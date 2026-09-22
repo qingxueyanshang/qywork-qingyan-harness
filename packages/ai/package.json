@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./fault-server.test-helper": "./src/providers/fault-server.test-helper.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

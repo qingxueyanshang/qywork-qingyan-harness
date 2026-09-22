@@ -48,6 +48,7 @@ export {
   type ModelFinishRate,
   markProviderRequestFirstContent,
   markProviderRequestFirstEvent,
+  markProviderRequestHeaders,
   markProviderRequestSent,
   markRunRunning,
   markStepExecuting,

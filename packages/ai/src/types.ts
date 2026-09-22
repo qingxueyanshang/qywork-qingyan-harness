@@ -263,8 +263,12 @@ export type ProviderEvent =
    *
    * 它把「上传/排队到响应头」与「响应建立后到首段思考或正文」分开；不携带正文，
    * 也不进入模型历史。各适配器必须在自己的协议边界上发一次。
+   *
+   * `headersAt` 取 `TransportTrace.headersAt`，即 `fetch` 返回响应头的那一刻。
+   * **不要换成事件产生时的当前时刻**：这个事件在 SDK 解析完首批字节之后才发得出来，
+   * 两者相差的毫秒数正是这一列要度量的首包等待。
    */
-  | { type: 'response_started' }
+  | { type: 'response_started'; headersAt: number }
   | { type: 'thinking_delta'; delta: string }
   | { type: 'response_reasoning'; reasoning: ResponseReasoning }
   | { type: 'text_delta'; delta: string }

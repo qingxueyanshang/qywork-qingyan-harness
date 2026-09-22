@@ -2107,6 +2107,16 @@ DROP INDEX idx_schedules_last_conversation;
 CREATE INDEX idx_schedules_conversation ON schedules(conversation_id);
 `,
   },
+  {
+    id: 58,
+    name: 'provider_request_headers_at',
+    /**
+     * 响应头到达的观察时刻。它与 `first_event_at` 不是同一件事：响应头已到而首个
+     * 协议事件未到的那一段，是中转接单之后、模型产出之前的等待，只有这一列能把它
+     * 与「连接还没通」分开。NULL 表示迁移前旧行或响应头未到达。
+     */
+    sql: `ALTER TABLE provider_requests ADD COLUMN headers_at INTEGER;`,
+  },
 ]
 
 /**
@@ -2260,6 +2270,7 @@ export interface ProviderRequestRow {
   request_bytes: number | null
   cache_route_fingerprint: string | null
   sent_at: number | null
+  headers_at: number | null
   first_event_at: number | null
   first_content_at: number | null
   completed_at: number | null
@@ -2405,6 +2416,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'request_bytes',
     'cache_route_fingerprint',
     'sent_at',
+    'headers_at',
     'first_event_at',
     'first_content_at',
     'completed_at',

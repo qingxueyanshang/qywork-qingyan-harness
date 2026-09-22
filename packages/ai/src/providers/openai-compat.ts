@@ -139,7 +139,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
         )) as unknown as AsyncIterable<CompatChunk>
 
       // SDK promise 在流响应建立后 resolve；此刻还没有消费首个 SSE chunk。
-      yield { type: 'response_started' }
+      // 时刻取传输层观察到的响应头，不取此刻。
+      yield { type: 'response_started', headersAt: trace.headersAt! }
 
       let chunks = 0
       for await (const chunk of stream) {

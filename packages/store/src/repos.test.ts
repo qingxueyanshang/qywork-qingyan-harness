@@ -28,6 +28,7 @@ import {
   listWorkspaces,
   markProviderRequestFirstContent,
   markProviderRequestFirstEvent,
+  markProviderRequestHeaders,
   markProviderRequestSent,
   openProviderRequest,
   providerFinishRates,
@@ -48,7 +49,7 @@ function fresh() {
 }
 
 describe('逐请求传输证据', () => {
-  test('路线、体积、首事件、首内容与终态逐项落库', () => {
+  test('路线、体积、响应头、首事件、首内容与终态逐项落库', () => {
     const { store, ws } = fresh()
     const cv = createConversation(store, { workspaceId: ws.id, provider: 'relay', model: 'm' })
     const run = createRun(store, {
@@ -74,6 +75,9 @@ describe('逐请求传输证据', () => {
       requestBytes: 4096,
     })
     markProviderRequestSent(store, request.id)
+    markProviderRequestHeaders(store, request.id, 1_700_000_000_000)
+    // 观察时刻由调用方给，重复写入保持第一次：后到的那个不是响应头到达时刻。
+    markProviderRequestHeaders(store, request.id, 1_700_000_009_000)
     markProviderRequestFirstEvent(store, request.id)
     markProviderRequestFirstContent(store, request.id)
     settleProviderRequest(store, request.id, 'received', null, null, 'completed')
@@ -87,6 +91,7 @@ describe('逐请求传输证据', () => {
       finishReason: 'completed',
     })
     expect(found.sentAt).toBeNumber()
+    expect(found.headersAt).toBe(1_700_000_000_000)
     expect(found.firstEventAt).toBeNumber()
     expect(found.firstContentAt).toBeNumber()
     expect(found.completedAt).toBeNumber()

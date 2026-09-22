@@ -88,6 +88,7 @@ import {
   listWorkflowRecords,
   markProviderRequestFirstContent,
   markProviderRequestFirstEvent,
+  markProviderRequestHeaders,
   markProviderRequestSent,
   markRunRunning,
   markStepExecuting,
@@ -934,6 +935,8 @@ export class Session {
       },
       openRequest: (input) => openProviderRequest(store, input).id,
       markRequestSent: (requestId) => markProviderRequestSent(store, requestId as never),
+      markRequestHeaders: (requestId, at) =>
+        markProviderRequestHeaders(store, requestId as never, at),
       markRequestFirstEvent: (requestId) =>
         markProviderRequestFirstEvent(store, requestId as never),
       markRequestFirstContent: (requestId) =>
@@ -1236,6 +1239,9 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
         if (trace && requestId && !sawEvent && ev.type !== 'request_prepared') {
           sawEvent = true
           trace.firstEvent(requestId)
+        }
+        if (trace && requestId && ev.type === 'response_started') {
+          trace.headers(requestId, ev.headersAt)
         }
         if (ev.type === 'text_delta') text += ev.delta
         else if (ev.type === 'done') {

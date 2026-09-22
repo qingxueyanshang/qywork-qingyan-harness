@@ -297,6 +297,11 @@ export interface LoopPersistence {
   }): string
   /** 请求真的发出去了。sent_at 只在这里置。 */
   markRequestSent(requestId: string): void
+  /**
+   * 响应头到达。`at` 是传输层观察到的时刻，由 `response_started` 事件带上来，
+   * **不是本方法被调用的时刻**。
+   */
+  markRequestHeaders?(requestId: string, at: number): void
   /** 可选是为了旧测试夹具；生产装配必须提供。 */
   markRequestFirstEvent?(requestId: string): void
   markRequestFirstContent?(requestId: string): void
@@ -717,6 +722,7 @@ export class AgentLoop {
         })
       },
       sent: (requestId: string): void => persist.markRequestSent(requestId),
+      headers: (requestId: string, at: number): void => persist.markRequestHeaders?.(requestId, at),
       firstEvent: (requestId: string): void => persist.markRequestFirstEvent?.(requestId),
       settle: (
         requestId: string,
@@ -1328,6 +1334,7 @@ export class AgentLoop {
                   break
                 case 'response_started':
                   // 只作为传输遥测边界；不产生模型可见内容或 UI step。
+                  persist.markRequestHeaders?.(requestId, ev.headersAt)
                   break
                 case 'request_prepared': {
                   const limit = adapter.spec.contextWindow

@@ -117,7 +117,8 @@ export class AnthropicAdapter implements LlmAdapter {
         switch (ev.type) {
           case 'message_start': {
             // Anthropic 的 message_start 是协议级流起点，早于首个内容块。
-            yield { type: 'response_started' }
+            // 时刻取传输层观察到的响应头，不取本事件到达时刻：两者之间隔着 SDK 解析。
+            yield { type: 'response_started', headersAt: trace.headersAt! }
             const u = ev.message?.usage
             if (u) applyUsage(usage, u)
             break

@@ -277,6 +277,8 @@ export interface SummaryTrace {
   /** 发出之前登记，返回请求 id。 */
   open(req: ChatRequest): string
   sent(requestId: string): void
+  /** `at` 是 `response_started` 带来的传输层观察时刻，不是调用时刻。 */
+  headers(requestId: string, at: number): void
   firstEvent(requestId: string): void
   settle(
     requestId: string,
