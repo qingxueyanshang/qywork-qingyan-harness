@@ -118,6 +118,11 @@ export interface LoopDeps {
    * 存在的理由只有一个：让测试在几百毫秒内验到这条路径。回归测试不能等三分钟。
    */
   streamIdleTimeoutMs?: number
+  /**
+   * 重发前的退避等待。不传按真实计时器等，并随中止信号提前结束。
+   * 存在的理由只有一个：让重发回归断言退避毫秒数，而不必真的等满一分钟。
+   */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>
 }
 
 /**
@@ -402,18 +407,7 @@ function idleTimeoutFor(effort: ChatRequest['effort']): number {
 }
 
 /**
- * 上游自报「暂时不可用」后的等待。
- *
- * 这类故障的恢复是秒级，而重发期间界面上没有任何反馈，等更久用户会当成卡死。
- */
-export const UNAVAILABLE_BACKOFF_MS = 3_000
-
-/** 429 未给等待时间时，从 1 秒开始指数退避，单次最多等待 30 秒。 */
-export const RATE_LIMIT_BACKOFF_BASE_MS = 1_000
-export const RATE_LIMIT_BACKOFF_MAX_MS = 30_000
-
-/**
- * 一轮之内最多原样重发几次。**对表里每个码一视同仁。**
+ * 一轮之内最多原样重发几次。**对可重发集合里每个码一视同仁。**
  *
  * **这个数只有这一处**，界面上那句「正在重连 N / M」的 M 由 `run.retrying` 事件
  * 带过去，不许在前端再写一遍。
@@ -430,45 +424,53 @@ export const RATE_LIMIT_BACKOFF_MAX_MS = 30_000
 export const MAX_RESENDS = 5
 
 /**
- * 会自动重发的失败，值是重发前的等待毫秒。次数上限见 `MAX_RESENDS`。
+ * 会自动重发的失败码。次数上限见 `MAX_RESENDS`，等多久见 `resendBackoffMs`。
  *
- * **传输层等 0，上游明确答复的不可用要等。** 连接失败时无从判断请求是否送达，
- * 原样立刻重发是唯一选择；`provider_unavailable` 是上游明确答复的「暂时不可用」，
- * 不等就是无退避地重压对端。
- *
- * 这张表只说「等多久」，**不说「以什么形式重发」**——原样重发还是带当前上下文
+ * 这个集合只说「重不重发」，**不说「以什么形式重发」**——原样重发还是带当前上下文
  * 续发，由尝试循环按正文是否已显示决定。
  *
  * 不要以「重发要多付一次长 prompt 的钱」为由把 `provider_unavailable` 摘掉：
  * 不重发时用户要手动继续，那一次付的是同一笔钱，而且 run 已经落成 failed，
  * 新消息还得让模型重新理解上一轮做到哪。
  *
- * **`invalid_request` 不在表里，别加进来。** 那个码的定义就是「同一份字节再发一次
- * 拿回同一个拒绝」（`ai/errors.ts` 的 400 / 413 / 422 一支）。整类加进来的代价实测付过：
- * 给不接受图片的模型发一张图，用户看到的是「正在重连 1 / 5」一直数到 5，
- * 而真正的原因——这个模型不接受图片——一个字都没出现。中转站已证实可恢复的模糊
- * 拒绝由 `ai/errors.ts` 精确归成 `provider_unavailable`，不要在这里再按文案分叉。
+ * **`invalid_request` 不在集合里，别加进来。** 那个码的定义就是「同一份字节再发一次
+ * 拿回同一个拒绝」（`ai/errors.ts` 的 400 / 413 / 422 一支），加进来只会把真正的原因
+ * （例如这个模型不接受图片）推迟到五次重发之后才显示。中转站已证实可恢复的模糊拒绝
+ * 由 `ai/errors.ts` 精确归成 `provider_unavailable`，不在这里再按文案分叉。
  *
- * **超时与断连同价。** `stream_idle_timeout` 是传输层按字节空闲掐断的流，连接已经判死，
- * 立刻原样重发；连接超时（`timedOut` 的 `network_error`）是响应头等了
- * `PROVIDER_HTTP.timeout` 还没回，同样。掐了不重发等于这一轮必败，重复推理的代价由
- * 重发窗口限住：正文已显示的部分作为上一条保留，不重跑。
- * 「静默可能是上游还在想」只对响应头之前成立，那一段传输层不计时，
- * 不存在中转站还在等上游思考、这边掐了再发让它重跑一遍的情形。
+ * **超时与断连同价。** `stream_idle_timeout` 是传输层按字节空闲掐断的流，连接已经判死；
+ * 连接超时（`timedOut` 的 `network_error`）是响应头等了 `PROVIDER_HTTP.timeout` 还没回，
+ * 同样。掐了不重发等于这一轮必败，重复推理的代价由重发窗口限住：正文已显示的部分
+ * 作为上一条保留，不重跑。
  */
-const RESENDABLE: ReadonlyMap<string, number> = new Map([
-  ['network_error', 0],
-  ['stream_idle_timeout', 0],
-  ['provider_unavailable', UNAVAILABLE_BACKOFF_MS],
+const RESENDABLE_CODES: ReadonlySet<string> = new Set([
+  'network_error',
+  'stream_idle_timeout',
+  'provider_unavailable',
+  'rate_limited',
 ])
 
-/** 重发前等多久。不在表里的失败返回 undefined：不重发。 */
+/** 指数退避的首档。中转侧故障的恢复是秒级，更短的首档等于无退避地重压对端。 */
+const RESEND_BACKOFF_BASE_MS = 2_000
+
+/** 单次退避上限。取 30 秒后，首发加五次重发的总等待停在一分钟量级。 */
+const RESEND_BACKOFF_MAX_MS = 30_000
+
+/** 抖动比例，只向上加：同时被拒的多个请求要错开重发时刻，下限仍是退避档本身。 */
+const RESEND_BACKOFF_JITTER = 0.1
+
+/**
+ * 重发前等多久。不可重发的失败返回 undefined。
+ *
+ * **可重发的失败一律先等。** 上游给了 `Retry-After` 就按它等，否则按指数退避。
+ * 连接层失败立刻原样重发换不回更快的恢复，只会在对端仍不可用时把五次额度
+ * 在几毫秒内耗尽。
+ */
 function resendBackoffMs(error: ProviderError, resends: number): number | undefined {
-  if (error.code === 'rate_limited') {
-    if (error.retryAfterMs !== null) return Math.max(0, error.retryAfterMs)
-    return Math.min(RATE_LIMIT_BACKOFF_BASE_MS * 2 ** resends, RATE_LIMIT_BACKOFF_MAX_MS)
-  }
-  return RESENDABLE.get(error.code)
+  if (!RESENDABLE_CODES.has(error.code)) return undefined
+  if (error.retryAfterMs !== null) return Math.max(0, error.retryAfterMs)
+  const step = Math.min(RESEND_BACKOFF_BASE_MS * 2 ** resends, RESEND_BACKOFF_MAX_MS)
+  return Math.round(step * (1 + Math.random() * RESEND_BACKOFF_JITTER))
 }
 
 /**
@@ -650,11 +652,19 @@ export class AgentLoop {
    */
   private readonly compaction: CompactionPort
 
+  /**
+   * 退避等待。**恒非空**——缺省是可中断的真实计时，两个调用点因此不必判空。
+   *
+   * 等待必须随信号结束：退避的这几十秒内用户点停止，不中断等待就是按钮无响应。
+   */
+  private readonly backoff: (ms: number, signal: AbortSignal) => Promise<void>
+
   constructor(private readonly deps: LoopDeps) {
     this.compaction = deps.compaction ?? {
       project: (messages) => messages,
       run: async () => ({ status: 'skipped', reasonCode: 'nothing_to_fold' }),
     }
+    this.backoff = deps.sleep ?? ((ms, signal) => untilAborted(signal, sleep(ms)))
   }
 
   /**
@@ -1600,8 +1610,7 @@ export class AgentLoop {
                   max: MAX_RESENDS,
                   failedThinkingStepIds: [...attemptThinking],
                 }
-                // 等待必须可中断：退避的这几秒内用户点停止，不中断等待就是按钮无响应。
-                if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))
+                if (backoffMs > 0) await this.backoff(backoffMs, input.signal)
                 continue
               }
 
@@ -1631,7 +1640,7 @@ export class AgentLoop {
                 max: MAX_RESENDS,
                 failedThinkingStepIds: [],
               }
-              if (backoffMs > 0) await untilAborted(input.signal, sleep(backoffMs))
+              if (backoffMs > 0) await this.backoff(backoffMs, input.signal)
               continue turns
             }
 
@@ -1676,6 +1685,16 @@ export class AgentLoop {
           stopReason = 'user_interrupt'
           break
         }
+
+        /*
+         * **`max_tokens` 之下这一批工具调用不作数。**
+         *
+         * 输出被截断意味着最后一条调用的参数可能停在半个 JSON 上，而截断处恰好是
+         * 合法 JSON 时连 `argumentsError` 都没有。按它执行就是拿残缺参数动手，
+         * 且模型没有机会补完。整批在这里丢掉，正文与思考照常落账，
+         * 下面的 `!calls.length` 分支随即把终态定成 `output_truncated`。
+         */
+        if (providerStop === 'max_tokens') calls.length = 0
 
         // 把本轮 assistant 输出写回 transcript：模型下一轮必须看到自己刚说过什么、
         // 调了哪些工具，否则会重复调用。
@@ -1868,18 +1887,23 @@ export class AgentLoop {
 
         // ── 工具执行：按波次调度 ──
         /*
-         * **名字不在注册表里的，一律不进执行链。**
+         * **名字不在注册表里的、参数不是合法 JSON 的，一律不进执行链。**
          *
          * 注册表是工具的唯一权威——名字不在表里就是未注册调用，不是一种工具。
          * 放它进去会开出一条没有动作、也没有执行事实的 tool step，迫使界面替它
          * 编造标题。
+         *
+         * 参数解析失败时适配器把 `arguments` 交成 `{}` 并把原文挂在 `argumentsError`
+         * 上。必填项校验（`ToolRegistry.execute`）只挡得住声明了 `required` 的工具，
+         * `required: []` 的工具会把这个空对象当成「没有参数」照常执行。
+         * 所以判据取 `argumentsError` 本身，不取校验结果。
          *
          * 在这里挡掉之后，**下游每一条 step 都必然有 spec、必然解析得出动作**，
          * 渲染那侧不再需要任何兜底分支。
          *
          * 但结果**必须回给模型**：provider 的契约是每个 tool_call 都要有一条
          * 对应 id 的 tool 结果，少一条下一轮直接 400。所以照常推一条失败结果，
-         * 它自己会改用真实存在的工具。
+         * 它自己会改用真实存在的工具或重发完整参数。
          */
         // 本批（一次 provider 决策）的逐调用证据，波次全部结束后聚合成一条。
         const batchEvidence: {
@@ -1889,11 +1913,16 @@ export class AgentLoop {
         }[] = []
 
         for (const [callIndex, c] of calls.entries()) {
-          if (registry.has(c.name)) continue
+          const rejection = !registry.has(c.name)
+            ? `未注册调用：${c.name}。只能调用工具表中已注册的工具。`
+            : c.argumentsError !== undefined
+              ? `参数不是合法 JSON，未执行：${c.argumentsError}。请重新发送完整的 JSON 参数。`
+              : null
+          if (rejection === null) continue
           const outcome: ToolOutcome = {
             status: 'failure',
             executed: false,
-            message: `未注册调用：${c.name}。只能调用工具表中已注册的工具。`,
+            message: rejection,
           }
           transcript.push({
             role: 'tool',
@@ -1911,13 +1940,13 @@ export class AgentLoop {
         /*
          * 两套下标不可混用：`planWaves` 的 callIndex 是过滤后下标，进账本与
          * 事件，语义保持不变；批证据要按 provider 原调用顺序聚合，用原始下标
-         * ——未知调用的证据（上面）就是按原始下标记的，混用会让含未知调用的
+         * ——被挡下的调用的证据（上面）就是按原始下标记的，混用会让含被挡调用的
          * 批次聚合顺序偏离原顺序。
          */
         const known: WireToolCall[] = []
         const originalIndexes: number[] = []
         calls.forEach((c, i) => {
-          if (!registry.has(c.name)) return
+          if (!registry.has(c.name) || c.argumentsError !== undefined) return
           known.push(c)
           originalIndexes.push(i)
         })

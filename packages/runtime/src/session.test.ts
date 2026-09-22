@@ -665,15 +665,18 @@ describe('新建会话的来源', () => {
   ) {
     const store = new Store({ path: ':memory:' })
     const root = await mkdtemp(join(tmpdir(), 'qywork-src-'))
+    const controller = new AbortController()
     const s = new Session({
       store,
       config,
       workspaceRoot: root,
-      signal: new AbortController().signal,
+      signal: controller.signal,
     })
     try {
-      for await (const _ of s.ask('查一下这个函数', undefined, over)) {
-        // 只要跑到第一次 provider 调用就够了，产出不关心。
+      for await (const ev of s.ask('查一下这个函数', undefined, over)) {
+        // 只要跑到第一次 provider 调用就够了，产出不关心。这条事件说明那次调用已经
+        // 失败，后面是分钟量级的重发退避，停掉它。
+        if (ev.type === 'run.retrying') controller.abort()
       }
     } catch {
       // 连不上是预期的。

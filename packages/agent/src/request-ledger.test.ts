@@ -111,6 +111,11 @@ function baseCtx(runId: string): ToolContextBase {
 async function runAgainst(
   ledgerUnderTest: Ledger,
   profile: { kind: 'openai_responses' | 'openai_chat_completions'; baseUrl: string; model: string },
+  /**
+   * 退避等待。缺省注入立即返回：耗满五次重发的那两条按真实退避要等一分钟，
+   * 而它们问的是账本的行数与列值，不是等了多久。
+   */
+  sleep: (ms: number, signal: AbortSignal) => Promise<void> = async () => {},
 ): Promise<AgentEvent[]> {
   const loop = new AgentLoop({
     adapter: buildAdapter({ ...profile, apiKey: 'sk-fault' }),
@@ -119,6 +124,7 @@ async function runAgainst(
     makeToolContext: baseCtx,
     persist: ledgerUnderTest.persist,
     streamIdleTimeoutMs: 2_000,
+    sleep,
   })
   const events: AgentEvent[] = []
   for await (const ev of loop.run({
@@ -139,11 +145,16 @@ test('503 退避重发：接收次数与已发送行数相等，退避期间没�
   const fault: FaultServer = startFaultServer('retry_after_then_ok')
   const led = ledger()
   try {
-    await runAgainst(led, {
-      kind: 'openai_responses',
-      baseUrl: fault.openaiBaseUrl,
-      model: 'deepseek-flash',
-    })
+    await runAgainst(
+      led,
+      {
+        kind: 'openai_responses',
+        baseUrl: fault.openaiBaseUrl,
+        model: 'deepseek-flash',
+      },
+      // 这一条要验「退避期间没有新接收」，所以按真实计时等，等的是夹具给的 Retry-After。
+      (ms) => Bun.sleep(ms),
+    )
     const rows = led.rows()
     expect(fault.receipts.length).toBe(2)
     expect(sentRows(rows).length).toBe(fault.receipts.length)

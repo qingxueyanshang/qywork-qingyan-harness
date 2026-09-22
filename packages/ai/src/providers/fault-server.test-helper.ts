@@ -44,8 +44,11 @@ export interface FaultServer {
   /** 每次收到请求的时刻，按到达顺序追加。 */
   receipts: number[]
   mode: FaultMode
-  /** `retry_after_then_ok` 与 `hung_error_body` 的 503 响应头里带的 Retry-After 秒数。 */
-  retryAfterSeconds: number
+  /**
+   * `retry_after_then_ok` 与 `hung_error_body` 的 503 响应头里带的 Retry-After 秒数。
+   * `null` 表示不带这个响应头——客户端此时只能按自己的退避策略决定等多久。
+   */
+  retryAfterSeconds: number | null
   /** `inline_error` 事件里的分类词与原文，三协议共用同一份。 */
   inlineError: { type: string; message: string }
   /**
@@ -413,7 +416,10 @@ function protocolOf(pathname: string): Protocol {
 }
 
 function respond(protocol: Protocol, fault: FaultServer): Response {
-  const retryAfter = String(fault.retryAfterSeconds)
+  const errorHeaders: Record<string, string> = {
+    'content-type': 'application/json',
+    ...(fault.retryAfterSeconds === null ? {} : { 'retry-after': String(fault.retryAfterSeconds) }),
+  }
   const closed = () => {
     fault.closedByClient++
   }
@@ -422,16 +428,11 @@ function respond(protocol: Protocol, fault: FaultServer): Response {
       return fault.receipts.length === 1
         ? new Response('{"error":{"message":"No available accounts"}}', {
             status: 503,
-            headers: { 'content-type': 'application/json', 'retry-after': retryAfter },
+            headers: errorHeaders,
           })
         : new Response(bodyOf(protocol, 'text'), { headers: SSE_HEADERS })
     case 'hung_error_body':
-      return endless(
-        '{"error":{"message":"No available accounts',
-        503,
-        { 'content-type': 'application/json', 'retry-after': retryAfter },
-        closed,
-      )
+      return endless('{"error":{"message":"No available accounts', 503, errorHeaders, closed)
     case 'tool_then_no_eof':
       return endless(bodyOf(protocol, 'tool'), 200, SSE_HEADERS, closed)
     case 'inline_error':
