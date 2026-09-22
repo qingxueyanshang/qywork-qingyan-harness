@@ -52,7 +52,13 @@
 
 import type { ReasoningEcho } from '@qywork/core'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
-import { classifyProviderError, namelessToolCall, ProviderError } from '../errors.ts'
+import {
+  classifyProviderError,
+  classifyStreamError,
+  namelessToolCall,
+  ProviderError,
+} from '../errors.ts'
+import { readSse, SSE_DONE, sseJson } from '../sse.ts'
 import { estimateRequest } from '../tokens.ts'
 import { newTrace, readTransport, traceFetch } from '../transport.ts'
 import type {
@@ -203,7 +209,11 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     yield { type: 'response_started', headersAt: trace.headersAt! }
 
     try {
-      for await (const event of readSse(res.body)) {
+      for await (const frame of readSse(res.body)) {
+        // Responses 协议不发 `[DONE]`；中转补一条也不作终态，终态只认 response.completed。
+        if (frame.data === SSE_DONE) continue
+        const event = sseJson(frame.data)
+        if (!event) continue
         const type = String(event.type ?? '')
 
         if (type === 'response.output_text.delta') {
@@ -307,20 +317,20 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           rawFinish = rawStatusOf(response)
           stopReason = normalizeStatus(response)
           settled = true
-          continue
+          // 终态到手就结束读取：读取器随即取消 body，工具调用与用量不等 HTTP EOF 才交付。
+          break
         }
 
         // 流内错误。SSE 已经 200 了，错误只能从事件里出——不认它的话
         // 表现是「流正常结束但什么都没有」。
         if (type === 'response.failed' || type === 'error') {
+          // 顶层 `error` 事件自己就是那个错误对象，退到 `event` 而不是空对象：
+          // 空对象会把 provider 原文换成 `{}`。
           const detail =
             ((event.response as Record<string, unknown>)?.error as Record<string, unknown>) ??
             (event.error as Record<string, unknown>) ??
-            {}
-          throw classifyProviderError(
-            'openai_responses',
-            asError(200, JSON.stringify(detail || event)),
-          )
+            event
+          throw classifyStreamError('openai_responses', detail)
         }
       }
 
@@ -340,6 +350,9 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           code: 'network_error',
           message: '流在终态事件之前结束',
           provider: 'openai_responses',
+          // 用量那一格先到、终态没到时把实数带上去。`source` 仍是 `estimated` 说明
+          // 它一个字节都没回报过，那种时候不带——带了就是把零当成真值记进账本。
+          ...(usage.source === 'provider' ? { usage } : {}),
         })
       }
     } catch (err) {
@@ -550,38 +563,6 @@ export function buildTools(
 }
 
 // ───────────────────────── 响应解析 ─────────────────────────
-
-/**
- * 读 SSE。
- *
- * 只认 `data:` 行，事件类型从 JSON 体里的 `type` 取——Responses 的 `event:` 行
- * 与体内的 `type` 是重复的，而中转站不一定两个都发。以体为准更稳。
- */
-export async function* readSse(
-  body: ReadableStream<Uint8Array>,
-): AsyncGenerator<Record<string, unknown>, void, unknown> {
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
-    buffer += decoder.decode(chunk, { stream: true })
-    for (;;) {
-      const idx = buffer.indexOf('\n')
-      if (idx < 0) break
-      const line = buffer.slice(0, idx).trim()
-      buffer = buffer.slice(idx + 1)
-      if (!line.startsWith('data:')) continue
-      const payload = line.slice(5).trim()
-      if (!payload || payload === '[DONE]') continue
-      try {
-        yield JSON.parse(payload)
-      } catch {
-        // 半行或非 JSON 的心跳。忽略而不是报协议错误——
-        // 一个心跳把整轮 run 打断，代价完全不成比例。
-      }
-    }
-  }
-}
 
 export function applyUsage(acc: ProviderUsage, raw: Record<string, unknown> | undefined): void {
   if (!raw) return

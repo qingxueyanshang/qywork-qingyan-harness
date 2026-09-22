@@ -1226,9 +1226,6 @@ export interface ProviderRequest {
    *
    * 它与 `firstEventAt` 之间那一段是「远端已接单、模型还没产出」；缺了它，
    * 连接未通与接单后等待在账本上是同一种静默。
-   *
-   * 边界：非 2xx 的响应在适配器抛错前不交付 `response_started`，这一列因此为 null，
-   * 那一次的响应头时刻只在失败诊断的传输读数里。
    */
   headersAt: number | null
   /** provider 返回的第一个流事件；不含本地 request_prepared。 */
@@ -1268,6 +1265,14 @@ export interface ProviderTransportReading {
   status: number | null
   /** 发出到响应头到达的毫秒数；没到为 null。 */
   headersAfterMs: number | null
+  /**
+   * 响应头到达的绝对时刻；没到为 null。
+   *
+   * 与 `headersAfterMs` 各答各的问题：诊断只看时长，账本那一列要的是时刻。
+   * 非 2xx 的响应头只能从这里进 `ProviderRequest.headersAt`——那条路上适配器直接抛错，
+   * 不经过 `response_started`。
+   */
+  headersAt: number | null
   /** 正文累计字节数。 */
   bytes: number
   /** 最后一个正文字节到失败时刻的毫秒数；一个字节都没收到为 null。 */

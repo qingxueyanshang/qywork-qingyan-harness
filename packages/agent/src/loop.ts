@@ -1180,10 +1180,6 @@ export class AgentLoop {
         carriedResends = 0
         for (;;) {
           attemptThinking = []
-          // 每次尝试自己的中止器：它与用户停止的信号并联成这一次的 `req.signal`，
-          // 复用上一次那个等于新连接一开就已经是 aborted。
-          const attemptAbort = new AbortController()
-          req = { ...req, signal: AbortSignal.any([input.signal, attemptAbort.signal]) }
 
           // 同一轮的第 N 次发送。`uq_provider_run_turn` 靠它区分，重发因此不会顶掉
           // 上一次那行——两次都真实发生过，账要分开记。**就地自增**，不要挪到各条
@@ -1354,6 +1350,11 @@ export class AgentLoop {
             const code = pe?.code ?? 'internal_error'
             const interrupted = input.signal.aborted
             const silentMs = Math.max(0, Date.now() - lastEventAt)
+            // 非 2xx 的响应头不经过 `response_started`（适配器在那条路上直接抛错），
+            // 时刻只在传输读数里。它到过就记，账本因此分得出「连不上」和「被回绝」。
+            if (pe?.transport?.headersAt != null) {
+              persist.markRequestHeaders?.(requestId, pe.transport.headersAt)
+            }
             const recordDecision = (
               decision: ProviderRetryDecision,
               attempt: number | null = null,

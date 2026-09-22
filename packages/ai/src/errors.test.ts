@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { classifyProviderError, ProviderError } from './errors.ts'
+import { classifyProviderError, classifyStreamError, ProviderError } from './errors.ts'
 
 const P = 'openai_responses' as const
 
@@ -161,22 +161,48 @@ describe('用户中断不是错误', () => {
 })
 
 describe('按用户的下一步动作分类', () => {
-  test('SSE 建连后的 200 错误事件仍按结构化错误分类', () => {
-    const reported = (code: string, type = '') =>
-      Object.assign(new Error('provider reported failure'), {
-        status: 200,
-        error: { code, type, message: 'provider reported failure' },
-      })
+  test('流内 error 事件按事件里的 type / code 分类，不看状态码', () => {
+    const byType = (type: string) => classifyStreamError(P, { type, message: 'provider 原话' }).code
+    const byCode = (code: string) => classifyStreamError(P, { code, message: 'provider 原话' }).code
 
-    expect(classifyProviderError(P, reported('rate_limit_exceeded')).code).toBe('rate_limited')
-    expect(classifyProviderError(P, reported('insufficient_quota')).code).toBe('insufficient_quota')
-    expect(classifyProviderError(P, reported('server_error')).code).toBe('provider_unavailable')
-    expect(classifyProviderError(P, reported('invalid_request_error')).code).toBe('invalid_request')
-    expect(classifyProviderError(P, reported('invalid_api_key')).code).toBe('auth_failed')
-    expect(classifyProviderError(P, reported('model_not_found')).code).toBe('model_not_found')
-    expect(
-      classifyProviderError(P, Object.assign(new Error('Too many requests'), { status: 200 })).code,
-    ).toBe('rate_limited')
+    expect(byType('rate_limit_error')).toBe('rate_limited')
+    expect(byCode('rate_limit_exceeded')).toBe('rate_limited')
+    expect(byType('too_many_requests')).toBe('rate_limited')
+    expect(byType('authentication_error')).toBe('auth_failed')
+    expect(byType('permission_error')).toBe('auth_failed')
+    expect(byCode('invalid_api_key')).toBe('auth_failed')
+    expect(byType('not_found_error')).toBe('model_not_found')
+    expect(byCode('model_not_found')).toBe('model_not_found')
+    expect(byType('invalid_request_error')).toBe('invalid_request')
+    expect(byCode('bad_request')).toBe('invalid_request')
+    expect(byCode('insufficient_quota')).toBe('insufficient_quota')
+    expect(byType('overloaded_error')).toBe('provider_unavailable')
+    expect(byType('server_error')).toBe('provider_unavailable')
+    expect(byType('api_error')).toBe('provider_unavailable')
+    expect(byType('这家中转自己编的码')).toBe('provider_unavailable')
+  })
+
+  /** 分类码说的是「哪一类」，说不出 provider 报了什么。原文丢了就没有第二处能取回。 */
+  test('流内 error 保留事件原文与结构化字段', () => {
+    const e = classifyStreamError(P, {
+      type: 'overloaded_error',
+      message: 'Overloaded',
+      code: 'x_overloaded',
+    })
+    expect(e.code).toBe('provider_unavailable')
+    expect(e.message).toBe('Overloaded')
+    expect(e.detail).toMatchObject({
+      providerMessage: 'Overloaded',
+      providerType: 'overloaded_error',
+      providerCode: 'x_overloaded',
+    })
+    // 没有 HTTP 状态码：流内错误不伪造一个，账本据此区分「被回绝」与「建连后出错」。
+    expect(e.status).toBeUndefined()
+  })
+
+  test('事件没带文案时退到 code / type，不编一句', () => {
+    expect(classifyStreamError(P, { code: 'server_error' }).message).toBe('server_error')
+    expect(classifyStreamError(P, {}).message).toBe('模型服务返回错误事件')
   })
 
   test('401 未配置与 401 key 无效是两条不同的引导', () => {

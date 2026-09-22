@@ -12,6 +12,10 @@
  *
  * **文案匹配是刻意的兜底，不是 bug，别删。** 429 优先读结构化错误码，
  * 没有错误码时仍要靠文案区分限速与欠费；传输层错误同样需要文案兜底。
+ *
+ * 两个入口：`classifyProviderError` 收异常对象（HTTP 失败、SDK 抛出、传输层断流），
+ * `classifyStreamError` 收流内 `error` 事件里的结构化字段。流内错误没有 HTTP 状态码，
+ * 不要为了走前一个入口而伪造一个。
  */
 
 import type { ErrorCode, ProviderKind, ProviderTransportReading } from '@qywork/core'
@@ -178,6 +182,53 @@ export function classifyProviderError(
 }
 
 /**
+ * 流内 `error` 事件的归类。三条协议的错误事件字段名一致（`type` / `code` / `message`
+ * / `param`），装进这一个入口。
+ *
+ * **输入是事件里的结构化字段，不是异常对象**：SSE 已经 200 了，此刻没有 HTTP 状态码可读，
+ * 伪造一个会让「provider 拒绝了请求」和「连接建立后出错」在账本上无法区分。
+ *
+ * `message` 保留事件原文：分类码说的是「哪一类」，说不出 provider 报的是哪一句。
+ * 事件没带文案时退到 `code` / `type`，不编一句。
+ */
+export function classifyStreamError(
+  provider: ProviderKind,
+  event: Record<string, unknown>,
+): ProviderError {
+  const field = (key: string): string => {
+    const value = event[key]
+    return typeof value === 'string' ? value : ''
+  }
+  const code = field('code')
+  const type = field('type')
+  const param = field('param')
+  const message = field('message').trim() || code || type || '模型服务返回错误事件'
+  const reported = `${type} ${code}`.toLowerCase()
+  const detail = {
+    providerMessage: message,
+    ...(code ? { providerCode: code } : {}),
+    ...(type ? { providerType: type } : {}),
+    ...(param ? { providerParam: param } : {}),
+  }
+  const build = (errorCode: ErrorCode, msg?: string) =>
+    new ProviderError({ code: errorCode, message: msg ?? message, provider, detail })
+
+  if (quotaExhausted(event, message)) return build('insufficient_quota', '账户额度不足')
+  if (/rate[\s_-]?limit|too[\s_-]?many[\s_-]?requests/.test(reported)) {
+    return build('rate_limited', '触发限速')
+  }
+  if (/authentication|unauthorized|invalid[\s_-]?api[\s_-]?key|permission|forbidden/.test(reported))
+    return build('auth_failed', '当前凭证无权完成请求')
+  if (/not[\s_-]?found/.test(reported)) {
+    return build('model_not_found', '模型不存在：检查模型 ID 与接口地址')
+  }
+  if (/invalid[\s_-]?request|bad[\s_-]?request/.test(reported)) return build('invalid_request')
+  // 一个明确的失败事件本身就是 provider 暂不可用的证据；没有结构化细码时保留原文，
+  // 同时让它进入 `loop.ts` 的重发表。
+  return build('provider_unavailable')
+}
+
+/**
  * 沿 cause 链取回已经归好类的错误。只走四层，既覆盖 SDK 包装又防损坏对象成环。
  *
  * 传输层判定的断流是一个 `ProviderError`，而 SDK 在响应体流出错时会把它再包一层
@@ -239,35 +290,6 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
       capacity,
       cause: err,
     })
-  }
-
-  /*
-   * Responses API 的失败不一定走非 2xx：SSE 已经建立以后，限速、过载等会作为
-   * `response.failed` / `error` 事件到达。适配器把这类事件保留为 status=200，
-   * 这里必须按事件里的结构化 code/type 分类；否则它们全落成 internal_error，
-   * 现有重试链就永远看不到本来可恢复的限速或服务抖动。
-   */
-  if (status !== undefined && status >= 200 && status < 300) {
-    // code/type 最稳；个别中转站会把它们剥掉，最后把原文并入同一窄词表兜底。
-    const reported = `${providerCode ?? ''} ${providerType ?? ''} ${message}`.toLowerCase()
-    if (quotaExhausted(err, message)) return build('insufficient_quota', '账户额度不足')
-    if (/rate[\s_-]?limit|too[\s_-]?many[\s_-]?requests/.test(reported)) {
-      return build('rate_limited', '触发限速')
-    }
-    if (
-      /authentication|unauthorized|invalid[\s_-]?api[\s_-]?key|permission|forbidden/.test(reported)
-    ) {
-      return build('auth_failed', '当前凭证无权完成请求')
-    }
-    if (/model[\s_-]?not[\s_-]?found/.test(reported)) {
-      return build('model_not_found', '模型不存在：检查模型 ID 与接口地址')
-    }
-    if (/invalid[\s_-]?request|bad[\s_-]?request/.test(reported)) {
-      return build('invalid_request', message)
-    }
-    // 一个明确的失败事件本身就是 provider 暂不可用的证据；没有结构化细码时
-    // 保留原文，同时让它进入 `loop.ts` 的重发表。
-    return build('provider_unavailable', message)
   }
 
   switch (status) {

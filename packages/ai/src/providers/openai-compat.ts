@@ -16,7 +16,13 @@ import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import OpenAI from 'openai'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
-import { classifyProviderError, namelessToolCall, ProviderError } from '../errors.ts'
+import {
+  classifyProviderError,
+  classifyStreamError,
+  namelessToolCall,
+  ProviderError,
+} from '../errors.ts'
+import { readSse, SSE_DONE, sseJson } from '../sse.ts'
 import { estimateRequest } from '../tokens.ts'
 import { newTrace, readTransport, traceFetch } from '../transport.ts'
 import type {
@@ -126,9 +132,17 @@ export class OpenAICompatAdapter implements LlmAdapter {
     const trace = newTrace()
 
     try {
-      // 兼容端点的字段集参差不齐（reasoning_content、prompt_cache_hit_tokens 等
-      // 都不在官方类型里），所以请求体和响应都在这个边界上断言，内部按 Record 处理。
-      const stream = (await this.client
+      /*
+       * 用 SDK 构造请求、鉴权与重试策略，但**响应体自己读**。
+       *
+       * `asResponse()` 交出原始 `Response`，SSE 由共用读取器解析。不要改回 SDK 的流迭代：
+       * 它把 `[DONE]` 只当一条标记、继续等 HTTP EOF，因此工具调用与用量要等对端关连接
+       * 才交付，对端不关就一直等。
+       *
+       * 兼容端点的字段集参差不齐（reasoning_content、prompt_cache_hit_tokens 等都不在
+       * 官方类型里），所以请求体和响应都在这个边界上断言，内部按 Record 处理。
+       */
+      const res = await this.client
         .withOptions({ fetch: traceFetch(trace, 'openai_chat_completions', req.idleTimeoutMs) })
         .chat.completions.create(
           { ...body, stream: true, stream_options: { include_usage: true } } as never,
@@ -136,14 +150,37 @@ export class OpenAICompatAdapter implements LlmAdapter {
             ...(req.signal ? { signal: req.signal } : {}),
             ...(Object.keys(requestHeaders).length ? { headers: requestHeaders } : {}),
           },
-        )) as unknown as AsyncIterable<CompatChunk>
+        )
+        .asResponse()
 
-      // SDK promise 在流响应建立后 resolve；此刻还没有消费首个 SSE chunk。
+      if (!res.body) {
+        throw new ProviderError({
+          code: 'provider_unavailable',
+          message: '响应没有 body',
+          provider: 'openai_chat_completions',
+          status: res.status,
+        })
+      }
+
+      // `asResponse()` 返回即响应头已到，正文 SSE 尚未开始。
       // 时刻取传输层观察到的响应头，不取此刻。
       yield { type: 'response_started', headersAt: trace.headersAt! }
 
       let chunks = 0
-      for await (const chunk of stream) {
+      for await (const frame of readSse(res.body)) {
+        // 终止标记到手就结束读取：读取器随即取消 body，不等对端 FIN。
+        if (frame.data === SSE_DONE) break
+        const parsed = sseJson(frame.data)
+        if (!parsed) continue
+        // 流内错误。SSE 已经 200 了，错误只能从 chunk 里出。
+        const inlineError = parsed.error
+        if (inlineError && typeof inlineError === 'object') {
+          throw classifyStreamError(
+            'openai_chat_completions',
+            inlineError as Record<string, unknown>,
+          )
+        }
+        const chunk = parsed as unknown as CompatChunk
         chunks++
         if (chunk.usage) applyUsage(usage, chunk.usage)
 
@@ -225,6 +262,9 @@ export class OpenAICompatAdapter implements LlmAdapter {
 
       /*
        * **流结束了却一次都没给过 `finish_reason` = 传输被截断，不是「说完了」。**
+       *
+       * 判据是 `finish_reason`，**不是 `[DONE]`**：部分中转不发终止标记，拿它当判据
+       * 会把一次正常收尾报成断流。
        *
        * 协议要求最后一个 chunk 带 `finish_reason`，用量也在同一个 chunk 里。
        * 两者一起缺席只有一个成因：连接在模型说完之前断了。默认值 `end_turn`

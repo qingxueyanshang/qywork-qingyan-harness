@@ -1237,6 +1237,8 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
     } catch (err) {
       const pe = err instanceof ProviderError ? err : null
       if (trace && requestId) {
+        // 非 2xx 的响应头不经过 `response_started`，时刻只在传输读数里。与主请求同一条规则。
+        if (pe?.transport?.headersAt != null) trace.headers(requestId, pe.transport.headersAt)
         // 与主请求同一套终态：被拒是 rejected，其余（掐流、中断、断连）都是 uncertain。
         trace.settle(
           requestId,

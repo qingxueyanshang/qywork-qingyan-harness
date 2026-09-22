@@ -10,7 +10,7 @@
 import { describe, expect, test } from 'bun:test'
 import { lookupModel } from '../catalog.ts'
 import type { ProviderUsage, WireMessage } from '../types.ts'
-import { applyUsage, buildInput, buildTools, readSse } from './openai-responses.ts'
+import { applyUsage, buildInput, buildTools } from './openai-responses.ts'
 
 describe('input 是条目序列，不是消息序列', () => {
   test('普通用户消息用 input_text', () => {
@@ -372,54 +372,6 @@ describe('用量口径', () => {
     const u = fresh()
     applyUsage(u, undefined)
     expect(u.source).toBe('estimated')
-  })
-})
-
-describe('SSE 解析', () => {
-  function streamOf(text: string): ReadableStream<Uint8Array> {
-    return new ReadableStream({
-      start(c) {
-        c.enqueue(new TextEncoder().encode(text))
-        c.close()
-      },
-    })
-  }
-
-  async function collect(text: string) {
-    const out: Record<string, unknown>[] = []
-    for await (const e of readSse(streamOf(text))) out.push(e)
-    return out
-  }
-
-  test('逐条解析 data 行', async () => {
-    const events = await collect(
-      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"你"}\n\n' +
-        'data: {"type":"response.output_text.delta","delta":"好"}\n\n',
-    )
-    expect(events.map((e) => e.delta)).toEqual(['你', '好'])
-  })
-
-  test('[DONE] 与空行被跳过', async () => {
-    expect(await collect('data: [DONE]\n\n\n')).toEqual([])
-  })
-
-  /** 心跳或半行不能把整轮 run 打断——代价完全不成比例。 */
-  test('非 JSON 的行忽略而不是抛', async () => {
-    const events = await collect('data: 不是json\n\ndata: {"type":"ok"}\n\n')
-    expect(events).toEqual([{ type: 'ok' }])
-  })
-
-  test('跨 chunk 的半行能拼回来', async () => {
-    const stream = new ReadableStream<Uint8Array>({
-      start(c) {
-        c.enqueue(new TextEncoder().encode('data: {"type":"a","de'))
-        c.enqueue(new TextEncoder().encode('lta":"x"}\n\n'))
-        c.close()
-      },
-    })
-    const out: Record<string, unknown>[] = []
-    for await (const e of readSse(stream)) out.push(e)
-    expect(out).toEqual([{ type: 'a', delta: 'x' }])
   })
 })
 

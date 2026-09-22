@@ -1,9 +1,10 @@
 /**
  * Anthropic 原生适配器。
  *
- * 用官方 SDK（@anthropic-ai/sdk），不手搓 HTTP——SDK 负责 SSE 解析、鉴权头和 beta 头，
+ * 用官方 SDK（@anthropic-ai/sdk）构造请求：鉴权头、beta 头与地址归一由它负责，
  * 手搓这些只会重复造轮子并且随协议演进腐烂。超时与重试**由这边指定**
- * （`PROVIDER_HTTP`），不用它的出厂值。
+ * （`PROVIDER_HTTP`），不用它的出厂值。**响应体由本地读取器解析**（`../sse.ts`）：
+ * 协议终态到达即交付并取消 body，不等 HTTP EOF。
  *
  * 这一层的职责是把 ChatRequest 的通用形状翻译成 provider-native 形状，并且**在装配期
  * 就消灭会 400 的组合**——不是发出去挨一个错误再兜底：
@@ -19,7 +20,13 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { EffortLevel } from '@qywork/core'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
-import { classifyProviderError, namelessToolCall } from '../errors.ts'
+import {
+  classifyProviderError,
+  classifyStreamError,
+  namelessToolCall,
+  ProviderError,
+} from '../errors.ts'
+import { readSse, sseJson } from '../sse.ts'
 import {
   estimateMessage,
   estimateRequest,
@@ -100,25 +107,49 @@ export class AnthropicAdapter implements LlmAdapter {
     let rawStop = ''
     let refusal: { category: string | null; explanation?: string } | undefined
 
-    // 累积工具调用：SDK 把参数按 input_json_delta 分片流下来，要自己拼回 JSON。
+    // 累积工具调用：参数按 input_json_delta 分片流下来，要自己拼回 JSON。
     const partial = new Map<number, { id: string; name: string; json: string }>()
+    /** `message_stop` 到过没有。没到就是传输被截断，不是模型说完了。 */
+    let settled = false
 
     const trace = newTrace()
 
     try {
-      const stream = this.client
+      /*
+       * 用 SDK 构造请求、鉴权与 beta 头，但**响应体自己读**。
+       *
+       * `asResponse()` 交出原始 `Response`，SSE 由共用读取器解析。不要改回
+       * `messages.stream()` + `finalMessage()`：那条路要读到 HTTP EOF 才 resolve，
+       * 对端发完 `message_stop` 却不关连接时，工具调用与用量一直交付不出来。
+       */
+      const res = await this.client
         .withOptions({ fetch: traceFetch(trace, 'anthropic_messages', req.idleTimeoutMs) })
-        .messages.stream(
-          body as unknown as Anthropic.MessageStreamParams,
+        .messages.create(
+          { ...body, stream: true } as never,
           req.signal ? { signal: req.signal } : {},
         )
+        .asResponse()
 
-      for await (const ev of stream as AsyncIterable<AnthropicStreamEvent>) {
-        switch (ev.type) {
+      if (!res.body) {
+        throw new ProviderError({
+          code: 'provider_unavailable',
+          message: '响应没有 body',
+          provider: 'anthropic_messages',
+          status: res.status,
+        })
+      }
+
+      // `asResponse()` 返回即响应头已到，早于 `message_start`。
+      yield { type: 'response_started', headersAt: trace.headersAt! }
+
+      for await (const frame of readSse(res.body)) {
+        const parsed = sseJson(frame.data)
+        if (!parsed) continue
+        // 事件名在 `event:` 行与 JSON 体的 `type` 里重复出现，中转不一定两个都发。
+        const ev = parsed as unknown as AnthropicStreamEvent
+        const type = typeof ev.type === 'string' && ev.type ? ev.type : (frame.event ?? '')
+        switch (type) {
           case 'message_start': {
-            // Anthropic 的 message_start 是协议级流起点，早于首个内容块。
-            // 时刻取传输层观察到的响应头，不取本事件到达时刻：两者之间隔着 SDK 解析。
-            yield { type: 'response_started', headersAt: trace.headersAt! }
             const u = ev.message?.usage
             if (u) applyUsage(usage, u)
             break
@@ -174,26 +205,38 @@ export class AnthropicAdapter implements LlmAdapter {
             }
             break
           }
+          case 'message_stop':
+            // 终态到手就结束读取：读取器随即取消 body，不等对端 FIN。
+            settled = true
+            break
+          case 'error':
+            throw classifyStreamError(
+              'anthropic_messages',
+              (parsed.error as Record<string, unknown>) ?? parsed,
+            )
           default:
             break
         }
+        if (settled) break
       }
 
-      const final = await (
-        stream as { finalMessage(): Promise<AnthropicFinalMessage> }
-      ).finalMessage()
-      if (final.usage) applyUsage(usage, final.usage)
-      if (final.stop_reason) {
-        rawStop = String(final.stop_reason)
-        stopReason = normalizeStopReason(final.stop_reason)
-      }
-      if (final.stop_reason === 'refusal' && final.stop_details) {
-        refusal = {
-          category: final.stop_details.category ?? null,
-          ...(final.stop_details.explanation === undefined
-            ? {}
-            : { explanation: final.stop_details.explanation }),
-        }
+      /*
+       * **流结束了却没到过 `message_stop` = 传输被截断，不是「说完了」。**
+       *
+       * 默认值 `end_turn` 会把连接中途断掉记成正常完成——界面上是「写到一半就停、
+       * run 显示成功」，那一轮读数无从对账。记成传输失败而不是 provider 拒绝：
+       * 没有 HTTP 状态码，是否计费无从判断，账本行因此落 `uncertain`。
+       */
+      if (!settled) {
+        throw new ProviderError({
+          code: 'network_error',
+          message: '流在 message_stop 之前结束',
+          provider: 'anthropic_messages',
+          detail: { model: req.model },
+          // `message_start` 已经报过输入用量时把实数带上去。`source` 仍是 `estimated`
+          // 说明一个字节都没回报过，那种时候不带——带了就是把零当成真值记进账本。
+          ...(usage.source === 'provider' ? { usage } : {}),
+        })
       }
 
       const calls = collectToolCalls(partial, req.model)
@@ -356,13 +399,6 @@ interface AnthropicStreamEvent {
     stop_details?: { category?: string | null; explanation?: string } | null
   }
   usage?: AnthropicUsage
-}
-
-/** 收尾时问 SDK 要的那份完整消息。`stop_details` 只在 refusal 下非空。 */
-interface AnthropicFinalMessage {
-  usage?: AnthropicUsage
-  stop_reason?: string | null
-  stop_details?: { category?: string | null; explanation?: string } | null
 }
 
 /** 内容块。一个块只会长成其中一种，字段因此全是可选的。 */

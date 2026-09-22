@@ -101,6 +101,7 @@ test('记响应头、正文字节与保活行，正文原样透传', async () =>
   expect(reading).toEqual({
     status: 200,
     headersAfterMs: trace.headersAt! - trace.sentAt,
+    headersAt: trace.headersAt,
     bytes: trace.bytes,
     sinceLastByteMs: 1500,
     keepAliveLines: 2,
@@ -112,6 +113,7 @@ test('响应头没到时读数全空，状态码为 null', () => {
   expect(readTransport(trace, 4000)).toEqual({
     status: null,
     headersAfterMs: null,
+    headersAt: null,
     bytes: 0,
     sinceLastByteMs: null,
     keepAliveLines: 0,
