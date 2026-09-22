@@ -1,6 +1,6 @@
 /**
  * 覆盖 `openai-compat.ts` 的 `buildReasoning`（实际发出去的思考控制字段）
- * 与 `createThinkingSplitter`（正文里的思考标签改判通道）。
+ * 与 `createThinkingSplitter`（正文里的思考标签改判通道）、strict 参数约束。
  *
  * **必须看真实请求体**，不能只测那个纯函数：这条链路上一次出问题正是
  * 「目录里声明了档位、界面也画了控件、请求里一个字段都没有」——
@@ -1061,6 +1061,26 @@ describe('strict 工具定义', () => {
     expect(props.offset?.description).toBe('起始行号（1 起），默认 1')
   })
 
+  test('可选枚举允许 null，必填枚举仍只接受原值且不改写原始 schema', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['wheel', 'click'] },
+        button: { type: 'string', enum: ['left', 'right', 'middle'] },
+        step: { type: 'string', enum: ['line', 'page', null] },
+      },
+      required: ['action'],
+    }
+    const original = structuredClone(schema)
+    const converted = strictify(schema)
+    const props = converted.properties as Record<string, Record<string, unknown>>
+    expect(props.button?.enum).toEqual(['left', 'right', 'middle', null])
+    expect(props.step?.enum).toEqual(['line', 'page', null])
+    expect(props.action?.enum).toEqual(['wheel', 'click'])
+    expect(schema).toEqual(original)
+    expect(strictify(converted)).toEqual(converted)
+  })
+
   test('数组的 items 也要转，嵌套对象同样补齐 required', () => {
     const out = strictify({
       type: 'object',
@@ -1069,7 +1089,11 @@ describe('strict 工具定义', () => {
           type: 'array',
           items: {
             type: 'object',
-            properties: { content: { type: 'string' }, note: { type: 'string' } },
+            properties: {
+              content: { type: 'string' },
+              note: { type: 'string' },
+              state: { type: 'string', enum: ['off', 'on'] },
+            },
             required: ['content'],
           },
         },
@@ -1078,10 +1102,11 @@ describe('strict 工具定义', () => {
     })
     const items = (out.properties as Record<string, Record<string, unknown>>).todos
       ?.items as Record<string, unknown>
-    expect(items.required).toEqual(['content', 'note'])
+    expect(items.required).toEqual(['content', 'note', 'state'])
     expect(items.additionalProperties).toBe(false)
     const inner = items.properties as Record<string, Record<string, unknown>>
     expect(inner.note?.type).toEqual(['string', 'null'])
+    expect(inner.state?.enum).toEqual(['off', 'on', null])
   })
 
   test('同一份输入给出同一份输出——前缀缓存的前提', () => {
