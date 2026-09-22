@@ -173,6 +173,14 @@ export interface WireMessage {
    * 与 `_messageId` 合起来才是完整位置：先比消息 id，同一条消息内再比戳。
    */
   _step?: string
+  /**
+   * 产出这条消息的那次请求的 id。**内部记账用，绝不上线。**
+   *
+   * 只有带 `toolCalls` 的 assistant 消息与它的 tool 结果带它：裁剪工具图片时要认出
+   * 「最近待续的那一批是哪一批」，再拿这个值去请求账里查它有没有被真的发出去过。
+   * 纯文本消息、用户消息与投影摘要不带。
+   */
+  _batch?: string
 }
 
 /**

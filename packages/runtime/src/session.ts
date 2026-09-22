@@ -77,6 +77,7 @@ import {
   finishRun,
   getConversation,
   getRun,
+  hasReceivedRequestWithImages,
   latestAnchoredProviderRequest,
   latestTodos,
   listDisabledExtras,
@@ -89,6 +90,7 @@ import {
   markProviderRequestFirstContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
+  markProviderRequestInputImages,
   markProviderRequestSent,
   markRunRunning,
   markStepExecuting,
@@ -386,7 +388,7 @@ export class Session {
         : {}),
       makeToolContext: (runId, emit) =>
         this.makeToolContext(runId, emit, target, conversationId as ConversationId),
-      persist: this.makePersistence(),
+      persist: this.makePersistence(conversationId),
       ...(compaction ? { compaction } : {}),
     })
   }
@@ -870,7 +872,7 @@ export class Session {
     return next
   }
 
-  private makePersistence(): LoopPersistence {
+  private makePersistence(conversationId: ConversationId): LoopPersistence {
     const { store } = this.opts
     return {
       nextSeq: (runId) => this.nextSeq(runId),
@@ -949,6 +951,10 @@ export class Session {
         markProviderRequestFirstEvent(store, requestId as never),
       markRequestFirstContent: (requestId) =>
         markProviderRequestFirstContent(store, requestId as never),
+      markRequestInputImages: (requestId, batchId) =>
+        markProviderRequestInputImages(store, requestId as never, batchId),
+      inputImagesConsumed: (batchId) =>
+        hasReceivedRequestWithImages(store, conversationId, batchId),
       settleRequest: (requestId, status, usage, errorCode, finishReason, errorMessage) =>
         settleProviderRequest(
           store,

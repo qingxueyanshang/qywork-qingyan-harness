@@ -1501,6 +1501,7 @@ export function openProviderRequest(
     payloadHash: input.payloadHash,
     requestBytes: input.requestBytes ?? null,
     cacheRouteFingerprint: input.cacheRouteFingerprint ?? null,
+    inputImageBatchId: null,
     sentAt: null,
     headersAt: null,
     firstEventAt: null,
@@ -1555,6 +1556,44 @@ export function markProviderRequestHeaders(store: Store, id: ProviderRequestId, 
   store.db
     .query('UPDATE provider_requests SET headers_at = COALESCE(headers_at, ?) WHERE id = ?')
     .run(at, id)
+}
+
+/**
+ * 本次输入实际完整携带的工具图片批次。**在请求发出之前、图片块已经确认在请求体里
+ * 之后调用**；没带图、只剩文字或部分缺失时一律不调，该列保持 NULL。
+ */
+export function markProviderRequestInputImages(
+  store: Store,
+  id: ProviderRequestId,
+  batchId: string,
+): void {
+  store.db
+    .query('UPDATE provider_requests SET input_image_batch_id = ? WHERE id = ?')
+    .run(batchId, id)
+}
+
+/**
+ * 这批工具图片有没有被一次已接收的主请求真的送到模型。
+ *
+ * 四个条件缺一不可：同会话、主请求、这一批的引用、已发出且终态为 `received`。
+ * `rejected` / `uncertain` / 摘要请求都不算——发出去不等于对端收到。
+ * 时间先后不参与判断：同毫秒的两行按引用各自成立。
+ */
+export function hasReceivedRequestWithImages(
+  store: Store,
+  conversationId: ConversationId,
+  batchId: string,
+): boolean {
+  const row = store.db
+    .query<{ one: number }, [string, string]>(
+      `SELECT 1 AS one FROM provider_requests pr
+       JOIN runs r ON r.id = pr.run_id
+       WHERE r.conversation_id = ? AND pr.purpose = 'turn' AND pr.input_image_batch_id = ?
+         AND pr.sent_at IS NOT NULL AND pr.status = 'received'
+       LIMIT 1`,
+    )
+    .get(conversationId, batchId)
+  return row !== null
 }
 
 /** provider 的第一个真实流事件。重复调用保持第一次，不让后续事件覆盖。 */
@@ -1703,6 +1742,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     requestBytes: r.request_bytes,
     finishReason: r.finish_reason ?? '',
     cacheRouteFingerprint: r.cache_route_fingerprint,
+    inputImageBatchId: r.input_image_batch_id,
     sentAt: r.sent_at,
     headersAt: r.headers_at,
     firstEventAt: r.first_event_at,

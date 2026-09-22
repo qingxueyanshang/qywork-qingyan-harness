@@ -2117,6 +2117,18 @@ CREATE INDEX idx_schedules_conversation ON schedules(conversation_id);
      */
     sql: `ALTER TABLE provider_requests ADD COLUMN headers_at INTEGER;`,
   },
+  {
+    id: 59,
+    name: 'provider_request_input_image_batch_id',
+    /**
+     * 本次输入实际完整携带的那一批工具图片，值是产出该批调用的请求 id。
+     * 它与 `steps.provider_batch_id` 回答的不是同一个问题：那一列是生成归属，
+     * 这一列是输入事实。能力过滤与压缩收纳都会去图留文字，所以一次成功的请求
+     * 证明不了模型见过图。NULL 表示迁移前旧行、本次没带图，或图片没有完整
+     * 进入请求体；不按时间回填。
+     */
+    sql: `ALTER TABLE provider_requests ADD COLUMN input_image_batch_id TEXT;`,
+  },
 ]
 
 /**
@@ -2269,6 +2281,8 @@ export interface ProviderRequestRow {
   payload_hash: string
   request_bytes: number | null
   cache_route_fingerprint: string | null
+  /** 本次输入实际完整携带的工具图片批次；见 `ProviderRequest.inputImageBatchId`。 */
+  input_image_batch_id: string | null
   sent_at: number | null
   headers_at: number | null
   first_event_at: number | null
@@ -2415,6 +2429,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'payload_hash',
     'request_bytes',
     'cache_route_fingerprint',
+    'input_image_batch_id',
     'sent_at',
     'headers_at',
     'first_event_at',

@@ -316,6 +316,21 @@ export interface LoopPersistence {
    * **不是本方法被调用的时刻**。
    */
   markRequestHeaders?(requestId: string, at: number): void
+  /**
+   * 本次输入实际完整携带了哪一批工具图片。`batchId` 是产出那批调用的请求 id。
+   *
+   * **只在图片块逐张确认还在请求体里之后调用**：能力过滤或压缩把图换成文字之后
+   * 仍然调，等于替模型声明它看过一张没发出去的图。
+   */
+  markRequestInputImages?(requestId: string, batchId: string): void
+  /**
+   * 这批工具图片有没有被一次已接收的主请求真的送到过模型。
+   *
+   * 读的是同一份请求账（`markRequestInputImages` 写的那一列），所以放在这个 port 上：
+   * 它要按轮重新回答——同一批图在本轮还没送达、下一轮就送达了，`RunInput` 里的
+   * 一个值答不了。没有记录一律 false，无记录不等于模型看过。
+   */
+  inputImagesConsumed?(batchId: string): boolean
   /** 可选是为了旧测试夹具；生产装配必须提供。 */
   markRequestFirstEvent?(requestId: string): void
   markRequestFirstContent?(requestId: string): void
@@ -653,6 +668,14 @@ export class AgentLoop {
   private lastOmitted: ContextOmitted = emptyOmitted()
 
   /**
+   * 上一次装配打算带上的那批工具图片：批次 id 与张数。`null` = 这次没有待带的图。
+   *
+   * 由 `buildRequest` 写、`openStream` 在 `materialize` 之后读。张数是**装配前**
+   * 数出来的，能力过滤或压缩去掉任意一张都会让两侧对不上，引用因此不写。
+   */
+  private lastInputImages: { batchId: string; images: number } | null = null
+
+  /**
    * 压缩端口。**恒非空**——缺省时是下面那个透传实现。
    *
    * 透传的语义与「没有压缩」逐字相同：投影原样返回、压缩报「没什么可折」，
@@ -742,17 +765,28 @@ export class AgentLoop {
     return trace
   }
 
+  /**
+   * 装配完的请求交给适配器，并在这里确认那批工具图片有没有真的进请求体。
+   *
+   * 确认点只有这一个，位置是 `materialize` 之后：压缩投影、能力过滤三道都在它之前，
+   * 三个适配器把图像块一比一序列化，所以这里数到的张数就是线上那份字节里的张数。
+   * 放在装配处确认会漏掉「模型不收图、图被换成文字注记」这一支。
+   */
   private async openStream(
     adapter: LlmAdapter,
     req: ChatRequest,
+    requestId: string,
   ): Promise<AsyncIterable<ProviderEvent>> {
-    return adapter.stream(
-      await materialize(req, {
-        image: adapter.spec.vision,
-        video: adapter.spec.video && adapter.transmits.video === true,
-        mediaPaths: adapter.transmits.mediaPaths === true,
-      }),
-    )
+    const materialized = await materialize(req, {
+      image: adapter.spec.vision,
+      video: adapter.spec.video && adapter.transmits.video === true,
+      mediaPaths: adapter.transmits.mediaPaths === true,
+    })
+    const pending = this.lastInputImages
+    if (pending && batchImageCount(materialized.messages, pending.batchId) === pending.images) {
+      this.deps.persist.markRequestInputImages?.(requestId, pending.batchId)
+    }
+    return adapter.stream(materialized)
   }
 
   async *run(input: RunInput): AsyncGenerator<AgentEvent, void, unknown> {
@@ -1241,7 +1275,7 @@ export class AgentLoop {
           let recordedFirstContent = false
 
           try {
-            const stream = await this.openStream(adapter, req)
+            const stream = await this.openStream(adapter, req, requestId)
             persist.markRequestSent(requestId)
 
             for await (const ev of stream) {
@@ -1736,6 +1770,8 @@ export class AgentLoop {
               ? { reasoningContent: thinkingText }
               : {}),
             _group: 'executionRecords',
+            // 带工具调用的那一条才是图片批次的锚；投影侧（`runtime/transcript.ts`）同值。
+            ...(calls.length ? { _batch: requestId } : {}),
           })
           stampUnit(unitStart)
         }
@@ -1948,6 +1984,7 @@ export class AgentLoop {
             toolCallId: c.id,
             content: toolOutcomeContent(c, outcome),
             _group: 'executionRecords',
+            _batch: requestId,
           })
           batchEvidence.push({
             callIndex,
@@ -2088,6 +2125,7 @@ export class AgentLoop {
               toolCallId: s.call.id,
               content: toolOutcomeContent(s.call, s.outcome),
               _group: 'executionRecords',
+              _batch: requestId,
             })
 
             batchEvidence.push({
@@ -2228,21 +2266,36 @@ export class AgentLoop {
       : input.history
     const assembledRaw: WireMessage[] = [...history, ...transcript]
     /*
-     * 图像块只在产生它的那一轮出现：transcript 最后一个工具波次（最后一条带 toolCalls
-     * 的 assistant 之后的 tool 结果）保留图，其余带图的工具结果换成 `images_omitted`
-     * 信封。模型在看图的那一轮已经把观察写进正文，之后每轮重放的是它看过的像素，
-     * 而字节随张数线性累积，每轮都要重新上传。要再看按路径重读，或用信封里的
+     * 图像块只在**模型还没收到过的那一批**工具结果上出现：history 与 transcript
+     * 合起来的最后一条带 toolCalls 的 assistant 及其后的 tool 结果，若请求账里没有
+     * 「它的图已被一次已接收的主请求完整携带」的记录，整批保留；其余带图的工具结果
+     * 换成 `images_omitted` 信封。模型在看图的那一轮已经把观察写进正文，之后每轮
+     * 重放的是它看过的像素，而字节随张数线性累积。要再看按路径重读，或用信封里的
      * `call_id` 经 `read_history` 取回定格的那一张。
+     *
+     * 判据不能是「这批图在不在当前 transcript 里」：工具成功之后那次请求被拒、
+     * 换一个 run 带着 history 续跑时，图从来没送达过却会被当成旧图省略，
+     * 模型因此在没有观察结果的情况下接着做。批次归属查不到引用记录时保守保留——
+     * 无记录不等于模型看过。
      */
     let lastCall = -1
-    for (let i = transcript.length - 1; i >= 0; i--) {
-      if (transcript[i]!.role === 'assistant' && transcript[i]!.toolCalls?.length) {
+    for (let i = assembledRaw.length - 1; i >= 0; i--) {
+      const m = assembledRaw[i]!
+      if (m.role === 'assistant' && m.toolCalls?.length) {
         lastCall = i
         break
       }
     }
-    const keepFrom = lastCall < 0 ? assembledRaw.length : history.length + lastCall
+    const pendingBatch = lastCall < 0 ? null : (assembledRaw[lastCall]!._batch ?? null)
+    const consumed =
+      pendingBatch !== null && this.deps.persist.inputImagesConsumed?.(pendingBatch) === true
+    const keepFrom = lastCall < 0 || consumed ? assembledRaw.length : lastCall
     const scoped = assembledRaw.map((m, i) => (i >= keepFrom ? m : omitImages(m)))
+    const pendingImages = pendingBatch === null ? 0 : batchImageCount(scoped, pendingBatch)
+    this.lastInputImages =
+      pendingBatch !== null && pendingImages > 0
+        ? { batchId: pendingBatch, images: pendingImages }
+        : null
     const projected = this.compaction.project(scoped)
     const messages: WireMessage[] = [...projected]
 
@@ -2564,6 +2617,33 @@ export function toolResultContent(
  * **必须逐字稳定且无图时返回原引用**：投影每次构造请求都跑一遍，产物抖动会让缓存
  * 断点之前的字节每次都变。
  */
+/**
+ * 这一批工具结果里还剩几个图像块。
+ *
+ * 从最后一条归属该批次的 assistant 消息往后数，只数 tool 消息里的图像块。
+ * 装配时与 `materialize` 之后各数一次，两个数相等才算「这一批完整进了请求体」。
+ * **两处必须调同一个函数**：各写一遍会漂移，而漂移了不会有任何报错，
+ * 代价是给一次没带图的请求写上引用。
+ */
+function batchImageCount(messages: readonly WireMessage[], batchId: string): number {
+  let start = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!
+    if (m.role === 'assistant' && m.toolCalls?.length && m._batch === batchId) {
+      start = i
+      break
+    }
+  }
+  if (start < 0) return 0
+  let count = 0
+  for (let i = start + 1; i < messages.length; i++) {
+    const m = messages[i]!
+    if (m.role !== 'tool' || m._batch !== batchId || typeof m.content === 'string') continue
+    count += m.content.filter((b) => b.type === 'image').length
+  }
+  return count
+}
+
 export function omitImages(m: WireMessage): WireMessage {
   if (m.role !== 'tool' || typeof m.content === 'string' || !m.content) return m
   if (!m.content.some((b) => b.type === 'image')) return m

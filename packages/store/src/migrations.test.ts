@@ -1767,3 +1767,27 @@ VALUES ('sch_bound', 'C:\\ws', '日报', 'p', 'interval', 30, 1, 1, 222, 'cv_bou
     db.close()
   })
 })
+
+describe('迁移 59：请求账记录本次输入携带的图片批次', () => {
+  /** 旧行没有这条事实，只能是 NULL——按时间倒推等于替模型声明它看过一张没发出去的图。 */
+  test('存量请求行加列后为 NULL，不按时间回填', () => {
+    const db = dbBefore(59)
+    db.exec(`
+INSERT INTO provider_requests
+  (id, run_id, turn_index, retry_index, purpose, model, status, measured_input_tokens,
+   sent_categories, omitted_categories, payload_hash, sent_at, created_at)
+VALUES ('pr_legacy', 'rn_legacy', 0, 0, 'turn', 'm', 'received', 10, '{}', '{}', 'h', 5, 5);
+`)
+
+    applyOne(db, 59)
+
+    expect(
+      db
+        .query<{ id: string; input_image_batch_id: string | null }, []>(
+          'SELECT id, input_image_batch_id FROM provider_requests',
+        )
+        .all(),
+    ).toEqual([{ id: 'pr_legacy', input_image_batch_id: null }])
+    db.close()
+  })
+})
