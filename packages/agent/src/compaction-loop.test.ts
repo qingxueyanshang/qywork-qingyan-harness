@@ -10,7 +10,7 @@
  * 与 `uq_provider_run_turn` 的关系——别的用例都把这个端口打桩成常量。
  */
 
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
 import {
   classifyProviderError,
@@ -32,21 +32,8 @@ import {
 import type { CompactionOutcome } from './compaction.ts'
 import { stepStamp } from './compaction.ts'
 import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from './index.ts'
-import { AgentLoop, MAX_RESENDS, softLimit, UNAVAILABLE_BACKOFF_MS } from './loop.ts'
+import { AgentLoop, MAX_RESENDS, softLimit } from './loop.ts'
 import { ToolRegistry } from './registry.ts'
-
-/*
- * 退避是真的在等。只把退避那一档改成立即触发，别的定时器原样放行——
- * 全量替换会让卡死检测（`STREAM_IDLE_TIMEOUT_MS`）立刻开火，成功用例会被判成断流。
- */
-const realSetTimeout = globalThis.setTimeout
-beforeAll(() => {
-  globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) =>
-    realSetTimeout(fn, ms === UNAVAILABLE_BACKOFF_MS ? 0 : ms, ...rest)) as typeof setTimeout
-})
-afterAll(() => {
-  globalThis.setTimeout = realSetTimeout
-})
 
 /** 落库的压缩 step，供「中断不记账」「payload 与事件同源」两组断言读。 */
 type RecordedCompaction = Parameters<LoopPersistence['recordCompaction']>[2]
@@ -235,6 +222,8 @@ function build(
     systemPrompt: 'sys',
     persist: noopPersistence(),
     makeToolContext: makeCtx,
+    // 退避真等下去的话，「非容量错误照常上报」那条要等满五次指数退避。
+    sleep: async () => {},
     ...(compaction ? { compaction } : {}),
   })
 }
@@ -557,7 +546,7 @@ describe('发送前检查：唯一的压缩触发', () => {
   test('非容量错误照常上报', async () => {
     const comp = fakeCompaction(okOutcome)
     // 把重发额度拒满再多拒一次：参数错误与「上游暂时不可用」同归
-    // `provider_unavailable`，会被自动重发（代价写在 `loop.ts` 的 `RESENDABLE` 上）。
+    // `provider_unavailable`，会被自动重发（代价写在 `loop.ts` 的 `RESENDABLE_CODES` 上）。
     // 拒的次数不够的话某一次就成功了，断言的是重发路径而不是上报路径。
     const { adapter } = rejectingAdapter(MAX_RESENDS + 1, paramError)
     const events = await collect(build(adapter, comp.port), 'rn_param')

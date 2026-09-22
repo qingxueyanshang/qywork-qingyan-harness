@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywork/ai'
 import {
   buildAdapter,
@@ -24,13 +24,22 @@ import type {
 } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
 import { AgentLoop, type LoopPersistence, type ToolContext, type ToolContextBase } from './index.ts'
-import {
-  MAX_RESENDS,
-  RATE_LIMIT_BACKOFF_BASE_MS,
-  RATE_LIMIT_BACKOFF_MAX_MS,
-  UNAVAILABLE_BACKOFF_MS,
-} from './loop.ts'
+import { MAX_RESENDS } from './loop.ts'
 import { type DelegatePort, ToolRegistry, type ToolSpec } from './registry.ts'
+
+/**
+ * 第 n 次重发之前的退避基准（毫秒）与允许的抖动上界。
+ *
+ * 数字在这里独立写一遍，不从 `loop.ts` 导入：导进来的断言等于拿实现校验实现。
+ */
+const BACKOFF_STEPS = [2_000, 4_000, 8_000, 16_000, 30_000] as const
+const BACKOFF_JITTER_MAX = 1.1
+
+function expectBackoff(actual: number | null | undefined, resends: number): void {
+  const step = BACKOFF_STEPS[resends]!
+  expect(actual).toBeGreaterThanOrEqual(step)
+  expect(actual).toBeLessThanOrEqual(step * BACKOFF_JITTER_MAX)
+}
 
 test('Responses 密文沿现有思考步骤落盘，下一轮工具结果仍带原样历史', async () => {
   const reasoning = {
@@ -794,6 +803,8 @@ describe('流卡死要有终态，不能无限期挂着', () => {
       makeToolContext: baseCtx,
       persist: noopPersistence(),
       streamIdleTimeoutMs: 150,
+      // 这一组问的是超时判据和接收次数，退避时长由 `resend-policy.test.ts` 锁。
+      sleep: async () => {},
     })
   }
 
@@ -863,6 +874,7 @@ describe('监督期间按停止，不报断流也不再发请求', () => {
     mode: FaultMode,
     runId: string,
     protocol: (typeof FAULT_PROTOCOLS)[number],
+    abortAfterMs = 300,
   ): Promise<{ types: string[]; stopReason: string; receipts: number }> {
     const fault = startFaultServer(mode)
     const controller = new AbortController()
@@ -882,7 +894,7 @@ describe('监督期间按停止，不报断流也不再发请求', () => {
     })
     const types: string[] = []
     let stopReason = ''
-    const timer = setTimeout(() => controller.abort(), 300)
+    const timer = setTimeout(() => controller.abort(), abortAfterMs)
     try {
       for await (const ev of loop.run({
         runId: runId as never,
@@ -910,6 +922,99 @@ describe('监督期间按停止，不报断流也不再发请求', () => {
         expect(result.receipts).toBe(1)
       }, 20_000)
     }
+
+    // 保活期间服务端正在发字节，停止走的是另一条路：流没有出错，是读取方退出。
+    test(`${protocol.kind} 在保活期间停止：run 以 user_interrupt 收尾，不再发请求`, async () => {
+      const result = await stopDuring(
+        'keepalive_then_ok',
+        `rn_stop_${protocol.kind}_keepalive`,
+        protocol,
+        150,
+      )
+      expect(result.stopReason).toBe('user_interrupt')
+      expect(result.types).not.toContain('run.error')
+      expect(result.types).not.toContain('run.retrying')
+      expect(result.receipts).toBe(1)
+    }, 20_000)
+  }
+})
+
+/**
+ * 输出上限截断时的工具调用。
+ *
+ * `max_tokens` 说的是模型话没说完，最后一条工具调用的参数可能停在半个 JSON 上；
+ * 截断处恰好是合法 JSON 时连 `argumentsError` 都没有。按它执行就是拿残缺参数动手。
+ */
+describe('输出被截断时不执行工具', () => {
+  for (const protocol of FAULT_PROTOCOLS) {
+    test(`${protocol.kind} 参数截断加 max_tokens：一次都不执行，终态是 output_truncated`, async () => {
+      const fault = startFaultServer('truncated_tool_call')
+      let executed = 0
+      const toolSteps: string[] = []
+      const registry = new ToolRegistry()
+      registry.register({
+        name: 'echo',
+        description: '回显。',
+        parameters: {
+          type: 'object',
+          properties: { a: { type: 'number' } },
+          required: [],
+          additionalProperties: false,
+        },
+        actionKind: 'read',
+        objectLabel: '内容',
+        category: 'session',
+        facet: '测试',
+        summary: '测试夹具',
+        permissionEffect: 'read',
+        fn: async () => {
+          executed++
+          return { status: 'success', executed: true, message: 'ok' }
+        },
+      })
+      const persist = noopPersistence()
+      persist.openToolStep = () => {
+        const id = `st_tool_${toolSteps.length}`
+        toolSteps.push(id)
+        return id
+      }
+      const loop = new AgentLoop({
+        adapter: buildAdapter({
+          kind: protocol.kind,
+          model: protocol.model,
+          apiKey: 'sk-fault',
+          baseUrl: faultBaseUrl(fault, protocol.kind),
+        }),
+        registry,
+        systemPrompt: 's',
+        makeToolContext: baseCtx,
+        persist,
+        streamIdleTimeoutMs: 5_000,
+      })
+      const types: string[] = []
+      let stopReason = ''
+      try {
+        for await (const ev of loop.run({
+          runId: `rn_trunc_${protocol.kind}` as never,
+          history: [],
+          signal: new AbortController().signal,
+        })) {
+          types.push(ev.type)
+          if (ev.type === 'run.finished') stopReason = ev.stopReason
+        }
+      } finally {
+        fault.stop()
+      }
+
+      // 注册表里有 `echo`，参数校验也放得过（没有必填项）。挡住它的只有终态本身。
+      expect(executed).toBe(0)
+      expect(toolSteps).toEqual([])
+      expect(types).not.toContain('tool.started')
+      expect(stopReason).toBe('output_truncated')
+      expect(types).not.toContain('run.error')
+      // 只发过一次：截断不是可重发的失败。
+      expect(fault.receipts.length).toBe(1)
+    }, 20_000)
   }
 })
 
@@ -1104,6 +1209,8 @@ describe('工具参数流贯穿适配器、空闲计时和界面事件', () => {
       persist,
       makeToolContext: baseCtx,
       streamIdleTimeoutMs: 300,
+      // `stall` 会重发一次，退避时长不在这一组的范围内。
+      sleep: async () => {},
     })
     try {
       for await (const event of loop.run({
@@ -3067,30 +3174,12 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
  * 这一组锁三件事：**账本必须落终态**、**零输出才重发**、**重发过要说出来**。
  */
 describe('传输断了：落终态、无痕重发、说清形状', () => {
-  /*
-   * 退避是真的在等，`reject` 那几条会让这个文件多跑十秒。
+  /**
+   * 注入的退避等待收到的毫秒数，按顺序。每次 `collect` 开头清空。
    *
-   * 只把退避那一档改成立即触发，别的定时器原样放行——全量替换会让卡死检测
-   * （`STREAM_IDLE_TIMEOUT_MS`）立刻开火，成功用例会被判成断流。
+   * 等待改成注入之后这一组不再真的等：退避是一分钟量级，真等下去这个文件跑不完。
    */
-  const realSetTimeout = globalThis.setTimeout
-  const rateLimitBackoffs = new Set(
-    Array.from({ length: MAX_RESENDS }, (_, i) =>
-      Math.min(RATE_LIMIT_BACKOFF_BASE_MS * 2 ** i, RATE_LIMIT_BACKOFF_MAX_MS),
-    ),
-  )
-  const observedBackoffs: number[] = []
-  beforeAll(() => {
-    globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
-      if (ms !== undefined && rateLimitBackoffs.has(ms)) observedBackoffs.push(ms)
-      const delay =
-        ms === UNAVAILABLE_BACKOFF_MS || (ms !== undefined && rateLimitBackoffs.has(ms)) ? 0 : ms
-      return realSetTimeout(fn, delay, ...rest)
-    }) as typeof setTimeout
-  })
-  afterAll(() => {
-    globalThis.setTimeout = realSetTimeout
-  })
+  const backoffs: number[] = []
 
   interface Recorded {
     opened: number[]
@@ -3279,10 +3368,16 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
       systemPrompt: 's',
       persist: recordingPersistence(rec),
       makeToolContext: (runId) => baseCtx(runId),
+      // 立即返回，但仍按信号裁决：停止发生在等待里，缺了这一句就验不到「停得下来」。
+      sleep: async (ms, sleepSignal) => {
+        backoffs.push(ms)
+        if (sleepSignal.aborted) throw new DOMException('已中断', 'AbortError')
+      },
     }).run({ runId: 'rn_net' as never, history: [], signal })
   }
 
   async function collect(adapter: LlmAdapter): Promise<{ rec: Recorded; events: AgentEvent[] }> {
+    backoffs.length = 0
     const rec: Recorded = { opened: [], settled: [], diagnostics: [], thinking: [], failed: [] }
     const events: AgentEvent[] = []
     for await (const ev of run(adapter, rec)) events.push(ev)
@@ -3299,8 +3394,11 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
         { name: 'ProviderError', code: 'network_error', message: '连接被断开' },
         { name: 'Error', code: 'ECONNRESET' },
       ],
-      retry: { decision: 'resend', attempt: 1, max: MAX_RESENDS, backoffMs: 0 },
+      retry: { decision: 'resend', attempt: 1, max: MAX_RESENDS },
     })
+    // 传输失败同样先等：立刻重发换不回更快的恢复，只会把五次额度在几毫秒内耗尽。
+    expectBackoff(rec.diagnostics[0]?.retry.backoffMs, 0)
+    expect(backoffs).toEqual([rec.diagnostics[0]!.retry.backoffMs!])
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
@@ -3351,12 +3449,12 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
       errorCode: 'provider_unavailable',
       errorMessage: 'Upstream returned HTTP 403 Forbidden',
     })
-    expect(rec.diagnostics[0]?.retry).toEqual({
+    expect(rec.diagnostics[0]?.retry).toMatchObject({
       decision: 'resend',
       attempt: 1,
       max: MAX_RESENDS,
-      backoffMs: UNAVAILABLE_BACKOFF_MS,
     })
+    expectBackoff(rec.diagnostics[0]?.retry.backoffMs, 0)
     expect(events.filter((e) => e.type === 'run.retrying')).toEqual([
       expect.objectContaining({ attempt: 1, max: MAX_RESENDS }),
     ])
@@ -3399,13 +3497,14 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
   })
 
   test('429 没有 Retry-After 时按指数退避', async () => {
-    observedBackoffs.length = 0
     const { rec } = await collect(
       scriptedAdapter(['rate-limit-no-header', 'rate-limit-no-header', 'ok']),
     )
 
     expect(rec.opened).toEqual([0, 1, 2])
-    expect(observedBackoffs).toEqual([RATE_LIMIT_BACKOFF_BASE_MS, RATE_LIMIT_BACKOFF_BASE_MS * 2])
+    expect(backoffs).toHaveLength(2)
+    expectBackoff(backoffs[0], 0)
+    expectBackoff(backoffs[1], 1)
   })
 
   test('额度不足不重发', async () => {
