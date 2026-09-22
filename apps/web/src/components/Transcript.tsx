@@ -403,26 +403,21 @@ const SILENT_MS = 30_000
 /**
  * 这一轮此刻在**哪个阶段**。
  *
- * 阶段包括请求、思考、生成、执行、回复和重连；
- * 近期没有收到进度、也没有工具正在执行时，显示「已 N 秒没有新数据」。
+ * 阶段只有一个来源：这条会话的当前请求投影（`store/state.ts` 的 `RequestProjection`）。
+ * 实时事件与刷新快照按同一条规则写它，所以刷新前后这一格说的是同一句话。
  *
  * 这一格说的是阶段，不是动作。工具组头那句说的才是这一批工具在做什么
  * （查询 / 读取 / 创建 / 修改 / 删除 / 运行 / 调用），两者粒度不同、不重复——
  * 动作轴里也没有「执行」这个词，不会撞。
  *
- * 按**流的位置**判断，而不是按快照推：从时间线快照反推会慢半拍，
- * 而这行字的全部意义就是「它现在有反应」。
- *
- * **为什么必须有「正在请求」这一档。** 只有三档、拿「正在回复」兜底是不成立的：刚发出消息那一刻，流
- * 的最后一条是用户自己那句话——回车之后立刻显示「正在回复…」，紧接着出现的却是思考内容。那句话
- * 在它为真之前就说了：请求刚发出，模型一个字都还没输出。
- *
  * **为什么「正在执行」要看 `status`。** 只看 `kind === 'tool'` 的话，工具跑完之后到模型回包之间这一
  * 整段都在说「正在执行…」——而那段是最容易出事的一段（实测一次断流就断在这之后的 262 秒里）。工
- * 具卡有终态，用它判：**在跑才叫在执行，跑完了是在等回包**。
+ * 具卡有终态，用它判：**在跑才叫在执行，跑完了是在等回包**。工具在跑时也不报静默：
+ * 一次构建十分钟很正常，而它自己会出 stdout。
  *
- * **静默那一档为什么要绕开两种情形。** 工具还在跑时绕开：一次构建十分钟很正常，而它自己
- * 会出 stdout，那种情况下报静默是假话。
+ * **等待时长按阶段各取各的时刻。** 已经出过内容的取 `lastContentAt`，还没出内容的取
+ * 该阶段的 `sentAt` / `headersAt`——把阶段等待说成「无新增内容」会在一次从未产出的请求上
+ * 报出一个凭空的内容间隔。缺时刻就不报秒数，不拿页面加载时刻或首内容时刻顶替。
  */
 function liveStatus(now: number, conversationId: string): string {
   const current = viewOf(conversationId)
@@ -433,29 +428,40 @@ function liveStatus(now: number, conversationId: string): string {
   /*
    * 连接不在 ready 上时**这一格什么都不说**。
    *
-   * 下面那句「已 N 秒没有新数据」在字面上仍然为真，但它把「对端没了」说成了
+   * 下面那句「已 N 秒…」在字面上仍然为真，但它把「对端没了」说成了
    * 「数据慢」——用户会继续等，而实际上服务端已经不在，停止按钮也没人接。
    * 真正的答案由顶部那条连接横幅给（它还带重试倒计时），这里再说一遍就是两处
    * 各写一份、迟早漂成两句话。
    */
   if (state.connection !== 'ready') return ''
 
-  /*
-   * 重发中的那一段：末条是失败那次留下的半截思考，按流的位置判会说成「正在思考…」
-   * ——而此刻模型一个字都没在写。上限的数由事件带来，不在这里写死。
-   */
-  const retry = current.retry
-  if (retry) return `正在重连 ${retry.attempt} / ${retry.max}…`
-
-  const since = current.lastEventAt ?? current.runStartedAt
-  if (since !== null && now - since >= SILENT_MS) {
-    return `已 ${Math.round((now - since) / 1000)} 秒没有新数据`
+  const req = current.request
+  if (!req) return '正在请求…'
+  switch (req.phase) {
+    case 'backoff': {
+      if (req.backoffUntil === null) return '等待重试…'
+      // 倒计时只是展示：重发由服务端按同一个截止点发起，前端不因为数到 0 就做任何事。
+      return `等待重试，${Math.max(0, Math.ceil((req.backoffUntil - now) / 1000))} 秒后…`
+    }
+    case 'sent':
+    case 'headers': {
+      const since = req.phase === 'sent' ? req.sentAt : req.headersAt
+      if (since !== null && now - since >= SILENT_MS) {
+        return `已 ${Math.round((now - since) / 1000)} 秒没有响应`
+      }
+      if (req.phase === 'headers') return '等待响应…'
+      return req.attempt > 0 ? `正在重连 ${req.attempt} / ${req.max}…` : '正在请求…'
+    }
+    case 'content': {
+      if (req.lastContentAt !== null && now - req.lastContentAt >= SILENT_MS) {
+        return `已 ${Math.round((now - req.lastContentAt) / 1000)} 秒无新增内容`
+      }
+      if (current.generatingToolCall) return '正在生成…'
+      if (last?.kind === 'thinking') return '正在思考…'
+      if (last?.kind === 'text') return '正在回复…'
+      return '正在请求…'
+    }
   }
-
-  if (current.generatingToolCall) return '正在生成…'
-  if (last?.kind === 'thinking') return '正在思考…'
-  if (last?.kind === 'text') return '正在回复…'
-  return '正在请求…'
 }
 
 /**

@@ -724,8 +724,11 @@ describe('事件按会话归属过滤', () => {
       event: {
         type: 'run.retrying',
         runId: 'run_1',
+        requestId: 'pr_child',
         attempt: 2,
         max: 5,
+        backoffMs: 2000,
+        at: 1000,
         failedThinkingStepIds: [],
       },
     } as never)
@@ -738,11 +741,10 @@ describe('事件按会话归属过滤', () => {
     // 当前会话这一份一个字都不该多。
     expect(transcript()).toHaveLength(0)
     expect(state.todos).toHaveLength(0)
-    expect(viewOf('cv_child').lastEventAt).not.toBe(null)
     expect(viewOf('cv_child').usage?.inputTokens).toBe(12)
-    expect(viewOf('cv_child').retry).toEqual({ attempt: 2, max: 5 })
+    expect(viewOf('cv_child').request).toMatchObject({ attempt: 2, max: 5, phase: 'backoff' })
     expect(view().usage).toBe(null)
-    expect(view().retry).toBe(null)
+    expect(view().request).toBe(null)
     closePanelTab('conversation-cv_child')
     syncViews()
   })
@@ -1092,30 +1094,64 @@ describe('事件按会话归属过滤', () => {
   })
 
   /*
-   * ── 断流重发的那句「正在重连 N / M」 ──
+   * ── 当前请求投影：阶段、次数、退避截止点与最后内容时刻 ──
    *
-   * 服务端不发配对的「重发结束」事件（理由在 `RunRetryingEvent` 上），收场全靠
-   * `RESUMED` 那张表 + 入口那一处判断。这一组锁的就是收场：不收场的表现是
+   * 服务端不发配对的「重发结束」事件（理由在 `RunRetryingEvent` 上），
+   * 收场靠的是下一条 `run.request`。这一组锁的是阶段推进：不推进的表现是
    * 整轮跑完了，阶段那一格还钉在「正在重连 3 / 5」。
    */
-  const retryFrame = (seq: number, attempt: number) =>
+  let projectionSeq = 0
+  const retryFrame = (attempt: number, backoffMs = 60_000, at = 1_000) =>
     ({
-      seq,
+      seq: ++projectionSeq,
       at: 0,
       conversationId: 'cv_now',
       event: {
         type: 'run.retrying',
         runId: 'run_1',
+        requestId: 'pr_fail_' + attempt,
         attempt,
         max: 5,
+        backoffMs,
+        at,
         failedThinkingStepIds: [],
       },
     }) as never
 
-  test('重发的进度照收，界面据此把阶段改口', () => {
+  const requestFrame = (phase: 'sent' | 'headers', attempt: number, at = 2_000) =>
+    ({
+      seq: ++projectionSeq,
+      at: 0,
+      conversationId: 'cv_now',
+      event: {
+        type: 'run.request',
+        runId: 'run_1',
+        requestId: 'pr_send_' + attempt,
+        phase,
+        attempt,
+        max: 5,
+        at,
+      },
+    }) as never
+
+  const contentFrame = (at: number, conversationId = 'cv_now') =>
+    ({
+      seq: ++projectionSeq,
+      at: 0,
+      conversationId,
+      event: { type: 'tool.generating', runId: 'run_1', at },
+    }) as never
+
+  test('退避事件写下阶段、次数与截止点', () => {
     reset('cv_now')
-    applyEvent(retryFrame(1, 3))
-    expect(viewOf('cv_now').retry).toEqual({ attempt: 3, max: 5 })
+    applyEvent(retryFrame(3))
+    expect(viewOf('cv_now').request).toMatchObject({
+      requestId: 'pr_fail_3',
+      attempt: 3,
+      max: 5,
+      phase: 'backoff',
+      backoffUntil: 61_000,
+    })
   })
 
   test('重发按 AgentLoop 给出的 step id 撤掉失败半截，已完成思考不受影响', () => {
@@ -1124,13 +1160,25 @@ describe('事件按会话归属过滤', () => {
       seq: 1,
       at: 0,
       conversationId: 'cv_now',
-      event: { type: 'thinking.delta', runId: 'run_1', stepId: 'st_done', delta: '前一轮思考' },
+      event: {
+        type: 'thinking.delta',
+        runId: 'run_1',
+        stepId: 'st_done',
+        delta: '前一轮思考',
+        at: 1,
+      },
     } as never)
     applyEvent({
       seq: 2,
       at: 0,
       conversationId: 'cv_now',
-      event: { type: 'thinking.delta', runId: 'run_1', stepId: 'st_failed', delta: '失败的半截' },
+      event: {
+        type: 'thinking.delta',
+        runId: 'run_1',
+        stepId: 'st_failed',
+        delta: '失败的半截',
+        at: 2,
+      },
     } as never)
     applyEvent({
       seq: 3,
@@ -1139,8 +1187,11 @@ describe('事件按会话归属过滤', () => {
       event: {
         type: 'run.retrying',
         runId: 'run_1',
+        requestId: 'pr_fail_1',
         attempt: 1,
         max: 5,
+        backoffMs: 0,
+        at: 3,
         failedThinkingStepIds: ['st_failed'],
       },
     } as never)
@@ -1152,86 +1203,74 @@ describe('事件按会话归属过滤', () => {
     ).toEqual(['st_done'])
   })
 
-  test('新那次一出思考就收场——不收场的话整轮跑完还钉在「正在重连」上', () => {
+  /** 发出只结束等待：截止点清掉、次数留着，界面因此从「等待重试」换成「正在重连 N / M」。 */
+  test('下一次发出结束退避，次数保留到那一次身上', () => {
     reset('cv_now')
-    applyEvent(retryFrame(1, 1))
-    applyEvent({
-      seq: 2,
-      at: 0,
-      conversationId: 'cv_now',
-      event: { type: 'thinking.delta', runId: 'run_1', stepId: 'st_2', delta: '重来一遍' },
-    } as never)
-    expect(viewOf('cv_now').retry).toBe(null)
+    applyEvent(retryFrame(2))
+    applyEvent(requestFrame('sent', 2))
+    expect(viewOf('cv_now').request).toMatchObject({
+      phase: 'sent',
+      attempt: 2,
+      max: 5,
+      backoffUntil: null,
+      sentAt: 2_000,
+    })
+    applyEvent(requestFrame('headers', 2, 2_400))
+    expect(viewOf('cv_now').request).toMatchObject({ phase: 'headers', headersAt: 2_400 })
   })
 
-  test('工具参数进度刷新本会话、结束重连，不提前创建工具步骤', () => {
+  test('工具参数进度推进内容时刻，不提前创建工具步骤', () => {
     discardPace()
     reset('cv_now')
-    applyEvent(retryFrame(1, 1))
-    setState('views', 'cv_now', 'lastEventAt', 1)
-    applyEvent({
-      seq: 2,
-      at: 0,
-      conversationId: 'cv_now',
-      event: { type: 'tool.generating', runId: 'run_1' },
-    } as never)
+    applyEvent(requestFrame('sent', 0))
+    applyEvent(contentFrame(3_000))
     expect(viewOf('cv_now').generatingToolCall).toBe(true)
-    expect(viewOf('cv_now').lastEventAt).toBeGreaterThan(1)
-    expect(viewOf('cv_now').retry).toBe(null)
+    expect(viewOf('cv_now').request).toMatchObject({ phase: 'content', lastContentAt: 3_000 })
     expect(viewOf('cv_now').transcript).toHaveLength(0)
 
-    applyEvent(retryFrame(3, 2))
+    applyEvent(retryFrame(2))
     expect(viewOf('cv_now').generatingToolCall).toBe(false)
+    applyEvent(contentFrame(4_000))
     applyEvent({
-      seq: 4,
-      at: 0,
-      conversationId: 'cv_now',
-      event: { type: 'tool.generating', runId: 'run_1' },
-    } as never)
-    applyEvent({
-      seq: 5,
+      seq: ++projectionSeq,
       at: 0,
       conversationId: 'cv_now',
       event: { type: 'run.finished', runId: 'run_1', stopReason: 'user_interrupt', usage: null },
     } as never)
     expect(viewOf('cv_now').generatingToolCall).toBe(false)
-    expect(viewOf('cv_now').lastEventAt).toBe(null)
+    expect(viewOf('cv_now').request).toBe(null)
   })
 
-  test('子会话参数进度不改变主会话的阶段或静默时间', () => {
+  test('子会话参数进度不改变主会话的阶段或内容时刻', () => {
     reset('cv_now')
     openConversationTab('cv_child_progress', '子会话')
     syncViews()
-    setState('views', 'cv_now', 'lastEventAt', 1)
-    applyEvent({
-      seq: 1,
-      at: 0,
-      conversationId: 'cv_child_progress',
-      event: { type: 'tool.generating', runId: 'run_child' },
-    } as never)
+    applyEvent(requestFrame('sent', 0))
+    applyEvent(contentFrame(5_000, 'cv_child_progress'))
     expect(viewOf('cv_child_progress').generatingToolCall).toBe(true)
     expect(viewOf('cv_now').generatingToolCall).toBe(false)
-    expect(viewOf('cv_now').lastEventAt).toBe(1)
+    expect(viewOf('cv_now').request).toMatchObject({ phase: 'sent', lastContentAt: null })
     closePanelTab('conversation-cv_child_progress')
     syncViews()
   })
 
-  test('工作区级事件不收场——后台一次文件改动不该把这句话抹掉', () => {
+  /** 心跳与空增量在服务端就不发内容事件，界面这一侧因此一个字段都不动。 */
+  test('工作区级事件不推进阶段——后台一次文件改动不该把这句话抹掉', () => {
     reset('cv_now')
-    applyEvent(retryFrame(1, 2))
+    applyEvent(retryFrame(2))
     applyEvent({
-      seq: 2,
+      seq: ++projectionSeq,
       at: 0,
       event: { type: 'git.state', workspaceId: 'ws_1', branch: 'master' },
     } as never)
-    expect(viewOf('cv_now').retry).toEqual({ attempt: 2, max: 5 })
+    expect(viewOf('cv_now').request).toMatchObject({ attempt: 2, phase: 'backoff' })
   })
 
-  test('额度用满整轮报错，也要收场', () => {
+  test('额度用满整轮报错，投影清空', () => {
     reset('cv_now')
-    applyEvent(retryFrame(1, 5))
+    applyEvent(retryFrame(5))
     applyEvent({
-      seq: 2,
+      seq: ++projectionSeq,
       at: 0,
       conversationId: 'cv_now',
       event: {
@@ -1241,52 +1280,48 @@ describe('事件按会话归属过滤', () => {
         message: '连接被断开，已重发 5 次',
       },
     } as never)
-    expect(viewOf('cv_now').retry).toBe(null)
-  })
-
-  /** 别的会话开跑不算这条会话「有动静」——算进去的话静默检测永远报不出来。 */
-  test('别的会话的忙闲不刷新「上一次有动静」', () => {
-    reset('cv_now')
-    setState('views', 'cv_now', 'lastEventAt', 1)
-    applyEvent({
-      seq: 7,
-      at: 0,
-      event: { type: 'conversation.busy', conversationId: 'cv_other', busy: true },
-    } as never)
-    expect(viewOf('cv_now').lastEventAt).toBe(1)
+    expect(viewOf('cv_now').request).toBe(null)
   })
 
   /**
-   * 原始失败形状：一轮结束后服务端紧接着广播工作区级的 `git.state`，用户几分钟后再发一句，
-   * 回车那一刻乐观置忙、状态行立刻按「上一次有动静」计时——基准要是这条 `git.state`，
-   * 下一轮开头就会闪出一句「已 N 秒没有新数据」，直到 `run.started` 到达才消失。
-   * 只有带 runId 的事件才算这一轮「有动静」；`goal` 同样在收尾之后发、同样不算。
+   * 旧请求的迟到内容事件不许把新请求的阶段退回去。序号比投影上那个小就丢弃，
+   * 这条规则同时挡住「旧快照晚于新事件返回」。
    */
-  test('轮次结束后到达的工作区级事件与 goal 不算这条会话「有动静」', () => {
+  test('序号更小的迟到事件退不回已经推进的阶段', () => {
     reset('cv_now')
+    const late = contentFrame(6_000)
+    applyEvent(requestFrame('sent', 1))
+    applyEvent(late)
+    expect(viewOf('cv_now').request).toMatchObject({ phase: 'sent', lastContentAt: null })
+  })
+
+  /**
+   * 一轮收尾之后到达的工作区级事件与 `goal` 不属于任何一次请求，不许凭空造出一个阶段。
+   * `run.started` 同样不造——阶段只由 `run.request` 写，那才是真的发出去了。
+   */
+  test('收尾后到达的工作区级事件、goal 与起轮都不造出请求阶段', () => {
+    reset('cv_now')
+    applyEvent(requestFrame('sent', 0))
     applyEvent({
-      seq: 8,
+      seq: ++projectionSeq,
       at: 0,
       conversationId: 'cv_now',
       event: { type: 'run.finished', runId: 'run_1', stopReason: 'end_turn', usage: null },
     } as never)
-    expect(viewOf('cv_now').lastEventAt).toBe(null)
+    expect(viewOf('cv_now').request).toBe(null)
     applyEvent({
-      seq: 9,
+      seq: ++projectionSeq,
       at: 0,
       event: { type: 'git.state', workspaceId: 'ws_1', branch: 'master' },
     } as never)
-    expect(viewOf('cv_now').lastEventAt).toBe(null)
     applyEvent({
-      seq: 10,
+      seq: ++projectionSeq,
       at: 0,
       conversationId: 'cv_now',
       event: { type: 'goal', goal: null },
     } as never)
-    expect(viewOf('cv_now').lastEventAt).toBe(null)
-    // 下一轮真的开始才算：`run.started` 带 runId。
     applyEvent({
-      seq: 11,
+      seq: ++projectionSeq,
       at: 0,
       conversationId: 'cv_now',
       event: {
@@ -1297,7 +1332,9 @@ describe('事件按会话归属过滤', () => {
         userMessageId: null,
       },
     } as never)
-    expect(viewOf('cv_now').lastEventAt).not.toBe(null)
+    expect(viewOf('cv_now').request).toBe(null)
+    applyEvent(requestFrame('sent', 0, 7_000))
+    expect(viewOf('cv_now').request).toMatchObject({ phase: 'sent', sentAt: 7_000 })
   })
 
   /**
@@ -1448,10 +1485,20 @@ describe('账本修订号跟着落库走', () => {
   })
 
   /** 只有动静、没有落库的那一类不能换号，否则重取被拉到 token 频率。 */
-  test('「上一次有动静」变了不换号', () => {
+  test('当前请求的内容时刻变了不换号', () => {
     startRun()
     const before = ledgerRevision()
-    setState('views', 'cv_1', 'lastEventAt', 123456)
+    setState('views', 'cv_1', 'request', {
+      requestId: 'pr_rev',
+      attempt: 0,
+      max: 5,
+      phase: 'content',
+      backoffUntil: null,
+      sentAt: 1,
+      headersAt: 2,
+      lastContentAt: 123456,
+      seq: 1,
+    })
     expect(ledgerRevision()).toBe(before)
   })
 })
@@ -2189,41 +2236,62 @@ describe('报错正文并进这一轮的读数条', () => {
  * 起因是一次真实断流：服务端 262 秒一个字节都没收到，而界面上只有一个越走越大的
  * 总耗时配一句「正在思考…」——两者都没说出真相，用户直到最后报错才知道断了。
  *
- * 静默时长本身不需要新协议字段：每一帧的到达时刻，客户端本地就有。
- * 这一组锁的就是「它真的知道」。
+ * 静默时长按**当前请求的最后内容时刻**算，而那个时刻由适配器观察、随内容事件带来，
+ * 与落库的 `provider_requests.last_content_at` 是同一个值。这一组锁的是
+ * 「只有真内容推进它」：按任意一帧计时的话，心跳撑着的一条死流永远报不出静默。
  */
-describe('事件到达时刻按帧记下来', () => {
-  const frame = (type: string, extra: Record<string, unknown> = {}) =>
-    ({
-      seq: 9,
+describe('内容时刻只由真内容推进', () => {
+  const sent = (seq: number) =>
+    applyEvent({
+      seq,
       at: 0,
       conversationId: 'cv_now',
-      event: { type, runId: 'run_1', ...extra },
-    }) as never
+      event: {
+        type: 'run.request',
+        runId: 'run_1',
+        requestId: 'pr_silence',
+        phase: 'sent',
+        attempt: 0,
+        max: 5,
+        at: 1_000,
+      },
+    } as never)
 
-  test('任何一帧到达都刷新「上一次有动静」', () => {
+  test('非内容事件不推进它——心跳撑着的死流才报得出静默', () => {
     setState({ activeConversation: 'cv_now' })
     freshView('cv_now')
-    applyEvent(frame('todos', { todos: [] }))
-    const first = viewOf('cv_now').lastEventAt
-    expect(first).not.toBe(null)
+    sent(1)
+    applyEvent({
+      seq: 2,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'todos', runId: 'run_1', todos: [] },
+    } as never)
+    expect(viewOf('cv_now').request).toMatchObject({ phase: 'sent', lastContentAt: null })
+    applyEvent({
+      seq: 3,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'text.delta', runId: 'run_1', stepId: 'st_x', delta: '喂', at: 9_000 },
+    } as never)
+    expect(viewOf('cv_now').request).toMatchObject({ phase: 'content', lastContentAt: 9_000 })
   })
 
   /**
-   * 归属不是当前会话的帧不能刷新它——否则后台会话每动一下，
+   * 归属不是这条会话的帧不能动它——否则后台会话每动一下，
    * 前台这条就被判成「刚有动静」，静默永远不会显示出来。
    */
-  test('别的会话的帧不刷新它', () => {
+  test('别的会话的帧不动它', () => {
     setState({ activeConversation: 'cv_now' })
     freshView('cv_now')
-    setState('views', 'cv_now', 'lastEventAt', 1)
+    sent(4)
     applyEvent({
-      seq: 10,
+      seq: 5,
       at: 0,
       conversationId: 'cv_other',
-      event: { type: 'todos', runId: 'run_1', todos: [] },
+      event: { type: 'text.delta', runId: 'run_1', stepId: 'st_y', delta: '别人', at: 9_000 },
     } as never)
-    expect(viewOf('cv_now').lastEventAt).toBe(1)
+    expect(viewOf('cv_now').request).toMatchObject({ lastContentAt: null })
   })
 
   /** 收尾之后清掉：留着的话下一轮开头会拿上一轮的时刻算，起手就报出错误的静默时长。 */
@@ -2233,18 +2301,205 @@ describe('事件到达时刻按帧记下来', () => {
       busyConversations: ['cv_now'],
     })
     freshView('cv_now')
-    setState('views', 'cv_now', 'lastEventAt', 1)
-    applyEvent(
-      frame('run.finished', {
+    sent(6)
+    applyEvent({
+      seq: 7,
+      at: 0,
+      conversationId: 'cv_now',
+      event: {
+        type: 'run.finished',
+        runId: 'run_1',
         status: 'done',
         stopReason: 'completed',
         usage: null,
         stepCount: 1,
         durationMs: 1,
         fileChanges: [],
+      },
+    } as never)
+    expect(viewOf('cv_now').request).toBe(null)
+  })
+})
+
+/**
+ * 刷新之后当前请求的阶段、次数与截止点原样还原。
+ *
+ * 事件环有界（`server/bus.ts` 按帧数与字节数淘汰），断线久了补不回来，所以刷新
+ * 不能靠重放实时事件。服务端把这一份从 `RunManager` 与同一份请求账现取，随历史页
+ * 一起回来，客户端按同一条规则折进同一个投影——两条路恢复出来的必须是同一个状态。
+ *
+ * 四组分别对应四个阶段；另两条锁竞态与请求数。
+ */
+describe('刷新按同一份请求账恢复当前请求', () => {
+  let historyCalls = 0
+  let otherCalls = 0
+
+  const stubHistory = (live: unknown) => {
+    historyCalls = 0
+    otherCalls = 0
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
+      if (p.includes('/history')) {
+        historyCalls++
+        return {
+          messages: [],
+          runs: [],
+          steps: [],
+          todos: [],
+          workflowStarts: [],
+          nextCursor: null,
+          live,
+        }
+      }
+      otherCalls++
+      throw new Error('这个接口不在本组范围内')
+    }
+  }
+
+  const snapshot = (request: Record<string, unknown> | null, seq = 100) => ({
+    runId: 'rn_live',
+    seq,
+    request,
+  })
+
+  const baseRequest = {
+    requestId: 'pr_live',
+    attempt: 2,
+    max: 5,
+    status: 'in_flight',
+    sentAt: 1_000,
+    headersAt: null,
+    firstContentAt: null,
+    lastContentAt: null,
+    backoffUntil: null,
+  }
+
+  const reload = async (live: unknown) => {
+    setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
+    freshView('cv_live')
+    stubHistory(live)
+    await reloadActiveConversation()
+  }
+
+  test('退避中：阶段、N / M 与截止点都还原', async () => {
+    await reload(
+      snapshot({ ...baseRequest, status: 'rejected', sentAt: 500, backoffUntil: 61_000 }),
+    )
+    expect(viewOf('cv_live').request).toMatchObject({
+      requestId: 'pr_live',
+      attempt: 2,
+      max: 5,
+      phase: 'backoff',
+      backoffUntil: 61_000,
+    })
+  })
+
+  test('已发送未回头：阶段停在发出，等待时长按 sent_at 算', async () => {
+    await reload(snapshot(baseRequest))
+    expect(viewOf('cv_live').request).toMatchObject({
+      phase: 'sent',
+      attempt: 2,
+      sentAt: 1_000,
+      headersAt: null,
+      lastContentAt: null,
+    })
+  })
+
+  test('已回头无内容：阶段是等待响应，内容时刻仍为空', async () => {
+    await reload(snapshot({ ...baseRequest, headersAt: 1_400 }))
+    expect(viewOf('cv_live').request).toMatchObject({
+      phase: 'headers',
+      headersAt: 1_400,
+      lastContentAt: null,
+    })
+  })
+
+  /**
+   * 持续输出之后刷新：还原的是**最后一段内容**的时刻，不是重拉那一刻。
+   * 拿重拉时刻顶替的表现是刷新一次静默归零，一条已经卡住的流看起来刚有过动静。
+   */
+  test('有内容：还原最后一段内容的时刻，不是重拉时刻', async () => {
+    setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
+    freshView('cv_live')
+    applyEvent({
+      seq: 8,
+      at: 0,
+      conversationId: 'cv_live',
+      event: {
+        type: 'run.request',
+        runId: 'rn_live',
+        requestId: 'pr_live',
+        phase: 'sent',
+        attempt: 2,
+        max: 5,
+        at: 1_000,
+      },
+    } as never)
+    applyEvent({
+      seq: 9,
+      at: 0,
+      conversationId: 'cv_live',
+      event: { type: 'text.delta', runId: 'rn_live', stepId: 'st_1', delta: '首段', at: 1_500 },
+    } as never)
+    applyEvent({
+      seq: 10,
+      at: 0,
+      conversationId: 'cv_live',
+      event: { type: 'text.delta', runId: 'rn_live', stepId: 'st_1', delta: '末段', at: 61_500 },
+    } as never)
+    const before = viewOf('cv_live').request
+    expect(before).toMatchObject({ phase: 'content', lastContentAt: 61_500 })
+
+    stubHistory(
+      snapshot({
+        ...baseRequest,
+        headersAt: 1_200,
+        firstContentAt: 1_500,
+        lastContentAt: 61_500,
       }),
     )
-    expect(viewOf('cv_now').lastEventAt).toBe(null)
+    await reloadActiveConversation()
+    expect(viewOf('cv_live').request).toMatchObject({
+      phase: 'content',
+      attempt: 2,
+      max: 5,
+      lastContentAt: 61_500,
+    })
+    // 刷新只打一次历史接口，运行中快照随它一起回来，没有第二个接口。
+    expect(historyCalls).toBe(1)
+    expect(otherCalls).toBeGreaterThan(0)
+  })
+
+  /** 加载期间先到的新事件比快照新，快照不许把它盖回去。 */
+  test('序号更旧的快照不覆盖已经到达的新事件', async () => {
+    setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
+    freshView('cv_live')
+    applyEvent({
+      seq: 200,
+      at: 0,
+      conversationId: 'cv_live',
+      event: {
+        type: 'run.request',
+        runId: 'rn_live',
+        requestId: 'pr_new',
+        phase: 'headers',
+        attempt: 3,
+        max: 5,
+        at: 9_000,
+      },
+    } as never)
+    stubHistory(snapshot({ ...baseRequest, requestId: 'pr_old' }, 100))
+    await reloadActiveConversation()
+    expect(viewOf('cv_live').request).toMatchObject({
+      requestId: 'pr_new',
+      attempt: 3,
+      phase: 'headers',
+    })
+  })
+
+  /** 已落终态的 run 不带快照，投影随之清空——界面不会把它画成还在执行。 */
+  test('没有 run 在跑时投影清空', async () => {
+    await reload(null)
+    expect(viewOf('cv_live').request).toBe(null)
   })
 })
 
