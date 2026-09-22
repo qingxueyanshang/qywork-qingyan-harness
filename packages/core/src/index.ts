@@ -15,7 +15,6 @@ export {
   type ConversationId,
   type GoalId,
   type MessageId,
-  newBatchId,
   newConversationId,
   newGoalId,
   newMessageId,

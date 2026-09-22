@@ -874,13 +874,21 @@ export class Session {
     const { store } = this.opts
     return {
       nextSeq: (runId) => this.nextSeq(runId),
-      openTextStep: (runId, seq) => appendStep(store, { runId, seq, kind: 'text', content: '' }).id,
-      openThinkingStep: (runId, seq, reasoning) =>
+      openTextStep: (runId, seq, batchId) =>
+        appendStep(store, {
+          runId,
+          seq,
+          kind: 'text',
+          content: '',
+          providerBatchId: batchId,
+        }).id,
+      openThinkingStep: (runId, seq, batchId, reasoning) =>
         appendStep(store, {
           runId,
           seq,
           kind: 'thinking',
           content: '',
+          providerBatchId: batchId,
           ...(reasoning ? { payload: { kind: 'response_reasoning', reasoning } as const } : {}),
         }).id,
       // 开即终态：注入的那句话没有中间态可等，`status` 用默认的 `done`。

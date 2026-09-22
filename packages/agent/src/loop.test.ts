@@ -74,9 +74,9 @@ test('Responses 密文沿现有思考步骤落盘，下一轮工具结果仍带�
   }
   const persist = noopPersistence()
   const original = persist.openThinkingStep
-  persist.openThinkingStep = (runId, seq, data) => {
+  persist.openThinkingStep = (runId, seq, batchId, data) => {
     persisted.push(data)
-    return original(runId, seq)
+    return original(runId, seq, batchId)
   }
   const loop = new AgentLoop({
     adapter,

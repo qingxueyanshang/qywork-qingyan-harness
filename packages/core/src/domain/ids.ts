@@ -85,6 +85,3 @@ export const newGoalId = () => `gl_${monotonicId()}` as GoalId
 
 /** 账本条目。不是领域实体，没有品牌类型——它只是一行记账。 */
 export const newUsageId = () => `ug_${monotonicId()}`
-
-/** 一次 provider 响应里的所有工具调用共享一个 batch id。 */
-export const newBatchId = () => `bt_${monotonicId()}`

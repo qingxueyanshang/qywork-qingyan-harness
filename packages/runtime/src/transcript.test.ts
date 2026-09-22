@@ -286,6 +286,50 @@ describe('steps 投影', () => {
     assertPairs(out)
   })
 
+  /**
+   * 归属未记录的旧文本不能被当成「另一次生成」。拆开它等于凭空造出一条
+   * 没有工具调用的 assistant 消息，而那段正文在活侧本来就挂在下面这批调用上。
+   */
+  test('文本归属为 null 时不与其后的工具调用切开', () => {
+    const out = stepsToWireMessages([
+      step({
+        seq: 1,
+        kind: 'text',
+        content: '先读一个文件。',
+        toolName: null,
+        toolCallId: null,
+        providerBatchId: null,
+      }),
+      step({ seq: 2, providerBatchId: 'bt_migrated', toolCallId: 'A' }),
+    ])
+    expect(out.filter((m) => m.role === 'assistant')).toHaveLength(1)
+    expect(out[0]!.content).toBe('先读一个文件。')
+    expect(out[0]!.toolCalls?.map((c) => c.id)).toEqual(['A'])
+    assertPairs(out)
+  })
+
+  test('相邻两段文本归属不同时各成一条 assistant 消息', () => {
+    const out = stepsToWireMessages([
+      step({
+        seq: 1,
+        kind: 'text',
+        content: '上半句',
+        toolName: null,
+        toolCallId: null,
+        providerBatchId: 'pr_1',
+      }),
+      step({
+        seq: 2,
+        kind: 'text',
+        content: '下半句',
+        toolName: null,
+        toolCallId: null,
+        providerBatchId: 'pr_2',
+      }),
+    ])
+    expect(out.map((m) => m.content)).toEqual(['上半句', '下半句'])
+  })
+
   /** 恢复路径整体替换 payload，`args` 被抹掉——投影不能因此崩，也不能编参数。 */
   test('孤儿 payload（args 被抹）投影成空参数 + failure，不编造', () => {
     const out = stepsToWireMessages([
