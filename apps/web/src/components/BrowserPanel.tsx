@@ -33,6 +33,7 @@ export default function BrowserPanel(props: { id: string }) {
   const tab = () => browserTab(props.id)
   const [draft, setDraft] = createSignal<string | null>(null)
   const [error, setError] = createSignal('')
+  const [manualRefresh, setManualRefresh] = createSignal(0)
   /** 地址栏正在被编辑时显示草稿，否则显示宿主报回来的真实地址。 */
   const address = () => draft() ?? shown(tab()?.url ?? '')
 
@@ -108,9 +109,19 @@ export default function BrowserPanel(props: { id: string }) {
           type="button"
           aria-label="刷新"
           data-tip="刷新"
-          onClick={() => run(navigateBrowserPage(props.id, 'reload'))}
+          onClick={() => {
+            setManualRefresh((n) => n + 1)
+            run(navigateBrowserPage(props.id, 'reload'))
+          }}
         >
-          <IconRefresh size={14} />
+          {/* 与文件页一致，每次点击转一圈，快速刷新的本地页面也能看到反馈。 */}
+          <IconRefresh
+            size={14}
+            style={{
+              transform: `rotate(${manualRefresh() * 360}deg)`,
+              transition: 'transform 360ms ease-out',
+            }}
+          />
         </button>
         <input
           class="web-url"

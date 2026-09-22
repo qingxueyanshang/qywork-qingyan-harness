@@ -12,6 +12,7 @@
  *
  * 同文件另锁三块要 DOM 才成立的口径：工具图片的回放、编排画布与展开态的归属、
  * 回执不画、只有子 agent 在跑时收尾条之外没有第二条读数条。
+ * 运行条另覆盖起轮交接：耗时列保留位置，开始时刻到达后不能显示负耗时。
  *
  * DOM 在这里装、用完卸掉，动态 import 的理由同 `settings/LoadState.test.tsx`。
  */
@@ -66,6 +67,72 @@ async function resetStore() {
 function resize(target: Element) {
   resizeCallbacks.get(target)?.([], {} as ResizeObserver)
 }
+
+test('发送到起轮之间保留耗时列，开始时刻到达时同步计时且不重建星河', async () => {
+  const store = await import('../lib/store/index.ts')
+  const { render } = await import('solid-js/web')
+  const { Transcript } = await import('./Transcript.tsx')
+  const workspaceBefore = store.workspace()
+  const connectionBefore = store.state.connection
+  const sendBefore = store.client.send
+  const nowBefore = Date.now
+  const id = 'cv_start_elapsed'
+  let now = 100_000
+  Date.now = () => now
+  ;(store.client as unknown as { send: typeof sendBefore }).send = () => {}
+  store.setState({
+    activeConversation: id,
+    busyConversations: [],
+    connection: 'ready',
+    views: {},
+    lastRunId: null,
+  })
+  store.openView(id)
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+  try {
+    store.sendMessage('开始')
+    const strip = host.querySelector('.run-strip')
+    const galaxy = host.querySelector('.run-galaxy')
+    const elapsed = host.querySelector('.run-elapsed')
+    expect(elapsed).not.toBeNull()
+    expect(elapsed?.textContent).toBe('')
+    expect(strip?.querySelector('.run-live')?.textContent).toBe('正在请求…')
+
+    // 确认事件在下一次 100ms 时钟更新前到达。
+    now += 60
+    store.applyEvent({
+      seq: 1,
+      at: now,
+      conversationId: id,
+      event: {
+        type: 'run.started',
+        conversationId: id,
+        runId: 'rn_start_elapsed',
+        model: 'm',
+        userMessageId: null,
+        retryOfRunId: null,
+      },
+    } as never)
+    expect(host.querySelector('.run-strip')).toBe(strip)
+    expect(host.querySelector('.run-galaxy')).toBe(galaxy)
+    expect(host.querySelector('.run-elapsed')).toBe(elapsed)
+    expect(elapsed?.textContent).toBe('0.0s')
+
+    now += 200
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(elapsed?.textContent).toBe('0.2s')
+  } finally {
+    dispose()
+    host.remove()
+    Date.now = nowBefore
+    ;(store.client as unknown as { send: typeof sendBefore }).send = sendBefore
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+    store.setState('connection', connectionBefore)
+  }
+})
 
 test('主会话与子会话状态行按真实参数进度显示，静默与重连仍能接管', async () => {
   const store = await import('../lib/store/index.ts')
