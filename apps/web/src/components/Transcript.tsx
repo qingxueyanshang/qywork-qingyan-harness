@@ -10,6 +10,7 @@ import {
   For,
   Index,
   Match,
+  on,
   onCleanup,
   onMount,
   Show,
@@ -787,9 +788,14 @@ function RunStatusBar(props: {
       </span>
 
       <span class="run-readout">
-        <Show when={props.elapsed !== null}>
-          <span class="run-metric run-elapsed" data-tip="本轮耗时">
-            {props.elapsed!.toFixed(1)}s
+        {/* 起轮确认前保留耗时列，避免确认到达时推移后续读数。 */}
+        <Show when={props.running || props.elapsed !== null}>
+          <span
+            class="run-metric run-elapsed"
+            data-tip={props.elapsed === null ? undefined : '本轮耗时'}
+            aria-hidden={props.elapsed === null}
+          >
+            {props.elapsed === null ? '' : `${props.elapsed.toFixed(1)}s`}
           </span>
         </Show>
         <Show when={props.usage}>
@@ -843,11 +849,21 @@ function RunStatusBar(props: {
  */
 export function LiveRunBar(props: { conversationId: string }) {
   const [now, setNow] = createSignal(Date.now())
-  createEffect(() => {
-    if (!isConversationRunning(props.conversationId)) return
-    const t = setInterval(() => setNow(Date.now()), 100)
-    onCleanup(() => clearInterval(t))
-  })
+  // 开始时刻到达时同步时钟，避免上一帧的 now 早于新起点。
+  createEffect(
+    on(
+      [
+        () => isConversationRunning(props.conversationId),
+        () => viewOf(props.conversationId).runStartedAt,
+      ],
+      ([running]) => {
+        setNow(Date.now())
+        if (!running) return
+        const t = setInterval(() => setNow(Date.now()), 100)
+        onCleanup(() => clearInterval(t))
+      },
+    ),
+  )
 
   const elapsed = () => {
     const from = viewOf(props.conversationId).runStartedAt
