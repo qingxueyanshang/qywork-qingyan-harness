@@ -145,6 +145,8 @@ export class AnthropicAdapter implements LlmAdapter {
       for await (const frame of readSse(res.body)) {
         const parsed = sseJson(frame.data)
         if (!parsed) continue
+        // 这一帧解析出来的时刻。带内容的事件都用它，不让下游各取一次当前时刻。
+        const at = Date.now()
         // 事件名在 `event:` 行与 JSON 体的 `type` 里重复出现，中转不一定两个都发。
         const ev = parsed as unknown as AnthropicStreamEvent
         const type = typeof ev.type === 'string' && ev.type ? ev.type : (frame.event ?? '')
@@ -168,18 +170,18 @@ export class AnthropicAdapter implements LlmAdapter {
             if (d?.type === 'text_delta') {
               // 同 `input_json_delta`：缺席按空串收，直接透传 undefined 会让
               // 字符串 `undefined` 进到正文里。
-              yield { type: 'text_delta', delta: d.text ?? '' }
+              yield { type: 'text_delta', delta: d.text ?? '', at }
             } else if (d?.type === 'thinking_delta') {
               // display:'omitted'（默认）时这里是空串——思考照样发生、照样计费，
               // 只是不回传内容。不要据此判断「模型没思考」。
-              if (d.thinking) yield { type: 'thinking_delta', delta: d.thinking }
+              if (d.thinking) yield { type: 'thinking_delta', delta: d.thinking, at }
             } else if (d?.type === 'input_json_delta') {
               const slot = partial.get(ev.index)
               // **必须兜住缺席**：直接拼接会把字符串 `undefined` 接进 JSON，
               // 随后 `JSON.parse` 抛错，整次工具调用的参数将丢失。
               if (slot && d.partial_json) {
                 slot.json += d.partial_json
-                yield { type: 'tool_call_progress' }
+                yield { type: 'tool_call_progress', at }
               }
             }
             break
@@ -240,7 +242,7 @@ export class AnthropicAdapter implements LlmAdapter {
       }
 
       const calls = collectToolCalls(partial, req.model)
-      if (calls.length) yield { type: 'tool_calls', calls }
+      if (calls.length) yield { type: 'tool_calls', calls, at: Date.now() }
     } catch (err) {
       throw classifyProviderError('anthropic_messages', err, readTransport(trace))
     }

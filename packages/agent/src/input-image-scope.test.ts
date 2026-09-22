@@ -85,7 +85,7 @@ function capturingAdapter(opts: { vision: boolean | null } = { vision: true }): 
     async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       seen.push(req)
       yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, base.density) }
-      yield { type: 'text_delta', delta: '完成' }
+      yield { type: 'text_delta', delta: '完成', at: Date.now() }
       yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
     },
   }

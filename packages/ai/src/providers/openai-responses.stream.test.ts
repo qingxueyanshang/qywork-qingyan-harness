@@ -328,6 +328,7 @@ describe('完整工具参数快照', () => {
         calls: [
           { id: 'c_read', name: 'read_file', arguments: { path: 'pelican-bike/index.html' } },
         ],
+        at: expect.any(Number),
       },
     ])
   })
@@ -354,7 +355,11 @@ describe('完整工具参数快照', () => {
         },
       ]),
     )
-    expect(events.find((e) => e.type === 'text_delta')).toEqual({ type: 'text_delta', delta: xml })
+    expect(events.find((e) => e.type === 'text_delta')).toEqual({
+      type: 'text_delta',
+      delta: xml,
+      at: expect.any(Number),
+    })
     expect(events.find((e) => e.type === 'tool_calls')).toMatchObject({
       calls: [{ name: 'read_file', arguments: {} }],
     })

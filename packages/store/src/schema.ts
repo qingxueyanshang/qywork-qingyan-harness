@@ -2129,6 +2129,16 @@ CREATE INDEX idx_schedules_conversation ON schedules(conversation_id);
      */
     sql: `ALTER TABLE provider_requests ADD COLUMN input_image_batch_id TEXT;`,
   },
+  {
+    id: 60,
+    name: 'provider_request_last_content_at',
+    /**
+     * 最后一段非空正文、思考或新增工具参数到达的观察时刻。
+     * `first_content_at` 答不了「此刻静默了多久」：持续输出时首内容时刻离现在越来越远。
+     * 心跳、空 delta、响应头与用量都不推进它。NULL 表示迁移前旧行或本次尚无内容。
+     */
+    sql: `ALTER TABLE provider_requests ADD COLUMN last_content_at INTEGER;`,
+  },
 ]
 
 /**
@@ -2287,6 +2297,7 @@ export interface ProviderRequestRow {
   headers_at: number | null
   first_event_at: number | null
   first_content_at: number | null
+  last_content_at: number | null
   completed_at: number | null
   created_at: number
 }
@@ -2434,6 +2445,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'headers_at',
     'first_event_at',
     'first_content_at',
+    'last_content_at',
     'completed_at',
     'created_at',
   ],

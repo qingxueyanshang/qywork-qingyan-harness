@@ -87,7 +87,7 @@ import {
   listSchedules,
   listSteps,
   listWorkflowRecords,
-  markProviderRequestFirstContent,
+  markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
   markProviderRequestInputImages,
@@ -949,8 +949,8 @@ export class Session {
         markProviderRequestHeaders(store, requestId as never, at),
       markRequestFirstEvent: (requestId) =>
         markProviderRequestFirstEvent(store, requestId as never),
-      markRequestFirstContent: (requestId) =>
-        markProviderRequestFirstContent(store, requestId as never),
+      markRequestContent: (requestId, at) =>
+        markProviderRequestContent(store, requestId as never, at),
       markRequestInputImages: (requestId, batchId) =>
         markProviderRequestInputImages(store, requestId as never, batchId),
       inputImagesConsumed: (batchId) =>
@@ -1239,6 +1239,18 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
         }
         if (trace && requestId && ev.type === 'response_started') {
           trace.headers(requestId, ev.headersAt)
+        }
+        // 摘要与主请求同一条规则：每一段非空内容都推进内容时刻，用适配器带来的观察时刻。
+        if (
+          trace &&
+          requestId &&
+          (ev.type === 'text_delta' ||
+            ev.type === 'thinking_delta' ||
+            ev.type === 'tool_call_progress' ||
+            ev.type === 'tool_calls' ||
+            ev.type === 'response_reasoning')
+        ) {
+          trace.content(requestId, ev.at)
         }
         if (ev.type === 'text_delta') text += ev.delta
         else if (ev.type === 'done') {

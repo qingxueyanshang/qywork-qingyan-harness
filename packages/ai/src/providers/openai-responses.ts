@@ -214,11 +214,13 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         if (frame.data === SSE_DONE) continue
         const event = sseJson(frame.data)
         if (!event) continue
+        // 这一帧解析出来的时刻。带内容的事件都用它，不让下游各取一次当前时刻。
+        const at = Date.now()
         const type = String(event.type ?? '')
 
         if (type === 'response.output_text.delta') {
           const delta = String(event.delta ?? '')
-          if (delta) yield { type: 'text_delta', delta }
+          if (delta) yield { type: 'text_delta', delta, at }
           continue
         }
 
@@ -232,7 +234,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           type === 'response.reasoning_summary_text.delta'
         ) {
           const delta = String(event.delta ?? '')
-          if (delta) yield { type: 'thinking_delta', delta }
+          if (delta) yield { type: 'thinking_delta', delta, at }
           continue
         }
 
@@ -256,7 +258,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           const argsDelta = String(event.delta ?? '')
           if (slot && argsDelta) {
             slot.json += argsDelta
-            yield { type: 'tool_call_progress' }
+            yield { type: 'tool_call_progress', at }
           }
           continue
         }
@@ -367,13 +369,14 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           model: req.model,
           items: [...encryptedReasoning].sort(([a], [b]) => a - b).map(([, item]) => item),
         },
+        at: Date.now(),
       }
     }
     if (calls.length) {
       // 截断优先，别把 max_tokens 覆盖成 tool_use——理由同 openai-compat：
       // 参数拼到一半被截断时，抹掉截断信号 = 上层拿着残缺参数照常执行工具。
       if (stopReason !== 'max_tokens') stopReason = 'tool_use'
-      yield { type: 'tool_calls', calls }
+      yield { type: 'tool_calls', calls, at: Date.now() }
     }
 
     yield { type: 'usage', usage }

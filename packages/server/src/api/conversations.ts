@@ -1,6 +1,7 @@
 /** 模型目录、会话、消息、run。前端进来第一屏要的全在这。 */
 
 import { rm } from 'node:fs/promises'
+import { MAX_RESENDS } from '@qywork/agent'
 import type { ModelSpec } from '@qywork/ai'
 import {
   applySpecOverride,
@@ -15,6 +16,7 @@ import type {
   ConversationChangesPageResponse,
   ConversationHistoryPageResponse,
   ConversationId,
+  ConversationLiveSnapshot,
   ConversationRunsResponse,
   ConversationUsageResponse,
   EffortLevel,
@@ -46,7 +48,7 @@ import {
   usageTotals,
 } from '@qywork/store'
 import { attachmentsDirOf } from './attachments.ts'
-import { type ApiHandler, json } from './types.ts'
+import { type ApiHandler, type ApiRequestDeps, json } from './types.ts'
 
 /** 一个接口下挂着的一个模型。**只列配置里真有的**——没配的选了也发不出去。 */
 export interface ModelRow {
@@ -212,6 +214,52 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
   }
 
   return [...groups.values(), custom].filter((v) => v.models.length > 0)
+}
+
+/**
+ * 运行中这一轮的只读快照，供刷新后恢复「当前请求走到哪一阶段」。
+ *
+ * 三样事实全部现取，不新增状态表：在跑的是哪一轮取自 `RunManager`（账本那一列在
+ * 进程崩过之后仍可能挂着 `running`），请求时刻取自 `provider_requests` 那一行，
+ * 次数与退避截止点取自失败诊断里的 `retry`。
+ *
+ * 只看主请求（`purpose='turn'`）：摘要请求不发 `run.request`，算进来会让刷新后的
+ * 阶段与实时事件指向两次不同的请求。
+ */
+function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSnapshot | null {
+  const runId = d.runs.currentRunId(id)
+  if (!runId) return null
+  const rows = listProviderRequests(d.store, runId).filter((r) => r.purpose === 'turn')
+  const last = rows.at(-1)
+  const seq = d.bus.currentSeq
+  if (!last) return { runId, seq, request: null }
+
+  /*
+   * 次数按故障链数，不按 `retry_index`——那一列每个 turn 从 0 重来，带上下文续发之后
+   * 会把「第 3 次重连」报成第 0 次。链上前一行的裁决写着「即将进行第几次」，
+   * 它就是这一行的序号。
+   */
+  const settled = last.completedAt !== null
+  const decided = settled ? last : rows.at(-2)
+  const retry = decided?.diagnostic?.retry
+  const resend = retry?.decision === 'resend' ? retry : null
+  return {
+    runId,
+    seq,
+    request: {
+      requestId: last.id,
+      attempt: resend?.attempt ?? 0,
+      max: resend?.max ?? MAX_RESENDS,
+      status: last.status,
+      sentAt: last.sentAt,
+      headersAt: last.headersAt,
+      firstContentAt: last.firstContentAt,
+      lastContentAt: last.lastContentAt,
+      // 只有「这一次已失败、下一次还没登记」时才在等待：下一行一开，这一行就不再是当前请求。
+      backoffUntil:
+        settled && resend && resend.at !== null ? resend.at + (resend.backoffMs ?? 0) : null,
+    },
+  }
 }
 
 export const handleConversationsApi: ApiHandler = async (url, req, d) => {
@@ -403,10 +451,13 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         return json({ error: 'limit 必须是 1 到 100 的整数' }, 422)
       }
       const before = url.searchParams.get('before')?.trim() || null
-      const page: ConversationHistoryPageResponse = listConversationHistoryPage(d.store, id, {
-        limit,
-        before: before as MessageId | null,
-      })
+      const page: ConversationHistoryPageResponse = {
+        ...listConversationHistoryPage(d.store, id, {
+          limit,
+          before: before as MessageId | null,
+        }),
+        live: liveSnapshot(d, id),
+      }
       return json(page)
     }
     if (convMatch[2] === 'changes') {

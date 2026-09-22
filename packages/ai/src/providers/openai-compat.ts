@@ -172,6 +172,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
         if (frame.data === SSE_DONE) break
         const parsed = sseJson(frame.data)
         if (!parsed) continue
+        // 这一帧解析出来的时刻。带内容的事件都用它，不让下游各取一次当前时刻。
+        const at = Date.now()
         // 流内错误。SSE 已经 200 了，错误只能从 chunk 里出。
         const inlineError = parsed.error
         if (inlineError && typeof inlineError === 'object') {
@@ -192,13 +194,13 @@ export class OpenAICompatAdapter implements LlmAdapter {
         // DeepSeek / Kimi 用 reasoning_content，部分中转站用 reasoning。都收。
         const reasoning = delta.reasoning_content ?? delta.reasoning
         if (typeof reasoning === 'string' && reasoning) {
-          yield { type: 'thinking_delta', delta: reasoning }
+          yield { type: 'thinking_delta', delta: reasoning, at }
         }
 
         if (typeof delta.content === 'string' && delta.content) {
           const split = splitter.push(delta.content)
-          if (split.thinking) yield { type: 'thinking_delta', delta: split.thinking }
-          if (split.text) yield { type: 'text_delta', delta: split.text }
+          if (split.thinking) yield { type: 'thinking_delta', delta: split.thinking, at }
+          if (split.text) yield { type: 'text_delta', delta: split.text, at }
         }
 
         for (const tc of delta.tool_calls ?? []) {
@@ -214,7 +216,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
           const argsDelta: string = tc.function?.arguments ?? ''
           if (argsDelta) {
             slot.json += argsDelta
-            yield { type: 'tool_call_progress' }
+            yield { type: 'tool_call_progress', at }
           }
         }
 
@@ -227,7 +229,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       // 已累积但未等到闭合标签的部分，原样作为正文输出。放在工具调用之前：
       // 它是正文的一部分，顺序不能倒。
       const tail = splitter.flush()
-      if (tail) yield { type: 'text_delta', delta: tail }
+      if (tail) yield { type: 'text_delta', delta: tail, at: Date.now() }
 
       const calls = collectToolCalls(partial, req.model)
       if (calls.length) {
@@ -236,7 +238,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
         // 抹掉，上层因此拿着半截 JSON 解析失败的参数照常执行工具，事后还看不出
         // 发生过截断。截断优先——它决定的是这一轮该不该继续，比「是否存在工具调用」更靠前。
         if (stopReason !== 'max_tokens') stopReason = 'tool_use'
-        yield { type: 'tool_calls', calls }
+        yield { type: 'tool_calls', calls, at: Date.now() }
       }
 
       /*

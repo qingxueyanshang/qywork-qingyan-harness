@@ -333,7 +333,12 @@ export interface LoopPersistence {
   inputImagesConsumed?(batchId: string): boolean
   /** 可选是为了旧测试夹具；生产装配必须提供。 */
   markRequestFirstEvent?(requestId: string): void
-  markRequestFirstContent?(requestId: string): void
+  /**
+   * 收到一段非空思考、正文或新增工具参数。**每一段都调**，首值与末值由落库端分别保留。
+   *
+   * `at` 是适配器解析该段时的观察时刻，由 provider 事件带上来，不是本方法被调用的时刻。
+   */
+  markRequestContent?(requestId: string, at: number): void
   /**
    * 请求终态。`usage` 为 null = provider 没回报，**四个字段落 null 不落 0**——
    * 中转站漏 usage 是常态，记成 0 会让上下文锚点误判成「这次什么都没占」。
@@ -747,6 +752,7 @@ export class AgentLoop {
       sent: (requestId: string): void => persist.markRequestSent(requestId),
       headers: (requestId: string, at: number): void => persist.markRequestHeaders?.(requestId, at),
       firstEvent: (requestId: string): void => persist.markRequestFirstEvent?.(requestId),
+      content: (requestId: string, at: number): void => persist.markRequestContent?.(requestId, at),
       settle: (
         requestId: string,
         status: 'received' | 'uncertain' | 'rejected',
@@ -1272,11 +1278,19 @@ export class AgentLoop {
           /** provider 真的回过来的事件数（不含 `request_prepared`）。 */
           let providerEvents = 0
           let recordedFirstEvent = false
-          let recordedFirstContent = false
 
           try {
             const stream = await this.openStream(adapter, req, requestId)
             persist.markRequestSent(requestId)
+            yield {
+              type: 'run.request',
+              runId: input.runId,
+              requestId,
+              phase: 'sent',
+              attempt: resends,
+              max: MAX_RESENDS,
+              at: Date.now(),
+            }
 
             for await (const ev of stream) {
               lastEventAt = Date.now()
@@ -1286,15 +1300,21 @@ export class AgentLoop {
                   recordedFirstEvent = true
                   persist.markRequestFirstEvent?.(requestId)
                 }
+                /*
+                 * 内容时刻**每一段都推进**，用适配器带来的观察时刻。
+                 *
+                 * 只记首次答不了「此刻静默了多久」：持续输出时首内容时刻离现在越来越远。
+                 * 空 delta、心跳、响应头、用量与 `done` 不在这张表里——它们证明连接还活，
+                 * 不证明模型又写出了内容。
+                 */
                 if (
-                  !recordedFirstContent &&
-                  (ev.type === 'thinking_delta' ||
-                    ev.type === 'text_delta' ||
-                    ev.type === 'tool_call_progress' ||
-                    ev.type === 'tool_calls')
+                  ev.type === 'thinking_delta' ||
+                  ev.type === 'text_delta' ||
+                  ev.type === 'tool_call_progress' ||
+                  ev.type === 'tool_calls' ||
+                  ev.type === 'response_reasoning'
                 ) {
-                  recordedFirstContent = true
-                  persist.markRequestFirstContent?.(requestId)
+                  persist.markRequestContent?.(requestId, ev.at)
                 }
               }
               if (input.signal.aborted) break
@@ -1314,11 +1334,20 @@ export class AgentLoop {
                 }
                 case 'tool_call_progress':
                   // 参数进度只交给界面显示；空闲计时在传输层按字节走，不看事件。
-                  yield { type: 'tool.generating', runId: input.runId }
+                  yield { type: 'tool.generating', runId: input.runId, at: ev.at }
                   break
                 case 'response_started':
                   // 只作为传输遥测边界；不产生模型可见内容或 UI step。
                   persist.markRequestHeaders?.(requestId, ev.headersAt)
+                  yield {
+                    type: 'run.request',
+                    runId: input.runId,
+                    requestId,
+                    phase: 'headers',
+                    attempt: resends,
+                    max: MAX_RESENDS,
+                    at: ev.headersAt,
+                  }
                   break
                 case 'request_prepared': {
                   const limit = adapter.spec.contextWindow
@@ -1362,6 +1391,7 @@ export class AgentLoop {
                     stepId: stepId as never,
                     delta: ev.delta,
                     redacted: false,
+                    at: ev.at,
                   }
                   break
                 }
@@ -1380,6 +1410,7 @@ export class AgentLoop {
                     runId: input.runId,
                     stepId: stepId as never,
                     delta,
+                    at: ev.at,
                   }
                   break
                 }
@@ -1422,6 +1453,7 @@ export class AgentLoop {
               decision: ProviderRetryDecision,
               attempt: number | null = null,
               backoffMs: number | null = null,
+              at: number | null = null,
             ): void => {
               persist.recordRequestDiagnostic?.(requestId, {
                 causes: failureCauseChain(err),
@@ -1430,7 +1462,7 @@ export class AgentLoop {
                 transport: pe?.transport ?? null,
                 assistantChars: assistantText.length,
                 toolCallCount: calls.length,
-                retry: { decision, attempt, max: MAX_RESENDS, backoffMs },
+                retry: { decision, attempt, max: MAX_RESENDS, backoffMs, at },
               })
             }
 
@@ -1634,7 +1666,10 @@ export class AgentLoop {
              * 次数照算——那一轮已经真的发出去过那么多次，换个码不该把账清零。
              */
             if (backoffMs !== undefined && resends < MAX_RESENDS) {
-              recordDecision('resend', resends + 1, backoffMs)
+              // 等待起点取一次，诊断与事件用同一个值——两处各取一次会让刷新后的
+              // 倒计时与实时倒计时差出这两行之间的毫秒数。
+              const waitingSince = Date.now()
+              recordDecision('resend', resends + 1, backoffMs, waitingSince)
               resends++
               if (assistantText === '') {
                 /*
@@ -1659,8 +1694,11 @@ export class AgentLoop {
                 yield {
                   type: 'run.retrying',
                   runId: input.runId,
+                  requestId,
                   attempt: resends,
                   max: MAX_RESENDS,
+                  backoffMs,
+                  at: waitingSince,
                   failedThinkingStepIds: [...attemptThinking],
                 }
                 if (backoffMs > 0) await this.backoff(backoffMs, input.signal)
@@ -1689,8 +1727,11 @@ export class AgentLoop {
               yield {
                 type: 'run.retrying',
                 runId: input.runId,
+                requestId,
                 attempt: resends,
                 max: MAX_RESENDS,
+                backoffMs,
+                at: waitingSince,
                 failedThinkingStepIds: [],
               }
               if (backoffMs > 0) await this.backoff(backoffMs, input.signal)

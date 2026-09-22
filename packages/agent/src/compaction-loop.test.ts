@@ -105,7 +105,7 @@ function rejectingAdapter(rejectTimes: number, makeError = capacityError) {
       state.attempts++
       if (state.attempts <= rejectTimes) throw makeError()
       yield { type: 'request_prepared', measuredInputTokens: 10 }
-      yield { type: 'text_delta', delta: '压缩后完成' }
+      yield { type: 'text_delta', delta: '压缩后完成', at: Date.now() }
       yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
     },
   }
@@ -120,7 +120,7 @@ function okAdapter(): LlmAdapter {
     spec: lookupModel('claude-opus-5', 'anthropic_messages'),
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       yield { type: 'request_prepared', measuredInputTokens: 10 }
-      yield { type: 'text_delta', delta: '完成' }
+      yield { type: 'text_delta', delta: '完成', at: Date.now() }
       yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
     },
   }
@@ -517,10 +517,14 @@ describe('发送前检查：唯一的压缩触发', () => {
               source: 'provider',
             },
           }
-          yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
+          yield {
+            type: 'tool_calls',
+            calls: [{ id: 'c1', name: 'noop', arguments: {} }],
+            at: Date.now(),
+          }
           yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
         } else {
-          yield { type: 'text_delta', delta: '完成' }
+          yield { type: 'text_delta', delta: '完成', at: Date.now() }
           yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
         }
       },
@@ -579,10 +583,14 @@ describe('投影时机', () => {
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
         if (turn++ === 0) {
-          yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
+          yield {
+            type: 'tool_calls',
+            calls: [{ id: 'c1', name: 'noop', arguments: {} }],
+            at: Date.now(),
+          }
           yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
         } else {
-          yield { type: 'text_delta', delta: '完成' }
+          yield { type: 'text_delta', delta: '完成', at: Date.now() }
           yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
         }
       },
@@ -623,10 +631,14 @@ function twoTurnAdapter(): LlmAdapter {
     async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
       yield { type: 'request_prepared', measuredInputTokens: 10 }
       if (turn++ === 0) {
-        yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
+        yield {
+          type: 'tool_calls',
+          calls: [{ id: 'c1', name: 'noop', arguments: {} }],
+          at: Date.now(),
+        }
         yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
       } else {
-        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'text_delta', delta: '完成', at: Date.now() }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
       }
     },
@@ -725,7 +737,11 @@ describe('run 内 transcript 参与投影', () => {
           yield ev
         }
         if (turn++ === 0) {
-          yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
+          yield {
+            type: 'tool_calls',
+            calls: [{ id: 'c1', name: 'noop', arguments: {} }],
+            at: Date.now(),
+          }
           yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
         } else {
           yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
@@ -778,10 +794,14 @@ describe('transcript 的可折单元', () => {
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
         if (turn++ === 0) {
-          yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'noop', arguments: {} }] }
+          yield {
+            type: 'tool_calls',
+            calls: [{ id: 'c1', name: 'noop', arguments: {} }],
+            at: Date.now(),
+          }
           yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
         } else {
-          yield { type: 'text_delta', delta: '完成' }
+          yield { type: 'text_delta', delta: '完成', at: Date.now() }
           yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
         }
       },
@@ -862,7 +882,7 @@ function capturingAdapter(spec: LlmAdapter['spec']) {
     async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       seen.push(req)
       yield { type: 'request_prepared', measuredInputTokens: 10 }
-      yield { type: 'text_delta', delta: '完成' }
+      yield { type: 'text_delta', delta: '完成', at: Date.now() }
       yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
     },
   }
@@ -940,11 +960,12 @@ describe('缓存断点', () => {
           yield {
             type: 'tool_calls',
             calls: [{ id: 'c1', name: 'grep', arguments: {} }],
+            at: Date.now(),
           }
           yield { type: 'done', stopReason: 'tool_use', rawStopReason: 'tool_calls' }
           return
         }
-        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'text_delta', delta: '完成', at: Date.now() }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: 'stop' }
       },
     }
@@ -1262,7 +1283,7 @@ function usageAdapter(): LlmAdapter {
     spec: lookupModel('claude-opus-5', 'anthropic_messages'),
     async *stream(_req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       yield { type: 'request_prepared', measuredInputTokens: 10 }
-      yield { type: 'text_delta', delta: '完成' }
+      yield { type: 'text_delta', delta: '完成', at: Date.now() }
       yield {
         type: 'usage',
         usage: {

@@ -13,7 +13,7 @@ import type {
   Conversation,
   ConversationChangeStep,
   ConversationChangesPageResponse,
-  ConversationHistoryPageResponse,
+  ConversationHistoryPage,
   ConversationId,
   FileChange,
   Message,
@@ -598,7 +598,7 @@ export function listConversationHistoryPage(
   store: Store,
   conversationId: ConversationId,
   input: { before?: MessageId | null; limit: number },
-): ConversationHistoryPageResponse {
+): ConversationHistoryPage {
   const limit = Math.max(1, Math.min(100, Math.trunc(input.limit)))
   const before = input.before ?? null
   const userRows = before
@@ -1204,7 +1204,7 @@ export function recoverStaleRuns(
         assistantChars: null,
         toolCallCount: null,
         // 进程已经退出，没有“还能重发几次”这一事实；0 明确表示恢复流程不发请求。
-        retry: { decision: 'process_exit', attempt: null, max: 0, backoffMs: null },
+        retry: { decision: 'process_exit', attempt: null, max: 0, backoffMs: null, at: null },
       }
       store.db
         .query(
@@ -1279,7 +1279,7 @@ export function recoverStaleRuns(
       transport: null,
       assistantChars: null,
       toolCallCount: null,
-      retry: { decision: 'process_exit', attempt: null, max: 0, backoffMs: null },
+      retry: { decision: 'process_exit', attempt: null, max: 0, backoffMs: null, at: null },
     }
     store.db
       .query(
@@ -1506,6 +1506,7 @@ export function openProviderRequest(
     headersAt: null,
     firstEventAt: null,
     firstContentAt: null,
+    lastContentAt: null,
     completedAt: null,
     createdAt: Date.now(),
   }
@@ -1603,13 +1604,20 @@ export function markProviderRequestFirstEvent(store: Store, id: ProviderRequestI
     .run(Date.now(), id)
 }
 
-/** 第一段思考、正文或工具调用。重复调用保持第一次。 */
-export function markProviderRequestFirstContent(store: Store, id: ProviderRequestId): void {
+/**
+ * 一段非空思考、正文或新增工具参数到达。
+ *
+ * **每一段都调，`at` 由适配器在解析该段时观察得到，不要在这里取当前时刻**：
+ * 事件传到这里已经晚了若干毫秒，而 `last_content_at` 的用途正是算「此刻静默了多久」。
+ * 首值由 `COALESCE` 保在 `first_content_at`，末值每次覆盖 `last_content_at`，
+ * 两列一次更新写完——分成两条语句会让它们在中途失败时对不上。
+ */
+export function markProviderRequestContent(store: Store, id: ProviderRequestId, at: number): void {
   store.db
     .query(
-      'UPDATE provider_requests SET first_content_at = COALESCE(first_content_at, ?) WHERE id = ?',
+      'UPDATE provider_requests SET first_content_at = COALESCE(first_content_at, ?), last_content_at = ? WHERE id = ?',
     )
-    .run(Date.now(), id)
+    .run(at, at, id)
 }
 
 /**
@@ -1747,6 +1755,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     headersAt: r.headers_at,
     firstEventAt: r.first_event_at,
     firstContentAt: r.first_content_at,
+    lastContentAt: r.last_content_at,
     completedAt: r.completed_at,
     createdAt: r.created_at,
   }

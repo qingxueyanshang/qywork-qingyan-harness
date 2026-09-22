@@ -686,8 +686,8 @@ function scriptedAdapter(turns: (WireToolCall[] | null)[], seen: ChatRequest[]):
       const calls = turns[turn++] ?? null
       yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, spec.density) }
       yield { type: 'response_started', headersAt: Date.now() }
-      if (calls) yield { type: 'tool_calls', calls }
-      else yield { type: 'text_delta', delta: '完成' }
+      if (calls) yield { type: 'tool_calls', calls, at: Date.now() }
+      else yield { type: 'text_delta', delta: '完成', at: Date.now() }
       yield { type: 'done', stopReason: calls ? 'tool_use' : 'end_turn', rawStopReason: '' }
     },
   }

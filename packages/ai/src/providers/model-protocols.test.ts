@@ -199,6 +199,7 @@ describe('GLM 5.3 与 Grok 4.7 官方协议映射', () => {
           arguments: { path: 'b.ts' },
         },
       ],
+      at: expect.any(Number),
     })
   })
 
@@ -238,7 +239,7 @@ describe('GLM 5.3 与 Grok 4.7 官方协议映射', () => {
       },
     ])
     expect(events.filter((e) => e.type === 'response_reasoning')).toEqual([
-      { type: 'response_reasoning', reasoning },
+      { type: 'response_reasoning', reasoning, at: expect.any(Number) },
     ])
     expect(events.some((e) => e.type === 'thinking_delta')).toBe(false)
   })
@@ -253,7 +254,7 @@ describe('GLM 5.3 与 Grok 4.7 官方协议映射', () => {
         },
       ])
       expect(events.filter((e) => e.type === 'response_reasoning')).toEqual(
-        output ? [] : [{ type: 'response_reasoning', reasoning }],
+        output ? [] : [{ type: 'response_reasoning', reasoning, at: expect.any(Number) }],
       )
     }
   })

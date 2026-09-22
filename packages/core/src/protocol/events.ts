@@ -56,6 +56,7 @@ export type AgentEvent =
   | ConversationBusyEvent
   // ── run 生命周期 ──
   | RunStartedEvent
+  | RunRequestEvent
   | RunRetryingEvent
   | RunFinishedEvent
   | RunErrorEvent
@@ -257,23 +258,56 @@ export interface RunErrorEvent {
 }
 
 /**
+ * 这一次 provider 请求走到了哪个阶段。
+ *
+ * `sent` = 已调用底层 fetch（不表示中转已接收），`headers` = 响应头已到但模型还没产出。
+ * 两个阶段各发一次，配的是同一个 `requestId`，界面据它把「正在重连」换成「正在请求」
+ * 再换成「等待响应」。少了它，退避结束之后到首段内容之间没有任何事件，
+ * 界面只能停在上一阶段的说法上。
+ *
+ * `attempt` 是本次故障链内的重发序号（首发 0），与 `run.retrying` 共用同一份预算；
+ * **不是 `provider_requests.retry_index`**——那一列按 turn 重新计数，跨自动续轮会清零。
+ */
+export interface RunRequestEvent {
+  type: 'run.request'
+  runId: RunId
+  /** `provider_requests` 那一行的 id；刷新快照与实时事件按它对齐同一次请求。 */
+  requestId: string
+  phase: 'sent' | 'headers'
+  attempt: number
+  /** 上限。真源是 `agent` 的 `MAX_RESENDS`，界面不自己写死这个数。 */
+  max: number
+  /**
+   * 该阶段的观察时刻。`headers` 取传输层记下的响应头时刻，不取事件产生时刻——
+   * 两者相差的毫秒数正是首包等待。
+   */
+  at: number
+}
+
+/**
  * 断流后正在重发。
  *
  * 两种形式都发这条事件（判据在 `agent/loop.ts` 的尝试循环）：正文未显示的同一份
  * 字节原样再发；正文已显示的把它作为上一条推进 transcript，带当前上下文再发。
- * 界面拿它把阶段那一格改口成「正在重连 N / M」——不这么说的话，界面上是失败那次
+ * 界面拿它把阶段那一格改口成「等待重试，N 秒后」——不这么说的话，界面上是失败那次
  * 留下的半截思考配一句「正在思考…」，而模型此刻一个字都没在写。
  *
- * **没有配对的「重发结束」事件。** 新那次的第一条输出就是结束信号，
+ * **没有配对的「重发结束」事件。** 下一次的 `run.request` 就是结束信号，
  * 再发一条等于同一件事两处各说一遍，且两处必然漂移。
  */
 export interface RunRetryingEvent {
   type: 'run.retrying'
   runId: RunId
+  /** 失败的那一次请求在 `provider_requests` 里的行 id。 */
+  requestId: string
   /** 第几次重发，从 1 起。 */
   attempt: number
   /** 上限。真源是 `agent` 的 `MAX_RESENDS`，界面不自己写死这个数。 */
   max: number
+  /** 这次等待多久。0 表示上游要求立刻重发。 */
+  backoffMs: number
+  /** 等待开始的时刻。倒计时截止点 = `at + backoffMs`，客户端不自己取当前时刻。 */
+  at: number
   /**
    * 被这次重发取代的思考 step。
    *
@@ -322,12 +356,16 @@ export interface TextDeltaEvent {
   stepId: StepId
   /** 只有增量。 */
   delta: string
+  /** 这一段到达本地的时刻，与 `provider_requests.last_content_at` 落的是同一个值。 */
+  at: number
 }
 
 /** 工具参数正在生成。它还不是可执行的调用，不创建工具步骤或写入模型历史。 */
 export interface ToolGeneratingEvent {
   type: 'tool.generating'
   runId: RunId
+  /** 这一段到达本地的时刻，与 `provider_requests.last_content_at` 落的是同一个值。 */
+  at: number
 }
 
 /**
@@ -343,6 +381,8 @@ export interface ThinkingDeltaEvent {
   delta: string
   /** 部分 provider 只给摘要级思考。 */
   redacted: boolean
+  /** 这一段到达本地的时刻，与 `provider_requests.last_content_at` 落的是同一个值。 */
+  at: number
 }
 
 /** 一段完整 assistant 文本已落库，客户端可以用它替换本地累积的 delta。 */

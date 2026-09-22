@@ -63,11 +63,11 @@ test('Responses 密文沿现有思考步骤落盘，下一轮工具结果仍带�
       const { signal: _signal, ...request } = req
       seen.push(structuredClone(request))
       if (seen.length === 1) {
-        yield { type: 'response_reasoning', reasoning }
-        yield { type: 'tool_calls', calls: [call('read_file', { path: 'a.ts' })] }
+        yield { type: 'response_reasoning', reasoning, at: Date.now() }
+        yield { type: 'tool_calls', calls: [call('read_file', { path: 'a.ts' })], at: Date.now() }
         yield { type: 'done', stopReason: 'tool_use', rawStopReason: 'completed' }
       } else {
-        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'text_delta', delta: '完成', at: Date.now() }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: 'completed' }
       }
     },
@@ -118,9 +118,9 @@ function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'):
       yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, spec.density) }
       yield { type: 'response_started', headersAt: Date.now() }
       if (calls) {
-        yield { type: 'tool_calls', calls }
+        yield { type: 'tool_calls', calls, at: Date.now() }
       } else {
-        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'text_delta', delta: '完成', at: Date.now() }
       }
       yield {
         type: 'usage',
@@ -371,10 +371,10 @@ describe('流式通道的顺序', () => {
       spec: lookupModel('gpt-5.6-terra', 'openai_chat_completions'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
-        yield { type: 'thinking_delta', delta: '想一' }
-        yield { type: 'text_delta', delta: '说一' }
-        yield { type: 'thinking_delta', delta: '想二' }
-        yield { type: 'text_delta', delta: '说二' }
+        yield { type: 'thinking_delta', delta: '想一', at: Date.now() }
+        yield { type: 'text_delta', delta: '说一', at: Date.now() }
+        yield { type: 'thinking_delta', delta: '想二', at: Date.now() }
+        yield { type: 'text_delta', delta: '说二', at: Date.now() }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
       },
     }
@@ -434,7 +434,7 @@ describe('流式通道的顺序', () => {
       spec: lookupModel('gpt-5.6-terra', 'openai_chat_completions'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
-        for (const d of ['a', 'b', 'c']) yield { type: 'text_delta', delta: d }
+        for (const d of ['a', 'b', 'c']) yield { type: 'text_delta', delta: d, at: Date.now() }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
       },
     }
@@ -502,14 +502,14 @@ describe('流式通道的顺序', () => {
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
         if (turn++ === 0) {
-          yield { type: 'text_delta', delta: ' ' }
-          yield { type: 'thinking_delta', delta: '想' }
-          yield { type: 'tool_calls', calls: [call('probe')] }
+          yield { type: 'text_delta', delta: ' ', at: Date.now() }
+          yield { type: 'thinking_delta', delta: '想', at: Date.now() }
+          yield { type: 'tool_calls', calls: [call('probe')], at: Date.now() }
           yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
           return
         }
-        yield { type: 'text_delta', delta: '  ' }
-        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'text_delta', delta: '  ', at: Date.now() }
+        yield { type: 'text_delta', delta: '完成', at: Date.now() }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
       },
     }
@@ -1192,7 +1192,7 @@ describe('工具参数流贯穿适配器、空闲计时和界面事件', () => {
       },
     })
     const persist = noopPersistence()
-    persist.markRequestFirstContent = () => {
+    persist.markRequestContent = () => {
       firstContent = true
       contentBeforeCompletion ||= !parametersComplete
     }
@@ -1681,7 +1681,7 @@ describe('原地打转', () => {
           measuredInputTokens: estimateRequest(req, base.spec.density),
         }
         yield { type: 'response_started', headersAt: Date.now() }
-        yield { type: 'text_delta', delta: '仍停在同一个位置' }
+        yield { type: 'text_delta', delta: '仍停在同一个位置', at: Date.now() }
         yield {
           type: 'usage',
           usage: {
@@ -2358,8 +2358,8 @@ describe('正常响应结束不冒充任务完成', () => {
         seen.push(req.messages.filter((m) => m.role === 'assistant').map((m) => m.reasoningContent))
         yield { type: 'request_prepared', measuredInputTokens: 1 }
         yield { type: 'response_started', headersAt: Date.now() }
-        yield { type: 'thinking_delta', delta: '想一想' }
-        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'thinking_delta', delta: '想一想', at: Date.now() }
+        yield { type: 'text_delta', delta: '完成', at: Date.now() }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
       },
     }
@@ -2526,11 +2526,11 @@ describe('effort 传到请求上', () => {
 })
 
 describe('逐请求传输证据不改变请求内容', () => {
-  test('记录接口、协议、字节数以及首事件和首内容', async () => {
+  test('记录接口、协议、字节数以及首事件与每一段内容', async () => {
     const base = noopPersistence()
     let opened: Parameters<LoopPersistence['openRequest']>[0] | null = null
     let firstEvents = 0
-    let firstContents = 0
+    let contentMarks = 0
     const marks: string[] = []
     const loop = new AgentLoop({
       adapter: fakeAdapter([null]),
@@ -2547,8 +2547,8 @@ describe('逐请求传输证据不改变请求内容', () => {
           firstEvents++
           marks.push('event')
         },
-        markRequestFirstContent: () => {
-          firstContents++
+        markRequestContent: () => {
+          contentMarks++
           marks.push('content')
         },
       },
@@ -2569,7 +2569,7 @@ describe('逐请求传输证据不改变请求内容', () => {
     })
     expect(opened!.requestBytes).toBeGreaterThan(0)
     expect(firstEvents).toBe(1)
-    expect(firstContents).toBe(1)
+    expect(contentMarks).toBe(1)
     expect(marks).toEqual(['event', 'content'])
   })
 })
@@ -3259,9 +3259,10 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
           act === 'break-after-text' ||
           act === 'break-after-thinking'
         ) {
-          if (act === 'break-after-text') yield { type: 'text_delta', delta: '我先看看' }
+          if (act === 'break-after-text')
+            yield { type: 'text_delta', delta: '我先看看', at: Date.now() }
           if (act === 'break-after-thinking')
-            yield { type: 'thinking_delta', delta: '失败那段思考' }
+            yield { type: 'thinking_delta', delta: '失败那段思考', at: Date.now() }
           throw new ProviderError({
             code: 'network_error',
             message: act === 'connect-timeout' ? '连接超时' : '连接被断开',
@@ -3333,7 +3334,8 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
           act === 'rate-limit-no-header' ||
           act === 'rate-limit-after-text'
         ) {
-          if (act === 'rate-limit-after-text') yield { type: 'text_delta', delta: '已输出' }
+          if (act === 'rate-limit-after-text')
+            yield { type: 'text_delta', delta: '已输出', at: Date.now() }
           throw new ProviderError({
             code: 'rate_limited',
             message: '触发限速',
@@ -3351,7 +3353,7 @@ describe('传输断了：落终态、无痕重发、说清形状', () => {
             status: 429,
           })
         }
-        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'text_delta', delta: '完成', at: Date.now() }
         yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
       },
     }
@@ -3863,7 +3865,7 @@ describe('provider 说要调工具但一条都没解析出来', () => {
         // 中转站把非流式响应硬转成 SSE、或名字分片丢了都是这个形状。
         async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
           yield { type: 'request_prepared', measuredInputTokens: 10 }
-          yield { type: 'text_delta', delta: '我这就去执行' }
+          yield { type: 'text_delta', delta: '我这就去执行', at: Date.now() }
           yield { type: 'done', stopReason: 'tool_use', rawStopReason: 'tool_calls' }
         },
       },
