@@ -222,7 +222,8 @@ export class AnthropicAdapter implements LlmAdapter {
         this.spec.minCacheablePrefix,
         estimateSchemas(req.tools, this.spec.density) +
           req.system.reduce((n, b) => n + estimateText(b.text, this.spec.density), 0),
-        this.spec.chatReasoningProtocol === 'deepseek_preserved',
+        this.spec.chatReasoningProtocol === 'deepseek_preserved' ||
+          this.spec.chatReasoningProtocol === 'preserved',
       ),
       tools: buildTools(req.tools),
       ...(thinking ? { thinking } : {}),

@@ -94,6 +94,53 @@ async function send(
 }
 
 describe('思考档位严格遵守用户选择', () => {
+  test('MiMo 按 Messages 形状回传文本轮与工具轮思考，不发送伪强度', async () => {
+    const body = await send(
+      [
+        { role: 'user', content: '开始' },
+        { role: 'assistant', content: '计划', reasoningContent: '第一轮思考' },
+        { role: 'user', content: '继续' },
+        {
+          role: 'assistant',
+          content: '',
+          reasoningContent: '工具轮思考',
+          toolCalls: [
+            { id: 'c1', name: 'read_file', arguments: { path: 'pelican-bike/index.html' } },
+          ],
+        },
+        { role: 'tool', toolCallId: 'c1', content: '内容' },
+      ],
+      'high',
+      'mimo-v2.6-pro',
+    )
+    expect(body).not.toHaveProperty('thinking')
+    expect(body).not.toHaveProperty('output_config')
+    expect(body.messages).toMatchObject([
+      { role: 'user' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '第一轮思考' },
+          { type: 'text', text: '计划' },
+        ],
+      },
+      { role: 'user' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '工具轮思考' },
+          {
+            type: 'tool_use',
+            id: 'c1',
+            name: 'read_file',
+            input: { path: 'pelican-bike/index.html' },
+          },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: '内容' }] },
+    ])
+  })
+
   test('DeepSeek 三档使用 output_config，并完整回传文本轮和工具轮思考', async () => {
     const messages: WireMessage[] = [
       { role: 'user', content: '第一问' },

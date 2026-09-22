@@ -25,6 +25,64 @@ import {
 } from './loop.ts'
 import { type DelegatePort, ToolRegistry, type ToolSpec } from './registry.ts'
 
+test('Responses 密文沿现有思考步骤落盘，下一轮工具结果仍带原样历史', async () => {
+  const reasoning = {
+    model: 'grok-4.7',
+    items: [
+      {
+        type: 'reasoning',
+        id: 'rs1',
+        encrypted_content: 'opaque',
+        summary: [],
+      },
+    ],
+  }
+  const seen: ChatRequest[] = []
+  const persisted: unknown[] = []
+  const adapter: LlmAdapter = {
+    ...fakeAdapter([]),
+    kind: 'openai_responses',
+    spec: lookupModel('grok-4.7', 'openai_responses'),
+    async *stream(req) {
+      const { signal: _signal, ...request } = req
+      seen.push(structuredClone(request))
+      if (seen.length === 1) {
+        yield { type: 'response_reasoning', reasoning }
+        yield { type: 'tool_calls', calls: [call('read_file', { path: 'a.ts' })] }
+        yield { type: 'done', stopReason: 'tool_use', rawStopReason: 'completed' }
+      } else {
+        yield { type: 'text_delta', delta: '完成' }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: 'completed' }
+      }
+    },
+  }
+  const persist = noopPersistence()
+  const original = persist.openThinkingStep
+  persist.openThinkingStep = (runId, seq, data) => {
+    persisted.push(data)
+    return original(runId, seq)
+  }
+  const loop = new AgentLoop({
+    adapter,
+    registry: new ToolRegistry(),
+    systemPrompt: 'sys',
+    persist,
+    makeToolContext: baseCtx,
+  })
+  const events: AgentEvent[] = []
+  for await (const ev of loop.run({
+    runId: 'rn_cipher' as never,
+    history: [],
+    signal: new AbortController().signal,
+  }))
+    events.push(ev)
+  expect(persisted).toEqual([reasoning])
+  expect(seen[1]!.messages.find((m) => m.role === 'assistant')?.responseReasoning).toEqual(
+    reasoning,
+  )
+  expect(events.some((e) => e.type === 'thinking.delta')).toBe(false)
+})
+
 /** 按脚本回放的假 adapter：每次 stream() 产出预设的一轮。 */
 function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-opus-5'): LlmAdapter {
   let turn = 0

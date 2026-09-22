@@ -44,6 +44,7 @@ import type {
   ProviderRequestDiagnostic,
   ProviderRequestPurpose,
   ProviderRetryDecision,
+  ResponseReasoning,
   RunId,
   RunUsage,
   StepId,
@@ -216,7 +217,7 @@ export interface LoopPersistence {
    * 回传 `reasoning_content`，否则后续轮次 400；历史从 steps 投影回去时缺这一段
    * 就是必然的 400。
    */
-  openThinkingStep(runId: RunId, seq: number): string
+  openThinkingStep(runId: RunId, seq: number, reasoning?: ResponseReasoning): string
   /**
    * 轮内自动重发前，把失败那次留下的思考 step 落成失败终态。
    *
@@ -1050,6 +1051,7 @@ export class AgentLoop {
          */
         let pendingText = ''
         let thinkingText = ''
+        let responseReasoning: ResponseReasoning | undefined
         const calls: WireToolCall[] = []
         let providerStop: string = 'end_turn'
         /** provider 的原话，只进账本不参与判断。 */
@@ -1313,6 +1315,13 @@ export class AgentLoop {
               if (input.signal.aborted) break
 
               switch (ev.type) {
+                case 'response_reasoning': {
+                  responseReasoning = ev.reasoning
+                  const id = persist.openThinkingStep(input.runId, nextSeq(), ev.reasoning)
+                  attemptThinking.push(id as StepId)
+                  open = null
+                  break
+                }
                 case 'tool_call_progress':
                   // 同一条参数进度既刷新 openStream 的空闲计时，也交给界面显示。
                   yield { type: 'tool.generating', runId: input.runId }
@@ -1648,6 +1657,7 @@ export class AgentLoop {
                 open = null
                 pendingText = ''
                 thinkingText = ''
+                responseReasoning = undefined
                 calls.length = 0
                 // 界面此刻的末条是失败那次的半截思考，不发这条事件它会一直显示「正在思考…」。
                 yield {
@@ -1674,6 +1684,7 @@ export class AgentLoop {
                 role: 'assistant',
                 content: assistantText,
                 ...(thinkingText ? { reasoningContent: thinkingText } : {}),
+                ...(responseReasoning ? { responseReasoning } : {}),
                 _group: 'executionRecords',
               })
               stampUnit(unitStart)
@@ -1738,11 +1749,17 @@ export class AgentLoop {
         /** 本轮这个可折单元在 transcript 里的起点。工具结果随后追加到它后面。 */
         const unitStart = transcript.length
         const preserveAssistantReasoning = adapter.spec.chatReasoningProtocol !== 'standard'
-        if (assistantText || calls.length || (thinkingText && preserveAssistantReasoning)) {
+        if (
+          assistantText ||
+          calls.length ||
+          responseReasoning ||
+          (thinkingText && preserveAssistantReasoning)
+        ) {
           transcript.push({
             role: 'assistant',
             content: assistantText,
             ...(calls.length ? { toolCalls: calls } : {}),
+            ...(responseReasoning ? { responseReasoning } : {}),
             // 标准路径只回放工具轮；Qwen3.8 / GLM-5.3 的官方协议要求所有轮次完整回放。
             ...(thinkingText && (calls.length || preserveAssistantReasoning)
               ? { reasoningContent: thinkingText }

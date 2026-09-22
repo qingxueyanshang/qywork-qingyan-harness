@@ -36,6 +36,80 @@ import { buildHistory, stepsToUnits, stepsToWireMessages } from './transcript.ts
 
 const noAttachments = async (content: string) => content
 
+test('连续文本续写按密文快照保留每次生成的边界', () => {
+  const reasoning = (id: string) => ({
+    model: 'grok-4.7',
+    items: [
+      {
+        type: 'reasoning',
+        id,
+        encrypted_content: `cipher-${id}`,
+        summary: [],
+      },
+    ],
+  })
+  const messages = stepsToWireMessages([
+    step({ seq: 1, kind: 'text', content: '前半段' }),
+    step({
+      seq: 2,
+      kind: 'thinking',
+      content: '',
+      payload: { kind: 'response_reasoning', reasoning: reasoning('rs1') },
+    }),
+    step({ seq: 3, kind: 'text', content: '后半段' }),
+    step({
+      seq: 4,
+      kind: 'thinking',
+      content: '',
+      payload: { kind: 'response_reasoning', reasoning: reasoning('rs2') },
+    }),
+  ])
+  expect(
+    messages.map((m) => ({ content: m.content, reasoning: m.responseReasoning, stamp: m._step })),
+  ).toEqual([
+    { content: '前半段', reasoning: reasoning('rs1'), stamp: stepStamp('rn', 2) },
+    { content: '后半段', reasoning: reasoning('rs2'), stamp: stepStamp('rn', 4) },
+  ])
+})
+
+test('思考密文从数据库步骤恢复，工具轮及纯文本轮原样保留，失败尝试排除', () => {
+  const store = new Store({ path: ':memory:' })
+  try {
+    const ws = upsertWorkspace(store, 'C:/ws', 'ws')
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'grok-4.7' })
+    const msg = appendMessage(store, { conversationId: conv.id, role: 'user', content: '读取' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'grok-4.7',
+      clientRequestId: 'cipher-test',
+      userMessageId: msg.id,
+      messageIdUpperBound: msg.id,
+      contextSnapshot: [],
+    })
+    const reasoning = {
+      model: 'grok-4.7',
+      items: [{ type: 'reasoning', id: 'rs1', encrypted_content: 'opaque', summary: [] }],
+    }
+    appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'thinking',
+      content: '',
+      payload: { kind: 'response_reasoning', reasoning },
+    })
+    const persisted = listSteps(store, run.id)
+    expect(stepsToWireMessages(persisted)[0]?.responseReasoning).toEqual(reasoning)
+    expect(stepsToWireMessages([{ ...persisted[0]!, status: 'failure' }])).toEqual([])
+    const messages = stepsToWireMessages([...persisted, step({ runId: run.id, seq: 2 })])
+    expect(messages[0]?.responseReasoning).toEqual(reasoning)
+    expect(messages[0]?.reasoningContent).toBeUndefined()
+    assertPairs(messages)
+  } finally {
+    store.close()
+  }
+})
+
 function step(over: Partial<Step>): Step {
   return {
     id: 'st' as never,

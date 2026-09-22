@@ -1,5 +1,5 @@
 /**
- * 工具名的 provider 约束。
+ * 工具名的 provider 约束、必填参数与唯一执行入口。
  *
  * 这条是实测撞出来的，而且只在**真实产物 + 真实 provider**下才会出现：
  * 装一个 id 叫 `demo.lines` 的插件（反向域名风格，清单文档自己推荐的写法），
@@ -56,6 +56,53 @@ describe('注册期就挡住 provider 不收的名字', () => {
 })
 
 describe('执行入口 fail-closed', () => {
+  test('缺少必填参数不会进入权限解析或工具函数，回执明确说明缺参', async () => {
+    const r = new ToolRegistry()
+    r.register({
+      ...spec('read_file'),
+      parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      actionKind: () => {
+        throw new Error('缺参不应进入动作解析')
+      },
+      fn: async () => {
+        throw new Error('缺参不应执行工具')
+      },
+    })
+    const out = await r.execute('read_file', {}, {} as ToolContext)
+    expect(out).toEqual({
+      status: 'failure',
+      executed: false,
+      message: '工具 read_file 缺少必填参数：path。请按工具定义传入 JSON 参数。',
+      errorKind: 'invalid_tool_arguments',
+    })
+  })
+
+  test('只校验注册 schema 的必填键，可选字段和合法无参工具照常执行', async () => {
+    const r = new ToolRegistry()
+    r.register({
+      ...spec('read_file'),
+      permissionEffect: 'internal_control',
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string' }, limit: { type: 'integer' } },
+        required: ['path'],
+      },
+      fn: async (args) => ({ status: 'success', message: 'ok', data: args }),
+    })
+    r.register({ ...spec('status'), permissionEffect: 'internal_control' })
+    expect(
+      await r.execute('read_file', { path: 'pelican-bike/index.html' }, {} as ToolContext),
+    ).toMatchObject({
+      status: 'success',
+      executed: true,
+      data: { path: 'pelican-bike/index.html' },
+    })
+    expect(await r.execute('status', {}, {} as ToolContext)).toMatchObject({
+      status: 'success',
+      executed: true,
+    })
+  })
+
   test('注册表未命中返回未执行的结构化失败', async () => {
     const out = await new ToolRegistry().execute('missing_tool', {}, {} as unknown as ToolContext)
     expect(out).toEqual({

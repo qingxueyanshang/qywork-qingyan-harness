@@ -498,6 +498,9 @@ describe('模型库枚举校验', () => {
     ).toEqual([])
     expect(diagnoseConfig(withEntry({ cacheRouting: 'x_grok_conv_id' }))).toEqual([])
     expect(diagnoseConfig(withEntry({ chatReasoningProtocol: 'deepseek_preserved' }))).toEqual([])
+    expect(diagnoseConfig(withEntry({ chatReasoningProtocol: 'preserved' }))).toEqual([])
+    expect(diagnoseConfig(withEntry({ reasoningEcho: 'reasoning_text_object' }))).toEqual([])
+    expect(diagnoseConfig(withEntry({ reasoningEcho: 'encrypted_content' }))).toEqual([])
   })
 
   /** 没填 = 照内置值，不是问题。 */
