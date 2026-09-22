@@ -1220,6 +1220,16 @@ export interface ProviderRequest {
   /** 模型可见请求主体的 UTF-8 字节数；不含凭证和传输头。 */
   requestBytes: number | null
   cacheRouteFingerprint: string | null
+  /**
+   * 本次输入实际完整携带的那一批工具图片，值是产出该批调用的请求 id。
+   *
+   * 与 `steps.provider_batch_id` 是两件事：那一列回答「谁产生了这批调用」，
+   * 这一列回答「哪一次请求把它的图真的发了出去」。模型不收图时图块会换成文字注记，
+   * 压缩收纳也只去图留文字，所以一次成功的请求推不出模型见过图。
+   *
+   * NULL = 存量行、本次没带图，或图片没有完整进入请求体。不发送给 provider。
+   */
+  inputImageBatchId: string | null
   sentAt: number | null
   /**
    * 响应头到达的时刻，由传输层在 `fetch` 返回时观察。

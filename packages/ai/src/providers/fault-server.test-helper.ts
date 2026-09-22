@@ -29,6 +29,8 @@ export type FaultMode =
   | 'eof_before_terminal'
   /** 首次在协议终态之前 FIN，第二次交完整工具调用，其后正常完成。 */
   | 'eof_before_terminal_then_tool'
+  /** 首次交完整工具调用，其后一律 503：工具跑成功了，带着结果的下一次请求被回绝。 */
+  | 'tool_then_unavailable'
   /** 200 响应头已到，之后一个字节都不再发。 */
   | 'headers_then_silence'
   /** 先发若干 SSE 注释行保活，间隔短于空闲上限，再正常完成。 */
@@ -450,6 +452,13 @@ function respond(protocol: Protocol, fault: FaultServer): Response {
       })
     case 'eof_before_terminal':
       return new Response(bodyOf(protocol, 'truncated'), { headers: SSE_HEADERS })
+    case 'tool_then_unavailable':
+      return fault.receipts.length === 1
+        ? new Response(bodyOf(protocol, 'tool'), { headers: SSE_HEADERS })
+        : new Response('{"error":{"message":"No available accounts"}}', {
+            status: 503,
+            headers: errorHeaders,
+          })
     case 'eof_before_terminal_then_tool': {
       const shape: Shape =
         fault.receipts.length === 1 ? 'truncated' : fault.receipts.length === 2 ? 'tool' : 'text'

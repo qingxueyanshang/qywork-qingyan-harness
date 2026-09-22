@@ -363,6 +363,8 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
           ...(reasoning ? { reasoningContent: reasoning } : {}),
           ...(responseReasoning ? { responseReasoning } : {}),
           _group: GROUP,
+          // 图片裁剪据此认出最近待续的那一批，活侧（`agent/loop.ts`）写同一个值。
+          _batch: batchId,
         },
         stamp,
       ),
@@ -372,7 +374,13 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
     for (const s of ordered) {
       messages.push(
         mark(
-          { role: 'tool', toolCallId: s.toolCallId ?? '', content: toolContent(s), _group: GROUP },
+          {
+            role: 'tool',
+            toolCallId: s.toolCallId ?? '',
+            content: toolContent(s),
+            _group: GROUP,
+            _batch: batchId,
+          },
           stamp,
         ),
       )
