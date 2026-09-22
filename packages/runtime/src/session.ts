@@ -21,7 +21,6 @@ import {
   type LoopPersistence,
   type PermissionVerdict,
   type PluginPort,
-  STREAM_IDLE_TIMEOUT_MS,
   type Summarizer,
   type ToolContextBase,
   ToolRegistry,
@@ -35,6 +34,7 @@ import {
   ProviderError,
   type ProviderProfile,
   type ProviderUsage,
+  STREAM_IDLE_TIMEOUT_MS,
   type TokenDensity,
   type WireToolCall,
 } from '@qywork/ai'
@@ -1166,9 +1166,9 @@ export interface SummarizerOptions {
  * 思考档位遵守用户选择：选了就原样继承，没选就省略字段、沿用模型默认。
  * 摘要任务不能为了提速在后台替用户降档，更不能发送关闭思考的命令。
  *
- * 超时判的是**流停了多久**（与主请求同一个 `STREAM_IDLE_TIMEOUT_MS`），不是总共
- * 跑了多久。不要换成总时长上限：正在逐字产出的慢摘要不是卡死，掐掉它等于把
- * 一次已经付过费的正常调用作废。
+ * 空闲上限交给传输层按字节判（`idleTimeoutMs`，与主请求同一个基准），这里不另起计时。
+ * 不要换成总时长上限：正在逐字产出的慢摘要不是卡死，掐掉它等于把一次已经付过费的
+ * 正常调用作废。
  *
  * 预算是 **token**，直接当 `max_tokens` 申报。以 `max_tokens` 收尾的那次返回
  * null：半份摘要比没有更坏——它看起来完整。
@@ -1183,21 +1183,6 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
         ? selectedEffort
         : undefined
     const willThink = effort !== undefined || adapter.spec.thinksByDefault
-
-    // 空闲判定要能中止底层请求，所以走自己的控制器，外部信号挂在它上面。
-    const ac = new AbortController()
-    const followOuter = () => ac.abort()
-    if (opts.signal?.aborted) ac.abort()
-    else opts.signal?.addEventListener('abort', followOuter, { once: true })
-    let stalled = false
-    let idle: ReturnType<typeof setTimeout> | undefined
-    const bump = () => {
-      clearTimeout(idle)
-      idle = setTimeout(() => {
-        stalled = true
-        ac.abort()
-      }, STREAM_IDLE_TIMEOUT_MS)
-    }
 
     let text = ''
     /** 摘要被输出上限截断。**截断的摘要一律不采用**——半份摘要看起来完整。 */
@@ -1225,17 +1210,15 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
       maxOutputTokens: willThink
         ? adapter.spec.maxOutputTokens
         : Math.min(adapter.spec.maxOutputTokens ?? budgetTokens, budgetTokens),
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       ...(effort ? { effort } : {}),
-      signal: ac.signal,
+      ...(opts.signal ? { signal: opts.signal } : {}),
     }
     const requestId = trace?.open(req)
     let sawEvent = false
     try {
-      // 首个事件之前就要起计时：没回过一个字节是最典型的卡死形状。
-      bump()
       if (trace && requestId) trace.sent(requestId)
       for await (const ev of adapter.stream(req)) {
-        bump()
         if (trace && requestId && !sawEvent && ev.type !== 'request_prepared') {
           sawEvent = true
           trace.firstEvent(requestId)
@@ -1257,29 +1240,12 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
         // 与主请求同一套终态：被拒是 rejected，其余（掐流、中断、断连）都是 uncertain。
         trace.settle(
           requestId,
-          !stalled && pe?.status !== undefined ? 'rejected' : 'uncertain',
+          pe?.status !== undefined ? 'rejected' : 'uncertain',
           pe?.usage ?? null,
-          stalled
-            ? 'stream_idle_timeout'
-            : ac.signal.aborted
-              ? null
-              : (pe?.code ?? 'internal_error'),
+          opts.signal?.aborted ? null : (pe?.code ?? 'internal_error'),
         )
       }
-      // 掐流与用户按停止在适配器那侧是同一个 AbortError，`stalled` 是唯一的区分依据。
-      if (stalled) {
-        throw new ProviderError({
-          code: 'stream_idle_timeout',
-          message: '模型响应中断',
-          provider: adapter.spec.provider,
-          timedOut: true,
-          cause: err,
-        })
-      }
       throw err
-    } finally {
-      clearTimeout(idle)
-      opts.signal?.removeEventListener('abort', followOuter)
     }
 
     if (trace && requestId) trace.settle(requestId, 'received', spent?.u ?? null, null, finish)

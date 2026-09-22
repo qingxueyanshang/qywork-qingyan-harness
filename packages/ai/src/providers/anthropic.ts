@@ -107,7 +107,7 @@ export class AnthropicAdapter implements LlmAdapter {
 
     try {
       const stream = this.client
-        .withOptions({ fetch: traceFetch(trace) })
+        .withOptions({ fetch: traceFetch(trace, 'anthropic_messages', req.idleTimeoutMs) })
         .messages.stream(
           body as unknown as Anthropic.MessageStreamParams,
           req.signal ? { signal: req.signal } : {},

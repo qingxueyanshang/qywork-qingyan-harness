@@ -12,7 +12,12 @@
  *   bun run scripts/overflow-recovery.ts
  */
 
-import { buildAdapter, classifyProviderError, ProviderError } from '@qywork/ai'
+import {
+  buildAdapter,
+  classifyProviderError,
+  ProviderError,
+  STREAM_IDLE_TIMEOUT_MS,
+} from '@qywork/ai'
 import { loadConfig, resolveModel } from '@qywork/runtime'
 
 let failures = 0
@@ -64,6 +69,7 @@ async function main(): Promise<number> {
       messages: [{ role: 'user', content: filler }],
       tools: [],
       maxOutputTokens: 16,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       signal: AbortSignal.timeout(180_000),
     })) {
       if (ev.type === 'done') stop = ev.stopReason

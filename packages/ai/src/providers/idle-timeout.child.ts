@@ -4,6 +4,7 @@
  * 结果按 `{ 协议: 'ok' | 错误文案 }` 以 JSON 写到 stdout。
  */
 import { buildAdapter } from '../factory.ts'
+import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ChatRequest, ProviderProfile } from '../types.ts'
 
 /** 静默时长。要跨过 Bun 空闲定时器的一轮（4 秒），再留半秒余量。 */
@@ -102,6 +103,7 @@ async function drain(kind: ProviderProfile['kind'], model: string): Promise<stri
       messages: [{ role: 'user', content: 'hi' }],
       tools: [],
       maxOutputTokens: 16,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       signal: new AbortController().signal,
     }
     for await (const _ of adapter.stream(req)) {

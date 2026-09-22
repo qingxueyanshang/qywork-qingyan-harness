@@ -23,7 +23,7 @@
  */
 
 import type { ProviderEvent, ProviderUsage, WireMessage, WireToolCall } from '@qywork/ai'
-import { buildAdapter, lookupModel } from '@qywork/ai'
+import { buildAdapter, lookupModel, STREAM_IDLE_TIMEOUT_MS } from '@qywork/ai'
 
 /**
  * 一个待测端点。
@@ -154,6 +154,7 @@ async function streamOnce(
     messages,
     tools: opts.tools ? [WEATHER] : [],
     maxOutputTokens: 2048,
+    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
     // `ThinkingRequest` 只有 adaptive / budget 两档，**没有关闭档**：
     // 不发这个字段就是不请求思考，`noThink` 因此只影响下面几条断言的期望值。
     ...(opts.cacheKey ? { cacheKey: opts.cacheKey } : {}),

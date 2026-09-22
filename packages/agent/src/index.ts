@@ -63,7 +63,6 @@ export {
   imagesOf,
   type LoopPersistence,
   omitImages,
-  STREAM_IDLE_TIMEOUT_MS,
   softLimit,
   toolResultContent,
 } from './loop.ts'

@@ -13,6 +13,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { unknownModel } from '../catalog.ts'
 import { ProviderError } from '../errors.ts'
+import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ChatRequest, ProviderEvent } from '../types.ts'
 import { OpenAICompatAdapter } from './openai-compat.ts'
 
@@ -63,6 +64,7 @@ function request(): ChatRequest {
     messages: [{ role: 'user', content: '帮我做一个 3D 赛车游戏' }],
     tools: [],
     maxOutputTokens: 8192,
+    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
   }
 }
 

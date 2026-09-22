@@ -9,6 +9,11 @@ import {
   lookupModel,
   ProviderError,
 } from '@qywork/ai'
+import {
+  type FaultMode,
+  type FaultServer,
+  startFaultServer,
+} from '@qywork/ai/fault-server.test-helper'
 import type {
   AgentEvent,
   ContextBreakdown,
@@ -769,127 +774,145 @@ describe('权限拒绝', () => {
  *
  * `stream_idle_timeout` 必须真的有人发。没有生产者的话，provider 侧抖一下 run
  * 就那么挂着，既不出错也不结束，界面持续转圈。
+ *
+ * 判定在传输层按字节走，所以这一组必须过真实 HTTP：假适配器不经过 `traceFetch`，
+ * 断言留在它上面一条也验不到。
  */
 describe('流卡死要有终态，不能无限期挂着', () => {
-  /**
-   * 响应头之后沉默，直到被 abort。`connectMs` 是响应头之前的等待：看门狗从响应头之后
-   * 起计，这一段不该被它掐。`text` 为真时先输出一个字再沉默，用来压住重发。
-   */
-  function stallingAdapter(
-    opts: { connectMs?: number; text?: boolean } = {},
-  ): LlmAdapter & { aborted: number } {
-    const self = {
-      kind: 'anthropic_messages' as const,
-      transmits: { effort: true },
-      spec: lookupModel('claude-opus-5', 'anthropic_messages'),
-      aborted: 0,
-      async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
-        yield { type: 'request_prepared', measuredInputTokens: 10 }
-        if (opts.connectMs) await new Promise((resolve) => setTimeout(resolve, opts.connectMs))
-        yield { type: 'response_started', headersAt: Date.now() }
-        if (opts.text) yield { type: 'text_delta', delta: '半' }
-        await new Promise<void>((resolve) => {
-          req.signal?.addEventListener('abort', () => {
-            self.aborted++
-            resolve()
-          })
-        })
-      },
-    }
-    return self
-  }
-
-  function loopWith(adapter: LlmAdapter) {
-    const registry = new ToolRegistry()
+  function loopAgainst(fault: FaultServer): AgentLoop {
     return new AgentLoop({
-      adapter,
-      registry,
+      adapter: buildAdapter({
+        kind: 'openai_responses',
+        model: 'deepseek-flash',
+        apiKey: 'sk-fault',
+        baseUrl: fault.openaiBaseUrl,
+      }),
+      registry: new ToolRegistry(),
       systemPrompt: 's',
-      makeToolContext: () => ({}) as ToolContext,
+      makeToolContext: baseCtx,
       persist: noopPersistence(),
       streamIdleTimeoutMs: 150,
     })
   }
 
-  test('响应头之前的等待不归看门狗，响应头之后的静默才判超时', async () => {
-    const events: string[] = []
-    let code: string | undefined
+  async function runAgainst(
+    mode: FaultMode,
+    runId: string,
+  ): Promise<{ types: string[]; receipts: number; code: string; message: string }> {
+    const fault = startFaultServer(mode)
+    const types: string[] = []
+    let code = ''
     let message = ''
-    // 响应头前等 300ms，超过 150ms 的空闲上限：这一段不该被掐，读数必须是「未收到后续数据」。
-    for await (const ev of loopWith(stallingAdapter({ connectMs: 300 })).run({
-      runId: 'rn_1' as never,
-      history: [],
-      signal: new AbortController().signal,
-    })) {
-      events.push(ev.type)
-      if (ev.type === 'run.error') {
-        code = ev.code
-        message = ev.message
+    try {
+      for await (const ev of loopAgainst(fault).run({
+        runId: runId as never,
+        history: [],
+        signal: new AbortController().signal,
+      })) {
+        types.push(ev.type)
+        if (ev.type === 'run.error') {
+          code = ev.code
+          message = ev.message
+        }
       }
+      return { types, receipts: fault.receipts.length, code, message }
+    } finally {
+      fault.stop()
     }
-    expect(code).toBe('stream_idle_timeout')
-    expect(message).toMatch(/未收到后续数据/)
-    expect(message).not.toMatch(/未收到响应/)
+  }
+
+  test('响应头之后的静默判超时，读数是「未收到后续数据」', async () => {
+    const result = await runAgainst('headers_then_silence', 'rn_1')
+    expect(result.code).toBe('stream_idle_timeout')
+    // 响应头到过，所以读数说的是「没有后续」，不是「没有响应」。
+    expect(result.message).toMatch(/未收到后续数据/)
+    expect(result.message).not.toMatch(/未收到响应/)
     // 关键：必须有终态。没有 run.finished 的话账本里留有一条永远 running 的记录。
-    expect(events).toContain('run.finished')
-  }, 10_000)
+    expect(result.types).toContain('run.finished')
+  }, 20_000)
 
   test('正文之前的静默原样重发，额度用尽才落终态', async () => {
-    const adapter = stallingAdapter()
-    let code: string | undefined
-    let message = ''
-    let retrying = 0
-    for await (const ev of loopWith(adapter).run({
-      runId: 'rn_2' as never,
-      history: [],
-      signal: new AbortController().signal,
-    })) {
-      if (ev.type === 'run.retrying') retrying++
-      if (ev.type === 'run.error') {
-        code = ev.code
-        message = ev.message
-      }
-    }
-    expect(code).toBe('stream_idle_timeout')
-    expect(retrying).toBe(MAX_RESENDS)
-    expect(message).toMatch(
+    const result = await runAgainst('headers_then_silence', 'rn_2')
+    expect(result.code).toBe('stream_idle_timeout')
+    expect(result.types.filter((t) => t === 'run.retrying')).toHaveLength(MAX_RESENDS)
+    expect(result.message).toMatch(
       new RegExp(`^模型响应中断，\\d+ 秒未收到后续数据，已重发 ${MAX_RESENDS} 次$`),
     )
-    // 每次尝试都要中止自己那条连接，不然被判死的流一直占着。
-    expect(adapter.aborted).toBe(MAX_RESENDS + 1)
-  }, 10_000)
+    // 每一次尝试都真的发出去过：服务端侧的接收次数等于首发加重发。
+    expect(result.receipts).toBe(MAX_RESENDS + 1)
+  }, 20_000)
 
-  test('超时会中止底层请求 —— 不然那条连接一直挂着', async () => {
-    // 正文已出：每次都带着正文续发，直到额度用尽；每一次尝试都要中止自己那条连接。
-    const adapter = stallingAdapter({ text: true })
-    for await (const _ of loopWith(adapter).run({
-      runId: 'rn_3' as never,
-      history: [],
-      signal: new AbortController().signal,
-    })) {
-      // 只是把流跑完
-    }
-    expect(adapter.aborted).toBe(MAX_RESENDS + 1)
-  }, 10_000)
+  test('保活行撑住的流不受影响 —— 超时计的是字节间隔不是总时长', async () => {
+    const result = await runAgainst('keepalive_then_ok', 'rn_4')
+    expect(result.types).not.toContain('run.error')
+    expect(result.types).toContain('run.finished')
+    expect(result.receipts).toBe(1)
+  }, 20_000)
+})
 
-  test('正常流不受影响 —— 超时计的是间隔不是总时长', async () => {
-    const events: string[] = []
-    for await (const ev of loopWith(fakeAdapter([null])).run({
-      runId: 'rn_4' as never,
-      history: [],
-      signal: new AbortController().signal,
-    })) {
-      events.push(ev.type)
+/**
+ * 传输层接管响应体期间按停止。
+ *
+ * 掐流与用户停止在适配器那侧都表现为流被置错，只有 run 的中止信号能区分它们；
+ * 归错了就成了「用户点了停止，界面却在自动重连」。
+ */
+describe('监督期间按停止，不报断流也不再发请求', () => {
+  async function stopDuring(
+    mode: FaultMode,
+    runId: string,
+  ): Promise<{ types: string[]; stopReason: string; receipts: number }> {
+    const fault = startFaultServer(mode)
+    const controller = new AbortController()
+    const loop = new AgentLoop({
+      adapter: buildAdapter({
+        kind: 'openai_responses',
+        model: 'deepseek-flash',
+        apiKey: 'sk-fault',
+        baseUrl: fault.openaiBaseUrl,
+      }),
+      registry: new ToolRegistry(),
+      systemPrompt: 's',
+      makeToolContext: baseCtx,
+      persist: noopPersistence(),
+      // 空闲上限放得远大于停止时刻：停下来的必须是用户，不是监督。
+      streamIdleTimeoutMs: 5_000,
+    })
+    const types: string[] = []
+    let stopReason = ''
+    const timer = setTimeout(() => controller.abort(), 300)
+    try {
+      for await (const ev of loop.run({
+        runId: runId as never,
+        history: [],
+        signal: controller.signal,
+      })) {
+        types.push(ev.type)
+        if (ev.type === 'run.finished') stopReason = ev.stopReason
+      }
+      return { types, stopReason, receipts: fault.receipts.length }
+    } finally {
+      clearTimeout(timer)
+      fault.stop()
     }
-    expect(events).not.toContain('run.error')
-    expect(events).toContain('run.finished')
-  })
+  }
+
+  for (const mode of ['hung_error_body', 'headers_then_silence'] as const) {
+    test(`${mode} 期间停止：run 以 user_interrupt 收尾，不再发请求`, async () => {
+      const result = await stopDuring(mode, `rn_stop_${mode}`)
+      expect(result.stopReason).toBe('user_interrupt')
+      expect(result.types).not.toContain('run.error')
+      expect(result.types).not.toContain('run.retrying')
+      expect(result.receipts).toBe(1)
+    }, 20_000)
+  }
 })
 
 describe('工具参数流贯穿适配器、空闲计时和界面事件', () => {
   const kinds = ['openai_responses', 'openai_chat_completions', 'anthropic_messages'] as const
   type Kind = (typeof kinds)[number]
   const encode = new TextEncoder()
+  /** 首个真实参数片段之前的保活轮数。总时长要长于被测的空闲上限。 */
+  const HEARTBEATS = 8
   const sse = (event: Record<string, unknown>) =>
     `${event.type ? `event: ${event.type}\n` : ''}data: ${JSON.stringify(event)}\n\n`
 
@@ -988,32 +1011,43 @@ describe('工具参数流贯穿适配器、空闲计时和界面事件', () => {
       fetch() {
         requests++
         const broken = requests === 1 && (mode === 'stall' || mode === 'heartbeat')
-        const tool =
-          requests === 1 || ((mode === 'stall' || mode === 'heartbeat') && requests === 2)
+        const tool = requests === 1 || (mode === 'stall' && requests === 2)
         const frames = wire(kind, tool)
         if (!tool)
           return new Response(frames.start + frames.delta('完成') + frames.end, {
             headers: { 'content-type': 'text/event-stream' },
           })
-        let index = 0
+        let opened = false
+        let sent = 0
+        let pings = 0
         let canceled = false
         return new Response(
           new ReadableStream<Uint8Array>({
             async pull(sink) {
-              if (index > 0) await Bun.sleep(60)
+              if (opened) await Bun.sleep(60)
               if (canceled) return
-              if (index === 0) sink.enqueue(encode.encode(frames.start))
-              else if (broken && (mode === 'heartbeat' || index > 1)) {
-                // 空参数与 SSE 保活都不是生成进展，不能让死请求无限续命。
-                sink.enqueue(encode.encode(`: keep-alive\n\n${frames.delta('')}`))
-              } else if (index <= parts.length)
-                sink.enqueue(encode.encode(frames.delta(parts[index - 1]!)))
-              else {
-                parametersComplete = true
-                sink.enqueue(encode.encode(frames.end))
-                sink.close()
+              if (!opened) {
+                opened = true
+                sink.enqueue(encode.encode(frames.start))
+                return
               }
-              index++
+              // 空闲判定在传输层按字节走，所以「卡住」只能写成一个字节都不再发：
+              // 保活行与空参数片段都是字节，发出去就不算静默。
+              if (broken && mode === 'stall') return
+              if (broken && mode === 'heartbeat' && pings < HEARTBEATS) {
+                pings++
+                // 保活与空参数撑住连接，但都不是生成进展：界面不得因此报进度。
+                sink.enqueue(encode.encode(`: keep-alive\n\n${frames.delta('')}`))
+                return
+              }
+              if (sent < parts.length) {
+                sink.enqueue(encode.encode(frames.delta(parts[sent]!)))
+                sent++
+                return
+              }
+              parametersComplete = true
+              sink.enqueue(encode.encode(frames.end))
+              sink.close()
             },
             cancel() {
               canceled = true
@@ -1107,12 +1141,15 @@ describe('工具参数流贯穿适配器、空闲计时和界面事件', () => {
     })
   }
 
-  test('首内容之前只有保活，不伪造生成进度，超时走原有重连', async () => {
+  test('首内容之前只有保活，不伪造生成进度也不被误杀', async () => {
     const result = await exercise('openai_responses', 'heartbeat')
-    const retry = result.events.findIndex((ev) => ev.type === 'run.retrying')
-    expect(retry).toBeGreaterThan(-1)
-    expect(result.events.slice(0, retry).some((ev) => ev.type === 'tool.generating')).toBe(false)
+    // 保活与空参数片段撑住了连接，所以这一次请求不该被判断流。
+    expect(result.events.some((ev) => ev.type === 'run.retrying')).toBe(false)
+    expect(result.events.some((ev) => ev.type === 'run.error')).toBe(false)
+    // 进度事件的条数等于真实参数片段数：保活与空片段一条都没算进去。
+    expect(result.events.filter((ev) => ev.type === 'tool.generating')).toHaveLength(8)
     expect(result.executions).toBe(1)
+    expect(result.earlyExecution).toBe(false)
   })
 
   test('参数生成中停止，不执行工具也不触发自动重连', async () => {

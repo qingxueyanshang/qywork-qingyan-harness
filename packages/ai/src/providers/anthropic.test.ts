@@ -7,6 +7,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { EffortLevel } from '@qywork/core'
 import { lookupModel } from '../catalog.ts'
+import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ProviderEvent, ProviderProfile, WireMessage } from '../types.ts'
 import { AnthropicAdapter } from './anthropic.ts'
 
@@ -85,6 +86,7 @@ async function send(
     messages,
     tools: [],
     maxOutputTokens: 64,
+    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
     ...(effort ? { effort } : {}),
     signal: new AbortController().signal,
   })) {

@@ -22,6 +22,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { builtinCatalog, lookupModel } from '../catalog.ts'
 import { ProviderError } from '../errors.ts'
 import { buildAdapter } from '../factory.ts'
+import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import { PROVIDER_HTTP, type ProviderEvent, type ProviderUsage } from '../types.ts'
 import { OpenAIResponsesAdapter } from './openai-responses.ts'
 
@@ -272,6 +273,7 @@ async function run(
     messages: [{ role: 'user', content: '你好' }],
     tools: [],
     maxOutputTokens: 1024,
+    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
     ...over,
   })) {
     events.push(ev)
@@ -380,6 +382,7 @@ test('MiMo Responses 回传完整历史思考、标准工具 JSON 及官方输�
     effort: 'high',
     cacheKey: 'mimo-session',
     maxOutputTokens: 200_000,
+    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
     messages: [
       { role: 'user', content: '开始' },
       { role: 'assistant', content: '计划', reasoningContent: '第一轮思考' },
@@ -469,6 +472,7 @@ test('GPT-6 Astra 内置规格通过 Responses 发送工具、输出上限与推
       messages: [{ role: 'user', content: '读取文件' }],
       tools: [{ name: 'read_file', description: '读取文件', parameters: { type: 'object' } }],
       maxOutputTokens: 200_000,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       cacheKey: 'astra-session',
       ...(effort ? { effort } : {}),
     })) {

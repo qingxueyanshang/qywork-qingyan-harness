@@ -12,7 +12,12 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
-import { classifyProviderError, DEFAULT_DENSITY, lookupModel } from '@qywork/ai'
+import {
+  classifyProviderError,
+  DEFAULT_DENSITY,
+  lookupModel,
+  STREAM_IDLE_TIMEOUT_MS,
+} from '@qywork/ai'
 import type { AgentEvent, RunUsage } from '@qywork/core'
 import {
   createConversation,
@@ -1235,6 +1240,7 @@ function summarizingCompaction(outcome: CompactionOutcome) {
           messages: [{ role: 'user', content: '摘要提示词' }],
           tools: [],
           maxOutputTokens: null,
+          idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
         })
         trace.sent(id)
         trace.firstEvent(id)

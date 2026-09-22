@@ -3,6 +3,7 @@ import { EFFORT_ORDER, type EffortLevel, type ProviderKind, type ThinkingMode } 
 import { declaredEffortLevels, effortIsTransmittable, lookupModel } from './catalog.ts'
 import { ProviderError } from './errors.ts'
 import { buildAdapter } from './factory.ts'
+import { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 import type { ChatRequest, ProviderProfile, TransportCapabilities } from './types.ts'
 
 const LEVELS = EFFORT_ORDER.filter((level) => level !== 'minimal')
@@ -65,6 +66,7 @@ async function attempt(
       messages: [{ role: 'user', content: 'hi' }],
       tools: [],
       maxOutputTokens: 16,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       ...(effort ? { effort } : {}),
       ...(signal ? { signal } : {}),
     }

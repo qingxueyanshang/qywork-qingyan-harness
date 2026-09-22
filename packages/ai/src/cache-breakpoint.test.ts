@@ -16,6 +16,7 @@
 import { describe, expect, test } from 'bun:test'
 import { buildAdapter } from './factory.ts'
 import type { AnthropicOutMessage } from './providers/anthropic.ts'
+import { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 import type { ChatRequest, WireMessage } from './types.ts'
 
 const profile = { kind: 'anthropic_messages' as const, apiKey: 'sk-x', model: 'claude-opus-5' }
@@ -30,6 +31,7 @@ function req(messages: WireMessage[]): ChatRequest {
     messages,
     tools: [],
     maxOutputTokens: 1024,
+    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
   }
 }
 
@@ -177,6 +179,7 @@ describe('兼容协议上这个字段是惰性的', () => {
       messages: [{ role: 'user', content: long(8000) }],
       tools: [],
       maxOutputTokens: 1024,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
     }
     const marked: ChatRequest = {
       ...base,
