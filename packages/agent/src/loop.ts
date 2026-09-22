@@ -57,7 +57,6 @@ import {
   emptyOmitted,
   envelopeHeadTokens,
   log,
-  newBatchId,
   reconcileBreakdown,
 } from '@qywork/core'
 import type { CompactionOutcome, SummaryTrace } from './compaction.ts'
@@ -212,7 +211,11 @@ export interface LoopPersistence {
     seq: number,
     input: { text: string; attachments?: Attachment[]; origin?: 'subagent' | 'workflow' },
   ): string
-  openTextStep(runId: RunId, seq: number): string
+  /**
+   * `batchId` 是产生这段正文的那次请求的 id，落进 `provider_batch_id`。
+   * 工具行与同一次生成的思考行取同一个值——投影靠它认出生成边界。
+   */
+  openTextStep(runId: RunId, seq: number, batchId: string): string
   /**
    * 思考正文的行。**与文本行同构**：流到就开，逐段追加，`appendText` 共用。
    *
@@ -223,7 +226,12 @@ export interface LoopPersistence {
    * 回传 `reasoning_content`，否则后续轮次 400；历史从 steps 投影回去时缺这一段
    * 就是必然的 400。
    */
-  openThinkingStep(runId: RunId, seq: number, reasoning?: ResponseReasoning): string
+  openThinkingStep(
+    runId: RunId,
+    seq: number,
+    batchId: string,
+    reasoning?: ResponseReasoning,
+  ): string
   /**
    * 轮内自动重发前，把失败那次留下的思考 step 落成失败终态。
    *
@@ -953,7 +961,14 @@ export class AgentLoop {
           }
         }
 
-        const batchId = newBatchId()
+        /**
+         * 本次尝试的请求账行 id。**它同时是这次生成的批次 id**：正文、思考与工具行
+         * 都落这一个值，投影据此认出「这几条是同一次响应产出的」。
+         *
+         * 另起一个自生成的批次 id 会让批次与请求成为两本账，而生成边界正是靠
+         * 「哪一次请求产出的」定义的。重发换一行账，批次跟着换。
+         */
+        let requestId = ''
 
         /**
          * 当前正在写的那条 step，**跟通道切换开闭，不跟一轮闩死**。
@@ -976,8 +991,8 @@ export class AgentLoop {
           if (open?.kind !== kind) {
             const id =
               kind === 'text'
-                ? persist.openTextStep(input.runId, nextSeq())
-                : persist.openThinkingStep(input.runId, nextSeq())
+                ? persist.openTextStep(input.runId, nextSeq(), requestId)
+                : persist.openThinkingStep(input.runId, nextSeq(), requestId)
             if (kind === 'thinking') attemptThinking.push(id as StepId)
             open = { kind, id }
           }
@@ -1177,7 +1192,6 @@ export class AgentLoop {
          * 「一个字节都没回来」。网络失败因此**全部落在下面这个 `for await` 里**，
          * 不在 `openStream` 里。
          */
-        let requestId = ''
         /** 本轮已经开过几行账。`uq_provider_run_turn` 的第三段取的就是它。 */
         let sendIndex = 0
         /**
@@ -1254,7 +1268,12 @@ export class AgentLoop {
               switch (ev.type) {
                 case 'response_reasoning': {
                   responseReasoning = ev.reasoning
-                  const id = persist.openThinkingStep(input.runId, nextSeq(), ev.reasoning)
+                  const id = persist.openThinkingStep(
+                    input.runId,
+                    nextSeq(),
+                    requestId,
+                    ev.reasoning,
+                  )
                   attemptThinking.push(id as StepId)
                   open = null
                   break
@@ -1967,7 +1986,7 @@ export class AgentLoop {
                 input.runId,
                 nextSeq(),
                 call,
-                batchId,
+                requestId,
                 callIndex,
                 waveIndex,
                 action,
@@ -1984,7 +2003,7 @@ export class AgentLoop {
               stepId: r.stepId as never,
               toolCallId: r.call.id,
               toolName: r.call.name,
-              batchId,
+              batchId: requestId,
               callIndex: r.callIndex,
               waveIndex,
               args: r.call.arguments,

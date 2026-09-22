@@ -27,6 +27,8 @@ export type FaultMode =
   | 'inline_error'
   /** 用量已回报，流在协议终态之前 FIN。 */
   | 'eof_before_terminal'
+  /** 首次在协议终态之前 FIN，第二次交完整工具调用，其后正常完成。 */
+  | 'eof_before_terminal_then_tool'
   /** 200 响应头已到，之后一个字节都不再发。 */
   | 'headers_then_silence'
   /** 先发若干 SSE 注释行保活，间隔短于空闲上限，再正常完成。 */
@@ -43,6 +45,13 @@ export interface FaultServer {
   openaiBaseUrl: string
   /** 每次收到请求的时刻，按到达顺序追加。 */
   receipts: number[]
+  /**
+   * 每次收到的请求正文原文，与 `receipts` 同下标。
+   *
+   * 留原文不留解析结果：三条协议的请求体结构各不相同，解析成统一形状就是在夹具里
+   * 再写一份协议知识，而断言要问的正是「线上那份字节里有没有它」。
+   */
+  bodies: string[]
   mode: FaultMode
   /**
    * `retry_after_then_ok` 与 `hung_error_body` 的 503 响应头里带的 Retry-After 秒数。
@@ -441,6 +450,11 @@ function respond(protocol: Protocol, fault: FaultServer): Response {
       })
     case 'eof_before_terminal':
       return new Response(bodyOf(protocol, 'truncated'), { headers: SSE_HEADERS })
+    case 'eof_before_terminal_then_tool': {
+      const shape: Shape =
+        fault.receipts.length === 1 ? 'truncated' : fault.receipts.length === 2 ? 'tool' : 'text'
+      return new Response(bodyOf(protocol, shape), { headers: SSE_HEADERS })
+    }
     case 'headers_then_silence':
       // 单个换行只为把响应头冲出去：它不构成任何 SSE 事件，之后一个字节都不再来。
       return endless('\n', 200, SSE_HEADERS, closed)
@@ -458,6 +472,7 @@ export function startFaultServer(mode: FaultMode): FaultServer {
     anthropicBaseUrl: '',
     openaiBaseUrl: '',
     receipts: [],
+    bodies: [],
     mode,
     retryAfterSeconds: 1,
     inlineError: DEFAULT_INLINE_ERROR,
@@ -470,7 +485,7 @@ export function startFaultServer(mode: FaultMode): FaultServer {
       fault.receipts.push(Date.now())
       const protocol = protocolOf(new URL(req.url).pathname)
       // 请求体必须读完，否则未消费的正文会拖住这一条连接的关闭。
-      await req.text()
+      fault.bodies.push(await req.text())
       return respond(protocol, fault)
     },
   })

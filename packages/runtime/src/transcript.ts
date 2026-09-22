@@ -193,6 +193,10 @@ export interface StepUnit {
  * tool_action 属于同一个 assistant 轮，合成一条带 `toolCalls` 的消息，
  * 随后每个调用一条 `role:'tool'`；它们与被并进来的前置文本共用一个戳。
  *
+ * `providerBatchId` 是产出该 step 的那次请求的 id，因此**相邻两条归属不同即为
+ * 生成边界**，前面攒的正文在那里收成一条独立的 assistant 消息。断流后带上下文
+ * 续发的那一段（活侧是 `[A]`、`[B+工具]` 两条）靠这一条切回原形。
+ *
  * **戳必须与 `agent/loop.ts` 里活的 transcript 逐字相同**：同一个单元在
  * 「本 run 活跃时」与「跨 run 投影回历史后」定位不一致的话，压缩会按两条不同的
  * 线去切同一段内容。
@@ -240,9 +244,26 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
     pendingText = ''
   }
 
+  /**
+   * 上一条生成 step（text / thinking / tool_action）的 `providerBatchId`。
+   *
+   * 判据只认**相邻两条都非空且不同**：null 表示归属未记录，与任何值相邻都不切分。
+   * 放宽成「与上一个非空值比较」会把旧行的 text（null）从它后面那批旧工具调用上
+   * 拆开，而那两段在活侧本来是同一条 assistant 消息。
+   *
+   * user 与 compaction step 不带归属，也不参与相邻判定：它们夹在两次生成之间时，
+   * 生成边界仍然在。
+   */
+  let previousBatchId: string | null = null
+
   let i = 0
   while (i < steps.length) {
     const step = steps[i]!
+    if (step.kind === 'text' || step.kind === 'thinking' || step.kind === 'tool_action') {
+      const batch = step.providerBatchId
+      if (previousBatchId && batch && batch !== previousBatchId) flushText()
+      previousBatchId = batch
+    }
     // 密文快照在响应收尾落盘；其后的文本或思考属于下一次生成，不能覆盖上一轮。
     if (pendingResponseReasoning && (step.kind === 'text' || step.kind === 'thinking')) flushText()
     if (step.kind === 'thinking') {
