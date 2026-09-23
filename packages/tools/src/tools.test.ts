@@ -1,5 +1,14 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from 'node:fs/promises'
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
@@ -363,13 +372,67 @@ describe('文件工具', () => {
     const root = await workspace()
     const out = await registry().execute(
       'write_file',
-      { path: 'a.txt', content: 'clobbered' },
+      { path: 'a.txt', mode: 'overwrite', content: 'clobbered' },
       ctx(root),
     )
     expect(out.status).toBe('failure')
     expect(out.errorKind).toBe('stale_write')
+    expect(out.message).toContain('read_file')
+    expect(out.message).not.toContain('list_dir')
     // 磁盘内容必须原封不动。
     expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello\nworld\n')
+  })
+
+  test.each(['.', 'nested output'])('重名后按回执列目录再新建：%s', async (parent) => {
+    const root = await workspace()
+    const r = registry()
+    const c = ctx(root)
+    const target = (name: string) => (parent === '.' ? name : `${parent}/${name}`)
+    await mkdir(join(root, parent), { recursive: true })
+    await writeFile(join(root, parent, 'output.html'), 'original page', 'utf8')
+    await writeFile(join(root, parent, 'output-2.html'), 'another page', 'utf8')
+
+    const conflict = await r.execute(
+      'write_file',
+      { path: target('output.html'), mode: 'create', content: 'new page' },
+      c,
+    )
+    expect(conflict.status).toBe('failure')
+    expect(conflict.errorKind).toBe('file_exists')
+    expect(conflict.executed).toBe(false)
+    expect(conflict.message).not.toContain('read_file')
+    const directoryArgs = conflict.message.match(/list_dir (\{[^\n]+?\}) /)?.[1]
+    expect(directoryArgs).toBeDefined()
+    expect(JSON.parse(directoryArgs!)).toEqual({ path: parent })
+    const listed = await r.execute('list_dir', JSON.parse(directoryArgs!), c)
+    expect(listed.status).toBe('success')
+    const entries = listed.data?.entries as string[]
+    expect(entries).toContain('output.html')
+    expect(entries).toContain('output-2.html')
+    expect(JSON.stringify(listed)).not.toContain('original page')
+    expect(JSON.stringify(listed)).not.toContain('another page')
+
+    // 列目录只查询名称，不授予覆盖已有文件的读取凭据。
+    const overwrite = await r.execute(
+      'write_file',
+      { path: target('output.html'), mode: 'overwrite', content: 'new page' },
+      c,
+    )
+    expect(overwrite.status).toBe('failure')
+    expect(overwrite.errorKind).toBe('stale_write')
+    const available = ['output.html', 'output-2.html', 'output-3.html'].find(
+      (name) => !entries.includes(name),
+    )!
+    const created = await r.execute(
+      'write_file',
+      { path: target(available), mode: 'create', content: 'new page' },
+      c,
+    )
+    expect(created.status).toBe('success')
+    expect(created.fileChanges?.[0]?.changeType).toBe('created')
+    expect(await readFile(join(root, parent, available), 'utf8')).toBe('new page')
+    expect(await readFile(join(root, parent, 'output.html'), 'utf8')).toBe('original page')
+    expect(await readFile(join(root, parent, 'output-2.html'), 'utf8')).toBe('another page')
   })
 
   test('读过之后允许覆盖，并报告行级增删', async () => {
@@ -377,7 +440,11 @@ describe('文件工具', () => {
     const r = registry()
     const c = ctx(root)
     await r.execute('read_file', { path: 'a.txt' }, c)
-    const out = await r.execute('write_file', { path: 'a.txt', content: 'hello\nthere\n' }, c)
+    const out = await r.execute(
+      'write_file',
+      { path: 'a.txt', mode: 'overwrite', content: 'hello\nthere\n' },
+      c,
+    )
     expect(out.status).toBe('success')
     expect(out.fileChanges?.[0]?.changeType).toBe('modified')
     expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello\nthere\n')
@@ -387,11 +454,219 @@ describe('文件工具', () => {
     const root = await workspace()
     const out = await registry().execute(
       'write_file',
-      { path: 'nested/deep/new.txt', content: 'x' },
+      { path: 'nested/deep/new.txt', mode: 'create', content: 'x' },
       ctx(root),
     )
     expect(out.status).toBe('success')
     expect(out.fileChanges?.[0]?.changeType).toBe('created')
+  })
+
+  test('读过的文件在新建模式下仍然报重名，不能覆盖', async () => {
+    const root = await workspace()
+    const r = registry()
+    const c = ctx(root)
+    await r.execute('read_file', { path: 'a.txt' }, c)
+    const out = await r.execute('write_file', { path: 'a.txt', mode: 'create', content: 'new' }, c)
+    expect(out.errorKind).toBe('file_exists')
+    expect(out.message).toContain('list_dir')
+    expect(out.message).not.toContain('read_file')
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello\nworld\n')
+  })
+
+  test('允许自由命名时复用内容新建，回执和读取凭据指向实际文件', async () => {
+    const root = await workspace()
+    const r = registry()
+    const c = ctx(root)
+    await mkdir(join(root, '作品'), { recursive: true })
+    await writeFile(join(root, '作品', 'page.html'), 'existing')
+    await writeFile(join(root, '作品', 'page-2.html'), 'another')
+    await r.execute('read_file', { path: '作品/page.html' }, c)
+    const content = '<h1>新作品</h1>\n'.repeat(1000)
+    const out = await r.execute(
+      'write_file',
+      {
+        path: '作品/page.html',
+        mode: 'create',
+        on_conflict: 'rename',
+        content,
+      },
+      c,
+    )
+    expect(out.status).toBe('success')
+    expect(out.data?.path).toBe('作品/page-3.html')
+    expect(out.fileChanges?.[0]?.path).toBe(String(out.data?.path))
+    expect(out.fileChanges?.[0]?.changeType).toBe('created')
+    expect(out.message).toContain('作品/page-3.html')
+    expect(await readFile(join(root, '作品', 'page-3.html'), 'utf8')).toBe(content)
+    expect(await readFile(join(root, '作品', 'page.html'), 'utf8')).toBe('existing')
+    expect(await readFile(join(root, '作品', 'page-2.html'), 'utf8')).toBe('another')
+    const edited = await r.execute(
+      'edit_file',
+      {
+        path: out.data?.path,
+        old_string: '新作品',
+        new_string: '调整标题',
+        replace_all: true,
+      },
+      c,
+    )
+    expect(edited.status).toBe('success')
+  })
+
+  test('并发新建同名文件在本地选名，所有内容分别完整落盘', async () => {
+    const root = await workspace()
+    const r = registry()
+    const contents = Array.from({ length: 12 }, (_, i) => `作品 ${i}\n`.repeat(1000))
+    const outcomes = await Promise.all(
+      contents.map((content) =>
+        r.execute(
+          'write_file',
+          {
+            path: 'page.html',
+            mode: 'create',
+            on_conflict: 'rename',
+            content,
+          },
+          ctx(root),
+        ),
+      ),
+    )
+    const paths = outcomes.map((out) => String(out.data?.path))
+    expect(new Set(paths).size).toBe(contents.length)
+    expect(paths).toContain('page.html')
+    expect(paths).toContain('page-12.html')
+    for (const [i, out] of outcomes.entries()) {
+      expect(out.status).toBe('success')
+      expect(out.fileChanges?.[0]?.changeType).toBe('created')
+      expect(await readFile(join(root, paths[i]!), 'utf8')).toBe(contents[i]!)
+    }
+  })
+
+  test('固定名称并发新建只有一个成功，其余报重名且不覆盖', async () => {
+    const root = await workspace()
+    const r = registry()
+    const contents = ['first', 'second', 'third']
+    const outcomes = await Promise.all(
+      contents.map((content) =>
+        r.execute(
+          'write_file',
+          {
+            path: 'fixed.txt',
+            mode: 'create',
+            content,
+          },
+          ctx(root),
+        ),
+      ),
+    )
+    expect(outcomes.filter((out) => out.status === 'success')).toHaveLength(1)
+    for (const out of outcomes.filter((out) => out.status !== 'success')) {
+      expect(out.errorKind).toBe('file_exists')
+      expect(out.executed).toBe(false)
+    }
+    const winner = outcomes.findIndex((out) => out.status === 'success')
+    expect(await readFile(join(root, 'fixed.txt'), 'utf8')).toBe(contents[winner]!)
+  })
+
+  test.each(['error', 'rename'])(
+    '悬挂软链占用文件名，新建不沿链接落盘：%s',
+    async (on_conflict) => {
+      const root = await workspace()
+      const target = join(root, 'missing-target.html')
+      await symlink(target, join(root, 'page.html'), 'file')
+      const out = await registry().execute(
+        'write_file',
+        {
+          path: 'page.html',
+          mode: 'create',
+          on_conflict,
+          content: 'new page',
+        },
+        ctx(root),
+      )
+      if (on_conflict === 'error') {
+        expect(out.errorKind).toBe('file_exists')
+        expect(out.executed).toBe(false)
+        expect(out.message).toContain('list_dir')
+      } else {
+        expect(out.status).toBe('success')
+        expect(out.data?.path).toBe('page-2.html')
+        expect(await readFile(join(root, 'page-2.html'), 'utf8')).toBe('new page')
+      }
+      expect(await stat(target).catch(() => null)).toBeNull()
+      expect((await lstat(join(root, 'page.html'))).isSymbolicLink()).toBe(true)
+    },
+  )
+
+  test('新建仍拒绝通过父目录软链越界', async () => {
+    const root = await workspace()
+    const outside = await mkdtemp(join(tmpdir(), 'qywork-create-outside-'))
+    await symlink(outside, join(root, 'linked'), 'junction')
+    const out = await registry().execute(
+      'write_file',
+      {
+        path: 'linked/page.html',
+        mode: 'create',
+        on_conflict: 'rename',
+        content: 'new page',
+      },
+      ctx(root),
+    )
+    expect(out.errorKind).toBe('path_out_of_workspace')
+    expect(await stat(join(outside, 'page.html')).catch(() => null)).toBeNull()
+  })
+
+  test('覆盖模式不新建；读后的内容改变仍然拒绝覆盖', async () => {
+    const root = await workspace()
+    const r = registry()
+    const c = ctx(root)
+    const missing = await r.execute(
+      'write_file',
+      {
+        path: 'missing/new.txt',
+        mode: 'overwrite',
+        content: 'new',
+      },
+      c,
+    )
+    expect(missing.errorKind).toBe('path_not_found')
+    expect(await stat(join(root, 'missing')).catch(() => null)).toBeNull()
+    await r.execute('read_file', { path: 'a.txt' }, c)
+    await writeFile(join(root, 'a.txt'), 'changed externally')
+    const stale = await r.execute(
+      'write_file',
+      {
+        path: 'a.txt',
+        mode: 'overwrite',
+        content: 'clobbered',
+      },
+      c,
+    )
+    expect(stale.errorKind).toBe('stale_write')
+    expect(stale.message).toContain('read_file')
+    expect(stale.message).not.toContain('list_dir')
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('changed externally')
+  })
+
+  test.each([
+    {},
+    { mode: 'unknown' },
+    { mode: 'create', on_conflict: 'unknown' },
+    { mode: 'overwrite', on_conflict: 'rename' },
+  ])('没有明确的合法写入语义时不落盘：%j', async (args) => {
+    const root = await workspace()
+    const out = await registry().execute(
+      'write_file',
+      {
+        path: 'new.txt',
+        content: 'new',
+        ...args,
+      },
+      ctx(root),
+    )
+    expect(out.errorKind).toBe('invalid_tool_arguments')
+    expect(out.executed).toBe(false)
+    expect(await stat(join(root, 'new.txt')).catch(() => null)).toBeNull()
   })
 
   /**
@@ -406,7 +681,11 @@ describe('文件工具', () => {
       const c = ctx(root)
       await writeFile(join(root, 'f.txt'), before, 'utf8')
       await r.execute('read_file', { path: 'f.txt' }, c)
-      const out = await r.execute('write_file', { path: 'f.txt', content: after }, c)
+      const out = await r.execute(
+        'write_file',
+        { path: 'f.txt', mode: 'overwrite', content: after },
+        c,
+      )
       expect(out.status).toBe('success')
       return out.fileChanges?.[0]
     }
@@ -557,7 +836,7 @@ describe('权限闸', () => {
     const root = await workspace()
     const out = await registry().execute(
       'write_file',
-      { path: 'blocked.txt', content: 'x' },
+      { path: 'blocked.txt', mode: 'create', content: 'x' },
       ctx(root, false),
     )
     expect(out.executed).toBe(false)
@@ -1384,7 +1663,7 @@ describe('read_file 认图片', () => {
     const r = registry()
     const c = ctx(root)
     await r.execute('read_file', { path: 'c.png' }, c)
-    const w = await r.execute('write_file', { path: 'c.png', content: 'x' }, c)
+    const w = await r.execute('write_file', { path: 'c.png', mode: 'overwrite', content: 'x' }, c)
     expect(w.status).toBe('success')
   })
 })

@@ -3,15 +3,15 @@
  *
  * 两条贯穿全部写操作的规则：
  *
- * 1. **写前必须读过。** edit/write 对已存在文件要求调用方先读过且内容未变。
+ * 1. **新建不覆盖；修改前必须读过。** edit/write 的修改模式要求先读过且内容未变。
  *    这挡住的是「模型基于陈旧内容覆盖掉用户刚做的修改」——最贵的一类事故，
  *    而且用户往往到很久以后才发现。
  * 2. **edit 的 old_string 必须唯一命中。** 命中 0 次或多次都是失败，不猜第一个。
  *    猜错的那次会静默改错地方。
  */
 
-import { mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { lstat, mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { dirname, join, parse } from 'node:path'
 import { chargeBatchBudget, deliveredTokens, type ToolContext, type ToolSpec } from '@qywork/agent'
 import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
@@ -382,18 +382,31 @@ const EMPTY_SECRETS = { values: [] }
 export const writeFileTool: ToolSpec = {
   name: 'write_file',
   description:
-    '把完整内容写入一个文件，覆盖原有内容。用于新建文件，或改动幅度大到不适合 edit_file 的重写。' +
-    '覆盖已存在的文件前必须先 read_file——内容自你读过之后被改动过会拒绝写入。',
+    '整份写入文件，必须用 mode 明确区分新建与覆盖修改。' +
+    'create 只新建，绝不覆盖已有文件；普通重名会提示先 list_dir 核对目录。' +
+    '用户要新作品且没有指定固定文件名时，使用 create 和 on_conflict=rename：工具在本地自动选空闲名称，直接写入本次 content，无需重新生成。后续操作使用回执里的实际 path。' +
+    'overwrite 只修改已有文件，必须先 read_file 且内容未变；局部修改优先 edit_file。',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: '工作区相对路径' },
+      mode: {
+        type: 'string',
+        enum: ['create', 'overwrite'],
+        description: 'create 新建独立文件；overwrite 覆盖修改已有文件，必须先读取。',
+      },
+      on_conflict: {
+        type: 'string',
+        enum: ['error', 'rename'],
+        description:
+          '新建重名时的处理，默认 error。仅当文件名可以自由选择时用 rename，自动追加 -2、-3 等后缀；固定文件名使用 error。覆盖修改不能使用 rename。',
+      },
       content: { type: 'string', description: '文件完整内容' },
     },
-    required: ['path', 'content'],
+    required: ['path', 'mode', 'content'],
     additionalProperties: false,
   },
-  actionKind: 'write',
+  actionKind: (args) => (args.mode === 'overwrite' ? 'edit' : 'write'),
   objectLabel: '文件',
   category: 'files',
   facet: '读写',
@@ -401,35 +414,91 @@ export const writeFileTool: ToolSpec = {
   targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
   permissionEffect: 'write',
   async fn(args, ctx) {
-    const abs = await resolveWritablePath(rootsOf(ctx), String(args.path))
+    const mode = args.mode
+    const conflict = args.on_conflict ?? 'error'
+    if (
+      (mode !== 'create' && mode !== 'overwrite') ||
+      (conflict !== 'error' && conflict !== 'rename') ||
+      (mode === 'overwrite' && conflict === 'rename')
+    ) {
+      return {
+        status: 'failure',
+        executed: false,
+        message:
+          'mode 必须为 create 或 overwrite；on_conflict 必须为 error 或 rename，rename 仅用于允许自由命名的新建文件。',
+        errorKind: 'invalid_tool_arguments',
+      }
+    }
+    const requested = String(args.path)
     const content = String(args.content)
-
-    const existing = await readFile(abs, 'utf8').catch(() => null)
-    if (existing !== null) {
+    let abs: string
+    let existing: string | null = null
+    let bytes = content
+    if (mode === 'create') {
+      const { dir, name, ext } = parse(requested)
+      for (let suffix = 1; ; suffix++) {
+        ctx.signal.throwIfAborted()
+        const candidate = suffix === 1 ? requested : join(dir, `${name}-${suffix}${ext}`)
+        abs = await resolveWritablePath(rootsOf(ctx), candidate, { followFinalSymlink: false })
+        await mkdir(dirname(abs), { recursive: true })
+        // 悬挂软链同样占用名称，不能只依赖 wx 对目标存在性的检查。
+        const occupied = await lstat(abs).then(
+          () => true,
+          (err: NodeJS.ErrnoException) => {
+            if (err.code === 'ENOENT') return false
+            throw err
+          },
+        )
+        if (!occupied) {
+          try {
+            // 独占创建处理查名后被其他创建者占用的情况，内容在本次调用内复用。
+            await writeFile(abs, bytes, { encoding: 'utf8', flag: 'wx' })
+            break
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+          }
+        }
+        if (conflict === 'rename') continue
+        const parent = await resolveWritablePath(rootsOf(ctx), dirname(requested))
+        return {
+          status: 'failure',
+          executed: false,
+          message:
+            `${requested} 已存在，新建不会覆盖。先 list_dir ${JSON.stringify({ path: displayPath(ctx.workspaceRoot, parent) })} ` +
+            '核对目录中的文件名，再选择未占用的路径；若必须使用这个名字，请先确认已有文件应如何处理。',
+          errorKind: 'file_exists',
+        }
+      }
+    } else {
+      abs = await resolveWritablePath(rootsOf(ctx), requested, { mustExist: true })
+      existing = await readFile(abs, 'utf8')
       const seen = readHashes(ctx).get(abs)
       if (seen === null) {
         return {
           status: 'failure',
-          message: `${args.path} 已存在但没读取过。先 read_file 再覆盖。`,
+          executed: false,
+          message: `${requested} 没读取过，已拒绝覆盖修改。先 read_file 再覆盖。`,
           errorKind: 'stale_write',
         }
       }
       if (seen !== hash(existing)) {
         return {
           status: 'failure',
-          message: `${args.path} 在你读取之后被改动过，已拒绝覆盖。请重新 read_file。`,
+          executed: false,
+          message: `${requested} 在你读取之后被改动过，已拒绝覆盖。请重新 read_file。`,
           errorKind: 'stale_write',
         }
       }
+      bytes = fromLf(content, dominantEol(existing))
+      // r+ 不创建文件：目标被并发删除时不能把覆盖修改变成新建。
+      const file = await open(abs, 'r+')
+      try {
+        await file.writeFile(bytes, 'utf8')
+        await file.truncate(Buffer.byteLength(bytes, 'utf8'))
+      } finally {
+        await file.close()
+      }
     }
-
-    // 按既有文件的行尾落盘。模型给的整份内容一律是 LF，原样写下去就是把一个
-    // CRLF 文件整份改成 LF——而回执是「写入成功」，git diff 里每一行都变了，
-    // 没有任何人会去数字节。新文件按 LF。
-    const bytes = fromLf(content, existing === null ? '\n' : dominantEol(existing))
-
-    await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, bytes, 'utf8')
     // 记的必须是**落盘那一份**：记 content 的话下一次 edit_file 立刻判定「被人改过」。
     readHashes(ctx).set(abs, hash(bytes))
 
@@ -442,6 +511,7 @@ export const writeFileTool: ToolSpec = {
     return {
       status: 'success',
       message: `${existing === null ? '创建' : '写入'} ${change.path}`,
+      data: { path: change.path },
       fileChanges: [change],
     }
   },

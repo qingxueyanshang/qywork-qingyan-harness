@@ -133,7 +133,7 @@ describe('CRLF 文件上的文件工具', () => {
     // 模型给的整份内容一律是 LF。
     const out = await r.execute(
       'write_file',
-      { path: 'crlf.ts', content: 'const a = 1\nconst z = 9\n' },
+      { path: 'crlf.ts', mode: 'overwrite', content: 'const a = 1\nconst z = 9\n' },
       c,
     )
     expect(out.status).toBe('success')
@@ -145,7 +145,11 @@ describe('CRLF 文件上的文件工具', () => {
     const r = registry()
     const c = ctx(root)
     await r.execute('read_file', { path: 'crlf.ts' }, c)
-    await r.execute('write_file', { path: 'crlf.ts', content: 'const a = 1\nconst z = 9\n' }, c)
+    await r.execute(
+      'write_file',
+      { path: 'crlf.ts', mode: 'overwrite', content: 'const a = 1\nconst z = 9\n' },
+      c,
+    )
     const out = await r.execute(
       'edit_file',
       { path: 'crlf.ts', old_string: 'const z = 9', new_string: 'const z = 10' },
@@ -158,7 +162,7 @@ describe('CRLF 文件上的文件工具', () => {
     const root = await crlfWorkspace()
     const out = await registry().execute(
       'write_file',
-      { path: 'fresh.ts', content: 'a\nb\n' },
+      { path: 'fresh.ts', mode: 'create', content: 'a\nb\n' },
       ctx(root),
     )
     expect(out.status).toBe('success')

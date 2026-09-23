@@ -1541,6 +1541,10 @@ function cardTitle(item: TranscriptItem): string {
  * 电脑控制工具同理：`action.target` 是不透明的窗口编号，显示的是结果里带回的窗口标题。
  */
 function shownTarget(item: TranscriptItem): string | undefined {
+  if (item.toolName === 'write_file' && item.status === 'success') {
+    const actualPath = item.outcome?.fileChanges?.[0]?.path
+    if (actualPath) return displayTarget(actualPath)
+  }
   const target = item.action?.target
   if (!target) return undefined
   if (item.toolName?.startsWith('desktop_')) return desktopWindowLabel(item.outcome?.data)

@@ -32,7 +32,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 
 先用 grep 与 glob 定位，再读定位到的部分，不要通读文件。
 
-修改已存在的文件前必须先 read_file——写入工具会校验你读到的内容是否仍是磁盘上的最新版本，跳过这一步会被拒绝。
+新建与修改文件必须明确区分：write_file 的 mode=create 只新建，遇到重名先按回执 list_dir 核对目录，不要连续猜名字，也不要改成覆盖。用户要新作品且未指定固定文件名时，用 mode=create、on_conflict=rename，让工具自动选空闲名称并直接写入已有内容，后续使用回执中的实际路径。覆盖属于修改，用 mode=overwrite；与 edit_file 一样，必须先 read_file，写入时会校验读取后的内容是否仍是最新版本。
 
 改动代码时匹配周围代码的风格：命名、注释密度、惯用法。
 

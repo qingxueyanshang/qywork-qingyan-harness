@@ -184,7 +184,7 @@ function normalizeRoots(input: RootsInput): WorkspaceRoots {
 export async function resolveInWorkspace(
   roots: RootsInput,
   candidate: string,
-  opts: { mustExist?: boolean; literal?: boolean } = {},
+  opts: { mustExist?: boolean; literal?: boolean; followFinalSymlink?: boolean } = {},
 ): Promise<string> {
   const { workspaceRoot, additional, unrestricted } = normalizeRoots(roots)
   // 从 file URL 解出的路径已是文件系统字面值，不再解码文件名中的百分号。
@@ -204,11 +204,16 @@ export async function resolveInWorkspace(
    * 两条路因此都走 `resolveForWrite`——它对不存在的目标解析到最近的已存在祖先，
    * 中间目录的软链照样解开，逃逸挡得住。存在性等边界判完再回答。
    */
-  const targetReal = await resolveForWrite(joined)
+  // 独占新建操作的是目录项本身：末段软链也占用名称，不能解析到其目标再创建。
+  // 父目录仍解析软链并接受同一套工作区边界检查。
+  const targetReal =
+    opts.followFinalSymlink === false
+      ? resolve(await resolveForWrite(dirname(joined)), basename(joined))
+      : await resolveForWrite(joined)
 
   /*
    * 「完全访问」下不设边界。**解析照做、只跳过归属判定**——返回的仍然是
-   * realpath 之后的那一个路径，因为「判的和写的是同一个路径」这条与边界无关：
+   * 按本次操作解析后的路径，因为「判的和写的是同一个路径」这条与边界无关：
    * 调用方拿它去记「本轮读过没有」，返回字面路径会让软链根下的新鲜度判定恒错。
    */
   if (unrestricted) {
@@ -424,7 +429,7 @@ export function isProtectedPath(workspaceRoot: string, resolved: string): boolea
 export async function resolveWritablePath(
   roots: RootsInput,
   candidate: string,
-  opts: { mustExist?: boolean } = {},
+  opts: { mustExist?: boolean; followFinalSymlink?: boolean } = {},
 ): Promise<string> {
   const { workspaceRoot, unrestricted } = normalizeRoots(roots)
   const resolved = await resolveInWorkspace(roots, candidate, opts)
