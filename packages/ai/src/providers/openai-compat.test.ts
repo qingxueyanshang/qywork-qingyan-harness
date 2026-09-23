@@ -582,10 +582,19 @@ describe('逐模型的历史思考协议', () => {
       },
       { role: 'tool', tool_call_id: 'c1' },
     ])
-    expect(body.tools).toMatchObject([
+    expect(body.tools).toEqual([
       {
         type: 'function',
-        function: { name: 'read_file', strict: true, parameters: { required: ['path', 'limit'] } },
+        function: {
+          name: 'read_file',
+          description: '读取文件',
+          parameters: {
+            type: 'object',
+            properties: { path: { type: 'string' }, limit: { type: 'integer' } },
+            required: ['path'],
+            additionalProperties: false,
+          },
+        },
       },
     ])
     for (const field of ['thinking', 'reasoning_effort', 'preserve_thinking', 'prompt_cache_key'])

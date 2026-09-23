@@ -1,4 +1,9 @@
-import { PROVIDER_KINDS, type ProviderKind } from '@qywork/core'
+import {
+  matchesToolCallCheck,
+  PROVIDER_KINDS,
+  type ProviderKind,
+  type ToolCallCheck,
+} from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import {
   ensureModelCatalog,
@@ -86,6 +91,7 @@ export function ModelSettings() {
   }
 
   const patchProvider = (name: string, p: Partial<RedactedProvider>) => {
+    setProbes({})
     void replaceConfig((cur) => {
       const prev = cur.providers[name]
       if (!prev) return null
@@ -203,15 +209,31 @@ export function ModelSettings() {
 
   const runProbe = async (provider: string, model: string) => {
     const key = probeKey(provider, model)
+    const started = config()?.providers[provider]
+    const catalogEntry = config()?.catalog?.[`${model}|${started?.kind}`]
     setProbing(key)
     try {
       const r = await probeModel(provider, model)
+      const current = config()?.providers[provider]
+      if (
+        current?.kind !== started?.kind ||
+        current?.baseUrl !== started?.baseUrl ||
+        JSON.stringify(config()?.catalog?.[`${model}|${current?.kind}`]) !==
+          JSON.stringify(catalogEntry)
+      )
+        return
       setProbes((prev) => ({ ...prev, [key]: r }))
       // 探测只校准当前接口是否透传控制面，不改写全局模型能力。
       if (Object.keys(r.transport).length > 0) {
         void replaceConfig((cur) => {
           const owner = cur.providers[provider]
-          if (!owner) return null
+          if (
+            !owner ||
+            owner.kind !== started?.kind ||
+            owner.baseUrl !== started?.baseUrl ||
+            JSON.stringify(cur.catalog?.[`${model}|${owner.kind}`]) !== JSON.stringify(catalogEntry)
+          )
+            return null
           const entry = owner.models[model]
           if (!entry) return null
           return {
@@ -367,6 +389,11 @@ export function ModelSettings() {
                           const isDefault = () =>
                             c().active?.provider === name() && c().active?.model === id
                           const result = () => probes()[probeKey(name(), id)]
+                          const schema = () =>
+                            modelCatalog()
+                              ?.providers.find((v) => v.name === name())
+                              ?.models.find((m) => m.id === id)?.chatToolSchema
+                          const check = () => p().models[id]?.transport?.toolCalls
                           return (
                             <div class="model-row" classList={{ active: isDefault() }}>
                               <div class="model-row-main">
@@ -389,6 +416,22 @@ export function ModelSettings() {
                                 {/* 结论跟在模型 id 右边，同一行。放到行下面的话，
                                       每探一次这一行就长高一截，下面几行整体往下跳。 */}
                                 <Show when={result()}>{(r) => <ProbeSummary result={r()} />}</Show>
+                                <Show when={!result() && check()}>
+                                  {(record) => (
+                                    <ToolCheckSummary
+                                      check={record() as ToolCallCheck}
+                                      current={Boolean(
+                                        schema() &&
+                                          matchesToolCallCheck(record() as ToolCallCheck, {
+                                            kind: p().kind as ProviderKind,
+                                            model: id,
+                                            baseUrl: p().baseUrl ?? '',
+                                            schema: schema()!,
+                                          }),
+                                      )}
+                                    />
+                                  )}
+                                </Show>
                                 <button
                                   class="btn-ghost sm"
                                   type="button"
@@ -501,7 +544,16 @@ function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
         : levels.length > 0
           ? `${o.effortSource === 'catalog' ? '模型库' : '接口接受'}：${levels.join(' / ')}`
           : '无可调档位'
-    return { text: `连接正常　${thinking}　${effort}`, bad: false }
+    const tools =
+      o.toolCalls?.status === 'passed'
+        ? '工具调用通过'
+        : o.toolCalls?.status === 'failed'
+          ? '工具调用失败'
+          : '工具调用未确认'
+    return {
+      text: `连接正常　${tools}　${thinking}　${effort}`,
+      bad: o.toolCalls?.status === 'failed',
+    }
   }
   return (
     <span
@@ -514,6 +566,24 @@ function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
       }
     >
       {text().text}
+    </span>
+  )
+}
+
+function ToolCheckSummary(props: { check: ToolCallCheck; current: boolean }) {
+  return (
+    <span
+      class="probe-line"
+      classList={{ bad: props.current && props.check.status === 'failed' }}
+      data-tip={`检测时间：${new Date(props.check.checkedAt).toLocaleString()}。仅对应检测时的接口和模型配置。`}
+    >
+      {!props.current
+        ? '配置已更新，可重新检测'
+        : props.check.status === 'passed'
+          ? '工具调用通过'
+          : props.check.status === 'failed'
+            ? '工具调用失败'
+            : '工具调用未确认'}
     </span>
   )
 }

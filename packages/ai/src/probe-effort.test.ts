@@ -16,9 +16,9 @@ beforeAll(() => {
   server = Bun.serve({
     port: 0,
     async fetch(req) {
-      const body = (await req.json()) as { reasoning_effort?: string }
+      const body = (await req.json()) as { reasoning_effort?: string; tools?: unknown[] }
       const effort = body.reasoning_effort
-      seen.push(effort)
+      if (!body.tools?.length) seen.push(effort)
       if (html)
         return new Response('<html>relay home</html>', { headers: { 'content-type': 'text/html' } })
       const status =
@@ -134,15 +134,15 @@ describe('五档逐一检测', () => {
     const r = await probeModel(profile('claude-opus-5'), { gapMs: 0 })
     expect(seen).toEqual([undefined])
     expect(r.untested).toEqual(['effort'])
-    expect(toTransportCapabilities(r)).toEqual({})
+    expect(toTransportCapabilities(r).effort).toBeUndefined()
   })
   test('端点连非法值也接受时报告不确定，不把五档写成已验证', async () => {
     ignoreAll = true
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.effortLevels).toEqual(levels)
     expect(r.inconclusive).toEqual(['effort'])
-    expect(r.probes.at(-1)?.detail).toContain('非法档位')
-    expect(toTransportCapabilities(r)).toEqual({})
+    expect(r.probes.find((p) => p.name === '非法值对照')?.detail).toContain('非法档位')
+    expect(toTransportCapabilities(r).effort).toBeUndefined()
   })
   test('某一档临时失败也继续其余档，但不覆盖已保存的结果', async () => {
     transient = 'medium'
@@ -150,13 +150,13 @@ describe('五档逐一检测', () => {
     expect(seen.slice(1, 6)).toEqual(levels)
     expect(r.effortLevels).toEqual(['low', 'high', 'xhigh', 'max'])
     expect(r.inconclusive).toEqual(['effort'])
-    expect(toTransportCapabilities(r)).toEqual({})
+    expect(toTransportCapabilities(r).effort).toBeUndefined()
   })
   test('非法值对照临时失败也不能形成结论', async () => {
     transient = '__qy_probe_invalid_effort__'
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.inconclusive).toEqual(['effort'])
-    expect(toTransportCapabilities(r)).toEqual({})
+    expect(toTransportCapabilities(r).effort).toBeUndefined()
   })
   test('HTML 响应不是连接成功', async () => {
     html = true

@@ -1,8 +1,15 @@
 /** 已声明模型按库中档位校验，未声明模型尝试五档。仅由用户显式触发。 */
-import { EFFORT_ORDER, type EffortLevel, type ProviderKind, type ThinkingMode } from '@qywork/core'
+import {
+  EFFORT_ORDER,
+  type EffortLevel,
+  type ProviderKind,
+  type ThinkingMode,
+  type ToolCallCheck,
+} from '@qywork/core'
 import { declaredEffortLevels, effortIsTransmittable, lookupModel } from './catalog.ts'
 import { ProviderError } from './errors.ts'
 import { buildAdapter } from './factory.ts'
+import { probeToolCalls } from './probe-tools.ts'
 import { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 import type { ChatRequest, ProviderProfile, TransportCapabilities } from './types.ts'
 
@@ -10,6 +17,7 @@ const LEVELS = EFFORT_ORDER.filter((level) => level !== 'minimal')
 const INVALID_EFFORT = '__qy_probe_invalid_effort__'
 
 export interface ProbeOutcome {
+  toolCalls?: ToolCallCheck
   reachable: boolean
   untested: 'effort'[]
   /** 超时、限速或非法值也被接受时，不能据此改写配置。 */
@@ -99,6 +107,20 @@ export async function probeModel(
   profile: ProviderProfile,
   opts: ProbeOptions = {},
 ): Promise<ProbeOutcome> {
+  const outcome = await probeEffort(profile, opts)
+  if (outcome.reachable && !opts.signal?.aborted) {
+    const { transport: _previous, ...declared } = profile
+    const result = await probeToolCalls(declared, opts.signal)
+    outcome.toolCalls = result.check
+    outcome.probes.push(...result.steps)
+  }
+  return outcome
+}
+
+async function probeEffort(
+  profile: ProviderProfile,
+  opts: ProbeOptions = {},
+): Promise<ProbeOutcome> {
   // 保留用户的参数格式声明，移除上次检测结果，允许重新发现已恢复的档位。
   const { transport: _previous, ...declared } = profile
   const seed = lookupModel(profile.model, profile.kind)
@@ -182,10 +204,12 @@ export async function probeModel(
   return outcome
 }
 
-/** 只保存一次完整、且能拒绝非法值的校验；部分失败时保留上次配置。 */
+/** 档位仅保存完整校验；工具检测独立记录实际状态，不裁决运行时能力。 */
 export function toTransportCapabilities(outcome: ProbeOutcome): TransportCapabilities {
-  if (!outcome.reachable || outcome.untested.length || outcome.inconclusive.length) return {}
+  const tools = outcome.toolCalls ? { toolCalls: outcome.toolCalls } : {}
+  if (!outcome.reachable || outcome.untested.length || outcome.inconclusive.length) return tools
   return {
+    ...tools,
     effort: outcome.effortLevels.length > 0,
     effortLevels: [...outcome.effortLevels],
     ...(outcome.thinking ? { thinking: outcome.thinking } : {}),

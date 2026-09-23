@@ -14,6 +14,7 @@ import type {
   ProviderKind,
   ReasoningEcho,
   ThinkingMode,
+  ToolSchemaMode,
 } from '@qywork/core'
 import { DEFAULT_DENSITY, type TokenDensity } from './tokens.ts'
 import type { TransportCapabilities } from './types.ts'
@@ -117,7 +118,7 @@ export interface ModelSpec {
    * `native` 保留模型库注册时的原生 required/optional 形状。两者不能按
    * OpenAI-compatible 这个接口名一刀切：兼容基础字段不等于兼容 strict 采样规则。
    */
-  chatToolSchema: 'openai_strict' | 'native'
+  chatToolSchema: ToolSchemaMode
   /**
    * 支持的 effort 档位。空数组=不支持 effort 参数。
    */
@@ -862,7 +863,9 @@ function mimoCatalog(): ModelSpec[] {
       effortLevels: [],
       reasoningEcho: 'none',
       chatReasoningProtocol: 'preserved',
-      chatToolSchema: 'openai_strict',
+      // MiMo Chat / Responses 的 strict nullable 定义实测会产生残缺 arguments。
+      // 三个型号共用官方原生工具定义，保留 required/optional，不转换成 nullable。
+      chatToolSchema: 'native',
       cacheRouting: 'none',
       minCacheablePrefix: 0,
     }
@@ -941,7 +944,7 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
      */
     reasoningEcho: 'none',
     chatReasoningProtocol: 'standard',
-    chatToolSchema: 'openai_strict',
+    chatToolSchema: 'native',
     effortLevels: [],
     thinksByDefault: false,
     minCacheablePrefix: 1024,
@@ -1643,7 +1646,12 @@ export function applyTransportCapabilities(
   transport?: TransportCapabilities,
   override?: SpecOverride,
 ): ModelSpec {
-  const spec = applySpecOverride(seed, override)
+  const declared = applySpecOverride(seed, override)
+  // Messages 适配器始终发送原生 input_schema；运行时与检测应报告实际发送策略。
+  const spec =
+    declared.provider === 'anthropic_messages'
+      ? { ...declared, chatToolSchema: 'native' as const }
+      : declared
   if (!transport) return spec
   const levels = declaredEffortLevels(seed, override)
   return {

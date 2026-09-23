@@ -63,13 +63,21 @@ test('qy probe 使用配置中的未知模型档位，保存不覆盖模型规�
     ])
     expect({ code, err: code === 0 ? '' : err }).toEqual({ code: 0, err: '' })
     expect(JSON.parse(out).effortLevels).toEqual(['high', 'max'])
-    expect(seen).toEqual([undefined, 'high', 'max', '__qy_probe_invalid_effort__'])
+    expect(seen).toEqual([undefined, 'high', 'max', '__qy_probe_invalid_effort__', undefined])
+    expect(seen).toHaveLength(5)
     const saved = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as QyConfig
     expect(saved.catalog).toEqual(catalog)
-    expect(saved.providers.test?.models.custom?.transport).toEqual({
+    expect(saved.providers.test?.models.custom?.transport).toMatchObject({
       effort: true,
       effortLevels: ['high', 'max'],
       thinking: 'reasoning_effort',
+      toolCalls: {
+        kind: 'openai_chat_completions',
+        model: 'custom',
+        schema: 'native',
+        baseUrl: `http://127.0.0.1:${server.port}/v1`,
+        status: 'inconclusive',
+      },
     })
   } finally {
     server.stop(true)

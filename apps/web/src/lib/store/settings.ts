@@ -12,6 +12,8 @@ import type {
   PermissionMode,
   ScheduleView,
   ThinkingMode,
+  ToolCallCheck,
+  ToolSchemaMode,
 } from '@qywork/core'
 import { createSignal } from 'solid-js'
 import { ApiError } from '../client.ts'
@@ -40,7 +42,12 @@ export interface RedactedModel {
    */
   effort?: EffortLevel
   /** 当前接口路线的控制面透传结论；不写入全局模型目录。 */
-  transport?: { effort?: boolean; effortLevels?: EffortLevel[]; thinking?: ThinkingMode }
+  transport?: {
+    effort?: boolean
+    effortLevels?: EffortLevel[]
+    thinking?: ThinkingMode
+    toolCalls?: ToolCallCheck
+  }
 }
 
 /** 接口的对外形状：明文 key 不出服务进程，只回「有没有」。 */
@@ -189,6 +196,7 @@ export async function setPermissionMode(mode: PermissionMode): Promise<void> {
 
 /** 一个接口下挂着的一个模型。 */
 export interface ModelOption {
+  chatToolSchema: ToolSchemaMode
   id: string
   /** 内置目录里的显示名；目录里没有就是 id 本身。 */
   label: string
@@ -332,6 +340,7 @@ export interface ProbeStep {
   inconclusive?: boolean
 }
 export interface ProbeOutcome {
+  toolCalls?: ToolCallCheck
   effortSource: 'catalog' | 'probe'
   reachable: boolean
   /** 这条链路上无从探测的轴。**与「探了、被拒了」不是一回事**，不能合并显示。 */
@@ -355,7 +364,7 @@ export interface ProbeResult {
  * **探的是落盘配置**，不是界面上的草稿：请求体只带名字，key 由服务端自己取。
  * 允许探草稿就得让端点接收临时明文 key，等于多开一条 key 上行路径。
  *
- * 会真的发几个请求（每个 ≤16 token），所以只由用户点按钮触发。
+ * 会发送连接、档位和两轮工具契约请求，所以只由用户点按钮触发。
  */
 export function probeModel(provider: string, model: string): Promise<ProbeResult> {
   return scheduleWrite('/api/probe', {

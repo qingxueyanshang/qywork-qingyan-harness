@@ -221,6 +221,7 @@ let script: {
 /** 上一次发出去的请求体。用来断言**发出去**的内容，不只是收回来的；只声明这份测试真的读的那几格。 */
 interface SentBody {
   input?: { type: string }[]
+  tools?: { strict?: boolean }[]
   store?: boolean
   prompt_cache_key?: string
   reasoning?: { summary?: string; effort?: string }
@@ -434,12 +435,11 @@ test('MiMo Responses 回传完整历史思考、标准工具 JSON 及官方输�
       },
       { type: 'function_call_output', call_id: 'c1', output: '内容' },
     ],
-    tools: [
-      { type: 'function', name: 'read_file', strict: true, parameters: { required: ['path'] } },
-    ],
+    tools: [{ type: 'function', name: 'read_file', parameters: { required: ['path'] } }],
   })
   expect(lastBody).not.toHaveProperty('reasoning')
   expect(lastBody).not.toHaveProperty('prompt_cache_key')
+  expect(lastBody.tools?.[0]?.strict).toBeUndefined()
   expect(events.find((e) => e.type === 'tool_calls')).toMatchObject({
     calls: [{ name: 'get_weather', arguments: { city: '北京' } }],
   })
