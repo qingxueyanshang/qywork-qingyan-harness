@@ -35,8 +35,10 @@ import {
  */
 export function ProjectRow(props: {
   workspace: KnownWorkspace
-  /** 当前正在用的那个：它展开会话列表，移除之后会自动切到服务端指定的下一个。 */
+  /** 当前正在用的那个；移除之后会自动切到服务端指定的下一个。 */
   current?: boolean
+  /** 当前项目的会话列表是否展开。 */
+  expanded?: boolean
   onOpen?: () => void
   onNewChat?: () => void
   /** 列表或会话有变动时重拉——顺序、计数、会话列表都可能已经不一样了。 */
@@ -127,7 +129,12 @@ export function ProjectRow(props: {
         class="project-open"
         type="button"
         onClick={() => props.onOpen?.()}
-        disabled={props.current}
+        aria-expanded={props.current ? Boolean(props.expanded) : false}
+        aria-label={
+          props.current
+            ? `${props.workspace.name}，${props.expanded ? '收起会话' : '展开会话'}`
+            : `${props.workspace.name}，切换项目`
+        }
       >
         <Show when={pinned()} fallback={<IconFolder size={15} />}>
           {/* 置顶的项目换图标，而不是在名字后面加一个「已置顶」标签：

@@ -39,10 +39,10 @@ import { ProjectRow } from './ProjectRow.tsx'
  * sidecar——重启服务、断连、打断正在跑的那一轮。
  *
  * **一条列表，顺序稳定。** 项目按「置顶 > 添加先后」排，**当前项目不被提到最上面**——那样切一次它
- * 就跳到顶部，位置跳动比「当前项目在哪」更难用。它原地展开自己的会话，由高亮和缩进说明现在在哪个
+ * 就跳到顶部，位置跳动比「当前项目在哪」更难用。它可原地展开自己的会话，由高亮和缩进说明现在在哪个
  * 项目里。
  *
- * 只有当前项目展开：服务端一次回一个项目的会话列表，用户同一时刻也只看得见一个。
+ * 只有当前项目能展开会话：服务端一次回一个项目的列表；当前项目可点行收起、再点展开。
  *
  * **不要往这里加没有去处的入口。** 判据：**每一个可见入口点下去都必须产生可观察的状态变化**。一个
  * `<button>` 没有 `onClick`，比没有这个入口更糟——点下去没有任何反馈，用户只会反复去点。
@@ -60,6 +60,7 @@ export function Sidebar(props: { onClose?: () => void }) {
   const desktop = isDesktopShell()
   const [known, { refetch: refetchWorkspaces }] = createResource(loadKnownWorkspaces)
   const [error, setError] = createSignal<string | null>(null)
+  const [collapsedPath, setCollapsedPath] = createSignal<string | null>(null)
 
   /*
    * 连接一恢复就重拉项目清单。
@@ -92,6 +93,7 @@ export function Sidebar(props: { onClose?: () => void }) {
     setError(null)
     try {
       await activateWorkspace({ path })
+      setCollapsedPath(null)
       // 列表按「最近打开」排序，切过之后顺序变了，重拉一次。
       void refetchWorkspaces()
     } catch (e) {
@@ -152,19 +154,28 @@ export function Sidebar(props: { onClose?: () => void }) {
       </div>
 
       {/* **一条列表，顺序稳定。** 当前项目不被提到最上面——那样切一次它就跳到
-          顶部，而位置跳动比「当前项目在哪」更难用。它原地展开自己的会话，
+          顶部，而位置跳动比「当前项目在哪」更难用。它可原地展开或收起会话，
           由高亮和缩进说明「现在在这个项目里」。 */}
       <div class="sidebar-scroll">
         <For each={workspaces()}>
           {(w: KnownWorkspace) => {
             const isCurrent = () => w.rootPath === workspace()?.root
+            const expanded = () => isCurrent() && collapsedPath() !== w.rootPath
             return (
               <div class="project">
                 <ProjectRow
                   workspace={w}
                   current={isCurrent()}
-                  onOpen={() => void go(w.rootPath)}
+                  expanded={expanded()}
+                  onOpen={() => {
+                    if (isCurrent()) {
+                      setCollapsedPath((path) => (path === w.rootPath ? null : w.rootPath))
+                    } else {
+                      void go(w.rootPath)
+                    }
+                  }}
                   onNewChat={() => {
+                    setCollapsedPath(null)
                     void newConversation()
                     props.onClose?.()
                   }}
@@ -176,9 +187,8 @@ export function Sidebar(props: { onClose?: () => void }) {
                   onError={setError}
                 />
 
-                {/* 只有当前项目展开会话：服务端一次回一个项目的列表，
-                    而用户同一时刻也只看得见一个。 */}
-                <Show when={isCurrent()}>
+                {/* 收起只改变这一栏的呈现，不取消当前会话或停止正在运行的任务。 */}
+                <Show when={expanded()}>
                   <ul class="nav-list">
                     <For each={state.conversations}>
                       {(c) => (

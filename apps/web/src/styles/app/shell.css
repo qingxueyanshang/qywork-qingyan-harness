@@ -549,10 +549,6 @@
   font: inherit;
   text-align: left;
 }
-.project-open:disabled {
-  /* 当前项目那一行点了也不换，但它仍要能 hover 出卡片，所以不降透明度。 */
-  cursor: default;
-}
 /* flex 子项默认 `flex-shrink: 1`，收缩量按 flex-basis 成比例分摊到每个孩子。
    不写这条的话，名字长到撑满的行会把图标一起压窄。实测（真实界面、真账本、
    只切这一条）：`deepseek-deepseek-v4-flash-vision-exp` 那行的图标从 15px
