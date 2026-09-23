@@ -313,7 +313,21 @@ export type ProviderEvent =
       stopReason: ProviderStopReason
       rawStopReason: string
       refusal?: RefusalDetail
+      /** 响应包含思考块；内容可以由供应商隐藏。 */
+      thinkingObserved?: true
     }
+
+/** 思考文本、原始思考条目和供应商用量均可提供正向证据。 */
+export function hasThinkingEvidence(event: ProviderEvent): boolean {
+  return (
+    (event.type === 'thinking_delta' && event.delta.length > 0) ||
+    (event.type === 'response_reasoning' && event.reasoning.items.length > 0) ||
+    (event.type === 'usage' &&
+      event.usage.source === 'provider' &&
+      event.usage.reasoningTokens > 0) ||
+    (event.type === 'done' && event.thinkingObserved === true)
+  )
+}
 
 export type ProviderStopReason =
   | 'end_turn'

@@ -3,7 +3,13 @@ import type { ToolCallCheck, ToolSchemaMode } from '@qywork/core'
 import { ProviderError } from './errors.ts'
 import { buildAdapter } from './factory.ts'
 import type { ProbeStep } from './probe.ts'
-import type { ChatRequest, ProviderProfile, WireMessage, WireToolCall } from './types.ts'
+import {
+  type ChatRequest,
+  hasThinkingEvidence,
+  type ProviderProfile,
+  type WireMessage,
+  type WireToolCall,
+} from './types.ts'
 
 const TOOL = 'qy_tool_probe'
 const URL = 'pelican-bicycle.html'
@@ -60,6 +66,7 @@ export async function probeToolCalls(
 ): Promise<{
   check: ToolCallCheck
   steps: ProbeStep[]
+  thinkingObserved: boolean
 }> {
   const adapter = buildAdapter(profile)
   const check: ToolCallCheck = {
@@ -71,6 +78,7 @@ export async function probeToolCalls(
     status: 'inconclusive',
   }
   const steps: ProbeStep[] = []
+  let thinkingObserved = false
   const messages: WireMessage[] = [
     {
       role: 'user',
@@ -96,6 +104,7 @@ export async function probeToolCalls(
         idleTimeoutMs: 60_000,
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       })) {
+        thinkingObserved ||= hasThinkingEvidence(event)
         if (event.type === 'text_delta') text += event.delta
         if (event.type === 'thinking_delta') reasoning += event.delta
         if (event.type === 'response_reasoning') responseReasoning = event.reasoning
@@ -179,5 +188,5 @@ export async function probeToolCalls(
       break
     }
   }
-  return { check, steps }
+  return { check, steps, thinkingObserved }
 }

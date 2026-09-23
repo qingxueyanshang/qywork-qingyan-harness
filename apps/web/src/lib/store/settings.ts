@@ -349,7 +349,7 @@ export interface ProbeOutcome {
   inconclusive: 'effort'[]
   effortLevels: EffortLevel[]
   thinking?: ThinkingMode
-  thinksByDefault: boolean
+  thinkingObserved: boolean
   probes: ProbeStep[]
 }
 export interface ProbeResult {

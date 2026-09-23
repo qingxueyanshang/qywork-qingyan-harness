@@ -519,7 +519,7 @@ function firstModelRef(
  * **「没探测」和「不支持」分开显示。** 合并成一个「否」就是把没验过的事写成结论——
  * 而用户会据此去查一处没坏的配置。失败的那几步给出原文，结论错了要能查。
  */
-function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
+export function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
   /**
    * 一行说完，长了截断，完整内容进 `title`。
    *
@@ -534,11 +534,11 @@ function ProbeSummary(props: { result: ProbeResult | { error: string } }) {
       const why = o.probes.filter((s) => !s.ok && !s.skipped).map((s) => s.detail)
       return { text: ['连接失败', ...why].join('　'), bad: true }
     }
-    // 默认思考输出与档位校验分别展示；未观察到输出不代表模型不支持思考。
-    const thinking = o.thinksByDefault ? '已观察到思考输出' : '未观察到默认思考'
+    // 思考观察与参数校验独立，均不推断模型内部的强度差异。
+    const thinking = o.thinkingObserved ? '已观察到思考' : '未观察到思考'
     const levels = o.effortLevels
     const effort = o.inconclusive.includes('effort')
-      ? '档位生效未验证'
+      ? '档位参数未确认'
       : o.untested.includes('effort')
         ? '思考档位未检测'
         : levels.length > 0

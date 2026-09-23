@@ -68,9 +68,7 @@ export async function runProbe(args: string[]): Promise<number> {
 
   const transport = toTransportCapabilities(outcome)
 
-  // 探不出来的轴要**点名**说，不能笼统一句「没结论」。
-  // 模型的思考参数格式发不出 effort 时那一轴无从探测；但「什么都不发时它自己思不思考」
-  // 是从回包看出来的，那一条永远有结论。报成失败会让用户去查一处没坏的配置。
+  // 参数校验未确认时保留配置；思考观察独立报告。
   if (outcome.untested.length) {
     process.stderr.write(
       `\n${DIM}未探测的轴：${outcome.untested.join(' / ')}（这条链路不发该字段），` +

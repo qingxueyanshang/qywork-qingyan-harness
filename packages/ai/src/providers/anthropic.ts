@@ -105,6 +105,7 @@ export class AnthropicAdapter implements LlmAdapter {
     let stopReason: ProviderStopReason = 'end_turn'
     // provider 的原话，只进账本不参与判断。空串 = 流断在终态之前。
     let rawStop = ''
+    let thinkingObserved = false
     let refusal: { category: string | null; explanation?: string } | undefined
 
     // 累积工具调用：参数按 input_json_delta 分片流下来，要自己拼回 JSON。
@@ -158,6 +159,9 @@ export class AnthropicAdapter implements LlmAdapter {
           }
           case 'content_block_start': {
             const block = ev.content_block
+            if (block?.type === 'thinking' || block?.type === 'redacted_thinking') {
+              thinkingObserved = true
+            }
             if (block?.type === 'tool_use') {
               // 缺席按空串收：名字为空由 `collectToolCalls` 的 `!slot.name` 那条统一报错，
               // 那是「工具调用没有名字」的唯一判定点，这里不再各判一次。
@@ -248,7 +252,13 @@ export class AnthropicAdapter implements LlmAdapter {
     }
 
     yield { type: 'usage', usage }
-    yield { type: 'done', stopReason, rawStopReason: rawStop, ...(refusal ? { refusal } : {}) }
+    yield {
+      type: 'done',
+      stopReason,
+      rawStopReason: rawStop,
+      ...(refusal ? { refusal } : {}),
+      ...(thinkingObserved ? { thinkingObserved: true } : {}),
+    }
   }
 
   // ───────────────────────── 装配 ─────────────────────────
