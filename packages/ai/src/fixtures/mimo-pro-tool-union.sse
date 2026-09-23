@@ -1,0 +1,22 @@
+data: {"choices":[{"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":"call_733aa7ec077e48aeaedf566b","function":{"arguments":"","name":"browser_tabs"},"type":"function"}],"reasoning_content":null},"finish_reason":null,"index":0}]}
+
+data: {"choices":[{"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":null,"function":{"arguments":"{\"action\": ","name":null},"type":"function"}],"reasoning_content":null},"finish_reason":null,"index":0}]}
+
+data: {"choices":[{"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":null,"function":{"arguments":"\"","name":null},"type":"function"}],"reasoning_content":null},"finish_reason":null,"index":0}]}
+
+data: {"choices":[{"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":null,"function":{"arguments":"create","name":null},"type":"function"}],"reasoning_content":null},"finish_reason":null,"index":0}]}
+
+data: {"choices":[{"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":null,"function":{"arguments":"\"","name":null},"type":"function"}],"reasoning_content":null},"finish_reason":null,"index":0}]}
+
+data: {"choices":[{"delta":{"content":"<tool_call><function=browser_tabs><parameter=action>create</parameter><parameter=url>pelican-bicycle.html","role":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null,"index":0}]}
+
+data: {"choices":[{"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":null,"function":{"arguments":", \"url\": ","name":null},"type":"function"}],"reasoning_content":null},"finish_reason":null,"index":0}]}
+
+data: {"choices":[{"delta":{"content":"</parameter><parameter=tabId>null","role":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null,"index":0}]}
+
+data: {"choices":[{"delta":{"content":"</parameter></function></tool_call>","role":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null,"index":0}]}
+
+data: {"choices":[{"delta":{"content":null,"role":null,"tool_calls":null,"reasoning_content":null},"finish_reason":"tool_calls","index":0}]}
+
+data: [DONE]
+

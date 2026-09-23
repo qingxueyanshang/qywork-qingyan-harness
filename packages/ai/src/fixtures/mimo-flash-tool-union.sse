@@ -1,0 +1,28 @@
+data: {"choices":[{"index":0,"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":"call_40f0240189ff4463b0382e2c","function":{"arguments":"","name":"browser_tabs"},"type":"function"}],"reasoning_content":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":null,"function":{"arguments":"{\"action\": ","name":null},"type":"function"}],"reasoning_content":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":null,"function":{"arguments":"\"","name":null},"type":"function"}],"reasoning_content":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":null,"function":{"arguments":"create","name":null},"type":"function"}],"reasoning_content":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"<tool_call><function=browser_tabs><parameter=action>create</parameter><parameter=url>pelican","role":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":null,"function":{"arguments":"\"","name":null},"type":"function"}],"reasoning_content":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":null,"role":null,"tool_calls":[{"index":0,"id":null,"function":{"arguments":", \"url\": ","name":null},"type":"function"}],"reasoning_content":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"-bicycle.html","role":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"</parameter><parameter=","tool_calls":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"tabId>null","role":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"</parameter></function>","tool_calls":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"</tool_call>","role":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":null,"role":null,"tool_calls":null,"reasoning_content":null},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

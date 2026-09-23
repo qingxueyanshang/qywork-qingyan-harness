@@ -35,6 +35,38 @@ function cfg(over: Partial<QyConfig> = {}): QyConfig {
   }
 }
 
+test('落盘旧参数模式不能覆盖模型库的协议策略', async () => {
+  const model = 'mimo-v2.6-pro'
+  const config = cfg({
+    active: { provider: 'mimo', model },
+    providers: {
+      mimo: { kind: 'openai_chat_completions', apiKey: 'test', models: { [model]: {} } },
+    },
+  })
+  const home = await mkdtemp(join(tmpdir(), 'qy-tool-schema-'))
+  const previousHome = process.env.QYWORK_HOME
+  try {
+    process.env.QYWORK_HOME = home
+    await writeFile(
+      join(home, 'config.json'),
+      JSON.stringify({
+        ...config,
+        catalog: {
+          [catalogKey(model, 'openai_chat_completions')]: { chatToolSchema: 'openai_strict' },
+        },
+      }),
+    )
+    const loaded = await loadConfig()
+    const target = resolveModel(loaded)!
+    expect(buildAdapter({ ...target, apiKey: target.apiKey! }).spec.chatToolSchema).toBe('native')
+    expect(diagnoseConfig(loaded)).toEqual([])
+  } finally {
+    if (previousHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 /**
  * 「接口 → 模型」两层之后的解析。
  *

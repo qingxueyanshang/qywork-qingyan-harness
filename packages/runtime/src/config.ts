@@ -26,6 +26,7 @@ import {
   type ReasoningEcho,
   THINKING_MODES,
   type ThinkingMode,
+  TOOL_SCHEMA_MODES,
 } from '@qywork/core'
 import { globalScopeRoot, normalizeAdditionalDirectories } from '@qywork/tools'
 
@@ -722,6 +723,19 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
       }
       if (m.transport?.thinking !== undefined && !THINKING_MODES.includes(m.transport.thinking)) {
         problems.push(`${name} / ${id} 的 transport.thinking 不是有效参数格式。`)
+      }
+      const check = m.transport?.toolCalls
+      if (
+        check !== undefined &&
+        (!check ||
+          !PROVIDER_KINDS.includes(check.kind) ||
+          typeof check.model !== 'string' ||
+          typeof check.baseUrl !== 'string' ||
+          !TOOL_SCHEMA_MODES.includes(check.schema) ||
+          !Number.isFinite(check.checkedAt) ||
+          !['passed', 'failed', 'inconclusive'].includes(check.status))
+      ) {
+        problems.push(`${name} / ${id} 的 transport.toolCalls 不是有效工具检测记录。`)
       }
     }
   }

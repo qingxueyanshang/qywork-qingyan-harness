@@ -22,6 +22,7 @@ import type {
   EffortLevel,
   MessageId,
   RunId,
+  ToolSchemaMode,
 } from '@qywork/core'
 import {
   catalogKey,
@@ -52,6 +53,7 @@ import { type ApiHandler, type ApiRequestDeps, json } from './types.ts'
 
 /** 一个接口下挂着的一个模型。**只列配置里真有的**——没配的选了也发不出去。 */
 export interface ModelRow {
+  chatToolSchema: ToolSchemaMode
   id: string
   /** 内置目录里的显示名；目录里没有就是 id 本身。 */
   label: string
@@ -288,6 +290,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         const effortLevels = effortIsTransmittable(spec) ? spec.effortLevels : []
         return {
           id,
+          chatToolSchema: spec.chatToolSchema,
           label: spec.catalogued === false ? id : spec.displayName,
           // 界面据此决定还要不要显示思考强度那个开关。空数组 = 这条链路上
           // 调不了思考，显示出来就是一个选了没反应的控件。

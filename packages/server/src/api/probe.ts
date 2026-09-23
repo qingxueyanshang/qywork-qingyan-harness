@@ -61,15 +61,18 @@ export const handleProbeApi: ApiHandler = async (url, req, d) => {
     return json({ error: 'not found', message: `配置里没有名为 "${body.provider}" 的接口` }, 404)
   }
 
-  const outcome = await probeModel({
-    kind: target.kind,
-    apiKey: target.apiKey ?? '',
-    model: target.model,
-    ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
-    ...(target.headers ? { headers: target.headers } : {}),
-    ...(target.spec ? { spec: target.spec } : {}),
-    // 模型规格包含用户声明的协议和档位；只忽略上次的 transport 校准。
-  })
+  const outcome = await probeModel(
+    {
+      kind: target.kind,
+      apiKey: target.apiKey ?? '',
+      model: target.model,
+      ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
+      ...(target.headers ? { headers: target.headers } : {}),
+      ...(target.spec ? { spec: target.spec } : {}),
+      // 模型规格包含用户声明的协议和档位；只忽略上次的 transport 校准。
+    },
+    { signal: req.signal },
+  )
 
   const { values } = collectSecrets(d.config)
   return json({

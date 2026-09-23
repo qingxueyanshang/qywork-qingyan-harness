@@ -9,7 +9,7 @@
  *   qy probe <模型名>         探指定模型（走它所属的接口）
  *   qy probe --save           把结果写回配置（不加这个只打印，不改配置）
  *
- * 探测会**真的发几个请求**（每个一个字、最多 16 token），所以它只由用户显式触发。
+ * 探测会发送连接、档位和两轮工具契约请求，所以它只由用户显式触发。
  */
 
 import { describeProbe, probeModel, toTransportCapabilities } from '@qywork/ai'
@@ -41,7 +41,7 @@ export async function runProbe(args: string[]): Promise<number> {
 
   process.stderr.write(
     `${BOLD}探测 ${stored.provider} / ${stored.model}${RESET} ${DIM}${stored.kind}${RESET}\n` +
-      `${DIM}会发几个极小的请求（每个 ≤16 token）${RESET}\n\n`,
+      `${DIM}检测连接、思考档位和两轮工具调用${RESET}\n\n`,
   )
 
   const outcome = await probeModel({

@@ -12,6 +12,7 @@ import type {
   ProviderKind,
   ResponseReasoning,
   ThinkingMode,
+  ToolCallCheck,
 } from '@qywork/core'
 import type { ModelSpec, SpecOverride } from './catalog.ts'
 
@@ -61,6 +62,8 @@ export const PROVIDER_HEADERS = { connection: 'close' } as const
  * 检测结果只作用于这个接口，不修改全局模型的价格、窗口或其他能力。
  */
 export interface TransportCapabilities {
+  /** 原始工具参数和结果回传的检测记录，不改变模型能力或工具执行策略。 */
+  toolCalls?: ToolCallCheck
   effort?: boolean
   effortLevels?: EffortLevel[]
   thinking?: ThinkingMode

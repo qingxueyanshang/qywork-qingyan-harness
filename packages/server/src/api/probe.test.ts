@@ -117,13 +117,20 @@ for (const route of routes) {
     }
     expect(result.outcome.reachable).toBe(true)
     expect(result.outcome.effortLevels).toEqual(['low', 'high', 'max'])
-    expect(result.transport).toEqual({
+    expect(result.transport).toMatchObject({
       effort: true,
       effortLevels: ['low', 'high', 'max'],
       thinking: route.thinking,
+      toolCalls: {
+        kind: route.kind,
+        model: 'custom',
+        baseUrl: config.providers.local!.baseUrl,
+        schema: 'native',
+        status: 'inconclusive',
+      },
     })
     expect(result.outcome.effortSource).toBe('catalog')
-    expect(requests).toHaveLength(5)
+    expect(requests).toHaveLength(6)
     expect(requests[1]).toMatchObject({ model: 'custom', ...route.fields })
     // 检测只返回当前端点的结论，不修改全局规格或配置。
     expect(config.providers.local?.models.custom?.transport).toEqual({ effort: false })

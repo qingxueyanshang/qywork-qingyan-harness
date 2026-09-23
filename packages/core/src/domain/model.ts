@@ -66,6 +66,32 @@ export const PROVIDER_KINDS = [
 ] as const
 export type ProviderKind = (typeof PROVIDER_KINDS)[number]
 
+/** 工具定义的发送策略；兼容同一 API 不代表支持相同的 JSON Schema 子集。 */
+export const TOOL_SCHEMA_MODES = ['native', 'openai_strict'] as const
+export type ToolSchemaMode = (typeof TOOL_SCHEMA_MODES)[number]
+
+/** 一次工具契约检测的记录，只用于诊断，不裁决运行时能否调用工具。 */
+export interface ToolCallCheck {
+  kind: ProviderKind
+  model: string
+  baseUrl: string
+  schema: ToolSchemaMode
+  checkedAt: number
+  status: 'passed' | 'failed' | 'inconclusive'
+}
+
+export function matchesToolCallCheck(
+  check: ToolCallCheck,
+  target: Pick<ToolCallCheck, 'kind' | 'model' | 'baseUrl' | 'schema'>,
+): boolean {
+  return (
+    check.kind === target.kind &&
+    check.model === target.model &&
+    check.baseUrl.replace(/\/+$/, '') === target.baseUrl.replace(/\/+$/, '') &&
+    check.schema === target.schema
+  )
+}
+
 /**
  * 思考强度怎么发到线上。**每条模型在每条协议上各有一个值**，由模型库那一格裁决。
  *
