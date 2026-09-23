@@ -19,6 +19,21 @@ import {
   priceAt,
 } from './catalog.ts'
 
+test('Claude Opus 5.5 的官方价格、缓存与恒开思考规格', () => {
+  const opus = lookupModel('claude-opus-5-5', 'anthropic_messages')
+  expect(opus).toMatchObject({
+    provider: 'anthropic_messages',
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    vision: true,
+    thinking: 'always_on',
+    thinksByDefault: true,
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    minCacheablePrefix: 512,
+    pricing: { input: 4, output: 20, cacheRead: 0.2, cacheWrite5m: 5, cacheWrite1h: 8 },
+  })
+})
+
 describe('模型库与端点校验的优先级', () => {
   const transport = {
     effort: true,
@@ -355,6 +370,7 @@ describe('视频输入', () => {
         'openai_chat_completions:qwen3.7-plus',
         'openai_chat_completions:qwen3.8-flash',
         'openai_chat_completions:qwen3.8-max',
+        'openai_chat_completions:qwen3.8-omni-flash',
       ].sort(),
     )
   })
@@ -545,6 +561,25 @@ describe('长上下文阶梯价', () => {
     }
     expect(computeCost(astra, usage)).toBe(2.5)
     expect(computeCost(astra, { ...usage, cacheWriteTokens: 72_001 })).toBe(4.750025)
+  })
+
+  test('GPT-6 Sol 与 Luna 在 272K 边界切换完整计费档', () => {
+    for (const [id, short, long] of [
+      ['gpt-6-sol', [2, 10, 0.2, 2.5], [4, 15, 0.4, 5]],
+      ['gpt-6-luna', [0.1, 0.5, 0.01, 0.125], [0.2, 0.75, 0.02, 0.25]],
+    ] as const) {
+      const model = lookupModel(id, 'openai_responses')
+      expect(model.provider).toBe('openai_responses')
+      expect(model.contextWindow).toBe(1_050_000)
+      expect(model.maxOutputTokens).toBe(128_000)
+      expect(model.effortLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+      const before = priceAt(model, { promptTokens: 272_000 })
+      const after = priceAt(model, { promptTokens: 272_001 })
+      expect([before.input, before.output, before.cacheRead, before.cacheWrite5m]).toEqual([
+        ...short,
+      ])
+      expect([after.input, after.output, after.cacheRead, after.cacheWrite5m]).toEqual([...long])
+    }
   })
 
   test('GPT-5.6 长上下文连缓存写入价一起换档', () => {
@@ -769,7 +804,7 @@ describe('目录里的价格与档位', () => {
     expect(after).toMatchObject({ input: 0.8, output: 2.8, cacheRead: 0.23, currency: 'CNY' })
   })
 
-  test('Kimi K3 三档，Qwen3.8 Max 已收录', () => {
+  test('Kimi K3 三档，Qwen3.8 Max 与 Omni Flash 已收录', () => {
     expect(spec('kimi-k3').effortLevels).toEqual(['low', 'high', 'max'])
     expect(spec('kimi-k3').pricing).toMatchObject({
       input: 20,
@@ -784,6 +819,17 @@ describe('目录里的价格与档位', () => {
     expect(spec('qwen3.8-max').effortLevels).toEqual(['low', 'medium', 'xhigh'])
     expect(spec('qwen3.8-max').chatReasoningProtocol).toBe('qwen_preserved')
     expect(spec('qwen3.8-max').chatToolSchema).toBe('openai_strict')
+    expect(spec('qwen3.8-omni-flash')).toMatchObject({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 131_072,
+      vision: true,
+      video: true,
+      thinksByDefault: true,
+      effortLevels: ['low', 'medium', 'xhigh'],
+      chatReasoningProtocol: 'qwen_preserved',
+      cacheRouting: 'none',
+      pricing: { input: 0.8, output: 2.7, cacheRead: 0.1, currency: 'CNY' },
+    })
   })
 
   test('GLM-5.3 系列 Chat 走保留思考协议，并保留厂商原生工具 schema', () => {

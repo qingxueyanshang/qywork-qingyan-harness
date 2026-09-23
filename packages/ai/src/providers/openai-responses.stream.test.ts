@@ -453,46 +453,48 @@ test('响应建立事件早于模型内容', async () => {
   expect(content).toBeGreaterThan(started)
 })
 
-test('GPT-6 Astra 内置规格通过 Responses 发送工具、输出上限与推理档位', async () => {
-  const spec = builtinCatalog().find((m) => m.id === 'gpt-6-astra')!
-  expect(spec.provider).toBe('openai_responses')
-  const astra = buildAdapter({
-    kind: spec.provider,
-    model: spec.id,
-    baseUrl: BASE,
-    apiKey: 'sk-test',
-  })
-  script = {
-    status: 200,
-    body: TEXT_RUN,
-    contentType: 'text/event-stream',
-    headers: {},
-    delayMs: 0,
-  }
-  for (const effort of [undefined, 'low', 'medium', 'high', 'xhigh', 'max'] as const) {
-    const events: ProviderEvent[] = []
-    for await (const event of astra.stream({
+test('GPT-6 内置规格通过 Responses 发送工具、输出上限与推理档位', async () => {
+  for (const id of ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']) {
+    const spec = builtinCatalog().find((m) => m.id === id)!
+    expect(spec.provider).toBe('openai_responses')
+    const adapter = buildAdapter({
+      kind: spec.provider,
       model: spec.id,
-      system: [],
-      messages: [{ role: 'user', content: '读取文件' }],
-      tools: [{ name: 'read_file', description: '读取文件', parameters: { type: 'object' } }],
-      maxOutputTokens: 200_000,
-      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
-      cacheKey: 'astra-session',
-      ...(effort ? { effort } : {}),
-    })) {
-      events.push(event)
-    }
-    expect(events.at(-1)?.type).toBe('done')
-    expect(lastBody).toMatchObject({
-      model: 'gpt-6-astra',
-      max_output_tokens: 128_000,
-      prompt_cache_key: 'astra-session',
-      tools: [{ type: 'function', name: 'read_file' }],
+      baseUrl: BASE,
+      apiKey: 'sk-test',
     })
-    expect(lastBody.reasoning?.effort).toBe(effort)
-    for (const field of ['temperature', 'top_p', 'top_logprobs', 'prompt_cache_retention']) {
-      expect(lastBody).not.toHaveProperty(field)
+    script = {
+      status: 200,
+      body: TEXT_RUN,
+      contentType: 'text/event-stream',
+      headers: {},
+      delayMs: 0,
+    }
+    for (const effort of [undefined, 'low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      const events: ProviderEvent[] = []
+      for await (const event of adapter.stream({
+        model: spec.id,
+        system: [],
+        messages: [{ role: 'user', content: '读取文件' }],
+        tools: [{ name: 'read_file', description: '读取文件', parameters: { type: 'object' } }],
+        maxOutputTokens: 200_000,
+        idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+        cacheKey: 'gpt-6-session',
+        ...(effort ? { effort } : {}),
+      })) {
+        events.push(event)
+      }
+      expect(events.at(-1)?.type).toBe('done')
+      expect(lastBody).toMatchObject({
+        model: id,
+        max_output_tokens: 128_000,
+        prompt_cache_key: 'gpt-6-session',
+        tools: [{ type: 'function', name: 'read_file' }],
+      })
+      expect(lastBody.reasoning?.effort).toBe(effort)
+      for (const field of ['temperature', 'top_p', 'top_logprobs', 'prompt_cache_retention']) {
+        expect(lastBody).not.toHaveProperty(field)
+      }
     }
   }
 })
