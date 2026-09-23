@@ -632,6 +632,33 @@ describe('逐模型的历史思考协议', () => {
     expect((body.messages as Record<string, unknown>[])[1]?.reasoning_content).toBe('完整思考')
   })
 
+  test('Qwen3.8 Omni Flash 的工具结果续轮保留思考与官方档位', async () => {
+    const body = await send(
+      'qwen3.8-omni-flash',
+      'medium',
+      [{ name: 'lookup', description: '查询', parameters: { type: 'object' } }],
+      [
+        { role: 'user', content: '查询' },
+        {
+          role: 'assistant',
+          content: '',
+          reasoningContent: '先查询',
+          toolCalls: [{ id: 'call_1', name: 'lookup', arguments: {} }],
+        },
+        { role: 'tool', content: '结果', toolCallId: 'call_1' },
+      ],
+    )
+    expect(body.preserve_thinking).toBe(true)
+    expect(body.reasoning_effort).toBe('medium')
+    expect(body).not.toHaveProperty('prompt_cache_key')
+    expect(body.tools).toMatchObject([{ type: 'function', function: { name: 'lookup' } }])
+    expect(body.messages).toMatchObject([
+      { role: 'user' },
+      { role: 'assistant', reasoning_content: '先查询', tool_calls: [{ id: 'call_1' }] },
+      { role: 'tool', tool_call_id: 'call_1', content: '结果' },
+    ])
+  })
+
   test('GLM-5.3 Flash 始终保留思考，并可单独选档', async () => {
     const bare = await send('glm-5.3-flash')
     expect(bare.thinking).toEqual({ type: 'enabled', clear_thinking: false })

@@ -96,6 +96,13 @@ async function send(
 }
 
 describe('思考档位严格遵守用户选择', () => {
+  test('Claude Opus 5.5 思考恒开，强度通过 output_config 发送', async () => {
+    const body = await send([{ role: 'user', content: 'hi' }], 'medium', 'claude-opus-5-5')
+    expect(body.model).toBe('claude-opus-5-5')
+    expect(body).not.toHaveProperty('thinking')
+    expect(body.output_config).toEqual({ effort: 'medium' })
+  })
+
   test('MiMo 按 Messages 形状回传文本轮与工具轮思考，不发送伪强度', async () => {
     const body = await send(
       [

@@ -394,6 +394,26 @@ const GPT_6_ASTRA_LONG: LongContextTier = {
   note: '提示词超过 272K token 后整条请求按 $20 / $75（缓存 $2）计价',
 }
 
+const GPT_6_SOL_LONG: LongContextTier = {
+  thresholdTokens: 272_001,
+  input: 4,
+  output: 15,
+  cacheRead: 0.4,
+  cacheWrite5m: 5,
+  cacheWrite1h: 5,
+  note: '提示词超过 272K token 后整条请求按 $4 / $15（缓存 $0.4）计价',
+}
+
+const GPT_6_LUNA_LONG: LongContextTier = {
+  thresholdTokens: 272_001,
+  input: 0.2,
+  output: 0.75,
+  cacheRead: 0.02,
+  cacheWrite5m: 0.25,
+  cacheWrite1h: 0.25,
+  note: '提示词超过 272K token 后整条请求按 $0.2 / $0.75（缓存 $0.02）计价',
+}
+
 const GPT_56_SOL_LONG: LongContextTier = {
   thresholdTokens: 272_001,
   input: 8,
@@ -692,6 +712,15 @@ const CLAUDE_BASE = {
 
 export function claudeCatalog(): ModelSpec[] {
   return [
+    {
+      ...CLAUDE_BASE,
+      id: 'claude-opus-5-5',
+      displayName: 'Claude Opus 5.5',
+      pricing: { ...anthropicPricing(4, 20), cacheRead: 0.2 },
+      thinking: 'always_on',
+      thinksByDefault: true,
+      minCacheablePrefix: 512,
+    },
     {
       ...CLAUDE_BASE,
       id: 'claude-fable-5-1',
@@ -1043,6 +1072,33 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       pricing: usd(10, 50, 1, 12.5),
       longContext: [GPT_6_ASTRA_LONG],
     },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
+      id: 'gpt-6-sol',
+      displayName: 'GPT-6 Sol',
+      vendor: 'openai',
+      // 思考档位下的工具调用要求 Responses API。
+      provider: 'openai_responses',
+      vision: true,
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(2, 10, 0.2, 2.5),
+      longContext: [GPT_6_SOL_LONG],
+    },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
+      id: 'gpt-6-luna',
+      displayName: 'GPT-6 Luna',
+      vendor: 'openai',
+      provider: 'openai_responses',
+      vision: true,
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(0.1, 0.5, 0.01, 0.125),
+      longContext: [GPT_6_LUNA_LONG],
+    },
     /*
      * ── OpenAI GPT-5.6 ──
      *
@@ -1254,17 +1310,20 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
 
     // ── 阿里云百炼 Qwen（人民币标价）──
     /*
-     * 官方模型页（2026-08）逐字，华北 2（北京），单位 ¥/百万：
+     * 官方模型页（2026-09）逐字，华北 2（北京），单位 ¥/百万：
      *
      * | 模型 | 窗口 | 最大输出 | 输入 | 输出 | 命中 | 输入模态 |
      * |---|---|---|---|---|---|---|
      * | qwen3.8-max | 1,000,000 | 131,072 | 12 | 36 | 1.5 | Image、Text、Video |
      * | qwen3.8-flash | 1,000,000 | 131,072 | 0.8 | 2.7 | 0.1 | Image、Text、Video |
+     * | qwen3.8-omni-flash | 1,000,000 | 131,072 | 0.8 | 2.7 | 0.1 | Image、Text、Audio、Video |
      * | qwen3.7-max | 1,000,000 | 131,072 | 12 | 36 | 2.4 | Text |
      * | qwen3.7-plus | 1,000,000 | 131,072 | 2 | 8 | 0.4 | Image、Text、Video |
      * | qwen3.7-flash | 1,000,000 | 131,072 | 0.2 | 0.8 | 0.04 | Image、Text、Video |
      * | qwen3-vl-plus | 262,144 | 32,768 | 1 | 10 | 0.2 | Image、Text、Video |
      * | qwen3-vl-flash | 262,144 | 32,768 | 0.15 | 1.5 | 0.03 | Image、Text、Video |
+     *
+     * Omni Flash 的新加坡地域另有 ¥1.094 / ¥3.427 / 缓存 ¥0.117；此目录记北京价。
      *
      * **最大输出那一列容易记错**：plus 与 flash 都是 131,072。
      *
@@ -1304,6 +1363,21 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'qwen3.8-flash',
       displayName: 'Qwen3.8 Flash',
       vendor: 'alibaba',
+      vision: true,
+      video: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 131_072,
+      pricing: cny(0.8, 2.7, 0.1),
+      chatReasoningProtocol: 'qwen_preserved',
+      cacheRouting: 'none',
+    },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'xhigh']),
+      id: 'qwen3.8-omni-flash',
+      displayName: 'Qwen3.8 Omni Flash',
+      vendor: 'alibaba',
+      // 当前目录只声明已接通的图片与视频输入；音频输入由模型支持，但本协议适配器尚未接通。
       vision: true,
       video: true,
       contextWindow: 1_000_000,

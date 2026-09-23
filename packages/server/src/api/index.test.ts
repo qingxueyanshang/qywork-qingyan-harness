@@ -724,6 +724,21 @@ describe('模型目录', () => {
     })
   })
 
+  test('Claude、GPT-6 与 Qwen 新型号进入模型库和已配置列表', async () => {
+    for (const [kind, id, vendor, label] of [
+      ['anthropic_messages', 'claude-opus-5-5', 'anthropic', 'Claude Opus 5.5'],
+      ['openai_responses', 'gpt-6-sol', 'openai', 'GPT-6 Sol'],
+      ['openai_responses', 'gpt-6-luna', 'openai', 'GPT-6 Luna'],
+      ['openai_chat_completions', 'qwen3.8-omni-flash', 'alibaba', 'Qwen3.8 Omni Flash'],
+    ] as const) {
+      const b = await body(withConfig(kind, id))
+      const rows = b.library.find((v) => v.id === vendor)!.models.filter((m) => m.id === id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.label).toBe(label)
+      expect(b.providers[0]!.models[0]).toMatchObject({ id, label, known: true })
+    }
+  })
+
   test('MiMo 的三种协议规格同时进入模型库与已配置列表', async () => {
     for (const kind of ['openai_chat_completions', 'openai_responses', 'anthropic_messages']) {
       const b = await body(withConfig(kind, 'mimo-v2.6-pro'))
