@@ -361,6 +361,70 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
   }
 })
 
+test.each(['running', 'success', 'failure'] as const)(
+  '文件卡显示实际落盘路径：%s',
+  async (status) => {
+    const store = await import('../lib/store/index.ts')
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const workspaceBefore = store.workspace()
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      views: {
+        [CV]: {
+          history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
+          runStartedAt: null,
+          usage: null,
+          generatingToolCall: false,
+          request: null,
+          error: null,
+          transcript: [
+            {
+              id: 'tool-created-path',
+              kind: 'tool',
+              text: '',
+              toolName: 'write_file',
+              action: { kind: 'write', objectLabel: '文件', target: 'page.html' },
+              args: { path: 'page.html', mode: 'create', on_conflict: 'rename', content: 'new' },
+              status,
+              ...(status === 'success'
+                ? {
+                    outcome: {
+                      status: 'success',
+                      executed: true,
+                      message: '创建 page-2.html',
+                      data: { path: 'page-2.html' },
+                      fileChanges: [
+                        { path: 'page-2.html', changeType: 'created', additions: 1, deletions: 0 },
+                      ],
+                    },
+                  }
+                : {}),
+            },
+          ],
+        },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(() => <Transcript />, host)
+    try {
+      expect(host.querySelector('.fold-target')?.getAttribute('data-tip')).toBe(
+        status === 'success' ? 'page-2.html' : 'page.html',
+      )
+      expect(host.querySelector('.fold-label')?.textContent).toContain('创建文件')
+    } finally {
+      dispose()
+      host.remove()
+      await resetStore()
+      store.setWorkspace(workspaceBefore)
+    }
+  },
+)
+
 describe('工具图片回放', () => {
   test('read_file 图片只给模型，不自动渲染成会话图片', async () => {
     const store = await import('../lib/store/index.ts')

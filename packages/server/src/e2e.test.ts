@@ -45,7 +45,7 @@ function toolTurn(path: string, content: string): string {
     {
       type: 'response.function_call_arguments.delta',
       item_id: 'fc_1',
-      delta: JSON.stringify({ path, content }),
+      delta: JSON.stringify({ path, mode: 'create', content }),
     },
     { type: 'response.output_item.done', output_index: 0, item: { type: 'function_call' } },
     {
