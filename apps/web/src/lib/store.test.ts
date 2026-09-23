@@ -2370,6 +2370,8 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     headersAt: null,
     firstContentAt: null,
     lastContentAt: null,
+    lastContentKind: null,
+    lastVisibleAt: null,
     backoffUntil: null,
   }
 
@@ -2411,6 +2413,26 @@ describe('刷新按同一份请求账恢复当前请求', () => {
       headersAt: 1_400,
       lastContentAt: null,
     })
+  })
+
+  test('工具参数流刷新后仍保留类型与上次可见时刻', async () => {
+    await reload(
+      snapshot({
+        ...baseRequest,
+        headersAt: 1_400,
+        firstContentAt: 1_500,
+        lastContentAt: 61_500,
+        lastContentKind: 'tool_arguments',
+        lastVisibleAt: 1_500,
+      }),
+    )
+    expect(viewOf('cv_live').request).toMatchObject({
+      phase: 'content',
+      lastContentAt: 61_500,
+      lastContentKind: 'tool_arguments',
+      lastVisibleAt: 1_500,
+    })
+    expect(viewOf('cv_live').generatingToolCall).toBe(true)
   })
 
   /**
@@ -2455,6 +2477,8 @@ describe('刷新按同一份请求账恢复当前请求', () => {
         headersAt: 1_200,
         firstContentAt: 1_500,
         lastContentAt: 61_500,
+        lastContentKind: 'text',
+        lastVisibleAt: 61_500,
       }),
     )
     await reloadActiveConversation()
@@ -2463,6 +2487,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
       attempt: 2,
       max: 5,
       lastContentAt: 61_500,
+      lastVisibleAt: 61_500,
     })
     // 刷新只打一次历史接口，运行中快照随它一起回来，没有第二个接口。
     expect(historyCalls).toBe(1)
@@ -2487,13 +2512,24 @@ describe('刷新按同一份请求账恢复当前请求', () => {
         at: 9_000,
       },
     } as never)
-    stubHistory(snapshot({ ...baseRequest, requestId: 'pr_old' }, 100))
+    stubHistory(
+      snapshot(
+        {
+          ...baseRequest,
+          requestId: 'pr_old',
+          lastContentAt: 5_000,
+          lastContentKind: 'tool_arguments',
+        },
+        100,
+      ),
+    )
     await reloadActiveConversation()
     expect(viewOf('cv_live').request).toMatchObject({
       requestId: 'pr_new',
       attempt: 3,
       phase: 'headers',
     })
+    expect(viewOf('cv_live').generatingToolCall).toBe(false)
   })
 
   /** 已落终态的 run 不带快照，投影随之清空——界面不会把它画成还在执行。 */

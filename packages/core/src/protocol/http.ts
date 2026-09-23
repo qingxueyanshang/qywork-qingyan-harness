@@ -15,6 +15,7 @@ import type { MessageId } from '../domain/ids.ts'
 import type {
   FileChange,
   Message,
+  ProviderRequestContentKind,
   ProviderRequestStatus,
   Run,
   Step,
@@ -84,6 +85,8 @@ export interface LiveRequestSnapshot {
   headersAt: number | null
   firstContentAt: number | null
   lastContentAt: number | null
+  lastContentKind: ProviderRequestContentKind | null
+  lastVisibleAt: number | null
   /**
    * 退避倒计时的截止点（等待开始时刻 + 退避时长）。
    * 只有「这一次已失败且下一次尚未发出」时才非空。

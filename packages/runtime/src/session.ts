@@ -949,8 +949,8 @@ export class Session {
         markProviderRequestHeaders(store, requestId as never, at),
       markRequestFirstEvent: (requestId) =>
         markProviderRequestFirstEvent(store, requestId as never),
-      markRequestContent: (requestId, at) =>
-        markProviderRequestContent(store, requestId as never, at),
+      markRequestContent: (requestId, at, kind, visible) =>
+        markProviderRequestContent(store, requestId as never, at, kind, visible),
       markRequestInputImages: (requestId, batchId) =>
         markProviderRequestInputImages(store, requestId as never, batchId),
       inputImagesConsumed: (batchId) =>

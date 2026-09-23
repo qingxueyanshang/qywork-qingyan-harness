@@ -632,13 +632,16 @@ function writeRequest(
   cid: string,
   seq: number,
   next: (prev: RequestProjection | null) => RequestProjection | null,
+  generatingToolCall?: boolean,
 ): void {
   setState(
     produce((s) => {
       const v = s.views[cid]
       if (!v) return
       if (v.request && seq <= v.request.seq) return
-      v.request = next(v.request)
+      const request = next(v.request)
+      v.request = request
+      if (generatingToolCall !== undefined) v.generatingToolCall = generatingToolCall
     }),
   )
 }
@@ -665,54 +668,88 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
       return
 
     case 'run.request':
-      setState('views', cid, 'generatingToolCall', false)
-      writeRequest(cid, seq, (prev) => ({
-        requestId: ev.requestId,
-        attempt: ev.attempt,
-        max: ev.max,
-        phase: ev.phase,
-        // 发出即结束等待：截止点清掉，次数留着。
-        backoffUntil: null,
-        sentAt:
-          ev.phase === 'sent'
-            ? ev.at
-            : prev?.requestId === ev.requestId
-              ? (prev?.sentAt ?? null)
-              : null,
-        headersAt: ev.phase === 'headers' ? ev.at : null,
-        lastContentAt: null,
+      writeRequest(
+        cid,
         seq,
-      }))
+        (prev) => ({
+          requestId: ev.requestId,
+          attempt: ev.attempt,
+          max: ev.max,
+          phase: ev.phase,
+          // 发出即结束等待：截止点清掉，次数留着。
+          backoffUntil: null,
+          sentAt:
+            ev.phase === 'sent'
+              ? ev.at
+              : prev?.requestId === ev.requestId
+                ? (prev?.sentAt ?? null)
+                : null,
+          headersAt: ev.phase === 'headers' ? ev.at : null,
+          lastContentAt: null,
+          lastContentKind: null,
+          lastVisibleAt: null,
+          seq,
+        }),
+        false,
+      )
       return
 
     case 'run.retrying':
-      setState('views', cid, 'generatingToolCall', false)
-      writeRequest(cid, seq, () => ({
-        requestId: ev.requestId,
-        attempt: ev.attempt,
-        max: ev.max,
-        phase: 'backoff',
-        backoffUntil: ev.at + ev.backoffMs,
-        sentAt: null,
-        headersAt: null,
-        lastContentAt: null,
+      writeRequest(
+        cid,
         seq,
-      }))
+        () => ({
+          requestId: ev.requestId,
+          attempt: ev.attempt,
+          max: ev.max,
+          phase: 'backoff',
+          backoffUntil: ev.at + ev.backoffMs,
+          sentAt: null,
+          headersAt: null,
+          lastContentAt: null,
+          lastContentKind: null,
+          lastVisibleAt: null,
+          seq,
+        }),
+        false,
+      )
       return
 
     case 'thinking.delta':
     case 'text.delta':
-    case 'tool.generating':
-      setState('views', cid, 'generatingToolCall', ev.type === 'tool.generating')
+    case 'tool.generating': {
+      const kind =
+        ev.type === 'thinking.delta'
+          ? 'thinking'
+          : ev.type === 'text.delta'
+            ? 'text'
+            : 'tool_arguments'
       /*
        * 内容事件不带 requestId，所以只推进已有投影的阶段与最后内容时刻。
-       * 没有投影时整条丢掉——那说明 `run.request` 还没到（首屏加载期），
-       * 此刻凭空造一条投影等于编一个 requestId 与次数，而刷新快照马上会给真值。
+       * 没有投影时不造请求阶段——那说明 `run.request` 还没到（首屏加载期），
+       * 凭空补 requestId 与次数是编造；内容类型仍可供当前思考折叠显示。
        */
-      writeRequest(cid, seq, (prev) =>
-        prev ? { ...prev, phase: 'content', lastContentAt: ev.at, seq } : null,
+      writeRequest(
+        cid,
+        seq,
+        (prev) =>
+          prev
+            ? {
+                ...prev,
+                phase: 'content',
+                lastContentAt: ev.at,
+                lastContentKind: kind,
+                lastVisibleAt:
+                  ev.type === 'tool.generating' || ev.delta.length === 0
+                    ? prev.lastVisibleAt
+                    : ev.at,
+                seq,
+              }
+            : null,
+        ev.type === 'tool.generating',
       )
       return
+    }
 
     case 'usage':
       setState('views', cid, 'usage', ev.usage)
@@ -923,6 +960,8 @@ function projectLive(live: ConversationLiveSnapshot): RequestProjection | null {
     sentAt: r.sentAt,
     headersAt: r.headersAt,
     lastContentAt: r.lastContentAt,
+    lastContentKind: r.lastContentKind ?? null,
+    lastVisibleAt: r.lastVisibleAt ?? null,
     seq: live.seq,
   }
 }
@@ -941,6 +980,7 @@ function restoreRequest(v: ConversationView, live: ConversationLiveSnapshot | nu
   }
   if (v.request && live.seq < v.request.seq) return
   v.request = projectLive(live)
+  v.generatingToolCall = v.request?.lastContentKind === 'tool_arguments'
 }
 
 /** 一页折成会话流：首派先进流，它自己那一行由 workflow 折叠藏起来，只为把那张卡画全。 */

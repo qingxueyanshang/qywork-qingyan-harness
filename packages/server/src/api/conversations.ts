@@ -257,6 +257,8 @@ function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSn
       headersAt: last.headersAt,
       firstContentAt: last.firstContentAt,
       lastContentAt: last.lastContentAt,
+      lastContentKind: last.lastContentKind,
+      lastVisibleAt: last.lastVisibleAt,
       // 只有「这一次已失败、下一次还没登记」时才在等待：下一行一开，这一行就不再是当前请求。
       backoffUntil:
         settled && resend && resend.at !== null ? resend.at + (resend.backoffMs ?? 0) : null,

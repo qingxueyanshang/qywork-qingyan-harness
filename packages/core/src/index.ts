@@ -76,6 +76,7 @@ export {
   type ProviderFailureCause,
   type ProviderKind,
   type ProviderRequest,
+  type ProviderRequestContentKind,
   type ProviderRequestDiagnostic,
   type ProviderRequestPurpose,
   type ProviderRequestStatus,
