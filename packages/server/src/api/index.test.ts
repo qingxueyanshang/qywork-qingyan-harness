@@ -1270,8 +1270,8 @@ describe('会话历史分页接口', () => {
     const live = open(1)
     markProviderRequestSent(d.store, live.id)
     markProviderRequestHeaders(d.store, live.id, 1_700_000_061_000)
-    markProviderRequestContent(d.store, live.id, 1_700_000_062_000)
-    markProviderRequestContent(d.store, live.id, 1_700_000_065_000)
+    markProviderRequestContent(d.store, live.id, 1_700_000_062_000, 'thinking', true)
+    markProviderRequestContent(d.store, live.id, 1_700_000_065_000, 'tool_arguments', false)
 
     const res = await call(`/api/conversations/${conv.id}/history`, undefined, d)
     const page = (await res?.json()) as ConversationHistoryPageResponse
@@ -1287,6 +1287,8 @@ describe('会话历史分页接口', () => {
       headersAt: 1_700_000_061_000,
       firstContentAt: 1_700_000_062_000,
       lastContentAt: 1_700_000_065_000,
+      lastContentKind: 'tool_arguments',
+      lastVisibleAt: 1_700_000_062_000,
       // 下一次已经发出，退避结束，倒计时不再有截止点。
       backoffUntil: null,
     })

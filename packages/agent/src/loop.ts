@@ -42,6 +42,7 @@ import type {
   FileChange,
   ProviderFailureCause,
   ProviderKind,
+  ProviderRequestContentKind,
   ProviderRequestDiagnostic,
   ProviderRequestPurpose,
   ProviderRetryDecision,
@@ -338,7 +339,12 @@ export interface LoopPersistence {
    *
    * `at` 是适配器解析该段时的观察时刻，由 provider 事件带上来，不是本方法被调用的时刻。
    */
-  markRequestContent?(requestId: string, at: number): void
+  markRequestContent?(
+    requestId: string,
+    at: number,
+    kind?: ProviderRequestContentKind,
+    visible?: boolean,
+  ): void
   /**
    * 请求终态。`usage` 为 null = provider 没回报，**四个字段落 null 不落 0**——
    * 中转站漏 usage 是常态，记成 0 会让上下文锚点误判成「这次什么都没占」。
@@ -1314,7 +1320,18 @@ export class AgentLoop {
                   ev.type === 'tool_calls' ||
                   ev.type === 'response_reasoning'
                 ) {
-                  persist.markRequestContent?.(requestId, ev.at)
+                  const kind: ProviderRequestContentKind =
+                    ev.type === 'thinking_delta'
+                      ? 'thinking'
+                      : ev.type === 'text_delta'
+                        ? 'text'
+                        : ev.type === 'tool_call_progress' || ev.type === 'tool_calls'
+                          ? 'tool_arguments'
+                          : 'other'
+                  const visible =
+                    (ev.type === 'thinking_delta' && ev.delta.length > 0) ||
+                    (ev.type === 'text_delta' && (open?.kind === 'text' || /\S/.test(ev.delta)))
+                  persist.markRequestContent?.(requestId, ev.at, kind, visible)
                 }
               }
               if (input.signal.aborted) break

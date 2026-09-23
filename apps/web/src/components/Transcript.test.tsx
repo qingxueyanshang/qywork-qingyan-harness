@@ -240,7 +240,7 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
   const workspaceBefore = store.workspace()
   const connectionBefore = store.state.connection
   const { render } = await import('solid-js/web')
-  const { LiveRunBar } = await import('./Transcript.tsx')
+  const { LiveRunBar, TranscriptRows } = await import('./Transcript.tsx')
   const ids = ['cv_progress_main', 'cv_progress_child']
   store.setState({
     activeConversation: ids[0]!,
@@ -262,6 +262,8 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
       sentAt: null,
       headersAt: null,
       lastContentAt: Date.now() - 31_000,
+      lastContentKind: 'thinking' as const,
+      lastVisibleAt: Date.now() - 60_000,
       seq: ++seq,
     })
   for (const id of ids) {
@@ -269,6 +271,9 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
     store.setState('views', id, 'runStartedAt', Date.now() - 60_000)
     silent(id)
   }
+  store.setState('views', ids[1]!, 'transcript', [
+    { id: 'st_progress_thinking', kind: 'thinking', text: '先前的思考' },
+  ])
   const host = document.createElement('div')
   document.body.append(host)
   const dispose = render(
@@ -276,6 +281,11 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
       <>
         <LiveRunBar conversationId={ids[0]!} />
         <LiveRunBar conversationId={ids[1]!} />
+        <TranscriptRows
+          items={store.viewOf(ids[1]!).transcript}
+          live={() => true}
+          generatingToolCall={() => store.viewOf(ids[1]!).generatingToolCall}
+        />
       </>
     ),
     host as unknown as HTMLElement,
@@ -290,12 +300,14 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
   const notes = () => [...host.querySelectorAll('.run-live')].map((el) => el.textContent)
   try {
     expect(notes().every((note) => note?.includes('无新增内容'))).toBe(true)
+    expect(host.querySelector('.fold-label')?.textContent).toContain('思考中')
     progress(ids[0]!)
-    expect(notes()[0]).toBe('正在生成…')
+    expect(notes()[0]).toMatch(/^等待响应，已 60 秒无可见进展$/)
     expect(notes()[1]).toContain('无新增内容')
     expect(store.viewOf(ids[0]!).transcript).toHaveLength(0)
     progress(ids[1]!)
-    expect(notes()).toEqual(['正在生成…', '正在生成…'])
+    expect(notes().every((note) => note?.includes('无可见进展'))).toBe(true)
+    expect(host.querySelector('.fold-label')?.textContent).toContain('已思考')
 
     silent(ids[0]!)
     expect(notes()[0]).toContain('无新增内容')
@@ -330,8 +342,23 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
       },
     } as never)
     expect(notes()[0]).toBe('正在重连 1 / 5…')
+    store.applyEvent({
+      seq: ++seq,
+      at: Date.now(),
+      conversationId: ids[0],
+      event: {
+        type: 'run.request',
+        runId: 'rn_progress',
+        requestId: 'pr_retry',
+        phase: 'headers',
+        attempt: 1,
+        max: 5,
+        at: Date.now(),
+      },
+    } as never)
+    expect(notes()[0]).toBe('等待响应…')
     progress(ids[0]!)
-    expect(notes()[0]).toBe('正在生成…')
+    expect(notes()[0]).toBe('等待响应…')
     store.applyEvent({
       seq: ++seq,
       at: Date.now(),
@@ -351,6 +378,8 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
     } as never)
     expect(notes()[0]).toBe('正在执行…')
     expect(store.viewOf(ids[0]!).generatingToolCall).toBe(false)
+    store.setState('connection', 'reconnecting')
+    expect(notes()).toEqual([])
   } finally {
     dispose()
     host.remove()

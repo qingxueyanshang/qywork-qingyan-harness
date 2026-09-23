@@ -18,6 +18,7 @@ import type {
   Currency,
   MessageId,
   ProviderKind,
+  ProviderRequestContentKind,
   ProviderRequestId,
   ProviderRequestStatus,
   ResourceId,
@@ -2139,6 +2140,15 @@ CREATE INDEX idx_schedules_conversation ON schedules(conversation_id);
      */
     sql: `ALTER TABLE provider_requests ADD COLUMN last_content_at INTEGER;`,
   },
+  {
+    id: 61,
+    name: 'provider_request_visible_progress',
+    // 内容类别与可见时刻同属请求账本；不从旧行的首内容时刻猜测可见进展。
+    sql: `
+ALTER TABLE provider_requests ADD COLUMN last_content_kind TEXT CHECK (last_content_kind IN ('thinking','text','tool_arguments','other'));
+ALTER TABLE provider_requests ADD COLUMN last_visible_at INTEGER;
+`,
+  },
 ]
 
 /**
@@ -2298,6 +2308,8 @@ export interface ProviderRequestRow {
   first_event_at: number | null
   first_content_at: number | null
   last_content_at: number | null
+  last_content_kind: ProviderRequestContentKind | null
+  last_visible_at: number | null
   completed_at: number | null
   created_at: number
 }
@@ -2446,6 +2458,8 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'first_event_at',
     'first_content_at',
     'last_content_at',
+    'last_content_kind',
+    'last_visible_at',
     'completed_at',
     'created_at',
   ],

@@ -321,7 +321,13 @@ export function ConversationStream(props: {
             />
           )}
         </Show>
-        <TranscriptRows items={props.items} live={props.live} />
+        <TranscriptRows
+          items={props.items}
+          live={props.live}
+          generatingToolCall={() =>
+            props.conversationId ? viewOf(props.conversationId).generatingToolCall : false
+          }
+        />
         {props.trailing}
         {/* 收尾条与读数条不并存：这一轮收尾之后仍有格在跑时，那几格的数印在收尾条上。 */}
         <Show when={props.live() && !props.closed() && props.conversationId}>
@@ -423,7 +429,6 @@ function liveStatus(now: number, conversationId: string): string {
   const current = viewOf(conversationId)
   const items = current.transcript
   const last = items[items.length - 1]
-  if (last?.kind === 'tool' && last.status === 'running') return '正在执行…'
 
   /*
    * 连接不在 ready 上时**这一格什么都不说**。
@@ -434,6 +439,7 @@ function liveStatus(now: number, conversationId: string): string {
    * 各写一份、迟早漂成两句话。
    */
   if (state.connection !== 'ready') return ''
+  if (last?.kind === 'tool' && last.status === 'running') return '正在执行…'
 
   const req = current.request
   if (!req) return '正在请求…'
@@ -456,10 +462,21 @@ function liveStatus(now: number, conversationId: string): string {
       if (req.lastContentAt !== null && now - req.lastContentAt >= SILENT_MS) {
         return `已 ${Math.round((now - req.lastContentAt) / 1000)} 秒无新增内容`
       }
-      if (current.generatingToolCall) return '正在生成…'
+      // 上游仍在送工具参数也不能掩盖用户长时间看不到新内容。
+      // 存量请求没有这个字段，避免从首内容时刻猜测可见进展。
+      const visibleSince = req.lastVisibleAt ?? req.headersAt ?? req.sentAt
+      if (req.lastContentKind != null && visibleSince !== null && now - visibleSince >= SILENT_MS) {
+        return `等待响应，已 ${Math.round((now - visibleSince) / 1000)} 秒无可见进展`
+      }
+      // 内容类别来自请求投影；旧快照没有类别时才按末条 transcript 兜底。
+      if (req.lastContentKind === 'tool_arguments' || req.lastContentKind === 'other')
+        return '等待响应…'
+      if (req.lastContentKind === 'thinking') return '正在思考…'
+      if (req.lastContentKind === 'text') return '正在回复…'
+      if (current.generatingToolCall) return '等待响应…'
       if (last?.kind === 'thinking') return '正在思考…'
       if (last?.kind === 'text') return '正在回复…'
-      return '正在请求…'
+      return '等待响应…'
     }
   }
 }
@@ -667,7 +684,9 @@ function Fold(props: {
 function ThinkingFold(props: { item: TranscriptItem }) {
   const row = useContext(RowStream)
   // memo 而不是取值函数，理由同 `Prose`：读的两样每 push 一条就通知一次。
-  const streaming = createMemo(() => row.live() && row.items().at(-1)?.id === props.item.id)
+  const streaming = createMemo(
+    () => row.live() && !row.generatingToolCall() && row.items().at(-1)?.id === props.item.id,
+  )
   // 流仍在增长时说「思考中」，停了说「已思考」——避免出现
   // 「标签写着已思考、旁边转圈说正在思考」的自相矛盾。
   const verb = () => (streaming() ? '思考中' : '已思考')
@@ -973,9 +992,14 @@ function compactionFailureLabel(code: string | undefined): string {
  * 那一列；右侧的子会话页给它自己那条——拿当前会话的末项去比的话，子会话的每一段
  * 正文都会被判成已定稿，每来一批字就整段重排一次。
  */
-const RowStream = createContext<{ items: () => TranscriptItem[]; live: () => boolean }>({
+const RowStream = createContext<{
+  items: () => TranscriptItem[]
+  live: () => boolean
+  generatingToolCall: () => boolean
+}>({
   items: transcript,
   live: isRunning,
+  generatingToolCall: () => false,
 })
 
 /** 六行用户正文的实际高度：`--fs-prose` 13.5px × 1.55 行高 × 6，取整为 126px。改 `.bubble` 的字号或行高时这里要跟着改。 */
@@ -1063,10 +1087,20 @@ function keyedRows(source: () => RenderItem[]): Accessor<RenderRow[]> {
   })
 }
 
-export function TranscriptRows(props: { items: TranscriptItem[]; live?: () => boolean }) {
+export function TranscriptRows(props: {
+  items: TranscriptItem[]
+  live?: () => boolean
+  generatingToolCall?: () => boolean
+}) {
   const rows = keyedRows(() => buildRenderItems(props.items))
   return (
-    <RowStream.Provider value={{ items: () => props.items, live: props.live ?? isRunning }}>
+    <RowStream.Provider
+      value={{
+        items: () => props.items,
+        live: props.live ?? isRunning,
+        generatingToolCall: props.generatingToolCall ?? (() => false),
+      }}
+    >
       <For each={rows()}>
         {({ node }) => (
           <Switch>

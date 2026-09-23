@@ -1193,6 +1193,7 @@ export function envelopeHeadTokens(breakdown: ContextBreakdown): number {
  * 常态，把没回报记成 0 会让上下文锚点误判成「这次请求什么都没占」。
  */
 export type ProviderRequestPurpose = 'turn' | 'summary'
+export type ProviderRequestContentKind = 'thinking' | 'text' | 'tool_arguments' | 'other'
 
 export interface ProviderRequest {
   id: ProviderRequestId
@@ -1276,6 +1277,10 @@ export interface ProviderRequest {
    * 心跳、空 delta、响应头与用量都不推进它。NULL = 存量行或本次尚无内容。
    */
   lastContentAt: number | null
+  /** 最近一段内容的类型；NULL 表示尚无内容或旧行。用于刷新后恢复运行中状态。 */
+  lastContentKind: ProviderRequestContentKind | null
+  /** 最后一次真正显示到会话里的思考或正文；工具参数增量不推进它。 */
+  lastVisibleAt: number | null
   /** 请求进入 received / uncertain / rejected 终态的时刻。 */
   completedAt: number | null
   createdAt: number

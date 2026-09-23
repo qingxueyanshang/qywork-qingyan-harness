@@ -68,9 +68,9 @@ function ledger(): Ledger {
     markRequestSent: (id) => markProviderRequestSent(store, id as never),
     markRequestHeaders: (id, at) => markProviderRequestHeaders(store, id as never, at),
     markRequestFirstEvent: (id) => markProviderRequestFirstEvent(store, id as never),
-    markRequestContent: (id, at) => {
+    markRequestContent: (id, at, kind, visible) => {
       contentMarks.push(at)
-      markProviderRequestContent(store, id as never, at)
+      markProviderRequestContent(store, id as never, at, kind, visible)
     },
     recordRequestDiagnostic: (id, diagnostic) =>
       recordProviderRequestDiagnostic(store, id as never, diagnostic),
@@ -185,9 +185,27 @@ test('退避重发的阶段事件：退避 → 发出 → 响应头 → 内容�
     const delta = events.find((e) => e.type === 'text.delta')
     if (delta?.type !== 'text.delta') throw new Error('缺少 text.delta')
     expect(delta.at).toBe(rows[1]!.lastContentAt!)
+    expect(rows[1]!.lastContentKind).toBe('text')
+    expect(rows[1]!.lastVisibleAt).toBe(delta.at)
     // 被回绝的那一行一个字都没收到，内容时刻两列都空。
     expect(rows[0]!.firstContentAt).toBeNull()
     expect(rows[0]!.lastContentAt).toBeNull()
+  } finally {
+    led.close()
+    fault.stop()
+  }
+}, 30_000)
+
+test('未完成工具参数只推进内容时刻，不冒充可见正文', async () => {
+  const fault: FaultServer = startFaultServer('truncated_tool_call')
+  const led = ledger()
+  try {
+    const events = await runAgainst(led, fault.openaiBaseUrl)
+    expect(events.some((e) => e.type === 'tool.generating')).toBe(true)
+    const row = led.rows()[0]!
+    expect(row.lastContentKind).toBe('tool_arguments')
+    expect(row.lastContentAt).not.toBeNull()
+    expect(row.lastVisibleAt).toBeNull()
   } finally {
     led.close()
     fault.stop()

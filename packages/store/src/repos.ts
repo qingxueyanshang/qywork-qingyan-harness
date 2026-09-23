@@ -22,6 +22,7 @@ import type {
   NodeState,
   ProviderKind,
   ProviderRequest,
+  ProviderRequestContentKind,
   ProviderRequestDiagnostic,
   ProviderRequestId,
   ProviderRequestPurpose,
@@ -1507,6 +1508,8 @@ export function openProviderRequest(
     firstEventAt: null,
     firstContentAt: null,
     lastContentAt: null,
+    lastContentKind: null,
+    lastVisibleAt: null,
     completedAt: null,
     createdAt: Date.now(),
   }
@@ -1612,12 +1615,21 @@ export function markProviderRequestFirstEvent(store: Store, id: ProviderRequestI
  * 首值由 `COALESCE` 保在 `first_content_at`，末值每次覆盖 `last_content_at`，
  * 两列一次更新写完——分成两条语句会让它们在中途失败时对不上。
  */
-export function markProviderRequestContent(store: Store, id: ProviderRequestId, at: number): void {
+export function markProviderRequestContent(
+  store: Store,
+  id: ProviderRequestId,
+  at: number,
+  kind: ProviderRequestContentKind | null = null,
+  visible = false,
+): void {
   store.db
     .query(
-      'UPDATE provider_requests SET first_content_at = COALESCE(first_content_at, ?), last_content_at = ? WHERE id = ?',
+      `UPDATE provider_requests SET
+       first_content_at = COALESCE(first_content_at, ?), last_content_at = ?,
+       last_content_kind = ?, last_visible_at = CASE WHEN ? THEN ? ELSE last_visible_at END
+       WHERE id = ?`,
     )
-    .run(at, at, id)
+    .run(at, at, kind, visible ? 1 : 0, at, id)
 }
 
 /**
@@ -1756,6 +1768,8 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     firstEventAt: r.first_event_at,
     firstContentAt: r.first_content_at,
     lastContentAt: r.last_content_at,
+    lastContentKind: r.last_content_kind,
+    lastVisibleAt: r.last_visible_at,
     completedAt: r.completed_at,
     createdAt: r.created_at,
   }

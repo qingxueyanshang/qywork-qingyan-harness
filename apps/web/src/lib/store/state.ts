@@ -23,6 +23,7 @@ import type {
   GitStateEvent,
   Goal,
   NodeState,
+  ProviderRequestContentKind,
   RunUsage,
   ServerCapabilities,
   StopReason,
@@ -170,6 +171,10 @@ export interface RequestProjection {
   headersAt: number | null
   /** 最后一段非空内容到达的时刻，与 `provider_requests.last_content_at` 同一个值。 */
   lastContentAt: number | null
+  /** 最近一段内容的类型，供实时事件与刷新快照共用。 */
+  lastContentKind: ProviderRequestContentKind | null
+  /** 最后一次可见思考或正文的时刻；工具参数增量不推进。 */
+  lastVisibleAt: number | null
   /**
    * 写下这个投影的那条事件的序号（快照写的是它携带的边界）。
    *
