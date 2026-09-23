@@ -10,34 +10,80 @@ let accepted = new Set<string>(levels)
 let ignoreAll = false
 let transient: string | undefined
 let html = false
+let explicitThinking = false
+let rejectStandard = false
+let observation: 'text' | 'usage' | 'control' | 'none' = 'text'
+let unrelatedRejection: string | undefined
 let seen: (string | undefined)[] = []
+let bodies: Record<string, unknown>[] = []
 let server: ReturnType<typeof Bun.serve>
 beforeAll(() => {
   server = Bun.serve({
     port: 0,
     async fetch(req) {
-      const body = (await req.json()) as { reasoning_effort?: string; tools?: unknown[] }
+      const body = (await req.json()) as {
+        reasoning_effort?: string
+        thinking?: { type: string }
+        tools?: unknown[]
+      }
+      bodies.push(body)
       const effort = body.reasoning_effort
       if (!body.tools?.length) seen.push(effort)
       if (html)
         return new Response('<html>relay home</html>', { headers: { 'content-type': 'text/html' } })
+      const enabled = !explicitThinking || body.thinking?.type === 'enabled'
       const status =
         effort && effort === transient
           ? 503
-          : effort && !accepted.has(effort) && !ignoreAll
+          : effort &&
+              ((rejectStandard && !body.thinking) ||
+                effort === unrelatedRejection ||
+                (enabled && !accepted.has(effort) && !ignoreAll))
             ? 400
             : 200
       if (status !== 200)
         return new Response(
           JSON.stringify({
-            error: { message: status === 400 ? 'unsupported effort' : 'upstream unavailable' },
+            error: {
+              message:
+                status === 400
+                  ? effort === unrelatedRejection
+                    ? 'max_tokens must be greater than 4096 when reasoning_effort is high'
+                    : 'unsupported effort'
+                  : 'upstream unavailable',
+            },
           }),
           { status, headers: { 'content-type': 'application/json' } },
         )
-      return new Response(
-        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
-        { headers: { 'content-type': 'text/event-stream' } },
-      )
+      const thought =
+        enabled &&
+        effort &&
+        (observation === 'control' ? !accepted.has(effort) : accepted.has(effort))
+      const data = {
+        choices: [
+          {
+            delta: {
+              content: 'ok',
+              ...(thought && (observation === 'text' || observation === 'control')
+                ? { reasoning_content: '计算余数' }
+                : {}),
+            },
+            finish_reason: 'stop',
+          },
+        ],
+        ...(thought && observation === 'usage'
+          ? {
+              usage: {
+                prompt_tokens: 1,
+                completion_tokens: 20,
+                completion_tokens_details: { reasoning_tokens: 16 },
+              },
+            }
+          : {}),
+      }
+      return new Response(`data: ${JSON.stringify(data)}\n\ndata: [DONE]\n\n`, {
+        headers: { 'content-type': 'text/event-stream' },
+      })
     },
   })
 })
@@ -47,7 +93,12 @@ beforeEach(() => {
   ignoreAll = false
   transient = undefined
   html = false
+  explicitThinking = false
+  rejectStandard = false
+  observation = 'text'
+  unrelatedRejection = undefined
   seen = []
+  bodies = []
 })
 const profile = (model = 'custom'): ProviderProfile => ({
   kind: 'openai_chat_completions',
@@ -141,7 +192,7 @@ describe('五档逐一检测', () => {
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.effortLevels).toEqual(levels)
     expect(r.inconclusive).toEqual(['effort'])
-    expect(r.probes.find((p) => p.name === '非法值对照')?.detail).toContain('非法档位')
+    expect(r.probes.find((p) => p.name.endsWith('非法值对照'))?.detail).toContain('非法档位')
     expect(toTransportCapabilities(r).effort).toBeUndefined()
   })
   test('某一档临时失败也继续其余档，但不覆盖已保存的结果', async () => {
@@ -164,4 +215,176 @@ describe('五档逐一检测', () => {
     expect(r.reachable).toBe(false)
     expect(seen).toEqual([undefined])
   })
+
+  test('汇总带档位请求的思考，探针预算足以容纳思考与回答', async () => {
+    const r = await probeModel(profile(), { gapMs: 0 })
+    expect(r.thinkingObserved).toBe(true)
+    expect(bodies[0]?.max_tokens).toBe(2048)
+    expect(bodies[0]?.messages).not.toEqual([{ role: 'user', content: 'hi' }])
+    expect(bodies[1]?.max_tokens).toBe(2048)
+    expect(toTransportCapabilities(r)).not.toHaveProperty('thinksByDefault')
+  })
+
+  test('只有服务端 reasoning_tokens，没有公开文本，也识别为观察到思考', async () => {
+    observation = 'usage'
+    expect((await probeModel(profile(), { gapMs: 0 })).thinkingObserved).toBe(true)
+  })
+
+  test('非法值请求的思考不作为正常配置的证据', async () => {
+    observation = 'control'
+    ignoreAll = true
+    const r = await probeModel(profile(), { gapMs: 0 })
+    expect(r.thinkingObserved).toBe(false)
+    expect(toTransportCapabilities(r).effort).toBeUndefined()
+  })
+
+  test('未知 Chat 模型识别显式思考格式，保存后真实请求使用同一格式', async () => {
+    explicitThinking = true
+    accepted = new Set(['low', 'high'])
+    const r = await probeModel(profile(), { gapMs: 0 })
+    expect(r.thinking).toBe('deepseek_thinking')
+    expect(r.thinkingObserved).toBe(true)
+    expect(r.inconclusive).toEqual([])
+    expect(r.effortLevels).toEqual(['low', 'high'])
+    expect(r.probes.some((p) => p.name.startsWith('reasoning_effort /') && p.inconclusive)).toBe(
+      true,
+    )
+    const adapter = buildAdapter({ ...profile(), transport: toTransportCapabilities(r) })
+    for await (const _ of adapter.stream({
+      model: 'custom',
+      system: [],
+      messages: [{ role: 'user', content: '实际对话' }],
+      tools: [],
+      effort: 'high',
+      maxOutputTokens: 2048,
+      idleTimeoutMs: 1000,
+    })) {
+    }
+    expect(bodies.at(-1)).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' })
+  })
+
+  test('已有手动格式不被自动探测替换', async () => {
+    explicitThinking = true
+    const r = await probeModel(
+      { ...profile(), spec: { thinking: 'reasoning_effort' } },
+      { gapMs: 0 },
+    )
+    expect(bodies.every((body) => body.thinking === undefined)).toBe(true)
+    expect(r.inconclusive).toEqual(['effort'])
+    expect(toTransportCapabilities(r).thinking).toBeUndefined()
+  })
+
+  test('通用请求错误不误删原有档位', async () => {
+    unrelatedRejection = 'high'
+    const r = await probeModel(profile('deepseek-flash'), { gapMs: 0 })
+    expect(r.inconclusive).toEqual(['effort'])
+    expect(toTransportCapabilities(r).effortLevels).toBeUndefined()
+  })
+
+  test('临时错误不会切换另一种思考格式', async () => {
+    transient = 'high'
+    const r = await probeModel(profile(), { gapMs: 0 })
+    expect(r.inconclusive).toEqual(['effort'])
+    expect(bodies.every((body) => body.thinking === undefined)).toBe(true)
+  })
+
+  test('未观察到思考不会阻止已通过参数校验的配置保存', async () => {
+    observation = 'none'
+    const r = await probeModel(profile(), { gapMs: 0 })
+    expect(r.thinkingObserved).toBe(false)
+    expect(toTransportCapabilities(r)).toMatchObject({
+      effort: true,
+      thinking: 'reasoning_effort',
+      effortLevels: levels,
+    })
+  })
+
+  test('一个格式拒绝而另一格式未确认，不把未知模型写成无档位', async () => {
+    rejectStandard = true
+    ignoreAll = true
+    const r = await probeModel(profile(), { gapMs: 0 })
+    expect(r.inconclusive).toEqual(['effort'])
+    expect(toTransportCapabilities(r).effort).toBeUndefined()
+  })
 })
+
+test.each([false, true])(
+  '未知 Messages 模型识别格式并保留隐藏思考证据，恒开=%s',
+  async (alwaysOn) => {
+    const requests: Record<string, unknown>[] = []
+    const endpoint = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const body = (await req.json()) as {
+          thinking?: { type: string }
+          output_config?: { effort: string }
+        }
+        requests.push(body)
+        const effort = body.output_config?.effort
+        const error =
+          alwaysOn && body.thinking
+            ? 'thinking is not supported'
+            : effort && !['low', 'high'].includes(effort)
+              ? 'unsupported effort'
+              : undefined
+        if (error) return Response.json({ error: { message: error } }, { status: 400 })
+        const events = [
+          { type: 'message_start', message: { usage: { input_tokens: 1, output_tokens: 0 } } },
+          {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'thinking', thinking: '', signature: 'opaque' },
+          },
+          { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '192' } },
+          {
+            type: 'message_delta',
+            delta: { stop_reason: 'end_turn' },
+            usage: { output_tokens: 12 },
+          },
+          { type: 'message_stop' },
+        ]
+        return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      },
+    })
+    try {
+      const target: ProviderProfile = {
+        kind: 'anthropic_messages',
+        model: 'unknown-messages',
+        apiKey: 'test',
+        baseUrl: `http://127.0.0.1:${endpoint.port}`,
+      }
+      const r = await probeModel(target, { gapMs: 0 })
+      expect(r.thinkingObserved).toBe(true)
+      expect(r.effortLevels).toEqual(['low', 'high'])
+      expect(r.inconclusive).toEqual([])
+      expect(r.thinking).toBe(alwaysOn ? 'none' : 'adaptive_only')
+      const events = []
+      for await (const event of buildAdapter({
+        ...target,
+        transport: toTransportCapabilities(r),
+      }).stream({
+        model: target.model,
+        system: [],
+        messages: [{ role: 'user', content: '实际请求' }],
+        tools: [],
+        effort: 'high',
+        maxOutputTokens: 2048,
+        idleTimeoutMs: 1000,
+      }))
+        events.push(event)
+      expect(requests.at(-1)?.output_config).toEqual({ effort: 'high' })
+      expect(requests.at(-1)?.thinking).toEqual(
+        alwaysOn ? undefined : { type: 'adaptive', display: 'summarized' },
+      )
+      expect(events.some((event) => event.type === 'thinking_delta')).toBe(false)
+      expect(events.at(-1)).toMatchObject({ type: 'done', thinkingObserved: true })
+      expect(events.find((event) => event.type === 'usage')).toMatchObject({
+        usage: { reasoningTokens: 0 },
+      })
+    } finally {
+      endpoint.stop(true)
+    }
+  },
+)

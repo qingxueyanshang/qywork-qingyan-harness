@@ -104,6 +104,7 @@ describe('工具契约检测走实际协议适配器', () => {
       async (profile, bodies) => {
         const result = await probeToolCalls({ ...profile, model })
         expect(result.check.status).toBe('passed')
+        expect(result.thinkingObserved).toBe(true)
         expect(bodies).toHaveLength(2)
         const tool = bodies[0]!.tools[0]!.function
         expect(tool.strict).toBeUndefined()

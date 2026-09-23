@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
-beforeAll(() => {
+beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
+  // 组件模块可能已在其他测试的 document 上初始化。
+  const { delegateEvents } = await import('solid-js/web')
+  delegateEvents(['click'])
 })
 afterAll(async () => {
   await GlobalRegistrator.unregister()

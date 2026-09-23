@@ -18,7 +18,7 @@ function outcome(over: Partial<ProbeOutcome> = {}): ProbeOutcome {
     inconclusive: [],
     effortSource: 'catalog',
     effortLevels: ['low', 'high'],
-    thinksByDefault: true,
+    thinkingObserved: true,
     probes: [],
     ...over,
   }
@@ -55,11 +55,11 @@ describe('只写回真的探过的轴', () => {
   })
 
   /**
-   * 端点不通时 `thinksByDefault` 的那个 false 是占位不是观测。
+   * 端点不通时 `thinkingObserved` 的 false 不是能力结论。
    * 写回去会把「没测成」变成「测出来它不思考」。
    */
   test('端点不通时什么都不写 —— 那个 false 是占位不是结论', () => {
-    expect(toTransportCapabilities(outcome({ reachable: false, thinksByDefault: false }))).toEqual(
+    expect(toTransportCapabilities(outcome({ reachable: false, thinkingObserved: false }))).toEqual(
       {},
     )
   })
