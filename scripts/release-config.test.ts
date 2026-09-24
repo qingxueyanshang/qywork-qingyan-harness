@@ -246,6 +246,7 @@ describe('桌面发布清单', () => {
     }
     const manifests = {
       'typecheck:rust': 'apps/desktop/src-tauri/Cargo.toml',
+      'test:rust': 'apps/desktop/src-tauri/Cargo.toml',
       'typecheck:computer-host': 'apps/desktop/native/computer-host/Cargo.toml',
       'test:computer-host': 'apps/desktop/native/computer-host/Cargo.toml',
     }
@@ -254,6 +255,20 @@ describe('桌面发布清单', () => {
       expect(pkg.scripts.gate).toContain(`bun run ${name}`)
       expect(pkg.scripts[name]).toContain('--locked')
       expect(pkg.scripts[name]).toContain(`--manifest-path ${manifest}`)
+    }
+  })
+
+  /**
+   * 外壳的构建脚本会删除并重新复制 `<target-dir>/debug/qy-computer-host.exe`。开发实例正从
+   * `.cargo/config.toml` 那个目录运行这个文件，Windows 上文件被占用，删除报拒绝访问、
+   * 门禁以 101 退出。门禁的外壳两步因此用独立的产物目录。
+   */
+  test('门禁的外壳 cargo 步骤不与开发实例共用产物目录', () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }
+    for (const name of ['typecheck:rust', 'test:rust']) {
+      expect(pkg.scripts[name]).toContain('--target-dir .tmp/cargo-gate')
     }
   })
 

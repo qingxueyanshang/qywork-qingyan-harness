@@ -386,14 +386,17 @@ F 是明确不采纳的，写出来是为了不被重新抄进来。
 
 ## C2　门禁
 
-**一条命令，四道闸，全绿才算过：**
+**一条命令，全绿才算过：**
 
 ```bash
 bun run gate
 ```
 
 它按顺序跑：`typecheck`（`packages/*` 的 solution build **加** `apps/web`）→
-`biome check` → `bun run test` → `cargo check`（桌面端 Rust）。
+`biome check` → `bun run test` → 外壳 `apps/desktop/src-tauri` 的 `cargo check` 与 `cargo test` →
+worker `apps/desktop/native/computer-host` 的 `cargo check` 与 `cargo test`。
+外壳两步用独立的产物目录 `.tmp/cargo-gate`：外壳的构建脚本会删除并重新复制
+`debug/qy-computer-host.exe`，开发实例运行期间这个文件被占用，共用目录时门禁必然失败。
 
 `bun run test` 这一闸里有两道结构守卫，红了不是「测试挂了」而是「规则被破了」：
 `scripts/dependency-graph.test.ts`（B6 的包依赖方向）与
