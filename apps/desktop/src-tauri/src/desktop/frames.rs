@@ -3,12 +3,14 @@
 //! 上一段是服务端 ⇄ 宿主的 `/native/desktop`（字段与
 //! `packages/core/src/protocol/native-desktop.ts` 逐字对应），下一段是宿主 ⇄ worker 的
 //! 行分隔 JSON（字段与 `apps/desktop/native/computer-host/src/protocol.rs` 逐字对应）。
+//! 两段的对应由 `packages/core/src/protocol/native-desktop.samples.json` 锁住：服务端、宿主与
+//! worker 的测试读同一份样例，宿主漏转一个字段时本文件的样例测试失败。
 //!
 //! 本模块不碰进程、连接与 OS，全部翻译都是纯函数。
 //!
 //! 两条边界：
 //!
-//! 1. **只有五种 op 会被翻译下去。** worker 的 `handshake` / `bind_connection` / `cancel`
+//! 1. **只有六种 op 会被翻译下去**（`FORWARDED_OPS`）。 worker 的 `handshake` / `bind_connection` / `cancel`
 //!    由宿主自己发起，服务端发不出这三种，因此它们的观察（`ready` / `cancel_registered` /
 //!    `connection_bound`）不可能出现在服务端请求的回执里。
 //! 2. **缺省字段一律 `Option` + `skip_serializing_if`。** 多发一个 `null` 会让接收端的
@@ -63,7 +65,9 @@ pub struct EventFrame {
     pub authorized: bool,
 }
 
+// 测试里按样例做往返比对要序列化它；生产路径只反序列化。
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct RequestFrame {
     #[serde(rename = "type")]
@@ -139,6 +143,7 @@ pub struct RequestFrame {
 
 /// 目标窗口身份。三项一起给，派发前重新核对，句柄复用因此识别得出。
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct Target {
     pub window: i64,
@@ -532,6 +537,43 @@ pub fn to_result(
         observation,
         observation_error: response.observation_error,
         blocking: None,
+    }
+}
+
+/// 把一条 worker 回执连同它的观察翻译成服务端结果帧。
+///
+/// 窗口清单与阻塞窗口要补进程启动时刻与应用名，由 `identify` 交出（它做 OS 查询，本模块
+/// 不做）；补不上身份的窗口整条丢掉，不给它一个编造的启动时刻——目标身份少一项，句柄复用
+/// 就识别不出来。控件表、等待、图像与文本观察原样透传。
+pub fn relay(
+    request_id: String,
+    binding: &Binding,
+    mut response: WorkerResponse,
+    mut identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+) -> ResultFrame {
+    let observation = response.observation.take();
+    let blocking = response.blocking.take();
+    let mut frame = to_result(request_id, binding, response, None);
+    match observation.map(|o| project(&o, &mut identify)) {
+        None => {}
+        Some(Ok(projected)) => frame.observation = Some(projected),
+        Some(Err(reason)) => frame.observation_error = Some(reason),
+    }
+    frame.blocking = blocking.and_then(|b| enrich_blocking(&b, &mut identify));
+    frame
+}
+
+/// 把 worker 的观察投影成服务端协议里的形状。认不出的观察种类如实报错，不透传。
+fn project(
+    observation: &Value,
+    identify: impl FnMut(i64, u32) -> Option<(i64, String)>,
+) -> Result<Value, String> {
+    match observation.get("kind").and_then(Value::as_str) {
+        Some("windows") => {
+            enrich_windows(observation, identify).ok_or_else(|| "窗口清单的字段对不上".to_owned())
+        }
+        Some("tree" | "wait" | "image" | "text") => Ok(observation.clone()),
+        other => Err(format!("认不出的观察 {}", other.unwrap_or("(无 kind)"))),
     }
 }
 
@@ -1114,5 +1156,107 @@ mod tests {
     fn a_non_windows_observation_is_left_alone() {
         let tree = json!({"kind": "tree", "window": 66, "capturedAt": 1});
         assert_eq!(enrich_windows(&tree, |_, _| None), None);
+    }
+
+    // ── 与服务端、worker 共用的样例 ──
+
+    /// 三端共用的一份样例。三端各写一份夹具就不再是契约：宿主漏接一个字段，另外两端的
+    /// 测试照样全绿。
+    const SAMPLES: &str =
+        include_str!("../../../../../packages/core/src/protocol/native-desktop.samples.json");
+
+    fn samples() -> Value {
+        serde_json::from_str(SAMPLES).expect("样例文件要能解析")
+    }
+
+    fn sample_binding() -> Binding {
+        Binding {
+            host_id: "h1".to_owned(),
+            host_epoch: 2,
+            connection_epoch: 3,
+        }
+    }
+
+    /// 进程启动时刻与应用名的替身：只认得出样例里 pid 900 的两个窗口。
+    fn identify(handle: i64, pid: u32) -> Option<(i64, String)> {
+        (pid == 900 && (handle == 66 || handle == 88))
+            .then(|| (1_700_000_000_000, "记事本".to_owned()))
+    }
+
+    /// 服务端请求里宿主没声明的字段会被 serde 静默丢掉。样例里的每个字段都要原样落进
+    /// `RequestFrame`，只有 `actionId` 例外：动作身份只在服务端用，宿主不转发它。
+    #[test]
+    fn request_frame_keeps_every_field_of_the_shared_samples() {
+        for (key, sample) in samples()["requests"].as_object().expect("样例") {
+            let frame: RequestFrame = serde_json::from_value(sample.clone()).expect(key);
+            let mut back = serde_json::to_value(&frame).expect("可序列化");
+            back.as_object_mut().expect("对象").retain(|_, v| !v.is_null());
+            let mut expected = sample.clone();
+            expected.as_object_mut().expect("对象").remove("actionId");
+            assert_eq!(back, expected, "{key}");
+        }
+    }
+
+    #[test]
+    fn server_requests_translate_to_the_shared_worker_requests() {
+        let all = samples();
+        let requests = all["requests"].as_object().expect("样例");
+        assert_eq!(requests.len(), all["workerRequests"].as_object().expect("样例").len());
+        for (key, sample) in requests {
+            let frame: RequestFrame = serde_json::from_value(sample.clone()).expect(key);
+            let window = frame.target.map_or(0, |t| t.window);
+            let worker = to_worker("w1".to_owned(), &frame, &sample_binding(), window)
+                .unwrap_or_else(|e| panic!("{key}: {e}"));
+            assert_eq!(
+                serde_json::to_value(&worker).expect("可序列化"),
+                all["workerRequests"][key],
+                "{key}"
+            );
+        }
+    }
+
+    /// worker 回执经宿主转成结果帧。宿主漏转 worker 的一个字段时，这里的结果帧与样例对不上。
+    #[test]
+    fn worker_responses_relay_to_the_shared_result_frames() {
+        let all = samples();
+        let responses = all["workerResponses"].as_object().expect("样例");
+        assert_eq!(responses.len(), all["results"].as_object().expect("样例").len());
+        for (key, sample) in responses {
+            let Ok(WorkerLine::Response(response)) = serde_json::from_value(sample.clone()) else {
+                panic!("{key} 不是一条回执");
+            };
+            let frame = relay("dr_1".to_owned(), &sample_binding(), response, identify);
+            assert_eq!(
+                serde_json::to_value(&frame).expect("可序列化"),
+                all["results"][key],
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_frames_match_the_shared_samples() {
+        let all = samples();
+        let binding = sample_binding();
+        let ready = HostReady {
+            kind: "host.ready",
+            host_id: binding.host_id.clone(),
+            host_epoch: binding.host_epoch,
+            connection_epoch: binding.connection_epoch,
+            platform: "windows",
+            worker_ready: true,
+            authorized: true,
+        };
+        assert_eq!(serde_json::to_value(&ready).expect("可序列化"), all["hostReady"]);
+        let event = EventFrame {
+            frame: "desktop.event",
+            connection_epoch: binding.connection_epoch,
+            host_id: binding.host_id.clone(),
+            host_epoch: binding.host_epoch,
+            kind: "worker.state",
+            worker_ready: false,
+            authorized: true,
+        };
+        assert_eq!(serde_json::to_value(&event).expect("可序列化"), all["workerState"]);
     }
 }
