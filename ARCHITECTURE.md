@@ -20,8 +20,9 @@ Tauri(Rust) ──spawn──> qy serve (Bun 单文件二进制)
 |---|---|
 | `qy exec "..."` | 单次执行，`--json` 出 JSONL 供 CI |
 | `qy serve` | 本地 HTTP + WebSocket，桌面端与手机端都连它 |
-| `qy`（默认） | 交互式 TUI（未接线） |
-| `qy mcp` / `qy team run` | 未接线 |
+| `qy`（默认） | 交互式 TUI（非 TTY 下打印用法） |
+| `qy mcp` | 查看工作区 MCP server 的连接状态与失败原因 |
+| `qy team run` | 未实现，编排从图形界面发起 |
 
 **Tauri 侧零业务状态**：外壳一旦自己揣一份数据库或缓存，就和 `qy serve` 成了
 两本账，而两本账迟早漂移、漂移了很难发现。宁可多一次 localhost 往返。
