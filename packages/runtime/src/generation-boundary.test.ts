@@ -2,7 +2,7 @@
  * 生成边界：一次请求产出的正文、思考与工具调用共用一个 `provider_batch_id`，
  * 投影在归属变化处把消息切开。
  *
- * 覆盖范围：`agent/loop.ts` 的批次 id 取值（`openTextStep` / `openThinkingStep` /
+ * 覆盖范围：`agent/loop/` 的批次 id 取值（`openTextStep` / `openThinkingStep` /
  * `openToolStep` 都写本次 `openRequest` 的返回值）与 `runtime/transcript.ts` 的
  * `stepsToUnits` 切分；经 `@qywork/ai` 的三协议故障端点跑真实 HTTP，step 与请求账
  * 落真实 `Store`。

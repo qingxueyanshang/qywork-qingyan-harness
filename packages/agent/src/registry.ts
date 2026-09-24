@@ -681,7 +681,7 @@ export const BATCH_TO_CALL_RATIO = 2
 /**
  * 这一轮的投递预算。**单次与整波两个上界的唯一算处。**
  *
- * 它不再参与压缩阈值——阈值只有窗口比例一项（`loop.ts` 的 `softLimit`）。
+ * 它不再参与压缩阈值——阈值只有窗口比例一项（`loop/request.ts` 的 `softLimit`）。
  * 批预算只管投递上界与可折单元的体积上界。
  */
 export function deliveryBudget(contextWindow: number): { perCall: number; batchCap: number } {

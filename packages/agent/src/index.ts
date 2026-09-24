@@ -56,18 +56,16 @@ export {
 // 主循环：runtime/session.ts 是唯一装配方
 // `softLimit` 另有一个包外消费者：面板画的触发线必须与真正会触发的那条同源
 // `MAX_RESENDS` 同理：历史接口的运行中快照要报同一个上限，另写一个数就是第二本账
+export { MAX_RESENDS } from './loop/attempt.ts'
+export { AgentLoop } from './loop/index.ts'
 export {
-  AgentLoop,
-  type CompactionPort,
-  type CompactionRunInput,
   envelopeResult,
   imagesOf,
-  type LoopPersistence,
-  MAX_RESENDS,
   omitImages,
   softLimit,
   toolResultContent,
-} from './loop.ts'
+} from './loop/request.ts'
+export type { CompactionPort, CompactionRunInput, LoopPersistence } from './loop/types.ts'
 // run_command 的拒绝清单：runtime 的 Session 在放行之前问它
 export { decideCommand } from './policy.ts'
 // 工具注册表：tools 注册内置工具，mcp 与 plugins 在其后追加

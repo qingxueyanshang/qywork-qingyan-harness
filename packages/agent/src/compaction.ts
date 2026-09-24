@@ -1,7 +1,7 @@
 /**
  * 上下文压缩：两段式管线，一个入口。
  *
- * 这个文件只管**怎么压**；**什么时候压**是 `agent/loop.ts` 的事（发送前按占用与
+ * 这个文件只管**怎么压**；**什么时候压**是 `agent/loop/compact.ts` 的事（发送前按占用与
  * 软阈值判），取数与落库是 `runtime/compaction.ts` 的事。
  *
  * 分工按内容性质划：**确定性内容归算法，叙事性内容归模型。**
@@ -115,7 +115,7 @@ function condenseToolResult(content: WireMessage['content']): WireMessage['conte
   /*
    * 块数组：**丢掉图像块，只把文本信封收起来，并在信封里标 `images_omitted`**。
    *
-   * 图像块只出现在当前工具波次（`loop.ts` 的 `omitImages` 在装配时已把更早的换成信封），
+   * 图像块只出现在当前工具波次（`loop/request.ts` 的 `omitImages` 在装配时已把更早的换成信封），
    * 折叠线扫到当前波次时这里做同一件事。标记不可省：收纳后的信封与新鲜的成功信封同形，
    * 缺这一位模型会把图当成仍然可见。要再看按原路径重新 `read_file`，或用 `call_id`
    * 经 `read_history` 取回。
@@ -148,7 +148,7 @@ function condenseToolResult(content: WireMessage['content']): WireMessage['conte
 /**
  * 工具结果信封的反序列化。
  *
- * 正文由 `agent/loop.ts` 与 `runtime/transcript.ts` 用 `JSON.stringify` 造，
+ * 正文由 `agent/loop/request.ts` 与 `runtime/transcript.ts` 用 `JSON.stringify` 造，
  * 这里是它的反向。解析不出来的原样返回——收纳换不了信封时保留原文是安全方向，
  * 而让一次投影抛异常会把整轮 run 带崩。
  */

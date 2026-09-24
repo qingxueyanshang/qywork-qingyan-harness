@@ -1,8 +1,8 @@
 /**
  * 同一对象的当前视图在历史里只留最新一份。
  *
- * 覆盖范围：`loop.ts` 的 `collapseSuperseded`（取代规则、收纳信封形状、纯函数与幂等），
- * 以及它接在 `buildRequest` 上之后适配器实际收到的那份请求。回放侧给消息打同一个
+ * 覆盖范围：`loop/request.ts` 的 `collapseSuperseded`（取代规则、收纳信封形状、纯函数与幂等），
+ * 以及它接在 `loop/index.ts` 的 `buildRequest` 上之后适配器实际收到的那份请求。回放侧给消息打同一个
  * `_view` 由 `runtime/transcript.test.ts` 锁。
  *
  * 原始失败形状：同一窗口的 12 份整窗控件表全部随历史重发，末次请求约九成是旧表，
@@ -13,10 +13,11 @@ import { expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
 import { DEFAULT_DENSITY, estimateRequest, lookupModel } from '@qywork/ai'
 import type { CurrentView } from '@qywork/core'
-import type { LoopPersistence } from './loop.ts'
-import { AgentLoop, collapseSuperseded } from './loop.ts'
-import type { ToolContextBase } from './registry.ts'
-import { ToolRegistry } from './registry.ts'
+import type { ToolContextBase } from '../registry.ts'
+import { ToolRegistry } from '../registry.ts'
+import { AgentLoop } from './index.ts'
+import { collapseSuperseded } from './request.ts'
+import type { LoopPersistence } from './types.ts'
 
 function envelope(callId: string, table: string, resources?: string[]): string {
   return JSON.stringify({

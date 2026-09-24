@@ -545,7 +545,7 @@ describe('逐请求账本读得出重发', () => {
 /**
  * 信封换一份时只换头部。
  *
- * 判据与 loop 那侧同源：`agent/loop.ts` 按 `envelopeHashOf` 判、两处共用
+ * 判据与 loop 那侧同源：`agent/loop/run-state.ts` 按 `envelopeHashOf` 判、两处共用
  * `core` 的 `envelopeHeadTokens` 量。两处不同的话同一条会话在运行中和回头看
  * 会给出两个数——实测过 80.0% 对 54.5%，而会话内容一个字没变。
  */

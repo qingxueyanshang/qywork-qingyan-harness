@@ -1,7 +1,7 @@
 /**
  * 图像块的两种形态。
  *
- * 覆盖范围：`loop.ts` 的 `toolResultContent` / `materialize` / `breakdownOf` 的
+ * 覆盖范围：`loop/request.ts` 的 `toolResultContent` / `materialize` / `breakdownOf` 的
  * tool 分支，以及 `compaction.ts` 的 `condenseMessage` 对块数组的处置。
  *
  * 这一组盯着三个**完全静默**的方向：图片跨轮变成两种形状、收纳收不掉图、
@@ -13,8 +13,8 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ContentBlock, WireMessage } from '@qywork/ai'
-import { condenseMessage } from './compaction.ts'
-import { envelopeResult, materialize, omitImages, toolResultContent } from './loop.ts'
+import { condenseMessage } from '../compaction.ts'
+import { envelopeResult, materialize, omitImages, toolResultContent } from './request.ts'
 
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',

@@ -1,12 +1,12 @@
 /**
- * 覆盖范围：`loop.ts` 的单一退避策略与重发预算（`resendBackoffMs`、`MAX_RESENDS`、
+ * 覆盖范围：`loop/attempt.ts` 的单一退避策略与重发预算（`resendBackoffMs`、`MAX_RESENDS`、
  * `LoopDeps.sleep`），对 `@qywork/ai` 的 `providers/fault-server.test-helper.ts`
  * 三协议故障端点跑真实 HTTP。
  *
  * 退避经注入的 `sleep` 执行，断言它收到的毫秒序列：真等下去的话，
  * 一次耗满预算是一分钟量级。停止那两条例外，它们要的正是真实计时。
  *
- * 退避档位（2 / 4 / 8 / 16 / 30 秒）在本文件独立写一遍，不从 `loop.ts` 导入：
+ * 退避档位（2 / 4 / 8 / 16 / 30 秒）在本文件独立写一遍，不从 `loop/attempt.ts` 导入：
  * 导进来的断言等于拿实现校验实现。
  */
 
@@ -18,9 +18,9 @@ import {
   startFaultServer,
 } from '@qywork/ai/fault-server.test-helper'
 import type { AgentEvent } from '@qywork/core'
-import { AgentLoop, type LoopPersistence, type ToolContextBase } from './index.ts'
-import { MAX_RESENDS } from './loop.ts'
-import { ToolRegistry } from './registry.ts'
+import { AgentLoop, type LoopPersistence, type ToolContextBase } from '../index.ts'
+import { ToolRegistry } from '../registry.ts'
+import { MAX_RESENDS } from './attempt.ts'
 
 const BACKOFF_STEPS = [2_000, 4_000, 8_000, 16_000, 30_000] as const
 const BACKOFF_JITTER_MAX = 1.1

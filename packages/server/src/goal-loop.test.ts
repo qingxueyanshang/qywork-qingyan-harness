@@ -227,7 +227,7 @@ function startLoop(cv: ConversationId) {
 
 describe('一轮接一轮', () => {
   /**
-   * 原始缺口：`loop.ts` 的 step 循环是 **run 内**的，一轮跑完就真的结束了，
+   * 原始缺口：`agent/loop/index.ts` 的 step 循环是 **run 内**的，一轮跑完就真的结束了，
    * 没有任何代码会自动再起一轮。这条走的是**用户 `/goal` 那条真入口**——
    * 立目标当场起第一轮，第二轮的请求必须由服务端自己发出来。
    *

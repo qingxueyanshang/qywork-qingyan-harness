@@ -274,7 +274,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
        *
        * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，是否计费无从判断——
        * 所以已经攒到的 usage 随错误一起带上去（见 `usage` 字段），账本行落 `uncertain`
-       * 但数是实的。这一轮由 `loop.ts` 自动重发（上限见 `MAX_RESENDS`）：正文未显示的
+       * 但数是实的。这一轮由 `agent/loop/attempt.ts` 自动重发（上限见 `MAX_RESENDS`）：正文未显示的
        * 原样重发，已显示的把正文作为上一条推进 transcript 后带当前上下文续发；额度用尽后
        * 用户拿到的是一条说得出「收了多少、断在哪」的错误，而不是一次假的成功。
        */

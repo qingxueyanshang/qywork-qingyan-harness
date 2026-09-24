@@ -121,7 +121,7 @@ async function main(): Promise<number> {
   /*
    * `capacity` 是恢复的**凭证**，不是附加信息。
    *
-   * `loop.ts` 的判据是 `code === 'context_overflow' && pe.capacity`：
+   * `agent/loop/attempt.ts` 的判据是 `code === 'context_overflow' && pe.capacity`：
    * 只看 code 不够，泛化的 400 也可能带这个码。缺了 capacity，
    * 恢复一次都不会触发，会话撞窗后没有出路。
    */

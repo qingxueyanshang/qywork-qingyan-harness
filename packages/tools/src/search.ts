@@ -58,7 +58,7 @@ const MAX_MATCH_CHARS = 400
 /**
  * 按投递预算把命中列表裁到装得下，并把实际用量记账。
  *
- * **grep 必须计入这本账。** `loop.ts` 下发每一波之前 `resetBatchBudget`，理由写在
+ * **grep 必须计入这本账。** `agent/loop/tool-wave.ts` 下发每一波之前 `resetBatchBudget`，理由写在
  * 那里：「压缩只留一个入口」的前提正是两次检查之间的跳变有上界。单次上界 25,000
  * token，而 200 条 × 400 字符最坏约 32,000——**单次就越了**；它又是 `parallelSafe`，
  * 一波五个就是整波上界的三倍多。不记账那个前提就不成立。

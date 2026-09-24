@@ -1,7 +1,7 @@
 /**
  * 工具图片在「下一次请求被回绝」之后还能不能回到模型面前。
  *
- * 覆盖范围：`agent/loop.ts` 的图片裁剪与 `openStream` 的输入引用确认、
+ * 覆盖范围：`agent/loop/index.ts` 的图片裁剪与 `openStream` 的输入引用确认、
  * `store/repos.ts` 的 `markProviderRequestInputImages` /
  * `hasReceivedRequestWithImages`、`runtime/transcript.ts` 把执行记录投影回 history，
  * 经 `@qywork/ai` 的三协议故障端点跑真实 HTTP、真实 `Store`。

@@ -339,7 +339,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
        * 用量也停在估算值上，那一轮读数无从对账。
        *
        * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，是否计费无从判断，
-       * 账本行因此落 `uncertain`。「收到了多少」由 `loop.ts` 的
+       * 账本行因此落 `uncertain`。「收到了多少」由 `agent/loop/attempt.ts` 的
        * 现场读数补，所以这里不再分「一个事件都没有」和「断在半路」两种说法。
        */
       if (!settled) {

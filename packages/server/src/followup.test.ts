@@ -5,7 +5,7 @@
  * `commands.ts` 的 `message.send` 忙闲裁决、对子会话的回绝、两条 `followup.*` 分支与
  * `conversation.interrupt` 的三样一起停、`run-control.ts` 的 `submitMessage`
  * （用户消息与子 agent 回执同一条路）、收尾时的火发与它同目标续起的优先级、
- * `agent/loop.ts` 在 step 边界的注入，以及 `runtime/transcript.ts` 把那条
+ * `agent/loop/index.ts` 在 step 边界的注入，以及 `runtime/transcript.ts` 把那条
  * `kind='user'` 的 step 投影回历史。
  *
  * **为什么必须走真链路。** 这个功能的形状是「一轮跑到一半，模型下一次请求里

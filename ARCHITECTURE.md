@@ -340,7 +340,7 @@ MCP 那条的表现最值得记：一个只提供 `resources`、不提供 `tools
 
 **`breakdown` 是一个此前没见过的形状：有生产者，但生产的是假值。**
 
-前面所有条目都是「没有生产者」。这一条不同——`loop.ts` 确实每轮都发 `breakdown`，
+前面所有条目都是「没有生产者」。这一条不同——`agent/loop/attempt.ts` 确实每轮都发 `breakdown`，
 七个字段全填 0。它比没有生产者更坏：
 
 - 「没有生产者」在接消费者的那一刻就会暴露（拿不到数据）；
@@ -348,7 +348,7 @@ MCP 那条的表现最值得记：一个只提供 `resources`、不提供 `tools
   数字全零的饼图，而没有任何人能从界面上看出那是假的。
 
 而分组信息一直是真实存在的（`session.ts` 标 `historyMessages`、
-`loop.ts` 标 `executionRecords`、`compaction.ts` 标 `summary`），
+`agent/loop/` 标 `executionRecords`、`compaction.ts` 标 `summary`），
 **只是从来没有人按组去量**：这条链路铺了三段，停在最后一步。
 
 处置：填真值（`breakdownOf(req)` 按 `_group` 分桶），而不是删字段——
@@ -411,7 +411,7 @@ MCP 那条的表现最值得记：一个只提供 `resources`、不提供 `tools
 
 `max_tokens` 这个词在 4xx 错误里绝大多数指**输出**上限的参数校验
 （`max_tokens must be ≤ 8192`），不是输入超限。曾经 `errors.ts` 用
-`message.includes('max_tokens')` 判 `context_overflow`，`loop.ts` 用
+`message.includes('max_tokens')` 判 `context_overflow`，主循环用
 `providerStop === 'max_tokens'` 判 `context_exhausted`——两处都反了。
 
 后果不只是文案不准：容量判定是**压缩并重发**的触发器。判宽了，一个普通的参数错误
@@ -507,7 +507,7 @@ MCP 那条的表现最值得记：一个只提供 `resources`、不提供 `tools
 
 ### 触发只有一个入口：发送前按占用判
 
-`agent/loop.ts` 在装配完请求、发出去之前拿占用比软阈值，超了才压。
+`agent/loop/compact.ts` 在装配完请求、发出去之前拿占用比软阈值，超了才压。
 
 不做「发出去被 provider 拒了再压、然后重发」：那个形状每次触发都要先烧掉一次
 注定失败的长请求，长 prompt 上是几秒到几十秒外加计费。反对阈值的常见论据是
@@ -869,7 +869,7 @@ server 是**每条消息新建一个 Session** 的。扩展加载如果绑在 Se
   而它占着的正是刚被判定为不可恢复的那条流。
 - abort 用的是**本次尝试专属**的 AbortController（与 run 的 signal 用
   `AbortSignal.any` 链起来）。直接 abort run 的 signal 会把重试和后续步骤一起打死。
-- 归 `stream_idle_timeout`，与断连同在 `loop.ts` 的重发表里：同一额度、同一窗口
+- 归 `stream_idle_timeout`，与断连同在 `agent/loop/attempt.ts` 的重发表里：同一额度、同一窗口
   （正文出过字不重发）。2026-09-04 曾改成超时一律不重发，理由是「分不出是死了还是
   还在想」；实测（2026-09-06，子 agent 在 opencode 上 8 次 180 秒空闲超时）不重发的
   结果是那一格直接失败，而「还在想」只在响应头之前成立，那一段不归看门狗。

@@ -4,7 +4,7 @@
  * **覆盖范围**：`runtime/config.ts` 的 `resolveModel` 带出 `spec` →
  * `runtime/session.ts` 的 `resolveProfile` 塞进 `ProviderProfile.spec` →
  * `ai/factory.ts` 的 `applySpecOverride` 叠进 adapter 的 spec →
- * `agent/loop.ts` 用它算钱 → `store/usage.ts` 的 `recordUsage` 落账。
+ * `agent/loop/request.ts` 用它算钱 → `store/usage.ts` 的 `recordUsage` 落账。
  * 合并顺序本身的单测在 `ai/src/catalog.test.ts`「模型库覆盖」。
  *
  * **为什么这条必须走真链路。** 那五处任何一处漏接，界面上都照样能改、改完也照样显示成改过的样子，

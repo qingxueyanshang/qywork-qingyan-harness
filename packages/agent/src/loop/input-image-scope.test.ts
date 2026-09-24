@@ -1,7 +1,7 @@
 /**
  * 工具图片带进哪一次请求，以及这一次有没有真的带上。
  *
- * 覆盖范围：`loop.ts` 的 `buildRequest` 图片裁剪（最近待续批次、已消费批次、更早批次）
+ * 覆盖范围：`loop/index.ts` 的 `buildRequest` 图片裁剪（最近待续批次、已消费批次、更早批次）
  * 与 `openStream` 里的输入引用确认（`LoopPersistence.markRequestInputImages` /
  * `inputImagesConsumed`），以及它们与 `materialize` 能力过滤、`compaction.ts` 收纳的
  * 先后关系。
@@ -14,11 +14,11 @@
 import { expect, test } from 'bun:test'
 import type { ChatRequest, ContentBlock, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
 import { DEFAULT_DENSITY, estimateRequest, lookupModel } from '@qywork/ai'
-import { condenseMessage } from './compaction.ts'
-import type { LoopPersistence } from './loop.ts'
-import { AgentLoop } from './loop.ts'
-import type { ToolContextBase } from './registry.ts'
-import { ToolRegistry } from './registry.ts'
+import { condenseMessage } from '../compaction.ts'
+import { AgentLoop } from '../index.ts'
+import type { ToolContextBase } from '../registry.ts'
+import { ToolRegistry } from '../registry.ts'
+import type { LoopPersistence } from './types.ts'
 
 interface Ledger {
   persist: LoopPersistence
