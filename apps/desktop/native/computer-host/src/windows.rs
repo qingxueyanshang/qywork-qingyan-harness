@@ -14,8 +14,10 @@
 //!    固定用 `ControlViewCondition`。读树与动作前重定位共用它，下标才对得上；换成
 //!    TreeWalker 会多出第二套顺序，同一个 `ref` 在两处指不同节点。
 
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
@@ -73,8 +75,10 @@ use ::windows::Win32::UI::Accessibility::{
     UIA_VirtualizedItemPatternId,
 };
 use ::windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+use ::windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
+    EnumWindows, GetClassNameW, GetWindow, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindow, IsWindowVisible, GWL_EXSTYLE, GW_HWNDPREV, WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 
 use crate::foreground;
@@ -243,14 +247,10 @@ fn window_alive(window: i64) -> bool {
     unsafe { IsWindow(Some(HWND(window as *mut c_void))) }.as_bool()
 }
 
-/// 定位结果：目标元素本身与它的父节点。
-///
-/// 父节点单独交出来是动作后重读要用的：重读的是目标所在的子树，不是整窗。
+/// 定位结果：目标元素本身与它从窗口元素出发的下标路径。
 struct Located {
     element: IUIAutomationElement,
     path: Vec<usize>,
-    /// 父元素。目标就是窗口元素本身时缺席。
-    parent: Option<IUIAutomationElement>,
 }
 
 /// 一次等待的全部输入。
@@ -259,8 +259,12 @@ pub struct WaitRequest<'a> {
     pub until: WaitUntil,
     pub reference: Option<&'a str>,
     pub value: Option<&'a str>,
-    /// `until=appears` 的筛选条件。其余条件不看它。
-    pub select: &'a Select,
+    /// `until=appears` 要出现的控件角色。其余条件不看它。
+    pub role: Option<&'a str>,
+    /// `until=appears` 要出现的控件文字。其余条件不看它。
+    pub name_contains: Option<&'a str>,
+    /// 等待结束时重读的范围根。缺席表示整窗。
+    pub root: Option<&'a str>,
     /// `until=window` 要等的标题子串。
     pub name: Option<&'a str>,
     pub poll: Duration,
@@ -278,6 +282,8 @@ pub struct ActRequest<'a> {
     pub window: i64,
     /// 控件目标。与 `point` 互斥，准入判定已经保证只给了一个。
     pub reference: Option<&'a str>,
+    /// 动作之后重读的范围根。缺席表示整窗。
+    pub root: Option<&'a str>,
     /// 屏幕物理像素落点。只有指针动作接受。
     pub point: Option<ScreenPoint>,
     /// 采集落点那张图的窗口几何代际。给了 `point` 就必须给。
@@ -325,6 +331,8 @@ pub struct Backend {
     /// **与读树那一份要的属性完全相同。** 定位沿途的节点会被当成完整节点读（等待的判定
     /// 就这么读目标控件），少缓存一项就会在那里撞上「所需属性不在 CacheRequest 中」。
     nav_cache: IUIAutomationCacheRequest,
+    /// 这个 worker 读过控件表的窗口，按句柄与进程号记，句柄被复用时不会认错。
+    read_before: Mutex<HashSet<(i64, u32)>>,
 }
 
 impl Backend {
@@ -367,6 +375,7 @@ impl Backend {
             options,
             control_view,
             nav_cache,
+            read_before: Mutex::new(HashSet::new()),
         })
     }
 
@@ -437,7 +446,6 @@ impl Backend {
     fn locate(&self, window: i64, reference: &str) -> Result<Located, Failure> {
         let (path, expected) = decode_ref(reference).map_err(Failure::Refused)?;
         let mut element = self.window_element(window, &self.nav_cache)?;
-        let mut parent: Option<IUIAutomationElement> = None;
         for (depth, index) in path.iter().enumerate() {
             let children = cached_children(&element)?;
             let Some(child) = children.get(*index).cloned() else {
@@ -445,7 +453,6 @@ impl Backend {
                     "{REF_STALE}: 第 {depth} 层没有下标 {index} 的子节点"
                 )));
             };
-            parent = Some(element);
             element = self.expand(&child, &self.nav_cache)?;
         }
         let actual = cached_identity(&element)?;
@@ -461,14 +468,14 @@ impl Backend {
                 }
             )));
         }
-        Ok(Located {
-            element,
-            path,
-            parent,
-        })
+        Ok(Located { element, path })
     }
 
     /// 读一个窗口的控件表。`select.root` 给了就从那棵子树读起。
+    ///
+    /// 这个 worker 第一次读一个窗口时读到控件数不再变化为止：Chromium 系应用在第一次收到
+    /// UIA 请求时才开启无障碍树，约 0.3 s 后建好，第一次读到的只有浏览器外框、没有网页内容，
+    /// 且不算截断。之后再读同一个窗口只读一次。
     pub fn read_tree(
         &self,
         window: i64,
@@ -476,9 +483,18 @@ impl Backend {
         bounds: Bounds,
         foreground: bool,
     ) -> Result<Observation, String> {
-        self.read_tree_inner(window, select, bounds, foreground)
-            .map(Observation::Tree)
-            .map_err(|f| f.into_reason(window))
+        let first = self
+            .read_before
+            .lock()
+            .map(|mut seen| seen.insert((window, window_pid(window))))
+            .unwrap_or(false);
+        let read = || self.read_tree_inner(window, select, bounds, foreground);
+        let tree = if first {
+            settle(read, |t| t.node_count, FIRST_READ_INTERVAL, FIRST_READ_LIMIT)
+        } else {
+            read()
+        };
+        tree.map(Observation::Tree).map_err(|f| f.into_reason(window))
     }
 
     fn read_tree_inner(
@@ -525,22 +541,22 @@ impl Backend {
         let started = Instant::now();
         let mut walk = Walk {
             backend: self,
-            window,
             cache,
-            select,
             bounds,
             fields,
             until: started + Duration::from_millis(bounds.time_budget_ms),
             visited: 0,
             truncated_by: Vec::new(),
             collected: Vec::new(),
+            seen: HashSet::new(),
         };
         let mut path = root_path.to_vec();
         // 根节点读不到就整体失败：没有根就没有这次观察，不存在可以跳过它继续的走法。
         walk.node(root, &mut path, 0, None)?;
-        let (nodes, root_enabled, visited, truncated_by) = walk.finish();
+        let (nodes, visited, truncated_by) = walk.finish();
+        // 根节点是第一个被读的，表的第一项一定是它。
         let enabled = if root_path.is_empty() {
-            root_enabled
+            nodes.first().map(|n| n.enabled)
         } else {
             Some(self.window_enabled(window)?)
         };
@@ -552,6 +568,7 @@ impl Backend {
                 .then(|| nodes.first().map(|n| n.reference.clone()))
                 .flatten(),
             window_enabled: enabled.unwrap_or(false),
+            window_covered: window_covered(window),
             completeness: Completeness {
                 complete: truncated_by.is_empty(),
                 truncated_by,
@@ -563,44 +580,16 @@ impl Backend {
         })
     }
 
-    /// 动作之后重读目标所在的子树。读不到子树时如实回错，执行事实不变。
-    fn reread_around(
-        &self,
-        window: i64,
-        located: &Located,
-        bounds: Bounds,
-        foreground: bool,
-    ) -> Result<Observation, String> {
-        let select = Select::default();
-        let read = || -> Result<Tree, Failure> {
-            let fields = Fields {
-                value: true,
-                state: true,
-                foreground,
-            };
-            let cache = self.walk_cache(fields)?;
-            match &located.parent {
-                Some(parent) => {
-                    let root = self.expand(parent, &cache)?;
-                    let path = &located.path[..located.path.len() - 1];
-                    self.walk_from(window, &root, path, &select, bounds, &cache, fields)
-                }
-                // 目标就是窗口元素：这时「所在子树」只能是整窗。
-                None => {
-                    let root = self.window_element(window, &cache)?;
-                    self.walk_from(window, &root, &[], &select, bounds, &cache, fields)
-                }
-            }
-        };
-        read().map(Observation::Tree).map_err(|f| f.into_reason(window))
-    }
-
-    /// 执行一个动作并重读目标所在的子树。
+    /// 执行一个动作并按调用方当前观察的范围整份重读。
     ///
     /// 十三种动作共用这一条路径：定位、准入判定、可放弃等待的调用与动作后重读各只有
     /// 一处实现。按动作分成多条路径会让这四件事各有一份拷贝。
     ///
     /// **没有派发就不重读**：那一份观察会被调用方读成动作已经发生。
+    ///
+    /// 不要改回只读目标所在的子树：调用方拿到的重读就是它的当前观察，只读一段的话，
+    /// 范围外的控件要么缺席，要么由调用方把旧节点拼回来，而旧节点的状态与可用动作
+    /// 停在动作之前。
     pub fn act(
         &self,
         req: &ActRequest<'_>,
@@ -609,6 +598,7 @@ impl Backend {
         let ActRequest {
             window,
             reference,
+            root,
             point,
             expect_generation,
             action,
@@ -643,8 +633,8 @@ impl Backend {
             // 换成一份不进 UIA 的事实——目标进程此刻的顶层窗口，调用方据此观察新出现的
             // 那一个。
             Attempt::Called(outcome) if !outcome.returned => {
-                // 定位到的那两个元素同样不能在这条线程上丢弃：释放代理也要等目标进程
-                // 应答，就地丢会等满 UIA 连接超时。
+                // 定位到的元素同样不能在这条线程上丢弃：释放代理也要等目标进程应答，
+                // 就地丢会等满 UIA 连接超时。
                 if let Some(located) = located {
                     release_off_thread(located);
                 }
@@ -654,12 +644,11 @@ impl Backend {
                 )
             }
             called => {
-                let observed = match &located {
-                    Some(located) => self.reread_around(window, located, bounds, fg),
-                    // 按屏幕坐标操作时没有「目标所在子树」，只能重读整窗。
-                    None => self.read_tree(window, &Select::default(), bounds, fg),
+                let scope = Select {
+                    root: root.map(str::to_owned),
+                    ..Select::default()
                 };
-                (called, observed)
+                (called, self.read_tree(window, &scope, bounds, fg))
             }
         }
     }
@@ -784,7 +773,7 @@ impl Backend {
                 let count = tree
                     .nodes
                     .iter()
-                    .filter(|n| matches_select(req.select, n))
+                    .filter(|n| matches_target(req.role, req.name_contains, n))
                     .count();
                 Ok(Probe::Matched {
                     count: u32::try_from(count).unwrap_or(u32::MAX),
@@ -798,7 +787,6 @@ impl Backend {
                 match self.locate(req.window, reference) {
                     Ok(located) => {
                         let node = self.read_cached_node(
-                            req.window,
                             &located.element,
                             &located.path,
                             Fields {
@@ -831,39 +819,18 @@ impl Backend {
         })
     }
 
-    /// 等待返回时的那一份状态。
+    /// 等待返回时的那一份状态：调用方当前观察的范围，整份重读。
     ///
-    /// 判定读到的树能复用就复用；`gone` 命中时目标已经不在，交回一份空表并把范围指成
-    /// 那个 `ref`——调用方据此只作废这一段引用。
+    /// `appears` 的判定每轮读的就是整窗，范围也是整窗时直接复用最后一轮那一份。
     fn wait_state(&self, req: &WaitRequest<'_>, probe: Probe) -> Result<Tree, Failure> {
-        if let Probe::Matched { tree, .. } = probe {
+        if let (Probe::Matched { tree, .. }, None) = (probe, req.root) {
             return Ok(tree);
         }
-        let missing = matches!(probe, Probe::Missing);
-        match req.reference {
-            Some(reference) if !missing => {
-                let select = Select {
-                    root: Some(reference.to_owned()),
-                    ..Select::default()
-                };
-                self.read_tree_inner(req.window, &select, req.bounds, req.foreground)
-            }
-            Some(reference) => Ok(Tree {
-                window: req.window,
-                captured_at: now_ms(),
-                scope: Some(reference.to_owned()),
-                window_enabled: self.window_enabled(req.window)?,
-                completeness: Completeness {
-                    complete: true,
-                    truncated_by: Vec::new(),
-                    filtered_by: Vec::new(),
-                    visited: 0,
-                },
-                node_count: 0,
-                nodes: Vec::new(),
-            }),
-            None => self.read_tree_inner(req.window, &Select::default(), req.bounds, req.foreground),
-        }
+        let scope = Select {
+            root: req.root.map(str::to_owned),
+            ..Select::default()
+        };
+        self.read_tree_inner(req.window, &scope, req.bounds, req.foreground)
     }
 
     fn window_enabled(&self, window: i64) -> Result<bool, Failure> {
@@ -876,7 +843,6 @@ impl Backend {
     /// 只有选择容器的选中项是实时读的，见 `selected_names`；其余全部来自缓存。
     fn read_cached_node(
         &self,
-        window: i64,
         element: &IUIAutomationElement,
         path: &[usize],
         fields: Fields,
@@ -890,7 +856,8 @@ impl Backend {
 
         let mut actions = Vec::new();
         let mut value = None;
-        if available(element, UIA_IsValuePatternAvailablePropertyId)? {
+        let value_pattern = available(element, UIA_IsValuePatternAvailablePropertyId)?;
+        if value_pattern {
             // 缓存请求没要值时这里读不到，属于字段选择的结果，不是失败。
             value = cached_string(element, UIA_ValueValuePropertyId)?;
             actions.push(
@@ -1008,6 +975,11 @@ impl Backend {
         if text {
             // 支不支持设选区要问 `SupportedTextSelection`，它没有缓存版本；动作那一刻再问。
             actions.push(NodeAction::ready("select_text"));
+            // 终端与控制台的正文只有 TextPattern：不取的话观察里只剩控件名，看不出窗口
+            // 里正在运行什么。
+            if fields.value && !value_pattern {
+                value = visible_text(element, &name.to_string())?;
+            }
         }
 
         let bounds = unsafe { element.CachedBoundingRectangle() }.map_err(uia("读包围盒"))?;
@@ -1022,13 +994,15 @@ impl Backend {
                     actions.push(NodeAction::foreground(action));
                 }
             }
-            // 键盘动作列在两处：此刻持有键盘焦点的控件，以及窗口根节点在它就是系统
-            // 前台窗口的时候。前者是「输入会进这个控件」，后者是「输入会进这个窗口」
-            // ——自绘界面不暴露业务控件，给不出一个持有焦点的控件，只列前者等于对
-            // 这类应用关掉整条键盘路径。路径为空才是窗口元素自己，子树读的根带着它
-            // 在整窗里的下标。
-            let window_keyboard = path.is_empty() && foreground::foreground_window() == window;
-            if focused || window_keyboard {
+            // 键盘动作列在两处：此刻持有键盘焦点的控件（输入进这个控件），以及窗口根节点
+            // （输入进这个窗口）。自绘界面给不出持有焦点的控件，只列前者等于对它关掉整条
+            // 键盘路径。路径为空才是窗口元素自己，子树读的根带着它在整窗里的下标。
+            //
+            // 不要给窗口根加「此刻是系统前台窗口」的条件：派发时 `foreground::perform` 先把
+            // 目标窗口提到前台再核对。加了这个条件，桌面这类没有 WindowPattern、无法先
+            // activate 的窗口永远拿不到键盘动作，Win+I 这类系统快捷键只能借用户正在用的
+            // 窗口按出去。
+            if focused || path.is_empty() {
                 actions.push(NodeAction::foreground("type_text"));
                 actions.push(NodeAction::foreground("press_key"));
             }
@@ -1222,29 +1196,24 @@ struct Fields {
     foreground: bool,
 }
 
-/// 一个节点连同它在前序表里的父节点下标。筛选时按 `keep` 决定留不留。
+/// 一个节点连同它在前序表里的父节点下标。
 struct Collected {
     node: Node,
     parent: Option<usize>,
-    keep: bool,
 }
 
-/// 深度优先遍历的状态。
-///
-/// 三个上限限的是**遍历过的节点数**，不是返回的条数：筛选发生在遍历之后，被筛掉的节点
-/// 一样付出了读取成本。两者在 `completeness` 里分两格记。
+/// 深度优先遍历的状态。三个上限限的是遍历过的节点数。
 struct Walk<'a> {
     backend: &'a Backend,
-    /// 这次读的是哪个窗口。窗口根节点的键盘动作按「它是不是系统前台窗口」列。
-    window: i64,
     cache: &'a IUIAutomationCacheRequest,
-    select: &'a Select,
     bounds: Bounds,
     fields: Fields,
     until: Instant,
     visited: u32,
     truncated_by: Vec<&'static str>,
     collected: Vec<Collected>,
+    /// 本次遍历已输出的 RuntimeId。只在这一次遍历内有效：RuntimeId 跨时刻可复用。
+    seen: HashSet<String>,
 }
 
 impl Walk<'_> {
@@ -1268,24 +1237,6 @@ impl Walk<'_> {
         Err(failure)
     }
 
-    /// 命中的节点连同它的祖先一起留下。
-    ///
-    /// 祖先不留的话，展平表上的 `parent_ref` 会指向一个不在表里的节点，候选的祖先路径
-    /// 就拼不出来。
-    fn keep_up(&mut self, mut at: usize) {
-        loop {
-            let entry = &mut self.collected[at];
-            if entry.keep {
-                return;
-            }
-            entry.keep = true;
-            match entry.parent {
-                Some(parent) => at = parent,
-                None => return,
-            }
-        }
-    }
-
     fn node(
         &mut self,
         element: &IUIAutomationElement,
@@ -1293,19 +1244,17 @@ impl Walk<'_> {
         depth: u32,
         parent: Option<usize>,
     ) -> Result<(), Failure> {
-        let mut node = self.backend.read_cached_node(self.window, element, path, self.fields)?;
+        // 已输出过的强身份不再输出、不再展开，也不计入 visited。UIA 返回的子节点列表可能
+        // 含祖先或已读过的节点（Edge 内容面板把父窗口的全部子节点接在自己的子节点之后，
+        // 其中包括它自己），照常展开会逐层复制同一棵子树，直到撞上 max_depth / max_nodes。
+        if !first_sighting(&mut self.seen, &runtime_id(element)?) {
+            return Ok(());
+        }
+        let mut node = self.backend.read_cached_node(element, path, self.fields)?;
         node.depth = depth;
         self.visited += 1;
-        let matched = matches_select(self.select, &node);
         let index = self.collected.len();
-        self.collected.push(Collected {
-            node,
-            parent,
-            keep: false,
-        });
-        if matched {
-            self.keep_up(index);
-        }
+        self.collected.push(Collected { node, parent });
         if depth >= self.bounds.max_depth {
             self.mark("max_depth");
             return Ok(());
@@ -1344,41 +1293,41 @@ impl Walk<'_> {
         Ok(())
     }
 
-    /// 输出前序表：只留 `keep` 的节点，并把父引用填成父节点的 `ref`。
-    fn finish(self) -> (Vec<Node>, Option<bool>, u32, Vec<&'static str>) {
-        let (nodes, root_enabled) = flatten(self.collected);
-        (nodes, root_enabled, self.visited, self.truncated_by)
+    /// 输出前序表，并把父引用填成父节点的 `ref`。
+    fn finish(self) -> (Vec<Node>, u32, Vec<&'static str>) {
+        (flatten(self.collected), self.visited, self.truncated_by)
     }
 }
 
-/// 展平收集到的节点，并单独带出根节点的可用状态。
-///
-/// **窗口可用状态只能取根节点，不能取返回表的第一项。** 筛选发生在遍历之后：根节点
-/// 匹配不上筛选条件时第一项是某个普通控件，一条都匹配不上时表是空的。按第一项判会把
-/// 「按名称筛出 0 个控件」报成「窗口被模态窗口挡着，控件都不可操作」，与事实不符。
-fn flatten(collected: Vec<Collected>) -> (Vec<Node>, Option<bool>) {
+/// 展平收集到的节点：把父节点下标换成父节点的 `ref`，顺序不变。
+fn flatten(collected: Vec<Collected>) -> Vec<Node> {
     let refs: Vec<String> = collected.iter().map(|c| c.node.reference.clone()).collect();
-    let root_enabled = collected.first().map(|c| c.node.enabled);
-    let mut nodes = Vec::new();
-    for entry in collected {
-        if !entry.keep {
-            continue;
-        }
-        let mut node = entry.node;
-        node.parent_ref = entry.parent.map(|at| refs[at].clone());
-        nodes.push(node);
-    }
-    (nodes, root_enabled)
+    collected
+        .into_iter()
+        .map(|entry| {
+            let mut node = entry.node;
+            node.parent_ref = entry.parent.map(|at| refs[at].clone());
+            node
+        })
+        .collect()
 }
 
-/// 一个节点过不过得了筛选。没有筛选条件时全过。
-fn matches_select(select: &Select, node: &Node) -> bool {
-    if let Some(role) = &select.role {
-        if node.role != *role {
+/// 这个 RuntimeId 在本次遍历里是不是第一次出现，并登记它。
+///
+/// 空串是没有 RuntimeId 的弱身份，一律算第一次：弱身份按属性指纹认，两个不同的控件可能
+/// 指纹相同，按它去重会丢掉真实控件。
+fn first_sighting(seen: &mut HashSet<String>, runtime: &str) -> bool {
+    runtime.is_empty() || seen.insert(runtime.to_owned())
+}
+
+/// 一个节点满不满足等待 `appears` 的条件。两项都没给时任何节点都满足。
+fn matches_target(role: Option<&str>, name_contains: Option<&str>, node: &Node) -> bool {
+    if let Some(role) = role {
+        if node.role != role {
             return false;
         }
     }
-    if let Some(text) = &select.name_contains {
+    if let Some(text) = name_contains {
         let needle = text.to_lowercase();
         let hit = node.name.to_lowercase().contains(&needle)
             || node.automation_id.to_lowercase().contains(&needle)
@@ -1438,6 +1387,97 @@ unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
         class_name: String::from_utf16_lossy(&class_name[..class_written.max(0) as usize]),
     });
     TRUE
+}
+
+/// 第一次读一个窗口时两次读取之间隔多久。Edge 的无障碍树在第一次请求后约 0.3 s 建好。
+const FIRST_READ_INTERVAL: Duration = Duration::from_millis(350);
+/// 第一次读一个窗口最多读多久。页面上有持续变化的元素时控件数一直在变，到点即交回最后一份。
+const FIRST_READ_LIMIT: Duration = Duration::from_secs(2);
+
+/// 隔 `interval` 重读，直到相邻两次的计数相同或到 `limit`，交回最后一份。
+fn settle<T>(
+    read: impl Fn() -> Result<T, Failure>,
+    count: impl Fn(&T) -> u32,
+    interval: Duration,
+    limit: Duration,
+) -> Result<T, Failure> {
+    let until = Instant::now() + limit;
+    let mut last = read()?;
+    while Instant::now() + interval <= until {
+        std::thread::sleep(interval);
+        let next = read()?;
+        let stable = count(&next) == count(&last);
+        last = next;
+        if stable {
+            break;
+        }
+    }
+    Ok(last)
+}
+
+/// 窗口所属进程号。读不到时为 0。
+fn window_pid(window: i64) -> u32 {
+    let mut pid = 0u32;
+    // SAFETY: 只读查询，出参是本栈帧上的整数。
+    unsafe { GetWindowThreadProcessId(HWND(window as *mut c_void), Some(&mut pid)) };
+    pid
+}
+
+/// 窗口此刻在屏幕上是否一点都看不见：最小化，或可见部分被 z 序在它上面的窗口完全盖住。
+///
+/// 盖在上面的窗口只算可见、未最小化、未被 DWM 隐藏（其他虚拟桌面、挂起的应用）、且不是
+/// 分层或鼠标穿透的窗口：分层窗口通常是阴影、悬浮歌词这类透明层，算进来会把看得见的窗口
+/// 报成被盖住。矩形取 DWM 的可见边框，不含不可见的调整边框。读不出几何时按没盖住报。
+fn window_covered(window: i64) -> bool {
+    let hwnd = HWND(window as *mut c_void);
+    // SAFETY: 只读查询。
+    if unsafe { IsIconic(hwnd) }.as_bool() {
+        return true;
+    }
+    let Ok(frame) = crate::capture::window_frame(hwnd) else {
+        return false;
+    };
+    let Some(target) = frame.visible.intersect(&foreground::virtual_desktop()) else {
+        return true;
+    };
+    let mut covers = Vec::new();
+    // SAFETY: 只读查询；句柄沿 z 序向上逐个取，取到顶返回错误即停。
+    let mut above = unsafe { GetWindow(hwnd, GW_HWNDPREV) };
+    while let Ok(next) = above {
+        if next.is_invalid() {
+            break;
+        }
+        if covers_others(next) {
+            if let Ok(f) = crate::capture::window_frame(next) {
+                covers.push(f.visible);
+            }
+        }
+        // SAFETY: 同上。
+        above = unsafe { GetWindow(next, GW_HWNDPREV) };
+    }
+    crate::geometry::fully_covered(target, &covers)
+}
+
+/// 这个窗口能不能挡住它下面的窗口。
+fn covers_others(hwnd: HWND) -> bool {
+    // SAFETY: 四项都是只读查询，出参是本栈帧上的整数。
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            return false;
+        }
+        let style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if style & (WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0) != 0 {
+            return false;
+        }
+        let mut cloaked = 0u32;
+        let read = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            std::ptr::addr_of_mut!(cloaked).cast(),
+            u32::try_from(std::mem::size_of::<u32>()).unwrap_or(4),
+        );
+        read.is_err() || cloaked == 0
+    }
 }
 
 /// UIA 用空指针表示「没有这个子节点」「不支持这个模式」。
@@ -1598,6 +1638,45 @@ fn selected_names(element: &IUIAutomationElement) -> Result<(Vec<String>, usize)
         }
     }
     Ok((names, total))
+}
+
+/// 文本控件此刻可见范围里的文字，规则见 `visible_lines`。
+///
+/// 不要改读 `DocumentRange`：终端的文档范围从缓冲区开头算，读到的是最早的输出，
+/// 不是屏幕上正在显示的内容。
+fn visible_text(element: &IUIAutomationElement, name: &str) -> Result<Option<String>, Failure> {
+    count_call();
+    let Some(found) =
+        optional(unsafe { element.GetCurrentPattern(UIA_TextPatternId) }).map_err(uia("取 TextPattern"))?
+    else {
+        return Ok(None);
+    };
+    let pattern = found
+        .cast::<IUIAutomationTextPattern>()
+        .map_err(uia("TextPattern 转换"))?;
+    count_call();
+    let ranges = unsafe { pattern.GetVisibleRanges() }.map_err(uia("取可见范围"))?;
+    let length = unsafe { ranges.Length() }.map_err(uia("读可见范围段数"))?;
+    let mut segments = Vec::new();
+    for index in 0..length {
+        let range = unsafe { ranges.GetElement(index) }.map_err(uia("取可见范围"))?;
+        count_call();
+        segments.push(unsafe { range.GetText(-1) }.map_err(uia("读可见文本"))?.to_string());
+    }
+    Ok(visible_lines(&segments, name))
+}
+
+/// 可见范围各段按段换行拼接，去掉行尾空格与首尾空行。为空或与控件名称相同时为 `None`。
+///
+/// 按段换行是因为 conhost 每行一段且段内不带换行；Windows Terminal 只给一段，行按窗宽
+/// 补空格，不去行尾空格一屏有上万个空格。
+fn visible_lines(segments: &[String], name: &str) -> Option<String> {
+    let joined = segments.join("\n");
+    let lines: Vec<&str> = joined.lines().map(str::trim_end).collect();
+    let first = lines.iter().position(|line| !line.is_empty())?;
+    let last = lines.iter().rposition(|line| !line.is_empty())?;
+    let text = lines[first..=last].join("\n");
+    (text != name.trim()).then_some(text)
 }
 
 /// 一个滚动轴的位置百分比。这个轴滚不动、或状态没取时缺席。
@@ -2613,35 +2692,99 @@ mod tests {
         }
     }
 
-    fn collected(reference: &str, enabled: bool, keep: bool, parent: Option<usize>) -> Collected {
+    fn collected(reference: &str, parent: Option<usize>) -> Collected {
         let mut n = node("button", "按钮", "", None);
         n.reference = reference.to_owned();
-        n.enabled = enabled;
-        Collected {
-            node: n,
-            parent,
-            keep,
-        }
+        Collected { node: n, parent }
+    }
+
+    /// 遍历读到的节点全部交回，顺序不变；根在第一项，范围与窗口可用状态都按它取。
+    #[test]
+    fn every_visited_node_is_returned_in_order_with_parent_refs() {
+        let nodes = flatten(vec![
+            collected("w#1", None),
+            collected("w.0#3", Some(0)),
+            collected("w.0.0#4", Some(1)),
+            collected("w.1#5", Some(0)),
+        ]);
+        let refs: Vec<&str> = nodes.iter().map(|n| n.reference.as_str()).collect();
+        assert_eq!(refs, ["w#1", "w.0#3", "w.0.0#4", "w.1#5"]);
+        let parents: Vec<Option<&str>> = nodes.iter().map(|n| n.parent_ref.as_deref()).collect();
+        assert_eq!(parents, [None, Some("w#1"), Some("w.0#3"), Some("w#1")]);
+    }
+
+    /// Edge 第一次读只有 47 个外框节点，0.3 s 后 52 个：读到相邻两次计数相同才交回。
+    #[test]
+    fn first_read_settles_once_the_count_stops_changing() {
+        let counts = [47u32, 52, 52, 60];
+        let reads = std::cell::Cell::new(0usize);
+        let got = settle(
+            || {
+                let n = counts[reads.get()];
+                reads.set(reads.get() + 1);
+                Ok(n)
+            },
+            |n| *n,
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+        );
+        assert_eq!(got.ok(), Some(52));
+        assert_eq!(reads.get(), 3);
     }
 
     #[test]
-    fn the_window_enabled_flag_comes_from_the_root_not_from_the_first_kept_node() {
-        // 筛选把根筛掉、只留一个可用的控件：窗口仍然是被挡住的那个状态。
-        let (nodes, root_enabled) = flatten(vec![
-            collected("w#1", false, false, None),
-            collected("w.0#3", true, true, Some(0)),
-        ]);
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].parent_ref.as_deref(), Some("w#1"));
-        assert_eq!(root_enabled, Some(false));
+    fn settle_hands_back_the_last_read_at_the_limit() {
+        let reads = std::cell::Cell::new(0u32);
+        let got = settle(
+            || {
+                reads.set(reads.get() + 1);
+                Ok(reads.get())
+            },
+            |n| *n,
+            Duration::from_millis(5),
+            Duration::from_millis(30),
+        );
+        assert_eq!(got.ok(), Some(reads.get()));
+        assert!(reads.get() <= 7);
+    }
 
-        // 一条都没筛中：表是空的，窗口状态仍取根节点，不是「窗口被模态窗口挡着」。
-        let (nodes, root_enabled) = flatten(vec![
-            collected("w#1", true, false, None),
-            collected("w.0#3", true, false, Some(0)),
-        ]);
-        assert!(nodes.is_empty());
-        assert_eq!(root_enabled, Some(true));
+    #[test]
+    fn a_failed_read_during_settling_is_returned() {
+        let got: Result<u32, Failure> = settle(
+            || Err(Failure::Refused("target_lost".to_owned())),
+            |n| *n,
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+        );
+        assert!(got.is_err());
+    }
+
+    /// Windows Terminal 形状：一段，行按窗宽补空格，末尾一片空行。
+    #[test]
+    fn visible_text_trims_padding_and_blank_edges() {
+        let screen = "\r\n⏺ Bash(bun run task.ts)      \r\n  ⎿  Running…    \r\n\r\n>        \r\n        \r\n     ";
+        assert_eq!(
+            visible_lines(&[screen.to_owned()], "Windows PowerShell").as_deref(),
+            Some("⏺ Bash(bun run task.ts)\n  ⎿  Running…\n\n>")
+        );
+    }
+
+    /// conhost 形状：每行一段，段内不带换行。拼成一段会把两行粘成一行。
+    #[test]
+    fn visible_text_puts_each_range_on_its_own_line() {
+        let rows = ["probe-line-1   ", "probe-line-2", "PS C:\\> "].map(str::to_owned);
+        assert_eq!(
+            visible_lines(&rows, "Text Area").as_deref(),
+            Some("probe-line-1\nprobe-line-2\nPS C:\\>")
+        );
+    }
+
+    /// 名称就是正文的文字控件（网页文字、标签页标题）不重复给一遍，空屏也不给。
+    #[test]
+    fn visible_text_is_absent_when_it_repeats_the_name_or_is_blank() {
+        assert_eq!(visible_lines(&["上下文膨胀与平衡".to_owned()], "上下文膨胀与平衡"), None);
+        assert_eq!(visible_lines(&["   \r\n  ".to_owned()], "Windows PowerShell"), None);
+        assert_eq!(visible_lines(&[], "Windows PowerShell"), None);
     }
 
     #[test]
@@ -2832,44 +2975,50 @@ mod tests {
         assert_eq!(clip_utf16(&pair, 2), ("a\u{fffd}".to_owned(), true));
     }
 
-    /// 没有筛选条件时一个都不挡。
+    /// `appears` 两项条件都没给时任何节点都满足。
     #[test]
-    fn an_empty_selection_keeps_every_node() {
-        let select = Select::default();
-        assert!(matches_select(&select, &node("button", "保存", "save", None)));
-        assert!(matches_select(&select, &node("edit", "", "", None)));
+    fn an_empty_appears_condition_matches_every_node() {
+        assert!(matches_target(None, None, &node("button", "保存", "save", None)));
+        assert!(matches_target(None, None, &node("edit", "", "", None)));
     }
 
     #[test]
-    fn role_and_text_filters_apply_together() {
-        let select = Select {
-            role: Some("button".to_owned()),
-            name_contains: Some("保存".to_owned()),
-            ..Select::default()
-        };
-        assert!(matches_select(&select, &node("button", "保存", "save", None)));
-        assert!(!matches_select(&select, &node("edit", "保存", "save", None)));
-        assert!(!matches_select(
-            &select,
-            &node("button", "取消", "cancel", None)
-        ));
+    fn appears_role_and_text_apply_together() {
+        let (role, text) = (Some("button"), Some("保存"));
+        assert!(matches_target(role, text, &node("button", "保存", "save", None)));
+        assert!(!matches_target(role, text, &node("edit", "保存", "save", None)));
+        assert!(!matches_target(role, text, &node("button", "取消", "cancel", None)));
     }
 
-    /// 文本筛选看名称、稳定标识与值三处，且不分大小写。
+    /// 文字条件看名称、稳定标识与值三处，且不分大小写。
     #[test]
-    fn the_text_filter_looks_at_name_id_and_value_case_insensitively() {
-        let select = Select {
-            name_contains: Some("Save".to_owned()),
-            ..Select::default()
-        };
-        assert!(matches_select(&select, &node("button", "SAVE AS", "x", None)));
-        assert!(matches_select(&select, &node("button", "别的", "saveBtn", None)));
-        assert!(matches_select(
-            &select,
-            &node("edit", "别的", "x", Some("autosave"))
-        ));
-        assert!(!matches_select(&select, &node("edit", "别的", "x", Some("无"))));
+    fn the_appears_text_looks_at_name_id_and_value_case_insensitively() {
+        let text = Some("Save");
+        assert!(matches_target(None, text, &node("button", "SAVE AS", "x", None)));
+        assert!(matches_target(None, text, &node("button", "别的", "saveBtn", None)));
+        assert!(matches_target(None, text, &node("edit", "别的", "x", Some("autosave"))));
+        assert!(!matches_target(None, text, &node("edit", "别的", "x", Some("无"))));
         // 没取值的节点不会因为值缺席就命中。
-        assert!(!matches_select(&select, &node("edit", "别的", "x", None)));
+        assert!(!matches_target(None, text, &node("edit", "别的", "x", None)));
+    }
+
+    #[test]
+    fn a_runtime_id_is_emitted_once_per_walk_and_weak_identities_are_never_merged() {
+        // Edge 内容面板的子节点列表：自己的子节点之后接着父窗口的全部子节点，含它自己。
+        let mut seen = HashSet::new();
+        for id in ["42.263932", "42.460938", "42.198318", "42.263932.4.0.0.179"] {
+            assert!(first_sighting(&mut seen, id));
+        }
+        for id in ["42.263932.4.0.0.181", "42.592008"] {
+            assert!(first_sighting(&mut seen, id));
+        }
+        for id in ["42.460938", "42.198318", "42.263932.4.0.0.179"] {
+            assert!(!first_sighting(&mut seen, id), "{id} 已输出过，不再展开");
+        }
+        // 弱身份每次都算第一次。
+        assert!(first_sighting(&mut seen, ""));
+        assert!(first_sighting(&mut seen, ""));
+        // 集合只属于一次遍历：新的遍历从空集合开始。
+        assert!(first_sighting(&mut HashSet::new(), "42.460938"));
     }
 }

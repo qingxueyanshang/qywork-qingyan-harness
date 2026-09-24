@@ -65,8 +65,6 @@ pub struct Request {
 
 /// 一次读取的三个上限。语义固定：`max_nodes` 与 `max_depth` 限遍历，`time_budget_ms`
 /// 限这次遍历自身的用时，三者任一触顶都记进 `truncated_by`。
-///
-/// 筛选不走这里：被筛掉的节点仍然被遍历过，它不是截断。
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bounds {
@@ -75,19 +73,16 @@ pub struct Bounds {
     pub time_budget_ms: u64,
 }
 
-/// 观察的筛选与字段选择。全部缺省时读整窗、取全部字段。
+/// 观察的范围与字段选择。全部缺省时读整窗、取全部字段。
+///
+/// 没有按角色或文字筛选的字段：读树交回本次范围内的全部节点，筛选只作用于交给模型的
+/// 视图。在这里筛会让筛出来的几个节点成为当前观察，其余控件的引用随之失效。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Select {
     /// 子树根的 `ref`。缺席表示从窗口元素开始读。
     #[serde(default)]
     pub root: Option<String>,
-    /// 只留这个角色的控件。
-    #[serde(default)]
-    pub role: Option<String>,
-    /// 只留名称、稳定标识或值包含这段文字的控件，不分大小写。
-    #[serde(default)]
-    pub name_contains: Option<String>,
     /// 取不取控件当前值。为假时 `value` 一律缺席，可用动作仍照常判定。
     #[serde(default = "yes")]
     pub include_value: bool,
@@ -110,8 +105,6 @@ impl Default for Select {
     fn default() -> Self {
         Self {
             root: None,
-            role: None,
-            name_contains: None,
             include_value: true,
             include_state: true,
         }
@@ -119,19 +112,13 @@ impl Default for Select {
 }
 
 impl Select {
-    /// 施加了哪些筛选，逐条写进 `completeness.filtered_by`。
+    /// 范围与字段选择，逐条写进 `completeness.filtered_by`。
     ///
-    /// 调用方据此区分「这个控件不存在」与「这个控件被筛掉了」，两者不能混。
+    /// 调用方据此区分「这个控件不存在」与「这个控件不在本次读取范围里」，两者不能混。
     pub fn describe(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(root) = &self.root {
             out.push(format!("root={root}"));
-        }
-        if let Some(role) = &self.role {
-            out.push(format!("role={role}"));
-        }
-        if let Some(text) = &self.name_contains {
-            out.push(format!("nameContains={text}"));
         }
         if !self.include_value {
             out.push("includeValue=false".to_owned());
@@ -494,7 +481,7 @@ pub enum Op {
         #[serde(flatten)]
         bounds: Bounds,
     },
-    /// 在控件上执行一个动作，之后重读它所在的子树。
+    /// 在控件上执行一个动作，之后按 `root` 给的范围整份重读。
     ///
     /// 所有改变状态的动作走这一条：定位、准入、可放弃等待与重读只有一处实现，
     /// 按动作分成多个 op 会让这四件事各有一份拷贝。
@@ -507,6 +494,9 @@ pub enum Op {
         window: i64,
         #[serde(default, rename = "ref")]
         reference: Option<String>,
+        /// 动作之后重读的范围，取调用方当前观察的范围根。缺席表示整窗。
+        #[serde(default)]
+        root: Option<String>,
         #[serde(default)]
         point: Option<ScreenPoint>,
         #[serde(default)]
@@ -553,10 +543,15 @@ pub enum Op {
         /// `until=value` 要等到的值。
         #[serde(default)]
         value: Option<String>,
-        /// `until=appears` 的筛选条件。与读树那一份同形，字段也在同一层，
-        /// 不是嵌在 `select` 对象里。
-        #[serde(flatten)]
-        select: Select,
+        /// `until=appears` 要出现的控件角色。
+        #[serde(default)]
+        role: Option<String>,
+        /// `until=appears` 要出现的控件文字：名称、稳定标识或值包含它，不分大小写。
+        #[serde(default)]
+        name_contains: Option<String>,
+        /// 等待结束时重读的范围，取调用方当前观察的范围根。缺席表示整窗。
+        #[serde(default)]
+        root: Option<String>,
         /// `until=window` 要等的标题子串。
         #[serde(default)]
         name: Option<String>,
@@ -731,6 +726,11 @@ pub struct Tree {
     pub scope: Option<String>,
     /// 目标窗口此刻可不可用。模态窗口挡住它时为假。
     pub window_enabled: bool,
+    /// 目标窗口此刻在屏幕上一点都看不见：最小化，或被 z 序在它上面的窗口完全盖住。
+    ///
+    /// 浏览器对载入之后还没在屏幕上显示过的页面不向 UIA 交出网页内容，控件表这时只有外框、
+    /// 也没有撞上限，这一格是调用方能看到的唯一迹象。
+    pub window_covered: bool,
     pub completeness: Completeness,
     pub node_count: u32,
     pub nodes: Vec<Node>,
@@ -759,9 +759,9 @@ pub struct WindowInfo {
 
 /// 观察的完整性。
 ///
-/// 截断与筛选是两件事，分两格记：`truncated_by` 说的是上限截断了遍历，`filtered_by`
-/// 说的是哪些条件把遍历过的节点挡在了结果外面。调用方不能把「没采到」读成「没有」，
-/// 也不能把「被筛掉」读成「不存在」。
+/// 截断与范围是两件事，分两格记：`truncated_by` 说的是上限截断了遍历，`filtered_by`
+/// 说的是读取范围与字段选择。调用方不能把「没采到」读成「没有」，也不能把「不在读取
+/// 范围里」读成「不存在」。
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Completeness {
@@ -947,6 +947,8 @@ pub struct Node {
     pub role: String,
     pub name: String,
     pub automation_id: String,
+    /// ValuePattern 的值；没有 ValuePattern 而有 TextPattern 的控件（终端、控制台正文）
+    /// 是此刻可见的文字。字段选择不取值时缺席。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     pub enabled: bool,
@@ -1368,13 +1370,13 @@ mod tests {
         }
     }
 
-    /// 筛选逐条写进 completeness，调用方据此分得出「没有」与「被筛掉」。
+    /// 范围与字段选择逐条写进 completeness，调用方据此分得出「没有」与「不在读取范围里」。
     #[test]
     fn selection_is_described_field_by_field() {
         let req = parse(
             r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
-                "op":"read_tree","params":{"window":66,"root":"w.0#7","role":"button",
-                "nameContains":"保存","includeValue":false,"includeState":false,
+                "op":"read_tree","params":{"window":66,"root":"w.0#7",
+                "includeValue":false,"includeState":false,
                 "maxNodes":500,"maxDepth":12,"timeBudgetMs":1500}}"#,
         );
         match req.op {
@@ -1383,12 +1385,43 @@ mod tests {
                     select.describe(),
                     vec![
                         "root=w.0#7".to_owned(),
-                        "role=button".to_owned(),
-                        "nameContains=保存".to_owned(),
                         "includeValue=false".to_owned(),
                         "includeState=false".to_owned(),
                     ]
                 );
+            }
+            other => panic!("解析成了别的 op：{other:?}"),
+        }
+    }
+
+    /// 动作与等待都带当前观察的范围根，结束时按它整份重读。
+    #[test]
+    fn act_and_wait_carry_the_observation_scope() {
+        let act = parse(
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"act","params":{"window":66,"ref":"w.0.3#9","root":"w.0#7",
+                "action":{"kind":"invoke"},"maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}"#,
+        );
+        match act.op {
+            Op::Act { root, .. } => assert_eq!(root.as_deref(), Some("w.0#7")),
+            other => panic!("解析成了别的 op：{other:?}"),
+        }
+        let wait = parse(
+            r#"{"id":"r2","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"wait","params":{"window":66,"until":"appears","role":"button",
+                "nameContains":"保存","pollMs":250,"timeoutMs":9000,
+                "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}"#,
+        );
+        match wait.op {
+            Op::Wait {
+                role,
+                name_contains,
+                root,
+                ..
+            } => {
+                assert_eq!(role.as_deref(), Some("button"));
+                assert_eq!(name_contains.as_deref(), Some("保存"));
+                assert_eq!(root, None);
             }
             other => panic!("解析成了别的 op：{other:?}"),
         }
@@ -1441,7 +1474,7 @@ mod tests {
         .is_err());
     }
 
-    /// 单读一个控件的 op 不存在：动作与等待都自带子树重读，没有第二条只读路径。
+    /// 单读一个控件的 op 不存在：动作与等待都自带按范围的重读，没有第二条只读路径。
     #[test]
     fn a_single_element_read_op_does_not_exist() {
         assert!(serde_json::from_str::<Request>(
@@ -1468,6 +1501,7 @@ mod tests {
             captured_at: 17,
             scope: scope.map(str::to_owned),
             window_enabled: true,
+            window_covered: false,
             completeness: Completeness {
                 complete: true,
                 truncated_by: Vec::new(),
@@ -1539,19 +1573,19 @@ mod tests {
         assert_eq!(value["nodeCount"], 1);
     }
 
-    /// 截断与筛选分两格：被筛掉的节点遍历过，它不是截断。
+    /// 截断与读取范围分两格：只读了一棵子树不是截断。
     #[test]
-    fn truncation_and_filtering_are_reported_separately() {
-        let mut body = tree(None);
+    fn truncation_and_scope_are_reported_separately() {
+        let mut body = tree(Some("w.0#7"));
         body.completeness = Completeness {
             complete: false,
             truncated_by: vec!["max_nodes"],
-            filtered_by: vec!["role=button".to_owned()],
+            filtered_by: vec!["root=w.0#7".to_owned()],
             visited: 500,
         };
         let value = serde_json::to_value(Observation::Tree(body)).unwrap();
         assert_eq!(value["completeness"]["truncatedBy"][0], "max_nodes");
-        assert_eq!(value["completeness"]["filteredBy"][0], "role=button");
+        assert_eq!(value["completeness"]["filteredBy"][0], "root=w.0#7");
         assert_eq!(value["completeness"]["visited"], 500);
     }
 

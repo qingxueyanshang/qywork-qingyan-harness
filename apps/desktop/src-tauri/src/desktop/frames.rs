@@ -98,11 +98,14 @@ pub struct RequestFrame {
     pub max_depth: Option<u32>,
     #[serde(default)]
     pub time_budget_ms: Option<u64>,
-    /// 只读这个 ref 底下的子树。缺席表示整窗。
+    /// 读取范围的根：`read_tree` 只读这个 ref 底下的子树，`act` 与 `wait` 结束时按它重读。
+    /// 缺席表示整窗。
     #[serde(default)]
     pub root: Option<String>,
+    /// `wait` 的 `until=appears` 要出现的控件角色。
     #[serde(default)]
     pub role: Option<String>,
+    /// `wait` 的 `until=appears` 要出现的控件文字。
     #[serde(default)]
     pub name_contains: Option<String>,
     #[serde(default)]
@@ -345,6 +348,9 @@ pub fn to_worker(
             if let Some(generation) = &frame.expect_generation {
                 merge(&mut params, json!({ "expectGeneration": generation }));
             }
+            if let Some(root) = &frame.root {
+                merge(&mut params, json!({ "root": root }));
+            }
             params
         }
         "read_text" => json!({
@@ -354,7 +360,15 @@ pub fn to_worker(
         }),
         "wait" => {
             let mut params = bounds(frame, window)?;
-            merge(&mut params, select(frame));
+            if let Some(root) = &frame.root {
+                merge(&mut params, json!({ "root": root }));
+            }
+            if let Some(role) = &frame.role {
+                merge(&mut params, json!({ "role": role }));
+            }
+            if let Some(text) = &frame.name_contains {
+                merge(&mut params, json!({ "nameContains": text }));
+            }
             merge(
                 &mut params,
                 json!({
@@ -413,18 +427,12 @@ fn bounds(frame: &RequestFrame, window: i64) -> Result<Value, &'static str> {
     }))
 }
 
-/// 筛选与字段选择。缺席的项一律不写进去：多发一个 `null` 会让 worker 的可选字段判定
-/// 从「没有」变成「有且为空」。
+/// 读树的范围与字段选择。缺席的项一律不写进去：多发一个 `null` 会让 worker 的可选字段
+/// 判定从「没有」变成「有且为空」。
 fn select(frame: &RequestFrame) -> Value {
     let mut out = json!({});
     if let Some(root) = &frame.root {
         merge(&mut out, json!({ "root": root }));
-    }
-    if let Some(role) = &frame.role {
-        merge(&mut out, json!({ "role": role }));
-    }
-    if let Some(text) = &frame.name_contains {
-        merge(&mut out, json!({ "nameContains": text }));
     }
     if let Some(include) = frame.include_value {
         merge(&mut out, json!({ "includeValue": include }));
@@ -879,8 +887,9 @@ mod tests {
         );
     }
 
+    /// 读树只带范围与字段选择；角色与文字不进读树，它们只作用于交给模型的视图。
     #[test]
-    fn a_local_query_travels_as_root_role_and_text() {
+    fn a_read_travels_as_root_and_field_selection_only() {
         let mut frame = request("read_tree");
         frame.root = Some("w.0#7".to_owned());
         frame.role = Some("button".to_owned());
@@ -889,22 +898,41 @@ mod tests {
         frame.include_state = Some(false);
         let worker = to_worker("w1".to_owned(), &frame, &binding(), 77).unwrap();
         assert_eq!(worker.params["root"], json!("w.0#7"));
-        assert_eq!(worker.params["role"], json!("button"));
-        assert_eq!(worker.params["nameContains"], json!("保存"));
+        assert!(worker.params.get("role").is_none());
+        assert!(worker.params.get("nameContains").is_none());
         assert_eq!(worker.params["includeValue"], json!(false));
         assert_eq!(worker.params["includeState"], json!(false));
         assert_eq!(worker.params["window"], json!(77));
     }
 
-    /// 动作也带三个上限：动作后要重读目标所在的子树，上限由服务端给，worker 不自带默认值。
+    /// 动作带三个上限与当前观察的范围根：动作后按这个范围整份重读，上限由服务端给，
+    /// worker 不自带默认值。
     #[test]
-    fn an_action_carries_the_bounds_for_the_follow_up_read() {
+    fn an_action_carries_the_bounds_and_scope_for_the_follow_up_read() {
         let mut frame = request("act");
         frame.action = Some(json!({"kind": "invoke"}));
+        frame.root = Some("w.0#7".to_owned());
         let worker = to_worker("w1".to_owned(), &frame, &binding(), 77).unwrap();
         assert_eq!(worker.params["maxNodes"], json!(500));
         assert_eq!(worker.params["maxDepth"], json!(12));
         assert_eq!(worker.params["timeBudgetMs"], json!(1500));
+        assert_eq!(worker.params["root"], json!("w.0#7"));
+    }
+
+    /// 等待带 `appears` 的角色与文字，以及结束时重读的范围根。
+    #[test]
+    fn a_wait_carries_the_appears_condition_and_scope() {
+        let mut frame = request("wait");
+        frame.until = Some("appears".to_owned());
+        frame.poll_ms = Some(250);
+        frame.timeout_ms = Some(9000);
+        frame.role = Some("button".to_owned());
+        frame.name_contains = Some("保存".to_owned());
+        frame.root = Some("w.0#7".to_owned());
+        let worker = to_worker("w1".to_owned(), &frame, &binding(), 77).unwrap();
+        assert_eq!(worker.params["role"], json!("button"));
+        assert_eq!(worker.params["nameContains"], json!("保存"));
+        assert_eq!(worker.params["root"], json!("w.0#7"));
     }
 
     #[test]

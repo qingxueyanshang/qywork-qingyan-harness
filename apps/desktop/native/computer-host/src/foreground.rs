@@ -12,6 +12,7 @@
 //!    共用这一处），再做各自原有的核对：指针核对落点归目标窗口，键盘核对前台窗口就是
 //!    目标窗口且窗口未被禁用。点名了控件时再核对它持有键盘焦点，焦点不在它上面就拒绝
 //!    ——激活窗口不等于改控件焦点，这一条不替用户做。不点名控件即以窗口为目标。
+//!    带 Win 的组合键例外：它发给系统，不提目标窗口，改提任务栏（`system_shortcut`）。
 //! 5. **中途前台变了立即停止**，已发出多少如实带回，执行事实落 `unknown`，不向另一个
 //!    窗口续输。这条管的是动作进行中，不是派发前。
 //! 6. **窗口动作的生效证据按动作各自读回**（前台窗口、显示状态、窗口矩形），
@@ -22,6 +23,7 @@
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
+use ::windows::core::w;
 use ::windows::Win32::Foundation::{HWND, POINT, RECT};
 use ::windows::Win32::UI::Accessibility::{
     IUIAutomationElement, IUIAutomationTransformPattern, IUIAutomationWindowPattern,
@@ -31,7 +33,8 @@ use ::windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId}
 use ::windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics,
-    GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsZoomed, SetForegroundWindow,
+    FindWindowW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsZoomed,
+    SetForegroundWindow,
     ShowWindow, WindowFromPoint, GA_ROOT, GUITHREADINFO, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
 };
@@ -84,6 +87,11 @@ pub fn perform(
     stop: &dyn Fn() -> bool,
 ) -> Attempt {
     let sink = SystemSink;
+    if let ActionSpec::PressKey { key, modifiers } = action {
+        if modifiers.contains(&Modifier::Win) {
+            return system_shortcut(&sink, key, modifiers);
+        }
+    }
     if action.takes_input() {
         ensure_foreground(window);
     }
@@ -370,7 +378,7 @@ fn keyboard_target(window: i64, element: Option<&IUIAutomationElement>) -> Resul
     Ok(())
 }
 
-/// 系统前台窗口的句柄。窗口根节点的键盘动作表按它列。
+/// 系统前台窗口的句柄。
 pub fn foreground_window() -> i64 {
     // SAFETY: 无参只读查询。
     unsafe { GetForegroundWindow() }.0 as i64
@@ -458,6 +466,24 @@ fn press_key(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attempt {
     }
     let (dispatch, reason) = classify_input(sent, requested);
     Attempt::Called(Outcome::returned(dispatch, reason))
+}
+
+/// 带 Win 的组合键发给系统，不经过任何应用窗口。
+///
+/// 先把任务栏提到前台再按：系统快捷键由外壳截获，与前台是哪个窗口无关；不是系统快捷键的
+/// 组合落在任务栏上，不进用户的窗口。不要改成先提目标窗口：桌面（Progman）提到前台后，
+/// 前台落在同线程的另一个窗口（WorkerW），前台核对永远不过，模型只能改借用户正在用的
+/// 窗口去按，按之前还会把那个窗口提到最前、改它的显示状态。
+fn system_shortcut(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attempt {
+    // SAFETY: 只读查询，类名是常量。
+    let Ok(tray) = (unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }) else {
+        return Attempt::Refused("no_taskbar: 找不到任务栏".to_owned());
+    };
+    let target = tray.0 as i64;
+    if !matches!(raise(target), Raised::Reached) {
+        return Attempt::Refused(format!("not_foreground: {}", foreground_window()));
+    }
+    press_key(sink, key, modifiers)
 }
 
 // ── 窗口 ──
@@ -731,7 +757,7 @@ fn window_state(window: i64) -> Option<WindowState> {
 }
 
 /// 虚拟桌面矩形。绝对指针坐标铺在它上面，多显示器时原点可能是负的。
-fn virtual_desktop() -> ScreenRect {
+pub fn virtual_desktop() -> ScreenRect {
     // SAFETY: 四项都是无参只读指标查询。
     unsafe {
         ScreenRect {
