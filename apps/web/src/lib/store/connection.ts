@@ -8,9 +8,7 @@
  */
 
 import type {
-  ActionDescriptor,
   AgentEvent,
-  Attachment,
   CommandRejectedFrame,
   ContextBreakdown,
   ContextOmitted,
@@ -20,10 +18,9 @@ import type {
   EventEnvelope,
   FollowUp,
   Goal,
-  NodeState,
-  RunUsage,
-  StopReason,
-  ToolOutcomeWire,
+  Message,
+  Run,
+  Step,
 } from '@qywork/core'
 import { createEffect, createRoot } from 'solid-js'
 import { produce } from 'solid-js/store'
@@ -857,15 +854,6 @@ function foldRunState(ev: AgentEvent): void {
   }
 }
 
-interface StoredMessage {
-  id: string
-  role: string
-  content: string
-  attachments?: Attachment[]
-  /** 见 `Message.origin`：null = 用户本人打的字，其余两值是回执。 */
-  origin: 'subagent' | 'workflow' | null
-  createdAt: number
-}
 /** `GET /api/conversations/:id/context` 的回体，形状同 runtime 的 `ContextPanel`。 */
 interface StoredContextPanel {
   total: number
@@ -875,58 +863,18 @@ interface StoredContextPanel {
   breakdown: ContextBreakdown
   omitted: ContextOmitted
 }
-interface StoredRun {
-  id: string
-  userMessageId: string | null
-  createdAt: number
-  /** null = 这一轮还没收尾（正在跑，或进程被杀）。 */
-  finishedAt: number | null
-  stopReason: StopReason | null
-  status: string
-  usage: RunUsage | null
-  errorMessage: string | null
-}
-interface StoredStep {
-  id: string
-  runId: string
-  seq: number
-  kind: string
-  toolName: string | null
-  content: string | null
-  payload: {
-    kind: string
-    args?: Record<string, unknown>
-    outcome?: ToolOutcomeWire
-    action?: ActionDescriptor
-    /** 派活卡每一格的状态，见 `StepPayload`。 */
-    nodes?: Record<string, NodeState>
-    /** kind='compaction' 专有，见 `StepPayload`。 */
-    phase?: 'done' | 'skipped' | 'failed'
-    summarized?: boolean
-    reasonCode?: string
-    compactedMessages?: number
-    /** kind='user' 专有：注入消息带的附件，见 `StepPayload`。 */
-    attachments?: Attachment[]
-    /** kind='user' 专有：谁投的，见 `StepPayload`。缺席 = 用户本人。 */
-    origin?: 'subagent' | 'workflow'
-  } | null
-  status: string
-  createdAt: number
-  /** 这次调用跑了多久。迁移 28 之前的行没有这个数。 */
-  durationMs: number | null
-}
 
 /** 一条会话的三样落库事实：消息、run、每个 run 的 steps。 */
 interface Folded {
-  messages: StoredMessage[]
-  runs: StoredRun[]
-  stepsByRun: Map<string, StoredStep[]>
+  messages: Message[]
+  runs: Run[]
+  stepsByRun: Map<string, Step[]>
 }
 
 interface HistoryPage extends Folded {
   todos: ConversationHistoryPageResponse['todos']
   /** 这一页引用却不在页里的 workflow 首派，见 `ConversationHistoryPageResponse`。 */
-  workflowStarts: StoredStep[]
+  workflowStarts: Step[]
   nextCursor: string | null
   /** 运行中这一轮与当前请求的只读快照；没有 run 在跑时为 null。 */
   live: ConversationLiveSnapshot | null
@@ -1048,9 +996,9 @@ async function fetchConversationPage(
     `/api/conversations/${id}/history?${query}`,
     { signal },
   )
-  const stepsByRun = new Map<string, StoredStep[]>()
+  const stepsByRun = new Map<string, Step[]>()
   for (const raw of page.steps) {
-    const step = raw as unknown as StoredStep
+    const step = raw
     const list = stepsByRun.get(step.runId) ?? []
     list.push(step)
     stepsByRun.set(step.runId, list)
@@ -1060,7 +1008,7 @@ async function fetchConversationPage(
     runs: page.runs,
     stepsByRun,
     todos: page.todos,
-    workflowStarts: page.workflowStarts as unknown as StoredStep[],
+    workflowStarts: page.workflowStarts,
     nextCursor: page.nextCursor,
     live: page.live,
   }
@@ -1071,7 +1019,7 @@ async function fetchConversationPage(
  * 两处各折一遍的话，工具卡的折叠口径迟早在两边漂开。
  */
 function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[] {
-  const runsByUserMessage = new Map<string, StoredRun[]>()
+  const runsByUserMessage = new Map<string, Run[]>()
   for (const r of runs) {
     if (!r.userMessageId) continue
     const list = runsByUserMessage.get(r.userMessageId) ?? []
@@ -1602,7 +1550,7 @@ export async function reloadActiveConversation(): Promise<void> {
  * **一条 step 不等于一条界面条目**：不同 kind 投影成不同的会话条目。
  * 思考只来自独立的 `kind='thinking'`；迁移 37 已把旧工具行正文转成这种结构。
  */
-function stepToItems(s: StoredStep): TranscriptItem[] {
+function stepToItems(s: Step): TranscriptItem[] {
   if (s.kind === 'text') {
     return s.content ? [{ id: s.id, kind: 'text', text: s.content }] : []
   }
@@ -1650,7 +1598,9 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
     ]
   }
   if (s.kind === 'tool_action') {
-    const outcome = s.payload?.outcome
+    const p =
+      s.payload?.kind === 'tool_call' || s.payload?.kind === 'tool_result' ? s.payload : null
+    const outcome = p?.kind === 'tool_result' ? p.outcome : undefined
     // action 来自后端落库的解析结果，是这张卡的全部标题（动词 + 对象 + 目标）。
     // **`ToolSpec` 上 `actionKind` / `objectLabel` 都是必填，所以它一定在**——
     // 别为「万一没有」加回落：回落成 `execute` 的话，刷新一次页面一整轮的读文件
@@ -1661,9 +1611,9 @@ function stepToItems(s: StoredStep): TranscriptItem[] {
         kind: 'tool',
         text: '',
         toolName: s.toolName ?? '',
-        ...(s.payload?.action ? { action: s.payload.action } : {}),
-        ...(s.payload?.args ? { args: s.payload.args } : {}),
-        ...(s.payload?.nodes ? { nodes: s.payload.nodes } : {}),
+        ...(p?.action ? { action: p.action } : {}),
+        ...(p?.args ? { args: p.args } : {}),
+        ...(p?.nodes ? { nodes: p.nodes } : {}),
         status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
         ...(outcome ? { outcome } : {}),
         // 存量行没有这个数，那时不显示耗时——不为它编一个。
