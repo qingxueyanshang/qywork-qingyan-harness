@@ -1791,3 +1791,24 @@ VALUES ('pr_legacy', 'rn_legacy', 0, 0, 'turn', 'm', 'received', 10, '{}', '{}',
     db.close()
   })
 })
+
+describe('迁移 62：删掉没有读写方的权限表', () => {
+  test('存量库迁移后与新建库都没有 permission_rules / permission_audit', () => {
+    const db = dbBefore(62)
+    db.exec(`INSERT INTO permission_rules (id, workspace_id, scope, effect, created_at)
+VALUES ('pr_x', 'ws', 'run_command:git', 'allow', 1);`)
+    applyOne(db, 62)
+    const tables = (d: Database) =>
+      d
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE name LIKE 'permission_%' OR name LIKE '%permission_scope' OR name = 'idx_audit_workspace'",
+        )
+        .all()
+    expect(tables(db)).toEqual([])
+    db.close()
+
+    const fresh = dbBefore(Number.POSITIVE_INFINITY)
+    expect(tables(fresh)).toEqual([])
+    fresh.close()
+  })
+})

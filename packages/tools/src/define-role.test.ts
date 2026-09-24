@@ -27,7 +27,7 @@ function ctx(root: string): ToolContext {
     signal: new AbortController().signal,
     emit: () => {},
     stepId: 'st_test',
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
   }
 }
 

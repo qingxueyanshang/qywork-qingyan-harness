@@ -1009,14 +1009,15 @@ export class Session {
    * - **`run_command`**：唯一一条能同时绕开路径约束和 SSRF 闸的路径
    *   （命令字符串里的路径不经过参数解析）。只有它需要真正的裁决。
    */
-  private async decide(
-    meta: { toolName: string; args: Record<string, unknown> } | undefined,
-  ): Promise<PermissionVerdict> {
+  private async decide(call: {
+    toolName: string
+    args: Record<string, unknown>
+  }): Promise<PermissionVerdict> {
     if ((this.opts.config.mode ?? 'auto') === 'full') return { allowed: true }
 
-    if (meta?.toolName !== 'run_command') return { allowed: true }
+    if (call.toolName !== 'run_command') return { allowed: true }
 
-    const command = String(meta.args.command ?? '')
+    const command = String(call.args.command ?? '')
     // 根目录清单必须与路径层、沙箱层是**同一份**。三处各算各的，
     // 现象是「配了但只有一层生效」，而三层的报错互不相干。
     const d = decideCommand(command, {
@@ -1148,7 +1149,7 @@ export class Session {
       // `full` 的定义就是「不裁决」是同一件事的两面——只放开权限闸而留着路径层，
       // 就是「read_file 被拒、run_command 读到」那种两套账。
       ...((this.opts.config.mode ?? 'auto') === 'full' ? { unrestrictedPaths: true } : {}),
-      requestPermission: async (_scope, _preview, meta) => this.decide(meta),
+      requestPermission: (call) => this.decide(call),
     }
   }
 }

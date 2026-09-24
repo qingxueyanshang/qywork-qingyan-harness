@@ -131,7 +131,7 @@ function ctxWith(
     sink: null,
     signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
     ...(browser ? { browser } : {}),
   }
 }

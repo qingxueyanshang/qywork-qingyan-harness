@@ -32,7 +32,7 @@ function ctx(delegate?: Port): ToolContext {
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
     stepId: 'st_test',
     ...(delegate ? { delegate } : {}),
   }

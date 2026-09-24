@@ -51,9 +51,9 @@ function ctx(plugins: ToolContext['plugins'], approve = true): ToolContext & { a
     signal: new AbortController().signal,
     emit: () => {},
     stepId: 'st_test',
-    requestPermission: async (_scope: string, preview: string) => {
-      asked.push(preview)
-      return approve
+    requestPermission: async (call: { toolName: string }) => {
+      asked.push(call.toolName)
+      return approve ? { allowed: true } : { allowed: false, reason: '夹具拒绝' }
     },
     ...(plugins ? { plugins } : {}),
     asked,

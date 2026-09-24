@@ -949,23 +949,13 @@ export interface ToolContext {
   /**
    * 请求授权。被拒时工具必须原样放弃，不得绕行。
    *
-   * **返回值可以带理由**，这是两模式设计的关键：`auto` 模式下没有人可问，
-   * 拒绝只能作为工具失败结果回到模型手里——它得知道**为什么**才能换个做法。
-   * 只回 `false` 的话模型看到的是「已拒绝：execute:xxx」，除了重试一遍没别的选择。
-   *
-   * 兼容 `boolean`：老的装配和大量测试夹具都写着 `async () => true`，
-   * 为了一个可选的理由字段去改几十处夹具不划算。`true`/`false` 由
-   * `normalizeVerdict` 归一，没给理由时补一句中性的。
-   *
-   * `meta` 让裁决方知道这是**哪个工具**在请求。只看 scope 分不出
-   * `run_command` 和某个插件工具——两者的 scope 都是 `execute:<目标>`，
-   * 而它们该走的裁决路径完全不同。
+   * 入参是工具名与参数：裁决按工具区分（`run_command` 与插件工具的执行目标形状相同，
+   * 裁决路径完全不同）。拒绝必须带理由，见 `PermissionVerdict`。
    */
-  requestPermission(
-    scope: string,
-    preview: string,
-    meta?: { toolName: string; args: Record<string, unknown> },
-  ): Promise<boolean | PermissionVerdict>
+  requestPermission(call: {
+    toolName: string
+    args: Record<string, unknown>
+  }): Promise<PermissionVerdict>
   /**
    * 已知凭证，交给子进程之前要剥掉的那几个值。
    *
@@ -1035,19 +1025,6 @@ export type ToolContextBase = Omit<ToolContext, 'emit' | 'stepId'>
  * （「写不了工作区外的路径」→ 它会改成写工作区内）。
  */
 export type PermissionVerdict = { allowed: true } | { allowed: false; reason: string }
-
-/**
- * 把 `boolean` 归一成裁决。
- *
- * 老装配与测试夹具大量写着 `async () => true`，为一个可选字段改几十处不划算。
- * `false` 补一句中性理由——**不能留空**，空理由传到模型那里就退化成
- * 「失败了，不知道为什么」，那是最没用的一种反馈。
- */
-function normalizeVerdict(v: boolean | PermissionVerdict, scope: string): PermissionVerdict {
-  if (v === true) return { allowed: true }
-  if (v === false) return { allowed: false, reason: `已拒绝：${scope}` }
-  return v.allowed ? v : { allowed: false, reason: v.reason || `已拒绝：${scope}` }
-}
 
 export type ToolFn = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolOutcome>
 
@@ -1309,12 +1286,7 @@ export class ToolRegistry {
 
     const effect = resolvePermissionEffect(spec, args)
     if (effect !== 'internal_control') {
-      const action = resolveAction(spec, args, ctx)
-      const scope = `${effect}:${action.target ?? action.objectLabel}`
-      const verdict = normalizeVerdict(
-        await ctx.requestPermission(scope, describeCall(spec, args), { toolName: name, args }),
-        scope,
-      )
+      const verdict = await ctx.requestPermission({ toolName: name, args })
       if (!verdict.allowed) {
         // executed=false 是关键：被拒的调用没有产生任何副作用，
         // 后续的崩溃恢复和重试逻辑依赖这个事实。
@@ -1422,19 +1394,4 @@ function validate(spec: ToolSpec): void {
   }
   if (!spec.facet?.trim()) throw new Error(`[qywork] 工具 ${spec.name} 未声明 facet`)
   if (!spec.summary?.trim()) throw new Error(`[qywork] 工具 ${spec.name} 未声明 summary`)
-}
-
-/** 给用户看的授权预览。要具体到能判断该不该批，不能只说「要写文件」。 */
-function describeCall(spec: ToolSpec, args: Record<string, unknown>): string {
-  const target = spec.targetExtractor?.(args)
-  const parts = [spec.name]
-  if (target) parts.push(target)
-  const extra = Object.entries(args)
-    .filter(([k]) => k !== 'path' && k !== 'file_path')
-    .map(([k, v]) => `${k}=${truncate(String(v), 120)}`)
-  return [parts.join(' '), ...extra].join('\n')
-}
-
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : `${s.slice(0, n)}…`
 }

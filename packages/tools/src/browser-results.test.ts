@@ -191,7 +191,7 @@ function context(
     sink,
     signal: new AbortController().signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
     browser,
   }
 }

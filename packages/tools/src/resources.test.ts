@@ -43,7 +43,7 @@ function ctx(sink: SinkPort | null): ToolContext {
     sink,
     signal: new AbortController().signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
   }
 }
 

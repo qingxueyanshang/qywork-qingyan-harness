@@ -21,7 +21,7 @@ function ctx(): ToolContext & { emitted: TodoItem[][] } {
     signal: new AbortController().signal,
     emit: () => {},
     emitTodos: (t) => emitted.push(t),
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
   } as ToolContext & { emitted: TodoItem[][] }
 }
 

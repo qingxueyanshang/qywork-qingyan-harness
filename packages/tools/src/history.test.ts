@@ -81,7 +81,7 @@ function ctx(history: HistoryPort | undefined): ToolContext {
     ...(history ? { history } : {}),
     signal: new AbortController().signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
   }
 }
 
