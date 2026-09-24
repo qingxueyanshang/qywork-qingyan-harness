@@ -355,7 +355,7 @@ function shortLabel(e: DesktopElement): string {
  *
  * 同名控件只能靠它区分：两个都叫「保存」的按钮，一个在工具栏里、一个在对话框里。
  * 路径顺着 `parentRef` 在同一张控件表里往上走；父控件不在表里就停下，交出已经走到的
- * 那一段——观察被筛过时表里可能只剩一段祖先。
+ * 那一段——观察只读了一棵子树时，范围根以上的祖先不在表里。
  */
 function ancestorPath(table: DesktopElement[], element: DesktopElement): string {
   const byRef = new Map(table.map((e) => [e.ref, e]))
@@ -505,7 +505,7 @@ function checkPrecondition(element: DesktopElement, kind: DesktopActionKind): vo
 /**
  * 这一项所在的选择容器。顺着 `parentRef` 往上找第一个带 `selection` 的控件。
  *
- * 找不到返回 `undefined`：观察被筛过时祖先可能不在表里，那时不在本地拦，交给宿主判。
+ * 找不到返回 `undefined`：观察只读了一棵子树时祖先可能不在表里，那时不在本地拦，交给宿主判。
  */
 function selectionContainer(
   table: DesktopElement[],
@@ -795,6 +795,7 @@ function snapshotLine(s: DesktopSnapshot): string {
   return (
     `${s.observationId} · ${s.elements.length} 个控件` +
     (s.windowEnabled ? '' : ' · 被模态窗口挡着') +
+    (s.windowCovered ? ' · 窗口被盖住或已最小化' : '') +
     (s.truncated ? ` · 未读全 ${s.truncatedBy.join(' / ')}` : '') +
     (s.filteredBy.length ? ` · 已筛选 ${s.filteredBy.join(' / ')}` : '')
   )
@@ -824,12 +825,15 @@ function windowTitle(title: string): string {
   return title.length <= MAX_TITLE_CHARS ? title : `${title.slice(0, MAX_TITLE_CHARS)}…`
 }
 
-/** 结果生产交回的三格接到 `ToolOutcome` 上。没有落盘时不写 `resources` 这个键。 */
-function delivered(parts: DesktopResultParts): Pick<ToolOutcome, 'message' | 'data' | 'resources'> {
+/** 结果生产交回的几格接到 `ToolOutcome` 上。没有落盘时不写 `resources` 这个键。 */
+function delivered(
+  parts: DesktopResultParts,
+): Pick<ToolOutcome, 'message' | 'data' | 'resources' | 'currentView'> {
   return {
     message: parts.message,
     data: parts.data,
     ...(parts.resources ? { resources: parts.resources } : {}),
+    currentView: parts.currentView,
   }
 }
 
@@ -996,7 +1000,7 @@ async function imagePayload(
  * 自绘窗口的控件数对调用方零信息量，它只能看图，附上这一张省掉随后那次单独采图。
  * **未派发的不附**：什么都没发生，手上那张图仍然成立。
  *
- * 时机就是动作回执到手那一刻——宿主在回执之前已经重读过一次目标子树，画面的稳定时间
+ * 时机就是动作回执到手那一刻——宿主在回执之前已经按读取范围重读过一次，画面的稳定时间
  * 由那一次给出，这里不另等。
  *
  * 图采不到只在回执尾巴上补一句，不改执行事实：动作已经发生了。
@@ -1058,7 +1062,7 @@ export const desktopWindowsTool: ToolSpec = {
   ...BASE,
   name: 'desktop_windows',
   description:
-    '列出本机可操作的顶层窗口。操作本机应用走这一组工具，不要用 run_command 截图点坐标。' +
+    '列出用户桌面上当前打开的顶层窗口。操作本机应用走这一组工具，不要用 run_command 截图点坐标。' +
     'windowId 是后续调用的入口，窗口重建后失效。',
   parameters: { type: 'object', properties: {}, additionalProperties: false },
   actionKind: 'read',
@@ -1085,9 +1089,11 @@ export const desktopObserveTool: ToolSpec = {
     '观察一个窗口。capture=structure（默认）读控件表，region_image 采图，combined 两样都要，text 读文档文本与选区。' +
     '先用 structure，树里找不到目标时才采图。' +
     '控件表给角色、名称、automationId、value、enabled、rect、parentRef 与控件状态；' +
-    'actions 列出此刻能做什么，delivery 非空才能执行。' +
+    '每个控件的 actionSet 是 actionSets 的下标，指向它此刻能做的动作，delivery 非空才能执行；' +
+    '控件上缺席的 enabled、offscreen、automationId 取 defaults 的值。' +
     '回执里「无可操作控件」就是自绘界面，这一次调用已经把整窗图一并给了，动作按图给坐标，不必再采一次；' +
     '「未读全」是采集没采全，调 maxNodes 或 maxDepth 重读；' +
+    '「窗口被盖住或已最小化」时浏览器等应用可能没交出页面内容，表里缺的不代表不存在，要看全先 activate 再观察；' +
     '「已投 N/M 个控件」是这一次只返回了其中一部分，完整控件表已按结果里的 resource id 存好，' +
     '用 read_resource 读，不必重读。' +
     '返回的 observationId 与 ref 是 desktop_act 与 desktop_wait 的前提，重新观察即换号；窗口移动后旧 imageRef 失效。',
@@ -1098,9 +1104,15 @@ export const desktopObserveTool: ToolSpec = {
       capture: { type: 'string', enum: CAPTURES, description: '观察什么，默认 structure' },
       maxNodes: { type: 'integer', description: `最多读多少个控件，上限 ${MAX_NODES}` },
       maxDepth: { type: 'integer', description: `最多读多少层，上限 ${MAX_DEPTH}` },
-      root: { type: 'string', description: '只读这个控件底下的子树，取自上一份观察的 ref' },
-      role: { type: 'string', description: '只返回这个角色的控件' },
-      query: { type: 'string', description: '只返回名称、稳定标识或值包含这段文字的控件' },
+      root: {
+        type: 'string',
+        description: '只读这个控件底下的子树，取自上一份观察的 ref；之后的动作按这个范围重读',
+      },
+      role: { type: 'string', description: '结果只列这个角色的控件，其余控件仍在这份观察里' },
+      query: {
+        type: 'string',
+        description: '结果只列名称、稳定标识或值包含这段文字的控件，其余控件仍在这份观察里',
+      },
       includeValue: { type: 'boolean', description: '取不取控件当前值，默认取' },
       includeState: {
         type: 'boolean',
@@ -1210,11 +1222,16 @@ export const desktopObserveTool: ToolSpec = {
           ? { maxDepth: bounded(args.maxDepth, 'maxDepth', 1, MAX_DEPTH) }
           : {}),
         ...(given(args.root) ? { root: str(args.root, 'root') } : {}),
-        ...(given(args.role) ? { role: str(args.role, 'role') } : {}),
-        ...(given(args.query) ? { query: str(args.query, 'query') } : {}),
         ...(args.includeValue === false ? { includeValue: false } : {}),
         ...(args.includeState === false ? { includeState: false } : {}),
       }
+      const filter =
+        given(args.role) || given(args.query)
+          ? {
+              ...(given(args.role) ? { role: str(args.role, 'role') } : {}),
+              ...(given(args.query) ? { query: str(args.query, 'query') } : {}),
+            }
+          : undefined
       const snapshot = await send(() => desktop.observe(input))
       const line =
         `${snapshot.app} · ${windowTitle(snapshot.title)} · ${snapshotLine(snapshot)}` +
@@ -1229,6 +1246,7 @@ export const desktopObserveTool: ToolSpec = {
         snapshot,
         place: 'top',
         targetRef: null,
+        ...(filter ? { filter } : {}),
         lead: line,
       })
       if (!alsoImage) {
@@ -1327,12 +1345,12 @@ export const desktopActTool: ToolSpec = {
   ...BASE,
   name: 'desktop_act',
   description:
-    '在观察到的控件上执行一个动作，动作与参数取自该控件的 actions。' +
+    '在观察到的控件上执行一个动作，动作与参数取自该控件 actionSet 指向的动作表。' +
     '目标给 ref，或给 automationId / name（可加 role 收窄），要求唯一命中。' +
     '后台动作 invoke / set_value / set_range_value / select / add_to_selection / remove_from_selection / ' +
     'set_toggle / expand / collapse / scroll / scroll_into_view / realize_item / select_text 经控件接口发出。' +
     '前台动作 click / hover / drag / wheel / type_text / press_key / activate / set_window_state / ' +
-    'move_window / resize_window / close_window 用真实指针键盘，只在用户启用前台操作时出现在 actions 里，' +
+    'move_window / resize_window / close_window 用真实指针键盘，只在用户启用前台操作时出现在动作表里，' +
     '没出现就是没启用，不要改用别的动作代替。' +
     'type_text 点名控件时要它此刻持有键盘焦点，先 click 它；自绘界面不给控件，输入投给窗口。' +
     '指针动作可以不给控件，改给 imageRef 与 imageX / imageY；按图定位的动作回执自带一张动作后的整窗图，不必再观察一次。' +

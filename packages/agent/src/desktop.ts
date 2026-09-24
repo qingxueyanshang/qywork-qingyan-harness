@@ -62,6 +62,7 @@ export interface DesktopElement {
   name: string
   /** 应用给控件定的稳定标识。可能是空串，那时只能按 role 与 name 定位。 */
   automationId: string
+  /** ValuePattern 的值；没有 ValuePattern 而有 TextPattern 的控件（终端、控制台正文）是此刻可见的文字。 */
   value?: string
   enabled: boolean
   /** 不在可视区内。不等于不可操作：语义动作不要求控件可见。 */
@@ -157,12 +158,17 @@ export interface DesktopImage {
 /**
  * 一次窗口观察。
  *
- * 控件表是展平的前序序列，层级由每个控件的 `parentRef` 与 `depth` 表达。
+ * 控件表是展平的前序序列，层级由每个控件的 `parentRef` 与 `depth` 表达。表里是本次
+ * 读取范围内遍历到的全部控件：按角色或文字筛选只作用于交给模型的视图，不缩小这张表。
  *
- * **截断与筛选分两格**：`truncated` 为真表示被上限截断了，`filteredBy` 列出施加过的
- * 筛选条件。调用方不能把「没采到」读成「没有」，也不能把「被筛掉」读成「不存在」。
+ * **截断与范围分两格**：`truncated` 为真表示被上限截断了，`filteredBy` 列出读取范围与
+ * 字段选择。调用方不能把「没采到」读成「没有」，也不能把「不在读取范围里」读成「不存在」。
  *
  * `windowEnabled` 为假表示这个窗口此刻被模态窗口挡着，它的控件一个都动不了。
+ *
+ * `windowCovered` 为真表示这个窗口此刻在屏幕上一点都看不见（最小化，或被上层窗口完全盖住）。
+ * 浏览器对载入后还没显示过的页面不交出网页内容，控件表这时只有外框、`truncated` 仍为假：
+ * 不能把缺的读成没有。
  */
 export interface DesktopSnapshot {
   windowId: string
@@ -171,6 +177,8 @@ export interface DesktopSnapshot {
   /** 观察编号。动作必须带上它；重新观察即换号，旧号作废。 */
   observationId: string
   capturedAt: number
+  /** 读取范围的根，即表的第一项。缺席表示整窗。 */
+  scope?: string
   elements: DesktopElement[]
   truncated: boolean
   truncatedBy: string[]
@@ -178,13 +186,14 @@ export interface DesktopSnapshot {
   /** 遍历过的控件数。上限限的是它，不是 `elements` 的长度。 */
   visited: number
   windowEnabled: boolean
+  windowCovered: boolean
 }
 
 /**
  * 动作或等待之后的重读，是一份带新编号的完整观察。
  *
- * 目标控件所在的子树重读之后并进上一份观察：子树里的旧编号作废，子树外的仍然成立。
- * 调用方拿到它就能接着发下一个动作，不必再单独观察一次。
+ * 按上一份观察的读取范围整份重读，整份替换上一份观察。调用方拿到它就能接着发下一个
+ * 动作，不必再单独观察一次。
  *
  * **重读缺席不代表动作没发出去。** 调用方拿到 `observationError` 时先重新观察确认，
  * 不要重复同一个动作。**`dispatch` 为 `not_dispatched` 是例外**：一条系统调用都没发出，
@@ -262,12 +271,12 @@ export interface DesktopPort {
     windowId: string
     maxNodes?: number
     maxDepth?: number
-    /** 只读这个 ref 底下的子树。要求它属于本执行者对该窗口的上一份观察。 */
+    /**
+     * 只读这个 ref 底下的子树。要求它属于本执行者对该窗口的上一份观察。
+     *
+     * 它成为这份观察的读取范围：之后的动作与等待按它整份重读，直到下一次观察换掉它。
+     */
     root?: string
-    /** 只留这个角色的控件。 */
-    role?: string
-    /** 只留名称、稳定标识或值包含这段文字的控件，不分大小写。 */
-    query?: string
     /** 取不取控件当前值。缺席按取。 */
     includeValue?: boolean
     /**

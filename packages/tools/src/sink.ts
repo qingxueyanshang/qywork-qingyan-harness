@@ -86,14 +86,15 @@ export function isContentAuthority(toolName: string): boolean {
 export const INLINE_BUDGET_BYTES = 8 * 1024
 
 /**
- * 观察结果上限占单次投递预算的比例。
+ * browser 观察结果上限占单次投递预算的比例。
  *
- * **产品里只有这一个数**：它同时决定「多大算大」与「视图装多少」，desktop 的控件表与
- * browser 的元素表共用它。写成比例是为了让小窗口跟着缩。
+ * 它同时决定「多大算大」与「视图装多少」。写成比例是为了让小窗口跟着缩。desktop 的
+ * 控件表不用它：被新观察取代的控件表由 AgentLoop 在历史里收起，单份按单次投递上限给；
+ * browser 的观察不参与这种收起，读信息类任务里观察正文就是答案。
  */
 export const OBSERVATION_RESULT_BUDGET_RATIO = 1 / 4
 
-/** 这一轮观察结果的上限（token）。 */
+/** 这一轮 browser 观察结果的上限（token）。 */
 export function observationResultBudget(contextWindow: number): number {
   return Math.max(
     1,
