@@ -194,6 +194,7 @@ function 快照(elements: DesktopElement[], observationId = 'do_1'): DesktopSnap
     filteredBy: [],
     visited: elements.length,
     windowEnabled: true,
+    windowCovered: false,
   }
 }
 
@@ -472,6 +473,7 @@ interface Hit {
   offset: number
   lineOffset: number
   text: string
+  wholeLine: boolean
 }
 
 async function searchWhole(
@@ -609,7 +611,7 @@ describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读回'
 })
 
 describe('真实分片存储上的搜索续查', () => {
-  test('长控件行行尾的命中：跨页读完不漏不重，lineOffset 指向该控件的行首', async () => {
+  test('长控件行行尾的命中：跨页读完不漏不重，返回整条控件记录，lineOffset 指向该控件的行首', async () => {
     const h = harness()
     const ctx = toolCtx({ h, desktop: desktopPort(大表) })
     const r = await h.registry.execute('desktop_observe', { windowId: 'dw_1' }, ctx)
@@ -623,11 +625,11 @@ describe('真实分片存储上的搜索续查', () => {
     // 行号与命中正文互相对得上：漏一条、重一条都会让这一组错位。
     for (const hit of hits) expect(hit.text).toContain(`${行尾标记}${hit.line - 首行 + 1}`)
 
-    // 命中在行尾：截出来的那段从行中间开始，行首的 ref 不在里面。
+    // 命中在行尾：返回的是整条控件记录，从行首的 ref 起，可直接解析。
     const 末条 = hits[hits.length - 1] as Hit
+    expect(末条.wholeLine).toBe(true)
     expect(末条.text).toContain(`${行尾标记}${条目数}`)
-    expect(末条.text.startsWith('…')).toBe(true)
-    expect(末条.text).not.toContain('"ref"')
+    expect((JSON.parse(末条.text) as { ref: string }).ref).toBe(`e#${条目数}`)
 
     // 拿 lineOffset 当 offset 读回来的是这个控件整行的行首。
     const 整行 = await h.registry.execute(
@@ -851,7 +853,18 @@ describe('同一份结果在各层同形', () => {
 
     const envelope = JSON.parse(live) as { resources?: string[]; result?: Record<string, unknown> }
     expect(envelope.resources).toBeUndefined()
-    expect((envelope.result?.observation as DesktopSnapshot).elements).toEqual(小表)
+    // 投递形状是紧凑的：按结果自带的默认值与动作字典还原后与原表相等。
+    const observation = envelope.result?.observation as {
+      defaults: Record<string, unknown>
+      actionSets: DesktopSnapshot['elements'][number]['actions'][]
+      elements: (Record<string, unknown> & { actionSet: number })[]
+    }
+    const expanded = observation.elements.map(({ actionSet, ...rest }) => ({
+      ...observation.defaults,
+      ...rest,
+      actions: observation.actionSets[actionSet],
+    }))
+    expect(expanded).toEqual(小表)
     expect(countRows(h)).toEqual({ refs: 0, blobs: 0 })
     expect(replayToolContent(h, runId, callId)).toBe(live)
   })

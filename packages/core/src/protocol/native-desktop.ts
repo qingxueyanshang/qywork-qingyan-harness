@@ -295,9 +295,9 @@ export interface DesktopTarget {
 /**
  * 观察的完整性。
  *
- * **截断与筛选是两件事，分两格记。** `truncatedBy` 说的是上限截断了遍历，`filteredBy`
- * 说的是哪些条件把遍历过的控件挡在了结果外面。调用方不能把「没采到」读成「没有」，
- * 也不能把「被筛掉」读成「不存在」。
+ * **截断与范围是两件事，分两格记。** `truncatedBy` 说的是上限截断了遍历，`filteredBy`
+ * 说的是读取范围与字段选择（子树根、不取值、不取状态）。调用方不能把「没采到」读成
+ * 「没有」，也不能把「不在读取范围里」读成「不存在」。
  */
 export interface DesktopCompleteness {
   complete: boolean
@@ -323,6 +323,7 @@ export interface DesktopNode {
   role: string
   name: string
   automationId: string
+  /** ValuePattern 的值；没有 ValuePattern 而有 TextPattern 的控件（终端、控制台正文）是此刻可见的文字。 */
   value?: string
   enabled: boolean
   offscreen: boolean
@@ -390,17 +391,19 @@ export interface DesktopTextBody {
 /**
  * 一次控件读取的全部内容。`tree` 与 `wait` 两种观察共用它。
  *
- * `scope` 是本次读取覆盖的范围：给出 ref 时只读了那棵子树，缺席时读的是整窗。
- * **调用方按它决定作废哪一段引用**——缺席时整份旧观察作废，给出 ref 时只有那一段子树
- * 作废，无关区域的旧引用仍然成立。
+ * `scope` 是本次读取覆盖的范围：给出 ref 时只读了那棵子树（它就是表的第一项），缺席时
+ * 读的是整窗。节点是这个范围内遍历到的全部节点，不按角色或文字筛选。
  *
- * `windowEnabled` 为假表示目标窗口此刻被模态窗口挡着。
+ * `windowEnabled` 为假表示目标窗口此刻被模态窗口挡着。`windowCovered` 为真表示它此刻在屏幕上
+ * 一点都看不见（最小化，或被上层窗口完全盖住）：浏览器对载入后还没显示过的页面不交出网页内容，
+ * 这时控件表只有外框且不算截断。
  */
 export interface DesktopTreeBody {
   window: number
   capturedAt: number
   scope?: string
   windowEnabled: boolean
+  windowCovered: boolean
   completeness: DesktopCompleteness
   nodeCount: number
   nodes: DesktopNode[]
@@ -616,11 +619,14 @@ export interface DesktopRequestFrame {
   maxNodes?: number
   maxDepth?: number
   timeBudgetMs?: number
-  /** 只读这个 ref 底下的子树。缺席表示整窗。 */
+  /**
+   * 读取范围的根：`read_tree` 只读这个 ref 底下的子树，`act` 与 `wait` 结束时按它整份
+   * 重读。缺席表示整窗。
+   */
   root?: string
-  /** 只留这个角色的控件。 */
+  /** `wait` 的 `until=appears` 要出现的控件角色。 */
   role?: string
-  /** 只留名称、稳定标识或值包含这段文字的控件，不分大小写。 */
+  /** `wait` 的 `until=appears` 要出现的控件文字：名称、稳定标识或值包含它，不分大小写。 */
   nameContains?: string
   /** 取不取控件当前值。缺席按取。 */
   includeValue?: boolean

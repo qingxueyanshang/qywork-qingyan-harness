@@ -1,9 +1,9 @@
 /**
  * desktop 结果的投递闸。
  *
- * **覆盖范围**：`desktop-results.ts` 的上限、大小判定、视图选取、长值处理、JSONL 存盘、
- * 资源引用与实际用量记账，以及 `desktop.ts` 四个出口（observe 含补图分支、act、wait、
- * act_sequence）接上它之后的结果形状。
+ * **覆盖范围**：`desktop-results.ts` 的上限、大小判定、紧凑表示的无损往返、视图选取、
+ * 长值处理、JSONL 存盘、资源引用与实际用量记账，以及 `desktop.ts` 四个出口（observe 含
+ * 补图分支、act、wait、act_sequence）接上它之后的结果形状。
  *
  * 夹具是合成的：控件名称、值与窗口标题都不取自真实应用或网页。
  */
@@ -27,10 +27,9 @@ import {
   desktopObserveTool,
   desktopWaitTool,
 } from './desktop.ts'
-import { observationResultBudget } from './sink.ts'
 
 const WINDOW = 200_000
-const LIMIT = observationResultBudget(WINDOW)
+const LIMIT = deliveryBudget(WINDOW).perCall
 /** 一个控件的值长到单独一个就装不下视图。 */
 const LONG_VALUE = '合成长文本。'.repeat(10_000)
 
@@ -66,7 +65,7 @@ const 内层: DesktopElement = {
   offscreen: false,
   actions: [],
 }
-/** 值特别长的那一个，排在表的前面：视图装它时预算还很宽，仍然只能留身份。 */
+/** 值特别长的那一个，排在表的前面：视图装它时预算还很宽，值仍然只能留前缀。 */
 const 长值框: DesktopElement = {
   ref: 'v#1',
   parentRef: 'w#0',
@@ -155,6 +154,7 @@ function snapshot(
     filteredBy: [],
     visited: elements.length,
     windowEnabled: true,
+    windowCovered: false,
     ...over,
   }
 }
@@ -267,10 +267,22 @@ interface Delivery {
   unsaved?: string
 }
 
+/** 交给模型的一个控件：动作表换成下标，与默认值相同的格省掉。 */
+type CompactElement = Omit<DesktopElement, 'actions' | 'enabled' | 'offscreen' | 'automationId'> & {
+  enabled?: boolean
+  offscreen?: boolean
+  automationId?: string
+  actionSet: number
+  nameOmittedChars?: number
+  valueOmittedChars?: number
+}
+
 interface DeliveredObservation {
   app: string
   title: string
-  elements: (DesktopElement & { valueOmittedChars?: number })[]
+  defaults: { enabled: boolean; offscreen: boolean; automationId: string }
+  actionSets: DesktopElement['actions'][]
+  elements: CompactElement[]
   truncated: boolean
   truncatedBy: string[]
   filteredBy: string[]
@@ -280,6 +292,15 @@ interface DeliveredObservation {
 function observationOf(outcome: ToolOutcome): DeliveredObservation {
   const data = outcome.data as { observation?: unknown }
   return (data.observation ?? data) as DeliveredObservation
+}
+
+/** 按结果自带的默认值与动作字典还原成完整控件。 */
+function expand(observation: DeliveredObservation): DesktopElement[] {
+  return observation.elements.map(({ actionSet, ...rest }) => {
+    const actions = observation.actionSets[actionSet]
+    if (actions === undefined) throw new Error(`actionSet ${actionSet} 不在字典里`)
+    return { ...observation.defaults, ...rest, actions } as DesktopElement
+  })
 }
 
 /** 存盘正文按行拼回一份观察。 */
@@ -295,30 +316,100 @@ async function actOnTarget(ctx: ToolContext, observationId = 'do_1'): Promise<To
 }
 
 describe('小控件表整份内联', () => {
-  test('data 的字段与值与观察逐字相同，不带投递说明，也不落盘', async () => {
+  test('控件按结果自带的字典还原后与观察逐字段相等，元数据原样，不带投递说明，也不落盘', async () => {
     const sink = fakeSink()
     const ctx = context(fakePort(小表, { acts: 0 }), sink)
     const r = await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
+    const observation = observationOf(r)
 
-    expect(JSON.stringify(r.data)).toBe(JSON.stringify({ ...snapshot(小表) }))
-    expect(observationOf(r).delivery).toBeUndefined()
+    expect(expand(observation)).toEqual(小表)
+    const { elements: _e, defaults: _d, actionSets: _a, ...meta } = observation
+    const { elements: _source, ...sourceMeta } = snapshot(小表)
+    expect(meta).toEqual(sourceMeta)
+    expect(observation.delivery).toBeUndefined()
     expect(r.resources).toBeUndefined()
     expect(sink.landed).toHaveLength(0)
   })
 
-  test('动作结果里的观察同样整份内联', async () => {
+  test('动作表去重：同一个动作表只进字典一次，与默认值相同的格不出现在控件上', async () => {
+    const ctx = context(fakePort(小表, { acts: 0 }), fakeSink())
+    const observation = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
+
+    expect(observation.actionSets).toHaveLength(2)
+    for (const e of observation.elements) {
+      expect('enabled' in e).toBe(false)
+      expect('offscreen' in e).toBe(false)
+    }
+  })
+
+  test('动作结果里的观察同样整份内联，回执字段原样', async () => {
     const sink = fakeSink()
     const ctx = context(fakePort(小表, { acts: 0 }), sink)
     const r = await actOnTarget(ctx)
+    const data = r.data as { actionId: string; dispatch: string }
 
-    expect(JSON.stringify(r.data)).toBe(
-      JSON.stringify({
-        actionId: 'da_1',
-        dispatch: 'submitted',
-        observation: snapshot(小表, { observationId: 'do_2' }),
-      }),
-    )
+    expect(data.actionId).toBe('da_1')
+    expect(data.dispatch).toBe('submitted')
+    expect(expand(observationOf(r))).toEqual(小表)
     expect(sink.landed).toHaveLength(0)
+  })
+
+  /**
+   * 原始失败形状：110 个控件，账号、密码与登录按钮排在第 84–91 项，前面是 73 个浏览器
+   * 外框节点。按比例缩过的上限只投前 26 项，三个表单控件全部缺席。
+   */
+  test('装得下单次投递上限的整窗控件表整份给出，排在末尾的表单控件都在', async () => {
+    const 外框 = Array.from({ length: 73 }, (_, i) => ({
+      ref: `w.0.${i}#42.1.${i}`,
+      parentRef: 'w#42.1',
+      depth: 2,
+      role: i % 3 === 0 ? 'button' : 'pane',
+      name: i % 3 === 0 ? `工具栏按钮 ${i}` : '',
+      automationId: i % 5 === 0 ? `view_${i}` : '',
+      enabled: true,
+      offscreen: false,
+      rect: { x: i * 10, y: 0, width: 32, height: 32 },
+      actions: [
+        { action: 'scroll_into_view', delivery: ['background'] },
+        { action: 'click', delivery: ['foreground'] },
+        { action: 'hover', delivery: ['foreground'] },
+        { action: 'drag', delivery: ['foreground'] },
+      ],
+    }))
+    const 正文 = Array.from({ length: 36 }, (_, i) => ({
+      ref: `w.1.${i}#42.2.${i}`,
+      parentRef: 'w#42.1',
+      depth: 2,
+      role: i === 10 || i === 12 ? 'edit' : i === 17 ? 'button' : 'text',
+      name: i === 10 ? '请输入账号' : i === 12 ? '请输入密码' : i === 17 ? '登录' : `正文 ${i}`,
+      automationId: '',
+      ...(i === 10 || i === 12 ? { value: '' } : {}),
+      enabled: true,
+      offscreen: false,
+      rect: { x: 400, y: 200 + i * 20, width: 240, height: 20 },
+      actions:
+        i === 17
+          ? [
+              { action: 'invoke', delivery: ['background'] },
+              { action: 'click', delivery: ['foreground'] },
+            ]
+          : [
+              { action: 'scroll_into_view', delivery: ['background'] },
+              { action: 'click', delivery: ['foreground'] },
+            ],
+    }))
+    const 窗口: DesktopElement = { ...根, ref: 'w#42.1', actions: [] }
+    const table = [窗口, ...外框, ...正文] as DesktopElement[]
+    expect(table).toHaveLength(110)
+    const ctx = context(fakePort(table, { acts: 0 }), fakeSink(), 1_000_000)
+    const observation = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
+
+    expect(observation.delivery).toBeUndefined()
+    expect(expand(observation)).toEqual(table)
+    const names = observation.elements.map((e) => e.name)
+    expect(names).toContain('请输入账号')
+    expect(names).toContain('请输入密码')
+    expect(names).toContain('登录')
   })
 })
 
@@ -349,22 +440,21 @@ describe('大控件表只投一部分', () => {
     expect(observation.title).toBe('合成标题')
   })
 
-  test('控件不从中间切开，长值只留身份与字数', async () => {
+  test('控件不从中间切开，长值留前 200 字并标出省略字数，动作表下标都指得到', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
-    const view = observationOf(await actOnTarget(ctx)).elements
+    const observation = observationOf(await actOnTarget(ctx))
+    const view = observation.elements
     for (const e of view) {
       expect(typeof e.ref).toBe('string')
       expect(typeof e.role).toBe('string')
       expect(typeof e.name).toBe('string')
-      expect(typeof e.automationId).toBe('string')
-      expect(typeof e.enabled).toBe('boolean')
-      expect(Array.isArray(e.actions)).toBe(true)
+      expect(observation.actionSets[e.actionSet]).toBeDefined()
     }
     const long = view.find((e) => e.ref === 'v#1')
     expect(long).toBeDefined()
-    expect(long?.value).toBeUndefined()
-    expect(long?.valueOmittedChars).toBe(LONG_VALUE.length)
-    expect(long?.actions).toEqual(长值框.actions)
+    expect(long?.value).toBe(LONG_VALUE.slice(0, 200))
+    expect(long?.valueOmittedChars).toBe(LONG_VALUE.length - 200)
+    expect(observation.actionSets[long?.actionSet ?? -1]).toEqual(长值框.actions)
   })
 
   test('视图保持原始顺序', async () => {
@@ -501,8 +591,8 @@ describe('目标值很长时回执仍然短', () => {
     // 目标与祖先之外还装得下别的控件。
     expect(view.filter((e) => e.ref.startsWith('e#')).length).toBeGreaterThan(0)
     const target = view.find((e) => e.ref === 't#2')
-    expect(target?.value).toBeUndefined()
-    expect(target?.valueOmittedChars).toBe(LONG_VALUE.length + 2)
+    expect(target?.value).toBe(LONG_VALUE.slice(0, 200))
+    expect(target?.valueOmittedChars).toBe(LONG_VALUE.length + 2 - 200)
   })
 
   test('读回按完整值判：目标里有这段文字就是一致', async () => {
@@ -629,7 +719,8 @@ describe('存不下时照实说', () => {
   test('小表不受影响：没有 sink 也整份内联', async () => {
     const ctx = context(fakePort(小表, { acts: 0 }), null)
     const r = await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
-    expect(JSON.stringify(r.data)).toBe(JSON.stringify({ ...snapshot(小表) }))
+    expect(observationOf(r).delivery).toBeUndefined()
+    expect(expand(observationOf(r))).toEqual(小表)
   })
 })
 

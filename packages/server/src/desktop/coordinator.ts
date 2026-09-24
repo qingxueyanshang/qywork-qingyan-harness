@@ -8,7 +8,8 @@
  * 1. **OS 句柄不出这一层。** 模型拿到的是 `dw_N` 这样的不透明 id；句柄、pid 与进程
  *    启动时刻记在这里，发请求时才拼成目标身份交给宿主。
  * 2. **观察按窗口留一份。** 同一个窗口再观察一次，上一份编号即作废；宿主换代际
- *    （重连、换 worker）时全部作废。动作只认还在表里的编号。
+ *    （重连、换 worker）时全部作废。动作只认还在表里的编号。每份观察只含同一次读取
+ *    的节点，动作与等待之后按它的读取范围整份重读，不与别的读取拼接。
  * 3. **占用是执行者级的，权威只有这里一处。** 物理桌面只有一个，同一时刻只有一个
  *    执行者能在窗口上观察与动作；同时要桌面的其余执行者排队等它释放。宿主那侧不记
  *    谁在占用，它只按请求自己带的身份派发。
@@ -65,7 +66,7 @@ const WAIT_POLL_MS = 250
 /**
  * 等待请求的期限比调用方要的时长多出来的那一段。
  *
- * 宿主到点之后还要重读一次目标子树才回执，这一段要盖得住那次读取；给短了的话，本地的
+ * 宿主到点之后还要按读取范围重读一次才回执，这一段要盖得住那次读取；给短了的话，本地的
  * 超时会先到，一次正常到期的等待会被记成宿主不可用。
  */
 const WAIT_SLACK_MS = READ_TREE_BUDGET_MS + 2_000
@@ -154,12 +155,15 @@ interface ObservationRecord {
   windowId: string
   /** 采集这一份时的宿主代际。代际一变这份记录即作废。 */
   epochKey: string
+  /** 读取范围的根。缺席表示整窗。动作与等待之后按它重读。 */
+  scope?: string
   elements: DesktopElement[]
   truncatedBy: string[]
   filteredBy: string[]
   visited: number
   capturedAt: number
   windowEnabled: boolean
+  windowCovered: boolean
 }
 
 /**
@@ -246,53 +250,6 @@ function elementOf(node: DesktopNode): DesktopElement {
     ...(node.text === true ? { text: true } : {}),
     ...(node.weakIdentity === true ? { weakIdentity: true } : {}),
   }
-}
-
-/** `ref` 里的下标路径。身份段（`#` 之后）不参与范围判定。 */
-function pathOf(ref: string): string {
-  const at = ref.indexOf('#')
-  return at < 0 ? ref : ref.slice(0, at)
-}
-
-/** 这个控件在不在 `scope` 那棵子树里。按下标路径逐段比，不是字符串前缀。 */
-function inScope(ref: string, scope: string): boolean {
-  const path = pathOf(ref)
-  const root = pathOf(scope)
-  return path === root || path.startsWith(`${root}.`)
-}
-
-/**
- * 把新读到的一段并进上一份控件表。
- *
- * 三条规则，判据都是可核实的事实：
- *
- * 1. **窗口被模态窗口挡住**（`windowEnabled` 为假）：整份作废。这个窗口的控件此刻一个
- *    都动不了，留着旧编号等于留一张全是不可用目标的表。
- * 2. **本次读的是一棵子树**（`scope` 给了 ref）：只有那棵子树里的旧编号作废，新读到的
- *    按原位置插回去；子树外的控件没被动过，旧编号仍然成立。
- * 3. **本次读的是整窗**（`scope` 缺席）：整份替换。
- */
-function spliceElements(
-  previous: DesktopElement[],
-  fresh: DesktopElement[],
-  scope: string | undefined,
-  windowEnabled: boolean,
-): DesktopElement[] {
-  if (!windowEnabled || scope === undefined) return fresh
-  const out: DesktopElement[] = []
-  let inserted = false
-  for (const element of previous) {
-    if (inScope(element.ref, scope)) {
-      if (!inserted) {
-        out.push(...fresh)
-        inserted = true
-      }
-      continue
-    }
-    out.push(element)
-  }
-  if (!inserted) out.push(...fresh)
-  return out
 }
 
 export class DesktopCoordinator {
@@ -525,8 +482,6 @@ export class DesktopCoordinator {
       maxNodes?: number
       maxDepth?: number
       root?: string
-      role?: string
-      query?: string
       includeValue?: boolean
       includeState?: boolean
     },
@@ -550,8 +505,6 @@ export class DesktopCoordinator {
       maxDepth: input.maxDepth ?? DEFAULT_MAX_DEPTH,
       timeBudgetMs: READ_TREE_BUDGET_MS,
       ...(input.root !== undefined ? { root: input.root } : {}),
-      ...(input.role !== undefined ? { role: input.role } : {}),
-      ...(input.query !== undefined ? { nameContains: input.query } : {}),
       ...(input.includeValue !== undefined ? { includeValue: input.includeValue } : {}),
       ...(input.includeState !== undefined ? { includeState: input.includeState } : {}),
     })
@@ -559,31 +512,36 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 把一份读取结果并进本执行者对这个窗口的观察，并换一个新编号。
+   * 用一份读取结果整份替换本执行者对这个窗口的观察，并换一个新编号。
    *
-   * 整窗读整份替换，子树读只换那一段，见 `spliceElements`。换编号是硬性的：旧编号对应
-   * 的那张表已经不是这一张，留着它等于让模型在两份表之间挑。
+   * 不要把它改回与上一份拼接：拼进来的旧节点带着新编号、新时刻与这次读取的完整性，
+   * 而它们的状态与可用动作停在上一次读取那一刻。换编号是硬性的：旧编号对应的那张表
+   * 已经不是这一张，留着它等于让模型在两份表之间挑。
+   *
+   * 整窗读的第一项是窗口元素本身，它的名称就是此刻的窗口标题，一并刷新窗口表里的那一格：
+   * 窗口表只在发现窗口时写入，页面换过之后仍是旧标题。
    */
   #absorb(lease: Lease, windowId: string, body: DesktopTreeBody): DesktopSnapshot {
     const host = this.#liveHost(lease)
     const known = this.#targetOf(windowId)
-    const previous = lease.observations.get(windowId)
-    const fresh = body.nodes.map(elementOf)
-    const elements =
-      previous && previous.epochKey === epochKeyOf(host)
-        ? spliceElements(previous.elements, fresh, body.scope, body.windowEnabled)
-        : fresh
+    const elements = body.nodes.map(elementOf)
+    const root = elements[0]
+    if (body.scope === undefined && root !== undefined && root.name !== '') {
+      known.title = root.name
+    }
     this.#nextObservation += 1
     const record: ObservationRecord = {
       observationId: `do_${this.#nextObservation}`,
       windowId,
       epochKey: epochKeyOf(host),
+      ...(body.scope !== undefined ? { scope: body.scope } : {}),
       elements,
       truncatedBy: [...body.completeness.truncatedBy],
       filteredBy: [...body.completeness.filteredBy],
       visited: body.completeness.visited,
       capturedAt: body.capturedAt,
       windowEnabled: body.windowEnabled,
+      windowCovered: body.windowCovered,
     }
     lease.observations.set(windowId, record)
     return snapshotOf(record, known)
@@ -757,11 +715,13 @@ export class DesktopCoordinator {
     const actionId = `da_${this.#nextAction}`
     this.#setTarget(lease, known.app)
     try {
+      const scope = lease.observations.get(input.windowId)?.scope
       const result = await this.#bridge.request('act', {
         executorId: lease.executorId,
         actionId,
         target: this.#frameTarget(known),
         ...aimed,
+        ...(scope !== undefined ? { root: scope } : {}),
         action: input.action,
         maxNodes: DEFAULT_MAX_NODES,
         maxDepth: DEFAULT_MAX_DEPTH,
@@ -898,7 +858,7 @@ export class DesktopCoordinator {
    * 等一个后置条件成立。
    *
    * 判定下沉到宿主：这里只发一条请求并等它的终态，不在本地按固定间隔重读。期限比调用方
-   * 要的时长多一段，宿主到点之后还要重读一次目标子树。
+   * 要的时长多一段，宿主到点之后还要按当前观察的读取范围重读一次。
    *
    * **等待期间本次执行仍然占着桌面**：引用在观察里产生、在动作里消费，中间放别人进来
    * 它就不再成立。占用不会被等待卡死——`release` 一到就撤销这条请求，宿主在一个轮询间隔
@@ -926,6 +886,7 @@ export class DesktopCoordinator {
       this.#recordOf(lease, input.windowId, input.observationId, input.ref)
     }
     this.#setTarget(lease, known.app)
+    const scope = lease.observations.get(input.windowId)?.scope
     try {
       const result = await this.#bridge.request(
         'wait',
@@ -933,6 +894,7 @@ export class DesktopCoordinator {
           executorId: lease.executorId,
           target: this.#frameTarget(known),
           until: input.until,
+          ...(scope !== undefined ? { root: scope } : {}),
           ...(input.ref !== undefined ? { ref: input.ref } : {}),
           ...(input.value !== undefined ? { value: input.value } : {}),
           ...(input.role !== undefined ? { role: input.role } : {}),
@@ -986,7 +948,7 @@ export class DesktopCoordinator {
   /**
    * 动作或等待之后的那份重读。
    *
-   * 读到了就并进观察并换新编号。没读到时按执行事实分两种：**未派发的动作一条系统调用
+   * 读到了就整份替换观察并换新编号。没读到时按执行事实分两种：**未派发的动作一条系统调用
    * 都没发出，上一份观察仍然成立，就地保留、编号不变**——作废它等于要求调用方为一件
    * 没有发生的事重新观察一次；已派发与结果未知那两种，控件表停在动作之前那一刻而动作
    * 可能已经生效，整份作废。
@@ -1093,12 +1055,14 @@ function snapshotOf(record: ObservationRecord, known: KnownWindow): DesktopSnaps
     title: known.title,
     observationId: record.observationId,
     capturedAt: record.capturedAt,
+    ...(record.scope !== undefined ? { scope: record.scope } : {}),
     elements: record.elements,
     truncated: record.truncatedBy.length > 0,
     truncatedBy: [...record.truncatedBy],
     filteredBy: [...record.filteredBy],
     visited: record.visited,
     windowEnabled: record.windowEnabled,
+    windowCovered: record.windowCovered,
   }
 }
 

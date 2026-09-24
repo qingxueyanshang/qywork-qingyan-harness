@@ -215,6 +215,7 @@ async function serveOnce(op: DesktopOp): Promise<DesktopRequestFrame> {
         window: WINDOW.handle,
         capturedAt: 2,
         windowEnabled: true,
+        windowCovered: false,
         completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 1 },
         nodeCount: 1,
         nodes: [
@@ -344,8 +345,8 @@ const SAVE_BUTTON: DesktopNode = {
  * 有限动作序列走完真链路：一次工具调用，逐动作一帧，停下之后不再发帧。
  *
  * 断言的是帧而不是工具内部状态：序列要证明的就是「模型发一次、宿主收到几次」。
- * 每一帧回一份 `scope` 限定的子树重读，子树之外的旧 `ref` 因此仍然成立——
- * 第二、三步给的正是第一份观察里的编号。
+ * 第一份观察是整窗，动作帧不带范围，宿主回一份整窗重读；第二、三步给的编号在重读里
+ * 仍然存在，所以照常可用。
  */
 test('一次序列调用逐动作发帧，actionId 各不相同，截断后不再发帧', async () => {
   script = [
@@ -376,6 +377,7 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
       window: WINDOW.handle,
       capturedAt: 2,
       windowEnabled: true,
+      windowCovered: false,
       completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 3 },
       nodeCount: 3,
       nodes: [{ ...NAME_BOX }, { ...AGREE_BOX }, { ...SAVE_BUTTON }],
@@ -385,23 +387,24 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
   const first = await host.next()
   expect(first.op).toBe('act')
   expect(first.ref).toBe('w.0#7')
+  expect(first.root).toBeUndefined()
   host.reply(first, {
     dispatch: 'submitted',
     observation: {
       kind: 'tree',
       window: WINDOW.handle,
       capturedAt: 3,
-      scope: 'w.0#7',
       windowEnabled: true,
-      completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 1 },
-      nodeCount: 1,
-      nodes: [{ ...NAME_BOX, value: '张三' }],
+      windowCovered: false,
+      completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 3 },
+      nodeCount: 3,
+      nodes: [{ ...NAME_BOX, value: '张三' }, { ...AGREE_BOX }, { ...SAVE_BUTTON }],
     },
   })
 
   const second = await host.next()
   expect(second.op).toBe('act')
-  // 第一步只重读了它自己那棵子树，第二步给的编号来自第一份观察，仍然成立。
+  // 第二步给的编号在第一步之后的整窗重读里仍然存在。
   expect(second.ref).toBe('w.1#8')
   host.reply(second, { dispatch: 'unknown', reason: 'provider 无响应' })
 

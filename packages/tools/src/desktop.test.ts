@@ -264,7 +264,7 @@ const 前台窗口: DesktopElement = {
 /**
  * 自绘界面的观察：树上只有窗口根，一个业务控件都没有。
  *
- * 它就是系统前台窗口，所以键盘动作挂在根上——这类窗口给不出一个持有焦点的控件。
+ * 键盘动作挂在窗口根上——这类窗口给不出一个持有焦点的控件。
  */
 const 自绘窗口: DesktopElement = {
   ...窗口,
@@ -333,6 +333,17 @@ const TABLE = [
 /** 前台模式开着时那一份控件表。窗口根换成带窗口动作的那一个。 */
 const FOREGROUND_TABLE = [前台窗口, ...TABLE.slice(1), 前台按钮, 焦点框]
 
+/** 一个控件在 TABLE 里的全部祖先 ref，由近及远。 */
+function ancestorsOf(element: DesktopElement): string[] {
+  const out: string[] = []
+  let at = element.parentRef
+  while (at !== undefined) {
+    out.push(at)
+    at = TABLE.find((e) => e.ref === at)?.parentRef
+  }
+  return out
+}
+
 function snapshot(over: Partial<DesktopSnapshot> = {}): DesktopSnapshot {
   return {
     windowId: 'dw_1',
@@ -346,6 +357,7 @@ function snapshot(over: Partial<DesktopSnapshot> = {}): DesktopSnapshot {
     filteredBy: [],
     visited: TABLE.length,
     windowEnabled: true,
+    windowCovered: false,
     ...over,
   }
 }
@@ -1246,8 +1258,8 @@ describe('三态回执与动作后观察', () => {
   })
 })
 
-describe('局部查询与字段选择', () => {
-  test('子树根、角色、文字与字段选择逐项交给端口', async () => {
+describe('局部读取、视图筛选与字段选择', () => {
+  test('子树根与字段选择交给端口，角色与文字不交给端口', async () => {
     const { port, calls } = fakeDesktop()
     await run(
       desktopObserveTool,
@@ -1262,14 +1274,75 @@ describe('局部查询与字段选择', () => {
     )
     expect(calls[0]).toEqual({
       method: 'observe',
-      input: {
-        windowId: 'dw_1',
-        root: 'w.1#4',
-        role: 'button',
-        query: '保存',
-        includeValue: false,
-      },
+      input: { windowId: 'dw_1', root: 'w.1#4', includeValue: false },
     })
+  })
+
+  test('角色与文字只筛交给模型的视图：命中的控件连同祖先列出，并说明其余控件仍在观察里', async () => {
+    const { port } = fakeDesktop()
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', role: 'button', query: '保存' },
+      ctxWith(port),
+    )
+    const hits = TABLE.filter((e) => e.role === 'button' && e.name.includes('保存'))
+    expect(hits.length).toBeGreaterThan(0)
+    const refs = (r.data as { elements: DesktopElement[] }).elements.map((e) => e.ref)
+    for (const hit of hits) expect(refs).toContain(hit.ref)
+    for (const ref of refs) {
+      const element = TABLE.find((e) => e.ref === ref)
+      const isHit = hits.some((h) => h.ref === ref)
+      const isAncestor = hits.some((h) => ancestorsOf(h).includes(ref))
+      expect(isHit || isAncestor).toBe(true)
+      expect(element).toBeDefined()
+    }
+    expect(r.data).toMatchObject({
+      viewFilter: ['role=button', 'query=保存'],
+      matched: hits.length,
+    })
+    expect(r.message).toContain('其余控件仍在这份观察里')
+  })
+
+  /** 历史里被取代的控件表靠这一格收起：窗口、读取范围、视图筛没筛过。 */
+  test('观察与动作的结果声明当前视图：筛过的视图标 partial', async () => {
+    const { port } = fakeDesktop({
+      observe: async (input) =>
+        snapshot({ windowId: input.windowId, ...(input.root ? { scope: input.root } : {}) }),
+    })
+    const whole = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(whole.currentView).toEqual({ key: 'desktop:dw_1' })
+    const scoped = await run(desktopObserveTool, { windowId: 'dw_1', root: 'w.1#4' }, ctxWith(port))
+    expect(scoped.currentView).toEqual({ key: 'desktop:dw_1', scope: 'w.1#4' })
+    const filtered = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', query: '保存' },
+      ctxWith(port),
+    )
+    expect(filtered.currentView).toEqual({ key: 'desktop:dw_1', partial: true })
+    const acted = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 表单保存.ref },
+      ctxWith(port),
+    )
+    expect(acted.currentView).toEqual({ key: 'desktop:dw_1' })
+  })
+
+  /**
+   * 原始失败形状：按文字筛出密码框之后，用同一份观察按登录按钮执行，返回“没有匹配的控件”。
+   * 视图筛选不缩小控件表，筛出的视图之外的控件照样能按同一个观察编号执行。
+   */
+  test('筛过视图之后，视图外的控件仍按同一个观察编号执行', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(desktopObserveTool, { windowId: 'dw_1', query: '姓名' }, ctxWith(port))
+    const shown = (r.data as { elements: DesktopElement[] }).elements.map((e) => e.ref)
+    expect(shown).not.toContain(表单保存.ref)
+    const acted = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 表单保存.ref },
+      ctxWith(port),
+    )
+    expect(acted.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['observe', 'act'])
   })
 
   test('没给筛选参数时一个都不往下传', async () => {
@@ -1287,21 +1360,21 @@ describe('局部查询与字段选择', () => {
     expect(bad).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
   })
 
-  /** 截断与筛选是两件事：一个说「没读全」，一个说「挡掉了」，回执里各说一次。 */
-  test('截断与筛选分别如实报出来', async () => {
+  /** 截断与读取范围是两件事：一个说「没读全」，一个说「只读了这一段」，回执里各说一次。 */
+  test('截断与读取范围分别如实报出来', async () => {
     const { port } = fakeDesktop({
       observe: async (input) =>
         snapshot({
           windowId: input.windowId,
           truncated: true,
           truncatedBy: ['max_nodes'],
-          filteredBy: ['role=button', 'nameContains=保存'],
+          filteredBy: ['root=w.1#4'],
           visited: 900,
         }),
     })
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(r.message).toContain('max_nodes')
-    expect(r.message).toContain('role=button')
+    expect(r.message).toContain('root=w.1#4')
     expect(r.data).toMatchObject({ visited: 900 })
   })
 
@@ -1312,6 +1385,25 @@ describe('局部查询与字段选择', () => {
     })
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(r.message).toContain('模态窗口')
+  })
+
+  /**
+   * 原始失败形状：被盖住的浏览器窗口只交出外框、不算截断，模型把用户那一页当成空页改写了地址栏。
+   * 读数必须说出窗口被盖住，控件表同时照常交付。
+   */
+  test('窗口被盖住时读数如实说明，结果里带着这一格', async () => {
+    const { port } = fakeDesktop({
+      observe: async (input) => snapshot({ windowId: input.windowId, windowCovered: true }),
+    })
+    const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(r.message).toContain('窗口被盖住或已最小化')
+    expect(r.data).toMatchObject({ windowCovered: true })
+  })
+
+  test('窗口没被盖住时读数不提这一句', async () => {
+    const { port } = fakeDesktop()
+    const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(r.message).not.toContain('窗口被盖住')
   })
 })
 

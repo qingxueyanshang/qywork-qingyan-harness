@@ -1,28 +1,35 @@
 /**
  * desktop 四个出口的结果生产。
  *
- * 控件表小的整份内联，格式不变；大的整份存盘，结果里放一部分控件加规范资源引用。
- * 四条边界：
+ * 控件表装得下单次投递上限就整份内联，装不下就整份存盘，结果里放一部分控件加规范资源
+ * 引用。六条边界：
  *
  * 1. **判定线与视图上限是同一个数**，按 `deliveredTokens` 量整条结果——控件、观察
  *    元数据、回执、message 与资源引用都算在内。只量元素数组会把回执与长 message
- *    漏在上限之外。
+ *    漏在上限之外。上限是单次投递上限本身，不再按比例缩：历史里被取代的控件表由
+ *    AgentLoop 收起，单份表的大小不再随步数累积。
  * 2. **动作判定与读回核验不看这里的视图**，它们用端口交回的完整控件表。
  * 3. **采集侧与投递侧分列**：`truncated` / `truncatedBy` / `filteredBy` 说的是没采到，
  *    `delivery` 说的是采到了没投。两者不能合并成一格。
  * 4. **图像字节不进这里**：它走 `data.images`，既不计入上限也不写进存盘正文。
+ * 5. **按角色或文字筛选只作用于视图**：观察编号与控件表是端口交回的整份，筛出来的控件与
+ *    其余控件的 `ref` 同样可以直接用。存盘正文是整份控件表。
+ * 6. **投递形状只有一种**：`actions` 去重成 `actionSets`，控件上只留下标；与 `defaults`
+ *    相同的格省掉。小表与大表的视图同形，字典随每个结果自带。存盘正文仍是一行一个
+ *    完整原始控件，不依赖字典。
  */
 
 import {
   type DesktopElement,
   type DesktopSnapshot,
   deliveredTokens,
+  deliveryBudget,
   recordBatchSpent,
   type ToolContext,
 } from '@qywork/agent'
 import type { TokenDensity } from '@qywork/ai'
-import type { IntermediateResourceRef, ResourceId } from '@qywork/core'
-import { deliver, type LandedResult, observationResultBudget } from './sink.ts'
+import type { CurrentView, IntermediateResourceRef, ResourceId } from '@qywork/core'
+import { deliver, type LandedResult } from './sink.ts'
 
 /** 存盘正文：一行一个 JSON 值。 */
 const JSONL_MIME = 'application/x-ndjson'
@@ -35,22 +42,40 @@ const SOURCE_TYPE = 'desktop:observation'
  */
 const ID_ESTIMATE = 'r'.repeat(32)
 /**
- * 视图里窗口标题最多留多少字。
+ * 视图里窗口标题与控件名称、值各自最多留多少字。
  *
- * 取 200，与 message 里控件值的上限同一量级。标题由窗口自报、长度无界，而上限按整条
- * 结果计量：一段长标题会把视图预算吃光，控件一个都投不出去。
+ * 取 200，与 message 里控件值的上限同一量级。这几格由窗口与应用自报、长度无界，而上限
+ * 按整条结果计量：一格长文本会把视图预算吃光，排在它后面的控件一个都投不出去。只用在
+ * 大表视图上，完整原值在存盘正文里。
  */
 export const MAX_TITLE_CHARS = 200
 
+/**
+ * 控件上缺席时取的值。每个结果都带一份，模型读结果时不依赖别处的约定。
+ *
+ * 取绝大多数控件的实际值：可用、可见、没有稳定标识。
+ */
+const DEFAULTS = { enabled: true, offscreen: false, automationId: '' } as const
+
 type DesktopResultContext = Pick<ToolContext, 'sink' | 'contextWindow' | 'density' | 'state'>
 
-/** 视图里值被留在存盘正文里的控件。身份、状态与能力照旧。 */
-export interface ValueOmittedElement extends Omit<DesktopElement, 'value'> {
-  /** 这个控件的值有多少字。完整值在存盘正文里。 */
-  valueOmittedChars: number
-}
+type Actions = DesktopElement['actions']
 
-export type ViewElement = DesktopElement | ValueOmittedElement
+/**
+ * 交给模型的一个控件：`actions` 换成 `actionSets` 的下标，与 `DEFAULTS` 相同的格省掉。
+ * 大表视图里超长的名称与值只留前缀，并标明省掉多少字。
+ */
+export type CompactElement = Omit<
+  DesktopElement,
+  'actions' | 'enabled' | 'offscreen' | 'automationId'
+> & {
+  enabled?: boolean
+  offscreen?: boolean
+  automationId?: string
+  actionSet: number
+  nameOmittedChars?: number
+  valueOmittedChars?: number
+}
 
 /** 投递事实。与采集侧的 `truncated` / `filteredBy` 是两回事。 */
 interface Delivery {
@@ -72,16 +97,29 @@ export interface DesktopResultInput {
   receipt?: Record<string, unknown>
   /** 本次动作的目标控件，它与它的祖先优先进视图。没有目标给 null。 */
   targetRef?: string | null
+  /** 视图只列命中这些条件的控件及其祖先。 */
+  filter?: ViewFilter
   /** message 的执行事实部分。控件内容不进 message。 */
   lead: string
-  /** 上限，缺省取 `observationResultBudget(ctx.contextWindow)`。 */
+  /** 上限，缺省取 `deliveryBudget(ctx.contextWindow).perCall`。 */
   limit?: number
+}
+
+/** 视图的筛选条件。`query` 看名称、稳定标识与值，不分大小写。 */
+export interface ViewFilter {
+  role?: string
+  query?: string
 }
 
 export interface DesktopResultParts {
   message: string
   data: Record<string, unknown>
   resources?: IntermediateResourceRef[]
+  /**
+   * 这份结果是哪个窗口、哪个读取范围的当前控件表。AgentLoop 按它把历史里被取代的
+   * 控件表收起；按条件筛过的视图标 `partial`，不取代别的结果。
+   */
+  currentView: CurrentView
 }
 
 /**
@@ -90,22 +128,27 @@ export interface DesktopResultParts {
  * 存不下的部分照实说：没有 sink 或写失败时不给地址，执行事实一个字不改。
  */
 export function desktopResult(input: DesktopResultInput): DesktopResultParts {
-  const { ctx, snapshot } = input
+  const { ctx } = input
+  const snapshot = viewOf(input.snapshot, input.filter)
   const receipt = input.receipt ?? {}
-  const limit = input.limit ?? observationResultBudget(ctx.contextWindow)
+  const limit = input.limit ?? deliveryBudget(ctx.contextWindow).perCall
+  const lead = input.filter ? `${input.lead} · ${filterNote(snapshot)}` : input.lead
+  const shaped = { ...input, snapshot, lead }
 
+  const { elements, ...meta } = snapshot
   const whole: DesktopResultParts = {
-    message: input.lead,
-    data: compose(receipt, { ...snapshot }, input.place),
+    message: lead,
+    data: compose(receipt, { ...meta, ...pack(elements) }, input.place),
+    currentView: viewKeyOf(input),
   }
   if (tokensOf(whole, ctx.density) <= limit) return recorded(ctx, whole)
 
-  const total = snapshot.elements.length
-  const body = jsonlBody(snapshot)
+  const total = elements.length
+  const body = jsonlBody(input.snapshot)
   const skeleton = assemble(
-    input,
+    shaped,
     receipt,
-    [],
+    pack([]),
     { deliveredElements: total, totalElements: total, resourceId: ID_ESTIMATE },
     [
       {
@@ -119,7 +162,7 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
     ],
   )
   const view = pickView(
-    snapshot.elements,
+    elements,
     input.targetRef ?? null,
     limit - tokensOf(skeleton, ctx.density),
     ctx.density,
@@ -138,11 +181,12 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
     },
   })
 
+  const delivered = view.elements.length
   if (landed.resourceId === null) {
     return recorded(
       ctx,
-      assemble(input, receipt, view, {
-        deliveredElements: view.length,
+      assemble(shaped, receipt, view, {
+        deliveredElements: delivered,
         totalElements: total,
         unsaved: landed.landError ?? '本次执行没有正文库',
       }),
@@ -151,13 +195,68 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   return recorded(
     ctx,
     assemble(
-      input,
+      shaped,
       receipt,
       view,
-      { deliveredElements: view.length, totalElements: total, resourceId: landed.resourceId },
+      { deliveredElements: delivered, totalElements: total, resourceId: landed.resourceId },
       [resourceRef(landed)],
     ),
   )
+}
+
+/** 这份结果对应的当前视图：窗口、读取范围，以及视图是否按条件筛过。 */
+function viewKeyOf(input: DesktopResultInput): CurrentView {
+  return {
+    key: `desktop:${input.snapshot.windowId}`,
+    ...(input.snapshot.scope !== undefined ? { scope: input.snapshot.scope } : {}),
+    ...(input.filter ? { partial: true as const } : {}),
+  }
+}
+
+/** 按视图条件筛过的观察。没有条件时原样返回。 */
+type ShownSnapshot = DesktopSnapshot & { viewFilter?: string[]; matched?: number }
+
+/**
+ * 视图只列命中条件的控件，连同它们的祖先：祖先不留的话 `parentRef` 指向表外，
+ * 同名控件分不开。`matched` 是命中数，不含祖先。
+ */
+function viewOf(snapshot: DesktopSnapshot, filter: ViewFilter | undefined): ShownSnapshot {
+  if (!filter) return snapshot
+  const byRef = new Map(snapshot.elements.map((e) => [e.ref, e]))
+  const kept = new Set<string>()
+  let matched = 0
+  for (const element of snapshot.elements) {
+    if (!matchesFilter(element, filter)) continue
+    matched++
+    let at: DesktopElement | undefined = element
+    while (at !== undefined && !kept.has(at.ref)) {
+      kept.add(at.ref)
+      at = at.parentRef === undefined ? undefined : byRef.get(at.parentRef)
+    }
+  }
+  return {
+    ...snapshot,
+    elements: snapshot.elements.filter((e) => kept.has(e.ref)),
+    viewFilter: [
+      ...(filter.role !== undefined ? [`role=${filter.role}`] : []),
+      ...(filter.query !== undefined ? [`query=${filter.query}`] : []),
+    ],
+    matched,
+  }
+}
+
+function matchesFilter(element: DesktopElement, filter: ViewFilter): boolean {
+  if (filter.role !== undefined && element.role !== filter.role) return false
+  if (filter.query === undefined) return true
+  const needle = filter.query.toLowerCase()
+  return [element.name, element.automationId, element.value].some((field) =>
+    field?.toLowerCase().includes(needle),
+  )
+}
+
+/** message 里的视图筛选事实：命中多少，以及其余控件仍属这份观察。 */
+function filterNote(snapshot: ShownSnapshot): string {
+  return `视图按 ${snapshot.viewFilter?.join(' ')} 列出命中的 ${snapshot.matched} 个控件及其祖先，其余控件仍在这份观察里`
 }
 
 /** 观察在 data 里的位置。两处的字段名与层级都由调用方那一侧的界面消费，不要挪。 */
@@ -169,18 +268,72 @@ function compose(
   return place === 'top' ? { ...receipt, ...observation } : { ...receipt, observation }
 }
 
+/** 投递给模型的控件表：默认值、动作字典与控件。 */
+interface Packed {
+  defaults: typeof DEFAULTS
+  actionSets: Actions[]
+  elements: CompactElement[]
+}
+
+/** 动作字典。下标按第一次登记的先后编号，同一个结果里一个动作表只占一个下标。 */
+class ActionSets {
+  readonly list: Actions[] = []
+  #index = new Map<string, number>()
+
+  /** 这个动作表的下标，以及它是不是还没登记过。只查不登记。 */
+  peek(actions: Actions): { index: number; fresh: boolean } {
+    const known = this.#index.get(JSON.stringify(actions))
+    return known === undefined
+      ? { index: this.list.length, fresh: true }
+      : { index: known, fresh: false }
+  }
+
+  add(actions: Actions): number {
+    const { index, fresh } = this.peek(actions)
+    if (fresh) {
+      this.#index.set(JSON.stringify(actions), index)
+      this.list.push(actions)
+    }
+    return index
+  }
+}
+
+/** 整份控件表的投递形状。 */
+function pack(elements: readonly DesktopElement[]): Packed {
+  const sets = new ActionSets()
+  const packed = elements.map((e) => compactOf(e, sets.add(e.actions)))
+  return { defaults: DEFAULTS, actionSets: sets.list, elements: packed }
+}
+
+/** 一个控件的投递形状。`element` 可以是已经留了前缀的那一份，省略字数随之带上。 */
+function compactOf(
+  element: DesktopElement & { nameOmittedChars?: number; valueOmittedChars?: number },
+  actionSet: number,
+): CompactElement {
+  const { actions: _actions, enabled, offscreen, automationId, ...rest } = element
+  return {
+    ...rest,
+    ...(enabled !== DEFAULTS.enabled ? { enabled } : {}),
+    ...(offscreen !== DEFAULTS.offscreen ? { offscreen } : {}),
+    ...(automationId !== DEFAULTS.automationId ? { automationId } : {}),
+    actionSet,
+  }
+}
+
 function assemble(
   input: DesktopResultInput,
   receipt: Record<string, unknown>,
-  view: ViewElement[],
+  view: Packed,
   delivery: Delivery,
   resources: IntermediateResourceRef[] = [],
 ): DesktopResultParts {
-  const observation = { ...boundedTitle(input.snapshot), elements: view, delivery }
+  const { elements: _elements, ...meta } = boundedTitle(input.snapshot)
+  const observation = { ...meta, ...view, delivery }
   return {
     message: `${input.lead} · ${noteOf(delivery)}`,
     data: compose(receipt, observation, input.place),
     ...(resources.length ? { resources } : {}),
+    currentView: viewKeyOf(input),
   }
 }
 
@@ -231,39 +384,39 @@ function jsonlBody(snapshot: DesktopSnapshot): Uint8Array {
 }
 
 /**
- * 视图选谁：本次动作目标及其祖先、当前焦点控件优先，其余按原始顺序补到上限为止。
+ * 大表视图选谁：本次动作目标及其祖先、当前焦点控件优先，其余按原始顺序补到上限为止。
  *
- * **控件不从中间切开**：装不下时先去掉长值再试，仍装不下就停。优先那几个一律装入——
- * 目标不在视图里，模型就只能再观察一次，减量的意义随之消失。输出按原始顺序，
- * `parentRef` 表达的层级关系因此仍然读得出来。
+ * **控件不从中间切开**：超长的名称与值先留前缀，装不下就停。优先那几个一律装入——
+ * 目标不在视图里，模型就只能再观察一次。输出按原始顺序，`parentRef` 表达的层级关系
+ * 因此仍然读得出来。一个控件的成本含它第一次带进字典的那个动作表。
  */
 function pickView(
   elements: readonly DesktopElement[],
   targetRef: string | null,
   budget: number,
   density: TokenDensity,
-): ViewElement[] {
+): Packed {
   const priority = new Set<string>()
   const queue = ordered(elements, targetRef, priority)
-  const chosen = new Map<string, ViewElement>()
+  const sets = new ActionSets()
+  const chosen = new Map<string, CompactElement>()
   let left = budget
   for (const element of queue) {
-    let item: ViewElement = element
-    let cost = costOf(item, density)
-    if (cost > left) {
-      item = withoutValue(element)
-      cost = costOf(item, density)
-    }
+    const shown = boundedFields(element)
+    const { index, fresh } = sets.peek(element.actions)
+    const item = compactOf(shown, index)
+    const cost = costOf(item, density) + (fresh ? costOf(element.actions, density) : 0)
     if (cost > left && !priority.has(element.ref)) break
+    sets.add(element.actions)
     chosen.set(element.ref, item)
     left -= cost
   }
-  const view: ViewElement[] = []
+  const view: CompactElement[] = []
   for (const element of elements) {
     const item = chosen.get(element.ref)
     if (item !== undefined) view.push(item)
   }
-  return view
+  return { defaults: DEFAULTS, actionSets: sets.list, elements: view }
 }
 
 /** 优先那几个排在前面，其余保持原始顺序。`priority` 由本函数填好交回。 */
@@ -290,20 +443,39 @@ function ordered(
   return [...head, ...elements.filter((e) => !priority.has(e.ref))]
 }
 
-/** 长值留在存盘正文里，视图里留身份、状态与能力，并标明值有多少字。 */
-function withoutValue(element: DesktopElement): ViewElement {
-  if (element.value === undefined) return element
-  const { value, ...rest } = element
-  return { ...rest, valueOmittedChars: value.length }
+/** 超长的名称与值只留前 `MAX_TITLE_CHARS` 字，并标明省掉多少字。短的原样。 */
+function boundedFields(
+  element: DesktopElement,
+): DesktopElement & { nameOmittedChars?: number; valueOmittedChars?: number } {
+  const longName = element.name.length > MAX_TITLE_CHARS
+  const longValue = element.value !== undefined && element.value.length > MAX_TITLE_CHARS
+  if (!longName && !longValue) return element
+  return {
+    ...element,
+    ...(longName
+      ? {
+          name: element.name.slice(0, MAX_TITLE_CHARS),
+          nameOmittedChars: element.name.length - MAX_TITLE_CHARS,
+        }
+      : {}),
+    ...(longValue && element.value !== undefined
+      ? {
+          value: element.value.slice(0, MAX_TITLE_CHARS),
+          valueOmittedChars: element.value.length - MAX_TITLE_CHARS,
+        }
+      : {}),
+  }
 }
 
-/** 一个控件在视图里占多少，含数组分隔符。 */
-function costOf(item: ViewElement, density: TokenDensity): number {
+/** 一项在视图里占多少，含数组分隔符。 */
+function costOf(item: unknown, density: TokenDensity): number {
   return deliveredTokens(`${JSON.stringify(item)},`, density)
 }
 
+/** 整条结果交给模型的部分有多大。`currentView` 不上线，不计在内。 */
 function tokensOf(parts: DesktopResultParts, density: TokenDensity): number {
-  return deliveredTokens(JSON.stringify(parts), density)
+  const { currentView: _view, ...delivered } = parts
+  return deliveredTokens(JSON.stringify(delivered), density)
 }
 
 /**
