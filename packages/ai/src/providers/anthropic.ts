@@ -20,12 +20,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { EffortLevel } from '@qywork/core'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
-import {
-  classifyProviderError,
-  classifyStreamError,
-  namelessToolCall,
-  ProviderError,
-} from '../errors.ts'
+import { classifyProviderError, classifyStreamError, ProviderError } from '../errors.ts'
 import { readSse, sseJson } from '../sse.ts'
 import {
   estimateMessage,
@@ -44,10 +39,10 @@ import type {
   ProviderUsage,
   ToolSchema,
   WireMessage,
-  WireToolCall,
 } from '../types.ts'
 import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
+import { collectToolCalls } from './tool-calls.ts'
 
 /**
  * 思考开启时给输出留的最小预算。低于这个数，思考稍微长一点正文就没地方写了，
@@ -245,7 +240,7 @@ export class AnthropicAdapter implements LlmAdapter {
         })
       }
 
-      const calls = collectToolCalls(partial, req.model)
+      const calls = collectToolCalls(partial, 'anthropic_messages', req.model)
       if (calls.length) yield { type: 'tool_calls', calls, at: Date.now() }
     } catch (err) {
       throw classifyProviderError('anthropic_messages', err, readTransport(trace))
@@ -581,32 +576,4 @@ function applyUsage(acc: ProviderUsage, u: AnthropicUsage) {
     acc.cacheWriteTokens = u.cache_creation_input_tokens
   }
   acc.source = 'provider'
-}
-
-function collectToolCalls(
-  partial: Map<number, { id: string; name: string; json: string }>,
-  model: string,
-): WireToolCall[] {
-  const calls: WireToolCall[] = []
-  for (const [, slot] of [...partial.entries()].sort((a, b) => a[0] - b[0])) {
-    if (!slot.name) throw namelessToolCall('anthropic_messages', model)
-    let args: Record<string, unknown> = {}
-    let argsError: string | null = null
-    if (slot.json.trim()) {
-      try {
-        args = JSON.parse(slot.json)
-      } catch {
-        // 参数 JSON 分片没拼完整（流被中断）。标出来交给 loop 记成一次失败的工具调用，
-        // 而不是让整轮崩掉、也不是塞个魔法键假装参数还在。
-        argsError = slot.json
-      }
-    }
-    calls.push({
-      id: slot.id,
-      name: slot.name,
-      arguments: args,
-      ...(argsError === null ? {} : { argumentsError: argsError }),
-    })
-  }
-  return calls
 }

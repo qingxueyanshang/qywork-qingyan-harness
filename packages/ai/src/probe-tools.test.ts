@@ -153,7 +153,7 @@ describe('工具契约检测走实际协议适配器', () => {
         async (profile, bodies) => {
           const result = await probeToolCalls(profile)
           expect(result.check.status).toBe('failed')
-          expect(result.steps[0]?.detail).toContain('不是完整 JSON')
+          expect(result.steps[0]?.detail).toContain('不是 JSON 对象')
           expect(bodies).toHaveLength(1)
         },
       )

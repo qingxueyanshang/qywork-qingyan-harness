@@ -41,6 +41,8 @@ export type FaultMode =
   | 'truncated_tool_call'
   /** 一律 402，正文取 DeepSeek 余额不足时的原样响应体（111 字节）。 */
   | 'payment_required'
+  /** 首次交完整工具调用（参数原文取 `toolArguments`），其后正常完成。 */
+  | 'tool_then_complete'
 
 export interface FaultServer {
   /** Anthropic Messages 的 baseUrl；SDK 自己接 `/v1/messages`。 */
@@ -64,6 +66,8 @@ export interface FaultServer {
   retryAfterSeconds: number | null
   /** `inline_error` 事件里的分类词与原文，三协议共用同一份。 */
   inlineError: { type: string; message: string }
+  /** `tool_then_complete` 那次工具调用的参数原文，三协议共用。默认 `{"a":1}`。 */
+  toolArguments: string
   /**
    * 客户端主动断开连接的次数，由永不结束的响应体的 `cancel` 回调计数。
    *
@@ -124,7 +128,7 @@ function sse(events: Record<string, unknown>[]): string {
   return events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join('')
 }
 
-function responsesBody(shape: Shape, inline: InlineError): string {
+function responsesBody(shape: Shape, inline: InlineError, args: string): string {
   const created = { type: 'response.created', response: { id: 'resp_1', status: 'in_progress' } }
   const message = {
     type: 'response.output_item.added',
@@ -163,13 +167,13 @@ function responsesBody(shape: Shape, inline: InlineError): string {
           type: 'response.function_call_arguments.delta',
           item_id: 'fc_1',
           output_index: 0,
-          delta: '{"a":1}',
+          delta: args,
         },
         {
           type: 'response.function_call_arguments.done',
           item_id: 'fc_1',
           output_index: 0,
-          arguments: '{"a":1}',
+          arguments: args,
         },
         {
           type: 'response.output_item.done',
@@ -179,7 +183,7 @@ function responsesBody(shape: Shape, inline: InlineError): string {
             id: 'fc_1',
             call_id: 'call_1',
             name: 'echo',
-            arguments: '{"a":1}',
+            arguments: args,
             status: 'completed',
           },
         },
@@ -222,7 +226,7 @@ function responsesBody(shape: Shape, inline: InlineError): string {
   }
 }
 
-function chatBody(shape: Shape, inline: InlineError): string {
+function chatBody(shape: Shape, inline: InlineError, args: string): string {
   const chunk = (fields: Record<string, unknown>) => ({
     id: 'chatcmpl_1',
     object: 'chat.completion.chunk',
@@ -269,7 +273,7 @@ function chatBody(shape: Shape, inline: InlineError): string {
             choices: [
               {
                 index: 0,
-                delta: { tool_calls: [{ index: 0, function: { arguments: '{"a":1}' } }] },
+                delta: { tool_calls: [{ index: 0, function: { arguments: args } }] },
               },
             ],
           }),
@@ -322,7 +326,7 @@ function chatBody(shape: Shape, inline: InlineError): string {
   }
 }
 
-function anthropicBody(shape: Shape, inline: InlineError): string {
+function anthropicBody(shape: Shape, inline: InlineError, args: string): string {
   const start = {
     type: 'message_start',
     message: {
@@ -364,7 +368,7 @@ function anthropicBody(shape: Shape, inline: InlineError): string {
         {
           type: 'content_block_delta',
           index: 0,
-          delta: { type: 'input_json_delta', partial_json: '{"a":1}' },
+          delta: { type: 'input_json_delta', partial_json: args },
         },
         { type: 'content_block_stop', index: 0 },
         {
@@ -411,15 +415,22 @@ export interface InlineError {
  * 三协议默认的流内错误。分类词取各家都用的过载码，原文三协议一致，
  * 参数化测试因此可以对同一句断言。
  */
+const DEFAULT_TOOL_ARGUMENTS = '{"a":1}'
+
 const DEFAULT_INLINE_ERROR: InlineError = {
   type: 'overloaded_error',
   message: 'Upstream is overloaded, please retry',
 }
 
-function bodyOf(protocol: Protocol, shape: Shape, inline = DEFAULT_INLINE_ERROR): string {
-  if (protocol === 'responses') return responsesBody(shape, inline)
-  if (protocol === 'chat') return chatBody(shape, inline)
-  return anthropicBody(shape, inline)
+function bodyOf(
+  protocol: Protocol,
+  shape: Shape,
+  inline = DEFAULT_INLINE_ERROR,
+  args = DEFAULT_TOOL_ARGUMENTS,
+): string {
+  if (protocol === 'responses') return responsesBody(shape, inline, args)
+  if (protocol === 'chat') return chatBody(shape, inline, args)
+  return anthropicBody(shape, inline, args)
 }
 
 function protocolOf(pathname: string): Protocol {
@@ -475,6 +486,16 @@ function respond(protocol: Protocol, fault: FaultServer): Response {
       return new Response(bodyOf(protocol, 'text'), { headers: SSE_HEADERS })
     case 'truncated_tool_call':
       return new Response(bodyOf(protocol, 'truncated_tool'), { headers: SSE_HEADERS })
+    case 'tool_then_complete':
+      return new Response(
+        bodyOf(
+          protocol,
+          fault.receipts.length === 1 ? 'tool' : 'text',
+          fault.inlineError,
+          fault.toolArguments,
+        ),
+        { headers: SSE_HEADERS },
+      )
     case 'payment_required':
       return new Response(
         '{"error":{"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}}',
@@ -492,6 +513,7 @@ export function startFaultServer(mode: FaultMode): FaultServer {
     mode,
     retryAfterSeconds: 1,
     inlineError: DEFAULT_INLINE_ERROR,
+    toolArguments: DEFAULT_TOOL_ARGUMENTS,
     closedByClient: 0,
     stop: () => {},
   }
