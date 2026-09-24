@@ -50,8 +50,8 @@ export const readResourceTool: ToolSpec = {
       query: {
         type: 'string',
         description:
-          '从 offset 开始搜这个子串，只返回命中的行。' +
-          '命中行很长时返回命中附近的内容，要整行就拿 lineOffset 当 offset 再读一次。' +
+          '从 offset 开始搜这个子串，只返回命中的整行。' +
+          '单行超过一页时只返回命中附近的片段（wholeLine 为 false），要整行就拿 lineOffset 当 offset 再读。' +
           '知道要找什么时优先用它，比猜 offset 快得多。',
       },
     },
@@ -203,22 +203,28 @@ function decodePage(bytes: Uint8Array, budget: number): { text: string; consumed
 /** 扫描步长。与内容库的分片大小对齐，避免一次读跨太多分片。 */
 const SCAN_STEP = 256 * 1024
 
-/** 命中文本在命中位置两侧各留的字符数。 */
+/** 单行超过整页预算时，片段在命中位置两侧各留的字符数。 */
 const HIT_CONTEXT_CHARS = 200
 
-/** 命中的一行。`offset` 是命中处的字节位置，`lineOffset` 是该行行首：读整行从行首起读。 */
+/**
+ * 命中的一行。`offset` 是命中处的字节位置，`lineOffset` 是该行行首。
+ *
+ * `wholeLine` 为假时 `text` 是命中附近的片段：整行从 `lineOffset` 按字节读。它只说这一行
+ * 给没给全，与搜索是否到达正文末尾（`nextOffset`）、原观察采集是否完整是三件事。
+ */
 interface Hit {
   line: number
   offset: number
   lineOffset: number
   text: string
+  wholeLine: boolean
 }
 
 /**
- * 截出命中附近的文本。
+ * 截出命中附近的文本。只用于单行超过整页预算的情形。
  *
- * 不要改成取行首若干字：落盘的 JSONL 一个控件就是一长行，命中经常在行尾，
- * 从行首截出来的那段里没有命中。两端截掉内容时补省略号，标明这不是整行。
+ * 不要改成取行首若干字：命中可能在行尾，从行首截出来的那段里没有命中。
+ * 两端截掉内容时补省略号。
  */
 function hitWindow(line: string, index: number, matchLength: number): string {
   const from = Math.max(0, index - HIT_CONTEXT_CHARS)
@@ -282,21 +288,28 @@ function searchResource(
   let carry = ''
   let carryStart = offset
 
-  /** 收一行的命中。预算不够时不收，返回 false——调用方以该行行首作为续查位置。 */
+  /**
+   * 收一行的命中：装得下就给整行，不从中间切开一条记录。
+   *
+   * 整行装不下剩余预算且本页已有命中时不收，返回 false，调用方以该行行首作为续查位置。
+   * 本页第一条命中的整行仍装不下时，说明单行超过整页预算，只给命中附近的片段：
+   * 否则续查会停在同一行。
+   */
   const take = (line: string, lineStart: number): boolean => {
     lineNo++
     const index = line.indexOf(query)
     if (index < 0) return true
-    const text = hitWindow(line, index, query.length)
-    // 预算按字节记。本页一条都没有时无视预算：否则超长的单行会让续查停在原地。
-    const cost = Buffer.byteLength(text, 'utf8')
-    if (cost > budget && hits.length > 0) return false
-    budget -= cost
+    const lineBytes = Buffer.byteLength(line, 'utf8')
+    if (lineBytes > budget && hits.length > 0) return false
+    const text = lineBytes <= budget ? line : hitWindow(line, index, query.length)
+    budget -= Buffer.byteLength(text, 'utf8')
     hits.push({
       line: lineNo,
       offset: lineStart + Buffer.byteLength(line.slice(0, index), 'utf8'),
       lineOffset: lineStart,
       text,
+      // 命中本身占满整行时片段就是整行。
+      wholeLine: text === line,
     })
     return true
   }

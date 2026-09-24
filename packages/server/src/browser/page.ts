@@ -40,7 +40,11 @@ import {
 
 /** 一次观察最多返回多少个元素。超出时按 offset 翻页，不静默截断。 */
 const MAX_ELEMENTS = 120
-/** 元素名称与正文摘要的字符上限。 */
+/**
+ * 选项样例与填写回执里值的字符上限。
+ *
+ * 元素表的名称与值不用它：查询要按原值匹配，完整原值随观察存盘，长度由投递层控制。
+ */
 const MAX_TEXT = 200
 /** 动作回执的目标标签、遮挡元素与选项样例的名称上限。 */
 const MAX_LABEL = 60
@@ -957,10 +961,10 @@ function axCandidates(
       actionable,
       element: {
         role: role || tag,
-        name: name.slice(0, MAX_TEXT),
+        name,
         tag,
         ...(attrs.type ? { inputType: attrs.type } : {}),
-        ...(value !== undefined ? { value: String(value).slice(0, MAX_TEXT) } : {}),
+        ...(value !== undefined ? { value: String(value) } : {}),
         ...(props.get('checked') !== undefined ? { checked: props.get('checked') === 'true' } : {}),
         // expanded / selected 缺席即这个角色没有这一项，补 false 会把「没有这一项」
         // 说成「收起」「未选中」。
@@ -1031,10 +1035,10 @@ function domCandidates(byBackend: Map<number, DomInfo>, frame: FrameScope): Cand
       actionable: true,
       element: {
         role: role || tag,
-        name: name.slice(0, MAX_TEXT),
+        name,
         tag,
         ...(attrs.type ? { inputType: attrs.type } : {}),
-        ...(attrs.value !== undefined ? { value: attrs.value.slice(0, MAX_TEXT) } : {}),
+        ...(attrs.value !== undefined ? { value: attrs.value } : {}),
         ...(frame.frame ? { frame: frame.frame } : {}),
       },
       ref: {
