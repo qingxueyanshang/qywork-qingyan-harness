@@ -16,12 +16,7 @@ import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import OpenAI from 'openai'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
-import {
-  classifyProviderError,
-  classifyStreamError,
-  namelessToolCall,
-  ProviderError,
-} from '../errors.ts'
+import { classifyProviderError, classifyStreamError, ProviderError } from '../errors.ts'
 import { readSse, SSE_DONE, sseJson } from '../sse.ts'
 import { estimateRequest } from '../tokens.ts'
 import { newTrace, readTransport, traceFetch } from '../transport.ts'
@@ -34,10 +29,10 @@ import type {
   ProviderUsage,
   ToolSchema,
   WireMessage,
-  WireToolCall,
 } from '../types.ts'
 import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP, videoData } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
+import { collectToolCalls } from './tool-calls.ts'
 
 export class OpenAICompatAdapter implements LlmAdapter {
   readonly kind = 'openai_chat_completions' as const
@@ -231,7 +226,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
       const tail = splitter.flush()
       if (tail) yield { type: 'text_delta', delta: tail, at: Date.now() }
 
-      const calls = collectToolCalls(partial, req.model)
+      const calls = collectToolCalls(partial, 'openai_chat_completions', req.model)
       if (calls.length) {
         // **`max_tokens` 不能被覆盖掉。** 输出正好在拼工具参数的中途撞上上限时，
         // 这里既有 calls 又有 'length'；无条件改成 tool_use 会把「被截断了」这件事
@@ -933,30 +928,4 @@ function applyUsage(acc: ProviderUsage, u: CompatUsage) {
     acc.reasoningTokens = outDetails.reasoning_tokens
   }
   acc.source = 'provider'
-}
-
-function collectToolCalls(
-  partial: Map<number, { id: string; name: string; json: string }>,
-  model: string,
-): WireToolCall[] {
-  const calls: WireToolCall[] = []
-  for (const [, slot] of [...partial.entries()].sort((a, b) => a[0] - b[0])) {
-    if (!slot.name) throw namelessToolCall('openai_chat_completions', model)
-    let args: Record<string, unknown> = {}
-    let argsError: string | null = null
-    if (slot.json.trim()) {
-      try {
-        args = JSON.parse(slot.json)
-      } catch {
-        argsError = slot.json
-      }
-    }
-    calls.push({
-      id: slot.id,
-      name: slot.name,
-      arguments: args,
-      ...(argsError === null ? {} : { argumentsError: argsError }),
-    })
-  }
-  return calls
 }

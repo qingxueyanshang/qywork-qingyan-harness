@@ -147,7 +147,7 @@ export async function probeToolCalls(
           ok: false,
           detail:
             call.argumentsError !== undefined
-              ? `工具参数不是完整 JSON：${call.argumentsError.slice(0, 240)}`
+              ? `工具参数不是 JSON 对象：${call.argumentsError.slice(0, 240)}`
               : '工具名、参数类型或回传凭据不符合检测约定',
         })
         break

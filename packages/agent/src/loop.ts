@@ -2000,15 +2000,15 @@ export class AgentLoop {
 
         // ── 工具执行：按波次调度 ──
         /*
-         * **名字不在注册表里的、参数不是合法 JSON 的，一律不进执行链。**
+         * **名字不在注册表里的、参数不是 JSON 对象的，一律不进执行链。**
          *
          * 注册表是工具的唯一权威——名字不在表里就是未注册调用，不是一种工具。
          * 放它进去会开出一条没有动作、也没有执行事实的 tool step，迫使界面替它
          * 编造标题。
          *
-         * 参数解析失败时适配器把 `arguments` 交成 `{}` 并把原文挂在 `argumentsError`
-         * 上。必填项校验（`ToolRegistry.execute`）只挡得住声明了 `required` 的工具，
-         * `required: []` 的工具会把这个空对象当成「没有参数」照常执行。
+         * 参数不是 JSON 对象（解析失败、`null`、数组或标量）时适配器把 `arguments` 交成
+         * `{}` 并把原文挂在 `argumentsError` 上。必填项校验（`ToolRegistry.execute`）只挡得住
+         * 声明了 `required` 的工具，`required: []` 的工具会把这个空对象当成「没有参数」照常执行。
          * 所以判据取 `argumentsError` 本身，不取校验结果。
          *
          * 在这里挡掉之后，**下游每一条 step 都必然有 spec、必然解析得出动作**，
@@ -2029,7 +2029,7 @@ export class AgentLoop {
           const rejection = !registry.has(c.name)
             ? `未注册调用：${c.name}。只能调用工具表中已注册的工具。`
             : c.argumentsError !== undefined
-              ? `参数不是合法 JSON，未执行：${c.argumentsError}。请重新发送完整的 JSON 参数。`
+              ? `参数不是 JSON 对象，未执行：${c.argumentsError}。请重新发送完整的 JSON 对象参数。`
               : null
           if (rejection === null) continue
           const outcome: ToolOutcome = {

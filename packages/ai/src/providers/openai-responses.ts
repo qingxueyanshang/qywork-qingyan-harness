@@ -52,12 +52,7 @@
 
 import type { ReasoningEcho } from '@qywork/core'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
-import {
-  classifyProviderError,
-  classifyStreamError,
-  namelessToolCall,
-  ProviderError,
-} from '../errors.ts'
+import { classifyProviderError, classifyStreamError, ProviderError } from '../errors.ts'
 import { readSse, SSE_DONE, sseJson } from '../sse.ts'
 import { estimateRequest } from '../tokens.ts'
 import { newTrace, readTransport, traceFetch } from '../transport.ts'
@@ -70,11 +65,11 @@ import type {
   ProviderUsage,
   ToolSchema,
   WireMessage,
-  WireToolCall,
 } from '../types.ts'
 import { imageData, outputCap, PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { mergeContextIntoUsers } from './context.ts'
 import { normalizeBaseUrl, strictify } from './openai-compat.ts'
+import { collectToolCalls } from './tool-calls.ts'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
   readonly kind = 'openai_responses' as const
@@ -361,7 +356,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       throw classifyProviderError('openai_responses', err, readTransport(trace))
     }
 
-    const calls = collectToolCalls(partial, req.model)
+    const calls = collectToolCalls(partial, 'openai_responses', req.model)
     if (encryptedReasoning.size) {
       yield {
         type: 'response_reasoning',
@@ -607,39 +602,6 @@ function normalizeStatus(response: Record<string, unknown>): ProviderStopReason 
   if (incomplete?.reason === 'max_output_tokens') return 'max_tokens'
   if (incomplete?.reason === 'content_filter') return 'refusal'
   return 'end_turn'
-}
-
-function collectToolCalls(
-  partial: Map<number, { id: string; name: string; json: string }>,
-  model: string,
-): WireToolCall[] {
-  return [...partial.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([, slot]) => {
-      if (!slot.name) throw namelessToolCall('openai_responses', model)
-      // 参数解析失败**不能吞**：交一个空对象上去，等于告诉模型参数已被工具收下。
-      const parsed = parseArgs(slot.json)
-      return {
-        id: slot.id,
-        name: slot.name,
-        arguments: parsed.args,
-        ...(parsed.error === null ? {} : { argumentsError: parsed.error }),
-      }
-    })
-}
-
-function parseArgs(json: string): { args: Record<string, unknown>; error: string | null } {
-  if (!json.trim()) return { args: {}, error: null }
-  try {
-    const parsed = JSON.parse(json)
-    return typeof parsed === 'object' && parsed !== null
-      ? { args: parsed, error: null }
-      : { args: {}, error: json }
-  } catch {
-    // 保留原文交给上层去拒绝，比静默变成 {} 强：后者等于告诉模型参数已被接受，
-    // 模型会对着一个完全不同的结果继续往下走。
-    return { args: {}, error: json }
-  }
 }
 
 function asError(

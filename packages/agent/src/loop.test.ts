@@ -2832,6 +2832,54 @@ describe('注册表是工具的唯一权威', () => {
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 
+  /**
+   * 端点把参数交成合法 JSON 但不是对象时（`null`、数组、标量），调用在执行链之前被拒，
+   * 结果回给模型，run 照常结束。经三协议真实适配器走 HTTP：工具的动作解析读取参数字段，
+   * `null` 交下去会在单次执行的错误处理之外抛出，整轮以 `provider_error` 失败。
+   */
+  test('参数不是 JSON 对象的调用被拒，结果回给模型，run 照常结束', async () => {
+    for (const literal of ['null', '[]', '"x"', '42']) {
+      for (const { kind, model } of FAULT_PROTOCOLS) {
+        const fault = startFaultServer('tool_then_complete')
+        fault.toolArguments = literal
+        try {
+          const registry = new ToolRegistry()
+          registry.register({
+            ...realSpec('echo'),
+            targetExtractor: (args) => String((args as { path?: unknown }).path ?? ''),
+          })
+          const loop = new AgentLoop({
+            adapter: buildAdapter({
+              kind,
+              model,
+              apiKey: 'sk-fault',
+              baseUrl: faultBaseUrl(fault, kind),
+            }),
+            registry,
+            systemPrompt: 'sys',
+            persist: noopPersistence(),
+            makeToolContext: (runId) => baseCtx(runId),
+          })
+          const events: AgentEvent[] = []
+          for await (const ev of loop.run({
+            runId: 'rn_args' as never,
+            history: [],
+            signal: new AbortController().signal,
+          })) {
+            events.push(ev)
+          }
+          const finished = events.find((e) => e.type === 'run.finished')
+          expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
+          expect(events.some((e) => e.type === 'tool.started')).toBe(false)
+          expect(fault.bodies).toHaveLength(2)
+          expect(fault.bodies[1]).toContain('参数不是 JSON 对象，未执行')
+        } finally {
+          fault.stop()
+        }
+      }
+    }
+  }, 30_000)
+
   test('连续三轮相同的未注册调用会进入无进展终态', async () => {
     const registry = new ToolRegistry()
     registry.register(realSpec('read_thing'))
