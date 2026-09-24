@@ -213,7 +213,7 @@ function elementsOf(r: ToolOutcome): BrowserElement[] {
 
 /** 整条结果的 token 数，与上限同一把尺：截图走图像块，不算在内。 */
 function sizeOf(r: ToolOutcome): number {
-  const { images, ...data } = r.data ?? {}
+  const { images: _images, ...data } = r.data ?? {}
   return deliveredTokens(
     JSON.stringify({ message: r.message, data, resources: r.resources }),
     DEFAULT_DENSITY,

@@ -315,7 +315,7 @@ function boundedItem(item: unknown): unknown {
  * 变成负数，一个元素都投不出去。大小判定、视图预算与记账都用这一把尺。
  */
 function tokensOf(parts: BrowserResultParts, density: TokenDensity): number {
-  const { images, ...data } = parts.data ?? {}
+  const { images: _images, ...data } = parts.data ?? {}
   return deliveredTokens(JSON.stringify({ ...parts, data }), density)
 }
 
