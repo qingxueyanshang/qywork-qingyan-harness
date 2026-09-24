@@ -214,19 +214,26 @@ class ArgError extends Error {
 }
 
 /**
- * 这个可选参数给了没有。`null` 与空串按缺席算，与浏览器工具同一条判据。
+ * 这个可选参数给了没有。`null`、空串与字符串 `"null"` 按缺席算，与浏览器工具同一条判据。
  *
  * **这条判据也管「不属于本动作的参数」那一类检查，不要在那里换成 `!== undefined`。**
  * strict 工具 schema 把每个可选参数都列进 `required` 并在类型里加 `null`
- * （`packages/ai` 的 `strictify`），模型按它为用不上的参数逐个填空位——实测填的是
- * `null` 与空串两种。按 `!== undefined` 判会把一次 `set_value` 附带的二十来个空位
- * 全报成多余参数，动作一次也派发不出去。
+ * （`packages/ai` 的 `strictify`），模型按它为用不上的参数逐个填空位：约束解码的端点填
+ * `null` 与空串，DeepSeek 不论 schema 是否 strict 都会填字符串 `"null"`。按 `!== undefined`
+ * 判会把一次 `set_value` 附带的二十来个空位全报成多余参数，动作一次也派发不出去。
  *
- * 空串对这条检查不构成例外：`value` 的清空语义由动作自己的参数表放行，
- * 走不到这条判据。
+ * 空串与 `"null"` 对这条检查不构成例外：`value`、`text` 的原文由动作自己的参数表读，
+ * 走不到这条判据，输入字面的 null 不受影响。
  */
 function given(raw: unknown): boolean {
-  return raw !== undefined && raw !== null && String(raw).trim() !== ''
+  if (raw === undefined || raw === null) return false
+  const text = String(raw).trim()
+  return text !== '' && text.toLowerCase() !== 'null'
+}
+
+/** 不属于本动作的参数上的 0 与 false 同样是空位：它们不表达任何意图。 */
+function blank(raw: unknown): boolean {
+  return raw === false || String(raw).trim() === '0'
 }
 
 function str(raw: unknown, field: string): string {
@@ -401,6 +408,15 @@ function resolveTarget(
     const ref = str(args.ref, 'ref')
     const hit = table.find((e) => e.ref === ref)
     if (!hit) {
+      // `#` 之后是控件身份，宿主按它核对控件没换过。漏抄时不按位置猜：拿旧观察的位置配新
+      // 观察编号会点到挪到那个位置的另一个控件。回执给出这个位置在本观察里的整条 ref。
+      const same = ref.includes('#') ? [] : table.filter((e) => e.ref.split('#')[0] === ref)
+      if (same.length === 1) {
+        throw new ArgError(
+          `未执行 · ref 要整条照抄，${ref} 在这份观察里是 ${same[0]!.ref}`,
+          'desktop_ref_unknown',
+        )
+      }
       throw new ArgError(`未执行 · 这份观察里没有 ${ref} · 先重新观察`, 'desktop_ref_unknown')
     }
     return hit
@@ -578,7 +594,9 @@ function checkActionParams(
     ...(POINTER_ACTIONS.includes(kind) ? POINT_PARAMS : []),
     ...ACTION_PARAMS[kind],
   ])
-  const extra = Object.keys(args).filter((key) => !allowed.has(key) && given(args[key]))
+  const extra = Object.keys(args).filter(
+    (key) => !allowed.has(key) && given(args[key]) && !blank(args[key]),
+  )
   if (extra.length) {
     throw new ArgError(`${kind} 不接受 ${extra.join(' / ')}`)
   }
@@ -819,6 +837,36 @@ function typedReadback(
   return target.value.includes(action.text) ? 'match' : 'mismatch'
 }
 
+/**
+ * 一次输入真正进了哪个控件：点名的控件；输入投给窗口时是这份控件表里持有键盘焦点的
+ * 那一个（取最深的）。找不到时缺席。
+ */
+function inputField(
+  table: DesktopElement[] | null,
+  element: DesktopElement | undefined,
+): DesktopElement | undefined {
+  if (!element) return undefined
+  if (!isWindowRoot(element)) return element
+  return table?.findLast((e) => e.focused === true && !isWindowRoot(e))
+}
+
+/** 回执里一个输入框的值，与 `valueLabel` 同一条长度规则：超长的只印字数，原文在控件表里。 */
+function fieldValue(value: string | undefined): string {
+  if (value === undefined) return '读不回'
+  if (value.length <= MAX_LINE_VALUE_CHARS) return JSON.stringify(value)
+  return `${value.length} 字`
+}
+
+/** 输入框在输入前后的值：模型据此看到输入之前框里的内容。 */
+function fieldLine(ref: string, before: string | undefined, after: string | undefined): string {
+  return ` · ${ref} 原值 ${fieldValue(before)} → 现值 ${fieldValue(after)}`
+}
+
+/** 写入类动作：`type_text` 与 `set_value`。它们的回执带输入框的原值。 */
+function writes(action: DesktopAction): boolean {
+  return action.kind === 'type_text' || action.kind === 'set_value'
+}
+
 /** message 里的窗口标题。标题由应用自报、长度无界，超过上限印前缀；`data` 里的标题按结果生产的规则处理。 */
 function windowTitle(title: string): string {
   if (!title) return '(无标题)'
@@ -851,6 +899,7 @@ function actOutcome(
   action: DesktopAction,
   ref: string,
   r: DesktopActResult,
+  field?: DesktopElement,
 ): ToolOutcome {
   const receipt: Record<string, unknown> = { actionId: r.actionId, dispatch: r.dispatch }
   if (r.reason !== undefined) receipt.reason = r.reason
@@ -870,7 +919,8 @@ function actOutcome(
   if (r.observation) {
     // 目标查找与读回核验按端口交回的完整控件表做，不看投给模型的那一部分。
     const target = r.observation.elements.find((e) => e.ref === ref)
-    const readback = typedReadback(action, target)
+    const typed = field && r.observation.elements.find((e) => e.ref === field.ref)
+    const readback = typedReadback(action, field ? typed : target)
     const failed = unknown || readback === 'mismatch'
     const parts = desktopResult({
       ctx,
@@ -882,6 +932,11 @@ function actOutcome(
       lead:
         `${lead} · ${snapshotLine(r.observation)}` +
         (target ? ` · 目标 ${elementLine(target)}` : '') +
+        // set_value 的现值已在目标那一行里，只补原值。
+        (field && action.kind === 'set_value' ? ` · 原值 ${fieldValue(field.value)}` : '') +
+        (field && action.kind === 'type_text'
+          ? fieldLine(field.ref, field.value, typed?.value)
+          : '') +
         (readback === 'mismatch' ? ' · 读回不一致' : '') +
         (readback === 'unreadable' ? ' · 读不回控件值' : ''),
     })
@@ -1425,8 +1480,9 @@ export const desktopActTool: ToolSpec = {
       const kind = oneOf(args.action, ACTIONS, 'action')
       const table = given(args.imageRef) ? null : desktop.elements(windowId, observationId)
       const { aim, action } = planAct(table, kind, args, TARGET_PARAMS)
+      const field = writes(action) ? inputField(table, aim.element) : undefined
       const r = await send(() => desktop.act({ windowId, observationId, ...aim.input, action }))
-      const outcome = actOutcome(ctx, action, aim.element?.ref ?? '', r)
+      const outcome = actOutcome(ctx, action, aim.element?.ref ?? '', r, field)
       if (aim.input.at === undefined) return outcome
       return withShot(outcome, r.dispatch !== 'not_dispatched', desktop, send, windowId, ctx)
     }),
@@ -1534,6 +1590,8 @@ interface StepReceipt {
   dispatch: DesktopDispatch
   reason?: string
   expect?: { until: Expectation; met: boolean }
+  /** 写入类这一步的输入框与它在输入前后的值。 */
+  input?: { ref: string; before?: string; after?: string }
   durationMs: number
 }
 
@@ -1688,6 +1746,7 @@ function stepLine(r: StepReceipt): string {
   return (
     `${r.index} ${r.action} ${r.target} ${fact}` +
     (r.reason === undefined ? '' : ` · ${r.reason}`) +
+    (r.input ? fieldLine(r.input.ref, r.input.before, r.input.after) : '') +
     expect
   )
 }
@@ -1830,6 +1889,7 @@ async function runStep(
     }
   }
 
+  const field = writes(action) ? inputField(cursor.table, aim.element) : undefined
   const started = Date.now()
   let result: DesktopActResult
   try {
@@ -1879,6 +1939,14 @@ async function runStep(
     }
   }
   advance(cursor, result)
+  if (field) {
+    const after = cursor.table?.find((e) => e.ref === field.ref)?.value
+    receipt.input = {
+      ref: field.ref,
+      ...(field.value === undefined ? {} : { before: field.value }),
+      ...(after === undefined ? {} : { after }),
+    }
+  }
   if (result.dispatch === 'unknown') {
     return {
       receipt,

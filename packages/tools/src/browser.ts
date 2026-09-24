@@ -10,9 +10,10 @@
  *    没有端口时这七个工具不注册（`index.ts` 按通道注册），工具体里仍判一次并如实报错。
  * 2. **注册表不按 schema 校验实参。** 必需参数、取值范围、数值有限性、动作的参数
  *    适用范围都在这里判，判完之前不调端口。
- * 3. **`null` 与空串按缺席算。** OpenAI 兼容协议的 strict 改写会把可选字段标成
- *    nullable，模型因此常把没填的字段显式写成 `null`；按「给了一个非法值」拒绝的话，
- *    一次正常调用会被一个没打算填的字段挡下来。例外是 `fill` 与 `select` 的 `text`：
+ * 3. **`null`、空串与字符串 `"null"` 按缺席算。** OpenAI 兼容协议的 strict 改写会把可选字段
+ *    标成 nullable，模型因此常把没填的字段显式写成 `null`，DeepSeek 写成字符串 `"null"`；
+ *    按「给了一个非法值」拒绝的话，一次正常调用会被一个没打算填的字段挡下来。例外是
+ *    `fill` 与 `select` 的 `text`：
  *    空串分别是清空输入框与选中值为空的选项，只有 `null` 才算未提供。
  * 4. **本地预览、上传下载的路径先裁决再交给端口。** 走这一轮会话的根目录清单（`rootsOf`），
  *    与内置文件工具同一份判定；端口只按裁决后的绝对路径操作。
@@ -66,9 +67,11 @@ class ArgError extends Error {
   }
 }
 
-/** 这个可选参数给了没有。`null` 与空串按缺席算，理由见文件头第 3 条。 */
+/** 这个可选参数给了没有。`null`、空串与字符串 `"null"` 按缺席算，理由见文件头第 3 条。 */
 function given(raw: unknown): boolean {
-  return raw !== undefined && raw !== null && String(raw).trim() !== ''
+  if (raw === undefined || raw === null) return false
+  const text = String(raw).trim()
+  return text !== '' && text.toLowerCase() !== 'null'
 }
 
 function str(raw: unknown, field: string): string {
