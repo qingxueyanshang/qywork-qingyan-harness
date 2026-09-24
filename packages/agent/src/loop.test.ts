@@ -176,7 +176,7 @@ function baseCtx(runId: string): ToolContextBase {
     state: new Map(),
     sink: null,
     signal: new AbortController().signal,
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
   }
 }
 
@@ -585,7 +585,7 @@ describe('ToolContext 生命周期', () => {
           state: new Map(),
           sink: null,
           signal: new AbortController().signal,
-          requestPermission: async () => true,
+          requestPermission: async () => ({ allowed: true }),
         }
         captured = ctx
         return ctx
@@ -648,7 +648,7 @@ describe('ToolContext 生命周期', () => {
           state: new Map(),
           sink: null,
           signal: new AbortController().signal,
-          requestPermission: async () => true,
+          requestPermission: async () => ({ allowed: true }),
         }
       },
     })
@@ -1317,7 +1317,7 @@ describe('上下文分组占用', () => {
           state: new Map(),
           sink: null,
           signal: new AbortController().signal,
-          requestPermission: async () => true,
+          requestPermission: async () => ({ allowed: true }),
         }),
       })
 
@@ -1388,7 +1388,7 @@ describe('上下文分组占用', () => {
         state: new Map(),
         sink: null,
         signal: new AbortController().signal,
-        requestPermission: async () => true,
+        requestPermission: async () => ({ allowed: true }),
       }),
     })
 
@@ -1458,7 +1458,7 @@ describe('上下文分组占用', () => {
         state: new Map(),
         sink: null,
         signal: new AbortController().signal,
-        requestPermission: async () => true,
+        requestPermission: async () => ({ allowed: true }),
       }),
     })
 
@@ -1598,7 +1598,7 @@ describe('原地打转', () => {
         sink: null,
         signal: new AbortController().signal,
         emit: () => {},
-        requestPermission: async () => true,
+        requestPermission: async () => ({ allowed: true }),
       }),
     })
 
@@ -2019,7 +2019,7 @@ describe('原地打转', () => {
         sink: null,
         signal: new AbortController().signal,
         emit: () => {},
-        requestPermission: async () => true,
+        requestPermission: async () => ({ allowed: true }),
       }),
     })
 
@@ -2499,7 +2499,7 @@ describe('effort 传到请求上', () => {
           sink: null,
           signal: new AbortController().signal,
           emit: () => {},
-          requestPermission: async () => true,
+          requestPermission: async () => ({ allowed: true }),
         }) as ToolContext,
     })
     for await (const _ of loop.run({
@@ -2601,7 +2601,7 @@ describe('花费带币种', () => {
           sink: null,
           signal: new AbortController().signal,
           emit: () => {},
-          requestPermission: async () => true,
+          requestPermission: async () => ({ allowed: true }),
         }) as ToolContext,
     })
     const events = []
@@ -2715,7 +2715,7 @@ describe('上下文读数：一把尺', () => {
         state: new Map(),
         sink: null,
         signal: new AbortController().signal,
-        requestPermission: async () => true,
+        requestPermission: async () => ({ allowed: true }),
       }),
     })
 
@@ -2759,7 +2759,7 @@ describe('上下文读数：一把尺', () => {
         state: new Map(),
         sink: null,
         signal: new AbortController().signal,
-        requestPermission: async () => true,
+        requestPermission: async () => ({ allowed: true }),
       }),
     })
 
@@ -3812,7 +3812,7 @@ describe('停止能拽回卡住的工具', () => {
         state: new Map(),
         sink: null,
         signal: controller.signal,
-        requestPermission: async () => true,
+        requestPermission: async () => ({ allowed: true }),
       }),
     })
 

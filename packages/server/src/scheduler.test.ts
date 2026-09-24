@@ -146,7 +146,7 @@ async function listViaTool(store: Store, workspaceRoot: string): Promise<string>
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
     schedules: {
       list: () => listSchedules(store, workspaceRoot, Date.now()),
       create: () => {

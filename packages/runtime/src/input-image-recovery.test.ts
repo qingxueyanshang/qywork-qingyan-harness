@@ -127,7 +127,7 @@ function baseCtx(runId: string): ToolContextBase {
     state: new Map(),
     sink: null,
     signal: new AbortController().signal,
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
   }
 }
 

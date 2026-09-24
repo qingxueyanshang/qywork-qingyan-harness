@@ -471,7 +471,7 @@ function ctxWith(desktop?: DesktopPort, signal = new AbortController().signal): 
     sink: null,
     signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
     ...(desktop ? { desktop } : {}),
   }
 }

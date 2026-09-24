@@ -420,7 +420,7 @@ function toolCtx(input: {
     sink: input.sink === undefined ? input.h.sink : input.sink,
     signal: new AbortController().signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
     ...(input.desktop ? { desktop: input.desktop } : {}),
     ...(input.browser ? { browser: input.browser } : {}),
   }
@@ -752,7 +752,7 @@ function makeBase(h: Harness, runId: RunId, desktop: DesktopPort): () => ToolCon
     state: new Map(),
     sink: new RuntimeSink(h.store, h.content, runId),
     signal: new AbortController().signal,
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
     desktop,
   })
 }

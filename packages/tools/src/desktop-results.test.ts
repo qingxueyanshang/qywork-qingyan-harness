@@ -255,7 +255,7 @@ function context(desktop: DesktopPort, sink: SinkPort | null, contextWindow = WI
     sink,
     signal: new AbortController().signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
     desktop,
   }
 }

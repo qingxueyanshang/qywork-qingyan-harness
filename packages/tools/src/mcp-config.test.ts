@@ -19,7 +19,7 @@ function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
     ...overrides,
   }
 }

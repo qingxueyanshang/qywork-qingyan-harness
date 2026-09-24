@@ -2149,6 +2149,15 @@ ALTER TABLE provider_requests ADD COLUMN last_content_kind TEXT CHECK (last_cont
 ALTER TABLE provider_requests ADD COLUMN last_visible_at INTEGER;
 `,
   },
+  {
+    id: 62,
+    name: 'drop_permission_rules_and_audit',
+    // 两张表没有任何读写方：权限裁决由 `Session.decide` 按模式与命令现判，不存规则也不留审计。
+    sql: `
+DROP TABLE permission_rules;
+DROP TABLE permission_audit;
+`,
+  },
 ]
 
 /**

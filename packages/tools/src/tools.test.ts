@@ -51,7 +51,8 @@ function ctx(root: string, approve = true): ToolContext {
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},
-    requestPermission: async () => approve,
+    requestPermission: async () =>
+      approve ? { allowed: true } : { allowed: false, reason: '夹具拒绝' },
   }
 }
 

@@ -52,7 +52,7 @@ function ctx(opts?: { goal?: Goal | null; result?: GoalWriteResult }): ToolConte
     goals: port,
     signal: new AbortController().signal,
     emit: () => {},
-    requestPermission: async () => true,
+    requestPermission: async () => ({ allowed: true }),
   } as unknown as ToolContext & { spy: Spy }
 }
 

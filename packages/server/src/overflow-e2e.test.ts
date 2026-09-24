@@ -217,7 +217,7 @@ test('容量拒绝 → 认出凭证 → 压一次 → 重发成功', async () =>
       sink: null,
       signal: new AbortController().signal,
       emit: () => {},
-      requestPermission: async () => true,
+      requestPermission: async () => ({ allowed: true }),
     }),
     compaction,
   })
