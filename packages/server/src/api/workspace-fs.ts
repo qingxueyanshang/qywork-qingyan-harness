@@ -5,6 +5,11 @@
  * 会写盘的是 create / rename / delete 三条，**它们共用同一套口径**：
  * 入参不合法回 422 且不落盘、目标已存在回 409 不覆盖、路径越界翻成 422
  * （那是入参问题，不该以 500 的面貌出现在界面上）。每条的特殊之处写在它自己头上。
+ *
+ * 路径一律按 `literal` 解析，并把解析结果交给 `files.ts` 读写：查询参数已由
+ * `URLSearchParams` 解码过一次，请求体里的路径是字面值，再解码一次会把文件名里的
+ * `%20` 之类当成转义。create / rename / delete 操作的是目录项本身，用
+ * `followFinalSymlink: false`：跟随末段软链时，删除和改名会作用到软链指向的目标。
  */
 
 import { resolveInWorkspace } from '@qywork/tools'
@@ -26,9 +31,9 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   if (p === '/api/files/tree') {
     const rel = q.get('path') ?? '.'
     // 走同一套路径约束：HTTP 入口和工具入口不能有两套安全策略。
-    await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
+    const dir = await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true, literal: true })
     const depth = Math.min(6, Math.max(1, Number(q.get('depth') ?? 2)))
-    return json({ nodes: await listTree(d.workspaceRoot, rel === '.' ? '' : rel, depth) })
+    return json({ nodes: await listTree(dir, rel === '.' ? '' : rel, depth) })
   }
 
   if (p === '/api/files/find') {
@@ -50,13 +55,17 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     if (!rel || (kind !== 'file' && kind !== 'dir')) {
       return json({ error: 'invalid', message: '缺少路径或类型' }, 422)
     }
+    let abs: string
     try {
-      await resolveInWorkspace(d.workspaceRoot, rel)
+      abs = await resolveInWorkspace(d.workspaceRoot, rel, {
+        literal: true,
+        followFinalSymlink: false,
+      })
     } catch {
       return json({ error: 'invalid', message: `${rel} 不在这个项目里` }, 422)
     }
     try {
-      return json({ node: await createEntry(d.workspaceRoot, rel, kind) })
+      return json({ node: await createEntry(abs, rel, kind) })
     } catch (err) {
       if (err instanceof EntryExistsError)
         return json({ error: 'exists', message: err.message }, 409)
@@ -76,13 +85,18 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     if (/[/\\]/.test(name) || name === '.' || name === '..') {
       return json({ error: 'invalid', message: '名字里不能带路径分隔符' }, 422)
     }
+    let abs: string
     try {
-      await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
+      abs = await resolveInWorkspace(d.workspaceRoot, rel, {
+        mustExist: true,
+        literal: true,
+        followFinalSymlink: false,
+      })
     } catch {
       return json({ error: 'invalid', message: `${rel} 不在这个项目里` }, 422)
     }
     try {
-      return json({ node: await renameEntry(d.workspaceRoot, rel, name) })
+      return json({ node: await renameEntry(abs, rel, name) })
     } catch (err) {
       if (err instanceof EntryExistsError)
         return json({ error: 'exists', message: err.message }, 409)
@@ -98,20 +112,25 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     const body = (await req.json().catch(() => null)) as { path?: string } | null
     const rel = body?.path?.trim()
     if (!rel) return json({ error: 'invalid', message: '缺少要删除的路径' }, 422)
+    let abs: string
     try {
-      await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
+      abs = await resolveInWorkspace(d.workspaceRoot, rel, {
+        mustExist: true,
+        literal: true,
+        followFinalSymlink: false,
+      })
     } catch {
       return json({ error: 'invalid', message: `${rel} 不在这个项目里` }, 422)
     }
-    await deleteEntry(d.workspaceRoot, rel)
+    await deleteEntry(abs)
     return json({ ok: true })
   }
 
   if (p === '/api/files/preview') {
     const rel = q.get('path')
     if (!rel) return json({ error: 'path required' }, 400)
-    await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true })
-    return json(await preview(d.workspaceRoot, rel))
+    const abs = await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true, literal: true })
+    return json(await preview(abs, rel))
   }
 
   return null

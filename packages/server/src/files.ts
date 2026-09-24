@@ -7,7 +7,7 @@
  * 永远追不上现实，而族是有限的。
  */
 
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, sep } from 'node:path'
 import { IGNORED_DIRS } from '@qywork/tools'
 
@@ -184,17 +184,17 @@ export function classify(path: string): { kind: PreviewKind; mime: string; langu
  *
  * 按 depth 懒展开，所以列全不等于一次遍历整棵树：`node_modules` 也只有点开
  * 才会往里走一层。
+ *
+ * 本文件的读写函数都接收**调用方已按工作区边界解析过的绝对路径**，另带一份显示用的
+ * 相对路径。不要在这里用 `join(workspaceRoot, rel)` 重新拼：边界判的是解析结果，
+ * 重新拼出来的是另一个路径。节点路径由相对路径段拼接，不对解析结果取 `relative`，
+ * 因为解析结果已解开软链，工作区根本身是软链或 junction 时两者不同根。
  */
-export async function listTree(
-  workspaceRoot: string,
-  relPath: string,
-  depth: number,
-): Promise<FileNode[]> {
-  const abs = join(workspaceRoot, relPath)
-  return walk(abs, workspaceRoot, depth)
+export async function listTree(dir: string, relPath: string, depth: number): Promise<FileNode[]> {
+  return walk(dir, relPath, depth)
 }
 
-async function walk(dir: string, root: string, depth: number): Promise<FileNode[]> {
+async function walk(dir: string, rel: string, depth: number): Promise<FileNode[]> {
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
   const out: FileNode[] = []
 
@@ -203,15 +203,16 @@ async function walk(dir: string, root: string, depth: number): Promise<FileNode[
     const info = await stat(abs).catch(() => null)
     if (!info) continue
 
+    const path = toPosix(join(rel, e.name))
     const node: FileNode = {
       name: e.name,
-      path: toPosix(relative(root, abs)),
+      path,
       kind: e.isDirectory() ? 'dir' : 'file',
       size: info.size,
       mtime: info.mtimeMs,
     }
     if (e.isDirectory() && depth > 1) {
-      node.children = await walk(abs, root, depth - 1)
+      node.children = await walk(abs, path, depth - 1)
     }
     out.push(node)
   }
@@ -240,11 +241,10 @@ export class EntryExistsError extends Error {
  * 打出来的路径，缺一层就报错等于让他一层一层建。
  */
 export async function createEntry(
-  workspaceRoot: string,
+  abs: string,
   relPath: string,
   kind: 'file' | 'dir',
 ): Promise<FileNode> {
-  const abs = join(workspaceRoot, relPath)
   const taken = await stat(abs).catch(() => null)
   if (taken) throw new EntryExistsError(relPath)
 
@@ -270,14 +270,9 @@ export async function createEntry(
  * 名字合法性由调用方先判（不能带分隔符、不能是 `.` / `..`）：那是入参校验，
  * 属于边界那一层。这里只管「新名字已经被占了」这一件事，和 `createEntry` 同一个口径。
  */
-export async function renameEntry(
-  workspaceRoot: string,
-  relPath: string,
-  name: string,
-): Promise<FileNode> {
-  const abs = join(workspaceRoot, relPath)
+export async function renameEntry(abs: string, relPath: string, name: string): Promise<FileNode> {
   const nextRel = toPosix(join(dirname(relPath), name))
-  const nextAbs = join(workspaceRoot, nextRel)
+  const nextAbs = join(dirname(abs), name)
 
   const taken = await stat(nextAbs).catch(() => null)
   // 同一个名字改成同一个名字：Windows 上不区分大小写，`a.ts` → `A.ts` 会被
@@ -301,8 +296,8 @@ export async function renameEntry(
  * `force: false` 是有意的：不存在时要抛，让上面回 404。`force: true` 会把
  * 「删掉了」和「本来就没有」说成同一句话，而用户执行的是删除操作，需要确认是否已删除。
  */
-export async function deleteEntry(workspaceRoot: string, relPath: string): Promise<void> {
-  await rm(join(workspaceRoot, relPath), { recursive: true, force: false })
+export async function deleteEntry(abs: string): Promise<void> {
+  await rm(abs, { recursive: true, force: false })
 }
 
 export interface FindHit {
@@ -364,8 +359,7 @@ export async function findByName(
   return { matches, truncated }
 }
 
-export async function preview(workspaceRoot: string, relPath: string): Promise<PreviewResult> {
-  const abs = join(workspaceRoot, relPath)
+export async function preview(abs: string, relPath: string): Promise<PreviewResult> {
   const info = await stat(abs)
   const { kind, mime, language } = classify(relPath)
 
@@ -380,13 +374,14 @@ export async function preview(workspaceRoot: string, relPath: string): Promise<P
 
   if (kind === 'text' || kind === 'tabular') {
     // 表格族里 csv/tsv 是文本，xlsx 不是——按实际能否解码决定走哪条路。
-    const buf = await readFile(abs)
-    const slice = buf.subarray(0, MAX_TEXT_BYTES)
-    const text = new TextDecoder('utf-8', { fatal: false }).decode(slice)
+    // 只读上限以内的字节：整文件读入再截断，内存占用随文件大小增长。
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(
+      await readHead(abs, MAX_TEXT_BYTES),
+    )
     if (looksBinary(text)) {
       return { ...base, kind: 'binary', truncated: false, note: '二进制内容，无法以文本预览' }
     }
-    return { ...base, content: text, truncated: buf.length > MAX_TEXT_BYTES }
+    return { ...base, content: text, truncated: info.size > MAX_TEXT_BYTES }
   }
 
   if (kind === 'image' || kind === 'pdf' || kind === 'audio' || kind === 'video') {
@@ -402,6 +397,17 @@ export async function preview(workspaceRoot: string, relPath: string): Promise<P
   }
 
   return { ...base, note: kind === 'archive' ? '归档文件' : '二进制文件' }
+}
+
+async function readHead(abs: string, limit: number): Promise<Uint8Array> {
+  const handle = await open(abs, 'r')
+  try {
+    const buf = new Uint8Array(limit)
+    const { bytesRead } = await handle.read(buf, 0, limit, 0)
+    return buf.subarray(0, bytesRead)
+  } finally {
+    await handle.close()
+  }
 }
 
 /** 控制字符密度判定。比嗅探魔数通用——覆盖所有未登记的格式。 */
