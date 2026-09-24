@@ -237,6 +237,45 @@ describe('steps 投影', () => {
     expect(out[0]?.reasoningContent).toBe('达到输出上限')
   })
 
+  /**
+   * 历史里被取代的控件表按 `_view` 收起，活侧从 outcome 的 `currentView` 取值；回放必须
+   * 从落盘的同一个字段取出同样的值，否则同一段历史在当轮与续跑时收起的范围不同。
+   */
+  test('落盘 outcome 的 currentView 成为 tool 消息的 _view，形状不对就不带', () => {
+    const out = stepsToWireMessages([
+      step({
+        seq: 1,
+        toolName: 'desktop_observe',
+        toolCallId: 'A',
+        callIndex: 0,
+        payload: {
+          kind: 'tool_result',
+          args: {},
+          outcome: {
+            status: 'success',
+            currentView: { key: 'desktop:dw_1', scope: 'w.1#4', partial: true },
+          },
+        } as never,
+      }),
+      step({
+        seq: 2,
+        toolName: 'desktop_observe',
+        toolCallId: 'B',
+        callIndex: 1,
+        payload: {
+          kind: 'tool_result',
+          args: {},
+          outcome: { status: 'success', currentView: { scope: 'w.1#4' } },
+        } as never,
+      }),
+      step({ seq: 3, toolCallId: 'C', callIndex: 2 }),
+    ])
+    const tools = out.filter((m) => m.role === 'tool')
+    expect(tools[0]?._view).toEqual({ key: 'desktop:dw_1', scope: 'w.1#4', partial: true })
+    expect(tools[1]?._view).toBeUndefined()
+    expect(tools[2]?._view).toBeUndefined()
+  })
+
   test('结构与精确条数：user 之后是 assistant(toolCalls) + 每个调用一条 tool', () => {
     const out = stepsToWireMessages([
       step({ seq: 1, kind: 'text', content: '我先读两个文件。', toolName: null, toolCallId: null }),

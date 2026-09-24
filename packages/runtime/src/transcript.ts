@@ -24,6 +24,7 @@ import type {
   Attachment,
   ContextGroup,
   ConversationId,
+  CurrentView,
   MessageId,
   ResponseReasoning,
   RunContextSegment,
@@ -124,12 +125,29 @@ interface ToolPayload {
     message?: string
     data?: unknown
     resources?: { resourceId?: string }[]
+    currentView?: unknown
   }
 }
 
 function toolPayloadOf(step: Step): ToolPayload {
   const p = step.payload as ToolPayload | null
   return p && typeof p === 'object' ? p : {}
+}
+
+/**
+ * 落盘回来的 `currentView`。形状不对就当没有：它只决定历史里的旧视图要不要收起，
+ * 当成没有的代价是那一份照原样重发。
+ */
+function viewOf(step: Step): CurrentView | undefined {
+  const raw = toolPayloadOf(step).outcome?.currentView
+  if (!raw || typeof raw !== 'object') return undefined
+  const { key, scope, partial } = raw as Record<string, unknown>
+  if (typeof key !== 'string') return undefined
+  return {
+    key,
+    ...(typeof scope === 'string' ? { scope } : {}),
+    ...(partial === true ? { partial: true as const } : {}),
+  }
 }
 
 /**
@@ -372,6 +390,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
     pendingText = ''
 
     for (const s of ordered) {
+      const view = viewOf(s)
       messages.push(
         mark(
           {
@@ -380,6 +399,8 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
             content: toolContent(s),
             _group: GROUP,
             _batch: batchId,
+            // 旧视图的收起按它判定，活侧（`agent/loop.ts`）从同一个 outcome 字段取值。
+            ...(view ? { _view: view } : {}),
           },
           stamp,
         ),
