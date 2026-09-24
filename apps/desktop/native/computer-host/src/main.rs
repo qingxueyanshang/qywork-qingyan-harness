@@ -273,6 +273,7 @@ fn handle(
         Op::Act {
             window,
             reference,
+            root,
             point,
             expect_generation,
             action,
@@ -284,6 +285,7 @@ fn handle(
             &windows::ActRequest {
                 window,
                 reference: reference.as_deref(),
+                root: root.as_deref(),
                 point,
                 expect_generation: expect_generation.as_deref(),
                 action: &action,
@@ -358,7 +360,9 @@ fn run_wait(state: &State, req: Request) -> Response {
         until,
         reference,
         value,
-        select,
+        role,
+        name_contains,
+        root,
         name,
         poll_ms,
         timeout_ms,
@@ -382,7 +386,9 @@ fn run_wait(state: &State, req: Request) -> Response {
         until,
         reference: reference.as_deref(),
         value: value.as_deref(),
-        select: &select,
+        role: role.as_deref(),
+        name_contains: name_contains.as_deref(),
+        root: root.as_deref(),
         name: name.as_deref(),
         poll: Duration::from_millis(poll_ms.max(1)),
         deadline,
@@ -422,7 +428,7 @@ fn observe(id: String, outcome: Result<Observation, String>) -> Response {
     }
 }
 
-/// 动作请求的终态：执行事实由调用结果决定，动作后的子树重读单列。
+/// 动作请求的终态：执行事实由调用结果决定，动作后的重读单列。
 ///
 /// 重读失败不回退执行事实——动作可能已经生效，改记未执行会让调用方重发一次。
 #[cfg(windows)]

@@ -67,6 +67,36 @@ impl ScreenRect {
             height: bottom - y,
         })
     }
+
+    /// 从本矩形里去掉 `cut`，剩下的部分拆成至多四个互不重叠的矩形。
+    pub fn subtract(&self, cut: &Self) -> Vec<Self> {
+        let Some(hole) = self.intersect(cut) else {
+            return vec![*self];
+        };
+        let pieces = [
+            (self.x, self.y, self.width, hole.y - self.y),
+            (self.x, hole.bottom(), self.width, self.bottom() - hole.bottom()),
+            (self.x, hole.y, hole.x - self.x, hole.height),
+            (hole.right(), hole.y, self.right() - hole.right(), hole.height),
+        ];
+        pieces
+            .into_iter()
+            .filter(|&(_, _, width, height)| width > 0 && height > 0)
+            .map(|(x, y, width, height)| Self { x, y, width, height })
+            .collect()
+    }
+}
+
+/// `target` 是否被 `covers` 合起来完全盖住。
+pub fn fully_covered(target: ScreenRect, covers: &[ScreenRect]) -> bool {
+    let mut left = vec![target];
+    for cover in covers {
+        left = left.iter().flat_map(|r| r.subtract(cover)).collect();
+        if left.is_empty() {
+            return true;
+        }
+    }
+    left.is_empty()
 }
 
 /// 绝对指针坐标的满量程。`SendInput` 把 0 到这个数铺在虚拟桌面的宽高上。
@@ -230,6 +260,29 @@ mod tests {
 
     fn point(x: i32, y: i32) -> ScreenPoint {
         ScreenPoint { x, y }
+    }
+
+    #[test]
+    fn a_window_under_one_bigger_window_is_fully_covered() {
+        assert!(fully_covered(rect(100, 100, 800, 600), &[rect(0, 0, 1920, 1040)]));
+    }
+
+    /// 两个窗口各盖一半、合起来盖满，同样算完全盖住；留一条缝就不算。
+    #[test]
+    fn covers_add_up_and_any_visible_strip_counts() {
+        let target = rect(0, 0, 100, 100);
+        assert!(fully_covered(target, &[rect(0, 0, 60, 100), rect(50, 0, 60, 100)]));
+        assert!(!fully_covered(target, &[rect(0, 0, 60, 100), rect(61, 0, 60, 100)]));
+        assert!(!fully_covered(target, &[rect(10, 10, 80, 80)]));
+        assert!(!fully_covered(target, &[]));
+    }
+
+    #[test]
+    fn subtracting_a_hole_leaves_the_frame_around_it() {
+        let pieces = rect(0, 0, 10, 10).subtract(&rect(2, 3, 4, 5));
+        let area: i32 = pieces.iter().map(|r| r.width * r.height).sum();
+        assert_eq!(area, 100 - 20);
+        assert_eq!(rect(0, 0, 10, 10).subtract(&rect(20, 20, 5, 5)), vec![rect(0, 0, 10, 10)]);
     }
 
     /// 单屏：左上角落在 0，右下角那个像素落在满量程上。
