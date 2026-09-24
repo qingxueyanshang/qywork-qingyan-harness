@@ -37,11 +37,11 @@ const JSONL_MIME = 'application/x-ndjson'
  */
 const ID_ESTIMATE = 'r'.repeat(32)
 /**
- * 视图里页面标题与网址各自最多留多少字。
+ * 视图里页面标题、网址与元素的名称、值、正文各自最多留多少字。
  *
- * 取 200，与采集侧对元素名称、正文的上限同一量级。页面自报的标题与网址长度无界
- * （data URL 可以有几万字），而上限按整条结果计量：5,000 字的标题加 5,000 字的网址
- * 就能把视图预算吃光，元素一个都投不出去。
+ * 这些字段长度无界（data URL、长文本框的值可以有几万字），而上限按整条结果计量：
+ * 一格 5,000 字就能把视图预算吃光，元素一个都投不出去。只在大页视图上生效，
+ * 完整原值在存盘正文里。
  */
 export const MAX_META_CHARS = 200
 
@@ -265,8 +265,9 @@ function jsonlBody(page: BrowserPage): Uint8Array {
 /**
  * 视图装本次表的前几项，装到上限为止。
  *
- * **项不从中间切开**，装不下的那一项之后也不再往下找：视图因此始终是本次表的前缀，
- * 「已投 N/M」说得出投的是哪几项。不按目标排序的理由见文件头第 2 条。
+ * 每项的超长字段先按 `boundedItem` 留前缀；**项不从中间切开**，装不下的那一项之后也不再
+ * 往下找：视图因此始终是本次表的前缀，「已投 N/M」说得出投的是哪几项。不按目标排序的
+ * 理由见文件头第 2 条。
  */
 function pickView(
   list: readonly unknown[],
@@ -276,13 +277,34 @@ function pickView(
   const view: unknown[] = []
   let left = budget
   for (const item of list) {
+    const shown = boundedItem(item)
     // 含数组分隔符。
-    const cost = deliveredTokens(`${JSON.stringify(item)},`, density)
+    const cost = deliveredTokens(`${JSON.stringify(shown)},`, density)
     if (cost > left) break
-    view.push(item)
+    view.push(shown)
     left -= cost
   }
   return view
+}
+
+/**
+ * 视图里的一项：超长的 name / value / text 只留前 `MAX_META_CHARS` 字，并标明省掉多少字。
+ *
+ * 采集侧保留原值，查询按原值匹配。不要删掉这一步：一项超长字段会让 `pickView` 在它那里
+ * 停下，排在它后面的项一个都投不出去。
+ */
+function boundedItem(item: unknown): unknown {
+  if (!item || typeof item !== 'object') return item
+  const record = item as Record<string, unknown>
+  let bounded: Record<string, unknown> | null = null
+  for (const key of ['name', 'value', 'text'] as const) {
+    const value = record[key]
+    if (typeof value !== 'string' || value.length <= MAX_META_CHARS) continue
+    bounded ??= { ...record }
+    bounded[key] = value.slice(0, MAX_META_CHARS)
+    bounded[`${key}OmittedChars`] = value.length - MAX_META_CHARS
+  }
+  return bounded ?? item
 }
 
 /**

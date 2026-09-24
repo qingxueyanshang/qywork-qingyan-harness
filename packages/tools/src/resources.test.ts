@@ -79,6 +79,7 @@ interface Hit {
   offset: number
   lineOffset: number
   text: string
+  wholeLine: boolean
 }
 
 interface SearchPage {
@@ -270,18 +271,55 @@ describe('query 搜索', () => {
     expect(hits[0]!.offset).toBe(4)
   })
 
-  test('长 JSON 行的行尾命中：返回命中附近而不是行首', async () => {
-    const long = `{"pad":"${'p'.repeat(4000)}","target":"针"}`
+  test('控件表的命中返回整条记录，可直接解析，不从中间切开', async () => {
+    // 落盘控件表的形状：第一行元数据，之后一行一个控件；命中的“账号”在记录中段。
+    const record = {
+      ref: 'w.1.0.0.1.1.0.0.0.0.1.3#42.657644.4.93.12.244',
+      parentRef: 'w.1.0.0.1.1.0.0.0.0.1#42.657644.4.93.12.230',
+      depth: 11,
+      role: 'text',
+      name: '账号',
+      automationId: '',
+      enabled: true,
+      offscreen: false,
+      rect: [812, 402, 36, 20],
+      actions: [
+        { action: 'scroll_into_view', delivery: ['background'] },
+        { action: 'click', delivery: ['foreground'] },
+        { action: 'hover', delivery: ['foreground'] },
+      ],
+    }
+    const pad = (i: number) => JSON.stringify({ ...record, ref: `w.${i}#${i}`, name: `控件${i}` })
+    const body = ['{"windowId":"dw_5"}', pad(1), pad(2), JSON.stringify(record), pad(3)].join('\n')
+    const r = await run({ resource_id: 'rs_1', query: '账号' }, memSink(body))
+    const hits = r.data!.hits as Hit[]
+    expect(hits).toHaveLength(1)
+    expect(hits[0]!.wholeLine).toBe(true)
+    expect(JSON.parse(hits[0]!.text)).toEqual(record)
+  })
+
+  test('单行超过整页预算：只给命中附近的片段并标明，从 lineOffset 读得回整行', async () => {
+    const long = `{"pad":"${'p'.repeat(20_000)}","target":"针"}`
     const sink = memSink(`前一行\n${long}\n后一行`)
     const r = await run({ resource_id: 'rs_1', query: '"target"' }, sink)
     const hit = (r.data!.hits as Hit[])[0]!
     expect(hit.line).toBe(2)
+    expect(hit.wholeLine).toBe(false)
     expect(hit.text).toContain('"target":"针"')
     expect(hit.text.length).toBeLessThan(600)
     const back = await run({ resource_id: 'rs_1', offset: hit.offset, length: 20 }, sink)
     expect(String(back.data!.content).startsWith('"target"')).toBe(true)
     const whole = await run({ resource_id: 'rs_1', offset: hit.lineOffset, length: 20 }, sink)
     expect(String(whole.data!.content).startsWith('{"pad"')).toBe(true)
+  })
+
+  test('整行装不下本页剩余预算时留到下一页，不切成片段', async () => {
+    const line = (i: number) => `${'x'.repeat(6000)}hit-${i}`
+    const pages = await searchThrough(memSink([line(1), line(2), line(3)].join('\n')), 'hit-')
+    const all = pages.flatMap((p) => p.hits)
+    expect(all.map((h) => h.line)).toEqual([1, 2, 3])
+    for (const h of all) expect(h.wholeLine).toBe(true)
+    expect(pages.length).toBeGreaterThan(1)
   })
 
   test('跨扫描步长边界的中文与 emoji 照样命中，偏移不偏', async () => {

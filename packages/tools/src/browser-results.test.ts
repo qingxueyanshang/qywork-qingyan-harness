@@ -411,6 +411,33 @@ describe('大页只投前面一部分', () => {
     expect(meta.url).toBe(url)
   })
 
+  test('单项超长的值只留前缀并标出省略字数，排在它后面的元素照样投出，原值在存盘正文里', async () => {
+    const value = '长'.repeat(5_000)
+    const 长值元素: BrowserElement = {
+      ref: 'e0',
+      role: 'textbox',
+      name: '备注',
+      tag: 'textarea',
+      value,
+    }
+    const sink = fakeSink()
+    const ctx = context(
+      fakeBrowser({ observe: async () => ({ ...大页, elements: [长值元素, ...大页元素] }) }),
+      sink,
+    )
+    const r = await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    const view = elementsOf(r) as (BrowserElement & { valueOmittedChars?: number })[]
+
+    expect(sizeOf(r)).toBeLessThanOrEqual(LIMIT)
+    expect(view[0]?.value).toBe(value.slice(0, 200))
+    expect(view[0]?.valueOmittedChars).toBe(value.length - 200)
+    expect(view.length).toBeGreaterThan(1)
+    expect(view.slice(1)).toEqual(大页元素.slice(0, view.length - 1))
+
+    const { rows } = fromJsonl(sink.landed[0] as Uint8Array) as { rows: BrowserElement[] }
+    expect(rows[0]?.value).toBe(value)
+  })
+
   test('message 只放执行事实，不印元素正文', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     const r = await browserActTool.fn(CLICK, ctx)

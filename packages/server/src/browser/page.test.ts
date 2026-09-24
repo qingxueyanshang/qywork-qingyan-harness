@@ -1214,6 +1214,31 @@ test('query 只返回名称匹配的元素，编号照常可用', async () => {
   expect(none.observation.truncated).toBe(false)
 })
 
+/** 原始失败形状：名称与值在采集时先裁到 200 字，第 200 字之后的内容既查不到也读不回。 */
+test('名称与值按原值采集，query 能命中第 200 字之后的内容', async () => {
+  const fake = new FakePage()
+  cleanups.push(() => fake.stop())
+  const doc = fake.model.docs[0] as DocModel
+  const longName = `${'前'.repeat(300)}尾部标记`
+  const longValue = `${'v'.repeat(500)}值尾`
+  doc.nodes = [
+    { backendNodeId: 100, tag: 'button', attrs: { id: 'b0' } },
+    { backendNodeId: 101, tag: 'textarea', attrs: { id: 't0', value: longValue } },
+  ]
+  doc.ax = [
+    { backendDOMNodeId: 100, role: 'button', name: longName },
+    { backendDOMNodeId: 101, role: 'textbox', name: '备注' },
+  ]
+  const handle = await connect(fake)
+
+  const byName = await observe(handle, { query: '尾部标记' })
+  expect(byName.observation.elements).toHaveLength(1)
+  expect(byName.observation.elements[0]?.name).toBe(longName)
+  const byValue = await observe(handle, { query: '值尾' })
+  expect(byValue.observation.elements).toHaveLength(1)
+  expect(byValue.observation.elements[0]?.value).toBe(longValue)
+})
+
 test('点击视口外的元素先滚到可见处，再按滚动后的实时坐标发事件', async () => {
   const { fake, handle } = await newPage()
   addBottomButton(fake)
