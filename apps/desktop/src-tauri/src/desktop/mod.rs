@@ -34,7 +34,7 @@ use tauri_plugin_shell::ShellExt;
 
 use crate::ws::WsSender;
 use frames::{
-    enrich_blocking, enrich_windows, needs_target, to_result, to_worker, Binding, Dispatch,
+    needs_target, relay, to_worker, Binding, Dispatch,
     EventFrame, HeldInput, HostReady, RequestFrame, ResultFrame, WorkerLine, WorkerRequest,
     WorkerResponse,
 };
@@ -536,7 +536,7 @@ impl DesktopHost {
 
     /// 收一条 worker 发上来的行。宿主自己发起的那几种回执止于这里，不透到服务端。
     fn on_worker_response(&self, line: &str) {
-        let mut response = match serde_json::from_str::<WorkerLine>(line) {
+        let response = match serde_json::from_str::<WorkerLine>(line) {
             Ok(WorkerLine::Response(r)) => r,
             // 按下状态账只记下来，不进回执路径：它不对应任何一条请求。
             Ok(WorkerLine::Input(notice)) => {
@@ -570,17 +570,7 @@ impl DesktopHost {
             }
             return;
         };
-        let observation = response.observation.take();
-        let blocking = response.blocking.take();
-        let mut frame = to_result(request_id, &binding, response, None);
-        match observation.map(|o| self.project(o)) {
-            None => {}
-            Some(Ok(projected)) => frame.observation = Some(projected),
-            Some(Err(reason)) => frame.observation_error = Some(reason),
-        }
-        // 补不上身份的窗口在这里被丢掉，与窗口清单同一条规则：目标身份少一项，
-        // 句柄复用就识别不出来。
-        frame.blocking = blocking.and_then(|b| enrich_blocking(&b, |handle, pid| self.identify(handle, pid)));
+        let frame = relay(request_id, &binding, response, |handle, pid| self.identify(handle, pid));
         self.send_frame(&frame);
     }
 
@@ -591,19 +581,6 @@ impl DesktopHost {
         }
         let found = identity::process_identity(pid)?;
         Some((found.started_at_ms, found.app))
-    }
-
-    /// 把 worker 的观察投影成服务端协议里的形状。
-    ///
-    /// 窗口清单要补进程启动时刻与可执行文件名；补不上的窗口整条丢掉，不给它一个编造的
-    /// 启动时刻——目标身份少一项，句柄复用就识别不出来。
-    fn project(&self, observation: serde_json::Value) -> Result<serde_json::Value, String> {
-        match observation.get("kind").and_then(serde_json::Value::as_str) {
-            Some("windows") => enrich_windows(&observation, |handle, pid| self.identify(handle, pid))
-                .ok_or_else(|| "窗口清单的字段对不上".to_owned()),
-            Some("tree" | "wait" | "image" | "text") => Ok(observation),
-            other => Err(format!("认不出的观察 {}", other.unwrap_or("(无 kind)"))),
-        }
     }
 
     /// worker 没了：停派发、结清在途、把不可用发布出去。

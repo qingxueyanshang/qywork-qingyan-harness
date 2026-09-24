@@ -2449,4 +2449,317 @@ mod tests {
         assert!(!satisfied(WaitUntil::Value, Some(""), novalue));
         assert!(!satisfied(WaitUntil::Value, None, novalue));
     }
+
+    // ── 与服务端、宿主共用的样例 ──
+
+    /// 三端共用的一份样例。三端各写一份夹具就不再是契约：宿主漏接 worker 的一个字段，
+    /// 三端各自的测试照样全绿。
+    const SAMPLES: &str =
+        include_str!("../../../../../packages/core/src/protocol/native-desktop.samples.json");
+
+    fn samples() -> serde_json::Value {
+        serde_json::from_str(SAMPLES).expect("样例文件要能解析")
+    }
+
+    fn sample_request(key: &str) -> Request {
+        serde_json::from_value(samples()["workerRequests"][key].clone())
+            .unwrap_or_else(|e| panic!("样例请求 {key} 应当解析成功：{e}"))
+    }
+
+    /// 宿主翻出来的每一种请求都要被 worker 读成同样的值：字段名拼错时 serde 按缺席处理，
+    /// 解析照样成功，只有逐项比对才看得出来。
+    #[test]
+    fn host_requests_from_the_shared_samples_carry_every_field() {
+        for key in samples()["workerRequests"].as_object().expect("样例").keys() {
+            let r = sample_request(key);
+            assert_eq!(
+                (r.id.as_str(), r.deadline, r.host_id.as_str(), r.host_epoch, r.connection_epoch),
+                ("w1", Some(1_757_744_400_000), "h1", 2, 3),
+                "{key}"
+            );
+        }
+        let bounds = |b: Bounds| (b.max_nodes, b.max_depth, b.time_budget_ms);
+        assert!(matches!(sample_request("list_windows").op, Op::ListWindows {}));
+        match sample_request("read_tree").op {
+            Op::ReadTree { window, select, bounds: b } => {
+                assert_eq!(window, 66);
+                assert_eq!(select.root.as_deref(), Some("w.0.1#42.7"));
+                assert!(!select.include_value && !select.include_state);
+                assert_eq!(bounds(b), (400, 12, 800));
+            }
+            other => panic!("{other:?}"),
+        }
+        let act = sample_request("act_ref");
+        assert!(!act.foreground);
+        match act.op {
+            Op::Act { window, reference, root, point, expect_generation, action, bounds: b } => {
+                assert_eq!(window, 66);
+                assert_eq!(reference.as_deref(), Some("w.0.1#42.7"));
+                assert_eq!(root.as_deref(), Some("w.0"));
+                assert_eq!((point, expect_generation), (None, None));
+                assert!(matches!(action, ActionSpec::SetValue { value } if value == "你好"));
+                assert_eq!(bounds(b), (400, 12, 800));
+            }
+            other => panic!("{other:?}"),
+        }
+        let act = sample_request("act_point");
+        assert!(act.foreground);
+        match act.op {
+            Op::Act { reference, point, expect_generation, action, .. } => {
+                assert_eq!(reference, None);
+                assert_eq!(point, Some(ScreenPoint { x: 120, y: -40 }));
+                assert_eq!(expect_generation.as_deref(), Some("80,80,520,460@96#1"));
+                assert!(matches!(action, ActionSpec::Click { button: MouseButton::Left, count: 2 }));
+            }
+            other => panic!("{other:?}"),
+        }
+        match sample_request("read_text").op {
+            Op::ReadText { window, reference, max_chars } => {
+                assert_eq!((window, reference.as_str(), max_chars), (66, "w.0.3", 4000));
+            }
+            other => panic!("{other:?}"),
+        }
+        match sample_request("wait").op {
+            Op::Wait {
+                window,
+                until,
+                reference,
+                value,
+                role,
+                name_contains,
+                root,
+                name,
+                poll_ms,
+                timeout_ms,
+                bounds: b,
+            } => {
+                assert_eq!((window, until), (66, WaitUntil::Appears));
+                assert_eq!(reference.as_deref(), Some("w.0.1"));
+                assert_eq!(value.as_deref(), Some("完成"));
+                assert_eq!(role.as_deref(), Some("Button"));
+                assert_eq!(name_contains.as_deref(), Some("确定"));
+                assert_eq!(root.as_deref(), Some("w.0"));
+                assert_eq!(name.as_deref(), Some("另存为"));
+                assert_eq!((poll_ms, timeout_ms), (150, 5000));
+                assert_eq!(bounds(b), (400, 12, 800));
+            }
+            other => panic!("{other:?}"),
+        }
+        match sample_request("capture_image").op {
+            Op::CaptureImage { window, region, expect_generation, max_edge, max_bytes, time_budget_ms } => {
+                assert_eq!(window, 66);
+                assert_eq!(region, Some(ScreenRect { x: -10, y: 20, width: 300, height: 200 }));
+                assert_eq!(expect_generation.as_deref(), Some("80,80,520,460@96#1"));
+                assert_eq!((max_edge, max_bytes, time_budget_ms), (1568, 3_000_000, 800));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn tree_body(nodes: Vec<Node>) -> Tree {
+        Tree {
+            window: 66,
+            captured_at: 1_757_744_400_100,
+            scope: Some("w.0".to_owned()),
+            window_enabled: true,
+            window_covered: false,
+            completeness: Completeness {
+                complete: false,
+                truncated_by: vec!["max_nodes"],
+                filtered_by: vec!["root".to_owned()],
+                visited: 400,
+            },
+            node_count: 2,
+            nodes,
+        }
+    }
+
+    /// 每个可选字段都填上的控件。结构体字面量要求列全字段：`Node` 多一个字段，这里先编译
+    /// 不过，样例随之要补，宿主与服务端两侧的样例测试再各自核对它有没有接住。
+    fn full_node() -> Node {
+        Node {
+            reference: "w.0.1#42.7".to_owned(),
+            parent_ref: Some("w.0".to_owned()),
+            depth: 1,
+            role: "Slider".to_owned(),
+            name: "音量".to_owned(),
+            automation_id: "volume".to_owned(),
+            value: Some("30".to_owned()),
+            enabled: true,
+            offscreen: false,
+            focused: true,
+            rect: Some(ScreenRect { x: -120, y: 40, width: 200, height: 24 }),
+            actions: vec![
+                NodeAction::ready("set_range_value"),
+                NodeAction::blocked("scroll", "not_scrollable"),
+            ],
+            range: Some(RangeState {
+                value: 30.0,
+                min: 0.0,
+                max: 100.0,
+                small_change: Some(1.0),
+                large_change: Some(10.0),
+            }),
+            toggle: Some("on"),
+            expand: Some("collapsed"),
+            selected: Some(true),
+            selection: Some(SelectionState {
+                multiple: false,
+                required: true,
+                selected: vec!["低".to_owned()],
+                truncated: true,
+            }),
+            scroll: Some(ScrollState { horizontal: Some(0.0), vertical: Some(55.5) }),
+            text: true,
+            weak_identity: true,
+        }
+    }
+
+    fn bare_node() -> Node {
+        Node {
+            reference: "w.0".to_owned(),
+            parent_ref: None,
+            depth: 0,
+            role: "Window".to_owned(),
+            name: "未命名 - 记事本".to_owned(),
+            automation_id: String::new(),
+            value: None,
+            enabled: true,
+            offscreen: false,
+            focused: false,
+            rect: None,
+            actions: Vec::new(),
+            range: None,
+            toggle: None,
+            expand: None,
+            selected: None,
+            selection: None,
+            scroll: None,
+            text: false,
+            weak_identity: false,
+        }
+    }
+
+    fn window(window: i64, pid: u32, title: &str, class_name: &str) -> WindowInfo {
+        WindowInfo {
+            window,
+            pid,
+            title: title.to_owned(),
+            class_name: class_name.to_owned(),
+        }
+    }
+
+    /// worker 发出的每一种回执逐字等于样例。顶层字段与观察字段都在这里锁住：
+    /// worker 加了字段而样例没有，宿主那侧就验不到它有没有被转发。
+    #[test]
+    fn responses_serialize_to_the_shared_samples() {
+        let all = samples();
+        let expected = &all["workerResponses"];
+        let cases: Vec<(&str, Response)> = vec![
+            (
+                "windows",
+                Response::observed(
+                    "w1".to_owned(),
+                    Observation::Windows {
+                        captured_at: 1_757_744_400_100,
+                        windows: vec![
+                            window(66, 900, "未命名", "Notepad"),
+                            window(99, 901, "身份查不到", "Other"),
+                        ],
+                    },
+                ),
+            ),
+            (
+                "tree",
+                Response::observed(
+                    "w1".to_owned(),
+                    Observation::Tree(tree_body(vec![bare_node(), full_node()])),
+                ),
+            ),
+            (
+                "wait",
+                Response::observed(
+                    "w1".to_owned(),
+                    Observation::Wait(Wait {
+                        found: false,
+                        reason: Some("timeout".to_owned()),
+                        tree: Tree {
+                            window: 66,
+                            captured_at: 1_757_744_400_100,
+                            scope: Some("w.0".to_owned()),
+                            window_enabled: false,
+                            window_covered: true,
+                            completeness: Completeness {
+                                complete: true,
+                                truncated_by: Vec::new(),
+                                filtered_by: Vec::new(),
+                                visited: 1,
+                            },
+                            node_count: 0,
+                            nodes: Vec::new(),
+                        },
+                    }),
+                ),
+            ),
+            (
+                "text",
+                Response::observed(
+                    "w1".to_owned(),
+                    Observation::Text(Text {
+                        window: 66,
+                        captured_at: 1_757_744_400_100,
+                        scope: "w.0.3".to_owned(),
+                        text: "第一行".to_owned(),
+                        truncated: true,
+                        selection_support: "single",
+                        selection: vec![TextSelection {
+                            start: 0,
+                            text: "第".to_owned(),
+                            truncated: false,
+                        }],
+                    }),
+                ),
+            ),
+            (
+                "image",
+                Response::observed(
+                    "w1".to_owned(),
+                    Observation::Image(Image {
+                        window: 66,
+                        captured_at: 1_757_744_400_100,
+                        source: "wgc",
+                        geometry: Geometry {
+                            image_width: 506,
+                            image_height: 453,
+                            screen: ScreenRect { x: 87, y: 80, width: 506, height: 453 },
+                            dpi: 96,
+                            generation: "80,80,520,460@96#1".to_owned(),
+                        },
+                        mime: "image/png",
+                        bytes: "iVBORw0KGgo=".to_owned(),
+                    }),
+                ),
+            ),
+            (
+                "act_blocked",
+                Response {
+                    id: "w1".to_owned(),
+                    dispatch: Dispatch::Unknown,
+                    reason: Some("call_pending".to_owned()),
+                    observation: None,
+                    observation_error: Some("target_blocked".to_owned()),
+                    blocking: Some(vec![
+                        BlockingWindow { info: window(88, 900, "另存为", "#32770"), appeared: true },
+                        BlockingWindow { info: window(99, 901, "身份查不到", "Other"), appeared: false },
+                    ]),
+                    after_reply: None,
+                },
+            ),
+            ("rejected", Response::rejected("w1".to_owned(), "stale_epoch".to_owned())),
+        ];
+        assert_eq!(cases.len(), expected.as_object().expect("样例").len());
+        for (key, response) in cases {
+            assert_eq!(serde_json::to_value(&response).expect("可序列化"), expected[key], "{key}");
+        }
+    }
 }

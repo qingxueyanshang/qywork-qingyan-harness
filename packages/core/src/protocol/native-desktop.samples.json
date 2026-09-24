@@ -1,0 +1,592 @@
+{
+  "hostReady": {
+    "type": "host.ready",
+    "hostId": "h1",
+    "hostEpoch": 2,
+    "connectionEpoch": 3,
+    "platform": "windows",
+    "workerReady": true,
+    "authorized": true
+  },
+  "workerState": {
+    "type": "desktop.event",
+    "connectionEpoch": 3,
+    "hostId": "h1",
+    "hostEpoch": 2,
+    "kind": "worker.state",
+    "workerReady": false,
+    "authorized": true
+  },
+  "requests": {
+    "list_windows": {
+      "type": "desktop.request",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "executorId": "cv_a",
+      "deadline": 1757744400000,
+      "foreground": false,
+      "op": "list_windows"
+    },
+    "read_tree": {
+      "type": "desktop.request",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "executorId": "cv_a",
+      "deadline": 1757744400000,
+      "foreground": false,
+      "op": "read_tree",
+      "target": { "window": 66, "pid": 900, "processStartedAt": 1700000000000 },
+      "maxNodes": 400,
+      "maxDepth": 12,
+      "timeBudgetMs": 800,
+      "root": "w.0.1#42.7",
+      "includeValue": false,
+      "includeState": false
+    },
+    "act_ref": {
+      "type": "desktop.request",
+      "requestId": "dr_1",
+      "actionId": "da_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "executorId": "cv_a",
+      "deadline": 1757744400000,
+      "foreground": false,
+      "op": "act",
+      "target": { "window": 66, "pid": 900, "processStartedAt": 1700000000000 },
+      "ref": "w.0.1#42.7",
+      "action": { "kind": "set_value", "value": "你好" },
+      "maxNodes": 400,
+      "maxDepth": 12,
+      "timeBudgetMs": 800,
+      "root": "w.0"
+    },
+    "act_point": {
+      "type": "desktop.request",
+      "requestId": "dr_1",
+      "actionId": "da_2",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "executorId": "cv_a",
+      "deadline": 1757744400000,
+      "foreground": true,
+      "op": "act",
+      "target": { "window": 66, "pid": 900, "processStartedAt": 1700000000000 },
+      "point": { "x": 120, "y": -40 },
+      "action": { "kind": "click", "button": "left", "count": 2 },
+      "maxNodes": 400,
+      "maxDepth": 12,
+      "timeBudgetMs": 800,
+      "expectGeneration": "80,80,520,460@96#1"
+    },
+    "read_text": {
+      "type": "desktop.request",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "executorId": "cv_a",
+      "deadline": 1757744400000,
+      "foreground": false,
+      "op": "read_text",
+      "target": { "window": 66, "pid": 900, "processStartedAt": 1700000000000 },
+      "ref": "w.0.3",
+      "maxChars": 4000
+    },
+    "wait": {
+      "type": "desktop.request",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "executorId": "cv_a",
+      "deadline": 1757744400000,
+      "foreground": false,
+      "op": "wait",
+      "target": { "window": 66, "pid": 900, "processStartedAt": 1700000000000 },
+      "ref": "w.0.1",
+      "value": "完成",
+      "maxNodes": 400,
+      "maxDepth": 12,
+      "timeBudgetMs": 800,
+      "root": "w.0",
+      "role": "Button",
+      "nameContains": "确定",
+      "until": "appears",
+      "name": "另存为",
+      "pollMs": 150,
+      "timeoutMs": 5000
+    },
+    "capture_image": {
+      "type": "desktop.request",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "executorId": "cv_a",
+      "deadline": 1757744400000,
+      "foreground": false,
+      "op": "capture_image",
+      "target": { "window": 66, "pid": 900, "processStartedAt": 1700000000000 },
+      "timeBudgetMs": 800,
+      "region": { "x": -10, "y": 20, "width": 300, "height": 200 },
+      "expectGeneration": "80,80,520,460@96#1",
+      "maxEdge": 1568,
+      "maxBytes": 3000000
+    }
+  },
+  "workerRequests": {
+    "list_windows": {
+      "id": "w1",
+      "deadline": 1757744400000,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "connectionEpoch": 3,
+      "foreground": false,
+      "op": "list_windows",
+      "params": {}
+    },
+    "read_tree": {
+      "id": "w1",
+      "deadline": 1757744400000,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "connectionEpoch": 3,
+      "foreground": false,
+      "op": "read_tree",
+      "params": {
+        "window": 66,
+        "maxNodes": 400,
+        "maxDepth": 12,
+        "timeBudgetMs": 800,
+        "root": "w.0.1#42.7",
+        "includeValue": false,
+        "includeState": false
+      }
+    },
+    "act_ref": {
+      "id": "w1",
+      "deadline": 1757744400000,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "connectionEpoch": 3,
+      "foreground": false,
+      "op": "act",
+      "params": {
+        "window": 66,
+        "maxNodes": 400,
+        "maxDepth": 12,
+        "timeBudgetMs": 800,
+        "action": { "kind": "set_value", "value": "你好" },
+        "ref": "w.0.1#42.7",
+        "root": "w.0"
+      }
+    },
+    "act_point": {
+      "id": "w1",
+      "deadline": 1757744400000,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "connectionEpoch": 3,
+      "foreground": true,
+      "op": "act",
+      "params": {
+        "window": 66,
+        "maxNodes": 400,
+        "maxDepth": 12,
+        "timeBudgetMs": 800,
+        "action": { "kind": "click", "button": "left", "count": 2 },
+        "point": { "x": 120, "y": -40 },
+        "expectGeneration": "80,80,520,460@96#1"
+      }
+    },
+    "read_text": {
+      "id": "w1",
+      "deadline": 1757744400000,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "connectionEpoch": 3,
+      "foreground": false,
+      "op": "read_text",
+      "params": { "window": 66, "ref": "w.0.3", "maxChars": 4000 }
+    },
+    "wait": {
+      "id": "w1",
+      "deadline": 1757744400000,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "connectionEpoch": 3,
+      "foreground": false,
+      "op": "wait",
+      "params": {
+        "window": 66,
+        "maxNodes": 400,
+        "maxDepth": 12,
+        "timeBudgetMs": 800,
+        "root": "w.0",
+        "role": "Button",
+        "nameContains": "确定",
+        "until": "appears",
+        "pollMs": 150,
+        "timeoutMs": 5000,
+        "ref": "w.0.1",
+        "value": "完成",
+        "name": "另存为"
+      }
+    },
+    "capture_image": {
+      "id": "w1",
+      "deadline": 1757744400000,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "connectionEpoch": 3,
+      "foreground": false,
+      "op": "capture_image",
+      "params": {
+        "window": 66,
+        "maxEdge": 1568,
+        "maxBytes": 3000000,
+        "timeBudgetMs": 800,
+        "region": { "x": -10, "y": 20, "width": 300, "height": 200 },
+        "expectGeneration": "80,80,520,460@96#1"
+      }
+    }
+  },
+  "workerResponses": {
+    "windows": {
+      "id": "w1",
+      "dispatch": "not_dispatched",
+      "observation": {
+        "kind": "windows",
+        "capturedAt": 1757744400100,
+        "windows": [
+          { "window": 66, "pid": 900, "title": "未命名", "className": "Notepad" },
+          { "window": 99, "pid": 901, "title": "身份查不到", "className": "Other" }
+        ]
+      }
+    },
+    "tree": {
+      "id": "w1",
+      "dispatch": "not_dispatched",
+      "observation": {
+        "kind": "tree",
+        "window": 66,
+        "capturedAt": 1757744400100,
+        "scope": "w.0",
+        "windowEnabled": true,
+        "windowCovered": false,
+        "completeness": {
+          "complete": false,
+          "truncatedBy": ["max_nodes"],
+          "filteredBy": ["root"],
+          "visited": 400
+        },
+        "nodeCount": 2,
+        "nodes": [
+          {
+            "ref": "w.0",
+            "depth": 0,
+            "role": "Window",
+            "name": "未命名 - 记事本",
+            "automationId": "",
+            "enabled": true,
+            "offscreen": false,
+            "actions": []
+          },
+          {
+            "ref": "w.0.1#42.7",
+            "parentRef": "w.0",
+            "depth": 1,
+            "role": "Slider",
+            "name": "音量",
+            "automationId": "volume",
+            "value": "30",
+            "enabled": true,
+            "offscreen": false,
+            "focused": true,
+            "rect": { "x": -120, "y": 40, "width": 200, "height": 24 },
+            "actions": [
+              { "action": "set_range_value", "delivery": ["background"] },
+              { "action": "scroll", "delivery": [], "unavailable": "not_scrollable" }
+            ],
+            "range": {
+              "value": 30.0,
+              "min": 0.0,
+              "max": 100.0,
+              "smallChange": 1.0,
+              "largeChange": 10.0
+            },
+            "toggle": "on",
+            "expand": "collapsed",
+            "selected": true,
+            "selection": {
+              "multiple": false,
+              "required": true,
+              "selected": ["低"],
+              "truncated": true
+            },
+            "scroll": { "horizontal": 0.0, "vertical": 55.5 },
+            "text": true,
+            "weakIdentity": true
+          }
+        ]
+      }
+    },
+    "wait": {
+      "id": "w1",
+      "dispatch": "not_dispatched",
+      "observation": {
+        "kind": "wait",
+        "found": false,
+        "reason": "timeout",
+        "window": 66,
+        "capturedAt": 1757744400100,
+        "scope": "w.0",
+        "windowEnabled": false,
+        "windowCovered": true,
+        "completeness": { "complete": true, "truncatedBy": [], "filteredBy": [], "visited": 1 },
+        "nodeCount": 0,
+        "nodes": []
+      }
+    },
+    "text": {
+      "id": "w1",
+      "dispatch": "not_dispatched",
+      "observation": {
+        "kind": "text",
+        "window": 66,
+        "capturedAt": 1757744400100,
+        "scope": "w.0.3",
+        "text": "第一行",
+        "truncated": true,
+        "selectionSupport": "single",
+        "selection": [{ "start": 0, "text": "第", "truncated": false }]
+      }
+    },
+    "image": {
+      "id": "w1",
+      "dispatch": "not_dispatched",
+      "observation": {
+        "kind": "image",
+        "window": 66,
+        "capturedAt": 1757744400100,
+        "source": "wgc",
+        "geometry": {
+          "imageWidth": 506,
+          "imageHeight": 453,
+          "screen": { "x": 87, "y": 80, "width": 506, "height": 453 },
+          "dpi": 96,
+          "generation": "80,80,520,460@96#1"
+        },
+        "mime": "image/png",
+        "bytes": "iVBORw0KGgo="
+      }
+    },
+    "act_blocked": {
+      "id": "w1",
+      "dispatch": "unknown",
+      "reason": "call_pending",
+      "observationError": "target_blocked",
+      "blocking": [
+        { "window": 88, "pid": 900, "title": "另存为", "className": "#32770", "appeared": true },
+        { "window": 99, "pid": 901, "title": "身份查不到", "className": "Other", "appeared": false }
+      ]
+    },
+    "rejected": {
+      "id": "w1",
+      "dispatch": "not_dispatched",
+      "reason": "stale_epoch"
+    }
+  },
+  "results": {
+    "windows": {
+      "type": "desktop.result",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "dispatch": "not_dispatched",
+      "observation": {
+        "kind": "windows",
+        "capturedAt": 1757744400100,
+        "windows": [
+          {
+            "handle": 66,
+            "pid": 900,
+            "processStartedAt": 1700000000000,
+            "app": "记事本",
+            "title": "未命名"
+          }
+        ]
+      }
+    },
+    "tree": {
+      "type": "desktop.result",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "dispatch": "not_dispatched",
+      "observation": {
+        "kind": "tree",
+        "window": 66,
+        "capturedAt": 1757744400100,
+        "scope": "w.0",
+        "windowEnabled": true,
+        "windowCovered": false,
+        "completeness": {
+          "complete": false,
+          "truncatedBy": ["max_nodes"],
+          "filteredBy": ["root"],
+          "visited": 400
+        },
+        "nodeCount": 2,
+        "nodes": [
+          {
+            "ref": "w.0",
+            "depth": 0,
+            "role": "Window",
+            "name": "未命名 - 记事本",
+            "automationId": "",
+            "enabled": true,
+            "offscreen": false,
+            "actions": []
+          },
+          {
+            "ref": "w.0.1#42.7",
+            "parentRef": "w.0",
+            "depth": 1,
+            "role": "Slider",
+            "name": "音量",
+            "automationId": "volume",
+            "value": "30",
+            "enabled": true,
+            "offscreen": false,
+            "focused": true,
+            "rect": { "x": -120, "y": 40, "width": 200, "height": 24 },
+            "actions": [
+              { "action": "set_range_value", "delivery": ["background"] },
+              { "action": "scroll", "delivery": [], "unavailable": "not_scrollable" }
+            ],
+            "range": {
+              "value": 30.0,
+              "min": 0.0,
+              "max": 100.0,
+              "smallChange": 1.0,
+              "largeChange": 10.0
+            },
+            "toggle": "on",
+            "expand": "collapsed",
+            "selected": true,
+            "selection": {
+              "multiple": false,
+              "required": true,
+              "selected": ["低"],
+              "truncated": true
+            },
+            "scroll": { "horizontal": 0.0, "vertical": 55.5 },
+            "text": true,
+            "weakIdentity": true
+          }
+        ]
+      }
+    },
+    "wait": {
+      "type": "desktop.result",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "dispatch": "not_dispatched",
+      "observation": {
+        "kind": "wait",
+        "found": false,
+        "reason": "timeout",
+        "window": 66,
+        "capturedAt": 1757744400100,
+        "scope": "w.0",
+        "windowEnabled": false,
+        "windowCovered": true,
+        "completeness": { "complete": true, "truncatedBy": [], "filteredBy": [], "visited": 1 },
+        "nodeCount": 0,
+        "nodes": []
+      }
+    },
+    "text": {
+      "type": "desktop.result",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "dispatch": "not_dispatched",
+      "observation": {
+        "kind": "text",
+        "window": 66,
+        "capturedAt": 1757744400100,
+        "scope": "w.0.3",
+        "text": "第一行",
+        "truncated": true,
+        "selectionSupport": "single",
+        "selection": [{ "start": 0, "text": "第", "truncated": false }]
+      }
+    },
+    "image": {
+      "type": "desktop.result",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "dispatch": "not_dispatched",
+      "observation": {
+        "kind": "image",
+        "window": 66,
+        "capturedAt": 1757744400100,
+        "source": "wgc",
+        "geometry": {
+          "imageWidth": 506,
+          "imageHeight": 453,
+          "screen": { "x": 87, "y": 80, "width": 506, "height": 453 },
+          "dpi": 96,
+          "generation": "80,80,520,460@96#1"
+        },
+        "mime": "image/png",
+        "bytes": "iVBORw0KGgo="
+      }
+    },
+    "act_blocked": {
+      "type": "desktop.result",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "dispatch": "unknown",
+      "reason": "call_pending",
+      "observationError": "target_blocked",
+      "blocking": [
+        {
+          "handle": 88,
+          "pid": 900,
+          "processStartedAt": 1700000000000,
+          "app": "记事本",
+          "title": "另存为",
+          "appeared": true
+        }
+      ]
+    },
+    "rejected": {
+      "type": "desktop.result",
+      "requestId": "dr_1",
+      "connectionEpoch": 3,
+      "hostId": "h1",
+      "hostEpoch": 2,
+      "dispatch": "not_dispatched",
+      "reason": "stale_epoch"
+    }
+  }
+}
