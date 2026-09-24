@@ -716,6 +716,8 @@ export class Session {
       clearInterval(heartbeat)
       // 生成器被提前关闭（用户 Ctrl-C、客户端断连）时也要给 run 一个终态，
       // 否则账本里会永远留有一条 running 的孤儿记录。
+      // 边界：这层只覆盖 `run.started` 之后。在它之前关闭生成器或抛出异常时，run 行停在
+      // running，由下次启动的 `recoverStaleRuns` 按 `owner_pid` 回收。
       if (!finished) {
         const ambiguous = listSteps(store, run.id).some(
           (step) => step.status === 'running' && step.executionStartedAt !== null,
