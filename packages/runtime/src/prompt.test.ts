@@ -332,6 +332,17 @@ describe('能力段', () => {
     expect(prompt).toContain('desktop_act_sequence')
   })
 
+  /**
+   * 原始失败形状：模型把正在运行别的程序的终端当成空闲 shell，往里输入命令并 exit。
+   * 这一行照实写明开着的窗口是用户的，不加操作禁令；这件事只写在这一行。
+   */
+  test('桌面这一行写明开着的窗口是用户正在用的，完成与否按观察里看得到的结果判断，且只出现一次', () => {
+    const prompt = buildSystemPrompt(new Set(['run_command', 'desktop_windows']))
+    expect(prompt.split('桌面上已经开着的窗口是用户自己正在用的')).toHaveLength(2)
+    expect(prompt).toContain('以观察里看得到的结果为准')
+    expect(prompt).not.toContain('先新建标签页')
+  })
+
   test('没有桌面工具就不提它们', () => {
     const prompt = buildSystemPrompt(new Set(['run_command']))
     expect(prompt).not.toContain('desktop_windows')
