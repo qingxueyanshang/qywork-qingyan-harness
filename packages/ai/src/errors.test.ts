@@ -11,6 +11,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { classifyProviderError, classifyStreamError, ProviderError } from './errors.ts'
+import { drainAdapter, FAULT_PROTOCOLS, withFault } from './providers/fault-server.test-helper.ts'
 
 const P = 'openai_responses' as const
 
@@ -240,6 +241,24 @@ describe('按用户的下一步动作分类', () => {
     expect(classifyProviderError(P, http(429, '账户余额不足，请充值')).code).toBe(
       'insufficient_quota',
     )
+  })
+
+  /**
+   * 402 是 Payment Required，不看正文：DeepSeek 的正文里 `code` 是 `invalid_request_error`，
+   * 按字段判会落到参数错误。经三协议真实适配器走 HTTP，断言的是界面最终拿到的码。
+   */
+  test('402 归账户额度不足', async () => {
+    expect(classifyProviderError(P, http(402, 'Insufficient Balance')).code).toBe(
+      'insufficient_quota',
+    )
+    for (const { kind, model } of FAULT_PROTOCOLS) {
+      const { err } = await withFault('payment_required', (fault) =>
+        drainAdapter({ fault, kind, model, idleTimeoutMs: 5_000 }),
+      )
+      expect(err).toBeInstanceOf(ProviderError)
+      expect((err as ProviderError).code).toBe('insufficient_quota')
+      expect((err as ProviderError).message).toBe('账户额度不足')
+    }
   })
 
   test('retry-after-ms 优先于 retry-after', () => {
