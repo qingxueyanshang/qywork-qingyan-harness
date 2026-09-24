@@ -3583,6 +3583,43 @@ describe('可选参数填空位', () => {
     expect(calls.filter((c) => c.method === 'act')).toHaveLength(1)
   })
 
+  /**
+   * 原始失败形状（DeepSeek Flash，strict 与原样 schema 下都出现）：用不上的参数填字符串 "null"、
+   * 空串、0 与 "0"，imageRef 也填 "null"。改前这些都算「给了」，invoke 先被当成按图定位拒掉，
+   * 再按多余参数拒掉，模型换着填法连发 8 次也没派发出去。
+   */
+  test('空位填字符串 null、0 与 "0" 时照常按控件派发', async () => {
+    const { port, calls } = fakeDesktop()
+    const padded = strictArgs(desktopActTool, {
+      windowId: 'dw_1',
+      observationId: 'do_1',
+      action: 'invoke',
+      ref: 'w.0.0#3',
+    })
+    for (const key of Object.keys(padded)) if (padded[key] === null) padded[key] = 'null'
+    padded.imageRef = 'null'
+    padded.number = '0'
+    padded.dx = 0
+    padded.count = 0
+    const r = await run(desktopActTool, padded, ctxWith(port))
+    expect(r.status).toBe('success')
+    expect((calls.find((c) => c.method === 'act')?.input as { action: unknown }).action).toEqual({
+      kind: 'invoke',
+    })
+  })
+
+  test('ref 漏抄 # 之后的身份段：不猜，回执给出这份观察里的整条 ref', async () => {
+    const { port, calls } = fakeDesktop()
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(r.message).toContain('w.0.0#3')
+    expect(calls).toEqual([])
+  })
+
   test('真的给了不属于这个动作的值仍然当场拒绝', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
@@ -3599,5 +3636,109 @@ describe('可选参数填空位', () => {
     expect(r).toMatchObject({ status: 'failure', executed: false })
     expect(r.message).toContain('invoke 不接受 value')
     expect(calls).toEqual([])
+  })
+})
+
+/**
+ * 原始失败形状：资源管理器隐藏了已知扩展名，改名框里只有「盘点草稿-0037」。模型在一个序列里
+ * F2 → 输入「盘点终稿-0037.txt」→ 回车，输入投给窗口，回执只说「已执行」，文件变成 `.txt.txt`。
+ * 回执必须说出输入框在输入前后的值，模型才看得到框里原本没有扩展名。
+ */
+describe('type_text 回执里的输入框原值与现值', () => {
+  const 改名窗口: DesktopElement = {
+    ...窗口,
+    actions: [
+      { action: 'type_text', delivery: ['foreground'] },
+      { action: 'press_key', delivery: ['foreground'] },
+    ],
+  }
+  const 改名框: DesktopElement = { ...焦点框, name: '盘点草稿-0037', value: '盘点草稿-0037' }
+
+  function renamePort() {
+    const base = fakeDesktop({
+      act: async () => ({
+        dispatch: 'submitted' as const,
+        actionId: 'da_1',
+        observation: snapshot({
+          observationId: 'do_2',
+          elements: [改名窗口, { ...改名框, value: '盘点终稿-0037.txt' }],
+        }),
+      }),
+    })
+    return {
+      ...base,
+      port: {
+        ...base.port,
+        elements: (windowId: string, observationId: string) =>
+          windowId === 'dw_1' && observationId === 'do_1' ? [改名窗口, 改名框] : null,
+      } as DesktopPort,
+    }
+  }
+
+  test('输入投给窗口时，回执按持有焦点的输入框印出原值与现值', async () => {
+    const { port } = renamePort()
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'type_text', text: '盘点终稿-0037.txt' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('w.10#17 原值 "盘点草稿-0037" → 现值 "盘点终稿-0037.txt"')
+  })
+
+  test('序列里的 type_text 一步同样印出原值与现值', async () => {
+    const { port } = renamePort()
+    const r = await run(
+      desktopActSequenceTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        steps: [{ action: 'type_text', text: '盘点终稿-0037.txt' }],
+      },
+      ctxWith(port),
+    )
+    expect(r.message).toContain('原值 "盘点草稿-0037" → 现值 "盘点终稿-0037.txt"')
+    expect((r.data as { steps: { input?: unknown }[] }).steps[0]?.input).toEqual({
+      ref: 'w.10#17',
+      before: '盘点草稿-0037',
+      after: '盘点终稿-0037.txt',
+    })
+  })
+})
+
+describe('set_value 回执里的原值', () => {
+  /** 隐藏扩展名的改名：名称单元格原值没有扩展名，写入带扩展名的全名，回执要说出原值。 */
+  test('单动作 set_value 回执补上原值，现值留在目标那一行', async () => {
+    const 名称格: DesktopElement = { ...焦点框, name: '名称', value: '盘点草稿-0037' }
+    const base = fakeDesktop({
+      act: async () => ({
+        dispatch: 'submitted' as const,
+        actionId: 'da_1',
+        observation: snapshot({
+          observationId: 'do_2',
+          elements: [窗口, { ...名称格, value: '盘点终稿-0037.txt' }],
+        }),
+      }),
+    })
+    const port = {
+      ...base.port,
+      elements: (windowId: string, observationId: string) =>
+        windowId === 'dw_1' && observationId === 'do_1' ? [窗口, 名称格] : null,
+    } as DesktopPort
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'set_value',
+        ref: 'w.10#17',
+        value: '盘点终稿-0037.txt',
+      },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('原值 "盘点草稿-0037"')
+    expect(r.message).toContain('= "盘点终稿-0037.txt"')
+    expect(r.message).not.toContain('→ 现值')
   })
 })
