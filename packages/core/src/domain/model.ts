@@ -856,6 +856,23 @@ export interface ToolOutcomeWire {
   /** 本次调用落盘的中间资源引用。只含定位事实，不携带正文。 */
   resources?: IntermediateResourceRef[]
   errorKind?: string
+  /**
+   * 这个结果是某个对象的当前视图。装配请求时，同一对象出现覆盖它的更新视图后，历史里
+   * 的这一份换成收纳信封；它随 outcome 落盘，回放按同一个字段判定。
+   */
+  currentView?: CurrentView
+}
+
+/**
+ * 一个工具结果是某个对象的一份当前视图。
+ *
+ * `scope` 缺席表示整个对象；给了表示其中一段，只被同一段或整个对象的后续视图覆盖。
+ * `partial` 为真（按条件筛过的视图）时它不覆盖别的结果，自己可被覆盖。
+ */
+export interface CurrentView {
+  key: string
+  scope?: string
+  partial?: true
 }
 
 /**
