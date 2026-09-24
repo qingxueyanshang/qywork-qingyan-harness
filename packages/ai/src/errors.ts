@@ -298,6 +298,9 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
         looksUnconfigured(err) ? 'no_api_key' : 'auth_failed',
         looksUnconfigured(err) ? '未配置 API Key' : 'API Key 无效',
       )
+    // 402 Payment Required 不看正文：余额不足时正文里的 `code` 可能是 `invalid_request_error`。
+    case 402:
+      return build('insufficient_quota', '账户额度不足')
     case 403:
       return build('auth_failed', '当前 Key 无权访问该模型')
     case 404:

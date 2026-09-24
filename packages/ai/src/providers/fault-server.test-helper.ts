@@ -39,6 +39,8 @@ export type FaultMode =
   | 'complete'
   /** 工具参数只发了半截 JSON，协议终态是输出上限。 */
   | 'truncated_tool_call'
+  /** 一律 402，正文取 DeepSeek 余额不足时的原样响应体（111 字节）。 */
+  | 'payment_required'
 
 export interface FaultServer {
   /** Anthropic Messages 的 baseUrl；SDK 自己接 `/v1/messages`。 */
@@ -473,6 +475,11 @@ function respond(protocol: Protocol, fault: FaultServer): Response {
       return new Response(bodyOf(protocol, 'text'), { headers: SSE_HEADERS })
     case 'truncated_tool_call':
       return new Response(bodyOf(protocol, 'truncated_tool'), { headers: SSE_HEADERS })
+    case 'payment_required':
+      return new Response(
+        '{"error":{"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}}',
+        { status: 402, headers: { 'content-type': 'application/json' } },
+      )
   }
 }
 
