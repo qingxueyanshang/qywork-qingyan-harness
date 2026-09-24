@@ -3,7 +3,7 @@
  *
  * **覆盖范围**：`run-control.ts` 的 `submitMessage` 空闲分支与 `startRun` 收尾那一段
  * （`resetSteer` → `CONTINUABLE` → `fireFollowUpRound`）、`runs.ts` 的 `resetSteer`
- * 与队列取走，以及 `agent/loop.ts` 每轮开头 `takeSteered` 的注入位置。
+ * 与队列取走，以及 `agent/loop/index.ts` 每轮开头 `takeSteered` 的注入位置。
  * 队列本身的入队幂等、翻转与删除在 `followup.test.ts`，一格失败其余照跑在
  * `delegate.test.ts`。
  *

@@ -160,7 +160,7 @@ export async function startRun(
      *
      * **两个都要收，因为报错有两条路**：loop 内部的 provider 错误**不会抛出来**，
      * 它被就地转成 `run.error` + `run.finished{stopReason:'provider_error'}`
-     * （`agent/loop.ts`）；只有 loop 之外的错（装配 adapter、解析档案）才走 catch。
+     * （`agent/loop/index.ts`）；只有 loop 之外的错（装配 adapter、解析档案）才走 catch。
      * 只认 catch 的话，一次 provider 报错会被判成「这一轮正常跑完了」然后接着续起
      * ——那正是「不自动重试异常」要防的形状。
      */

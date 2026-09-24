@@ -4,7 +4,7 @@
  * **覆盖范围**：`tools/desktop-results.ts`、`tools/browser-results.ts`、`tools/resources.ts`
  * 与 `runtime/sink.ts` 的 `RuntimeSink` / `collectResourceGarbage` 在真实 `Store` +
  * `ContentStore` 上的合作；`agent/registry.ts` 的 `ToolRegistry.execute` 与批级记账；
- * `runtime/transcript.ts` 的工具结果信封与 `agent/loop.ts` 当轮信封的同形；
+ * `runtime/transcript.ts` 的工具结果信封与 `agent/loop/request.ts` 当轮信封的同形；
  * `agent/compaction.ts` 的 `condenseMessage` 对资源引用的保留。
  *
  * 工具侧的上限、视图选取与故障降级在 `tools/desktop-results.test.ts`、

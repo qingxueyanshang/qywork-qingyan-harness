@@ -946,7 +946,7 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
     /*
      * **判错的两个方向代价不对等，所以往大的一侧给。** 给小了每轮提前压缩，
      * 白花钱又丢上下文，而且完全静默；给大了撞窗拿到的是带 `capacity` 的
-     * `context_overflow`，`loop.ts` 据它压一次再重发，有终态。
+     * `context_overflow`，`agent/loop/compact.ts` 据它压一次再重发，有终态。
      *
      * 取 500K 不取 1M：1M 是当前发布里最常见的标称档，但中转站按自己的策略截、
      * 本地 ollama 按 `num_ctx` 给，实际可用窗口小于标称是常态。
@@ -1824,7 +1824,7 @@ export function computeCost(
   //
   // adapter 是一个 run 建一次，而 run 可以跑很久：DeepSeek 的高峰窗口一天有两段，
   // 一个 08:55 开始、跑过 09:00 的 run，按建 adapter 那一刻取价会把整轮都按空闲价记。
-  // 算钱是逐波次调的（`agent/loop.ts` 每收完一次 usage 就算一次），
+  // 算钱是逐波次调的（`agent/loop/attempt.ts` 每收完一次 usage 就算一次），
   // 在这里取时间正好落在那一次请求刚结束的时候。
   //
   // 提示词大小同理：它逐波次增长，长上下文档必须按**这一次**的大小判，

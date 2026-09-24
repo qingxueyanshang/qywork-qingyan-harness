@@ -648,7 +648,7 @@ describe('思考的投影', () => {
    *
    * 模型侧与界面侧口径**刻意不同**，这里锁的是模型侧：
    * 纯文本轮不带 `reasoningContent`——活的 transcript 只在有工具调用时才挂它
-   * （`agent/loop.ts`），投影多带一份就与活的不同形，缓存前缀从那里断掉。
+   * （`agent/loop/turn-end.ts`），投影多带一份就与活的不同形，缓存前缀从那里断掉。
    */
   test('有工具调用时带上思考，纯文本轮不带', () => {
     const withTools = stepsToWireMessages([

@@ -20,7 +20,7 @@
  *
  * **信封换了一份只换头部，两侧同一组判据。** 模型相同而冻结前缀或工具表变了时，
  * 消息侧一个字没变，锚点那一大段真值仍然成立——按 `envelopeHeadTokens` 把头部
- * 换成最近一次已发送请求那一份即可。这与 loop 那侧逐条对应（`agent/loop.ts` 里
+ * 换成最近一次已发送请求那一份即可。这与 loop 那侧逐条对应（`agent/loop/run-state.ts` 里
  * `envelopeHashOf` 判、同一个 `envelopeHeadTokens` 量）：两处判据不同的话，
  * 同一条会话在运行中和回头看会给出两个数。
  */

@@ -1230,7 +1230,7 @@ CREATE INDEX idx_step_run_seq ON steps(run_id, seq);
      * → `data.images: [{data, mime}]`。
      *
      * 不迁移的后果是经实测确认的，而且不报错：摘字节的 `envelopeResult` 与产图像块的
-     * `imagesOf`（都在 `agent/loop.ts`）现在都只认 `images`，旧行两边都对不上，
+     * `imagesOf`（都在 `agent/loop/request.ts`）现在都只认 `images`，旧行两边都对不上，
      * 因此整串 base64 原样进信封当**文本**发出去。同一份会话实测 12 条旧行
      * 2.79 MB base64：本地按 4 字符/token 记 732k，provider 侧约 1.9M，
      * 一次请求直接被容量拒绝；压缩收掉大半之后仍有两张留在窗口里，
@@ -1272,7 +1272,7 @@ WHERE json_extract(payload, '$.outcome.data.imageData') IS NOT NULL;
     /**
      * 一次工具调用跑了多久，落库。
      *
-     * 这个数 `loop.ts` 早就量出来了（`Date.now()` 差，随 `tool.finished` 发出去），
+     * 这个数 `agent/loop/tool-wave.ts` 早就量出来了（`Date.now()` 差，随 `tool.finished` 发出去），
      * 但只活在连接期：前端把它写进内存里那条 item，刷新就没了。表现是派活卡上
      * 那一格的耗时刷新之后消失，而编排那张图不受影响——它的耗时是编排器另外量的，
      * 旧记录落在 `outcome.data.nodes[]`，新 workflow 转移落在 `outcome.data.receipts[]`。

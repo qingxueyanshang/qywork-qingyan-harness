@@ -5,7 +5,7 @@
  * 重新装配**这条控制流真的走通了。两者分开是因为前者纯函数、后者要造占用压力，
  * 混在一起会让「算法对不对」和「接线对不对」在失败时分不出来。
  *
- * 覆盖范围：`loop.ts` 的压缩触发与容量恢复。其中「压缩重发另开一行账」那条接真
+ * 覆盖范围：`loop/compact.ts` 的压缩触发与容量恢复。其中「压缩重发另开一行账」那条接真
  * `Store`，连带覆盖 `store/repos.ts` 的 `openProviderRequest` 在同一轮多次发送下
  * 与 `uq_provider_run_turn` 的关系——别的用例都把这个端口打桩成常量。
  */
@@ -29,11 +29,13 @@ import {
   settleProviderRequest,
   upsertWorkspace,
 } from '@qywork/store'
-import type { CompactionOutcome } from './compaction.ts'
-import { stepStamp } from './compaction.ts'
-import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from './index.ts'
-import { AgentLoop, MAX_RESENDS, softLimit } from './loop.ts'
-import { ToolRegistry } from './registry.ts'
+import type { CompactionOutcome } from '../compaction.ts'
+import { stepStamp } from '../compaction.ts'
+import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from '../index.ts'
+import { AgentLoop } from '../index.ts'
+import { ToolRegistry } from '../registry.ts'
+import { MAX_RESENDS } from './attempt.ts'
+import { softLimit } from './request.ts'
 
 /** 落库的压缩 step，供「中断不记账」「payload 与事件同源」两组断言读。 */
 type RecordedCompaction = Parameters<LoopPersistence['recordCompaction']>[2]
@@ -550,7 +552,7 @@ describe('发送前检查：唯一的压缩触发', () => {
   test('非容量错误照常上报', async () => {
     const comp = fakeCompaction(okOutcome)
     // 把重发额度拒满再多拒一次：参数错误与「上游暂时不可用」同归
-    // `provider_unavailable`，会被自动重发（代价写在 `loop.ts` 的 `RESENDABLE_CODES` 上）。
+    // `provider_unavailable`，会被自动重发（代价写在 `loop/attempt.ts` 的 `RESENDABLE_CODES` 上）。
     // 拒的次数不够的话某一次就成功了，断言的是重发路径而不是上报路径。
     const { adapter } = rejectingAdapter(MAX_RESENDS + 1, paramError)
     const events = await collect(build(adapter, comp.port), 'rn_param')

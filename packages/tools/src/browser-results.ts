@@ -310,7 +310,7 @@ function boundedItem(item: unknown): unknown {
 /**
  * 整条结果的 token 数，**不含 `images`**。
  *
- * 截图按图像块发出，不进信封文本（`agent/loop.ts` 组装工具结果时按 `images` 取图），
+ * 截图按图像块发出，不进信封文本（`agent/loop/request.ts` 组装工具结果时按 `images` 取图），
  * 按文本量等于把一兆多的 base64 算进上限：小页会被判成大页去存盘，大页的视图预算
  * 变成负数，一个元素都投不出去。大小判定、视图预算与记账都用这一把尺。
  */

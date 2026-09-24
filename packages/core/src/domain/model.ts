@@ -1177,7 +1177,7 @@ export function reconcileBreakdown(breakdown: ContextBreakdown, total: number): 
 /**
  * 请求信封那部分的占用：系统提示词 + 两张工具表。
  *
- * 三项与 `envelopeHashOf`（`agent/loop.ts`）哈希的 `[model, system, tools]` 逐项
+ * 三项与 `envelopeHashOf`（`agent/loop/request.ts`）哈希的 `[model, system, tools]` 逐项
  * 对应。信封换了一份时要重估的只有这三项，多算一项就把没变的内容也重估了一遍。
  *
  * **具名导出，两处都调它，不许各写一遍相加。** 锚点修正在 loop 与

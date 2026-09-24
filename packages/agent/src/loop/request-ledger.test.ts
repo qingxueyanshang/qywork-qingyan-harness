@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`loop.ts` 的逐请求账在真实 HTTP 故障下的落账事实
+ * 覆盖范围：`loop/attempt.ts` 的逐请求账在真实 HTTP 故障下的落账事实
  * （`openRequest` / `markRequestSent` / `markRequestHeaders` / `settleRequest`），
  * 与 `@qywork/ai` 的 `providers/fault-server.test-helper.ts` 三协议故障端点。
  *
@@ -30,9 +30,9 @@ import {
   settleProviderRequest,
   upsertWorkspace,
 } from '@qywork/store'
-import { AgentLoop, type LoopPersistence, type ToolContextBase } from './index.ts'
-import { MAX_RESENDS } from './loop.ts'
-import { ToolRegistry } from './registry.ts'
+import { AgentLoop, type LoopPersistence, type ToolContextBase } from '../index.ts'
+import { ToolRegistry } from '../registry.ts'
+import { MAX_RESENDS } from './attempt.ts'
 
 interface Ledger {
   runId: RunId

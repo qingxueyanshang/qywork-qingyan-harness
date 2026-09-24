@@ -124,9 +124,11 @@ F 是明确不采纳的，写出来是为了不被重新抄进来。
 
 **S 单一职责——一个文件一个职责，涨到看不完就拆。**
 正例：`packages/server/src/` 里 `files` / `git` / `runs` / `pairing` / `bus` 各管一件事；
-`server.ts` 只做装配，HTTP 路由按域拆到 `api/*`，由 `api/index.ts` 的处理器表分派。
-反例：`packages/agent/src/loop.ts` 的 `AgentLoop.run` 一个生成器同时承担跟进消息注入、
-发送前压缩、请求账、重发与退避、撞窗恢复、工具波次调度与停机判定。新逻辑不要再往里加。
+`server.ts` 只做装配，HTTP 路由按域拆到 `api/*`，由 `api/index.ts` 的处理器表分派；
+`packages/agent/src/loop/` 的 `AgentLoop.run` 只做轮次编排，压缩、发送与重发、收尾、
+工具波次各在一个文件里，共用 `run-state.ts` 的同一份状态。
+反例：`apps/web/src/components/Composer.tsx` 的 `Composer` 一个组件同时承担模型选择、
+附件、语音输入与提交。
 判据不是行数是理由数：说不出「这个文件只做 X」就该拆。
 
 **O 对扩展开放、对修改关闭——加东西不该改老代码。**

@@ -206,7 +206,7 @@ export async function setEffort(
  * （`server/run-control.ts`）。用户在长会话里主动点它，是为了在下一轮之前先把
  * 上下文腾出来，而不是等占用逼近阈值。
  *
- * 自动那条是发送前按占用检查（见 `agent/loop.ts`）；provider 的容量拒绝不触发压缩，
+ * 自动那条是发送前按占用检查（见 `agent/loop/compact.ts`）；provider 的容量拒绝不触发压缩，
  * 只如实报错。
  *
  * 结果通过 compaction 事件回来（done / failed 都会回），所以这里不做乐观更新。

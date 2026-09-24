@@ -163,7 +163,7 @@ export interface WireMessage {
    * 没有这个位置。装配层无条件标注，各适配器自己决定要不要落到线上——
    * 与 `reasoningContent`、`transmits` 是同一个形状。
    *
-   * 标在哪由「这一段跨请求是不是逐字节稳定」决定，见 `agent/loop.ts` 的装配。
+   * 标在哪由「这一段跨请求是不是逐字节稳定」决定，见 `agent/loop/index.ts` 的装配。
    */
   cacheBreakpoint?: boolean
   /** 内部记账用，绝不上线。 */

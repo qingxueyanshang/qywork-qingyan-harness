@@ -958,7 +958,7 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
  * 握着 stdout，管道 3 秒不 EOF（Windows 11 / Bun 1.3.14）。
  *
  * **管道不 EOF 比服务没死严重。** 谁要是拿管道 EOF 当「命令结束了」的判据，那次
- * `registry.execute` 就永不返回，而 `loop.ts` 调它的那一处外面没有任何超时。后果
+ * `registry.execute` 就永不返回，而 `agent/loop/tool-wave.ts` 调它的那一处外面没有任何超时。后果
  * 逐层传导到 `run-control.ts` 的 finally 不执行、`runs.unregister` 不执行——
  * **这条会话从此永远回绝「已有任务在执行」，直到重启 `qy serve`**。触发它不需要
  * 「起服务器」这种边角：任何经 shell 派生了子进程的命令（`npm test` → node、

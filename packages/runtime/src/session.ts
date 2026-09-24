@@ -657,7 +657,7 @@ export class Session {
      * `provider_error` 的 run，账本里的报错正文是 `null`，界面刷新之后
      * 「为什么停」只剩「模型服务出错」五个字，连不上还是 key 错了看不出来。
      *
-     * `run.error` 恒在 `run.finished` 之前（`agent/loop.ts` 连着 yield 两条），
+     * `run.error` 恒在 `run.finished` 之前（`agent/loop/index.ts` 连着 yield 两条），
      * 所以在这里接一手就够，不需要另开一条持久化路径。
      */
     let failure: { message: string; code: string } | null = null
@@ -1431,7 +1431,7 @@ export async function withAttachments(
       notes.push(`（附件 ${a.name}：${toPosixPath(abs)}）`)
       continue
     }
-    // 只给位置，不读字节。读盘由 `agent/loop.ts` 的 `materialize` 在发出前做一次——
+    // 只给位置，不读字节。读盘由 `agent/loop/request.ts` 的 `materialize` 在发出前做一次——
     // 被压缩折掉的那些轮次因此完全不必读盘，而这里读的话它们每一轮都白读一遍。
     blocks.push(
       image

@@ -155,7 +155,7 @@ describe('用户中断不是错误', () => {
     const err = new Error('aborted')
     err.name = 'AbortError'
     const e = classifyProviderError(P, err)
-    // internal_error 不在 loop.ts 的重发表里——用户按的停止不该被自动重发。
+    // internal_error 不在 agent/loop/attempt.ts 的重发表里——用户按的停止不该被自动重发。
     expect(e.code).toBe('internal_error')
     expect(e.message).toBe('已取消')
   })
@@ -273,7 +273,7 @@ describe('按用户的下一步动作分类', () => {
     expect(classifyProviderError(P, http(404)).code).toBe('model_not_found')
   })
 
-  test('5xx 归 provider_unavailable —— 这个码在 loop.ts 的重发表里', () => {
+  test('5xx 归 provider_unavailable —— 这个码在 agent/loop/attempt.ts 的重发表里', () => {
     for (const s of [500, 502, 503, 529]) {
       expect(classifyProviderError(P, http(s)).code).toBe('provider_unavailable')
     }
@@ -290,7 +290,7 @@ describe('按用户的下一步动作分类', () => {
   })
 
   /**
-   * 原始失败形状：给不接受图片的模型发图像块。这个码**不在** `loop.ts` 的重发表里，
+   * 原始失败形状：给不接受图片的模型发图像块。这个码**不在** `agent/loop/attempt.ts` 的重发表里，
    * 所以界面不会报「正在重连 N / M」。
    */
   test('模型不接受图片的 400 归 invalid_request', () => {
@@ -308,7 +308,7 @@ describe('按用户的下一步动作分类', () => {
 
   /**
    * 中转站会把「后端暂时不可用」发成 400 而不是 5xx。归 `provider_unavailable`
-   * 才进得了 `loop.ts` 的重发表；判成别的码，一次上游抖动就终结整轮。
+   * 才进得了 `agent/loop/attempt.ts` 的重发表；判成别的码，一次上游抖动就终结整轮。
    */
   test('中转站用 400 报「暂时不可用」，仍归 provider_unavailable', () => {
     const e = classifyProviderError(

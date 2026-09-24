@@ -224,7 +224,7 @@ export function classifyStreamError(
   }
   if (/invalid[\s_-]?request|bad[\s_-]?request/.test(reported)) return build('invalid_request')
   // 一个明确的失败事件本身就是 provider 暂不可用的证据；没有结构化细码时保留原文，
-  // 同时让它进入 `loop.ts` 的重发表。
+  // 同时让它进入 `agent/loop/attempt.ts` 的重发表。
   return build('provider_unavailable')
 }
 
@@ -396,7 +396,7 @@ function looksRetryableRejection(status: number, message: string): boolean {
  * **为什么不能只匹配 Node/undici 那串。** 运行时是 Bun，它自己的 fetch 报的是另一套话。2026-08 在一
  * 台网络抖动的机器上对 DeepSeek 连打，三种真实失败一条都匹配不上 Node 那套：
  * `The operation timed out.` / `The socket connection was closed unexpectedly.` /
- * `unknown certificate verification error`。全部落进 `internal_error`——它不在 `loop.ts` 的重发表
+ * `unknown certificate verification error`。全部落进 `internal_error`——它不在 `agent/loop/attempt.ts` 的重发表
  * 里，后果不是文案难看，是**一次抖动直接终结整轮 run**。
  *
  * 所以每一支都带两条正则：`code` 上是整串（锚定），文案里是夹在句子中间的一个词

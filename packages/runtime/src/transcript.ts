@@ -153,7 +153,7 @@ function viewOf(step: Step): CurrentView | undefined {
 /**
  * 一次工具结果的模型可见正文。
  *
- * **必须与活的 transcript 逐字同形**（`agent/loop.ts` 里 push 的那一份）。
+ * **必须与活的 transcript 逐字同形**（`agent/loop/tool-wave.ts` 里 push 的那一份）。
  * 两处不同形的话，同一次调用在本轮和下一轮长得不一样，模型会当成两件事——
  * 而这种不一致不会有任何报错。
  */
@@ -215,7 +215,7 @@ export interface StepUnit {
  * 生成边界**，前面攒的正文在那里收成一条独立的 assistant 消息。断流后带上下文
  * 续发的那一段（活侧是 `[A]`、`[B+工具]` 两条）靠这一条切回原形。
  *
- * **戳必须与 `agent/loop.ts` 里活的 transcript 逐字相同**：同一个单元在
+ * **戳必须与 `agent/loop/run-state.ts` 里活的 transcript 逐字相同**：同一个单元在
  * 「本 run 活跃时」与「跨 run 投影回历史后」定位不一致的话，压缩会按两条不同的
  * 线去切同一段内容。
  */
@@ -316,7 +316,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
        * 与活的 transcript 逐条同位。
        *
        * `_group` 是 `historyMessages` 而不是 `GROUP`——这是用户打的字，不是执行记录。
-       * 活侧（`agent/loop.ts` 的注入点）必须同值，两侧不同口径比都记错更坏。
+       * 活侧（`agent/loop/index.ts` 的注入点）必须同值，两侧不同口径比都记错更坏。
        *
        * `pendingReasoning` 在这里必然是空的：注入发生在 step 循环顶部，
        * 而思考与它的工具批次在同一步之内，中间夹不进别的 step。
@@ -381,7 +381,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
           ...(reasoning ? { reasoningContent: reasoning } : {}),
           ...(responseReasoning ? { responseReasoning } : {}),
           _group: GROUP,
-          // 图片裁剪据此认出最近待续的那一批，活侧（`agent/loop.ts`）写同一个值。
+          // 图片裁剪据此认出最近待续的那一批，活侧（`agent/loop/turn-end.ts`）写同一个值。
           _batch: batchId,
         },
         stamp,
@@ -399,7 +399,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
             content: toolContent(s),
             _group: GROUP,
             _batch: batchId,
-            // 旧视图的收起按它判定，活侧（`agent/loop.ts`）从同一个 outcome 字段取值。
+            // 旧视图的收起按它判定，活侧（`agent/loop/tool-wave.ts`）从同一个 outcome 字段取值。
             ...(view ? { _view: view } : {}),
           },
           stamp,

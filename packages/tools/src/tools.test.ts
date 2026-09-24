@@ -1511,7 +1511,7 @@ describe('grep 的单条上界', () => {
 /**
  * grep 必须计入批级投递预算。
  *
- * `loop.ts` 每下发一波之前 `resetBatchBudget`，理由写在那里：「压缩只留一个入口」
+ * `agent/loop/tool-wave.ts` 每下发一波之前 `resetBatchBudget`，理由写在那里：「压缩只留一个入口」
  * 的前提正是**两次检查之间的跳变有上界**。grep 不记账的话，单次 200 条 × 400 字符
  * 最坏约 32,000 token，已经越过单次上界 25,000；它又是 `parallelSafe`，
  * 一波五个就是整波上界的三倍多。

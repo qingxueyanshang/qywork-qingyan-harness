@@ -113,7 +113,7 @@ export async function runInit(args: string[]): Promise<number> {
    * **不要灌一个预置值**（比如 `maxOutputTokens: 8192`）：DeepSeek 的真实上限是
    * 384000（见 `catalog.ts`），差 47 倍。
    *
-   * 它是硬上限：装配时与目录值取 min（`loop.ts` 的输出上限计算），每次请求都用它。
+   * 它是硬上限：装配时与目录值取 min（`agent/loop/request.ts` 的输出上限计算），每次请求都用它。
    * 实测形状：DeepSeek 开 max 思考档，一轮思考占 8493 token，预算在正文开始前耗尽，
    * run 以 `output_truncated` 收尾。
    *

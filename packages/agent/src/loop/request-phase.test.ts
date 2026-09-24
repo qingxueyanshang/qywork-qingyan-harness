@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`loop.ts` 发出的 `run.request` / `run.retrying` 两条阶段事件的字段与顺序，
+ * 覆盖范围：`loop/attempt.ts` 发出的 `run.request` / `run.retrying` 两条阶段事件的字段与顺序，
  * 以及 `provider_requests.last_content_at` 的推进判据（`markRequestContent` 那条路）。
  * 故障端点来自 `@qywork/ai` 的 `providers/fault-server.test-helper.ts`。
  *
@@ -25,8 +25,8 @@ import {
   settleProviderRequest,
   upsertWorkspace,
 } from '@qywork/store'
-import { AgentLoop, type LoopPersistence, type ToolContextBase } from './index.ts'
-import { ToolRegistry } from './registry.ts'
+import { AgentLoop, type LoopPersistence, type ToolContextBase } from '../index.ts'
+import { ToolRegistry } from '../registry.ts'
 
 interface Ledger {
   runId: RunId
