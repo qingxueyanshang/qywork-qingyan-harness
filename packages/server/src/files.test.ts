@@ -1,17 +1,18 @@
 /**
  * 覆盖 `files.ts`：`listTree` / `createEntry` / `renameEntry` / `deleteEntry` /
- * `findByName` / `classify`。
+ * `findByName` / `classify` / `preview`；以及 `api/workspace-fs.ts` 的路径解析。
  *
- * 锁五件事：**树里一条都不少**（依赖树、构建产物、点开头的条目全列——藏一条
+ * 锁这几件事：**树里一条都不少**（依赖树、构建产物、点开头的条目全列——藏一条
  * 在界面上就等于它不存在）、**新建与改名都不覆盖**、**删不存在的要抛**（不静默成功）、
- * **搜索跳噪音目录**（与树口径不同，是有意的），以及分类的回落口径。
- * 预览的字节截断不在这里测。
+ * **搜索跳噪音目录**（与树口径不同，是有意的）、分类的回落口径、预览只读上限以内的字节，
+ * 以及接口按字面值解析路径、删除软链只删目录项本身。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { handleWorkspaceFsApi } from './api/workspace-fs.ts'
 import {
   classify,
   createEntry,
@@ -19,6 +20,7 @@ import {
   EntryExistsError,
   findByName,
   listTree,
+  preview,
   renameEntry,
 } from './files.ts'
 
@@ -39,6 +41,11 @@ async function workspace(): Promise<string> {
   return dir
 }
 
+/** 树的入口参数：工作区根的绝对路径与它的显示路径。 */
+async function root(): Promise<[string, string]> {
+  return [await workspace(), '']
+}
+
 describe('文件树', () => {
   /**
    * 一条都不过滤：依赖树、构建产物、`.git`、点开头的配置全在。
@@ -48,7 +55,7 @@ describe('文件树', () => {
    * 不存在。不一致的方向只允许是界面看得多。
    */
   test('磁盘上有的全进树', async () => {
-    const names = (await listTree(await workspace(), '', 2)).map((n) => n.name)
+    const names = (await listTree(...(await root()), 2)).map((n) => n.name)
     for (const entry of [
       'src',
       'a.ts',
@@ -64,14 +71,14 @@ describe('文件树', () => {
   })
 
   test('目录在前，子层按 depth 展开', async () => {
-    const nodes = await listTree(await workspace(), '', 2)
+    const nodes = await listTree(...(await root()), 2)
     expect(nodes[0]?.kind).toBe('dir')
     expect(nodes.find((n) => n.name === 'src')?.children?.map((c) => c.name)).toEqual(['main.ts'])
   })
 
   /** depth 到底就不再展开——不是展开成空数组，那会让界面画一个假的空目录。 */
   test('depth=1 时目录没有 children 字段', async () => {
-    const nodes = await listTree(await workspace(), '', 1)
+    const nodes = await listTree(...(await root()), 1)
     expect(nodes.find((n) => n.name === 'src')?.children).toBeUndefined()
   })
 })
@@ -79,22 +86,22 @@ describe('文件树', () => {
 describe('新建', () => {
   test('文件建出来是空的，中间目录一并建', async () => {
     const dir = await workspace()
-    const node = await createEntry(dir, 'docs/notes/a.md', 'file')
+    const node = await createEntry(join(dir, 'docs/notes/a.md'), 'docs/notes/a.md', 'file')
     expect(node).toMatchObject({ name: 'a.md', path: 'docs/notes/a.md', kind: 'file', size: 0 })
     expect(await readFile(join(dir, 'docs/notes/a.md'), 'utf8')).toBe('')
   })
 
   test('目录建出来能再往里建', async () => {
     const dir = await workspace()
-    expect((await createEntry(dir, 'pkg', 'dir')).kind).toBe('dir')
-    expect((await createEntry(dir, 'pkg/x.ts', 'file')).path).toBe('pkg/x.ts')
+    expect((await createEntry(join(dir, 'pkg'), 'pkg', 'dir')).kind).toBe('dir')
+    expect((await createEntry(join(dir, 'pkg/x.ts'), 'pkg/x.ts', 'file')).path).toBe('pkg/x.ts')
   })
 
   /** 覆盖是不可撤销的，所以「已存在」必须是个错，不能静默成功。 */
   test('重名一律报错，文件和目录都不覆盖', async () => {
     const dir = await workspace()
-    expect(createEntry(dir, 'a.ts', 'file')).rejects.toThrow(EntryExistsError)
-    expect(createEntry(dir, 'src', 'dir')).rejects.toThrow(EntryExistsError)
+    expect(createEntry(join(dir, 'a.ts'), 'a.ts', 'file')).rejects.toThrow(EntryExistsError)
+    expect(createEntry(join(dir, 'src'), 'src', 'dir')).rejects.toThrow(EntryExistsError)
     // 原内容没被动过
     expect(await readFile(join(dir, 'a.ts'), 'utf8')).toBe('export const a = 1\n')
   })
@@ -103,23 +110,25 @@ describe('新建', () => {
 describe('改名与删除', () => {
   test('改名只换名字，路径留在原来那一层', async () => {
     const dir = await workspace()
-    const node = await renameEntry(dir, 'src/main.ts', 'entry.ts')
+    const node = await renameEntry(join(dir, 'src/main.ts'), 'src/main.ts', 'entry.ts')
     expect(node).toMatchObject({ name: 'entry.ts', path: 'src/entry.ts', kind: 'file' })
     expect(await readFile(join(dir, 'src/entry.ts'), 'utf8')).toBe('export const b = 2\n')
   })
 
   test('改成一个已经存在的名字要报错，不覆盖', async () => {
     const dir = await workspace()
-    await createEntry(dir, 'src/entry.ts', 'file')
-    expect(renameEntry(dir, 'src/main.ts', 'entry.ts')).rejects.toThrow(EntryExistsError)
+    await createEntry(join(dir, 'src/entry.ts'), 'src/entry.ts', 'file')
+    expect(renameEntry(join(dir, 'src/main.ts'), 'src/main.ts', 'entry.ts')).rejects.toThrow(
+      EntryExistsError,
+    )
     expect(await readFile(join(dir, 'src/main.ts'), 'utf8')).toBe('export const b = 2\n')
   })
 
   test('删目录连里面一起删；删不存在的要抛，不静默', async () => {
     const dir = await workspace()
-    await deleteEntry(dir, 'src')
+    await deleteEntry(join(dir, 'src'))
     expect((await listTree(dir, '', 1)).map((n) => n.name)).not.toContain('src')
-    expect(deleteEntry(dir, 'src')).rejects.toThrow()
+    expect(deleteEntry(join(dir, 'src'))).rejects.toThrow()
   })
 })
 
@@ -157,5 +166,74 @@ describe('预览分类', () => {
     // 回落是 text 而不是 binary：新扩展名永远追不完，把没见过的当文本读
     // 最多是一屏乱码，当二进制则是「能读却不给看」。
     expect(classify('x.qwerty')).toEqual({ kind: 'text', mime: 'text/plain' })
+  })
+})
+
+describe('预览', () => {
+  /** 超过上限时只读上限以内的字节；截断标记按文件大小判。 */
+  test('大文本只回前 512 KiB，并标记截断', async () => {
+    const dir = await workspace()
+    const line = `${'x'.repeat(1023)}\n`
+    await writeFile(join(dir, 'big.log'), line.repeat(1024))
+    const out = await preview(join(dir, 'big.log'), 'big.log')
+    expect(out.size).toBe(1024 * 1024)
+    expect(out.truncated).toBe(true)
+    expect(out.content).toBe(line.repeat(512))
+  })
+
+  test('上限以内原样返回，不标截断', async () => {
+    const dir = await workspace()
+    const out = await preview(join(dir, 'a.ts'), 'a.ts')
+    expect(out).toMatchObject({ content: 'export const a = 1\n', truncated: false })
+  })
+})
+
+describe('文件接口的路径解析', () => {
+  async function call(dir: string, path: string, body?: Record<string, unknown>) {
+    const url = new URL(
+      body ? `http://x${path}` : `http://x/api/files/preview?path=${encodeURIComponent(path)}`,
+    )
+    const req = body
+      ? new Request(url.href, { method: 'POST', body: JSON.stringify(body) })
+      : new Request(url.href)
+    const res = await handleWorkspaceFsApi(url, req, { workspaceRoot: dir } as never)
+    return res as Response
+  }
+
+  /**
+   * 文件名里的 `%20` / `%41` 是字面字符。查询参数已由 `URLSearchParams` 解码过一次，
+   * 再按转义解一次会去找另一个文件：前者找不到，后者校验一个文件、读取另一个。
+   */
+  test('文件名含百分号转义时按字面值预览、改名、删除', async () => {
+    const dir = await workspace()
+    await writeFile(join(dir, 'report%20v2.md'), 'only this one')
+    await writeFile(join(dir, 'a%41.txt'), 'literal')
+    await writeFile(join(dir, 'aA.txt'), 'decoded twin')
+
+    expect(await (await call(dir, 'report%20v2.md')).json()).toMatchObject({
+      content: 'only this one',
+    })
+    expect(await (await call(dir, 'a%41.txt')).json()).toMatchObject({ content: 'literal' })
+
+    const renamed = await call(dir, '/api/files/rename', { path: 'a%41.txt', name: 'b%42.txt' })
+    expect(renamed.status).toBe(200)
+    expect(await readFile(join(dir, 'b%42.txt'), 'utf8')).toBe('literal')
+    expect(await readFile(join(dir, 'aA.txt'), 'utf8')).toBe('decoded twin')
+
+    expect((await call(dir, '/api/files/delete', { path: 'report%20v2.md' })).status).toBe(200)
+    expect(await stat(join(dir, 'report%20v2.md')).catch(() => null)).toBeNull()
+  })
+
+  /** 删除的是目录项本身：删软链不能删掉它指向的目录。 */
+  test('删除指向工作区内目录的软链，只删软链', async () => {
+    const dir = await workspace()
+    try {
+      await symlink(join(dir, 'src'), join(dir, 'src-link'), 'junction')
+    } catch {
+      return // 无权限建链接时跳过
+    }
+    expect((await call(dir, '/api/files/delete', { path: 'src-link' })).status).toBe(200)
+    expect(await lstat(join(dir, 'src-link')).catch(() => null)).toBeNull()
+    expect(await readFile(join(dir, 'src', 'main.ts'), 'utf8')).toBe('export const b = 2\n')
   })
 })
