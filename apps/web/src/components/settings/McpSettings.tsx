@@ -78,24 +78,10 @@ export default function McpSettings() {
 
   const servers = () => (loaded(data)?.servers ?? []).filter((s) => s.scope === scope())
 
-  /**
-   * 没信任这个项目、因此一次都没启动的那些。
-   *
-   * **它们不能混进「没连上」**：那一栏的含义是「试过、失败了」，而这些一次都没试过，
-   * 两者的出路完全不同。这一页只报状态——信不信任由那个弹窗问，不在这里给第二个入口。
-   */
-  const pending = () =>
-    scope() === 'project' && loaded(data)?.trusted === false
-      ? (loaded(data)?.configured ?? []).filter((c) => c.scope === 'project')
-      : []
-
-  /** 这一轮配了但没连上的：配置里有、servers 里没有、也不是在等信任的那些。 */
+  /** 这一轮配了但没连上的：配置里有、servers 里没有的那些。 */
   const missing = () =>
     (loaded(data)?.configured ?? []).filter(
-      (c) =>
-        c.scope === scope() &&
-        !loaded(data)?.servers.some((s) => s.name === c.name) &&
-        !pending().some((x) => x.name === c.name),
+      (c) => c.scope === scope() && !loaded(data)?.servers.some((s) => s.name === c.name),
     )
 
   const failures = () =>
@@ -127,13 +113,6 @@ export default function McpSettings() {
 
             <Section>
               <Switch fallback={<EmptyBox label="这一层没有连上的服务" actions={<AddButton />} />}>
-                <Match when={pending().length > 0}>
-                  {/* 边界，不是解释：界面上没有第二处说得出「没信任就不启动」。 */}
-                  <p class="settings-notices">没有信任这个项目，它声明的 server 不会启动</p>
-                  <div class="entry-list">
-                    <For each={pending()}>{(c) => <EntryCard name={c.name} />}</For>
-                  </div>
-                </Match>
                 <Match when={servers().length > 0}>
                   <div class="entry-list">
                     <For each={servers()}>

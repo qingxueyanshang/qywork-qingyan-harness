@@ -15,13 +15,7 @@
 
 import { readFile } from 'node:fs/promises'
 import { parseMcpConfig } from '@qywork/mcp'
-import {
-  isWorkspaceTrusted,
-  loadConfig,
-  loadScopedMcpConfig,
-  MCP_CONFIG,
-  mergeMcpServers,
-} from '@qywork/runtime'
+import { loadScopedMcpConfig, MCP_CONFIG, mergeMcpServers } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
 
 /** 只有项目层和全局层可写。内置随程序发布，写进去下次升级就没了。 */
@@ -47,8 +41,8 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
      * 插件与 MCP 子进程，而且没有人关——开一次这一页就漏一套。异常路径也要 release，
      * 所以是 try/finally。同 `/api/tools`。
      *
-     * 另一层作用：这里回的必须就是**模型手里那一份**。现起一份的话，信任刚打开时
-     * 这一页会显示「已连上」，而模型持有的仍是加载时那份，两个界面互相打脸。
+     * 另一层作用：这里回的必须就是**模型手里那一份**。现起一份的话，配置刚改过时
+     * 这一页显示的连接状态与模型持有的那份不一致。
      */
     const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
     const ext = await acquireExtensions(d.workspaceRoot)
@@ -72,12 +66,6 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
           scope: config.scopeOf[name] ?? 'project',
         })),
         error: config.error,
-        /**
-         * 项目层要先授权才加载。未授权时项目层的 server 只出现在 `configured` 里，
-         * `servers` 一条都没有——界面必须能说出这是为什么，否则用户看到的是
-         * 「配了但什么都没发生」。
-         */
-        trusted: isWorkspaceTrusted(await loadConfig(), d.workspaceRoot),
       })
     } finally {
       releaseExtensions(d.workspaceRoot)

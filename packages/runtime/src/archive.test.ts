@@ -276,7 +276,7 @@ describe('诊断导出', () => {
     })
     const parsed = JSON.parse(text)
     expect(parsed.kind).toBe('qywork.session-diagnostic')
-    expect(parsed.schemaVersion).toBe(6)
+    expect(parsed.schemaVersion).toBe(7)
     expect(parsed.exportedBy).toMatchObject({ name: 'qywork', version: pkg.version })
     expect(parsed.provider).toMatchObject({
       name: 'p',
@@ -293,7 +293,6 @@ describe('诊断导出', () => {
     expect(parsed.runtimeConfig).toMatchObject({
       permissionMode: 'auto',
       sandboxNetwork: 'allow',
-      workspaceTrusted: false,
     })
     expect(parsed.runs[0].contextSnapshot).toHaveLength(4)
     expect(parsed.runs[0].resources[0].contentHash).toBe('sha256:calc')
