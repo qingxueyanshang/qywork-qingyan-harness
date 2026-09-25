@@ -219,11 +219,15 @@ function textField(action: BrowserActionKind, raw: unknown): { text?: string } {
 
 /**
  * 网页地址直接交给浏览器；本地文件先走文件工具的路径裁决，再转成 file URL。
+ *
+ * 本地路径从第一个 `?` 起是查询串（其中的 `#` 起是片段），只有前面的部分参与路径裁决；
+ * Windows 文件名不含 `?`。`?` 之前的 `#` 是文件名的一部分，不要按片段拆：文件名含 `#`
+ * 是常见写法。要给不带查询串的本地路径加片段，用 file URL。
  */
 async function browserUrl(raw: unknown, ctx: ToolContext): Promise<string> {
   const value = str(raw, 'url')
-  let candidate = value
-  let suffix: URL | undefined
+  let candidate: string
+  let suffix: { search: string; hash: string }
   // Windows 盘符不是 URL 协议；无协议的路径相对当前工作区解析。
   if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^[a-z]:[/\\]/i.test(value)) {
     let parsed: URL
@@ -242,6 +246,10 @@ async function browserUrl(raw: unknown, ctx: ToolContext): Promise<string> {
       throw new ArgError(`本地文件地址无法解析：${value}`)
     }
     suffix = parsed
+  } else {
+    const cut = value.indexOf('?')
+    candidate = cut < 0 ? value : value.slice(0, cut)
+    suffix = new URL(cut < 0 ? '' : value.slice(cut), 'file:///')
   }
   const absolute = await resolveInWorkspace(rootsOf(ctx), candidate, {
     mustExist: true,
@@ -251,10 +259,8 @@ async function browserUrl(raw: unknown, ctx: ToolContext): Promise<string> {
     throw new ArgError(`路径不是文件：${candidate}。请指定要预览的 HTML 或其他文件。`)
   }
   const url = pathToFileURL(absolute)
-  if (suffix) {
-    url.search = suffix.search
-    url.hash = suffix.hash
-  }
+  url.search = suffix.search
+  url.hash = suffix.hash
   return url.toString()
 }
 
@@ -271,6 +277,25 @@ const STOPPED = {
   message: '本次执行已停止，不再操作浏览器。',
   errorKind: 'aborted',
 } as const
+
+/** 等满 `ms` 返回 `true`；中途取消立即返回 `false`。 */
+function pause(ms: number, signal: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve(false)
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve(false)
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(true)
+    }, ms)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 /** 把端口调用包起来，调用发生的那一刻记下来。 */
 type PortCall = <T>(call: () => Promise<T>) => Promise<T>
@@ -748,6 +773,7 @@ export const browserWaitTool: ToolSpec = {
   name: 'browser_wait',
   description:
     '等待一个 CSS 选择器在当前主文档出现，用于替代反复 observe 轮询。' +
+    '不给 selector 时等满 timeoutMs 再观察，用于等页面里的动画、计时或脚本运行一段时间。' +
     `默认 ${DEFAULT_WAIT_MS} 毫秒，上限 ${MAX_WAIT_MS} 毫秒。` +
     '取得新观察时结果里直接带回元素表与 observationId，据此继续下一步，不必再调 browser_observe；' +
     '未取得观察时先 browser_observe 确认页面状态。' +
@@ -759,24 +785,35 @@ export const browserWaitTool: ToolSpec = {
       selector: { type: 'string' },
       timeoutMs: { type: 'integer' },
     },
-    required: ['tabId', 'selector'],
+    required: ['tabId'],
     additionalProperties: false,
   },
   actionKind: 'read',
-  summary: '等一个 CSS 选择器出现',
+  summary: '等一个 CSS 选择器出现，或等满一段时长',
   targetExtractor: tabTarget,
 
   fn: (args, ctx) =>
     onBrowser(ctx, async (browser, send) => {
-      const selector = str(args.selector, 'selector')
-      const input = {
-        tabId: str(args.tabId, 'tabId'),
-        selector,
-        timeoutMs: given(args.timeoutMs)
-          ? Math.min(MAX_WAIT_MS, Math.max(MIN_WAIT_MS, finite(args.timeoutMs, 'timeoutMs')))
-          : DEFAULT_WAIT_MS,
+      const tabId = str(args.tabId, 'tabId')
+      const timeoutMs = given(args.timeoutMs)
+        ? Math.min(MAX_WAIT_MS, Math.max(MIN_WAIT_MS, finite(args.timeoutMs, 'timeoutMs')))
+        : DEFAULT_WAIT_MS
+      if (!given(args.selector)) {
+        if (!(await pause(timeoutMs, ctx.signal))) return STOPPED
+        const r = await send(() => browser.observe({ tabId }))
+        return {
+          status: 'success',
+          ...browserResult({
+            ctx,
+            toolName: 'browser_wait',
+            page: r,
+            receipt: { waitedMs: timeoutMs },
+            lead: `已等 ${timeoutMs} 毫秒。${isOptionsPage(r) ? optionsLine(r) : observationLine(r)}`,
+          }),
+        }
       }
-      const r = await send(() => browser.wait(input))
+      const selector = str(args.selector, 'selector')
+      const r = await send(() => browser.wait({ tabId, selector, timeoutMs }))
       return withFollowUp(
         ctx,
         'browser_wait',

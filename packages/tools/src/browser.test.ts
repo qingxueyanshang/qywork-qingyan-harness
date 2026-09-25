@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { realpathSync } from 'node:fs'
-import { mkdtemp, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -261,6 +261,31 @@ describe('发动作之前的终态', () => {
       method: 'navigate',
       input: { tabId: 'bt_1', action: 'goto', url: withSuffix },
     })
+  })
+
+  test('本地路径带查询串时只按 ? 之前的部分找文件，查询串与片段接到 file URL 上', async () => {
+    const root = await workspace()
+    await mkdir(join(root, '.tmp'))
+    const page = join(root, '.tmp', 'autotest.html')
+    const hashed = join(root, '.tmp', '鹈鹕 #1.html')
+    await writeFile(page, '<title>自动测试</title>')
+    await writeFile(hashed, '<title>文件名带井号</title>')
+    const { port, calls } = fakeBrowser()
+    for (const [input, expected] of [
+      ['.tmp/autotest.html?mode=flip', `${pathToFileURL(page).href}?mode=flip`],
+      [`${page}?mode=flip#end`, `${pathToFileURL(page).href}?mode=flip#end`],
+      ['.tmp/鹈鹕 #1.html?mode=flip', `${pathToFileURL(hashed).href}?mode=flip`],
+    ] as const) {
+      const r = await browserNavigateTool.fn(
+        { tabId: 'bt_1', action: 'goto', url: input },
+        ctxWith(root, port),
+      )
+      expect(r.status).toBe('success')
+      expect(calls.at(-1)).toEqual({
+        method: 'navigate',
+        input: { tabId: 'bt_1', action: 'goto', url: expected },
+      })
+    }
   })
 
   test('本地文件不存在、是目录或 URL 编码不合法时，不调用浏览器', async () => {
@@ -722,6 +747,33 @@ describe('观察的投递', () => {
     expect(r.executed).toBe(true)
     expect(data(r)).toMatchObject({ found: false, reason: 'timeout', observationId: 'ob_1' })
     expect(r.message).toContain('没等到 #x')
+  })
+
+  test('不给 selector 时等满时长再观察，不走选择器等待', async () => {
+    const { port, calls } = fakeBrowser()
+    const started = Date.now()
+    const r = await browserWaitTool.fn({ tabId: 'bt_1', timeoutMs: 150 }, ctxWith('/w', port))
+    expect(Date.now() - started).toBeGreaterThanOrEqual(140)
+    expect(r.status).toBe('success')
+    expect(calls).toEqual([{ method: 'observe', input: { tabId: 'bt_1' } }])
+    expect(data(r)).toMatchObject({ waitedMs: 150, observationId: 'ob_1' })
+    expect(r.message).toContain('已等 150 毫秒')
+  })
+
+  test('按时长等待期间取消：不再观察，按已停止收尾', async () => {
+    const { port, calls } = fakeBrowser()
+    const stop = new AbortController()
+    const pending = browserWaitTool.fn(
+      { tabId: 'bt_1', timeoutMs: 60_000 },
+      ctxWith('/w', port, stop.signal),
+    )
+    stop.abort()
+    expect(await pending).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'aborted',
+    })
+    expect(calls).toHaveLength(0)
   })
 
   test('端口进去之后出错记 executed:true', async () => {
