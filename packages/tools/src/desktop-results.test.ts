@@ -2,8 +2,9 @@
  * desktop 结果的投递闸。
  *
  * **覆盖范围**：`desktop-results.ts` 的上限、大小判定、紧凑表示的无损往返、视图选取、
- * 长值处理、JSONL 存盘、资源引用与实际用量记账，以及 `desktop.ts` 四个出口（observe 含
- * 补图分支、act、wait、act_sequence）接上它之后的结果形状。
+ * 长值处理、JSONL 存盘、资源引用与实际用量记账、无名结构容器的省略与 `depth` 重算、
+ * `rect` 开关，以及 `desktop.ts` 四个出口（observe 含补图分支、act、wait、act_sequence）
+ * 接上它之后的结果形状。
  *
  * 夹具是合成的：控件名称、值与窗口标题都不取自真实应用或网页。
  */
@@ -295,9 +296,11 @@ function observationOf(outcome: ToolOutcome): DeliveredObservation {
   return (data.observation ?? data) as DeliveredObservation
 }
 
-/** 投给模型的控件不带 `parentRef`：层级由前序顺序与 `depth` 表达。 */
-function delivered(elements: readonly DesktopElement[]): Omit<DesktopElement, 'parentRef'>[] {
-  return elements.map(({ parentRef: _parentRef, ...rest }) => rest)
+/** 投给模型的控件不带 `parentRef` 与 `rect`：层级由前序顺序与 `depth` 表达。 */
+function delivered(
+  elements: readonly DesktopElement[],
+): Omit<DesktopElement, 'parentRef' | 'rect'>[] {
+  return elements.map(({ parentRef: _parentRef, rect: _rect, ...rest }) => rest)
 }
 
 /** 按结果自带的默认值与动作字典还原成完整控件。 */
@@ -362,13 +365,14 @@ describe('小控件表整份内联', () => {
 
   /**
    * 原始失败形状：110 个控件，账号、密码与登录按钮排在第 84–91 项，前面是 73 个浏览器
-   * 外框节点。按比例缩过的上限只投前 26 项，三个表单控件全部缺席。
+   * 外框节点。按比例缩过的上限只投前 26 项，三个表单控件全部缺席。外框里的无名 pane
+   * 是结构容器，不列。
    */
   test('装得下单次投递上限的整窗控件表整份给出，排在末尾的表单控件都在', async () => {
     const 外框 = Array.from({ length: 73 }, (_, i) => ({
       ref: `e${10 + i}`,
       parentRef: 'e1',
-      depth: 2,
+      depth: 1,
       role: i % 3 === 0 ? 'button' : 'pane',
       name: i % 3 === 0 ? `工具栏按钮 ${i}` : '',
       automationId: i % 5 === 0 ? `view_${i}` : '',
@@ -385,7 +389,7 @@ describe('小控件表整份内联', () => {
     const 正文 = Array.from({ length: 36 }, (_, i) => ({
       ref: `e${100 + i}`,
       parentRef: 'e1',
-      depth: 2,
+      depth: 1,
       role: i === 10 || i === 12 ? 'edit' : i === 17 ? 'button' : 'text',
       name: i === 10 ? '请输入账号' : i === 12 ? '请输入密码' : i === 17 ? '登录' : `正文 ${i}`,
       automationId: '',
@@ -411,7 +415,7 @@ describe('小控件表整份内联', () => {
     const observation = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
 
     expect(observation.delivery).toBeUndefined()
-    expect(expand(observation)).toEqual(delivered(table))
+    expect(expand(observation)).toEqual(delivered(table.filter((e) => e.name !== '')))
     const names = observation.elements.map((e) => e.name)
     expect(names).toContain('请输入账号')
     expect(names).toContain('请输入密码')
@@ -846,5 +850,279 @@ describe('四个出口', () => {
     expect(observationOf(r).delivery?.totalElements).toBe(大表.length)
     expect(observationOf(r).elements.map((e) => e.ref)).toContain('e6')
     expect(acted.acts).toBe(2)
+  })
+})
+
+describe('精简投递', () => {
+  const 盒 = { x: 400, y: 300, width: 240, height: 32 }
+  const 登录页: DesktopElement = { ...根, name: '合成登录页' }
+  const 说明: DesktopElement = {
+    ref: 'e20',
+    parentRef: 'e1',
+    depth: 1,
+    role: 'text',
+    name: '说明文字',
+    automationId: '',
+    enabled: true,
+    offscreen: false,
+    rect: 盒,
+    actions: [],
+  }
+  /** 无名 pane，只承载层级。挂着滚动入视动作，那不算状态。 */
+  const 外壳: DesktopElement = {
+    ref: 'e21',
+    parentRef: 'e1',
+    depth: 1,
+    role: 'pane',
+    name: '',
+    automationId: 'shell',
+    enabled: true,
+    offscreen: false,
+    rect: 盒,
+    actions: [{ action: 'scroll_into_view', delivery: ['background'] }],
+  }
+  const 表单: DesktopElement = {
+    ref: 'e22',
+    parentRef: 'e21',
+    depth: 2,
+    role: 'group',
+    name: '登录',
+    automationId: 'login',
+    enabled: true,
+    offscreen: false,
+    rect: 盒,
+    actions: [],
+  }
+  const 夹层: DesktopElement = {
+    ref: 'e23',
+    parentRef: 'e22',
+    depth: 3,
+    role: 'custom',
+    name: '',
+    automationId: '',
+    enabled: true,
+    offscreen: false,
+    rect: 盒,
+    actions: [],
+  }
+  const 账号: DesktopElement = {
+    ref: 'e24',
+    parentRef: 'e23',
+    depth: 4,
+    role: 'edit',
+    name: '账号',
+    automationId: '',
+    value: '',
+    enabled: true,
+    offscreen: false,
+    rect: { x: 420, y: 310, width: 200, height: 24 },
+    actions: [{ action: 'set_value', delivery: ['background'] }],
+  }
+  /** 无名但带着滚动位置：状态在，照列。 */
+  const 滚动区: DesktopElement = { ...外壳, ref: 'e25', automationId: '', scroll: { vertical: 0 } }
+  /** 无名但被禁用：非默认状态，照列。 */
+  const 灰容器: DesktopElement = { ...夹层, ref: 'e26', parentRef: 'e1', depth: 1, enabled: false }
+  const 精简表 = [登录页, 说明, 外壳, 表单, 夹层, 账号, 滚动区, 灰容器]
+
+  /** 端口形状去掉 `parentRef` 与 `rect`，换上投递里的 `depth`。 */
+  function lean(e: DesktopElement, depth: number): Omit<DesktopElement, 'parentRef' | 'rect'> {
+    const { parentRef: _parentRef, rect: _rect, ...rest } = e
+    return { ...rest, depth }
+  }
+
+  /**
+   * 原 `depth` 留着的话，账号框是 4 层、前面没有 3 层的控件，读起来就近挂到说明文字那一层；
+   * 重算之后它的父控件是前面最近的 1 层「登录」。
+   */
+  test('无名结构容器不列，depth 按列出的祖先计，其余字段与端口形状逐字段相同', async () => {
+    const ctx = context(fakePort(精简表, { acts: 0 }), fakeSink())
+    const observation = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
+
+    expect(expand(observation)).toEqual([
+      lean(登录页, 0),
+      lean(说明, 1),
+      lean(表单, 1),
+      lean(账号, 2),
+      lean(滚动区, 1),
+      lean(灰容器, 1),
+    ])
+  })
+
+  test('includeRect 为真时带 rect；默认与动作之后的观察都不带', async () => {
+    const ctx = context(fakePort(精简表, { acts: 0 }), fakeSink())
+    const withRect = observationOf(
+      await desktopObserveTool.fn({ windowId: 'dw_1', includeRect: true }, ctx),
+    )
+    expect(withRect.elements.find((e) => e.ref === 'e24')?.rect).toEqual(账号.rect)
+    expect(withRect.elements.find((e) => e.ref === 'e1')?.rect).toBeUndefined()
+
+    const plain = observationOf(
+      await desktopObserveTool.fn({ windowId: 'dw_1', includeRect: false }, ctx),
+    )
+    expect(plain.elements.some((e) => 'rect' in e)).toBe(false)
+
+    const acted = await desktopActTool.fn(
+      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'e24', value: '甲' },
+      ctx,
+    )
+    expect(observationOf(acted).elements.some((e) => 'rect' in e)).toBe(false)
+  })
+
+  test('动作目标是无名容器时照样列出，它下面的层级随之按它计', async () => {
+    const ctx = context(fakePort(精简表, { acts: 0 }), fakeSink())
+    const acted = await desktopActTool.fn(
+      { windowId: 'dw_1', observationId: 'do_1', action: 'scroll_into_view', ref: 'e21' },
+      ctx,
+    )
+    const shown = observationOf(acted).elements
+    expect(shown.map((e) => e.ref)).toContain('e21')
+    expect(shown.find((e) => e.ref === 'e22')?.depth).toBe(2)
+
+    const observed = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
+    expect(observed.elements.map((e) => e.ref)).not.toContain('e21')
+  })
+
+  test('按角色或文字筛出来的结构容器照样列出，命中数不变', async () => {
+    const ctx = context(fakePort(精简表, { acts: 0 }), fakeSink())
+    const byRole = await desktopObserveTool.fn({ windowId: 'dw_1', role: 'pane' }, ctx)
+    expect(observationOf(byRole).elements.map((e) => e.ref)).toEqual(['e1', 'e21', 'e25'])
+    expect(byRole.message).toContain('命中的 2 个控件')
+
+    const byQuery = await desktopObserveTool.fn({ windowId: 'dw_1', query: 'shell' }, ctx)
+    expect(observationOf(byQuery).elements.map((e) => e.ref)).toEqual(['e1', 'e21'])
+    expect(byQuery.message).toContain('命中的 1 个控件')
+  })
+
+  test('「已投 N/M」只数列出的控件，结构容器不算未投', async () => {
+    const 容器们 = Array.from({ length: 50 }, (_, i) => ({
+      ...外壳,
+      ref: `e${9000 + i}`,
+      automationId: '',
+    }))
+    const ctx = context(fakePort([...大表, ...容器们], { acts: 0 }), fakeSink())
+    const delivery = observationOf(await actOnTarget(ctx)).delivery
+
+    expect(delivery?.totalElements).toBe(大表.length)
+  })
+
+  test('存盘正文仍是端口交回的整份：结构容器、rect 与原 depth 都在', async () => {
+    const 带容器的大表 = [...大表.slice(0, -1), 外壳, 表单, 夹层, 账号, 目标]
+    const sink = fakeSink()
+    const ctx = context(fakePort(带容器的大表, { acts: 0 }), sink)
+    await actOnTarget(ctx)
+
+    const back = fromJsonl(sink.landed[0] as Uint8Array)
+    expect(back.elements).toEqual(带容器的大表)
+  })
+
+  /**
+   * 合成一张浏览器形状的表：外框三层无名 pane 包着标题栏按钮、工具栏与地址栏，网页正文
+   * 六层无名 group 包着文字、链接、两个输入框与一个登录按钮，每个控件都带包围盒与指针动作。
+   */
+  function browserShaped(): { host: DesktopElement[]; port: DesktopElement[] } {
+    const pointer: DesktopElement['actions'] = [
+      { action: 'scroll_into_view', delivery: ['background'] },
+      { action: 'click', delivery: ['foreground'] },
+      { action: 'hover', delivery: ['foreground'] },
+      { action: 'drag', delivery: ['foreground'] },
+    ]
+    const host: DesktopElement[] = []
+    const children = new Map<string, number>()
+    const add = (parent: DesktopElement | null, over: Partial<DesktopElement>): DesktopElement => {
+      const at = parent === null ? 0 : (children.get(parent.ref) ?? 0)
+      if (parent !== null) children.set(parent.ref, at + 1)
+      const path = parent === null ? 'w' : `${parent.ref.split('#')[0]}.${at}`
+      const n = host.length + 1
+      const e: DesktopElement = {
+        ref: `${path}#42.657644.4.93.12.${100 + n}`,
+        ...(parent === null ? {} : { parentRef: parent.ref }),
+        depth: parent === null ? 0 : parent.depth + 1,
+        role: 'pane',
+        name: '',
+        automationId: '',
+        enabled: true,
+        offscreen: false,
+        rect: { x: (n * 37) % 1900, y: (n * 23) % 1100, width: 160, height: 28 },
+        actions: pointer,
+        ...over,
+      }
+      host.push(e)
+      return e
+    }
+    const win = add(null, { role: 'window', name: '合成登录页 - 合成浏览器', actions: [] })
+    let chrome = win
+    for (let i = 0; i < 3; i++) chrome = add(chrome, {})
+    for (const [name, id] of [
+      ['最小化', 'view_2'],
+      ['还原', 'view_4'],
+      ['关闭', 'view_7'],
+    ] as const) {
+      add(chrome, { role: 'button', name, automationId: id })
+    }
+    const bar = add(chrome, { role: 'tool_bar', name: '应用栏', automationId: 'view_1000' })
+    for (let i = 0; i < 12; i++) {
+      add(bar, { role: 'button', name: `工具栏按钮 ${i}`, automationId: `view_${1001 + i}` })
+    }
+    add(bar, {
+      role: 'edit',
+      name: '地址和搜索栏',
+      automationId: 'view_1021',
+      value: 'https://example.test/login',
+    })
+    let page = add(win, {
+      role: 'document',
+      name: '合成登录页',
+      value: 'https://example.test/login',
+    })
+    for (let i = 0; i < 6; i++) page = add(page, { role: 'group' })
+    for (let i = 0; i < 20; i++) {
+      const row = add(page, { role: 'group' })
+      add(row, { role: i % 2 === 0 ? 'text' : 'link', name: `正文条目 ${i}` })
+    }
+    const form = add(page, { role: 'group' })
+    add(form, { role: 'edit', name: '请输入账号', value: '' })
+    add(form, { role: 'edit', name: '请输入密码', value: '' })
+    add(form, { role: 'button', name: '登录' })
+    const id = new Map(host.map((e, i) => [e.ref, `e${i + 1}`]))
+    const port = host.map((e, i) => ({
+      ...e,
+      ref: id.get(e.ref) as string,
+      ...(e.parentRef === undefined ? {} : { parentRef: id.get(e.parentRef) as string }),
+      ...(i === 0 ? { windowRoot: true } : {}),
+    }))
+    return { host, port }
+  }
+
+  /** 端口直接交出宿主 ref 时的投递：长编号、rect 与结构容器都在，字典规则与现投递相同。 */
+  function hostShapedChars(table: readonly DesktopElement[]): number {
+    const sets: string[] = []
+    const elements = table.map(
+      ({ actions, parentRef: _parentRef, enabled, offscreen, automationId, ...rest }) => {
+        const key = JSON.stringify(actions)
+        if (!sets.includes(key)) sets.push(key)
+        return {
+          ...rest,
+          ...(enabled ? {} : { enabled }),
+          ...(offscreen ? { offscreen } : {}),
+          ...(automationId ? { automationId } : {}),
+          actionSet: sets.indexOf(key),
+        }
+      },
+    )
+    const actionSets = sets.map((s) => JSON.parse(s) as unknown)
+    const defaults = { enabled: true, offscreen: false, automationId: '' }
+    return JSON.stringify({ defaults, actionSets, elements }).length
+  }
+
+  /** 这张表的比值约三成；`rect` 或长编号回到投递里，比值超过四成。 */
+  test('浏览器形状的控件表：精简投递不到宿主编号写法的四成', async () => {
+    const { host, port } = browserShaped()
+    const ctx = context(fakePort(port, { acts: 0 }), fakeSink())
+    const observation = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
+    const { defaults, actionSets, elements } = observation
+    const leanChars = JSON.stringify({ defaults, actionSets, elements }).length
+
+    expect(observation.delivery).toBeUndefined()
+    expect(leanChars).toBeLessThanOrEqual(hostShapedChars(host) * 0.4)
   })
 })
