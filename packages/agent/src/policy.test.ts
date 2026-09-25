@@ -400,9 +400,13 @@ describe('additionalDirectories', () => {
 describe('写法变体', () => {
   const H = homedir()
 
+  /** Linux 的文件系统区分大小写：大小写不同的是另一个路径，不在家目录里。 */
   test('绝对路径的大小写要折', () => {
-    expect(kind(`rm ${join(H, 'x.txt').toLowerCase()}`)).toBe('deny')
-    expect(kind(`rm ${join(H, 'x.txt').toUpperCase()}`)).toBe('deny')
+    const literal = join(H, 'x.txt')
+    const folds = process.platform === 'win32' || process.platform === 'darwin'
+    for (const variant of [literal.toLowerCase(), literal.toUpperCase()]) {
+      expect(kind(`rm ${variant}`)).toBe(folds || variant === literal ? 'deny' : 'allow')
+    }
   })
 
   test('家目录的符号写法与字面写法都认', () => {
