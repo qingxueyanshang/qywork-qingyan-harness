@@ -722,41 +722,6 @@ export function importMcp(scope: Scope, path: string): Promise<{ ok: boolean; na
   })
 }
 
-// ───────────────────────── 会话级开关 ─────────────────────────
-
-/**
- * 一条可开关的条目。**只影响当前那一条会话。**
- *
- * 清单由服务端按三层解析出来，和 agent 真正加载的那份同源——前端各扫一遍
- * 就会出现「面板上关掉了，模型还在用」。内置层不在里面：用户看不见它。
- */
-export interface ExtraRow {
-  /** `<类目>:<标识>`。前缀就是类目。 */
-  key: string
-  label: string
-  detail: string
-  scope: Scope
-  enabled: boolean
-}
-
-export async function loadExtras(conversationId: string): Promise<ExtraRow[]> {
-  const r = await client.api<{ extras: ExtraRow[] }>(
-    `/api/conversations/${encodeURIComponent(conversationId)}/extras`,
-  )
-  return r.extras
-}
-
-export function setExtraEnabled(
-  conversationId: string,
-  key: string,
-  enabled: boolean,
-): Promise<{ ok: boolean }> {
-  return scheduleWrite(`/api/conversations/${encodeURIComponent(conversationId)}/extras`, {
-    method: 'PUT',
-    body: JSON.stringify({ key, enabled }),
-  })
-}
-
 // ───────────────────────── 附件 ─────────────────────────
 
 /**

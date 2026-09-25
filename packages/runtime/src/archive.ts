@@ -26,7 +26,6 @@ import {
   getConversation,
   getWorkspace,
   latestTodos,
-  listDisabledExtras,
   listLoadedTools,
   listMessages,
   listProviderRequests,
@@ -60,7 +59,6 @@ export interface ArchiveBundle {
     goal: ReturnType<typeof currentGoal>
     todos: NonNullable<ReturnType<typeof latestTodos>>
     loadedTools: string[]
-    disabledExtras: string[]
   }
   runs: (Run & {
     contextSnapshot: RunContextSegment[]
@@ -123,9 +121,6 @@ export function collect(store: Store, conversationId: ConversationId): ArchiveBu
       todos: bestEffort('sessionState.todos', [], () => latestTodos(store, conversationId) ?? []),
       loadedTools: bestEffort('sessionState.loadedTools', [], () =>
         [...listLoadedTools(store, conversationId)].sort(),
-      ),
-      disabledExtras: bestEffort('sessionState.disabledExtras', [], () =>
-        [...listDisabledExtras(store, conversationId)].sort(),
       ),
     },
     runs: listRuns(store, conversationId).map((r) => ({
@@ -266,7 +261,7 @@ export function exportConversationDiagnostics(
   return `${JSON.stringify(
     {
       kind: 'qywork.session-diagnostic',
-      schemaVersion: 5,
+      schemaVersion: 6,
       exportedBy: {
         name: 'qywork',
         version: pkg.version,

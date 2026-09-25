@@ -11,7 +11,6 @@ import {
   recordLoadedTools,
   registerResource,
   Store,
-  setExtraEnabled,
   settleProviderRequest,
   settleToolStep,
   updateRunUsage,
@@ -51,7 +50,6 @@ function fixture(): { store: Store; conversationId: ConversationId } {
   })
   createGoal(store, { conversationId: conv.id, objective: '修好 calc.js' })
   recordLoadedTools(store, conv.id, ['mcp__docs__search'])
-  setExtraEnabled(store, conv.id, 'skill:legacy', false)
 
   const ok = appendStep(store, {
     runId: run.id,
@@ -146,7 +144,6 @@ describe('采集', () => {
     expect(b.messages).toHaveLength(1)
     expect(b.sessionState.goal?.objective).toBe('修好 calc.js')
     expect(b.sessionState.loadedTools).toEqual(['mcp__docs__search'])
-    expect(b.sessionState.disabledExtras).toEqual(['skill:legacy'])
     expect(b.runs).toHaveLength(1)
     expect(b.runs[0]!.contextSnapshot.map((s) => s.group)).toEqual([
       'workspaceState',
@@ -279,7 +276,7 @@ describe('诊断导出', () => {
     })
     const parsed = JSON.parse(text)
     expect(parsed.kind).toBe('qywork.session-diagnostic')
-    expect(parsed.schemaVersion).toBe(5)
+    expect(parsed.schemaVersion).toBe(6)
     expect(parsed.exportedBy).toMatchObject({ name: 'qywork', version: pkg.version })
     expect(parsed.provider).toMatchObject({
       name: 'p',

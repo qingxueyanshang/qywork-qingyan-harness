@@ -19,13 +19,11 @@ import {
   createRun,
   fileReadHash,
   listConversations,
-  listDisabledExtras,
   listRecentConversations,
   listRunContextSnapshots,
   listWorkspaces,
   Store,
   setConversationTitle,
-  setExtraEnabled,
   setStepNodeState,
   settleToolStep,
   upsertWorkspace,
@@ -519,12 +517,11 @@ describe('外部工具按量转按需', () => {
     description: 'x'.repeat(800),
   }))
 
-  async function assemble(over: { disabled?: string[] } = {}) {
+  async function assemble() {
     const store = new Store({ path: ':memory:' })
     const root = await workspaceWithMcp('fat', fatTools)
     const ws = upsertWorkspace(store, root, 'ws')
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
-    for (const key of over.disabled ?? []) setExtraEnabled(store, conv.id, key, false)
 
     const s = new Session({
       store,
@@ -533,10 +530,8 @@ describe('外部工具按量转按需', () => {
       signal: new AbortController().signal,
     })
     await (
-      s as unknown as {
-        loadExtensionTools(n: TokenDensity, d: ReadonlySet<string>, c: string): Promise<void>
-      }
-    ).loadExtensionTools(DEFAULT_DENSITY, listDisabledExtras(store, conv.id), conv.id)
+      s as unknown as { loadExtensionTools(n: TokenDensity, c: string): Promise<void> }
+    ).loadExtensionTools(DEFAULT_DENSITY, conv.id)
 
     const registry = (s as unknown as { registry: ToolRegistry }).registry
     const nextSnapshot = () => {
@@ -609,10 +604,8 @@ describe('外部工具按量转按需', () => {
       signal: new AbortController().signal,
     })
     await (
-      next as unknown as {
-        loadExtensionTools(n: TokenDensity, d: ReadonlySet<string>, c: string): Promise<void>
-      }
-    ).loadExtensionTools(DEFAULT_DENSITY, listDisabledExtras(store, conv.id), conv.id)
+      next as unknown as { loadExtensionTools(n: TokenDensity, c: string): Promise<void> }
+    ).loadExtensionTools(DEFAULT_DENSITY, conv.id)
 
     const names = (next as unknown as { registry: ToolRegistry }).registry
       .schemas()
@@ -621,18 +614,6 @@ describe('外部工具按量转按需', () => {
     // 只把装过的那个放回去，其余照旧待加载。
     expect(names).not.toContain('mcp__fat__t1')
     next.dispose()
-    s.dispose()
-    store.close()
-  }, 20_000)
-
-  /**
-   * 会话级开关的语义不得因改为按需加载而丢失：被关掉的工具**连清单里都不该出现**，
-   * 否则模型会去 load_tool 一个必然失败的名字。
-   */
-  test('会话级关掉的 server 连清单都不进', async () => {
-    const { store, s, registry, nextSnapshot } = await assemble({ disabled: ['mcp:fat'] })
-    expect(nextSnapshot()).toBe('')
-    expect(registry.schemas().map((t) => t.name)).not.toContain('load_tool')
     s.dispose()
     store.close()
   }, 20_000)
