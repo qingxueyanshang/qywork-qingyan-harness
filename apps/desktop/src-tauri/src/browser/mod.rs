@@ -1,65 +1,74 @@
 //! 原生浏览器宿主。
 //!
-//! 这一层是真实浏览器资源的唯一权威：子 WebView 句柄、tabId、profile 占用、
-//! 控制归属、一次性下载授权都在这里，组件卸载或插件退出都不销毁它们。
+//! 这一层是真实浏览器资源的唯一权威：tabId、profile 占用、控制归属、一次性下载授权
+//! 都在这里，组件卸载或插件退出都不销毁它们。页面本身由引擎承载，每个构建目标只编译
+//! 一个引擎：Windows 是主窗口下的 WebView2 子视图（`webview2`），macOS 与 Linux 是
+//! 本机已安装的 Chromium 系浏览器的独立窗口（`chromium`）。两者对服务端说同一份协议。
 //!
 //! 三条不变量：
 //!
-//! 1. **AI 路径不碰系统焦点。** 子视图以 `.focused(false)` 建出，避让只用
-//!    `set_position` 移出可视区——`hide()` 会让页面不再出帧，截图与等待一起挂起。
-//! 2. **任何 Tauri webview 调用都不能握着 `state` 锁。** `add_child` 内部是
-//!    `run_on_main_thread` 加阻塞等待，而下载与导航钩子在主线程上要拿同一把锁。
+//! 1. **AI 路径不碰系统焦点。** AI 建的页不取焦点：WebView2 的子视图移出可视区避让，
+//!    Chromium 的页开在后台页签。
+//! 2. **任何引擎调用都不能握着 `state` 锁。** WebView2 的 `add_child` 内部是
+//!    `run_on_main_thread` 加阻塞等待，Chromium 引擎的调用要等 CDP 回包，而两种引擎的
+//!    事件回调都要拿同一把锁。
 //! 3. **归属的唯一判据是 `conversation_id`。** AI 页归开它的会话、跨消息稳定；
 //!    用户页 `None`。下载裁决按它分岔，会话删除即关它名下的页。
 
-/// 前端要调的那几条命令。**整份编译**，Windows 之外只剩「没有内置浏览器」这一条答复——
+/// 前端要调的那几条命令。**整份编译**，移动端只剩「没有内置浏览器」这一条答复——
 /// `tauri::generate_handler!` 的清单在所有平台上引用同一组路径。
 pub mod commands;
 
-#[cfg(windows)]
+#[cfg(desktop)]
+mod address;
+#[cfg(desktop)]
 mod bridge;
-#[cfg(windows)]
+#[cfg(desktop)]
 mod downloads;
-#[cfg(windows)]
+#[cfg(desktop)]
 mod frames;
-#[cfg(windows)]
+#[cfg(desktop)]
 mod profile;
+
+#[cfg(all(desktop, not(windows)))]
+mod chromium;
 #[cfg(windows)]
 mod webview2;
 
+#[cfg(all(desktop, not(windows)))]
+use chromium as engine;
 #[cfg(windows)]
+use webview2 as engine;
+
+#[cfg(desktop)]
 use std::collections::HashMap;
-#[cfg(windows)]
+#[cfg(desktop)]
 use std::sync::{Arc, Mutex, OnceLock};
 
-#[cfg(windows)]
-use tauri::{AppHandle, Emitter, Wry};
+#[cfg(desktop)]
+use tauri::{AppHandle, Emitter};
 
-#[cfg(windows)]
+#[cfg(desktop)]
 use commands::TabView;
-#[cfg(windows)]
+#[cfg(desktop)]
 use downloads::{Arm, ArmTable, Decision};
-#[cfg(windows)]
-use frames::{EventFrame, HostReady, RequestFrame, ResultData};
-#[cfg(windows)]
-use profile::ProfileLock;
-#[cfg(windows)]
-use webview2::Tab;
+#[cfg(desktop)]
+use frames::{EventFrame, Hello, HostReady, HostUnavailable, RequestFrame, ResultData, TabSnapshot};
 
-#[cfg(windows)]
+#[cfg(desktop)]
 use crate::hostkey::new_host_key;
-#[cfg(windows)]
+#[cfg(desktop)]
 use crate::ws::WsSender;
 
-#[cfg(windows)]
+#[cfg(desktop)]
 /// 进程内唯一的宿主。一个 qywork 进程只打开一份 profile，这个静态就是那份权威。
 static HOST: OnceLock<Arc<BrowserHost>> = OnceLock::new();
 
-/// 一次下载的裁决结果，由原生下载钩子执行。
+/// 一次下载的裁决结果，由引擎的下载钩子执行。
 ///
-/// `Allow` 带着被消费掉的那份授权的 downloadId：钩子把它绑到下载对象上，终态按它回报。
+/// `Allow` 带着被消费掉的那份授权的 downloadId：引擎把它绑到这一次下载上，终态按它回报。
 /// 少了这个身份，同一页上的旧终态会结算新调用。
-#[cfg(windows)]
+#[cfg(desktop)]
 pub enum DownloadVerdict {
     /// 用户页：沿用浏览器提议的路径，不绑身份，也不回报终态。
     Default,
@@ -69,18 +78,71 @@ pub enum DownloadVerdict {
     Cancel,
 }
 
-#[cfg(windows)]
+/// 引擎就绪时给得出的调试端点与运行时版本。`host.ready` 按它写。
+#[cfg(desktop)]
+pub struct Runtime {
+    pub debug_port: u16,
+    pub version: String,
+}
+
+/// 建一页要交给引擎的三样：这一页的 id、注入的标记、目标地址。
+#[cfg(desktop)]
+pub struct OpenSpec<'a> {
+    pub tab_id: &'a str,
+    pub marker: &'a str,
+    pub url: &'a str,
+    /// 这一页不该被提到前面。AI 建的页为真，用户新开的页为假。
+    /// 嵌入式引擎的页一律不取焦点，摆到面板上才可见，不看它。
+    #[cfg_attr(windows, allow(dead_code))]
+    pub background: bool,
+}
+
+/// 引擎建出的一页：原生句柄，以及回包时刻的地址与标题。
+#[cfg(desktop)]
+pub struct Opened {
+    pub page: engine::Page,
+    pub url: String,
+    pub title: String,
+}
+
+#[cfg(desktop)]
+struct Tab {
+    page: engine::Page,
+    url: String,
+    title: String,
+    marker: String,
+    /// 这一页所属的工作区 id。建页时定，此后不改——页面不在工作区之间移动。
+    workspace_id: String,
+    /// 外壳进程里的创建序号，与终端会话共用一个计数器。界面按它排页签条。
+    created_seq: u64,
+    /// 拥有它的会话 id；`None` = 用户手动开的页。归属跟着会话走，跨消息稳定。
+    conversation_id: Option<String>,
+}
+
+#[cfg(desktop)]
+impl Tab {
+    fn snapshot(&self, tab_id: &str) -> TabSnapshot {
+        TabSnapshot {
+            tab_id: tab_id.to_owned(),
+            url: self.url.clone(),
+            title: self.title.clone(),
+            marker: self.marker.clone(),
+            workspace_id: self.workspace_id.clone(),
+            conversation_id: self.conversation_id.clone(),
+        }
+    }
+}
+
+#[cfg(desktop)]
 pub struct BrowserHost {
     /// 发 `browser:tabs` 用。界面那份标签页清单是这份状态的投影，只能由这里推。
     app: AppHandle,
-    profile: ProfileLock,
-    debug_port: u16,
+    engine: engine::Engine,
     instance_id: String,
-    runtime_version: String,
     state: Mutex<HostState>,
 }
 
-#[cfg(windows)]
+#[cfg(desktop)]
 #[derive(Default)]
 struct HostState {
     tabs: HashMap<String, Tab>,
@@ -93,76 +155,65 @@ struct HostState {
     stopping: bool,
 }
 
-/// 拉起宿主：占用 profile、分配回环 CDP 端口、连上 sidecar 的宿主路径。
+/// 拉起宿主：启动引擎、连上 sidecar 的宿主路径。
 ///
 /// 失败只写日志并结束这条能力——浏览器控制起不来不该拦住整个应用启动。
-#[cfg(windows)]
+#[cfg(desktop)]
 pub fn start(app: &AppHandle, port: u16, key: String) {
     if key.is_empty() {
         return;
     }
-    let Some(dir) = profile::profile_dir() else {
-        log::error!("取不到配置根目录，浏览器宿主不启用");
-        return;
-    };
-    let profile = match profile::lock(&dir) {
-        Ok(lock) => lock,
+    let engine = match engine::Engine::start(app) {
+        Ok(engine) => engine,
         Err(reason) => {
             log::error!("浏览器宿主不启用：{reason}");
             return;
         }
     };
-    let Some(debug_port) = free_loopback_port() else {
-        log::error!("分配不到回环调试端口，浏览器宿主不启用");
-        return;
-    };
-    let runtime_version = tauri::webview_version().unwrap_or_default();
     let host = Arc::new(BrowserHost {
         app: app.clone(),
-        profile,
-        debug_port,
+        engine,
         instance_id: new_host_key(),
-        runtime_version,
         state: Mutex::new(HostState::default()),
     });
     if HOST.set(Arc::clone(&host)).is_err() {
         log::error!("浏览器宿主已经启动过一次");
         return;
     }
-    log::info!(
-        "浏览器宿主已就绪 profile={} debugPort={debug_port} runtime={}",
-        host.profile.dir().display(),
-        host.runtime_version
-    );
     bridge::spawn(app.clone(), host, port, key);
 }
 
-#[cfg(windows)]
-/// 断开宿主连接并关掉自有子视图。退出路径上调用，可重复调用。
+#[cfg(desktop)]
+/// 断开宿主连接、关掉自有页，再让引擎收场。退出路径上调用，可重复调用。
 pub fn shutdown() {
     let Some(host) = HOST.get() else { return };
     host.state.lock().expect("宿主状态锁被污染").stopping = true;
     host.disconnected();
-    let views = {
+    let pages = {
         let mut state = host.state.lock().expect("宿主状态锁被污染");
-        state.tabs.drain().map(|(_, tab)| tab).collect::<Vec<_>>()
+        state.tabs.drain().map(|(_, tab)| tab.page).collect::<Vec<_>>()
     };
-    for tab in views {
-        tab.close();
+    for page in pages {
+        host.engine.close(page);
     }
+    host.engine.shutdown();
 }
 
-/// 让内核挑一个空闲回环端口。子视图共用一个 WebView2 environment，
-/// 因此这个端口整个进程只分配一次。
-#[cfg(windows)]
-fn free_loopback_port() -> Option<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
-    listener.local_addr().ok().map(|a| a.port())
+/// 注入的标记。两种引擎在每个新文档创建时注入同一段。
+///
+/// 必须是不可写不可配置的属性：可写的话同源的另一个页面能把自己的标记改成这一页的值，
+/// CDP 侧按标记认页就会认错。
+#[cfg(desktop)]
+fn marker_script(marker: &str) -> String {
+    let value = serde_json::to_string(marker).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        "Object.defineProperty(window,'__qyworkTab',{{value:{value},writable:false,configurable:false}});"
+    )
 }
 
 /// 取请求帧里的工作区 id。空值与缺席一律拒绝：没有工作区的页在界面上无处归属，
 /// 也无从判断该不该让另一个工作区的会话操作它。
-#[cfg(windows)]
+#[cfg(desktop)]
 fn workspace_of(frame: &RequestFrame, op: &str) -> Result<String, String> {
     match frame.workspace_id.as_deref() {
         Some(id) if !id.is_empty() => Ok(id.to_owned()),
@@ -170,7 +221,7 @@ fn workspace_of(frame: &RequestFrame, op: &str) -> Result<String, String> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(desktop)]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -178,26 +229,33 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-#[cfg(windows)]
+#[cfg(desktop)]
 impl BrowserHost {
-    fn debug_port(&self) -> u16 {
-        self.debug_port
+    /// 连接的首帧：引擎就绪时是 `host.ready`，没有可用浏览器时是 `host.unavailable`。
+    fn hello(&self, state: &HostState, runtime: Result<Runtime, &'static str>) -> Hello {
+        match runtime {
+            Ok(runtime) => Hello::Ready(HostReady {
+                kind: "host.ready",
+                host_instance_id: self.instance_id.clone(),
+                connection_epoch: state.connection_epoch,
+                platform: std::env::consts::OS,
+                runtime_version: runtime.version,
+                debug_port: runtime.debug_port,
+                tabs: state.tabs.iter().map(|(id, tab)| tab.snapshot(id)).collect(),
+            }),
+            Err(reason) => Hello::Unavailable(HostUnavailable { kind: "host.unavailable", reason }),
+        }
     }
 
     /// 新连接接管发送端并自增纪元；旧纪元的请求与结果随之作废。
-    fn connected(&self, sender: Arc<WsSender>) -> HostReady {
+    ///
+    /// 引擎还在启动时这里等到它给出结果：首帧要么带着可用的调试端点，要么如实说没有。
+    fn connected(&self, sender: Arc<WsSender>) -> (u64, Hello) {
+        let runtime = self.engine.settled();
         let mut state = self.state.lock().expect("宿主状态锁被污染");
         state.connection_epoch += 1;
         state.sender = Some(sender);
-        HostReady {
-            kind: "host.ready",
-            host_instance_id: self.instance_id.clone(),
-            connection_epoch: state.connection_epoch,
-            platform: "windows",
-            runtime_version: self.runtime_version.clone(),
-            debug_port: self.debug_port,
-            tabs: state.tabs.iter().map(|(id, tab)| tab.snapshot(id)).collect(),
-        }
+        (state.connection_epoch, self.hello(&state, runtime))
     }
 
     /// 断连：撤销全部未消费下载授权，**归属与页面都保留**。
@@ -214,6 +272,7 @@ impl BrowserHost {
         if let Some(sender) = sender {
             sender.shutdown();
         }
+        self.sync_downloads();
         self.changed();
     }
 
@@ -223,6 +282,13 @@ impl BrowserHost {
 
     fn current_epoch(&self) -> u64 {
         self.state.lock().expect("宿主状态锁被污染").connection_epoch
+    }
+
+    /// 引擎按授权表是否为空切换下载行为。授权表一变就调，调用方不握锁。
+    fn sync_downloads(&self) {
+        if let Err(e) = self.engine.sync_downloads() {
+            log::warn!("下载行为切换失败：{e}");
+        }
     }
 
     /// 界面用的标签页清单。**只有 id / 地址 / 标题 / 工作区**：marker 与会话归属是 CDP 与
@@ -309,6 +375,7 @@ impl BrowserHost {
                     .expect("宿主状态锁被污染")
                     .arms
                     .disarm(tab_id, Some(download_id));
+                self.sync_downloads();
                 Ok(ResultData { removed: Some(removed), ..ResultData::default() })
             }
             other => Err(format!("认不出的操作 {other}")),
@@ -331,27 +398,36 @@ impl BrowserHost {
             state.next_tab += 1;
             (format!("bt_{}", state.next_tab), crate::next_created_seq(), new_host_key())
         };
-        // 建视图在锁外：`add_child` 会等主线程，而主线程上的下载钩子要拿同一把锁。
-        let tab = webview2::create(
+        // 建页在锁外：引擎要等主线程或 CDP 回包，而它们的回调要拿同一把锁。
+        let opened = self.engine.open(
             app,
-            webview2::NewTab {
-                tab_id: tab_id.clone(),
-                created_seq,
-                marker: marker.clone(),
-                url: url.to_owned(),
-                profile_dir: self.profile.dir().to_path_buf(),
-                debug_port: self.debug_port(),
-                workspace_id,
-                conversation_id,
+            OpenSpec {
+                tab_id: &tab_id,
+                marker: &marker,
+                url,
+                background: conversation_id.is_some(),
             },
         )?;
+        let tab = Tab {
+            page: opened.page,
+            url: opened.url,
+            title: opened.title,
+            marker,
+            workspace_id,
+            created_seq,
+            conversation_id,
+        };
+        Ok((self.admit(tab_id, tab), created_seq))
+    }
+
+    /// 一页进入存活集合。服务端只能从 `opened` 事件知道——用户自己新开的页也走这里。
+    fn admit(&self, tab_id: String, tab: Tab) -> ResultData {
         let snapshot = {
             let mut state = self.state.lock().expect("宿主状态锁被污染");
             let entry = state.tabs.entry(tab_id.clone()).or_insert(tab);
             entry.snapshot(&tab_id)
         };
-        // 存活集合多了一页，服务端只能从这条事件知道——用户自己新开的页也走这里。
-        self.emit("opened", tab_id.clone(), |f| {
+        self.emit("opened", tab_id, |f| {
             f.url = Some(snapshot.url.clone());
             f.title = Some(snapshot.title.clone());
             f.marker = Some(snapshot.marker.clone());
@@ -359,15 +435,12 @@ impl BrowserHost {
             f.conversation_id = Some(snapshot.conversation_id.clone());
         });
         self.changed();
-        Ok((
-            ResultData {
-                tab_id: Some(snapshot.tab_id),
-                url: Some(snapshot.url),
-                title: Some(snapshot.title),
-                ..ResultData::default()
-            },
-            created_seq,
-        ))
+        ResultData {
+            tab_id: Some(snapshot.tab_id),
+            url: Some(snapshot.url),
+            title: Some(snapshot.title),
+            ..ResultData::default()
+        }
     }
 
     fn close(&self, tab_id: &str) -> Result<ResultData, String> {
@@ -377,7 +450,8 @@ impl BrowserHost {
             state.tabs.remove(tab_id)
         };
         let tab = tab.ok_or_else(|| format!("认不出的标签页 {tab_id}"))?;
-        tab.close();
+        self.engine.close(tab.page);
+        self.sync_downloads();
         self.emit("closed", tab_id.to_owned(), |_| {});
         self.changed();
         Ok(ResultData::default())
@@ -444,19 +518,21 @@ impl BrowserHost {
             for id in ids {
                 state.arms.disarm(&id, None);
                 if let Some(tab) = state.tabs.remove(&id) {
-                    tab.close();
-                    closed.push(id);
+                    closed.push((id, tab.page));
                 }
             }
             closed
         };
-        for id in closed {
+        for (id, page) in closed {
+            self.engine.close(page);
             self.emit("closed", id, |_| {});
         }
+        self.sync_downloads();
         self.changed();
         Ok(ResultData::default())
     }
 
+    /// 登记一份授权。引擎切到按授权落盘的下载行为之后才回成功：服务端拿到回包就触发下载。
     fn arm(
         &self,
         tab_id: &str,
@@ -465,22 +541,29 @@ impl BrowserHost {
         download_id: &str,
         deadline: u64,
     ) -> Result<ResultData, String> {
-        let mut state = self.state.lock().expect("宿主状态锁被污染");
-        let tab = state
-            .tabs
-            .get(tab_id)
-            .ok_or_else(|| format!("认不出的标签页 {tab_id}"))?;
-        if tab.conversation_id.as_deref() != Some(conversation_id) {
-            return Err("该标签页不归本会话".to_owned());
+        {
+            let mut state = self.state.lock().expect("宿主状态锁被污染");
+            let tab = state
+                .tabs
+                .get(tab_id)
+                .ok_or_else(|| format!("认不出的标签页 {tab_id}"))?;
+            if tab.conversation_id.as_deref() != Some(conversation_id) {
+                return Err("该标签页不归本会话".to_owned());
+            }
+            state.arms.arm(
+                tab_id.to_owned(),
+                Arm {
+                    path: path.into(),
+                    deadline_ms: deadline,
+                    download_id: download_id.to_owned(),
+                },
+            )?;
         }
-        state.arms.arm(
-            tab_id.to_owned(),
-            Arm {
-                path: path.into(),
-                deadline_ms: deadline,
-                download_id: download_id.to_owned(),
-            },
-        )?;
+        if let Err(e) = self.engine.sync_downloads() {
+            self.state.lock().expect("宿主状态锁被污染").arms.disarm(tab_id, Some(download_id));
+            self.sync_downloads();
+            return Err(format!("下载行为切换失败：{e}"));
+        }
         Ok(ResultData::default())
     }
 
@@ -505,16 +588,18 @@ impl BrowserHost {
         self.changed();
     }
 
-    /// `DownloadStarting` 的裁决。授权表是唯一判据，拦下的那一次就地发 `download.blocked`。
+    /// 一次下载开始时的裁决。授权表是唯一判据，拦下的那一次就地发 `download.blocked`。
     ///
-    /// 拦截事件带上被消费掉的授权身份；没有消费到授权（页面自己发起的下载）时不带，
-    /// 服务端因此不会用它结算任何工具调用。
+    /// `tab_id` 为 `None` 表示这次下载不来自任何存活页（用户在浏览器窗口里自己开的页），
+    /// 按用户下载放行。拦截事件带上被消费掉的授权身份；没有消费到授权（页面自己发起的
+    /// 下载）时不带，服务端因此不会用它结算任何工具调用。
     fn decide_download(
         &self,
-        tab_id: &str,
+        tab_id: Option<&str>,
         url: &str,
         suggested: Option<String>,
     ) -> DownloadVerdict {
+        let Some(tab_id) = tab_id else { return DownloadVerdict::Default };
         let decision = {
             let mut state = self.state.lock().expect("宿主状态锁被污染");
             let manual = state
@@ -540,7 +625,7 @@ impl BrowserHost {
         }
     }
 
-    /// 下载对象报出终态。只有消费过授权的下载走到这里，身份因此一定在。
+    /// 下载报出终态。只有消费过授权的下载走到这里，身份因此一定在。
     fn note_download_finished(
         &self,
         tab_id: &str,
@@ -557,38 +642,118 @@ impl BrowserHost {
     }
 }
 
-#[cfg(windows)]
-/// 供子视图钩子取回宿主。钩子在主线程上跑，拿到的是同一份权威。
+/// 只有独立窗口的引擎会发起的宿主操作：页面自己开的新页、用户在浏览器里关掉的页、
+/// 浏览器进程换代。嵌入式引擎的页只经宿主的命令进出。
+#[cfg(all(desktop, not(windows)))]
+impl BrowserHost {
+    /// 授权表里还有没有授权。引擎按它决定下载行为。
+    fn downloads_armed(&self) -> bool {
+        !self.state.lock().expect("宿主状态锁被污染").arms.is_empty()
+    }
+
+    /// 一个存活页自己开出来的新页。它继承开它的那一页的工作区与归属：
+    /// 弹窗是那一页的操作结果，归属不因为换了一页而变。开它的页已经不在时不收。
+    fn note_popup(
+        &self,
+        opener_tab: &str,
+        page: engine::Page,
+        marker: String,
+        url: String,
+        title: String,
+    ) -> Option<String> {
+        let (tab_id, tab) = {
+            let mut state = self.state.lock().expect("宿主状态锁被污染");
+            let opener = state.tabs.get(opener_tab)?;
+            let workspace_id = opener.workspace_id.clone();
+            let conversation_id = opener.conversation_id.clone();
+            state.next_tab += 1;
+            let tab_id = format!("bt_{}", state.next_tab);
+            let tab = Tab {
+                page,
+                url,
+                title,
+                marker,
+                workspace_id,
+                created_seq: crate::next_created_seq(),
+                conversation_id,
+            };
+            (tab_id, tab)
+        };
+        self.admit(tab_id.clone(), tab);
+        Some(tab_id)
+    }
+
+    /// 浏览器那边已经没有这一页了（用户关掉、页面自己关掉）。宿主关的页已先从表里摘掉，
+    /// 走到这里时查不到，不重复报 `closed`。
+    fn note_closed(&self, tab_id: &str) {
+        let removed = {
+            let mut state = self.state.lock().expect("宿主状态锁被污染");
+            state.arms.disarm(tab_id, None);
+            state.tabs.remove(tab_id).is_some()
+        };
+        if !removed {
+            return;
+        }
+        self.sync_downloads();
+        self.emit("closed", tab_id.to_owned(), |_| {});
+        self.changed();
+    }
+
+    /// 浏览器进程退出或重新起来。上一个进程里的页与授权都已作废；连着的话在同一条连接上
+    /// 按新纪元重发首帧，服务端据此换掉调试端点或撤下能力。
+    fn engine_changed(&self, runtime: Result<Runtime, &'static str>) {
+        let (sender, hello) = {
+            let mut state = self.state.lock().expect("宿主状态锁被污染");
+            state.tabs.clear();
+            state.arms.clear();
+            let Some(sender) = state.sender.clone() else {
+                drop(state);
+                self.changed();
+                return;
+            };
+            state.connection_epoch += 1;
+            (sender, self.hello(&state, runtime))
+        };
+        match serde_json::to_string(&hello) {
+            Ok(text) => {
+                if let Err(e) = sender.send_text(&text) {
+                    log::warn!("浏览器宿主首帧发送失败：{e}");
+                }
+            }
+            Err(e) => log::error!("浏览器宿主首帧序列化失败：{e}"),
+        }
+        self.changed();
+    }
+}
+
+#[cfg(desktop)]
+/// 供引擎的回调取回宿主。回调拿到的是同一份权威。
 fn host() -> Option<&'static Arc<BrowserHost>> {
     HOST.get()
 }
 
-#[cfg(windows)]
+#[cfg(desktop)]
 const NO_HOST: &str = "内置浏览器没有启用";
 
-/// 还没摆过的页移出可视区时用的尺寸。摆过一次之后按那一次的尺寸停。
-#[cfg(windows)]
-const DEFAULT_PARK_SIZE: (u32, u32) = (1280, 800);
-
 /// 界面此刻看得见的标签页。宿主没起来时是空的，不是错误：入口本来就不显示。
-#[cfg(windows)]
+#[cfg(desktop)]
 pub fn tab_views() -> Vec<TabView> {
     host().map(|h| h.views()).unwrap_or_default()
 }
 
 /// 用户新开一页。
 ///
-/// 走的是 AI 建页那条 `create`，只是不带控制纪元——同一个宿主、同一份 profile、
+/// 走的是 AI 建页那条 `create`，只是不带会话归属——同一个宿主、同一份 profile、
 /// 同一套下载裁决。**不要另写一条用户专用的建页路径**：两条路会在参数串、
 /// 标记注入与首个文档等待上分头漂移。
-#[cfg(windows)]
+#[cfg(desktop)]
 pub fn user_open(app: &AppHandle, url: Option<&str>, workspace_id: &str) -> Result<TabView, String> {
     let host = host().ok_or(NO_HOST)?;
     if workspace_id.is_empty() {
         return Err("新建标签页缺少工作区".to_owned());
     }
     // 不给地址就是一页空标签，地址由用户在地址栏里输入。
-    let target = url.unwrap_or(webview2::BLANK);
+    let target = url.unwrap_or(address::BLANK);
     let (data, created_seq) = host.create(app, target, workspace_id.to_owned(), None)?;
     Ok(TabView {
         tab_id: data.tab_id.unwrap_or_default(),
@@ -599,61 +764,36 @@ pub fn user_open(app: &AppHandle, url: Option<&str>, workspace_id: &str) -> Resu
     })
 }
 
-#[cfg(windows)]
+#[cfg(desktop)]
 pub fn user_close(tab_id: &str) -> Result<(), String> {
     host().ok_or(NO_HOST)?.close(tab_id).map(|_| ())
 }
 
-/// 人工导航。真实引擎导航，地址由 `on_navigation` 事件回投，不在这里改状态。
-#[cfg(windows)]
+/// 人工导航。真实引擎导航，地址由引擎的导航事件回投，不在这里改状态。
+#[cfg(desktop)]
 pub fn user_navigate(tab_id: &str, action: &str, url: Option<&str>) -> Result<(), String> {
     let host = host().ok_or(NO_HOST)?;
-    let view = {
+    let page = {
         let state = host.state.lock().expect("宿主状态锁被污染");
         state
             .tabs
             .get(tab_id)
-            .map(|t| t.view())
+            .map(|t| t.page.clone())
             .ok_or_else(|| format!("认不出的标签页 {tab_id}"))?
     };
-    webview2::navigate(&view, action, url)
+    host.engine.navigate(&page, action, url)
 }
 
-/// 摆放子视图：`active` 那一页落在给定的物理矩形上，其余全部移出可视区。
-///
-/// 一次调用摆完所有页，因此「哪一页该露出来」只有界面这一个说法。
-/// `active` 为 `None`（面板收起、翻到别的页、浮层盖上来）时全部移出可视区。
-#[cfg(windows)]
-pub fn layout(active: Option<&str>, x: i32, y: i32, width: u32, height: u32) -> Result<(), String> {
-    let host = host().ok_or(NO_HOST)?;
-    let (views, sizes): (Vec<(String, tauri::Webview<Runtime>)>, HashMap<String, (u32, u32)>) = {
-        let state = host.state.lock().expect("宿主状态锁被污染");
-        (
-            state.tabs.iter().map(|(id, tab)| (id.clone(), tab.view())).collect(),
-            state.tabs.iter().map(|(id, tab)| (id.clone(), tab.size)).collect(),
-        )
-    };
-    let mut placed = Vec::new();
-    for (id, view) in views {
-        if active == Some(id.as_str()) && width > 0 && height > 0 {
-            webview2::place(&view, x, y, width, height);
-            placed.push((id, (width, height)));
-        } else {
-            let size = sizes.get(&id).copied().unwrap_or(DEFAULT_PARK_SIZE);
-            webview2::park(&view, size.0, size.1);
-        }
-    }
-    if !placed.is_empty() {
-        let mut state = host.state.lock().expect("宿主状态锁被污染");
-        for (id, size) in placed {
-            if let Some(tab) = state.tabs.get_mut(&id) {
-                tab.size = size;
-            }
-        }
-    }
-    Ok(())
-}
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::marker_script;
 
-#[cfg(windows)]
-/// 子视图里挂的 Tauri 运行时类型。钩子签名要它。
-type Runtime = Wry;
+    #[test]
+    fn marker_script_defines_a_locked_property() {
+        let script = marker_script("ab\"cd");
+        assert!(script.contains("writable:false"), "{script}");
+        assert!(script.contains("configurable:false"), "{script}");
+        // 标记经 JSON 转义，注入的字符串不能从属性值里逃出去。
+        assert!(script.contains("\"ab\\\"cd\""), "{script}");
+    }
+}

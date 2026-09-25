@@ -4,7 +4,7 @@
 //! sidecar 不由 Rust 父进程启动，建立在父子 stdio 上的桥只在发布版成立。
 //!
 //! 连接在专用线程上跑，请求就地执行——`add_child` 要求不在主线程上调用，
-//! 这个线程正好满足。
+//! Chromium 引擎的调用要阻塞等 CDP 回包，这个线程两样都满足。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,11 +48,11 @@ fn run(app: &AppHandle, host: &Arc<BrowserHost>, port: u16, key: &str) -> std::i
     let mut client =
         WsClient::connect(port, PATH, &[(KEY_HEADER, key.to_owned())], seed)?;
     let sender = client.sender();
-    let ready = host.connected(Arc::clone(&sender));
-    let text = serde_json::to_string(&ready)
-        .map_err(|e| std::io::Error::other(format!("host.ready 序列化失败：{e}")))?;
+    let (epoch, hello) = host.connected(Arc::clone(&sender));
+    let text = serde_json::to_string(&hello)
+        .map_err(|e| std::io::Error::other(format!("宿主首帧序列化失败：{e}")))?;
     sender.send_text(&text)?;
-    log::info!("浏览器宿主已连上 sidecar epoch={}", ready.connection_epoch);
+    log::info!("浏览器宿主已连上 sidecar epoch={epoch}");
 
     while let Some(raw) = client.read_text()? {
         let Some(reply) = handle(app, host, &raw) else { continue };

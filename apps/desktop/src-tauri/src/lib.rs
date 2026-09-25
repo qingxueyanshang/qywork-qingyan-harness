@@ -424,7 +424,7 @@ fn remember_workspace(path: String) -> Result<(), String> {
 /// 发布版由本进程现生成并经环境变量交给它自己拉起的 sidecar；开发版的 sidecar 由
 /// `scripts/dev.ts` 拉起，凭据由它生成，这里只接收。两种模式走同一条宿主路径。
 ///
-/// 三端都要：桌面宿主不限平台，浏览器宿主自己按 `cfg(windows)` 决定起不起。
+/// 三端都要：桌面宿主与浏览器宿主都不限平台。
 fn host_key() -> Option<String> {
     if tauri::is_dev() {
         std::env::var("QYWORK_HOST_KEY").ok().filter(|v| !v.is_empty())
@@ -525,9 +525,9 @@ pub fn run() {
                 #[cfg(desktop)]
                 build_tray(&handle)?;
 
-                // 宿主要在主窗口之后起：浏览器宿主的子 WebView 挂在它底下。
+                // 宿主要在主窗口之后起：Windows 的浏览器宿主把子 WebView 挂在主窗口底下。
                 if let Some(key) = host_key {
-                    #[cfg(windows)]
+                    #[cfg(desktop)]
                     browser::start(&handle, info.port, key.clone());
                     desktop::start(&handle, info.port, key);
                 }
@@ -563,7 +563,7 @@ pub fn run() {
                 // 终端里的 shell 也是子进程，同一条理由要显式杀掉：留下来会持有
                 // 工作区里的文件句柄，用户下一次删目录会被拒。
                 terminal::shutdown(&app.state::<terminal::TerminalHandle>());
-                #[cfg(windows)]
+                #[cfg(desktop)]
                 browser::shutdown();
                 // 先结清桌面在途请求再收 sidecar：收尾回执要从这条宿主 WS 发出去，
                 // sidecar 一没，服务端那边只剩超时。

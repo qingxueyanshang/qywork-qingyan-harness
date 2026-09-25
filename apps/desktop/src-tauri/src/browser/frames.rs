@@ -30,6 +30,22 @@ pub struct HostReady {
     pub tabs: Vec<TabSnapshot>,
 }
 
+/// 宿主连着，但此刻没有可用的浏览器：找不到，或浏览器进程已退出。
+#[derive(Debug, Serialize)]
+pub struct HostUnavailable {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub reason: &'static str,
+}
+
+/// 连接的首帧，以及浏览器进程换代后在同一条连接上重发的那一帧。
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum Hello {
+    Ready(HostReady),
+    Unavailable(HostUnavailable),
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestFrame {
@@ -163,7 +179,10 @@ pub fn reject_reason(
 
 #[cfg(test)]
 mod tests {
-    use super::{reject_reason, EventFrame, HostReady, RequestFrame, ResultData, ResultFrame, TabSnapshot};
+    use super::{
+        reject_reason, EventFrame, Hello, HostReady, HostUnavailable, RequestFrame, ResultData,
+        ResultFrame, TabSnapshot,
+    };
     use serde_json::{json, Value};
 
     /// 与 server 侧同一份样例。两侧各写一份样例就不再是契约，
@@ -251,7 +270,13 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(serde_json::to_value(&ready).unwrap(), sample("hostReady"));
+        assert_eq!(serde_json::to_value(Hello::Ready(ready)).unwrap(), sample("hostReady"));
+    }
+
+    #[test]
+    fn host_unavailable_encodes_to_the_sample_bytes() {
+        let hello = Hello::Unavailable(HostUnavailable { kind: "host.unavailable", reason: "not_found" });
+        assert_eq!(serde_json::to_value(&hello).unwrap(), sample("hostUnavailable"));
     }
 
     #[test]
