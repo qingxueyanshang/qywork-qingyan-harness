@@ -1135,7 +1135,8 @@ export const desktopObserveTool: ToolSpec = {
     '控件表给角色、名称、automationId、value、enabled、depth 与控件状态，includeRect 为真时另给 rect；' +
     '没有名称、值与状态的 pane / group / custom 容器不列出；' +
     '控件按前序排列，depth 按列出的祖先计，父控件是前面最近的、depth 小一层的那一个；' +
-    '每个控件的 actionSet 是 actionSets 的下标，指向它此刻能做的动作，delivery 非空才能执行；' +
+    '每个控件的 actionSet 是 actionSets 的下标，那一项按投递方式列出它此刻能做的动作：' +
+    'background 经控件接口发出，foreground 用真实指针键盘，unavailable 是此刻做不了的动作与原因；' +
     '控件上缺席的 enabled、offscreen、automationId 取 defaults 的值。' +
     '回执里「无可操作控件」就是自绘界面，这一次调用已经把整窗图一并给了，动作按图给坐标，不必再采一次；' +
     '「未读全」是采集没采全，调 maxNodes 或 maxDepth 重读；' +

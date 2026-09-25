@@ -14,7 +14,7 @@
  * 4. **图像字节不进这里**：它走 `data.images`，既不计入上限也不写进存盘正文。
  * 5. **按角色或文字筛选只作用于视图**：观察编号与控件表是端口交回的整份，筛出来的控件与
  *    其余控件的 `ref` 同样可以直接用。存盘正文是整份控件表。
- * 6. **投递形状只有一种**：`actions` 去重成 `actionSets`，控件上只留下标；与 `defaults`
+ * 6. **投递形状只有一种**：`actions` 按投递方式分组、去重成 `actionSets`，控件上只留下标；与 `defaults`
  *    相同的格省掉；`rect` 只在调用方要时给；无名结构容器不列，`depth` 按列出的祖先计。
  *    小表与大表的视图同形，字典随每个结果自带。存盘正文仍是一行一个完整原始控件，
  *    不依赖字典。
@@ -345,28 +345,59 @@ function compose(
 /** 投递给模型的控件表：默认值、动作字典与控件。 */
 interface Packed {
   defaults: typeof DEFAULTS
-  actionSets: Actions[]
+  actionSets: ActionGroups[]
   elements: CompactElement[]
 }
 
-/** 动作字典。下标按第一次登记的先后编号，同一个结果里一个动作表只占一个下标。 */
+/**
+ * 字典里的一项：一个控件的动作表按投递方式分组。
+ *
+ * 键是 `delivery` 的取值，一个动作有多种投递方式时按字母序用 `+` 连起来；值是这一组的
+ * 动作名，顺序同端口交回的动作表。`delivery` 为空的动作放进 `unavailable`，值是原因。
+ * 组与组之间不保留原顺序：按投递方式列同一组动作名只写一次，动作名的相对顺序对调用方
+ * 不构成约定。
+ */
+type ActionGroups = Record<string, string[] | Record<string, string>>
+
+/** 一个动作表的字典形状。组的键按字母序，`unavailable` 在最后，同一张表只有一种写法。 */
+function groupsOf(actions: Actions): ActionGroups {
+  const groups = new Map<string, string[]>()
+  const unavailable: Record<string, string> = {}
+  let blocked = false
+  for (const a of actions) {
+    if (a.delivery.length === 0) {
+      unavailable[a.action] = a.unavailable ?? ''
+      blocked = true
+      continue
+    }
+    const key = [...a.delivery].sort().join('+')
+    groups.set(key, [...(groups.get(key) ?? []), a.action])
+  }
+  const out: ActionGroups = {}
+  for (const key of [...groups.keys()].sort()) out[key] = groups.get(key) ?? []
+  if (blocked) out.unavailable = unavailable
+  return out
+}
+
+/** 动作字典。下标按第一次登记的先后编号，同一个结果里一种分组只占一个下标。 */
 class ActionSets {
-  readonly list: Actions[] = []
+  readonly list: ActionGroups[] = []
   #index = new Map<string, number>()
 
-  /** 这个动作表的下标，以及它是不是还没登记过。只查不登记。 */
-  peek(actions: Actions): { index: number; fresh: boolean } {
-    const known = this.#index.get(JSON.stringify(actions))
+  /** 这个动作表的下标、字典形状，以及它是不是还没登记过。只查不登记。 */
+  peek(actions: Actions): { index: number; fresh: boolean; groups: ActionGroups } {
+    const groups = groupsOf(actions)
+    const known = this.#index.get(JSON.stringify(groups))
     return known === undefined
-      ? { index: this.list.length, fresh: true }
-      : { index: known, fresh: false }
+      ? { index: this.list.length, fresh: true, groups }
+      : { index: known, fresh: false, groups }
   }
 
   add(actions: Actions): number {
-    const { index, fresh } = this.peek(actions)
+    const { index, fresh, groups } = this.peek(actions)
     if (fresh) {
-      this.#index.set(JSON.stringify(actions), index)
-      this.list.push(actions)
+      this.#index.set(JSON.stringify(groups), index)
+      this.list.push(groups)
     }
     return index
   }
@@ -491,9 +522,9 @@ function pickView(
   let left = budget
   for (const element of queue) {
     const shown = boundedFields(element)
-    const { index, fresh } = sets.peek(element.actions)
+    const { index, fresh, groups } = sets.peek(element.actions)
     const item = compactOf(shown, index, includeRect)
-    const cost = costOf(item, density) + (fresh ? costOf(element.actions, density) : 0)
+    const cost = costOf(item, density) + (fresh ? costOf(groups, density) : 0)
     if (cost > left && !priority.has(element.ref)) break
     sets.add(element.actions)
     chosen.set(element.ref, item)
