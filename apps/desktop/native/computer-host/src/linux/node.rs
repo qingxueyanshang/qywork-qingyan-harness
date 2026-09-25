@@ -1,0 +1,794 @@
+//! AT-SPI 对象的事实换算成协议节点：角色与状态进共用词表，可用动作按对象真实暴露的接口
+//! 与动作列出。
+//!
+//! 本模块不调总线。动作那一刻按同一套判定挑动作下标（`claim`、`selectable_in`），
+//! 列出的动作与派发的调用因此只有一处来源。
+
+use atspi::{Interface, InterfaceSet, Role as AtspiRole, State, StateSet};
+
+use crate::geometry::ScreenRect;
+use crate::protocol::{range_state, Node, NodeAction, Role, ScrollState, ToggleState};
+use crate::tree::{encode_ref, fingerprint, Identity};
+
+/// 一个对象读到的原始事实。
+#[derive(Debug, Clone)]
+pub struct Facts {
+    pub role: AtspiRole,
+    pub name: String,
+    pub accessible_id: String,
+    pub states: StateSet,
+    pub interfaces: InterfaceSet,
+    /// 动作名，下标即 `DoAction` 的参数。
+    ///
+    /// 取的是 `GetName` 的非本地化名称。不要改用 `GetActions`：它交回本地化名称，
+    /// 中文会话里 GTK 的 `click` 会变成「点击」，按名字挑动作的判定全部落空。
+    pub actions: Vec<String>,
+    pub extents: Option<ScreenRect>,
+    pub value: Option<Numbers>,
+    /// 文本内容。没有 Text 接口、这一次不取值或超过 `VALUE_TEXT_LIMIT` 时缺席。
+    pub text: Option<String>,
+}
+
+/// Value 接口的四个数。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Numbers {
+    pub current: f64,
+    pub min: f64,
+    pub max: f64,
+    /// `MinimumIncrement`。0 表示应用没给步长。
+    pub increment: f64,
+}
+
+/// 父对象里与子节点可用动作有关的事实。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Context {
+    /// 父对象实现了 Selection 接口，子节点的选择经它改。
+    pub selection: bool,
+    pub showing: bool,
+    pub multiselectable: bool,
+}
+
+impl Context {
+    pub fn of(parent: &Facts) -> Self {
+        Self {
+            selection: parent.interfaces.contains(Interface::Selection),
+            showing: parent.states.contains(State::Showing),
+            multiselectable: parent.states.contains(State::Multiselectable),
+        }
+    }
+}
+
+/// 节点值里最多带多少个字符的文本。超过即不带，调用方经 `read_text` 读全文。
+///
+/// 不要改成截一段前缀交出：终端与长文档的前缀是最早的内容，不是正在显示的内容，而节点值
+/// 没有「已截断」标记。
+pub const VALUE_TEXT_LIMIT: i32 = 4096;
+
+/// 这一次读取要取哪些可选字段。含义同 Windows 后端：前两项不影响可用动作表。
+#[derive(Debug, Clone, Copy)]
+pub struct Fields {
+    pub value: bool,
+    pub state: bool,
+    pub foreground: bool,
+}
+
+/// 按钮类默认动作的动作名。按优先顺序排。
+const INVOKE_NAMES: [&str; 4] = ["click", "press", "activate", "jump"];
+/// 复选与单选控件切换状态的动作名。Qt 给 `Toggle`，GTK 给 `click`。
+const TOGGLE_NAMES: [&str; 4] = ["toggle", "click", "press", "activate"];
+/// 可展开控件切换展开状态的动作名。GTK 的树表格单元给 `expand or contract`，展开器给
+/// `activate`，Qt 的组合框给 `Press`。不含 `toggle`：Qt 树表格单元的 `Toggle` 切换的是选中。
+const EXPAND_NAMES: [&str; 4] = ["expand or contract", "activate", "click", "press"];
+
+/// 一个对象的「点一下」动作承担的是哪一种语义，以及它的动作下标。
+///
+/// 一个对象只取一种：复选框的 `click` 是 `set_toggle`，不再同时列成 `invoke`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Click {
+    Invoke(i32),
+    Toggle(i32),
+    /// 单选按钮：`select` 经它的动作发出。
+    Radio(i32),
+    Expand(i32),
+}
+
+fn action_index(facts: &Facts, names: &[&str]) -> Option<i32> {
+    names.iter().find_map(|want| {
+        facts
+            .actions
+            .iter()
+            .position(|a| a.eq_ignore_ascii_case(want))
+            .and_then(|i| i32::try_from(i).ok())
+    })
+}
+
+fn radio(role: AtspiRole) -> bool {
+    matches!(role, AtspiRole::RadioButton | AtspiRole::RadioMenuItem)
+}
+
+fn checkable(facts: &Facts) -> bool {
+    facts.states.contains(State::Checkable)
+        || matches!(
+            facts.role,
+            AtspiRole::CheckBox | AtspiRole::CheckMenuItem | AtspiRole::ToggleButton
+        )
+}
+
+/// 这个对象的「点一下」归哪一种语义。顺序：单选 → 可展开 → 可复选 → 默认动作。
+///
+/// 可展开先于可复选：GTK 的展开器是一个带展开状态的切换按钮，它的动作展开内容。
+pub fn claim(facts: &Facts) -> Option<Click> {
+    if radio(facts.role) {
+        return action_index(facts, &TOGGLE_NAMES).map(Click::Radio);
+    }
+    if facts.states.contains(State::Expandable) {
+        return action_index(facts, &EXPAND_NAMES).map(Click::Expand);
+    }
+    if checkable(facts) {
+        return action_index(facts, &TOGGLE_NAMES).map(Click::Toggle);
+    }
+    action_index(facts, &INVOKE_NAMES).map(Click::Invoke)
+}
+
+/// 这个对象能不能经父对象的 Selection 接口选中，能的话容器是否允许多选。
+///
+/// 父对象此刻不在屏幕上时不算：Qt 组合框收起时的下拉列表也实现 Selection，改它的选中项
+/// 不会改组合框的当前值。
+pub fn selectable_in(facts: &Facts, context: Context) -> Option<bool> {
+    (facts.states.contains(State::Selectable)
+        && context.selection
+        && context.showing
+        && !radio(facts.role))
+    .then_some(context.multiselectable || facts.states.contains(State::Multiselectable))
+}
+
+/// 复选状态。Qt 的中间态同时带 `checked` 与 `indeterminate`，先判中间态。
+pub fn toggle_state(states: StateSet) -> ToggleState {
+    if states.contains(State::Indeterminate) {
+        ToggleState::Indeterminate
+    } else if states.contains(State::Checked) {
+        ToggleState::On
+    } else {
+        ToggleState::Off
+    }
+}
+
+/// 滚动条的方向。GTK 在状态里给，Qt 不给，按包围盒的长边判；两样都没有时判不出。
+pub fn orientation(facts: &Facts) -> Option<Axis> {
+    if facts.states.contains(State::Vertical) {
+        return Some(Axis::Vertical);
+    }
+    if facts.states.contains(State::Horizontal) {
+        return Some(Axis::Horizontal);
+    }
+    let rect = facts.extents?;
+    match rect.height.cmp(&rect.width) {
+        std::cmp::Ordering::Greater => Some(Axis::Vertical),
+        std::cmp::Ordering::Less => Some(Axis::Horizontal),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+/// 这个对象是可以按步滚动的滚动条：角色是滚动条、有 Value 接口、方向判得出。
+pub fn scroll_bar(facts: &Facts) -> Option<(Axis, Numbers)> {
+    if facts.role != AtspiRole::ScrollBar {
+        return None;
+    }
+    Some((orientation(facts)?, facts.value?))
+}
+
+/// 可编辑文本：有 EditableText 接口、带 `editable` 状态且不带 `read-only`。
+///
+/// 只看接口不够：GTK 3 的只读输入框照样实现 EditableText，`SetTextContents` 返回真而内容
+/// 不变；Qt 的只读输入框则真的被改掉。
+pub fn editable(facts: &Facts) -> bool {
+    facts.interfaces.contains(Interface::EditableText)
+        && facts.states.contains(State::Editable)
+        && !facts.states.contains(State::ReadOnly)
+}
+
+/// 数值只读：带 `read-only`，或角色本身只显示进度。
+pub fn range_read_only(facts: &Facts) -> bool {
+    facts.states.contains(State::ReadOnly)
+        || matches!(facts.role, AtspiRole::ProgressBar | AtspiRole::LevelBar)
+}
+
+/// 能不能设文本选区：有 Text 接口，且是可编辑文本或带 `selectable-text`。
+pub fn text_selectable(facts: &Facts) -> bool {
+    facts.interfaces.contains(Interface::Text)
+        && (facts.interfaces.contains(Interface::EditableText)
+            || facts.states.contains(State::SelectableText))
+}
+
+/// 可用：`enabled` 或 `sensitive` 任一。GTK 3 给中间态复选框去掉 `enabled` 而留着 `sensitive`。
+pub fn enabled(states: StateSet) -> bool {
+    states.contains(State::Enabled) || states.contains(State::Sensitive)
+}
+
+/// 这个对象列出的动作。模式缺失的动作不列；前台动作这个后端还没有实现，一律不列。
+pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
+    let mut out = Vec::new();
+    let click = claim(facts);
+    if facts.interfaces.contains(Interface::EditableText) {
+        out.push(if editable(facts) {
+            NodeAction::ready("set_value")
+        } else {
+            NodeAction::blocked("set_value", "read_only")
+        });
+    }
+    if matches!(click, Some(Click::Invoke(_))) {
+        out.push(NodeAction::ready("invoke"));
+    }
+    if facts.interfaces.contains(Interface::Value) {
+        out.push(if range_read_only(facts) {
+            NodeAction::blocked("set_range_value", "read_only")
+        } else {
+            NodeAction::ready("set_range_value")
+        });
+    }
+    if matches!(click, Some(Click::Toggle(_))) {
+        out.push(NodeAction::ready("set_toggle"));
+    }
+    if matches!(click, Some(Click::Expand(_))) {
+        out.push(NodeAction::ready("expand"));
+        out.push(NodeAction::ready("collapse"));
+    }
+    if matches!(click, Some(Click::Radio(_))) {
+        out.push(NodeAction::ready("select"));
+    } else if let Some(multiple) = selectable_in(facts, context) {
+        out.push(NodeAction::ready("select"));
+        if multiple {
+            out.push(NodeAction::ready("add_to_selection"));
+            out.push(NodeAction::ready("remove_from_selection"));
+        }
+    }
+    if let Some((_, numbers)) = scroll_bar(facts) {
+        out.push(if numbers.max > numbers.min {
+            NodeAction::ready("scroll")
+        } else {
+            NodeAction::blocked("scroll", "not_scrollable")
+        });
+    }
+    if text_selectable(facts) {
+        out.push(NodeAction::ready("select_text"));
+    }
+    out
+}
+
+/// 身份段：对象串接角色、名称与稳定标识的指纹。
+///
+/// 两样都要对上才算同一个控件：列表行视图会被复用，同一个对象路径换了内容；对象路径在
+/// 对象销毁后也可能再分配给别的对象。段首不是 `~`，协调器按它给稳定短编号。
+pub fn identity(key: &str, facts: &Facts) -> Identity {
+    let print = fingerprint(&role_name(facts.role), &facts.name, &facts.accessible_id);
+    Identity::Stable(format!("{key}@{print}"))
+}
+
+/// 换算成协议节点。`parent_ref` 与 `depth` 由遍历填。
+pub fn node(facts: &Facts, context: Context, path: &[usize], key: &str, fields: Fields) -> Node {
+    let states = facts.states;
+    let click = claim(facts);
+    let value = if !fields.value {
+        None
+    } else if facts.interfaces.contains(Interface::EditableText) {
+        facts.text.clone()
+    } else {
+        // 标签的文本就是它的名称，不重复给一遍。
+        facts
+            .text
+            .clone()
+            .filter(|t| !t.trim().is_empty() && t.trim() != facts.name.trim())
+    };
+    let range = facts.value.filter(|_| fields.state).and_then(|n| {
+        range_state(
+            n.current,
+            n.min,
+            n.max,
+            if n.increment > 0.0 {
+                n.increment
+            } else {
+                f64::NAN
+            },
+            f64::NAN,
+        )
+    });
+    let scroll = scroll_bar(facts).filter(|_| fields.state).map(|(axis, n)| {
+        let percent = (n.max > n.min).then(|| (n.current - n.min) / (n.max - n.min) * 100.0);
+        match axis {
+            Axis::Horizontal => ScrollState {
+                horizontal: percent,
+                vertical: None,
+            },
+            Axis::Vertical => ScrollState {
+                horizontal: None,
+                vertical: percent,
+            },
+        }
+    });
+    let identity = identity(key, facts);
+    Node {
+        reference: encode_ref(path, &identity),
+        parent_ref: None,
+        depth: 0,
+        role: role_name(facts.role),
+        name: facts.name.clone(),
+        automation_id: facts.accessible_id.clone(),
+        value,
+        enabled: enabled(states),
+        offscreen: !states.contains(State::Showing),
+        focused: fields.foreground && states.contains(State::Focused),
+        rect: facts.extents,
+        actions: offers(facts, context),
+        range,
+        toggle: matches!(click, Some(Click::Toggle(_)))
+            .then(|| toggle_state(states).as_str())
+            .filter(|_| fields.state),
+        expand: states
+            .contains(State::Expandable)
+            .then(|| {
+                if states.contains(State::Expanded) {
+                    "expanded"
+                } else {
+                    "collapsed"
+                }
+            })
+            .filter(|_| fields.state),
+        selected: if radio(facts.role) {
+            Some(states.contains(State::Checked))
+        } else {
+            states
+                .contains(State::Selectable)
+                .then(|| states.contains(State::Selected))
+        }
+        .filter(|_| fields.state),
+        // AT-SPI 没有「容器要求始终选中一项」这一项，给不出完整的容器约束。
+        selection: None,
+        scroll,
+        text: facts.interfaces.contains(Interface::Text),
+        weak_identity: false,
+    }
+}
+
+/// 包围盒换算。零尺寸与 `i32::MIN` 坐标按缺席算：GTK 3 对没有分配位置的控件交回
+/// `(-2147483648, -2147483648, 1, 1)`，Qt 对收起的下拉列表交回全零。
+pub fn extents(x: i32, y: i32, width: i32, height: i32) -> Option<ScreenRect> {
+    (width > 0 && height > 0 && x != i32::MIN && y != i32::MIN).then_some(ScreenRect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+/// AT-SPI 角色换算成协议角色名。词表里没有对应的角色交回 `atspi_<角色名>`，不猜一个相近的。
+pub fn role_name(role: AtspiRole) -> String {
+    vocabulary(role).map_or_else(
+        || format!("atspi_{}", role.name().replace([' ', '-'], "_")),
+        |r| r.as_str().to_owned(),
+    )
+}
+
+fn vocabulary(role: AtspiRole) -> Option<Role> {
+    use AtspiRole as A;
+    Some(match role {
+        A::Button | A::ToggleButton | A::PushButtonMenu => Role::Button,
+        A::Calendar => Role::Calendar,
+        A::CheckBox => Role::CheckBox,
+        A::ComboBox | A::Autocomplete => Role::ComboBox,
+        A::Entry | A::PasswordText | A::Text => Role::Edit,
+        A::Link => Role::Hyperlink,
+        A::Image | A::Icon | A::ImageMap => Role::Image,
+        A::ListItem => Role::ListItem,
+        A::List | A::ListBox => Role::List,
+        A::Menu | A::PopupMenu => Role::Menu,
+        A::MenuBar => Role::MenuBar,
+        A::MenuItem | A::CheckMenuItem | A::RadioMenuItem | A::TearoffMenuItem => Role::MenuItem,
+        A::ProgressBar | A::LevelBar => Role::ProgressBar,
+        A::RadioButton => Role::RadioButton,
+        A::ScrollBar => Role::ScrollBar,
+        A::Slider | A::Dial => Role::Slider,
+        A::SpinButton => Role::Spinner,
+        A::StatusBar => Role::StatusBar,
+        A::PageTabList => Role::Tab,
+        A::PageTab => Role::TabItem,
+        A::Label | A::Static | A::Caption | A::Heading | A::Paragraph => Role::Text,
+        A::ToolBar | A::Editbar => Role::ToolBar,
+        A::ToolTip => Role::ToolTip,
+        A::Tree | A::TreeTable => Role::Tree,
+        A::TreeItem => Role::TreeItem,
+        A::Canvas | A::DrawingArea => Role::Custom,
+        A::Filler
+        | A::Grouping
+        | A::Section
+        | A::Form
+        | A::Landmark
+        | A::Article
+        | A::BlockQuote
+        | A::Embedded
+        | A::Header
+        | A::Footer => Role::Group,
+        A::TableCell | A::TableRow => Role::DataItem,
+        A::DocumentFrame
+        | A::DocumentText
+        | A::DocumentWeb
+        | A::DocumentEmail
+        | A::DocumentSpreadsheet
+        | A::DocumentPresentation
+        | A::HTMLContainer
+        | A::Page
+        | A::Terminal => Role::Document,
+        A::Frame
+        | A::Window
+        | A::Dialog
+        | A::Alert
+        | A::FileChooser
+        | A::ColorChooser
+        | A::FontChooser
+        | A::InternalFrame => Role::Window,
+        A::Panel
+        | A::ScrollPane
+        | A::Viewport
+        | A::LayeredPane
+        | A::RootPane
+        | A::GlassPane
+        | A::SplitPane
+        | A::OptionPane
+        | A::DirectoryPane => Role::Pane,
+        A::ColumnHeader | A::RowHeader | A::TableColumnHeader | A::TableRowHeader => {
+            Role::HeaderItem
+        }
+        A::Table => Role::Table,
+        A::TitleBar => Role::TitleBar,
+        A::Separator => Role::Separator,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::DELIVERY_BACKGROUND;
+
+    fn facts(
+        role: AtspiRole,
+        states: &[State],
+        interfaces: &[Interface],
+        actions: &[&str],
+    ) -> Facts {
+        let mut set = StateSet::empty();
+        for s in states {
+            set.insert(*s);
+        }
+        let mut ifaces = InterfaceSet::empty();
+        for i in interfaces {
+            ifaces.insert(*i);
+        }
+        Facts {
+            role,
+            name: "控件".to_owned(),
+            accessible_id: String::new(),
+            states: set,
+            interfaces: ifaces,
+            actions: actions.iter().map(|a| (*a).to_owned()).collect(),
+            extents: extents(10, 20, 100, 30),
+            value: None,
+            text: None,
+        }
+    }
+
+    fn names(actions: &[NodeAction]) -> Vec<&'static str> {
+        actions.iter().map(|a| a.action).collect()
+    }
+
+    const SHOWN: &[State] = &[
+        State::Enabled,
+        State::Sensitive,
+        State::Showing,
+        State::Visible,
+    ];
+    const FIELDS: Fields = Fields {
+        value: true,
+        state: true,
+        foreground: false,
+    };
+
+    /// GTK 按钮给 `click`，Qt 按钮给 `Press` 与 `SetFocus`；两者都列成 `invoke`，
+    /// `SetFocus` 会移走键盘焦点，不映射成任何动作。
+    #[test]
+    fn a_button_offers_invoke_through_its_default_action() {
+        let gtk = facts(AtspiRole::Button, SHOWN, &[Interface::Action], &["click"]);
+        assert_eq!(claim(&gtk), Some(Click::Invoke(0)));
+        assert_eq!(names(&offers(&gtk, Context::default())), ["invoke"]);
+        let qt = facts(
+            AtspiRole::Button,
+            SHOWN,
+            &[Interface::Action],
+            &["SetFocus", "Press"],
+        );
+        assert_eq!(claim(&qt), Some(Click::Invoke(1)));
+        let focus_only = facts(
+            AtspiRole::Button,
+            SHOWN,
+            &[Interface::Action],
+            &["SetFocus"],
+        );
+        assert_eq!(claim(&focus_only), None);
+        assert!(offers(&focus_only, Context::default()).is_empty());
+    }
+
+    /// 复选框的 `click` 只列成 `set_toggle`；Qt 的 `Toggle` 优先于 `Press`。
+    #[test]
+    fn a_check_box_offers_set_toggle_and_not_invoke() {
+        let gtk = facts(AtspiRole::CheckBox, SHOWN, &[Interface::Action], &["click"]);
+        assert_eq!(claim(&gtk), Some(Click::Toggle(0)));
+        assert_eq!(names(&offers(&gtk, Context::default())), ["set_toggle"]);
+        let qt = facts(
+            AtspiRole::CheckBox,
+            &[State::Checkable, State::Enabled],
+            &[Interface::Action],
+            &["Press", "Toggle", "SetFocus"],
+        );
+        assert_eq!(claim(&qt), Some(Click::Toggle(1)));
+    }
+
+    /// Qt 的中间态同时带 `checked` 与 `indeterminate`。
+    #[test]
+    fn the_indeterminate_state_wins_over_checked() {
+        let mut both = StateSet::empty();
+        both.insert(State::Checked);
+        both.insert(State::Indeterminate);
+        assert_eq!(toggle_state(both), ToggleState::Indeterminate);
+        let mut on = StateSet::empty();
+        on.insert(State::Checked);
+        assert_eq!(toggle_state(on), ToggleState::On);
+        assert_eq!(toggle_state(StateSet::empty()), ToggleState::Off);
+    }
+
+    /// GTK 3 的展开器是可展开的切换按钮，它的 `activate` 展开内容，不是复选。
+    #[test]
+    fn an_expander_offers_expand_and_collapse() {
+        let expander = facts(
+            AtspiRole::ToggleButton,
+            &[State::Expandable, State::Enabled],
+            &[Interface::Action],
+            &["activate"],
+        );
+        assert_eq!(claim(&expander), Some(Click::Expand(0)));
+        assert_eq!(
+            names(&offers(&expander, Context::default())),
+            ["expand", "collapse"]
+        );
+        let cell = facts(
+            AtspiRole::TableCell,
+            &[State::Expandable],
+            &[Interface::Action],
+            &["expand or contract", "edit", "activate"],
+        );
+        assert_eq!(claim(&cell), Some(Click::Expand(0)));
+    }
+
+    /// Qt 树表格单元只有切换选中的 `Toggle`：可展开状态照报，不列展开动作。
+    #[test]
+    fn an_expandable_cell_without_an_expand_action_offers_no_expansion() {
+        let qt = facts(
+            AtspiRole::TableCell,
+            &[State::Expandable, State::Selectable, State::Showing],
+            &[Interface::Action],
+            &["Toggle"],
+        );
+        assert_eq!(claim(&qt), None);
+        let node = node(&qt, Context::default(), &[0], ":1.2/x", FIELDS);
+        assert_eq!(node.expand, Some("collapsed"));
+        assert!(!names(&node.actions).contains(&"expand"));
+    }
+
+    /// 选择项经父对象的 Selection 接口改选中；容器或项带 `multiselectable` 才列增选与取消。
+    #[test]
+    fn a_selectable_item_offers_selection_through_its_container() {
+        let item = facts(
+            AtspiRole::ListItem,
+            &[State::Selectable, State::Showing],
+            &[],
+            &[],
+        );
+        let single = Context {
+            selection: true,
+            showing: true,
+            multiselectable: false,
+        };
+        assert_eq!(names(&offers(&item, single)), ["select"]);
+        let multi = Context {
+            multiselectable: true,
+            ..single
+        };
+        assert_eq!(
+            names(&offers(&item, multi)),
+            ["select", "add_to_selection", "remove_from_selection"]
+        );
+        // Qt 把 multiselectable 放在项上而不是容器上。
+        let qt = facts(
+            AtspiRole::ListItem,
+            &[State::Selectable, State::Multiselectable],
+            &[Interface::Action],
+            &["Toggle"],
+        );
+        assert_eq!(selectable_in(&qt, single), Some(true));
+        // 容器不实现 Selection，或此刻不在屏幕上（收起的下拉列表），一条选择动作都不列。
+        assert!(offers(
+            &item,
+            Context {
+                selection: false,
+                ..single
+            }
+        )
+        .is_empty());
+        assert!(offers(
+            &item,
+            Context {
+                showing: false,
+                ..single
+            }
+        )
+        .is_empty());
+    }
+
+    /// 单选按钮的 `select` 经它自己的动作发出，选中状态取 `checked`。
+    #[test]
+    fn a_radio_button_offers_select_and_reports_checked_as_selected() {
+        let radio = facts(
+            AtspiRole::RadioButton,
+            &[State::Checked, State::Showing],
+            &[Interface::Action],
+            &["click"],
+        );
+        assert_eq!(claim(&radio), Some(Click::Radio(0)));
+        let node = node(&radio, Context::default(), &[1], ":1.2/x", FIELDS);
+        assert_eq!(names(&node.actions), ["select"]);
+        assert_eq!(node.selected, Some(true));
+        assert_eq!(node.toggle, None);
+    }
+
+    /// 只读输入框照样列 `set_value`，但标成此刻不可用；GTK 3 靠缺 `editable`，Qt 靠 `read-only`。
+    #[test]
+    fn a_read_only_entry_offers_set_value_as_blocked() {
+        let text = [Interface::EditableText, Interface::Text];
+        let gtk = facts(AtspiRole::Text, &[State::Enabled], &text, &["activate"]);
+        let qt = facts(
+            AtspiRole::Text,
+            &[State::Editable, State::ReadOnly],
+            &text,
+            &["SetFocus"],
+        );
+        let writable = facts(AtspiRole::Text, &[State::Editable], &text, &[]);
+        for blocked in [&gtk, &qt] {
+            let offer = &offers(blocked, Context::default())[0];
+            assert_eq!(offer.action, "set_value");
+            assert_eq!(offer.unavailable, Some("read_only"));
+            assert!(offer.delivery.is_empty());
+        }
+        let offer = &offers(&writable, Context::default())[0];
+        assert_eq!(offer.delivery, vec![DELIVERY_BACKGROUND]);
+        assert!(names(&offers(&writable, Context::default())).contains(&"select_text"));
+    }
+
+    /// 滚动条按步滚动；滚不动的轴标成不可用。方向 GTK 给状态，Qt 按包围盒判。
+    #[test]
+    fn a_scroll_bar_offers_scroll_on_its_own_axis() {
+        let mut bar = facts(
+            AtspiRole::ScrollBar,
+            &[State::Vertical],
+            &[Interface::Value],
+            &[],
+        );
+        bar.value = Some(Numbers {
+            current: 0.0,
+            min: 0.0,
+            max: 1150.0,
+            increment: 11.0,
+        });
+        assert_eq!(scroll_bar(&bar).map(|s| s.0), Some(Axis::Vertical));
+        assert_eq!(
+            names(&offers(&bar, Context::default())),
+            ["set_range_value", "scroll"]
+        );
+        let node = node(&bar, Context::default(), &[2], ":1.2/x", FIELDS);
+        assert_eq!(node.scroll.and_then(|s| s.vertical), Some(0.0));
+        let mut qt = facts(
+            AtspiRole::ScrollBar,
+            &[],
+            &[Interface::Value],
+            &["Increase"],
+        );
+        qt.extents = extents(1195, 561, 14, 108);
+        qt.value = Some(Numbers {
+            current: 0.0,
+            min: 0.0,
+            max: 0.0,
+            increment: 20.0,
+        });
+        assert_eq!(orientation(&qt), Some(Axis::Vertical));
+        let offer = offers(&qt, Context::default());
+        assert_eq!(offer[1].unavailable, Some("not_scrollable"));
+    }
+
+    /// 标签的文本等于名称时不重复给值；输入框的值就是文本，空串也给。
+    #[test]
+    fn a_label_does_not_repeat_its_name_as_value() {
+        let mut label = facts(AtspiRole::Label, SHOWN, &[Interface::Text], &[]);
+        label.text = Some("控件".to_owned());
+        assert_eq!(
+            node(&label, Context::default(), &[], ":1.2/x", FIELDS).value,
+            None
+        );
+        let mut entry = facts(
+            AtspiRole::Text,
+            SHOWN,
+            &[Interface::Text, Interface::EditableText],
+            &[],
+        );
+        entry.text = Some(String::new());
+        assert_eq!(
+            node(&entry, Context::default(), &[], ":1.2/x", FIELDS)
+                .value
+                .as_deref(),
+            Some("")
+        );
+        let skip = Fields {
+            value: false,
+            ..FIELDS
+        };
+        assert_eq!(
+            node(&entry, Context::default(), &[], ":1.2/x", skip).value,
+            None
+        );
+    }
+
+    /// 身份段含对象串与指纹，名称一变身份就变；段首不是弱身份的 `~`。
+    #[test]
+    fn the_identity_carries_the_object_and_its_fingerprint() {
+        let a = facts(AtspiRole::ListItem, SHOWN, &[], &[]);
+        let mut b = a.clone();
+        b.name = "换了内容".to_owned();
+        let key = ":1.2/org/a11y/atspi/accessible/7";
+        let ia = identity(key, &a);
+        assert_ne!(ia, identity(key, &b));
+        assert!(!ia.is_weak());
+        let reference = node(&a, Context::default(), &[0, 3], key, FIELDS).reference;
+        assert!(reference.starts_with("w.0.3#:1.2/org/a11y/atspi/accessible/7@"));
+    }
+
+    /// GTK 3 的中间态复选框去掉了 `enabled` 而留着 `sensitive`，仍然可用。
+    #[test]
+    fn sensitive_alone_counts_as_enabled() {
+        let mut s = StateSet::empty();
+        s.insert(State::Sensitive);
+        assert!(enabled(s));
+        assert!(!enabled(StateSet::empty()));
+    }
+
+    #[test]
+    fn unplaced_extents_are_absent() {
+        assert_eq!(extents(i32::MIN, i32::MIN, 1, 1), None);
+        assert_eq!(extents(0, 0, 0, 0), None);
+        assert!(extents(-5, 3, 10, 10).is_some());
+    }
+
+    /// 词表里有的角色交回协议名，没有的交回带前缀的原名，不落进词表。
+    #[test]
+    fn roles_map_into_the_vocabulary_or_keep_their_own_name() {
+        assert_eq!(role_name(AtspiRole::Button), "button");
+        assert_eq!(role_name(AtspiRole::Filler), "group");
+        assert_eq!(role_name(AtspiRole::Frame), "window");
+        assert_eq!(role_name(AtspiRole::Text), "edit");
+        assert_eq!(role_name(AtspiRole::Label), "text");
+        let raw = role_name(AtspiRole::AcceleratorLabel);
+        assert_eq!(raw, "atspi_accelerator_label");
+        assert!(Role::ALL.iter().all(|r| r.as_str() != raw));
+    }
+}

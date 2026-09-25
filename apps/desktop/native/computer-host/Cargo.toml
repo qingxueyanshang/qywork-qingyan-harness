@@ -57,6 +57,16 @@ windows = { version = "0.61", features = [
   "Win32_Graphics_Imaging",
 ] }
 
+# Linux 后端：控件树与语义动作经 AT-SPI，窗口清单与几何经 X11。
+[target.'cfg(target_os = "linux")'.dependencies]
+# 只取代理与公共类型：总线连接由后端自己建，不监听事件。
+atspi = { version = "0.30", default-features = false, features = ["proxies"] }
+# `blocking-api` 让 atspi 的代理同时生成阻塞版本：worker 是线程模型，没有异步运行时，
+# 不要为它引入第二套调度。
+zbus = { version = "5.5", default-features = false, features = ["async-io", "blocking-api"] }
+# 纯 Rust 的 X11 客户端，只用核心协议。
+x11rb = { version = "0.14", default-features = false }
+
 [profile.release]
 # 单文件体积优先：这个二进制随安装包分发。
 opt-level = "s"
