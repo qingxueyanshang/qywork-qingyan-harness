@@ -16,6 +16,12 @@
  * 事件与扫描结果都归最早打开的那个，后面的窗口从前一个收尾那一刻起才算自己的。
  * 并行执行时的归属因此是估算。
  *
+ * **工作区根先取 realpath，watch、共享键、标记路径、扫描与 stat 都用它。** FSEvents 按真实路径
+ * 报事件，watch 的路径经过符号链接时前缀对不上，一条事件都收不到，收尾的屏障只能等到上限。
+ * 同一个目录的不同写法因此共用一个 watcher。结果里的路径相对工作区根，与调用方用哪种写法无关。
+ * 必须用 `realpathSync.native`：Windows 上非 native 版保留调用方给的大小写，只差大小写的两种写法
+ * 会各开一个 watcher。
+ *
  * **收尾先等在途事件交齐，再交出归属。** 事件从发生到进回调有延迟（macOS 的 FSEvents 按 50 ms
  * 合批交付），收尾时直接关 watcher 或把事件改归下一个窗口，此前发生、尚未交付的事件就丢失或记错窗口。
  * 排在最前的窗口收尾时在 `<root>/.tmp` 下写一个唯一命名的标记文件，收到它的事件才交出归属：
@@ -53,7 +59,7 @@
  * 按前缀排除会把项目文件一并丢掉。
  */
 
-import { type Dirent, existsSync, type FSWatcher, mkdirSync, watch } from 'node:fs'
+import { type Dirent, existsSync, type FSWatcher, mkdirSync, realpathSync, watch } from 'node:fs'
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, join, relative, resolve } from 'node:path'
 import type { FileChange } from '@qywork/core'
@@ -140,14 +146,15 @@ const shared = new Map<string, Shared>()
  *
  * 向上找 `.git` 而不是起 `git rev-parse`：判仓库不该起进程，进程只在收尾时起。
  * 上界与 git 自己的发现规则取同一个来源 `GIT_CEILING_DIRECTORIES`，
- * 列在里面的目录不再往上走。
+ * 列在里面的目录不再往上走。`root` 是 realpath，条目也取 realpath 再比较；
+ * 不存在的条目不起作用，与 git 相同。
  */
 function repoRootOf(root: string): string | null {
   const ceilings = new Set(
     (process.env.GIT_CEILING_DIRECTORIES ?? '')
       .split(delimiter)
-      .filter(Boolean)
-      .map((p) => resolve(p)),
+      .filter((p) => p && existsSync(p))
+      .map((p) => realpathSync.native(p)),
   )
   let dir = resolve(root)
   for (;;) {
@@ -400,12 +407,13 @@ function barrier(root: string, owner: Shared, onSettled: () => void = () => {}):
 }
 
 /**
- * 等 `root` 上的 watcher 交齐此刻之前发生的事件，并等这些路径第一次被报上来时的 stat 做完。
+ * 等 `workspaceRoot` 上的 watcher 交齐此刻之前发生的事件，并等这些路径第一次被报上来时的 stat 做完。
  * 返回 false = 没有开着的窗口，或没等到。
  *
  * 供测试在窗口中途建立「观察器已见过某个路径」这一前提；生产代码只经 `close()` 用这道屏障。
  */
-export async function settleEvents(root: string): Promise<boolean> {
+export async function settleEvents(workspaceRoot: string): Promise<boolean> {
+  const root = realpathSync.native(workspaceRoot)
   const owner = shared.get(root)
   if (!owner) return false
   const arrived = await barrier(root, owner)
@@ -413,7 +421,11 @@ export async function settleEvents(root: string): Promise<boolean> {
   return arrived
 }
 
-export function openChangeWindow(root: string, opts: ChangeWindowOptions = {}): ChangeWindow {
+export function openChangeWindow(
+  workspaceRoot: string,
+  opts: ChangeWindowOptions = {},
+): ChangeWindow {
+  const root = realpathSync.native(workspaceRoot)
   const window: Window = { startedAt: Date.now(), paths: new Map(), prunedDirs: new Set() }
   let entry = shared.get(root)
   if (!entry) {

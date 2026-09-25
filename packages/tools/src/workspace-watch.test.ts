@@ -2,7 +2,7 @@
  * 覆盖 `workspace-watch.ts`：执行窗口内的路径归集、忽略判定与收尾判型。
  */
 import { describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FileChange } from '@qywork/core'
@@ -412,6 +412,56 @@ describe('执行窗口内的工作区变更', () => {
 
     expect(got.incomplete).toBe(true)
     expect(got.changes.map((c) => c.path)).toEqual(['a.txt'])
+  })
+
+  /**
+   * 原始失败形状：macOS 的 FSEvents 按真实路径报事件，watch 符号链接路径时一条事件都收不到，
+   * 删除报不出，收尾的屏障等到上限、结果判为不完整。Windows 上用目录联接，建它不需要特权。
+   */
+  test('经符号链接打开的工作区照常收到事件，路径相对调用方给的根', async () => {
+    const real = await gitRepo()
+    await writeFile(join(real, 'gone.txt'), 'x\n')
+    const root = `${real}-link`
+    await symlink(real, root, 'junction')
+    await Bun.sleep(20)
+
+    const window = openChangeWindow(root)
+    await settle()
+    await rm(join(root, 'gone.txt'))
+    await writeFile(join(root, 'kept.txt'), 'k\n')
+    const got = await window.close()
+
+    expect(typeOf(got.changes)).toEqual(
+      new Map([
+        ['gone.txt', 'deleted'],
+        ['kept.txt', 'created'],
+      ]),
+    )
+    expect(got.incomplete).toBe(false)
+  })
+
+  /**
+   * 同一个目录的两种写法共用一个 watcher，窗口照样排队；各开一个的话后一个窗口会收下前一个的删除。
+   * 用删除断言：删除只有事件看得见，收尾扫描按毫秒取的窗口边界不参与。
+   */
+  test('同一个目录经两种写法打开时共用一个 watcher', async () => {
+    const real = await gitRepo()
+    await writeFile(join(real, 'a.txt'), 'a\n')
+    await writeFile(join(real, 'b.txt'), 'b\n')
+    const link = `${real}-link`
+    await symlink(real, link, 'junction')
+    await Bun.sleep(20)
+
+    const first = openChangeWindow(real)
+    const second = openChangeWindow(link)
+    await settle()
+    await rm(join(real, 'a.txt'))
+    const firstChanges = await first.close()
+    await rm(join(link, 'b.txt'))
+    const secondChanges = await second.close()
+
+    expect(firstChanges.changes).toEqual([{ path: 'a.txt', changeType: 'deleted' }])
+    expect(secondChanges.changes).toEqual([{ path: 'b.txt', changeType: 'deleted' }])
   })
 
   test('两个窗口同时开着时，事件归最早打开的那个', async () => {
