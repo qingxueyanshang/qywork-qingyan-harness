@@ -294,6 +294,11 @@ function observationOf(outcome: ToolOutcome): DeliveredObservation {
   return (data.observation ?? data) as DeliveredObservation
 }
 
+/** 投给模型的控件不带 `parentRef`：`ref` 的路径段就是祖先链。 */
+function delivered(elements: readonly DesktopElement[]): Omit<DesktopElement, 'parentRef'>[] {
+  return elements.map(({ parentRef: _parentRef, ...rest }) => rest)
+}
+
 /** 按结果自带的默认值与动作字典还原成完整控件。 */
 function expand(observation: DeliveredObservation): DesktopElement[] {
   return observation.elements.map(({ actionSet, ...rest }) => {
@@ -316,13 +321,13 @@ async function actOnTarget(ctx: ToolContext, observationId = 'do_1'): Promise<To
 }
 
 describe('小控件表整份内联', () => {
-  test('控件按结果自带的字典还原后与观察逐字段相等，元数据原样，不带投递说明，也不落盘', async () => {
+  test('控件按结果自带的字典还原后与观察逐字段相等（不带 parentRef），元数据原样，不带投递说明，也不落盘', async () => {
     const sink = fakeSink()
     const ctx = context(fakePort(小表, { acts: 0 }), sink)
     const r = await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
     const observation = observationOf(r)
 
-    expect(expand(observation)).toEqual(小表)
+    expect(expand(observation)).toEqual(delivered(小表))
     const { elements: _e, defaults: _d, actionSets: _a, ...meta } = observation
     const { elements: _source, ...sourceMeta } = snapshot(小表)
     expect(meta).toEqual(sourceMeta)
@@ -350,7 +355,7 @@ describe('小控件表整份内联', () => {
 
     expect(data.actionId).toBe('da_1')
     expect(data.dispatch).toBe('submitted')
-    expect(expand(observationOf(r))).toEqual(小表)
+    expect(expand(observationOf(r))).toEqual(delivered(小表))
     expect(sink.landed).toHaveLength(0)
   })
 
@@ -405,7 +410,7 @@ describe('小控件表整份内联', () => {
     const observation = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
 
     expect(observation.delivery).toBeUndefined()
-    expect(expand(observation)).toEqual(table)
+    expect(expand(observation)).toEqual(delivered(table))
     const names = observation.elements.map((e) => e.name)
     expect(names).toContain('请输入账号')
     expect(names).toContain('请输入密码')
@@ -720,7 +725,7 @@ describe('存不下时照实说', () => {
     const ctx = context(fakePort(小表, { acts: 0 }), null)
     const r = await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
     expect(observationOf(r).delivery).toBeUndefined()
-    expect(expand(observationOf(r))).toEqual(小表)
+    expect(expand(observationOf(r))).toEqual(delivered(小表))
   })
 })
 
