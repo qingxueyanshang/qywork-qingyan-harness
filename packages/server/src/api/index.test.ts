@@ -19,7 +19,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type {
   ConversationChangesPageResponse,
   ConversationHistoryPageResponse,
@@ -63,7 +63,7 @@ interface RunsStub {
   currentRunId(): RunId | null
 }
 
-function deps(root = 'C:/ws/demo'): ApiDeps & { wsId: string } {
+function deps(root = '/ws/demo'): ApiDeps & { wsId: string } {
   let lan = false
   const runsStub: RunsStub = {
     isBusy: () => false,
@@ -125,14 +125,14 @@ describe('派发', () => {
     expect(await res?.json()).toEqual({
       id: (d as unknown as { wsId: string }).wsId,
       // 账本里的根是归一后的形式（`upsertWorkspace`），派发照抄它。
-      root: 'C:\\ws\\demo',
+      root: resolve('/ws/demo'),
       name: 'demo',
     })
   })
 
   test('根目录这种取不出目录名时回落到整条路径，不回空串', async () => {
-    const res = await call('/api/workspace', undefined, deps('C:/'))
-    expect(((await res?.json()) as { name: string }).name).toBe('C:\\')
+    const res = await call('/api/workspace', undefined, deps('/'))
+    expect(((await res?.json()) as { name: string }).name).toBe(resolve('/'))
   })
 
   /* 指了一个不存在的项目要 404，**不能静默回落到最近打开的那个**——
@@ -186,9 +186,9 @@ describe('方法参与匹配，不是只看路径', () => {
 describe('移除项目', () => {
   /** 两个项目：后 upsert 的那个是「当前」（不带 `?ws=` 落到最近打开的）。 */
   const twoWorkspaces = () => {
-    const d = deps('C:/ws/old')
+    const d = deps('/ws/old')
     const oldId = (d as unknown as { wsId: string }).wsId
-    const current = upsertWorkspace(d.store, 'C:/ws/current', 'current')
+    const current = upsertWorkspace(d.store, '/ws/current', 'current')
     return { d, oldId, currentId: current.id }
   }
 
@@ -210,7 +210,7 @@ describe('移除项目', () => {
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     expect((await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d))?.status).toBe(200)
 
-    const again = upsertWorkspace(d.store, 'C:/ws/old', 'old')
+    const again = upsertWorkspace(d.store, '/ws/old', 'old')
     expect(String(again.id)).toBe(oldId) // root_path UNIQUE，命中的是同一行
     expect(listWorkspaces(d.store).map((w) => String(w.id))).toContain(oldId)
     expect(listConversations(d.store, oldId as never)).toHaveLength(1)
@@ -243,7 +243,7 @@ describe('移除项目', () => {
     const { d, oldId, currentId } = twoWorkspaces()
     const before = listWorkspaces(d.store).map((w) => String(w.id))
     // 「切过去」走的是同一条 upsert，它会更新 last_opened_at
-    upsertWorkspace(d.store, 'C:/ws/current', 'current')
+    upsertWorkspace(d.store, '/ws/current', 'current')
     expect(listWorkspaces(d.store).map((w) => String(w.id))).toEqual(before)
     expect(before).toEqual([oldId, currentId])
   })
@@ -371,10 +371,10 @@ describe('移除项目', () => {
     })
 
     test('给的路径已在账本里 —— 复用那一行，移除过的会话跟着回来', async () => {
-      const d = deps('C:/ws/demo')
+      const d = deps('/ws/demo')
       const id = (d as unknown as { wsId: string }).wsId
       createConversation(d.store, { workspaceId: id as never, provider: 'p', model: 'm' })
-      upsertWorkspace(d.store, 'C:/ws/other', 'other') // 留一个，不然移除会被 409 挡住
+      upsertWorkspace(d.store, '/ws/other', 'other') // 留一个，不然移除会被 409 挡住
       expect((await call(`/api/workspaces/${id}`, { method: 'DELETE' }, d))?.status).toBe(200)
       expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(id)
 
@@ -384,7 +384,7 @@ describe('移除项目', () => {
       expect(String(again.id)).not.toBe(id) // 换了路径就是另一个项目
       await rm(dir, { recursive: true, force: true }).catch(() => {})
 
-      const back = upsertWorkspace(d.store, 'C:/ws/demo', 'demo')
+      const back = upsertWorkspace(d.store, '/ws/demo', 'demo')
       expect(String(back.id)).toBe(id)
       expect(listConversations(d.store, id as never)).toHaveLength(1)
     })
@@ -409,12 +409,15 @@ describe('移除项目', () => {
     const res = await call(`/api/workspaces/${currentId}`, { method: 'DELETE' }, d)
     expect(res?.status).toBe(200)
     // 不回 next 的话，客户端手里的 ?ws= 指着刚被移除的那个，随后每条请求都 404
-    expect(await res?.json()).toEqual({ ok: true, next: { id: oldId, rootPath: 'C:\\ws\\old' } })
+    expect(await res?.json()).toEqual({
+      ok: true,
+      next: { id: oldId, rootPath: resolve('/ws/old') },
+    })
     expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(currentId)
   })
 
   test('最后一个项目移不掉，回 409 且账本不动 —— 移完没有项目可服务', async () => {
-    const d = deps('C:/ws/only')
+    const d = deps('/ws/only')
     const onlyId = (d as unknown as { wsId: string }).wsId
     const res = await call(`/api/workspaces/${onlyId}`, { method: 'DELETE' }, d)
     expect(res?.status).toBe(409)
@@ -975,8 +978,8 @@ describe('模型目录', () => {
 describe('按 ?ws= 解析项目', () => {
   function twoProjects() {
     const store = new Store({ path: ':memory:' })
-    const a = upsertWorkspace(store, 'C:/ws/a', 'a')
-    const b = upsertWorkspace(store, 'C:/ws/b', 'b')
+    const a = upsertWorkspace(store, '/ws/a', 'a')
+    const b = upsertWorkspace(store, '/ws/b', 'b')
     return { d: { store } as unknown as ApiDeps, a, b }
   }
 
@@ -984,7 +987,7 @@ describe('按 ?ws= 解析项目', () => {
     const { d, a, b } = twoProjects()
     // b 是后 upsert 的，缺省会落到它身上——所以这条能证明参数真的起作用。
     const res = await call(`/api/workspace?ws=${a.id}`, undefined, d)
-    expect(await res?.json()).toEqual({ id: a.id, root: 'C:\\ws\\a', name: 'a' })
+    expect(await res?.json()).toEqual({ id: a.id, root: resolve('/ws/a'), name: 'a' })
     const fallback = await call('/api/workspace', undefined, d)
     expect(((await fallback?.json()) as { id: string }).id).toBe(b.id)
   })
@@ -995,7 +998,7 @@ describe('按 ?ws= 解析项目', () => {
       '/api/workspaces',
       {
         method: 'POST',
-        body: JSON.stringify({ path: 'C:/ws/不存在的目录' }),
+        body: JSON.stringify({ path: '/ws/不存在的目录' }),
       },
       d,
     )
