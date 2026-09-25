@@ -61,7 +61,7 @@ windows = { version = "0.61", features = [
   "Win32_UI_Input_KeyboardAndMouse",
 ] }
 # 逐下载钩子绑的是 `DownloadStarting` 交出的 `ICoreWebView2DownloadOperation` 本身，
-# 见 browser/tabs.rs。版本跟 tauri 传递依赖的那份对齐（0.38），否则 `PlatformWebview::controller()`
+# 见 browser/webview2.rs。版本跟 tauri 传递依赖的那份对齐（0.38），否则 `PlatformWebview::controller()`
 # 交出来的接口与这里的类型不是同一个。
 webview2-com = "0.38"
 
