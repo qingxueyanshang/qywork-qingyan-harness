@@ -7,8 +7,6 @@
 export { ContentStore, contentPathFor } from './content.ts'
 // 主账本句柄
 export { Store } from './db.ts'
-// 三层作用域里被单独关掉的记忆/技能条目
-export { type ExtraKey, listDisabledExtras, setExtraEnabled } from './extras.ts'
 // 目标与自动续起：runtime 用端口交给工具，server 在 run 收尾处判续起
 export { createGoal, currentGoal, updateGoal } from './goals.ts'
 // 按需加载的外部工具：runtime 在装配工具表时读回、在 load_tool 成功后写入

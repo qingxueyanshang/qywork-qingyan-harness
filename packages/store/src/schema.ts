@@ -1085,9 +1085,6 @@ WHERE tool_name = 'memory';
      * 「它为什么停在这」，而就地更新只留得下最后那一次状态，中间的暂停、改写、
      * 轮次推进全部丢失——而那正是用户回头要看的部分。
      *
-     * **`conversation_extras` 装不下它**：那是「会话关掉了哪几项」的两列成员表，
-     * 没有版本、没有顺序、没有快照。
-     *
      * **主键就是 `(goal_id, revision)`，不另发一个事件 id。** 复合主键把
      * 「同一个 revision 不许写两次」变成数据库层的约束，两个写入方撞车时
      * 后到的那个直接抛，而不是静默追加出第二条同版本的记录。
@@ -1120,10 +1117,6 @@ CREATE INDEX idx_goal_events_conv ON goal_events(conversation_id, goal_id);
      * 息。不落盘的话模型每一轮都得重新 `load_tool` 一遍——而它在 transcript 里看得见上一轮装过、
      * 工具表里却没有，会反复去试。每轮固定一次的往返开销，反而高于「全部常驻」，按需加载就失去意义
      * 了。
-     *
-     * **为什么不写进 `conversation_extras`。** 那张表是**「这一轮关掉了哪几项」**的成员表（没有行 =
-     * 全开）。这里记的是「已经打开了哪几项」，默认相反、写入方不同、清理时机也不同。共表就是两套账
-     * 共用一个键空间，迟早有人按前缀过滤时把对方的行一起算进去。
      *
      * 主键 (conversation_id, tool_name)：同一个工具装两次是同一件事，
      * `INSERT OR IGNORE` 直接落到这条约束上。它同时充当 FK 的索引
@@ -2157,6 +2150,12 @@ ALTER TABLE provider_requests ADD COLUMN last_visible_at INTEGER;
 DROP TABLE permission_rules;
 DROP TABLE permission_audit;
 `,
+  },
+  {
+    id: 63,
+    name: 'drop_conversation_extras',
+    // 没有读写方：会话装配不再按会话关闭技能 / 记忆 / 扩展工具，界面也没有入口。
+    sql: `DROP TABLE conversation_extras;`,
   },
 ]
 

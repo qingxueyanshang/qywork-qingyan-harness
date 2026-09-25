@@ -80,7 +80,6 @@ import {
   hasReceivedRequestWithImages,
   latestAnchoredProviderRequest,
   latestTodos,
-  listDisabledExtras,
   listLoadedTools,
   listMessages,
   listRuns,
@@ -453,17 +452,12 @@ export class Session {
      * 重建，因此上下文字节不会随执行波次漂移。
      */
     const adapter = buildAdapter(this.resolveProfile(target))
-    const disabled = listDisabledExtras(store, conversationId)
     if (!this.extensions) {
-      await this.loadExtensionTools(adapter.spec.density, disabled, conversationId)
+      await this.loadExtensionTools(adapter.spec.density, conversationId)
     }
     const roots = scopeRoots(this.opts.workspaceRoot)
-    const skills = (await scanSkills(roots).catch(() => [])).filter(
-      (skill) => !disabled.has(`skill:${skill.name}`),
-    )
-    const memories = (await listScopedEntries(roots).catch(() => [])).filter(
-      (memory) => !disabled.has(`memory:${memory.key}`),
-    )
+    const skills = await scanSkills(roots).catch(() => [])
+    const memories = await listScopedEntries(roots).catch(() => [])
     const canAssignModels = ['define_role', 'subagent', 'workflow'].some((name) =>
       this.registry.has(name),
     )
@@ -758,7 +752,6 @@ export class Session {
    */
   private async loadExtensionTools(
     density: TokenDensity,
-    disabled: ReadonlySet<string> = new Set(),
     conversationId?: ConversationId,
   ): Promise<void> {
     const ext = await acquireExtensions(this.opts.workspaceRoot, (line) =>
@@ -769,17 +762,8 @@ export class Session {
     // 角色的 allowedTools 同样约束插件与 MCP 工具。
     // 只过滤内置工具的话，一个「只读」角色照样能调插件里的写工具。
     const allow = this.opts.allowedTools ? new Set(this.opts.allowedTools) : null
-    // 会话级开关关掉的那些**不进这一步**，而不是接进来再拦。
-    // 接进来再拦的话模型仍然看得见它（工具表里、或者运行上下文清单里），
-    // 会反复去调、去装一个必然失败的名字。
-    const off = (spec: { name: string }) => {
-      const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(spec.name)
-      if (mcp) return disabled.has(`mcp:${mcp[1]}`)
-      const plugin = /^(.+?)__/.exec(spec.name)
-      return plugin ? disabled.has(`plugin:${plugin[1]}`) : false
-    }
     const eligible = ext.toolSpecs.filter(
-      (spec) => !(allow && !allow.has(spec.name)) && !off(spec) && !this.registry.has(spec.name),
+      (spec) => !(allow && !allow.has(spec.name)) && !this.registry.has(spec.name),
     )
 
     /*
