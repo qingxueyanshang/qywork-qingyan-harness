@@ -1254,6 +1254,17 @@ pub enum Seen<'a> {
     Window(bool),
 }
 
+/// 等待条件还能不能成立。
+///
+/// 等值或等可用时目标控件已经不在：控件身份按 RuntimeId 核，重建出来的是另一个控件，
+/// 这个条件不会再成立，继续轮询只会等到超时。其余组合照常轮询。
+pub fn attainable(until: WaitUntil, seen: Seen<'_>) -> bool {
+    !matches!(
+        (until, seen),
+        (WaitUntil::Value | WaitUntil::Enabled, Seen::Missing)
+    )
+}
+
 /// 这一轮读到的事实满不满足等待条件。
 pub fn satisfied(until: WaitUntil, want: Option<&str>, seen: Seen<'_>) -> bool {
     match (until, seen) {
@@ -2086,6 +2097,23 @@ mod tests {
         // 控件还在就不算消失，控件没了也不算值等到了。
         assert!(!satisfied(WaitUntil::Value, Some(""), Seen::Missing));
         assert!(!satisfied(WaitUntil::Enabled, None, Seen::Missing));
+    }
+
+    /// 原始失败形状：等刚点过的链接的值，页面一跳转链接就不在了，此前要轮询到超时。
+    #[test]
+    fn a_value_or_enabled_wait_on_a_missing_control_cannot_succeed() {
+        assert!(!attainable(WaitUntil::Value, Seen::Missing));
+        assert!(!attainable(WaitUntil::Enabled, Seen::Missing));
+        // 等消失的恰好要它不在；等出现与等窗口不看单个控件。
+        assert!(attainable(WaitUntil::Gone, Seen::Missing));
+        assert!(attainable(WaitUntil::Appears, Seen::Matches(0)));
+        assert!(attainable(WaitUntil::Window, Seen::Window(false)));
+        let off = Seen::Element {
+            enabled: false,
+            value: None,
+        };
+        assert!(attainable(WaitUntil::Value, off));
+        assert!(attainable(WaitUntil::Enabled, off));
     }
 
     /// 大窗口上的判定本身要花几百毫秒，间隔得跟着放大，否则等待会把目标应用占满。

@@ -85,7 +85,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 use crate::foreground;
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
-    next_poll, now_ms, satisfied, scroll_amounts, selected_name_budget, toggle_steps,
+    attainable, next_poll, now_ms, satisfied, scroll_amounts, selected_name_budget, toggle_steps,
     ActionEvidence, ActionSpec, Bounds,
     range_state, BlockingWindow, Completeness, Dispatch, DragTarget, Node, NodeAction, Observation,
     ScrollState, Seen, Select,
@@ -754,7 +754,7 @@ impl Backend {
         Ok(Observation::Wait(Wait { found, reason, tree }))
     }
 
-    /// 轮询到条件成立、到期或被撤销。返回最后一轮读到的事实。
+    /// 轮询到条件成立、不可能再成立（`target_gone`）、到期或被撤销。返回最后一轮读到的事实。
     fn wait_loop(
         &self,
         req: &WaitRequest<'_>,
@@ -768,6 +768,9 @@ impl Backend {
             let probe = self.probe(req)?;
             if satisfied(req.until, req.value, probe.seen()) {
                 return Ok((true, None, probe));
+            }
+            if !attainable(req.until, probe.seen()) {
+                return Ok((false, Some("target_gone".to_owned()), probe));
             }
             let now = Instant::now();
             if now >= req.deadline {
