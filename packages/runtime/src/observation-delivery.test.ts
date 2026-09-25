@@ -76,7 +76,8 @@ const 条目数 = 480
 const 长值 = '合成长文本。'.repeat(10_000)
 
 const 根: DesktopElement = {
-  ref: 'w#0',
+  ref: 'e1',
+  windowRoot: true,
   depth: 0,
   role: 'window',
   name: '合成窗口',
@@ -86,8 +87,8 @@ const 根: DesktopElement = {
   actions: [],
 }
 const 分组: DesktopElement = {
-  ref: 'g#1',
-  parentRef: 'w#0',
+  ref: 'e2',
+  parentRef: 'e1',
   depth: 1,
   role: 'group',
   name: '合成分组 🙂',
@@ -97,8 +98,8 @@ const 分组: DesktopElement = {
   actions: [],
 }
 const 焦点框: DesktopElement = {
-  ref: 'f#1',
-  parentRef: 'w#0',
+  ref: 'e3',
+  parentRef: 'e1',
   depth: 1,
   role: 'edit',
   name: '焦点框',
@@ -110,8 +111,8 @@ const 焦点框: DesktopElement = {
   actions: [{ action: 'set_value', delivery: ['background'] }],
 }
 const 长值框: DesktopElement = {
-  ref: 'v#1',
-  parentRef: 'w#0',
+  ref: 'e4',
+  parentRef: 'e1',
   depth: 1,
   role: 'edit',
   name: '长值框',
@@ -128,8 +129,8 @@ const 长值框: DesktopElement = {
  * 都会让回读与原观察不等，而两种都不会报错。
  */
 const 特殊值: DesktopElement = {
-  ref: 'z#1',
-  parentRef: 'w#0',
+  ref: 'e5',
+  parentRef: 'e1',
   depth: 0,
   role: 'edit',
   name: '',
@@ -143,8 +144,8 @@ const 特殊值: DesktopElement = {
 } as unknown as DesktopElement
 /** 动作目标，排在整张表最后：进视图靠优先级，不靠位置。 */
 const 目标: DesktopElement = {
-  ref: 't#1',
-  parentRef: 'g#1',
+  ref: 'e6',
+  parentRef: 'e2',
   depth: 2,
   role: 'button',
   name: '目标按钮',
@@ -157,8 +158,8 @@ const 目标: DesktopElement = {
 /** `value` 写在最后一个键上，标记因此落在这一行的行尾。 */
 function 条目(i: number): DesktopElement {
   return {
-    ref: `e#${i}`,
-    parentRef: 'w#0',
+    ref: `e${100 + i}`,
+    parentRef: 'e1',
     depth: 1,
     role: 'text',
     name: `合成条目 ${i} 🙂 ${'甲乙丙丁'.repeat(40)}`,
@@ -519,7 +520,7 @@ describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读回'
     const ctx = toolCtx({ h, desktop: desktopPort(大表) })
     const r = await h.registry.execute(
       'desktop_act',
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 't#1' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e6' },
       ctx,
     )
     expect(r.status).toBe('success')
@@ -539,16 +540,13 @@ describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读回'
     expect(meta).toEqual(expected)
     expect(rows).toEqual(elements)
     // 缺席、null、false、0、空串与长值都按原样回来。
-    const 回读特殊 = rows.find((e) => (e as DesktopElement).ref === 'z#1') as Record<
-      string,
-      unknown
-    >
+    const 回读特殊 = rows.find((e) => (e as DesktopElement).ref === 'e5') as Record<string, unknown>
     expect(回读特殊.value).toBe('')
     expect(回读特殊.enabled).toBe(false)
     expect(回读特殊.depth).toBe(0)
     expect((回读特殊.selection as { truncated: unknown }).truncated).toBeNull()
     expect('rect' in 回读特殊).toBe(false)
-    expect((rows.find((e) => (e as DesktopElement).ref === 'v#1') as DesktopElement).value).toBe(
+    expect((rows.find((e) => (e as DesktopElement).ref === 'e4') as DesktopElement).value).toBe(
       长值,
     )
   })
@@ -618,7 +616,7 @@ describe('真实分片存储上的搜索续查', () => {
     const id = resourceIdOf(r)
 
     // 元数据一行，之后是 `大表` 的元素；带标记的第一个控件因此落在第 7 行。
-    const 首行 = 1 + 大表.findIndex((e) => e.ref === 'e#1') + 1
+    const 首行 = 1 + 大表.findIndex((e) => e.ref === 'e101') + 1
     const hits = await searchWhole(h, ctx, id, 行尾标记)
     expect(hits.map((x) => x.line)).toEqual(Array.from({ length: 条目数 }, (_, i) => 首行 + i))
     expect(new Set(hits.map((x) => x.offset)).size).toBe(条目数)
@@ -629,7 +627,7 @@ describe('真实分片存储上的搜索续查', () => {
     const 末条 = hits[hits.length - 1] as Hit
     expect(末条.wholeLine).toBe(true)
     expect(末条.text).toContain(`${行尾标记}${条目数}`)
-    expect((JSON.parse(末条.text) as { ref: string }).ref).toBe(`e#${条目数}`)
+    expect((JSON.parse(末条.text) as { ref: string }).ref).toBe(`e${100 + 条目数}`)
 
     // 拿 lineOffset 当 offset 读回来的是这个控件整行的行首。
     const 整行 = await h.registry.execute(
@@ -638,7 +636,7 @@ describe('真实分片存储上的搜索续查', () => {
       ctx,
     )
     expect(
-      String((整行.data as { content: string }).content).startsWith(`{"ref":"e#${条目数}"`),
+      String((整行.data as { content: string }).content).startsWith(`{"ref":"e${100 + 条目数}"`),
     ).toBe(true)
   })
 
@@ -807,7 +805,7 @@ async function runDesktopAct(
           {
             id: callId,
             name: 'desktop_act',
-            arguments: { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 't#1' },
+            arguments: { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e6' },
           },
         ],
         null,
@@ -885,8 +883,8 @@ describe('同一份结果在各层同形', () => {
                 windowId: 'dw_1',
                 observationId: 'do_1',
                 steps: [
-                  { action: 'invoke', ref: 't#1' },
-                  { action: 'invoke', ref: 't#1', expect: { until: 'gone' } },
+                  { action: 'invoke', ref: 'e6' },
+                  { action: 'invoke', ref: 'e6', expect: { until: 'gone' } },
                 ],
               },
             },
@@ -1012,7 +1010,7 @@ describe('实际用量跨工具可见', () => {
 
     const act = await h.registry.execute(
       'desktop_act',
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 't#1' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e6' },
       ctx,
     )
     expect(act.status).toBe('success')

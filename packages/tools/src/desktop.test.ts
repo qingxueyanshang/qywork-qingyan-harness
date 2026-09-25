@@ -38,7 +38,8 @@ import { MAX_EDGE } from './image.ts'
 
 /** 窗口根。同名按钮分在两个分组下，只有祖先路径区分得开。 */
 const 窗口: DesktopElement = {
-  ref: 'w#1',
+  ref: 'e1',
+  windowRoot: true,
   depth: 0,
   role: 'window',
   name: '另存为',
@@ -48,8 +49,8 @@ const 窗口: DesktopElement = {
   actions: [],
 }
 const 工具栏: DesktopElement = {
-  ref: 'w.0#2',
-  parentRef: 'w#1',
+  ref: 'e2',
+  parentRef: 'e1',
   depth: 1,
   role: 'tool_bar',
   name: '',
@@ -59,8 +60,8 @@ const 工具栏: DesktopElement = {
   actions: [],
 }
 const 工具栏保存: DesktopElement = {
-  ref: 'w.0.0#3',
-  parentRef: 'w.0#2',
+  ref: 'e3',
+  parentRef: 'e2',
   depth: 2,
   role: 'button',
   name: '保存',
@@ -70,8 +71,8 @@ const 工具栏保存: DesktopElement = {
   actions: [{ action: 'invoke', delivery: ['background'] }],
 }
 const 表单组: DesktopElement = {
-  ref: 'w.1#4',
-  parentRef: 'w#1',
+  ref: 'e4',
+  parentRef: 'e1',
   depth: 1,
   role: 'group',
   name: '文件',
@@ -81,8 +82,8 @@ const 表单组: DesktopElement = {
   actions: [],
 }
 const 输入框: DesktopElement = {
-  ref: 'w.1.0#5',
-  parentRef: 'w.1#4',
+  ref: 'e5',
+  parentRef: 'e4',
   depth: 2,
   role: 'edit',
   name: '姓名',
@@ -94,8 +95,8 @@ const 输入框: DesktopElement = {
   actions: [{ action: 'set_value', delivery: ['background'] }],
 }
 const 表单保存: DesktopElement = {
-  ref: 'w.1.1#6',
-  parentRef: 'w.1#4',
+  ref: 'e6',
+  parentRef: 'e4',
   depth: 2,
   role: 'button',
   name: '保存',
@@ -105,8 +106,8 @@ const 表单保存: DesktopElement = {
   actions: [{ action: 'invoke', delivery: ['background'] }],
 }
 const 灰按钮: DesktopElement = {
-  ref: 'w.1.2#7',
-  parentRef: 'w.1#4',
+  ref: 'e7',
+  parentRef: 'e4',
   depth: 2,
   role: 'button',
   name: '提交',
@@ -117,8 +118,8 @@ const 灰按钮: DesktopElement = {
 }
 
 const 滑块: DesktopElement = {
-  ref: 'w.2#8',
-  parentRef: 'w#1',
+  ref: 'e8',
+  parentRef: 'e1',
   depth: 1,
   role: 'slider',
   name: '音量',
@@ -129,8 +130,8 @@ const 滑块: DesktopElement = {
   range: { value: 20, min: 0, max: 100, smallChange: 1, largeChange: 10 },
 }
 const 进度条: DesktopElement = {
-  ref: 'w.3#9',
-  parentRef: 'w#1',
+  ref: 'e9',
+  parentRef: 'e1',
   depth: 1,
   role: 'progress_bar',
   name: '进度',
@@ -141,8 +142,8 @@ const 进度条: DesktopElement = {
   range: { value: 35, min: 0, max: 100, smallChange: 0, largeChange: 0 },
 }
 const 三态复选: DesktopElement = {
-  ref: 'w.4#10',
-  parentRef: 'w#1',
+  ref: 'e10',
+  parentRef: 'e1',
   depth: 1,
   role: 'check_box',
   name: '三态',
@@ -153,8 +154,8 @@ const 三态复选: DesktopElement = {
   toggle: 'off',
 }
 const 单选列表: DesktopElement = {
-  ref: 'w.5#11',
-  parentRef: 'w#1',
+  ref: 'e11',
+  parentRef: 'e1',
   depth: 1,
   role: 'list',
   name: '单选',
@@ -165,8 +166,8 @@ const 单选列表: DesktopElement = {
   selection: { multiple: false, required: false },
 }
 const 单选项: DesktopElement = {
-  ref: 'w.5.0#12',
-  parentRef: 'w.5#11',
+  ref: 'e12',
+  parentRef: 'e11',
   depth: 2,
   role: 'list_item',
   name: 'single-alpha',
@@ -181,8 +182,8 @@ const 单选项: DesktopElement = {
   selected: false,
 }
 const 树节点: DesktopElement = {
-  ref: 'w.6#13',
-  parentRef: 'w#1',
+  ref: 'e13',
+  parentRef: 'e1',
   depth: 1,
   role: 'tree_item',
   name: 'treeRoot',
@@ -196,8 +197,8 @@ const 树节点: DesktopElement = {
   expand: 'collapsed',
 }
 const 长列表: DesktopElement = {
-  ref: 'w.7#14',
-  parentRef: 'w#1',
+  ref: 'e14',
+  parentRef: 'e1',
   depth: 1,
   role: 'list',
   name: '长列表',
@@ -213,8 +214,8 @@ const 长列表: DesktopElement = {
 }
 /** 前台模式开着时读到的按钮：指针动作带 foreground delivery，后台动作照常。 */
 const 前台按钮: DesktopElement = {
-  ref: 'w.9#16',
-  parentRef: 'w#1',
+  ref: 'e16',
+  parentRef: 'e1',
   depth: 1,
   role: 'button',
   name: '前台',
@@ -232,8 +233,8 @@ const 前台按钮: DesktopElement = {
 }
 /** 持有键盘焦点的那一个。键盘动作只挂在它身上。 */
 const 焦点框: DesktopElement = {
-  ref: 'w.10#17',
-  parentRef: 'w#1',
+  ref: 'e17',
+  parentRef: 'e1',
   depth: 1,
   role: 'edit',
   name: '焦点',
@@ -277,8 +278,8 @@ const 自绘窗口: DesktopElement = {
 }
 
 const 文档框: DesktopElement = {
-  ref: 'w.8#15',
-  parentRef: 'w#1',
+  ref: 'e15',
+  parentRef: 'e1',
   depth: 1,
   role: 'edit',
   name: '正文',
@@ -295,8 +296,8 @@ const 文档框: DesktopElement = {
 
 /** 收起的组合框：控件表里没有它的项，选中项只在 selection.selected 里。 */
 const 组合框: DesktopElement = {
-  ref: 'w.11#18',
-  parentRef: 'w#1',
+  ref: 'e18',
+  parentRef: 'e1',
   depth: 1,
   role: 'combo_box',
   name: '部门',
@@ -522,7 +523,7 @@ describe('没有端口与已停止', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e3' },
       ctxWith(port, controller.signal),
     )
     expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: 'aborted' })
@@ -539,7 +540,7 @@ describe('目标解析与层级消歧', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_value',
-        ref: 'w.1.0#5',
+        ref: 'e5',
         value: '张三',
       },
       ctxWith(port),
@@ -551,7 +552,7 @@ describe('目标解析与层级消歧', () => {
         input: {
           windowId: 'dw_1',
           observationId: 'do_1',
-          ref: 'w.1.0#5',
+          ref: 'e5',
           action: { kind: 'set_value', value: '张三' },
         },
       },
@@ -566,7 +567,7 @@ describe('目标解析与层级消歧', () => {
       ctxWith(port),
     )
     expect(r.status).toBe('success')
-    expect(calls[0]).toMatchObject({ input: { ref: 'w.1.1#6' } })
+    expect(calls[0]).toMatchObject({ input: { ref: 'e6' } })
   })
 
   /**
@@ -582,8 +583,8 @@ describe('目标解析与层级消歧', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_target_ambiguous' })
-    expect(r.message).toContain('w.0.0#3')
-    expect(r.message).toContain('w.1.1#6')
+    expect(r.message).toContain('e3')
+    expect(r.message).toContain('e6')
     expect(r.message).toContain('window「另存为」 > tool_bar')
     expect(r.message).toContain('window「另存为」 > group「文件」')
     expect(calls).toEqual([])
@@ -641,7 +642,7 @@ describe('目标解析与层级消歧', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_0', action: 'invoke', ref: 'w.0.0#3' },
+      { windowId: 'dw_1', observationId: 'do_0', action: 'invoke', ref: 'e3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_observation_stale' })
@@ -652,7 +653,7 @@ describe('目标解析与层级消歧', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.9.9#9' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e99' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_ref_unknown' })
@@ -665,7 +666,7 @@ describe('动作前置条件', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.1.2#7' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e7' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_precondition' })
@@ -676,7 +677,7 @@ describe('动作前置条件', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.0.0#3', value: 'x' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'e3', value: 'x' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
@@ -688,7 +689,7 @@ describe('动作前置条件', () => {
     const { port, calls } = fakeDesktop()
     const missing = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.1.0#5' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'e5' },
       ctxWith(port),
     )
     expect(missing).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
@@ -696,7 +697,7 @@ describe('动作前置条件', () => {
 
     await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'w.1.0#5', value: '' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'e5', value: '' },
       ctxWith(port),
     )
     expect(calls[0]).toMatchObject({ input: { action: { kind: 'set_value', value: '' } } })
@@ -706,7 +707,7 @@ describe('动作前置条件', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3', value: 'x' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e3', value: 'x' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
@@ -724,7 +725,7 @@ describe('动作族：参数、目标态与前置条件', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_range_value',
-        ref: 'w.3#9',
+        ref: 'e9',
         number: 50,
       },
       ctxWith(port),
@@ -742,7 +743,7 @@ describe('动作族：参数、目标态与前置条件', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_range_value',
-        ref: 'w.2#8',
+        ref: 'e8',
         number: 120,
       },
       ctxWith(port),
@@ -757,7 +758,7 @@ describe('动作族：参数、目标态与前置条件', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_range_value',
-        ref: 'w.2#8',
+        ref: 'e8',
         number: 42,
       },
       ctxWith(port),
@@ -774,7 +775,7 @@ describe('动作族：参数、目标态与前置条件', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_toggle',
-        ref: 'w.4#10',
+        ref: 'e10',
         state: 'indeterminate',
       },
       ctxWith(port),
@@ -789,7 +790,7 @@ describe('动作族：参数、目标态与前置条件', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_toggle',
-        ref: 'w.4#10',
+        ref: 'e10',
         state: 'off',
       },
       ctxWith(port),
@@ -803,7 +804,7 @@ describe('动作族：参数、目标态与前置条件', () => {
     const { port, calls } = fakeDesktop()
     const add = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'add_to_selection', ref: 'w.5.0#12' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'add_to_selection', ref: 'e12' },
       ctxWith(port),
     )
     expect(add).toMatchObject({ executed: false, errorKind: 'desktop_precondition' })
@@ -811,7 +812,7 @@ describe('动作族：参数、目标态与前置条件', () => {
 
     await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'select', ref: 'w.5.0#12' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'select', ref: 'e12' },
       ctxWith(port),
     )
     expect(calls[0]).toMatchObject({ input: { action: { kind: 'select' } } })
@@ -821,7 +822,7 @@ describe('动作族：参数、目标态与前置条件', () => {
     const { port, calls } = fakeDesktop()
     const again = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'collapse', ref: 'w.6#13' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'collapse', ref: 'e13' },
       ctxWith(port),
     )
     expect(again).toMatchObject({ executed: false, errorKind: 'desktop_precondition' })
@@ -829,7 +830,7 @@ describe('动作族：参数、目标态与前置条件', () => {
 
     await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'expand', ref: 'w.6#13' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'expand', ref: 'e13' },
       ctxWith(port),
     )
     expect(calls[0]).toMatchObject({ input: { action: { kind: 'expand' } } })
@@ -839,7 +840,7 @@ describe('动作族：参数、目标态与前置条件', () => {
     const { port, calls } = fakeDesktop()
     const missing = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'scroll', ref: 'w.7#14' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'scroll', ref: 'e14' },
       ctxWith(port),
     )
     expect(missing).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
@@ -850,7 +851,7 @@ describe('动作族：参数、目标态与前置条件', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'scroll',
-        ref: 'w.7#14',
+        ref: 'e14',
         direction: 'down',
       },
       ctxWith(port),
@@ -868,7 +869,7 @@ describe('动作族：参数、目标态与前置条件', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'realize_item',
-        ref: 'w.7#14',
+        ref: 'e14',
         itemName: 'row-0900',
       },
       ctxWith(port),
@@ -883,7 +884,7 @@ describe('动作族：参数、目标态与前置条件', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'select_text',
-        ref: 'w.8#15',
+        ref: 'e15',
         start: 3,
         length: 4,
       },
@@ -895,7 +896,7 @@ describe('动作族：参数、目标态与前置条件', () => {
 
     const bare = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'realize_item', ref: 'w.7#14' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'realize_item', ref: 'e14' },
       ctxWith(port),
     )
     expect(bare).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
@@ -905,9 +906,9 @@ describe('动作族：参数、目标态与前置条件', () => {
   test('参数不属于这个动作就拒绝，不静默忽略', async () => {
     const { port, calls } = fakeDesktop()
     for (const args of [
-      { action: 'invoke', ref: 'w.0.0#3', value: 'x' },
-      { action: 'expand', ref: 'w.6#13', number: 1 },
-      { action: 'set_toggle', ref: 'w.4#10', state: 'on', value: 'x' },
+      { action: 'invoke', ref: 'e3', value: 'x' },
+      { action: 'expand', ref: 'e13', number: 1 },
+      { action: 'set_toggle', ref: 'e10', state: 'on', value: 'x' },
     ]) {
       const r = await run(
         desktopActTool,
@@ -973,12 +974,12 @@ describe('选择容器的选中项', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'select', ref: 'w.5.0#12' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'select', ref: 'e12' },
       ctxWith(port),
     )
     expect(r.status).toBe('success')
     const observation = (r.data as { observation: DesktopSnapshot }).observation
-    expect(observation.elements.find((e) => e.ref === 'w.5#11')?.selection?.selected).toEqual([
+    expect(observation.elements.find((e) => e.ref === 'e11')?.selection?.selected).toEqual([
       'single-alpha',
     ])
   })
@@ -1011,7 +1012,7 @@ describe('选择容器的选中项', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'scroll',
-        ref: 'w.7#14',
+        ref: 'e14',
         direction: 'down',
       },
       ctxWith(port),
@@ -1037,12 +1038,12 @@ describe('选择容器的选中项', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'scroll',
-        ref: 'w.7#14',
+        ref: 'e14',
         direction: 'down',
       },
       ctxWith(port),
     )
-    expect(r.message).toContain('w.7#14')
+    expect(r.message).toContain('e14')
     expect(r.message).not.toContain('选中')
   })
 })
@@ -1064,17 +1065,17 @@ describe('读文本与选区', () => {
     })
     const r = await run(
       desktopObserveTool,
-      { windowId: 'dw_1', capture: 'text', observationId: 'do_1', ref: 'w.8#15', maxChars: 50 },
+      { windowId: 'dw_1', capture: 'text', observationId: 'do_1', ref: 'e15', maxChars: 50 },
       ctxWith(port),
     )
     expect(r.status).toBe('success')
     expect(calls).toEqual([
       {
         method: 'readText',
-        input: { windowId: 'dw_1', observationId: 'do_1', ref: 'w.8#15', maxChars: 50 },
+        input: { windowId: 'dw_1', observationId: 'do_1', ref: 'e15', maxChars: 50 },
       },
     ])
-    expect(r.data).toMatchObject({ ref: 'w.8#15', truncated: true, selectionSupport: 'single' })
+    expect(r.data).toMatchObject({ ref: 'e15', truncated: true, selectionSupport: 'single' })
     expect(r.message).toContain('截断')
   })
 
@@ -1082,7 +1083,7 @@ describe('读文本与选区', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
-      { windowId: 'dw_1', capture: 'text', observationId: 'do_1', ref: 'w.0.0#3' },
+      { windowId: 'dw_1', capture: 'text', observationId: 'do_1', ref: 'e3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ errorKind: 'desktop_action_unsupported' })
@@ -1100,7 +1101,7 @@ describe('三态回执与动作后观察', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_value',
-        ref: 'w.1.0#5',
+        ref: 'e5',
         value: '张三',
       },
       ctxWith(port),
@@ -1126,7 +1127,7 @@ describe('三态回执与动作后观察', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({
@@ -1151,7 +1152,7 @@ describe('三态回执与动作后观察', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
@@ -1172,7 +1173,7 @@ describe('三态回执与动作后观察', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({
@@ -1203,7 +1204,7 @@ describe('三态回执与动作后观察', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e3' },
       ctxWith(port),
     )
     expect(r.status).toBe('success')
@@ -1229,7 +1230,7 @@ describe('三态回执与动作后观察', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
@@ -1251,7 +1252,7 @@ describe('三态回执与动作后观察', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0#3' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_unavailable' })
@@ -1265,7 +1266,7 @@ describe('局部读取、视图筛选与字段选择', () => {
       desktopObserveTool,
       {
         windowId: 'dw_1',
-        root: 'w.1#4',
+        root: 'e4',
         role: 'button',
         query: '保存',
         includeValue: false,
@@ -1274,7 +1275,7 @@ describe('局部读取、视图筛选与字段选择', () => {
     )
     expect(calls[0]).toEqual({
       method: 'observe',
-      input: { windowId: 'dw_1', root: 'w.1#4', includeValue: false },
+      input: { windowId: 'dw_1', root: 'e4', includeValue: false },
     })
   })
 
@@ -1311,8 +1312,8 @@ describe('局部读取、视图筛选与字段选择', () => {
     })
     const whole = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(whole.currentView).toEqual({ key: 'desktop:dw_1' })
-    const scoped = await run(desktopObserveTool, { windowId: 'dw_1', root: 'w.1#4' }, ctxWith(port))
-    expect(scoped.currentView).toEqual({ key: 'desktop:dw_1', scope: 'w.1#4' })
+    const scoped = await run(desktopObserveTool, { windowId: 'dw_1', root: 'e4' }, ctxWith(port))
+    expect(scoped.currentView).toEqual({ key: 'desktop:dw_1', scope: 'e4' })
     const filtered = await run(
       desktopObserveTool,
       { windowId: 'dw_1', query: '保存' },
@@ -1368,13 +1369,13 @@ describe('局部读取、视图筛选与字段选择', () => {
           windowId: input.windowId,
           truncated: true,
           truncatedBy: ['max_nodes'],
-          filteredBy: ['root=w.1#4'],
+          filteredBy: ['root=e4'],
           visited: 900,
         }),
     })
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(r.message).toContain('max_nodes')
-    expect(r.message).toContain('root=w.1#4')
+    expect(r.message).toContain('root=e4')
     expect(r.data).toMatchObject({ visited: 900 })
   })
 
@@ -1469,7 +1470,7 @@ describe('采集模式', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
-      { windowId: 'dw_1', around: 'w.1.0#5', observationId: 'do_1' },
+      { windowId: 'dw_1', around: 'e5', observationId: 'do_1' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
@@ -1483,7 +1484,7 @@ describe('采集模式', () => {
       {
         windowId: 'dw_1',
         capture: 'region_image',
-        around: 'w.1.0#5',
+        around: 'e5',
         observationId: 'do_1',
         imageRef: 'di_1',
         imageRect: { x: 0, y: 0, width: 10, height: 10 },
@@ -1504,7 +1505,7 @@ describe('按控件与按图取景', () => {
         windowId: 'dw_1',
         capture: 'region_image',
         observationId: 'do_1',
-        around: 'w.1.0#5',
+        around: 'e5',
         pad: 20,
       },
       ctxWith(port),
@@ -1531,7 +1532,7 @@ describe('按控件与按图取景', () => {
     })
     const r = await run(
       desktopObserveTool,
-      { windowId: 'dw_1', capture: 'combined', around: 'w.1.0#5', pad: 5 },
+      { windowId: 'dw_1', capture: 'combined', around: 'e5', pad: 5 },
       ctxWith(port),
     )
     // `elements` 恒回 null：走到它就会以「观察已失效」收尾，采不到图。
@@ -1546,7 +1547,7 @@ describe('按控件与按图取景', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
-      { windowId: 'dw_1', capture: 'combined', observationId: 'do_1', around: 'w.1.0#5' },
+      { windowId: 'dw_1', capture: 'combined', observationId: 'do_1', around: 'e5' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
@@ -1557,7 +1558,7 @@ describe('按控件与按图取景', () => {
     const { port, calls } = fakeDesktop()
     await run(
       desktopObserveTool,
-      { windowId: 'dw_1', capture: 'region_image', observationId: 'do_1', around: 'w.1.0#5' },
+      { windowId: 'dw_1', capture: 'region_image', observationId: 'do_1', around: 'e5' },
       ctxWith(port),
     )
     expect(calls[0]).toMatchObject({
@@ -1570,7 +1571,7 @@ describe('按控件与按图取景', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
-      { windowId: 'dw_1', capture: 'region_image', observationId: 'do_1', around: 'w.0.0#3' },
+      { windowId: 'dw_1', capture: 'region_image', observationId: 'do_1', around: 'e3' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_no_bounds' })
@@ -1581,7 +1582,7 @@ describe('按控件与按图取景', () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
-      { windowId: 'dw_1', capture: 'region_image', observationId: 'do_9', around: 'w.1.0#5' },
+      { windowId: 'dw_1', capture: 'region_image', observationId: 'do_9', around: 'e5' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_observation_stale' })
@@ -1781,7 +1782,7 @@ describe('等待', () => {
     )
     expect(calls[0]).toMatchObject({
       method: 'wait',
-      input: { ref: 'w.1.1#6', until: 'enabled', timeoutMs: 60_000 },
+      input: { ref: 'e6', until: 'enabled', timeoutMs: 60_000 },
     })
   })
 
@@ -1789,7 +1790,7 @@ describe('等待', () => {
     const { port, calls } = fakeDesktop()
     const bad = await run(
       desktopWaitTool,
-      { windowId: 'dw_1', observationId: 'do_1', until: 'value', ref: 'w.1.0#5' },
+      { windowId: 'dw_1', observationId: 'do_1', until: 'value', ref: 'e5' },
       ctxWith(port),
     )
     expect(bad).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
@@ -1837,7 +1838,7 @@ describe('等待', () => {
     const { port } = fakeDesktop()
     const r = await run(
       desktopWaitTool,
-      { windowId: 'dw_1', observationId: 'do_1', until: 'enabled', ref: 'w.1.1#6' },
+      { windowId: 'dw_1', observationId: 'do_1', until: 'enabled', ref: 'e6' },
       ctxWith(port),
     )
     expect(r.status).toBe('success')
@@ -1854,7 +1855,7 @@ describe('等待', () => {
     })
     const r = await run(
       desktopWaitTool,
-      { windowId: 'dw_1', observationId: 'do_1', until: 'enabled', ref: 'w.1.2#7' },
+      { windowId: 'dw_1', observationId: 'do_1', until: 'enabled', ref: 'e7' },
       ctxWith(port),
     )
     expect(r).toMatchObject({
@@ -1877,7 +1878,7 @@ describe('等待', () => {
     })
     const r = await run(
       desktopWaitTool,
-      { windowId: 'dw_1', observationId: 'do_1', until: 'gone', ref: 'w.1.2#7' },
+      { windowId: 'dw_1', observationId: 'do_1', until: 'gone', ref: 'e7' },
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_observation_unavailable' })
@@ -1920,7 +1921,7 @@ describe('前台动作', () => {
           windowId: 'dw_1',
           observationId: 'do_1',
           action,
-          ref: 'w.0.0#3',
+          ref: 'e3',
           ...(action === 'type_text' ? { text: '张三' } : {}),
         },
         ctxWith(port),
@@ -1938,7 +1939,7 @@ describe('前台动作', () => {
     const { port, calls } = foregroundPort()
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'w.9#16', button: 'right' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'e16', button: 'right' },
       ctxWith(port),
     )
     expect(r.status).toBe('success')
@@ -1948,7 +1949,7 @@ describe('前台动作', () => {
         input: {
           windowId: 'dw_1',
           observationId: 'do_1',
-          ref: 'w.9#16',
+          ref: 'e16',
           action: { kind: 'click', button: 'right', count: 1 },
         },
       },
@@ -1959,7 +1960,7 @@ describe('前台动作', () => {
     const { port, calls } = foregroundPort()
     await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'w.9#16', count: 2 },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'e16', count: 2 },
       ctxWith(port),
     )
     expect((calls[0]?.input as { action: unknown }).action).toEqual({
@@ -1969,7 +1970,7 @@ describe('前台动作', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'w.9#16', count: 9 },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'e16', count: 9 },
       ctxWith(port),
     )
     // 越界按上限夹，不拒：三击没有额外语义，两下已经是双击。
@@ -1981,7 +1982,7 @@ describe('前台动作', () => {
     const { port, calls } = foregroundPort()
     const blocked = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'type_text', ref: 'w.9#16', text: '张三' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'type_text', ref: 'e16', text: '张三' },
       ctxWith(port),
     )
     expect(blocked).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
@@ -1991,7 +1992,7 @@ describe('前台动作', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'type_text',
-        ref: 'w.10#17',
+        ref: 'e17',
         text: '张三',
       },
       ctxWith(port),
@@ -2049,7 +2050,7 @@ describe('前台动作', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'press_key',
-        ref: 'w#1',
+        ref: 'e1',
         key: 'a',
         modifiers: ['ctrl'],
       },
@@ -2060,6 +2061,23 @@ describe('前台动作', () => {
       observationId: 'do_1',
       action: { kind: 'press_key', key: 'a', modifiers: ['ctrl'] },
     })
+  })
+
+  /** 子树读取的根同样 `depth` 为 0、没有 `parentRef`，但它不是窗口元素。 */
+  test('只读过子树的观察没有窗口根，不点名控件的输入在派发之前被拒', async () => {
+    const { windowRoot: _root, ...子树根 } = 自绘窗口
+    const { port, calls } = fakeDesktop({
+      elements: (windowId, observationId) =>
+        windowId === 'dw_1' && observationId === 'do_1' ? [{ ...子树根, ref: 'e4' }] : null,
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'type_text', text: '张三' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_target_missing' })
+    expect(r.message).toContain('先对整窗观察一次')
+    expect(calls).toEqual([])
   })
 
   test('窗口根没有键盘动作时，不点名控件的输入在派发之前被拒', async () => {
@@ -2099,7 +2117,7 @@ describe('前台动作', () => {
   const 输入 = (port: DesktopPort, text: string) =>
     run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'type_text', ref: 'w.10#17', text },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'type_text', ref: 'e17', text },
       ctxWith(port),
     )
 
@@ -2165,7 +2183,7 @@ describe('前台动作', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_value',
-        ref: 'w.10#17',
+        ref: 'e17',
         value: '张三',
       },
       ctxWith(port),
@@ -2193,8 +2211,8 @@ describe('前台动作', () => {
    */
   test('树上只有窗口与标题栏时，观察回执指出要取图并给坐标', async () => {
     const 标题栏: DesktopElement = {
-      ref: 'w.1#20',
-      parentRef: 'w#1',
+      ref: 'e20',
+      parentRef: 'e1',
       depth: 1,
       role: 'title_bar',
       name: '',
@@ -2205,8 +2223,8 @@ describe('前台动作', () => {
       actions: [{ action: 'set_value', delivery: ['background'] }],
     }
     const 关闭按钮: DesktopElement = {
-      ref: 'w.1.3#21',
-      parentRef: 'w.1#20',
+      ref: 'e21',
+      parentRef: 'e20',
       depth: 2,
       role: 'button',
       name: '关闭',
@@ -2216,8 +2234,8 @@ describe('前台动作', () => {
       actions: [{ action: 'invoke', delivery: ['background'] }],
     }
     const 画布: DesktopElement = {
-      ref: 'w.0#22',
-      parentRef: 'w#1',
+      ref: 'e22',
+      parentRef: 'e1',
       depth: 1,
       role: 'pane',
       name: '',
@@ -2249,8 +2267,8 @@ describe('前台动作', () => {
 
   test('无可操作控件但模型不收图片：只给控件表，不采那张看不到的图', async () => {
     const 画布: DesktopElement = {
-      ref: 'w.0#22',
-      parentRef: 'w#1',
+      ref: 'e22',
+      parentRef: 'e1',
       depth: 1,
       role: 'pane',
       name: '',
@@ -2284,8 +2302,8 @@ describe('前台动作', () => {
   test('前台操作关着时，同一行补上它没启用', async () => {
     const 后台窗口: DesktopElement = { ...窗口, actions: [] }
     const 画布: DesktopElement = {
-      ref: 'w.0#22',
-      parentRef: 'w#1',
+      ref: 'e22',
+      parentRef: 'e1',
       depth: 1,
       role: 'pane',
       name: '',
@@ -2333,7 +2351,7 @@ describe('前台动作', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'press_key',
-        ref: 'w.10#17',
+        ref: 'e17',
         key: 'a',
         modifiers: ['ctrl', 'ctrl'],
       },
@@ -2350,7 +2368,7 @@ describe('前台动作', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'press_key',
-        ref: 'w.10#17',
+        ref: 'e17',
         key: 'a',
         modifiers: ['hyper'],
       },
@@ -2363,7 +2381,7 @@ describe('前台动作', () => {
     const { port, calls } = foregroundPort()
     const byOffset = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'drag', ref: 'w.9#16', dx: 80, dy: 0 },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'drag', ref: 'e16', dx: 80, dy: 0 },
       ctxWith(port),
     )
     expect(byOffset.status).toBe('success')
@@ -2376,8 +2394,8 @@ describe('前台动作', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'drag',
-        ref: 'w.9#16',
-        toRef: 'w.1.0#5',
+        ref: 'e16',
+        toRef: 'e5',
         dx: 80,
       },
       ctxWith(port),
@@ -2385,7 +2403,7 @@ describe('前台动作', () => {
     expect(both).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
     const none = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'drag', ref: 'w.9#16' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'drag', ref: 'e16' },
       ctxWith(port),
     )
     expect(none).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
@@ -2418,7 +2436,7 @@ describe('前台动作', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'click',
-        ref: 'w.9#16',
+        ref: 'e16',
         imageRef: 'di_1',
         imageX: 1,
         imageY: 1,
@@ -2498,7 +2516,7 @@ describe('前台动作', () => {
     const { port, calls } = foregroundPort()
     await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'w.9#16' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'e16' },
       ctxWith(port),
     )
     expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
@@ -2537,7 +2555,7 @@ describe('前台动作', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_window_state',
-        ref: 'w#1',
+        ref: 'e1',
         windowState: 'maximized',
       },
       ctxWith(port),
@@ -2552,7 +2570,7 @@ describe('前台动作', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_window_state',
-        ref: 'w#1',
+        ref: 'e1',
         state: 'maximized',
       },
       ctxWith(port),
@@ -2576,7 +2594,7 @@ describe('前台动作', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'type_text',
-        ref: 'w.10#17',
+        ref: 'e17',
         text: '张三',
       },
       ctxWith(port),
@@ -2598,7 +2616,7 @@ describe('前台动作', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'w.9#16' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'e16' },
       ctxWith(port),
     )
     expect(r).toMatchObject({
@@ -2625,7 +2643,7 @@ describe('前台动作', () => {
     })
     const r = await run(
       desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'close_window', ref: 'w#1' },
+      { windowId: 'dw_1', observationId: 'do_1', action: 'close_window', ref: 'e1' },
       ctxWith(port),
     )
     expect(r.status).toBe('success')
@@ -2652,10 +2670,10 @@ describe('前台动作', () => {
           windowId: 'dw_1',
           observationId: 'do_1',
           steps: [
-            { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+            { action: 'set_value', ref: 'e5', value: '张三' },
             {
               action,
-              ref: 'w.9#16',
+              ref: 'e16',
               ...(action === 'set_window_state' ? { windowState: 'maximized' } : {}),
               ...(action === 'move_window' ? { x: 1, y: 2 } : {}),
               ...(action === 'resize_window' ? { width: 300, height: 200 } : {}),
@@ -2833,7 +2851,7 @@ describe('有限动作序列', () => {
     const { port, calls } = sequencePort()
     await run(
       desktopActSequenceTool,
-      seq([{ action: 'set_value', ref: 'w.1.0#5', value: '张三' }]),
+      seq([{ action: 'set_value', ref: 'e5', value: '张三' }]),
       ctxWith(port),
     )
     expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
@@ -2870,8 +2888,8 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'select', ref: 'w.5.0#12' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'select', ref: 'e12' },
       ]),
       ctxWith(port),
     )
@@ -2886,9 +2904,9 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'set_toggle', ref: 'w.4#10', state: 'on' },
-        { action: 'select', ref: 'w.5.0#12' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'set_toggle', ref: 'e10', state: 'on' },
+        { action: 'select', ref: 'e12' },
       ]),
       ctxWith(port),
     )
@@ -2897,7 +2915,7 @@ describe('有限动作序列', () => {
     expect(r.executed).toBe(true)
     expect(calls.map((c) => c.method)).toEqual(['act', 'act', 'act'])
     const inputs = calls.map((c) => c.input as { observationId: string; ref: string })
-    expect(inputs.map((i) => i.ref)).toEqual(['w.1.0#5', 'w.4#10', 'w.5.0#12'])
+    expect(inputs.map((i) => i.ref)).toEqual(['e5', 'e10', 'e12'])
     // 每一步按上一步带回的那个编号发出，不是原地复用第一个。
     expect(inputs.map((i) => i.observationId)).toEqual(['do_1', 'do_2', 'do_3'])
 
@@ -2918,9 +2936,9 @@ describe('有限动作序列', () => {
 
     // 夹具自己的状态说得出这三步真落下去了。
     const table = current()
-    expect(table.find((e) => e.ref === 'w.1.0#5')?.value).toBe('张三')
-    expect(table.find((e) => e.ref === 'w.4#10')?.toggle).toBe('on')
-    expect(table.find((e) => e.ref === 'w.5.0#12')?.selected).toBe(true)
+    expect(table.find((e) => e.ref === 'e5')?.value).toBe('张三')
+    expect(table.find((e) => e.ref === 'e10')?.toggle).toBe('on')
+    expect(table.find((e) => e.ref === 'e12')?.selected).toBe(true)
   })
 
   test('序列只调端口，不经过任何模型请求通道', async () => {
@@ -2928,8 +2946,8 @@ describe('有限动作序列', () => {
     await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'invoke', ref: 'w.0.0#3' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'invoke', ref: 'e3' },
       ]),
       ctxWith(port),
     )
@@ -2948,15 +2966,15 @@ describe('有限动作序列', () => {
     await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'invoke', ref: 'w.0.0#3' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'invoke', ref: 'e3' },
       ]),
       ctx,
     )
     expect(sent).toHaveLength(2)
     expect(sent.every((s) => s.channel === 'progress')).toBe(true)
-    expect(sent[0]?.delta).toContain('1 set_value w.1.0#5 已执行')
-    expect(sent[1]?.delta).toContain('2 invoke w.0.0#3 已执行')
+    expect(sent[0]?.delta).toContain('1 set_value e5 已执行')
+    expect(sent[1]?.delta).toContain('2 invoke e3 已执行')
   })
 
   test('第 2 步结果未知时停下，第 3 步不执行', async () => {
@@ -2966,9 +2984,9 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'set_toggle', ref: 'w.4#10', state: 'on' },
-        { action: 'invoke', ref: 'w.0.0#3' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'set_toggle', ref: 'e10', state: 'on' },
+        { action: 'invoke', ref: 'e3' },
       ]),
       ctxWith(port),
     )
@@ -2989,9 +3007,9 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'invoke', ref: 'w.1.2#7' },
-        { action: 'invoke', ref: 'w.0.0#3' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'invoke', ref: 'e7' },
+        { action: 'invoke', ref: 'e3' },
       ]),
       ctxWith(port),
     )
@@ -3006,7 +3024,7 @@ describe('有限动作序列', () => {
     const data = r.data as { dispatched: number[]; notExecuted: number[] }
     expect(data.dispatched).toEqual([1])
     expect(data.notExecuted).toEqual([2, 3])
-    expect(r.message).toContain('2 invoke w.1.2#7 未执行')
+    expect(r.message).toContain('2 invoke e7 未执行')
   })
 
   test('第一步就没有执行时整组记未执行', async () => {
@@ -3014,8 +3032,8 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'invoke', ref: 'w.1.2#7' },
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'invoke', ref: 'e7' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
       ]),
       ctxWith(port),
     )
@@ -3031,17 +3049,17 @@ describe('有限动作序列', () => {
       seq([
         {
           action: 'set_value',
-          ref: 'w.1.0#5',
+          ref: 'e5',
           value: '张三',
           expect: { until: 'value', value: '张三' },
         },
         {
           action: 'set_toggle',
-          ref: 'w.4#10',
+          ref: 'e10',
           state: 'on',
           expect: { until: 'toggle', state: 'on' },
         },
-        { action: 'select', ref: 'w.5.0#12', expect: { until: 'selected' } },
+        { action: 'select', ref: 'e12', expect: { until: 'selected' } },
       ]),
       ctxWith(port),
     )
@@ -3063,11 +3081,11 @@ describe('有限动作序列', () => {
       seq([
         {
           action: 'set_value',
-          ref: 'w.1.0#5',
+          ref: 'e5',
           value: '张三',
           expect: { until: 'value', value: '李四', timeoutMs: 200 },
         },
-        { action: 'invoke', ref: 'w.0.0#3' },
+        { action: 'invoke', ref: 'e3' },
       ]),
       ctxWith(port),
     )
@@ -3091,7 +3109,7 @@ describe('有限动作序列', () => {
       seq([
         {
           action: 'set_toggle',
-          ref: 'w.4#10',
+          ref: 'e10',
           state: 'on',
           expect: { until: 'toggle', state: 'indeterminate' },
         },
@@ -3118,9 +3136,9 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'invoke', ref: 'w.0.0#3' },
-        { action: 'invoke', ref: 'w.1.1#6' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'invoke', ref: 'e3' },
+        { action: 'invoke', ref: 'e6' },
       ]),
       ctxWith(port),
     )
@@ -3140,8 +3158,8 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'invoke', ref: 'w.0.0#3' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'invoke', ref: 'e3' },
       ]),
       ctxWith(port),
     )
@@ -3160,8 +3178,8 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'invoke', ref: 'w.0.0#3' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'invoke', ref: 'e3' },
       ]),
       ctxWith(port, controller.signal),
     )
@@ -3174,7 +3192,7 @@ describe('有限动作序列', () => {
     const { port, calls } = sequencePort()
     const steps = Array.from({ length: 11 }, () => ({
       action: 'set_value',
-      ref: 'w.1.0#5',
+      ref: 'e5',
       value: '张三',
     }))
     const r = await run(desktopActSequenceTool, seq(steps), ctxWith(port))
@@ -3188,16 +3206,16 @@ describe('有限动作序列', () => {
     const notLast = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'close_window', ref: 'w#1' },
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'close_window', ref: 'e1' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
       ]),
       ctxWith(port),
     )
     const last = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'close_window', ref: 'w#1' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'close_window', ref: 'e1' },
       ]),
       ctxWith(port),
     )
@@ -3212,7 +3230,7 @@ describe('有限动作序列', () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
-      seq([{ action: 'frobnicate', ref: 'w.1.0#5' }]),
+      seq([{ action: 'frobnicate', ref: 'e5' }]),
       ctxWith(port),
     )
     expect(r).toMatchObject({ status: 'failure', executed: false })
@@ -3223,7 +3241,7 @@ describe('有限动作序列', () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
-      seq([{ action: 'invoke', ref: 'w.0.0#3', value: '张三' }]),
+      seq([{ action: 'invoke', ref: 'e3', value: '张三' }]),
       ctxWith(port),
     )
     expect(r).toMatchObject({ status: 'failure', executed: false })
@@ -3238,7 +3256,7 @@ describe('有限动作序列', () => {
       seq([
         {
           action: 'set_value',
-          ref: 'w.1.0#5',
+          ref: 'e5',
           automationId: '',
           name: '',
           role: '',
@@ -3273,7 +3291,7 @@ describe('有限动作序列', () => {
       seq([
         {
           action: 'set_toggle',
-          ref: 'w.4#10',
+          ref: 'e10',
           state: 'on',
           expect: { until: 'toggle', state: 'on', timeoutMs: 500 },
         },
@@ -3290,27 +3308,27 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'invoke', ref: 'w.0.0#3' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'invoke', ref: 'e3' },
       ]),
       ctxWith(port),
     )
     expect(r.status).toBe('success')
     const second = calls[1]?.input as { observationId: string; ref: string }
-    expect(second.ref).toBe('w.0.0#3')
+    expect(second.ref).toBe('e3')
     expect(second.observationId).toBe('do_2')
   })
 
   test('引用接续：新观察里没有这个 ref 就停下来交回模型，不另找一个顶上', async () => {
-    const rebuilt = TABLE.map((e) => (e.ref === 'w.4#10' ? { ...e, ref: 'w.4#77' } : { ...e }))
+    const rebuilt = TABLE.map((e) => (e.ref === 'e10' ? { ...e, ref: 'e77' } : { ...e }))
     const { port, calls } = sequencePort({
       acts: [{ observation: snapshot({ observationId: 'do_9', elements: rebuilt }) }],
     })
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'set_toggle', ref: 'w.4#10', state: 'on' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'set_toggle', ref: 'e10', state: 'on' },
       ]),
       ctxWith(port),
     )
@@ -3320,25 +3338,25 @@ describe('有限动作序列', () => {
       executed: true,
       errorKind: 'desktop_ref_unknown',
     })
-    expect(r.message).toContain('2 set_toggle w.4#10 未执行')
+    expect(r.message).toContain('2 set_toggle e10 未执行')
   })
 
   test('引用接续：按 automationId 定位的步骤在新观察里重新解析', async () => {
-    const rebuilt = TABLE.map((e) => (e.ref === 'w.4#10' ? { ...e, ref: 'w.4#77' } : { ...e }))
+    const rebuilt = TABLE.map((e) => (e.ref === 'e10' ? { ...e, ref: 'e77' } : { ...e }))
     const { port, calls } = sequencePort({
       acts: [{ observation: snapshot({ observationId: 'do_9', elements: rebuilt }) }],
     })
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
         { action: 'set_toggle', automationId: 'triCheck', state: 'on' },
       ]),
       ctxWith(port),
     )
     expect(r.status).toBe('success')
     const second = calls[1]?.input as { observationId: string; ref: string }
-    expect(second.ref).toBe('w.4#77')
+    expect(second.ref).toBe('e77')
     expect(second.observationId).toBe('do_9')
   })
 
@@ -3347,7 +3365,7 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
         { action: 'invoke', name: '保存' },
       ]),
       ctxWith(port),
@@ -3368,7 +3386,7 @@ describe('有限动作序列', () => {
       {
         windowId: 'dw_1',
         observationId: 'do_404',
-        steps: [{ action: 'set_value', ref: 'w.1.0#5', value: '张三' }],
+        steps: [{ action: 'set_value', ref: 'e5', value: '张三' }],
       },
       ctxWith(port),
     )
@@ -3386,7 +3404,7 @@ describe('有限动作序列', () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
-      seq([{ action: 'set_value', ref: 'w.1.0#5', value: '张三' }]),
+      seq([{ action: 'set_value', ref: 'e5', value: '张三' }]),
       ctxWith(port, controller.signal),
     )
     expect(calls).toEqual([])
@@ -3394,11 +3412,7 @@ describe('有限动作序列', () => {
   })
 
   test('没有端口时如实报，不当成执行过', async () => {
-    const r = await run(
-      desktopActSequenceTool,
-      seq([{ action: 'invoke', ref: 'w.0.0#3' }]),
-      ctxWith(),
-    )
+    const r = await run(desktopActSequenceTool, seq([{ action: 'invoke', ref: 'e3' }]), ctxWith())
     expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: 'unsupported' })
   })
 
@@ -3413,7 +3427,7 @@ describe('有限动作序列', () => {
     }
     const r = await run(
       desktopActSequenceTool,
-      seq([{ action: 'set_value', ref: 'w.1.0#5', value: '张三' }]),
+      seq([{ action: 'set_value', ref: 'e5', value: '张三' }]),
       ctxWith(failing),
     )
     expect(r).toMatchObject({
@@ -3434,8 +3448,8 @@ describe('有限动作序列', () => {
     const r = await run(
       desktopActSequenceTool,
       seq([
-        { action: 'set_value', ref: 'w.1.0#5', value: '张三' },
-        { action: 'invoke', ref: 'w.0.0#3' },
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'invoke', ref: 'e3' },
       ]),
       ctxWith(failing),
     )
@@ -3554,7 +3568,7 @@ describe('可选参数填空位', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'invoke',
-        ref: 'w.0.0#3',
+        ref: 'e3',
       }),
       ctxWith(port),
     )
@@ -3571,7 +3585,7 @@ describe('可选参数填空位', () => {
       windowId: 'dw_1',
       observationId: 'do_1',
       action: 'set_value',
-      ref: 'w.1.0#5',
+      ref: 'e5',
       value: '张三',
     })
     // 字符串型的空位填空串，数值型的填 null——实测里模型就是这么混着填的。
@@ -3594,7 +3608,7 @@ describe('可选参数填空位', () => {
       windowId: 'dw_1',
       observationId: 'do_1',
       action: 'invoke',
-      ref: 'w.0.0#3',
+      ref: 'e3',
     })
     for (const key of Object.keys(padded)) if (padded[key] === null) padded[key] = 'null'
     padded.imageRef = 'null'
@@ -3608,18 +3622,6 @@ describe('可选参数填空位', () => {
     })
   })
 
-  test('ref 漏抄 # 之后的身份段：不猜，回执给出这份观察里的整条 ref', async () => {
-    const { port, calls } = fakeDesktop()
-    const r = await run(
-      desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'w.0.0' },
-      ctxWith(port),
-    )
-    expect(r).toMatchObject({ status: 'failure', executed: false })
-    expect(r.message).toContain('w.0.0#3')
-    expect(calls).toEqual([])
-  })
-
   test('真的给了不属于这个动作的值仍然当场拒绝', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
@@ -3628,7 +3630,7 @@ describe('可选参数填空位', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'invoke',
-        ref: 'w.0.0#3',
+        ref: 'e3',
         value: '张三',
       }),
       ctxWith(port),
@@ -3683,7 +3685,7 @@ describe('type_text 回执里的输入框原值与现值', () => {
       ctxWith(port),
     )
     expect(r.status).toBe('success')
-    expect(r.message).toContain('w.10#17 原值 "盘点草稿-0037" → 现值 "盘点终稿-0037.txt"')
+    expect(r.message).toContain('e17 原值 "盘点草稿-0037" → 现值 "盘点终稿-0037.txt"')
   })
 
   test('序列里的 type_text 一步同样印出原值与现值', async () => {
@@ -3699,7 +3701,7 @@ describe('type_text 回执里的输入框原值与现值', () => {
     )
     expect(r.message).toContain('原值 "盘点草稿-0037" → 现值 "盘点终稿-0037.txt"')
     expect((r.data as { steps: { input?: unknown }[] }).steps[0]?.input).toEqual({
-      ref: 'w.10#17',
+      ref: 'e17',
       before: '盘点草稿-0037',
       after: '盘点终稿-0037.txt',
     })
@@ -3731,7 +3733,7 @@ describe('set_value 回执里的原值', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         action: 'set_value',
-        ref: 'w.10#17',
+        ref: 'e17',
         value: '盘点终稿-0037.txt',
       },
       ctxWith(port),

@@ -46,9 +46,10 @@ export interface DesktopWindowInfo {
 /**
  * 一次观察里的一个控件。
  *
- * `ref` 只在**同一次观察、同一窗口**内有效。重新观察、换 worker、宿主重连之后旧编号
- * 一律作废。`actions` 只列宿主真的能执行的动作，**不是控件声明支持的全部模式**：
- * 按它发请求才不会撞上一个没有实现的动作。
+ * `ref` 是本窗口内按控件身份分配的短编号：同一个控件在之后的观察里编号不变，发放过的
+ * 编号不再分给别的身份。动作只认本执行者对这个窗口最近一份观察里的编号；换 worker、
+ * 宿主重连之后一律作废。`actions` 只列宿主真的能执行的动作，**不是控件声明支持的全部
+ * 模式**：按它发请求才不会撞上一个没有实现的动作。
  *
  * `parentRef` 指向同一张表里的父控件，`depth` 是相对本次观察范围的层数。同名控件靠
  * 祖先路径分得开，路径由调用方顺着 `parentRef` 往上走出来。
@@ -57,6 +58,12 @@ export interface DesktopElement {
   ref: string
   /** 父控件的 `ref`。本次观察范围的根没有父控件。 */
   parentRef?: string
+  /**
+   * 这是窗口元素本身：整窗读取的第一项。缺席表示不是。
+   *
+   * 子树读取的根同样 `depth` 为 0、没有 `parentRef`，不能按那两格判。
+   */
+  windowRoot?: boolean
   depth: number
   role: string
   name: string
@@ -177,7 +184,7 @@ export interface DesktopSnapshot {
   /** 观察编号。动作必须带上它；重新观察即换号，旧号作废。 */
   observationId: string
   capturedAt: number
-  /** 读取范围的根，即表的第一项。缺席表示整窗。 */
+  /** 读取范围的根，即表的第一项的 `ref`。缺席表示整窗。 */
   scope?: string
   elements: DesktopElement[]
   truncated: boolean
