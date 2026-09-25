@@ -42,6 +42,8 @@ apps/desktop/src-tauri/permissions/
 
 # agent 运行态（.claude/memory/ 是项目记忆，要入库）
 .claude/*.lock
+# 子 agent 的独立 worktree：每个都是整份检出，自带根级 biome.json。
+.claude/worktrees/
 scripts/dist/
 
 # 方案、复审、执行记录（CLAUDE.md A3/A4）。
