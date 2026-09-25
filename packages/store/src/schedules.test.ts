@@ -7,6 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { resolve, sep } from 'node:path'
 import type { ConversationId, RunId, WorkspaceId } from '@qywork/core'
 import { Store } from './db.ts'
 import {
@@ -29,8 +30,10 @@ import {
 
 let store: Store
 // 已归一的形式（`normalizeWorkspaceRoot`）：仓储层落盘与回读都是这一份。
-const ROOT_A = 'C:\\ws\\a'
-const ROOT_B = 'C:\\ws\\b'
+const ROOT_A = resolve('/ws/a')
+const ROOT_B = resolve('/ws/b')
+/** 同一目录未归一的写法：分隔符换成 `/` 再加末尾分隔符。Windows 上两处都要归一，POSIX 上是末尾那个。 */
+const ROOT_A_UNNORMALIZED = `${ROOT_A.replaceAll(sep, '/')}/`
 let wsA: WorkspaceId
 let wsB: WorkspaceId
 /** 建任务的那条会话，绑定与复用都以它为准。 */
@@ -58,7 +61,7 @@ afterEach(() => {
 
 /** 建任务时绑定的那条会话按工作区取，与 `SchedulePort` 的注入同形。 */
 function homeOf(root: string): ConversationId {
-  return root === ROOT_B || root === 'C:/ws/b' ? homeB : homeA
+  return root === ROOT_B ? homeB : homeA
 }
 
 /** 一条已经到期的间隔任务：创建时刻推到过去，`isDue` 立即为真。 */
@@ -138,19 +141,21 @@ describe('读写', () => {
 
   /*
    * `workspace_root` 与 `workspaces.root_path` 走同一份归一。不归一的话，
-   * 用正斜杠建的任务在反斜杠的那次列表里查不到，而工作区是同一个。
+   * 用未归一写法建的任务在归一写法的那次列表里查不到，而工作区是同一个。
    */
-  test('两种分隔符写法指同一个工作区', () => {
+  test('同一目录的两种写法指同一个工作区', () => {
     const s = createSchedule(
       store,
-      'C:/ws/a',
-      { title: '正斜杠建的', prompt: 'p', kind: 'interval', everyMinutes: 30 },
+      ROOT_A_UNNORMALIZED,
+      { title: '未归一写法建的', prompt: 'p', kind: 'interval', everyMinutes: 30 },
       homeA,
     )
     expect(s.workspaceRoot).toBe(ROOT_A)
-    expect(listSchedules(store, ROOT_A, Date.now()).map((t) => t.title)).toEqual(['正斜杠建的'])
-    expect(listSchedules(store, 'C:/ws/a', Date.now()).map((t) => t.title)).toEqual(['正斜杠建的'])
-    expect(deleteSchedule(store, s.id, 'C:/ws/a')?.id).toBe(s.id)
+    expect(listSchedules(store, ROOT_A, Date.now()).map((t) => t.title)).toEqual(['未归一写法建的'])
+    expect(listSchedules(store, ROOT_A_UNNORMALIZED, Date.now()).map((t) => t.title)).toEqual([
+      '未归一写法建的',
+    ])
+    expect(deleteSchedule(store, s.id, ROOT_A_UNNORMALIZED)?.id).toBe(s.id)
   })
 
   test('改不到别的工作区的任务，删也删不掉', () => {

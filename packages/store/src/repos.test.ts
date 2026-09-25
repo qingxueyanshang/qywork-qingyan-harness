@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { resolve, sep } from 'node:path'
 import type { FileChange, MessageId } from '@qywork/core'
 import { Store } from './db.ts'
 import {
@@ -676,20 +677,23 @@ describe('会话所属项目', () => {
 })
 
 /*
- * `root_path` 是 UNIQUE，但比较按字符串做：两种分隔符写法各建一行的话，
+ * `root_path` 是 UNIQUE，但比较按字符串做：同一目录的两种写法各建一行的话，
  * 同一个目录下的会话会分裂在两个项目里，侧栏出现两个同名项目。
  */
 describe('工作区根路径归一', () => {
-  test('两种分隔符写法只得一行，第二次是更新不是新建', () => {
+  test('同一目录的两种写法只得一行，第二次是更新不是新建', () => {
     const store = new Store({ path: ':memory:' })
-    const slash = upsertWorkspace(store, 'C:/ws/demo', '正斜杠')
-    const back = upsertWorkspace(store, 'C:\\ws\\demo', '反斜杠')
+    const root = resolve('/ws/demo')
+    // 分隔符换成 `/` 再加末尾分隔符：Windows 上两处都要归一，POSIX 上是末尾那个。
+    const unnormalized = `${root.replaceAll(sep, '/')}/`
+    const first = upsertWorkspace(store, unnormalized, '未归一')
+    const second = upsertWorkspace(store, root, '已归一')
 
-    expect(back.id).toBe(slash.id)
-    expect(back.rootPath).toBe('C:\\ws\\demo')
+    expect(second.id).toBe(first.id)
+    expect(second.rootPath).toBe(root)
     expect(listWorkspaces(store).length).toBe(1)
-    expect(getWorkspaceByPath(store, 'C:/ws/demo')?.id).toBe(slash.id)
-    expect(getWorkspaceByPath(store, 'C:\\ws\\demo')?.id).toBe(slash.id)
+    expect(getWorkspaceByPath(store, unnormalized)?.id).toBe(first.id)
+    expect(getWorkspaceByPath(store, root)?.id).toBe(first.id)
     store.close()
   })
 })
