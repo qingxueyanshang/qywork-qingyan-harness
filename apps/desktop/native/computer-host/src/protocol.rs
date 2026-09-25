@@ -2738,8 +2738,8 @@ mod tests {
                 assert_eq!((window, until), (66, WaitUntil::Appears));
                 assert_eq!(reference.as_deref(), Some("w.0.1"));
                 assert_eq!(value.as_deref(), Some("完成"));
-                assert_eq!(role.as_deref(), Some("Button"));
-                assert_eq!(name_contains.as_deref(), Some("确定"));
+                assert_eq!(role.as_deref(), Some("slider"));
+                assert_eq!(name_contains.as_deref(), Some("音量"));
                 assert_eq!(root.as_deref(), Some("w.0"));
                 assert_eq!(name.as_deref(), Some("另存为"));
                 assert_eq!((poll_ms, timeout_ms), (150, 5000));
@@ -2783,7 +2783,7 @@ mod tests {
             reference: "w.0.1#42.7".to_owned(),
             parent_ref: Some("w.0".to_owned()),
             depth: 1,
-            role: "Slider".to_owned(),
+            role: Role::Slider.as_str().to_owned(),
             name: "音量".to_owned(),
             automation_id: "volume".to_owned(),
             value: Some("30".to_owned()),
@@ -2822,7 +2822,7 @@ mod tests {
             reference: "w.0".to_owned(),
             parent_ref: None,
             depth: 0,
-            role: "Window".to_owned(),
+            role: Role::Window.as_str().to_owned(),
             name: "未命名 - 记事本".to_owned(),
             automation_id: String::new(),
             value: None,
@@ -2963,5 +2963,50 @@ mod tests {
         for (key, response) in cases {
             assert_eq!(serde_json::to_value(&response).expect("可序列化"), expected[key], "{key}");
         }
+    }
+
+    /// 样例里出现的每一个 `role`（请求的角色条件与控件表的角色）都是词表里的名字。
+    /// 写法不同的角色在 worker 这一侧逐字比较，永远不命中任何控件。
+    #[test]
+    fn every_role_in_the_shared_samples_is_in_the_vocabulary() {
+        fn roles(value: &serde_json::Value, out: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, item) in map {
+                        match (key.as_str(), item) {
+                            ("role", serde_json::Value::String(role)) => out.push(role.clone()),
+                            _ => roles(item, out),
+                        }
+                    }
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|i| roles(i, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        roles(&samples(), &mut found);
+        assert!(found.len() >= 4, "样例里应当有请求与控件表两处角色：{found:?}");
+        for role in found {
+            assert!(
+                Role::ALL.iter().any(|known| known.as_str() == role),
+                "{role} 不在角色词表里"
+            );
+        }
+    }
+
+    /// 样例里等待 `appears` 的角色与文字命中样例控件表里的控件：两处用的是同一套词。
+    #[test]
+    fn the_sample_appears_condition_matches_a_sample_node() {
+        let Op::Wait { role, name_contains, .. } = sample_request("wait").op else {
+            panic!("wait 样例应当解析成等待");
+        };
+        let nodes = [bare_node(), full_node()];
+        let hits = nodes
+            .iter()
+            .filter(|n| {
+                crate::tree::matches_target(role.as_deref(), name_contains.as_deref(), n)
+            })
+            .count();
+        assert_eq!(hits, 1);
     }
 }
