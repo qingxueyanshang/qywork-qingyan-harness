@@ -1132,8 +1132,9 @@ export const desktopObserveTool: ToolSpec = {
   description:
     '观察一个窗口。capture=structure（默认）读控件表，region_image 采图，combined 两样都要，text 读文档文本与选区。' +
     '先用 structure，树里找不到目标时才采图。' +
-    '控件表给角色、名称、automationId、value、enabled、rect、depth 与控件状态；' +
-    '控件按前序排列，父控件是前面最近的、depth 小一层的那一个；' +
+    '控件表给角色、名称、automationId、value、enabled、depth 与控件状态，includeRect 为真时另给 rect；' +
+    '没有名称、值与状态的 pane / group / custom 容器不列出；' +
+    '控件按前序排列，depth 按列出的祖先计，父控件是前面最近的、depth 小一层的那一个；' +
     '每个控件的 actionSet 是 actionSets 的下标，指向它此刻能做的动作，delivery 非空才能执行；' +
     '控件上缺席的 enabled、offscreen、automationId 取 defaults 的值。' +
     '回执里「无可操作控件」就是自绘界面，这一次调用已经把整窗图一并给了，动作按图给坐标，不必再采一次；' +
@@ -1160,6 +1161,11 @@ export const desktopObserveTool: ToolSpec = {
         description: '结果只列名称、稳定标识或值包含这段文字的控件，其余控件仍在这份观察里',
       },
       includeValue: { type: 'boolean', description: '取不取控件当前值，默认取' },
+      includeRect: {
+        type: 'boolean',
+        description:
+          '控件表带不带 rect（屏幕物理像素包围盒），默认不带；按位置判断布局或算拖拽偏移时才要',
+      },
       includeState: {
         type: 'boolean',
         description: '取不取 range / toggle / expand / selected / selection / scroll，默认取',
@@ -1293,6 +1299,7 @@ export const desktopObserveTool: ToolSpec = {
         place: 'top',
         targetRef: null,
         ...(filter ? { filter } : {}),
+        ...(args.includeRect === true ? { includeRect: true } : {}),
         lead: line,
       })
       if (!alsoImage) {

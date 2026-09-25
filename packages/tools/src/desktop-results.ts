@@ -15,8 +15,9 @@
  * 5. **按角色或文字筛选只作用于视图**：观察编号与控件表是端口交回的整份，筛出来的控件与
  *    其余控件的 `ref` 同样可以直接用。存盘正文是整份控件表。
  * 6. **投递形状只有一种**：`actions` 去重成 `actionSets`，控件上只留下标；与 `defaults`
- *    相同的格省掉。小表与大表的视图同形，字典随每个结果自带。存盘正文仍是一行一个
- *    完整原始控件，不依赖字典。
+ *    相同的格省掉；`rect` 只在调用方要时给；无名结构容器不列，`depth` 按列出的祖先计。
+ *    小表与大表的视图同形，字典随每个结果自带。存盘正文仍是一行一个完整原始控件，
+ *    不依赖字典。
  */
 
 import {
@@ -56,6 +57,8 @@ export const MAX_TITLE_CHARS = 200
  * 取绝大多数控件的实际值：可用、可见、没有稳定标识。
  */
 const DEFAULTS = { enabled: true, offscreen: false, automationId: '' } as const
+/** 结构容器的角色。这几种控件没有名称与状态时只承载层级。 */
+const CONTAINER_ROLES: ReadonlySet<string> = new Set(['pane', 'group', 'custom'])
 
 type DesktopResultContext = Pick<ToolContext, 'sink' | 'contextWindow' | 'density' | 'state'>
 
@@ -66,7 +69,8 @@ type Actions = DesktopElement['actions']
  * 大表视图里超长的名称与值只留前缀，并标明省掉多少字。
  *
  * 不带 `parentRef`：控件按前序排列，父控件是前面最近的、`depth` 小一层的那一个。再带一份
- * 父控件引用约占控件表的四分之一，且每一步都是新内容，无法命中缓存。
+ * 父控件引用约占控件表的四分之一，且每一步都是新内容，无法命中缓存。`rect` 只在
+ * `includeRect` 为真时带：它约占控件表的五分之一，按控件动作与取景都不读投递里的这一格。
  */
 export type CompactElement = Omit<
   DesktopElement,
@@ -102,6 +106,8 @@ export interface DesktopResultInput {
   targetRef?: string | null
   /** 视图只列命中这些条件的控件及其祖先。 */
   filter?: ViewFilter
+  /** 控件带不带 `rect`。缺席不带。 */
+  includeRect?: boolean
   /** message 的执行事实部分。控件内容不进 message。 */
   lead: string
   /** 上限，缺省取 `deliveryBudget(ctx.contextWindow).perCall`。 */
@@ -132,16 +138,19 @@ export interface DesktopResultParts {
  */
 export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const { ctx } = input
-  const snapshot = viewOf(input.snapshot, input.filter)
+  const { shown: snapshot, hits } = viewOf(input.snapshot, input.filter)
   const receipt = input.receipt ?? {}
   const limit = input.limit ?? deliveryBudget(ctx.contextWindow).perCall
   const lead = input.filter ? `${input.lead} · ${filterNote(snapshot)}` : input.lead
   const shaped = { ...input, snapshot, lead }
+  const includeRect = input.includeRect === true
 
-  const { elements, ...meta } = snapshot
+  const { elements: read, ...meta } = snapshot
+  const targetRef = input.targetRef ?? null
+  const elements = listable(read, new Set([...keptAnyway(read, targetRef), ...hits]))
   const whole: DesktopResultParts = {
     message: lead,
-    data: compose(receipt, { ...meta, ...pack(elements) }, input.place),
+    data: compose(receipt, { ...meta, ...pack(elements, includeRect) }, input.place),
     currentView: viewKeyOf(input),
   }
   if (tokensOf(whole, ctx.density) <= limit) return recorded(ctx, whole)
@@ -151,7 +160,7 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const skeleton = assemble(
     shaped,
     receipt,
-    pack([]),
+    pack([], includeRect),
     { deliveredElements: total, totalElements: total, resourceId: ID_ESTIMATE },
     [
       {
@@ -166,9 +175,10 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   )
   const view = pickView(
     elements,
-    input.targetRef ?? null,
+    priorityOf(read, targetRef),
     limit - tokensOf(skeleton, ctx.density),
     ctx.density,
+    includeRect,
   )
 
   const excerpt = JSON.stringify(view)
@@ -220,17 +230,20 @@ function viewKeyOf(input: DesktopResultInput): CurrentView {
 type ShownSnapshot = DesktopSnapshot & { viewFilter?: string[]; matched?: number }
 
 /**
- * 视图只列命中条件的控件，连同它们的祖先：祖先不留的话 `parentRef` 指向表外，
- * 同名控件分不开。`matched` 是命中数，不含祖先。
+ * 视图只列命中条件的控件，连同它们的祖先：祖先不留的话层级读不出来，同名控件分不开。
+ * `matched` 是命中数，不含祖先；`hits` 是命中的那几个，结构容器命中了同样列出。
  */
-function viewOf(snapshot: DesktopSnapshot, filter: ViewFilter | undefined): ShownSnapshot {
-  if (!filter) return snapshot
+function viewOf(
+  snapshot: DesktopSnapshot,
+  filter: ViewFilter | undefined,
+): { shown: ShownSnapshot; hits: ReadonlySet<string> } {
+  const hits = new Set<string>()
+  if (!filter) return { shown: snapshot, hits }
   const byRef = new Map(snapshot.elements.map((e) => [e.ref, e]))
   const kept = new Set<string>()
-  let matched = 0
   for (const element of snapshot.elements) {
     if (!matchesFilter(element, filter)) continue
-    matched++
+    hits.add(element.ref)
     let at: DesktopElement | undefined = element
     while (at !== undefined && !kept.has(at.ref)) {
       kept.add(at.ref)
@@ -238,14 +251,72 @@ function viewOf(snapshot: DesktopSnapshot, filter: ViewFilter | undefined): Show
     }
   }
   return {
-    ...snapshot,
-    elements: snapshot.elements.filter((e) => kept.has(e.ref)),
-    viewFilter: [
-      ...(filter.role !== undefined ? [`role=${filter.role}`] : []),
-      ...(filter.query !== undefined ? [`query=${filter.query}`] : []),
-    ],
-    matched,
+    shown: {
+      ...snapshot,
+      elements: snapshot.elements.filter((e) => kept.has(e.ref)),
+      viewFilter: [
+        ...(filter.role !== undefined ? [`role=${filter.role}`] : []),
+        ...(filter.query !== undefined ? [`query=${filter.query}`] : []),
+      ],
+      matched: hits.size,
+    },
+    hits,
   }
+}
+
+/**
+ * 无名结构容器：pane / group / custom，没有名称、值与文本，也没有任何非默认状态。
+ *
+ * 它们只承载层级。可用动作不参与判定：浏览器里几乎每个节点都挂着 scroll_into_view 与
+ * 指针动作，按它判等于一个都不省。
+ */
+function structural(e: DesktopElement): boolean {
+  return (
+    CONTAINER_ROLES.has(e.role) &&
+    e.name === '' &&
+    e.value === undefined &&
+    e.text !== true &&
+    e.enabled &&
+    !e.offscreen &&
+    e.focused !== true &&
+    e.weakIdentity !== true &&
+    e.windowRoot !== true &&
+    e.expand === undefined &&
+    e.toggle === undefined &&
+    e.selected === undefined &&
+    e.selection === undefined &&
+    e.scroll === undefined &&
+    e.range === undefined
+  )
+}
+
+/**
+ * 投给模型的控件：无名结构容器不列，`keep` 里的照列；`depth` 改成列出的祖先个数。
+ *
+ * 不要保留原 `depth`：容器省掉之后层数跳级，它的子控件读起来挂在前一个兄弟下面。按列出的
+ * 祖先计数，「父控件是前面最近的、depth 小一层的那一个」对投递出去的表仍然成立；一个都
+ * 没省时它与原值相同。父控件不在表里的控件沿用原值。
+ */
+function listable(
+  elements: readonly DesktopElement[],
+  keep: ReadonlySet<string>,
+): DesktopElement[] {
+  const levels = new Map<string, number>()
+  const listed = new Set<string>()
+  const out: DesktopElement[] = []
+  for (const e of elements) {
+    const parent = e.parentRef
+    const parentLevel = parent === undefined ? undefined : levels.get(parent)
+    const level =
+      parent === undefined || parentLevel === undefined
+        ? e.depth
+        : parentLevel + (listed.has(parent) ? 1 : 0)
+    levels.set(e.ref, level)
+    if (structural(e) && !keep.has(e.ref)) continue
+    listed.add(e.ref)
+    out.push(level === e.depth ? e : { ...e, depth: level })
+  }
+  return out
 }
 
 function matchesFilter(element: DesktopElement, filter: ViewFilter): boolean {
@@ -302,9 +373,9 @@ class ActionSets {
 }
 
 /** 整份控件表的投递形状。 */
-function pack(elements: readonly DesktopElement[]): Packed {
+function pack(elements: readonly DesktopElement[], includeRect: boolean): Packed {
   const sets = new ActionSets()
-  const packed = elements.map((e) => compactOf(e, sets.add(e.actions)))
+  const packed = elements.map((e) => compactOf(e, sets.add(e.actions), includeRect))
   return { defaults: DEFAULTS, actionSets: sets.list, elements: packed }
 }
 
@@ -312,10 +383,12 @@ function pack(elements: readonly DesktopElement[]): Packed {
 function compactOf(
   element: DesktopElement & { nameOmittedChars?: number; valueOmittedChars?: number },
   actionSet: number,
+  includeRect: boolean,
 ): CompactElement {
   const {
     actions: _actions,
     parentRef: _parentRef,
+    rect,
     enabled,
     offscreen,
     automationId,
@@ -326,6 +399,7 @@ function compactOf(
     ...(enabled !== DEFAULTS.enabled ? { enabled } : {}),
     ...(offscreen !== DEFAULTS.offscreen ? { offscreen } : {}),
     ...(automationId !== DEFAULTS.automationId ? { automationId } : {}),
+    ...(includeRect && rect !== undefined ? { rect } : {}),
     actionSet,
   }
 }
@@ -398,24 +472,27 @@ function jsonlBody(snapshot: DesktopSnapshot): Uint8Array {
  *
  * **控件不从中间切开**：超长的名称与值先留前缀，装不下就停。优先那几个一律装入——
  * 目标不在视图里，模型就只能再观察一次。输出按原始顺序；其余部分是原始顺序的前缀，
- * 优先那几个连同祖先一起装入，视图里每个控件的祖先因此都在视图里，层级按 `depth` 读得出。
- * 一个控件的成本含它第一次带进字典的那个动作表。
+ * 优先那几个连同祖先一起装入，视图里每个控件列出的祖先因此都在视图里，层级按 `depth`
+ * 读得出。一个控件的成本含它第一次带进字典的那个动作表。
  */
 function pickView(
   elements: readonly DesktopElement[],
-  targetRef: string | null,
+  priority: ReadonlySet<string>,
   budget: number,
   density: TokenDensity,
+  includeRect: boolean,
 ): Packed {
-  const priority = new Set<string>()
-  const queue = ordered(elements, targetRef, priority)
+  const queue = [
+    ...elements.filter((e) => priority.has(e.ref)),
+    ...elements.filter((e) => !priority.has(e.ref)),
+  ]
   const sets = new ActionSets()
   const chosen = new Map<string, CompactElement>()
   let left = budget
   for (const element of queue) {
     const shown = boundedFields(element)
     const { index, fresh } = sets.peek(element.actions)
-    const item = compactOf(shown, index)
+    const item = compactOf(shown, index, includeRect)
     const cost = costOf(item, density) + (fresh ? costOf(element.actions, density) : 0)
     if (cost > left && !priority.has(element.ref)) break
     sets.add(element.actions)
@@ -430,19 +507,28 @@ function pickView(
   return { defaults: DEFAULTS, actionSets: sets.list, elements: view }
 }
 
-/** 优先那几个排在前面，其余保持原始顺序。`priority` 由本函数填好交回。 */
-function ordered(
-  elements: readonly DesktopElement[],
-  targetRef: string | null,
-  priority: Set<string>,
-): DesktopElement[] {
+/**
+ * 是结构容器也照列的那几个：本次动作目标与当前焦点控件本身。
+ *
+ * 它们的无名祖先照常省掉：`depth` 按列出的祖先计，省掉之后层级仍然读得出。
+ */
+function keptAnyway(elements: readonly DesktopElement[], targetRef: string | null): string[] {
+  return elements.filter((e) => e.ref === targetRef || e.focused === true).map((e) => e.ref)
+}
+
+/**
+ * 大表视图里不受上限约束的那几个：本次动作目标、当前焦点控件，以及它们的祖先。
+ *
+ * 按端口交回的整份表走 `parentRef`，在省掉结构容器之前算。其中被省掉的容器不在视图里，
+ * 其余的连同祖先一起装入。
+ */
+function priorityOf(elements: readonly DesktopElement[], targetRef: string | null): Set<string> {
   const byRef = new Map(elements.map((e) => [e.ref, e]))
-  const head: DesktopElement[] = []
+  const priority = new Set<string>()
   const takeWithAncestors = (element: DesktopElement | undefined): void => {
     let at = element
     while (at !== undefined && !priority.has(at.ref)) {
       priority.add(at.ref)
-      head.push(at)
       at = at.parentRef === undefined ? undefined : byRef.get(at.parentRef)
     }
   }
@@ -450,7 +536,7 @@ function ordered(
   for (const element of elements) {
     if (element.focused === true) takeWithAncestors(element)
   }
-  return [...head, ...elements.filter((e) => !priority.has(e.ref))]
+  return priority
 }
 
 /** 超长的名称与值只留前 `MAX_TITLE_CHARS` 字，并标明省掉多少字。短的原样。 */
