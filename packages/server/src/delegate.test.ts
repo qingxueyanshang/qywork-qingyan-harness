@@ -18,7 +18,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import {
   type AgentEvent,
   type ConversationId,
@@ -1035,7 +1035,24 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     const bin = join(dir, 'fake-bin')
     await mkdir(bin, { recursive: true })
     // 假的 codex：不看参数，往当前目录写三个文件（普通、项目点路径、被忽略的缓存），
-    // 再按 codex 的 jsonl 形状报一句结果。
+    // 再按 codex 的 jsonl 形状报一句结果。两份写法都放：Windows 按 PATHEXT 取 `.cmd`，
+    // POSIX 取无后缀的 sh 脚本。sh 脚本先等 50 ms 再写：Linux 的文件时间戳按时钟节拍取值，
+    // 窗口打开后一个节拍内新建的文件判为 modified（`workspace-watch.ts` 的边界）。
+    await writeFile(
+      join(bin, 'codex'),
+      [
+        '#!/bin/sh',
+        'sleep 0.05',
+        'echo made > cli-made.txt',
+        'mkdir -p .github/workflows',
+        'echo ci > .github/workflows/ci.yml',
+        'mkdir -p .profile-cache',
+        'echo x > .profile-cache/state.bin',
+        `echo '{"type":"item.completed","item":{"text":"done"}}'`,
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
     await writeFile(
       join(bin, 'codex.cmd'),
       [
@@ -1056,11 +1073,15 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     git('config', 'user.name', 't')
     await writeFile(join(dir, '.gitignore'), '.profile-cache/\n')
     const env = { PATH: process.env.PATH, OPENAI_API_KEY: process.env.OPENAI_API_KEY }
-    // 只留假 CLI、系统目录（`.cmd` 要靠 cmd.exe 起）与 git 所在目录；凭证判据是这个变量有值。
+    // 只留假 CLI、系统目录（Windows 上 `.cmd` 要靠 cmd.exe 起，POSIX 上脚本要用 sleep 与 mkdir）与 git
+    // 所在目录；凭证判据是这个变量有值。
     // git 必须留着：观察器收尾时要起它判忽略规则，找不到就只能报观察范围不完整。
     const gitDir = dirname(Bun.which('git') ?? '')
-    const sys = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
-    process.env.PATH = `${bin};${sys};${gitDir}`
+    const sys =
+      process.platform === 'win32'
+        ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+        : dirname(Bun.which('mkdir') ?? '/bin/mkdir')
+    process.env.PATH = [bin, sys, gitDir].join(delimiter)
     process.env.OPENAI_API_KEY = 'sk-test'
     try {
       const cid = conversation()

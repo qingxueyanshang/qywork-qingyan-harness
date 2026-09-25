@@ -58,13 +58,16 @@ describe('这台机器上没装 git', () => {
    * 判据是「git 跑不跑得起来」本来就属于 `git()` 的返回类型（它有 `ok: false` 这一档），
    * 所以接在那里而不是给广播那一处加 `.catch`——后者是在下游堵症状。
    *
-   * 用清空 PATH 制造这个状态：Bun 按 PATH 解析可执行文件，空 PATH 就是「没装」。
+   * PATH 指向一个空目录制造这个状态。不要改成空串：PATH 为空时 Bun 在 POSIX 上按缺省路径查找，
+   * 照样找得到 git。仓库建在分支上，回 null 只能来自找不到 git。
    */
   test('git 不在 PATH 上时回 null，而不是抛', async () => {
+    const dir = await repoWithCommit()
+    const empty = await mkdtemp(join(tmpdir(), 'qy-nopath-'))
     const prev = process.env.PATH
-    process.env.PATH = ''
+    process.env.PATH = empty
     try {
-      expect(await currentBranch(process.cwd())).toBeNull()
+      expect(await currentBranch(dir)).toBeNull()
     } finally {
       process.env.PATH = prev
     }
