@@ -17,6 +17,7 @@ import {
   type DesktopSnapshot,
   deliveredTokens,
   deliveryBudget,
+  markCompacted,
   type SinkPort,
   type ToolContext,
   type ToolOutcome,
@@ -1285,6 +1286,19 @@ describe('差异投递', () => {
       sorted(目标.actions),
       sorted((before[3] as DesktopElement).actions),
     ])
+  })
+
+  /** 压缩按全部消息留尾部：别的工具的大结果能把基底挤出去，基底之后落定过压缩就不再用它。 */
+  test('基底之后落定过一次压缩：整份投递，并成为新的基底', async () => {
+    const table = page('', 80)
+    const ctx = context(steppedPort([table, table, table]).port, fakeSink())
+    await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
+    markCompacted(ctx.state)
+
+    const whole = diffOf(await act(ctx, 'do_1'))
+    expect(whole.since).toBeUndefined()
+    expect(whole.elements).toHaveLength(delivered(table).length)
+    expect(diffOf(await act(ctx, 'do_2')).since).toBe('do_2')
   })
 
   test('换了父控件的控件记作改变：差异里的行不在原位置上，只比投递字段会漏掉它', async () => {

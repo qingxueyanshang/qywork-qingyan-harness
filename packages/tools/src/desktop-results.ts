@@ -20,10 +20,12 @@
  *    不依赖字典。
  * 7. **差异只相对一份仍然可见的整份投递**：本 run、同窗口、同读取范围、未筛选、未分页、
  *    不带 `rect` 的那一份；逐字未变的控件过半；这份基底与之后各次差异累计不超过单次上限，
- *    压缩保留的尾部（两倍单次上限）因此装得下它们。任一条不成立即整份投递并成为新基底。
+ *    压缩保留的尾部（两倍单次上限）因此装得下它们；基底之后本 run 没有落定过压缩（尾部按全部
+ *    消息计，别的工具的大结果能把基底挤出去）。任一条不成立即整份投递并成为新基底。
  */
 
 import {
+  compactionEpoch,
   type DesktopElement,
   type DesktopSnapshot,
   deliveredTokens,
@@ -170,7 +172,8 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const rows = bases ? new Map(elements.map((e) => [e.ref, rowKey(e)])) : null
 
   if (input.incremental === true && bases && rows) {
-    const base = bases.get(view.key)?.get(view.scope ?? '')
+    const known = bases.get(view.key)?.get(view.scope ?? '')
+    const base = known?.epoch === compactionEpoch(ctx.state) ? known : undefined
     const diff = base ? diffOf(base, elements, rows) : null
     if (base && diff) {
       const parts = diffParts(input, receipt, meta, diff, view)
@@ -193,7 +196,12 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
       // 带 rect 的整份不当基底：之后的差异不带 rect，未列出的控件在基底里的 rect 可能已经过时。
       const next = includeRect
         ? null
-        : { observationId: snapshot.observationId, rows, spent: wholeTokens }
+        : {
+            observationId: snapshot.observationId,
+            rows,
+            spent: wholeTokens,
+            epoch: compactionEpoch(ctx.state),
+          }
       supersede(bases, view, next)
     }
     return recorded(ctx, whole)
@@ -283,6 +291,8 @@ interface Base {
   rows: Map<string, string>
   /** 这份基底与之后各次差异一共投了多少 token。不超过单次上限，基底才仍在压缩保留的尾部里。 */
   spent: number
+  /** 基底投递时的压缩次数（`compactionEpoch`）。之后落定过压缩，基底可能已换成信封，不再用。 */
+  epoch: number
 }
 
 /** 视图 key → 读取范围（整窗记空串）→ 基底。 */

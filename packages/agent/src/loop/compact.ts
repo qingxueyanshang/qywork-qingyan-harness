@@ -9,6 +9,7 @@ import type { ProviderError } from '@qywork/ai'
 import { estimateRequest } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { envelopeHeadTokens, log } from '@qywork/core'
+import { markCompacted } from '../registry.ts'
 import { breakdownOf, envelopeHashOf, softLimit } from './request.ts'
 import { type LoopHost, type RunState, type TurnState, untilAborted } from './run-state.ts'
 
@@ -78,6 +79,7 @@ export async function* compactBeforeSend(
     return 'interrupted'
   }
   if (outcome.status === 'compacted') {
+    markCompacted(run.ctx.state)
     persist.recordCompaction(input.runId, run.nextSeq(), {
       phase: 'done',
       manifestRevision: outcome.manifest.revision,
@@ -225,6 +227,7 @@ export async function* recoverFromOverflow(
   if (outcome.status === 'compacted') {
     const rebuilt = host.buildRequest(run, turn.turnNotice)
     if (estimateRequest(rebuilt, density) < sizeBefore) {
+      markCompacted(run.ctx.state)
       persist.recordCompaction(input.runId, run.nextSeq(), {
         phase: 'done',
         manifestRevision: outcome.manifest.revision,

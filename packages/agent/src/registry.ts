@@ -711,6 +711,23 @@ export function resetBatchBudget(state: Map<string, unknown>): void {
   state.set(BATCH_SPENT_KEY, 0)
 }
 
+const COMPACTION_EPOCH_KEY = 'ctx.compactionEpoch'
+
+/**
+ * 本 run 里压缩落定过几次。
+ *
+ * 压缩把保留尾部之前的工具正文换成信封。工具早先投递、之后还要引用的结果，只在它记下的
+ * 次数与当前相等时才仍逐字留在模型的上下文里。
+ */
+export function compactionEpoch(state: Map<string, unknown>): number {
+  return (state.get(COMPACTION_EPOCH_KEY) as number | undefined) ?? 0
+}
+
+/** 记一次落定的压缩。由 loop 在压缩生效之后调。 */
+export function markCompacted(state: Map<string, unknown>): void {
+  state.set(COMPACTION_EPOCH_KEY, compactionEpoch(state) + 1)
+}
+
 /**
  * 记一笔已经投递出去的用量。**不作准入裁决，实际投了多少就加多少。**
  *
