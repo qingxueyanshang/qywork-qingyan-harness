@@ -2431,6 +2431,41 @@ describe('前台动作', () => {
     expect(bad).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
   })
 
+  test('徽标键 / Command / Super 统一叫 meta，win 不是别名', async () => {
+    const { port, calls } = foregroundPort()
+    await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'press_key',
+        ref: 'e17',
+        key: 'r',
+        modifiers: ['meta'],
+      },
+      ctxWith(port),
+    )
+    expect((calls[0]?.input as { action: unknown }).action).toEqual({
+      kind: 'press_key',
+      key: 'r',
+      modifiers: ['meta'],
+    })
+    const win = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'press_key',
+        ref: 'e17',
+        key: 'r',
+        modifiers: ['win'],
+      },
+      ctxWith(port),
+    )
+    expect(win).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(calls).toHaveLength(1)
+  })
+
   test('拖拽终点二选一：控件或像素偏移，都给即拒', async () => {
     const { port, calls } = foregroundPort()
     const byOffset = await run(

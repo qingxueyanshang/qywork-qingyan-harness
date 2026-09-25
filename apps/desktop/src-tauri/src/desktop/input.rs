@@ -10,6 +10,11 @@
 
 use super::frames::HeldInput;
 
+/// 协议键名到虚拟键码的换算表，与 worker 派发按键用的是同一个文件。
+#[cfg(windows)]
+#[path = "../../../native/computer-host/src/windows/keys.rs"]
+mod keys;
+
 /// 释放这份账里的键与鼠标键。返回真的进了输入队列的事件数。
 #[cfg(windows)]
 pub fn release(held: &HeldInput) -> u32 {
@@ -23,18 +28,22 @@ pub fn release(held: &HeldInput) -> u32 {
     let mut inputs: Vec<INPUT> = Vec::new();
     // 顺序与按下相反：修饰键要在主键之后抬起，鼠标键最后。
     for key in held.keys.iter().rev() {
+        // 认不出的键名不猜一个键抬起来：抬错的那一个本来就没有按下。
+        let Some((vk, extended)) = keys::virtual_key(key) else {
+            continue;
+        };
         let mut flags = KEYEVENTF_KEYUP;
-        if key.extended {
+        if extended {
             flags |= KEYEVENTF_EXTENDEDKEY;
         }
         // SAFETY: 纯查询，参数是虚拟键码。
         let scan =
-            u16::try_from(unsafe { MapVirtualKeyW(u32::from(key.vk), MAPVK_VK_TO_VSC) }).unwrap_or(0);
+            u16::try_from(unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) }).unwrap_or(0);
         inputs.push(INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(key.vk),
+                    wVk: VIRTUAL_KEY(vk),
                     wScan: scan,
                     dwFlags: flags,
                     time: 0,

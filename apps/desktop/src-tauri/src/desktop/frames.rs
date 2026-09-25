@@ -473,7 +473,7 @@ pub enum WorkerLine {
     Response(WorkerResponse),
 }
 
-/// worker 此刻按住的鼠标键与虚拟键码。
+/// worker 此刻按住的鼠标键与键。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InputNotice {
@@ -485,16 +485,8 @@ pub struct InputNotice {
 #[serde(rename_all = "camelCase")]
 pub struct HeldInput {
     pub buttons: Vec<String>,
-    pub keys: Vec<HeldKey>,
-}
-
-/// 一个按住不放的物理键。扩展键标志要一起带：抬起事件少了它，目标应用收到的是
-/// 小键盘上的同码键，它按下的那一个仍然停在按下状态。
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HeldKey {
-    pub vk: u16,
-    pub extended: bool,
+    /// 按住的键，协议键名，按下顺序。换成本平台键码在 `input::release` 里做。
+    pub keys: Vec<String>,
 }
 
 impl HeldInput {
@@ -763,14 +755,13 @@ mod tests {
     #[test]
     fn an_input_notice_is_not_mistaken_for_a_receipt() {
         let notice = serde_json::from_str::<WorkerLine>(
-            r#"{"input":{"buttons":["left"],"keys":[{"vk":17,"extended":false}]}}"#,
+            r#"{"input":{"buttons":["left"],"keys":["ctrl","a"]}}"#,
         )
         .expect("通报应当解析成功");
         match notice {
             WorkerLine::Input(notice) => {
                 assert_eq!(notice.input.buttons, vec!["left".to_owned()]);
-                assert_eq!(notice.input.keys.len(), 1);
-                assert_eq!(notice.input.keys[0].vk, 17);
+                assert_eq!(notice.input.keys, vec!["ctrl".to_owned(), "a".to_owned()]);
                 assert!(!notice.input.is_empty());
             }
             WorkerLine::Response(r) => panic!("解析成了回执：{r:?}"),

@@ -13,6 +13,7 @@ use ::windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CHAR};
 
+use super::keys::virtual_key;
 use crate::input::{CharSink, Event, Sink};
 use crate::protocol::MouseButton;
 
@@ -24,7 +25,10 @@ impl Sink for SystemSink {
         if events.is_empty() {
             return 0;
         }
-        let inputs: Vec<INPUT> = events.iter().map(build).collect();
+        // 键名换算不了时整批不发：发一半会让组合键停在半按下的状态。
+        let Some(inputs) = events.iter().map(build).collect::<Option<Vec<INPUT>>>() else {
+            return 0;
+        };
         let size = i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(0);
         // SAFETY: 切片与结构体尺寸都由本函数构造，调用期间不会被改动。
         unsafe { SendInput(&inputs, size) }
@@ -102,8 +106,9 @@ fn scan_of(vk: u16) -> u16 {
     u16::try_from(unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) }).unwrap_or(0)
 }
 
-fn build(event: &Event) -> INPUT {
-    match *event {
+/// 一个事件对应的 `INPUT`。键名不在换算表里时返回 `None`。
+fn build(event: &Event) -> Option<INPUT> {
+    Some(match *event {
         Event::Move { dx, dy } => mouse(
             MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
             dx,
@@ -131,7 +136,8 @@ fn build(event: &Event) -> INPUT {
             0,
             delta,
         ),
-        Event::Key { vk, extended, down } => {
+        Event::Key { ref key, down } => {
+            let (vk, extended) = virtual_key(key)?;
             let mut flags = KEYBD_EVENT_FLAGS(0);
             if extended {
                 flags |= KEYEVENTF_EXTENDEDKEY;
@@ -141,5 +147,57 @@ fn build(event: &Event) -> INPUT {
             }
             keyboard(vk, scan_of(vk), flags)
         }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{key_names, Modifier};
+
+    /// 词表里的每个键名、每个修饰键都换算得出虚拟键码：换算不了的键名会让整批输入不发。
+    #[test]
+    fn every_protocol_key_has_a_virtual_key() {
+        let modifiers = [Modifier::Ctrl, Modifier::Alt, Modifier::Shift, Modifier::Meta];
+        for name in key_names().chain(modifiers.map(|m| m.key_name().to_owned())) {
+            assert!(virtual_key(&name).is_some(), "{name} 没有虚拟键码");
+        }
+    }
+
+    fn key_flags(key: &str, down: bool) -> Option<KEYBD_EVENT_FLAGS> {
+        let input = build(&Event::Key {
+            key: key.to_owned(),
+            down,
+        })?;
+        // SAFETY: `build` 对按键事件构造的是 `ki` 这一支。
+        Some(unsafe { input.Anonymous.ki.dwFlags })
+    }
+
+    /// 扩展键标志跟着按下与抬起两个事件走：抬起少了它，按下的那个键停在按下状态。
+    #[test]
+    fn the_extended_flag_travels_with_both_halves_of_a_key_press() {
+        for down in [true, false] {
+            let flags = key_flags("up", down).expect("up 在词表里");
+            assert_eq!(flags.0 & KEYEVENTF_EXTENDEDKEY.0, KEYEVENTF_EXTENDEDKEY.0);
+            assert_eq!(flags.0 & KEYEVENTF_KEYUP.0 != 0, !down);
+        }
+        assert_eq!(key_flags("a", true).map(|f| f.0 & KEYEVENTF_EXTENDEDKEY.0), Some(0));
+    }
+
+    /// 换算不了的键名让整批一个事件都不发。
+    #[test]
+    fn a_batch_with_an_unknown_key_sends_nothing() {
+        let events = [
+            Event::Key {
+                key: "ctrl".to_owned(),
+                down: true,
+            },
+            Event::Key {
+                key: "win".to_owned(),
+                down: true,
+            },
+        ];
+        assert!(key_flags("win", true).is_none());
+        assert_eq!(SystemSink.send(&events), 0);
     }
 }

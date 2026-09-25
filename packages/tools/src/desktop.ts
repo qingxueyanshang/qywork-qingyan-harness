@@ -151,7 +151,10 @@ const TO_FOCUS = '不给 ref 即投给窗口当前的焦点'
  */
 const WINDOW_ACTIONS: readonly DesktopActionKind[] = ['activate', ...WINDOW_SHAPE_ACTIONS]
 const MOUSE_BUTTONS: readonly DesktopMouseButton[] = ['left', 'right', 'middle']
-const MODIFIERS: readonly DesktopModifier[] = ['ctrl', 'alt', 'shift', 'win']
+const MODIFIERS: readonly DesktopModifier[] = ['ctrl', 'alt', 'shift', 'meta']
+/** 修饰键参数的说明。`meta` 在三端对应不同的键，说明里写明对应关系。 */
+const MODIFIERS_DESCRIPTION =
+  'press_key 的修饰键；meta 是 Windows 徽标键、macOS 的 Command、Linux 的 Super'
 const WINDOW_STATES: readonly DesktopWindowState[] = ['normal', 'minimized', 'maximized']
 /** 一次点击最多连点几下。双击是 2，没有三击。 */
 const MAX_CLICK_COUNT = 2
@@ -1475,7 +1478,7 @@ export const desktopActTool: ToolSpec = {
       modifiers: {
         type: 'array',
         items: { type: 'string', enum: MODIFIERS },
-        description: 'press_key 的修饰键',
+        description: MODIFIERS_DESCRIPTION,
       },
       windowState: {
         type: 'string',
@@ -2120,7 +2123,7 @@ export const desktopActSequenceTool: ToolSpec = {
             modifiers: {
               type: 'array',
               items: { type: 'string', enum: MODIFIERS },
-              description: 'press_key 的修饰键',
+              description: MODIFIERS_DESCRIPTION,
             },
             imageRef: { type: 'string', description: '按图定位：上一次采图返回的 imageRef' },
             imageX: { type: 'integer', description: '按图定位：图内像素横坐标，左上角是 0,0' },

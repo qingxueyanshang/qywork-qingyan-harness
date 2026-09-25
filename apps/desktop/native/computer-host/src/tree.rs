@@ -118,6 +118,9 @@ pub fn first_sighting(seen: &mut HashSet<String>, stable: &str) -> bool {
 }
 
 /// 一个节点满不满足等待 `appears` 的条件。两项都没给时任何节点都满足。
+///
+/// 角色逐字比较：调用方给的角色要是协议词表（`protocol::Role`）里的名字，
+/// 写法不同的角色（`Button`）不会命中任何节点。
 pub fn matches_target(role: Option<&str>, name_contains: Option<&str>, node: &Node) -> bool {
     if let Some(role) = role {
         if node.role != role {

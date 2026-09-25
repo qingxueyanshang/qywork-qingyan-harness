@@ -270,7 +270,139 @@ pub enum Modifier {
     Ctrl,
     Alt,
     Shift,
-    Win,
+    /// Windows 徽标键、macOS 的 Command、Linux 的 Super。
+    Meta,
+}
+
+impl Modifier {
+    /// 这个修饰键的键名。按下状态账按键名记，平台键码由派发端换算。
+    pub const fn key_name(self) -> &'static str {
+        match self {
+            Self::Ctrl => "ctrl",
+            Self::Alt => "alt",
+            Self::Shift => "shift",
+            Self::Meta => "meta",
+        }
+    }
+}
+
+/// 不按规则生成的主键名。字母 a–z、数字 0–9 与功能键 f1–f24 由 `key_names` 生成。
+const NAMED_KEYS: [&str; 26] = [
+    "enter",
+    "tab",
+    "escape",
+    "space",
+    "backspace",
+    "delete",
+    "insert",
+    "home",
+    "end",
+    "page_up",
+    "page_down",
+    "up",
+    "down",
+    "left",
+    "right",
+    "semicolon",
+    "equal",
+    "comma",
+    "minus",
+    "period",
+    "slash",
+    "backquote",
+    "bracket_left",
+    "backslash",
+    "bracket_right",
+    "quote",
+];
+
+/// 主键名词表，全小写。修饰键不在其中：它们只经 `Modifier` 给出，不能当主键按。
+///
+/// 各平台后端与宿主补发都把这些名字换算成本平台的键码，换算表必须覆盖整张词表。
+pub fn key_names() -> impl Iterator<Item = String> {
+    let letters = (b'a'..=b'z').map(|c| char::from(c).to_string());
+    let digits = (b'0'..=b'9').map(|c| char::from(c).to_string());
+    let functions = (1..=24).map(|n| format!("f{n}"));
+    letters
+        .chain(digits)
+        .chain(functions)
+        .chain(NAMED_KEYS.iter().map(|name| (*name).to_owned()))
+}
+
+/// 把调用方给的主键名规范成词表里的写法。不分大小写；词表外的名字返回 `None`，不猜。
+pub fn key_name(raw: &str) -> Option<String> {
+    let name = raw.to_ascii_lowercase();
+    key_names().any(|known| known == name).then_some(name)
+}
+
+/// 一组控件角色：变体、协议里的名字。只在这里列一次，变体与名字不会分叉。
+macro_rules! roles {
+    ($($role:ident => $name:literal,)+) => {
+        /// 控件角色词表。节点的 `role` 与等待 `appears` 的角色条件都用这里的名字。
+        ///
+        /// 各平台后端把自己的控件类型换算进这张表；平台类型在表里没有对应时，后端交回
+        /// 它自己的原始类型名（Windows 是 `control_<ControlType>`），它不在词表里。
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Role {
+            $($role,)+
+        }
+
+        impl Role {
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$role => $name,)+
+                }
+            }
+
+            /// 整张词表。单测按它核对样例与各平台的换算表。
+            #[cfg(test)]
+            pub const ALL: &'static [Self] = &[$(Self::$role,)+];
+        }
+    };
+}
+
+roles! {
+    Button => "button",
+    Calendar => "calendar",
+    CheckBox => "check_box",
+    ComboBox => "combo_box",
+    Edit => "edit",
+    Hyperlink => "hyperlink",
+    Image => "image",
+    ListItem => "list_item",
+    List => "list",
+    Menu => "menu",
+    MenuBar => "menu_bar",
+    MenuItem => "menu_item",
+    ProgressBar => "progress_bar",
+    RadioButton => "radio_button",
+    ScrollBar => "scroll_bar",
+    Slider => "slider",
+    Spinner => "spinner",
+    StatusBar => "status_bar",
+    Tab => "tab",
+    TabItem => "tab_item",
+    Text => "text",
+    ToolBar => "tool_bar",
+    ToolTip => "tool_tip",
+    Tree => "tree",
+    TreeItem => "tree_item",
+    Custom => "custom",
+    Group => "group",
+    Thumb => "thumb",
+    DataGrid => "data_grid",
+    DataItem => "data_item",
+    Document => "document",
+    SplitButton => "split_button",
+    Window => "window",
+    Pane => "pane",
+    Header => "header",
+    HeaderItem => "header_item",
+    Table => "table",
+    TitleBar => "title_bar",
+    Separator => "separator",
+    SemanticZoom => "semantic_zoom",
+    AppBar => "app_bar",
 }
 
 /// 窗口的显示状态。`WindowPattern` 的三种可视状态。
@@ -1067,7 +1199,7 @@ pub fn classify_action(
     })
 }
 
-/// worker 此刻按住不放的鼠标键与虚拟键码。
+/// worker 此刻按住不放的鼠标键与键。
 ///
 /// **它只描述输入状态，不是任务状态。** 随按随记、释放即清，宿主按它在确认 worker
 /// 退出之后补发释放。空账表示这个 worker 手上没有按住任何键。
@@ -1076,18 +1208,10 @@ pub fn classify_action(
 pub struct HeldInput {
     /// 按住的鼠标键名。
     pub buttons: Vec<&'static str>,
-    pub keys: Vec<HeldKey>,
-}
-
-/// 一个按住不放的物理键。
-///
-/// **扩展键标志要一起记**：抬起事件少了 `E0` 前缀，目标应用收到的是小键盘上的同码键，
-/// 它按下的那一个仍然停在按下状态。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HeldKey {
-    pub vk: u16,
-    pub extended: bool,
+    /// 按住的键，按下顺序。主键是 `key_names` 里的名字，修饰键是 `Modifier::key_name`。
+    ///
+    /// 记键名不记平台键码：worker 派发与宿主补发各自按本平台的换算表把它换成键码。
+    pub keys: Vec<String>,
 }
 
 /// 输入状态通报。与回执共用 stdout，靠 `input` 这一格与回执区分——回执一定带
@@ -2452,14 +2576,11 @@ mod tests {
     fn an_input_notice_is_told_apart_from_a_receipt_by_its_shape() {
         let notice = serde_json::to_value(InputNotice::of(HeldInput {
             buttons: vec!["left"],
-            keys: vec![HeldKey {
-                vk: 162,
-                extended: false,
-            }],
+            keys: vec!["ctrl".to_owned(), "a".to_owned()],
         }))
         .expect("通报应当序列化成功");
         assert_eq!(notice["input"]["buttons"][0], "left");
-        assert_eq!(notice["input"]["keys"][0], json_of(r#"{"vk":162,"extended":false}"#));
+        assert_eq!(notice["input"]["keys"], json_of(r#"["ctrl","a"]"#));
         assert!(notice.get("id").is_none());
         assert!(notice.get("dispatch").is_none());
         let receipt =
@@ -2469,6 +2590,55 @@ mod tests {
             serde_json::to_value(InputNotice::of(HeldInput::default())).unwrap()["input"],
             json_of(r#"{"buttons":[],"keys":[]}"#)
         );
+    }
+
+    /// 修饰键只有四个名字：`win` 不是别名，写它的请求解析失败。
+    #[test]
+    fn the_meta_modifier_has_no_platform_alias() {
+        let meta = action_of(act_params(
+            r#"{"kind":"press_key","key":"r","modifiers":["meta","shift"]}"#,
+        ));
+        assert!(matches!(
+            meta,
+            ActionSpec::PressKey { modifiers, .. } if modifiers == [Modifier::Meta, Modifier::Shift]
+        ));
+        assert!(serde_json::from_str::<Request>(
+            r#"{"id":"r1","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
+                "op":"act","params":{"window":66,"ref":"w.0#7",
+                "action":{"kind":"press_key","key":"r","modifiers":["win"]},
+                "maxNodes":50,"maxDepth":4,"timeBudgetMs":800}}"#
+        )
+        .is_err());
+        assert_eq!(
+            [Modifier::Ctrl, Modifier::Alt, Modifier::Shift, Modifier::Meta].map(Modifier::key_name),
+            ["ctrl", "alt", "shift", "meta"]
+        );
+    }
+
+    /// 主键名不分大小写，规范成小写；修饰键与词表外的名字不是主键。
+    #[test]
+    fn a_key_name_is_normalised_or_refused() {
+        assert_eq!(key_name("A").as_deref(), Some("a"));
+        assert_eq!(key_name("F12").as_deref(), Some("f12"));
+        assert_eq!(key_name("Page_Down").as_deref(), Some("page_down"));
+        assert_eq!(key_name("bracket_left").as_deref(), Some("bracket_left"));
+        for unknown in ["ctrl", "meta", "f25", "f0", "f01", "any", ""] {
+            assert_eq!(key_name(unknown), None, "{unknown}");
+        }
+        let all: Vec<String> = key_names().collect();
+        assert_eq!(all.len(), 26 + 10 + 24 + NAMED_KEYS.len());
+        assert!(all.iter().all(|k| *k == k.to_ascii_lowercase()));
+    }
+
+    /// 角色名互不相同，且都是小写加下划线：宿主与服务端按名字逐字比较。
+    #[test]
+    fn role_names_are_unique_snake_case_words() {
+        let names: Vec<&str> = Role::ALL.iter().map(|r| r.as_str()).collect();
+        let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), names.len());
+        assert!(names
+            .iter()
+            .all(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '_')));
     }
 
     /// 没有 ValuePattern 的控件等不到任何值，不能把「没有值」当成空串命中。
