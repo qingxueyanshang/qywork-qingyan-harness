@@ -337,10 +337,11 @@ describe('执行窗口内的工作区变更', () => {
   })
 
   /**
-   * 不给已报路径就只剩事件与扫描两条来源，行为与对账之前一样：目录里深一层的文件
-   * 报不出来。**不要断言浅一层那个文件报得出来**——那一条只有事件看得见，而事件会丢。
+   * 不给已报路径就只剩事件与扫描两条来源，目录里的文件只有事件看得见。Windows 上整个目录
+   * 被删时，深一层文件的删除事件多数不交出、少数交出，浅一层的同样可能丢。两种结果都正确，
+   * **不要断言哪个文件报得出或报不出**；目录被删时逐个报出其中的文件靠已报路径对账，见上一条。
    */
-  test('不传已报路径时，目录被删报不出其中的文件', async () => {
+  test('不传已报路径时，目录被删只按收到的事件报删除，不判为未读全', async () => {
     const root = await gitRepo()
     await mkdir(join(root, 'd', 'sub'), { recursive: true })
     await writeFile(join(root, 'd', 'a.txt'), 'a\n')
@@ -353,7 +354,7 @@ describe('执行窗口内的工作区变更', () => {
     await settle()
     const got = await window.close()
 
-    expect(typeOf(got.changes).has('d/sub/b.txt')).toBe(false)
+    expect(got.changes.every((c) => c.changeType === 'deleted')).toBe(true)
     expect(got.incomplete).toBe(false)
   })
 
