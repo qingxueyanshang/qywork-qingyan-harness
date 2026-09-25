@@ -27,7 +27,7 @@ import {
   rootsOf,
 } from './paths.ts'
 import { startCommandRunner } from './runner.ts'
-import { BASH_PATH_ENV, commandShell, setCommandRunner } from './sandbox.ts'
+import { BASH_PATH_ENV, commandShell, detectSandbox, setCommandRunner } from './sandbox.ts'
 
 async function workspace(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qywork-test-'))
@@ -1047,6 +1047,12 @@ describe('搜索与命令', () => {
   })
 
   /**
+   * 后台进程能不能活过 shell。bwrap 在独立的 PID 命名空间里跑命令，shell 退出时命名空间里的
+   * 进程一并终止，没有进程扣着管道，结果里也就不该有那句说明。
+   */
+  const backgroundSurvives = () => detectSandbox().backend !== 'bwrap'
+
+  /**
    * **原始失败形状**：命令跑完了、shell 也正常退出了，但它留下的后台进程继承了
    * stdout 的写端仍未关闭，因此管道永远不 EOF。账本里那次是 `run.ps1 start`
    * （起了个 node 服务留在后台，而那正是脚本该做的事）：界面上那条 `run_command`
@@ -1077,7 +1083,7 @@ describe('搜索与命令', () => {
     expect(String(out.data?.stdout)).toContain('started')
     // 挂死的话这里是 20 秒起步，改回等 EOF 就永远回不来。
     expect(elapsed).toBeLessThan(5_000)
-    expect(out.message).toContain('后台进程仍在运行并持有输出管道')
+    expect(out.message?.includes('后台进程仍在运行并持有输出管道')).toBe(backgroundSurvives())
   }, 30_000)
 
   /**
@@ -1108,7 +1114,7 @@ describe('搜索与命令', () => {
       expect(out.status).toBe('success')
       expect(String(out.data?.stdout)).toContain('started')
       expect(Date.now() - started).toBeLessThan(5_000)
-      expect(out.message).toContain('后台进程仍在运行并持有输出管道')
+      expect(out.message?.includes('后台进程仍在运行并持有输出管道')).toBe(backgroundSurvives())
     } finally {
       // 这是个进程级变量，留着会让本文件后面的命令都改走 runner。
       setCommandRunner(null)
@@ -1256,9 +1262,13 @@ describe('probe_url', () => {
   test('起服务、抓到响应、进程随调用结束而消失', async () => {
     const root = await workspace()
     const port = 19807
-    const server = `require('http').createServer((_,r)=>{r.writeHead(200);r.end('hello from probe')}).listen(${port},'127.0.0.1');setInterval(()=>{},1000)`
-    const cmd = process.platform === 'win32' ? `node -e "${server}"` : `node -e '${server}'`
-    const out = await run(root, cmd, `http://127.0.0.1:${port}/`)
+    // 服务源码写进文件：放进 `node -e` 的话要按 shell 的引号规则转义，POSIX 与 Windows 写法不同。
+    // 后缀用 `.cjs`：临时目录在仓库里，上层 package.json 的 `"type": "module"` 会让 `.js` 按 ESM 加载。
+    await writeFile(
+      join(root, 'server.cjs'),
+      `require('http').createServer((_,r)=>{r.writeHead(200);r.end('hello from probe')}).listen(${port},'127.0.0.1');setInterval(()=>{},1000)`,
+    )
+    const out = await run(root, 'node server.cjs', `http://127.0.0.1:${port}/`)
 
     expect(out.status).toBe('success')
     const probe = out.data?.probe as { status: number; body: string }
