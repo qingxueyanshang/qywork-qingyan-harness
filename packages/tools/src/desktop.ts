@@ -2212,6 +2212,9 @@ export const desktopWaitTool: ToolSpec = {
   name: 'desktop_wait',
   description:
     '等一个条件成立，不派发任何动作。enabled / value / gone 盯一个已有控件，给法与 desktop_act 相同。' +
+    '条件取自已经看到的内容：确认页面跳转或提交生效，用 gone 等当前页上刚点过的按钮或链接消失，' +
+    '或用 value 等地址栏、输入框变成某个值；appears 的 name 只用确定会出现的文字，不按常识猜' +
+    '（登录后的链接有的网站叫「退出」，有的叫「注销」）。猜错的条件只能等到超时。' +
     '到期如实返回未满足与当时的控件表。',
   parameters: {
     type: 'object',
@@ -2231,7 +2234,7 @@ export const desktopWaitTool: ToolSpec = {
       name: {
         type: 'string',
         description:
-          'enabled / value / gone 时按名称定位控件；appears 时是要出现的控件名称；window 时是新窗口标题的子串',
+          'enabled / value / gone 时按名称定位控件；appears 时是要出现的控件名称里的一段文字，只用确定会出现的；window 时是新窗口标题的子串',
       },
       role: { type: 'string' },
       value: { type: 'string', description: 'until=value 时要等到的值' },
