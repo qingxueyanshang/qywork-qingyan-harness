@@ -5,7 +5,8 @@
 //! 1. **这里的每一个动作都会把前台从用户手上拿走**，因此只在用户显式启用前台模式时
 //!    才走得到这里；关着时准入判定在 `protocol::admit` 就拒了，一条系统调用都不发。
 //! 2. **落点在派发那一刻重新求。** 控件重新定位、读此刻的包围盒、核对落点确实属于
-//!    目标窗口，三步缺一不可：观察时记下的包围盒在控件移动之后指向别处。
+//!    目标窗口，三步缺一不可：观察时记下的包围盒在控件移动之后指向别处。按控件定位时，
+//!    落点打在控件自己所在、归目标窗口所有的弹出窗口上同样算属于目标。
 //! 3. **按住的键随按随记，任何中止路径都释放。** 记账与释放由 `input::Hold` 做，
 //!    本模块不手写释放调用。
 //! 4. **指针与键盘输入在派发前先把目标窗口拿到前台**（`ensure_foreground`，两条路径
@@ -35,7 +36,8 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics,
     FindWindowW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsZoomed,
     SetForegroundWindow,
-    ShowWindow, WindowFromPoint, GA_ROOT, GUITHREADINFO, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    ShowWindow, WindowFromPoint, GA_ROOT, GA_ROOTOWNER, GUITHREADINFO, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
 };
 
@@ -66,13 +68,16 @@ const WINDOW_SETTLE: Duration = Duration::from_millis(400);
 /// 读回时两次查询之间隔多久。查的全是 Win32 窗口属性，一次几微秒。
 const SETTLE_POLL_MS: u64 = 20;
 
-/// 一次指针动作的落点。非指针动作两项都缺席。
+/// 一次指针动作的落点。非指针动作三项都缺席。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Aim {
     /// 指针落点，屏幕物理像素。
     pub anchor: Option<ScreenPoint>,
     /// 拖拽终点。只有拖拽有。
     pub destination: Option<ScreenPoint>,
+    /// 按控件定位时，目标控件所在的那个 OS 窗口（它自己或最近一个带窗口句柄的祖先）。
+    /// 按图像坐标定位时缺席。
+    pub host: Option<i64>,
 }
 
 /// 执行一个前台动作。
@@ -289,10 +294,10 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
     Attempt::Called(Outcome::returned(dispatch, reason))
 }
 
-/// 这次指针动作落在哪个屏幕坐标上，并核对那个位置确实属于目标窗口。
+/// 这次指针动作落在哪个屏幕坐标上，并核对那个位置确实属于这次动作，判据见 `lands_on_target`。
 ///
 /// 目标窗口不在前台那一种由 `ensure_foreground` 在派发前处理完；走到这里仍被盖住的是
-/// 置顶窗口，如实拒绝。
+/// 置顶窗口或别的窗口，如实拒绝。
 fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
     let anchor = aim
         .anchor
@@ -318,13 +323,32 @@ fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
     }
     // SAFETY: 句柄来自上一行的查询。
     let root = unsafe { GetAncestor(hit, GA_ROOT) };
-    if root.0 as i64 != window {
+    // SAFETY: 同上，对顶层窗口求它所有者链的顶端。
+    let owner = unsafe { GetAncestor(root, GA_ROOTOWNER) };
+    // SAFETY: 句柄来自这一次定位，窗口已关闭时交回空句柄，与任何落点都不相等。
+    let control_root = aim
+        .host
+        .map(|host| unsafe { GetAncestor(HWND(host as *mut c_void), GA_ROOT) }.0 as i64);
+    if !lands_on_target(window, root.0 as i64, owner.0 as i64, control_root) {
         return Err(format!(
             "occluded: {},{}",
             anchor.x, anchor.y
         ));
     }
     Ok(anchor)
+}
+
+/// 落点所在的顶层窗口收不收这次指针动作。
+///
+/// 是目标窗口本身即收。不是时只在按控件定位时收：落点所在的顶层窗口就是目标控件自己所在的
+/// 顶层窗口，且它归目标窗口所有（目标窗口弹出的下拉框、菜单）。模态对话框或别的应用盖在
+/// 目标控件上时，落点所在的顶层窗口不是控件所在的那一个，照旧拒绝；按图像坐标定位的动作
+/// 没有控件，`control_root` 缺席，只认目标窗口本身。
+///
+/// 不要改成只看「落点窗口归目标窗口所有」：目标窗口自己的模态对话框同样归它所有，
+/// 盖住控件时点下去的是对话框。
+fn lands_on_target(window: i64, hit_root: i64, hit_owner: i64, control_root: Option<i64>) -> bool {
+    hit_root == window || (control_root == Some(hit_root) && hit_owner == window)
 }
 
 fn move_event(point: ScreenPoint) -> Event {
@@ -780,5 +804,48 @@ fn settled(limit: Duration, reached: impl Fn() -> bool) -> bool {
             return false;
         }
         std::thread::sleep(Duration::from_millis(SETTLE_POLL_MS));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lands_on_target;
+
+    /// 目标窗口、它弹出的下拉框、它的模态对话框、别的应用的窗口。
+    const TARGET: i64 = 0x1000;
+    const POPUP: i64 = 0x2000;
+    const DIALOG: i64 = 0x3000;
+    const OTHER: i64 = 0x4000;
+
+    #[test]
+    fn a_landing_on_the_target_window_itself_is_accepted() {
+        assert!(lands_on_target(TARGET, TARGET, TARGET, Some(TARGET)));
+        // 按图像坐标定位没有控件，落在目标窗口本身照样收。
+        assert!(lands_on_target(TARGET, TARGET, TARGET, None));
+    }
+
+    /// 原始失败形状：Edge 的自动填充下拉框是它拥有的另一个顶层窗口，点里面的历史账号被判遮挡。
+    #[test]
+    fn a_landing_on_the_popup_the_target_control_lives_in_is_accepted() {
+        assert!(lands_on_target(TARGET, POPUP, TARGET, Some(POPUP)));
+    }
+
+    #[test]
+    fn another_application_covering_the_control_is_refused() {
+        assert!(!lands_on_target(TARGET, OTHER, OTHER, Some(TARGET)));
+        // 别的应用的窗口哪怕恰好就是控件所在的那个，也不归目标窗口所有。
+        assert!(!lands_on_target(TARGET, OTHER, OTHER, Some(OTHER)));
+    }
+
+    /// 模态对话框归目标窗口所有，但控件在目标窗口里：点下去的是对话框。
+    #[test]
+    fn a_modal_dialog_covering_the_control_is_refused() {
+        assert!(!lands_on_target(TARGET, DIALOG, TARGET, Some(TARGET)));
+    }
+
+    /// 按图像坐标定位没有控件可认，落在弹出窗口上一律拒绝。
+    #[test]
+    fn an_image_point_on_an_owned_popup_is_refused() {
+        assert!(!lands_on_target(TARGET, POPUP, TARGET, None));
     }
 }

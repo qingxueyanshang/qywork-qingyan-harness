@@ -60,7 +60,8 @@ use ::windows::Win32::UI::Accessibility::{
     UIA_IsSelectionPatternAvailablePropertyId, UIA_IsTextPatternAvailablePropertyId,
     UIA_IsTogglePatternAvailablePropertyId, UIA_IsTransformPatternAvailablePropertyId,
     UIA_IsValuePatternAvailablePropertyId, UIA_IsWindowPatternAvailablePropertyId,
-    UIA_ItemContainerPatternId, UIA_NamePropertyId, UIA_RangeValueIsReadOnlyPropertyId,
+    UIA_ItemContainerPatternId, UIA_NamePropertyId, UIA_NativeWindowHandlePropertyId,
+    UIA_RangeValueIsReadOnlyPropertyId,
     UIA_RangeValueLargeChangePropertyId, UIA_RangeValueMaximumPropertyId,
     UIA_RangeValueMinimumPropertyId, UIA_RangeValuePatternId, UIA_RangeValueSmallChangePropertyId,
     UIA_RangeValueValuePropertyId, UIA_RuntimeIdPropertyId,
@@ -247,10 +248,15 @@ fn window_alive(window: i64) -> bool {
     unsafe { IsWindow(Some(HWND(window as *mut c_void))) }.as_bool()
 }
 
-/// 定位结果：目标元素本身与它从窗口元素出发的下标路径。
+/// 定位结果：目标元素本身、它从窗口元素出发的下标路径，以及它所在的那个 OS 窗口。
 struct Located {
     element: IUIAutomationElement,
     path: Vec<usize>,
+    /// 定位路径上最后一个带窗口句柄的节点（含目标自己）的句柄。
+    ///
+    /// 目标窗口弹出的下拉框、菜单是它所拥有的另一个顶层窗口，UIA 把它排在目标窗口的树里；
+    /// 指针落点核对靠这一格认出落点打在控件自己所在的那个窗口上。
+    host: i64,
 }
 
 /// 一次等待的全部输入。
@@ -370,6 +376,10 @@ impl Backend {
             },
         )
         .map_err(|e| format!("建重定位缓存请求失败：{e}"))?;
+        // 重定位另记窗口句柄：`locate` 沿路径取目标所在的 OS 窗口，指针落点核对要用它。
+        // 读树不需要，不加进 `build_cache`。
+        unsafe { nav_cache.AddProperty(UIA_NativeWindowHandlePropertyId) }
+            .map_err(|e| format!("重定位缓存请求加窗口句柄失败：{e}"))?;
         Ok(Self {
             automation,
             options,
@@ -446,6 +456,7 @@ impl Backend {
     fn locate(&self, window: i64, reference: &str) -> Result<Located, Failure> {
         let (path, expected) = decode_ref(reference).map_err(Failure::Refused)?;
         let mut element = self.window_element(window, &self.nav_cache)?;
+        let mut host = window;
         for (depth, index) in path.iter().enumerate() {
             let children = cached_children(&element)?;
             let Some(child) = children.get(*index).cloned() else {
@@ -454,6 +465,7 @@ impl Backend {
                 )));
             };
             element = self.expand(&child, &self.nav_cache)?;
+            host = cached_native_window(&element)?.unwrap_or(host);
         }
         let actual = cached_identity(&element)?;
         if actual != expected {
@@ -468,7 +480,11 @@ impl Backend {
                 }
             )));
         }
-        Ok(Located { element, path })
+        Ok(Located {
+            element,
+            path,
+            host,
+        })
     }
 
     /// 读一个窗口的控件表。`select.root` 给了就从那棵子树读起。
@@ -693,6 +709,8 @@ impl Backend {
         Ok(foreground::Aim {
             anchor: Some(anchor),
             destination,
+            // 按图像坐标定位时没有控件，落点只认目标窗口本身。
+            host: point.is_none().then(|| located.map(|l| l.host)).flatten(),
         })
     }
 
@@ -1062,6 +1080,12 @@ fn expand_name(state: i32) -> &'static str {
 ///
 /// 没有包围盒的控件指不出落点：provider 对没有可视位置的控件交回全零矩形，
 /// 按它算出来的中心是屏幕左上角。
+/// 这个元素自己的窗口句柄。只有对应一个 OS 窗口的元素有，其余交回 `None`。只读缓存。
+fn cached_native_window(element: &IUIAutomationElement) -> Result<Option<i64>, Failure> {
+    let handle = unsafe { element.CachedNativeWindowHandle() }.map_err(uia("读窗口句柄"))?;
+    Ok((!handle.0.is_null()).then_some(handle.0 as i64))
+}
+
 pub fn box_center(window: i64, element: &IUIAutomationElement) -> Result<ScreenPoint, String> {
     let bounds = unsafe { element.CachedBoundingRectangle() }
         .map_err(uia("读包围盒"))
