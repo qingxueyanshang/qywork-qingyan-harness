@@ -6,10 +6,15 @@ import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FileChange } from '@qywork/core'
-import { gitProcessCount, openChangeWindow } from './workspace-watch.ts'
+import { gitProcessCount, openChangeWindow, settleEvents } from './workspace-watch.ts'
 
 async function settle(): Promise<void> {
   await Bun.sleep(250)
+}
+
+/** 观察器已交齐此前的事件。临时文件不进结果的前提是观察器在它消失之前 stat 到过它。 */
+async function observed(root: string): Promise<void> {
+  expect(await settleEvents(root)).toBe(true)
 }
 
 /** 忽略判定问的是真的 git，夹具就得是真的仓库。 */
@@ -44,7 +49,7 @@ describe('执行窗口内的工作区变更', () => {
     await writeFile(join(root, 'src', 'old.ts'), 'a\nb\n')
     await rm(join(root, 'gone.txt'))
     await writeFile(join(root, 'tmp.swp'), 't')
-    await settle()
+    await observed(root)
     await rm(join(root, 'tmp.swp'))
     // 新建的二进制不数行
     await writeFile(join(root, 'shot.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 1]))
@@ -191,9 +196,8 @@ describe('执行窗口内的工作区变更', () => {
     await mkdir(join(root, 'a', 'b', 'c'), { recursive: true })
     await writeFile(join(root, 'a', 'b', 'c', 'deep.ts'), 'deep\n')
     await writeFile(join(root, 'atomic.txt.part'), 'v1\n')
-    // 写与改名之间要留一拍：临时文件不进结果的前提是观察器在改名前 stat 到过它，
-    // 两步之间没有间隔时它会被判成 deleted。
-    await settle()
+    // 改名之前观察器要已经 stat 到临时文件，否则它会被判成 deleted。
+    await observed(root)
     await rename(join(root, 'atomic.txt.part'), join(root, 'atomic.txt'))
     await settle()
     const got = await window.close()
@@ -356,6 +360,58 @@ describe('执行窗口内的工作区变更', () => {
 
     expect(got.changes.every((c) => c.changeType === 'deleted')).toBe(true)
     expect(got.incomplete).toBe(false)
+  })
+
+  /**
+   * 原始失败形状：收尾那一刻删除事件还在途。删除只有事件看得见，收尾不等在途事件交齐的话
+   * 最后几步里的删除不进结果。macOS 的 FSEvents 按 50 ms 合批交付，在途时间最长。
+   */
+  test('删除后立即收尾，删除照常报出', async () => {
+    const root = await gitRepo()
+    await writeFile(join(root, 'gone.txt'), 'x\n')
+    await Bun.sleep(20)
+
+    const window = openChangeWindow(root)
+    await settle()
+    await rm(join(root, 'gone.txt'))
+    const got = await window.close()
+
+    expect(got.changes).toEqual([{ path: 'gone.txt', changeType: 'deleted' }])
+    expect(got.incomplete).toBe(false)
+  })
+
+  /** 收尾前发生、收尾时还在途的事件属于正在收尾的窗口，不能落到排在后面的窗口里。 */
+  test('两个窗口同时开着时，前一个收尾时在途的事件仍归它', async () => {
+    const root = await gitRepo()
+    await writeFile(join(root, 'a.txt'), 'a\n')
+    await writeFile(join(root, 'b.txt'), 'b\n')
+    await Bun.sleep(20)
+
+    const first = openChangeWindow(root)
+    const second = openChangeWindow(root)
+    await settle()
+    await rm(join(root, 'a.txt'))
+    const firstChanges = await first.close()
+    await rm(join(root, 'b.txt'))
+    const secondChanges = await second.close()
+
+    expect(firstChanges.changes).toEqual([{ path: 'a.txt', changeType: 'deleted' }])
+    expect(secondChanges.changes).toEqual([{ path: 'b.txt', changeType: 'deleted' }])
+  })
+
+  /** 标记写不进去就无从确认事件已交齐，结果按观察范围不完整交出，扫描得到的改动照报。 */
+  test('屏障标记写不进去时标记观察范围不完整', async () => {
+    const root = await gitRepo()
+    await writeFile(join(root, '.tmp'), 'not a directory')
+    await Bun.sleep(20)
+
+    const window = openChangeWindow(root)
+    await settle()
+    await writeFile(join(root, 'a.txt'), '1')
+    const got = await window.close()
+
+    expect(got.incomplete).toBe(true)
+    expect(got.changes.map((c) => c.path)).toEqual(['a.txt'])
   })
 
   test('两个窗口同时开着时，事件归最早打开的那个', async () => {
