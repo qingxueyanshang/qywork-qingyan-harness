@@ -22,11 +22,9 @@ mod sink;
 use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 #[cfg(debug_assertions)]
-use std::sync::atomic::AtomicU64;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use ::windows::core::{Interface, BOOL, BSTR};
@@ -89,7 +87,8 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::backend::{
-    wait_loop, ActRequest, Attempt, Backend, CaptureRequest, Outcome, Probe, WaitRequest,
+    self, wait_loop, ActRequest, Attempt, Backend, CaptureRequest, Job, Outcome, Probe,
+    WaitRequest, Watch,
 };
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
@@ -1669,31 +1668,12 @@ unsafe fn read_i32_array(array: *const SAFEARRAY) -> Result<Vec<String>, Failure
 
 // ── 动作：可放弃等待的调用路径 ──
 
-/// 主路径等一次动作调用返回多久。
-///
-/// 正常的模式调用在这段时间里早就回来了。它不是调用的上界——`InvokePattern.Invoke()`
-/// 点开模态对话框时，provider 那一侧要等对话框关掉才返回。
-const CALL_CONFIRM_MS: u64 = 400;
-/// 调用没按时返回时，再花多久找可核实的生效证据。
-///
-/// 两段加起来留在宿主给的 UIA 连接超时（2000 ms）以内：超过它调用自己就带错误返回，
-/// 再等只是把同一个结论推迟。
-const CALL_EVIDENCE_MS: u64 = 1_400;
-/// 找证据时两次查询之间隔多久。查的全是 Win32 窗口属性，一次几微秒。
-const EVIDENCE_POLL_MS: u64 = 40;
-/// 尚未返回的动作调用线程上界。
-///
-/// 到上界即拒绝新动作：那说明目标应用已经有这么多次调用没回来，再发一次只多一条挂着的
-/// 线程。每条线程在调用返回时自行退出，UIA 连接超时给了它一个上界。
-const MAX_PENDING_CALLS: u32 = 8;
 /// 一次 `set_toggle` 最多按几下。三态环最长三格，按不到目标态即如实回未知。
 const MAX_TOGGLE_STEPS: u32 = 3;
 /// 调用没返回时随回执带回几个顶层窗口。
 ///
 /// 这一格是给调用方指下一步观察哪个窗口用的，不是窗口清单的第二个入口。
 const MAX_BLOCKING_WINDOWS: usize = 16;
-
-static PENDING_CALLS: AtomicU32 = AtomicU32::new(0);
 
 /// 一次待发的模式调用，连同它捕获的 UIA 接口。
 ///
@@ -1713,6 +1693,18 @@ impl Deferred {
     fn run(self) -> Result<(), String> {
         (self.0)()
     }
+
+    /// 换成调用线程上执行的任务：先加入进程的 MTA，接口对象属于它，不加入就调不动。
+    fn into_job(self) -> Job {
+        Box::new(move || {
+            let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            let result = self.run();
+            if hr.is_ok() {
+                unsafe { CoUninitialize() };
+            }
+            result
+        })
+    }
 }
 
 /// 把一次 UIA 模式调用包成可以交给别的线程的形状。
@@ -1720,15 +1712,10 @@ pub fn defer(call: impl FnOnce() -> ::windows::core::Result<()> + 'static) -> De
     Deferred(Box::new(move || call().map_err(|e| e.to_string())))
 }
 
-/// 调用没返回时去哪儿找「动作已经生效」的证据。
-///
-/// **每种动作认的证据不同**：后台模式调用认「窗口被禁用 / 已关闭 / 同进程多出一个顶层
-/// 窗口」，而激活会主动改前台，那时「多出一个顶层窗口」证明不了这次激活做过什么。
-/// 窗口动作因此各自读回自己那一项。
-pub trait Watch {
-    fn evidence(&self) -> Option<ActionEvidence>;
-    /// 调用没返回时交给调用方的顶层窗口清单。
-    fn blocking(&self) -> Vec<BlockingWindow>;
+/// 在调用线程上发一次 UIA 模式调用，并在有界时间里定下执行事实，见 `backend::dispatch_call`。
+pub fn dispatch_call(watch: &dyn Watch, deferred: Deferred) -> Attempt {
+    count_call();
+    backend::dispatch_call(watch, deferred.into_job())
 }
 
 /// 调用前后都读得到的窗口事实。后台模式调用的证据全部由它给出。
@@ -1869,88 +1856,19 @@ fn process_windows(pid: u32) -> Vec<WindowInfo> {
     sink.found
 }
 
-/// 起一条线程发这次调用。到达线程上界时返回 `None`，调用没有发出。
-fn spawn_call(deferred: Deferred) -> Option<Receiver<Result<(), String>>> {
-    PENDING_CALLS
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-            (n < MAX_PENDING_CALLS).then_some(n + 1)
-        })
-        .ok()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        // 加入进程的 MTA。接口对象属于它，不加入就调不动。
-        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        let result = deferred.run();
-        // 送不出去是常态：主路径可能已经放弃等待了。
-        let _ = tx.send(result);
-        if hr.is_ok() {
-            unsafe { CoUninitialize() };
-        }
-        PENDING_CALLS.fetch_sub(1, Ordering::SeqCst);
-    });
-    Some(rx)
-}
-
 /// 把一个 UIA 接口交给另一条线程去丢弃。
 ///
 /// **目标应用的 UI 线程卡在一次没返回的调用里时，释放它的代理要等它应答**：在执行线程上
 /// 丢弃会等满 UIA 连接超时，实测一个元素约两秒。占用与动作调用同一份线程额度；
 /// 额度满时这个封装就地被丢弃，退回等目标进程应答。
 fn release_off_thread<T: 'static>(value: T) {
-    let _ = spawn_call(Deferred(Box::new(move || {
-        drop(value);
-        Ok(())
-    })));
-}
-
-/// 发一次可能不返回的调用，并在有界时间里定下执行事实。
-///
-/// 先等一个短确认窗口；没等到就改看 `watch` 认的可核实事实。有证据即 `submitted`，
-/// 没有证据而调用仍未返回才是 `unknown`。
-pub fn dispatch_call(watch: &dyn Watch, deferred: Deferred) -> Attempt {
-    let Some(rx) = spawn_call(deferred) else {
-        return Attempt::Refused(format!(
-            "action_calls_exhausted: {MAX_PENDING_CALLS}"
-        ));
-    };
-    count_call();
-    let first = match rx.recv_timeout(Duration::from_millis(CALL_CONFIRM_MS)) {
-        Ok(result) => Some(result),
-        Err(RecvTimeoutError::Timeout) => None,
-        Err(RecvTimeoutError::Disconnected) => {
-            Some(Err("动作调用线程没有留下结果".to_owned()))
-        }
-    };
-    if let Some(result) = first {
-        let (dispatch, reason) = crate::protocol::classify_action(Some(&result), None, true)
-            .expect("调用有返回值时终态必定判得出");
-        return Attempt::Called(Outcome::returned(dispatch, reason));
-    }
-    let until = Instant::now() + Duration::from_millis(CALL_EVIDENCE_MS);
-    loop {
-        let returned = match rx.try_recv() {
-            Ok(result) => Some(result),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(Err("动作调用线程没有留下结果".to_owned())),
-        };
-        let settled = crate::protocol::classify_action(
-            returned.as_ref(),
-            watch.evidence(),
-            Instant::now() >= until,
-        );
-        if let Some((dispatch, reason)) = settled {
-            if returned.is_some() {
-                return Attempt::Called(Outcome::returned(dispatch, reason));
-            }
-            return Attempt::Called(Outcome {
-                dispatch,
-                reason,
-                returned: false,
-                windows: watch.blocking(),
-            });
-        }
-        std::thread::sleep(Duration::from_millis(EVIDENCE_POLL_MS));
-    }
+    let _ = backend::spawn_call(
+        Deferred(Box::new(move || {
+            drop(value);
+            Ok(())
+        }))
+        .into_job(),
+    );
 }
 
 /// 按动作取模式、判前置条件，然后发调用。
@@ -2559,46 +2477,6 @@ mod tests {
         assert_eq!(role_name(50_040), "app_bar");
         assert_eq!(role_name(50_041), "control_50041");
         assert_eq!(role_name(0), "control_0");
-    }
-
-    /// 调用线程有上界：到上界之后不再起线程，那一次动作因此没有发出。
-    ///
-    /// 额度在线程退出时归还，所以上界不会因为一段时间的拥挤就永久关闭动作。
-    #[test]
-    fn pending_action_calls_are_bounded_and_the_budget_comes_back() {
-        static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        RELEASE.store(false, Ordering::SeqCst);
-        let mut held = Vec::new();
-        for _ in 0..MAX_PENDING_CALLS {
-            let rx = spawn_call(Deferred(Box::new(|| {
-                while !RELEASE.load(Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Ok(())
-            })))
-            .expect("上界之内应当起得来线程");
-            held.push(rx);
-        }
-        assert!(
-            spawn_call(Deferred(Box::new(|| Ok(())))).is_none(),
-            "到上界之后不该再起线程"
-        );
-        RELEASE.store(true, Ordering::SeqCst);
-        for rx in held {
-            assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(Ok(())));
-        }
-        let until = Instant::now() + Duration::from_secs(5);
-        let recovered = loop {
-            if let Some(rx) = spawn_call(Deferred(Box::new(|| Ok(())))) {
-                break Some(rx);
-            }
-            if Instant::now() >= until {
-                break None;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        let rx = recovered.expect("线程退出之后额度应当归还");
-        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(Ok(())));
     }
 
     #[test]
