@@ -2,11 +2,12 @@
  * 同一对象的当前视图在历史里只留最新一份。
  *
  * 覆盖范围：`loop/request.ts` 的 `collapseSuperseded`（取代规则、收纳信封形状、纯函数与幂等），
- * 以及它接在 `loop/index.ts` 的 `buildRequest` 上之后适配器实际收到的那份请求。回放侧给消息打同一个
- * `_view` 由 `runtime/transcript.test.ts` 锁。
+ * 以及它接在 `loop/index.ts` 的 `buildRequest` 上之后适配器实际收到的那份请求与其中的缓存断点。
+ * 回放侧给消息打同一个 `_view` 由 `runtime/transcript.test.ts` 锁。
  *
  * 原始失败形状：同一窗口的 12 份整窗控件表全部随历史重发，末次请求约九成是旧表，
- * 而动作只接受最新一份的观察编号。
+ * 而动作只接受最新一份的观察编号。收起旧表之后的失败形状：每一步都改写上一步的末条结果，
+ * 缓存只命中到首条用户消息，其后的内容每一步整段重写。
  */
 
 import { expect, test } from 'bun:test'
@@ -15,6 +16,7 @@ import { DEFAULT_DENSITY, estimateRequest, lookupModel } from '@qywork/ai'
 import type { CurrentView } from '@qywork/core'
 import type { ToolContextBase } from '../registry.ts'
 import { ToolRegistry } from '../registry.ts'
+import { call, fakeAdapter } from './fixtures.test-helper.ts'
 import { AgentLoop } from './index.ts'
 import { collapseSuperseded } from './request.ts'
 import type { LoopPersistence } from './types.ts'
@@ -226,4 +228,100 @@ test('适配器收到的请求里，被取代的控件表已换成收纳信封�
   expect(isCondensed(tools[0])).toBe(true)
   expect(String(tools[0]?.content)).not.toContain('第一份整窗表')
   expect(String(tools[1]?.content)).toContain('第二份整窗表')
+})
+
+/** 请求体里的字节：内部标记（`_` 前缀）与断点标记不影响前缀是否相同。 */
+function wire(m: WireMessage): string {
+  return JSON.stringify(m, (k, v) => (k === 'cacheBreakpoint' || k.startsWith('_') ? undefined : v))
+}
+
+/**
+ * 按 Anthropic 的缓存规则算每一步命中的消息条数：条目只写在断点处，命中取以往请求写过
+ * 条目的最长相同前缀。
+ */
+function cachedPrefixes(requests: readonly WireMessage[][]): number[] {
+  const entries = new Set<string>()
+  return requests.map((messages) => {
+    const lines = messages.map(wire)
+    let hit = 0
+    for (let n = lines.length; n > 0 && hit === 0; n--) {
+      if (entries.has(lines.slice(0, n).join('\n'))) hit = n
+    }
+    for (const [i, m] of messages.entries()) {
+      if (m.cacheBreakpoint) entries.add(lines.slice(0, i + 1).join('\n'))
+    }
+    return hit
+  })
+}
+
+/** 这一步与上一步第一处不同的消息下标；上一步整段未变时为上一步的条数。 */
+function firstChange(prev: readonly WireMessage[], cur: readonly WireMessage[]): number {
+  const i = prev.findIndex((m, at) => wire(m) !== wire(cur[at]!))
+  return i < 0 ? prev.length : i
+}
+
+test('逐步观察同一窗口：每一步的缓存命中到上一份控件表被收起之前', async () => {
+  const registry = new ToolRegistry()
+  let observations = 0
+  registry.register({
+    name: 'observe',
+    description: '读取窗口控件表。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    actionKind: 'read',
+    objectLabel: '窗口',
+    category: 'session',
+    facet: '测试',
+    summary: '测试夹具',
+    permissionEffect: 'internal_control',
+    async fn() {
+      observations++
+      return {
+        status: 'success',
+        message: `第 ${observations} 次观察`,
+        data: { elements: `控件表 ${observations}` },
+        currentView: W1,
+      }
+    },
+  })
+  const scripted = fakeAdapter([
+    [call('observe')],
+    [call('observe')],
+    [call('observe')],
+    [call('observe')],
+    null,
+  ])
+  const seen: WireMessage[][] = []
+  const adapter: LlmAdapter = {
+    ...scripted,
+    stream(req) {
+      seen.push(JSON.parse(JSON.stringify(req.messages)) as WireMessage[])
+      return scripted.stream(req)
+    },
+  }
+  const loop = new AgentLoop({
+    adapter,
+    registry,
+    systemPrompt: 'sys',
+    makeToolContext: baseCtx,
+    persist: persistence(),
+  })
+  for await (const _ of loop.run({
+    runId: 'rn_cache' as never,
+    history: [{ role: 'user', content: '登录', _group: 'historyMessages' }],
+    signal: new AbortController().signal,
+  })) {
+    // 断言落在适配器收到的请求上。
+  }
+
+  expect(seen).toHaveLength(5)
+  const changes = seen.slice(1).map((cur, k) => firstChange(seen[k]!, cur))
+  // 从第三步起，上一步的末条控件表都被收起：场景确实走到了改写上一步前缀的路径。
+  for (const [k, at] of changes.entries()) {
+    if (k >= 1) expect(at).toBeLessThan(seen[k]!.length)
+  }
+  expect(cachedPrefixes(seen).slice(1)).toEqual(changes)
+  // 系统提示词另占一个，Anthropic 一次请求最多 4 个断点。
+  for (const messages of seen) {
+    expect(messages.filter((m) => m.cacheBreakpoint).length).toBeLessThanOrEqual(3)
+  }
 })

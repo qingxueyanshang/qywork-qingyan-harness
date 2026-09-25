@@ -325,15 +325,6 @@ export function batchImageCount(messages: readonly WireMessage[], batchId: strin
 }
 
 /**
- * 把带图的工具结果换成只有信封的形态，信封里标 `images_omitted: true`。
- *
- * 与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）：模型据这一位知道图不在场，
- * 缺了它会把图当成仍然可见。`result` 保留，只有图像块被摘掉。
- *
- * **必须逐字稳定且无图时返回原引用**：投影每次构造请求都跑一遍，产物抖动会让缓存
- * 断点之前的字节每次都变。
- */
-/**
  * 被同一对象的更新视图取代的工具结果换成收纳信封（`condenseMessage`）。
  *
  * 判定只看消息上的 `_view`：同一 `key` 下，后面出现整个对象的视图，或同一 `scope` 的
@@ -367,6 +358,15 @@ export function collapseSuperseded(messages: readonly WireMessage[]): WireMessag
   return out
 }
 
+/**
+ * 把带图的工具结果换成只有信封的形态，信封里标 `images_omitted: true`。
+ *
+ * 与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）：模型据这一位知道图不在场，
+ * 缺了它会把图当成仍然可见。`result` 保留，只有图像块被摘掉。
+ *
+ * **必须逐字稳定且无图时返回原引用**：投影每次构造请求都跑一遍，产物抖动会让缓存
+ * 断点之前的字节每次都变。
+ */
 export function omitImages(m: WireMessage): WireMessage {
   if (m.role !== 'tool' || typeof m.content === 'string' || !m.content) return m
   if (!m.content.some((b) => b.type === 'image')) return m

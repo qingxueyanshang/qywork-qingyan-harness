@@ -319,6 +319,17 @@ export class AgentLoop {
         break
       }
     }
+    /*
+     * 缓存断点之三：最后一批工具结果所属的 assistant 消息。
+     *
+     * 下一步装配时，这一批结果可能被同一对象的更新视图取代、或摘掉图像块，末尾断点的
+     * 前缀随之对不上。Anthropic 只在断点处写入缓存条目，命中只发生在以往请求写过条目的
+     * 位置；不在这里打断点，下一步只能命中 history 末条，其后的内容每一步整段重写。
+     * 一次请求最多 4 个断点：系统提示词、history 末条、这里、末尾，不要再加第五个，
+     * 超出会被 400 拒绝。
+     */
+    if (lastCall >= 0)
+      assembledRaw[lastCall] = { ...assembledRaw[lastCall]!, cacheBreakpoint: true }
     const pendingBatch = lastCall < 0 ? null : (assembledRaw[lastCall]!._batch ?? null)
     const consumed =
       pendingBatch !== null && this.deps.persist.inputImagesConsumed?.(pendingBatch) === true
@@ -364,9 +375,8 @@ export class AgentLoop {
     this.lastOmitted = omitted
 
     /*
-     * 缓存断点之三：本次已接受消息的末尾。run 内除了刚被新视图取代的那一份结果，
-     * 其余消息逐字不变，所以下一步能复用那一份之前的全部前缀；兼容协议忽略此标记，
-     * Anthropic 把它落成显式断点。
+     * 缓存断点之四：本次已接受消息的末尾。下一步没有改动这一批结果时，从这里整段复用；
+     * 兼容协议忽略此标记，Anthropic 把它落成显式断点。
      */
     const latest = messages.length - 1
     if (latest >= 0 && !messages[latest]!.cacheBreakpoint) {
