@@ -112,7 +112,6 @@ test('发送到起轮之间保留耗时列，开始时刻到达时同步计时�
         runId: 'rn_start_elapsed',
         model: 'm',
         userMessageId: null,
-        retryOfRunId: null,
       },
     } as never)
     expect(host.querySelector('.run-strip')).toBe(strip)

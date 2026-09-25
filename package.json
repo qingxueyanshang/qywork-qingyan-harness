@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "dev": "bun run scripts/dev.ts",
-    "dev:agent": "bun --watch packages/cli/src/index.ts serve --port 7717 --host 127.0.0.1",
+    "dev:agent": "bun packages/cli/src/index.ts serve --port 7717 --host 127.0.0.1",
     "dev:web": "bun run --cwd apps/web dev",
     "build": "bun run build:web && bun run build:agent",
     "build:web": "bun run --cwd apps/web build",
