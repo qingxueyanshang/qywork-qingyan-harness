@@ -238,6 +238,14 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
         return Err(anyhow::anyhow!("主窗口没有建起来：{reason}").into());
     }
 
+    // 无装饰窗口四边的缩放边框由 Tauri 在建主 WebView 时挂上，但 `unstable` 特性下主
+    // WebView 按子视图创建，那条分支不挂。`set_resizable` 的处理对无装饰窗口会补挂，
+    // 已挂上时直接返回。不要删这一行：删了窗口四边拖不动，且不报任何错。
+    #[cfg(windows)]
+    if let Err(e) = window.set_resizable(true) {
+        log::warn!("窗口缩放边框未挂上：{e}");
+    }
+
     #[cfg(windows)]
     extend_frame_for_shadow(&window);
 

@@ -22,6 +22,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # `tray-icon`：关闭按钮只把主窗口收进托盘，进程从托盘菜单退出，见 lib.rs 的 `build_tray`。
 # `unstable`：`Window::add_child` 只在这个开关下存在，浏览器宿主的子 WebView 靠它建出。
+# 它同时让主 WebView 按子视图创建，Windows 上无装饰窗口的缩放边框因此要在 lib.rs 的
+# `build_main_window` 里补挂。
 tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
