@@ -279,11 +279,14 @@ type CompactElement = Omit<DesktopElement, 'actions' | 'enabled' | 'offscreen' |
   valueOmittedChars?: number
 }
 
+/** 字典里的一项：按投递方式分组的动作名，`unavailable` 是此刻做不了的动作与原因。 */
+type ActionGroups = Record<string, string[] | Record<string, string>>
+
 interface DeliveredObservation {
   app: string
   title: string
   defaults: { enabled: boolean; offscreen: boolean; automationId: string }
-  actionSets: DesktopElement['actions'][]
+  actionSets: ActionGroups[]
   elements: CompactElement[]
   truncated: boolean
   truncatedBy: string[]
@@ -296,18 +299,43 @@ function observationOf(outcome: ToolOutcome): DeliveredObservation {
   return (data.observation ?? data) as DeliveredObservation
 }
 
+/** 动作表按动作名排序：分组写法不保留组与组之间的原顺序，比较时两边都排一次。 */
+function sorted(actions: DesktopElement['actions']): DesktopElement['actions'] {
+  return [...actions].sort((a, b) => (a.action < b.action ? -1 : a.action > b.action ? 1 : 0))
+}
+
+/** 字典里的一项还原成动作表。 */
+function actionsOf(groups: ActionGroups | undefined): DesktopElement['actions'] {
+  if (groups === undefined) throw new Error('actionSet 不在字典里')
+  const out: DesktopElement['actions'] = []
+  for (const [key, value] of Object.entries(groups)) {
+    if (key === 'unavailable') {
+      for (const [action, reason] of Object.entries(value as Record<string, string>)) {
+        out.push({ action: action as never, delivery: [], unavailable: reason })
+      }
+      continue
+    }
+    for (const action of value as string[]) {
+      out.push({ action: action as never, delivery: key.split('+') as never })
+    }
+  }
+  return sorted(out)
+}
+
 /** 投给模型的控件不带 `parentRef` 与 `rect`：层级由前序顺序与 `depth` 表达。 */
 function delivered(
   elements: readonly DesktopElement[],
 ): Omit<DesktopElement, 'parentRef' | 'rect'>[] {
-  return elements.map(({ parentRef: _parentRef, rect: _rect, ...rest }) => rest)
+  return elements.map(({ parentRef: _parentRef, rect: _rect, ...rest }) => ({
+    ...rest,
+    actions: sorted(rest.actions),
+  }))
 }
 
 /** 按结果自带的默认值与动作字典还原成完整控件。 */
 function expand(observation: DeliveredObservation): DesktopElement[] {
   return observation.elements.map(({ actionSet, ...rest }) => {
-    const actions = observation.actionSets[actionSet]
-    if (actions === undefined) throw new Error(`actionSet ${actionSet} 不在字典里`)
+    const actions = actionsOf(observation.actionSets[actionSet])
     return { ...observation.defaults, ...rest, actions } as DesktopElement
   })
 }
@@ -349,6 +377,30 @@ describe('小控件表整份内联', () => {
       expect('enabled' in e).toBe(false)
       expect('offscreen' in e).toBe(false)
     }
+  })
+
+  /** 字典按投递方式分组：还原后与端口交回的动作表逐项相等，组内同名动作只写一次。 */
+  test('动作字典按投递方式分组，还原后与原动作表逐项相等', async () => {
+    const 混合: DesktopElement['actions'] = [
+      { action: 'set_value', delivery: [], unavailable: 'read_only' },
+      { action: 'invoke', delivery: ['background'] },
+      { action: 'scroll_into_view', delivery: ['background'] },
+      { action: 'click', delivery: ['foreground'] },
+      { action: 'type_text', delivery: ['foreground'] },
+    ]
+    const 甲 = { ...目标, ref: 'e30', actions: 混合 }
+    const 乙 = { ...目标, ref: 'e31', name: '另一个', actions: [...混合] }
+    const ctx = context(fakePort([根, 甲, 乙], { acts: 0 }), fakeSink())
+    const observation = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
+
+    const [a, b] = observation.elements.filter((e) => e.ref === 'e30' || e.ref === 'e31')
+    expect(a?.actionSet).toBe(b?.actionSet)
+    expect(observation.actionSets[a?.actionSet ?? -1]).toEqual({
+      background: ['invoke', 'scroll_into_view'],
+      foreground: ['click', 'type_text'],
+      unavailable: { set_value: 'read_only' },
+    })
+    expect(expand(observation)).toEqual(delivered([根, 甲, 乙]))
   })
 
   test('动作结果里的观察同样整份内联，回执字段原样', async () => {
@@ -477,7 +529,7 @@ describe('大控件表只投一部分', () => {
     expect(long).toBeDefined()
     expect(long?.value).toBe(LONG_VALUE.slice(0, 200))
     expect(long?.valueOmittedChars).toBe(LONG_VALUE.length - 200)
-    expect(observation.actionSets[long?.actionSet ?? -1]).toEqual(长值框.actions)
+    expect(actionsOf(observation.actionSets[long?.actionSet ?? -1])).toEqual(sorted(长值框.actions))
   })
 
   test('视图保持原始顺序', async () => {

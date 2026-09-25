@@ -852,15 +852,18 @@ describe('同一份结果在各层同形', () => {
     const envelope = JSON.parse(live) as { resources?: string[]; result?: Record<string, unknown> }
     expect(envelope.resources).toBeUndefined()
     // 投递形状是紧凑的：按结果自带的默认值与动作字典还原后，与去掉 parentRef 的原表相等。
+    // 字典按投递方式分组，`小表` 的动作表每张都只有一种投递方式，还原顺序与原表一致。
     const observation = envelope.result?.observation as {
       defaults: Record<string, unknown>
-      actionSets: DesktopSnapshot['elements'][number]['actions'][]
+      actionSets: Record<string, string[]>[]
       elements: (Record<string, unknown> & { actionSet: number })[]
     }
     const expanded = observation.elements.map(({ actionSet, ...rest }) => ({
       ...observation.defaults,
       ...rest,
-      actions: observation.actionSets[actionSet],
+      actions: Object.entries(observation.actionSets[actionSet] ?? {}).flatMap(
+        ([delivery, names]) => names.map((action) => ({ action, delivery: delivery.split('+') })),
+      ),
     }))
     expect(expanded).toEqual(小表.map(({ parentRef: _parentRef, ...rest }) => rest))
     expect(countRows(h)).toEqual({ refs: 0, blobs: 0 })
