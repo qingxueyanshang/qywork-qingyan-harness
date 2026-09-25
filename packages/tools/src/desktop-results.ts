@@ -65,7 +65,7 @@ type Actions = DesktopElement['actions']
  * 交给模型的一个控件：`actions` 换成 `actionSets` 的下标，与 `DEFAULTS` 相同的格省掉。
  * 大表视图里超长的名称与值只留前缀，并标明省掉多少字。
  *
- * 不带 `parentRef`：`ref` 的路径段就是祖先链（`w.1.0.2` 的父控件是 `w.1.0`），再带一份
+ * 不带 `parentRef`：控件按前序排列，父控件是前面最近的、`depth` 小一层的那一个。再带一份
  * 父控件引用约占控件表的四分之一，且每一步都是新内容，无法命中缓存。
  */
 export type CompactElement = Omit<
@@ -394,11 +394,12 @@ function jsonlBody(snapshot: DesktopSnapshot): Uint8Array {
 }
 
 /**
- * 大表视图选谁：本次动作目标及其祖先、当前焦点控件优先，其余按原始顺序补到上限为止。
+ * 大表视图选谁：本次动作目标、当前焦点控件及它们的祖先优先，其余按原始顺序补到上限为止。
  *
  * **控件不从中间切开**：超长的名称与值先留前缀，装不下就停。优先那几个一律装入——
- * 目标不在视图里，模型就只能再观察一次。输出按原始顺序，层级关系由 `ref` 的路径与 `depth`
- * 读出。一个控件的成本含它第一次带进字典的那个动作表。
+ * 目标不在视图里，模型就只能再观察一次。输出按原始顺序；其余部分是原始顺序的前缀，
+ * 优先那几个连同祖先一起装入，视图里每个控件的祖先因此都在视图里，层级按 `depth` 读得出。
+ * 一个控件的成本含它第一次带进字典的那个动作表。
  */
 function pickView(
   elements: readonly DesktopElement[],
@@ -437,18 +438,17 @@ function ordered(
 ): DesktopElement[] {
   const byRef = new Map(elements.map((e) => [e.ref, e]))
   const head: DesktopElement[] = []
-  const take = (element: DesktopElement): void => {
-    if (priority.has(element.ref)) return
-    priority.add(element.ref)
-    head.push(element)
+  const takeWithAncestors = (element: DesktopElement | undefined): void => {
+    let at = element
+    while (at !== undefined && !priority.has(at.ref)) {
+      priority.add(at.ref)
+      head.push(at)
+      at = at.parentRef === undefined ? undefined : byRef.get(at.parentRef)
+    }
   }
-  let at = targetRef === null ? undefined : byRef.get(targetRef)
-  while (at !== undefined && !priority.has(at.ref)) {
-    take(at)
-    at = at.parentRef === undefined ? undefined : byRef.get(at.parentRef)
-  }
+  takeWithAncestors(targetRef === null ? undefined : byRef.get(targetRef))
   for (const element of elements) {
-    if (element.focused === true) take(element)
+    if (element.focused === true) takeWithAncestors(element)
   }
   return [...head, ...elements.filter((e) => !priority.has(e.ref))]
 }

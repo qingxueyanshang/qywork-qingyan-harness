@@ -104,8 +104,8 @@ test('不同窗口互不取代，没有声明视图的结果不动', () => {
 })
 
 test('子树视图只被同一子树或整窗取代；整窗不被后面的子树取代', () => {
-  const sub = { ...W1, scope: 'w.1#4' }
-  const other = { ...W1, scope: 'w.2#9' }
+  const sub = { ...W1, scope: 'e4' }
+  const other = { ...W1, scope: 'e9' }
   const out = collapseSuperseded([
     observed('c1', W1),
     observed('c2', sub),

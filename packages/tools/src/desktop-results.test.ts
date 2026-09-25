@@ -34,7 +34,8 @@ const LIMIT = deliveryBudget(WINDOW).perCall
 const LONG_VALUE = '合成长文本。'.repeat(10_000)
 
 const 根: DesktopElement = {
-  ref: 'w#0',
+  ref: 'e1',
+  windowRoot: true,
   depth: 0,
   role: 'window',
   name: '合成窗口',
@@ -44,8 +45,8 @@ const 根: DesktopElement = {
   actions: [],
 }
 const 外层: DesktopElement = {
-  ref: 'g#1',
-  parentRef: 'w#0',
+  ref: 'e2',
+  parentRef: 'e1',
   depth: 1,
   role: 'group',
   name: '外层分组',
@@ -55,8 +56,8 @@ const 外层: DesktopElement = {
   actions: [],
 }
 const 内层: DesktopElement = {
-  ref: 'g#2',
-  parentRef: 'g#1',
+  ref: 'e3',
+  parentRef: 'e2',
   depth: 2,
   role: 'group',
   name: '内层分组',
@@ -67,8 +68,8 @@ const 内层: DesktopElement = {
 }
 /** 值特别长的那一个，排在表的前面：视图装它时预算还很宽，值仍然只能留前缀。 */
 const 长值框: DesktopElement = {
-  ref: 'v#1',
-  parentRef: 'w#0',
+  ref: 'e4',
+  parentRef: 'e1',
   depth: 1,
   role: 'edit',
   name: '长值框',
@@ -79,8 +80,8 @@ const 长值框: DesktopElement = {
   actions: [{ action: 'set_value', delivery: ['background'] }],
 }
 const 焦点框: DesktopElement = {
-  ref: 'f#1',
-  parentRef: 'w#0',
+  ref: 'e5',
+  parentRef: 'e1',
   depth: 1,
   role: 'edit',
   name: '焦点框',
@@ -93,8 +94,8 @@ const 焦点框: DesktopElement = {
 }
 /** 动作目标，排在整张表的最后一个：优先进视图靠的是优先级，不是位置。 */
 const 目标: DesktopElement = {
-  ref: 't#1',
-  parentRef: 'g#2',
+  ref: 'e6',
+  parentRef: 'e3',
   depth: 3,
   role: 'button',
   name: '目标按钮',
@@ -106,8 +107,8 @@ const 目标: DesktopElement = {
 
 function filler(count: number): DesktopElement[] {
   return Array.from({ length: count }, (_, i) => ({
-    ref: `e#${i}`,
-    parentRef: 'w#0',
+    ref: `e${100 + i}`,
+    parentRef: 'e1',
     depth: 1,
     role: 'text',
     name: `合成条目 ${i}`,
@@ -121,8 +122,8 @@ function filler(count: number): DesktopElement[] {
 
 /** 自己就带着长值的动作目标，打字动作打在它上面。 */
 const 长值目标: DesktopElement = {
-  ref: 't#2',
-  parentRef: 'g#2',
+  ref: 'e7',
+  parentRef: 'e3',
   depth: 3,
   role: 'edit',
   name: '长值目标',
@@ -294,7 +295,7 @@ function observationOf(outcome: ToolOutcome): DeliveredObservation {
   return (data.observation ?? data) as DeliveredObservation
 }
 
-/** 投给模型的控件不带 `parentRef`：`ref` 的路径段就是祖先链。 */
+/** 投给模型的控件不带 `parentRef`：层级由前序顺序与 `depth` 表达。 */
 function delivered(elements: readonly DesktopElement[]): Omit<DesktopElement, 'parentRef'>[] {
   return elements.map(({ parentRef: _parentRef, ...rest }) => rest)
 }
@@ -317,7 +318,7 @@ function fromJsonl(body: Uint8Array): DesktopSnapshot {
 }
 
 async function actOnTarget(ctx: ToolContext, observationId = 'do_1'): Promise<ToolOutcome> {
-  return desktopActTool.fn({ windowId: 'dw_1', observationId, action: 'invoke', ref: 't#1' }, ctx)
+  return desktopActTool.fn({ windowId: 'dw_1', observationId, action: 'invoke', ref: 'e6' }, ctx)
 }
 
 describe('小控件表整份内联', () => {
@@ -365,8 +366,8 @@ describe('小控件表整份内联', () => {
    */
   test('装得下单次投递上限的整窗控件表整份给出，排在末尾的表单控件都在', async () => {
     const 外框 = Array.from({ length: 73 }, (_, i) => ({
-      ref: `w.0.${i}#42.1.${i}`,
-      parentRef: 'w#42.1',
+      ref: `e${10 + i}`,
+      parentRef: 'e1',
       depth: 2,
       role: i % 3 === 0 ? 'button' : 'pane',
       name: i % 3 === 0 ? `工具栏按钮 ${i}` : '',
@@ -382,8 +383,8 @@ describe('小控件表整份内联', () => {
       ],
     }))
     const 正文 = Array.from({ length: 36 }, (_, i) => ({
-      ref: `w.1.${i}#42.2.${i}`,
-      parentRef: 'w#42.1',
+      ref: `e${100 + i}`,
+      parentRef: 'e1',
       depth: 2,
       role: i === 10 || i === 12 ? 'edit' : i === 17 ? 'button' : 'text',
       name: i === 10 ? '请输入账号' : i === 12 ? '请输入密码' : i === 17 ? '登录' : `正文 ${i}`,
@@ -403,7 +404,7 @@ describe('小控件表整份内联', () => {
               { action: 'click', delivery: ['foreground'] },
             ],
     }))
-    const 窗口: DesktopElement = { ...根, ref: 'w#42.1', actions: [] }
+    const 窗口: DesktopElement = { ...根, ref: 'e1', actions: [] }
     const table = [窗口, ...外框, ...正文] as DesktopElement[]
     expect(table).toHaveLength(110)
     const ctx = context(fakePort(table, { acts: 0 }), fakeSink(), 1_000_000)
@@ -424,17 +425,30 @@ describe('大控件表只投一部分', () => {
     const view = observationOf(await actOnTarget(ctx)).elements
     const refs = view.map((e) => e.ref)
 
-    expect(refs).toContain('t#1')
-    expect(refs).toContain('g#2')
-    expect(refs).toContain('g#1')
-    expect(refs).toContain('w#0')
+    expect(refs).toContain('e6')
+    expect(refs).toContain('e3')
+    expect(refs).toContain('e2')
+    expect(refs).toContain('e1')
     expect(view.length).toBeLessThan(大表.length)
   })
 
   test('当前焦点控件在视图里', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
     const view = observationOf(await actOnTarget(ctx)).elements
-    expect(view.map((e) => e.ref)).toContain('f#1')
+    expect(view.map((e) => e.ref)).toContain('e5')
+  })
+
+  /** 视图里层级只由 `depth` 与顺序表达：祖先缺席时，焦点控件读起来挂在前一个控件下面。 */
+  test('焦点控件的祖先随它一起进视图', async () => {
+    const 深外层 = { ...外层, ref: 'e9', automationId: 'deepOuter' }
+    const 深内层 = { ...内层, ref: 'e10', parentRef: 'e9', automationId: 'deepInner' }
+    const 深焦点 = { ...焦点框, ref: 'e11', parentRef: 'e10', depth: 3 }
+    const table = [根, ...filler(3994), 深外层, 深内层, 深焦点]
+    const ctx = context(fakePort(table, { acts: 0 }), fakeSink())
+    const view = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)).elements
+
+    expect(view.length).toBeLessThan(table.length)
+    expect(view.map((e) => e.ref).slice(-3)).toEqual(['e9', 'e10', 'e11'])
   })
 
   /** 动作行行尾的窗口名取自这两格，裁过的观察里它们必须还在。 */
@@ -455,7 +469,7 @@ describe('大控件表只投一部分', () => {
       expect(typeof e.name).toBe('string')
       expect(observation.actionSets[e.actionSet]).toBeDefined()
     }
-    const long = view.find((e) => e.ref === 'v#1')
+    const long = view.find((e) => e.ref === 'e4')
     expect(long).toBeDefined()
     expect(long?.value).toBe(LONG_VALUE.slice(0, 200))
     expect(long?.valueOmittedChars).toBe(LONG_VALUE.length - 200)
@@ -553,13 +567,13 @@ describe('目标值很长时回执仍然短', () => {
     windowId: 'dw_1',
     observationId: 'do_1',
     action: 'type_text',
-    ref: 't#2',
+    ref: 'e7',
     text: '尾巴',
   }
 
   function typingContext(afterValue: string, acted: Acted = { acts: 0 }): ToolContext {
     const after = snapshot(
-      长值目标表.map((e) => (e.ref === 't#2' ? { ...e, value: afterValue } : e)),
+      长值目标表.map((e) => (e.ref === 'e7' ? { ...e, value: afterValue } : e)),
       { observationId: 'do_2' },
     )
     return context(
@@ -594,8 +608,8 @@ describe('目标值很长时回执仍然短', () => {
     )
     expect(size).toBeLessThanOrEqual(LIMIT)
     // 目标与祖先之外还装得下别的控件。
-    expect(view.filter((e) => e.ref.startsWith('e#')).length).toBeGreaterThan(0)
-    const target = view.find((e) => e.ref === 't#2')
+    expect(view.filter((e) => e.name.startsWith('合成条目')).length).toBeGreaterThan(0)
+    const target = view.find((e) => e.ref === 'e7')
     expect(target?.value).toBe(LONG_VALUE.slice(0, 200))
     expect(target?.valueOmittedChars).toBe(LONG_VALUE.length + 2 - 200)
   })
@@ -618,8 +632,8 @@ describe('目标值很长时回执仍然短', () => {
 describe('存盘正文与资源引用', () => {
   test('JSONL 第一行是非元素元数据，之后每行一个控件，拼回与原观察相等', async () => {
     const 带空值: DesktopElement = {
-      ref: 'z#1',
-      parentRef: 'w#0',
+      ref: 'e8',
+      parentRef: 'e1',
       depth: 1,
       role: 'edit',
       name: '',
@@ -789,7 +803,7 @@ describe('四个出口', () => {
       fakeSink(),
     )
     const r = await desktopWaitTool.fn(
-      { windowId: 'dw_1', observationId: 'do_1', until: 'enabled', ref: 't#1' },
+      { windowId: 'dw_1', observationId: 'do_1', until: 'enabled', ref: 'e6' },
       ctx,
     )
     const data = r.data as { found: boolean; reason: string }
@@ -799,7 +813,7 @@ describe('四个出口', () => {
     expect(data.found).toBe(false)
     expect(data.reason).toBe('timeout')
     expect(observationOf(r).delivery?.resourceId).toBe('rs_1')
-    expect(observationOf(r).elements.map((e) => e.ref)).toContain('t#1')
+    expect(observationOf(r).elements.map((e) => e.ref)).toContain('e6')
   })
 
   test('序列保留逐步回执与停止点，只有最后那份观察按上限处理', async () => {
@@ -810,8 +824,8 @@ describe('四个出口', () => {
         windowId: 'dw_1',
         observationId: 'do_1',
         steps: [
-          { action: 'invoke', ref: 't#1' },
-          { action: 'invoke', ref: 't#1', expect: { until: 'gone' } },
+          { action: 'invoke', ref: 'e6' },
+          { action: 'invoke', ref: 'e6', expect: { until: 'gone' } },
         ],
       },
       ctx,
@@ -830,7 +844,7 @@ describe('四个出口', () => {
     expect(data.stoppedAt).toBe(2)
     expect(typeof data.stopReason).toBe('string')
     expect(observationOf(r).delivery?.totalElements).toBe(大表.length)
-    expect(observationOf(r).elements.map((e) => e.ref)).toContain('t#1')
+    expect(observationOf(r).elements.map((e) => e.ref)).toContain('e6')
     expect(acted.acts).toBe(2)
   })
 })

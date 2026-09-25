@@ -408,15 +408,6 @@ function resolveTarget(
     const ref = str(args.ref, 'ref')
     const hit = table.find((e) => e.ref === ref)
     if (!hit) {
-      // `#` 之后是控件身份，宿主按它核对控件没换过。漏抄时不按位置猜：拿旧观察的位置配新
-      // 观察编号会点到挪到那个位置的另一个控件。回执给出这个位置在本观察里的整条 ref。
-      const same = ref.includes('#') ? [] : table.filter((e) => e.ref.split('#')[0] === ref)
-      if (same.length === 1) {
-        throw new ArgError(
-          `未执行 · ref 要整条照抄，${ref} 在这份观察里是 ${same[0]!.ref}`,
-          'desktop_ref_unknown',
-        )
-      }
       throw new ArgError(`未执行 · 这份观察里没有 ${ref} · 先重新观察`, 'desktop_ref_unknown')
     }
     return hit
@@ -458,13 +449,11 @@ function targetGiven(args: Record<string, unknown>): boolean {
 }
 
 /**
- * 这个控件是不是窗口根节点。
- *
- * 判据是 `ref` 的下标路径只有根那一段（`w`）：子树读回来的根带着它在整窗里的下标
- * （`w.3.1`），按「没有 parentRef」判会把子树根一并算进来。
+ * 这个控件是不是窗口根节点。按端口标出的 `windowRoot` 判：子树读取的根同样 `depth` 为 0、
+ * 没有 `parentRef`，按那两格判会把子树根一并算进来。
  */
 function isWindowRoot(e: DesktopElement): boolean {
-  return e.ref.split('#')[0] === 'w'
+  return e.windowRoot === true
 }
 
 /** 观察里的窗口根节点。整窗观察一定有它；只读过子树的观察没有，那时要求重读整窗。 */
@@ -1144,7 +1133,7 @@ export const desktopObserveTool: ToolSpec = {
     '观察一个窗口。capture=structure（默认）读控件表，region_image 采图，combined 两样都要，text 读文档文本与选区。' +
     '先用 structure，树里找不到目标时才采图。' +
     '控件表给角色、名称、automationId、value、enabled、rect、depth 与控件状态；' +
-    'ref 的路径段就是祖先链，w.1.0.2 的父控件是 w.1.0；' +
+    '控件按前序排列，父控件是前面最近的、depth 小一层的那一个；' +
     '每个控件的 actionSet 是 actionSets 的下标，指向它此刻能做的动作，delivery 非空才能执行；' +
     '控件上缺席的 enabled、offscreen、automationId 取 defaults 的值。' +
     '回执里「无可操作控件」就是自绘界面，这一次调用已经把整窗图一并给了，动作按图给坐标，不必再采一次；' +
@@ -1152,7 +1141,8 @@ export const desktopObserveTool: ToolSpec = {
     '「窗口被盖住或已最小化」时浏览器等应用可能没交出页面内容，表里缺的不代表不存在，要看全先 activate 再观察；' +
     '「已投 N/M 个控件」是这一次只返回了其中一部分，完整控件表已按结果里的 resource id 存好，' +
     '用 read_resource 读，不必重读。' +
-    '返回的 observationId 与 ref 是 desktop_act 与 desktop_wait 的前提，重新观察即换号；窗口移动后旧 imageRef 失效。',
+    '返回的 observationId 与 ref 是 desktop_act 与 desktop_wait 的前提；observationId 重新观察即换号，' +
+    'ref 按控件分配，同一个控件在新观察里编号不变；窗口移动后旧 imageRef 失效。',
   parameters: {
     type: 'object',
     properties: {

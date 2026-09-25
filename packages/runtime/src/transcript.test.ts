@@ -253,7 +253,7 @@ describe('steps 投影', () => {
           args: {},
           outcome: {
             status: 'success',
-            currentView: { key: 'desktop:dw_1', scope: 'w.1#4', partial: true },
+            currentView: { key: 'desktop:dw_1', scope: 'e4', partial: true },
           },
         } as never,
       }),
@@ -265,13 +265,13 @@ describe('steps 投影', () => {
         payload: {
           kind: 'tool_result',
           args: {},
-          outcome: { status: 'success', currentView: { scope: 'w.1#4' } },
+          outcome: { status: 'success', currentView: { scope: 'e4' } },
         } as never,
       }),
       step({ seq: 3, toolCallId: 'C', callIndex: 2 }),
     ])
     const tools = out.filter((m) => m.role === 'tool')
-    expect(tools[0]?._view).toEqual({ key: 'desktop:dw_1', scope: 'w.1#4', partial: true })
+    expect(tools[0]?._view).toEqual({ key: 'desktop:dw_1', scope: 'e4', partial: true })
     expect(tools[1]?._view).toBeUndefined()
     expect(tools[2]?._view).toBeUndefined()
   })

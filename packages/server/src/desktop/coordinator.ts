@@ -18,6 +18,10 @@
  *    下一个进来；确认不了就整条挡住，等宿主换代际。
  * 5. **「正在操作哪个应用」跟随占用。** 只有持有桌面的那个执行者写得动它；它释放、
  *    宿主断开或换代际都要清回 `null`。
+ * 6. **控件编号在这里发放，也只在这里翻译。** 宿主的 ref 带下标路径与身份段，只用于
+ *    宿主重新定位控件；端口交出去的是按控件身份分配的短编号 `e<n>`。进宿主的每一处按
+ *    本次观察的对应表翻回完整 ref，宿主回包里的 ref 在 `#absorb` 换成短编号。工具层
+ *    不翻译、不另存对应关系。
  */
 
 import type {
@@ -121,6 +125,15 @@ const FOREGROUND_POINTER: ReadonlySet<string> = new Set(['click', 'hover', 'drag
  * （前台窗口就是目标窗口且窗口未被禁用），这里只是不拦。
  */
 const WINDOW_TARGET: ReadonlySet<string> = new Set(['type_text', 'press_key'])
+/**
+ * 一个窗口的编号表最多记多少个控件身份，超过即淘汰最久没出现的那个。
+ *
+ * 要高于单次读取的节点数（工具侧上限 4000）：同一份观察里的控件在表里互相挤掉的话，
+ * 下一份观察里它们会拿到新号。
+ */
+export const MAX_WINDOW_REFS = 8192
+/** 宿主在 `filteredBy` 里记读取范围的那一项的前缀，其后是宿主的完整 ref。 */
+const ROOT_FILTER = 'root='
 
 /**
  * 端口已经释放，或者此刻没有可用的宿主。
@@ -139,6 +152,49 @@ export class DesktopTargetError extends Error implements DesktopRefusal {
   readonly executed = false as const
 }
 
+/**
+ * 宿主 ref 里的控件身份，编号表的键。
+ *
+ * 有 RuntimeId 时取 `#` 之后的身份段：控件挪了位置、下标路径变了，它仍是同一个键。
+ * 身份段以 `~` 开头（属性指纹）或为空时取整条 ref：指纹对同角色同名的兄弟控件不唯一，
+ * 单独作键会把两个控件编成同一个号。
+ */
+function identityOfRef(hostRef: string): string {
+  const at = hostRef.indexOf('#')
+  const segment = at < 0 ? '' : hostRef.slice(at + 1)
+  return segment === '' || segment.startsWith('~') ? hostRef : segment
+}
+
+/**
+ * 一个窗口的控件编号表：控件身份 → `e<n>`。
+ *
+ * 编号只增不减，淘汰掉的身份再出现时拿新号。RuntimeId 可能被另一个控件复用，表因此按窗口
+ * 隔离、有上限；同一个号不会发给两个身份。`Map` 的插入顺序就是最近出现的先后。
+ */
+class WindowRefs {
+  #ids = new Map<string, string>()
+  #last = 0
+
+  /** 这个宿主 ref 在本窗口的编号。见过的身份沿用原号，并记为最近出现。 */
+  of(hostRef: string): string {
+    const key = identityOfRef(hostRef)
+    const known = this.#ids.get(key)
+    if (known !== undefined) {
+      this.#ids.delete(key)
+      this.#ids.set(key, known)
+      return known
+    }
+    this.#last += 1
+    const id = `e${this.#last}`
+    this.#ids.set(key, id)
+    if (this.#ids.size > MAX_WINDOW_REFS) {
+      const oldest = this.#ids.keys().next().value
+      if (oldest !== undefined) this.#ids.delete(oldest)
+    }
+    return id
+  }
+}
+
 /** 一个已发现窗口的完整身份。`windowId` 之外的三项都不交给模型。 */
 interface KnownWindow {
   windowId: string
@@ -147,6 +203,8 @@ interface KnownWindow {
   processStartedAt: number
   app: string
   title: string
+  /** 这个窗口的控件编号表。窗口身份一变即换一个 `windowId`，表随之重开。 */
+  refs: WindowRefs
 }
 
 /** 一次观察的记录。动作前的唯一匹配与前置条件按它判。 */
@@ -155,9 +213,15 @@ interface ObservationRecord {
   windowId: string
   /** 采集这一份时的宿主代际。代际一变这份记录即作废。 */
   epochKey: string
-  /** 读取范围的根。缺席表示整窗。动作与等待之后按它重读。 */
-  scope?: string
+  /**
+   * 读取范围的根：`ref` 是交给端口的短编号，`host` 是宿主的完整 ref。缺席表示整窗。
+   * 动作与等待之后按 `host` 重读。
+   */
+  scope?: { ref: string; host: string }
+  /** 端口形状：`ref` 与 `parentRef` 是本窗口的短编号。 */
   elements: DesktopElement[]
+  /** 本次观察里短编号 → 宿主的完整 ref。发往宿主的控件引用一律按它翻译。 */
+  hostRefs: Map<string, string>
   truncatedBy: string[]
   filteredBy: string[]
   visited: number
@@ -211,11 +275,14 @@ function identityKey(w: { handle: number; pid: number; processStartedAt: number 
   return `${w.handle}:${w.pid}:${w.processStartedAt}`
 }
 
-/** 一个控件的端口形状。层级跟着走：`parentRef` 指同一张表里的父控件。 */
-function elementOf(node: DesktopNode): DesktopElement {
+/**
+ * 一个控件的端口形状。`ref` 与 `parentRef` 按 `refOf` 换成短编号，`parentRef` 指同一张表
+ * 里的父控件。
+ */
+function elementOf(node: DesktopNode, refOf: (hostRef: string) => string): DesktopElement {
   return {
-    ref: node.ref,
-    ...(node.parentRef !== undefined ? { parentRef: node.parentRef } : {}),
+    ref: refOf(node.ref),
+    ...(node.parentRef !== undefined ? { parentRef: refOf(node.parentRef) } : {}),
     depth: node.depth,
     role: node.role,
     name: node.name,
@@ -456,7 +523,9 @@ export class DesktopCoordinator {
         windowId = `dw_${this.#nextWindow}`
         this.#byIdentity.set(key, windowId)
       }
-      this.#windows.set(windowId, { windowId, ...w })
+      // 编号表跟着窗口身份走，再次发现同一个窗口时沿用：换一张新表会让同一个控件换号。
+      const refs = this.#windows.get(windowId)?.refs ?? new WindowRefs()
+      this.#windows.set(windowId, { windowId, ...w, refs })
       out.push({ windowId, app: w.app, title: w.title })
     }
     return out
@@ -494,7 +563,8 @@ export class DesktopCoordinator {
     const known = this.#targetOf(input.windowId)
     // 子树根必须来自本执行者对这个窗口的上一份观察：现编一个编号等于让宿主去定位一个
     // 没人见过的位置。
-    if (input.root !== undefined) this.#requireRef(lease, input.windowId, input.root)
+    const root =
+      input.root === undefined ? undefined : this.#requireRef(lease, input.windowId, input.root)
     // 目标在**发请求之前**就登记：读树可能挂在 provider 上直到超时，等回包之后再登记的话，
     // 界面在这段时间里说不出正在操作谁。
     this.#setTarget(lease, known.app)
@@ -504,7 +574,7 @@ export class DesktopCoordinator {
       maxNodes: input.maxNodes ?? DEFAULT_MAX_NODES,
       maxDepth: input.maxDepth ?? DEFAULT_MAX_DEPTH,
       timeBudgetMs: READ_TREE_BUDGET_MS,
-      ...(input.root !== undefined ? { root: input.root } : {}),
+      ...(root !== undefined ? { root } : {}),
       ...(input.includeValue !== undefined ? { includeValue: input.includeValue } : {}),
       ...(input.includeState !== undefined ? { includeState: input.includeState } : {}),
     })
@@ -518,26 +588,39 @@ export class DesktopCoordinator {
    * 而它们的状态与可用动作停在上一次读取那一刻。换编号是硬性的：旧编号对应的那张表
    * 已经不是这一张，留着它等于让模型在两份表之间挑。
    *
-   * 整窗读的第一项是窗口元素本身，它的名称就是此刻的窗口标题，一并刷新窗口表里的那一格：
-   * 窗口表只在发现窗口时写入，页面换过之后仍是旧标题。
+   * 整窗读的第一项是窗口元素本身：标上 `windowRoot`，它的名称就是此刻的窗口标题，一并刷新
+   * 窗口表里的那一格——窗口表只在发现窗口时写入，页面换过之后仍是旧标题。
+   *
+   * 宿主回包里带 ref 的三处在这里换成短编号：控件的 `ref` / `parentRef`、`scope`，以及
+   * `filteredBy` 里的 `root=` 那一项。
    */
   #absorb(lease: Lease, windowId: string, body: DesktopTreeBody): DesktopSnapshot {
     const host = this.#liveHost(lease)
     const known = this.#targetOf(windowId)
-    const elements = body.nodes.map(elementOf)
+    const hostRefs = new Map<string, string>()
+    const refOf = (hostRef: string): string => known.refs.of(hostRef)
+    const elements = body.nodes.map((node) => {
+      const element = elementOf(node, refOf)
+      hostRefs.set(element.ref, node.ref)
+      return element
+    })
     const root = elements[0]
-    if (body.scope === undefined && root !== undefined && root.name !== '') {
-      known.title = root.name
+    if (body.scope === undefined && root !== undefined) {
+      root.windowRoot = true
+      if (root.name !== '') known.title = root.name
     }
     this.#nextObservation += 1
     const record: ObservationRecord = {
       observationId: `do_${this.#nextObservation}`,
       windowId,
       epochKey: epochKeyOf(host),
-      ...(body.scope !== undefined ? { scope: body.scope } : {}),
+      ...(body.scope !== undefined ? { scope: { ref: refOf(body.scope), host: body.scope } } : {}),
       elements,
+      hostRefs,
       truncatedBy: [...body.completeness.truncatedBy],
-      filteredBy: [...body.completeness.filteredBy],
+      filteredBy: body.completeness.filteredBy.map((f) =>
+        f.startsWith(ROOT_FILTER) ? `${ROOT_FILTER}${refOf(f.slice(ROOT_FILTER.length))}` : f,
+      ),
       visited: body.completeness.visited,
       capturedAt: body.capturedAt,
       windowEnabled: body.windowEnabled,
@@ -564,14 +647,16 @@ export class DesktopCoordinator {
     return record.elements
   }
 
-  #recordOf(lease: Lease, windowId: string, observationId: string, ref: string): void {
-    const elements = this.#elements(lease, windowId, observationId)
-    if (!elements) {
+  /** 这个短编号在指定那份观察里对应的宿主 ref。观察失效或编号不在其中即在本地拒绝。 */
+  #recordOf(lease: Lease, windowId: string, observationId: string, ref: string): string {
+    if (!this.#elements(lease, windowId, observationId)) {
       throw new DesktopTargetError(`观察 ${observationId} 已经失效，请重新观察`)
     }
-    if (!elements.some((e) => e.ref === ref)) {
+    const hostRef = lease.observations.get(windowId)?.hostRefs.get(ref)
+    if (hostRef === undefined) {
       throw new DesktopTargetError(`观察 ${observationId} 里没有控件 ${ref}`)
     }
+    return hostRef
   }
 
   /**
@@ -686,12 +771,13 @@ export class DesktopCoordinator {
     return record
   }
 
-  /** 这个引用在不在本执行者对该窗口的最近一份观察里，不看编号。 */
-  #requireRef(lease: Lease, windowId: string, ref: string): void {
-    const record = lease.observations.get(windowId)
-    if (!record || !record.elements.some((e) => e.ref === ref)) {
+  /** 这个短编号在本执行者对该窗口的最近一份观察里对应的宿主 ref，不看观察编号。 */
+  #requireRef(lease: Lease, windowId: string, ref: string): string {
+    const hostRef = lease.observations.get(windowId)?.hostRefs.get(ref)
+    if (hostRef === undefined) {
       throw new DesktopTargetError(`这个窗口最近一份观察里没有控件 ${ref}，请重新观察`)
     }
+    return hostRef
   }
 
   async #act(
@@ -710,7 +796,7 @@ export class DesktopCoordinator {
     this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
     const aimed = this.#aim(lease, known, input)
-    this.#checkDestination(lease, input.windowId, input.action)
+    const action = this.#hostAction(lease, input.windowId, input.action)
     this.#nextAction += 1
     const actionId = `da_${this.#nextAction}`
     this.#setTarget(lease, known.app)
@@ -721,8 +807,8 @@ export class DesktopCoordinator {
         actionId,
         target: this.#frameTarget(known),
         ...aimed,
-        ...(scope !== undefined ? { root: scope } : {}),
-        action: input.action,
+        ...(scope !== undefined ? { root: scope.host } : {}),
+        action,
         maxNodes: DEFAULT_MAX_NODES,
         maxDepth: DEFAULT_MAX_DEPTH,
         timeBudgetMs: READ_TREE_BUDGET_MS,
@@ -788,8 +874,7 @@ export class DesktopCoordinator {
       throw new DesktopTargetError('控件与图像点只能给一个')
     }
     if (input.ref !== undefined) {
-      this.#recordOf(lease, input.windowId, input.observationId, input.ref)
-      return { ref: input.ref }
+      return { ref: this.#recordOf(lease, input.windowId, input.observationId, input.ref) }
     }
     if (input.at === undefined) {
       if (WINDOW_TARGET.has(input.action.kind)) return {}
@@ -812,14 +897,15 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 拖拽的控件终点要在本执行者对这个窗口的最近一份观察里。
+   * 发给宿主的动作载荷。只有拖拽的控件终点带控件引用，它要在本执行者对这个窗口的最近一份
+   * 观察里，并翻成宿主 ref；其余动作原样交回。
    *
    * 终点写在动作里而不是另开一格：只有拖拽有终点，多一格空字段会让调用方按它给出
    * 一个不会被读的值。像素偏移不需要核对，它由宿主在派发前夹进目标窗口。
    */
-  #checkDestination(lease: Lease, windowId: string, action: DesktopAction): void {
-    if (action.kind !== 'drag' || action.to.kind !== 'ref') return
-    this.#requireRef(lease, windowId, action.to.ref)
+  #hostAction(lease: Lease, windowId: string, action: DesktopAction): DesktopAction {
+    if (action.kind !== 'drag' || action.to.kind !== 'ref') return action
+    return { ...action, to: { kind: 'ref', ref: this.#requireRef(lease, windowId, action.to.ref) } }
   }
 
   /**
@@ -835,12 +921,12 @@ export class DesktopCoordinator {
     await this.#acquire(lease)
     this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
-    this.#recordOf(lease, input.windowId, input.observationId, input.ref)
+    const ref = this.#recordOf(lease, input.windowId, input.observationId, input.ref)
     this.#setTarget(lease, known.app)
     const result = await this.#bridge.request('read_text', {
       executorId: lease.executorId,
       target: this.#frameTarget(known),
-      ref: input.ref,
+      ref,
       maxChars: input.maxChars,
     })
     const observation = expect(result, 'text')
@@ -882,9 +968,10 @@ export class DesktopCoordinator {
     await this.#acquire(lease)
     this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
-    if (input.ref !== undefined) {
-      this.#recordOf(lease, input.windowId, input.observationId, input.ref)
-    }
+    const ref =
+      input.ref === undefined
+        ? undefined
+        : this.#recordOf(lease, input.windowId, input.observationId, input.ref)
     this.#setTarget(lease, known.app)
     const scope = lease.observations.get(input.windowId)?.scope
     try {
@@ -894,8 +981,8 @@ export class DesktopCoordinator {
           executorId: lease.executorId,
           target: this.#frameTarget(known),
           until: input.until,
-          ...(scope !== undefined ? { root: scope } : {}),
-          ...(input.ref !== undefined ? { ref: input.ref } : {}),
+          ...(scope !== undefined ? { root: scope.host } : {}),
+          ...(ref !== undefined ? { ref } : {}),
           ...(input.value !== undefined ? { value: input.value } : {}),
           ...(input.role !== undefined ? { role: input.role } : {}),
           ...(input.query !== undefined ? { nameContains: input.query } : {}),
@@ -1055,7 +1142,7 @@ function snapshotOf(record: ObservationRecord, known: KnownWindow): DesktopSnaps
     title: known.title,
     observationId: record.observationId,
     capturedAt: record.capturedAt,
-    ...(record.scope !== undefined ? { scope: record.scope } : {}),
+    ...(record.scope !== undefined ? { scope: record.scope.ref } : {}),
     elements: record.elements,
     truncated: record.truncatedBy.length > 0,
     truncatedBy: [...record.truncatedBy],

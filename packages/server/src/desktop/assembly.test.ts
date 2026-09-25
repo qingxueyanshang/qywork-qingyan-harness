@@ -216,21 +216,9 @@ async function serveOnce(op: DesktopOp): Promise<DesktopRequestFrame> {
         capturedAt: 2,
         windowEnabled: true,
         windowCovered: false,
-        completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 1 },
-        nodeCount: 1,
-        nodes: [
-          {
-            ref: 'w.0#7',
-            depth: 0,
-            role: 'edit',
-            name: '姓名',
-            automationId: 'nameBox',
-            value: '',
-            enabled: true,
-            offscreen: false,
-            actions: [{ action: 'set_value', delivery: ['background'] }],
-          },
-        ],
+        completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 2 },
+        nodeCount: 2,
+        nodes: [{ ...FORM_ROOT }, { ...NAME_BOX }],
       },
     })
   } else {
@@ -256,7 +244,7 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
       windowId: 'dw_1',
       observationId: 'do_1',
       action: 'set_value',
-      ref: 'w.0#7',
+      ref: 'e2',
       value: '张三',
     }),
     textTurn('做完了'),
@@ -307,10 +295,22 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
   expect(body).toContain('结果未知')
 })
 
-/** 序列用的控件表：三个各自可动的后台控件，够走三步。 */
+/** 整窗读取的第一项：窗口元素本身。 */
+const FORM_ROOT: DesktopNode = {
+  ref: 'w#1',
+  depth: 0,
+  role: 'window',
+  name: '表单',
+  automationId: '',
+  enabled: true,
+  offscreen: false,
+  actions: [],
+}
+/** 序列用的控件表：窗口下三个各自可动的后台控件，够走三步。 */
 const NAME_BOX: DesktopNode = {
   ref: 'w.0#7',
-  depth: 0,
+  parentRef: 'w#1',
+  depth: 1,
   role: 'edit',
   name: '姓名',
   automationId: 'nameBox',
@@ -321,7 +321,8 @@ const NAME_BOX: DesktopNode = {
 }
 const AGREE_BOX: DesktopNode = {
   ref: 'w.1#8',
-  depth: 0,
+  parentRef: 'w#1',
+  depth: 1,
   role: 'check_box',
   name: '同意',
   automationId: 'agree',
@@ -332,7 +333,8 @@ const AGREE_BOX: DesktopNode = {
 }
 const SAVE_BUTTON: DesktopNode = {
   ref: 'w.2#9',
-  depth: 0,
+  parentRef: 'w#1',
+  depth: 1,
   role: 'button',
   name: '保存',
   automationId: 'save',
@@ -346,7 +348,8 @@ const SAVE_BUTTON: DesktopNode = {
  *
  * 断言的是帧而不是工具内部状态：序列要证明的就是「模型发一次、宿主收到几次」。
  * 第一份观察是整窗，动作帧不带范围，宿主回一份整窗重读；第二、三步给的编号在重读里
- * 仍然存在，所以照常可用。
+ * 仍然存在，所以照常可用。姓名框的 RuntimeId 与上一条用例里那一个相同，编号表是窗口级的，
+ * 它因此还是 `e2`；帧上是宿主的完整 ref。
  */
 test('一次序列调用逐动作发帧，actionId 各不相同，截断后不再发帧', async () => {
   script = [
@@ -356,9 +359,9 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
         windowId: 'dw_1',
         observationId: observationIn(body),
         steps: [
-          { action: 'set_value', ref: 'w.0#7', value: '张三' },
-          { action: 'set_toggle', ref: 'w.1#8', state: 'on' },
-          { action: 'invoke', ref: 'w.2#9' },
+          { action: 'set_value', ref: 'e2', value: '张三' },
+          { action: 'set_toggle', ref: 'e3', state: 'on' },
+          { action: 'invoke', ref: 'e4' },
         ],
       }),
     textTurn('停在第二步了'),
@@ -378,9 +381,9 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
       capturedAt: 2,
       windowEnabled: true,
       windowCovered: false,
-      completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 3 },
-      nodeCount: 3,
-      nodes: [{ ...NAME_BOX }, { ...AGREE_BOX }, { ...SAVE_BUTTON }],
+      completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 4 },
+      nodeCount: 4,
+      nodes: [{ ...FORM_ROOT }, { ...NAME_BOX }, { ...AGREE_BOX }, { ...SAVE_BUTTON }],
     },
   })
 
@@ -396,9 +399,14 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
       capturedAt: 3,
       windowEnabled: true,
       windowCovered: false,
-      completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 3 },
-      nodeCount: 3,
-      nodes: [{ ...NAME_BOX, value: '张三' }, { ...AGREE_BOX }, { ...SAVE_BUTTON }],
+      completeness: { complete: true, truncatedBy: [], filteredBy: [], visited: 4 },
+      nodeCount: 4,
+      nodes: [
+        { ...FORM_ROOT },
+        { ...NAME_BOX, value: '张三' },
+        { ...AGREE_BOX },
+        { ...SAVE_BUTTON },
+      ],
     },
   })
 

@@ -274,8 +274,8 @@ describe('query 搜索', () => {
   test('控件表的命中返回整条记录，可直接解析，不从中间切开', async () => {
     // 落盘控件表的形状：第一行元数据，之后一行一个控件；命中的“账号”在记录中段。
     const record = {
-      ref: 'w.1.0.0.1.1.0.0.0.0.1.3#42.657644.4.93.12.244',
-      parentRef: 'w.1.0.0.1.1.0.0.0.0.1#42.657644.4.93.12.230',
+      ref: 'e244',
+      parentRef: 'e230',
       depth: 11,
       role: 'text',
       name: '账号',
@@ -289,7 +289,7 @@ describe('query 搜索', () => {
         { action: 'hover', delivery: ['foreground'] },
       ],
     }
-    const pad = (i: number) => JSON.stringify({ ...record, ref: `w.${i}#${i}`, name: `控件${i}` })
+    const pad = (i: number) => JSON.stringify({ ...record, ref: `e${i}`, name: `控件${i}` })
     const body = ['{"windowId":"dw_5"}', pad(1), pad(2), JSON.stringify(record), pad(3)].join('\n')
     const r = await run({ resource_id: 'rs_1', query: '账号' }, memSink(body))
     const hits = r.data!.hits as Hit[]

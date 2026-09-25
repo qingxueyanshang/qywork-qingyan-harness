@@ -2,6 +2,8 @@
  * 桌面占用与观察记账。
  *
  * 覆盖范围：`desktop/coordinator.ts` 的占用、排队、撤销、释放、目标读数、局部读取参数、
+ * 控件短编号的发放规则（按身份跨观察稳定、不复用、弱身份、上限淘汰、按窗口隔离）与进出
+ * 宿主两个方向的 ref 翻译、
  * 动作与等待之后按读取范围整份替换观察、窗口标题随整窗读取刷新、等待的四种终态，以及图像采集的取景参数、imageRef 的
  * 换算与四条失效判据、控件包围盒与选择容器选中项名单的透传。同目录的 `bridge.test.ts`
  * 覆盖宿主连接与代际配对，`assembly.test.ts` 覆盖端口注入。
@@ -14,7 +16,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DesktopWindowInfo } from '@qywork/agent'
+import type { DesktopSnapshot, DesktopWindowInfo } from '@qywork/agent'
 import type {
   DesktopNode,
   DesktopObservation,
@@ -25,7 +27,7 @@ import type {
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store, upsertWorkspace } from '@qywork/store'
 import { serve } from '../server.ts'
-import type { DesktopCoordinator } from './coordinator.ts'
+import { type DesktopCoordinator, MAX_WINDOW_REFS } from './coordinator.ts'
 import { FakeDesktopHost, HOST_KEY, WINDOW } from './fixtures.ts'
 
 /** 第二个窗口。两个执行者各操作一个，「正在操作」读数才区分得开。 */
@@ -411,7 +413,7 @@ test('局部读取的子树根与字段选择落在帧上，快照带回读取�
   const a = desktop.portFor('cv_a')
   await firstLook(host, a)
 
-  const pending = a.observe({ windowId: 'dw_1', root: 'w.1#4', includeValue: false })
+  const pending = a.observe({ windowId: 'dw_1', root: 'e4', includeValue: false })
   const frame = await host.next()
   expect(frame.op).toBe('read_tree')
   expect(frame.root).toBe('w.1#4')
@@ -430,8 +432,13 @@ test('局部读取的子树根与字段选择落在帧上，快照带回读取�
     }),
   })
   const snapshot = await pending
-  expect(snapshot.scope).toBe('w.1#4')
-  expect(snapshot.filteredBy).toEqual(['root=w.1#4', 'includeValue=false'])
+  // 宿主回包里的范围与 `root=` 那一项都换成短编号，端口外面见不到宿主的 ref。
+  expect(snapshot.scope).toBe('e4')
+  expect(snapshot.filteredBy).toEqual(['root=e4', 'includeValue=false'])
+  expect(snapshot.elements.map((e) => e.ref)).toEqual(['e4', 'e5'])
+  expect(snapshot.elements[1]?.parentRef).toBe('e4')
+  // 子树读取的根不是窗口元素。
+  expect(snapshot.elements[0]?.windowRoot).toBeUndefined()
   expect(snapshot.truncated).toBe(false)
   expect(snapshot.visited).toBe(2)
 })
@@ -443,9 +450,233 @@ test('没见过的子树根在本地就拒绝，一帧都不发', async () => {
   const a = desktop.portFor('cv_a')
   await firstLook(host, a)
   const before = host.received.length
-  await expect(a.observe({ windowId: 'dw_1', root: 'w.9#9' })).rejects.toThrow('没有控件')
+  await expect(a.observe({ windowId: 'dw_1', root: 'e9' })).rejects.toThrow('没有控件')
   await tick()
   expect(host.received.length).toBe(before)
+})
+
+/** 读一次整窗并回这一份节点，交回快照。 */
+async function lookWith(
+  host: FakeDesktopHost,
+  port: { observe: (input: { windowId: string }) => Promise<DesktopSnapshot> },
+  nodes: DesktopNode[],
+  windowId = 'dw_1',
+): Promise<DesktopSnapshot> {
+  const pending = port.observe({ windowId })
+  const frame = await host.next()
+  host.reply(frame, {
+    observation: { ...TREE, window: frame.target?.window ?? 0, nodeCount: nodes.length, nodes },
+  })
+  return pending
+}
+
+/**
+ * 原始失败形状：端口直接交出宿主的 ref（下标路径加身份段），前面插进一个兄弟控件，
+ * 同一个控件的 ref 就换了一条，相邻两份观察逐字不同。编号要按身份跟着控件走，
+ * 发给宿主的则是这一份观察里的新路径。
+ */
+test('同一个控件在两份观察里编号相同，路径变了编号不变，动作发的是新路径的完整 ref', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  const first = await firstLook(host, a)
+
+  // 甲组前面插入一个新分组：其后三个控件的下标路径都变了，RuntimeId 不变。
+  const shifted: DesktopNode[] = [
+    窗口根,
+    { ...甲组, ref: 'w.0#6', name: '新', automationId: 'n' },
+    { ...甲组, ref: 'w.1#2' },
+    { ...甲输入框, ref: 'w.1.0#3', parentRef: 'w.1#2' },
+    { ...乙组, ref: 'w.2#4' },
+    { ...乙按钮, ref: 'w.2.0#5', parentRef: 'w.2#4' },
+  ]
+  const second = await lookWith(host, a, shifted)
+  expect(second.observationId).not.toBe(first.observationId)
+  expect(second.elements.map((e) => e.ref)).toEqual(['e1', 'e6', 'e2', 'e3', 'e4', 'e5'])
+  expect(second.elements.map((e) => e.parentRef)).toEqual([undefined, 'e1', 'e1', 'e2', 'e1', 'e4'])
+  expect(second.elements[0]?.windowRoot).toBe(true)
+  expect(second.elements.filter((e) => e.windowRoot === true)).toHaveLength(1)
+
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: second.observationId,
+    ref: 'e5',
+    action: { kind: 'invoke' },
+  })
+  const frame = await host.next()
+  expect(frame.ref).toBe('w.2.0#5')
+  host.reply(frame, { dispatch: 'submitted', observation: { ...TREE, nodes: shifted } })
+  expect((await acting).observation?.elements.map((e) => e.ref)).toEqual(
+    second.elements.map((e) => e.ref),
+  )
+})
+
+test('新控件拿新号，消失的控件的号不发给别的控件；拿它发动作在本地被拒', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await firstLook(host, a)
+
+  // 乙按钮没了，同一个位置换成另一个控件。
+  const replaced = [
+    窗口根,
+    甲组,
+    甲输入框,
+    乙组,
+    { ...乙按钮, ref: 'w.1.0#9', name: '取消', automationId: 'cancel' },
+  ]
+  const second = await lookWith(host, a, replaced)
+  expect(second.elements.map((e) => e.ref)).toEqual(['e1', 'e2', 'e3', 'e4', 'e6'])
+
+  const before = host.received.length
+  await expect(
+    a.act({
+      windowId: 'dw_1',
+      observationId: second.observationId,
+      ref: 'e5',
+      action: { kind: 'invoke' },
+    }),
+  ).rejects.toThrow('里没有控件 e5')
+  await tick()
+  expect(host.received.length).toBe(before)
+
+  // 乙按钮回来了：它的身份还在表里，沿用原号。
+  const third = await lookWith(host, a, NODES)
+  expect(third.elements.map((e) => e.ref)).toEqual(['e1', 'e2', 'e3', 'e4', 'e5'])
+})
+
+/** 属性指纹对同角色同名的兄弟不唯一，单独作键会把两个控件编成同一个号。 */
+test('没有 RuntimeId 的控件按完整 ref 编号：指纹相同的兄弟各拿一个号，位置变了就是新号', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await discover(host, () => a.windows())
+
+  const 弱甲: DesktopNode = { ...乙按钮, ref: 'w.1.0#~abc', weakIdentity: true }
+  const 弱乙: DesktopNode = { ...乙按钮, ref: 'w.1.1#~abc', weakIdentity: true }
+  const first = await lookWith(host, a, [窗口根, 乙组, 弱甲, 弱乙])
+  expect(first.elements.map((e) => e.ref)).toEqual(['e1', 'e2', 'e3', 'e4'])
+  const again = await lookWith(host, a, [窗口根, 乙组, 弱甲, 弱乙])
+  expect(again.elements.map((e) => e.ref)).toEqual(['e1', 'e2', 'e3', 'e4'])
+
+  const moved = await lookWith(host, a, [窗口根, 乙组, { ...弱甲, ref: 'w.1.2#~abc' }])
+  expect(moved.elements.map((e) => e.ref)).toEqual(['e1', 'e2', 'e5'])
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: moved.observationId,
+    ref: 'e5',
+    action: { kind: 'invoke' },
+  })
+  const frame = await host.next()
+  expect(frame.ref).toBe('w.1.2#~abc')
+  host.reply(frame, { dispatch: 'unknown', observationError: '宿主没有回传' })
+  await acting
+})
+
+/** 漏翻一处，宿主收到的就是一个它认不出的编号。 */
+test('进宿主的控件引用都翻回完整 ref：子树根、动作目标、拖拽终点、重读范围、读文本与等待目标', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await firstLook(host, a)
+
+  const scoped = a.observe({ windowId: 'dw_1', root: 'e4' })
+  const read = await host.next()
+  expect(read.root).toBe('w.1#4')
+  host.reply(read, { observation: subtree() })
+  const inScope = await scoped
+
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: inScope.observationId,
+    ref: 'e5',
+    action: { kind: 'drag', to: { kind: 'ref', ref: 'e4' } },
+  })
+  const act = await host.next()
+  expect(act.ref).toBe('w.1.0#5')
+  expect(act.root).toBe('w.1#4')
+  expect(act.action).toEqual({ kind: 'drag', to: { kind: 'ref', ref: 'w.1#4' } })
+  host.reply(act, { dispatch: 'submitted', observation: subtree() })
+  const acted = await acting
+  const observationId = acted.observation?.observationId ?? ''
+
+  const reading = a.readText({ windowId: 'dw_1', observationId, ref: 'e5', maxChars: 100 })
+  const text = await host.next()
+  expect(text.ref).toBe('w.1.0#5')
+  host.reply(text, {
+    observation: {
+      kind: 'text',
+      window: WINDOW.handle,
+      capturedAt: 9,
+      scope: 'w.1.0#5',
+      text: '正文',
+      truncated: false,
+      selectionSupport: 'none',
+      selection: [],
+    },
+  })
+  expect((await reading).text).toBe('正文')
+
+  const waiting = a.wait({
+    windowId: 'dw_1',
+    observationId,
+    until: 'enabled',
+    ref: 'e5',
+    timeoutMs: 1_000,
+  })
+  const wait = await host.next()
+  expect(wait.ref).toBe('w.1.0#5')
+  expect(wait.root).toBe('w.1#4')
+  host.reply(wait, { observation: { ...subtree(), kind: 'wait', found: true } })
+  expect((await waiting).observation?.scope).toBe('e4')
+})
+
+test('编号表满了淘汰最久没出现的身份，它再出现时拿新号', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await firstLook(host, a)
+
+  // 窗口根之外再来 MAX_WINDOW_REFS - 1 个新身份：表里超出上限的四个是甲组、甲输入框、
+  // 乙组与乙按钮，窗口根在这一份里刚出现过，留在表里。
+  const crowd: DesktopNode[] = Array.from({ length: MAX_WINDOW_REFS - 1 }, (_, i) => ({
+    ...甲输入框,
+    ref: `w.2.${i}#${1000 + i}`,
+    parentRef: 'w#1',
+  }))
+  const crowded = await lookWith(host, a, [窗口根, ...crowd])
+  expect(crowded.elements[0]?.ref).toBe('e1')
+  expect(crowded.elements.at(-1)?.ref).toBe(`e${MAX_WINDOW_REFS + 4}`)
+
+  const back = await lookWith(host, a, NODES)
+  const next = MAX_WINDOW_REFS + 5
+  expect(back.elements.map((e) => e.ref)).toEqual([
+    'e1',
+    `e${next}`,
+    `e${next + 1}`,
+    `e${next + 2}`,
+    `e${next + 3}`,
+  ])
+})
+
+test('窗口关掉重开之后换了 windowId，编号表随之重开', async () => {
+  const handle = fresh()
+  const { host, desktop } = await connected(handle)
+  const a = desktop.portFor('cv_a')
+  await firstLook(host, a)
+  const trimmed = await lookWith(host, a, [窗口根, 乙组, 乙按钮])
+  expect(trimmed.elements.map((e) => e.ref)).toEqual(['e1', 'e4', 'e5'])
+
+  const reborn = { ...WINDOW, processStartedAt: WINDOW.processStartedAt + 1 }
+  const listing = a.windows()
+  const list = await host.next()
+  host.reply(list, { observation: { kind: 'windows', capturedAt: 2, windows: [reborn] } })
+  const [again] = await listing
+  if (!again) throw new Error('窗口发现应当交回重开的窗口')
+  expect(again.windowId).not.toBe('dw_1')
+
+  const fresher = await lookWith(host, a, [窗口根, 乙组, 乙按钮], again.windowId)
+  expect(fresher.elements.map((e) => e.ref)).toEqual(['e1', 'e2', 'e3'])
 })
 
 test('整窗观察之后的动作按整窗重读：帧上不带范围，重读结果整份替换观察', async () => {
@@ -457,11 +688,12 @@ test('整窗观察之后的动作按整窗重读：帧上不带范围，重读�
   const acting = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'invoke' },
   })
   const frame = await host.next()
   expect(frame.op).toBe('act')
+  expect(frame.ref).toBe('w.1.0#5')
   expect(frame.action).toEqual({ kind: 'invoke' })
   expect(frame.root).toBeUndefined()
   // 动作也带三个上限：宿主要用它们做动作之后的那次重读。
@@ -480,8 +712,8 @@ test('整窗观察之后的动作按整窗重读：帧上不带范围，重读�
   expect(result.observation.observationId).not.toBe(first.observationId)
   expect(result.observation.scope).toBeUndefined()
   expect(result.observation.capturedAt).toBe(9)
-  expect(result.observation.elements.map((e) => e.ref)).toEqual(NODES.map((n) => n.ref))
-  expect(result.observation.elements.find((e) => e.ref === 'w.1.0#5')?.name).toBe('保存（已改）')
+  expect(result.observation.elements.map((e) => e.ref)).toEqual(['e1', 'e2', 'e3', 'e4', 'e5'])
+  expect(result.observation.elements.find((e) => e.ref === 'e5')?.name).toBe('保存（已改）')
   // 旧编号作废，新编号可用。
   expect(a.elements('dw_1', first.observationId)).toBeNull()
   expect(a.elements('dw_1', result.observation.observationId)).toHaveLength(5)
@@ -505,16 +737,16 @@ test('子树范围的观察之后，动作按同一范围重读，新观察只�
     },
   })
   await whole
-  const scoped = a.observe({ windowId: 'dw_1', root: 'w.1#4' })
+  const scoped = a.observe({ windowId: 'dw_1', root: 'e4' })
   const scopedFrame = await host.next()
   host.reply(scopedFrame, { observation: subtree() })
   const inScope = await scoped
-  expect(inScope.scope).toBe('w.1#4')
+  expect(inScope.scope).toBe('e4')
 
   const acting = a.act({
     windowId: 'dw_1',
     observationId: inScope.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'invoke' },
   })
   const frame = await host.next()
@@ -528,8 +760,8 @@ test('子树范围的观察之后，动作按同一范围重读，新观察只�
   })
   const result = await acting
   if (!result.observation) throw new Error('动作回执应当带回新的观察')
-  expect(result.observation.elements.map((e) => e.ref)).toEqual(['w.1#4', 'w.1.0#5'])
-  expect(result.observation.scope).toBe('w.1#4')
+  expect(result.observation.elements.map((e) => e.ref)).toEqual(['e4', 'e5'])
+  expect(result.observation.scope).toBe('e4')
   expect(result.observation.capturedAt).toBe(200)
   expect(result.observation.visited).toBe(2)
 })
@@ -543,7 +775,7 @@ test('动作之后窗口被模态窗口挡住：整份观察作废，只剩重�
   const acting = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'invoke' },
   })
   const frame = await host.next()
@@ -555,7 +787,7 @@ test('动作之后窗口被模态窗口挡住：整份观察作废，只剩重�
   if (!result.observation) throw new Error('动作回执应当带回新的观察')
   expect(result.observation.windowEnabled).toBe(false)
   expect(result.observation.windowCovered).toBe(true)
-  expect(result.observation.elements.map((e) => e.ref)).toEqual(['w.1#4', 'w.1.0#5'])
+  expect(result.observation.elements.map((e) => e.ref)).toEqual(['e4', 'e5'])
 })
 
 /**
@@ -573,22 +805,26 @@ test('动作被宿主拒绝派发：观察编号仍然有效，下一个动作�
   const refused = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'click', button: 'left', count: 1 },
   })
   host.reply(await host.next(), { dispatch: 'not_dispatched', reason: 'occluded: 680,853' })
   const result = await refused
   expect(result.dispatch).toBe('not_dispatched')
   expect(result.observation).toBeNull()
-  expect(a.elements('dw_1', first.observationId)?.map((e) => e.ref)).toEqual(
-    NODES.map((n) => n.ref),
-  )
+  expect(a.elements('dw_1', first.observationId)?.map((e) => e.ref)).toEqual([
+    'e1',
+    'e2',
+    'e3',
+    'e4',
+    'e5',
+  ])
 
   // 同一个编号接着发下一个动作：它发得出去，不是「观察已失效」。
   const next = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'activate' },
   })
   const frame = await host.next()
@@ -606,7 +842,7 @@ test('动作之后没有重读：这个窗口的控件表整份作废', async ()
   const acting = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'invoke' },
   })
   const frame = await host.next()
@@ -630,7 +866,7 @@ test('动作调用未返回：窗口清单按同一条路径登记，新窗口�
   const acting = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'invoke' },
   })
   const frame = await host.next()
@@ -705,7 +941,7 @@ test('动作回执的窗口清单不剪掉别的窗口', async () => {
   const acting = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'invoke' },
   })
   const frame = await host.next()
@@ -734,7 +970,7 @@ test('等待的条件与两个时限落在帧上，等到之后带回新观察',
     windowId: 'dw_1',
     observationId: first.observationId,
     until: 'value',
-    ref: 'w.0.0#3',
+    ref: 'e3',
     value: '张三',
     timeoutMs: 5_000,
   })
@@ -762,7 +998,7 @@ test('等待带上当前观察的范围与 appears 的角色、文字', async ()
   const { host, desktop } = await connected(handle)
   const a = desktop.portFor('cv_a')
   await firstLook(host, a)
-  const scoped = a.observe({ windowId: 'dw_1', root: 'w.1#4' })
+  const scoped = a.observe({ windowId: 'dw_1', root: 'e4' })
   const scopedFrame = await host.next()
   host.reply(scopedFrame, { observation: subtree() })
   const inScope = await scoped
@@ -781,7 +1017,7 @@ test('等待带上当前观察的范围与 appears 的角色、文字', async ()
   expect(frame.nameContains).toBe('保存')
   host.reply(frame, { observation: { ...subtree(), kind: 'wait', found: true } })
   const result = await waiting
-  expect(result.observation?.scope).toBe('w.1#4')
+  expect(result.observation?.scope).toBe('e4')
 })
 
 /** 窗口表只在发现窗口时写入标题；页面换过之后要靠整窗读取读到的窗口元素名称刷新。 */
@@ -798,7 +1034,7 @@ test('整窗读取把窗口元素的名称刷新成窗口标题，子树读取�
   })
   expect((await whole).title).toBe('新页面 - 浏览器')
 
-  const scoped = a.observe({ windowId: 'dw_1', root: 'w.1#4' })
+  const scoped = a.observe({ windowId: 'dw_1', root: 'e4' })
   const scopedFrame = await host.next()
   host.reply(scopedFrame, { observation: subtree() })
   expect((await scoped).title).toBe('新页面 - 浏览器')
@@ -814,7 +1050,7 @@ test('等待到期：如实回未满足与当时的状态，不算执行失败',
     windowId: 'dw_1',
     observationId: first.observationId,
     until: 'enabled',
-    ref: 'w.0.0#3',
+    ref: 'e3',
     timeoutMs: 1_000,
   })
   const frame = await host.next()
@@ -841,7 +1077,7 @@ test('等待期间释放：撤销帧发出，等待按撤销收尾，桌面交�
     windowId: 'dw_1',
     observationId: first.observationId,
     until: 'enabled',
-    ref: 'w.0.0#3',
+    ref: 'e3',
     timeoutMs: 60_000,
   })
   const waitFrame = await host.next()
@@ -881,7 +1117,7 @@ test('等待期间宿主换代：等待有终态，旧观察随执行实例作�
     windowId: 'dw_1',
     observationId: first.observationId,
     until: 'enabled',
-    ref: 'w.0.0#3',
+    ref: 'e3',
     timeoutMs: 60_000,
   })
   await host.next()
@@ -1180,13 +1416,13 @@ test('控件包围盒随观察交到端口外面', async () => {
     },
   })
   const snapshot = await pending
-  expect(snapshot.elements.find((e) => e.ref === 'w.0.0#3')?.rect).toEqual({
+  expect(snapshot.elements.find((e) => e.ref === 'e3')?.rect).toEqual({
     x: 300,
     y: 200,
     width: 120,
     height: 24,
   })
-  expect(snapshot.elements.find((e) => e.ref === 'w#1')?.rect).toBeUndefined()
+  expect(snapshot.elements.find((e) => e.ref === 'e1')?.rect).toBeUndefined()
 })
 
 /** 选中项名单与它的截断标记随观察交到端口外面；worker 没给时端口不造一份。 */
@@ -1219,13 +1455,13 @@ test('选择容器的选中项名单随观察交到端口外面', async () => {
     },
   })
   const snapshot = await pending
-  expect(snapshot.elements.find((e) => e.ref === 'w.0#2')?.selection).toEqual({
+  expect(snapshot.elements.find((e) => e.ref === 'e2')?.selection).toEqual({
     multiple: true,
     required: false,
     selected: ['甲', '乙'],
     truncated: true,
   })
-  expect(snapshot.elements.find((e) => e.ref === 'w#1')?.selection).toBeUndefined()
+  expect(snapshot.elements.find((e) => e.ref === 'e1')?.selection).toBeUndefined()
 })
 
 /**
@@ -1267,7 +1503,7 @@ test('控件与图像点只能给一个，两种都给或都不给都在本地�
     a.act({
       windowId: 'dw_1',
       observationId: first.observationId,
-      ref: 'w.1.0#5',
+      ref: 'e5',
       at: { imageRef: image.imageRef, x: 1, y: 1 },
       action: { kind: 'click', button: 'left', count: 1 },
     }),
@@ -1393,7 +1629,7 @@ test('拖拽的像素偏移原样下去，控件终点要在观察里', async ()
   const acting = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'drag', to: { kind: 'offset', dx: 80, dy: 0 } },
   })
   const frame = await host.next()
@@ -1407,8 +1643,8 @@ test('拖拽的像素偏移原样下去，控件终点要在观察里', async ()
     a.act({
       windowId: 'dw_1',
       observationId: now,
-      ref: 'w.1.0#5',
-      action: { kind: 'drag', to: { kind: 'ref', ref: 'w.9#9' } },
+      ref: 'e5',
+      action: { kind: 'drag', to: { kind: 'ref', ref: 'e9' } },
     }),
   ).rejects.toThrow('没有控件')
   await tick()
@@ -1434,7 +1670,7 @@ test('前台接管的读数只在宿主真的派发之后才上调', async () =>
   const refused = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'click', button: 'left', count: 1 },
   })
   let frame = await host.next()
@@ -1447,7 +1683,7 @@ test('前台接管的读数只在宿主真的派发之后才上调', async () =>
   const acting = a.act({
     windowId: 'dw_1',
     observationId: first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'click', button: 'left', count: 1 },
   })
   frame = await host.next()
@@ -1459,7 +1695,7 @@ test('前台接管的读数只在宿主真的派发之后才上调', async () =>
   const reading = a.act({
     windowId: 'dw_1',
     observationId: done.observation?.observationId ?? first.observationId,
-    ref: 'w.1.0#5',
+    ref: 'e5',
     action: { kind: 'invoke' },
   })
   frame = await host.next()
