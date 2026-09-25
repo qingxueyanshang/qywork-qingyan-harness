@@ -8,7 +8,6 @@
 // 分组口径必须与事件协议同一个类型，各写一份就是这次要清理的那个历史。
 import type {
   ContextGroup,
-  CurrentView,
   EffortLevel,
   ProviderKind,
   ResponseReasoning,
@@ -185,13 +184,6 @@ export interface WireMessage {
    * 纯文本消息、用户消息与投影摘要不带。
    */
   _batch?: string
-  /**
-   * 这条工具结果是哪个对象的当前视图。**内部记账用，绝不上线。**
-   *
-   * 装配请求时，同一对象出现覆盖它的更新视图后，这一条换成收纳信封。只有声明了
-   * `currentView` 的结果带它，活侧与回放从同一个 outcome 字段取值。
-   */
-  _view?: CurrentView
 }
 
 /**

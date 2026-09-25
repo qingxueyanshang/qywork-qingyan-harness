@@ -6,8 +6,9 @@
  *
  * 1. **判定线与视图上限是同一个数**，按 `deliveredTokens` 量整条结果——控件、观察
  *    元数据、回执、message 与资源引用都算在内。只量元素数组会把回执与长 message
- *    漏在上限之外。上限是单次投递上限本身，不再按比例缩：历史里被取代的控件表由
- *    AgentLoop 收起，单份表的大小不再随步数累积。
+ *    漏在上限之外。上限取单次投递上限本身，不要改成 browser 那样按比例缩：多数整窗控件表
+ *    会因此分页，排在尾部的动作目标首读不在视图里，分页的结果也当不了差异基底。历史里的
+ *    控件表只追加，累积由精简投递、差异投递与压缩承担。
  * 2. **动作判定与读回核验不看这里的视图**，它们用端口交回的完整控件表。
  * 3. **采集侧与投递侧分列**：`truncated` / `truncatedBy` / `filteredBy` 说的是没采到，
  *    `delivery` 说的是采到了没投。两者不能合并成一格。
@@ -34,7 +35,7 @@ import {
   type ToolContext,
 } from '@qywork/agent'
 import type { TokenDensity } from '@qywork/ai'
-import type { CurrentView, IntermediateResourceRef, ResourceId } from '@qywork/core'
+import type { IntermediateResourceRef, ResourceId } from '@qywork/core'
 import { deliver, type LandedResult } from './sink.ts'
 
 /** 存盘正文：一行一个 JSON 值。 */
@@ -142,11 +143,6 @@ export interface DesktopResultParts {
   message: string
   data: Record<string, unknown>
   resources?: IntermediateResourceRef[]
-  /**
-   * 这份结果是哪个窗口、哪个读取范围的当前控件表。AgentLoop 按它把历史里被取代的
-   * 控件表收起；按条件筛过的视图标 `partial`，不取代别的结果。
-   */
-  currentView: CurrentView
 }
 
 /**
@@ -166,17 +162,17 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const { elements: read, ...meta } = snapshot
   const targetRef = input.targetRef ?? null
   const elements = listable(read, new Set([...keptAnyway(read, targetRef), ...hits]))
-  const view = viewKeyOf(input)
-  // 筛过的视图标 partial，不取代别的结果，也不碰基底。
+  // 筛过的视图不碰基底。
   const bases = input.filter ? null : basesOf(ctx)
+  const key = baseKeyOf(snapshot)
   const rows = bases ? new Map(elements.map((e) => [e.ref, rowKey(e)])) : null
 
   if (input.incremental === true && bases && rows) {
-    const known = bases.get(view.key)?.get(view.scope ?? '')
+    const known = bases.get(key)
     const base = known?.epoch === compactionEpoch(ctx.state) ? known : undefined
     const diff = base ? diffOf(base, elements, rows) : null
     if (base && diff) {
-      const parts = diffParts(input, receipt, meta, diff, view)
+      const parts = diffParts(input, receipt, meta, diff)
       const spent = tokensOf(parts, ctx.density)
       if (base.spent + spent <= limit) {
         base.spent += spent
@@ -188,25 +184,21 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const whole: DesktopResultParts = {
     message: lead,
     data: compose(receipt, { ...meta, ...pack(elements, includeRect) }, input.place),
-    currentView: view,
   }
   const wholeTokens = tokensOf(whole, ctx.density)
   if (wholeTokens <= limit) {
-    if (bases && rows) {
-      // 带 rect 的整份不当基底：之后的差异不带 rect，未列出的控件在基底里的 rect 可能已经过时。
-      const next = includeRect
-        ? null
-        : {
-            observationId: snapshot.observationId,
-            rows,
-            spent: wholeTokens,
-            epoch: compactionEpoch(ctx.state),
-          }
-      supersede(bases, view, next)
-    }
+    // 带 rect 的整份不当基底：之后的差异不带 rect，未列出的控件在基底里的 rect 可能已经过时。
+    if (bases && rows && !includeRect) {
+      bases.set(key, {
+        observationId: snapshot.observationId,
+        rows,
+        spent: wholeTokens,
+        epoch: compactionEpoch(ctx.state),
+      })
+    } else bases?.delete(key)
     return recorded(ctx, whole)
   }
-  if (bases) supersede(bases, view, null)
+  bases?.delete(key)
 
   const total = elements.length
   const body = jsonlBody(input.snapshot)
@@ -270,15 +262,6 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   )
 }
 
-/** 这份结果对应的当前视图：窗口、读取范围，以及视图是否按条件筛过。 */
-function viewKeyOf(input: DesktopResultInput): CurrentView {
-  return {
-    key: `desktop:${input.snapshot.windowId}`,
-    ...(input.snapshot.scope !== undefined ? { scope: input.snapshot.scope } : {}),
-    ...(input.filter ? { partial: true as const } : {}),
-  }
-}
-
 /**
  * 模型手上的一份整份控件表：本 run 里某个窗口、某个读取范围最近一次整份、未筛选、未分页的
  * 投递。差异投递按它比较。
@@ -295,8 +278,8 @@ interface Base {
   epoch: number
 }
 
-/** 视图 key → 读取范围（整窗记空串）→ 基底。 */
-type Bases = Map<string, Map<string, Base>>
+/** 基底键（`baseKeyOf`）→ 基底。 */
+type Bases = Map<string, Base>
 
 function basesOf(ctx: DesktopResultContext): Bases {
   const known = ctx.state.get(BASES_KEY) as Bases | undefined
@@ -307,18 +290,12 @@ function basesOf(ctx: DesktopResultContext): Bases {
 }
 
 /**
- * 一份不筛选的结果进了历史之后，基底随之更新。取代范围与 `collapseSuperseded` 同一套：
- * 整窗的结果取代这个窗口的全部视图，局部读取的结果只取代同一个读取范围。
+ * 基底按窗口与读取范围分开记，整窗读取没有读取范围。
  *
- * 取代范围不要比那边窄：历史里已经收起的表留在这里当基底，之后的差异指向一份模型看不到的表。
+ * 一份不筛选的结果只更新同一个键：历史只追加，别的键的基底仍逐字在上下文里。
  */
-function supersede(bases: Bases, view: CurrentView, next: Base | null): void {
-  if (view.scope === undefined) bases.delete(view.key)
-  else bases.get(view.key)?.delete(view.scope)
-  if (next === null) return
-  const scopes = bases.get(view.key) ?? new Map<string, Base>()
-  scopes.set(view.scope ?? '', next)
-  bases.set(view.key, scopes)
+function baseKeyOf(snapshot: DesktopSnapshot): string {
+  return JSON.stringify([snapshot.windowId, snapshot.scope ?? null])
 }
 
 /**
@@ -366,14 +343,13 @@ function diffOf(
  * 差异结果。观察元数据与整份投递相同，控件表换成 `since` / `unchanged` 与三类变化。
  *
  * 行不在原位置上，所以 `added` 与 `changed` 的每一行都带 `parentRef`（列出的父控件）；
- * 字典只含这两类行用到的项。标 `partial`：它不取代基底，下一份整份投递同时取代两者。
+ * 字典只含这两类行用到的项。
  */
 function diffParts(
   input: DesktopResultInput,
   receipt: Record<string, unknown>,
   meta: Omit<DesktopSnapshot, 'elements'>,
   diff: Diff,
-  view: CurrentView,
 ): DesktopResultParts {
   const sets = new ActionSets()
   const rowOf = (e: DesktopElement): CompactElement & { parentRef?: string } => ({
@@ -396,7 +372,6 @@ function diffParts(
   return {
     message: `${input.lead} · 与 ${diff.since} 相比：${counts}`,
     data: compose(receipt, observation, input.place),
-    currentView: { ...view, partial: true },
   }
 }
 
@@ -629,7 +604,6 @@ function assemble(
     message: `${input.lead} · ${noteOf(delivery)}`,
     data: compose(receipt, observation, input.place),
     ...(resources.length ? { resources } : {}),
-    currentView: viewKeyOf(input),
   }
 }
 
@@ -780,10 +754,9 @@ function costOf(item: unknown, density: TokenDensity): number {
   return deliveredTokens(`${JSON.stringify(item)},`, density)
 }
 
-/** 整条结果交给模型的部分有多大。`currentView` 不上线，不计在内。 */
+/** 整条结果交给模型的部分有多大。 */
 function tokensOf(parts: DesktopResultParts, density: TokenDensity): number {
-  const { currentView: _view, ...delivered } = parts
-  return deliveredTokens(JSON.stringify(delivered), density)
+  return deliveredTokens(JSON.stringify(parts), density)
 }
 
 /**

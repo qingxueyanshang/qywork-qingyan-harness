@@ -25,7 +25,6 @@ import { compactBeforeSend } from './compact.ts'
 import {
   batchImageCount,
   breakdownOf,
-  collapseSuperseded,
   declaredMaxOutput,
   envelopeHashOf,
   idleTimeoutFor,
@@ -322,9 +321,9 @@ export class AgentLoop {
     /*
      * 缓存断点之三：最后一批工具结果所属的 assistant 消息。
      *
-     * 下一步装配时，这一批结果可能被同一对象的更新视图取代、或摘掉图像块，末尾断点的
-     * 前缀随之对不上。Anthropic 只在断点处写入缓存条目，命中只发生在以往请求写过条目的
-     * 位置；不在这里打断点，下一步只能命中 history 末条，其后的内容每一步整段重写。
+     * 下一步装配时，这一批结果可能被摘掉图像块，末尾断点的前缀随之对不上。Anthropic 只在
+     * 断点处写入缓存条目，命中只发生在以往请求写过条目的位置；不在这里打断点，下一步只能
+     * 命中 history 末条，其后的内容每一步整段重写。
      * 一次请求最多 4 个断点：系统提示词、history 末条、这里、末尾，不要再加第五个，
      * 超出会被 400 拒绝。
      */
@@ -334,13 +333,7 @@ export class AgentLoop {
     const consumed =
       pendingBatch !== null && this.deps.persist.inputImagesConsumed?.(pendingBatch) === true
     const keepFrom = lastCall < 0 || consumed ? assembledRaw.length : lastCall
-    /*
-     * 同一对象的当前视图在历史里只留最新那一份（`collapseSuperseded`）。与图像块同一步
-     * 处理：两者都是「模型已经看过、之后不再有用」的内容，换成同一种收纳信封。
-     */
-    const scoped = collapseSuperseded(
-      assembledRaw.map((m, i) => (i >= keepFrom ? m : omitImages(m))),
-    )
+    const scoped = assembledRaw.map((m, i) => (i >= keepFrom ? m : omitImages(m)))
     const pendingImages = pendingBatch === null ? 0 : batchImageCount(scoped, pendingBatch)
     this.lastInputImages =
       pendingBatch !== null && pendingImages > 0

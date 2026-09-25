@@ -1304,30 +1304,6 @@ describe('局部读取、视图筛选与字段选择', () => {
     expect(r.message).toContain('其余控件仍在这份观察里')
   })
 
-  /** 历史里被取代的控件表靠这一格收起：窗口、读取范围、视图筛没筛过。 */
-  test('观察与动作的结果声明当前视图：筛过的视图标 partial', async () => {
-    const { port } = fakeDesktop({
-      observe: async (input) =>
-        snapshot({ windowId: input.windowId, ...(input.root ? { scope: input.root } : {}) }),
-    })
-    const whole = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
-    expect(whole.currentView).toEqual({ key: 'desktop:dw_1' })
-    const scoped = await run(desktopObserveTool, { windowId: 'dw_1', root: 'e4' }, ctxWith(port))
-    expect(scoped.currentView).toEqual({ key: 'desktop:dw_1', scope: 'e4' })
-    const filtered = await run(
-      desktopObserveTool,
-      { windowId: 'dw_1', query: '保存' },
-      ctxWith(port),
-    )
-    expect(filtered.currentView).toEqual({ key: 'desktop:dw_1', partial: true })
-    const acted = await run(
-      desktopActTool,
-      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 表单保存.ref },
-      ctxWith(port),
-    )
-    expect(acted.currentView).toEqual({ key: 'desktop:dw_1' })
-  })
-
   /**
    * 原始失败形状：按文字筛出密码框之后，用同一份观察按登录按钮执行，返回“没有匹配的控件”。
    * 视图筛选不缩小控件表，筛出的视图之外的控件照样能按同一个观察编号执行。

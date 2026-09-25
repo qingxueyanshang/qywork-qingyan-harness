@@ -5,12 +5,13 @@
  * 与 `runtime/sink.ts` 的 `RuntimeSink` / `collectResourceGarbage` 在真实 `Store` +
  * `ContentStore` 上的合作；`agent/registry.ts` 的 `ToolRegistry.execute` 与批级记账；
  * `runtime/transcript.ts` 的工具结果信封与 `agent/loop/request.ts` 当轮信封的同形；
- * `agent/compaction.ts` 的 `condenseMessage` 对资源引用的保留；差异投递的基底与差异在
- * `agent/loop/request.ts` 的 `collapseSuperseded` 下的取代关系。
+ * `agent/compaction.ts` 的 `condenseMessage` 对资源引用的保留；电脑控制的观察在
+ * `agent/loop/index.ts` 装配的请求里只追加：同一窗口的多份整份、上一个 run 留在历史里的表、
+ * 差异投递的基底，在之后的请求里都逐字在场。
  *
  * 工具侧的上限、视图选取与故障降级在 `tools/desktop-results.test.ts`、
  * `tools/browser-results.test.ts`、`tools/resources.test.ts` 里用内存 sink 验过，
- * 这里只验跨层的部分：真实分片存储、step 落账、回放、收纳、回收与跨工具记账。
+ * 这里只验跨层的部分：真实分片存储、step 落账、回放、只追加、收纳、回收与跨工具记账。
  *
  * 夹具全部合成：控件名、元素名、页面标题与地址都不取自真实应用或网页。
  * 正文按内容库的分片大小构造——跨分片读回才证得了分片拼接没有错位，
@@ -925,10 +926,10 @@ describe('同一份结果在各层同形', () => {
   /**
    * 观察 → 动作（界面几乎没变，差异投递）→ 动作（页面跳转，整份投递）。
    *
-   * 差异标 partial，不收起基底；下一份整份投递同时收起基底与差异。差异那一条的回放与当轮
-   * 逐字相同。
+   * 基底与差异在之后的每个请求里都逐字在场，页面跳转之后的整份不改写它们。差异那一条的
+   * 回放与当轮逐字相同。
    */
-  test('差异投递：请求里基底与差异并存，下一份整份同时收起两者，回放与当轮逐字相同', async () => {
+  test('差异投递：基底与差异在之后的请求里逐字留着，回放与当轮逐字相同', async () => {
     const h = harness()
     const runId = h.runId
     const 改名 = 小表.map((e) => (e.ref === 'e6' ? { ...e, name: '改过名的按钮' } : e))
@@ -974,9 +975,8 @@ describe('同一份结果在各层同形', () => {
       // 事件在这条用例里不作断言，只把 run 跑完。
     }
     expect(seen).toHaveLength(4)
-    type Envelope = { result_omitted?: true; result?: Record<string, unknown> }
     const envelopeIn = (req: ChatRequest, callId: string) =>
-      JSON.parse(toolMessageOf(req.messages, callId).content as string) as Envelope
+      JSON.parse(contentIn(req, callId)) as Envelope
     const observationIn = (e: Envelope) => e.result?.observation as Record<string, unknown>
 
     const afterDiff = seen[2] as ChatRequest
@@ -986,14 +986,123 @@ describe('同一份结果在各层同形', () => {
     expect((diff.changed as { ref: string }[]).map((e) => e.ref)).toEqual(['e6'])
 
     const afterJump = seen[3] as ChatRequest
-    expect(envelopeIn(afterJump, 'c_obs').result_omitted).toBe(true)
-    expect(envelopeIn(afterJump, 'c_act1').result_omitted).toBe(true)
+    expect(contentIn(afterJump, 'c_obs')).toBe(contentIn(afterDiff, 'c_obs'))
+    expect(contentIn(afterJump, 'c_act1')).toBe(contentIn(afterDiff, 'c_act1'))
+    expect(condensedIn(afterJump)).toEqual([])
     const jumped = observationIn(envelopeIn(afterJump, 'c_act2'))
     expect(jumped.since).toBeUndefined()
     expect(jumped.elements).toHaveLength(跳转.length)
 
-    const live = toolMessageOf(afterDiff.messages, 'c_act1').content as string
-    expect(replayToolContent(h, runId, 'c_act1')).toBe(live)
+    expect(replayToolContent(h, runId, 'c_act1')).toBe(contentIn(afterDiff, 'c_act1'))
+  })
+})
+
+type Envelope = { result_omitted?: true; result?: Record<string, unknown> }
+
+/** 请求里某次调用的 tool 消息正文。 */
+function contentIn(req: ChatRequest, callId: string): string {
+  const content = toolMessageOf(req.messages, callId).content
+  expect(typeof content).toBe('string')
+  return content as string
+}
+
+/** 请求里换成收纳信封的 tool 消息的调用 id。 */
+function condensedIn(req: ChatRequest): string[] {
+  return req.messages
+    .filter((m) => m.role === 'tool' && typeof m.content === 'string')
+    .filter((m) => (JSON.parse(m.content as string) as Envelope).result_omitted === true)
+    .map((m) => m.toolCallId ?? '')
+}
+
+/** 每次观察交回下一份表，观察编号 do_1、do_2……。 */
+function observingPort(tables: DesktopElement[][]): DesktopPort {
+  let at = 0
+  return {
+    ...desktopPort(tables[0] as DesktopElement[]),
+    observe: async () => {
+      const i = Math.min(at++, tables.length - 1)
+      return 快照(tables[i] as DesktopElement[], `do_${i + 1}`)
+    },
+  }
+}
+
+/** 跑一个 run：按脚本逐轮观察，收尾一轮纯文本。交回适配器收到的每一份请求。 */
+async function runObservations(
+  h: Harness,
+  runId: RunId,
+  port: DesktopPort,
+  callIds: string[],
+  history: WireMessage[],
+): Promise<ChatRequest[]> {
+  const seen: ChatRequest[] = []
+  const loop = new AgentLoop({
+    adapter: scriptedAdapter(
+      [
+        ...callIds.map((id) => [
+          { id, name: 'desktop_observe', arguments: { windowId: 'dw_1' } } as WireToolCall,
+        ]),
+        null,
+      ],
+      seen,
+    ),
+    registry: h.registry,
+    systemPrompt: 'sys',
+    persist: persistence(h.store, { userSteps: 0 }),
+    makeToolContext: makeBase(h, runId, port),
+  })
+  for await (const _ of loop.run({ runId, history, signal: new AbortController().signal })) {
+    // 事件在这组用例里不作断言，只把 run 跑完。
+  }
+  expect(seen).toHaveLength(callIds.length + 1)
+  return seen
+}
+
+describe('电脑控制的观察在历史里只追加', () => {
+  const 改名 = (name: string) => 小表.map((e) => (e.ref === 'e6' ? { ...e, name } : e))
+
+  /** 原始失败形状：同一窗口的后一份整份观察把前面各份换成收纳信封，改写已发出的前缀。 */
+  test('同一窗口连续三次整份观察：之后的请求里三份表都逐字在场，没有收纳信封', async () => {
+    const h = harness()
+    const calls = ['c_obs1', 'c_obs2', 'c_obs3']
+    const port = observingPort([改名('第一次'), 改名('第二次'), 改名('第三次')])
+    const seen = await runObservations(h, h.runId, port, calls, [
+      { role: 'user', content: '登录', _group: 'historyMessages' },
+    ])
+
+    const last = seen[3] as ChatRequest
+    for (const [k, callId] of calls.entries()) {
+      const first = contentIn(seen[k + 1] as ChatRequest, callId)
+      expect((JSON.parse(first) as Envelope).result?.elements).toHaveLength(小表.length)
+      expect(contentIn(last, callId)).toBe(first)
+    }
+    expect(condensedIn(last)).toEqual([])
+  })
+
+  /** 原始失败形状：下一个 run 第一次观察同一窗口，上一个 run 留在历史里的末份表被收起。 */
+  test('第二个 run 的第一次整份观察之后，历史里上一个 run 的表逐字不变', async () => {
+    const h = harness()
+    const port = observingPort([改名('第一个 run'), 改名('第二个 run')])
+    const first = await runObservations(
+      h,
+      h.runId,
+      port,
+      ['c_run1'],
+      [{ role: 'user', content: '登录', _group: 'historyMessages' }],
+    )
+    const live = contentIn(first[1] as ChatRequest, 'c_run1')
+
+    const history: WireMessage[] = [
+      { role: 'user', content: '登录', _group: 'historyMessages' },
+      ...stepsToUnits(listSteps(h.store, h.runId)).flatMap((u) => u.messages),
+      { role: 'user', content: '继续', _group: 'historyMessages' },
+    ]
+    const second = await runObservations(h, anotherRun(h), port, ['c_run2'], history)
+
+    expect(contentIn(second[0] as ChatRequest, 'c_run1')).toBe(live)
+    const after = second[1] as ChatRequest
+    expect(contentIn(after, 'c_run1')).toBe(live)
+    expect((JSON.parse(contentIn(after, 'c_run2')) as Envelope).result?.elements).toBeDefined()
+    expect(condensedIn(after)).toEqual([])
   })
 })
 

@@ -1256,7 +1256,6 @@ describe('差异投递', () => {
     expect([diff.added, diff.changed, diff.removed]).toEqual([[], [], []])
     expect(diff.elements).toBeUndefined()
     expect(after.message).toContain('与 do_1 相比：新增 0、改变 0、消失 0')
-    expect(after.currentView).toEqual({ key: 'desktop:dw_1', partial: true })
     const full = JSON.stringify(observationOf(base)).length
     expect(JSON.stringify(observationOf(after)).length).toBeLessThanOrEqual(full * 0.1)
   })
@@ -1356,13 +1355,32 @@ describe('差异投递', () => {
     expect((run('do_4', 'observation').observation as DiffObservation).since).toBe('do_3')
   })
 
+  /** 历史只追加：整窗的整份投递之后，局部读取范围的基底仍在上下文里，照样当基底。 */
+  test('基底按窗口与读取范围分开记：整窗整份不作废同一窗口局部读取范围的基底', async () => {
+    const table = page('', 80)
+    const state = new Map<string, unknown>()
+    const run = (observationId: string, scope: string | undefined, incremental: boolean) =>
+      desktopResult({
+        ctx: { sink: fakeSink(), contextWindow: WINDOW, density: DEFAULT_DENSITY, state },
+        toolName: incremental ? 'desktop_act' : 'desktop_observe',
+        snapshot: snapshot(table, { observationId, ...(scope !== undefined ? { scope } : {}) }),
+        place: incremental ? 'observation' : 'top',
+        ...(incremental ? { incremental: true } : {}),
+        lead: 'x',
+      }).data as Record<string, unknown>
+    run('do_1', 'e2', false)
+    run('do_2', undefined, false)
+    expect((run('do_3', 'e2', true).observation as DiffObservation).since).toBe('do_1')
+    expect((run('do_4', undefined, true).observation as DiffObservation).since).toBe('do_2')
+  })
+
   test('筛过的视图不当基底，分页的观察不当基底且作废之前的基底', async () => {
     const table = page('', 80)
     const filtered = context(steppedPort([table, table]).port, fakeSink())
     await desktopObserveTool.fn({ windowId: 'dw_1', role: 'button' }, filtered)
     expect(diffOf(await act(filtered, 'do_1')).since).toBeUndefined()
 
-    // 小表先整份投递成为基底，随后同一个窗口的观察大到只能分页：之前的基底随它一起被取代。
+    // 小表先整份投递成为基底，随后同一个窗口的观察大到只能分页：之前的基底随之作废。
     const { port } = steppedPort([table, 大表, table])
     const paged = context({ ...port, observe: async () => snapshot(table) }, fakeSink())
     await desktopObserveTool.fn({ windowId: 'dw_1' }, paged)

@@ -14,7 +14,6 @@ import { estimateJson, type TokenDensity, type ToolSchema } from '@qywork/ai'
 import type {
   ActionDescriptor,
   ActionKind,
-  CurrentView,
   FileChange,
   Goal,
   GoalAction,
@@ -1058,11 +1057,6 @@ export interface ToolOutcome {
   /** 本次调用落盘的中间资源。必须原样进账本——压缩层要靠它判断正文还在不在。 */
   resources?: IntermediateResourceRef[]
   errorKind?: string
-  /**
-   * 这个结果是某个对象的当前视图。装配请求时，同一对象出现覆盖它的更新视图后，历史里
-   * 的这一份换成收纳信封；它随 outcome 落盘，回放按同一个字段判定。
-   */
-  currentView?: CurrentView
 }
 
 // ─────────────────────────────── 工具声明 ───────────────────────────────
@@ -1330,7 +1324,6 @@ export class ToolRegistry {
         ...(out.fileChanges ? { fileChanges: out.fileChanges } : {}),
         ...(out.resources?.length ? { resources: out.resources } : {}),
         ...(out.errorKind ? { errorKind: out.errorKind } : {}),
-        ...(out.currentView ? { currentView: out.currentView } : {}),
       }
     } catch (err) {
       /*
