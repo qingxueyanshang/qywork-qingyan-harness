@@ -294,6 +294,10 @@ describe('auto_vacuum 转档', () => {
     const path = join(dir, 'c.sqlite3')
     const s = new ContentStore(path)
     s.put(new Uint8Array(4 * 1024 * 1024))
+    // 正文先落进主文件，再关掉自动检查点：文件缩小只能来自回收自己的检查点，
+    // 不随回收写入的帧数是否碰到 `wal_autocheckpoint` 而变。
+    s.db.exec('PRAGMA wal_checkpoint(PASSIVE)')
+    s.db.exec('PRAGMA wal_autocheckpoint = 0')
     const pages = () =>
       s.db.query<{ page_count: number }, []>('PRAGMA page_count').get()?.page_count ?? -1
     const before = { pages: pages(), bytes: statSync(path).size }

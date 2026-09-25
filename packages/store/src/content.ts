@@ -402,7 +402,15 @@ export class ContentStore {
           .run(Date.now() - 24 * 60 * 60 * 1000)
       })
       .immediate()
-    if (removed > 0) this.db.exec('PRAGMA incremental_vacuum')
+    if (removed > 0) {
+      this.db.exec('PRAGMA incremental_vacuum')
+      /*
+       * WAL 模式下主文件在检查点才截短。只靠自动检查点的话，回收写入的帧数不足
+       * `wal_autocheckpoint`、或检查点落在删除与回收之间时，文件保持原大小。
+       * PASSIVE 不等待读者：有别的连接正在读时这一次截不全，由之后的检查点完成。
+       */
+      this.db.exec('PRAGMA wal_checkpoint(PASSIVE)')
+    }
     return { removed }
   }
 
