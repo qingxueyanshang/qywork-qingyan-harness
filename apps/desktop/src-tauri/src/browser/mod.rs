@@ -25,7 +25,7 @@ mod frames;
 #[cfg(windows)]
 mod profile;
 #[cfg(windows)]
-mod tabs;
+mod webview2;
 
 #[cfg(windows)]
 use std::collections::HashMap;
@@ -44,7 +44,7 @@ use frames::{EventFrame, HostReady, RequestFrame, ResultData};
 #[cfg(windows)]
 use profile::ProfileLock;
 #[cfg(windows)]
-use tabs::Tab;
+use webview2::Tab;
 
 #[cfg(windows)]
 use crate::hostkey::new_host_key;
@@ -332,9 +332,9 @@ impl BrowserHost {
             (format!("bt_{}", state.next_tab), crate::next_created_seq(), new_host_key())
         };
         // 建视图在锁外：`add_child` 会等主线程，而主线程上的下载钩子要拿同一把锁。
-        let tab = tabs::create(
+        let tab = webview2::create(
             app,
-            tabs::NewTab {
+            webview2::NewTab {
                 tab_id: tab_id.clone(),
                 created_seq,
                 marker: marker.clone(),
@@ -588,7 +588,7 @@ pub fn user_open(app: &AppHandle, url: Option<&str>, workspace_id: &str) -> Resu
         return Err("新建标签页缺少工作区".to_owned());
     }
     // 不给地址就是一页空标签，地址由用户在地址栏里输入。
-    let target = url.unwrap_or(tabs::BLANK);
+    let target = url.unwrap_or(webview2::BLANK);
     let (data, created_seq) = host.create(app, target, workspace_id.to_owned(), None)?;
     Ok(TabView {
         tab_id: data.tab_id.unwrap_or_default(),
@@ -616,7 +616,7 @@ pub fn user_navigate(tab_id: &str, action: &str, url: Option<&str>) -> Result<()
             .map(|t| t.view())
             .ok_or_else(|| format!("认不出的标签页 {tab_id}"))?
     };
-    tabs::navigate(&view, action, url)
+    webview2::navigate(&view, action, url)
 }
 
 /// 摆放子视图：`active` 那一页落在给定的物理矩形上，其余全部移出可视区。
@@ -636,11 +636,11 @@ pub fn layout(active: Option<&str>, x: i32, y: i32, width: u32, height: u32) -> 
     let mut placed = Vec::new();
     for (id, view) in views {
         if active == Some(id.as_str()) && width > 0 && height > 0 {
-            tabs::place(&view, x, y, width, height);
+            webview2::place(&view, x, y, width, height);
             placed.push((id, (width, height)));
         } else {
             let size = sizes.get(&id).copied().unwrap_or(DEFAULT_PARK_SIZE);
-            tabs::park(&view, size.0, size.1);
+            webview2::park(&view, size.0, size.1);
         }
     }
     if !placed.is_empty() {
