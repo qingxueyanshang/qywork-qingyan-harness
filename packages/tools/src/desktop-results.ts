@@ -2,7 +2,7 @@
  * desktop 四个出口的结果生产。
  *
  * 控件表装得下单次投递上限就整份内联，装不下就整份存盘，结果里放一部分控件加规范资源
- * 引用。六条边界：
+ * 引用；动作与等待之后的重读在条件成立时只投与上一份整份相比的变化。七条边界：
  *
  * 1. **判定线与视图上限是同一个数**，按 `deliveredTokens` 量整条结果——控件、观察
  *    元数据、回执、message 与资源引用都算在内。只量元素数组会把回执与长 message
@@ -18,6 +18,9 @@
  *    相同的格省掉；`rect` 只在调用方要时给；无名结构容器不列，`depth` 按列出的祖先计。
  *    小表与大表的视图同形，字典随每个结果自带。存盘正文仍是一行一个完整原始控件，
  *    不依赖字典。
+ * 7. **差异只相对一份仍然可见的整份投递**：本 run、同窗口、同读取范围、未筛选、未分页、
+ *    不带 `rect` 的那一份；逐字未变的控件过半；这份基底与之后各次差异累计不超过单次上限，
+ *    压缩保留的尾部（两倍单次上限）因此装得下它们。任一条不成立即整份投递并成为新基底。
  */
 
 import {
@@ -59,6 +62,14 @@ export const MAX_TITLE_CHARS = 200
 const DEFAULTS = { enabled: true, offscreen: false, automationId: '' } as const
 /** 结构容器的角色。这几种控件没有名称与状态时只承载层级。 */
 const CONTAINER_ROLES: ReadonlySet<string> = new Set(['pane', 'group', 'custom'])
+/** `ctx.state` 里记差异基底的键。`ctx.state` 是 run 级的：新 run 的第一次投递一定整份。 */
+const BASES_KEY = 'desktop:bases'
+/**
+ * 差异投递要求与基底逐字相同的控件至少占多少，分母取基底与这一份里较多的那个。
+ *
+ * 低于它说明界面已经大改（页面跳转、换了对话框），整份投递读起来更直接，且成为新基底。
+ */
+const MIN_UNCHANGED_SHARE = 0.5
 
 type DesktopResultContext = Pick<ToolContext, 'sink' | 'contextWindow' | 'density' | 'state'>
 
@@ -108,6 +119,11 @@ export interface DesktopResultInput {
   filter?: ViewFilter
   /** 控件带不带 `rect`。缺席不带。 */
   includeRect?: boolean
+  /**
+   * 动作与等待之后的重读传 true：条件成立时只投与上一份整份投递相比的变化。
+   * `desktop_observe` 不传，一律整份：模型主动要看的是整张表。
+   */
+  incremental?: boolean
   /** message 的执行事实部分。控件内容不进 message。 */
   lead: string
   /** 上限，缺省取 `deliveryBudget(ctx.contextWindow).perCall`。 */
@@ -148,12 +164,41 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const { elements: read, ...meta } = snapshot
   const targetRef = input.targetRef ?? null
   const elements = listable(read, new Set([...keptAnyway(read, targetRef), ...hits]))
+  const view = viewKeyOf(input)
+  // 筛过的视图标 partial，不取代别的结果，也不碰基底。
+  const bases = input.filter ? null : basesOf(ctx)
+  const rows = bases ? new Map(elements.map((e) => [e.ref, rowKey(e)])) : null
+
+  if (input.incremental === true && bases && rows) {
+    const base = bases.get(view.key)?.get(view.scope ?? '')
+    const diff = base ? diffOf(base, elements, rows) : null
+    if (base && diff) {
+      const parts = diffParts(input, receipt, meta, diff, view)
+      const spent = tokensOf(parts, ctx.density)
+      if (base.spent + spent <= limit) {
+        base.spent += spent
+        return recorded(ctx, parts)
+      }
+    }
+  }
+
   const whole: DesktopResultParts = {
     message: lead,
     data: compose(receipt, { ...meta, ...pack(elements, includeRect) }, input.place),
-    currentView: viewKeyOf(input),
+    currentView: view,
   }
-  if (tokensOf(whole, ctx.density) <= limit) return recorded(ctx, whole)
+  const wholeTokens = tokensOf(whole, ctx.density)
+  if (wholeTokens <= limit) {
+    if (bases && rows) {
+      // 带 rect 的整份不当基底：之后的差异不带 rect，未列出的控件在基底里的 rect 可能已经过时。
+      const next = includeRect
+        ? null
+        : { observationId: snapshot.observationId, rows, spent: wholeTokens }
+      supersede(bases, view, next)
+    }
+    return recorded(ctx, whole)
+  }
+  if (bases) supersede(bases, view, null)
 
   const total = elements.length
   const body = jsonlBody(input.snapshot)
@@ -173,7 +218,7 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
       },
     ],
   )
-  const view = pickView(
+  const picked = pickView(
     elements,
     priorityOf(read, targetRef),
     limit - tokensOf(skeleton, ctx.density),
@@ -181,7 +226,7 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
     includeRect,
   )
 
-  const excerpt = JSON.stringify(view)
+  const excerpt = JSON.stringify(picked)
   const landed = deliver(ctx.sink, {
     toolName: input.toolName,
     sourceType: SOURCE_TYPE,
@@ -194,11 +239,11 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
     },
   })
 
-  const delivered = view.elements.length
+  const delivered = picked.elements.length
   if (landed.resourceId === null) {
     return recorded(
       ctx,
-      assemble(shaped, receipt, view, {
+      assemble(shaped, receipt, picked, {
         deliveredElements: delivered,
         totalElements: total,
         unsaved: landed.landError ?? '本次执行没有正文库',
@@ -210,7 +255,7 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
     assemble(
       shaped,
       receipt,
-      view,
+      picked,
       { deliveredElements: delivered, totalElements: total, resourceId: landed.resourceId },
       [resourceRef(landed)],
     ),
@@ -223,6 +268,125 @@ function viewKeyOf(input: DesktopResultInput): CurrentView {
     key: `desktop:${input.snapshot.windowId}`,
     ...(input.snapshot.scope !== undefined ? { scope: input.snapshot.scope } : {}),
     ...(input.filter ? { partial: true as const } : {}),
+  }
+}
+
+/**
+ * 模型手上的一份整份控件表：本 run 里某个窗口、某个读取范围最近一次整份、未筛选、未分页的
+ * 投递。差异投递按它比较。
+ *
+ * 它只记投递出去了什么，不参与动作判定：动作仍按协调器交回的完整表核对。
+ */
+interface Base {
+  observationId: string
+  /** 编号 → 这一行投递内容的比较串，见 `rowKey`。 */
+  rows: Map<string, string>
+  /** 这份基底与之后各次差异一共投了多少 token。不超过单次上限，基底才仍在压缩保留的尾部里。 */
+  spent: number
+}
+
+/** 视图 key → 读取范围（整窗记空串）→ 基底。 */
+type Bases = Map<string, Map<string, Base>>
+
+function basesOf(ctx: DesktopResultContext): Bases {
+  const known = ctx.state.get(BASES_KEY) as Bases | undefined
+  if (known) return known
+  const bases: Bases = new Map()
+  ctx.state.set(BASES_KEY, bases)
+  return bases
+}
+
+/**
+ * 一份不筛选的结果进了历史之后，基底随之更新。取代范围与 `collapseSuperseded` 同一套：
+ * 整窗的结果取代这个窗口的全部视图，局部读取的结果只取代同一个读取范围。
+ *
+ * 取代范围不要比那边窄：历史里已经收起的表留在这里当基底，之后的差异指向一份模型看不到的表。
+ */
+function supersede(bases: Bases, view: CurrentView, next: Base | null): void {
+  if (view.scope === undefined) bases.delete(view.key)
+  else bases.get(view.key)?.delete(view.scope)
+  if (next === null) return
+  const scopes = bases.get(view.key) ?? new Map<string, Base>()
+  scopes.set(view.scope ?? '', next)
+  bases.set(view.key, scopes)
+}
+
+/**
+ * 一行投递内容的比较串：投递形状（不含 `rect`）、它的动作字典项与列出的父控件。
+ *
+ * 父控件要算进来：差异里的行不在原位置上，换了父控件而其余字段不变的控件，只比投递字段
+ * 会被判成未变。
+ */
+function rowKey(e: DesktopElement): string {
+  const { actionSet: _index, ...row } = compactOf(e, 0, false)
+  return JSON.stringify({ ...row, parentRef: e.parentRef ?? null, actions: groupsOf(e.actions) })
+}
+
+/** 与基底相比的变化。三类都按这一份里的顺序排，`removed` 按基底里的顺序。 */
+interface Diff {
+  since: string
+  unchanged: number
+  added: DesktopElement[]
+  changed: DesktopElement[]
+  removed: string[]
+}
+
+/** 与基底相比的变化；逐字未变的控件不到 `MIN_UNCHANGED_SHARE` 时交回 `null`，整份投递。 */
+function diffOf(
+  base: Base,
+  elements: readonly DesktopElement[],
+  rows: ReadonlyMap<string, string>,
+): Diff | null {
+  let unchanged = 0
+  const added: DesktopElement[] = []
+  const changed: DesktopElement[] = []
+  for (const e of elements) {
+    const before = base.rows.get(e.ref)
+    if (before === undefined) added.push(e)
+    else if (before === rows.get(e.ref)) unchanged++
+    else changed.push(e)
+  }
+  const most = Math.max(base.rows.size, elements.length)
+  if (most === 0 || unchanged < MIN_UNCHANGED_SHARE * most) return null
+  const removed = [...base.rows.keys()].filter((ref) => !rows.has(ref))
+  return { since: base.observationId, unchanged, added, changed, removed }
+}
+
+/**
+ * 差异结果。观察元数据与整份投递相同，控件表换成 `since` / `unchanged` 与三类变化。
+ *
+ * 行不在原位置上，所以 `added` 与 `changed` 的每一行都带 `parentRef`（列出的父控件）；
+ * 字典只含这两类行用到的项。标 `partial`：它不取代基底，下一份整份投递同时取代两者。
+ */
+function diffParts(
+  input: DesktopResultInput,
+  receipt: Record<string, unknown>,
+  meta: Omit<DesktopSnapshot, 'elements'>,
+  diff: Diff,
+  view: CurrentView,
+): DesktopResultParts {
+  const sets = new ActionSets()
+  const rowOf = (e: DesktopElement): CompactElement & { parentRef?: string } => ({
+    ...compactOf(e, sets.add(e.actions), false),
+    ...(e.parentRef !== undefined ? { parentRef: e.parentRef } : {}),
+  })
+  const added = diff.added.map(rowOf)
+  const changed = diff.changed.map(rowOf)
+  const observation = {
+    ...meta,
+    since: diff.since,
+    unchanged: diff.unchanged,
+    defaults: DEFAULTS,
+    actionSets: sets.list,
+    added,
+    changed,
+    removed: diff.removed,
+  }
+  const counts = `新增 ${added.length}、改变 ${changed.length}、消失 ${diff.removed.length}`
+  return {
+    message: `${input.lead} · 与 ${diff.since} 相比：${counts}`,
+    data: compose(receipt, observation, input.place),
+    currentView: { ...view, partial: true },
   }
 }
 
@@ -291,30 +455,37 @@ function structural(e: DesktopElement): boolean {
 }
 
 /**
- * 投给模型的控件：无名结构容器不列，`keep` 里的照列；`depth` 改成列出的祖先个数。
+ * 投给模型的控件：无名结构容器不列，`keep` 里的照列；`depth` 改成列出的祖先个数，
+ * `parentRef` 改成最近一个列出的祖先。
  *
  * 不要保留原 `depth`：容器省掉之后层数跳级，它的子控件读起来挂在前一个兄弟下面。按列出的
  * 祖先计数，「父控件是前面最近的、depth 小一层的那一个」对投递出去的表仍然成立；一个都
- * 没省时它与原值相同。父控件不在表里的控件沿用原值。
+ * 没省时它与原值相同。父控件不在表里的控件两格都沿用原值。
  */
 function listable(
   elements: readonly DesktopElement[],
   keep: ReadonlySet<string>,
 ): DesktopElement[] {
   const levels = new Map<string, number>()
+  /** 编号 → 它自己（列出时）或它最近一个列出的祖先。 */
+  const anchors = new Map<string, string | undefined>()
   const listed = new Set<string>()
   const out: DesktopElement[] = []
   for (const e of elements) {
     const parent = e.parentRef
     const parentLevel = parent === undefined ? undefined : levels.get(parent)
-    const level =
-      parent === undefined || parentLevel === undefined
-        ? e.depth
-        : parentLevel + (listed.has(parent) ? 1 : 0)
+    const inTable = parent !== undefined && parentLevel !== undefined
+    const level = inTable ? parentLevel + (listed.has(parent) ? 1 : 0) : e.depth
+    const up = inTable ? anchors.get(parent) : parent
     levels.set(e.ref, level)
-    if (structural(e) && !keep.has(e.ref)) continue
+    if (structural(e) && !keep.has(e.ref)) {
+      anchors.set(e.ref, up)
+      continue
+    }
+    anchors.set(e.ref, e.ref)
     listed.add(e.ref)
-    out.push(level === e.depth ? e : { ...e, depth: level })
+    const { parentRef: _parentRef, ...rest } = e
+    out.push({ ...rest, ...(up !== undefined ? { parentRef: up } : {}), depth: level })
   }
   return out
 }
