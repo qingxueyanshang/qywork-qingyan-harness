@@ -33,7 +33,7 @@ import type { CompactionOutcome } from '../compaction.ts'
 import { stepStamp } from '../compaction.ts'
 import type { CompactionPort, CompactionRunInput, LoopPersistence, ToolContext } from '../index.ts'
 import { AgentLoop } from '../index.ts'
-import { ToolRegistry } from '../registry.ts'
+import { compactionEpoch, ToolRegistry } from '../registry.ts'
 import { MAX_RESENDS } from './attempt.ts'
 import { softLimit } from './request.ts'
 
@@ -253,12 +253,16 @@ describe('发送前检查：唯一的压缩触发', () => {
    */
   test('越过软阈值：发送前压一次并重新装配', async () => {
     const comp = fakeCompaction(okOutcome)
+    let ctx: ToolContext | undefined
     const loop = new AgentLoop({
       adapter: okAdapter(),
       registry: new ToolRegistry(),
       systemPrompt: 'sys',
       persist: noopPersistence(),
-      makeToolContext: makeCtx,
+      makeToolContext: () => {
+        ctx = makeCtx()
+        return ctx
+      },
       compaction: comp.port,
     })
     const events: AgentEvent[] = []
@@ -282,6 +286,8 @@ describe('发送前检查：唯一的压缩触发', () => {
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'started')).toBe(true)
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'done')).toBe(true)
     expect(events.find((e) => e.type === 'run.finished')?.type).toBe('run.finished')
+    // 工具据这个次数判断早先投递的结果是否仍逐字可见（电脑控制的差异基底）。
+    expect(ctx ? compactionEpoch(ctx.state) : -1).toBe(1)
   })
 
   /**
