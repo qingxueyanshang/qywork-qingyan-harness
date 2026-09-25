@@ -16,13 +16,22 @@
  * 事件与扫描结果都归最早打开的那个，后面的窗口从前一个收尾那一刻起才算自己的。
  * 并行执行时的归属因此是估算。
  *
+ * **收尾先等在途事件交齐，再交出归属。** 事件从发生到进回调有延迟（macOS 的 FSEvents 按 50 ms
+ * 合批交付），收尾时直接关 watcher 或把事件改归下一个窗口，此前发生、尚未交付的事件就丢失或记错窗口。
+ * 排在最前的窗口收尾时在 `<root>/.tmp` 下写一个唯一命名的标记文件，收到它的事件才交出归属：
+ * FSEvents、inotify、ReadDirectoryChangesW 对同一个 watcher 都按发生顺序交付，标记之前的事件
+ * 此时都已进回调。标记写不进去或到 `BARRIER_TIMEOUT_MS` 仍未收到，结果按 `incomplete` 交出。
+ * `.tmp` 必须在建 watcher 之前建好：Linux 的递归 watch 由读线程给之后才出现的目录补挂监视，
+ * 补挂之前写进去的标记没有事件。
+ *
  * 拿不到改动前的内容，所以改过的与删掉的不带行数；新建的文本文件按落盘内容数行，
  * 口径与文件工具相同（`countDiff` 对空的旧内容：新内容按 `\n` 切开的段数）。
  * `changeType` 按收尾时的磁盘状态判：不存在 = deleted；创建时间在窗口内 = created；其余 modified。
  * 创建时间与窗口起点的比较受时间戳精度限制：Linux 的文件时间戳按内核时钟节拍取值，比 `Date.now()`
  * 落后至多一个节拍（WSL2 实测最多 5.3 ms，2026-09-25），窗口打开后一个节拍内新建的文件判为 modified。
  * 不要把窗口起点前移来抵消：连续两条命令之间只隔几毫秒，前移后上一条新建的文件在下一个窗口里判为 created。
- * 临时文件（窗口内建、收尾前删）不进结果；原子保存（写临时文件再改名）会被判成 created。
+ * 临时文件（窗口内建、收尾前删）不进结果，前提是观察器在它消失之前 stat 到过它：存在时间短于
+ * 事件交付延迟的临时文件判为 deleted。原子保存（写临时文件再改名）会被判成 created。
  * 结果里只有文件：仍在磁盘上的按 `stat` 判，已经不在的按同一批里有没有路径以它为父段判。
  *
  * **哪些路径不报告由 Git 裁决，事件收集与收尾扫描共用这一条策略。**
@@ -44,8 +53,8 @@
  * 按前缀排除会把项目文件一并丢掉。
  */
 
-import { type Dirent, existsSync, type FSWatcher, watch } from 'node:fs'
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { type Dirent, existsSync, type FSWatcher, mkdirSync, watch } from 'node:fs'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, join, relative, resolve } from 'node:path'
 import type { FileChange } from '@qywork/core'
 import { IGNORED_DIRS } from './paths.ts'
@@ -55,7 +64,7 @@ import { collectProcess } from './sandbox.ts'
 export interface ObservedChanges {
   changes: FileChange[]
   /**
-   * 观察范围不完整：Git 判定没跑成，或收尾扫描到界停止。
+   * 观察范围不完整：收尾时没等到在途事件交齐，Git 判定没跑成，或收尾扫描到界停止。
    *
    * 调用方**必须**把它说给上游——不说的话，一次没跑完的过滤与一次真的没有改动
    * 在结果里长得一模一样。
@@ -92,7 +101,13 @@ const MAX_COUNT_BYTES = 4 * 1024 * 1024
 const CLOCK_SLACK_MS = 1_000
 /** 单次 git 查询的时长上限。到点树杀，结果按判定没跑成处理。 */
 const GIT_TIMEOUT_MS = 15_000
+/**
+ * 等标记事件的上限。正常交付在毫秒级，macOS 上多出至多一个 50 ms 合批周期；
+ * 到点仍未收到按没等到处理。
+ */
+const BARRIER_TIMEOUT_MS = 5_000
 const NO_STDIN = new Uint8Array(0)
+let markerSeq = 0
 
 /** 一个路径第一次被报上来时的磁盘状态。null = 那一刻已不存在。 */
 interface FirstSeen {
@@ -114,6 +129,8 @@ interface Shared {
   repoRoot: string | null
   /** 工作区根相对仓库根的位置，posix 分隔符；工作区就是仓库根时为空串。 */
   prefix: string
+  /** 在等的事件屏障：标记文件的工作区相对路径 → 收到它的事件（true）或 watcher 报错（false）。 */
+  barriers: Map<string, (arrived: boolean) => void>
 }
 
 const shared = new Map<string, Shared>()
@@ -352,6 +369,50 @@ async function goneFrom(
   return out
 }
 
+/**
+ * 写一个标记文件，等 watcher 交出它的事件。返回 false = 没等到：标记写不进去、watcher 已报错，
+ * 或到了上限。`onSettled` 在等到或放弃的那一刻同步调用，排在标记之后交付的事件已不归调用方。
+ *
+ * 标记放在 `.tmp` 下：这一段一律不报，标记自己的事件不进任何窗口。
+ */
+function barrier(root: string, owner: Shared, onSettled: () => void = () => {}): Promise<boolean> {
+  if (shared.get(root) !== owner) {
+    onSettled()
+    return Promise.resolve(false)
+  }
+  const rel = `.tmp/qywork-watch-${process.pid}-${++markerSeq}`
+  const abs = join(root, rel)
+  return new Promise((resolve) => {
+    const settle = (arrived: boolean) => {
+      if (!owner.barriers.delete(rel)) return
+      clearTimeout(timer)
+      onSettled()
+      void rm(abs, { force: true })
+        .catch(() => {})
+        .then(() => resolve(arrived))
+    }
+    const timer = setTimeout(() => settle(false), BARRIER_TIMEOUT_MS)
+    owner.barriers.set(rel, settle)
+    mkdir(join(root, '.tmp'), { recursive: true })
+      .then(() => writeFile(abs, ''))
+      .catch(() => settle(false))
+  })
+}
+
+/**
+ * 等 `root` 上的 watcher 交齐此刻之前发生的事件，并等这些路径第一次被报上来时的 stat 做完。
+ * 返回 false = 没有开着的窗口，或没等到。
+ *
+ * 供测试在窗口中途建立「观察器已见过某个路径」这一前提；生产代码只经 `close()` 用这道屏障。
+ */
+export async function settleEvents(root: string): Promise<boolean> {
+  const owner = shared.get(root)
+  if (!owner) return false
+  const arrived = await barrier(root, owner)
+  await Promise.all(owner.windows.flatMap((w) => [...w.paths.values()]))
+  return arrived
+}
+
 export function openChangeWindow(root: string, opts: ChangeWindowOptions = {}): ChangeWindow {
   const window: Window = { startedAt: Date.now(), paths: new Map(), prunedDirs: new Set() }
   let entry = shared.get(root)
@@ -362,10 +423,17 @@ export function openChangeWindow(root: string, opts: ChangeWindowOptions = {}): 
       watcher: null as unknown as FSWatcher,
       repoRoot,
       prefix: repoRoot === null ? '' : relative(repoRoot, resolve(root)).replaceAll('\\', '/'),
+      barriers: new Map(),
+    }
+    try {
+      mkdirSync(join(root, '.tmp'), { recursive: true })
+    } catch {
+      // 建不成时屏障写不进标记，收尾按 incomplete 交出。
     }
     created.watcher = watch(root, { recursive: true }, (_event, filename) => {
       if (typeof filename !== 'string' || !filename) return
       const rel = filename.replaceAll('\\', '/')
+      created.barriers.get(rel)?.(true)
       const owner = created.windows[0]
       if (!owner) return
       const segments = rel.split('/')
@@ -385,6 +453,7 @@ export function openChangeWindow(root: string, opts: ChangeWindowOptions = {}): 
     created.watcher.on('error', () => {
       created.watcher.close()
       if (shared.get(root) === created) shared.delete(root)
+      for (const settle of [...created.barriers.values()]) settle(false)
     })
     shared.set(root, created)
     entry = created
@@ -395,20 +464,26 @@ export function openChangeWindow(root: string, opts: ChangeWindowOptions = {}): 
   return {
     async close() {
       const closedAt = Date.now()
-      owner.windows.splice(owner.windows.indexOf(window), 1)
-      const next = owner.windows[0]
-      if (next) next.startedAt = Math.max(next.startedAt, closedAt)
-      else {
-        owner.watcher.close()
-        if (shared.get(root) === owner) shared.delete(root)
+      const handOff = () => {
+        owner.windows.splice(owner.windows.indexOf(window), 1)
+        const next = owner.windows[0]
+        if (next) next.startedAt = Math.max(next.startedAt, closedAt)
+        else {
+          owner.watcher.close()
+          if (shared.get(root) === owner) shared.delete(root)
+        }
       }
+      // 事件只进排在最前的窗口，只有它要等在途事件。
+      let settled = true
+      if (owner.windows[0] === window) settled = await barrier(root, owner, handOff)
+      else handOff()
 
       const until = closedAt + CLOCK_SLACK_MS
       const walked = await touchedSince(root, window.startedAt, until)
       const walkOnly = walked.paths.filter((rel) => !window.paths.has(rel))
       const prunedDirs = [...new Set([...window.prunedDirs, ...walked.pruned])]
 
-      let incomplete = walked.truncated
+      let incomplete = walked.truncated || !settled
       let tracked: string[] = []
       if (owner.repoRoot !== null && prunedDirs.length > 0) {
         const got = await trackedInPruned(
