@@ -132,7 +132,7 @@ const WINDOW_SHAPE_ACTIONS: readonly DesktopActionKind[] = [
 const SEQUENCE_ACTIONS: readonly DesktopActionKind[] = ACTIONS.filter(
   (kind) => !WINDOW_SHAPE_ACTIONS.includes(kind),
 )
-/** 接受图像点落点的那几种。其余动作只能按控件执行。 */
+/** 接受图像点落点的那几种。其余动作不接受图像点：键盘动作不给 ref 时投给窗口焦点，其余按控件执行。 */
 const POINTER_ACTIONS: readonly DesktopActionKind[] = ['click', 'hover', 'drag', 'wheel']
 /**
  * 可以不点名控件、直接投给窗口的那几种。
@@ -141,6 +141,15 @@ const POINTER_ACTIONS: readonly DesktopActionKind[] = ['click', 'hover', 'drag',
  * 永远给不出一个持有焦点的控件，只认控件等于对这类应用关掉整条键盘路径。
  */
 const WINDOW_TARGET_ACTIONS: readonly DesktopActionKind[] = ['type_text', 'press_key']
+/** 键盘动作点名了不接受按键的控件、或给了图像点时，回执里指明的另一条路。 */
+const TO_FOCUS = '不给 ref 即投给窗口当前的焦点'
+/**
+ * 作用于窗口本身的动作：不点名控件时取窗口根。
+ *
+ * 宿主执行形变动作要读回窗口根控件的显示状态与矩形，所以发出去仍带窗口根的 ref，
+ * 不要改成像键盘动作那样不带 ref 投给窗口。
+ */
+const WINDOW_ACTIONS: readonly DesktopActionKind[] = ['activate', ...WINDOW_SHAPE_ACTIONS]
 const MOUSE_BUTTONS: readonly DesktopMouseButton[] = ['left', 'right', 'middle']
 const MODIFIERS: readonly DesktopModifier[] = ['ctrl', 'alt', 'shift', 'win']
 const WINDOW_STATES: readonly DesktopWindowState[] = ['normal', 'minimized', 'maximized']
@@ -494,8 +503,10 @@ function checkPrecondition(element: DesktopElement, kind: DesktopActionKind): vo
   const offer = element.actions.find((a) => a.action === kind)
   if (!offer) {
     const usable = element.actions.length ? element.actions.map((a) => a.action).join(' / ') : '无'
+    const other =
+      WINDOW_TARGET_ACTIONS.includes(kind) && !isWindowRoot(element) ? ` · ${TO_FOCUS}` : ''
     throw new ArgError(
-      `${kind} 未执行 · ${element.ref} 不支持 · 可用 ${usable}`,
+      `${kind} 未执行 · ${element.ref} 不支持 · 可用 ${usable}${other}`,
       'desktop_action_unsupported',
     )
   }
@@ -969,7 +980,13 @@ function waitOutcome(
   ref: string | undefined,
   follow: DesktopFollowUp,
 ): ToolOutcome {
-  const lead = found ? '已满足' : `未满足 · ${reason ?? 'timeout'}`
+  // `target_gone`：等值或等可用时目标控件已不在，宿主不再轮询。回执写明原因，不写成超时。
+  const gone = !found && reason === 'target_gone'
+  const lead = found
+    ? '已满足'
+    : gone
+      ? `未满足 · ${ref ?? '目标控件'} 已不在窗口里，条件不会再成立`
+      : `未满足 · ${reason ?? 'timeout'}`
   if (follow.observation) {
     const parts = desktopResult({
       ctx,
@@ -983,7 +1000,12 @@ function waitOutcome(
     })
     return {
       status: found ? 'success' : 'failure',
-      ...(found ? {} : { executed: false, errorKind: 'desktop_wait_timeout' }),
+      ...(found
+        ? {}
+        : {
+            executed: false,
+            errorKind: gone ? 'desktop_wait_target_gone' : 'desktop_wait_timeout',
+          }),
       ...delivered(parts),
     }
   }
@@ -1423,7 +1445,8 @@ export const desktopActTool: ToolSpec = {
       action: { type: 'string', enum: ACTIONS },
       ref: {
         type: 'string',
-        description: '控件编号，取自同一份观察；type_text / press_key 可以不给，那时目标是窗口',
+        description:
+          '控件编号，取自同一份观察；type_text / press_key 不给时投给窗口当前的焦点，activate 与改变窗口的动作不给时作用于窗口本身',
       },
       automationId: { type: 'string', description: '按稳定标识定位，要求唯一命中' },
       name: { type: 'string', description: '按名称定位，要求唯一命中' },
@@ -1520,7 +1543,11 @@ function planAct(
 ): { aim: Aim; action: DesktopAction } {
   if (given(args.imageRef)) {
     if (!POINTER_ACTIONS.includes(kind)) {
-      throw new ArgError(`${kind} 只能按控件执行，不接受 imageRef`)
+      throw new ArgError(
+        WINDOW_TARGET_ACTIONS.includes(kind)
+          ? `${kind} 不接受 imageRef · ${TO_FOCUS}`
+          : `${kind} 只能按控件执行，不接受 imageRef`,
+      )
     }
     if (targetGiven(args)) throw new ArgError('控件与图像点只能给一个')
     const at = {
@@ -1534,7 +1561,8 @@ function planAct(
     }
   }
   const toWindow = WINDOW_TARGET_ACTIONS.includes(kind)
-  const element = toWindow && !targetGiven(args) ? windowRoot(table) : resolveTarget(table, args)
+  const onWindow = toWindow || WINDOW_ACTIONS.includes(kind)
+  const element = onWindow && !targetGiven(args) ? windowRoot(table) : resolveTarget(table, args)
   checkPrecondition(element, kind)
   const action = buildAction(table ?? [], element, kind, args, params)
   const byWindow = toWindow && isWindowRoot(element)

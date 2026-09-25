@@ -1843,6 +1843,29 @@ describe('等待', () => {
     expect(r.message).toContain('do_9')
   })
 
+  /** 原始失败形状：等刚点过的链接的值，页面跳转后链接不在，此前轮询到超时、回执只写 timeout。 */
+  test('要等的控件已不在时回执写明原因，不写成超时', async () => {
+    const { port } = fakeDesktop({
+      wait: async () => ({
+        found: false,
+        reason: 'target_gone',
+        observation: snapshot({ observationId: 'do_9' }),
+      }),
+    })
+    const r = await run(
+      desktopWaitTool,
+      { windowId: 'dw_1', observationId: 'do_1', until: 'value', ref: 'e7', value: 'x' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'desktop_wait_target_gone',
+    })
+    expect(r.message).toContain('e7 已不在窗口里，条件不会再成立')
+    expect(r.message).not.toContain('timeout')
+  })
+
   test('被撤销时如实回撤销，不当成超时', async () => {
     const { port } = fakeDesktop({
       wait: async () => ({
@@ -2037,6 +2060,61 @@ describe('前台动作', () => {
       observationId: 'do_1',
       action: { kind: 'press_key', key: 'a', modifiers: ['ctrl'] },
     })
+  })
+
+  /** 原始失败形状：activate 不给 ref 被「没给目标」拒，而 worker 执行它只用窗口句柄。 */
+  test('activate 不给目标时作用于窗口，发出去带窗口根的 ref', async () => {
+    const { port, calls } = 自绘Port()
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'activate' },
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(calls[0]?.input).toEqual({
+      windowId: 'dw_1',
+      observationId: 'do_1',
+      ref: 'e1',
+      action: { kind: 'activate' },
+    })
+  })
+
+  /** 原始失败形状：按键带截图坐标时回执说「只能按控件执行」，而不给 ref 就能投给焦点。 */
+  test('键盘动作带图像点时回执指明不给 ref 即投给焦点', async () => {
+    const { port, calls } = 自绘Port()
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'press_key',
+        key: 'enter',
+        imageRef: 'di_1',
+        imageX: 10,
+        imageY: 10,
+      },
+      ctxWith(port),
+    )
+    expect(r.executed).toBe(false)
+    expect(r.message).toContain('不给 ref 即投给窗口当前的焦点')
+    expect(r.message).not.toContain('只能按控件执行')
+    expect(calls).toEqual([])
+  })
+
+  test('对不接受按键的控件按键时，回执指明不给 ref 即投给焦点', async () => {
+    const { port, calls } = fakeDesktop({
+      elements: (windowId, observationId) =>
+        windowId === 'dw_1' && observationId === 'do_1' ? [自绘窗口, 文档框] : null,
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'press_key', ref: 'e15', key: 'enter' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
+    expect(r.message).toContain('e15 不支持')
+    expect(r.message).toContain('不给 ref 即投给窗口当前的焦点')
+    expect(calls).toEqual([])
   })
 
   /** 子树读取的根同样 `depth` 为 0、没有 `parentRef`，但它不是窗口元素。 */
