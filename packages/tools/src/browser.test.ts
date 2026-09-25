@@ -294,7 +294,9 @@ describe('发动作之前的终态', () => {
     for (const [url, kind] of [
       ['missing.html', 'path_not_found'],
       [root, 'invalid_argument'],
-      ['file:///%ZZ.html', 'invalid_argument'],
+      // 用编码的分隔符：`fileURLToPath` 在各平台都拒绝它。`%ZZ` 这类非法转义会被原样保留，
+      // POSIX 上得到的是一个合法的绝对路径。
+      ['file:///a%2Fb.html', 'invalid_argument'],
     ]) {
       const r = await browserTabsTool.fn({ action: 'create', url }, ctxWith(root, port))
       expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: kind })
