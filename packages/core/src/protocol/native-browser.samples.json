@@ -25,6 +25,10 @@
       }
     ]
   },
+  "hostUnavailable": {
+    "type": "host.unavailable",
+    "reason": "not_found"
+  },
   "createRequest": {
     "type": "browser.request",
     "requestId": "br_13",

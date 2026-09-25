@@ -15,6 +15,7 @@
  */
 
 import type {
+  BrowserCapability,
   BrowserEventFrame,
   BrowserOp,
   BrowserRequestFrame,
@@ -63,6 +64,8 @@ export class BrowserBridge {
   #key: string
   #socket: ServerWebSocket<SocketData> | null = null
   #host: NativeBrowserHost | null = null
+  /** 宿主连着但报了没有可用浏览器。与 `#host` 互斥：一个非空另一个必为空。 */
+  #unavailable: BrowserCapability['unavailable'] | null = null
   #tabs = new Map<string, BrowserTabSnapshot>()
   #pending = new Map<string, Pending>()
   #nextRequest = 0
@@ -89,6 +92,11 @@ export class BrowserBridge {
   /** 已连上的宿主。`null` = 现在没有原生浏览器资源。 */
   host(): NativeBrowserHost | null {
     return this.#host
+  }
+
+  /** 宿主连着但没有可用浏览器时的原因。宿主没连上或浏览器可用时为 `null`。 */
+  unavailable(): BrowserCapability['unavailable'] | null {
+    return this.#unavailable
   }
 
   tabs(): BrowserTabSnapshot[] {
@@ -181,6 +189,10 @@ export class BrowserBridge {
       this.#ready(frame)
       return
     }
+    if (frame.type === 'host.unavailable') {
+      this.#withdraw(frame.reason)
+      return
+    }
     if (frame.type === 'browser.result') {
       this.#result(frame)
       return
@@ -200,6 +212,7 @@ export class BrowserBridge {
     }
     // 重连按新纪元重建：先让上一纪元的待决调用失败，再登记快照。
     this.#failPending(new BrowserBridgeError('浏览器宿主已重连'))
+    this.#unavailable = null
     this.#host = {
       hostInstanceId: frame.hostInstanceId,
       connectionEpoch: frame.connectionEpoch,
@@ -272,9 +285,23 @@ export class BrowserBridge {
     }
   }
 
+  /**
+   * 宿主报没有可用浏览器：连接留着，上一份快照与待决调用作废，能力随之下线。
+   * 浏览器重新起来时宿主在同一条连接上再发 `host.ready`。
+   */
+  #withdraw(reason: NonNullable<BrowserCapability['unavailable']>): void {
+    this.#failPending(new BrowserBridgeError('浏览器宿主没有可用的浏览器'))
+    this.#host = null
+    this.#unavailable = reason
+    this.#tabs.clear()
+    log.info('browser', '浏览器宿主没有可用的浏览器', { reason })
+    for (const listener of [...this.#hostChanges]) listener(null)
+  }
+
   #reset(): void {
     this.#failPending(new BrowserBridgeError('浏览器宿主已断开'))
     this.#host = null
+    this.#unavailable = null
     this.#tabs.clear()
     for (const listener of [...this.#hostChanges]) listener(null)
   }

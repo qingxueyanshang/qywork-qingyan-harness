@@ -7,6 +7,7 @@
 
 import type { ConversationId } from '../domain/ids.ts'
 import type { Attachment, PermissionMode } from '../domain/model.ts'
+import type { BrowserUnavailableReason } from './native-browser.ts'
 
 // ─────────────────────────────── 握手 ───────────────────────────────
 
@@ -168,10 +169,12 @@ export interface ServerCapabilities {
  * `connected` 单独成立即可手动浏览；AI 控制要两项同时成立。
  */
 export interface BrowserCapability {
-  /** 原生浏览器宿主已连上服务端。手动浏览的唯一判据。 */
+  /** 原生浏览器宿主已连上服务端且有可用的浏览器。手动浏览的唯一判据。 */
   connected: boolean
-  /** 宿主上报的 WebView2 Runtime 版本达到 AI 控制的下限。宿主没连上时为 `false`。 */
+  /** 宿主上报的浏览器运行时版本达到 AI 控制的下限。`connected` 为假时为 `false`。 */
   runtimeSupported: boolean
+  /** 宿主连着、但没有可用浏览器的原因；此时 `connected` 为假。宿主没连上或浏览器可用时缺席。 */
+  unavailable?: BrowserUnavailableReason
 }
 
 /**

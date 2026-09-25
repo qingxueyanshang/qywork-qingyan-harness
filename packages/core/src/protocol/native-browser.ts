@@ -82,12 +82,36 @@ export interface HostReadyFrame {
   type: 'host.ready'
   hostInstanceId: string
   connectionEpoch: number
+  /** 宿主所在的操作系统：`windows` / `macos` / `linux`。 */
   platform: string
-  /** WebView2 Runtime 完整版本，由原生 API 取得，不由插件自报。 */
+  /**
+   * 浏览器运行时完整版本：Windows 为 WebView2 Runtime，由原生 API 取得；macOS 与 Linux
+   * 为宿主拉起的 Chrome / Edge / Chromium，由它的调试端点报出。
+   */
   runtimeVersion: string
-  /** 宿主分配的回环 CDP 端口。只有子视图建起来之后那个端口才开始监听。 */
+  /**
+   * 回环 CDP 端口。Windows 上由宿主分配，第一个子视图建起来之后才开始监听；
+   * macOS 与 Linux 上是浏览器进程自己挑的端口，进程换代即换。
+   */
   debugPort: number
   tabs: BrowserTabSnapshot[]
+}
+
+/**
+ * 宿主此刻没有可用的浏览器。`not_found` = 本机找不到 Chrome、Edge 或 Chromium；
+ * `exited` = 浏览器进程已退出，宿主正在重启它或已停止重启。
+ */
+export type BrowserUnavailableReason = 'not_found' | 'exited'
+
+/**
+ * 宿主连着但没有可用的浏览器。它顶替 `host.ready` 作为首帧，也在浏览器进程退出时
+ * 于同一条连接上发出；浏览器重新起来后宿主再发一次 `host.ready`。
+ *
+ * 收到它即上一份快照与待决调用全部作废，能力按「没有宿主」发布，原因随能力给到界面。
+ */
+export interface HostUnavailableFrame {
+  type: 'host.unavailable'
+  reason: BrowserUnavailableReason
 }
 
 /**
@@ -182,4 +206,8 @@ export interface BrowserEventFrame {
 }
 
 /** 宿主发往服务端的帧。 */
-export type NativeBrowserUpFrame = HostReadyFrame | BrowserResultFrame | BrowserEventFrame
+export type NativeBrowserUpFrame =
+  | HostReadyFrame
+  | HostUnavailableFrame
+  | BrowserResultFrame
+  | BrowserEventFrame

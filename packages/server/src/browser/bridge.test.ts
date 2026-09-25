@@ -213,6 +213,53 @@ test('宿主 host.ready 之后能力可用，运行时版本低于下限则不�
   expect(low.browser?.available()).toBe(false)
 })
 
+/**
+ * 宿主连着却没有可用浏览器（找不到，或浏览器进程退出）时，能力下线并带上原因；
+ * 浏览器重新起来后宿主在同一条连接上重发 `host.ready`，能力恢复、原因消失。
+ */
+test('host.unavailable 撤下能力并报原因，同一条连接上的 host.ready 恢复它', async () => {
+  const handle = fresh()
+  const seen: unknown[] = []
+  cleanups.push(
+    handle.bus.subscribe({
+      id: 'probe',
+      origin: 'desktop',
+      conversations: null,
+      send: (frame) => {
+        if (frame.event.type === 'browser.state') seen.push(frame.event.browser)
+      },
+    }),
+  )
+  const host = await FakeHost.connect(handle.port)
+  host.send(samples().hostUnavailable as unknown as NativeBrowserUpFrame)
+  await settle()
+  expect(handle.browser?.available()).toBe(false)
+  expect(seen.at(-1)).toEqual({
+    connected: false,
+    runtimeSupported: false,
+    unavailable: 'not_found',
+  })
+
+  host.ready()
+  await settle()
+  expect(handle.browser?.available()).toBe(true)
+  expect(seen.at(-1)).toEqual({ connected: true, runtimeSupported: true })
+
+  // 浏览器进程退出：在途调用失败，快照清空，原因换成 exited。
+  const pending = handle.browser?.portFor('cv_bridge', WS).open('http://127.0.0.1:1/page')
+  await host.next()
+  host.send({ type: 'host.unavailable', reason: 'exited' })
+  expect((await failure(pending)).message).toMatch(/没有可用的浏览器/)
+  await settle()
+  expect(await handle.browser?.portFor('cv_a1', WS).tabs()).toEqual([])
+  expect(seen.at(-1)).toEqual({ connected: false, runtimeSupported: false, unavailable: 'exited' })
+
+  // 连接断开之后原因不再成立：此刻是没有宿主，不是宿主没有浏览器。
+  host.socket.close()
+  await settle()
+  expect(seen.at(-1)).toEqual({ connected: false, runtimeSupported: false })
+})
+
 test('断线让所有待决调用失败，并把能力一起下线', async () => {
   const handle = fresh()
   const host = await FakeHost.connect(handle.port)
