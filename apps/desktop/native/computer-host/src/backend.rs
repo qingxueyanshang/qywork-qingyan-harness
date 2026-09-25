@@ -1,15 +1,17 @@
 //! 平台后端的契约：`Backend` trait、跨 trait 传递的请求与结果类型，以及每个后端都按
-//! 同一规则做的两项判定（等待的轮询收尾、指针落点归属）。
+//! 同一规则做的三项判定（动作调用的有界等待、等待的轮询收尾、指针落点归属）。
 //!
 //! 每个构建目标只编译一个后端，由 `main.rs` 按 `cfg` 选定，运行时不存在两个后端并存。
 //! 本模块不调用任何 OS 接口。
 
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
-    attainable, next_poll, satisfied, ActionSpec, BlockingWindow, Bounds, Dispatch, Image,
-    Observation, Seen, Select, Tree, WaitUntil,
+    attainable, classify_action, next_poll, satisfied, ActionEvidence, ActionSpec,
+    BlockingWindow, Bounds, Dispatch, Image, Observation, Seen, Select, Tree, WaitUntil,
 };
 
 /// 一个平台的桌面控制实现。服务循环只经这几个方法调用平台接口。
@@ -146,6 +148,97 @@ impl Outcome {
             returned: true,
             windows: Vec::new(),
         }
+    }
+}
+
+/// 主路径等一次动作调用返回多久。
+///
+/// 正常的控件调用在这段时间里早就回来了。它不是调用的上界：点开模态对话框的调用要等
+/// 对话框关掉才返回。
+const CALL_CONFIRM_MS: u64 = 400;
+/// 调用没按时返回时，再花多久找可核实的生效证据。
+///
+/// 两段加起来留在宿主给的调用上界（2000 ms）以内：超过它调用自己就带错误返回，
+/// 再等只是把同一个结论推迟。
+const CALL_EVIDENCE_MS: u64 = 1_400;
+/// 找证据时两次查询之间隔多久。证据读的是窗口系统的属性，一次几微秒。
+const EVIDENCE_POLL_MS: u64 = 40;
+/// 尚未返回的动作调用线程上界。
+///
+/// 到上界即拒绝新动作：那说明目标应用已经有这么多次调用没回来，再发一次只多一条挂着的
+/// 线程。每条线程在调用返回时自行退出，调用上界给了它一个期限。
+const MAX_PENDING_CALLS: u32 = 8;
+
+static PENDING_CALLS: AtomicU32 = AtomicU32::new(0);
+
+/// 交给调用线程执行的一次动作调用。平台要求的线程初始化由后端包在任务里。
+pub type Job = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+/// 调用没返回时去哪儿找「动作已经生效」的证据。
+///
+/// **每种动作认的证据不同**：后台控件调用认「窗口被禁用 / 已关闭 / 同进程多出一个顶层
+/// 窗口」，而激活会主动改前台，那时「多出一个顶层窗口」证明不了这次激活做过什么。
+/// 窗口动作因此各自读回自己那一项。
+pub trait Watch {
+    fn evidence(&self) -> Option<ActionEvidence>;
+    /// 调用没返回时交给调用方的顶层窗口清单。
+    fn blocking(&self) -> Vec<BlockingWindow>;
+}
+
+/// 起一条线程执行这次调用。到达线程上界时返回 `None`，调用没有发出。
+pub fn spawn_call(job: Job) -> Option<Receiver<Result<(), String>>> {
+    PENDING_CALLS
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            (n < MAX_PENDING_CALLS).then_some(n + 1)
+        })
+        .ok()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // 送不出去是常态：主路径可能已经放弃等待了。
+        let _ = tx.send(job());
+        PENDING_CALLS.fetch_sub(1, Ordering::SeqCst);
+    });
+    Some(rx)
+}
+
+/// 发一次可能不返回的调用，并在有界时间里定下执行事实。
+///
+/// 先等一个短确认窗口；没等到就改看 `watch` 认的可核实事实。有证据即 `submitted`，
+/// 没有证据而调用仍未返回才是 `unknown`。
+pub fn dispatch_call(watch: &dyn Watch, job: Job) -> Attempt {
+    let Some(rx) = spawn_call(job) else {
+        return Attempt::Refused(format!("action_calls_exhausted: {MAX_PENDING_CALLS}"));
+    };
+    let first = match rx.recv_timeout(Duration::from_millis(CALL_CONFIRM_MS)) {
+        Ok(result) => Some(result),
+        Err(RecvTimeoutError::Timeout) => None,
+        Err(RecvTimeoutError::Disconnected) => Some(Err("动作调用线程没有留下结果".to_owned())),
+    };
+    if let Some(result) = first {
+        let (dispatch, reason) =
+            classify_action(Some(&result), None, true).expect("调用有返回值时终态必定判得出");
+        return Attempt::Called(Outcome::returned(dispatch, reason));
+    }
+    let until = Instant::now() + Duration::from_millis(CALL_EVIDENCE_MS);
+    loop {
+        let returned = match rx.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err("动作调用线程没有留下结果".to_owned())),
+        };
+        let settled = classify_action(returned.as_ref(), watch.evidence(), Instant::now() >= until);
+        if let Some((dispatch, reason)) = settled {
+            if returned.is_some() {
+                return Attempt::Called(Outcome::returned(dispatch, reason));
+            }
+            return Attempt::Called(Outcome {
+                dispatch,
+                reason,
+                returned: false,
+                windows: watch.blocking(),
+            });
+        }
+        std::thread::sleep(Duration::from_millis(EVIDENCE_POLL_MS));
     }
 }
 
@@ -342,6 +435,46 @@ mod tests {
         assert!(!found);
         assert_eq!(reason.as_deref(), Some("cancelled"));
         assert!(matches!(last, Probe::Element { enabled: true, .. }));
+    }
+
+    /// 调用线程有上界：到上界之后不再起线程，那一次动作因此没有发出。
+    ///
+    /// 额度在线程退出时归还，所以上界不会因为一段时间的拥挤就永久关闭动作。
+    #[test]
+    fn pending_action_calls_are_bounded_and_the_budget_comes_back() {
+        static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        RELEASE.store(false, Ordering::SeqCst);
+        let mut held = Vec::new();
+        for _ in 0..MAX_PENDING_CALLS {
+            let rx = spawn_call(Box::new(|| {
+                while !RELEASE.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(())
+            }))
+            .expect("上界之内应当起得来线程");
+            held.push(rx);
+        }
+        assert!(
+            spawn_call(Box::new(|| Ok(()))).is_none(),
+            "到上界之后不该再起线程"
+        );
+        RELEASE.store(true, Ordering::SeqCst);
+        for rx in held {
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(Ok(())));
+        }
+        let until = Instant::now() + Duration::from_secs(5);
+        let recovered = loop {
+            if let Some(rx) = spawn_call(Box::new(|| Ok(()))) {
+                break Some(rx);
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let rx = recovered.expect("线程退出之后额度应当归还");
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(Ok(())));
     }
 
     /// 一轮读取失败即整次等待失败，不再轮询下一轮。
