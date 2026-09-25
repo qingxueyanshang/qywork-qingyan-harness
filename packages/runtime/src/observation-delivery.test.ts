@@ -5,7 +5,8 @@
  * 与 `runtime/sink.ts` 的 `RuntimeSink` / `collectResourceGarbage` 在真实 `Store` +
  * `ContentStore` 上的合作；`agent/registry.ts` 的 `ToolRegistry.execute` 与批级记账；
  * `runtime/transcript.ts` 的工具结果信封与 `agent/loop/request.ts` 当轮信封的同形；
- * `agent/compaction.ts` 的 `condenseMessage` 对资源引用的保留。
+ * `agent/compaction.ts` 的 `condenseMessage` 对资源引用的保留；差异投递的基底与差异在
+ * `agent/loop/request.ts` 的 `collapseSuperseded` 下的取代关系。
  *
  * 工具侧的上限、视图选取与故障降级在 `tools/desktop-results.test.ts`、
  * `tools/browser-results.test.ts`、`tools/resources.test.ts` 里用内存 sink 验过，
@@ -919,6 +920,80 @@ describe('同一份结果在各层同形', () => {
     expect(envelope.result?.stoppedAt).toBe(2)
     expect(envelope.resources).toHaveLength(1)
     expect(replayToolContent(h, runId, callId)).toBe(live)
+  })
+
+  /**
+   * 观察 → 动作（界面几乎没变，差异投递）→ 动作（页面跳转，整份投递）。
+   *
+   * 差异标 partial，不收起基底；下一份整份投递同时收起基底与差异。差异那一条的回放与当轮
+   * 逐字相同。
+   */
+  test('差异投递：请求里基底与差异并存，下一份整份同时收起两者，回放与当轮逐字相同', async () => {
+    const h = harness()
+    const runId = h.runId
+    const 改名 = 小表.map((e) => (e.ref === 'e6' ? { ...e, name: '改过名的按钮' } : e))
+    const 跳转 = [
+      根,
+      { ...分组, ref: 'e90', name: '另一页' },
+      { ...目标, ref: 'e91', parentRef: 'e90' },
+    ]
+    const tables = [小表, 改名, 跳转]
+    let at = 0
+    const snap = (i: number) => 快照(tables[i] as DesktopElement[], `do_${i + 1}`)
+    const port: DesktopPort = {
+      ...desktopPort(小表),
+      observe: async () => snap(0),
+      elements: (_windowId, observationId) => tables[Number(observationId.slice(3)) - 1] ?? null,
+      act: async () => {
+        at += 1
+        return { dispatch: 'submitted', actionId: `da_${at}`, observation: snap(at) }
+      },
+    }
+    const act = (id: string, observationId: string) => ({
+      id,
+      name: 'desktop_act',
+      arguments: { windowId: 'dw_1', observationId, action: 'invoke', ref: 'e6' },
+    })
+    const seen: ChatRequest[] = []
+    const loop = new AgentLoop({
+      adapter: scriptedAdapter(
+        [
+          [{ id: 'c_obs', name: 'desktop_observe', arguments: { windowId: 'dw_1' } }],
+          [act('c_act1', 'do_1')],
+          [act('c_act2', 'do_2')],
+          null,
+        ],
+        seen,
+      ),
+      registry: h.registry,
+      systemPrompt: 'sys',
+      persist: persistence(h.store, { userSteps: 0 }),
+      makeToolContext: makeBase(h, runId, port),
+    })
+    for await (const _ of loop.run({ runId, history: [], signal: new AbortController().signal })) {
+      // 事件在这条用例里不作断言，只把 run 跑完。
+    }
+    expect(seen).toHaveLength(4)
+    type Envelope = { result_omitted?: true; result?: Record<string, unknown> }
+    const envelopeIn = (req: ChatRequest, callId: string) =>
+      JSON.parse(toolMessageOf(req.messages, callId).content as string) as Envelope
+    const observationIn = (e: Envelope) => e.result?.observation as Record<string, unknown>
+
+    const afterDiff = seen[2] as ChatRequest
+    expect(envelopeIn(afterDiff, 'c_obs').result?.elements).toBeDefined()
+    const diff = observationIn(envelopeIn(afterDiff, 'c_act1'))
+    expect(diff.since).toBe('do_1')
+    expect((diff.changed as { ref: string }[]).map((e) => e.ref)).toEqual(['e6'])
+
+    const afterJump = seen[3] as ChatRequest
+    expect(envelopeIn(afterJump, 'c_obs').result_omitted).toBe(true)
+    expect(envelopeIn(afterJump, 'c_act1').result_omitted).toBe(true)
+    const jumped = observationIn(envelopeIn(afterJump, 'c_act2'))
+    expect(jumped.since).toBeUndefined()
+    expect(jumped.elements).toHaveLength(跳转.length)
+
+    const live = toolMessageOf(afterDiff.messages, 'c_act1').content as string
+    expect(replayToolContent(h, runId, 'c_act1')).toBe(live)
   })
 })
 

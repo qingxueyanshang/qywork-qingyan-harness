@@ -3,8 +3,8 @@
  *
  * **覆盖范围**：`desktop-results.ts` 的上限、大小判定、紧凑表示的无损往返、视图选取、
  * 长值处理、JSONL 存盘、资源引用与实际用量记账、无名结构容器的省略与 `depth` 重算、
- * `rect` 开关，以及 `desktop.ts` 四个出口（observe 含补图分支、act、wait、act_sequence）
- * 接上它之后的结果形状。
+ * `rect` 开关、动作字典的分组写法、差异投递的三个条件与差异形状，以及 `desktop.ts` 四个
+ * 出口（observe 含补图分支、act、wait、act_sequence）接上它之后的结果形状。
  *
  * 夹具是合成的：控件名称、值与窗口标题都不取自真实应用或网页。
  */
@@ -28,6 +28,7 @@ import {
   desktopObserveTool,
   desktopWaitTool,
 } from './desktop.ts'
+import { desktopResult } from './desktop-results.ts'
 
 const WINDOW = 200_000
 const LIMIT = deliveryBudget(WINDOW).perCall
@@ -1017,7 +1018,7 @@ describe('精简投递', () => {
       { windowId: 'dw_1', observationId: 'do_1', action: 'set_value', ref: 'e24', value: '甲' },
       ctx,
     )
-    expect(observationOf(acted).elements.some((e) => 'rect' in e)).toBe(false)
+    expect(JSON.stringify(acted.data)).not.toContain('"rect"')
   })
 
   test('动作目标是无名容器时照样列出，它下面的层级随之按它计', async () => {
@@ -1176,5 +1177,211 @@ describe('精简投递', () => {
 
     expect(observation.delivery).toBeUndefined()
     expect(leanChars).toBeLessThanOrEqual(hostShapedChars(host) * 0.4)
+  })
+})
+
+describe('差异投递', () => {
+  /** 一张装得下单次上限的表：窗口根、两个分组，其下各一串可点的条目。 */
+  function page(prefix: string, count: number): DesktopElement[] {
+    const click: DesktopElement['actions'] = [
+      { action: 'invoke', delivery: ['background'] },
+      { action: 'click', delivery: ['foreground'] },
+    ]
+    const groups: DesktopElement[] = [
+      { ...外层, ref: 'e2', name: `${prefix}甲组` },
+      { ...外层, ref: 'e3', name: `${prefix}乙组`, automationId: 'outer2' },
+    ]
+    const items = Array.from({ length: count }, (_, i) => ({
+      ref: `e${10 + i}`,
+      parentRef: i % 2 === 0 ? 'e2' : 'e3',
+      depth: 2,
+      role: 'button',
+      name: `${prefix}条目 ${i}`,
+      automationId: `item-${i}`,
+      enabled: true,
+      offscreen: false,
+      actions: click,
+    }))
+    return [根, ...groups, ...items]
+  }
+
+  /** 观察交回第 0 份，之后每次动作依次交回下一份，编号 do_1、do_2……。 */
+  function steppedPort(tables: DesktopElement[][]): { port: DesktopPort; acted: string[] } {
+    const acted: string[] = []
+    let at = 0
+    const snap = (i: number) =>
+      snapshot(tables[i] as DesktopElement[], { observationId: `do_${i + 1}` })
+    return {
+      acted,
+      port: {
+        ...fakePort(tables[0] as DesktopElement[], { acts: 0 }),
+        observe: async () => snap(0),
+        elements: (_windowId, observationId) => tables[Number(observationId.slice(3)) - 1] ?? null,
+        act: async (input) => {
+          acted.push(input.ref ?? '')
+          at = Math.min(at + 1, tables.length - 1)
+          return { dispatch: 'submitted', actionId: `da_${at}`, observation: snap(at) }
+        },
+      },
+    }
+  }
+
+  interface DiffObservation {
+    observationId: string
+    since?: string
+    unchanged?: number
+    elements?: CompactElement[]
+    added?: (CompactElement & { parentRef?: string })[]
+    changed?: (CompactElement & { parentRef?: string })[]
+    removed?: string[]
+    actionSets: ActionGroups[]
+  }
+
+  const diffOf = (r: ToolOutcome) => observationOf(r) as unknown as DiffObservation
+  const act = (ctx: ToolContext, observationId: string, ref = 'e10') =>
+    desktopActTool.fn({ windowId: 'dw_1', observationId, action: 'invoke', ref }, ctx)
+
+  /** 原始失败形状：点一下什么都没变，下一份观察仍整份重投。 */
+  test('动作之后界面没变：只投一句「与基底相同」，字符数不到整份的一成', async () => {
+    const table = page('', 80)
+    const ctx = context(steppedPort([table, table]).port, fakeSink())
+    const base = await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
+    const after = await act(ctx, 'do_1')
+    const diff = diffOf(after)
+
+    expect(diff.since).toBe('do_1')
+    expect(diff.observationId).toBe('do_2')
+    expect(diff.unchanged).toBe(delivered(table).length)
+    expect([diff.added, diff.changed, diff.removed]).toEqual([[], [], []])
+    expect(diff.elements).toBeUndefined()
+    expect(after.message).toContain('与 do_1 相比：新增 0、改变 0、消失 0')
+    expect(after.currentView).toEqual({ key: 'desktop:dw_1', partial: true })
+    const full = JSON.stringify(observationOf(base)).length
+    expect(JSON.stringify(observationOf(after)).length).toBeLessThanOrEqual(full * 0.1)
+  })
+
+  test('新增、改变与消失各自列出：新增与改变整行给出并带 parentRef，字典只含用到的项', async () => {
+    const before = page('', 80)
+    const after = before
+      .filter((e) => e.ref !== 'e11')
+      .map((e) => (e.ref === 'e12' ? { ...e, name: '改名的条目', enabled: false } : e))
+    const added: DesktopElement = {
+      ...目标,
+      ref: 'e200',
+      parentRef: 'e3',
+      depth: 2,
+      name: '新出现的按钮',
+    }
+    const ctx = context(steppedPort([before, [...after, added]]).port, fakeSink())
+    await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
+    const diff = diffOf(await act(ctx, 'do_1'))
+
+    expect(diff.removed).toEqual(['e11'])
+    expect(diff.changed?.map((e) => [e.ref, e.name, e.enabled, e.parentRef])).toEqual([
+      ['e12', '改名的条目', false, 'e2'],
+    ])
+    expect(diff.added?.map((e) => [e.ref, e.depth, e.parentRef])).toEqual([['e200', 2, 'e3']])
+    expect(diff.actionSets.map((groups) => actionsOf(groups))).toEqual([
+      sorted(目标.actions),
+      sorted((before[3] as DesktopElement).actions),
+    ])
+  })
+
+  test('换了父控件的控件记作改变：差异里的行不在原位置上，只比投递字段会漏掉它', async () => {
+    const before = page('', 80)
+    const moved = before.map((e) => (e.ref === 'e10' ? { ...e, parentRef: 'e3' } : e))
+    const ctx = context(steppedPort([before, moved]).port, fakeSink())
+    await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
+    const diff = diffOf(await act(ctx, 'do_1'))
+
+    expect(diff.changed?.map((e) => [e.ref, e.parentRef])).toEqual([['e10', 'e3']])
+  })
+
+  test('页面跳转，没变的控件不到一半：整份投递，并成为下一次差异的基底', async () => {
+    const first = page('', 80)
+    const jumped = page('另一页 ', 80)
+    const ctx = context(steppedPort([first, jumped, jumped]).port, fakeSink())
+    await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
+
+    const whole = diffOf(await act(ctx, 'do_1'))
+    expect(whole.since).toBeUndefined()
+    expect(whole.elements).toHaveLength(delivered(jumped).length)
+    expect(diffOf(await act(ctx, 'do_2')).since).toBe('do_2')
+  })
+
+  test('基底与之后的差异累计超过单次上限：整份投递，从这一份重新累计', async () => {
+    const table = page('', 80)
+    const input = (
+      observationId: string,
+      place: 'top' | 'observation',
+      state: Map<string, unknown>,
+    ) => ({
+      ctx: { sink: fakeSink(), contextWindow: WINDOW, density: DEFAULT_DENSITY, state },
+      toolName: 'desktop_act',
+      snapshot: snapshot(table, { observationId }),
+      place,
+      incremental: place === 'observation',
+      lead: 'x',
+    })
+    const size = (parts: { message: string; data: unknown }) =>
+      deliveredTokens(JSON.stringify({ message: parts.message, data: parts.data }), DEFAULT_DENSITY)
+    // 先量出一份整份与一份差异各多大。
+    const probe = new Map<string, unknown>()
+    const base = size(desktopResult(input('do_1', 'top', probe)))
+    const diff = size(desktopResult(input('do_2', 'observation', probe)))
+    const limit = base + diff + Math.floor(diff / 2)
+
+    const state = new Map<string, unknown>()
+    const run = (id: string, place: 'top' | 'observation') =>
+      desktopResult({ ...input(id, place, state), limit }).data as Record<string, unknown>
+    run('do_1', 'top')
+    expect((run('do_2', 'observation').observation as DiffObservation).since).toBe('do_1')
+    const third = run('do_3', 'observation').observation as DiffObservation
+    expect(third.since).toBeUndefined()
+    expect(third.elements).toBeDefined()
+    expect((run('do_4', 'observation').observation as DiffObservation).since).toBe('do_3')
+  })
+
+  test('筛过的视图不当基底，分页的观察不当基底且作废之前的基底', async () => {
+    const table = page('', 80)
+    const filtered = context(steppedPort([table, table]).port, fakeSink())
+    await desktopObserveTool.fn({ windowId: 'dw_1', role: 'button' }, filtered)
+    expect(diffOf(await act(filtered, 'do_1')).since).toBeUndefined()
+
+    // 小表先整份投递成为基底，随后同一个窗口的观察大到只能分页：之前的基底随它一起被取代。
+    const { port } = steppedPort([table, 大表, table])
+    const paged = context({ ...port, observe: async () => snapshot(table) }, fakeSink())
+    await desktopObserveTool.fn({ windowId: 'dw_1' }, paged)
+    expect(observationOf(await act(paged, 'do_1', 'e10')).delivery?.resourceId).toBeDefined()
+    expect(diffOf(await act(paged, 'do_2', 'e6')).since).toBeUndefined()
+  })
+
+  test('带 rect 的整份观察不当基底', async () => {
+    const table = page('', 80)
+    const ctx = context(steppedPort([table, table]).port, fakeSink())
+    await desktopObserveTool.fn({ windowId: 'dw_1', includeRect: true }, ctx)
+    expect(diffOf(await act(ctx, 'do_1')).since).toBeUndefined()
+  })
+
+  test('基底只在本 run 里成立：新 run 的第一份重读整份投递', async () => {
+    const table = page('', 80)
+    const { port } = steppedPort([table, table])
+    await desktopObserveTool.fn({ windowId: 'dw_1' }, context(port, fakeSink()))
+    const next = diffOf(await act(context(port, fakeSink()), 'do_1'))
+    expect(next.since).toBeUndefined()
+    expect(next.elements).toBeDefined()
+  })
+
+  test('差异里没列出的控件照用基底里的编号，下一次动作带差异那一份的观察编号', async () => {
+    const table = page('', 80)
+    const { port, acted } = steppedPort([table, table, table])
+    const ctx = context(port, fakeSink())
+    await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
+    const diff = diffOf(await act(ctx, 'do_1'))
+    expect(diff.since).toBe('do_1')
+
+    const next = await act(ctx, diff.observationId, 'e40')
+    expect(next.status).toBe('success')
+    expect(acted).toEqual(['e10', 'e40'])
   })
 })

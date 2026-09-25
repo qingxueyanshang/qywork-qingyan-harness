@@ -916,6 +916,7 @@ function actOutcome(
       toolName: 'desktop_act',
       snapshot: r.observation,
       place: 'observation',
+      incremental: true,
       receipt,
       targetRef: ref || null,
       lead:
@@ -978,6 +979,7 @@ function waitOutcome(
       toolName: 'desktop_wait',
       snapshot: follow.observation,
       place: 'observation',
+      incremental: true,
       receipt: { found, ...(reason ? { reason } : {}) },
       targetRef: ref ?? null,
       lead: `${lead} · ${snapshotLine(follow.observation)}`,
@@ -1412,6 +1414,9 @@ export const desktopActTool: ToolSpec = {
     '「读回不一致」同样不要重发同一段。' +
     'not_dispatched 时手上的 observationId 仍然有效，按原因码改条件重试即可。' +
     '动作之后同次带回新观察与新的 observationId；弹出新窗口时改带 blocking，对它继续观察。' +
+    '本工具、desktop_act_sequence 与 desktop_wait 带回的观察在多半控件没变时只给变化：' +
+    'since 是这个窗口上一份整份控件表的 observationId，added 与 changed 整行给出并带 parentRef，' +
+    'removed 是消失的编号；没列出的控件与 since 那份相同，编号照用，下一步动作带这一份的 observationId。' +
     '连着几个动作打在同一个窗口上时用 desktop_act_sequence，一次调用跑完。',
   parameters: {
     type: 'object',
@@ -1818,6 +1823,7 @@ function sequenceOutcome(
     toolName: 'desktop_act_sequence',
     snapshot: cursor.last,
     place: 'observation',
+    incremental: true,
     receipt,
     targetRef: done.at(-1)?.target ?? null,
     lead,
