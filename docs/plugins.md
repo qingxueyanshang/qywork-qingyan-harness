@@ -148,7 +148,7 @@ ode.exe
 
 `contributes` 里还有这三项：`previewers`（按渲染族接管扩展名）、`roles`（给 Agent Team
 加角色）、`providers`（加模型供应商）。字段定义见 `packages/plugins/src/manifest.ts`，
-清单校验、扩展名冲突检测、跨作用域合并都是通的。
+清单校验与扩展名冲突检测都是通的。
 
 **但宿主目前没有任何一处读取它们**——注册进去之后不会有渲染调用、不会出现在 Agent Team
 的角色表里、也不会被模型工厂认出来。写了不报错，只是没有效果。

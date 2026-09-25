@@ -106,7 +106,6 @@ const startedFrame = (runId: string) =>
       conversationId: CV,
       model: 'm',
       userMessageId: null,
-      retryOfRunId: null,
     },
   }) as never
 

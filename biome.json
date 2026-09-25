@@ -28,7 +28,7 @@
     "rules": {
       "recommended": true,
       "suspicious": {
-        "noExplicitAny": "warn"
+        "noExplicitAny": "error"
       },
       "a11y": {
         "useMediaCaption": "off"
