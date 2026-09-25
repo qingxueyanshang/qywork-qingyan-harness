@@ -56,7 +56,8 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// 退出时等 worker 自己收场的上限。超过就不等了——不能因为它卡住而拦住应用退出。
 const EXIT_WAIT: Duration = Duration::from_secs(3);
 
-/// 替换 worker 时先关 stdin，等这么久它还在就强杀。卡在 OS 调用里的进程读不到 stdin 结束。
+/// 替换 worker 时先关 stdin，等这么久它还在就强杀。worker 读到 stdin 结束即退出进程，
+/// 强杀只用于进程退出本身没有在期限内完成的情形。
 const REPLACE_GRACE: Duration = Duration::from_secs(2);
 
 /// 替换之后等下一代握手就绪的上限。到期仍未就绪即如实回执，不无限等。
@@ -193,8 +194,8 @@ pub fn start_with_worker(worker_path: PathBuf, port: u16, key: String) -> Arc<De
 /// 顺序不能反。先断连接的话，在途请求的收尾回执发不出去，服务端那边只剩超时，而超时
 /// 一律按已派发记——一次可证明没有发出去的动作会被记成可能已经执行。
 ///
-/// 收 worker 用的是关它的 stdin，不是杀进程：worker 的退出路径就是 stdin 结束，
-/// 它会先让执行线程收完手上那一次 OS 调用。
+/// 收 worker 用的是关它的 stdin，不是杀进程：worker 读到 stdin 结束即退出进程，
+/// 不等执行线程手上那一次 OS 调用；它按住的键由 `worker_gone` 按最后一次通报补发抬起。
 pub fn shutdown() {
     let Some(host) = HOST.get() else { return };
     host.stop_dispatch_and_settle("qywork 正在退出");
@@ -511,8 +512,8 @@ impl DesktopHost {
 
     /// 有界地换掉当前 worker，并等下一代握手就绪。
     ///
-    /// 先禁新派发并关掉 stdin——worker 的正常退出路径就是 stdin 结束；卡在 OS 调用里的
-    /// 进程不会响应它，所以过了 `REPLACE_GRACE` 就强杀，且只杀本宿主起的那个 pid。
+    /// 先禁新派发并关掉 stdin——worker 读到 stdin 结束即退出进程，执行线程卡在 OS 调用里
+    /// 也一样；过了 `REPLACE_GRACE` 仍没退出就强杀，且只杀本宿主起的那个 pid。
     ///
     /// 收尾与换代都不在这里做：进程一没，监督循环走的还是 `worker_gone` 那条路径
     /// （在途按事实记账、`hostEpoch` 加一、握手完成才发新的 ready），换代因此也照常计入

@@ -254,7 +254,7 @@ pub fn cancel_targets(pending: &HashMap<String, Pending>, executor_id: &str) -> 
 /// 强杀一个 worker 进程。
 ///
 /// 只在关掉它的 stdin、等过一个短期限仍没退出之后调用，且 `pid` 只能是本宿主起的那一个。
-/// 卡在 OS 调用里的进程不会响应 stdin 结束，不强杀就换不掉它。
+/// 进程退出没有在期限内完成时，不强杀就换不掉它。
 #[cfg(windows)]
 pub fn terminate(pid: u32) {
     use windows::Win32::Foundation::CloseHandle;

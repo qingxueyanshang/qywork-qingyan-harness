@@ -59,6 +59,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
+use crate::backend::CaptureRequest;
 use crate::geometry::{crop_for, generation_matches, Geometry, ScreenRect, WindowFrame};
 use crate::protocol::{now_ms, Image};
 
@@ -109,21 +110,9 @@ pub fn set_per_monitor_v2() -> bool {
     }
 }
 
-/// 一次采集的全部输入。
-pub struct CaptureRequest<'a> {
-    pub window: i64,
-    /// 要采的屏幕物理像素矩形。缺席表示整窗。
-    pub region: Option<ScreenRect>,
-    /// 要求窗口几何代际仍是这一个。
-    pub expect_generation: Option<&'a str>,
-    pub max_edge: u32,
-    pub max_bytes: u32,
-    pub budget: Duration,
-}
-
 /// 采集器。D3D 设备、WinRT 设备与 WIC 工厂各建一次，按 worker 进程存活。
 ///
-/// 与 UIA 的 `Backend` 同理：COM 单元属于线程，必须在要用它的那条线程上构造。
+/// 与 `Uia` 同理：COM 单元属于线程，必须在要用它的那条线程上构造。
 pub struct Capturer {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
@@ -760,7 +749,7 @@ mod tests {
         let _ = before;
     }
 
-    /// DPI 感知模式是从 OS 读回来的实际值。worker 在 `main` 最前面设过一次，
+    /// DPI 感知模式是从 OS 读回来的实际值。worker 在构造第一个后端时设过一次，
     /// 单测进程没设，因此这里只要求这个查询本身可用。
     #[test]
     fn the_dpi_awareness_query_reads_back_from_the_os() {

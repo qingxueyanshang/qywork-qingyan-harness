@@ -67,7 +67,7 @@ fn build_worker(manifest_dir: &Path, target: &str) {
     println!("cargo:rerun-if-changed={}", outfile.display());
 
     // 一律按 release 编，不跟外壳的 profile 走：worker 的 debug 构建打开
-    // `cfg(debug_assertions)` 的那几条诊断（`capture.rs`、`windows.rs`），跟着走会让
+    // `cfg(debug_assertions)` 的那几条诊断（`windows/capture.rs`、`windows/mod.rs`），跟着走会让
     // 开发态的 worker 与安装包里的那个行为不同。
     let mut cargo = Command::new(std::env::var_os("CARGO").expect("CARGO 由 cargo 设给构建脚本"));
     cargo
