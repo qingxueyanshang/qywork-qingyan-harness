@@ -1,5 +1,5 @@
-//! Windows UI Automation 后端：窗口发现、控件树读取、ValuePattern 设值、InvokePattern 调用、
-//! 有界等待。
+//! Windows 后端（`Uia`）：UI Automation 负责窗口发现、控件树读取、后台语义动作与有界等待，
+//! 前台输入在 `foreground`，图像采集在 `capture`。
 //!
 //! 五条边界：
 //!
@@ -14,10 +14,15 @@
 //!    固定用 `ControlViewCondition`。读树与动作前重定位共用它，下标才对得上；换成
 //!    TreeWalker 会多出第二套顺序，同一个 `ref` 在两处指不同节点。
 
+mod capture;
+mod foreground;
+mod sink;
+
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
@@ -82,18 +87,21 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     IsIconic, IsWindow, IsWindowVisible, GWL_EXSTYLE, GW_HWNDPREV, WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 
-use crate::foreground;
+use crate::backend::{
+    wait_loop, ActRequest, Attempt, Backend, CaptureRequest, Outcome, Probe, WaitRequest,
+};
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
-    attainable, next_poll, now_ms, satisfied, scroll_amounts, selected_name_budget, toggle_steps,
-    ActionEvidence, ActionSpec, Bounds,
-    range_state, BlockingWindow, Completeness, Dispatch, DragTarget, Node, NodeAction, Observation,
-    ScrollState, Seen, Select,
-    SelectionState, Text, TextSelection, ToggleState, Tree, Wait, WaitUntil,
-    WindowInfo,
+    now_ms, scroll_amounts, selected_name_budget, toggle_steps, ActionEvidence, ActionSpec,
+    Bounds, range_state, BlockingWindow, Completeness, Dispatch, DragTarget, Image, Node,
+    NodeAction, Observation, ScrollState, Select, SelectionState, Text, TextSelection,
+    ToggleState, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED, REF_STALE, TARGET_BLOCKED,
 };
-
-pub const BACKEND: &str = "windows-uia";
+use crate::tree::{
+    decode_ref, encode_ref, fingerprint, first_sighting, flatten, matches_target, settle,
+    Collected, Identity,
+};
+use capture::Capturer;
 
 /// 跨进程 UIA 调用计数。只在 debug 构建里存在，用于读树成本的对照测量。
 #[cfg(debug_assertions)]
@@ -124,7 +132,7 @@ fn take_calls() -> u64 {
 /// `captures` 在结构化路径上恒为 0——读树、动作与等待都走不到采集代码。
 fn report_cost(op: &str, nodes: u32, started: Instant) {
     let calls = take_calls();
-    let captures = crate::capture::take_captures();
+    let captures = capture::take_captures();
     #[cfg(debug_assertions)]
     eprintln!(
         "cost {op} nodes={nodes} uia_calls={calls} captures={captures} elapsed_ms={:.3}",
@@ -136,50 +144,8 @@ fn report_cost(op: &str, nodes: u32, started: Instant) {
     }
 }
 
-/// 一次动作尝试的事实。`Refused` 表示没有向 provider 发出调用，`Called` 表示调用已经发出。
-///
-/// 两者必须分开：`Called` 的动作可能已经生效，不能与「模式缺失」「只读」归为同一类。
-/// `Called` 自带执行事实与原文，由可放弃等待路径判定，见 `dispatch_call`。
-pub enum Attempt {
-    Refused(String),
-    Called(Outcome),
-}
-
-/// 一次已经发出的动作调用的终态。
-pub struct Outcome {
-    pub dispatch: Dispatch,
-    pub reason: Option<String>,
-    /// 调用已经返回。
-    ///
-    /// 为假时目标应用的 UI 线程还卡在这次调用里，**对这个窗口的任何 UIA 读取都会等到
-    /// 超时**，所以调用方不要在这种回执之后重读目标窗口。
-    pub returned: bool,
-    /// `returned` 为假时目标进程此刻的顶层窗口，纯 Win32 读出，不进 UIA。
-    pub windows: Vec<BlockingWindow>,
-}
-
-impl Outcome {
-    pub fn returned(dispatch: Dispatch, reason: Option<String>) -> Self {
-        Self {
-            dispatch,
-            reason,
-            returned: true,
-            windows: Vec::new(),
-        }
-    }
-}
-
 const TIMEOUT_HRESULT: i32 = UIA_E_TIMEOUT as i32;
 const ELEMENT_GONE_HRESULT: i32 = UIA_E_ELEMENTNOTAVAILABLE as i32;
-
-/// 目标已经不在树上时的拒绝原因前缀。等待的「控件消失」条件按它判定。
-const REF_STALE: &str = "ref_stale";
-
-/// 动作调用尚未返回，没有重读目标窗口。调用方按它决定下一步观察哪个窗口。
-const TARGET_BLOCKED: &str = "target_blocked";
-
-/// 没有派发就不重读：那一份观察会被调用方读成动作已经发生。
-const NOT_DISPATCHED: &str = "动作没有派发，没有重读";
 
 /// 失败的两种形状：UIA 调用返回的错误，以及 worker 自己判定的拒绝。
 ///
@@ -259,75 +225,22 @@ struct Located {
     host: i64,
 }
 
-/// 一次等待的全部输入。
-pub struct WaitRequest<'a> {
-    pub window: i64,
-    pub until: WaitUntil,
-    pub reference: Option<&'a str>,
-    pub value: Option<&'a str>,
-    /// `until=appears` 要出现的控件角色。其余条件不看它。
-    pub role: Option<&'a str>,
-    /// `until=appears` 要出现的控件文字。其余条件不看它。
-    pub name_contains: Option<&'a str>,
-    /// 等待结束时重读的范围根。缺席表示整窗。
-    pub root: Option<&'a str>,
-    /// `until=window` 要等的标题子串。
-    pub name: Option<&'a str>,
-    pub poll: Duration,
-    pub deadline: Instant,
-    pub bounds: Bounds,
-    /// 用户启用了前台接管。等待自带的那份重读按它决定列不列前台动作。
-    pub foreground: bool,
-}
-
-/// 一次动作请求的全部目标信息。
+/// 本进程的 DPI 感知模式是不是 per-monitor v2，从 OS 读回来的实际值。第一次调用时设定。
 ///
-/// 收成一个结构体而不是八个位置参数：目标两种给法、几何代际与前台开关都要一起传，
-/// 位置参数写错顺序不会编译失败。
-pub struct ActRequest<'a> {
-    pub window: i64,
-    /// 控件目标。与 `point` 互斥，准入判定已经保证只给了一个。
-    pub reference: Option<&'a str>,
-    /// 动作之后重读的范围根。缺席表示整窗。
-    pub root: Option<&'a str>,
-    /// 屏幕物理像素落点。只有指针动作接受。
-    pub point: Option<ScreenPoint>,
-    /// 采集落点那张图的窗口几何代际。给了 `point` 就必须给。
-    pub expect_generation: Option<&'a str>,
-    pub action: &'a ActionSpec,
-    pub bounds: Bounds,
-    pub foreground: bool,
+/// **必须在任何窗口矩形或 DPI 查询之前设**：设晚了，系统已经按虚拟化的坐标回答过问题，
+/// 而那些答案不会重来。执行线程最先构造后端，`Uia::new` 第一步就调它。
+fn per_monitor_v2() -> bool {
+    static SET: OnceLock<bool> = OnceLock::new();
+    *SET.get_or_init(|| {
+        let set = capture::set_per_monitor_v2();
+        // 宿主把 worker 的 stderr 转进应用日志：图像几何对不上时，这一行说得出是哪一档
+        // DPI 感知、有几台显示器、虚拟桌面的原点在哪。
+        eprintln!("dpi per_monitor_v2={set} displays {}", capture::monitor_report());
+        set
+    })
 }
 
-/// 一轮判定读到的事实。`Matched` 一并带回这一轮读到的树，返回时不再重读一遍。
-enum Probe {
-    Element {
-        enabled: bool,
-        value: Option<String>,
-    },
-    Missing,
-    Matched {
-        count: u32,
-        tree: Tree,
-    },
-    NewWindow(bool),
-}
-
-impl Probe {
-    fn seen(&self) -> Seen<'_> {
-        match self {
-            Self::Element { enabled, value } => Seen::Element {
-                enabled: *enabled,
-                value: value.as_deref(),
-            },
-            Self::Missing => Seen::Missing,
-            Self::Matched { count, .. } => Seen::Matches(*count),
-            Self::NewWindow(found) => Seen::Window(*found),
-        }
-    }
-}
-
-pub struct Backend {
+pub struct Uia {
     automation: IUIAutomation,
     options: IUIAutomation2,
     /// 子节点枚举的筛选条件。读树与重定位共用，下标因此对得上。
@@ -339,11 +252,21 @@ pub struct Backend {
     nav_cache: IUIAutomationCacheRequest,
     /// 这个 worker 读过控件表的窗口，按句柄与进程号记，句柄被复用时不会认错。
     read_before: Mutex<HashSet<(i64, u32)>>,
+    /// 图像采集器，第一次采集时才建。
+    ///
+    /// 不要改成在 `new` 里建：等待线程每条请求各建一个后端，它们用不到采集，
+    /// 每次都建一份 D3D 设备与 WIC 工厂只增加开销。建不起来只影响采集请求，
+    /// 结构化观察与动作不碰它。
+    capturer: OnceCell<Result<Capturer, String>>,
 }
 
-impl Backend {
+impl Backend for Uia {
+    const NAME: &'static str = "windows-uia";
+
     /// 在调用线程上初始化 COM 与 UIA。必须在执行线程上构造：COM 单元属于线程。
-    pub fn new() -> Result<Self, String> {
+    fn new() -> Result<Self, String> {
+        // 进程的 DPI 感知模式先于一切窗口查询设定，见 `per_monitor_v2`。
+        per_monitor_v2();
         // UIA 客户端用 MTA：STA 下客户端要靠自己的消息泵驱动跨进程回调，阻塞等待会死锁。
         let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         if hr.is_err() {
@@ -386,6 +309,7 @@ impl Backend {
             control_view,
             nav_cache,
             read_before: Mutex::new(HashSet::new()),
+            capturer: OnceCell::new(),
         })
     }
 
@@ -393,7 +317,7 @@ impl Backend {
     ///
     /// 这两项是整个 IUIAutomation 实例的设置，无法逐调用指定，因此由宿主在握手时给定：
     /// worker 不自带默认值，避免上界有两个出处。
-    pub fn set_timeouts(
+    fn set_timeouts(
         &self,
         connection_ms: u32,
         transaction_ms: u32,
@@ -417,6 +341,172 @@ impl Backend {
         }
     }
 
+    /// 读一个窗口的控件表。`select.root` 给了就从那棵子树读起。
+    ///
+    /// 这个 worker 第一次读一个窗口时读到控件数不再变化为止：Chromium 系应用在第一次收到
+    /// UIA 请求时才开启无障碍树，约 0.3 s 后建好，第一次读到的只有浏览器外框、没有网页内容，
+    /// 且不算截断。之后再读同一个窗口只读一次。
+    fn read_tree(
+        &self,
+        window: i64,
+        select: &Select,
+        bounds: Bounds,
+        foreground: bool,
+    ) -> Result<Observation, String> {
+        let first = self
+            .read_before
+            .lock()
+            .map(|mut seen| seen.insert((window, window_pid(window))))
+            .unwrap_or(false);
+        let read = || self.read_tree_inner(window, select, bounds, foreground);
+        let tree = if first {
+            settle(read, |t| t.node_count, FIRST_READ_INTERVAL, FIRST_READ_LIMIT)
+        } else {
+            read()
+        };
+        tree.map(Observation::Tree).map_err(|f| f.into_reason(window))
+    }
+
+    /// 执行一个动作并按调用方当前观察的范围整份重读。
+    ///
+    /// 十三种动作共用这一条路径：定位、准入判定、可放弃等待的调用与动作后重读各只有
+    /// 一处实现。按动作分成多条路径会让这四件事各有一份拷贝。
+    ///
+    /// **没有派发就不重读**：那一份观察会被调用方读成动作已经发生。
+    ///
+    /// 不要改回只读目标所在的子树：调用方拿到的重读就是它的当前观察，只读一段的话，
+    /// 范围外的控件要么缺席，要么由调用方把旧节点拼回来，而旧节点的状态与可用动作
+    /// 停在动作之前。
+    fn act(
+        &self,
+        req: &ActRequest<'_>,
+        stop: &dyn Fn() -> bool,
+    ) -> (Attempt, Result<Observation, String>) {
+        let ActRequest {
+            window,
+            reference,
+            root,
+            point,
+            expect_generation,
+            action,
+            bounds,
+            foreground: fg,
+        } = *req;
+        // 按图定位的落点先核对窗口几何代际：窗口在采图与派发之间移动过的话，
+        // 那个坐标指的已经不是同一块界面。
+        if let Some(expected) = expect_generation {
+            if let Err(reason) = foreground::check_generation(window, expected) {
+                return (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned()));
+            }
+        }
+        let located = match reference.map(|r| self.locate(window, r)) {
+            None => None,
+            Some(Ok(l)) => Some(l),
+            Some(Err(f)) => {
+                return (
+                    Attempt::Refused(f.into_reason(window)),
+                    Err(NOT_DISPATCHED.to_owned()),
+                )
+            }
+        };
+        let aim = match self.aim(window, located.as_ref(), point, action) {
+            Ok(aim) => aim,
+            Err(reason) => return (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned())),
+        };
+        let element = located.as_ref().map(|l| &l.element);
+        match perform(window, element, action, aim, stop) {
+            Attempt::Refused(reason) => (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned())),
+            // 调用还没返回：目标应用的 UI 线程卡在里面，这一次重读必然等满时间预算再超时。
+            // 换成一份不进 UIA 的事实——目标进程此刻的顶层窗口，调用方据此观察新出现的
+            // 那一个。
+            Attempt::Called(outcome) if !outcome.returned => {
+                // 定位到的元素同样不能在这条线程上丢弃：释放代理也要等目标进程应答，
+                // 就地丢会等满 UIA 连接超时。
+                if let Some(located) = located {
+                    release_off_thread(located);
+                }
+                (
+                    Attempt::Called(outcome),
+                    Err(TARGET_BLOCKED.to_owned()),
+                )
+            }
+            called => {
+                let scope = Select {
+                    root: root.map(str::to_owned),
+                    ..Select::default()
+                };
+                (called, self.read_tree(window, &scope, bounds, fg))
+            }
+        }
+    }
+
+    /// 清一次到目标 provider 的连接。
+    ///
+    /// 上一次动作调用还挂在目标应用里时，**这个 provider 上的下一次 UIA 调用必定等到
+    /// 连接超时才回，再下一次才正常**（实测 2010 ms 失败、随后成功）。这一次调用就是
+    /// 那个代价，由 worker 在回执发出之后自己付：留给调用方付的话，它下一次观察拿到的
+    /// 是一次不该有的超时失败。
+    fn drain_provider(&self, window: i64) {
+        let _ = self.window_element(window, &self.nav_cache);
+    }
+
+    /// 读一个控件的文档文本与选区。只读，不改变状态，也不设焦点。
+    fn read_text(
+        &self,
+        window: i64,
+        reference: &str,
+        max_chars: u32,
+    ) -> Result<Observation, String> {
+        let located = self.locate(window, reference).map_err(|f| f.into_reason(window))?;
+        let pattern: IUIAutomationTextPattern =
+            current_pattern(window, &located.element, UIA_TextPatternId, "TextPattern")?;
+        read_document(window, reference, &pattern, max_chars).map_err(|f| f.into_reason(window))
+    }
+
+    /// 等一个后置条件成立。判定、轮询与到期都在这里，调用方只拿终态。
+    ///
+    /// `stop` 每轮问一次：执行者撤销这条请求时它变真，等待立即以 `cancelled` 收尾。
+    fn wait(&self, req: &WaitRequest<'_>, stop: &dyn Fn() -> bool) -> Result<Observation, String> {
+        let (found, reason, probe) = match wait_loop(req, stop, || self.probe(req)) {
+            Ok(v) => v,
+            Err(f) => return Err(f.into_reason(req.window)),
+        };
+        // 只计最后这一次状态读取。轮询各轮自己已经各打过一行，把整段等待算进来会重复计。
+        let started = Instant::now();
+        let tree = self
+            .wait_state(req, probe)
+            .map_err(|f| f.into_reason(req.window))?;
+        report_cost("wait_state", tree.completeness.visited, started);
+        Ok(Observation::Wait(Wait { found, reason, tree }))
+    }
+
+    fn list_windows(&self) -> Result<Observation, String> {
+        list_windows()
+    }
+
+    /// per-monitor v2 没设上时窗口矩形被系统虚拟化过，采到的图与控件包围盒不在同一套坐标上。
+    /// 交一张对不上号的图比不交更糟，所以这里直接拒。
+    fn capture_image(&self, req: &CaptureRequest<'_>) -> Result<Image, String> {
+        if !per_monitor_v2() {
+            return Err(
+                "dpi_awareness_unset: 进程不是 per-monitor v2 DPI 感知，图像几何不可信".to_owned(),
+            );
+        }
+        let capturer = self.capturer.get_or_init(|| {
+            let built = Capturer::new();
+            if let Err(e) = &built {
+                eprintln!("图像采集不可用：{e}");
+            }
+            built
+        });
+        match capturer {
+            Ok(capturer) => capturer.capture(req),
+            Err(e) => Err(format!("backend_unavailable: {e}")),
+        }
+    }
+}
+
+impl Uia {
     /// 读树用的缓存请求。取不取值与取不取状态细节各自可选，可用动作一直判得出来。
     fn walk_cache(&self, fields: Fields) -> Result<IUIAutomationCacheRequest, Failure> {
         build_cache(&self.automation, &self.control_view, fields)
@@ -471,8 +561,8 @@ impl Backend {
         if actual != expected {
             return Err(Failure::Refused(format!(
                 "{REF_STALE}: 该位置现在是 {}，ref 里记的是 {}{}",
-                actual.describe(),
-                expected.describe(),
+                describe(&actual),
+                describe(&expected),
                 if expected.is_weak() {
                     "；这个控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对，界面重排后旧引用不可靠，请重新观察"
                 } else {
@@ -485,32 +575,6 @@ impl Backend {
             path,
             host,
         })
-    }
-
-    /// 读一个窗口的控件表。`select.root` 给了就从那棵子树读起。
-    ///
-    /// 这个 worker 第一次读一个窗口时读到控件数不再变化为止：Chromium 系应用在第一次收到
-    /// UIA 请求时才开启无障碍树，约 0.3 s 后建好，第一次读到的只有浏览器外框、没有网页内容，
-    /// 且不算截断。之后再读同一个窗口只读一次。
-    pub fn read_tree(
-        &self,
-        window: i64,
-        select: &Select,
-        bounds: Bounds,
-        foreground: bool,
-    ) -> Result<Observation, String> {
-        let first = self
-            .read_before
-            .lock()
-            .map(|mut seen| seen.insert((window, window_pid(window))))
-            .unwrap_or(false);
-        let read = || self.read_tree_inner(window, select, bounds, foreground);
-        let tree = if first {
-            settle(read, |t| t.node_count, FIRST_READ_INTERVAL, FIRST_READ_LIMIT)
-        } else {
-            read()
-        };
-        tree.map(Observation::Tree).map_err(|f| f.into_reason(window))
     }
 
     fn read_tree_inner(
@@ -596,79 +660,6 @@ impl Backend {
         })
     }
 
-    /// 执行一个动作并按调用方当前观察的范围整份重读。
-    ///
-    /// 十三种动作共用这一条路径：定位、准入判定、可放弃等待的调用与动作后重读各只有
-    /// 一处实现。按动作分成多条路径会让这四件事各有一份拷贝。
-    ///
-    /// **没有派发就不重读**：那一份观察会被调用方读成动作已经发生。
-    ///
-    /// 不要改回只读目标所在的子树：调用方拿到的重读就是它的当前观察，只读一段的话，
-    /// 范围外的控件要么缺席，要么由调用方把旧节点拼回来，而旧节点的状态与可用动作
-    /// 停在动作之前。
-    pub fn act(
-        &self,
-        req: &ActRequest<'_>,
-        stop: &dyn Fn() -> bool,
-    ) -> (Attempt, Result<Observation, String>) {
-        let ActRequest {
-            window,
-            reference,
-            root,
-            point,
-            expect_generation,
-            action,
-            bounds,
-            foreground: fg,
-        } = *req;
-        // 按图定位的落点先核对窗口几何代际：窗口在采图与派发之间移动过的话，
-        // 那个坐标指的已经不是同一块界面。
-        if let Some(expected) = expect_generation {
-            if let Err(reason) = foreground::check_generation(window, expected) {
-                return (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned()));
-            }
-        }
-        let located = match reference.map(|r| self.locate(window, r)) {
-            None => None,
-            Some(Ok(l)) => Some(l),
-            Some(Err(f)) => {
-                return (
-                    Attempt::Refused(f.into_reason(window)),
-                    Err(NOT_DISPATCHED.to_owned()),
-                )
-            }
-        };
-        let aim = match self.aim(window, located.as_ref(), point, action) {
-            Ok(aim) => aim,
-            Err(reason) => return (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned())),
-        };
-        let element = located.as_ref().map(|l| &l.element);
-        match perform(window, element, action, aim, stop) {
-            Attempt::Refused(reason) => (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned())),
-            // 调用还没返回：目标应用的 UI 线程卡在里面，这一次重读必然等满时间预算再超时。
-            // 换成一份不进 UIA 的事实——目标进程此刻的顶层窗口，调用方据此观察新出现的
-            // 那一个。
-            Attempt::Called(outcome) if !outcome.returned => {
-                // 定位到的元素同样不能在这条线程上丢弃：释放代理也要等目标进程应答，
-                // 就地丢会等满 UIA 连接超时。
-                if let Some(located) = located {
-                    release_off_thread(located);
-                }
-                (
-                    Attempt::Called(outcome),
-                    Err(TARGET_BLOCKED.to_owned()),
-                )
-            }
-            called => {
-                let scope = Select {
-                    root: root.map(str::to_owned),
-                    ..Select::default()
-                };
-                (called, self.read_tree(window, &scope, bounds, fg))
-            }
-        }
-    }
-
     /// 指针动作的落点与拖拽终点。非指针动作两项都缺席。
     ///
     /// 落点两种来源：调用方给的屏幕坐标，或控件此刻的包围盒中心。**包围盒读的是这一次
@@ -712,76 +703,6 @@ impl Backend {
             // 按图像坐标定位时没有控件，落点只认目标窗口本身。
             host: point.is_none().then(|| located.map(|l| l.host)).flatten(),
         })
-    }
-
-    /// 清一次到目标 provider 的连接。
-    ///
-    /// 上一次动作调用还挂在目标应用里时，**这个 provider 上的下一次 UIA 调用必定等到
-    /// 连接超时才回，再下一次才正常**（实测 2010 ms 失败、随后成功）。这一次调用就是
-    /// 那个代价，由 worker 在回执发出之后自己付：留给调用方付的话，它下一次观察拿到的
-    /// 是一次不该有的超时失败。
-    pub fn drain_provider(&self, window: i64) {
-        let _ = self.window_element(window, &self.nav_cache);
-    }
-
-    /// 读一个控件的文档文本与选区。只读，不改变状态，也不设焦点。
-    pub fn read_text(
-        &self,
-        window: i64,
-        reference: &str,
-        max_chars: u32,
-    ) -> Result<Observation, String> {
-        let located = self.locate(window, reference).map_err(|f| f.into_reason(window))?;
-        let pattern: IUIAutomationTextPattern =
-            current_pattern(window, &located.element, UIA_TextPatternId, "TextPattern")?;
-        read_document(window, reference, &pattern, max_chars).map_err(|f| f.into_reason(window))
-    }
-
-    /// 等一个后置条件成立。判定、轮询与到期都在这里，调用方只拿终态。
-    ///
-    /// `stop` 每轮问一次：执行者撤销这条请求时它变真，等待立即以 `cancelled` 收尾。
-    pub fn wait(&self, req: &WaitRequest<'_>, stop: &dyn Fn() -> bool) -> Result<Observation, String> {
-        let (found, reason, probe) = match self.wait_loop(req, stop) {
-            Ok(v) => v,
-            Err(f) => return Err(f.into_reason(req.window)),
-        };
-        // 只计最后这一次状态读取。轮询各轮自己已经各打过一行，把整段等待算进来会重复计。
-        let started = Instant::now();
-        let tree = self
-            .wait_state(req, probe)
-            .map_err(|f| f.into_reason(req.window))?;
-        report_cost("wait_state", tree.completeness.visited, started);
-        Ok(Observation::Wait(Wait { found, reason, tree }))
-    }
-
-    /// 轮询到条件成立、不可能再成立（`target_gone`）、到期或被撤销。返回最后一轮读到的事实。
-    fn wait_loop(
-        &self,
-        req: &WaitRequest<'_>,
-        stop: &dyn Fn() -> bool,
-    ) -> Result<(bool, Option<String>, Probe), Failure> {
-        loop {
-            if stop() {
-                return Ok((false, Some("cancelled".to_owned()), self.probe(req)?));
-            }
-            let started = Instant::now();
-            let probe = self.probe(req)?;
-            if satisfied(req.until, req.value, probe.seen()) {
-                return Ok((true, None, probe));
-            }
-            if !attainable(req.until, probe.seen()) {
-                return Ok((false, Some("target_gone".to_owned()), probe));
-            }
-            let now = Instant::now();
-            if now >= req.deadline {
-                return Ok((false, Some("timeout".to_owned()), probe));
-            }
-            std::thread::sleep(next_poll(
-                req.poll,
-                now.saturating_duration_since(started),
-                req.deadline - now,
-            ));
-        }
     }
 
     /// 读一轮判定所需的事实。
@@ -1223,15 +1144,9 @@ struct Fields {
     foreground: bool,
 }
 
-/// 一个节点连同它在前序表里的父节点下标。
-struct Collected {
-    node: Node,
-    parent: Option<usize>,
-}
-
 /// 深度优先遍历的状态。三个上限限的是遍历过的节点数。
 struct Walk<'a> {
-    backend: &'a Backend,
+    backend: &'a Uia,
     cache: &'a IUIAutomationCacheRequest,
     bounds: Bounds,
     fields: Fields,
@@ -1326,49 +1241,6 @@ impl Walk<'_> {
     }
 }
 
-/// 展平收集到的节点：把父节点下标换成父节点的 `ref`，顺序不变。
-fn flatten(collected: Vec<Collected>) -> Vec<Node> {
-    let refs: Vec<String> = collected.iter().map(|c| c.node.reference.clone()).collect();
-    collected
-        .into_iter()
-        .map(|entry| {
-            let mut node = entry.node;
-            node.parent_ref = entry.parent.map(|at| refs[at].clone());
-            node
-        })
-        .collect()
-}
-
-/// 这个 RuntimeId 在本次遍历里是不是第一次出现，并登记它。
-///
-/// 空串是没有 RuntimeId 的弱身份，一律算第一次：弱身份按属性指纹认，两个不同的控件可能
-/// 指纹相同，按它去重会丢掉真实控件。
-fn first_sighting(seen: &mut HashSet<String>, runtime: &str) -> bool {
-    runtime.is_empty() || seen.insert(runtime.to_owned())
-}
-
-/// 一个节点满不满足等待 `appears` 的条件。两项都没给时任何节点都满足。
-fn matches_target(role: Option<&str>, name_contains: Option<&str>, node: &Node) -> bool {
-    if let Some(role) = role {
-        if node.role != role {
-            return false;
-        }
-    }
-    if let Some(text) = name_contains {
-        let needle = text.to_lowercase();
-        let hit = node.name.to_lowercase().contains(&needle)
-            || node.automation_id.to_lowercase().contains(&needle)
-            || node
-                .value
-                .as_deref()
-                .is_some_and(|v| v.to_lowercase().contains(&needle));
-        if !hit {
-            return false;
-        }
-    }
-    true
-}
-
 /// 顶层可见窗口清单。纯 Win32 调用，不进 UIA，也不涉及图像。
 ///
 /// 标题为空的可见窗口一律不收：那一类是工具窗口与消息宿主窗口，不是可操作目标。代价是
@@ -1421,27 +1293,6 @@ const FIRST_READ_INTERVAL: Duration = Duration::from_millis(350);
 /// 第一次读一个窗口最多读多久。页面上有持续变化的元素时控件数一直在变，到点即交回最后一份。
 const FIRST_READ_LIMIT: Duration = Duration::from_secs(2);
 
-/// 隔 `interval` 重读，直到相邻两次的计数相同或到 `limit`，交回最后一份。
-fn settle<T>(
-    read: impl Fn() -> Result<T, Failure>,
-    count: impl Fn(&T) -> u32,
-    interval: Duration,
-    limit: Duration,
-) -> Result<T, Failure> {
-    let until = Instant::now() + limit;
-    let mut last = read()?;
-    while Instant::now() + interval <= until {
-        std::thread::sleep(interval);
-        let next = read()?;
-        let stable = count(&next) == count(&last);
-        last = next;
-        if stable {
-            break;
-        }
-    }
-    Ok(last)
-}
-
 /// 窗口所属进程号。读不到时为 0。
 fn window_pid(window: i64) -> u32 {
     let mut pid = 0u32;
@@ -1461,7 +1312,7 @@ fn window_covered(window: i64) -> bool {
     if unsafe { IsIconic(hwnd) }.as_bool() {
         return true;
     }
-    let Ok(frame) = crate::capture::window_frame(hwnd) else {
+    let Ok(frame) = capture::window_frame(hwnd) else {
         return false;
     };
     let Some(target) = frame.visible.intersect(&foreground::virtual_desktop()) else {
@@ -1475,7 +1326,7 @@ fn window_covered(window: i64) -> bool {
             break;
         }
         if covers_others(next) {
-            if let Ok(f) = crate::capture::window_frame(next) {
+            if let Ok(f) = capture::window_frame(next) {
                 covers.push(f.visible);
             }
         }
@@ -1759,70 +1610,19 @@ fn cached_children(element: &IUIAutomationElement) -> Result<Vec<IUIAutomationEl
     Ok(out)
 }
 
-/// 一个控件的身份。
-///
-/// RuntimeId 是首选；provider 不给时退到角色、名称与稳定标识的指纹，并在观察里把这个
-/// 控件标成弱身份。**两种身份不相等**，哪怕字面量凑巧一样。
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Identity {
-    Runtime(String),
-    Attributes(String),
-}
-
-impl Identity {
-    fn is_weak(&self) -> bool {
-        matches!(self, Self::Attributes(_))
+/// 回执里怎么称呼一个身份。指纹是不透明串，说清它是按什么算的。
+fn describe(identity: &Identity) -> String {
+    match identity {
+        Identity::Stable(id) => format!("RuntimeId {id}"),
+        Identity::Attributes(print) => format!("属性指纹 {print}"),
     }
-
-    /// 写进 `ref` 的那一段。弱身份带 `~` 前缀，解码时据此分得开。
-    fn encode(&self) -> String {
-        match self {
-            Self::Runtime(id) => id.clone(),
-            Self::Attributes(print) => format!("~{print}"),
-        }
-    }
-
-    fn decode(segment: &str) -> Self {
-        match segment.strip_prefix('~') {
-            Some(print) => Self::Attributes(print.to_owned()),
-            None => Self::Runtime(segment.to_owned()),
-        }
-    }
-
-    /// 回执里怎么称呼它。指纹是不透明串，说清它是按什么算的。
-    fn describe(&self) -> String {
-        match self {
-            Self::Runtime(id) => format!("RuntimeId {id}"),
-            Self::Attributes(print) => format!("属性指纹 {print}"),
-        }
-    }
-}
-
-/// 角色、名称与稳定标识的指纹。FNV-1a，够短且与输入一一对应到碰撞概率可忽略。
-///
-/// 三项用不会出现在取值里的分隔符拼起来再算：直接连接的话，`("ab","c")` 与 `("a","bc")`
-/// 会算出同一个指纹。
-fn fingerprint(role: &str, name: &str, automation_id: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in role
-        .as_bytes()
-        .iter()
-        .chain(b"\x1f")
-        .chain(name.as_bytes())
-        .chain(b"\x1f")
-        .chain(automation_id.as_bytes())
-    {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x1000_0000_01b3);
-    }
-    format!("{hash:016x}")
 }
 
 /// 从缓存读一个元素的身份。不发跨进程调用。
 fn cached_identity(element: &IUIAutomationElement) -> Result<Identity, Failure> {
     let runtime = runtime_id(element)?;
     if !runtime.is_empty() {
-        return Ok(Identity::Runtime(runtime));
+        return Ok(Identity::Stable(runtime));
     }
     let control_type = unsafe { element.CachedControlType() }.map_err(uia("读控件类型"))?;
     let name = unsafe { element.CachedName() }.map_err(uia("读名称"))?;
@@ -1866,36 +1666,6 @@ unsafe fn read_i32_array(array: *const SAFEARRAY) -> Result<Vec<String>, Failure
     Ok(parts)
 }
 
-/// `ref` 的编码：`w` 加逐层子节点下标，`#` 后是身份段。
-fn encode_ref(path: &[usize], identity: &Identity) -> String {
-    let mut out = String::from("w");
-    for index in path {
-        out.push('.');
-        out.push_str(&index.to_string());
-    }
-    out.push('#');
-    out.push_str(&identity.encode());
-    out
-}
-
-fn decode_ref(reference: &str) -> Result<(Vec<usize>, Identity), String> {
-    let Some((path, identity)) = reference.split_once('#') else {
-        return Err(format!("bad_ref: {reference}"));
-    };
-    let mut segments = path.split('.');
-    if segments.next() != Some("w") {
-        return Err(format!("bad_ref: {reference}"));
-    }
-    let mut indexes = Vec::new();
-    for segment in segments {
-        let index = segment
-            .parse::<usize>()
-            .map_err(|_| format!("bad_ref: {reference}"))?;
-        indexes.push(index);
-    }
-    Ok((indexes, Identity::decode(identity)))
-}
-
 // ── 动作：可放弃等待的调用路径 ──
 
 /// 主路径等一次动作调用返回多久。
@@ -1926,7 +1696,7 @@ static PENDING_CALLS: AtomicU32 = AtomicU32::new(0);
 
 /// 一次待发的模式调用，连同它捕获的 UIA 接口。
 ///
-/// **两端都在进程的 MTA 里**：`Backend::new` 与每条调用线程都做
+/// **两端都在进程的 MTA 里**：`Uia::new` 与每条调用线程都做
 /// `CoInitializeEx(COINIT_MULTITHREADED)`，同一个接口指针因此可以直接跨线程调用，
 /// 不需要封送。不要把 UIA 客户端改成 STA，那时这个封装不再成立。
 pub struct Deferred(Box<dyn FnOnce() -> Result<(), String>>);
@@ -2694,98 +2464,6 @@ fn role_name(control_type: i32) -> String {
 mod tests {
     use super::*;
 
-    fn node(role: &str, name: &str, automation_id: &str, value: Option<&str>) -> Node {
-        Node {
-            reference: "w.0#7".to_owned(),
-            parent_ref: None,
-            depth: 0,
-            role: role.to_owned(),
-            name: name.to_owned(),
-            automation_id: automation_id.to_owned(),
-            value: value.map(str::to_owned),
-            enabled: true,
-            offscreen: false,
-            focused: false,
-            rect: None,
-            actions: Vec::new(),
-            range: None,
-            toggle: None,
-            expand: None,
-            selected: None,
-            selection: None,
-            scroll: None,
-            text: false,
-            weak_identity: false,
-        }
-    }
-
-    fn collected(reference: &str, parent: Option<usize>) -> Collected {
-        let mut n = node("button", "按钮", "", None);
-        n.reference = reference.to_owned();
-        Collected { node: n, parent }
-    }
-
-    /// 遍历读到的节点全部交回，顺序不变；根在第一项，范围与窗口可用状态都按它取。
-    #[test]
-    fn every_visited_node_is_returned_in_order_with_parent_refs() {
-        let nodes = flatten(vec![
-            collected("w#1", None),
-            collected("w.0#3", Some(0)),
-            collected("w.0.0#4", Some(1)),
-            collected("w.1#5", Some(0)),
-        ]);
-        let refs: Vec<&str> = nodes.iter().map(|n| n.reference.as_str()).collect();
-        assert_eq!(refs, ["w#1", "w.0#3", "w.0.0#4", "w.1#5"]);
-        let parents: Vec<Option<&str>> = nodes.iter().map(|n| n.parent_ref.as_deref()).collect();
-        assert_eq!(parents, [None, Some("w#1"), Some("w.0#3"), Some("w#1")]);
-    }
-
-    /// Edge 第一次读只有 47 个外框节点，0.3 s 后 52 个：读到相邻两次计数相同才交回。
-    #[test]
-    fn first_read_settles_once_the_count_stops_changing() {
-        let counts = [47u32, 52, 52, 60];
-        let reads = std::cell::Cell::new(0usize);
-        let got = settle(
-            || {
-                let n = counts[reads.get()];
-                reads.set(reads.get() + 1);
-                Ok(n)
-            },
-            |n| *n,
-            Duration::from_millis(1),
-            Duration::from_secs(1),
-        );
-        assert_eq!(got.ok(), Some(52));
-        assert_eq!(reads.get(), 3);
-    }
-
-    #[test]
-    fn settle_hands_back_the_last_read_at_the_limit() {
-        let reads = std::cell::Cell::new(0u32);
-        let got = settle(
-            || {
-                reads.set(reads.get() + 1);
-                Ok(reads.get())
-            },
-            |n| *n,
-            Duration::from_millis(5),
-            Duration::from_millis(30),
-        );
-        assert_eq!(got.ok(), Some(reads.get()));
-        assert!(reads.get() <= 7);
-    }
-
-    #[test]
-    fn a_failed_read_during_settling_is_returned() {
-        let got: Result<u32, Failure> = settle(
-            || Err(Failure::Refused("target_lost".to_owned())),
-            |n| *n,
-            Duration::from_millis(1),
-            Duration::from_secs(1),
-        );
-        assert!(got.is_err());
-    }
-
     /// Windows Terminal 形状：一段，行按窗宽补空格，末尾一片空行。
     #[test]
     fn visible_text_trims_padding_and_blank_edges() {
@@ -2858,61 +2536,17 @@ mod tests {
         assert!(stale.is_element_gone());
     }
 
-    #[test]
-    fn ref_round_trips_through_encode_and_decode() {
-        let strong = Identity::Runtime("42.1180674.4.1".to_owned());
-        let encoded = encode_ref(&[0, 3, 1], &strong);
-        assert_eq!(encoded, "w.0.3.1#42.1180674.4.1");
-        assert_eq!(decode_ref(&encoded), Ok((vec![0, 3, 1], strong)));
-        assert_eq!(
-            decode_ref("w#7.1"),
-            Ok((Vec::new(), Identity::Runtime("7.1".to_owned())))
-        );
-    }
-
-    /// 弱身份在 `ref` 里带 `~` 前缀，解码时与 RuntimeId 分得开。
-    #[test]
-    fn a_weak_identity_survives_the_round_trip_and_stays_distinct() {
-        let weak = Identity::Attributes("0123456789abcdef".to_owned());
-        let encoded = encode_ref(&[2], &weak);
-        assert_eq!(encoded, "w.2#~0123456789abcdef");
-        assert_eq!(decode_ref(&encoded), Ok((vec![2], weak.clone())));
-        // 字面量一样也不算同一种身份：那个位置从没有 RuntimeId 变成有了，就不是同一个控件。
-        assert_ne!(weak, Identity::Runtime("0123456789abcdef".to_owned()));
-        assert!(weak.is_weak());
-        assert!(!Identity::Runtime("7.1".to_owned()).is_weak());
-    }
-
-    /// 三项任一变化都换指纹；拼接不能直接相连，否则挪一个字符就撞上同一个指纹。
-    #[test]
-    fn the_attribute_fingerprint_separates_the_three_fields() {
-        let base = fingerprint("list_item", "item-alpha", "");
-        assert_eq!(base, fingerprint("list_item", "item-alpha", ""));
-        assert_ne!(base, fingerprint("list_item", "item-beta", ""));
-        assert_ne!(base, fingerprint("button", "item-alpha", ""));
-        assert_ne!(base, fingerprint("list_item", "item-alpha", "id"));
-        assert_ne!(fingerprint("ab", "c", ""), fingerprint("a", "bc", ""));
-        assert_eq!(base.len(), 16);
-    }
-
     /// 回执要说清核对的是哪一种身份，弱身份还要说清它为什么不可靠。
     #[test]
     fn the_refusal_names_the_kind_of_identity_it_compared() {
         assert_eq!(
-            Identity::Runtime("42.7".to_owned()).describe(),
+            describe(&Identity::Stable("42.7".to_owned())),
             "RuntimeId 42.7"
         );
         assert_eq!(
-            Identity::Attributes("abc".to_owned()).describe(),
+            describe(&Identity::Attributes("abc".to_owned())),
             "属性指纹 abc"
         );
-    }
-
-    #[test]
-    fn malformed_ref_is_refused_rather_than_guessed() {
-        for bad in ["w.0.1", "x.0#7.1", "w.a#7.1", ""] {
-            assert!(decode_ref(bad).is_err(), "{bad} 应当解析失败");
-        }
     }
 
     #[test]
@@ -3000,52 +2634,5 @@ mod tests {
         // 截断点落在代理对中间时那一个字符换成替换字符，仍然标记为截断。
         let pair = BSTR::from("a🙂b");
         assert_eq!(clip_utf16(&pair, 2), ("a\u{fffd}".to_owned(), true));
-    }
-
-    /// `appears` 两项条件都没给时任何节点都满足。
-    #[test]
-    fn an_empty_appears_condition_matches_every_node() {
-        assert!(matches_target(None, None, &node("button", "保存", "save", None)));
-        assert!(matches_target(None, None, &node("edit", "", "", None)));
-    }
-
-    #[test]
-    fn appears_role_and_text_apply_together() {
-        let (role, text) = (Some("button"), Some("保存"));
-        assert!(matches_target(role, text, &node("button", "保存", "save", None)));
-        assert!(!matches_target(role, text, &node("edit", "保存", "save", None)));
-        assert!(!matches_target(role, text, &node("button", "取消", "cancel", None)));
-    }
-
-    /// 文字条件看名称、稳定标识与值三处，且不分大小写。
-    #[test]
-    fn the_appears_text_looks_at_name_id_and_value_case_insensitively() {
-        let text = Some("Save");
-        assert!(matches_target(None, text, &node("button", "SAVE AS", "x", None)));
-        assert!(matches_target(None, text, &node("button", "别的", "saveBtn", None)));
-        assert!(matches_target(None, text, &node("edit", "别的", "x", Some("autosave"))));
-        assert!(!matches_target(None, text, &node("edit", "别的", "x", Some("无"))));
-        // 没取值的节点不会因为值缺席就命中。
-        assert!(!matches_target(None, text, &node("edit", "别的", "x", None)));
-    }
-
-    #[test]
-    fn a_runtime_id_is_emitted_once_per_walk_and_weak_identities_are_never_merged() {
-        // Edge 内容面板的子节点列表：自己的子节点之后接着父窗口的全部子节点，含它自己。
-        let mut seen = HashSet::new();
-        for id in ["42.263932", "42.460938", "42.198318", "42.263932.4.0.0.179"] {
-            assert!(first_sighting(&mut seen, id));
-        }
-        for id in ["42.263932.4.0.0.181", "42.592008"] {
-            assert!(first_sighting(&mut seen, id));
-        }
-        for id in ["42.460938", "42.198318", "42.263932.4.0.0.179"] {
-            assert!(!first_sighting(&mut seen, id), "{id} 已输出过，不再展开");
-        }
-        // 弱身份每次都算第一次。
-        assert!(first_sighting(&mut seen, ""));
-        assert!(first_sighting(&mut seen, ""));
-        // 集合只属于一次遍历：新的遍历从空集合开始。
-        assert!(first_sighting(&mut HashSet::new(), "42.460938"));
     }
 }

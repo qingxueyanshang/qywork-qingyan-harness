@@ -451,6 +451,15 @@ impl ActionSpec {
 pub const FOREGROUND_DISABLED: &str =
     "foreground_disabled: 前台操作未启用";
 
+/// 目标已经不在树上时的拒绝原因前缀。等待的「控件消失」条件按它判定。
+pub const REF_STALE: &str = "ref_stale";
+
+/// 动作调用尚未返回，没有重读目标窗口。调用方按它决定下一步观察哪个窗口。
+pub const TARGET_BLOCKED: &str = "target_blocked";
+
+/// 没有派发就不重读：那一份观察会被调用方读成动作已经发生。
+pub const NOT_DISPATCHED: &str = "动作没有派发，没有重读";
+
 /// 请求动作。`params` 一律显式给出，空参数写 `{}`。
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", content = "params", rename_all = "snake_case")]
@@ -671,11 +680,6 @@ pub enum Observation {
         /// 从 UIA 接口读回来的实际值，不是请求里那两个数的回声。
         connection_timeout_ms: u32,
         transaction_timeout_ms: u32,
-        /// 本进程的 DPI 感知模式是不是 per-monitor v2，从 OS 读回来的实际值。
-        ///
-        /// 为假时窗口矩形被系统虚拟化过，采到的图与控件包围盒对不上同一套坐标，
-        /// 采集请求一律拒绝。
-        dpi_per_monitor_v2: bool,
     },
     /// 取消已登记。它不说明目标请求有没有执行过——接收线程查不到那件事，目标请求自己那条
     /// `reason: cancelled` 的回执才是取消生效的证据。
