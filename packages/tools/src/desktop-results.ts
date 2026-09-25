@@ -64,10 +64,13 @@ type Actions = DesktopElement['actions']
 /**
  * 交给模型的一个控件：`actions` 换成 `actionSets` 的下标，与 `DEFAULTS` 相同的格省掉。
  * 大表视图里超长的名称与值只留前缀，并标明省掉多少字。
+ *
+ * 不带 `parentRef`：`ref` 的路径段就是祖先链（`w.1.0.2` 的父控件是 `w.1.0`），再带一份
+ * 父控件引用约占控件表的四分之一，且每一步都是新内容，无法命中缓存。
  */
 export type CompactElement = Omit<
   DesktopElement,
-  'actions' | 'enabled' | 'offscreen' | 'automationId'
+  'actions' | 'enabled' | 'offscreen' | 'automationId' | 'parentRef'
 > & {
   enabled?: boolean
   offscreen?: boolean
@@ -310,7 +313,14 @@ function compactOf(
   element: DesktopElement & { nameOmittedChars?: number; valueOmittedChars?: number },
   actionSet: number,
 ): CompactElement {
-  const { actions: _actions, enabled, offscreen, automationId, ...rest } = element
+  const {
+    actions: _actions,
+    parentRef: _parentRef,
+    enabled,
+    offscreen,
+    automationId,
+    ...rest
+  } = element
   return {
     ...rest,
     ...(enabled !== DEFAULTS.enabled ? { enabled } : {}),
@@ -387,8 +397,8 @@ function jsonlBody(snapshot: DesktopSnapshot): Uint8Array {
  * 大表视图选谁：本次动作目标及其祖先、当前焦点控件优先，其余按原始顺序补到上限为止。
  *
  * **控件不从中间切开**：超长的名称与值先留前缀，装不下就停。优先那几个一律装入——
- * 目标不在视图里，模型就只能再观察一次。输出按原始顺序，`parentRef` 表达的层级关系
- * 因此仍然读得出来。一个控件的成本含它第一次带进字典的那个动作表。
+ * 目标不在视图里，模型就只能再观察一次。输出按原始顺序，层级关系由 `ref` 的路径与 `depth`
+ * 读出。一个控件的成本含它第一次带进字典的那个动作表。
  */
 function pickView(
   elements: readonly DesktopElement[],

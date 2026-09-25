@@ -1143,7 +1143,8 @@ export const desktopObserveTool: ToolSpec = {
   description:
     '观察一个窗口。capture=structure（默认）读控件表，region_image 采图，combined 两样都要，text 读文档文本与选区。' +
     '先用 structure，树里找不到目标时才采图。' +
-    '控件表给角色、名称、automationId、value、enabled、rect、parentRef 与控件状态；' +
+    '控件表给角色、名称、automationId、value、enabled、rect、depth 与控件状态；' +
+    'ref 的路径段就是祖先链，w.1.0.2 的父控件是 w.1.0；' +
     '每个控件的 actionSet 是 actionSets 的下标，指向它此刻能做的动作，delivery 非空才能执行；' +
     '控件上缺席的 enabled、offscreen、automationId 取 defaults 的值。' +
     '回执里「无可操作控件」就是自绘界面，这一次调用已经把整窗图一并给了，动作按图给坐标，不必再采一次；' +

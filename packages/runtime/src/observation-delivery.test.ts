@@ -853,7 +853,7 @@ describe('同一份结果在各层同形', () => {
 
     const envelope = JSON.parse(live) as { resources?: string[]; result?: Record<string, unknown> }
     expect(envelope.resources).toBeUndefined()
-    // 投递形状是紧凑的：按结果自带的默认值与动作字典还原后与原表相等。
+    // 投递形状是紧凑的：按结果自带的默认值与动作字典还原后，与去掉 parentRef 的原表相等。
     const observation = envelope.result?.observation as {
       defaults: Record<string, unknown>
       actionSets: DesktopSnapshot['elements'][number]['actions'][]
@@ -864,7 +864,7 @@ describe('同一份结果在各层同形', () => {
       ...rest,
       actions: observation.actionSets[actionSet],
     }))
-    expect(expanded).toEqual(小表)
+    expect(expanded).toEqual(小表.map(({ parentRef: _parentRef, ...rest }) => rest))
     expect(countRows(h)).toEqual({ refs: 0, blobs: 0 })
     expect(replayToolContent(h, runId, callId)).toBe(live)
   })
