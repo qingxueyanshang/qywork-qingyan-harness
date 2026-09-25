@@ -22,7 +22,6 @@ import {
 } from '@qywork/ai'
 import type { ContextBreakdown, RunUsage } from '@qywork/core'
 import { emptyBreakdown } from '@qywork/core'
-import { condenseMessage } from '../compaction.ts'
 import type { ToolOutcome } from '../registry.ts'
 
 /**
@@ -322,40 +321,6 @@ export function batchImageCount(messages: readonly WireMessage[], batchId: strin
     count += m.content.filter((b) => b.type === 'image').length
   }
   return count
-}
-
-/**
- * 被同一对象的更新视图取代的工具结果换成收纳信封（`condenseMessage`）。
- *
- * 判定只看消息上的 `_view`：同一 `key` 下，后面出现整个对象的视图，或同一 `scope` 的
- * 视图，且那一份不是 `partial`，前面这一份就被取代。按条件筛过的视图不取代别的结果。
- * 收纳信封保留 call_id、执行事实与资源 id，原文可经 `read_history` 或 `read_resource` 取回。
- *
- * **必须是消息序列的纯函数**：活侧与回放各调一次，产物不同就会让同一段前缀在两边
- * 长得不一样。没有被取代时返回原引用。
- */
-export function collapseSuperseded(messages: readonly WireMessage[]): WireMessage[] {
-  /** 后面出现过整个对象视图的 key。 */
-  const whole = new Set<string>()
-  /** 后面出现过的分段视图，按 key 记 scope。 */
-  const parts = new Map<string, Set<string>>()
-  const out = [...messages]
-  for (let i = out.length - 1; i >= 0; i--) {
-    const m = out[i]!
-    const view = m.role === 'tool' ? m._view : undefined
-    if (view === undefined) continue
-    const sameScope = view.scope !== undefined && parts.get(view.key)?.has(view.scope) === true
-    if (whole.has(view.key) || sameScope) out[i] = condenseMessage(m)
-    if (view.partial === true) continue
-    if (view.scope === undefined) {
-      whole.add(view.key)
-      continue
-    }
-    const scopes = parts.get(view.key) ?? new Set<string>()
-    scopes.add(view.scope)
-    parts.set(view.key, scopes)
-  }
-  return out
 }
 
 /**

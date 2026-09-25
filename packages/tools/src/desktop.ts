@@ -863,14 +863,11 @@ function windowTitle(title: string): string {
 }
 
 /** 结果生产交回的几格接到 `ToolOutcome` 上。没有落盘时不写 `resources` 这个键。 */
-function delivered(
-  parts: DesktopResultParts,
-): Pick<ToolOutcome, 'message' | 'data' | 'resources' | 'currentView'> {
+function delivered(parts: DesktopResultParts): Pick<ToolOutcome, 'message' | 'data' | 'resources'> {
   return {
     message: parts.message,
     data: parts.data,
     ...(parts.resources ? { resources: parts.resources } : {}),
-    currentView: parts.currentView,
   }
 }
 

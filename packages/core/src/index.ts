@@ -47,7 +47,6 @@ export {
   type ContextOmitted,
   type Conversation,
   type Currency,
-  type CurrentView,
   deriveConversationTitle,
   EFFORT_ORDER,
   type EffortLevel,

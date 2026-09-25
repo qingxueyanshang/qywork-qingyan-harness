@@ -210,7 +210,6 @@ export async function* executeCalls(
         content: toolOutcomeContent(s.call, s.outcome),
         _group: 'executionRecords',
         _batch: requestId,
-        ...(s.outcome.currentView ? { _view: s.outcome.currentView } : {}),
       })
 
       batchEvidence.push({
