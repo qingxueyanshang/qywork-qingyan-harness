@@ -205,7 +205,6 @@ describe('连接恢复', () => {
           root: 'C:\\work',
           rootPath: 'C:\\work',
           name: 'work',
-          pendingTrust: [],
         }
       }
       if (path.startsWith('/api/conversations/cv_restore/history')) {

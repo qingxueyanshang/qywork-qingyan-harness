@@ -38,7 +38,7 @@ import {
 } from '@qywork/store'
 import pkg from '../package.json' with { type: 'json' }
 import type { QyConfig } from './config.ts'
-import { isWorkspaceTrusted, resolveModel } from './config.ts'
+import { resolveModel } from './config.ts'
 
 export type ArchiveFormat = 'markdown' | 'json'
 
@@ -261,7 +261,7 @@ export function exportConversationDiagnostics(
   return `${JSON.stringify(
     {
       kind: 'qywork.session-diagnostic',
-      schemaVersion: 6,
+      schemaVersion: 7,
       exportedBy: {
         name: 'qywork',
         version: pkg.version,
@@ -317,9 +317,6 @@ export function exportConversationDiagnostics(
         sandboxNetwork: config.sandboxNetwork ?? 'allow',
         additionalDirectories: config.additionalDirectories ?? [],
         envAllowList: config.envAllowList ?? [],
-        workspaceTrusted: bundle.workspace
-          ? isWorkspaceTrusted(config, bundle.workspace.rootPath)
-          : null,
       },
       conversationTree: exportedTree,
       ...exportedBundle,

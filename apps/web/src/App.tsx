@@ -3,7 +3,6 @@ import { Composer } from './components/Composer.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import { Transcript } from './components/Transcript.tsx'
-import { TrustDialog } from './components/TrustDialog.tsx'
 import { localHtmlUrl } from './lib/links.ts'
 import { observeAppUpdate } from './lib/store/app-update.ts'
 
@@ -301,8 +300,6 @@ export function App() {
         </Suspense>
       </Show>
       <Tooltip />
-      {/* 项目里带着会被执行的配置时才出现，绝大多数项目从不画它。 */}
-      <TrustDialog />
       {/* 设置是弹窗：改一格就走，不必把会话整个换掉。 */}
       <Show when={settingsPage()}>
         <Suspense>

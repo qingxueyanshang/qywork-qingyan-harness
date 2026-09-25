@@ -373,33 +373,9 @@ export function probeModel(provider: string, model: string): Promise<ProbeResult
   })
 }
 
-/**
- * 当前项目，外加**这里有没有待决定的事**。
- *
- * `pendingTrust` 里是这个项目中要先点头才会执行的那些配置项的名字。空数组的两种成因
- * （项目层没有配置 / 已经信任过）调用方不需要区分。
- */
-export interface WorkspaceDetail extends WorkspaceInfo {
-  pendingTrust: string[]
-}
-export function loadWorkspace(): Promise<WorkspaceDetail> {
-  return client.api<WorkspaceDetail>('/api/workspace')
-}
-
-/**
- * 信任 / 取消信任当前项目。
- *
- * 信任的对象是**项目**：今天只有项目层 `.agents/mcp.json` 会被执行，闸就落在那里；
- * 以后再有工作区来源的执行面复用这一份，不各加一道。落在哪个项目由服务端按
- * `?ws=` 判，前端不传路径——它本来也不知道绝对路径以外的判据。
- *
- * 改的是**下一次加载扩展时的输入**：服务已经持有的那一份不重载，与 `importMcp` 同理。
- */
-export function trustWorkspace(trusted: boolean): Promise<{ trusted: boolean }> {
-  return scheduleWrite('/api/workspace/trust', {
-    method: 'POST',
-    body: JSON.stringify({ trusted }),
-  })
+/** 当前项目。 */
+export function loadWorkspace(): Promise<WorkspaceInfo> {
+  return client.api<WorkspaceInfo>('/api/workspace')
 }
 
 /**
@@ -693,8 +669,6 @@ export interface McpPayload {
   /** 配置里有、但这一轮没连上的。不列的话它们凭空消失。 */
   configured: { name: string; scope: Scope }[]
   error: string | null
-  /** 这个工作区的项目层扩展是否已授权。未授权时项目层的 server 一条都不启动。 */
-  trusted: boolean
 }
 export function loadMcp(): Promise<McpPayload> {
   return client.api<McpPayload>('/api/mcp')

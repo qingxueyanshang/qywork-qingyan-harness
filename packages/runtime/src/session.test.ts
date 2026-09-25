@@ -28,7 +28,7 @@ import {
   settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
-import { configPath, NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
+import { NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
 import { buildTailNotes } from './prompt.ts'
 import { Session, withAttachments } from './session.ts'
 
@@ -430,12 +430,10 @@ async function workspaceWithMcp(
   const root = await mkdtemp(join(tmpdir(), 'qywork-sess-mcp-'))
   await mkdir(join(root, '.agents'), { recursive: true })
   /*
-   * 项目层的 MCP 要先授权才加载，而授权落在 `config.json` 里。这一份必须写进临时
-   * 的 `QYWORK_HOME`，写本机真配置会给用户加上一条指向临时目录的授权。
+   * 加载时会合入全局层的 `mcp.json`，所以指向临时的 `QYWORK_HOME`，不连本机真配置里的 server。
    * 还原由文件末尾的 `afterEach` 负责。
    */
   process.env.QYWORK_HOME = await mkdtemp(join(tmpdir(), 'qywork-sess-home-'))
-  await writeFile(configPath(), JSON.stringify({ trustedWorkspaces: [root] }), 'utf8')
   const NL = String.fromCharCode(10)
   const defs = JSON.stringify(
     tools.map((t) => ({ ...t, inputSchema: { type: 'object' } })),
