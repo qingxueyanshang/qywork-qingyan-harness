@@ -1,6 +1,7 @@
 /**
  * 覆盖 `files.ts`：`listTree` / `createEntry` / `renameEntry` / `deleteEntry` /
- * `findByName` / `classify` / `preview`；以及 `api/workspace-fs.ts` 的路径解析。
+ * `findByName` / `classify` / `preview` / `openRaw`；以及 `api/workspace-fs.ts` 的路径解析
+ * 与原始字节接口。
  *
  * 锁这几件事：**树里一条都不少**（依赖树、构建产物、点开头的条目全列——藏一条
  * 在界面上就等于它不存在）、**新建与改名都不覆盖**、**删不存在的要抛**（不静默成功）、
@@ -186,6 +187,20 @@ describe('预览', () => {
     const out = await preview(join(dir, 'a.ts'), 'a.ts')
     expect(out).toMatchObject({ content: 'export const a = 1\n', truncated: false })
   })
+
+  /**
+   * 原始失败形状：PDF 以 data URI 内联，打包版 CSP 的 `frame-src` 不放行 `data:`，iframe 空白；
+   * 超过 4 MB 的还只给一句「超出内联上限」。现在不内联、不设上限，字节由 `/api/files/raw` 给。
+   */
+  test('PDF 不内联、不受内联上限约束，带修改时间', async () => {
+    const dir = await workspace()
+    const abs = join(dir, 'big.pdf')
+    await writeFile(abs, `%PDF-1.4 ${'x'.repeat(5 * 1024 * 1024)}`)
+    const out = await preview(abs, 'big.pdf')
+    expect(out).toMatchObject({ kind: 'pdf', mtime: (await stat(abs)).mtimeMs, truncated: false })
+    expect(out.dataUri).toBeUndefined()
+    expect(out.note).toBeUndefined()
+  })
 })
 
 describe('文件接口的路径解析', () => {
@@ -235,5 +250,22 @@ describe('文件接口的路径解析', () => {
     expect((await call(dir, '/api/files/delete', { path: 'src-link' })).status).toBe(200)
     expect(await lstat(join(dir, 'src-link')).catch(() => null)).toBeNull()
     expect(await readFile(join(dir, 'src', 'main.ts'), 'utf8')).toBe('export const b = 2\n')
+  })
+
+  /** 同一个地址在文件改写后是另一份内容，浏览器缓存会让预览停在旧版本上。 */
+  test('原始字节按类型回、不许缓存；目录回 404', async () => {
+    const dir = await workspace()
+    await writeFile(join(dir, 'x.pdf'), '%PDF-1.4 x')
+    const get = async (path: string) => {
+      const url = new URL(`http://x/api/files/raw?path=${encodeURIComponent(path)}`)
+      return (await handleWorkspaceFsApi(url, new Request(url.href), {
+        workspaceRoot: dir,
+      } as never)) as Response
+    }
+    const res = await get('x.pdf')
+    expect(res.headers.get('content-type')).toBe('application/pdf')
+    expect(res.headers.get('cache-control')).toBe('no-store')
+    expect(await res.text()).toBe('%PDF-1.4 x')
+    expect((await get('src')).status).toBe(404)
   })
 })

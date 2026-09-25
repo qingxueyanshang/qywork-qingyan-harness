@@ -36,11 +36,13 @@ export interface PreviewResult {
   kind: PreviewKind
   mime: string
   size: number
+  /** 源文件修改时间。PDF 的字节另取（`openRaw`），界面按它判断要不要重取。 */
+  mtime: number
   /** 文本族才有。 */
   content?: string
   /** 语法高亮语言标识。 */
   language?: string
-  /** 二进制族用 data URI 回传（有大小上限）。 */
+  /** 图片与音视频用 data URI 回传（有大小上限）。 */
   dataUri?: string
   truncated: boolean
   /** 无法内联时给出的说明，UI 直接显示。 */
@@ -368,9 +370,16 @@ export async function preview(abs: string, relPath: string): Promise<PreviewResu
     kind,
     mime,
     size: info.size,
+    mtime: info.mtimeMs,
     truncated: false,
     ...(language ? { language } : {}),
   }
+
+  /*
+   * PDF 不内联，字节由 `openRaw` 另给。不要改回 data URI：桌面端 CSP 的 `frame-src`
+   * 只放行 `blob:`，data URI 的 iframe 在打包版里是空白；内联还要把整份文件 base64 进这条 JSON。
+   */
+  if (kind === 'pdf') return base
 
   if (kind === 'text' || kind === 'tabular') {
     // 表格族里 csv/tsv 是文本，xlsx 不是——按实际能否解码决定走哪条路。
@@ -384,7 +393,7 @@ export async function preview(abs: string, relPath: string): Promise<PreviewResu
     return { ...base, content: text, truncated: info.size > MAX_TEXT_BYTES }
   }
 
-  if (kind === 'image' || kind === 'pdf' || kind === 'audio' || kind === 'video') {
+  if (kind === 'image' || kind === 'audio' || kind === 'video') {
     if (info.size > MAX_INLINE_BYTES) {
       return {
         ...base,
@@ -397,6 +406,16 @@ export async function preview(abs: string, relPath: string): Promise<PreviewResu
   }
 
   return { ...base, note: kind === 'archive' ? '归档文件' : '二进制文件' }
+}
+
+/** 文件的原始字节与类型。目录回 `null`。字节按流读出，不整份进内存。 */
+export async function openRaw(
+  abs: string,
+  relPath: string,
+): Promise<{ body: Blob; mime: string } | null> {
+  const info = await stat(abs)
+  if (!info.isFile()) return null
+  return { body: Bun.file(abs), mime: classify(relPath).mime }
 }
 
 async function readHead(abs: string, limit: number): Promise<Uint8Array> {

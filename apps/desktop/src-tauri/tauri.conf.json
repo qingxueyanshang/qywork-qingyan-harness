@@ -18,7 +18,7 @@
         "style-src": "'self' 'unsafe-inline'",
         "font-src": "'self' data:",
         "connect-src": "'self' http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*",
-        "frame-src": "'self' http: https:"
+        "frame-src": "'self' http: https: blob:"
       }
     }
   },
