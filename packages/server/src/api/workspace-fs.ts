@@ -1,5 +1,5 @@
 /**
- * 文件树、按名搜索、预览、新建 / 改名 / 删除。
+ * 文件树、按名搜索、预览与原始字节、新建 / 改名 / 删除。
  * 右侧面板的几个标签页都从这里取数。
  *
  * 会写盘的是 create / rename / delete 三条，**它们共用同一套口径**：
@@ -19,6 +19,7 @@ import {
   EntryExistsError,
   findByName,
   listTree,
+  openRaw,
   preview,
   renameEntry,
 } from '../files.ts'
@@ -131,6 +132,21 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     if (!rel) return json({ error: 'path required' }, 400)
     const abs = await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true, literal: true })
     return json(await preview(abs, rel))
+  }
+
+  /*
+   * 原始字节。PDF 预览用它：界面取回后 `createObjectURL` 交给 iframe。
+   * 同一个地址在文件改写后是另一份内容，所以不许浏览器缓存。
+   */
+  if (p === '/api/files/raw') {
+    const rel = q.get('path')
+    if (!rel) return json({ error: 'path required' }, 400)
+    const abs = await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true, literal: true })
+    const raw = await openRaw(abs, rel)
+    if (!raw) return json({ error: 'not_found' }, 404)
+    return new Response(raw.body, {
+      headers: { 'content-type': raw.mime, 'cache-control': 'no-store' },
+    })
   }
 
   return null

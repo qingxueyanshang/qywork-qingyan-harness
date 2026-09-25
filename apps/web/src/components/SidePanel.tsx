@@ -864,10 +864,15 @@ function FileBrowser() {
         </Show>
       </div>
 
-      <Show when={openFile()}>
+      {/*
+       * **按路径重挂**（`keyed`）：点另一个文件，正文立即换成那个文件的加载态。
+       * 不要去掉 `keyed`：资源重取期间 `loaded()` 返回上一个文件的结果，上一个文件的错误
+       * 也保留到新结果返回，正文会停在旧文件上。同一个文件的刷新不重挂，阅读位置保留。
+       */}
+      <Show when={openFile()} keyed>
         {(path) => (
           <Suspense fallback={<div class="preview" />}>
-            <FileView path={path()} refresh={manualRefresh() + state.fileVersion} />
+            <FileView path={path} refresh={manualRefresh() + state.fileVersion} />
           </Suspense>
         )}
       </Show>

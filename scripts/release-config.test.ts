@@ -56,6 +56,17 @@ describe('桌面发布清单', () => {
     }
   })
 
+  /**
+   * 文件预览的 PDF 以 blob URL 进 iframe（`FileView` 的 `PdfFrame`）。CSP 只在打包版生效，
+   * `tauri dev` 的页面由 vite 提供、不带这份 CSP，漏了这一项只在打包版里显示为空白。
+   */
+  test('打包版 CSP 放行 blob 地址的 iframe', () => {
+    const config = JSON.parse(
+      readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+    )
+    expect(config.app.security.csp['frame-src'].split(/\s+/)).toContain('blob:')
+  })
+
   test('正式更新必须打包签名并上传清单', () => {
     const prepare = actionText('release-prepare')
     const config = JSON.parse(

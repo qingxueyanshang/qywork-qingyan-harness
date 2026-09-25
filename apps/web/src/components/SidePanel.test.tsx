@@ -845,3 +845,136 @@ describe('看板按这一端真有的能力列行', () => {
     expect(labels).not.toContain('终端')
   })
 })
+
+describe('文件预览的切换与 PDF', () => {
+  /**
+   * 原始失败形状：点另一个文件后正文停在上一个文件上，直到新文件的预览取回来——
+   * 取得慢的文件看起来像点了没反应。
+   */
+  test('切换文件立即换成新文件的加载态，不留上一个文件的正文', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    let releaseB: (() => void) | undefined
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path: string,
+    ) => {
+      if (path.startsWith('/api/files/tree')) return { nodes: [] }
+      if (!path.startsWith('/api/files/preview')) throw new Error(`没有桩这条：${path}`)
+      const file = decodeURIComponent(path.split('path=')[1] ?? '')
+      if (file === 'b.md') {
+        await new Promise<void>((resolve) => {
+          releaseB = resolve
+        })
+      }
+      return {
+        path: file,
+        kind: 'text',
+        mime: 'text/markdown',
+        size: 1,
+        mtime: 1,
+        content: file === 'a.md' ? '甲文件正文' : '乙文件正文',
+        truncated: false,
+      }
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+
+    store.setWorkspace({ id: 'ws_switch', root: 'C:\\work', name: 'work' })
+    store.setOpenFile('a.md')
+    store.setSidePanel('files')
+
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+
+    await waitFor(
+      () => host.querySelector('.cm-content')?.textContent?.includes('甲文件正文') === true,
+      () => host.innerHTML.slice(0, 400),
+    )
+
+    store.setOpenFile('b.md')
+    await waitFor(
+      () => releaseB !== undefined,
+      () => 'b.md 的预览没有发出',
+    )
+    expect(host.querySelector('.preview-head')?.textContent).toContain('b.md')
+    expect(host.querySelector('.preview .preview-loading')).not.toBeNull()
+    expect(host.textContent).not.toContain('甲文件正文')
+
+    releaseB?.()
+    await waitFor(
+      () => host.querySelector('.cm-content')?.textContent?.includes('乙文件正文') === true,
+      () => host.innerHTML.slice(0, 400),
+    )
+  })
+
+  /**
+   * PDF 的字节另取，交给 iframe。会话里写别的文件会让预览重取一次，
+   * 源文件没变（修改时间相同）时字节不重取、阅读器不重新加载。
+   */
+  test('PDF 按修改时间取字节，写别的文件不重载', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    const originalRaw = store.client.raw
+    let mtime = 1
+    const rawCalls: string[] = []
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path: string,
+    ) => {
+      if (!path.startsWith('/api/files/preview')) throw new Error(`没有桩这条：${path}`)
+      return {
+        path: 'r.pdf',
+        kind: 'pdf',
+        mime: 'application/pdf',
+        size: 9,
+        mtime,
+        truncated: false,
+      }
+    }
+    ;(store.client as unknown as { raw: (path: string) => Promise<Response> }).raw = async (
+      path: string,
+    ) => {
+      rawCalls.push(path)
+      return new Response('%PDF-1.4', { headers: { 'content-type': 'application/pdf' } })
+    }
+    // happy-dom 的 iframe 取不了 `blob:` 地址，会在后台报错；换成它能加载的空白页。
+    const { createObjectURL, revokeObjectURL } = URL
+    URL.createObjectURL = () => 'about:blank'
+    URL.revokeObjectURL = () => {}
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+      ;(store.client as unknown as { raw: typeof originalRaw }).raw = originalRaw
+      URL.createObjectURL = createObjectURL
+      URL.revokeObjectURL = revokeObjectURL
+    }
+
+    const { render } = await import('solid-js/web')
+    const { default: FileView } = await import('./FileView.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(
+      () => <FileView path="r.pdf" refresh={store.state.fileVersion} />,
+      host as unknown as HTMLElement,
+    )
+
+    await waitFor(
+      () => host.querySelector('iframe.preview-frame') !== null,
+      () => `raw=${rawCalls.join(',')} html=${host.innerHTML.slice(0, 300)}`,
+    )
+    expect(rawCalls).toEqual([`/api/files/raw?path=${encodeURIComponent('r.pdf')}`])
+
+    store.setState('fileVersion', 1)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(rawCalls).toHaveLength(1)
+
+    mtime = 2
+    store.setState('fileVersion', 2)
+    await waitFor(
+      () => rawCalls.length === 2,
+      () => `raw=${rawCalls.join(',')}`,
+    )
+  })
+})

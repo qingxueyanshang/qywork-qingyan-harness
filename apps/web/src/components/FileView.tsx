@@ -1,5 +1,16 @@
 import type { EditorView } from '@codemirror/view'
-import { createEffect, createResource, Match, onCleanup, Show, Switch } from 'solid-js'
+import {
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  Match,
+  on,
+  onCleanup,
+  Show,
+  Switch,
+} from 'solid-js'
+import { ApiError } from '../lib/client.ts'
 import { createReadonlyEditor } from '../lib/editor.ts'
 import { loaded } from '../lib/resource.ts'
 import { absPath, client, explainApiError, setOpenFile } from '../lib/store/index.ts'
@@ -10,6 +21,7 @@ interface PreviewResult {
   kind: 'text' | 'image' | 'pdf' | 'audio' | 'video' | 'tabular' | 'archive' | 'binary'
   mime: string
   size: number
+  mtime: number
   content?: string
   language?: string
   dataUri?: string
@@ -74,8 +86,7 @@ export default function FileView(props: { path: string; refresh?: number }) {
                 <img class="preview-media" src={r().dataUri} alt={r().path} />
               </Match>
               <Match when={r().kind === 'pdf'}>
-                {/* WKWebView 和 WebView2 都内建 PDF 渲染，不需要额外的 JS 阅读器 */}
-                <iframe class="preview-frame" src={r().dataUri} title={r().path} />
+                <PdfFrame path={r().path} mtime={r().mtime} />
               </Match>
               <Match when={r().kind === 'video'}>
                 <video class="preview-media" src={r().dataUri} controls />
@@ -92,6 +103,71 @@ export default function FileView(props: { path: string; refresh?: number }) {
         <footer class="preview-foot">内容已截断</footer>
       </Show>
     </div>
+  )
+}
+
+/**
+ * PDF：取原始字节交给 iframe，由 WebView 内建的阅读器渲染（WebView2 与 WKWebView 都带）。
+ *
+ * - 用 blob URL，不用 data URI：桌面端 CSP 的 `frame-src` 只放行 `blob:`。
+ * - 只在修改时间变了才重取。`mtime` 必须经 memo：预览每重取一次都返回一个新对象，
+ *   直接依赖它的话，会话里任何一次写文件都会让阅读器重新加载、回到第一页。
+ * - blob URL 换下来就撤销，卸载时撤销最后一个：不撤销的话整份字节占着内存直到整页刷新。
+ */
+function PdfFrame(props: { path: string; mtime: number }) {
+  const [src, setSrc] = createSignal<string | null>(null)
+  const [error, setError] = createSignal<string | null>(null)
+  const mtime = createMemo(() => props.mtime)
+
+  const replace = (next: string | null) => {
+    const old = src()
+    setSrc(next)
+    if (old) URL.revokeObjectURL(old)
+  }
+
+  /** 只有最后一次请求算数：文件连续改写时先发的可能后到。 */
+  let generation = 0
+  createEffect(
+    on(mtime, () => {
+      const mine = ++generation
+      const url = `/api/files/raw?path=${encodeURIComponent(props.path)}`
+      void (async () => {
+        const res = await client.raw(url)
+        if (!res.ok) throw new ApiError(res.status, url, await res.text().catch(() => ''))
+        return URL.createObjectURL(await res.blob())
+      })().then(
+        (next) => {
+          if (mine !== generation) {
+            URL.revokeObjectURL(next)
+            return
+          }
+          setError(null)
+          replace(next)
+        },
+        (err: unknown) => {
+          if (mine !== generation) return
+          replace(null)
+          setError(err instanceof ApiError ? err.detail : String(err))
+        },
+      )
+    }),
+  )
+  onCleanup(() => {
+    generation += 1
+    replace(null)
+  })
+
+  return (
+    <Show
+      when={src()}
+      fallback={
+        <Show when={error()} fallback={<div class="preview-loading" />}>
+          {(msg) => <div class="preview-note">{msg()}</div>}
+        </Show>
+      }
+    >
+      {(u) => <iframe class="preview-frame" src={u()} title={props.path} />}
+    </Show>
   )
 }
 
