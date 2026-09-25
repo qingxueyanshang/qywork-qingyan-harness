@@ -126,8 +126,12 @@ export type DesktopActionKind =
 
 export type DesktopMouseButton = 'left' | 'right' | 'middle'
 
-/** 组合键里的修饰键。按下顺序即数组顺序，释放按逆序。 */
-export type DesktopModifier = 'ctrl' | 'alt' | 'shift' | 'win'
+/**
+ * 组合键里的修饰键。按下顺序即数组顺序，释放按逆序。
+ *
+ * `meta` 是 Windows 徽标键、macOS 的 Command、Linux 的 Super。
+ */
+export type DesktopModifier = 'ctrl' | 'alt' | 'shift' | 'meta'
 
 /** 窗口的显示状态。 */
 export type DesktopWindowState = 'normal' | 'minimized' | 'maximized'

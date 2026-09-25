@@ -12,8 +12,8 @@
 //!    不得 panic。
 //! 4. **本模块不做目标核对。** 前台窗口、包围盒与遮挡由调用方在派发之前判定，
 //!    这里只把已经定好的事件交给系统。
-//! 5. **扫描码由派发端补。** 虚拟键码到扫描码的映射是一次 OS 查询，放进事件序列就
-//!    测不了；事件序列里只有虚拟键码与扩展键标志。
+//! 5. **平台键码由派发端换算。** 事件序列与按下状态账里只有协议键名，换成本平台键码
+//!    （Windows 是虚拟键码、扩展键标志与扫描码）在平台的 `Sink` 里做。
 //! 6. **文字不走键盘事件。** `Event` 里没有文字，文字由 `post_text` 按 UTF-16 码元
 //!    投字符消息。不要为文字新增键盘事件：`KEYEVENTF_UNICODE` 注入时系统对
 //!    U+002D、U+2010–2015、U+3000–303F、U+FF00–FFDF 只投递按下、不投递配对的抬起，
@@ -22,10 +22,10 @@
 use std::sync::{Mutex, OnceLock};
 
 use crate::geometry::ScreenPoint;
-use crate::protocol::{HeldInput, HeldKey, Modifier, MouseButton, ScrollDirection};
+use crate::protocol::{HeldInput, MouseButton, ScrollDirection};
 
 /// 一个待派发的输入事件。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// 指针移到绝对坐标。坐标已经换算成满量程值，见 `geometry::to_absolute`。
     Move { dx: i32, dy: i32 },
@@ -33,8 +33,8 @@ pub enum Event {
     Button { button: MouseButton, down: bool },
     /// 滚轮。`delta` 是一格的整数倍，负值向下或向左。
     Wheel { delta: i32, horizontal: bool },
-    /// 物理按键。
-    Key { vk: u16, extended: bool, down: bool },
+    /// 物理按键。`key` 是协议键名：主键名或修饰键名。
+    Key { key: String, down: bool },
 }
 
 /// 一次滚动的格数对应的轮值。系统按它换算成实际行数。
@@ -44,6 +44,7 @@ pub const WHEEL_DELTA: i32 = 120;
 ///
 /// 返回真的进了输入队列的事件数，**它可能小于请求数**：目标进程完整性比本进程高时
 /// UIPI 会把这一批挡掉。调用方按这个数判执行事实，不按调用有没有报错判。
+/// 批里有本平台换算不了的键名时整批不发，返回 0。
 pub trait Sink {
     fn send(&self, events: &[Event]) -> u32;
 }
@@ -61,7 +62,7 @@ pub trait CharSink {
 #[derive(Debug, Default)]
 struct Ledger {
     buttons: Vec<MouseButton>,
-    keys: Vec<HeldKey>,
+    keys: Vec<String>,
 }
 
 impl Ledger {
@@ -85,7 +86,7 @@ pub fn on_change(notify: impl Fn(HeldInput) + Send + Sync + 'static) {
     let _ = NOTIFY.set(Box::new(notify));
 }
 
-/// 此刻按住的鼠标键与虚拟键码。
+/// 此刻按住的鼠标键与键名。
 pub fn held() -> HeldInput {
     LEDGER
         .lock()
@@ -122,26 +123,22 @@ pub const fn button_name(button: MouseButton) -> &'static str {
 pub struct Hold<'a> {
     sink: &'a dyn Sink,
     buttons: Vec<MouseButton>,
-    keys: Vec<(u16, bool)>,
+    keys: Vec<String>,
     released: bool,
 }
 
 impl<'a> Hold<'a> {
-    /// 记下将要按住的鼠标键与物理键，**在派发按下事件之前调用**。
-    pub fn record(sink: &'a dyn Sink, buttons: Vec<MouseButton>, keys: Vec<(u16, bool)>) -> Self {
+    /// 记下将要按住的鼠标键与键名，**在派发按下事件之前调用**。
+    pub fn record(sink: &'a dyn Sink, buttons: Vec<MouseButton>, keys: Vec<String>) -> Self {
         edit(|ledger| {
             for button in &buttons {
                 if !ledger.buttons.contains(button) {
                     ledger.buttons.push(*button);
                 }
             }
-            for (vk, extended) in &keys {
-                let key = HeldKey {
-                    vk: *vk,
-                    extended: *extended,
-                };
-                if !ledger.keys.contains(&key) {
-                    ledger.keys.push(key);
+            for key in &keys {
+                if !ledger.keys.contains(key) {
+                    ledger.keys.push(key.clone());
                 }
             }
         });
@@ -172,10 +169,9 @@ impl<'a> Hold<'a> {
         }
         self.released = true;
         let mut events: Vec<Event> = Vec::new();
-        for (vk, extended) in self.keys.iter().rev() {
+        for key in self.keys.iter().rev() {
             events.push(Event::Key {
-                vk: *vk,
-                extended: *extended,
+                key: key.clone(),
                 down: false,
             });
         }
@@ -195,14 +191,10 @@ impl<'a> Hold<'a> {
     }
 }
 
-fn drop_from_ledger(buttons: &[MouseButton], keys: &[(u16, bool)]) {
-    let buttons = buttons.to_vec();
-    let keys = keys.to_vec();
+fn drop_from_ledger(buttons: &[MouseButton], keys: &[String]) {
     edit(|ledger| {
         ledger.buttons.retain(|b| !buttons.contains(b));
-        ledger
-            .keys
-            .retain(|k| !keys.iter().any(|(vk, extended)| *vk == k.vk && *extended == k.extended));
+        ledger.keys.retain(|k| !keys.contains(k));
     });
 }
 
@@ -214,104 +206,20 @@ impl Drop for Hold<'_> {
 
 // ── 事件序列 ──
 
-/// 键名 → 虚拟键码与扩展键标志。认不出的名字返回 `None`，不猜。
-///
-/// 扩展键标志漏给的代价是真实的：方向键与小键盘的同名键共用虚拟键码，少了 `E0`
-/// 前缀，目标应用收到的是小键盘那一个。
-pub fn key_code(name: &str) -> Option<(u16, bool)> {
-    let lower = name.to_ascii_lowercase();
-    if let Some(letter) = single_ascii(&lower, 'a'..='z') {
-        return Some((u16::from(letter.to_ascii_uppercase() as u8), false));
-    }
-    if let Some(digit) = single_ascii(&lower, '0'..='9') {
-        return Some((u16::from(digit as u8), false));
-    }
-    if let Some(rest) = lower.strip_prefix('f') {
-        if let Ok(index) = rest.parse::<u16>() {
-            if (1..=24).contains(&index) {
-                return Some((0x6F + index, false));
-            }
-        }
-    }
-    let named = match lower.as_str() {
-        "enter" => (0x0D, false),
-        "tab" => (0x09, false),
-        "escape" => (0x1B, false),
-        "space" => (0x20, false),
-        "backspace" => (0x08, false),
-        "delete" => (0x2E, true),
-        "insert" => (0x2D, true),
-        "home" => (0x24, true),
-        "end" => (0x23, true),
-        "page_up" => (0x21, true),
-        "page_down" => (0x22, true),
-        "up" => (0x26, true),
-        "down" => (0x28, true),
-        "left" => (0x25, true),
-        "right" => (0x27, true),
-        "semicolon" => (0xBA, false),
-        "equal" => (0xBB, false),
-        "comma" => (0xBC, false),
-        "minus" => (0xBD, false),
-        "period" => (0xBE, false),
-        "slash" => (0xBF, false),
-        "backquote" => (0xC0, false),
-        "bracket_left" => (0xDB, false),
-        "backslash" => (0xDC, false),
-        "bracket_right" => (0xDD, false),
-        "quote" => (0xDE, false),
-        _ => return None,
-    };
-    Some(named)
-}
-
-fn single_ascii(text: &str, range: std::ops::RangeInclusive<char>) -> Option<char> {
-    let mut chars = text.chars();
-    let first = chars.next()?;
-    (chars.next().is_none() && range.contains(&first)).then_some(first)
-}
-
-/// 修饰键 → 虚拟键码与扩展键标志。
-pub const fn modifier_code(modifier: Modifier) -> (u16, bool) {
-    match modifier {
-        Modifier::Shift => (0x10, false),
-        Modifier::Ctrl => (0x11, false),
-        Modifier::Alt => (0x12, false),
-        // 左 Win 的扫描码带 E0 前缀，少了它目标应用收不到这个键。
-        Modifier::Win => (0x5B, true),
-    }
-}
-
 /// 组合键的事件序列：修饰键按给出的顺序按下，主键按下抬起，修饰键**逆序**释放。
 ///
 /// 逆序释放是硬要求：按 Ctrl、Shift 的顺序按下却按同序释放，目标应用在中间那一刻
 /// 收到的是一个只按着 Shift 的状态，而很多快捷键表按修饰键组合判。
-pub fn key_stroke(key: (u16, bool), modifiers: &[(u16, bool)]) -> Vec<Event> {
+pub fn key_stroke(key: &str, modifiers: &[String]) -> Vec<Event> {
+    let press = |key: &str, down: bool| Event::Key {
+        key: key.to_owned(),
+        down,
+    };
     let mut events = Vec::with_capacity(modifiers.len() * 2 + 2);
-    for (vk, extended) in modifiers {
-        events.push(Event::Key {
-            vk: *vk,
-            extended: *extended,
-            down: true,
-        });
-    }
-    events.push(Event::Key {
-        vk: key.0,
-        extended: key.1,
-        down: true,
-    });
-    events.push(Event::Key {
-        vk: key.0,
-        extended: key.1,
-        down: false,
-    });
-    for (vk, extended) in modifiers.iter().rev() {
-        events.push(Event::Key {
-            vk: *vk,
-            extended: *extended,
-            down: false,
-        });
-    }
+    events.extend(modifiers.iter().map(|m| press(m, true)));
+    events.push(press(key, true));
+    events.push(press(key, false));
+    events.extend(modifiers.iter().rev().map(|m| press(m, false)));
     events
 }
 
@@ -447,82 +355,34 @@ mod tests {
         }
     }
 
-    fn key(vk: u16, down: bool) -> Event {
+    fn key(name: &str, down: bool) -> Event {
         Event::Key {
-            vk,
-            extended: false,
+            key: name.to_owned(),
             down,
         }
     }
 
-    #[test]
-    fn letters_digits_and_function_keys_map_to_their_virtual_key_codes() {
-        assert_eq!(key_code("a"), Some((0x41, false)));
-        assert_eq!(key_code("Z"), Some((0x5A, false)));
-        assert_eq!(key_code("0"), Some((0x30, false)));
-        assert_eq!(key_code("9"), Some((0x39, false)));
-        assert_eq!(key_code("f1"), Some((0x70, false)));
-        assert_eq!(key_code("f12"), Some((0x7B, false)));
-        assert_eq!(key_code("f24"), Some((0x87, false)));
-        assert_eq!(key_code("enter"), Some((0x0D, false)));
-        assert_eq!(key_code("escape"), Some((0x1B, false)));
-        // 认不出的名字不猜：没有这个键就没有这次按键。
-        assert_eq!(key_code("f25"), None);
-        assert_eq!(key_code("f0"), None);
-        assert_eq!(key_code("any"), None);
-        assert_eq!(key_code(""), None);
-        assert_eq!(key_code("ctrl"), None);
-    }
-
-    /// 方向键与编辑键要带扩展键标志：少了它目标应用收到的是小键盘上的同码键。
-    #[test]
-    fn navigation_keys_carry_the_extended_flag() {
-        for name in [
-            "up", "down", "left", "right", "home", "end", "page_up", "page_down", "insert",
-            "delete",
-        ] {
-            assert_eq!(key_code(name).map(|k| k.1), Some(true), "{name} 应当是扩展键");
-        }
-        for name in ["a", "enter", "tab", "space", "f5", "comma"] {
-            assert_eq!(key_code(name).map(|k| k.1), Some(false), "{name} 不该是扩展键");
-        }
-        assert!(modifier_code(Modifier::Win).1);
-        assert_eq!(modifier_code(Modifier::Ctrl), (0x11, false));
-        assert_eq!(modifier_code(Modifier::Alt), (0x12, false));
-        assert_eq!(modifier_code(Modifier::Shift), (0x10, false));
+    fn names(keys: &[&str]) -> Vec<String> {
+        keys.iter().map(|k| (*k).to_owned()).collect()
     }
 
     /// 修饰键按给出的顺序按下，逆序释放。
     #[test]
     fn a_key_stroke_releases_its_modifiers_in_reverse_order() {
-        let events = key_stroke((0x41, false), &[(0x11, false), (0x10, false)]);
+        let events = key_stroke("a", &names(&["ctrl", "shift"]));
         assert_eq!(
             events,
             vec![
-                key(0x11, true),
-                key(0x10, true),
-                key(0x41, true),
-                key(0x41, false),
-                key(0x10, false),
-                key(0x11, false),
+                key("ctrl", true),
+                key("shift", true),
+                key("a", true),
+                key("a", false),
+                key("shift", false),
+                key("ctrl", false),
             ]
         );
         // 没有修饰键时就是一对按下抬起。
-        assert_eq!(
-            key_stroke((0x0D, false), &[]),
-            vec![key(0x0D, true), key(0x0D, false)]
-        );
-    }
-
-    /// 扩展键标志跟着每一个事件走，按下与抬起都要带。
-    #[test]
-    fn the_extended_flag_travels_with_both_halves_of_a_key_press() {
-        let events = key_stroke((0x26, true), &[(0x5B, true)]);
-        assert!(events.iter().all(|e| matches!(
-            e,
-            Event::Key { extended: true, .. }
-        )));
-        assert_eq!(events.len(), 4);
+        assert_eq!(key_stroke("enter", &[]), vec![key("enter", true), key("enter", false)]);
     }
 
     /// 代理对的两个码元在同一批里。分批发会让目标应用先收到一个孤立的高位代理。
@@ -716,20 +576,15 @@ mod tests {
         let _guard = LEDGER_TESTS.lock().expect("用例锁");
         let sink = Recorder::default();
         {
-            let _hold = Hold::record(&sink, vec![MouseButton::Left], vec![(0x11, false)]);
+            let _hold = Hold::record(&sink, vec![MouseButton::Left], names(&["ctrl", "a"]));
             assert_eq!(held().buttons, vec!["left"]);
-            assert_eq!(
-                held().keys,
-                vec![HeldKey {
-                    vk: 0x11,
-                    extended: false
-                }]
-            );
+            assert_eq!(held().keys, names(&["ctrl", "a"]));
         }
         assert_eq!(
             sink.events(),
             vec![
-                key(0x11, false),
+                key("a", false),
+                key("ctrl", false),
                 Event::Button {
                     button: MouseButton::Left,
                     down: false
@@ -760,7 +615,7 @@ mod tests {
             accept: Some(0),
             ..Recorder::default()
         };
-        assert_eq!(sink.send(&key_stroke((0x41, false), &[])), 0);
+        assert_eq!(sink.send(&key_stroke("a", &[])), 0);
         assert!(sink.events().is_empty());
     }
 }

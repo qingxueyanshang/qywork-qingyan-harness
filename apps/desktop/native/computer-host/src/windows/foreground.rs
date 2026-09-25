@@ -13,7 +13,8 @@
 //!    共用这一处），再做各自原有的核对：指针核对落点归目标窗口，键盘核对前台窗口就是
 //!    目标窗口且窗口未被禁用。点名了控件时再核对它持有键盘焦点，焦点不在它上面就拒绝
 //!    ——激活窗口不等于改控件焦点，这一条不替用户做。不点名控件即以窗口为目标。
-//!    带 Win 的组合键例外：它发给系统，不提目标窗口，改提任务栏（`system_shortcut`）。
+//!    带 `meta`（Windows 徽标键）的组合键例外：它发给系统，不提目标窗口，改提任务栏
+//!    （`system_shortcut`）。
 //! 5. **中途前台变了立即停止**，已发出多少如实带回，执行事实落 `unknown`，不向另一个
 //!    窗口续输。这条管的是动作进行中，不是派发前。
 //! 6. **窗口动作的生效证据按动作各自读回**（前台窗口、显示状态、窗口矩形），
@@ -46,11 +47,11 @@ use super::{current_pattern, defer, dispatch_call, CallWatch, StateWatch};
 use crate::backend::{lands_on_target, Attempt, Outcome};
 use crate::geometry::{to_absolute, ScreenPoint, ScreenRect};
 use crate::input::{
-    drag_path, key_code, key_stroke, modifier_code, post_text, wheel_of, CharSink, Event, Hold,
-    Sink,
+    drag_path, key_stroke, post_text, wheel_of, CharSink, Event, Hold, Sink,
 };
 use crate::protocol::{
-    classify_input, ActionEvidence, ActionSpec, Dispatch, Modifier, MouseButton, WindowState,
+    classify_input, key_name, ActionEvidence, ActionSpec, Dispatch, Modifier, MouseButton,
+    WindowState,
 };
 
 /// 一次拖拽分几段移动。
@@ -93,7 +94,7 @@ pub fn perform(
 ) -> Attempt {
     let sink = SystemSink;
     if let ActionSpec::PressKey { key, modifiers } = action {
-        if modifiers.contains(&Modifier::Win) {
+        if modifiers.contains(&Modifier::Meta) {
             return system_shortcut(&sink, key, modifiers);
         }
     }
@@ -456,11 +457,11 @@ fn gui_focus() -> i64 {
 
 /// 一次组合键。整条序列一次交给系统，中间没有别的输入插得进来。
 fn press_key(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attempt {
-    let Some(main) = key_code(key) else {
+    let Some(main) = key_name(key) else {
         return Attempt::Refused(format!("unknown_key: {key}"));
     };
-    let held: Vec<(u16, bool)> = modifiers.iter().map(|m| modifier_code(*m)).collect();
-    let events = key_stroke(main, &held);
+    let held: Vec<String> = modifiers.iter().map(|m| m.key_name().to_owned()).collect();
+    let events = key_stroke(&main, &held);
     let requested = u32::try_from(events.len()).unwrap_or(u32::MAX);
     // 记账在派发之前：整条序列自带抬起，但只发出去一半时修饰键会停在按下状态。
     let mut hold = Hold::record(sink, Vec::new(), {
@@ -479,7 +480,7 @@ fn press_key(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attempt {
     Attempt::Called(Outcome::returned(dispatch, reason))
 }
 
-/// 带 Win 的组合键发给系统，不经过任何应用窗口。
+/// 带 `meta`（Windows 徽标键）的组合键发给系统，不经过任何应用窗口。
 ///
 /// 先把任务栏提到前台再按：系统快捷键由外壳截获，与前台是哪个窗口无关；不是系统快捷键的
 /// 组合落在任务栏上，不进用户的窗口。不要改成先提目标窗口：桌面（Progman）提到前台后，

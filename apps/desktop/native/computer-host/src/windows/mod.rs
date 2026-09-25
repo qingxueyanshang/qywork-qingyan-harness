@@ -16,6 +16,7 @@
 
 mod capture;
 mod foreground;
+mod keys;
 mod sink;
 
 use std::cell::OnceCell;
@@ -94,7 +95,7 @@ use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
     now_ms, scroll_amounts, selected_name_budget, toggle_steps, ActionEvidence, ActionSpec,
     Bounds, range_state, BlockingWindow, Completeness, Dispatch, DragTarget, Image, Node,
-    NodeAction, Observation, ScrollState, Select, SelectionState, Text, TextSelection,
+    NodeAction, Observation, Role, ScrollState, Select, SelectionState, Text, TextSelection,
     ToggleState, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED, REF_STALE, TARGET_BLOCKED,
 };
 use crate::tree::{
@@ -2405,58 +2406,60 @@ fn selection_support_name(support: SupportedTextSelection) -> &'static str {
     }
 }
 
-/// UIA 控件类型常量从 50000 起连续编号，按偏移取名。
-const ROLES: [&str; 41] = [
-    "button",
-    "calendar",
-    "check_box",
-    "combo_box",
-    "edit",
-    "hyperlink",
-    "image",
-    "list_item",
-    "list",
-    "menu",
-    "menu_bar",
-    "menu_item",
-    "progress_bar",
-    "radio_button",
-    "scroll_bar",
-    "slider",
-    "spinner",
-    "status_bar",
-    "tab",
-    "tab_item",
-    "text",
-    "tool_bar",
-    "tool_tip",
-    "tree",
-    "tree_item",
-    "custom",
-    "group",
-    "thumb",
-    "data_grid",
-    "data_item",
-    "document",
-    "split_button",
-    "window",
-    "pane",
-    "header",
-    "header_item",
-    "table",
-    "title_bar",
-    "separator",
-    "semantic_zoom",
-    "app_bar",
+/// UIA 控件类型 → 协议角色。UIA 的控件类型常量从 50000 起连续编号，按偏移取。
+const CONTROL_TYPE_ROLES: [Role; 41] = [
+    Role::Button,
+    Role::Calendar,
+    Role::CheckBox,
+    Role::ComboBox,
+    Role::Edit,
+    Role::Hyperlink,
+    Role::Image,
+    Role::ListItem,
+    Role::List,
+    Role::Menu,
+    Role::MenuBar,
+    Role::MenuItem,
+    Role::ProgressBar,
+    Role::RadioButton,
+    Role::ScrollBar,
+    Role::Slider,
+    Role::Spinner,
+    Role::StatusBar,
+    Role::Tab,
+    Role::TabItem,
+    Role::Text,
+    Role::ToolBar,
+    Role::ToolTip,
+    Role::Tree,
+    Role::TreeItem,
+    Role::Custom,
+    Role::Group,
+    Role::Thumb,
+    Role::DataGrid,
+    Role::DataItem,
+    Role::Document,
+    Role::SplitButton,
+    Role::Window,
+    Role::Pane,
+    Role::Header,
+    Role::HeaderItem,
+    Role::Table,
+    Role::TitleBar,
+    Role::Separator,
+    Role::SemanticZoom,
+    Role::AppBar,
 ];
 
+/// 控件类型换算成协议角色名。词表里没有对应的类型交回 `control_<ControlType>`，
+/// 不猜一个相近的角色。
 fn role_name(control_type: i32) -> String {
     usize::try_from(control_type - 50_000)
         .ok()
-        .and_then(|offset| ROLES.get(offset))
+        .and_then(|offset| CONTROL_TYPE_ROLES.get(offset))
         .map_or_else(
             || format!("control_{control_type}"),
-            |name| (*name).to_owned(),
+            |role| role.as_str().to_owned(),
         )
 }
 
