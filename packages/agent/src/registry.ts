@@ -10,7 +10,13 @@
  * 3. **重名即装配错误。** 同名注册直接抛，不静默覆盖——覆盖会静默丢弃一整个插件的工具。
  */
 
-import { estimateJson, type TokenDensity, type ToolSchema } from '@qywork/ai'
+import {
+  estimateJson,
+  type MediaFile,
+  type MediaInput,
+  type TokenDensity,
+  type ToolSchema,
+} from '@qywork/ai'
 import type {
   ActionDescriptor,
   ActionKind,
@@ -19,6 +25,7 @@ import type {
   GoalAction,
   GoalWriteResult,
   IntermediateResourceRef,
+  MediaOutput,
   ResourceCoverage,
   Schedule,
   ScheduleDraft,
@@ -33,6 +40,45 @@ import type {
 import type { DesktopPort } from './desktop.ts'
 
 // ─────────────────────────────── 执行上下文 ───────────────────────────────
+
+/**
+ * 生成端口：生成工具经它调用生成模型。
+ *
+ * 选模型、按目录校验参数、调接口在实现方（runtime，只有它握着配置与凭证）；读参考图、写产物留在工具里，
+ * 与 `read_file` / `write_file` 走同一条路径边界。接口定义在这里的理由同 `SinkPort`。
+ */
+export interface MediaPort {
+  generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult>
+}
+
+export interface MediaCall {
+  type: MediaOutput
+  prompt: string
+  /** 输入文件，各带用途。操作由用途推出来（见实现方），不让大模型选。 */
+  inputs: MediaInput[]
+  /** 大模型按参数表填的原生字段，由实现方按目录校验。 */
+  params: Record<string, unknown>
+  /** 与 `model` 同给同不给；都不给用该类别的默认模型。 */
+  provider?: string
+  model?: string
+  /** 接续取回一个已提交的远端任务：只查询与下载，不再提交、不重复扣费。要同时给 provider 与 model。 */
+  resumeTaskId?: string
+  /**
+   * 远端任务号一到手就回调，带上实际选中的接口与模型，调用方把它落盘；
+   * 之后停止、超时、进程退出都还能取回。
+   */
+  onTask?: (task: { taskId: string; provider: string; model: string }) => void | Promise<void>
+  /** 远端任务状态变化时回报一句。 */
+  onStatus?: (status: string) => void
+}
+
+/**
+ * 失败（选不出模型、参数不合法、接口报错）的 `message` 直接给大模型读，要写明怎么改。
+ * `pendingTaskId`：远端任务还在（等待超时、查询或下载失败），可以接续取回；没有它的失败是终态。
+ */
+export type MediaCallResult =
+  | { ok: true; provider: string; model: string; files: MediaFile[] }
+  | { ok: false; message: string; pendingTaskId?: string }
 
 /**
  * 中间资源落盘端口。
@@ -913,6 +959,12 @@ export interface ToolContext {
   /** MCP 配置通道；没接时 `write_mcp_server` / `move_mcp_server` 不注册。 */
   mcpConfig?: McpConfigPort
   /**
+   * 生成通道。见 `MediaPort`。
+   *
+   * 没有配置任何生成模型时不接，生成工具不注册：没有模型的生成工具没有任何降级形态。
+   */
+  media?: MediaPort
+  /**
    * 内置浏览器通道。见 `BrowserPort`。
    *
    * 没接上时浏览器工具不注册——同 `delegate` 那条：没有浏览器的浏览器工具
@@ -1052,7 +1104,7 @@ export interface ToolOutcome {
   message: string
   data?: Record<string, unknown>
   /** 明确的用户界面展示意图；缺省结果只进入模型上下文与账本。 */
-  presentation?: { images?: 'inline' }
+  presentation?: { images?: 'inline'; files?: 'open' }
   fileChanges?: FileChange[]
   /** 本次调用落盘的中间资源。必须原样进账本——压缩层要靠它判断正文还在不在。 */
   resources?: IntermediateResourceRef[]

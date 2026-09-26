@@ -22,6 +22,8 @@ import { moveSkillTool, readSkillTool, writeSkillTool } from './skills.ts'
 import { writeTodosTool } from './todos.ts'
 import { webFetchTool, webSearchTool } from './web.ts'
 
+// 生成工具按类别查：runtime 据此判断本轮快照要不要列那一类模型
+export { MEDIA_TOOLS } from './generate.ts'
 // 记忆：runtime/session.ts 装配提示词时要读索引，server/api/memory.ts 要读写单条
 export {
   listAllScopedEntries,
@@ -103,7 +105,9 @@ export {
 } from './tool-pool.ts'
 export { type ChangeWindow, openChangeWindow } from './workspace-watch.ts'
 
+import type { MediaOutput } from '@qywork/core'
 import { defineRoleTool } from './define-role.ts'
+import { MEDIA_TOOLS } from './generate.ts'
 import { readHistoryTool } from './history.ts'
 import { installPluginTool } from './plugin-install.ts'
 import { subagentTool } from './subagent.ts'
@@ -125,6 +129,8 @@ export function registerBuiltinTools(
     mcpConfig?: boolean
     browser?: boolean
     desktop?: boolean
+    /** 配了模型的生成类别。每一类的生成工具只在这一类有模型时注册。 */
+    media?: readonly MediaOutput[]
   } = {},
 ): void {
   const shell = commandShell()
@@ -157,6 +163,8 @@ export function registerBuiltinTools(
     writeSkillTool,
     moveSkillTool,
     ...(opts.mcpConfig ? [writeMcpServerTool, moveMcpServerTool] : []),
+    // 生成按类别注册：没有图像模型的出图工具调一次必失败（B5）。
+    ...(opts.media ?? []).map((output) => MEDIA_TOOLS[output]),
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,
