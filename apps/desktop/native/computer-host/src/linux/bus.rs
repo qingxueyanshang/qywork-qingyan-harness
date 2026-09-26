@@ -7,8 +7,10 @@ use std::io::ErrorKind;
 use std::time::Duration;
 
 use atspi::proxy::bus::{BusProxyBlocking, StatusProxyBlocking};
+use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::proxy::ProxyImpl;
 use zbus::blocking::Connection;
+use zbus::names::BusName;
 use zbus::proxy::CacheProperties;
 
 use crate::protocol::REF_STALE;
@@ -16,25 +18,80 @@ use crate::protocol::REF_STALE;
 /// 总线上的一个无障碍对象：所在应用的唯一名与对象路径。
 ///
 /// 唯一名在总线存续期间不复用，应用重启后换一个，所以旧对象的 `Obj` 不会指到新进程上。
+/// 以众所周知名交回的引用由 `resolve` 换成属主的唯一名，`bus` 里只有唯一名。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Obj {
     pub bus: String,
     pub path: String,
 }
 
+/// 应用交回的一格对象引用 `(so)`，按总线名的形式分。
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reference {
+    /// 空引用。应用对不存在的子节点交回它，不报错。
+    Null,
+    Unique(Obj),
+    /// WebKitGTK 的界面进程以 WebProcess 的众所周知名（`<应用>.Sandboxed.WebProcess-<uuid>`）引用
+    /// 网页的根，沙箱开关与否都是这个形式；WebProcess 自己交回的引用用它的唯一名。
+    WellKnown {
+        name: BusName<'static>,
+        path: String,
+    },
+    /// 总线名既不是唯一名也不是众所周知名，原文是原因。
+    Invalid(String),
+}
+
+impl Reference {
+    /// 按 D-Bus 的总线名语法分类。空引用只看路径，与总线名无关。
+    pub fn parse(name: &str, path: &str) -> Self {
+        if path == Obj::NULL_PATH {
+            return Self::Null;
+        }
+        match BusName::try_from(name.to_owned()) {
+            Ok(BusName::Unique(unique)) => Self::Unique(Obj {
+                bus: unique.to_string(),
+                path: path.to_owned(),
+            }),
+            Ok(name) => Self::WellKnown {
+                name,
+                path: path.to_owned(),
+            },
+            Err(e) => Self::Invalid(format!("对象引用 ({name:?}, {path}) 的总线名不合法：{e}")),
+        }
+    }
+
+    /// 换成对象，空引用交回 `None`。`owner` 查众所周知名此刻的属主，见 `owner`。
+    ///
+    /// 身份段取属主的唯一名，不要改成众所周知名：众所周知名可以在进程重启后由新进程重新持有，
+    /// 旧 `ref` 会重新定位到新进程里同一路径的对象上；WebProcess 引用自己的对象时用唯一名，
+    /// 同一个对象会有两个身份段，遍历的去重随之失效。
+    ///
+    /// 总线名不合法的一格按对象消失记：这一格没有可以寻址的对象。
+    pub fn resolve(
+        self,
+        owner: impl FnOnce(BusName<'static>) -> Result<String, Failure>,
+    ) -> Option<Result<Obj, Failure>> {
+        match self {
+            Self::Null => None,
+            Self::Unique(obj) => Some(Ok(obj)),
+            Self::WellKnown { name, path } => Some(owner(name).map(|bus| Obj { bus, path })),
+            Self::Invalid(text) => Some(Err(Failure::Gone { app: false, text })),
+        }
+    }
+}
+
+/// 众所周知名此刻的属主（唯一名），由总线守护进程给出，不经应用。
+pub fn owner(conn: &Connection, name: BusName<'static>) -> Result<String, Failure> {
+    let daemon = DBusProxy::new(conn).map_err(dbus("建总线守护进程代理"))?;
+    daemon
+        .get_name_owner(name)
+        .map(|unique| unique.to_string())
+        .map_err(|e| Failure::from_zbus("查总线名的属主", &e.into()))
+}
+
 impl Obj {
     /// 这个对象在注册表里的空引用路径。应用对不存在的子节点交回它，不报错。
     const NULL_PATH: &'static str = "/org/a11y/atspi/null";
-
-    /// 从总线交回的对象引用构造。空引用交回 `None`。
-    pub fn from_ref(object: &atspi::ObjectRefOwned) -> Option<Self> {
-        let bus = object.name_as_str()?;
-        let path = object.path_as_str();
-        (path != Self::NULL_PATH && !bus.is_empty()).then(|| Self {
-            bus: bus.to_owned(),
-            path: path.to_owned(),
-        })
-    }
 
     /// 一个应用的根对象。
     pub fn root_of(bus: &str) -> Self {
@@ -243,18 +300,92 @@ mod tests {
         assert!(stale.is_gone());
     }
 
+    /// 不该问总线守护进程的引用：唯一名与空引用。
+    fn no_lookup(name: BusName<'static>) -> Result<String, Failure> {
+        panic!("不该查 {name} 的属主")
+    }
+
+    /// 空引用只看路径：总线名为空、为唯一名都一样。
     #[test]
     fn a_null_reference_is_not_an_object() {
-        let null = atspi::ObjectRef::new_owned(
-            zbus::names::UniqueName::from_static_str_unchecked(":1.2"),
-            zbus::zvariant::ObjectPath::from_static_str_unchecked(Obj::NULL_PATH),
-        );
-        assert_eq!(Obj::from_ref(&null), None);
-        let real = atspi::ObjectRef::new_owned(
-            zbus::names::UniqueName::from_static_str_unchecked(":1.2"),
-            zbus::zvariant::ObjectPath::from_static_str_unchecked("/org/a11y/atspi/accessible/7"),
-        );
-        let obj = Obj::from_ref(&real).expect("真实对象");
+        assert!(Reference::parse("", Obj::NULL_PATH)
+            .resolve(no_lookup)
+            .is_none());
+        assert!(Reference::parse(":1.2", Obj::NULL_PATH)
+            .resolve(no_lookup)
+            .is_none());
+        let obj = Reference::parse(":1.2", "/org/a11y/atspi/accessible/7")
+            .resolve(no_lookup)
+            .expect("真实对象")
+            .expect("唯一名直接可用");
         assert_eq!(obj.key(), ":1.2/org/a11y/atspi/accessible/7");
+    }
+
+    const WEB_PROCESS: &str = "org.webkit.app-2a42ef0a781e095cffb6c580eb308d5545f3c4e5da6e3d626c0899063a3fd236.Sandboxed.WebProcess-8105f09d-d955-4a1d-81d9-b0d18a512e8f";
+    const WEB_ROOT: &str = "/org/a11y/webkit/accessible/eee2d7dc_8d6f_4ce7_9d21_4328496c21ed";
+
+    /// 原始失败形状：WebKitGTK 界面进程交回的网页根引用，总线名是 WebProcess 的众所周知名。
+    /// 它是一格合法引用；身份段取属主的唯一名，与 WebProcess 自己以唯一名交回的同一个对象相同。
+    #[test]
+    fn a_web_process_reference_resolves_to_its_owner() {
+        let asked = std::cell::Cell::new(false);
+        let obj = Reference::parse(WEB_PROCESS, WEB_ROOT)
+            .resolve(|name| {
+                asked.set(true);
+                assert_eq!(name.as_str(), WEB_PROCESS);
+                Ok(":1.2".to_owned())
+            })
+            .expect("真实对象")
+            .expect("属主查得到");
+        assert!(asked.get());
+        let same = Reference::parse(":1.2", WEB_ROOT)
+            .resolve(no_lookup)
+            .expect("真实对象")
+            .expect("唯一名直接可用");
+        assert_eq!(obj, same);
+        assert_eq!(obj.key(), format!(":1.2{WEB_ROOT}"));
+    }
+
+    /// WebProcess 换了一个之后众所周知名与属主都换了：旧身份段对不上新对象。
+    #[test]
+    fn a_restarted_web_process_gets_a_new_identity() {
+        let before = Reference::parse(WEB_PROCESS, WEB_ROOT)
+            .resolve(|_| Ok(":1.2".to_owned()))
+            .and_then(Result::ok)
+            .expect("旧对象");
+        let after = Reference::parse(
+            "org.webkit.app-2a42ef0a781e095cffb6c580eb308d5545f3c4e5da6e3d626c0899063a3fd236.Sandboxed.WebProcess-dba5a8e7-f257-4093-a8b1-6761f797eba8",
+            WEB_ROOT,
+        )
+        .resolve(|_| Ok(":1.5".to_owned()))
+        .and_then(Result::ok)
+        .expect("新对象");
+        assert_ne!(before.key(), after.key());
+    }
+
+    /// 众所周知名此刻没有属主：这一格按对象消失记，交给遍历记截断，不是整条回复失败。
+    #[test]
+    fn a_well_known_name_without_an_owner_is_a_vanished_child() {
+        let no_owner = zbus::fdo::Error::NameHasNoOwner("x".to_owned());
+        let gone = Reference::parse(WEB_PROCESS, WEB_ROOT)
+            .resolve(|_| Err(Failure::from_zbus("查总线名的属主", &no_owner.into())))
+            .expect("不是空引用")
+            .expect_err("没有属主");
+        assert!(gone.is_gone() && !gone.is_timeout());
+    }
+
+    /// 总线名为空或不合法的一格是读不出的引用，按对象消失记，只丢这一格。
+    #[test]
+    fn a_malformed_bus_name_is_an_unreadable_reference() {
+        for name in ["", "not a name", "1.2"] {
+            let failure = Reference::parse(name, "/org/a11y/atspi/accessible/5")
+                .resolve(no_lookup)
+                .expect("不是空引用")
+                .expect_err("读不出");
+            assert!(failure.is_gone() && !failure.is_timeout());
+            let reason = failure.into_reason();
+            assert!(reason.starts_with("ref_stale: "), "{reason}");
+            assert!(reason.contains("/org/a11y/atspi/accessible/5"), "{reason}");
+        }
     }
 }
