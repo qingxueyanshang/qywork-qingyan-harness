@@ -37,9 +37,11 @@ export {
   isDashScopeEndpoint,
   MEDIA_KIND_OUTPUT,
   MEDIA_KINDS,
+  MEDIA_OUTPUT_UNIT,
   MEDIA_OUTPUTS,
   type MediaKind,
   type MediaOutput,
+  type MediaSpend,
 } from './domain/media.ts'
 // 领域模型：落库形状与读数口径，几乎每个包都要
 export {
@@ -103,6 +105,7 @@ export {
   type RunStatus,
   type RunUsage,
   reconcileBreakdown,
+  runCosts,
   type Step,
   type StepKind,
   type StepPayload,

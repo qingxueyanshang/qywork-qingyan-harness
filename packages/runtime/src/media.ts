@@ -11,11 +11,14 @@ import {
   lookupMediaModel,
   MediaError,
   type MediaInput,
+  type MediaModelSpec,
   type MediaOperation,
+  type MediaUsage,
+  mediaCost,
   operationLabel,
   validateMediaCall,
 } from '@qywork/ai'
-import type { MediaOutput } from '@qywork/core'
+import type { MediaKind, MediaOutput, MediaSpend } from '@qywork/core'
 import { listMediaModels, type QyConfig, resolveMediaModel } from './config.ts'
 
 const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
@@ -48,7 +51,33 @@ export function operationOf(
   return { operation: 'text_to_video' }
 }
 
-export function makeMediaPort(config: QyConfig): MediaPort {
+/**
+ * 一次成功生成的花费。数量按类别取接口回报的张数、秒数或字符数，金额见 `mediaCost`。
+ * 只在成功时产生：失败的请求各家都不计费。
+ */
+function spendOf(
+  spec: MediaModelSpec,
+  usage: MediaUsage,
+  output: MediaOutput,
+  target: { kind: MediaKind; provider: string; model: string },
+): MediaSpend {
+  const { cost, currency } = mediaCost(spec, usage)
+  const quantity =
+    output === 'image' ? usage.images : output === 'video' ? usage.seconds : usage.characters
+  return {
+    kind: target.kind,
+    provider: target.provider,
+    model: target.model,
+    output,
+    quantity: quantity ?? null,
+    cost,
+    currency,
+    at: Date.now(),
+  }
+}
+
+/** `onSpend`：每次成功生成交出花费，由会话层记进所属轮次。 */
+export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) => void): MediaPort {
   return {
     async generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult> {
       const label = OUTPUT_LABEL[call.type]
@@ -127,6 +156,7 @@ export function makeMediaPort(config: QyConfig): MediaPort {
             ...(call.resumeTaskId ? { resumeTaskId: call.resumeTaskId } : {}),
           },
         )
+        onSpend?.(spendOf(adapter.spec, result.usage ?? {}, call.type, target))
         return { ok: true, provider: target.provider, model: target.model, files: result.files }
       } catch (err) {
         if (signal.aborted || !(err instanceof MediaError)) throw err

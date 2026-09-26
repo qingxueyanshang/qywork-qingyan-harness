@@ -2157,6 +2157,43 @@ DROP TABLE permission_audit;
     // 没有读写方：会话装配不再按会话关闭技能 / 记忆 / 扩展工具，界面也没有入口。
     sql: `DROP TABLE conversation_extras;`,
   },
+  {
+    id: 64,
+    name: 'media_spend',
+    /**
+     * 生成花费：`runs.media_usage` 存本轮每次生成的花费（`MediaSpend[]` JSON），账本放行 `media`。
+     *
+     * 账本重建而不是 ALTER：SQLite 改不了 CHECK 约束。列序照现表（`currency` 是迁移 7 追加的，排最后），
+     * `INSERT … SELECT *` 才对得上。`team` / `classifier` 两个值原样保留，删不删由用户定。
+     */
+    sql: `
+ALTER TABLE runs ADD COLUMN media_usage TEXT NOT NULL DEFAULT '[]';
+CREATE TABLE usage_ledger_new (
+  id              TEXT PRIMARY KEY,
+  kind            TEXT NOT NULL CHECK (kind IN ('run','summary','team','classifier','media')),
+  run_id          TEXT,
+  conversation_id TEXT,
+  workspace_id    TEXT,
+  model           TEXT NOT NULL,
+  provider        TEXT NOT NULL,
+  input_tokens    INTEGER NOT NULL DEFAULT 0,
+  output_tokens   INTEGER NOT NULL DEFAULT 0,
+  cached_tokens   INTEGER,
+  cache_write_tokens INTEGER,
+  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+  cost            REAL NOT NULL DEFAULT 0,
+  occurred_at     INTEGER NOT NULL,
+  currency        TEXT NOT NULL DEFAULT 'USD'
+);
+INSERT INTO usage_ledger_new SELECT * FROM usage_ledger;
+DROP TABLE usage_ledger;
+ALTER TABLE usage_ledger_new RENAME TO usage_ledger;
+CREATE INDEX idx_usage_time ON usage_ledger(occurred_at);
+CREATE INDEX idx_usage_ws ON usage_ledger(workspace_id, occurred_at);
+CREATE INDEX idx_usage_model ON usage_ledger(model, occurred_at);
+CREATE UNIQUE INDEX uq_usage_run ON usage_ledger(run_id) WHERE run_id IS NOT NULL AND kind = 'run';
+`,
+  },
 ]
 
 /**
@@ -2259,6 +2296,8 @@ export interface RunRow {
   /** 派活来源，见 `Run.dispatchStepId`。NULL = 不是派出来的。 */
   dispatch_step_id: StepId | null
   dispatch_node_id: string | null
+  /** 本轮的生成花费，`MediaSpend[]` JSON。 */
+  media_usage: string
   created_at: number
   finished_at: number | null
 }
@@ -2418,6 +2457,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'finished_at',
     'dispatch_step_id',
     'dispatch_node_id',
+    'media_usage',
   ],
   steps: [
     'id',

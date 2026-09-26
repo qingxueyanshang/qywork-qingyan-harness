@@ -46,8 +46,10 @@ import type {
   EffortLevel,
   FollowUp,
   GoalWriteResult,
+  MediaSpend,
   RunId,
   RunInterruption,
+  RunUsage,
   Step,
   StepId,
   WorkflowProjection,
@@ -105,6 +107,7 @@ import {
   settleToolStep,
   touchRun,
   updateGoal,
+  updateRunMedia,
   updateRunUsage,
   upsertWorkspace,
   workflowIdsOf,
@@ -263,6 +266,14 @@ export class Session {
    * 校验不通过的条目在这里就被丢掉，用户会在 `configNotices` 里看到原因。
    */
   private readonly extraDirs: string[]
+
+  /**
+   * 各轮次的生成花费。生成通道成功时追加并写进 `runs.media_usage`（`recordMediaSpend`），
+   * 本轮 usage 事件经过 `ask` 时附上，轮次结束时逐条入账后清掉。
+   */
+  private readonly mediaSpends = new Map<RunId, MediaSpend[]>()
+  /** 各轮次最近一次的模型用量。生成花费到达时补推 usage 事件，以它为底。 */
+  private readonly modelUsage = new Map<RunId, RunUsage>()
 
   constructor(private readonly opts: SessionOptions) {
     this.extraDirs = normalizeAdditionalDirectories(opts.config.additionalDirectories).dirs
@@ -680,6 +691,14 @@ export class Session {
         ...(anchor ? { anchor } : {}),
       })) {
         if (ev.type === 'run.error') failure = { message: ev.message, code: ev.code }
+        if (ev.type === 'usage') this.modelUsage.set(run.id, ev.usage)
+        // 本轮的生成花费附进 usage：读数条与「运行」面板按 `runCosts` 把它与模型花费合在一起显示。
+        // 下面记账用的 `ev.usage` 仍只是模型调用那一份。
+        const spends = this.mediaSpends.get(run.id)
+        const out =
+          spends?.length && (ev.type === 'usage' || ev.type === 'run.finished')
+            ? { ...ev, usage: { ...ev.usage, media: spends } }
+            : ev
         if (ev.type === 'run.finished') {
           finished = true
           const interruption =
@@ -713,12 +732,30 @@ export class Session {
             currency: ev.usage.currency,
           })
         }
-        yield ev
+        yield out
       }
     } finally {
       // 心跳先停。停晚了不要紧（只推 running 的行），但停在最前面才保证
       // 无论下面哪一步抛异常都不会留下一个还在推心跳的定时器。
       clearInterval(heartbeat)
+      // 生成花费逐条入账。放在这里而不是 `run.finished` 分支：被中断、连接关闭的轮次也已经扣过费。
+      for (const spend of this.mediaSpends.get(run.id) ?? []) {
+        recordUsage(store, {
+          kind: 'media',
+          runId: run.id,
+          conversationId,
+          workspaceId: this.workspaceId,
+          model: spend.model,
+          provider: spend.kind,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: spend.cost,
+          currency: spend.currency,
+          occurredAt: spend.at,
+        })
+      }
+      this.mediaSpends.delete(run.id)
+      this.modelUsage.delete(run.id)
       // 生成器被提前关闭（用户 Ctrl-C、客户端断连）时也要给 run 一个终态，
       // 否则账本里会永远留有一条 running 的孤儿记录。
       // 边界：这层只覆盖 `run.started` 之后。在它之前关闭生成器或抛出异常时，run 行停在
@@ -1039,6 +1076,18 @@ export class Session {
     }
   }
 
+  /**
+   * 记下一次生成花费：写进本轮 `runs.media_usage`，并补推一次 usage 事件，轮次还在跑时读数条与面板就能看到。
+   * 事件里的模型用量取本轮最近一次，生成花费由 `ask` 统一附上。
+   */
+  private recordMediaSpend(runId: RunId, spend: MediaSpend, emit: (e: AgentEvent) => void): void {
+    const spends = [...(this.mediaSpends.get(runId) ?? []), spend]
+    this.mediaSpends.set(runId, spends)
+    updateRunMedia(this.opts.store, runId, spends)
+    const usage = this.modelUsage.get(runId)
+    if (usage) emit({ type: 'usage', runId, usage })
+  }
+
   private makeToolContext(
     runId: RunId,
     emit: (e: AgentEvent) => void,
@@ -1133,7 +1182,11 @@ export class Session {
       ...(this.opts.desktop ? { desktop: this.opts.desktop } : {}),
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
       ...(listMediaModels(this.opts.config).length
-        ? { media: makeMediaPort(this.opts.config) }
+        ? {
+            media: makeMediaPort(this.opts.config, (spend) =>
+              this.recordMediaSpend(runId, spend, emit),
+            ),
+          }
         : {}),
       history: historyPortFor(store, conversationId as ConversationId),
       signal: this.opts.signal,

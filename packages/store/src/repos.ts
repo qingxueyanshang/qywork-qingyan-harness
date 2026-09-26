@@ -16,6 +16,7 @@ import type {
   ConversationHistoryPage,
   ConversationId,
   FileChange,
+  MediaSpend,
   Message,
   MessageId,
   NodePhase,
@@ -1058,6 +1059,17 @@ export function updateRunUsage(store: Store, id: RunId, usage: RunUsage): void {
     )
 }
 
+/** 本轮的生成花费整份写入。只由会话层在每次生成成功时调用，与模型用量分列，两者互不覆盖。 */
+export function updateRunMedia(store: Store, id: RunId, media: MediaSpend[]): void {
+  store.db.query('UPDATE runs SET media_usage = ? WHERE id = ?').run(JSON.stringify(media), id)
+}
+
+/** 没有生成时不带 `media` 键，与 `RunUsage.media` 的约定一致。 */
+function mediaOf(raw: string): { media?: MediaSpend[] } {
+  const media = readJson<MediaSpend[]>(raw, [])
+  return media.length ? { media } : {}
+}
+
 /**
  * Run 收尾。stopReason 必填——废除「静默 done」，前端要能回答用户
  * 「它为什么停了」，不能只显示一个绿勾。
@@ -2059,6 +2071,7 @@ function rowToRun(r: RunRow): Run {
       cost: r.cost,
       currency: r.currency,
       turns: readJson(r.usage_turns, []),
+      ...mediaOf(r.media_usage),
     },
     stepCount: r.step_count,
     errorMessage: r.error_message,
