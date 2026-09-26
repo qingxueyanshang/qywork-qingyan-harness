@@ -9,9 +9,8 @@
 //!    成功之后置上。收尾的分类全靠这一格。
 //! 2. **收尾分类与服务端那侧同一条规则**（`packages/server/src/desktop/bridge.ts`）：
 //!    可证明没写出去的记 `not_dispatched`，其余记 `unknown`。两层用不同规则就是两本账。
-//! 3. **重启有退避也有上限。** 一启动就崩的 worker 不能被无限拉起；活过
-//!    `HEALTHY_RUN_MS` 才算这一次启动成功，退避计数归零。替换一个卡住的 worker 走的是
-//!    同一条退避，不另设计数。
+//! 3. **重启有退避也有上限**，规则在 `crate::restart`，与浏览器进程共用。替换一个卡住的
+//!    worker 走的是同一条退避，不另设计数。
 //! 4. **强杀只在关 stdin 之后、且只对本宿主起的那个 pid。** 按可执行文件名找进程会命中
 //!    用户自己开着的另一个 qywork。
 
@@ -20,17 +19,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
 
 use super::frames::{Binding, Dispatch};
-
-/// 重启退避的起点与上界。
-const RESTART_BASE_MS: u64 = 500;
-const RESTART_MAX_MS: u64 = 15_000;
-/// 连续失败多少次之后不再重启。到达上限即电脑控制整条发布为不可用。
-const RESTART_MAX_ATTEMPTS: u32 = 5;
-/// 活过这个时长即认为这次启动是成功的，下一次失败从头退避。
-const HEALTHY_RUN_MS: u128 = 60_000;
 
 /// 执行者级取消等到的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,27 +277,6 @@ pub fn terminate(pid: u32) {
     }
 }
 
-/// 第 `attempt` 次重启等多久。`None` = 到达上限，不再重启。
-pub fn restart_delay(attempt: u32) -> Option<Duration> {
-    if attempt >= RESTART_MAX_ATTEMPTS {
-        return None;
-    }
-    let ms = RESTART_BASE_MS
-        .checked_shl(attempt)
-        .unwrap_or(RESTART_MAX_MS)
-        .min(RESTART_MAX_MS);
-    Some(Duration::from_millis(ms))
-}
-
-/// 这一次 worker 活了 `ran_for` 之后退出，下一次重启算第几次。
-pub fn next_attempt(attempt: u32, ran_for: Duration) -> u32 {
-    if ran_for.as_millis() >= HEALTHY_RUN_MS {
-        0
-    } else {
-        attempt + 1
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,17 +340,6 @@ mod tests {
         assert!(cancel_targets(&pending, "dx_9").is_empty());
     }
 
-    #[test]
-    fn restart_backs_off_and_then_gives_up() {
-        assert_eq!(restart_delay(0), Some(Duration::from_millis(500)));
-        assert_eq!(restart_delay(1), Some(Duration::from_millis(1_000)));
-        assert_eq!(restart_delay(2), Some(Duration::from_millis(2_000)));
-        assert_eq!(restart_delay(3), Some(Duration::from_millis(4_000)));
-        assert_eq!(restart_delay(4), Some(Duration::from_millis(8_000)));
-        assert_eq!(restart_delay(RESTART_MAX_ATTEMPTS), None);
-        assert_eq!(restart_delay(99), None);
-    }
-
     /// 到期仍有在途即要求换掉 worker；在途清空是可证明的终态，晚于截止时刻也算结清。
     #[test]
     fn a_cancel_that_outlives_its_deadline_asks_for_a_new_worker() {
@@ -390,15 +348,5 @@ mod tests {
         assert_eq!(cancel_outcome(true, 99, 100), None);
         assert_eq!(cancel_outcome(true, 100, 100), Some(CancelOutcome::Replace));
         assert_eq!(cancel_outcome(true, 500, 100), Some(CancelOutcome::Replace));
-    }
-
-    /// 一启动就崩的 worker 退避到上限即停；活过一分钟的那一次让计数归零，
-    /// 否则跑了一整天才崩一次的 worker 也会在第五次之后永远不再起来。
-    #[test]
-    fn a_healthy_run_resets_the_backoff() {
-        assert_eq!(next_attempt(0, Duration::from_millis(80)), 1);
-        assert_eq!(next_attempt(4, Duration::from_millis(80)), 5);
-        assert_eq!(next_attempt(4, Duration::from_secs(60)), 0);
-        assert_eq!(next_attempt(4, Duration::from_secs(3_600)), 0);
     }
 }

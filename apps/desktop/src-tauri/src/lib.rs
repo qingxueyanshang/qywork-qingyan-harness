@@ -21,6 +21,7 @@ mod browser;
 pub mod desktop;
 mod hostkey;
 mod logfile;
+mod restart;
 mod sidecar;
 mod terminal;
 mod updater;
