@@ -113,6 +113,7 @@ import {
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
   externalSchemaTokens,
   listScopedEntries,
+  MEDIA_TOOLS,
   makeLoadToolTool,
   normalizeAdditionalDirectories,
   PendingToolPool,
@@ -124,6 +125,7 @@ import {
 import { RuntimeCompaction } from './compaction.ts'
 import {
   collectSecrets,
+  listMediaModels,
   type ModelRef,
   NO_MODEL_MESSAGE,
   type QyConfig,
@@ -131,6 +133,7 @@ import {
 } from './config.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
+import { makeMediaPort } from './media.ts'
 import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 import { RuntimeSink } from './sink.ts'
 import { buildHistory } from './transcript.ts'
@@ -300,6 +303,8 @@ export class Session {
       mcpConfig: true,
       browser: opts.browser !== undefined,
       desktop: opts.desktop !== undefined,
+      // 生成工具按配了模型的类别注册；与其他内置工具同一规则，角色的 allowedTools 点名时按点名过滤。
+      media: [...new Set(listMediaModels(opts.config).map((m) => m.output))],
     }
     if (opts.allowedTools === undefined) {
       registerBuiltinTools(this.registry, withDelegate)
@@ -461,6 +466,10 @@ export class Session {
     const canAssignModels = ['define_role', 'subagent', 'workflow'].some((name) =>
       this.registry.has(name),
     )
+    // 只列本会话真有工具的那几类：角色只点名了视频工具时，图像模型的参数表不给。
+    const mediaModels = listMediaModels(config).filter((m) =>
+      this.registry.has(MEDIA_TOOLS[m.output].name),
+    )
     // 角色、外部 CLI、本会话已有的子 agent：模型据此按 id 引用，不猜名字。
     const delegateFacts =
       canAssignModels && this.opts.delegate
@@ -484,6 +493,8 @@ export class Session {
           }
         : {}),
       ...delegateFacts,
+      // 参数表跟着生成工具走：工具没注册（没配模型、角色没点名）就不给。
+      ...(mediaModels.length ? { mediaModels } : {}),
       externalTools: this.pendingTools?.index() ?? [],
       todos: latestTodos(store, conversationId),
       // 未走完的图跟着快照一起冻结。没有派活通道就没有图，也不必查。
@@ -1121,6 +1132,9 @@ export class Session {
       ...(this.opts.browser ? { browser: this.opts.browser } : {}),
       ...(this.opts.desktop ? { desktop: this.opts.desktop } : {}),
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
+      ...(listMediaModels(this.opts.config).length
+        ? { media: makeMediaPort(this.opts.config) }
+        : {}),
       history: historyPortFor(store, conversationId as ConversationId),
       signal: this.opts.signal,
       emitTodos: (todos) => {

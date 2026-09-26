@@ -3,6 +3,7 @@
 import { mkdir, stat } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
+import { MEDIA_OUTPUTS } from '@qywork/core'
 import { configDir } from '@qywork/runtime'
 import {
   archiveWorkspaceConversations,
@@ -288,10 +289,15 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
     )
 
     const registry = new ToolRegistry()
-    // 浏览器与电脑控制的工具也列进来：这一页是设置目录，按静态完整清单列，
+    // 浏览器、电脑控制与生成的工具也列进来：这一页是设置目录，按静态完整清单列，
     // 不是某条会话此刻能不能调它的真源。漏掉一个通道的表现是那一组只剩说明行，
     // 读起来像这组能力只有两条。
-    registerBuiltinTools(registry, { mcpConfig: true, browser: true, desktop: true })
+    registerBuiltinTools(registry, {
+      mcpConfig: true,
+      browser: true,
+      desktop: true,
+      media: MEDIA_OUTPUTS,
+    })
     /*
      * `load_tool` 要手动补一行：它只在会话建待加载池时注册，不在 `registerBuiltinTools`
      * 里，这个裸注册表列不出它。**不要在这里重算一遍分档**（量 schema 总量、超阈值才列）

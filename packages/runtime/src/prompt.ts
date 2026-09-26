@@ -1,11 +1,16 @@
 import type { SubagentSummary } from '@qywork/agent'
+import { describeParam, lookupMediaModel, operationLabel } from '@qywork/ai'
 import {
+  MEDIA_OUTPUTS,
+  type MediaOutput,
   type RunContextSegment,
   SUBAGENT_KIND_LABEL,
   type TodoItem,
   type WorkflowPhase,
   type WorkflowProjection,
 } from '@qywork/core'
+import { MEDIA_TOOLS } from '@qywork/tools'
+import type { MediaModelEntry } from './config.ts'
 
 /**
  * 三层冻结前缀：system → environment → rules。
@@ -210,6 +215,38 @@ const TODO_LABEL: Record<TodoItem['status'], string> = {
   completed: '已完成',
 }
 
+const MEDIA_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
+
+/** 生成模型与各自的参数表。参数名是接口原生字段，原样写进 `params_json`。 */
+function mediaModelsNote(models: MediaModelEntry[]): string {
+  const sections: string[] = []
+  for (const output of MEDIA_OUTPUTS) {
+    const rows = models.filter((m) => m.output === output)
+    if (!rows.length) continue
+    const lines = [`### ${MEDIA_LABEL[output]} · ${MEDIA_TOOLS[output].name}`]
+    for (const m of rows) {
+      const spec = lookupMediaModel(m.model, m.kind)
+      const ops = spec.operations.map(operationLabel).join('、')
+      const limits = [
+        spec.inputs.maxImages ? `参考图最多 ${spec.inputs.maxImages} 张` : '',
+        spec.inputs.maxVideos ? `参考视频最多 ${spec.inputs.maxVideos} 个` : '',
+      ]
+        .filter(Boolean)
+        .join('、')
+      lines.push(
+        `- provider \`${m.provider}\`；model \`${m.model}\`${m.isDefault ? '（默认）' : ''}：${ops}${limits ? `，${limits}` : ''}`,
+        ...spec.params.map((p) => `  - ${describeParam(p)}`),
+      )
+    }
+    sections.push(lines.join('\n'))
+  }
+  return (
+    `## 可用的生成模型（本次运行快照）\n${sections.join('\n\n')}\n\n` +
+    'params_json 只用所选模型列出的参数，按用户的要求（尺寸、比例、清晰度、张数等）或你的判断取值，用不到的不填；' +
+    'provider 与 model 只接受同一行的值，都不填用默认模型。'
+  )
+}
+
 /**
  * 生成一次 run 的非对话上下文快照。调用方只在 run 建立前调用一次并原子落库；
  * 不得在每个 provider 请求前重算，否则同一 run 的线上字节会漂移，重试与缓存都失真。
@@ -235,6 +272,11 @@ export function buildTailNotes(input: {
    * 两者不能合并，否则后者会诱使模型继续无依据地生成一个名称。
    */
   models?: { provider: string; model: string }[]
+  /**
+   * 已配置的生成模型。只在注册了生成工具时传：大模型据此选模型、按参数表填 `params_json`。
+   * 参数表取自生成目录，与发出前的校验是同一份，不会出现「表上有、校验却拒」。
+   */
+  mediaModels?: MediaModelEntry[]
   /** 当前项目的角色与本机识别到的外部 CLI。`undefined` = 本会话没有派活能力。 */
   team?: {
     roles: { id: string; name: string; description: string; provider?: string; model?: string }[]
@@ -276,7 +318,16 @@ export function buildTailNotes(input: {
       : '权限模式：auto——工作区外的写删、改系统状态的命令、读写凭证文件会被拒绝，其余放行。',
   )
 
-  const notes: TailNote[] = [{ content: lines.join('\n'), group: 'workspaceState' }]
+  /*
+   * 生成模型的参数表排在最前，工作区状态行在它之后。快照与用户那句话并在同一条消息里，
+   * 参数表若是最后一节，紧跟其后的用户请求会被读成参数表的一部分：实测模型回复「没有说要画什么」。
+   */
+  const notes: TailNote[] = [
+    ...(input.mediaModels?.length
+      ? [{ content: mediaModelsNote(input.mediaModels), group: 'workspaceState' as const }]
+      : []),
+    { content: lines.join('\n'), group: 'workspaceState' },
+  ]
 
   /*
    * 模型清单放动态快照，不放冻结 system 前缀：设置页保存后，下一轮就应看到新配置，
