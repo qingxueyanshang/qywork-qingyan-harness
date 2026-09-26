@@ -1739,3 +1739,57 @@ describe('展开态跟着 step id 走', () => {
     }
   })
 })
+
+/** 收尾读数条与「运行」面板同一个口径（`runCosts`）：模型调用加生成，不同币种并列。 */
+test('收尾读数条的金额含这一轮的生成花费', async () => {
+  const { render } = await import('solid-js/web')
+  const { TranscriptRows } = await import('./Transcript.tsx')
+  const items = [
+    {
+      id: 'run_rn_media',
+      kind: 'run',
+      text: '',
+      run: {
+        runId: 'rn_media',
+        stopReason: 'completed',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cachedTokens: null,
+          cacheWriteTokens: null,
+          reasoningTokens: 0,
+          cost: 0.01,
+          currency: 'USD',
+          turns: [],
+          media: [
+            {
+              kind: 'dashscope_images',
+              provider: 'qwen',
+              model: 'qwen-image-3.0',
+              output: 'image',
+              quantity: 1,
+              cost: 0.18,
+              currency: 'CNY',
+              at: 1,
+            },
+          ],
+        },
+        startedAt: 1,
+        endedAt: 2,
+        errorMessage: null,
+      },
+    },
+  ]
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(
+    () => <TranscriptRows items={items as never} />,
+    host as unknown as HTMLElement,
+  )
+  try {
+    expect(host.querySelector('.run-cost')?.textContent).toBe('¥0.18 + $0.01')
+  } finally {
+    dispose()
+    host.remove()
+  }
+})

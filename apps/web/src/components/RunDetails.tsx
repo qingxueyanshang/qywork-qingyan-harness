@@ -1,13 +1,13 @@
 import type {
   ConversationRunsResponse,
   ConversationUsageResponse,
-  Currency,
+  MediaOutput,
   ProviderRequest,
   Run,
   UsageLedgerRow,
   UsageTotals,
 } from '@qywork/core'
-import { formatCosts, formatMoney } from '@qywork/core'
+import { formatCosts, formatMoney, MEDIA_OUTPUT_UNIT, runCosts } from '@qywork/core'
 import { createMemo, createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
 import { compact, requestOutcome, stopReasonLabel } from '../lib/step-view.ts'
@@ -169,7 +169,7 @@ function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
         (acc, r) => ({
           input: acc.input + (r.usage?.inputTokens ?? 0),
           output: acc.output + (r.usage?.outputTokens ?? 0),
-          cost: addCost(acc.cost, r.usage?.cost, r.usage?.currency),
+          cost: addCosts(acc.cost, r.usage ? runCosts(r.usage) : {}),
           cached: addMaybe(acc.cached, r.usage?.cachedTokens),
           cacheWrite: addMaybe(acc.cacheWrite, r.usage?.cacheWriteTokens),
         }),
@@ -310,9 +310,11 @@ function RequestLedger(props: { run: Run }) {
   const requests = () => loaded(data)?.requests ?? []
   const costOf = (turnIndex: number) =>
     (props.run.usage?.turns ?? []).find((t) => t.turnIndex === turnIndex)?.costUsd ?? 0
+  /** 这一轮里的生成（出图、视频、语音）。每次一行，排在模型请求之后。 */
+  const media = () => props.run.usage?.media ?? []
 
   return (
-    <Show when={requests().length > 0}>
+    <Show when={requests().length > 0 || media().length > 0}>
       <div class="run-detail">
         <table class="run-req">
           <thead>
@@ -355,6 +357,26 @@ function RequestLedger(props: { run: Run }) {
                   </tr>
                 )
               }}
+            </For>
+            {/* 生成行：请求列写类别，模型名在 title 里——面板窄，这张表多出十几像素最右一列就被裁掉；
+                按模型的花费在「用量」页。输出列写接口回报的数量（张 / 秒 / 字符），没有 token 与缓存。
+                只有成功的生成才有这一行（失败各家都不计费），结果列与成功的请求同写「已完成」。 */}
+            <For each={media()}>
+              {(m) => (
+                <tr title={m.model}>
+                  <td>{MEDIA_REQUEST[m.output]}</td>
+                  <td>{NA}</td>
+                  <td>
+                    {m.quantity === null
+                      ? NA
+                      : `${m.quantity.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${MEDIA_OUTPUT_UNIT[m.output]}`}
+                  </td>
+                  <td>{NA}</td>
+                  <td>{NA}</td>
+                  <td>{m.cost > 0 ? formatMoney(m.cost, m.currency) : NA}</td>
+                  <td class="run-req-out">已完成</td>
+                </tr>
+              )}
             </For>
           </tbody>
         </table>
@@ -414,10 +436,12 @@ function clockOf(at: number): string {
   return sameDay ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`
 }
 
-/** 这一轮的金额。计价为 0 即这个模型没有价目，写 $0.00 是把「不知道」说成「免费」。 */
+/**
+ * 这一轮的金额：模型调用加生成，与会话流读数条同一个口径（`runCosts`）。
+ * 计价为 0 即没有价目，写 $0.00 是把「不知道」说成「免费」。
+ */
 function runCost(r: Run): string {
-  const u = r.usage
-  return u && u.cost > 0 ? formatMoney(u.cost, u.currency) : NA
+  return r.usage ? money(runCosts(r.usage)) : NA
 }
 
 /** 金额合计。同上：一笔计价都没有时不是零元，是没有价目。 */
@@ -446,20 +470,26 @@ function num(n: number | null): string {
   return n === null ? NA : n.toLocaleString()
 }
 
-/** 把一笔花费并进按币种分的桶里。**不跨币种相加。** */
-function addCost(
+/** 把一轮的花费并进按币种分的桶里。**不跨币种相加。** */
+function addCosts(
   acc: Record<string, number>,
-  cost: number | undefined,
-  currency: Currency | undefined,
+  costs: Record<string, number>,
 ): Record<string, number> {
-  if (!cost) return acc
-  const cur = currency ?? 'USD'
-  return { ...acc, [cur]: (acc[cur] ?? 0) + cost }
+  const out = { ...acc }
+  for (const [cur, v] of Object.entries(costs)) out[cur] = (out[cur] ?? 0) + v
+  return out
 }
 
 /** 累加一个「可能没给」的计数。两边都没给过时保持 `null`。 */
 function addMaybe(acc: number | null, v: number | null | undefined): number | null {
   return v === null || v === undefined ? acc : (acc ?? 0) + v
+}
+
+/** 逐请求表里生成行的请求列：写类别，用模型库页签的叫法。 */
+const MEDIA_REQUEST: Record<MediaOutput, string> = {
+  image: '图像',
+  video: '视频',
+  audio: '音频',
 }
 
 /** 账本里非轮次那一笔的中文名。键取自 `UsageKind`。 */
