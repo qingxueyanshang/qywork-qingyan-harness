@@ -44,7 +44,8 @@ use crate::backend::{
 use crate::geometry::ScreenPoint;
 use crate::protocol::{
     Access, ActionEvidence, ActionSpec, BlockingWindow, Bounds, DragTarget, Grant, Image,
-    Observation, Select, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED, TARGET_BLOCKED,
+    Observation, Select, Tree, Wait, WaitUntil, WindowInfo, ACCESSIBILITY_BUS_UNAVAILABLE,
+    NOT_DISPATCHED, TARGET_BLOCKED,
 };
 use crate::tree::{matches_target, settle};
 use associate::{frame_window, FrameSide, Unmatched, XSide};
@@ -343,17 +344,25 @@ fn frame_sides(frames: &[Frame]) -> Vec<FrameSide<'_>> {
 }
 
 impl Atspi {
-    /// 这个实例的无障碍总线连接。第一次调用时按握手给的上界建立；建不成时下一次调用再找。
+    /// 这个实例的无障碍总线连接。第一次调用时按握手给的上界建立；总线那一端关掉之后重建；
+    /// 建不成时以 `ACCESSIBILITY_BUS_UNAVAILABLE` 拒绝，下一次调用再找。
+    ///
+    /// 不要去掉 `is_closed` 的判定：总线守护进程退出后这条连接上的每次调用都失败，而原因
+    /// 原文里没有原因码，服务循环也就不会现查授权事实。
     fn conn(&self) -> Result<Connection, String> {
         if let Some((conn, _)) = self.bus.borrow().as_ref() {
-            return Ok(conn.clone());
+            if !conn.is_closed() {
+                return Ok(conn.clone());
+            }
         }
+        *self.bus.borrow_mut() = None;
         let (connect, call) = self
             .bounds
             .get()
             .ok_or_else(|| "no_handshake: 无障碍总线连接在握手之后建立".to_owned())?;
-        let located = bus::locate()?;
-        let conn = bus::connect(&located.address, connect, call)?;
+        let unavailable = |e: String| format!("{ACCESSIBILITY_BUS_UNAVAILABLE}: {e}");
+        let located = bus::locate().map_err(unavailable)?;
+        let conn = bus::connect(&located.address, connect, call).map_err(unavailable)?;
         // 宿主把 worker 的 stderr 转进应用日志。每个进程只记一次：等待线程每条请求各建一个实例。
         static REPORTED: Once = Once::new();
         REPORTED.call_once(|| {

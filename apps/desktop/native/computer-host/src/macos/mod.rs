@@ -37,8 +37,16 @@ pub use backend::Ax;
 mod tests {
     use std::collections::HashMap;
 
+    use super::facts::NOT_TRUSTED;
     use super::keys::keycode;
-    use crate::protocol::{key_names, Modifier};
+    use crate::protocol::{key_names, refused_for_grant, Modifier};
+
+    /// 没有辅助功能授权的拒绝要被服务循环认出来：认不出的话，运行中撤销授权之后界面一直报
+    /// 已就绪。
+    #[test]
+    fn the_not_trusted_refusal_triggers_an_access_recheck() {
+        assert!(refused_for_grant(NOT_TRUSTED), "{NOT_TRUSTED}");
+    }
 
     /// 词表里的每个键名、每个修饰键都有自己的键码，F21–F24 除外（macOS 没有这四个键）。
     /// 两个名字共用一个键码时，补发抬起分不清抬的是哪一个。
