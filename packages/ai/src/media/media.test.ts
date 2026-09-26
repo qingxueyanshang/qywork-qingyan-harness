@@ -1,18 +1,19 @@
 /**
  * 生成模型的目录、参数校验与两个出图适配器。
  *
- * 覆盖范围：`media/catalog.ts` 的查法、`media/params.ts` 的校验、`media/adapters/openai-images.ts` 与
- * `media/adapters/dashscope.ts` 出图时实际发出的请求与对响应的读法、`media/http.ts` 的错误原文与格式识别。
- * 视频适配器与任务等待见 `media-videos.test.ts`。
+ * 覆盖范围：`media/catalog.ts` 的查法与计价（`mediaCost` 与各模型的单价）、`media/params.ts` 的校验、
+ * `media/adapters/openai-images.ts` 与 `media/adapters/dashscope.ts` 出图时实际发出的请求与对响应（含计量）的读法、
+ * `media/http.ts` 的错误原文与格式识别。视频适配器与任务等待见 `media-videos.test.ts`。
  *
  * 适配器必须看真实请求：起一个本机端点，把收到的方法、路径、头与正文原样存下来。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
-import { findMediaModel, lookupMediaModel } from './catalog.ts'
+import type { MediaKind } from '@qywork/core'
+import { findMediaModel, lookupMediaModel, mediaCost } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
 import { validateMediaCall } from './params.ts'
-import { MediaError } from './types.ts'
+import { MediaError, type MediaUsage } from './types.ts'
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
 const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 9, 9])
@@ -211,6 +212,39 @@ describe('openai_images', () => {
       .catch((e: unknown) => e)
     expect((err as Error).message).toContain('内容审核未通过')
   })
+
+  test('计量照接口字段读：OpenAI 回分文字与图片的输入 token，火山回张数与 output_tokens', async () => {
+    const run = (model: string) =>
+      adapter(model).run(
+        { operation: 'generate', prompt: 'x', inputs: [], params: {} },
+        { signal: signal() },
+      )
+    reply = () =>
+      Response.json({
+        data: [{ b64_json: Buffer.from(PNG).toString('base64') }],
+        usage: {
+          input_tokens: 60,
+          output_tokens: 1756,
+          input_tokens_details: { text_tokens: 50, image_tokens: 10 },
+        },
+      })
+    expect((await run('gpt-image-2.5-flare')).usage).toEqual({
+      images: 1,
+      inputTextTokens: 50,
+      inputImageTokens: 10,
+      outputTokens: 1756,
+    })
+    reply = () =>
+      Response.json({
+        data: [{ url: `${origin()}/files/out.jpg` }],
+        usage: { generated_images: 1, input_images: 2, output_tokens: 16384 },
+      })
+    expect((await run('doubao-seedream-5-0-pro-260628')).usage).toEqual({
+      images: 1,
+      inputImages: 2,
+      outputTokens: 16384,
+    })
+  })
 })
 
 describe('dashscope_images', () => {
@@ -256,6 +290,7 @@ describe('dashscope_images', () => {
       parameters: { size: '1024*1024' },
     })
     expect(out.files).toEqual([{ bytes: JPEG, mime: 'image/jpeg' }])
+    expect(out.usage).toEqual({ images: 1 })
   })
 
   test('没有图时报接口给的码与原文', async () => {
@@ -264,5 +299,116 @@ describe('dashscope_images', () => {
       .run({ operation: 'generate', prompt: 'x', inputs: [], params: {} }, { signal: signal() })
       .catch((e: unknown) => e)
     expect((err as Error).message).toBe('接口没有返回图片：DataInspectionFailed 输入内容不合规')
+  })
+})
+
+describe('计价', () => {
+  const cost = (id: string, kind: MediaKind, usage: MediaUsage) =>
+    mediaCost(lookupMediaModel(id, kind), usage)
+
+  test('GPT Image 2.5 按文字输入、图片输入、图片输出三种 token 分别计价', () => {
+    const out = cost('gpt-image-2.5-sunburst', 'openai_images', {
+      images: 1,
+      inputTextTokens: 50,
+      inputImageTokens: 100,
+      outputTokens: 1756,
+    })
+    expect(out.currency).toBe('USD')
+    expect(out.cost).toBeCloseTo((50 * 5 + 100 * 8 + 1756 * 30) / 1e6, 10)
+  })
+
+  /** 像素按 `output_tokens × 256 / 张数` 折算：2048² 是高档，1536² 是低档；首张参考图免费。 */
+  test('Seedream 5.0 Pro 按每张像素分档，参考图第 2 张起收费', () => {
+    const high = cost('doubao-seedream-5-0-pro-260628', 'openai_images', {
+      images: 1,
+      inputImages: 2,
+      outputTokens: (2048 * 2048) / 256,
+    })
+    expect(high).toEqual({ cost: expect.closeTo(0.62, 10), currency: 'CNY' })
+    const low = cost('doubao-seedream-5-0-pro-260628', 'openai_images', {
+      images: 1,
+      outputTokens: (1536 * 1536) / 256,
+    })
+    expect(low).toEqual({ cost: 0.3, currency: 'CNY' })
+  })
+
+  test('千问图像按接口回报的输出档位计价，档位缺失时金额不明', () => {
+    const usage = { images: 1, inputImages: 1, imageTier: 'qima_output_2k' }
+    expect(cost('qwen-image-3.0-pro', 'dashscope_images', usage)).toEqual({
+      cost: expect.closeTo(0.52, 10),
+      currency: 'CNY',
+    })
+    expect(cost('qwen-image-3.0-pro', 'dashscope_images', { images: 1 })).toEqual({
+      cost: 0,
+      currency: 'CNY',
+    })
+  })
+
+  test('万相视频按秒与分辨率计价', () => {
+    expect(
+      cost('wan3.0-video-prime', 'dashscope_videos', { seconds: 5, resolution: '720p' }),
+    ).toEqual({ cost: expect.closeTo(4.5, 10), currency: 'CNY' })
+  })
+
+  /** 官方价格页的算例：2.0 720p 16:9 5 秒约 108000 token，¥4.97。 */
+  test('Seedance 按输出 token、分辨率与输入是否含视频计价', () => {
+    expect(
+      cost('doubao-seedance-2-0-260128', 'ark_videos', {
+        outputTokens: 108_000,
+        resolution: '720p',
+        videoInput: false,
+      }).cost,
+    ).toBeCloseTo(4.968, 6)
+    expect(
+      cost('doubao-seedance-2-5-260628', 'ark_videos', {
+        outputTokens: 1_000_000,
+        resolution: '1080p',
+        videoInput: true,
+      }).cost,
+    ).toBeCloseTo(46, 6)
+  })
+
+  test('千问语音合成按字符计价', () => {
+    expect(cost('qwen3-tts-flash', 'dashscope_speech', { characters: 195 }).cost).toBeCloseTo(
+      0.0156,
+      10,
+    )
+  })
+
+  test('百炼上的可灵按秒、清晰度、有无声音与参考视频计价；声音未回报时金额不明', () => {
+    const omni = 'kling/kling-v3-omni-video-generation'
+    expect(
+      cost(omni, 'dashscope_videos', {
+        seconds: 5,
+        resolution: '1080p',
+        audio: false,
+        videoInput: true,
+      }).cost,
+    ).toBeCloseTo(6, 10)
+    expect(
+      cost('kling/kling-v3-video-generation', 'dashscope_videos', {
+        seconds: 5,
+        resolution: '720p',
+        audio: false,
+      }).cost,
+    ).toBeCloseTo(3, 10)
+    expect(
+      cost('kling/kling-v3-video-generation', 'dashscope_videos', {
+        seconds: 5,
+        resolution: '720p',
+      }).cost,
+    ).toBe(0)
+  })
+
+  test('接口回报了扣费金额时以它为准；没有价目的模型金额不明', () => {
+    expect(
+      cost('kling-3.0', 'kling_videos', { seconds: 5, billed: { amount: 0.56, currency: 'CNY' } }),
+    ).toEqual({ cost: 0.56, currency: 'CNY' })
+    expect(cost('gpt-4o-mini-tts', 'openai_speech', {}).cost).toBe(0)
+  })
+
+  /** 经中转站调用的价格以中转站为准，目录里的官方价不跟过去。 */
+  test('按 id 兜底到别的协议时不带单价', () => {
+    expect(lookupMediaModel('doubao-seedance-2-5-260628', 'openai_videos').price).toBeUndefined()
   })
 })

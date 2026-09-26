@@ -5,7 +5,7 @@
  * 结果地址 24 小时内有效，可以用同一个任务号接续取回。只有远端明确报失败才是终态。
  */
 
-import { MediaError, type MediaRunOptions } from './types.ts'
+import { MediaError, type MediaRunOptions, type MediaUsage } from './types.ts'
 
 /** 等待上限。视频典型 1–5 分钟，留足余量；超过就把任务号交还调用方接续取回。 */
 export const TASK_WAIT_MS = 20 * 60_000
@@ -14,8 +14,11 @@ const MAX_INTERVAL_MS = 15_000
 
 export type TaskState =
   | { state: 'pending'; status: string }
-  | { state: 'done'; url: string }
+  | { state: 'done'; url: string; usage?: MediaUsage }
   | { state: 'failed'; message: string }
+
+/** 任务完成：结果地址与查询结果里的计量。 */
+export type TaskDone = Extract<TaskState, { state: 'done' }>
 
 /** 远端明确报了失败：终态，任务号没有接续的意义。 */
 class RemoteTaskFailed extends MediaError {}
@@ -35,20 +38,20 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /**
- * 等任务完成，返回结果地址。第一次查询不等待：接续取回时任务通常已经完成。
+ * 等任务完成，返回结果地址与计量。第一次查询不等待：接续取回时任务通常已经完成。
  * 状态变化时经 `onStatus` 回报一句，不按查询次数回报。
  */
 export async function waitTask(
   taskId: string,
   check: () => Promise<TaskState>,
   opts: MediaRunOptions,
-): Promise<string> {
+): Promise<TaskDone> {
   const deadline = Date.now() + TASK_WAIT_MS
   let interval = FIRST_INTERVAL_MS
   let last = ''
   for (;;) {
     const s = await check()
-    if (s.state === 'done') return s.url
+    if (s.state === 'done') return s
     if (s.state === 'failed') throw new RemoteTaskFailed(`远端任务失败：${s.message}`)
     if (s.status !== last) {
       last = s.status

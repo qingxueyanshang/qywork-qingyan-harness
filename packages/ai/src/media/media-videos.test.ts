@@ -99,6 +99,7 @@ describe('dashscope_videos', () => {
       () =>
         Response.json({
           output: { task_status: 'SUCCEEDED', video_url: `${origin()}/files/out.mp4` },
+          usage: { video_count: 1, duration: 2.0, SR: 480, fps: 30 },
         }),
     ]
     const tasks: string[] = []
@@ -131,6 +132,8 @@ describe('dashscope_videos', () => {
     expect(tasks).toEqual(['task-1'])
     expect(seen.some((s) => s.path === '/api/v1/tasks/task-1')).toBe(true)
     expect(out.files[0]?.bytes).toEqual(MP4)
+    // 计量取查询结果顶层的 `usage`：万相的 `SR` 是数字。
+    expect(out.usage).toEqual({ seconds: 2, resolution: '480p', videoInput: false })
   })
 
   test('接续取回只查询与下载，不再提交', async () => {
@@ -201,9 +204,17 @@ describe('dashscope_videos', () => {
       () =>
         Response.json({
           output: { task_status: 'SUCCEEDED', video_url: `${origin()}/files/out.mp4` },
+          usage: {
+            duration: 5,
+            size: '1280*720',
+            fps: 24,
+            video_count: 1,
+            audio: false,
+            SR: '720',
+          },
         }),
     ]
-    await buildMediaAdapter({
+    const out = await buildMediaAdapter({
       kind: 'dashscope_videos',
       model: 'kling/kling-v3-omni-video-generation',
       apiKey: 'sk-ds',
@@ -226,6 +237,8 @@ describe('dashscope_videos', () => {
       input: { media: [{ type: 'base' }, { type: 'refer' }] },
     })
     expect(post.json?.parameters).toEqual({ mode: 'std' })
+    // 可灵的 `SR` 是字符串，另回 `audio`；输入含视频由请求决定。
+    expect(out.usage).toEqual({ seconds: 5, resolution: '720p', audio: false, videoInput: true })
   })
 })
 
@@ -234,7 +247,14 @@ describe('ark_videos', () => {
     submit = () => Response.json({ id: 'cgt-1' })
     polls = [
       () =>
-        Response.json({ status: 'succeeded', content: { video_url: `${origin()}/files/out.mp4` } }),
+        Response.json({
+          status: 'succeeded',
+          content: { video_url: `${origin()}/files/out.mp4` },
+          usage: { completion_tokens: 108000, total_tokens: 108000 },
+          duration: 5,
+          resolution: '720p',
+          generate_audio: true,
+        }),
     ]
     const adapter = buildMediaAdapter({
       kind: 'ark_videos',
@@ -242,7 +262,7 @@ describe('ark_videos', () => {
       apiKey: 'sk-ark',
       baseUrl: `${origin()}/api/v3`,
     })
-    await adapter.run(
+    const out = await adapter.run(
       {
         operation: 'video_to_video',
         prompt: '把背景换成夜晚',
@@ -268,6 +288,13 @@ describe('ark_videos', () => {
       duration: -1,
     })
     expect(seen.some((s) => s.path === '/api/v3/contents/generations/tasks/cgt-1')).toBe(true)
+    expect(out.usage).toEqual({
+      outputTokens: 108000,
+      seconds: 5,
+      resolution: '720p',
+      audio: true,
+      videoInput: true,
+    })
   })
 })
 
@@ -300,6 +327,31 @@ describe('kling_videos', () => {
     expect(post.json).toEqual({ prompt: '海浪', settings: { resolution: '1080p', duration: 5 } })
     expect(seen.some((s) => s.path === '/tasks' && s.search === '?task_ids=kt-1')).toBe(true)
     expect(out.files[0]?.bytes).toEqual(MP4)
+  })
+
+  /** 金额取从余额扣的那几项；从资源包扣的只有单位数，没有金额。 */
+  test('计量取视频时长与 billing 里的实扣金额', async () => {
+    const task = (billing: unknown[]) => () =>
+      Response.json({
+        code: 0,
+        data: [
+          {
+            id: 'kt-b',
+            status: 'succeeded',
+            outputs: [{ type: 'video', url: `${origin()}/files/out.mp4`, duration: '5' }],
+            billing,
+          },
+        ],
+      })
+    const run = () =>
+      adapter('kling-3.0').run(
+        { operation: 'text_to_video', prompt: '海浪', inputs: [], params: {} },
+        opts({ resumeTaskId: 'kt-b' }),
+      )
+    polls = [task([{ charge_type: 'cash', amount: '0.56', currency: 'CNY', list_price: '0.6' }])]
+    expect((await run()).usage).toEqual({ seconds: 5, billed: { amount: 0.56, currency: 'CNY' } })
+    polls = [task([{ charge_type: 'unit', amount: '4', package_type: 'video' }])]
+    expect((await run()).usage).toEqual({ seconds: 5 })
   })
 
   test('首尾帧走 image-to-video，文字与图片进 contents，图片是不带前缀的 base64', async () => {

@@ -83,8 +83,12 @@ describe('dashscope_speech', () => {
     })
 
   /** 音色与语种放错到 `parameters` 里，接口按默认音色合成、不报错。 */
-  test('音色与语种和文字一起放进 input；结果地址拿到就下载', async () => {
-    reply = () => Response.json({ output: { audio: { url: `${origin()}/files/out.wav` } } })
+  test('音色与语种和文字一起放进 input；结果地址拿到就下载，计量读 characters', async () => {
+    reply = () =>
+      Response.json({
+        output: { audio: { url: `${origin()}/files/out.wav` } },
+        usage: { input_tokens: 0, output_tokens: 0, characters: 12 },
+      })
     const out = await adapter().run(
       {
         operation: 'speech',
@@ -102,6 +106,7 @@ describe('dashscope_speech', () => {
       },
     })
     expect(out.files[0]).toEqual({ bytes: WAV, mime: 'audio/wav' })
+    expect(out.usage).toEqual({ characters: 12 })
   })
 
   test('结果是 base64 时直接解码', async () => {

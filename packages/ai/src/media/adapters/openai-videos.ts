@@ -8,7 +8,7 @@
 
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { download, getJson, postJson } from '../http.ts'
+import { count, defined, download, getJson, postJson } from '../http.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
@@ -17,6 +17,7 @@ import {
   type MediaRequest,
   type MediaResult,
   type MediaRunOptions,
+  type MediaUsage,
 } from '../types.ts'
 
 /** OpenAI 视频接口自己的字段。其余参数一律进 `metadata`。 */
@@ -61,8 +62,11 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     }
     const id = taskId
     return afterSubmit(id, signal, async () => {
-      const url = await waitTask(id, () => this.check(base, id, auth, signal), opts)
-      return { files: [await download(url, signal, auth)] }
+      const done = await waitTask(id, () => this.check(base, id, auth, signal), opts)
+      return {
+        files: [await download(done.url, signal, auth)],
+        ...(done.usage ? { usage: done.usage } : {}),
+      }
     })
   }
 
@@ -75,7 +79,14 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     const path = `${base}/videos/${encodeURIComponent(taskId)}`
     const body = await getJson(path, auth, signal)
     const status = String(body.status ?? '')
-    if (status === 'completed') return { state: 'done', url: `${path}/content` }
+    // 视频对象只带时长 `seconds`（字符串），没有用量与金额字段。
+    if (status === 'completed') {
+      return {
+        state: 'done',
+        url: `${path}/content`,
+        usage: defined<MediaUsage>({ seconds: count(body.seconds) }),
+      }
+    }
     if (status === 'failed' || status === 'cancelled' || status === 'expired') {
       const error = body.error as { message?: unknown } | undefined
       return { state: 'failed', message: `${status} ${String(error?.message ?? '')}`.trim() }

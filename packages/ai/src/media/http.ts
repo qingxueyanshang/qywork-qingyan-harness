@@ -121,6 +121,17 @@ export function sniffMime(bytes: Uint8Array): string | null {
   return null
 }
 
+/** 接口 JSON 里的一个数：非数字、负数都当作没有回报。字符串形式的数（可灵的 `duration`）照读。 */
+export function count(value: unknown): number | undefined {
+  const n = typeof value === 'string' && value.trim() ? Number(value) : value
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined
+}
+
+/** 去掉值为 `undefined` 的键：`exactOptionalPropertyTypes` 下可选字段不接受 `undefined`。 */
+export function defined<T extends object>(value: { [K in keyof T]?: T[K] | undefined }): T {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T
+}
+
 /** `data:<mime>;base64,<...>`。火山要求类型小写。 */
 export function dataUri(bytes: Uint8Array, mime: string): string {
   return `data:${mime.toLowerCase()};base64,${Buffer.from(bytes).toString('base64')}`

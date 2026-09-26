@@ -4,7 +4,7 @@
  * 与对话适配器（`LlmAdapter`）分开：生成接口不是流，没有 token 事件，结果是一组文件。
  */
 
-import type { MediaKind } from '@qywork/core'
+import type { Currency, MediaKind } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation } from './catalog.ts'
 
 /** 发一次生成请求需要的端点与凭证。 */
@@ -43,8 +43,36 @@ export interface MediaFile {
   mime: string
 }
 
+/**
+ * 接口回报的计量。照接口原字段读，不在本地估算；接口没有回报的项不填。金额由目录按它算（`MediaPrice`）。
+ */
+export interface MediaUsage {
+  /** 成功输出的图片张数。 */
+  images?: number
+  /** 计费的输入图片张数。 */
+  inputImages?: number
+  /** 接口给出的输出档位，如百炼千问图像的 `qima_output_2k`。 */
+  imageTier?: string
+  /** 计费秒数，口径以接口为准（百炼万相含输入视频时长）。 */
+  seconds?: number
+  /** 输出视频分辨率，统一写成 `480p` / `720p` / `1080p` / `4k`。 */
+  resolution?: string
+  /** 输出是否带声音。 */
+  audio?: boolean
+  /** 输入是否含视频。计价按它分档，由请求决定，不是接口回报。 */
+  videoInput?: boolean
+  /** 计费字符数。 */
+  characters?: number
+  inputTextTokens?: number
+  inputImageTokens?: number
+  outputTokens?: number
+  /** 接口直接回报的扣费金额。有它时不按单价计算。 */
+  billed?: { amount: number; currency: Currency }
+}
+
 export interface MediaResult {
   files: MediaFile[]
+  usage?: MediaUsage
 }
 
 export interface MediaRunOptions {

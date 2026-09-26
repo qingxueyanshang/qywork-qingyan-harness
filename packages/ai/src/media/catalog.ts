@@ -12,12 +12,13 @@
  *
  * 种子逐条对过官方文档，核对日期写在每组上方。
  *
- * **不收价格。** 各家出图按分辨率、张数分档计价，官方页面没有核到一条能对应到型号的单价；
- * 写一个没核实的数，账本上的金额就看起来可信。价格核实后再加计价字段。
+ * **价格按接口回报的计量算，不在本地估算用量。** 单价逐条对官方价格页，按分辨率、清晰度等分档的
+ * 按回报的规格取档；取不到档位或没有价目时金额记 0，界面显示 N/A。不写没核实的单价：
+ * 账本上一个编出来的金额看起来和真的一样。
  */
 
-import { MEDIA_KIND_OUTPUT, type MediaKind } from '@qywork/core'
-import type { MediaInput } from './types.ts'
+import { type Currency, MEDIA_KIND_OUTPUT, type MediaKind } from '@qywork/core'
+import type { MediaInput, MediaUsage } from './types.ts'
 
 /**
  * 生成操作。由调用时给了哪些输入推出来，不让大模型选。
@@ -75,7 +76,139 @@ export interface MediaModelSpec {
   params: readonly MediaParamSpec[]
   /** false = 目录里没有这个 id，用的是协议默认。 */
   catalogued: boolean
+  /**
+   * 官方单价，按接口回报的计量算金额。没有时金额不明：协议默认、按 id 兜底到别的协议（中转站价格不同）、
+   * 接口不回报计量的模型（OpenAI 语音合成）。接口直接回报扣费金额的（可灵官方）不需要单价。
+   */
+  price?: MediaPrice
 }
+
+export interface MediaPrice {
+  currency: Currency
+  /** 缺计价所需的量时返回 null。 */
+  cost(u: MediaUsage): number | null
+}
+
+/**
+ * 一次生成的金额。接口直接回报扣费的以回报为准，其次按目录单价算；都没有时金额记 0（金额不明）。
+ */
+export function mediaCost(
+  spec: MediaModelSpec,
+  usage: MediaUsage,
+): { cost: number; currency: Currency } {
+  if (usage.billed) return { cost: usage.billed.amount, currency: usage.billed.currency }
+  const currency = spec.price?.currency ?? 'USD'
+  const cost = spec.price?.cost(usage)
+  return { cost: cost !== null && cost !== undefined && cost > 0 ? cost : 0, currency }
+}
+
+/** 按档位取单价。档位不在表里（接口回报了表外的规格）时返回 undefined，金额按不明处理。 */
+function tier(rates: Record<string, number>, key: string | undefined): number | undefined {
+  return key === undefined ? undefined : rates[key]
+}
+
+/** Seedance 的 480p 与 720p 同价。 */
+function seedanceTier(resolution: string | undefined): string | undefined {
+  return resolution === '480p' || resolution === '720p' ? '720p' : resolution
+}
+
+/**
+ * 按张计价。`output` 给出每张输出图的单价（可按计量分档），`input` 是每张参考图的单价，
+ * `firstInputFree` 为首张参考图免费（火山 Seedream 5.0 Pro）。
+ */
+function perImage(
+  currency: Currency,
+  output: (u: MediaUsage) => number | undefined,
+  input: { rate: number; firstInputFree?: boolean } | null = null,
+): MediaPrice {
+  return {
+    currency,
+    cost(u) {
+      const rate = output(u)
+      if (u.images === undefined || rate === undefined) return null
+      const inputs = u.inputImages ?? 0
+      const billedInputs = input?.firstInputFree ? Math.max(inputs - 1, 0) : inputs
+      return u.images * rate + billedInputs * (input?.rate ?? 0)
+    },
+  }
+}
+
+/** 按秒计价，单价按计量分档。 */
+function perSecond(currency: Currency, rate: (u: MediaUsage) => number | undefined): MediaPrice {
+  return {
+    currency,
+    cost(u) {
+      const r = rate(u)
+      return u.seconds === undefined || r === undefined ? null : u.seconds * r
+    },
+  }
+}
+
+/** 按每百万输出 token 计价，单价按计量分档（Seedance）。 */
+function perMillionOutputTokens(
+  currency: Currency,
+  rate: (u: MediaUsage) => number | undefined,
+): MediaPrice {
+  return {
+    currency,
+    cost(u) {
+      const r = rate(u)
+      return u.outputTokens === undefined || r === undefined ? null : (u.outputTokens * r) / 1e6
+    },
+  }
+}
+
+// ── 价格（2026-09-26 对官方价格页，均为原价，不计限时折扣与免费额度）──
+// OpenAI「Pricing」图像生成：GPT Image 2.5 文字输入 $5、图片输入 $8、图片输出 $30，每百万 token；
+// Images API 不计缓存输入。
+const gptImagePrice: MediaPrice = {
+  currency: 'USD',
+  cost: (u) =>
+    u.outputTokens === undefined
+      ? null
+      : ((u.inputTextTokens ?? 0) * 5 + (u.inputImageTokens ?? 0) * 8 + u.outputTokens * 30) / 1e6,
+}
+// 火山方舟「模型价格」：Seedream 5.0 Pro 单图 ≤ 261 万像素 ¥0.30、> 261 万像素 ¥0.60，输入图首张免费、第 2 张起 ¥0.02；
+// 像素按 `output_tokens`（像素总数 / 256）折算每张。Flash 每张 ¥0.12，输入图免费。
+const seedreamProPrice = perImage(
+  'CNY',
+  (u) =>
+    u.outputTokens === undefined || !u.images
+      ? undefined
+      : (u.outputTokens * 256) / u.images <= 2_610_000
+        ? 0.3
+        : 0.6,
+  { rate: 0.02, firstInputFree: true },
+)
+const seedreamFlashPrice = perImage('CNY', () => 0.12)
+// 百炼「模型调用价格」：千问图像 3.0 Pro 输出 1k ¥0.25、2k ¥0.5，3.0 输出 ¥0.18，输入均 ¥0.02 每张；
+// 档位取接口回报的 `output_image_type`。
+const qwenImagePrice = (rates: Record<string, number>) =>
+  perImage('CNY', (u) => tier(rates, u.imageTier), { rate: 0.02 })
+// 万相图像 2.7 Pro ¥0.50、2.7 ¥0.20 每张，只按输出计费。
+// 万相视频 3.0 Prime 480P ¥0.45、720P ¥0.9、1080P ¥1.8 每秒；3.0 ¥0.3、¥0.6、¥1.2；计费秒数含输入视频时长。
+const wanVideoPrice = (rates: Record<string, number>) =>
+  perSecond('CNY', (u) => tier(rates, u.resolution))
+// 火山方舟「模型价格」：Seedance 每百万 token，按输出分辨率与输入是否含视频分档；480p 与 720p 同价。
+const seedancePrice = (rates: Record<string, [number, number]>) =>
+  perMillionOutputTokens('CNY', (u) => {
+    const pair = rates[seedanceTier(u.resolution) ?? '']
+    return pair ? pair[u.videoInput ? 1 : 0] : undefined
+  })
+// 百炼「模型调用价格」：千问语音合成 3 按输入字符 ¥0.8 每万字符（一个汉字计 2 个字符，接口回报的已按此计），输出不计费。
+const qwenSpeechPrice: MediaPrice = {
+  currency: 'CNY',
+  cost: (u) => (u.characters === undefined ? null : (u.characters / 10_000) * 0.8),
+}
+// 百炼「模型调用价格」：可灵 3.0 按秒，按清晰度（std 720P / pro 1080P / 4k）、有无声音、有无参考视频分档。
+// 无声 ¥0.6 / ¥0.8 / ¥3.0，有声 ¥0.9 / ¥1.2 / ¥3.0；Omni 有参考视频（只能无声）与有声同价；Turbo 固定有声 ¥0.8 / ¥1.0。
+const KLING_SILENT = { '720p': 0.6, '1080p': 0.8, '4k': 3.0 }
+const KLING_SOUND = { '720p': 0.9, '1080p': 1.2, '4k': 3.0 }
+const klingBailianPrice = (rates: (u: MediaUsage) => Record<string, number> | undefined) =>
+  perSecond('CNY', (u) => {
+    const table = rates(u)
+    return table ? tier(table, u.resolution) : undefined
+  })
 
 // ── OpenAI GPT Image（2026-09-25 对 developers.openai.com 图像生成指南与 edits 参考）──
 const gptImageParams: readonly MediaParamSpec[] = [
@@ -510,6 +643,7 @@ const spec = (
   operations: readonly MediaOperation[],
   inputs: MediaModelSpec['inputs'],
   params: readonly MediaParamSpec[],
+  price?: MediaPrice,
 ): MediaModelSpec => ({
   id,
   displayName,
@@ -519,6 +653,7 @@ const spec = (
   inputs,
   params,
   catalogued: true,
+  ...(price ? { price } : {}),
 })
 
 const SEEDS: readonly MediaModelSpec[] = [
@@ -530,6 +665,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 16, maxVideos: 0, transport: 'multipart' },
     gptImageParams,
+    gptImagePrice,
   ),
   spec(
     'gpt-image-2.5-sunburst',
@@ -539,6 +675,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 16, maxVideos: 0, transport: 'multipart' },
     gptImageParams,
+    gptImagePrice,
   ),
   spec(
     'doubao-seedream-5-0-pro-260628',
@@ -548,6 +685,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 10, maxVideos: 0, transport: 'json' },
     seedreamParams,
+    seedreamProPrice,
   ),
   spec(
     'doubao-seedream-5-0-flash-260915',
@@ -557,6 +695,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 10, maxVideos: 0, transport: 'json' },
     seedreamParams,
+    seedreamFlashPrice,
   ),
   spec(
     'qwen-image-3.0-pro',
@@ -566,6 +705,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 3, maxVideos: 0, transport: 'json' },
     qwenImageParams,
+    qwenImagePrice({ qima_output_1k: 0.25, qima_output_2k: 0.5 }),
   ),
   spec(
     'qwen-image-3.0',
@@ -575,6 +715,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 3, maxVideos: 0, transport: 'json' },
     qwenImageParams,
+    qwenImagePrice({ qima_output_1k: 0.18, qima_output_2k: 0.18 }),
   ),
   spec(
     'wan2.7-image-pro',
@@ -584,6 +725,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 9, maxVideos: 0, transport: 'json' },
     wanImageParams,
+    perImage('CNY', () => 0.5),
   ),
   spec(
     'wan2.7-image',
@@ -593,6 +735,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     IMAGE_OPERATIONS,
     { maxImages: 9, maxVideos: 0, transport: 'json' },
     wanImageParams,
+    perImage('CNY', () => 0.2),
   ),
   spec(
     'wan3.0-video',
@@ -602,6 +745,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     VIDEO_OPERATIONS,
     { maxImages: 10, maxVideos: 5, transport: 'json' },
     wanVideoParams,
+    wanVideoPrice({ '480p': 0.3, '720p': 0.6, '1080p': 1.2 }),
   ),
   spec(
     'wan3.0-video-prime',
@@ -611,6 +755,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     VIDEO_OPERATIONS,
     { maxImages: 10, maxVideos: 5, transport: 'json' },
     wanVideoParams,
+    wanVideoPrice({ '480p': 0.45, '720p': 0.9, '1080p': 1.8 }),
   ),
   spec(
     'doubao-seedance-2-5-260628',
@@ -620,6 +765,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     VIDEO_OPERATIONS,
     { maxImages: 30, maxVideos: 10, transport: 'json' },
     seedanceParams,
+    seedancePrice({ '720p': [70, 42], '1080p': [77, 46] }),
   ),
   spec(
     'doubao-seedance-2-0-260128',
@@ -629,6 +775,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     VIDEO_OPERATIONS,
     { maxImages: 9, maxVideos: 3, transport: 'json' },
     seedance20Params(['480p', '720p', '1080p', '4k']),
+    seedancePrice({ '720p': [46, 28], '1080p': [51, 31], '4k': [26, 16] }),
   ),
   spec(
     'doubao-seedance-2-0-fast-260128',
@@ -638,6 +785,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     VIDEO_OPERATIONS,
     { maxImages: 9, maxVideos: 3, transport: 'json' },
     seedance20Params(['480p', '720p']),
+    seedancePrice({ '720p': [37, 22] }),
   ),
   spec(
     'doubao-seedance-2-0-mini-260615',
@@ -647,6 +795,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     VIDEO_OPERATIONS,
     { maxImages: 9, maxVideos: 3, transport: 'json' },
     seedance20Params(['480p', '720p']),
+    seedancePrice({ '720p': [23, 14] }),
   ),
   spec(
     'kling/kling-v3-omni-video-generation',
@@ -656,6 +805,9 @@ const SEEDS: readonly MediaModelSpec[] = [
     VIDEO_OPERATIONS,
     { maxImages: 7, maxVideos: 1, transport: 'json', types: KLING_BAILIAN_TYPES },
     [...klingBailianParams({ modes: ['std', 'pro', '4k'], audio: true }), klingBailianVideoType],
+    klingBailianPrice((u) =>
+      u.videoInput || u.audio ? KLING_SOUND : u.audio === false ? KLING_SILENT : undefined,
+    ),
   ),
   spec(
     'kling/kling-v3-video-generation',
@@ -665,6 +817,9 @@ const SEEDS: readonly MediaModelSpec[] = [
     ['text_to_video', 'image_to_video', 'first_last_frame'],
     NO_INPUTS,
     klingBailianParams({ modes: ['std', 'pro', '4k'], audio: true }),
+    klingBailianPrice((u) =>
+      u.audio ? KLING_SOUND : u.audio === false ? KLING_SILENT : undefined,
+    ),
   ),
   spec(
     'kling/kling-v3-turbo-video-generation',
@@ -674,6 +829,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     ['text_to_video', 'image_to_video'],
     NO_INPUTS,
     klingBailianParams({ modes: ['std', 'pro'], audio: false }),
+    klingBailianPrice(() => ({ '720p': 0.8, '1080p': 1.0 })),
   ),
   // 官方接口的视频素材只收 URL，本机文件没有可传的地方，所以 Omni 在这条协议上只做参考图。
   spec(
@@ -728,6 +884,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     SPEECH_OPERATIONS,
     NO_INPUTS,
     qwenSpeechParams,
+    qwenSpeechPrice,
   ),
   spec(
     'qwen3-tts-instruct-flash',
@@ -749,6 +906,7 @@ const SEEDS: readonly MediaModelSpec[] = [
         description: '由模型改写朗读要求，使其更容易被遵循',
       },
     ],
+    qwenSpeechPrice,
   ),
 ]
 
@@ -872,8 +1030,10 @@ export function lookupMediaModel(id: string, kind: MediaKind): MediaModelSpec {
     (m) => m.id === id && MEDIA_KIND_OUTPUT[m.kind] === MEDIA_KIND_OUTPUT[kind],
   )
   if (byId) {
+    // 单价不跟过去：同一个模型经中转站或别的协议调用，价格以那一方为准，目录里没有。
+    const { price: _price, ...rest } = byId
     return {
-      ...byId,
+      ...rest,
       kind,
       operations: byId.operations.filter((o) => base.operations.includes(o)),
       inputs: {

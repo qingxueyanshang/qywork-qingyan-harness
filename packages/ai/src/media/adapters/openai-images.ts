@@ -11,7 +11,7 @@
 import { basename } from 'node:path'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { dataUri, download, postJson, send, sniffMime } from '../http.ts'
+import { count, dataUri, defined, download, postJson, send, sniffMime } from '../http.ts'
 import {
   type MediaAdapter,
   MediaError,
@@ -20,6 +20,7 @@ import {
   type MediaRequest,
   type MediaResult,
   type MediaRunOptions,
+  type MediaUsage,
 } from '../types.ts'
 
 export class OpenAIImagesAdapter implements MediaAdapter {
@@ -64,8 +65,25 @@ export class OpenAIImagesAdapter implements MediaAdapter {
         signal,
       )
     }
-    return { files: await readImages(body, signal) }
+    const files = await readImages(body, signal)
+    return { files, usage: readUsage(body, files.length) }
   }
+}
+
+/**
+ * 响应里的 `usage`。OpenAI 回 token（`input_tokens_details` 分文字与图片）；火山回成功张数 `generated_images`、
+ * 输入张数 `input_images` 与 `output_tokens`（像素总数 / 256）。张数以接口为准，没有回报时取实际收到的张数。
+ */
+function readUsage(body: Record<string, unknown>, received: number): MediaUsage {
+  const u = (body.usage ?? {}) as Record<string, unknown>
+  const input = (u.input_tokens_details ?? {}) as Record<string, unknown>
+  return defined<MediaUsage>({
+    images: count(u.generated_images) ?? received,
+    inputImages: count(u.input_images),
+    inputTextTokens: count(input.text_tokens),
+    inputImageTokens: count(input.image_tokens),
+    outputTokens: count(u.output_tokens),
+  })
 }
 
 /** 响应里的 `data[]`：每项是 `b64_json` 或 `url`。单项失败（火山会逐张报错）并进消息，不静默丢。 */
