@@ -7,29 +7,25 @@
 //! Chromium 引擎的调用要阻塞等 CDP 回包，这个线程两样都满足。
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tauri::AppHandle;
 
 use super::frames::{reject_reason, RequestFrame, ResultFrame};
 use super::{now_ms, BrowserHost};
 use crate::hostkey::KEY_HEADER;
-use crate::ws::WsClient;
+use crate::ws::{Reconnect, WsClient};
 
 /// 与 `packages/core/src/protocol/native-browser.ts` 的常量逐字一致。
 const PATH: &str = "/native/browser";
 
-const RETRY_BASE_MS: u64 = 400;
-const RETRY_MAX_MS: u64 = 15_000;
-
 pub fn spawn(app: AppHandle, host: Arc<BrowserHost>, port: u16, key: String) {
     std::thread::spawn(move || {
-        let mut delay = RETRY_BASE_MS;
+        let mut backoff = Reconnect::new();
         loop {
             if host.is_stopping() {
                 return;
             }
-            match run(&app, &host, port, &key) {
+            match run(&app, &host, port, &key, &mut backoff) {
                 Ok(()) => log::info!("浏览器宿主连接已关闭"),
                 Err(e) => log::warn!("浏览器宿主连接中断：{e}"),
             }
@@ -37,13 +33,18 @@ pub fn spawn(app: AppHandle, host: Arc<BrowserHost>, port: u16, key: String) {
             if host.is_stopping() {
                 return;
             }
-            std::thread::sleep(Duration::from_millis(delay));
-            delay = (delay * 2).min(RETRY_MAX_MS);
+            std::thread::sleep(backoff.next_delay());
         }
     });
 }
 
-fn run(app: &AppHandle, host: &Arc<BrowserHost>, port: u16, key: &str) -> std::io::Result<()> {
+fn run(
+    app: &AppHandle,
+    host: &Arc<BrowserHost>,
+    port: u16,
+    key: &str,
+    backoff: &mut Reconnect,
+) -> std::io::Result<()> {
     let seed = now_ms() ^ (u64::from(std::process::id()) << 32);
     let mut client =
         WsClient::connect(port, PATH, &[(KEY_HEADER, key.to_owned())], seed)?;
@@ -52,6 +53,7 @@ fn run(app: &AppHandle, host: &Arc<BrowserHost>, port: u16, key: &str) -> std::i
     let text = serde_json::to_string(&hello)
         .map_err(|e| std::io::Error::other(format!("宿主首帧序列化失败：{e}")))?;
     sender.send_text(&text)?;
+    backoff.connected();
     log::info!("浏览器宿主已连上 sidecar epoch={epoch}");
 
     while let Some(raw) = client.read_text()? {

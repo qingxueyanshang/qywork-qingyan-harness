@@ -7,26 +7,22 @@
 //! 等 worker 的回执——等它就会让一次长 OS 调用把整条连接堵住，取消帧也进不来。
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::DesktopHost;
 use crate::hostkey::KEY_HEADER;
-use crate::ws::WsClient;
+use crate::ws::{Reconnect, WsClient};
 
 /// 与 `packages/core/src/protocol/native-desktop.ts` 的常量逐字一致。
 const PATH: &str = "/native/desktop";
 
-const RETRY_BASE_MS: u64 = 400;
-const RETRY_MAX_MS: u64 = 15_000;
-
 pub fn spawn(host: Arc<DesktopHost>, port: u16, key: String) {
     std::thread::spawn(move || {
-        let mut delay = RETRY_BASE_MS;
+        let mut backoff = Reconnect::new();
         loop {
             if host.is_stopping() {
                 return;
             }
-            match run(&host, port, &key) {
+            match run(&host, port, &key, &mut backoff) {
                 Ok(()) => log::info!("桌面宿主连接已关闭"),
                 Err(e) => log::warn!("桌面宿主连接中断：{e}"),
             }
@@ -34,13 +30,12 @@ pub fn spawn(host: Arc<DesktopHost>, port: u16, key: String) {
             if host.is_stopping() {
                 return;
             }
-            std::thread::sleep(Duration::from_millis(delay));
-            delay = (delay * 2).min(RETRY_MAX_MS);
+            std::thread::sleep(backoff.next_delay());
         }
     });
 }
 
-fn run(host: &Arc<DesktopHost>, port: u16, key: &str) -> std::io::Result<()> {
+fn run(host: &Arc<DesktopHost>, port: u16, key: &str, backoff: &mut Reconnect) -> std::io::Result<()> {
     let seed = super::now_ms() as u64 ^ (u64::from(std::process::id()) << 32);
     let mut client = WsClient::connect(port, PATH, &[(KEY_HEADER, key.to_owned())], seed)?;
     let sender = client.sender();
@@ -52,6 +47,7 @@ fn run(host: &Arc<DesktopHost>, port: u16, key: &str) -> std::io::Result<()> {
     let text = serde_json::to_string(&ready)
         .map_err(|e| std::io::Error::other(format!("host.ready 序列化失败：{e}")))?;
     sender.send_text(&text)?;
+    backoff.connected();
     log::info!("桌面宿主已连上 sidecar epoch={epoch}");
 
     while let Some(raw) = client.read_text()? {
