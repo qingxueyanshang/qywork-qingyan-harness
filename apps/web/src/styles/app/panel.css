@@ -452,6 +452,10 @@
   align-items: center;
   justify-content: center;
 }
+/* `.btn-ghost` 自带 `align-self: flex-start`，不覆盖的话按钮贴在这块区域顶上。 */
+.web-window > .btn-ghost {
+  align-self: center;
+}
 /* 「交给 AI」与「停止」共用这一颗按钮。**宽度写死**：两个词长度不同，
    不定宽的话地址栏会跟着变宽变窄，而用户正瞄着地址栏里的光标。 */
 .web-own {
