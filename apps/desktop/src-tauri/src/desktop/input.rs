@@ -17,6 +17,10 @@ mod keys;
 #[cfg(target_os = "linux")]
 #[path = "../../../native/computer-host/src/linux/x11/keys.rs"]
 mod keys;
+/// 连 X 服务器的路径，与 worker 用的是同一个文件。
+#[cfg(target_os = "linux")]
+#[path = "../../../native/computer-host/src/linux/x11/connect.rs"]
+mod connect;
 #[cfg(target_os = "macos")]
 #[path = "../../../native/computer-host/src/macos/keys.rs"]
 mod keys;
@@ -88,8 +92,9 @@ pub fn release(held: &HeldInput) -> u32 {
     unsafe { SendInput(&inputs, size) }
 }
 
-/// 同上，经 XTest。宿主自己连一次 X 服务器，按此刻的键盘映射把键名换成键码：映射与换算规则
-/// 都与 worker 派发时相同（`keys::keycode`）。连不上 X 服务器时一个都发不出，返回 0。
+/// 同上，经 XTest。宿主自己连一次 X 服务器（与 worker 同一条建连路径），按此刻的键盘映射把
+/// 键名换成键码，换算规则与 worker 派发时相同（`keys::keycode`）。连不上 X 服务器时一个都发
+/// 不出，返回 0。
 #[cfg(target_os = "linux")]
 pub fn release(held: &HeldInput) -> u32 {
     use x11rb::connection::Connection as _;
@@ -101,7 +106,7 @@ pub fn release(held: &HeldInput) -> u32 {
     const KEY_RELEASE: u8 = 3;
     const BUTTON_RELEASE: u8 = 5;
 
-    let (conn, screen) = match x11rb::connect(None) {
+    let (conn, screen) = match connect::open() {
         Ok(connected) => connected,
         Err(e) => {
             log::warn!("补发抬起连不上 X 服务器：{e}");
