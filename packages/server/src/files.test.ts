@@ -190,16 +190,22 @@ describe('预览', () => {
 
   /**
    * 原始失败形状：PDF 以 data URI 内联，打包版 CSP 的 `frame-src` 不放行 `data:`，iframe 空白；
-   * 超过 4 MB 的还只给一句「超出内联上限」。现在不内联、不设上限，字节由 `/api/files/raw` 给。
+   * 超过 4 MB 的 PDF、图片、视频都只给一句「超出内联上限」。现在都不内联、不设上限，字节由 `/api/files/raw` 给。
    */
-  test('PDF 不内联、不受内联上限约束，带修改时间', async () => {
+  test('PDF、图片与视频不内联、不受内联上限约束，带修改时间', async () => {
     const dir = await workspace()
-    const abs = join(dir, 'big.pdf')
-    await writeFile(abs, `%PDF-1.4 ${'x'.repeat(5 * 1024 * 1024)}`)
-    const out = await preview(abs, 'big.pdf')
-    expect(out).toMatchObject({ kind: 'pdf', mtime: (await stat(abs)).mtimeMs, truncated: false })
-    expect(out.dataUri).toBeUndefined()
-    expect(out.note).toBeUndefined()
+    for (const [name, kind] of [
+      ['big.pdf', 'pdf'],
+      ['big.png', 'image'],
+      ['big.mp4', 'video'],
+    ] as const) {
+      const abs = join(dir, name)
+      await writeFile(abs, `x${'x'.repeat(5 * 1024 * 1024)}`)
+      const out = await preview(abs, name)
+      expect(out).toMatchObject({ kind, mtime: (await stat(abs)).mtimeMs, truncated: false })
+      expect('dataUri' in out).toBe(false)
+      expect(out.note).toBeUndefined()
+    }
   })
 })
 

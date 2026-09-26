@@ -142,7 +142,7 @@ export const handleAttachmentsApi: ApiHandler = async (url, req, d) => {
  * 按路径回原始字节，供界面显示缩略图。
  *
  * **回字节不回 base64 JSON**：不涨三分之一，浏览器自己管缓存，前端拿到就能
- * `createObjectURL`。`/api/files/preview` 那条只吃工作区相对路径且回 dataUri，
+ * `createObjectURL`。`/api/files/preview` 那条只吃工作区相对路径且不回字节，
  * 够不着工作区外的源文件。
  */
 async function serveRaw(url: URL, workspaceRoot: string): Promise<Response> {

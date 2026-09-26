@@ -24,7 +24,6 @@ interface PreviewResult {
   mtime: number
   content?: string
   language?: string
-  dataUri?: string
   truncated: boolean
   note?: string
 }
@@ -82,17 +81,8 @@ export default function FileView(props: { path: string; refresh?: number }) {
               <Match when={r().kind === 'text' || r().kind === 'tabular'}>
                 <CodeView content={r().content ?? ''} path={r().path} />
               </Match>
-              <Match when={r().kind === 'image'}>
-                <img class="preview-media" src={r().dataUri} alt={r().path} />
-              </Match>
-              <Match when={r().kind === 'pdf'}>
-                <PdfFrame path={r().path} mtime={r().mtime} />
-              </Match>
-              <Match when={r().kind === 'video'}>
-                <video class="preview-media" src={r().dataUri} controls />
-              </Match>
-              <Match when={r().kind === 'audio'}>
-                <audio class="preview-audio" src={r().dataUri} controls />
+              <Match when={rawKind(r().kind)}>
+                {(kind) => <RawView kind={kind()} path={r().path} mtime={r().mtime} />}
               </Match>
             </Switch>
           )}
@@ -106,18 +96,27 @@ export default function FileView(props: { path: string; refresh?: number }) {
   )
 }
 
+type RawKind = 'pdf' | 'image' | 'video' | 'audio'
+
+function rawKind(kind: PreviewResult['kind']): RawKind | null {
+  return kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio' ? kind : null
+}
+
 /**
- * PDF：取原始字节交给 iframe，由 WebView 内建的阅读器渲染（WebView2 与 WKWebView 都带）。
+ * PDF、图片与音视频：取原始字节做成 blob URL 交给对应元素。PDF 由 WebView 内建的阅读器渲染。
  *
- * - 用 blob URL，不用 data URI：桌面端 CSP 的 `frame-src` 只放行 `blob:`。
- * - 只在修改时间变了才重取。`mtime` 必须经 memo：预览每重取一次都返回一个新对象，
- *   直接依赖它的话，会话里任何一次写文件都会让阅读器重新加载、回到第一页。
+ * - 用 blob URL，不用 data URI：桌面端 CSP 的 `frame-src` 只放行 `blob:`；data URI 还要整份 base64 进 JSON。
+ * - 不直接把 `/api/files/raw` 填进 `src`：那条接口认 Authorization 头，元素自己发的请求带不上。
+ *   代价是整份字节进内存、不支持 Range 拖动加载。
+ * - 只在路径或修改时间变了才重取。判据必须经 memo 且是字符串：预览每重取一次都返回一个新对象，
+ *   直接依赖它的话，会话里任何一次写文件都会让阅读器重新加载、回到第一页；只看修改时间的话，
+ *   同一个预览里换到修改时间恰好相同的另一个文件时不会重取，显示的还是上一个文件。
  * - blob URL 换下来就撤销，卸载时撤销最后一个：不撤销的话整份字节占着内存直到整页刷新。
  */
-function PdfFrame(props: { path: string; mtime: number }) {
+function RawView(props: { kind: RawKind; path: string; mtime: number }) {
   const [src, setSrc] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
-  const mtime = createMemo(() => props.mtime)
+  const source = createMemo(() => JSON.stringify([props.path, props.mtime]))
 
   const replace = (next: string | null) => {
     const old = src()
@@ -128,7 +127,7 @@ function PdfFrame(props: { path: string; mtime: number }) {
   /** 只有最后一次请求算数：文件连续改写时先发的可能后到。 */
   let generation = 0
   createEffect(
-    on(mtime, () => {
+    on(source, () => {
       const mine = ++generation
       const url = `/api/files/raw?path=${encodeURIComponent(props.path)}`
       void (async () => {
@@ -166,7 +165,22 @@ function PdfFrame(props: { path: string; mtime: number }) {
         </Show>
       }
     >
-      {(u) => <iframe class="preview-frame" src={u()} title={props.path} />}
+      {(u) => (
+        <Switch>
+          <Match when={props.kind === 'pdf'}>
+            <iframe class="preview-frame" src={u()} title={props.path} />
+          </Match>
+          <Match when={props.kind === 'image'}>
+            <img class="preview-media" src={u()} alt={props.path} />
+          </Match>
+          <Match when={props.kind === 'video'}>
+            <video class="preview-media" src={u()} controls />
+          </Match>
+          <Match when={props.kind === 'audio'}>
+            <audio class="preview-audio" src={u()} controls />
+          </Match>
+        </Switch>
+      )}
     </Show>
   )
 }
