@@ -97,7 +97,7 @@ fn plan(
         },
         ActionSpec::SetValue { value } => {
             if !facts.interfaces.contains(Interface::EditableText) {
-                return Err(missing("EditableText"));
+                return Err(missing("这个控件不实现 EditableText，不能在后台设置文本"));
             }
             if !node::editable(facts) {
                 return Err("read_only".to_owned());
