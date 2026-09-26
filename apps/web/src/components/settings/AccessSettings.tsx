@@ -1,5 +1,5 @@
 import { Show } from 'solid-js'
-import { state } from '../../lib/store/index.ts'
+import { browserUnavailableText, state } from '../../lib/store/index.ts'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import {
   config,
@@ -26,6 +26,14 @@ function desktopStatus(): string {
   if (!d.authorized) return '系统未授权'
   if (!d.workerReady) return '组件未就绪'
   return '已就绪'
+}
+
+/** 浏览器控制此刻卡在哪一步。宿主连着却没有浏览器时报原因，版本不达标时手动浏览仍可用。 */
+function browserStatus(): string {
+  const b = state.capabilities?.browser
+  if (!b) return '读取中…'
+  if (b.connected) return b.runtimeSupported ? '已就绪' : '浏览器版本过低'
+  return browserUnavailableText() ?? '宿主未连接'
 }
 
 /**
@@ -103,6 +111,15 @@ export function AccessSettings() {
               </Row>
               <Row label="状态">
                 <span class="setting-row-hint">{desktopStatus()}</span>
+              </Row>
+            </div>
+          </section>
+
+          <section class="settings-block">
+            <h3 class="settings-block-head">浏览器控制</h3>
+            <div class="setting-rows">
+              <Row label="状态">
+                <span class="setting-row-hint">{browserStatus()}</span>
               </Row>
             </div>
           </section>
