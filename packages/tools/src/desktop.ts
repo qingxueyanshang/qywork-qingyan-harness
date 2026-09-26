@@ -1165,6 +1165,7 @@ export const desktopObserveTool: ToolSpec = {
     '回执里「无可操作控件」就是自绘界面，这一次调用已经把整窗图一并给了，动作按图给坐标，不必再采一次；' +
     '「未读全」是采集没采全，调 maxNodes 或 maxDepth 重读；' +
     '「窗口被盖住或已最小化」时浏览器等应用可能没交出页面内容，表里缺的不代表不存在，要看全先 activate 再观察；' +
+    '浏览器自动填充的账号密码在页面上有点击或按键之前读不到，输入框 value 为空不代表框里没填，点一下输入框再读；' +
     '「已投 N/M 个控件」是这一次只返回了其中一部分，完整控件表已按结果里的 resource id 存好，' +
     '用 read_resource 读，不必重读。' +
     '返回的 observationId 与 ref 是 desktop_act 与 desktop_wait 的前提；observationId 重新观察即换号，' +
