@@ -1,4 +1,7 @@
-//! 把本进程的前台权让给 worker。
+//! 把本进程的前台权让给 worker。只有 Windows 编译这个模块。
+//!
+//! Windows 的前台锁只允许前台进程转让前台，用户发消息那一刻前台进程通常是本进程。X11 没有
+//! 按进程裁决前台的机制：worker 的激活请求带来源标记，由窗口管理器按 EWMH 处理。
 //!
 //! 三条边界：
 //!
@@ -12,16 +15,9 @@
 /// 允许 `pid` 那个进程把窗口切到前台。
 ///
 /// 本进程此刻不在前台时系统直接拒绝，返回假：那时 worker 自己会挂到前台线程上再要一次。
-#[cfg(windows)]
 pub fn grant(pid: u32) -> bool {
     use ::windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
     // SAFETY: 只传一个进程号，没有出参。
     unsafe { AllowSetForegroundWindow(pid) }.is_ok()
-}
-
-/// 非 Windows 平台没有前台锁这条机制。
-#[cfg(not(windows))]
-pub fn grant(_pid: u32) -> bool {
-    false
 }

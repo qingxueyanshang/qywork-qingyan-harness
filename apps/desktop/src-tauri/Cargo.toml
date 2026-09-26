@@ -65,6 +65,16 @@ windows = { version = "0.61", features = [
 # 交出来的接口与这里的类型不是同一个。
 webview2-com = "0.38"
 
+# Linux 的 `PR_SET_PDEATHSIG` 与 macOS 的 `proc_pidinfo`，见 desktop/worker.rs 与 desktop/identity.rs。
+# 版本跟依赖树里的那份对齐（0.2）。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# worker 被强杀之后经 XTest 补发它按住的键与鼠标键的抬起，见 desktop/input.rs。
+# 与 worker 用同一个版本（0.14）；纯 Rust 实现，不链接 libX11。
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.14", default-features = false, features = ["xtest"] }
+
 [features]
 # 由 tauri-build 生成的自定义协议开关，勿手改。
 custom-protocol = ["tauri/custom-protocol"]
