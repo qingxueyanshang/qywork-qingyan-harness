@@ -228,9 +228,51 @@ impl WsClient {
     }
 }
 
+const RECONNECT_BASE_MS: u64 = 400;
+const RECONNECT_MAX_MS: u64 = 15_000;
+
+/// 宿主连接断开之后的重连间隔：从 `RECONNECT_BASE_MS` 起每次翻倍，封顶 `RECONNECT_MAX_MS`；
+/// 连上并发出首帧之后回到起点。
+///
+/// 不要去掉 `connected` 的归零：不归零时间隔只增不减，sidecar 重启过几次之后宿主每次都要等满
+/// 封顶值才重连，这段时间里对应的能力按「宿主未连接」发布。
+pub struct Reconnect {
+    next_ms: u64,
+}
+
+impl Reconnect {
+    pub fn new() -> Self {
+        Self { next_ms: RECONNECT_BASE_MS }
+    }
+
+    /// 这一次连上了：下一次断开从起点重连。
+    pub fn connected(&mut self) {
+        self.next_ms = RECONNECT_BASE_MS;
+    }
+
+    /// 这一次断开之后等多久再连。
+    pub fn next_delay(&mut self) -> std::time::Duration {
+        let ms = self.next_ms;
+        self.next_ms = (ms * 2).min(RECONNECT_MAX_MS);
+        std::time::Duration::from_millis(ms)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::base64;
+    use super::{base64, Reconnect};
+    use std::time::Duration;
+
+    /// 原始失败形状：连上过一次之后间隔不归零，下一次断开直接等封顶值。
+    #[test]
+    fn reconnect_backs_off_and_starts_over_once_connected() {
+        let mut r = Reconnect::new();
+        let delays: Vec<u128> = (0..8).map(|_| r.next_delay().as_millis()).collect();
+        assert_eq!(delays, [400, 800, 1_600, 3_200, 6_400, 12_800, 15_000, 15_000]);
+        r.connected();
+        assert_eq!(r.next_delay(), Duration::from_millis(400));
+        assert_eq!(r.next_delay(), Duration::from_millis(800));
+    }
 
     #[test]
     fn base64_matches_rfc_vectors() {
