@@ -61,7 +61,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::backend::CaptureRequest;
 use crate::geometry::{crop_for, generation_matches, Geometry, ScreenRect, WindowFrame};
-use crate::protocol::{now_ms, Image};
+use crate::protocol::{base64, now_ms, Image};
 
 /// 采集方式。图像观察如实带上它。
 pub const SOURCE_WGC: &str = "wgc";
@@ -687,44 +687,9 @@ fn report_capture_cost(source: &str, built: Result<&Image, &String>, started: In
     }
 }
 
-/// 标准 base64。图像字节要经行分隔 JSON 交给宿主，不能按原始字节走。
-fn base64(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = u32::from(chunk[0]);
-        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
-        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[(n >> 18) as usize & 63] as char);
-        out.push(TABLE[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            TABLE[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            TABLE[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn base64_matches_rfc_vectors() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
-        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
-        assert_eq!(base64(&[0x00, 0xff, 0x80]), "AP+A");
-    }
 
     /// 最小化的窗口与失效句柄在采集之前就被挡下，一个像素都不采。
     #[test]

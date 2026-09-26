@@ -99,29 +99,6 @@ pub fn fully_covered(target: ScreenRect, covers: &[ScreenRect]) -> bool {
     left.is_empty()
 }
 
-/// 绝对指针坐标的满量程。`SendInput` 把 0 到这个数铺在虚拟桌面的宽高上。
-const ABSOLUTE_SPAN: i32 = 65_535;
-
-/// 屏幕物理像素点 → `SendInput` 的绝对指针坐标。
-///
-/// 三条约束，换错任一条指针都会落在别处：
-///
-/// 1. **铺的是虚拟桌面矩形，不是主显示器矩形**，因此事件要带
-///    `MOUSEEVENTF_VIRTUALDESK`；虚拟桌面原点在主显示器左侧或上方有显示器时是负数。
-/// 2. **分母取宽高减一**：最后一个像素要落在满量程上，用宽高本身会整体差一格。
-/// 3. 结果夹在 0 与满量程之间：桌面外的点没有对应的绝对坐标。
-pub fn to_absolute(point: ScreenPoint, desktop: ScreenRect) -> (i32, i32) {
-    let span = |value: i32, origin: i32, size: i32| -> i32 {
-        let range = f64::from((size - 1).max(1));
-        let scaled = (f64::from(value - origin) * f64::from(ABSOLUTE_SPAN) / range).round();
-        (scaled as i32).clamp(0, ABSOLUTE_SPAN)
-    };
-    (
-        span(point.x, desktop.x, desktop.width),
-        span(point.y, desktop.y, desktop.height),
-    )
-}
-
 /// 一张图的几何。交给模型的每一张图都带一份。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -283,39 +260,6 @@ mod tests {
         let area: i32 = pieces.iter().map(|r| r.width * r.height).sum();
         assert_eq!(area, 100 - 20);
         assert_eq!(rect(0, 0, 10, 10).subtract(&rect(20, 20, 5, 5)), vec![rect(0, 0, 10, 10)]);
-    }
-
-    /// 单屏：左上角落在 0，右下角那个像素落在满量程上。
-    #[test]
-    fn absolute_coordinates_span_the_whole_desktop() {
-        let desktop = rect(0, 0, 2560, 1440);
-        assert_eq!(to_absolute(point(0, 0), desktop), (0, 0));
-        assert_eq!(to_absolute(point(2559, 1439), desktop), (65_535, 65_535));
-        assert_eq!(to_absolute(point(1280, 720), desktop), (32_780, 32_790));
-    }
-
-    /// 负原点：主显示器左上方还有一台时，虚拟桌面原点是负的，换算要从那里起算。
-    #[test]
-    fn a_negative_desktop_origin_is_the_zero_of_the_absolute_range() {
-        let desktop = rect(-1920, -200, 4480, 1640);
-        assert_eq!(to_absolute(point(-1920, -200), desktop), (0, 0));
-        assert_eq!(to_absolute(point(2559, 1439), desktop), (65_535, 65_535));
-        // 主显示器左上角落在虚拟桌面中间偏左：1920 / 4479 与 200 / 1639 的满量程比例。
-        assert_eq!(to_absolute(point(0, 0), desktop), (28_093, 7_997));
-    }
-
-    /// 桌面外的点夹在量程两端，不绕回另一侧。
-    #[test]
-    fn a_point_outside_the_desktop_is_clamped_to_the_range() {
-        let desktop = rect(0, 0, 2560, 1440);
-        assert_eq!(to_absolute(point(-10, -10), desktop), (0, 0));
-        assert_eq!(to_absolute(point(9999, 9999), desktop), (65_535, 65_535));
-    }
-
-    /// 单像素宽的桌面不会让分母变成 0。
-    #[test]
-    fn a_one_pixel_desktop_does_not_divide_by_zero() {
-        assert_eq!(to_absolute(point(0, 0), rect(0, 0, 1, 1)), (0, 0));
     }
 
     #[test]
