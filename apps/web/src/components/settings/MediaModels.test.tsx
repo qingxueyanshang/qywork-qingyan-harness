@@ -147,7 +147,7 @@ test('目录里的图像模型挂成生成模型：协议按地址定、首个�
   }
 })
 
-test('模型库按类别分页签；生成类一张表，厂商是一列，参数表收在行末', async () => {
+test('模型库按类别分页签；生成类一张表，厂商是一列，参数由行末按钮展开到下一整行', async () => {
   const { render } = await import('solid-js/web')
   const { ModelLibrary } = await import('./ModelLibrary.tsx')
   const host = document.createElement('div')
@@ -164,9 +164,15 @@ test('模型库按类别分页签；生成类一张表，厂商是一列，参�
     expect(table?.textContent).toContain('qwen-image-3.0')
     expect(table?.textContent).toContain('阿里云')
     expect(table?.textContent).toContain('百炼')
-    expect(table?.textContent).toContain('生成 / 修改')
-    expect(table?.textContent).toContain('图 3')
-    expect(table?.querySelector('summary')?.textContent).toBe('3 项')
+    // 参考图上限跟在它约束的「修改」后面。
+    expect(table?.textContent).toContain('生成 / 修改 ≤3')
+    const toggle = table?.querySelector<HTMLButtonElement>('.lib-params-toggle')
+    expect(toggle?.textContent).toBe('3 项')
+    expect(table?.querySelector('.lib-params')).toBeNull()
+    fire(toggle!, 'click')
+    const row = table?.querySelector<HTMLTableRowElement>('tr.lib-params')
+    expect(row?.cells[0]?.colSpan).toBe(5)
+    expect(row?.querySelectorAll('li').length).toBe(3)
   } finally {
     dispose()
     host.remove()
