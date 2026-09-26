@@ -22,6 +22,7 @@ import type {
   StepId,
   WorkspaceId,
 } from './ids.ts'
+import type { MediaSpend } from './media.ts'
 import type { SubagentKind } from './workflow.ts'
 
 // ──────────────────────────── 共享词表 ────────────────────────────
@@ -498,6 +499,22 @@ export interface RunUsage {
   currency: Currency
   /** 每轮一条，供命中率分桶与成本审计；不参与计费。 */
   turns: UsageTurn[]
+  /** 这一轮里的生成花费（出图、视频、语音）。没有生成时不带这个键。上面的 `cost` 只是模型调用的花费。 */
+  media?: MediaSpend[]
+}
+
+/**
+ * 一轮的全部花费：模型调用加生成，按币种分开。读数条与「运行」面板共用这一份口径，
+ * 各算各的话同一轮在两处显示不同的金额。金额为 0 的项不计入（0 是金额不明，不是免费）。
+ */
+export function runCosts(usage: RunUsage): Record<string, number> {
+  const costs: Record<string, number> = {}
+  const add = (amount: number, currency: Currency) => {
+    if (amount > 0) costs[currency] = (costs[currency] ?? 0) + amount
+  }
+  add(usage.cost, usage.currency)
+  for (const m of usage.media ?? []) add(m.cost, m.currency)
+  return costs
 }
 
 export interface UsageTurn {
@@ -525,9 +542,9 @@ export interface UsageTurn {
  *
  * 每一条都是**独立于 run 的一笔开销**，不加进来就意味着那笔钱在界面上不存在。
  * `summary`（压缩时的摘要调用）是典型：不进账本它就完全看不见，
- * 压缩越频繁账单和界面差得越多。
+ * 压缩越频繁账单和界面差得越多。`media` 是轮次里的一次生成，带所属轮次的 run_id。
  */
-export type UsageKind = 'run' | 'summary'
+export type UsageKind = 'run' | 'summary' | 'media'
 
 export interface UsageTotals {
   entries: number

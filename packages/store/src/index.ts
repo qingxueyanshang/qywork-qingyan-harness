@@ -70,6 +70,7 @@ export {
   settleToolStep,
   setWorkspacePinned,
   touchRun,
+  updateRunMedia,
   updateRunUsage,
   upsertWorkspace,
   workspaceOf,

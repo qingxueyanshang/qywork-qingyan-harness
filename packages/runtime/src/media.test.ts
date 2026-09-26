@@ -1,23 +1,32 @@
 /**
- * 生成端口与参数表快照。
+ * 生成端口、参数表快照与生成花费的记账。
  *
- * 覆盖范围：`media.ts` 的 `makeMediaPort`（选模型、发出前校验、接口错误的转述）与 `operationOf`，
- * 以及 `prompt.ts` 里「可用的生成模型」那一节。
+ * 覆盖范围：`media.ts` 的 `makeMediaPort`（选模型、发出前校验、接口错误的转述、成功时交出花费）与 `operationOf`，
+ * `prompt.ts` 里「可用的生成模型」那一节，以及 `session.ts` 把生成花费写进本轮 usage、`runs` 行与账本。
  *
  * 端口对面是一个本机假百炼端点：参数不合法时它必须一次都没收到请求。
+ * 记账那一组另起一个假的对话接口，脚本化地先调出图工具、再收尾，跑完整的一轮。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { type AgentEvent, runCosts } from '@qywork/core'
+import { getRun, Store } from '@qywork/store'
 import type { QyConfig } from './config.ts'
 import { listMediaModels } from './config.ts'
 import { makeMediaPort, operationOf } from './media.ts'
 import { buildTailNotes } from './prompt.ts'
+import { Session } from './session.ts'
 
 const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 1])
 
 let server: ReturnType<typeof Bun.serve>
 let hits: string[] = []
 let reply: () => Response = () => Response.json({})
+/** 对话接口的回复，按调用次序给出 SSE 正文。 */
+let chat: () => string = () => ''
 
 beforeAll(() => {
   server = Bun.serve({
@@ -26,6 +35,9 @@ beforeAll(() => {
     fetch(req) {
       const path = new URL(req.url).pathname
       if (path === '/files/out.jpg') return new Response(JPEG)
+      if (path.endsWith('/chat/completions')) {
+        return new Response(chat(), { headers: { 'content-type': 'text/event-stream' } })
+      }
       hits.push(path)
       return reply()
     },
@@ -117,6 +129,154 @@ describe('生成端口', () => {
       Response.json({ code: 'InvalidParameter', message: 'size 不合法' }, { status: 400 })
     const out = await makeMediaPort(config()).generate(call(), signal())
     expect(!out.ok && out.message).toBe('qwen / qwen-image-3.0：HTTP 400：size 不合法')
+  })
+
+  test('成功时按接口回报的计量交出花费，失败时不交', async () => {
+    reply = () =>
+      Response.json({
+        output: {
+          choices: [
+            { message: { content: [{ image: `http://127.0.0.1:${server.port}/files/out.jpg` }] } },
+          ],
+        },
+        usage: {
+          output_image_count: 1,
+          input_image_count: 0,
+          output_image_type: 'qima_output_2k',
+        },
+      })
+    const spends: unknown[] = []
+    await makeMediaPort(config(), (s) => spends.push(s)).generate(call(), signal())
+    expect(spends).toEqual([
+      {
+        kind: 'dashscope_images',
+        provider: 'qwen',
+        model: 'qwen-image-3.0',
+        output: 'image',
+        quantity: 1,
+        cost: 0.18,
+        currency: 'CNY',
+        at: expect.any(Number),
+      },
+    ])
+
+    reply = () => Response.json({ code: 'InvalidParameter', message: 'x' }, { status: 400 })
+    await makeMediaPort(config(), (s) => spends.push(s)).generate(call(), signal())
+    expect(spends).toHaveLength(1)
+  })
+})
+
+/** 对话接口的一段 SSE：先调一次出图工具，下一次请求收尾。 */
+function chatTurn(turn: number): string {
+  const chunk = (body: unknown) => `data: ${JSON.stringify(body)}\n\n`
+  if (turn === 1) {
+    return (
+      chunk({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_img',
+                  type: 'function',
+                  function: {
+                    name: 'generate_image',
+                    arguments: JSON.stringify({ prompt: '一只猫' }),
+                  },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      }) +
+      chunk({
+        choices: [{ delta: {}, finish_reason: 'tool_calls' }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      }) +
+      'data: [DONE]\n\n'
+    )
+  }
+  return (
+    chunk({ choices: [{ delta: { content: '画好了' }, finish_reason: null }] }) +
+    chunk({
+      choices: [{ delta: {}, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 20, completion_tokens: 3 },
+    }) +
+    'data: [DONE]\n\n'
+  )
+}
+
+describe('生成花费', () => {
+  /**
+   * 原始失败形状：一轮里生成了图片，读数条、「运行」面板与账本都看不到这笔花费。
+   * 这里跑完整的一轮：花费随本轮 usage 事件与收尾事件带出，写进 `runs` 行，收尾时记进账本；
+   * 记账的 `run` 那一行仍只是模型调用。
+   */
+  test('一次出图的花费进本轮 usage、runs 行与账本', async () => {
+    let turn = 0
+    chat = () => chatTurn(++turn)
+    reply = () =>
+      Response.json({
+        output: {
+          choices: [
+            { message: { content: [{ image: `http://127.0.0.1:${server.port}/files/out.jpg` }] } },
+          ],
+        },
+        usage: { output_image_count: 1, input_image_count: 0, output_image_type: 'qima_output_1k' },
+      })
+    const store = new Store({ path: ':memory:' })
+    const s = new Session({
+      store,
+      config: {
+        ...config(),
+        active: { provider: 'qwen', model: 'qwen-test' },
+        providers: {
+          qwen: { ...config().providers.qwen!, models: { 'qwen-test': {} } },
+        },
+        mode: 'full',
+      },
+      workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-media-spend-')),
+      signal: new AbortController().signal,
+    })
+    try {
+      const events: AgentEvent[] = []
+      for await (const ev of s.ask('画一只猫')) events.push(ev)
+      const finished = events.find((e) => e.type === 'run.finished')
+      if (finished?.type !== 'run.finished') throw new Error('没有收尾事件')
+      const spend = {
+        kind: 'dashscope_images',
+        provider: 'qwen',
+        model: 'qwen-image-3.0',
+        output: 'image',
+        quantity: 1,
+        cost: 0.18,
+        currency: 'CNY',
+      }
+      expect(finished.usage.media).toEqual([expect.objectContaining(spend)])
+      expect(runCosts(finished.usage)).toEqual({ CNY: 0.18 })
+      // 轮次还在跑时就有一次带着这笔花费的 usage 事件。
+      expect(events.some((e) => e.type === 'usage' && e.usage.media?.length === 1)).toBe(true)
+      expect(getRun(store, finished.runId)?.usage.media).toEqual([expect.objectContaining(spend)])
+      expect(
+        store.db
+          .query('SELECT kind, run_id, model, cost, currency FROM usage_ledger ORDER BY kind')
+          .all(),
+      ).toEqual([
+        {
+          kind: 'media',
+          run_id: finished.runId,
+          model: 'qwen-image-3.0',
+          cost: 0.18,
+          currency: 'CNY',
+        },
+        { kind: 'run', run_id: finished.runId, model: 'qwen-test', cost: 0, currency: 'USD' },
+      ])
+    } finally {
+      s.dispose()
+      store.close()
+    }
   })
 })
 

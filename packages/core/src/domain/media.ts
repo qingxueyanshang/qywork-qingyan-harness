@@ -5,6 +5,8 @@
  * 都按它分派，混进来就得在每一处排除生成协议。
  */
 
+import type { Currency } from './model.ts'
+
 /**
  * 一个值 = 一种请求形状，不是一个厂商：火山方舟的出图与 OpenAI 同形状，同属 `openai_images`。
  * 加值要同时加该协议的适配器、`MEDIA_KIND_OUTPUT` 一行与目录里的协议默认。
@@ -24,6 +26,32 @@ export type MediaKind = (typeof MEDIA_KINDS)[number]
 /** 生成的产物类别。顺序即模型库页签顺序。 */
 export const MEDIA_OUTPUTS = ['image', 'video', 'audio'] as const
 export type MediaOutput = (typeof MEDIA_OUTPUTS)[number]
+
+/** 生成花费里数量那一格的单位：图片按张、视频按秒、语音按字符，都是各家计费的口径。 */
+export const MEDIA_OUTPUT_UNIT: Record<MediaOutput, '张' | '秒' | '字符'> = {
+  image: '张',
+  video: '秒',
+  audio: '字符',
+}
+
+/**
+ * 一轮里的一次生成花费。存在所属轮次的 `runs.media_usage`，轮次收尾时逐条记进账本。
+ *
+ * `cost` 为 0 表示金额不明：模型没有价目、接口没有回报计价所需的量，或从资源包扣费（没有金额）。
+ * 界面按既有约定把 0 显示成 N/A，不显示成免费。
+ */
+export interface MediaSpend {
+  kind: MediaKind
+  /** 接口名。 */
+  provider: string
+  model: string
+  output: MediaOutput
+  /** 接口回报的数量，单位见 `MEDIA_OUTPUT_UNIT`；接口没有回报时为 null。 */
+  quantity: number | null
+  cost: number
+  currency: Currency
+  at: number
+}
 
 /** 协议决定类别。配置里不另存类别：两处各存一份就可能对不上。 */
 export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
