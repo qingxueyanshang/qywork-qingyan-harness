@@ -28,6 +28,7 @@ const APP_COMMANDS: &[&str] = &[
     "browser_open",
     "browser_close",
     "browser_navigate",
+    "browser_activate",
     "browser_layout",
 ];
 

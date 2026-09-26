@@ -281,6 +281,16 @@ impl BrowserHost {
         self.state.lock().expect("宿主状态锁被污染").stopping
     }
 
+    /// 取一页的引擎句柄。引擎调用在锁外做，这里只拷出句柄。
+    fn page(&self, tab_id: &str) -> Result<engine::Page, String> {
+        let state = self.state.lock().expect("宿主状态锁被污染");
+        state
+            .tabs
+            .get(tab_id)
+            .map(|t| t.page.clone())
+            .ok_or_else(|| format!("认不出的标签页 {tab_id}"))
+    }
+
     fn current_epoch(&self) -> u64 {
         self.state.lock().expect("宿主状态锁被污染").connection_epoch
     }
@@ -774,15 +784,16 @@ pub fn user_close(tab_id: &str) -> Result<(), String> {
 #[cfg(desktop)]
 pub fn user_navigate(tab_id: &str, action: &str, url: Option<&str>) -> Result<(), String> {
     let host = host().ok_or(NO_HOST)?;
-    let page = {
-        let state = host.state.lock().expect("宿主状态锁被污染");
-        state
-            .tabs
-            .get(tab_id)
-            .map(|t| t.page.clone())
-            .ok_or_else(|| format!("认不出的标签页 {tab_id}"))?
-    };
+    let page = host.page(tab_id)?;
     host.engine.navigate(&page, action, url)
+}
+
+/// 用户要看某一页：把它所在的浏览器窗口提到前面。只有页在独立窗口里的引擎有这件事。
+#[cfg(all(desktop, not(windows)))]
+pub fn user_activate(tab_id: &str) -> Result<(), String> {
+    let host = host().ok_or(NO_HOST)?;
+    let page = host.page(tab_id)?;
+    host.engine.activate(&page)
 }
 
 #[cfg(all(test, desktop))]

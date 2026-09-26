@@ -99,12 +99,36 @@ pub async fn browser_navigate(
     }
 }
 
+/// 把一页所在的浏览器窗口提到前面。只有页在独立窗口里的 macOS 与 Linux 有这件事；
+/// Windows 的页嵌在面板里，界面不会调到这里。要等 CDP 回包，理由同建页。
+#[tauri::command]
+pub async fn browser_activate(tab_id: String) -> Result<(), String> {
+    #[cfg(all(desktop, not(windows)))]
+    {
+        tauri::async_runtime::spawn_blocking(move || super::user_activate(&tab_id))
+            .await
+            .map_err(|e| format!("切换窗口任务失败：{e}"))?
+    }
+    #[cfg(windows)]
+    {
+        let _ = tab_id;
+        Err("浏览器页嵌在面板里，没有独立窗口".to_owned())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = tab_id;
+        Err(UNSUPPORTED.to_owned())
+    }
+}
+
 /// 摆放子视图。矩形是**物理像素**（DOM 矩形乘 `devicePixelRatio`），原点是窗口客户区左上角。
 ///
-/// `tabId` 缺席表示这一刻一页都不该露出来：面板收起、翻到别的页、浮层盖上来。
-/// 原生子视图是窗口的子 HWND，画在所有 DOM 之上，CSS 的层叠对它无效。
+/// `tabId` 缺席表示这一刻一页都不该露出来：面板收起、翻到别的页、浮层盖上来，以及界面
+/// 整页加载时收起上一份页面摆出来的子视图。原生子视图是窗口的子 HWND，画在所有 DOM 之上，
+/// CSS 的层叠对它无效。
 ///
-/// macOS 与 Linux 的页在浏览器自己的窗口里，不嵌进面板，没有可摆放的视图，因此如实报错。
+/// macOS 与 Linux 的页在浏览器自己的窗口里，面板里本来没有摆出来的页：收起全部即已成立，
+/// 摆放某一页做不到，如实报错。界面加载时还不知道宿主是哪一种，所以收起全部两端都要接。
 #[tauri::command]
 pub fn browser_layout(
     tab_id: Option<String>,
@@ -119,8 +143,11 @@ pub fn browser_layout(
     }
     #[cfg(all(desktop, not(windows)))]
     {
-        let _ = (tab_id, x, y, width, height);
-        Err("浏览器页在独立窗口里，不在面板内摆放".to_owned())
+        let _ = (x, y, width, height);
+        match tab_id {
+            None => Ok(()),
+            Some(_) => Err("浏览器页在独立窗口里，不在面板内摆放".to_owned()),
+        }
     }
     #[cfg(not(desktop))]
     {
