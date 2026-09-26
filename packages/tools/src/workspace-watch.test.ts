@@ -76,6 +76,39 @@ describe('执行窗口内的工作区变更', () => {
   })
 
   /**
+   * 原始失败形状：文件时间戳按文件系统时钟的刻度取值，比 `Date.now()` 落后至多一个刻度
+   * （Linux 按 HZ 为 1–10 ms）。起点取 `Date.now()` 时，打开后同一刻度内新建的文件
+   * 创建时间早于起点，判为 modified。
+   */
+  test('窗口打开后立即新建的文件判为 created', async () => {
+    const root = await gitRepo()
+    const window = openChangeWindow(root)
+    await writeFile(join(root, 'a.txt'), 'a\n')
+    const got = await window.close()
+
+    expect(got.changes).toEqual([
+      { path: 'a.txt', changeType: 'created', additions: 2, deletions: 0 },
+    ])
+    expect(got.incomplete).toBe(false)
+  })
+
+  /**
+   * 反方向：打开前同一刻度内写下的文件不属于本窗口，本窗口改了它判为 modified。
+   * 连续两条命令之间只隔几毫秒，把起点前移去抵消刻度会让上一条的文件在这里重报或判为 created。
+   */
+  test('窗口打开前刚写下的文件不进结果，打开后改了它判为 modified', async () => {
+    const root = await gitRepo()
+    await writeFile(join(root, 'kept.txt'), 'k\n')
+    await writeFile(join(root, 'edited.txt'), 'e\n')
+    const window = openChangeWindow(root)
+    await writeFile(join(root, 'edited.txt'), 'e\ne\n')
+    const got = await window.close()
+
+    expect(got.changes).toEqual([{ path: 'edited.txt', changeType: 'modified' }])
+    expect(got.incomplete).toBe(false)
+  })
+
+  /**
    * 原始失败形状：`.github/workflows`、`.gitignore`、`.editorconfig` 与用户自己的点目录
    * 都是项目文件，按点前缀排除会把它们一起丢掉。忽略与否只由 Git 裁决。
    */
@@ -383,7 +416,8 @@ describe('执行窗口内的工作区变更', () => {
   /**
    * 收尾前发生、收尾时还在途的事件属于正在收尾的窗口，不能落到排在后面的窗口里。
    * 收尾之后那一步用新建：标记的 rename 占 Bun 约 2 ms 的去重窗口，紧跟其后的删除可能不交付，
-   * 新建由收尾扫描补上。只断言路径：窗口起点后一个时钟节拍内新建的文件在 Linux 上判为 modified。
+   * 新建由收尾扫描补上。只断言路径：排队的窗口以前一个收尾时的 `Date.now()` 为起点，
+   * 其后一个时间戳刻度内新建的文件判为 modified。
    */
   test('两个窗口同时开着时，前一个收尾时在途的事件仍归它', async () => {
     const root = await gitRepo()
@@ -445,7 +479,7 @@ describe('执行窗口内的工作区变更', () => {
 
   /**
    * 同一个目录的两种写法共用一个 watcher，窗口照样排队；各开一个的话后一个窗口会收下前一个的删除。
-   * 前一个窗口用删除断言：删除只有事件看得见，收尾扫描按毫秒取的窗口边界不参与。
+   * 前一个窗口用删除断言：删除只有事件看得见，与收尾扫描的时间边界无关。
    * 收尾之后那一步用新建、只断言路径，理由见「前一个收尾时在途的事件仍归它」。
    */
   test('同一个目录经两种写法打开时共用一个 watcher', async () => {
