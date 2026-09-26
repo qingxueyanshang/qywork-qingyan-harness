@@ -62,11 +62,9 @@ describe('正文里的链接', () => {
     const { renderMarkdown } = await import('./lib/markdown.ts')
     const g = globalThis as Record<string, unknown>
     const previousTauri = g.__TAURI_INTERNALS__
-    const previousAgent = Object.getOwnPropertyDescriptor(navigator, 'userAgent')
     const previousCapabilities = store.state.capabilities
     const opened: { url: string; workspaceId: string }[] = []
     let hostTabs: Record<string, unknown>[] = []
-    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Windows NT 10.0' })
     g.__TAURI_INTERNALS__ = {
       invoke: async (cmd: string, args: { url: string; workspaceId: string }) => {
         if (cmd === 'browser_open') {
@@ -112,8 +110,6 @@ describe('正文里的链接', () => {
       store.setWorkspace(null)
       store.setState('capabilities', previousCapabilities)
       g.__TAURI_INTERNALS__ = previousTauri
-      if (previousAgent) Object.defineProperty(navigator, 'userAgent', previousAgent)
-      else Reflect.deleteProperty(navigator, 'userAgent')
     }
   })
 
@@ -123,7 +119,7 @@ describe('正文里的链接', () => {
     const event = await clickLink(renderMarkdown('[预览](flying-bird.html)'))
     expect(event.defaultPrevented).toBe(true)
     expect(store.panelTabs()).toHaveLength(0)
-    expect(store.state.notice?.message).toContain('Windows 桌面端')
+    expect(store.state.notice?.message).toBe('本地网页预览需要桌面端。')
     store.setState('notice', null)
     store.setWorkspace(null)
   })

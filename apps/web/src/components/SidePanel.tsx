@@ -29,7 +29,6 @@ import {
   closePanelTab,
   explainApiError,
   isDesktopShell,
-  isNativeBrowserShell,
   loadConversationChanges,
   loadOlderConversationChanges,
   openBrowserTab,
@@ -133,10 +132,10 @@ const DESKTOP = isDesktopShell()
  * 这是用户点名要的形状：清单同时充当路线图。接上哪一项就给它补一个 `open`，
  * 看板那段 JSX 一行不用改。
  *
- * 现状（核过码，别照着标签猜）：终端在 Rust 侧有 PTY，只在桌面端有；内置浏览器是
- * Windows 桌面外壳里的原生子 WebView，要宿主连上才有，别的端换成 HTTP 网页预览
- * （一个 iframe，只能看）。无限画布没有实现；Word / PPT 不在
- * `packages/server/src/files.ts` 的分类表里；Excel 虽然分到 `tabular`，但 xlsx 是
+ * 现状（核过码，别照着标签猜）：终端在 Rust 侧有 PTY，只在桌面端有；内置浏览器由
+ * 桌面外壳的宿主承载（Windows 嵌在面板里，macOS 与 Linux 在浏览器自己的窗口里），
+ * 要宿主连上才有，别的端换成 HTTP 网页预览（一个 iframe，只能看）。无限画布没有实现；
+ * Word / PPT 不在 `packages/server/src/files.ts` 的分类表里；Excel 虽然分到 `tabular`，但 xlsx 是
  * 二进制、走到 `looksBinary` 就退成「无法以文本预览」——真能开的只有 csv / tsv，
  * 那条路文件那一页本来就有。
  */
@@ -165,14 +164,14 @@ const PREVIEW_SOURCES: {
   },
   {
     /*
-     * 网页预览**只在没有内置浏览器的那几端有**，不按「宿主连没连上」判。
-     * 按可用性判的话，Windows 外壳上宿主起不来就退成了 iframe——用户拿到的是一个
+     * 网页预览**只在没有桌面外壳的那几端有**，不按「宿主连没连上」判。
+     * 按可用性判的话，外壳上宿主起不来就退成了 iframe——用户拿到的是一个
      * 看起来一样、却没有登录状态也不受 AI 控制的页面，而他分辨不出来。
      */
     key: 'preview',
     label: '网页预览',
     icon: IconGlobe,
-    show: () => !isNativeBrowserShell(),
+    show: () => !DESKTOP,
     open: () => openPanelTab('preview'),
   },
   { key: 'word', label: 'Word', icon: IconFile },

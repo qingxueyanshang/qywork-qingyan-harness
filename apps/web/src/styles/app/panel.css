@@ -444,6 +444,14 @@
   flex: 1;
   min-height: 0;
 }
+/* 页在浏览器自己的窗口里时，这块区域只放把窗口提到前面的那颗按钮。 */
+.web-window {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 /* 「交给 AI」与「停止」共用这一颗按钮。**宽度写死**：两个词长度不同，
    不定宽的话地址栏会跟着变宽变窄，而用户正瞄着地址栏里的光标。 */
 .web-own {
