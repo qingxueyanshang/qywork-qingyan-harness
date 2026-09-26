@@ -49,13 +49,13 @@ import {
 } from './page.ts'
 
 /**
- * 浏览器控制的最低 WebView2 Runtime 版本。
+ * 浏览器控制的最低 Chromium 主版本。WebView2 Runtime 与 Chrome / Edge / Chromium 同按它判。
  *
- * 这个版本上 `Emulation.setFocusEmulationEnabled` 被接受，附加目标、跨站子会话、
- * 页面输入、截图、AX 树、`DOM.setFileInputFiles` 与逐下载钩子都已实测通过。
- * 低于它不发布 AI 控制能力，手动浏览不受影响。
+ * 这个主版本上 `Emulation.setFocusEmulationEnabled` 被接受，附加目标、跨站子会话、
+ * 页面输入、截图、AX 树、`DOM.setFileInputFiles` 与逐下载钩子都已实测通过
+ * （WebView2 152.0.4191.66）。低于它不发布 AI 控制能力，手动浏览不受影响。
  */
-export const MIN_RUNTIME_VERSION = '152.0.4191.66'
+export const MIN_CHROMIUM_MAJOR = 152
 
 /**
  * 这一页正被另一个执行者占着。
@@ -206,16 +206,13 @@ interface Lease {
   released: boolean
 }
 
-/** 版本按点分数字逐段比较。段数不同时缺的段按 0 算。 */
-export function meetsRuntimeFloor(version: string, floor = MIN_RUNTIME_VERSION): boolean {
-  const left = version.split('.').map((p) => Number.parseInt(p, 10) || 0)
-  const right = floor.split('.').map((p) => Number.parseInt(p, 10) || 0)
-  for (let i = 0; i < Math.max(left.length, right.length); i++) {
-    const a = left[i] ?? 0
-    const b = right[i] ?? 0
-    if (a !== b) return a > b
-  }
-  return true
+/**
+ * 只比第一段主版本。不要改回逐段比较：后三段是 Chrome、Edge、WebView2 各自的构建号，
+ * 彼此不可比，同一主版本上较早的 Edge 构建会被一个 WebView2 构建号拒掉。读不出主版本的一律不达标。
+ */
+export function meetsRuntimeFloor(version: string, floor = MIN_CHROMIUM_MAJOR): boolean {
+  const major = Number.parseInt(version.split('.')[0] ?? '', 10)
+  return Number.isFinite(major) && major >= floor
 }
 
 export class BrowserCoordinator {
