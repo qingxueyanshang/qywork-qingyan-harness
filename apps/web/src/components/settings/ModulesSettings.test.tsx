@@ -51,13 +51,7 @@ function activeLabel(host: HTMLElement): string | undefined {
   return segOf(host).find((b) => b.classList.contains('active'))?.textContent ?? undefined
 }
 
-/**
- * 等一个条件成立。
- *
- * **不要换成固定时长的 sleep。** `configStore` 是模块级共享的一份，写入走一条串行
- * 队列；整套测试跑在同一个进程里时，队列里可能还压着别的测试排进去的编辑，
- * 本次写出去的那一条不一定是第一条。
- */
+/** 等一个条件成立。配置、工具清单与 PUT 各自异步完成，不要换成固定时长的 sleep。 */
 async function until(ok: () => boolean, ms = 3000): Promise<boolean> {
   const deadline = Date.now() + ms
   while (Date.now() < deadline) {
@@ -78,7 +72,7 @@ test('开关读数：缺席按启用，只有显式 false 才关', async () => {
 test('组头开关：缺席按启用，点一下写出去的是 desktopEnabled', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
-  const { config } = await import('./configStore.ts')
+  const { config, reloadConfig } = await import('./configStore.ts')
   const { ModulesSettings } = await import('./ModulesSettings.tsx')
 
   let stored: Record<string, unknown> = { providers: {} }
@@ -100,6 +94,8 @@ test('组头开关：缺席按启用，点一下写出去的是 desktopEnabled',
     }
     throw new Error(`unexpected ${path}`)
   }
+  // `ensureConfig` 在整个进程里只拉一次，共享配置可能是先运行的测试文件读到的那份。
+  await reloadConfig()
 
   const host = document.createElement('div')
   document.body.append(host)
@@ -113,26 +109,18 @@ test('组头开关：缺席按启用，点一下写出去的是 desktopEnabled',
     expect(host.textContent).not.toContain('desktopEnabled')
     expect(host.textContent).not.toContain('dispatch')
 
-    // 缺席按启用。true / false 两种读数由 `desktopSwitchOn` 的单测锁——
-    // `configStore` 是模块级共享的一份，整套测试跑在同一个进程里时，
-    // 别的测试文件装的模块替身会把「重新载入服务端那一份」这条路径接管掉。
+    // 缺席按启用。true / false 两种读数由 `desktopSwitchOn` 的单测锁。
     expect(activeLabel(host)).toBe('启用')
 
-    /*
-     * 点「关闭」写出去的是这一格。
-     *
-     * 判据取 `config()`：`patchConfig` 把新值同步写进这份共享配置，之后才排队发 PUT。
-     * **不要改成等那次 PUT 到达**：整套测试跑在同一个进程里，`configStore` 的写入队列
-     * 是模块级的一份，别的测试文件排进去而没有回应的编辑会把队列卡住，本次写入因此
-     * 可能一直发不出去。PUT 的报文形状由 `configStore.test.ts` 与服务端的接口测试锁。
-     */
     click(segOf(host).find((b) => b.textContent === '关闭') as HTMLButtonElement)
     expect(config()?.desktopEnabled).toBe(false)
     expect(activeLabel(host)).toBe('关闭')
+    expect(await until(() => stored.desktopEnabled === false)).toBe(true)
 
     click(segOf(host).find((b) => b.textContent === '启用') as HTMLButtonElement)
     expect(config()?.desktopEnabled).toBe(true)
     expect(activeLabel(host)).toBe('启用')
+    expect(await until(() => stored.desktopEnabled === true)).toBe(true)
   } finally {
     dispose()
     host.remove()

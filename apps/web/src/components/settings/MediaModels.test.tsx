@@ -3,15 +3,10 @@
  *
  * 覆盖范围：`ModelSettings.tsx` 的 `addModel` 分流、生成模型行、`removeMediaModel` 与 `withMediaDefaults`；
  * `ModelLibrary.tsx` 的类别页签与 `MediaTable`。
- *
- * 判据取共享的 `config()`，每个操作之后立即断言：写入先同步改这一份再排队发 PUT。
- * **不要改成等待**：`configStore` 的写入队列是模块级的一份，整套测试跑在同一个进程里时，
- * 别的测试文件留下的写入稍后回来会把这一份整个换掉。PUT 的报文形状由 `configStore.test.ts`
- * 与服务端接口测试锁（理由同 `ModulesSettings.test.tsx`）。
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
-import type { MediaLibraryModel } from '../../lib/store/index.ts'
+import type { MediaLibraryModel, RedactedConfig } from '../../lib/store/index.ts'
 
 beforeAll(() => GlobalRegistrator.register({ url: 'http://localhost/' }))
 afterAll(async () => {
@@ -40,6 +35,15 @@ function fire(el: HTMLElement, type: 'click' | 'keydown', init: KeyboardEventIni
   else el.dispatchEvent(event)
 }
 
+async function until(ok: () => boolean, ms = 3000): Promise<boolean> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (ok()) return true
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  return ok()
+}
+
 const QWEN_IMAGE: MediaLibraryModel = {
   id: 'qwen-image-3.0',
   label: '千问图像 3.0',
@@ -55,10 +59,10 @@ const QWEN_IMAGE: MediaLibraryModel = {
 test('目录里的图像模型挂成生成模型：协议按地址定、首个成为默认、没有检测、删掉后默认一并清掉', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
-  const { config, reloadConfig, replaceConfig } = await import('./configStore.ts')
+  const { config, configBusy, reloadConfig } = await import('./configStore.ts')
   const { ModelSettings } = await import('./ModelSettings.tsx')
 
-  let stored: Record<string, unknown> = {
+  let stored: RedactedConfig = {
     providers: {
       qwen: {
         kind: 'openai_chat_completions',
@@ -73,7 +77,7 @@ test('目录里的图像模型挂成生成模型：协议按地址定、首个�
       return { providers: [], media: [], library: [], mediaLibrary: [QWEN_IMAGE] } as T
     }
     if (path === '/api/config' && init?.method === 'PUT') {
-      stored = (JSON.parse(String(init.body)) as { config: Record<string, unknown> }).config
+      stored = (JSON.parse(String(init.body)) as { config: RedactedConfig }).config
       return { ok: true } as T
     }
     if (path === '/api/config') {
@@ -90,27 +94,6 @@ test('目录里的图像模型挂成生成模型：协议按地址定、首个�
   }
   await reloadConfig()
   await store.reloadModelCatalog()
-
-  /*
-   * 整套测试里 `loadServerConfig` 可能被别的文件的模块替身接管，读回来的不一定是上面那份。
-   * 所以测试用的接口用一次乐观更新加进当前那一份；此后到最后一条断言之间不让出执行权，
-   * 队列里的写入回来之前断言已经做完。
-   */
-  void replaceConfig((cur) => {
-    const { mediaDefaults: _drop, ...rest } = cur
-    return {
-      ...rest,
-      providers: {
-        ...cur.providers,
-        qwen: {
-          kind: 'openai_chat_completions',
-          baseUrl: 'https://x.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
-          hasApiKey: true,
-          models: {},
-        },
-      },
-    }
-  })
 
   const host = document.createElement('div')
   document.body.append(host)
@@ -150,6 +133,12 @@ test('目录里的图像模型挂成生成模型：协议按地址定、首个�
     expect(qwen()?.media).toEqual({})
     // 那一类删空了：默认一并删掉，否则保存会被服务端以「默认指向已删模型」挡回。
     expect(config()?.mediaDefaults).toBeUndefined()
+
+    // 三次编辑依次落盘，最后一次 PUT 的是删掉生成模型之后的整份。
+    expect(await until(() => !configBusy())).toBe(true)
+    expect(stored.providers.qwen?.media).toEqual({})
+    expect(stored.providers.qwen?.models).toEqual({ 'some-chat-model': {} })
+    expect(stored.mediaDefaults).toBeUndefined()
   } finally {
     dispose()
     host.remove()
