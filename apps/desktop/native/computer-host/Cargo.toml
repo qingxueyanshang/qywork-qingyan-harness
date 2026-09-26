@@ -67,6 +67,35 @@ zbus = { version = "5.5", default-features = false, features = ["async-io", "blo
 # 纯 Rust 的 X11 客户端，只用核心协议。
 x11rb = { version = "0.14", default-features = false }
 
+# macOS 后端：控件树与语义动作经 AX（ApplicationServices），窗口层叠序经 CGWindowList。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "CFArray",
+  "CFDictionary",
+  "CFNumber",
+  "CFString",
+  # CGRect / CGPoint / CGSize：AX 位置尺寸与 CG 窗口矩形。
+  "CFCGTypes",
+] }
+objc2-application-services = { version = "0.3", default-features = false, features = [
+  "std",
+  "HIServices",
+  "AXUIElement",
+  "AXError",
+  "AXValue",
+  # AXUIElementCreateApplication 与 AXUIElementGetPid 的进程号是 `libc::pid_t`。
+  "libc",
+] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+  "std",
+  "CGWindow",
+  # 窗口信息里的矩形是字典，经 CGRectMakeWithDictionaryRepresentation 换回 CGRect。
+  "CGGeometry",
+] }
+# `kill(pid, 0)`：进程退出后 AX 对它的调用与应用不应答回同一个错误码，只能另查进程在不在。
+libc = { version = "0.2", default-features = false }
+
 [profile.release]
 # 单文件体积优先：这个二进制随安装包分发。
 opt-level = "s"
