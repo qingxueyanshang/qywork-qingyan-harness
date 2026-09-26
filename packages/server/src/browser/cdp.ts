@@ -46,7 +46,14 @@ const TEARDOWN_TAGS = new Set(['detach', 'dispose', 'keyup', 'mouseup'])
 
 export type TeardownTag = 'detach' | 'dispose' | 'keyup' | 'mouseup'
 
-/** 一条按键事件里描述这个键的三项。三项必须自洽，缺一项网页收到的是认不出的按键。 */
+/**
+ * 一条按键事件里描述这个键的字段。`key` / `code` / `windowsVirtualKeyCode` 三项必须自洽，
+ * 缺一项网页收到的是认不出的按键。
+ *
+ * `nativeVirtualKeyCode` 各平台都填 Windows 虚拟键码，不按宿主平台分支：Windows 上它就是原生键码；
+ * Linux 的 Chrome 154 上填与不填，字符、回车、退格、方向键、Tab、`Ctrl+A`、`Ctrl+Z` 与文本插入的
+ * 结果完全一致。
+ */
 function keyFields(spec: KeySpec): Record<string, unknown> {
   return {
     key: spec.key,
