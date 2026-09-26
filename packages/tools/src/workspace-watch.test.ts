@@ -2,6 +2,7 @@
  * 覆盖 `workspace-watch.ts`：执行窗口内的路径归集、忽略判定与收尾判型。
  */
 import { describe, expect, test } from 'bun:test'
+import { rmSync } from 'node:fs'
 import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,6 +36,20 @@ function typeOf(changes: FileChange[]): Map<string, string> {
 }
 
 describe('执行窗口内的工作区变更', () => {
+  test('连续删除不同文件不丢事件，收尾屏障正常完成', async () => {
+    const root = await gitRepo()
+    const paths = Array.from({ length: 12 }, (_, i) => `delete-${i}.txt`)
+    await Promise.all(paths.map((path) => writeFile(join(root, path), 'x\n')))
+    const window = openChangeWindow(root)
+    await settle()
+    for (const path of paths) rmSync(join(root, path))
+    const got = await window.close()
+
+    expect(got.incomplete).toBe(false)
+    expect(got.changes.map((change) => change.path).sort()).toEqual(paths.sort())
+    expect(got.changes.every((change) => change.changeType === 'deleted')).toBe(true)
+  })
+
   test('新建 / 修改 / 删除各判其类；临时文件与噪音目录不进结果', async () => {
     const root = await gitRepo()
     await mkdir(join(root, 'src'))
@@ -424,8 +439,7 @@ describe('执行窗口内的工作区变更', () => {
 
   /**
    * 收尾前发生、收尾时还在途的事件属于正在收尾的窗口，不能落到排在后面的窗口里。
-   * 收尾之后那一步用新建：标记的 rename 占 Bun 约 2 ms 的去重窗口，紧跟其后的删除可能不交付，
-   * 新建由收尾扫描补上。只断言路径：排队的窗口以前一个收尾时的 `Date.now()` 为起点，
+   * 收尾之后那一步用新建，验证后一个窗口的路径归属。只断言路径：排队的窗口以前一个收尾时的 `Date.now()` 为起点，
    * 其后一个时间戳刻度内新建的文件判为 modified。
    */
   test('两个窗口同时开着时，前一个收尾时在途的事件仍归它', async () => {

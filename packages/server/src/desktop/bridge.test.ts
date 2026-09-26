@@ -247,9 +247,16 @@ test('首连、补发和换流重连都恢复当前桌面目标及其所属会�
       `ws://127.0.0.1:${handle.port}/stream?origin=desktop&token=${handle.token}`,
     )
     const events: DesktopTargetEvent[] = []
+    let currentSeq: number | undefined
+    let snapshotReceived = false
     client.onmessage = (ev) => {
       const frame = JSON.parse(String(ev.data))
-      if (frame.event?.type === 'desktop.target') events.push(frame.event)
+      if (frame.type === 'hello.ok') currentSeq = frame.currentSeq
+      if (frame.event?.type === 'desktop.target') {
+        events.push(frame.event)
+        // 补发帧不代表快照已到达；当前快照的序号大于握手时的序号。
+        if (currentSeq !== undefined && frame.seq > currentSeq) snapshotReceived = true
+      }
     }
     await new Promise<void>((resolve, reject) => {
       client.onopen = () => resolve()
@@ -266,7 +273,9 @@ test('首连、补发和换流重连都恢复当前桌面目标及其所属会�
         ...(resume ? { resume } : {}),
       }),
     )
-    await settle()
+    const deadline = Date.now() + 2_000
+    while (!snapshotReceived && Date.now() < deadline) await Bun.sleep(10)
+    expect(snapshotReceived).toBe(true)
     client.close()
     return events
   }
