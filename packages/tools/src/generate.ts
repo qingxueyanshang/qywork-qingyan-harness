@@ -200,7 +200,7 @@ function succeeded(
 ): ToolOutcome {
   return {
     status: 'success',
-    message: `生成${noun}（${result.provider} / ${result.model}）：${changes.map((c) => c.path).join('、')}`,
+    message: `已生成${noun}（${result.provider} / ${result.model}）：${changes.map((c) => c.path).join('、')}`,
     data: {
       provider: result.provider,
       model: result.model,
@@ -211,25 +211,38 @@ function succeeded(
       })),
     },
     fileChanges: changes,
-    presentation: { files: 'open' },
   }
 }
+
+/** 三个生成工具共用的参数说明。 */
+const PARAMS_NOTE =
+  'params_json 仅使用本轮「可用的生成模型」中该模型列出的参数，取值依据用户要求或自行判断，无需设置的参数省略。' +
+  'provider 与 model 须取自该清单的同一行；两者均省略时使用默认模型。'
+
+/**
+ * 生成文件在会话中的唯一展示入口：回复里的路径链接，点击由正文链接的处理交给右侧文件预览。
+ * 不写明时模型会以 Markdown 图片嵌入，相对地址在会话里是一张损坏的图，或同一路径写出多次。
+ */
+const DISPLAY_NOTE =
+  '回复中以 Markdown 链接写出生成文件的工作区路径，链接文字与地址均为该路径，例如 [generated/cover.png](generated/cover.png)，' +
+  '用户点击链接即可在右侧面板预览；每个文件只引用一次，不得以 Markdown 图片形式嵌入。'
 
 export const generateImageTool: ToolSpec = {
   name: 'generate_image',
   description:
-    '用已配置的图像生成模型出图或改图，产物写进工作区，结果只返回文件路径。' +
-    '不给 images 是按提示词生成；给 images（工作区里的图片路径）是在这些图的基础上修改或参考生成，改哪里、怎么改写在 prompt 里。' +
-    'params_json 只填本轮「可用的生成模型」里该模型列出的参数，按用户的要求或你的判断取值，用不到的不填。' +
-    'provider 与 model 只接受那份清单里同一行的值，都不给就用默认模型。生成按次计费，不要为了试探重复调用。',
+    '调用已配置的图像生成模型执行文生图或图像编辑，生成的文件写入工作区，结果仅返回文件路径。' +
+    '未提供 images 时按提示词生成；提供 images（工作区内的图片路径）时以这些图片为基础进行编辑或参考生成，编辑的部位与方式在 prompt 中说明。' +
+    PARAMS_NOTE +
+    '生成按次计费，不得为试探效果重复调用。' +
+    DISPLAY_NOTE,
   parameters: {
     type: 'object',
     properties: {
-      prompt: { type: 'string', description: '要生成什么，或要怎么修改' },
+      prompt: { type: 'string', description: '生成内容的描述；编辑时说明修改的部位与方式' },
       images: {
         type: 'array',
         items: { type: 'string' },
-        description: '参考图或待修改图的工作区路径',
+        description: '参考图或待编辑图片的工作区路径',
       },
       params_json: {
         type: 'string',
@@ -239,7 +252,7 @@ export const generateImageTool: ToolSpec = {
       model: { type: 'string', description: '模型 id' },
       output: {
         type: 'string',
-        description: `输出文件的工作区路径；多张时从第二张起加 -2、-3。不填写到 ${DEFAULT_DIR}/`,
+        description: `输出文件的工作区路径；生成多张时自第二张起追加 -2、-3 后缀；省略时写入 ${DEFAULT_DIR}/`,
       },
     },
     required: ['prompt'],
@@ -290,17 +303,22 @@ interface TaskRecord {
 export const generateVideoTool: ToolSpec = {
   name: 'generate_video',
   description:
-    '用已配置的视频生成模型生成视频，产物写进工作区，结果只返回文件路径。远端要排队生成，通常要等几分钟。' +
-    '按给了哪些输入决定做什么：都不给是文生视频；给 first_frame 是首帧生视频；再给 last_frame 是首尾帧；' +
-    '给 images 是参考图生成；给 videos 是以参考视频为输入（编辑、延长还是参考，看该模型参数表里的字段，没有字段就写在 prompt 里）。' +
-    '首尾帧不能与 images、videos 同时给。params_json 只填本轮「可用的生成模型」里该模型列出的参数。' +
-    '提交后会在输出位置旁写一个 .task.json 任务记录；等待被中断或超时时，用 resume 传这个记录的路径取回结果，不会重新提交、不重复扣费。',
+    '调用已配置的视频生成模型生成视频，生成的文件写入工作区，结果仅返回文件路径。远端任务需排队处理，通常耗时数分钟。' +
+    '任务类型由提供的输入决定：均未提供时为文生视频；提供 first_frame 为首帧生视频；同时提供 last_frame 为首尾帧生视频；' +
+    '提供 images 为参考图生视频；提供 videos 表示以参考视频为输入，编辑、延长或参考由该模型参数表中的对应字段指定，无对应字段时在 prompt 中说明。' +
+    'first_frame、last_frame 不能与 images、videos 同时提供。' +
+    PARAMS_NOTE +
+    '提交后在输出位置旁写入 .task.json 任务记录；等待中断或超时后，以 resume 传入该记录路径取回结果，不会重新提交，也不会重复计费。' +
+    DISPLAY_NOTE,
   parameters: {
     type: 'object',
     properties: {
-      prompt: { type: 'string', description: '视频内容；编辑或延长时写清要怎么改、往哪个方向延长' },
+      prompt: { type: 'string', description: '视频内容的描述；编辑或延长时说明修改内容或延长方向' },
       first_frame: { type: 'string', description: '首帧图片的工作区路径' },
-      last_frame: { type: 'string', description: '尾帧图片的工作区路径，要与 first_frame 一起给' },
+      last_frame: {
+        type: 'string',
+        description: '尾帧图片的工作区路径，须与 first_frame 同时提供',
+      },
       images: { type: 'array', items: { type: 'string' }, description: '参考图的工作区路径' },
       videos: { type: 'array', items: { type: 'string' }, description: '参考视频的工作区路径' },
       params_json: {
@@ -311,11 +329,11 @@ export const generateVideoTool: ToolSpec = {
       model: { type: 'string', description: '模型 id' },
       output: {
         type: 'string',
-        description: `输出文件的工作区路径，不填写到 ${DEFAULT_DIR}/`,
+        description: `输出文件的工作区路径；省略时写入 ${DEFAULT_DIR}/`,
       },
       resume: {
         type: 'string',
-        description: `要取回的任务记录（${TASK_SUFFIX}）路径。给了它其余参数都不用给`,
+        description: `待取回任务的记录文件路径（${TASK_SUFFIX}）；提供该参数时无需提供其他参数`,
       },
     },
     required: [],
@@ -441,13 +459,14 @@ async function settleVideo(
 export const generateAudioTool: ToolSpec = {
   name: 'generate_audio',
   description:
-    '用已配置的语音合成模型把文字读成音频，产物写进工作区，结果只返回文件路径。' +
-    '音色、语种、语气等写在 params_json 里，只填本轮「可用的生成模型」里该模型列出的参数，按用户的要求或你的判断取值。' +
-    'provider 与 model 只接受那份清单里同一行的值，都不给就用默认模型。',
+    '调用已配置的语音合成模型将文本合成为音频，生成的文件写入工作区，结果仅返回文件路径。' +
+    '音色、语种、语气等在 params_json 中设置。' +
+    PARAMS_NOTE +
+    DISPLAY_NOTE,
   parameters: {
     type: 'object',
     properties: {
-      text: { type: 'string', description: '要读出来的文字' },
+      text: { type: 'string', description: '待合成的文本' },
       params_json: {
         type: 'string',
         description: '该模型的参数，JSON 对象，字段与取值见本轮「可用的生成模型」',
@@ -456,7 +475,7 @@ export const generateAudioTool: ToolSpec = {
       model: { type: 'string', description: '模型 id' },
       output: {
         type: 'string',
-        description: `输出文件的工作区路径，不填写到 ${DEFAULT_DIR}/`,
+        description: `输出文件的工作区路径；省略时写入 ${DEFAULT_DIR}/`,
       },
     },
     required: ['text'],

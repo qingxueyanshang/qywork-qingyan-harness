@@ -634,26 +634,6 @@
   min-width: 0;
   margin: 2px 0 6px;
 }
-/* 工具声明可打开的产物：一行一个路径，点了在右侧预览里打开。 */
-.tool-files {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  margin: 2px 0 6px;
-}
-.tool-file {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--accent);
-}
-.tool-file:hover {
-  text-decoration: underline;
-}
 .tool-images img {
   display: block;
   width: auto;

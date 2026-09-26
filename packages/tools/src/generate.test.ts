@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type MediaCall, type MediaCallResult, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
-import { generateImageTool, generateVideoTool } from './generate.ts'
+import { generateImageTool, generateVideoTool, MEDIA_TOOLS } from './generate.ts'
 import { registerBuiltinTools } from './index.ts'
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
@@ -76,6 +76,14 @@ describe('generate_image', () => {
     expect(out.fileChanges).toEqual([{ path: `generated/${name}`, changeType: 'created' }])
     expect(JSON.stringify(out.data)).not.toContain('base64')
     expect(new Uint8Array(await readFile(join(root, 'generated', name!)))).toEqual(PNG)
+  })
+
+  /** 产物在会话里只经回复中的路径链接展示；说明里不写明时，模型会以 Markdown 图片嵌入或把路径写出多次。 */
+  test('三个生成工具的说明都写明产物以路径链接展示、不以图片嵌入', () => {
+    for (const tool of Object.values(MEDIA_TOOLS)) {
+      expect(tool.description).toContain('回复中以 Markdown 链接写出生成文件的工作区路径')
+      expect(tool.description).toContain('不得以 Markdown 图片形式嵌入')
+    }
   })
 
   test('给了参考图就按修改发，图按字节与类型读好', async () => {

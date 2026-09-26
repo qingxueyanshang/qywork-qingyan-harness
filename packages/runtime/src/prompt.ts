@@ -242,8 +242,8 @@ function mediaModelsNote(models: MediaModelEntry[]): string {
   }
   return (
     `## 可用的生成模型（本次运行快照）\n${sections.join('\n\n')}\n\n` +
-    'params_json 只用所选模型列出的参数，按用户的要求（尺寸、比例、清晰度、张数等）或你的判断取值，用不到的不填；' +
-    'provider 与 model 只接受同一行的值，都不填用默认模型。'
+    'params_json 仅使用所选模型列出的参数，取值依据用户要求（尺寸、比例、清晰度、数量等）或自行判断，无需设置的参数省略；' +
+    'provider 与 model 须取自同一行，两者均省略时使用默认模型。'
   )
 }
 
