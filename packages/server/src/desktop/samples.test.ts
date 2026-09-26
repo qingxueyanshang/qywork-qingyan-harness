@@ -128,6 +128,7 @@ const HOST_READY: Record<keyof DesktopHostReadyFrame, true> = {
   platform: true,
   workerReady: true,
   authorized: true,
+  missing: true,
 }
 const EVENT: Record<keyof DesktopEventFrame, true> = {
   type: true,
@@ -137,6 +138,7 @@ const EVENT: Record<keyof DesktopEventFrame, true> = {
   kind: true,
   workerReady: true,
   authorized: true,
+  missing: true,
 }
 const TARGET: Record<keyof DesktopTarget, true> = {
   window: true,

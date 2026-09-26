@@ -13,6 +13,10 @@
 //!   放执行线程上会把同一时间的窗口发现与读树全堵住，而取消要在等待期间生效。
 //!
 //! 每条请求都有终态：解析失败、后端不可用、通道已关闭都各自回一条 `not_dispatched`。
+//!
+//! 授权事实（`Backend::access`）只在三个时刻现查：握手、一次调用因缺前提被拒之后
+//! （`refused_for_grant`）、以及还缺前提期间每 `ACCESS_POLL` 一轮。前提齐备时不轮询：
+//! 运行中撤销的授权由下一次被拒的调用报出来。
 
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
@@ -23,8 +27,12 @@ use std::time::{Duration, Instant};
 use crate::backend::{ActRequest, Attempt, Backend, CaptureRequest, WaitRequest};
 use crate::input;
 use crate::protocol::{
-    admit, now_ms, Binding, HostIdentity, InputNotice, Observation, Op, Request, Response,
+    admit, now_ms, refused_for_grant, Access, AccessNotice, Binding, HostIdentity, InputNotice,
+    Observation, Op, Request, Response,
 };
+
+/// 还缺前提时多久重查一次授权。用户在系统设置里授权之后，界面在这个间隔内看到变化。
+const ACCESS_POLL: Duration = Duration::from_secs(1);
 
 /// worker 的全部跨线程状态。
 ///
@@ -37,6 +45,71 @@ struct State {
     cancelled: Mutex<HashSet<String>>,
     /// 宿主握手时给的调用上界。等待线程自建后端时要用同一份。
     timeouts: Mutex<Option<(u32, u32)>>,
+    access: Mutex<AccessLedger>,
+}
+
+/// 最后一次交给宿主的授权事实，以及重查线程在不在跑。只做判定，不调 OS、不写 stdout。
+#[derive(Default)]
+struct AccessLedger {
+    /// 握手回执或最后一条通报里的那一份。握手之前没有。
+    reported: Option<Access>,
+    polling: bool,
+}
+
+/// 一次现查之后要做的事。
+#[derive(Debug)]
+struct AccessStep {
+    /// 事实变了：要发的那一份通报。
+    notify: Option<Access>,
+    /// 要起一条重查线程。
+    poll: bool,
+}
+
+impl AccessLedger {
+    /// 握手：记下 `Ready` 里交出去的那一份。返回要不要起重查线程。
+    fn handshake(&mut self, now: &Access) -> bool {
+        self.reported = Some(now.clone());
+        self.start_poll()
+    }
+
+    /// 记下一次现查的结果。握手之前查到的不算：那时宿主还没有可对比的基准。
+    fn observe(&mut self, now: Access) -> AccessStep {
+        let Some(reported) = &self.reported else {
+            return AccessStep {
+                notify: None,
+                poll: false,
+            };
+        };
+        let notify = (!reported.same(&now)).then(|| now.clone());
+        if notify.is_some() {
+            self.reported = Some(now);
+        }
+        AccessStep {
+            notify,
+            poll: self.start_poll(),
+        }
+    }
+
+    /// 重查线程每轮末尾调：前提齐了即停，并记下线程已停，下一次被拒的调用会再起一条。
+    fn keep_polling(&mut self) -> bool {
+        let keep = self.missing_any();
+        if !keep {
+            self.polling = false;
+        }
+        keep
+    }
+
+    fn start_poll(&mut self) -> bool {
+        let start = self.missing_any() && !self.polling;
+        if start {
+            self.polling = true;
+        }
+        start
+    }
+
+    fn missing_any(&self) -> bool {
+        self.reported.as_ref().is_some_and(|a| !a.missing.is_empty())
+    }
 }
 
 /// 跑完这个 worker 进程的一生。stdin 结束即以退出码 0 结束进程，不返回。
@@ -159,6 +232,7 @@ fn execute_all<B: Backend>(rx: Receiver<Request>, state: &Arc<State>) {
         let response = handle(&backend, state, req);
         let drain = response.after_reply;
         reply(&response);
+        recheck_if_refused::<B>(&response, state);
         // 回执先出去，再付这一次 provider 重连的代价：放回执之前付的话，一次点开模态框的
         // 动作要等满连接超时才回得了。
         if let Some(window) = drain {
@@ -167,7 +241,7 @@ fn execute_all<B: Backend>(rx: Receiver<Request>, state: &Arc<State>) {
     }
 }
 
-fn handle<B: Backend>(backend: &B, state: &State, req: Request) -> Response {
+fn handle<B: Backend>(backend: &B, state: &Arc<State>, req: Request) -> Response {
     let cancelled = state.cancelled.lock().expect("取消登记锁").remove(&req.id);
     let binding = state.binding.lock().expect("绑定锁").clone();
     if let Err(reason) = admit(&req, binding.as_ref(), cancelled, now_ms()) {
@@ -190,6 +264,13 @@ fn handle<B: Backend>(backend: &B, state: &State, req: Request) -> Response {
                     *state.binding.lock().expect("绑定锁") = Some(bound.clone());
                     *state.timeouts.lock().expect("超时锁") = Some((connection, transaction));
                     state.cancelled.lock().expect("取消登记锁").clear();
+                    let access = B::access();
+                    if !access.missing.is_empty() {
+                        report(&access);
+                    }
+                    if state.access.lock().expect("授权锁").handshake(&access) {
+                        spawn_access_poll::<B>(Arc::clone(state));
+                    }
                     Response::observed(
                         req.id,
                         Observation::Ready {
@@ -198,6 +279,7 @@ fn handle<B: Backend>(backend: &B, state: &State, req: Request) -> Response {
                             host_epoch: bound.host.host_epoch,
                             connection_timeout_ms: connection,
                             transaction_timeout_ms: transaction,
+                            access,
                         },
                     )
                 }
@@ -273,7 +355,11 @@ fn handle<B: Backend>(backend: &B, state: &State, req: Request) -> Response {
 /// 而跨线程共享一个客户端会让等待里的一次长调用挡住执行线程手上那一次。
 fn spawn_wait<B: Backend>(req: Request, state: &Arc<State>) {
     let state = Arc::clone(state);
-    std::thread::spawn(move || reply(&run_wait::<B>(&state, req)));
+    std::thread::spawn(move || {
+        let response = run_wait::<B>(&state, req);
+        reply(&response);
+        recheck_if_refused::<B>(&response, &state);
+    });
 }
 
 fn run_wait<B: Backend>(state: &State, req: Request) -> Response {
@@ -383,6 +469,55 @@ fn notify_input(notice: &InputNotice) {
     write_line(serde_json::to_string(notice));
 }
 
+/// 回执因缺前提被拒（原因或重读错误以 `refused_for_grant` 的码开头）时现查一次授权事实：
+/// 前提在运行中被撤销，宿主要从这里得知。回执先发出去再查，不拖慢这一条的终态。
+fn recheck_if_refused<B: Backend>(response: &Response, state: &Arc<State>) {
+    let refused = [&response.reason, &response.observation_error]
+        .into_iter()
+        .flatten()
+        .any(|text| refused_for_grant(text));
+    if refused {
+        apply_access::<B>(state, B::access());
+    }
+}
+
+/// 把一次现查的结果记进账，事实变了即发一行通报，还缺前提而没有重查线程时起一条。
+fn apply_access<B: Backend>(state: &Arc<State>, now: Access) {
+    let step = state.access.lock().expect("授权锁").observe(now);
+    if let Some(changed) = &step.notify {
+        report(changed);
+        write_line(serde_json::to_string(&AccessNotice { access: changed }));
+    }
+    if step.poll {
+        spawn_access_poll::<B>(Arc::clone(state));
+    }
+}
+
+/// 还缺前提期间每 `ACCESS_POLL` 重查一轮，前提齐了即停：用户在系统设置里授权之后不必重启。
+fn spawn_access_poll<B: Backend>(state: Arc<State>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(ACCESS_POLL);
+        apply_access::<B>(&state, B::access());
+        if !state.access.lock().expect("授权锁").keep_polling() {
+            return;
+        }
+    });
+}
+
+/// 授权事实与没给的原因原文写进 stderr，宿主把它转进应用日志。
+fn report(access: &Access) {
+    match &access.detail {
+        Some(detail) => eprintln!(
+            "授权 authorized={} missing={:?}：{detail}",
+            access.authorized, access.missing
+        ),
+        None => eprintln!(
+            "授权 authorized={} missing={:?}",
+            access.authorized, access.missing
+        ),
+    }
+}
+
 /// 整行一次写出。分两次写会让两个线程的回执在同一行里交错。
 fn reply(response: &Response) {
     write_line(serde_json::to_string(response));
@@ -405,6 +540,7 @@ fn write_line(text: serde_json::Result<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Grant;
 
     /// 两个期限取先到的那个：调用方要等 10 秒而宿主的 pending 只剩 2 秒时，等到 2 秒就回。
     #[test]
@@ -425,6 +561,68 @@ mod tests {
         let now = 1_000_000i64;
         let past = wait_deadline(10_000, Some(now - 5), now);
         assert!(past <= Instant::now() + Duration::from_millis(5));
+    }
+
+    fn access(missing: Vec<Grant>) -> Access {
+        Access::of(missing, None)
+    }
+
+    /// 按事实比较，原因原文不算，同 `Access::same`。
+    impl PartialEq for AccessStep {
+        fn eq(&self, other: &Self) -> bool {
+            let notify = match (&self.notify, &other.notify) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.same(b),
+                _ => false,
+            };
+            notify && self.poll == other.poll
+        }
+    }
+
+    fn step(notify: Option<Vec<Grant>>, poll: bool) -> AccessStep {
+        AccessStep {
+            notify: notify.map(access),
+            poll,
+        }
+    }
+
+    /// 撤销与恢复：握手时齐备不轮询；调用被拒后现查到缺项即通报并起重查；重查到齐了即通报、
+    /// 线程停下；之后再被撤销时还能再起一条。
+    #[test]
+    fn a_revoked_grant_is_reported_and_polled_until_it_returns() {
+        let mut ledger = AccessLedger::default();
+        assert!(!ledger.handshake(&access(Vec::new())));
+        // 现查结果没变：不通报，不起线程。
+        assert_eq!(ledger.observe(access(Vec::new())), step(None, false));
+
+        let bus = vec![Grant::AccessibilityBus];
+        assert_eq!(ledger.observe(access(bus.clone())), step(Some(bus.clone()), true));
+        // 重查线程在跑时再有调用被拒：同一份事实不重复通报，也不起第二条线程。
+        assert_eq!(ledger.observe(access(bus.clone())), step(None, false));
+        assert!(ledger.keep_polling());
+
+        assert_eq!(ledger.observe(access(Vec::new())), step(Some(Vec::new()), false));
+        assert!(!ledger.keep_polling());
+
+        assert_eq!(ledger.observe(access(bus.clone())), step(Some(bus), true));
+    }
+
+    /// 握手时就缺前提：起重查线程；只缺屏幕录制也要查，它随时可能被授予。
+    #[test]
+    fn a_missing_grant_at_handshake_starts_the_poll_once() {
+        let mut ledger = AccessLedger::default();
+        let screen = vec![Grant::ScreenRecording];
+        assert!(ledger.handshake(&access(vec![Grant::Accessibility, Grant::ScreenRecording])));
+        assert_eq!(ledger.observe(access(screen.clone())), step(Some(screen), false));
+        assert!(ledger.keep_polling());
+    }
+
+    /// 握手之前查到的不算：宿主还没有可对比的基准，也还没有可以通报的执行实例。
+    #[test]
+    fn nothing_is_reported_before_the_handshake() {
+        let mut ledger = AccessLedger::default();
+        assert_eq!(ledger.observe(access(vec![Grant::Accessibility])), step(None, false));
+        assert!(!ledger.keep_polling());
     }
 
     /// 等待请求走自己的线程：`execute_all` 按这个形状认它，认错就会排进执行队列，

@@ -6,8 +6,9 @@
 //! 1. **`SCScreenshotManager` 从 macOS 14 起才有**，ScreenCaptureKit 本身从 12.3 起才有，worker 对它
 //!    弱链接（`build.rs`）。取图前先查这个类在不在，不在即拒绝，一个 ScreenCaptureKit 的方法都不调：
 //!    绑定库按名字找类，找不到时终止进程。
-//! 2. **屏幕录制授权先查 `CGPreflightScreenCaptureAccess`**，没有授权即拒绝，不调 ScreenCaptureKit：
-//!    没有授权时调它会以 worker 的名义弹出授权框，授权由外壳的设置页引导。
+//! 2. **屏幕录制授权由后端在调这里之前查**（`ax::screen_capture_allowed`，与授权事实里的
+//!    `Grant::ScreenRecording` 是同一个读数），没有授权即拒绝，不调 ScreenCaptureKit：没有授权时
+//!    调它会以 worker 的名义弹出授权框，授权由外壳的设置页引导。
 //! 3. **图的尺寸按窗口的像素矩形要**（`screen::Placed`），不按 ScreenCaptureKit 自己的比例，取回的图
 //!    因此与控件包围盒、按图定位的落点是同一套像素。不取窗口阴影，部分在屏幕外的窗口不裁。
 //! 4. 不置前台、不设焦点、不动指针。两次完成回调在 ScreenCaptureKit 自己的线程上跑：Objective-C
@@ -25,7 +26,7 @@ use objc2::AllocAnyThread;
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     kCGColorSpaceSRGB, CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
-    CGImageByteOrderInfo, CGPreflightScreenCaptureAccess,
+    CGImageByteOrderInfo,
 };
 use objc2_foundation::NSError;
 use objc2_screen_capture_kit::{
@@ -45,11 +46,6 @@ pub const SOURCE: &str = "screencapturekit";
 /// 系统里有没有按窗口取图的接口。
 pub fn available() -> bool {
     AnyClass::get(c"SCScreenshotManager").is_some()
-}
-
-/// 本进程有没有屏幕录制授权。只查不申请。
-pub fn permitted() -> bool {
-    CGPreflightScreenCaptureAccess()
 }
 
 /// 采一张窗口 `number` 的图。`placed` 是它此刻的几何。返回 `Err(原因)` 时没有交出任何像素。

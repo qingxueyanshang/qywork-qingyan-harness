@@ -17,6 +17,7 @@
  */
 
 import { MEDIA_KIND_OUTPUT, type MediaKind } from '@qywork/core'
+import type { MediaInput } from './types.ts'
 
 /**
  * 生成操作。由调用时给了哪些输入推出来，不让大模型选。
@@ -63,8 +64,14 @@ export interface MediaModelSpec {
   /**
    * 参考图、参考视频的数量上限与传法（首尾帧不计入）。传法由目录声明，不按模型名猜：
    * OpenAI 的修改走 multipart `/edits`，其余都放进 JSON。
+   * `types`：同一协议下各家的素材类型名不同时（百炼上的万相与可灵），写明各用途在请求里的类型名；不写用协议的。
    */
-  inputs: { maxImages: number; maxVideos: number; transport: 'multipart' | 'json' }
+  inputs: {
+    maxImages: number
+    maxVideos: number
+    transport: 'multipart' | 'json'
+    types?: Partial<Record<MediaInput['role'], string>>
+  }
   params: readonly MediaParamSpec[]
   /** false = 目录里没有这个 id，用的是协议默认。 */
   catalogued: boolean
@@ -275,6 +282,154 @@ const seedanceParams: readonly MediaParamSpec[] = [
   { name: 'watermark', type: 'boolean', default: false, description: '右下角加「AI 生成」水印' },
 ]
 
+/**
+ * 火山方舟 Seedance 2.0 系列（2026-09-25 对方舟「创建视频生成任务 API」逐参数的「模型支持」与模型列表）。
+ * 与 2.5 的差别：时长上限 15，画幅不受输入限制，没有 `omni_reference_task_type` 与 `output_format`；
+ * 清晰度按型号不同，由调用方给出。
+ */
+function seedance20Params(resolutions: readonly string[]): readonly MediaParamSpec[] {
+  return [
+    {
+      name: 'resolution',
+      type: 'enum',
+      values: resolutions,
+      default: '720p',
+      description: '分辨率',
+    },
+    {
+      name: 'ratio',
+      type: 'enum',
+      values: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
+      default: 'adaptive',
+      description: '画幅；adaptive 按输入或提示词自动选',
+    },
+    {
+      name: 'duration',
+      type: 'integer',
+      min: -1,
+      max: 15,
+      description: '时长（秒），4 到 15；-1 由模型定',
+    },
+    { name: 'generate_audio', type: 'boolean', default: true, description: '是否带同步声音' },
+    { name: 'watermark', type: 'boolean', default: false, description: '右下角加「AI 生成」水印' },
+  ]
+}
+
+/**
+ * 百炼上的可灵 3.0（2026-09-25 对百炼「可灵视频生成 API 参考」）。只开在北京地域。
+ * 与万相同一个端点，但 `media[].type` 的取值不同（参考图是 `refer`，视频分 `feature` 与 `base`），见目录的 `types`。
+ * `input` 里的多镜头、主体、负向提示词不收：多镜头可写进提示词，负向描述官方允许写进提示词。
+ */
+function klingBailianParams(opts: { modes: readonly string[]; audio: boolean }): MediaParamSpec[] {
+  return [
+    {
+      name: 'mode',
+      type: 'enum',
+      values: opts.modes,
+      default: 'pro',
+      description: '清晰度档位：std 为 720P，pro 为 1080P，4k 为 4K',
+    },
+    {
+      name: 'aspect_ratio',
+      type: 'enum',
+      values: ['16:9', '9:16', '1:1'],
+      default: '16:9',
+      operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
+      description: '画幅；编辑视频时按输入视频的宽高比，这个值无效',
+    },
+    {
+      name: 'duration',
+      type: 'integer',
+      min: 3,
+      max: 15,
+      default: 5,
+      description: '时长（秒）；有参考视频时 3 到 10，编辑视频时按输入视频时长、这个值无效',
+    },
+    ...(opts.audio
+      ? [
+          {
+            name: 'audio',
+            type: 'boolean',
+            default: false,
+            description: '是否生成声音；输入里有视频时只能 false',
+          } as const,
+        ]
+      : []),
+  ]
+}
+
+/**
+ * 百炼上可灵的参考视频不靠参数区分用途，靠 `media[].type`：接口没有单独的字段，这里用这个参数交给大模型选，
+ * 百炼适配器把它写进视频那一项的类型，不作为参数发出。取值是接口原词。
+ */
+const klingBailianVideoType: MediaParamSpec = {
+  name: 'video_type',
+  type: 'enum',
+  values: ['feature', 'base'],
+  default: 'feature',
+  operations: ['video_to_video'],
+  description:
+    '参考视频的用途：feature 作特征参考（参考镜头、风格，或生成上一 / 下一镜头），base 作待编辑视频',
+}
+
+/**
+ * 可灵开放平台官方接口的 3.0（2026-09-25 对 kling.ai/document-api 的 3.0、3.0 Omni、3.0 Turbo 各页）。
+ * 参数全在 `settings` 里；画幅只在文生时有，首帧、首尾帧按首帧的宽高比。
+ */
+function klingParams(opts: {
+  resolutions: readonly string[]
+  audio: readonly string[] | null
+  multiShot: boolean
+}): MediaParamSpec[] {
+  return [
+    {
+      name: 'resolution',
+      type: 'enum',
+      values: opts.resolutions,
+      default: '720p',
+      description: '分辨率',
+    },
+    {
+      name: 'aspect_ratio',
+      type: 'enum',
+      values: ['16:9', '9:16', '1:1'],
+      default: '16:9',
+      operations: ['text_to_video', 'reference_to_video'],
+      description: '画幅',
+    },
+    {
+      name: 'duration',
+      type: 'integer',
+      min: 3,
+      max: 15,
+      default: 5,
+      description: '时长（秒）',
+    },
+    ...(opts.audio
+      ? [
+          {
+            name: 'audio',
+            type: 'enum',
+            values: opts.audio,
+            default: 'off',
+            description: 'native 生成匹配画面的声音，off 无声',
+          } as const,
+        ]
+      : []),
+    ...(opts.multiShot
+      ? [
+          {
+            name: 'multi_shot',
+            type: 'boolean',
+            default: true,
+            description:
+              '多镜头；提示词按「shot 序号, 秒数, 描述;」写分镜，各镜头秒数之和等于总时长',
+          } as const,
+        ]
+      : []),
+  ]
+}
+
 // ── OpenAI 语音（2026-09-25 对 developers.openai.com 语音合成指南与 speech 参考）──
 const openaiSpeechParams: readonly MediaParamSpec[] = [
   {
@@ -334,6 +489,11 @@ const qwenSpeechParams: readonly MediaParamSpec[] = [
 const IMAGE_OPERATIONS: readonly MediaOperation[] = ['generate', 'edit']
 const SPEECH_OPERATIONS: readonly MediaOperation[] = ['speech']
 const NO_INPUTS: MediaModelSpec['inputs'] = { maxImages: 0, maxVideos: 0, transport: 'json' }
+/** 百炼上可灵的素材类型名；视频的类型由参数 `video_type` 定，这里是不填时的值。 */
+const KLING_BAILIAN_TYPES: MediaModelSpec['inputs']['types'] = {
+  reference: 'refer',
+  video: 'feature',
+}
 const VIDEO_OPERATIONS: readonly MediaOperation[] = [
   'text_to_video',
   'image_to_video',
@@ -462,6 +622,96 @@ const SEEDS: readonly MediaModelSpec[] = [
     seedanceParams,
   ),
   spec(
+    'doubao-seedance-2-0-260128',
+    'Seedance 2.0',
+    '火山引擎',
+    'ark_videos',
+    VIDEO_OPERATIONS,
+    { maxImages: 9, maxVideos: 3, transport: 'json' },
+    seedance20Params(['480p', '720p', '1080p', '4k']),
+  ),
+  spec(
+    'doubao-seedance-2-0-fast-260128',
+    'Seedance 2.0 Fast',
+    '火山引擎',
+    'ark_videos',
+    VIDEO_OPERATIONS,
+    { maxImages: 9, maxVideos: 3, transport: 'json' },
+    seedance20Params(['480p', '720p']),
+  ),
+  spec(
+    'doubao-seedance-2-0-mini-260615',
+    'Seedance 2.0 Mini',
+    '火山引擎',
+    'ark_videos',
+    VIDEO_OPERATIONS,
+    { maxImages: 9, maxVideos: 3, transport: 'json' },
+    seedance20Params(['480p', '720p']),
+  ),
+  spec(
+    'kling/kling-v3-omni-video-generation',
+    '可灵 3.0 Omni',
+    '快手',
+    'dashscope_videos',
+    VIDEO_OPERATIONS,
+    { maxImages: 7, maxVideos: 1, transport: 'json', types: KLING_BAILIAN_TYPES },
+    [...klingBailianParams({ modes: ['std', 'pro', '4k'], audio: true }), klingBailianVideoType],
+  ),
+  spec(
+    'kling/kling-v3-video-generation',
+    '可灵 3.0',
+    '快手',
+    'dashscope_videos',
+    ['text_to_video', 'image_to_video', 'first_last_frame'],
+    NO_INPUTS,
+    klingBailianParams({ modes: ['std', 'pro', '4k'], audio: true }),
+  ),
+  spec(
+    'kling/kling-v3-turbo-video-generation',
+    '可灵 3.0 Turbo',
+    '快手',
+    'dashscope_videos',
+    ['text_to_video', 'image_to_video'],
+    NO_INPUTS,
+    klingBailianParams({ modes: ['std', 'pro'], audio: false }),
+  ),
+  // 官方接口的视频素材只收 URL，本机文件没有可传的地方，所以 Omni 在这条协议上只做参考图。
+  spec(
+    'kling-3.0-omni',
+    '可灵 3.0 Omni',
+    '快手',
+    'kling_videos',
+    ['reference_to_video'],
+    { maxImages: 7, maxVideos: 0, transport: 'json' },
+    klingParams({
+      resolutions: ['720p', '1080p', '4k'],
+      audio: ['native', 'off'],
+      multiShot: true,
+    }),
+  ),
+  spec(
+    'kling-3.0',
+    '可灵 3.0',
+    '快手',
+    'kling_videos',
+    ['text_to_video', 'image_to_video', 'first_last_frame'],
+    NO_INPUTS,
+    klingParams({
+      resolutions: ['720p', '1080p', '4k'],
+      audio: ['native', 'off'],
+      multiShot: true,
+    }),
+  ),
+  spec(
+    'kling-3.0-turbo',
+    '可灵 3.0 Turbo',
+    '快手',
+    'kling_videos',
+    ['text_to_video', 'image_to_video'],
+    NO_INPUTS,
+    klingParams({ resolutions: ['720p', '1080p'], audio: null, multiShot: false }),
+  ),
+  spec(
     'gpt-4o-mini-tts',
     'GPT-4o mini TTS',
     'OpenAI',
@@ -559,6 +809,14 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     params: seedanceParams.filter((p) =>
       ['resolution', 'ratio', 'duration', 'watermark'].includes(p.name),
     ),
+    catalogued: false,
+  },
+  kling_videos: {
+    vendor: null,
+    kind: 'kling_videos',
+    operations: ['text_to_video', 'image_to_video'],
+    inputs: NO_INPUTS,
+    params: klingParams({ resolutions: ['720p', '1080p'], audio: null, multiShot: false }),
     catalogued: false,
   },
   openai_speech: {

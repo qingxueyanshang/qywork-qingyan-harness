@@ -83,6 +83,7 @@ function shake(
         connected: false,
         workerReady: false,
         authorized: false,
+        missing: [],
       }),
       announceGit: () => {},
       announceDesktopTarget: () => {},

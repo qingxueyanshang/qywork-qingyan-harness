@@ -1,5 +1,11 @@
-import { Show } from 'solid-js'
-import { browserUnavailableText, state } from '../../lib/store/index.ts'
+import type { DesktopCapability, DesktopGrant } from '@qywork/core'
+import { createSignal, For, Show } from 'solid-js'
+import {
+  browserUnavailableText,
+  isDesktopShell,
+  state,
+  tauriInvoke,
+} from '../../lib/store/index.ts'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import {
   config,
@@ -17,15 +23,25 @@ import { Field, Row } from './Row.tsx'
  * 这台机器此刻卡在哪一步。
  *
  * 三项能力位依次成立，只报第一个不成立的那一步：三项各占一行的话，
- * 宿主没连上时后两行都会写「未连接」，同一件事印三遍。
+ * 宿主没连上时后两行都会写「未连接」，同一件事印三遍。授权事实由 worker 报，
+ * 所以组件未就绪排在系统未授权前面。
  */
-function desktopStatus(): string {
-  const d = state.capabilities?.desktop
+export function desktopStatus(d: DesktopCapability | undefined): string {
   if (!d) return '读取中…'
   if (!d.connected) return '宿主未连接'
-  if (!d.authorized) return '系统未授权'
   if (!d.workerReady) return '组件未就绪'
+  if (!d.authorized) return '系统未授权'
   return '已就绪'
+}
+
+/**
+ * 缺项在界面上的名字与状态词。`pane` 为真的那两项在系统设置里有对应的一页，
+ * 由外壳按名字打开。
+ */
+const GRANTS: Record<DesktopGrant, { label: string; value: string; pane: boolean }> = {
+  accessibility: { label: '辅助功能', value: '未授权', pane: true },
+  screen_recording: { label: '屏幕录制', value: '未授权', pane: true },
+  accessibility_bus: { label: '无障碍总线', value: '不可用', pane: false },
 }
 
 /** 浏览器控制此刻卡在哪一步。宿主连着却没有浏览器时报原因，版本不达标时手动浏览仍可用。 */
@@ -49,6 +65,12 @@ function browserStatus(): string {
  */
 export function AccessSettings() {
   ensureConfig()
+  // 外壳没能打开系统设置的那一项。只记最近一次：再点一次即清掉重试。
+  const [openFailed, setOpenFailed] = createSignal<DesktopGrant | null>(null)
+  const openSettings = (grant: DesktopGrant) => {
+    setOpenFailed(null)
+    tauriInvoke('desktop_open_settings', { grant }).catch(() => setOpenFailed(grant))
+  }
 
   return (
     <Show
@@ -110,8 +132,27 @@ export function AccessSettings() {
                 />
               </Row>
               <Row label="状态">
-                <span class="setting-row-hint">{desktopStatus()}</span>
+                <span class="setting-row-hint">{desktopStatus(state.capabilities?.desktop)}</span>
               </Row>
+              <For each={state.capabilities?.desktop.missing ?? []}>
+                {(grant) => (
+                  <Row
+                    label={GRANTS[grant].label}
+                    hint={openFailed() === grant ? '无法打开系统设置' : GRANTS[grant].value}
+                  >
+                    {/* 按钮只在桌面外壳里给：打开系统设置是外壳的命令，手机与浏览器里调不到。 */}
+                    <Show when={GRANTS[grant].pane && isDesktopShell()}>
+                      <button
+                        class="btn-ghost sm"
+                        type="button"
+                        onClick={() => openSettings(grant)}
+                      >
+                        打开系统设置
+                      </button>
+                    </Show>
+                  </Row>
+                )}
+              </For>
             </div>
           </section>
 

@@ -11,7 +11,9 @@
 //! 1. 结构化路径不采集任何图像，也不调用置前台、设焦点或指针接口。前台动作只在前台模式开着、
 //!    且窗口对应上 CG 窗口时列出与执行；取图与前台动作对没对应上的窗口一律拒绝。
 //! 2. 本进程不是受信任的辅助功能客户端时，一切读取与动作都以 `accessibility_not_trusted`
-//!    拒绝。每次现问：用户可以在 worker 运行期间开关授权。取图另要屏幕录制授权，同样每次现问。
+//!    拒绝；取图另要屏幕录制授权，缺了以 `screen_recording_not_granted` 拒绝。每次现问：用户可以
+//!    在 worker 运行期间开关授权。两个原因码都在 `protocol::refused_for_grant` 里，服务循环据此
+//!    现查授权事实，运行中撤销的授权由这一次被拒报出。
 //! 3. `ref` 是不透明串：从窗口元素出发的子节点下标路径、`@` 后的核对串（原始角色、子角色与
 //!    稳定标识的指纹）、`#` 后的身份段（进程内身份表的编号）。动作前按路径重新定位并核对两者。
 //! 4. 消息上界在握手时对系统范围元素设一次，对本进程的全部 AX 调用生效。不要改成对窗口或
@@ -25,7 +27,53 @@ mod keys;
 mod pure;
 
 #[cfg(target_os = "macos")]
-pub use ffi::Ax;
+pub use ffi::{exit_with_parent, Ax};
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::keys::keycode;
+    use super::pure::facts::{no_screen_recording, not_trusted};
+    use crate::protocol::{key_names, refused_for_grant, Modifier};
+
+    /// 缺授权的两种拒绝都要被服务循环认出来：认不出的话，运行中撤销授权之后界面一直报
+    /// 授权还在。
+    #[test]
+    fn grant_refusals_trigger_an_access_recheck() {
+        assert!(refused_for_grant(&not_trusted()), "{}", not_trusted());
+        assert!(
+            refused_for_grant(&no_screen_recording()),
+            "{}",
+            no_screen_recording()
+        );
+    }
+
+    /// 词表里的每个键名、每个修饰键都有自己的键码，F21–F24 除外（macOS 没有这四个键）。
+    /// 两个名字共用一个键码时，补发抬起分不清抬的是哪一个。
+    #[test]
+    fn every_protocol_key_has_its_own_key_code() {
+        let modifiers = [
+            Modifier::Ctrl,
+            Modifier::Alt,
+            Modifier::Shift,
+            Modifier::Meta,
+        ];
+        let mut seen = HashMap::new();
+        for name in key_names().chain(modifiers.map(|m| m.key_name().to_owned())) {
+            let absent = ["f21", "f22", "f23", "f24"].contains(&name.as_str());
+            match keycode(&name) {
+                None => assert!(absent, "{name} 没有键码"),
+                Some(code) => {
+                    assert!(!absent, "{name} 在 macOS 上没有虚拟键码");
+                    if let Some(other) = seen.insert(code, name.clone()) {
+                        panic!("{name} 与 {other} 共用键码 {code:#04x}");
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// ScreenCaptureKit 在 worker 的加载命令里必须是弱链接，见 `build.rs`。测试二进制与 worker
 /// 按同一组链接参数链接，macOS 上读测试二进制自己的加载命令核对。

@@ -406,6 +406,27 @@ fn reveal_workspace(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// 打开系统设置里授予电脑控制某项前提的那一页。`grant` 是 worker 报的缺项名。
+///
+/// 页面地址由这里按名字查表，不接受前端给的地址：WebView 能让本进程打开任意 URL 就等于
+/// 能让它拉起任意 URL scheme 的处理程序。只有 macOS 有对应的设置页，别的平台一律报错。
+#[tauri::command]
+fn desktop_open_settings(app: AppHandle, grant: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let pane = match grant.as_str() {
+        "accessibility" if cfg!(target_os = "macos") => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        }
+        "screen_recording" if cfg!(target_os = "macos") => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+        _ => return Err(format!("{grant} 没有对应的系统设置页")),
+    };
+    app.opener()
+        .open_url(pane, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// 记住最后打开的项目。
 ///
 /// 这条 IPC 只做路径校验与落盘。递归文件监听不能混进来：Web 端没有
@@ -470,6 +491,7 @@ pub fn run() {
             pick_files,
             save_session_export,
             reveal_workspace,
+            desktop_open_settings,
             remember_workspace,
             window_minimize,
             window_toggle_maximize,

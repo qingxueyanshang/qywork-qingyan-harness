@@ -21,7 +21,7 @@ use x11rb::protocol::xproto::{ConnectionExt as _, Keycode, Keysym, Window};
 use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::wrapper::ConnectionExt as _;
 
-use super::keys::keysym;
+use super::keys::{keycode, keysym};
 use super::Display;
 use crate::input::{Event, Sink};
 use crate::protocol::MouseButton;
@@ -69,11 +69,9 @@ impl Keymap {
             .filter_map(|(i, syms)| Some((self.min.checked_add(u8::try_from(i).ok()?)?, syms)))
     }
 
-    /// 不带修饰就能按出这个 keysym 的键码：第一组第一级上是它的那一个。
+    /// 不带修饰就能按出这个 keysym 的键码，规则见 `keys::keycode`。
     pub fn keycode(&self, sym: Keysym) -> Option<Keycode> {
-        self.keycodes()
-            .find(|(_, syms)| syms.first() == Some(&sym))
-            .map(|(code, _)| code)
+        keycode(self.min, self.per, &self.syms, sym)
     }
 
     /// 一个 keysym 都没有映射的键码。

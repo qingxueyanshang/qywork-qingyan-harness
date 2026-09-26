@@ -15,6 +15,7 @@ export const MEDIA_KINDS = [
   'openai_videos',
   'ark_videos',
   'dashscope_videos',
+  'kling_videos',
   'openai_speech',
   'dashscope_speech',
 ] as const
@@ -31,6 +32,7 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   openai_videos: 'video',
   ark_videos: 'video',
   dashscope_videos: 'video',
+  kling_videos: 'video',
   openai_speech: 'audio',
   dashscope_speech: 'audio',
 }
@@ -66,6 +68,15 @@ export function isArkEndpoint(baseUrl: string): boolean {
   }
 }
 
+/** 可灵开放平台官方端点（国内 `api-beijing`，海外 `api-singapore`）。 */
+export function isKlingEndpoint(baseUrl: string): boolean {
+  try {
+    return /^api-(beijing|singapore)\.klingai\.com$/.test(new URL(baseUrl).hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
 /**
  * 添加生成模型时的默认协议，按「类别 × 接口地址」查。
  *
@@ -80,7 +91,8 @@ export function defaultMediaKind(output: MediaOutput, baseUrl: string | undefine
       return dashScope ? 'dashscope_images' : 'openai_images'
     case 'video':
       if (dashScope) return 'dashscope_videos'
-      return baseUrl !== undefined && isArkEndpoint(baseUrl) ? 'ark_videos' : 'openai_videos'
+      if (baseUrl !== undefined && isArkEndpoint(baseUrl)) return 'ark_videos'
+      return baseUrl !== undefined && isKlingEndpoint(baseUrl) ? 'kling_videos' : 'openai_videos'
     case 'audio':
       return dashScope ? 'dashscope_speech' : 'openai_speech'
   }

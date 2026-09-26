@@ -3,7 +3,7 @@
 //! 本模块不调用 AX。FFI 层把 CF 值换成 `Raw` 交进来，换算规则因此在任何目标上都能测。
 
 use crate::geometry::ScreenRect;
-use crate::protocol::REF_STALE;
+use crate::protocol::{ACCESSIBILITY_NOT_TRUSTED, REF_STALE, SCREEN_RECORDING_NOT_GRANTED};
 
 /// AX 属性名。系统头文件把它们定义成 `CFSTR` 宏，绑定库里没有对应的常量。
 pub mod attr {
@@ -361,8 +361,20 @@ pub fn error_name(value: i32) -> String {
     }
 }
 
-/// 辅助功能授权缺失时一切读取与动作的拒绝原因。
-pub const NOT_TRUSTED: &str = "accessibility_not_trusted: 系统设置的「隐私与安全性 › 辅助功能」里没有允许 qywork，读不了控件树，也执行不了控件动作";
+/// 辅助功能授权缺失时一切读取与动作的拒绝原因。原因码取 `ACCESSIBILITY_NOT_TRUSTED`：
+/// 服务循环按这个码现查授权事实，码写错了运行中撤销的授权就报不出来。
+pub fn not_trusted() -> String {
+    format!(
+        "{ACCESSIBILITY_NOT_TRUSTED}: 系统设置的「隐私与安全性 › 辅助功能」里没有允许 qywork，读不了控件树，也执行不了控件动作"
+    )
+}
+
+/// 屏幕录制授权缺失时取图的拒绝原因。原因码取 `SCREEN_RECORDING_NOT_GRANTED`，理由同上。
+pub fn no_screen_recording() -> String {
+    format!(
+        "{SCREEN_RECORDING_NOT_GRANTED}: 系统设置的「隐私与安全性」里没有给 qywork 屏幕录制权限，取不了图"
+    )
+}
 
 /// 目标窗口或它所在的应用已经不在时的原因码。
 pub const TARGET_LOST: &str = "target_lost";
@@ -396,7 +408,7 @@ impl Failure {
             }
             code::CANNOT_COMPLETE => Self::Timeout(text),
             code::INVALID_UI_ELEMENT => Self::Gone { app: false, text },
-            code::API_DISABLED => Self::Refused(NOT_TRUSTED.to_owned()),
+            code::API_DISABLED => Self::Refused(not_trusted()),
             _ => Self::Ax(text),
         }
     }
@@ -589,7 +601,7 @@ mod tests {
         assert!(gone.is_gone());
         assert!(gone.into_reason().starts_with("ref_stale: "));
         let off = Failure::from_ax("读角色", code::API_DISABLED, true);
-        assert_eq!(off.into_reason(), NOT_TRUSTED);
+        assert_eq!(off.into_reason(), not_trusted());
         let other = Failure::from_ax("读角色", code::FAILURE, true);
         assert!(!other.is_gone() && !other.is_timeout());
         assert_eq!(other.into_reason(), "读角色失败：kAXErrorFailure");

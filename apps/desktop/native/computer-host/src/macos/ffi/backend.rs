@@ -16,14 +16,14 @@ use crate::backend::{
 use crate::geometry::ScreenPoint;
 use crate::macos::pure::associate::CgWindow;
 use crate::macos::pure::facts::{
-    action, action_error, attr, error_name, Failure, Value, NOT_TRUSTED,
+    action, action_error, attr, error_name, no_screen_recording, not_trusted, Failure, Value,
 };
 use crate::macos::pure::node::{self, Fields};
 use crate::macos::pure::plan::{self, Call, MAX_TOGGLE_STEPS};
 use crate::protocol::{
-    now_ms, ActionEvidence, ActionSpec, BlockingWindow, Bounds, Dispatch, DragTarget, Image,
-    Observation, Select, ToggleState, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED,
-    TARGET_BLOCKED,
+    now_ms, Access, ActionEvidence, ActionSpec, BlockingWindow, Bounds, Dispatch, DragTarget,
+    Grant, Image, Observation, Select, ToggleState, Tree, Wait, WaitUntil, WindowInfo,
+    NOT_DISPATCHED, TARGET_BLOCKED,
 };
 use crate::tree::{matches_target, settle};
 
@@ -40,9 +40,6 @@ const WINDOW_ONLY: &str =
 /// 系统没有按窗口取图的接口。
 const CAPTURE_UNAVAILABLE: &str =
     "capture_unavailable: 按窗口取图要 macOS 14 或更高版本（ScreenCaptureKit 的 SCScreenshotManager）";
-/// 屏幕录制授权缺失时取图的拒绝原因。
-const NO_SCREEN_RECORDING: &str =
-    "screen_recording_not_granted: 系统设置的「隐私与安全性」里没有给 qywork 屏幕录制权限，取不了图";
 
 /// 动作前重新定位与等待判定读的字段：值与状态都要，前台属性不要。
 const ALL_FIELDS: Fields = Fields {
@@ -60,7 +57,7 @@ fn trusted() -> Result<(), String> {
     if ax::trusted() {
         Ok(())
     } else {
-        Err(NOT_TRUSTED.to_owned())
+        Err(not_trusted())
     }
 }
 
@@ -79,6 +76,19 @@ impl Backend for Ax {
         Ok(Self {
             read_before: RefCell::new(HashSet::new()),
         })
+    }
+
+    /// 辅助功能与屏幕录制两项分开报：前者管读取、动作与键鼠投递，后者只管取图。两项的读数与
+    /// 调用被拒时判的是同一个（`ax::trusted`、`ax::screen_capture_allowed`）。
+    fn access() -> Access {
+        let mut missing = Vec::new();
+        if !ax::trusted() {
+            missing.push(Grant::Accessibility);
+        }
+        if !ax::screen_capture_allowed() {
+            missing.push(Grant::ScreenRecording);
+        }
+        Access::of(missing, None)
     }
 
     /// AX 没有建连这一步，建连上界原样交回。调用上界设在系统范围元素上；AX 没有读回接口，
@@ -209,8 +219,8 @@ impl Backend for Ax {
         if !capture::available() {
             return Err(CAPTURE_UNAVAILABLE.to_owned());
         }
-        if !capture::permitted() {
-            return Err(NO_SCREEN_RECORDING.to_owned());
+        if !ax::screen_capture_allowed() {
+            return Err(no_screen_recording());
         }
         trusted()?;
         let root = walk::root(req.window).map_err(Failure::into_reason)?;

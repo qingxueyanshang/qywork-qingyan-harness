@@ -510,7 +510,7 @@ fn close_window(display: &Display, window: Window) -> Attempt {
         return Attempt::Refused("close_unsupported: 窗口管理器不允许关闭这个窗口".to_owned());
     }
     let pid = display.client(window).map_or(0, |c| c.pid);
-    let watch = CallWatch::before(display, Some(window), pid);
+    let watch = CallWatch::before(Some(display), Some(window), pid);
     if let Err(reason) = display.request_close(window) {
         return Attempt::Refused(reason);
     }

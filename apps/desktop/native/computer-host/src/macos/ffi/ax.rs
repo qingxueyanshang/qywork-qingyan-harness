@@ -16,7 +16,8 @@ use objc2_core_graphics::{
     kCGNullWindowID, kCGWindowAlpha, kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer,
     kCGWindowName, kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID, CGDirectDisplayID,
     CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode, CGGetActiveDisplayList,
-    CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo, CGWindowListOption,
+    CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
+    CGWindowListCopyWindowInfo, CGWindowListOption,
 };
 
 use crate::macos::pure::associate::CgWindow;
@@ -349,6 +350,11 @@ fn elements(value: &CFType) -> Vec<Element> {
 pub fn trusted() -> bool {
     // SAFETY: 无参数。
     unsafe { AXIsProcessTrusted() }
+}
+
+/// 本进程有没有屏幕录制授权。只查，不弹授权框。
+pub fn screen_capture_allowed() -> bool {
+    CGPreflightScreenCaptureAccess()
 }
 
 /// 这个进程此刻还在不在。没有权限发信号（`EPERM`）也说明进程在。

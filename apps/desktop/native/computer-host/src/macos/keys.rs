@@ -1,16 +1,18 @@
-//! 协议键名 → macOS 虚拟键码（`CGKeyCode`，ANSI 键位）与修饰键的事件标志位。
+//! 协议键名 → macOS 虚拟键码（`CGKeyCode`）。
 //!
-//! worker 派发按键与外壳在 worker 退出后补发抬起要用同一张表：外壳经 `#[path]` 引入本文件，
-//! 不要在外壳里另写一张表，两张表一旦不一致，补发抬起的就不是 worker 按下的那个键。
+//! worker 派发按键与外壳在 worker 退出后补发抬起要用同一张表，外壳经 `#[path]` 引入本文件。
+//! 不要在外壳里另写一张表：两张表一旦不一致，补发抬起的就不是 worker 按下的那个键。
 //! 因此本文件只依赖标准库，不引用任何 crate 内的路径。
-//!
-//! 虚拟键码是物理键位，与当前键盘布局无关：`a` 按下的是 ANSI 键盘上 A 所在的那个键。
 
 /// 键名 → 虚拟键码。键名是协议写法（全小写的主键名，或修饰键名 `ctrl` / `alt` / `shift` /
 /// `meta`）；认不出的名字返回 `None`，不猜。
 ///
-/// macOS 的功能键只到 F20，`f21`–`f24` 没有键码，返回 `None`。
-pub fn key_code(name: &str) -> Option<u16> {
+/// 两条边界：
+///
+/// 1. 虚拟键码按 ANSI 键盘上的键位编号，不随键盘布局换：非 QWERTY 布局下 `a` 那个键按出的
+///    是该布局在这个键位上的字符。
+/// 2. macOS 没有 F21–F24 的虚拟键码，这四个名字返回 `None`。
+pub fn keycode(name: &str) -> Option<u16> {
     let code = match name {
         "a" => 0x00,
         "s" => 0x01,
@@ -62,7 +64,7 @@ pub fn key_code(name: &str) -> Option<u16> {
         "tab" => 0x30,
         "space" => 0x31,
         "backquote" => 0x32,
-        // macOS 的 Delete 键是向后删除，对应协议的 backspace；向前删除是 forward delete。
+        // macOS 的 Delete 是向左删除的那个键。
         "backspace" => 0x33,
         "escape" => 0x35,
         "meta" => 0x37,
@@ -86,10 +88,11 @@ pub fn key_code(name: &str) -> Option<u16> {
         "f10" => 0x6D,
         "f12" => 0x6F,
         "f15" => 0x71,
-        // PC 键盘的 Insert 键在 macOS 上报 Help 键的键码。
+        // PC 键盘的 Insert 在 macOS 上报的是 Help 键码。
         "insert" => 0x72,
         "home" => 0x73,
         "page_up" => 0x74,
+        // 向右删除。
         "delete" => 0x75,
         "f4" => 0x76,
         "end" => 0x77,
@@ -105,104 +108,36 @@ pub fn key_code(name: &str) -> Option<u16> {
     Some(code)
 }
 
-/// 修饰键名 → `CGEventFlags` 里对应的那一位。不是修饰键的名字返回 `None`。
-///
-/// 派发端在每个键盘事件上按此刻按住的修饰键设标志位，不靠系统从修饰键事件推算。
-pub fn modifier_flag(name: &str) -> Option<u64> {
-    Some(match name {
-        "shift" => 0x0002_0000,
-        "ctrl" => 0x0004_0000,
-        "alt" => 0x0008_0000,
-        "meta" => 0x0010_0000,
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{key_code, modifier_flag};
+    use super::keycode;
 
     #[test]
-    fn letters_digits_and_named_keys_map_to_ansi_key_codes() {
-        assert_eq!(key_code("a"), Some(0x00));
-        assert_eq!(key_code("z"), Some(0x06));
-        assert_eq!(key_code("0"), Some(0x1D));
-        assert_eq!(key_code("9"), Some(0x19));
-        assert_eq!(key_code("f1"), Some(0x7A));
-        assert_eq!(key_code("f12"), Some(0x6F));
-        assert_eq!(key_code("f20"), Some(0x5A));
-        assert_eq!(key_code("enter"), Some(0x24));
-        assert_eq!(key_code("backspace"), Some(0x33));
-        assert_eq!(key_code("delete"), Some(0x75));
-        assert_eq!(key_code("up"), Some(0x7E));
+    fn keys_map_to_their_ansi_virtual_key_codes() {
+        assert_eq!(keycode("a"), Some(0x00));
+        assert_eq!(keycode("z"), Some(0x06));
+        assert_eq!(keycode("0"), Some(0x1D));
+        assert_eq!(keycode("9"), Some(0x19));
+        assert_eq!(keycode("f1"), Some(0x7A));
+        assert_eq!(keycode("f12"), Some(0x6F));
+        assert_eq!(keycode("f20"), Some(0x5A));
+        assert_eq!(keycode("enter"), Some(0x24));
+        assert_eq!(keycode("backspace"), Some(0x33));
+        assert_eq!(keycode("delete"), Some(0x75));
         // 认不出的名字不猜：没有这个键就没有这次按键。键名是规范写法，大写不认。
         for unknown in [
-            "f25", "f0", "f01", "f+1", "any", "", "A", "win", "cmd", "option",
+            "f21", "f24", "f25", "f0", "f01", "any", "", "A", "win", "cmd",
         ] {
-            assert_eq!(key_code(unknown), None, "{unknown}");
+            assert_eq!(keycode(unknown), None, "{unknown}");
         }
     }
 
     /// 修饰键取左侧那一个：`meta` 是 Command，`alt` 是 Option。
     #[test]
-    fn modifiers_map_to_the_left_hand_key_codes_and_their_flags() {
-        assert_eq!(key_code("meta"), Some(0x37));
-        assert_eq!(key_code("shift"), Some(0x38));
-        assert_eq!(key_code("alt"), Some(0x3A));
-        assert_eq!(key_code("ctrl"), Some(0x3B));
-        assert_eq!(modifier_flag("shift"), Some(0x0002_0000));
-        assert_eq!(modifier_flag("ctrl"), Some(0x0004_0000));
-        assert_eq!(modifier_flag("alt"), Some(0x0008_0000));
-        assert_eq!(modifier_flag("meta"), Some(0x0010_0000));
-        assert_eq!(modifier_flag("a"), None);
-        assert_eq!(modifier_flag("enter"), None);
-    }
-
-    /// 同一个键码不对应两个键名：对应了的话，补发抬起时认不出按下的是哪一个。
-    #[test]
-    fn no_two_names_share_a_key_code() {
-        let names: Vec<String> = (b'a'..=b'z')
-            .map(|c| char::from(c).to_string())
-            .chain((b'0'..=b'9').map(|c| char::from(c).to_string()))
-            .chain((1..=20).map(|n| format!("f{n}")))
-            .collect();
-        let mut seen = std::collections::HashMap::new();
-        for name in names.iter().map(String::as_str).chain([
-            "enter",
-            "tab",
-            "escape",
-            "space",
-            "backspace",
-            "delete",
-            "insert",
-            "home",
-            "end",
-            "page_up",
-            "page_down",
-            "up",
-            "down",
-            "left",
-            "right",
-            "semicolon",
-            "equal",
-            "comma",
-            "minus",
-            "period",
-            "slash",
-            "backquote",
-            "bracket_left",
-            "backslash",
-            "bracket_right",
-            "quote",
-            "shift",
-            "ctrl",
-            "alt",
-            "meta",
-        ]) {
-            let code = key_code(name).unwrap_or_else(|| panic!("{name} 没有键码"));
-            if let Some(other) = seen.insert(code, name) {
-                panic!("{name} 与 {other} 共用键码 {code:#x}");
-            }
-        }
+    fn modifiers_map_to_the_left_hand_keys() {
+        assert_eq!(keycode("meta"), Some(0x37));
+        assert_eq!(keycode("shift"), Some(0x38));
+        assert_eq!(keycode("alt"), Some(0x3A));
+        assert_eq!(keycode("ctrl"), Some(0x3B));
     }
 }

@@ -19,7 +19,7 @@ use objc2_core_graphics::{
 };
 
 use crate::input::{text_batches, Event, Sink};
-use crate::macos::keys::key_code;
+use crate::macos::keys::keycode;
 use crate::macos::pure::events::{flags_with, Cg, Tracker};
 use crate::macos::pure::screen::Mapping;
 
@@ -58,7 +58,7 @@ impl MacSink {
 
     /// 这个协议键名在 macOS 键盘上有没有键码。
     pub fn resolves(&self, key: &str) -> bool {
-        key_code(key).is_some()
+        keycode(key).is_some()
     }
 
     fn build(&self, spec: Cg) -> Option<CFRetained<CGEvent>> {

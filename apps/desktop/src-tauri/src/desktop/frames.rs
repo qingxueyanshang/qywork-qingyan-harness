@@ -39,6 +39,17 @@ pub struct Binding {
 
 // ── 服务端 ⇄ 宿主 ──
 
+/// 操作系统给了哪些前提。**唯一的来源是 worker**：它的握手回执与之后的授权通报。
+///
+/// 宿主只转发，不按平台自己判，也不解释 `missing` 里的名字。缺省值是「没有 worker 就没有
+/// 这一项」：不授权、不列缺项，界面据 `workerReady` 为假报组件未就绪。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Access {
+    pub authorized: bool,
+    pub missing: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostReady {
@@ -49,7 +60,8 @@ pub struct HostReady {
     pub connection_epoch: u64,
     pub platform: &'static str,
     pub worker_ready: bool,
-    pub authorized: bool,
+    #[serde(flatten)]
+    pub access: Access,
 }
 
 #[derive(Debug, Serialize)]
@@ -62,7 +74,8 @@ pub struct EventFrame {
     pub host_epoch: u64,
     pub kind: &'static str,
     pub worker_ready: bool,
-    pub authorized: bool,
+    #[serde(flatten)]
+    pub access: Access,
 }
 
 // 测试里按样例做往返比对要序列化它；生产路径只反序列化。
@@ -313,6 +326,15 @@ impl WorkerResponse {
             .and_then(|o| o.get("kind")?.as_str())
             == Some("ready")
     }
+
+    /// 就绪回执里握手那一刻的授权事实。不是就绪回执、或缺这一格时为 `None`。
+    pub fn ready_access(&self) -> Option<Access> {
+        if !self.is_ready() {
+            return None;
+        }
+        let access = self.observation.as_ref()?.get("access")?;
+        serde_json::from_value(access.clone()).ok()
+    }
 }
 
 /// 把服务端请求翻译成一条 worker 请求。
@@ -463,13 +485,14 @@ fn reference(frame: &RequestFrame) -> Result<&str, &'static str> {
 
 /// worker 发上来的一行。
 ///
-/// 两种形状靠字段区分，不靠额外的类型标记：回执一定带 `id` 与 `dispatch`，
-/// 输入状态通报一定只带 `input`。顺序不能反——`untagged` 按声明顺序试，
-/// 回执那一支先试就会把通报也解析成一条没有 id 的回执。
+/// 三种形状靠字段区分，不靠额外的类型标记：回执一定带 `id` 与 `dispatch`，
+/// 输入状态通报一定只带 `input`，授权通报一定只带 `access`。两种通报排在回执前面——
+/// `untagged` 按声明顺序试，回执那一支先试就会把通报也解析成一条没有 id 的回执。
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum WorkerLine {
     Input(InputNotice),
+    Access(AccessNotice),
     Response(WorkerResponse),
 }
 
@@ -478,6 +501,12 @@ pub enum WorkerLine {
 #[serde(rename_all = "camelCase")]
 pub struct InputNotice {
     pub input: HeldInput,
+}
+
+/// 握手之后操作系统给的前提变了。
+#[derive(Debug, Deserialize)]
+pub struct AccessNotice {
+    pub access: Access,
 }
 
 /// **只描述输入状态，不是任务状态。** 宿主按它在确认 worker 退出之后补发释放。
@@ -764,7 +793,7 @@ mod tests {
                 assert_eq!(notice.input.keys, vec!["ctrl".to_owned(), "a".to_owned()]);
                 assert!(!notice.input.is_empty());
             }
-            WorkerLine::Response(r) => panic!("解析成了回执：{r:?}"),
+            other => panic!("解析错了：{other:?}"),
         }
         let receipt = serde_json::from_str::<WorkerLine>(
             r#"{"id":"w1","dispatch":"submitted"}"#,
@@ -772,14 +801,39 @@ mod tests {
         .expect("回执应当解析成功");
         match receipt {
             WorkerLine::Response(r) => assert_eq!((r.id.as_str(), r.dispatch.as_str()), ("w1", "submitted")),
-            WorkerLine::Input(n) => panic!("解析成了通报：{n:?}"),
+            other => panic!("解析成了通报：{other:?}"),
         }
         let empty = serde_json::from_str::<WorkerLine>(r#"{"input":{"buttons":[],"keys":[]}}"#)
             .expect("空账应当解析成功");
         match empty {
             WorkerLine::Input(notice) => assert!(notice.input.is_empty()),
-            WorkerLine::Response(r) => panic!("解析成了回执：{r:?}"),
+            other => panic!("解析错了：{other:?}"),
         }
+    }
+
+    /// 授权通报与另外两种行靠 `access` 这一格分开；就绪回执里嵌着的 `access` 不是通报。
+    #[test]
+    fn an_access_notice_is_told_apart_from_receipts_and_input_notices() {
+        let notice = serde_json::from_str::<WorkerLine>(
+            r#"{"access":{"authorized":false,"missing":["accessibility","screen_recording"]}}"#,
+        )
+        .expect("通报应当解析成功");
+        match notice {
+            WorkerLine::Access(notice) => assert_eq!(
+                notice.access,
+                Access {
+                    authorized: false,
+                    missing: vec!["accessibility".to_owned(), "screen_recording".to_owned()],
+                }
+            ),
+            other => panic!("解析错了：{other:?}"),
+        }
+        let ready = serde_json::from_str::<WorkerLine>(
+            r#"{"id":"w1","dispatch":"not_dispatched","observation":{"kind":"ready",
+                "access":{"authorized":true,"missing":[]}}}"#,
+        )
+        .expect("就绪回执应当解析成功");
+        assert!(matches!(ready, WorkerLine::Response(_)), "{ready:?}");
     }
 
     /// 读文本是只读 op：只要句柄、控件与上限，不带读树那三个上限。
@@ -1051,16 +1105,26 @@ mod tests {
     }
 
     #[test]
-    fn readiness_comes_from_the_worker_observation() {
+    fn readiness_and_access_come_from_the_worker_observation() {
         let response = WorkerResponse {
             id: "h_1".to_owned(),
             dispatch: "not_dispatched".to_owned(),
             reason: None,
-            observation: Some(json!({"kind": "ready", "backend": "windows-uia"})),
+            observation: Some(json!({
+                "kind": "ready", "backend": "linux-atspi",
+                "access": {"authorized": false, "missing": ["accessibility_bus"]}
+            })),
             observation_error: None,
             blocking: None,
         };
         assert!(response.is_ready());
+        assert_eq!(
+            response.ready_access(),
+            Some(Access {
+                authorized: false,
+                missing: vec!["accessibility_bus".to_owned()],
+            })
+        );
 
         let other = WorkerResponse {
             id: "h_1".to_owned(),
@@ -1071,6 +1135,7 @@ mod tests {
             blocking: None,
         };
         assert!(!other.is_ready());
+        assert_eq!(other.ready_access(), None);
     }
 
     #[test]
@@ -1236,7 +1301,10 @@ mod tests {
             connection_epoch: binding.connection_epoch,
             platform: "windows",
             worker_ready: true,
-            authorized: true,
+            access: Access {
+                authorized: true,
+                missing: Vec::new(),
+            },
         };
         assert_eq!(serde_json::to_value(&ready).expect("可序列化"), all["hostReady"]);
         let event = EventFrame {
@@ -1245,8 +1313,11 @@ mod tests {
             host_id: binding.host_id.clone(),
             host_epoch: binding.host_epoch,
             kind: "worker.state",
-            worker_ready: false,
-            authorized: true,
+            worker_ready: true,
+            access: Access {
+                authorized: true,
+                missing: vec!["screen_recording".to_owned()],
+            },
         };
         assert_eq!(serde_json::to_value(&event).expect("可序列化"), all["workerState"]);
     }

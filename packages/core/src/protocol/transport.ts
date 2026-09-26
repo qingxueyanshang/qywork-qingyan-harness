@@ -8,6 +8,7 @@
 import type { ConversationId } from '../domain/ids.ts'
 import type { Attachment, PermissionMode } from '../domain/model.ts'
 import type { BrowserPresentation, BrowserUnavailableReason } from './native-browser.ts'
+import type { DesktopGrant } from './native-desktop.ts'
 
 // ─────────────────────────────── 握手 ───────────────────────────────
 
@@ -151,7 +152,8 @@ export interface ServerCapabilities {
    * 电脑控制。**三件事分开报，不合成一个布尔。**
    *
    * 三者是依次成立的阶段，合成之后界面只说得出「用不了」，说不出卡在哪一步，
-   * 而这三步的下一步动作完全不同：装应用、授权、等组件起来。
+   * 而这三步的下一步动作完全不同：装应用、等组件起来、授权。授权事实由 worker 报，
+   * 所以组件没起来时没有这一项。
    *
    * 与浏览器同理，这条服务端知情：原生宿主是连到服务端的，worker 与授权状态由它上报。
    * 宿主连接变化时由 `desktop.state` 事件更新同一份投影。
@@ -191,8 +193,10 @@ export interface DesktopCapability {
   connected: boolean
   /** 宿主上报 worker 进程已握手就绪。宿主没连上时为 `false`。 */
   workerReady: boolean
-  /** 操作系统已授予桌面控制所需的权限。宿主没连上时为 `false`。 */
+  /** 操作系统已授予读取与动作所需的权限。worker 没就绪时为 `false`：那时没有这一项事实。 */
   authorized: boolean
+  /** 操作系统没给的前提，界面据此指明去哪里开。worker 没就绪时为空。 */
+  missing: DesktopGrant[]
 }
 
 /**

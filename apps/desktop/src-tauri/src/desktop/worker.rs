@@ -3,7 +3,7 @@
 //! IPC 是子进程 stdio 上的行分隔 JSON：管道随进程关闭，worker 退出即 stdout 结束，
 //! 宿主不需要心跳，也不新增本机可连的端点。
 //!
-//! 四条边界：
+//! 五条边界：
 //!
 //! 1. **登记先于写入。** 在途表里先有这一条，再写 stdin；`written` 只在 `write_all`
 //!    成功之后置上。收尾的分类全靠这一格。
@@ -13,6 +13,9 @@
 //!    worker 走的是同一条退避，不另设计数。
 //! 4. **强杀只在关 stdin 之后、且只对本宿主起的那个 pid。** 按可执行文件名找进程会命中
 //!    用户自己开着的另一个 qywork。
+//! 5. **宿主被强杀时 worker 随之结束。** 没有任何宿主代码跑得到，只能交给内核：Windows 是
+//!    作业对象，Linux 是拉起时设的 `PR_SET_PDEATHSIG`；macOS 两者都没有，由 worker 自己
+//!    监听父进程退出。
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -92,18 +95,13 @@ pub struct Spawned {
     ///
     /// 宿主进程被强杀时没有任何代码跑得到，只有内核在最后一个句柄关闭时收掉作业里的
     /// 进程。调用方要把它按住到不再需要这个 worker 为止，提前丢掉就是当场杀掉它。
+    #[cfg(windows)]
     pub job: Option<Job>,
 }
 
 /// 一个 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业对象。
-///
-/// 只有 Windows 有：非 Windows 目前没有 worker 实现，对应的进程组或 `PR_SET_PDEATHSIG`
-/// 一并留到那一端落地时做，现在不给一个做不到的承诺。
 #[cfg(windows)]
 pub struct Job(windows::Win32::Foundation::HANDLE);
-
-#[cfg(not(windows))]
-pub struct Job(());
 
 // SAFETY: 句柄由本类型独占，只在 Drop 里关一次。
 #[cfg(windows)]
@@ -151,9 +149,30 @@ fn confine(child: &Child) -> Option<Job> {
     None
 }
 
-#[cfg(not(windows))]
-fn confine(_child: &Child) -> Option<Job> {
-    None
+/// 让 worker 在拉起它的那条线程退出时收到 `SIGKILL`。
+///
+/// `PR_SET_PDEATHSIG` 跟的是线程不是进程：拉起 worker 的是监督线程，它等到 worker 退出才
+/// 返回，所以这条线程的退出只会发生在宿主进程结束时。不要改成在别的短命线程上拉起 worker。
+///
+/// `getppid` 的核对补上 `fork` 与 `prctl` 之间父进程已经退出的那一段：那时信号不会再来。
+#[cfg(target_os = "linux")]
+fn die_with_parent(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: 取本进程号，无副作用。
+    let parent = unsafe { libc::getpid() };
+    // SAFETY: 闭包在 fork 之后、exec 之前的子进程里执行，只调 async-signal-safe 的系统调用。
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                return Err(std::io::Error::other("宿主已经退出"));
+            }
+            Ok(())
+        });
+    }
 }
 
 /// 拉起一个 worker 进程。三条管道都要接：stdout 是回执，stderr 是它退出的原因。
@@ -169,9 +188,13 @@ pub fn spawn(path: &Path) -> std::io::Result<Spawned> {
         // CREATE_NO_WINDOW。不加它，GUI 进程拉起控制台子进程会闪一个黑框。
         command.creation_flags(0x0800_0000);
     }
+    #[cfg(target_os = "linux")]
+    die_with_parent(&mut command);
     let mut child = command.spawn()?;
     let pid = child.id();
+    #[cfg(windows)]
     let job = confine(&child);
+    #[cfg(windows)]
     if job.is_none() {
         log::warn!("computer-host worker pid={pid} 没能放进作业对象，宿主被强杀时它会留下");
     }
@@ -195,6 +218,7 @@ pub fn spawn(path: &Path) -> std::io::Result<Spawned> {
         },
         stdout,
         stderr,
+        #[cfg(windows)]
         job,
     })
 }
