@@ -120,6 +120,18 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 安装包未做 Authenticode 签名，Windows 可能显示 SmartScreen 提示；
 Release 中的 `SHA256SUMS-windows-x86_64.txt` 可用于校验文件完整性。
 
+## Linux 与 macOS
+
+Releases 目前只提供 Windows 安装包。Linux x86_64 的 `.deb`、`.AppImage` 与 macOS 的 `.dmg`
+由[发布工作流](.github/workflows/)构建，使用这些构建产物时：
+
+- **deb**：依赖已写入包内（`at-spi2-core`，推荐 PipeWire 与 `xdg-desktop-portal`），
+  `sudo apt install ./qywork_*.deb` 会一并安装。
+- **AppImage**：系统需已安装 `fuse3`、`libegl1`、`libgles2` 与 `at-spi2-core`；
+  未安装 FUSE 时加 `--appimage-extract-and-run` 参数运行。
+- **浏览器控制**：使用本机已安装的 Chrome、Edge 或 Chromium，安装包不附带浏览器。
+- **电脑控制（macOS）**：需在系统设置中授予“辅助功能”权限，截图另需“屏幕录制”权限。
+
 ## 从源码启动
 
 安装 [Bun](https://bun.sh) 后克隆仓库：
