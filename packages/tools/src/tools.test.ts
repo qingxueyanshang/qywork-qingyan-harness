@@ -27,7 +27,7 @@ import {
   rootsOf,
 } from './paths.ts'
 import { startCommandRunner } from './runner.ts'
-import { BASH_PATH_ENV, commandShell, detectSandbox, setCommandRunner } from './sandbox.ts'
+import { BASH_PATH_ENV, commandShell, setCommandRunner } from './sandbox.ts'
 
 async function workspace(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qywork-test-'))
@@ -1047,12 +1047,6 @@ describe('搜索与命令', () => {
   })
 
   /**
-   * 后台进程能不能活过 shell。bwrap 在独立的 PID 命名空间里跑命令，shell 退出时命名空间里的
-   * 进程一并终止，没有进程扣着管道，结果里也就不该有那句说明。
-   */
-  const backgroundSurvives = () => detectSandbox().backend !== 'bwrap'
-
-  /**
    * **原始失败形状**：命令跑完了、shell 也正常退出了，但它留下的后台进程继承了
    * stdout 的写端仍未关闭，因此管道永远不 EOF。账本里那次是 `run.ps1 start`
    * （起了个 node 服务留在后台，而那正是脚本该做的事）：界面上那条 `run_command`
@@ -1083,7 +1077,7 @@ describe('搜索与命令', () => {
     expect(String(out.data?.stdout)).toContain('started')
     // 挂死的话这里是 20 秒起步，改回等 EOF 就永远回不来。
     expect(elapsed).toBeLessThan(5_000)
-    expect(out.message?.includes('后台进程仍在运行并持有输出管道')).toBe(backgroundSurvives())
+    expect(out.message).toContain('后台进程仍在运行并持有输出管道')
   }, 30_000)
 
   /**
@@ -1114,12 +1108,36 @@ describe('搜索与命令', () => {
       expect(out.status).toBe('success')
       expect(String(out.data?.stdout)).toContain('started')
       expect(Date.now() - started).toBeLessThan(5_000)
-      expect(out.message?.includes('后台进程仍在运行并持有输出管道')).toBe(backgroundSurvives())
+      expect(out.message).toContain('后台进程仍在运行并持有输出管道')
     } finally {
       // 这是个进程级变量，留着会让本文件后面的命令都改走 runner。
       setCommandRunner(null)
       runner.stop()
     }
+  }, 30_000)
+
+  /**
+   * 原始失败形状：Linux 的 bwrap 沙箱在 shell 退出时结束命名空间里的全部进程，`npm run dev &`
+   * 这类后台服务随命令返回一起消失，结果里没有任何说明。锁的是进程确实留下：命令返回之后，
+   * 它仍然写得出文件。
+   */
+  test('命令返回之后，它留下的后台进程继续运行', async () => {
+    const shell = commandShell()
+    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    const root = await workspace()
+    const command = shell.argv.includes('-Command')
+      ? "Start-Process -NoNewWindow -FilePath cmd.exe -ArgumentList '/c','ping -n 2 127.0.0.1 >nul & echo alive>bg.txt'"
+      : '(sleep 1; echo alive > bg.txt) &'
+
+    const out = await registry().execute('run_command', { command }, ctx(root))
+    expect(out.status).toBe('success')
+
+    let body = ''
+    for (let i = 0; i < 50 && !body; i++) {
+      await Bun.sleep(100)
+      body = await readFile(join(root, 'bg.txt'), 'utf8').catch(() => '')
+    }
+    expect(body).toContain('alive')
   }, 30_000)
 
   /**

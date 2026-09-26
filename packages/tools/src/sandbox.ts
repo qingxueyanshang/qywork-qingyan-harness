@@ -353,6 +353,12 @@ export function defaultMaskPaths(home = homedir()): string[] {
  *   里有别的进程的环境变量，而凭证刚在本进程侧被剥干净）。
  * - **不 `--unshare-net`**：网络照常。断网的 agent 装不了依赖、拉不了代码，
  *   而按域名过滤要一整套代理。这是刻意留下的缺口，见文件头注释与文档。
+ * - **不加 `--die-with-parent`**：它给命名空间的 init 设 `PR_SET_PDEATHSIG`，bwrap 外层进程
+ *   在 shell 退出时随之退出，init 收到 SIGKILL，内核结束命名空间里的全部进程，命令留下的
+ *   后台进程因此一个不剩；runner 退出时同理。超时、中断与探测收尾由 `killTree` 按进程组发信号，
+ *   命名空间里的进程与外层同组，不依赖这个选项。
+ * - 命名空间的 init 持有 stdout / stderr，直到其中最后一个进程退出。后台进程即使重定向了输出，
+ *   `collectProcess` 也报 `backgroundHeld`。
  */
 export function buildBwrapArgv(
   policy: SandboxPolicy,
@@ -369,7 +375,6 @@ export function buildBwrapArgv(
     '/',
     '--dev',
     '/dev',
-    '--die-with-parent',
   ]
 
   /*
@@ -934,9 +939,8 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
     /*
      * 非 Windows 上自成进程组，`killTree` 才有整组可杀。
      *
-     * 不这么做的话它和 `qy serve` 同组，而 `process.kill(-pid)` 打的是**组**
-     * ——那一下会连自己一起杀掉。`killTree` 因此还要再验一次组长身份，
-     * 见那边的注释：这里只是把「能安全整组杀」这个前提创造出来。
+     * 不这么做的话它和 `qy serve` 同组，按它的 pid 找不到进程组，`killTree`
+     * 只杀得到 shell 本身，shell 派生的子孙照常运行。
      *
      * Windows 不加：那边靠 `taskkill /T` 走进程树，不需要组语义，
      * 而 detached 在 Windows 上是「脱离控制台」，与这里的目的无关。
@@ -970,10 +974,12 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
  *
  * **平台**：
  * - **Windows**：`taskkill /F /T`，`/T` 连子孙一起。上面那段是本机实测。
- * - **其余平台**：杀进程组。**但必须先确认它真是自己那一组的组长**——`detached`
- *   万一没生效，`-pid` 指向的就是 `qy serve` 自己所在的组，而那一下不会报错，
- *   服务端会被直接杀掉。验不过就回落到单进程 kill。
- *   **这条路径没有在本机验证过**（本机是 Windows），如实写在这里。
+ * - **其余平台**：向以 `proc.pid` 为组号的进程组发 SIGKILL。`detached` 起的子进程自成一组，
+ *   组号即其 pid，shell 派生的子孙与 bwrap 命名空间里的进程都在组内（Linux / WSL2 实测，
+ *   macOS 未实测）。不是 detached 起的子进程不是组长，不存在以它的 pid 为组号的组，
+ *   调用抛 ESRCH，落到单进程 kill；这一下不会命中 `qy serve` 自己所在的组。
+ *   不要改成先用 `process.getpgid` 验组长：Bun 1.3.14 没有这个方法，验证永远不通过，
+ *   树杀退化为只杀 shell。
  */
 export function killTree(proc: { pid: number; kill(): void }): void {
   if (process.platform === 'win32') {
@@ -984,23 +990,11 @@ export function killTree(proc: { pid: number; kill(): void }): void {
     })
     return
   }
-  // `getpgid` 运行时有、`@types/bun` 里没声明；断言到最小形状而不是 any，
-  // 这样「它可能不存在」这件事仍然写在类型里。
-  const getpgid = (process as unknown as { getpgid?: (pid: number) => number }).getpgid
-  let leadsOwnGroup = false
   try {
-    leadsOwnGroup = getpgid?.(proc.pid) === proc.pid
+    process.kill(-proc.pid, 'SIGKILL')
+    return
   } catch {
-    // 进程已经没了，或者平台不提供 getpgid：都按「不确定」处理。
-    leadsOwnGroup = false
-  }
-  if (leadsOwnGroup) {
-    try {
-      process.kill(-proc.pid, 'SIGKILL')
-      return
-    } catch {
-      // 组已经空了，落到下面补一刀单进程的。
-    }
+    // 没有这个进程组：它不是 detached 起的，或整组已经退出。
   }
   proc.kill()
 }
