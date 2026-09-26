@@ -52,9 +52,9 @@ pub struct Aim {
     pub anchor: Option<ScreenPoint>,
     /// 拖拽终点。只有拖拽有。
     pub destination: Option<ScreenPoint>,
-    /// 按控件定位时，控件自报的所在顶层窗口的客户区原点，见 `walk::toplevel_origin`；按图像
-    /// 坐标定位、或读不到控件的窗口坐标时缺席。
-    pub origin: Option<ScreenPoint>,
+    /// 按控件定位时，控件所在的顶层窗口：目标窗口，或目标窗口拥有、画着这个控件的弹出窗口；
+    /// 按图像坐标定位时缺席。
+    pub host: Option<i64>,
 }
 
 /// 点名控件的键盘输入要核对的那一项：控件此刻有没有键盘焦点。读的是实时状态。
@@ -271,39 +271,10 @@ fn landing(display: &Display, window: Window, aim: Aim) -> Result<ScreenPoint, S
         return Err(format!("point_outside_window: {},{}", anchor.x, anchor.y));
     }
     let (hit_root, hit_owner) = display.hit(anchor)?;
-    let origin_of = |w: i64| Window::try_from(w).ok().and_then(|w| display.origin(w));
-    let target = i64::from(window);
-    let root = control_root(
-        aim.origin,
-        (target, origin_of(target)),
-        (hit_root, origin_of(hit_root)),
-    );
-    if !lands_on_target(target, hit_root, hit_owner, root) {
+    if !lands_on_target(i64::from(window), hit_root, hit_owner, aim.host) {
         return Err(format!("occluded: {},{}", anchor.x, anchor.y));
     }
     Ok(anchor)
-}
-
-/// 控件所在的顶层窗口，交给 `lands_on_target`。`target` 与 `hit` 是目标窗口、落点处的顶层窗口
-/// 与各自的客户区原点。
-///
-/// X 服务器与 AT-SPI 都不给控件所在的 X 窗口，只能按控件自报的原点对：只认目标窗口与落点处
-/// 的窗口两个候选，都对不上时缺席，与按图像坐标定位一样只认目标窗口本身。先认目标窗口：弹出
-/// 窗口恰好与目标窗口客户区同一原点时，先认落点处的窗口会把盖在控件上的弹出窗口当成控件所在
-/// 的窗口。
-///
-/// 这个原点取自工具包：GTK 3 对下拉菜单里的控件报弹出窗口的原点；Qt 对组合框下拉列表里的
-/// 控件报主窗口的原点，那些控件按 ref 点击因此判 `occluded`。
-fn control_root(
-    origin: Option<ScreenPoint>,
-    target: (i64, Option<ScreenPoint>),
-    hit: (i64, Option<ScreenPoint>),
-) -> Option<i64> {
-    let origin = origin?;
-    [target, hit]
-        .into_iter()
-        .find(|(_, at)| *at == Some(origin))
-        .map(|(window, _)| window)
 }
 
 /// 一批事件发完之后的执行事实。
@@ -564,69 +535,4 @@ fn window_rect(display: &Display, window: Window) -> Result<ScreenRect, String> 
         .client(window)
         .and_then(|c| c.outer())
         .ok_or_else(|| "target_lost: 读窗口矩形失败".to_owned())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 目标窗口、它弹出的下拉菜单、它的模态对话框、别的应用的置顶窗口，与各自的客户区原点。
-    const TARGET: i64 = 0x40_0004;
-    const POPUP: i64 = 0x40_005f;
-    const DIALOG: i64 = 0x40_0090;
-    const OTHER: i64 = 0x60_0004;
-    const AT_TARGET: ScreenPoint = ScreenPoint { x: 161, y: 160 };
-    const AT_POPUP: ScreenPoint = ScreenPoint { x: 173, y: 173 };
-
-    /// `control_root` 与 `lands_on_target` 合起来的裁决。`hit` 是落点处的窗口、它的所有者与原点。
-    fn lands(origin: Option<ScreenPoint>, hit: (i64, i64, ScreenPoint)) -> bool {
-        let root = control_root(origin, (TARGET, Some(AT_TARGET)), (hit.0, Some(hit.2)));
-        lands_on_target(TARGET, hit.0, hit.1, root)
-    }
-
-    /// 原始失败形状：GTK 组合框的下拉菜单是目标窗口拥有的另一个顶层窗口，点里面的菜单项被判
-    /// 遮挡。菜单项自报的原点就是弹出窗口的原点。
-    #[test]
-    fn a_control_in_the_popup_the_target_owns_lands() {
-        assert_eq!(
-            control_root(
-                Some(AT_POPUP),
-                (TARGET, Some(AT_TARGET)),
-                (POPUP, Some(AT_POPUP))
-            ),
-            Some(POPUP)
-        );
-        assert!(lands(Some(AT_POPUP), (POPUP, TARGET, AT_POPUP)));
-    }
-
-    /// 目标窗口里的控件被它自己的下拉菜单或模态对话框盖住：点下去的是盖在上面的那个窗口。
-    #[test]
-    fn a_control_of_the_target_covered_by_its_own_window_is_refused() {
-        assert!(!lands(Some(AT_TARGET), (POPUP, TARGET, AT_POPUP)));
-        assert!(!lands(
-            Some(AT_TARGET),
-            (DIALOG, TARGET, ScreenPoint { x: 300, y: 250 })
-        ));
-        // 盖在上面的弹出窗口恰好与目标窗口客户区同一原点：先认目标窗口，照旧拒绝。
-        assert!(!lands(Some(AT_TARGET), (POPUP, TARGET, AT_TARGET)));
-    }
-
-    /// 别的应用的置顶窗口盖在控件上，哪怕与控件自报的原点相同，也不归目标窗口所有。
-    #[test]
-    fn an_unrelated_window_on_top_is_refused() {
-        assert!(!lands(Some(AT_TARGET), (OTHER, OTHER, AT_POPUP)));
-        assert!(!lands(Some(AT_POPUP), (OTHER, OTHER, AT_POPUP)));
-    }
-
-    /// 按图像坐标定位，或控件自报的原点哪个候选都对不上：只认目标窗口本身。
-    #[test]
-    fn without_a_known_origin_only_the_target_itself_lands() {
-        assert!(!lands(None, (POPUP, TARGET, AT_POPUP)));
-        assert!(!lands(
-            Some(ScreenPoint { x: 0, y: 0 }),
-            (POPUP, TARGET, AT_POPUP)
-        ));
-        assert!(lands(None, (TARGET, TARGET, AT_TARGET)));
-        assert!(lands(Some(AT_TARGET), (TARGET, TARGET, AT_TARGET)));
-    }
 }

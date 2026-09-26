@@ -44,7 +44,7 @@ use zbus::blocking::Connection;
 use crate::backend::{
     wait_loop, ActRequest, Attempt, Backend, CaptureRequest, Probe, WaitRequest, Watch,
 };
-use crate::geometry::ScreenPoint;
+use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
     Access, ActionEvidence, ActionSpec, BlockingWindow, Bounds, DragTarget, Grant, Image,
     Observation, Select, Tree, Wait, WaitUntil, WindowInfo, ACCESSIBILITY_BUS_UNAVAILABLE,
@@ -532,6 +532,16 @@ impl Atspi {
         }
     }
 
+    /// 按控件定位时控件所在的顶层窗口：控件画在目标窗口拥有的弹出窗口里时是那个弹出窗口
+    /// （`Located::popup` 的内容整个装得下的最上面一个），否则是目标窗口。
+    fn host(&self, window: u32, popup: Option<ScreenRect>) -> i64 {
+        let held = popup.and_then(|content| {
+            let display = self.display().ok()?;
+            x11::holding(&display.popups(window), content)
+        });
+        i64::from(held.unwrap_or(window))
+    }
+
     /// 动作之后按调用方当前观察的范围整份重读。
     fn reread(&self, req: &ActRequest<'_>) -> Result<Observation, String> {
         let scope = Select {
@@ -606,7 +616,7 @@ impl Atspi {
         if whole_window && located.as_ref().is_some_and(|l| !l.path.is_empty()) {
             return Attempt::Refused("pattern_missing: 窗口动作只能对窗口根节点执行".to_owned());
         }
-        let aim = match self.aim(tree.as_ref(), located.as_ref(), req) {
+        let aim = match self.aim(window, tree.as_ref(), located.as_ref(), req) {
             Ok(aim) => aim,
             Err(reason) => return Attempt::Refused(reason),
         };
@@ -631,13 +641,14 @@ impl Atspi {
         foreground::perform(display, window, focus, req.action, aim, stop)
     }
 
-    /// 指针动作的落点、拖拽终点，与按控件定位时控件自报的所在顶层窗口原点。非指针动作全部缺席。
+    /// 指针动作的落点、拖拽终点与控件所在的顶层窗口。非指针动作三项都缺席。
     ///
     /// 落点两种来源：调用方给的屏幕坐标，或控件此刻的包围盒中心。**包围盒读的是这一次重新
-    /// 定位拿到的那一份**，不是观察时记下的。不要把控件所在的顶层窗口当成目标窗口本身：`ref`
-    /// 从目标窗口的 frame 出发，而组合框下拉菜单里的控件画在目标窗口拥有的另一个顶层窗口里。
+    /// 定位拿到的那一份**，不是观察时记下的。控件所在的顶层窗口见 `host`：不要取目标窗口本身，
+    /// `ref` 从目标窗口的 frame 出发，而组合框下拉列表里的控件画在目标窗口拥有的弹出窗口里。
     fn aim(
         &self,
+        window: u32,
         tree: Option<&(Connection, Root)>,
         located: Option<&Located>,
         req: &ActRequest<'_>,
@@ -645,20 +656,15 @@ impl Atspi {
         if !req.action.takes_point() {
             return Ok(foreground::Aim::default());
         }
-        let bounds = |l: &Located| {
+        let center = |l: &Located| {
             l.facts
                 .extents
+                .map(|r| r.center())
                 .ok_or_else(|| "no_bounds: 这个控件没有可视位置".to_owned())
         };
-        let (anchor, origin) = match (req.point, tree, located) {
-            (Some(point), _, _) => (point, None),
-            (None, Some((conn, _)), Some(l)) => {
-                let rect = bounds(l)?;
-                let origin =
-                    walk::toplevel_origin(conn, &l.obj, rect).map_err(Failure::into_reason)?;
-                (rect.center(), origin)
-            }
-            (None, _, _) => return Err("missing_target: 指针动作没有落点".to_owned()),
+        let anchor = match req.point {
+            Some(point) => point,
+            None => center(located.ok_or("missing_target: 指针动作没有落点")?)?,
         };
         let destination = match req.action {
             ActionSpec::Drag { to } => Some(match to {
@@ -670,7 +676,7 @@ impl Atspi {
                     let (conn, root) = tree.ok_or("missing_target: 拖拽终点没有控件树")?;
                     let target = walk::locate(conn, &root.obj, reference, ALL_FIELDS)
                         .map_err(Failure::into_reason)?;
-                    bounds(&target)?.center()
+                    center(&target)?
                 }
             }),
             _ => None,
@@ -678,7 +684,10 @@ impl Atspi {
         Ok(foreground::Aim {
             anchor: Some(anchor),
             destination,
-            origin,
+            host: req
+                .point
+                .is_none()
+                .then(|| self.host(window, located.and_then(|l| l.popup))),
         })
     }
 
@@ -851,6 +860,7 @@ impl Atspi {
                 facts: walk::facts(conn, &root.obj, fields)?,
                 context: node::Context::default(),
                 parent: None,
+                popup: None,
             },
             Some(reference) => walk::locate(conn, &root.obj, reference, fields)?,
         };

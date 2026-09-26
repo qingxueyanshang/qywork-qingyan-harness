@@ -18,7 +18,7 @@ use x11rb::protocol::xproto::{
 use x11rb::protocol::Event;
 
 use super::{words, Display};
-use crate::geometry::ScreenPoint;
+use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::WindowState;
 
 /// 客户端消息里的来源标识：代表用户操作的工具。
@@ -32,6 +32,17 @@ const STATE_ADD: u32 = 1;
 const GRAVITY_NORTH_WEST: u32 = 1;
 /// 应用不支持 `_NET_WM_PING` 时，同步点退回等这么久。
 const PING_FALLBACK: Duration = Duration::from_millis(60);
+
+/// `popups`（`Display::popups` 的结果，从下到上）里整个装得下 `content` 的最上面一个。
+///
+/// 弹出窗口里的内容可以比窗口小一圈：Qt 组合框的下拉列表在它的弹出窗口里四周各缩进 1 像素。
+pub fn holding(popups: &[(Window, ScreenRect)], content: ScreenRect) -> Option<Window> {
+    popups
+        .iter()
+        .rev()
+        .find(|(_, rect)| rect.intersect(&content) == Some(content))
+        .map(|(window, _)| *window)
+}
 
 /// 窗口管理器可以拒绝的窗口动作，对应 `_NET_WM_ALLOWED_ACTIONS` 里的项。
 #[derive(Debug, Clone, Copy)]
@@ -246,7 +257,12 @@ impl Display {
             return Err(format!("point_unowned: {},{}", point.x, point.y));
         }
         let hit = self.client_in(child).unwrap_or(child);
-        let mut owner = hit;
+        Ok((i64::from(hit), i64::from(self.owner(hit))))
+    }
+
+    /// 窗口沿 `WM_TRANSIENT_FOR` 上溯到的顶端，没有时是它自己。
+    fn owner(&self, window: Window) -> Window {
+        let mut owner = window;
         for _ in 0..8 {
             let Some(next) = self
                 .property(
@@ -261,7 +277,39 @@ impl Display {
             };
             owner = next;
         }
-        Ok((i64::from(hit), i64::from(owner)))
+        owner
+    }
+
+    /// 归 `owner` 所有、此刻映射着的 override-redirect 顶层窗口（弹出菜单、组合框的下拉列表）
+    /// 与它们含边框的屏幕矩形，按层叠序从下到上。
+    pub fn popups(&self, owner: Window) -> Vec<(Window, ScreenRect)> {
+        let Ok(Ok(tree)) = self.conn.query_tree(self.root).map(|c| c.reply()) else {
+            return Vec::new();
+        };
+        tree.children
+            .into_iter()
+            .filter(|w| {
+                self.conn
+                    .get_window_attributes(*w)
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .is_some_and(|a| a.override_redirect && a.map_state == MapState::VIEWABLE)
+            })
+            .filter(|w| *w != owner && self.owner(*w) == owner)
+            .filter_map(|w| {
+                let g = self.conn.get_geometry(w).ok()?.reply().ok()?;
+                let border = i32::from(g.border_width);
+                Some((
+                    w,
+                    ScreenRect {
+                        x: i32::from(g.x),
+                        y: i32::from(g.y),
+                        width: i32::from(g.width) + border * 2,
+                        height: i32::from(g.height) + border * 2,
+                    },
+                ))
+            })
+            .collect()
     }
 
     /// 外框里的客户窗口：沿子窗口向下找第一个在窗口管理器清单里的窗口。不是外框时交回 `None`。
@@ -344,5 +392,48 @@ impl Display {
                 limit.as_millis()
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, width: i32, height: i32) -> ScreenRect {
+        ScreenRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// GTK 组合框的下拉菜单与它的弹出窗口一样大；Qt 的下拉列表四周缩进 1 像素。两者都认得出。
+    #[test]
+    fn a_dropdown_is_held_by_its_popup() {
+        let gtk = [(0x40_005f, rect(173, 173, 396, 124))];
+        assert_eq!(holding(&gtk, rect(173, 173, 396, 124)), Some(0x40_005f));
+        let qt = [(0x40_0011, rect(712, 171, 398, 90))];
+        assert_eq!(holding(&qt, rect(713, 172, 396, 88)), Some(0x40_0011));
+    }
+
+    /// 内容伸出弹出窗口、或弹出窗口只盖住它的一部分：不是这个弹出窗口里的内容。
+    #[test]
+    fn content_outside_a_popup_is_not_held() {
+        let popups = [(0x40_005f, rect(173, 173, 396, 124))];
+        assert_eq!(holding(&popups, rect(161, 160, 420, 300)), None);
+        assert_eq!(holding(&popups, rect(500, 280, 120, 40)), None);
+        assert_eq!(holding(&[], rect(173, 173, 10, 10)), None);
+    }
+
+    /// 两个弹出窗口都装得下时取层叠序最上面的那个。
+    #[test]
+    fn the_topmost_popup_that_holds_the_content_wins() {
+        let popups = [
+            (0x40_0001, rect(100, 100, 400, 400)),
+            (0x40_0002, rect(150, 150, 200, 200)),
+        ];
+        assert_eq!(holding(&popups, rect(160, 160, 50, 50)), Some(0x40_0002));
+        assert_eq!(holding(&popups, rect(110, 110, 50, 50)), Some(0x40_0001));
     }
 }
