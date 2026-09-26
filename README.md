@@ -135,7 +135,7 @@ Release 中各平台的 `SHA256SUMS-*.txt` 可用于校验文件完整性。
 
 ## 从源码启动
 
-安装 [Bun](https://bun.sh) 后克隆仓库：
+安装 [Bun](https://bun.sh) 1.4.2 或更新版本后克隆仓库：
 
 ```powershell
 git clone https://github.com/qingxueyanshang/qywork-qingyan-harness.git
