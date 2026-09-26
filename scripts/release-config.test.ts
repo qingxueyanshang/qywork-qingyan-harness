@@ -226,6 +226,28 @@ describe('桌面发布清单', () => {
   })
 
   /**
+   * Wayland 下原生窗口的取图与前台键鼠经 `org.freedesktop.portal.Desktop`，由 xdg-desktop-portal
+   * 提供；worker 在运行时 dlopen `libpipewire-0.3.so.0`，dpkg-shlibdeps 看不到这条依赖。
+   * 缺了只有 Wayland 下的这两项不可用，X11 与语义路径不受影响，因此是 Recommends 不是 Depends。
+   * resolute 的库包是 `libpipewire-0.3-0t64`，Provides `libpipewire-0.3-0`；写成二选一，包名
+   * 不带 t64 的发行版按后一项解析。
+   *
+   * 不推荐 portal 后端（`xdg-desktop-portal-gnome | xdg-desktop-portal-kde`）：GNOME 与 KDE 桌面
+   * 自带各自的后端；其他桌面上 apt 按缺省装推荐包时会装第一项，连同 gnome-shell、nautilus 共
+   * 579 个包（2026-09-26，resolute，以空 dpkg 状态模拟）。
+   */
+  test('deb 推荐 Wayland 取图与输入要的 portal 与 libpipewire', () => {
+    const config = JSON.parse(
+      readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+    ) as { bundle: { linux?: { deb?: { recommends?: string[] } } } }
+
+    expect(config.bundle.linux?.deb?.recommends).toEqual([
+      'libpipewire-0.3-0t64 | libpipewire-0.3-0',
+      'xdg-desktop-portal',
+    ])
+  })
+
+  /**
    * linuxdeploy 给 AppDir 里每个 ELF 加 RUNPATH。它自带的 patchelf 改过的 bun 单文件程序 `qy`
    * 启动即段错误，打包也在 gtk 插件对它调用 ldd 时中止；系统的 patchelf 改过的正常运行。
    * `PATCHELF` 指向 setup-build 用 apt 装的那一份。
