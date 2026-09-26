@@ -74,6 +74,13 @@ export interface BrowserTabSnapshot {
 }
 
 /**
+ * 页显示在哪里。`embedded` = 嵌在主窗口的面板里（Windows 的 WebView2 子视图）；
+ * `window` = 在浏览器自己的窗口里（macOS 与 Linux 拉起的 Chrome / Edge / Chromium）。
+ * 由宿主的引擎决定，同一个宿主进程里不变。
+ */
+export type BrowserPresentation = 'embedded' | 'window'
+
+/**
  * 宿主注册帧。连接建立后宿主先发这一帧，服务端据此接受这条连接。
  *
  * `connectionEpoch` 由宿主每次连接自增：跨重连的旧请求与旧结果按它作废。
@@ -84,6 +91,7 @@ export interface HostReadyFrame {
   connectionEpoch: number
   /** 宿主所在的操作系统：`windows` / `macos` / `linux`。 */
   platform: string
+  presentation: BrowserPresentation
   /**
    * 浏览器运行时完整版本：Windows 为 WebView2 Runtime，由原生 API 取得；macOS 与 Linux
    * 为宿主拉起的 Chrome / Edge / Chromium，由它的调试端点报出。

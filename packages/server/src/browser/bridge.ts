@@ -37,6 +37,7 @@ export interface NativeBrowserHost {
   hostInstanceId: string
   connectionEpoch: number
   platform: string
+  presentation: HostReadyFrame['presentation']
   runtimeVersion: string
   debugPort: number
 }
@@ -217,12 +218,14 @@ export class BrowserBridge {
       hostInstanceId: frame.hostInstanceId,
       connectionEpoch: frame.connectionEpoch,
       platform: frame.platform,
+      presentation: frame.presentation,
       runtimeVersion: frame.runtimeVersion,
       debugPort: frame.debugPort,
     }
     this.#tabs = new Map(frame.tabs.map((tab) => [tab.tabId, tab]))
     log.info('browser', '浏览器宿主已连接', {
       platform: frame.platform,
+      presentation: frame.presentation,
       runtimeVersion: frame.runtimeVersion,
       epoch: frame.connectionEpoch,
       tabs: frame.tabs.length,
