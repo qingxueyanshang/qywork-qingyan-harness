@@ -126,7 +126,10 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
   }
 }
 
-/** 输入用途到 `input.media[].type` 的对应。 */
+/**
+ * 输入用途到 `input.media[].type` 的对应（万相的取值）。目录的 `inputs.types` 按型号覆盖：
+ * 同一端点上的可灵用另一套类型名，视频的类型还可以由参数 `video_type` 指定。
+ */
 const MEDIA_TYPE: Record<MediaInput['role'], string> = {
   first_frame: 'first_frame',
   last_frame: 'last_frame',
@@ -148,16 +151,19 @@ export class DashScopeVideosAdapter implements MediaAdapter {
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
     let taskId = opts.resumeTaskId
     if (!taskId) {
+      const { video_type: videoType, ...parameters } = req.params
+      const types = { ...MEDIA_TYPE, ...this.spec.inputs.types }
+      if (typeof videoType === 'string') types.video = videoType
       const media = []
       for (const input of req.inputs) {
-        media.push({ type: MEDIA_TYPE[input.role], url: await this.source(input, origin, signal) })
+        media.push({ type: types[input.role], url: await this.source(input, origin, signal) })
       }
       const body = await postJson(
         `${origin}${VIDEO_PATH}`,
         {
           model: this.profile.model,
           input: { prompt: req.prompt, ...(media.length ? { media } : {}) },
-          ...(Object.keys(req.params).length ? { parameters: req.params } : {}),
+          ...(Object.keys(parameters).length ? { parameters } : {}),
         },
         {
           ...auth,

@@ -24,6 +24,7 @@ const MEDIA_KIND_LABEL: Record<MediaKind, string> = {
   openai_videos: '中转 /v1/videos',
   ark_videos: '火山方舟',
   dashscope_videos: '百炼',
+  kling_videos: '可灵',
   openai_speech: 'OpenAI 兼容',
   dashscope_speech: '百炼',
 }
