@@ -41,6 +41,11 @@
       "icons/icon.ico"
     ],
     "externalBin": ["bin/qy", "bin/qy-computer-host"],
+    "linux": {
+      "deb": {
+        "depends": ["at-spi2-core"]
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "11.0"
     },
