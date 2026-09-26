@@ -82,8 +82,9 @@ mod backend {
         Probe, WaitRequest, Watch,
     };
     use crate::protocol::{
-        now_ms, ActionEvidence, ActionSpec, BlockingWindow, Bounds, Dispatch, Image, Observation,
-        Select, ToggleState, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED, TARGET_BLOCKED,
+        now_ms, Access, ActionEvidence, ActionSpec, BlockingWindow, Bounds, Dispatch, Grant, Image,
+        Observation, Select, ToggleState, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED,
+        TARGET_BLOCKED,
     };
     use crate::tree::{matches_target, settle};
 
@@ -125,6 +126,18 @@ mod backend {
             Ok(Self {
                 read_before: RefCell::new(HashSet::new()),
             })
+        }
+
+        /// 辅助功能与屏幕录制两项分开报：前者管读取、动作与键鼠投递，后者只管取图。
+        fn access() -> Access {
+            let mut missing = Vec::new();
+            if !ax::trusted() {
+                missing.push(Grant::Accessibility);
+            }
+            if !ax::screen_capture_allowed() {
+                missing.push(Grant::ScreenRecording);
+            }
+            Access::of(missing, None)
         }
 
         /// AX 没有建连这一步，建连上界原样交回。调用上界设在系统范围元素上；AX 没有读回接口，

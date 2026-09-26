@@ -761,9 +761,11 @@ pub enum Observation {
         backend: &'static str,
         host_id: String,
         host_epoch: u64,
-        /// 从 UIA 接口读回来的实际值，不是请求里那两个数的回声。
+        /// 后端实际采用的上界：UIA 从接口读回，AX 与 AT-SPI 没有读回接口，交回设定的值。
         connection_timeout_ms: u32,
         transaction_timeout_ms: u32,
+        /// 握手这一刻操作系统给了哪些前提。之后的变化由 `AccessNotice` 通报。
+        access: Access,
     },
     /// 取消已登记。它不说明目标请求有没有执行过——接收线程查不到那件事，目标请求自己那条
     /// `reason: cancelled` 的回执才是取消生效的证据。
@@ -1178,6 +1180,62 @@ impl InputNotice {
     pub fn of(held: HeldInput) -> Self {
         Self { input: held }
     }
+}
+
+/// 桌面控制要操作系统给、而此刻可能没给的一项前提。每一项只有一个平台的后端会报。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Grant {
+    /// macOS 的辅助功能授权。读树、动作与键鼠投递都归它。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Accessibility,
+    /// macOS 的屏幕录制授权。只管取图。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    ScreenRecording,
+    /// Linux 的会话总线上找得到无障碍总线（`org.a11y.Bus`）。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    AccessibilityBus,
+}
+
+impl Grant {
+    /// 缺了这一项，读取与动作是否一律不可用。
+    const fn gates(self) -> bool {
+        !matches!(self, Self::ScreenRecording)
+    }
+}
+
+/// 操作系统此刻给了哪些前提。握手回执与之后的变化通报都是这个形状。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Access {
+    /// 读取与动作可用：`missing` 里没有缺了就一律不可用的那种前提。
+    pub authorized: bool,
+    /// 没给的前提，顺序由后端固定。界面据此指明去哪里开。`authorized` 为真时也可能不空。
+    pub missing: Vec<Grant>,
+    /// 没给的原因原文。只写进 stderr：它是 OS 的错误文本，协议只带 `missing`。
+    #[serde(skip)]
+    pub detail: Option<String>,
+}
+
+impl Access {
+    pub fn of(missing: Vec<Grant>, detail: Option<String>) -> Self {
+        Self {
+            authorized: !missing.iter().any(|g| g.gates()),
+            missing,
+            detail,
+        }
+    }
+
+    /// 两份事实相同。原因原文不算：同一件事的错误文本可能每次都不一样。
+    pub fn same(&self, other: &Self) -> bool {
+        self.missing == other.missing
+    }
+}
+
+/// 授权变化通报。与回执、输入通报共用 stdout，靠 `access` 这一格区分。
+#[derive(Debug, Serialize)]
+pub struct AccessNotice<'a> {
+    pub access: &'a Access,
 }
 
 /// 一批原始输入发出之后的执行事实。
@@ -2511,6 +2569,52 @@ mod tests {
             serde_json::to_value(InputNotice::of(HeldInput::default())).unwrap()["input"],
             json_of(r#"{"buttons":[],"keys":[]}"#)
         );
+    }
+
+    /// 缺辅助功能或无障碍总线即不可用；只缺屏幕录制时读取与动作照常可用。
+    #[test]
+    fn only_the_gating_grants_withhold_authorization() {
+        assert!(Access::of(Vec::new(), None).authorized);
+        assert!(!Access::of(vec![Grant::Accessibility], None).authorized);
+        assert!(!Access::of(vec![Grant::AccessibilityBus], None).authorized);
+        assert!(Access::of(vec![Grant::ScreenRecording], None).authorized);
+        assert!(!Access::of(vec![Grant::Accessibility, Grant::ScreenRecording], None).authorized);
+    }
+
+    /// 原因原文不进协议，也不算事实变化：同一件事的错误文本每次可能不同。
+    #[test]
+    fn the_access_notice_carries_the_facts_but_not_the_os_text() {
+        let denied = Access::of(vec![Grant::AccessibilityBus], Some("连接会话总线失败".to_owned()));
+        let notice = serde_json::to_value(AccessNotice { access: &denied }).unwrap();
+        assert_eq!(
+            notice,
+            json_of(r#"{"access":{"authorized":false,"missing":["accessibility_bus"]}}"#)
+        );
+        assert!(notice.get("id").is_none() && notice.get("input").is_none());
+        let again = Access::of(vec![Grant::AccessibilityBus], Some("另一段原文".to_owned()));
+        assert!(denied.same(&again));
+        assert!(!denied.same(&Access::of(Vec::new(), None)));
+        let screen = Access::of(vec![Grant::Accessibility, Grant::ScreenRecording], None);
+        assert_eq!(
+            serde_json::to_value(&screen).unwrap()["missing"],
+            json_of(r#"["accessibility","screen_recording"]"#)
+        );
+    }
+
+    /// 握手回执带着那一刻的授权事实：宿主据此发布 `authorized`，不自己判平台。
+    #[test]
+    fn the_ready_observation_carries_the_access_facts() {
+        let ready = serde_json::to_value(Observation::Ready {
+            backend: "linux-atspi",
+            host_id: "h1".to_owned(),
+            host_epoch: 2,
+            connection_timeout_ms: 2000,
+            transaction_timeout_ms: 2000,
+            access: Access::of(Vec::new(), None),
+        })
+        .unwrap();
+        assert_eq!(ready["kind"], "ready");
+        assert_eq!(ready["access"], json_of(r#"{"authorized":true,"missing":[]}"#));
     }
 
     /// 修饰键只有四个名字：`win` 不是别名，写它的请求解析失败。

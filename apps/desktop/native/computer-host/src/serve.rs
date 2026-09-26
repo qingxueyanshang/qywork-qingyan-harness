@@ -16,6 +16,7 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -23,8 +24,12 @@ use std::time::{Duration, Instant};
 use crate::backend::{ActRequest, Attempt, Backend, CaptureRequest, WaitRequest};
 use crate::input;
 use crate::protocol::{
-    admit, now_ms, Binding, HostIdentity, InputNotice, Observation, Op, Request, Response,
+    admit, now_ms, Access, AccessNotice, Binding, HostIdentity, InputNotice, Observation, Op,
+    Request, Response,
 };
+
+/// 还缺前提时多久重查一次授权。用户在系统设置里授权之后，界面在这个间隔内看到变化。
+const ACCESS_POLL: Duration = Duration::from_secs(1);
 
 /// worker 的全部跨线程状态。
 ///
@@ -37,6 +42,8 @@ struct State {
     cancelled: Mutex<HashSet<String>>,
     /// 宿主握手时给的调用上界。等待线程自建后端时要用同一份。
     timeouts: Mutex<Option<(u32, u32)>>,
+    /// 授权监视线程起过没有。一个进程只起一条：通报的基准是上一次发出的那一份。
+    watching: AtomicBool,
 }
 
 /// 跑完这个 worker 进程的一生。stdin 结束即以退出码 0 结束进程，不返回。
@@ -190,6 +197,13 @@ fn handle<B: Backend>(backend: &B, state: &State, req: Request) -> Response {
                     *state.binding.lock().expect("绑定锁") = Some(bound.clone());
                     *state.timeouts.lock().expect("超时锁") = Some((connection, transaction));
                     state.cancelled.lock().expect("取消登记锁").clear();
+                    let access = B::access();
+                    if !access.missing.is_empty() {
+                        report(&access);
+                    }
+                    if !state.watching.swap(true, Ordering::SeqCst) {
+                        watch_access::<B>(access.clone());
+                    }
                     Response::observed(
                         req.id,
                         Observation::Ready {
@@ -198,6 +212,7 @@ fn handle<B: Backend>(backend: &B, state: &State, req: Request) -> Response {
                             host_epoch: bound.host.host_epoch,
                             connection_timeout_ms: connection,
                             transaction_timeout_ms: transaction,
+                            access,
                         },
                     )
                 }
@@ -381,6 +396,42 @@ fn act<B: Backend>(id: String, backend: &B, state: &State, req: &ActRequest<'_>)
 /// 发一行输入状态通报。与回执共用 stdout 的整行写出路径，两者不会在同一行里交错。
 fn notify_input(notice: &InputNotice) {
     write_line(serde_json::to_string(notice));
+}
+
+/// 授权事实一有变化就发一行通报，直到前提全部齐备为止。
+///
+/// 只在还缺前提时轮询：它要保证的是用户授权之后不必重启就能用上。前提齐备之后不再查，
+/// 运行中被撤销的授权由每次调用的拒绝原因表达。
+fn watch_access<B: Backend>(first: Access) {
+    if first.missing.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let mut last = first;
+        while !last.missing.is_empty() {
+            std::thread::sleep(ACCESS_POLL);
+            let now = B::access();
+            if !now.same(&last) {
+                report(&now);
+                write_line(serde_json::to_string(&AccessNotice { access: &now }));
+                last = now;
+            }
+        }
+    });
+}
+
+/// 授权事实与没给的原因原文写进 stderr，宿主把它转进应用日志。
+fn report(access: &Access) {
+    match &access.detail {
+        Some(detail) => eprintln!(
+            "授权 authorized={} missing={:?}：{detail}",
+            access.authorized, access.missing
+        ),
+        None => eprintln!(
+            "授权 authorized={} missing={:?}",
+            access.authorized, access.missing
+        ),
+    }
 }
 
 /// 整行一次写出。分两次写会让两个线程的回执在同一行里交错。
