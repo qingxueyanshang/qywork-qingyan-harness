@@ -1238,6 +1238,19 @@ pub struct AccessNotice<'a> {
     pub access: &'a Access,
 }
 
+/// macOS：本进程不是受信任的辅助功能客户端。
+pub const ACCESSIBILITY_NOT_TRUSTED: &str = "accessibility_not_trusted";
+/// Linux：会话里找不到或连不上无障碍总线。
+pub const ACCESSIBILITY_BUS_UNAVAILABLE: &str = "accessibility_bus_unavailable";
+
+/// 这条拒绝原因是不是「操作系统没给前提」。是的话服务循环现查一次授权事实：运行中撤销的
+/// 授权要靠它在下一次调用时报出来。原因码在原文开头，后面可以接 `: 说明`。
+pub fn refused_for_grant(reason: &str) -> bool {
+    [ACCESSIBILITY_NOT_TRUSTED, ACCESSIBILITY_BUS_UNAVAILABLE]
+        .iter()
+        .any(|code| reason.strip_prefix(code).is_some_and(|rest| rest.is_empty() || rest.starts_with(':')))
+}
+
 /// 一批原始输入发出之后的执行事实。
 ///
 /// `SendInput` 的返回值是真的插进输入队列的事件数，**它可能小于请求数**：
@@ -2599,6 +2612,22 @@ mod tests {
             serde_json::to_value(&screen).unwrap()["missing"],
             json_of(r#"["accessibility","screen_recording"]"#)
         );
+    }
+
+    /// 只认原因码本身或「码: 说明」；码只出现在别处、或被接在别的词后面都不算。
+    #[test]
+    fn a_grant_refusal_is_recognised_by_its_leading_code() {
+        assert!(refused_for_grant("accessibility_not_trusted"));
+        assert!(refused_for_grant("accessibility_not_trusted: 系统设置里没有允许"));
+        assert!(refused_for_grant("accessibility_bus_unavailable: 连接会话总线失败"));
+        for other in [
+            "ref_stale: 第 0 层没有下标 3 的子节点",
+            "target_lost: accessibility_bus_unavailable",
+            "accessibility_bus_unavailable_later",
+            "",
+        ] {
+            assert!(!refused_for_grant(other), "{other}");
+        }
     }
 
     /// 握手回执带着那一刻的授权事实：宿主据此发布 `authorized`，不自己判平台。
