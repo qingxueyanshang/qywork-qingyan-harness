@@ -15,8 +15,9 @@ use atspi::proxy::value::ValueProxyBlocking;
 use atspi::{CoordType, Interface, State};
 use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::Connection;
+use zbus::zvariant::OwnedObjectPath;
 
-use super::bus::{dbus, Failure, Obj};
+use super::bus::{self, dbus, Failure, Obj, Reference};
 use super::node::{self, Context, Facts, Fields, Numbers, VALUE_TEXT_LIMIT};
 use crate::protocol::{Bounds, Completeness, Node, Select, REF_STALE};
 use crate::tree::{decode_ref, first_sighting, flatten, Collected};
@@ -24,10 +25,23 @@ use crate::tree::{decode_ref, first_sighting, flatten, Collected};
 /// 注册表的根对象：它的子节点是各应用的根。
 const REGISTRY: &str = "org.a11y.atspi.Registry";
 
-pub fn children(conn: &Connection, obj: &Obj) -> Result<Vec<Obj>, Failure> {
+/// 一个对象的子节点，顺序即回复里的顺序，空引用不计。每一格各自成败：读不出的那一格只丢它
+/// 自己，占着的下标不让给后面的兄弟。
+///
+/// 回复按 `a(so)` 原样取，不要改用 atspi 的 `get_children`：它的引用类型要求总线名是唯一名，
+/// 一格众所周知名就让整条回复解析失败，总线名为空的一格则直接 panic。
+pub fn children(conn: &Connection, obj: &Obj) -> Result<Vec<Result<Obj, Failure>>, Failure> {
     let accessible: AccessibleProxyBlocking = obj.proxy(conn)?;
-    let refs = accessible.get_children().map_err(dbus("取子节点"))?;
-    Ok(refs.iter().filter_map(Obj::from_ref).collect())
+    let refs: Vec<(String, OwnedObjectPath)> = accessible
+        .inner()
+        .call("GetChildren", &())
+        .map_err(dbus("取子节点"))?;
+    Ok(refs
+        .iter()
+        .filter_map(|(name, path)| {
+            Reference::parse(name, path.as_str()).resolve(|name| bus::owner(conn, name))
+        })
+        .collect())
 }
 
 /// 接口上的一项可选读取：应用不应答或对象已经消失照常交出去，其余失败按读不到算。
@@ -157,13 +171,12 @@ pub fn locate(
     let mut obj = root.clone();
     let mut parent: Option<Obj> = None;
     for (depth, index) in expected.path.iter().enumerate() {
-        let kids = children(conn, &obj)?;
-        let Some(child) = kids.get(*index).cloned() else {
+        let Some(child) = children(conn, &obj)?.into_iter().nth(*index) else {
             return Err(Failure::Refused(format!(
                 "{REF_STALE}: 第 {depth} 层没有下标 {index} 的子节点"
             )));
         };
-        parent = Some(std::mem::replace(&mut obj, child));
+        parent = Some(std::mem::replace(&mut obj, child?));
     }
     let facts = facts(conn, &obj, fields)?;
     node::verify(&expected, &obj.key(), &facts).map_err(Failure::Refused)?;
@@ -289,8 +302,9 @@ impl Walk<'_> {
             Err(f) => return self.tolerate(f),
         };
         let own = Context::of(&facts);
-        // 下标照常递增：跳过一个子节点不能让它后面的兄弟换 ref。
-        for (offset, child) in kids.iter().enumerate() {
+        // 下标照常递增：跳过一个子节点不能让它后面的兄弟换 ref。引用读不出的一格与读到一半
+        // 消失的子节点同样处置。
+        for (offset, child) in kids.into_iter().enumerate() {
             if self.visited >= self.bounds.max_nodes {
                 self.mark("max_nodes");
                 break;
@@ -300,7 +314,8 @@ impl Walk<'_> {
                 break;
             }
             path.push(offset);
-            let built = self.visit(child, None, own, path, depth + 1, Some(index));
+            let built =
+                child.and_then(|child| self.visit(&child, None, own, path, depth + 1, Some(index)));
             path.pop();
             if let Err(f) = built {
                 self.tolerate(f)?;
@@ -320,7 +335,15 @@ pub struct App {
 /// 注册表上的全部应用，每个根对象只出现一次。只问注册表与总线守护进程，不经任何应用。
 pub fn apps(conn: &Connection) -> Result<Vec<App>, Failure> {
     let registry = Obj::root_of(REGISTRY);
-    let roots = unique(children(conn, &registry)?);
+    let roots = unique(
+        children(conn, &registry)?
+            .into_iter()
+            .filter_map(|root| {
+                root.map_err(|e| eprintln!("跳过注册表里的一项：{}", e.into_reason()))
+                    .ok()
+            })
+            .collect(),
+    );
     let daemon = DBusProxy::new(conn).map_err(dbus("建总线守护进程代理"))?;
     Ok(roots
         .into_iter()
@@ -367,8 +390,8 @@ pub fn frames<'a>(conn: &Connection, apps: impl IntoIterator<Item = &'a App>) ->
                 continue;
             }
         };
-        for obj in tops {
-            match frame(conn, &obj, app.pid) {
+        for top in tops {
+            match top.and_then(|obj| frame(conn, &obj, app.pid)) {
                 Ok(Some(f)) => out.push(f),
                 Ok(None) => {}
                 Err(e) if e.is_timeout() => {
