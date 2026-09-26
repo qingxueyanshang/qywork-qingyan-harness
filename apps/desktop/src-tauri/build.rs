@@ -14,6 +14,7 @@ const APP_COMMANDS: &[&str] = &[
     "pick_files",
     "save_session_export",
     "reveal_workspace",
+    "desktop_open_settings",
     "remember_workspace",
     "window_minimize",
     "window_toggle_maximize",

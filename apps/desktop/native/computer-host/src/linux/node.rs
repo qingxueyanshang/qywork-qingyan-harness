@@ -65,11 +65,18 @@ impl Context {
 pub const VALUE_TEXT_LIMIT: i32 = 4096;
 
 /// 这一次读取要取哪些可选字段。含义同 Windows 后端：前两项不影响可用动作表。
+///
+/// 后三项由窗口能给出什么决定，见 `super::Reach`。
 #[derive(Debug, Clone, Copy)]
 pub struct Fields {
     pub value: bool,
     pub state: bool,
+    /// 列前台动作，报键盘焦点。
     pub foreground: bool,
+    /// 前台动作里列指针动作。`foreground` 为假时不起作用。
+    pub pointer: bool,
+    /// 节点带包围盒。包围盒不是屏幕坐标的窗口不带：`rect` 与图像几何是同一套坐标。
+    pub rect: bool,
 }
 
 /// 按钮类默认动作的动作名。按优先顺序排。
@@ -261,14 +268,15 @@ pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
     out
 }
 
-/// 这个对象列出的前台动作。调用方只在前台模式开着、且窗口有对应的 X 窗口时要。
+/// 这个对象列出的前台动作。调用方只在前台模式开着、且窗口有对应的 X 窗口时要；`pointer`
+/// 为假时不列指针动作。
 ///
 /// 指针动作只列在有包围盒、此刻显示着的控件上：没有包围盒就指不出落点。键盘动作列在持有
 /// 键盘焦点的控件与窗口根节点上：自绘界面给不出持有焦点的控件，只列前者等于对它关掉整条
 /// 键盘路径。窗口动作只列在窗口根节点上。`path` 为空才是窗口根自己。
-pub fn foreground_offers(facts: &Facts, path: &[usize]) -> Vec<NodeAction> {
+pub fn foreground_offers(facts: &Facts, path: &[usize], pointer: bool) -> Vec<NodeAction> {
     let mut out = Vec::new();
-    if facts.extents.is_some() && facts.states.contains(State::Showing) {
+    if pointer && facts.extents.is_some() && facts.states.contains(State::Showing) {
         for action in ["click", "hover", "drag", "wheel"] {
             out.push(NodeAction::foreground(action));
         }
@@ -385,11 +393,11 @@ pub fn node(facts: &Facts, context: Context, path: &[usize], key: &str, fields: 
         enabled: enabled(states),
         offscreen: !states.contains(State::Showing),
         focused: fields.foreground && states.contains(State::Focused),
-        rect: facts.extents,
+        rect: facts.extents.filter(|_| fields.rect),
         actions: {
             let mut actions = offers(facts, context);
             if fields.foreground {
-                actions.extend(foreground_offers(facts, path));
+                actions.extend(foreground_offers(facts, path, fields.pointer));
             }
             actions
         },
@@ -564,6 +572,8 @@ mod tests {
         value: true,
         state: true,
         foreground: false,
+        pointer: false,
+        rect: true,
     };
 
     fn foreground_names(node: &Node) -> Vec<&'static str> {
@@ -580,6 +590,7 @@ mod tests {
     fn foreground_actions_follow_the_mode_the_focus_and_the_window_root() {
         let on = Fields {
             foreground: true,
+            pointer: true,
             ..FIELDS
         };
         let button = facts(AtspiRole::Button, SHOWN, &[Interface::Action], &["click"]);
@@ -617,6 +628,55 @@ mod tests {
                 "resize_window"
             ]
         );
+    }
+
+    /// Wayland 会话里的 X 窗口：键盘与窗口动作照列，指针动作一个都不列，哪怕控件有包围盒。
+    #[test]
+    fn a_window_without_pointer_reach_lists_keyboard_and_window_actions_only() {
+        let keys_only = Fields {
+            foreground: true,
+            pointer: false,
+            ..FIELDS
+        };
+        let frame = facts(AtspiRole::Frame, SHOWN, &[], &[]);
+        assert_eq!(
+            foreground_names(&node(&frame, Context::default(), &[], KEY, keys_only)),
+            [
+                "type_text",
+                "press_key",
+                "activate",
+                "set_window_state",
+                "close_window",
+                "move_window",
+                "resize_window"
+            ]
+        );
+        let button = facts(AtspiRole::Button, SHOWN, &[Interface::Action], &["click"]);
+        assert!(
+            foreground_names(&node(&button, Context::default(), &[0], KEY, keys_only)).is_empty()
+        );
+    }
+
+    /// 原始失败形状：原生 Wayland 窗口的包围盒以 surface 为原点，按屏幕坐标发布出去，调用方
+    /// 会拿它取景、算拖拽偏移。不发布时节点照常列出，可用动作不变。
+    #[test]
+    fn a_rect_that_is_not_in_screen_coordinates_is_withheld() {
+        let button = facts(AtspiRole::Button, SHOWN, &[Interface::Action], &["click"]);
+        let shown = node(&button, Context::default(), &[0], KEY, FIELDS);
+        assert_eq!(shown.rect, extents(10, 20, 100, 30));
+        let withheld = node(
+            &button,
+            Context::default(),
+            &[0],
+            KEY,
+            Fields {
+                rect: false,
+                ..FIELDS
+            },
+        );
+        assert_eq!(withheld.rect, None);
+        assert_eq!(names(&withheld.actions), ["invoke"]);
+        assert!(!withheld.offscreen);
     }
 
     /// GTK 按钮给 `click`，Qt 按钮给 `Press` 与 `SetFocus`；两者都列成 `invoke`，

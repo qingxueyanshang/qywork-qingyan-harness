@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
-    attainable, classify_action, next_poll, satisfied, ActionEvidence, ActionSpec,
+    attainable, classify_action, next_poll, satisfied, Access, ActionEvidence, ActionSpec,
     BlockingWindow, Bounds, Dispatch, Image, Observation, Seen, Select, Tree, WaitUntil,
 };
 
@@ -23,7 +23,13 @@ pub trait Backend: Sized {
     const NAME: &'static str;
 
     /// 在调用线程上建起这个平台的客户端。
+    ///
+    /// 操作系统没给前提（`access`）不算构造失败：那时握手照样发布就绪，由 `access` 报出缺什么，
+    /// 前提补上之后不必换 worker。
     fn new() -> Result<Self, String>;
+
+    /// 操作系统此刻给了哪些前提。每次调用现查，不建客户端：授权监视线程上没有后端实例。
+    fn access() -> Access;
 
     /// 设定跨进程调用的上界，并把实际生效值读回来。
     ///

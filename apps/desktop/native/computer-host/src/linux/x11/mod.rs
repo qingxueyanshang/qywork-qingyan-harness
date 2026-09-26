@@ -5,11 +5,14 @@
 //! 坐标，即屏幕物理像素。
 
 mod capture;
+mod connect;
 mod keys;
 pub mod sink;
 mod wm;
 
 pub use wm::WmAction;
+
+use connect::open;
 
 use std::cell::{Cell, OnceCell};
 
@@ -167,10 +170,23 @@ impl Display {
         })
     }
 
+    /// X 服务器是 XWayland：它登记了 `XWAYLAND` 扩展。
+    ///
+    /// XWayland 是 Wayland 合成器的一个客户端：原生 Wayland 窗口不在它的窗口树里，
+    /// XTest 指针事件的投递还要看合成器的指针此刻在不在它的某个 surface 上。
+    pub fn xwayland(&self) -> bool {
+        self.conn
+            .query_extension(b"XWAYLAND")
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .is_some_and(|r| r.present)
+    }
+
     /// 窗口管理器管理的顶层窗口，按层叠序从下到上。
     ///
-    /// 清单取 `_NET_CLIENT_LIST_STACKING`。根窗口上没有这一项说明没有遵循 EWMH 的窗口管理器，
-    /// 如实失败：不要改成枚举根窗口的子窗口，那一层在有窗口管理器时全是边框窗口。
+    /// 清单取 `_NET_CLIENT_LIST_STACKING`。根窗口上没有这一项说明没有遵循 EWMH 的窗口管理器
+    /// （WSLg 的 Weston 也不设），如实失败：不要改成枚举根窗口的子窗口，那一层在有窗口管理器
+    /// 时全是边框窗口。
     pub fn clients(&self) -> Result<Vec<Client>, String> {
         let list = self
             .property(
@@ -338,43 +354,6 @@ fn words(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
     bytes
         .chunks_exact(4)
         .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
-}
-
-/// 先按 x11rb 的地址顺序连（文件系统上的套接字、TCP），都失败而显示在本机时再连同名的
-/// 抽象套接字。
-///
-/// 不要删掉第二步：`/tmp/.X11-unix` 不可写的环境里 X 服务器只在抽象命名空间监听（WSL 的
-/// 这个目录是 WSLg 的只读挂载），libxcb 先连抽象套接字，x11rb 0.14 只连文件系统上的那个。
-fn open() -> Result<(RustConnection, usize), String> {
-    x11rb::connect(None).or_else(|first| {
-        abstract_socket()
-            .map_err(|second| format!("连接 X 服务器失败：{first}；抽象套接字：{second}"))
-    })
-}
-
-fn abstract_socket() -> Result<(RustConnection, usize), String> {
-    use std::os::linux::net::SocketAddrExt;
-    use x11rb::reexports::x11rb_protocol::{parse_display, xauth};
-    let parsed = parse_display::parse_display(None).map_err(|e| e.to_string())?;
-    if !parsed.host.is_empty() {
-        return Err("显示不在本机".to_owned());
-    }
-    let name = format!("/tmp/.X11-unix/X{}", parsed.display);
-    let address = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())
-        .map_err(|e| e.to_string())?;
-    let socket =
-        std::os::unix::net::UnixStream::connect_addr(&address).map_err(|e| e.to_string())?;
-    let (stream, (family, peer)) = x11rb::rust_connection::DefaultStream::from_unix_stream(socket)
-        .map_err(|e| e.to_string())?;
-    // 与 x11rb 自己建连时同一个取法：读不到授权信息就不带授权连。
-    let (auth_name, auth_data) = xauth::get_auth(family, &peer, parsed.display)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let screen = usize::from(parsed.screen);
-    RustConnection::connect_to_stream_with_auth_info(stream, screen, auth_name, auth_data)
-        .map(|conn| (conn, screen))
-        .map_err(|e| e.to_string())
 }
 
 /// `WM_CLASS` 是「实例名\0类名\0」，取类名。只有一段时取那一段。

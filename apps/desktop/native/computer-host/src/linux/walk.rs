@@ -317,10 +317,10 @@ pub struct App {
     pub pid: u32,
 }
 
-/// 注册表上的全部应用。只问注册表与总线守护进程，不经任何应用。
+/// 注册表上的全部应用，每个根对象只出现一次。只问注册表与总线守护进程，不经任何应用。
 pub fn apps(conn: &Connection) -> Result<Vec<App>, Failure> {
     let registry = Obj::root_of(REGISTRY);
-    let roots = children(conn, &registry)?;
+    let roots = unique(children(conn, &registry)?);
     let daemon = DBusProxy::new(conn).map_err(dbus("建总线守护进程代理"))?;
     Ok(roots
         .into_iter()
@@ -332,6 +332,16 @@ pub fn apps(conn: &Connection) -> Result<Vec<App>, Failure> {
             App { root, pid }
         })
         .collect())
+}
+
+/// 同一个对象（总线唯一名 + 对象路径）只留第一次出现的那一个，其余顺序不变。
+///
+/// 注册表会把同一个应用列两遍（无障碍总线重启、应用重新注册之后实测如此）。不去重的话它的
+/// 每个 frame 都出现两次：两份同标题同位置的 frame 让窗口关联判成不唯一，窗口清单里同一个
+/// 编号列两遍。
+fn unique(objs: Vec<Obj>) -> Vec<Obj> {
+    let mut seen = HashSet::new();
+    objs.into_iter().filter(|o| seen.insert(o.clone())).collect()
 }
 
 /// 一个应用的顶层 frame。
@@ -412,5 +422,30 @@ mod tests {
             text: "g".to_owned(),
         };
         assert!(optional::<u8>(Err(gone)).is_err());
+    }
+
+    /// 注册表把同一个应用列两遍时只留一个，别的应用与顺序不动；总线名相同而路径不同的是两个对象。
+    #[test]
+    fn a_registry_entry_listed_twice_is_kept_once() {
+        let obj = |bus: &str, path: &str| Obj {
+            bus: bus.to_owned(),
+            path: path.to_owned(),
+        };
+        let root = "/org/a11y/atspi/accessible/root";
+        let listed = vec![
+            obj(":1.4", root),
+            obj(":1.9", root),
+            obj(":1.9", root),
+            obj(":1.4", root),
+            obj(":1.9", "/org/a11y/atspi/accessible/7"),
+        ];
+        assert_eq!(
+            unique(listed),
+            vec![
+                obj(":1.4", root),
+                obj(":1.9", root),
+                obj(":1.9", "/org/a11y/atspi/accessible/7"),
+            ]
+        );
     }
 }

@@ -33,5 +33,6 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn main() {
+    macos::exit_with_parent();
     serve::run::<macos::Ax>()
 }

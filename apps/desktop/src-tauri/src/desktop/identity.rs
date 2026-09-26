@@ -1,8 +1,10 @@
 //! 窗口与进程的身份查询：句柄此刻属于哪个进程、那个进程什么时候启动、可执行文件叫什么。
 //!
 //! 边界：窗口句柄与 pid 都会被 OS 复用，**单独作为长期身份不成立**。派发动作之前要用
-//! 句柄现问一次 pid，再用 pid 现问一次启动时刻，两项都与观察时记下的一致才算还是同一个
-//! 窗口。任一项取不到时返回 `None`，调用方据此拒绝派发，不要回落到只比句柄。
+//! pid 现问一次启动时刻，与观察时记下的一致才算还是同一个进程。任一项取不到时返回
+//! `None`，调用方据此拒绝派发，不要回落到只比句柄。
+//!
+//! 句柄 → pid 只有 Windows 在这里现问：别的平台窗口的归属进程只有 worker 的窗口清单一个来源。
 
 /// 一个进程的身份。`app` 是可执行文件名，界面上「正在操作哪个应用」显示的就是它。
 pub struct ProcessIdentity {
@@ -26,13 +28,6 @@ pub fn window_pid(handle: i64) -> Option<u32> {
         let thread = GetWindowThreadProcessId(hwnd, Some(&mut pid));
         (thread != 0 && pid != 0).then_some(pid)
     }
-}
-
-/// 非 Windows 暂无窗口后端（worker 在这些平台上直接以错误退出），因此认不出任何句柄。
-/// 三端窗口发现随各自的原生后端一起补。
-#[cfg(not(windows))]
-pub fn window_pid(_handle: i64) -> Option<u32> {
-    None
 }
 
 #[cfg(windows)]
@@ -122,12 +117,36 @@ fn parse_btime(stat: &str) -> Option<i64> {
         .ok()
 }
 
-/// macOS 未实现：返回 `None`，窗口因此不进清单。进程启动时刻要经 `sysctl` 的
-/// `kinfo_proc` 读，需要一份手写的 C 结构体布局；布局写错不报错，读出的是无效值。
-/// worker 在 macOS 上没有后端，启动即以明确错误退出。
+/// macOS 的进程启动时刻取 `proc_pidinfo(PROC_PIDTBSDINFO)` 的 `pbi_start_tvsec` /
+/// `pbi_start_tvusec`，可执行文件名取 `proc_pidpath` 的最后一段。
+///
+/// 结构体布局用 `libc` 的定义，不要改成手写 `kinfo_proc`：布局写错不报错，读出的是无效值。
+/// 调用交回的字节数不等于结构体大小即认不出，不拿半个结构体当身份。
 #[cfg(target_os = "macos")]
-pub fn process_identity(_pid: u32) -> Option<ProcessIdentity> {
-    None
+pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    // SAFETY: 缓冲区是一个 `proc_bsdinfo`，长度如实给出。
+    let got =
+        unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size) };
+    if got != size {
+        return None;
+    }
+    // SAFETY: 调用写满了整个结构体；未写的字节也已清零。
+    let info = unsafe { info.assume_init() };
+    let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: 缓冲区长度如实给出，交回的是写入的字节数。
+    let len = unsafe {
+        libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32)
+    };
+    let len = usize::try_from(len).ok().filter(|n| *n > 0)?;
+    let seconds = i64::try_from(info.pbi_start_tvsec).ok()?;
+    let micros = i64::try_from(info.pbi_start_tvusec).ok()?;
+    Some(ProcessIdentity {
+        started_at_ms: seconds * 1_000 + micros / 1_000,
+        app: file_name(&String::from_utf8_lossy(&path[..len]), '/'),
+    })
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
@@ -190,7 +209,7 @@ mod tests {
     }
 
     /// 本进程的身份一定读得到，且两次读到同一个启动时刻——它要能当身份用。
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[test]
     fn this_process_has_a_stable_identity() {
         let pid = std::process::id();
@@ -198,14 +217,17 @@ mod tests {
         let second = process_identity(pid).expect("本进程的身份必须读得到");
         assert_eq!(first.started_at_ms, second.started_at_ms);
         assert!(first.started_at_ms > 1_500_000_000_000, "{}", first.started_at_ms);
+        // 测试可执行文件是 cargo 编出的 `qywork_lib-<哈希>`。
+        assert!(first.app.starts_with("qywork_lib-"), "{}", first.app);
+        #[cfg(windows)]
         assert!(first.app.ends_with(".exe"), "{}", first.app);
     }
 
     /// 不存在的 pid 不能返回一个编造的身份：那会让句柄复用检查永远通过。
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[test]
     fn an_unknown_process_has_no_identity() {
-        assert!(process_identity(0xffff_fff0).is_none());
+        assert!(process_identity(0x3fff_fff0).is_none());
     }
 
     #[cfg(windows)]

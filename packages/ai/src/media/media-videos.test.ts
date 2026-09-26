@@ -1,16 +1,18 @@
 /**
- * 视频生成：三个视频适配器与任务等待。
+ * 视频生成：四个视频适配器与任务等待。
  *
  * 覆盖范围：`media/adapters/dashscope.ts` 的 `DashScopeVideosAdapter`、`media/adapters/ark-videos.ts`、
- * `media/adapters/openai-videos.ts` 实际发出的提交与查询、`media/task.ts` 的终态与可接续的区分，
- * 以及 `media/catalog.ts` 视频模型按 id 兜底时的操作交集。
+ * `media/adapters/openai-videos.ts`、`media/adapters/kling.ts` 实际发出的提交与查询、`media/task.ts` 的终态与可接续的区分，
+ * `media/catalog.ts` 视频模型按 id 兜底时的操作交集与按型号的参数表，以及 `@qywork/core` 的 `defaultMediaKind` 对视频的选择。
  *
  * 起一个本机端点当远端：记下每个请求，查询按预设的状态序列回答。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { defaultMediaKind } from '@qywork/core'
 import { lookupMediaModel } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
+import { validateMediaCall } from './params.ts'
 import { MediaError } from './types.ts'
 
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
@@ -19,6 +21,7 @@ const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
 interface Seen {
   method: string
   path: string
+  search: string
   headers: Record<string, string>
   json?: Record<string, unknown>
 }
@@ -42,7 +45,7 @@ beforeAll(() => {
       req.headers.forEach((v, k) => {
         headers[k] = v
       })
-      const entry: Seen = { method: req.method, path: url.pathname, headers }
+      const entry: Seen = { method: req.method, path: url.pathname, search: url.search, headers }
       if (req.headers.get('content-type')?.includes('json')) {
         entry.json = (await req.json()) as Record<string, unknown>
       }
@@ -190,6 +193,40 @@ describe('dashscope_videos', () => {
     )
     expect(statuses).toEqual(['RUNNING'])
   }, 15_000)
+
+  /** 同一端点上的可灵用另一套素材类型名；视频的用途由 `video_type` 指定，它不作为参数发出。 */
+  test('可灵按目录的类型名放素材，video_type 写进视频那一项', async () => {
+    submit = () => Response.json({ output: { task_id: 'task-k' } })
+    polls = [
+      () =>
+        Response.json({
+          output: { task_status: 'SUCCEEDED', video_url: `${origin()}/files/out.mp4` },
+        }),
+    ]
+    await buildMediaAdapter({
+      kind: 'dashscope_videos',
+      model: 'kling/kling-v3-omni-video-generation',
+      apiKey: 'sk-ds',
+      baseUrl: `${origin()}/compatible-mode/v1`,
+    }).run(
+      {
+        operation: 'video_to_video',
+        prompt: '把视频里的人换成图里的人',
+        inputs: [
+          { role: 'video', bytes: MP4, mime: 'video/mp4', path: '/w/a.mp4' },
+          { role: 'reference', bytes: PNG, mime: 'image/png', path: '/w/b.png' },
+        ],
+        params: { video_type: 'base', mode: 'std' },
+      },
+      opts(),
+    )
+    const post = seen.find((s) => s.method === 'POST')!
+    expect(post.json).toMatchObject({
+      model: 'kling/kling-v3-omni-video-generation',
+      input: { media: [{ type: 'base' }, { type: 'refer' }] },
+    })
+    expect(post.json?.parameters).toEqual({ mode: 'std' })
+  })
 })
 
 describe('ark_videos', () => {
@@ -231,6 +268,123 @@ describe('ark_videos', () => {
       duration: -1,
     })
     expect(seen.some((s) => s.path === '/api/v3/contents/generations/tasks/cgt-1')).toBe(true)
+  })
+})
+
+describe('kling_videos', () => {
+  const adapter = (model: string) =>
+    buildMediaAdapter({ kind: 'kling_videos', model, apiKey: 'kling-key', baseUrl: origin() })
+  const succeeded = (id: string) => () =>
+    Response.json({
+      code: 0,
+      data: [
+        { id, status: 'succeeded', outputs: [{ type: 'video', url: `${origin()}/files/out.mp4` }] },
+      ],
+    })
+
+  test('文生只发 prompt 与 settings，按任务号查询，取 outputs 里的视频', async () => {
+    submit = () => Response.json({ code: 0, data: { id: 'kt-1', status: 'submitted' } })
+    polls = [succeeded('kt-1')]
+    const out = await adapter('kling-3.0').run(
+      {
+        operation: 'text_to_video',
+        prompt: '海浪',
+        inputs: [],
+        params: { resolution: '1080p', duration: 5 },
+      },
+      opts(),
+    )
+    const post = seen.find((s) => s.method === 'POST')!
+    expect(post.path).toBe('/text-to-video/kling-3.0')
+    expect(post.headers.authorization).toBe('Bearer kling-key')
+    expect(post.json).toEqual({ prompt: '海浪', settings: { resolution: '1080p', duration: 5 } })
+    expect(seen.some((s) => s.path === '/tasks' && s.search === '?task_ids=kt-1')).toBe(true)
+    expect(out.files[0]?.bytes).toEqual(MP4)
+  })
+
+  test('首尾帧走 image-to-video，文字与图片进 contents，图片是不带前缀的 base64', async () => {
+    submit = () => Response.json({ code: 0, data: { id: 'kt-2' } })
+    polls = [succeeded('kt-2')]
+    await adapter('kling-3.0').run(
+      {
+        operation: 'first_last_frame',
+        prompt: '花开',
+        inputs: [
+          { role: 'first_frame', bytes: PNG, mime: 'image/png', path: '/w/a.png' },
+          { role: 'last_frame', bytes: PNG, mime: 'image/png', path: '/w/b.png' },
+        ],
+        params: {},
+      },
+      opts(),
+    )
+    const post = seen.find((s) => s.method === 'POST')!
+    const base64 = Buffer.from(PNG).toString('base64')
+    expect(post.path).toBe('/image-to-video/kling-3.0')
+    expect(post.json).toEqual({
+      contents: [
+        { type: 'prompt', text: '花开' },
+        { type: 'first_frame', url: base64 },
+        { type: 'last_frame', url: base64 },
+      ],
+    })
+  })
+
+  test('参考图走 omni-video；远端失败是终态；提交被拒带接口原文', async () => {
+    submit = () => Response.json({ code: 0, data: { id: 'kt-3' } })
+    polls = [
+      () =>
+        Response.json({ code: 0, data: [{ id: 'kt-3', status: 'failed', message: '内容不合规' }] }),
+    ]
+    const failed = await rejection(
+      adapter('kling-3.0-omni').run(
+        {
+          operation: 'reference_to_video',
+          prompt: '图里的猫在跑',
+          inputs: [{ role: 'reference', bytes: PNG, mime: 'image/png', path: '/w/a.png' }],
+          params: { aspect_ratio: '1:1' },
+        },
+        opts(),
+      ),
+    )
+    const post = seen.find((s) => s.method === 'POST')!
+    expect(post.path).toBe('/omni-video/kling-3.0-omni')
+    expect(post.json).toMatchObject({
+      contents: [{ type: 'prompt' }, { type: 'refer_image' }],
+      settings: { aspect_ratio: '1:1' },
+    })
+    expect(failed.message).toContain('内容不合规')
+    expect(failed.pendingTaskId).toBeUndefined()
+
+    submit = () => Response.json({ code: 1201, message: 'model not supported' })
+    const refused = await rejection(
+      adapter('kling-3.0').run(
+        { operation: 'text_to_video', prompt: 'x', inputs: [], params: {} },
+        opts(),
+      ),
+    )
+    expect(refused.message).toContain('model not supported')
+  })
+})
+
+describe('目录与默认协议', () => {
+  test('Seedance 2.0 Fast 的清晰度与时长按它自己的表校验', () => {
+    const spec = lookupMediaModel('doubao-seedance-2-0-fast-260128', 'ark_videos')
+    const none = { images: 0, videos: 0 }
+    expect(validateMediaCall(spec, 'text_to_video', { resolution: '1080p' }, none)).toHaveLength(1)
+    expect(validateMediaCall(spec, 'text_to_video', { duration: 20 }, none)).toHaveLength(1)
+    expect(
+      validateMediaCall(spec, 'text_to_video', { resolution: '720p', duration: 15 }, none),
+    ).toEqual([])
+  })
+
+  test('添加视频模型时按接口地址定协议', () => {
+    expect(defaultMediaKind('video', 'https://api-beijing.klingai.com')).toBe('kling_videos')
+    expect(defaultMediaKind('video', 'https://api-singapore.klingai.com/')).toBe('kling_videos')
+    expect(defaultMediaKind('video', 'https://ark.cn-beijing.volces.com/api/v3')).toBe('ark_videos')
+    expect(
+      defaultMediaKind('video', 'https://ws.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'),
+    ).toBe('dashscope_videos')
+    expect(defaultMediaKind('video', 'https://relay.example.com/v1')).toBe('openai_videos')
   })
 })
 

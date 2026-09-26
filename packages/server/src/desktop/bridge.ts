@@ -20,6 +20,7 @@ import type {
   DesktopAction,
   DesktopBlockingWindow,
   DesktopEventFrame,
+  DesktopGrant,
   DesktopHostReadyFrame,
   DesktopObservation,
   DesktopOp,
@@ -46,6 +47,7 @@ export interface NativeDesktopHost {
   platform: string
   workerReady: boolean
   authorized: boolean
+  missing: DesktopGrant[]
 }
 
 /**
@@ -299,6 +301,7 @@ export class DesktopBridge {
       platform: frame.platform,
       workerReady: frame.workerReady,
       authorized: frame.authorized,
+      missing: frame.missing,
     }
     log.info('desktop', '桌面宿主已连接', {
       platform: frame.platform,
@@ -307,6 +310,7 @@ export class DesktopBridge {
       connectionEpoch: frame.connectionEpoch,
       workerReady: frame.workerReady,
       authorized: frame.authorized,
+      missing: frame.missing,
     })
     this.#announce()
   }
@@ -360,10 +364,21 @@ export class DesktopBridge {
       log.warn('desktop', '认不出的宿主事件', { kind: frame.kind })
       return
     }
-    if (host.workerReady === frame.workerReady && host.authorized === frame.authorized) return
+    if (
+      host.workerReady === frame.workerReady &&
+      host.authorized === frame.authorized &&
+      host.missing.join() === frame.missing.join()
+    ) {
+      return
+    }
     // worker 退出或授权被撤销时，在途的那些调用已经没有人会回执，按已派发收尾。
     if (!frame.workerReady || !frame.authorized) this.#failPending('桌面宿主已不可用')
-    this.#host = { ...host, workerReady: frame.workerReady, authorized: frame.authorized }
+    this.#host = {
+      ...host,
+      workerReady: frame.workerReady,
+      authorized: frame.authorized,
+      missing: frame.missing,
+    }
     this.#announce()
   }
 

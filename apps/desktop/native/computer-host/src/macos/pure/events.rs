@@ -16,7 +16,7 @@
 
 use crate::geometry::ScreenPoint;
 use crate::input::Event;
-use crate::macos::keys::{key_code, modifier_flag};
+use crate::macos::keys::keycode;
 use crate::protocol::MouseButton;
 
 /// `CGEventType` 的取值。
@@ -35,6 +35,20 @@ pub mod kind {
 
 /// 四个修饰键在 `CGEventFlags` 里的位。键盘事件建出来时已有的其余位（小键盘、Fn）不动。
 pub const MODIFIER_MASK: u64 = 0x001E_0000;
+
+/// 修饰键名 → `CGEventFlags` 里对应的那一位。不是修饰键的名字返回 `None`。
+///
+/// 每个键盘事件按此刻按住的修饰键设这几位，见文件头第 2 条。外壳补发抬起只发键码，用不到它，
+/// 所以它不在共用的 `keys.rs` 里。
+fn modifier_flag(name: &str) -> Option<u64> {
+    Some(match name {
+        "shift" => 0x0002_0000,
+        "ctrl" => 0x0004_0000,
+        "alt" => 0x0008_0000,
+        "meta" => 0x0010_0000,
+        _ => return None,
+    })
+}
 
 /// 一个待建的 CGEvent。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -177,7 +191,7 @@ impl Tracker {
                 }
             }
             Event::Key { key, down } => {
-                let code = key_code(key)?;
+                let code = keycode(key)?;
                 if let Some(flag) = modifier_flag(key) {
                     if *down {
                         self.flags |= flag;
@@ -405,21 +419,25 @@ mod tests {
         );
     }
 
-    /// 词表里的主键除了 F21–F24 都有键码，四个修饰键都有键码与标志位：换算表必须覆盖整张词表，
-    /// 缺的只能是 macOS 键盘本来就没有的键。
+    /// 四个修饰键各有一个不同的标志位，都落在 `MODIFIER_MASK` 里；主键没有标志位。键码的覆盖
+    /// 由 `macos::tests` 对整张词表核对。
     #[test]
-    fn every_protocol_key_has_a_key_code_except_f21_to_f24() {
-        let missing: Vec<String> = key_names().filter(|k| key_code(k).is_none()).collect();
-        assert_eq!(missing, ["f21", "f22", "f23", "f24"]);
+    fn every_modifier_has_its_own_flag_inside_the_mask() {
+        let mut all = 0u64;
         for m in [
             Modifier::Ctrl,
             Modifier::Alt,
             Modifier::Shift,
             Modifier::Meta,
         ] {
-            assert!(key_code(m.key_name()).is_some(), "{}", m.key_name());
             let flag = modifier_flag(m.key_name()).expect("修饰键有标志位");
-            assert_eq!(flag & MODIFIER_MASK, flag);
+            assert_eq!(flag & MODIFIER_MASK, flag, "{}", m.key_name());
+            assert_eq!(all & flag, 0, "{} 与别的修饰键共用标志位", m.key_name());
+            all |= flag;
+        }
+        assert_eq!(all, MODIFIER_MASK);
+        for name in key_names() {
+            assert_eq!(modifier_flag(&name), None, "{name}");
         }
     }
 
