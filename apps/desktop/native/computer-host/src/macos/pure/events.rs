@@ -14,9 +14,9 @@
 //! 状态跨批保留：一次动作分几批派发（拖拽逐段移动）时，按住的键与指针位置接着上一批算。
 //! 本模块不调用任何接口。
 
-use super::keys::{key_code, modifier_flag};
 use crate::geometry::ScreenPoint;
 use crate::input::Event;
+use crate::macos::keys::{key_code, modifier_flag};
 use crate::protocol::MouseButton;
 
 /// `CGEventType` 的取值。

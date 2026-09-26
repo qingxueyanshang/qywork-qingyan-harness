@@ -259,7 +259,7 @@ pub fn window_steps(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::macos::node::kind;
+    use crate::macos::pure::node::kind;
 
     /// 每一对现状与目标都排得出写法；已经在目标状态即拒绝，不写任何属性。
     #[test]

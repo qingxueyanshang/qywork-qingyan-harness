@@ -18,10 +18,10 @@ use objc2_core_graphics::{
     CGEventType, CGMouseButton, CGScrollEventUnit,
 };
 
-use super::events::{flags_with, Cg, Tracker};
-use super::keys::key_code;
-use super::screen::Mapping;
 use crate::input::{text_batches, Event, Sink};
+use crate::macos::keys::key_code;
+use crate::macos::pure::events::{flags_with, Cg, Tracker};
+use crate::macos::pure::screen::Mapping;
 
 /// 一个按键事件最多带多少个 UTF-16 码元。单个事件带的文字以 20 个码元为限，超出的部分不保证送达。
 const TEXT_UNITS_PER_EVENT: usize = 20;

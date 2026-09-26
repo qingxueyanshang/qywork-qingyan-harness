@@ -21,18 +21,18 @@
 use std::cell::Cell;
 use std::time::Duration;
 
-use super::associate;
 use super::ax::{self, Element};
 use super::backend::CallWatch;
-use super::facts::{action, action_error, attr, error_name};
-use super::identity::Handle;
-use super::plan::{self, Setting};
-use super::screen::Placed;
 use super::sink::MacSink;
 use super::walk::{self, Root};
 use crate::backend::{confirm, dispatch_call, lands_on_target, settled, Attempt, Outcome};
 use crate::geometry::ScreenPoint;
 use crate::input::{drag_path, key_stroke, wheel_of, Event, Hold, Sink};
+use crate::macos::pure::associate;
+use crate::macos::pure::facts::{action, action_error, attr, error_name};
+use crate::macos::pure::identity::Handle;
+use crate::macos::pure::plan::{self, Setting};
+use crate::macos::pure::screen::Placed;
 use crate::protocol::{
     classify_input, key_name, ActionSpec, Dispatch, Modifier, MouseButton, WindowState,
 };

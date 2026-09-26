@@ -8,15 +8,15 @@ use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::associate::{self, AxSide, CgWindow, Unmatched};
 use super::ax::{self, Element};
-use super::facts::{
+use crate::macos::pure::associate::{self, AxSide, CgWindow, Unmatched};
+use crate::macos::pure::facts::{
     attr, clip_utf16, utf16_slice, wants_value, Facts, Failure, Frame, Value, BATCH, TARGET_LOST,
 };
-use super::identity::{Identities, MAX_IDENTITIES};
-use super::node::{self, kind, Context, Fields};
-use super::plan::Setting;
-use super::screen::{self, Mapping, Placed};
+use crate::macos::pure::identity::{Identities, MAX_IDENTITIES};
+use crate::macos::pure::node::{self, kind, Context, Fields};
+use crate::macos::pure::plan::Setting;
+use crate::macos::pure::screen::{self, Mapping, Placed};
 use crate::protocol::{
     now_ms, Bounds, Completeness, Node, Observation, Select, Text, TextSelection, REF_STALE,
 };
