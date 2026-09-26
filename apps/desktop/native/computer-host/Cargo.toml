@@ -64,8 +64,11 @@ atspi = { version = "0.30", default-features = false, features = ["proxies"] }
 # `blocking-api` 让 atspi 的代理同时生成阻塞版本：worker 是线程模型，没有异步运行时，
 # 不要为它引入第二套调度。
 zbus = { version = "5.5", default-features = false, features = ["async-io", "blocking-api"] }
-# 纯 Rust 的 X11 客户端，只用核心协议。
-x11rb = { version = "0.14", default-features = false }
+# 纯 Rust 的 X11 客户端：核心协议，加 Composite（按窗口取图）、Damage（等被盖住的部分重绘完）
+# 与 XTest（前台键鼠）。
+x11rb = { version = "0.14", default-features = false, features = ["composite", "damage", "xtest"] }
+# PNG 的 DEFLATE 压缩。版本跟 apps/desktop/src-tauri 依赖树里的那份对齐（0.8）。
+miniz_oxide = "0.8"
 
 # macOS 后端：控件树与语义动作经 AX（ApplicationServices），窗口层叠序经 CGWindowList。
 [target.'cfg(target_os = "macos")'.dependencies]

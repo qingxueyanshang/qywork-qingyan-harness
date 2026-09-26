@@ -211,7 +211,7 @@ pub fn enabled(states: StateSet) -> bool {
     states.contains(State::Enabled) || states.contains(State::Sensitive)
 }
 
-/// 这个对象列出的动作。模式缺失的动作不列；前台动作这个后端还没有实现，一律不列。
+/// 这个对象列出的后台动作。模式缺失的动作不列；前台动作由 `foreground_offers` 列。
 pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
     let mut out = Vec::new();
     let click = claim(facts);
@@ -257,6 +257,36 @@ pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
     }
     if text_selectable(facts) {
         out.push(NodeAction::ready("select_text"));
+    }
+    out
+}
+
+/// 这个对象列出的前台动作。调用方只在前台模式开着、且窗口有对应的 X 窗口时要。
+///
+/// 指针动作只列在有包围盒、此刻显示着的控件上：没有包围盒就指不出落点。键盘动作列在持有
+/// 键盘焦点的控件与窗口根节点上：自绘界面给不出持有焦点的控件，只列前者等于对它关掉整条
+/// 键盘路径。窗口动作只列在窗口根节点上。`path` 为空才是窗口根自己。
+pub fn foreground_offers(facts: &Facts, path: &[usize]) -> Vec<NodeAction> {
+    let mut out = Vec::new();
+    if facts.extents.is_some() && facts.states.contains(State::Showing) {
+        for action in ["click", "hover", "drag", "wheel"] {
+            out.push(NodeAction::foreground(action));
+        }
+    }
+    if facts.states.contains(State::Focused) || path.is_empty() {
+        out.push(NodeAction::foreground("type_text"));
+        out.push(NodeAction::foreground("press_key"));
+    }
+    if path.is_empty() {
+        for action in [
+            "activate",
+            "set_window_state",
+            "close_window",
+            "move_window",
+            "resize_window",
+        ] {
+            out.push(NodeAction::foreground(action));
+        }
     }
     out
 }
@@ -343,8 +373,9 @@ pub fn node(facts: &Facts, context: Context, path: &[usize], key: &str, fields: 
             },
         }
     });
+    let id = identity(key);
     Node {
-        reference: encode_ref(path, Some(&check(facts)), &identity(key)),
+        reference: encode_ref(path, Some(&check(facts)), &id),
         parent_ref: None,
         depth: 0,
         role: role_name(facts.role),
@@ -355,7 +386,13 @@ pub fn node(facts: &Facts, context: Context, path: &[usize], key: &str, fields: 
         offscreen: !states.contains(State::Showing),
         focused: fields.foreground && states.contains(State::Focused),
         rect: facts.extents,
-        actions: offers(facts, context),
+        actions: {
+            let mut actions = offers(facts, context);
+            if fields.foreground {
+                actions.extend(foreground_offers(facts, path));
+            }
+            actions
+        },
         range,
         toggle: matches!(click, Some(Click::Toggle(_)))
             .then(|| toggle_state(states).as_str())
@@ -382,7 +419,7 @@ pub fn node(facts: &Facts, context: Context, path: &[usize], key: &str, fields: 
         selection: None,
         scroll,
         text: facts.interfaces.contains(Interface::Text),
-        weak_identity: false,
+        weak_identity: id.is_weak(),
     }
 }
 
@@ -528,6 +565,59 @@ mod tests {
         state: true,
         foreground: false,
     };
+
+    fn foreground_names(node: &Node) -> Vec<&'static str> {
+        node.actions
+            .iter()
+            .filter(|a| a.delivery.contains(&crate::protocol::DELIVERY_FOREGROUND))
+            .map(|a| a.action)
+            .collect()
+    }
+
+    /// 前台模式关着时一个前台动作都不列；开着时指针动作列在显示着的控件上，键盘动作列在
+    /// 持有焦点的控件与窗口根上，窗口动作只列在窗口根上。
+    #[test]
+    fn foreground_actions_follow_the_mode_the_focus_and_the_window_root() {
+        let on = Fields {
+            foreground: true,
+            ..FIELDS
+        };
+        let button = facts(AtspiRole::Button, SHOWN, &[Interface::Action], &["click"]);
+        assert!(
+            foreground_names(&node(&button, Context::default(), &[0, 1], KEY, FIELDS)).is_empty()
+        );
+        assert_eq!(
+            foreground_names(&node(&button, Context::default(), &[0, 1], KEY, on)),
+            ["click", "hover", "drag", "wheel"]
+        );
+        let mut hidden = button.clone();
+        hidden.states.remove(State::Showing);
+        assert!(foreground_names(&node(&hidden, Context::default(), &[0, 1], KEY, on)).is_empty());
+        let mut focused: Vec<State> = SHOWN.to_vec();
+        focused.push(State::Focused);
+        let entry = facts(AtspiRole::Entry, &focused, &[Interface::EditableText], &[]);
+        assert_eq!(
+            foreground_names(&node(&entry, Context::default(), &[0, 2], KEY, on)),
+            ["click", "hover", "drag", "wheel", "type_text", "press_key"]
+        );
+        let frame = facts(AtspiRole::Frame, SHOWN, &[], &[]);
+        assert_eq!(
+            foreground_names(&node(&frame, Context::default(), &[], KEY, on)),
+            [
+                "click",
+                "hover",
+                "drag",
+                "wheel",
+                "type_text",
+                "press_key",
+                "activate",
+                "set_window_state",
+                "close_window",
+                "move_window",
+                "resize_window"
+            ]
+        );
+    }
 
     /// GTK 按钮给 `click`，Qt 按钮给 `Press` 与 `SetFocus`；两者都列成 `invoke`，
     /// `SetFocus` 会移走键盘焦点，不映射成任何动作。

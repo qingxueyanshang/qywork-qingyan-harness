@@ -118,9 +118,10 @@ pub struct Geometry {
 /// 窗口此刻的几何事实，由平台层读出来。代际与几何都由它算。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowFrame {
-    /// `GetWindowRect` 给的窗口矩形。
+    /// 含边框的窗口矩形：Windows 是 `GetWindowRect`，X11 是窗口管理器的外框。
     pub window: ScreenRect,
-    /// DWM 的可见边框。WGC 帧的原点是它，不是 `window`。
+    /// 采集帧的原点所在的矩形，不是 `window`：Windows 是 DWM 的可见边框（WGC 帧），
+    /// X11 是客户区。
     pub visible: ScreenRect,
     pub dpi: u32,
     /// 窗口所在显示器的标识。同一个矩形换到另一台显示器时靠它分得开。
