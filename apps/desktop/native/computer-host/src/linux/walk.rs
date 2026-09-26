@@ -19,7 +19,7 @@ use zbus::blocking::Connection;
 use super::bus::{dbus, Failure, Obj};
 use super::node::{self, Context, Facts, Fields, Numbers, VALUE_TEXT_LIMIT};
 use crate::protocol::{Bounds, Completeness, Node, Select, REF_STALE};
-use crate::tree::{decode_ref, first_sighting, flatten, Collected, Identity};
+use crate::tree::{decode_ref, first_sighting, flatten, Collected};
 
 /// 注册表的根对象：它的子节点是各应用的根。
 const REGISTRY: &str = "org.a11y.atspi.Registry";
@@ -52,8 +52,8 @@ pub fn facts(conn: &Connection, obj: &Obj, fields: Fields) -> Result<Facts, Fail
     let interfaces = accessible.get_interfaces().map_err(dbus("读接口"))?;
     let name = accessible.name().map_err(dbus("读名称"))?;
     // 2.34 之前的 AT-SPI 没有这一项：读不到按空串算，与应用没设置同一个含义。
-    let accessible_id = optional(accessible.accessible_id().map_err(dbus("读稳定标识")))?
-        .unwrap_or_default();
+    let accessible_id =
+        optional(accessible.accessible_id().map_err(dbus("读稳定标识")))?.unwrap_or_default();
     let extents = if interfaces.contains(Interface::Component) {
         let component: ComponentProxyBlocking = obj.proxy(conn)?;
         optional(
@@ -146,17 +146,17 @@ pub struct Located {
     pub parent: Option<Obj>,
 }
 
-/// 从窗口根出发按下标路径重新定位，并核对身份段：对象串与指纹都要对上。
+/// 从窗口根出发按下标路径重新定位，并核对身份段与核对串，见 `node::verify`。
 pub fn locate(
     conn: &Connection,
     root: &Obj,
     reference: &str,
     fields: Fields,
 ) -> Result<Located, Failure> {
-    let (path, expected) = decode_ref(reference).map_err(Failure::Refused)?;
+    let expected = decode_ref(reference).map_err(Failure::Refused)?;
     let mut obj = root.clone();
     let mut parent: Option<Obj> = None;
-    for (depth, index) in path.iter().enumerate() {
+    for (depth, index) in expected.path.iter().enumerate() {
         let kids = children(conn, &obj)?;
         let Some(child) = kids.get(*index).cloned() else {
             return Err(Failure::Refused(format!(
@@ -166,32 +166,18 @@ pub fn locate(
         parent = Some(std::mem::replace(&mut obj, child));
     }
     let facts = facts(conn, &obj, fields)?;
-    let actual = node::identity(&obj.key(), &facts);
-    if actual != expected {
-        return Err(Failure::Refused(format!(
-            "{REF_STALE}: 该位置现在是 {}，ref 里记的是 {}；对象路径与角色、名称、稳定标识都一致才算同一个控件，请重新观察",
-            describe(&actual),
-            describe(&expected)
-        )));
-    }
+    node::verify(&expected, &obj.key(), &facts).map_err(Failure::Refused)?;
     let context = match &parent {
         Some(parent) => context_of(conn, parent)?,
         None => Context::default(),
     };
     Ok(Located {
         obj,
-        path,
+        path: expected.path,
         facts,
         context,
         parent,
     })
-}
-
-fn describe(identity: &Identity) -> String {
-    match identity {
-        Identity::Stable(id) => id.clone(),
-        Identity::Attributes(print) => format!("~{print}"),
-    }
 }
 
 /// 一次遍历的结果。
