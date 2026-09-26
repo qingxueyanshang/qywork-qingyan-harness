@@ -543,8 +543,14 @@ impl Uia {
     /// 身份核对分两种，按 `ref` 里记的那一种判：有 RuntimeId 的比 RuntimeId，没有的比
     /// 角色、名称与稳定标识的指纹。**两种不能互相顶替**——一个原本没有 RuntimeId 的位置
     /// 现在有了，说明那里已经不是同一个控件。
+    ///
+    /// 这个后端交出的 `ref` 不带核对串；带了的不是它交出的，拒绝而不是忽略那一格。
     fn locate(&self, window: i64, reference: &str) -> Result<Located, Failure> {
-        let (path, expected) = decode_ref(reference).map_err(Failure::Refused)?;
+        let parts = decode_ref(reference).map_err(Failure::Refused)?;
+        if parts.check.is_some() {
+            return Err(Failure::Refused(format!("bad_ref: {reference}")));
+        }
+        let (path, expected) = (parts.path, parts.identity);
         let mut element = self.window_element(window, &self.nav_cache)?;
         let mut host = window;
         for (depth, index) in path.iter().enumerate() {
@@ -961,7 +967,7 @@ impl Uia {
 
         let identity = cached_identity(element)?;
         Ok(Node {
-            reference: encode_ref(path, &identity),
+            reference: encode_ref(path, None, &identity),
             parent_ref: None,
             depth: 0,
             role: role_name(control_type.0),

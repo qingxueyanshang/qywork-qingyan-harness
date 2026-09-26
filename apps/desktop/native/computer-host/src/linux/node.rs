@@ -7,8 +7,8 @@
 use atspi::{Interface, InterfaceSet, Role as AtspiRole, State, StateSet};
 
 use crate::geometry::ScreenRect;
-use crate::protocol::{range_state, Node, NodeAction, Role, ScrollState, ToggleState};
-use crate::tree::{encode_ref, fingerprint, Identity};
+use crate::protocol::{range_state, Node, NodeAction, Role, ScrollState, ToggleState, REF_STALE};
+use crate::tree::{encode_ref, fingerprint, Identity, RefParts};
 
 /// 一个对象读到的原始事实。
 #[derive(Debug, Clone)]
@@ -261,13 +261,45 @@ pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
     out
 }
 
-/// 身份段：对象串接角色、名称与稳定标识的指纹。
+/// 身份段：总线唯一名接对象路径。段首不是 `~`，协调器按它给稳定短编号。
 ///
-/// 两样都要对上才算同一个控件：列表行视图会被复用，同一个对象路径换了内容；对象路径在
-/// 对象销毁后也可能再分配给别的对象。段首不是 `~`，协调器按它给稳定短编号。
-pub fn identity(key: &str, facts: &Facts) -> Identity {
-    let print = fingerprint(&role_name(facts.role), &facts.name, &facts.accessible_id);
-    Identity::Stable(format!("{key}@{print}"))
+/// 不要把指纹或名称放进身份段：组合框、标签与列表行的名称随内容变，协调器会把改了内容的
+/// 同一个控件当成删掉一个、新增一个，短编号与差异投递都随之失效。
+pub fn identity(key: &str) -> Identity {
+    Identity::Stable(key.to_owned())
+}
+
+/// 核对串：角色与稳定标识的指纹，写在 `ref` 的 `#` 之前，重新定位时与身份段一起核对。
+///
+/// 对象路径在对象销毁后可能再分配给别的对象，换成的对象通常换了角色。名称不进核对串：
+/// 名称随内容变的控件改了内容仍是同一个控件。
+pub fn check(facts: &Facts) -> String {
+    fingerprint(&role_name(facts.role), "", &facts.accessible_id)
+}
+
+/// 按 `ref` 重新定位到的对象是不是 `ref` 记的那一个：身份段与核对串都要对上。
+pub fn verify(expected: &RefParts, key: &str, facts: &Facts) -> Result<(), String> {
+    let actual = check(facts);
+    if expected.identity != identity(key) {
+        return Err(format!(
+            "{REF_STALE}: 该位置现在是对象 {key}，ref 里记的是 {}，请重新观察",
+            describe(&expected.identity)
+        ));
+    }
+    if expected.check.as_deref() != Some(actual.as_str()) {
+        return Err(format!(
+            "{REF_STALE}: 对象 {key} 的角色或稳定标识已经变了（核对串 {actual}，ref 里记的是 {}），这个对象路径已经给了别的控件，请重新观察",
+            expected.check.as_deref().unwrap_or("缺席")
+        ));
+    }
+    Ok(())
+}
+
+fn describe(identity: &Identity) -> String {
+    match identity {
+        Identity::Stable(id) => id.clone(),
+        Identity::Attributes(print) => format!("~{print}"),
+    }
 }
 
 /// 换算成协议节点。`parent_ref` 与 `depth` 由遍历填。
@@ -311,9 +343,8 @@ pub fn node(facts: &Facts, context: Context, path: &[usize], key: &str, fields: 
             },
         }
     });
-    let identity = identity(key, facts);
     Node {
-        reference: encode_ref(path, &identity),
+        reference: encode_ref(path, Some(&check(facts)), &identity(key)),
         parent_ref: None,
         depth: 0,
         role: role_name(facts.role),
@@ -749,18 +780,64 @@ mod tests {
         );
     }
 
-    /// 身份段含对象串与指纹，名称一变身份就变；段首不是弱身份的 `~`。
+    const KEY: &str = ":1.2/org/a11y/atspi/accessible/7";
+
+    fn reference_of(facts: &Facts) -> String {
+        node(facts, Context::default(), &[0, 3], KEY, FIELDS).reference
+    }
+
+    /// 身份段只有对象串，核对串在 `#` 之前：协调器按 `#` 之后给短编号。
     #[test]
-    fn the_identity_carries_the_object_and_its_fingerprint() {
-        let a = facts(AtspiRole::ListItem, SHOWN, &[], &[]);
-        let mut b = a.clone();
-        b.name = "换了内容".to_owned();
-        let key = ":1.2/org/a11y/atspi/accessible/7";
-        let ia = identity(key, &a);
-        assert_ne!(ia, identity(key, &b));
-        assert!(!ia.is_weak());
-        let reference = node(&a, Context::default(), &[0, 3], key, FIELDS).reference;
-        assert!(reference.starts_with("w.0.3#:1.2/org/a11y/atspi/accessible/7@"));
+    fn the_identity_segment_is_the_object_alone() {
+        let combo = facts(AtspiRole::ComboBox, SHOWN, &[], &[]);
+        let reference = reference_of(&combo);
+        let (head, segment) = reference.split_once('#').expect("ref 带身份段");
+        assert_eq!(segment, KEY);
+        assert!(head.starts_with("w.0.3@"));
+        assert!(!identity(KEY).is_weak());
+    }
+
+    /// 原始失败形状：组合框换了选中项、名称随之从 alpha 变成 beta，身份段与整条 ref 都不变，
+    /// 旧 ref 照样重新定位得上。
+    #[test]
+    fn a_control_whose_name_follows_its_content_keeps_its_ref() {
+        let alpha = Facts {
+            name: "alpha".to_owned(),
+            ..facts(AtspiRole::ComboBox, SHOWN, &[], &[])
+        };
+        let beta = Facts {
+            name: "beta".to_owned(),
+            ..alpha.clone()
+        };
+        assert_eq!(reference_of(&alpha), reference_of(&beta));
+        let old = crate::tree::decode_ref(&reference_of(&alpha)).expect("解得开");
+        assert_eq!(verify(&old, KEY, &beta), Ok(()));
+    }
+
+    /// 同一个对象路径上换成了别的角色或别的稳定标识：对象路径已经给了别的控件，`ref_stale`。
+    #[test]
+    fn a_different_role_or_id_at_the_same_object_is_stale() {
+        let button = facts(AtspiRole::Button, SHOWN, &[], &[]);
+        let old = crate::tree::decode_ref(&reference_of(&button)).expect("解得开");
+        let label = Facts {
+            role: AtspiRole::Label,
+            ..button.clone()
+        };
+        let renamed_id = Facts {
+            accessible_id: "other".to_owned(),
+            ..button.clone()
+        };
+        for changed in [&label, &renamed_id] {
+            let refused = verify(&old, KEY, changed).expect_err("应当拒绝");
+            assert!(refused.starts_with("ref_stale: "), "{refused}");
+        }
+        // 另一个对象（应用重启后唯一名变了）同样拒绝。
+        let restarted =
+            verify(&old, ":1.9/org/a11y/atspi/accessible/7", &button).expect_err("应当拒绝");
+        assert!(restarted.starts_with("ref_stale: "));
+        // 不带核对串的 ref 不是这个后端交出的。
+        let bare = crate::tree::decode_ref(&format!("w.0.3#{KEY}")).expect("解得开");
+        assert!(verify(&bare, KEY, &button).is_err());
     }
 
     /// GTK 3 的中间态复选框去掉了 `enabled` 而留着 `sensitive`，仍然可用。

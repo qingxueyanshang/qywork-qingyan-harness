@@ -60,34 +60,57 @@ pub fn fingerprint(role: &str, name: &str, automation_id: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// `ref` 的编码：`w` 加逐层子节点下标，`#` 后是身份段。
-pub fn encode_ref(path: &[usize], identity: &Identity) -> String {
+/// 解开的 `ref`：下标路径、可选的核对串与身份段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefParts {
+    pub path: Vec<usize>,
+    /// 重新定位时与身份段一起核对的串。只有身份段本身认不出对象复用的后端才带。
+    pub check: Option<String>,
+    pub identity: Identity,
+}
+
+/// `ref` 的编码：`w` 加逐层子节点下标，可选的 `@核对串`，`#` 后是身份段。
+///
+/// 核对串放在 `#` 之前：协调器按 `#` 之后的身份段给短编号，放进身份段的内容一变就换号。
+/// 不带核对串的 `ref` 与这一格加入之前逐字节相同。
+pub fn encode_ref(path: &[usize], check: Option<&str>, identity: &Identity) -> String {
     let mut out = String::from("w");
     for index in path {
         out.push('.');
         out.push_str(&index.to_string());
+    }
+    if let Some(check) = check {
+        out.push('@');
+        out.push_str(check);
     }
     out.push('#');
     out.push_str(&identity.encode());
     out
 }
 
-pub fn decode_ref(reference: &str) -> Result<(Vec<usize>, Identity), String> {
-    let Some((path, identity)) = reference.split_once('#') else {
-        return Err(format!("bad_ref: {reference}"));
+pub fn decode_ref(reference: &str) -> Result<RefParts, String> {
+    let bad = || format!("bad_ref: {reference}");
+    let Some((head, identity)) = reference.split_once('#') else {
+        return Err(bad());
+    };
+    let (path, check) = match head.split_once('@') {
+        Some((_, "")) => return Err(bad()),
+        Some((path, check)) => (path, Some(check.to_owned())),
+        None => (head, None),
     };
     let mut segments = path.split('.');
     if segments.next() != Some("w") {
-        return Err(format!("bad_ref: {reference}"));
+        return Err(bad());
     }
     let mut indexes = Vec::new();
     for segment in segments {
-        let index = segment
-            .parse::<usize>()
-            .map_err(|_| format!("bad_ref: {reference}"))?;
-        indexes.push(index);
+        indexes.push(segment.parse::<usize>().map_err(|_| bad())?);
     }
-    Ok((indexes, Identity::decode(identity)))
+    Ok(RefParts {
+        path: indexes,
+        check,
+        identity: Identity::decode(identity),
+    })
 }
 
 /// 一个节点连同它在前序表里的父节点下标。
@@ -263,25 +286,58 @@ pub(crate) mod tests {
         assert!(got.is_err());
     }
 
+    fn parts(path: Vec<usize>, check: Option<&str>, identity: Identity) -> RefParts {
+        RefParts {
+            path,
+            check: check.map(str::to_owned),
+            identity,
+        }
+    }
+
+    /// 不带核对串的 `ref` 与加入核对串之前逐字节相同：Windows 后端交出的就是这一种。
     #[test]
     fn ref_round_trips_through_encode_and_decode() {
         let strong = Identity::Stable("42.1180674.4.1".to_owned());
-        let encoded = encode_ref(&[0, 3, 1], &strong);
+        let encoded = encode_ref(&[0, 3, 1], None, &strong);
         assert_eq!(encoded, "w.0.3.1#42.1180674.4.1");
-        assert_eq!(decode_ref(&encoded), Ok((vec![0, 3, 1], strong)));
+        assert_eq!(decode_ref(&encoded), Ok(parts(vec![0, 3, 1], None, strong)));
         assert_eq!(
             decode_ref("w#7.1"),
-            Ok((Vec::new(), Identity::Stable("7.1".to_owned())))
+            Ok(parts(Vec::new(), None, Identity::Stable("7.1".to_owned())))
         );
+    }
+
+    /// 核对串在 `#` 之前，身份段因此不随它变；解码把三部分分开交回。
+    #[test]
+    fn a_check_sits_before_the_identity_segment() {
+        let object = Identity::Stable(":1.2/org/a11y/atspi/accessible/7".to_owned());
+        let encoded = encode_ref(&[0, 3], Some("0123456789abcdef"), &object);
+        assert_eq!(encoded, "w.0.3@0123456789abcdef#:1.2/org/a11y/atspi/accessible/7");
+        assert_eq!(
+            decode_ref(&encoded),
+            Ok(parts(vec![0, 3], Some("0123456789abcdef"), object.clone()))
+        );
+        assert_eq!(
+            encode_ref(&[], Some("ab"), &object),
+            "w@ab#:1.2/org/a11y/atspi/accessible/7"
+        );
+        // 身份段里可以有 `@`：只有 `#` 之前的那一个是核对串的分隔符。
+        assert_eq!(
+            decode_ref("w.1#:1.2/a@b"),
+            Ok(parts(vec![1], None, Identity::Stable(":1.2/a@b".to_owned())))
+        );
+        for bad in ["w.0@#x", "x@ab#y", "w.a@ab#y"] {
+            assert!(decode_ref(bad).is_err(), "{bad} 应当解析失败");
+        }
     }
 
     /// 弱身份在 `ref` 里带 `~` 前缀，解码时与稳定身份分得开。
     #[test]
     fn a_weak_identity_survives_the_round_trip_and_stays_distinct() {
         let weak = Identity::Attributes("0123456789abcdef".to_owned());
-        let encoded = encode_ref(&[2], &weak);
+        let encoded = encode_ref(&[2], None, &weak);
         assert_eq!(encoded, "w.2#~0123456789abcdef");
-        assert_eq!(decode_ref(&encoded), Ok((vec![2], weak.clone())));
+        assert_eq!(decode_ref(&encoded), Ok(parts(vec![2], None, weak.clone())));
         // 字面量一样也不算同一种身份：那个位置从没有稳定身份变成有了，就不是同一个控件。
         assert_ne!(weak, Identity::Stable("0123456789abcdef".to_owned()));
         assert!(weak.is_weak());
