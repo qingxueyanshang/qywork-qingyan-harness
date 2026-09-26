@@ -14,6 +14,7 @@
 
 import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
+import { isDashScopeEndpoint } from '@qywork/core'
 import OpenAI from 'openai'
 import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
 import { classifyProviderError, classifyStreamError, ProviderError } from '../errors.ts'
@@ -76,7 +77,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
     this.spec = spec
     this.apiKey = profile.apiKey || 'unset'
     this.baseUrl = normalizeBaseUrl(profile.baseUrl)
-    this.dashScopeMedia = isDashScopeMediaEndpoint(this.baseUrl)
+    this.dashScopeMedia = isDashScopeEndpoint(this.baseUrl)
     this.openCodeSession = isOpenCodeEndpoint(this.baseUrl) ? crypto.randomUUID() : null
     this.client = new OpenAI({
       apiKey: this.apiKey,
@@ -424,20 +425,6 @@ export async function prepareDashScopeMedia(
     }),
   )
   return { ...req, messages }
-}
-
-export function isDashScopeMediaEndpoint(baseUrl: string): boolean {
-  try {
-    const host = new URL(baseUrl).hostname.toLowerCase()
-    return (
-      host === 'dashscope.aliyuncs.com' ||
-      host === 'dashscope-intl.aliyuncs.com' ||
-      host === 'dashscope-us.aliyuncs.com' ||
-      host.endsWith('.maas.aliyuncs.com')
-    )
-  } catch {
-    return false
-  }
 }
 
 export function isOpenCodeEndpoint(baseUrl: string): boolean {

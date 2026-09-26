@@ -33,6 +33,27 @@ export {
 export { classifyProviderError, ProviderError } from './errors.ts'
 // 唯一的 adapter 构造入口
 export { buildAdapter } from './factory.ts'
+// 生成模型：目录（设置页与生成工具共用）、参数校验、唯一的生成适配器构造入口
+export {
+  findMediaModel,
+  lookupMediaModel,
+  type MediaModelSpec,
+  type MediaOperation,
+  type MediaParamSpec,
+  mediaCatalog,
+} from './media/catalog.ts'
+export { buildMediaAdapter } from './media/index.ts'
+export { describeParam, operationLabel, validateMediaCall } from './media/params.ts'
+export {
+  type MediaAdapter,
+  MediaError,
+  type MediaFile,
+  type MediaInput,
+  type MediaProfile,
+  type MediaRequest,
+  type MediaResult,
+  type MediaRunOptions,
+} from './media/types.ts'
 // 能力探测：cli 的 probe 子命令与设置页的「探测」按钮
 export {
   describeProbe,

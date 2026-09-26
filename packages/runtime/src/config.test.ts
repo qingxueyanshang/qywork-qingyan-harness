@@ -15,8 +15,10 @@ import {
   configNotices,
   diagnoseConfig,
   diagnoseRunnable,
+  listMediaModels,
   loadConfig,
   type QyConfig,
+  resolveMediaModel,
   resolveModel,
 } from './config.ts'
 
@@ -976,5 +978,60 @@ describe('出厂默认不预设模型', () => {
   test('没有 active 时 resolveModel 返回 undefined，不去猜一个接口', async () => {
     const fresh = await loadConfig()
     expect(resolveModel(fresh)).toBeUndefined()
+  })
+})
+
+describe('生成模型', () => {
+  const withMedia = (over: Partial<QyConfig> = {}): QyConfig => {
+    const base = cfg()
+    return {
+      ...base,
+      providers: {
+        ...base.providers,
+        qwen: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-qwen',
+          baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+          models: {},
+          media: { 'qwen-image-3.0': { kind: 'dashscope_images' } },
+        },
+      },
+      mediaDefaults: { image: { provider: 'qwen', model: 'qwen-image-3.0' } },
+      ...over,
+    }
+  }
+
+  test('不点名取该类别的默认，带上接口的凭证与地址', () => {
+    const r = resolveMediaModel(withMedia(), 'image')
+    expect(r).toMatchObject({
+      provider: 'qwen',
+      model: 'qwen-image-3.0',
+      kind: 'dashscope_images',
+      output: 'image',
+      apiKey: 'sk-qwen',
+    })
+  })
+
+  /** 点了名就不换：生成按次计费，换一个等于替调用方改了选择。 */
+  test('点名的模型不存在时解析失败，不回落到默认', () => {
+    expect(resolveMediaModel(withMedia(), 'image', { provider: 'qwen', model: '没有' })).toBe(
+      undefined,
+    )
+    expect(resolveMediaModel(withMedia({ mediaDefaults: {} }), 'image')).toBeUndefined()
+  })
+
+  /** 对话解析只看 `models`：生成表里的 id 不会让它解析到那个接口。 */
+  test('对话模型不在生成清单里，对话解析也不看生成表', () => {
+    expect(listMediaModels(withMedia()).map((m) => m.model)).toEqual(['qwen-image-3.0'])
+    expect(resolveModel(withMedia(), 'qwen-image-3.0')?.provider).toBe('ds')
+  })
+
+  test('协议不在词表里、默认指向不存在的模型都拦', () => {
+    const bad = withMedia()
+    bad.providers.qwen!.media = { x: { kind: 'dalle' as never } }
+    const problems = diagnoseConfig(bad)
+    expect(problems.some((p) => p.includes('生成协议 "dalle"'))).toBe(true)
+    expect(problems.some((p) => p.includes('默认生成模型 "qwen / qwen-image-3.0"'))).toBe(true)
+    expect(diagnoseConfig(withMedia())).toEqual([])
   })
 })

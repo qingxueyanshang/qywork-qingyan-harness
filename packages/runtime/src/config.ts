@@ -19,6 +19,11 @@ import {
   EFFORT_ORDER,
   type EffortLevel,
   log,
+  MEDIA_KIND_OUTPUT,
+  MEDIA_KINDS,
+  MEDIA_OUTPUTS,
+  type MediaKind,
+  type MediaOutput,
   type PermissionMode,
   PROVIDER_KINDS,
   type ProviderKind,
@@ -69,6 +74,11 @@ export interface QyConfig {
   providers: Record<string, StoredProvider>
   /** 用户改过的模型参数，键由 `catalogKey` 造。见 `StoredCatalogEntry`。 */
   catalog?: Record<string, StoredCatalogEntry>
+  /**
+   * 各类别的默认生成模型：生成工具不点名模型时用它。与 `active` 同一种指针，指向某个接口的 `media` 表。
+   * 缺某一类就是那一类没有默认；该类别加进第一个模型时由设置页设上。
+   */
+  mediaDefaults?: Partial<Record<MediaOutput, ModelRef>>
   /** 权限模式，默认 auto。 */
   mode?: PermissionMode
   /**
@@ -156,6 +166,19 @@ export interface StoredProvider {
   headers?: Record<string, string>
   /** 键是模型 id。 */
   models: Record<string, StoredModel>
+  /**
+   * 这个接口下的生成模型，键是模型 id。与对话模型共用上面的 key 与地址。
+   *
+   * **不并进 `models`**：输入框模型选择、子 agent 可选清单、`resolveModel` 都把 `models` 当对话模型遍历，
+   * 并进去就得在每一处排除生成模型，漏掉一处，生成模型就会被当成对话模型发请求。
+   */
+  media?: Record<string, StoredMediaModel>
+}
+
+/** 一个生成模型挂在这个接口下的那一格。 */
+export interface StoredMediaModel {
+  /** 走哪种生成协议。添加时按接口地址给默认值（`defaultMediaKind`），之后以这里为准。 */
+  kind: MediaKind
 }
 
 /**
@@ -595,6 +618,73 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
   }
 }
 
+/** 发一次生成请求需要的全部信息。派生值，不落盘。 */
+export interface ResolvedMediaModel {
+  /** 接口名，即 `providers` 的键。 */
+  provider: string
+  model: string
+  kind: MediaKind
+  output: MediaOutput
+  apiKey?: string
+  baseUrl?: string
+  headers?: Record<string, string>
+}
+
+/**
+ * 找到这一次要用的生成模型：点名了按点名的接口与模型取，没点名取该类别的默认。
+ *
+ * 点名的模型不在那个接口的 `media` 表里、或类别对不上，返回 undefined，**不回落到别的模型**：
+ * 调用方点了名，换一个等于替它改了选择，而生成按次计费。
+ */
+export function resolveMediaModel(
+  cfg: QyConfig,
+  output: MediaOutput,
+  ref?: ModelRef,
+): ResolvedMediaModel | undefined {
+  const target = ref ?? cfg.mediaDefaults?.[output]
+  if (!target) return undefined
+  const provider = cfg.providers[target.provider]
+  const stored = provider?.media?.[target.model]
+  if (!provider || !stored || MEDIA_KIND_OUTPUT[stored.kind] !== output) return undefined
+  return {
+    provider: target.provider,
+    model: target.model,
+    kind: stored.kind,
+    output,
+    ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
+    ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
+    ...(provider.headers ? { headers: provider.headers } : {}),
+  }
+}
+
+/** 已配置的一个生成模型。`isDefault` 表示它是该类别的默认。 */
+export interface MediaModelEntry {
+  provider: string
+  model: string
+  kind: MediaKind
+  output: MediaOutput
+  isDefault: boolean
+}
+
+/** 已配置的全部生成模型，按接口在配置里的顺序。 */
+export function listMediaModels(cfg: QyConfig): MediaModelEntry[] {
+  const rows: MediaModelEntry[] = []
+  for (const [provider, p] of Object.entries(cfg.providers)) {
+    for (const [model, m] of Object.entries(p.media ?? {})) {
+      const output = MEDIA_KIND_OUTPUT[m.kind]
+      const d = cfg.mediaDefaults?.[output]
+      rows.push({
+        provider,
+        model,
+        kind: m.kind,
+        output,
+        isDefault: d?.provider === provider && d.model === model,
+      })
+    }
+  }
+  return rows
+}
+
 /**
  * 收集本机所有已知凭证明文，交给起子进程的工具去剥。
  *
@@ -725,6 +815,35 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
             `  在设置 → 模型库里重选，或改 ${configPath()} 里 "catalog" 下的这一格。`,
         )
       }
+    }
+  }
+
+  /*
+   * 生成模型的协议必须在词表里，默认生成模型必须指向存在且类别对得上的那一格。
+   * 前者错了适配器无从分派；后者错了生成工具不点名时解析不出模型，报的却是「没有默认模型」。
+   */
+  for (const [name, p] of Object.entries(cfg.providers)) {
+    for (const [id, m] of Object.entries(p.media ?? {})) {
+      if (!MEDIA_KINDS.includes(m?.kind)) {
+        problems.push(
+          `${name} / ${id} 的生成协议 "${String(m?.kind)}" 不是有效值。\n` +
+            `  可选：${MEDIA_KINDS.join('、')}\n` +
+            `  改 ${configPath()} 里这个接口 "media" 下的这一格。`,
+        )
+      }
+    }
+  }
+  for (const [output, ref] of Object.entries(cfg.mediaDefaults ?? {})) {
+    const stored = ref ? cfg.providers[ref.provider]?.media?.[ref.model] : undefined
+    if (!MEDIA_OUTPUTS.includes(output as MediaOutput)) {
+      problems.push(`默认生成模型的类别 "${output}" 不是有效值。可选：${MEDIA_OUTPUTS.join('、')}`)
+    } else if (!ref || !stored) {
+      problems.push(
+        `默认生成模型 "${ref?.provider} / ${ref?.model}" 不在配置里。\n` +
+          `  改 ${configPath()} 里的 "mediaDefaults"。`,
+      )
+    } else if (MEDIA_KIND_OUTPUT[stored.kind] !== output) {
+      problems.push(`默认生成模型 "${ref.provider} / ${ref.model}" 不属于 ${output} 类别。`)
     }
   }
 

@@ -30,7 +30,17 @@ export {
   type StepId,
   type WorkspaceId,
 } from './domain/ids.ts'
-
+// 生成模型的协议与类别：配置校验、目录、设置页共用
+export {
+  defaultMediaKind,
+  isArkEndpoint,
+  isDashScopeEndpoint,
+  MEDIA_KIND_OUTPUT,
+  MEDIA_KINDS,
+  MEDIA_OUTPUTS,
+  type MediaKind,
+  type MediaOutput,
+} from './domain/media.ts'
 // 领域模型：落库形状与读数口径，几乎每个包都要
 export {
   type Attachment,

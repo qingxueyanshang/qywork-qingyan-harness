@@ -137,6 +137,31 @@ describe('回填', () => {
   })
 
   /**
+   * 默认生成模型与 active 同规则。原始失败形状：界面删掉最后一个图像模型、不再带 `mediaDefaults`，
+   * 服务端按展开合并留下旧默认，校验判它指向已删的模型，保存被 422 挡住，模型删不掉。
+   */
+  test('默认生成模型以客户端为准，没带就删', () => {
+    const base = cfg()
+    const current: QyConfig = {
+      ...base,
+      providers: {
+        ...base.providers,
+        local: {
+          ...base.providers.local!,
+          media: { 'qwen-image-3.0': { kind: 'dashscope_images' } },
+        },
+      },
+      mediaDefaults: { image: { provider: 'local', model: 'qwen-image-3.0' } },
+    }
+    const wire = redactConfig(current)
+    wire.providers.local = { ...wire.providers.local!, media: {} }
+    delete wire.mediaDefaults
+    const out = mergeConfig(current, JSON.parse(JSON.stringify(wire)) as RedactedConfig)
+    expect(out.mediaDefaults).toBeUndefined()
+    expect(out.providers.local?.media).toEqual({})
+  })
+
+  /**
    * **界面认识的字段，比配置里真实存在的字段少。**
    *
    * `apps/web` 够不着 `@qywork/runtime`（层级不允许），所以那边手抄了一份
