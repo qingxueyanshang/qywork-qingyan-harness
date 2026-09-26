@@ -1,14 +1,16 @@
 //! Linux 后端（`Atspi`）：AT-SPI 负责控件树、后台语义动作、读文本与有界等待，X11 负责窗口
-//! 清单、层叠序、几何、取图、前台键鼠与窗口动作（`x11`、`foreground`）。
+//! 清单、层叠序、几何、取图、前台键鼠与窗口动作（`x11`、`foreground`）；Wayland 会话里原生
+//! Wayland 窗口的取图与前台键鼠经 xdg-desktop-portal（`portal`）。
 //!
 //! 六条边界：
 //!
 //! 1. 结构化路径不采集任何图像，也不调用置前台、设焦点或指针接口。前台动作只在前台模式开着
 //!    时列出与执行。
 //! 2. 窗口清单以 X11 的 EWMH 清单为准，AT-SPI frame 按 `associate` 的规则对上 X 窗口；
-//!    对不上的 frame 以负数编号单独列出，只给控件树与后台动作，不给图像与前台动作。
-//!    X11 一侧不可用（连不上 X 服务器，或根窗口上没有 EWMH 清单）时清单里只有这种 frame，
-//!    原生 Wayland 窗口也是这种 frame。
+//!    对不上的 frame 以负数编号单独列出。X11 会话里它们只给控件树与后台动作；Wayland 会话里
+//!    它们（原生 Wayland 窗口，以及没对上的 XWayland 窗口）在用户经系统授权框共享之后另给
+//!    取图与键鼠，见 `portal`。X11 一侧不可用（连不上 X 服务器，或根窗口上没有 EWMH 清单）时
+//!    清单里只有这种 frame。
 //! 3. 能力与坐标可信度按窗口定，不按平台定，规则见 `Reach`。
 //! 4. `ref` 是不透明串：从窗口根 frame 出发的子节点下标路径、`@` 后的核对串（角色与稳定标识的
 //!    指纹），`#` 后的身份段（总线唯一名 + 对象路径）。动作前按路径重新定位并核对两者，
@@ -24,6 +26,7 @@ mod associate;
 mod bus;
 mod foreground;
 mod node;
+mod portal;
 mod text;
 mod walk;
 mod x11;
@@ -60,43 +63,53 @@ const FIRST_READ_LIMIT: Duration = Duration::from_secs(2);
 /// 调用没返回时随回执带回几个顶层窗口。
 const MAX_BLOCKING_WINDOWS: usize = 16;
 
-/// 没有唯一对应 X 窗口的 frame 被要求取图或前台动作时的拒绝原因。后面接会话与 X11 一侧的
-/// 状况，见 `Atspi::frame_only`。
+/// 没有唯一对应 X 窗口的 frame 被要求取图或前台动作时的拒绝原因。后面接 X11 一侧的状况，
+/// 见 `Atspi::frame_only`。
 const FRAME_ONLY: &str =
     "window_unassociated: 这个 frame 没有唯一对应的 X11 窗口，不能取图，也不能做前台动作";
-/// Wayland 会话里 `FRAME_ONLY` 后面接的说明。
-const WAYLAND_FRAME: &str =
-    "Wayland 会话里原生 Wayland 窗口不在 X11 里，它们的取图与前台输入要经合成器授权，当前不提供";
 /// Wayland 会话里的 X 窗口被要求做指针动作时的拒绝原因，理由见 `Reach`。
 const POINTER_UNVERIFIABLE: &str = "pointer_unverifiable: 这是 Wayland 会话里的 X11 窗口，\
      XTest 指针事件落到哪个窗口由合成器决定，X11 一侧核对不了；键盘输入与窗口动作不受这一条限制";
+/// 原生 Wayland 窗口量流时等一帧的上限。动作请求没有自己的采集预算，取与取图相同的量级。
+const MEASURE_BUDGET: Duration = Duration::from_secs(2);
 
-/// 一个窗口此刻能给出什么。按窗口定，由窗口有没有对上 X 窗口与会话类型决定。
+/// 一个窗口此刻能给出什么。按窗口定，由窗口有没有对上 X 窗口、会话类型与 portal 共享决定。
 ///
 /// - `rect`：AT-SPI 包围盒是 X 根窗口坐标，可以作为节点的 `rect` 发布、作为指针落点。对上
 ///   X 窗口的窗口是；没对上的只在 X11 会话里是。Wayland 会话里原生 Wayland 窗口报的是以
 ///   自己 surface 左上角为原点的坐标（含客户端画的阴影），弹出菜单也按这个原点报，与屏幕、
-///   与图像几何都不是同一套坐标。
-/// - `window`：键盘输入与窗口动作。对上 X 窗口即可：键盘的前置条件核对的是窗口管理器维护的
-///   活动窗口与 X 输入焦点，Wayland 会话里由合成器自己的 X 窗口管理器维护。
-/// - `pointer`：对上 X 窗口，且不在 Wayland 会话里。XWayland 投递 XTest 指针事件时还要看
-///   合成器的指针此刻在不在它的某个 surface 上，X11 一侧读不到这一项，也看不见原生 Wayland
-///   窗口，`lands_on_target` 的判据在这里不成立。不要按合成器名或环境放开它：XWayland 是否把
-///   XTest 事件转交合成器取决于合成器启动它的方式，X 协议里没有可核对的标志。
+///   与图像几何都不是同一套坐标；经 portal 共享之后也不发布，按图定位用流自己的坐标。
+/// - `keyboard`：键盘输入。对上 X 窗口即可：前置条件核对的是窗口管理器维护的活动窗口与
+///   X 输入焦点，Wayland 会话里由合成器自己的 X 窗口管理器维护。原生 Wayland 窗口要经
+///   portal 共享、且用户允许了键盘控制。
+/// - `window`：窗口动作。只有对上 X 窗口的窗口有：Wayland 合成器不允许客户端摆放别的窗口。
+/// - `pointer`：指针动作。对上 X 窗口且不在 Wayland 会话里；或原生 Wayland 窗口经 portal
+///   共享、且用户允许了指针控制，那时只接受按图定位的落点。XWayland 投递 XTest 指针事件时
+///   还要看合成器的指针此刻在不在它的某个 surface 上，X11 一侧读不到这一项，也看不见原生
+///   Wayland 窗口，`lands_on_target` 的判据在这里不成立。不要按合成器名或环境放开它：
+///   XWayland 是否把 XTest 事件转交合成器取决于合成器启动它的方式，X 协议里没有可核对的标志。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Reach {
     rect: bool,
+    keyboard: bool,
     window: bool,
     pointer: bool,
 }
 
 impl Reach {
-    /// `associated`：窗口对上了 X 窗口。`x_server`：连得上 X 服务器。
-    fn of(associated: bool, x_server: bool, wayland: bool) -> Self {
+    /// `associated`：窗口对上了 X 窗口。`x_server`：连得上 X 服务器。`shared`：没对上 X 窗口的
+    /// frame 在 Wayland 会话里经 portal 共享的方式。
+    fn of(
+        associated: bool,
+        x_server: bool,
+        wayland: bool,
+        shared: Option<&portal::Coverage>,
+    ) -> Self {
         Self {
             rect: associated || (x_server && !wayland),
+            keyboard: associated || shared.is_some_and(|c| c.keyboard),
             window: associated,
-            pointer: associated && !wayland,
+            pointer: (associated && !wayland) || shared.is_some_and(|c| c.pointer),
         }
     }
 }
@@ -273,6 +286,7 @@ impl Backend for Atspi {
             state: false,
             foreground: false,
             pointer: false,
+            window: false,
             rect: false,
         };
         let located =
@@ -292,6 +306,9 @@ impl Backend for Atspi {
     }
 
     fn capture_image(&self, req: &CaptureRequest<'_>) -> Result<Image, String> {
+        if req.window < 0 && self.wayland {
+            return self.capture_shared(req);
+        }
         let window = self.xid(req.window)?;
         self.display()?.capture(window, req)
     }
@@ -317,6 +334,7 @@ const ALL_FIELDS: Fields = Fields {
     state: true,
     foreground: false,
     pointer: false,
+    window: false,
     rect: false,
 };
 
@@ -386,9 +404,18 @@ impl Atspi {
         self.display()?.clients()
     }
 
-    /// `xid` 缺席即窗口没有对上 X 窗口。
-    fn reach(&self, xid: Option<u32>) -> Reach {
-        Reach::of(xid.is_some(), self.display.is_ok(), self.wayland)
+    /// 读控件树的那个窗口此刻能给出什么。没对上 X 窗口的 frame 在 Wayland 会话里按 portal
+    /// 的共享状态算，只读已有的状态，不触发授权框。
+    fn reach(&self, root: &Root) -> Reach {
+        let shared = (root.xid.is_none() && self.wayland)
+            .then(|| portal::covers(&root.obj.key()))
+            .flatten();
+        Reach::of(
+            root.xid.is_some(),
+            self.display.is_ok(),
+            self.wayland,
+            shared.as_ref(),
+        )
     }
 
     /// 窗口编号对应的 X 窗口号。负数是没有对应 X 窗口的 frame。
@@ -399,16 +426,10 @@ impl Atspi {
         u32::try_from(window).map_err(|_| format!("bad_window: {window} 不是 X11 窗口号"))
     }
 
-    /// 对没有对应 X 窗口的 frame 取图或做前台动作时的拒绝原因，带上会话与 X11 一侧此刻的状况。
-    ///
-    /// 两项成立时都带：一个 frame 是原生 Wayland 窗口，还是因 X11 一侧不可用而没对上的 X 窗口，
-    /// 从 AT-SPI 上分不出来。
+    /// X11 会话里对没有对应 X 窗口的 frame 取图或做前台动作时的拒绝原因，带上 X11 一侧此刻的
+    /// 状况。Wayland 会话里这种 frame 走 `portal`，不到这里。
     fn frame_only(&self) -> String {
         let mut reason = FRAME_ONLY.to_owned();
-        if self.wayland {
-            reason.push('；');
-            reason.push_str(WAYLAND_FRAME);
-        }
         if let Err(x_side) = self.x_clients() {
             reason.push('；');
             reason.push_str(&x_side);
@@ -524,6 +545,9 @@ impl Atspi {
     ///
     /// 按图像坐标的指针动作与不点名控件的键盘输入不经 AT-SPI：没有无障碍树的自绘窗口也做得了。
     fn act_foreground(&self, req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
+        if req.window < 0 && self.wayland {
+            return self.act_shared(req, stop);
+        }
         let window = match self.xid(req.window) {
             Ok(w) => w,
             Err(reason) => return Attempt::Refused(reason),
@@ -533,7 +557,7 @@ impl Atspi {
             Err(reason) => return Attempt::Refused(reason),
         };
         // 在向 X 服务器发任何请求之前拒：指针动作的第一步就是激活目标窗口。
-        if req.action.takes_point() && !self.reach(Some(window)).pointer {
+        if req.action.takes_point() && !Reach::of(true, true, self.wayland, None).pointer {
             return Attempt::Refused(POINTER_UNVERIFIABLE.to_owned());
         }
         // 按图定位的落点先核对窗口几何代际：窗口在采图与派发之间移动过的话，那个坐标指的
@@ -653,6 +677,135 @@ impl Atspi {
         })
     }
 
+    /// 此刻全部没对上 X 窗口的 frame（Wayland 会话里即原生 Wayland 窗口），以及编号 `window`
+    /// 的那一个在其中的下标。
+    fn native_frames(&self, conn: &Connection, window: i64) -> Result<(Vec<Frame>, usize), String> {
+        let clients = self.x_clients().unwrap_or_default();
+        let apps = walk::apps(conn).map_err(Failure::into_reason)?;
+        let frames = walk::frames(conn, &apps);
+        let unclaimed = associate::unclaimed(&x_sides(&clients), &frame_sides(&frames));
+        let frames: Vec<Frame> = frames
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| unclaimed.contains(i))
+            .map(|(_, f)| f)
+            .collect();
+        let at = frames
+            .iter()
+            .position(|f| frame_window(&f.obj.key()) == window)
+            .ok_or_else(|| format!("{TARGET_LOST}: 编号 {window} 的 frame 已经不在"))?;
+        Ok((frames, at))
+    }
+
+    /// 原生 Wayland 窗口的共享授权，没有时按 `portal::grant` 去量流、对应或问用户。交回授权与
+    /// 窗口此刻的 AT-SPI 尺寸。
+    fn shared(
+        &self,
+        frames: &[Frame],
+        target: &Frame,
+        budget: Duration,
+    ) -> Result<(portal::Grant, (i32, i32)), String> {
+        let size = target
+            .rect
+            .map(|r| (r.width, r.height))
+            .ok_or("no_bounds: 读不出这个窗口的尺寸")?;
+        let sizes: Vec<(String, (i32, i32))> = frames
+            .iter()
+            .filter_map(|f| f.rect.map(|r| (f.obj.key(), (r.width, r.height))))
+            .collect();
+        let (_, call) = self
+            .bounds
+            .get()
+            .ok_or("no_handshake: portal 连接在握手之后建立")?;
+        let key = target.obj.key();
+        let want = portal::Want {
+            key: &key,
+            title: &target.title,
+            size,
+            frames: &sizes,
+        };
+        portal::grant(&want, call, budget).map(|grant| (grant, size))
+    }
+
+    /// 取一张原生 Wayland 窗口的图，经 portal 共享的流。
+    fn capture_shared(&self, req: &CaptureRequest<'_>) -> Result<Image, String> {
+        let conn = self.conn()?;
+        let (frames, at) = self.native_frames(&conn, req.window)?;
+        let target = &frames[at];
+        let accessible: AccessibleProxyBlocking =
+            target.obj.proxy(&conn).map_err(Failure::into_reason)?;
+        let states = accessible
+            .get_state()
+            .map_err(bus::dbus("读 frame 状态"))
+            .map_err(Failure::into_reason)?;
+        if states.contains(State::Iconified) {
+            return Err("window_minimized: 窗口已最小化，采不到内容".to_owned());
+        }
+        let (grant, size) = self.shared(&frames, target, req.budget)?;
+        portal::capture(&grant, portal::generation(size, grant.coverage.node), req)
+    }
+
+    /// 原生 Wayland 窗口的前台输入，经 portal。窗口动作合成器不允许，按控件定位的指针动作
+    /// 没有可用的坐标：这类请求在要共享授权之前就拒绝，见 `portal::screen`。
+    fn act_shared(&self, req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
+        if let Err(reason) = portal::screen(req.action, req.point) {
+            return Attempt::Refused(reason);
+        }
+        let conn = match self.conn() {
+            Ok(c) => c,
+            Err(reason) => return Attempt::Refused(reason),
+        };
+        let (frames, at) = match self.native_frames(&conn, req.window) {
+            Ok(found) => found,
+            Err(reason) => return Attempt::Refused(reason),
+        };
+        let target = &frames[at];
+        let (grant, size) = match self.shared(&frames, target, MEASURE_BUDGET) {
+            Ok(shared) => shared,
+            Err(reason) => return Attempt::Refused(reason),
+        };
+        if let Some(expected) = req.expect_generation {
+            let actual = portal::generation(size, grant.coverage.node);
+            if actual != expected {
+                return Attempt::Refused(format!("geometry_changed: {expected} → {actual}"));
+            }
+        }
+        let located = match req.reference.filter(|_| req.action.targets_window()) {
+            Some(reference) => match walk::locate(&conn, &target.obj, reference, ALL_FIELDS) {
+                Ok(l) => Some(l),
+                Err(f) => return Attempt::Refused(f.into_reason()),
+            },
+            None => None,
+        };
+        let state_of = |obj: &bus::Obj, state: State| -> Result<bool, String> {
+            let accessible: AccessibleProxyBlocking =
+                obj.proxy(&conn).map_err(Failure::into_reason)?;
+            let states = accessible
+                .get_state()
+                .map_err(bus::dbus("读状态"))
+                .map_err(Failure::into_reason)?;
+            Ok(states.contains(state))
+        };
+        let active = || state_of(&target.obj, State::Active);
+        let focused = located
+            .as_ref()
+            .map(|l| move || state_of(&l.obj, State::Focused));
+        let focus = focused
+            .as_ref()
+            .map(|f| f as &dyn Fn() -> Result<bool, String>);
+        portal::perform(
+            &portal::Target {
+                grant: &grant,
+                size,
+                active: &active,
+                focus,
+            },
+            req.action,
+            req.point,
+            stop,
+        )
+    }
+
     /// `IsEnabled` 为假时附在「没有对应 frame」后面的说明。
     ///
     /// 只说「可能」：Qt 在根窗口上有 `AT_SPI_BUS` 属性时不看 `IsEnabled` 照样连上总线，
@@ -675,12 +828,14 @@ impl Atspi {
         bounds: Bounds,
         foreground: bool,
     ) -> Result<Tree, Failure> {
-        let reach = self.reach(root.xid);
+        let reach = self.reach(root);
         let fields = Fields {
             value: select.include_value,
             state: select.include_state,
-            foreground: foreground && reach.window,
-            pointer: foreground && reach.pointer,
+            foreground: foreground && reach.keyboard,
+            // 按控件定位的指针动作要有屏幕坐标的包围盒；经 portal 共享的窗口只按图定位。
+            pointer: foreground && reach.pointer && reach.rect,
+            window: foreground && reach.window,
             rect: reach.rect,
         };
         let captured_at = crate::protocol::now_ms();
@@ -882,50 +1037,85 @@ impl Watch for CallWatch<'_> {
 mod tests {
     use super::*;
 
+    const NONE: Reach = Reach {
+        rect: false,
+        keyboard: false,
+        window: false,
+        pointer: false,
+    };
+
+    fn coverage(keyboard: bool, pointer: bool) -> portal::Coverage {
+        portal::Coverage {
+            session: "/s/1".to_owned(),
+            node: 44,
+            size: Some((1280, 800)),
+            keyboard,
+            pointer,
+        }
+    }
+
     /// X11 会话里对上 X 窗口的窗口什么都给；没对上的 frame 只给屏幕坐标的包围盒。
     #[test]
     fn an_x11_session_gives_associated_windows_everything() {
         let all = Reach {
             rect: true,
+            keyboard: true,
             window: true,
             pointer: true,
         };
-        assert_eq!(Reach::of(true, true, false), all);
+        assert_eq!(Reach::of(true, true, false, None), all);
         assert_eq!(
-            Reach::of(false, true, false),
-            Reach {
-                rect: true,
-                window: false,
-                pointer: false,
-            }
+            Reach::of(false, true, false, None),
+            Reach { rect: true, ..NONE }
         );
     }
 
-    /// 原始失败形状：Wayland 会话里原生 Wayland 窗口的包围盒以它自己的 surface 为原点，
-    /// 不能作为屏幕坐标发布；XWayland 窗口的指针落点核对不了，只留键盘与窗口动作。
+    /// Wayland 会话里原生 Wayland 窗口的包围盒以它自己的 surface 为原点，不能作为屏幕坐标
+    /// 发布；XWayland 窗口的指针落点核对不了，只留键盘与窗口动作。
     #[test]
     fn a_wayland_session_withholds_native_rects_and_xwayland_pointers() {
-        let none = Reach {
-            rect: false,
-            window: false,
-            pointer: false,
-        };
-        assert_eq!(Reach::of(false, true, true), none);
+        assert_eq!(Reach::of(false, true, true, None), NONE);
         assert_eq!(
-            Reach::of(true, true, true),
+            Reach::of(true, true, true, None),
             Reach {
                 rect: true,
+                keyboard: true,
                 window: true,
                 pointer: false,
             }
         );
     }
 
+    /// 原始失败形状：原生 Wayland 窗口没有取图与键鼠。经 portal 共享之后给键盘与按图定位的
+    /// 指针，按用户允许的设备分别给；包围盒与窗口动作仍不给。
+    #[test]
+    fn a_shared_wayland_window_gains_input_but_no_rect_or_window_actions() {
+        assert_eq!(
+            Reach::of(false, false, true, Some(&coverage(true, true))),
+            Reach {
+                keyboard: true,
+                pointer: true,
+                ..NONE
+            }
+        );
+        assert_eq!(
+            Reach::of(false, true, true, Some(&coverage(false, true))),
+            Reach {
+                pointer: true,
+                ..NONE
+            }
+        );
+        assert_eq!(
+            Reach::of(false, false, true, Some(&coverage(false, false))),
+            NONE
+        );
+    }
+
     /// 连不上 X 服务器时没有屏幕坐标系，包围盒一律不发布。
     #[test]
     fn without_an_x_server_no_rect_is_published() {
-        assert!(!Reach::of(false, false, false).rect);
-        assert!(!Reach::of(false, false, true).rect);
+        assert!(!Reach::of(false, false, false, None).rect);
+        assert!(!Reach::of(false, false, true, None).rect);
     }
 
     #[test]

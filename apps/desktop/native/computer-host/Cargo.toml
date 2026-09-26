@@ -72,6 +72,9 @@ x11rb = { version = "0.14", default-features = false, features = ["composite", "
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 # PNG 的 DEFLATE 压缩。版本跟 apps/desktop/src-tauri 依赖树里的那份对齐（0.8）。
 miniz_oxide = "0.8"
+# Wayland 取图：运行时 dlopen libpipewire-0.3，构建不要它的头文件与链接库，没装它的系统上
+# worker 照常启动。`dlopen` / `dlsym` 与 `timespec` 经这个 crate 取。
+libc = { version = "0.2", default-features = false }
 
 # macOS 后端：控件树、语义动作与窗口动作经 AX（ApplicationServices），窗口层叠序、显示器与
 # 前台键鼠经 CoreGraphics，取图经 ScreenCaptureKit。

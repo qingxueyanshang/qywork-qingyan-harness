@@ -6,7 +6,7 @@
 
 mod capture;
 mod connect;
-mod keys;
+pub(in crate::linux) mod keys;
 pub mod sink;
 mod wm;
 
