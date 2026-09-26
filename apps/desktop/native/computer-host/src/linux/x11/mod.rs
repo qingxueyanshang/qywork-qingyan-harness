@@ -1,12 +1,24 @@
-//! X11 一侧的窗口事实：EWMH 窗口清单与层叠序、标题、进程号、类名，以及客户区与外框矩形。
+//! X11 一侧：EWMH 窗口清单与层叠序、标题、进程号、类名、客户区与外框矩形，以及取图
+//! （`capture`）、前台输入（`sink`）与窗口管理器请求（`wm`）。
 //!
-//! 全是本机 X 服务器的往返调用，不经过任何应用，目标应用卡死时照常应答。
+//! 全是本机 X 服务器的往返调用，不经过任何应用，目标应用卡死时照常应答。坐标一律是根窗口
+//! 坐标，即屏幕物理像素。
+
+mod capture;
+mod keys;
+mod png;
+pub mod sink;
+mod wm;
+
+pub use wm::WmAction;
+
+use std::cell::{Cell, OnceCell};
 
 use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, MapState, Window};
 use x11rb::rust_connection::RustConnection;
 
-use crate::geometry::{fully_covered, ScreenRect};
+use crate::geometry::{fully_covered, ScreenRect, WindowFrame};
 
 /// 按名字取的 atom。只在建连时取一次。
 struct Atoms {
@@ -16,6 +28,31 @@ struct Atoms {
     net_wm_state: u32,
     net_wm_state_hidden: u32,
     utf8_string: u32,
+    net_active_window: u32,
+    net_wm_state_maximized_vert: u32,
+    net_wm_state_maximized_horz: u32,
+    net_moveresize_window: u32,
+    net_close_window: u32,
+    net_wm_allowed_actions: u32,
+    net_wm_action_minimize: u32,
+    net_wm_action_maximize_horz: u32,
+    net_wm_action_maximize_vert: u32,
+    net_wm_action_move: u32,
+    net_wm_action_resize: u32,
+    net_wm_action_close: u32,
+    wm_change_state: u32,
+    wm_protocols: u32,
+    net_wm_ping: u32,
+}
+
+/// 一个窗口在根窗口下的那一层祖先：有重设父窗口的窗口管理器时是它的外框窗口，
+/// 没有时是窗口自己。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Top {
+    pub window: Window,
+    /// 含 X 边框宽度的外框矩形。
+    pub outer: ScreenRect,
+    pub border: i32,
 }
 
 /// 一个被窗口管理器管理的顶层窗口。
@@ -29,17 +66,30 @@ pub struct Client {
     pub class_name: String,
     /// 客户区的屏幕矩形。窗口已销毁或未映射时读不到。
     pub client: Option<ScreenRect>,
-    /// 含窗口管理器边框的外框矩形：客户区在根窗口下的那一层祖先窗口。
-    pub outer: Option<ScreenRect>,
+    /// 根窗口下的那一层祖先。
+    pub top: Option<Top>,
     /// 最小化，或未映射。
     pub hidden: bool,
+}
+
+impl Client {
+    /// 含窗口管理器边框的外框矩形。
+    pub fn outer(&self) -> Option<ScreenRect> {
+        self.top.map(|t| t.outer)
+    }
 }
 
 pub struct Display {
     conn: RustConnection,
     root: Window,
+    /// `DISPLAY` 里的屏幕号。
+    screen_number: usize,
     screen: ScreenRect,
     atoms: Atoms,
+    /// 取图要用的扩展协商结果。第一次取图时协商。
+    extensions: OnceCell<Result<(), String>>,
+    /// 下一次 `_NET_WM_PING` 带的标记，见 `Display::ping`。
+    ping_token: Cell<u32>,
 }
 
 impl Display {
@@ -58,26 +108,63 @@ impl Display {
             width: i32::from(screen.width_in_pixels),
             height: i32::from(screen.height_in_pixels),
         };
-        let intern = |name: &[u8]| -> Result<u32, String> {
-            conn.intern_atom(false, name)
-                .map_err(|e| e.to_string())
-                .and_then(|c| c.reply().map_err(|e| e.to_string()))
-                .map(|r| r.atom)
-                .map_err(|e| format!("取 atom {} 失败：{e}", String::from_utf8_lossy(name)))
-        };
-        let atoms = Atoms {
-            client_list_stacking: intern(b"_NET_CLIENT_LIST_STACKING")?,
-            net_wm_name: intern(b"_NET_WM_NAME")?,
-            net_wm_pid: intern(b"_NET_WM_PID")?,
-            net_wm_state: intern(b"_NET_WM_STATE")?,
-            net_wm_state_hidden: intern(b"_NET_WM_STATE_HIDDEN")?,
-            utf8_string: intern(b"UTF8_STRING")?,
-        };
+        let [client_list_stacking, net_wm_name, net_wm_pid, net_wm_state, net_wm_state_hidden, utf8_string, net_active_window, net_wm_state_maximized_vert, net_wm_state_maximized_horz, net_moveresize_window, net_close_window, net_wm_allowed_actions, net_wm_action_minimize, net_wm_action_maximize_horz, net_wm_action_maximize_vert, net_wm_action_move, net_wm_action_resize, net_wm_action_close, wm_change_state, wm_protocols, net_wm_ping] =
+            intern(
+                &conn,
+                [
+                    b"_NET_CLIENT_LIST_STACKING",
+                    b"_NET_WM_NAME",
+                    b"_NET_WM_PID",
+                    b"_NET_WM_STATE",
+                    b"_NET_WM_STATE_HIDDEN",
+                    b"UTF8_STRING",
+                    b"_NET_ACTIVE_WINDOW",
+                    b"_NET_WM_STATE_MAXIMIZED_VERT",
+                    b"_NET_WM_STATE_MAXIMIZED_HORZ",
+                    b"_NET_MOVERESIZE_WINDOW",
+                    b"_NET_CLOSE_WINDOW",
+                    b"_NET_WM_ALLOWED_ACTIONS",
+                    b"_NET_WM_ACTION_MINIMIZE",
+                    b"_NET_WM_ACTION_MAXIMIZE_HORZ",
+                    b"_NET_WM_ACTION_MAXIMIZE_VERT",
+                    b"_NET_WM_ACTION_MOVE",
+                    b"_NET_WM_ACTION_RESIZE",
+                    b"_NET_WM_ACTION_CLOSE",
+                    b"WM_CHANGE_STATE",
+                    b"WM_PROTOCOLS",
+                    b"_NET_WM_PING",
+                ],
+            )?;
         Ok(Self {
             conn,
             root,
+            screen_number: number,
             screen: bounds,
-            atoms,
+            atoms: Atoms {
+                client_list_stacking,
+                net_wm_name,
+                net_wm_pid,
+                net_wm_state,
+                net_wm_state_hidden,
+                utf8_string,
+                net_active_window,
+                net_wm_state_maximized_vert,
+                net_wm_state_maximized_horz,
+                net_moveresize_window,
+                net_close_window,
+                net_wm_allowed_actions,
+                net_wm_action_minimize,
+                net_wm_action_maximize_horz,
+                net_wm_action_maximize_vert,
+                net_wm_action_move,
+                net_wm_action_resize,
+                net_wm_action_close,
+                wm_change_state,
+                wm_protocols,
+                net_wm_ping,
+            },
+            extensions: OnceCell::new(),
+            ping_token: Cell::new(1),
         })
     }
 
@@ -93,11 +180,7 @@ impl Display {
                 AtomEnum::WINDOW.into(),
             )
             .ok_or("no_window_manager: 根窗口上没有 _NET_CLIENT_LIST_STACKING")?;
-        let windows: Vec<Window> = list
-            .chunks_exact(4)
-            .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
-            .collect();
-        Ok(windows.into_iter().filter_map(|w| self.client(w)).collect())
+        Ok(words(&list).filter_map(|w| self.client(w)).collect())
     }
 
     /// 一个顶层窗口此刻的事实。窗口已销毁时交回 `None`。
@@ -114,31 +197,21 @@ impl Display {
             .unwrap_or_default();
         let pid = self
             .property(window, self.atoms.net_wm_pid, AtomEnum::CARDINAL.into())
-            .and_then(|b| {
-                b.get(..4)
-                    .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
-            })
+            .and_then(|b| words(&b).next())
             .unwrap_or(0);
         let class_name = self
             .property(window, AtomEnum::WM_CLASS.into(), AtomEnum::STRING.into())
             .map(|b| class_part(&b))
             .unwrap_or_default();
         let hidden = attributes.map_state != MapState::VIEWABLE
-            || self
-                .property(window, self.atoms.net_wm_state, AtomEnum::ATOM.into())
-                .is_some_and(|b| {
-                    b.chunks_exact(4).any(|a| {
-                        u32::from_ne_bytes([a[0], a[1], a[2], a[3]])
-                            == self.atoms.net_wm_state_hidden
-                    })
-                });
+            || self.has_state(window, self.atoms.net_wm_state_hidden);
         Some(Client {
             window,
             title,
             pid,
             class_name,
             client: self.client_rect(window),
-            outer: self.outer_rect(window),
+            top: self.top(window),
             hidden,
         })
     }
@@ -160,27 +233,47 @@ impl Display {
         })
     }
 
-    /// 外框矩形：沿父窗口上溯到根窗口下的那一层，取它的几何（含边框宽度）。
+    /// 根窗口下的那一层祖先与它的外框矩形：沿父窗口上溯到根窗口下的那一层，取它的几何
+    /// （含边框宽度）。
     ///
     /// 不要改成客户区加 `_NET_FRAME_EXTENTS`：不是每个窗口管理器都设它，而父窗口链在任何
     /// 重设父窗口的窗口管理器下都成立。没有窗口管理器重设父窗口时外框就是客户区自己。
-    fn outer_rect(&self, window: Window) -> Option<ScreenRect> {
+    fn top(&self, window: Window) -> Option<Top> {
         let mut current = window;
         for _ in 0..16 {
             let tree = self.conn.query_tree(current).ok()?.reply().ok()?;
             if tree.parent == self.root || tree.parent == x11rb::NONE {
                 let g = self.conn.get_geometry(current).ok()?.reply().ok()?;
-                let border = i32::from(g.border_width) * 2;
-                return Some(ScreenRect {
-                    x: i32::from(g.x),
-                    y: i32::from(g.y),
-                    width: i32::from(g.width) + border,
-                    height: i32::from(g.height) + border,
+                let border = i32::from(g.border_width);
+                return Some(Top {
+                    window: current,
+                    outer: ScreenRect {
+                        x: i32::from(g.x),
+                        y: i32::from(g.y),
+                        width: i32::from(g.width) + border * 2,
+                        height: i32::from(g.height) + border * 2,
+                    },
+                    border,
                 });
             }
             current = tree.parent;
         }
         None
+    }
+
+    /// 窗口此刻的几何事实，采图与按图定位的动作共用这一份。
+    ///
+    /// X11 的坐标就是物理像素、没有按显示器的缩放，DPI 一律按 96 记；显示器标识取屏幕号。
+    pub fn frame(&self, client: &Client) -> Result<WindowFrame, String> {
+        let (Some(top), Some(area)) = (client.top, client.client) else {
+            return Err("target_lost: 读不出窗口几何".to_owned());
+        };
+        Ok(WindowFrame {
+            window: top.outer,
+            visible: area,
+            dpi: 96,
+            monitor: i64::try_from(self.screen_number).unwrap_or(0),
+        })
     }
 
     /// 读一个窗口属性的全部字节。属性缺席、类型不符或窗口已销毁时交回 `None`。
@@ -192,6 +285,12 @@ impl Display {
             .reply()
             .ok()?;
         (reply.type_ == kind && !reply.value.is_empty()).then_some(reply.value)
+    }
+
+    /// `_NET_WM_STATE` 里有没有这一项。
+    fn has_state(&self, window: Window, state: u32) -> bool {
+        self.property(window, self.atoms.net_wm_state, AtomEnum::ATOM.into())
+            .is_some_and(|b| words(&b).any(|a| a == state))
     }
 
     /// 窗口此刻在屏幕上是否一点都看不见：最小化或未映射，或外框与屏幕的交集被层叠序在它
@@ -206,7 +305,7 @@ impl Display {
         if target.hidden {
             return true;
         }
-        let Some(frame) = target.outer.or(target.client) else {
+        let Some(frame) = target.outer().or(target.client) else {
             return false;
         };
         let Some(visible) = frame.intersect(&self.screen) else {
@@ -215,10 +314,31 @@ impl Display {
         let covers: Vec<ScreenRect> = stack[at + 1..]
             .iter()
             .filter(|c| !c.hidden)
-            .filter_map(|c| c.outer.or(c.client))
+            .filter_map(|c| c.outer().or(c.client))
             .collect();
         fully_covered(visible, &covers)
     }
+}
+
+/// 一次往返取回全部 atom：请求先全部发出，再逐个收回执。
+fn intern<const N: usize>(conn: &RustConnection, names: [&[u8]; N]) -> Result<[u32; N], String> {
+    let cookies = names.map(|name| conn.intern_atom(false, name));
+    let mut out = [0u32; N];
+    for ((slot, cookie), name) in out.iter_mut().zip(cookies).zip(names) {
+        *slot = cookie
+            .map_err(|e| e.to_string())
+            .and_then(|c| c.reply().map_err(|e| e.to_string()))
+            .map(|r| r.atom)
+            .map_err(|e| format!("取 atom {} 失败：{e}", String::from_utf8_lossy(name)))?;
+    }
+    Ok(out)
+}
+
+/// 32 位格式的属性值按本机字节序切成字。
+fn words(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
+    bytes
+        .chunks_exact(4)
+        .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 /// 先按 x11rb 的地址顺序连（文件系统上的套接字、TCP），都失败而显示在本机时再连同名的

@@ -442,6 +442,8 @@ export type DesktopImageSource =
    * 画不全的部分在图上是黑的，调用方据此判断这张图能不能当依据。
    */
   | 'print_window'
+  /** X11 的 Composite 扩展。按窗口取，窗口被遮挡或部分在屏幕外也取得到它自己的内容。 */
+  | 'x11_composite'
 
 /** 一次图像采集的结果。 */
 export interface DesktopImageBody {

@@ -1,12 +1,12 @@
 //! Linux 后端（`Atspi`）：AT-SPI 负责控件树、后台语义动作、读文本与有界等待，X11 负责窗口
-//! 清单、层叠序与几何。
+//! 清单、层叠序、几何、取图、前台键鼠与窗口动作（`x11`、`foreground`）。
 //!
 //! 五条边界：
 //!
-//! 1. 结构化路径不采集任何图像，也不调用置前台、设焦点或指针接口。取图、前台键鼠与窗口动作
-//!    这个后端还没有实现：一律以 `unsupported` 拒绝，可用动作表里也不列。
+//! 1. 结构化路径不采集任何图像，也不调用置前台、设焦点或指针接口。前台动作只在前台模式开着
+//!    时列出与执行。
 //! 2. 窗口清单以 X11 的 EWMH 清单为准，AT-SPI frame 按 `associate` 的规则对上 X 窗口；
-//!    对不上的 frame 以负数编号单独列出，只给控件树。
+//!    对不上的 frame 以负数编号单独列出，只给控件树与后台动作，不给图像与前台动作。
 //! 3. `ref` 是不透明串：从窗口根 frame 出发的子节点下标路径、`@` 后的核对串（角色与稳定标识的
 //!    指纹），`#` 后的身份段（总线唯一名 + 对象路径）。动作前按路径重新定位并核对两者，
 //!    不允许拿旧编号操作换过位置、或对象路径已经给了别的控件的那个位置。
@@ -18,6 +18,7 @@
 mod actions;
 mod associate;
 mod bus;
+mod foreground;
 mod node;
 mod text;
 mod walk;
@@ -35,9 +36,10 @@ use zbus::blocking::Connection;
 use crate::backend::{
     wait_loop, ActRequest, Attempt, Backend, CaptureRequest, Probe, WaitRequest, Watch,
 };
+use crate::geometry::ScreenPoint;
 use crate::protocol::{
-    ActionEvidence, BlockingWindow, Bounds, Image, Observation, Select, Tree, Wait, WaitUntil,
-    WindowInfo, NOT_DISPATCHED, TARGET_BLOCKED,
+    ActionEvidence, ActionSpec, BlockingWindow, Bounds, DragTarget, Image, Observation, Select,
+    Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED, TARGET_BLOCKED,
 };
 use crate::tree::{matches_target, settle};
 use associate::{frame_window, FrameSide, Unmatched, XSide};
@@ -52,9 +54,9 @@ const FIRST_READ_LIMIT: Duration = Duration::from_secs(2);
 /// 调用没返回时随回执带回几个顶层窗口。
 const MAX_BLOCKING_WINDOWS: usize = 16;
 
-/// 前台动作的拒绝原因。准入已经要求前台模式开着，走到这里说明模式开着而这个后端没有实现。
-const FOREGROUND_UNSUPPORTED: &str =
-    "unsupported: 前台动作（指针、键盘与窗口动作）在 Linux 后端尚未实现";
+/// 没有唯一对应 X 窗口的 frame 被要求取图或前台动作时的拒绝原因。
+const FRAME_ONLY: &str =
+    "window_unassociated: 这个 frame 没有唯一对应的 X11 窗口，不能取图，也不能做前台动作";
 
 pub struct Atspi {
     display: x11::Display,
@@ -174,15 +176,18 @@ impl Backend for Atspi {
         tree.map(Observation::Tree).map_err(Failure::into_reason)
     }
 
-    /// 执行一个后台动作并按调用方当前观察的范围整份重读。没有派发就不重读。
+    /// 执行一个动作并按调用方当前观察的范围整份重读。没有派发就不重读。
     fn act(
         &self,
         req: &ActRequest<'_>,
-        _stop: &dyn Fn() -> bool,
+        stop: &dyn Fn() -> bool,
     ) -> (Attempt, Result<Observation, String>) {
         let refused = |reason: String| (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned()));
-        if req.action.foreground_only() || req.point.is_some() {
-            return refused(FOREGROUND_UNSUPPORTED.to_owned());
+        if req.action.foreground_only() {
+            return match self.act_foreground(req, stop) {
+                Attempt::Refused(reason) => refused(reason),
+                called => (called, self.reread(req)),
+            };
         }
         let Some(reference) = req.reference else {
             return refused("missing_target: 这个动作只能按控件执行".to_owned());
@@ -206,16 +211,7 @@ impl Backend for Atspi {
             Attempt::Called(outcome) if !outcome.returned => {
                 (Attempt::Called(outcome), Err(TARGET_BLOCKED.to_owned()))
             }
-            called => {
-                let scope = Select {
-                    root: req.root.map(str::to_owned),
-                    ..Select::default()
-                };
-                (
-                    called,
-                    self.read_tree(req.window, &scope, req.bounds, req.foreground),
-                )
-            }
+            called => (called, self.reread(req)),
         }
     }
 
@@ -249,12 +245,8 @@ impl Backend for Atspi {
     }
 
     fn capture_image(&self, req: &CaptureRequest<'_>) -> Result<Image, String> {
-        if req.window < 0 {
-            return Err(
-                "window_unassociated: 这个 frame 没有唯一对应的 X11 窗口，不能取图".to_owned(),
-            );
-        }
-        Err("unsupported: 取图在 Linux 后端尚未实现".to_owned())
+        let window = xid(req.window)?;
+        self.display.capture(window, req)
     }
 
     fn wait(&self, req: &WaitRequest<'_>, stop: &dyn Fn() -> bool) -> Result<Observation, String> {
@@ -286,9 +278,17 @@ fn x_sides(clients: &[x11::Client]) -> Vec<XSide<'_>> {
             title: &c.title,
             pid: c.pid,
             client: c.client,
-            outer: c.outer,
+            outer: c.outer(),
         })
         .collect()
+}
+
+/// 窗口编号对应的 X 窗口号。负数是没有对应 X 窗口的 frame。
+fn xid(window: i64) -> Result<u32, String> {
+    if window < 0 {
+        return Err(FRAME_ONLY.to_owned());
+    }
+    u32::try_from(window).map_err(|_| format!("bad_window: {window} 不是 X11 窗口号"))
 }
 
 fn frame_sides(frames: &[Frame]) -> Vec<FrameSide<'_>> {
@@ -370,6 +370,140 @@ impl Atspi {
         }
     }
 
+    /// 动作之后按调用方当前观察的范围整份重读。
+    fn reread(&self, req: &ActRequest<'_>) -> Result<Observation, String> {
+        let scope = Select {
+            root: req.root.map(str::to_owned),
+            ..Select::default()
+        };
+        self.read_tree(req.window, &scope, req.bounds, req.foreground)
+    }
+
+    /// 前台动作：核对几何代际、重新定位控件、求落点，再交给 `foreground::perform`。
+    ///
+    /// 按图像坐标的指针动作与不点名控件的键盘输入不经 AT-SPI：没有无障碍树的自绘窗口也做得了。
+    fn act_foreground(&self, req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
+        let window = match xid(req.window) {
+            Ok(w) => w,
+            Err(reason) => return Attempt::Refused(reason),
+        };
+        // 按图定位的落点先核对窗口几何代际：窗口在采图与派发之间移动过的话，那个坐标指的
+        // 已经不是同一块界面。
+        if let Some(expected) = req.expect_generation {
+            if let Err(reason) = foreground::check_generation(&self.display, window, expected) {
+                return Attempt::Refused(reason);
+            }
+        }
+        let needs_tree = req.reference.is_some()
+            || matches!(
+                req.action,
+                ActionSpec::Drag {
+                    to: DragTarget::Ref { .. }
+                }
+            );
+        let tree = if needs_tree {
+            match self.conn().and_then(|conn| {
+                self.root(&conn, req.window)
+                    .map(|root| (conn, root))
+                    .map_err(Failure::into_reason)
+            }) {
+                Ok(tree) => Some(tree),
+                Err(reason) => return Attempt::Refused(reason),
+            }
+        } else {
+            None
+        };
+        let located = match (&tree, req.reference) {
+            (Some((conn, root)), Some(reference)) => {
+                match walk::locate(conn, &root.obj, reference, ALL_FIELDS) {
+                    Ok(l) => Some(l),
+                    Err(f) => return Attempt::Refused(f.into_reason()),
+                }
+            }
+            _ => None,
+        };
+        // 窗口动作作用于整个窗口，只接受窗口根节点，与它们只列在根节点上一致。
+        let whole_window = matches!(
+            req.action,
+            ActionSpec::SetWindowState { .. }
+                | ActionSpec::MoveWindow { .. }
+                | ActionSpec::ResizeWindow { .. }
+                | ActionSpec::CloseWindow
+        );
+        if whole_window && located.as_ref().is_some_and(|l| !l.path.is_empty()) {
+            return Attempt::Refused("pattern_missing: 窗口动作只能对窗口根节点执行".to_owned());
+        }
+        let aim = match self.aim(tree.as_ref(), located.as_ref(), req) {
+            Ok(aim) => aim,
+            Err(reason) => return Attempt::Refused(reason),
+        };
+        let focused = |obj: &bus::Obj, conn: &Connection| -> Result<bool, String> {
+            let accessible: AccessibleProxyBlocking =
+                obj.proxy(conn).map_err(Failure::into_reason)?;
+            let states = accessible
+                .get_state()
+                .map_err(bus::dbus("读焦点状态"))
+                .map_err(Failure::into_reason)?;
+            Ok(states.contains(State::Focused))
+        };
+        let check = match (&tree, &located) {
+            (Some((conn, _)), Some(l)) if req.action.targets_window() => {
+                Some(move || focused(&l.obj, conn))
+            }
+            _ => None,
+        };
+        let focus: foreground::Focus<'_> = check
+            .as_ref()
+            .map(|c| c as &dyn Fn() -> Result<bool, String>);
+        foreground::perform(&self.display, window, focus, req.action, aim, stop)
+    }
+
+    /// 指针动作的落点与拖拽终点。非指针动作两项都缺席。
+    ///
+    /// 落点两种来源：调用方给的屏幕坐标，或控件此刻的包围盒中心。**包围盒读的是这一次重新
+    /// 定位拿到的那一份**，不是观察时记下的。按控件定位时控件所在的顶层窗口取目标窗口本身：
+    /// `ref` 从目标窗口的 frame 出发。
+    fn aim(
+        &self,
+        tree: Option<&(Connection, Root)>,
+        located: Option<&Located>,
+        req: &ActRequest<'_>,
+    ) -> Result<foreground::Aim, String> {
+        if !req.action.takes_point() {
+            return Ok(foreground::Aim::default());
+        }
+        let center = |l: &Located| {
+            l.facts
+                .extents
+                .map(|r| r.center())
+                .ok_or_else(|| "no_bounds: 这个控件没有可视位置".to_owned())
+        };
+        let anchor = match req.point {
+            Some(point) => point,
+            None => center(located.ok_or("missing_target: 指针动作没有落点")?)?,
+        };
+        let destination = match req.action {
+            ActionSpec::Drag { to } => Some(match to {
+                DragTarget::Offset { dx, dy } => ScreenPoint {
+                    x: anchor.x + dx,
+                    y: anchor.y + dy,
+                },
+                DragTarget::Ref { reference } => {
+                    let (conn, root) = tree.ok_or("missing_target: 拖拽终点没有控件树")?;
+                    let target = walk::locate(conn, &root.obj, reference, ALL_FIELDS)
+                        .map_err(Failure::into_reason)?;
+                    center(&target)?
+                }
+            }),
+            _ => None,
+        };
+        Ok(foreground::Aim {
+            anchor: Some(anchor),
+            destination,
+            host: req.point.is_none().then_some(req.window),
+        })
+    }
+
     /// `IsEnabled` 为假时附在「没有对应 frame」后面的说明。
     ///
     /// 只说「可能」：Qt 在根窗口上有 `AT_SPI_BUS` 属性时不看 `IsEnabled` 照样连上总线，
@@ -395,7 +529,8 @@ impl Atspi {
         let fields = Fields {
             value: select.include_value,
             state: select.include_state,
-            foreground,
+            // 没有对应 X 窗口的 frame 给不出坐标与键盘焦点的核对，前台动作不列。
+            foreground: foreground && root.xid.is_some(),
         };
         let captured_at = crate::protocol::now_ms();
         let start = match &select.root {
