@@ -6,7 +6,6 @@
 
 mod capture;
 mod keys;
-mod png;
 pub mod sink;
 mod wm;
 

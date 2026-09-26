@@ -67,6 +67,9 @@ zbus = { version = "5.5", default-features = false, features = ["async-io", "blo
 # 纯 Rust 的 X11 客户端：核心协议，加 Composite（按窗口取图）、Damage（等被盖住的部分重绘完）
 # 与 XTest（前台键鼠）。
 x11rb = { version = "0.14", default-features = false, features = ["composite", "damage", "xtest"] }
+
+# Linux 与 macOS 的采集帧由 `src/png.rs` 自己编码。
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 # PNG 的 DEFLATE 压缩。版本跟 apps/desktop/src-tauri 依赖树里的那份对齐（0.8）。
 miniz_oxide = "0.8"
 
