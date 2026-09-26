@@ -157,7 +157,12 @@ describe('桌面发布清单', () => {
         )
         const result = Bun.spawnSync([bash!, '-c', apple.run!], {
           cwd: dir,
-          env: { ...process.env, ...values, GITHUB_ENV: 'github-env', GITHUB_OUTPUT: 'github-output' },
+          env: {
+            ...process.env,
+            ...values,
+            GITHUB_ENV: 'github-env',
+            GITHUB_OUTPUT: 'github-output',
+          },
         })
         expect(result.exitCode).toBe(0)
         const environment = existsSync(join(dir, 'github-env'))
