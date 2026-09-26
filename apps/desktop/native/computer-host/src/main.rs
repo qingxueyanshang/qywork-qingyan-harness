@@ -12,6 +12,9 @@ mod linux;
 #[cfg(any(target_os = "macos", test))]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod macos;
+// Linux 与 macOS 的采集帧自己缩放与编码；Windows 用 WIC，不编译它。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod png;
 mod protocol;
 mod serve;
 mod tree;

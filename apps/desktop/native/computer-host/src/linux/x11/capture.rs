@@ -23,9 +23,10 @@ use x11rb::protocol::xproto::{
 };
 use x11rb::protocol::{ErrorKind, Event};
 
-use super::{png, Display, Top};
+use super::{Display, Top};
 use crate::backend::CaptureRequest;
 use crate::geometry::{crop_for, fully_covered, generation_matches, Geometry, ScreenRect};
+use crate::png;
 use crate::protocol::{base64, now_ms, Image};
 
 /// 采集方式。图像观察如实带上它。

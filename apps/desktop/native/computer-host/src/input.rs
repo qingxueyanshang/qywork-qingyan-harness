@@ -15,7 +15,8 @@
 //! 5. **事件里只有平台无关的量。** 坐标是屏幕物理像素，滚轮是格数，键是协议键名；
 //!    换成本平台的形状（Windows 是绝对坐标满量程、轮值与虚拟键码，X11 是根窗口坐标、
 //!    滚轮按钮与当前键盘映射里的键码）在平台的 `Sink` 里做。
-//! 6. **文字不经 `Event`。** 各平台的文字投递方式不同，由平台后端自己实现。
+//! 6. **文字不经 `Event`。** 各平台的文字投递方式不同，由平台后端自己实现；按 UTF-16 码元
+//!    切批（`text_batches`）是按码元投递的平台共用的一步。
 
 use std::sync::{Mutex, OnceLock};
 
@@ -223,6 +224,31 @@ pub const fn wheel_of(direction: ScrollDirection, amount: u32) -> (i32, bool) {
     }
 }
 
+/// 把文字按 UTF-16 码元切成批，**代理对不跨批**。
+///
+/// 一个补充平面字符占两个码元，两个码元分在两批发出去的话，目标应用先收到一个孤立的
+/// 高位代理，那不是任何字符。
+///
+/// X11 按字符借用键码，不按码元投递，Linux 不编译它。
+#[cfg(any(windows, target_os = "macos", test))]
+pub fn text_batches(text: &str, max_units: usize) -> Vec<Vec<u16>> {
+    let limit = max_units.max(2);
+    let mut out: Vec<Vec<u16>> = Vec::new();
+    let mut batch: Vec<u16> = Vec::new();
+    for ch in text.chars() {
+        let width = ch.len_utf16();
+        if !batch.is_empty() && batch.len() + width > limit {
+            out.push(std::mem::take(&mut batch));
+        }
+        let mut buf = [0u16; 2];
+        batch.extend_from_slice(ch.encode_utf16(&mut buf));
+    }
+    if !batch.is_empty() {
+        out.push(batch);
+    }
+    out
+}
+
 /// 拖拽途中的落点序列，**不含起点，末尾恰好是终点**。
 ///
 /// 分段发是必要的：一次跳到终点的话，按住拖动的控件收不到中间的移动消息，
@@ -330,6 +356,31 @@ mod tests {
         ]);
         // 段数为 0 时仍然至少走一步，落在终点上。
         assert_eq!(drag_path(from, to, 0), vec![to]);
+    }
+
+    /// 代理对的两个码元在同一批里。分批发会让目标应用先收到一个孤立的高位代理。
+    #[test]
+    fn a_surrogate_pair_is_never_split_across_batches() {
+        // 每个字符两个码元，上限 3 只装得下一个字符。
+        let batches = text_batches("𠮷𠮷", 3);
+        assert_eq!(batches.len(), 2);
+        assert!(batches.iter().all(|b| b.len() == 2));
+        for batch in &batches {
+            assert!((0xD800..0xDC00).contains(&batch[0]));
+            assert!((0xDC00..0xE000).contains(&batch[1]));
+        }
+        // 上限装得下时不拆。
+        assert_eq!(text_batches("𠮷", 4), vec![vec![0xD842, 0xDFB7]]);
+        // 上限比一个代理对还小时仍然不拆：拆出来的半个码元不是任何字符。
+        assert_eq!(text_batches("𠮷", 1), vec![vec![0xD842, 0xDFB7]]);
+    }
+
+    /// 中文按码元切批，批的长度不超过上限。
+    #[test]
+    fn text_is_batched_by_utf16_units() {
+        let batches = text_batches("张三李四王五", 4);
+        assert_eq!(batches, vec![vec![0x5F20, 0x4E09, 0x674E, 0x56DB], vec![0x738B, 0x4E94]]);
+        assert!(text_batches("", 4).is_empty());
     }
 
     /// 持有在 `Drop` 时释放，且释放事件是抬起、顺序与按下相反。
