@@ -54,7 +54,7 @@ use crate::tree::{matches_target, settle};
 use associate::{frame_window, FrameSide, Unmatched, XSide};
 use bus::{Failure, Obj, TARGET_LOST};
 use node::Fields;
-use walk::{Frame, Located};
+use walk::{Frame, Located, Popup};
 
 /// 第一次读一个窗口时两次读取之间隔多久。Chromium 系应用在第一次收到无障碍请求后才建树。
 const FIRST_READ_INTERVAL: Duration = Duration::from_millis(350);
@@ -142,11 +142,13 @@ pub struct Atspi {
     read_before: RefCell<HashSet<(i64, u32)>>,
 }
 
-/// 读控件树用的根：窗口对应的 frame，所在应用的进程号，以及对应上的 X 窗口。
+/// 读控件树用的根：窗口对应的 frame，所在应用的进程号，对应上的 X 窗口，以及接在 frame 子节点
+/// 后面的、这个窗口拥有的弹出窗口（见 `Atspi::popups`）。
 struct Root {
     obj: Obj,
     pid: u32,
     xid: Option<u32>,
+    popups: Vec<Popup>,
 }
 
 impl Backend for Atspi {
@@ -258,7 +260,7 @@ impl Backend for Atspi {
             Ok(r) => r,
             Err(f) => return refused(f.into_reason()),
         };
-        let located = match walk::locate(&conn, &root.obj, reference, ALL_FIELDS) {
+        let located = match walk::locate(&conn, &root.obj, &root.popups, reference, ALL_FIELDS) {
             Ok(l) => l,
             Err(f) => return refused(f.into_reason()),
         };
@@ -289,8 +291,8 @@ impl Backend for Atspi {
             window: false,
             rect: false,
         };
-        let located =
-            walk::locate(&conn, &root.obj, reference, fields).map_err(Failure::into_reason)?;
+        let located = walk::locate(&conn, &root.obj, &root.popups, reference, fields)
+            .map_err(Failure::into_reason)?;
         if !located.facts.interfaces.contains(Interface::Text) {
             return Err("pattern_missing: Text".to_owned());
         }
@@ -487,6 +489,7 @@ impl Atspi {
                     obj: f.obj,
                     pid: f.pid,
                     xid: None,
+                    popups: Vec::new(),
                 })
                 .ok_or_else(|| {
                     Failure::Refused(format!("{TARGET_LOST}: 编号 {window} 的 frame 已经不在"))
@@ -515,10 +518,12 @@ impl Atspi {
         match found {
             Ok(i) => {
                 let frame = frames.swap_remove(i);
+                let popups = self.popups(conn, xid, frame.pid, &frames)?;
                 Ok(Root {
                     obj: frame.obj,
                     pid: frame.pid,
                     xid: Some(xid),
+                    popups,
                 })
             }
             Err(Unmatched::None) => Err(Failure::Refused(format!(
@@ -530,6 +535,41 @@ impl Atspi {
                  窗口清单另列了这些 frame，按它们的编号读控件树"
             ))),
         }
+    }
+
+    /// X 窗口 `xid` 拥有的弹出窗口里，内容挂在应用顶层对象下的那些：顶层对象与 frame 同一进程、
+    /// 屏幕矩形等于一个归 `xid` 所有的 override-redirect 窗口，且是自己子节点的父对象。`tops` 是
+    /// 同一次查到的其余顶层对象。
+    ///
+    /// 右键菜单不在 frame 的子树里，GTK 把它列成应用的另一个顶层对象；接在 frame 后面，观察
+    /// 目标窗口就看得到它、按 `ref` 操作它。组合框下拉菜单所在的弹出窗口 GTK 同样列成顶层，而
+    /// 菜单把组合框报成父对象，已经在组合框底下，由 `owns_children` 排除。
+    ///
+    /// 边界：Qt 的弹出菜单与 GTK 挂在普通按钮上的菜单不是应用的子节点，这里找不到它们。
+    fn popups(
+        &self,
+        conn: &Connection,
+        xid: u32,
+        pid: u32,
+        tops: &[Frame],
+    ) -> Result<Vec<Popup>, Failure> {
+        let Ok(display) = self.display() else {
+            return Ok(Vec::new());
+        };
+        let windows = display.popups(xid);
+        let mut out = Vec::new();
+        for top in tops.iter().filter(|t| t.pid == pid) {
+            let Some(rect) = top.rect.filter(|r| windows.iter().any(|(_, w)| w == r)) else {
+                continue;
+            };
+            if walk::owns_children(conn, &top.obj)? {
+                out.push(Popup {
+                    obj: top.obj.clone(),
+                    rect,
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// 按控件定位时控件所在的顶层窗口：控件画在目标窗口拥有的弹出窗口里时是那个弹出窗口
@@ -598,7 +638,7 @@ impl Atspi {
         };
         let located = match (&tree, req.reference) {
             (Some((conn, root)), Some(reference)) => {
-                match walk::locate(conn, &root.obj, reference, ALL_FIELDS) {
+                match walk::locate(conn, &root.obj, &root.popups, reference, ALL_FIELDS) {
                     Ok(l) => Some(l),
                     Err(f) => return Attempt::Refused(f.into_reason()),
                 }
@@ -645,7 +685,7 @@ impl Atspi {
     ///
     /// 落点两种来源：调用方给的屏幕坐标，或控件此刻的包围盒中心。**包围盒读的是这一次重新
     /// 定位拿到的那一份**，不是观察时记下的。控件所在的顶层窗口见 `host`：不要取目标窗口本身，
-    /// `ref` 从目标窗口的 frame 出发，而组合框下拉列表里的控件画在目标窗口拥有的弹出窗口里。
+    /// `ref` 从目标窗口的 frame 出发，而下拉列表与右键菜单里的控件画在目标窗口拥有的弹出窗口里。
     fn aim(
         &self,
         window: u32,
@@ -674,7 +714,7 @@ impl Atspi {
                 },
                 DragTarget::Ref { reference } => {
                     let (conn, root) = tree.ok_or("missing_target: 拖拽终点没有控件树")?;
-                    let target = walk::locate(conn, &root.obj, reference, ALL_FIELDS)
+                    let target = walk::locate(conn, &root.obj, &root.popups, reference, ALL_FIELDS)
                         .map_err(Failure::into_reason)?;
                     center(&target)?
                 }
@@ -785,7 +825,7 @@ impl Atspi {
             }
         }
         let located = match req.reference.filter(|_| req.action.targets_window()) {
-            Some(reference) => match walk::locate(&conn, &target.obj, reference, ALL_FIELDS) {
+            Some(reference) => match walk::locate(&conn, &target.obj, &[], reference, ALL_FIELDS) {
                 Ok(l) => Some(l),
                 Err(f) => return Attempt::Refused(f.into_reason()),
             },
@@ -862,9 +902,9 @@ impl Atspi {
                 parent: None,
                 popup: None,
             },
-            Some(reference) => walk::locate(conn, &root.obj, reference, fields)?,
+            Some(reference) => walk::locate(conn, &root.obj, &root.popups, reference, fields)?,
         };
-        let walked = walk::walk(conn, &start, select, bounds, fields)?;
+        let walked = walk::walk(conn, &start, &root.popups, select, bounds, fields)?;
         // 窗口可用状态只认 frame 自己的那一格。
         let window_enabled = if start.path.is_empty() {
             node::enabled(start.facts.states)
@@ -922,9 +962,9 @@ impl Atspi {
                 let reference = req
                     .reference
                     .ok_or_else(|| Failure::Refused("missing_ref".to_owned()))?;
-                let located = self
-                    .root(conn, req.window)
-                    .and_then(|root| walk::locate(conn, &root.obj, reference, ALL_FIELDS));
+                let located = self.root(conn, req.window).and_then(|root| {
+                    walk::locate(conn, &root.obj, &root.popups, reference, ALL_FIELDS)
+                });
                 match located {
                     Ok(l) => {
                         let node =

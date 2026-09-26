@@ -1,8 +1,9 @@
 //! 经总线读控件树：一个对象的事实、子节点、深度优先遍历、按 `ref` 重新定位，以及注册表
 //! 上的应用与它们的顶层 frame。
 //!
-//! 子节点顺序只有一处来源：`children` 的 `GetChildren`。读树与重新定位共用它，`ref` 里的
-//! 下标才对得上；不要在一处改用 `GetChildAtIndex`，两者的顺序不保证一致。
+//! 子节点顺序只有一处来源：`children` 的 `GetChildren`，窗口根再接上 `root_children` 里的弹出
+//! 窗口。读树与重新定位共用它们，`ref` 里的下标才对得上；不要在一处改用 `GetChildAtIndex`，
+//! 两者的顺序不保证一致。
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -177,6 +178,26 @@ pub fn context_of(
     Ok(Context::of(role, states, interfaces, above))
 }
 
+/// 目标窗口拥有的一个弹出窗口：应用顶层里的那个对象与它的屏幕矩形。读树与重新定位把它们接在
+/// 窗口根自己的子节点后面，下标从窗口根的子节点数往后排。
+#[derive(Debug, Clone)]
+pub struct Popup {
+    pub obj: Obj,
+    pub rect: ScreenRect,
+}
+
+/// 窗口根在树里的子节点：它自己的子节点，接上目标窗口拥有的弹出窗口。第二项是自己的子节点数。
+fn root_children(
+    conn: &Connection,
+    root: &Obj,
+    popups: &[Popup],
+) -> Result<(Vec<Result<Obj, Failure>>, usize), Failure> {
+    let mut kids = children(conn, root)?;
+    let own = kids.len();
+    kids.extend(popups.iter().map(|p| Ok(p.obj.clone())));
+    Ok((kids, own))
+}
+
 /// 按 `ref` 重新定位的结果。
 pub struct Located {
     pub obj: Obj,
@@ -186,15 +207,17 @@ pub struct Located {
     pub context: Context,
     /// 父对象。目标就是窗口根时缺席。
     pub parent: Option<Obj>,
-    /// 目标画在弹出窗口里时，那个弹出窗口里内容的屏幕矩形：目标所在的组合框下拉列表。不在弹出
-    /// 窗口里或读不出时缺席。
+    /// 目标画在弹出窗口里时，那个弹出窗口里内容的屏幕矩形：目标所在的组合框下拉列表，或路径
+    /// 起头的那个弹出窗口。不在弹出窗口里或读不出时缺席。
     pub popup: Option<ScreenRect>,
 }
 
-/// 从窗口根出发按下标路径重新定位，并核对身份段与核对串，见 `node::verify`。
+/// 从窗口根出发按下标路径重新定位，并核对身份段与核对串，见 `node::verify`。`popups` 与读树时
+/// 接在窗口根后面的是同一份，见 `Popup`。
 pub fn locate(
     conn: &Connection,
     root: &Obj,
+    popups: &[Popup],
     reference: &str,
     fields: Fields,
 ) -> Result<Located, Failure> {
@@ -202,8 +225,19 @@ pub fn locate(
     let mut obj = root.clone();
     let mut parent: Option<Obj> = None;
     let mut grandparent: Option<Obj> = None;
+    let mut popup = None;
     for (depth, index) in expected.path.iter().enumerate() {
-        let Some(child) = children(conn, &obj)?.into_iter().nth(*index) else {
+        let kids = if depth == 0 {
+            let (kids, own) = root_children(conn, &obj, popups)?;
+            popup = index
+                .checked_sub(own)
+                .and_then(|i| popups.get(i))
+                .map(|p| p.rect);
+            kids
+        } else {
+            children(conn, &obj)?
+        };
+        let Some(child) = kids.into_iter().nth(*index) else {
             return Err(Failure::Refused(format!(
                 "{REF_STALE}: 第 {depth} 层没有下标 {index} 的子节点"
             )));
@@ -216,10 +250,11 @@ pub fn locate(
         Some(parent) => context_of(conn, parent, grandparent.as_ref())?,
         None => Context::default(),
     };
-    let popup = match &parent {
-        Some(parent) if context.dropdown => screen_rect(conn, parent)?,
-        _ => None,
-    };
+    if context.dropdown {
+        if let Some(parent) = &parent {
+            popup = screen_rect(conn, parent)?;
+        }
+    }
     Ok(Located {
         obj,
         path: expected.path,
@@ -230,6 +265,21 @@ pub fn locate(
     })
 }
 
+/// 一个应用顶层对象是不是它自己那些子节点的父对象。GTK 把组合框下拉菜单所在的弹出窗口也列成
+/// 应用顶层，而下拉菜单把组合框报成父对象：那份内容已经在组合框底下，不再接一次。
+pub fn owns_children(conn: &Connection, top: &Obj) -> Result<bool, Failure> {
+    let Some(first) = children(conn, top)?.into_iter().next() else {
+        return Ok(false);
+    };
+    let accessible: AccessibleProxyBlocking = first?.proxy(conn)?;
+    let (name, path): (String, OwnedObjectPath) = accessible
+        .inner()
+        .get_property("Parent")
+        .map_err(dbus("读父对象"))?;
+    let parent = Reference::parse(&name, path.as_str()).resolve(|name| bus::owner(conn, name));
+    Ok(matches!(parent, Some(Ok(p)) if p == *top))
+}
+
 /// 一次遍历的结果。
 pub struct Walked {
     pub nodes: Vec<Node>,
@@ -237,15 +287,18 @@ pub struct Walked {
 }
 
 /// 从 `root`（位于窗口里 `root_path` 处）开始深度优先读，三个上限限的是遍历过的节点数。
+/// 从窗口根读时 `popups` 接在它自己的子节点后面，见 `Popup`。
 pub fn walk(
     conn: &Connection,
     root: &Located,
+    popups: &[Popup],
     select: &Select,
     bounds: Bounds,
     fields: Fields,
 ) -> Result<Walked, Failure> {
     let mut walk = Walk {
         conn,
+        popups,
         bounds,
         fields,
         until: Instant::now() + Duration::from_millis(bounds.time_budget_ms),
@@ -278,6 +331,7 @@ pub fn walk(
 
 struct Walk<'a> {
     conn: &'a Connection,
+    popups: &'a [Popup],
     bounds: Bounds,
     fields: Fields,
     until: Instant,
@@ -334,7 +388,12 @@ impl Walk<'_> {
             self.mark("max_depth");
             return Ok(());
         }
-        let kids = match children(self.conn, obj) {
+        let kids = if path.is_empty() {
+            root_children(self.conn, obj, self.popups).map(|(kids, _)| kids)
+        } else {
+            children(self.conn, obj)
+        };
+        let kids = match kids {
             Ok(k) => k,
             Err(f) => return self.tolerate(f),
         };
