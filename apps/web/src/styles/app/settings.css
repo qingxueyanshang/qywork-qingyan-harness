@@ -1009,39 +1009,51 @@ textarea.code-area::placeholder {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-/* 模型库的类别页签：对话与各类生成。 */
+/* 模型库的类别页签：对话与各类生成。与下面的表同在一个 `.settings-block` 里，间距取块内那一档。 */
 .lib-tabs {
   display: flex;
   gap: var(--s-4);
-  margin-bottom: var(--s-3);
 }
-/* 生成类的表：列与对话表不同，列宽单独给；参数列占余下宽度。 */
-.lib-table.media th:nth-child(1) {
-  width: 220px;
+/* 生成类的表按内容定列宽：每类一张表，不与别的表对齐列，写死的列宽装不下视频那一行的操作。
+   各列不换行、宽度取 auto，表宽多出的部分由浏览器按内容宽度比例分给各列。
+   不要给某一列 `width: 1%` 收成内容宽：余下宽度会全部落到剩下那一列，表的右侧整块空着。
+   参数展开在跨全部列的下一行；不要放回最后一列，那一列只剩一窄条。 */
+.lib-table.media {
+  table-layout: auto;
 }
-.lib-table.media th:nth-child(2) {
-  width: 72px;
+.lib-table.media th,
+.lib-table.media td {
+  padding-right: var(--s-3);
+  white-space: nowrap;
 }
-.lib-table.media th:nth-child(3) {
-  width: 88px;
-}
-.lib-table.media th:nth-child(4) {
-  width: 150px;
-}
-.lib-table.media th:nth-child(5) {
-  width: 96px;
-}
-.lib-table.media th:nth-child(6) {
+/* 盖掉对话表按列序写死的列宽。 */
+.lib-table.media th:nth-child(n) {
   width: auto;
 }
-.lib-params summary {
-  cursor: pointer;
+.lib-params-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
   color: var(--text-secondary);
+  font-size: var(--fs-sm);
 }
+.lib-params-toggle:hover {
+  color: var(--text-primary);
+}
+.lib-table tbody .lib-params td {
+  padding-top: 0;
+  padding-bottom: var(--s-2);
+  border-top: none;
+  white-space: normal;
+}
+/* `width: 0` 加 `min-width: 100%`：参数文字不计入列宽，展开前后各列位置不变，列表仍占满整行。 */
 .lib-params ul {
-  margin: var(--s-1) 0 0;
+  width: 0;
+  min-width: 100%;
+  margin: 0;
   padding-left: var(--s-4);
   font-size: var(--fs-xs);
+  line-height: 1.7;
   color: var(--text-secondary);
 }
 .lib-table tbody tr + tr td {
