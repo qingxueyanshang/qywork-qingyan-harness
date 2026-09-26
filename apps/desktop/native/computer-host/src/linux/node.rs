@@ -82,10 +82,21 @@ pub struct Fields {
 }
 
 /// 按钮类默认动作的动作名。按优先顺序排。
+///
+/// 不要加 `select`：WebKit 下拉框的 `select` 打开或收起弹出列表，而它不报展开状态，调用方
+/// 读不回这次动作的结果。
 const INVOKE_NAMES: [&str; 4] = ["click", "press", "activate", "jump"];
-/// 复选与单选控件切换状态的动作名。Qt 给 `Toggle`，GTK 给 `click`，WebKit 的复选框按当前状态给
-/// `check` 或 `uncheck`，动作下标不变。
+/// 复选控件切换状态的动作名。Qt 给 `Toggle`，GTK 给 `click`，WebKit 按当前状态给 `check` 或
+/// `uncheck`，动作下标不变。
 const TOGGLE_NAMES: [&str; 6] = ["toggle", "click", "press", "activate", "check", "uncheck"];
+/// 单选按钮选中自己的动作名。Qt 给 `Toggle`，GTK 给 `click`，WebKit 给 `select`。
+const RADIO_NAMES: [&str; 5] = ["toggle", "click", "press", "activate", "select"];
+/// 可选项选中自己的动作名：WebKit 网页里对象的默认动作没有名字，可选项的默认动作按用户选择
+/// 的方式选中它。
+///
+/// 不要改成经父对象的 Selection 选中 WebKit 下拉框的选项：那样改了值但不触发 `change`，
+/// 页面脚本收不到这次选择。
+const ITEM_SELECT_NAMES: [&str; 1] = [""];
 /// 可展开控件切换展开状态的动作名。GTK 的树表格单元给 `expand or contract`，展开器给
 /// `activate`，Qt 的组合框给 `Press`。不含 `toggle`：Qt 树表格单元的 `Toggle` 切换的是选中。
 const EXPAND_NAMES: [&str; 4] = ["expand or contract", "activate", "click", "press"];
@@ -97,8 +108,8 @@ const EXPAND_NAMES: [&str; 4] = ["expand or contract", "activate", "click", "pre
 pub enum Click {
     Invoke(i32),
     Toggle(i32),
-    /// 单选按钮：`select` 经它的动作发出。
-    Radio(i32),
+    /// `select` 经它自己的动作发出：单选按钮，与默认动作没有名字的可选项。
+    Select(i32),
     Expand(i32),
 }
 
@@ -124,18 +135,24 @@ fn checkable(facts: &Facts) -> bool {
         )
 }
 
-/// 这个对象的「点一下」归哪一种语义。顺序：单选 → 可展开 → 可复选 → 默认动作。
+/// 这个对象的「点一下」归哪一种语义。顺序：单选 → 可展开 → 可复选 → 可选项 → 默认动作。
 ///
 /// 可展开先于可复选：GTK 的展开器是一个带展开状态的切换按钮，它的动作展开内容。
+/// 可选项只认没有名字的动作：GTK 下拉菜单的菜单项带 `selectable`，它的 `click` 仍是 `invoke`。
 pub fn claim(facts: &Facts) -> Option<Click> {
     if radio(facts.role) {
-        return action_index(facts, &TOGGLE_NAMES).map(Click::Radio);
+        return action_index(facts, &RADIO_NAMES).map(Click::Select);
     }
     if facts.states.contains(State::Expandable) {
         return action_index(facts, &EXPAND_NAMES).map(Click::Expand);
     }
     if checkable(facts) {
         return action_index(facts, &TOGGLE_NAMES).map(Click::Toggle);
+    }
+    if facts.states.contains(State::Selectable) {
+        if let Some(index) = action_index(facts, &ITEM_SELECT_NAMES) {
+            return Some(Click::Select(index));
+        }
     }
     action_index(facts, &INVOKE_NAMES).map(Click::Invoke)
 }
@@ -249,14 +266,13 @@ pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
         out.push(NodeAction::ready("expand"));
         out.push(NodeAction::ready("collapse"));
     }
-    if matches!(click, Some(Click::Radio(_))) {
+    let container = selectable_in(facts, context);
+    if matches!(click, Some(Click::Select(_))) || container.is_some() {
         out.push(NodeAction::ready("select"));
-    } else if let Some(multiple) = selectable_in(facts, context) {
-        out.push(NodeAction::ready("select"));
-        if multiple {
-            out.push(NodeAction::ready("add_to_selection"));
-            out.push(NodeAction::ready("remove_from_selection"));
-        }
+    }
+    if container == Some(true) {
+        out.push(NodeAction::ready("add_to_selection"));
+        out.push(NodeAction::ready("remove_from_selection"));
     }
     if let Some((_, numbers)) = scroll_bar(facts) {
         out.push(if numbers.max > numbers.min {
@@ -905,11 +921,102 @@ mod tests {
             &[Interface::Action],
             &["click"],
         );
-        assert_eq!(claim(&radio), Some(Click::Radio(0)));
+        assert_eq!(claim(&radio), Some(Click::Select(0)));
         let node = node(&radio, Context::default(), &[1], ":1.2/x", FIELDS);
         assert_eq!(names(&node.actions), ["select"]);
         assert_eq!(node.selected, Some(true));
         assert_eq!(node.toggle, None);
+    }
+
+    /// WebKit 网页控件共有的状态。
+    const WEB: &[State] = &[
+        State::Enabled,
+        State::Focusable,
+        State::Sensitive,
+        State::Showing,
+        State::Visible,
+    ];
+
+    /// 原始失败形状：WebKit 的单选按钮只有一个名为 `select` 的动作，一个动作都不列。
+    /// 列 `select` 经它自己的动作发出，选中状态取 `checked`。
+    #[test]
+    fn a_web_radio_button_selects_through_its_select_action() {
+        let mut states = WEB.to_vec();
+        states.push(State::Checkable);
+        let ifaces = [Interface::Action, Interface::Text, Interface::Hyperlink];
+        let off = facts(AtspiRole::RadioButton, &states, &ifaces, &["select"]);
+        let mut on = off.clone();
+        on.states.insert(State::Checked);
+        for (facts, selected) in [(&off, false), (&on, true)] {
+            assert_eq!(claim(facts), Some(Click::Select(0)));
+            let node = node(facts, Context::default(), &[0], KEY, FIELDS);
+            assert_eq!(names(&node.actions), ["select"]);
+            assert_eq!(node.selected, Some(selected));
+            assert_eq!(node.toggle, None);
+        }
+    }
+
+    /// 原始失败形状：WebKit 下拉框的选项挂在一个不在屏幕上的弹出列表下，列表的 Selection 因此
+    /// 不可用，选项一个动作都不列。选项自己唯一的动作没有名字，`select` 经它发出。
+    #[test]
+    fn a_web_option_selects_itself_through_its_unnamed_action() {
+        let mut states = WEB.to_vec();
+        states.push(State::Selectable);
+        let option = facts(AtspiRole::MenuItem, &states, &[Interface::Action], &[""]);
+        let hidden_popup = Context {
+            selection: true,
+            showing: false,
+            multiselectable: false,
+        };
+        assert_eq!(claim(&option), Some(Click::Select(0)));
+        assert_eq!(selectable_in(&option, hidden_popup), None);
+        let node = node(&option, hidden_popup, &[0, 0], KEY, FIELDS);
+        assert_eq!(names(&node.actions), ["select"]);
+        assert_eq!(node.selected, Some(false));
+        // 容器可多选时增选与取消照旧经它的 Selection。
+        let multi = Context {
+            showing: true,
+            multiselectable: true,
+            ..hidden_popup
+        };
+        assert_eq!(
+            names(&offers(&option, multi)),
+            ["select", "add_to_selection", "remove_from_selection"]
+        );
+    }
+
+    /// GTK 下拉菜单的菜单项带 `selectable`，它的 `click` 仍列成 `invoke`，不当成选中自己的动作。
+    #[test]
+    fn a_selectable_menu_item_with_a_named_click_stays_invoke() {
+        let item = facts(
+            AtspiRole::MenuItem,
+            &[State::Enabled, State::Selectable, State::Visible],
+            &[Interface::Action],
+            &["click"],
+        );
+        assert_eq!(claim(&item), Some(Click::Invoke(0)));
+        assert_eq!(names(&offers(&item, Context::default())), ["invoke"]);
+    }
+
+    /// WebKit 下拉框的 `select` 打开或收起弹出列表而不报展开状态，弹出列表的 `select` 同样；
+    /// `<details>` 可展开，而它与 `<summary>` 的无名动作都交回 false、不改展开状态。三者都不列动作。
+    #[test]
+    fn web_controls_without_a_readable_result_offer_nothing() {
+        let combo = facts(AtspiRole::ComboBox, WEB, &[Interface::Action], &["select"]);
+        let popup = facts(
+            AtspiRole::Menu,
+            &[State::Enabled, State::Sensitive],
+            &[Interface::Action, Interface::Selection],
+            &["select"],
+        );
+        let mut expandable = WEB.to_vec();
+        expandable.push(State::Expandable);
+        let details = facts(AtspiRole::Unknown, &expandable, &[Interface::Action], &[""]);
+        let summary = facts(AtspiRole::Unknown, WEB, &[Interface::Action], &[""]);
+        for facts in [&combo, &popup, &details, &summary] {
+            assert_eq!(claim(facts), None, "{:?}", facts.role);
+            assert!(offers(facts, Context::default()).is_empty());
+        }
     }
 
     /// 只读输入框照样列 `set_value`，但标成此刻不可用；GTK 3 靠缺 `editable`，Qt 靠 `read-only`。

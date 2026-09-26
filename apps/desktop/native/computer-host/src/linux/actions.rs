@@ -129,7 +129,7 @@ fn plan(
             set_number(conn, obj, *value)
         }
         ActionSpec::Select => match claimed {
-            Some(Click::Radio(index)) => do_action(conn, obj, index),
+            Some(Click::Select(index)) => do_action(conn, obj, index),
             _ => {
                 let (container, index) = selection(conn, target, parent)?;
                 Ok(Box::new(move || {
