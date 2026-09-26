@@ -3,7 +3,7 @@ import { Composer } from './components/Composer.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import { Transcript } from './components/Transcript.tsx'
-import { localHtmlUrl } from './lib/links.ts'
+import { localHtmlUrl, workspaceFile } from './lib/links.ts'
 import { observeAppUpdate } from './lib/store/app-update.ts'
 
 // 懒加载：这个模块带着 CodeMirror 核心，约 300 kB。
@@ -23,6 +23,7 @@ import {
   exportActiveConversation,
   loadConversations,
   loadWorkspace,
+  openFileInPanel,
   openLinkInPanel,
   PANEL_MIN,
   panelMaximized,
@@ -37,10 +38,12 @@ import {
   toggleSidebar,
   transcript,
   view,
+  workspace,
 } from './lib/store/index.ts'
 
 /**
- * 正文里的链接落到右侧面板：有内置浏览器就开一页真的网页，否则开网页预览。
+ * 正文里的链接落到右侧面板：有内置浏览器就开一页真的网页，否则开网页预览；
+ * 工作区里的其他文件（图片、文档等）开在文件预览里。
  *
  * **挂在根上，不在每个渲染点各接一次**：应用里的 `<a>` 全部由 markdown 渲染产出
  * （模型正文、配置提醒），没有手写的锚点。
@@ -55,9 +58,16 @@ import {
 export function openLink(e: MouseEvent): void {
   const link = (e.target as Element).closest('a')
   const href = link?.getAttribute('href') ?? ''
-  if (!/^https?:\/\//i.test(href) && !localHtmlUrl(href, '/')) return
+  if (/^https?:\/\//i.test(href) || localHtmlUrl(href, '/')) {
+    e.preventDefault()
+    openLinkInPanel(href)
+    return
+  }
+  // 工作区里的其他文件在右侧文件预览里打开，与工具产物的路径同一个入口。
+  const file = workspaceFile(href, workspace()?.root ?? '')
+  if (!file) return
   e.preventDefault()
-  openLinkInPanel(href)
+  openFileInPanel(file)
 }
 
 /** 复制回执停留的时长。短于这个数看不清图标换过，长了会跨到下一次点击。 */

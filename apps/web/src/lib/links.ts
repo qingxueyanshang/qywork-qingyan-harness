@@ -16,6 +16,36 @@ export function localHtmlUrl(href: string, workspaceRoot: string): string | null
   }
 }
 
+/**
+ * Markdown 里指向本机文件的地址：相对路径、Windows 或 POSIX 绝对路径。去掉查询与锚点、解码后以正斜杠返回；
+ * 网址、带协议的地址、`//` 开头的网络地址与页内锚点返回 null。
+ */
+export function localPath(href: string): string | null {
+  const value = href.trim()
+  if (!value || value.startsWith('#') || value.startsWith('//') || /\p{Cc}/u.test(value))
+    return null
+  if (!/^[a-z]:[/\\]/i.test(value) && /^[^/?#\\]*:/.test(value)) return null
+  try {
+    return decodeURI(value.replace(/[?#].*$/s, '')).replaceAll('\\', '/') || null
+  } catch {
+    return null
+  }
+}
+
+/** 本机文件地址 → 工作区相对路径，交给右侧文件预览；落在工作区外返回 null。 */
+export function workspaceFile(href: string, workspaceRoot: string): string | null {
+  const path = localPath(href)
+  if (!path) return null
+  const windows = /^[a-z]:\//i.test(path)
+  if (!windows && !path.startsWith('/')) return path.replace(/^(\.\/)+/, '')
+  const root = workspaceRoot.replaceAll('\\', '/').replace(/\/+$/, '')
+  if (!root) return null
+  const inside = windows
+    ? path.toLowerCase().startsWith(`${root.toLowerCase()}/`)
+    : path.startsWith(`${root}/`)
+  return inside ? path.slice(root.length + 1) : null
+}
+
 /** 根目录和裸 Windows 路径是文件系统字面值，其中的百分号、问号和井号不是 URL 分隔符。 */
 function fileUrl(path: string): URL {
   const normalized = path.replaceAll('\\', '/')
