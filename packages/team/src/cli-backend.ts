@@ -116,6 +116,12 @@ export async function runCli(
       NO_COLOR: '1',
       TERM: 'dumb',
     },
+    /*
+     * 非 Windows 上自成进程组，`collectProcess` 的树杀才够得着它派生的子孙：不 detached 的话
+     * 按它的 pid 找不到进程组，树杀只杀得到 CLI 本身。Windows 不加：那边靠 `taskkill /T`
+     * 走进程树，detached 在 Windows 上是「脱离控制台」。
+     */
+    ...(process.platform === 'win32' ? {} : { detached: true }),
   })
 
   const narrator = createNarrator(agent)

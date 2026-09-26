@@ -10,8 +10,8 @@
  * 事件带没带 stepId（不带前端整条丢弃）、终态发没发（不发那一格永远停在进行中）、
  * 回执投没投（不投这次派活就等于丢了）。
  *
- * 外部 CLI 那一支覆盖「派出去、跑完、格里落了写入」与观察器的忽略判定：
- * PATH 上放一个假的 `codex.cmd`。
+ * 外部 CLI 那一支覆盖「派出去、跑完、格里落了写入」、观察器的忽略判定，以及起不来时
+ * 观察窗口照样收掉：PATH 上放一个假的 `codex.cmd`。
  * 真正的 CLI 会不会照约定输出由真机验收（`scripts/smoke-cli-receipt.ts`）。
  */
 
@@ -47,6 +47,8 @@ import {
   settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
+import { findCli } from '@qywork/team'
+import { openChangeWindow } from '@qywork/tools'
 import { EventBus } from './bus.ts'
 import { makeDelegate } from './delegate.ts'
 import { RunManager } from './runs.ts'
@@ -1123,5 +1125,48 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
       if (env.OPENAI_API_KEY === undefined) delete process.env.OPENAI_API_KEY
       else process.env.OPENAI_API_KEY = env.OPENAI_API_KEY
     }
+  })
+
+  /**
+   * 原始失败形状：外部 CLI 起不来（`Bun.spawn` 找不到可执行文件）时观察窗口没有收掉。窗口先于进程
+   * 打开，漏收的那个一直排在最前，此后同一工作区的窗口收不到任何事件，删除一条都报不出来。
+   */
+  test('外部 CLI 起不来时收掉观察窗口，此后的窗口照常收到删除', async () => {
+    const bin = join(dir, 'vanished-bin')
+    await mkdir(bin, { recursive: true })
+    await writeFile(join(bin, 'codex'), '#!/bin/sh\n', { mode: 0o755 })
+    await writeFile(join(bin, 'codex.cmd'), '@echo off\r\n')
+    const env = { PATH: process.env.PATH, OPENAI_API_KEY: process.env.OPENAI_API_KEY }
+    process.env.PATH = bin
+    process.env.OPENAI_API_KEY = 'sk-test'
+    try {
+      // 识别结果按 PATH 缓存：先识别到再删掉文件，派活时 spawn 才找不到它。
+      expect((await findCli('codex'))?.id).toBe('codex')
+      await rm(bin, { recursive: true, force: true })
+      const cid = conversation()
+      const { runId, step } = parentTurn(cid, '派给不存在的 codex')
+      const res = await delegate(cid).dispatch({
+        target: { kind: 'cli', cli: 'codex', name: 'codex 节点' },
+        task: '改一个文件',
+        runId,
+        stepId: step.id,
+      })
+      expect(res).toMatchObject({ ok: true, kind: 'cli' })
+      settle(step.id, '派给不存在的 codex')
+      await until(() => phasesOf('child').includes('failed'), 'CLI 落失败终态')
+    } finally {
+      process.env.PATH = env.PATH
+      if (env.OPENAI_API_KEY === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = env.OPENAI_API_KEY
+    }
+
+    // 删除只有事件看得见，收尾扫描补不上：前一个窗口漏收时这一条报不出来。
+    await writeFile(join(dir, 'doomed.txt'), 'x\n')
+    const window = openChangeWindow(dir)
+    await Bun.sleep(250)
+    await rm(join(dir, 'doomed.txt'))
+    await Bun.sleep(250)
+    const got = await window.close()
+    expect(got.changes).toContainEqual({ path: 'doomed.txt', changeType: 'deleted' })
   })
 })

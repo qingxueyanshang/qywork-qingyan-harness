@@ -460,6 +460,8 @@ export function makeDelegate(ctx: {
       if (cli) {
         // 它是本机另一个进程，跑完之前写了什么，不发出来一个字都看不到。
         const stepId = at.stepId
+        // 必须先开窗再起进程：窗口起点之前写下的文件判不出是这个 CLI 新建的。
+        // 起不来时收掉窗口：不收的话它一直排在最前，此后的窗口收不到任何事件。
         const changeWindow = openChangeWindow(workspaceRoot, { reported })
         const r = await runCli(cli, {
           prompt: task,
@@ -477,6 +479,9 @@ export function makeDelegate(ctx: {
                   ),
               }
             : {}),
+        }).catch(async (e: unknown) => {
+          await changeWindow.close()
+          throw e
         })
         const watched = await changeWindow.close()
         for (const c of watched.changes) {
