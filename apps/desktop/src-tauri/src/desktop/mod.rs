@@ -15,6 +15,7 @@
 //! 换成当前值的话，一条跨代际的迟到回执会结算另一次调用。
 
 mod bridge;
+#[cfg(windows)]
 mod foreground;
 mod frames;
 mod identity;
@@ -411,7 +412,8 @@ impl DesktopHost {
         };
         // 前台模式的请求派发前把前台权让给 worker：用户发消息那一刻前台进程通常就是本
         // 进程，系统只允许前台进程转让这份权限。不看返回值——让不成时 worker 自己还有
-        // 第二级手段，这里没有可裁决的事。
+        // 第二级手段，这里没有可裁决的事。只有 Windows 有这条机制，见 `foreground`。
+        #[cfg(windows)]
         if frame.foreground {
             if let Some(pid) = self.worker_pid() {
                 foreground::grant(pid);
@@ -605,8 +607,13 @@ impl DesktopHost {
         }
     }
 
-    /// 一个窗口的进程启动时刻与可执行文件名。句柄与 pid 对不上即认不出。
+    /// 一个窗口的进程启动时刻与可执行文件名。Windows 上句柄与 pid 对不上即认不出。
+    ///
+    /// 别的平台窗口的归属进程只有 worker 的窗口清单一个来源（X11 的 `_NET_WM_PID`、AX 的
+    /// `AXUIElementGetPid`），宿主不另查一次。
+    #[cfg_attr(not(windows), allow(unused_variables))]
     fn identify(&self, handle: i64, pid: u32) -> Option<(i64, String)> {
+        #[cfg(windows)]
         if identity::window_pid(handle)? != pid {
             return None;
         }
@@ -734,10 +741,15 @@ impl HostState {
 
 /// 目标窗口身份的派发前核对。
 ///
-/// 句柄现问一次归属进程，pid 现问一次启动时刻，两项都与观察时记下的一致才派发。
+/// pid 现问一次启动时刻，与观察时记下的一致才派发；Windows 上句柄还要现问一次归属进程。
 /// 少了这一步，目标窗口在观察与动作之间关闭、句柄被另一个窗口复用时，动作会落在那个
 /// 窗口上而不报错。
+///
+/// 别的平台不现查句柄的归属：窗口 → 进程只有 worker 的窗口清单一个来源，服务端按清单里的
+/// 句柄、pid 与启动时刻三项登记窗口，下一份清单里三项对不上的旧编号在服务端就被拒。
+/// 核对不到的只有一种：清单重读之前，X11 窗口号被另一个进程复用，而原属进程仍在运行。
 fn verify_target(target: frames::Target) -> Result<(), String> {
+    #[cfg(windows)]
     if identity::window_pid(target.window) != Some(target.pid) {
         return Err("target_lost".to_owned());
     }
@@ -784,6 +796,7 @@ fn run_worker(host: &Arc<DesktopHost>) -> Result<(), String> {
     let pid = spawned.link.pid();
     // 作业对象按住到本函数返回为止，也就是这个 worker 进程的一生。提前丢掉它就是当场
     // 杀掉 worker：作业里最后一个句柄关闭时内核收掉作业里的全部进程。
+    #[cfg(windows)]
     let _job = spawned.job;
     log::info!("computer-host worker 已启动 pid={pid}");
 
