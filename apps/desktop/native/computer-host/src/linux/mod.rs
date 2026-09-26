@@ -13,7 +13,8 @@
 //! 4. 每次总线调用以宿主握手时给的上界为限，由 zbus 连接的 `method_timeout` 承担；
 //!    本模块不另起线程等待读取。
 //! 5. 每个后端实例自己连一条无障碍总线：等待线程各建一个实例，与执行线程互不排队，
-//!    一次卡住的调用只占住它自己那条连接。
+//!    一次卡住的调用只占住它自己那条连接。连接在握手之后的第一次调用时建立，会话里找不到
+//!    无障碍总线时下一次调用再找：总线装上或启动之后不必换 worker。
 
 mod actions;
 mod associate;
@@ -24,7 +25,7 @@ mod text;
 mod walk;
 mod x11;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::sync::Once;
 use std::time::Duration;
@@ -38,8 +39,8 @@ use crate::backend::{
 };
 use crate::geometry::ScreenPoint;
 use crate::protocol::{
-    ActionEvidence, ActionSpec, BlockingWindow, Bounds, DragTarget, Image, Observation, Select,
-    Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED, TARGET_BLOCKED,
+    Access, ActionEvidence, ActionSpec, BlockingWindow, Bounds, DragTarget, Grant, Image,
+    Observation, Select, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED, TARGET_BLOCKED,
 };
 use crate::tree::{matches_target, settle};
 use associate::{frame_window, FrameSide, Unmatched, XSide};
@@ -60,11 +61,11 @@ const FRAME_ONLY: &str =
 
 pub struct Atspi {
     display: x11::Display,
-    address: String,
-    /// `org.a11y.Status.IsEnabled`，构造时读一次。只读不写，见 `bus::locate`。
-    enabled: Result<bool, String>,
-    /// 握手时按宿主给的上界建的连接。握手之前没有：那时准入判定不放行任何读取。
-    conn: RefCell<Option<Connection>>,
+    /// 握手时宿主给的建连上界与调用上界。握手之前没有：那时准入判定不放行任何读取。
+    bounds: Cell<Option<(Duration, Duration)>>,
+    /// 按上界建的无障碍总线连接，与建连时读到的 `org.a11y.Status.IsEnabled`（只读不写，见
+    /// `bus::locate`）。还没建或会话里找不到总线时为空。
+    bus: RefCell<Option<(Connection, Result<bool, String>)>>,
     /// 这个实例读过控件表的窗口，按窗口编号与进程号记。
     read_before: RefCell<HashSet<(i64, u32)>>,
 }
@@ -80,38 +81,32 @@ impl Backend for Atspi {
     const NAME: &'static str = "linux-atspi";
 
     fn new() -> Result<Self, String> {
-        let display = x11::Display::connect()?;
-        let located = bus::locate()?;
-        // 宿主把 worker 的 stderr 转进应用日志。每个进程只记一次：等待线程每条请求各建一个实例。
-        static REPORTED: Once = Once::new();
-        REPORTED.call_once(|| {
-            eprintln!(
-                "a11y bus={} IsEnabled={:?}",
-                located.address, located.enabled
-            );
-        });
         Ok(Self {
-            display,
-            address: located.address,
-            enabled: located.enabled,
-            conn: RefCell::new(None),
+            display: x11::Display::connect()?,
+            bounds: Cell::new(None),
+            bus: RefCell::new(None),
             read_before: RefCell::new(HashSet::new()),
         })
     }
 
-    /// 按宿主给的上界建一条新连接并换上。调用上界读回自连接本身；建连上界由
-    /// `bus::connect` 在等待建连时执行。
+    /// 会话总线上查得到无障碍总线的地址即授权。查不到时读取与动作一律不可用，原因原文随通报
+    /// 写进 stderr。
+    fn access() -> Access {
+        match bus::locate() {
+            Ok(_) => Access::of(Vec::new(), None),
+            Err(detail) => Access::of(vec![Grant::AccessibilityBus], Some(detail)),
+        }
+    }
+
+    /// 记下宿主给的上界，丢掉旧连接。之后的每条连接都按这两个值建：建连上界由 `bus::connect`
+    /// 在等待建连时执行，调用上界是连接的 `method_timeout`。
     fn set_timeouts(&self, connection_ms: u32, transaction_ms: u32) -> Result<(u32, u32), String> {
-        let conn = bus::connect(
-            &self.address,
+        self.bounds.set(Some((
             Duration::from_millis(u64::from(connection_ms)),
             Duration::from_millis(u64::from(transaction_ms)),
-        )?;
-        let applied = conn
-            .method_timeout()
-            .map_or(0, |d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX));
-        *self.conn.borrow_mut() = Some(conn);
-        Ok((connection_ms, applied))
+        )));
+        *self.bus.borrow_mut() = None;
+        Ok((connection_ms, transaction_ms))
     }
 
     fn list_windows(&self) -> Result<Observation, String> {
@@ -303,11 +298,27 @@ fn frame_sides(frames: &[Frame]) -> Vec<FrameSide<'_>> {
 }
 
 impl Atspi {
+    /// 这个实例的无障碍总线连接。第一次调用时按握手给的上界建立；建不成时下一次调用再找。
     fn conn(&self) -> Result<Connection, String> {
-        self.conn
-            .borrow()
-            .clone()
-            .ok_or_else(|| "no_handshake: 无障碍总线连接在握手时建立".to_owned())
+        if let Some((conn, _)) = self.bus.borrow().as_ref() {
+            return Ok(conn.clone());
+        }
+        let (connect, call) = self
+            .bounds
+            .get()
+            .ok_or_else(|| "no_handshake: 无障碍总线连接在握手之后建立".to_owned())?;
+        let located = bus::locate()?;
+        let conn = bus::connect(&located.address, connect, call)?;
+        // 宿主把 worker 的 stderr 转进应用日志。每个进程只记一次：等待线程每条请求各建一个实例。
+        static REPORTED: Once = Once::new();
+        REPORTED.call_once(|| {
+            eprintln!(
+                "a11y bus={} IsEnabled={:?}",
+                located.address, located.enabled
+            );
+        });
+        *self.bus.borrow_mut() = Some((conn.clone(), located.enabled));
+        Ok(conn)
     }
 
     /// 窗口编号对应的 frame。
@@ -509,8 +520,8 @@ impl Atspi {
     /// 只说「可能」：Qt 在根窗口上有 `AT_SPI_BUS` 属性时不看 `IsEnabled` 照样连上总线，
     /// 而那一项由总线启动器写，有没有取决于启动先后。
     fn enabled_hint(&self) -> &'static str {
-        match self.enabled {
-            Ok(false) => {
+        match self.bus.borrow().as_ref().map(|(_, enabled)| enabled) {
+            Some(Ok(false)) => {
                 "；org.a11y.Status.IsEnabled 为假，Qt、Chromium 与 Electron 应用在这种会话里可能不交出控件树"
             }
             _ => "",

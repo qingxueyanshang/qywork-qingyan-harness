@@ -92,7 +92,7 @@ use crate::backend::{
 };
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
-    now_ms, toggle_steps, ActionEvidence, ActionSpec, Bounds, range_state, BlockingWindow,
+    now_ms, toggle_steps, Access, ActionEvidence, ActionSpec, Bounds, range_state, BlockingWindow,
     Completeness, Dispatch, DragTarget, Image, Node, NodeAction, Observation, Role,
     ScrollDirection, ScrollState, ScrollStep, Select, SelectionState, Text, TextSelection,
     ToggleState, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED, REF_STALE, TARGET_BLOCKED,
@@ -262,6 +262,12 @@ pub struct Uia {
 
 impl Backend for Uia {
     const NAME: &'static str = "windows-uia";
+
+    /// UIA 不需要用户授权。宿主未提权时操作不了提权窗口是 UIPI 的进程完整性规则，由动作回执里
+    /// 的调用失败原文表达，不在这里。
+    fn access() -> Access {
+        Access::of(Vec::new(), None)
+    }
 
     /// 在调用线程上初始化 COM 与 UIA。必须在执行线程上构造：COM 单元属于线程。
     fn new() -> Result<Self, String> {
