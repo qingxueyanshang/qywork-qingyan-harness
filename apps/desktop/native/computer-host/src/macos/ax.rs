@@ -1,4 +1,4 @@
-//! AX、CF 与 CGWindowList 的薄封装：CF 值换成 `facts::Raw`，AX 错误码以整数原样交回。
+//! AX、CF、CGWindowList 与显示器清单的薄封装：CF 值换成 `facts::Raw`，AX 错误码以整数原样交回。
 //!
 //! 本模块只做调用与类型换算，判定一律在纯换算模块里。
 
@@ -14,7 +14,8 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::{
     kCGNullWindowID, kCGWindowAlpha, kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer,
-    kCGWindowName, kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID,
+    kCGWindowName, kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID, CGDirectDisplayID,
+    CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode, CGGetActiveDisplayList,
     CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo, CGWindowListOption,
 };
 
@@ -22,6 +23,7 @@ use super::associate::CgWindow;
 use super::facts::{code, Frame, Raw};
 use super::identity::Handle;
 use super::plan::Setting;
+use super::screen::Display;
 
 /// 一个 AX 元素引用：进程号加元素标识的令牌，比较按 `CFEqual`。
 #[derive(Clone)]
@@ -101,6 +103,26 @@ impl Element {
             Err(code::ATTRIBUTE_UNSUPPORTED | code::NO_VALUE) => Ok(Raw::Missing),
             Err(e) => Err(e),
         }
+    }
+
+    /// 一个元素属性（前台应用、焦点窗口、关闭按钮）。不支持、没有值或值不是元素时缺席。
+    pub fn element(&self, attribute: &str) -> Result<Option<Element>, i32> {
+        match self.copy(attribute) {
+            Ok(value) => Ok(value.downcast::<AXUIElement>().ok().map(Element)),
+            Err(code::ATTRIBUTE_UNSUPPORTED | code::NO_VALUE) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 系统范围元素上的命中测试：全局坐标（点）处最深的那个元素。
+    pub fn element_at(&self, x: f32, y: f32) -> Result<Element, i32> {
+        let mut found: *const AXUIElement = std::ptr::null();
+        // SAFETY: 出参指向局部变量；成功时交回的引用归调用方。
+        status(unsafe {
+            self.0
+                .copy_element_at_position(x, y, NonNull::from(&mut found))
+        })?;
+        unsafe { owned(found) }.map(Element)
     }
 
     /// 一个元素数组属性（子节点、窗口、选中行）。不支持或没有值时交回空表。
@@ -200,6 +222,33 @@ impl Element {
                     AXValue::new(
                         AXValueType::CFRange,
                         NonNull::from(&mut range).cast::<c_void>(),
+                    )
+                }
+                .ok_or(code::FAILURE)?;
+                self.set_value(attribute, &value)
+            }
+            Setting::Point { x, y } => {
+                let mut point = CGPoint { x: *x, y: *y };
+                // SAFETY: 值指针指向与 `CGPoint` 类型标记一致的局部变量，调用期间有效。
+                let value = unsafe {
+                    AXValue::new(
+                        AXValueType::CGPoint,
+                        NonNull::from(&mut point).cast::<c_void>(),
+                    )
+                }
+                .ok_or(code::FAILURE)?;
+                self.set_value(attribute, &value)
+            }
+            Setting::Size { width, height } => {
+                let mut size = CGSize {
+                    width: *width,
+                    height: *height,
+                };
+                // SAFETY: 值指针指向与 `CGSize` 类型标记一致的局部变量，调用期间有效。
+                let value = unsafe {
+                    AXValue::new(
+                        AXValueType::CGSize,
+                        NonNull::from(&mut size).cast::<c_void>(),
                     )
                 }
                 .ok_or(code::FAILURE)?;
@@ -312,6 +361,42 @@ pub fn alive(pid: i32) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// 此刻在用的显示器：全局矩形（点）与每点像素数。清单读不出时交回空表。
+pub fn displays() -> Vec<Display> {
+    const MAX_DISPLAYS: u32 = 32;
+    let mut ids: [CGDirectDisplayID; MAX_DISPLAYS as usize] = [0; MAX_DISPLAYS as usize];
+    let mut count: u32 = 0;
+    // SAFETY: 两个出参都指向本函数的局部变量，数组长度与 `MAX_DISPLAYS` 一致。
+    let err = unsafe { CGGetActiveDisplayList(MAX_DISPLAYS, ids.as_mut_ptr(), &mut count) };
+    if err.0 != 0 {
+        return Vec::new();
+    }
+    ids[..count.min(MAX_DISPLAYS) as usize]
+        .iter()
+        .map(|&id| {
+            let bounds = CGDisplayBounds(id);
+            let mode = CGDisplayCopyDisplayMode(id);
+            let points = CGDisplayMode::width(mode.as_deref());
+            let pixels = CGDisplayMode::pixel_width(mode.as_deref());
+            Display {
+                id,
+                bounds: Frame {
+                    x: bounds.origin.x,
+                    y: bounds.origin.y,
+                    width: bounds.size.width,
+                    height: bounds.size.height,
+                },
+                // 显示模式读不出时比例为 0，`screen::place` 不用这台显示器。
+                scale: if points == 0 {
+                    0.0
+                } else {
+                    pixels as f64 / points as f64
+                },
+            }
+        })
+        .collect()
 }
 
 /// 全部窗口，从前到后。不在屏幕上的窗口（最小化、隐藏、在别的桌面空间）也在里面。

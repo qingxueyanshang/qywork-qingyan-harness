@@ -1,10 +1,11 @@
 //! AX 元素的事实换算成协议节点：角色与状态进共用词表，可用动作按元素真实暴露的动作名与
-//! 可写属性列出，身份段与核对串按身份表编出。
+//! 可写属性列出，身份段与核对串按身份表编出，包围盒按窗口的那一套换算成屏幕物理像素。
 //!
 //! 本模块不调用 AX。动作那一刻按同一套判定挑调用（`claim`、`select_route`、`expand_route`），
 //! 列出的动作与派发的调用因此只有一处来源。
 
 use super::facts::{action, attr, utf16_len, Facts, Frame, Value, VALUE_TEXT_LIMIT};
+use super::screen::Mapping;
 use crate::protocol::{range_state, Node, NodeAction, Role, ScrollState, ToggleState, REF_STALE};
 use crate::tree::{encode_ref, fingerprint, Identity, RefParts};
 
@@ -31,6 +32,7 @@ pub mod kind {
 pub struct Fields {
     pub value: bool,
     pub state: bool,
+    /// 报键盘焦点并列前台动作。调用方只在前台模式开着、且窗口对应上 CG 窗口时置真。
     pub foreground: bool,
 }
 
@@ -260,7 +262,7 @@ pub fn container_queries(facts: &Facts) -> Vec<&'static str> {
     out
 }
 
-/// 这个元素列出的动作。缺了发法的动作不列；前台动作这个后端还没有实现，一律不列。
+/// 这个元素列出的后台动作。缺了发法的动作不列；前台动作由 `foreground_offers` 列。
 ///
 /// 增选与取消选中不列：AX 不报容器是否允许多选，写选中集合时单选容器会换掉已有的选中项。
 pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
@@ -303,6 +305,37 @@ pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
     }
     if text_selectable(facts) {
         out.push(NodeAction::ready("select_text"));
+    }
+    out
+}
+
+/// 这个元素列出的前台动作。
+///
+/// 指针动作只列在有矩形、落在窗口可见范围里、窗口没有最小化的元素上：没有矩形就指不出落点。
+/// 键盘动作列在持有键盘焦点的元素与窗口根上：自绘界面给不出持有焦点的控件，只列前者等于对它
+/// 关掉整条键盘路径。窗口动作只列在窗口根上，这个窗口支不支持由派发那一刻判。`path` 为空才是
+/// 窗口根自己。
+pub fn foreground_offers(facts: &Facts, path: &[usize], offscreen: bool) -> Vec<NodeAction> {
+    let mut out = Vec::new();
+    if facts.frame.is_some() && !offscreen && facts.minimized != Some(true) {
+        for action in ["click", "hover", "drag", "wheel"] {
+            out.push(NodeAction::foreground(action));
+        }
+    }
+    if facts.focused == Some(true) || path.is_empty() {
+        out.push(NodeAction::foreground("type_text"));
+        out.push(NodeAction::foreground("press_key"));
+    }
+    if path.is_empty() {
+        for action in [
+            "activate",
+            "set_window_state",
+            "close_window",
+            "move_window",
+            "resize_window",
+        ] {
+            out.push(NodeAction::foreground(action));
+        }
     }
     out
 }
@@ -365,16 +398,16 @@ fn describe(identity: &Identity) -> String {
 
 /// 换算成协议节点。`parent_ref` 与 `depth` 由遍历填。
 ///
-/// `window` 是元素所在窗口的矩形，判「在不在窗口可见范围里」用。
-///
-/// 包围盒不进节点：AX 给的是点，协议的 `rect` 是屏幕物理像素，点到像素的换算与取图一起定，
-/// 此前交出点会让调用方按像素去用它。
+/// `window` 是元素所在窗口的 AX 矩形，判「在不在窗口可见范围里」用。`mapping` 是这个窗口的
+/// 点到像素换算：窗口没有对应上 CG 窗口时缺席，节点就不带包围盒，与这种窗口不给图、不给坐标
+/// 动作一致。
 pub fn node(
     facts: &Facts,
     context: Context,
     path: &[usize],
     id: u64,
     window: Option<Frame>,
+    mapping: Option<&Mapping>,
     fields: Fields,
 ) -> Node {
     let click = claim(facts);
@@ -417,8 +450,14 @@ pub fn node(
         enabled: facts.enabled.unwrap_or(true),
         offscreen,
         focused: fields.foreground && facts.focused == Some(true),
-        rect: None,
-        actions: offers(facts, context),
+        rect: facts.frame.zip(mapping).map(|(own, m)| m.rect(own)),
+        actions: {
+            let mut actions = offers(facts, context);
+            if fields.foreground {
+                actions.extend(foreground_offers(facts, path, offscreen));
+            }
+            actions
+        },
         range,
         toggle: (click == Some(Click::Toggle))
             .then(|| toggle_state(facts).map(ToggleState::as_str))
@@ -559,7 +598,7 @@ mod tests {
         check.subrole = "AXSwitch".to_owned();
         check.value = Value::Number(2.0);
         assert_eq!(claim(&check), Some(Click::Toggle));
-        let node = node(&check, Context::default(), &[0], 7, None, FIELDS);
+        let node = node(&check, Context::default(), &[0], 7, None, None, FIELDS);
         assert_eq!(names(&node.actions), ["set_toggle"]);
         assert_eq!(node.toggle, Some("indeterminate"));
         assert_eq!(node.role, "check_box");
@@ -578,7 +617,7 @@ mod tests {
             select_route(&tab, Context::default()),
             Some(Selector::Press)
         );
-        let node = node(&tab, Context::default(), &[1], 7, None, FIELDS);
+        let node = node(&tab, Context::default(), &[1], 7, None, None, FIELDS);
         assert_eq!(names(&node.actions), ["select"]);
         assert_eq!(node.selected, Some(true));
         assert_eq!(node.role, "tab_item");
@@ -619,13 +658,13 @@ mod tests {
         let mut label = facts(kind::STATIC_TEXT, &[]);
         label.title = String::new();
         label.value = Value::Text("已保存".to_owned());
-        let node = node(&label, Context::default(), &[], 3, None, FIELDS);
+        let node = node(&label, Context::default(), &[], 3, None, None, FIELDS);
         assert_eq!(node.name, "已保存");
         assert_eq!(node.value, None);
         let mut field = facts(kind::TEXT_FIELD, &[]);
         field.value = Value::Text(String::new());
         assert_eq!(
-            super::node(&field, Context::default(), &[], 3, None, FIELDS)
+            super::node(&field, Context::default(), &[], 3, None, None, FIELDS)
                 .value
                 .as_deref(),
             Some("")
@@ -635,13 +674,13 @@ mod tests {
             ..FIELDS
         };
         assert_eq!(
-            super::node(&field, Context::default(), &[], 3, None, skip).value,
+            super::node(&field, Context::default(), &[], 3, None, None, skip).value,
             None
         );
         // 超过上限的文本不进节点值。
         field.value = Value::Text("字".repeat(VALUE_TEXT_LIMIT as usize + 1));
         assert_eq!(
-            super::node(&field, Context::default(), &[], 3, None, FIELDS).value,
+            super::node(&field, Context::default(), &[], 3, None, None, FIELDS).value,
             None
         );
     }
@@ -663,7 +702,7 @@ mod tests {
         slider.min = Some(0.0);
         slider.max = Some(100.0);
         slider.settable.value = true;
-        let node = node(&slider, Context::default(), &[0], 5, None, FIELDS);
+        let node = node(&slider, Context::default(), &[0], 5, None, None, FIELDS);
         assert_eq!(names(&node.actions), ["set_range_value"]);
         assert_eq!(
             node.range.map(|r| (r.value, r.min, r.max)),
@@ -682,7 +721,7 @@ mod tests {
         bar.value = Value::Number(0.25);
         bar.orientation = kind::VERTICAL.to_owned();
         assert_eq!(scroll_bar(&bar).map(|s| s.0), Some(Axis::Vertical));
-        let node = super::node(&bar, Context::default(), &[0], 6, None, FIELDS);
+        let node = super::node(&bar, Context::default(), &[0], 6, None, None, FIELDS);
         assert_eq!(node.scroll.and_then(|s| s.vertical), Some(25.0));
     }
 
@@ -780,7 +819,7 @@ mod tests {
             Some(Expander::Attribute(attr::DISCLOSING))
         );
         assert_eq!(
-            super::node(&row, Context::default(), &[], 2, None, FIELDS).expand,
+            super::node(&row, Context::default(), &[], 2, None, None, FIELDS).expand,
             Some("expanded")
         );
         let mut triangle = facts(kind::DISCLOSURE_TRIANGLE, &[action::PRESS]);
@@ -810,34 +849,207 @@ mod tests {
             width: 700.0,
             height: 20.0,
         });
-        assert!(node(&row, Context::default(), &[], 1, Some(window), FIELDS).offscreen);
+        assert!(node(&row, Context::default(), &[], 1, Some(window), None, FIELDS).offscreen);
         row.frame = Some(Frame {
             y: 100.0,
             ..row.frame.expect("有矩形")
         });
-        assert!(!node(&row, Context::default(), &[], 1, Some(window), FIELDS).offscreen);
-        assert!(!node(&row, Context::default(), &[], 1, None, FIELDS).offscreen);
+        assert!(!node(&row, Context::default(), &[], 1, Some(window), None, FIELDS).offscreen);
+        assert!(!node(&row, Context::default(), &[], 1, None, None, FIELDS).offscreen);
     }
 
-    /// 焦点只在前台模式开着时报；包围盒不进节点。
+    /// 焦点只在前台模式开着时报。
     #[test]
     fn focus_is_reported_only_in_foreground_mode() {
         let mut field = facts(kind::TEXT_FIELD, &[]);
         field.focused = Some(true);
-        field.frame = Some(Frame {
-            x: 1.0,
-            y: 2.0,
-            width: 3.0,
-            height: 4.0,
-        });
-        let background = node(&field, Context::default(), &[], 1, None, FIELDS);
+        let background = node(&field, Context::default(), &[1], 1, None, None, FIELDS);
         assert!(!background.focused);
-        assert!(background.rect.is_none());
+        assert!(!names(&background.actions).contains(&"type_text"));
         let foreground = Fields {
             foreground: true,
             ..FIELDS
         };
-        assert!(node(&field, Context::default(), &[], 1, None, foreground).focused);
+        let node = node(&field, Context::default(), &[1], 1, None, None, foreground);
+        assert!(node.focused);
+        assert!(names(&node.actions).contains(&"type_text"));
+    }
+
+    /// Retina 屏上的窗口：包围盒按窗口的那一套换算成像素；窗口没有换算时不带包围盒。
+    #[test]
+    fn the_bounding_box_is_reported_in_pixels_of_the_windows_display() {
+        use super::super::screen::{place, Display};
+        let window = Frame {
+            x: 100.0,
+            y: 50.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        let placed = place(
+            &[Display {
+                id: 1,
+                bounds: Frame {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1512.0,
+                    height: 982.0,
+                },
+                scale: 2.0,
+            }],
+            window,
+        )
+        .expect("有显示器");
+        let mut button = facts("AXButton", &[action::PRESS]);
+        button.frame = Some(Frame {
+            x: 120.0,
+            y: 80.0,
+            width: 60.0,
+            height: 24.0,
+        });
+        let node = node(
+            &button,
+            Context::default(),
+            &[0],
+            4,
+            Some(window),
+            Some(&placed.mapping),
+            FIELDS,
+        );
+        assert_eq!(
+            node.rect,
+            Some(crate::geometry::ScreenRect {
+                x: 240,
+                y: 160,
+                width: 120,
+                height: 48,
+            })
+        );
+        assert!(super::node(
+            &button,
+            Context::default(),
+            &[0],
+            4,
+            Some(window),
+            None,
+            FIELDS
+        )
+        .rect
+        .is_none());
+    }
+
+    /// 前台模式开着时：有矩形且在窗口里的元素列指针动作；持有焦点的元素与窗口根列键盘动作；
+    /// 窗口动作只在根上。前台模式关着时一条都不列。
+    #[test]
+    fn foreground_actions_follow_bounds_focus_and_the_window_root() {
+        let foreground = Fields {
+            foreground: true,
+            ..FIELDS
+        };
+        let window = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        let mut button = facts("AXButton", &[action::PRESS]);
+        button.frame = Some(Frame {
+            x: 10.0,
+            y: 10.0,
+            width: 60.0,
+            height: 24.0,
+        });
+        let offered = names(
+            &node(
+                &button,
+                Context::default(),
+                &[0],
+                1,
+                Some(window),
+                None,
+                foreground,
+            )
+            .actions,
+        );
+        assert_eq!(offered, ["invoke", "click", "hover", "drag", "wheel"]);
+        let hidden = Facts {
+            frame: Some(Frame {
+                y: 900.0,
+                ..button.frame.expect("有矩形")
+            }),
+            ..button.clone()
+        };
+        assert_eq!(
+            names(
+                &node(
+                    &hidden,
+                    Context::default(),
+                    &[0],
+                    1,
+                    Some(window),
+                    None,
+                    foreground
+                )
+                .actions
+            ),
+            ["invoke"]
+        );
+        let mut root = facts(kind::WINDOW, &[]);
+        root.frame = Some(window);
+        let at_root = names(
+            &node(
+                &root,
+                Context::default(),
+                &[],
+                1,
+                Some(window),
+                None,
+                foreground,
+            )
+            .actions,
+        );
+        assert_eq!(
+            at_root,
+            [
+                "click",
+                "hover",
+                "drag",
+                "wheel",
+                "type_text",
+                "press_key",
+                "activate",
+                "set_window_state",
+                "close_window",
+                "move_window",
+                "resize_window",
+            ]
+        );
+        // 最小化的窗口不列指针动作，窗口动作照列：恢复它要靠它们。
+        root.minimized = Some(true);
+        let minimized = names(
+            &node(
+                &root,
+                Context::default(),
+                &[],
+                1,
+                Some(window),
+                None,
+                foreground,
+            )
+            .actions,
+        );
+        assert!(!minimized.contains(&"click"));
+        assert!(minimized.contains(&"set_window_state"));
+        assert!(node(
+            &root,
+            Context::default(),
+            &[],
+            1,
+            Some(window),
+            None,
+            FIELDS
+        )
+        .actions
+        .is_empty());
     }
 
     /// 身份段只有身份表编号，核对串在 `#` 之前。
@@ -848,6 +1060,7 @@ mod tests {
             Context::default(),
             &[0, 3],
             42,
+            None,
             None,
             FIELDS,
         )
@@ -863,11 +1076,11 @@ mod tests {
     fn a_control_whose_name_follows_its_content_keeps_its_ref() {
         let mut combo = facts("AXPopUpButton", &[action::PRESS]);
         combo.value = Value::Text("alpha".to_owned());
-        let before = node(&combo, Context::default(), &[1], 9, None, FIELDS).reference;
+        let before = node(&combo, Context::default(), &[1], 9, None, None, FIELDS).reference;
         combo.title = "beta".to_owned();
         combo.value = Value::Text("beta".to_owned());
         assert_eq!(
-            node(&combo, Context::default(), &[1], 9, None, FIELDS).reference,
+            node(&combo, Context::default(), &[1], 9, None, None, FIELDS).reference,
             before
         );
         let parts = crate::tree::decode_ref(&before).expect("解得开");
@@ -879,7 +1092,7 @@ mod tests {
     fn a_different_number_or_check_is_stale() {
         let button = facts("AXButton", &[action::PRESS]);
         let old = crate::tree::decode_ref(
-            &node(&button, Context::default(), &[0], 9, None, FIELDS).reference,
+            &node(&button, Context::default(), &[0], 9, None, None, FIELDS).reference,
         )
         .expect("解得开");
         let other = verify(&old, 10, &check(&button)).expect_err("应当拒绝");

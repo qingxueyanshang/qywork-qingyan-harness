@@ -32,6 +32,16 @@ pub mod attr {
     pub const WINDOWS: &str = "AXWindows";
     /// Electron 应用只在这一项为真时向 AX 交出网页内容。只写应用元素，不写窗口。
     pub const MANUAL_ACCESSIBILITY: &str = "AXManualAccessibility";
+    /// 窗口是否全屏。协议的「最大化」对应它，见 `plan::window_steps`。
+    pub const FULL_SCREEN: &str = "AXFullScreen";
+    /// 窗口的关闭按钮元素。
+    pub const CLOSE_BUTTON: &str = "AXCloseButton";
+    /// 应用元素上：这个应用是不是前台应用。写真即把它提到前台。
+    pub const FRONTMOST: &str = "AXFrontmost";
+    /// 系统范围元素上：前台应用的应用元素。
+    pub const FOCUSED_APPLICATION: &str = "AXFocusedApplication";
+    /// 应用元素上：接收键盘输入的那个窗口。
+    pub const FOCUSED_WINDOW: &str = "AXFocusedWindow";
 }
 
 /// AX 动作名。
@@ -40,6 +50,8 @@ pub mod action {
     pub const INCREMENT: &str = "AXIncrement";
     pub const DECREMENT: &str = "AXDecrement";
     pub const SCROLL_TO_VISIBLE: &str = "AXScrollToVisible";
+    /// 把窗口提到它所在应用的窗口最上面。不改前台应用。
+    pub const RAISE: &str = "AXRaise";
 }
 
 /// 一次批量读取的属性，顺序即 `Facts::decode` 认的下标。FFI 层在末尾追加 `AXChildren`，
@@ -117,7 +129,7 @@ impl Raw {
     }
 
     /// 布尔属性。应用给 `CFBoolean` 或 0 / 1 的 `CFNumber` 都有。
-    fn flag(&self) -> Option<bool> {
+    pub fn flag(&self) -> Option<bool> {
         match self {
             Self::Bool(b) => Some(*b),
             Self::Number(n) => Some(*n != 0.0),

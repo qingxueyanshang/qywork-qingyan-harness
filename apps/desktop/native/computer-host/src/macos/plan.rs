@@ -1,11 +1,14 @@
-//! 后台语义动作的发法：按动作与元素事实挑一次 AX 调用，或给出「可证明没有发出调用」的拒绝原因。
+//! 动作的发法：后台语义动作按动作与元素事实挑一次 AX 调用，窗口的显示状态按现状与目标排出
+//! 要写的属性；两者都可能给出「可证明没有发出调用」的拒绝原因。
 //!
 //! 本模块不调用 AX。拒绝一律是派发之前判得出的前置条件：只读、越界、缺发法、已在目标状态，
 //! 归 `not_dispatched`。调用发出之后的结果由 FFI 层按 AX 错误码定，一律不在这里判。
 
 use super::facts::{action, attr, on_boundary, utf16_len, Facts, Value};
 use super::node::{self, Axis, Click, Context, Expander, Selector};
-use crate::protocol::{toggle_steps, ActionSpec, ScrollDirection, ScrollStep, ToggleState};
+use crate::protocol::{
+    toggle_steps, ActionSpec, ScrollDirection, ScrollStep, ToggleState, WindowState,
+};
 
 /// 一次 AX 调用。
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +31,16 @@ pub enum Setting {
     Range {
         location: u32,
         length: u32,
+    },
+    /// `CGPoint`，单位是点。窗口的 `AXPosition`。
+    Point {
+        x: f64,
+        y: f64,
+    },
+    /// `CGSize`，单位是点。窗口的 `AXSize`。
+    Size {
+        width: f64,
+        height: f64,
     },
 }
 
@@ -207,10 +220,91 @@ pub fn toggle_precheck(facts: &Facts, want: ToggleState) -> Result<ToggleState, 
     Ok(current)
 }
 
+/// 窗口此刻的显示状态：最小化优先，其次全屏，否则是普通状态。读不出的项按否算。
+pub fn window_state(minimized: Option<bool>, full_screen: Option<bool>) -> WindowState {
+    if minimized == Some(true) {
+        WindowState::Minimized
+    } else if full_screen == Some(true) {
+        WindowState::Maximized
+    } else {
+        WindowState::Normal
+    }
+}
+
+/// 把窗口从 `current` 改到 `target` 要依次写的布尔属性：先离开现状，再进入目标状态。
+///
+/// 协议的「最大化」对应全屏（`AXFullScreen`）：它是绿色按钮的默认动作，而且读得回；缩放（zoom）
+/// 在 AX 里没有可读的状态，写了也判不出生效没有。全屏窗口的最小化按钮不可用，所以全屏到最小化
+/// 先退出全屏。
+pub fn window_steps(
+    current: WindowState,
+    target: WindowState,
+) -> Result<Vec<(&'static str, bool)>, String> {
+    if current == target {
+        return Err(format!("already_in_state: {}", target.as_str()));
+    }
+    let leave = match current {
+        WindowState::Minimized => Some((attr::MINIMIZED, false)),
+        WindowState::Maximized => Some((attr::FULL_SCREEN, false)),
+        WindowState::Normal => None,
+    };
+    let enter = match target {
+        WindowState::Minimized => Some((attr::MINIMIZED, true)),
+        WindowState::Maximized => Some((attr::FULL_SCREEN, true)),
+        WindowState::Normal => None,
+    };
+    Ok(leave.into_iter().chain(enter).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::macos::node::kind;
+
+    /// 每一对现状与目标都排得出写法；已经在目标状态即拒绝，不写任何属性。
+    #[test]
+    fn window_steps_leave_the_current_state_before_entering_the_target() {
+        use WindowState::{Maximized, Minimized, Normal};
+        assert_eq!(
+            window_steps(Normal, Minimized),
+            Ok(vec![(attr::MINIMIZED, true)])
+        );
+        assert_eq!(
+            window_steps(Normal, Maximized),
+            Ok(vec![(attr::FULL_SCREEN, true)])
+        );
+        assert_eq!(
+            window_steps(Minimized, Normal),
+            Ok(vec![(attr::MINIMIZED, false)])
+        );
+        assert_eq!(
+            window_steps(Maximized, Normal),
+            Ok(vec![(attr::FULL_SCREEN, false)])
+        );
+        assert_eq!(
+            window_steps(Minimized, Maximized),
+            Ok(vec![(attr::MINIMIZED, false), (attr::FULL_SCREEN, true)])
+        );
+        assert_eq!(
+            window_steps(Maximized, Minimized),
+            Ok(vec![(attr::FULL_SCREEN, false), (attr::MINIMIZED, true)])
+        );
+        for state in [Normal, Minimized, Maximized] {
+            let refused = window_steps(state, state).expect_err("应当拒绝");
+            assert!(refused.starts_with("already_in_state"), "{refused}");
+        }
+    }
+
+    #[test]
+    fn the_window_state_reads_minimized_before_full_screen() {
+        assert_eq!(window_state(Some(true), Some(true)), WindowState::Minimized);
+        assert_eq!(
+            window_state(Some(false), Some(true)),
+            WindowState::Maximized
+        );
+        assert_eq!(window_state(None, None), WindowState::Normal);
+        assert_eq!(window_state(Some(false), None), WindowState::Normal);
+    }
 
     fn facts(role: &str, actions: &[&str]) -> Facts {
         Facts {

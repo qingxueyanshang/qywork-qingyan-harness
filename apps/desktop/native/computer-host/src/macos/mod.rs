@@ -1,15 +1,17 @@
-//! macOS 后端（`Ax`）：AX 负责窗口清单、控件树、后台语义动作、读文本与有界等待，
-//! CGWindowList 负责层叠序与窗口编号。
+//! macOS 后端（`Ax`）：AX 负责窗口清单、控件树、后台语义动作、窗口动作、读文本与有界等待，
+//! CGWindowList 负责层叠序、窗口编号与窗口几何，CGEvent 负责前台键鼠（`foreground`、`sink`），
+//! ScreenCaptureKit 负责取图（`capture`）。
 //!
-//! 纯换算（`facts`、`node`、`plan`、`identity`、`associate`）在每个目标的单测里编译，
-//! 调 AX 的部分（`ax`、`walk` 与本文件的后端）只在 macOS 上编译。
+//! 纯换算（`facts`、`node`、`plan`、`identity`、`associate`、`screen`、`events`、`keys`）在每个
+//! 目标的单测里编译，调系统接口的部分（`ax`、`walk`、`sink`、`capture`、`foreground` 与本文件的
+//! 后端）只在 macOS 上编译。
 //!
 //! 五条边界：
 //!
-//! 1. 结构化路径不采集任何图像，也不调用置前台、设焦点或指针接口。取图、前台键鼠与窗口动作
-//!    这个后端还没有实现：一律以 `unsupported` 拒绝，可用动作表里也不列。
+//! 1. 结构化路径不采集任何图像，也不调用置前台、设焦点或指针接口。前台动作只在前台模式开着、
+//!    且窗口对应上 CG 窗口时列出与执行；取图与前台动作对没对应上的窗口一律拒绝。
 //! 2. 本进程不是受信任的辅助功能客户端时，一切读取与动作都以 `accessibility_not_trusted`
-//!    拒绝。每次现问：用户可以在 worker 运行期间开关授权。
+//!    拒绝。每次现问：用户可以在 worker 运行期间开关授权。取图另要屏幕录制授权，同样每次现问。
 //! 3. `ref` 是不透明串：从窗口元素出发的子节点下标路径、`@` 后的核对串（原始角色、子角色与
 //!    稳定标识的指纹）、`#` 后的身份段（进程内身份表的编号）。动作前按路径重新定位并核对两者。
 //! 4. 消息上界在握手时对系统范围元素设一次，对本进程的全部 AX 调用生效。不要改成对窗口或
@@ -20,10 +22,19 @@
 mod associate;
 #[cfg(target_os = "macos")]
 mod ax;
+#[cfg(target_os = "macos")]
+mod capture;
+mod events;
 mod facts;
+#[cfg(target_os = "macos")]
+mod foreground;
 mod identity;
+mod keys;
 mod node;
 mod plan;
+mod screen;
+#[cfg(target_os = "macos")]
+mod sink;
 #[cfg(target_os = "macos")]
 mod walk;
 
@@ -37,7 +48,9 @@ mod backend {
     use std::time::Duration;
 
     use super::ax::{self, Element};
+    use super::capture;
     use super::facts::{action_error, attr, error_name, Failure, Value, NOT_TRUSTED};
+    use super::foreground::{self, Aim, Target};
     use super::node::{self, Fields};
     use super::plan::{self, Call, MAX_TOGGLE_STEPS};
     use super::walk::{self, Located, Root};
@@ -45,9 +58,11 @@ mod backend {
         dispatch_call, wait_loop, ActRequest, Attempt, Backend, CaptureRequest, Job, Outcome,
         Probe, WaitRequest, Watch,
     };
+    use crate::geometry::ScreenPoint;
     use crate::protocol::{
-        now_ms, ActionEvidence, ActionSpec, BlockingWindow, Bounds, Dispatch, Image, Observation,
-        Select, ToggleState, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED, TARGET_BLOCKED,
+        now_ms, ActionEvidence, ActionSpec, BlockingWindow, Bounds, Dispatch, DragTarget, Image,
+        Observation, Select, ToggleState, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED,
+        TARGET_BLOCKED,
     };
     use crate::tree::{matches_target, settle};
 
@@ -58,9 +73,15 @@ mod backend {
     /// 调用没返回时随回执带回几个顶层窗口。
     const MAX_BLOCKING_WINDOWS: usize = 16;
 
-    /// 前台动作的拒绝原因。准入已经要求前台模式开着，走到这里说明模式开着而这个后端没有实现。
-    const FOREGROUND_UNSUPPORTED: &str =
-        "unsupported: 前台动作（指针、键盘与窗口动作）在 macOS 后端尚未实现";
+    /// 没有唯一对应 CG 窗口的 AX 窗口被要求取图或前台动作时的拒绝原因。
+    const WINDOW_ONLY: &str =
+        "window_unassociated: 这个窗口没有唯一对应的 CG 窗口，不能取图，也不能做前台动作";
+    /// 系统没有按窗口取图的接口。
+    const CAPTURE_UNAVAILABLE: &str =
+        "capture_unavailable: 按窗口取图要 macOS 14 或更高版本（ScreenCaptureKit 的 SCScreenshotManager）";
+    /// 屏幕录制授权缺失时取图的拒绝原因。
+    const NO_SCREEN_RECORDING: &str =
+        "screen_recording_not_granted: 系统设置的「隐私与安全性」里没有给 qywork 屏幕录制权限，取不了图";
 
     /// 动作前重新定位与等待判定读的字段：值与状态都要，前台属性不要。
     const ALL_FIELDS: Fields = Fields {
@@ -80,6 +101,14 @@ mod backend {
         } else {
             Err(NOT_TRUSTED.to_owned())
         }
+    }
+
+    /// 窗口编号对应的 CGWindowID。负数是没有对应 CG 窗口的 AX 窗口。
+    fn cg_number(window: i64) -> Result<u32, String> {
+        if window < 0 {
+            return Err(WINDOW_ONLY.to_owned());
+        }
+        u32::try_from(window).map_err(|_| format!("bad_window: {window} 不是 CGWindowID"))
     }
 
     impl Backend for Ax {
@@ -154,19 +183,26 @@ mod backend {
             tree.map(Observation::Tree).map_err(Failure::into_reason)
         }
 
-        /// 执行一个后台动作并按调用方当前观察的范围整份重读。没有派发就不重读。
+        /// 执行一个动作并按调用方当前观察的范围整份重读。没有派发就不重读。
         fn act(
             &self,
             req: &ActRequest<'_>,
-            _stop: &dyn Fn() -> bool,
+            stop: &dyn Fn() -> bool,
         ) -> (Attempt, Result<Observation, String>) {
             let refused =
                 |reason: String| (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned()));
             if let Err(reason) = trusted() {
                 return refused(reason);
             }
-            if req.action.foreground_only() || req.point.is_some() {
-                return refused(FOREGROUND_UNSUPPORTED.to_owned());
+            if req.action.foreground_only() {
+                return match act_foreground(req, stop) {
+                    Attempt::Refused(reason) => refused(reason),
+                    // 调用还没返回：应用可能卡在这次调用里，重读会等满上界再超时。
+                    Attempt::Called(outcome) if !outcome.returned => {
+                        (Attempt::Called(outcome), Err(TARGET_BLOCKED.to_owned()))
+                    }
+                    called => (called, self.reread(req)),
+                };
             }
             let Some(reference) = req.reference else {
                 return refused("missing_target: 这个动作只能按控件执行".to_owned());
@@ -195,16 +231,7 @@ mod backend {
                 Attempt::Called(outcome) if !outcome.returned => {
                     (Attempt::Called(outcome), Err(TARGET_BLOCKED.to_owned()))
                 }
-                called => {
-                    let scope = Select {
-                        root: req.root.map(str::to_owned),
-                        ..Select::default()
-                    };
-                    (
-                        called,
-                        self.read_tree(req.window, &scope, req.bounds, req.foreground),
-                    )
-                }
+                called => (called, self.reread(req)),
             }
         }
 
@@ -219,13 +246,27 @@ mod backend {
             walk::read_text(&root, window, reference, max_chars).map_err(Failure::into_reason)
         }
 
+        /// 系统接口与屏幕录制授权先判，窗口最小化与几何再判，都满足才调 ScreenCaptureKit，
+        /// 理由见 `capture` 第 1、2 条。
         fn capture_image(&self, req: &CaptureRequest<'_>) -> Result<Image, String> {
-            if req.window < 0 {
-                return Err(
-                    "window_unassociated: 这个窗口没有唯一对应的 CG 窗口，不能取图".to_owned(),
-                );
+            let number = cg_number(req.window)?;
+            if !capture::available() {
+                return Err(CAPTURE_UNAVAILABLE.to_owned());
             }
-            Err("unsupported: 取图在 macOS 后端尚未实现".to_owned())
+            if !capture::permitted() {
+                return Err(NO_SCREEN_RECORDING.to_owned());
+            }
+            trusted()?;
+            let root = walk::root(req.window).map_err(Failure::into_reason)?;
+            let facts =
+                walk::window_facts(&root.element, root.pid).map_err(Failure::into_reason)?;
+            if facts.minimized == Some(true) {
+                return Err("window_minimized: 窗口已最小化，采不到内容".to_owned());
+            }
+            let placed = root
+                .placed
+                .ok_or_else(|| "target_lost: 读不出窗口几何".to_owned())?;
+            capture::capture(number, &placed, req)
         }
 
         fn wait(
@@ -245,6 +286,128 @@ mod backend {
         }
     }
 
+    impl Ax {
+        /// 动作之后按调用方当前观察的范围整份重读。
+        fn reread(&self, req: &ActRequest<'_>) -> Result<Observation, String> {
+            let scope = Select {
+                root: req.root.map(str::to_owned),
+                ..Select::default()
+            };
+            self.read_tree(req.window, &scope, req.bounds, req.foreground)
+        }
+    }
+
+    /// 前台动作：核对几何代际、重新定位控件、求落点，再交给 `foreground::perform`。
+    ///
+    /// 按图像坐标的指针动作与不点名控件的键盘输入不读控件树：没有无障碍树的自绘窗口也做得了。
+    fn act_foreground(req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
+        let number = match cg_number(req.window) {
+            Ok(n) => n,
+            Err(reason) => return Attempt::Refused(reason),
+        };
+        let root = match walk::root(req.window) {
+            Ok(r) => r,
+            Err(f) => return Attempt::Refused(f.into_reason()),
+        };
+        let Some(placed) = root.placed else {
+            return Attempt::Refused("target_lost: 读不出窗口几何".to_owned());
+        };
+        // 按图定位的落点先核对窗口几何代际：窗口在采图与派发之间移动过的话，那个坐标指的
+        // 已经不是同一块界面。
+        if let Some(expected) = req.expect_generation {
+            let actual = placed.frame.generation();
+            if actual != expected {
+                return Attempt::Refused(format!("geometry_changed: {expected} → {actual}"));
+            }
+        }
+        let located = match req.reference.map(|r| walk::locate(&root, r, false)) {
+            None => None,
+            Some(Ok(l)) => Some(l),
+            Some(Err(f)) => return Attempt::Refused(f.into_reason()),
+        };
+        // 窗口动作作用于整个窗口，只接受窗口根节点，与它们只列在根节点上一致。
+        let whole_window = matches!(
+            req.action,
+            ActionSpec::SetWindowState { .. }
+                | ActionSpec::MoveWindow { .. }
+                | ActionSpec::ResizeWindow { .. }
+                | ActionSpec::CloseWindow
+        );
+        if whole_window && located.as_ref().is_some_and(|l| !l.path.is_empty()) {
+            return Attempt::Refused("pattern_missing: 窗口动作只能对窗口根节点执行".to_owned());
+        }
+        let target = Target {
+            root: &root,
+            number,
+            placed,
+        };
+        let aim = match aim(&target, located.as_ref(), req) {
+            Ok(aim) => aim,
+            Err(reason) => return Attempt::Refused(reason),
+        };
+        let focused = |l: &Located| -> Result<bool, String> {
+            l.element
+                .raw(attr::FOCUSED)
+                .map(|raw| raw.flag() == Some(true))
+                .map_err(|code| {
+                    Failure::from_ax("读焦点状态", code, ax::alive(root.pid)).into_reason()
+                })
+        };
+        let check = located
+            .as_ref()
+            .filter(|_| req.action.targets_window())
+            .map(|l| move || focused(l));
+        let focus: foreground::Focus<'_> = check
+            .as_ref()
+            .map(|c| c as &dyn Fn() -> Result<bool, String>);
+        foreground::perform(&target, focus, req.action, aim, stop)
+    }
+
+    /// 指针动作的落点与拖拽终点，屏幕物理像素。非指针动作两项都缺席。
+    ///
+    /// 落点两种来源：调用方给的屏幕坐标，或控件此刻矩形的中心。**矩形读的是这一次重新定位拿到的
+    /// 那一份**，不是观察时记下的。按控件定位时控件所在的顶层窗口取目标窗口本身：`ref` 从目标
+    /// 窗口元素出发。
+    fn aim(
+        target: &Target<'_>,
+        located: Option<&Located>,
+        req: &ActRequest<'_>,
+    ) -> Result<Aim, String> {
+        if !req.action.takes_point() {
+            return Ok(Aim::default());
+        }
+        let mapping = target.placed.mapping;
+        let center = |l: &Located| {
+            l.facts
+                .frame
+                .map(|f| mapping.rect(f).center())
+                .ok_or_else(|| "no_bounds: 这个控件没有可视位置".to_owned())
+        };
+        let anchor = match req.point {
+            Some(point) => point,
+            None => center(located.ok_or("missing_target: 指针动作没有落点")?)?,
+        };
+        let destination = match req.action {
+            ActionSpec::Drag { to } => Some(match to {
+                DragTarget::Offset { dx, dy } => ScreenPoint {
+                    x: anchor.x + dx,
+                    y: anchor.y + dy,
+                },
+                DragTarget::Ref { reference } => {
+                    let other = walk::locate(target.root, reference, false)
+                        .map_err(Failure::into_reason)?;
+                    center(&other)?
+                }
+            }),
+            _ => None,
+        };
+        Ok(Aim {
+            anchor: Some(anchor),
+            destination,
+            host: req.point.is_none().then_some(req.window),
+        })
+    }
+
     fn read_tree_inner(
         root: &Root,
         window: i64,
@@ -255,7 +418,8 @@ mod backend {
         let fields = Fields {
             value: select.include_value,
             state: select.include_state,
-            foreground,
+            // 没有对应 CG 窗口的窗口给不出坐标，也做不了前台动作，前台动作不列。
+            foreground: foreground && root.cg.is_some(),
         };
         let captured_at = now_ms();
         let start = match &select.root {
@@ -390,12 +554,20 @@ mod backend {
                     .reference
                     .ok_or_else(|| Failure::Refused("missing_ref".to_owned()))?;
                 let located = walk::root(req.window).and_then(|root| {
-                    walk::locate(&root, reference, false).map(|l| (l, root.frame))
+                    walk::locate(&root, reference, false)
+                        .map(|l| (l, root.frame, root.placed.map(|p| p.mapping)))
                 });
                 match located {
-                    Ok((l, frame)) => {
-                        let node =
-                            node::node(&l.facts, l.context, &l.path, l.id, frame, ALL_FIELDS);
+                    Ok((l, frame, mapping)) => {
+                        let node = node::node(
+                            &l.facts,
+                            l.context,
+                            &l.path,
+                            l.id,
+                            frame,
+                            mapping.as_ref(),
+                            ALL_FIELDS,
+                        );
                         Ok(Probe::Element {
                             enabled: node.enabled,
                             value: node.value,
@@ -433,15 +605,15 @@ mod backend {
     }
 
     /// 调用前后都读得到的窗口事实，全部来自 CGWindowList：应用卡在一次 AX 调用里时窗口服务器
-    /// 照常应答。
-    struct CallWatch {
+    /// 照常应答。后台动作与关闭窗口共用。
+    pub(super) struct CallWatch {
         pid: i32,
         window: Option<u32>,
         before: Vec<u32>,
     }
 
     impl CallWatch {
-        fn before(pid: i32, window: Option<u32>) -> Self {
+        pub(super) fn before(pid: i32, window: Option<u32>) -> Self {
             Self {
                 pid,
                 window,
@@ -486,5 +658,116 @@ mod backend {
                 })
                 .collect()
         }
+    }
+}
+
+/// ScreenCaptureKit 在 worker 的加载命令里必须是弱链接，见 `build.rs`。测试二进制与 worker
+/// 按同一组链接参数链接，macOS 上读测试二进制自己的加载命令核对。
+#[cfg(test)]
+mod linkage {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_LOAD_DYLIB: u32 = 0xc;
+    const LC_LOAD_WEAK_DYLIB: u32 = 0x8000_0018;
+
+    /// 64 位 Mach-O 里每一条 dylib 加载命令：是不是弱链接、安装名。不是 64 位 Mach-O 时交回空表。
+    fn dylibs(image: &[u8]) -> Vec<(bool, String)> {
+        let word = |at: usize| {
+            image
+                .get(at..at + 4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        if word(0) != Some(MH_MAGIC_64) {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut at = 32usize;
+        for _ in 0..word(16).unwrap_or(0) {
+            let (Some(cmd), Some(size)) = (word(at), word(at + 4)) else {
+                break;
+            };
+            if cmd == LC_LOAD_DYLIB || cmd == LC_LOAD_WEAK_DYLIB {
+                let name = word(at + 8)
+                    .and_then(|offset| image.get(at + offset as usize..at + size as usize))
+                    .and_then(|bytes| bytes.split(|b| *b == 0).next())
+                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+                if let Some(name) = name {
+                    out.push((cmd == LC_LOAD_WEAK_DYLIB, name));
+                }
+            }
+            if size == 0 {
+                break;
+            }
+            at += size as usize;
+        }
+        out
+    }
+
+    /// 一条 dylib 加载命令：命令头、名字偏移 24、三个版本字段，名字补齐到 8 字节。
+    fn command(cmd: u32, name: &str) -> Vec<u8> {
+        let mut path = name.as_bytes().to_vec();
+        path.push(0);
+        while (24 + path.len()) % 8 != 0 {
+            path.push(0);
+        }
+        let size = u32::try_from(24 + path.len()).expect("长度");
+        let mut out = Vec::new();
+        for field in [cmd, size, 24, 2, 0x1_0000, 0x1_0000] {
+            out.extend_from_slice(&field.to_le_bytes());
+        }
+        out.extend_from_slice(&path);
+        out
+    }
+
+    #[test]
+    fn dylib_load_commands_are_read_with_their_weak_flag() {
+        let commands = [
+            command(
+                LC_LOAD_WEAK_DYLIB,
+                "/System/Library/Frameworks/ScreenCaptureKit.framework/Versions/A/ScreenCaptureKit",
+            ),
+            command(0x19, "__TEXT"),
+            command(LC_LOAD_DYLIB, "/usr/lib/libSystem.B.dylib"),
+        ];
+        let body: Vec<u8> = commands.concat();
+        let mut image = Vec::new();
+        for field in [
+            MH_MAGIC_64,
+            0x0100_000c,
+            0,
+            2,
+            3,
+            u32::try_from(body.len()).expect("长度"),
+            0,
+            0,
+        ] {
+            image.extend_from_slice(&field.to_le_bytes());
+        }
+        image.extend_from_slice(&body);
+        assert_eq!(
+            dylibs(&image),
+            vec![
+                (
+                    true,
+                    "/System/Library/Frameworks/ScreenCaptureKit.framework/Versions/A/ScreenCaptureKit"
+                        .to_owned()
+                ),
+                (false, "/usr/lib/libSystem.B.dylib".to_owned()),
+            ]
+        );
+        assert!(dylibs(b"\x7fELF").is_empty());
+    }
+
+    /// 原始失败形状：强链接时 11.0–12.2 上 dyld 找不到这个框架，拒绝启动 worker。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_capture_kit_is_weakly_linked() {
+        let exe = std::env::current_exe().expect("测试二进制路径");
+        let image = std::fs::read(exe).expect("读得到测试二进制");
+        let linked: Vec<(bool, String)> = dylibs(&image)
+            .into_iter()
+            .filter(|(_, name)| name.contains("/ScreenCaptureKit.framework/"))
+            .collect();
+        assert!(!linked.is_empty(), "测试二进制没有链接 ScreenCaptureKit");
+        assert!(linked.iter().all(|(weak, _)| *weak), "{linked:?}");
     }
 }

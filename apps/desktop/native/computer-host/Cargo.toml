@@ -73,7 +73,8 @@ x11rb = { version = "0.14", default-features = false, features = ["composite", "
 # PNG 的 DEFLATE 压缩。版本跟 apps/desktop/src-tauri 依赖树里的那份对齐（0.8）。
 miniz_oxide = "0.8"
 
-# macOS 后端：控件树与语义动作经 AX（ApplicationServices），窗口层叠序经 CGWindowList。
+# macOS 后端：控件树、语义动作与窗口动作经 AX（ApplicationServices），窗口层叠序、显示器与
+# 前台键鼠经 CoreGraphics，取图经 ScreenCaptureKit。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = { version = "0.3", default-features = false, features = [
   "std",
@@ -98,7 +99,42 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = [
   "CGWindow",
   # 窗口信息里的矩形是字典，经 CGRectMakeWithDictionaryRepresentation 换回 CGRect。
   "CGGeometry",
+  # 显示器清单、全局矩形与显示模式：点到像素的换算按窗口所在显示器的比例。
+  # 取显示器清单的函数返回 CGError。
+  "CGDirectDisplay",
+  "CGError",
+  # 前台键鼠：建事件、设修饰键与点击次数、投到 HID 事件流。键盘事件的键码类型在 CGRemoteOperation 下。
+  "CGEvent",
+  "CGEventTypes",
+  "CGEventSource",
+  "CGRemoteOperation",
+  # 取回的 CGImage 画进一块已知排法的位图，读出 RGB。
+  "CGImage",
+  "CGBitmapContext",
+  "CGContext",
+  "CGColorSpace",
 ] }
+# 按窗口取图。这个框架从 macOS 12.3 起才有，`SCScreenshotManager` 从 14.0 起才有，而应用最低支持
+# 11.0：`build.rs` 把它改成弱链接，运行时先查类在不在。
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "SCScreenshotManager",
+  "SCShareableContent",
+  "SCStream",
+  "block2",
+  "objc2-core-foundation",
+  "objc2-core-graphics",
+] }
+# 查类在不在、持有 Objective-C 对象。不要开 `exception`：它要 Apple 的 C 编译器。
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSArray",
+  "NSError",
+  "NSString",
+] }
+# ScreenCaptureKit 的完成回调是块。
+block2 = { version = "0.6", default-features = false, features = ["std"] }
 # `kill(pid, 0)`：进程退出后 AX 对它的调用与应用不应答回同一个错误码，只能另查进程在不在。
 libc = { version = "0.2", default-features = false }
 
