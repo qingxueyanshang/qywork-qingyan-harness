@@ -6,9 +6,9 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { detectClis, findCli } from './cli-detect.ts'
 
 /** 造一个假的 claude 可执行文件。两种后缀都写，POSIX 与 Windows 各认一个。 */
@@ -48,6 +48,22 @@ describe('外部 CLI 识别', () => {
     expect(found.map((c) => c.id)).toEqual(['claude'])
     expect(found[0]!.vendor).toBe('Anthropic')
     expect(found[0]!.path.startsWith(dir)).toBe(true)
+  })
+
+  /**
+   * 原始失败形状：POSIX 上只查文件在不在，排在 PATH 前面的同名无执行位文件被认成已安装，
+   * 识别结果指向一个起不来的文件，派活时才以 EACCES 失败。
+   */
+  test('没有执行位的同名文件与同名目录不算，继续往 PATH 后面找', async () => {
+    const plain = await mkdtemp(join(tmpdir(), 'qy-cli-plain-'))
+    await writeFile(join(plain, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o644 })
+    const folder = await mkdtemp(join(tmpdir(), 'qy-cli-dir-'))
+    await mkdir(join(folder, 'claude'))
+    const real = await fakeBin('claude')
+    const found = await detectClis({ PATH: [plain, folder, real].join(delimiter), PATHEXT: '.CMD' })
+    // Windows 没有执行位，能否执行看后缀：排在最前的无后缀文件照旧认。
+    const expected = process.platform === 'win32' ? join(plain, 'claude') : join(real, 'claude')
+    expect(found.map((c) => c.path)).toEqual([expected])
   })
 
   test('PATH 上一个都没有时回空，不报错', async () => {

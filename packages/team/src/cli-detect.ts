@@ -14,7 +14,8 @@
  * 或者那家的凭证文件在。
  */
 
-import { access } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { access, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import type { CliAgent } from './types.ts'
@@ -260,12 +261,27 @@ async function resolveOnPath(bin: string, env: NodeJS.ProcessEnv): Promise<strin
     if (!base) continue
     for (const ext of exts) {
       const p = join(base, bin + ext.toLowerCase())
-      if (await exists(p)) return p
+      if (await runnable(p)) return p
     }
     // POSIX 上没有后缀这一说；Windows 上无后缀的那个也要认（可能是真的可执行文件）。
     if (process.platform === 'win32' && (await exists(join(base, bin)))) return join(base, bin)
   }
   return null
+}
+
+/**
+ * 这个路径能否当命令执行。POSIX 上要求是带执行位的普通文件：没有执行位的文件与同名目录，
+ * `execve` 以 EACCES 拒绝，shell 按 PATH 查找时跳过它们继续往后找。
+ * Windows 没有执行位，能否执行由后缀决定，存在即可。
+ */
+async function runnable(p: string): Promise<boolean> {
+  if (process.platform === 'win32') return exists(p)
+  const s = await stat(p).catch(() => null)
+  if (!s?.isFile()) return false
+  return await access(p, constants.X_OK).then(
+    () => true,
+    () => false,
+  )
 }
 
 async function exists(p: string): Promise<boolean> {
