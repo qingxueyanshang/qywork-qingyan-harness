@@ -22,6 +22,9 @@ mod associate;
 mod ax;
 mod facts;
 mod identity;
+// 前台键盘派发还没有接上：这张表此刻只有外壳补发抬起与单测在用。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+mod keys;
 mod node;
 mod plan;
 #[cfg(target_os = "macos")]
@@ -29,6 +32,39 @@ mod walk;
 
 #[cfg(target_os = "macos")]
 pub use backend::Ax;
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::keys::keycode;
+    use crate::protocol::{key_names, Modifier};
+
+    /// 词表里的每个键名、每个修饰键都有自己的键码，F21–F24 除外（macOS 没有这四个键）。
+    /// 两个名字共用一个键码时，补发抬起分不清抬的是哪一个。
+    #[test]
+    fn every_protocol_key_has_its_own_key_code() {
+        let modifiers = [
+            Modifier::Ctrl,
+            Modifier::Alt,
+            Modifier::Shift,
+            Modifier::Meta,
+        ];
+        let mut seen = HashMap::new();
+        for name in key_names().chain(modifiers.map(|m| m.key_name().to_owned())) {
+            let absent = ["f21", "f22", "f23", "f24"].contains(&name.as_str());
+            match keycode(&name) {
+                None => assert!(absent, "{name} 没有键码"),
+                Some(code) => {
+                    assert!(!absent, "{name} 在 macOS 上没有虚拟键码");
+                    if let Some(other) = seen.insert(code, name.clone()) {
+                        panic!("{name} 与 {other} 共用键码 {code:#04x}");
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 mod backend {

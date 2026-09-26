@@ -1,7 +1,7 @@
-//! 协议键名 → X11 keysym。keysym 换成键码按当前键盘映射做，那一步由各自的 X 连接完成。
+//! 协议键名 → X11 keysym → 键码。键盘映射由各自的 X 连接读，换算规则只在这里写一次。
 //!
-//! worker 派发按键与外壳在 worker 退出后补发抬起要用同一张表，外壳经 `#[path]` 引入本文件。
-//! 不要在外壳里另写一张表：两张表一旦不一致，补发抬起的就不是 worker 按下的那个键。
+//! worker 派发按键与外壳在 worker 退出后补发抬起要用同一张表与同一条换算规则，外壳经 `#[path]`
+//! 引入本文件。不要在外壳里另写一份：两份一旦不一致，补发抬起的就不是 worker 按下的那个键。
 //! 因此本文件只依赖标准库，不引用任何 crate 内的路径。
 
 /// 键名 → keysym。键名是协议写法（全小写的主键名，或修饰键名 `ctrl` / `alt` / `shift` /
@@ -56,9 +56,31 @@ pub fn keysym(name: &str) -> Option<u32> {
     Some(named)
 }
 
+/// 不带修饰就能按出 `sym` 的键码：键盘映射里第一组第一级上是它的那一个。
+///
+/// `syms` 是 `GetKeyboardMapping` 从 `min` 起逐键码排的 keysym 表，每个键码 `per` 个。
+/// 只在更高一级上的 keysym 返回 `None`：按下那个键得到的是另一个字符。
+pub fn keycode(min: u8, per: usize, syms: &[u32], sym: u32) -> Option<u8> {
+    syms.chunks(per.max(1))
+        .position(|levels| levels.first() == Some(&sym))
+        .and_then(|i| min.checked_add(u8::try_from(i).ok()?))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::keysym;
+    use super::{keycode, keysym};
+
+    /// 键码 8 空，9 是 a/A，10 空，11 只在第二级上有分号，12 是 Return。
+    const SYMS: [u32; 10] = [0, 0, 0x61, 0x41, 0, 0, 0x2c, 0x3b, 0xff0d, 0];
+
+    #[test]
+    fn a_keysym_resolves_only_on_the_first_level() {
+        assert_eq!(keycode(8, 2, &SYMS, 0x61), Some(9));
+        assert_eq!(keycode(8, 2, &SYMS, 0xff0d), Some(12));
+        // 大写 A 与分号只在第二级：按下那个键得到的是别的字符。
+        assert_eq!(keycode(8, 2, &SYMS, 0x41), None);
+        assert_eq!(keycode(8, 2, &SYMS, 0x3b), None);
+    }
 
     #[test]
     fn letters_digits_and_function_keys_map_to_their_keysyms() {

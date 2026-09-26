@@ -12,6 +12,8 @@ mod linux;
 #[cfg(any(target_os = "macos", test))]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod macos;
+#[cfg(target_os = "macos")]
+mod parent;
 mod protocol;
 mod serve;
 mod tree;
@@ -30,5 +32,6 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn main() {
+    parent::exit_with_parent();
     serve::run::<macos::Ax>()
 }
