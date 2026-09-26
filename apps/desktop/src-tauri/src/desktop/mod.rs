@@ -34,7 +34,7 @@ use tauri_plugin_shell::ShellExt;
 
 use crate::ws::WsSender;
 use frames::{
-    needs_target, relay, to_worker, Binding, Dispatch,
+    needs_target, relay, to_worker, Access, Binding, Dispatch,
     EventFrame, HeldInput, HostReady, RequestFrame, ResultFrame, WorkerLine, WorkerRequest,
     WorkerResponse,
 };
@@ -73,17 +73,6 @@ fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// 操作系统有没有授予桌面控制所需的权限。
-///
-/// Windows 的 UIA 不需要用户授权，如实报真。宿主自身未提权时操作不了提权窗口是 UIPI
-/// 的进程完整性规则，不是这一格的含义——它由动作回执里 worker 的调用失败原文表达。
-///
-/// macOS 的辅助功能授权与 Linux 的 AT-SPI 会话权限随各自的原生后端一起做，在那之前
-/// 如实报假：这两端的 worker 现在直接以错误退出，不存在可用的桌面控制。
-const fn authorized() -> bool {
-    cfg!(windows)
-}
-
 const fn platform() -> &'static str {
     if cfg!(windows) {
         "windows"
@@ -102,6 +91,8 @@ struct HostState {
     link: Option<Arc<worker::WorkerLink>>,
     worker_pid: Option<u32>,
     worker_ready: bool,
+    /// 当前 worker 最后一次报的授权事实。没有 worker 时是缺省值：不授权、不列缺项。
+    access: Access,
     /// worker 此刻认的连接代际。它只接受严格增大的值，所以要记下来才判得出该不该发
     /// `bind_connection`：worker 起来与 WS 建连没有固定先后，握手带的可能已经是旧值。
     worker_connection_epoch: u64,
@@ -163,6 +154,7 @@ pub fn start_with_worker(worker_path: PathBuf, port: u16, key: String) -> Arc<De
             link: None,
             worker_pid: None,
             worker_ready: false,
+            access: Access::default(),
             worker_connection_epoch: 0,
             pending: HashMap::new(),
             next_worker_id: 0,
@@ -241,7 +233,12 @@ impl DesktopHost {
             connection_epoch,
             platform: platform(),
             worker_ready: state.worker_ready,
-            authorized: authorized(),
+            // 握手回执先于就绪记下授权事实，就绪之前不发布它。
+            access: if state.worker_ready {
+                state.access.clone()
+            } else {
+                Access::default()
+            },
         }
     }
 
@@ -542,6 +539,10 @@ impl DesktopHost {
                 self.state.lock().expect("桌面宿主状态锁被污染").held = notice.input;
                 return;
             }
+            Ok(WorkerLine::Access(notice)) => {
+                self.access_changed(notice.access);
+                return;
+            }
             Err(e) => {
                 log::warn!("认不出的 worker 回执：{e}");
                 return;
@@ -552,6 +553,10 @@ impl DesktopHost {
             if state.handshake.as_ref().is_some_and(|(id, _)| *id == response.id) {
                 let (id, tx) = state.handshake.take().expect("上一行刚判过它存在");
                 state.pending.remove(&id);
+                // 授权事实在读 stdout 的这条线程上按行序记下：之后的授权通报一定排在它后面。
+                if let Some(access) = response.ready_access() {
+                    state.access = access;
+                }
                 drop(state);
                 let _ = tx.send(response);
                 return;
@@ -571,6 +576,33 @@ impl DesktopHost {
         };
         let frame = relay(request_id, &binding, response, |handle, pid| self.identify(handle, pid));
         self.send_frame(&frame);
+    }
+
+    /// 授权事实变了：记下，worker 已就绪时发一条状态事件。
+    ///
+    /// 还没就绪时只记不发：随后的 `host.ready` 带的就是这一份。
+    fn access_changed(&self, access: Access) {
+        let event = {
+            let mut state = self.state.lock().expect("桌面宿主状态锁被污染");
+            state.access = access;
+            state.worker_ready.then(|| EventFrame {
+                frame: "desktop.event",
+                connection_epoch: state.connection_epoch,
+                host_id: self.host_id.clone(),
+                host_epoch: state.host_epoch,
+                kind: "worker.state",
+                worker_ready: true,
+                access: state.access.clone(),
+            })
+        };
+        if let Some(event) = event {
+            log::info!(
+                "computer-host 授权变化 authorized={} missing={:?}",
+                event.access.authorized,
+                event.access.missing
+            );
+            self.send_frame(&event);
+        }
     }
 
     /// 一个窗口的进程启动时刻与可执行文件名。句柄与 pid 对不上即认不出。
@@ -626,6 +658,7 @@ impl DesktopHost {
         let (settled, event) = {
             let mut state = self.state.lock().expect("桌面宿主状态锁被污染");
             state.worker_ready = false;
+            state.access = Access::default();
             state.handshake = None;
             state.link = None;
             state.worker_pid = None;
@@ -638,7 +671,7 @@ impl DesktopHost {
                     host_epoch: state.host_epoch,
                     kind: "worker.state",
                     worker_ready: false,
-                    authorized: authorized(),
+                    access: Access::default(),
                 },
             )
         };
@@ -754,7 +787,7 @@ fn run_worker(host: &Arc<DesktopHost>) -> Result<(), String> {
     let _job = spawned.job;
     log::info!("computer-host worker 已启动 pid={pid}");
 
-    // stderr 只写日志：非 Windows 的 worker 直接在这里说明它没有可用实现。
+    // stderr 只写日志：后端起不来的原因与没给的授权前提都从这里来。
     let stderr = spawned.stderr;
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -837,6 +870,10 @@ fn await_ready(
     if !response.is_ready() {
         return Err(response.reason.unwrap_or_else(|| "握手被拒".to_owned()));
     }
+    // 授权事实已由读 stdout 的线程按行序记下（`on_worker_response`），这里只核对它在。
+    if response.ready_access().is_none() {
+        return Err("握手回执没有授权事实".to_owned());
+    }
     let ready = {
         let mut state = host.state.lock().expect("桌面宿主状态锁被污染");
         state.worker_ready = true;
@@ -850,7 +887,7 @@ fn await_ready(
             connection_epoch: state.connection_epoch,
             platform: platform(),
             worker_ready: true,
-            authorized: authorized(),
+            access: state.access.clone(),
         }
     };
     host.rebind_worker();
@@ -872,6 +909,7 @@ mod tests {
             link: None,
             worker_pid: None,
             worker_ready: false,
+            access: Access::default(),
             worker_connection_epoch: 0,
             pending: HashMap::new(),
             next_worker_id: 0,
@@ -920,6 +958,48 @@ mod tests {
         let mut s = state();
         let ids: Vec<String> = (0..3).map(|_| s.take_worker_id()).collect();
         assert_eq!(ids, vec!["w1", "w2", "w3"]);
+    }
+
+    fn host() -> DesktopHost {
+        DesktopHost {
+            host_id: "h1".to_owned(),
+            worker_path: PathBuf::new(),
+            _desktop_lock: None,
+            state: Mutex::new(state()),
+        }
+    }
+
+    /// 授权事实只来自 worker：握手回执里的那一份、之后的授权通报，worker 没了即回到缺省。
+    #[test]
+    fn the_access_facts_follow_the_worker_lines() {
+        let host = host();
+        let (tx, rx) = std::sync::mpsc::channel();
+        host.state.lock().unwrap().handshake = Some(("w1".to_owned(), tx));
+        host.on_worker_response(
+            r#"{"id":"w1","dispatch":"not_dispatched","observation":{"kind":"ready",
+                "access":{"authorized":false,"missing":["accessibility","screen_recording"]}}}"#,
+        );
+        assert!(rx.recv().unwrap().is_ready());
+        let denied = Access {
+            authorized: false,
+            missing: vec!["accessibility".to_owned(), "screen_recording".to_owned()],
+        };
+        assert_eq!(host.state.lock().unwrap().access, denied);
+
+        host.state.lock().unwrap().worker_ready = true;
+        host.on_worker_response(
+            r#"{"access":{"authorized":true,"missing":["screen_recording"]}}"#,
+        );
+        assert_eq!(
+            host.state.lock().unwrap().access,
+            Access {
+                authorized: true,
+                missing: vec!["screen_recording".to_owned()],
+            }
+        );
+
+        host.worker_gone("测试");
+        assert_eq!(host.state.lock().unwrap().access, Access::default());
     }
 
     /// 认不出的句柄一律拒派发。放行它等于让动作落到一个已经不存在的窗口的位置上。

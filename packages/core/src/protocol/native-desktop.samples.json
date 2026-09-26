@@ -6,7 +6,8 @@
     "connectionEpoch": 3,
     "platform": "windows",
     "workerReady": true,
-    "authorized": true
+    "authorized": true,
+    "missing": []
   },
   "workerState": {
     "type": "desktop.event",
@@ -14,8 +15,9 @@
     "hostId": "h1",
     "hostEpoch": 2,
     "kind": "worker.state",
-    "workerReady": false,
-    "authorized": true
+    "workerReady": true,
+    "authorized": true,
+    "missing": ["screen_recording"]
   },
   "requests": {
     "list_windows": {

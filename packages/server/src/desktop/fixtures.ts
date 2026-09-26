@@ -24,6 +24,7 @@ export const READY: DesktopHostReadyFrame = {
   platform: 'windows',
   workerReady: true,
   authorized: true,
+  missing: [],
 }
 
 export const WINDOW: DesktopWindow = {
