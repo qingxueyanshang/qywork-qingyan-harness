@@ -50,6 +50,7 @@ import type { SocketData } from '../deps.ts'
 import { RunManager } from '../runs.ts'
 import { serve } from '../server.ts'
 import { SubagentRegistry } from '../subagents.ts'
+import { meetsRuntimeFloor } from './coordinator.ts'
 
 const HOST_KEY = 'coordinator-host-key'
 
@@ -1513,6 +1514,24 @@ test('运行时版本低于下限时不发控制权，也不向宿主发请求',
   const port = handle.browser?.portFor('cv_1', WS)
   expect((await failure(port?.open('http://127.0.0.1:1/page'))).message).toMatch(/不可用/)
   expect(host.received).toHaveLength(0)
+})
+
+/**
+ * 原始失败形状：下限写成一个 WebView2 构建号 `152.0.4191.66` 并逐段比较，主版本同为 152 的
+ * 较早 Edge 构建 `152.0.4100.12` 被判不达标，AI 控制不发布。
+ */
+test('运行时下限按 Chromium 主版本判，主版本达标的任一构建都放行', async () => {
+  const { handle } = fresh()
+  const host = await AutoHost.connect(handle.port)
+  host.ready(fakeDevtools(host.marker).port, '152.0.4100.12')
+  await settle()
+  expect(handle.browser?.available()).toBe(true)
+
+  expect(meetsRuntimeFloor('154.0.8037.57')).toBe(true)
+  expect(meetsRuntimeFloor('152.0.1.0')).toBe(true)
+  expect(meetsRuntimeFloor('151.0.9999.99')).toBe(false)
+  expect(meetsRuntimeFloor('')).toBe(false)
+  expect(meetsRuntimeFloor('dev')).toBe(false)
 })
 
 test('释放之后这个端口再也拿不到控制权', async () => {
