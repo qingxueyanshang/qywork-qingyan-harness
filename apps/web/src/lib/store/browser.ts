@@ -9,7 +9,8 @@
  * 工作区的条目上，因此整页刷新之后各工作区的原生页各自回到自己的页签条上。
  */
 
-import { createSignal } from 'solid-js'
+import type { BrowserCapability } from '@qywork/core'
+import { type Accessor, createMemo, createRoot, createSignal } from 'solid-js'
 import {
   BLANK_PAGE,
   closeBrowserPage,
@@ -20,9 +21,11 @@ import {
   parkBrowserView,
 } from '../browser.ts'
 import { localHtmlUrl } from '../links.ts'
-import { isNativeBrowserShell } from './shell.ts'
+import { isDesktopShell } from './shell.ts'
 import { setState, state } from './state.ts'
 import { holdPanelTab, openPreviewTab, showPanelTab, syncBrowserTabs, workspace } from './ui.ts'
+
+type Presentation = NonNullable<BrowserCapability['presentation']>
 
 const [tabs, setTabs] = createSignal<readonly NativeTab[]>([])
 
@@ -37,12 +40,38 @@ export function browserTab(tabId: string): NativeTab | undefined {
 /**
  * 这一端能不能用内置浏览器（手动浏览）。
  *
- * 两条都要：这个界面在 Windows 桌面外壳里（摆得下原生子视图），
+ * 两条都要：这个界面在桌面外壳里（宿主就在这个外壳里，页签命令才调得到），
  * 且服务端报宿主已连上。宿主没连上时**不降级成 iframe**——那是另一种能力，
  * 不是同一件事的备用路线。
  */
 export function browserReady(): boolean {
-  return isNativeBrowserShell() && state.capabilities?.browser.connected === true
+  return isDesktopShell() && state.capabilities?.browser.connected === true
+}
+
+/**
+ * 页嵌在面板里（`embedded`）还是在浏览器自己的窗口里（`window`）。只由宿主在握手能力里报，
+ * 不按 UA 或平台推断；宿主第一次连上之前为 `null`。
+ *
+ * 宿主断开后沿用上一次的值：它由外壳的构建目标决定，同一次加载里不会变。不要改成跟着
+ * 断开回到 `null`，那会在宿主重连期间把嵌在面板里的页收掉。
+ */
+export const browserPresentation: Accessor<Presentation | null> = createRoot(() =>
+  createMemo<Presentation | null>((last) => state.capabilities?.browser.presentation ?? last, null),
+)
+
+/**
+ * 宿主连着却没有可用浏览器时的原因，其余情况为 `null`。设置页的状态行与开页失败的提示
+ * 用同一句话。
+ */
+export function browserUnavailableText(): string | null {
+  switch (state.capabilities?.browser.unavailable) {
+    case 'not_found':
+      return '未找到 Chrome、Edge 或 Chromium'
+    case 'exited':
+      return '浏览器已退出'
+    default:
+      return null
+  }
 }
 
 /**
@@ -105,19 +134,21 @@ export async function openBrowserTab(url?: string): Promise<void> {
 /**
  * 正文里的链接落到右侧面板。
  *
- * 本地 HTML 使用工作区文件地址；HTTP 链接按所在端使用内置浏览器或网页预览。
- * 宿主不可用或开页失败时投递已有的错误通知，不把 file URL 交给远端 iframe。
+ * 桌面外壳里本地 HTML 与 HTTP 链接都交给内置浏览器，页嵌在面板里还是在独立窗口里由宿主定；
+ * 别的端 HTTP 链接用网页预览。宿主不可用或开页失败时投递已有的错误通知，
+ * 不把 file URL 交给远端 iframe。
  */
 export function openLinkInPanel(url: string): void {
   const local = localHtmlUrl(url, workspace()?.root ?? '/')
   const failed = (message: string) => setState('notice', { reason: 'preview_failed', message })
-  if (isNativeBrowserShell()) {
+  if (isDesktopShell()) {
     if (!workspace()) {
       failed('请先打开工作区。')
       return
     }
     if (!browserReady()) {
-      failed('内置浏览器尚未连接，请稍后重试。')
+      const reason = browserUnavailableText()
+      failed(reason ? `${reason}。` : '内置浏览器尚未连接，请稍后重试。')
       return
     }
     void openBrowserTab(local ?? url).catch((error: unknown) => {
@@ -126,7 +157,7 @@ export function openLinkInPanel(url: string): void {
     return
   }
   if (local) {
-    failed('本地网页预览需要 Windows 桌面端。')
+    failed('本地网页预览需要桌面端。')
     return
   }
   openPreviewTab(url)
@@ -142,11 +173,15 @@ export function openLinkInPanel(url: string): void {
  * 挂载时按需摆放。`parkBrowserView()` 不带 tabId，按宿主的存活页全部收起，不依赖前端此刻
  * 认得几页。
  *
+ * 不要把这一次 park 挪到拿到 `browserPresentation` 之后：显示位置要等宿主连上服务端才有，
+ * 硬刷新之后宿主重连可能要几秒，这段时间里子视图一直盖着聊天。页在独立窗口里的宿主把
+ * 「全部收起」当作已成立，不需要这里区分。
+ *
  * 放在模块顶层，不挂在某个组件的 `onMount` 上：镜像随这个模块一起建立，
  * 对账就跟它在同一处，不引入「谁先跑」这个问题（同 `ui.ts` 里补终端页签那段）。
  */
 export function initBrowserProjection(): void {
-  if (!isNativeBrowserShell()) return
+  if (!isDesktopShell()) return
   parkBrowserView()
   void onBrowserTabs(project).catch(() => {})
   void listBrowserTabs()

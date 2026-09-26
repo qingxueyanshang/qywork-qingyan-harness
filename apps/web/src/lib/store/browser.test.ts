@@ -10,8 +10,8 @@
  * `store/browser.ts` 顶层 `new QyClient` 不在这条链上，但它经 `state.ts` / `ui.ts` 间接
  * 触到几个浏览器全局，所以这里先补齐再动态 import（同 `store.test.ts` 的理由）。
  *
- * 覆盖范围（B6）：`store/browser.ts` 的 `initBrowserProjection`、`openBrowserTab` 与 `browserTabLabel`，
- * 连同它们经 `store/ui.ts` 按工作区落账的那一段。
+ * 覆盖范围（B6）：`store/browser.ts` 的 `initBrowserProjection`、`openBrowserTab`、`browserTabLabel`、
+ * `openLinkInPanel` 与 `browserUnavailableText`，连同它们经 `store/ui.ts` 按工作区落账的那一段。
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -33,10 +33,13 @@ g.localStorage ??= {
   removeItem: (k: string) => stored.delete(k),
 }
 
-const { browserTabLabel, initBrowserProjection, openBrowserTab } = await import('./browser.ts')
+const { browserTabLabel, initBrowserProjection, openBrowserTab, openLinkInPanel } = await import(
+  './browser.ts'
+)
 const { panelTabs, setSidePanel, setWorkspace, sidePanel, syncBrowserTabs } = await import(
   './ui.ts'
 )
+const { setState, state } = await import('./state.ts')
 
 interface Invoke {
   cmd: string
@@ -44,7 +47,8 @@ interface Invoke {
 }
 
 /**
- * 装成 Windows 桌面外壳，记录所有原生调用。返回 restore。
+ * 装成桌面外壳，记录所有原生调用。返回 restore。UA 取 Linux 的：宿主是哪一种只由握手能力说，
+ * 与 UA 无关。
  *
  * `reply` 给某条命令自定回包，返回 `undefined` 的走默认回包。
  */
@@ -54,7 +58,7 @@ function asShell(
 ): () => void {
   const origNav = g.navigator
   const origTauri = g.__TAURI_INTERNALS__
-  g.navigator = { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+  g.navigator = { userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' }
   g.__TAURI_INTERNALS__ = {
     invoke: (cmd: string, args: Record<string, unknown> | undefined) => {
       invokes.push({ cmd, args })
@@ -111,7 +115,7 @@ describe('内置浏览器投影初始化', () => {
     restore = undefined
   })
 
-  test('在 Windows 桌面外壳里初始化时，先把所有子视图移出可视区', () => {
+  test('在桌面外壳里初始化时，先把所有子视图移出可视区', () => {
     const invokes: Invoke[] = []
     restore = asShell(invokes)
 
@@ -266,6 +270,73 @@ describe('内置浏览器页按工作区落账', () => {
 
     await openBrowserTab()
 
+    expect(invokes.some((i) => i.cmd === 'browser_open')).toBe(false)
+  })
+})
+
+/**
+ * 正文里的链接落到内置浏览器。
+ *
+ * 原始失败形状：macOS 与 Linux 的外壳里宿主已经连上，点本地 HTML 仍提示「本地网页预览需要
+ * Windows 桌面端。」；宿主报了找不到浏览器，提示却是「尚未连接，请稍后重试」。
+ */
+describe('正文链接交给内置浏览器', () => {
+  let restore: (() => void) | undefined
+  const previous = state.capabilities
+  afterEach(() => {
+    restore?.()
+    restore = undefined
+    setState('notice', null)
+    setState('capabilities', previous)
+  })
+
+  const caps = (browser: Record<string, unknown>) =>
+    ({
+      sandbox: { backend: 'none', active: false, reason: '' },
+      environment: [],
+      mode: 'auto',
+      browser,
+    }) as never
+
+  test('页在独立窗口里的宿主：本地 HTML 按工作区文件地址开页', async () => {
+    reset()
+    const tab = hostTab('bt_link', WS_A.id)
+    const opened: (Record<string, unknown> | undefined)[] = []
+    restore = asShell([], (cmd, args) => {
+      if (cmd === 'browser_open') {
+        opened.push(args)
+        return Promise.resolve(tab)
+      }
+      if (cmd === 'browser_tabs') return Promise.resolve([tab])
+      return undefined
+    })
+    setState(
+      'capabilities',
+      caps({ connected: true, runtimeSupported: true, presentation: 'window' }),
+    )
+    setWorkspace(WS_A)
+
+    openLinkInPanel('page.html')
+    await flush()
+
+    expect(opened).toEqual([{ workspaceId: WS_A.id, url: 'file:///C:/a/page.html' }])
+    expect(sidePanel()).toEqual({ tab: 'bt_link' })
+    expect(state.notice?.reason).not.toBe('preview_failed')
+  })
+
+  test('宿主报找不到浏览器：提示原因，不开页', () => {
+    reset()
+    const invokes: Invoke[] = []
+    restore = asShell(invokes)
+    setState(
+      'capabilities',
+      caps({ connected: false, runtimeSupported: false, unavailable: 'not_found' }),
+    )
+    setWorkspace(WS_A)
+
+    openLinkInPanel('page.html')
+
+    expect(state.notice?.message).toBe('未找到 Chrome、Edge 或 Chromium。')
     expect(invokes.some((i) => i.cmd === 'browser_open')).toBe(false)
   })
 })

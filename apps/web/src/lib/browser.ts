@@ -1,8 +1,9 @@
 /**
  * 内置浏览器桥：界面这一侧与 Rust 原生宿主之间只有这一层。
  *
- * **只在 Windows 桌面外壳里存在。** 调用方在渲染入口之前就该用
- * `isNativeBrowserShell()` 加握手能力判掉，而不是让这里抛错（CLAUDE.md B5）。
+ * **只在桌面外壳里存在。** 调用方在渲染入口之前就该用 `isDesktopShell()` 加握手能力
+ * 判掉，而不是让这里抛错（CLAUDE.md B5）。摆放子视图只对页嵌在面板里的宿主成立，
+ * 把窗口提到前面只对页在独立窗口里的宿主成立，按握手能力的 `presentation` 取用。
  *
  * 标签页清单、地址、标题都是宿主推过来的投影，这里只发「请宿主做一件事」。
  * **前端不生成 tabId，也不自己写地址**——那两样在宿主手里。归属是协调器的事，
@@ -50,6 +51,11 @@ export function navigateBrowserPage(
 
 export function onBrowserTabs(handler: (tabs: NativeTab[]) => void): Promise<void> {
   return tauriListen<NativeTab[]>('browser:tabs', handler)
+}
+
+/** 把这一页所在的浏览器窗口提到前面，并切到这一页。 */
+export function activateBrowserPage(tabId: string): Promise<void> {
+  return tauriInvoke<void>('browser_activate', { tabId })
 }
 
 /**
