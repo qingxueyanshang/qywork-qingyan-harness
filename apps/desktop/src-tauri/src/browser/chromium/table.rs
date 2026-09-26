@@ -11,7 +11,7 @@ pub struct PageEntry {
     pub session: String,
     /// 宿主给它的 tabId。`None` = 不在存活集合里的页（用户在浏览器窗口里自己开的页）。
     pub tab: Option<String>,
-    /// 最近一次报给宿主的地址与标题，来自 `Target.targetInfoChanged`。
+    /// 浏览器最近一次报出的地址与标题，经 `page_info` 写入。
     pub url: String,
     pub title: String,
     /// Page 域已开、已放行。宿主建页要等到这一步才注入标记。
@@ -27,6 +27,14 @@ pub struct PageEntry {
 pub struct Popup {
     pub opener_tab: String,
     pub marker: String,
+}
+
+/// 一次地址与标题投影里要报给宿主的变化，只含变了的那几项。
+#[derive(Debug, PartialEq, Eq)]
+pub struct InfoChange {
+    pub tab: String,
+    pub url: Option<String>,
+    pub title: Option<String>,
 }
 
 #[derive(Default)]
@@ -99,6 +107,28 @@ impl Table {
         (entry.session == session).then_some(entry)
     }
 
+    /// 这个会话是不是某个顶层页自己的会话。是则返回那一页的 targetId；子帧会话不算。
+    pub fn page_of_session(&self, session: &str) -> Option<&str> {
+        let top = self.sessions.get(session)?;
+        (self.pages.get(top)?.session == session).then_some(top.as_str())
+    }
+
+    /// 记下浏览器报出的一页此刻的地址与标题。存活集合里的页有变化时返回要报的那几项；
+    /// 不在存活集合里的页只记不报。
+    pub fn page_info(&mut self, target: &str, url: &str, title: &str) -> Option<InfoChange> {
+        let entry = self.pages.get_mut(target)?;
+        let url_changed = entry.url != url;
+        let title_changed = entry.title != title;
+        url.clone_into(&mut entry.url);
+        title.clone_into(&mut entry.title);
+        let tab = entry.tab.clone()?;
+        (url_changed || title_changed).then(|| InfoChange {
+            tab,
+            url: url_changed.then(|| url.to_owned()),
+            title: title_changed.then(|| title.to_owned()),
+        })
+    }
+
     pub fn page(&self, target: &str) -> Option<&PageEntry> {
         self.pages.get(target)
     }
@@ -120,7 +150,7 @@ impl Table {
 
 #[cfg(test)]
 mod tests {
-    use super::Table;
+    use super::{InfoChange, Table};
 
     fn table_with_tab() -> Table {
         let mut t = Table::default();
@@ -173,6 +203,47 @@ mod tests {
         t.frame_removed("P1");
         assert_eq!(t.tab_of_frame("F-same"), None);
         assert_eq!(t.tab_of_frame("P1").as_deref(), Some("bt_1"));
+    }
+
+    /// 导航提交时浏览器报的标题还是地址，文档标题要等之后重读才有：重读到的标题必须作为一次
+    /// 标题变化报出去，同样的读数再来一次不报。
+    #[test]
+    fn a_title_read_after_the_commit_is_reported_once() {
+        let mut t = table_with_tab();
+        assert_eq!(
+            t.page_info("P1", "http://h/one", "h/one"),
+            Some(InfoChange {
+                tab: "bt_1".into(),
+                url: Some("http://h/one".into()),
+                title: Some("h/one".into()),
+            })
+        );
+        assert_eq!(
+            t.page_info("P1", "http://h/one", "标题一"),
+            Some(InfoChange { tab: "bt_1".into(), url: None, title: Some("标题一".into()) })
+        );
+        assert_eq!(t.page_info("P1", "http://h/one", "标题一"), None);
+        assert_eq!(t.page("P1").unwrap().title, "标题一");
+    }
+
+    /// 不在存活集合里的页只记不报；建页等导航完成时读的就是记下的这一份。
+    #[test]
+    fn untracked_and_unknown_pages_report_nothing() {
+        let mut t = Table::default();
+        t.page_attached("P2", "S2", "about:blank", "");
+        assert_eq!(t.page_info("P2", "http://h/x", "X"), None);
+        assert_eq!(t.page("P2").unwrap().title, "X");
+        assert_eq!(t.page_info("P-unknown", "http://h/x", "X"), None);
+    }
+
+    /// 重读只对顶层页自己的会话做：子帧会话报的加载事件不是这一页的。
+    #[test]
+    fn only_the_page_session_maps_back_to_its_page() {
+        let mut t = table_with_tab();
+        t.child_attached("S1", "S-oopif", "F-oopif");
+        assert_eq!(t.page_of_session("S1"), Some("P1"));
+        assert_eq!(t.page_of_session("S-oopif"), None);
+        assert_eq!(t.page_of_session("S-unknown"), None);
     }
 
     /// 主帧只认页会话上报的那一帧：子帧会话里的根帧不是顶层页的主帧。

@@ -461,6 +461,11 @@ impl Instance {
                         self.frame_stopped(s, frame);
                     }
                 }
+                "Page.domContentEventFired" | "Page.loadEventFired" | "Page.navigatedWithinDocument" => {
+                    if let Some(s) = session {
+                        self.reread_info(s);
+                    }
+                }
                 "Browser.downloadWillBegin" => self.download_began(p),
                 "Browser.downloadProgress" => self.download_progressed(p),
                 _ => {}
@@ -545,7 +550,8 @@ impl Instance {
         }
     }
 
-    /// 地址与标题的投影。只报变了的那一项。
+    /// 地址与标题的投影。`Target.targetInfoChanged` 与重读的 `Target.getTargetInfo` 都走这里，
+    /// 只报变了的那一项。
     fn info_changed(&self, info: &Value) {
         if info.get("type").and_then(Value::as_str) != Some("page") {
             return;
@@ -553,21 +559,26 @@ impl Instance {
         let Some(target) = info.get("targetId").and_then(Value::as_str) else { return };
         let url = info.get("url").and_then(Value::as_str).unwrap_or_default();
         let title = info.get("title").and_then(Value::as_str).unwrap_or_default();
-        let (tab, url_changed, title_changed) = {
-            let mut table = self.table();
-            let Some(entry) = table.page_mut(target) else { return };
-            let url_changed = entry.url != url;
-            let title_changed = entry.title != title;
-            url.clone_into(&mut entry.url);
-            title.clone_into(&mut entry.title);
-            (entry.tab.clone(), url_changed, title_changed)
-        };
-        let (Some(tab), Some(host)) = (tab, super::host()) else { return };
-        if url_changed {
-            host.note_navigated(&tab, url);
+        let change = self.table().page_info(target, url, title);
+        let (Some(change), Some(host)) = (change, super::host()) else { return };
+        if let Some(url) = &change.url {
+            host.note_navigated(&change.tab, url);
         }
-        if title_changed {
-            host.note_title(&tab, title);
+        if let Some(title) = &change.title {
+            host.note_title(&change.tab, title);
+        }
+    }
+
+    /// 顶层页的主帧 DOMContentLoaded、load 或同文档导航之后重读一次地址与标题。
+    ///
+    /// 不要只靠 `Target.targetInfoChanged`：Chrome 只在导航提交时发它，那时标题还是地址，
+    /// 文档标题出来之后不再发（154 实测）；DOMContentLoaded 时重读已是文档标题。
+    /// 加载完成之后脚本再改的标题，要到下一次这三种事件才投影。
+    fn reread_info(&self, session: &str) {
+        let Some(target) = self.table().page_of_session(session).map(str::to_owned) else { return };
+        match self.call("Target.getTargetInfo", json!({ "targetId": target }), None) {
+            Ok(result) => self.info_changed(&result["targetInfo"]),
+            Err(e) => log::warn!("重读页的地址与标题失败：{e}"),
         }
     }
 
