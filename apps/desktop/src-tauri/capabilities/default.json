@@ -11,6 +11,7 @@
     "allow-pick-files",
     "allow-save-session-export",
     "allow-reveal-workspace",
+    "allow-desktop-open-settings",
     "allow-remember-workspace",
     "allow-window-minimize",
     "allow-window-toggle-maximize",
