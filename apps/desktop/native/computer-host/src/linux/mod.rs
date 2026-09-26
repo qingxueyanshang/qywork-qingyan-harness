@@ -631,11 +631,11 @@ impl Atspi {
         foreground::perform(display, window, focus, req.action, aim, stop)
     }
 
-    /// 指针动作的落点与拖拽终点。非指针动作两项都缺席。
+    /// 指针动作的落点、拖拽终点，与按控件定位时控件自报的所在顶层窗口原点。非指针动作全部缺席。
     ///
     /// 落点两种来源：调用方给的屏幕坐标，或控件此刻的包围盒中心。**包围盒读的是这一次重新
-    /// 定位拿到的那一份**，不是观察时记下的。按控件定位时控件所在的顶层窗口取目标窗口本身：
-    /// `ref` 从目标窗口的 frame 出发。
+    /// 定位拿到的那一份**，不是观察时记下的。不要把控件所在的顶层窗口当成目标窗口本身：`ref`
+    /// 从目标窗口的 frame 出发，而组合框下拉菜单里的控件画在目标窗口拥有的另一个顶层窗口里。
     fn aim(
         &self,
         tree: Option<&(Connection, Root)>,
@@ -645,15 +645,20 @@ impl Atspi {
         if !req.action.takes_point() {
             return Ok(foreground::Aim::default());
         }
-        let center = |l: &Located| {
+        let bounds = |l: &Located| {
             l.facts
                 .extents
-                .map(|r| r.center())
                 .ok_or_else(|| "no_bounds: 这个控件没有可视位置".to_owned())
         };
-        let anchor = match req.point {
-            Some(point) => point,
-            None => center(located.ok_or("missing_target: 指针动作没有落点")?)?,
+        let (anchor, origin) = match (req.point, tree, located) {
+            (Some(point), _, _) => (point, None),
+            (None, Some((conn, _)), Some(l)) => {
+                let rect = bounds(l)?;
+                let origin =
+                    walk::toplevel_origin(conn, &l.obj, rect).map_err(Failure::into_reason)?;
+                (rect.center(), origin)
+            }
+            (None, _, _) => return Err("missing_target: 指针动作没有落点".to_owned()),
         };
         let destination = match req.action {
             ActionSpec::Drag { to } => Some(match to {
@@ -665,7 +670,7 @@ impl Atspi {
                     let (conn, root) = tree.ok_or("missing_target: 拖拽终点没有控件树")?;
                     let target = walk::locate(conn, &root.obj, reference, ALL_FIELDS)
                         .map_err(Failure::into_reason)?;
-                    center(&target)?
+                    bounds(&target)?.center()
                 }
             }),
             _ => None,
@@ -673,7 +678,7 @@ impl Atspi {
         Ok(foreground::Aim {
             anchor: Some(anchor),
             destination,
-            host: req.point.is_none().then_some(req.window),
+            origin,
         })
     }
 

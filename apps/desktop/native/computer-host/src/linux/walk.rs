@@ -19,6 +19,7 @@ use zbus::zvariant::OwnedObjectPath;
 
 use super::bus::{self, dbus, Failure, Obj, Reference};
 use super::node::{self, Context, Facts, Fields, Numbers, VALUE_TEXT_LIMIT};
+use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{Bounds, Completeness, Node, Select, REF_STALE};
 use crate::tree::{decode_ref, first_sighting, flatten, Collected};
 
@@ -124,6 +125,28 @@ pub fn facts(conn: &Connection, obj: &Obj, fields: Fields) -> Result<Facts, Fail
         value,
         text,
     })
+}
+
+/// 对象所在顶层窗口的客户区原点：屏幕坐标的包围盒 `screen` 减去窗口坐标的包围盒。读不到窗口
+/// 坐标时缺席，读取见 `optional`。
+///
+/// 窗口坐标由工具包按它自己记的顶层窗口给：GTK 3 对下拉菜单里的对象给弹出窗口，Qt 对组合框
+/// 下拉列表里的对象给主窗口。
+pub fn toplevel_origin(
+    conn: &Connection,
+    obj: &Obj,
+    screen: ScreenRect,
+) -> Result<Option<ScreenPoint>, Failure> {
+    let component: ComponentProxyBlocking = obj.proxy(conn)?;
+    Ok(optional(
+        component
+            .get_extents(CoordType::Window)
+            .map_err(dbus("读窗口坐标的包围盒")),
+    )?
+    .map(|(x, y, _, _)| ScreenPoint {
+        x: screen.x - x,
+        y: screen.y - y,
+    }))
 }
 
 /// Value 接口此刻的四个数。
