@@ -83,8 +83,9 @@ pub struct Fields {
 
 /// 按钮类默认动作的动作名。按优先顺序排。
 const INVOKE_NAMES: [&str; 4] = ["click", "press", "activate", "jump"];
-/// 复选与单选控件切换状态的动作名。Qt 给 `Toggle`，GTK 给 `click`。
-const TOGGLE_NAMES: [&str; 4] = ["toggle", "click", "press", "activate"];
+/// 复选与单选控件切换状态的动作名。Qt 给 `Toggle`，GTK 给 `click`，WebKit 的复选框按当前状态给
+/// `check` 或 `uncheck`，动作下标不变。
+const TOGGLE_NAMES: [&str; 6] = ["toggle", "click", "press", "activate", "check", "uncheck"];
 /// 可展开控件切换展开状态的动作名。GTK 的树表格单元给 `expand or contract`，展开器给
 /// `activate`，Qt 的组合框给 `Press`。不含 `toggle`：Qt 树表格单元的 `Toggle` 切换的是选中。
 const EXPAND_NAMES: [&str; 4] = ["expand or contract", "activate", "click", "press"];
@@ -749,6 +750,49 @@ mod tests {
             &["Press", "Toggle", "SetFocus"],
         );
         assert_eq!(claim(&qt), Some(Click::Toggle(1)));
+    }
+
+    /// 原始失败形状：WebKit 的复选框只有一个动作，未选中时名为 `check`、选中后名为 `uncheck`。
+    /// 两种状态都列 `set_toggle` 并报复选状态。
+    #[test]
+    fn a_web_check_box_offers_set_toggle_under_either_action_name() {
+        let web = [
+            State::Checkable,
+            State::Enabled,
+            State::Focusable,
+            State::Sensitive,
+            State::Showing,
+            State::Visible,
+        ];
+        let ifaces = [Interface::Action, Interface::Text, Interface::Hyperlink];
+        let off = facts(AtspiRole::CheckBox, &web, &ifaces, &["check"]);
+        let mut on = facts(AtspiRole::CheckBox, &web, &ifaces, &["uncheck"]);
+        on.states.insert(State::Checked);
+        for (facts, state) in [(&off, "off"), (&on, "on")] {
+            assert_eq!(claim(facts), Some(Click::Toggle(0)));
+            let node = node(facts, Context::default(), &[0], KEY, FIELDS);
+            assert_eq!(names(&node.actions), ["set_toggle"]);
+            assert_eq!(node.toggle, Some(state));
+        }
+    }
+
+    /// WebKit 的输入框带 `editable` 状态而不实现 EditableText：不列 `set_value`。
+    #[test]
+    fn a_web_text_input_without_editable_text_offers_no_set_value() {
+        let input = facts(
+            AtspiRole::Entry,
+            &[
+                State::Editable,
+                State::Enabled,
+                State::Focusable,
+                State::SelectableText,
+                State::Showing,
+                State::SingleLine,
+            ],
+            &[Interface::Action, Interface::Text],
+            &["activate"],
+        );
+        assert!(!names(&offers(&input, Context::default())).contains(&"set_value"));
     }
 
     /// Qt 的中间态同时带 `checked` 与 `indeterminate`。
