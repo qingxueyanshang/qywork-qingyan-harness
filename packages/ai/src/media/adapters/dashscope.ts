@@ -12,7 +12,7 @@ import {
   uploadDashScopeMedia,
 } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { dataUri, download, getJson, postJson, sniffMime } from '../http.ts'
+import { count, dataUri, defined, download, getJson, postJson, sniffMime } from '../http.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
@@ -22,6 +22,7 @@ import {
   type MediaRequest,
   type MediaResult,
   type MediaRunOptions,
+  type MediaUsage,
 } from '../types.ts'
 
 const DEFAULT_ORIGIN = 'https://dashscope.aliyuncs.com'
@@ -74,8 +75,35 @@ export class DashScopeImagesAdapter implements MediaAdapter {
     }
     const files = []
     for (const url of urls) files.push(await download(url, signal))
-    return { files }
+    return { files, usage: imageUsage(body, files.length) }
   }
+}
+
+/**
+ * 出图的计量。千问图像回 `output_image_count`、`input_image_count` 与档位 `output_image_type`；
+ * 万相图像回 `image_count`（它的 token 字段标明不计费，不读）。
+ */
+function imageUsage(body: Record<string, unknown>, received: number): MediaUsage {
+  const u = (body.usage ?? {}) as Record<string, unknown>
+  return defined<MediaUsage>({
+    images: count(u.output_image_count) ?? count(u.image_count) ?? received,
+    inputImages: count(u.input_image_count),
+    imageTier: typeof u.output_image_type === 'string' ? u.output_image_type : undefined,
+  })
+}
+
+/**
+ * 视频任务的计量（查询结果顶层的 `usage`）。`duration` 是计费秒数：万相有参考视频时含输入视频时长。
+ * `SR` 万相回数字、百炼上的可灵回字符串（`720` / `1080` / `4k`）；可灵另回 `audio`。
+ */
+function videoUsage(raw: unknown): MediaUsage {
+  const u = (raw ?? {}) as Record<string, unknown>
+  const sr = String(u.SR ?? '').toLowerCase()
+  return defined<MediaUsage>({
+    seconds: count(u.duration),
+    resolution: sr ? (sr.endsWith('k') || sr.endsWith('p') ? sr : `${sr}p`) : undefined,
+    audio: typeof u.audio === 'boolean' ? u.audio : undefined,
+  })
 }
 
 /** `output.choices[].message.content[].image` 里的地址。 */
@@ -112,11 +140,15 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
       signal,
     )
     const audio = (body.output as { audio?: { url?: unknown; data?: unknown } } | undefined)?.audio
+    // 千问语音合成 3 按输入字符计费，接口回 `characters`（一个汉字计 2 个字符）。
+    const usage = defined<MediaUsage>({
+      characters: count((body.usage as Record<string, unknown> | undefined)?.characters),
+    })
     if (typeof audio?.url === 'string' && audio.url)
-      return { files: [await download(audio.url, signal)] }
+      return { files: [await download(audio.url, signal)], usage }
     if (typeof audio?.data === 'string' && audio.data) {
       const bytes = new Uint8Array(Buffer.from(audio.data, 'base64'))
-      return { files: [{ bytes, mime: sniffMime(bytes) ?? 'audio/wav' }] }
+      return { files: [{ bytes, mime: sniffMime(bytes) ?? 'audio/wav' }], usage }
     }
     const code = typeof body.code === 'string' ? body.code : ''
     const message = typeof body.message === 'string' ? body.message : ''
@@ -183,9 +215,10 @@ export class DashScopeVideosAdapter implements MediaAdapter {
       await opts.onTask?.(taskId)
     }
     const id = taskId
+    const videoInput = req.inputs.some((i) => i.role === 'video')
     return afterSubmit(id, signal, async () => {
-      const url = await waitTask(id, () => this.check(origin, id, auth, signal), opts)
-      return { files: [await download(url, signal)] }
+      const done = await waitTask(id, () => this.check(origin, id, auth, signal), opts)
+      return { files: [await download(done.url, signal)], usage: { ...done.usage, videoInput } }
     })
   }
 
@@ -199,7 +232,9 @@ export class DashScopeVideosAdapter implements MediaAdapter {
     const out = (body.output ?? {}) as Record<string, unknown>
     const status = String(out.task_status ?? '')
     if (status === 'SUCCEEDED') {
-      if (typeof out.video_url === 'string') return { state: 'done', url: out.video_url }
+      if (typeof out.video_url === 'string') {
+        return { state: 'done', url: out.video_url, usage: videoUsage(body.usage) }
+      }
       return { state: 'failed', message: '任务成功但没有返回视频地址' }
     }
     if (status === 'FAILED' || status === 'CANCELED' || status === 'UNKNOWN') {

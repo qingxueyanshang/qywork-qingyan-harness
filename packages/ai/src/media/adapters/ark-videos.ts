@@ -7,7 +7,7 @@
  */
 
 import type { MediaModelSpec } from '../catalog.ts'
-import { dataUri, download, getJson, postJson } from '../http.ts'
+import { count, dataUri, defined, download, getJson, postJson } from '../http.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
@@ -17,6 +17,7 @@ import {
   type MediaRequest,
   type MediaResult,
   type MediaRunOptions,
+  type MediaUsage,
 } from '../types.ts'
 
 const DEFAULT_BASE = 'https://ark.cn-beijing.volces.com/api/v3'
@@ -26,6 +27,20 @@ const ROLE: Record<MediaInput['role'], string> = {
   last_frame: 'last_frame',
   reference: 'reference_image',
   video: 'reference_video',
+}
+
+/**
+ * 任务的计量。计费按 `usage.completion_tokens`（有参考视频时不足最低用量按最低用量回报）；
+ * `duration` 是输出秒数，`resolution` 与 `generate_audio` 是实际生成的规格。
+ */
+function taskUsage(body: Record<string, unknown>): MediaUsage {
+  const usage = (body.usage ?? {}) as Record<string, unknown>
+  return defined<MediaUsage>({
+    outputTokens: count(usage.completion_tokens),
+    seconds: count(body.duration),
+    resolution: typeof body.resolution === 'string' ? body.resolution.toLowerCase() : undefined,
+    audio: typeof body.generate_audio === 'boolean' ? body.generate_audio : undefined,
+  })
 }
 
 export class ArkVideosAdapter implements MediaAdapter {
@@ -64,9 +79,10 @@ export class ArkVideosAdapter implements MediaAdapter {
       await opts.onTask?.(taskId)
     }
     const id = taskId
+    const videoInput = req.inputs.some((i) => i.role === 'video')
     return afterSubmit(id, signal, async () => {
-      const url = await waitTask(id, () => this.check(base, id, auth, signal), opts)
-      return { files: [await download(url, signal)] }
+      const done = await waitTask(id, () => this.check(base, id, auth, signal), opts)
+      return { files: [await download(done.url, signal)], usage: { ...done.usage, videoInput } }
     })
   }
 
@@ -84,7 +100,7 @@ export class ArkVideosAdapter implements MediaAdapter {
     const status = String(body.status ?? '')
     if (status === 'succeeded') {
       const url = (body.content as { video_url?: unknown } | undefined)?.video_url
-      if (typeof url === 'string') return { state: 'done', url }
+      if (typeof url === 'string') return { state: 'done', url, usage: taskUsage(body) }
       return { state: 'failed', message: '任务成功但没有返回视频地址' }
     }
     if (status === 'failed' || status === 'cancelled' || status === 'expired') {

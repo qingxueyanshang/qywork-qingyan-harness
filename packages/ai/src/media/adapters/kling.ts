@@ -9,8 +9,9 @@
  * 图片按 base64 发，不带 `data:` 前缀；视频素材接口只收 URL，所以这条协议不收参考视频。
  */
 
+import type { Currency } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation } from '../catalog.ts'
-import { download, getJson, postJson } from '../http.ts'
+import { count, defined, download, getJson, postJson } from '../http.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
@@ -20,6 +21,7 @@ import {
   type MediaRequest,
   type MediaResult,
   type MediaRunOptions,
+  type MediaUsage,
 } from '../types.ts'
 
 const DEFAULT_BASE = 'https://api-beijing.klingai.com'
@@ -28,6 +30,25 @@ const CONTENT_TYPE: Partial<Record<MediaInput['role'], string>> = {
   first_frame: 'first_frame',
   last_frame: 'last_frame',
   reference: 'refer_image',
+}
+
+/**
+ * 任务的计量。金额取 `billing[]` 里从余额扣的那几项（`charge_type: cash`，`amount` 是实扣金额，`currency` 为 CNY / USD）；
+ * 从资源包扣的（`charge_type: unit`）只有单位数、没有金额，不记金额。秒数取视频那一项的 `duration`。
+ */
+function taskUsage(video: Record<string, unknown>, billing: unknown): MediaUsage {
+  const cash = (Array.isArray(billing) ? (billing as Record<string, unknown>[]) : []).filter(
+    (b) => b.charge_type === 'cash' && (b.currency === 'CNY' || b.currency === 'USD'),
+  )
+  const currency = cash[0]?.currency as Currency | undefined
+  const amounts = cash.filter((b) => b.currency === currency).map((b) => count(b.amount))
+  return defined<MediaUsage>({
+    seconds: count(video.duration),
+    billed:
+      currency && amounts.every((a) => a !== undefined)
+        ? { amount: amounts.reduce<number>((sum, a) => sum + (a ?? 0), 0), currency }
+        : undefined,
+  })
 }
 
 function pathOf(operation: MediaOperation): string {
@@ -80,8 +101,11 @@ export class KlingVideosAdapter implements MediaAdapter {
     }
     const id = taskId
     return afterSubmit(id, signal, async () => {
-      const url = await waitTask(id, () => this.check(base, id, auth, signal), opts)
-      return { files: [await download(url, signal)] }
+      const done = await waitTask(id, () => this.check(base, id, auth, signal), opts)
+      return {
+        files: [await download(done.url, signal)],
+        ...(done.usage ? { usage: done.usage } : {}),
+      }
     })
   }
 
@@ -99,8 +123,10 @@ export class KlingVideosAdapter implements MediaAdapter {
       const outputs = Array.isArray(task?.outputs)
         ? (task.outputs as Record<string, unknown>[])
         : []
-      const url = outputs.find((o) => o.type === 'video')?.url
-      if (typeof url === 'string') return { state: 'done', url }
+      const video = outputs.find((o) => o.type === 'video')
+      if (typeof video?.url === 'string') {
+        return { state: 'done', url: video.url, usage: taskUsage(video, task?.billing) }
+      }
       return { state: 'failed', message: '任务成功但没有返回视频地址' }
     }
     if (status === 'failed') {

@@ -40,7 +40,9 @@ export {
   type MediaModelSpec,
   type MediaOperation,
   type MediaParamSpec,
+  type MediaPrice,
   mediaCatalog,
+  mediaCost,
 } from './media/catalog.ts'
 export { buildMediaAdapter } from './media/index.ts'
 export { describeParam, operationLabel, validateMediaCall } from './media/params.ts'
@@ -53,6 +55,7 @@ export {
   type MediaRequest,
   type MediaResult,
   type MediaRunOptions,
+  type MediaUsage,
 } from './media/types.ts'
 // 能力探测：cli 的 probe 子命令与设置页的「探测」按钮
 export {
