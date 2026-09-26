@@ -5,7 +5,7 @@
 Agent = Model + Harness。模型负责推理，qywork 提供工具执行、上下文管理、记忆、技能与任务编排，
 并将它们集成进本地工作台。可以直接用于编程，也可以组合领域知识、工具和角色，定制自己的 Agent。
 
-[下载 Windows 版](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) ·
+[下载 Windows / macOS / Linux 版](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) ·
 [快速开始](#快速开始) · [从源码启动](#从源码启动) · [文档](docs/INDEX.md)
 
 ![qywork 工作台：项目与会话、并行子 Agent、工作区文件](docs/images/qywork-workbench-dark.png)
@@ -112,18 +112,18 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 
 ## 快速开始
 
-1. 从 [GitHub Releases](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) 下载 Windows x64 的 `.exe` 安装包。
+1. 从 [GitHub Releases](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) 下载对应系统与架构的安装包：Windows x64 `.exe`、macOS Intel / Apple Silicon `.dmg`、Linux x64 `.deb` 或 `.AppImage`。
 2. 打开“系统设置”，添加模型服务，填写接口地址、API Key 和模型名称。
 3. 点击“新建 work”，选择项目目录，输入任务。
 
 关闭窗口会收进系统托盘；完全退出使用托盘菜单中的“退出”。
 安装包未做 Authenticode 签名，Windows 可能显示 SmartScreen 提示；
-Release 中的 `SHA256SUMS-windows-x86_64.txt` 可用于校验文件完整性。
+Release 中各平台的 `SHA256SUMS-*.txt` 可用于校验文件完整性。
 
 ## Linux 与 macOS
 
-Releases 目前只提供 Windows 安装包。Linux x86_64 的 `.deb`、`.AppImage` 与 macOS 的 `.dmg`
-由[发布工作流](.github/workflows/)构建，使用这些构建产物时：
+从 v0.1.19 起，Releases 同步提供 Linux x86_64 的 `.deb`、`.AppImage` 与 macOS Intel / Apple Silicon 的 `.dmg`，
+均由[发布工作流](.github/workflows/)构建。应用内自动安装更新目前仅支持 Windows；macOS/Linux 下载新安装包更新。
 
 - **deb**：依赖已写入包内（`at-spi2-core`，推荐 PipeWire 与 `xdg-desktop-portal`），
   `sudo apt install ./qywork_*.deb` 会一并安装。
@@ -131,6 +131,7 @@ Releases 目前只提供 Windows 安装包。Linux x86_64 的 `.deb`、`.AppImag
   未安装 FUSE 时加 `--appimage-extract-and-run` 参数运行。
 - **浏览器控制**：使用本机已安装的 Chrome、Edge 或 Chromium，安装包不附带浏览器。
 - **电脑控制（macOS）**：需在系统设置中授予“辅助功能”权限，截图另需“屏幕录制”权限。
+- **macOS 签名**：当前未做 Apple Developer ID 签名和公证，Gatekeeper 可能阻止直接打开；更新包签名不替代 Apple 代码签名。
 
 ## 从源码启动
 
