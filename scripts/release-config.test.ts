@@ -128,6 +128,60 @@ describe('桌面发布清单', () => {
     expect(workflow).not.toContain('continue-on-error')
   })
 
+  test('Apple 签名配置完整时才传给打包器，空值与缺项不导入证书', () => {
+    const workflow = Bun.YAML.parse(workflowText('release-macos.yml')) as {
+      jobs: { release: { steps: { id?: string; run?: string; env?: Record<string, string> }[] } }
+    }
+    const steps = workflow.jobs.release.steps
+    const apple = steps.find((step) => step.id === 'apple')!
+    const tauri = steps.find((step) => step.id === 'tauri')!
+    const credentials = {
+      APPLE_CERTIFICATE: 'test-certificate',
+      APPLE_CERTIFICATE_PASSWORD: '',
+      APPLE_SIGNING_IDENTITY: 'Developer ID Application: Test',
+      APPLE_ID: 'test@example.invalid',
+      APPLE_PASSWORD: 'test-app-password',
+      APPLE_TEAM_ID: 'TESTTEAM',
+    }
+    expect(Object.keys(tauri.env ?? {}).filter((key) => key.startsWith('APPLE_'))).toEqual([])
+    const bash = probeBash().path
+    expect(bash).not.toBeNull()
+    for (const mode of ['empty', 'partial', 'complete']) {
+      const dir = mkdtempSync(join(tmpdir(), 'release-apple-'))
+      try {
+        const values = Object.fromEntries(
+          Object.entries(credentials).map(([key, value]) => [
+            key,
+            mode === 'empty' || (mode === 'partial' && key === 'APPLE_PASSWORD') ? '' : value,
+          ]),
+        )
+        const result = Bun.spawnSync([bash!, '-c', apple.run!], {
+          cwd: dir,
+          env: { ...process.env, ...values, GITHUB_ENV: 'github-env', GITHUB_OUTPUT: 'github-output' },
+        })
+        expect(result.exitCode).toBe(0)
+        const environment = existsSync(join(dir, 'github-env'))
+          ? readFileSync(join(dir, 'github-env'), 'utf8')
+          : ''
+        const output = readFileSync(join(dir, 'github-output'), 'utf8').trim()
+        if (mode === 'complete') {
+          expect(output).toBe('suffix=')
+          for (const [key, value] of Object.entries(credentials)) {
+            expect(apple.env?.[key]).toBe('$' + `{{ secrets.${key} }}`)
+            expect(environment.split('\n')).toContain(`${key}=${value}`)
+          }
+        } else {
+          expect(output).toBe('suffix=-unsigned')
+          expect(environment).toBe('')
+        }
+        expect(result.stdout.toString()).not.toContain('test-certificate')
+        expect(result.stdout.toString()).not.toContain('test-app-password')
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+  })
+
   /** 两种架构各用匹配架构的 runner：外部二进制按 `rustc -vV` 的宿主三元组命名。 */
   test('macOS 发布覆盖 x86_64 与 arm64 两种目标', () => {
     const workflow = workflowText('release-macos.yml')
