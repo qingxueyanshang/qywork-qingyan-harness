@@ -113,6 +113,32 @@ describe('正文里的链接', () => {
     }
   })
 
+  test('工作区里的其他文件在右侧文件预览里打开，图片也是', async () => {
+    const store = await freshWorkspace()
+    const { renderMarkdown } = await import('./lib/markdown.ts')
+    try {
+      for (const md of [
+        '[查看原图](generated/a.png)',
+        '![设计图](generated/a.png)',
+        '[原图](C:/ws/generated/a.png)',
+      ]) {
+        store.setOpenFile(null)
+        const event = await clickLink(renderMarkdown(md))
+        expect(event.defaultPrevented).toBe(true)
+        expect(store.openFile()).toBe('generated/a.png')
+        expect(store.sidePanel()).toBe('files')
+      }
+      // 工作区外的文件不接管：没有能打开它的面板。
+      store.setOpenFile(null)
+      const outside = await clickLink('<a href="D:/other/a.png">a.png</a>')
+      expect(outside.defaultPrevented).toBe(false)
+      expect(store.openFile()).toBeNull()
+    } finally {
+      store.setOpenFile(null)
+      store.setWorkspace(null)
+    }
+  })
+
   test('没有原生浏览器的客户端明确提示本地预览不可用，并阻止默认跳转', async () => {
     const store = await freshWorkspace()
     const { renderMarkdown } = await import('./lib/markdown.ts')

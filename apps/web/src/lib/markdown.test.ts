@@ -124,6 +124,29 @@ describe('外链', () => {
     }
   })
 
+  /** 原始失败形状：生成图片后模型回复里贴的 `![…](generated/x.png)` 渲染成一张损坏的图、`[查看原图](…)` 的地址被净化清空。 */
+  test('本机文件的图片显示成路径链接，本机文件链接的地址保留；网上的图片照旧内嵌', () => {
+    const md = '![设计图](generated/a.png)\n\n[查看原图](generated/a.png)'
+    for (const html of [
+      renderMarkdown(md),
+      (() => {
+        const { settled, live } = createStreamRenderer().push(`${md}\n\n第三段\n\n第四段`)
+        return settled + live
+      })(),
+    ]) {
+      expect(html).not.toContain('<img')
+      expect(html).toContain(
+        'href="generated/a.png" target="_blank" rel="noreferrer noopener">generated/a.png</a>',
+      )
+      expect(html).toContain(
+        'href="generated/a.png" target="_blank" rel="noreferrer noopener">查看原图</a>',
+      )
+    }
+    expect(renderMarkdown('![图](https://example.com/a.png)')).toContain(
+      '<img src="https://example.com/a.png"',
+    )
+  })
+
   test('一律新窗口打开并断开 opener —— 模型给的链接不可信', () => {
     const html = renderMarkdown('[example](https://example.com)')
     expect(html).toContain('target="_blank"')

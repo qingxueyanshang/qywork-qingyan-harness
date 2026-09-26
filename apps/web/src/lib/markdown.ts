@@ -35,7 +35,7 @@ import {
   getDefaultWhiteList,
   safeAttrValue,
 } from 'xss'
-import { localHtmlUrl } from './links.ts'
+import { localHtmlUrl, localPath } from './links.ts'
 
 type Hljs = typeof import('highlight.js/lib/common').default
 
@@ -168,6 +168,15 @@ function makeRenderer(opts: RenderOptions, ready: boolean): Renderer {
     return `<a href="${escapeHtml(href ?? '')}"${t} target="_blank" rel="noreferrer noopener">${text}</a>`
   }
 
+  // 本机文件的图片不内嵌，显示成路径链接，点了在右侧预览。不要改回 `<img>`：相对地址按应用页面的地址解析，
+  // 取不到文件，净化也会把它清空，界面上是一张损坏的图。
+  const image = renderer.image.bind(renderer)
+  renderer.image = (token) => {
+    const path = localPath(token.href)
+    if (!path) return image(token)
+    return `<a href="${escapeHtml(token.href)}" target="_blank" rel="noreferrer noopener">${escapeHtml(path)}</a>`
+  }
+
   return renderer
 }
 
@@ -185,9 +194,9 @@ function finish(raw: string): string {
   return filterXSS(wrapped, {
     whiteList: WHITELIST,
     safeAttrValue(tag, name, value, cssFilter) {
-      // 仅保留可点击的本地 HTML 地址；不放行资源 src 或脚本协议。
+      // 仅保留可点击的本机文件地址（本地 HTML 进内置浏览器，其余进右侧文件预览）；不放行资源 src 或脚本协议。
       const decoded = friendlyAttrValue(value)
-      if (tag === 'a' && name === 'href' && localHtmlUrl(decoded, '/'))
+      if (tag === 'a' && name === 'href' && (localHtmlUrl(decoded, '/') || localPath(decoded)))
         return escapeAttrValue(decoded)
       return safeAttrValue(tag, name, value, cssFilter)
     },
