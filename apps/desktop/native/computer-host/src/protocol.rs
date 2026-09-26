@@ -172,16 +172,6 @@ pub enum ToggleState {
 }
 
 impl ToggleState {
-    /// UIA 的 ToggleState 常量顺序：0 = Off，1 = On，2 = Indeterminate。
-    pub fn from_uia(raw: i32) -> Option<Self> {
-        match raw {
-            0 => Some(Self::Off),
-            1 => Some(Self::On),
-            2 => Some(Self::Indeterminate),
-            _ => None,
-        }
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -217,41 +207,12 @@ pub enum ScrollDirection {
     Right,
 }
 
-impl ScrollDirection {
-    fn vertical(self) -> bool {
-        matches!(self, Self::Up | Self::Down)
-    }
-}
-
 /// 一次滚动的步长。ScrollPattern 只认「一行」与「一页」，没有像素量。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScrollStep {
     Line,
     Page,
-}
-
-/// UIA `ScrollAmount` 常量。
-///
-/// 顺序是 LargeDecrement(0) / SmallDecrement(1) / NoAmount(2) / LargeIncrement(3) /
-/// SmallIncrement(4)。**不要按枚举名的字母序重排**，调用按这个数值传。
-pub const SCROLL_NO_AMOUNT: i32 = 2;
-
-/// 把方向与步长换成 `Scroll(horizontal, vertical)` 的两个实参。
-///
-/// 不动的那一个轴必须是 `NoAmount`：传别的值会让这次滚动同时动两个轴。
-pub fn scroll_amounts(direction: ScrollDirection, step: ScrollStep) -> (i32, i32) {
-    let amount = match (direction, step) {
-        (ScrollDirection::Up | ScrollDirection::Left, ScrollStep::Page) => 0,
-        (ScrollDirection::Up | ScrollDirection::Left, ScrollStep::Line) => 1,
-        (ScrollDirection::Down | ScrollDirection::Right, ScrollStep::Page) => 3,
-        (ScrollDirection::Down | ScrollDirection::Right, ScrollStep::Line) => 4,
-    };
-    if direction.vertical() {
-        (SCROLL_NO_AMOUNT, amount)
-    } else {
-        (amount, SCROLL_NO_AMOUNT)
-    }
 }
 
 /// 鼠标键。
@@ -415,15 +376,6 @@ pub enum WindowState {
 }
 
 impl WindowState {
-    /// UIA 的 `WindowVisualState` 常量顺序：0 = Normal，1 = Maximized，2 = Minimized。
-    pub const fn as_uia(self) -> i32 {
-        match self {
-            Self::Normal => 0,
-            Self::Maximized => 1,
-            Self::Minimized => 2,
-        }
-    }
-
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Normal => "normal",
@@ -846,6 +798,31 @@ pub struct Image {
     pub bytes: String,
 }
 
+/// 标准 base64。图像字节要经行分隔 JSON 交给宿主，不能按原始字节走。
+pub fn base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
+        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 /// 一次控件读取的全部内容。`Tree` 与 `Wait` 两种观察共用它。
 ///
 /// 控件表是展平的前序序列，层级由 `parent_ref` 与 `depth` 表达。
@@ -989,16 +966,6 @@ pub fn range_state(
     })
 }
 
-/// 最多列几项选中项的名称。
-///
-/// 名称逐项跨进程读，上限限的是这个代价；选中项再多时该读的是列表本身，不是一份长名单。
-pub const MAX_SELECTED_NAMES: usize = 16;
-
-/// 这一次要读几项选中项的名称。
-pub fn selected_name_budget(total: usize) -> usize {
-    total.min(MAX_SELECTED_NAMES)
-}
-
 /// SelectionPattern 读到的容器约束与当前选中项。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1015,21 +982,6 @@ pub struct SelectionState {
     /// `selected` 不是全部。
     #[serde(skip_serializing_if = "not_set")]
     pub truncated: bool,
-}
-
-impl SelectionState {
-    /// `total` 是容器报的选中项数，`names` 只含读到名称的那几项。
-    ///
-    /// 两者不等即名单不全：撞上 `MAX_SELECTED_NAMES`，或某一项在读它名称之前消失。
-    /// 两种都记同一格，调用方要的是「这不是全部」这一件事。
-    pub fn new(multiple: bool, required: bool, names: Vec<String>, total: usize) -> Self {
-        Self {
-            multiple,
-            required,
-            truncated: names.len() < total,
-            selected: names,
-        }
-    }
 }
 
 /// ScrollPattern 读到的滚动位置，百分比。
@@ -1840,6 +1792,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn base64_matches_rfc_vectors() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&[0x00, 0xff, 0x80]), "AP+A");
+    }
+
     /// 二态控件按一下就到，三态控件按目标态算要按几下；环上没有的状态返回 None。
     #[test]
     fn toggle_steps_count_the_presses_a_target_state_needs() {
@@ -1855,28 +1817,6 @@ mod tests {
         // 二态控件到不了中间态：报不支持，不是按两下凑过去。
         assert_eq!(toggle_steps(Off, Indeterminate, false), None);
         assert_eq!(toggle_steps(Indeterminate, Off, false), None);
-    }
-
-    #[test]
-    fn toggle_state_maps_to_the_uia_constants() {
-        assert_eq!(ToggleState::from_uia(0), Some(ToggleState::Off));
-        assert_eq!(ToggleState::from_uia(1), Some(ToggleState::On));
-        assert_eq!(ToggleState::from_uia(2), Some(ToggleState::Indeterminate));
-        assert_eq!(ToggleState::from_uia(3), None);
-        assert_eq!(ToggleState::Indeterminate.as_str(), "indeterminate");
-    }
-
-    /// 不动的那个轴必须是 NoAmount：传别的值会让一次滚动同时动两个轴。
-    #[test]
-    fn scroll_amounts_move_one_axis_at_a_time() {
-        use ScrollDirection::{Down, Left, Right, Up};
-        use ScrollStep::{Line, Page};
-        assert_eq!(scroll_amounts(Down, Line), (SCROLL_NO_AMOUNT, 4));
-        assert_eq!(scroll_amounts(Down, Page), (SCROLL_NO_AMOUNT, 3));
-        assert_eq!(scroll_amounts(Up, Line), (SCROLL_NO_AMOUNT, 1));
-        assert_eq!(scroll_amounts(Up, Page), (SCROLL_NO_AMOUNT, 0));
-        assert_eq!(scroll_amounts(Right, Line), (4, SCROLL_NO_AMOUNT));
-        assert_eq!(scroll_amounts(Left, Page), (0, SCROLL_NO_AMOUNT));
     }
 
     /// 每种动作的参数跟着自己的名字走，少一项就解析失败，不会翻译成一条合法请求。
@@ -2013,12 +1953,12 @@ mod tests {
     #[test]
     fn a_container_carries_the_names_of_what_is_selected() {
         let mut body = tree(None);
-        body.nodes[0].selection = Some(SelectionState::new(
-            false,
-            false,
-            vec!["市场部".to_owned()],
-            1,
-        ));
+        body.nodes[0].selection = Some(SelectionState {
+            multiple: false,
+            required: false,
+            selected: vec!["市场部".to_owned()],
+            truncated: false,
+        });
         let value = serde_json::to_value(Observation::Tree(body)).unwrap();
         let selection = &value["nodes"][0]["selection"];
         assert_eq!(selection["selected"], serde_json::json!(["市场部"]));
@@ -2026,36 +1966,17 @@ mod tests {
         assert!(selection.get("truncated").is_none());
 
         let mut empty = tree(None);
-        empty.nodes[0].selection = Some(SelectionState::new(true, false, Vec::new(), 0));
+        empty.nodes[0].selection = Some(SelectionState {
+            multiple: true,
+            required: false,
+            selected: Vec::new(),
+            truncated: false,
+        });
         let value = serde_json::to_value(Observation::Tree(empty)).unwrap();
         let selection = &value["nodes"][0]["selection"];
         assert!(selection.get("selected").is_none(), "没有选中项时不该出现这一格");
         assert!(selection.get("truncated").is_none());
         assert_eq!(selection["multiple"], true);
-    }
-
-    /// 选中项多于上限时只读前几项，并标出名单不全。
-    #[test]
-    fn a_long_selection_is_cut_at_the_cap_and_says_so() {
-        let total = MAX_SELECTED_NAMES + 7;
-        assert_eq!(selected_name_budget(total), MAX_SELECTED_NAMES);
-        assert_eq!(selected_name_budget(3), 3);
-        let names: Vec<String> = (0..selected_name_budget(total))
-            .map(|i| format!("行-{i}"))
-            .collect();
-        let state = SelectionState::new(true, false, names, total);
-        assert_eq!(state.selected.len(), MAX_SELECTED_NAMES);
-        assert!(state.truncated);
-        let value = serde_json::to_value(&state).unwrap();
-        assert_eq!(value["truncated"], true);
-    }
-
-    /// 读名称时某一项已经消失：那一项没有名称，名单因此不全。
-    #[test]
-    fn a_selected_item_that_vanished_leaves_the_list_incomplete() {
-        let state = SelectionState::new(true, false, vec!["甲".to_owned()], 2);
-        assert!(state.truncated);
-        assert_eq!(state.selected, vec!["甲".to_owned()]);
     }
 
     /// 滚不动的那个轴缺席。**缺席不是 0**：0 是「在顶端」。

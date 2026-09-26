@@ -1,5 +1,5 @@
 //! 平台后端的契约：`Backend` trait、跨 trait 传递的请求与结果类型，以及每个后端都按
-//! 同一规则做的三项判定（动作调用的有界等待、等待的轮询收尾、指针落点归属）。
+//! 同一规则做的四项判定（动作调用的有界等待、窗口动作的读回、等待的轮询收尾、指针落点归属）。
 //!
 //! 每个构建目标只编译一个后端，由 `main.rs` 按 `cfg` 选定，运行时不存在两个后端并存。
 //! 本模块不调用任何 OS 接口。
@@ -240,6 +240,43 @@ pub fn dispatch_call(watch: &dyn Watch, job: Job) -> Attempt {
         }
         std::thread::sleep(Duration::from_millis(EVIDENCE_POLL_MS));
     }
+}
+
+/// 读回时两次查询之间隔多久。查的是窗口系统的属性，一次在毫秒以内。
+const SETTLE_POLL_MS: u64 = 20;
+
+/// 在期限内等一个窗口系统读数成立。
+pub fn settled(limit: Duration, reached: impl Fn() -> bool) -> bool {
+    let until = Instant::now() + limit;
+    loop {
+        if reached() {
+            return true;
+        }
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(SETTLE_POLL_MS));
+    }
+}
+
+/// 调用返回成功之后再核一次读回值。
+///
+/// 调用返回成功只说明对端受理了，窗口状态要等它自己处理完才变。读不回目标值时
+/// 落 `unknown`：状态可能仍在变化中，记成失败会让调用方重发一次。
+pub fn confirm(attempt: Attempt, limit: Duration, reached: impl Fn() -> bool) -> Attempt {
+    let Attempt::Called(outcome) = attempt else {
+        return attempt;
+    };
+    if outcome.dispatch != Dispatch::Submitted || !outcome.returned {
+        return Attempt::Called(outcome);
+    }
+    if settled(limit, reached) {
+        return Attempt::Called(outcome);
+    }
+    Attempt::Called(Outcome::returned(
+        Dispatch::Unknown,
+        Some("调用成功，窗口没有变成请求的状态".to_owned()),
+    ))
 }
 
 /// 一轮等待判定读到的事实。`Matched` 一并带回这一轮读到的树，返回时不再重读一遍。

@@ -92,9 +92,9 @@ use crate::backend::{
 };
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::{
-    now_ms, scroll_amounts, selected_name_budget, toggle_steps, ActionEvidence, ActionSpec,
-    Bounds, range_state, BlockingWindow, Completeness, Dispatch, DragTarget, Image, Node,
-    NodeAction, Observation, Role, ScrollState, Select, SelectionState, Text, TextSelection,
+    now_ms, toggle_steps, ActionEvidence, ActionSpec, Bounds, range_state, BlockingWindow,
+    Completeness, Dispatch, DragTarget, Image, Node, NodeAction, Observation, Role,
+    ScrollDirection, ScrollState, ScrollStep, Select, SelectionState, Text, TextSelection,
     ToggleState, Tree, Wait, WaitUntil, WindowInfo, NOT_DISPATCHED, REF_STALE, TARGET_BLOCKED,
 };
 use crate::tree::{
@@ -841,7 +841,7 @@ impl Uia {
         let mut toggle = None;
         if available(element, UIA_IsTogglePatternAvailablePropertyId)? {
             toggle = cached_int(element, UIA_ToggleToggleStatePropertyId)?
-                .and_then(ToggleState::from_uia)
+                .and_then(toggle_from_uia)
                 .map(ToggleState::as_str);
             actions.push(NodeAction::ready("set_toggle"));
         }
@@ -882,7 +882,7 @@ impl Uia {
                 cached_flag(element, UIA_SelectionIsSelectionRequiredPropertyId)?,
             ) {
                 let (names, total) = selected_names(element)?;
-                selection = Some(SelectionState::new(multiple, required, names, total));
+                selection = Some(selection_state(multiple, required, names, total));
             }
         }
 
@@ -2153,7 +2153,7 @@ fn toggle_to(
         let raw = unsafe { pattern.CurrentToggleState() }
             .map_err(uia("读复选状态"))
             .map_err(|f| f.into_reason(window))?;
-        ToggleState::from_uia(raw.0).ok_or_else(|| format!("unknown_toggle_state: {}", raw.0))
+        toggle_from_uia(raw.0).ok_or_else(|| format!("unknown_toggle_state: {}", raw.0))
     };
     let current = match read() {
         Ok(s) => s,
@@ -2387,9 +2387,112 @@ fn role_name(control_type: i32) -> String {
         )
 }
 
+/// UIA 的 ToggleState 常量顺序：0 = Off，1 = On，2 = Indeterminate。
+fn toggle_from_uia(raw: i32) -> Option<ToggleState> {
+    match raw {
+        0 => Some(ToggleState::Off),
+        1 => Some(ToggleState::On),
+        2 => Some(ToggleState::Indeterminate),
+        _ => None,
+    }
+}
+
+/// UIA `ScrollAmount` 常量。
+///
+/// 顺序是 LargeDecrement(0) / SmallDecrement(1) / NoAmount(2) / LargeIncrement(3) /
+/// SmallIncrement(4)。**不要按枚举名的字母序重排**，调用按这个数值传。
+const SCROLL_NO_AMOUNT: i32 = 2;
+
+/// 把方向与步长换成 `Scroll(horizontal, vertical)` 的两个实参。
+///
+/// 不动的那一个轴必须是 `NoAmount`：传别的值会让这次滚动同时动两个轴。
+fn scroll_amounts(direction: ScrollDirection, step: ScrollStep) -> (i32, i32) {
+    let amount = match (direction, step) {
+        (ScrollDirection::Up | ScrollDirection::Left, ScrollStep::Page) => 0,
+        (ScrollDirection::Up | ScrollDirection::Left, ScrollStep::Line) => 1,
+        (ScrollDirection::Down | ScrollDirection::Right, ScrollStep::Page) => 3,
+        (ScrollDirection::Down | ScrollDirection::Right, ScrollStep::Line) => 4,
+    };
+    if matches!(direction, ScrollDirection::Up | ScrollDirection::Down) {
+        (SCROLL_NO_AMOUNT, amount)
+    } else {
+        (amount, SCROLL_NO_AMOUNT)
+    }
+}
+
+/// 最多列几项选中项的名称。
+///
+/// 名称逐项跨进程读，上限限的是这个代价；选中项再多时该读的是列表本身，不是一份长名单。
+const MAX_SELECTED_NAMES: usize = 16;
+
+/// 这一次要读几项选中项的名称。
+fn selected_name_budget(total: usize) -> usize {
+    total.min(MAX_SELECTED_NAMES)
+}
+
+/// `total` 是容器报的选中项数，`names` 只含读到名称的那几项。
+///
+/// 两者不等即名单不全：撞上 `MAX_SELECTED_NAMES`，或某一项在读它名称之前消失。
+/// 两种都记同一格，调用方要的是「这不是全部」这一件事。
+fn selection_state(multiple: bool, required: bool, names: Vec<String>, total: usize) -> SelectionState {
+    SelectionState {
+        multiple,
+        required,
+        truncated: names.len() < total,
+        selected: names,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toggle_state_maps_to_the_uia_constants() {
+        assert_eq!(toggle_from_uia(0), Some(ToggleState::Off));
+        assert_eq!(toggle_from_uia(1), Some(ToggleState::On));
+        assert_eq!(toggle_from_uia(2), Some(ToggleState::Indeterminate));
+        assert_eq!(toggle_from_uia(3), None);
+        assert_eq!(ToggleState::Indeterminate.as_str(), "indeterminate");
+    }
+
+    /// 不动的那个轴必须是 NoAmount：传别的值会让一次滚动同时动两个轴。
+    #[test]
+    fn scroll_amounts_move_one_axis_at_a_time() {
+        use ScrollDirection::{Down, Left, Right, Up};
+        use ScrollStep::{Line, Page};
+        assert_eq!(scroll_amounts(Down, Line), (SCROLL_NO_AMOUNT, 4));
+        assert_eq!(scroll_amounts(Down, Page), (SCROLL_NO_AMOUNT, 3));
+        assert_eq!(scroll_amounts(Up, Line), (SCROLL_NO_AMOUNT, 1));
+        assert_eq!(scroll_amounts(Up, Page), (SCROLL_NO_AMOUNT, 0));
+        assert_eq!(scroll_amounts(Right, Line), (4, SCROLL_NO_AMOUNT));
+        assert_eq!(scroll_amounts(Left, Page), (0, SCROLL_NO_AMOUNT));
+    }
+
+    /// 读名称时某一项已经消失：那一项没有名称，名单因此不全。
+    #[test]
+    fn a_selected_item_that_vanished_leaves_the_list_incomplete() {
+        let state = selection_state(true, false, vec!["甲".to_owned()], 2);
+        assert!(state.truncated);
+        assert_eq!(state.selected, vec!["甲".to_owned()]);
+    }
+
+    /// 选中项多于上限时只读前几项，并标出名单不全。
+    #[test]
+    fn a_long_selection_is_cut_at_the_cap_and_says_so() {
+        let total = MAX_SELECTED_NAMES + 7;
+        assert_eq!(selected_name_budget(total), MAX_SELECTED_NAMES);
+        assert_eq!(selected_name_budget(3), 3);
+        let names: Vec<String> = (0..selected_name_budget(total))
+            .map(|i| format!("行-{i}"))
+            .collect();
+        let state = selection_state(true, false, names, total);
+        assert_eq!(state.selected.len(), MAX_SELECTED_NAMES);
+        assert!(state.truncated);
+        let value = serde_json::to_value(&state).unwrap();
+        assert_eq!(value["truncated"], true);
+    }
+
 
     /// Windows Terminal 形状：一段，行按窗宽补空格，末尾一片空行。
     #[test]

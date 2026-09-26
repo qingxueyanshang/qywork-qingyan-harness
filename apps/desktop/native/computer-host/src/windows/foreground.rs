@@ -23,7 +23,7 @@
 //!    剪贴板，对字符集也没有限制。
 
 use std::ffi::c_void;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ::windows::core::w;
 use ::windows::Win32::Foundation::{HWND, POINT, RECT};
@@ -42,13 +42,11 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
 };
 
-use super::sink::{SystemCharSink, SystemSink};
+use super::sink::{post_text, CharSink, SystemCharSink, SystemSink};
 use super::{current_pattern, defer, dispatch_call, CallWatch, StateWatch};
-use crate::backend::{lands_on_target, Attempt, Outcome};
-use crate::geometry::{to_absolute, ScreenPoint, ScreenRect};
-use crate::input::{
-    drag_path, key_stroke, post_text, wheel_of, CharSink, Event, Hold, Sink,
-};
+use crate::backend::{confirm, lands_on_target, settled, Attempt, Outcome};
+use crate::geometry::{ScreenPoint, ScreenRect};
+use crate::input::{drag_path, key_stroke, wheel_of, Event, Hold, Sink};
 use crate::protocol::{
     classify_input, key_name, ActionEvidence, ActionSpec, Dispatch, Modifier, MouseButton,
     WindowState,
@@ -66,8 +64,6 @@ const TEXT_BATCH_UNITS: usize = 24;
 const ACTIVATE_SETTLE: Duration = Duration::from_millis(400);
 /// 读回窗口状态或矩形的等待上限。模式调用返回之后窗口还要重绘一次。
 const WINDOW_SETTLE: Duration = Duration::from_millis(400);
-/// 读回时两次查询之间隔多久。查的全是 Win32 窗口属性，一次几微秒。
-const SETTLE_POLL_MS: u64 = 20;
 
 /// 一次指针动作的落点。非指针动作三项都缺席。
 #[derive(Debug, Clone, Copy, Default)]
@@ -188,7 +184,7 @@ fn click(window: i64, sink: &dyn Sink, aim: Aim, button: MouseButton, count: u32
         Ok(point) => point,
         Err(reason) => return Attempt::Refused(reason),
     };
-    let mut events = vec![move_event(anchor)];
+    let mut events = vec![Event::Move { to: anchor }];
     for _ in 0..count {
         events.push(Event::Button { button, down: true });
         events.push(Event::Button {
@@ -205,7 +201,7 @@ fn hover(window: i64, sink: &dyn Sink, aim: Aim) -> Attempt {
         Ok(point) => point,
         Err(reason) => return Attempt::Refused(reason),
     };
-    let events = [move_event(anchor)];
+    let events = [Event::Move { to: anchor }];
     settle(sink.send(&events), &events)
 }
 
@@ -216,9 +212,9 @@ fn wheel(window: i64, sink: &dyn Sink, aim: Aim, wheel: (i32, bool)) -> Attempt 
     };
     // 滚轮事件去的是指针底下那个窗口，所以要先把指针移到目标上。
     let events = [
-        move_event(anchor),
+        Event::Move { to: anchor },
         Event::Wheel {
-            delta: wheel.0,
+            notches: wheel.0,
             horizontal: wheel.1,
         },
     ];
@@ -247,7 +243,7 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
         }
         Ok(_) => {}
     }
-    if sink.send(&[move_event(anchor)]) == 0 {
+    if sink.send(&[Event::Move { to: anchor }]) == 0 {
         return blocked(1);
     }
     // 记账在按下之前：按下与记账之间 worker 被强杀的话，那个键就没有人知道它按住了。
@@ -286,7 +282,7 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
                 Some("target_lost: 拖拽途中窗口消失 · 左键已释放".to_owned()),
             ));
         }
-        moved += sink.send(&[move_event(*point)]);
+        moved += sink.send(&[Event::Move { to: *point }]);
         std::thread::sleep(Duration::from_millis(DRAG_STEP_MS));
     }
     let released = hold.release();
@@ -337,11 +333,6 @@ fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
         ));
     }
     Ok(anchor)
-}
-
-fn move_event(point: ScreenPoint) -> Event {
-    let (dx, dy) = to_absolute(point, virtual_desktop());
-    Event::Move { dx, dy }
 }
 
 /// 一批事件发完之后的执行事实。
@@ -605,6 +596,15 @@ fn activate(window: i64) -> Attempt {
     }
 }
 
+/// UIA 的 `WindowVisualState` 常量顺序：0 = Normal，1 = Maximized，2 = Minimized。
+const fn visual_state(state: WindowState) -> i32 {
+    match state {
+        WindowState::Normal => 0,
+        WindowState::Maximized => 1,
+        WindowState::Minimized => 2,
+    }
+}
+
 fn set_window_state(window: i64, element: &IUIAutomationElement, target: WindowState) -> Attempt {
     let pattern: IUIAutomationWindowPattern =
         match current_pattern(window, element, UIA_WindowPatternId, "WindowPattern") {
@@ -638,7 +638,7 @@ fn set_window_state(window: i64, element: &IUIAutomationElement, target: WindowS
         ActionEvidence::WindowState,
         Box::new(move || window_state(window) == Some(target)),
     );
-    let state = WindowVisualState(target.as_uia());
+    let state = WindowVisualState(visual_state(target));
     let attempt = dispatch_call(&watch, defer(move || unsafe {
         pattern.SetWindowVisualState(state)
     }));
@@ -710,26 +710,6 @@ fn close_window(window: i64, element: &IUIAutomationElement) -> Attempt {
     }))
 }
 
-/// 调用返回成功之后再核一次读回值。
-///
-/// 模式调用返回成功只说明 provider 受理了，窗口状态要等它自己处理完才变。读不回目标值时
-/// 落 `unknown`：状态可能仍在变化中，记成失败会让调用方重发一次。
-fn confirm(attempt: Attempt, limit: Duration, reached: impl Fn() -> bool) -> Attempt {
-    let Attempt::Called(outcome) = attempt else {
-        return attempt;
-    };
-    if outcome.dispatch != Dispatch::Submitted || !outcome.returned {
-        return Attempt::Called(outcome);
-    }
-    if settled(limit, reached) {
-        return Attempt::Called(outcome);
-    }
-    Attempt::Called(Outcome::returned(
-        Dispatch::Unknown,
-        Some("调用成功，窗口没有变成请求的状态".to_owned()),
-    ))
-}
-
 // ── Win32 读数 ──
 
 fn alive(window: i64) -> bool {
@@ -778,19 +758,5 @@ pub fn virtual_desktop() -> ScreenRect {
             width: GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1),
             height: GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1),
         }
-    }
-}
-
-/// 在期限内等一个 Win32 读数成立。
-fn settled(limit: Duration, reached: impl Fn() -> bool) -> bool {
-    let until = Instant::now() + limit;
-    loop {
-        if reached() {
-            return true;
-        }
-        if Instant::now() >= until {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(SETTLE_POLL_MS));
     }
 }
