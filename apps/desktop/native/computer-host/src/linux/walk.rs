@@ -19,7 +19,7 @@ use zbus::zvariant::OwnedObjectPath;
 
 use super::bus::{self, dbus, Failure, Obj, Reference};
 use super::node::{self, Context, Facts, Fields, Numbers, VALUE_TEXT_LIMIT};
-use crate::geometry::{ScreenPoint, ScreenRect};
+use crate::geometry::ScreenRect;
 use crate::protocol::{Bounds, Completeness, Node, Select, REF_STALE};
 use crate::tree::{decode_ref, first_sighting, flatten, Collected};
 
@@ -127,26 +127,15 @@ pub fn facts(conn: &Connection, obj: &Obj, fields: Fields) -> Result<Facts, Fail
     })
 }
 
-/// 对象所在顶层窗口的客户区原点：屏幕坐标的包围盒 `screen` 减去窗口坐标的包围盒。读不到窗口
-/// 坐标时缺席，读取见 `optional`。
-///
-/// 窗口坐标由工具包按它自己记的顶层窗口给：GTK 3 对下拉菜单里的对象给弹出窗口，Qt 对组合框
-/// 下拉列表里的对象给主窗口。
-pub fn toplevel_origin(
-    conn: &Connection,
-    obj: &Obj,
-    screen: ScreenRect,
-) -> Result<Option<ScreenPoint>, Failure> {
+/// 对象此刻的屏幕包围盒。读不出或尚未摆放时缺席，读取见 `optional`。
+fn screen_rect(conn: &Connection, obj: &Obj) -> Result<Option<ScreenRect>, Failure> {
     let component: ComponentProxyBlocking = obj.proxy(conn)?;
     Ok(optional(
         component
-            .get_extents(CoordType::Window)
-            .map_err(dbus("读窗口坐标的包围盒")),
+            .get_extents(CoordType::Screen)
+            .map_err(dbus("读包围盒")),
     )?
-    .map(|(x, y, _, _)| ScreenPoint {
-        x: screen.x - x,
-        y: screen.y - y,
-    }))
+    .and_then(|(x, y, w, h)| node::extents(x, y, w, h)))
 }
 
 /// Value 接口此刻的四个数。
@@ -197,6 +186,9 @@ pub struct Located {
     pub context: Context,
     /// 父对象。目标就是窗口根时缺席。
     pub parent: Option<Obj>,
+    /// 目标画在弹出窗口里时，那个弹出窗口里内容的屏幕矩形：目标所在的组合框下拉列表。不在弹出
+    /// 窗口里或读不出时缺席。
+    pub popup: Option<ScreenRect>,
 }
 
 /// 从窗口根出发按下标路径重新定位，并核对身份段与核对串，见 `node::verify`。
@@ -224,12 +216,17 @@ pub fn locate(
         Some(parent) => context_of(conn, parent, grandparent.as_ref())?,
         None => Context::default(),
     };
+    let popup = match &parent {
+        Some(parent) if context.dropdown => screen_rect(conn, parent)?,
+        _ => None,
+    };
     Ok(Located {
         obj,
         path: expected.path,
         facts,
         context,
         parent,
+        popup,
     })
 }
 
