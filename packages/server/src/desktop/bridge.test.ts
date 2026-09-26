@@ -168,6 +168,7 @@ test('握手报出三项能力位，宿主连上之后由事件推同一份投�
     connected: false,
     workerReady: false,
     authorized: false,
+    missing: [],
   })
 
   const host = await connect(handle.port)
@@ -178,7 +179,7 @@ test('握手报出三项能力位，宿主连上之后由事件推同一份投�
     .find((e) => (e as { type?: string })?.type === 'desktop.state')
   expect(state).toEqual({
     type: 'desktop.state',
-    desktop: { connected: true, workerReady: true, authorized: true },
+    desktop: { connected: true, workerReady: true, authorized: true, missing: [] },
   })
 
   // 正在操作哪个应用：执行者碰到窗口时推上去，释放时推回 null。
@@ -360,11 +361,68 @@ test('worker 掉线的状态事件让能力下线，并收掉在途调用', asyn
     hostEpoch: 2,
     kind: 'worker.state',
     workerReady: false,
-    authorized: true,
+    authorized: false,
+    missing: [],
   })
   expect((await failure(pending)).dispatch).toBe('unknown')
   await settle()
   expect(handle.desktop?.available()).toBe(false)
+})
+
+/**
+ * 授权事实在同一个执行实例内变化：worker 起来时没授权、用户在系统设置里打开之后由事件推上来，
+ * 不必重连也不必换 worker。只缺屏幕录制时能力照常发布，缺项原样交给界面。
+ */
+test('授权变化经状态事件更新能力与缺项，不换执行实例', async () => {
+  const handle = fresh()
+  const client = new WebSocket(
+    `ws://127.0.0.1:${handle.port}/stream?origin=desktop&token=${handle.token}`,
+  )
+  const frames: { type: string; event?: { type?: string; desktop?: unknown } }[] = []
+  client.onmessage = (ev) => frames.push(JSON.parse(String(ev.data)))
+  await new Promise<void>((resolve, reject) => {
+    client.onopen = () => resolve()
+    client.onerror = () => reject(new Error('配对连接应当能建立'))
+  })
+  cleanups.push(() => client.close())
+  client.send(JSON.stringify({ type: 'hello', token: handle.token, origin: 'desktop' }))
+  await settle()
+
+  const host = await connect(handle.port)
+  host.ready({ authorized: false, missing: ['accessibility', 'screen_recording'] })
+  await settle()
+  expect(handle.desktop?.available()).toBe(false)
+
+  const event = (authorized: boolean, missing: ('accessibility' | 'screen_recording')[]) =>
+    host.send({
+      type: 'desktop.event',
+      connectionEpoch: 3,
+      hostId: 'h1',
+      hostEpoch: 2,
+      kind: 'worker.state',
+      workerReady: true,
+      authorized,
+      missing,
+    })
+  event(true, ['screen_recording'])
+  await settle()
+  expect(handle.desktop?.available()).toBe(true)
+  event(true, [])
+  await settle()
+  const states = frames
+    .map((f) => f.event)
+    .filter((e) => e?.type === 'desktop.state')
+    .map((e) => e?.desktop)
+  expect(states).toEqual([
+    {
+      connected: true,
+      workerReady: true,
+      authorized: false,
+      missing: ['accessibility', 'screen_recording'],
+    },
+    { connected: true, workerReady: true, authorized: true, missing: ['screen_recording'] },
+    { connected: true, workerReady: true, authorized: true, missing: [] },
+  ])
 })
 
 test('代际对不上的状态事件改不了能力', async () => {
@@ -380,6 +438,7 @@ test('代际对不上的状态事件改不了能力', async () => {
     kind: 'worker.state',
     workerReady: false,
     authorized: false,
+    missing: [],
   })
   await settle()
   expect(handle.desktop?.available()).toBe(true)

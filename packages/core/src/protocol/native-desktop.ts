@@ -563,9 +563,20 @@ export interface DesktopHostReadyFrame {
   platform: string
   /** worker 进程已握手就绪。 */
   workerReady: boolean
-  /** 操作系统已授予桌面控制所需的权限。 */
+  /** 操作系统已授予读取与动作所需的权限。由 worker 报，worker 没就绪时为 `false`。 */
   authorized: boolean
+  /** 操作系统没给的前提。`authorized` 为真时也可能不空，worker 没就绪时为空。 */
+  missing: DesktopGrant[]
 }
+
+/**
+ * 电脑控制要操作系统给的一项前提，每一项只有一个平台会报。
+ *
+ * - `accessibility`：macOS 辅助功能授权。缺了读取与动作一律不可用。
+ * - `screen_recording`：macOS 屏幕录制授权。只管取图，`authorized` 不看它。
+ * - `accessibility_bus`：Linux 会话里的无障碍总线。缺了读取与动作一律不可用。
+ */
+export type DesktopGrant = 'accessibility' | 'screen_recording' | 'accessibility_bus'
 
 /**
  * 一次桌面操作。
@@ -707,6 +718,7 @@ export interface DesktopEventFrame {
   kind: 'worker.state'
   workerReady: boolean
   authorized: boolean
+  missing: DesktopGrant[]
 }
 
 /** 宿主发往服务端的帧。 */

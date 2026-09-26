@@ -230,6 +230,7 @@ export {
   type DesktopDispatch,
   type DesktopDragTarget,
   type DesktopEventFrame,
+  type DesktopGrant,
   type DesktopHostReadyFrame,
   type DesktopImageBody,
   type DesktopImageGeometry,
