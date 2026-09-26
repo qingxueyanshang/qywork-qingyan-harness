@@ -35,15 +35,10 @@ export type RenderItem =
  */
 const STANDALONE = new Set(['subagent', 'workflow'])
 
-/**
- * 生产者明确要求展示、且结果里确有可展示的内容时，这一条独立成条：
- * 内联图片要有合法图片，可打开的产物要有文件路径。收进工具组里就被折叠，用户看不见。
- */
-function carriesPresentation(item: TranscriptItem): boolean {
-  const presentation = item.outcome?.presentation
+/** 只有生产者明确要求内联展示、且结果里确有合法图片时，图片工具才独立成条。 */
+function carriesPresentedImages(item: TranscriptItem): boolean {
   return (
-    (presentation?.images === 'inline' && resultImages(item.outcome?.data).length > 0) ||
-    (presentation?.files === 'open' && (item.outcome?.fileChanges?.length ?? 0) > 0)
+    item.outcome?.presentation?.images === 'inline' && resultImages(item.outcome.data).length > 0
   )
 }
 
@@ -117,7 +112,7 @@ export function buildRenderItems(transcript: TranscriptItem[]): RenderItem[] {
     }
     if (
       item.kind === 'tool' &&
-      (STANDALONE.has(item.toolName ?? '') || carriesPresentation(item))
+      (STANDALONE.has(item.toolName ?? '') || carriesPresentedImages(item))
     ) {
       flush()
       out.push({ kind: 'tool', id: item.id, item })

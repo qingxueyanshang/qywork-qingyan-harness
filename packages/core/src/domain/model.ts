@@ -848,10 +848,9 @@ export interface ToolOutcomeWire {
   data?: Record<string, unknown>
   /**
    * 可选的用户界面展示意图。工具结果默认只供模型与账本消费；只有生产者明确声明，
-   * 前端才展开：`images: 'inline'` 把结果里的图片画进会话正文（模型视觉输入与用户展示不是同一件事）；
-   * `files: 'open'` 把 `fileChanges` 的路径列成可点的条目，点了在右侧预览里打开。
+   * 前端才把其中的图片展开到会话正文。模型视觉输入与用户展示不是同一件事。
    */
-  presentation?: { images?: 'inline'; files?: 'open' }
+  presentation?: { images?: 'inline' }
   /** 文件类工具产出的变更摘要，供实时预览与 diff 面板消费。 */
   fileChanges?: FileChange[]
   /** 本次调用落盘的中间资源引用。只含定位事实，不携带正文。 */
