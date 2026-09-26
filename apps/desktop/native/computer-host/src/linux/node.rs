@@ -40,20 +40,32 @@ pub struct Numbers {
 }
 
 /// 父对象里与子节点可用动作有关的事实。
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Context {
-    /// 父对象实现了 Selection 接口，子节点的选择经它改。
+    /// 子节点的选中经父对象的 Selection 改：父对象实现了它，且不是菜单或组合框的下拉列表。
     pub selection: bool,
-    pub showing: bool,
     pub multiselectable: bool,
+    /// 父对象是组合框的下拉列表：组合框的子节点里实现 Selection 的那一个。下拉列表画在组合框
+    /// 所在窗口拥有的弹出窗口里。
+    pub dropdown: bool,
+    /// 父对象是组合框。只用来推出子节点的 `dropdown`。
+    pub combo: bool,
 }
 
 impl Context {
-    pub fn of(parent: &Facts) -> Self {
+    /// 父对象的角色、状态与接口，`above` 是父对象自己的上下文。
+    ///
+    /// 菜单与组合框下拉列表的 Selection 只移动高亮：GTK 的菜单、GTK 与 Qt 组合框的下拉列表上
+    /// `SelectChild` 交回真，而菜单项不激活、组合框的值不变。不要按父对象此刻在不在屏幕上判：
+    /// 下拉列表展开时同样只移动高亮。
+    pub fn of(role: AtspiRole, states: StateSet, interfaces: InterfaceSet, above: Context) -> Self {
+        let selection = interfaces.contains(Interface::Selection);
+        let dropdown = above.combo && selection;
         Self {
-            selection: parent.interfaces.contains(Interface::Selection),
-            showing: parent.states.contains(State::Showing),
-            multiselectable: parent.states.contains(State::Multiselectable),
+            selection: selection && !dropdown && role != AtspiRole::Menu,
+            multiselectable: states.contains(State::Multiselectable),
+            dropdown,
+            combo: role == AtspiRole::ComboBox,
         }
     }
 }
@@ -157,16 +169,11 @@ pub fn claim(facts: &Facts) -> Option<Click> {
     action_index(facts, &INVOKE_NAMES).map(Click::Invoke)
 }
 
-/// 这个对象能不能经父对象的 Selection 接口选中，能的话容器是否允许多选。
-///
-/// 父对象此刻不在屏幕上时不算：Qt 组合框收起时的下拉列表也实现 Selection，改它的选中项
-/// 不会改组合框的当前值。
+/// 这个对象能不能经父对象的 Selection 接口选中，能的话容器是否允许多选。哪些父对象不算见
+/// `Context::of`。
 pub fn selectable_in(facts: &Facts, context: Context) -> Option<bool> {
-    (facts.states.contains(State::Selectable)
-        && context.selection
-        && context.showing
-        && !radio(facts.role))
-    .then_some(context.multiselectable || facts.states.contains(State::Multiselectable))
+    (facts.states.contains(State::Selectable) && context.selection && !radio(facts.role))
+        .then_some(context.multiselectable || facts.states.contains(State::Multiselectable))
 }
 
 /// 复选状态。Qt 的中间态同时带 `checked` 与 `indeterminate`，先判中间态。
@@ -871,16 +878,12 @@ mod tests {
             &[],
             &[],
         );
-        let single = Context {
-            selection: true,
-            showing: true,
-            multiselectable: false,
-        };
+        let single = list(&[State::Showing], Context::default());
         assert_eq!(names(&offers(&item, single)), ["select"]);
-        let multi = Context {
-            multiselectable: true,
-            ..single
-        };
+        let multi = list(
+            &[State::Showing, State::Multiselectable],
+            Context::default(),
+        );
         assert_eq!(
             names(&offers(&item, multi)),
             ["select", "add_to_selection", "remove_from_selection"]
@@ -893,23 +896,87 @@ mod tests {
             &["Toggle"],
         );
         assert_eq!(selectable_in(&qt, single), Some(true));
-        // 容器不实现 Selection，或此刻不在屏幕上（收起的下拉列表），一条选择动作都不列。
-        assert!(offers(
-            &item,
-            Context {
-                selection: false,
-                ..single
-            }
+        // 容器不实现 Selection，一条选择动作都不列。
+        let plain = Context::of(
+            AtspiRole::List,
+            states(&[State::Showing]),
+            InterfaceSet::empty(),
+            Context::default(),
+        );
+        assert!(offers(&item, plain).is_empty());
+    }
+
+    fn states(list: &[State]) -> StateSet {
+        let mut set = StateSet::empty();
+        for s in list {
+            set.insert(*s);
+        }
+        set
+    }
+
+    /// 实现 Selection 的列表作父对象时的上下文，`above` 是列表自己的上下文。
+    fn list(list_states: &[State], above: Context) -> Context {
+        let mut selection = InterfaceSet::empty();
+        selection.insert(Interface::Selection);
+        Context::of(AtspiRole::List, states(list_states), selection, above)
+    }
+
+    /// 组合框作父对象时的上下文：组合框自己不实现 Selection。
+    fn combo_box() -> Context {
+        Context::of(
+            AtspiRole::ComboBox,
+            states(&[State::Showing, State::Expandable]),
+            InterfaceSet::empty(),
+            Context::default(),
         )
-        .is_empty());
-        assert!(offers(
-            &item,
-            Context {
-                showing: false,
-                ..single
-            }
-        )
-        .is_empty());
+    }
+
+    /// 原始失败形状：Qt 组合框展开后，下拉列表里的项列出 `select`，经列表的 Selection 发出后
+    /// 交回已执行，而组合框的值不变。组合框的下拉列表与菜单一律不经 Selection 列选中；GTK 的
+    /// 菜单项留着改值的 `invoke`，Qt 的下拉项没有后台动作。
+    #[test]
+    fn a_dropdown_list_or_a_menu_offers_no_selection() {
+        let dropdown = list(&[State::Showing, State::Focused], combo_box());
+        assert!(dropdown.dropdown && !dropdown.selection);
+        let qt_item = facts(
+            AtspiRole::ListItem,
+            &[State::Selectable, State::Showing, State::Transient],
+            &[Interface::Action],
+            &["Toggle"],
+        );
+        assert!(offers(&qt_item, dropdown).is_empty());
+        // 同一个列表不在组合框下时照常经 Selection 选中。
+        assert_eq!(
+            names(&offers(
+                &qt_item,
+                list(&[State::Showing], Context::default())
+            )),
+            ["select"]
+        );
+        let mut selection = InterfaceSet::empty();
+        selection.insert(Interface::Selection);
+        let gtk_item = facts(
+            AtspiRole::MenuItem,
+            &[State::Selectable, State::Showing],
+            &[Interface::Action],
+            &["click"],
+        );
+        let combo_menu = Context::of(
+            AtspiRole::Menu,
+            states(&[State::Showing]),
+            selection,
+            combo_box(),
+        );
+        let context_menu = Context::of(
+            AtspiRole::Menu,
+            states(&[State::Showing]),
+            selection,
+            Context::default(),
+        );
+        assert!(combo_menu.dropdown && !context_menu.dropdown);
+        for context in [combo_menu, context_menu] {
+            assert_eq!(names(&offers(&gtk_item, context)), ["invoke"]);
+        }
     }
 
     /// 单选按钮的 `select` 经它自己的动作发出，选中状态取 `checked`。
@@ -956,29 +1023,36 @@ mod tests {
         }
     }
 
-    /// 原始失败形状：WebKit 下拉框的选项挂在一个不在屏幕上的弹出列表下，列表的 Selection 因此
+    /// 原始失败形状：WebKit 下拉框的选项挂在组合框的弹出列表（菜单）下，列表的 Selection
     /// 不可用，选项一个动作都不列。选项自己唯一的动作没有名字，`select` 经它发出。
     #[test]
     fn a_web_option_selects_itself_through_its_unnamed_action() {
-        let mut states = WEB.to_vec();
-        states.push(State::Selectable);
-        let option = facts(AtspiRole::MenuItem, &states, &[Interface::Action], &[""]);
-        let hidden_popup = Context {
-            selection: true,
-            showing: false,
-            multiselectable: false,
-        };
+        let mut option_states = WEB.to_vec();
+        option_states.push(State::Selectable);
+        let option = facts(
+            AtspiRole::MenuItem,
+            &option_states,
+            &[Interface::Action],
+            &[""],
+        );
+        let mut selection = InterfaceSet::empty();
+        selection.insert(Interface::Selection);
+        let popup = Context::of(
+            AtspiRole::Menu,
+            states(&[State::Enabled]),
+            selection,
+            combo_box(),
+        );
         assert_eq!(claim(&option), Some(Click::Select(0)));
-        assert_eq!(selectable_in(&option, hidden_popup), None);
-        let node = node(&option, hidden_popup, &[0, 0], KEY, FIELDS);
+        assert_eq!(selectable_in(&option, popup), None);
+        let node = node(&option, popup, &[0, 0], KEY, FIELDS);
         assert_eq!(names(&node.actions), ["select"]);
         assert_eq!(node.selected, Some(false));
-        // 容器可多选时增选与取消照旧经它的 Selection。
-        let multi = Context {
-            showing: true,
-            multiselectable: true,
-            ..hidden_popup
-        };
+        // 列表框可多选时增选与取消照旧经它的 Selection。
+        let multi = list(
+            &[State::Showing, State::Multiselectable],
+            Context::default(),
+        );
         assert_eq!(
             names(&offers(&option, multi)),
             ["select", "add_to_selection", "remove_from_selection"]

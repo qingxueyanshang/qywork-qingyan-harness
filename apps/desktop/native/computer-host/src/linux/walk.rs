@@ -12,7 +12,7 @@ use atspi::proxy::action::ActionProxyBlocking;
 use atspi::proxy::component::ComponentProxyBlocking;
 use atspi::proxy::text::TextProxyBlocking;
 use atspi::proxy::value::ValueProxyBlocking;
-use atspi::{CoordType, Interface, State};
+use atspi::{CoordType, Interface, InterfaceSet, State, StateSet};
 use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::Connection;
 use zbus::zvariant::OwnedObjectPath;
@@ -160,16 +160,32 @@ pub fn numbers(conn: &Connection, obj: &Obj) -> Result<Numbers, Failure> {
     })
 }
 
-/// 父对象里与子节点可用动作有关的事实：接口与状态，两次调用。
-pub fn context_of(conn: &Connection, obj: &Obj) -> Result<Context, Failure> {
+/// 父对象里与子节点可用动作有关的事实，`grandparent` 是父对象的父对象。
+pub fn context_of(
+    conn: &Connection,
+    obj: &Obj,
+    grandparent: Option<&Obj>,
+) -> Result<Context, Failure> {
     let accessible: AccessibleProxyBlocking = obj.proxy(conn)?;
+    let role = accessible.get_role().map_err(dbus("读父节点角色"))?;
     let states = accessible.get_state().map_err(dbus("读父节点状态"))?;
     let interfaces = accessible.get_interfaces().map_err(dbus("读父节点接口"))?;
-    Ok(Context {
-        selection: interfaces.contains(Interface::Selection),
-        showing: states.contains(State::Showing),
-        multiselectable: states.contains(State::Multiselectable),
-    })
+    let above = match grandparent {
+        Some(grandparent) => {
+            let accessible: AccessibleProxyBlocking = grandparent.proxy(conn)?;
+            let role = accessible
+                .get_role()
+                .map_err(dbus("读父节点的父节点角色"))?;
+            Context::of(
+                role,
+                StateSet::empty(),
+                InterfaceSet::empty(),
+                Context::default(),
+            )
+        }
+        None => Context::default(),
+    };
+    Ok(Context::of(role, states, interfaces, above))
 }
 
 /// 按 `ref` 重新定位的结果。
@@ -193,18 +209,19 @@ pub fn locate(
     let expected = decode_ref(reference).map_err(Failure::Refused)?;
     let mut obj = root.clone();
     let mut parent: Option<Obj> = None;
+    let mut grandparent: Option<Obj> = None;
     for (depth, index) in expected.path.iter().enumerate() {
         let Some(child) = children(conn, &obj)?.into_iter().nth(*index) else {
             return Err(Failure::Refused(format!(
                 "{REF_STALE}: 第 {depth} 层没有下标 {index} 的子节点"
             )));
         };
-        parent = Some(std::mem::replace(&mut obj, child?));
+        grandparent = parent.replace(std::mem::replace(&mut obj, child?));
     }
     let facts = facts(conn, &obj, fields)?;
     node::verify(&expected, &obj.key(), &facts).map_err(Failure::Refused)?;
     let context = match &parent {
-        Some(parent) => context_of(conn, parent)?,
+        Some(parent) => context_of(conn, parent, grandparent.as_ref())?,
         None => Context::default(),
     };
     Ok(Located {
@@ -324,7 +341,7 @@ impl Walk<'_> {
             Ok(k) => k,
             Err(f) => return self.tolerate(f),
         };
-        let own = Context::of(&facts);
+        let own = Context::of(facts.role, facts.states, facts.interfaces, context);
         // 下标照常递增：跳过一个子节点不能让它后面的兄弟换 ref。引用读不出的一格与读到一半
         // 消失的子节点同样处置。
         for (offset, child) in kids.into_iter().enumerate() {
