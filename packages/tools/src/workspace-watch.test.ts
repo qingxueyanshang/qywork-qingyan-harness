@@ -79,11 +79,15 @@ describe('执行窗口内的工作区变更', () => {
    * 原始失败形状：文件时间戳按文件系统时钟的刻度取值，比 `Date.now()` 落后至多一个刻度
    * （Linux 按 HZ 为 1–10 ms）。起点取 `Date.now()` 时，打开后同一刻度内新建的文件
    * 创建时间早于起点，判为 modified。
+   *
+   * 断言不依赖事件：macOS 的事件流在 `watch()` 返回之后才开始投递，紧跟打开的写入可能没有事件，
+   * a.txt 由收尾扫描按 mtime 取到。收尾前等一下，是让屏障标记写在事件流开始之后。
    */
   test('窗口打开后立即新建的文件判为 created', async () => {
     const root = await gitRepo()
     const window = openChangeWindow(root)
     await writeFile(join(root, 'a.txt'), 'a\n')
+    await settle()
     const got = await window.close()
 
     expect(got.changes).toEqual([
@@ -95,12 +99,17 @@ describe('执行窗口内的工作区变更', () => {
   /**
    * 反方向：打开前同一刻度内写下的文件不属于本窗口，本窗口改了它判为 modified。
    * 连续两条命令之间只隔几毫秒，把起点前移去抵消刻度会让上一条的文件在这里重报或判为 created。
+   *
+   * 两条断言都不依赖事件：打开前的写入早于 watcher，三端都不投递；kept.txt 由收尾扫描的
+   * 时间下界挡掉，edited.txt 由收尾扫描按 mtime 取到。打开后先等一下再改，是让改动与屏障标记
+   * 都落在 macOS 的事件流开始之后。
    */
   test('窗口打开前刚写下的文件不进结果，打开后改了它判为 modified', async () => {
     const root = await gitRepo()
     await writeFile(join(root, 'kept.txt'), 'k\n')
     await writeFile(join(root, 'edited.txt'), 'e\n')
     const window = openChangeWindow(root)
+    await settle()
     await writeFile(join(root, 'edited.txt'), 'e\ne\n')
     const got = await window.close()
 
