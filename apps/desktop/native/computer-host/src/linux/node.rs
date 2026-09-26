@@ -66,15 +66,17 @@ pub const VALUE_TEXT_LIMIT: i32 = 4096;
 
 /// 这一次读取要取哪些可选字段。含义同 Windows 后端：前两项不影响可用动作表。
 ///
-/// 后三项由窗口能给出什么决定，见 `super::Reach`。
+/// 后四项由窗口能给出什么决定，见 `super::Reach`。
 #[derive(Debug, Clone, Copy)]
 pub struct Fields {
     pub value: bool,
     pub state: bool,
-    /// 列前台动作，报键盘焦点。
+    /// 列键盘动作，报键盘焦点。
     pub foreground: bool,
-    /// 前台动作里列指针动作。`foreground` 为假时不起作用。
+    /// 前台动作里列按控件定位的指针动作。`foreground` 为假时不起作用。
     pub pointer: bool,
+    /// 窗口根上列窗口动作。`foreground` 为假时不起作用。
+    pub window: bool,
     /// 节点带包围盒。包围盒不是屏幕坐标的窗口不带：`rect` 与图像几何是同一套坐标。
     pub rect: bool,
 }
@@ -268,13 +270,18 @@ pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
     out
 }
 
-/// 这个对象列出的前台动作。调用方只在前台模式开着、且窗口有对应的 X 窗口时要；`pointer`
-/// 为假时不列指针动作。
+/// 这个对象列出的前台动作。调用方只在前台模式开着、且窗口收得到键盘输入时要；`pointer`
+/// 为假时不列指针动作，`window` 为假时不列窗口动作。
 ///
 /// 指针动作只列在有包围盒、此刻显示着的控件上：没有包围盒就指不出落点。键盘动作列在持有
 /// 键盘焦点的控件与窗口根节点上：自绘界面给不出持有焦点的控件，只列前者等于对它关掉整条
 /// 键盘路径。窗口动作只列在窗口根节点上。`path` 为空才是窗口根自己。
-pub fn foreground_offers(facts: &Facts, path: &[usize], pointer: bool) -> Vec<NodeAction> {
+pub fn foreground_offers(
+    facts: &Facts,
+    path: &[usize],
+    pointer: bool,
+    window: bool,
+) -> Vec<NodeAction> {
     let mut out = Vec::new();
     if pointer && facts.extents.is_some() && facts.states.contains(State::Showing) {
         for action in ["click", "hover", "drag", "wheel"] {
@@ -285,7 +292,7 @@ pub fn foreground_offers(facts: &Facts, path: &[usize], pointer: bool) -> Vec<No
         out.push(NodeAction::foreground("type_text"));
         out.push(NodeAction::foreground("press_key"));
     }
-    if path.is_empty() {
+    if window && path.is_empty() {
         for action in [
             "activate",
             "set_window_state",
@@ -397,7 +404,12 @@ pub fn node(facts: &Facts, context: Context, path: &[usize], key: &str, fields: 
         actions: {
             let mut actions = offers(facts, context);
             if fields.foreground {
-                actions.extend(foreground_offers(facts, path, fields.pointer));
+                actions.extend(foreground_offers(
+                    facts,
+                    path,
+                    fields.pointer,
+                    fields.window,
+                ));
             }
             actions
         },
@@ -573,6 +585,7 @@ mod tests {
         state: true,
         foreground: false,
         pointer: false,
+        window: false,
         rect: true,
     };
 
@@ -591,6 +604,7 @@ mod tests {
         let on = Fields {
             foreground: true,
             pointer: true,
+            window: true,
             ..FIELDS
         };
         let button = facts(AtspiRole::Button, SHOWN, &[Interface::Action], &["click"]);
@@ -636,6 +650,7 @@ mod tests {
         let keys_only = Fields {
             foreground: true,
             pointer: false,
+            window: true,
             ..FIELDS
         };
         let frame = facts(AtspiRole::Frame, SHOWN, &[], &[]);
@@ -654,6 +669,24 @@ mod tests {
         let button = facts(AtspiRole::Button, SHOWN, &[Interface::Action], &["click"]);
         assert!(
             foreground_names(&node(&button, Context::default(), &[0], KEY, keys_only)).is_empty()
+        );
+    }
+
+    /// 经 portal 共享的原生 Wayland 窗口：只列键盘动作。窗口动作合成器不允许，指针动作只按图
+    /// 定位，控件上不列。
+    #[test]
+    fn a_shared_wayland_window_lists_keyboard_actions_only() {
+        let keyboard = Fields {
+            foreground: true,
+            pointer: false,
+            window: false,
+            rect: false,
+            ..FIELDS
+        };
+        let frame = facts(AtspiRole::Frame, SHOWN, &[], &[]);
+        assert_eq!(
+            foreground_names(&node(&frame, Context::default(), &[], KEY, keyboard)),
+            ["type_text", "press_key"]
         );
     }
 

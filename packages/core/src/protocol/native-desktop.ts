@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 桌面原生宿主连接的线上契约。
  *
  * 这条连接只承载桌面控件的观察与动作；聊天指令不经它，浏览器资源操作也不经它
@@ -423,6 +423,9 @@ export interface DesktopTreeBody {
  *
  * `generation` 是窗口矩形与显示器的代际：窗口移动、缩放、换显示器或 DPI 变化之后它就
  * 不同，按图定位的请求在派发前据此被拒。
+ *
+ * 来源是 `portal_screen_cast` 时没有屏幕坐标：Wayland 不给客户端全局坐标，`screen` 是那条流
+ * 自己的逻辑坐标，原点是窗口左上角。按图定位的落点照同一条换算交给 worker，只对这一个窗口成立。
  */
 export interface DesktopImageGeometry {
   imageWidth: number
@@ -446,6 +449,11 @@ export type DesktopImageSource =
   | 'x11_composite'
   /** macOS 的 ScreenCaptureKit，按窗口取，窗口被遮挡也取得到它自己的内容。要 macOS 14 以上。 */
   | 'screencapturekit'
+  /**
+   * xdg-desktop-portal 的 ScreenCast，按窗口共享。Wayland 会话里的原生 Wayland 窗口，用户在
+   * 系统授权框里共享之后才取得到；几何见 `DesktopImageGeometry`。
+   */
+  | 'portal_screen_cast'
 
 /** 一次图像采集的结果。 */
 export interface DesktopImageBody {
