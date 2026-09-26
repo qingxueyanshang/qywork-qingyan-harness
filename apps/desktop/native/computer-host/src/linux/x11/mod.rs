@@ -20,7 +20,7 @@ use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, MapState, Window};
 use x11rb::rust_connection::RustConnection;
 
-use crate::geometry::{fully_covered, ScreenRect, WindowFrame};
+use crate::geometry::{fully_covered, ScreenPoint, ScreenRect, WindowFrame};
 
 /// 按名字取的 atom。只在建连时取一次。
 struct Atoms {
@@ -233,18 +233,27 @@ impl Display {
 
     /// 客户区的屏幕矩形：窗口原点换算到根窗口坐标，尺寸取窗口自己的几何。
     fn client_rect(&self, window: Window) -> Option<ScreenRect> {
+        let origin = self.origin(window)?;
+        let geometry = self.conn.get_geometry(window).ok()?.reply().ok()?;
+        Some(ScreenRect {
+            x: origin.x,
+            y: origin.y,
+            width: i32::from(geometry.width),
+            height: i32::from(geometry.height),
+        })
+    }
+
+    /// 窗口原点的根窗口坐标。窗口已销毁时交回 `None`。
+    pub fn origin(&self, window: Window) -> Option<ScreenPoint> {
         let origin = self
             .conn
             .translate_coordinates(window, self.root, 0, 0)
             .ok()?
             .reply()
             .ok()?;
-        let geometry = self.conn.get_geometry(window).ok()?.reply().ok()?;
-        Some(ScreenRect {
+        Some(ScreenPoint {
             x: i32::from(origin.dst_x),
             y: i32::from(origin.dst_y),
-            width: i32::from(geometry.width),
-            height: i32::from(geometry.height),
         })
     }
 
