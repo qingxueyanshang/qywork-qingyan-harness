@@ -31,6 +31,9 @@ use super::{marker_script, DownloadVerdict, Opened, OpenSpec, Runtime};
 /// 子视图里挂的 Tauri 运行时类型。钩子签名要它。
 type Wv = Wry;
 
+/// `host.ready` 报的显示位置：页是主窗口里的子视图，由界面摆进面板。
+pub const PRESENTATION: &str = "embedded";
+
 /// wry 在未指定 `additional_browser_args` 时传的默认值。
 /// 指定该方法会**整体替换**默认值，所以必须自己带上。
 const WRY_DEFAULT_BROWSER_ARGS: &str =

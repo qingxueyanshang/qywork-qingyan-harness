@@ -25,6 +25,8 @@ pub struct HostReady {
     pub host_instance_id: String,
     pub connection_epoch: u64,
     pub platform: &'static str,
+    /// 页显示在哪里：`embedded` 嵌在面板里，`window` 在浏览器自己的窗口里。由引擎决定。
+    pub presentation: &'static str,
     pub runtime_version: String,
     pub debug_port: u16,
     pub tabs: Vec<TabSnapshot>,
@@ -249,6 +251,7 @@ mod tests {
             host_instance_id: "6f2a0c11".into(),
             connection_epoch: 3,
             platform: "windows",
+            presentation: "embedded",
             runtime_version: "152.0.4191.66".into(),
             debug_port: 51234,
             tabs: vec![

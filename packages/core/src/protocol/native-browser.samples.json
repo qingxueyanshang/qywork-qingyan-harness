@@ -4,6 +4,7 @@
     "hostInstanceId": "6f2a0c11",
     "connectionEpoch": 3,
     "platform": "windows",
+    "presentation": "embedded",
     "runtimeVersion": "152.0.4191.66",
     "debugPort": 51234,
     "tabs": [

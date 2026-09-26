@@ -43,6 +43,9 @@ use table::{Popup, Table};
 const NOT_FOUND: &str = "not_found";
 const EXITED: &str = "exited";
 
+/// `host.ready` 报的显示位置：页在浏览器自己的窗口里，面板只列页签。
+pub const PRESENTATION: &str = "window";
+
 /// 宿主建页后等页面附上来并放行的上限。附上与放行都是本机毫秒级的事。
 const ATTACH_WAIT: Duration = Duration::from_secs(10);
 /// 建页之后等目标文档导航完成的上限，与 Windows 等首个文档取同一个数。

@@ -517,6 +517,7 @@ class AutoHost {
       hostInstanceId: 'h1',
       connectionEpoch: this.epoch,
       platform: 'windows',
+      presentation: 'embedded',
       runtimeVersion,
       debugPort,
       tabs: [],

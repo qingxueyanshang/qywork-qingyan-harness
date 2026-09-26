@@ -239,6 +239,7 @@ impl BrowserHost {
                 host_instance_id: self.instance_id.clone(),
                 connection_epoch: state.connection_epoch,
                 platform: std::env::consts::OS,
+                presentation: engine::PRESENTATION,
                 runtime_version: runtime.version,
                 debug_port: runtime.debug_port,
                 tabs: state.tabs.iter().map(|(id, tab)| tab.snapshot(id)).collect(),

@@ -18,5 +18,6 @@ export function browserCapability(bridge: BrowserBridge | null): BrowserCapabili
     connected: host !== null,
     runtimeSupported: host !== null && meetsRuntimeFloor(host.runtimeVersion),
     ...(unavailable ? { unavailable } : {}),
+    ...(host ? { presentation: host.presentation } : {}),
   }
 }

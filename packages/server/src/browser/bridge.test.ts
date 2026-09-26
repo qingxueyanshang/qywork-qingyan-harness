@@ -243,7 +243,11 @@ test('host.unavailable 撤下能力并报原因，同一条连接上的 host.rea
   host.ready()
   await settle()
   expect(handle.browser?.available()).toBe(true)
-  expect(seen.at(-1)).toEqual({ connected: true, runtimeSupported: true })
+  expect(seen.at(-1)).toEqual({
+    connected: true,
+    runtimeSupported: true,
+    presentation: 'embedded',
+  })
 
   // 浏览器进程退出：在途调用失败，快照清空，原因换成 exited。
   const pending = handle.browser?.portFor('cv_bridge', WS).open('http://127.0.0.1:1/page')
@@ -255,6 +259,33 @@ test('host.unavailable 撤下能力并报原因，同一条连接上的 host.rea
   expect(seen.at(-1)).toEqual({ connected: false, runtimeSupported: false, unavailable: 'exited' })
 
   // 连接断开之后原因不再成立：此刻是没有宿主，不是宿主没有浏览器。
+  host.socket.close()
+  await settle()
+  expect(seen.at(-1)).toEqual({ connected: false, runtimeSupported: false })
+})
+
+/**
+ * 页显示在面板里还是浏览器自己的窗口里，只由宿主的 `host.ready` 说；能力把它原样带给界面，
+ * 宿主不在时缺席。界面按它显示，不按 UA 判断。
+ */
+test('页的显示位置随 host.ready 进能力，宿主断开后缺席', async () => {
+  const handle = fresh()
+  const seen: unknown[] = []
+  cleanups.push(
+    handle.bus.subscribe({
+      id: 'probe',
+      origin: 'desktop',
+      conversations: null,
+      send: (frame) => {
+        if (frame.event.type === 'browser.state') seen.push(frame.event.browser)
+      },
+    }),
+  )
+  const host = await FakeHost.connect(handle.port)
+  host.ready({ platform: 'linux', presentation: 'window', runtimeVersion: '154.0.8037.57' })
+  await settle()
+  expect(seen.at(-1)).toEqual({ connected: true, runtimeSupported: true, presentation: 'window' })
+
   host.socket.close()
   await settle()
   expect(seen.at(-1)).toEqual({ connected: false, runtimeSupported: false })

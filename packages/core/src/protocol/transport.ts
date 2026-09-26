@@ -7,7 +7,7 @@
 
 import type { ConversationId } from '../domain/ids.ts'
 import type { Attachment, PermissionMode } from '../domain/model.ts'
-import type { BrowserUnavailableReason } from './native-browser.ts'
+import type { BrowserPresentation, BrowserUnavailableReason } from './native-browser.ts'
 
 // ─────────────────────────────── 握手 ───────────────────────────────
 
@@ -175,6 +175,8 @@ export interface BrowserCapability {
   runtimeSupported: boolean
   /** 宿主连着、但没有可用浏览器的原因；此时 `connected` 为假。宿主没连上或浏览器可用时缺席。 */
   unavailable?: BrowserUnavailableReason
+  /** 宿主报的页显示位置，`connected` 为真时才有。界面按它决定面板里是嵌入的页还是窗口入口。 */
+  presentation?: BrowserPresentation
 }
 
 /**
