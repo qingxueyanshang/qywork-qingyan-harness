@@ -1117,6 +1117,39 @@ describe('搜索与命令', () => {
   }, 30_000)
 
   /**
+   * 工作区观察窗口先于进程打开。进程起不来时窗口必须收掉：漏收的窗口一直排在最前，
+   * 此后每条命令的事件都归它，结果里的文件改动一条都没有。
+   */
+  test('进程起不来时收掉观察窗口，下一条命令的文件改动照常报出', async () => {
+    const shell = commandShell()
+    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    const root = await workspace()
+    setCommandRunner({
+      spawn: async () => {
+        throw new Error('命令 runner 已退出')
+      },
+      stop() {},
+    })
+    try {
+      const failed = await registry().execute('run_command', { command: 'echo x' }, ctx(root))
+      expect(failed.status).toBe('failure')
+    } finally {
+      setCommandRunner(null)
+    }
+
+    // 删除只有事件看得见，收尾扫描补不上：窗口漏收时删除报不出来。
+    const command = shell.argv.includes('-Command')
+      ? 'Remove-Item a.txt; Set-Content made.txt made'
+      : 'rm a.txt && echo made > made.txt'
+    const out = await registry().execute('run_command', { command }, ctx(root))
+    expect(out.status).toBe('success')
+    expect(out.fileChanges?.map((c) => [c.path, c.changeType]).sort()).toEqual([
+      ['a.txt', 'deleted'],
+      ['made.txt', 'created'],
+    ])
+  }, 30_000)
+
+  /**
    * 原始失败形状：Linux 的 bwrap 沙箱在 shell 退出时结束命名空间里的全部进程，`npm run dev &`
    * 这类后台服务随命令返回一起消失，结果里没有任何说明。锁的是进程确实留下：命令返回之后，
    * 它仍然写得出文件。

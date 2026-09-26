@@ -236,21 +236,16 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         ...(ctx.denyNetwork ? { denyNetwork: true } : {}),
       }
 
-      const { proc, sandbox } = await spawnGuarded({
-        command,
-        cwd,
-        policy,
-        // NON_INTERACTIVE_ENV 放在剥离**之后**：它由本文件注入，
-        // 里面没有凭证，也不该被名字规则误伤（比如将来加个带 TOKEN 的变量）。
-        env: {
-          ...scrubEnv(process.env, secrets, { allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW }),
-          ...NON_INTERACTIVE_ENV,
-          ...(await tmpEnv(ctx.workspaceRoot)),
-        },
-      })
+      // NON_INTERACTIVE_ENV 放在剥离**之后**：它由本文件注入，
+      // 里面没有凭证，也不该被名字规则误伤（比如将来加个带 TOKEN 的变量）。
+      const env = {
+        ...scrubEnv(process.env, secrets, { allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW }),
+        ...NON_INTERACTIVE_ENV,
+        ...(await tmpEnv(ctx.workspaceRoot)),
+      }
 
       // 命令改了哪些文件由工作区观察器给：shell 没有精确明细，路径与变更类型是它能知道的全部。
-      // 在进程起来之后才开窗：子进程从启动到第一次写盘远长于开窗那一下，先开则 spawn 抛错时窗口泄漏。
+      // 必须先开窗再起进程：窗口起点之前写下的文件判不出是这条命令新建的。
       const reported = turnReported(ctx.state)
       const changeWindow = openChangeWindow(ctx.workspaceRoot, { reported })
       const closeWindow = async () => {
@@ -258,6 +253,14 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         trackReported(reported, observed.changes)
         return observed
       }
+
+      // spawn 抛错时收掉窗口：不收的话它一直排在最前，此后的窗口收不到任何事件。
+      const { proc, sandbox } = await spawnGuarded({ command, cwd, policy, env }).catch(
+        async (e: unknown) => {
+          await changeWindow.close()
+          throw e
+        },
+      )
 
       // 每条流一个脱敏器：它们各自带跨片缓冲，共用一个会把两条流的尾巴串起来。
       const redactors = {

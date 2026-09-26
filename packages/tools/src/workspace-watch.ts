@@ -36,10 +36,11 @@
  *
  * 拿不到改动前的内容，所以改过的与删掉的不带行数；新建的文本文件按落盘内容数行，
  * 口径与文件工具相同（`countDiff` 对空的旧内容：新内容按 `\n` 切开的段数）。
- * `changeType` 按收尾时的磁盘状态判：不存在 = deleted；创建时间在窗口内 = created；其余 modified。
- * 创建时间与窗口起点的比较受时间戳精度限制：Linux 的文件时间戳按内核时钟节拍取值，比 `Date.now()`
- * 落后至多一个节拍（WSL2 实测最多 5.3 ms，2026-09-25），窗口打开后一个节拍内新建的文件判为 modified。
- * 不要把窗口起点前移来抵消：连续两条命令之间只隔几毫秒，前移后上一条新建的文件在下一个窗口里判为 created。
+ * `changeType` 按收尾时的磁盘状态判：不存在 = deleted；创建时间不早于窗口起点 = created；其余 modified。
+ * **窗口起点与文件时间戳取自同一个时钟。** 新建 watcher 时等文件时间戳越过当前刻度，以越过后的值为
+ * 起点（`stampTick`）：打开前写下的文件时间戳都小于起点，打开后写下的都不小于起点。调用方必须在
+ * 窗口打开之后才开始写；打开因此多阻塞至多一个刻度（Linux 按 HZ 为 1–10 ms）。排队的窗口以前一个
+ * 窗口收尾时的 `Date.now()` 为起点，文件时间戳比它落后至多一个刻度，其后一个刻度内新建的文件判为 modified。
  * 临时文件（窗口内建、收尾前删）不进结果，前提是观察器在它消失之前 stat 到过它：存在时间短于
  * 事件交付延迟的临时文件判为 deleted。原子保存（写临时文件再改名）会被判成 created。
  * 结果里只有文件：仍在磁盘上的按 `stat` 判，已经不在的按同一批里有没有路径以它为父段判。
@@ -63,7 +64,17 @@
  * 按前缀排除会把项目文件一并丢掉。
  */
 
-import { type Dirent, existsSync, type FSWatcher, mkdirSync, realpathSync, watch } from 'node:fs'
+import {
+  type Dirent,
+  existsSync,
+  type FSWatcher,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  watch,
+  writeFileSync,
+} from 'node:fs'
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, join, relative, resolve } from 'node:path'
 import type { FileChange } from '@qywork/core'
@@ -116,6 +127,11 @@ const GIT_TIMEOUT_MS = 15_000
  * 到点仍未收到按没等到处理。
  */
 const BARRIER_TIMEOUT_MS = 5_000
+/**
+ * 等文件时间戳前进一个刻度的上限。刻度在 Linux 上按 HZ 为 1–10 ms，Windows 的时钟中断缺省
+ * 15.6 ms；到点仍未前进的是秒级精度的文件系统（FAT、HFS+ 等）。
+ */
+const STAMP_TICK_LIMIT_MS = 20
 const NO_STDIN = new Uint8Array(0)
 let markerSeq = 0
 
@@ -125,7 +141,10 @@ interface FirstSeen {
 }
 
 interface Window {
-  /** 本窗口开始拥有事件与扫描结果的时刻：排在最前时是打开时刻，否则是前一个窗口收尾的时刻。 */
+  /**
+   * 本窗口开始拥有事件与扫描结果的时刻。新建 watcher 的窗口取 `stampTick` 的返回值，
+   * 与文件时间戳同一个时钟；排队的窗口取前一个窗口收尾时的 `Date.now()`。
+   */
   startedAt: number
   paths: Map<string, Promise<FirstSeen | null>>
   /** 事件命中运行产物目录而被剪掉时记下的目录，收尾时交给索引补齐。 */
@@ -381,6 +400,37 @@ async function goneFrom(
 }
 
 /**
+ * 文件时间戳越过当前刻度之后的第一个值，作新建 watcher 的窗口起点。
+ *
+ * 在 `.tmp` 下反复改写同一个探针文件，直到它的 mtime 大于第一次写入时的值：此前写下的文件
+ * 时间戳都不大于第一次的值，此后写下的都不小于返回值，窗口两侧的写入不会落在同一个刻度里。
+ * 不要换成 `Date.now()`：文件时间戳按刻度取值，比它落后至多一个刻度，打开后同一刻度内新建的文件
+ * 判为 modified；它又按毫秒取整，打开前同一毫秒内写下的文件判为窗口内新建。
+ *
+ * 必须在建 watcher 之前调用：探针的事件会占 Bun 约 2 ms 的去重窗口。探针写不进去时返回
+ * `Date.now()`，收尾的屏障同样写不进标记，结果按 `incomplete` 交出；`STAMP_TICK_LIMIT_MS`
+ * 内时间戳没有前进时同样返回 `Date.now()`。
+ */
+function stampTick(root: string): number {
+  const probe = join(root, '.tmp', `qywork-watch-${process.pid}-${++markerSeq}`)
+  const deadline = Date.now() + STAMP_TICK_LIMIT_MS
+  let stamp: number | null = null
+  try {
+    writeFileSync(probe, '')
+    const first = statSync(probe).mtimeMs
+    while (stamp === null && Date.now() < deadline) {
+      writeFileSync(probe, '0')
+      const now = statSync(probe).mtimeMs
+      if (now > first) stamp = now
+    }
+    rmSync(probe, { force: true })
+  } catch {
+    // 写不进时落到 `Date.now()`；删不掉的探针留在 `.tmp` 里，这一段一律不报。
+  }
+  return stamp ?? Date.now()
+}
+
+/**
  * 写一个标记文件，等 watcher 交出它的事件。返回 false = 没等到：标记写不进去、watcher 已报错，
  * 或到了上限。`onSettled` 在等到或放弃的那一刻同步调用，排在标记之后交付的事件已不归调用方。
  *
@@ -446,6 +496,8 @@ export function openChangeWindow(
     } catch {
       // 建不成时屏障写不进标记，收尾按 incomplete 交出。
     }
+    // 排队的窗口不取：它从前一个窗口收尾时才拥有事件，起点在交接时改写。
+    window.startedAt = stampTick(root)
     created.watcher = watch(root, { recursive: true }, (_event, filename) => {
       if (typeof filename !== 'string' || !filename) return
       const rel = filename.replaceAll('\\', '/')

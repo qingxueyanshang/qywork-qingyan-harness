@@ -1036,13 +1036,11 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     await mkdir(bin, { recursive: true })
     // 假的 codex：不看参数，往当前目录写三个文件（普通、项目点路径、被忽略的缓存），
     // 再按 codex 的 jsonl 形状报一句结果。两份写法都放：Windows 按 PATHEXT 取 `.cmd`，
-    // POSIX 取无后缀的 sh 脚本。sh 脚本先等 50 ms 再写：Linux 的文件时间戳按时钟节拍取值，
-    // 窗口打开后一个节拍内新建的文件判为 modified（`workspace-watch.ts` 的边界）。
+    // POSIX 取无后缀的 sh 脚本。
     await writeFile(
       join(bin, 'codex'),
       [
         '#!/bin/sh',
-        'sleep 0.05',
         'echo made > cli-made.txt',
         'mkdir -p .github/workflows',
         'echo ci > .github/workflows/ci.yml',
