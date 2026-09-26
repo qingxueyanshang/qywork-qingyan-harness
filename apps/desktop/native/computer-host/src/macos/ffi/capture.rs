@@ -33,9 +33,9 @@ use objc2_screen_capture_kit::{
     SCStreamConfiguration,
 };
 
-use super::screen::Placed;
 use crate::backend::CaptureRequest;
 use crate::geometry::{crop_for, generation_matches, Crop, Geometry};
+use crate::macos::pure::screen::Placed;
 use crate::png;
 use crate::protocol::{base64, now_ms, Image};
 

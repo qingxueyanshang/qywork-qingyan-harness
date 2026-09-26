@@ -19,11 +19,11 @@ use objc2_core_graphics::{
     CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo, CGWindowListOption,
 };
 
-use super::associate::CgWindow;
-use super::facts::{code, Frame, Raw};
-use super::identity::Handle;
-use super::plan::Setting;
-use super::screen::Display;
+use crate::macos::pure::associate::CgWindow;
+use crate::macos::pure::facts::{code, Frame, Raw};
+use crate::macos::pure::identity::Handle;
+use crate::macos::pure::plan::Setting;
+use crate::macos::pure::screen::Display;
 
 /// 一个 AX 元素引用：进程号加元素标识的令牌，比较按 `CFEqual`。
 #[derive(Clone)]
