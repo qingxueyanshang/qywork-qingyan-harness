@@ -1,4 +1,7 @@
 import {
+  defaultMediaKind,
+  MEDIA_KIND_OUTPUT,
+  type MediaOutput,
   matchesToolCallCheck,
   PROVIDER_KINDS,
   type ProviderKind,
@@ -45,6 +48,9 @@ const KIND_LABEL: Record<ProviderKind, string> = {
 }
 
 const probeKey = (provider: string, model: string) => JSON.stringify([provider, model])
+
+/** 生成模型行上的类别词。同一列里有对话的「默认」与各类生成的「默认」，不写类别就分不清哪个管哪件事。 */
+const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
 
 /**
  * 模型配置：**接口一层，模型一层**。
@@ -133,7 +139,7 @@ export function ModelSettings() {
         if (fallback) next.active = fallback
         else delete next.active
       }
-      return next
+      return withMediaDefaults(next, (ref) => ref.provider === name)
     })
   }
 
@@ -147,11 +153,20 @@ export function ModelSettings() {
       const moved = cur.providers[from]
       if (!moved || to in cur.providers) return null
       const { [from]: _drop, ...rest } = cur.providers
-      return {
+      const next: RedactedConfig = {
         ...cur,
         providers: { ...rest, [to]: moved },
         ...(cur.active?.provider === from ? { active: { ...cur.active, provider: to } } : {}),
       }
+      if (cur.mediaDefaults) {
+        next.mediaDefaults = Object.fromEntries(
+          Object.entries(cur.mediaDefaults).map(([output, ref]) => [
+            output,
+            ref.provider === from ? { ...ref, provider: to } : ref,
+          ]),
+        )
+      }
+      return next
     })
   }
 
@@ -160,14 +175,41 @@ export function ModelSettings() {
    *
    * 参数不在这里写——它们照着 id 从模型库查（`lookupModel` + 库里的覆盖）。
    * 在这里再存一份窗口和价格，就是同一件事记两本账。
+   *
+   * id 在生成目录里就挂成生成模型，协议按接口地址给默认值（`defaultMediaKind`），之后以落盘的为准；
+   * 这一类还没有默认模型时它成为默认。目录里没有的 id 照旧当对话模型。
    */
   const addModel = (provider: string, id: string) => {
     const base = config()
     const p = base?.providers[provider]
     if (!base || !p || !id) return
     // 已存在该 id：此前静默返回会使回车后毫无反馈、看似失效，应明确报出。
-    if (id in p.models) {
+    if (id in p.models || id in (p.media ?? {})) {
       reportConfigWriteError(`模型 ${id} 已存在于接口 ${provider} 下`)
+      return
+    }
+    const generator = modelCatalog()?.mediaLibrary.find((m) => m.id === id)
+    if (generator) {
+      void replaceConfig((cur) => {
+        const owner = cur.providers[provider]
+        if (!owner || id in owner.models || id in (owner.media ?? {})) return null
+        const kind = defaultMediaKind(generator.output, owner.baseUrl)
+        return {
+          ...cur,
+          providers: {
+            ...cur.providers,
+            [provider]: { ...owner, media: { ...owner.media, [id]: { kind } } },
+          },
+          ...(cur.mediaDefaults?.[generator.output]
+            ? {}
+            : {
+                mediaDefaults: {
+                  ...cur.mediaDefaults,
+                  [generator.output]: { provider, model: id },
+                },
+              }),
+        }
+      })
       return
     }
     void replaceConfig((cur) => {
@@ -183,6 +225,19 @@ export function ModelSettings() {
         // 省掉一次「加完了怎么还没生效」。
         ...(Object.keys(owner.models).length === 0 ? { active: { provider, model: id } } : {}),
       }
+    })
+  }
+
+  const removeMediaModel = (provider: string, id: string) => {
+    void replaceConfig((cur) => {
+      const owner = cur.providers[provider]
+      if (!owner?.media) return null
+      const { [id]: _drop, ...media } = owner.media
+      const next: RedactedConfig = {
+        ...cur,
+        providers: { ...cur.providers, [provider]: { ...owner, media } },
+      }
+      return withMediaDefaults(next, (ref) => ref.provider === provider && ref.model === id)
     })
   }
 
@@ -454,6 +509,49 @@ export function ModelSettings() {
                         }}
                       </For>
 
+                      <For each={Object.entries(p().media ?? {})}>
+                        {([id, m]) => {
+                          const output = MEDIA_KIND_OUTPUT[m.kind]
+                          const isDefault = () => {
+                            const ref = c().mediaDefaults?.[output]
+                            return ref?.provider === name() && ref.model === id
+                          }
+                          return (
+                            <div class="model-row" classList={{ active: isDefault() }}>
+                              <div class="model-row-main">
+                                <button
+                                  class="model-pick"
+                                  type="button"
+                                  disabled={isDefault()}
+                                  onClick={() =>
+                                    void replaceConfig((cur) => ({
+                                      ...cur,
+                                      mediaDefaults: {
+                                        ...cur.mediaDefaults,
+                                        [output]: { provider: name(), model: id },
+                                      },
+                                    }))
+                                  }
+                                >
+                                  {isDefault() ? '默认' : '设为默认'}
+                                </button>
+                                <span class="model-id">{id}</span>
+                                <span class="model-output">{OUTPUT_LABEL[output]}</span>
+                                {/* 没有「检测」：探测一次就是真生成一次、真扣一次费。 */}
+                                <button
+                                  class="icon-btn"
+                                  type="button"
+                                  aria-label={`删除模型 ${id}`}
+                                  onClick={() => removeMediaModel(name(), id)}
+                                >
+                                  <IconTrash size={12} />
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        }}
+                      </For>
+
                       <div class="model-row add">
                         <input
                           type="text"
@@ -476,6 +574,7 @@ export function ModelSettings() {
           <Show when={showLibrary()}>
             <ModelLibrary
               vendors={modelCatalog()?.library ?? []}
+              media={modelCatalog()?.mediaLibrary ?? []}
               loading={modelCatalogLoading()}
               error={modelCatalogError()}
             />
@@ -503,6 +602,43 @@ export function ModelSettings() {
 }
 
 /** 接口表里第一个挂了模型的那一格。删光当前接口时用它选下一个可用接口。 */
+/**
+ * 删掉生成模型或接口之后改默认生成模型：`gone` 命中的那一类换成同类的第一个，同类一个不剩就删掉那一类的键，
+ * 全删空了整个字段不带。保存时这一份是权威，留一个指向已删模型的默认，保存会被 422 挡回来。
+ */
+function withMediaDefaults(
+  next: RedactedConfig,
+  gone: (ref: { provider: string; model: string }) => boolean,
+): RedactedConfig {
+  if (!next.mediaDefaults) return next
+  const defaults: Partial<Record<MediaOutput, { provider: string; model: string }>> = {}
+  for (const [output, ref] of Object.entries(next.mediaDefaults) as [
+    MediaOutput,
+    { provider: string; model: string },
+  ][]) {
+    if (!gone(ref)) {
+      defaults[output] = ref
+      continue
+    }
+    const fallback = firstMediaRef(next.providers, output)
+    if (fallback) defaults[output] = fallback
+  }
+  const { mediaDefaults: _drop, ...rest } = next
+  return Object.keys(defaults).length ? { ...rest, mediaDefaults: defaults } : rest
+}
+
+function firstMediaRef(
+  providers: Record<string, RedactedProvider>,
+  output: MediaOutput,
+): { provider: string; model: string } | null {
+  for (const [provider, p] of Object.entries(providers)) {
+    for (const [model, m] of Object.entries(p.media ?? {})) {
+      if (MEDIA_KIND_OUTPUT[m.kind] === output) return { provider, model }
+    }
+  }
+  return null
+}
+
 function firstModelRef(
   providers: Record<string, RedactedProvider>,
 ): { provider: string; model: string } | null {

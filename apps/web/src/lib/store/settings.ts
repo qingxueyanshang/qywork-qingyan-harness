@@ -9,6 +9,8 @@ import type {
   Attachment,
   Conversation,
   EffortLevel,
+  MediaKind,
+  MediaOutput,
   PermissionMode,
   ScheduleView,
   ThinkingMode,
@@ -56,6 +58,8 @@ export interface RedactedProvider {
   baseUrl?: string
   headers?: Record<string, string>
   models: Record<string, RedactedModel>
+  /** 这个接口下的生成模型，键是模型 id。与 `models` 分表：输入框的模型选择只列 `models`。 */
+  media?: Record<string, { kind: MediaKind }>
   hasApiKey: boolean
   /**
    * **只写。** 读接口永远不回它（回的是上面那个 `hasApiKey`），
@@ -82,6 +86,11 @@ export interface RedactedConfig {
   updates?: { autoCheck: boolean; autoDownload: boolean }
   /** 当前默认「接口 × 模型」。**可缺省**：出厂不预设模型，删光最后一个模型后也没有。 */
   active?: ModelRef
+  /**
+   * 各类别的默认生成模型。与 `active` 同规则：保存时这一份是权威，没带就是没有默认，
+   * 所以删光某一类的模型时要把那一类的键删掉，删空了整个字段不带。
+   */
+  mediaDefaults?: Partial<Record<MediaOutput, ModelRef>>
   providers: Record<string, RedactedProvider>
   /**
    * 模型参数的覆盖，键是「模型 id | 协议」。
@@ -262,9 +271,50 @@ export interface LibraryVendor {
   models: LibraryModel[]
 }
 
+/** 生成操作。与服务端生成目录的 `MediaOperation` 同一组值。 */
+export type MediaOperationName =
+  | 'generate'
+  | 'edit'
+  | 'text_to_video'
+  | 'image_to_video'
+  | 'first_last_frame'
+  | 'reference_to_video'
+  | 'video_to_video'
+  | 'speech'
+
+/** 接口下挂着的一个生成模型。 */
+export interface MediaModelOption {
+  provider: string
+  id: string
+  kind: MediaKind
+  output: MediaOutput
+  label: string
+  operations: MediaOperationName[]
+  isDefault: boolean
+  /** false = 生成目录里没有，参数表是协议默认。 */
+  known: boolean
+}
+
+/** 生成目录里的一条。`params` 每行一个参数，与交给大模型的是同一份文字。 */
+export interface MediaLibraryModel {
+  id: string
+  label: string
+  vendor: string | null
+  kind: MediaKind
+  output: MediaOutput
+  operations: MediaOperationName[]
+  maxImages: number
+  maxVideos: number
+  params: string[]
+}
+
 export interface ModelCatalog {
   /** 可选的：配置里真有的接口 × 模型。 */
   providers: ProviderModels[]
+  /** 已配置的生成模型。不能对话，输入框的模型选择不读它。 */
+  media: MediaModelOption[]
+  /** 内置生成目录。添加模型时据此认出生成模型，模型库的生成类页签显示它。 */
+  mediaLibrary: MediaLibraryModel[]
   /** 当前默认「接口 × 模型」。**可缺省**：出厂不预设模型时它不存在。 */
   active?: { provider: string; model: string }
   /** 模型参数表。**不是可选列表**——接口下挂了哪个 id，就按它从这里查参数。 */

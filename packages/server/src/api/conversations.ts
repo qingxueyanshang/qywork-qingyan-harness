@@ -2,13 +2,16 @@
 
 import { rm } from 'node:fs/promises'
 import { MAX_RESENDS } from '@qywork/agent'
-import type { ModelSpec } from '@qywork/ai'
+import type { MediaOperation, ModelSpec } from '@qywork/ai'
 import {
   applySpecOverride,
   applyTransportCapabilities,
   builtinCatalog,
+  describeParam,
   effortIsTransmittable,
+  lookupMediaModel,
   lookupModel,
+  mediaCatalog,
   unknownModel,
   VENDORS,
 } from '@qywork/ai'
@@ -20,14 +23,18 @@ import type {
   ConversationRunsResponse,
   ConversationUsageResponse,
   EffortLevel,
+  MediaKind,
+  MediaOutput,
   MessageId,
   RunId,
   ToolSchemaMode,
 } from '@qywork/core'
+import { MEDIA_KIND_OUTPUT } from '@qywork/core'
 import {
   catalogKey,
   contextPanel,
   exportConversationDiagnostics,
+  listMediaModels,
   type QyConfig,
   resolveModel,
   type StoredCatalogEntry,
@@ -100,6 +107,40 @@ export interface ModelsResponse {
   /** 当前选中的接口与模型。形状与配置里那一段一致。 */
   active: QyConfig['active']
   library: LibraryVendor[]
+  /**
+   * 已配置的生成模型，按接口在配置里的顺序。与 `providers` 分开：它们不能对话，
+   * 输入框的模型选择只读 `providers`，不必排除任何一行。
+   */
+  media: MediaModelRow[]
+  /** 内置生成目录，给模型库的生成类页签。只收各家最新一代。 */
+  mediaLibrary: MediaLibraryModel[]
+}
+
+/** 接口下挂着的一个生成模型。 */
+export interface MediaModelRow {
+  provider: string
+  id: string
+  kind: MediaKind
+  output: MediaOutput
+  label: string
+  operations: MediaOperation[]
+  /** 它是不是该类别的默认。 */
+  isDefault: boolean
+  /** false = 生成目录里没有，参数表是协议默认。 */
+  known: boolean
+}
+
+/** 生成目录里的一条。`params` 是给人看的参数表，每行一个参数，与给大模型的同一份文字。 */
+export interface MediaLibraryModel {
+  id: string
+  label: string
+  vendor: string | null
+  kind: MediaKind
+  output: MediaOutput
+  operations: MediaOperation[]
+  maxImages: number
+  maxVideos: number
+  params: string[]
 }
 
 /**
@@ -307,10 +348,36 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         }
       }),
     }))
+    const media: MediaModelRow[] = listMediaModels(d.config).map((m) => {
+      const spec = lookupMediaModel(m.model, m.kind)
+      return {
+        provider: m.provider,
+        id: m.model,
+        kind: m.kind,
+        output: m.output,
+        label: spec.catalogued ? spec.displayName : m.model,
+        operations: [...spec.operations],
+        isDefault: m.isDefault,
+        known: spec.catalogued,
+      }
+    })
+    const mediaLibrary: MediaLibraryModel[] = mediaCatalog().map((spec) => ({
+      id: spec.id,
+      label: spec.displayName,
+      vendor: spec.vendor,
+      kind: spec.kind,
+      output: MEDIA_KIND_OUTPUT[spec.kind],
+      operations: [...spec.operations],
+      maxImages: spec.inputs.maxImages,
+      maxVideos: spec.inputs.maxVideos,
+      params: spec.params.map(describeParam),
+    }))
     const res: ModelsResponse = {
       providers,
       active: d.config.active,
       library: buildLibrary(overrides),
+      media,
+      mediaLibrary,
     }
     return json(res)
   }

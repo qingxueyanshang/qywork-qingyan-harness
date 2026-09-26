@@ -715,7 +715,8 @@ textarea.code-area::placeholder {
  * 伪元素而不是 `border-bottom`：后者会让未选中的那些也占掉 2px，切换时整行上下跳。 */
 .scope-tab,
 .tab-chip,
-.usage-chip {
+.usage-chip,
+.lib-tab {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -726,18 +727,21 @@ textarea.code-area::placeholder {
 }
 .scope-tab:hover,
 .tab-chip:hover,
-.usage-chip:hover {
+.usage-chip:hover,
+.lib-tab:hover {
   color: var(--text-secondary);
 }
 .scope-tab.active,
 .tab-chip.active,
-.usage-chip.active {
+.usage-chip.active,
+.lib-tab.active {
   color: var(--text-primary);
   font-weight: 500;
 }
 .scope-tab.active::after,
 .tab-chip.active::after,
-.usage-chip.active::after {
+.usage-chip.active::after,
+.lib-tab.active::after {
   content: "";
   position: absolute;
   left: 0;
@@ -1004,6 +1008,41 @@ textarea.code-area::placeholder {
 .lib-table .num {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+/* 模型库的类别页签：对话与各类生成。 */
+.lib-tabs {
+  display: flex;
+  gap: var(--s-4);
+  margin-bottom: var(--s-3);
+}
+/* 生成类的表：列与对话表不同，列宽单独给；参数列占余下宽度。 */
+.lib-table.media th:nth-child(1) {
+  width: 220px;
+}
+.lib-table.media th:nth-child(2) {
+  width: 72px;
+}
+.lib-table.media th:nth-child(3) {
+  width: 88px;
+}
+.lib-table.media th:nth-child(4) {
+  width: 150px;
+}
+.lib-table.media th:nth-child(5) {
+  width: 96px;
+}
+.lib-table.media th:nth-child(6) {
+  width: auto;
+}
+.lib-params summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.lib-params ul {
+  margin: var(--s-1) 0 0;
+  padding-left: var(--s-4);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
 }
 .lib-table tbody tr + tr td {
   border-top: 1px solid var(--border-subtle);
@@ -1510,4 +1549,10 @@ textarea.code-area::placeholder {
 }
 .usage-table tbody tr + tr td {
   border-top: 1px solid var(--border-subtle);
+}
+/* 生成模型行上的类别词：同一列里对话与各类生成各有一个「默认」，靠它分清。 */
+.model-output {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
 }

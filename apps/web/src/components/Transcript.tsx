@@ -66,7 +66,7 @@ import {
   view,
   viewOf,
 } from '../lib/store/index.ts'
-import { openCliTab, openConversationTab } from '../lib/store/ui.ts'
+import { openCliTab, openConversationTab, openFileInPanel } from '../lib/store/ui.ts'
 import { reparseSkip } from '../lib/stream-pace.ts'
 import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { IconChevron, IconSpinner } from './Icons.tsx'
@@ -1593,6 +1593,11 @@ function ToolCard(props: { item: TranscriptItem }) {
     props.item.outcome?.presentation?.images === 'inline'
       ? resultImages(props.item.outcome.data)
       : []
+  /** 生产者声明可打开的产物路径。只列路径，看内容在右侧预览里看。 */
+  const files = () =>
+    props.item.outcome?.presentation?.files === 'open'
+      ? (props.item.outcome.fileChanges ?? []).map((c) => c.path)
+      : []
   // 派活的那两个画成图，不套折叠：它们各自是一整条子会话的入口，
   // 而产出正文在那条子会话（或那个 CLI 进程的输出流）里本来就有。
   if (props.item.toolName === 'workflow' || props.item.toolName === 'subagent') {
@@ -1621,6 +1626,17 @@ function ToolCard(props: { item: TranscriptItem }) {
                 alt={`${props.item.action?.target ?? '工具结果'} 图片 ${index() + 1}`}
                 loading="lazy"
               />
+            )}
+          </For>
+        </div>
+      </Show>
+      <Show when={files().length > 0}>
+        <div class="tool-files">
+          <For each={files()}>
+            {(path) => (
+              <button class="tool-file" type="button" onClick={() => openFileInPanel(path)}>
+                {path}
+              </button>
             )}
           </For>
         </div>
