@@ -621,6 +621,7 @@ export const browserObserveTool: ToolSpec = {
     'frame 只看某个 iframe，取自元素的 frame 字段。' +
     '元素上的 expanded 与 selected 缺席表示这个角色没有这一项，不表示收起或未选中；' +
     'options 是 select 的选项摘要，按当前页面现读。' +
+    '浏览器自动填充的账号密码在页面上有点击或按键之前读不到，输入框 value 为空不代表框里没填，点一下输入框再读。' +
     '元素上的 optionsTruncated=true 表示这个 select 的选项没有列全：' +
     '用 optionsFor 按该元素继续读，返回的是选项页而不是新观察，' +
     'observationId 与 ref 沿用原来那一份；optionsFor 不能与 frame、screenshot、offset 同时给。',
