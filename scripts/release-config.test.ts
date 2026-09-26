@@ -212,6 +212,39 @@ describe('桌面发布清单', () => {
   })
 
   /**
+   * Linux 上电脑控制经会话总线激活 `org.a11y.Bus`，提供它的是 at-spi2-core（总线启动器与
+   * `org.a11y.Bus.service`）。WebKitGTK 的依赖链只带到 `libatspi2.0-0t64`，后者对 at-spi2-core
+   * 只是 Recommends：不装推荐包时 worker 报 `accessibility_bus` 缺失，电脑控制不可用。
+   * worker 与外壳的 X11、D-Bus 客户端是纯 Rust，只链接 libc 与 libgcc_s，不另需系统库。
+   */
+  test('deb 声明 at-spi2-core 为运行依赖', () => {
+    const config = JSON.parse(
+      readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+    ) as { bundle: { linux?: { deb?: { depends?: string[] } } } }
+
+    expect(config.bundle.linux?.deb?.depends).toEqual(['at-spi2-core'])
+  })
+
+  /**
+   * linuxdeploy 给 AppDir 里每个 ELF 加 RUNPATH。它自带的 patchelf 改过的 bun 单文件程序 `qy`
+   * 启动即段错误，打包也在 gtk 插件对它调用 ldd 时中止；系统的 patchelf 改过的正常运行。
+   * `PATCHELF` 指向 setup-build 用 apt 装的那一份。
+   */
+  test('Linux 出包时 linuxdeploy 使用 apt 装的 patchelf', () => {
+    const workflow = Bun.YAML.parse(workflowText('release-linux.yml')) as {
+      jobs: { release: { steps: { id?: string; env?: Record<string, string> }[] } }
+    }
+    const setup = Bun.YAML.parse(actionText('setup-build')) as {
+      runs: { steps: { name: string; run?: string }[] }
+    }
+    const tauri = workflow.jobs.release.steps.find((step) => step.id === 'tauri')
+    const apt = setup.runs.steps.find((step) => step.name === 'Install Linux system libraries')
+
+    expect(tauri?.env?.PATCHELF).toBe('/usr/bin/patchelf')
+    expect(apt?.run?.split(/\s+/)).toContain('patchelf')
+  })
+
+  /**
    * CI 不许持有写权限，也不许放过一部分门禁：它是提交与 PR 的唯一自动证据，
    * 降一格就等于没有。
    */

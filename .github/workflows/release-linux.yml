@@ -42,6 +42,9 @@ jobs:
       - name: Run release gate
         run: bun run gate
 
+      # PATCHELF 不要删：linuxdeploy 给 AppDir/usr/bin 下每个 ELF 加 RUNPATH，用它自带的 patchelf 0.8
+      # 改过的 bun 单文件程序 qy 启动即段错误（exit 139），gtk 插件对它调用 ldd 失败，打包中止。
+      # setup-build 用 apt 装的 patchelf 改过的 qy 运行正常。
       - name: Build packages and create draft release
         id: tauri
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
@@ -49,6 +52,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PATCHELF: /usr/bin/patchelf
         with:
           projectPath: apps/desktop
           tauriScript: bun run tauri
