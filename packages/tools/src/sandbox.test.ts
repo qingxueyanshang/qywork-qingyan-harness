@@ -312,6 +312,13 @@ describe('bwrap 参数生成', () => {
     expect(binds(argv, '--proc').length + (argv.includes('--proc') ? 1 : 0)).toBeGreaterThan(0)
   })
 
+  test('不把命名空间的生命周期绑在 bwrap 外层进程上', () => {
+    // `--die-with-parent` 让命名空间的 init 随外层进程退出而被结束：shell 一退出，
+    // 命令留下的后台进程全部被内核结束，结果里却没有任何说明。
+    const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })
+    expect(argv).not.toContain('--die-with-parent')
+  })
+
   test('命令放在 -- 之后，且原样不变', () => {
     const cmd = ['/bin/sh', '-c', 'echo "a; b" && ls']
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, cmd, { exists: never })
@@ -586,9 +593,11 @@ describe('killTree', () => {
     // shell 取 `commandShell()`，不按 platform 现判——这里复刻的就是它。
     // 脚本一律用双引号包：`SERVER` 里全是单引号，用单引号包会在第一个内层引号处断开
     // （用单引号包的写法在没跑过的分支里能一直藏着不暴露）。
+    // `& wait` 让 shell 留作父进程：`-c` 只有一条简单命令时 bash 直接 exec 它，
+    // 被杀的就是监听端口的进程本身，树杀是否成立测不出来。
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器没有 bash，这条端到端跑不了')
-    const inner = [...shell.argv, `node -e "${SERVER}"`]
+    const inner = [...shell.argv, `node -e "${SERVER}" & wait`]
     const proc = Bun.spawn(inner, {
       stdout: 'pipe',
       stderr: 'pipe',
