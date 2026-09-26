@@ -977,4 +977,66 @@ describe('文件预览的切换与 PDF', () => {
       () => `raw=${rawCalls.join(',')}`,
     )
   })
+
+  /**
+   * 原始失败形状：图片与音视频以 data URI 内联，超过 4 MB 只给一句「超出内联上限」，
+   * 生成的 4K 图与视频点开看不到。现在与 PDF 一样取原始字节。
+   */
+  test('图片与视频也取原始字节，不依赖预览里的内联数据', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    const originalRaw = store.client.raw
+    const rawCalls: string[] = []
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path: string,
+    ) => {
+      const file = decodeURIComponent(path.split('path=')[1] ?? '')
+      const video = file.endsWith('.mp4')
+      return {
+        path: file,
+        kind: video ? 'video' : 'image',
+        mime: video ? 'video/mp4' : 'image/png',
+        size: 20 * 1024 * 1024,
+        mtime: 1,
+        truncated: false,
+      }
+    }
+    ;(store.client as unknown as { raw: (path: string) => Promise<Response> }).raw = async (
+      path: string,
+    ) => {
+      rawCalls.push(path)
+      return new Response('bytes')
+    }
+    const { createObjectURL, revokeObjectURL } = URL
+    URL.createObjectURL = () => 'about:blank'
+    URL.revokeObjectURL = () => {}
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+      ;(store.client as unknown as { raw: typeof originalRaw }).raw = originalRaw
+      URL.createObjectURL = createObjectURL
+      URL.revokeObjectURL = revokeObjectURL
+    }
+
+    const { createSignal } = await import('solid-js')
+    const { render } = await import('solid-js/web')
+    const { default: FileView } = await import('./FileView.tsx')
+    const [path, setPath] = createSignal('generated/a.png')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <FileView path={path()} />, host as unknown as HTMLElement)
+
+    await waitFor(
+      () => host.querySelector('img.preview-media')?.getAttribute('src') === 'about:blank',
+      () => `raw=${rawCalls.join(',')} html=${host.innerHTML.slice(0, 300)}`,
+    )
+    setPath('generated/b.mp4')
+    await waitFor(
+      () => host.querySelector('video.preview-media') !== null,
+      () => `raw=${rawCalls.join(',')} html=${host.innerHTML.slice(0, 300)}`,
+    )
+    expect(rawCalls).toEqual([
+      `/api/files/raw?path=${encodeURIComponent('generated/a.png')}`,
+      `/api/files/raw?path=${encodeURIComponent('generated/b.mp4')}`,
+    ])
+  })
 })

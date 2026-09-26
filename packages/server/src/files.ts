@@ -7,7 +7,7 @@
  * 永远追不上现实，而族是有限的。
  */
 
-import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, sep } from 'node:path'
 import { IGNORED_DIRS } from '@qywork/tools'
 
@@ -36,14 +36,12 @@ export interface PreviewResult {
   kind: PreviewKind
   mime: string
   size: number
-  /** 源文件修改时间。PDF 的字节另取（`openRaw`），界面按它判断要不要重取。 */
+  /** 源文件修改时间。PDF、图片与音视频的字节另取（`openRaw`），界面按它判断要不要重取。 */
   mtime: number
   /** 文本族才有。 */
   content?: string
   /** 语法高亮语言标识。 */
   language?: string
-  /** 图片与音视频用 data URI 回传（有大小上限）。 */
-  dataUri?: string
   truncated: boolean
   /** 无法内联时给出的说明，UI 直接显示。 */
   note?: string
@@ -51,8 +49,6 @@ export interface PreviewResult {
 
 /** 文本预览上限。超过就截断——把 5MB 的日志塞进浏览器只会把标签页卡死。 */
 const MAX_TEXT_BYTES = 512 * 1024
-/** 内联二进制上限（data URI 会膨胀约 1.37 倍）。 */
-const MAX_INLINE_BYTES = 4 * 1024 * 1024
 
 const EXT_LANGUAGE: Record<string, string> = {
   '.ts': 'typescript',
@@ -376,10 +372,11 @@ export async function preview(abs: string, relPath: string): Promise<PreviewResu
   }
 
   /*
-   * PDF 不内联，字节由 `openRaw` 另给。不要改回 data URI：桌面端 CSP 的 `frame-src`
-   * 只放行 `blob:`，data URI 的 iframe 在打包版里是空白；内联还要把整份文件 base64 进这条 JSON。
+   * PDF、图片与音视频不内联，字节由 `openRaw` 另给。不要改回 data URI：桌面端 CSP 的 `frame-src`
+   * 只放行 `blob:`，data URI 的 iframe 在打包版里是空白；内联还要把整份文件 base64 进这条 JSON，
+   * 生成的 4K 图与视频常在几 MB 以上，只能截掉不给看。
    */
-  if (kind === 'pdf') return base
+  if (kind === 'pdf' || kind === 'image' || kind === 'audio' || kind === 'video') return base
 
   if (kind === 'text' || kind === 'tabular') {
     // 表格族里 csv/tsv 是文本，xlsx 不是——按实际能否解码决定走哪条路。
@@ -391,18 +388,6 @@ export async function preview(abs: string, relPath: string): Promise<PreviewResu
       return { ...base, kind: 'binary', truncated: false, note: '二进制内容，无法以文本预览' }
     }
     return { ...base, content: text, truncated: info.size > MAX_TEXT_BYTES }
-  }
-
-  if (kind === 'image' || kind === 'audio' || kind === 'video') {
-    if (info.size > MAX_INLINE_BYTES) {
-      return {
-        ...base,
-        truncated: true,
-        note: `文件 ${formatBytes(info.size)}，超出内联上限，请在本地打开`,
-      }
-    }
-    const buf = await readFile(abs)
-    return { ...base, dataUri: `data:${mime};base64,${buf.toString('base64')}` }
   }
 
   return { ...base, note: kind === 'archive' ? '归档文件' : '二进制文件' }
@@ -440,17 +425,6 @@ function looksBinary(sample: string): boolean {
     if (c < 9 || (c > 13 && c < 32)) control++
   }
   return control / n > 0.1
-}
-
-function formatBytes(n: number): string {
-  const units = ['B', 'KB', 'MB', 'GB']
-  let v = n
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
 
 const toPosix = (p: string) => p.split(sep).join('/')
