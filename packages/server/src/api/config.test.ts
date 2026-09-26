@@ -346,6 +346,42 @@ describe('落盘门禁', () => {
   })
 
   /**
+   * 原始失败形状：删掉某一类最后一个生成模型（默认随之删掉）后，到另一个接口下挂同一个模型，保存被 422 拒绝
+   * 「默认生成模型不在配置里」。进程里那份留着已删的默认，GET 把它回给设置页；设置页见这一类已有默认就不再改，
+   * 因此带着指向已删模型的默认提交。这里按设置页的改法走一遍。
+   */
+  test('删掉的默认生成模型不留在进程里，换接口重挂能保存', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    const image = { 'gpt-image-2.5-sunburst': { kind: 'openai_images' as const } }
+    try {
+      const d = { config: cfg() } as unknown as ApiDeps
+      const start = redactConfig(cfg())
+      start.providers.main!.media = image
+      start.mediaDefaults = { image: { provider: 'main', model: 'gpt-image-2.5-sunburst' } }
+      expect((await put(d, start))!.status).toBe(200)
+
+      // 设置页删掉 main 下那一个：这一类没有别的模型，默认一起删掉。
+      const removed = (await get(d)).config
+      removed.providers.main!.media = {}
+      delete removed.mediaDefaults
+      expect((await put(d, removed))!.status).toBe(200)
+
+      const fresh = (await get(d)).config
+      expect(fresh.mediaDefaults).toBeUndefined()
+      // 设置页的添加：挂到 local 下，这一类还没有默认时才设它为默认。
+      fresh.providers.local!.media = image
+      fresh.mediaDefaults ??= { image: { provider: 'local', model: 'gpt-image-2.5-sunburst' } }
+      expect((await put(d, fresh))!.status).toBe(200)
+      expect(d.config.mediaDefaults?.image?.provider).toBe('local')
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
+  /**
    * 乐观并发：带一个过期的 baseVersion（模拟另一个窗口已经改过）保存，回 409 且不落盘。
    * 带当前 version 的正常保存放行。不带 baseVersion 的老客户端/脚本照旧放行。
    */
