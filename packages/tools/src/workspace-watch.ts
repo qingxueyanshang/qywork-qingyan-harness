@@ -298,6 +298,8 @@ async function describe(root: string, rel: string, since: number): Promise<FileC
   const abs = join(root, rel)
   const s = await stat(abs)
   if (s.isDirectory()) return null
+  // FSEvents 可迟到投递开窗前的事件；ctime 保留修改后恢复 mtime 的真实变更。
+  if (Math.max(s.mtimeMs, s.ctimeMs) < since) return null
   if (s.birthtimeMs < since) return { path: rel, changeType: 'modified' }
   const lines = await countCreated(abs, s.size)
   return lines === null

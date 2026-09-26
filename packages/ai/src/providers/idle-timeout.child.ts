@@ -7,8 +7,8 @@ import { buildAdapter } from '../factory.ts'
 import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ChatRequest, ProviderProfile } from '../types.ts'
 
-/** 静默时长。要跨过 Bun 空闲定时器的一轮（4 秒），再留半秒余量。 */
-const SILENT_MS = 4_500
+/** Bun 1.4 的空闲定时器为 1 秒阈值补一个 4 秒刻度，再向上取整；跨过两轮并留余量。 */
+const SILENT_MS = 9_000
 
 const sse = (events: Record<string, unknown>[]): string =>
   events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')
@@ -74,6 +74,7 @@ const STREAMS: Record<string, [string, string]> = {
 const encoder = new TextEncoder()
 const server = Bun.serve({
   port: 0,
+  idleTimeout: 0,
   fetch(req) {
     const path = new URL(req.url).pathname
     const match = Object.entries(STREAMS).find(([suffix]) => path.endsWith(suffix))

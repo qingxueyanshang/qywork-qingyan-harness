@@ -16,8 +16,29 @@
  * 与 MCP server 同一档。所以这里不加裁决，只做凭证收敛。
  */
 
+import { readFile, stat } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { collectProcess, MAX_TIMEOUT_MS, scrubEnv } from '@qywork/tools'
 import type { CliAgent } from './types.ts'
+
+/** npm 的 Windows 入口经 Node 直接启动，避免 cmd.exe 重新解释多行提示词与特殊字符。 */
+async function commandFor(command: string, args: string[]): Promise<string[]> {
+  if (process.platform !== 'win32' || !command.toLowerCase().endsWith('.cmd')) {
+    return [command, ...args]
+  }
+  const shim = await readFile(command, 'utf8')
+  const entry = shim.match(
+    /^endLocal & goto #_undefined_# 2>NUL \|\| title %COMSPEC% & "%_prog%" +"%dp0%\\(node_modules\\[^"\r\n]+)" %\*\r?$/m,
+  )?.[1]
+  if (!entry || !shim.includes('SET "_prog=node"')) return [command, ...args]
+  const base = dirname(command)
+  const localNode = join(base, 'node.exe')
+  const node = (await stat(localNode).catch(() => null))?.isFile()
+    ? localNode
+    : Bun.which('node.exe')
+  if (!node) throw new Error('该外部 CLI 需要 Node.js，请先安装 Node.js')
+  return [node, join(base, entry), ...args]
+}
 
 /**
  * 追加在任务后面的输出格式约定。
@@ -93,7 +114,7 @@ export async function runCli(
 
   // 一律跑在工作区根下：派活给外部 CLI 是「在这个项目里干一件事」，
   // 它自己的工作目录不该由这里的配置面再开一个旋钮。
-  const proc = Bun.spawn([agent.command, ...args], {
+  const proc = Bun.spawn(await commandFor(agent.command, args), {
     cwd: input.workspaceRoot,
     // 关掉 stdin：被调度的 CLI 若想交互提问，这里没有人能回答，
     // 开着只会让它静默等到被终止。

@@ -1037,8 +1037,7 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     const bin = join(dir, 'fake-bin')
     await mkdir(bin, { recursive: true })
     // 假的 codex：不看参数，往当前目录写三个文件（普通、项目点路径、被忽略的缓存），
-    // 再按 codex 的 jsonl 形状报一句结果。两份写法都放：Windows 按 PATHEXT 取 `.cmd`，
-    // POSIX 取无后缀的 sh 脚本。
+    // 再按 codex 的 jsonl 形状报一句结果。Windows 使用 npm 的 Node 入口，POSIX 使用 sh 入口。
     await writeFile(
       join(bin, 'codex'),
       [
@@ -1056,15 +1055,23 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     await writeFile(
       join(bin, 'codex.cmd'),
       [
-        '@echo off',
-        'echo made> "%CD%\\cli-made.txt"',
-        'mkdir "%CD%\\.github\\workflows" 2>nul',
-        'echo ci> "%CD%\\.github\\workflows\\ci.yml"',
-        'mkdir "%CD%\\.profile-cache" 2>nul',
-        'echo x> "%CD%\\.profile-cache\\state.bin"',
-        'echo {"type":"item.completed","item":{"text":"done"}}',
+        '@ECHO off',
+        'SET dp0=%~dp0',
+        'SET "_prog=node"',
+        'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\fake-cli\\index.js" %*',
         '',
       ].join('\r\n'),
+    )
+    await mkdir(join(bin, 'node_modules', 'fake-cli'), { recursive: true })
+    await writeFile(
+      join(bin, 'node_modules', 'fake-cli', 'index.js'),
+      `const fs = require('node:fs');
+fs.writeFileSync('cli-made.txt', 'made\\n');
+fs.mkdirSync('.github/workflows', { recursive: true });
+fs.writeFileSync('.github/workflows/ci.yml', 'ci\\n');
+fs.mkdirSync('.profile-cache', { recursive: true });
+fs.writeFileSync('.profile-cache/state.bin', 'x\\n');
+console.log(JSON.stringify({ type: 'item.completed', item: { text: 'done' } }));`,
     )
     // 观察器的忽略判定问的是 git，忽略规则得有来源，所以这条测试把夹具目录做成仓库。
     const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir })
@@ -1073,15 +1080,15 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     git('config', 'user.name', 't')
     await writeFile(join(dir, '.gitignore'), '.profile-cache/\n')
     const env = { PATH: process.env.PATH, OPENAI_API_KEY: process.env.OPENAI_API_KEY }
-    // 只留假 CLI、系统目录（Windows 上 `.cmd` 要靠 cmd.exe 起，POSIX 上脚本要用 sleep 与 mkdir）与 git
-    // 所在目录；凭证判据是这个变量有值。
+    // 只保留假 CLI、系统命令、Git 与 Node 所在目录；凭证判据是这个变量有值。
     // git 必须留着：观察器收尾时要起它判忽略规则，找不到就只能报观察范围不完整。
     const gitDir = dirname(Bun.which('git') ?? '')
+    const nodeDir = dirname(Bun.which('node') ?? '')
     const sys =
       process.platform === 'win32'
         ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
         : dirname(Bun.which('mkdir') ?? '/bin/mkdir')
-    process.env.PATH = [bin, sys, gitDir].join(delimiter)
+    process.env.PATH = [bin, sys, gitDir, nodeDir].join(delimiter)
     process.env.OPENAI_API_KEY = 'sk-test'
     try {
       const cid = conversation()
@@ -1094,7 +1101,8 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
       })
       expect(res).toMatchObject({ ok: true, kind: 'cli' })
       settle(step.id, '派给 codex')
-      await until(() => phasesOf('child').includes('done'), 'CLI 落终态')
+      await until(() => phasesOf('child').some((p) => p === 'done' || p === 'failed'), 'CLI 落终态')
+      expect(members().at(-1)?.state).toMatchObject({ phase: 'done' })
 
       expect(await Bun.file(join(dir, 'cli-made.txt')).exists()).toBe(true)
       expect(await Bun.file(join(dir, '.profile-cache', 'state.bin')).exists()).toBe(true)

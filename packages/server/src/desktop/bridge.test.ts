@@ -74,6 +74,13 @@ const connect = (port: number, key = HOST_KEY) => FakeDesktopHost.connect(port, 
 /** 让事件循环把已经到达的帧派发完。 */
 const settle = () => new Promise((r) => setTimeout(r, 30))
 
+/** 网络帧何时到达由事件循环决定，不能用固定延迟代替收到帧。 */
+async function waitFor(check: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000
+  while (!check() && Date.now() < deadline) await Bun.sleep(10)
+  expect(check()).toBe(true)
+}
+
 /**
  * 取一次失败的原因。
  *
@@ -160,7 +167,7 @@ test('握手报出三项能力位，宿主连上之后由事件推同一份投�
   })
   cleanups.push(() => client.close())
   client.send(JSON.stringify({ type: 'hello', token: handle.token, origin: 'desktop' }))
-  await settle()
+  await waitFor(() => frames.some((f) => f.type === 'hello.ok'))
   const hello = frames.find((f) => f.type === 'hello.ok') as
     | { capabilities: { desktop: unknown } }
     | undefined
@@ -173,7 +180,7 @@ test('握手报出三项能力位，宿主连上之后由事件推同一份投�
 
   const host = await connect(handle.port)
   host.ready()
-  await settle()
+  await waitFor(() => frames.some((f) => (f.event as { type?: string })?.type === 'desktop.state'))
   const state = frames
     .map((f) => f.event)
     .find((e) => (e as { type?: string })?.type === 'desktop.state')

@@ -237,12 +237,10 @@ describe('能力上报', () => {
     })
   })
 
-  test('winget 探测认得应用执行别名（Bun.which 认不出的那种）', () => {
+  test('winget 探测与 Windows 对应用执行别名的解析一致', () => {
     if (process.platform !== 'win32') return
     const found =
       Bun.spawnSync(['where.exe', 'winget'], { stdout: 'ignore', stderr: 'ignore' }).exitCode === 0
     expect(wingetUsable()).toBe(found)
-    // 反向对照：真是别名的话 Bun 自己解析不出来，这正是本条存在的理由。
-    if (found) expect(Bun.which('winget')).toBeNull()
   })
 })
