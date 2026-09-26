@@ -187,4 +187,95 @@ describe('运行页', () => {
     expect(rows[1]!.querySelector('.run-mark')?.textContent).toBe('压缩摘要')
     expect(host.querySelectorAll('.run-row.static')).toHaveLength(1)
   })
+
+  /**
+   * 原始失败形状：一轮里生成了图片，面板上这一轮的金额与逐请求表都看不到这笔花费。
+   * 生成花费计入这一轮的金额（不同币种并列），展开后逐请求表里一次生成占一行；
+   * 账本里带 runId 的生成行属于这一轮，不单列。
+   */
+  test('生成花费计入这一轮的金额，展开后在逐请求表里占一行', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    const withMedia = {
+      ...run('rn_m', 0.01, 'USD'),
+      usage: {
+        cost: 0.01,
+        currency: 'USD',
+        turns: [],
+        media: [
+          {
+            kind: 'dashscope_images',
+            provider: 'qwen',
+            model: 'qwen-image-3.0',
+            output: 'image',
+            quantity: 1,
+            cost: 0.18,
+            currency: 'CNY',
+            at: 1_700_000_001_000,
+          },
+        ],
+      },
+    }
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path: string,
+    ) => {
+      if (path.endsWith('/runs')) return { runs: [withMedia], childRuns: [] }
+      if (path.endsWith('/requests')) return { requests: [] }
+      if (path.endsWith('/usage')) {
+        return {
+          totals: {
+            entries: 2,
+            inputTokens: 10,
+            outputTokens: 5,
+            cachedTokens: null,
+            cacheWriteTokens: null,
+            reasoningTokens: 0,
+            cost: { USD: 0.01, CNY: 0.18 },
+          },
+          entries: [
+            {
+              id: 'ug_media',
+              kind: 'media',
+              runId: 'rn_m',
+              model: 'qwen-image-3.0',
+              inputTokens: 0,
+              outputTokens: 0,
+              cachedTokens: null,
+              cacheWriteTokens: null,
+              cost: 0.18,
+              currency: 'CNY',
+              occurredAt: 1_700_000_001_000,
+            },
+          ],
+        }
+      }
+      if (path.startsWith('/api/usage')) return { totals: { cost: { USD: 9 } } }
+      return {}
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: unknown }).api = originalApi
+    }
+    store.setState({ activeConversation: 'cv_parent', connection: 'ready' })
+
+    const { render } = await import('solid-js/web')
+    const { default: RunDetails } = await import('./RunDetails.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <RunDetails />, host as unknown as HTMLElement)
+
+    await waitFor(
+      () => host.querySelectorAll('.run-row').length === 1,
+      () => `清单里有 ${host.querySelectorAll('.run-row').length} 行`,
+    )
+    const row = host.querySelector<HTMLButtonElement>('.run-row')!
+    expect(row.querySelector('.run-money')?.textContent).toBe('¥0.18 + $0.01')
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await waitFor(
+      () => host.querySelectorAll('.run-req tbody tr').length === 1,
+      () => `逐请求表有 ${host.querySelectorAll('.run-req tbody tr').length} 行`,
+    )
+    const cells = [...host.querySelectorAll('.run-req tbody tr td')].map((td) => td.textContent)
+    expect(cells).toEqual(['图像', 'N/A', '1 张', 'N/A', 'N/A', '¥0.18', '已完成'])
+    expect(host.querySelector('.run-req tbody tr')?.getAttribute('title')).toBe('qwen-image-3.0')
+  })
 })
