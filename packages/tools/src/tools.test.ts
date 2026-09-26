@@ -1137,10 +1137,11 @@ describe('搜索与命令', () => {
       setCommandRunner(null)
     }
 
-    // 删除只有事件看得见，收尾扫描补不上：窗口漏收时删除报不出来。
+    // 删除只有事件看得见，收尾扫描补不上：窗口漏收时删除报不出来。先等一下再删，
+    // 是让删除落在 macOS 的事件流开始之后：事件流在 `watch()` 返回之后才开始投递。
     const command = shell.argv.includes('-Command')
-      ? 'Remove-Item a.txt; Set-Content made.txt made'
-      : 'rm a.txt && echo made > made.txt'
+      ? 'Start-Sleep -Milliseconds 300; Remove-Item a.txt; Set-Content made.txt made'
+      : 'sleep 0.3; rm a.txt && echo made > made.txt'
     const out = await registry().execute('run_command', { command }, ctx(root))
     expect(out.status).toBe('success')
     expect(out.fileChanges?.map((c) => [c.path, c.changeType]).sort()).toEqual([
