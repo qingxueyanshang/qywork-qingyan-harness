@@ -19,10 +19,19 @@ afterAll(async () => {
   await GlobalRegistrator.unregister()
 })
 
-/** 回车走真实派发：输入框的处理函数读 `currentTarget`，只有经委托派发时它才被填上。 */
+/**
+ * 直接调用 Solid 挂在元素上的委托处理函数。回车的处理函数读 `currentTarget`，按 Solid 委托
+ * 派发的做法把它指向该元素。
+ *
+ * 不要改成 `dispatchEvent`：Solid 的委托监听在组件模块首次求值时挂到全局 `document` 上，
+ * 模块在整套测试的进程里只求值一次，而每个测试文件注册各自的 happy-dom 窗口。先于本文件
+ * 导入 `ModelSettings.tsx` 的测试文件存在时，本文件的 `document` 上没有这个监听。
+ */
 function fire(el: HTMLElement, type: 'click' | 'keydown', init: KeyboardEventInit = {}) {
   if (type === 'keydown') {
-    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }))
+    const event = new KeyboardEvent('keydown', { bubbles: true, ...init })
+    Object.defineProperty(event, 'currentTarget', { configurable: true, value: el })
+    ;(el as unknown as { $$keydown: (e: Event) => void }).$$keydown.call(el, event)
     return
   }
   const event = new MouseEvent('click', { bubbles: true })
