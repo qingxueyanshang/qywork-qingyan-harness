@@ -61,7 +61,7 @@ fn build_worker(manifest_dir: &Path, target: &str) {
         .join("bin")
         .join(format!("{WORKER}-{target}{suffix}"));
 
-    for path in ["src", "Cargo.toml", "Cargo.lock"] {
+    for path in ["src", "build.rs", "Cargo.toml", "Cargo.lock"] {
         println!("cargo:rerun-if-changed={}", crate_dir.join(path).display());
     }
     // 产物本身也登记：`bin/` 不入库，删掉之后下一次外壳构建要能把它补回来。

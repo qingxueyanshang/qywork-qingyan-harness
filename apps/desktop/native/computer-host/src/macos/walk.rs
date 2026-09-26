@@ -1,4 +1,4 @@
-//! 经 AX 读控件树：一个元素的事实、深度优先遍历、按 `ref` 重新定位、窗口发现与读文本，
+//! 经 AX 读控件树：一个元素的事实、深度优先遍历、按 `ref` 重新定位、窗口发现、窗口几何与读文本，
 //! 以及进程内的身份表。
 //!
 //! 子节点顺序只有一处来源：`AXChildren`。遍历从批量读取里取它，重新定位单独读它，两处读的是
@@ -16,6 +16,7 @@ use super::facts::{
 use super::identity::{Identities, MAX_IDENTITIES};
 use super::node::{self, kind, Context, Fields};
 use super::plan::Setting;
+use super::screen::{self, Mapping, Placed};
 use crate::protocol::{
     now_ms, Bounds, Completeness, Node, Observation, Select, Text, TextSelection, REF_STALE,
 };
@@ -109,7 +110,23 @@ pub struct Root {
     pub element: Element,
     pub pid: i32,
     pub cg: Option<u32>,
+    /// AX 的窗口矩形，单位是点。
     pub frame: Option<Frame>,
+    /// 对应上的 CG 窗口此刻的几何。没对应上、或读不出 CG 矩形时缺席。
+    pub placed: Option<Placed>,
+}
+
+/// 一个 CG 窗口此刻的几何，见 `screen::place`。窗口已经不在或读不出矩形时缺席。
+///
+/// 矩形取 CGWindowList 而不取 AX：取图、按图定位与控件包围盒要用同一份矩形算代际与换算，
+/// 而窗口服务器在应用卡住时照常应答。
+pub fn placed(number: u32) -> Option<Placed> {
+    placed_in(&ax::cg_windows(), number)
+}
+
+fn placed_in(cgs: &[CgWindow], number: u32) -> Option<Placed> {
+    let bounds = cgs.iter().find(|w| w.number == number)?.bounds?;
+    screen::place(&ax::displays(), screen::frame_of(bounds))
 }
 
 /// 按 `ref` 重新定位的结果，或一次遍历的起点。
@@ -192,6 +209,7 @@ pub fn walk(
     let mut walk = Walk {
         pid: root.pid,
         window: root.frame,
+        mapping: root.placed.map(|p| p.mapping),
         bounds,
         fields,
         until: Instant::now() + Duration::from_millis(bounds.time_budget_ms),
@@ -224,6 +242,7 @@ pub fn walk(
 struct Walk {
     pid: i32,
     window: Option<Frame>,
+    mapping: Option<Mapping>,
     bounds: Bounds,
     fields: Fields,
     until: Instant,
@@ -271,7 +290,15 @@ impl Walk {
         if !first_sighting(&mut self.seen, &id.to_string()) {
             return Ok(());
         }
-        let mut node = node::node(&facts, context, path, id, self.window, self.fields);
+        let mut node = node::node(
+            &facts,
+            context,
+            path,
+            id,
+            self.window,
+            self.mapping.as_ref(),
+            self.fields,
+        );
         node.depth = depth;
         self.visited += 1;
         let index = self.collected.len();
@@ -398,6 +425,7 @@ pub fn root(window: i64) -> Result<Root, Failure> {
             pid,
             cg: None,
             frame: facts.frame,
+            placed: None,
         });
     }
     let number = u32::try_from(window)
@@ -433,6 +461,7 @@ pub fn root(window: i64) -> Result<Root, Failure> {
                 pid,
                 cg: Some(number),
                 frame: facts.frame,
+                placed: placed_in(&cgs, number),
             })
         }
         Err(Unmatched::None) => Err(Failure::Refused(

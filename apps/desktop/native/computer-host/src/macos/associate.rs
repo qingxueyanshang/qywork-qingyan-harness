@@ -1,6 +1,6 @@
-//! AX 窗口与 CGWindowList 窗口的对应关系、对不上的窗口怎么编号，以及按层叠序判遮挡。
+//! AX 窗口与 CGWindowList 窗口的对应关系、对不上的窗口怎么编号，以及按层叠序判遮挡与落点命中。
 //!
-//! 三条规则：
+//! 四条规则：
 //!
 //! 1. **窗口清单以 AX 为准。** 标题取 AX 的 `AXTitle`：CG 的窗口名要屏幕录制授权才给。
 //!    CGWindowList 只提供层叠序、遮挡判定与取图要用的 CGWindowID。
@@ -8,10 +8,12 @@
 //!    对应上的窗口以 CGWindowID 编号；对不上的以身份表编号的相反数编号，只给控件树与后台
 //!    语义动作，不给图像与坐标动作。不要改用私有的 `_AXUIElementGetWindow`。
 //! 3. **遮挡要证据。** 读不出矩形时按没盖住报。
+//! 4. **落点命中分两步**：落点归哪个应用由 AX 的系统范围命中测试给出，它按窗口服务器真实的命中
+//!    规则认，穿透鼠标的覆盖窗口不算；同一个应用的几个窗口谁接住这一下由层叠序定。
 //!
 //! 本模块不调用任何接口，事实由调用方读好交进来。
 
-use crate::geometry::{fully_covered, ScreenRect};
+use crate::geometry::{fully_covered, ScreenPoint, ScreenRect};
 
 /// CGWindowList 里的一个窗口。清单按从前到后的层叠序排列。
 #[derive(Debug, Clone)]
@@ -107,6 +109,20 @@ pub fn covered(at: usize, windows: &[CgWindow]) -> bool {
         .filter_map(|w| w.bounds)
         .collect();
     fully_covered(bounds, &covers)
+}
+
+/// 落点 `at`（点）处接住指针的窗口编号：`windows` 从前到后第一个属于进程 `pid`、在屏幕上、
+/// 不全透明、矩形含这个点的窗口。`pid` 是 AX 命中测试认出的应用，见文件头第 4 条。
+pub fn hit(at: (f64, f64), windows: &[CgWindow], pid: i32) -> Option<u32> {
+    let point = ScreenPoint {
+        x: at.0.floor() as i32,
+        y: at.1.floor() as i32,
+    };
+    windows
+        .iter()
+        .filter(|w| w.pid == pid && w.on_screen && w.alpha > 0.0)
+        .find(|w| w.bounds.is_some_and(|b| b.contains(point)))
+        .map(|w| w.number)
 }
 
 #[cfg(test)]
@@ -230,5 +246,45 @@ mod tests {
             ..target
         };
         assert!(covered(0, &[hidden]));
+    }
+
+    /// 落点接住的是那个应用在层叠序里最上面、矩形含落点的窗口；别的应用的窗口不算，
+    /// 哪怕它排在更前面：AX 已经认定落点归这个应用。
+    #[test]
+    fn a_hit_takes_the_frontmost_window_of_the_hit_application() {
+        let overlay = CgWindow {
+            layer: 25,
+            ..cg(40, 99, FRAME)
+        };
+        let sheet = cg(
+            41,
+            10,
+            ScreenRect {
+                x: 300,
+                y: 100,
+                width: 200,
+                height: 150,
+            },
+        );
+        let window = cg(42, 10, FRAME);
+        let stack = [overlay, sheet, window];
+        assert_eq!(hit((350.5, 120.0), &stack, 10), Some(41));
+        assert_eq!(hit((120.0, 90.0), &stack, 10), Some(42));
+        assert_eq!(hit((120.0, 90.0), &stack, 99), Some(40));
+        // 矩形外、别的进程、看不见的窗口都不接。
+        assert_eq!(hit((10.0, 10.0), &stack, 10), None);
+        assert_eq!(hit((120.0, 90.0), &stack, 11), None);
+        let gone = CgWindow {
+            on_screen: false,
+            ..cg(42, 10, FRAME)
+        };
+        let glass = CgWindow {
+            alpha: 0.0,
+            ..cg(43, 10, FRAME)
+        };
+        assert_eq!(hit((120.0, 90.0), &[gone, glass], 10), None);
+        // 右边界与下边界在矩形之外。
+        assert_eq!(hit((900.0, 90.0), &[cg(42, 10, FRAME)], 10), None);
+        assert_eq!(hit((899.9, 90.0), &[cg(42, 10, FRAME)], 10), Some(42));
     }
 }
