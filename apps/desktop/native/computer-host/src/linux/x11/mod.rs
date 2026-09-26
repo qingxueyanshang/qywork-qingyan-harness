@@ -171,10 +171,23 @@ impl Display {
         })
     }
 
+    /// X 服务器是 XWayland：它登记了 `XWAYLAND` 扩展。
+    ///
+    /// XWayland 是 Wayland 合成器的一个客户端：原生 Wayland 窗口不在它的窗口树里，
+    /// XTest 指针事件的投递还要看合成器的指针此刻在不在它的某个 surface 上。
+    pub fn xwayland(&self) -> bool {
+        self.conn
+            .query_extension(b"XWAYLAND")
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .is_some_and(|r| r.present)
+    }
+
     /// 窗口管理器管理的顶层窗口，按层叠序从下到上。
     ///
-    /// 清单取 `_NET_CLIENT_LIST_STACKING`。根窗口上没有这一项说明没有遵循 EWMH 的窗口管理器，
-    /// 如实失败：不要改成枚举根窗口的子窗口，那一层在有窗口管理器时全是边框窗口。
+    /// 清单取 `_NET_CLIENT_LIST_STACKING`。根窗口上没有这一项说明没有遵循 EWMH 的窗口管理器
+    /// （WSLg 的 Weston 也不设），如实失败：不要改成枚举根窗口的子窗口，那一层在有窗口管理器
+    /// 时全是边框窗口。
     pub fn clients(&self) -> Result<Vec<Client>, String> {
         let list = self
             .property(

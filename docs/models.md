@@ -149,8 +149,12 @@ bun run packages/cli/src/index.ts probe my-model --save
 生成模型不出现在对话的模型选择里，也没有「检测」按钮：检测一次就是真实生成一次。
 
 接口协议按服务地址决定：百炼官方地址走百炼原生接口；火山方舟官方地址的视频走方舟任务接口，
-出图走 OpenAI 兼容接口；其他地址（包括中转站）走 OpenAI 兼容的 `/images`、`/videos`、`/audio/speech`。
+出图走 OpenAI 兼容接口；可灵开放平台官方地址（`https://api-beijing.klingai.com`、`https://api-singapore.klingai.com`）
+的视频走可灵接口，使用可灵控制台创建的 API Key；其他地址（包括中转站）走 OpenAI 兼容的 `/images`、`/videos`、`/audio/speech`。
 中转站的 `/v1/videos` 只支持文生视频。
+
+可灵也可以经百炼调用，模型 ID 形如 `kling/kling-v3-video-generation`，仅北京地域，需先在百炼控制台开通。
+可灵官方接口的视频素材只接受网络地址，因此以参考视频编辑只能经百炼调用。
 
 对话中，模型通过 `generate_image`、`generate_video`、`generate_audio` 调用生成模型，
 按「模型库」里该模型的参数表自行填写尺寸、时长、音色等参数；参数不合法时在发出请求前拦下。

@@ -9,6 +9,7 @@ import {
   DashScopeSpeechAdapter,
   DashScopeVideosAdapter,
 } from './adapters/dashscope.ts'
+import { KlingVideosAdapter } from './adapters/kling.ts'
 import { OpenAIImagesAdapter } from './adapters/openai-images.ts'
 import { OpenAISpeechAdapter } from './adapters/openai-speech.ts'
 import { OpenAIVideosAdapter } from './adapters/openai-videos.ts'
@@ -28,6 +29,8 @@ export function buildMediaAdapter(profile: MediaProfile): MediaAdapter {
       return new ArkVideosAdapter(profile, spec)
     case 'dashscope_videos':
       return new DashScopeVideosAdapter(profile, spec)
+    case 'kling_videos':
+      return new KlingVideosAdapter(profile, spec)
     case 'openai_speech':
       return new OpenAISpeechAdapter(profile, spec)
     case 'dashscope_speech':

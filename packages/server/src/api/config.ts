@@ -89,6 +89,19 @@ export function mergeConfig(current: QyConfig, incoming: RedactedConfig): QyConf
   return merged
 }
 
+/**
+ * 把进程里那份配置就地换成 `next`。就地换而不是换引用：`d.config` 被 run、权限、模型解析各处按引用持有。
+ *
+ * 不要只用 `Object.assign`：它不删除 `next` 里没有的键。删掉的默认模型（`active`、`mediaDefaults`）会留在内存里，
+ * 由下一次 GET 回给设置页、随下一次保存提交，被校验以「默认模型不在配置里」拒绝。
+ */
+function adoptConfig(target: QyConfig, next: QyConfig): void {
+  for (const key of Object.keys(target)) {
+    if (!(key in next)) Reflect.deleteProperty(target, key)
+  }
+  Object.assign(target, next)
+}
+
 export const handleConfigApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
 
@@ -101,11 +114,10 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
      * （`qy probe` 落校准结果、手编 JSON、另一个 qywork 实例）会在用户下一次
      * 改任何一格设置时被整份盖掉，全程没有提示。
      *
-     * 就地改而不是换引用：`d.config` 被 run、权限、模型解析各处按引用持有。
      * 进程内没有「只在内存里、盘上没有」的配置状态——除了这个文件的 PUT 分支，
      * 全仓没有第二处写 `d.config`，所以整份换掉不会丢字段。
      */
-    Object.assign(d.config, await loadConfig())
+    adoptConfig(d.config, await loadConfig())
     return json({
       path: configPath(),
       config: redactConfig(d.config),
@@ -144,10 +156,7 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
     await saveConfig(merged)
     // 就地更新运行中的这份：不更新的话，保存成功但本进程仍用旧配置，
     // 用户下一轮对话还是老模型——又一个「看起来生效了」。
-    Object.assign(d.config, merged)
-    for (const k of Object.keys(d.config.providers)) {
-      if (!(k in merged.providers)) delete d.config.providers[k]
-    }
+    adoptConfig(d.config, merged)
     return json({ ok: true, config: redactConfig(d.config), notices: configNotices(d.config) })
   }
 
