@@ -10,6 +10,10 @@ mod geometry;
 mod input;
 #[cfg(target_os = "linux")]
 mod linux;
+// macOS 后端的纯换算，此时只有单测在用。
+#[cfg(test)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod macos;
 mod protocol;
 mod serve;
 mod tree;
