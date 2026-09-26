@@ -38,10 +38,8 @@ use frames::{
     EventFrame, HeldInput, HostReady, RequestFrame, ResultFrame, WorkerLine, WorkerRequest,
     WorkerResponse,
 };
-use worker::{
-    cancel_outcome, cancel_targets, drain_server, next_attempt, restart_delay, CancelOutcome,
-    Origin, Pending,
-};
+use crate::restart::{next_attempt, restart_delay};
+use worker::{cancel_outcome, cancel_targets, drain_server, CancelOutcome, Origin, Pending};
 
 /// `externalBin` 里那个随包 worker 的名字。
 const WORKER_NAME: &str = "qy-computer-host";

@@ -14,14 +14,6 @@ use std::time::{Duration, Instant};
 const PORT_FILE_WAIT: Duration = Duration::from_secs(20);
 const PORT_FILE_POLL: Duration = Duration::from_millis(100);
 
-/// 重启退避的起点与上界，与电脑控制 worker 的重启同一套数。
-const RESTART_BASE_MS: u64 = 500;
-const RESTART_MAX_MS: u64 = 15_000;
-/// 连续多少次短命退出之后不再重启。到达上限即浏览器控制发布为不可用。
-const RESTART_MAX_ATTEMPTS: u32 = 5;
-/// 活过这个时长即认为这次启动是成功的，下一次退出从头退避。
-const HEALTHY_RUN_MS: u128 = 60_000;
-
 /// 找到的浏览器。
 pub struct Found {
     pub exe: PathBuf,
@@ -214,27 +206,6 @@ pub fn product_version(product: &str) -> String {
     product.split_once('/').map_or(product, |(_, v)| v).to_owned()
 }
 
-/// 第 `attempt` 次重启等多久。`None` = 到达上限，不再重启。
-pub fn restart_delay(attempt: u32) -> Option<Duration> {
-    if attempt >= RESTART_MAX_ATTEMPTS {
-        return None;
-    }
-    let ms = RESTART_BASE_MS
-        .checked_shl(attempt)
-        .unwrap_or(RESTART_MAX_MS)
-        .min(RESTART_MAX_MS);
-    Some(Duration::from_millis(ms))
-}
-
-/// 这一次浏览器活了 `ran_for` 之后退出，下一次重启算第几次。
-pub fn next_attempt(attempt: u32, ran_for: Duration) -> u32 {
-    if ran_for.as_millis() >= HEALTHY_RUN_MS {
-        0
-    } else {
-        attempt + 1
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,16 +227,6 @@ mod tests {
         assert_eq!(product_version("Chrome/154.0.8037.57"), "154.0.8037.57");
         assert_eq!(product_version("Edg/153.0.3000.1"), "153.0.3000.1");
         assert_eq!(product_version("154.0"), "154.0");
-    }
-
-    #[test]
-    fn restart_backs_off_and_then_gives_up() {
-        assert_eq!(restart_delay(0), Some(Duration::from_millis(500)));
-        assert_eq!(restart_delay(1), Some(Duration::from_millis(1_000)));
-        assert_eq!(restart_delay(4), Some(Duration::from_millis(8_000)));
-        assert_eq!(restart_delay(RESTART_MAX_ATTEMPTS), None);
-        assert_eq!(next_attempt(0, Duration::from_millis(80)), 1);
-        assert_eq!(next_attempt(4, Duration::from_secs(60)), 0);
     }
 
     /// snap 的过渡包是一段转去 `/snap/bin` 的脚本，不能当成原生安装挑中。

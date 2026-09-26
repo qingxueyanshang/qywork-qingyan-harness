@@ -34,6 +34,7 @@ use super::address::{navigation_url, BLANK};
 use super::profile::{self, ProfileLock};
 use super::{marker_script, DownloadVerdict, Opened, OpenSpec, Runtime};
 use crate::hostkey::new_host_key;
+use crate::restart;
 use cdp::{Cdp, Event};
 use launch::Found;
 use table::{Popup, Table};
@@ -288,8 +289,8 @@ fn supervise(inner: &Arc<Inner>) {
         if let Some(host) = super::host() {
             host.engine_changed(Err(EXITED));
         }
-        attempt = launch::next_attempt(attempt, started.elapsed());
-        let Some(delay) = launch::restart_delay(attempt) else {
+        attempt = restart::next_attempt(attempt, started.elapsed());
+        let Some(delay) = restart::restart_delay(attempt) else {
             log::error!("浏览器连续 {attempt} 次启动后很快退出，不再重启");
             break;
         };
