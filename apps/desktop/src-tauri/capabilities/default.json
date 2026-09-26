@@ -25,6 +25,7 @@
     "allow-browser-open",
     "allow-browser-close",
     "allow-browser-navigate",
+    "allow-browser-activate",
     "allow-browser-layout"
   ]
 }

@@ -173,6 +173,14 @@ impl Engine {
         self.instance()?.navigate(&page.target, action, url)
     }
 
+    /// 把这一页切成它所在窗口的当前页签，并把窗口提到前面；窗口最小化时一并还原。
+    /// 能不能真的拿到前台由窗口管理器决定。
+    pub fn activate(&self, page: &Page) -> Result<(), String> {
+        self.instance()?
+            .call("Target.activateTarget", json!({ "targetId": page.target }), None)
+            .map(|_| ())
+    }
+
     /// 按授权表切换下载行为。浏览器不在时没有要切的对象。
     pub fn sync_downloads(&self) -> Result<(), String> {
         match self.instance() {
