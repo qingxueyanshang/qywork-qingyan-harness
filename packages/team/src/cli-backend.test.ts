@@ -1,7 +1,7 @@
 /**
  * 覆盖范围：`cli-backend.ts` 的 `extract`（从外部 CLI 的 stdout 里取那段答案）、
- * 流里取正文的那个解析点（实时页与回执共用），以及 `runCli` 交出去的两项——
- * 追加给它的回执约定、接着问要用的会话 id。后三条用 `node` 当替身跑，
+ * 流里取正文的那个解析点（实时页与回执共用），`runCli` 交出去的两项——
+ * 追加给它的回执约定、接着问要用的会话 id，以及中断时的树杀。后四条用 `node` 当替身跑，
  * 不需要本机装着那几家 CLI。
  *
  * 厂商表本身（调什么、参数长什么样）由真机冒烟覆盖：那是最容易过期的地方，
@@ -141,6 +141,68 @@ describe('接着问', () => {
     expect(got.output.startsWith('sess-7|你刚才改了什么')).toBe(true)
     expect(got.output).toContain('### 回执')
   })
+})
+
+/**
+ * 原始失败形状：POSIX 上 CLI 不自成进程组，中断与静默到点的树杀只杀得到 CLI 本身，
+ * 它派生的子进程照常运行、占着端口。替身派生一个监听端口的子进程，端口关掉才算杀干净。
+ * 静默到点走的是同一个树杀，额度是 `MAX_TIMEOUT_MS`，这里用中断触发。
+ */
+describe('树杀', () => {
+  /** 端口挑一个不太可能撞上的；撞上了这条测试会以「中断前连不上」失败，不会误判成功。 */
+  const PORT = 18949
+  const hit = async (): Promise<boolean> => {
+    try {
+      const r = await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(1000) })
+      return r.ok
+    } catch {
+      return false
+    }
+  }
+
+  test('中断时外部 CLI 派生的子进程一并结束', async () => {
+    const server = `require('http').createServer((_,r)=>r.end('alive')).listen(${PORT},'127.0.0.1')`
+    // 子进程的 pid 写到 stdout，测试失败时按它清理，不留一个占着端口的孤儿。
+    const spawner: CliAgent = {
+      ...echo,
+      args: [
+        '-e',
+        `var c=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(server)}],{stdio:'ignore'});process.stdout.write(String(c.pid));setInterval(function(){},1000)`,
+        '{prompt}',
+      ],
+    }
+    const controller = new AbortController()
+    const running = runCli(spawner, {
+      prompt: '起个服务',
+      workspaceRoot: await mkdtemp(join(tmpdir(), 'qy-cli-')),
+      signal: controller.signal,
+    })
+    let up = false
+    for (let i = 0; i < 50 && !up; i++) {
+      await Bun.sleep(100)
+      up = await hit()
+    }
+    controller.abort()
+    const got = await running
+    try {
+      expect(up).toBe(true)
+      let down = false
+      for (let i = 0; i < 20 && !down; i++) {
+        await Bun.sleep(100)
+        down = !(await hit())
+      }
+      expect(down).toBe(true)
+    } finally {
+      const pid = Number.parseInt(got.output, 10)
+      if (pid > 0) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // 已经结束。
+        }
+      }
+    }
+  }, 30_000)
 })
 
 /**
