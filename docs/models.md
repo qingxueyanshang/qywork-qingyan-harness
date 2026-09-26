@@ -142,4 +142,40 @@ bun run packages/cli/src/index.ts probe my-model --save
 具体型号的内置规格见[模型目录](../packages/ai/src/catalog.ts)，检测逻辑见
 [探测实现](../packages/ai/src/probe.ts)。
 
+## 生成模型（图像 · 视频 · 音频）
+
+生成模型挂在已有的模型服务下，与对话模型共用 API Key 与 Base URL。在模型服务的模型列表里输入
+「模型库」图像、视频、音频页签中列出的模型 ID，回车即挂上；每类第一个成为该类的默认模型。
+生成模型不出现在对话的模型选择里，也没有「检测」按钮：检测一次就是真实生成一次。
+
+接口协议按服务地址决定：百炼官方地址走百炼原生接口；火山方舟官方地址的视频走方舟任务接口，
+出图走 OpenAI 兼容接口；其他地址（包括中转站）走 OpenAI 兼容的 `/images`、`/videos`、`/audio/speech`。
+中转站的 `/v1/videos` 只支持文生视频。
+
+对话中，模型通过 `generate_image`、`generate_video`、`generate_audio` 调用生成模型，
+按「模型库」里该模型的参数表自行填写尺寸、时长、音色等参数；参数不合法时在发出请求前拦下。
+产物写入工作区，默认目录为 `generated/`，会话中点击路径即可在右侧预览。
+
+视频提交后会在输出位置旁写一个 `.task.json` 任务记录，完成后删除。等待被中断、超时或程序退出时记录会保留，
+让模型用 `generate_video` 的 `resume` 取回结果，不会重新提交。
+
+模型库未收录的生成模型在 `config.json` 中手写，`kind` 取值见
+[生成协议](../packages/core/src/domain/media.ts)：
+
+```json
+{
+  "providers": {
+    "qwen": {
+      "kind": "openai_chat_completions",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "models": {},
+      "media": { "wan2.6-t2v": { "kind": "dashscope_videos" } }
+    }
+  },
+  "mediaDefaults": { "video": { "provider": "qwen", "model": "wan2.6-t2v" } }
+}
+```
+
+未收录的模型使用该协议的通用参数表。生成费用目前不计入用量统计。
+
 [返回项目介绍](../README.md) · [文档索引](INDEX.md)
