@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { extract, runCli } from './cli-backend.ts'
@@ -87,6 +87,39 @@ const run = (agent: CliAgent, root: string) =>
   })
 
 describe('回执约定', () => {
+  test('Windows npm 入口原样传递多行、引号与命令字符，不执行提示词内容', async () => {
+    if (process.platform !== 'win32') return
+    const root = await mkdtemp(join(tmpdir(), 'qy-cli-shim-'))
+    const bin = join(root, 'bin with space')
+    const entry = join(bin, 'node_modules', 'fake-cli', 'index.js')
+    await mkdir(join(bin, 'node_modules', 'fake-cli'), { recursive: true })
+    await writeFile(entry, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))')
+    const command = join(bin, 'fake.cmd')
+    await writeFile(
+      command,
+      [
+        '@ECHO off',
+        'SET dp0=%~dp0',
+        'SET "_prog=node"',
+        'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\fake-cli\\index.js" %*',
+        '',
+      ].join('\r\n'),
+    )
+    const prompt = '第一行\r\n" & echo injected>injected.txt & rem "\n%PATH% !PATH! | <> ^ () 中文'
+    const got = await runCli(
+      { ...echo, command, args: ['--prompt', '{prompt}', '--tail'] },
+      { prompt, workspaceRoot: root, signal: new AbortController().signal },
+    )
+    expect(got.ok).toBe(true)
+    const args = JSON.parse(got.output) as string[]
+    expect(args).toHaveLength(3)
+    expect(args[0]).toBe('--prompt')
+    expect(args[1]?.startsWith(prompt)).toBe(true)
+    expect(args[1]).toContain('### 回执')
+    expect(args[2]).toBe('--tail')
+    expect(await Bun.file(join(root, 'injected.txt')).exists()).toBe(false)
+  })
+
   test('任务原样在前，约定追加在后', async () => {
     const got = await run(echo, await mkdtemp(join(tmpdir(), 'qy-cli-')))
     expect(got.output.startsWith('把 a.txt 改成小写')).toBe(true)

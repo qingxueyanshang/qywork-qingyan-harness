@@ -3,7 +3,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { rmSync } from 'node:fs'
-import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FileChange } from '@qywork/core'
@@ -36,6 +36,25 @@ function typeOf(changes: FileChange[]): Map<string, string> {
 }
 
 describe('执行窗口内的工作区变更', () => {
+  test('连续开窗不收前一轮的延迟写入；恢复 mtime 的本轮修改仍保留', async () => {
+    const root = await gitRepo()
+    for (let i = 0; i < 4; i++) {
+      const before = join(root, `before-${i}.txt`)
+      const changed = join(root, `changed-${i}.txt`)
+      await writeFile(before, 'before\n')
+      await writeFile(changed, 'before\n')
+      const prior = await stat(changed)
+      const window = openChangeWindow(root)
+      await observed(root)
+      await writeFile(changed, 'after\n')
+      await utimes(changed, prior.atime, prior.mtime)
+      await observed(root)
+      const got = await window.close()
+      expect(got.incomplete).toBe(false)
+      expect(got.changes).toEqual([{ path: `changed-${i}.txt`, changeType: 'modified' }])
+    }
+  })
+
   test('连续删除不同文件不丢事件，收尾屏障正常完成', async () => {
     const root = await gitRepo()
     const paths = Array.from({ length: 12 }, (_, i) => `delete-${i}.txt`)
