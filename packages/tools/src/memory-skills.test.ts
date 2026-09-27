@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ToolContext } from '@qywork/agent'
+import { openBatchBudget, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   deleteMemoryTool,
@@ -35,7 +35,7 @@ function ctx(root: string, approve = true): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},

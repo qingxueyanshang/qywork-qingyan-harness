@@ -11,13 +11,14 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
+  batchRemaining,
   chargeBatchBudget,
   type DesktopElement,
   type DesktopPort,
   type DesktopSnapshot,
   deliveredTokens,
-  deliveryBudget,
   markCompacted,
+  openBatchBudget,
   type SinkPort,
   type ToolContext,
   type ToolOutcome,
@@ -30,9 +31,10 @@ import {
   desktopWaitTool,
 } from './desktop.ts'
 import { desktopResult } from './desktop-results.ts'
+import { observationBudget } from './sink.ts'
 
 const WINDOW = 200_000
-const LIMIT = deliveryBudget(WINDOW).perCall
+const LIMIT = observationBudget(WINDOW)
 /** 一个控件的值长到单独一个就装不下视图。 */
 const LONG_VALUE = '合成长文本。'.repeat(10_000)
 
@@ -255,7 +257,7 @@ function context(desktop: DesktopPort, sink: SinkPort | null, contextWindow = WI
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink,
     signal: new AbortController().signal,
     emit: () => {},
@@ -804,30 +806,27 @@ describe('存不下时照实说', () => {
 describe('实际用量记账', () => {
   test('投多少记多少，只记一次', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
-    const before = chargeBatchBudget(ctx, 0).batchRemaining
+    openBatchBudget(ctx.state, 1_000_000)
     const r = await actOnTarget(ctx)
-    const after = chargeBatchBudget(ctx, 0).batchRemaining
 
     const spent = deliveredTokens(
       JSON.stringify({ message: r.message, data: r.data, resources: r.resources }),
       DEFAULT_DENSITY,
     )
-    expect(before - after).toBe(spent)
+    expect(1_000_000 - batchRemaining(ctx)).toBe(spent)
   })
 
-  test('越过本波预算时动作不被拒，余额报 0，其后的读取准入不使用假余额', async () => {
-    const small = 32_000
-    const ctx = context(fakePort(大表, { acts: 0 }), fakeSink(), small)
-    const { perCall, batchCap } = deliveryBudget(small)
-    expect(chargeBatchBudget(ctx, perCall).ok).toBe(true)
-    expect(chargeBatchBudget(ctx, batchCap - perCall - 200).ok).toBe(true)
-    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(200)
+  test('越过本次决策额度时动作不被拒，余额报 0，其后的读取准入不使用假余额', async () => {
+    const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
+    openBatchBudget(ctx.state, 1000)
+    expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
+    expect(batchRemaining(ctx)).toBe(200)
 
     const r = await actOnTarget(ctx)
     expect(r.status).toBe('success')
     expect((r.data as { dispatch: string }).dispatch).toBe('submitted')
-    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(0)
-    // 累计值没有被截回上限：随后的读取准入照旧拒绝。
+    expect(batchRemaining(ctx)).toBe(0)
+    // 累计值没有被截回额度：随后的读取准入照旧拒绝。
     expect(chargeBatchBudget(ctx, 100).ok).toBe(false)
   })
 })
@@ -1339,12 +1338,12 @@ describe('差异投递', () => {
     const size = (parts: { message: string; data: unknown }) =>
       deliveredTokens(JSON.stringify({ message: parts.message, data: parts.data }), DEFAULT_DENSITY)
     // 先量出一份整份与一份差异各多大。
-    const probe = new Map<string, unknown>()
+    const probe = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY)
     const base = size(desktopResult(input('do_1', 'top', probe)))
     const diff = size(desktopResult(input('do_2', 'observation', probe)))
     const limit = base + diff + Math.floor(diff / 2)
 
-    const state = new Map<string, unknown>()
+    const state = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY)
     const run = (id: string, place: 'top' | 'observation') =>
       desktopResult({ ...input(id, place, state), limit }).data as Record<string, unknown>
     run('do_1', 'top')
@@ -1358,7 +1357,7 @@ describe('差异投递', () => {
   /** 历史只追加：整窗的整份投递之后，局部读取范围的基底仍在上下文里，照样当基底。 */
   test('基底按窗口与读取范围分开记：整窗整份不作废同一窗口局部读取范围的基底', async () => {
     const table = page('', 80)
-    const state = new Map<string, unknown>()
+    const state = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY)
     const run = (observationId: string, scope: string | undefined, incremental: boolean) =>
       desktopResult({
         ctx: { sink: fakeSink(), contextWindow: WINDOW, density: DEFAULT_DENSITY, state },

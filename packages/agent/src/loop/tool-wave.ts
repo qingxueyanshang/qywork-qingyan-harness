@@ -5,13 +5,13 @@
 
 import type { WireToolCall } from '@qywork/ai'
 import type { AgentEvent, RunId } from '@qywork/core'
+import { openBatchBudget } from '../delivery.ts'
 import type { EventQueue } from '../event-queue.ts'
 import { drainUntil } from '../event-queue.ts'
 import { cycleFingerprint } from '../progress.ts'
 import {
   isParallelSafe,
   type PermissionEffect,
-  resetBatchBudget,
   resolveAction,
   resolvePermissionEffect,
   type ToolContext,
@@ -19,18 +19,26 @@ import {
   type ToolOutcome,
   type ToolRegistry,
 } from '../registry.ts'
-import { toolOutcomeContent } from './request.ts'
-import { type RunState, type TurnState, untilAborted } from './run-state.ts'
+import { compactBeforeTools } from './compact.ts'
+import { softLimit, toolOutcomeContent } from './request.ts'
+import { type LoopHost, type RunState, type TurnState, untilAborted } from './run-state.ts'
 
 /**
- * 执行本轮的工具调用。返回 `stop` 时 `run.stopReason` 与 `stopDetail` 已定为无进展。
+ * 执行本轮的工具调用。返回 `stop` 时 `run.stopReason` 与 `stopDetail` 已定为无进展或用户中断。
  */
 export async function* executeCalls(
+  host: LoopHost,
   run: RunState,
   turn: TurnState,
 ): AsyncGenerator<AgentEvent, 'stop' | 'continue', unknown> {
   const { input, persist, registry, transcript, fileChanges, ctx, emitQueue } = run
   const { calls, requestId } = turn
+
+  // 压缩检查点必须在打开第一条工具记录之前，理由见 `compactBeforeTools`。
+  const occupancy = yield* compactBeforeTools(host, run, turn)
+  if (occupancy === 'interrupted') return 'stop'
+  // 投递额度按决策开一次账，全部波次共用：余量 = 软阈值 − 此刻占用。
+  openBatchBudget(ctx.state, softLimit(run.adapter.spec) - occupancy)
 
   /*
    * **名字不在注册表里的、参数不是 JSON 对象的，一律不进执行链。**
@@ -101,10 +109,6 @@ export async function* executeCalls(
 
   for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
     const wave = waves[waveIndex]!
-    // 批级投递预算按波次清零。限单次没有上界——一波五个 read_file
-    // 各自都在 1/8 以内，加起来就是 5/8，而「压缩只留一个入口」的前提
-    // 正是两次检查之间的跳变有上界。
-    resetBatchBudget(ctx.state)
     const results = await Promise.all(
       wave.map(async ({ call, callIndex }) => {
         // 非空断言成立：上面已经把不在注册表里的调用整段挡掉了，

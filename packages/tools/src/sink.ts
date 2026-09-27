@@ -13,19 +13,29 @@
  * 按「超过 N KB 就落盘」来判会同时犯两个方向的错：把可重放的源码文件存成副本，
  * 又漏掉那些不大但不可重建的输出（一次 200 行的 web_search 结果）。
  *
+ * 另一条入库理由是**续读**：本次投递装不下、而原工具又不能按范围续读时（历史条目、记忆、技能、
+ * `read_file` 的单行），正文经 `landHead`（`@qywork/agent`）存一次，模型用 `read_resource` 接着读。
+ * 能按范围续读的（`read_file` 的多行）不入库，给下一段的 `offset`。
+ *
  * **为什么模型必须知道自己看到的是截断的。** 投递给模型的是摘要 + `resource_id` + **覆盖事实**（投
  * 了多少 / 一共多少 / 截没截）。少了覆盖事实，模型会把 4 KB 摘要当成 2.3 MB 的全部，然后基于不完整
  * 信息下结论——那比不给它更糟，因为它不知道自己不知道。
  */
 
 import {
-  deliveredTokens,
-  deliveryBudget,
+  batchRemaining,
+  chargeBatchBudget,
+  continuationNote,
+  decodeUtf8Boundary,
+  headBytesWithin,
+  landHead,
+  outcomeTokens,
   recordBatchSpent,
   type SinkPort,
   type ToolContext,
+  type ToolOutcome,
+  tokensToBytes,
 } from '@qywork/agent'
-import type { TokenDensity } from '@qywork/ai'
 import type {
   IntermediateResourceRef,
   ResourceCoverage,
@@ -75,8 +85,8 @@ export function isContentAuthority(toolName: string): boolean {
 /**
  * 投递给模型的正文上限（字节）。
  *
- * **它是「摘录多长」，不是「容量闸」。** 容量那一半由 `chargeBatchBudget`
- * （`@qywork/agent`）管，那条还管一整个波次的累计量。
+ * **它是「摘录多长」，不是「容量闸」。** 容量由本次决策的投递额度管
+ * （`@qywork/agent` 的 `batchRemaining`），实际摘录取两者较小的那个。
  *
  * **不要把它改成窗口比例**：摘录长度是可读性问题（头尾各留一半，
  * 错误信息通常在尾部），不是容量问题。8 KB 的依据是实测——
@@ -86,10 +96,20 @@ export function isContentAuthority(toolName: string): boolean {
 export const INLINE_BUDGET_BYTES = 8 * 1024
 
 /**
- * browser 观察结果上限占单次投递预算的比例。
+ * 观察视图与子任务摘录的单份尺寸（token）：窗口 1/8，封顶 30K。
+ *
+ * 这是可读性尺寸，不是容量闸：实际投递还受本次决策的剩余额度约束（`batchRemaining`）。
+ * 压缩的尾部保留量取它的两倍（`runtime/compaction.ts` 的 `tailRetain`），一份整视图必然落在保留尾部之内。
+ */
+export function observationBudget(contextWindow: number): number {
+  return Math.min(Math.floor(contextWindow / 8), 30_000)
+}
+
+/**
+ * browser 观察结果上限占单份视图尺寸的比例。
  *
  * 它同时决定「多大算大」与「视图装多少」。写成比例是为了让小窗口跟着缩。desktop 的
- * 控件表不用它，单份按单次投递上限给：按这个比例缩，多数整窗控件表要分页，排在尾部的
+ * 控件表不用它，单份按 `observationBudget` 给：按这个比例缩，多数整窗控件表要分页，排在尾部的
  * 动作目标首读不在视图里，分页的结果也当不了差异基底。控件表在历史里的累积由精简投递、
  * 差异投递与压缩承担。
  */
@@ -97,10 +117,20 @@ export const OBSERVATION_RESULT_BUDGET_RATIO = 1 / 4
 
 /** 这一轮 browser 观察结果的上限（token）。 */
 export function observationResultBudget(contextWindow: number): number {
-  return Math.max(
-    1,
-    Math.floor(deliveryBudget(contextWindow).perCall * OBSERVATION_RESULT_BUDGET_RATIO),
-  )
+  return Math.max(1, Math.floor(observationBudget(contextWindow) * OBSERVATION_RESULT_BUDGET_RATIO))
+}
+
+/** 本次投递的实际上限：展示尺寸与剩余额度取小，至少 1。 */
+export function viewLimit(ctx: Pick<ToolContext, 'state'>, size: number): number {
+  return Math.max(1, Math.min(size, batchRemaining(ctx)))
+}
+
+/** 摘录字节上限：展示尺寸（字节）与剩余额度折成的字节数取小。 */
+export function excerptBytes(
+  ctx: Pick<ToolContext, 'state' | 'density'>,
+  sizeBytes = INLINE_BUDGET_BYTES,
+): number {
+  return Math.min(sizeBytes, tokensToBytes(batchRemaining(ctx), ctx.density))
 }
 
 /** 头尾各留一半：错误信息通常在尾部（stack trace、exit code），只留头部会把它切掉。 */
@@ -139,8 +169,8 @@ export function clampBody(
 
   const headBytes = Math.floor(budget * HEAD_RATIO)
   const tailBytes = budget - headBytes
-  const head = decodeAtBoundary(body.subarray(0, headBytes), 'head')
-  const tail = decodeAtBoundary(body.subarray(body.byteLength - tailBytes), 'tail')
+  const head = decodeUtf8Boundary(body.subarray(0, headBytes), 'head')
+  const tail = decodeUtf8Boundary(body.subarray(body.byteLength - tailBytes), 'tail')
   const omitted = body.byteLength - headBytes - tailBytes
 
   return {
@@ -148,30 +178,6 @@ export function clampBody(
     truncated: true,
     deliveredBytes: headBytes + tailBytes,
   }
-}
-
-/**
- * 在 UTF-8 字符边界上解码。
- *
- * 从头切时丢弃末尾不完整的字符，从尾切时丢弃开头不完整的字符。
- * 用 `fatal: true` 逐步回退比自己数续字节位更可靠——续字节的判定规则
- * 在四字节字符和代理对上很容易写错。
- */
-function decodeAtBoundary(slice: Uint8Array, side: 'head' | 'tail'): string {
-  const strict = new TextDecoder('utf-8', { fatal: true })
-  // 最多回退 3 字节：UTF-8 单字符最长 4 字节。
-  for (let back = 0; back <= 3 && back < slice.byteLength; back++) {
-    const candidate =
-      side === 'head' ? slice.subarray(0, slice.byteLength - back) : slice.subarray(back)
-    try {
-      return strict.decode(candidate)
-    } catch {
-      // 还在字符中间，再退一格。
-    }
-  }
-  // 四次都失败说明这段不是合法 UTF-8（二进制输出）。宽松解码，让替换符如实出现——
-  // 它此时是真实信息：「这里不是文本」。
-  return new TextDecoder('utf-8').decode(slice)
 }
 
 /**
@@ -257,49 +263,32 @@ export function deliver(
 }
 
 /**
- * 单次投递预算（token）折成摘录字节数。
- *
- * `deliver` 按字节裁剪，投递预算按 token 记账，两边必须是同一把尺
- * （`estimateJson`，见 `deliveredTokens`）。按每字节 token 数的**上界**反算：
- * 纯 ASCII 每字节 `1 / jsonCharsPerToken` 个 token；中文一个字在 UTF-8 里至少三字节、
- * 算 `cjkTokensPerChar` 个 token。取两者较大的那个，结果对任何正文都不超预算。
- */
-function budgetBytes(perCallTokens: number, density: TokenDensity): number {
-  const perByte = Math.max(density.cjkTokensPerChar / 3, 1 / density.jsonCharsPerToken)
-  return Math.max(1, Math.floor(perCallTokens / perByte))
-}
-
-/**
  * 子 agent 与 workflow 的产出过闸。
  *
- * 与 `run_command` 的两条流同形，差别只在预算：命令输出用 8 KB 默认摘录，
- * 子 agent 的产出是它整件事的交付物，摘录预算取单次投递预算
- * （`deliveryBudget(...).perCall`）折成的字节数。**不要改回 8 KB 默认值**：
- * 一份三千余字的中文审查就是 10 KB，会被从中间切开。
+ * 与 `run_command` 的两条流同形，差别只在尺寸：命令输出用 8 KB 默认摘录，
+ * 子 agent 的产出是它整件事的交付物，摘录取单份视图尺寸（`observationBudget`）折成的字节数。
+ * **不要改回 8 KB 默认值**：一份三千余字的中文审查就是 10 KB，会被从中间切开。
  *
- * **`share` 是分母：一次工具调用只有一份 perCall。** 一次返回 n 条产出时每条拿
- * `perCall / n`，不是每条各拿一份——后者会让内联总量随回执数线性增长，
- * 而批级保留预算（`batchCap`）的前提是「刚进来的那一波必然完整保留」。
+ * **不走投递额度。** 回执在任何一次 provider 决策之外产生，作为一条消息进入父会话的下一轮，
+ * 那一轮的容量由发送前压缩负责；这里没有可扣的决策账。
+ *
+ * **`share` 是分母：一次回执只有一份视图尺寸。** 一次返回 n 条产出时每条拿
+ * 1/n，不是每条各拿一份：后者会让内联总量随回执数线性增长。
  *
  * `coverage` 只在截断时给：没截断就没有「看不到的部分」，调用方不必往结果里放。
  */
 export function deliverAgentOutput(
-  ctx: Pick<ToolContext, 'sink' | 'contextWindow' | 'density' | 'state'>,
+  ctx: Pick<ToolContext, 'sink' | 'contextWindow' | 'density'>,
   input: { toolName: string; sourceType: string; body: string; share?: number },
 ): { text: string; coverage: ResourceCoverage | null; resource: IntermediateResourceRef | null } {
-  const perCall = deliveryBudget(ctx.contextWindow).perCall
   const share = Math.max(1, input.share ?? 1)
   const landed = deliver(ctx.sink, {
     toolName: input.toolName,
     sourceType: input.sourceType,
     body: new TextEncoder().encode(input.body),
     mimeType: 'text/plain',
-    budget: budgetBytes(Math.floor(perCall / share), ctx.density),
+    budget: tokensToBytes(Math.floor(observationBudget(ctx.contextWindow) / share), ctx.density),
   })
-  // 摘录记进本批预算，与 `run_command` 同形。必须是 `recordBatchSpent` 而不是
-  // `chargeBatchBudget`：产出已经投出，超预算时后者不累加，同一波里其余读取工具
-  // 会按一笔不存在的余额作准入。
-  recordBatchSpent(ctx, deliveredTokens(landed.text, ctx.density))
   return {
     text: landed.text,
     coverage: landed.coverage.truncated ? landed.coverage : null,
@@ -314,4 +303,53 @@ export function deliverAgentOutput(
         }
       : null,
   }
+}
+
+/** 本次决策的投递额度已用完。下一轮按新的占用重开额度后再读。 */
+export function budgetExhausted(): ToolOutcome {
+  return {
+    status: 'failure',
+    message: '本轮投递额度已用完，下一轮再读。',
+    errorKind: 'result_too_large',
+  }
+}
+
+/**
+ * 只读工具交付一段不能按范围续读的正文：历史条目、记忆、技能、`read_file` 的单行。
+ *
+ * `whole` 整份装得下就原样投递并记账。装不下时投递头部，完整正文经 `landHead` 存一次，
+ * `partial` 按头部与续读说明组出结果。余额为 0 时失败，不为一段一个字节都投递不了的结果存正文。
+ *
+ * 续读说明几十 token，不从头部里扣，按实际投递量记账。
+ */
+export function deliverReadable(
+  ctx: Pick<ToolContext, 'state' | 'sink' | 'density'>,
+  input: {
+    toolName: string
+    sourceType: string
+    whole: { message: string; data?: Record<string, unknown> }
+    body: string
+    partial: (head: string, note: string) => { message: string; data?: Record<string, unknown> }
+  },
+): ToolOutcome {
+  const charged = chargeBatchBudget(ctx, outcomeTokens(input.whole, ctx.density))
+  if (charged.ok) return { status: 'success', ...input.whole }
+  if (charged.remaining === 0) return budgetExhausted()
+
+  const frame = outcomeTokens(input.partial('', ''), ctx.density)
+  const body = new TextEncoder().encode(input.body)
+  const head = landHead(ctx.sink, {
+    toolName: input.toolName,
+    sourceType: input.sourceType,
+    body,
+    mimeType: 'text/plain',
+    budgetBytes: headBytesWithin(body, charged.remaining - frame, ctx.density),
+  })
+  const outcome: ToolOutcome = {
+    status: 'success',
+    ...input.partial(head.text, continuationNote(head)),
+    ...(head.resource ? { resources: [head.resource] } : {}),
+  }
+  recordBatchSpent(ctx, outcomeTokens(outcome, ctx.density))
+  return outcome
 }

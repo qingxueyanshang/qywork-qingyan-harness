@@ -3,7 +3,7 @@
  *
  * **覆盖范围**：`tools/desktop-results.ts`、`tools/browser-results.ts`、`tools/resources.ts`
  * 与 `runtime/sink.ts` 的 `RuntimeSink` / `collectResourceGarbage` 在真实 `Store` +
- * `ContentStore` 上的合作；`agent/registry.ts` 的 `ToolRegistry.execute` 与批级记账；
+ * `ContentStore` 上的合作；`agent/registry.ts` 的 `ToolRegistry.execute` 与 `agent/delivery.ts` 的投递额度记账；
  * `runtime/transcript.ts` 的工具结果信封与 `agent/loop/request.ts` 当轮信封的同形；
  * `agent/compaction.ts` 的 `condenseMessage` 对资源引用的保留；电脑控制的观察在
  * `agent/loop/index.ts` 装配的请求里只追加：同一窗口的多份整份、上一个 run 留在历史里的表、
@@ -29,6 +29,7 @@ import {
   type BrowserOptionsPage,
   type BrowserPort,
   type BrowserSelectOption,
+  batchRemaining,
   type CompactionOutcome,
   type CompactionPort,
   chargeBatchBudget,
@@ -36,9 +37,8 @@ import {
   type DesktopElement,
   type DesktopPort,
   type DesktopSnapshot,
-  deliveryBudget,
   type LoopPersistence,
-  resetBatchBudget,
+  openBatchBudget,
   type SinkPort,
   type ToolContext,
   type ToolContextBase,
@@ -419,7 +419,7 @@ function toolCtx(input: {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink: input.sink === undefined ? input.h.sink : input.sink,
     signal: new AbortController().signal,
     emit: () => {},
@@ -749,7 +749,7 @@ function makeBase(h: Harness, runId: RunId, desktop: DesktopPort): () => ToolCon
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink: new RuntimeSink(h.store, h.content, runId),
     signal: new AbortController().signal,
     requestPermission: async () => ({ allowed: true }),
@@ -1182,18 +1182,16 @@ describe('重启、切会话与回收之后仍读得到', () => {
 })
 
 describe('实际用量跨工具可见', () => {
-  test('超预算的观察不被拒、用量全记，随后的读取工具看到的余额是 0', async () => {
+  test('超额的观察不被拒、用量全记，随后的读取工具看到的余额是 0', async () => {
     const h = harness()
     const window = 32_000
-    const { perCall, batchCap } = deliveryBudget(window)
     const ctx = toolCtx({ h, window, desktop: desktopPort(大表) })
     writeFileSync(join(h.dir, 'note.txt'), '合成正文\n'.repeat(50), 'utf8')
 
-    resetBatchBudget(ctx.state)
-    // 本波先前的读取已经用掉大部分预算。
-    expect(chargeBatchBudget(ctx, perCall).ok).toBe(true)
-    expect(chargeBatchBudget(ctx, batchCap - perCall - 200).ok).toBe(true)
-    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(200)
+    openBatchBudget(ctx.state, 1000)
+    // 本次决策先前的读取已经用掉大部分额度。
+    expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
+    expect(batchRemaining(ctx)).toBe(200)
 
     const act = await h.registry.execute(
       'desktop_act',
@@ -1203,14 +1201,14 @@ describe('实际用量跨工具可见', () => {
     expect(act.status).toBe('success')
     expect((act.data as { dispatch: string }).dispatch).toBe('submitted')
 
-    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(0)
-    // 累计值没有被截回上限：连 0 token 的准入都不再通过。
-    expect(chargeBatchBudget(ctx, 0).ok).toBe(false)
+    expect(batchRemaining(ctx)).toBe(0)
+    // 累计值没有被截回额度：1 token 的准入也不再通过。
+    expect(chargeBatchBudget(ctx, 1).ok).toBe(false)
 
     const read = await h.registry.execute('read_file', { path: 'note.txt' }, ctx)
     expect(read.status).toBe('failure')
     expect(read.errorKind).toBe('result_too_large')
-    expect(read.message).toContain('本批还剩 0')
+    expect(read.message).toContain('额度已用完')
   })
 })
 

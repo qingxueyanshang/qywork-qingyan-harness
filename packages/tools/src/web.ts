@@ -13,7 +13,7 @@ import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } fr
 import type { IntermediateResourceRef } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
 import { type SafetyOptions, safeFetch } from './net-safety.ts'
-import { deliver } from './sink.ts'
+import { deliver, excerptBytes } from './sink.ts'
 
 /** 用户配置注入 ctx.resources 的键。没配就用默认（最严格）策略。 */
 export const NET_POLICY_KEY = 'qywork.netPolicy'
@@ -97,11 +97,12 @@ export const webFetchTool: ToolSpec = {
       body: new TextEncoder().encode(text),
       mimeType: contentType || 'text/plain',
       query: url,
+      budget: excerptBytes(ctx),
     })
-    // 摘录也记进本批预算：`deliver` 已经把它压到 8 KB 以内，
-    // 但一波五次外取加起来仍然是一笔——批级上界要看得见全部来源。
+    // 摘录记进本次决策的额度：`deliver` 已把它压到 8 KB 与剩余额度之内，
+    // 一次决策里多次外取加起来仍是一笔。
     // 必须是 `recordBatchSpent` 而不是 `chargeBatchBudget`：抓取已经发生、摘录已经投出，
-    // 超预算时后者不累加，同一波里其余读取工具会按一笔不存在的余额作准入。
+    // 超额时后者不累加，同一决策里其余读取工具会按一笔不存在的余额作准入。
     recordBatchSpent(ctx, deliveredTokens(landed.text, ctx.density))
 
     const resources: IntermediateResourceRef[] = landed.resourceId

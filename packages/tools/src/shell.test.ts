@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { chargeBatchBudget, deliveryBudget, type ToolContext } from '@qywork/agent'
+import { batchRemaining, chargeBatchBudget, openBatchBudget, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { commandShell } from './sandbox.ts'
 import { makeShellTool } from './shell.ts'
@@ -49,7 +49,8 @@ describe('run_command 的子进程环境', () => {
       workspaceRoot: root,
       emit: () => {},
       sink: null,
-      state: new Map(),
+      density: DEFAULT_DENSITY,
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     } as unknown as ToolContext)
 
     expect(outcome.status).toBe('success')
@@ -60,8 +61,8 @@ describe('run_command 的子进程环境', () => {
 })
 
 describe('run_command 的用量记账', () => {
-  /** 命令已经执行、摘录已经投出，这一笔不记等于让同一波后面的读取工具按一份不存在的余额作准入。 */
-  test('本批剩不下时照样记账，同一波后面的读取工具看到余额 0', async () => {
+  /** 命令已经执行、摘录已经投出，这一笔不记等于让同一决策里后面的读取工具按一份不存在的余额作准入。 */
+  test('额度剩不下时照样记账，同一决策里后面的读取工具看到余额 0', async () => {
     const found = commandShell()
     if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
     const root = await mkdtemp(join(tmpdir(), 'qywork-shell-budget-'))
@@ -73,19 +74,17 @@ describe('run_command 的用量记账', () => {
       workspaceRoot: root,
       contextWindow: 200_000,
       density: DEFAULT_DENSITY,
-      state: new Map<string, unknown>(),
+      state: openBatchBudget(new Map<string, unknown>(), 1000),
       sink: null,
       emit: () => {},
     } as unknown as ToolContext
-    const { perCall, batchCap } = deliveryBudget(200_000)
-    expect(chargeBatchBudget(ctx, perCall).ok).toBe(true)
-    expect(chargeBatchBudget(ctx, batchCap - perCall - 200).ok).toBe(true)
-    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(200)
+    expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
+    expect(batchRemaining(ctx)).toBe(200)
 
     const outcome = await makeShellTool(found).fn({ command: `bun "${script}"` }, ctx)
 
     expect(outcome.status).toBe('success')
-    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(0)
+    expect(batchRemaining(ctx)).toBe(0)
     expect(chargeBatchBudget(ctx, 100).ok).toBe(false)
   })
 })

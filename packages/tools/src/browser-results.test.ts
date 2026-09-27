@@ -19,9 +19,10 @@ import {
   type BrowserOptionsPage,
   type BrowserPort,
   type BrowserSelectOption,
+  batchRemaining,
   chargeBatchBudget,
   deliveredTokens,
-  deliveryBudget,
+  openBatchBudget,
   type SinkPort,
   type ToolContext,
   type ToolOutcome,
@@ -187,7 +188,7 @@ function context(
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink,
     signal: new AbortController().signal,
     emit: () => {},
@@ -723,11 +724,10 @@ describe('存不下时照实说', () => {
 describe('实际用量记账', () => {
   test('投多少记多少，只记一次', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
-    const before = chargeBatchBudget(ctx, 0).batchRemaining
+    openBatchBudget(ctx.state, 1_000_000)
     const r = await browserActTool.fn(CLICK, ctx)
-    const after = chargeBatchBudget(ctx, 0).batchRemaining
 
-    expect(before - after).toBe(sizeOf(r))
+    expect(1_000_000 - batchRemaining(ctx)).toBe(sizeOf(r))
   })
 
   test('记进本波的用量不含截图字节', async () => {
@@ -735,26 +735,24 @@ describe('实际用量记账', () => {
       fakeBrowser({ observe: async () => ({ ...大页, image: 大截图 }) }),
       fakeSink(),
     )
-    const before = chargeBatchBudget(ctx, 0).batchRemaining
+    openBatchBudget(ctx.state, 1_000_000)
     const r = await browserObserveTool.fn({ tabId: 'bt_1', screenshot: true }, ctx)
-    const after = chargeBatchBudget(ctx, 0).batchRemaining
+    const spent = 1_000_000 - batchRemaining(ctx)
 
-    expect(before - after).toBe(sizeOf(r))
-    expect(before - after).toBeLessThanOrEqual(LIMIT)
+    expect(spent).toBe(sizeOf(r))
+    expect(spent).toBeLessThanOrEqual(LIMIT)
   })
 
-  test('越过本波预算时动作不被拒，余额报 0，其后的读取准入不使用假余额', async () => {
-    const small = 32_000
-    const ctx = context(fakeBrowser(), fakeSink(), { contextWindow: small })
-    const { perCall, batchCap } = deliveryBudget(small)
-    expect(chargeBatchBudget(ctx, perCall).ok).toBe(true)
-    expect(chargeBatchBudget(ctx, batchCap - perCall - 200).ok).toBe(true)
-    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(200)
+  test('越过本次决策额度时动作不被拒，余额报 0，其后的读取准入不使用假余额', async () => {
+    const ctx = context(fakeBrowser(), fakeSink())
+    openBatchBudget(ctx.state, 1000)
+    expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
+    expect(batchRemaining(ctx)).toBe(200)
 
     const r = await browserActTool.fn(CLICK, ctx)
     expect(r.status).toBe('success')
     expect((r.data as { element: string }).element).toBe('button 提交')
-    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(0)
+    expect(batchRemaining(ctx)).toBe(0)
     expect(chargeBatchBudget(ctx, 100).ok).toBe(false)
   })
 })

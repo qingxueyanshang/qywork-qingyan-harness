@@ -22,6 +22,7 @@ import type {
   ToolOutcome,
   ToolSpec,
 } from '@qywork/agent'
+import { openBatchBudget } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   browserActTool,
@@ -127,7 +128,7 @@ function ctxWith(
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink: null,
     signal,
     emit: () => {},

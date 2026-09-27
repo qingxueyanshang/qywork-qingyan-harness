@@ -44,7 +44,7 @@ import {
   spawnGuarded,
 } from './sandbox.ts'
 import { createStreamRedactor, scrubEnv } from './secrets.ts'
-import { deliver } from './sink.ts'
+import { deliver, excerptBytes } from './sink.ts'
 import { openChangeWindow } from './workspace-watch.ts'
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -427,11 +427,12 @@ function deliverStreams(
       body: encoder.encode(text),
       mimeType: 'text/plain',
       query: command,
+      budget: excerptBytes(ctx),
     })
 
-    // 摘录记进本批预算：`deliver` 已压到 8 KB 内，但一波多次执行仍是一笔。
+    // 摘录记进本次决策的额度：`deliver` 已压到 8 KB 与剩余额度之内，一次决策里多次执行仍是一笔。
     // 必须是 `recordBatchSpent` 而不是 `chargeBatchBudget`：命令已经执行、摘录已经投出，
-    // 超预算时后者不累加，同一波里其余读取工具会按一笔不存在的余额作准入。
+    // 超额时后者不累加，同一决策里其余读取工具会按一笔不存在的余额作准入。
     recordBatchSpent(ctx, deliveredTokens(landed.text, ctx.density))
     data[channel] = landed.text
     // 覆盖事实必须进 data：模型读 message 和 data，读不到 coverage 就不知道自己看的是几分之几。

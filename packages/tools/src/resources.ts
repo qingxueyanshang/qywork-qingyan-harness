@@ -19,11 +19,23 @@
  * 页边可能因此丢弃不足一个码点的字节。
  */
 
-import type { ToolContext, ToolOutcome, ToolSpec } from '@qywork/agent'
+import {
+  batchRemaining,
+  outcomeTokens,
+  recordBatchSpent,
+  type ToolContext,
+  type ToolOutcome,
+  type ToolSpec,
+  tokensToBytes,
+} from '@qywork/agent'
 import { badIntMessage, intArg } from './args.ts'
+import { budgetExhausted } from './sink.ts'
 
-/** 单次读取的上限。与 sink 的投递预算一致，翻倍是因为这次是模型**主动**要的。 */
-const MAX_READ_BYTES = 16 * 1024
+/**
+ * 搜索一页最多返回多少字节的命中。这是查询结果的分页约定，不是投递上限：
+ * 连续阅读（不带 query）默认读到末尾，只受本轮剩余额度约束。
+ */
+const SEARCH_PAGE_BYTES = 16 * 1024
 
 /** UTF-8 单个码点最长 4 字节：边界向前或向后的搜索范围都不超过 3 字节。 */
 const MAX_UTF8_SPAN = 3
@@ -45,7 +57,8 @@ export const readResourceTool: ToolSpec = {
       },
       length: {
         type: 'integer',
-        description: `读取字节数，默认且最大 ${MAX_READ_BYTES}。带 query 时不生效。`,
+        description:
+          '读取字节数，默认读到末尾；超出本轮剩余容量时只返回装得下的部分。带 query 时不生效。',
       },
       query: {
         type: 'string',
@@ -95,7 +108,7 @@ export const readResourceTool: ToolSpec = {
     // 两个数都必须先读得出整数：`NaN >= sizeBytes` 为假，越界那道闸门会被 NaN 穿过去。
     // 校验要在分流之前：搜索同样按 offset 起算，放进分支里就是让 query 绕开这道闸门。
     const rawOffset = intArg(args.offset, 0)
-    const rawLength = intArg(args.length, MAX_READ_BYTES)
+    const rawLength = intArg(args.length, stat.sizeBytes)
     if (rawOffset === null || rawLength === null) {
       const bad = rawOffset === null ? 'offset' : 'length'
       return {
@@ -115,9 +128,27 @@ export const readResourceTool: ToolSpec = {
     }
 
     const query = typeof args.query === 'string' ? args.query : ''
-    if (query) return searchResource(ctx.sink, resourceId, stat.sizeBytes, query, offset)
+    // 位置说明与 data 的其余字段先从余额里扣出来，再把剩下的折成正文字节。
+    const frame = outcomeTokens(
+      pageOutcome('', stat.sizeBytes, stat.sizeBytes - 1, stat.sizeBytes, stat.mimeType),
+      ctx.density,
+    )
+    const room = tokensToBytes(Math.max(0, batchRemaining(ctx) - frame), ctx.density)
+    if (room === 0) return budgetExhausted()
+    if (query) {
+      const found = searchResource(
+        ctx.sink,
+        resourceId,
+        stat.sizeBytes,
+        query,
+        offset,
+        Math.min(SEARCH_PAGE_BYTES, room),
+      )
+      recordBatchSpent(ctx, outcomeTokens(found, ctx.density))
+      return found
+    }
 
-    const budget = Math.min(MAX_READ_BYTES, Math.max(1, rawLength))
+    const budget = Math.min(room, Math.max(1, rawLength))
     // 多读的两段各有用处：起点对齐最多跳 3 字节，预算内装不下一个完整码点时最多补 3 字节。
     const span = Math.min(budget + MAX_UTF8_SPAN * 2, stat.sizeBytes - offset)
     const raw = ctx.sink.read(resourceId, offset, span)
@@ -125,24 +156,41 @@ export const readResourceTool: ToolSpec = {
 
     const start = offset + alignStart(raw)
     const page = decodePage(raw.subarray(start - offset), budget)
-    const nextOffset = start + page.consumed
-    const hasMore = nextOffset < stat.sizeBytes
-
-    return {
-      status: 'success',
-      // 位置信息必须在 message 里而不只在 data 里：模型读的是 message。
-      message: hasMore
-        ? `已读取 ${start}–${nextOffset} / ${stat.sizeBytes} 字节。后续用 offset=${nextOffset} 继续。`
-        : `已读取 ${start}–${nextOffset} / ${stat.sizeBytes} 字节（到末尾）。`,
-      data: {
-        content: page.text,
-        offset: start,
-        nextOffset: hasMore ? nextOffset : null,
-        totalBytes: stat.sizeBytes,
-        mimeType: stat.mimeType,
-      },
-    }
+    const outcome = pageOutcome(
+      page.text,
+      start,
+      start + page.consumed,
+      stat.sizeBytes,
+      stat.mimeType,
+    )
+    // 页长已按余额定，这里记实际投递量；码点补全最多多出 3 字节。
+    recordBatchSpent(ctx, outcomeTokens(outcome, ctx.density))
+    return outcome
   },
+}
+
+function pageOutcome(
+  text: string,
+  start: number,
+  nextOffset: number,
+  totalBytes: number,
+  mimeType: string | null,
+): ToolOutcome {
+  const hasMore = nextOffset < totalBytes
+  return {
+    status: 'success',
+    // 位置信息必须在 message 里而不只在 data 里：模型读的是 message。
+    message: hasMore
+      ? `已读取 ${start}–${nextOffset} / ${totalBytes} 字节。后续用 offset=${nextOffset} 继续。`
+      : `已读取 ${start}–${nextOffset} / ${totalBytes} 字节（到末尾）。`,
+    data: {
+      content: text,
+      offset: start,
+      nextOffset: hasMore ? nextOffset : null,
+      totalBytes,
+      mimeType,
+    },
+  }
 }
 
 function readFailure(resourceId: string): ToolOutcome {
@@ -275,6 +323,7 @@ function searchResource(
   totalBytes: number,
   query: string,
   offset: number,
+  pageBytes: number,
 ): ToolOutcome {
   const before = countLinesBefore(sink, resourceId, offset)
   if (before === null) return readFailure(resourceId)
@@ -282,7 +331,7 @@ function searchResource(
   const decoder = new TextDecoder('utf-8')
   const hits: Hit[] = []
   let lineNo = before
-  let budget = MAX_READ_BYTES
+  let budget = pageBytes
   let nextOffset: number | null = null
   let start = offset
   let carry = ''

@@ -1,9 +1,9 @@
 /**
- * 覆盖 `resources.ts`（`read_resource` 的前置校验、字节分页、query 搜索与续查）。
+ * 覆盖 `resources.ts`（`read_resource` 的前置校验、字节分页、query 搜索与续查、按投递额度分页）。
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { SinkPort, ToolContext } from '@qywork/agent'
+import { openBatchBudget, outcomeTokens, type SinkPort, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { readResourceTool } from './resources.ts'
 
@@ -39,7 +39,7 @@ function ctx(sink: SinkPort | null): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink,
     signal: new AbortController().signal,
     emit: () => {},
@@ -394,5 +394,39 @@ describe('query 跨页续查', () => {
     expect(pages).toHaveLength(2)
     for (const page of pages) expect(page.hits.length).toBeGreaterThan(0)
     expect(pages.flatMap((p) => p.hits).map((h) => h.line)).toEqual([1, 2])
+  })
+})
+
+describe('按本次决策的投递额度分页', () => {
+  const withRoom = (sink: SinkPort, room: number): ToolContext => ({
+    ...ctx(sink),
+    state: openBatchBudget(new Map(), room),
+  })
+  const body = `${'甲'.repeat(20_000)}尾部标记`
+
+  test('不传 length 时读到末尾', async () => {
+    const r = await readResourceTool.fn({ resource_id: 'rs_1' }, withRoom(memSink(body), 1_000_000))
+    const page = r.data as unknown as Page
+    expect(page.content).toBe(body)
+    expect(page.nextOffset).toBeNull()
+  })
+
+  test('余额不够时只返回装得下的一页，沿 nextOffset 续读不重不漏', async () => {
+    const sink = memSink(body)
+    const first = await readResourceTool.fn({ resource_id: 'rs_1' }, withRoom(sink, 2_000))
+    const page = first.data as unknown as Page
+    expect(page.nextOffset).not.toBeNull()
+    expect(outcomeTokens(first, DEFAULT_DENSITY)).toBeLessThanOrEqual(2_000)
+    const rest = await readResourceTool.fn(
+      { resource_id: 'rs_1', offset: page.nextOffset },
+      withRoom(sink, 1_000_000),
+    )
+    expect(page.content + (rest.data as unknown as Page).content).toBe(body)
+  })
+
+  test('余额为 0 时失败，不返回成功的空页', async () => {
+    const r = await readResourceTool.fn({ resource_id: 'rs_1' }, withRoom(memSink(body), 0))
+    expect(r.status).toBe('failure')
+    expect(r.errorKind).toBe('result_too_large')
   })
 })
