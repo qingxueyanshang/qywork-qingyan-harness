@@ -1044,6 +1044,40 @@ describe('注入的用户消息与压缩', () => {
     expect(prompt).toContain(`[message:${run.id}:${injected.id}] 用户：所有路径都用正斜杠`)
     store.close()
   })
+
+  /** F19：助手正文的地址是它自己的 text step，不是所属用户消息的 id。 */
+  test('助手正文进摘要段时，地址是它自己的 <runId>:<stepId>', async () => {
+    const { store, conv, ids } = fresh(8)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: 'ws' as never,
+      model: 'm',
+      clientRequestId: 'c1',
+      userMessageId: ids[0] ?? null,
+      messageIdUpperBound: ids[0] ?? null,
+      contextSnapshot: [],
+    })
+    const text = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'text',
+      content: '结论：签名算法定为 RS256',
+      providerBatchId: 'bt_answer',
+    })
+    addToolWaves(store, run.id, 2, 400, 2)
+
+    let prompt = ''
+    const spy: Summarizer = async (p) => {
+      prompt = p
+      return '模型写的摘要'
+    }
+    const result = await port(store, conv.id, spy).run(await pressure(store, conv.id))
+
+    expect(result.status).toBe('compacted')
+    expect(prompt).toContain(`[message:${run.id}:${text.id}] 助手：结论：签名算法定为 RS256`)
+    expect(prompt).not.toContain(`[message:${ids[0]}] 助手：结论`)
+    store.close()
+  })
 })
 
 /**

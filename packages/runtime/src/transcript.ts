@@ -184,6 +184,13 @@ export interface StepUnit {
    * 压缩拿它的 id 组出取回地址（`<runId>:<stepId>`）。
    */
   userStep?: Step
+  /**
+   * 这个单元里助手正文的第一条 text step。压缩拿它组出助手正文的取回地址（`<runId>:<stepId>`），
+   * `HistoryPort.message` 按它把同一次生成的正文读回来。没有助手正文时缺席。
+   *
+   * 不要用所属用户消息的 id 代替：那个地址读回的是用户的原话，不是助手说过的内容。
+   */
+  textStep?: Step
 }
 
 /**
@@ -208,6 +215,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
 
   let pendingText = ''
   let pendingStamp = ''
+  let pendingTextStep: Step | undefined
   /**
    * 本轮的思考正文，等这一轮的工具批次来取。
    *
@@ -219,13 +227,16 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
   const flushText = () => {
     const reasoning = opts.preserveAssistantReasoning ? pendingReasoning : ''
     const responseReasoning = pendingResponseReasoning
+    const textStep = pendingTextStep
     pendingReasoning = ''
     pendingResponseReasoning = undefined
+    pendingTextStep = undefined
     if (!pendingText.trim() && !reasoning && !responseReasoning) {
       pendingText = ''
       return
     }
     units.push({
+      ...(textStep ? { textStep } : {}),
       stamp: pendingStamp,
       messages: [
         mark(
@@ -286,6 +297,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
     }
     if (step.kind === 'text') {
       pendingText += step.content ?? ''
+      pendingTextStep ??= step
       pendingStamp = stepStamp(step.runId, step.seq)
       i += 1
       continue
@@ -349,8 +361,10 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
     // 思考正文只来自独立 thinking step；迁移 37 已把旧工具行正文搬过去。
     const reasoning = pendingReasoning
     const responseReasoning = pendingResponseReasoning
+    const textStep = pendingText.trim() ? pendingTextStep : undefined
     pendingReasoning = ''
     pendingResponseReasoning = undefined
+    pendingTextStep = undefined
     // 戳取批次里最大的 seq：活的 transcript 那侧是「一波跑完时的高水位」，同一个数。
     const stamp = stepStamp(batch[0]!.runId, Math.max(...batch.map((s) => s.seq)))
 
@@ -385,7 +399,7 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
         ),
       )
     }
-    units.push({ stamp, messages, steps: ordered })
+    units.push({ stamp, messages, steps: ordered, ...(textStep ? { textStep } : {}) })
   }
 
   flushText()
