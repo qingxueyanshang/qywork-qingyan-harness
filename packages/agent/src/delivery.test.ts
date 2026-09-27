@@ -18,15 +18,21 @@ import {
   chargeBatchBudget,
   continuationNote,
   deliveredTokens,
+  deliveryCap,
   landHead,
   openBatchBudget,
   outcomeTokens,
   recordBatchSpent,
+  tailRetain,
   tokensToBytes,
 } from './delivery.ts'
 import type { SinkPort } from './registry.ts'
 
-const ctx = (room: number) => ({ state: openBatchBudget(new Map<string, unknown>(), room) })
+/** 窗口取 0：尾部保留量为 0，单次上限等于余额，便于逐项核对账目。上限本身另有用例。 */
+const ctx = (room: number) => ({
+  state: openBatchBudget(new Map<string, unknown>(), room),
+  contextWindow: 0,
+})
 
 function fakeSink(): SinkPort & { landed: Uint8Array[] } {
   const landed: Uint8Array[] = []
@@ -43,13 +49,15 @@ function fakeSink(): SinkPort & { landed: Uint8Array[] } {
 
 describe('一次决策一份额度', () => {
   test('没开账就调用是装配错误，不给默认额度', () => {
-    expect(() => chargeBatchBudget({ state: new Map() }, 1)).toThrow('投递额度未开账')
+    expect(() => chargeBatchBudget({ state: new Map(), contextWindow: 0 }, 1)).toThrow(
+      '投递额度未开账',
+    )
   })
 
   /** 额度是请求余量，不是常数：1M 窗口下 31K 的读取在余量内就放行。 */
   test('额度内的读取放行并记账，额度外的拒绝且不记账', () => {
     const c = ctx(800_000)
-    expect(chargeBatchBudget(c, 31_000)).toEqual({ ok: true, remaining: 769_000 })
+    expect(chargeBatchBudget(c, 31_000)).toEqual({ ok: true, cap: 769_000 })
     expect(chargeBatchBudget(c, 800_000).ok).toBe(false)
     expect(batchRemaining(c)).toBe(769_000)
   })
@@ -72,6 +80,24 @@ describe('一次决策一份额度', () => {
 
   test('负的余量按 0 开账', () => {
     expect(batchRemaining(ctx(-500))).toBe(0)
+  })
+
+  /**
+   * 一段填满余额的结果在下一次压缩里是跨过保留量的那个单元，会被留下，
+   * 下一次决策的额度为 0、续读停在原地。单次上限因此给下一次决策留出一份尾部保留量。
+   */
+  test('单次上限给下一次决策留出一份尾部保留量', () => {
+    const c = { state: openBatchBudget(new Map<string, unknown>(), 25_000), contextWindow: 32_000 }
+    expect(tailRetain(32_000)).toBe(8_000)
+    expect(deliveryCap(c)).toBe(17_000)
+    expect(chargeBatchBudget(c, 20_000).ok).toBe(false)
+    expect(chargeBatchBudget(c, 17_000).ok).toBe(true)
+  })
+
+  test('余额不足两份保留量时，单次不超过一份保留量', () => {
+    const c = { state: openBatchBudget(new Map<string, unknown>(), 10_000), contextWindow: 32_000 }
+    expect(deliveryCap(c)).toBe(8_000)
+    expect(deliveryCap({ ...c, state: openBatchBudget(new Map(), 5_000) })).toBe(5_000)
   })
 })
 

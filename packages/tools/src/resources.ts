@@ -20,7 +20,7 @@
  */
 
 import {
-  batchRemaining,
+  deliveryCap,
   outcomeTokens,
   recordBatchSpent,
   type ToolContext,
@@ -133,7 +133,7 @@ export const readResourceTool: ToolSpec = {
       pageOutcome('', stat.sizeBytes, stat.sizeBytes - 1, stat.sizeBytes, stat.mimeType),
       ctx.density,
     )
-    const room = tokensToBytes(Math.max(0, batchRemaining(ctx) - frame), ctx.density)
+    const room = tokensToBytes(Math.max(0, deliveryCap(ctx) - frame), ctx.density)
     if (room === 0) return budgetExhausted()
     if (query) {
       const found = searchResource(

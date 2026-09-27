@@ -50,6 +50,7 @@ describe('run_command 的子进程环境', () => {
       emit: () => {},
       sink: null,
       density: DEFAULT_DENSITY,
+      contextWindow: 200_000,
       state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     } as unknown as ToolContext)
 

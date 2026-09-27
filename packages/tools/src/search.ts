@@ -70,7 +70,7 @@ function fitBudget(ctx: ToolContext, matches: string[]): { matches: string[]; tr
   const charged = chargeBatchBudget(ctx, total)
   if (charged.ok) return { matches, trimmed: false }
 
-  const room = charged.remaining
+  const room = charged.cap
   const kept: string[] = []
   let used = 0
   for (const m of matches) {
