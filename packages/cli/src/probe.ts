@@ -1,5 +1,5 @@
 /**
- * `qy probe` —— 实测一个供应商档案支持什么。
+ * `qy probe` —— 经模型所属接口实测该模型支持什么。
  *
  * 内置目录只认得出自己认识的模型；接中转站、自建网关、刚发布的模型时，
  * 它回落到一组保守的猜测。保守是对的，但**没有任何办法验证那个猜测**——
@@ -34,8 +34,10 @@ export async function runProbe(args: string[]): Promise<number> {
       )
       return 2
     }
-    const target = name ?? config.active?.provider
-    process.stderr.write(`配置里没有名为 "${target}" 的接口。已有：${known}\n`)
+    const target = name ?? config.active?.model
+    process.stderr.write(
+      `无法确定模型 "${target}" 所属的接口。请在设置中检查模型归属和默认接口。已有接口：${known}\n`,
+    )
     return 2
   }
 

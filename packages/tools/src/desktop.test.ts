@@ -1087,6 +1087,41 @@ describe('读文本与选区', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ errorKind: 'desktop_action_unsupported' })
+    expect(r.message).toContain('未提供 value')
+    expect(r.message).not.toContain('当前值已在')
+    expect(calls).toEqual([])
+  })
+
+  test('容器没有文本和值时提示读子树，按提示可以取得控件表', async () => {
+    const { port, calls } = fakeDesktop()
+    const context = ctxWith(port)
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'text', observationId: 'do_1', ref: 'e4' },
+      context,
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
+    expect(r.message).toContain('capture=structure、root=e4')
+    expect(r.message).not.toContain('value 里')
+    expect(calls).toEqual([])
+    const next = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'structure', observationId: 'do_1', root: 'e4' },
+      context,
+    )
+    expect(next.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['observe'])
+  })
+
+  test.each(['', '当前内容'])('控件确实有 value 时才提示读取值（%j）', async (value) => {
+    const { port, calls } = fakeDesktop({ elements: () => [{ ...输入框, value }] })
+    const r = await run(
+      desktopObserveTool,
+      { windowId: 'dw_1', capture: 'text', observationId: 'do_1', ref: 'e5' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
+    expect(r.message).toContain('当前值已在观察的 value 里')
     expect(calls).toEqual([])
   })
 })
@@ -3566,6 +3601,7 @@ describe('可选参数填空位', () => {
   test('两种 OpenAI 接口允许 wheel 的无关枚举填 null，并按原坐标派发滚动', async () => {
     const registry = new ToolRegistry()
     registry.register(desktopActTool)
+    registry.register(desktopObserveTool)
     const bodies: Record<string, unknown>[] = []
     const server = Bun.serve({
       hostname: '127.0.0.1',
@@ -3632,6 +3668,21 @@ describe('可选参数填空位', () => {
           at: { imageRef: 'di_1', x: 1030, y: 375 },
           action: { kind: 'wheel', direction: 'up', amount: 6 },
         })
+        const rawObserve = (bodies.at(-1)!.tools as Record<string, unknown>[])[1]!
+        const observe = (rawObserve.function ?? rawObserve) as {
+          name: string
+          parameters: {
+            properties: { imageRect: { type: string[]; required: string[] } }
+          }
+        }
+        expect(observe.name).toBe('desktop_observe')
+        expect(observe.parameters.properties.imageRect.type).toEqual(['object', 'null'])
+        expect(observe.parameters.properties.imageRect.required).toEqual([
+          'x',
+          'y',
+          'width',
+          'height',
+        ])
       }
     } finally {
       server.stop(true)
@@ -3646,6 +3697,29 @@ describe('可选参数填空位', () => {
       ctxWith(port),
     )
     expect(r.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['observe'])
+  })
+
+  test('structure 的 imageRect 空对象仍拒绝，按回执改为 null 后只读树', async () => {
+    const { port, calls } = fakeDesktop()
+    const context = ctxWith(port)
+    const args = strictArgs(desktopObserveTool, {
+      windowId: 'dw_1',
+      capture: 'structure',
+      query: '检测',
+      around: '',
+      imageRef: '',
+      pad: 0,
+      imageRect: {},
+    })
+    const rejected = await run(desktopObserveTool, args, context)
+    expect(rejected).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(rejected.message).toContain('capture=structure')
+    expect(rejected.message).toContain('imageRect 不要填 {}')
+    expect(rejected.message).toContain('null')
+    expect(calls).toEqual([])
+    const corrected = await run(desktopObserveTool, { ...args, imageRect: null }, context)
+    expect(corrected.status).toBe('success')
     expect(calls.map((c) => c.method)).toEqual(['observe'])
   })
 

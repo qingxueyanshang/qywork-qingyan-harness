@@ -1156,6 +1156,8 @@ export const desktopObserveTool: ToolSpec = {
   description:
     '观察一个窗口。capture=structure（默认）读控件表，region_image 采图，combined 两样都要，text 读文档文本与选区。' +
     '先用 structure，树里找不到目标时才采图。' +
+    'capture=text 只读标有 text:true 的控件；读取容器内部控件用 structure 并将 root 设为容器 ref。' +
+    'around、imageRef、imageRect 只用于采图；不采图时省略，必须填的空位用 null，imageRect 不要填 {}。' +
     '控件表给角色、名称、automationId、value、enabled、depth 与控件状态，includeRect 为真时另给 rect；' +
     '没有名称、值与状态的 pane / group / custom 容器不列出；' +
     '控件按前序排列，depth 按列出的祖先计，父控件是前面最近的、depth 小一层的那一个；' +
@@ -1201,7 +1203,10 @@ export const desktopObserveTool: ToolSpec = {
         description:
           'capture=region_image 用 around 取景时要给，capture=text 一定要给，取自 desktop_observe',
       },
-      ref: { type: 'string', description: 'capture=text 要读哪个控件，取自同一份观察' },
+      ref: {
+        type: 'string',
+        description: 'capture=text 要读的控件，取自同一份观察且标有 text:true',
+      },
       automationId: { type: 'string', description: 'capture=text 按稳定标识定位，要求唯一命中' },
       name: { type: 'string', description: 'capture=text 按名称定位，要求唯一命中' },
       maxChars: {
@@ -1213,7 +1218,7 @@ export const desktopObserveTool: ToolSpec = {
       imageRef: { type: 'string', description: '要放大的那一张图，取自上一次采图' },
       imageRect: {
         type: 'object',
-        description: 'imageRef 那张图里的一块，图像坐标',
+        description: 'imageRef 那张图里的一块，图像坐标；不采图时省略或填 null，不要填 {}',
         properties: {
           x: { type: 'integer' },
           y: { type: 'integer' },
@@ -1238,14 +1243,24 @@ export const desktopObserveTool: ToolSpec = {
         ? oneOf(args.capture, CAPTURES, 'capture')
         : 'structure'
       if (capture !== 'region_image' && capture !== 'combined' && framingGiven(args)) {
-        throw new ArgError('未执行 · 取景参数只在 capture=region_image 或 combined 下有效')
+        throw new ArgError(
+          `未执行 · capture=${capture} 不接受取景参数 around / imageRef / imageRect；` +
+            '不采图时省略这些参数，必须填时用 null，imageRect 不要填 {}',
+        )
       }
       if (capture === 'text') {
         const observationId = str(args.observationId, 'observationId')
-        const element = resolveTarget(desktop.elements(windowId, observationId), args)
+        const elements = desktop.elements(windowId, observationId)
+        const element = resolveTarget(elements, args)
         if (element.text !== true) {
+          const hint =
+            element.value !== undefined
+              ? '当前值已在观察的 value 里，空字符串表示值为空'
+              : elements?.some((item) => item.parentRef === element.ref)
+                ? `要查看内部控件，请用 capture=structure、root=${element.ref} 读取子树`
+                : '当前观察也未提供 value，请查看控件表中已有的名称和状态'
           throw new ArgError(
-            `未执行 · ${element.ref} 读不出文档文本 · 它的当前值在观察的 value 里`,
+            `未执行 · ${element.ref} 不支持文档文本读取 · ${hint}`,
             'desktop_action_unsupported',
           )
         }

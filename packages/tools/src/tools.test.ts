@@ -120,11 +120,12 @@ describe('越界拒绝是判定，不是崩溃', () => {
    * 加 `additionalDirectories` 则是不放开全部权限、只开这一个目录。
    * 少说一条就是把用户往另一条上逼。
    */
-  test('回话给得出两条出路，且不诱导绕过', async () => {
+  test('回话给出两条出路，不承诺命令裁决会拒绝同一路径', async () => {
     const out = await denial()
     expect(out.message).toContain('完全访问')
     expect(out.message).toContain('additionalDirectories')
-    expect(out.message).toContain('不要改用 run_command')
+    expect(out.message).toContain('命令权限规则另行裁决')
+    expect(out.message).not.toContain('同一份根目录清单拦')
   })
 })
 

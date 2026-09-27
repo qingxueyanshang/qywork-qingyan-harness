@@ -90,7 +90,7 @@ const USAGE = `qy —— qywork 编码 agent
     --thinking            带上思考内容
     -o <文件>             写文件，默认打到 stdout
 
-  qy probe [<档案名>]      实测端点支持什么（思考模式、effort 档位）
+  qy probe [<模型名>]      检测指定模型；省略时检测当前默认模型
     --save                把结论写回配置；不加则只打印
 
   qy config               显示当前配置
