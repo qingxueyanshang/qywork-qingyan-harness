@@ -455,7 +455,12 @@ describe('投影', () => {
     const projected = projectManifest(manifest)
     expect(projected).toHaveLength(2)
     expect(projected[0]!.content).toContain('重构认证模块')
-    expect(projected[0]!.content).toContain('修订版本 3')
+  })
+
+  /** F14：只推进收纳线时 revision 递增、summary 与 facts 不变，投影必须逐字不变。 */
+  test('只有 revision 变化时投影字节不变', () => {
+    const next = { ...manifest, revision: manifest.revision + 1 }
+    expect(projectManifest(next)).toEqual(projectManifest(manifest))
   })
 
   test('事实清单单独成条，避免被下一轮压缩改写', () => {

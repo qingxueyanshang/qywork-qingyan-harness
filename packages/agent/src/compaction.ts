@@ -630,8 +630,9 @@ export function projectManifest(
       role: 'user',
       // 尾巴上这句是**能力边界**不是解释：没有它，模型不知道折掉的原文还取得回来，
       // 因此要么当作已经丢失、要么重新把工作做一遍。
+      // 不要写进 `revision`：只推进收纳线也会递增它，这条消息紧跟 system，一变整段历史的缓存前缀都失效。
       content:
-        `[此处是被压缩的早期对话摘要，修订版本 ${manifest.revision}]\n\n${manifest.summary}\n\n` +
+        `[此处是被压缩的早期对话摘要]\n\n${manifest.summary}\n\n` +
         `（摘要里的 [message:…] / [action:…] 是原文地址，需要原文用 read_history 取回。）`,
     },
     { role: 'assistant', content: factsContent(manifest.facts) },
