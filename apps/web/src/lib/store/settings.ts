@@ -207,6 +207,8 @@ export async function setPermissionMode(mode: PermissionMode): Promise<void> {
 export interface ModelOption {
   chatToolSchema: ToolSchemaMode
   id: string
+  /** Base URL 留空时使用的官方地址；未登记时省略。 */
+  defaultBaseUrl?: string
   /** 内置目录里的显示名；目录里没有就是 id 本身。 */
   label: string
   /** 这个模型吃哪几档思考强度。空数组 = 这条链路上调不了，界面据此不显示那个开关。 */

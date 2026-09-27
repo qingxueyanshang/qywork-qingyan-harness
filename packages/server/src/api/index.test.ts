@@ -482,6 +482,27 @@ describe('模型目录', () => {
   /** 摊平成一张表只是为了断言好写；界面拿到的是分好组的。 */
   const models = async (d: ApiDeps) => (await body(d)).providers.flatMap((p) => p.models)
 
+  test('官方默认地址按模型与协议下发，显式端点不被写回覆盖', async () => {
+    const d = withConfig('openai_chat_completions', 'deepseek-flash')
+    d.config.providers.p!.baseUrl = 'https://relay.example/v1'
+    expect((await models(d))[0]?.defaultBaseUrl).toBe('https://api.deepseek.com/v1')
+    expect(d.config.providers.p!.baseUrl).toBe('https://relay.example/v1')
+    expect(
+      (await models(withConfig('anthropic_messages', 'deepseek-flash')))[0]?.defaultBaseUrl,
+    ).toBe('https://api.deepseek.com/anthropic')
+    expect(
+      (await models(withConfig('openai_chat_completions', 'mimo-v2.6-pro')))[0]?.defaultBaseUrl,
+    ).toBe('https://api.xiaomimimo.com/v1')
+    expect(
+      (await models(withConfig('openai_chat_completions', 'custom')))[0]?.defaultBaseUrl,
+    ).toBeUndefined()
+    d.config.catalog = { 'custom|openai_chat_completions': { vendor: 'deepseek' } }
+    d.config.providers.p!.models.custom = {}
+    expect((await models(d)).find((m) => m.id === 'custom')?.defaultBaseUrl).toBe(
+      'https://api.deepseek.com/v1',
+    )
+  })
+
   /**
    * **只列配置里有的**。
    *

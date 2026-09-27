@@ -680,6 +680,8 @@ describe('模型库一次性迁移', () => {
       kind: r.kind,
       apiKey: r.apiKey ?? 'sk-x',
       model: r.model,
+      // 参数迁移验收使用测试端点，不依赖旧模型仍在官方目录中。
+      baseUrl: 'https://relay.example/v1',
       ...(r.spec ? { spec: r.spec } : {}),
     }).spec
   }
