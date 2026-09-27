@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type ToolContext, ToolRegistry } from '@qywork/agent'
+import { openBatchBudget, type SinkPort, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   acquireExtensions,
   globalPluginsDir,
@@ -135,15 +136,19 @@ async function workspaceWith(extra: string[]) {
     const tool = ext.toolSpecs.find((t) => t.name === 'test_probe__run')
     // 工具上下文里只有插件这条路用得到的那几项。身份由宿主按 callId 保管，
     // 插件那侧只拿得到一个 parentCallId。
+    // 投递额度由 AgentLoop 按决策开账，这里直接开一份不设限的。
     const ctx = {
       workspaceRoot: root,
       conversationId: 'cv_test',
       runId: 'run_test',
       signal: new AbortController().signal,
+      density: DEFAULT_DENSITY,
+      sink: null,
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     } as unknown as ToolContext
     const probe = async (method: string, params: Record<string, unknown> = {}) =>
       tool!.fn({ method, params }, ctx)
-    return { root, ext, probe, stop: () => ext.stop() }
+    return { root, ext, ctx, probe, stop: () => ext.stop() }
   })
 }
 
@@ -180,6 +185,30 @@ describe('插件端到端', () => {
     const r = await probe('fs.read', { path: 'hello.txt' })
     expect(r.status).toBe('success')
     expect((r.data as { r: { content: string } }).r.content).toBe('你好')
+    stop()
+  })
+
+  /** 插件结果没有上界：超出本轮剩余额度时 data 整份存进正文库，回执合法且有界。 */
+  test('超出剩余额度的插件结果整份存进正文库，回执留地址', async () => {
+    const { root, ctx, probe, stop } = await workspaceWith(['workspace:read'])
+    await writeFile(join(root, 'big.txt'), `${'插件正文。'.repeat(40_000)}尾部标记`, 'utf8')
+    const landed: Uint8Array[] = []
+    const sink: SinkPort = {
+      land(input) {
+        landed.push(input.body)
+        return { resourceId: `rs_${landed.length}`, contentHash: 'sha:x' }
+      },
+      read: () => null,
+      stat: () => null,
+    }
+    ;(ctx as { sink: SinkPort | null }).sink = sink
+    openBatchBudget(ctx.state, 2000)
+    const r = await probe('fs.read', { path: 'big.txt' })
+    expect(r.status).toBe('success')
+    expect(r.data).toBeUndefined()
+    expect(String(r.resources?.[0]?.resourceId)).toBe('rs_1')
+    expect(new TextDecoder().decode(landed[0]!)).toContain('尾部标记')
+    expect(r.message).toContain('rs_1')
     stop()
   })
 
@@ -370,9 +399,12 @@ describe('MCP 接线', () => {
     const { ext } = await withMcp()
     const registry = new ToolRegistry()
     for (const s of ext.toolSpecs) registry.register(s)
-    const out = await registry
-      .get('mcp__demo__ping')!
-      .fn({}, { signal: new AbortController().signal } as never)
+    const out = await registry.get('mcp__demo__ping')!.fn({}, {
+      signal: new AbortController().signal,
+      density: DEFAULT_DENSITY,
+      sink: null,
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    } as never)
     expect(out.status).toBe('success')
     expect(out.message).toBe('pong')
     ext.stop()

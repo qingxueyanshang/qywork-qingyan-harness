@@ -15,7 +15,12 @@
 
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { sanitizeToolName, type ToolContext, type ToolSpec } from '@qywork/agent'
+import {
+  boundExecutedOutcome,
+  sanitizeToolName,
+  type ToolContext,
+  type ToolSpec,
+} from '@qywork/agent'
 import { CALL_TIMEOUT_MS, checkPermission, type HostCallContext, PluginHost } from './host.ts'
 import {
   ManifestError,
@@ -221,7 +226,11 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
       fn: async (args, ctx) => {
         try {
           const result = await host.call(t.name, args, callContext(manifest.id, ctx))
-          return normalizeOutcome(result, t.name)
+          // 插件结果没有上界：按本轮剩余额度定稿，超额的 message 与 data 整份存进正文库。
+          return boundExecutedOutcome(ctx, normalizeOutcome(result, t.name), {
+            toolName: name,
+            sourceType: `plugin:${manifest.id}`,
+          })
         } catch (err) {
           return {
             status: 'failure' as const,

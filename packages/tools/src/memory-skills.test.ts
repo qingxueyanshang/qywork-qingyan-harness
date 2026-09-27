@@ -279,3 +279,44 @@ describe('技能扫描', () => {
     expect(await scanSkills(await workspace())).toEqual([])
   })
 })
+
+/**
+ * 记忆与技能的正文没有长度上限（用户可以直接改文件）：只放一处，装不下本轮剩余额度时存进正文库续读。
+ */
+describe('记忆与技能按投递额度交付', () => {
+  const long = `${'手改的长记忆。'.repeat(15_000)}尾部标记`
+  const fakeSink = () => {
+    const landed: Uint8Array[] = []
+    return {
+      landed,
+      land: (input: { body: Uint8Array }) => {
+        landed.push(input.body)
+        return { resourceId: `rs_${landed.length}`, contentHash: 'sha:x' }
+      },
+      read: () => null,
+      stat: () => null,
+    }
+  }
+
+  test('正文只在 message 一处，data 里不再复制一份', async () => {
+    const root = await workspace()
+    await mkdir(join(root, MEMORY_DIR), { recursive: true })
+    await writeFile(join(root, MEMORY_DIR, '长.md'), long)
+    const r = await readMemoryTool.fn({ key: '长' }, ctx(root))
+    expect(r.message).toBe(long)
+    expect(r.data).toEqual({ key: '长', scope: 'project' })
+  })
+
+  test('装不下时投递头部，完整正文存一次，给出续读位置', async () => {
+    const root = await workspace()
+    await mkdir(join(root, MEMORY_DIR), { recursive: true })
+    await writeFile(join(root, MEMORY_DIR, '长.md'), long)
+    const sink = fakeSink()
+    const c = { ...ctx(root), sink, state: openBatchBudget(new Map(), 3000) }
+    const r = await readMemoryTool.fn({ key: '长' }, c)
+    expect(r.status).toBe('success')
+    expect(r.message.length).toBeLessThan(long.length)
+    expect(r.message).toContain('read_resource')
+    expect(new TextDecoder().decode(sink.landed[0]!)).toBe(long)
+  })
+})

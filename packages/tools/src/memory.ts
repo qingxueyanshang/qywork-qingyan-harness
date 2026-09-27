@@ -38,6 +38,7 @@ import {
   scopePaths,
   scopeRoots,
 } from './scopes.ts'
+import { deliverReadable } from './sink.ts'
 
 /** 各层根目录下装记忆的那个子目录。 */
 export const MEMORY_SUBDIR = 'memory'
@@ -146,13 +147,19 @@ export const readMemoryTool: ToolSpec = {
     const found = requested
       ? await readFromScope(scopeRoots(ctx.workspaceRoot), requested, key)
       : await readScoped(scopeRoots(ctx.workspaceRoot), key)
-    return found === null
-      ? { status: 'failure', message: `没有名为 ${key} 的记忆`, errorKind: 'not_found' }
-      : {
-          status: 'success',
-          message: found.content,
-          data: { key, content: found.content, scope: found.scope },
-        }
+    if (found === null) {
+      return { status: 'failure', message: `没有名为 ${key} 的记忆`, errorKind: 'not_found' }
+    }
+    // 正文只放 message 一处：data 里再放一份，同一段正文就按两份占额度。
+    // 用户手改过的记忆文件没有长度上限，装不下时存进正文库续读。
+    const data = { key, scope: found.scope }
+    return deliverReadable(ctx, {
+      toolName: 'read_memory',
+      sourceType: 'memory',
+      whole: { message: found.content, data },
+      body: found.content,
+      partial: (head, note) => ({ message: head + note, data: { ...data, truncated: true } }),
+    })
   },
 }
 
