@@ -32,6 +32,39 @@ describe('指纹', () => {
     )
   })
 
+  test('未执行的参数校验失败按错误判重复，改变参数但未解决错误不算进展', () => {
+    const outcome = {
+      status: 'failure',
+      executed: false,
+      errorKind: 'invalid_tool_arguments',
+      message: '缺少必填参数：path、content',
+    }
+    const first = cycleFingerprint('write_file', {}, outcome)
+    expect(cycleFingerprint('write_file', { attempt: 2 }, outcome)).toBe(first)
+    // 已补齐部分必填项，校验结果改变，允许继续修正。
+    expect(
+      cycleFingerprint(
+        'write_file',
+        { path: 'a' },
+        { ...outcome, message: '缺少必填参数：content' },
+      ),
+    ).not.toBe(first)
+    expect(cycleFingerprint('other_tool', {}, outcome)).not.toBe(first)
+  })
+
+  test('不把权限拒绝、已执行或执行事实未知的失败合并成同一参数错误', () => {
+    for (const outcome of [
+      { status: 'failure', executed: false, errorKind: 'permission_denied' },
+      { status: 'failure', executed: true, errorKind: 'invalid_tool_arguments' },
+      { status: 'failure', errorKind: 'invalid_tool_arguments' },
+      { status: 'success', executed: false, errorKind: 'invalid_tool_arguments' },
+    ]) {
+      expect(cycleFingerprint('tool', { path: 'a' }, outcome)).not.toBe(
+        cycleFingerprint('tool', { path: 'b' }, outcome),
+      )
+    }
+  })
+
   /** 同样的动作、不同的结果 = 不同的周期。轮询类调用靠这条不被误判。 */
   test('结果不同则周期指纹不同', () => {
     const args = { command: 'ls' }

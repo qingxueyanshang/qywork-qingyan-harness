@@ -89,7 +89,12 @@ export const writeTodosTool: ToolSpec = {
   async fn(args, ctx) {
     const parsed = parseTodos(args.todos)
     if (!parsed.ok) {
-      return { status: 'failure', message: parsed.message, errorKind: 'invalid_plan' }
+      return {
+        status: 'failure',
+        executed: false,
+        message: parsed.message,
+        errorKind: 'invalid_plan',
+      }
     }
 
     const todos = parsed.todos
