@@ -13,7 +13,7 @@
  * - **派活的那两个不进组**（见 `STANDALONE`）。
  */
 
-import { type ActionKind, foldWorkflow, workflowGroupId } from '@qywork/core'
+import { type ActionKind, foldWorkflow, type NodeState, workflowGroupId } from '@qywork/core'
 import { resultImages } from './step-view.ts'
 import type { TranscriptItem } from './store/index.ts'
 
@@ -169,6 +169,26 @@ export function collapseWorkflowItems(transcript: TranscriptItem[]): TranscriptI
     if (hidden.has(index)) return []
     return [replacements.get(index) ?? item]
   })
+}
+
+/** 流尾的后台任务摘要与派活卡共用节点状态，续派只取每个子会话的最新状态。 */
+export function delegationStatus(transcript: TranscriptItem[]): string | null {
+  const states = new Map<string, NodeState>()
+  const reviews: string[] = []
+  for (const item of collapseWorkflowItems(transcript)) {
+    if (item.kind !== 'tool' || !STANDALONE.has(item.toolName ?? '')) continue
+    for (const [id, state] of Object.entries(item.workflow?.states ?? item.nodes ?? {})) {
+      states.set(state.subagentId ?? `${item.id}:${id}`, state)
+    }
+    const workflow = item.workflow
+    const checkpoint = workflow?.nodes.find((node) => node.id === workflow.checkpointId)
+    if (checkpoint?.kind === 'checkpoint') reviews.push(checkpoint.label)
+  }
+  const active = [...states.values()].filter((state) => state.phase === 'working')
+  if (active.length) return `等待子任务返回：${active.map((state) => state.label).join('、')}`
+  const queued = [...states.values()].filter((state) => state.phase === 'queued')
+  if (queued.length) return `子任务排队中：${queued.map((state) => state.label).join('、')}`
+  return reviews.length ? `等待主会话审查：${reviews.join('、')}` : null
 }
 
 /**

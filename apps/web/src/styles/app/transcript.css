@@ -820,6 +820,14 @@
   margin-bottom: 0;
 }
 
+.delegation-status {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
 /*
  * 还在跑的那一条**没有自己的定位规则**，它就是流里的最后一条内容。
  *

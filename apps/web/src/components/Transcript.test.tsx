@@ -68,6 +68,188 @@ function resize(target: Element) {
   resizeCallbacks.get(target)?.([], {} as ResizeObserver)
 }
 
+// 覆盖历史重建、主/子会话状态判断与流尾呈现，不依赖实时 run.started 的残留。
+test('主会话派活结束后刷新或切回，显示子任务进度且发送消息不排队', async () => {
+  const store = await import('../lib/store/index.ts')
+  const { render } = await import('solid-js/web')
+  const { Transcript, ConversationStream } = await import('./Transcript.tsx')
+  const id = 'cv_background_receipt'
+  const apiBefore = store.client.api
+  const sendBefore = store.client.send
+  const workspaceBefore = store.workspace()
+  const connectionBefore = store.state.connection
+  const node = { phase: 'working', label: '赛车游戏开发', subagentId: 'cv_racer' }
+  const usage = {
+    inputTokens: 14,
+    outputTokens: 3777,
+    cachedTokens: 27761,
+    cacheWriteTokens: 3249,
+    reasoningTokens: 0,
+    cost: 0.257581,
+    currency: 'USD',
+    turns: [],
+  }
+  ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (path) => {
+    if (!path.includes('/history')) throw new Error('本用例只提供会话历史')
+    return {
+      messages: [{ id: 'ms_dispatch', role: 'user', content: '做赛车游戏', createdAt: 1 }],
+      runs: [
+        {
+          id: 'rn_dispatch',
+          userMessageId: 'ms_dispatch',
+          status: 'done',
+          stopReason: 'completed',
+          createdAt: 1_000,
+          finishedAt: 52_376,
+          usage,
+          errorMessage: null,
+        },
+      ],
+      steps: [
+        {
+          id: 'st_dispatch',
+          runId: 'rn_dispatch',
+          seq: 1,
+          kind: 'tool_action',
+          toolName: 'workflow',
+          status: 'success',
+          createdAt: 1_100,
+          durationMs: 10,
+          payload: {
+            kind: 'tool_result',
+            args: {
+              goal: '赛车游戏',
+              nodes: [
+                { id: 'build', kind: 'temp', name: '赛车游戏开发', task: '开发游戏' },
+                { id: 'review', kind: 'checkpoint', label: '审批赛车游戏', needs: ['build'] },
+              ],
+            },
+            action: { kind: 'run', objectLabel: '工作流', target: '赛车游戏' },
+            outcome: {
+              status: 'success',
+              executed: true,
+              message: '已派发',
+              data: { workflowId: 'st_dispatch', dispatched: ['build'] },
+            },
+            nodes: { build: node },
+          },
+        },
+      ],
+      live: null,
+      todos: [],
+      workflowStarts: [],
+      nextCursor: null,
+    }
+  }
+  ;(store.client as unknown as { send: typeof sendBefore }).send = () => {}
+  store.setState({
+    activeConversation: id,
+    busyConversations: [id],
+    views: {},
+    lastRunId: null,
+    followUps: [],
+    connection: 'ready',
+  })
+  store.openView(id)
+  const host = document.createElement('div')
+  const panel = document.createElement('div')
+  const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+  const disposePanel = render(
+    () => (
+      <ConversationStream
+        conversationId={id}
+        items={store.viewOf(id).transcript}
+        live={() => store.isConversationRunning(id)}
+        closed={() => store.conversationRunClosed(id)}
+        variant="panel"
+      />
+    ),
+    panel as unknown as HTMLElement,
+  )
+  try {
+    for (const reload of [false, true]) {
+      if (reload) {
+        store.setState('activeConversation', 'cv_elsewhere')
+        store.syncViews()
+        store.setState('activeConversation', id)
+        store.syncViews()
+      }
+      await store.reloadActiveConversation()
+      expect(store.viewOf(id).history.error).toBeNull()
+      expect(store.state.lastRunId).toBeNull()
+      expect(store.isRunning()).toBe(true)
+      expect(store.hasRun()).toBe(false)
+      for (const surface of [host, panel]) {
+        expect(surface.querySelectorAll('.run-strip')).toHaveLength(1)
+        expect(surface.querySelector('.run-live')).toBeNull()
+        expect(surface.querySelector('.delegation-status')?.textContent).toContain('赛车游戏开发')
+        expect(surface.querySelector('.delegation-status')?.textContent).toContain('等待子任务返回')
+        expect(surface.textContent).not.toContain('命中 N/A')
+      }
+    }
+    store.applyEvent({
+      seq: 1,
+      at: 55_000,
+      conversationId: id,
+      event: {
+        type: 'team.member',
+        runId: 'rn_dispatch',
+        stepId: 'st_dispatch',
+        nodeId: 'build',
+        state: { ...node, phase: 'done', output: '已交稿' },
+      },
+    } as never)
+    expect(host.querySelector('.delegation-status')?.textContent).toBe(
+      '等待主会话审查：审批赛车游戏',
+    )
+    store.applyEvent({
+      seq: 2,
+      at: 55_001,
+      event: {
+        type: 'conversation.busy',
+        conversationId: id,
+        busy: false,
+      },
+    } as never)
+    expect(host.querySelector('.delegation-status')).toBeNull()
+    expect(host.querySelector('.run-live')).toBeNull()
+    store.setState('busyConversations', [id])
+    await store.reloadActiveConversation()
+    store.sendMessage('补充一个要求')
+    expect(store.state.followUps).toEqual([])
+    expect(store.transcript().at(-1)?.text).toBe('补充一个要求')
+    expect(host.querySelector('.delegation-status')).toBeNull()
+    expect(host.querySelector('.run-live')?.textContent).toBe('正在请求…')
+
+    // 自动审批起轮没有乐观用户消息，末条仍是上一轮的收尾条。
+    store.setState('views', id, 'transcript', store.transcript().slice(0, -1))
+    await store.reloadActiveConversation()
+    store.applyEvent({
+      seq: 3,
+      at: 60_000,
+      conversationId: id,
+      event: {
+        type: 'run.started',
+        runId: 'rn_review',
+        conversationId: id,
+        model: 'm',
+        userMessageId: null,
+      },
+    } as never)
+    expect(store.hasRun()).toBe(true)
+    expect(host.querySelector('.delegation-status')).toBeNull()
+    expect(host.querySelector('.run-live')?.textContent).toBe('正在请求…')
+  } finally {
+    dispose()
+    disposePanel()
+    ;(store.client as unknown as { api: typeof apiBefore }).api = apiBefore
+    ;(store.client as unknown as { send: typeof sendBefore }).send = sendBefore
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+    store.setState('connection', connectionBefore)
+  }
+})
+
 test('发送到起轮之间保留耗时列，开始时刻到达时同步计时且不重建星河', async () => {
   const store = await import('../lib/store/index.ts')
   const { render } = await import('solid-js/web')

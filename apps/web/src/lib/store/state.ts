@@ -453,8 +453,8 @@ export function hasRunStatus(): boolean {
  * `runStartedAt !== null`：晚打开的子会话可能没收到瞬时的 run.started，但服务端
  * 的 RunManager 已经明确告诉它正在忙，隐藏状态条就是把权威事实丢了。
  *
- * 终态条只可能由 `run.finished` 落在流尾；仍在运行但尚未恢复开始时间的会话，
- * 流尾不会有它这一轮的 run 条目，因此照常显示状态条，只暂时省略耗时。
+ * 实时收尾与历史重建均由本会话的开始时间和末条终态判断。
+ * 新起轮会设置开始时间，用户发送消息会追加用户条目，均不应沿用上一轮终态。
  */
 export function conversationRunClosed(id: string | null): boolean {
   const items = viewOf(id).transcript
@@ -476,22 +476,9 @@ export function composerStackAbove(): boolean {
   )
 }
 
-/**
- * 这一轮的收尾条已经落到流尾了。
- *
- * 收尾走两帧：`run.finished` 落下收尾条并把实时读数交接给它，随后
- * `conversation.busy` 才把这条会话放闲。只按 `isRunning()` 判活的那条读数条，
- * 中间那一帧里流尾同时挂着刚落下的收尾条和一条读数已经交接完的空壳。
- * 那一帧会被画出来：`run.finished` 这个任务里连带跑了正文的定稿重渲染
- * （33KB 实测 7.8ms），帧边界大概率就落在它之后。
- *
- * 按 runId 认，不按「末条是不是 run」认：重试时被接替那一轮的收尾条就在流尾，
- * 而新那一轮真的在跑。
- */
+/** 主会话与子会话共用收尾判据；lastRunId 在仅有后台子任务时重建为 null。 */
 export function runClosed(): boolean {
-  const t = transcript()
-  const last = t[t.length - 1]
-  return last?.kind === 'run' && last.run?.runId === state.lastRunId
+  return conversationRunClosed(state.activeConversation)
 }
 
 /**

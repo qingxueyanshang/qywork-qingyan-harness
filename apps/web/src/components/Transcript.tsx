@@ -23,6 +23,7 @@ import { createStreamRenderer, renderMarkdown } from '../lib/markdown.ts'
 import {
   actionLabel,
   buildRenderItems,
+  delegationStatus,
   groupTitle,
   type RenderItem,
   sameRenderItem,
@@ -294,6 +295,9 @@ export function ConversationStream(props: {
 }) {
   const follow = createConversationScroll(() => props.conversationId)
   const main = () => props.variant === 'main'
+  const background = createMemo(() =>
+    props.live() && props.closed() ? delegationStatus(props.items) : null,
+  )
 
   return (
     <div
@@ -329,7 +333,10 @@ export function ConversationStream(props: {
           }
         />
         {props.trailing}
-        {/* 收尾条与读数条不并存：这一轮收尾之后仍有格在跑时，那几格的数印在收尾条上。 */}
+        {/* 本轮用量留在收尾条，后台任务只显示节点进度。 */}
+        <Show when={background()}>
+          {(status) => <output class="delegation-status">{status()}</output>}
+        </Show>
         <Show when={props.live() && !props.closed() && props.conversationId}>
           <LiveRunBar conversationId={props.conversationId!} />
         </Show>
