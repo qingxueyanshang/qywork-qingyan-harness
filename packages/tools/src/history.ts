@@ -11,18 +11,12 @@
  * 会话历史本身** （用户说过什么、模型说过什么、哪一步调了什么工具拿到什么）。两者不重叠，也**不互
  * 相兜底**：`rs_xxx` 在这里查不到，反过来也一样。
  *
- * **边界。** 读回来的量走与 `read_file` 同一个投递预算（`chargeBatchBudget`）。
- * 没有这道闸的话，模型可以把刚折掉的内容整段读回来，压缩当场失效。
+ * **边界。** 读回来的量走与 `read_file` 同一份投递额度。一条装不下时投递头部，
+ * 完整内容存进正文库，由 `read_resource` 续读：历史条目没有范围参数，不存就读不全。
  */
 
-import {
-  chargeBatchBudget,
-  deliveredTokens,
-  type ToolContext,
-  type ToolOutcome,
-  type ToolSpec,
-} from '@qywork/agent'
-import { MEDIA_TOKENS } from '@qywork/ai'
+import { chargeBatchBudget, outcomeTokens, type ToolSpec } from '@qywork/agent'
+import { budgetExhausted, deliverReadable } from './sink.ts'
 
 /** 一次搜索最多回多少条命中。再多模型也读不完，只会把预算烧光。 */
 const MAX_HITS = 40
@@ -33,23 +27,6 @@ const HIT_EXCERPT = 200
 function excerpt(value: string, limit: number): string {
   const flat = value.replace(/\s+/g, ' ').trim()
   return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`
-}
-
-/**
- * 投递预算检查。超了拒绝而不截断，与 `read_file` 同一口径：
- * 拒绝只产生一条约百字节的回执，截断产生的是满额正文而模型往往还得再读一次。
- */
-function charged(ctx: ToolContext, text: string): ToolOutcome | null {
-  const tokens = deliveredTokens(text, ctx.density)
-  const budget = chargeBatchBudget(ctx, tokens)
-  if (budget.ok) return null
-  return {
-    status: 'failure',
-    message:
-      `这一段约 ${tokens} token，超出单次投递预算 ${budget.perCall}` +
-      `（本批还剩 ${budget.batchRemaining}）。改用 query 精确搜，或分几轮取。`,
-    errorKind: 'result_too_large',
-  }
 }
 
 export const readHistoryTool: ToolSpec = {
@@ -141,14 +118,17 @@ export const readHistoryTool: ToolSpec = {
           errorKind: 'not_found',
         }
       }
-      const text = m.content
-      const over = charged(ctx, text)
-      if (over) return over
-      return {
-        status: 'success',
-        message: `读回消息 ${messageId}（${m.role === 'user' ? '用户' : '助手'}）`,
-        data: { role: m.role, content: text },
-      }
+      const message = `读回消息 ${messageId}（${m.role === 'user' ? '用户' : '助手'}）`
+      return deliverReadable(ctx, {
+        toolName: 'read_history',
+        sourceType: 'history:message',
+        whole: { message, data: { role: m.role, content: m.content } },
+        body: m.content,
+        partial: (head, note) => ({
+          message: message + note,
+          data: { role: m.role, content: head, truncated: true },
+        }),
+      })
     }
 
     if (stepId || callId) {
@@ -161,32 +141,24 @@ export const readHistoryTool: ToolSpec = {
           errorKind: 'not_found',
         }
       }
-      const text = `${st.args}\n${st.outcome}`
-      const over = charged(ctx, text)
-      if (over) return over
       const images = st.images ?? []
-      if (images.length) {
-        // 图按 `read_file` 同一口径扣投递预算，一张一份 `MEDIA_TOKENS`。
-        const budget = chargeBatchBudget(ctx, MEDIA_TOKENS * images.length)
-        if (!budget.ok) {
-          return {
-            status: 'failure',
-            message: `本批投递预算只剩 ${budget.batchRemaining} token，装不下这条记录里的 ${images.length} 张图，下一轮再读。`,
-            errorKind: 'result_too_large',
-          }
-        }
-      }
-      return {
-        status: 'success',
-        message: `读回执行记录 ${shown}（${st.tool} · ${st.status}${images.length ? '，含图片' : ''}）`,
-        data: {
-          tool: st.tool,
-          status: st.status,
-          args: st.args,
-          outcome: st.outcome,
-          ...(images.length ? { images } : {}),
+      const message = `读回执行记录 ${shown}（${st.tool} · ${st.status}${images.length ? '，含图片' : ''}）`
+      // 图按 `read_file` 同一口径计入额度，一张一份 `MEDIA_TOKENS`（`outcomeTokens` 里算）。
+      const media = images.length ? { images } : {}
+      return deliverReadable(ctx, {
+        toolName: 'read_history',
+        sourceType: 'history:step',
+        whole: {
+          message,
+          data: { tool: st.tool, status: st.status, args: st.args, outcome: st.outcome, ...media },
         },
-      }
+        // 装不下时参数与结果按原文顺序拼成一段续读，头部放在 content。
+        body: `${st.args}\n${st.outcome}`,
+        partial: (head, note) => ({
+          message: message + note,
+          data: { tool: st.tool, status: st.status, content: head, truncated: true, ...media },
+        }),
+      })
     }
 
     const hits = history.search(query, MAX_HITS)
@@ -197,15 +169,19 @@ export const readHistoryTool: ToolSpec = {
       (h) =>
         `[${h.kind === 'message' ? 'message' : 'action'}:${h.id}] ${excerpt(h.line, HIT_EXCERPT)}`,
     )
-    const text = lines.join('\n')
-    const over = charged(ctx, text)
-    if (over) return over
-    return {
-      status: 'success',
-      // 命中数达到上限时说出来：模型据此判断要不要把 query 写得更窄，
-      // 不说的话这份结果读起来就是全部。
-      message: `命中 ${hits.length} 条${hits.length >= MAX_HITS ? '（已达上限，可能还有更多）' : ''}`,
-      data: { hits: lines },
+    // 命中数达到上限时说出来：模型据此判断要不要把 query 写得更窄，
+    // 不说的话这份结果读起来就是全部。
+    const found = `命中 ${hits.length} 条${hits.length >= MAX_HITS ? '（已达上限，可能还有更多）' : ''}`
+    // 装不下时从后往前减条数：命中可以换更窄的 query 重搜，不存正文。
+    for (let kept = lines.length; kept > 0; kept--) {
+      const outcome = {
+        message: kept < lines.length ? `${found}，本轮剩余容量只装得下前 ${kept} 条` : found,
+        data: { hits: lines.slice(0, kept) },
+      }
+      if (chargeBatchBudget(ctx, outcomeTokens(outcome, ctx.density)).ok) {
+        return { status: 'success', ...outcome }
+      }
     }
+    return budgetExhausted()
   },
 }

@@ -1,12 +1,12 @@
 /**
- * run 内压缩的两个调用点：发送前按占用触发，以及 provider 容量拒绝后压一次再重发。
+ * run 内压缩的三个调用点：发送前按占用触发、执行工具之前按占用触发，以及 provider 容量拒绝后压一次再重发。
  *
- * 两处调的是同一个 `CompactionPort.run()`、落同一份 manifest、走同一条落库路径，
- * 它们是调用点不是两个权威。
+ * 三处调的是同一个 `CompactionPort.run()`、落同一份 manifest、走同一条落库路径，
+ * 它们是调用点不是三个权威。
  */
 
 import type { ProviderError } from '@qywork/ai'
-import { estimateRequest } from '@qywork/ai'
+import { estimateMessages, estimateRequest } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { envelopeHeadTokens, log } from '@qywork/core'
 import { markCompacted } from '../registry.ts'
@@ -34,21 +34,75 @@ export async function* compactBeforeSend(
   run: RunState,
   turn: TurnState,
 ): AsyncGenerator<AgentEvent, 'sent' | 'interrupted', unknown> {
-  const { adapter, input, persist, density } = run
   if (run.transcript.length <= run.compactedAt) return 'sent'
-  const occupancy = run.occupancyOf(turn.req)
-  if (occupancy <= softLimit(adapter.spec)) return 'sent'
+  // 摘要请求占这一轮的编号，主请求顺延。
+  const done = yield* compactOverSoftLimit(host, run, turn, {
+    occupancy: run.occupancyOf(turn.req),
+    estimated: estimateRequest(turn.req, run.density),
+    summaryTurn: run.requestTurn,
+    notice: turn.turnNotice,
+  })
+  return done === 'interrupted' ? 'interrupted' : 'sent'
+}
+
+/**
+ * 执行工具之前的检查点：本次响应的输出可能已把占用推过软阈值，此时投递额度为 0。
+ * 返回投递额度该按哪个占用读数开账；`interrupted` 时 `run.stopReason` 已置为 `user_interrupt`。
+ *
+ * **必须在打开第一条工具记录之前调。** 压缩记录占一个 step 序号，夹在同一批次的工具记录之间时，
+ * `runtime/transcript.ts` 的 `stepsToUnits` 只收连续的同批次记录，这次决策会被拆成两个单元：
+ * 重建出的历史与实际对话不同形，前一段的结果还可能在模型看到之前被折叠。落在本次响应的
+ * text / thinking 与工具记录之间则仍是一个单元。
+ *
+ * 读数与发送前同一把尺：有锚点取锚点（响应后已含本轮输出）；没有锚点时是上一次请求的估算
+ * 加上本次响应推进 transcript 的那条 assistant 消息。不为量占用重装请求：装配会多投影一次。
+ */
+export async function* compactBeforeTools(
+  host: LoopHost,
+  run: RunState,
+  turn: TurnState,
+): AsyncGenerator<AgentEvent, number | 'interrupted', unknown> {
+  const estimated =
+    estimateRequest(turn.req, run.density) +
+    estimateMessages(run.transcript.slice(turn.unitStart), run.density)
+  const occupancy = run.anchor ? run.meter(0).tokens : estimated
+  // 上一次尝试已看到本次响应之前的全部历史：本次响应属于最后一个单元，不可折，不再重试。
+  if (run.compactedAt >= turn.unitStart) return occupancy
+  // 这一轮的编号已被刚完成的主请求占用：摘要请求占下一个，下一轮主请求再顺延。
+  const done = yield* compactOverSoftLimit(host, run, turn, {
+    occupancy,
+    estimated,
+    summaryTurn: run.requestTurn + 1,
+    notice: null,
+  })
+  if (done === 'interrupted') return 'interrupted'
+  // 压缩生效后锚点作废、请求已按新投影重装（含本次响应），读数改按重装后的请求估。
+  return done === 'compacted' ? estimateRequest(turn.req, run.density) : occupancy
+}
+
+/**
+ * 占用越过软阈值时压一次。`notice` 是压缩生效后重装请求时附带的本轮提示：
+ * 发送前那一处带上本轮提示，工具之前那一处提示已随上一次请求发出，不再带。
+ */
+async function* compactOverSoftLimit(
+  host: LoopHost,
+  run: RunState,
+  turn: TurnState,
+  at: { occupancy: number; estimated: number; summaryTurn: number; notice: string | null },
+): AsyncGenerator<AgentEvent, 'compacted' | 'unchanged' | 'interrupted', unknown> {
+  const { adapter, input, persist, density } = run
+  const { occupancy } = at
+  if (occupancy <= softLimit(adapter.spec)) return 'unchanged'
 
   run.compactedAt = run.transcript.length
-  log.info('agent', '发送前检查触发压缩', {
+  log.info('agent', '占用超过软阈值，触发压缩', {
     occupancy,
     softLimit: softLimit(adapter.spec),
   })
   yield { type: 'compaction', runId: input.runId, phase: 'started' }
   // 同工具波次：压缩可能要调一次模型，卡住的话整轮停在这里，而且它不写
   // `provider_requests`，账本上连「卡在哪」都看不出来。
-  // 摘要请求占下一个 turn 编号；主请求顺延。
-  const trace = host.summaryTrace(run, run.requestTurn)
+  const trace = host.summaryTrace(run, at.summaryTurn)
   const outcome = await untilAborted(
     input.signal,
     host.compaction.run({
@@ -57,7 +111,7 @@ export async function* compactBeforeSend(
       trigger: 'automatic',
       model: adapter.spec.id,
       occupancy,
-      estimatedOccupancy: estimateRequest(turn.req, density),
+      estimatedOccupancy: at.estimated,
       contextWindow: adapter.spec.contextWindow,
       density,
     }),
@@ -107,8 +161,9 @@ export async function* compactBeforeSend(
      */
     run.anchor = null
     // 压缩改的是投影，必须重新装配——拿旧请求发出去等于这次压缩白花。
-    turn.req = host.buildRequest(run, turn.turnNotice)
+    turn.req = host.buildRequest(run, at.notice)
     turn.breakdown = breakdownOf(turn.req, density)
+    return 'compacted'
   } else {
     // 压不动不是致命错：照常发出去，让 provider 来判。
     // **skipped 与 failed 分开报**：「没什么可压」不是失败，
@@ -127,7 +182,7 @@ export async function* compactBeforeSend(
       reasonCode: outcome.reasonCode,
     }
   }
-  return 'sent'
+  return 'unchanged'
 }
 
 /** 容量拒绝那一次尝试的现场，由发送阶段交过来。 */

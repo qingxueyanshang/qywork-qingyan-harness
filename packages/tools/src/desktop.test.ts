@@ -23,7 +23,7 @@ import type {
   ToolOutcome,
   ToolSpec,
 } from '@qywork/agent'
-import { ToolRegistry } from '@qywork/agent'
+import { openBatchBudget, ToolRegistry } from '@qywork/agent'
 import { buildAdapter, DEFAULT_DENSITY, STREAM_IDLE_TIMEOUT_MS } from '@qywork/ai'
 import type { DesktopAction } from '@qywork/core'
 import {
@@ -468,7 +468,7 @@ function ctxWith(desktop?: DesktopPort, signal = new AbortController().signal): 
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink: null,
     signal,
     emit: () => {},

@@ -10,7 +10,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
-import { ToolRegistry } from '@qywork/agent'
+import { openBatchBudget, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import { registerBuiltinTools } from './index.ts'
@@ -25,7 +25,7 @@ function ctx(root: string): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},

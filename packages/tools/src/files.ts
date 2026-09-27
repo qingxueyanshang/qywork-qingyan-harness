@@ -12,7 +12,13 @@
 
 import { lstat, mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, parse } from 'node:path'
-import { chargeBatchBudget, deliveredTokens, type ToolContext, type ToolSpec } from '@qywork/agent'
+import {
+  batchRemaining,
+  chargeBatchBudget,
+  outcomeTokens,
+  type ToolContext,
+  type ToolSpec,
+} from '@qywork/agent'
 import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
 import { isInlineImage, mimeOf } from '@qywork/core'
@@ -27,18 +33,10 @@ import {
   rootsOf,
 } from './paths.ts'
 import { redactSecrets } from './secrets.ts'
+import { deliverReadable } from './sink.ts'
 
 /** 没有会话级 port 时的退路：把读记录暂存在 run 内的便签上。 */
 const READ_STATE_KEY = 'files.readHashes'
-
-/**
- * 默认读多少行。
- *
- * 与 `RESULT_BUDGET_RATIO` 是一对：2000 行普通代码约 20~25k token，
- * 而 200k 窗口的 1/8 正好是 25k。改这个数就要回去看那个比例还容不容得下，
- * 否则工具描述里写的默认值就是假的。
- */
-const DEFAULT_READ_LINES = 2000
 
 /**
  * 读记录的取用口。
@@ -167,13 +165,13 @@ export const readFileTool: ToolSpec = {
     'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配）。' +
     '修改任何已存在的文件前必须先用它读一次——' +
     'write_file 和 edit_file 会校验你读到的内容是否仍是磁盘上的最新版本。' +
-    '支持用 offset/limit 分段读取大文件。',
+    '默认读整份；超出本轮剩余容量时返回装得下的部分与续读位置。需要某一段时用 offset/limit。',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: '工作区相对路径' },
       offset: { type: 'integer', description: '起始行号（1 起），默认 1' },
-      limit: { type: 'integer', description: '最多读取行数，默认 2000' },
+      limit: { type: 'integer', description: '最多读取行数，默认读到文件末尾' },
     },
     required: ['path'],
     additionalProperties: false,
@@ -182,7 +180,7 @@ export const readFileTool: ToolSpec = {
   objectLabel: '文件',
   category: 'files',
   facet: '读写',
-  summary: '读一个文件（可分页，大文件自动落盘）',
+  summary: '读一个文件（默认整份，可分段）',
   targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
   permissionEffect: 'read',
   // 读操作互不干扰，可并行；资源键让同一文件的读写不会混进同一波。
@@ -226,9 +224,17 @@ export const readFileTool: ToolSpec = {
           message: `图片过大（${Math.round(info.size / 1024 / 1024)} MB），上限 10 MB`,
         }
       }
+      const charged = chargeBatchBudget(ctx, MEDIA_TOKENS)
+      if (!charged.ok) {
+        return {
+          status: 'failure',
+          message: `本轮投递额度只剩 ${charged.remaining} token，装不下一张图，下一轮再读。`,
+          errorKind: 'result_too_large',
+        }
+      }
       /*
-       * **记一次读记录。** 图片走不到下面那句 `readHashes(...).set`，不补这一笔的话
-       * 模型读过一张图再 `write_file` 同一个路径，会拿到「已存在但没读取过。
+       * **记一次读记录，且只在图确实交出去时记。** 图片走不到下面文本那条 `readHashes(...).set`，
+       * 不补这一笔的话模型读过一张图再 `write_file` 同一个路径，会拿到「已存在但没读取过。
        * 先 read_file 再覆盖」——而它照做也永远过不去，那句话就成了假的。
        *
        * **按 utf8 解码后再哈希，不按原始字节。** 判据是「和校验方算的是不是同一个数」
@@ -236,14 +242,6 @@ export const readFileTool: ToolSpec = {
        * 对二进制来说这个解码是有损的，但它是确定性的，两侧算出来一样就够。
        */
       readHashes(ctx).set(abs, hash(await readFile(abs, 'utf8')))
-      const charged = chargeBatchBudget(ctx, MEDIA_TOKENS)
-      if (!charged.ok) {
-        return {
-          status: 'failure',
-          message: `本批投递预算只剩 ${charged.batchRemaining} token，装不下一张图，下一轮再读。`,
-          errorKind: 'result_too_large',
-        }
-      }
       /*
        * 超标才缩，在上限内原样通过——**不能读到图就重编码**：
        * 一张 1440×900 的网页截图重编码之后会变大 2.4 倍（实测，见 `image.ts`）。
@@ -303,15 +301,11 @@ export const readFileTool: ToolSpec = {
     const text = pdf ?? (await readFile(abs, 'utf8'))
     if (BINARY_SNIFF.test(text.slice(0, 4096))) return notText(String(args.path))
 
-    // 哈希按**磁盘原文**算：它回答的是「磁盘现在是什么」，换成归一后的那份，
-    // 文件行尾被别人改过就查不出来了。交给模型的正文才归一。
-    readHashes(ctx).set(abs, hash(text))
-
     const lines = toLf(text).split('\n')
     // 读不出整数就在这里终止。`Math.max` 是下界钳位（`offset: 0` 取 1），它挡不住 NaN：
     // `Math.max(1, NaN)` 还是 NaN，继续往下走就是一次「成功读取 0 行」。
     const rawOffset = intArg(args.offset, 1)
-    const rawLimit = intArg(args.limit, DEFAULT_READ_LINES)
+    const rawLimit = intArg(args.limit, lines.length)
     if (rawOffset === null || rawLimit === null) {
       const bad = rawOffset === null ? 'offset' : 'limit'
       return {
@@ -323,56 +317,90 @@ export const readFileTool: ToolSpec = {
     const offset = Math.max(1, rawOffset)
     const limit = Math.max(1, rawLimit)
     const slice = lines.slice(offset - 1, offset - 1 + limit)
-    const numbered = slice.map((l, i) => `${offset + i}\t${l}`).join('\n')
-    const truncated = offset - 1 + slice.length < lines.length
+    const shown = displayPath(ctx.workspaceRoot, abs)
+    const secrets = ctx.secrets ?? EMPTY_SECRETS
 
     /*
-     * 投递预算：这一次调用最多往上下文里放多少。
+     * 所请求范围的前 n 行组成的结果。
      *
-     * **超了就拒绝，不截断。** 截断看着更友好，实际更贵：拒绝只产生约 100 字节的
-     * 错误回执，截断产生的是满额正文，而那份正文往往并不是模型要的那一段——
-     * 工具错误率是降了，平均 token 反而上升。
-     *
-     * 预算取「窗口比例」与绝对封顶的较小者（`deliveryBudget`），不是硬编码；
-     * 判据与建议范围一起给回去，否则模型只知道「太大了」，只能靠二分去猜。
+     * **正文过一遍脱敏。** 这条路不接凭证保护的话，`read_file` 就是直接把磁盘上的字节交给模型：
+     * 工作区里的 `.env`、误提交的私钥、`config/*.local.json` 里的 token，读一次就进上下文、
+     * 随下一次请求发给 provider，而那是不可撤回的。模型拿不到 `cat .env` 的输出，换 `read_file`
+     * 就拿到的话，等于没拦。脱敏的是交给模型的那一份，磁盘上的文件一个字节没动；
+     * `edit_file` 的读回校验用的是原文哈希，不受影响。
      */
-    const tokens = deliveredTokens(numbered, ctx.density)
-    const charged = chargeBatchBudget(ctx, tokens)
-    if (!charged.ok) {
-      const perLine = Math.max(1, Math.ceil(tokens / Math.max(1, slice.length)))
-      const room = Math.min(charged.perCall, charged.batchRemaining)
+    const firstLines = (n: number): { message: string; data: Record<string, unknown> } => {
+      const numbered = slice
+        .slice(0, n)
+        .map((l, i) => `${offset + i}\t${l}`)
+        .join('\n')
+      const end = offset - 1 + n
+      const complete = n === slice.length
       return {
-        status: 'failure',
-        message:
-          `这一段约 ${tokens} token，超出单次投递预算 ${charged.perCall}` +
-          `（本批还剩 ${charged.batchRemaining}）。` +
-          `改成 offset=${offset}、limit=${Math.max(1, Math.floor(room / perLine))} 分段读。`,
-        errorKind: 'result_too_large',
+        message: complete
+          ? `读取 ${shown}（${n} 行${end < lines.length ? '，已截断' : ''}）`
+          : `读取 ${shown} 第 ${offset}–${end} 行（共 ${lines.length} 行）。` +
+            `超出本轮剩余容量，从 offset=${end + 1} 续读。`,
+        data: {
+          content: redactSecrets(numbered, secrets),
+          totalLines: lines.length,
+          truncated: end < lines.length,
+          ...(complete ? {} : { nextOffset: end + 1 }),
+        },
       }
     }
 
-    return {
-      status: 'success',
-      message: `读取 ${displayPath(ctx.workspaceRoot, abs)}（${slice.length} 行${truncated ? '，已截断' : ''}）`,
-      /*
-       * **正文过一遍脱敏。**
-       *
-       * 这条路不接凭证保护的话，`read_file` 就是直接把磁盘上的字节交给模型：
-       * 工作区里的 `.env`、误提交的私钥、`config/*.local.json` 里的 token，
-       * 读一次就进上下文、随下一次请求发给 provider——**而那是不可撤回的**。
-       *
-       * 一头拦一头不拦等于没拦：模型拿不到 `cat .env` 的输出，换 `read_file`
-       * 就拿到了，而它并不是在绕过什么，只是换了个工具。
-       *
-       * 脱敏的是**交给模型的那一份**，磁盘上的文件一个字节没动；`edit_file`
-       * 的读回校验走的是另一条路（`readHashes` 存的是原文哈希），不受影响。
-       */
-      data: {
-        content: redactSecrets(numbered, ctx.secrets ?? EMPTY_SECRETS),
-        totalLines: lines.length,
-        truncated,
-      },
+    // 哈希按**磁盘原文**算：它回答的是「磁盘现在是什么」，换成归一后的那份，
+    // 文件行尾被别人改过就查不出来了。交给模型的正文才归一。
+    // 只在确实交出内容之后记：失败的读取不能成为 edit 的前置证据。
+    const markRead = () => readHashes(ctx).set(abs, hash(text))
+
+    /*
+     * 投递：所请求的范围整份装得下就整份给；装不下给装得下的最长行前缀和下一行的 offset，
+     * 不拒绝。拒绝的回合不产出正文，模型只能按建议再读一遍。
+     *
+     * 行数用二分按真实结果量出来，不要按平均行长估：行长不均时估出来的行数装不下。
+     */
+    const whole = firstLines(slice.length)
+    if (chargeBatchBudget(ctx, outcomeTokens(whole, ctx.density)).ok) {
+      markRead()
+      return { status: 'success', ...whole }
     }
+    const remaining = batchRemaining(ctx)
+    let fit = 0
+    let over = slice.length
+    while (over - fit > 1) {
+      const mid = (fit + over) >> 1
+      if (outcomeTokens(firstLines(mid), ctx.density) <= remaining) fit = mid
+      else over = mid
+    }
+    if (fit > 0) {
+      const part = firstLines(fit)
+      chargeBatchBudget(ctx, outcomeTokens(part, ctx.density))
+      markRead()
+      return { status: 'success', ...part }
+    }
+
+    // 第一行都装不下：行偏移切不到一行中间，这一行存一次，按字节续读。
+    const line = redactSecrets(slice[0] ?? '', secrets)
+    const message = `读取 ${shown} 第 ${offset} 行（共 ${lines.length} 行）`
+    const nextLine = offset < lines.length ? offset + 1 : null
+    const more = nextLine === null ? {} : { nextOffset: nextLine }
+    const result = deliverReadable(ctx, {
+      toolName: 'read_file',
+      sourceType: 'file:line',
+      whole: {
+        message,
+        data: { content: `${offset}\t${line}`, totalLines: lines.length, truncated: true, ...more },
+      },
+      body: line,
+      partial: (head, note) => ({
+        message: `${message}，该行只投递了开头${nextLine === null ? '' : `，下一行从 offset=${nextLine} 用 read_file 读`}。${note}`,
+        data: { content: `${offset}\t${head}`, totalLines: lines.length, truncated: true, ...more },
+      }),
+    })
+    if (result.status === 'success') markRead()
+    return result
   },
 }
 

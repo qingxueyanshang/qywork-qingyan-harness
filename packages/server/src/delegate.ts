@@ -92,7 +92,7 @@ interface DispatchAt {
   runId: string
   stepId?: string
   nodeId?: string
-  /** 图节点才有：这张图的 id，与这一格的产出摘录该占单次投递预算的几分之一。 */
+  /** 图节点才有：这张图的 id，与这一格的产出摘录该占单份视图尺寸的几分之一。 */
   workflow?: { workflowId: string; share: number }
 }
 
@@ -345,14 +345,13 @@ export function makeDelegate(ctx: {
       sink: new RuntimeSink(deps.store, deps.content, runId as RunId),
       contextWindow: spec.contextWindow,
       density: spec.density as TokenDensity,
-      state: new Map<string, unknown>(),
     }
   }
 
   /**
    * 子 agent 的产出过闸。**这一步不能省**：产出没有上界，一份被杀在半路的外部 CLI
-   * 回执实测二十六万字符，整段进上下文之后压缩层已经无从下手（单条结果超过整个
-   * 批级保留预算），那一轮的读数会直接越过窗口。超预算的落盘，正文里留定位符。
+   * 回执实测二十六万字符，整段进上下文之后压缩层已经无从下手（单条消息超过压缩保留的
+   * 尾部），那一轮的读数会直接越过窗口。超出摘录尺寸的落盘，正文里留定位符。
    */
   const excerpt = (at: DispatchAt, nodeId: string, body: string): string => {
     if (!body) return ''
@@ -596,7 +595,7 @@ export function makeDelegate(ctx: {
 
   // ─────────────────────────── 图 ───────────────────────────
 
-  /** 图上一格的产出摘录该占单次投递预算的几分之一：同一条检查点回执里几格平分。 */
+  /** 图上一格的产出摘录该占单份视图尺寸的几分之一：同一条检查点回执里几格平分。 */
   const shareOf = (nodes: WorkflowNode[], nodeId: string): number => {
     const checkpoint = nodes.find(
       (node): node is WorkflowCheckpointNode =>

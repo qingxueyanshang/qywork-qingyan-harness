@@ -3,12 +3,18 @@
  *
  * 它是压缩的另一半：折掉的原文一直在账本里，这个工具负责把它接回给模型。
  * 所以这里锁三件事——**取回的是逐字原文**、**端口没接时如实报而不是谎称找不到**、
- * **读回来的量受投递预算约束**（没有这道闸，模型可以把刚折掉的整段读回来，
- * 压缩当场失效）。
+ * **读回来的量受本次决策的投递额度约束**，装不下的部分存进正文库、由 `read_resource` 续读。
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { HistoryPort, HistoryStep, ToolContext } from '@qywork/agent'
+import {
+  batchRemaining,
+  type HistoryPort,
+  type HistoryStep,
+  openBatchBudget,
+  type SinkPort,
+  type ToolContext,
+} from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { readHistoryTool } from './history.ts'
 
@@ -76,7 +82,7 @@ function ctx(history: HistoryPort | undefined): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink: null,
     ...(history ? { history } : {}),
     signal: new AbortController().signal,
@@ -179,23 +185,60 @@ describe('搜索', () => {
   })
 })
 
-describe('投递预算', () => {
+describe('投递额度', () => {
+  function fakeSink(): SinkPort & { landed: Uint8Array[] } {
+    const landed: Uint8Array[] = []
+    return {
+      landed,
+      land(input) {
+        landed.push(input.body)
+        return { resourceId: `rs_${landed.length}`, contentHash: 'sha:x' }
+      },
+      read: () => null,
+      stat: () => null,
+    }
+  }
+  const budgeted = (room: number) => {
+    const sink = fakeSink()
+    const c = { ...ctx(memHistory()), sink }
+    openBatchBudget(c.state, room)
+    return { c, sink }
+  }
+  const contentOf = (r: { data?: Record<string, unknown> }) =>
+    (r.data as { content: string }).content
+
   /**
-   * 没有这条闸，模型可以把刚折掉的内容整段读回来——压缩不产生任何收益。
-   * 与 `read_file` 同一口径：**超了拒绝，不截断**。
+   * 历史条目没有范围参数：装不下时只给提示的话，原文永远读不全。
+   * 投递头部，完整原文存一次，说明里给出 `read_resource` 的续读位置。
    */
-  test('超出单次预算时拒绝，且给出可执行的下一步', async () => {
-    const r = await run({ message_id: 'ms_big' })
-    expect(r.status).toBe('failure')
-    expect(r.errorKind).toBe('result_too_large')
-    expect(r.message).toContain('query')
+  test('装不下时投递头部，完整原文存进正文库，给出续读位置', async () => {
+    const { c, sink } = budgeted(5000)
+    const r = await readHistoryTool.fn({ message_id: 'ms_big' }, c)
+    expect(r.status).toBe('success')
+    const head = contentOf(r)
+    expect(LONG.startsWith(head)).toBe(true)
+    expect(head.length).toBeLessThan(LONG.length)
+    expect(new TextDecoder().decode(sink.landed[0]!)).toBe(LONG)
+    expect(r.message).toContain('read_resource')
+    expect(r.message).toContain(`offset=${new TextEncoder().encode(head).byteLength}`)
+    expect(batchRemaining(c)).toBeLessThan(500)
   })
 
-  test('预算按波次累计，不是每次调用重置', async () => {
-    const c = ctx(memHistory())
+  test('额度按决策累计：同一决策里先读过的量从余额里扣掉', async () => {
+    const fresh = budgeted(5000)
+    const alone = contentOf(await readHistoryTool.fn({ message_id: 'ms_big' }, fresh.c))
+
+    const { c } = budgeted(5000)
     expect((await readHistoryTool.fn({ message_id: 'ms_1' }, c)).status).toBe('success')
-    // 同一个 ctx 再读一次大的：单次预算之外还要受本批已花掉的量约束。
-    const second = await readHistoryTool.fn({ message_id: 'ms_big' }, c)
-    expect(second.status).toBe('failure')
+    const after = contentOf(await readHistoryTool.fn({ message_id: 'ms_big' }, c))
+    expect(after.length).toBeLessThan(alone.length)
+  })
+
+  test('余额为 0 时失败，不存正文', async () => {
+    const { c, sink } = budgeted(0)
+    const r = await readHistoryTool.fn({ message_id: 'ms_big' }, c)
+    expect(r.status).toBe('failure')
+    expect(r.errorKind).toBe('result_too_large')
+    expect(sink.landed).toHaveLength(0)
   })
 })

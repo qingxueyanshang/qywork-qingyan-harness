@@ -23,6 +23,22 @@ export {
   summaryCutOf,
   unitKey,
 } from './compaction.ts'
+// 投递额度：一次 provider 决策共用一份，装不下时存正文续读
+export {
+  batchRemaining,
+  boundExecutedOutcome,
+  chargeBatchBudget,
+  continuationNote,
+  decodeUtf8Boundary,
+  deliveredTokens,
+  type HeadDelivery,
+  headBytesWithin,
+  landHead,
+  openBatchBudget,
+  outcomeTokens,
+  recordBatchSpent,
+  tokensToBytes,
+} from './delivery.ts'
 // 电脑控制端口：tools 按它写桌面工具，server 的协调器实现它，runtime 注入
 export type {
   DesktopActReceipt,
@@ -85,11 +101,8 @@ export {
   type BrowserTabInfo,
   type BrowserWaitReceipt,
   type BrowserWaitResult,
-  chargeBatchBudget,
   compactionEpoch,
   type DelegatePort,
-  deliveredTokens,
-  deliveryBudget,
   type FileReadPort,
   type FollowUpObservation,
   type GoalPort,
@@ -102,9 +115,6 @@ export {
   markCompacted,
   type PermissionVerdict,
   type PluginPort,
-  RESULT_BUDGET_RATIO,
-  recordBatchSpent,
-  resetBatchBudget,
   type SchedulePort,
   type SinkPort,
   type SubagentSummary,

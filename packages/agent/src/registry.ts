@@ -10,13 +10,7 @@
  * 3. **重名即装配错误。** 同名注册直接抛，不静默覆盖——覆盖会静默丢弃一整个插件的工具。
  */
 
-import {
-  estimateJson,
-  type MediaFile,
-  type MediaInput,
-  type TokenDensity,
-  type ToolSchema,
-} from '@qywork/ai'
+import type { MediaFile, MediaInput, TokenDensity, ToolSchema } from '@qywork/ai'
 import type {
   ActionDescriptor,
   ActionKind,
@@ -612,8 +606,8 @@ export interface SchedulePort {
 /**
  * 「这个会话读到那个文件时，它长什么样」。写前的新鲜度校验就靠它。
  *
- * **为什么必须是个 port，不能塞进 `state`。** `state` 是 **run 内的便签**（批级预算、计划快照都在里
- * 面，两者必须每轮清零），而读记录的正确寿命是**整条会话**：模型上一轮读过、这一轮直接改是完全正常
+ * **为什么必须是个 port，不能塞进 `state`。** `state` 是 **run 内的便签**（投递额度、计划快照都在里
+ * 面，前者每次决策重开），而读记录的正确寿命是**整条会话**：模型上一轮读过、这一轮直接改是完全正常
  * 的用法，挂在 run 上就意味着每轮第一次改文件必然先失败一次「未读取过」。服务端又是**每条消息新建
  * 一个 Session**，进程里没有「会话级」这个生命周期可挂——所以寿命交给装配方（runtime 拿账本按会话
  * 存），这里只约定形状。
@@ -684,78 +678,6 @@ export interface GoalPort {
   }): GoalWriteResult
 }
 
-/**
- * 一次工具调用能投递多少 token。
- *
- * **依据是工具接口的承诺，不是窗口。** `read_file` 的默认行数上限是 2000 行
- * （`tools/files.ts`），预算必须容得下这个默认读法，否则工具描述里写的
- * 「默认 2000 行」就是假的——模型照描述调用，结果被截，而它不知道为什么。
- * 承诺随产品定，**跟着窗口线性放大是错的**：1M 窗口按比例会给到 125K，
- * 等于一次读取就占掉八分之一上下文。
- *
- * **按最费的那一档标定。** 扣账走 `deliveredTokens`（JSON 档），而各家密度不同：
- * 2000 行普通代码（去掉中文注释、带行号前缀）在已标定的 DeepSeek 档是 23,862，
- * 在未标定模型走的上界档是 29,828。取 30,000 才能让承诺在两档都成立——
- * 按已标定那一档定就会让未标定的端点上 `read_file` 的默认读法被拒。
- *
- * 中文注释密的源码超出这条线是对的，不是标定失误：本仓 2000 行原样实测 25,514
- * token，装进工具结果之后更多，它本来就装不下。
- */
-export const READ_DELIVERY_CAP = 30_000
-
-/**
- * 小窗口下单次投递不得超过的窗口份额。
- *
- * 只在 W < 240K 时生效：240K 档它与 `READ_DELIVERY_CAP` 恰好相等（30K），
- * 更大的窗口一律由那条承诺封顶。
- */
-export const RESULT_BUDGET_RATIO = 1 / 8
-
-/**
- * 一个执行波次的上限是单次的几倍。
- *
- * 限单次没有上界：工具按波次并行，一波五个 `read_file` 各自都在单次预算以内，
- * 加起来就是五份。批级预算同时是压缩的保留预算（「刚进来的那一波必然完整保留」），
- * 所以它不能被拆成两个数。
- *
- * 取 2 的判据是 200K 档行为逐点不变（对照口径：窗口的 1/4 对 1/8）。不推导：
- * 并行度由模型给出，没有上界。
- */
-export const BATCH_TO_CALL_RATIO = 2
-
-/**
- * 这一轮的投递预算。**单次与整波两个上界的唯一算处。**
- *
- * 它不再参与压缩阈值——阈值只有窗口比例一项（`loop/request.ts` 的 `softLimit`）。
- * 批预算只管投递上界与可折单元的体积上界。
- */
-export function deliveryBudget(contextWindow: number): { perCall: number; batchCap: number } {
-  const perCall = Math.min(Math.floor(contextWindow * RESULT_BUDGET_RATIO), READ_DELIVERY_CAP)
-  return { perCall, batchCap: perCall * BATCH_TO_CALL_RATIO }
-}
-
-/**
- * 一段将要作为工具结果投递的正文有多大。**闸门与请求共用这一把尺。**
- *
- * 按 JSON 档量而不是散文档：它最终躺在 `{call_id, tool, status, executed,
- * summary, result}` 里发出去，而 `estimateMessage` 对 tool 角色整条走 JSON 档
- * （`ai/tokens.ts`）。这里换一把尺的话，扣的账和真正装进窗口的是两个数，
- * 差约两成，而两边都不会报错。
- *
- * 边界：这里量的是**未转义**的正文，落进 JSON 时换行等字符会再多占一点，
- * 量级在百分之一二。
- */
-export function deliveredTokens(text: string, density: TokenDensity): number {
-  return estimateJson(text, density)
-}
-
-const BATCH_SPENT_KEY = 'ctx.batchSpent'
-
-/** 新波次开始，批级预算清零。由 loop 在下发每一波之前调。 */
-export function resetBatchBudget(state: Map<string, unknown>): void {
-  state.set(BATCH_SPENT_KEY, 0)
-}
-
 const COMPACTION_EPOCH_KEY = 'ctx.compactionEpoch'
 
 /**
@@ -771,39 +693,6 @@ export function compactionEpoch(state: Map<string, unknown>): number {
 /** 记一次落定的压缩。由 loop 在压缩生效之后调。 */
 export function markCompacted(state: Map<string, unknown>): void {
   state.set(COMPACTION_EPOCH_KEY, compactionEpoch(state) + 1)
-}
-
-/**
- * 记一笔已经投递出去的用量。**不作准入裁决，实际投了多少就加多少。**
- *
- * 给已经产生副作用的工具用：动作执行完了，结果也定稿了，此时唯一正确的做法是
- * 把真实用量记进同一份计数。累计值允许越过 `batchCap`——把它截回上限会让同一波里
- * 其余读取工具读到一笔不存在的余额，余额查询因此只在报数时取到 0 为止。
- */
-export function recordBatchSpent(
-  ctx: Pick<ToolContext, 'state' | 'contextWindow'>,
-  tokens: number,
-): { batchRemaining: number } {
-  const spent = ((ctx.state.get(BATCH_SPENT_KEY) as number | undefined) ?? 0) + tokens
-  ctx.state.set(BATCH_SPENT_KEY, spent)
-  return { batchRemaining: Math.max(0, deliveryBudget(ctx.contextWindow).batchCap - spent) }
-}
-
-/**
- * 记一笔结果占用，回答「还放得下吗」。
- *
- * **只对无副作用的读取工具用。** 写入类工具执行完再说超预算是没有意义的——
- * 副作用已经发生，拒绝等于告诉模型没写成。
- */
-export function chargeBatchBudget(
-  ctx: Pick<ToolContext, 'state' | 'contextWindow'>,
-  tokens: number,
-): { ok: boolean; perCall: number; batchRemaining: number } {
-  const { perCall, batchCap } = deliveryBudget(ctx.contextWindow)
-  const spent = (ctx.state.get(BATCH_SPENT_KEY) as number | undefined) ?? 0
-  const ok = tokens <= perCall && spent + tokens <= batchCap
-  if (ok) recordBatchSpent(ctx, tokens)
-  return { ok, perCall, batchRemaining: Math.max(0, batchCap - spent) }
 }
 
 /**
@@ -881,11 +770,11 @@ export interface ToolContext {
   runId: string
   model: string
   /**
-   * 这一轮那个模型的上下文窗口。
+   * 这一轮那个模型的上下文窗口。观察视图的单份尺寸按它算。
    *
-   * 投递预算按它算，**在执行时应用**——工具跑的那一刻就知道当前模型，
-   * 按窗口算出预算、截到位、把结果写进 step。投影只读已落库的 payload、
-   * 永不重算界，所以换模型只影响之后的读取，历史一个字节不改。
+   * 所有界都**在执行时应用**：投递额度（`delivery.ts`，loop 按决策开账）与视图尺寸在工具跑的
+   * 那一刻定，结果截到位后写进 step。投影只读已落库的 payload、永不重算界，
+   * 所以换模型只影响之后的读取，历史一个字节不改。
    *
    * 反过来（投影时按当前模型重算界）会让同一条 step 的字节随模型变，
    * 换一次模型整段历史失配、缓存全丢，投影也不再是纯函数。

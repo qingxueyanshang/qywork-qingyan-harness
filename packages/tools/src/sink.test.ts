@@ -1,16 +1,18 @@
 /**
  * 覆盖范围：`sink.ts` 的可重放性分类、裁剪与落盘、调用方自带摘录的那条入口，
- * 以及子 agent 产出的投递闸与它的用量记账。
+ * 子 agent 产出的投递闸，以及只读工具的续读交付（`deliverReadable`）。
  */
 import { describe, expect, test } from 'bun:test'
-import { chargeBatchBudget, deliveredTokens, deliveryBudget } from '@qywork/agent'
+import { batchRemaining, deliveredTokens, openBatchBudget } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   clampBody,
   deliver,
   deliverAgentOutput,
+  deliverReadable,
   INLINE_BUDGET_BYTES,
   isContentAuthority,
+  observationBudget,
   type SinkPort,
 } from './sink.ts'
 
@@ -246,19 +248,18 @@ describe('投递分支', () => {
 })
 
 /**
- * 子 agent 与 workflow 的产出走这一道：摘录预算取单次投递预算，不是 8 KB 默认值。
- * 调用方是 server 的派活通道（组装回执时），与工具产出同一把尺。
+ * 子 agent 与 workflow 的产出走这一道：摘录取单份视图尺寸，不是 8 KB 默认值。
+ * 调用方是 server 的派活通道（组装回执时），在任何一次 provider 决策之外，不走投递额度。
  */
 describe('子 agent 产出的投递闸', () => {
   const window = 200_000
-  const budget = deliveryBudget(window).perCall
+  const budget = observationBudget(window)
   const middle = '被摘录切掉的那一句'
   const huge = '审查结论。'.repeat(30_000) + middle + '审查结论。'.repeat(30_000)
   const context = () => ({
     sink: fakeSink(),
     contextWindow: window,
     density: DEFAULT_DENSITY,
-    state: new Map<string, unknown>(),
   })
 
   test('超长产出落盘，交出去的是有界摘要加定位符', () => {
@@ -288,10 +289,7 @@ describe('子 agent 产出的投递闸', () => {
     expect(ctx.sink.landed).toHaveLength(0)
   })
 
-  /**
-   * 一条回执里几格平分同一份单次预算。每格各拿一份的话内联总量随格数线性增长，
-   * 而批级保留预算的前提是刚进来的那一波必然完整保留。
-   */
+  /** 一条回执里几格平分同一份视图尺寸。每格各拿一份的话内联总量随格数线性增长。 */
   test('share 是分母：几格平分同一份预算', () => {
     const alone = deliverAgentOutput(context(), {
       toolName: 'workflow',
@@ -308,29 +306,65 @@ describe('子 agent 产出的投递闸', () => {
     expect(shared.length).toBeGreaterThan(alone.length * 0.4)
   })
 
-  test('摘录量记进本批预算', () => {
+  /** 回执在决策之外产生：不要求开账，也不动任何一份决策账。 */
+  test('不走投递额度', () => {
     const ctx = context()
-    const before = chargeBatchBudget(ctx, 0).batchRemaining
-    const landed = deliverAgentOutput(ctx, {
-      toolName: 'subagent',
-      sourceType: 'subagent',
-      body: huge,
-    })
-    const after = chargeBatchBudget(ctx, 0).batchRemaining
-    expect(before - after).toBe(deliveredTokens(landed.text, DEFAULT_DENSITY))
+    expect(() =>
+      deliverAgentOutput(ctx, { toolName: 'subagent', sourceType: 'subagent', body: huge }),
+    ).not.toThrow()
+    expect('state' in ctx).toBe(false)
+  })
+})
+
+/**
+ * 只读工具交付一段不能按范围续读的正文。三档：整份装得下、装不下（头部 + 落盘续读）、余额为 0。
+ */
+describe('续读交付', () => {
+  const body = `${'前段正文。'.repeat(2000)}尾部标记`
+  const context = (room: number) => ({
+    sink: fakeSink(),
+    density: DEFAULT_DENSITY,
+    state: openBatchBudget(new Map<string, unknown>(), room),
+  })
+  const input = {
+    toolName: 'read_history',
+    sourceType: 'history:message',
+    whole: { message: '读回消息', data: { content: body } },
+    body,
+    partial: (head: string, note: string) => ({
+      message: `读回消息${note}`,
+      data: { content: head, truncated: true },
+    }),
+  }
+
+  test('装得下：整份投递，不落盘', () => {
+    const ctx = context(1_000_000)
+    const r = deliverReadable(ctx, input)
+    expect((r.data as { content: string }).content).toBe(body)
+    expect(ctx.sink.landed).toHaveLength(0)
+    expect(r.resources).toBeUndefined()
   })
 
-  /** 产出已经投出去了，这一笔不记等于让同一波后面的读取工具按一份不存在的余额作准入。 */
-  test('本批剩不下时照样记账，同一波后面的读取工具看到余额 0', () => {
-    const ctx = context()
-    const { batchCap } = deliveryBudget(window)
-    expect(chargeBatchBudget(ctx, budget).ok).toBe(true)
-    expect(chargeBatchBudget(ctx, batchCap - budget - 200).ok).toBe(true)
-    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(200)
+  test('装不下：投递头部，完整正文存一次，说明里给出续读位置', () => {
+    const ctx = context(2000)
+    const r = deliverReadable(ctx, input)
+    const head = (r.data as { content: string }).content
+    expect(r.status).toBe('success')
+    expect(body.startsWith(head)).toBe(true)
+    expect(head.length).toBeLessThan(body.length)
+    expect(ctx.sink.landed).toHaveLength(1)
+    expect(new TextDecoder().decode(ctx.sink.landed[0])).toBe(body)
+    expect(r.message).toContain(`offset=${new TextEncoder().encode(head).byteLength}`)
+    expect(r.resources?.[0]?.resourceId).toBeTruthy()
+    // 头部按余额定：只超出续读说明那几十 token。
+    expect(2000 - batchRemaining(ctx)).toBeGreaterThan(1500)
+  })
 
-    deliverAgentOutput(ctx, { toolName: 'subagent', sourceType: 'subagent', body: huge })
-
-    expect(chargeBatchBudget(ctx, 0).batchRemaining).toBe(0)
-    expect(chargeBatchBudget(ctx, 100).ok).toBe(false)
+  test('余额为 0：失败，不落盘', () => {
+    const ctx = context(0)
+    const r = deliverReadable(ctx, input)
+    expect(r.status).toBe('failure')
+    expect(r.errorKind).toBe('result_too_large')
+    expect(ctx.sink.landed).toHaveLength(0)
   })
 })

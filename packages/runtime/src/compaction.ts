@@ -21,7 +21,6 @@ import {
   condenseCutOf,
   condenseMessage,
   cutKey,
-  deliveryBudget,
   projectManifest,
   softLimit,
   summaryCutOf,
@@ -61,6 +60,17 @@ import {
  * 写超了的那一次被「截断作废」闸捕获，并作为更大的样本进入下一次的分布。
  */
 const SUMMARY_PERCENTILE = 0.95
+
+/**
+ * 自动压缩保留多少尾部原文（token）：窗口的 1/4，封顶 60K。
+ *
+ * 它只决定已发送的历史留多少原文，是工作记忆的量，不是投递上限。未发送的结果不靠它保护：
+ * 一次 provider 决策是一个单元，`foldIndexOf` 至少保留最后一个单元。
+ * 封顶值是观察视图单份尺寸（`tools/sink.ts` 的 `observationBudget`）的两倍：一份整视图必然落在保留尾部之内。
+ */
+function tailRetain(contextWindow: number): number {
+  return Math.min(Math.floor(contextWindow / 4), 60_000)
+}
 
 export interface CompactionDeps {
   store: Store
@@ -203,12 +213,11 @@ export class RuntimeCompaction implements CompactionPort {
     const summaryKey = summary ? cutKey(summary) : ''
     const condenseKey = condense ? cutKey(condense) : ''
 
-    // 选界：从尾部逐单元累加到保留预算为止。**保留预算 = 批级投递预算**，
-    // 给出的不变量是「上一次检查以来刚进来的那一波必然完整保留」。
+    // 选界：从尾部逐单元累加到保留量为止，至少保留最后一个单元。
     const units = this.collectUnits(input.density)
-    const automaticRetain = deliveryBudget(input.contextWindow).batchCap
+    const automaticRetain = tailRetain(input.contextWindow)
     /*
-     * 自动压缩必须完整保留一个批级窗口；手动压缩发生在用户明确要求收纳时，
+     * 自动压缩按 `tailRetain` 保留尾部；手动压缩发生在用户明确要求收纳时，
      * 若仍拿模型总窗口的 1/4 当尾部预算，低占用会话的整段历史可能还不够这个数，
      * `/compact` 就只能回 `nothing_to_fold`。手动入口仍用同一个选界函数，只把
      * 保留量收敛到当前可折历史的 1/4，至少保留最后一个完整单元。

@@ -9,6 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { openBatchBudget } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { CLIENT_PROTOCOL_VERSION, KNOWN_VERSION_LIST } from './client.ts'
 import { loadMcpServers, parseMcpConfig, unsupportedCapabilities } from './load.ts'
@@ -277,7 +278,7 @@ function ctx() {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},

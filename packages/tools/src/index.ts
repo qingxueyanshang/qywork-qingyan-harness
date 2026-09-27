@@ -91,7 +91,7 @@ export { redactSecrets, scrubEnv } from './secrets.ts'
 // server 拿它拼那条终止说明，三处共用一个数。
 export { DEFAULT_ENV_ALLOW, MAX_TIMEOUT_MS, resolveCommandTimeout } from './shell.ts'
 // 子 agent 产出的投递闸：server 的派活通道组装回执时过同一道，不另量一把尺。
-export { deliverAgentOutput } from './sink.ts'
+export { deliverAgentOutput, observationBudget } from './sink.ts'
 // 技能：runtime/session.ts 扫索引，server/api 列给设置页
 export { SKILLS_SUBDIR, type SkillMeta, scanAllSkills, scanSkills } from './skills.ts'
 // 外部工具按需加载：runtime/session.ts 量一次决定全量常驻还是进池子；

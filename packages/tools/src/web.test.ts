@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { chargeBatchBudget, deliveryBudget, type ToolContext } from '@qywork/agent'
+import { batchRemaining, chargeBatchBudget, openBatchBudget, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { htmlToText, NET_POLICY_KEY, parseDuckDuckGo, webFetchTool } from './web.ts'
 
@@ -13,7 +13,7 @@ function ctx(): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},
@@ -89,8 +89,11 @@ describe('搜索结果解析', () => {
 })
 
 describe('抓取的用量记账', () => {
-  /** 抓取已经发生、摘录已经投出，这一笔不记等于让同一波后面的读取工具按一份不存在的余额作准入。 */
-  test('本批剩不下时照样记账，同一波后面的读取工具看到余额 0', async () => {
+  /**
+   * 摘录受本次决策的剩余额度约束，且投出去的量照实记账：
+   * 不记等于让同一决策里后面的读取工具按一份不存在的余额作准入。
+   */
+  test('摘录按剩余额度收窄并记账', async () => {
     const server = Bun.serve({
       hostname: '127.0.0.1',
       port: 0,
@@ -101,16 +104,17 @@ describe('抓取的用量记账', () => {
       const c = ctx()
       // 回环地址按 allowHosts 放行：SSRF 闸对 127.0.0.1 默认拒绝。
       c.resources.set(NET_POLICY_KEY, { allowHosts: ['127.0.0.1'] })
-      const { perCall, batchCap } = deliveryBudget(c.contextWindow)
-      expect(chargeBatchBudget(c, perCall).ok).toBe(true)
-      expect(chargeBatchBudget(c, batchCap - perCall - 200).ok).toBe(true)
-      expect(chargeBatchBudget(c, 0).batchRemaining).toBe(200)
+      openBatchBudget(c.state, 1000)
+      expect(chargeBatchBudget(c, 800).ok).toBe(true)
+      expect(batchRemaining(c)).toBe(200)
 
       const r = await webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, c)
 
       expect(r.status).toBe('success')
-      expect(chargeBatchBudget(c, 0).batchRemaining).toBe(0)
-      expect(chargeBatchBudget(c, 100).ok).toBe(false)
+      // 8 KB 默认摘录约 2700 个中文字；余额只有 200 token，摘录必须按余额收窄。
+      expect((r.data as { content: string }).content.length).toBeLessThan(500)
+      expect(batchRemaining(c)).toBeLessThan(200)
+      expect(chargeBatchBudget(c, 200).ok).toBe(false)
     } finally {
       await server.stop(true)
     }

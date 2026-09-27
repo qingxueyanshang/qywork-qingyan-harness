@@ -25,7 +25,7 @@ import {
 } from '@qywork/agent'
 import type { TokenDensity } from '@qywork/ai'
 import type { IntermediateResourceRef, ResourceId } from '@qywork/core'
-import { deliver, type LandedResult, observationResultBudget } from './sink.ts'
+import { deliver, type LandedResult, observationResultBudget, viewLimit } from './sink.ts'
 
 /** 存盘正文：一行一个 JSON 值。 */
 const JSONL_MIME = 'application/x-ndjson'
@@ -78,7 +78,7 @@ export interface BrowserResultInput {
   settle?: 'quiet' | 'deadline'
   /** message 的执行事实部分。元素内容不进 message。 */
   lead: string
-  /** 上限，缺省取 `observationResultBudget(ctx.contextWindow)`。 */
+  /** 上限，缺省取 `observationResultBudget(ctx.contextWindow)` 与剩余额度的较小者。 */
   limit?: number
 }
 
@@ -92,7 +92,7 @@ export type BrowserResultParts = Pick<ToolOutcome, 'message' | 'data' | 'resourc
  */
 export function browserResult(input: BrowserResultInput): BrowserResultParts {
   const { ctx, page } = input
-  const limit = input.limit ?? observationResultBudget(ctx.contextWindow)
+  const limit = input.limit ?? viewLimit(ctx, observationResultBudget(ctx.contextWindow))
   const { list } = split(page)
 
   const whole = assemble(input, null)

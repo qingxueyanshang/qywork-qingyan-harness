@@ -1,7 +1,8 @@
 /**
  * 覆盖 `loop/tool-wave.ts`：波次规划（`planWaves`）与副作用判定（`provablyNoEffect`），
  * 以及经 `AgentLoop.run` 的工具中途输出、ToolContext 生命周期、文件失效事件、权限拒绝、
- * 注册表对调用的裁决、原地打转判定、停止对卡住工具的回收。
+ * 注册表对调用的裁决、原地打转判定、停止对卡住工具的回收、投递额度按决策开账，
+ * 与 `loop/compact.ts` 的执行工具之前压缩检查点。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -13,7 +14,7 @@ import {
   startFaultServer,
 } from '@qywork/ai/fault-server.test-helper'
 import type { AgentEvent } from '@qywork/core'
-import { AgentLoop, type ToolContextBase } from '../index.ts'
+import { AgentLoop, batchRemaining, chargeBatchBudget, type ToolContextBase } from '../index.ts'
 import { ToolRegistry, type ToolSpec } from '../registry.ts'
 import { baseCtx, call, fakeAdapter, noopPersistence } from './fixtures.test-helper.ts'
 import { planWaves, provablyNoEffect } from './tool-wave.ts'
@@ -1351,5 +1352,149 @@ describe('波次规划', () => {
         fileChanges: [{ path: 'a', kind: 'modified' } as never],
       }),
     ).toBe(false)
+  })
+})
+
+/**
+ * 投递额度按 provider 决策开账。
+ *
+ * 余量 = 软阈值 − 决策开始时的占用读数，全部波次共用一份；响应输出把占用推过软阈值时，
+ * 在打开第一条工具记录之前先压缩再开账。
+ */
+describe('投递额度按决策开账', () => {
+  /** 每次调用按固定量申请额度，记下每次是否放行。串行执行，三个调用各占一波。 */
+  function grabRegistry(tokens: number, admitted: boolean[], seen: number[] = []): ToolRegistry {
+    const registry = new ToolRegistry()
+    registry.register({
+      name: 'grab',
+      description: '申请一段固定额度。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      actionKind: 'read',
+      objectLabel: '测试',
+      category: 'session',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      async fn(_args, ctx) {
+        seen.push(batchRemaining(ctx))
+        const ok = chargeBatchBudget(ctx, tokens).ok
+        admitted.push(ok)
+        return { status: ok ? 'success' : 'failure', message: ok ? 'ok' : '装不下' }
+      },
+    })
+    return registry
+  }
+
+  /** 第一轮报告的输入量可指定的假 adapter：第一轮发起调用，第二轮收尾。 */
+  function adapterWithUsage(calls: WireToolCall[], firstInput: number): LlmAdapter {
+    const base = fakeAdapter([calls, null])
+    let turn = 0
+    return {
+      ...base,
+      async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+        const first = turn++ === 0
+        for await (const ev of base.stream(req)) {
+          if (first && ev.type === 'usage') {
+            yield { ...ev, usage: { ...ev.usage, inputTokens: firstInput } }
+          } else yield ev
+        }
+      },
+    }
+  }
+
+  async function drain(loop: AgentLoop): Promise<void> {
+    for await (const _ of loop.run({
+      runId: 'rn_budget' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      // 只看工具那侧记下的额度
+    }
+  }
+
+  /**
+   * F09 的形状：同一决策三个调用分三波执行。逐波重开账的话三次都放行，
+   * 总量越过决策开始时的余量。
+   */
+  test('三波共用一份额度，不逐波清零', async () => {
+    const admitted: boolean[] = []
+    // 窗口 1M，软阈值 800K；占用只有锚点的 15 token，余量约 800K。
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([[call('grab'), call('grab'), call('grab')], null]),
+      registry: grabRegistry(300_000, admitted),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    await drain(loop)
+    expect(admitted).toEqual([true, true, false])
+  })
+
+  test('额度是软阈值以下的余量，不是固定常数', async () => {
+    const admitted: boolean[] = []
+    const seen: number[] = []
+    const loop = new AgentLoop({
+      adapter: adapterWithUsage([call('grab')], 700_000),
+      registry: grabRegistry(31_000, admitted, seen),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    await drain(loop)
+    // 锚点 = 输入 700,000 + 输出 5。
+    expect(seen).toEqual([800_000 - 700_005])
+    expect(admitted).toEqual([true])
+  })
+
+  /**
+   * 响应的输出把占用推过软阈值：不压缩的话这次决策的额度为 0，读取全部失败。
+   * 压缩记录必须落在第一条工具记录之前，否则同一决策会被拆成两个单元。
+   */
+  test('决策开始占用越过软阈值：先压缩，压缩记录在工具记录之前，再按压缩后的占用开账', async () => {
+    const order: string[] = []
+    const persist = noopPersistence()
+    const admitted: boolean[] = []
+    const seen: number[] = []
+    let runs = 0
+    const loop = new AgentLoop({
+      adapter: adapterWithUsage([call('grab')], 850_000),
+      registry: grabRegistry(300_000, admitted, seen),
+      systemPrompt: 'sys',
+      persist: {
+        ...persist,
+        recordCompaction: (...a) => {
+          order.push('compaction')
+          persist.recordCompaction(...a)
+        },
+        openToolStep: (...a) => {
+          order.push('tool')
+          return persist.openToolStep(...a)
+        },
+      },
+      makeToolContext: (runId) => baseCtx(runId),
+      compaction: {
+        project: (messages) => messages,
+        run: async () => {
+          runs++
+          return {
+            status: 'compacted',
+            summarized: false,
+            manifest: {
+              revision: 1,
+              compactedThroughMessageId: null,
+              compactedMessageCount: 0,
+              summary: '摘要',
+              facts: { filesTouched: [], openItems: [], userConstraints: [] },
+              createdAt: 0,
+            },
+          }
+        },
+      },
+    })
+    await drain(loop)
+    expect(runs).toBe(1)
+    expect(order).toEqual(['compaction', 'tool'])
+    expect(admitted).toEqual([true])
+    expect(seen[0]).toBeGreaterThan(700_000)
   })
 })

@@ -30,13 +30,12 @@ import {
   type DesktopElement,
   type DesktopSnapshot,
   deliveredTokens,
-  deliveryBudget,
   recordBatchSpent,
   type ToolContext,
 } from '@qywork/agent'
 import type { TokenDensity } from '@qywork/ai'
 import type { IntermediateResourceRef, ResourceId } from '@qywork/core'
-import { deliver, type LandedResult } from './sink.ts'
+import { deliver, type LandedResult, observationBudget, viewLimit } from './sink.ts'
 
 /** 存盘正文：一行一个 JSON 值。 */
 const JSONL_MIME = 'application/x-ndjson'
@@ -129,7 +128,7 @@ export interface DesktopResultInput {
   incremental?: boolean
   /** message 的执行事实部分。控件内容不进 message。 */
   lead: string
-  /** 上限，缺省取 `deliveryBudget(ctx.contextWindow).perCall`。 */
+  /** 上限，缺省取单份视图尺寸（`observationBudget`）与剩余额度的较小者。 */
   limit?: number
 }
 
@@ -154,7 +153,7 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const { ctx } = input
   const { shown: snapshot, hits } = viewOf(input.snapshot, input.filter)
   const receipt = input.receipt ?? {}
-  const limit = input.limit ?? deliveryBudget(ctx.contextWindow).perCall
+  const limit = input.limit ?? viewLimit(ctx, observationBudget(ctx.contextWindow))
   const lead = input.filter ? `${input.lead} · ${filterNote(snapshot)}` : input.lead
   const shaped = { ...input, snapshot, lead }
   const includeRect = input.includeRect === true

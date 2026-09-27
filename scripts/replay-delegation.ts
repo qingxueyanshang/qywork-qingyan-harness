@@ -27,7 +27,6 @@
 import { appendFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { deliveryBudget } from '@qywork/agent'
 import { applySpecOverride, lookupModel } from '@qywork/ai'
 import {
   type AgentEvent,
@@ -49,6 +48,7 @@ import {
   Store,
   workflowIdsOf,
 } from '@qywork/store'
+import { observationBudget } from '@qywork/tools'
 
 // ─────────────────────────── 参数与落点 ───────────────────────────
 
@@ -251,13 +251,13 @@ console.log('合计', money(stack(subtotal(cart), ['SAVE10'])))
 }
 
 /**
- * 撑过投递闸用的填充文件：内容机械可复述，长度按父模型的单次投递预算算。
+ * 撑过投递闸用的填充文件：内容机械可复述，长度按父模型的单份视图尺寸算。
  *
- * 摘录预算是 `perCall` token 折成的字节数，折算比按最坏密度取到 2.5 字节每 token
- * （`sink.ts` 的 `budgetBytes`）。给到 1.3 倍才落得进正文库并在回执里留下定位符。
+ * 摘录上限是 `observationBudget` token 折成的字节数，折算比按最坏密度取到 2.5 字节每 token
+ * （`@qywork/agent` 的 `tokensToBytes`）。给到 1.3 倍才落得进正文库并在回执里留下定位符。
  */
-function bulkText(perCall: number): string {
-  const target = Math.ceil(perCall * 2.5 * 1.3)
+function bulkText(viewTokens: number): string {
+  const target = Math.ceil(viewTokens * 2.5 * 1.3)
   const lines: string[] = []
   let size = 0
   for (let i = 1; size < target; i++) {
@@ -268,10 +268,10 @@ function bulkText(perCall: number): string {
   return `${lines.join('\n')}\n`
 }
 
-async function writeFixture(perCall: number): Promise<number> {
+async function writeFixture(viewTokens: number): Promise<number> {
   await mkdir(join(WS_DIR, 'src'), { recursive: true })
   for (const [rel, body] of Object.entries(FIXTURE)) await Bun.write(join(WS_DIR, rel), body)
-  const bulk = bulkText(perCall)
+  const bulk = bulkText(viewTokens)
   await Bun.write(join(WS_DIR, 'bulk.txt'), bulk)
   return bulk.length
 }
@@ -1290,13 +1290,13 @@ async function main(): Promise<number> {
   if (!stored) throw new Error(`配置里没有 ${PARENT.provider} / ${PARENT.model}`)
   // 摘录预算与执行时那一处同源（`delegate.ts` 的 deliveryContext）：写死一个数的话，换模型就对不上。
   const spec = applySpecOverride(lookupModel(stored.model, stored.kind), stored.spec)
-  const { perCall } = deliveryBudget(spec.contextWindow)
-  const bulkBytes = await writeFixture(perCall)
+  const viewTokens = observationBudget(spec.contextWindow)
+  const bulkBytes = await writeFixture(viewTokens)
 
   store = new Store({ path: DB })
   await startService()
   log(
-    `父会话 ${PARENT.provider} / ${PARENT.model}，窗口 ${spec.contextWindow}，单次投递预算 ${perCall} token`,
+    `父会话 ${PARENT.provider} / ${PARENT.model}，窗口 ${spec.contextWindow}，单份视图尺寸 ${viewTokens} token`,
   )
   log(`工作区 ${WS_DIR}；bulk.txt ${bulkBytes} 字节；要跑 ${SELECTED.join('、')}`)
 

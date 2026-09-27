@@ -56,15 +56,13 @@ const MAX_MATCH_CHARS = 400
  * 整串一起截是错的：路径长的时候会把行号先切掉，那条命中就再也定位不回去。
  */
 /**
- * 按投递预算把命中列表裁到装得下，并把实际用量记账。
+ * 按本次决策的剩余额度把命中列表裁到装得下，并把实际用量记账。
  *
- * **grep 必须计入这本账。** `agent/loop/tool-wave.ts` 下发每一波之前 `resetBatchBudget`，理由写在
- * 那里：「压缩只留一个入口」的前提正是两次检查之间的跳变有上界。单次上界 25,000
- * token，而 200 条 × 400 字符最坏约 32,000——**单次就越了**；它又是 `parallelSafe`，
- * 一波五个就是整波上界的三倍多。不记账那个前提就不成立。
+ * **grep 必须计入这份账。** 200 条 × 400 字符最坏约 32,000 token，它又是 `parallelSafe`，
+ * 一次决策里多个 grep 不记账的话，同一决策里后续读取会按虚高的余额准入。
  *
  * **裁而不是拒。** 这个工具本来就有截断契约（`MAX_RESULTS` + `truncated`），
- * 按预算少给几条走的是同一条路；改成失败则是新增一种失败模式，
+ * 按额度少给几条走的是同一条路；改成失败则是新增一种失败模式，
  * 而 grep 没有 offset，模型只能靠猜一个更窄的模式重来。
  */
 function fitBudget(ctx: ToolContext, matches: string[]): { matches: string[]; trimmed: boolean } {
@@ -72,7 +70,7 @@ function fitBudget(ctx: ToolContext, matches: string[]): { matches: string[]; tr
   const charged = chargeBatchBudget(ctx, total)
   if (charged.ok) return { matches, trimmed: false }
 
-  const room = Math.min(charged.perCall, charged.batchRemaining)
+  const room = charged.remaining
   const kept: string[] = []
   let used = 0
   for (const m of matches) {
@@ -202,7 +200,7 @@ export const grepTool: ToolSpec = {
         status: 'success',
         message:
           `命中 ${fit.matches.length} 行（ripgrep）` +
-          (fit.trimmed ? '，已按投递预算截断，收窄模式或范围可看到更多' : ''),
+          (fit.trimmed ? '，已按本轮剩余容量截断，收窄模式或范围可看到更多' : ''),
         data: {
           matches: fit.matches,
           truncated: viaRg.truncated || fit.trimmed,
@@ -267,7 +265,7 @@ export const grepTool: ToolSpec = {
       status: 'success',
       message:
         `命中 ${fit.matches.length} 行（内置遍历，未找到 ripgrep）` +
-        (fit.trimmed ? '，已按投递预算截断，收窄模式或范围可看到更多' : ''),
+        (fit.trimmed ? '，已按本轮剩余容量截断，收窄模式或范围可看到更多' : ''),
       data: { matches: fit.matches, truncated: truncated || fit.trimmed, engine: 'builtin' },
     }
   },

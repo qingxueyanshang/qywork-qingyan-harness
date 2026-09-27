@@ -204,7 +204,7 @@ export class AgentLoop {
         const next =
           turn.refusalNote || !turn.calls.length
             ? yield* concludeWithoutTools(run, turn)
-            : yield* executeCalls(run, turn)
+            : yield* executeCalls(host, run, turn)
         if (next === 'stop') break
       }
     } catch (err) {

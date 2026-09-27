@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
-import { sanitizeToolName, ToolRegistry } from '@qywork/agent'
+import { openBatchBudget, sanitizeToolName, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
 import {
@@ -47,7 +47,7 @@ function ctx(root: string, approve = true): ToolContext {
     density: DEFAULT_DENSITY,
     vision: null,
     resources: new Map(),
-    state: new Map(),
+    state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     sink: null,
     signal: new AbortController().signal,
     emit: () => {},
@@ -1572,7 +1572,7 @@ describe('grep 的单条上界', () => {
 })
 
 /**
- * grep 必须计入批级投递预算。
+ * grep 必须计入本次决策的投递额度。
  *
  * `agent/loop/tool-wave.ts` 每下发一波之前 `resetBatchBudget`，理由写在那里：「压缩只留一个入口」
  * 的前提正是**两次检查之间的跳变有上界**。grep 不记账的话，单次 200 条 × 400 字符
@@ -1581,26 +1581,25 @@ describe('grep 的单条上界', () => {
  *
  * 断言的是「裁而不是拒」：这个工具本来就有截断契约，超预算走同一条路。
  */
-describe('grep 计入投递预算', () => {
-  test('超出预算时少给几条并标 truncated，不是失败', async () => {
+describe('grep 计入投递额度', () => {
+  test('超出剩余额度时少给几条并标 truncated，不是失败', async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-budget-')))
-    // 每行都命中、每行都吃满单条上界，堆到远超预算。
+    // 每行都命中、每行都吃满单条上界，堆到远超额度。
     const line = `bug ${'y'.repeat(500)}`
     await writeFile(join(root, 'noisy.txt'), Array.from({ length: 200 }, () => line).join('\n'))
 
     const { grepTool } = await import('./search.ts')
-    // 小窗口把预算压到很小：单次 = 窗口的 1/8。
-    const tiny = { ...ctx(root), contextWindow: 8_000 }
+    const tiny = { ...ctx(root), state: openBatchBudget(new Map(), 1000) }
     const out = await grepTool.fn!({ pattern: 'bug', path: '.' }, tiny)
 
     expect(out.status).toBe('success')
     const data = out.data as { matches: string[]; truncated: boolean }
     expect(data.truncated).toBe(true)
     expect(data.matches.length).toBeLessThan(200)
-    expect(out.message).toContain('已按投递预算截断')
+    expect(out.message).toContain('已按本轮剩余容量截断')
   })
 
-  /** 正常体量的搜索不受影响——预算只在真的越界时才动手。 */
+  /** 正常体量的搜索不受影响——额度只在真的越界时才动手。 */
   test('装得下时一条不少，也不标截断', async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-small-')))
     await writeFile(join(root, 'a.txt'), 'bug one\nbug two\nbug three\n')
@@ -1610,7 +1609,7 @@ describe('grep 计入投递预算', () => {
     const data = out.data as { matches: string[]; truncated: boolean }
     expect(data.matches.length).toBe(3)
     expect(data.truncated).toBe(false)
-    expect(out.message).not.toContain('已按投递预算截断')
+    expect(out.message).not.toContain('已按本轮剩余容量截断')
   })
 })
 
@@ -1669,7 +1668,7 @@ describe('read_file 认图片', () => {
     expect(out.status).toBe('failure')
     expect(out.message).toContain('当前模型不接受图片输入')
     expect(out.message).toContain('不要再读')
-    // 一个字节都没读出来：读了再丢等于徒劳一次缩放、白扣一次投递预算。
+    // 一个字节都没读出来：读了再丢等于徒劳一次缩放、白扣一次投递额度。
     expect(out.data).toBeUndefined()
 
     const ok = await registry().execute(
