@@ -68,18 +68,20 @@ function hash(text: string): string {
   return Bun.hash(text).toString(16)
 }
 
-const MAX_READ_BYTES = 1024 * 1024
-
 /**
- * 图片与 PDF 各有自己的上限，**不与 `MAX_READ_BYTES` 合并**。
+ * 文本、图片与 PDF 各有自己的上限，三个数管三件不同的事，合并成一个数之后调任一边都会误伤另外两边。
  *
- * 三个数管三件不同的事：文本按 token 成本封顶（1 MB 已经装不进任何窗口），
- * 图片按 provider 的单请求上限封顶（10 MB base64 约 13 MB），
- * PDF 按解析时的内存占用封顶（`unpdf` 整份读进内存）。
- * 合并成一个数之后，调任一边都会误伤另外两边。
+ * - 文本按内存封顶：整份读进内存再按行切分，与 PDF 同一口径。它不是投递上限——投多少由本次决策的
+ *   投递额度定，装不下时分段续读；也不要按 token 成本封顶，1M 窗口装得下远大于 1 MB 的文本。
+ * - 图片按 provider 的单请求上限封顶（10 MB base64 约 13 MB）。
+ * - PDF 按解析时的内存占用封顶（`unpdf` 整份读进内存）。
  */
+const MAX_TEXT_BYTES = 20 * 1024 * 1024
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_PDF_BYTES = 20 * 1024 * 1024
+
+/** 超过它的文件先嗅探再整读：视频、音频、压缩包多数都比它大，整读一次再判就是把它整份装进内存。 */
+const SNIFF_BEFORE_READ_BYTES = 1024 * 1024
 
 /** PDF 抽取结果的 run 内缓存。键带指纹，文件改了自然失效。 */
 const PDF_STATE_KEY = 'files.pdfText'
@@ -127,7 +129,7 @@ const BINARY_SNIFF = /\x00/
 
 /**
  * 只读头部若干字节做嗅探，**不整个读进来**——走到这里的文件已经超了
- * `MAX_READ_BYTES`，整读一次就是把它装进内存再丢掉。
+ * `SNIFF_BEFORE_READ_BYTES`，整读一次就是把它装进内存再丢掉。
  */
 async function looksBinary(abs: string): Promise<boolean> {
   const fh = await open(abs, 'r').catch(() => null)
@@ -194,11 +196,10 @@ export const readFileTool: ToolSpec = {
     }
 
     /*
-     * 图片与 PDF 在**大小守卫之前**分派。
+     * 图片与 PDF 在**二进制嗅探之前**分派。
      *
-     * 不能放到下面二进制嗅探那一行：`MAX_READ_BYTES` 是 1 MB，而手机照片和多数
-     * PDF 都比它大，放晚一行它们会先被拒，拿到的话术还是「请用 offset/limit
-     * 分段读取」——对一张图不可执行。这两条各有自己的上限。
+     * 不能放到下面二进制嗅探那一行：手机照片和多数 PDF 都超过 `SNIFF_BEFORE_READ_BYTES`，
+     * 放晚一行它们会先被判成二进制而拒绝。这两条各有自己的上限。
      */
     // PDF 抽取缓存的键：文件改了就是另一份内容，缓存自然不命中。
     const fingerprint = `${Math.trunc(info.mtimeMs)}:${info.size}`
@@ -285,17 +286,19 @@ export const readFileTool: ToolSpec = {
       }
     }
 
-    if (pdf === null && info.size > MAX_READ_BYTES) {
+    if (pdf === null && info.size > SNIFF_BEFORE_READ_BYTES) {
       /*
-       * **先嗅探再报「过大」。** 视频、音频、压缩包多数都超过 1 MB，落到「请用
-       * offset/limit 分段读取」这句话上的话，模型会照着分段读一遍——那条路对二进制
-       * 走不通，它只能反复试。判据取内容不取扩展名：一张扩展名写错的文件同样成立，
+       * **先嗅探再判大小。** 判据取内容不取扩展名：一张扩展名写错的文件同样成立，
        * 而按扩展名判就得在这里再养一份音视频清单。
        */
       if (await looksBinary(abs)) return notText(String(args.path))
-      return {
-        status: 'failure',
-        message: `文件过大（${info.size} 字节），请用 offset/limit 分段读取`,
+      if (info.size > MAX_TEXT_BYTES) {
+        return {
+          status: 'failure',
+          message:
+            `文件过大（${Math.round(info.size / 1024 / 1024)} MB），超出整份读取的上限 20 MB。` +
+            `只需要其中一部分时用 run_command 调 grep / head / tail 等工具取出后再读。`,
+        }
       }
     }
     const text = pdf ?? (await readFile(abs, 'utf8'))
