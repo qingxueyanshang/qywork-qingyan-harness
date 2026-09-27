@@ -31,12 +31,14 @@ export {
   continuationNote,
   decodeUtf8Boundary,
   deliveredTokens,
+  deliveryCap,
   type HeadDelivery,
   headBytesWithin,
   landHead,
   openBatchBudget,
   outcomeTokens,
   recordBatchSpent,
+  tailRetain,
   tokensToBytes,
 } from './delivery.ts'
 // 电脑控制端口：tools 按它写桌面工具，server 的协调器实现它，runtime 注入

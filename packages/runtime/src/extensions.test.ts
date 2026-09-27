@@ -143,6 +143,7 @@ async function workspaceWith(extra: string[]) {
       runId: 'run_test',
       signal: new AbortController().signal,
       density: DEFAULT_DENSITY,
+      contextWindow: 0,
       sink: null,
       state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     } as unknown as ToolContext
@@ -402,6 +403,7 @@ describe('MCP 接线', () => {
     const out = await registry.get('mcp__demo__ping')!.fn({}, {
       signal: new AbortController().signal,
       density: DEFAULT_DENSITY,
+      contextWindow: 0,
       sink: null,
       state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
     } as never)

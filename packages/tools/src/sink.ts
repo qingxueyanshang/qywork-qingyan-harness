@@ -23,10 +23,10 @@
  */
 
 import {
-  batchRemaining,
   chargeBatchBudget,
   continuationNote,
   decodeUtf8Boundary,
+  deliveryCap,
   headBytesWithin,
   landHead,
   outcomeTokens,
@@ -120,17 +120,17 @@ export function observationResultBudget(contextWindow: number): number {
   return Math.max(1, Math.floor(observationBudget(contextWindow) * OBSERVATION_RESULT_BUDGET_RATIO))
 }
 
-/** 本次投递的实际上限：展示尺寸与剩余额度取小，至少 1。 */
-export function viewLimit(ctx: Pick<ToolContext, 'state'>, size: number): number {
-  return Math.max(1, Math.min(size, batchRemaining(ctx)))
+/** 本次投递的实际上限：展示尺寸与单次投递上限（`deliveryCap`）取小，至少 1。 */
+export function viewLimit(ctx: Pick<ToolContext, 'state' | 'contextWindow'>, size: number): number {
+  return Math.max(1, Math.min(size, deliveryCap(ctx)))
 }
 
-/** 摘录字节上限：展示尺寸（字节）与剩余额度折成的字节数取小。 */
+/** 摘录字节上限：展示尺寸（字节）与单次投递上限折成的字节数取小。 */
 export function excerptBytes(
-  ctx: Pick<ToolContext, 'state' | 'density'>,
+  ctx: Pick<ToolContext, 'state' | 'density' | 'contextWindow'>,
   sizeBytes = INLINE_BUDGET_BYTES,
 ): number {
-  return Math.min(sizeBytes, tokensToBytes(batchRemaining(ctx), ctx.density))
+  return Math.min(sizeBytes, tokensToBytes(deliveryCap(ctx), ctx.density))
 }
 
 /** 头尾各留一半：错误信息通常在尾部（stack trace、exit code），只留头部会把它切掉。 */
@@ -323,7 +323,7 @@ export function budgetExhausted(): ToolOutcome {
  * 续读说明几十 token，不从头部里扣，按实际投递量记账。
  */
 export function deliverReadable(
-  ctx: Pick<ToolContext, 'state' | 'sink' | 'density'>,
+  ctx: Pick<ToolContext, 'state' | 'sink' | 'density' | 'contextWindow'>,
   input: {
     toolName: string
     sourceType: string
@@ -334,7 +334,7 @@ export function deliverReadable(
 ): ToolOutcome {
   const charged = chargeBatchBudget(ctx, outcomeTokens(input.whole, ctx.density))
   if (charged.ok) return { status: 'success', ...input.whole }
-  if (charged.remaining === 0) return budgetExhausted()
+  if (charged.cap === 0) return budgetExhausted()
 
   const frame = outcomeTokens(input.partial('', ''), ctx.density)
   const body = new TextEncoder().encode(input.body)
@@ -343,7 +343,7 @@ export function deliverReadable(
     sourceType: input.sourceType,
     body,
     mimeType: 'text/plain',
-    budgetBytes: headBytesWithin(body, charged.remaining - frame, ctx.density),
+    budgetBytes: headBytesWithin(body, charged.cap - frame, ctx.density),
   })
   const outcome: ToolOutcome = {
     status: 'success',

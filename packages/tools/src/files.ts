@@ -13,8 +13,8 @@
 import { lstat, mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, parse } from 'node:path'
 import {
-  batchRemaining,
   chargeBatchBudget,
+  deliveryCap,
   outcomeTokens,
   type ToolContext,
   type ToolSpec,
@@ -229,7 +229,7 @@ export const readFileTool: ToolSpec = {
       if (!charged.ok) {
         return {
           status: 'failure',
-          message: `本轮投递额度只剩 ${charged.remaining} token，装不下一张图，下一轮再读。`,
+          message: `本轮投递额度只剩 ${charged.cap} token，装不下一张图，下一轮再读。`,
           errorKind: 'result_too_large',
         }
       }
@@ -369,7 +369,7 @@ export const readFileTool: ToolSpec = {
       markRead()
       return { status: 'success', ...whole }
     }
-    const remaining = batchRemaining(ctx)
+    const remaining = deliveryCap(ctx)
     let fit = 0
     let over = slice.length
     while (over - fit > 1) {

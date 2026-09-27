@@ -295,6 +295,7 @@ function callCtx(
     signal,
     sink,
     density: DEFAULT_DENSITY,
+    contextWindow: 0,
     state: openBatchBudget(new Map(), room),
   } as never
 }

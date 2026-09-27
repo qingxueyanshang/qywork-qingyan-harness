@@ -24,6 +24,7 @@ import {
   projectManifest,
   softLimit,
   summaryCutOf,
+  tailRetain,
   unitKey,
 } from '@qywork/agent'
 import type { TokenDensity, WireMessage } from '@qywork/ai'
@@ -60,17 +61,6 @@ import {
  * 写超了的那一次被「截断作废」闸捕获，并作为更大的样本进入下一次的分布。
  */
 const SUMMARY_PERCENTILE = 0.95
-
-/**
- * 自动压缩保留多少尾部原文（token）：窗口的 1/4，封顶 60K。
- *
- * 它只决定已发送的历史留多少原文，是工作记忆的量，不是投递上限。未发送的结果不靠它保护：
- * 一次 provider 决策是一个单元，`foldIndexOf` 至少保留最后一个单元。
- * 封顶值是观察视图单份尺寸（`tools/sink.ts` 的 `observationBudget`）的两倍：一份整视图必然落在保留尾部之内。
- */
-function tailRetain(contextWindow: number): number {
-  return Math.min(Math.floor(contextWindow / 4), 60_000)
-}
 
 export interface CompactionDeps {
   store: Store

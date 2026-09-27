@@ -33,10 +33,32 @@ function account(state: Map<string, unknown>): { room: number; spent: number } {
   return { room, spent: (state.get(SPENT_KEY) as number | undefined) ?? 0 }
 }
 
-/** 本次决策还剩多少额度（token）。 */
+/** 本次决策还剩多少额度（token）。单次投递用 `deliveryCap`，不要直接拿它定尺寸。 */
 export function batchRemaining(ctx: Pick<ToolContext, 'state'>): number {
   const { room, spent } = account(ctx.state)
   return Math.max(0, room - spent)
+}
+
+/**
+ * 自动压缩保留多少尾部原文（token）：窗口的 1/4，封顶 60K。
+ *
+ * 压缩选界（`runtime/compaction.ts`）与单次投递上限（`deliveryCap`）共用它，两处各写一个数就对不上。
+ * 封顶值是观察视图单份尺寸（`tools/sink.ts` 的 `observationBudget`）的两倍：一份整视图必然落在保留尾部之内。
+ */
+export function tailRetain(contextWindow: number): number {
+  return Math.min(Math.floor(contextWindow / 4), 60_000)
+}
+
+/**
+ * 一次投递最多用多少额度（token）：给下一次决策留出一份尾部保留量，或者整段不超过尾部保留量。
+ *
+ * 不要放宽到整份余额：压缩选界从尾部累加到保留量为止，跨过保留量的那个单元自己也留下。
+ * 一段填满余额的结果因此在下一次压缩里仍被留着，而下一次决策的额度为 0，续读停在原地。
+ */
+export function deliveryCap(ctx: Pick<ToolContext, 'state' | 'contextWindow'>): number {
+  const remaining = batchRemaining(ctx)
+  const retain = tailRetain(ctx.contextWindow)
+  return Math.max(remaining - retain, Math.min(remaining, retain))
 }
 
 /**
@@ -56,19 +78,20 @@ export function recordBatchSpent(
 }
 
 /**
- * 只读工具的准入：装得下就记账并放行，装不下不记账。
+ * 只读工具的准入：不超过 `deliveryCap` 就记账并放行，超过不记账。`cap` 是此刻单次投递的上限，
+ * 装不下整份的调用方按它定部分投递的尺寸。
  *
  * 写入类工具不要用它：副作用已经发生时报「装不下」等于告诉模型没做成。
  */
 export function chargeBatchBudget(
-  ctx: Pick<ToolContext, 'state'>,
+  ctx: Pick<ToolContext, 'state' | 'contextWindow'>,
   tokens: number,
-): { ok: boolean; remaining: number } {
-  const { room, spent } = account(ctx.state)
-  const remaining = Math.max(0, room - spent)
-  if (tokens > remaining) return { ok: false, remaining }
+): { ok: boolean; cap: number } {
+  const cap = deliveryCap(ctx)
+  if (tokens > cap) return { ok: false, cap }
+  const { spent } = account(ctx.state)
   ctx.state.set(SPENT_KEY, spent + tokens)
-  return { ok: true, remaining: remaining - tokens }
+  return { ok: true, cap: deliveryCap(ctx) }
 }
 
 /**
@@ -262,11 +285,11 @@ export function continuationNote(head: HeadDelivery): string {
  * 不要按字符串截断 data：截断后的 JSON 不再合法，结构字段也会缺失。
  */
 export function boundExecutedOutcome(
-  ctx: Pick<ToolContext, 'state' | 'sink' | 'density'>,
+  ctx: Pick<ToolContext, 'state' | 'sink' | 'density' | 'contextWindow'>,
   outcome: ToolOutcome,
   source: { toolName: string; sourceType: string },
 ): ToolOutcome {
-  const remaining = batchRemaining(ctx)
+  const remaining = deliveryCap(ctx)
   if (outcomeTokens(outcome, ctx.density) <= remaining) {
     recordBatchSpent(ctx, outcomeTokens(outcome, ctx.density))
     return outcome
