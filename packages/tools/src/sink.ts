@@ -338,12 +338,15 @@ export function deliverReadable(
 
   const frame = outcomeTokens(input.partial('', ''), ctx.density)
   const body = new TextEncoder().encode(input.body)
+  const budgetBytes = headBytesWithin(body, charged.cap - frame, ctx.density)
+  // 一个字节都放不下时不存正文、不投递空头部：空头部加续读说明会让按行续读的调用方跳过这一段。
+  if (budgetBytes === 0) return budgetExhausted()
   const head = landHead(ctx.sink, {
     toolName: input.toolName,
     sourceType: input.sourceType,
     body,
     mimeType: 'text/plain',
-    budgetBytes: headBytesWithin(body, charged.cap - frame, ctx.density),
+    budgetBytes,
   })
   const outcome: ToolOutcome = {
     status: 'success',

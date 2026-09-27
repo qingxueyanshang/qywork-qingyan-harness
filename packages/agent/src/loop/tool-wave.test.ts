@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { ChatRequest, LlmAdapter, ProviderEvent, WireToolCall } from '@qywork/ai'
+import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage, WireToolCall } from '@qywork/ai'
 import { buildAdapter, DEFAULT_DENSITY, estimateRequest } from '@qywork/ai'
 import {
   FAULT_PROTOCOLS,
@@ -1385,8 +1385,14 @@ describe('投递额度按决策开账', () => {
     return registry
   }
 
-  /** 第一轮报告的输入量可指定的假 adapter：第一轮发起调用，第二轮收尾。 */
-  function adapterWithUsage(calls: WireToolCall[], firstInput: number): LlmAdapter {
+  /**
+   * 第一轮报告的输入量由 `input(本地估算)` 给出的假 adapter：第一轮发起调用，第二轮收尾。
+   * 报告值与估算的比值就是两把尺的比值，额度按它折算。
+   */
+  function adapterWithUsage(
+    calls: WireToolCall[],
+    input: (estimated: number) => number,
+  ): LlmAdapter {
     const base = fakeAdapter([calls, null])
     let turn = 0
     return {
@@ -1395,22 +1401,26 @@ describe('投递额度按决策开账', () => {
         const first = turn++ === 0
         for await (const ev of base.stream(req)) {
           if (first && ev.type === 'usage') {
-            yield { ...ev, usage: { ...ev.usage, inputTokens: firstInput } }
+            const estimated = estimateRequest(req, base.spec.density)
+            yield { ...ev, usage: { ...ev.usage, inputTokens: input(estimated), outputTokens: 0 } }
           } else yield ev
         }
       },
     }
   }
 
-  async function drain(loop: AgentLoop): Promise<void> {
+  async function drain(loop: AgentLoop, history: WireMessage[] = []): Promise<void> {
     for await (const _ of loop.run({
       runId: 'rn_budget' as never,
-      history: [],
+      history,
       signal: new AbortController().signal,
     })) {
       // 只看工具那侧记下的额度
     }
   }
+
+  /** 约 30 万 token 的历史，用来让「占用」与「本地估算」都是真实量级。 */
+  const bulky: WireMessage[] = [{ role: 'user', content: '甲'.repeat(270_000) }]
 
   /**
    * F09 的形状：同一决策三个调用分三波执行。逐波重开账的话三次都放行，
@@ -1418,9 +1428,9 @@ describe('投递额度按决策开账', () => {
    */
   test('三波共用一份额度，不逐波清零', async () => {
     const admitted: boolean[] = []
-    // 窗口 1M，软阈值 800K；占用只有锚点的 15 token，余量约 800K。
+    // 窗口 1M，软阈值 800K；占用几十 token，余量约 800K。
     const loop = new AgentLoop({
-      adapter: fakeAdapter([[call('grab'), call('grab'), call('grab')], null]),
+      adapter: adapterWithUsage([call('grab'), call('grab'), call('grab')], (e) => e),
       registry: grabRegistry(300_000, admitted),
       systemPrompt: 'sys',
       persist: noopPersistence(),
@@ -1431,19 +1441,46 @@ describe('投递额度按决策开账', () => {
   })
 
   test('额度是软阈值以下的余量，不是固定常数', async () => {
-    const admitted: boolean[] = []
     const seen: number[] = []
+    let estimated = 0
     const loop = new AgentLoop({
-      adapter: adapterWithUsage([call('grab')], 700_000),
-      registry: grabRegistry(31_000, admitted, seen),
+      adapter: adapterWithUsage([call('grab')], (e) => {
+        estimated = e
+        return e
+      }),
+      registry: grabRegistry(31_000, [], seen),
       systemPrompt: 'sys',
       persist: noopPersistence(),
       makeToolContext: (runId) => baseCtx(runId),
     })
-    await drain(loop)
-    // 锚点 = 输入 700,000 + 输出 5。
-    expect(seen).toEqual([800_000 - 700_005])
-    expect(admitted).toEqual([true])
+    await drain(loop, bulky)
+    expect(estimated).toBeGreaterThan(250_000)
+    // 两把尺一致时额度就是软阈值减占用；余下的差是本次 assistant 消息的估算。
+    expect(seen[0]!).toBeGreaterThan(800_000 - estimated - 100)
+    expect(seen[0]!).toBeLessThanOrEqual(800_000 - estimated + 100)
+  })
+
+  /**
+   * 占用是 provider 真值，工具结果按本地估算记账。估算偏高 2 倍时不折算的话，
+   * 额度只有真实余量的一半，读取一段比一段小、占用始终到不了软阈值。
+   */
+  test('估算比 provider 真值高时，额度按两把尺的比值折算', async () => {
+    const seen: number[] = []
+    let estimated = 0
+    const loop = new AgentLoop({
+      adapter: adapterWithUsage([call('grab')], (e) => {
+        estimated = e
+        return Math.round(e / 2)
+      }),
+      registry: grabRegistry(1, [], seen),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    await drain(loop, bulky)
+    const real = 800_000 - Math.round(estimated / 2)
+    expect(seen[0]!).toBeGreaterThan(real * 1.9)
+    expect(seen[0]!).toBeLessThan(real * 2.1)
   })
 
   /**
@@ -1457,7 +1494,7 @@ describe('投递额度按决策开账', () => {
     const seen: number[] = []
     let runs = 0
     const loop = new AgentLoop({
-      adapter: adapterWithUsage([call('grab')], 850_000),
+      adapter: adapterWithUsage([call('grab')], () => 850_000),
       registry: grabRegistry(300_000, admitted, seen),
       systemPrompt: 'sys',
       persist: {

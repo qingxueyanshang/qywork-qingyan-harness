@@ -9,6 +9,7 @@ import type { ProviderError } from '@qywork/ai'
 import { estimateMessages, estimateRequest } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { envelopeHeadTokens, log } from '@qywork/core'
+import { tailRetain } from '../delivery.ts'
 import { markCompacted } from '../registry.ts'
 import { breakdownOf, envelopeHashOf, softLimit } from './request.ts'
 import { type LoopHost, type RunState, type TurnState, untilAborted } from './run-state.ts'
@@ -39,6 +40,7 @@ export async function* compactBeforeSend(
   const done = yield* compactOverSoftLimit(host, run, turn, {
     occupancy: run.occupancyOf(turn.req),
     estimated: estimateRequest(turn.req, run.density),
+    threshold: softLimit(run.adapter.spec),
     summaryTurn: run.requestTurn,
     notice: turn.turnNotice,
   })
@@ -46,8 +48,13 @@ export async function* compactBeforeSend(
 }
 
 /**
- * 执行工具之前的检查点：本次响应的输出可能已把占用推过软阈值，此时投递额度为 0。
- * 返回投递额度该按哪个占用读数开账；`interrupted` 时 `run.stopReason` 已置为 `user_interrupt`。
+ * 执行工具之前的检查点：软阈值以下的余量不足一份尾部保留量时先压一次。
+ * 返回此刻的占用读数与同一份内容的本地估算，投递额度按两者开账；
+ * `interrupted` 时 `run.stopReason` 已置为 `user_interrupt`。
+ *
+ * 触发线比发送前那一处低一份尾部保留量（按两把尺的比值折成真值）：余量不足这么多时，
+ * 这次决策只放得下一小段甚至一行都放不下，读取只能报额度用完、下一轮重来。
+ * 本次响应的输出把占用推过软阈值时同理，那时额度为 0。
  *
  * **必须在打开第一条工具记录之前调。** 压缩记录占一个 step 序号，夹在同一批次的工具记录之间时，
  * `runtime/transcript.ts` 的 `stepsToUnits` 只收连续的同批次记录，这次决策会被拆成两个单元：
@@ -61,42 +68,53 @@ export async function* compactBeforeTools(
   host: LoopHost,
   run: RunState,
   turn: TurnState,
-): AsyncGenerator<AgentEvent, number | 'interrupted', unknown> {
+): AsyncGenerator<AgentEvent, { occupancy: number; estimated: number } | 'interrupted', unknown> {
   const estimated =
     estimateRequest(turn.req, run.density) +
     estimateMessages(run.transcript.slice(turn.unitStart), run.density)
   const occupancy = run.anchor ? run.meter(0).tokens : estimated
   // 上一次尝试已看到本次响应之前的全部历史：本次响应属于最后一个单元，不可折，不再重试。
-  if (run.compactedAt >= turn.unitStart) return occupancy
+  if (run.compactedAt >= turn.unitStart) return { occupancy, estimated }
+  const scale = occupancy > 0 ? estimated / occupancy : 1
   // 这一轮的编号已被刚完成的主请求占用：摘要请求占下一个，下一轮主请求再顺延。
   const done = yield* compactOverSoftLimit(host, run, turn, {
     occupancy,
     estimated,
+    threshold: softLimit(run.adapter.spec) - tailRetain(run.adapter.spec.contextWindow) / scale,
     summaryTurn: run.requestTurn + 1,
     notice: null,
   })
   if (done === 'interrupted') return 'interrupted'
+  if (done === 'unchanged') return { occupancy, estimated }
   // 压缩生效后锚点作废、请求已按新投影重装（含本次响应），读数改按重装后的请求估。
-  return done === 'compacted' ? estimateRequest(turn.req, run.density) : occupancy
+  const rebuilt = estimateRequest(turn.req, run.density)
+  return { occupancy: rebuilt, estimated: rebuilt }
 }
 
 /**
- * 占用越过软阈值时压一次。`notice` 是压缩生效后重装请求时附带的本轮提示：
+ * 占用越过 `threshold` 时压一次。`notice` 是压缩生效后重装请求时附带的本轮提示：
  * 发送前那一处带上本轮提示，工具之前那一处提示已随上一次请求发出，不再带。
  */
 async function* compactOverSoftLimit(
   host: LoopHost,
   run: RunState,
   turn: TurnState,
-  at: { occupancy: number; estimated: number; summaryTurn: number; notice: string | null },
+  at: {
+    occupancy: number
+    estimated: number
+    threshold: number
+    summaryTurn: number
+    notice: string | null
+  },
 ): AsyncGenerator<AgentEvent, 'compacted' | 'unchanged' | 'interrupted', unknown> {
   const { adapter, input, persist, density } = run
   const { occupancy } = at
-  if (occupancy <= softLimit(adapter.spec)) return 'unchanged'
+  if (occupancy <= at.threshold) return 'unchanged'
 
   run.compactedAt = run.transcript.length
-  log.info('agent', '占用超过软阈值，触发压缩', {
+  log.info('agent', '占用越过压缩线，触发压缩', {
     occupancy,
+    threshold: Math.round(at.threshold),
     softLimit: softLimit(adapter.spec),
   })
   yield { type: 'compaction', runId: input.runId, phase: 'started' }

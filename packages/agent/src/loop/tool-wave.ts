@@ -35,10 +35,17 @@ export async function* executeCalls(
   const { calls, requestId } = turn
 
   // 压缩检查点必须在打开第一条工具记录之前，理由见 `compactBeforeTools`。
-  const occupancy = yield* compactBeforeTools(host, run, turn)
-  if (occupancy === 'interrupted') return 'stop'
-  // 投递额度按决策开一次账，全部波次共用：余量 = 软阈值 − 此刻占用。
-  openBatchBudget(ctx.state, softLimit(run.adapter.spec) - occupancy)
+  const reading = yield* compactBeforeTools(host, run, turn)
+  if (reading === 'interrupted') return 'stop'
+  /*
+   * 投递额度按决策开一次账，全部波次共用：余量 = 软阈值 − 此刻占用。
+   *
+   * 占用是 provider 真值，工具结果按本地估算记账，两把尺在同一份内容上的比值折算一次。
+   * 不折算的话估算偏高时，每段按估算填满余量、真实占用只涨到它的几分之一：
+   * 占用逐轮逼近软阈值却不越线，压缩不触发，续读一段比一段小。
+   */
+  const scale = reading.occupancy > 0 ? reading.estimated / reading.occupancy : 1
+  openBatchBudget(ctx.state, (softLimit(run.adapter.spec) - reading.occupancy) * scale)
 
   /*
    * **名字不在注册表里的、参数不是 JSON 对象的，一律不进执行链。**
