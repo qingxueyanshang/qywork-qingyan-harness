@@ -19,21 +19,18 @@
  *    内置的读的是**本地落盘的中间产物**（命令输出、大文件的截断部分），
  *    这里读的是**外部 server 提供的数据**。重名会在注册期直接抛，
  *    但更糟的是万一没抛——模型会把两者混为一谈。
- * 2. **工具名必须带 `mcp__` 前缀。** `sink.ts` 的 `isContentAuthority` 按这个
- *    前缀判断「这个工具的结果是否可以落盘再按 id 读回」。少了前缀，
- *    一份超预算的 resource 正文会被直接截断丢掉，而且**不留 resource id**——
- *    模型连「还有没看到的部分」都不知道。
+ * 2. **工具名必须带 `mcp__` 前缀。** 与内置工具、插件工具的命名空间隔开，模型也能从名字看出
+ *    它在调哪个 server。正文装不下本轮剩余额度时由 `boundExecutedOutcome`（`@qywork/agent`）
+ *    存进正文库、只投递头部，模型按回执里的 resource id 续读。
  * 3. **权限声明是 `read`，scope 用 `mcp:<server>/resource`。** 不是 `execute`：
  *    列清单和读正文都不产生副作用，按 execute 处理会让它们跟真正的工具调用
  *    走同一条裁决路径，多一层。
  */
 
-import type { ToolSpec } from '@qywork/agent'
+import { boundExecutedOutcome, type ToolSpec } from '@qywork/agent'
 import type { McpClient } from './client.ts'
 import { permissionLabel, toolName } from './register.ts'
 
-/** 单次读回的文本上限。超出的部分交给 sink 落盘，模型可以再读回来。 */
-const MAX_RESOURCE_CHARS = 60_000
 /** 一次列出的条目上限。列表本身是要进上下文的，不能没有边界。 */
 const MAX_LIST_ENTRIES = 200
 
@@ -105,7 +102,11 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
           if (list.length > shown.length) {
             lines.push(`…（共 ${list.length} 条，只列出前 ${shown.length} 条）`)
           }
-          return { status: 'success', message: lines.join('\n') }
+          return boundExecutedOutcome(
+            ctx,
+            { status: 'success', message: lines.join('\n') },
+            { toolName: toolName(server, 'list_resources'), sourceType: 'mcp:resources' },
+          )
         } catch (err) {
           return fail(server, 'resources/list', err)
         }
@@ -139,12 +140,12 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
           if (contents.length === 0) {
             return { status: 'failure', message: `${uri} 没有返回任何内容` }
           }
-          const text = renderResourceContents(contents)
-          const clamped =
-            text.length > MAX_RESOURCE_CHARS
-              ? `${text.slice(0, MAX_RESOURCE_CHARS)}\n…（正文超过 ${MAX_RESOURCE_CHARS} 字符，已截断）`
-              : text
-          return { status: 'success', message: clamped }
+          // 装不下本轮剩余额度时正文整份存进正文库、只投递头部，不在这里按字符截断丢掉尾部。
+          return boundExecutedOutcome(
+            ctx,
+            { status: 'success', message: renderResourceContents(contents) },
+            { toolName: toolName(server, 'fetch_resource'), sourceType: 'mcp:resource' },
+          )
         } catch (err) {
           return fail(server, `resources/read ${uri}`, err)
         }

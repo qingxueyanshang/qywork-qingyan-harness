@@ -31,6 +31,7 @@ import {
   scopeDir,
   scopeRoots,
 } from './scopes.ts'
+import { deliverReadable } from './sink.ts'
 
 /** 各层根目录下装技能的那个子目录。`.agents/skills` 是跨客户端约定的那条。 */
 export const SKILLS_SUBDIR = 'skills'
@@ -239,11 +240,15 @@ export const readSkillTool: ToolSpec = {
     if (text === null) {
       return { status: 'failure', message: `技能 ${wanted} 的 SKILL.md 读取失败` }
     }
-    return {
-      status: 'success',
-      message: text,
-      data: { name: hit.name, dir: hit.dir, scope: hit.scope },
-    }
+    // SKILL.md 没有长度上限：装不下本轮剩余额度时存进正文库续读。
+    const data = { name: hit.name, dir: hit.dir, scope: hit.scope }
+    return deliverReadable(ctx, {
+      toolName: 'read_skill',
+      sourceType: 'skill',
+      whole: { message: text, data },
+      body: text,
+      partial: (head, note) => ({ message: head + note, data: { ...data, truncated: true } }),
+    })
   },
 }
 

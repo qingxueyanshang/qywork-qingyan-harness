@@ -19,11 +19,8 @@
  * 两个 server 各带一个 `search` 不会互相覆盖，模型也能从名字看出它在调谁。
  */
 
-import { sanitizeToolName, type ToolSpec } from '@qywork/agent'
+import { boundExecutedOutcome, sanitizeToolName, type ToolSpec } from '@qywork/agent'
 import type { McpCallResult, McpClient, McpToolDef } from './client.ts'
-
-/** 单次工具结果的文本上限。MCP 结果不过 sink，超了只能截断，所以要说出来。 */
-const MAX_RESULT_CHARS = 60_000
 
 /**
  * 注册名。**必须消毒**：server 名来自用户配置、工具名来自第三方 server，
@@ -93,10 +90,6 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
         const res = await callWithAbort(client, def.name, args, ctx.signal)
         const images = imagesOf(res)
         const text = renderContent(res)
-        const clamped =
-          text.length > MAX_RESULT_CHARS
-            ? `${text.slice(0, MAX_RESULT_CHARS)}\n…（结果超过 ${MAX_RESULT_CHARS} 字符，已截断）`
-            : text
 
         const data = {
           ...(res.structuredContent !== undefined
@@ -107,15 +100,21 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
           ...(images.length ? { images } : {}),
         }
 
-        return {
-          // isError 是「工具执行失败」，不是协议错误。原样传下去，
-          // 模型看得见失败详情才能自己改参数重试。
-          status: res.isError ? 'failure' : 'success',
-          executed: true,
-          message: clamped || (res.isError ? 'MCP 工具报告失败但没有给出内容' : '完成'),
-          ...(Object.keys(data).length ? { data } : {}),
-          ...(res.isError ? { errorKind: 'mcp_tool_error' } : {}),
-        }
+        // 正文与 structuredContent 一并按本轮剩余额度定稿：装不下时整份存进正文库、回执留地址，
+        // 不在这里按字符截断丢掉尾部。
+        return boundExecutedOutcome(
+          ctx,
+          {
+            // isError 是「工具执行失败」，不是协议错误。原样传下去，
+            // 模型看得见失败详情才能自己改参数重试。
+            status: res.isError ? 'failure' : 'success',
+            executed: true,
+            message: text || (res.isError ? 'MCP 工具报告失败但没有给出内容' : '完成'),
+            ...(Object.keys(data).length ? { data } : {}),
+            ...(res.isError ? { errorKind: 'mcp_tool_error' } : {}),
+          },
+          { toolName: toolName(server, def.name), sourceType: 'mcp' },
+        )
       } catch (err) {
         return {
           status: 'failure',

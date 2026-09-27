@@ -9,7 +9,8 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ToolRegistry } from '@qywork/agent'
+import { openBatchBudget, type SinkPort, ToolRegistry } from '@qywork/agent'
+import { DEFAULT_DENSITY } from '@qywork/ai'
 import { McpClient } from './client.ts'
 import { loadMcpServers, parseMcpConfig } from './load.ts'
 import { permissionLabel, renderContent, specFor, toolName } from './register.ts'
@@ -284,6 +285,20 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
   })
 })
 
+/** 工具调用的最小上下文：投递额度由 AgentLoop 按决策开账，这里直接开一份。 */
+function callCtx(
+  signal = new AbortController().signal,
+  room = Number.POSITIVE_INFINITY,
+  sink: SinkPort | null = null,
+): never {
+  return {
+    signal,
+    sink,
+    density: DEFAULT_DENSITY,
+    state: openBatchBudget(new Map(), room),
+  } as never
+}
+
 describe('工具装配', () => {
   test('注册名带 server 前缀，两个 server 的同名工具不打架', () => {
     expect(toolName('a', 'search')).toBe('mcp__a__search')
@@ -295,7 +310,7 @@ describe('工具装配', () => {
     const c = client(entry, dir)
     await c.start()
     const spec = specFor(c, (await c.listTools())[0]!)
-    const out = await spec.fn({ text: '嗨' }, { signal: new AbortController().signal } as never)
+    const out = await spec.fn({ text: '嗨' }, callCtx())
     expect(out.status).toBe('success')
     expect(out.message).toContain('嗨')
     c.stop()
@@ -306,7 +321,7 @@ describe('工具装配', () => {
     const c = client(entry, dir)
     await c.start()
     const spec = specFor(c, (await c.listTools())[0]!)
-    const out = await spec.fn({}, { signal: new AbortController().signal } as never)
+    const out = await spec.fn({}, callCtx())
     expect(out.status).toBe('failure')
     expect(out.message).toBe('这个工具坏了')
     expect(out.errorKind).toBe('mcp_tool_error')
@@ -320,9 +335,34 @@ describe('工具装配', () => {
     const spec = specFor(c, (await c.listTools())[0]!)
     const ac = new AbortController()
     ac.abort()
-    const out = await spec.fn({ text: 'x' }, { signal: ac.signal } as never)
+    const out = await spec.fn({ text: 'x' }, callCtx(ac.signal))
     expect(out.status).toBe('failure')
     expect(out.message).toContain('已取消')
+    c.stop()
+  })
+
+  /** 结果装不下本轮剩余额度：正文整份存进正文库、只投递头部，尾部不丢。 */
+  test('超出剩余额度的结果存进正文库，回执带地址与续读位置', async () => {
+    const { dir, entry } = await fixture()
+    const c = client(entry, dir)
+    await c.start()
+    const spec = specFor(c, (await c.listTools())[0]!)
+    const landed: Uint8Array[] = []
+    const sink: SinkPort = {
+      land(input) {
+        landed.push(input.body)
+        return { resourceId: `rs_${landed.length}`, contentHash: 'sha:x' }
+      },
+      read: () => null,
+      stat: () => null,
+    }
+    const text = `${'回显正文。'.repeat(20_000)}尾部标记`
+    const out = await spec.fn({ text }, callCtx(undefined, 2000, sink))
+    expect(out.status).toBe('success')
+    expect(out.message.length).toBeLessThan(text.length)
+    expect(out.message).toContain('read_resource')
+    expect(new TextDecoder().decode(landed[0]!)).toContain('尾部标记')
+    expect(String(out.resources?.[0]?.resourceId)).toBe('rs_1')
     c.stop()
   })
 
@@ -332,7 +372,7 @@ describe('工具装配', () => {
     await c.start()
     const spec = specFor(c, (await c.listTools())[0]!)
     c.stop()
-    const out = await spec.fn({ text: 'x' }, { signal: new AbortController().signal } as never)
+    const out = await spec.fn({ text: 'x' }, callCtx())
     expect(out.status).toBe('failure')
     expect(out.executed).toBe(true)
   })
