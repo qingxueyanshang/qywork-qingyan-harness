@@ -36,7 +36,6 @@ interface HelloOk {
       id: string
       label: string
       path: string | null
-      impact: string
       required: boolean
       hint: string
       canInstall: boolean
@@ -159,18 +158,17 @@ describe('能力上报', () => {
    *
    * 这条不是形式检查：握手里没有消费者的能力位一律该删（见 `transport.ts`），
    * 所以这一格的验收是「设置页那一节能据此渲染」——
-   * 有路径就显示路径，没有就显示影响与下一步，`canInstall` 决定按钮出不出现。
+   * 有路径就显示路径，没有就显示缺了会怎样，`canInstall` 决定按钮出不出现。
    */
-  test('environment 逐条报路径、影响与能不能一键装', () => {
+  test('environment 逐条报路径、缺失影响与能不能一键装', () => {
     const env = shake(new EventBus(), {}).ok().capabilities.environment
     // 表里每一条都对应代码里一处真实的 spawn。
     expect(env.map((d) => d.id)).toEqual(['bash', 'git', 'ripgrep', 'node'])
     for (const d of env) {
       expect(d.label.length).toBeGreaterThan(0)
-      // 「缺了会怎样」必填：一行「未安装」不告诉用户要不要管它。
-      expect(d.impact.length).toBeGreaterThan(0)
+      // 「缺了会怎样」没装时必填：一行「未安装」不告诉用户要不要管它。
       if (d.path === null) expect(d.hint.length).toBeGreaterThan(0)
-      // 装上了就没什么可装的——按钮不该在已拥有的那一行出现。
+      // 装上了就没什么可装的——按钮不该在已安装的那一行出现。
       else expect(d.canInstall).toBe(false)
     }
     // bash 不在这里：批 4 之后它缺了只是语法换成 PowerShell，只有一个 shell
@@ -221,13 +219,11 @@ describe('能力上报', () => {
      * **原始失败形状**：只有 PowerShell 的机器上，模型有 `run_command`，
      * 设置页却报一条必需依赖缺失——用户因此去装一个他并不需要的依赖。
      */
-    test('没 bash 但有 PowerShell —— 不报必需，且说清现在跑的是哪个、语法差在哪', () => {
+    test('没 bash 但有 PowerShell —— 不报必需，只说命令改由 PowerShell 执行', () => {
       const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
       const row = resolveBashRow({ bash: () => noBash, shell: () => shell(ps) })
       expect(row.required).toBe(false)
-      // 用户得知道本机跑的是哪一档 shell，以及 5.1 上 && 为什么不能写。
-      expect(row.hint).toContain(ps)
-      expect(row.hint).toContain('&&')
+      expect(row.hint).toBe('命令当前由 PowerShell 执行，安装后改用 bash。')
     })
 
     test('三档全空 —— 这才是必需依赖缺失，下一步照 bash 那一档说', () => {

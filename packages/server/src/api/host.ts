@@ -31,7 +31,7 @@
 
 import type { EnvDependency } from '@qywork/core'
 import type { CommandShell } from '@qywork/tools'
-import { BASH_PATH_ENV, commandShell, probeBash } from '@qywork/tools'
+import { commandShell, probeBash } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
 /**
@@ -46,7 +46,7 @@ interface DepState {
   path: string | null
   /** 缺了就有功能不能用。前端只在 `path` 为 `null` 时消费它（标红 + 「需要安装」）。 */
   required: boolean
-  /** 没装时的下一步。装了是空串。 */
+  /** 没装时缺了会怎样，一句话。装了是空串。 */
   hint: string
 }
 
@@ -59,7 +59,6 @@ interface DepState {
 interface DepSpec {
   id: string
   label: string
-  impact: string
   /** winget 包 id。null = 不提供一键装。 */
   winget: string | null
   probe: () => DepState
@@ -123,8 +122,8 @@ export function wingetUsable(): boolean {
  *   不能显示成同一种（前者 POSIX，后者不是）。
  * - `required` 只在**一个 shell 都没有**时为真——那时 `run_command` 真的不注册
  *   （Alpine 这类不带 bash 的镜像会走到），标红是对的。
- * - `hint` 把差别说全：现在真正在跑的是哪个可执行文件、语法差在哪
- *   （B7 的例外——能力边界声明必须留全，不能只说一句「装了更好」）。
+ * - `hint` 只说命令改由 PowerShell 执行，这是用户需要知道的能力边界。语法差异由
+ *   `run_command` 的工具描述交给模型（`tools/shell.ts` 拼入的 `shell.hint`），不在设置页重复。
  *
  * 注入是为了能测另外两档：本机只可能命中其中一档，而这一批要修的失败形状
  * （没 bash、有 PowerShell）不在开发机上。判据同 `sandbox.ts` 的 `resolveCommandShell`。
@@ -144,24 +143,16 @@ export function resolveBashRow(deps: {
     return {
       path: null,
       required: true,
-      hint: `bash、pwsh、powershell 均不可用，模型无法使用 run_command：${bash.reason}`,
+      hint: `模型无法执行命令。${bash.reason}`,
     }
   }
-  return {
-    path: null,
-    required: false,
-    hint:
-      `命令仍可执行，但语法不同：当前交由 ${shell.path}，模型需按 PowerShell 而非 POSIX 语法编写` +
-      '（2>/dev/null 要写成 2>$null）；落在 Windows PowerShell 5.1（System32 里那个）时，' +
-      '&& 与 || 更是解析错误，只能用 ; 与 if ($?) { }。装上 bash 就切回 POSIX。',
-  }
+  return { path: null, required: false, hint: '命令当前由 PowerShell 执行，安装后改用 bash。' }
 }
 
 const DEPS: DepSpec[] = [
   {
     id: 'bash',
     label: 'bash',
-    impact: '模型执行命令（构建、测试、git 操作）：有 bash 才是 POSIX 语法',
     winget: 'Git.Git',
     // bash **不查 PATH**，理由见 `tools/sandbox.ts` 的 `findGitBash`：
     // 这台机器上 PATH 第一条是 WSL 启动器，命令会跑进另一个文件系统。
@@ -170,34 +161,32 @@ const DEPS: DepSpec[] = [
   {
     id: 'git',
     label: 'git',
-    impact: '版本面板：分支、改动、差异',
     winget: 'Git.Git',
     probe: () => ({
       path: onPath('git'),
       required: true,
-      hint: '安装后版本面板才能读取状态；Git for Windows 会一并提供上述 bash。',
+      hint: '版本面板无法显示分支、改动与差异。',
     }),
   },
   {
     id: 'ripgrep',
     label: 'ripgrep',
-    impact: '全文搜索加速',
     winget: 'BurntSushi.ripgrep.MSVC',
     probe: () => ({
       path: onPath('rg'),
       required: false,
-      hint: '未安装时由内置遍历兜底，大型仓库速度较慢。',
+      hint: '搜索使用内置实现，大型仓库较慢。',
     }),
   },
   {
     id: 'node',
     label: 'Node.js',
-    impact: '插件运行时',
     winget: 'OpenJS.NodeJS.LTS',
+    // 出网限制的版本要求不写在这里：插件页按实际版本报「出网闸 有 / 无」与原因。
     probe: () => ({
       path: onPath('node'),
       required: false,
-      hint: '只有装插件时才需要；出网闸要 Node 22.15 / 23.5 以上。',
+      hint: '插件无法运行。',
     }),
   },
 ]
@@ -225,7 +214,6 @@ export function probeEnvironment(): EnvDependency[] {
       id: d.id,
       label: d.label,
       path,
-      impact: d.impact,
       required,
       hint: path === null ? hint : '',
       canInstall: path === null && canInstall(d),
@@ -272,27 +260,19 @@ export const handleHostApi: ApiHandler = async (url, req) => {
   if (!dep) return json({ error: 'bad request', message: `没有名为 "${body?.id}" 的依赖` }, 400)
 
   if (dep.winget === null) {
-    return json({ error: 'unsupported', message: `${dep.label} 没有可用的一键安装` }, 409)
+    return json({ error: 'unsupported', message: `${dep.label} 不支持一键安装。` }, 409)
   }
   if (process.platform !== 'win32') {
     return json(
       {
         error: 'unsupported',
-        message: `一键安装只在 Windows 上有。当前系统请用自己的包管理器装 ${dep.label}。`,
+        message: `一键安装仅支持 Windows，请使用系统包管理器安装 ${dep.label}。`,
       },
       409,
     )
   }
   if (!wingetUsable()) {
-    return json(
-      {
-        error: 'no winget',
-        message:
-          '本机没有 winget（Windows 10 1809 之前没有它）。请手动安装；' +
-          `bash 装在非常规位置时可以用 ${BASH_PATH_ENV} 指过去。`,
-      },
-      409,
-    )
+    return json({ error: 'no winget', message: `本机没有 winget，请手动安装 ${dep.label}。` }, 409)
   }
 
   // 起进程本身失败（连 cmd.exe 都没有）也要如实回报，不能让按钮看起来点成功了。
@@ -309,8 +289,7 @@ export const handleHostApi: ApiHandler = async (url, req) => {
   return json({
     started: true,
     command: `winget install --id ${dep.winget} -e --source winget`,
-    // **这句必须回给前端显示。** 装完之后 PATH 是这个进程启动时的快照，
-    // 新装的依赖不在里面——不重启的话探测照样找不到，而那个失败形状最难判断。
-    note: '安装窗口已经打开。装完请重启 qywork——当前进程的 PATH 是启动时的快照，看不到新装的程序。',
+    // 必须提示重启：本进程的 PATH 取自启动时，不重启则新装的程序探测不到。
+    note: '安装窗口已打开，完成后重启 qywork 生效。',
   })
 }
