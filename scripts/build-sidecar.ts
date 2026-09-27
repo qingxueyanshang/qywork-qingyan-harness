@@ -53,9 +53,11 @@ async function main(): Promise<number> {
   // 相对路径解析不到打包外的文件，实测输出会变成兜底的 0.0.0。
   const version = (await Bun.file(join(ROOT, 'VERSION')).text()).trim()
 
+  // 用当前进程的 Bun 可执行文件，不按 PATH 解析 `bun`：npm 安装的 Bun 在 PATH 上先命中 `bun.cmd`
+  // 包装，Bun 1.4.2 拒绝把含引号的参数（下面的 `--define`）传给 .cmd，编译直接失败。
   const proc = Bun.spawn(
     [
-      'bun',
+      process.execPath,
       'build',
       ENTRY,
       '--compile',
