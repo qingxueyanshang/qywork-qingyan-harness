@@ -535,7 +535,7 @@ describe('事实包必须逐字保留，不经模型', () => {
     expect(fact).toContain('[message:ms_007]')
   })
 
-  /** F12：预算紧时，后来的闲聊不能把前面的禁止要求挤掉。 */
+  /** F12：预算紧时，较新的闲聊不能把较早的禁止要求挤掉。 */
   test('预算紧时带约束的消息先收，闲聊后收', async () => {
     const chatter = Array.from({ length: 30 }, (_, i) =>
       msg(10 + i, 'user', `顺便看看这段输出有什么问题，追问编号 ${i}：补充一些背景。`),
@@ -553,7 +553,7 @@ describe('事实包必须逐字保留，不经模型', () => {
     expect(r.manifest.facts.userConstraints.length).toBeLessThan(chatter.length + 1)
   })
 
-  /** F13：同一工具对同一目标后来成功了，之前的失败不再是未解决；无关目标的成功不核销。 */
+  /** F13：同一工具对同一目标在失败之后成功，之前的失败不再是未解决；无关目标的成功不核销。 */
   test('未解决项按同一工具与目标的后续成功核销', async () => {
     const read = (i: number, target: string, status: 'success' | 'failure') => ({
       stepId: `rn_1:${i}`,
