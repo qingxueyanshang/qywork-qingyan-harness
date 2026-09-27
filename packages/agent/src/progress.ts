@@ -8,6 +8,7 @@
  *
  * **判据：动作、模型可见结果或状态快照、副作用三样都没变。** 一次 provider 决策只留一个
  * 周期指纹；工具名、参数与结果共同进入该指纹，响应结束动作则与未完成待办快照共同进入。
+ * 执行前被拒的参数校验失败只比较工具与校验结果：改变参数却没有解决同一错误，不是进展。
  *
  * 只有周期指纹逐项相同、而且这些周期**都确凿没有产生副作用**
  * 时才算一个空转周期。这三条缺一不可：
@@ -73,16 +74,24 @@ export function cycleFingerprint(
     status: string
     executed?: boolean
     message?: string
+    errorKind?: string
     data?: unknown
     resources?: readonly { resourceId: string }[]
   },
 ): string {
+  // 只有明确未执行的参数校验失败可以忽略参数。缺参项或其他结果变化仍会改变指纹，
+  // 修正后真正执行的调用也重新按完整参数比较；权限拒绝、外部执行失败等保持原口径。
+  const rejectedArguments =
+    outcome.status === 'failure' &&
+    outcome.executed === false &&
+    outcome.errorKind === 'invalid_tool_arguments'
   return digest(
     stable({
       tool: toolName,
-      arguments: args,
+      arguments: rejectedArguments ? null : args,
       status: outcome.status,
       executed: outcome.executed ?? null,
+      errorKind: outcome.errorKind ?? null,
       summary: outcome.message ?? '',
       resources: outcome.resources?.map((r) => r.resourceId) ?? [],
       result: outcome.data ?? null,
@@ -100,8 +109,8 @@ export const REQUIRED_REPEATS = 3
  * 历史的末尾是不是一个已被事实确认的空转周期。
  *
  * 找最近的三个等宽周期：逐项周期指纹相同，且其中每一次调用都确凿没有副作用。
- * 任何一项参数、结果、状态或文件变更不同都会打断循环——**这是设计意图**，
- * 不是漏判：变了就说明还在往前走。
+ * 校验失败按工具与错误结果比较，其余调用仍比较完整参数；结果、状态或文件变更
+ * 不同都会打断循环。
  */
 export function repeatsNoProgress(
   history: readonly ProgressEvidence[],

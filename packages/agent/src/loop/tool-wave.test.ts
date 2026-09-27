@@ -429,6 +429,86 @@ describe('权限拒绝', () => {
  */
 
 describe('原地打转', () => {
+  test.each([
+    {
+      label: '只改无关字段，缺参错误未变，第三轮停止',
+      args: Array.from({ length: 10 }, (_, attempt) => ({ attempt })),
+      results: 3,
+      executed: 0,
+      stopReason: 'no_progress',
+    },
+    {
+      label: '收到重复提示后补齐参数，可以执行并结束',
+      args: [{ attempt: 1 }, { attempt: 2 }, { path: 'a', content: 'ok' }],
+      results: 3,
+      executed: 1,
+      stopReason: 'completed',
+    },
+    {
+      label: '逐步补齐参数使校验错误改变，可以继续修正',
+      args: [{}, {}, { path: 'a' }, { path: 'a' }, { path: 'a', content: 'ok' }],
+      results: 5,
+      executed: 1,
+      stopReason: 'completed',
+    },
+  ])('$label', async ({ args, results, executed: expectedExecuted, stopReason }) => {
+    const registry = new ToolRegistry()
+    let executed = 0
+    registry.register({
+      name: 'write_check',
+      description: '验证必填参数与失败重试，不写入文件。',
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string' }, content: { type: 'string' } },
+        required: ['path', 'content'],
+        additionalProperties: false,
+      },
+      actionKind: 'write',
+      objectLabel: '文件',
+      category: 'files',
+      facet: '测试',
+      summary: '测试夹具',
+      permissionEffect: 'internal_control',
+      fn: async () => {
+        executed++
+        return { status: 'success', message: '已处理' }
+      },
+    })
+    const requests: ChatRequest[] = []
+    const inner = fakeAdapter(args.map((a) => [call('write_check', a)]))
+    const loop = new AgentLoop({
+      adapter: {
+        ...inner,
+        async *stream(req) {
+          requests.push(req)
+          yield* inner.stream(req)
+        },
+      },
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    const events: AgentEvent[] = []
+    for await (const event of loop.run({
+      runId: 'rn_missing_args' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      events.push(event)
+    }
+    expect(events.filter((e) => e.type === 'tool.finished')).toHaveLength(results)
+    expect(executed).toBe(expectedExecuted)
+    expect(events.find((e) => e.type === 'run.finished')?.stopReason).toBe(stopReason)
+    // 指纹的归一化不改写真实调用：原始参数与每条失败回执仍须回传给模型。
+    const replay = requests[2]!.messages
+    expect(replay.filter((m) => m.toolCalls).map((m) => m.toolCalls![0]!.arguments)).toEqual(
+      args.slice(0, 2),
+    )
+    expect(replay.filter((m) => m.role === 'tool')).toHaveLength(2)
+    expect(replay.at(-1)?.content).toContain('未取得进展')
+  })
+
   /**
    * 复现要挡的形状：模型用一模一样的参数反复调同一个只读工具，拿到一模一样的
    * 结果。不挡的话它会无限请求 provider。这里必须按实际行为判空转；固定轮数只会
@@ -539,10 +619,10 @@ describe('原地打转', () => {
     expect(tails[1]?.role).toBe('tool')
     expect(tails[2]?.role).toBe('user')
     expect(String(tails[2]?.content)).toBe(
-      '工具调用、参数与结果已连续两轮相同；连续三轮相同时本次运行停止。',
+      '工具调用与结果已连续两轮重复，未取得进展；连续三轮重复时本次运行停止。',
     )
     expect(finished?.stopReason).toBe('no_progress')
-    expect(finished?.stopDetail).toBe('连续三轮相同的调用与结果：stuck')
+    expect(finished?.stopDetail).toBe('连续三轮工具调用没有进展：stuck')
   })
 
   test('连续三轮收到相同 pause_turn 时按真实空转停下', async () => {

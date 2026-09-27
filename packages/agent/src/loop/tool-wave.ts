@@ -247,13 +247,13 @@ export async function* executeCalls(
   // 波次跑完才知道这个单元的末 step seq，整段重盖一次。
   run.stampUnit(turn.unitStart)
 
-  // 原地打转：同样的调用、同样的结果、没有副作用，连着三个周期。
+  // 原地打转：调用或参数校验失败的结果重复、没有副作用，连着三个周期。
   // **判在批次跑完之后**，不在下发之前——提前中断会在 transcript 里留下
   // 一条有 tool_calls 却没有 tool 结果的 assistant 消息，下一轮请求会被
   // provider 直接 400。代价是晚一轮才停，仍然远好过继续空转。
   if (run.stalled()) {
     run.stopReason = 'no_progress'
-    run.stopDetail = `连续三轮相同的调用与结果：${[...new Set(calls.map((c) => c.name))].join('、')}`
+    run.stopDetail = `连续三轮工具调用没有进展：${[...new Set(calls.map((c) => c.name))].join('、')}`
     return 'stop'
   }
   return 'continue'

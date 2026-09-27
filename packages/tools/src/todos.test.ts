@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'bun:test'
-import type { ToolContext } from '@qywork/agent'
+import { AgentLoop, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import type { TodoItem } from '@qywork/core'
+import {
+  baseCtx,
+  call,
+  fakeAdapter,
+  noopPersistence,
+} from '../../agent/src/loop/fixtures.test-helper.ts'
 import { writeTodosTool } from './todos.ts'
 
 function ctx(): ToolContext & { emitted: TodoItem[][] } {
@@ -100,6 +106,42 @@ describe('整表替换语义', () => {
 })
 
 describe('硬约束：拒绝而不是静默纠正', () => {
+  test('相同非法待办连续三轮后停止，不修改待办账本', async () => {
+    const registry = new ToolRegistry()
+    registry.register(writeTodosTool)
+    const emitted: TodoItem[][] = []
+    const loop = new AgentLoop({
+      adapter: fakeAdapter(Array.from({ length: 10 }, () => [call('write_todos', { todos: [] })])),
+      registry,
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        emitTodos: (todos) => emitted.push(todos),
+      }),
+    })
+    let results = 0
+    let stopReason: string | undefined
+    for await (const event of loop.run({
+      runId: 'rn_invalid_todos' as never,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      if (event.type === 'tool.finished') {
+        results++
+        expect(event.outcome).toMatchObject({
+          status: 'failure',
+          executed: false,
+          errorKind: 'invalid_plan',
+        })
+      }
+      if (event.type === 'run.finished') stopReason = event.stopReason
+    }
+    expect(results).toBe(3)
+    expect(stopReason).toBe('no_progress')
+    expect(emitted).toHaveLength(0)
+  })
+
   test('两条 in_progress 直接拒绝', async () => {
     const { r, c } = await run([
       { content: '甲', status: 'in_progress' },

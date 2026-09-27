@@ -33,7 +33,7 @@ import { envelopeHashOf } from './request.ts'
 import type { CompactionPort, LoopDeps, LoopPersistence, RunInput } from './types.ts'
 
 /** 第二次出现相同的轮次时交给模型的事实。第三次就停，这句话说的就是这条规则。 */
-const REPEAT_NOTICE = '工具调用、参数与结果已连续两轮相同；连续三轮相同时本次运行停止。'
+const REPEAT_NOTICE = '工具调用与结果已连续两轮重复，未取得进展；连续三轮重复时本次运行停止。'
 
 /** 各阶段从 `AgentLoop` 取用的能力。由 `AgentLoop` 构造，一个实例一份。 */
 export interface LoopHost {
