@@ -524,6 +524,93 @@ describe('事实包必须逐字保留，不经模型', () => {
     expect(r.manifest.facts.userConstraints).toContain('不要动 legacy/ 目录')
     expect(r.manifest.facts.filesTouched.length).toBeLessThan(many.length)
   })
+
+  /** F11：约束写在长消息的后半段。先截头部再判的话，它既不算约束，也不在事实包里。 */
+  test('长消息按全文判约束，摘出带约束的句子并附原文地址', async () => {
+    const long = `${'这是一段很长的背景说明，交代需求的来龙去脉。'.repeat(20)}上线前不要动 production 数据库。`
+    const r = await compact(input({ messages: [msg(7, 'user', long)], actions: [] }), ok)
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    const [fact] = r.manifest.facts.userConstraints
+    expect(fact).toContain('不要动 production 数据库')
+    expect(fact).toContain('[message:ms_007]')
+  })
+
+  /** F12：预算紧时，后来的闲聊不能把前面的禁止要求挤掉。 */
+  test('预算紧时带约束的消息先收，闲聊后收', async () => {
+    const chatter = Array.from({ length: 30 }, (_, i) =>
+      msg(10 + i, 'user', `顺便看看这段输出有什么问题，追问编号 ${i}：补充一些背景。`),
+    )
+    const r = await compact(
+      input({
+        messages: [msg(1, 'user', '不要 force-push'), ...chatter],
+        actions: [],
+        projectionBudget: 300,
+      }),
+      ok,
+    )
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.facts.userConstraints[0]).toBe('不要 force-push')
+    expect(r.manifest.facts.userConstraints.length).toBeLessThan(chatter.length + 1)
+  })
+
+  /** F13：同一工具对同一目标后来成功了，之前的失败不再是未解决；无关目标的成功不核销。 */
+  test('未解决项按同一工具与目标的后续成功核销', async () => {
+    const read = (i: number, target: string, status: 'success' | 'failure') => ({
+      stepId: `rn_1:${i}`,
+      tool: 'read_file',
+      status,
+      actionKind: 'read' as const,
+      target,
+      summary: '',
+      ...(status === 'failure' ? { errorCode: 'path_not_found' } : {}),
+    })
+    const r = await compact(
+      input({
+        actions: [
+          read(1, 'a.ts', 'failure'),
+          read(2, 'b.ts', 'failure'),
+          read(3, 'a.ts', 'success'),
+          read(4, 'c.ts', 'success'),
+        ],
+      }),
+      ok,
+    )
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.facts.openItems).toEqual(['read_file b.ts 失败（path_not_found）'])
+  })
+
+  test('上一次压缩留下的失败项同样可以被核销', async () => {
+    const previous: CompactionManifest = {
+      revision: 1,
+      compactedThroughMessageId: 'ms_000' as MessageId,
+      compactedMessageCount: 0,
+      summary: '旧摘要',
+      facts: {
+        filesTouched: [],
+        openItems: ['read_file a.ts 失败（path_not_found）'],
+        userConstraints: [],
+      },
+      createdAt: 0,
+    }
+    const r = await compact(
+      input({
+        previous,
+        actions: [
+          {
+            stepId: 'rn_2:1',
+            tool: 'read_file',
+            status: 'success',
+            actionKind: 'read',
+            target: 'a.ts',
+            summary: '',
+          },
+        ],
+      }),
+      ok,
+    )
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.facts.openItems).toEqual([])
+  })
 })
 
 describe('投影', () => {

@@ -490,31 +490,40 @@ function extractFacts(
     if (a.target && a.actionKind && FILE_ACTION_KINDS.has(a.actionKind)) filesTouched.add(a.target)
   }
 
-  const openItems = [...(previous?.openItems ?? [])]
   // 落盘产物的定位符。合并而不是替换——早期落的那份正文压缩之后照样要能读回。
   const resources = new Set(previous?.resources ?? [])
   for (const a of actions) {
-    if (a.resourceId) resources.add(`${a.tool}${a.target ? ` ${a.target}` : ''} → ${a.resourceId}`)
+    if (a.resourceId) resources.add(`${actionLabel(a)} → ${a.resourceId}`)
   }
+  /*
+   * 未解决项按时间顺序核销：同一工具对同一目标后来成功了，它之前的失败就不再是未解决。
+   * 判据只认工具与目标都相同，无关目标的成功不核销。只累加不核销的话，
+   * 模型每次压缩后都会看到一条已经解决的失败，并据此重做。
+   */
+  let openItems = [...(previous?.openItems ?? [])]
   for (const a of actions) {
+    const failed = `${actionLabel(a)} 失败`
     if (a.status === 'failure') {
-      openItems.push(
-        `${a.tool}${a.target ? ` ${a.target}` : ''} 失败${a.errorCode ? `（${a.errorCode}）` : ''}`,
-      )
+      openItems.push(`${failed}${a.errorCode ? `（${a.errorCode}）` : ''}`)
+    } else if (a.status === 'success') {
+      openItems = openItems.filter((item) => item !== failed && !item.startsWith(`${failed}（`))
     }
   }
 
   /*
-   * 用户消息**全部**逐字进事实包，约束类排前面。
+   * 用户消息**全部**进事实包，约束类排前面。
    *
    * 用正则筛去留会漏：真实会话上那三条正则一条都没命中过。逐字收录不会把投影
    * 推过原文——事实包是原文的子集，上界由「必须更小」闸与 `fitFacts` 的预算兜住。
+   *
+   * 长消息按全文判约束、摘出带约束的句子，并附原文地址：先截头部再判的话，
+   * 写在后面的「不要…」既不算约束，也不在事实包里。
    */
   const fresh: string[] = []
   for (const m of messages) {
     const text = (m.content ?? '').trim()
     if (!text || m.role !== 'user') continue
-    fresh.push(excerpt(text, EXCERPT))
+    fresh.push(userFact(m.id, text))
   }
   const userConstraints = [
     ...new Set([
@@ -530,6 +539,23 @@ function extractFacts(
     userConstraints,
     ...(resources.size ? { resources: [...resources] } : {}),
   }
+}
+
+/** 动作在事实清单里的名字：工具名加目标。未解决项的核销按它逐字匹配。 */
+function actionLabel(a: CompactionAction): string {
+  return `${a.tool}${a.target ? ` ${a.target}` : ''}`
+}
+
+/**
+ * 一条用户消息在事实包里的写法。
+ *
+ * 装得下就是原文。装不下时先摘出带约束的句子，没有再取头部；截过的附上 `[message:…]`，
+ * 模型需要全文时按它用 `read_history` 取回。
+ */
+function userFact(id: string, text: string): string {
+  if (text.length <= EXCERPT) return excerpt(text, EXCERPT)
+  const hits = text.split(/(?<=[。！？!?；;\n])/).filter(looksLikeConstraint)
+  return `${excerpt(hits.length ? hits.join(' ') : text, EXCERPT)}（原文 [message:${id}]）`
 }
 
 function dedupeKeepLatest(list: string[]): string[] {
@@ -552,6 +578,9 @@ function dedupeKeepLatest(list: string[]): string[] {
  * 文件清单最先让位——文件路径重读一次就有，而「永远不要 force-push」这类
  * 该不变量一旦丢失将无法恢复。每类内部从最近往早收。
  *
+ * 用户消息里带约束的先收、其余后收：两者混在一起从最近往早收的话，
+ * 后来的闲聊会先把预算用完，前面的禁止要求被挤掉。
+ *
  * 顺序写成代码不写成配置：它是正确性判断，不是口味。
  */
 function fitFacts(facts: CompactionFacts, budget: number, density: TokenDensity): CompactionFacts {
@@ -566,7 +595,11 @@ function fitFacts(facts: CompactionFacts, budget: number, density: TokenDensity)
     }
     return kept.reverse()
   }
-  const userConstraints = take(facts.userConstraints)
+  const binding = take(facts.userConstraints.filter(looksLikeConstraint))
+  const userConstraints = [
+    ...binding,
+    ...take(facts.userConstraints.filter((t) => !looksLikeConstraint(t))),
+  ]
   const openItems = take(facts.openItems)
   const resources = take(facts.resources ?? [])
   const filesTouched = take(facts.filesTouched)
