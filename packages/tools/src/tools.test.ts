@@ -1616,9 +1616,8 @@ describe('grep 计入投递额度', () => {
 /**
  * `read_file` 的图片与 PDF 两条分派。
  *
- * 两条都必须在 **1 MB 大小守卫之前**分派：手机照片和多数 PDF 都比它大，
- * 放晚一行它们会先被拒，而拿到的话术是「请用 offset/limit 分段读取」——
- * 对一张图不可执行。这一组盯的就是那个顺序。
+ * 两条都必须在**二进制嗅探之前**分派：手机照片和多数 PDF 都超过嗅探的大小线，
+ * 放晚一行它们会先被判成二进制而拒绝。这一组盯的就是那个顺序。
  */
 describe('read_file 认图片', () => {
   const PNG = Buffer.from(
@@ -1684,8 +1683,8 @@ describe('read_file 认图片', () => {
    * 三个适配器都没有视频的编码器，任何模型都一样。所以这里回的不是
    * 「换个模型」，是「不要再读它」。
    *
-   * 盯的是那句话不能落到「请用 offset/limit 分段读取」上：多数视频都超过 1 MB，
-   * 而分段读一个二进制文件走不通，模型只能反复试。判据取内容不取扩展名。
+   * 盯的是那句话不能落到「分段读取」上：分段读一个二进制文件走不通，模型只能反复试。
+   * 判据取内容不取扩展名。
    */
   test('读视频：报「不是文本」而不是「分段读取」', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-mp4-'))
@@ -1700,12 +1699,7 @@ describe('read_file 认图片', () => {
     expect(out.message).not.toContain('分段读取')
   })
 
-  /**
-   * 超过 1 MB 的图片必须走图片那条错误，不能落到文本那条。
-   *
-   * 落到文本那条的话用户看到的是「请用 offset/limit 分段读取」——
-   * 而那对一张图既做不到也没意义。
-   */
+  /** 超过嗅探大小线的图片必须走图片那条，不能被判成二进制拒绝。 */
   test('大图报的是图片的错，不是「分段读取」', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-img2-'))
     await writeFile(join(root, 'big.png'), Buffer.concat([PNG, Buffer.alloc(2 * 1024 * 1024)]))
@@ -1728,5 +1722,58 @@ describe('read_file 认图片', () => {
     await r.execute('read_file', { path: 'c.png' }, c)
     const w = await r.execute('write_file', { path: 'c.png', mode: 'overwrite', content: 'x' }, c)
     expect(w.status).toBe('success')
+  })
+})
+
+/**
+ * F01：大于 1 MB 的文本不再在读取之前整份拒绝。投多少由投递额度定，
+ * 整份读取的上限只按内存算（20 MB，与 PDF 同一口径）。
+ */
+describe('read_file 读大文本', () => {
+  test('1.3 MB 文本按 offset=1、limit=1 读得到第一行', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-big-text-'))
+    const line = 'x'.repeat(99)
+    await writeFile(
+      join(root, 'big.log'),
+      Array.from({ length: 13_000 }, (_, i) => `${i} ${line}`).join('\n'),
+    )
+    const out = await registry().execute(
+      'read_file',
+      { path: 'big.log', offset: 1, limit: 1 },
+      ctx(root),
+    )
+    expect(out.status).toBe('success')
+    expect((out.data as { content: string }).content).toBe(`1\t0 ${line}`)
+    expect((out.data as { totalLines: number }).totalLines).toBe(13_000)
+  })
+
+  test('读过的大文本能被 edit_file 修改，外部改过之后照旧拦住', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-big-edit-'))
+    const body = Array.from({ length: 13_000 }, (_, i) => `row ${i} ${'y'.repeat(95)}`).join('\n')
+    await writeFile(join(root, 'big.log'), body)
+    const r = registry()
+    const c = ctx(root)
+    expect((await r.execute('read_file', { path: 'big.log', offset: 5, limit: 2 }, c)).status).toBe(
+      'success',
+    )
+    await writeFile(join(root, 'big.log'), `${body}\nappended`)
+    const edit = { path: 'big.log', old_string: 'row 7 ', new_string: 'row seven ' }
+    expect((await r.execute('edit_file', edit, c)).status).toBe('failure')
+    expect((await r.execute('read_file', { path: 'big.log', offset: 5, limit: 2 }, c)).status).toBe(
+      'success',
+    )
+    expect((await r.execute('edit_file', edit, c)).status).toBe('success')
+  })
+
+  test('超过 20 MB 的文本如实报内存上限', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-huge-text-'))
+    await writeFile(join(root, 'huge.log'), 'z'.repeat(21 * 1024 * 1024))
+    const out = await registry().execute(
+      'read_file',
+      { path: 'huge.log', offset: 1, limit: 1 },
+      ctx(root),
+    )
+    expect(out.status).toBe('failure')
+    expect(out.message).toContain('20 MB')
   })
 })
