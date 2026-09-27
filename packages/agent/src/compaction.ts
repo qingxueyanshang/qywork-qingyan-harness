@@ -164,17 +164,34 @@ function parseEnvelope(content: string): Record<string, unknown> | null {
 }
 
 function foldCallArguments(call: WireToolCall): WireToolCall {
-  let folded = false
-  const args: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(call.arguments)) {
-    if (typeof value === 'string' && value.length > EXCERPT) {
-      args[key] = `${value.slice(0, EXCERPT)}…[已折叠 ${value.length - EXCERPT} 字符]`
-      folded = true
-    } else {
-      args[key] = value
-    }
+  const folded = foldValue(call.arguments)
+  return folded === call.arguments
+    ? call
+    : { ...call, arguments: folded as Record<string, unknown> }
+}
+
+/**
+ * 把任意深度的长字符串折成摘录 + 标记，对象与数组的结构原样保留。没有可折的返回原引用。
+ *
+ * 不要只折顶层：批量写入类工具把正文放在 `files[].content` 这类嵌套位置，只折顶层时这些参数永远收纳不掉。
+ */
+function foldValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.length > EXCERPT
+      ? `${value.slice(0, EXCERPT)}…[已折叠 ${value.length - EXCERPT} 字符]`
+      : value
   }
-  return folded ? { ...call, arguments: args } : call
+  if (Array.isArray(value)) {
+    const items = value.map(foldValue)
+    return items.some((item, i) => item !== value[i]) ? items : value
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).map(([k, v]) => [k, foldValue(v)] as const)
+    return entries.some(([k, v]) => v !== (value as Record<string, unknown>)[k])
+      ? Object.fromEntries(entries)
+      : value
+  }
+  return value
 }
 
 /**

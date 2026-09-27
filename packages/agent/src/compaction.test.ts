@@ -165,6 +165,44 @@ describe('收纳段：换信封，不改字节', () => {
     expect(args.content.length).toBeLessThan(400)
   })
 
+  /** F15：嵌套在对象与数组里的长字符串也要折，结构保留，同一输入两次折叠逐字相同。 */
+  test('嵌套参数里的长字符串也折，结构不变且投影稳定', () => {
+    const message = {
+      role: 'assistant' as const,
+      content: '',
+      toolCalls: [
+        {
+          id: 'c1',
+          name: 'write_files',
+          arguments: {
+            files: [
+              { path: 'a.ts', content: 'z'.repeat(100_000) },
+              { path: 'b.ts', content: '短' },
+            ],
+            meta: { note: 'y'.repeat(2000), count: 2 },
+          },
+        },
+      ],
+    }
+    const out = condenseMessage(message)
+    const args = out.toolCalls![0]!.arguments as {
+      files: { path: string; content: string }[]
+      meta: { note: string; count: number }
+    }
+    expect(args.files[0]!.path).toBe('a.ts')
+    expect(args.files[0]!.content).toContain('已折叠')
+    expect(args.files[1]!.content).toBe('短')
+    expect(args.meta.count).toBe(2)
+    expect(JSON.stringify(args).length).toBeLessThan(2000)
+    expect(condenseMessage(message)).toEqual(out)
+  })
+
+  test('没有长字符串时原样返回同一个调用', () => {
+    const call = { id: 'c1', name: 'x', arguments: { a: { b: ['短'] } } }
+    const out = condenseMessage({ role: 'assistant', content: '', toolCalls: [call] })
+    expect(out.toolCalls![0]).toBe(call)
+  })
+
   test('思考正文原样保留 —— 缺它 DeepSeek 兼容端点下一轮 400', () => {
     const out = condenseMessage({
       role: 'assistant',
