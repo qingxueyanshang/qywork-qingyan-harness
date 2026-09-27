@@ -31,7 +31,7 @@ const FOLLOWUP_MODES: { id: FollowUpMode; label: string }[] = [
 /**
  * 运行环境：qywork 要调的那几个外部程序在不在。
  *
- * **三态，不是两态。** 已拥有 / 需要安装 / 未安装（可选）。**中间那档不能省**：rg 缺了只是搜索慢一
+ * **三态，不是两态。** 已安装 / 需要安装 / 未安装（可选）。**中间那档不能省**：rg 缺了只是搜索慢一
  * 点（内置遍历顶上），node 只有装插件才用——把它们也标成「需要安装」，用户第一次点开设置页看到的
  * 就是一片红，而真正坏掉的那条淹在里面。
  *
@@ -74,11 +74,11 @@ function EnvironmentRows() {
             <div class="setting-row-text">
               <span class="setting-row-label">
                 {d.label}
-                {d.path === null ? (d.required ? ' · 需要安装' : ' · 未安装（可选）') : ' · 已拥有'}
+                {d.path === null ? (d.required ? ' · 需要安装' : ' · 未安装（可选）') : ' · 已安装'}
               </span>
               {/* 装了就只报路径——排查「同一条命令在终端能跑、在这里不行」时，
                   唯一有用的信息是它当前用的哪一个。 */}
-              <span class="setting-row-hint">{d.path ?? `${d.impact} · ${d.hint}`}</span>
+              <span class="setting-row-hint">{d.path ?? d.hint}</span>
             </div>
             <Show when={d.canInstall}>
               <div class="setting-row-control">
@@ -95,13 +95,6 @@ function EnvironmentRows() {
           </div>
         )}
       </For>
-      <Show when={deps().some((d) => d.canInstall)}>
-        <div class="setting-row stack">
-          <span class="setting-row-hint">
-            安装会打开一个终端窗口执行 winget；完成后需重启 qywork。
-          </span>
-        </div>
-      </Show>
       <Show when={result()}>
         {(r) => (
           <div class="setting-row stack">

@@ -213,10 +213,6 @@ export interface EnvDependency {
   /** 找到的可执行文件路径；`null` = 没装。 */
   path: string | null
   /**
-   * 缺了它会怎样。**必填**——一行「未安装」不告诉用户要不要管它。
-   */
-  impact: string
-  /**
    * `true` = 缺了就有功能不能用（bash、git）；
    * `false` = 缺了只是降级或只在特定场景要（rg 有内置遍历顶上，node 只有装插件才用）。
    *
@@ -224,7 +220,10 @@ export interface EnvDependency {
    * 设置页看到的就是一片红，而其中大半不影响他用。
    */
   required: boolean
-  /** 没装时的下一步（怎么装、或者环境变量怎么指）。装了时是空串。 */
+  /**
+   * 没装时缺了会怎样，按本机当前状态写成一句。**没装时必填**——一行「未安装」不告诉用户要不要管它。
+   * 装了时是空串。
+   */
   hint: string
   /**
    * 能不能一键装（Windows + 有 winget + 本仓收录了它的包 id）。
