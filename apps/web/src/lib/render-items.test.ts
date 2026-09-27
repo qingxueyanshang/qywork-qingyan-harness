@@ -7,7 +7,14 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { actionLabel, buildRenderItems, groupTitle, sameRenderItem, verb } from './render-items.ts'
+import {
+  actionLabel,
+  buildRenderItems,
+  delegationStatus,
+  groupTitle,
+  sameRenderItem,
+  verb,
+} from './render-items.ts'
 import type { TranscriptItem } from './store/index.ts'
 
 let seq = 0
@@ -334,6 +341,23 @@ describe('workflow 始终是一张卡', () => {
       target: { kind: 'role', role: 'dev' },
       task: '查',
     })
+  })
+})
+
+describe('后台子任务摘要', () => {
+  const task = (phase: 'working' | 'queued' | 'done' | 'failed', label = '开发') =>
+    item('tool', {
+      toolName: 'subagent',
+      nodes: { subagent: { phase, label, subagentId: 'cv_dev' as never } },
+    })
+
+  test('同一子会话续派只显示最新状态，旧任务名与失败终态不显示为运行中', () => {
+    const first = task('working', '初稿')
+    const resumed = task('queued', '修订')
+    expect(delegationStatus([first, resumed])).toBe('子任务排队中：修订')
+    expect(delegationStatus([first, resumed, task('working', '修订')])).toBe('等待子任务返回：修订')
+    expect(delegationStatus([first, resumed, task('done')])).toBeNull()
+    expect(delegationStatus([first, resumed, task('failed')])).toBeNull()
   })
 })
 
