@@ -387,6 +387,14 @@ export async function compact(
   // 落库端还有一道守卫，两道的判据是同一个信号。
   if (signal?.aborted) return { status: 'aborted' }
   if (!summary?.trim()) return summaryFailed('summary_empty', '摘要为空或被输出上限截断')
+  /*
+   * 「在预算内」闸：摘要超出事实清单之外的余量就作废摘要段，提示词里写明了这条。
+   * 只查下面那道「必须更小」不够：被替换的区域很大时，一份远超预算的摘要同样比它小，
+   * 压缩落库之后占用仍在软阈值之上。
+   */
+  if (estimateText(summary.trim(), input.density) > headroom) {
+    return summaryFailed('over_budget', '摘要超出投影预算')
+  }
 
   const candidate: CompactionManifest = {
     revision: (previous?.revision ?? 0) + 1,
