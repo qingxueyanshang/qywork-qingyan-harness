@@ -76,7 +76,7 @@ export interface ProviderProfile {
    * 其余情况下 `buildAdapter` 直接抛 `no_api_key`——不发请求去等 401。
    */
   apiKey: string
-  /** 自定义端点（中转站、自建网关、ollama）。 */
+  /** 自定义端点；留空时按模型库中的厂商和当前协议使用官方端点。 */
   baseUrl?: string
   model: string
   /** 额外请求头，给需要特殊鉴权的中转站用。 */

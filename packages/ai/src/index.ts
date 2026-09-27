@@ -24,6 +24,7 @@ export {
   lookupModel,
   type ModelSpec,
   type OffPeakDiscount,
+  officialBaseUrl,
   priceAt,
   type SpecOverride,
   unknownModel,

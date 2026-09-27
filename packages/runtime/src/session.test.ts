@@ -35,7 +35,12 @@ import { Session, withAttachments } from './session.ts'
 const config: QyConfig = {
   active: { provider: 'p', model: 'deepseek-v4-flash' },
   providers: {
-    p: { kind: 'openai_chat_completions', apiKey: 'sk-x', models: { 'deepseek-v4-flash': {} } },
+    p: {
+      kind: 'openai_chat_completions',
+      apiKey: 'sk-x',
+      baseUrl: 'https://relay.example/v1',
+      models: { 'deepseek-v4-flash': {} },
+    },
   },
 }
 

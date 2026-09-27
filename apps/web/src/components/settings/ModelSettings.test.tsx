@@ -1,4 +1,4 @@
-/** 覆盖检测结果的思考观察、参数校验及连接失败显示。 */
+/** 覆盖检测结果显示和 Base URL 的官方地址占位符。 */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { ProbeResult } from '../../lib/store/index.ts'
@@ -7,6 +7,17 @@ beforeAll(() => GlobalRegistrator.register({ url: 'http://localhost/' }))
 afterAll(async () => {
   document.body.replaceChildren()
   await GlobalRegistrator.unregister()
+})
+
+test('地址占位符显示实际官方地址；混合厂商与未知模型不显示错误的统一默认', async () => {
+  const { baseUrlPlaceholder } = await import('./ModelSettings.tsx')
+  const deepseek = 'https://api.deepseek.com/v1'
+  expect(baseUrlPlaceholder([deepseek, deepseek])).toBe(`留空使用 ${deepseek}`)
+  expect(baseUrlPlaceholder([deepseek, 'https://api.xiaomimimo.com/v1'])).toBe(
+    '留空按各模型使用官方地址',
+  )
+  expect(baseUrlPlaceholder([deepseek, undefined])).toBe('请填写接口地址')
+  expect(baseUrlPlaceholder([])).toBe('请填写接口地址')
 })
 
 test('思考已观察但参数未确认时分别显示；未观察不显示为不支持', async () => {

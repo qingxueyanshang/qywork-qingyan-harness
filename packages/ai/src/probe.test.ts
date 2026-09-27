@@ -175,6 +175,7 @@ describe('探测结果真的会影响请求装配', () => {
       kind: 'openai_chat_completions',
       apiKey: 'sk-x',
       model: '某个中转站的模型',
+      baseUrl: 'https://relay.example/v1',
       transport: { effort: true },
     })
     expect(adapter.spec.effortLevels).toEqual([])

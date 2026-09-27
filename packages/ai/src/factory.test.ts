@@ -1,9 +1,137 @@
 import { describe, expect, test } from 'bun:test'
-import { lookupModel } from './catalog.ts'
+import { builtinCatalog, lookupModel, officialBaseUrl, VENDORS } from './catalog.ts'
 import { ProviderError } from './errors.ts'
 import { buildAdapter } from './factory.ts'
+import { probeModel } from './probe.ts'
+import type { ProviderProfile } from './types.ts'
 
 const base = { kind: 'openai_chat_completions' as const, model: 'deepseek-flash' }
+
+describe('Base URL 留空时按模型库解析官方地址', () => {
+  const examples: [ProviderProfile['kind'], string, string][] = [
+    ['openai_chat_completions', 'deepseek-flash', 'https://api.deepseek.com/v1/chat/completions'],
+    ['openai_responses', 'deepseek-flash', 'https://api.deepseek.com/v1/responses'],
+    ['anthropic_messages', 'deepseek-flash', 'https://api.deepseek.com/anthropic/v1/messages'],
+    ['openai_chat_completions', 'mimo-v2.6-pro', 'https://api.xiaomimimo.com/v1/chat/completions'],
+    ['openai_responses', 'mimo-v2.6-pro', 'https://api.xiaomimimo.com/v1/responses'],
+    ['anthropic_messages', 'claude-opus-5', 'https://api.anthropic.com/v1/messages'],
+    ['openai_responses', 'gpt-6-sol', 'https://api.openai.com/v1/responses'],
+    [
+      'openai_chat_completions',
+      'gemini-3.8-flash',
+      'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    ],
+    [
+      'openai_chat_completions',
+      'glm-5.3-flash',
+      'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+    ],
+  ]
+
+  for (const [kind, model, url] of examples) {
+    test(`${model} / ${kind} 的检测请求使用官方地址且保留凭证`, async () => {
+      const original = globalThis.fetch
+      let captured: { url: string; model: string; credential: string | null } | undefined
+      globalThis.fetch = (async (input, init) => {
+        const headers = new Headers(init?.headers)
+        captured = {
+          url: String(input),
+          model: JSON.parse(String(init?.body)).model,
+          credential: headers.get(kind === 'anthropic_messages' ? 'x-api-key' : 'authorization'),
+        }
+        return new Response(JSON.stringify({ error: { message: 'test rejection' } }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        })
+      }) as typeof fetch
+      try {
+        const result = await probeModel({ kind, model, apiKey: 'sk-test', baseUrl: '  ' })
+        expect(result.reachable).toBe(false)
+        expect(captured).toEqual({
+          url,
+          model,
+          credential: kind === 'anthropic_messages' ? 'sk-test' : 'Bearer sk-test',
+        })
+      } finally {
+        globalThis.fetch = original
+      }
+    })
+  }
+
+  test('库中每个厂商至少有一个可用的官方默认协议', () => {
+    for (const vendor of VENDORS) {
+      expect(builtinCatalog().some((m) => m.vendor === vendor.id && officialBaseUrl(m))).toBe(true)
+    }
+  })
+
+  test('显式中转、套餐和本地地址始终优先，不按已知模型改换厂商', async () => {
+    const original = globalThis.fetch
+    let actual = ''
+    globalThis.fetch = (async (input) => {
+      actual = String(input)
+      return new Response(JSON.stringify({ error: { message: 'test rejection' } }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as typeof fetch
+    try {
+      for (const root of [
+        'https://relay.example',
+        'https://token-plan-cn.xiaomimimo.com',
+        'http://127.0.0.1:11434',
+      ]) {
+        for (const kind of [
+          'openai_chat_completions',
+          'openai_responses',
+          'anthropic_messages',
+        ] as const) {
+          const baseUrl = `${root}/${kind === 'anthropic_messages' ? 'anthropic' : 'v1'}`
+          const profile = { kind, model: 'mimo-v2.6-pro', apiKey: 'sk-test', baseUrl }
+          await probeModel(profile)
+          const suffix =
+            kind === 'anthropic_messages'
+              ? '/v1/messages'
+              : kind === 'openai_responses'
+                ? '/responses'
+                : '/chat/completions'
+          expect(actual).toBe(`${baseUrl}${suffix}`)
+          expect(profile.baseUrl).toBe(baseUrl)
+        }
+      }
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  test('未知模型及未登记的协议要求地址，不默认为 OpenAI', () => {
+    for (const profile of [
+      { ...base, model: 'DeepSeek-V4.1-Flash' },
+      { kind: 'anthropic_messages' as const, model: 'gpt-6-sol' },
+    ]) {
+      const error = grab(() => buildAdapter({ ...profile, apiKey: 'sk-test' }))
+      expect(error.code).toBe('invalid_request')
+      expect(error.message).toContain('请填写 Base URL')
+    }
+    expect(
+      buildAdapter({
+        ...base,
+        model: 'custom',
+        apiKey: 'sk-test',
+        baseUrl: 'https://relay.example/v1',
+      }).spec.id,
+    ).toBe('custom')
+  })
+
+  test('用户在模型库显式绑定厂商后使用对应官方地址', () => {
+    const adapter = buildAdapter({
+      ...base,
+      model: 'custom',
+      apiKey: 'sk-test',
+      spec: { vendor: 'deepseek' },
+    })
+    expect((adapter as unknown as { baseUrl: string }).baseUrl).toBe('https://api.deepseek.com/v1')
+  })
+})
 
 function grab(fn: () => unknown): ProviderError {
   try {

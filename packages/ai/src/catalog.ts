@@ -2,8 +2,8 @@
  * 模型目录与计价。
  *
  * 这是**内置基线**，不是白名单：用户在设置里填任意 model id 都能跑（BYOK 自定义接口是
- * 需求 11 的硬要求）。目录只提供三件事——已知模型的能力约束、计价、以及请求参数的合法性
- * 校验。未知模型走 `unknownModel()` 的保守默认值，不阻止发送。
+ * 需求 11 的硬要求）。目录提供模型能力、计价、请求参数约束和官方端点。
+ * 未知模型使用保守参数，需要用户指定端点。
  *
  * 口径来源：Anthropic 官方文档（2026-09-02 快照）。改动这里前先核对，别凭记忆写。
  */
@@ -180,33 +180,14 @@ export interface ModelSpec {
   catalogued?: boolean
 }
 
-/**
- * 厂商。
- *
- * **和 `ProviderKind` 是两个轴，不能合并。** `ProviderKind` 说的是协议——
- * DeepSeek、OpenAI、任何中转站都可以是 `openai_chat_completions`。厂商回答的是
- * 另外两个问题：端点在哪、旗下有哪些模型。
- * 合成一个的话「选了厂商自动带出端点」就无从做起，因为协议里没有端点。
- *
- * **它不落盘。** 配置文件里存的仍然是 `kind` / `model` / `baseUrl` / `apiKey`
- * 那几个字段，这张表只是填表时的默认值来源。多存一个 `vendor` 就会和 `baseUrl`
- * 打架：用户把端点改成中转站之后，vendor 还写着 deepseek，两本账立刻开始漂移。
- */
+/** 厂商及各协议的官方端点。端点只作为 Base URL 留空时的默认值，不写入配置。 */
 export interface Vendor {
   id: string
   displayName: string
-  defaultKind: ProviderKind
-  /** 官方端点。省略 = 用 SDK 自带的默认值（Anthropic 就是这种情况）。 */
-  defaultBaseUrl?: string
+  /** 未登记的协议需要显式配置端点。 */
+  baseUrls: Partial<Record<ProviderKind, string>>
 }
 
-/**
- * `defaultBaseUrl` **只填有实据的**。
- *
- * Anthropic 走 SDK 自带默认；DeepSeek 那条来自本机跑通的配置；OpenAI 那条是
- * `openai-responses.ts` 里的常量。其余六家没有实据，所以留空——凭印象写一个域名，
- * 错了的表现是「填好了却连不上」，比空着要人自己填糟得多。
- */
 /**
  * DeepSeek 的 tokenizer 密度。斜率法实测（2026-08-26，`deepseek-v4-flash-vision-exp`）：
  * 中文 0.569 token/字、真实源码 2.71–3.00 字符/token、工具结果整条 2.53 字符/token。
@@ -233,60 +214,85 @@ export const VENDORS: readonly Vendor[] = [
   {
     id: 'anthropic',
     displayName: 'Anthropic',
-    defaultKind: 'anthropic_messages',
+    baseUrls: {
+      anthropic_messages: 'https://api.anthropic.com',
+      openai_chat_completions: 'https://api.anthropic.com/v1',
+    },
   },
   {
     id: 'openai',
     displayName: 'OpenAI',
-    defaultKind: 'openai_chat_completions',
-    defaultBaseUrl: 'https://api.openai.com/v1',
+    baseUrls: {
+      openai_chat_completions: 'https://api.openai.com/v1',
+      openai_responses: 'https://api.openai.com/v1',
+    },
   },
   {
     id: 'deepseek',
     displayName: 'DeepSeek',
-    defaultKind: 'openai_chat_completions',
-    // 带 `/v1`：DeepSeek 的 OpenAI 兼容端点在这一层，少了它是 404。
-    defaultBaseUrl: 'https://api.deepseek.com/v1',
+    baseUrls: {
+      openai_chat_completions: 'https://api.deepseek.com/v1',
+      openai_responses: 'https://api.deepseek.com/v1',
+      anthropic_messages: 'https://api.deepseek.com/anthropic',
+    },
   },
   {
     id: 'xiaomi',
     displayName: '小米 MiMo',
-    defaultKind: 'openai_chat_completions',
-    defaultBaseUrl: 'https://api.xiaomimimo.com/v1',
+    baseUrls: {
+      openai_chat_completions: 'https://api.xiaomimimo.com/v1',
+      openai_responses: 'https://api.xiaomimimo.com/v1',
+      anthropic_messages: 'https://api.xiaomimimo.com/anthropic',
+    },
   },
   {
     id: 'google',
     displayName: 'Google',
-    defaultKind: 'openai_chat_completions',
+    baseUrls: {
+      openai_chat_completions: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    },
   },
   {
     id: 'xai',
     displayName: 'xAI',
-    defaultKind: 'openai_chat_completions',
-    defaultBaseUrl: 'https://api.x.ai/v1',
+    baseUrls: {
+      openai_chat_completions: 'https://api.x.ai/v1',
+      openai_responses: 'https://api.x.ai/v1',
+    },
   },
   {
     id: 'alibaba',
     displayName: '阿里云百炼',
-    defaultKind: 'openai_chat_completions',
+    baseUrls: {
+      openai_chat_completions: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      anthropic_messages: 'https://dashscope.aliyuncs.com/apps/anthropic',
+    },
   },
   {
     id: 'moonshot',
     displayName: '月之暗面',
-    defaultKind: 'openai_chat_completions',
+    baseUrls: { openai_chat_completions: 'https://api.moonshot.cn/v1' },
   },
   {
     id: 'zhipu',
     displayName: '智谱',
-    defaultKind: 'openai_chat_completions',
-    defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    baseUrls: { openai_chat_completions: 'https://open.bigmodel.cn/api/paas/v4' },
   },
   {
     id: 'minimax',
     displayName: 'MiniMax',
-    defaultKind: 'openai_chat_completions',
+    baseUrls: {
+      openai_chat_completions: 'https://api.minimax.cn/v1',
+      openai_responses: 'https://api.minimax.cn/v1',
+      anthropic_messages: 'https://api.minimax.cn/anthropic',
+    },
   },
 ]
+
+/** 以模型库声明的厂商和所选协议解析官方端点，不根据模型名称猜测厂商。 */
+export function officialBaseUrl(spec: Pick<ModelSpec, 'vendor' | 'provider'>): string | undefined {
+  return VENDORS.find((vendor) => vendor.id === spec.vendor)?.baseUrls[spec.provider]
+}
 
 /**
  * 长上下文阶梯价。

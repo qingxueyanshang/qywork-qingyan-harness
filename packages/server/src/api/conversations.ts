@@ -12,6 +12,7 @@ import {
   lookupMediaModel,
   lookupModel,
   mediaCatalog,
+  officialBaseUrl,
   unknownModel,
   VENDORS,
 } from '@qywork/ai'
@@ -62,6 +63,8 @@ import { type ApiHandler, type ApiRequestDeps, json } from './types.ts'
 export interface ModelRow {
   chatToolSchema: ToolSchemaMode
   id: string
+  /** Base URL 留空时使用的官方地址；未登记时省略。 */
+  defaultBaseUrl?: string
   /** 内置目录里的显示名；目录里没有就是 id 本身。 */
   label: string
   /** 这个模型吃哪几档思考强度。空数组 = 这条链路上调不了，界面据此不显示开关。 */
@@ -331,8 +334,10 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
           overrides[catalogKey(id, provider.kind)],
         )
         const effortLevels = effortIsTransmittable(spec) ? spec.effortLevels : []
+        const defaultBaseUrl = officialBaseUrl(spec)
         return {
           id,
+          ...(defaultBaseUrl ? { defaultBaseUrl } : {}),
           chatToolSchema: spec.chatToolSchema,
           label: spec.catalogued === false ? id : spec.displayName,
           // 界面据此决定还要不要显示思考强度那个开关。空数组 = 这条链路上

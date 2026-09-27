@@ -378,7 +378,12 @@ describe('用量口径', () => {
 describe('装配', () => {
   test('factory 现在真的能造出 responses 适配器', async () => {
     const { buildAdapter } = await import('../factory.ts')
-    const a = buildAdapter({ kind: 'openai_responses', apiKey: 'sk-x', model: 'gpt-5' })
+    const a = buildAdapter({
+      kind: 'openai_responses',
+      apiKey: 'sk-x',
+      model: 'gpt-5',
+      baseUrl: 'https://relay.example/v1',
+    })
     expect(a.kind).toBe('openai_responses')
   })
 
@@ -395,13 +400,19 @@ describe('装配', () => {
    */
   test('按参数格式声明：发不出去的就不能声明成会发', async () => {
     const { buildAdapter } = await import('../factory.ts')
-    const unknown = buildAdapter({ kind: 'openai_responses', apiKey: 'sk-x', model: 'gpt-5' })
+    const unknown = buildAdapter({
+      kind: 'openai_responses',
+      apiKey: 'sk-x',
+      model: 'gpt-5',
+      baseUrl: 'https://relay.example/v1',
+    })
     expect(unknown.transmits).toEqual({ effort: false })
 
     const rewritten = buildAdapter({
       kind: 'openai_responses',
       apiKey: 'sk-x',
       model: 'claude-opus-5',
+      baseUrl: 'https://relay.example/v1',
     })
     expect(rewritten.transmits).toEqual({ effort: false })
 
@@ -409,13 +420,19 @@ describe('装配', () => {
       kind: 'openai_responses',
       apiKey: 'sk-x',
       model: 'gemini-3.7-flash',
+      baseUrl: 'https://relay.example/v1',
     })
     expect(native.transmits).toEqual({ effort: true })
   })
 
   test('spec 未知时用保守默认值，不假装认识它', async () => {
     const { buildAdapter } = await import('../factory.ts')
-    const a = buildAdapter({ kind: 'openai_responses', apiKey: 'sk-x', model: '没听说过' })
+    const a = buildAdapter({
+      kind: 'openai_responses',
+      apiKey: 'sk-x',
+      model: '没听说过',
+      baseUrl: 'https://relay.example/v1',
+    })
     expect(a.spec.id).toBe('没听说过')
     expect(a.spec.pricing.input).toBe(0)
   })

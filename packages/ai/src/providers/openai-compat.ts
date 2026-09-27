@@ -379,7 +379,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
  * 界面上是「消息发出去了，什么也没发生」，账本里也查不到原因。
  *
  * 补 `/v1` 有一个反例：有些兼容端点用的是 `/v4` 等别的版本。版本段是用户明确
- * 提供的路由信息，不能覆盖，也不能再拼成 `/v4/v1`；只有路径末尾没有 `/v数字`
+ * 提供的路由信息，不能覆盖，也不能再拼成 `/v4/v1`；只有路径没有版本段
  * 时才补默认 `/v1`。中转站把 API 挂在无版本路径（`/api` 之类）时仍会补默认版本，
  * 失败是响亮的（404 / 401），不是这次这种静默——两种错的代价不对等。
  *
@@ -388,7 +388,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
 export function normalizeBaseUrl(raw: string | undefined): string {
   const url = (raw ?? '').trim().replace(/\/+$/, '')
   if (!url) return 'https://api.openai.com/v1'
-  return /\/v\d+$/i.test(url) ? url : `${url}/v1`
+  return /\/v\d+(?:beta\d*)?(?:\/[^?#]*)?$/i.test(url) ? url : `${url}/v1`
 }
 
 /** Base64 会增加约三分之一，7 MB 原文件可稳定落在百炼的 10 MB Data URL 上限内。 */

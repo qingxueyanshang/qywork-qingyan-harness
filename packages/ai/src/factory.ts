@@ -5,7 +5,7 @@
  * 经中转站以 OpenAI 协议调 Claude 是常见配置，按名字猜会把它路由到错误的协议上。
  */
 
-import { applyTransportCapabilities, lookupModel } from './catalog.ts'
+import { applyTransportCapabilities, lookupModel, officialBaseUrl } from './catalog.ts'
 import { ProviderError } from './errors.ts'
 import { AnthropicAdapter } from './providers/anthropic.ts'
 import { OpenAICompatAdapter } from './providers/openai-compat.ts'
@@ -61,14 +61,23 @@ export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAda
     profile.transport,
     profile.spec,
   )
+  const baseUrl = profile.baseUrl?.trim() || officialBaseUrl(spec)
+  if (!baseUrl) {
+    throw new ProviderError({
+      code: 'invalid_request',
+      message: `请填写 Base URL：模型 ${profile.model} 在当前协议下没有已登记的官方地址`,
+      provider: profile.kind,
+    })
+  }
+  const resolved = { ...profile, baseUrl }
 
   switch (profile.kind) {
     case 'anthropic_messages':
-      return new AnthropicAdapter(profile, spec)
+      return new AnthropicAdapter(resolved, spec)
     case 'openai_chat_completions':
-      return new OpenAICompatAdapter(profile, spec)
+      return new OpenAICompatAdapter(resolved, spec)
     case 'openai_responses':
-      return new OpenAIResponsesAdapter(profile, spec)
+      return new OpenAIResponsesAdapter(resolved, spec)
     default: {
       const never: never = profile.kind
       throw new Error(`未知 provider: ${String(never)}`)

@@ -370,6 +370,13 @@ export function ModelSettings() {
             {(name) => {
               const p = () => c().providers[name()]!
               const models = () => Object.keys(p().models)
+              const defaultUrls = () =>
+                models().map(
+                  (id) =>
+                    modelCatalog()
+                      ?.providers.find((provider) => provider.name === name())
+                      ?.models.find((model) => model.id === id)?.defaultBaseUrl,
+                )
               return (
                 <>
                   <section class="settings-block">
@@ -408,7 +415,7 @@ export function ModelSettings() {
                       <Field label="Base URL">
                         <input
                           type="text"
-                          placeholder="留空用官方默认"
+                          placeholder={baseUrlPlaceholder(defaultUrls())}
                           value={p().baseUrl ?? ''}
                           onBlur={(e) => patchProvider(name(), { baseUrl: e.currentTarget.value })}
                         />
@@ -599,6 +606,12 @@ export function ModelSettings() {
       )}
     </Show>
   )
+}
+
+export function baseUrlPlaceholder(urls: readonly (string | undefined)[]): string {
+  if (!urls.length || urls.some((url) => !url)) return '请填写接口地址'
+  const unique = [...new Set(urls)]
+  return unique.length === 1 ? `留空使用 ${unique[0]}` : '留空按各模型使用官方地址'
 }
 
 /** 接口表里第一个挂了模型的那一格。删光当前接口时用它选下一个可用接口。 */
