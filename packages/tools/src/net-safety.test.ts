@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { checkUrl, classifyAddress } from './net-safety.ts'
+import { checkUrl, classifyAddress, safeFetch } from './net-safety.ts'
 
 describe('地址分类', () => {
   test('公网地址放行', () => {
@@ -149,5 +149,42 @@ describe('IPv6 写法等价性 —— 按数值判，不按字面量匹配', () 
 
   test('解析不出来的 IPv6 默认拒绝，不当成公网放行', () => {
     expect(classifyAddress('::ffff:1.2.3')?.reason).toBe('reserved')
+  })
+})
+
+/**
+ * F16：响应超过读取上限时要报告取得不完整。不报的话截断后的正文会被当作完整的远端内容保存与引用。
+ */
+describe('读取上限与截断标记', () => {
+  const body = 'x'.repeat(100)
+  const serve = () => Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response(body) })
+  const fetchWith = async (maxBytes: number) => {
+    const server = serve()
+    try {
+      return await safeFetch(`http://127.0.0.1:${server.port}/`, {
+        allowHosts: ['127.0.0.1'],
+        maxBytes,
+      })
+    } finally {
+      await server.stop(true)
+    }
+  }
+
+  test('超过上限：只留上限内的字节，标记截断', async () => {
+    const r = await fetchWith(32)
+    expect(r.ok).toBe(true)
+    expect(r.body.byteLength).toBe(32)
+    expect(r.truncated).toBe(true)
+  })
+
+  test('正好等于上限：完整，不标截断', async () => {
+    const r = await fetchWith(100)
+    expect(r.body.byteLength).toBe(100)
+    expect(r.truncated).toBe(false)
+  })
+
+  test('小于上限：完整，不标截断', async () => {
+    const r = await fetchWith(1000)
+    expect(r.truncated).toBe(false)
   })
 })

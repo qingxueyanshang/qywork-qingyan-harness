@@ -289,6 +289,11 @@ export interface SafeFetchResult {
   url: string
   contentType: string | null
   body: Uint8Array
+  /**
+   * 响应超过读取上限，`body` 只是开头那一段。调用方必须把这件事告诉模型，
+   * 否则截断后的正文会被当作完整的远端内容保存与引用。
+   */
+  truncated: boolean
   /** 被挡时的原因。 */
   blocked?: { reason: BlockReason; message: string; url: string }
   redirects: string[]
@@ -329,6 +334,7 @@ export async function safeFetch(
         url: current,
         contentType: null,
         body: new Uint8Array(0),
+        truncated: false,
         blocked: {
           reason: verdict.reason ?? 'reserved',
           message: verdict.message ?? '被安全策略阻止',
@@ -388,13 +394,14 @@ export async function safeFetch(
       continue
     }
 
-    const responseBody = await readBounded(res, opts.maxBytes ?? 4 * 1024 * 1024)
+    const bounded = await readBounded(res, opts.maxBytes ?? 4 * 1024 * 1024)
     return {
       ok: res.ok,
       status: res.status,
       url: current,
       contentType: res.headers.get('content-type'),
-      body: responseBody,
+      body: bounded.bytes,
+      truncated: bounded.truncated,
       redirects,
     }
   }
@@ -405,6 +412,7 @@ export async function safeFetch(
     url: current,
     contentType: null,
     body: new Uint8Array(0),
+    truncated: false,
     blocked: { reason: 'reserved', message: `重定向超过 ${MAX_REDIRECTS} 跳`, url: current },
     redirects,
   }
@@ -498,11 +506,17 @@ function originOf(url: string): string {
  *
  * 不能直接 `res.arrayBuffer()`：对方可以返回一个无限流，那会耗尽内存。
  * Content-Length 不可信（可以不发，也可以与实际不符），所以按实际读取的字节数计。
+ *
+ * `truncated` 按实际读到的字节判：读满上限时再读一次，流没结束就是截断。
  */
-async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array> {
-  if (!res.body) return new Uint8Array(0)
+async function readBounded(
+  res: Response,
+  maxBytes: number,
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  if (!res.body) return { bytes: new Uint8Array(0), truncated: false }
   const chunks: Uint8Array[] = []
   let total = 0
+  let truncated = false
   const reader = res.body.getReader()
   try {
     while (total < maxBytes) {
@@ -511,6 +525,7 @@ async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array>
       chunks.push(value)
       total += value.byteLength
     }
+    truncated = total > maxBytes || (total === maxBytes && !(await reader.read()).done)
   } finally {
     // 提前停止时要主动取消，否则连接会挂到超时。
     await reader.cancel().catch(() => {})
@@ -524,5 +539,5 @@ async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array>
     out.set(slice, off)
     off += slice.byteLength
   }
-  return out
+  return { bytes: out, truncated }
 }
