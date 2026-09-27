@@ -19,7 +19,8 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
  * （shell 只锁 cwd，命令正文里 `cd` 得出去），也没告诉用户发生了什么。**一条被当成崩溃的策略判定，
  * 模型只会去找绕路。**
  *
- * 所以这里三件事一起说：为什么、哪两条路真的能走通、以及别去绕。
+ * 回话说明本次路径参数被拒的原因与两条出路，不替命令裁决层承诺结果。
+ * 命令规则允许普通的工作区外读取，因此不能声称 run_command 必然拒绝同一路径。
  *
  * **两条出路都要给全**，因为这条拒绝只发生在「自动审批」下：切「完全访问」
  * 是真的能解开（那个模式下路径边界整个不设），加 `additionalDirectories`
@@ -63,7 +64,7 @@ export class PathEscapeError extends Error {
         '要么改用工作区内的路径继续，要么停下来告诉用户，让他二选一：' +
         '切到「完全访问」（放开全部权限，包括路径），' +
         '或者把这个目录加进配置的 additionalDirectories（只开这一个）。' +
-        '不要改用 run_command 去绕——同一个模式下它也会被同一份根目录清单拦。',
+        '这是本次路径参数的边界；run_command 的命令内容由命令权限规则另行裁决。',
     )
     this.name = 'PathEscapeError'
   }
