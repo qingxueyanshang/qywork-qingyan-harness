@@ -186,6 +186,7 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
           url: res.url,
           contentType: res.contentType ?? null,
           body: new TextDecoder('utf-8').decode(res.body),
+          truncated: res.truncated,
           redirects: res.redirects,
         }
       }

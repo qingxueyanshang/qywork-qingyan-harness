@@ -105,6 +105,11 @@ export const webFetchTool: ToolSpec = {
     // 超额时后者不累加，同一决策里其余读取工具会按一笔不存在的余额作准入。
     recordBatchSpent(ctx, deliveredTokens(landed.text, ctx.density))
 
+    // 响应超过读取上限时，保存下来的也只是开头那段：覆盖事实里记下取得不完整，
+    // 不能让它被当作完整的远端正文引用。
+    const acquisition = res.truncated
+      ? { acquisition: 'partial', acquiredBytes: res.body.byteLength }
+      : {}
     const resources: IntermediateResourceRef[] = landed.resourceId
       ? [
           {
@@ -113,7 +118,7 @@ export const webFetchTool: ToolSpec = {
             contentHash: null,
             sizeBytes: landed.coverage.totalBytes ?? 0,
             mimeType: contentType || null,
-            coverage: landed.coverage,
+            coverage: { ...landed.coverage, ...acquisition },
           },
         ]
       : []
@@ -122,15 +127,18 @@ export const webFetchTool: ToolSpec = {
       status: 'success',
       // 重定向链要告诉模型：最终 URL 可能与它要的不是一回事，
       // 而它接下来可能会基于这个 URL 拼相对路径。
-      message: res.redirects.length
-        ? `已抓取（经 ${res.redirects.length} 次重定向，最终 ${res.url}）`
-        : '已抓取',
+      message:
+        (res.redirects.length
+          ? `已抓取（经 ${res.redirects.length} 次重定向，最终 ${res.url}）`
+          : '已抓取') +
+        (res.truncated ? `；响应超过读取上限，只取得开头 ${res.body.byteLength} 字节` : ''),
       data: {
         url: res.url,
         finalUrl: res.url,
         contentType,
         content: landed.text,
         ...(landed.coverage.truncated ? { coverage: landed.coverage } : {}),
+        ...acquisition,
         ...(res.redirects.length ? { redirects: res.redirects } : {}),
       },
       ...(resources.length ? { resources } : {}),

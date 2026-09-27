@@ -148,3 +148,27 @@ describe('web_fetch 的安全闸', () => {
     expect(webFetchTool.permissionEffect).toBe('network')
   })
 })
+
+describe('抓取的取得完整性', () => {
+  /** 超过读取上限时保存与投递的都只是开头：说明里与 data 里都要写明，不当作完整的远端正文。 */
+  test('响应超过读取上限时标明只取得开头', async () => {
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: () =>
+        new Response('a'.repeat(4 * 1024 * 1024 + 10), {
+          headers: { 'content-type': 'text/plain' },
+        }),
+    })
+    try {
+      const c = ctx()
+      c.resources.set(NET_POLICY_KEY, { allowHosts: ['127.0.0.1'] })
+      const r = await webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, c)
+      expect(r.status).toBe('success')
+      expect(r.message).toContain('只取得开头')
+      expect((r.data as { acquisition?: string }).acquisition).toBe('partial')
+    } finally {
+      await server.stop(true)
+    }
+  })
+})
