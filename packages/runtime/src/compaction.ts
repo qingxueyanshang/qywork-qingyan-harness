@@ -91,6 +91,8 @@ interface Unit {
   messages: WireMessage[]
   /** 会话消息行；执行记录单元为 null。 */
   row: CompactionInput['messages'][number] | null
+  /** 单元里助手正文的取回地址 `<runId>:<stepId>`；会话消息单元与没有助手正文的单元为 null。 */
+  assistantId: string | null
   actions: CompactionAction[]
 }
 
@@ -252,7 +254,12 @@ export class RuntimeCompaction implements CompactionPort {
       }
       for (const m of u.messages) {
         if (m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()) {
-          messages.push({ id: u.cut.messageId, role: 'assistant', content: m.content })
+          // 地址用助手正文自己的 step：用所属用户消息的 id 的话，模型按摘要里的标记读回的是用户的原话。
+          messages.push({
+            id: u.assistantId ?? u.cut.messageId,
+            role: 'assistant',
+            content: m.content,
+          })
         }
       }
       actions.push(...u.actions)
@@ -477,6 +484,7 @@ export class RuntimeCompaction implements CompactionPort {
           content: m.content,
           ...(m.attachments.length ? { hasAttachments: true } : {}),
         },
+        assistantId: null,
         actions: [],
       })
       for (const r of byUser.get(m.id) ?? []) {
@@ -510,6 +518,7 @@ export class RuntimeCompaction implements CompactionPort {
                   ...(files.length ? { hasAttachments: true } : {}),
                 }
               : null,
+            assistantId: u.textStep ? `${r.id}:${u.textStep.id}` : null,
             actions: u.steps.map((s) => actionOf(r.id, s)),
           })
         }

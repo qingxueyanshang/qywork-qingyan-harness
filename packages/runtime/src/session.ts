@@ -1546,6 +1546,20 @@ function historyPortFor(store: Store, cid: ConversationId): HistoryPort {
       const st = compositeStep(id)
       return st?.kind === 'user' ? st : null
     }
+    /**
+     * 助手正文的取回地址指向这次生成的第一条 text step（`transcript.ts` 的 `StepUnit.textStep`）。
+     * 一次生成的正文可能被思考切成几条 text step，按同一个 `providerBatchId` 拼回整段，
+     * 与压缩时交给摘要器的那段逐字相同。
+     */
+    const assistantTextOf = (id: string): string | null => {
+      const st = compositeStep(id)
+      if (st?.kind !== 'text') return null
+      if (!st.providerBatchId) return st.content ?? ''
+      return listSteps(store, st.runId)
+        .filter((x) => x.kind === 'text' && x.providerBatchId === st.providerBatchId)
+        .map((x) => x.content ?? '')
+        .join('')
+    }
     return {
       message: (id) => {
         const m = listMessages(store, cid, null).find((x) => x.id === id)
@@ -1556,14 +1570,16 @@ function historyPortFor(store: Store, cid: ConversationId): HistoryPort {
          * 一旦被折进摘要就再也取不回来——摘要里印着地址，取回却报「不存在」。
          */
         const st = userStepOf(id)
-        return st ? { role: 'user' as const, content: st.content ?? '' } : null
+        if (st) return { role: 'user' as const, content: st.content ?? '' }
+        const text = assistantTextOf(id)
+        return text === null ? null : { role: 'assistant' as const, content: text }
       },
       step: (id) => {
         const st = compositeStep(id)
-        // 注入的用户消息由 `message` 取回：这里的返回形状是
-        // `{tool,status,args,outcome}`，套上去只会回一个 `tool:'unknown'`
+        // 注入的用户消息与助手正文由 `message` 取回：这里的返回形状是
+        // `{tool,status,args,outcome}`，套在非工具记录上只会回一个 `tool:'unknown'`
         // 加两个空 JSON——看起来被处理了，实际什么都没答。
-        if (!st || st.kind === 'user') return null
+        if (st?.kind !== 'tool_action') return null
         return stepRecord(st)
       },
       byCallId: (callId) => {
@@ -1590,7 +1606,8 @@ function historyPortFor(store: Store, cid: ConversationId): HistoryPort {
              * 列而不是 payload 里，取回也由 `message` 负责。报成 step 的话
              * 摘录印的是空 payload，而模型拿着那个 id 去 `step` 只会得到 null。
              */
-            if (st.kind === 'user') {
+            // 助手正文同理：它在 text step 的 `content` 里，按消息报、由 `message` 取回。
+            if (st.kind === 'user' || st.kind === 'text') {
               const text = st.content ?? ''
               if (text.toLowerCase().includes(needle)) {
                 hits.push({ id: `${run.id}:${st.id}`, kind: 'message', line: text })

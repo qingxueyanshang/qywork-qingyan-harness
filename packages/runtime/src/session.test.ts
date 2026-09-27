@@ -880,6 +880,66 @@ describe('注入消息的回读', () => {
     ])
     store.close()
   })
+
+  /**
+   * F18：助手正文在 text step 里。摘要里给它的地址是这次生成的第一条 text step，
+   * 读回的必须是整段正文（思考把它切成了几条），执行记录那一侧回 null，搜索按消息报。
+   */
+  test('助手正文按 <runId>:<stepId> 取得回整段，搜得到，执行记录那一侧回 null', async () => {
+    const { s, store } = await session()
+    const ws = listWorkspaces(store)[0]!
+    const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'c1',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    const first = appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'text',
+      content: '先定签名算法：',
+      providerBatchId: 'bt_1',
+    })
+    appendStep(store, {
+      runId: run.id,
+      seq: 2,
+      kind: 'thinking',
+      content: '想',
+      providerBatchId: 'bt_1',
+    })
+    const rest = appendStep(store, {
+      runId: run.id,
+      seq: 3,
+      kind: 'text',
+      content: '用 RS256。',
+      providerBatchId: 'bt_1',
+    })
+
+    const make = (
+      s as unknown as {
+        makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext
+      }
+    ).makeToolContext.bind(s)
+    const ctx = make(run.id, () => {}, 'm', conv.id)
+    const address = `${run.id}:${first.id}`
+
+    expect(ctx.history?.message(address)).toEqual({
+      role: 'assistant',
+      content: '先定签名算法：用 RS256。',
+    })
+    expect(ctx.history?.step(address)).toBeNull()
+    // 命中的是切开后的那一条；按它的地址读回的仍是整段。
+    expect(ctx.history?.search('RS256', 10)).toEqual([
+      { id: `${run.id}:${rest.id}`, kind: 'message', line: '用 RS256。' },
+    ])
+    expect(ctx.history?.message(`${run.id}:${rest.id}`)?.content).toBe('先定签名算法：用 RS256。')
+    store.close()
+  })
 })
 
 /*
