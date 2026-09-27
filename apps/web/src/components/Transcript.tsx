@@ -980,6 +980,7 @@ function compactionFailureLabel(code: string | undefined): string {
     summary_error: '压缩失败：摘要调用出错',
     no_headroom: '压缩失败：没有可用空间',
     not_smaller: '压缩失败：摘要没有更小',
+    over_budget: '压缩失败：摘要过长',
   }
   return (code && map[code]) || '压缩失败'
 }

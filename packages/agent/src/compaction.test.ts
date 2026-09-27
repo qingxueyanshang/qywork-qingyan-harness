@@ -358,6 +358,57 @@ describe('「必须更小」闸', () => {
   })
 })
 
+/**
+ * 「在预算内」闸（F17）：摘要超出事实清单之外的余量就作废摘要段。
+ * 摘要段作废时按 `summaryFailed`：收纳线能前移就前移，旧摘要与事实原样沿用（R06）。
+ */
+describe('「在预算内」闸', () => {
+  const previous: CompactionManifest = {
+    revision: 1,
+    compactedThroughMessageId: 'ms_001' as MessageId,
+    condensedThrough: { messageId: 'ms_001' as MessageId },
+    compactedMessageCount: 1,
+    summary: '旧摘要',
+    facts: { filesTouched: ['a.ts'], openItems: [], userConstraints: ['不要动 legacy/'] },
+    createdAt: 0,
+  }
+  const tooLong = async () => '摘'.repeat(20_000)
+
+  test('被替换的区域很大时，远超预算的摘要也不采用', async () => {
+    const r = await compact(
+      input({ projectionBudget: 1_000, condensedRegionTokens: 50_000 }),
+      tooLong,
+    )
+    expect(r.status === 'compacted' && r.summarized).toBe(false)
+    expect(r.status === 'compacted' && r.reasonCode).toBe('over_budget')
+  })
+
+  test('摘要段作废、收纳线可前移：旧摘要与事实不变，收纳线推到折叠线', async () => {
+    const r = await compact(
+      input({ previous, projectionBudget: 1_000, condensedRegionTokens: 50_000 }),
+      tooLong,
+    )
+    if (r.status !== 'compacted') throw new Error('收纳线应当前移')
+    expect(r.manifest.summary).toBe('旧摘要')
+    expect(r.manifest.facts).toEqual(previous.facts)
+    expect(r.manifest.compactedThroughMessageId).toBe('ms_001' as MessageId)
+    expect(r.manifest.condensedThrough).toEqual({ messageId: 'ms_004' as MessageId })
+  })
+
+  test('摘要段作废、收纳线推不动：这一次失败，不落新 manifest', async () => {
+    const r = await compact(
+      input({
+        previous: { ...previous, condensedThrough: { messageId: 'ms_004' as MessageId } },
+        projectionBudget: 1_000,
+        condensedRegionTokens: 50_000,
+      }),
+      tooLong,
+    )
+    expect(r.status).toBe('failed')
+    expect(r.status === 'failed' && r.reasonCode).toBe('over_budget')
+  })
+})
+
 describe('中断即丢弃', () => {
   test('摘要调用抛 AbortError → aborted，不落任何行', async () => {
     const r = await compact(input(), async () => {
