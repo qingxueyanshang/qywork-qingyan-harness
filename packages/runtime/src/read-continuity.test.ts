@@ -297,12 +297,14 @@ describe('远大于窗口的文件逐段读完', () => {
 /**
  * 按脚本读一串文件的模型：读到 `nextOffset` 就接着读同一个文件，否则读下一个；
  * 从第三个文件起每次响应先说一段话（聊天为主的负载）。每次请求记下本地估算的体积。
+ * 回报的输入量是本地估算除以 `ratio`：取 1 时两把尺重合，取 1.7 是 V02 在 Flash 上实测的代码读取比值。
  */
 function scriptedAdapter(
   window: number,
   plan: string[],
   talk: string,
   sizes: number[],
+  ratio = 1,
 ): LlmAdapter {
   const scriptSpec = { ...flash, contextWindow: window }
   let call = 0
@@ -338,7 +340,7 @@ function scriptedAdapter(
       yield {
         type: 'usage',
         usage: {
-          inputTokens: size,
+          inputTokens: Math.round(size / ratio),
           outputTokens: 20,
           cachedTokens: null,
           cacheWriteTokens: null,
@@ -360,7 +362,7 @@ function fileOf(tokens: number, tag: string): string {
   return lines.join('\n')
 }
 
-async function readScript(window: number, files: { name: string; tokens: number }[]) {
+async function readScript(window: number, files: { name: string; tokens: number }[], ratio = 1) {
   const dir = mkdtempSync(join(tmpdir(), 'qywork-read-script-'))
   const dbPath = join(dir, 'a.sqlite3')
   const store = new Store({ path: dbPath })
@@ -427,6 +429,7 @@ async function readScript(window: number, files: { name: string; tokens: number 
     files.map((file) => file.name),
     'analysis '.repeat(Math.round(window * 0.0075)),
     sizes,
+    ratio,
   )
   const loop = new AgentLoop({
     adapter,
@@ -546,6 +549,34 @@ describe('远大于窗口的文件每段都能读满', () => {
         phase: 'done',
         summarized: false,
       })
+    }
+  }, 120_000)
+})
+
+/**
+ * 本地估算比 provider 真值高时（V02：Flash 上的代码读取约 1.7 倍），执行工具之前的触发线与投递额度必须按同一个
+ * 折算比：触发线按放大的比值算、额度按不放大算时，余量只够半份保留量而触发线未到，压缩之前多读两段被卡在半份
+ * 保留量的小段。
+ */
+describe('估算偏高时续读段不被卡在半份保留量', () => {
+  test('除最后一段外，每段都大于半份保留量', async () => {
+    const window = 200_000
+    const { stop, steps } = await readScript(
+      window,
+      [{ name: 'huge.txt', tokens: 3 * window }],
+      1.7,
+    )
+    expect(stop).toBe('completed')
+    const reads = steps
+      .filter((s) => s.kind === 'tool_action')
+      .map(
+        (s) =>
+          (s.payload as unknown as { outcome: { status: string; data: { content: string } } })
+            .outcome,
+      )
+    expect(reads.every((o) => o.status === 'success')).toBe(true)
+    for (const o of reads.slice(0, -1)) {
+      expect(estimateText(o.data.content, flash.density)).toBeGreaterThan(tailRetain(window) / 2)
     }
   }, 120_000)
 })
