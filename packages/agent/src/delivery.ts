@@ -142,6 +142,15 @@ export function tokensToBytes(tokens: number, density: TokenDensity): number {
 }
 
 /**
+ * `tokens` 最多对应多少字节：按每字节 token 数的**下界**反算，再加一个码点的余量。
+ * 用来给「先取多少正文再量」定上限，量完不超额度的那一段必然在这个字节数之内。
+ */
+export function tokensToMaxBytes(tokens: number, density: TokenDensity): number {
+  const perByte = Math.min(density.cjkTokensPerChar / 3, 1 / density.jsonCharsPerToken)
+  return Math.max(0, Math.ceil(tokens / perByte) + 4)
+}
+
+/**
  * 正文开头在 `tokens` 额度内最多能投递多少字节，落在码点边界上。
  *
  * 按落进 JSON 字符串后的真实估算二分，不用 `tokensToBytes` 的上界折算：那个折算对中文偏保守，
@@ -152,9 +161,8 @@ export function headBytesWithin(body: Uint8Array, tokens: number, density: Token
   if (tokens <= 0) return 0
   const cost = (n: number) =>
     deliveredTokens(JSON.stringify(decodeUtf8Boundary(body.subarray(0, n), 'head')), density)
-  const loosest = Math.min(density.cjkTokensPerChar / 3, 1 / density.jsonCharsPerToken)
   let fit = Math.min(body.byteLength, tokensToBytes(tokens, density))
-  let over = Math.min(body.byteLength, Math.ceil(tokens / loosest) + 4)
+  let over = Math.min(body.byteLength, tokensToMaxBytes(tokens, density))
   if (cost(over) <= tokens) return over
   if (cost(fit) > tokens) fit = 0
   while (over - fit > 1) {

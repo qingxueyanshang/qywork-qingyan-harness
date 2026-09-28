@@ -1765,15 +1765,49 @@ describe('read_file 读大文本', () => {
     expect((await r.execute('edit_file', edit, c)).status).toBe('success')
   })
 
-  test('超过 20 MB 的文本如实报内存上限', async () => {
+  /** 文本没有大小上限：按行流式读，内存只放本轮要投递的那几行。 */
+  test('25 MB 的多行文本按范围读得到末尾附近的行，总行数正确', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-huge-text-'))
-    await writeFile(join(root, 'huge.log'), 'z'.repeat(21 * 1024 * 1024))
+    const rows = 250_000
+    await writeFile(
+      join(root, 'huge.log'),
+      Array.from({ length: rows }, (_, i) => `${i} ${'z'.repeat(95)}`).join('\n'),
+    )
     const out = await registry().execute(
       'read_file',
-      { path: 'huge.log', offset: 1, limit: 1 },
+      { path: 'huge.log', offset: rows - 1, limit: 2 },
       ctx(root),
     )
-    expect(out.status).toBe('failure')
-    expect(out.message).toContain('20 MB')
+    expect(out.status).toBe('success')
+    const data = out.data as { content: string; totalLines: number; endLine: number }
+    expect(data.totalLines).toBe(rows)
+    expect(data.endLine).toBe(rows)
+    expect(data.content).toBe(
+      `${rows - 1}\t${rows - 2} ${'z'.repeat(95)}\n${rows}\t${rows - 1} ${'z'.repeat(95)}`,
+    )
+  })
+
+  /**
+   * 读取一侧边读边算哈希，编辑一侧对整份正文算：两侧解码不同（BOM、非法字节）或切行不同（CRLF）时，
+   * 读过的文件会被判成「读取之后被改过」而永远改不了。
+   */
+  test('带 BOM、CRLF 与非法字节的文件读过之后可以编辑', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-odd-bytes-'))
+    const bytes = Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from('first\r\nsecond '),
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from(' tail\r\nthird\r\n'),
+    ])
+    await writeFile(join(root, 'odd.txt'), bytes)
+    const r = registry()
+    const c = ctx(root)
+    const read = await r.execute('read_file', { path: 'odd.txt' }, c)
+    expect(read.status).toBe('success')
+    const content = (read.data as { content: string }).content
+    expect(content).not.toContain('\r')
+    expect(content.split('\n')[2]).toBe('3\tthird')
+    const edit = { path: 'odd.txt', old_string: 'third', new_string: 'THIRD' }
+    expect((await r.execute('edit_file', edit, c)).status).toBe('success')
   })
 })
