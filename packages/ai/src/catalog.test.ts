@@ -368,6 +368,19 @@ describe('图片输入', () => {
   })
 })
 
+describe('输出上限说明', () => {
+  /** 官方文本以 Claude 自称，给别家模型发就是让它扮演另一个模型。 */
+  test('只有 Anthropic 的条目开，经兼容协议调 Claude 时照样带着', () => {
+    for (const spec of builtinCatalog()) {
+      expect(spec.outputLimitNote === true).toBe(spec.vendor === 'anthropic')
+    }
+    expect(lookupModel('claude-opus-5-5', 'openai_chat_completions').outputLimitNote).toBe(true)
+    expect(
+      lookupModel('中转站上的某个模型', 'openai_chat_completions').outputLimitNote,
+    ).toBeUndefined()
+  })
+})
+
 describe('视频输入', () => {
   test('完整内置目录只放行官方协议与当前适配器都支持的模型', () => {
     const supported = builtinCatalog()

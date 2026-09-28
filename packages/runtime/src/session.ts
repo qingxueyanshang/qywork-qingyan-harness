@@ -371,7 +371,11 @@ export class Session {
     compaction?: CompactionPort,
   ): AgentLoop {
     // 能力段按已注册的工具名过滤：shell、派活、编排、外部工具都按通道注册。
-    const base = buildSystemPrompt(new Set(this.registry.list().map((s) => s.name)))
+    const { outputLimitNote, maxOutputTokens } = adapter.spec
+    const base = buildSystemPrompt(
+      new Set(this.registry.list().map((s) => s.name)),
+      outputLimitNote && maxOutputTokens ? maxOutputTokens : undefined,
+    )
     const providerName = resolveModel(this.opts.config, target)?.provider
     return new AgentLoop({
       adapter,

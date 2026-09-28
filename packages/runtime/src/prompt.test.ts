@@ -1,8 +1,8 @@
 /**
  * 尾区注记的装配。
  *
- * 覆盖范围：`prompt.ts` 的 `buildTailNotes`，以及 `buildSystemPrompt` 里 run_command
- * 那一行的措辞（前缀稳定性由 `agent/prefix-audit.test.ts` 审）。
+ * 覆盖范围：`prompt.ts` 的 `buildTailNotes`，`buildSystemPrompt` 里 run_command
+ * 那一行的措辞与末尾的 `outputLimitNote`（前缀稳定性由 `agent/prefix-audit.test.ts` 审）。
  *
  * 锁的是**技能、记忆、外部工具都只进标题**：正文（外部工具是完整参数说明）
  * 一旦被塞回尾区，每轮都要全量重发一遍，而这件事不会有任何报错——
@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
+import { buildSystemPrompt, buildTailNotes, outputLimitNote } from './prompt.ts'
 
 const base = { workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' as const }
 const note = (notes: ReturnType<typeof buildTailNotes>, group: string) =>
@@ -346,5 +346,20 @@ describe('能力段', () => {
   test('没有桌面工具就不提它们', () => {
     const prompt = buildSystemPrompt(new Set(['run_command']))
     expect(prompt).not.toContain('desktop_windows')
+  })
+})
+
+describe('输出上限说明', () => {
+  test('给出上限时附在系统提示词末尾，上限按千分位写进原文', () => {
+    const prompt = buildSystemPrompt(new Set(['run_command']), 128_000)
+    expect(prompt.endsWith(outputLimitNote(128_000))).toBe(true)
+    expect(prompt).toContain('a single limit of about 128,000 tokens')
+  })
+
+  test('不给上限时不附，其余部分与附了的版本逐字相同', () => {
+    const names = new Set(['run_command'])
+    const bare = buildSystemPrompt(names)
+    expect(bare).not.toContain('Everything Claude produces')
+    expect(buildSystemPrompt(names, 128_000)).toBe(`${bare}\n\n${outputLimitNote(128_000)}`)
   })
 })
