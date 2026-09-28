@@ -26,6 +26,8 @@ export {
   type OffPeakDiscount,
   officialBaseUrl,
   priceAt,
+  type ReasoningReplay,
+  reasoningReplay,
   type SpecOverride,
   unknownModel,
   VENDORS,

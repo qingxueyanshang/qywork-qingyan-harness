@@ -21,6 +21,7 @@ import type {
   RunContextSegment,
   Step,
 } from '@qywork/core'
+import { isNoticeStep } from '@qywork/core'
 import {
   currentGoal,
   getConversation,
@@ -455,7 +456,9 @@ function renderRun(run: ArchiveBundle['runs'][number], limit: number, thinking: 
      * 用二级标题打断助手那一段：它确实是对话换了个人说话。
      */
     if (s.kind === 'user') {
-      if (s.content?.trim()) out.push('## 用户（执行中插入）', '', s.content, '', '## 助手', '')
+      if (s.content?.trim() && !isNoticeStep(s)) {
+        out.push('## 用户（执行中插入）', '', s.content, '', '## 助手', '')
+      }
       continue
     }
     if (thinking && s.content?.trim()) {

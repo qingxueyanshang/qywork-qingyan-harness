@@ -15,7 +15,7 @@
  */
 
 import type { ChatRequest, ProviderEvent, ProviderUsage, WireMessage } from '@qywork/ai'
-import { estimateMessage, estimateRequest, ProviderError } from '@qywork/ai'
+import { estimateMessage, estimateRequest, ProviderError, reasoningReplay } from '@qywork/ai'
 import type { AgentEvent, ContextOmitted } from '@qywork/core'
 import { emptyBreakdown, emptyOmitted, log } from '@qywork/core'
 import { stepStamp } from '../compaction.ts'
@@ -32,6 +32,7 @@ import {
   mergeUsage,
   omitImages,
   payloadSnapshotOf,
+  replayReasoning,
 } from './request.ts'
 import { type LoopHost, RunState, sleep, TurnState, untilAborted } from './run-state.ts'
 import { executeCalls } from './tool-wave.ts'
@@ -88,7 +89,7 @@ export class AgentLoop {
       backoff,
       summaryTrace: (run, turnIndex) => this.summaryTrace(run, turnIndex),
       openStream: (req, requestId) => this.openStream(req, requestId),
-      buildRequest: (run, notice) => this.buildRequest(run, notice),
+      buildRequest: (run) => this.buildRequest(run),
       lastOmitted: () => this.lastOmitted,
     }
   }
@@ -185,10 +186,8 @@ export class AgentLoop {
 
         // `signal` 不在这里合成：每次尝试自带一个中止器，所以装配只出请求体，
         // 信号在尝试循环里逐次接上。
-        const turnNotice = run.notices.length ? run.notices.join('\n') : null
-        run.notices.length = 0
-        const req = this.buildRequest(run, turnNotice)
-        const turn = new TurnState(run, turnNotice, req, breakdownOf(req, run.density))
+        const req = this.buildRequest(run)
+        const turn = new TurnState(run, req, breakdownOf(req, run.density))
         run.rebaseAnchor(turn.req, turn.breakdown)
 
         if ((yield* compactBeforeSend(host, run, turn)) === 'interrupted') break
@@ -270,11 +269,7 @@ export class AgentLoop {
    * 前提就是这个：一旦哪天把旧结果正文改写成占位串，原文不在任何可测处，
    * 这个数就失去依据，届时该删掉它而不是估一个。
    */
-  private buildRequest(
-    run: RunState,
-    /** 只交给这一次请求的事实（见 `RunState.notices`）。附在末尾、在缓存断点之后，不落账本。 */
-    notice: string | null,
-  ): ChatRequest {
+  private buildRequest(run: RunState): ChatRequest {
     const { adapter, registry, systemPrompt } = this.deps
     const { input, transcript } = run
 
@@ -340,7 +335,12 @@ export class AgentLoop {
         ? { batchId: pendingBatch, images: pendingImages }
         : null
     const projected = this.compaction.project(scoped)
-    const messages: WireMessage[] = [...projected]
+    const tools = registry.schemas()
+    const messages: WireMessage[] = replayReasoning(
+      projected,
+      reasoningReplay(adapter.spec),
+      envelopeHashOf({ model: adapter.spec.id, system, tools }),
+    )
 
     /*
      * 被投影丢掉的那部分原文，按分组分开记：历史消息一份、工具结果一份。
@@ -375,13 +375,12 @@ export class AgentLoop {
     if (latest >= 0 && !messages[latest]!.cacheBreakpoint) {
       messages[latest] = { ...messages[latest]!, cacheBreakpoint: true }
     }
-    if (notice) messages.push({ role: 'user', content: notice, _group: 'workspaceState' })
 
     const assembled: ChatRequest = {
       model: adapter.spec.id,
       system,
       messages,
-      tools: registry.schemas(),
+      tools,
       maxOutputTokens: adapter.spec.maxOutputTokens,
       idleTimeoutMs: this.deps.streamIdleTimeoutMs ?? idleTimeoutFor(input.effort),
       ...(input.effort ? { effort: input.effort } : {}),

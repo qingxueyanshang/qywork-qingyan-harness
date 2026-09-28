@@ -8,6 +8,7 @@ import type {
   ChatRequest,
   ContentBlock,
   LlmAdapter,
+  ReasoningReplay,
   TokenDensity,
   WireMessage,
   WireToolCall,
@@ -161,8 +162,66 @@ export function payloadSnapshotOf(req: ChatRequest): { hash: string; bytes: numb
  * 也不要复用 `prefix-audit` 的 `hashFrozen`：它只覆盖到最后一个缓存断点，
  * 不含工具表，而工具表正是最常变的那一半。
  */
-export function envelopeHashOf(req: ChatRequest): string {
+export function envelopeHashOf(req: Pick<ChatRequest, 'model' | 'system' | 'tools'>): string {
   return Bun.hash(JSON.stringify([req.model, req.system, req.tools])).toString(36)
+}
+
+/**
+ * 前缀指纹链的一步：前一位的指纹接上这条消息会上线的字段。
+ *
+ * 字段按固定顺序取：活的 transcript 与跨 run 投影出来的同一条消息键序不同，
+ * 直接序列化整个对象会得到两个指纹。缓存断点与下划线开头的内部标记不进指纹，
+ * 它们逐次请求会变，provider 不把它们算作前缀改写。原生推理只取条目本身。
+ */
+function nextPrefix(prev: string, m: WireMessage): string {
+  const wire = [
+    m.role,
+    m.content,
+    m.toolCalls?.map((c) => [c.id, c.name, c.arguments]) ?? null,
+    m.toolCallId ?? null,
+    m.reasoningContent ?? null,
+    m.responseReasoning?.items ?? null,
+  ]
+  return Bun.hash(`${prev}\u0000${JSON.stringify(wire)}`).toString(36)
+}
+
+/** 整份请求的前缀指纹：由它产生的原生推理条目记下这个值。 */
+export function reasoningPrefix(req: ChatRequest): string {
+  return req.messages.reduce(nextPrefix, envelopeHashOf(req))
+}
+
+/**
+ * 装配点的推理裁剪：请求里只留这条协议会发、且产生时前缀未变的推理。
+ *
+ * 原生条目记下的前缀与本次请求在这条消息之前的前缀不同或缺席即剥离——换模型、换工具表、
+ * 压缩与收纳、图片省略、提示增删都会改前缀，provider 对这样的条目不按原样使用。
+ * 某一位变了，其后每一位的指纹都随之不同，所以剥离的总是那一位之后的全部条目。
+ *
+ * 必须在这里裁而不是只在适配器里裁：本地估算按请求里挂着的推理计数，
+ * 两处不一致时估算会多出一整段不上线的思考。
+ */
+export function replayReasoning(
+  messages: readonly WireMessage[],
+  replay: ReasoningReplay,
+  envelope: string,
+): WireMessage[] {
+  let prefix = envelope
+  return messages.map((m) => {
+    let out = m
+    if (out.responseReasoning && (!replay.opaque || out.responseReasoning.prefix !== prefix)) {
+      const { responseReasoning: _dropped, ...rest } = out
+      out = rest
+    }
+    const carriesText =
+      !out.responseReasoning &&
+      (replay.text === 'all' || (replay.text === 'tool_turns' && !!out.toolCalls?.length))
+    if (out.reasoningContent && !carriesText) {
+      const { reasoningContent: _dropped, ...rest } = out
+      out = rest
+    }
+    prefix = nextPrefix(prefix, out)
+    return out
+  })
 }
 
 /**

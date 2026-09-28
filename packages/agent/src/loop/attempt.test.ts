@@ -27,7 +27,7 @@ import {
 
 test('Responses 密文沿现有思考步骤落盘，下一轮工具结果仍带原样历史', async () => {
   const reasoning = {
-    model: 'grok-4.7',
+    tokens: 0,
     items: [
       {
         type: 'reasoning',
@@ -76,10 +76,9 @@ test('Responses 密文沿现有思考步骤落盘，下一轮工具结果仍带�
     signal: new AbortController().signal,
   }))
     events.push(ev)
-  expect(persisted).toEqual([reasoning])
-  expect(seen[1]!.messages.find((m) => m.role === 'assistant')?.responseReasoning).toEqual(
-    reasoning,
-  )
+  const stamped = { ...reasoning, prefix: expect.any(String) }
+  expect(persisted).toEqual([stamped])
+  expect(seen[1]!.messages.find((m) => m.role === 'assistant')?.responseReasoning).toEqual(stamped)
   expect(events.some((e) => e.type === 'thinking.delta')).toBe(false)
 })
 

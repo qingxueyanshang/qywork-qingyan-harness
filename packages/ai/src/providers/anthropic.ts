@@ -19,7 +19,12 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import type { EffortLevel } from '@qywork/core'
-import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
+import {
+  effortIsTransmittable,
+  type ModelSpec,
+  type ReasoningReplay,
+  reasoningReplay,
+} from '../catalog.ts'
 import { classifyProviderError, classifyStreamError, ProviderError } from '../errors.ts'
 import { readSse, sseJson } from '../sse.ts'
 import {
@@ -105,6 +110,9 @@ export class AnthropicAdapter implements LlmAdapter {
 
     // 累积工具调用：参数按 input_json_delta 分片流下来，要自己拼回 JSON。
     const partial = new Map<number, { id: string; name: string; json: string }>()
+    // 原生思考块（含签名）与全部块的先后顺序：回放要求原样、原位。
+    const thinking = new Map<number, AnthropicBlock>()
+    const order: { index: number; type: string; id?: string }[] = []
     /** `message_stop` 到过没有。没到就是传输被截断，不是模型说完了。 */
     let settled = false
 
@@ -154,8 +162,21 @@ export class AnthropicAdapter implements LlmAdapter {
           }
           case 'content_block_start': {
             const block = ev.content_block
-            if (block?.type === 'thinking' || block?.type === 'redacted_thinking') {
+            order.push({
+              index: ev.index,
+              type: block?.type ?? '',
+              ...(block?.id ? { id: block.id } : {}),
+            })
+            if (block?.type === 'thinking') {
               thinkingObserved = true
+              thinking.set(ev.index, {
+                type: 'thinking',
+                thinking: block.thinking ?? '',
+                signature: block.signature ?? '',
+              })
+            } else if (block?.type === 'redacted_thinking') {
+              thinkingObserved = true
+              thinking.set(ev.index, { type: 'redacted_thinking', data: block.data ?? '' })
             }
             if (block?.type === 'tool_use') {
               // 缺席按空串收：名字为空由 `collectToolCalls` 的 `!slot.name` 那条统一报错，
@@ -173,7 +194,12 @@ export class AnthropicAdapter implements LlmAdapter {
             } else if (d?.type === 'thinking_delta') {
               // display:'omitted'（默认）时这里是空串——思考照样发生、照样计费，
               // 只是不回传内容。不要据此判断「模型没思考」。
+              const block = thinking.get(ev.index)
+              if (block && d.thinking) block.thinking = `${block.thinking ?? ''}${d.thinking}`
               if (d.thinking) yield { type: 'thinking_delta', delta: d.thinking, at }
+            } else if (d?.type === 'signature_delta') {
+              const block = thinking.get(ev.index)
+              if (block && d.signature) block.signature = `${block.signature ?? ''}${d.signature}`
             } else if (d?.type === 'input_json_delta') {
               const slot = partial.get(ev.index)
               // **必须兜住缺席**：直接拼接会把字符串 `undefined` 接进 JSON，
@@ -241,6 +267,24 @@ export class AnthropicAdapter implements LlmAdapter {
       }
 
       const calls = collectToolCalls(partial, 'anthropic_messages', req.model)
+      const items = nativeThinking(order, thinking)
+      if (items.length) {
+        yield {
+          type: 'response_reasoning',
+          reasoning: {
+            items,
+            // 回报缺席时按思考正文估；签名里还有加密的完整推理，这个数只低不高。
+            tokens:
+              usage.source === 'provider' && usage.reasoningTokens > 0
+                ? usage.reasoningTokens
+                : items.reduce(
+                    (n, b) => n + estimateText(String(b.thinking ?? ''), this.spec.density),
+                    0,
+                  ),
+          },
+          at: Date.now(),
+        }
+      }
       if (calls.length) yield { type: 'tool_calls', calls, at: Date.now() }
     } catch (err) {
       throw classifyProviderError('anthropic_messages', err, readTransport(trace))
@@ -273,8 +317,7 @@ export class AnthropicAdapter implements LlmAdapter {
         this.spec.minCacheablePrefix,
         estimateSchemas(req.tools, this.spec.density) +
           req.system.reduce((n, b) => n + estimateText(b.text, this.spec.density), 0),
-        this.spec.chatReasoningProtocol === 'deepseek_preserved' ||
-          this.spec.chatReasoningProtocol === 'preserved',
+        reasoningReplay(this.spec),
       ),
       tools: buildTools(req.tools),
       ...(thinking ? { thinking } : {}),
@@ -384,6 +427,8 @@ interface AnthropicUsage {
   output_tokens?: number
   cache_read_input_tokens?: number
   cache_creation_input_tokens?: number
+  /** 思考 token 是 `output_tokens` 的一部分，这里单列。 */
+  output_tokens_details?: { thinking_tokens?: number }
 }
 
 /**
@@ -396,11 +441,19 @@ interface AnthropicStreamEvent {
   type: string
   index: number
   message?: { usage?: AnthropicUsage }
-  content_block?: { type?: string; id?: string; name?: string }
+  content_block?: {
+    type?: string
+    id?: string
+    name?: string
+    thinking?: string
+    signature?: string
+    data?: string
+  }
   delta?: {
     type?: string
     text?: string
     thinking?: string
+    signature?: string
     partial_json?: string
     stop_reason?: string
     stop_details?: { category?: string | null; explanation?: string } | null
@@ -413,6 +466,9 @@ export interface AnthropicBlock {
   type: string
   text?: string
   thinking?: string
+  signature?: string
+  /** `redacted_thinking` 的密文。 */
+  data?: string
   /** 装配时可能还没有（`WireMessage.toolCallId` 可缺），JSON 里的 undefined 等同不带这个键。 */
   tool_use_id?: string | undefined
   content?: string | AnthropicBlock[]
@@ -453,9 +509,9 @@ export interface AnthropicOutMessage {
 function buildMessages(
   messages: WireMessage[],
   density: TokenDensity,
-  minPrefix = 0,
-  prefixTokens = 0,
-  preserveReasoning = false,
+  minPrefix: number,
+  prefixTokens: number,
+  replay: ReasoningReplay,
 ): Anthropic.MessageParam[] {
   const out: AnthropicOutMessage[] = []
   // 断点落在哪几条输出上。工具结果会被合并进同一条 user 消息，
@@ -483,35 +539,21 @@ function buildMessages(
       continue
     }
 
-    if (m.role === 'assistant' && m.toolCalls?.length) {
-      const content: AnthropicBlock[] = []
-      if (preserveReasoning && m.reasoningContent) {
-        content.push({ type: 'thinking', thinking: m.reasoningContent })
-      }
-      if (typeof m.content === 'string' && m.content) {
-        content.push({ type: 'text', text: m.content })
-      }
-      for (const c of m.toolCalls) {
-        content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments })
-      }
-      out.push({ role: 'assistant', content })
+    if (m.role === 'assistant') {
+      const content = assistantBlocks(m, replay)
+      // 没有思考块也没有工具调用的纯文本轮保持字符串形态，已有会话的请求字节不变。
+      const plain = content.every((b) => b.type === 'text') && !m.toolCalls?.length
+      out.push({
+        role: 'assistant',
+        content: plain && typeof m.content === 'string' ? m.content : content,
+      })
       if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
       continue
     }
 
     out.push({
       role: m.role,
-      content:
-        preserveReasoning && m.role === 'assistant' && m.reasoningContent
-          ? [
-              { type: 'thinking', thinking: m.reasoningContent },
-              ...(typeof m.content === 'string'
-                ? [{ type: 'text', text: m.content }]
-                : toBlocks(m.content)),
-            ]
-          : typeof m.content === 'string'
-            ? m.content
-            : toBlocks(m.content),
+      content: typeof m.content === 'string' ? m.content : toBlocks(m.content),
     })
     if (m.cacheBreakpoint && running >= minPrefix) marks.push(out.length - 1)
   }
@@ -522,12 +564,86 @@ function buildMessages(
     if (typeof entry.content === 'string') {
       entry.content = [{ type: 'text', text: entry.content }]
     }
-    const last = entry.content[entry.content.length - 1]
+    // 思考块不接受 `cache_control`，断点挂在最后一个非思考块上。
+    const last = entry.content.findLast(
+      (b) => b.type !== 'thinking' && b.type !== 'redacted_thinking',
+    )
     if (last) last.cache_control = { type: 'ephemeral' as const }
   }
   // 清掉只用于合并的内部标记，避免它进入请求体破坏缓存前缀。
   for (const m of out) delete m._toolBatch
   return out as unknown as Anthropic.MessageParam[]
+}
+
+/**
+ * 一条 assistant 消息的内容块。
+ *
+ * 有原生思考块时按采集时记下的位置插回：本仓把正文合成一段、排在全部工具调用之前，
+ * 所以锚在正文上的块排在正文前，锚在某个工具调用上的块排在该 `tool_use` 前，
+ * 原本位于末尾的块排在最后。签名对轮内位置敏感，不要改成统一排在最前。
+ *
+ * 锚所指的工具调用已不在消息里（`max_tokens` 截断后整批丢弃）时，该块不回放：
+ * 从一条消息的末尾去掉思考块不会使其前面的块作废。
+ *
+ * 边界：同一次响应里正文被思考块隔成两段时，两段合并后原顺序无法复原。
+ */
+function assistantBlocks(m: WireMessage, replay: ReasoningReplay): AnthropicBlock[] {
+  const text: AnthropicBlock[] =
+    typeof m.content === 'string'
+      ? m.content
+        ? [{ type: 'text', text: m.content }]
+        : []
+      : toBlocks(m.content)
+  const calls: AnthropicBlock[] = (m.toolCalls ?? []).map((c) => ({
+    type: 'tool_use',
+    id: c.id,
+    name: c.name,
+    input: c.arguments,
+  }))
+  const native = replay.opaque ? (m.responseReasoning?.items ?? []) : []
+  if (!native.length) {
+    const thought: AnthropicBlock[] =
+      replay.text !== 'none' && m.reasoningContent
+        ? [{ type: 'thinking', thinking: m.reasoningContent }]
+        : []
+    return [...thought, ...text, ...calls]
+  }
+  const block = ({ beforeText: _t, beforeToolUse: _u, ...rest }: Record<string, unknown>) =>
+    rest as unknown as AnthropicBlock
+  const out = native.filter((b) => b.beforeText === true).map(block)
+  out.push(...text)
+  for (const call of calls) {
+    out.push(...native.filter((b) => b.beforeToolUse === call.id).map(block), call)
+  }
+  out.push(
+    ...native.filter((b) => b.beforeText !== true && b.beforeToolUse === undefined).map(block),
+  )
+  return out
+}
+
+/**
+ * 一次响应里可回放的原生思考块，按出现顺序，各自记下紧随其后的那个非思考块作为位置锚
+ * （正文记 `beforeText`，工具调用记 `beforeToolUse`，位于末尾的都不记）。
+ * 签名没收齐的思考块不收：provider 不认无签名的块。
+ */
+function nativeThinking(
+  order: readonly { index: number; type: string; id?: string }[],
+  blocks: ReadonlyMap<number, AnthropicBlock>,
+): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = []
+  order.forEach((entry, i) => {
+    const block = blocks.get(entry.index)
+    if (!block || (block.type === 'thinking' && !block.signature)) return
+    const next = order
+      .slice(i + 1)
+      .find((o) => o.type !== 'thinking' && o.type !== 'redacted_thinking')
+    out.push({
+      ...block,
+      ...(next?.type === 'text' ? { beforeText: true } : {}),
+      ...(next?.type === 'tool_use' && next.id ? { beforeToolUse: next.id } : {}),
+    })
+  })
+  return out
 }
 
 function toBlocks(content: Exclude<WireMessage['content'], string>) {
@@ -574,6 +690,9 @@ function applyUsage(acc: ProviderUsage, u: AnthropicUsage) {
   }
   if (typeof u.cache_creation_input_tokens === 'number') {
     acc.cacheWriteTokens = u.cache_creation_input_tokens
+  }
+  if (typeof u.output_tokens_details?.thinking_tokens === 'number') {
+    acc.reasoningTokens = u.output_tokens_details.thinking_tokens
   }
   acc.source = 'provider'
 }

@@ -13,7 +13,13 @@ import type {
 } from '@qywork/core'
 import { log, reconcileBreakdown } from '@qywork/core'
 import { recoverFromOverflow } from './compact.ts'
-import { envelopeHashOf, mergeUsage, payloadSnapshotOf, softLimit } from './request.ts'
+import {
+  envelopeHashOf,
+  mergeUsage,
+  payloadSnapshotOf,
+  reasoningPrefix,
+  softLimit,
+} from './request.ts'
 import type { LoopHost, RunState, TurnState } from './run-state.ts'
 
 /** 换行。日志里用，避免转义在工具链上被折半。 */
@@ -382,7 +388,7 @@ export async function* sendTurn(
           _group: 'executionRecords',
         })
         run.stampUnit(unitStart)
-        run.notices.push('上一条回复在此处中断，其后内容未送达。')
+        run.notify('上一条回复在此处中断，其后内容未送达。')
         run.carriedResends = resends
         run.turnIndex++
         yield {
@@ -475,12 +481,13 @@ async function* consumeStream(
 
     switch (ev.type) {
       case 'response_reasoning': {
-        turn.responseReasoning = ev.reasoning
+        // 盖上产生它的这次请求的前缀指纹：回放时据此判断前缀有没有变过。
+        turn.responseReasoning = { ...ev.reasoning, prefix: reasoningPrefix(turn.req) }
         const id = persist.openThinkingStep(
           input.runId,
           run.nextSeq(),
           turn.requestId,
-          ev.reasoning,
+          turn.responseReasoning,
         )
         turn.attemptThinking.push(id as StepId)
         turn.open = null

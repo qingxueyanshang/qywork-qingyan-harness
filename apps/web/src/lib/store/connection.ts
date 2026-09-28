@@ -22,6 +22,7 @@ import type {
   Run,
   Step,
 } from '@qywork/core'
+import { isNoticeStep } from '@qywork/core'
 import { createEffect, createRoot } from 'solid-js'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
@@ -1558,7 +1559,8 @@ function stepToItems(s: Step): TranscriptItem[] {
   // 与 `message.injected` 事件里那个是同一个值，因此不会闪出两条。
   if (s.kind === 'user') {
     const payload = s.payload?.kind === 'user' ? s.payload : undefined
-    if (!s.content) return []
+    // 执行事实是交给模型的输入，不是会话内容。
+    if (!s.content || isNoticeStep(s)) return []
     const origin = payload?.origin
     if (origin) return [{ id: s.id, kind: 'receipt', text: s.content, origin }]
     const files = payload?.attachments

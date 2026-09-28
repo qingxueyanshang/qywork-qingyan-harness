@@ -38,7 +38,7 @@ const noAttachments = async (content: string) => content
 
 test('连续文本续写按密文快照保留每次生成的边界', () => {
   const reasoning = (id: string) => ({
-    model: 'grok-4.7',
+    tokens: 0,
     items: [
       {
         type: 'reasoning',
@@ -88,7 +88,7 @@ test('思考密文从数据库步骤恢复，工具轮及纯文本轮原样保�
       contextSnapshot: [],
     })
     const reasoning = {
-      model: 'grok-4.7',
+      tokens: 0,
       items: [{ type: 'reasoning', id: 'rs1', encrypted_content: 'opaque', summary: [] }],
     }
     appendStep(store, {

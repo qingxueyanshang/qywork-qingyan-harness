@@ -46,7 +46,7 @@ export interface LoopHost {
     turnIndex: number,
   ): SummaryTrace & { opened: boolean; merged: boolean }
   openStream(req: ChatRequest, requestId: string): Promise<AsyncIterable<ProviderEvent>>
-  buildRequest(run: RunState, notice: string | null): ChatRequest
+  buildRequest(run: RunState): ChatRequest
   /** 最近一次 `buildRequest` 算出的省略量。 */
   lastOmitted(): ContextOmitted
 }
@@ -114,11 +114,6 @@ export class RunState {
   compactedAt = -1
   /** 进展证据，按调用顺序累积。判「原地打转」用，见 progress.ts。 */
   readonly progress: ProgressEvidence[] = []
-  /**
-   * 交给下一次请求的事实，一次性。**不落账本、不进界面**：它是给模型的输入，
-   * 不是会话内容。装配时以 user 消息附在末尾（见 `buildRequest`）。
-   */
-  readonly notices: string[] = []
   /**
    * 请求账的轮次编号（`uq_provider_run_turn` 的第二段）。主循环每轮推进一次，
    * 压缩的摘要请求占用编号时由压缩阶段另行推进。
@@ -228,11 +223,33 @@ export class RunState {
     return this.anchor ? this.meter(0).tokens : estimateRequest(req, this.density)
   }
 
-  /** 空转判据：满三次就停；满两次先把「你在重复」当事实交给下一次请求。 */
+  /** 空转判据：满三次就停；满两次先把「你在重复」当事实交给模型。 */
   stalled(): boolean {
     if (repeatsNoProgress(this.progress)) return true
-    if (repeatsNoProgress(this.progress, MAX_CYCLE_WIDTH, 2)) this.notices.push(REPEAT_NOTICE)
+    if (repeatsNoProgress(this.progress, MAX_CYCLE_WIDTH, 2)) this.notify(REPEAT_NOTICE)
     return false
+  }
+
+  /**
+   * 交给模型的执行事实（待办未完成、重复告警、断流续发）：落一条不显示的用户 step，
+   * 并追加到 transcript 尾部，此后每次请求都原位带着它。
+   *
+   * 不要改回「只附在下一次请求末尾」：下一次请求没有它，前缀就与产生那轮响应时不同，
+   * provider 据此作废那轮之后的思考块，缓存也从那里断开。
+   *
+   * 戳自己盖，与 run 内注入的用户消息同法；投影侧（`runtime/transcript.ts`）按载荷里的
+   * `notice` 还原成同一条消息。
+   */
+  notify(text: string): void {
+    const seq = this.nextSeq()
+    this.persist.landUserStep(this.input.runId, seq, { text, notice: true })
+    this.transcript.push({
+      role: 'user',
+      content: text,
+      _group: 'workspaceState',
+      _step: stepStamp(this.input.runId, seq),
+      ...(this.input.userMessageId ? { _messageId: this.input.userMessageId } : {}),
+    })
   }
 
   /*
@@ -319,8 +336,6 @@ export class TurnState {
 
   constructor(
     private readonly run: RunState,
-    /** 只交给这一轮请求的事实（见 `RunState.notices`），压缩后重建请求时沿用同一份。 */
-    readonly turnNotice: string | null,
     public req: ChatRequest,
     /*
      * 分组明细。**在信封判定之前算**——头部修正要用本轮的头部占用，而只有

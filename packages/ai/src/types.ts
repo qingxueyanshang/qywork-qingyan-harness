@@ -148,11 +148,14 @@ export interface WireMessage {
   /** role='tool' 时对应的调用 id。 */
   toolCallId?: string
   /**
-   * DeepSeek 等 OpenAI 兼容供应商在思考模式下要求带 tool_calls 的 assistant 消息
-   * 原样回传 reasoning_content，否则后续轮次 400。Anthropic 路径不需要。
+   * 思考正文。哪些协议、哪些轮次把它发上线由 `reasoningReplay`（`catalog.ts`）裁决；
+   * DeepSeek 等兼容供应商在思考模式下要求带 tool_calls 的轮次回传，否则后续轮次 400。
    */
   reasoningContent?: string
-  /** 不可展示的 Responses 原始 reasoning 条目，回传时校验模型身份。 */
+  /**
+   * 不可展示的原生推理条目。装配点只留下前缀未变的那些（`agent/loop/request.ts` 的
+   * `replayReasoning`），适配器收到即原样回放；有它时思考正文不再上线。
+   */
   responseReasoning?: ResponseReasoning
   /**
    * 缓存断点：**从请求开头到这条消息为止**的字节被 provider 缓存。
@@ -294,6 +297,7 @@ export type ProviderEvent =
    * 空 delta、心跳、响应头与用量不带它，也不推进任何内容时刻。
    */
   | { type: 'thinking_delta'; delta: string; at: number }
+  /** 一次响应的原生推理条目，流收齐后交付一次。 */
   | { type: 'response_reasoning'; reasoning: ResponseReasoning; at: number }
   | { type: 'text_delta'; delta: string; at: number }
   /** 收到非空工具参数片段；只报告生成进度，完整调用仍由 tool_calls 交付。 */

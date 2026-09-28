@@ -938,6 +938,7 @@ export class Session {
             kind: 'user',
             ...(input.attachments?.length ? { attachments: input.attachments } : {}),
             ...(input.origin ? { origin: input.origin } : {}),
+            ...(input.notice ? { notice: true as const } : {}),
           },
         }).id,
       failThinkingSteps: (stepIds) => failThinkingSteps(store, stepIds as never),

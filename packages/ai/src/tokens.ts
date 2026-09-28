@@ -133,9 +133,10 @@ export function estimateContent(
 export function estimateMessage(m: WireMessage, d: TokenDensity): number {
   const charsPerToken = m.role === 'tool' ? d.jsonCharsPerToken : d.textCharsPerToken
   let total = PER_MESSAGE_OVERHEAD + estimateContent(m.content, d, charsPerToken)
-  if (m.reasoningContent) total += estimateText(m.reasoningContent, d)
-  // 密文没有本地 tokenizer；以发送字节保守估算，收到 provider 用量后由锚点校准。
-  if (m.responseReasoning) total += estimateJson(m.responseReasoning.items, d)
+  // 原生推理条目按 provider 回报的 token 数计：签名与密文按字节估会高出数倍。
+  // 有它时思考正文不上线（`reasoningReplay`），两份只数一份。
+  if (m.responseReasoning) total += m.responseReasoning.tokens
+  else if (m.reasoningContent) total += estimateText(m.reasoningContent, d)
   for (const call of m.toolCalls ?? []) {
     total += estimateText(call.name, d) + estimateJson(call.arguments, d)
   }

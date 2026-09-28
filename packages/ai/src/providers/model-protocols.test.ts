@@ -7,8 +7,8 @@ import type { ChatRequest, ProviderEvent } from '../types.ts'
 import { buildInput } from './openai-responses.ts'
 
 const reasoning: ResponseReasoning = {
-  model: 'grok-4.7',
   items: [{ type: 'reasoning', id: 'rs1', encrypted_content: 'opaque-ciphertext', summary: [] }],
+  tokens: 0,
 }
 const tools = [
   {
@@ -259,13 +259,11 @@ describe('GLM 5.3 与 Grok 4.7 官方协议映射', () => {
     }
   })
 
-  test('换模型或协议时不会发送别的模型密文', () => {
+  test('密文按协议声明原样回放；换模型的剥离在装配点', () => {
     const messages = [{ role: 'assistant' as const, content: '已读', responseReasoning: reasoning }]
-    expect(
-      buildInput(messages, 'encrypted_content', 'another-model').some(
-        (i) => i.type === 'reasoning',
-      ),
-    ).toBe(false)
-    expect(buildInput(messages, 'none', 'grok-4.7').some((i) => i.type === 'reasoning')).toBe(false)
+    expect(buildInput(messages, 'encrypted_content').filter((i) => i.type === 'reasoning')).toEqual(
+      reasoning.items,
+    )
+    expect(buildInput(messages, 'none').some((i) => i.type === 'reasoning')).toBe(false)
   })
 })
