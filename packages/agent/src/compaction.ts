@@ -33,7 +33,13 @@ import type {
   WireToolCall,
 } from '@qywork/ai'
 import { estimateMessages, estimateText } from '@qywork/ai'
-import type { ActionKind, CompactionCut, CompactionFacts, CompactionManifest } from '@qywork/core'
+import type {
+  ActionKind,
+  CompactionCut,
+  CompactionFacts,
+  CompactionManifest,
+  FileReadProgress,
+} from '@qywork/core'
 
 /**
  * 摘录界：一条 segment、一条事实、一个被折叠的调用参数，共用这一个长度。
@@ -228,6 +234,8 @@ export interface CompactionAction {
   errorCode?: string | null
   /** 这次调用落盘的正文 id。压缩后靠它才能把内容库里那份读回来。 */
   resourceId?: string | null
+  /** 按行读取时这次读过的行段与文件总行数；其余调用为 null 或缺省。 */
+  lines?: { from: number; to: number; total: number } | null
 }
 
 export interface CompactionInput {
@@ -533,12 +541,48 @@ function extractFacts(
     ]),
   ]
 
+  const filesRead = mergeReads(previous?.filesRead ?? [], actions)
+
   return {
     filesTouched: [...filesTouched],
     openItems: dedupeKeepLatest(openItems),
     userConstraints,
     ...(resources.size ? { resources: [...resources] } : {}),
+    ...(filesRead.length ? { filesRead } : {}),
   }
+}
+
+/** 把成功的按行读取并入读取进度：同一文件的行段按起点排序，重叠或相邻的合并。 */
+function mergeReads(
+  previous: readonly FileReadProgress[],
+  actions: readonly CompactionAction[],
+): FileReadProgress[] {
+  const byPath = new Map<string, FileReadProgress>(
+    previous.map((p) => [p.path, { ...p, ranges: p.ranges.map(([a, b]) => [a, b]) }]),
+  )
+  for (const a of actions) {
+    if (a.status !== 'success' || a.actionKind !== 'read' || !a.target || !a.lines) continue
+    const entry = byPath.get(a.target) ?? { path: a.target, totalLines: a.lines.total, ranges: [] }
+    entry.totalLines = a.lines.total
+    entry.ranges.push([a.lines.from, a.lines.to])
+    byPath.set(a.target, entry)
+  }
+  return [...byPath.values()].map((entry) => {
+    const sorted = [...entry.ranges].sort((x, y) => x[0] - y[0])
+    const merged: [number, number][] = []
+    for (const [from, to] of sorted) {
+      const last = merged.at(-1)
+      if (last && from <= last[1] + 1) last[1] = Math.max(last[1], to)
+      else merged.push([from, to])
+    }
+    return { ...entry, ranges: merged }
+  })
+}
+
+/** 读取进度的一行：`path：已读第 1–27000、27001–30000 行（共 187500 行）`。 */
+function readProgressLine(p: FileReadProgress): string {
+  const ranges = p.ranges.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join('、')
+  return `${p.path}：已读第 ${ranges} 行（共 ${p.totalLines} 行）`
 }
 
 /** 动作在事实清单里的名字：工具名加目标。未解决项的核销按它逐字匹配。 */
@@ -601,6 +645,9 @@ function fitFacts(facts: CompactionFacts, budget: number, density: TokenDensity)
     ...take(facts.userConstraints.filter((t) => !looksLikeConstraint(t))),
   ]
   const openItems = take(facts.openItems)
+  // 读取进度排在文件清单之前：丢了它模型不知道读到哪里，会从头重读。
+  const readLines = new Set(take((facts.filesRead ?? []).map(readProgressLine)))
+  const filesRead = (facts.filesRead ?? []).filter((p) => readLines.has(readProgressLine(p)))
   const resources = take(facts.resources ?? [])
   const filesTouched = take(facts.filesTouched)
   return {
@@ -608,6 +655,7 @@ function fitFacts(facts: CompactionFacts, budget: number, density: TokenDensity)
     openItems,
     userConstraints,
     ...(resources.length ? { resources } : {}),
+    ...(filesRead.length ? { filesRead } : {}),
   }
 }
 
@@ -702,6 +750,11 @@ function factsContent(f: CompactionFacts): string {
   const lines: string[] = []
   if (f.userConstraints.length)
     lines.push(`用户约束：\n${f.userConstraints.map((s) => `- ${s}`).join('\n')}`)
+  if (f.filesRead?.length) {
+    lines.push(
+      `读取进度（续读从未读的行开始）：\n${f.filesRead.map((p) => `- ${readProgressLine(p)}`).join('\n')}`,
+    )
+  }
   if (f.filesTouched.length) lines.push(`涉及文件：${f.filesTouched.join('、')}`)
   if (f.resources?.length) {
     lines.push(

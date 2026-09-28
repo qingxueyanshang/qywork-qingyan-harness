@@ -456,6 +456,68 @@ describe('事实包必须逐字保留，不经模型', () => {
     expect(kept).toEqual(['不要动 legacy/ 目录', '继续，看看 src/a.ts'])
   })
 
+  /**
+   * 摘要线越过那些读取之后，模型只剩事实清单知道读到了哪里。
+   * 同一文件的段按起点合并（相邻、重叠都并），并与上一份清单合并；失败的读取不算。
+   */
+  test('按行读取的进度并入事实清单，续读位置在投影里', async () => {
+    const read = (
+      stepId: string,
+      from: number,
+      to: number,
+      status = 'success',
+    ): CompactionAction => ({
+      stepId,
+      tool: 'read_file',
+      status,
+      actionKind: 'read',
+      target: 'big.txt',
+      summary: `读取 big.txt 第 ${from}–${to} 行`,
+      lines: { from, to, total: 500 },
+    })
+    const previous: CompactionManifest = {
+      revision: 1,
+      compactedThroughMessageId: 'ms_001' as MessageId,
+      compactedMessageCount: 1,
+      summary: '上一份摘要',
+      facts: {
+        filesTouched: ['big.txt'],
+        openItems: [],
+        userConstraints: [],
+        filesRead: [{ path: 'big.txt', totalLines: 500, ranges: [[401, 450]] }],
+      },
+      createdAt: 0,
+    }
+    const r = await compact(
+      input({
+        previous,
+        actions: [
+          read('rn:1', 1, 100),
+          read('rn:2', 101, 200),
+          read('rn:3', 301, 350),
+          read('rn:4', 201, 300, 'failure'),
+        ],
+      }),
+      ok,
+    )
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.facts.filesRead).toEqual([
+      {
+        path: 'big.txt',
+        totalLines: 500,
+        ranges: [
+          [1, 200],
+          [301, 350],
+          [401, 450],
+        ],
+      },
+    ])
+    const projected = projectManifest(r.manifest)
+      .map((m) => m.content)
+      .join('\n')
+    expect(projected).toContain('big.txt：已读第 1–200、301–350、401–450 行（共 500 行）')
+  })
+
   test('失败的动作进未解决清单', async () => {
     const r = await compact(input(), ok)
     const open = r.status === 'compacted' ? r.manifest.facts.openItems.join('\n') : ''

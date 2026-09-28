@@ -111,6 +111,7 @@ async function pressure(store: Store, conversationId: string): Promise<Compactio
   return {
     trigger: 'automatic',
     model: 'm',
+    latestUnitSeen: false,
     occupancy: total,
     estimatedOccupancy: total,
     contextWindow: total,
@@ -779,6 +780,7 @@ describe('切界永不切开 tool_call 与 tool_result', () => {
       await p.run({
         trigger: 'automatic',
         model: 'm',
+        latestUnitSeen: false,
         occupancy: total,
         estimatedOccupancy: total,
         contextWindow: window,
@@ -925,6 +927,48 @@ describe('事实提取', () => {
     const r = await port(store, conv.id).run(await pressure(store, conv.id))
     if (r.status !== 'compacted') throw new Error('应当压缩成功')
     expect(r.manifest.facts.filesTouched).not.toContain('还没读完.ts')
+    store.close()
+  })
+})
+
+/**
+ * 一段几十万 token 的续读投递单独就超过保留量。模型看过之后整段留在保留尾部的话，
+ * 压缩后占用仍在软阈值附近，下一段只剩一份保留量的空间；模型没看过时必须整段留着。
+ */
+describe('已看过的超大单元压缩时一并收纳', () => {
+  async function withHugeLastUnit() {
+    const { store, ws, conv, ids } = fresh(2)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'huge-read',
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
+    })
+    addToolWaves(store, run.id, 1, 40_000)
+    return { store, conv }
+  }
+  const lastTool = (messages: WireMessage[]) =>
+    String([...messages].reverse().find((m) => m.role === 'tool')?.content ?? '')
+
+  test('看过：收纳它，只收纳不摘要', async () => {
+    const { store, conv } = await withHugeLastUnit()
+    const p = port(store, conv.id)
+    const outcome = await p.run({ ...(await pressure(store, conv.id)), latestUnitSeen: true })
+    expect(outcome.status === 'compacted' && outcome.summarized).toBe(false)
+    const tool = lastTool(p.project(await history(store, conv.id)))
+    expect(tool).toContain('result_omitted')
+    expect(tool).not.toContain('y'.repeat(1000))
+    store.close()
+  })
+
+  test('没看过：整段保留', async () => {
+    const { store, conv } = await withHugeLastUnit()
+    const p = port(store, conv.id)
+    await p.run({ ...(await pressure(store, conv.id)), latestUnitSeen: false })
+    expect(lastTool(p.project(await history(store, conv.id)))).toContain('y'.repeat(1000))
     store.close()
   })
 })
@@ -1195,6 +1239,7 @@ describe('两把尺不许直接相减', () => {
       const outcome = await p.run({
         trigger: 'automatic',
         model: 'm',
+        latestUnitSeen: false,
         occupancy,
         estimatedOccupancy: estimated,
         contextWindow,

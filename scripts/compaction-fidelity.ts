@@ -219,6 +219,7 @@ async function main(): Promise<number> {
   const outcome = await compaction.run({
     trigger: 'automatic',
     model: adapter.spec.id,
+    latestUnitSeen: true,
     occupancy,
     // 这里的占用本来就是本地估算，两把尺重合，比值为 1。
     estimatedOccupancy: occupancy,

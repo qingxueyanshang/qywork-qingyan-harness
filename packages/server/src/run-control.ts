@@ -761,6 +761,8 @@ export async function compactConversation(
     const outcome = await compaction.run({
       trigger: 'manual',
       model: spec.id,
+      // 手动压缩发生在两轮之间，模型已对最后一批结果作出响应。
+      latestUnitSeen: true,
       occupancy: panel.total,
       // 同一份面板的两把尺，压缩按它们的比值折算回收量。
       estimatedOccupancy: panel.measured,
