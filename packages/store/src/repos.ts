@@ -23,6 +23,7 @@ import type {
   NodeState,
   ProviderKind,
   ProviderRequest,
+  ProviderRequestConfiguration,
   ProviderRequestContentKind,
   ProviderRequestDiagnostic,
   ProviderRequestId,
@@ -1065,20 +1066,43 @@ export function finishRun(
     interruption?: RunInterruption | null
   },
 ): void {
-  store.db
-    .query(
-      `UPDATE runs SET status = ?, stop_reason = ?,
+  store.tx(() => {
+    store.db
+      .query(
+        `UPDATE runs SET status = ?, stop_reason = ?,
        error_message = ?, error_code = ?, interruption_detail = ?, finished_at = ? WHERE id = ?`,
-    )
-    .run(
-      input.status,
-      input.stopReason,
-      input.errorMessage ?? null,
-      input.errorCode ?? null,
-      input.interruption ? writeJson(input.interruption) : null,
-      Date.now(),
-      id,
-    )
+      )
+      .run(
+        input.status,
+        input.stopReason,
+        input.errorMessage ?? null,
+        input.errorCode ?? null,
+        input.interruption ? writeJson(input.interruption) : null,
+        Date.now(),
+        id,
+      )
+    // 调用方关闭生成器也必须收请求账，不等到下次启动才把它误记成进程退出。
+    const diagnostic: ProviderRequestDiagnostic = {
+      causes: [
+        {
+          name: 'RunEnded',
+          code: input.stopReason,
+          message: '所属轮次已结束，未收到该请求的完整终态；sentAt 为空表示未交给发送阶段。',
+        },
+      ],
+      providerEvents: null,
+      silentMs: null,
+      transport: null,
+      assistantChars: null,
+      toolCallCount: null,
+      retry: { decision: 'run_ended', attempt: null, max: 0, backoffMs: null, at: null },
+    }
+    store.db
+      .query(
+        "UPDATE provider_requests SET status = 'uncertain', completed_at = COALESCE(completed_at, ?), diagnostic = COALESCE(diagnostic, ?) WHERE run_id = ? AND status IN ('pending','in_flight')",
+      )
+      .run(Date.now(), writeJson(diagnostic), id)
+  })
 }
 
 /**
@@ -1202,7 +1226,7 @@ export function recoverStaleRuns(
           `UPDATE provider_requests
            SET status = 'uncertain', completed_at = COALESCE(completed_at, ?),
                diagnostic = COALESCE(diagnostic, ?)
-           WHERE run_id = ? AND status = 'in_flight'`,
+           WHERE run_id = ? AND status IN ('pending','in_flight')`,
         )
         .run(now, writeJson(requestDiagnostic), r.id)
       finishStmt.run(
@@ -1270,13 +1294,13 @@ export function recoverStaleRuns(
       transport: null,
       assistantChars: null,
       toolCallCount: null,
-      retry: { decision: 'process_exit', attempt: null, max: 0, backoffMs: null, at: null },
+      retry: { decision: 'run_ended', attempt: null, max: 0, backoffMs: null, at: null },
     }
     store.db
       .query(
         `UPDATE provider_requests SET status = 'uncertain', completed_at = COALESCE(completed_at, ?),
              diagnostic = COALESCE(diagnostic, ?)
-         WHERE status = 'in_flight'
+         WHERE status IN ('pending','in_flight')
            AND run_id IN (SELECT id FROM runs WHERE status NOT IN ('running','queued'))`,
       )
       .run(now, writeJson(orphanRequestDiagnostic))
@@ -1463,6 +1487,7 @@ export function openProviderRequest(
     measuredInputTokens: number
     /** 摘要请求不给。 */
     occupancyTokens?: number
+    configuration?: ProviderRequestConfiguration
     sentCategories: ContextBreakdown
     omittedCategories: ContextOmitted
     payloadHash: string
@@ -1492,6 +1517,7 @@ export function openProviderRequest(
     errorCode: null,
     errorMessage: null,
     diagnostic: null,
+    configuration: input.configuration ?? null,
     payloadHash: input.payloadHash,
     requestBytes: input.requestBytes ?? null,
     cacheRouteFingerprint: input.cacheRouteFingerprint ?? null,
@@ -1513,8 +1539,8 @@ export function openProviderRequest(
         measured_input_tokens, occupancy_tokens, provider_input_tokens, provider_output_tokens, provider_cached_tokens,
         provider_cache_write_tokens, sent_categories, omitted_categories, error_code, payload_hash,
         request_bytes, cache_route_fingerprint, sent_at, headers_at, first_event_at, first_content_at,
-        completed_at, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,?,NULL,NULL,NULL,NULL,NULL,?)`,
+        completed_at, created_at, configuration)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,?,NULL,NULL,NULL,NULL,NULL,?,?)`,
     )
     .run(
       row.id,
@@ -1534,6 +1560,7 @@ export function openProviderRequest(
       row.requestBytes,
       row.cacheRouteFingerprint,
       row.createdAt,
+      row.configuration === null ? null : writeJson(row.configuration),
     )
   return row
 }
@@ -1753,6 +1780,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     errorCode: r.error_code,
     errorMessage: r.error_message,
     diagnostic: readJson(r.diagnostic, null),
+    configuration: readJson(r.configuration, null),
     payloadHash: r.payload_hash,
     requestBytes: r.request_bytes,
     finishReason: r.finish_reason ?? '',

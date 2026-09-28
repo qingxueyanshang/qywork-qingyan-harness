@@ -90,6 +90,7 @@ export {
   type ProviderFailureCause,
   type ProviderKind,
   type ProviderRequest,
+  type ProviderRequestConfiguration,
   type ProviderRequestContentKind,
   type ProviderRequestDiagnostic,
   type ProviderRequestPurpose,

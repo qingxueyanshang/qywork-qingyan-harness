@@ -167,9 +167,6 @@ test('容量拒绝 → 认出凭证 → 压一次 → 重发成功', async () =>
     conversationId: conv.id,
     messageIdUpperBound: null,
     summarize: makeSummarizer({
-      store,
-      conversationId: conv.id,
-      workspaceId: ws.id,
       profile: () => profile,
     }),
   })

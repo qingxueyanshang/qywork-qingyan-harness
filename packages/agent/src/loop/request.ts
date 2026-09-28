@@ -15,15 +15,36 @@ import type {
 } from '@qywork/ai'
 import {
   computeCost,
+  diagnosticEndpoint,
   estimateJson,
   estimateMessage,
   estimateSchemas,
   estimateText,
   STREAM_IDLE_TIMEOUT_MS,
 } from '@qywork/ai'
-import type { ContextBreakdown, RunUsage } from '@qywork/core'
+import type { ContextBreakdown, ProviderRequestConfiguration, RunUsage } from '@qywork/core'
 import { emptyBreakdown } from '@qywork/core'
 import type { ToolOutcome } from '../registry.ts'
+
+/** 与装配的请求一起落账；后续改模型设置不会改写这次申报。 */
+export function requestConfiguration(
+  req: ChatRequest,
+  adapter: LlmAdapter,
+): ProviderRequestConfiguration {
+  return {
+    contextWindow: adapter.spec.contextWindow,
+    endpoint: diagnosticEndpoint(adapter.endpoint),
+    modelMaxOutputTokens: adapter.spec.maxOutputTokens,
+    maxOutputTokens:
+      req.maxOutputTokens === null
+        ? null
+        : Math.min(req.maxOutputTokens, adapter.spec.maxOutputTokens ?? req.maxOutputTokens),
+    effort: req.effort ?? null,
+    idleTimeoutMs: req.idleTimeoutMs,
+    toolCount: req.tools.length,
+    messageCount: req.messages.length,
+  }
+}
 
 /**
  * 按思考档位放宽流空闲上限，结果填进 `ChatRequest.idleTimeoutMs` 交给传输层执行。

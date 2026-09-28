@@ -515,7 +515,7 @@ describe('上下文读数：一把尺', () => {
       if (ev.type === 'context') shown.push(ev.tokens)
     }
     expect(recorded).toHaveLength(2)
-    expect(recorded).toEqual(shown)
+    expect(shown).toEqual([recorded[0]!, 15, recorded[1]!, 15])
   })
 })
 
@@ -823,10 +823,14 @@ describe('锚点的信封校验', () => {
     // 指纹对不上但还是同一个 tokenizer：真值仍然成立，只把头部那一段换掉。
     expect(await runOnce('not-the-current-envelope', 'claude-opus-5')).toEqual([
       { tokens: 12_345 - 5_000 + head, source: 'actual' },
+      { tokens: 15, source: 'actual' },
     ])
     // 换了模型：退回估算尺，标签如实跟着走。
     expect((await runOnce('not-the-current-envelope', 'other-model'))[0]?.source).toBe('estimated')
     // 没记过指纹的存量行不作为「变了」的证据，锚点原样照用。
-    expect(await runOnce(null, 'claude-opus-5')).toEqual([{ tokens: 12_345, source: 'actual' }])
+    expect(await runOnce(null, 'claude-opus-5')).toEqual([
+      { tokens: 12_345, source: 'actual' },
+      { tokens: 15, source: 'actual' },
+    ])
   })
 })

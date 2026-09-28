@@ -29,11 +29,13 @@ import {
   buildAdapter,
   type ChatRequest,
   type ContentBlock,
-  computeCost,
+  failureDiagnostics,
   type LlmAdapter,
   ProviderError,
   type ProviderProfile,
   type ProviderUsage,
+  providerContentKind,
+  providerErrorMessage,
   STREAM_IDLE_TIMEOUT_MS,
   type TokenDensity,
   type WireToolCall,
@@ -88,27 +90,19 @@ import {
   listSchedules,
   listSteps,
   listWorkflowRecords,
-  markProviderRequestContent,
-  markProviderRequestFirstEvent,
-  markProviderRequestHeaders,
   markProviderRequestInputImages,
-  markProviderRequestSent,
   markRunRunning,
   markStepExecuting,
-  openProviderRequest,
   recordFileRead,
   recordLoadedTools,
-  recordProviderRequestDiagnostic,
   recordUsage,
   type Store,
   setConversationTitle,
-  settleProviderRequest,
   settleRunningSteps,
   settleToolStep,
   touchRun,
   updateGoal,
   updateRunMedia,
-  updateRunUsage,
   upsertWorkspace,
   workflowIdsOf,
 } from '@qywork/store'
@@ -138,6 +132,7 @@ import { acquireExtensions, type Extensions, releaseExtensions } from './extensi
 import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { makeMediaPort } from './media.ts'
 import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
+import { requestPersistence } from './request-persistence.ts'
 import { RuntimeSink } from './sink.ts'
 import { buildHistory } from './transcript.ts'
 
@@ -643,9 +638,6 @@ export class Session {
       conversationId,
       messageIdUpperBound: run.messageIdUpperBound,
       summarize: makeSummarizer({
-        store,
-        conversationId,
-        workspaceId: this.workspaceId,
         profile: () => this.resolveProfile(target),
         effort: () => resolveModel(this.opts.config, target)?.effort,
         signal: this.opts.signal,
@@ -966,7 +958,6 @@ export class Session {
           { kind: 'tool_result', args, outcome, action },
           durationMs,
         ),
-      saveUsage: (runId, usage) => updateRunUsage(store, runId, usage),
       recordCompaction: (runId, seq, payload) => {
         appendStep(store, {
           runId,
@@ -975,41 +966,20 @@ export class Session {
           // 列值由 phase 导出，不让调用方再报一次——两处各报一次就是两本账，
           // 而它们会漂移。终态的细分（skipped 与 failed）在 payload 里。
           status: payload.phase === 'done' ? 'success' : 'failure',
-          payload: { kind: 'compaction', ...payload },
+          payload: {
+            kind: 'compaction',
+            ...payload,
+            ...(payload.message
+              ? { message: redactSecrets(payload.message, collectSecrets(this.opts.config)) }
+              : {}),
+          },
         })
       },
-      openRequest: (input) => openProviderRequest(store, input).id,
-      markRequestSent: (requestId) => markProviderRequestSent(store, requestId as never),
-      markRequestHeaders: (requestId, at) =>
-        markProviderRequestHeaders(store, requestId as never, at),
-      markRequestFirstEvent: (requestId) =>
-        markProviderRequestFirstEvent(store, requestId as never),
-      markRequestContent: (requestId, at, kind, visible) =>
-        markProviderRequestContent(store, requestId as never, at, kind, visible),
+      ...requestPersistence(store, this.opts.config),
       markRequestInputImages: (requestId, batchId) =>
         markProviderRequestInputImages(store, requestId as never, batchId),
       inputImagesConsumed: (batchId) =>
         hasReceivedRequestWithImages(store, conversationId, batchId),
-      settleRequest: (requestId, status, usage, errorCode, finishReason, errorMessage) =>
-        settleProviderRequest(
-          store,
-          requestId as never,
-          status,
-          usage,
-          errorCode,
-          finishReason,
-          errorMessage,
-        ),
-      recordRequestDiagnostic: (requestId, diagnostic) => {
-        const secrets = collectSecrets(this.opts.config)
-        recordProviderRequestDiagnostic(store, requestId as never, {
-          ...diagnostic,
-          causes: diagnostic.causes.map((cause) => ({
-            ...cause,
-            message: redactSecrets(cause.message, secrets),
-          })),
-        })
-      },
     }
   }
 
@@ -1207,14 +1177,6 @@ export class Session {
 }
 
 export interface SummarizerOptions {
-  store: Store
-  workspaceId: string
-  /**
-   * 这次压缩是为哪条会话做的。**必填**：它是这笔钱与会话之间唯一的连接，
-   * 不带的话账本里这一笔只认得工作区，「这条会话花了多少」就永远少算一块——
-   * 而压缩越频繁少得越多。
-   */
-  conversationId: ConversationId
   /** 每次调用现解析：摘要发起时会话模型可能已经被切过。 */
   profile: () => ProviderProfile
   /** 用户为当前「接口 × 模型」选的档；undefined = 省略字段，沿用模型默认。 */
@@ -1257,9 +1219,8 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
     /** 摘要被输出上限截断。**截断的摘要一律不采用**——半份摘要看起来完整。 */
     let truncated = false
     let finish: string | undefined
-    // 摘要也花钱。一轮之内的摘要请求由 trace 记进这一轮（provider_requests + 这一轮的 usage）；
-    // 手动压缩不在任何一轮里，在下面单独记一笔账本行。
-    let spent: { cost: number; u: ProviderUsage } | null = null
+    // 自动与手动摘要的请求和花费都由 trace 写回所属轮次。
+    let usage: ProviderUsage | null = null
     const req: ChatRequest = {
       model: adapter.spec.id,
       system: [{ text: '你是会话摘要器。只输出摘要正文。' }],
@@ -1283,71 +1244,66 @@ export function makeSummarizer(opts: SummarizerOptions): Summarizer {
       ...(effort ? { effort } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
     }
-    const requestId = trace?.open(req)
+    if (!trace) throw new Error('摘要请求缺少会话记账上下文')
+    const requestId = trace.open(req, adapter)
     let sawEvent = false
+    let providerEvents = 0
+    let lastEventAt = Date.now()
     try {
-      if (trace && requestId) trace.sent(requestId)
+      trace.sent(requestId)
       for await (const ev of adapter.stream(req)) {
-        if (trace && requestId && !sawEvent && ev.type !== 'request_prepared') {
+        if (ev.type !== 'request_prepared' && ev.type !== 'response_started') {
+          providerEvents++
+          lastEventAt = Date.now()
+        }
+        if (!sawEvent && ev.type !== 'request_prepared' && ev.type !== 'response_started') {
           sawEvent = true
           trace.firstEvent(requestId)
         }
-        if (trace && requestId && ev.type === 'response_started') {
+        if (ev.type === 'response_started') {
           trace.headers(requestId, ev.headersAt)
         }
-        // 摘要与主请求同一条规则：每一段非空内容都推进内容时刻，用适配器带来的观察时刻。
-        if (
-          trace &&
-          requestId &&
-          (ev.type === 'text_delta' ||
-            ev.type === 'thinking_delta' ||
-            ev.type === 'tool_call_progress' ||
-            ev.type === 'tool_calls' ||
-            ev.type === 'response_reasoning')
-        ) {
-          trace.content(requestId, ev.at)
-        }
+        const kind = providerContentKind(ev)
+        if (kind !== null && 'at' in ev) trace.content(requestId, ev.at, kind)
         if (ev.type === 'text_delta') text += ev.delta
         else if (ev.type === 'done') {
           truncated = ev.stopReason === 'max_tokens'
           finish = ev.rawStopReason
         } else if (ev.type === 'usage') {
-          spent = { cost: computeCost(adapter.spec, ev.usage), u: ev.usage }
+          usage = ev.usage
         }
       }
     } catch (err) {
       const pe = err instanceof ProviderError ? err : null
-      if (trace && requestId) {
-        // 非 2xx 的响应头不经过 `response_started`，时刻只在传输读数里。与主请求同一条规则。
-        if (pe?.transport?.headersAt != null) trace.headers(requestId, pe.transport.headersAt)
-        // 与主请求同一套终态：被拒是 rejected，其余（掐流、中断、断连）都是 uncertain。
-        trace.settle(
-          requestId,
-          pe?.status !== undefined ? 'rejected' : 'uncertain',
-          pe?.usage ?? null,
-          opts.signal?.aborted ? null : (pe?.code ?? 'internal_error'),
-        )
-      }
+      // 非 2xx 的响应头不经过 `response_started`，时刻只在传输读数里。与主请求同一条规则。
+      if (pe?.transport?.headersAt != null) trace.headers(requestId, pe.transport.headersAt)
+      // 与主请求同一套终态：被拒是 rejected，其余（掐流、中断、断连）都是 uncertain。
+      trace.settle(
+        requestId,
+        pe?.status !== undefined ? 'rejected' : 'uncertain',
+        pe?.usage ?? usage,
+        opts.signal?.aborted ? null : (pe?.code ?? 'internal_error'),
+        finish,
+        providerErrorMessage(err),
+      )
+      trace.diagnostic(requestId, {
+        ...failureDiagnostics(err),
+        providerEvents,
+        silentMs: Math.max(0, Date.now() - lastEventAt),
+        assistantChars: text.length,
+        toolCallCount: 0,
+        retry: {
+          decision: opts.signal?.aborted ? 'interrupted' : 'not_retryable',
+          attempt: null,
+          max: 0,
+          backoffMs: null,
+          at: null,
+        },
+      })
       throw err
     }
 
-    if (trace && requestId) trace.settle(requestId, 'received', spent?.u ?? null, null, finish)
-    else if (spent) {
-      recordUsage(opts.store, {
-        kind: 'summary',
-        conversationId: opts.conversationId,
-        workspaceId: opts.workspaceId,
-        model: adapter.spec.id,
-        provider: profile.kind,
-        inputTokens: spent.u.inputTokens,
-        outputTokens: spent.u.outputTokens,
-        cachedTokens: spent.u.cachedTokens,
-        cacheWriteTokens: spent.u.cacheWriteTokens,
-        reasoningTokens: spent.u.reasoningTokens,
-        cost: spent.cost,
-        currency: adapter.spec.pricing.currency ?? 'USD',
-      })
-    }
+    trace.settle(requestId, 'received', usage, null, finish)
     // 截断作废与空摘要同一个终态：调用方据此判摘要段没做成，收纳段照常落库。
     return truncated ? null : text.trim() || null
   }

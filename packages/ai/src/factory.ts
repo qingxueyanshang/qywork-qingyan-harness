@@ -73,11 +73,11 @@ export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAda
 
   switch (profile.kind) {
     case 'anthropic_messages':
-      return new AnthropicAdapter(resolved, spec)
+      return Object.assign(new AnthropicAdapter(resolved, spec), { endpoint: baseUrl })
     case 'openai_chat_completions':
-      return new OpenAICompatAdapter(resolved, spec)
+      return Object.assign(new OpenAICompatAdapter(resolved, spec), { endpoint: baseUrl })
     case 'openai_responses':
-      return new OpenAIResponsesAdapter(resolved, spec)
+      return Object.assign(new OpenAIResponsesAdapter(resolved, spec), { endpoint: baseUrl })
     default: {
       const never: never = profile.kind
       throw new Error(`未知 provider: ${String(never)}`)

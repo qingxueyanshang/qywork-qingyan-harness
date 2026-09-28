@@ -60,6 +60,8 @@ export { type FileLogSink, fileLogSink, LOG_FILE } from './log-file.ts'
 export { makeMcpConfigPort, mergeMcpServers, type WritableMcpScope } from './mcp-config-store.ts'
 // 提示词装配：agent 的前缀审计测试要拿真实的那一份来审（走动态 import）
 export { buildSystemPrompt, buildTailNotes } from './prompt.ts'
+// 主请求与摘要请求共用的持久化边界。
+export { requestPersistence } from './request-persistence.ts'
 // 全机任务文件导入账本：server 在开始服务之前调一次
 export { importLegacySchedules } from './schedules.ts'
 // 会话：装配的最终产物，CLI 与 server 的唯一入口。

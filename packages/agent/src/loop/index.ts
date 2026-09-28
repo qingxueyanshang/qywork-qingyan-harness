@@ -14,14 +14,15 @@
  * - 工具 schema 按名排序（registry 保证），排在最前，顺序抖动即全量失效。
  */
 
-import type { ChatRequest, ProviderEvent, ProviderUsage, WireMessage } from '@qywork/ai'
+import type { ChatRequest, ProviderEvent, WireMessage } from '@qywork/ai'
 import { estimateMessage, estimateRequest, ProviderError, reasoningReplay } from '@qywork/ai'
 import type { AgentEvent, ContextOmitted } from '@qywork/core'
-import { emptyBreakdown, emptyOmitted, log } from '@qywork/core'
+import { emptyOmitted, log } from '@qywork/core'
 import { stepStamp } from '../compaction.ts'
 import { describeDrift, PrefixAudit } from '../prefix-audit.ts'
 import { sendTurn } from './attempt.ts'
 import { compactBeforeSend } from './compact.ts'
+import { contextEvent } from './context.ts'
 import {
   batchImageCount,
   breakdownOf,
@@ -29,12 +30,11 @@ import {
   envelopeHashOf,
   idleTimeoutFor,
   materialize,
-  mergeUsage,
   omitImages,
-  payloadSnapshotOf,
   replayReasoning,
 } from './request.ts'
 import { type LoopHost, RunState, sleep, TurnState, untilAborted } from './run-state.ts'
+import { createSummaryTrace } from './summary-trace.ts'
 import { executeCalls } from './tool-wave.ts'
 import { concludeWithoutTools, settleResponse } from './turn-end.ts'
 import type { CompactionPort, LoopDeps, RunInput } from './types.ts'
@@ -99,52 +99,15 @@ export class AgentLoop {
    * `provider_requests`（purpose = summary，占 turnIndex 这个编号），回报的 usage 并进这一轮。
    * `opened` / `merged` 告诉调用方编号占没占、usage 变没变。
    */
-  private summaryTrace(run: RunState, turnIndex: number): ReturnType<LoopHost['summaryTrace']> {
-    const { persist, adapter, usage, density } = run
-    const runId = run.input.runId
-    const providerName = this.deps.providerName
-    const trace = {
-      opened: false,
-      merged: false,
-      open: (req: ChatRequest): string => {
-        trace.opened = true
-        const payload = payloadSnapshotOf(req)
-        return persist.openRequest({
-          runId,
-          turnIndex,
-          retryIndex: 0,
-          purpose: 'summary',
-          ...(providerName ? { providerName } : {}),
-          providerKind: adapter.kind,
-          model: req.model,
-          measuredInputTokens: estimateRequest(req, density),
-          sentCategories: emptyBreakdown(),
-          omittedCategories: emptyOmitted(),
-          payloadHash: payload.hash,
-          requestBytes: payload.bytes,
-          cacheRouteFingerprint: envelopeHashOf(req),
-        })
-      },
-      sent: (requestId: string): void => persist.markRequestSent(requestId),
-      headers: (requestId: string, at: number): void => persist.markRequestHeaders?.(requestId, at),
-      firstEvent: (requestId: string): void => persist.markRequestFirstEvent?.(requestId),
-      content: (requestId: string, at: number): void => persist.markRequestContent?.(requestId, at),
-      settle: (
-        requestId: string,
-        status: 'received' | 'uncertain' | 'rejected',
-        u: ProviderUsage | null,
-        errorCode: string | null,
-        finishReason?: string,
-      ): void => {
-        if (u) {
-          mergeUsage(usage, u, adapter, turnIndex)
-          persist.saveUsage(runId, usage)
-          trace.merged = true
-        }
-        persist.settleRequest(requestId, status, u, errorCode, finishReason)
-      },
-    }
-    return trace
+  private summaryTrace(run: RunState, turnIndex: number): ReturnType<typeof createSummaryTrace> {
+    return createSummaryTrace(
+      run.persist,
+      run.input.runId,
+      turnIndex,
+      run.adapter,
+      run.usage,
+      this.deps.providerName,
+    )
   }
 
   /**
@@ -199,6 +162,7 @@ export class AgentLoop {
 
         if ((yield* sendTurn(host, run, turn)) === 'continued') continue
         if (!settleResponse(run, turn)) break
+        yield contextEvent(host, run, turn, estimateRequest(turn.req, run.density))
 
         const next =
           turn.refusalNote || !turn.calls.length

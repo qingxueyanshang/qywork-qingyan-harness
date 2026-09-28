@@ -13,6 +13,7 @@
  * 要防的第一件事。两处差着一整个生命周期。
  */
 
+import { createSummaryTrace } from '@qywork/agent'
 import { buildAdapter, ProviderError, type ProviderProfile } from '@qywork/ai'
 import type {
   AgentEvent,
@@ -26,22 +27,31 @@ import type {
 } from '@qywork/core'
 import { log } from '@qywork/core'
 import {
+  collectSecrets,
   configPath,
   contextPanel,
   makeSummarizer,
   NO_MODEL_MESSAGE,
   RuntimeCompaction,
+  requestPersistence,
   resolveModel,
   Session,
 } from '@qywork/runtime'
 import {
+  appendStep,
   createGoal,
+  createRun,
   currentGoal,
+  finishRun,
   getConversation,
   listRuns,
+  markRunRunning,
+  recordUsage,
+  touchRun,
   updateGoal,
   workspaceOf,
 } from '@qywork/store'
+import { redactSecrets } from '@qywork/tools'
 import { makeDelegate } from './delegate.ts'
 import type { CommandDeps } from './deps.ts'
 import { publishGitState } from './http-util.ts'
@@ -729,28 +739,45 @@ export async function compactConversation(
   deps: CommandDeps,
 ): Promise<void> {
   const emit = (ev: AgentEvent) => deps.bus.publish(ev, conversationId)
-  // 手动压缩不属于任何 run，用空 runId——事件协议要求这个字段存在，
-  // 但前端对压缩卡的渲染不依赖它。
-  const runId = '' as RunId
+  const conversation = getConversation(deps.store, conversationId)
+  if (!conversation) throw new Error('会话不存在')
+  // 用户发起的维护操作也有真实轮次，摘要和压缩结果因此能进入同一份会话账。
+  const run = createRun(deps.store, {
+    conversationId,
+    workspaceId: conversation.workspaceId,
+    model: conversation.model,
+    clientRequestId: `compact:${crypto.randomUUID()}`,
+    userMessageId: null,
+    messageIdUpperBound: null,
+    contextSnapshot: [],
+  })
+  const runId = run.id
+  markRunRunning(deps.store, runId)
+  const heartbeat = setInterval(() => touchRun(deps.store, runId), 10_000)
+  const clean = (text: string) => redactSecrets(text, collectSecrets(deps.config))
+  let seq = 0
+  let usageProvider: string | null = null
 
-  emit({ type: 'compaction', runId, phase: 'started' })
   try {
+    emit({ type: 'compaction', runId, phase: 'started' })
     const compaction = new RuntimeCompaction({
       store: deps.store,
       conversationId,
       messageIdUpperBound: null,
       summarize: makeSummarizer({
-        store: deps.store,
-        conversationId,
-        workspaceId: workspaceOf(deps.store, conversationId)?.id ?? '',
         profile: () => summaryProfile(deps, conversationId),
+        effort: () =>
+          resolveModel(deps.config, { provider: conversation.provider, model: conversation.model })
+            ?.effort,
       }),
     })
-    // 占用与窗口从会话现算：手动压缩不属于任何 run，没有活的计量。
+    // 占用与窗口从会话现算：维护轮次没有主请求回执，没有活的计量。
     // 面板与触发判定用的是同一把尺（`contextPanel` 的锚点口径），不另起一本账。
     // 窗口与密度取同一份 spec：这两个数要互相比较，出自两份 spec 就是两本账。
     const adapter = buildAdapter(summaryProfile(deps, conversationId))
     const spec = adapter.spec
+    usageProvider = adapter.kind
+    run.usage.currency = spec.pricing.currency ?? 'USD'
     const providerName = getConversation(deps.store, conversationId)?.provider
     if (!providerName) throw new Error('这条旧会话尚未绑定接口，请重新选择模型')
     const panel = contextPanel(deps.store, conversationId, {
@@ -759,6 +786,14 @@ export async function compactConversation(
       providerKind: adapter.kind,
     })
     const outcome = await compaction.run({
+      trace: createSummaryTrace(
+        requestPersistence(deps.store, deps.config),
+        runId,
+        0,
+        adapter,
+        run.usage,
+        providerName,
+      ),
       trigger: 'manual',
       model: spec.id,
       // 手动压缩发生在两轮之间，模型已对最后一批结果作出响应。
@@ -769,6 +804,37 @@ export async function compactConversation(
       contextWindow: spec.contextWindow,
       density: spec.density,
     })
+    const phase =
+      outcome.status === 'compacted' ? 'done' : outcome.status === 'skipped' ? 'skipped' : 'failed'
+    appendStep(deps.store, {
+      runId,
+      seq: ++seq,
+      kind: 'compaction',
+      status: phase === 'done' ? 'success' : 'failure',
+      payload: {
+        kind: 'compaction',
+        phase,
+        manifestRevision: outcome.status === 'compacted' ? outcome.manifest.revision : 0,
+        compactedMessages:
+          outcome.status === 'compacted' ? outcome.manifest.compactedMessageCount : 0,
+        ...(outcome.status === 'compacted' ? { summarized: outcome.summarized } : {}),
+        ...('reasonCode' in outcome ? { reasonCode: outcome.reasonCode } : {}),
+        ...('message' in outcome && outcome.message ? { message: clean(outcome.message) } : {}),
+        trigger: 'manual',
+        occupancy: panel.total,
+        estimatedOccupancy: panel.measured,
+        contextWindow: spec.contextWindow,
+      },
+    })
+    finishRun(deps.store, runId, {
+      status: outcome.status === 'failed' || outcome.status === 'aborted' ? 'failed' : 'done',
+      stopReason:
+        outcome.status === 'failed' || outcome.status === 'aborted'
+          ? 'provider_error'
+          : 'completed',
+      ...('reasonCode' in outcome ? { errorCode: outcome.reasonCode } : {}),
+      ...('message' in outcome && outcome.message ? { errorMessage: clean(outcome.message) } : {}),
+    })
     if (outcome.status === 'compacted') {
       emit({
         type: 'compaction',
@@ -776,6 +842,7 @@ export async function compactConversation(
         phase: 'done',
         manifest: outcome.manifest,
         summarized: outcome.summarized,
+        ...(outcome.reasonCode ? { reasonCode: outcome.reasonCode } : {}),
       })
       // 手动压缩后没有下一次 request_prepared 事件，必须从刚落库的同一份 manifest
       // 重算并广播；否则模型下一轮已看到压缩投影，面板却一直停在压缩前。
@@ -810,24 +877,70 @@ export async function compactConversation(
     // 前端把这个字段直接括号显示，异常原文（英文、半截、带内部标识）
     // 就成了给用户看的界面文案。分类和 run.error 那条一个口径：
     // 认得的走 ProviderError 的码，其余一律 internal_error。
+    const reasonCode = err instanceof ProviderError ? err.code : 'internal_error'
+    const message = clean(err instanceof Error ? err.message : String(err))
+    appendStep(deps.store, {
+      runId,
+      seq: ++seq,
+      kind: 'compaction',
+      status: 'failure',
+      payload: {
+        kind: 'compaction',
+        phase: 'failed',
+        manifestRevision: 0,
+        compactedMessages: 0,
+        trigger: 'manual',
+        reasonCode,
+        message,
+      },
+    })
+    finishRun(deps.store, runId, {
+      status: 'failed',
+      stopReason: 'provider_error',
+      errorCode: reasonCode,
+      errorMessage: message,
+    })
     emit({
       type: 'compaction',
       runId,
       phase: 'failed',
-      reasonCode: err instanceof ProviderError ? err.code : 'internal_error',
+      reasonCode,
     })
+  } finally {
+    clearInterval(heartbeat)
+    // 与普通轮次一样只在收尾记一笔；请求明细和长期费用账各自保留原有职责。
+    if (usageProvider !== null && run.usage.turns.length > 0) {
+      recordUsage(deps.store, {
+        kind: 'run',
+        runId,
+        conversationId,
+        workspaceId: conversation.workspaceId,
+        model: conversation.model,
+        provider: usageProvider,
+        inputTokens: run.usage.inputTokens,
+        outputTokens: run.usage.outputTokens,
+        cachedTokens: run.usage.cachedTokens,
+        cacheWriteTokens: run.usage.cacheWriteTokens,
+        reasoningTokens: run.usage.reasoningTokens,
+        cost: run.usage.cost,
+        currency: run.usage.currency,
+      })
+    }
   }
 }
 
 /**
- * 手动压缩这一轮用哪个模型：会话当前模型，没有就用配置默认。
+ * 手动压缩使用会话绑定的接口与模型，同名模型不能借用全局默认接口。
  *
  * 字段集必须与 `Session.resolveProfile` 逐项相同——少给一项（`maxOutputTokens`
  * 就漏过一次）的表现是手动摘要按另一套上限发出去，两条入口的产出从此不可比。
  */
 function summaryProfile(deps: CommandDeps, conversationId: ConversationId): ProviderProfile {
-  const model = getConversation(deps.store, conversationId)?.model || deps.config.active?.model
-  const stored = model ? resolveModel(deps.config, model) : undefined
+  const conversation = getConversation(deps.store, conversationId)
+  const model = conversation?.model
+  const stored = conversation?.provider
+    ? resolveModel(deps.config, { provider: conversation.provider, model: conversation.model })
+    : undefined
   if (!stored) throw new Error(model ? `配置里没有模型 "${model}"` : NO_MODEL_MESSAGE)
   return {
     kind: stored.kind,
@@ -836,6 +949,7 @@ function summaryProfile(deps: CommandDeps, conversationId: ConversationId): Prov
     ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
     ...(stored.headers ? { headers: stored.headers } : {}),
     ...(stored.spec ? { spec: stored.spec } : {}),
+    ...(stored.transport ? { transport: stored.transport } : {}),
   }
 }
 

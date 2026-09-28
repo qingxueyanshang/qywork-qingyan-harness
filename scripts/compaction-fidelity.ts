@@ -17,12 +17,14 @@
  *   bun run scripts/compaction-fidelity.ts
  */
 
+import { createSummaryTrace } from '@qywork/agent'
 import { buildAdapter, estimateMessages, STREAM_IDLE_TIMEOUT_MS } from '@qywork/ai'
 import {
   buildHistory,
   loadConfig,
   makeSummarizer,
   RuntimeCompaction,
+  requestPersistence,
   resolveModel,
 } from '@qywork/runtime'
 import {
@@ -170,15 +172,13 @@ async function main(): Promise<number> {
 
   // ── 压缩 ──
   const realSummarizer = makeSummarizer({
-    store,
-    conversationId: conv.id,
-    workspaceId: ws.id,
     profile: () => ({
       kind: profile.kind,
       apiKey: profile.apiKey ?? '',
       model: profile.model,
       ...(profile.baseUrl ? { baseUrl: profile.baseUrl } : {}),
     }),
+    effort: () => profile.effort,
   })
   const compaction = new RuntimeCompaction({
     store,
@@ -187,16 +187,14 @@ async function main(): Promise<number> {
     /*
      * **走真实装配**，不要在这里自己拼一个摘要器。
      *
-     * 自拼的那个不降思考档：配了 `effort: max` 的模型会把输出预算全花在思考上，
-     * 正文没有任何输出，因此脚本测得的是 summary_empty，而线上并非如此——
-     * 验证工具与被验证的实现走两条路，验出来的结论不作数。
+     * 摘要与线上共用思考档、输出预算和请求记账；自拼请求会让验证量到另一种行为。
      */
-    summarize: async (prompt, budgetTokens) => {
+    summarize: async (prompt, budgetTokens, trace) => {
       process.stdout.write(
         `  [摘要预算 ${budgetTokens} token · 提示词 ${prompt.length} 字符]
 `,
       )
-      const out = await realSummarizer(prompt, budgetTokens)
+      const out = await realSummarizer(prompt, budgetTokens, trace)
       process.stdout.write(`  [摘要器返回 ${out === null ? 'null' : `${out.length} 字符`}]
 `)
       return out
@@ -216,15 +214,42 @@ async function main(): Promise<number> {
    */
   const occupancy = estimateMessages(history, adapter.spec.density)
   const contextWindow = Math.round(occupancy * 1.2)
-  const outcome = await compaction.run({
-    trigger: 'automatic',
-    model: adapter.spec.id,
-    latestUnitSeen: true,
-    occupancy,
-    // 这里的占用本来就是本地估算，两把尺重合，比值为 1。
-    estimatedOccupancy: occupancy,
-    contextWindow,
-    density: adapter.spec.density,
+  const summaryRun = createRun(store, {
+    conversationId: conv.id,
+    workspaceId: ws.id,
+    model: profile.model,
+    clientRequestId: crypto.randomUUID(),
+    userMessageId: null,
+    messageIdUpperBound: null,
+    contextSnapshot: [],
+  })
+  const outcome = await compaction
+    .run({
+      trace: createSummaryTrace(
+        requestPersistence(store, config),
+        summaryRun.id,
+        0,
+        adapter,
+        summaryRun.usage,
+        profile.provider,
+      ),
+      trigger: 'automatic',
+      model: adapter.spec.id,
+      latestUnitSeen: true,
+      occupancy,
+      // 这里的占用本来就是本地估算，两把尺重合，比值为 1。
+      estimatedOccupancy: occupancy,
+      contextWindow,
+      density: adapter.spec.density,
+    })
+    .catch((err: unknown) => {
+      finishRun(store, summaryRun.id, { status: 'failed', stopReason: 'provider_error' })
+      throw err
+    })
+  finishRun(store, summaryRun.id, {
+    status: outcome.status === 'failed' || outcome.status === 'aborted' ? 'failed' : 'done',
+    stopReason:
+      outcome.status === 'failed' || outcome.status === 'aborted' ? 'provider_error' : 'completed',
   })
   if (outcome.status !== 'compacted') {
     process.stderr.write(`压缩未执行：${outcome.status}\n`)

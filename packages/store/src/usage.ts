@@ -14,7 +14,7 @@ import type { Store } from './db.ts'
 
 export interface UsageEntry {
   kind: UsageKind
-  /** 有 run 的记 run；手动压缩的摘要调用没有 run，留空。 */
+  /** 所属轮次；历史独立摘要与媒体等非轮次账目允许为空。 */
   runId?: string | null
   conversationId?: string | null
   workspaceId?: string | null
@@ -94,7 +94,7 @@ export interface UsageQuery {
   workspaceId?: string
   /**
    * 只看这一条会话。**它包含这条会话引发的全部开销**：对话轮次、压缩摘要那次调用
-   * （`makeSummarizer` 同样带着会话 id 落账），以及它派出去的子会话。
+   * （自动与手动摘要都归入所属轮次），以及它派出去的子会话。
    * 外部 CLI 的钱花在别家账上，这里拿不到。
    */
   conversationId?: string
@@ -315,8 +315,8 @@ export function summaryOutputPercentile(
   workspaceId: string,
   percentile: number,
 ): number | null {
-  // 摘要请求记在两处，各记各的：一轮之内的在 provider_requests（purpose = summary），
-  // 手动压缩的在账本（kind = summary）。两处并起来才是全部样本。
+  // 当前摘要统一来自 provider_requests；旧版本独立摘要只在长期账本里。
+  // 当前轮次费用记 kind=run，不会与旧摘要样本重复。
   const rows = store.db
     .query<{ output_tokens: number }, [string, string]>(
       `SELECT output_tokens FROM (

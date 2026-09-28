@@ -17,6 +17,7 @@ import type {
   ContextBreakdown,
   ContextOmitted,
   ProviderKind,
+  ProviderRequestConfiguration,
   ProviderRequestContentKind,
   ProviderRequestDiagnostic,
   ProviderRequestPurpose,
@@ -250,6 +251,11 @@ export interface LoopPersistence {
       /** `phase='done'` 专有：摘要线跟着前移了（true），还是只收纳了工具正文（false）。 */
       summarized?: boolean
       reasonCode?: string
+      message?: string
+      trigger?: 'manual' | 'automatic' | 'overflow'
+      occupancy?: number
+      estimatedOccupancy?: number
+      contextWindow?: number
     },
   ): void
   /**
@@ -270,6 +276,7 @@ export interface LoopPersistence {
     measuredInputTokens: number
     /** 发出时运行中的上下文读数（`RunState.meter`）。摘要请求不给。 */
     occupancyTokens?: number
+    configuration?: ProviderRequestConfiguration
     sentCategories: ContextBreakdown
     omittedCategories: ContextOmitted
     payloadHash: string

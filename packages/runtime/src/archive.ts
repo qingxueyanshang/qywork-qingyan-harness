@@ -12,7 +12,7 @@
  *   两种格式的取舍相反，混成一种就两边都不好用。
  */
 
-import { applySpecOverride, lookupModel } from '@qywork/ai'
+import { applySpecOverride, diagnosticEndpoint, lookupModel } from '@qywork/ai'
 import type {
   ConversationId,
   Message,
@@ -40,6 +40,7 @@ import {
 import pkg from '../package.json' with { type: 'json' }
 import type { QyConfig } from './config.ts'
 import { resolveModel } from './config.ts'
+import { contextPanel } from './context-panel.ts'
 
 export type ArchiveFormat = 'markdown' | 'json'
 
@@ -108,15 +109,14 @@ export function collect(store: Store, conversationId: ConversationId): ArchiveBu
     }
   }
   const contextByRun = new Map(
-    listRunContextSnapshots(store, conversationId).map((snapshot) => [
-      snapshot.runId,
-      snapshot.segments,
-    ]),
+    bestEffort('runContextSnapshots', [], () => listRunContextSnapshots(store, conversationId)).map(
+      (snapshot) => [snapshot.runId, snapshot.segments],
+    ),
   )
   return {
-    workspace: getWorkspace(store, conversation.workspaceId),
+    workspace: bestEffort('workspace', null, () => getWorkspace(store, conversation.workspaceId)),
     conversation,
-    messages: listMessages(store, conversationId),
+    messages: bestEffort('messages', [], () => listMessages(store, conversationId)),
     sessionState: {
       goal: bestEffort('sessionState.goal', null, () => currentGoal(store, conversationId)),
       todos: bestEffort('sessionState.todos', [], () => latestTodos(store, conversationId) ?? []),
@@ -124,12 +124,14 @@ export function collect(store: Store, conversationId: ConversationId): ArchiveBu
         [...listLoadedTools(store, conversationId)].sort(),
       ),
     },
-    runs: listRuns(store, conversationId).map((r) => ({
+    runs: bestEffort('runs', [], () => listRuns(store, conversationId)).map((r) => ({
       ...r,
       contextSnapshot: contextByRun.get(r.id) ?? [],
-      steps: listSteps(store, r.id),
-      providerRequests: listProviderRequests(store, r.id),
-      resources: listResourcesForRun(store, r.id),
+      steps: bestEffort(`runs.${r.id}.steps`, [], () => listSteps(store, r.id)),
+      providerRequests: bestEffort(`runs.${r.id}.providerRequests`, [], () =>
+        listProviderRequests(store, r.id),
+      ),
+      resources: bestEffort(`runs.${r.id}.resources`, [], () => listResourcesForRun(store, r.id)),
     })),
     collectionErrors,
     exportedAt: Date.now(),
@@ -254,15 +256,36 @@ export function exportConversationDiagnostics(
     ...conversationTree,
     childConversations: conversationTree.childConversations.map(diagnosticBundle),
   }
-  const conversationProfiles = allConversations.map((item) => ({
-    conversationId: item.conversation!.id,
-    provider: diagnosticProvider(config, item.conversation!),
-  }))
+  const conversationProfiles = allConversations.map((item) => {
+    let provider: ReturnType<typeof diagnosticProvider> = null
+    let context: ReturnType<typeof contextPanel> | null = null
+    try {
+      provider = diagnosticProvider(config, item.conversation!)
+      if (provider)
+        context = contextPanel(store, item.conversation!.id, {
+          id: provider.model,
+          contextWindow: provider.effectiveModel.contextWindow,
+          providerName: provider.name,
+          providerKind: provider.kind,
+        })
+    } catch (error) {
+      item.collectionErrors.push({
+        section: 'currentProfile',
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
+    return {
+      conversationId: item.conversation!.id,
+      source: 'export_time' as const,
+      provider,
+      context,
+    }
+  })
 
   return `${JSON.stringify(
     {
       kind: 'qywork.session-diagnostic',
-      schemaVersion: 7,
+      schemaVersion: 8,
       exportedBy: {
         name: 'qywork',
         version: pkg.version,
@@ -277,6 +300,8 @@ export function exportConversationDiagnostics(
         childConversations: 'recursive_full_except_tool_result_media',
         runContextSnapshots: 'full',
         providerRequestLedger: 'full',
+        requestConfiguration: 'persisted_at_assembly_when_available',
+        conversationProfiles: 'export_time_not_historical',
         providerFailureAndRetryDecisions: 'persisted_when_observed',
         runInterruptionSources: 'persisted_when_observed',
         sidecarExitCodeSignalAndStderrTail: 'persisted_on_supervised_restart',
@@ -303,6 +328,23 @@ export function exportConversationDiagnostics(
             toolSteps: toolSteps.length,
             failedToolSteps: toolSteps.filter((step) => step.status === 'failure').length,
             providerRequests: run.providerRequests.length,
+            summaryRequests: run.providerRequests.filter((r) => r.purpose === 'summary').length,
+            failedSummaryRequests: run.providerRequests.filter(
+              (r) =>
+                r.purpose === 'summary' && (r.status === 'rejected' || r.status === 'uncertain'),
+            ).length,
+            requestsWithoutConfiguration: run.providerRequests.filter(
+              (r) => r.configuration === null,
+            ).length,
+            failedRequestsWithoutDiagnostics: run.providerRequests
+              .filter(
+                (r) =>
+                  (r.status === 'rejected' || r.status === 'uncertain') && r.diagnostic === null,
+              )
+              .map((r) => r.id),
+            compactions: run.steps
+              .filter((s) => s.kind === 'compaction')
+              .map((s) => ({ stepId: s.id, ...s.payload })),
             finishReasons: run.providerRequests.map((request) => request.finishReason),
             hasUnsettledProviderRequest: run.providerRequests.some(
               (request) => request.status === 'pending' || request.status === 'in_flight',
@@ -340,29 +382,11 @@ function diagnosticProvider(
     name: resolved.provider,
     kind: resolved.kind,
     model: resolved.model,
-    baseUrl: safeBaseUrl(resolved.baseUrl),
+    baseUrl: diagnosticEndpoint(resolved.baseUrl),
     headerNames: Object.keys(resolved.headers ?? {}).sort(),
     effort: resolved.effort ?? null,
     catalogOverride: resolved.spec ?? null,
     effectiveModel: applySpecOverride(lookupModel(resolved.model, resolved.kind), resolved.spec),
-  }
-}
-
-/**
- * 端点的主机与路径影响协议排查，但 URL 也能夹带 Basic Auth 或 `?key=`。
- * 这些值与 API key / header value 同属凭证，诊断包一律不带。
- */
-function safeBaseUrl(value: string | undefined): string | null {
-  if (!value) return null
-  try {
-    const url = new URL(value)
-    url.username = ''
-    url.password = ''
-    url.search = ''
-    url.hash = ''
-    return url.toString().replace(/\/$/, '')
-  } catch {
-    return '[invalid URL omitted]'
   }
 }
 

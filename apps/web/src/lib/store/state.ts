@@ -275,6 +275,7 @@ export interface AppState {
    * 计量来源只在服务端用于诊断，不进入界面状态。
    */
   context: {
+    source: 'actual' | 'projected' | 'estimated'
     tokens: number
     limit: number
     percent: number

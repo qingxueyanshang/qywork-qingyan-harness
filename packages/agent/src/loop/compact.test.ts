@@ -1175,7 +1175,14 @@ describe('结果形态对用户可见', () => {
     const done = events.find((e) => e.type === 'compaction' && e.phase === 'done')
     expect(done?.type === 'compaction' && done.summarized).toBe(true)
     expect(recorded).toEqual([
-      { phase: 'done', manifestRevision: 1, compactedMessages: 0, summarized: true },
+      expect.objectContaining({
+        phase: 'done',
+        manifestRevision: 1,
+        compactedMessages: 0,
+        summarized: true,
+        trigger: 'automatic',
+        occupancy: 900_000,
+      }),
     ])
   })
 

@@ -282,7 +282,13 @@ export type CompactionOutcome =
    * `summarized` 表示摘要线是否随之前移。false 时 `reasonCode` 说明摘要段为什么
    * 没做成；没有 `reasonCode` 就是不需要调模型（收纳段已经够了）。
    */
-  | { status: 'compacted'; manifest: CompactionManifest; summarized: boolean; reasonCode?: string }
+  | {
+      status: 'compacted'
+      manifest: CompactionManifest
+      summarized: boolean
+      reasonCode?: string
+      message?: string
+    }
   /** 折叠线以内没有新单元。**不是失败**——调用方不该报错。 */
   | { status: 'skipped'; reasonCode: 'nothing_to_fold' }
   /** 摘要段没做成，且收纳段也无可推进——这一次什么都没做到。 */
@@ -296,23 +302,29 @@ export type CompactionOutcome =
 
 /**
  * 摘要请求的记账钩子。一轮之内压缩时由主循环提供：摘要请求按这一轮的普通请求落
- * `provider_requests`，回报的 usage 并进这一轮。手动压缩不在任何一轮里，不给钩子。
+ * `provider_requests`，回报的 usage 并进所属轮次；手动压缩也使用同一份记账钩子。
  */
 export interface SummaryTrace {
   /** 发出之前登记，返回请求 id。 */
-  open(req: ChatRequest): string
+  open(req: ChatRequest, adapter?: import('@qywork/ai').LlmAdapter): string
   sent(requestId: string): void
   /** `at` 是 `response_started` 带来的传输层观察时刻，不是调用时刻。 */
   headers(requestId: string, at: number): void
   firstEvent(requestId: string): void
   /** 每一段非空内容都调；`at` 是适配器解析该段时的观察时刻，不是调用时刻。 */
-  content(requestId: string, at: number): void
+  content(
+    requestId: string,
+    at: number,
+    kind?: import('@qywork/core').ProviderRequestContentKind,
+  ): void
+  diagnostic(requestId: string, diagnostic: import('@qywork/core').ProviderRequestDiagnostic): void
   settle(
     requestId: string,
     status: 'received' | 'uncertain' | 'rejected',
     usage: ProviderUsage | null,
     errorCode: string | null,
     finishReason?: string,
+    errorMessage?: string | null,
   ): void
 }
 
@@ -359,6 +371,7 @@ export async function compact(
           status: 'compacted',
           summarized: false,
           reasonCode,
+          message,
           manifest: advanceCondense(previous, fold),
         }
       : { status: 'failed', reasonCode, message }

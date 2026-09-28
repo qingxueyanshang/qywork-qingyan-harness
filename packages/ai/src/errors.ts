@@ -18,7 +18,12 @@
  * 不要为了走前一个入口而伪造一个。
  */
 
-import type { ErrorCode, ProviderKind, ProviderTransportReading } from '@qywork/core'
+import type {
+  ErrorCode,
+  ProviderFailureCause,
+  ProviderKind,
+  ProviderTransportReading,
+} from '@qywork/core'
 import { type CapacityRejection, classifyCapacityRejection } from './capacity.ts'
 import type { ProviderUsage } from './types.ts'
 
@@ -206,6 +211,7 @@ export function classifyStreamError(
   const reported = `${type} ${code}`.toLowerCase()
   const detail = {
     providerMessage: message,
+    source: 'stream',
     ...(code ? { providerCode: code } : {}),
     ...(type ? { providerType: type } : {}),
     ...(param ? { providerParam: param } : {}),
@@ -258,6 +264,9 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
     ...(providerCode ? { providerCode } : {}),
     ...(providerType ? { providerType } : {}),
     ...(retryAfterMs !== null ? { retryAfterMs } : {}),
+    ...(providerErrorField(err, 'param')
+      ? { providerParam: providerErrorField(err, 'param') }
+      : {}),
   }
 
   const build = (code: ErrorCode, msg?: string, timedOut = false) =>
@@ -288,6 +297,7 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
       provider,
       ...(status !== undefined ? { status } : {}),
       capacity,
+      detail,
       cause: err,
     })
   }
@@ -490,4 +500,51 @@ export function namelessToolCall(provider: ProviderKind, model: string): Provide
     provider,
     detail: { model },
   })
+}
+
+/**
+ * 保留归类错误到最底层 cause 的短链。只取四层，既覆盖 SDK 包装又防损坏对象成环。
+ * 原文在 runtime 持久化边界按配置凭证与常见 key 形状脱敏。
+ */
+export function failureCauseChain(error: unknown): ProviderFailureCause[] {
+  const out: ProviderFailureCause[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = error
+  while (current !== null && current !== undefined && out.length < 4 && !seen.has(current)) {
+    seen.add(current)
+    const record = typeof current === 'object' ? (current as Record<string, unknown>) : null
+    const code = record?.code
+    out.push({
+      name: current instanceof Error ? current.name || 'Error' : typeof current,
+      code: typeof code === 'string' || typeof code === 'number' ? String(code) : null,
+      message: current instanceof Error ? current.message : String(current),
+    })
+    current = record?.cause
+  }
+  return out
+}
+
+/** 两种请求共用的失败证据；传输统计与接口原生错误码各自保留，不互相猜测。 */
+export function failureDiagnostics(error: unknown) {
+  const pe = error instanceof ProviderError ? error : null
+  const field = (key: string) =>
+    typeof pe?.detail?.[key] === 'string' ? (pe.detail[key] as string) : null
+  return {
+    causes: failureCauseChain(error),
+    transport: pe?.transport ?? null,
+    provider: {
+      status: pe?.status ?? null,
+      code: field('providerCode'),
+      type: field('providerType'),
+      param: field('providerParam'),
+    },
+  }
+}
+
+export function providerErrorMessage(error: unknown): string | null {
+  return error instanceof ProviderError &&
+    (error.status !== undefined || error.detail?.source === 'stream') &&
+    typeof error.detail?.providerMessage === 'string'
+    ? error.detail.providerMessage
+    : null
 }

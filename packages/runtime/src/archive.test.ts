@@ -263,6 +263,33 @@ describe('json：给脚本读', () => {
 })
 
 describe('诊断导出', () => {
+  test('局部账表读取失败时仍导出其余证据，并明确指出缺失段', () => {
+    const { store, conversationId } = fixture()
+    try {
+      store.db.exec('DROP TABLE intermediate_resources')
+      const parsed = JSON.parse(
+        exportConversationDiagnostics(store, conversationId, {
+          providers: {
+            p: {
+              kind: 'openai_chat_completions',
+              apiKey: 'secret-api-key',
+              models: { 'deepseek-v4-flash': {} },
+            },
+          },
+        }),
+      )
+      expect(parsed.messages.length).toBeGreaterThan(0)
+      expect(parsed.runs[0].providerRequests.length).toBeGreaterThan(0)
+      expect(parsed.runs[0].steps.length).toBeGreaterThan(0)
+      expect(parsed.runs[0].resources).toEqual([])
+      expect(parsed.collectionErrors).toEqual([
+        expect.objectContaining({ section: `runs.${parsed.runs[0].id}.resources` }),
+      ])
+      expect(parsed.runSignals[0].requestsWithoutConfiguration).toBe(1)
+    } finally {
+      store.close()
+    }
+  })
   test('带请求形状所需的接口信息，但不泄露凭证值', () => {
     const { store, conversationId } = fixture()
     const text = exportConversationDiagnostics(store, conversationId, {
@@ -279,7 +306,7 @@ describe('诊断导出', () => {
     })
     const parsed = JSON.parse(text)
     expect(parsed.kind).toBe('qywork.session-diagnostic')
-    expect(parsed.schemaVersion).toBe(7)
+    expect(parsed.schemaVersion).toBe(8)
     expect(parsed.exportedBy).toMatchObject({ name: 'qywork', version: pkg.version })
     expect(parsed.provider).toMatchObject({
       name: 'p',
