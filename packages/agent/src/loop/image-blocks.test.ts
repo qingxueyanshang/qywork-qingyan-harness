@@ -368,12 +368,12 @@ describe('图像块只在产生它的那一轮出现', () => {
   })
 
   /**
-   * 实测形状：标记只写 `true` 时，模型看过截图后下一轮读到信封，判断自己从未看过，
-   * 向用户否认上一轮的检查并反复读回同一张图。标记必须写明图已提供过与取回方式。
+   * 实测形状：标记只写 `true` 或只写「已提供」时，模型看过截图后下一轮读到信封，判断自己从未看过，
+   * 向用户否认上一轮的检查并反复读回同一张图。标记必须写明模型已看过与取回方式。
    */
-  test('省略标记写明图已在先前的请求中提供，并给出取回方式', () => {
+  test('省略标记写明模型已看过该图像，并给出取回方式', () => {
     const env = JSON.parse(omitImages(withImage()).content as string) as Record<string, unknown>
-    expect(env.images_omitted).toContain('已在先前的请求中提供')
+    expect(env.images_omitted).toContain('你已在紧接此次调用的请求中看过此图像')
     expect(env.images_omitted).toContain('read_history')
     expect(env.images_omitted).toContain('call_id')
   })
