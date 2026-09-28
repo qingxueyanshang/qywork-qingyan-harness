@@ -8,7 +8,13 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
-import { chargeBatchBudget, deliveredTokens, type ToolContext, type ToolSpec } from '@qywork/agent'
+import {
+  chargeBatchBudget,
+  deliveredTokens,
+  recordBatchSpent,
+  type ToolContext,
+  type ToolSpec,
+} from '@qywork/agent'
 import { toLf } from './eol.ts'
 import { IGNORED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
 import { collectProcess } from './sandbox.ts'
@@ -76,12 +82,13 @@ function fitBudget(ctx: ToolContext, matches: string[]): { matches: string[]; tr
   for (const m of matches) {
     // +1 是行分隔符：不算它的话，条数多时累计误差正好朝着超预算的方向。
     const n = deliveredTokens(m, ctx.density) + 1
-    if (used + n > room) break
+    // 第一条放不下也给：一条命中都不给等于告诉模型没有匹配。
+    if (kept.length > 0 && used + n > room) break
     kept.push(m)
     used += n
   }
-  chargeBatchBudget(ctx, used)
-  return { matches: kept, trimmed: true }
+  if (!chargeBatchBudget(ctx, used).ok) recordBatchSpent(ctx, used)
+  return { matches: kept, trimmed: kept.length < matches.length }
 }
 
 function clipMatch(line: string): string {
@@ -200,7 +207,7 @@ export const grepTool: ToolSpec = {
         status: 'success',
         message:
           `命中 ${fit.matches.length} 行（ripgrep）` +
-          (fit.trimmed ? '，已按本轮剩余容量截断，收窄模式或范围可看到更多' : ''),
+          (fit.trimmed ? '，已按上下文剩余空间截断，收窄模式或范围可看到更多' : ''),
         data: {
           matches: fit.matches,
           truncated: viaRg.truncated || fit.trimmed,
@@ -265,7 +272,7 @@ export const grepTool: ToolSpec = {
       status: 'success',
       message:
         `命中 ${fit.matches.length} 行（内置遍历，未找到 ripgrep）` +
-        (fit.trimmed ? '，已按本轮剩余容量截断，收窄模式或范围可看到更多' : ''),
+        (fit.trimmed ? '，已按上下文剩余空间截断，收窄模式或范围可看到更多' : ''),
       data: { matches: fit.matches, truncated: truncated || fit.trimmed, engine: 'builtin' },
     }
   },

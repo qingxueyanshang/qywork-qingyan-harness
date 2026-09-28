@@ -17,6 +17,7 @@ import {
 } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { readHistoryTool } from './history.ts'
+import { MIN_DELIVERY_BYTES } from './sink.ts'
 
 const LONG = '甲'.repeat(60_000)
 
@@ -234,11 +235,15 @@ describe('投递额度', () => {
     expect(after.length).toBeLessThan(alone.length)
   })
 
-  test('余额为 0 时失败，不存正文', async () => {
+  /** 报失败的回合不产出正文，模型原样重试；余量为 0 时仍给最小的一份，完整原文照样可续读。 */
+  test('余额为 0 时仍投递最小的一份头部，完整原文存进正文库', async () => {
     const { c, sink } = budgeted(0)
     const r = await readHistoryTool.fn({ message_id: 'ms_big' }, c)
-    expect(r.status).toBe('failure')
-    expect(r.errorKind).toBe('result_too_large')
-    expect(sink.landed).toHaveLength(0)
+    expect(r.status).toBe('success')
+    const head = contentOf(r)
+    expect(head.length).toBeGreaterThan(0)
+    expect(new TextEncoder().encode(head).byteLength).toBeLessThanOrEqual(MIN_DELIVERY_BYTES)
+    expect(LONG.startsWith(head)).toBe(true)
+    expect(new TextDecoder().decode(sink.landed[0]!)).toBe(LONG)
   })
 })

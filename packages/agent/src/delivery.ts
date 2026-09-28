@@ -273,11 +273,11 @@ export function continuationNote(head: HeadDelivery): string {
   const rest = head.totalBytes - head.nextOffset
   if (head.resource) {
     return (
-      `\n\n[超出本轮剩余容量，已投递 ${head.nextOffset} / ${head.totalBytes} 字节。` +
+      `\n\n[超出上下文剩余空间，已投递 ${head.nextOffset} / ${head.totalBytes} 字节。` +
       `完整内容已保存为 ${head.resource.resourceId}，用 read_resource 从 offset=${head.nextOffset} 续读。]`
     )
   }
-  return `\n\n[超出本轮剩余容量，其余 ${rest} 字节未投递，且无法保存：${head.unavailable}。]`
+  return `\n\n[超出上下文剩余空间，其余 ${rest} 字节未投递，且无法保存：${head.unavailable}。]`
 }
 
 /**
@@ -317,7 +317,7 @@ export function boundExecutedOutcome(
     message +=
       stored.resource !== null
         ? `\n\n[结构化结果共 ${body.byteLength} 字节，已保存为 ${stored.resource.resourceId}，用 read_resource 读取。]`
-        : `\n\n[结构化结果共 ${body.byteLength} 字节，超出本轮剩余容量且无法保存：${stored.unavailable}。]`
+        : `\n\n[结构化结果共 ${body.byteLength} 字节，超出上下文剩余空间且无法保存：${stored.unavailable}。]`
     data = images === undefined ? undefined : { images }
   }
 

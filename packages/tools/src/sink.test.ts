@@ -12,6 +12,7 @@ import {
   deliverReadable,
   INLINE_BUDGET_BYTES,
   isContentAuthority,
+  MIN_DELIVERY_BYTES,
   observationBudget,
   type SinkPort,
 } from './sink.ts'
@@ -362,11 +363,16 @@ describe('续读交付', () => {
     expect(2000 - batchRemaining(ctx)).toBeGreaterThan(1500)
   })
 
-  test('余额为 0：失败，不落盘', () => {
+  test('余额为 0：仍投递最小的一份头部，完整正文存一次', () => {
     const ctx = context(0)
     const r = deliverReadable(ctx, input)
-    expect(r.status).toBe('failure')
-    expect(r.errorKind).toBe('result_too_large')
-    expect(ctx.sink.landed).toHaveLength(0)
+    expect(r.status).toBe('success')
+    const head = (r.data as { content: string }).content
+    const bytes = new TextEncoder().encode(head).byteLength
+    expect(body.startsWith(head)).toBe(true)
+    // 落在码点边界上，最多比最小份少一个字的字节数。
+    expect(bytes).toBeLessThanOrEqual(MIN_DELIVERY_BYTES)
+    expect(bytes).toBeGreaterThan(MIN_DELIVERY_BYTES - 4)
+    expect(ctx.sink.landed).toHaveLength(1)
   })
 })

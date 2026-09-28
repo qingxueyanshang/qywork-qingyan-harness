@@ -305,20 +305,19 @@ export function deliverAgentOutput(
   }
 }
 
-/** 本次决策的投递额度已用完。下一轮按新的占用重开额度后再读。 */
-export function budgetExhausted(): ToolOutcome {
-  return {
-    status: 'failure',
-    message: '本轮投递额度已用完，下一轮再读。',
-    errorKind: 'result_too_large',
-  }
-}
+/**
+ * 余量放不下任何内容时，读取仍投递的最小一份（字节）：与命令输出摘录同一个尺寸。
+ *
+ * 不要改回报失败：那一回合不产出正文，模型原样重试；超出软阈值的这一小份由下一次发送前的压缩收回，
+ * 软阈值到窗口之间还有两成。
+ */
+export const MIN_DELIVERY_BYTES = INLINE_BUDGET_BYTES
 
 /**
  * 只读工具交付一段不能按范围续读的正文：历史条目、记忆、技能、`read_file` 的单行。
  *
  * `whole` 整份装得下就原样投递并记账。装不下时投递头部，完整正文经 `landHead` 存一次，
- * `partial` 按头部与续读说明组出结果。余额为 0 时失败，不为一段一个字节都投递不了的结果存正文。
+ * `partial` 按头部与续读说明组出结果。余量连头部都放不下时仍投递 `MIN_DELIVERY_BYTES`。
  *
  * 续读说明几十 token，不从头部里扣，按实际投递量记账。
  */
@@ -334,13 +333,17 @@ export function deliverReadable(
 ): ToolOutcome {
   const charged = chargeBatchBudget(ctx, outcomeTokens(input.whole, ctx.density))
   if (charged.ok) return { status: 'success', ...input.whole }
-  if (charged.cap === 0) return budgetExhausted()
 
   const frame = outcomeTokens(input.partial('', ''), ctx.density)
   const body = new TextEncoder().encode(input.body)
-  const budgetBytes = headBytesWithin(body, charged.cap - frame, ctx.density)
-  // 一个字节都放不下时不存正文、不投递空头部：空头部加续读说明会让按行续读的调用方跳过这一段。
-  if (budgetBytes === 0) return budgetExhausted()
+  const budgetBytes = Math.max(
+    headBytesWithin(body, Math.max(0, charged.cap - frame), ctx.density),
+    MIN_DELIVERY_BYTES,
+  )
+  if (budgetBytes >= body.byteLength) {
+    recordBatchSpent(ctx, outcomeTokens(input.whole, ctx.density))
+    return { status: 'success', ...input.whole }
+  }
   const head = landHead(ctx.sink, {
     toolName: input.toolName,
     sourceType: input.sourceType,

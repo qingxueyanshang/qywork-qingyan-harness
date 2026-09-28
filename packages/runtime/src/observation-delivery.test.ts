@@ -1182,7 +1182,7 @@ describe('重启、切会话与回收之后仍读得到', () => {
 })
 
 describe('实际用量跨工具可见', () => {
-  test('超额的观察不被拒、用量全记，随后的读取工具看到的余额是 0', async () => {
+  test('超额的观察不被拒、用量全记，随后的读取看到的余额是 0、仍投递最小的一份', async () => {
     const h = harness()
     const window = 32_000
     const ctx = toolCtx({ h, window, desktop: desktopPort(大表) })
@@ -1205,10 +1205,10 @@ describe('实际用量跨工具可见', () => {
     // 累计值没有被截回额度：1 token 的准入也不再通过。
     expect(chargeBatchBudget(ctx, 1).ok).toBe(false)
 
+    // 余量为 0 时读取仍投递最小的一份，不报失败；这份小文件整份在最小份之内。
     const read = await h.registry.execute('read_file', { path: 'note.txt' }, ctx)
-    expect(read.status).toBe('failure')
-    expect(read.errorKind).toBe('result_too_large')
-    expect(read.message).toContain('额度已用完')
+    expect(read.status).toBe('success')
+    expect((read.data as { content: string }).content).toContain('合成正文')
   })
 })
 
