@@ -347,18 +347,15 @@ step({
   },
 })
 
-const assistant = appendMessage(store, {
-  conversationId: conv.id,
-  role: 'assistant',
+step({
+  runId: run.id,
+  seq: 0,
+  kind: 'text',
   content:
     '归属已经修正：工具与知识库的发布都绑定当前管理员，历史空作者草稿仍不公开。测试首次失败是因为夹具里留了旧的空作者记录，清掉后全绿。前后端服务已关闭，可重新生成的缓存已清理。',
 })
 
-finishRun(store, run.id, {
-  status: 'done',
-  stopReason: 'completed',
-  assistantMessageId: assistant.id,
-})
+finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
 
 store.close()
 process.stdout.write(`seeded ${conv.id}\n`)

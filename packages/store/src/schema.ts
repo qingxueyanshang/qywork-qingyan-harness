@@ -2194,6 +2194,34 @@ CREATE INDEX idx_usage_model ON usage_ledger(model, occurred_at);
 CREATE UNIQUE INDEX uq_usage_run ON usage_ledger(run_id) WHERE run_id IS NOT NULL AND kind = 'run';
 `,
   },
+  {
+    id: 65,
+    name: 'user_only_messages',
+    /**
+     * `messages` 只存用户发的话：助手回复与工具记录一直在 `steps` 里，`role = 'assistant'` 没有写入方，
+     * `runs.assistant_message_id` 恒为 NULL。
+     *
+     * 表重建而不是 ALTER：SQLite 改不了 CHECK 约束。存量库若有助手行，这条迁移在插入时失败并整体回滚，
+     * 不要改成先删再插——那是静默丢数据。没有表以外键引用 `messages`，重建不连带删除。
+     */
+    sql: `
+CREATE TABLE messages_new (
+  id              TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  role            TEXT NOT NULL CHECK (role = 'user'),
+  content         TEXT NOT NULL DEFAULT '',
+  attachments     TEXT,
+  created_at      INTEGER NOT NULL,
+  origin          TEXT CHECK (origin IN ('subagent','workflow'))
+);
+INSERT INTO messages_new (id, conversation_id, role, content, attachments, created_at, origin)
+  SELECT id, conversation_id, role, content, attachments, created_at, origin FROM messages;
+DROP TABLE messages;
+ALTER TABLE messages_new RENAME TO messages;
+CREATE INDEX idx_msg_conv ON messages(conversation_id, id);
+ALTER TABLE runs DROP COLUMN assistant_message_id;
+`,
+  },
 ]
 
 /**
@@ -2254,8 +2282,8 @@ export interface ConversationRow {
 export interface MessageRow {
   id: MessageId
   conversation_id: ConversationId
-  /** `CHECK (role IN ('user','assistant'))`。 */
-  role: 'user' | 'assistant'
+  /** `CHECK (role = 'user')`：助手回复与工具记录在 `steps`。 */
+  role: 'user'
   content: string
   attachments: string | null
   /** `CHECK (origin IN ('subagent','workflow'))`。NULL = 用户本人发的。 */
@@ -2269,7 +2297,6 @@ export interface RunRow {
   workspace_id: WorkspaceId
   user_message_id: MessageId | null
   message_id_upper_bound: MessageId | null
-  assistant_message_id: MessageId | null
   model: string
   client_request_id: string
   /** `CHECK (status IN ('queued','running','done','failed','interrupted'))`。 */
@@ -2433,7 +2460,6 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'workspace_id',
     'user_message_id',
     'message_id_upper_bound',
-    'assistant_message_id',
     'model',
     'client_request_id',
     'status',

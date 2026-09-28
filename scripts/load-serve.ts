@@ -101,11 +101,6 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
       kind: 'text',
       content: `第 ${i + 1} 条：改动已落，回归通过。`,
     })
-    appendMessage(store, {
-      conversationId: conv.id,
-      role: 'assistant',
-      content: `第 ${i + 1} 条：改动已落，回归通过。`,
-    })
     finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
   }
 
@@ -156,9 +151,10 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
           },
         },
       })
-      appendMessage(store, {
-        conversationId: conv.id,
-        role: 'assistant',
+      appendStep(store, {
+        runId: run.id,
+        seq: 2,
+        kind: 'text',
         content: `第 ${t + 1} 轮完成。`,
       })
       finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
@@ -288,11 +284,6 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
       runId: run.id,
       seq: 2,
       kind: 'text',
-      content: `${fanout} 个子任务已收尾。`,
-    })
-    appendMessage(store, {
-      conversationId: parent.id,
-      role: 'assistant',
       content: `${fanout} 个子任务已收尾。`,
     })
     finishRun(store, run.id, { status: 'done', stopReason: 'completed' })

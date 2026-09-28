@@ -448,15 +448,13 @@ export async function buildHistory(
 
   const out: WireMessage[] = []
   for (const m of listMessages(store, conversationId, upperBound)) {
-    if (m.role === 'user') {
-      for (const segment of contextByUser.get(m.id) ?? []) {
-        out.push({
-          role: 'context',
-          content: segment.content,
-          _group: segment.group,
-          _messageId: m.id,
-        })
-      }
+    for (const segment of contextByUser.get(m.id) ?? []) {
+      out.push({
+        role: 'context',
+        content: segment.content,
+        _group: segment.group,
+        _messageId: m.id,
+      })
     }
     out.push({
       role: m.role,

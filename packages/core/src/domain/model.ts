@@ -221,10 +221,11 @@ export function deriveConversationTitle(prompt: string): string {
   return chars.length > TITLE_MAX ? `${chars.slice(0, TITLE_MAX).join('')}…` : line
 }
 
+/** 用户发的一句话。助手回复与工具记录在 run 的 steps 里，不在这里。 */
 export interface Message {
   id: MessageId
   conversationId: ConversationId
-  role: 'user' | 'assistant'
+  role: 'user'
   content: string
   attachments: Attachment[]
   /**
@@ -407,7 +408,6 @@ export interface Run {
    * 不得穿越进本 run 的历史。
    */
   messageIdUpperBound: MessageId | null
-  assistantMessageId: MessageId | null
   model: string
   /** 前端执行意图幂等键，(conversationId, clientRequestId) 唯一。 */
   clientRequestId: string

@@ -28,9 +28,8 @@ import type {
 /**
  * `GET /api/conversations/:id/history` —— 会话流的一页完整轮次。
  *
- * 一页以 user message 为边界：`messages` 会包含所选用户消息之间的 assistant
- * 兜底消息，`runs` 与 `steps` 则是这些用户消息名下的完整事实。这样翻页不会把
- * 一轮工具调用从中间劈开。`nextCursor` 是下一页的排他上界；null = 已到最早。
+ * 一页以用户消息为边界：`messages` 是所选的用户消息，`runs` 与 `steps` 是它们名下的
+ * 完整事实（助手回复与工具记录都在 steps 里）。这样翻页不会把一轮工具调用从中间劈开。`nextCursor` 是下一页的排他上界；null = 已到最早。
  *
  * `todos` 不构成独立的第二份状态，仅是服务端由同一批 steps 记录投影出的当前快照。
  * 它必须随首屏一起回：最新一次 `write_todos` 可能早于当前页，前端不能为了找它

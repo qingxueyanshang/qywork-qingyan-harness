@@ -17,12 +17,21 @@
  *   bun run scripts/compaction-fidelity.ts
  */
 
-import { buildAdapter, estimateText, STREAM_IDLE_TIMEOUT_MS } from '@qywork/ai'
-import { loadConfig, makeSummarizer, RuntimeCompaction, resolveModel } from '@qywork/runtime'
+import { buildAdapter, estimateMessages, STREAM_IDLE_TIMEOUT_MS } from '@qywork/ai'
+import {
+  buildHistory,
+  loadConfig,
+  makeSummarizer,
+  RuntimeCompaction,
+  resolveModel,
+} from '@qywork/runtime'
 import {
   appendMessage,
+  appendStep,
   ContentStore,
   createConversation,
+  createRun,
+  finishRun,
   listMessages,
   Store,
   upsertWorkspace,
@@ -102,14 +111,26 @@ async function main(): Promise<number> {
   // 而真实会话里绝大多数内容是可丢的过程性探索。
   for (let i = 1; i <= TOTAL_TURNS; i++) {
     const planted = FACTS.find((f) => f.turn === i)
-    appendMessage(store, {
+    const user = appendMessage(store, {
       conversationId: conv.id,
       role: 'user',
       content: planted ? planted.text : `第 ${i} 轮：继续，看看 src/mod${i}.ts 里还有什么要改的。`,
     })
-    appendMessage(store, {
+    // 助手回复按真实形状落成 run 里的 text step，消息表只存用户发的话。
+    const run = createRun(store, {
       conversationId: conv.id,
-      role: 'assistant',
+      workspaceId: ws.id,
+      model: profile.model,
+      clientRequestId: crypto.randomUUID(),
+      userMessageId: user.id,
+      messageIdUpperBound: user.id,
+      contextSnapshot: [],
+    })
+    appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'text',
+      providerBatchId: `pb_${i}`,
       content: planted
         ? `明白，我记下了。`
         : `我看过 src/mod${i}.ts 了，调整了几处类型标注，没有行为变化。` +
@@ -118,7 +139,9 @@ async function main(): Promise<number> {
           `具体来说，把 ${i} 处隐式 any 补成了显式类型，${i} 个可选参数补了默认值，` +
           `顺带核对了导出边界。这一轮没有改动运行时行为，测试全绿。`.repeat(4),
     })
+    finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
   }
+  const history = await buildHistory(store, conv.id, null, async (c) => c)
 
   const adapter = buildAdapter({
     kind: profile.kind,
@@ -191,10 +214,7 @@ async function main(): Promise<number> {
    * 取 1.2 倍：软阈值 = 0.96×占用（仍越线），保留预算 = 窗口的 1/4，
    * 摘要还剩约六成占用可用。
    */
-  const occupancy = listMessages(store, conv.id, null).reduce(
-    (n, m) => n + estimateText(m.content, adapter.spec.density),
-    0,
-  )
+  const occupancy = estimateMessages(history, adapter.spec.density)
   const contextWindow = Math.round(occupancy * 1.2)
   const outcome = await compaction.run({
     trigger: 'automatic',
@@ -217,11 +237,6 @@ async function main(): Promise<number> {
    * 而 `projectManifest` 无条件产出「摘要 + 事实清单」两条——直接调它，
    * 量到的是一份不会发给模型的内容。
    */
-  const history = listMessages(store, conv.id, null).map((m) => ({
-    role: m.role,
-    content: m.content,
-    _messageId: m.id,
-  }))
   const projected = compaction.project(history)
   const projectedText = projected.map((p) => String(p.content)).join('\n\n')
   const originalChars = FACTS.reduce((n, f) => n + f.text.length, 0) + TOTAL_TURNS * 480
