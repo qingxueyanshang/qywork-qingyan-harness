@@ -13,7 +13,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ContentBlock, WireMessage } from '@qywork/ai'
-import { condenseMessage } from '../compaction.ts'
+import { condenseMessage, IMAGES_OMITTED } from '../compaction.ts'
 import { envelopeResult, materialize, omitImages, toolResultContent } from './request.ts'
 
 const PNG = Buffer.from(
@@ -326,7 +326,7 @@ describe('收纳', () => {
     expect(env.result_omitted).toBe(true)
     expect(env.result).toBeUndefined()
     // 图像被丢必须留痕：收纳后的信封与新鲜成功信封同形，缺这一位模型会把图当成仍然可见。
-    expect(env.images_omitted).toBe(true)
+    expect(env.images_omitted).toBe(IMAGES_OMITTED)
   })
 
   test('图像省略标记在再收纳时逐字保留', () => {
@@ -342,7 +342,7 @@ describe('收纳', () => {
     const twice = condenseMessage(once)
     expect(twice.content).toBe(once.content)
     expect((JSON.parse(twice.content as string) as Record<string, unknown>).images_omitted).toBe(
-      true,
+      IMAGES_OMITTED,
     )
   })
 })
@@ -362,9 +362,20 @@ describe('图像块只在产生它的那一轮出现', () => {
     const out = omitImages(withImage())
     expect(typeof out.content).toBe('string')
     const env = JSON.parse(out.content as string) as Record<string, unknown>
-    expect(env.images_omitted).toBe(true)
+    expect(env.images_omitted).toBe(IMAGES_OMITTED)
     expect(env.result).toEqual({ lines: 1 })
     expect(out.content as string).not.toContain('QUJD')
+  })
+
+  /**
+   * 实测形状：标记只写 `true` 时，模型看过截图后下一轮读到信封，判断自己从未看过，
+   * 向用户否认上一轮的检查并反复读回同一张图。标记必须写明图已提供过与取回方式。
+   */
+  test('省略标记写明图已在先前的请求中提供，并给出取回方式', () => {
+    const env = JSON.parse(omitImages(withImage()).content as string) as Record<string, unknown>
+    expect(env.images_omitted).toContain('已在先前的请求中提供')
+    expect(env.images_omitted).toContain('read_history')
+    expect(env.images_omitted).toContain('call_id')
   })
 
   /** 投影每次请求都跑：无图必须回原引用，有图必须逐字稳定，否则前缀缓存全失配。 */
@@ -382,6 +393,6 @@ describe('图像块只在产生它的那一轮出现', () => {
       string,
       unknown
     >
-    expect(env.images_omitted).toBe(true)
+    expect(env.images_omitted).toBe(IMAGES_OMITTED)
   })
 })

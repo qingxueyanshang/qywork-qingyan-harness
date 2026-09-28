@@ -117,6 +117,16 @@ export function condenseMessage(m: WireMessage): WireMessage {
   return { ...m, toolCalls: m.toolCalls.map(foldCallArguments) }
 }
 
+/**
+ * 图像块被摘掉后信封里 `images_omitted` 的值，装配时省略（`loop/request.ts` 的 `omitImages`）与收纳共用。
+ *
+ * 只写真实情况：两处都只摘已随一次已接收的请求送达的图，所以说明它已提供过。只写 `true` 时
+ * 模型分不清「看过被省略」与「从未提供」，会否认自己看过并反复读回。必须逐字稳定，
+ * 投影每次构造请求都会重写这一段。
+ */
+export const IMAGES_OMITTED =
+  '图像已在先前的请求中提供，此处省略，可通过 read_history 按 call_id 取回。'
+
 function condenseToolResult(content: WireMessage['content']): WireMessage['content'] {
   /*
    * 块数组：**丢掉图像块，只把文本信封收起来，并在信封里标 `images_omitted`**。
@@ -134,7 +144,9 @@ function condenseToolResult(content: WireMessage['content']): WireMessage['conte
     const env = parseEnvelope(text.text)
     if (!env) return text.text
     const dropped = content.some((b) => b.type === 'image')
-    return condenseToolResult(JSON.stringify(dropped ? { ...env, images_omitted: true } : env))
+    return condenseToolResult(
+      JSON.stringify(dropped ? { ...env, images_omitted: IMAGES_OMITTED } : env),
+    )
   }
   const env = parseEnvelope(content)
   if (!env) return content
@@ -145,7 +157,7 @@ function condenseToolResult(content: WireMessage['content']): WireMessage['conte
     executed: env.executed,
     summary: env.summary,
     ...(env.resources ? { resources: env.resources } : {}),
-    ...(env.images_omitted ? { images_omitted: true } : {}),
+    ...(env.images_omitted ? { images_omitted: IMAGES_OMITTED } : {}),
     // 收纳过的再收纳一次必须逐字相同：投影每次构造请求都跑，产物一抖动缓存就全失配。
     ...(env.result !== undefined || env.result_omitted ? { result_omitted: true } : {}),
   })

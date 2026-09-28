@@ -11,6 +11,7 @@
 
 import { expect, test } from 'bun:test'
 import type { LlmAdapter, WireMessage } from '@qywork/ai'
+import { IMAGES_OMITTED } from '../compaction.ts'
 import { ToolRegistry } from '../registry.ts'
 import { baseCtx, call, fakeAdapter, noopPersistence } from './fixtures.test-helper.ts'
 import { AgentLoop } from './index.ts'
@@ -110,7 +111,9 @@ test('工具每一步带回一张图：每一步的缓存命中到上一批的�
   const tools = (seen[4] ?? []).filter((m) => m.role === 'tool')
   expect(tools.map(hasImage)).toEqual([false, false, false, true])
   for (const m of tools.slice(0, -1)) {
-    expect((JSON.parse(String(m.content)) as { images_omitted?: true }).images_omitted).toBe(true)
+    expect((JSON.parse(String(m.content)) as { images_omitted?: string }).images_omitted).toBe(
+      IMAGES_OMITTED,
+    )
   }
   const changes = seen.slice(1).map((cur, k) => firstChange(seen[k]!, cur))
   // 从第三步起，上一步末条的图都被摘掉：场景确实走到了改写上一步前缀的路径。
