@@ -38,15 +38,10 @@ export async function* executeCalls(
   const reading = yield* compactBeforeTools(host, run, turn)
   if (reading === 'interrupted') return 'stop'
   /*
-   * 投递额度按决策开一次账，全部波次共用：余量 = 软阈值 − 此刻占用。
-   *
-   * 占用是 provider 真值，工具结果按本地估算记账，余量按两把尺在整份请求上的比值折成估算尺。
-   * 比值只缩不放：它是整份请求的平均值，而一段结果的比值可能低得多。V00 实测整份请求 1.2–1.6，
-   * 生僻字正文 0.65；按 1.23 放大时，62 万字的生僻字文件一次整读，下一次请求真值 101.7 万、超出 1M 窗口。
-   * 估算偏高时不放大的代价是每段少读一些，执行工具之前的检查点照样在余量不足时先收纳上一段。
+   * 投递额度按决策开一次账，全部波次共用：余量 = 软阈值 − 此刻占用，按检查点给出的折算比
+   * 折成估算尺（占用是 provider 真值，工具结果按本地估算记账）。折算比只缩不放，理由见 `compactBeforeTools`。
    */
-  const scale = reading.occupancy > 0 ? Math.min(1, reading.estimated / reading.occupancy) : 1
-  openBatchBudget(ctx.state, (softLimit(run.adapter.spec) - reading.occupancy) * scale)
+  openBatchBudget(ctx.state, (softLimit(run.adapter.spec) - reading.occupancy) * reading.scale)
 
   /*
    * **名字不在注册表里的、参数不是 JSON 对象的，一律不进执行链。**

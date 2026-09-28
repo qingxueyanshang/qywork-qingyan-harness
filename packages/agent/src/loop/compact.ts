@@ -49,8 +49,14 @@ export async function* compactBeforeSend(
 
 /**
  * 执行工具之前的检查点：软阈值以下的余量不足一份尾部保留量时先压一次。
- * 返回此刻的占用读数与同一份内容的本地估算，投递额度按两者开账；
+ * 返回此刻的占用读数与估算尺折算比，投递额度按这两个数开账；
  * `interrupted` 时 `run.stopReason` 已置为 `user_interrupt`。
+ *
+ * 折算比是整份请求上本地估算与 provider 真值之比，只缩不放（上限 1）：它是平均值，
+ * 一段结果的比值可能低得多。V00 实测整份请求 1.2–1.6、生僻字正文 0.65；按 1.23 放大时，
+ * 62 万字的生僻字文件一次整读，下一次请求真值 101.7 万、超出 1M 窗口。
+ * 触发线与投递额度必须用同一个比值：触发线按放大后的比值算、额度按不放大算时，
+ * 余量已只够一小段而触发线未到，续读段在压缩之前缩成两份半保留量（V02 实测）。
  *
  * 触发线比发送前那一处低一份尾部保留量（按两把尺的比值折成真值）：余量不足这么多时，
  * 这次决策只放得下一小段甚至一行都放不下。本次响应的输出把占用推过软阈值时同理，那时额度为 0。
@@ -68,14 +74,14 @@ export async function* compactBeforeTools(
   host: LoopHost,
   run: RunState,
   turn: TurnState,
-): AsyncGenerator<AgentEvent, { occupancy: number; estimated: number } | 'interrupted', unknown> {
+): AsyncGenerator<AgentEvent, { occupancy: number; scale: number } | 'interrupted', unknown> {
   const estimated =
     estimateRequest(turn.req, run.density) +
     estimateMessages(run.transcript.slice(turn.unitStart), run.density)
   const occupancy = run.anchor ? run.meter(0).tokens : estimated
+  const scale = occupancy > 0 ? Math.min(1, estimated / occupancy) : 1
   // 上一次尝试已看到本次响应之前的全部历史：本次响应属于最后一个单元，不可折，不再重试。
-  if (run.compactedAt >= turn.unitStart) return { occupancy, estimated }
-  const scale = occupancy > 0 ? estimated / occupancy : 1
+  if (run.compactedAt >= turn.unitStart) return { occupancy, scale }
   // 这一轮的编号已被刚完成的主请求占用：摘要请求占下一个，下一轮主请求再顺延。
   const done = yield* compactOverSoftLimit(host, run, turn, {
     occupancy,
@@ -85,10 +91,9 @@ export async function* compactBeforeTools(
     latestUnitSeen: true,
   })
   if (done === 'interrupted') return 'interrupted'
-  if (done === 'unchanged') return { occupancy, estimated }
-  // 压缩生效后锚点作废、请求已按新投影重装（含本次响应），读数改按重装后的请求估。
-  const rebuilt = estimateRequest(turn.req, run.density)
-  return { occupancy: rebuilt, estimated: rebuilt }
+  if (done === 'unchanged') return { occupancy, scale }
+  // 压缩生效后锚点作废、请求已按新投影重装（含本次响应），读数改按重装后的请求估，两把尺重合。
+  return { occupancy: estimateRequest(turn.req, run.density), scale: 1 }
 }
 
 /**
