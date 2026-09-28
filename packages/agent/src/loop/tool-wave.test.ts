@@ -1462,10 +1462,10 @@ describe('投递额度按决策开账', () => {
   })
 
   /**
-   * 占用是 provider 真值，工具结果按本地估算记账。估算偏高 2 倍时不折算的话，
-   * 额度只有真实余量的一半，读取一段比一段小、占用始终到不了软阈值。
+   * 余量按两把尺在整份请求上的比值折成估算尺，只缩不放：整份请求的比值是平均值，
+   * 一段结果的比值可能低得多（生僻字正文 0.65），按平均值放大会让一次投递的真值超出窗口。
    */
-  test('估算比 provider 真值高时，额度按两把尺的比值折算', async () => {
+  test('估算比 provider 真值高时额度不放大，就是真实余量', async () => {
     const seen: number[] = []
     let estimated = 0
     const loop = new AgentLoop({
@@ -1480,8 +1480,27 @@ describe('投递额度按决策开账', () => {
     })
     await drain(loop, bulky)
     const real = 800_000 - Math.round(estimated / 2)
-    expect(seen[0]!).toBeGreaterThan(real * 1.9)
-    expect(seen[0]!).toBeLessThan(real * 2.1)
+    expect(seen[0]!).toBeGreaterThan(real - 100)
+    expect(seen[0]!).toBeLessThanOrEqual(real + 100)
+  })
+
+  test('估算比 provider 真值低时额度按比值缩小', async () => {
+    const seen: number[] = []
+    let estimated = 0
+    const loop = new AgentLoop({
+      adapter: adapterWithUsage([call('grab')], (e) => {
+        estimated = e
+        return e * 2
+      }),
+      registry: grabRegistry(1, [], seen),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    await drain(loop, bulky)
+    const real = 800_000 - estimated * 2
+    expect(seen[0]!).toBeGreaterThan(real * 0.45)
+    expect(seen[0]!).toBeLessThan(real * 0.55)
   })
 
   /**
