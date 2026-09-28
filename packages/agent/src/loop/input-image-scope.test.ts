@@ -14,7 +14,7 @@
 import { expect, test } from 'bun:test'
 import type { ChatRequest, ContentBlock, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
 import { DEFAULT_DENSITY, estimateRequest, lookupModel } from '@qywork/ai'
-import { condenseMessage } from '../compaction.ts'
+import { condenseMessage, IMAGES_OMITTED } from '../compaction.ts'
 import { AgentLoop } from '../index.ts'
 import type { ToolContextBase } from '../registry.ts'
 import { ToolRegistry } from '../registry.ts'
@@ -216,7 +216,7 @@ test('这批图被一次已接收的请求带过之后，下一次换成 images_
   const tools = (adapter.seen[0]?.messages ?? []).filter((m) => m.role === 'tool')
   expect(tools).toHaveLength(2)
   for (const t of tools) {
-    expect(JSON.parse(String(t.content))).toMatchObject({ images_omitted: true })
+    expect(JSON.parse(String(t.content))).toMatchObject({ images_omitted: IMAGES_OMITTED })
   }
   // 没带图就不写引用：这一行答的是「本次输入携带了什么」。
   expect(l.references.has('pr_1')).toBe(false)

@@ -24,6 +24,7 @@ import {
 } from '@qywork/ai'
 import type { ContextBreakdown, ProviderRequestConfiguration, RunUsage } from '@qywork/core'
 import { emptyBreakdown } from '@qywork/core'
+import { IMAGES_OMITTED } from '../compaction.ts'
 import type { ToolOutcome } from '../registry.ts'
 
 /** 与装配的请求一起落账；后续改模型设置不会改写这次申报。 */
@@ -404,7 +405,7 @@ export function batchImageCount(messages: readonly WireMessage[], batchId: strin
 }
 
 /**
- * 把带图的工具结果换成只有信封的形态，信封里标 `images_omitted: true`。
+ * 把带图的工具结果换成只有信封的形态，信封里的 `images_omitted` 写明图已提供过（`IMAGES_OMITTED`）。
  *
  * 与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）：模型据这一位知道图不在场，
  * 缺了它会把图当成仍然可见。`result` 保留，只有图像块被摘掉。
@@ -423,7 +424,7 @@ export function omitImages(m: WireMessage): WireMessage {
   } catch {
     return m
   }
-  return { ...m, content: JSON.stringify({ ...env, images_omitted: true }) }
+  return { ...m, content: JSON.stringify({ ...env, images_omitted: IMAGES_OMITTED }) }
 }
 
 /**

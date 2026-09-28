@@ -8,6 +8,7 @@ import type { ChatRequest, LlmAdapter } from '@qywork/ai'
 import { buildAdapter, DEFAULT_DENSITY, estimateText, lookupModel } from '@qywork/ai'
 import type { ContextBreakdown } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
+import { IMAGES_OMITTED } from '../compaction.ts'
 import { AgentLoop, type ToolContext } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
 import { baseCtx, fakeAdapter, noopPersistence } from './fixtures.test-helper.ts'
@@ -636,7 +637,7 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
       expect(typeof tools[0]!.content).toBe('string')
       expect(JSON.parse(tools[0]!.content as string)).toMatchObject({
         call_id: 'call_1',
-        images_omitted: true,
+        images_omitted: IMAGES_OMITTED,
       })
       expect(JSON.stringify(bodies[2])).not.toContain('IMG1')
       // 第二波：图仍在。
