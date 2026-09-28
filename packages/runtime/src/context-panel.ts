@@ -5,24 +5,20 @@
  * 面，面板就空了——而用户是在**回头看**的时候才想知道「上下文被谁占的」。所以真源是账本，面板是
  * 它的投影，任何时刻可查。
  *
- * **总数只有一把尺。** 最近一次已发送请求带 usage 时，`total` 就是 provider 真值；
- * 更新的请求尚未拿到 usage 时，从上一个真值输入起算，固定头部按逐字估算差替换，
- * 新增消息只按当前模型的本地结构估算推进；不把整份旧请求的误差倍率套到新内容上。
- * 这里刻意不做 `max(全量估算, provider真值)`——那两个数出自两把尺，锚点一失效
+ * **总数只有一把尺，就是运行中那一把。** 最近一次已发送请求带 usage 时，`total` 就是
+ * provider 真值（输入 + 输出）；尚未拿到 usage 时读它发出时记下的运行中读数
+ * （`occupancyTokens`，即 `RunState.meter`：锚点真值加其后的本地增量、信封换了只换头部）。
+ * 不要在这里另起一条推算：两处算式不同，同一条会话在运行中和回头看就是两个数。
+ * 这里也刻意不做 `max(全量估算, provider真值)`——那两个数出自两把尺，锚点一失效
  * 显示值就会无理由跳回字符上界。
  *
- * 没有任何**当前路线与模型的**带 usage 请求时才退回本地测得值，并把 `source` 标成
- * `estimated`。锚点后还有增量时标 `projected`，只有最近请求本身有回执才标 `actual`。
+ * 没有任何**当前路线与模型的**带 usage 请求时标 `estimated`，此时运行中读数就是本地估算。
+ * 锚点后还有增量时标 `projected`，只有最近请求本身有回执才标 `actual`。
  * **标签必须跟着数走**：用户要能一眼看出这个数能不能拿来做决定。
  *
  * **锚点必须与会话当前的接口、协议、模型同一条。** 各家 tokenizer 与中转 usage
  * 口径都可能不同，跨路线复用就是拿 A 的尺去判 B 的窗口，而它还挂着真值标签。
- *
- * **信封换了一份只换头部，两侧同一组判据。** 模型相同而冻结前缀或工具表变了时，
- * 消息侧一个字没变，锚点那一大段真值仍然成立——按 `envelopeHeadTokens` 把头部
- * 换成最近一次已发送请求那一份即可。这与 loop 那侧逐条对应（`agent/loop/run-state.ts` 里
- * `envelopeHashOf` 判、同一个 `envelopeHeadTokens` 量）：两处判据不同的话，
- * 同一条会话在运行中和回头看会给出两个数。
+ * 运行中读数为空（摘要请求、迁移前旧行）或那次请求不在当前路线上时，退回本地测得值。
  */
 
 import { softLimit } from '@qywork/agent'
@@ -32,7 +28,7 @@ import type {
   ConversationId,
   ProviderRequest,
 } from '@qywork/core'
-import { emptyBreakdown, emptyOmitted, envelopeHeadTokens, reconcileBreakdown } from '@qywork/core'
+import { emptyBreakdown, emptyOmitted, reconcileBreakdown } from '@qywork/core'
 import {
   getConversation,
   latestAnchoredProviderRequest,
@@ -91,47 +87,6 @@ function anchorTokens(r: {
     (r.providerCacheWriteTokens ?? 0) +
     (r.providerOutputTokens ?? 0)
   )
-}
-
-/** provider 对这一次请求实际计入窗口的输入，不含本轮输出。 */
-function anchorInputTokens(r: {
-  providerInputTokens: number | null
-  providerCachedTokens: number | null
-  providerCacheWriteTokens: number | null
-}): number {
-  return (
-    (r.providerInputTokens ?? 0) + (r.providerCachedTokens ?? 0) + (r.providerCacheWriteTokens ?? 0)
-  )
-}
-
-/**
- * 锚点的真值推进到**最近一次已发送请求**。
- *
- * 当前请求就是锚点时直接返回完整回执。更新的请求尚未回 usage 时分两段推进：
- * 信封头部逐字可数，按两次估算的差值换；消息侧只加两次请求的本地估算差。
- * 整条退回裸估算尺的代价实测是 54.5% 读作 80.0%。
- *
- * 指纹相同时不换头部，`null`（没记过指纹的存量行）同样不换：同一份信封下两份
- * 头部估算相等，换一遍只会把两次估算之间的口径差引进来。
- *
- * 边界：两份头部都是估算，所以差额带的是系数误差，不是零误差。
- */
-function anchoredTotal(anchored: ProviderRequest, sent: ProviderRequest): number {
-  if (anchored.id === sent.id) return anchorTokens(anchored)
-
-  const changed =
-    anchored.cacheRouteFingerprint !== null &&
-    anchored.cacheRouteFingerprint !== sent.cacheRouteFingerprint
-  const headDelta = changed
-    ? envelopeHeadTokens(sent.sentCategories) - envelopeHeadTokens(anchored.sentCategories)
-    : 0
-  /*
-   * 头部逐字可数，仍按原估算差换；其余增量按当前模型的本地结构估算推进。
-   * `sent - anchored - headDelta` 包含锚点回复进入下一轮后的模型可见部分，
-   * 所以基底必须是不含锚点输出的 provider 输入，不能从 `anchorTokens` 起算后再重复加。
-   */
-  const variableDelta = sent.measuredInputTokens - anchored.measuredInputTokens - headDelta
-  return Math.max(0, anchorInputTokens(anchored) + headDelta + variableDelta)
 }
 
 export function contextPanel(
@@ -204,25 +159,24 @@ export function contextPanel(
   // 判据不同是刻意的：一次超时或漏 usage 的请求也是「已发送」，
   // 拿它当锚等于把锚点归零，而那正是数字莫名跳水的来源。
   const latest = latestAnchoredProviderRequest(store, conversationId)
+  const onRoute = (r: ProviderRequest) =>
+    r.model === model.id &&
+    r.providerName === model.providerName &&
+    r.providerKind === model.providerKind
   /*
    * 换过模型就没有锚点了，**不往前找同模型的那一条**：更早那条描述的是更短的
    * 上下文，它是「另一份内容的真值」，比估算错得更隐蔽。退回估算尺、如实标
    * `estimated`，下一轮回执一到即重锚。
    */
-  const anchored =
-    latest &&
-    latest.model === model.id &&
-    latest.providerName === model.providerName &&
-    latest.providerKind === model.providerKind
-      ? latest
-      : null
+  const anchored = latest && onRoute(latest) ? latest : null
 
-  const total = anchored ? anchoredTotal(anchored, sent) : sent.measuredInputTokens
-  const source: ContextPanel['source'] = anchored
-    ? anchored.id === sent.id
-      ? 'actual'
-      : 'projected'
-    : 'estimated'
+  const live = onRoute(sent) ? sent.occupancyTokens : null
+  const { total, source } =
+    anchored?.id === sent.id
+      ? { total: anchorTokens(anchored), source: 'actual' as const }
+      : live !== null
+        ? { total: live, source: anchored ? ('projected' as const) : ('estimated' as const) }
+        : { total: sent.measuredInputTokens, source: 'estimated' as const }
 
   return {
     total,

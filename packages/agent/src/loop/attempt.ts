@@ -188,6 +188,7 @@ export async function* sendTurn(
     // provider 是否接收仍未知——两件事分开记，「发出去了没回」
     // 和「没发出去」在账本上才可区分。
     const payload = payloadSnapshotOf(turn.req)
+    const measured = estimateRequest(turn.req, density)
     turn.requestId = persist.openRequest({
       runId: input.runId,
       turnIndex: run.requestTurn,
@@ -196,7 +197,9 @@ export async function* sendTurn(
       ...(host.deps.providerName ? { providerName: host.deps.providerName } : {}),
       providerKind: adapter.kind,
       model: adapter.spec.id,
-      measuredInputTokens: estimateRequest(turn.req, density),
+      measuredInputTokens: measured,
+      // 与 `request_prepared` 时交给界面的读数同一把尺、同一个数。
+      occupancyTokens: run.meter(measured).tokens,
       sentCategories: turn.breakdown,
       omittedCategories: host.lastOmitted(),
       payloadHash: payload.hash,

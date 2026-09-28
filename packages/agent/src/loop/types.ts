@@ -268,6 +268,8 @@ export interface LoopPersistence {
     providerKind: ProviderKind
     model: string
     measuredInputTokens: number
+    /** 发出时运行中的上下文读数（`RunState.meter`）。摘要请求不给。 */
+    occupancyTokens?: number
     sentCategories: ContextBreakdown
     omittedCategories: ContextOmitted
     payloadHash: string

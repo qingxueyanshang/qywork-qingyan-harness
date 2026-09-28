@@ -481,6 +481,42 @@ describe('上下文读数：一把尺', () => {
     const ctx = events.find((e) => e.type === 'context')
     expect(ctx?.type === 'context' && ctx.source).toBe('estimated')
   })
+
+  /** 请求账记下的发出时读数就是读数条那个数：面板读它，不另算。 */
+  test('请求账的 occupancyTokens 与同一次请求的读数事件同值', async () => {
+    const recorded: (number | undefined)[] = []
+    const persist = {
+      ...noopPersistence(),
+      openRequest: (input: { occupancyTokens?: number }) => {
+        recorded.push(input.occupancyTokens)
+        return `pr_${recorded.length}`
+      },
+    }
+    const loop = new AgentLoop({
+      adapter: fakeAdapter([[{ id: 'c1', name: 'nope', arguments: {} }], null]),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist,
+      makeToolContext: (runId) => baseCtx(runId),
+    })
+    const shown: number[] = []
+    for await (const ev of loop.run({
+      runId: 'rn_occupancy' as never,
+      history: [{ role: 'user', content: '开始' }],
+      anchor: {
+        tokens: 20_000,
+        throughMessageId: null,
+        model: 'claude-opus-5',
+        headTokens: 0,
+        envelopeFingerprint: null,
+      },
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'context') shown.push(ev.tokens)
+    }
+    expect(recorded).toHaveLength(2)
+    expect(recorded).toEqual(shown)
+  })
 })
 
 /**

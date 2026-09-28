@@ -1461,6 +1461,8 @@ export function openProviderRequest(
     providerKind?: ProviderKind
     model: string
     measuredInputTokens: number
+    /** 摘要请求不给。 */
+    occupancyTokens?: number
     sentCategories: ContextBreakdown
     omittedCategories: ContextOmitted
     payloadHash: string
@@ -1479,6 +1481,7 @@ export function openProviderRequest(
     model: input.model,
     status: 'pending',
     measuredInputTokens: input.measuredInputTokens,
+    occupancyTokens: input.occupancyTokens ?? null,
     providerInputTokens: null,
     providerOutputTokens: null,
     providerCachedTokens: null,
@@ -1507,11 +1510,11 @@ export function openProviderRequest(
     .query(
       `INSERT INTO provider_requests
        (id, run_id, turn_index, retry_index, purpose, provider_name, provider_kind, model, status,
-        measured_input_tokens, provider_input_tokens, provider_output_tokens, provider_cached_tokens,
+        measured_input_tokens, occupancy_tokens, provider_input_tokens, provider_output_tokens, provider_cached_tokens,
         provider_cache_write_tokens, sent_categories, omitted_categories, error_code, payload_hash,
         request_bytes, cache_route_fingerprint, sent_at, headers_at, first_event_at, first_content_at,
         completed_at, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,?,NULL,NULL,NULL,NULL,NULL,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,?,NULL,?,?,?,NULL,NULL,NULL,NULL,NULL,?)`,
     )
     .run(
       row.id,
@@ -1524,6 +1527,7 @@ export function openProviderRequest(
       row.model,
       row.status,
       row.measuredInputTokens,
+      row.occupancyTokens,
       writeJson(row.sentCategories),
       writeJson(row.omittedCategories),
       row.payloadHash,
@@ -1739,6 +1743,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     model: r.model,
     status: r.status,
     measuredInputTokens: r.measured_input_tokens,
+    occupancyTokens: r.occupancy_tokens,
     providerInputTokens: r.provider_input_tokens,
     providerOutputTokens: r.provider_output_tokens,
     providerCachedTokens: r.provider_cached_tokens,
