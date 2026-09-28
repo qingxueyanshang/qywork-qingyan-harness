@@ -929,6 +929,51 @@ describe('事实提取', () => {
   })
 })
 
+describe('软阈值以下只做收回量够大的收纳', () => {
+  /** 占用低于软阈值：窗口取占用的 1.3 倍，软阈值 = 1.04 × 占用。 */
+  async function belowLine(store: Store, conversationId: string): Promise<CompactionRunInput> {
+    const load = await pressure(store, conversationId)
+    return { ...load, contextWindow: Math.round(load.occupancy * 1.3) }
+  }
+
+  test('收回不足半份保留量：跳过，不调摘要器，manifest 不变', async () => {
+    const { store, conv } = fresh(8)
+    let calls = 0
+    const p = port(store, conv.id, async () => {
+      calls++
+      return '摘要'
+    })
+    const outcome = await p.run(await belowLine(store, conv.id))
+    expect(outcome).toEqual({ status: 'skipped', reasonCode: 'nothing_to_fold' })
+    expect(calls).toBe(0)
+    expect(getConversation(store, conv.id)?.compactionManifest ?? null).toBeNull()
+    store.close()
+  })
+
+  test('收回够大：只收纳，不调摘要器', async () => {
+    const { store, ws, conv, ids } = fresh(8)
+    const run = createRun(store, {
+      conversationId: conv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'bulky-tools',
+      userMessageId: ids[0]!,
+      messageIdUpperBound: ids[0]!,
+      contextSnapshot: [],
+    })
+    addToolWaves(store, run.id, 3, 20_000)
+    let calls = 0
+    const p = port(store, conv.id, async () => {
+      calls++
+      return '摘要'
+    })
+    const outcome = await p.run(await belowLine(store, conv.id))
+    expect(outcome.status === 'compacted' && outcome.summarized).toBe(false)
+    expect(calls).toBe(0)
+    store.close()
+  })
+})
+
 describe('增量压缩', () => {
   test('第二次只处理新增部分，revision 递增', async () => {
     const { store, conv } = fresh()

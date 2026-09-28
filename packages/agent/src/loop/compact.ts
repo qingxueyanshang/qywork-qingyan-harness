@@ -53,8 +53,8 @@ export async function* compactBeforeSend(
  * `interrupted` 时 `run.stopReason` 已置为 `user_interrupt`。
  *
  * 触发线比发送前那一处低一份尾部保留量（按两把尺的比值折成真值）：余量不足这么多时，
- * 这次决策只放得下一小段甚至一行都放不下，读取只能报额度用完、下一轮重来。
- * 本次响应的输出把占用推过软阈值时同理，那时额度为 0。
+ * 这次决策只放得下一小段甚至一行都放不下。本次响应的输出把占用推过软阈值时同理，那时额度为 0。
+ * 软阈值以下端口只做收回量够大的收纳、不摘要，收不出时不动，这次决策按剩下的余量部分投递。
  *
  * **必须在打开第一条工具记录之前调。** 压缩记录占一个 step 序号，夹在同一批次的工具记录之间时，
  * `runtime/transcript.ts` 的 `stepsToUnits` 只收连续的同批次记录，这次决策会被拆成两个单元：
@@ -94,6 +94,10 @@ export async function* compactBeforeTools(
 /**
  * 占用越过 `threshold` 时压一次。`notice` 是压缩生效后重装请求时附带的本轮提示：
  * 发送前那一处带上本轮提示，工具之前那一处提示已随上一次请求发出，不再带。
+ *
+ * 占用未越过软阈值时端口只收纳或跳过、不调模型（`CompactionRunInput.occupancy` 的约定），
+ * 因此不播报开始；这时的跳过也不落记录、不发事件：什么都没改，也没有需要用户知道的状态。
+ * 越过软阈值时照旧播报开始，跳过要落记录——那表示上下文仍在软阈值以上。
  */
 async function* compactOverSoftLimit(
   host: LoopHost,
@@ -117,7 +121,8 @@ async function* compactOverSoftLimit(
     threshold: Math.round(at.threshold),
     softLimit: softLimit(adapter.spec),
   })
-  yield { type: 'compaction', runId: input.runId, phase: 'started' }
+  const overLine = occupancy > softLimit(adapter.spec)
+  if (overLine) yield { type: 'compaction', runId: input.runId, phase: 'started' }
   // 同工具波次：压缩可能要调一次模型，卡住的话整轮停在这里，而且它不写
   // `provider_requests`，账本上连「卡在哪」都看不出来。
   const trace = host.summaryTrace(run, at.summaryTurn)
@@ -187,6 +192,7 @@ async function* compactOverSoftLimit(
     // **skipped 与 failed 分开报**：「没什么可压」不是失败，
     // 把它显示成红色的压缩失败会让用户去查一个并不存在的故障。
     const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
+    if (phase === 'skipped' && !overLine) return 'unchanged'
     persist.recordCompaction(input.runId, run.nextSeq(), {
       phase,
       manifestRevision: 0,
