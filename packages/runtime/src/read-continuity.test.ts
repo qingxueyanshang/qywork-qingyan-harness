@@ -15,15 +15,19 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   AgentLoop,
+  type CompactionPort,
   type LoopPersistence,
   type Summarizer,
   softLimit,
   type ToolContextBase,
   ToolRegistry,
+  tailRetain,
 } from '@qywork/agent'
 import {
   type ChatRequest,
+  estimateMessages,
   estimateRequest,
+  estimateText,
   type LlmAdapter,
   lookupModel,
   type ProviderEvent,
@@ -288,4 +292,221 @@ describe('远大于窗口的文件逐段读完', () => {
     }
     expect(checked).toBe(replayed.size)
   }, 60_000)
+})
+
+/**
+ * 按脚本读一串文件的模型：读到 `nextOffset` 就接着读同一个文件，否则读下一个；
+ * 从第三个文件起每次响应先说一段话（聊天为主的负载）。每次请求记下本地估算的体积。
+ */
+function scriptedAdapter(
+  window: number,
+  plan: string[],
+  talk: string,
+  sizes: number[],
+): LlmAdapter {
+  const scriptSpec = { ...flash, contextWindow: window }
+  let call = 0
+  let next = 0
+  return {
+    kind: 'openai_chat_completions',
+    transmits: { effort: true },
+    spec: scriptSpec,
+    async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
+      const size = estimateRequest(req, scriptSpec.density)
+      sizes.push(size)
+      const last = [...req.messages].reverse().find((m) => m.role === 'tool')
+      const result = last
+        ? (JSON.parse(String(last.content)) as { result?: { nextOffset?: number } }).result
+        : undefined
+      const args = result?.nextOffset
+        ? { path: plan[next - 1]!, offset: result.nextOffset }
+        : next < plan.length
+          ? { path: plan[next++]! }
+          : null
+      yield { type: 'request_prepared', measuredInputTokens: size }
+      yield { type: 'response_started', headersAt: Date.now() }
+      if (args && next > 2) yield { type: 'text_delta', delta: talk, at: Date.now() }
+      if (args) {
+        yield {
+          type: 'tool_calls',
+          calls: [{ id: `call_${call++}`, name: 'read_file', arguments: args }],
+          at: Date.now(),
+        }
+      } else {
+        yield { type: 'text_delta', delta: '读完了', at: Date.now() }
+      }
+      yield {
+        type: 'usage',
+        usage: {
+          inputTokens: size,
+          outputTokens: 20,
+          cachedTokens: null,
+          cacheWriteTokens: null,
+          reasoningTokens: 0,
+          source: 'provider',
+        },
+      }
+      yield { type: 'done', stopReason: args ? 'tool_use' : 'end_turn', rawStopReason: '' }
+    },
+  }
+}
+
+/** 估算约 `tokens` 的文本文件。 */
+function fileOf(tokens: number, tag: string): string {
+  const lines: string[] = []
+  while (estimateText(lines.join('\n'), flash.density) < tokens) {
+    for (let i = 0; i < 200; i++) lines.push(`${tag} ${lines.length} ${'x'.repeat(40)}`)
+  }
+  return lines.join('\n')
+}
+
+async function readScript(window: number, files: { name: string; tokens: number }[]) {
+  const dir = mkdtempSync(join(tmpdir(), 'qywork-read-script-'))
+  const dbPath = join(dir, 'a.sqlite3')
+  const store = new Store({ path: dbPath })
+  const content = new ContentStore(contentPathFor(dbPath))
+  opened.push({ store, content })
+  for (const file of files) {
+    writeFileSync(
+      join(dir, file.name),
+      file.tokens > 0 ? fileOf(file.tokens, file.name) : file.name,
+    )
+  }
+  const ws = upsertWorkspace(store, dir, 'ws')
+  const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+  const ask = appendMessage(store, {
+    conversationId: conv.id,
+    role: 'user',
+    content: '把这些文件读完',
+  })
+  const run = createRun(store, {
+    conversationId: conv.id,
+    workspaceId: ws.id,
+    model: 'm',
+    clientRequestId: 'c1',
+    userMessageId: ask.id,
+    messageIdUpperBound: ask.id,
+    contextSnapshot: [],
+  })
+  const full = new ToolRegistry()
+  registerBuiltinTools(full)
+  const registry = new ToolRegistry()
+  registry.register(full.get('read_file')!)
+  const sizes: number[] = []
+  /*
+   * 每次压缩腾出多少：同一份历史在压缩前后的投影体积之差。历史取最近一次装配请求时的那份，
+   * 执行工具之前的检查点压的正是它。
+   */
+  const port = new RuntimeCompaction({
+    store,
+    conversationId: conv.id,
+    messageIdUpperBound: ask.id as MessageId,
+    summarize: async () => '已读过前面的文件。',
+  })
+  let lastHistory: WireMessage[] = []
+  const recoveries: { overLine: boolean; recovered: number }[] = []
+  const compaction: CompactionPort = {
+    project: (messages) => {
+      lastHistory = messages
+      return port.project(messages)
+    },
+    run: async (input) => {
+      const before = estimateMessages(port.project(lastHistory), flash.density)
+      const outcome = await port.run(input)
+      if (outcome.status === 'compacted') {
+        recoveries.push({
+          overLine: input.occupancy > softLimit({ contextWindow: window }),
+          recovered: before - estimateMessages(port.project(lastHistory), flash.density),
+        })
+      }
+      return outcome
+    },
+  }
+  const adapter = scriptedAdapter(
+    window,
+    files.map((file) => file.name),
+    'analysis '.repeat(Math.round(window * 0.0075)),
+    sizes,
+  )
+  const loop = new AgentLoop({
+    adapter,
+    registry,
+    systemPrompt: 'sys',
+    persist: persistence(store, { count: 0 }),
+    makeToolContext: (runId: string): ToolContextBase => ({
+      workspaceRoot: dir,
+      conversationId: conv.id,
+      runId,
+      model: adapter.spec.id,
+      contextWindow: window,
+      density: adapter.spec.density,
+      vision: adapter.spec.vision,
+      resources: new Map(),
+      state: new Map(),
+      sink: new RuntimeSink(store, content, runId as RunId),
+      signal: new AbortController().signal,
+      requestPermission: async () => ({ allowed: true }),
+    }),
+    compaction,
+  })
+  const history: WireMessage[] = listMessages(store, conv.id, null).map((m) => ({
+    role: m.role,
+    content: m.content,
+    _messageId: m.id,
+  }))
+  let stop = ''
+  for await (const ev of loop.run({
+    runId: run.id,
+    history,
+    userMessageId: ask.id,
+    signal: new AbortController().signal,
+  })) {
+    if (ev.type === 'run.finished') stop = ev.stopReason
+  }
+  // 请求与压缩按 step 序号交错：压缩记录的 seq 夹在前后两次请求的工具记录之间。
+  const steps = listSteps(store, run.id)
+  return { stop, steps, recoveries }
+}
+
+/**
+ * 占用落在「软阈值 − 尾部保留量」与软阈值之间时，执行工具之前的检查点每次决策都会尝试压缩。
+ * 只要有新可折单元就收纳的话，每次收纳几乎不腾空间却改写投影，下一次请求照样变大；
+ * 收不出时又会落一串跳过记录。收纳必须让下一次请求变小，跳过不留记录，读取全部成功。
+ */
+describe('压缩线附近的收纳必须腾出空间', () => {
+  const tiny = (i: number) => ({ name: `s${i}.txt`, tokens: 0 })
+  for (const [label, files] of [
+    [
+      '聊天为主',
+      [
+        { name: 'mid.txt', tokens: 40_000 },
+        { name: 'big.txt', tokens: 76_000 },
+        ...Array.from({ length: 40 }, (_, i) => tiny(i)),
+      ],
+    ],
+    [
+      '先读大文件再聊天',
+      [
+        { name: 'mid.txt', tokens: 2_000 },
+        { name: 'big.txt', tokens: 100_000 },
+        ...Array.from({ length: 40 }, (_, i) => tiny(i)),
+      ],
+    ],
+  ] as const) {
+    test(label, async () => {
+      const { stop, steps, recoveries } = await readScript(200_000, [...files])
+      expect(stop).toBe('completed')
+      for (const s of steps.filter((step) => step.kind === 'tool_action')) {
+        expect(s.status).toBe('success')
+      }
+      // 没有跳过记录：软阈值以下收不出时不留痕迹，越过软阈值的场景这里不出现。
+      for (const s of steps.filter((step) => step.kind === 'compaction')) {
+        expect((s.payload as { phase?: string }).phase).toBe('done')
+      }
+      // 软阈值以下的每次收纳至少腾出半份保留量。
+      const below = recoveries.filter((r) => !r.overLine)
+      expect(below.length).toBeGreaterThan(0)
+      for (const r of below) expect(r.recovered).toBeGreaterThanOrEqual(tailRetain(200_000) / 2)
+    }, 120_000)
+  }
 })

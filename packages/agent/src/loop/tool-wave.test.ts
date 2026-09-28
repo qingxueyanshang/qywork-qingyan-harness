@@ -1534,4 +1534,50 @@ describe('投递额度按决策开账', () => {
     expect(admitted).toEqual([true])
     expect(seen[0]).toBeGreaterThan(700_000)
   })
+
+  /**
+   * 软阈值以下端口只收纳或跳过、不调模型：跳过时什么都没改，不播报开始、不落记录。
+   * 越过软阈值时跳过照旧播报并落记录——上下文仍在软阈值以上。
+   */
+  test('软阈值以下的跳过不播报、不落记录；越过软阈值时照旧', async () => {
+    const cases: [number, { events: string[]; recorded: boolean }][] = [
+      [790_000, { events: [], recorded: false }],
+      [850_000, { events: ['started', 'skipped'], recorded: true }],
+    ]
+    for (const [reported, expected] of cases) {
+      const persist = noopPersistence()
+      let records = 0
+      let runs = 0
+      const loop = new AgentLoop({
+        adapter: adapterWithUsage([call('grab')], () => reported),
+        registry: grabRegistry(1, []),
+        systemPrompt: 'sys',
+        persist: {
+          ...persist,
+          recordCompaction: (...a) => {
+            records++
+            persist.recordCompaction(...a)
+          },
+        },
+        makeToolContext: (runId) => baseCtx(runId),
+        compaction: {
+          project: (messages) => messages,
+          run: async () => {
+            runs++
+            return { status: 'skipped', reasonCode: 'nothing_to_fold' }
+          },
+        },
+      })
+      const events: string[] = []
+      for await (const ev of loop.run({
+        runId: 'rn_budget' as never,
+        history: [],
+        signal: new AbortController().signal,
+      })) {
+        if (ev.type === 'compaction') events.push(ev.phase)
+      }
+      expect(runs).toBeGreaterThan(0)
+      expect({ events: events.slice(0, 2), recorded: records > 0 }).toEqual(expected)
+    }
+  })
 })

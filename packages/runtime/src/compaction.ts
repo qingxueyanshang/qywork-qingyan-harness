@@ -292,6 +292,22 @@ export class RuntimeCompaction implements CompactionPort {
     // 手动触发是明确的摘要请求；即使收纳已经够用，也必须继续尝试摘要段。
     const condenseOnly = input.trigger === 'automatic' && afterCondense <= limit
 
+    /*
+     * 占用未越过软阈值时只做收回量够大的收纳，不摘要。
+     *
+     * 收纳改写的是从第一个被收纳单元起的投影，整段保留尾部要重新计费；收回几十个 token 的收纳
+     * 腾不出空间，却每次决策都破一次缓存。下限取半份保留量：一段续读投递最多一份保留量，
+     * 收掉一段扣去信封仍要能过线；取整份时 32K 续读在收纳后仍放不下下一段。
+     * 越过软阈值时判据不变：收纳够就收纳，不够就摘要。
+     */
+    if (
+      input.trigger === 'automatic' &&
+      input.occupancy <= limit &&
+      originalNew - condensedNew < automaticRetain / 2
+    ) {
+      return { status: 'skipped', reasonCode: 'nothing_to_fold' }
+    }
+
     // 可行性：这一次必须真的推进一条线。收纳够用时摘要线不动，那就要求收纳线能前移。
     if (fold.key <= summaryKey || (condenseOnly && fold.key <= condenseKey)) {
       return { status: 'skipped', reasonCode: 'nothing_to_fold' }
