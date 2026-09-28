@@ -527,6 +527,9 @@
   flex: none;
   color: var(--danger);
 }
+.fold-failure-count {
+  color: var(--danger-summary);
+}
 /* **不加 opacity。** 蒙一层半透明会让失败行里「执行命令失败」和后面那段命令预览
    同为 --danger 却显出两种深浅。要淡就把 token 定成淡的，不要在个别元素上再蒙。
    槽里唯一会被截的就是它——路径和命令都可能很长。 */

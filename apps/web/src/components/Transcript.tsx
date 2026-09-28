@@ -1183,7 +1183,7 @@ function ToolGroup(props: { id: string; members: TranscriptItem[] }) {
         <>
           {groupTitle(props.members)}
           <Show when={failed() > 0}>
-            ，<span class="fold-word">{failed()} 个失败</span>
+            ，<span class="fold-failure-count">{failed()} 个失败</span>
           </Show>
         </>
       }
