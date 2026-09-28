@@ -609,7 +609,7 @@ function foldKey(kind: 'tool' | 'thinking' | 'group', id: string): string {
 
 function Fold(props: {
   id: string
-  label: string
+  label: JSX.Element
   /** 终态字样。**成功不写字**——一屏几十行全是「成功」等于没有信息。 */
   statusWord?: string
   target?: string
@@ -1161,8 +1161,8 @@ export function TranscriptRows(props: {
 }
 
 function ToolGroup(props: { id: string; members: TranscriptItem[] }) {
-  const tools = () => props.members.filter((m) => m.kind === 'tool')
-  const failed = () => tools().some((t) => t.status === 'failure')
+  const failed = () =>
+    props.members.filter((m) => m.kind === 'tool' && m.status === 'failure').length
   /*
    * 组卡出生时的开合等于它包住的内容在出生那一刻是否可见。单条工具展开着看，下一个工具
    * 启动把它并进组卡——组卡合着出生就把正在看的内容盖掉了。只写一次，之后组卡
@@ -1175,10 +1175,19 @@ function ToolGroup(props: { id: string; members: TranscriptItem[] }) {
     ),
   )
 
-  // 组头文案里已经带了「，N 个失败」，右侧不再挂一个计数——
-  // 那个数字回答不了任何问题，只是把行尾占满。
+  // 失败计数单独着色，普通操作摘要保持默认颜色。
   return (
-    <Fold id={foldKey('group', props.id)} failed={failed()} label={groupTitle(props.members)}>
+    <Fold
+      id={foldKey('group', props.id)}
+      label={
+        <>
+          {groupTitle(props.members)}
+          <Show when={failed() > 0}>
+            ，<span class="fold-word">{failed()} 个失败</span>
+          </Show>
+        </>
+      }
+    >
       <div class="fold-group">
         <For each={props.members}>
           {(m) => (

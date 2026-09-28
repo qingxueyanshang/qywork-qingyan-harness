@@ -401,10 +401,10 @@ describe('组头文案', () => {
     expect(t.indexOf('读取')).toBeLessThan(t.indexOf('创建'))
   })
 
-  test('有失败要报出失败数', () => {
-    expect(
-      groupTitle([tool('文件', 'read'), tool('文件', 'read', { status: 'failure' })]),
-    ).toContain('1 个失败')
+  test('失败工具仍计入动作摘要，失败数由组头单独呈现', () => {
+    expect(groupTitle([tool('文件', 'read'), tool('文件', 'read', { status: 'failure' })])).toBe(
+      '读取 2 个文件',
+    )
   })
 
   test('思考条不参与组头统计', () => {

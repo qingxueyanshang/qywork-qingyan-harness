@@ -192,8 +192,9 @@ export function delegationStatus(transcript: TranscriptItem[]): string | null {
 }
 
 /**
- * 组头文案：按动作类型首次出现顺序分桶，每桶「动词 N 个对象」。
+ * 组头动作文案：按动作类型首次出现顺序分桶，每桶「动词 N 个对象」。
  * 同桶对象不一致时退化成「N 个动作」——硬凑一个名词只会误导。
+ * 失败计数由组头组件单独呈现，避免把整段摘要染成失败色。
  *
  * **恒为摘要，跑着也是。** 别加「只要有一个工具在跑，整组标题就变成
  * 『正在<那一个的动词>…』」这种前置分支，两个毛病——
@@ -229,9 +230,7 @@ export function groupTitle(members: TranscriptItem[]): string {
     return `${VERBS[k]} ${list.length} ${UNITS[k]}${noun}`
   })
 
-  const failed = tools.filter((s) => s.status === 'failure').length
-  const base = parts.join('，')
-  return failed > 0 ? `${base}，${failed} 个失败` : base
+  return parts.join('，')
 }
 
 /**
