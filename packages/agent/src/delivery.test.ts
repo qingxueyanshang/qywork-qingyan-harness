@@ -86,18 +86,23 @@ describe('一次决策一份额度', () => {
    * 一段填满余额的结果在下一次压缩里是跨过保留量的那个单元，会被留下，
    * 下一次决策的额度为 0、续读停在原地。单次上限因此给下一次决策留出一份尾部保留量。
    */
-  test('单次上限给下一次决策留出一份尾部保留量', () => {
+  test('单次上限给下一次决策留出半份尾部保留量', () => {
     const c = { state: openBatchBudget(new Map<string, unknown>(), 25_000), contextWindow: 32_000 }
     expect(tailRetain(32_000)).toBe(8_000)
-    expect(deliveryCap(c)).toBe(17_000)
-    expect(chargeBatchBudget(c, 20_000).ok).toBe(false)
-    expect(chargeBatchBudget(c, 17_000).ok).toBe(true)
+    expect(deliveryCap(c)).toBe(21_000)
+    expect(chargeBatchBudget(c, 22_000).ok).toBe(false)
+    expect(chargeBatchBudget(c, 21_000).ok).toBe(true)
   })
 
-  test('余额不足两份保留量时，单次不超过一份保留量', () => {
-    const c = { state: openBatchBudget(new Map<string, unknown>(), 10_000), contextWindow: 32_000 }
-    expect(deliveryCap(c)).toBe(8_000)
-    expect(deliveryCap({ ...c, state: openBatchBudget(new Map(), 5_000) })).toBe(5_000)
+  test('余额不足一份保留量时，单次不超过半份保留量', () => {
+    const c = { state: openBatchBudget(new Map<string, unknown>(), 6_000), contextWindow: 32_000 }
+    expect(deliveryCap(c)).toBe(4_000)
+    expect(deliveryCap({ ...c, state: openBatchBudget(new Map(), 3_000) })).toBe(3_000)
+  })
+
+  test('保留量按窗口比例，不设固定封顶', () => {
+    expect(tailRetain(1_000_000)).toBe(250_000)
+    expect(tailRetain(200_000)).toBe(50_000)
   })
 })
 

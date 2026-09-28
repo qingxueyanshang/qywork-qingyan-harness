@@ -66,6 +66,7 @@ export {
   emptyOmitted,
   envelopeHeadTokens,
   type FileChange,
+  type FileReadProgress,
   type FoldedFileChange,
   type FollowUp,
   foldFileChanges,

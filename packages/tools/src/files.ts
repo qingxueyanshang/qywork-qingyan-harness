@@ -343,9 +343,11 @@ export const readFileTool: ToolSpec = {
         message: complete
           ? `读取 ${shown}（${n} 行${end < lines.length ? '，已截断' : ''}）`
           : `读取 ${shown} 第 ${offset}–${end} 行（共 ${lines.length} 行）。` +
-            `超出本轮剩余容量，从 offset=${end + 1} 续读。`,
+            `超出本轮剩余容量，从 offset=${end + 1} 续读；已读的段落在压缩时会收起，要点写在回复里。`,
         data: {
           content: redactSecrets(numbered, secrets),
+          startLine: offset,
+          endLine: end,
           totalLines: lines.length,
           truncated: end < lines.length,
           ...(complete ? {} : { nextOffset: end + 1 }),
@@ -394,12 +396,26 @@ export const readFileTool: ToolSpec = {
       sourceType: 'file:line',
       whole: {
         message,
-        data: { content: `${offset}\t${line}`, totalLines: lines.length, truncated: true, ...more },
+        data: {
+          content: `${offset}\t${line}`,
+          startLine: offset,
+          endLine: offset,
+          totalLines: lines.length,
+          truncated: true,
+          ...more,
+        },
       },
       body: line,
       partial: (head, note) => ({
         message: `${message}，该行只投递了开头${nextLine === null ? '' : `，下一行从 offset=${nextLine} 用 read_file 读`}。${note}`,
-        data: { content: `${offset}\t${head}`, totalLines: lines.length, truncated: true, ...more },
+        data: {
+          content: `${offset}\t${head}`,
+          startLine: offset,
+          endLine: offset,
+          totalLines: lines.length,
+          truncated: true,
+          ...more,
+        },
       }),
     })
     if (result.status === 'success') markRead()

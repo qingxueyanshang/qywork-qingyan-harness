@@ -40,25 +40,30 @@ export function batchRemaining(ctx: Pick<ToolContext, 'state'>): number {
 }
 
 /**
- * 自动压缩保留多少尾部原文（token）：窗口的 1/4，封顶 60K。
+ * 自动压缩保留多少尾部原文（token）：窗口的 1/4。
  *
  * 压缩选界（`runtime/compaction.ts`）与单次投递上限（`deliveryCap`）共用它，两处各写一个数就对不上。
- * 封顶值是观察视图单份尺寸（`tools/sink.ts` 的 `observationBudget`）的两倍：一份整视图必然落在保留尾部之内。
+ * 不要加固定封顶：它决定压缩后还剩多少最近的原文，按窗口比例才随窗口变大；
+ * 封在 60K 时 1M 窗口压缩后只剩 6% 原文。
  */
 export function tailRetain(contextWindow: number): number {
-  return Math.min(Math.floor(contextWindow / 4), 60_000)
+  return Math.floor(contextWindow / 4)
 }
 
 /**
- * 一次投递最多用多少额度（token）：给下一次决策留出一份尾部保留量，或者整段不超过尾部保留量。
+ * 一次投递最多用多少额度（token）：给下一次决策留出半份尾部保留量，或者整段不超过半份。
  *
- * 不要放宽到整份余额：压缩选界从尾部累加到保留量为止，跨过保留量的那个单元自己也留下。
- * 一段填满余额的结果因此在下一次压缩里仍被留着，而下一次决策的额度为 0，续读停在原地。
+ * 不要放宽到整份余额：一段填满余额的结果把占用推到软阈值，下一次发送前越线，而那时这段结果
+ * 模型还没看过、不能收纳，只能调模型写摘要。实测 1M 窗口读约 3 倍窗口的文件：放满时 11 次压缩里
+ * 5 次是模型摘要。
+ *
+ * 也不要留满一份：执行工具之前的检查点在余量不足一份保留量时才压缩，留满一份时两者在同一条线上，
+ * 差几十个 token 决定下一次决策压不压，续读段一大一小交替。留半份时下一次决策开始前必然先收纳上一段。
  */
 export function deliveryCap(ctx: Pick<ToolContext, 'state' | 'contextWindow'>): number {
   const remaining = batchRemaining(ctx)
-  const retain = tailRetain(ctx.contextWindow)
-  return Math.max(remaining - retain, Math.min(remaining, retain))
+  const reserve = Math.floor(tailRetain(ctx.contextWindow) / 2)
+  return Math.max(remaining - reserve, Math.min(remaining, reserve))
 }
 
 /**

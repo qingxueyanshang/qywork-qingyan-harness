@@ -1444,6 +1444,21 @@ export interface CompactionFacts {
    * 旧 manifest 没有这个键，读出来是 `undefined`，按空处理（已落盘的是历史事实）。
    */
   resources?: string[]
+  /**
+   * 按行读过的文件与读过的行段（相邻、重叠的段已合并）。
+   *
+   * 摘要线越过那些读取之后，模型只剩这份记录知道读到了哪里；没有它，续读一份大文件时
+   * 会从头重读。旧 manifest 没有这个键，按空处理。
+   */
+  filesRead?: FileReadProgress[]
+}
+
+export interface FileReadProgress {
+  path: string
+  /** 文件总行数，取最近一次读取时的值。 */
+  totalLines: number
+  /** 读过的行段 `[起, 止]`（含两端，从 1 开始），升序、互不相邻。 */
+  ranges: [number, number][]
 }
 
 // ─────────────────────────────── 工作区 ───────────────────────────────

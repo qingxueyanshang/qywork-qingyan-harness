@@ -510,3 +510,42 @@ describe('压缩线附近的收纳必须腾出空间', () => {
     }, 120_000)
   }
 })
+
+/**
+ * 读约 3 倍窗口的文件：每段读完、模型看过之后，下一次压缩把它整段收纳，下一段能读满余量。
+ * 看过的超大段整段留在保留尾部时，续读段会一大一小交替，压缩次数翻倍。
+ */
+describe('远大于窗口的文件每段都能读满', () => {
+  test('只收纳不摘要，行段首尾相接读到末尾，除最后一段外每段至少占窗口的 40%', async () => {
+    const window = 200_000
+    const { stop, steps } = await readScript(window, [{ name: 'huge.txt', tokens: 3 * window }])
+    expect(stop).toBe('completed')
+    const reads = steps
+      .filter((s) => s.kind === 'tool_action')
+      .map(
+        (s) =>
+          (
+            s.payload as unknown as {
+              outcome: {
+                status: string
+                data: { content: string; startLine: number; endLine: number; totalLines: number }
+              }
+            }
+          ).outcome,
+      )
+    expect(reads.every((o) => o.status === 'success')).toBe(true)
+    for (let i = 1; i < reads.length; i++) {
+      expect(reads[i]!.data.startLine).toBe(reads[i - 1]!.data.endLine + 1)
+    }
+    expect(reads.at(-1)!.data.endLine).toBe(reads.at(-1)!.data.totalLines)
+    for (const o of reads.slice(0, -1)) {
+      expect(estimateText(o.data.content, flash.density)).toBeGreaterThan(window * 0.4)
+    }
+    for (const s of steps.filter((step) => step.kind === 'compaction')) {
+      expect(s.payload as { phase?: string; summarized?: boolean }).toMatchObject({
+        phase: 'done',
+        summarized: false,
+      })
+    }
+  }, 120_000)
+})

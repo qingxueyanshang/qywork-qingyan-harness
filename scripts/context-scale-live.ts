@@ -498,6 +498,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   const outcome = await compaction.run({
     trigger: 'automatic',
     model: spec.id,
+    latestUnitSeen: true,
     occupancy: trueBefore,
     estimatedOccupancy: estBefore,
     contextWindow: window,

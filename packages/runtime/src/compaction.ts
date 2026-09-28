@@ -221,7 +221,7 @@ export class RuntimeCompaction implements CompactionPort {
             Math.max(1, Math.floor(units.reduce((total, unit) => total + unit.tokens, 0) / 4)),
           )
         : automaticRetain
-    const foldIndex = foldIndexOf(units, retain)
+    const foldIndex = foldIndexOf(units, retain, input.latestUnitSeen)
     if (foldIndex < 0) return { status: 'skipped', reasonCode: 'nothing_to_fold' }
     const fold = units[foldIndex]!
     const todoFacts = currentTodoFacts(units)
@@ -669,13 +669,17 @@ function toolEnvelopeStatus(content: WireMessage['content']): string | null {
 /**
  * 折叠线：最后一个**不**保留的单元的下标。`-1` = 尾部尚未累积足够的保留预算，无可折。
  *
- * 先加后判，所以把总量顶过预算的那个单元自己也留着——至少保留最后一个单元。
+ * 先加后判，把总量顶过预算的那个单元自己也留着——除非模型已经看过它、且它单独就超过保留量：
+ * 那是一段几十万 token 的续读投递，整段留着的话压缩后占用仍在软阈值附近，下一段只剩一份保留量的空间。
+ * 模型还没看过的最后一个单元总是留着。
  */
-function foldIndexOf(units: Unit[], retain: number): number {
+function foldIndexOf(units: Unit[], retain: number, latestUnitSeen: boolean): number {
   let spent = 0
   for (let i = units.length - 1; i >= 0; i--) {
     spent += units[i]!.tokens
-    if (spent >= retain) return i - 1
+    if (spent < retain) continue
+    const seen = i < units.length - 1 || latestUnitSeen
+    return seen && units[i]!.tokens > retain ? i : i - 1
   }
   return -1
 }
@@ -687,6 +691,7 @@ function actionOf(runId: string, step: Step): CompactionAction {
       message?: string
       errorKind?: string
       resources?: { resourceId?: string }[]
+      data?: unknown
     }
   } | null
   return {
@@ -698,5 +703,19 @@ function actionOf(runId: string, step: Step): CompactionAction {
     summary: payload?.outcome?.message ?? '',
     errorCode: payload?.outcome?.errorKind ?? null,
     resourceId: payload?.outcome?.resources?.[0]?.resourceId ?? null,
+    lines: linesOf(payload?.outcome?.data),
   }
+}
+
+/** 按行读取的结果带起止行号与总行数（`read_file`）；其余结果没有这三项。 */
+function linesOf(data: unknown): { from: number; to: number; total: number } | null {
+  const d = data as
+    | { startLine?: unknown; endLine?: unknown; totalLines?: unknown }
+    | null
+    | undefined
+  return typeof d?.startLine === 'number' &&
+    typeof d.endLine === 'number' &&
+    typeof d.totalLines === 'number'
+    ? { from: d.startLine, to: d.endLine, total: d.totalLines }
+    : null
 }

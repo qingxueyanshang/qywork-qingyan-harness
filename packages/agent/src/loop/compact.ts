@@ -43,6 +43,7 @@ export async function* compactBeforeSend(
     threshold: softLimit(run.adapter.spec),
     summaryTurn: run.requestTurn,
     notice: turn.turnNotice,
+    latestUnitSeen: false,
   })
   return done === 'interrupted' ? 'interrupted' : 'sent'
 }
@@ -83,6 +84,7 @@ export async function* compactBeforeTools(
     threshold: softLimit(run.adapter.spec) - tailRetain(run.adapter.spec.contextWindow) / scale,
     summaryTurn: run.requestTurn + 1,
     notice: null,
+    latestUnitSeen: true,
   })
   if (done === 'interrupted') return 'interrupted'
   if (done === 'unchanged') return { occupancy, estimated }
@@ -109,6 +111,7 @@ async function* compactOverSoftLimit(
     threshold: number
     summaryTurn: number
     notice: string | null
+    latestUnitSeen: boolean
   },
 ): AsyncGenerator<AgentEvent, 'compacted' | 'unchanged' | 'interrupted', unknown> {
   const { adapter, input, persist, density } = run
@@ -133,6 +136,7 @@ async function* compactOverSoftLimit(
       trace,
       trigger: 'automatic',
       model: adapter.spec.id,
+      latestUnitSeen: at.latestUnitSeen,
       occupancy,
       estimatedOccupancy: at.estimated,
       contextWindow: adapter.spec.contextWindow,
@@ -283,6 +287,8 @@ export async function* recoverFromOverflow(
       trace,
       trigger: 'automatic',
       model: adapter.spec.id,
+      // 被拒的那次请求里最后一批结果还没到模型手里。
+      latestUnitSeen: false,
       occupancy: cap.reportedInputTokens ?? run.occupancyOf(turn.req),
       // `sizeBefore` 就是这一份请求的本地估算，同一次装配、同一把尺。
       estimatedOccupancy: sizeBefore,

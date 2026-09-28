@@ -1428,10 +1428,11 @@ describe('投递额度按决策开账', () => {
    */
   test('三波共用一份额度，不逐波清零', async () => {
     const admitted: boolean[] = []
-    // 窗口 1M，软阈值 800K；占用几十 token，余量约 800K。
+    // 窗口 1M，软阈值 800K；占用几十 token，余量在 80 万–94 万之间（本次响应那条消息让两把尺的比值略大于 1）。
+    // 每次 35 万：两次之和装得下，三次装不下，与余量落在这个区间的哪一点无关。
     const loop = new AgentLoop({
       adapter: adapterWithUsage([call('grab'), call('grab'), call('grab')], (e) => e),
-      registry: grabRegistry(300_000, admitted),
+      registry: grabRegistry(350_000, admitted),
       systemPrompt: 'sys',
       persist: noopPersistence(),
       makeToolContext: (runId) => baseCtx(runId),
