@@ -9,6 +9,9 @@ import { cycleFingerprint } from '../progress.ts'
 import { envelopeHashOf } from './request.ts'
 import type { RunState, TurnState } from './run-state.ts'
 
+const TRUNCATED_NOTICE =
+  '上一次响应的输出达到单次上限，在中途被截断，本轮未结束。从中断处继续，不重述已完成的部分，剩余工作拆成较小的步骤。'
+
 /**
  * 请求账落终态，本轮输出写回 transcript，锚点按本轮真值前移。
  *
@@ -39,7 +42,7 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
    * 输出被截断意味着最后一条调用的参数可能停在半个 JSON 上，而截断处恰好是
    * 合法 JSON 时连 `argumentsError` 都没有。按它执行就是拿残缺参数动手，
    * 且模型没有机会补完。整批在这里丢掉，正文与思考照常落账，
-   * `concludeWithoutTools` 随即把终态定成 `output_truncated`。
+   * 随后由 `concludeWithoutTools` 续写。
    */
   if (turn.providerStop === 'max_tokens') turn.calls.length = 0
 
@@ -193,11 +196,23 @@ export async function* concludeWithoutTools(
     return 'stop'
   }
 
-  // provider 报 max_tokens 是**输出**被截断，模型话没说完。它优先于待办判据：
-  // 继续同一任务也接不回被截断的半句话，必须先把真实终态交给用户。
+  /*
+   * `max_tokens` 是这一次响应写满了单次输出上限，不是任务结束，因此续写，且优先于待办判据。
+   * 截断的正文与签名思考已在收尾时进了 transcript，下一次请求原样带上，模型从中断处接着做。
+   * 连续三次截断由空转判据停下。指纹不要带响应内容：每次截断的内容都不同，带了就判不出重复。
+   */
   if (turn.providerStop === 'max_tokens') {
-    run.stopReason = 'output_truncated'
-    return 'stop'
+    run.progress.push({
+      cycle: cycleFingerprint('output_truncated', {}, { status: 'truncated' }),
+      noProgress: true,
+    })
+    if (run.stalled()) {
+      run.stopReason = 'output_truncated'
+      run.stopDetail = '输出连续三次达到单次上限'
+      return 'stop'
+    }
+    run.notify(TRUNCATED_NOTICE)
+    return 'continue'
   }
 
   /*
