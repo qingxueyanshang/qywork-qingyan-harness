@@ -94,12 +94,38 @@ describe('密度标定', () => {
     }
   })
 
-  test('目录里每一条都带 density，三项都是正数', () => {
+  test('目录里每一条都带 density，四项都是正数', () => {
     for (const spec of builtinCatalog()) {
       expect(spec.density.cjkTokensPerChar).toBeGreaterThan(0)
+      expect(spec.density.rareCjkTokensPerChar).toBeGreaterThan(0)
       expect(spec.density.textCharsPerToken).toBeGreaterThan(0)
       expect(spec.density.jsonCharsPerToken).toBeGreaterThan(0)
     }
+  })
+})
+
+/**
+ * 常用字与其余汉字分两档：DeepSeek V4.1 Flash 实测随机一级字 1.04 token / 字、随机非一级字 1.91。
+ * 合成一档时生僻字被低估，一次读进一份生僻字文件就可能让下一次请求超出窗口。
+ */
+describe('汉字分两档', () => {
+  const d: TokenDensity = {
+    cjkTokensPerChar: 1,
+    rareCjkTokensPerChar: 3,
+    textCharsPerToken: 1_000_000,
+    jsonCharsPerToken: 1_000_000,
+  }
+
+  test('一级字与中文标点按常用档，其余汉字按生僻档', () => {
+    expect(estimateText('的一是了', d)).toBe(4)
+    expect(estimateText('，。（）「」', d)).toBe(6)
+    // 「龘」「㐀」「豈」分别是基本区非一级字、扩展 A 区、兼容区。
+    expect(estimateText('龘㐀豈', d)).toBe(9)
+  })
+
+  test('上界档对生僻字不低于 Flash 实测', () => {
+    const rare = '龘靐齉爩'.repeat(250)
+    expect(estimateText(rare, DEFAULT_DENSITY)).toBeGreaterThanOrEqual(rare.length * 1.91)
   })
 })
 
@@ -196,7 +222,12 @@ describe('消息', () => {
    */
   test('tool 角色走 JSON 档，不走散文档', () => {
     const payload = JSON.stringify({ call_id: 'c1', tool: 'read_file', result: 'x'.repeat(2000) })
-    const d: TokenDensity = { cjkTokensPerChar: 1, textCharsPerToken: 4, jsonCharsPerToken: 2 }
+    const d: TokenDensity = {
+      cjkTokensPerChar: 1,
+      rareCjkTokensPerChar: 3,
+      textCharsPerToken: 4,
+      jsonCharsPerToken: 2,
+    }
     const asTool = estimateMessage({ role: 'tool', toolCallId: 'c1', content: payload }, d)
     const asUser = estimateMessage({ role: 'user', content: payload }, d)
     expect(asTool).toBeGreaterThan(asUser)

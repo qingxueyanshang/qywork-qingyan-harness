@@ -133,11 +133,15 @@ export function outcomeTokens(
  * token 额度折成字节数。
  *
  * 按每字节 token 数的**上界**反算：纯 ASCII 每字节 `1 / jsonCharsPerToken` 个 token；
- * 中文一个字在 UTF-8 里至少三字节、算 `cjkTokensPerChar` 个 token。取较大者，
- * 按它折出来的字节数对任何正文都不超额度。
+ * 汉字在 UTF-8 里三字节，常用字与其余汉字各按自己那一档计。取最大者，
+ * 按它折出来的字节数对任何正文都不超额度。它对常用文本偏保守，能按真实内容量的地方用 `headBytesWithin`。
  */
 export function tokensToBytes(tokens: number, density: TokenDensity): number {
-  const perByte = Math.max(density.cjkTokensPerChar / 3, 1 / density.jsonCharsPerToken)
+  const perByte = Math.max(
+    density.cjkTokensPerChar / 3,
+    density.rareCjkTokensPerChar / 3,
+    1 / density.jsonCharsPerToken,
+  )
   return Math.max(0, Math.floor(tokens / perByte))
 }
 
@@ -146,7 +150,11 @@ export function tokensToBytes(tokens: number, density: TokenDensity): number {
  * 用来给「先取多少正文再量」定上限，量完不超额度的那一段必然在这个字节数之内。
  */
 export function tokensToMaxBytes(tokens: number, density: TokenDensity): number {
-  const perByte = Math.min(density.cjkTokensPerChar / 3, 1 / density.jsonCharsPerToken)
+  const perByte = Math.min(
+    density.cjkTokensPerChar / 3,
+    density.rareCjkTokensPerChar / 3,
+    1 / density.jsonCharsPerToken,
+  )
   return Math.max(0, Math.ceil(tokens / perByte) + 4)
 }
 

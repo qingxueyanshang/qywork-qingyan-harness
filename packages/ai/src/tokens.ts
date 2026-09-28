@@ -18,13 +18,21 @@
  *   只数 `m.content` 的话它是 0。
  */
 
+import { COMMON_HANZI } from './common-hanzi.ts'
 import type { ChatRequest, ContentBlock, ToolSchema, WireMessage } from './types.ts'
 
-/** 中日韩统一表意文字与常用中文标点。 */
-const CJK = /[　-〿㐀-䶿一-鿿豈-﫿＀-￯]/g
+/**
+ * 常用汉字的码元集合（GB2312 一级汉字，`common-hanzi.ts`）。
+ *
+ * 常用字与其余汉字要分两档：DeepSeek V4.1 Flash 实测随机一级字 1.04 token / 字，随机非一级字 1.91，
+ * 差近一倍；合成一档时，要么生僻字被低估（按常用字取值），要么常用中文被高估近三倍。
+ */
+const COMMON_HANZI_CODES: ReadonlySet<number> = new Set(
+  [...COMMON_HANZI].map((c) => c.charCodeAt(0)),
+)
 
 /**
- * 一个 tokenizer 对三类内容的密度。真源是 `ModelSpec.density`（`catalog.ts`）。
+ * 一个 tokenizer 对四类内容的密度。真源是 `ModelSpec.density`（`catalog.ts`）。
  *
  * 标定方法固定：同一段文本发两种长度，两次 `prompt_tokens` 相减取斜率——
  * 相减消掉端点的固定开销，中转站上也成立。加一档新模型前先按这个方法量一次，
@@ -34,8 +42,10 @@ const CJK = /[　-〿㐀-䶿一-鿿豈-﫿＀-￯]/g
  * 而那一次撞窗是无声的。
  */
 export interface TokenDensity {
-  /** 中文一个字算几个 token。 */
+  /** 常用汉字（`COMMON_HANZI`）与中文标点、全角符号，一个字算几个 token。 */
   cjkTokensPerChar: number
+  /** 其余中日韩表意文字（生僻字、扩展 A 区、兼容区），一个字算几个 token。 */
+  rareCjkTokensPerChar: number
   /** 自然语言正文与代码，几个字符算一个 token。 */
   textCharsPerToken: number
   /** 稠密结构（工具 schema、tool call 参数、工具结果），几个字符算一个 token。 */
@@ -45,12 +55,14 @@ export interface TokenDensity {
 /**
  * 没有标定过的模型用这一档。
  *
- * 三项都取实测里最费 token 的那一端（中文按 claude 的 1.03 再留一点、
- * 文本与 JSON 按稠密代码的 2.4 再留一点），因此对任何已知 tokenizer 都是上界。
+ * 常用字、文本与 JSON 取实测里最费 token 的那一端（中文按 claude 的 1.03 再留一点、
+ * 文本与 JSON 按稠密代码的 2.4 再留一点）；其余汉字取字节级上界：基本平面的汉字在 UTF-8 里
+ * 3 字节，按字节回退的 tokenizer 每字节至多一个 token。因此对任何已知 tokenizer 都是上界。
  * 代价是读数偏高——**未收录的模型宁可偏高，不能偏低**。
  */
 export const DEFAULT_DENSITY: TokenDensity = {
   cjkTokensPerChar: 1.1,
+  rareCjkTokensPerChar: 3,
   textCharsPerToken: 2.5,
   jsonCharsPerToken: 2,
 }
@@ -74,16 +86,32 @@ export const MEDIA_TOKENS = 2000
  */
 const PER_MESSAGE_OVERHEAD = 4
 
-function count(text: string, cjkPerChar: number, charsPerToken: number): number {
+/**
+ * 按码元分四类计数：中文标点与全角符号（U+3000–303F、U+FF00–FFEF）与常用字按常用档，
+ * 基本区的其余汉字、扩展 A 区（U+3400–4DBF）、兼容区（U+F900–FAFF）按生僻档，其余按 `charsPerToken`。
+ */
+function count(text: string, d: TokenDensity, charsPerToken: number): number {
   if (!text) return 0
-  const cjk = text.match(CJK)?.length ?? 0
-  const rest = text.length - cjk
-  return Math.ceil(cjk * cjkPerChar + rest / charsPerToken)
+  let common = 0
+  let rare = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 0x3000) continue
+    if (c <= 0x303f || (c >= 0xff00 && c <= 0xffef)) common++
+    else if (c >= 0x4e00 && c <= 0x9fff) {
+      if (COMMON_HANZI_CODES.has(c)) common++
+      else rare++
+    } else if ((c >= 0x3400 && c <= 0x4dbf) || (c >= 0xf900 && c <= 0xfaff)) rare++
+  }
+  const rest = text.length - common - rare
+  return Math.ceil(
+    common * d.cjkTokensPerChar + rare * d.rareCjkTokensPerChar + rest / charsPerToken,
+  )
 }
 
 /** 自然语言正文。 */
 export function estimateText(text: string, d: TokenDensity): number {
-  return count(text, d.cjkTokensPerChar, d.textCharsPerToken)
+  return count(text, d, d.textCharsPerToken)
 }
 
 /** 结构化数据（工具 schema、tool call 参数、工具结果 JSON）。 */
@@ -91,7 +119,7 @@ export function estimateJson(value: unknown, d: TokenDensity): number {
   if (value === undefined || value === null) return 0
   try {
     const text = typeof value === 'string' ? value : JSON.stringify(value)
-    return count(text, d.cjkTokensPerChar, d.jsonCharsPerToken)
+    return count(text, d, d.jsonCharsPerToken)
   } catch {
     // 循环引用等。返回 0 而不是抛——估算失败不该让整轮请求起不来。
     return 0
@@ -112,10 +140,10 @@ export function estimateContent(
   charsPerToken: number,
 ): number {
   if (!content) return 0
-  if (typeof content === 'string') return count(content, d.cjkTokensPerChar, charsPerToken)
+  if (typeof content === 'string') return count(content, d, charsPerToken)
   let total = 0
   for (const block of content) {
-    if (block.type === 'text') total += count(block.text, d.cjkTokensPerChar, charsPerToken)
+    if (block.type === 'text') total += count(block.text, d, charsPerToken)
     else total += MEDIA_TOKENS
   }
   return total

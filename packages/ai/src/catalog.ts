@@ -191,10 +191,11 @@ export interface Vendor {
 /**
  * DeepSeek 的 tokenizer 密度。斜率法实测（2026-08-26，`deepseek-v4-flash-vision-exp`）：
  * 中文 0.569 token/字、真实源码 2.71–3.00 字符/token、工具结果整条 2.53 字符/token。
- * 三档各留一点上界，在四份真实样本上落在 1.03–1.12x。
+ * 三档各留一点上界，在四份真实样本上落在 1.03–1.12x。生僻字未实测，取 `DEFAULT_DENSITY` 的字节级上界。
  */
 const DEEPSEEK_DENSITY: TokenDensity = {
   cjkTokensPerChar: 0.6,
+  rareCjkTokensPerChar: DEFAULT_DENSITY.rareCjkTokensPerChar,
   textCharsPerToken: 3,
   jsonCharsPerToken: 2.5,
 }
@@ -202,10 +203,11 @@ const DEEPSEEK_DENSITY: TokenDensity = {
 /**
  * Google 的 tokenizer 密度。同法实测（2026-08-26，`gemini-3.7-flash`）：
  * 中文 0.647 token/字、真实源码 2.42 字符/token、工具结果 2.43 字符/token。
- * 文本档比 DeepSeek 那一档更紧，因为它的代码密度实测更高。
+ * 文本档比 DeepSeek 那一档更紧，因为它的代码密度实测更高。生僻字未实测，取 `DEFAULT_DENSITY` 的字节级上界。
  */
 const GOOGLE_DENSITY: TokenDensity = {
   cjkTokensPerChar: 0.7,
+  rareCjkTokensPerChar: DEFAULT_DENSITY.rareCjkTokensPerChar,
   textCharsPerToken: 2.5,
   jsonCharsPerToken: 2.5,
 }

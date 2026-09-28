@@ -21,12 +21,14 @@
 
 import {
   deliveryCap,
+  headBytesWithin,
   outcomeTokens,
   recordBatchSpent,
   type ToolContext,
   type ToolOutcome,
   type ToolSpec,
   tokensToBytes,
+  tokensToMaxBytes,
 } from '@qywork/agent'
 import { badIntMessage, intArg } from './args.ts'
 import { MIN_DELIVERY_BYTES } from './sink.ts'
@@ -133,11 +135,7 @@ export const readResourceTool: ToolSpec = {
       pageOutcome('', stat.sizeBytes, stat.sizeBytes - 1, stat.sizeBytes, stat.mimeType),
       ctx.density,
     )
-    // 余量放不下时仍投递最小的一份，不报失败：那一回合不产出正文。
-    const room = Math.max(
-      tokensToBytes(Math.max(0, deliveryCap(ctx) - frame), ctx.density),
-      MIN_DELIVERY_BYTES,
-    )
+    const room = Math.max(0, deliveryCap(ctx) - frame)
     if (query) {
       const found = searchResource(
         ctx.sink,
@@ -145,20 +143,32 @@ export const readResourceTool: ToolSpec = {
         stat.sizeBytes,
         query,
         offset,
-        Math.min(SEARCH_PAGE_BYTES, room),
+        Math.min(SEARCH_PAGE_BYTES, Math.max(tokensToBytes(room, ctx.density), MIN_DELIVERY_BYTES)),
       )
       recordBatchSpent(ctx, outcomeTokens(found, ctx.density))
       return found
     }
 
-    const budget = Math.min(room, Math.max(1, rawLength))
+    /*
+     * 先按字节上界取一段，再按真实估算量出放得下的字节数：保守折算对常用文本只给得出一半。
+     * 余量放不下时仍投递最小的一份，不报失败：那一回合不产出正文。
+     */
+    const wanted = Math.min(
+      Math.max(tokensToMaxBytes(room, ctx.density), MIN_DELIVERY_BYTES),
+      Math.max(1, rawLength),
+    )
     // 多读的两段各有用处：起点对齐最多跳 3 字节，预算内装不下一个完整码点时最多补 3 字节。
-    const span = Math.min(budget + MAX_UTF8_SPAN * 2, stat.sizeBytes - offset)
+    const span = Math.min(wanted + MAX_UTF8_SPAN * 2, stat.sizeBytes - offset)
     const raw = ctx.sink.read(resourceId, offset, span)
     if (!raw) return readFailure(resourceId)
 
     const start = offset + alignStart(raw)
-    const page = decodePage(raw.subarray(start - offset), budget)
+    const body = raw.subarray(start - offset)
+    const budget = Math.min(
+      Math.max(headBytesWithin(body, room, ctx.density), MIN_DELIVERY_BYTES),
+      Math.max(1, rawLength),
+    )
+    const page = decodePage(body, budget)
     const outcome = pageOutcome(
       page.text,
       start,
