@@ -129,6 +129,12 @@ export interface ModelSpec {
    * 共用同一个上限，按「不思考」的口径调小 max_tokens 会把回答从中间截断。
    */
   thinksByDefault: boolean
+  /**
+   * 系统提示词末尾是否附 Anthropic 官方的输出上限说明（`runtime/prompt.ts` 的 `outputLimitNote`）。
+   * Claude 会先在思考里写完整份交付物、再在回复里重写一遍，单次输出因此逼近 `maxOutputTokens`
+   * 被截断；这段官方文本让它把思考用于决策。文本以 Claude 自称，只给 Claude 条目开。
+   */
+  outputLimitNote?: true
   /** 采样参数是否被拒绝。Claude 5 系全部拒绝 temperature/top_p/top_k。 */
   /** 最小可缓存前缀（token）。低于此值加了 cache_control 也静默不缓存。 */
   /**
@@ -716,6 +722,7 @@ const CLAUDE_BASE = {
   chatToolSchema: 'native' as const,
   // 照实测填，不引用 EFFORT_ORDER：那等于替以后新加的档位替 Anthropic 作保。
   effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[],
+  outputLimitNote: true as const,
 }
 
 export function claudeCatalog(): ModelSpec[] {

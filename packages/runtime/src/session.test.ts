@@ -11,7 +11,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { BrowserPort, DelegatePort, ToolContext, ToolRegistry } from '@qywork/agent'
-import { DEFAULT_DENSITY, type TokenDensity } from '@qywork/ai'
+import { DEFAULT_DENSITY, lookupModel, type TokenDensity } from '@qywork/ai'
 import type { ConversationId } from '@qywork/core'
 import {
   appendStep,
@@ -29,7 +29,7 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
-import { buildTailNotes } from './prompt.ts'
+import { buildTailNotes, outputLimitNote } from './prompt.ts'
 import { Session, withAttachments } from './session.ts'
 
 const config: QyConfig = {
@@ -166,13 +166,24 @@ describe('工具集', () => {
   })
 })
 
+/** 按 `makeLoop` 的真实入参取系统提示词：构造 loop 时只读适配器的 `spec`。 */
+function systemPromptFor(
+  s: Session,
+  model: string,
+  kind: 'anthropic_messages' | 'openai_chat_completions',
+) {
+  const loop = (
+    s as unknown as {
+      makeLoop(m: string, adapter: unknown): { deps: { systemPrompt: string } }
+    }
+  ).makeLoop(model, { spec: lookupModel(model, kind) })
+  return loop.deps.systemPrompt
+}
+
 describe('角色约束', () => {
   test('extraSystem 进冻结前缀', async () => {
     const { s, store } = await session({ extraSystem: '你只做代码审查，不改任何文件' })
-    const loop = (
-      s as unknown as { makeLoop(m: string): { deps: { systemPrompt: string } } }
-    ).makeLoop('deepseek-v4-flash')
-    expect((loop as unknown as { deps: { systemPrompt: string } }).deps.systemPrompt).toContain(
+    expect(systemPromptFor(s, 'deepseek-flash', 'openai_chat_completions')).toContain(
       '你只做代码审查',
     )
     store.close()
@@ -180,12 +191,20 @@ describe('角色约束', () => {
 
   test('不传时前缀与默认完全一致 —— 免得平白多一段把缓存冲掉', async () => {
     const { s, store } = await session()
-    const prompt = (
-      (s as unknown as { makeLoop(m: string): unknown }).makeLoop('deepseek-v4-flash') as {
-        deps: { systemPrompt: string }
-      }
-    ).deps.systemPrompt
-    expect(prompt).not.toContain('## 角色')
+    expect(systemPromptFor(s, 'deepseek-flash', 'openai_chat_completions')).not.toContain('## 角色')
+    store.close()
+  })
+})
+
+describe('输出上限说明', () => {
+  test('按本轮模型的目录条目给：Claude 附上限原文，别家不附', async () => {
+    const { s, store } = await session()
+    expect(systemPromptFor(s, 'claude-opus-5-5', 'anthropic_messages')).toContain(
+      outputLimitNote(128_000),
+    )
+    expect(systemPromptFor(s, 'deepseek-flash', 'openai_chat_completions')).not.toContain(
+      'Everything Claude produces',
+    )
     store.close()
   })
 })

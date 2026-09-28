@@ -193,6 +193,7 @@ describe('审真实的系统提示词', () => {
   test('三层冻结前缀里没有天生会变的字段', async () => {
     const { buildSystemPrompt } = await import('@qywork/runtime')
     expect(auditFrozenText(buildSystemPrompt(ALL))).toEqual([])
+    expect(auditFrozenText(buildSystemPrompt(ALL, 128_000))).toEqual([])
   })
 
   test('两次构造逐字节相同', async () => {

@@ -142,8 +142,22 @@ export const RULES_LAYER = `## 边界
 
 简单的问题用一段话直接回答，不要套标题和分节。`
 
-/** `toolNames` 是当前注册表里的工具名，决定能力段发哪几行。 */
-export function buildSystemPrompt(toolNames: ReadonlySet<string>): string {
+/**
+ * Anthropic 官方给长交付物的输出上限说明，原文只把上限换成模型的 `maxOutputTokens`。
+ *
+ * 不要改写或翻译：措辞是官方调过的。上限取模型值而不是单次请求钳位后的值：
+ * 这段在冻结前缀里，必须跨 run 逐字节稳定。
+ */
+export function outputLimitNote(limit: number): string {
+  return `Everything Claude produces in one reply, including any reasoning or drafting it does before the reply, counts toward a single limit of about ${limit.toLocaleString('en-US')} tokens. If that limit is reached before the reply is finished, the person receives a cut-off response and has to start over. Composing an entire output or deliverable in full as reasoning and then again as a reply would double the length of the turn without improving the result, so Claude doesn't do that.
+Instead, when the person has asked for a long or effort-intensive deliverable such as a multi-section document, a large table or dataset, or a complete code file, Claude spends extra effort on understanding the request, checking the inputs Claude's answer depends on, settling the structure and other difficult decisions, and otherwise using the reasoning space to reason and the output space to write an output. If Claude plans well then it should not need to draft its output multiple times (and Claude is pretty good at planning, so this should not be an issue).`
+}
+
+/**
+ * `toolNames` 是当前注册表里的工具名，决定能力段发哪几行。
+ * `outputLimit` 给出时在末尾附 `outputLimitNote`，由模型目录的 `outputLimitNote` 决定给不给。
+ */
+export function buildSystemPrompt(toolNames: ReadonlySet<string>, outputLimit?: number): string {
   const caps = CAPABILITY_LINES.filter((c) => toolNames.has(c.tool)).map((c) => c.line)
   /*
    * 外部 schema 小于预算时直接注册，不会有 `load_tool`。这时同样要解释输入区的
@@ -157,7 +171,12 @@ export function buildSystemPrompt(toolNames: ReadonlySet<string>): string {
   const environment = caps.length
     ? `${ENVIRONMENT_LAYER}\n\n## 能力\n\n${caps.join('\n')}`
     : ENVIRONMENT_LAYER
-  return [SYSTEM_LAYER, environment, RULES_LAYER].join('\n\n')
+  return [
+    SYSTEM_LAYER,
+    environment,
+    RULES_LAYER,
+    ...(outputLimit ? [outputLimitNote(outputLimit)] : []),
+  ].join('\n\n')
 }
 
 /**
