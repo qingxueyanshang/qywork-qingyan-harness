@@ -412,7 +412,7 @@ describe('原生思考块', () => {
     prefix: 'p',
   }
 
-  test('按位置锚原样插回，正文不再另发，锚到已丢弃调用的块不回放', async () => {
+  test('按位置锚原样插回，正文不再另发，锚到已丢弃调用的块排在末尾回放', async () => {
     const body = await send(
       [
         { role: 'user', content: '读 a.ts' },
@@ -434,7 +434,34 @@ describe('原生思考块', () => {
       { type: 'text', text: '读一下' },
       { type: 'redacted_thinking', data: 'cipher' },
       { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'a.ts' } },
+      { type: 'thinking', thinking: '截断了', signature: 'sig-x' },
     ])
+  })
+
+  /** 实测形状：写大文件的参数写到一半被截断，整批调用丢弃，续写时仍要带上动手前的思考。 */
+  test('截断轮：第一个已丢弃调用之前的思考回放，其后的块不回放', async () => {
+    const body = await send(
+      [
+        { role: 'user', content: '写游戏' },
+        {
+          role: 'assistant',
+          content: '',
+          responseReasoning: {
+            items: [
+              { type: 'thinking', thinking: '设计', signature: 'sig-1', beforeToolUse: 'toolu_a' },
+              { type: 'thinking', thinking: '再写', signature: 'sig-2', beforeToolUse: 'toolu_b' },
+              { type: 'thinking', thinking: '收尾', signature: 'sig-3' },
+            ],
+            tokens: 9,
+          },
+        },
+        { role: 'user', content: '续写' },
+      ],
+      undefined,
+      'claude-opus-5-5',
+    )
+    const assistant = (body.messages as { content: Record<string, unknown>[] }[])[1]!
+    expect(assistant.content).toEqual([{ type: 'thinking', thinking: '设计', signature: 'sig-1' }])
   })
 
   test('纯文本轮同样回放；缓存断点不落在思考块上', async () => {

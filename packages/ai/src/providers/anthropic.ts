@@ -582,8 +582,9 @@ function buildMessages(
  * 所以锚在正文上的块排在正文前，锚在某个工具调用上的块排在该 `tool_use` 前，
  * 原本位于末尾的块排在最后。签名对轮内位置敏感，不要改成统一排在最前。
  *
- * 锚所指的工具调用已不在消息里（`max_tokens` 截断后整批丢弃）时，该块不回放：
- * 从一条消息的末尾去掉思考块不会使其前面的块作废。
+ * 锚所指的工具调用已不在消息里（`max_tokens` 截断后整批丢弃）时，该块排在末尾照常回放，
+ * 它之后的思考块全部不回放：签名绑定块之前的内容，去掉该调用只改变其后块的前缀，
+ * 从末尾去掉的块不影响前面的块。不要改成连它一起丢掉：续写时模型会失去截断前的全部思考。
  *
  * 边界：同一次响应里正文被思考块隔成两段时，两段合并后原顺序无法复原。
  */
@@ -610,13 +611,24 @@ function assistantBlocks(m: WireMessage, replay: ReasoningReplay): AnthropicBloc
   }
   const block = ({ beforeText: _t, beforeToolUse: _u, ...rest }: Record<string, unknown>) =>
     rest as unknown as AnthropicBlock
-  const out = native.filter((b) => b.beforeText === true).map(block)
+  const present = new Set((m.toolCalls ?? []).map((c) => c.id))
+  const orphan = native.findIndex(
+    (b) => typeof b.beforeToolUse === 'string' && !present.has(b.beforeToolUse),
+  )
+  const kept = orphan < 0 ? native : native.slice(0, orphan + 1)
+  const out = kept.filter((b) => b.beforeText === true).map(block)
   out.push(...text)
   for (const call of calls) {
-    out.push(...native.filter((b) => b.beforeToolUse === call.id).map(block), call)
+    out.push(...kept.filter((b) => b.beforeToolUse === call.id).map(block), call)
   }
   out.push(
-    ...native.filter((b) => b.beforeText !== true && b.beforeToolUse === undefined).map(block),
+    ...kept
+      .filter(
+        (b) =>
+          b.beforeText !== true &&
+          (b.beforeToolUse === undefined || !present.has(b.beforeToolUse as string)),
+      )
+      .map(block),
   )
   return out
 }
