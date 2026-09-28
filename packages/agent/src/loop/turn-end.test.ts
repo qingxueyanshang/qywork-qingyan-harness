@@ -1,5 +1,5 @@
 /**
- * 覆盖 `loop/turn-end.ts`：输出截断时丢弃工具调用、`end_turn` 与未完成待办、
+ * 覆盖 `loop/turn-end.ts`：输出截断时丢弃工具调用并续写、`end_turn` 与未完成待办、
  * `tool_use` 却没有可解析调用。
  */
 
@@ -18,7 +18,7 @@ import { baseCtx, call, fakeAdapter, noopPersistence } from './fixtures.test-hel
 
 describe('输出被截断时不执行工具', () => {
   for (const protocol of FAULT_PROTOCOLS) {
-    test(`${protocol.kind} 参数截断加 max_tokens：一次都不执行，终态是 output_truncated`, async () => {
+    test(`${protocol.kind} 参数截断加 max_tokens：一次都不执行，连续三次截断后终态是 output_truncated`, async () => {
       const fault = startFaultServer('truncated_tool_call')
       let executed = 0
       const toolSteps: string[] = []
@@ -83,10 +83,58 @@ describe('输出被截断时不执行工具', () => {
       expect(types).not.toContain('tool.started')
       expect(stopReason).toBe('output_truncated')
       expect(types).not.toContain('run.error')
-      // 只发过一次：截断不是可重发的失败。
-      expect(fault.receipts.length).toBe(1)
+      // 每次截断续写一次，夹具每次都截断，第三次由空转判据停下。
+      expect(fault.receipts.length).toBe(3)
     }, 20_000)
   }
+})
+
+describe('输出截断后续写', () => {
+  /** 实测形状：Opus 5.5 xhigh 单次请求思考写满 128K，一个动作都没发出。 */
+  test('只有签名思考就被截断：下一次请求原样带上思考与续写提示，随后正常完成', async () => {
+    const seen: ChatRequest['messages'][] = []
+    const reasoning = { items: [{ type: 'thinking', thinking: '想', signature: 's' }], tokens: 9 }
+    const inner = fakeAdapter([])
+    const adapter: LlmAdapter = {
+      ...inner,
+      spec: lookupModel('claude-opus-5-5', 'anthropic_messages'),
+      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        seen.push(structuredClone(req.messages))
+        yield { type: 'request_prepared', measuredInputTokens: 1 }
+        yield { type: 'thinking_delta', delta: '想', at: Date.now() }
+        if (seen.length === 1) {
+          yield { type: 'response_reasoning', reasoning, at: Date.now() }
+          yield { type: 'done', stopReason: 'max_tokens', rawStopReason: 'max_tokens' }
+        } else {
+          yield { type: 'text_delta', delta: '完成', at: Date.now() }
+          yield { type: 'done', stopReason: 'end_turn', rawStopReason: 'end_turn' }
+        }
+      },
+    }
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: baseCtx,
+    })
+    let stopReason = ''
+    for await (const ev of loop.run({
+      runId: 'rn_truncated_thinking' as never,
+      history: [{ role: 'user', content: '做个游戏' }],
+      signal: new AbortController().signal,
+    })) {
+      if (ev.type === 'run.finished') stopReason = ev.stopReason
+    }
+
+    expect(stopReason).toBe('completed')
+    expect(seen.length).toBe(2)
+    const [, assistant, notice] = seen[1]!
+    expect(assistant!.role).toBe('assistant')
+    expect(assistant!.responseReasoning?.items).toEqual(reasoning.items)
+    expect(notice!.role).toBe('user')
+    expect(notice!.content).toContain('达到单次上限')
+  })
 })
 
 describe('正常响应结束不冒充任务完成', () => {
