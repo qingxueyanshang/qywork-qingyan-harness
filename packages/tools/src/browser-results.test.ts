@@ -142,7 +142,7 @@ function fakeBrowser(over: Partial<BrowserPort> = {}, acted: Acted = { acts: 0 }
       acted.acts++
       return { element: 'button 提交', observation: 大页, settle: 'quiet' }
     },
-    wait: async () => ({ found: true, observation: 大页 }),
+    wait: async () => ({ met: true, observation: 大页 }),
     upload: async (input) => ({ files: input.paths }),
     download: async (input) => ({ path: input.absolutePath, bytes: 3 }),
     release: async () => {},
@@ -649,16 +649,16 @@ describe('动作回执不因归档改口', () => {
     expect(sink.landed).toHaveLength(0)
   })
 
-  test('wait 超时仍可带观察，状态按 found 定', async () => {
+  test('wait 超时仍可带观察，状态按 met 定', async () => {
     const ctx = context(
-      fakeBrowser({ wait: async () => ({ found: false, reason: 'timeout', observation: 大页 }) }),
+      fakeBrowser({ wait: async () => ({ met: false, reason: 'timeout', observation: 大页 }) }),
       fakeSink(),
     )
     const r = await browserWaitTool.fn({ tabId: 'bt_1', selector: '#x' }, ctx)
 
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
-    expect(r.data).toMatchObject({ found: false, reason: 'timeout', observationId: 'ob_2' })
+    expect(r.data).toMatchObject({ met: false, reason: 'timeout', observationId: 'ob_2' })
     expect(deliveryOf(r)?.resourceId).toBe('rs_1')
   })
 })

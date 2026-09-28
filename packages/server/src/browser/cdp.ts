@@ -9,17 +9,10 @@
  * 2. **取消之后发送口只放行 teardown。** 清理命令（detach、等待器 dispose、收尾 keyUp 与
  *    mouseReleased）必须能发出去，否则页面留着按下状态，人工接管后输入行为不对。
  * 3. **方法集是白名单。** 不对上层暴露任意方法调用，`Browser` 域只放行 `getVersion`。
- * 4. **等待只观察，不执行动作。** 页内等待器用 `MutationObserver` 加 `setTimeout`，
+ * 4. **等待只观察，不执行动作。** 页内等待器用 `MutationObserver` 加定时复核，
  *    不用 `requestAnimationFrame`：子视图移出可视区时不再出帧，靠出帧驱动的轮询会挂住。
  */
 
-import {
-  type KeySpec,
-  type KeyStroke,
-  MODIFIER_KEYS,
-  type ModifierName,
-  modifierBits,
-} from '@qywork/agent'
 import { log } from '@qywork/core'
 
 /** 允许发出的域。加一个域等于扩大模型能触达的协议面，要单独讨论。 */
@@ -45,23 +38,6 @@ const ALLOWED_BROWSER_METHODS = new Set(['Browser.getVersion'])
 const TEARDOWN_TAGS = new Set(['detach', 'dispose', 'keyup', 'mouseup'])
 
 export type TeardownTag = 'detach' | 'dispose' | 'keyup' | 'mouseup'
-
-/**
- * 一条按键事件里描述这个键的字段。`key` / `code` / `windowsVirtualKeyCode` 三项必须自洽，
- * 缺一项网页收到的是认不出的按键。
- *
- * `nativeVirtualKeyCode` 各平台都填 Windows 虚拟键码，不按宿主平台分支：Windows 上它就是原生键码；
- * Linux 的 Chrome 154 上填与不填，字符、回车、退格、方向键、Tab、`Ctrl+A`、`Ctrl+Z` 与文本插入的
- * 结果完全一致。
- */
-function keyFields(spec: KeySpec): Record<string, unknown> {
-  return {
-    key: spec.key,
-    code: spec.code,
-    windowsVirtualKeyCode: spec.keyCode,
-    nativeVirtualKeyCode: spec.keyCode,
-  }
-}
 
 export class CdpError extends Error {}
 export class CdpCancelledError extends CdpError {}
@@ -89,6 +65,8 @@ export interface SendOptions {
 
 interface Pending {
   method: string
+  /** 收尾命令。取消时它们照常等回包，只有断连才结掉。 */
+  teardown: boolean
   resolve: (value: Record<string, unknown>) => void
   reject: (err: Error) => void
   timer: ReturnType<typeof setTimeout>
@@ -154,6 +132,9 @@ export interface CancelSummary {
  * 注册表挂在 `window` 上，因此可以按 id 单独清理，并读回 observer 与 timer
  * 的计数作为清理证据。**探针必须走这张表建**：另挂一个观察器的话，取消与断连时
  * 的清理路径找不到它，它会跟着文档一直观察下去。
+ *
+ * 等待器按状态判定选择器命中的第一个元素，状态的含义见 `BrowserWaitState`。除 DOM 变更外
+ * 每 100 ms 再核一次：CSS 过渡、动画与布局变化不产生 DOM 变更，只靠观察器会漏掉可见性变化。
  */
 const WAITER_RUNTIME = `(() => {
   if (window.__qyworkWaiters) return 'already'
@@ -162,13 +143,14 @@ const WAITER_RUNTIME = `(() => {
   window.__qyworkLive = { observers: 0, timers: 0 }
   const make = () => {
     let settle
-    const rec = { id: ++window.__qyworkSeq, done: false, obs: null, timer: null, mutations: 0 }
+    const rec = { id: ++window.__qyworkSeq, done: false, obs: null, timer: null, poll: null, mutations: 0 }
     rec.promise = new Promise((r) => { settle = r })
     rec.finish = (result) => {
       if (rec.done) return
       rec.done = true
       if (rec.obs) { rec.obs.disconnect(); rec.obs = null; window.__qyworkLive.observers-- }
       if (rec.timer !== null) { clearTimeout(rec.timer); rec.timer = null; window.__qyworkLive.timers-- }
+      if (rec.poll !== null) { clearInterval(rec.poll); rec.poll = null; window.__qyworkLive.timers-- }
       settle(result)
     }
     window.__qyworkWaiters.set(rec.id, rec)
@@ -179,19 +161,34 @@ const WAITER_RUNTIME = `(() => {
     window.__qyworkLive.observers++
     rec.obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true })
   }
-  window.__qyworkWait = (selector, timeoutMs) => {
+  const visible = (el) => {
+    if (!el.isConnected) return false
+    const r = el.getBoundingClientRect()
+    if (r.width === 0 || r.height === 0) return false
+    return el.checkVisibility({ visibilityProperty: true })
+  }
+  const states = {
+    attached: (el) => el !== null,
+    visible: (el) => el !== null && visible(el),
+    hidden: (el) => el === null || !visible(el),
+    enabled: (el) => el !== null && visible(el) && !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true',
+    text: (el, want) => el !== null && (el.textContent || '').replace(/\\s+/g, ' ').trim() === want,
+    value: (el, want) => el !== null && 'value' in el && String(el.value) === want,
+  }
+  window.__qyworkWait = (selector, timeoutMs, state, expected) => {
     const rec = make()
     const id = rec.id
+    const test = states[state]
     const check = () => {
-      const el = document.querySelector(selector)
-      if (!el) return false
-      const r = el.getBoundingClientRect()
-      rec.finish({ found: true, id, x: r.x + r.width / 2, y: r.y + r.height / 2 })
+      if (!test(document.querySelector(selector), expected)) return false
+      rec.finish({ met: true, id })
       return true
     }
     if (check()) return { id, immediate: true }
     watch(rec, () => { check() })
-    rec.timer = setTimeout(() => rec.finish({ found: false, reason: 'timeout', id }), timeoutMs)
+    rec.timer = setTimeout(() => rec.finish({ met: false, reason: 'timeout', id }), timeoutMs)
+    window.__qyworkLive.timers++
+    rec.poll = setInterval(check, 100)
     window.__qyworkLive.timers++
     return { id, immediate: false }
   }
@@ -207,11 +204,11 @@ const WAITER_RUNTIME = `(() => {
   }
   window.__qyworkAwait = (id) => {
     const rec = window.__qyworkWaiters.get(id)
-    return rec ? rec.promise : Promise.resolve({ found: false, reason: 'gone', id })
+    return rec ? rec.promise : Promise.resolve({ met: false, reason: 'gone', id })
   }
   window.__qyworkDispose = (id) => {
     const rec = window.__qyworkWaiters.get(id)
-    if (rec) rec.finish({ found: false, reason: 'cancelled', id })
+    if (rec) rec.finish({ met: false, reason: 'cancelled', id })
     window.__qyworkWaiters.delete(id)
     return window.__qyworkStats()
   }
@@ -253,15 +250,23 @@ export class CdpClient {
    * `frameDetached` 出——跨站帧提交时换渲染进程，以 detach 的形式离开父会话。
    */
   #frameLoads = new Map<string, { root: string; loading: Set<string> }>()
-  /** 本客户端按下但尚未释放的键。取消时按它补发 keyUp。 */
-  #heldKeys = new Map<string, { sessionId: string; params: Record<string, unknown> }>()
   /**
-   * 本客户端按下但尚未释放的鼠标键，连同最后一次移动到的坐标。
+   * 本客户端按下、尚未确认抬起的键，键为 `会话|code`。取消与收尾按它补发 keyUp。
+   *
+   * 按下在入网前登记，抬起**收到回包之后**才摘：超时、断连时抬起可能没到页面，
+   * 提前摘掉就没有依据再补、也报不出哪个键可能还按着。摘之前核对条目身份，
+   * 同一个键在抬起回包之前又被按下时，旧回包不摘新的那一条。
+   */
+  #heldKeys = new Map<string, Held<{ params: Record<string, unknown> }>>()
+  /**
+   * 本客户端按下、尚未确认抬起的鼠标键，连同最后一次移动到的坐标。登记与摘除规则同 `#heldKeys`。
    *
    * 只记本客户端自己发出去的按下：收尾时按它补 `mouseReleased`，不对别的会话或用户
    * 桌面释放输入。不靠成功路径最后那一条 `mouseReleased` ——拖动中途失败时它发不出来。
    */
-  #heldMouse = new Map<string, { sessionId: string; button: string; x: number; y: number }>()
+  #heldMouse = new Map<string, Held<{ button: string; x: number; y: number }>>()
+  /** 取消或断开时触发。输入执行器的计时等待靠它提前结束，不睡满按住时长。 */
+  #halt = new AbortController()
   /** 短寿命事件订阅。每一项只服务一次调用，由建立方在结束时摘掉。 */
   #watchers = new Set<{ sessionId: string; listener: (event: CdpEvent) => void }>()
   #businessClosed = false
@@ -270,7 +275,10 @@ export class CdpClient {
   private constructor(socket: WebSocket) {
     this.#socket = socket
     socket.onmessage = (ev) => this.#onMessage(String(ev.data))
-    socket.onclose = () => this.#failPending(new CdpDisconnectedError('CDP 连接已断开'))
+    socket.onclose = () => {
+      this.#halt.abort()
+      this.#failPending(new CdpDisconnectedError('CDP 连接已断开'))
+    }
     socket.onerror = () => {}
   }
 
@@ -321,6 +329,11 @@ export class CdpClient {
     return this.#cancelled
   }
 
+  /** 取消或连接断开时置位。之后业务命令一律发不出去。 */
+  get halted(): AbortSignal {
+    return this.#halt.signal
+  }
+
   /**
    * 发一条命令。
    *
@@ -348,19 +361,20 @@ export class CdpClient {
     const timeoutMs = options.timeoutMs ?? 15_000
     this.#seq += 1
     const id = this.#seq
-    if (method === 'Input.dispatchKeyEvent' && !teardown) {
-      this.#trackKey(options.sessionId, params)
-    }
-    if (method === 'Input.dispatchMouseEvent' && !teardown) {
-      this.#trackMouse(options.sessionId, params)
-    }
-    return new Promise<T>((resolve, reject) => {
+    const settle =
+      method === 'Input.dispatchKeyEvent'
+        ? this.#trackKey(options.sessionId, params)
+        : method === 'Input.dispatchMouseEvent'
+          ? this.#trackMouse(options.sessionId, params)
+          : null
+    const sent = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!this.#pending.delete(id)) return
         reject(new CdpTimeoutError(`${method} 超过 ${timeoutMs}ms 未返回`))
       }, timeoutMs)
       this.#pending.set(id, {
         method,
+        teardown: teardown !== undefined,
         resolve: resolve as (value: Record<string, unknown>) => void,
         reject,
         timer,
@@ -374,6 +388,14 @@ export class CdpClient {
         }),
       )
     })
+    // 先于调用方的 await 注册：调用方拿到回包时按下账已经是确认之后的状态。
+    if (settle) {
+      sent.then(
+        () => settle('applied'),
+        (err: unknown) => settle(unconfirmed(err) ? 'unknown' : 'rejected'),
+      )
+    }
+    return sent
   }
 
   /**
@@ -499,46 +521,6 @@ export class CdpClient {
     }
   }
 
-  /**
-   * 发一次按键：修饰键依次按下 → 主键按下抬起 → 修饰键逆序抬起。
-   *
-   * 每条事件的 `modifiers` 与发出它那一刻的按下集合一致：修饰键自己的 keyDown 含自身，
-   * keyUp 不含自身。含 Ctrl / Alt / Meta 时主键不附 `text` ——那时页面收到的是快捷键，
-   * 附上文本会让输入框同时插进一个字符。
-   *
-   * 中途失败不在这里补抬起：按下的键留在按下表里，由调用方走收尾原语统一释放。
-   */
-  async pressStroke(sessionId: string, stroke: KeyStroke, timeoutMs?: number): Promise<void> {
-    const limit = timeoutMs === undefined ? {} : { timeoutMs }
-    const down: ModifierName[] = []
-    const send = (params: Record<string, unknown>) =>
-      this.send('Input.dispatchKeyEvent', params, { sessionId, ...limit })
-    for (const name of stroke.modifiers) {
-      const spec = MODIFIER_KEYS[name]
-      down.push(name)
-      await send({ type: 'rawKeyDown', ...keyFields(spec), modifiers: modifierBits(down) })
-    }
-    const modifiers = modifierBits(down)
-    // 快捷键没有文本：Ctrl / Alt / Meta 按下时主键不产生字符。
-    const text = down.some((n) => n !== 'Shift') ? undefined : stroke.key.text
-    await send({
-      type: text === undefined ? 'rawKeyDown' : 'keyDown',
-      ...keyFields(stroke.key),
-      modifiers,
-      ...(text === undefined ? {} : { text }),
-    })
-    await send({ type: 'keyUp', ...keyFields(stroke.key), modifiers })
-    for (let i = down.length - 1; i >= 0; i--) {
-      const name = down[i] as ModifierName
-      down.pop()
-      await send({
-        type: 'keyUp',
-        ...keyFields(MODIFIER_KEYS[name]),
-        modifiers: modifierBits(down),
-      })
-    }
-  }
-
   async #initChildSession(sessionId: string): Promise<void> {
     // 帧导航状态放在最前：子会话附上时它的文档刚提交，里面的帧随后才建，早开一步少漏一帧。
     await this.#watchFrames(sessionId)
@@ -660,10 +642,17 @@ export class CdpClient {
   }
 
   /** 登记一个等待器并返回它的页内 id。返回后调用方用 `awaitWaiter` 等结果。 */
-  async startWaiter(sessionId: string, selector: string, timeoutMs: number): Promise<number> {
+  async startWaiter(
+    sessionId: string,
+    spec: { selector: string; state: string; expected?: string },
+    timeoutMs: number,
+  ): Promise<number> {
+    const args = [spec.selector, timeoutMs, spec.state, spec.expected ?? null]
+      .map((arg) => JSON.stringify(arg))
+      .join(', ')
     const created = await this.#evalObject<{ id?: number }>(
       sessionId,
-      `window.__qyworkWait(${JSON.stringify(selector)}, ${timeoutMs})`,
+      `window.__qyworkWait(${args})`,
     )
     const id = created.id
     if (typeof id !== 'number') throw new CdpError('页内等待器没有登记成功')
@@ -745,9 +734,11 @@ export class CdpClient {
     }
     this.#cancelled = true
     this.#businessClosed = true
+    this.#halt.abort()
     const left = (cap: number) =>
       deadline === undefined ? cap : Math.max(1, Math.min(cap, deadline - Date.now()))
-    const rejectedPending = this.#failPending(new CdpCancelledError(reason))
+    // 在飞的收尾命令不结掉：动作自己的收尾可能正在补抬起，结掉它等于让这个键留在按下状态。
+    const rejectedPending = this.#failPending(new CdpCancelledError(reason), true)
     const waiterStats: WaiterStats[] = []
     for (const sessionId of this.#pageSessions) {
       try {
@@ -785,47 +776,44 @@ export class CdpClient {
     return { rejectedPending, waiterStats, keysReleased, mouseReleased, detached }
   }
 
-  /** 把已按下未释放的键补一次 keyUp。走 teardown 身份，不是新的业务动作。 */
+  /**
+   * 把已按下未确认抬起的键补一次 keyUp。走 teardown 身份，不是新的业务动作。
+   *
+   * 取消与动作收尾可能同时走到这里：同一条目的在飞释放只发一次，后到的等同一个结果。
+   * 没确认的条目留在表里，由 `heldKeys` 报出。
+   */
   async releaseHeldKeys(deadline?: number): Promise<string[]> {
     const released: string[] = []
     for (const [key, held] of [...this.#heldKeys]) {
-      this.#heldKeys.delete(key)
-      try {
-        await this.send(
+      held.release ??= this.#releaseOnce(held, 'keyup', () =>
+        this.send(
           'Input.dispatchKeyEvent',
           {
             type: 'keyUp',
             key: held.params.key,
             code: held.params.code,
             windowsVirtualKeyCode: held.params.windowsVirtualKeyCode,
+            nativeVirtualKeyCode: held.params.nativeVirtualKeyCode,
             modifiers: held.params.modifiers ?? 0,
           },
-          {
-            sessionId: held.sessionId,
-            teardown: 'keyup',
-            timeoutMs:
-              deadline === undefined ? 3_000 : Math.max(1, Math.min(3_000, deadline - Date.now())),
-          },
-        )
-        released.push(key)
-      } catch (err) {
-        log.warn('browser', `收尾按键失败：${err instanceof Error ? err.message : String(err)}`)
-      }
+          { sessionId: held.sessionId, teardown: 'keyup', timeoutMs: teardownLimit(deadline) },
+        ),
+      )
+      if (await held.release) released.push(key)
     }
     return released
   }
 
   /**
-   * 把已按下未释放的鼠标键补一次 `mouseReleased`。走 teardown 身份，不是新的业务动作。
+   * 把已按下未确认抬起的鼠标键补一次 `mouseReleased`。走 teardown 身份，不是新的业务动作。
    *
    * 坐标取最后一次移动到的位置：在起点释放会让拖动落回原处，而那不是页面此刻的状态。
    */
   async releaseHeldMouse(deadline?: number): Promise<string[]> {
     const released: string[] = []
     for (const [key, held] of [...this.#heldMouse]) {
-      this.#heldMouse.delete(key)
-      try {
-        await this.send(
+      held.release ??= this.#releaseOnce(held, 'mouseup', () =>
+        this.send(
           'Input.dispatchMouseEvent',
           {
             type: 'mouseReleased',
@@ -835,25 +823,43 @@ export class CdpClient {
             buttons: 0,
             clickCount: 1,
           },
-          {
-            sessionId: held.sessionId,
-            teardown: 'mouseup',
-            timeoutMs:
-              deadline === undefined ? 3_000 : Math.max(1, Math.min(3_000, deadline - Date.now())),
-          },
-        )
-        released.push(key)
-      } catch (err) {
-        log.warn('browser', `收尾鼠标失败：${err instanceof Error ? err.message : String(err)}`)
-      }
+          { sessionId: held.sessionId, teardown: 'mouseup', timeoutMs: teardownLimit(deadline) },
+        ),
+      )
+      if (await held.release) released.push(key)
     }
     return released
   }
 
+  /** 一次收尾释放。结束后清掉在飞标记：失败的条目留在表里，下一次收尾可以再试。 */
+  #releaseOnce<T extends object>(
+    held: Held<T>,
+    kind: 'keyup' | 'mouseup',
+    send: () => Promise<unknown>,
+  ): Promise<boolean> {
+    return send()
+      .then(
+        () => true,
+        (err: unknown) => {
+          const what = kind === 'keyup' ? '按键' : '鼠标'
+          log.warn(
+            'browser',
+            `收尾${what}失败：${err instanceof Error ? err.message : String(err)}`,
+          )
+          return false
+        },
+      )
+      .finally(() => {
+        held.release = null
+      })
+  }
+
+  /** 按下未确认抬起的键，形如 `会话|code`。 */
   heldKeys(): string[] {
     return [...this.#heldKeys.keys()]
   }
 
+  /** 按下未确认抬起的鼠标键，形如 `会话|按键`。 */
   heldMouse(): string[] {
     return [...this.#heldMouse.keys()]
   }
@@ -862,40 +868,76 @@ export class CdpClient {
     this.#socket.close()
   }
 
-  #trackKey(sessionId: string | undefined, params: Record<string, unknown>): void {
+  /**
+   * 按键账：按下在入网前登记，返回回包到达时的处理。
+   *
+   * 按下被协议明确拒绝即没有生效，摘掉；超时、断连、取消时按下可能已经生效，留着。
+   * 抬起只有确认之后才摘，且只摘发出那一刻的那一条。
+   */
+  #trackKey(
+    sessionId: string | undefined,
+    params: Record<string, unknown>,
+  ): ((outcome: Outcome) => void) | null {
     const key = `${sessionId ?? ''}|${String(params.code ?? params.key ?? '')}`
     const type = params.type
     if (type === 'keyDown' || type === 'rawKeyDown') {
-      this.#heldKeys.set(key, { sessionId: sessionId ?? '', params })
+      const entry: Held<{ params: Record<string, unknown> }> = {
+        sessionId: sessionId ?? '',
+        params,
+        release: null,
+      }
+      this.#heldKeys.set(key, entry)
+      return (outcome) => {
+        if (outcome === 'rejected' && this.#heldKeys.get(key) === entry) this.#heldKeys.delete(key)
+      }
     }
-    if (type === 'keyUp') this.#heldKeys.delete(key)
+    if (type !== 'keyUp') return null
+    const entry = this.#heldKeys.get(key)
+    if (!entry) return null
+    return (outcome) => {
+      if (outcome === 'applied' && this.#heldKeys.get(key) === entry) this.#heldKeys.delete(key)
+    }
   }
 
-  /** 鼠标按下状态：按下登记、抬起摘掉、移动更新坐标。滚轮不改按下状态。 */
-  #trackMouse(sessionId: string | undefined, params: Record<string, unknown>): void {
+  /** 鼠标按下状态：登记与摘除同 `#trackKey`；移动在入网前更新坐标，滚轮不改按下状态。 */
+  #trackMouse(
+    sessionId: string | undefined,
+    params: Record<string, unknown>,
+  ): ((outcome: Outcome) => void) | null {
     const session = sessionId ?? ''
     const button = String(params.button ?? 'left')
     const key = `${session}|${button}`
     const type = params.type
     if (type === 'mousePressed') {
-      this.#heldMouse.set(key, {
+      const entry: Held<{ button: string; x: number; y: number }> = {
         sessionId: session,
         button,
         x: Number(params.x ?? 0),
         y: Number(params.y ?? 0),
-      })
-      return
+        release: null,
+      }
+      this.#heldMouse.set(key, entry)
+      return (outcome) => {
+        if (outcome === 'rejected' && this.#heldMouse.get(key) === entry)
+          this.#heldMouse.delete(key)
+      }
     }
     if (type === 'mouseReleased') {
-      this.#heldMouse.delete(key)
-      return
+      const entry = this.#heldMouse.get(key)
+      if (!entry) return null
+      return (outcome) => {
+        if (outcome === 'applied' && this.#heldMouse.get(key) === entry) {
+          this.#heldMouse.delete(key)
+        }
+      }
     }
-    if (type !== 'mouseMoved') return
+    if (type !== 'mouseMoved') return null
     for (const held of this.#heldMouse.values()) {
       if (held.sessionId !== session) continue
       held.x = Number(params.x ?? held.x)
       held.y = Number(params.y ?? held.y)
     }
+    return null
   }
 
   #onMessage(raw: string): void {
@@ -977,17 +1019,40 @@ export class CdpClient {
     }
   }
 
-  #failPending(err: Error): number {
-    const ids = [...this.#pending.keys()]
-    for (const id of ids) {
-      const pending = this.#pending.get(id)
-      if (!pending) continue
+  #failPending(err: Error, keepTeardown = false): number {
+    let rejected = 0
+    for (const [id, pending] of [...this.#pending]) {
+      if (keepTeardown && pending.teardown) continue
       this.#pending.delete(id)
       clearTimeout(pending.timer)
       pending.reject(err)
+      rejected += 1
     }
-    return ids.length
+    return rejected
   }
+}
+
+/** 一条输入命令的回包结果：生效、被协议拒绝（没有生效）、不明（超时、断连、取消）。 */
+type Outcome = 'applied' | 'rejected' | 'unknown'
+
+/** 一条按下记录。`release` 是在飞的收尾释放，非空时后到的释放者等它，不再发第二条。 */
+type Held<T> = T & { sessionId: string; release: Promise<boolean> | null }
+
+/** 收尾命令的超时：剩余预算与单条上限取小。 */
+function teardownLimit(deadline: number | undefined): number {
+  return deadline === undefined ? 3_000 : Math.max(1, Math.min(3_000, deadline - Date.now()))
+}
+
+/**
+ * 这个失败之后命令可能已经在页面上生效：超时、断连、取消都是「已入网未确认」。
+ * 协议错误回包说明对端拒绝了它，没有生效。
+ */
+function unconfirmed(err: unknown): boolean {
+  return (
+    err instanceof CdpTimeoutError ||
+    err instanceof CdpDisconnectedError ||
+    err instanceof CdpCancelledError
+  )
 }
 
 export function allowedMethod(method: string): boolean {

@@ -326,7 +326,7 @@ function fakeDevtools(marker: string): Devtools {
           } else if (expr.includes('__qyworkWait(')) {
             result = { result: { value: { id: 7, immediate: false } } }
           } else if (expr.includes('__qyworkAwait(')) {
-            result = { result: { value: { found: true, id: 7 } } }
+            result = { result: { value: { met: true, id: 7 } } }
           } else result = { result: { value: { waiters: 0, observers: 0, timers: 0 } } }
         }
         const reply = JSON.stringify(
@@ -668,7 +668,7 @@ test('一页被占住后，另一个执行的每种页面操作都被拒，宿�
     other?.observe({ tabId }),
     other?.navigate({ tabId, action: 'reload' }),
     other?.act({ tabId, observationId: ob?.observationId ?? '', action: 'click', ref: '' }),
-    other?.wait({ tabId, selector: '#x', timeoutMs: 1_000 }),
+    other?.wait({ tabId, selector: '#x', state: 'visible', timeoutMs: 1_000 }),
     other?.upload({ tabId, observationId: ob?.observationId ?? '', ref: '', paths: [target] }),
     other?.download({
       tabId,
@@ -1226,7 +1226,9 @@ test('CDP 单独断连后，同一执行可观察原页和新页，旧观察失�
   ).toBe('dl')
 
   await port?.open('http://127.0.0.1:1/page')
-  expect((await port?.wait({ tabId: 'bt_3', selector: 'h1', timeoutMs: 1000 }))?.found).toBe(true)
+  expect(
+    (await port?.wait({ tabId: 'bt_3', selector: 'h1', state: 'visible', timeoutMs: 1000 }))?.met,
+  ).toBe(true)
   expect(host.ops()).not.toContain('close')
 })
 
@@ -1276,11 +1278,14 @@ test('点击发出后 CDP 断连保留结果不明，不重放点击，下一次
     browserContext(dir, port),
   )
   held.open()
+  // 按下已经发出、抬起发不出去：结果未知，按下的鼠标键如实列出，不按「没执行」收场。
   expect(result).toMatchObject({
     status: 'failure',
-    errorKind: 'browser_disconnected',
+    errorKind: 'browser_unknown',
     executed: true,
   })
+  expect(result?.message).toContain('结果未知（CDP 连接已断开）')
+  expect(result?.message).toContain('未确认松开：left')
   expect(result?.message).toContain('结果可能不明')
   expect(result?.message).toContain('不要直接重复')
   expect(devtools.clicks()).toBe(1)
@@ -1831,8 +1836,13 @@ test('等待结束后直接采一次观察，不做静默等待也不带静默�
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
 
-  const r = await port?.wait({ tabId: tab?.tabId ?? '', selector: '#dl', timeoutMs: 1_000 })
-  expect(r?.found).toBe(true)
+  const r = await port?.wait({
+    tabId: tab?.tabId ?? '',
+    selector: '#dl',
+    state: 'visible',
+    timeoutMs: 1_000,
+  })
+  expect(r?.met).toBe(true)
   if (!r || r.observation === null) throw new Error('这次等待本应带回观察')
   expect('settle' in r).toBe(false)
   expect(r.observation.elements.length).toBeGreaterThan(0)
@@ -2026,6 +2036,7 @@ test('多事件动作中途失败仍带回后续观察，回执如实标注没�
     text: 'ab',
   })
   if (!r || r.observation === null) throw new Error('这次动作本应带回观察')
-  expect(r.execution).toEqual({ state: 'partial', confirmedUnits: 1 })
+  expect(r.execution).toMatchObject({ state: 'partial', confirmedUnits: 1 })
+  expect(r.execution?.reason).toContain('Input.dispatchKeyEvent')
   expect(r.observation.observationId).not.toBe(ob?.observationId)
 })

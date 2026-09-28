@@ -1,10 +1,11 @@
 /**
  * 受控页面上的观察与动作判定。
  *
- * 覆盖范围：`page.ts` 全部（AX 树与 DOM 快照的合并、可操作元素筛选、翻页、
- * 文档令牌与身份指纹的失效判定、动作前的按需滚动与实时坐标、命中失败的分类说明、
- * select 的选项摘要与继续读取、十种动作的发送形状与多事件动作的执行回执、上传、下载触发、
- * 采集前后的一致性判定与观察预算、跨站帧未就位时的等待与 `framesPending`）。
+ * 覆盖范围：`page.ts` 全部（AX 树与 DOM 快照的合并、可操作元素筛选、canvas 尺寸、翻页、
+ * 文档令牌与身份指纹的失效判定、动作前的按需滚动与实时坐标、元素内落点、命中失败的分类说明、
+ * select 的选项摘要与继续读取、十种动作的发送形状与执行回执、上传、下载触发、
+ * 采集前后的一致性判定与观察预算、跨站帧未就位时的等待与 `framesPending`），
+ * 以及 `input.ts` 全部（执行记账、按键阶段的集合差、按住计时与取消、鼠标事件、输入收尾）。
  *
  * 对端是一个按几何模型应答的假调试端点：文档有视口与滚动量，节点有文档坐标里的矩形，
  * 命中测试按矩形与列表顺序取最后一个（绘制顺序），`scrollIntoView` 改滚动量并逐层
@@ -302,7 +303,7 @@ class FakePage {
     ownerGone: new Set(),
   }
   /** 等待器的下一次结果。 */
-  waiterResult: Record<string, unknown> = { found: true, id: 1 }
+  waiterResult: Record<string, unknown> = { met: true, id: 1 }
 
   constructor() {
     const self = this
@@ -460,7 +461,7 @@ class FakePage {
     this.model.onScroll?.()
   }
 
-  inspect(doc: DocModel, node: NodeModel): Record<string, unknown> {
+  inspect(doc: DocModel, node: NodeModel, px?: number, py?: number): Record<string, unknown> {
     const identity = [
       node.tag,
       node.attrs.id ?? '',
@@ -469,8 +470,10 @@ class FakePage {
     ].join('|')
     if (this.model.gone.has(node.backendNodeId)) return { connected: false, identity }
     const r = this.rectOf(doc, node) ?? { x: 0, y: 0, width: 0, height: 0 }
-    const x = r.x + r.width / 2
-    const y = r.y + r.height / 2
+    const offset = px !== undefined && py !== undefined
+    const x = offset ? r.x + px : r.x + r.width / 2
+    const y = offset ? r.y + py : r.y + r.height / 2
+    const inBox = !offset || (px >= 0 && py >= 0 && px <= r.width && py <= r.height)
     const inView = x >= 0 && y >= 0 && x <= doc.viewport.width && y <= doc.viewport.height
     const hit = inView ? this.hitAt(doc, x, y) : null
     return {
@@ -480,6 +483,7 @@ class FakePage {
       y,
       width: r.width,
       height: r.height,
+      inBox,
       inView,
       sameTree: hit === node,
       hit: hit ? hit.tag : null,
@@ -666,6 +670,11 @@ class FakePage {
         if (m.gone.has(backend)) return { error: 'Node not found' }
         return { object: { objectId: `obj-${backend}` } }
       }
+      case 'DOM.getBoxModel': {
+        const box = this.nodeOf(Number(cmd.params?.backendNodeId))?.node.box
+        if (!box) return { error: 'Could not compute box model.' }
+        return { model: { width: box.width, height: box.height } }
+      }
       case 'Runtime.callFunctionOn': {
         const backend = Number(String(cmd.params?.objectId ?? '').replace('obj-', ''))
         const found = this.nodeOf(backend)
@@ -718,7 +727,9 @@ class FakePage {
             },
           }
         }
-        return { result: { value: this.inspect(found.doc, found.node) } }
+        const at = (i: number) =>
+          typeof args[i]?.value === 'number' ? (args[i]?.value as number) : undefined
+        return { result: { value: this.inspect(found.doc, found.node, at(0), at(1)) } }
       }
       case 'Runtime.evaluate': {
         const expr = String(cmd.params?.expression ?? '')
@@ -1668,7 +1679,7 @@ test('换过文档之后不带元素的 press 同样被拒，一条按键事件�
     tabId: 'bt_1',
     observationId: record.observationId,
     action: 'press',
-    key: 'Enter',
+    phases: [{ keys: ['Enter'] }],
   }).catch((e: Error) => e)
   expect(err).toBeInstanceOf(BrowserStaleRefError)
   expect(fake.sent('Input.dispatchKeyEvent')).toHaveLength(0)
@@ -1766,17 +1777,24 @@ test('fill 在控件上覆盖写入，不借按键也不借鼠标', async () => 
   expect(fake.called('qyScrollIntoView')).toHaveLength(0)
 })
 
-test('press 认不出的写法一条事件都不发', async () => {
+test('press 认不出的阶段一条事件都不发', async () => {
   const { fake, handle } = await newPage()
   const { record } = await observe(handle)
 
-  for (const key of ['Ctrl+Ctrl+A', 'Ctrl+', 'Hyper+A', 'F13', '']) {
-    const err = await act(handle, record, { action: 'press', key }).catch((e: Error) => e.message)
-    expect(String(err)).toContain('不支持的按键')
+  const bad = [
+    [],
+    [{ keys: ['Ctrl'] }],
+    [{ keys: ['KeyA', 'KeyA'] }],
+    [{ keys: ['F13'] }],
+    [{ keys: [] }],
+  ]
+  for (const phases of bad) {
+    const err = await act(handle, record, { action: 'press', phases }).catch((e: Error) => e)
+    expect(err).toBeInstanceOf(Error)
   }
   expect(fake.sent('Input.dispatchKeyEvent')).toHaveLength(0)
 
-  await act(handle, record, { action: 'press', key: 'Enter' })
+  await act(handle, record, { action: 'press', phases: [{ keys: ['Enter'] }] })
   expect(fake.sent('Input.dispatchKeyEvent').map((c) => c.params?.type)).toEqual([
     'keyDown',
     'keyUp',
@@ -1818,10 +1836,13 @@ test('scroll 落在元素上时用实时坐标，但不为它滚动页面', asyn
 test('等待只观察，结束后清掉页内等待器', async () => {
   const { fake, handle } = await newPage()
 
-  fake.waiterResult = { found: false, reason: 'timeout', id: 7 }
-  expect(await waitOnPage(handle, '#late', 500)).toEqual({ found: false, reason: 'timeout' })
+  fake.waiterResult = { met: false, reason: 'timeout', id: 7 }
+  expect(
+    await waitOnPage(handle, { selector: '#late', state: 'value', expected: '好' }, 500),
+  ).toEqual({ met: false, reason: 'timeout' })
   const evaluated = fake.sent('Runtime.evaluate').map((c) => String(c.params?.expression))
-  expect(evaluated.some((e) => e.includes('__qyworkWait('))).toBe(true)
+  // 条件原样交给页内等待器：选择器、时限、状态与期望值。
+  expect(evaluated).toContain('window.__qyworkWait("#late", 500, "value", "好")')
   expect(evaluated.some((e) => e.includes('__qyworkDispose('))).toBe(true)
   // 等待期间不发任何输入事件。
   expect(fake.mouse()).toHaveLength(0)
@@ -2082,30 +2103,25 @@ test('dblclick 发两轮按下抬起，clickCount 依次 1 与 2', async () => {
   expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 2 })
 })
 
-test('dblclick 第二轮注入失败时回 partial，并把按下的键补抬起', async () => {
+test('dblclick 第二轮按下被拒时回 partial，被拒的按下不补抬起', async () => {
   const { fake, handle } = await newPage()
   const { record, observation } = await observe(handle)
   // 第 1 条是按下之前的移动，第 4 条才是第二轮的按下：它被拒之后页面上只发生了第一轮。
   fake.model.failInputAt = 4
 
   const r = await act(handle, record, { action: 'dblclick', ref: refOf(observation, '提交') })
-  expect(r.execution).toEqual({ state: 'partial', confirmedUnits: 1 })
-  // 按下已经登记，收尾补一条抬起，页面不留按住状态。
-  expect(fake.mouseDetail().at(-1)).toEqual({
-    type: 'mouseReleased',
-    x: 40,
-    y: 20,
-    button: 'left',
-    buttons: 0,
-    clickCount: 1,
-  })
+  expect(r.execution).toMatchObject({ state: 'partial', confirmedUnits: 1 })
+  expect(r.execution?.reason).toContain('输入事件被拒')
+  // 被协议拒绝的按下没有生效，第一轮已经抬起：收尾不再补一条多余的抬起。
+  expect(fake.mouseDetail().at(-1)).toMatchObject({ type: 'mousePressed', clickCount: 2 })
+  expect(handle.client.heldMouse()).toEqual([])
 })
 
 test('组合键按修饰键、主键、逆序抬起的顺序发，modifiers 与当时按下集合一致', async () => {
   const { fake, handle } = await newPage()
   const { record } = await observe(handle)
 
-  await act(handle, record, { action: 'press', key: 'Ctrl+A' })
+  await act(handle, record, { action: 'press', phases: [{ keys: ['ControlLeft', 'KeyA'] }] })
   // Ctrl+A 说的是 Ctrl 加 A 键：不补 Shift，页面看到的 key 是 a。含 Ctrl 时主键不附文本。
   expect(fake.keyEvents()).toEqual([
     { type: 'rawKeyDown', key: 'Control', code: 'ControlLeft', modifiers: 2 },
@@ -2119,7 +2135,7 @@ test('Shift+Tab 与 Ctrl+Shift+Enter 的修饰位按当时按下集合算', asyn
   const { fake, handle } = await newPage()
   const { record } = await observe(handle)
 
-  await act(handle, record, { action: 'press', key: 'Shift+Tab' })
+  await act(handle, record, { action: 'press', phases: [{ keys: ['ShiftLeft', 'Tab'] }] })
   expect(fake.keyEvents()).toEqual([
     { type: 'rawKeyDown', key: 'Shift', code: 'ShiftLeft', modifiers: 8 },
     { type: 'rawKeyDown', key: 'Tab', code: 'Tab', modifiers: 8 },
@@ -2129,7 +2145,10 @@ test('Shift+Tab 与 Ctrl+Shift+Enter 的修饰位按当时按下集合算', asyn
 
   const { fake: two, handle: handleTwo } = await newPage()
   const second = await observe(handleTwo)
-  await act(handleTwo, second.record, { action: 'press', key: 'Ctrl+Shift+Enter' })
+  await act(handleTwo, second.record, {
+    action: 'press',
+    phases: [{ keys: ['ControlLeft', 'ShiftLeft', 'Enter'] }],
+  })
   expect(two.keyEvents().map((e) => [e.key, e.modifiers])).toEqual([
     ['Control', 2],
     ['Shift', 10],
@@ -2140,11 +2159,14 @@ test('Shift+Tab 与 Ctrl+Shift+Enter 的修饰位按当时按下集合算', asyn
   ])
 })
 
-test('加号写 Plus，大写字母与标点按 Shift 发，键码取物理键', async () => {
+test('上排符号与大写字母按住 Shift 取字符，键码取物理键', async () => {
   const { fake, handle } = await newPage()
   const { record } = await observe(handle)
 
-  await act(handle, record, { action: 'press', key: 'Ctrl+Plus' })
+  await act(handle, record, {
+    action: 'press',
+    phases: [{ keys: ['ControlLeft', 'ShiftLeft', 'Equal'] }],
+  })
   expect(fake.keyEvents().map((e) => [e.key, e.code, e.modifiers])).toEqual([
     ['Control', 'ControlLeft', 2],
     ['Shift', 'ShiftLeft', 10],
@@ -2156,8 +2178,11 @@ test('加号写 Plus，大写字母与标点按 Shift 发，键码取物理键',
 
   const { fake: two, handle: handleTwo } = await newPage()
   const second = await observe(handleTwo)
-  await act(handleTwo, second.record, { action: 'press', key: 'A' })
-  // 不带其他修饰键时大写字母补 Shift，页面才收到 A；虚拟键码是物理 A 键的 65。
+  await act(handleTwo, second.record, {
+    action: 'press',
+    phases: [{ keys: ['ShiftLeft', 'KeyA'] }],
+  })
+  // 按住 Shift 时页面收到 A；虚拟键码是物理 A 键的 65。
   expect(two.keyEvents()).toEqual([
     { type: 'rawKeyDown', key: 'Shift', code: 'ShiftLeft', modifiers: 8 },
     { type: 'keyDown', key: 'A', code: 'KeyA', modifiers: 8, text: 'A' },
@@ -2246,7 +2271,11 @@ test('type 中途目标被换掉就停下，回执是已确认的前缀', async 
     ref: refOf(observation, '关键词'),
     text: 'abc',
   })
-  expect(r.execution).toEqual({ state: 'partial', confirmedUnits: 1 })
+  expect(r.execution).toEqual({
+    state: 'partial',
+    confirmedUnits: 1,
+    reason: '输入目标已被替换、移除或失去焦点',
+  })
   // 页面上确实只进了一个字符，回执与它一致。
   expect(fake.valueOf(11)).toBe('a')
 })
@@ -2262,7 +2291,8 @@ test('type 第 N 个单元被拒时回 partial，页面效果与回执一致', a
     ref: refOf(observation, '关键词'),
     text: 'abc',
   })
-  expect(r.execution).toEqual({ state: 'partial', confirmedUnits: 1 })
+  expect(r.execution).toMatchObject({ state: 'partial', confirmedUnits: 1 })
+  expect(r.execution?.reason).toContain('输入事件被拒')
   expect(fake.valueOf(11)).toBe('a')
 })
 
@@ -2277,7 +2307,9 @@ test('输入事件入网之后连接断了回 unknown，不缩成已确认的前
     ref: refOf(observation, '关键词'),
     text: 'abc',
   })
-  expect(r.execution).toEqual({ state: 'unknown', confirmedUnits: 1 })
+  expect(r.execution).toMatchObject({ state: 'unknown', confirmedUnits: 1 })
+  // 断开的连接上发不出抬起：第二个字符的键可能还按着，回执如实列出来。
+  expect(r.execution?.unreleased).toEqual(['KeyB'])
 })
 
 test('type 中途取消之后不再发业务事件，回执不报完成', async () => {
@@ -2293,8 +2325,9 @@ test('type 中途取消之后不再发业务事件，回执不报完成', async 
     text: 'abcdef',
   })
   expect(r.execution?.state).not.toBe('completed')
-  // 取消之后一条业务按键都不再发出去。
-  expect(fake.keyEvents()).toHaveLength(2)
+  // 取消之后一条按下都不再发出去。取消时第一个字符的抬起回包还在路上，结果不明，
+  // 收尾按 teardown 再补一次抬起。
+  expect(fake.keyEvents().map((e) => e.type)).toEqual(['keyDown', 'keyUp', 'keyUp'])
   expect(fake.valueOf(11)).toBe('a')
 })
 
@@ -2464,7 +2497,7 @@ test('drag 按下后每条移动带 buttons 1，最后抬起清为 0', async () 
   const r = await act(handle, record, {
     action: 'drag',
     ref: refOf(observation, '卡片'),
-    toRef: refOf(observation, '目标槽'),
+    path: [{ ref: refOf(observation, '目标槽') }],
   })
   expect(fake.mouseDetail()).toEqual([
     // 按下之前先把指针移到起点，这一条不计入执行回执的单元数。
@@ -2475,7 +2508,7 @@ test('drag 按下后每条移动带 buttons 1，最后抬起清为 0', async () 
     { type: 'mouseReleased', x: 250, y: 280, button: 'left', buttons: 0, clickCount: 1 },
   ])
   expect(r.point).toEqual({ x: 50, y: 220 })
-  expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 4 })
+  expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 1 })
 })
 
 test('终点在视口外时先滚终点再滚起点，坐标一律按滚完之后现取', async () => {
@@ -2487,7 +2520,7 @@ test('终点在视口外时先滚终点再滚起点，坐标一律按滚完之�
   await act(handle, record, {
     action: 'drag',
     ref: refOf(observation, '卡片'),
-    toRef: refOf(observation, '目标槽'),
+    path: [{ ref: refOf(observation, '目标槽') }],
   })
   // 起点用的是两次滚动之后的位置，不是观察时那一份。
   expect(fake.mouseDetail()[0]).toEqual({
@@ -2528,7 +2561,7 @@ test('drag 按下之后取消，鼠标被补一次抬起，回执不报完成', 
   const r = await act(handle, record, {
     action: 'drag',
     ref: refOf(observation, '卡片'),
-    toRef: refOf(observation, '目标槽'),
+    path: [{ ref: refOf(observation, '目标槽') }],
   })
   expect(r.execution?.state).not.toBe('completed')
   const released = fake.mouseDetail().filter((e) => e.type === 'mouseReleased')
@@ -2569,10 +2602,10 @@ test('按下之前一律先把指针移到落点，且那一条不计入执行�
     const r = await act(drag.handle, record, {
       action: 'drag',
       ref: refOf(observation, '卡片'),
-      toRef: refOf(observation, '目标槽'),
+      path: [{ ref: refOf(observation, '目标槽') }],
     })
     expect(first(drag.fake)).toEqual({ ...aim, x: 50, y: 220 })
-    expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 4 })
+    expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 1 })
   }
 
   const download = await newPage()
@@ -2583,18 +2616,19 @@ test('按下之前一律先把指针移到落点，且那一条不计入执行�
   }
 })
 
-test('drag 缺终点或两端相同时在发事件之前拒绝', async () => {
+test('drag 缺路径时在发事件之前拒绝', async () => {
   const { fake, handle } = await newPage(addDragPair)
   const { record, observation } = await observe(handle)
   const ref = refOf(observation, '卡片')
 
   const missing = await act(handle, record, { action: 'drag', ref }).catch((e: Error) => e.message)
-  expect(String(missing)).toContain('toRef')
-
-  const same = await act(handle, record, { action: 'drag', ref, toRef: ref }).catch(
-    (e: Error) => e.message,
-  )
-  expect(String(same)).toContain('同一个元素')
+  expect(String(missing)).toContain('path')
+  const long = await act(handle, record, {
+    action: 'drag',
+    ref,
+    path: [{ ref, point: { x: 1, y: 1 }, durationMs: 6000 }],
+  }).catch((e: Error) => e.message)
+  expect(String(long)).toContain('durationMs')
   expect(fake.mouse()).toHaveLength(0)
 })
 
@@ -2608,8 +2642,170 @@ test('drag 的起点被遮住时不按下鼠标', async () => {
   const err = await act(handle, record, {
     action: 'drag',
     ref: refOf(observation, '卡片'),
-    toRef: refOf(observation, '目标槽'),
+    path: [{ ref: refOf(observation, '目标槽') }],
   }).catch((e: Error) => e)
   expect(err).toBeInstanceOf(BrowserAmbiguousRefError)
   expect(fake.mouse()).toHaveLength(0)
+})
+
+/** 加一块 400×200 的 canvas，左上角在文档 (0, 300)。 */
+function addCanvas(fake: FakePage): void {
+  const doc = fake.model.docs[0] as DocModel
+  doc.nodes.push({
+    backendNodeId: 50,
+    tag: 'canvas',
+    attrs: { id: 'pad' },
+    box: { x: 0, y: 300, width: 400, height: 200 },
+  })
+  doc.ax.push({ backendDOMNodeId: 50, role: 'Canvas', name: '' })
+}
+
+function canvasRef(observation: BrowserObservation): string {
+  return observation.elements.find((e) => e.tag === 'canvas')?.ref ?? ''
+}
+
+test('canvas 进元素表并带此刻的 CSS 尺寸', async () => {
+  const { handle } = await newPage(addCanvas)
+  const { observation } = await observe(handle)
+  expect(observation.elements.find((e) => e.tag === 'canvas')).toMatchObject({
+    role: 'Canvas',
+    size: { width: 400, height: 200 },
+  })
+})
+
+test('press 按阶段的集合差发送：按着的键不重发，最后全部松开', async () => {
+  const { fake, handle } = await newPage()
+  const { record } = await observe(handle)
+
+  const started = Date.now()
+  const r = await act(handle, record, {
+    action: 'press',
+    phases: [
+      { keys: ['KeyW'], durationMs: 30 },
+      { keys: ['KeyW', 'Space'] },
+      { keys: ['KeyW'], durationMs: 20 },
+    ],
+  })
+  expect(Date.now() - started).toBeGreaterThanOrEqual(45)
+  expect(fake.keyEvents().map((e) => `${e.type}:${e.code}`)).toEqual([
+    'keyDown:KeyW',
+    'keyDown:Space',
+    'keyUp:Space',
+    'keyUp:KeyW',
+  ])
+  expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 3 })
+})
+
+test('press 阶段之间文档换了就停：其余阶段不发，按着的键由收尾松开', async () => {
+  const { fake, handle } = await newPage()
+  const { record } = await observe(handle)
+  fake.model.onInput = (nth) => {
+    if (nth === 1) fake.model.token = 'doc-2'
+  }
+
+  const r = await act(handle, record, {
+    action: 'press',
+    phases: [{ keys: ['KeyW'], durationMs: 10 }, { keys: ['KeyW', 'Space'] }],
+  })
+  expect(fake.keyEvents().map((e) => `${e.type}:${e.code}`)).toEqual(['keyDown:KeyW', 'keyUp:KeyW'])
+  expect(r.execution).toEqual({
+    state: 'partial',
+    confirmedUnits: 1,
+    reason: '页面已经换过文档',
+  })
+})
+
+test('press 按住期间取消立即结束，不睡满时长，收尾松开按着的键', async () => {
+  const { fake, handle } = await newPage()
+  const { record } = await observe(handle)
+  setTimeout(() => void handle.client.cancel('测试取消'), 50)
+
+  const started = Date.now()
+  const r = await act(handle, record, {
+    action: 'press',
+    phases: [{ keys: ['KeyW'], durationMs: 3000 }],
+  })
+  expect(Date.now() - started).toBeLessThan(1000)
+  expect(fake.keyEvents().map((e) => e.type)).toEqual(['keyDown', 'keyUp'])
+  expect(r.execution).toEqual({ state: 'partial', confirmedUnits: 0, reason: '执行已停止' })
+})
+
+test('click 落在元素内的指定点上，按住期间带着按下的键，事件的修饰位与之一致', async () => {
+  const { fake, handle } = await newPage(addCanvas)
+  const { record, observation } = await observe(handle)
+
+  const started = Date.now()
+  const r = await act(handle, record, {
+    action: 'click',
+    ref: canvasRef(observation),
+    point: { x: 10, y: 20 },
+    holdMs: 40,
+    keys: ['ShiftLeft'],
+  })
+  expect(Date.now() - started).toBeGreaterThanOrEqual(40)
+  expect(r.point).toEqual({ x: 10, y: 320 })
+  expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 2 })
+  const mouse = fake
+    .sent('Input.dispatchMouseEvent')
+    .map((c) => [c.params?.type, c.params?.modifiers])
+  expect(mouse).toEqual([
+    ['mouseMoved', 8],
+    ['mousePressed', 8],
+    ['mouseReleased', 8],
+  ])
+  expect(fake.keyEvents().map((e) => `${e.type}:${e.code}:${e.modifiers}`)).toEqual([
+    'rawKeyDown:ShiftLeft:8',
+    'keyUp:ShiftLeft:0',
+  ])
+})
+
+test('落点超出元素此刻的矩形时一条事件都不发，并给出此刻的尺寸', async () => {
+  const { fake, handle } = await newPage(addCanvas)
+  const { record, observation } = await observe(handle)
+
+  const err = await act(handle, record, {
+    action: 'click',
+    ref: canvasRef(observation),
+    point: { x: 401, y: 0 },
+  }).catch((e: Error) => e.message)
+  expect(String(err)).toContain('宽 400、高 200')
+  expect(fake.mouse()).toHaveLength(0)
+})
+
+test('drag 在同一个元素的两个点之间移动，按时长约每帧插值一次，一段是一个单元', async () => {
+  const { fake, handle } = await newPage(addCanvas)
+  const { record, observation } = await observe(handle)
+  const ref = canvasRef(observation)
+
+  const r = await act(handle, record, {
+    action: 'drag',
+    ref,
+    point: { x: 0, y: 0 },
+    path: [{ ref, point: { x: 100, y: 100 }, durationMs: 64 }],
+  })
+  const detail = fake.mouseDetail()
+  expect(detail[1]).toMatchObject({ type: 'mousePressed', x: 0, y: 300 })
+  const moves = detail.filter((e) => e.type === 'mouseMoved' && e.buttons === 1)
+  expect(moves.map((e) => [e.x, e.y])).toEqual([
+    [25, 325],
+    [50, 350],
+    [75, 375],
+    [100, 400],
+  ])
+  expect(detail.at(-1)).toMatchObject({ type: 'mouseReleased', x: 100, y: 400, buttons: 0 })
+  expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 1 })
+})
+
+test('scroll 只给 deltaX 时纵向为 0，两个方向都不给时向下 400', async () => {
+  const { fake, handle } = await newPage()
+  const { record } = await observe(handle)
+
+  await act(handle, record, { action: 'scroll', deltaX: 300 })
+  await act(handle, record, { action: 'scroll' })
+  expect(
+    fake.sent('Input.dispatchMouseEvent').map((c) => [c.params?.deltaX, c.params?.deltaY]),
+  ).toEqual([
+    [300, 0],
+    [0, 400],
+  ])
 })

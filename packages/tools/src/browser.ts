@@ -27,12 +27,19 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   type BrowserActionKind,
   type BrowserExecution,
+  type BrowserKeyPhase,
   type BrowserObservation,
   type BrowserOptionsPage,
+  type BrowserPathStep,
+  type BrowserPoint,
   type BrowserPort,
+  type BrowserWaitState,
+  checkDuration,
+  checkHeldKeys,
+  checkKeyPhases,
+  checkPath,
   type FollowUpObservation,
-  KEY_HINT,
-  keyStroke,
+  INPUT_LIMITS,
   type ToolContext,
   type ToolOutcome,
   type ToolSpec,
@@ -46,6 +53,34 @@ const MAX_WAIT_MS = 60_000
 const MIN_WAIT_MS = 100
 /** 调用方没给时长时等多久。 */
 const DEFAULT_WAIT_MS = 10_000
+/** `browser_wait` 的状态取值，含义见 `BrowserWaitState`。 */
+const WAIT_STATES: readonly BrowserWaitState[] = [
+  'visible',
+  'attached',
+  'hidden',
+  'enabled',
+  'text',
+  'value',
+]
+
+/** 等待条件在 message 里的说法。 */
+function stateText(state: BrowserWaitState, expected: string | undefined): string {
+  switch (state) {
+    case 'attached':
+      return '在文档里'
+    case 'visible':
+      return '可见'
+    case 'hidden':
+      return '不可见或已移除'
+    case 'enabled':
+      return '可用'
+    case 'text':
+      return `文本为 ${JSON.stringify(expected ?? '')}`
+    case 'value':
+      return `值为 ${JSON.stringify(expected ?? '')}`
+  }
+}
+
 /** 一次下载从触发到落盘的上限。 */
 const DOWNLOAD_TIMEOUT_MS = 120_000
 /** 单次上传的文件数上限。 */
@@ -134,41 +169,115 @@ function optionsForArg(
  * 一次成功的点击，而调用方按拖动已完成继续下一步。
  */
 const ACT_FIELDS: Record<BrowserActionKind, readonly string[]> = {
-  click: ['ref'],
-  dblclick: ['ref'],
-  rightclick: ['ref'],
-  hover: ['ref'],
+  click: ['ref', 'point', 'keys', 'holdMs'],
+  dblclick: ['ref', 'point', 'keys'],
+  rightclick: ['ref', 'point', 'keys', 'holdMs'],
+  hover: ['ref', 'point'],
   fill: ['ref', 'text'],
   type: ['ref', 'text'],
   select: ['ref', 'text'],
-  scroll: ['ref', 'deltaY'],
-  press: ['ref', 'key'],
-  drag: ['ref', 'toRef'],
+  scroll: ['ref', 'point', 'deltaX', 'deltaY'],
+  press: ['ref', 'phases'],
+  drag: ['ref', 'point', 'keys', 'path'],
 }
 
 const ACT_KINDS = Object.keys(ACT_FIELDS) as BrowserActionKind[]
 
 /** 动作的可选参数全集，逐个按 `ACT_FIELDS` 核适用范围。 */
-const ACT_OPTIONAL = ['ref', 'toRef', 'text', 'key', 'deltaY'] as const
+const ACT_OPTIONAL = [
+  'ref',
+  'point',
+  'text',
+  'phases',
+  'keys',
+  'holdMs',
+  'path',
+  'deltaX',
+  'deltaY',
+] as const
+
+/** 这个值是不是一个对象（不含数组）。 */
+function isRecord(raw: unknown): raw is Record<string, unknown> {
+  return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+}
+
+/** 元素内的落点：离元素左上角的 CSS 像素偏移，两项都是非负有限数。 */
+function pointArg(raw: unknown, field: string): BrowserPoint {
+  if (!isRecord(raw)) throw new ArgError(`${field} 必须是 {x, y} 对象，收到 ${JSON.stringify(raw)}`)
+  const x = finite(raw.x, `${field}.x`)
+  const y = finite(raw.y, `${field}.y`)
+  if (x < 0 || y < 0) throw new ArgError(`${field} 的 x、y 不能为负`)
+  return { x, y }
+}
 
 /**
- * `press` 的键名预检：整串按 `@qywork/agent` 的词表解析，主键名一并判。
+ * 一组键码。只判形状，键码与上限交给 `@qywork/agent` 的同一张表。
  *
- * 空段、重复或认不出的修饰键、认不出的主键在这里就是参数错，`executed` 为假。
- * **不要在这里另写一份键名判定**：端口用的是同一个 `keyStroke`，两份表会各自漂移，
- * 未知主键名因此在预检放行、到端口才被拒，调用方拿到的是「动作可能已经发出」。
- * 加号本身写 `Plus`：`Ctrl++` 切出来的空段分不出是主键还是漏写。
+ * **不要在这里另写一份键名判定**：端口按同一张表再判一次，两份表会各自漂移，
+ * 未知键码因此在预检放行、到端口才被拒，调用方拿到的是「动作可能已经发出」。
  */
-function pressKey(raw: unknown): string {
-  const key = str(raw, 'key')
-  const trimmed = key
-    .split('+')
-    .map((part) => part.trim())
-    .join('+')
-  if (!keyStroke(trimmed)) {
-    throw new ArgError(`不支持的按键：${JSON.stringify(key)}（${KEY_HINT}）`)
-  }
-  return trimmed
+function keyList(raw: unknown, field: string): string[] {
+  if (!Array.isArray(raw))
+    throw new ArgError(`${field} 必须是键码数组，收到 ${JSON.stringify(raw)}`)
+  return raw.map((code) => String(code ?? '').trim())
+}
+
+/** `press` 的阶段。整段按同一张表与上限检完，才调端口。 */
+function phasesArg(raw: unknown): BrowserKeyPhase[] {
+  if (!Array.isArray(raw)) throw new ArgError(`phases 必须是数组，收到 ${JSON.stringify(raw)}`)
+  const phases = raw.map((one, i) => {
+    if (!isRecord(one)) throw new ArgError(`phases[${i}] 必须是 {keys, durationMs} 对象`)
+    const keys =
+      one.keys === undefined || one.keys === null ? [] : keyList(one.keys, `phases[${i}].keys`)
+    return {
+      keys,
+      ...(given(one.durationMs)
+        ? { durationMs: finite(one.durationMs, `phases[${i}].durationMs`) }
+        : {}),
+    }
+  })
+  const problem = checkKeyPhases(phases)
+  if (problem) throw new ArgError(problem)
+  return phases
+}
+
+/** 指针动作期间按着的键。 */
+function heldArg(raw: unknown): string[] {
+  const keys = keyList(raw, 'keys')
+  const problem = checkHeldKeys(keys, 'keys')
+  if (problem) throw new ArgError(problem)
+  return keys
+}
+
+function holdArg(raw: unknown): number {
+  const ms = finite(raw, 'holdMs')
+  const problem = checkDuration(ms, 'holdMs')
+  if (problem) throw new ArgError(problem)
+  return ms
+}
+
+/** `drag` 的路径。每段要有终点 ref；段数与时长按同一张上限表判。 */
+function pathArg(raw: unknown): BrowserPathStep[] {
+  if (!Array.isArray(raw)) throw new ArgError(`path 必须是数组，收到 ${JSON.stringify(raw)}`)
+  const path = raw.map((one, i): BrowserPathStep => {
+    if (!isRecord(one)) throw new ArgError(`path[${i}] 必须是 {ref, point, durationMs} 对象`)
+    return {
+      ref: str(one.ref, `path[${i}].ref`),
+      ...(isRecord(one.point) ? { point: pointArg(one.point, `path[${i}].point`) } : {}),
+      ...(given(one.durationMs)
+        ? { durationMs: finite(one.durationMs, `path[${i}].durationMs`) }
+        : {}),
+    }
+  })
+  const problem = checkPath(path)
+  if (problem) throw new ArgError(problem)
+  return path
+}
+
+/** 两个落点是不是同一个：都缺省（元素中心）或坐标相同。 */
+function samePoint(a: BrowserPoint | undefined, b: BrowserPoint | undefined): boolean {
+  if (!a || !b) return a === b
+  return a.x === b.x && a.y === b.y
 }
 
 /** 换行与制表以外的 C0/C1 控制字符。返回第一个命中的字符。 */
@@ -447,7 +556,13 @@ function incompleteAct(
   const partial = execution.state === 'partial'
   const units =
     execution.confirmedUnits === undefined ? '' : `，已确认 ${execution.confirmedUnits} 个单元`
-  const lead = partial ? `${action} 已部分发出${units}。` : `${action} 的结果未知。`
+  const reason = execution.reason ? `（${execution.reason}）` : ''
+  const unreleased = execution.unreleased?.length
+    ? `未确认松开：${execution.unreleased.join('、')}。`
+    : ''
+  const lead =
+    (partial ? `${action} 已部分发出${units}${reason}。` : `${action} 的结果未知${reason}。`) +
+    unreleased
   const advice = '先 browser_observe 确认页面实际状态，不要重放这个动作。'
   const errorKind = partial ? 'browser_partial' : 'browser_unknown'
   if (follow.observation) {
@@ -478,6 +593,15 @@ function incompleteAct(
 function tabTarget(args: Record<string, unknown>): string | null {
   return given(args.tabId) ? String(args.tabId).trim() : null
 }
+
+/** 元素内落点的参数形状，`point` 与 `path[].point` 共用。 */
+const POINT_SCHEMA = {
+  type: 'object',
+  description: '元素内的落点：离元素左上角的 CSS 像素偏移，缺省为元素中心',
+  properties: { x: { type: 'number' }, y: { type: 'number' } },
+  required: ['x', 'y'],
+  additionalProperties: false,
+} as const
 
 const BASE = {
   category: 'browser',
@@ -682,8 +806,24 @@ export const browserActTool: ToolSpec = {
   description:
     '对观察返回的元素执行动作：click 点击、dblclick 双击、rightclick 右键、hover 悬停、' +
     'fill 覆盖输入框内容、type 在当前光标处逐字输入、select 选下拉项、scroll 滚动、' +
-    'press 按键、drag 从 ref 拖到 toRef。' +
+    'press 按键、drag 拖动。' +
     'observationId 取自 observe、act、navigate 或 wait 返回的那一份。' +
+    'press 用 phases 表达有时序的按键：每个阶段是这段时间里按着的完整键集合与持续毫秒数，' +
+    '换阶段时只按下新增的键、抬起去掉的键，最后全部松开，按住期间不自动重复。' +
+    '例如按住 W 1.2 秒并在其间轻点空格：' +
+    '[{"keys":["KeyW"],"durationMs":1200},{"keys":["KeyW","Space"]},{"keys":["KeyW"],"durationMs":300}]。' +
+    '键名是物理键码，如 KeyW、Space、ArrowUp、Enter、ShiftLeft、ControlLeft；' +
+    '组合键写在同一阶段里，如 ["ControlLeft","KeyA"]；durationMs 缺省为 0，即按下后立刻进入下一阶段。' +
+    `一次最多 ${INPUT_LIMITS.phases} 个阶段、同时按 ${INPUT_LIMITS.keys} 个键，` +
+    `单段不超过 ${INPUT_LIMITS.phaseMs} 毫秒、合计不超过 ${INPUT_LIMITS.totalMs} 毫秒；` +
+    '更长的操作分多次调用，每次看结果再继续。' +
+    'point 是元素内离左上角的 CSS 像素偏移，用于 canvas 这类同一元素内的不同位置，' +
+    '范围见元素的 size，缺省为元素中心。' +
+    'holdMs 是 click / rightclick 的按住时长；keys 是指针动作期间按着的键，如 ["ShiftLeft"]。' +
+    'drag 在 ref（与 point）处按下，沿 path 逐段移动后松开，每段给终点 ref、可选 point 与 durationMs。' +
+    'scroll 的 deltaY 向下为正、deltaX 向右为正。' +
+    'execution.state=completed 只表示输入已全部发出并确认，不代表网站业务完成；' +
+    'partial 或 unknown 时看 reason 与 unreleased，先观察确认，不要重放。' +
     '动作之后取得新观察时结果里直接带回新的元素表与 observationId，据此继续下一步，' +
     '不必再调 browser_observe；settle=quiet 只表示页面短暂没有变化，不代表网站业务已完成，' +
     '后续目标还没出现时用 browser_wait。' +
@@ -705,17 +845,50 @@ export const browserActTool: ToolSpec = {
         type: 'string',
         description: '元素编号，drag 时是起点。scroll 与 press 可省略，作用于整页',
       },
-      toRef: { type: 'string', description: 'drag 的终点元素编号，与 ref 不能相同' },
+      point: POINT_SCHEMA,
       text: {
         type: 'string',
         description:
           'fill 覆盖输入框原有内容；type 在当前光标处逐字输入，换行按 Enter，单行控件可能因此提交；select 是要选中的选项',
       },
-      key: {
-        type: 'string',
-        description:
-          '功能键或组合键：Enter、Tab、Escape 等，或 Ctrl+A、Shift+Tab、Ctrl+Shift+Enter；主键可为单个字母数字标点，加号写 Plus；按 US 布局解释',
+      phases: {
+        type: 'array',
+        description: 'press 的按键阶段，按顺序执行',
+        items: {
+          type: 'object',
+          properties: {
+            keys: {
+              type: 'array',
+              items: { type: 'string' },
+              description: '这一阶段按着的物理键码，空数组表示全部松开',
+            },
+            durationMs: { type: 'integer', description: '这一阶段保持多久，缺省 0' },
+          },
+          required: ['keys'],
+          additionalProperties: false,
+        },
       },
+      keys: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'click / rightclick / dblclick / drag 期间按着的物理键码',
+      },
+      holdMs: { type: 'integer', description: 'click / rightclick 按下后保持多久再松开' },
+      path: {
+        type: 'array',
+        description: 'drag 的路径，至少一段',
+        items: {
+          type: 'object',
+          properties: {
+            ref: { type: 'string', description: '这一段终点所在的元素' },
+            point: POINT_SCHEMA,
+            durationMs: { type: 'integer', description: '这一段移动历时多久，缺省 0' },
+          },
+          required: ['ref'],
+          additionalProperties: false,
+        },
+      },
+      deltaX: { type: 'number', description: 'scroll 的横向滚动量，向右为正' },
       deltaY: { type: 'number', description: 'scroll 的滚动量，向下为正' },
     },
     required: ['tabId', 'observationId', 'action'],
@@ -735,14 +908,17 @@ export const browserActTool: ToolSpec = {
         }
       }
       const ref = given(args.ref) ? str(args.ref, 'ref') : undefined
-      // 元素动作没有 ref 就无从定位，drag 少一端就不知道拖到哪里：都在调端口前判，
+      // 元素动作没有 ref 就无从定位，drag 没有路径就不知道拖到哪里：都在调端口前判，
       // 否则一次必然失败的调用会被记成「动作已发出」，而那是禁止重试的一侧。
       if (ref === undefined && action !== 'scroll' && action !== 'press') {
         throw new ArgError(`${action} 必须给 ref`)
       }
-      const toRef = action === 'drag' ? str(args.toRef, 'toRef') : undefined
-      if (toRef !== undefined && toRef === ref) {
-        throw new ArgError('drag 的 ref 与 toRef 不能是同一个元素')
+      if (given(args.point) && ref === undefined) throw new ArgError('point 必须与 ref 一起给')
+      const point = given(args.point) ? pointArg(args.point, 'point') : undefined
+      const path = action === 'drag' ? pathArg(args.path) : undefined
+      const only = path?.length === 1 ? path[0] : undefined
+      if (only && only.ref === ref && samePoint(only.point, point)) {
+        throw new ArgError('drag 的起点与终点是同一个点')
       }
 
       const input = {
@@ -750,9 +926,13 @@ export const browserActTool: ToolSpec = {
         observationId: str(args.observationId, 'observationId'),
         action,
         ...(ref !== undefined ? { ref } : {}),
-        ...(toRef !== undefined ? { toRef } : {}),
+        ...(point ? { point } : {}),
         ...textField(action, args.text),
-        ...(action === 'press' ? { key: pressKey(args.key) } : {}),
+        ...(action === 'press' ? { phases: phasesArg(args.phases) } : {}),
+        ...(given(args.keys) ? { keys: heldArg(args.keys) } : {}),
+        ...(given(args.holdMs) ? { holdMs: holdArg(args.holdMs) } : {}),
+        ...(path ? { path } : {}),
+        ...(given(args.deltaX) ? { deltaX: finite(args.deltaX, 'deltaX') } : {}),
         ...(given(args.deltaY) ? { deltaY: finite(args.deltaY, 'deltaY') } : {}),
       }
       const r = await send(() => browser.act(input))
@@ -773,7 +953,10 @@ export const browserWaitTool: ToolSpec = {
   ...BASE,
   name: 'browser_wait',
   description:
-    '等待一个 CSS 选择器在当前主文档出现，用于替代反复 observe 轮询。' +
+    '等待当前主文档里一个 CSS 选择器达到指定状态，用于替代反复 observe 轮询。' +
+    'state 按选择器命中的第一个元素判定：visible（默认）有尺寸且可见；attached 在文档里即可；' +
+    'hidden 没有命中或不可见；enabled 可见且未禁用；' +
+    'text / value 是文本（空白归一）或控件值与 expected 完全相等，这两种必须给 expected。' +
     '不给 selector 时等满 timeoutMs 再观察，用于等页面里的动画、计时或脚本运行一段时间。' +
     `默认 ${DEFAULT_WAIT_MS} 毫秒，上限 ${MAX_WAIT_MS} 毫秒。` +
     '取得新观察时结果里直接带回元素表与 observationId，据此继续下一步，不必再调 browser_observe；' +
@@ -784,13 +967,15 @@ export const browserWaitTool: ToolSpec = {
     properties: {
       tabId: { type: 'string' },
       selector: { type: 'string' },
+      state: { type: 'string', enum: WAIT_STATES },
+      expected: { type: 'string', description: 'state 为 text 或 value 时要等到的值' },
       timeoutMs: { type: 'integer' },
     },
     required: ['tabId'],
     additionalProperties: false,
   },
   actionKind: 'read',
-  summary: '等一个 CSS 选择器出现，或等满一段时长',
+  summary: '等一个 CSS 选择器达到指定状态，或等满一段时长',
   targetExtractor: tabTarget,
 
   fn: (args, ctx) =>
@@ -800,6 +985,9 @@ export const browserWaitTool: ToolSpec = {
         ? Math.min(MAX_WAIT_MS, Math.max(MIN_WAIT_MS, finite(args.timeoutMs, 'timeoutMs')))
         : DEFAULT_WAIT_MS
       if (!given(args.selector)) {
+        if (given(args.state) || given(args.expected)) {
+          throw new ArgError('state 与 expected 要与 selector 一起给')
+        }
         if (!(await pause(timeoutMs, ctx.signal))) return STOPPED
         const r = await send(() => browser.observe({ tabId }))
         return {
@@ -814,17 +1002,30 @@ export const browserWaitTool: ToolSpec = {
         }
       }
       const selector = str(args.selector, 'selector')
-      const r = await send(() => browser.wait({ tabId, selector, timeoutMs }))
+      const state = given(args.state) ? oneOf(args.state, WAIT_STATES, 'state') : 'visible'
+      const wantsValue = state === 'text' || state === 'value'
+      // expected 的空串是「等到文本或值为空」，只有 null 才算没给。
+      const expected =
+        args.expected === undefined || args.expected === null ? undefined : String(args.expected)
+      if (wantsValue && expected === undefined) throw new ArgError(`state=${state} 必须给 expected`)
+      if (!wantsValue && given(expected)) throw new ArgError(`state=${state} 不接受 expected`)
+      const input = {
+        tabId,
+        selector,
+        state,
+        ...(wantsValue && expected !== undefined ? { expected } : {}),
+        timeoutMs,
+      }
+      const r = await send(() => browser.wait(input))
+      const target = `${selector} ${stateText(state, expected)}`
       return withFollowUp(
         ctx,
         'browser_wait',
-        { found: r.found, ...(r.reason ? { reason: r.reason } : {}) },
+        { met: r.met, state, ...(r.reason ? { reason: r.reason } : {}) },
         r,
         {
-          lead: r.found
-            ? `${selector} 已出现。`
-            : `没等到 ${selector}（${r.reason ?? 'timeout'}）。`,
-          ok: r.found,
+          lead: r.met ? `${target}，已达到。` : `没等到 ${target}（${r.reason ?? 'timeout'}）。`,
+          ok: r.met,
           advice: '先 browser_observe 确认页面状态。',
         },
       )

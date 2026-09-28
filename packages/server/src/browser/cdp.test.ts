@@ -104,6 +104,9 @@ class FakeEndpoint {
 
 const settle = () => new Promise((r) => setTimeout(r, 30))
 
+/** 等待器登记用的一份条件。 */
+const GO = { selector: '#go', state: 'visible' }
+
 const cleanups: (() => void)[] = []
 afterEach(() => {
   for (const fn of cleanups.splice(0).reverse()) fn()
@@ -139,7 +142,7 @@ function endpointWithTwoPages(markers: Record<string, string>): FakeEndpoint {
       return { result: { value: { id: 7, immediate: false } } }
     }
     if (expression.startsWith('window.__qyworkAwait(')) {
-      return { result: { value: { found: true, id: 7, x: 10, y: 20 } } }
+      return { result: { value: { met: true, id: 7 } } }
     }
     return { result: { value: { waiters: 0, observers: 0, timers: 0 } } }
   })
@@ -257,14 +260,111 @@ test('取消把已按下未释放的键补一次 keyUp，按键表随之清空',
   expect(keyUps[0]?.params?.code).toBe('KeyA')
 })
 
+/** 发一条按键事件。 */
+function key(
+  client: CdpClient,
+  sessionId: string,
+  type: 'keyDown' | 'keyUp',
+  code: string,
+  timeoutMs?: number,
+): Promise<Record<string, unknown>> {
+  return client.send(
+    'Input.dispatchKeyEvent',
+    { type, key: code.slice(-1).toLowerCase(), code, windowsVirtualKeyCode: 65 },
+    { sessionId, ...(timeoutMs === undefined ? {} : { timeoutMs }) },
+  )
+}
+
+test('抬起没等到回包时按下记录留着，收尾再补一次，确认之后才摘', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+
+  await key(client, sessionId, 'keyDown', 'KeyA')
+  endpoint.delays.set('Input.dispatchKeyEvent', 200)
+  expect(await failure(key(client, sessionId, 'keyUp', 'KeyA', 30))).toBeInstanceOf(CdpTimeoutError)
+  // 抬起可能没到页面：记录留着，收尾有依据再补、回执报得出这个键。
+  expect(client.heldKeys()).toEqual([`${sessionId}|KeyA`])
+
+  endpoint.delays.delete('Input.dispatchKeyEvent')
+  expect((await client.cancel()).keysReleased).toEqual([`${sessionId}|KeyA`])
+  expect(client.heldKeys()).toEqual([])
+  const ups = endpoint.received.filter(
+    (c) => c.method === 'Input.dispatchKeyEvent' && c.params?.type === 'keyUp',
+  )
+  expect(ups).toHaveLength(2)
+})
+
+test('按下被协议拒绝即摘掉，没等到回包的按下留着', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+  endpoint.replies.set('Input.dispatchKeyEvent', (cmd) =>
+    cmd.params?.code === 'KeyB' ? { error: 'Invalid parameters' } : {},
+  )
+
+  expect(await failure(key(client, sessionId, 'keyDown', 'KeyB'))).toBeInstanceOf(CdpError)
+  expect(client.heldKeys()).toEqual([])
+
+  endpoint.delays.set('Input.dispatchKeyEvent', 200)
+  expect(await failure(key(client, sessionId, 'keyDown', 'KeyC', 30))).toBeInstanceOf(
+    CdpTimeoutError,
+  )
+  expect(client.heldKeys()).toEqual([`${sessionId}|KeyC`])
+})
+
+test('旧抬起的回包不摘同一个键随后的按下', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+
+  await key(client, sessionId, 'keyDown', 'KeyA')
+  endpoint.delays.set('Input.dispatchKeyEvent', 40)
+  // 抬起回包到达之前同一个键又按下：页面上它是按着的。
+  await Promise.all([
+    key(client, sessionId, 'keyUp', 'KeyA'),
+    key(client, sessionId, 'keyDown', 'KeyA'),
+  ])
+  expect(client.heldKeys()).toEqual([`${sessionId}|KeyA`])
+})
+
+test('取消与动作收尾同时释放同一个键，只发一次抬起', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const client = await connect(endpoint)
+  const { sessionId } = await client.attachByMarker('marker-a')
+
+  await key(client, sessionId, 'keyDown', 'KeyA')
+  endpoint.delays.set('Input.dispatchKeyEvent', 40)
+  const [settled, summary] = await Promise.all([client.releaseHeldKeys(), client.cancel()])
+  expect(settled).toEqual([`${sessionId}|KeyA`])
+  expect(summary.keysReleased).toEqual([`${sessionId}|KeyA`])
+  const ups = endpoint.received.filter(
+    (c) => c.method === 'Input.dispatchKeyEvent' && c.params?.type === 'keyUp',
+  )
+  expect(ups).toHaveLength(1)
+})
+
+test('取消与断开都让 halted 置位，按住计时据此提前结束', async () => {
+  const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
+  const cancelled = await connect(endpoint)
+  expect(cancelled.halted.aborted).toBe(false)
+  await cancelled.cancel()
+  expect(cancelled.halted.aborted).toBe(true)
+
+  const dropped = await connect(endpoint)
+  endpoint.socket?.close()
+  await settle()
+  expect(dropped.halted.aborted).toBe(true)
+})
+
 test('等待器按 id 登记、等结果、单独清掉，计数读得回来', async () => {
   const endpoint = endpointWithTwoPages({ t1: 'marker-a' })
   const client = await connect(endpoint)
   const { sessionId } = await client.attachByMarker('marker-a')
 
-  const waiterId = await client.startWaiter(sessionId, '#go', 5_000)
+  const waiterId = await client.startWaiter(sessionId, GO, 5_000)
   expect(waiterId).toBe(7)
-  expect(await client.awaitWaiter(sessionId, waiterId, 5_000)).toMatchObject({ found: true })
+  expect(await client.awaitWaiter(sessionId, waiterId, 5_000)).toMatchObject({ met: true })
   expect(await client.disposeWaiter(sessionId, waiterId)).toEqual({
     waiters: 0,
     observers: 0,
@@ -331,7 +431,7 @@ test('等待器运行时不在当前文档时先补注入再登记，不把页�
   const { sessionId } = await client.attachByMarker('marker-a')
   installed = false
 
-  expect(await client.startWaiter(sessionId, '#go', 5_000)).toBe(7)
+  expect(await client.startWaiter(sessionId, GO, 5_000)).toBe(7)
   // 补的是运行时注入，不是把登记重发一遍：两次登记之间隔着一条注入。
   const evaluated = endpoint.received
     .filter((c) => c.method === 'Runtime.evaluate')
@@ -351,7 +451,7 @@ test('补注入之后回包仍不是对象时给可判定的失败，不解引�
   // 注入与登记都答不出值：这一页此刻没有等待器可用。
   endpoint.replies.set('Runtime.evaluate', () => ({ result: {} }))
 
-  const err = await failure(client.startWaiter(sessionId, '#go', 5_000))
+  const err = await failure(client.startWaiter(sessionId, GO, 5_000))
   expect(err).toBeInstanceOf(CdpError)
   expect(err.message).toContain('页面还没准备好等待器')
   const awaited = await failure(client.awaitWaiter(sessionId, 7, 5_000))

@@ -189,6 +189,8 @@ export interface BrowserElement {
   optionsTruncated?: boolean
   /** 正文摘要，按上限截断，不是整段 HTML。 */
   text?: string
+  /** `canvas` 此刻的 CSS 像素尺寸，即指针动作 `point` 的取值范围。 */
+  size?: { width: number; height: number }
   /** iframe 的帧编号；缺席表示主文档。 */
   frame?: string
 }
@@ -226,22 +228,52 @@ export type BrowserActionKind =
   | 'press'
   | 'drag'
 
+/** 元素上的一个点：元素矩形左上角起的 CSS 像素偏移。 */
+export interface BrowserPoint {
+  x: number
+  y: number
+}
+
+/** `press` 的一个阶段：这段时间里按着的完整键集合。 */
+export interface BrowserKeyPhase {
+  /** 物理键码，按 `keys.ts` 的表解析。空数组表示全部松开。 */
+  keys: string[]
+  /** 这个集合保持多久。缺省 0：按下之后立刻进入下一阶段。 */
+  durationMs?: number
+}
+
+/** `drag` 路径的一段：从上一个落点移到这个元素上的点。 */
+export interface BrowserPathStep {
+  ref: string
+  /** 缺省取元素中心。 */
+  point?: BrowserPoint
+  /** 这一段移动历时多久。缺省 0：只发中点与终点两次移动。 */
+  durationMs?: number
+}
+
 export interface BrowserActInput {
   tabId: string
   observationId: string
   action: BrowserActionKind
-  /** 元素引用。`scroll` 与 `press` 可省略，此时作用于文档。 */
+  /** 元素引用。`scroll` 与 `press` 可省略，此时作用于文档；`drag` 时是起点。 */
   ref?: string
-  /** `drag` 的终点，必须是同一份观察里的元素。 */
-  toRef?: string
+  /** 指针动作在 `ref` 上的落点。缺省取元素中心。 */
+  point?: BrowserPoint
   /** `fill` / `type` 要输入的文本，或 `select` 要选中的选项值与显示文本。 */
   text?: string
   /**
-   * `press` 的按键：功能键名，或 `Ctrl` / `Shift` / `Alt` / `Meta` 加主键的组合，
-   * 例如 `Ctrl+A`、`Shift+Tab`、`Ctrl+Shift+Enter`、`Ctrl+Plus`。按 `keys.ts` 的词表
-   * 解析，不接受任意字符串。
+   * `press` 的按键计划。阶段之间按集合差发送：前一阶段有、后一阶段没有的键抬起，
+   * 反之按下；最后一个阶段结束时全部抬起。按 `keys.ts` 的表与上限裁决。
    */
-  key?: string
+  phases?: BrowserKeyPhase[]
+  /** 指针动作期间按着的键，例如 `ShiftLeft`。动作开始前按下、结束后抬起。 */
+  keys?: string[]
+  /** `click` / `rightclick` 按下之后保持多久再抬起。 */
+  holdMs?: number
+  /** `drag` 的路径，至少一段。 */
+  path?: BrowserPathStep[]
+  /** `scroll` 的横向滚动量，向右为正。 */
+  deltaX?: number
   /** `scroll` 的滚动量，向下为正。 */
   deltaY?: number
 }
@@ -266,7 +298,7 @@ export type FollowUpObservation =
   | { observation: null; observationError: string }
 
 /**
- * 多事件动作的执行回执。
+ * 输入动作的执行回执。
  *
  * `completed` 只表示命令序列已经确认，**不表示业务成功**：页面收没收下这次输入要看
  * 动作之后的观察。已确认前缀之后本地终止是 `partial`；有事件已发出但没等到确认是
@@ -275,10 +307,17 @@ export type FollowUpObservation =
 export interface BrowserExecution {
   state: 'completed' | 'partial' | 'unknown'
   /**
-   * 已确认的单元数。单元按动作定义：`type` 是 Unicode 码点，`drag` 是鼠标事件，
-   * `dblclick` 是按下抬起轮数。
+   * 已确认的单元数，即已完成的前缀。单元按动作定义：`press` 是阶段，`type` 是 Unicode
+   * 码点，`drag` 是路径段，`dblclick` 是按下抬起轮数，`click` / `rightclick` 是按下与抬起。
    */
   confirmedUnits?: number
+  /** 没有完成时停下的原因。`completed` 时缺席。 */
+  reason?: string
+  /**
+   * 收尾没能确认松开的键码与鼠标键。非空时 `state` 必为 `unknown`：页面可能仍认为
+   * 它们按着，而断开的连接上发不出也确认不了抬起。
+   */
+  unreleased?: string[]
 }
 
 /** 底层动作回执。观察由协调器在动作之后补上。 */
@@ -287,7 +326,7 @@ export interface BrowserActReceipt {
   element?: string
   /** 命中点，坐标动作才有。 */
   point?: { x: number; y: number }
-  /** 多事件动作的执行结果。`type` / `drag` / `dblclick` 必带，单事件动作缺席。 */
+  /** 输入动作的执行结果。`click` / `rightclick` / `dblclick` / `press` / `drag` / `type` 必带，其余缺席。 */
   execution?: BrowserExecution
   /** `fill` 写入后控件里的实际值。 */
   value?: string
@@ -295,10 +334,19 @@ export interface BrowserActReceipt {
   normalized?: boolean
 }
 
+/**
+ * `wait` 等的页面状态，按选择器命中的第一个元素判定。
+ *
+ * `visible`：有尺寸且样式上可见；`hidden`：没有命中或命中的不可见；`enabled`：可见且未禁用；
+ * `text` / `value`：文本（空白归一）或控件值与 `expected` 完全相等。
+ */
+export type BrowserWaitState = 'attached' | 'visible' | 'hidden' | 'enabled' | 'text' | 'value'
+
 /** 底层等待回执。 */
 export interface BrowserWaitReceipt {
-  found: boolean
-  /** 没等到时的原因：`timeout` 或 `cancelled`。 */
+  /** 条件达成。 */
+  met: boolean
+  /** 没等到时的原因：`timeout`、`cancelled` 或 `gone`（文档换了）。 */
   reason?: string
 }
 
@@ -381,11 +429,18 @@ export interface BrowserPort {
   /** 在已观察的元素上做一次有限动作，并带回动作之后的观察。 */
   act(input: BrowserActInput): Promise<BrowserActResult>
   /**
-   * 等一个 CSS 选择器出现。有限超时，取消时一并清理页内等待器。
+   * 等主文档里一个 CSS 选择器达到指定状态。有限超时，取消时一并清理页内等待器。
    *
    * 等待结束后直接采一次观察，不再额外做静默等待，因此结果不带 `settle`。
    */
-  wait(input: { tabId: string; selector: string; timeoutMs: number }): Promise<BrowserWaitResult>
+  wait(input: {
+    tabId: string
+    selector: string
+    state: BrowserWaitState
+    /** `text` / `value` 要等到的值，其余状态缺席。 */
+    expected?: string
+    timeoutMs: number
+  }): Promise<BrowserWaitResult>
   /**
    * 把本机文件交给一个文件输入元素。
    *

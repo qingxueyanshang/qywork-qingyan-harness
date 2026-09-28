@@ -326,7 +326,7 @@ function browserPort(page: BrowserObservation): BrowserPort {
     navigate: async () => ({ observation: page, settle: 'quiet' }),
     observe: async (input) => (input.optionsFor ? 大选项页 : page),
     act: async () => ({ element: 'button 提交', observation: page, settle: 'quiet' }),
-    wait: async () => ({ found: true, observation: page }),
+    wait: async () => ({ met: true, observation: page }),
     upload: async (input) => ({ files: input.paths }),
     download: async (input) => ({ path: input.absolutePath, bytes: 3 }),
     release: async () => {},

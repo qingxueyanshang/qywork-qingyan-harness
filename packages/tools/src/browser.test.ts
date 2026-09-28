@@ -99,7 +99,7 @@ function fakeBrowser(over: Partial<BrowserPort> = {}): { port: BrowserPort; call
     },
     wait: async (input) => {
       note('wait', input)
-      return { found: true, observation: OB }
+      return { met: true, observation: OB }
     },
     upload: async (input) => {
       note('upload', input)
@@ -347,7 +347,7 @@ describe('发动作之前的终态', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('元素动作缺 ref、press 缺 key 都在调端口前判', async () => {
+  test('元素动作缺 ref、press 缺 phases 都在调端口前判', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const noRef = await browserActTool.fn(
@@ -362,7 +362,7 @@ describe('发动作之前的终态', () => {
       ctx,
     )
     expect(noKey.executed).toBe(false)
-    expect(noKey.message).toContain('key')
+    expect(noKey.message).toContain('phases')
     expect(calls).toHaveLength(0)
 
     // scroll 不带 ref 是合法的，作用于整页。
@@ -419,14 +419,37 @@ describe('动作的适用范围', () => {
       expect(calls.at(-1)?.input).toEqual({ ...base, action, ref: 'e1' })
     }
 
-    await browserActTool.fn({ ...base, action: 'drag', ref: 'e1', toRef: 'e2' }, ctx)
-    expect(calls.at(-1)?.input).toEqual({ ...base, action: 'drag', ref: 'e1', toRef: 'e2' })
+    const path = [{ ref: 'e2', point: { x: 5, y: 6 }, durationMs: 300 }]
+    await browserActTool.fn({ ...base, action: 'drag', ref: 'e1', keys: ['ShiftLeft'], path }, ctx)
+    expect(calls.at(-1)?.input).toEqual({
+      ...base,
+      action: 'drag',
+      ref: 'e1',
+      keys: ['ShiftLeft'],
+      path,
+    })
 
     await browserActTool.fn({ ...base, action: 'type', ref: 'e1', text: '你好' }, ctx)
     expect(calls.at(-1)?.input).toEqual({ ...base, action: 'type', ref: 'e1', text: '你好' })
 
-    await browserActTool.fn({ ...base, action: 'press', key: 'Ctrl+Shift+Enter' }, ctx)
-    expect(calls.at(-1)?.input).toEqual({ ...base, action: 'press', key: 'Ctrl+Shift+Enter' })
+    const phases = [{ keys: ['KeyW'], durationMs: 1200 }, { keys: ['KeyW', 'Space'] }]
+    await browserActTool.fn({ ...base, action: 'press', phases }, ctx)
+    expect(calls.at(-1)?.input).toEqual({ ...base, action: 'press', phases })
+
+    await browserActTool.fn(
+      { ...base, action: 'click', ref: 'e3', point: { x: 12, y: 0 }, holdMs: 600 },
+      ctx,
+    )
+    expect(calls.at(-1)?.input).toEqual({
+      ...base,
+      action: 'click',
+      ref: 'e3',
+      point: { x: 12, y: 0 },
+      holdMs: 600,
+    })
+
+    await browserActTool.fn({ ...base, action: 'scroll', deltaX: -200 }, ctx)
+    expect(calls.at(-1)?.input).toEqual({ ...base, action: 'scroll', deltaX: -200 })
   })
 
   test('鼠标动作缺 ref 在调端口前判', async () => {
@@ -440,22 +463,55 @@ describe('动作的适用范围', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('drag 要两端，两端不能是同一个', async () => {
+  test('drag 要路径与起点，起终点不能是同一个点', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const drag = { ...base, action: 'drag' }
 
-    const noTo = await browserActTool.fn({ ...drag, ref: 'e1' }, ctx)
-    expect(noTo.executed).toBe(false)
-    expect(noTo.message).toContain('toRef')
+    const noPath = await browserActTool.fn({ ...drag, ref: 'e1' }, ctx)
+    expect(noPath.executed).toBe(false)
+    expect(noPath.message).toContain('path')
 
-    const noFrom = await browserActTool.fn({ ...drag, toRef: 'e2' }, ctx)
+    const noFrom = await browserActTool.fn({ ...drag, path: [{ ref: 'e2' }] }, ctx)
     expect(noFrom.executed).toBe(false)
     expect(noFrom.message).toContain('必须给 ref')
 
-    const same = await browserActTool.fn({ ...drag, ref: 'e1', toRef: 'e1' }, ctx)
+    const same = await browserActTool.fn({ ...drag, ref: 'e1', path: [{ ref: 'e1' }] }, ctx)
     expect(same.executed).toBe(false)
-    expect(same.message).toContain('不能是同一个元素')
+    expect(same.message).toContain('同一个点')
+
+    const noStepRef = await browserActTool.fn(
+      { ...drag, ref: 'e1', path: [{ durationMs: 10 }] },
+      ctx,
+    )
+    expect(noStepRef.executed).toBe(false)
+    expect(noStepRef.message).toContain('path[0].ref')
+    expect(calls).toHaveLength(0)
+
+    // 同一个元素上的两个不同点是合法的拖动，canvas 靠它画线。
+    const line = await browserActTool.fn(
+      { ...drag, ref: 'e1', point: { x: 0, y: 0 }, path: [{ ref: 'e1', point: { x: 50, y: 0 } }] },
+      ctx,
+    )
+    expect(line.status).toBe('success')
+  })
+
+  test('落点、按住时长与按着的键在调端口前判', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    const cases: [Record<string, unknown>, string][] = [
+      [{ action: 'scroll', point: { x: 1, y: 1 } }, 'point 必须与 ref 一起给'],
+      [{ action: 'click', ref: 'e1', point: { x: -1, y: 1 } }, '不能为负'],
+      [{ action: 'click', ref: 'e1', point: [1, 2] }, 'point 必须是'],
+      [{ action: 'click', ref: 'e1', holdMs: 6000 }, 'holdMs'],
+      [{ action: 'click', ref: 'e1', keys: ['Shift'] }, '不是可用的键码'],
+      [{ action: 'click', ref: 'e1', keys: 'ShiftLeft' }, '键码数组'],
+    ]
+    for (const [args, text] of cases) {
+      const r = await browserActTool.fn({ ...base, ...args }, ctx)
+      expect(r.executed).toBe(false)
+      expect(r.message).toContain(text)
+    }
     expect(calls).toHaveLength(0)
   })
 
@@ -463,14 +519,17 @@ describe('动作的适用范围', () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const cases: Record<string, unknown>[] = [
-      { action: 'click', ref: 'e1', toRef: 'e2' },
-      { action: 'scroll', key: 'Enter' },
+      { action: 'click', ref: 'e1', path: [{ ref: 'e2' }] },
+      { action: 'scroll', phases: [{ keys: ['Enter'] }] },
       { action: 'hover', ref: 'e1', text: 'x' },
-      { action: 'press', key: 'Enter', deltaY: 100 },
-      { action: 'drag', ref: 'e1', toRef: 'e2', text: 'x' },
-      { action: 'fill', ref: 'e1', text: 'x', key: 'Enter' },
-      { action: 'type', ref: 'e1', text: 'x', toRef: 'e2' },
-      { action: 'select', ref: 'e1', text: 'x', deltaY: 1 },
+      { action: 'hover', ref: 'e1', holdMs: 100 },
+      { action: 'dblclick', ref: 'e1', holdMs: 100 },
+      { action: 'press', phases: [{ keys: ['Enter'] }], deltaY: 100 },
+      { action: 'press', phases: [{ keys: ['Enter'] }], keys: ['ShiftLeft'] },
+      { action: 'drag', ref: 'e1', path: [{ ref: 'e2' }], text: 'x' },
+      { action: 'fill', ref: 'e1', text: 'x', keys: ['Enter'] },
+      { action: 'type', ref: 'e1', text: 'x', point: { x: 1, y: 1 } },
+      { action: 'select', ref: 'e1', text: 'x', deltaX: 1 },
     ]
     for (const args of cases) {
       const r = await browserActTool.fn({ ...base, ...args }, ctx)
@@ -512,44 +571,59 @@ describe('动作的适用范围', () => {
     expect(calls.at(-1)?.input).toMatchObject({ text: 'a\nb\nc\td' })
   })
 
-  test('press 的键名整串预检', async () => {
+  test('press 的阶段整段预检，键码与上限和端口同一张表', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const press = { ...base, action: 'press' }
 
-    for (const key of ['Enter', 'Ctrl+A', 'Shift+Tab', 'Ctrl+Shift+Enter', 'Plus', 'Ctrl+Plus']) {
-      const r = await browserActTool.fn({ ...press, key }, ctx)
+    const good = [
+      [{ keys: ['Enter'] }],
+      [{ keys: ['ControlLeft', 'KeyA'] }],
+      [{ keys: ['ShiftLeft', 'Tab'] }],
+      [{ keys: ['Space'] }, { keys: [], durationMs: 200 }, { keys: ['Space'], durationMs: 500 }],
+    ]
+    for (const phases of good) {
+      const r = await browserActTool.fn({ ...press, phases }, ctx)
       expect(r.status).toBe('success')
-      expect(calls.at(-1)?.input).toMatchObject({ key })
+      expect(calls.at(-1)?.input).toMatchObject({ phases })
     }
-    // 段之间的空格归一，端口拿到的是规范写法。
-    await browserActTool.fn({ ...press, key: 'Ctrl + A' }, ctx)
-    expect(calls.at(-1)?.input).toMatchObject({ key: 'Ctrl+A' })
+    // strict 改写会把没填的 durationMs 写成 null：按缺席算。键码两端的空白去掉。
+    await browserActTool.fn({ ...press, phases: [{ keys: [' KeyW '], durationMs: null }] }, ctx)
+    expect(calls.at(-1)?.input).toMatchObject({ phases: [{ keys: ['KeyW'] }] })
 
     const sent = calls.length
-    // 主键名与结构在同一处判：认不出的主键同样是参数错，端口一次都不该被调进去。
-    for (const key of [
-      'Ctrl+',
-      '+',
-      'Ctrl++A',
-      'Ctrl+Ctrl+A',
-      'Super+A',
-      'Ctrl+A+B',
-      'NoSuchKey',
-      'F13',
-      'Ctrl+NoSuchKey',
-      'enter',
+    const tooMany = Array.from({ length: 33 }, () => ({ keys: ['KeyW'] }))
+    const wide = [
+      { keys: ['KeyA', 'KeyB', 'KeyC', 'KeyD', 'KeyE', 'KeyF', 'KeyG', 'KeyH', 'KeyI'] },
+    ]
+    for (const phases of [
+      [],
+      'KeyW',
+      [{ keys: ['W'] }],
+      [{ keys: ['Ctrl+A'] }],
+      [{ keys: ['KeyW', 'KeyW'] }],
+      [{ keys: [] }],
+      [{ keys: ['KeyW'], durationMs: 6000 }],
+      [{ keys: ['KeyW'], durationMs: -1 }],
+      [{ keys: ['KeyW'], durationMs: 'abc' }],
+      [
+        { keys: ['KeyW'], durationMs: 5000 },
+        { keys: ['KeyW'], durationMs: 5000 },
+        { keys: [], durationMs: 1 },
+      ],
+      tooMany,
+      wide,
     ]) {
-      const r = await browserActTool.fn({ ...press, key }, ctx)
+      const r = await browserActTool.fn({ ...press, phases }, ctx)
       expect(r.status).toBe('failure')
       expect(r.executed).toBe(false)
       expect(r.errorKind).toBe('invalid_argument')
     }
     expect(calls).toHaveLength(sent)
 
-    const unknown = await browserActTool.fn({ ...press, key: 'NoSuchKey' }, ctx)
+    const unknown = await browserActTool.fn({ ...press, phases: [{ keys: ['NoSuchKey'] }] }, ctx)
     expect(unknown.message).toContain('NoSuchKey')
-    expect(unknown.message).toContain('Enter')
+    expect(unknown.message).toContain('ControlLeft')
   })
 })
 
@@ -584,22 +658,32 @@ describe('部分完成与结果未知', () => {
   test('unknown 没有观察时保留回执与观察失败原因', async () => {
     const { port } = fakeBrowser({
       act: async () => ({
-        execution: { state: 'unknown' },
+        execution: { state: 'unknown', reason: '控制连接已断开', unreleased: ['KeyW'] },
         observation: null,
         observationError: '连接已断开',
       }),
     })
     const r = await browserActTool.fn(
-      { tabId: 'bt_1', observationId: 'ob_0', action: 'drag', ref: 'e1', toRef: 'e2' },
+      {
+        tabId: 'bt_1',
+        observationId: 'ob_0',
+        action: 'press',
+        phases: [{ keys: ['KeyW'], durationMs: 1000 }],
+      },
       ctxWith('/w', port),
     )
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
     expect(r.errorKind).toBe('browser_unknown')
-    expect(r.message).toContain('结果未知')
+    expect(r.message).toContain('结果未知（控制连接已断开）')
+    // 页面可能仍认为这个键按着：说出来，调用方才不会把后续异常当成页面自己的问题。
+    expect(r.message).toContain('未确认松开：KeyW')
     expect(r.message).toContain('连接已断开')
     expect(r.message).toContain('不要重放')
-    expect(data(r)).toEqual({ execution: { state: 'unknown' }, observationError: '连接已断开' })
+    expect(data(r)).toEqual({
+      execution: { state: 'unknown', reason: '控制连接已断开', unreleased: ['KeyW'] },
+      observationError: '连接已断开',
+    })
   })
 
   test('completed 与缺席都按普通成功投递', async () => {
@@ -741,15 +825,53 @@ describe('观察的投递', () => {
     expect(r.message).toContain('不要重复动作')
   })
 
-  test('wait 超时仍可带观察，状态按 found 定', async () => {
+  test('wait 超时仍可带观察，状态按 met 定', async () => {
     const { port } = fakeBrowser({
-      wait: async () => ({ found: false, reason: 'timeout', observation: OB }),
+      wait: async () => ({ met: false, reason: 'timeout', observation: OB }),
     })
     const r = await browserWaitTool.fn({ tabId: 'bt_1', selector: '#x' }, ctxWith('/w', port))
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
-    expect(data(r)).toMatchObject({ found: false, reason: 'timeout', observationId: 'ob_1' })
+    expect(data(r)).toMatchObject({ met: false, reason: 'timeout', observationId: 'ob_1' })
     expect(r.message).toContain('没等到 #x')
+  })
+
+  test('wait 的状态缺省为可见；text / value 必须给 expected，空串是合法的期望值', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+
+    await browserWaitTool.fn({ tabId: 'bt_1', selector: '#go' }, ctx)
+    expect(calls.at(-1)?.input).toEqual({
+      tabId: 'bt_1',
+      selector: '#go',
+      state: 'visible',
+      timeoutMs: 10_000,
+    })
+
+    const r = await browserWaitTool.fn(
+      { tabId: 'bt_1', selector: '#score', state: 'text', expected: '120' },
+      ctx,
+    )
+    expect(calls.at(-1)?.input).toMatchObject({ state: 'text', expected: '120' })
+    expect(r.message).toContain('#score 文本为 "120"，已达到')
+    expect(data(r)).toMatchObject({ met: true, state: 'text' })
+
+    await browserWaitTool.fn({ tabId: 'bt_1', selector: '#q', state: 'value', expected: '' }, ctx)
+    expect(calls.at(-1)?.input).toMatchObject({ state: 'value', expected: '' })
+
+    const sent = calls.length
+    const bad: [Record<string, unknown>, string][] = [
+      [{ selector: '#q', state: 'text' }, '必须给 expected'],
+      [{ selector: '#q', state: 'visible', expected: 'x' }, '不接受 expected'],
+      [{ selector: '#q', state: 'shown' }, 'state 只能是'],
+      [{ state: 'hidden' }, '要与 selector 一起给'],
+    ]
+    for (const [args, text] of bad) {
+      const one = await browserWaitTool.fn({ tabId: 'bt_1', ...args }, ctx)
+      expect(one.executed).toBe(false)
+      expect(one.message).toContain(text)
+    }
+    expect(calls).toHaveLength(sent)
   })
 
   test('不给 selector 时等满时长再观察，不走选择器等待', async () => {
