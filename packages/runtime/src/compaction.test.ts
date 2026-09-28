@@ -23,9 +23,47 @@ import {
 import { RuntimeCompaction } from './compaction.ts'
 import { buildHistory } from './transcript.ts'
 
-/** 助手消息垫长一点，单元之间才有体积差，选界不至于一刀切到底。 */
+/** 助手回复垫长一点，单元之间才有体积差，选界不至于一刀切到底。 */
 const PAD = 'x'.repeat(1000)
 
+/**
+ * 一轮对话按真实形状落库：用户的话进 `messages`，助手回复是这句话名下 run 里的 text step。
+ * 返回用户消息 id。
+ */
+function turn(
+  store: Store,
+  workspaceId: string,
+  conversationId: string,
+  user: string,
+  reply: string | null,
+): MessageId {
+  const message = appendMessage(store, {
+    conversationId: conversationId as never,
+    role: 'user',
+    content: user,
+  })
+  if (reply !== null) {
+    const run = createRun(store, {
+      conversationId: conversationId as never,
+      workspaceId: workspaceId as never,
+      model: 'm',
+      clientRequestId: `reply-${message.id}`,
+      userMessageId: message.id,
+      messageIdUpperBound: message.id,
+      contextSnapshot: [],
+    })
+    appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'text',
+      content: reply,
+      providerBatchId: `bt_reply_${message.id}`,
+    })
+  }
+  return message.id
+}
+
+/** `messageCount` 条对话：偶数位是用户的话，奇数位是上一句的助手回复。`ids` 只含用户消息。 */
 function fresh(messageCount = 8) {
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
@@ -36,18 +74,15 @@ function fresh(messageCount = 8) {
     title: 't',
   })
   const ids: MessageId[] = []
-  for (let i = 0; i < messageCount; i++) {
+  for (let i = 0; i < messageCount; i += 2) {
     ids.push(
-      appendMessage(store, {
-        conversationId: conv.id,
-        role: i % 2 === 0 ? 'user' : 'assistant',
-        content:
-          i === 0
-            ? '重构认证模块，不要动 legacy/'
-            : i % 2 === 0
-              ? `第 ${i} 条消息`
-              : `第 ${i} 条 ${PAD}`,
-      }).id,
+      turn(
+        store,
+        ws.id,
+        conv.id,
+        i === 0 ? '重构认证模块，不要动 legacy/' : `第 ${i} 条消息`,
+        i + 1 < messageCount ? `第 ${i + 1} 条 ${PAD}` : null,
+      ),
     )
   }
   return { store, ws, conv, ids }
@@ -225,7 +260,7 @@ describe('投影三区', () => {
       { content: '工作区：C:/ws', group: 'workspaceState' as const },
       { content: '## 记忆索引\n- no-repeat', group: 'memory' as const },
     ]
-    for (const [i, userMessageId] of [ids[0]!, ids[2]!, ids[4]!].entries()) {
+    for (const [i, userMessageId] of [ids[0]!, ids[1]!, ids[2]!].entries()) {
       createRun(store, {
         conversationId: conv.id,
         workspaceId: ws.id,
@@ -901,12 +936,8 @@ describe('增量压缩', () => {
     const first = await p.run(await pressure(store, conv.id))
     expect(first.status === 'compacted' && first.manifest.revision).toBe(1)
 
-    for (let i = 0; i < 4; i++) {
-      appendMessage(store, {
-        conversationId: conv.id,
-        role: 'assistant',
-        content: `新消息 ${i} ${PAD}`,
-      })
+    for (let i = 0; i < 2; i++) {
+      turn(store, conv.workspaceId, conv.id, `新消息 ${i}`, `新回复 ${i} ${PAD}`)
     }
 
     const second = await p.run(await pressure(store, conv.id))

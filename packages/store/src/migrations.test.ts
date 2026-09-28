@@ -11,14 +11,9 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Store } from './db.ts'
+import { executeMigration, Store } from './db.ts'
 import { recoverStaleRuns } from './repos.ts'
 import { MIGRATIONS, ROW_COLUMNS } from './schema.ts'
-
-function executeMigration(db: Database, migration: (typeof MIGRATIONS)[number]): void {
-  if (migration.sql) db.exec(migration.sql)
-  migration.apply?.(db)
-}
 
 /** 跑到某一条迁移之前的库。外键默认关着，所以可以只插 steps 不建父行。 */
 function dbBefore(id: number): Database {
@@ -1810,5 +1805,65 @@ VALUES ('pr_x', 'ws', 'run_command:git', 'allow', 1);`)
     const fresh = dbBefore(Number.POSITIVE_INFINITY)
     expect(tables(fresh)).toEqual([])
     fresh.close()
+  })
+})
+
+describe('迁移 65：消息表只存用户的话', () => {
+  test('存量用户消息逐列保留，runs 不再有 assistant_message_id', () => {
+    const db = dbBefore(65)
+    db.exec(`
+INSERT INTO messages (id, conversation_id, role, content, attachments, created_at, origin)
+VALUES ('ms_1', 'cv', 'user', '改一下登录页', '[]', 1, NULL),
+       ('ms_2', 'cv', 'user', '子任务回执', NULL, 2, 'subagent');
+`)
+    applyOne(db, 65)
+
+    expect(
+      db
+        .query(
+          'SELECT id, role, content, attachments, created_at, origin FROM messages ORDER BY id',
+        )
+        .all(),
+    ).toEqual([
+      {
+        id: 'ms_1',
+        role: 'user',
+        content: '改一下登录页',
+        attachments: '[]',
+        created_at: 1,
+        origin: null,
+      },
+      {
+        id: 'ms_2',
+        role: 'user',
+        content: '子任务回执',
+        attachments: null,
+        created_at: 2,
+        origin: 'subagent',
+      },
+    ])
+    const runColumns = db
+      .query<{ name: string }, []>('PRAGMA table_info(runs)')
+      .all()
+      .map((c) => c.name)
+    expect(runColumns).not.toContain('assistant_message_id')
+    expect(() =>
+      db.exec(
+        "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('ms_3', 'cv', 'assistant', 'x', 3)",
+      ),
+    ).toThrow()
+    db.close()
+  })
+
+  test('存量库里有助手行时迁移失败，不静默删除', () => {
+    const db = dbBefore(65)
+    db.exec(
+      "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('ms_a', 'cv', 'assistant', '旧回复', 1)",
+    )
+    expect(() => db.transaction(() => applyOne(db, 65))()).toThrow()
+    expect(db.query('SELECT id, role FROM messages').all()).toEqual([
+      { id: 'ms_a', role: 'assistant' },
+    ])
+    db.close()
   })
 })

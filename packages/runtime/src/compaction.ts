@@ -243,10 +243,15 @@ export class RuntimeCompaction implements CompactionPort {
         foldedMessageCount++
       }
       for (const m of u.messages) {
-        if (m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()) {
+        if (
+          u.assistantId &&
+          m.role === 'assistant' &&
+          typeof m.content === 'string' &&
+          m.content.trim()
+        ) {
           // 地址用助手正文自己的 step：用所属用户消息的 id 的话，模型按摘要里的标记读回的是用户的原话。
           messages.push({
-            id: u.assistantId ?? u.cut.messageId,
+            id: u.assistantId,
             role: 'assistant',
             content: m.content,
           })
@@ -453,15 +458,12 @@ export class RuntimeCompaction implements CompactionPort {
         _group: 'historyMessages',
         _messageId: m.id,
       }
-      const context: WireMessage[] =
-        m.role === 'user'
-          ? (contextByUser.get(m.id) ?? []).map((segment) => ({
-              role: 'context' as const,
-              content: segment.content,
-              _group: segment.group,
-              _messageId: m.id,
-            }))
-          : []
+      const context: WireMessage[] = (contextByUser.get(m.id) ?? []).map((segment) => ({
+        role: 'context' as const,
+        content: segment.content,
+        _group: segment.group,
+        _messageId: m.id,
+      }))
       units.push({
         key: cutKey(cut),
         cut,

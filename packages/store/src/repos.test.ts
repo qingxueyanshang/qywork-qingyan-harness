@@ -363,15 +363,10 @@ describe('会话历史分页', () => {
         })
       }
       finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
-      appendMessage(store, {
-        conversationId: conv.id,
-        role: 'assistant',
-        content: `兜底 ${i}`,
-      })
     }
 
     const newest = listConversationHistoryPage(store, conv.id, { limit: 2 })
-    expect(newest.messages.map((m) => m.content)).toEqual(['用户 4', '兜底 4', '用户 5', '兜底 5'])
+    expect(newest.messages.map((m) => m.content)).toEqual(['用户 4', '用户 5'])
     expect(newest.runs).toHaveLength(2)
     expect(newest.steps.map((s) => s.content)).toEqual(['回答 4', '回答 5'])
     expect(newest.todos.map((t) => t.content)).toEqual(['跨页待办'])
@@ -381,7 +376,7 @@ describe('会话历史分页', () => {
       limit: 2,
       before: newest.nextCursor,
     })
-    expect(older.messages.map((m) => m.content)).toEqual(['用户 2', '兜底 2', '用户 3', '兜底 3'])
+    expect(older.messages.map((m) => m.content)).toEqual(['用户 2', '用户 3'])
     expect(older.runs).toHaveLength(2)
     expect(older.steps.map((s) => s.content)).toEqual(['回答 2', '回答 3'])
     expect(older.nextCursor).toBe(users[1]!)
@@ -390,7 +385,7 @@ describe('会话历史分页', () => {
       limit: 2,
       before: older.nextCursor,
     })
-    expect(oldest.messages.map((m) => m.content)).toEqual(['用户 1', '兜底 1'])
+    expect(oldest.messages.map((m) => m.content)).toEqual(['用户 1'])
     expect(oldest.steps.map((s) => s.content)).toEqual(['回答 1', null])
     expect(oldest.nextCursor).toBeNull()
     store.close()

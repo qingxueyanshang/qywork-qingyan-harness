@@ -1029,52 +1029,45 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
 
   const items: TranscriptItem[] = []
   for (const m of messages) {
-    if (m.role === 'user') {
-      // 回执与人打的字都是 user 角色，且都能起轮：条目形态按 origin 分，名下的
-      // run 与 steps 两种一样折。
-      items.push(
-        m.origin
-          ? { id: m.id, kind: 'receipt', text: m.content, origin: m.origin }
-          : {
-              id: m.id,
-              kind: 'user',
-              text: m.content,
-              ...(m.attachments?.length ? { attachments: m.attachments } : {}),
-            },
-      )
-      for (const r of runsByUserMessage.get(m.id) ?? []) {
-        for (const s of stepsByRun.get(r.id) ?? []) {
-          for (const item of stepToItems(s)) {
-            items.push(item)
-          }
-        }
-        // 这一轮的收尾读数。**跟着 steps 一起折回来**——它和工具卡是同一类条目：
-        // 真实发生过、落了库、刷新后必须还在。少了它，「这一轮花了多少、跑了多久、
-        // 为什么停」在刷新后就只剩最后一轮（而且是活的那一份，重连即丢）。
-        //
-        // 还没收尾的 run（进程被杀、正在跑）不折：它没有终态，
-        // 造一条 `endedAt: null` 的条目会让读数条一直按运行中计时。
-        if (r.finishedAt !== null) {
-          items.push({
-            id: `run_${r.id}`,
-            kind: 'run',
-            text: '',
-            run: {
-              runId: r.id,
-              stopReason: r.stopReason,
-              usage: r.usage,
-              startedAt: r.createdAt,
-              endedAt: r.finishedAt,
-              errorMessage: r.errorMessage,
-            },
-          })
+    // 回执与人打的字都是 user 角色，且都能起轮：条目形态按 origin 分，名下的
+    // run 与 steps 两种一样折。
+    items.push(
+      m.origin
+        ? { id: m.id, kind: 'receipt', text: m.content, origin: m.origin }
+        : {
+            id: m.id,
+            kind: 'user',
+            text: m.content,
+            ...(m.attachments?.length ? { attachments: m.attachments } : {}),
+          },
+    )
+    for (const r of runsByUserMessage.get(m.id) ?? []) {
+      for (const s of stepsByRun.get(r.id) ?? []) {
+        for (const item of stepToItems(s)) {
+          items.push(item)
         }
       }
-    } else if (m.content.trim()) {
-      // assistant 兜底消息：steps 里已有 text step 时会重复，
-      // 所以只在这一轮没产出任何文本 step 时才补。
-      const alreadyHasText = items[items.length - 1]?.kind === 'text'
-      if (!alreadyHasText) items.push({ id: m.id, kind: 'text', text: m.content })
+      // 这一轮的收尾读数。**跟着 steps 一起折回来**——它和工具卡是同一类条目：
+      // 真实发生过、落了库、刷新后必须还在。少了它，「这一轮花了多少、跑了多久、
+      // 为什么停」在刷新后就只剩最后一轮（而且是活的那一份，重连即丢）。
+      //
+      // 还没收尾的 run（进程被杀、正在跑）不折：它没有终态，
+      // 造一条 `endedAt: null` 的条目会让读数条一直按运行中计时。
+      if (r.finishedAt !== null) {
+        items.push({
+          id: `run_${r.id}`,
+          kind: 'run',
+          text: '',
+          run: {
+            runId: r.id,
+            stopReason: r.stopReason,
+            usage: r.usage,
+            startedAt: r.createdAt,
+            endedAt: r.finishedAt,
+            errorMessage: r.errorMessage,
+          },
+        })
+      }
     }
   }
   return items

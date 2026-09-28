@@ -423,22 +423,12 @@ function toMarkdown(bundle: ArchiveBundle, opts: ArchiveOptions): string {
   const stepsByRun = new Map(bundle.runs.map((r) => [r.userMessageId ?? '', r]))
 
   for (const m of bundle.messages) {
-    if (m.role === 'user') {
-      out.push('---', '', `## 用户`, '', m.content, '')
-      const run = stepsByRun.get(m.id)
-      if (run) out.push(...renderRun(run, limit, opts.includeThinking === true))
-    } else if (m.role === 'assistant' && !hasRunFor(bundle, m)) {
-      // 没有对应 run 的 assistant 消息（历史导入之类）也要出现，不能因为
-      // 「渲染路径主要走 run」就把它漏掉。
-      out.push('## 助手', '', m.content, '')
-    }
+    out.push('---', '', `## 用户`, '', m.content, '')
+    const run = stepsByRun.get(m.id)
+    if (run) out.push(...renderRun(run, limit, opts.includeThinking === true))
   }
 
   return `${out.join('\n')}\n`
-}
-
-function hasRunFor(bundle: ArchiveBundle, m: Message): boolean {
-  return bundle.runs.some((r) => r.assistantMessageId === m.id)
 }
 
 function renderRun(run: ArchiveBundle['runs'][number], limit: number, thinking: boolean): string[] {

@@ -13,6 +13,55 @@ export interface StoreOptions {
   path: string
 }
 
+/**
+ * 执行一条迁移：SQL 逐条执行，再跑 `apply`。
+ *
+ * 不要把逐条执行换回 `db.exec(m.sql)`：Bun 1.4.2 执行多条语句时只报最后一条的错，
+ * 中间某条失败被吞掉，后面的 DROP / RENAME 照常执行，事务随之提交半迁移状态。
+ * 实测：重建表的 INSERT 违反 CHECK 后，旧表仍被删掉，数据静默丢失。
+ */
+export function executeMigration(db: Database, migration: (typeof MIGRATIONS)[number]): void {
+  if (migration.sql) for (const statement of splitStatements(migration.sql)) db.run(statement)
+  migration.apply?.(db)
+}
+
+/**
+ * 按引号与注释之外的分号切分。迁移里不写触发器：`BEGIN … END` 内部的分号在这里切不开，
+ * 需要触发器时改用 `apply`。
+ */
+function splitStatements(sql: string): string[] {
+  const statements: string[] = []
+  let start = 0
+  let i = 0
+  const push = (end: number) => {
+    const statement = sql.slice(start, end)
+    const code = statement.replace(/--[^\n]*|\/\*[\s\S]*?\*\//g, '').trim()
+    if (/\bCREATE\s+TRIGGER\b/i.test(code)) throw new Error('迁移 SQL 不支持触发器，改用 apply')
+    if (code) statements.push(statement)
+  }
+  while (i < sql.length) {
+    const c = sql[i]
+    if (c === "'" || c === '"') {
+      const close = sql.indexOf(c, i + 1)
+      i = close < 0 ? sql.length : close + 1
+    } else if (c === '-' && sql[i + 1] === '-') {
+      const newline = sql.indexOf('\n', i)
+      i = newline < 0 ? sql.length : newline + 1
+    } else if (c === '/' && sql[i + 1] === '*') {
+      const close = sql.indexOf('*/', i + 2)
+      i = close < 0 ? sql.length : close + 2
+    } else {
+      if (c === ';') {
+        push(i)
+        start = i + 1
+      }
+      i++
+    }
+  }
+  push(sql.length)
+  return statements
+}
+
 export class Store {
   readonly db: Database
 
@@ -73,8 +122,7 @@ export class Store {
       // 实例同时初始化时直接回 SQLITE_BUSY，不走 busy_timeout。
       this.db
         .transaction(() => {
-          if (m.sql) this.db.exec(m.sql)
-          m.apply?.(this.db)
+          executeMigration(this.db, m)
           this.db
             .query('INSERT INTO _migrations (id, name, applied_at) VALUES (?, ?, ?)')
             .run(m.id, m.name, Date.now())

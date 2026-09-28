@@ -593,8 +593,7 @@ export function listMessages(
  *
  * 旧读法是 messages + runs + 每个 run 一次 steps：轮数越多，请求数线性增长，
  * 浏览器还要等所有请求、解析所有 JSON、一次挂完整棵 DOM。这里把边界与批量读取
- * 收回账本层：一页只选 `limit` 条 user message，再一次取齐它们之间的消息、run
- * 与 steps。模型重建历史仍走无分页的 `listMessages` / `buildHistory`，不受影响。
+ * 收回账本层：一页只选 `limit` 条用户消息，再一次取齐它们的 run 与 steps。模型重建历史仍走无分页的 `listMessages` / `buildHistory`，不受影响。
  */
 export function listConversationHistoryPage(
   store: Store,
@@ -603,24 +602,24 @@ export function listConversationHistoryPage(
 ): ConversationHistoryPage {
   const limit = Math.max(1, Math.min(100, Math.trunc(input.limit)))
   const before = input.before ?? null
-  const userRows = before
+  const rows = before
     ? store.db
-        .query<Pick<MessageRow, 'id'>, [string, string, number]>(
-          `SELECT id FROM messages
-           WHERE conversation_id = ? AND role = 'user' AND id < ?
+        .query<MessageRow, [string, string, number]>(
+          `SELECT * FROM messages
+           WHERE conversation_id = ? AND id < ?
            ORDER BY id DESC LIMIT ?`,
         )
         .all(conversationId, before, limit + 1)
     : store.db
-        .query<Pick<MessageRow, 'id'>, [string, number]>(
-          `SELECT id FROM messages
-           WHERE conversation_id = ? AND role = 'user'
+        .query<MessageRow, [string, number]>(
+          `SELECT * FROM messages
+           WHERE conversation_id = ?
            ORDER BY id DESC LIMIT ?`,
         )
         .all(conversationId, limit + 1)
 
-  const hasMore = userRows.length > limit
-  const selected = userRows.slice(0, limit)
+  const hasMore = rows.length > limit
+  const selected = rows.slice(0, limit)
   const oldest = selected.at(-1)?.id ?? null
   if (!oldest) {
     return {
@@ -633,24 +632,7 @@ export function listConversationHistoryPage(
     }
   }
 
-  // 取所选用户轮次之间的整段消息；排他上界保证相邻页不重叠。
-  const messages = (
-    before
-      ? store.db
-          .query<MessageRow, [string, string, string]>(
-            `SELECT * FROM messages
-           WHERE conversation_id = ? AND id >= ? AND id < ?
-           ORDER BY id ASC`,
-          )
-          .all(conversationId, oldest, before)
-      : store.db
-          .query<MessageRow, [string, string]>(
-            `SELECT * FROM messages
-           WHERE conversation_id = ? AND id >= ?
-           ORDER BY id ASC`,
-          )
-          .all(conversationId, oldest)
-  ).map(rowToMessage)
+  const messages = selected.toReversed().map(rowToMessage)
 
   const userIds = selected.map((row) => row.id)
   const marks = userIds.map(() => '?').join(',')
@@ -776,7 +758,7 @@ export function listConversationChangesPage(
   const turnRows = rows<TurnRow>(
     `${cte}
      SELECT m.id, m.content, m.origin, m.created_at FROM messages m
-     WHERE m.conversation_id = $conv AND m.role = 'user' ${before ? 'AND m.id < $before' : ''}
+     WHERE m.conversation_id = $conv ${before ? 'AND m.id < $before' : ''}
        AND (EXISTS (SELECT 1 FROM own WHERE own.turn_id = m.id)
          OR EXISTS (SELECT 1 FROM delegated WHERE delegated.turn_id = m.id)
          OR EXISTS (SELECT 1 FROM nodes WHERE nodes.turn_id = m.id AND nodes.cli_writes > 0))
@@ -957,7 +939,6 @@ export function createRun(
     workspaceId: input.workspaceId,
     userMessageId: input.userMessageId,
     messageIdUpperBound: input.messageIdUpperBound,
-    assistantMessageId: null,
     model: input.model,
     clientRequestId: input.clientRequestId,
     dispatchStepId: input.dispatch?.stepId ?? null,
@@ -975,11 +956,11 @@ export function createRun(
   store.db
     .query(
       `INSERT INTO runs
-       (id, conversation_id, workspace_id, user_message_id, message_id_upper_bound, assistant_message_id,
+       (id, conversation_id, workspace_id, user_message_id, message_id_upper_bound,
         model, client_request_id, status, stop_reason, input_tokens, output_tokens, cached_tokens,
          cache_write_tokens, reasoning_tokens, cost, currency, usage_turns, step_count, error_message, error_code,
          context_snapshot, created_at, finished_at, owner_pid, heartbeat_at, dispatch_step_id, dispatch_node_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,?,NULL,?,?,?,?)`,
+        VALUES (?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,?,NULL,?,?,?,?)`,
     )
     .run(
       run.id,
@@ -987,7 +968,6 @@ export function createRun(
       run.workspaceId,
       run.userMessageId,
       run.messageIdUpperBound,
-      null,
       run.model,
       run.clientRequestId,
       run.status,
@@ -1080,7 +1060,6 @@ export function finishRun(
   input: {
     status: 'done' | 'failed' | 'interrupted'
     stopReason: StopReason
-    assistantMessageId?: MessageId | null
     errorMessage?: string | null
     errorCode?: string | null
     interruption?: RunInterruption | null
@@ -1088,13 +1067,12 @@ export function finishRun(
 ): void {
   store.db
     .query(
-      `UPDATE runs SET status = ?, stop_reason = ?, assistant_message_id = COALESCE(?, assistant_message_id),
+      `UPDATE runs SET status = ?, stop_reason = ?,
        error_message = ?, error_code = ?, interruption_detail = ?, finished_at = ? WHERE id = ?`,
     )
     .run(
       input.status,
       input.stopReason,
-      input.assistantMessageId ?? null,
       input.errorMessage ?? null,
       input.errorCode ?? null,
       input.interruption ? writeJson(input.interruption) : null,
@@ -2056,7 +2034,6 @@ function rowToRun(r: RunRow): Run {
     workspaceId: r.workspace_id,
     userMessageId: r.user_message_id,
     messageIdUpperBound: r.message_id_upper_bound,
-    assistantMessageId: r.assistant_message_id,
     model: r.model,
     clientRequestId: r.client_request_id,
     status: r.status,
