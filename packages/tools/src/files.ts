@@ -10,8 +10,10 @@
  *    猜错的那次会静默改错地方。
  */
 
+import { createReadStream } from 'node:fs'
 import { lstat, mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, parse } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import {
   chargeBatchBudget,
   deliveryCap,
@@ -19,6 +21,7 @@ import {
   recordBatchSpent,
   type ToolContext,
   type ToolSpec,
+  tokensToMaxBytes,
 } from '@qywork/agent'
 import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
@@ -65,24 +68,23 @@ function readHashes(ctx: ToolContext): ReadHashes {
   return { get: (p) => fallback.get(p) ?? null, set: (p, h) => void fallback.set(p, h) }
 }
 
+/**
+ * 读记录的哈希：正文按 UTF-8 编码后的 SHA-256。
+ *
+ * 读取一侧边读边算（`scanLines`），写入与编辑一侧对整份正文算，两侧必须是同一个函数。
+ * 不要换成只能一次算完的哈希：流式读取时整份正文不在内存里。
+ */
 function hash(text: string): string {
-  return Bun.hash(text).toString(16)
+  return new Bun.CryptoHasher('sha256').update(text).digest('hex')
 }
 
 /**
- * 文本、图片与 PDF 各有自己的上限，三个数管三件不同的事，合并成一个数之后调任一边都会误伤另外两边。
- *
- * - 文本按内存封顶：整份读进内存再按行切分，与 PDF 同一口径。它不是投递上限——投多少由本次决策的
- *   投递额度定，装不下时分段续读；也不要按 token 成本封顶，1M 窗口装得下远大于 1 MB 的文本。
- * - 图片按 provider 的单请求上限封顶（10 MB base64 约 13 MB）。
- * - PDF 按解析时的内存占用封顶（`unpdf` 整份读进内存）。
+ * 图片与 PDF 各有自己的上限：图片按 provider 的单请求上限（10 MB base64 约 13 MB），
+ * PDF 按解析时的内存占用（`unpdf` 整份读进内存）。文本没有大小上限：按行流式读，
+ * 内存只放得下本轮要投递的那几行（`scanLines`）。
  */
-const MAX_TEXT_BYTES = 20 * 1024 * 1024
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_PDF_BYTES = 20 * 1024 * 1024
-
-/** 超过它的文件先嗅探再整读：视频、音频、压缩包多数都比它大，整读一次再判就是把它整份装进内存。 */
-const SNIFF_BEFORE_READ_BYTES = 1024 * 1024
 
 /** PDF 抽取结果的 run 内缓存。键带指纹，文件改了自然失效。 */
 const PDF_STATE_KEY = 'files.pdfText'
@@ -128,20 +130,87 @@ async function pdfText(ctx: ToolContext, abs: string, stamp: string): Promise<st
 // biome-ignore lint/suspicious/noControlCharactersInRegex: 匹配 NUL 正是本意——判断文件是不是二进制的标准做法
 const BINARY_SNIFF = /\x00/
 
+/** 一次按行读取的结果：请求范围内保留下来的行、文件总行数、范围内的行是否全部保留、整份正文的哈希。 */
+interface LineScan {
+  lines: string[]
+  total: number
+  complete: boolean
+  digest: string
+}
+
 /**
- * 只读头部若干字节做嗅探，**不整个读进来**——走到这里的文件已经超了
- * `SNIFF_BEFORE_READ_BYTES`，整读一次就是把它装进内存再丢掉。
+ * 按行读正文：只保留第 `offset` 行起至多 `limit` 行、累计不超过 `keepBytes` 的行（至少一行），
+ * 同时数出总行数、算出整份正文的哈希。行按 LF 切，行尾的 CR 去掉，与 `toLf` 后再按 `\n` 切同形。
+ *
+ * 开头 4096 个字符里有 NUL 即判为二进制，不再往下读。
+ * 不要改回整份读进内存再切：几百 MB 的日志装进一个字符串就是几百 MB 的 UTF-16，
+ * 而一次最多只投递得下一个窗口的量。
  */
-async function looksBinary(abs: string): Promise<boolean> {
-  const fh = await open(abs, 'r').catch(() => null)
-  if (!fh) return false
-  try {
-    const buf = Buffer.alloc(4096)
-    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
-    return BINARY_SNIFF.test(buf.subarray(0, bytesRead).toString('utf8'))
-  } finally {
-    await fh.close()
+async function scanLines(
+  chunks: AsyncIterable<string>,
+  offset: number,
+  limit: number,
+  keepBytes: number,
+): Promise<LineScan | 'binary'> {
+  const hasher = new Bun.CryptoHasher('sha256')
+  const lines: string[] = []
+  let kept = 0
+  let total = 0
+  let complete = true
+  let pending = ''
+  let sniffed = false
+  const take = (line: string) => {
+    total++
+    if (total < offset || total - offset >= limit) return
+    if (lines.length > 0 && kept >= keepBytes) {
+      complete = false
+      return
+    }
+    lines.push(line)
+    kept += Buffer.byteLength(line) + 1
   }
+  for await (const text of chunks) {
+    hasher.update(text)
+    const buf = pending + text
+    if (!sniffed && buf.length >= 4096) {
+      if (BINARY_SNIFF.test(buf.slice(0, 4096))) return 'binary'
+      sniffed = true
+    }
+    let start = 0
+    for (let nl = buf.indexOf('\n'); nl >= 0; nl = buf.indexOf('\n', start)) {
+      take(
+        buf.charCodeAt(nl - 1) === 13 && nl > start
+          ? buf.slice(start, nl - 1)
+          : buf.slice(start, nl),
+      )
+      start = nl + 1
+    }
+    pending = buf.slice(start)
+  }
+  if (!sniffed && BINARY_SNIFF.test(pending.slice(0, 4096))) return 'binary'
+  take(pending)
+  return { lines, total, complete, digest: hasher.digest('hex') }
+}
+
+/**
+ * 文件正文按 UTF-8 流式解码成字符串片段。
+ *
+ * 用 `StringDecoder` 而不是 `TextDecoder`：前者与 `readFile(abs, 'utf8')` 同一套规则（保留 BOM、
+ * 非法字节的替换方式相同），写入与编辑一侧按后者算哈希，两侧解码不同就永远判成「读取之后被改过」。
+ */
+async function* decodeFile(abs: string): AsyncGenerator<string> {
+  const decoder = new StringDecoder('utf8')
+  for await (const chunk of createReadStream(abs)) {
+    const text = decoder.write(chunk as Buffer)
+    if (text) yield text
+  }
+  const rest = decoder.end()
+  if (rest) yield rest
+}
+
+/** 已在内存里的正文（PDF 抽取结果）当作一个片段交给 `scanLines`。 */
+async function* oneChunk(text: string): AsyncGenerator<string> {
+  yield text
 }
 
 /**
@@ -197,10 +266,8 @@ export const readFileTool: ToolSpec = {
     }
 
     /*
-     * 图片与 PDF 在**二进制嗅探之前**分派。
-     *
-     * 不能放到下面二进制嗅探那一行：手机照片和多数 PDF 都超过 `SNIFF_BEFORE_READ_BYTES`，
-     * 放晚一行它们会先被判成二进制而拒绝。这两条各有自己的上限。
+     * 图片与 PDF 在**二进制嗅探之前**分派：它们开头的字节里有 NUL，放到按行读取之后会先被判成
+     * 二进制而拒绝。这两条各有自己的上限。
      */
     // PDF 抽取缓存的键：文件改了就是另一份内容，缓存自然不命中。
     const fingerprint = `${Math.trunc(info.mtimeMs)}:${info.size}`
@@ -281,29 +348,10 @@ export const readFileTool: ToolSpec = {
       }
     }
 
-    if (pdf === null && info.size > SNIFF_BEFORE_READ_BYTES) {
-      /*
-       * **先嗅探再判大小。** 判据取内容不取扩展名：一张扩展名写错的文件同样成立，
-       * 而按扩展名判就得在这里再养一份音视频清单。
-       */
-      if (await looksBinary(abs)) return notText(String(args.path))
-      if (info.size > MAX_TEXT_BYTES) {
-        return {
-          status: 'failure',
-          message:
-            `文件过大（${Math.round(info.size / 1024 / 1024)} MB），超出整份读取的上限 20 MB。` +
-            `只需要其中一部分时用 run_command 调 grep / head / tail 等工具取出后再读。`,
-        }
-      }
-    }
-    const text = pdf ?? (await readFile(abs, 'utf8'))
-    if (BINARY_SNIFF.test(text.slice(0, 4096))) return notText(String(args.path))
-
-    const lines = toLf(text).split('\n')
     // 读不出整数就在这里终止。`Math.max` 是下界钳位（`offset: 0` 取 1），它挡不住 NaN：
     // `Math.max(1, NaN)` 还是 NaN，继续往下走就是一次「成功读取 0 行」。
     const rawOffset = intArg(args.offset, 1)
-    const rawLimit = intArg(args.limit, lines.length)
+    const rawLimit = intArg(args.limit, Number.MAX_SAFE_INTEGER)
     if (rawOffset === null || rawLimit === null) {
       const bad = rawOffset === null ? 'offset' : 'limit'
       return {
@@ -314,7 +362,18 @@ export const readFileTool: ToolSpec = {
     }
     const offset = Math.max(1, rawOffset)
     const limit = Math.max(1, rawLimit)
-    const slice = lines.slice(offset - 1, offset - 1 + limit)
+
+    // 只留本轮放得下的那几行：保留量取余量折成字节的上界，量完不超额度的前缀必然在其内。
+    const keepBytes = Math.max(MIN_DELIVERY_BYTES, tokensToMaxBytes(deliveryCap(ctx), ctx.density))
+    const scan = await scanLines(
+      pdf === null ? decodeFile(abs) : oneChunk(pdf),
+      offset,
+      limit,
+      keepBytes,
+    )
+    if (scan === 'binary') return notText(String(args.path))
+    const slice = scan.lines
+    const totalLines = scan.total
     const shown = displayPath(ctx.workspaceRoot, abs)
     const secrets = ctx.secrets ?? EMPTY_SECRETS
 
@@ -333,18 +392,18 @@ export const readFileTool: ToolSpec = {
         .map((l, i) => `${offset + i}\t${l}`)
         .join('\n')
       const end = offset - 1 + n
-      const complete = n === slice.length
+      const complete = n === slice.length && scan.complete
       return {
         message: complete
-          ? `读取 ${shown}（${n} 行${end < lines.length ? '，已截断' : ''}）`
-          : `读取 ${shown} 第 ${offset}–${end} 行（共 ${lines.length} 行）。` +
+          ? `读取 ${shown}（${n} 行${end < totalLines ? '，已截断' : ''}）`
+          : `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行）。` +
             `超出上下文剩余空间，从 offset=${end + 1} 续读；已读的段落在压缩时会收起，要点写在回复里。`,
         data: {
           content: redactSecrets(numbered, secrets),
           startLine: offset,
           endLine: end,
-          totalLines: lines.length,
-          truncated: end < lines.length,
+          totalLines,
+          truncated: end < totalLines,
           ...(complete ? {} : { nextOffset: end + 1 }),
         },
       }
@@ -353,7 +412,7 @@ export const readFileTool: ToolSpec = {
     // 哈希按**磁盘原文**算：它回答的是「磁盘现在是什么」，换成归一后的那份，
     // 文件行尾被别人改过就查不出来了。交给模型的正文才归一。
     // 只在确实交出内容之后记：失败的读取不能成为 edit 的前置证据。
-    const markRead = () => readHashes(ctx).set(abs, hash(text))
+    const markRead = () => readHashes(ctx).set(abs, scan.digest)
 
     /*
      * 投递：所请求的范围整份装得下就整份给；装不下给装得下的最长行前缀和下一行的 offset，
@@ -362,7 +421,7 @@ export const readFileTool: ToolSpec = {
      * 行数用二分按真实结果量出来，不要按平均行长估：行长不均时估出来的行数装不下。
      */
     const whole = firstLines(slice.length)
-    if (chargeBatchBudget(ctx, outcomeTokens(whole, ctx.density)).ok) {
+    if (scan.complete && chargeBatchBudget(ctx, outcomeTokens(whole, ctx.density)).ok) {
       markRead()
       return { status: 'success', ...whole }
     }
@@ -375,7 +434,7 @@ export const readFileTool: ToolSpec = {
         Buffer.byteLength(String(part.data.content)) <= MIN_DELIVERY_BYTES
       )
     }
-    if (fits(slice.length)) {
+    if (scan.complete && fits(slice.length)) {
       recordBatchSpent(ctx, outcomeTokens(whole, ctx.density))
       markRead()
       return { status: 'success', ...whole }
@@ -397,8 +456,8 @@ export const readFileTool: ToolSpec = {
 
     // 第一行都装不下：行偏移切不到一行中间，这一行存一次，按字节续读。
     const line = redactSecrets(slice[0] ?? '', secrets)
-    const message = `读取 ${shown} 第 ${offset} 行（共 ${lines.length} 行）`
-    const nextLine = offset < lines.length ? offset + 1 : null
+    const message = `读取 ${shown} 第 ${offset} 行（共 ${totalLines} 行）`
+    const nextLine = offset < totalLines ? offset + 1 : null
     const more = nextLine === null ? {} : { nextOffset: nextLine }
     const result = deliverReadable(ctx, {
       toolName: 'read_file',
@@ -409,7 +468,7 @@ export const readFileTool: ToolSpec = {
           content: `${offset}\t${line}`,
           startLine: offset,
           endLine: offset,
-          totalLines: lines.length,
+          totalLines,
           truncated: true,
           ...more,
         },
@@ -421,7 +480,7 @@ export const readFileTool: ToolSpec = {
           content: `${offset}\t${head}`,
           startLine: offset,
           endLine: offset,
-          totalLines: lines.length,
+          totalLines,
           truncated: true,
           ...more,
         },
