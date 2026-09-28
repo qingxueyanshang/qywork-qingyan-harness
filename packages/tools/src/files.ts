@@ -16,6 +16,7 @@ import {
   chargeBatchBudget,
   deliveryCap,
   outcomeTokens,
+  recordBatchSpent,
   type ToolContext,
   type ToolSpec,
 } from '@qywork/agent'
@@ -33,7 +34,7 @@ import {
   rootsOf,
 } from './paths.ts'
 import { redactSecrets } from './secrets.ts'
-import { deliverReadable } from './sink.ts'
+import { deliverReadable, MIN_DELIVERY_BYTES } from './sink.ts'
 
 /** 没有会话级 port 时的退路：把读记录暂存在 run 内的便签上。 */
 const READ_STATE_KEY = 'files.readHashes'
@@ -167,7 +168,7 @@ export const readFileTool: ToolSpec = {
     'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配）。' +
     '修改任何已存在的文件前必须先用它读一次——' +
     'write_file 和 edit_file 会校验你读到的内容是否仍是磁盘上的最新版本。' +
-    '默认读整份；超出本轮剩余容量时返回装得下的部分与续读位置。需要某一段时用 offset/limit。',
+    '默认读整份；超出上下文剩余空间时返回放得下的部分与续读位置。需要某一段时用 offset/limit。',
   parameters: {
     type: 'object',
     properties: {
@@ -225,14 +226,8 @@ export const readFileTool: ToolSpec = {
           message: `图片过大（${Math.round(info.size / 1024 / 1024)} MB），上限 10 MB`,
         }
       }
-      const charged = chargeBatchBudget(ctx, MEDIA_TOKENS)
-      if (!charged.ok) {
-        return {
-          status: 'failure',
-          message: `本轮投递额度只剩 ${charged.cap} token，装不下一张图，下一轮再读。`,
-          errorKind: 'result_too_large',
-        }
-      }
+      // 余量放不下一张图时照样投递：报失败的回合不产出内容，超出的这一张由下一次发送前的压缩收回。
+      if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
       /*
        * **记一次读记录，且只在图确实交出去时记。** 图片走不到下面文本那条 `readHashes(...).set`，
        * 不补这一笔的话模型读过一张图再 `write_file` 同一个路径，会拿到「已存在但没读取过。
@@ -343,7 +338,7 @@ export const readFileTool: ToolSpec = {
         message: complete
           ? `读取 ${shown}（${n} 行${end < lines.length ? '，已截断' : ''}）`
           : `读取 ${shown} 第 ${offset}–${end} 行（共 ${lines.length} 行）。` +
-            `超出本轮剩余容量，从 offset=${end + 1} 续读；已读的段落在压缩时会收起，要点写在回复里。`,
+            `超出上下文剩余空间，从 offset=${end + 1} 续读；已读的段落在压缩时会收起，要点写在回复里。`,
         data: {
           content: redactSecrets(numbered, secrets),
           startLine: offset,
@@ -372,16 +367,30 @@ export const readFileTool: ToolSpec = {
       return { status: 'success', ...whole }
     }
     const remaining = deliveryCap(ctx)
+    // 余量连一段都放不下时仍给 `MIN_DELIVERY_BYTES` 以内的整行，不报失败。
+    const fits = (n: number) => {
+      const part = firstLines(n)
+      return (
+        outcomeTokens(part, ctx.density) <= remaining ||
+        Buffer.byteLength(String(part.data.content)) <= MIN_DELIVERY_BYTES
+      )
+    }
+    if (fits(slice.length)) {
+      recordBatchSpent(ctx, outcomeTokens(whole, ctx.density))
+      markRead()
+      return { status: 'success', ...whole }
+    }
     let fit = 0
     let over = slice.length
     while (over - fit > 1) {
       const mid = (fit + over) >> 1
-      if (outcomeTokens(firstLines(mid), ctx.density) <= remaining) fit = mid
+      if (fits(mid)) fit = mid
       else over = mid
     }
     if (fit > 0) {
       const part = firstLines(fit)
-      chargeBatchBudget(ctx, outcomeTokens(part, ctx.density))
+      const tokens = outcomeTokens(part, ctx.density)
+      if (!chargeBatchBudget(ctx, tokens).ok) recordBatchSpent(ctx, tokens)
       markRead()
       return { status: 'success', ...part }
     }

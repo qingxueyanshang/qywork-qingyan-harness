@@ -6,6 +6,7 @@ import { describe, expect, test } from 'bun:test'
 import { openBatchBudget, outcomeTokens, type SinkPort, type ToolContext } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { readResourceTool } from './resources.ts'
+import { MIN_DELIVERY_BYTES } from './sink.ts'
 
 const enc = new TextEncoder()
 
@@ -413,10 +414,10 @@ describe('按本次决策的投递额度分页', () => {
 
   test('余额不够时只返回装得下的一页，沿 nextOffset 续读不重不漏', async () => {
     const sink = memSink(body)
-    const first = await readResourceTool.fn({ resource_id: 'rs_1' }, withRoom(sink, 2_000))
+    const first = await readResourceTool.fn({ resource_id: 'rs_1' }, withRoom(sink, 5_000))
     const page = first.data as unknown as Page
     expect(page.nextOffset).not.toBeNull()
-    expect(outcomeTokens(first, DEFAULT_DENSITY)).toBeLessThanOrEqual(2_000)
+    expect(outcomeTokens(first, DEFAULT_DENSITY)).toBeLessThanOrEqual(5_000)
     const rest = await readResourceTool.fn(
       { resource_id: 'rs_1', offset: page.nextOffset },
       withRoom(sink, 1_000_000),
@@ -424,9 +425,20 @@ describe('按本次决策的投递额度分页', () => {
     expect(page.content + (rest.data as unknown as Page).content).toBe(body)
   })
 
-  test('余额为 0 时失败，不返回成功的空页', async () => {
-    const r = await readResourceTool.fn({ resource_id: 'rs_1' }, withRoom(memSink(body), 0))
-    expect(r.status).toBe('failure')
-    expect(r.errorKind).toBe('result_too_large')
+  test('余额为 0 时仍返回最小的一页，沿 nextOffset 续读不重不漏', async () => {
+    const sink = memSink(body)
+    const first = await readResourceTool.fn({ resource_id: 'rs_1' }, withRoom(sink, 0))
+    expect(first.status).toBe('success')
+    const page = first.data as unknown as Page
+    expect(page.nextOffset).not.toBeNull()
+    // 码点补全最多多出 3 字节。
+    expect(new TextEncoder().encode(page.content).byteLength).toBeLessThanOrEqual(
+      MIN_DELIVERY_BYTES + 3,
+    )
+    const rest = await readResourceTool.fn(
+      { resource_id: 'rs_1', offset: page.nextOffset },
+      withRoom(sink, 1_000_000),
+    )
+    expect(page.content + (rest.data as unknown as Page).content).toBe(body)
   })
 })

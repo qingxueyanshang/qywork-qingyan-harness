@@ -29,7 +29,7 @@ import {
   tokensToBytes,
 } from '@qywork/agent'
 import { badIntMessage, intArg } from './args.ts'
-import { budgetExhausted } from './sink.ts'
+import { MIN_DELIVERY_BYTES } from './sink.ts'
 
 /**
  * 搜索一页最多返回多少字节的命中。这是查询结果的分页约定，不是投递上限：
@@ -58,7 +58,7 @@ export const readResourceTool: ToolSpec = {
       length: {
         type: 'integer',
         description:
-          '读取字节数，默认读到末尾；超出本轮剩余容量时只返回装得下的部分。带 query 时不生效。',
+          '读取字节数，默认读到末尾；超出上下文剩余空间时只返回放得下的部分。带 query 时不生效。',
       },
       query: {
         type: 'string',
@@ -133,8 +133,11 @@ export const readResourceTool: ToolSpec = {
       pageOutcome('', stat.sizeBytes, stat.sizeBytes - 1, stat.sizeBytes, stat.mimeType),
       ctx.density,
     )
-    const room = tokensToBytes(Math.max(0, deliveryCap(ctx) - frame), ctx.density)
-    if (room === 0) return budgetExhausted()
+    // 余量放不下时仍投递最小的一份，不报失败：那一回合不产出正文。
+    const room = Math.max(
+      tokensToBytes(Math.max(0, deliveryCap(ctx) - frame), ctx.density),
+      MIN_DELIVERY_BYTES,
+    )
     if (query) {
       const found = searchResource(
         ctx.sink,

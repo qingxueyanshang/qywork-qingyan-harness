@@ -22,6 +22,7 @@ import {
 } from '@qywork/agent'
 import { lookupModel } from '@qywork/ai'
 import { registerBuiltinTools } from './index.ts'
+import { MIN_DELIVERY_BYTES } from './sink.ts'
 
 const flash = lookupModel('deepseek-flash', 'openai_chat_completions')
 const MARKER = 'END_OF_FILE_MARKER'
@@ -139,20 +140,22 @@ describe('装不下时部分投递并给出续读位置', () => {
 })
 
 describe('失败的读取不算已读', () => {
-  test('额度用完时读取失败，随后的 edit 被拒；成功读取后 edit 通过', async () => {
+  /** 报失败的回合不产出正文；余量为 0 时仍从开头给最小的一份整行，并给出续读位置。 */
+  test('余量为 0 时仍投递开头的整行，不报失败', async () => {
     const root = await workspace()
     const r = registry()
     const c = ctx(root, 0)
     const read = await r.execute('read_file', { path: 'big.ts' }, c)
-    expect(read.status).toBe('failure')
-    expect(read.errorKind).toBe('result_too_large')
-
-    const edit = { path: 'big.ts', old_string: `const v7 = f(7)`, new_string: `const v7 = f(70)` }
-    expect((await r.execute('edit_file', edit, c)).status).toBe('failure')
-
-    openBatchBudget(c.state, 1_000_000)
-    expect((await r.execute('read_file', { path: 'big.ts' }, c)).status).toBe('success')
-    expect((await r.execute('edit_file', edit, c)).status).toBe('success')
+    expect(read.status).toBe('success')
+    const data = read.data as {
+      content: string
+      startLine: number
+      endLine: number
+      nextOffset?: number
+    }
+    expect(data.startLine).toBe(1)
+    expect(data.nextOffset).toBe(data.endLine + 1)
+    expect(Buffer.byteLength(data.content)).toBeLessThanOrEqual(MIN_DELIVERY_BYTES)
   })
 
   test('参数非法的读取不登记', async () => {

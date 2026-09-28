@@ -15,8 +15,8 @@
  * 完整内容存进正文库，由 `read_resource` 续读：历史条目没有范围参数，不存就读不全。
  */
 
-import { chargeBatchBudget, outcomeTokens, type ToolSpec } from '@qywork/agent'
-import { budgetExhausted, deliverReadable } from './sink.ts'
+import { chargeBatchBudget, outcomeTokens, recordBatchSpent, type ToolSpec } from '@qywork/agent'
+import { deliverReadable } from './sink.ts'
 
 /** 一次搜索最多回多少条命中。再多模型也读不完，只会把预算烧光。 */
 const MAX_HITS = 40
@@ -173,15 +173,21 @@ export const readHistoryTool: ToolSpec = {
     // 不说的话这份结果读起来就是全部。
     const found = `命中 ${hits.length} 条${hits.length >= MAX_HITS ? '（已达上限，可能还有更多）' : ''}`
     // 装不下时从后往前减条数：命中可以换更窄的 query 重搜，不存正文。
-    for (let kept = lines.length; kept > 0; kept--) {
-      const outcome = {
-        message: kept < lines.length ? `${found}，本轮剩余容量只装得下前 ${kept} 条` : found,
-        data: { hits: lines.slice(0, kept) },
-      }
+    const outcomeOf = (kept: number) => ({
+      message: kept < lines.length ? `${found}，上下文剩余空间只放得下前 ${kept} 条` : found,
+      data: { hits: lines.slice(0, kept) },
+    })
+    for (let kept = lines.length; kept > 1; kept--) {
+      const outcome = outcomeOf(kept)
       if (chargeBatchBudget(ctx, outcomeTokens(outcome, ctx.density)).ok) {
         return { status: 'success', ...outcome }
       }
     }
-    return budgetExhausted()
+    // 一条都放不下时仍给第一条：报失败的回合不产出结果，超出的这一条由下一次发送前的压缩收回。
+    const first = outcomeOf(1)
+    if (!chargeBatchBudget(ctx, outcomeTokens(first, ctx.density)).ok) {
+      recordBatchSpent(ctx, outcomeTokens(first, ctx.density))
+    }
+    return { status: 'success', ...first }
   },
 }

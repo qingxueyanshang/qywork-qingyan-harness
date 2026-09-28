@@ -1596,7 +1596,7 @@ describe('grep 计入投递额度', () => {
     const data = out.data as { matches: string[]; truncated: boolean }
     expect(data.truncated).toBe(true)
     expect(data.matches.length).toBeLessThan(200)
-    expect(out.message).toContain('已按本轮剩余容量截断')
+    expect(out.message).toContain('已按上下文剩余空间截断')
   })
 
   /** 正常体量的搜索不受影响——额度只在真的越界时才动手。 */
