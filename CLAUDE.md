@@ -397,8 +397,10 @@ bun run gate
 ```
 
 它按顺序跑：`typecheck`（`packages/*` 的 solution build **加** `apps/web`）→
-`biome check` → `bun run test` → 外壳 `apps/desktop/src-tauri` 的 `cargo check` 与 `cargo test` →
+`biome check` → `bun run test` → sidecar 编译与版本自检（`check:sidecar`，产物落 `.tmp/gate-sidecar`，
+不写 `bin/`）→ 外壳 `apps/desktop/src-tauri` 的 `cargo check` 与 `cargo test` →
 worker `apps/desktop/native/computer-host` 的 `cargo check` 与 `cargo test`。
+sidecar 那一步挡的是只在打包时才暴露的失败（例如 Bun 升级后从脚本里启动 Bun 的方式被拒）。
 外壳两步用独立的产物目录 `.tmp/cargo-gate`：外壳的构建脚本会删除并重新复制
 `debug/qy-computer-host.exe`，开发实例运行期间这个文件被占用，共用目录时门禁必然失败。
 
