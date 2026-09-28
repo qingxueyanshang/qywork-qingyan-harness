@@ -120,12 +120,13 @@ export function condenseMessage(m: WireMessage): WireMessage {
 /**
  * 图像块被摘掉后信封里 `images_omitted` 的值，装配时省略（`loop/request.ts` 的 `omitImages`）与收纳共用。
  *
- * 只写真实情况：两处都只摘已随一次已接收的请求送达的图，所以说明它已提供过。只写 `true` 时
- * 模型分不清「看过被省略」与「从未提供」，会否认自己看过并反复读回。必须逐字稳定，
- * 投影每次构造请求都会重写这一段。
+ * 两处都只摘已随一次已接收的请求送达的图，所以直接说明模型已看过。摘图同时使其后的思考块失效，
+ * 模型在上下文里找不到看过的痕迹；只写 `true` 或只说「已提供」时，它会判断自己没看过，
+ * 向用户否认上一轮的检查并反复读回。系统提示词「工作方式」段有同一条规则。
+ * 必须逐字稳定，投影每次构造请求都会重写这一段。
  */
 export const IMAGES_OMITTED =
-  '图像已在先前的请求中提供，此处省略，可通过 read_history 按 call_id 取回。'
+  '你已在紧接此次调用的请求中看过此图像，此处省略；需要画面细节时通过 read_history 按 call_id 取回。'
 
 function condenseToolResult(content: WireMessage['content']): WireMessage['content'] {
   /*

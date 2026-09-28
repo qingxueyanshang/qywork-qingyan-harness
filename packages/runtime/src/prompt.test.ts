@@ -349,6 +349,16 @@ describe('能力段', () => {
   })
 })
 
+describe('工具图像的生命周期', () => {
+  /** 摘图使看图时的思考失效；不写明这条规则，模型读到省略说明会判断自己没有看过。 */
+  test('系统提示词写明图像只提供一次、省略说明表示已看过、细节用 read_history 取回', () => {
+    const prompt = buildSystemPrompt(new Set(['read_history']))
+    expect(prompt).toContain('工具结果中的图像只随紧接着的一次请求提供')
+    expect(prompt).toContain('表示你已看过该图像')
+    expect(prompt).toContain('read_history 按 call_id 取回')
+  })
+})
+
 describe('输出上限说明', () => {
   test('给出上限时附在系统提示词末尾，上限按千分位写进原文', () => {
     const prompt = buildSystemPrompt(new Set(['run_command']), 128_000)
