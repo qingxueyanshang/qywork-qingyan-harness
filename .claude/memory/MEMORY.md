@@ -17,3 +17,4 @@ qywork 自己的记忆放这里，一条一个文件，下面一行一条指向�
 - [计时测试在机器高负载时成片超时](timing-tests-fail-under-machine-load.md) — followup / goal-loop / 插件 e2e 的 10s 上限；套件总时长翻倍且只红这几条就是负载，等回落再跑
 - [不碰用户窗口地复现前端问题](probe-ui-with-isolated-instance.md) — 拷库到 .tmp/probe/home 起隔离 sidecar，`#t=token` 配对，Node 驱动 Playwright 抓 pageerror
 - [真机电脑控制任务会动开着的任何窗口](desktop-live-runs-can-type-into-this-session.md) — 输入过 `exit` 结束主会话、导航过用户 Edge；跑前确认 run-task.ts 隐藏开跑前全部窗口，跑完用 scan-touched.ts 扫
+- [参照 agent 仓库在 view-agent](reference-agents-in-view-agent.md) — 「看看开源项目」指桌面 view-agent 下 pi / prime / cc-haha / deepseek-harness 四个；出处只进 docs/plans

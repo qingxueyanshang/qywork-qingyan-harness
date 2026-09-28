@@ -19,6 +19,15 @@ metadata:
 | 目标的每一次变更 | `goal_events.snapshot`（每次一行完整快照）|
 | **有没有发生过权限裁决** | `permission_audit` |
 | 用户原话 | `messages` |
+| 每次请求发了多少、上游认了多少、断在哪 | `provider_requests`（`sent_categories` / `provider_*_tokens` / `sent_at` / `diagnostic`）|
+
+`provider_requests` 的两个陷阱（2026-09-28 排查「Opus 反复长思考」时踩到）：
+
+- `request_bytes` 与 `measured_input_tokens` 量的是**适配器翻译之前**的通用请求，
+  含 `reasoningContent`；适配器丢掉的内容仍算在里面。判断「到底发没发上去」要拿
+  `provider_input + provider_cached + provider_cache_write` 与 `measured` 比，差额就是没上线的部分。
+- 缓存断档先算相邻两次 `sent_at` 的间隔：超过 5 分钟就是 TTL 过期（断点是默认 5 分钟档），
+  不要先怀疑中转轮询账号。
 
 最后一条是关键：`permission_audit` **空表** = 一次裁决都没发生过。
 两次排查都是靠它把「权限闸拦的」和「路径层拦的」分开——用户看到的现象一样，
