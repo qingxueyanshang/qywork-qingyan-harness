@@ -1,7 +1,8 @@
 /**
- * 覆盖 `anthropic.ts` 的请求体装配：工具结果（含图片块）到 Messages 协议的
- * wire 形状。起本机 server 当端点，把收到的 body 原样存下来——公共层测试
- * 只能证明图片块存在，证明不了最后一个 serializer 没有改形或丢块。
+ * 覆盖 `anthropic.ts` 的请求体装配与流解析：工具结果（含图片块）到 Messages 协议的
+ * wire 形状，原生思考块（签名、密文、位置）的采集与原位回放。起本机 server 当端点，
+ * 把收到的 body 原样存下来——公共层测试只能证明图片块存在，证明不了最后一个
+ * serializer 没有改形或丢块。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -16,6 +17,8 @@ const requestHeaders: Headers[] = []
 let lastEvents: ProviderEvent[] = []
 let server: ReturnType<typeof Bun.serve>
 let base = ''
+/** 端点这一次回的事件流；采集用例临时换掉，结束时还原。 */
+let reply = ''
 
 /** SDK 能读完的最小事件流：一段正文 + end_turn 终态。 */
 const SSE = [
@@ -53,12 +56,13 @@ const SSE = [
 ].join('\n')
 
 beforeAll(() => {
+  reply = SSE
   server = Bun.serve({
     port: 0,
     async fetch(req) {
       requestHeaders.push(new Headers(req.headers))
       bodies.push((await req.json()) as Record<string, unknown>)
-      return new Response(SSE, { headers: { 'content-type': 'text/event-stream' } })
+      return new Response(reply, { headers: { 'content-type': 'text/event-stream' } })
     },
   })
   base = `http://127.0.0.1:${server.port}`
@@ -290,5 +294,185 @@ describe('连接', () => {
     await send([{ role: 'user', content: 'hi' }])
     // 中转站会掐掉空闲的 keep-alive 连接，复用旧连接的下一次请求当场断开或一直静默。
     expect(requestHeaders[0]?.get('connection')).toBe('close')
+  })
+})
+
+/** 按事件对象拼一段 SSE，末尾是否带 `message_stop` 由调用方决定。 */
+function sse(events: Record<string, unknown>[]): string {
+  return `${events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n`).join('\n')}\n`
+}
+
+const START = {
+  type: 'message_start',
+  message: {
+    id: 'msg_t',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-opus-5-5',
+    content: [],
+    stop_reason: null,
+    stop_sequence: null,
+    usage: { input_tokens: 10, output_tokens: 0 },
+  },
+}
+
+/** Opus 5.5 的进度块形态：思考 → 正文 → 思考 → 工具调用，签名分两段到达。 */
+const THINKING_TURN = [
+  START,
+  {
+    type: 'content_block_start',
+    index: 0,
+    content_block: { type: 'thinking', thinking: '', signature: '' },
+  },
+  { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '先看' } },
+  {
+    type: 'content_block_delta',
+    index: 0,
+    delta: { type: 'signature_delta', signature: 'sig-a1' },
+  },
+  {
+    type: 'content_block_delta',
+    index: 0,
+    delta: { type: 'signature_delta', signature: 'sig-a2' },
+  },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '读一下' } },
+  { type: 'content_block_stop', index: 1 },
+  {
+    type: 'content_block_start',
+    index: 2,
+    content_block: { type: 'redacted_thinking', data: 'cipher' },
+  },
+  { type: 'content_block_stop', index: 2 },
+  {
+    type: 'content_block_start',
+    index: 3,
+    content_block: { type: 'thinking', thinking: '', signature: '' },
+  },
+  { type: 'content_block_delta', index: 3, delta: { type: 'thinking_delta', thinking: '没签名' } },
+  { type: 'content_block_stop', index: 3 },
+  {
+    type: 'content_block_start',
+    index: 4,
+    content_block: { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: {} },
+  },
+  {
+    type: 'content_block_delta',
+    index: 4,
+    delta: { type: 'input_json_delta', partial_json: '{"path":"a.ts"}' },
+  },
+  { type: 'content_block_stop', index: 4 },
+  {
+    type: 'message_delta',
+    delta: { stop_reason: 'tool_use', stop_sequence: null },
+    usage: { output_tokens: 90, output_tokens_details: { thinking_tokens: 42 } },
+  },
+]
+
+async function capture(events: Record<string, unknown>[]): Promise<ProviderEvent[]> {
+  reply = sse(events)
+  try {
+    await send([{ role: 'user', content: 'hi' }], undefined, 'claude-opus-5-5')
+  } catch {
+    // 截断用例在这里抛出；事件已经记在 lastEvents 里。
+  } finally {
+    reply = SSE
+  }
+  return lastEvents
+}
+
+describe('原生思考块', () => {
+  test('采集签名、密文与位置锚，思考 token 取回执', async () => {
+    const events = await capture([...THINKING_TURN, { type: 'message_stop' }])
+    const reasoning = events.find((e) => e.type === 'response_reasoning')
+    expect(reasoning?.type === 'response_reasoning' && reasoning.reasoning).toEqual({
+      items: [
+        { type: 'thinking', thinking: '先看', signature: 'sig-a1sig-a2', beforeText: true },
+        { type: 'redacted_thinking', data: 'cipher', beforeToolUse: 'toolu_1' },
+      ],
+      tokens: 42,
+    })
+    const usage = events.find((e) => e.type === 'usage')
+    expect(usage?.type === 'usage' && usage.usage.reasoningTokens).toBe(42)
+  })
+
+  test('流在 message_stop 之前断开时不交付思考块', async () => {
+    const events = await capture(THINKING_TURN)
+    expect(events.some((e) => e.type === 'response_reasoning')).toBe(false)
+  })
+
+  const native = {
+    items: [
+      { type: 'thinking', thinking: '先看', signature: 'sig-a', beforeText: true },
+      { type: 'redacted_thinking', data: 'cipher', beforeToolUse: 'toolu_1' },
+      { type: 'thinking', thinking: '截断了', signature: 'sig-x', beforeToolUse: 'toolu_gone' },
+    ],
+    tokens: 42,
+    prefix: 'p',
+  }
+
+  test('按位置锚原样插回，正文不再另发，锚到已丢弃调用的块不回放', async () => {
+    const body = await send(
+      [
+        { role: 'user', content: '读 a.ts' },
+        {
+          role: 'assistant',
+          content: '读一下',
+          reasoningContent: '先看',
+          responseReasoning: native,
+          toolCalls: [{ id: 'toolu_1', name: 'read_file', arguments: { path: 'a.ts' } }],
+        },
+        { role: 'tool', toolCallId: 'toolu_1', content: '内容' },
+      ],
+      undefined,
+      'claude-opus-5-5',
+    )
+    const assistant = (body.messages as { content: Record<string, unknown>[] }[])[1]!
+    expect(assistant.content).toEqual([
+      { type: 'thinking', thinking: '先看', signature: 'sig-a' },
+      { type: 'text', text: '读一下' },
+      { type: 'redacted_thinking', data: 'cipher' },
+      { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'a.ts' } },
+    ])
+  })
+
+  test('纯文本轮同样回放；缓存断点不落在思考块上', async () => {
+    const body = await send(
+      [
+        // 前缀要够这条模型的最短可缓存长度，断点才会落下。
+        { role: 'user', content: '问'.repeat(1000) },
+        {
+          role: 'assistant',
+          content: '答',
+          responseReasoning: {
+            items: [{ type: 'thinking', thinking: '想', signature: 's', beforeText: true }],
+            tokens: 5,
+          },
+          cacheBreakpoint: true,
+        },
+        { role: 'user', content: '再问' },
+      ],
+      undefined,
+      'claude-opus-5-5',
+    )
+    const assistant = (body.messages as { content: Record<string, unknown>[] }[])[1]!
+    expect(assistant.content).toEqual([
+      { type: 'thinking', thinking: '想', signature: 's' },
+      { type: 'text', text: '答', cache_control: { type: 'ephemeral' } },
+    ])
+  })
+
+  test('没有原生块时 Claude 不发思考正文', async () => {
+    const body = await send(
+      [
+        { role: 'user', content: '问' },
+        { role: 'assistant', content: '答', reasoningContent: '想' },
+        { role: 'user', content: '再问' },
+      ],
+      undefined,
+      'claude-opus-5-5',
+    )
+    expect((body.messages as { content: unknown }[])[1]!.content).toBe('答')
   })
 })

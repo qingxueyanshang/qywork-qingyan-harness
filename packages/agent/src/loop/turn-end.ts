@@ -132,7 +132,7 @@ export async function* concludeWithoutTools(
   run: RunState,
   turn: TurnState,
 ): AsyncGenerator<AgentEvent, 'stop' | 'continue', unknown> {
-  const { input, transcript, ctx } = run
+  const { input, ctx } = run
 
   if (turn.refusalNote) {
     run.stopReason = 'provider_error'
@@ -224,18 +224,9 @@ export async function* concludeWithoutTools(
       run.stopDetail = '待办未完成时连续三次只回话不动手'
       return 'stop'
     }
-    run.notices.push(
+    run.notify(
       `待办清单尚有 ${unfinished.length} 项未完成：${unfinished.map((todo) => todo.content).join('；')}。本轮未结束。`,
     )
-    /*
-     * 续起之后，这一条与模型接下来那条 assistant 之间没有 user 消息（提示只进请求、
-     * 不落 transcript）。DeepSeek 思考模式要求同一轮里每一条 assistant 都带回
-     * reasoning_content，只挂工具轮的话，下一次请求就是 400。
-     */
-    const last = transcript[transcript.length - 1]
-    if (last?.role === 'assistant' && turn.thinkingText && !last.reasoningContent) {
-      last.reasoningContent = turn.thinkingText
-    }
     return 'continue'
   }
 

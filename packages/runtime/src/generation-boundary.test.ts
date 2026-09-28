@@ -7,8 +7,8 @@
  * `stepsToUnits` 切分；经 `@qywork/ai` 的三协议故障端点跑真实 HTTP，step 与请求账
  * 落真实 `Store`。
  *
- * 判据是**活侧与投影送上线的字节一致**：先让一次终态前 EOF 产生 `[A]`、`[B+工具]`
- * 两条消息，再把投影当作下一个 run 的 history 发一次，比较两次请求体里的消息数组。
+ * 判据是**活侧与投影送上线的字节一致**：先让一次终态前 EOF 产生 `[A]`、`[中断提示]`、`[B+工具]`
+ * 三条消息，再把投影当作下一个 run 的 history 发一次，比较两次请求体里的消息数组。
  * 只数单元条数会放过「切对了但正文错位」这一类。
  */
 
@@ -58,7 +58,13 @@ function harness(): Harness {
       return next
     },
     landUserStep: (runId, seq, input) =>
-      appendStep(store, { runId, seq, kind: 'user', content: input.text }).id,
+      appendStep(store, {
+        runId,
+        seq,
+        kind: 'user',
+        content: input.text,
+        ...(input.notice ? { payload: { kind: 'user', notice: true } as const } : {}),
+      }).id,
     openTextStep: (runId, seq, batchId) =>
       appendStep(store, { runId, seq, kind: 'text', content: '', providerBatchId: batchId }).id,
     openThinkingStep: (runId, seq, batchId, reasoning) =>
@@ -194,7 +200,8 @@ async function drainRun(
 for (const { kind, model } of FAULT_PROTOCOLS) {
   /**
    * T13 生成边界：正文 A 之后终态前 EOF，带上下文续发拿到 B + 工具调用。
-   * 活侧是 `[A]`、`[B+工具]` 两条，投影必须切在同一处。
+   * 活侧是 `[A]`、`[中断提示]`、`[B+工具]` 三条，投影必须切在同一处；
+   * 中断提示落账后留在历史原位，不只附在续发那一次请求里。
    */
   test(`${kind} 断流续发后投影与活侧的消息边界一致`, async () => {
     const h = harness()
@@ -205,17 +212,19 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
         await drainRun(h, first, baseUrl, { kind, model }, [])
 
         const units = stepsToUnits(listSteps(h.store, first))
-        // A 自成一条：正文不带工具调用，工具批次另起一条。
-        expect(units).toHaveLength(3)
+        // A 自成一条：正文不带工具调用；中断提示一条；工具批次另起一条。
+        expect(units).toHaveLength(4)
         expect(units[0]!.messages).toHaveLength(1)
         expect(units[0]!.messages[0]!.content).toBe('完成')
         expect(units[0]!.messages[0]!.toolCalls).toBeUndefined()
-        expect(units[1]!.messages[0]!.content).toBe('')
-        expect(units[1]!.messages[0]!.toolCalls?.map((c) => c.name)).toEqual(['echo'])
-        expect(units[1]!.messages[1]!.role).toBe('tool')
-        expect(units[1]!.messages[1]!.toolCallId).toBe(units[1]!.messages[0]!.toolCalls![0]!.id)
+        expect(units[1]!.messages[0]!.role).toBe('user')
+        expect(units[1]!.messages[0]!._group).toBe('workspaceState')
+        expect(units[2]!.messages[0]!.content).toBe('')
+        expect(units[2]!.messages[0]!.toolCalls?.map((c) => c.name)).toEqual(['echo'])
+        expect(units[2]!.messages[1]!.role).toBe('tool')
+        expect(units[2]!.messages[1]!.toolCallId).toBe(units[2]!.messages[0]!.toolCalls![0]!.id)
 
-        // 第三次请求的请求体就是活侧的 `[A][B+工具][结果]`。
+        // 第三次请求的请求体就是活侧的 `[A][中断提示][B+工具][结果]`。
         expect(fault.bodies).toHaveLength(3)
         const live = wireMessagesOf(fault.bodies[2]!)
 
@@ -225,7 +234,7 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
           replayed,
           baseUrl,
           { kind, model },
-          units.slice(0, 2).flatMap((u) => u.messages),
+          units.slice(0, 3).flatMap((u) => u.messages),
         )
         expect(fault.bodies).toHaveLength(4)
         expect(wireMessagesOf(fault.bodies[3]!)).toEqual(live)

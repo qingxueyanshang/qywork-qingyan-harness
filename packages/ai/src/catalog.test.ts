@@ -17,7 +17,26 @@ import {
   effortIsTransmittable,
   lookupModel,
   priceAt,
+  reasoningReplay,
 } from './catalog.ts'
+
+/**
+ * 历史推理的上线规则逐协议锁住：装配点裁剪与三个适配器的翻译共用它，
+ * 任何一格变了，本地估算与线上字节就会各数一份。
+ */
+test('历史推理上线规则按协议与目录声明', () => {
+  const rule = (id: string, kind: Parameters<typeof lookupModel>[1]) =>
+    reasoningReplay(lookupModel(id, kind))
+  expect(rule('claude-opus-5-5', 'anthropic_messages')).toEqual({ opaque: true, text: 'none' })
+  expect(rule('mimo-v2.6-pro', 'anthropic_messages')).toEqual({ opaque: true, text: 'all' })
+  expect(rule('grok-4.7', 'openai_responses')).toEqual({ opaque: true, text: 'none' })
+  expect(rule('gpt-6-sol', 'openai_responses')).toEqual({ opaque: false, text: 'none' })
+  expect(rule('deepseek-flash', 'openai_chat_completions')).toEqual({ opaque: false, text: 'all' })
+  expect(rule('grok-4.7', 'openai_chat_completions')).toEqual({
+    opaque: false,
+    text: 'tool_turns',
+  })
+})
 
 test('Claude Opus 5.5 的官方价格、缓存与恒开思考规格', () => {
   const opus = lookupModel('claude-opus-5-5', 'anthropic_messages')

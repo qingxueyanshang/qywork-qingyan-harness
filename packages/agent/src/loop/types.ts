@@ -162,6 +162,7 @@ export interface LoopPersistence {
   nextSeq(runId: RunId): number
   /**
    * run 内注入的那句用户消息，落一条 `kind='user'` 的 step，返回 stepId。
+   * `notice` 标出装配层的执行事实（见 `RunState.notify`），同一条落账路径。
    *
    * **开即终态**：它不是执行，没有中间态可等。崩溃恢复只碰 `running` 行，
    * 因此这种行不需要、也不该有恢复分支。
@@ -169,7 +170,12 @@ export interface LoopPersistence {
   landUserStep(
     runId: RunId,
     seq: number,
-    input: { text: string; attachments?: Attachment[]; origin?: 'subagent' | 'workflow' },
+    input: {
+      text: string
+      attachments?: Attachment[]
+      origin?: 'subagent' | 'workflow'
+      notice?: true
+    },
   ): string
   /**
    * `batchId` 是产生这段正文的那次请求的 id，落进 `provider_batch_id`。

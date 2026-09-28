@@ -361,8 +361,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       yield {
         type: 'response_reasoning',
         reasoning: {
-          model: req.model,
           items: [...encryptedReasoning].sort(([a], [b]) => a - b).map(([, item]) => item),
+          tokens: usage.reasoningTokens,
         },
         at: Date.now(),
       }
@@ -388,7 +388,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     return {
       model: req.model,
       ...(instructions ? { instructions } : {}),
-      input: buildInput(req.messages, this.spec.reasoningEcho, req.model),
+      input: buildInput(req.messages, this.spec.reasoningEcho),
       // 同时封顶思考与正文。按「不思考」的口径调小它，回答会从中间截断。
       // 未收录的模型不申报，让端点用自己的默认。
       ...(cap === null ? {} : { max_output_tokens: cap }),
@@ -456,22 +456,17 @@ function reasoningItem(text: string, echo: ReasoningEcho): Record<string, unknow
  * 结构合法但语义错误的请求：模型看不到自己调过什么。
  *
  * 带工具调用的 assistant 轮**要不要回传思考内容由 `echo` 说了算**，见文件头。
+ * 密文条目只看消息上有没有：前缀变过的（含换模型）已由装配点剥离，这里不再判。
  */
 export function buildInput(
   messages: WireMessage[],
   echo: ReasoningEcho,
-  model?: string,
 ): Record<string, unknown>[] {
   const items: Record<string, unknown>[] = []
   const echoesReasoning = echo === 'reasoning_text' || echo === 'reasoning_text_object'
 
   for (const m of mergeContextIntoUsers(messages)) {
-    if (
-      m.role === 'assistant' &&
-      echo === 'encrypted_content' &&
-      m.responseReasoning &&
-      m.responseReasoning.model === model
-    ) {
+    if (m.role === 'assistant' && echo === 'encrypted_content' && m.responseReasoning) {
       items.push(...m.responseReasoning.items)
     }
     if (m.role === 'tool') {

@@ -1810,6 +1810,39 @@ export function effortIsTransmittable(spec: ModelSpec): boolean {
   return spec.thinking === 'reasoning_effort' || spec.thinking === 'deepseek_thinking'
 }
 
+/** 历史里的推理在这条 spec 的协议上发不发、发哪种。 */
+export interface ReasoningReplay {
+  /** 思考正文回放到哪些 assistant 消息上。有原生条目的消息不再带正文。 */
+  text: 'none' | 'tool_turns' | 'all'
+  /** 原生推理条目（带签名的思考块、加密推理）是否回放。 */
+  opaque: boolean
+}
+
+/**
+ * 历史推理的上线规则。**装配点裁剪与三个适配器的翻译共用这一份**：两处各判一遍时，
+ * 估算数的是挂载的推理、线上发的是另一份，本地估算因此系统性多出一整段思考。
+ *
+ * - `anthropic`：带签名的思考块原样回放；签名缺失的思考文字 Claude 不认（静默丢弃），
+ *   只有 `preserved` 系端点收文字。
+ * - `openai_responses`：由 `reasoningEcho` 声明，加密条目与文字条目二选一。
+ * - `openai_chat_completions`：`reasoning_content` 字段，工具轮恒带（DeepSeek 思考模式
+ *   缺了即 400，其余端点忽略该字段），`standard` 以外全部轮次都带。
+ */
+export function reasoningReplay(spec: ModelSpec): ReasoningReplay {
+  if (spec.provider === 'anthropic_messages') {
+    const preserved =
+      spec.chatReasoningProtocol === 'deepseek_preserved' ||
+      spec.chatReasoningProtocol === 'preserved'
+    return { opaque: true, text: preserved ? 'all' : 'none' }
+  }
+  if (spec.provider === 'openai_responses') {
+    const text =
+      spec.reasoningEcho === 'reasoning_text' || spec.reasoningEcho === 'reasoning_text_object'
+    return { opaque: spec.reasoningEcho === 'encrypted_content', text: text ? 'all' : 'none' }
+  }
+  return { opaque: false, text: spec.chatReasoningProtocol === 'standard' ? 'tool_turns' : 'all' }
+}
+
 /**
  * 按 usage 算这一轮的花费。
  *

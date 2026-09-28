@@ -209,14 +209,14 @@ describe('收纳段：换信封，不改字节', () => {
       content: '',
       reasoningContent: '想了很久',
       responseReasoning: {
-        model: 'grok-4.7',
+        tokens: 0,
         items: [{ type: 'reasoning', encrypted_content: 'cipher' }],
       },
       toolCalls: [{ id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } }],
     })
     expect(out.reasoningContent).toBe('想了很久')
     expect(out.responseReasoning).toEqual({
-      model: 'grok-4.7',
+      tokens: 0,
       items: [{ type: 'reasoning', encrypted_content: 'cipher' }],
     })
   })

@@ -16,7 +16,7 @@ import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { isDashScopeEndpoint } from '@qywork/core'
 import OpenAI from 'openai'
-import { effortIsTransmittable, type ModelSpec } from '../catalog.ts'
+import { effortIsTransmittable, type ModelSpec, reasoningReplay } from '../catalog.ts'
 import { classifyProviderError, classifyStreamError, ProviderError } from '../errors.ts'
 import { readSse, SSE_DONE, sseJson } from '../sse.ts'
 import { estimateRequest } from '../tokens.ts'
@@ -757,9 +757,7 @@ function buildMessages(messages: WireMessage[], spec: ModelSpec): CompatOutMessa
       return {
         role: m.role,
         content: toMultimodal(m.content),
-        ...(m.role === 'assistant' &&
-        m.reasoningContent &&
-        spec.chatReasoningProtocol !== 'standard'
+        ...(m.role === 'assistant' && m.reasoningContent && reasoningReplay(spec).text === 'all'
           ? { reasoning_content: m.reasoningContent }
           : {}),
       }
@@ -767,7 +765,7 @@ function buildMessages(messages: WireMessage[], spec: ModelSpec): CompatOutMessa
     return {
       role: m.role,
       content: m.content,
-      ...(m.role === 'assistant' && m.reasoningContent && spec.chatReasoningProtocol !== 'standard'
+      ...(m.role === 'assistant' && m.reasoningContent && reasoningReplay(spec).text === 'all'
         ? { reasoning_content: m.reasoningContent }
         : {}),
     }

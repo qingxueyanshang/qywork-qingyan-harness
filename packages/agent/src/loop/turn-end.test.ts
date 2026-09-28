@@ -353,15 +353,18 @@ describe('正常响应结束不冒充任务完成', () => {
   })
 
   /**
-   * 续起提示只进请求不落 transcript，模型接下来那条与上一条 assistant 之间没有 user 消息。
-   * deepseek 思考模式要求同一轮里每条 assistant 都带回推理正文，只挂工具轮的话下一次请求 400。
+   * 续起提示落进 transcript，此后每次请求都原位带着它：只附一次的话，再下一次请求的
+   * 前缀与产生那轮响应时不同，那轮之后的思考块被 provider 作废。
+   * DeepSeek 的推理正文照常随每条 assistant 回传。
    */
-  test('守卫续起时，刚结束的那条回复带上它的推理正文', async () => {
-    const inner = fakeAdapter([null, null, null])
+  test('守卫续起的提示留在历史原位，推理正文照常回传', async () => {
+    const inner = fakeAdapter([null, null, null], 'deepseek-flash')
     const seen: (string | undefined)[][] = []
+    const shapes: string[][] = []
     const adapter: LlmAdapter = {
       ...inner,
       async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+        shapes.push(req.messages.map((m) => m.role))
         seen.push(req.messages.filter((m) => m.role === 'assistant').map((m) => m.reasoningContent))
         yield { type: 'request_prepared', measuredInputTokens: 1 }
         yield { type: 'response_started', headersAt: Date.now() }
@@ -381,9 +384,12 @@ describe('正常响应结束不冒充任务完成', () => {
       }),
     })
     await runToEnd(loop, { runId: 'rn_todos_reasoning' })
-    // 第二次请求里，第一条 assistant（被续起的那条）已经带着推理正文。
     expect(seen[1]).toEqual(['想一想'])
     expect(seen[2]).toEqual(['想一想', '想一想'])
+    // 第一次续起的提示在第三次请求里仍在原位；第二次续起时空转判据先交出重复告警，
+    // 待办提示接在其后，各占一条。
+    expect(shapes[1]).toEqual(['assistant', 'user'])
+    expect(shapes[2]).toEqual(['assistant', 'user', 'assistant', 'user', 'user'])
   })
 
   test('没有清单或清单全部完成，保留一次正常 completed', async () => {

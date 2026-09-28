@@ -42,7 +42,6 @@ export async function* compactBeforeSend(
     estimated: estimateRequest(turn.req, run.density),
     threshold: softLimit(run.adapter.spec),
     summaryTurn: run.requestTurn,
-    notice: turn.turnNotice,
     latestUnitSeen: false,
   })
   return done === 'interrupted' ? 'interrupted' : 'sent'
@@ -83,7 +82,6 @@ export async function* compactBeforeTools(
     estimated,
     threshold: softLimit(run.adapter.spec) - tailRetain(run.adapter.spec.contextWindow) / scale,
     summaryTurn: run.requestTurn + 1,
-    notice: null,
     latestUnitSeen: true,
   })
   if (done === 'interrupted') return 'interrupted'
@@ -94,8 +92,7 @@ export async function* compactBeforeTools(
 }
 
 /**
- * 占用越过 `threshold` 时压一次。`notice` 是压缩生效后重装请求时附带的本轮提示：
- * 发送前那一处带上本轮提示，工具之前那一处提示已随上一次请求发出，不再带。
+ * 占用越过 `threshold` 时压一次。
  *
  * 占用未越过软阈值时端口只收纳或跳过、不调模型（`CompactionRunInput.occupancy` 的约定），
  * 因此不播报开始；这时的跳过也不落记录、不发事件：什么都没改，也没有需要用户知道的状态。
@@ -110,7 +107,6 @@ async function* compactOverSoftLimit(
     estimated: number
     threshold: number
     summaryTurn: number
-    notice: string | null
     latestUnitSeen: boolean
   },
 ): AsyncGenerator<AgentEvent, 'compacted' | 'unchanged' | 'interrupted', unknown> {
@@ -188,7 +184,7 @@ async function* compactOverSoftLimit(
      */
     run.anchor = null
     // 压缩改的是投影，必须重新装配——拿旧请求发出去等于这次压缩白花。
-    turn.req = host.buildRequest(run, at.notice)
+    turn.req = host.buildRequest(run)
     turn.breakdown = breakdownOf(turn.req, density)
     return 'compacted'
   } else {
@@ -310,7 +306,7 @@ export async function* recoverFromOverflow(
     throw err
   }
   if (outcome.status === 'compacted') {
-    const rebuilt = host.buildRequest(run, turn.turnNotice)
+    const rebuilt = host.buildRequest(run)
     if (estimateRequest(rebuilt, density) < sizeBefore) {
       markCompacted(run.ctx.state)
       persist.recordCompaction(input.runId, run.nextSeq(), {

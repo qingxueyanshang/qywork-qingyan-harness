@@ -1,6 +1,6 @@
 /**
  * 覆盖 `loop/run-state.ts` 的 `RunState`：信封换了时锚点只换头部、换模型时作废，
- * 以及空转判据在第二次重复时交出提示、第三次重复时停。
+ * 空转判据在第二次重复时交出提示、第三次重复时停，以及执行事实的落账与追加。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -67,11 +67,48 @@ describe('空转判据', () => {
     const same = { cycle: 'c', noProgress: true }
     run.progress.push(same)
     expect(run.stalled()).toBe(false)
-    expect(run.notices).toEqual([])
+    expect(run.transcript).toEqual([])
     run.progress.push(same)
     expect(run.stalled()).toBe(false)
-    expect(run.notices).toHaveLength(1)
+    expect(run.transcript).toHaveLength(1)
     run.progress.push(same)
     expect(run.stalled()).toBe(true)
+  })
+})
+
+describe('执行事实', () => {
+  /**
+   * 提示必须落账并留在 transcript：只附在下一次请求末尾的话，再下一次请求的前缀
+   * 就与产生那轮响应时不同，那轮之后的思考块被 provider 作废。
+   */
+  test('落一条带 notice 标记的用户 step，并以运行上下文分组追加到 transcript', () => {
+    const landed: unknown[] = []
+    const persist = {
+      ...noopPersistence(),
+      landUserStep: (_r: unknown, _s: unknown, input: unknown) => {
+        landed.push(input)
+        return 'st_notice'
+      },
+    }
+    const run = new RunState(
+      {
+        adapter: fakeAdapter([]),
+        registry: new ToolRegistry(),
+        systemPrompt: 's',
+        persist,
+        makeToolContext: (runId) => baseCtx(runId),
+      },
+      { runId: 'rn_notice' as never, history: [], signal: new AbortController().signal },
+    )
+    run.notify('本轮未结束。')
+    expect(landed).toEqual([{ text: '本轮未结束。', notice: true }])
+    expect(run.transcript).toEqual([
+      {
+        role: 'user',
+        content: '本轮未结束。',
+        _group: 'workspaceState',
+        _step: expect.any(String),
+      },
+    ])
   })
 })

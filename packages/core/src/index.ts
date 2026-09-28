@@ -79,6 +79,7 @@ export {
   type IntermediateResourceRef,
   isInlineImage,
   isInlineVideo,
+  isNoticeStep,
   type Message,
   matchesToolCallCheck,
   mimeOf,

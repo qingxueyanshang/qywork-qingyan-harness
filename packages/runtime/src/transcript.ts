@@ -29,6 +29,7 @@ import type {
   RunContextSegment,
   Step,
 } from '@qywork/core'
+import { isNoticeStep } from '@qywork/core'
 import {
   listMessages,
   listRunContextSnapshots,
@@ -317,9 +318,11 @@ export function stepsToUnits(steps: Step[], opts: ProjectOptions = {}): StepUnit
        */
       flushText()
       const stamp = stepStamp(step.runId, step.seq)
+      // 执行事实与活侧 `RunState.notify` 同组：它不是用户打的字。
+      const group = isNoticeStep(step) ? 'workspaceState' : USER_GROUP
       units.push({
         stamp,
-        messages: [mark({ role: 'user', content: step.content ?? '', _group: USER_GROUP }, stamp)],
+        messages: [mark({ role: 'user', content: step.content ?? '', _group: group }, stamp)],
         steps: [],
         userStep: step,
       })

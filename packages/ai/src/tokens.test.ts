@@ -162,6 +162,28 @@ describe('消息', () => {
     expect(a - b).toBe(100)
   })
 
+  /**
+   * 原生推理条目按回报的 token 数计。签名里是加密的完整推理，按字节估会高出数倍；
+   * 有它时思考正文不上线，两份只数一份。
+   */
+  test('原生推理按回报 token 计，不按签名字节，也不与正文重复计', () => {
+    const d = { ...D, textCharsPerToken: 4 }
+    const bare = estimateMessage({ role: 'assistant', content: '' }, d)
+    const native = estimateMessage(
+      {
+        role: 'assistant',
+        content: '',
+        reasoningContent: 'y'.repeat(400),
+        responseReasoning: {
+          items: [{ type: 'thinking', thinking: 'y'.repeat(400), signature: 's'.repeat(40_000) }],
+          tokens: 700,
+        },
+      },
+      d,
+    )
+    expect(native - bare).toBe(700)
+  })
+
   test('每条有固定协议开销——几十条短消息不会被系统性低估', () => {
     const many = Array.from({ length: 50 }, () => ({ role: 'user' as const, content: '' }))
     expect(estimateMessages(many, D)).toBe(50 * 4)

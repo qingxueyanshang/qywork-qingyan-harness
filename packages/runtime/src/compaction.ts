@@ -37,6 +37,7 @@ import type {
   MessageId,
   Step,
 } from '@qywork/core'
+import { isNoticeStep } from '@qywork/core'
 import {
   getConversation,
   latestSentProviderRequest,
@@ -518,14 +519,16 @@ export class RuntimeCompaction implements CompactionPort {
              * id 用 `<runId>:<stepId>`——它不在 `messages` 表里，
              * 由 `HistoryPort.message` 的复合形式解析回来。
              */
-            row: u.userStep
-              ? {
-                  id: `${r.id}:${u.userStep.id}`,
-                  role: 'user' as const,
-                  content: u.userStep.content ?? '',
-                  ...(files.length ? { hasAttachments: true } : {}),
-                }
-              : null,
+            // 执行事实不是用户的话，不以用户的名义进摘要。
+            row:
+              u.userStep && !isNoticeStep(u.userStep)
+                ? {
+                    id: `${r.id}:${u.userStep.id}`,
+                    role: 'user' as const,
+                    content: u.userStep.content ?? '',
+                    ...(files.length ? { hasAttachments: true } : {}),
+                  }
+                : null,
             assistantId: u.textStep ? `${r.id}:${u.textStep.id}` : null,
             actions: u.steps.map((s) => actionOf(r.id, s)),
           })

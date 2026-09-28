@@ -156,10 +156,23 @@ export const REASONING_ECHOES = [
 ] as const
 export type ReasoningEcho = (typeof REASONING_ECHOES)[number]
 
-/** Responses 返回的密文不展示为思考正文，也不能跨模型回传。 */
+/**
+ * provider 返回的原生推理条目（Anthropic 带签名的思考块、Responses 的加密推理），
+ * 不展示为思考正文，只在产生它的那段前缀未变时原样回放。
+ */
 export interface ResponseReasoning {
-  model: string
   items: Record<string, unknown>[]
+  /**
+   * 回放时计入输入的 token 数，取 provider 回报的推理用量。估算按它计：
+   * 条目里的签名与密文按字节估会高出数倍。
+   */
+  tokens: number
+  /**
+   * 产生它的那次请求的前缀指纹（模型、系统提示、工具表与全部消息），由装配方盖上，
+   * 适配器不知道。回放时与本次请求在这条消息之前的前缀比对，不同或缺席即不回放：
+   * 前缀变过的条目 provider 不按原样使用。
+   */
+  prefix?: string
 }
 
 // ─────────────────────────────── 会话 ───────────────────────────────
@@ -854,7 +867,17 @@ export type StepPayload =
       attachments?: Attachment[]
       /** 同 `Message.origin`：这一句是谁投进来的，缺席 = 用户本人。 */
       origin?: 'subagent' | 'workflow'
+      /**
+       * 装配层交给模型的执行事实（待办未完成、重复告警、断流续发），不是任何人说的话：
+       * 界面与导出不显示，投影进历史时归运行上下文。
+       */
+      notice?: true
     }
+
+/** 这条 step 是装配层交给模型的执行事实（见 `StepPayload` 的 `notice`），不是任何人说的话。 */
+export function isNoticeStep(step: Pick<Step, 'kind' | 'payload'>): boolean {
+  return step.kind === 'user' && step.payload?.kind === 'user' && step.payload.notice === true
+}
 
 /** 工具执行的规范结果，必须原样抵达 step 账本、事件流和 provider transcript。 */
 export interface ToolOutcomeWire {
