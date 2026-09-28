@@ -7,7 +7,7 @@
  */
 
 import { mkdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { BIN_DIR, externalBinPath } from './external-bin.ts'
 
 const ROOT = join(import.meta.dir, '..')
@@ -41,10 +41,21 @@ function windowsMetadata(version: string): string[] {
   ]
 }
 
-async function main(): Promise<number> {
-  const outfile = await externalBinPath('qy')
+/**
+ * `--outdir <目录>`（相对仓库根）：产物落到那里而不是 `bin/`，文件名不变。
+ * 门禁用它：门禁只读，而开发实例运行期间 `bin/` 里的产物被占用、删不掉。
+ */
+function outdirArg(): string | null {
+  const i = process.argv.indexOf('--outdir')
+  return i >= 0 ? (process.argv[i + 1] ?? null) : null
+}
 
-  await mkdir(BIN_DIR, { recursive: true })
+async function main(): Promise<number> {
+  const target = await externalBinPath('qy')
+  const outdir = outdirArg()
+  const outfile = outdir ? join(ROOT, outdir, basename(target)) : target
+
+  await mkdir(outdir ? dirname(outfile) : BIN_DIR, { recursive: true })
   await rm(outfile, { force: true })
 
   process.stdout.write(`编译 sidecar → ${outfile}\n`)
