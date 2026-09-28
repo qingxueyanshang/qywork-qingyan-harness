@@ -79,8 +79,8 @@ describe('run_command 的用量记账', () => {
       sink: null,
       emit: () => {},
     } as unknown as ToolContext
-    expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
-    expect(batchRemaining(ctx)).toBe(200)
+    expect(chargeBatchBudget(ctx, 980).ok).toBe(true)
+    expect(batchRemaining(ctx)).toBe(20)
 
     const outcome = await makeShellTool(found).fn({ command: `bun "${script}"` }, ctx)
 
