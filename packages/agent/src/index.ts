@@ -84,6 +84,7 @@ export {
   softLimit,
   toolResultContent,
 } from './loop/request.ts'
+export { createSummaryTrace } from './loop/summary-trace.ts'
 export type { CompactionPort, CompactionRunInput, LoopPersistence } from './loop/types.ts'
 // run_command 的拒绝清单：runtime 的 Session 在放行之前问它
 export { decideCommand } from './policy.ts'

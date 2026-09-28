@@ -13,6 +13,7 @@
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { createSummaryTrace } from '@qywork/agent'
 import { buildAdapter, estimateMessages } from '@qywork/ai'
 import type { AgentEvent, ConversationId, EventEnvelope, RunId } from '@qywork/core'
 import { envelopeHeadTokens } from '@qywork/core'
@@ -23,10 +24,13 @@ import {
   loadConfig,
   makeSummarizer,
   RuntimeCompaction,
+  requestPersistence,
   resolveModel,
 } from '@qywork/runtime'
 import { serve } from '@qywork/server'
 import {
+  createRun,
+  finishRun,
   getConversation,
   latestTodos,
   listProviderRequests,
@@ -288,12 +292,13 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     process.stdout.write(`\n跳过 ${ref.provider}/${ref.model}：配置里解析不出这条接口\n`)
     return
   }
-  const spec = buildAdapter({
+  const adapter = buildAdapter({
     kind: profile.kind,
     apiKey: profile.apiKey ?? '',
     model: profile.model,
     ...(profile.baseUrl ? { baseUrl: profile.baseUrl } : {}),
-  }).spec
+  })
+  const spec = adapter.spec
 
   // ── 一、真实模型在新尺下的估算/真值比 ──────────────────────────────
   process.stdout.write(
@@ -448,27 +453,24 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     .filter((s) => s.kind === 'tool_action').length
   check('模型真的产生了可折的执行记录', foldable > 0, { 工具步数: foldable })
 
-  const workspaceId = getConversation(store, conv as ConversationId)?.workspaceId ?? ''
   const summarizer = makeSummarizer({
-    store,
-    conversationId: conv as ConversationId,
-    workspaceId: workspaceId as never,
     profile: () => ({
       kind: profile.kind,
       apiKey: profile.apiKey ?? '',
       model: profile.model,
       ...(profile.baseUrl ? { baseUrl: profile.baseUrl } : {}),
     }),
+    effort: () => profile.effort,
   })
   let budgetSeen = 0
   const compaction = new RuntimeCompaction({
     store,
     conversationId: conv as ConversationId,
     messageIdUpperBound: null,
-    // 走真实装配，不在这里自拼一个摘要器：自拼的那个不降思考档，量到的是另一件事。
-    summarize: async (prompt, budgetTokens) => {
+    // 走真实装配，思考档、预算与诊断记录必须和线上一致。
+    summarize: async (prompt, budgetTokens, trace) => {
       budgetSeen = budgetTokens
-      return summarizer(prompt, budgetTokens)
+      return summarizer(prompt, budgetTokens, trace)
     },
   })
 
@@ -495,14 +497,41 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
    */
   const window = Math.max(4096, Math.round(trueBefore * 0.8))
   const softAt = Math.floor(window * 0.8)
-  const outcome = await compaction.run({
-    trigger: 'automatic',
-    model: spec.id,
-    latestUnitSeen: true,
-    occupancy: trueBefore,
-    estimatedOccupancy: estBefore,
-    contextWindow: window,
-    density: spec.density,
+  const summaryRun = createRun(store, {
+    conversationId: conv as ConversationId,
+    workspaceId: getConversation(store, conv as ConversationId)!.workspaceId,
+    model: profile.model,
+    clientRequestId: crypto.randomUUID(),
+    userMessageId: null,
+    messageIdUpperBound: null,
+    contextSnapshot: [],
+  })
+  const outcome = await compaction
+    .run({
+      trace: createSummaryTrace(
+        requestPersistence(store, config),
+        summaryRun.id,
+        0,
+        adapter,
+        summaryRun.usage,
+        ref.provider,
+      ),
+      trigger: 'automatic',
+      model: spec.id,
+      latestUnitSeen: true,
+      occupancy: trueBefore,
+      estimatedOccupancy: estBefore,
+      contextWindow: window,
+      density: spec.density,
+    })
+    .catch((err: unknown) => {
+      finishRun(store, summaryRun.id, { status: 'failed', stopReason: 'provider_error' })
+      throw err
+    })
+  finishRun(store, summaryRun.id, {
+    status: outcome.status === 'failed' || outcome.status === 'aborted' ? 'failed' : 'done',
+    stopReason:
+      outcome.status === 'failed' || outcome.status === 'aborted' ? 'provider_error' : 'completed',
   })
   note(
     `真值占用 ${trueBefore}　估算占用 ${estBefore}　比值 ${(estBefore / trueBefore).toFixed(3)}　窗口 ${window}　软阈值 ${softAt}`,

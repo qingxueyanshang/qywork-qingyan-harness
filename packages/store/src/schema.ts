@@ -2232,6 +2232,11 @@ ALTER TABLE runs DROP COLUMN assistant_message_id;
      */
     sql: `ALTER TABLE provider_requests ADD COLUMN occupancy_tokens INTEGER;`,
   },
+  {
+    id: 67,
+    name: 'provider_request_configuration',
+    sql: `ALTER TABLE provider_requests ADD COLUMN configuration TEXT;`,
+  },
 ]
 
 /**
@@ -2384,6 +2389,7 @@ export interface ProviderRequestRow {
   error_message: string | null
   /** `ProviderRequestDiagnostic` JSON。 */
   diagnostic: string | null
+  configuration: string | null
   payload_hash: string
   request_bytes: number | null
   cache_route_fingerprint: string | null
@@ -2536,6 +2542,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'error_code',
     'error_message',
     'diagnostic',
+    'configuration',
     'payload_hash',
     'request_bytes',
     'cache_route_fingerprint',

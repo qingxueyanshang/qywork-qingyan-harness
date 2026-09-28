@@ -833,6 +833,7 @@ function foldRunState(ev: AgentEvent): void {
 
     case 'context':
       setState('context', {
+        source: ev.source,
         tokens: ev.tokens,
         limit: ev.limit,
         percent: ev.percent,
@@ -857,6 +858,7 @@ function foldRunState(ev: AgentEvent): void {
 
 /** `GET /api/conversations/:id/context` 的回体，形状同 runtime 的 `ContextPanel`。 */
 interface StoredContextPanel {
+  source: 'actual' | 'projected' | 'estimated'
   total: number
   limit: number
   percent: number
@@ -1511,6 +1513,7 @@ export async function reloadActiveConversation(): Promise<void> {
         s.context = ctx
           ? {
               tokens: ctx.total,
+              source: ctx.source,
               limit: ctx.limit,
               percent: ctx.percent,
               compactAt: ctx.compactAt,

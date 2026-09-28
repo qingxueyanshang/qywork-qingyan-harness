@@ -33,7 +33,12 @@ export {
   VENDORS,
 } from './catalog.ts'
 // 错误归类：agent 判可否重试，server 决定前端引导动作
-export { classifyProviderError, ProviderError } from './errors.ts'
+export {
+  classifyProviderError,
+  failureDiagnostics,
+  ProviderError,
+  providerErrorMessage,
+} from './errors.ts'
 // 唯一的 adapter 构造入口
 export { buildAdapter } from './factory.ts'
 // 生成模型：目录（设置页与生成工具共用）、参数校验、唯一的生成适配器构造入口
@@ -96,3 +101,5 @@ export type {
   WireMessage,
   WireToolCall,
 } from './types.ts'
+
+export { diagnosticEndpoint, providerContentKind } from './types.ts'

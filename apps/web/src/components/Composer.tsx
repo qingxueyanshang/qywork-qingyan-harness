@@ -1335,7 +1335,14 @@ function ContextMeter() {
           <Show when={open()}>
             <div class="ctx-pop" role="dialog" aria-label="上下文占用明细">
               <div class="ctx-head">
-                <span>上下文</span>
+                <span>
+                  上下文
+                  {c().source === 'estimated'
+                    ? '（估算）'
+                    : c().source === 'projected'
+                      ? '（含估算）'
+                      : ''}
+                </span>
                 <span class="ctx-head-nums">
                   {fmtTok(c().tokens)} / {fmtLimit(c().limit)}
                 </span>

@@ -163,6 +163,11 @@ async function* compactOverSoftLimit(
   if (outcome.status === 'compacted') {
     markCompacted(run.ctx.state)
     persist.recordCompaction(input.runId, run.nextSeq(), {
+      trigger: 'automatic',
+      occupancy,
+      estimatedOccupancy: at.estimated,
+      contextWindow: adapter.spec.contextWindow,
+      ...('message' in outcome && outcome.message ? { message: outcome.message } : {}),
       phase: 'done',
       manifestRevision: outcome.manifest.revision,
       compactedMessages: outcome.manifest.compactedMessageCount,
@@ -199,6 +204,11 @@ async function* compactOverSoftLimit(
     const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
     if (phase === 'skipped' && !overLine) return 'unchanged'
     persist.recordCompaction(input.runId, run.nextSeq(), {
+      trigger: 'automatic',
+      occupancy,
+      estimatedOccupancy: at.estimated,
+      contextWindow: adapter.spec.contextWindow,
+      ...('message' in outcome && outcome.message ? { message: outcome.message } : {}),
       phase,
       manifestRevision: 0,
       compactedMessages: 0,
@@ -315,10 +325,16 @@ export async function* recoverFromOverflow(
     if (estimateRequest(rebuilt, density) < sizeBefore) {
       markCompacted(run.ctx.state)
       persist.recordCompaction(input.runId, run.nextSeq(), {
+        trigger: 'overflow',
+        occupancy: cap.reportedInputTokens ?? run.occupancyOf(turn.req),
+        estimatedOccupancy: sizeBefore,
+        contextWindow: adapter.spec.contextWindow,
+        ...('message' in outcome && outcome.message ? { message: outcome.message } : {}),
         phase: 'done',
         manifestRevision: outcome.manifest.revision,
         compactedMessages: outcome.manifest.compactedMessageCount,
         summarized: outcome.summarized,
+        ...(outcome.reasonCode ? { reasonCode: outcome.reasonCode } : {}),
       })
       yield {
         type: 'compaction',
@@ -326,6 +342,7 @@ export async function* recoverFromOverflow(
         phase: 'done',
         manifest: outcome.manifest,
         summarized: outcome.summarized,
+        ...(outcome.reasonCode ? { reasonCode: outcome.reasonCode } : {}),
       }
       run.compactedAt = transcript.length
       run.anchor = null
@@ -342,6 +359,11 @@ export async function* recoverFromOverflow(
   const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
   const reasonCode = outcome.status === 'compacted' ? 'no_reduction' : outcome.reasonCode
   persist.recordCompaction(input.runId, run.nextSeq(), {
+    trigger: 'overflow',
+    occupancy: cap.reportedInputTokens ?? run.occupancyOf(turn.req),
+    estimatedOccupancy: sizeBefore,
+    contextWindow: adapter.spec.contextWindow,
+    ...('message' in outcome && outcome.message ? { message: outcome.message } : {}),
     phase,
     manifestRevision: 0,
     compactedMessages: 0,

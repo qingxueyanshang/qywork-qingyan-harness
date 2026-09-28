@@ -3,22 +3,23 @@
  */
 
 import type { ProviderEvent } from '@qywork/ai'
-import { estimateRequest, ProviderError } from '@qywork/ai'
-import type {
-  AgentEvent,
-  ProviderFailureCause,
-  ProviderRequestContentKind,
-  ProviderRetryDecision,
-  StepId,
-} from '@qywork/core'
-import { log, reconcileBreakdown } from '@qywork/core'
+import {
+  estimateRequest,
+  failureDiagnostics,
+  ProviderError,
+  providerContentKind,
+  providerErrorMessage,
+} from '@qywork/ai'
+import type { AgentEvent, ProviderRetryDecision, StepId } from '@qywork/core'
+import { log } from '@qywork/core'
 import { recoverFromOverflow } from './compact.ts'
+import { contextEvent } from './context.ts'
 import {
   envelopeHashOf,
   mergeUsage,
   payloadSnapshotOf,
   reasoningPrefix,
-  softLimit,
+  requestConfiguration,
 } from './request.ts'
 import type { LoopHost, RunState, TurnState } from './run-state.ts'
 
@@ -102,32 +103,10 @@ function resendBackoffMs(error: ProviderError, resends: number): number | undefi
  *
  * 这句只在这里拼，全项目只有这一个拼装处。
  */
-function transportReading(providerEvents: number, silentMs: number): string {
+function transportReading(receivedResponse: boolean, silentMs: number): string {
   const secs = Math.round(silentMs / 1000)
-  if (providerEvents === 0) return `${secs} 秒未收到响应`
+  if (!receivedResponse) return `${secs} 秒未收到响应`
   return `${secs} 秒未收到后续数据`
-}
-
-/**
- * 保留归类错误到最底层 cause 的短链。只取四层，既覆盖 SDK 包装又防损坏对象成环。
- * 原文在 runtime 持久化边界按配置凭证与常见 key 形状脱敏。
- */
-function failureCauseChain(error: unknown): ProviderFailureCause[] {
-  const out: ProviderFailureCause[] = []
-  const seen = new Set<unknown>()
-  let current: unknown = error
-  while (current !== null && current !== undefined && out.length < 4 && !seen.has(current)) {
-    seen.add(current)
-    const record = typeof current === 'object' ? (current as Record<string, unknown>) : null
-    const code = record?.code
-    out.push({
-      name: current instanceof Error ? current.name || 'Error' : typeof current,
-      code: typeof code === 'string' || typeof code === 'number' ? String(code) : null,
-      message: current instanceof Error ? current.message : String(current),
-    })
-    current = record?.cause
-  }
-  return out
 }
 
 /** 一次尝试里 provider 事件的读数，失败时供诊断与超时读数使用。 */
@@ -200,6 +179,7 @@ export async function* sendTurn(
       measuredInputTokens: measured,
       // 与 `request_prepared` 时交给界面的读数同一把尺、同一个数。
       occupancyTokens: run.meter(measured).tokens,
+      configuration: requestConfiguration(turn.req, adapter),
       sentCategories: turn.breakdown,
       omittedCategories: host.lastOmitted(),
       payloadHash: payload.hash,
@@ -245,10 +225,9 @@ export async function* sendTurn(
         at: number | null = null,
       ): void => {
         persist.recordRequestDiagnostic?.(requestId, {
-          causes: failureCauseChain(err),
+          ...failureDiagnostics(err),
           providerEvents: probe.providerEvents,
           silentMs,
-          transport: pe?.transport ?? null,
           assistantChars: turn.assistantText.length,
           toolCallCount: turn.calls.length,
           retry: { decision, attempt, max: MAX_RESENDS, backoffMs, at },
@@ -274,9 +253,7 @@ export async function* sendTurn(
         pe?.usage ?? null,
         interrupted ? null : code,
         turn.rawStop,
-        !interrupted && pe?.status !== undefined && typeof pe.detail?.providerMessage === 'string'
-          ? pe.detail.providerMessage
-          : null,
+        interrupted ? null : providerErrorMessage(err),
       )
 
       // 中止来源由 runtime 的 AbortSignal reason 落到 run；请求行只记本次不重发。
@@ -414,7 +391,14 @@ export async function* sendTurn(
       const headline = pe.message.split(NEWLINE)[0]?.trim() || '模型服务出错'
       const facts = [
         headline,
-        ...(pe.timedOut ? [transportReading(probe.providerEvents, silentMs)] : []),
+        ...(pe.timedOut
+          ? [
+              transportReading(
+                probe.providerEvents > 0 || pe.transport?.headersAt != null,
+                silentMs,
+              ),
+            ]
+          : []),
         ...(resends > 0 ? [`已重发 ${resends} 次`] : []),
       ]
       throw new ProviderError({
@@ -446,7 +430,7 @@ async function* consumeStream(
   const { adapter, input, persist, usage } = run
   for await (const ev of stream) {
     probe.lastEventAt = Date.now()
-    if (ev.type !== 'request_prepared') {
+    if (ev.type !== 'request_prepared' && ev.type !== 'response_started') {
       probe.providerEvents++
       if (!probe.recordedFirstEvent) {
         probe.recordedFirstEvent = true
@@ -459,21 +443,8 @@ async function* consumeStream(
        * 空 delta、心跳、响应头、用量与 `done` 不在这张表里——它们证明连接还活，
        * 不证明模型又写出了内容。
        */
-      if (
-        ev.type === 'thinking_delta' ||
-        ev.type === 'text_delta' ||
-        ev.type === 'tool_call_progress' ||
-        ev.type === 'tool_calls' ||
-        ev.type === 'response_reasoning'
-      ) {
-        const kind: ProviderRequestContentKind =
-          ev.type === 'thinking_delta'
-            ? 'thinking'
-            : ev.type === 'text_delta'
-              ? 'text'
-              : ev.type === 'tool_call_progress' || ev.type === 'tool_calls'
-                ? 'tool_arguments'
-                : 'other'
+      const kind = providerContentKind(ev)
+      if (kind !== null && 'at' in ev) {
         const visible =
           (ev.type === 'thinking_delta' && ev.delta.length > 0) ||
           (ev.type === 'text_delta' && (turn.open?.kind === 'text' || /\S/.test(ev.delta)))
@@ -514,34 +485,7 @@ async function* consumeStream(
         }
         break
       case 'request_prepared': {
-        const limit = adapter.spec.contextWindow
-        const m = run.meter(ev.measuredInputTokens)
-        // 保留一位小数：1M 窗口下 2139 token 取整就是 0%，那一位有信息量。
-        const pct = limit ? Math.round((m.tokens / limit) * 1000) / 10 : 0
-        yield {
-          type: 'context',
-          runId: input.runId,
-          tokens: m.tokens,
-          limit,
-          percent: pct,
-          source: m.source,
-          compactAt: softLimit(adapter.spec),
-          /*
-           * **必须对账**：`tokens` 走锚定尺（provider 真值 + 锚点后的一轮尾巴），
-           * `breakdown` 是本地估算，两者天然不等。不对账的话面板上各行
-           * 加起来对不上标题，而差额无声地落进「剩余空间」那一行。
-           *
-           * 会话面板那侧（`runtime/context-panel.ts`）一直是对过账的，
-           * 这里不对就成了同一个面板两条路显示两组数：打开会话看到一组，
-           * run 一跑起来换成另一组。实测差过 271k。
-           *
-           * `m.source === 'estimated'` 时 `m.tokens` 与 `breakdown` 同尺
-           * 同源（都是 `estimateRequest` 的同一次装配），差额为零，
-           * 这里是恒等变换。
-           */
-          breakdown: reconcileBreakdown(turn.breakdown, m.tokens),
-          omitted: host.lastOmitted(),
-        }
+        yield contextEvent(host, run, turn, ev.measuredInputTokens)
         break
       }
       case 'thinking_delta': {

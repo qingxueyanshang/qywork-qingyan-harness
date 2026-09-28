@@ -10,6 +10,7 @@ import type {
   ContextGroup,
   EffortLevel,
   ProviderKind,
+  ProviderRequestContentKind,
   ResponseReasoning,
   ThinkingMode,
   ToolCallCheck,
@@ -333,6 +334,24 @@ export function hasThinkingEvidence(event: ProviderEvent): boolean {
   )
 }
 
+/** 主请求和摘要使用同一套内容判据；空 delta 与空调用列表不是模型新输出。 */
+export function providerContentKind(event: ProviderEvent): ProviderRequestContentKind | null {
+  switch (event.type) {
+    case 'text_delta':
+      return event.delta.length ? 'text' : null
+    case 'thinking_delta':
+      return event.delta.length ? 'thinking' : null
+    case 'tool_call_progress':
+      return 'tool_arguments'
+    case 'tool_calls':
+      return event.calls.length ? 'tool_arguments' : null
+    case 'response_reasoning':
+      return event.reasoning.items.length ? 'other' : null
+    default:
+      return null
+  }
+}
+
 export type ProviderStopReason =
   | 'end_turn'
   | 'tool_use'
@@ -361,6 +380,8 @@ export interface ProviderUsage {
 // ─────────────────────────────── 适配器 ───────────────────────────────
 
 export interface LlmAdapter {
+  /** 工厂解析后的实际端点，仅供诊断；持久化时必须去掉认证段与查询串。 */
+  readonly endpoint?: string
   readonly kind: ProviderKind
   readonly spec: ModelSpec
   /**
@@ -379,4 +400,19 @@ export interface LlmAdapter {
     mediaPaths?: boolean
   }
   stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown>
+}
+
+/** 只保留端点位置；URL 的认证段和查询串不属于诊断参数。 */
+export function diagnosticEndpoint(value: string | undefined): string | null {
+  if (!value) return null
+  try {
+    const url = new URL(value)
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return '[invalid URL omitted]'
+  }
 }

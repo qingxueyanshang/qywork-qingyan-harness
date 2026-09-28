@@ -857,6 +857,11 @@ export type StepPayload =
       /** `phase='done'` 专有：摘要线跟着前移了（true），还是只收纳了工具正文（false）。 */
       summarized?: boolean
       reasonCode?: string
+      message?: string
+      trigger?: 'manual' | 'automatic' | 'overflow'
+      occupancy?: number
+      estimatedOccupancy?: number
+      contextWindow?: number
     }
   | {
       /**
@@ -1235,6 +1240,18 @@ export function envelopeHeadTokens(breakdown: ContextBreakdown): number {
 export type ProviderRequestPurpose = 'turn' | 'summary'
 export type ProviderRequestContentKind = 'thinking' | 'text' | 'tool_arguments' | 'other'
 
+/** 请求装配时的参数；不含正文、凭证和请求头值，不能用导出时的配置回填旧请求。 */
+export interface ProviderRequestConfiguration {
+  contextWindow: number
+  modelMaxOutputTokens: number | null
+  maxOutputTokens: number | null
+  effort: EffortLevel | null
+  idleTimeoutMs: number
+  toolCount: number
+  messageCount: number
+  endpoint?: string | null
+}
+
 export interface ProviderRequest {
   id: ProviderRequestId
   runId: RunId
@@ -1287,6 +1304,7 @@ export interface ProviderRequest {
   errorMessage: string | null
   /** 失败现场与重试裁决；NULL = 成功、迁移前记录，或进程在裁决落账前消失。 */
   diagnostic: ProviderRequestDiagnostic | null
+  configuration: ProviderRequestConfiguration | null
   /** 请求体指纹。用来认出「同一份内容发了两遍」。 */
   payloadHash: string
   /** 模型可见请求主体的 UTF-8 字节数；不含凭证和传输头。 */
@@ -1310,7 +1328,7 @@ export interface ProviderRequest {
    * 连接未通与接单后等待在账本上是同一种静默。
    */
   headersAt: number | null
-  /** provider 返回的第一个流事件；不含本地 request_prepared。 */
+  /** provider 返回的第一个流事件；不含本地 request_prepared 和响应头 response_started。 */
   firstEventAt: number | null
   /** 第一段思考、正文或工具调用到达的时刻。 */
   firstContentAt: number | null
@@ -1341,6 +1359,7 @@ export type ProviderRetryDecision =
   | 'context_compaction'
   | 'context_compaction_failed'
   | 'process_exit'
+  | 'run_ended'
 
 /** 单个异常链节点。message 在 runtime 持久化边界脱敏。 */
 export interface ProviderFailureCause {
@@ -1379,6 +1398,12 @@ export interface ProviderTransportReading {
  * 一次失败请求的可导出诊断。它仍属于 `provider_requests` 这一行，不另造重试状态表。
  */
 export interface ProviderRequestDiagnostic {
+  provider?: {
+    status: number | null
+    code: string | null
+    type: string | null
+    param: string | null
+  }
   causes: ProviderFailureCause[]
   providerEvents: number | null
   silentMs: number | null
