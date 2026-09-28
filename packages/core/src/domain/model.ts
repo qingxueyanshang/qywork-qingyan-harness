@@ -1261,6 +1261,11 @@ export interface ProviderRequest {
    * 的增量，并给压缩回收量做两把尺的折算（`context-panel.ts` / `compaction.ts`）。
    */
   measuredInputTokens: number
+  /**
+   * 发出时运行中的上下文读数：上一次回执的输入与输出加其后的本地增量，界面读数条的那个数。
+   * 面板对尚无回执的请求读它，与运行中同一把尺。NULL = 摘要请求或迁移前旧行。
+   */
+  occupancyTokens: number | null
   providerInputTokens: number | null
   providerOutputTokens: number | null
   providerCachedTokens: number | null

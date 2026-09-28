@@ -2222,6 +2222,16 @@ CREATE INDEX idx_msg_conv ON messages(conversation_id, id);
 ALTER TABLE runs DROP COLUMN assistant_message_id;
 `,
   },
+  {
+    id: 66,
+    name: 'provider_request_occupancy_tokens',
+    /**
+     * 发出这次请求时运行中的上下文读数（`RunState.meter`：上一次回执的输入与输出加其后的
+     * 本地增量），界面读数条显示的就是它。面板对尚无回执的请求直接读这一列，不另算一遍。
+     * NULL 表示摘要请求或迁移前旧行；不回填。
+     */
+    sql: `ALTER TABLE provider_requests ADD COLUMN occupancy_tokens INTEGER;`,
+  },
 ]
 
 /**
@@ -2361,6 +2371,8 @@ export interface ProviderRequestRow {
   /** `CHECK (status IN ('pending','in_flight','received','uncertain','rejected'))`。 */
   status: ProviderRequestStatus
   measured_input_tokens: number
+  /** 发出时的运行中读数；见 `ProviderRequest.occupancyTokens`。 */
+  occupancy_tokens: number | null
   provider_input_tokens: number | null
   provider_output_tokens: number | null
   provider_cached_tokens: number | null
@@ -2513,6 +2525,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'model',
     'status',
     'measured_input_tokens',
+    'occupancy_tokens',
     'provider_input_tokens',
     'provider_output_tokens',
     'provider_cache_write_tokens',

@@ -64,6 +64,8 @@ function send(
   runId: ReturnType<typeof createRun>['id'],
   opts: {
     measured: number
+    /** 发出时运行中的读数；不给即迁移前旧行或摘要请求。 */
+    occupancy?: number
     categories?: Partial<ReturnType<typeof emptyBreakdown>>
     fingerprint?: string
     providerName?: string
@@ -78,6 +80,7 @@ function send(
     providerKind: opts.providerKind ?? 'openai_chat_completions',
     model: 'm',
     measuredInputTokens: opts.measured,
+    ...(opts.occupancy !== undefined ? { occupancyTokens: opts.occupancy } : {}),
     sentCategories: { ...emptyBreakdown(), ...opts.categories },
     omittedCategories: emptyOmitted(),
     payloadHash: `h${turn}`,
@@ -218,18 +221,43 @@ describe('上下文面板', () => {
     const anchored = contextPanel(store, conversationId, M(1_000_000))
     expect(anchored.total).toBe(33_000)
 
-    // 第二次：发出去了，但 provider 没报 usage。本地测得值远低于真值。
-    const second = send(store, runId, { measured: 3200 })
+    // 第二次：发出去了，但 provider 没报 usage。本地测得值远低于真值；发出时运行中的读数
+    // 是锚点真值 33,000 加其后增量 200。
+    const second = send(store, runId, { measured: 3200, occupancy: 33_200 })
     settleProviderRequest(store, second, 'received', null, null)
 
     const after = contextPanel(store, conversationId, M(1_000_000))
-    // 锚点输入真值 32,000；锚点后的模型可见增量按当前结构估算为 200。
-    // 不冻结在 32,000，也不跌回裸估算 3,200。
-    expect(after.total).toBe(32_200)
+    // 与运行中读数条同一个数，不跌回裸估算 3,200。
+    expect(after.total).toBe(33_200)
     expect(after.source).toBe('projected')
     // 分组明细跟着最近一次已发送的请求走，与锚点是两条判据；
     // 但会按对账把差额摊进可变桶，所以和恒等于总数。
-    expect(sum(after.breakdown)).toBe(32_200)
+    expect(sum(after.breakdown)).toBe(33_200)
+  })
+
+  /**
+   * 在途请求读发出时的运行中读数，面板不另算。面板另起「上次输入真值 + 本地估算差」一条算式时，
+   * 实测同一时刻读数条 13.6%、面板 8.2%、真值 6.1%。
+   */
+  test('在途请求与读数条同一个数；没记读数的旧行退回估算并如实标注', () => {
+    const { store, conversationId, runId } = fixture()
+    const first = send(store, runId, { measured: 89_651 })
+    settleProviderRequest(
+      store,
+      first,
+      'received',
+      { inputTokens: 2, outputTokens: 106_692, cachedTokens: 0, cacheWriteTokens: 28_803 },
+      null,
+    )
+    send(store, runId, { measured: 143_310, occupancy: 135_600 })
+    const inFlight = contextPanel(store, conversationId, M(1_000_000))
+    expect(inFlight.total).toBe(135_600)
+    expect(inFlight.source).toBe('projected')
+
+    send(store, runId, { measured: 150_000 })
+    const legacy = contextPanel(store, conversationId, M(1_000_000))
+    expect(legacy.total).toBe(150_000)
+    expect(legacy.source).toBe('estimated')
   })
 
   /**
@@ -543,14 +571,11 @@ describe('逐请求账本读得出重发', () => {
 })
 
 /**
- * 信封换一份时只换头部。
- *
- * 判据与 loop 那侧同源：`agent/loop/run-state.ts` 按 `envelopeHashOf` 判、两处共用
- * `core` 的 `envelopeHeadTokens` 量。两处不同的话同一条会话在运行中和回头看
- * 会给出两个数——实测过 80.0% 对 54.5%，而会话内容一个字没变。
+ * 信封换一份时只换头部：修正在运行中那一把尺里做（`agent/loop/run-state.ts` 的
+ * `rebaseAnchor`，由 `run-state.test.ts` 锁住），面板读它记下的读数，不再各算一遍。
  */
 describe('信封换一份只换头部', () => {
-  test('指纹不同时按头部差修正，指纹相同时原样', () => {
+  test('信封变了的在途请求，面板显示运行中已修正过的读数', () => {
     const { store, conversationId, runId } = fixture()
     const anchored = send(store, runId, {
       measured: 30_000,
@@ -567,16 +592,15 @@ describe('信封换一份只换头部', () => {
     // 同一份信封：真值原样。
     expect(contextPanel(store, conversationId, M(1_000_000)).total).toBe(101_000)
 
-    // 装了一个 MCP：头部从 10,000 变成 14,000，消息侧一个字没变。
+    // 装了一个 MCP：运行中按头部差 +4,000 修正锚点，再加其后增量 300。
     send(store, runId, {
-      // 新工具头部 +4,000；上一轮可见输出在本地尺上约 +300。
       measured: 34_300,
+      occupancy: 101_000 + 4000 + 300,
       categories: { systemPrompt: 1000, systemTools: 9000, mcpTools: 4000 },
       fingerprint: 'env-b',
     })
     const panel = contextPanel(store, conversationId, M(1_000_000))
-    expect(panel.total).toBe(100_000 + 4000 + 300)
-    // 头部与消息侧增量都按当前请求结构估算，不外推旧请求的整体误差倍率。
+    expect(panel.total).toBe(105_300)
     expect(panel.source).toBe('projected')
   })
 
