@@ -60,17 +60,19 @@ export type {
   DesktopWaitResult,
   DesktopWindowInfo,
 } from './desktop.ts'
-// 按键词表：tools 的 press 预检与 server 的 CDP 客户端按同一份表裁决
+// 物理键表与输入规模上限：tools 的预检与 server 的输入执行器按同一份表裁决
 export {
+  charKeys,
+  checkDuration,
+  checkHeldKeys,
+  checkKeyPhases,
+  checkPath,
+  INPUT_LIMITS,
   KEY_HINT,
+  type KeyEventFields,
   type KeySpec,
-  type KeyStroke,
-  keySpec,
-  keyStroke,
-  MODIFIER_KEYS,
-  type ModifierName,
+  keyEvent,
   modifierBits,
-  PRESS_KEYS,
 } from './keys.ts'
 // 主循环：runtime/session.ts 是唯一装配方
 // `softLimit` 另有一个包外消费者：面板画的触发线必须与真正会触发的那条同源
@@ -97,14 +99,18 @@ export {
   type BrowserDownloadResult,
   type BrowserElement,
   type BrowserExecution,
+  type BrowserKeyPhase,
   type BrowserObservation,
   type BrowserOptionsPage,
+  type BrowserPathStep,
+  type BrowserPoint,
   type BrowserPort,
   type BrowserRefusal,
   type BrowserSelectOption,
   type BrowserTabInfo,
   type BrowserWaitReceipt,
   type BrowserWaitResult,
+  type BrowserWaitState,
   compactionEpoch,
   type DelegatePort,
   type FileReadPort,

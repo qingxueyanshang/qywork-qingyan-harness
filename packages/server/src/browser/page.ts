@@ -19,24 +19,34 @@ import {
   type BrowserActInput,
   type BrowserActReceipt,
   type BrowserElement,
-  type BrowserExecution,
+  type BrowserKeyPhase,
   type BrowserObservation,
   type BrowserOptionsPage,
+  type BrowserPathStep,
+  type BrowserPoint,
   type BrowserSelectOption,
   type BrowserWaitReceipt,
-  KEY_HINT,
-  type KeyStroke,
-  keySpec,
-  keyStroke,
+  type BrowserWaitState,
+  charKeys,
+  checkDuration,
+  checkHeldKeys,
+  checkKeyPhases,
+  checkPath,
 } from '@qywork/agent'
 import { log } from '@qywork/core'
+import { type CdpClient, CdpError } from './cdp.ts'
 import {
-  CdpCancelledError,
-  type CdpClient,
-  CdpDisconnectedError,
-  CdpError,
-  CdpTimeoutError,
-} from './cdp.ts'
+  aimAt,
+  EVENT_TIMEOUT_MS,
+  Execution,
+  Keyboard,
+  leftMs,
+  mouseEvent,
+  type Point,
+  runKeyPhases,
+  settleInput,
+  within,
+} from './input.ts'
 
 /** 一次观察最多返回多少个元素。超出时按 offset 翻页，不静默截断。 */
 const MAX_ELEMENTS = 120
@@ -106,31 +116,14 @@ const PREPARE_TIMEOUT_MS = 5_000
 /** 帧链最多走几层。超过即判定失败，不继续向上找。 */
 const MAX_FRAME_DEPTH = 8
 
-/**
- * 多事件动作（type / drag / dblclick）的绝对期限。
- *
- * 定位、布局复核与全部业务事件合用它，单条命令从剩余预算取小。**不要改成每条命令
- * 各给一份额度**：2000 个码点乘以单条上限，一次调用能挂住几十分钟。
- */
-const ACTION_BUDGET_MS = 30_000
-/** 单条输入事件的上限。剩余预算更少时按剩余预算发。 */
-const EVENT_TIMEOUT_MS = 5_000
-/** 输入收尾的独立预算。业务预算用尽之后仍要能把按下的键与鼠标放开。 */
-const TEARDOWN_BUDGET_MS = 3_000
 /** `type` 一次最多输入多少个 Unicode 码点。整段预检通过才发第一个事件。 */
 const MAX_TYPE_UNITS = 2_000
-/** 拖动按下之后最多为终点推进几次滚动。 */
+/** 拖动按下之后最多为每一段终点推进几次滚动。 */
 const MAX_DRAG_SCROLLS = 2
+/** 有时长的拖动段里相邻两次移动的间隔，约一帧。 */
+const DRAG_STEP_MS = 16
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
-/** 距截止时间还剩多少毫秒。 */
-const leftMs = (deadline: number) => deadline - Date.now()
-
-/** 一条命令的超时：剩余预算与本条上限取小。发命令前由调用方判定预算是否已经耗尽。 */
-function within(deadline: number, capMs: number): { timeoutMs: number } {
-  return { timeoutMs: Math.max(1, Math.min(capMs, leftMs(deadline))) }
-}
 
 /** 元素引用已经指不到原来那个节点。调用方必须重新观察，不能改写编号重试。 */
 export class BrowserStaleRefError extends CdpError {}
@@ -138,80 +131,6 @@ export class BrowserStaleRefError extends CdpError {}
 export class BrowserAmbiguousRefError extends CdpError {}
 /** 预算内没能采到一份前后一致的快照。调用方保留已经发出的动作回执，不重做动作。 */
 export class BrowserObserveTimeoutError extends CdpError {}
-
-/**
- * 多事件动作的发送记账。
- *
- * 一个单元就是回执里 `confirmedUnits` 的一格。`confirm` 只在命令回包之后调用：
- * 已发出却没等到确认的那一条决定终态是 `unknown` 而不是 `partial` ——它可能已经在
- * 页面上生效了，说成「没做」会诱使调用方重放。
- */
-class Execution {
-  /** 本次动作的绝对期限。定位、布局复核与业务事件共用它。 */
-  readonly deadline = Date.now() + ACTION_BUDGET_MS
-  #confirmed = 0
-  #unknown = false
-  #stopped = false
-  #finished = false
-
-  /** 还能不能继续发业务事件：没停过、预算未尽、客户端未取消。 */
-  open(client: CdpClient): boolean {
-    return !this.#stopped && !client.cancelled && leftMs(this.deadline) > 0
-  }
-
-  /** 计划里的单元一个不少地确认完了。 */
-  finish(): void {
-    this.#finished = true
-  }
-
-  /** 本地判定要停：节点换了、焦点转走了、坐标量不定。已发出的事件不受影响。 */
-  stop(): void {
-    this.#stopped = true
-  }
-
-  /**
-   * 发一个单元并记账。返回还能不能接着发。
-   *
-   * 失败分两类：本地拒绝与协议错误回包都没有在页面上生效，按已确认前缀收场；
-   * 超时、断连、取消是「已入网未确认」，整次动作按 `unknown` 收场。
-   */
-  async run(task: () => Promise<void>): Promise<boolean> {
-    try {
-      await task()
-    } catch (err) {
-      this.#stopped = true
-      if (
-        err instanceof CdpTimeoutError ||
-        err instanceof CdpDisconnectedError ||
-        err instanceof CdpCancelledError
-      ) {
-        this.#unknown = true
-      }
-      return false
-    }
-    this.#confirmed += 1
-    return true
-  }
-
-  receipt(): BrowserExecution {
-    if (this.#unknown) return { state: 'unknown', confirmedUnits: this.#confirmed }
-    return {
-      state: this.#finished ? 'completed' : 'partial',
-      confirmedUnits: this.#confirmed,
-    }
-  }
-}
-
-/**
- * 输入收尾：把本客户端还按着的键与鼠标放开。成功、失败、取消同一条路径。
- *
- * 用独立的清理预算，不从动作预算里扣：动作预算耗尽正是最需要收尾的时候。
- */
-async function settleInput(client: CdpClient): Promise<void> {
-  const deadline = Date.now() + TEARDOWN_BUDGET_MS
-  await client.releaseHeldKeys(deadline)
-  await client.releaseHeldMouse(deadline)
-}
 
 /**
  * 一个元素编号背后的定位信息。
@@ -270,15 +189,20 @@ const DOC_TOKEN = `(() => {
  *
  * `label` 与 `hitLabel` 都按 `MAX_LABEL` 截。页面自报的 `aria-label` 长度无界，
  * 不在这里截的话它会经由动作回执进 message。
+ *
+ * 给了 `px` / `py` 时量的是元素矩形左上角起的那一点，否则是中心；`inBox` 说这一点在不在
+ * 此刻的矩形里——元素尺寸在观察之后可能变过。
  */
-export const INSPECT_FN = `function qyInspect() {
+export const INSPECT_FN = `function qyInspect(px, py) {
   const el = this
   const tag = (el.tagName || '').toLowerCase()
   const identity = [tag, el.id || '', el.getAttribute ? el.getAttribute('name') || '' : '', el.getAttribute ? el.getAttribute('type') || '' : ''].join('|')
   if (!el.isConnected) return { connected: false, identity }
   const r = el.getBoundingClientRect()
-  const x = r.x + r.width / 2
-  const y = r.y + r.height / 2
+  const offset = typeof px === 'number' && typeof py === 'number'
+  const x = offset ? r.x + px : r.x + r.width / 2
+  const y = offset ? r.y + py : r.y + r.height / 2
+  const inBox = !offset || (px >= 0 && py >= 0 && px <= r.width && py <= r.height)
   const view = el.ownerDocument.defaultView
   // 可视区判定用元素自己文档的视口。这一层通过只说明它在本文档内可见，
   // 跨站 iframe 还要逐层核对父文档，见 framePoint。
@@ -298,6 +222,7 @@ export const INSPECT_FN = `function qyInspect() {
     y,
     width: r.width,
     height: r.height,
+    inBox,
     inView,
     sameTree,
     hit: hit ? (hit.tagName || '').toLowerCase() : null,
@@ -549,9 +474,19 @@ const ACTIONABLE_ROLES = new Set([
  * 同样按可操作处理的标签。AX 角色缺失的自定义控件靠它兜住。
  *
  * **不含 `label`**：点它等于点它关联的控件，而那个控件已经单列了一行；
- * 它自己的可访问名通常是空的，进表只是一行没有用途的空条目。
+ * 它自己的可访问名通常是空的，进表只是一行没有用途的空条目。`canvas` 的交互全在它自己的
+ * 像素里，AX 树给它 `Canvas` 角色，只有按标签收进来，指针动作才有落点可指。
  */
-const ACTIONABLE_TAGS = new Set(['a', 'button', 'input', 'select', 'textarea', 'summary', 'option'])
+const ACTIONABLE_TAGS = new Set([
+  'a',
+  'button',
+  'input',
+  'select',
+  'textarea',
+  'summary',
+  'option',
+  'canvas',
+])
 
 /** 只提供正文的角色。它们让模型读得到页面结果，不必回传整页 HTML。 */
 const TEXT_ROLES = new Set(['StaticText', 'heading', 'paragraph', 'cell', 'columnheader'])
@@ -622,6 +557,7 @@ export async function observePage(
     const offset = opts.offset ?? 0
     const shown = all.slice(offset, offset + MAX_ELEMENTS)
     await attachOptions(client, shown, deadline)
+    await attachSizes(client, shown, deadline)
     const image = opts.screenshot ? await capture(client, sessionId, deadline) : null
     const after = await readDocument(page, within(deadline, COLLECT_TIMEOUT_MS).timeoutMs)
     if (after.token !== before.token || after.url !== before.url) continue
@@ -1115,6 +1051,35 @@ async function attachOptions(
   }
 }
 
+/**
+ * 给这一页要返回的 canvas 补上此刻的 CSS 像素尺寸，即指针动作 `point` 的取值范围。
+ *
+ * 只给 canvas：它的落点只能靠坐标区分，别的元素点中心就够。量不出（`display: none`）时
+ * 整项不写，不写成 0。
+ */
+async function attachSizes(
+  client: CdpClient,
+  shown: { element: BrowserElement; ref: RefRecord }[],
+  deadline: number,
+): Promise<void> {
+  for (const item of shown) {
+    if (item.element.tag !== 'canvas') continue
+    if (leftMs(deadline) <= 0) return
+    const box = await client
+      .send<{ model: { width: number; height: number } }>(
+        'DOM.getBoxModel',
+        { backendNodeId: item.ref.backendNodeId },
+        { sessionId: item.ref.sessionId, ...within(deadline, COLLECT_TIMEOUT_MS) },
+      )
+      .catch(() => null)
+    if (!box) continue
+    item.element = {
+      ...item.element,
+      size: { width: Math.round(box.model.width), height: Math.round(box.model.height) },
+    }
+  }
+}
+
 /** 按引用记录解析出节点再读一段选项。`limit` 为 0 时只取总数。 */
 async function readOptionsOf(
   client: CdpClient,
@@ -1209,7 +1174,9 @@ interface Inspection {
   y?: number
   width?: number
   height?: number
-  /** 中心点落在本文档视口内。跨站 iframe 还要逐层核父文档。 */
+  /** 指定的落点在元素此刻的矩形内。没指定落点时恒为真。 */
+  inBox?: boolean
+  /** 落点在本文档视口内。跨站 iframe 还要逐层核父文档。 */
   inView?: boolean
   sameTree?: boolean
   hit?: string | null
@@ -1266,6 +1233,7 @@ async function resolveRef(
   record: ObservationRecord,
   ref: string,
   deadline = Date.now() + PREPARE_BUDGET_MS,
+  point?: BrowserPoint,
 ): Promise<{ entry: RefRecord; objectId: string; inspect: Inspection }> {
   const { client } = page
   const entry = record.refs.get(ref)
@@ -1284,13 +1252,14 @@ async function resolveRef(
   const objectId = resolved?.object.objectId
   if (!objectId) throw new BrowserStaleRefError(`元素 ${ref} 已经不在页面上，请重新观察`)
 
-  const inspect = await inspectNode(client, entry.sessionId, objectId, ref, deadline)
+  const inspect = await inspectNode(client, entry.sessionId, objectId, ref, deadline, point)
   assertSameNode(ref, entry, inspect, '')
   return { entry, objectId, inspect }
 }
 
 /**
- * 页内复核一次：矩形、可视区、命中点与身份指纹都取此刻的值。
+ * 页内复核一次：矩形、可视区、命中点与身份指纹都取此刻的值。给了 `point` 时量那一点，
+ * 否则量中心。
  *
  * 页内抛异常时 `returnByValue` 下的 `result.value` 是 `undefined`，**必须在这里结掉**：
  * 直接返回的话，下一步解引用它会以一句内部异常原文结束，而那句话对调用方没有下一步。
@@ -1301,13 +1270,19 @@ async function inspectNode(
   objectId: string,
   ref: string,
   deadline: number,
+  point?: BrowserPoint,
 ): Promise<Inspection> {
   const inspected = await client.send<{
     result: { value?: Inspection }
     exceptionDetails?: unknown
   }>(
     'Runtime.callFunctionOn',
-    { objectId, functionDeclaration: INSPECT_FN, returnByValue: true },
+    {
+      objectId,
+      functionDeclaration: INSPECT_FN,
+      ...(point ? { arguments: [{ value: point.x }, { value: point.y }] } : {}),
+      returnByValue: true,
+    },
     { sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
   )
   const view = inspected.result.value
@@ -1337,29 +1312,38 @@ function assertSameNode(ref: string, entry: RefRecord, inspect: Inspection, when
  *
  * `scroll` 为假只重新量取，不动页面（观察与读选项按它调用）；`hit` 为假不做
  * 可命中裁决，只要坐标（滚动到元素上这类动作按落点发事件即可）。`deadline` 缺省时
- * 自带一份准备预算，多事件动作传自己的绝对期限进来，不另起一份时钟。
+ * 自带一份准备预算，多事件动作传自己的绝对期限进来，不另起一份时钟。`point` 是元素内的
+ * 落点，缺省取中心。
  */
 async function prepareAction(
   page: PageHandle,
   record: ObservationRecord,
   ref: string,
-  opts: { scroll: boolean; hit: boolean; deadline?: number },
+  opts: { scroll: boolean; hit: boolean; deadline?: number; point?: BrowserPoint },
 ): Promise<{ entry: RefRecord; objectId: string; inspect: Inspection; point: Point }> {
   const deadline = opts.deadline ?? Date.now() + PREPARE_BUDGET_MS
   const { client } = page
-  const { entry, objectId, inspect } = await resolveRef(page, record, ref, deadline)
+  const { entry, objectId, inspect } = await resolveRef(page, record, ref, deadline, opts.point)
   let view = inspect
   if (opts.scroll && (await scrollIntoView(client, entry, objectId, view, deadline))) {
-    view = await inspectNode(client, entry.sessionId, objectId, ref, deadline)
+    view = await inspectNode(client, entry.sessionId, objectId, ref, deadline, opts.point)
     assertSameNode(ref, entry, view, '滚动后')
   }
+  if (opts.point && view.inBox === false) throw outsideBox(ref, opts.point, view)
   if (opts.hit && view.disabled === true) throw new CdpError(`元素 ${ref} 当前不可用`)
   if (opts.hit) assertHittable(`元素 ${ref}`, view)
   const point = await toInputPoint(page, entry, view, ref, deadline, opts.hit)
   return { entry, objectId, inspect: view, point }
 }
 
-type Point = { x: number; y: number }
+/** 落点不在元素此刻的矩形里。给出此刻的尺寸，调用方据此换一个点。 */
+function outsideBox(ref: string, point: BrowserPoint, view: Inspection): CdpError {
+  const w = Math.round(view.width ?? 0)
+  const h = Math.round(view.height ?? 0)
+  return new CdpError(
+    `元素 ${ref} 上的点 (${point.x}, ${point.y}) 超出元素范围，它此刻宽 ${w}、高 ${h}`,
+  )
+}
 
 /**
  * 需要时把元素滚进可视区，返回是否真的发了滚动命令。
@@ -1552,45 +1536,35 @@ export async function actOnPage(
   const { client, sessionId } = page
   await assertDoc(page, record)
 
-  if (input.action === 'scroll' && !input.ref) {
-    const y = input.deltaY ?? 400
-    await client.send(
-      'Input.dispatchMouseEvent',
-      { type: 'mouseWheel', x: 10, y: 10, deltaX: 0, deltaY: y, button: 'none' },
-      { sessionId },
-    )
-    return {}
-  }
-  if (input.action === 'press' && !input.ref) {
-    await pressOn(page, sessionId, input.key)
-    return {}
-  }
+  if (input.action === 'press') return pressOnPage(page, record, input.ref, input.phases ?? [])
+  if (input.action === 'scroll') return scrollOnPage(page, record, input)
   if (!input.ref) throw new CdpError(`${input.action} 需要元素引用`)
+  const ref = input.ref
 
   switch (input.action) {
     case 'click':
-      return clickOnPage(page, record, input.ref, 'left')
     case 'rightclick':
-      return clickOnPage(page, record, input.ref, 'right')
+      return clickOnPage(page, record, ref, input, input.action === 'click' ? 'left' : 'right')
     case 'hover': {
-      const { inspect, point } = await prepareAction(page, record, input.ref, {
+      const { inspect, point } = await prepareAction(page, record, ref, {
         scroll: true,
         hit: true,
+        ...(input.point ? { point: input.point } : {}),
       })
       // 只移动，不按下。悬停层什么时候出现由页面决定，动作之后的观察采到什么就是什么。
-      await mouseEvent(client, sessionId, 'mouseMoved', point, { button: 'none', buttons: 0 })
-      return { element: inspect.label ?? input.ref, point }
+      await aimAt(client, sessionId, point, 0)
+      return { element: inspect.label ?? ref, point }
     }
     case 'dblclick':
-      return doubleClickOnPage(page, record, input.ref)
+      return doubleClickOnPage(page, record, ref, input)
     case 'drag':
-      return dragOnPage(page, record, input.ref, input.toRef)
+      return dragOnPage(page, record, ref, input)
     case 'type':
-      return typeOnPage(page, record, input.ref, input.text ?? '')
+      return typeOnPage(page, record, ref, input.text ?? '')
     case 'fill':
-      return fillOnPage(page, record, input.ref, input.text ?? '')
+      return fillOnPage(page, record, ref, input.text ?? '')
     case 'select': {
-      const { entry, objectId, inspect } = await resolveRef(page, record, input.ref)
+      const { entry, objectId, inspect } = await resolveRef(page, record, ref)
       const r = await client.send<{
         result: {
           value: {
@@ -1612,40 +1586,40 @@ export async function actOnPage(
         { sessionId: entry.sessionId },
       )
       const value = r.result.value
-      if (!value.ok) throw selectFailure(input.ref, input.text ?? '', value)
-      return { element: inspect.label ?? input.ref }
-    }
-    case 'scroll': {
-      // 滚动落点不做可命中裁决：滚轮事件打在被遮住的位置上一样滚得动。
-      const { inspect, point } = await prepareAction(page, record, input.ref, {
-        scroll: false,
-        hit: false,
-      })
-      await client.send(
-        'Input.dispatchMouseEvent',
-        {
-          type: 'mouseWheel',
-          x: point.x,
-          y: point.y,
-          deltaX: 0,
-          deltaY: input.deltaY ?? 400,
-          button: 'none',
-        },
-        { sessionId },
-      )
-      return { element: inspect.label ?? input.ref, point }
-    }
-    case 'press': {
-      const { entry, inspect } = await resolveRef(page, record, input.ref)
-      await client.send(
-        'DOM.focus',
-        { backendNodeId: entry.backendNodeId },
-        { sessionId: entry.sessionId },
-      )
-      await pressOn(page, entry.sessionId, input.key)
-      return { element: inspect.label ?? input.ref }
+      if (!value.ok) throw selectFailure(ref, input.text ?? '', value)
+      return { element: inspect.label ?? ref }
     }
   }
+}
+
+/**
+ * 滚轮。给了 ref 时在元素的落点上滚，否则在页面左上角附近滚；两个方向都没给时向下 400。
+ *
+ * 落点不做可命中裁决：滚轮事件打在被遮住的位置上一样滚得动。
+ */
+async function scrollOnPage(
+  page: PageHandle,
+  record: ObservationRecord,
+  input: BrowserActInput,
+): Promise<BrowserActReceipt> {
+  const { client, sessionId } = page
+  const deltaX = input.deltaX ?? 0
+  const deltaY = input.deltaY ?? (input.deltaX === undefined ? 400 : 0)
+  const target = input.ref
+    ? await prepareAction(page, record, input.ref, {
+        scroll: false,
+        hit: false,
+        ...(input.point ? { point: input.point } : {}),
+      })
+    : null
+  const at = target?.point ?? { x: 10, y: 10 }
+  await client.send(
+    'Input.dispatchMouseEvent',
+    { type: 'mouseWheel', x: at.x, y: at.y, deltaX, deltaY, button: 'none' },
+    { sessionId },
+  )
+  if (!target || !input.ref) return {}
+  return { element: target.inspect.label ?? input.ref, point: target.point }
 }
 
 /**
@@ -1673,92 +1647,116 @@ function selectFailure(
   return new CdpError(`元素 ${ref} 不是选择框`)
 }
 
-/** 按一次键或组合键。成功、失败都走同一条输入收尾，不把修饰键留在按下状态。 */
-async function pressOn(
+/**
+ * 按一段按键计划。给了 ref 时先把焦点放到它上面，按键发到它所在的会话；否则发到页会话，
+ * 落在文档此刻的焦点上，不涉及系统前台窗口。
+ *
+ * 阶段之间核一次文档令牌：换了文档就停，计划的其余部分不落到新页面上。焦点不核——
+ * Tab 这类按键本来就会移动焦点。成功、失败、取消都走同一条收尾。
+ */
+async function pressOnPage(
   page: PageHandle,
-  sessionId: string,
-  key: string | undefined,
-): Promise<void> {
-  const stroke = keyStroke(key ?? '')
-  if (!stroke) throw new CdpError(`不支持的按键：${key}（${KEY_HINT}）`)
-  try {
-    await page.client.pressStroke(sessionId, stroke)
-  } finally {
-    await settleInput(page.client)
+  record: ObservationRecord,
+  ref: string | undefined,
+  phases: BrowserKeyPhase[],
+): Promise<BrowserActReceipt> {
+  const problem = checkKeyPhases(phases)
+  if (problem) throw new CdpError(problem)
+  const { client } = page
+  const run = new Execution()
+  let sessionId = page.sessionId
+  let element: string | undefined
+  if (ref) {
+    const { entry, inspect } = await resolveRef(page, record, ref, run.deadline)
+    await client.send(
+      'DOM.focus',
+      { backendNodeId: entry.backendNodeId },
+      { sessionId: entry.sessionId, ...within(run.deadline, PREPARE_TIMEOUT_MS) },
+    )
+    sessionId = entry.sessionId
+    element = inspect.label ?? ref
   }
+  const keyboard = new Keyboard(client, sessionId)
+  if (await runKeyPhases(keyboard, phases, run, () => documentMoved(page, record, run.deadline))) {
+    run.finish()
+  }
+  await settleInput(client, [sessionId], run)
+  return { ...(element === undefined ? {} : { element }), execution: run.receipt() }
 }
 
-/** 按名字取一次按键。只用于表里一定有的那几个键，取不到即按键表被改坏。 */
-function requireStroke(name: string): KeyStroke {
-  const stroke = keyStroke(name)
-  if (!stroke) throw new CdpError(`按键表里没有 ${name}`)
-  return stroke
-}
-
-/** 发一条鼠标事件。坐标一律在页会话（顶层文档）的坐标系里。 */
-async function mouseEvent(
-  client: CdpClient,
-  sessionId: string,
-  type: 'mousePressed' | 'mouseReleased' | 'mouseMoved',
-  point: Point,
-  extra: Record<string, unknown>,
-  deadline?: number,
-): Promise<void> {
-  await client.send(
-    'Input.dispatchMouseEvent',
-    { type, x: point.x, y: point.y, ...extra },
-    { sessionId, ...(deadline === undefined ? {} : within(deadline, EVENT_TIMEOUT_MS)) },
+/** 这份观察的文档还是不是当前文档。换了、或读不到时返回停止原因。 */
+async function documentMoved(
+  page: PageHandle,
+  record: ObservationRecord,
+  deadline: number,
+): Promise<string | null> {
+  const doc = await readDocument(page, within(deadline, PREPARE_TIMEOUT_MS).timeoutMs).catch(
+    () => null,
   )
+  if (!doc) return '读不到当前文档'
+  return doc.token === record.docToken ? null : '页面已经换过文档'
 }
+
+/** 指针动作期间按着的键。与预检同一张表，发第一个事件之前判。 */
+function heldKeysOf(keys: string[] | undefined): string[] {
+  const held = keys ?? []
+  const problem = checkHeldKeys(held, 'keys')
+  if (problem) throw new CdpError(problem)
+  return held
+}
+
+/** 指针动作共用的可选参数。 */
+type PointerOptions = { point?: BrowserPoint; keys?: string[]; holdMs?: number }
 
 /**
- * 把指针移到落点。按下之前必须先发这一条。
- *
- * **不要省掉它。** 直接发 `mousePressed` 时 CDP 回包确认、随后的移动也带 `buttons: 1`，
- * 而渲染进程一次 mousedown 都没有派发——页内文档级捕获监听器一条都没收到。
- * 点击与拖动各跑 30 轮，各复现 1 次。它不是业务事件，不计入执行回执的单元数。
+ * 单次点击，可按住一段时间、可同时按着键。右键只换 `button`，定位、滚动与命中说明与左键
+ * 同一套。按下与抬起各是一个单元；按住期间被停下时由收尾补 `mouseReleased`。
  */
-async function aimAt(
-  client: CdpClient,
-  sessionId: string,
-  point: Point,
-  deadline?: number,
-): Promise<void> {
-  await mouseEvent(client, sessionId, 'mouseMoved', point, { button: 'none', buttons: 0 }, deadline)
-}
-
-async function clickPoint(
-  client: CdpClient,
-  sessionId: string,
-  point: Point,
-  button: 'left' | 'right' = 'left',
-): Promise<void> {
-  await aimAt(client, sessionId, point)
-  const buttonsOf = (down: boolean) => (down ? (button === 'right' ? 2 : 1) : 0)
-  for (const type of ['mousePressed', 'mouseReleased'] as const) {
-    await mouseEvent(client, sessionId, type, point, {
-      button,
-      buttons: buttonsOf(type === 'mousePressed'),
-      clickCount: 1,
-    })
-  }
-}
-
-/** 单次点击。右键只换 `button`，定位、滚动与命中说明与左键同一套。 */
 async function clickOnPage(
   page: PageHandle,
   record: ObservationRecord,
   ref: string,
+  opts: PointerOptions,
   button: 'left' | 'right',
 ): Promise<BrowserActReceipt> {
+  const keys = heldKeysOf(opts.keys)
+  const hold = opts.holdMs ?? 0
+  const bad = checkDuration(hold, 'holdMs')
+  if (bad) throw new CdpError(bad)
   const { client, sessionId } = page
-  const { inspect, point } = await prepareAction(page, record, ref, { scroll: true, hit: true })
-  try {
-    await clickPoint(client, sessionId, point, button)
-  } finally {
-    await settleInput(client)
+  const run = new Execution()
+  const { inspect, point } = await prepareAction(page, record, ref, {
+    scroll: true,
+    hit: true,
+    deadline: run.deadline,
+    ...(opts.point ? { point: opts.point } : {}),
+  })
+  const keyboard = new Keyboard(client, sessionId)
+  const send = (type: 'mousePressed' | 'mouseReleased', buttons: number) =>
+    run.run(client, () =>
+      mouseEvent(
+        client,
+        sessionId,
+        type,
+        point,
+        { button, buttons, clickCount: 1, modifiers: keyboard.modifiers },
+        run.deadline,
+      ),
+    )
+  const sequence = async (): Promise<boolean> => {
+    if (!(await run.run(client, () => keyboard.to(keys, run.deadline)))) return false
+    const aimed = await run.run(client, () =>
+      aimAt(client, sessionId, point, keyboard.modifiers, run.deadline),
+    )
+    if (!aimed || !(await send('mousePressed', button === 'right' ? 2 : 1))) return false
+    run.unit()
+    if (!(await run.hold(client, hold)) || !(await send('mouseReleased', 0))) return false
+    run.unit()
+    return run.run(client, () => keyboard.to([], run.deadline))
   }
-  return { element: inspect.label ?? ref, point }
+  if (await sequence()) run.finish()
+  await settleInput(client, [sessionId], run)
+  return { element: inspect.label ?? ref, point, execution: run.receipt() }
 }
 
 /**
@@ -1771,69 +1769,74 @@ async function doubleClickOnPage(
   page: PageHandle,
   record: ObservationRecord,
   ref: string,
+  opts: PointerOptions,
 ): Promise<BrowserActReceipt> {
+  const keys = heldKeysOf(opts.keys)
   const { client, sessionId } = page
   const run = new Execution()
   const { inspect, point } = await prepareAction(page, record, ref, {
     scroll: true,
     hit: true,
     deadline: run.deadline,
+    ...(opts.point ? { point: opts.point } : {}),
   })
-  await aimAt(client, sessionId, point, run.deadline)
-  let done = true
-  for (const clickCount of [1, 2]) {
-    if (!run.open(client)) {
-      done = false
-      break
+  const keyboard = new Keyboard(client, sessionId)
+  const sequence = async (): Promise<boolean> => {
+    if (!(await run.run(client, () => keyboard.to(keys, run.deadline)))) return false
+    const aimed = await run.run(client, () =>
+      aimAt(client, sessionId, point, keyboard.modifiers, run.deadline),
+    )
+    if (!aimed) return false
+    for (const clickCount of [1, 2]) {
+      const sent = await run.run(client, async () => {
+        const extra = { button: 'left', clickCount, modifiers: keyboard.modifiers }
+        await mouseEvent(
+          client,
+          sessionId,
+          'mousePressed',
+          point,
+          { ...extra, buttons: 1 },
+          run.deadline,
+        )
+        await mouseEvent(
+          client,
+          sessionId,
+          'mouseReleased',
+          point,
+          { ...extra, buttons: 0 },
+          run.deadline,
+        )
+      })
+      if (!sent) return false
+      run.unit()
     }
-    const sent = await run.run(async () => {
-      await mouseEvent(
-        client,
-        sessionId,
-        'mousePressed',
-        point,
-        { button: 'left', buttons: 1, clickCount },
-        run.deadline,
-      )
-      await mouseEvent(
-        client,
-        sessionId,
-        'mouseReleased',
-        point,
-        { button: 'left', buttons: 0, clickCount },
-        run.deadline,
-      )
-    })
-    if (!sent) {
-      done = false
-      break
-    }
+    return run.run(client, () => keyboard.to([], run.deadline))
   }
-  if (done) run.finish()
-  await settleInput(client)
+  if (await sequence()) run.finish()
+  await settleInput(client, [sessionId], run)
   return { element: inspect.label ?? ref, point, execution: run.receipt() }
 }
 
-/** `type` 的一个单元：一次按键，或一个走文本插入的码点。 */
-type TypeUnit = { stroke: KeyStroke } | { text: string }
+/** `type` 的一个单元：产生一个字符要按下的键，或一个走文本插入的码点。 */
+type TypeUnit = { keys: string[] } | { text: string }
 
 /**
  * 归一并切成可发的单元。
  *
  * 整段检完才发第一个事件：发到一半再发现超长的话，前半段已经进了页面，而输入事件
  * 撤不回来。CRLF 与单独的 CR 归一为换行，换行按 Enter 发——单行控件可能因此提交。
- * 布局表里的字符走按键序列，其余码点走 `Input.insertText`：不给中文造虚拟键码，
+ * 布局表里的字符走按键，其余码点走 `Input.insertText`：不给中文造虚拟键码，
  * 也不承诺 IME composition 与完整的 keydown/keyup 链。
  */
 function planType(text: string): TypeUnit[] {
   const units: TypeUnit[] = []
   for (const ch of text.replace(/\r\n?/g, '\n')) {
     if (ch === '\n') {
-      units.push({ stroke: requireStroke('Enter') })
+      units.push({ keys: ['Enter'] })
       continue
     }
     if (ch === '\t') {
-      units.push({ stroke: requireStroke('Tab') })
+      units.push({ keys: ['Tab'] })
       continue
     }
     const code = ch.codePointAt(0) ?? 0
@@ -1841,33 +1844,13 @@ function planType(text: string): TypeUnit[] {
       const hex = code.toString(16).toUpperCase().padStart(4, '0')
       throw new CdpError(`不能输入控制字符 U+${hex}`)
     }
-    const spec = keySpec(ch)
-    if (spec) units.push({ stroke: { modifiers: spec.shift === true ? ['Shift'] : [], key: spec } })
-    else units.push({ text: ch })
+    const keys = charKeys(ch)
+    units.push(keys ? { keys } : { text: ch })
   }
   if (units.length > MAX_TYPE_UNITS) {
     throw new CdpError(`一次最多输入 ${MAX_TYPE_UNITS} 个字符，这次给了 ${units.length} 个`)
   }
   return units
-}
-
-function sendTypeUnit(
-  client: CdpClient,
-  sessionId: string,
-  unit: TypeUnit,
-  deadline: number,
-): Promise<void> {
-  if ('text' in unit) {
-    // 文本插入发到元素自己的会话：焦点由该帧的渲染进程持有，发到顶层会落在别处。
-    return client
-      .send(
-        'Input.insertText',
-        { text: unit.text },
-        { sessionId, ...within(deadline, EVENT_TIMEOUT_MS) },
-      )
-      .then(() => {})
-  }
-  return client.pressStroke(sessionId, unit.stroke, within(deadline, EVENT_TIMEOUT_MS).timeoutMs)
 }
 
 /** 目标还在、还是同一个、焦点还在它身上。任一项不成立即停止输入。 */
@@ -1893,7 +1876,8 @@ async function onTypingTarget(
  * 逐字输入：聚焦目标后在当前选区输入，**不全选也不清空**，覆盖输入是 `fill` 的事。
  *
  * 每个码点发送前复核目标，节点被替换、移除或焦点转移时立刻停止，不继续发往另一个控件。
- * 默认不加人为延时：需要等异步候选层的应用分段 type 之后自己 wait。
+ * 默认不加人为延时：需要等异步候选层的应用分段 type 之后自己 wait。按键与 `press` 走
+ * 同一个 `Keyboard`：一个码点是一次按下集合再全部抬起。
  */
 async function typeOnPage(
   page: PageHandle,
@@ -1910,19 +1894,34 @@ async function typeOnPage(
     { backendNodeId: entry.backendNodeId },
     { sessionId: entry.sessionId, ...within(run.deadline, PREPARE_TIMEOUT_MS) },
   )
-  let done = true
-  for (const unit of units) {
-    if (!run.open(client) || !(await onTypingTarget(client, entry, objectId, run.deadline))) {
-      done = false
-      break
+  const keyboard = new Keyboard(client, entry.sessionId)
+  const sequence = async (): Promise<boolean> => {
+    for (const unit of units) {
+      if (!run.open(client)) return false
+      if (!(await onTypingTarget(client, entry, objectId, run.deadline))) {
+        run.stop('输入目标已被替换、移除或失去焦点')
+        return false
+      }
+      const sent = await run.run(client, async () => {
+        if ('text' in unit) {
+          // 文本插入发到元素自己的会话：焦点由该帧的渲染进程持有，发到顶层会落在别处。
+          await client.send(
+            'Input.insertText',
+            { text: unit.text },
+            { sessionId: entry.sessionId, ...within(run.deadline, EVENT_TIMEOUT_MS) },
+          )
+          return
+        }
+        await keyboard.to(unit.keys, run.deadline)
+        await keyboard.to([], run.deadline)
+      })
+      if (!sent) return false
+      run.unit()
     }
-    if (!(await run.run(() => sendTypeUnit(client, entry.sessionId, unit, run.deadline)))) {
-      done = false
-      break
-    }
+    return true
   }
-  if (done) run.finish()
-  await settleInput(client)
+  if (await sequence()) run.finish()
+  await settleInput(client, [entry.sessionId], run)
   return { element: inspect.label ?? ref, execution: run.receipt() }
 }
 
@@ -2016,17 +2015,18 @@ function limitsText(limits: FillOutcome['limits']): string {
 }
 
 /**
- * 按下状态里量取终点。
+ * 按下状态里量取一段的终点。
  *
- * 终点仍在可视区外时在按下状态内有界推进滚动并重新量取；跨文档、节点丢失或坐标量不定
- * 就返回 `null`，由调用方收尾。**不反复回头滚起点**：它已经按下，再滚它只会把按下的
- * 位置甩开。
+ * 终点仍在可视区外时在按下状态内有界推进滚动并重新量取；跨文档、节点丢失、落点超出
+ * 元素或坐标量不定就返回 `null`，由调用方收尾。**不反复回头滚起点**：它已经按下，
+ * 再滚它只会把按下的位置甩开。
  */
 async function dragTarget(
   page: PageHandle,
   end: { entry: RefRecord; objectId: string },
   ref: string,
   run: Execution,
+  point: BrowserPoint | undefined,
 ): Promise<Point | null> {
   const { client } = page
   for (let pass = 0; pass <= MAX_DRAG_SCROLLS; pass++) {
@@ -2037,8 +2037,10 @@ async function dragTarget(
       end.objectId,
       ref,
       run.deadline,
+      point,
     ).catch(() => null)
     if (!view || !view.connected || view.identity !== end.entry.identity) return null
+    if (view.inBox === false) return null
     if (view.inView === true) {
       return toInputPoint(page, end.entry, view, ref, run.deadline, false).catch(() => null)
     }
@@ -2055,11 +2057,13 @@ async function dragTarget(
 }
 
 /**
- * 拖动：两端都取自同一份观察。
+ * 拖动：在起点按下，沿路径逐段移动，在最后一段的终点抬起。起点与各段终点都取自同一份
+ * 观察，同一个元素上的两个不同点可以互为起终点。
  *
- * 先只读核两端，再完成必要滚动，最后在同一个坐标系里重新量取并复核起点可命中——
+ * 先只读核全部端点，再完成必要滚动，最后在同一个坐标系里重新量取并复核起点可命中——
  * **不得用第一次滚动前的起点坐标**，后一次滚动会让它指向另一个位置。按下之后每条移动
- * 带 `buttons: 1`，最后 `mouseReleased` 清为 0。
+ * 带 `buttons: 1`，最后 `mouseReleased` 清为 0。一段是一个单元：段内按时长约每帧移动一次，
+ * 时长为 0 时只发中点与终点。
  *
  * 只承诺指针事件驱动的拖动，不承诺 HTML5 DataTransfer 原生拖放链。
  */
@@ -2067,29 +2071,35 @@ async function dragOnPage(
   page: PageHandle,
   record: ObservationRecord,
   ref: string,
-  toRef: string | undefined,
+  opts: PointerOptions & { path?: BrowserPathStep[] },
 ): Promise<BrowserActReceipt> {
-  if (!toRef) throw new CdpError('drag 需要终点元素引用 toRef')
-  if (toRef === ref) throw new CdpError('drag 的起点与终点是同一个元素')
+  const path = opts.path ?? []
+  const problem = checkPath(path)
+  if (problem) throw new CdpError(problem)
+  const keys = heldKeysOf(opts.keys)
   const { client, sessionId } = page
   const run = new Execution()
   const deadline = run.deadline
-  // 先只读核两端：任一端已经不在了就不必滚动页面，更不该按下鼠标。
-  await resolveRef(page, record, ref, deadline)
-  const end = await resolveRef(page, record, toRef, deadline)
-  // 先滚终点、后量起点：滚终点会把起点带到别的位置，先量到的那一份从此不成立。
-  await scrollIntoView(client, end.entry, end.objectId, end.inspect, deadline)
-  const start = await prepareAction(page, record, ref, { scroll: true, hit: true, deadline })
-  const from = start.point
-  await aimAt(client, sessionId, from, deadline)
-
-  const send = async (
+  // 先只读核全部端点：任一端已经不在了就不必滚动页面，更不该按下鼠标。
+  await resolveRef(page, record, ref, deadline, opts.point)
+  const ends: { entry: RefRecord; objectId: string; inspect: Inspection }[] = []
+  for (const step of path) ends.push(await resolveRef(page, record, step.ref, deadline, step.point))
+  // 先滚第一段的终点、后量起点：滚终点会把起点带到别的位置，先量到的那一份从此不成立。
+  const first = ends[0]
+  if (first) await scrollIntoView(client, first.entry, first.objectId, first.inspect, deadline)
+  const start = await prepareAction(page, record, ref, {
+    scroll: true,
+    hit: true,
+    deadline,
+    ...(opts.point ? { point: opts.point } : {}),
+  })
+  const keyboard = new Keyboard(client, sessionId)
+  const send = (
     type: 'mousePressed' | 'mouseReleased' | 'mouseMoved',
     point: Point,
     buttons: number,
-  ): Promise<boolean> => {
-    if (!run.open(client)) return false
-    return run.run(() =>
+  ) =>
+    run.run(client, () =>
       mouseEvent(
         client,
         sessionId,
@@ -2098,41 +2108,62 @@ async function dragOnPage(
         {
           button: 'left',
           buttons,
+          modifiers: keyboard.modifiers,
           ...(type === 'mouseMoved' ? {} : { clickCount: 1 }),
         },
         deadline,
       ),
     )
-  }
+  let at = start.point
   const sequence = async (): Promise<boolean> => {
-    if (!(await send('mousePressed', from, 1))) return false
-    const to = await dragTarget(page, end, toRef, run)
-    if (!to) return false
-    const middle = { x: Math.round((from.x + to.x) / 2), y: Math.round((from.y + to.y) / 2) }
-    if (!(await send('mouseMoved', middle, 1))) return false
-    if (!(await send('mouseMoved', to, 1))) return false
-    return send('mouseReleased', to, 0)
+    if (!(await run.run(client, () => keyboard.to(keys, deadline)))) return false
+    const aimed = await run.run(client, () =>
+      aimAt(client, sessionId, at, keyboard.modifiers, deadline),
+    )
+    if (!aimed || !(await send('mousePressed', at, 1))) return false
+    for (const [i, step] of path.entries()) {
+      const end = ends[i]
+      const to = end ? await dragTarget(page, end, step.ref, run, step.point) : null
+      if (!to) {
+        run.stop(`第 ${i + 1} 段的终点 ${step.ref} 已经量不到`)
+        return false
+      }
+      const ms = step.durationMs ?? 0
+      const steps = Math.max(2, Math.round(ms / DRAG_STEP_MS))
+      for (let k = 1; k <= steps; k++) {
+        if (!(await run.hold(client, ms / steps))) return false
+        const point = {
+          x: at.x + ((to.x - at.x) * k) / steps,
+          y: at.y + ((to.y - at.y) * k) / steps,
+        }
+        if (!(await send('mouseMoved', point, 1))) return false
+      }
+      at = to
+      run.unit()
+    }
+    if (!(await send('mouseReleased', at, 0))) return false
+    return run.run(client, () => keyboard.to([], deadline))
   }
   if (await sequence()) run.finish()
-  await settleInput(client)
-  return { element: start.inspect.label ?? ref, point: from, execution: run.receipt() }
+  await settleInput(client, [sessionId], run)
+  return { element: start.inspect.label ?? ref, point: start.point, execution: run.receipt() }
 }
 
-/** 等一个选择器出现。页内等待器只观察并返回，不点击、不提交。 */
+/** 等主文档里一个选择器达到指定状态。页内等待器只观察并返回，不点击、不提交。 */
 export async function waitOnPage(
   page: PageHandle,
-  selector: string,
+  spec: { selector: string; state: BrowserWaitState; expected?: string },
   timeoutMs: number,
 ): Promise<BrowserWaitReceipt> {
   const { client, sessionId } = page
-  const waiterId = await client.startWaiter(sessionId, selector, timeoutMs)
+  const waiterId = await client.startWaiter(sessionId, spec, timeoutMs)
   try {
     const got = (await client.awaitWaiter(sessionId, waiterId, timeoutMs + 5_000)) as {
-      found?: boolean
+      met?: boolean
       reason?: string
     }
     return {
-      found: got.found === true,
+      met: got.met === true,
       ...(got.reason ? { reason: got.reason } : {}),
     }
   } finally {
@@ -2170,8 +2201,11 @@ export async function clickForDownload(
   ref: string,
 ): Promise<BrowserActReceipt> {
   await assertDoc(page, record)
-  // 与普通点击同一条准备：定位、滚动与命中说明都一致，两处不给两套解释。
-  const { inspect, point } = await prepareAction(page, record, ref, { scroll: true, hit: true })
-  await clickPoint(page.client, page.sessionId, point)
-  return { element: inspect.label ?? ref, point }
+  // 与普通点击同一条路径：定位、滚动、命中说明与收尾都一致，两处不给两套解释。
+  const receipt = await clickOnPage(page, record, ref, {}, 'left')
+  const execution = receipt.execution
+  if (execution && execution.state !== 'completed') {
+    throw new CdpError(`触发下载的点击没有做完：${execution.reason ?? execution.state}`)
+  }
+  return receipt
 }

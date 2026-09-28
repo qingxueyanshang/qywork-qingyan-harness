@@ -30,6 +30,7 @@ import type {
   BrowserRefusal,
   BrowserTabInfo,
   BrowserWaitResult,
+  BrowserWaitState,
   FollowUpObservation,
 } from '@qywork/agent'
 import type { BrowserEventFrame } from '@qywork/core'
@@ -807,10 +808,24 @@ export class BrowserCoordinator {
 
   async #wait(
     lease: Lease,
-    input: { tabId: string; selector: string; timeoutMs: number },
+    input: {
+      tabId: string
+      selector: string
+      state: BrowserWaitState
+      expected?: string
+      timeoutMs: number
+    },
   ): Promise<BrowserWaitResult> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
-    const receipt = await waitOnPage(page, input.selector, input.timeoutMs)
+    const receipt = await waitOnPage(
+      page,
+      {
+        selector: input.selector,
+        state: input.state,
+        ...(input.expected === undefined ? {} : { expected: input.expected }),
+      },
+      input.timeoutMs,
+    )
     // 等待按选择器结果直接采集：选择器已经是调用方给的就绪判据，不再叠一层静默等待。
     const deadline = Date.now() + FOLLOW_UP_BUDGET_MS
     return { ...receipt, ...(await this.#followUp(control, page, deadline)) }

@@ -1,60 +1,113 @@
 /**
- * 按键词表与组合键解析。
+ * 物理键表与一次输入的规模上限。
  *
- * 覆盖范围：`keys.ts` 全部（物理键的键码、功能键清单、组合键的修饰键顺序与
- * Shift 补按规则、拒绝形状、修饰位）。
+ * 覆盖范围：`keys.ts` 全部（按下集合推出的事件字段、字符到物理键、修饰位、
+ * 按键阶段与拖动路径的合法性、键码取值说明）。
  */
 
 import { expect, test } from 'bun:test'
-import { KEY_HINT, keySpec, keyStroke, modifierBits, PRESS_KEYS } from './keys.ts'
+import {
+  charKeys,
+  checkDuration,
+  checkHeldKeys,
+  checkKeyPhases,
+  checkPath,
+  INPUT_LIMITS,
+  KEY_HINT,
+  keyEvent,
+  modifierBits,
+} from './keys.ts'
 
-test('键盘表按物理键给键码，不按字符码点', () => {
-  expect(keySpec(';')).toEqual({ key: ';', code: 'Semicolon', keyCode: 186, text: ';' })
-  expect(keySpec(':')).toEqual({
-    key: ':',
+test('键码按物理键给虚拟键码，不按字符码点', () => {
+  expect(keyEvent('Semicolon', [])).toEqual({
+    key: ';',
     code: 'Semicolon',
     keyCode: 186,
-    text: ':',
-    shift: true,
+    text: ';',
+    modifiers: 0,
   })
   // 分号与冒号是同一个物理键。按字符码点算会得到 59 与 58，两个都不是可用的虚拟键码。
-  expect(keySpec(';')?.keyCode).not.toBe(';'.codePointAt(0))
-  expect(keySpec('a')?.keyCode).toBe(keySpec('A')?.keyCode)
-  expect(PRESS_KEYS).toContain('Enter')
-  expect(PRESS_KEYS).toContain('PageDown')
+  expect(keyEvent('Semicolon', ['ShiftLeft', 'Semicolon'])).toMatchObject({
+    key: ':',
+    keyCode: 186,
+    text: ':',
+    modifiers: 8,
+  })
+  expect(keyEvent('Space', [])).toMatchObject({ key: ' ', text: ' ' })
+  expect(keyEvent('Enter', [])).toMatchObject({ key: 'Enter', text: '\r' })
+  expect(keyEvent('Tab', [])?.text).toBeUndefined()
+  expect(keyEvent('Hyper', [])).toBeNull()
 })
 
-test('组合键解析：修饰键在前、主键在末，空段与重复修饰键一律拒绝', () => {
-  expect(keyStroke('Ctrl+A')).toEqual({
-    modifiers: ['Ctrl'],
-    // Ctrl+A 是 Ctrl 加 A 键：不补 Shift，页面看到的 key 是 a。
-    key: { key: 'a', code: 'KeyA', keyCode: 65, text: 'a' },
-  })
-  expect(keyStroke('Ctrl+a')?.key.key).toBe('a')
-  expect(keyStroke('Shift+Tab')?.modifiers).toEqual(['Shift'])
-  expect(keyStroke('Ctrl+Shift+Enter')?.modifiers).toEqual(['Ctrl', 'Shift'])
-  // 加号写 Plus：它是上排符号，要按住 Shift 才产生。
-  expect(keyStroke('Ctrl+Plus')?.modifiers).toEqual(['Ctrl', 'Shift'])
-  expect(keyStroke('Ctrl+Plus')?.key.code).toBe('Equal')
-  // 不带其他修饰键的大写字母补 Shift，否则页面收到的是小写。
-  expect(keyStroke('A')).toEqual({
-    modifiers: ['Shift'],
-    key: { key: 'A', code: 'KeyA', keyCode: 65, text: 'A', shift: true },
-  })
-
-  for (const bad of ['', 'Ctrl+', '+A', 'Ctrl++', 'Ctrl+Ctrl+A', 'Hyper+A', 'F13', 'ctrl+a']) {
-    expect(keyStroke(bad)).toBeNull()
-  }
+test('字符由按下集合推出：Shift 取上排字符，Ctrl / Alt / Meta 按着时不带文本', () => {
+  expect(keyEvent('KeyW', ['KeyW'])).toMatchObject({ key: 'w', text: 'w', modifiers: 0 })
+  expect(keyEvent('KeyW', ['ShiftLeft', 'KeyW'])).toMatchObject({ key: 'W', text: 'W' })
+  // Ctrl+A 是 Ctrl 加 A 键：页面看到的 key 是 a，且不产生字符。
+  const ctrlA = keyEvent('KeyA', ['ControlLeft', 'KeyA'])
+  expect(ctrlA).toMatchObject({ key: 'a', modifiers: 2 })
+  expect(ctrlA?.text).toBeUndefined()
+  // 修饰键自己的按下含自身、抬起不含自身，位由调用方给的集合决定。
+  expect(keyEvent('ControlLeft', ['ControlLeft'])?.modifiers).toBe(2)
+  expect(keyEvent('ControlLeft', [])?.modifiers).toBe(0)
 })
 
-test('修饰位按位或叠加，顺序不影响结果', () => {
+test('布局表里的字符拆成物理键，Shift 在前；表外字符返回 null', () => {
+  expect(charKeys('a')).toEqual(['KeyA'])
+  expect(charKeys('A')).toEqual(['ShiftLeft', 'KeyA'])
+  expect(charKeys('+')).toEqual(['ShiftLeft', 'Equal'])
+  expect(charKeys(' ')).toEqual(['Space'])
+  expect(charKeys('中')).toBeNull()
+})
+
+test('修饰位按位或叠加，非修饰键不计', () => {
   expect(modifierBits([])).toBe(0)
-  expect(modifierBits(['Ctrl'])).toBe(2)
-  expect(modifierBits(['Ctrl', 'Shift'])).toBe(10)
-  expect(modifierBits(['Shift', 'Ctrl'])).toBe(10)
+  expect(modifierBits(['ControlLeft'])).toBe(2)
+  expect(modifierBits(['ControlLeft', 'ShiftLeft', 'KeyA'])).toBe(10)
+  expect(modifierBits(['AltLeft', 'MetaLeft'])).toBe(5)
+})
+
+test('按键阶段：键码、重复、空集合、时长与合计上限各自成句', () => {
+  expect(
+    checkKeyPhases([
+      { keys: ['KeyW'], durationMs: 1200 },
+      { keys: ['KeyW', 'Space'] },
+      { keys: ['KeyW'], durationMs: 300 },
+    ]),
+  ).toBeNull()
+  expect(checkKeyPhases([])).toContain('至少要有一个阶段')
+  expect(checkKeyPhases([{ keys: ['W'] }])).toContain('不是可用的键码')
+  expect(checkKeyPhases([{ keys: ['KeyW', 'KeyW'] }])).toContain('重复')
+  expect(checkKeyPhases([{ keys: [] }])).toContain('空集合')
+  expect(checkKeyPhases([{ keys: [], durationMs: 100 }])).toBeNull()
+  expect(checkKeyPhases([{ keys: ['KeyW'], durationMs: -1 }])).toContain('durationMs')
+  expect(checkKeyPhases([{ keys: ['KeyW'], durationMs: 1.5 }])).toContain('durationMs')
+  expect(checkKeyPhases([{ keys: ['KeyW'], durationMs: INPUT_LIMITS.phaseMs + 1 }])).toContain(
+    'durationMs',
+  )
+  const long = Array.from({ length: 3 }, () => ({
+    keys: ['KeyW'],
+    durationMs: INPUT_LIMITS.phaseMs,
+  }))
+  expect(checkKeyPhases(long)).toContain('合计')
+  const many = Array.from({ length: INPUT_LIMITS.phases + 1 }, () => ({ keys: ['KeyW'] }))
+  expect(checkKeyPhases(many)).toContain(`最多 ${INPUT_LIMITS.phases} 个阶段`)
+  const wide = ['KeyA', 'KeyB', 'KeyC', 'KeyD', 'KeyE', 'KeyF', 'KeyG', 'KeyH', 'KeyI']
+  expect(checkHeldKeys(wide, 'keys')).toContain(`最多同时按 ${INPUT_LIMITS.keys} 个键`)
+})
+
+test('拖动路径与单个时长：段数、时长与合计按同一张上限表', () => {
+  expect(checkPath([{ durationMs: 400 }, {}])).toBeNull()
+  expect(checkPath([])).toContain('至少要有一段')
+  expect(checkPath(Array.from({ length: INPUT_LIMITS.pathSegments + 1 }, () => ({})))).toContain(
+    `最多 ${INPUT_LIMITS.pathSegments} 段`,
+  )
+  expect(checkPath([{ durationMs: 6000 }])).toContain('path[0].durationMs')
+  expect(checkDuration(0, 'holdMs')).toBeNull()
+  expect(checkDuration(Number.NaN, 'holdMs')).toContain('holdMs')
 })
 
 test('取值说明列全功能键与修饰键，两处拒绝共用它', () => {
-  for (const name of PRESS_KEYS) expect(KEY_HINT).toContain(name)
-  expect(KEY_HINT).toContain('Plus')
+  for (const code of ['Enter', 'Space', 'ArrowUp', 'PageDown', 'ShiftLeft', 'ControlLeft']) {
+    expect(KEY_HINT).toContain(code)
+  }
 })
