@@ -734,18 +734,46 @@ describe('静默计时', () => {
     }
   }
 
-  test('每片输出重置计时，一直在产出就不杀', async () => {
-    // 12 行 × 50ms = 600ms，静默额度 200ms：按总时长判早就到点了。
-    const proc = Bun.spawn(['node', '-e', ticker(12)], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      stdin: 'ignore',
-    })
-    const got = await collectProcess(proc, { idleMs: 200 })
-    expect(got.timedOut).toBe(false)
-    expect(got.exitCode).toBe(0)
-    expect(got.stdout.split('tick').length - 1).toBe(12)
-  }, 20_000)
+  for (const startupMs of [0, 350]) {
+    test(`每片输出重置计时，一直在产出就不杀（启动延迟 ${startupMs}ms）`, async () => {
+      // 启动就绪后才开始计输出间隔；350ms 启动延迟锁住不把启动耗时计入断言的前提。
+      const source =
+        `setTimeout(()=>{process.stdout.write('ready\\n');` +
+        `process.stdin.once('data',()=>{${ticker(12)}})},${startupMs})`
+      const proc = Bun.spawn(['node', '-e', source], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        stdin: 'pipe',
+      })
+      try {
+        const reader = proc.stdout.getReader()
+        const startupTimer = setTimeout(() => killTree(proc), 10_000)
+        let ready = ''
+        try {
+          const decoder = new TextDecoder()
+          while (!ready.endsWith('\n')) {
+            const chunk = await reader.read()
+            if (chunk.done) break
+            ready += decoder.decode(chunk.value, { stream: true })
+          }
+          expect(ready).toBe('ready\n')
+        } finally {
+          clearTimeout(startupTimer)
+          reader.releaseLock()
+        }
+        // 12 行 × 50ms = 600ms，静默额度仍为 200ms：按总时长判必然失败。
+        const collected = collectProcess(proc, { idleMs: 200 })
+        proc.stdin.write('start\n')
+        proc.stdin.end()
+        const got = await collected
+        expect(got.timedOut).toBe(false)
+        expect(got.exitCode).toBe(0)
+        expect(got.stdout.split('tick').length - 1).toBe(12)
+      } finally {
+        if (proc.exitCode === null) killTree(proc)
+      }
+    }, 20_000)
+  }
 
   test('两个计时器各自成立：还在产出，总时长到点照样杀', async () => {
     const proc = Bun.spawn(['node', '-e', ticker()], {
