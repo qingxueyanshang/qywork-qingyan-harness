@@ -226,8 +226,14 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
         // `--chat-floor`），但 `--chat-min` 就不再成立。那三个数改了，这里跟着改。
         .min_inner_size(1079.0, 480.0)
         .center()
-        .initialization_script(script)
-        .build()?;
+        .initialization_script(script);
+
+    // 保留 wry 默认禁用项；语音识别使用既有服务端点，避开新服务的连接失败。
+    #[cfg(windows)]
+    let window = window.additional_browser_args(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msSpeechRecognitionServiceUseCetoService",
+    );
+    let window = window.build()?;
 
     // `build()` 返回 Ok 不等于窗口存在：运行时把创建失败写进 log 后照样返回。
     // 任何一个 getter 拿不到就是没建起来，原因在 `ShellLog` 留住的那一条里。
