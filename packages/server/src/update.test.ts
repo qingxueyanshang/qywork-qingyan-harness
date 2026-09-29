@@ -1,6 +1,6 @@
 /** 覆盖 server.ts 的本机更新鉴权，以及 runs/commands 的更新与任务互斥。 */
 import { expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from '@qywork/store'
@@ -65,6 +65,6 @@ test('配对令牌不能取得更新占位；宿主占位后新指令被明确�
     store.close()
     if (previousHome === undefined) delete process.env.QYWORK_HOME
     else process.env.QYWORK_HOME = previousHome
-    await rm(root, { recursive: true, force: true })
+    // 临时目录由 run-tests 在测试进程退出后清理，避免与未退出的 Git 查询争用目录。
   }
 })
