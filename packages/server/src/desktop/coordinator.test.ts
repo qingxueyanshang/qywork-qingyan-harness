@@ -833,6 +833,55 @@ test('动作被宿主拒绝派发：观察编号仍然有效，下一个动作�
   expect((await next).dispatch).toBe('submitted')
 })
 
+test('输入未派发但窗口准备后的重读失败：旧观察作废，保留失败原因', async () => {
+  const { host, desktop } = await connected(fresh())
+  const a = desktop.portFor('cv_a')
+  const first = await firstLook(host, a)
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'e5',
+    action: { kind: 'click', button: 'left', count: 1 },
+  })
+  host.reply(await host.next(), {
+    dispatch: 'not_dispatched',
+    reason: 'geometry_changed: minimized → restored',
+    observationError: 'provider_timeout: 窗口准备后重读失败',
+  })
+  expect(await acting).toMatchObject({
+    dispatch: 'not_dispatched',
+    observation: null,
+    observationError: 'provider_timeout: 窗口准备后重读失败',
+  })
+  expect(a.elements('dw_1', first.observationId)).toBeNull()
+})
+
+test('输入未派发但窗口准备带回新观察：换编号，不再接受旧观察', async () => {
+  const { host, desktop } = await connected(fresh())
+  const a = desktop.portFor('cv_a')
+  const first = await firstLook(host, a)
+  const acting = a.act({
+    windowId: 'dw_1',
+    observationId: first.observationId,
+    ref: 'e5',
+    action: { kind: 'click', button: 'left', count: 1 },
+  })
+  host.reply(await host.next(), {
+    dispatch: 'not_dispatched',
+    reason: 'geometry_changed: minimized → restored',
+    observation: subtree(),
+  })
+  const result = await acting
+  expect(result.dispatch).toBe('not_dispatched')
+  if (!result.observation) throw new Error('窗口准备后的新观察不应丢失')
+  expect(result.observation.observationId).not.toBe(first.observationId)
+  expect(a.elements('dw_1', first.observationId)).toBeNull()
+  expect(a.elements('dw_1', result.observation.observationId)?.map((e) => e.ref)).toEqual([
+    'e4',
+    'e5',
+  ])
+})
+
 test('动作之后没有重读：这个窗口的控件表整份作废', async () => {
   const handle = fresh()
   const { host, desktop } = await connected(handle)

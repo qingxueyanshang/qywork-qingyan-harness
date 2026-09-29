@@ -904,11 +904,28 @@ function actOutcome(
   const receipt: Record<string, unknown> = { actionId: r.actionId, dispatch: r.dispatch }
   if (r.reason !== undefined) receipt.reason = r.reason
   if (r.dispatch === 'not_dispatched') {
+    const lead = `${action.kind} 未执行 · ${r.reason ?? '宿主拒绝'}`
+    const parts = r.observation
+      ? delivered(
+          desktopResult({
+            ctx,
+            toolName: 'desktop_act',
+            snapshot: r.observation,
+            place: 'observation',
+            incremental: true,
+            receipt,
+            targetRef: ref || null,
+            lead: `${lead} · ${snapshotLine(r.observation)}`,
+          }),
+        )
+      : {
+          message: `${lead}${r.observationError ? ` · ${r.observationError}` : ''}`,
+          data: { ...receipt, observationError: r.observationError },
+        }
     return {
       status: 'failure',
       executed: false,
-      message: `${action.kind} 未执行 · ${r.reason ?? '宿主拒绝'}`,
-      data: receipt,
+      ...parts,
       errorKind: 'desktop_not_dispatched',
     }
   }
@@ -1066,17 +1083,18 @@ async function imagePayload(
  * 按图定位的动作在回执上附一张动作后的整窗图。
  *
  * 在动作回执返回后立即采集；控件重读不保证异步界面状态已稳定，任务结果仍需依据观察核验。
- * 未派发的动作不附图；采集失败不改变动作派发事实。
+ * 请求动作或窗口准备使旧观察失效时补图；纯拒绝且旧观察仍有效时不附图。
+ * 采集失败不改变动作派发事实。
  */
 async function withShot(
   outcome: ToolOutcome,
-  dispatched: boolean,
+  refresh: boolean,
   desktop: DesktopPort,
   send: PortCall,
   windowId: string,
   ctx: ToolContext,
 ): Promise<ToolOutcome> {
-  if (!dispatched || ctx.vision === false) return outcome
+  if (!refresh || ctx.vision === false) return outcome
   const shot = await send(() => desktop.captureImage({ windowId, maxEdge: MAX_EDGE })).then(
     (image) => imagePayload(image),
     (err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }),
@@ -1446,7 +1464,7 @@ export const desktopActTool: ToolSpec = {
     '指针动作可使用 imageRef 与 imageX / imageY 定位；回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
     'dispatch 表示动作派发状态：not_dispatched 未执行，submitted 已提交，unknown 结果未确认。动作提交成功不等于任务完成；结果未确认时应先观察，不得直接重复执行。' +
     '「读回不一致」同样不要重发同一段。' +
-    'not_dispatched 时手上的 observationId 仍然有效，按原因码改条件重试即可。' +
+    'not_dispatched 只表示请求动作未派发，窗口准备可能已改变界面；有新观察用新编号，观察失效时先重新观察。' +
     '动作之后同次带回新观察与新的 observationId；弹出新窗口时改带 blocking，对它继续观察。' +
     '本工具、desktop_act_sequence 与 desktop_wait 带回的观察在多半控件没变时只给变化：' +
     'since 是这个窗口上一份整份控件表的 observationId，added 与 changed 整行给出并带 parentRef，' +
@@ -1523,7 +1541,11 @@ export const desktopActTool: ToolSpec = {
       const r = await send(() => desktop.act({ windowId, observationId, ...aim.input, action }))
       const outcome = actOutcome(ctx, action, aim.element?.ref ?? '', r, field)
       if (aim.input.at === undefined) return outcome
-      return withShot(outcome, r.dispatch !== 'not_dispatched', desktop, send, windowId, ctx)
+      const refresh =
+        r.dispatch !== 'not_dispatched' ||
+        r.observation !== null ||
+        !desktop.elements(windowId, observationId)
+      return withShot(outcome, refresh, desktop, send, windowId, ctx)
     }),
 }
 
@@ -1974,8 +1996,10 @@ async function runStep(
     durationMs: Date.now() - started,
   }
   if (result.dispatch === 'not_dispatched') {
-    // 一条系统调用都没发出，控件表与观察编号都还是上一步那一份：`advance` 会把它们
-    // 清掉，回执随即说「读不到最后一份控件表」，而那份表此刻仍然有效。
+    // 请求动作未发出，但前台准备可能已改变窗口。是否还能保留旧观察由端口统一判定。
+    if (result.observation || !desktop.elements(windowId, cursor.observationId)) {
+      advance(cursor, result)
+    }
     return {
       receipt,
       halt: {
@@ -2221,7 +2245,8 @@ export const desktopActSequenceTool: ToolSpec = {
       const byImage = plans.some((p) => given(p.args.imageRef))
       const dispatched = done.some((r) => r.dispatch !== 'not_dispatched')
       if (!byImage) return outcome
-      return withShot(outcome, dispatched, desktop, send, windowId, ctx)
+      const refresh = dispatched || cursor.last !== null || cursor.table === null
+      return withShot(outcome, refresh, desktop, send, windowId, ctx)
     }),
 }
 

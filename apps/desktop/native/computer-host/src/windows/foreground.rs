@@ -9,8 +9,8 @@
 //!    落点打在控件自己所在、归目标窗口所有的弹出窗口上同样算属于目标。
 //! 3. **按住的键随按随记，任何中止路径都释放。** 记账与释放由 `input::Hold` 做，
 //!    本模块不手写释放调用。
-//! 4. **指针与键盘输入在派发前先把目标窗口拿到前台**（`ensure_foreground`，两条路径
-//!    共用这一处），再做各自原有的核对：指针核对落点归目标窗口，键盘核对前台窗口就是
+//! 4. **指针与键盘输入在定位前先把目标窗口拿到前台**（`prepare`，由后端在定位前调用），
+//!    再读取控件与几何并做派发核对：指针核对落点归目标窗口，键盘核对前台窗口就是
 //!    目标窗口且窗口未被禁用。点名了控件时再核对它持有键盘焦点，焦点不在它上面就拒绝
 //!    ——激活窗口不等于改控件焦点，这一条不替用户做。不点名控件即以窗口为目标。
 //!    带 `meta`（Windows 徽标键）的组合键例外：它发给系统，不提目标窗口，改提任务栏
@@ -93,9 +93,6 @@ pub fn perform(
         if modifiers.contains(&Modifier::Meta) {
             return system_shortcut(&sink, key, modifiers);
         }
-    }
-    if action.takes_input() {
-        ensure_foreground(window);
     }
     match action {
         ActionSpec::Click { button, count } => click(window, &sink, aim, *button, *count),
@@ -293,7 +290,7 @@ fn drag(window: i64, sink: &dyn Sink, aim: Aim, stop: &dyn Fn() -> bool) -> Atte
 
 /// 这次指针动作落在哪个屏幕坐标上，并核对那个位置确实属于这次动作，判据见 `lands_on_target`。
 ///
-/// 目标窗口不在前台那一种由 `ensure_foreground` 在派发前处理完；走到这里仍被盖住的是
+/// 目标窗口不在前台那一种由 `prepare` 在定位前处理完；走到这里仍被盖住的是
 /// 置顶窗口或别的窗口，如实拒绝。
 fn landing(window: i64, aim: Aim) -> Result<ScreenPoint, String> {
     let anchor = aim
@@ -350,7 +347,7 @@ fn blocked(requested: u32) -> Attempt {
 
 // ── 键盘 ──
 
-/// 键盘输入的前置条件。目标窗口不在前台那一种由 `ensure_foreground` 在派发前处理完。
+/// 键盘输入的前置条件。目标窗口不在前台那一种由 `prepare` 在定位前处理完。
 ///
 /// 两条对所有键盘输入成立：目标窗口是系统前台窗口，且它没有被禁用。
 /// **不给控件即以窗口为目标**，判定到此为止——键盘输入去的是系统焦点所在，
@@ -491,16 +488,22 @@ fn system_shortcut(sink: &dyn Sink, key: &str, modifiers: &[Modifier]) -> Attemp
 
 // ── 窗口 ──
 
-/// 派发前把目标窗口拿到前台。已经在前台时不做任何调用。
-///
-/// **指针与键盘两条路径共用这一处**，激活只在这里发生：前台输入的落点核对
-/// （`landing` 的遮挡判定、`keyboard_target` 的前台判定）都以目标窗口在前台为前提，
-/// 各写一份就是两处激活。提不上来不在这里裁决——随后那次核对照原样给原因码。
-fn ensure_foreground(window: i64) {
-    if foreground_window() == window {
-        return;
+/// 定位前准备前台窗口。还原最小化窗口会改变控件位置，调用方必须在此后重新定位、
+/// 读取包围盒并核对截图几何。失败也可能已经还原窗口，不能据此保留旧观察。
+pub fn prepare(window: i64, action: &ActionSpec) -> Result<(), String> {
+    if !action.takes_input()
+        || matches!(action, ActionSpec::PressKey { modifiers, .. } if modifiers.contains(&Modifier::Meta))
+    {
+        return Ok(());
     }
-    let _ = raise(window);
+    if foreground_window() == window {
+        return Ok(());
+    }
+    match raise(window) {
+        Raised::Reached => Ok(()),
+        Raised::Accepted => Err("not_foreground: 激活调用已返回，目标窗口尚未到达前台".to_owned()),
+        Raised::Refused => Err("foreground_lock: 前台锁拒绝了这次激活，前台窗口没有变".to_owned()),
+    }
 }
 
 /// 一次前台提升的结果。

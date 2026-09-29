@@ -813,8 +813,7 @@ export class DesktopCoordinator {
         maxDepth: DEFAULT_MAX_DEPTH,
         timeBudgetMs: READ_TREE_BUDGET_MS,
       })
-      // 前台接管的读数按回执上调：宿主拒绝派发时桌面没有被碰，那时说「正在前台操作」
-      // 是一句假话。
+      // 前台接管的读数按请求动作的回执上调；窗口准备后的观察独立接收。
       if (FOREGROUND_ACTIONS.has(input.action.kind) && result.dispatch !== 'not_dispatched') {
         this.#setTarget(lease, known.app, true)
       }
@@ -1035,10 +1034,10 @@ export class DesktopCoordinator {
   /**
    * 动作或等待之后的那份重读。
    *
-   * 读到了就整份替换观察并换新编号。没读到时按执行事实分两种：**未派发的动作一条系统调用
-   * 都没发出，上一份观察仍然成立，就地保留、编号不变**——作废它等于要求调用方为一件
-   * 没有发生的事重新观察一次；已派发与结果未知那两种，控件表停在动作之前那一刻而动作
-   * 可能已经生效，整份作废。
+   * 读到了就整份替换观察并换新编号。没有新观察时，只有请求动作未派发且宿主没有报告
+   * 重读失败，才保留上一份观察与编号。窗口准备后即使输入被拒绝，
+   * 也可能带回新观察或重读错误；错误时不能再保留旧表。已派发与结果未知却没有观察时，
+   * 控件表同样整份作废。
    *
    * `dispatch` 给 `null` 表示这次调用不派发动作（等待），它总带着一份重读。
    * 执行事实不受这里影响。
@@ -1053,7 +1052,7 @@ export class DesktopCoordinator {
     if (observation?.kind === 'tree' || observation?.kind === 'wait') {
       return { observation: this.#absorb(lease, windowId, observation) }
     }
-    if (dispatch === 'not_dispatched') {
+    if (dispatch === 'not_dispatched' && error === undefined) {
       return { observation: null, observationError: '动作没有派发，上一份观察仍然有效' }
     }
     lease.observations.delete(windowId)
