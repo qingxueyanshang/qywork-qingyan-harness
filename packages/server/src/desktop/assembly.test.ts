@@ -290,9 +290,9 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
   })
   expect(act.action).toEqual({ kind: 'set_value', value: '张三' })
 
-  // 结果未知如实走到模型手里：这一条不能被读成「没执行」，也不能被读成成功。
+  // 结果未确认如实走到模型手里：这一条不能被读成「没执行」，也不能被读成成功。
   const body = bodies.at(-1) ?? '{}'
-  expect(body).toContain('结果未知')
+  expect(body).toContain('结果未确认')
 })
 
 /** 整窗读取的第一项：窗口元素本身。 */
@@ -426,7 +426,7 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
   // 序列本身不产生模型请求：观察一轮、序列一轮、收尾一轮，一共三条。
   expect(bodies).toHaveLength(3)
   const body = bodies.at(-1) ?? '{}'
-  expect(body).toContain('结果未知')
+  expect(body).toContain('结果未确认')
   expect(body).toContain('未执行 3 invoke')
   await settleCancel(seen)
 })
