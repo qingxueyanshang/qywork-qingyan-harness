@@ -10,6 +10,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { APIConnectionError } from 'openai'
 import { classifyProviderError, classifyStreamError, ProviderError } from './errors.ts'
 import { drainAdapter, FAULT_PROTOCOLS, withFault } from './providers/fault-server.test-helper.ts'
 
@@ -147,6 +148,86 @@ describe('传输失败分三支：连不上 / 被断开 / 超时', () => {
       const e = classifyProviderError(P, err)
       expect(e.code).toBe('network_error')
     }
+  })
+})
+
+describe('SDK 包装保留具体的传输失败原因', () => {
+  test.each([
+    [
+      'UNKNOWN_CERTIFICATE_VERIFICATION_ERROR',
+      'unknown certificate verification error',
+      'TLS 握手失败',
+      false,
+    ],
+    ['ECONNRESET', 'The socket connection was closed unexpectedly.', '连接被断开', false],
+    [
+      'ConnectionRefused',
+      'Unable to connect. Is the computer able to access the url?',
+      '连不上接口',
+      false,
+    ],
+    ['ENOTFOUND', 'getaddrinfo ENOTFOUND zhende.ai', '连不上接口', false],
+    ['ETIMEDOUT', 'The operation timed out.', '请求超时', true],
+    ['', 'unknown certificate verification error', 'TLS 握手失败', false],
+    ['', 'The socket connection was closed unexpectedly.', '连接被断开', false],
+    ['', 'The operation timed out.', '请求超时', true],
+  ] as const)('%s / %s', (code, message, expected, timedOut) => {
+    const raw = transport(code, message)
+    const wrapped = new APIConnectionError({ cause: raw })
+    const e = classifyProviderError('openai_chat_completions', wrapped)
+    expect(e.code).toBe('network_error')
+    expect(e.message).toContain(expected)
+    expect(e.timedOut).toBe(timedOut)
+    expect(e.cause).toBe(wrapped)
+    expect(wrapped.cause).toBe(raw)
+    expect(e.detail?.providerMessage).toBe('Connection error.')
+  })
+
+  test('多层包装的泛化连接码不能遮住底层证书原因', () => {
+    for (const raw of [
+      transport('UNKNOWN_CERTIFICATE_VERIFICATION_ERROR', 'read'),
+      new Error('unknown certificate verification error'),
+    ]) {
+      const wrapped = Object.assign(new Error('Connection error.', { cause: raw }), {
+        code: 'ConnectionError',
+      })
+      const e = classifyProviderError(P, new APIConnectionError({ cause: wrapped }))
+      expect(e.message).toContain('TLS 握手失败')
+    }
+  })
+
+  test('底层文案没有线索也能靠错误码识别连接重置', () => {
+    const wrapped = new APIConnectionError({
+      cause: transport('ECONNRESET', 'read'),
+    })
+    expect(classifyProviderError(P, wrapped).message).toBe('连接被断开')
+  })
+
+  test('原因链成环仍能识别具体错误并结束遍历', () => {
+    const raw = transport('ECONNRESET', 'read')
+    const wrapped = new APIConnectionError({ cause: raw })
+    raw.cause = wrapped
+    expect(classifyProviderError(P, wrapped).message).toBe('连接被断开')
+  })
+
+  test('HTTP 拒绝和用户取消仍优先于传输原因', () => {
+    const raw = transport('UNKNOWN_CERTIFICATE_VERIFICATION_ERROR', 'read')
+    const rejected = Object.assign(http(400, 'invalid max_tokens'), { cause: raw })
+    expect(classifyProviderError(P, rejected).code).toBe('invalid_request')
+    const aborted = new Error('aborted', { cause: raw })
+    aborted.name = 'AbortError'
+    expect(classifyProviderError(P, aborted).message).toBe('已取消')
+  })
+
+  test('已分类的原因保持原实例和超时标记', () => {
+    const original = new ProviderError({
+      code: 'stream_idle_timeout',
+      message: '模型响应中断',
+      provider: P,
+      timedOut: true,
+    })
+    const wrapped = new APIConnectionError({ cause: original })
+    expect(classifyProviderError(P, wrapped)).toBe(original)
   })
 })
 

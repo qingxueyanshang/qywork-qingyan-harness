@@ -353,7 +353,7 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
       break
   }
 
-  const transport = classifyTransport(err, message)
+  const transport = classifyTransport(err)
   if (transport) return build('network_error', transport.text, transport.timedOut)
 
   return build('internal_error')
@@ -451,13 +451,17 @@ const TRANSPORT_SHAPES: {
   },
 ]
 
-function classifyTransport(
-  err: unknown,
-  message: string,
-): { text: string; timedOut: boolean } | null {
-  const code = String((err as { code?: unknown })?.code ?? '').toUpperCase()
+function classifyTransport(err: unknown): { text: string; timedOut: boolean } | null {
+  // SDK 的 Connection error. 会把具体 errno 放在 cause 里。复用有界、去环的原因链，
+  // 按既有的具体到泛化顺序查整条链，避免包装层先命中「连不上」而遮住证书或断流原因。
+  const causes = failureCauseChain(err)
   for (const shape of TRANSPORT_SHAPES) {
-    if (shape.code.test(code) || shape.message.test(message)) {
+    if (
+      causes.some(
+        (cause) =>
+          shape.code.test((cause.code ?? '').toUpperCase()) || shape.message.test(cause.message),
+      )
+    ) {
       return { text: shape.text, timedOut: shape.timedOut }
     }
   }
