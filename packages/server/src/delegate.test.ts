@@ -207,8 +207,9 @@ function delegate(conversationId: ConversationId) {
 }
 
 /** 派出即返回，所以每条断言前都要等那件事真的发生。 */
-async function until(check: () => boolean, label: string): Promise<void> {
-  for (let i = 0; i < 600; i += 1) {
+async function until(check: () => boolean, label: string, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
     if (check()) return
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
@@ -1161,7 +1162,8 @@ console.log(JSON.stringify({ type: 'item.completed', item: { text: 'done' } }));
       })
       expect(res).toMatchObject({ ok: true, kind: 'cli' })
       settle(step.id, '派给不存在的 codex')
-      await until(() => phasesOf('child').includes('failed'), 'CLI 落失败终态')
+      // 观察窗口的屏障最多等待 5 秒；必须等收尾结束后再断言并关闭测试数据库。
+      await until(() => phasesOf('child').includes('failed'), 'CLI 落失败终态', 10_000)
     } finally {
       process.env.PATH = env.PATH
       if (env.OPENAI_API_KEY === undefined) delete process.env.OPENAI_API_KEY
@@ -1176,5 +1178,5 @@ console.log(JSON.stringify({ type: 'item.completed', item: { text: 'done' } }));
     await Bun.sleep(250)
     const got = await window.close()
     expect(got.changes).toContainEqual({ path: 'doomed.txt', changeType: 'deleted' })
-  })
+  }, 20_000)
 })
