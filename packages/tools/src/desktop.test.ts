@@ -1191,7 +1191,7 @@ describe('三态回执与动作后观察', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
-    expect(r.message).toContain('结果未知')
+    expect(r.message).toContain('结果未确认')
     expect(r.message).toContain('provider 无响应')
     expect(r.data).toMatchObject({ dispatch: 'unknown', actionId: 'da_3' })
   })
@@ -1269,7 +1269,7 @@ describe('三态回执与动作后观察', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
-    expect(r.message).toContain('结果未知')
+    expect(r.message).toContain('结果未确认')
     // 没有新窗口时如实列当前窗口，不硬说有新窗口。
     expect(r.message).toContain('当前窗口')
   })
@@ -2604,7 +2604,7 @@ describe('前台动作', () => {
     expect(r.status).toBe('success')
     expect(calls.map((c) => c.method)).toEqual(['act', 'captureImage'])
     expect(calls[1]?.input).toEqual({ windowId: 'dw_1', maxEdge: MAX_EDGE })
-    expect(r.message).toContain('click 已执行')
+    expect(r.message).toContain('click 已提交')
     expect(r.message).toContain('di_1')
     expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
   })
@@ -2725,7 +2725,7 @@ describe('前台动作', () => {
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
     expect(r.message).toContain('只发出了 4 个')
-    expect(r.message).toContain('结果未知')
+    expect(r.message).toContain('结果未确认')
   })
 
   test('前台模式未启用时宿主的拒绝按未执行透传', async () => {
@@ -3056,7 +3056,7 @@ describe('有限动作序列', () => {
     expect(data.dispatched).toEqual([1, 2, 3])
     expect(data.notExecuted).toEqual([])
     expect(data.observation.observationId).toBe('do_4')
-    expect(r.message).toContain('3 步全部执行')
+    expect(r.message).toContain('3 步全部提交')
 
     // 夹具自己的状态说得出这三步真落下去了。
     const table = current()
@@ -3097,8 +3097,8 @@ describe('有限动作序列', () => {
     )
     expect(sent).toHaveLength(2)
     expect(sent.every((s) => s.channel === 'progress')).toBe(true)
-    expect(sent[0]?.delta).toContain('1 set_value e5 已执行')
-    expect(sent[1]?.delta).toContain('2 invoke e3 已执行')
+    expect(sent[0]?.delta).toContain('1 set_value e5 已提交')
+    expect(sent[1]?.delta).toContain('2 invoke e3 已提交')
   })
 
   test('第 2 步结果未知时停下，第 3 步不执行', async () => {
@@ -3121,8 +3121,8 @@ describe('有限动作序列', () => {
     expect(data.dispatched).toEqual([1, 2])
     expect(data.notExecuted).toEqual([3])
     expect(data.stoppedAt).toBe(2)
-    expect(r.message).toContain('结果未知')
-    expect(r.message).toContain('结果未知')
+    expect(r.message).toContain('结果未确认')
+    expect(r.message).toContain('结果未确认')
     expect(r.message).toContain('未执行 3 invoke')
   })
 
@@ -3195,7 +3195,7 @@ describe('有限动作序列', () => {
       { until: 'toggle', met: true },
       { until: 'selected', met: true },
     ])
-    expect(r.message).toContain('value 已满足')
+    expect(r.message).toContain('后置条件 value 已满足')
   })
 
   test('后置条件没等到即截断后缀', async () => {
@@ -3223,7 +3223,7 @@ describe('有限动作序列', () => {
     const data = r.data as { dispatched: number[]; notExecuted: number[] }
     expect(data.dispatched).toEqual([1])
     expect(data.notExecuted).toEqual([2])
-    expect(r.message).toContain('value 未满足')
+    expect(r.message).toContain('后置条件 value 未满足')
   })
 
   test('toggle 与 selected 没有宿主等待，不成立当场停', async () => {
@@ -3578,7 +3578,7 @@ describe('有限动作序列', () => {
       ctxWith(failing),
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
-    expect(r.message).toContain('结果未知')
+    expect(r.message).toContain('结果未确认')
     const data = r.data as { dispatched: number[]; notExecuted: number[] }
     expect(data.dispatched).toEqual([1])
     expect(data.notExecuted).toEqual([2])
