@@ -29,6 +29,7 @@
  * 「应用内装依赖」本身是一条额外的执行入口，由用户明确要求才有——不要往这里追加别的软件。
  */
 
+import { win32 } from 'node:path'
 import type { EnvDependency } from '@qywork/core'
 import type { CommandShell } from '@qywork/tools'
 import { commandShell, probeBash } from '@qywork/tools'
@@ -71,31 +72,17 @@ interface DepSpec {
  * **探测方式必须和调用方式一致。** 上面三条（git / rg / node）的调用方都是
  * `Bun.spawn(['git', …])` 这种交给 Bun 解析 PATH 的写法，所以用 `Bun.which` 探
  * 恰好一致：Bun 找不到的，那些调用点同样启动不了，报「未安装」是对的。
- * winget 不一样，见 `wingetUsable()`。
+ * winget 使用执行别名探测，见 `resolveWinget()`。
  */
 function onPath(cmd: string): string | null {
   return Bun.which(cmd)
 }
 
-/**
- * winget 能不能用。**必须经 `cmd.exe` 探，不能用 `Bun.which`。**
- *
- * `WindowsApps` 下那个 winget.exe 是**应用执行别名**（APPEXECLINK 重解析点），不是
- * 真文件：`stat` 认不出这个标签，因此所有基于 `existsSync` 的查找一律说没有
- * （`Bun.which` 返回 null、`Bun.spawnSync` 直接抛），而 `CreateProcess` 解析得了它，
- * `cmd /c winget --version` 是 exit 0。**Win10/11 上 winget 一律是这个形状**——照
- * `Bun.which` 判的话一键装按钮在任何机器上都不出现，而这个缺陷只有真起一次服务才撞得到。
- *
- * 判据仍然是本仓一贯的那条（`sandbox.ts` 的 `detectSandbox`）：
- * **「装了」不等于「能用」，所以真跑一次**。而且跑的是**和安装时同一条路**——
- * 装是 `cmd /c start … winget …`，探也走 cmd，两边一致才有意义。
- *
- * 不缓存：命中 82ms、落空 9ms（实测），而且只在有依赖缺失时才会问到它。
- */
-export function wingetUsable(): boolean {
+/** 应用执行别名必须通过 cmd 实际运行，不能用文件存在性或 Bun.which 判定。 */
+function probeWinget(executable: string): boolean {
   try {
     return (
-      Bun.spawnSync(['cmd.exe', '/c', 'winget', '--version'], {
+      Bun.spawnSync(['cmd.exe', '/d', '/c', executable, '--version'], {
         stdout: 'ignore',
         stderr: 'ignore',
         stdin: 'ignore',
@@ -104,6 +91,22 @@ export function wingetUsable(): boolean {
   } catch {
     return false
   }
+}
+
+/** 探测结果同时用于能力上报和安装，WindowsApps 不在 PATH 时仍可使用执行别名。 */
+export function resolveWinget(
+  deps: {
+    platform: string
+    localAppData: string | undefined
+    probe: (executable: string) => boolean
+  } = { platform: process.platform, localAppData: process.env.LOCALAPPDATA, probe: probeWinget },
+): string | null {
+  if (deps.platform !== 'win32') return null
+  const candidates = ['winget']
+  if (deps.localAppData) {
+    candidates.push(win32.join(deps.localAppData, 'Microsoft', 'WindowsApps', 'winget.exe'))
+  }
+  return candidates.find(deps.probe) ?? null
 }
 
 /**
@@ -199,7 +202,7 @@ const DEPS: DepSpec[] = [
  * 而不是显示一个点了报错的按钮」。
  */
 function canInstall(dep: DepSpec): boolean {
-  return dep.winget !== null && process.platform === 'win32' && wingetUsable()
+  return dep.winget !== null && resolveWinget() !== null
 }
 
 /**
@@ -229,15 +232,17 @@ export function probeEnvironment(): EnvDependency[] {
  * `start` 开一个新控制台窗口，`cmd /k` 让它在 winget 跑完后**留着**——
  * 装失败时那几行输出是用户唯一的线索。
  */
-function installArgv(wingetId: string): string[] {
+export function installArgv(executable: string, wingetId: string): string[] {
   return [
     'cmd.exe',
+    '/d',
     '/c',
     'start',
     `Install ${wingetId}`,
     'cmd',
+    '/d',
     '/k',
-    'winget',
+    executable,
     'install',
     '--id',
     wingetId,
@@ -271,13 +276,14 @@ export const handleHostApi: ApiHandler = async (url, req) => {
       409,
     )
   }
-  if (!wingetUsable()) {
-    return json({ error: 'no winget', message: `本机没有 winget，请手动安装 ${dep.label}。` }, 409)
+  const winget = resolveWinget()
+  if (winget === null) {
+    return json({ error: 'no winget', message: `无法调用 winget，请手动安装 ${dep.label}。` }, 409)
   }
 
   // 起进程本身失败（连 cmd.exe 都没有）也要如实回报，不能让按钮看起来点成功了。
   try {
-    Bun.spawn(installArgv(dep.winget), {
+    Bun.spawn(installArgv(winget, dep.winget), {
       stdin: 'ignore',
       stdout: 'ignore',
       stderr: 'ignore',
@@ -288,7 +294,7 @@ export const handleHostApi: ApiHandler = async (url, req) => {
 
   return json({
     started: true,
-    command: `winget install --id ${dep.winget} -e --source winget`,
+    command: `"${winget}" install --id ${dep.winget} -e --source winget`,
     // 必须提示重启：本进程的 PATH 取自启动时，不重启则新装的程序探测不到。
     note: '安装窗口已打开，完成后重启 qywork 生效。',
   })

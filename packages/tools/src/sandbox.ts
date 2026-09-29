@@ -536,6 +536,8 @@ function dedupe(items: readonly string[]): string[] {
 // ───────────────────────── 唯一的 spawn 出口 ─────────────────────────
 
 export interface GuardedSpawnInput {
+  /** 调用方选定的解释器，必须与命令语法及工具说明一致。 */
+  shell: CommandShell | null
   /** 要执行的命令原文。由调用方保证已经过裁决。 */
   command: string
   /** 已解析的绝对工作目录。 */
@@ -865,7 +867,7 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
 
   // `run_command` 在一个 shell 都没有时不注册，所以正常路径到不了这里；
   // 插件的 `exec.run` 走的是同一个函数，它需要一个明确的错误信息，而非在 argv 处崩溃。
-  const shell = commandShell()
+  const shell = input.shell
   if (shell === null) {
     // 说 bash 那一档的原因：三档里只有它给得出「下一步怎么办」（装 Git for Windows），
     // 而另外两档是「这台机器上就是没有」，没有可操作的下一步。

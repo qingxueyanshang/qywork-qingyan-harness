@@ -62,6 +62,43 @@ describe('越界的写与删', () => {
     }
   })
 
+  test('绝对路径的环境检查与符号路径一样允许只读', () => {
+    const git = join(homedir(), 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe')
+    const winget = join(homedir(), 'AppData', 'Local', 'Microsoft', 'WindowsApps', 'winget.exe')
+    const commands = [
+      `Test-Path -LiteralPath '${git}'`,
+      `Get-Item '${winget}'`,
+      `Get-Content '${join(homedir(), '.gitconfig')}'`,
+      'Test-Path C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+      `$dirs = @('${git}','${winget}'); foreach ($d in $dirs) {"$d => $(Test-Path $d)"}; "Process PATH: $env:PATH"; (Get-CimInstance Win32_OperatingSystem | Select-Object Caption,OSArchitecture,Version | Format-List | Out-String)`,
+    ]
+    for (const command of commands) expect(kind(command)).toBe('allow')
+  })
+
+  test('只读检查后的写删及嵌套重定向仍按绝对路径拦截', () => {
+    const target = join(homedir(), 'outside.txt')
+    for (const command of [
+      `Test-Path '${target}'; Remove-Item '${target}'`,
+      `$p = '${target}'; Set-Content $p 'x'`,
+      `$p = '${target}'; 'x' > $p`,
+      `echo x > '${target}'`,
+      `powershell -Command "echo x > '${target}'"`,
+      `bash -c "echo x > '${target}'"`,
+    ]) {
+      expect(kind(command)).toBe('deny')
+    }
+  })
+
+  test('放行只读检查不放开凭证路径', () => {
+    for (const target of [
+      join(homedir(), '.ssh', 'id_rsa'),
+      join(homedir(), '.qywork', 'config.json'),
+    ]) {
+      expect(kind(`Test-Path '${target}'`)).toBe('deny')
+      expect(kind(`Get-Content '${target}'`)).toBe('deny')
+    }
+  })
+
   test('递归删根目录或家目录', () => {
     expect(kind('rm -rf /')).toBe('deny')
     expect(kind('rm -rf ~')).toBe('deny')

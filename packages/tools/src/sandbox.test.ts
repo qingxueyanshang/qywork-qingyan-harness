@@ -681,10 +681,23 @@ describe('子进程输出解码', () => {
  * 这条测试真的起进程——纯函数测不出这个洞，它发生在进程边界上。
  */
 describe('命令正文逐字节到达', () => {
+  test('调用方没有选定 shell 时明确失败，不在执行阶段重新选择', async () => {
+    await expect(
+      spawnGuarded({
+        shell: null,
+        command: 'echo should-not-run',
+        cwd: process.cwd(),
+        policy: null,
+        env: process.env as Record<string, string>,
+      }),
+    ).rejects.toThrow('没有可用的 shell')
+  })
+
   test('成对的反斜杠不被折半', async () => {
     const bs = String.fromCharCode(92)
     // 发 4 个反斜杠，数到达了几个。折半的话是 2。
     const { proc } = await spawnGuarded({
+      shell: commandShell(),
       command: `printf '%s' '${bs.repeat(4)}' | wc -c`,
       cwd: process.cwd(),
       policy: null,
@@ -697,6 +710,7 @@ describe('命令正文逐字节到达', () => {
   test('原始失败形状：python 源码里的一个反斜杠字符', async () => {
     const bs = String.fromCharCode(92)
     const { proc } = await spawnGuarded({
+      shell: commandShell(),
       command: [`python - <<'PYEOF'`, `print(len('${bs}${bs}'))`, 'PYEOF'].join('\n'),
       cwd: process.cwd(),
       policy: null,
