@@ -1174,6 +1174,33 @@ describe('三态回执与动作后观察', () => {
     expect(r.data).toMatchObject({ dispatch: 'not_dispatched' })
   })
 
+  test('未派发也交付窗口准备后的新观察，仍明确标记动作未执行', async () => {
+    const { port } = fakeDesktop({
+      act: async () => ({
+        dispatch: 'not_dispatched',
+        actionId: 'da_2',
+        reason: 'geometry_changed: minimized → restored',
+        observation: snapshot({ observationId: 'do_2' }),
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      { windowId: 'dw_1', observationId: 'do_1', action: 'invoke', ref: 'e3' },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'desktop_not_dispatched',
+    })
+    expect(r.data).toMatchObject({
+      dispatch: 'not_dispatched',
+      observation: { observationId: 'do_2' },
+    })
+    expect(r.message).toContain('未执行')
+    expect(r.message).toContain('do_2')
+  })
+
   /** 结果未知是禁止重发的那一侧：它必须记成已执行。 */
   test('unknown 记成已执行，并要求先重新观察', async () => {
     const { port } = fakeDesktop({
@@ -2609,7 +2636,33 @@ describe('前台动作', () => {
     expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
   })
 
-  test('未派发的按图动作不附图：什么都没发生，手上那张图仍然成立', async () => {
+  test('按图点击未派发但窗口准备已改变界面：回执补新图，保持未执行', async () => {
+    const { port, calls } = foregroundPort({
+      act: async () => ({
+        dispatch: 'not_dispatched',
+        actionId: 'da_1',
+        reason: 'geometry_changed',
+        observation: snapshot({ observationId: 'do_2' }),
+      }),
+    })
+    const r = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'click',
+        imageRef: 'di_1',
+        imageX: 40,
+        imageY: 50,
+      },
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(calls.map((c) => c.method)).toEqual(['captureImage'])
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
+  })
+
+  test('纯拒绝且旧观察有效的按图动作不附图', async () => {
     const { port, calls } = foregroundPort({
       act: async () => ({
         dispatch: 'not_dispatched',
@@ -2871,13 +2924,19 @@ describe('有限动作序列', () => {
         const actionId = `da_${nextAction}`
         if (!over) return { dispatch, actionId, observation: bump() }
         if (over.observation === null) {
+          if (dispatch !== 'not_dispatched' || over.observationError !== undefined)
+            observationId = ''
           return {
             dispatch,
             actionId,
             ...(over.reason === undefined ? {} : { reason: over.reason }),
             ...(over.blocking ? { blocking: over.blocking } : {}),
             observation: null,
-            observationError: over.observationError ?? '目标窗口此刻读不动',
+            observationError:
+              over.observationError ??
+              (dispatch === 'not_dispatched'
+                ? '动作没有派发，上一份观察仍然有效'
+                : '目标窗口此刻读不动'),
           }
         }
         if (over.observation) adopt(over)
@@ -3021,6 +3080,84 @@ describe('有限动作序列', () => {
     expect(r.message).toContain('occluded: 680,853')
     expect(r.message).toContain('观察 do_1 仍然有效')
     expect(r.message).not.toContain('读不到最后一份控件表')
+  })
+
+  test('未派发时交付新观察并停止序列，不重复或继续后续动作', async () => {
+    const { port, calls } = sequencePort({
+      acts: [
+        {
+          dispatch: 'not_dispatched',
+          reason: 'geometry_changed',
+          observation: snapshot({ observationId: 'do_2' }),
+        },
+      ],
+    })
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'select', ref: 'e12' },
+      ]),
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(r.data).toMatchObject({ observation: { observationId: 'do_2' }, notExecuted: [1, 2] })
+    expect(r.message).not.toContain('观察 do_1 仍然有效')
+    expect(calls).toHaveLength(1)
+  })
+
+  test('未派发且窗口准备后重读失败：不再声称旧观察有效', async () => {
+    const { port, calls } = sequencePort({
+      acts: [
+        {
+          dispatch: 'not_dispatched',
+          reason: 'geometry_changed',
+          observation: null,
+          observationError: 'provider_timeout: 窗口准备后重读失败',
+        },
+      ],
+    })
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'select', ref: 'e12' },
+      ]),
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(r.message).not.toContain('仍然有效')
+    expect(r.message).toContain('窗口准备后重读失败')
+    expect(calls).toHaveLength(1)
+  })
+
+  test('按图序列未派发但返回新观察时补图，后续点击不执行', async () => {
+    const { port, calls } = sequencePort({
+      acts: [
+        {
+          dispatch: 'not_dispatched',
+          reason: 'geometry_changed',
+          observation: snapshot({ observationId: 'do_2' }),
+        },
+      ],
+    })
+    let captured = 0
+    port.captureImage = async () => {
+      captured += 1
+      return image()
+    }
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'click', imageRef: 'di_1', imageX: 40, imageY: 50 },
+        { action: 'click', imageRef: 'di_1', imageX: 60, imageY: 70 },
+      ]),
+      ctxWith(port),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: false })
+    expect(calls).toHaveLength(1)
+    expect(captured).toBe(1)
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
   })
 
   test('逐步执行，每步一个 actionId，动作按顺序带着当时那份观察编号发出', async () => {

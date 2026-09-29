@@ -398,30 +398,49 @@ impl Backend for Uia {
             bounds,
             foreground: fg,
         } = *req;
-        // 按图定位的落点先核对窗口几何代际：窗口在采图与派发之间移动过的话，
-        // 那个坐标指的已经不是同一块界面。
+        let scope = Select {
+            root: root.map(str::to_owned),
+            ..Select::default()
+        };
+        let reread = || self.read_tree(window, &scope, bounds, fg);
+        // 前台准备可能已经还原窗口或改变焦点。请求的输入仍未派发，但观察必须重读。
+        let refused = |reason| {
+            let observed = if action.foreground_only() {
+                reread()
+            } else {
+                Err(NOT_DISPATCHED.to_owned())
+            };
+            (Attempt::Refused(reason), observed)
+        };
+        // 已失效的截图不能触发窗口准备；几何已变也不能继续保留旧观察。
         if let Some(expected) = expect_generation {
             if let Err(reason) = foreground::check_generation(window, expected) {
-                return (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned()));
+                return refused(reason);
+            }
+        }
+        if let Err(reason) = foreground::prepare(window, action) {
+            return refused(reason);
+        }
+        // 不能把恢复窗口前的截图坐标用于恢复后的窗口。
+        if let Some(expected) = expect_generation {
+            if let Err(reason) = foreground::check_generation(window, expected) {
+                return refused(reason);
             }
         }
         let located = match reference.map(|r| self.locate(window, r)) {
             None => None,
             Some(Ok(l)) => Some(l),
             Some(Err(f)) => {
-                return (
-                    Attempt::Refused(f.into_reason(window)),
-                    Err(NOT_DISPATCHED.to_owned()),
-                )
+                return refused(f.into_reason(window));
             }
         };
         let aim = match self.aim(window, located.as_ref(), point, action) {
             Ok(aim) => aim,
-            Err(reason) => return (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned())),
+            Err(reason) => return refused(reason),
         };
         let element = located.as_ref().map(|l| &l.element);
         match perform(window, element, action, aim, stop) {
-            Attempt::Refused(reason) => (Attempt::Refused(reason), Err(NOT_DISPATCHED.to_owned())),
+            Attempt::Refused(reason) => refused(reason),
             // 调用还没返回：目标应用的 UI 线程卡在里面，这一次重读必然等满时间预算再超时。
             // 换成一份不进 UIA 的事实——目标进程此刻的顶层窗口，调用方据此观察新出现的
             // 那一个。
@@ -436,13 +455,7 @@ impl Backend for Uia {
                     Err(TARGET_BLOCKED.to_owned()),
                 )
             }
-            called => {
-                let scope = Select {
-                    root: root.map(str::to_owned),
-                    ..Select::default()
-                };
-                (called, self.read_tree(window, &scope, bounds, fg))
-            }
+            called => (called, reread()),
         }
     }
 
@@ -952,7 +965,7 @@ impl Uia {
             // （输入进这个窗口）。自绘界面给不出持有焦点的控件，只列前者等于对它关掉整条
             // 键盘路径。路径为空才是窗口元素自己，子树读的根带着它在整窗里的下标。
             //
-            // 不要给窗口根加「此刻是系统前台窗口」的条件：派发时 `foreground::perform` 先把
+            // 不要给窗口根加「此刻是系统前台窗口」的条件：定位前 `foreground::prepare` 先把
             // 目标窗口提到前台再核对。加了这个条件，桌面这类没有 WindowPattern、无法先
             // activate 的窗口永远拿不到键盘动作，Win+I 这类系统快捷键只能借用户正在用的
             // 窗口按出去。

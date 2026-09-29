@@ -692,6 +692,7 @@ export interface DesktopRequestFrame {
  *
  * `dispatch` 是执行事实，`observation` 是动作之后重读到的状态，两者分列：重读失败时
  * `observationError` 单独成立，`dispatch` 保持原值，不得改记为未执行。
+ * 请求动作未派发时，窗口准备仍可能改变界面；带回新观察则替换旧观察，重读失败则作废旧观察。
  */
 export interface DesktopResultFrame {
   type: 'desktop.result'

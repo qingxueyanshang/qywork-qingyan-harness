@@ -28,7 +28,7 @@ use crate::backend::{ActRequest, Attempt, Backend, CaptureRequest, WaitRequest};
 use crate::input;
 use crate::protocol::{
     admit, now_ms, refused_for_grant, Access, AccessNotice, Binding, HostIdentity, InputNotice,
-    Observation, Op, Request, Response,
+    Dispatch, Observation, Op, Request, Response, NOT_DISPATCHED,
 };
 
 /// 还缺前提时多久重查一次授权。用户在系统设置里授权之后，界面在这个间隔内看到变化。
@@ -449,15 +449,32 @@ fn act<B: Backend>(id: String, backend: &B, state: &State, req: &ActRequest<'_>)
     let stop = || state.cancelled.lock().expect("取消登记锁").contains(&id);
     let (attempt, observed) = backend.act(req, &stop);
     state.cancelled.lock().expect("取消登记锁").remove(&id);
+    action_response(id, req.window, attempt, observed)
+}
+
+fn action_response(
+    id: String,
+    window: i64,
+    attempt: Attempt,
+    observed: Result<Observation, String>,
+) -> Response {
     match attempt {
-        Attempt::Refused(reason) => Response::rejected(id, reason),
+        Attempt::Refused(reason) => {
+            if matches!(&observed, Err(error) if error == NOT_DISPATCHED) {
+                return Response::rejected(id, reason);
+            }
+            // 输入未派发与窗口准备已经发生可以同时成立；保留重读结果或重读失败。
+            let mut response = Response::acted(id, Dispatch::NotDispatched, observed);
+            response.reason = Some(reason);
+            response
+        }
         Attempt::Called(outcome) => {
             let mut response = Response::acted(id, outcome.dispatch, observed);
             response.reason = outcome.reason;
             // 调用没返回时这一格替掉那次必然超时的重读，见 `Outcome::returned`。
             if !outcome.returned {
                 response.blocking = Some(outcome.windows);
-                response.after_reply = Some(req.window);
+                response.after_reply = Some(window);
             }
             response
         }
@@ -541,6 +558,34 @@ fn write_line(text: serde_json::Result<String>) {
 mod tests {
     use super::*;
     use crate::protocol::Grant;
+
+    #[test]
+    fn refused_input_preserves_the_observation_after_window_preparation() {
+        let response = action_response(
+            "r1".to_owned(),
+            66,
+            Attempt::Refused("geometry_changed".to_owned()),
+            Ok(Observation::Windows { captured_at: 1, windows: Vec::new() }),
+        );
+        assert_eq!(response.dispatch, Dispatch::NotDispatched);
+        assert_eq!(response.reason.as_deref(), Some("geometry_changed"));
+        assert!(response.observation.is_some());
+    }
+
+    #[test]
+    fn refused_input_preserves_a_failed_reread_but_pure_rejection_does_not_invalidate() {
+        for (error, retained) in [("provider_timeout", true), (NOT_DISPATCHED, false)] {
+            let response = action_response(
+                "r1".to_owned(),
+                66,
+                Attempt::Refused("foreground_lock".to_owned()),
+                Err(error.to_owned()),
+            );
+            assert_eq!(response.dispatch, Dispatch::NotDispatched);
+            assert_eq!(response.reason.as_deref(), Some("foreground_lock"));
+            assert_eq!(response.observation_error.as_deref(), retained.then_some(error));
+        }
+    }
 
     /// 两个期限取先到的那个：调用方要等 10 秒而宿主的 pending 只剩 2 秒时，等到 2 秒就回。
     #[test]

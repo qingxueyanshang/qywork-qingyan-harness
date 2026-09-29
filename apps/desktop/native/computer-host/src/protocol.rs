@@ -683,7 +683,8 @@ pub struct Response {
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observation: Option<Observation>,
-    /// 动作已派发但随后的重读失败时填这里，`dispatch` 保持原值。
+    /// 动作或窗口准备后的重读失败时填这里，`dispatch` 保持原值。
+    /// 即使请求动作未派发，窗口准备也可能改变状态；有此错误时旧观察不能继续使用。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observation_error: Option<String>,
     /// 动作调用尚未返回时目标进程此刻的顶层窗口，纯 Win32 读出。
