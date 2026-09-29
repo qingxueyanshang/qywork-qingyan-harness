@@ -255,7 +255,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       }
 
       // spawn 抛错时收掉窗口：不收的话它一直排在最前，此后的窗口收不到任何事件。
-      const { proc, sandbox } = await spawnGuarded({ command, cwd, policy, env }).catch(
+      const { proc, sandbox } = await spawnGuarded({ shell, command, cwd, policy, env }).catch(
         async (e: unknown) => {
           await changeWindow.close()
           throw e

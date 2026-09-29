@@ -24,6 +24,7 @@ import { dirname, join } from 'node:path'
 import type { HostCallContext } from '@qywork/plugins'
 import {
   collectProcess,
+  commandShell,
   displayPath,
   PROTECTED_DIRS,
   resolveInWorkspace,
@@ -263,6 +264,7 @@ async function runScrubbed(
   const isWindows = process.platform === 'win32'
 
   const { proc } = await spawnGuarded({
+    shell: commandShell(),
     command,
     cwd,
     policy: { workspaceRoot, readOnlySubdirs: PROTECTED_DIRS },

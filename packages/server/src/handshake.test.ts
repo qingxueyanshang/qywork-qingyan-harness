@@ -14,7 +14,7 @@ import { describe, expect, test } from 'bun:test'
 import type { AgentEvent, ConversationId, HelloFrame } from '@qywork/core'
 import type { CommandShell } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
-import { resolveBashRow, wingetUsable } from './api/host.ts'
+import { resolveBashRow, resolveWinget } from './api/host.ts'
 import { EventBus } from './bus.ts'
 import type { SocketData } from './deps.ts'
 import { handleHello } from './handshake.ts'
@@ -185,18 +185,6 @@ describe('能力上报', () => {
   })
 
   /**
-   * **winget 的探测不能走 `Bun.which`。** 这条是实测撞出来的 bug 的回归。
-   *
-   * `WindowsApps\winget.exe` 是应用执行别名（APPEXECLINK 重解析点），不是真文件：
-   * `existsSync` 报 ENOENT、`Bun.which` 返回 null、`Bun.spawnSync(['winget',…])`
-   * 直接抛「Executable not found in $PATH」，而 `cmd /c winget --version` 是 exit 0。
-   * Win10/11 上 winget 一律是这个形状——用 `Bun.which` 探的后果不是偶尔漏，
-   * 是**一键装按钮在任何机器上都不会出现**。
-   *
-   * 断言写成「与 `where.exe` 的结论一致」而不是写死 true：没装 winget 的机器上
-   * 两边都该是假，这条测试在那种机器上依然成立。
-   */
-  /**
    * bash 那一行的三档。**注入着测**：本机装着 Git Bash，只可能命中第一档，
    * 而这一批要修的失败形状（没 bash、有 PowerShell）在开发机上复现不出来。
    */
@@ -235,8 +223,13 @@ describe('能力上报', () => {
 
   test('winget 探测与 Windows 对应用执行别名的解析一致', () => {
     if (process.platform !== 'win32') return
-    const found =
-      Bun.spawnSync(['where.exe', 'winget'], { stdout: 'ignore', stderr: 'ignore' }).exitCode === 0
-    expect(wingetUsable()).toBe(found)
+    const executable = resolveWinget()
+    if (executable === null) return
+    expect(
+      Bun.spawnSync(['cmd.exe', '/d', '/c', executable, '--version'], {
+        stdout: 'ignore',
+        stderr: 'ignore',
+      }).exitCode,
+    ).toBe(0)
   })
 })

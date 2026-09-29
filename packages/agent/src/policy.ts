@@ -94,7 +94,21 @@ const atCommandStart = (body: string): RegExp => new RegExp(CMD_POS + body, 'i')
  * `truncate` ↔ `Clear-Content`、`>` ↔ `Out-File`）：少配一个，在没有 bash、外层就是
  * PowerShell 的那台机器上就是少一条规则，而那台机器上模型只会写这一半。
  */
-const WRITE_VERB = String.raw`(?:>>?|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|Rename-Item|Remove-Item|\brm\b|\bmv\b|\bcp\b|\btee\b|\bdd\b|\bmkdir\b|\btouch\b|\bchmod\b|\bchown\b|\bln\b|\btruncate\b|sed\s+-i)`
+const WRITE_COMMAND = String.raw`(?:Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|Rename-Item|Remove-Item|\brm\b|\bmv\b|\bcp\b|\btee\b|\bdd\b|\bmkdir\b|\btouch\b|\bchmod\b|\bchown\b|\bln\b|\btruncate\b|sed\s+-i)`
+const WRITE_VERB = `(?:>>?|${WRITE_COMMAND})`
+
+/** 引号内的输出文本不构成重定向；写删命令沿用同一份操作清单。 */
+function hasWriteOperation(command: string): boolean {
+  if (new RegExp(WRITE_COMMAND, 'i').test(command)) return true
+  let nestedWrite = false
+  const unquoted = command.replace(/"(?:`[\s\S]|[^"`])*"|'(?:''|[^'])*'/g, (quoted, offset) => {
+    if (/(?:^|\s)-(?:c|command)\s*$/i.test(command.slice(0, offset))) {
+      nestedWrite ||= hasWriteOperation(quoted.slice(1, -1))
+    }
+    return ''
+  })
+  return nestedWrite || />/.test(unquoted)
+}
 
 /**
  * 家目录/系统目录那条规则的标记。
@@ -365,10 +379,11 @@ export function decideCommand(command: string, ctx: PolicyContext): PolicyDecisi
  * （`C:\Users\<user>\Desktop\proj`），所以一条「家目录一律拒」的正则会把工作区自己拒掉。这个判断做不成
  * 纯文本匹配。
  *
- * **判据。** 命令里的绝对路径，落在家目录或系统目录内、**且**不在工作区、
- * 也不在 `additionalDirectories` 里 → 拒绝。
+ * 仅裁决包含写删操作的命令。只读操作由凭证规则单独裁决。
+ * 写删命令引用家目录或系统目录内、且不在工作区及额外目录内的绝对路径时拒绝。
  */
 function literalOutsideHome(command: string, ctx: PolicyContext): string | null {
+  if (!hasWriteOperation(command)) return null
   const home = normalizeSeparators(homedir())
   const allowed = [ctx.workspaceRoot, ...(ctx.additionalDirectories ?? [])]
     .map(normalizeSeparators)
@@ -397,7 +412,7 @@ function literalOutsideHome(command: string, ctx: PolicyContext): string | null 
     if (!isHome && !isSystem) continue
 
     return (
-      `命令引用了 ${m[1]}，它在${isHome ? '家目录' : '系统目录'}里、且不在工作区` +
+      `写删命令引用了 ${m[1]}，它在${isHome ? '家目录' : '系统目录'}里、且不在工作区` +
       `（也不在 additionalDirectories 里），效果必然越出工作区。` +
       `这台机器上没有内核级的路径边界，所以越界一律拒绝——` +
       `确实需要碰这个目录，请让用户把它加进 additionalDirectories。`

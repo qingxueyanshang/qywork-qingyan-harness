@@ -74,9 +74,8 @@ test('内置工具名全部符合 provider 约束', () => {
  * 所以它同时验了两件事：**指错即无**，以及**探测是每次现跑的**（缓存的话这里拿到的
  * 还是上一轮的结果）。
  *
- * **整段执行都要留在这个状态里**，所以它是 async 的：`spawnGuarded` 起进程时会自己
- * 重新探一次 shell，提前把环境变量还回去的话，注册按 PowerShell 算、真正执行的却是
- * bash——而那种测试永远是绿的，测的却不是它声称的那件事。
+ * 工具注册时选择解释器，执行时使用同一份结果。此处保持探测环境一致，
+ * 安装过程中解释器变化的回归由 shell.test.ts 单独覆盖。
  */
 async function withoutBash<T>(fn: () => T | Promise<T>): Promise<T> {
   const prev = process.env[BASH_PATH_ENV]
