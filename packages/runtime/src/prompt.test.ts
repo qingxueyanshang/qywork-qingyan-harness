@@ -325,10 +325,10 @@ describe('能力段', () => {
     const prompt = buildSystemPrompt(new Set(['run_command', 'desktop_windows']))
     expect(prompt).toContain('desktop_windows')
     expect(prompt).toContain('desktop_observe')
-    expect(prompt).toContain('不要用 run_command 截图点坐标')
+    expect(prompt).toContain('不得通过 run_command 截图或注入鼠标、键盘事件')
     // 自绘界面那条路径要点全：observe 自带图、按图动作的回执自带图、连招走 sequence。
-    expect(prompt).toContain('无可操作控件')
-    expect(prompt).toContain('按图给坐标')
+    expect(prompt).toContain('缺少可操作控件')
+    expect(prompt).toContain('使用观察结果附带的截图定位')
     expect(prompt).toContain('desktop_act_sequence')
   })
 
@@ -338,8 +338,12 @@ describe('能力段', () => {
    */
   test('桌面这一行写明开着的窗口是用户正在用的，完成与否按观察里看得到的结果判断，且只出现一次', () => {
     const prompt = buildSystemPrompt(new Set(['run_command', 'desktop_windows']))
-    expect(prompt.split('桌面上已经开着的窗口是用户自己正在用的')).toHaveLength(2)
-    expect(prompt).toContain('以观察里看得到的结果为准')
+    expect(prompt.split('已有桌面窗口及其内容属于用户')).toHaveLength(2)
+    expect(prompt).toContain('系统窗口标题仅用于识别窗口，不作为当前页面或会话的确认依据')
+    expect(prompt).toContain('证据不足或状态尚未确定时，应重新观察')
+    expect(prompt).toContain('未经核验，不得报告任务完成')
+    expect(prompt).toContain('不得仅因结果未确认而重复执行可能产生副作用的动作')
+    expect(prompt).not.toContain('不必再观察一次')
     expect(prompt).not.toContain('先新建标签页')
   })
 

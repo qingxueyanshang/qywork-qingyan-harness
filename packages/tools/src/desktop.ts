@@ -914,8 +914,8 @@ function actOutcome(
   }
   const unknown = r.dispatch === 'unknown'
   const lead = unknown
-    ? `${action.kind} 结果未知 · ${r.reason ?? '调用已发出未确认'}`
-    : `${action.kind} 已执行${r.reason === undefined ? '' : ` · ${r.reason}`}`
+    ? `${action.kind} 结果未确认 · ${r.reason ?? '调用已发出未确认'}`
+    : `${action.kind} 已提交${r.reason === undefined ? '' : ` · ${r.reason}`}`
   if (r.observation) {
     // 目标查找与读回核验按端口交回的完整控件表做，不看投给模型的那一部分。
     const target = r.observation.elements.find((e) => e.ref === ref)
@@ -1065,13 +1065,8 @@ async function imagePayload(
 /**
  * 按图定位的动作在回执上附一张动作后的整窗图。
  *
- * 自绘窗口的控件数对调用方零信息量，它只能看图，附上这一张省掉随后那次单独采图。
- * **未派发的不附**：什么都没发生，手上那张图仍然成立。
- *
- * 时机就是动作回执到手那一刻——宿主在回执之前已经按读取范围重读过一次，画面的稳定时间
- * 由那一次给出，这里不另等。
- *
- * 图采不到只在回执尾巴上补一句，不改执行事实：动作已经发生了。
+ * 在动作回执返回后立即采集；控件重读不保证异步界面状态已稳定，任务结果仍需依据观察核验。
+ * 未派发的动作不附图；采集失败不改变动作派发事实。
  */
 async function withShot(
   outcome: ToolOutcome,
@@ -1130,7 +1125,8 @@ export const desktopWindowsTool: ToolSpec = {
   ...BASE,
   name: 'desktop_windows',
   description:
-    '列出用户桌面上当前打开的顶层窗口。操作本机应用走这一组工具，不要用 run_command 截图点坐标。' +
+    '列出用户桌面上当前打开的顶层窗口。操作本机应用应使用桌面工具，不得通过 run_command 截图或注入鼠标、键盘事件。' +
+    'title 为系统窗口标题，可能与当前页面或会话不一致；操作目标应依据最新截图或控件确认。' +
     'windowId 是后续调用的入口，窗口重建后失效。',
   parameters: { type: 'object', properties: {}, additionalProperties: false },
   actionKind: 'read',
@@ -1447,8 +1443,8 @@ export const desktopActTool: ToolSpec = {
     'move_window / resize_window / close_window 用真实指针键盘，只在用户启用前台操作时出现在动作表里，' +
     '没出现就是没启用，不要改用别的动作代替。' +
     'type_text 点名控件时要它此刻持有键盘焦点，先 click 它；自绘界面不给控件，输入投给窗口。' +
-    '指针动作可以不给控件，改给 imageRef 与 imageX / imageY；按图定位的动作回执自带一张动作后的整窗图，不必再观察一次。' +
-    'dispatch 三种：not_dispatched 未执行，submitted 已执行，unknown 结果未知——先重新观察，不要重放；' +
+    '指针动作可使用 imageRef 与 imageX / imageY 定位；回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
+    'dispatch 表示动作派发状态：not_dispatched 未执行，submitted 已提交，unknown 结果未确认。动作提交成功不等于任务完成；结果未确认时应先观察，不得直接重复执行。' +
     '「读回不一致」同样不要重发同一段。' +
     'not_dispatched 时手上的 observationId 仍然有效，按原因码改条件重试即可。' +
     '动作之后同次带回新观察与新的 observationId；弹出新窗口时改带 blocking，对它继续观察。' +
@@ -1788,9 +1784,11 @@ function targetLabel(args: Record<string, unknown>): string {
 
 function stepLine(r: StepReceipt): string {
   const fact =
-    r.dispatch === 'not_dispatched' ? '未执行' : r.dispatch === 'unknown' ? '结果未知' : '已执行'
+    r.dispatch === 'not_dispatched' ? '未执行' : r.dispatch === 'unknown' ? '结果未确认' : '已提交'
   const expect =
-    r.expect === undefined ? '' : ` · ${r.expect.until} ${r.expect.met ? '已满足' : '未满足'}`
+    r.expect === undefined
+      ? ''
+      : ` · 后置条件 ${r.expect.until} ${r.expect.met ? '已满足' : '未满足'}`
   return (
     `${r.index} ${r.action} ${r.target} ${fact}` +
     (r.reason === undefined ? '' : ` · ${r.reason}`) +
@@ -1839,7 +1837,7 @@ function sequenceOutcome(
   const lines = done.map(stepLine)
   const head = halt
     ? `${dispatched.length} 步已派发 · ${notExecuted.length} 步未执行`
-    : `${plans.length} 步全部执行`
+    : `${plans.length} 步全部提交`
   const stopped = halt
     ? `停在第 ${halt.index} 步 · ${halt.reason}` +
       (pending.length ? ` · 未执行 ${pending.map((p) => `${p.index} ${p.kind}`).join('、')}` : '')
@@ -2079,8 +2077,9 @@ export const desktopActSequenceTool: ToolSpec = {
     'set_window_state / move_window / resize_window / close_window 不接受，它们会让后面几步的 imageRef 失效。' +
     '自绘界面的「点输入框 → type_text → press_key」这类连招走这里，一次调用跑完。' +
     '第一步按 observationId 那份控件表解析目标，之后每一步按上一步带回的新观察解析；' +
-    '按图定位的步骤给 imageRef 与 imageX / imageY，这组里有按图定位的步骤时末尾自带一张动作后的整窗图。' +
-    '某步未执行、结果未知、后置条件未满足、调用未返回或本次执行被停止，即停在该步并放弃后面的步骤。' +
+    '按图定位的步骤使用 imageRef 与 imageX / imageY，序列包含此类步骤时，回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
+    '全部提交仅表示动作已提交，不代表任务完成；expect 仅表示所指定的后置条件是否满足。' +
+    '某步未执行、结果未确认、后置条件未满足、调用未返回或本次执行被停止，即停在该步并放弃后面的步骤。' +
     '结果里 dispatched 与 notExecuted 分列；停下来之后按最后那份观察重新规划，不要重发整组。',
   parameters: {
     type: 'object',
