@@ -20,7 +20,12 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AgentEvent, EventEnvelope } from '@qywork/core'
+import type {
+  AgentEvent,
+  Attachment,
+  ConversationHistoryPageResponse,
+  EventEnvelope,
+} from '@qywork/core'
 import { toPosixPath } from '@qywork/core'
 import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store } from '@qywork/store'
@@ -336,6 +341,7 @@ describe('HTTP 面', () => {
     const { attachment } = (await up.json()) as { attachment: import('@qywork/core').Attachment }
     // 分类按扩展名，与「发出去时内联哪些」同一份判据。
     expect(attachment.type).toBe('image')
+    expect(attachment.name).toBe('截图 1.png')
     expect(attachment.mime).toBe('image/png')
     expect(attachment.size).toBe(png.length)
     // 落在会话自己的目录里，与会话库同一棵树——不是工作区。
@@ -360,6 +366,25 @@ describe('HTTP 面', () => {
     const second = (await (await post('a.png', png)).json()) as { attachment: { path: string } }
     const third = (await (await post('a.png', png)).json()) as { attachment: { path: string } }
     expect(second.attachment.path).not.toBe(third.attachment.path)
+
+    // 显示名称保留原文件名，存储名的安全化与长度限制不能改变它或丢失扩展名。
+    for (const [name, type, extension] of [
+      ['截图（第 1 张） #原图.png', 'image', '.png'],
+      ['演示 视频 (修订版).mp4', 'video', '.mp4'],
+      ['报告 [草稿] 100% + 附件.pdf', 'file', '.pdf'],
+      ['.env.local', 'file', '.local'],
+      [`${'截图'.repeat(50)}.png`, 'image', '.png'],
+      [`${'视频'.repeat(50)}.mp4`, 'video', '.mp4'],
+      [`${'报告'.repeat(50)}.docx`, 'file', '.docx'],
+    ] as const) {
+      const response = await post(encodeURIComponent(name), png)
+      expect(response.status).toBe(200)
+      const uploaded = (await response.json()) as { attachment: import('@qywork/core').Attachment }
+      expect(uploaded.attachment.name).toBe(name)
+      expect(uploaded.attachment.type).toBe(type)
+      expect(uploaded.attachment.path.endsWith(extension)).toBe(true)
+      expect(await readFile(uploaded.attachment.path)).toEqual(png)
+    }
 
     // qywork 不用统一媒体阈值替 Provider 裁决。
     const large = new Uint8Array(10 * 1024 * 1024 + 1)
@@ -845,18 +870,24 @@ describe('图片附件', () => {
    */
   test('随消息发出的文档只给路径，不给字节', async () => {
     const marker = 'MARKER_ONLY_IN_THE_FILE_BODY'
-    await writeFile(
-      join(ws_dir, 'notes.md'),
-      `# 标题
-${marker}
-`,
-      'utf8',
-    )
+    const name = '会议记录（第 1 版） #讨论.md'
 
     const conv = (await (
       await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
     ).json()) as { conversation?: { id?: string } }
     const conversationId = conv.conversation?.id
+    const uploaded = await fetch(`${base()}/api/attachments?conversation=${conversationId}`, {
+      method: 'POST',
+      headers: {
+        ...auth(),
+        'content-type': 'text/markdown',
+        'x-attachment-name': encodeURIComponent(name),
+      },
+      body: `# 标题\n${marker}\n`,
+    })
+    expect(uploaded.status).toBe(200)
+    const { attachment } = (await uploaded.json()) as { attachment: Attachment }
+    expect(attachment.name).toBe(name)
 
     const before = seenBodies.length
     const ws = new WebSocket(`${base().replace('http', 'ws')}/stream?token=${handle.token}`)
@@ -870,15 +901,7 @@ ${marker}
             clientRequestId: crypto.randomUUID(),
             conversationId,
             content: '看这个文件',
-            attachments: [
-              {
-                type: 'file',
-                name: 'notes.md',
-                mime: 'text/markdown',
-                size: 0,
-                path: 'notes.md',
-              },
-            ],
+            attachments: [attachment],
           }),
         )
       }
@@ -900,9 +923,17 @@ ${marker}
     ws.close()
 
     const body = seenBodies.slice(before).join('')
-    expect(body).toContain('notes.md')
+    expect(body).toContain(name)
+    expect(body).toContain(attachment.path)
     // 正文里给的是位置，不是内容——文件里那个标记一个字节都不该出现。
     expect(body).not.toContain(marker)
     expect(body).not.toContain(Buffer.from(marker).toString('base64'))
+
+    // 刷新后的附件卡片来自历史接口，必须与发送前的名称和资源一一对应。
+    const history = (await (
+      await fetch(`${base()}/api/conversations/${conversationId}/history`, { headers: auth() })
+    ).json()) as ConversationHistoryPageResponse
+    expect(history.messages[0]?.attachments).toEqual([attachment])
+    expect(history.messages[0]?.attachments[0]?.name).toBe(name)
   })
 })
