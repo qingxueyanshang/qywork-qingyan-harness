@@ -1,6 +1,6 @@
 /** 覆盖 git/source/apply/handoff：真实 Git 下载与快进、目录保护、管理接口和退出前后交接。 */
-import { afterEach, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { expect, test } from 'bun:test'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -16,14 +16,9 @@ import {
 } from './git.ts'
 import { startSourceUpdater } from './source.ts'
 
-const dirs: string[] = []
-afterEach(async () => {
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true })
-})
-
 async function fixture() {
+  // 重启进程可能仍持有工作目录；清理由 run-tests 在测试进程退出后统一执行。
   const dir = await mkdtemp(join(tmpdir(), 'updater-'))
-  dirs.push(dir)
   const remote = join(dir, 'release')
   const root = join(dir, 'checkout')
   await mkdir(remote)
@@ -36,7 +31,10 @@ async function fixture() {
   await mkdir(join(remote, 'scripts'))
   await writeFile(
     join(remote, 'scripts', 'dev.ts'),
-    "await Bun.write('.tmp/restarted.json', JSON.stringify(process.argv.slice(2)))\n",
+    // 原子发布回执，文件存在才表示内容完整，不能读取写入中的 JSON。
+    "import { rename } from 'node:fs/promises'\n" +
+      "await Bun.write('.tmp/restarted.json.part', JSON.stringify(process.argv.slice(2)))\n" +
+      "await rename('.tmp/restarted.json.part', '.tmp/restarted.json')\n",
   )
   const install = Bun.spawn([process.execPath, 'install'], {
     cwd: remote,
