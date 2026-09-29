@@ -68,6 +68,18 @@ export async function currentBranch(cwd: string): Promise<string | null> {
   return name || null
 }
 
+/**
+ * 这个工作树自己的 git 目录（绝对路径），`HEAD` 就在它下面。不是仓库、没装 git 都回 null。
+ *
+ * 不要拼 `<root>/.git`：链接工作树与子模块里 `.git` 是一个写着 `gitdir: …` 的文件，
+ * 项目开在仓库子目录时 `<root>/.git` 不存在。
+ */
+export async function gitDir(cwd: string): Promise<string | null> {
+  const r = await git(cwd, ['rev-parse', '--absolute-git-dir'])
+  if (!r.ok) return null
+  return r.out.trim() || null
+}
+
 /** 本地分支。**只有名字和是不是当前那条**——界面上没有别的字段在问。 */
 export interface Branch {
   name: string
