@@ -1,12 +1,13 @@
 /**
- * 覆盖 `git-watch.ts`：用户在终端里切分支，界面上那一格跟着换。
+ * 覆盖 `git-watch.ts` 与它用来定位 `HEAD` 的 `git.ts` `gitDir`：
+ * 用户在终端里切分支，界面上那一格跟着换。
  *
  * **这是原始失败形状**。应用里切分支那条路自己会广播，测它证明不了什么；
  * 而在终端里切分支在应用里没有任何入口，先前只能靠每 4 秒问一次 git 才发现。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent } from '@qywork/core'
@@ -58,7 +59,7 @@ async function until(branches: string[], name: string, ms = 5000): Promise<boole
   return false
 }
 
-describe('分支名跟着 .git/HEAD 走', () => {
+describe('分支名跟着 HEAD 走', () => {
   test('在终端里切分支，广播新分支名', async () => {
     const dir = await repoWithCommit()
     const { branches, watch } = fixture(dir)
@@ -68,6 +69,43 @@ describe('分支名跟着 .git/HEAD 走', () => {
 
       repo(dir)('checkout', '-q', '-b', 'feature')
       expect(await until(branches, 'feature')).toBe(true)
+    } finally {
+      watch.stop()
+    }
+  })
+
+  /**
+   * 项目开在链接工作树里：`<root>/.git` 是一个文件，`HEAD` 在主仓库的
+   * `.git/worktrees/<名>/` 下。盯 `<root>/.git` 收不到任何事件。
+   */
+  test('链接工作树里切分支，广播新分支名', async () => {
+    const dir = await repoWithCommit()
+    const wt = join(await mkdtemp(join(tmpdir(), 'qy-gitwatch-wt-')), 'wt')
+    repo(dir)('worktree', 'add', '-q', '-b', 'side', wt)
+    const { branches, watch } = fixture(wt)
+    try {
+      watch.retarget()
+      expect(await until(branches, 'side')).toBe(true)
+
+      repo(wt)('switch', '-q', '-c', 'side-2')
+      expect(await until(branches, 'side-2')).toBe(true)
+    } finally {
+      watch.stop()
+    }
+  })
+
+  /** 项目开在仓库的子目录里：`<root>/.git` 不存在。 */
+  test('仓库子目录里切分支，广播新分支名', async () => {
+    const dir = await repoWithCommit()
+    const sub = join(dir, 'sub')
+    await mkdir(sub)
+    const { branches, watch } = fixture(sub)
+    try {
+      watch.retarget()
+      expect(await until(branches, 'main')).toBe(true)
+
+      repo(dir)('switch', '-q', '-c', 'nested')
+      expect(await until(branches, 'nested')).toBe(true)
     } finally {
       watch.stop()
     }

@@ -16,9 +16,9 @@
  */
 
 import { type FSWatcher, watch } from 'node:fs'
-import { join } from 'node:path'
 import { mostRecentWorkspace, type Store } from '@qywork/store'
 import type { EventBus } from './bus.ts'
+import { gitDir } from './git.ts'
 import { publishGitState } from './http-util.ts'
 
 /**
@@ -40,7 +40,7 @@ export interface GitWatch {
 export function createGitWatch(store: Store, bus: EventBus): GitWatch {
   let root = ''
   let workspaceId = ''
-  /** `<root>/.git`：分支名的变化在这里报。不是 git 仓库时是 null。 */
+  /** 这个工作树的 git 目录（见 `gitDir`）：分支名的变化在这里报。不是 git 仓库时是 null。 */
   let inner: FSWatcher | null = null
   /** `<root>`：只为了等 `.git` 出现——`git init` 之后才有得盯。 */
   let outer: FSWatcher | null = null
@@ -72,10 +72,17 @@ export function createGitWatch(store: Store, bus: EventBus): GitWatch {
     }
   }
 
-  const attachInner = () => {
+  /**
+   * 查 git 目录要等一个子进程。等回来时 `root` 已被 `retarget` 换走或被 `stop` 清空，
+   * 就放弃这次挂载：挂上去的是旧项目的监听，或一个没人关、拖着进程不退出的监听。
+   */
+  const attachInner = async () => {
     if (inner) return
+    const target = root
+    const dir = await gitDir(target)
+    if (!dir || inner || root !== target) return
     // `HEAD.lock` 不算：那是写到一半的中间态，此刻问 git 拿到的还是旧名字。
-    inner = hold(join(root, '.git'), (name) => {
+    inner = hold(dir, (name) => {
       if (name === 'HEAD') announce()
     })
     if (inner) announce()
@@ -90,9 +97,9 @@ export function createGitWatch(store: Store, bus: EventBus): GitWatch {
     inner = null
     outer?.close()
     outer = hold(root, (name) => {
-      if (name === '.git') attachInner()
+      if (name === '.git') void attachInner()
     })
-    attachInner()
+    void attachInner()
     // 换了项目就先报一份，不等 `.git` 有动静：分支那一格要立刻换成新项目的。
     announce()
   }
@@ -103,6 +110,7 @@ export function createGitWatch(store: Store, bus: EventBus): GitWatch {
     stop() {
       if (settle) clearTimeout(settle)
       settle = null
+      root = ''
       inner?.close()
       inner = null
       outer?.close()
