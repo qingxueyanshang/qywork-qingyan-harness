@@ -50,13 +50,12 @@ function safeConversationId(raw: string | null): string | null {
   return raw
 }
 
-/** 文件名安全化：名字由客户端给，不能让它写到目录外，也不能带控制字符。 */
-function safeName(raw: string): string {
-  const base = raw.split(/[/\\]/).pop() ?? ''
-  const cleaned = base
+/** 仅安全化存储名；从尾部截取以保留扩展名，显示名称不使用此结果。 */
+function safeName(name: string): string {
+  const cleaned = name
     .replace(/[^\p{L}\p{N}._-]+/gu, '-')
     .replace(/^[.-]+/, '')
-    .slice(0, 80)
+    .slice(-80)
   return cleaned || 'attachment'
 }
 
@@ -86,12 +85,15 @@ export const handleAttachmentsApi: ApiHandler = async (url, req, d) => {
   }
 
   const mime = req.headers.get('content-type') ?? 'application/octet-stream'
-  const name = safeName(decodeURIComponent(req.headers.get('x-attachment-name') ?? ''))
+  const name =
+    decodeURIComponent(req.headers.get('x-attachment-name') ?? '')
+      .split(/[/\\]/)
+      .pop() || 'attachment'
 
   // 前缀去重：同名文件反复粘贴不能互相覆盖，否则上一条消息引用的图会被下一条换掉。
   const dir = attachmentsDirOf(conversationId)
   const id = crypto.randomUUID()
-  const fileName = `${id.slice(0, 8)}-${name}`
+  const fileName = `${id.slice(0, 8)}-${safeName(name)}`
   const path = join(dir, fileName)
   const pending = join(dir, `.${id}.part`)
   await mkdir(dir, { recursive: true })

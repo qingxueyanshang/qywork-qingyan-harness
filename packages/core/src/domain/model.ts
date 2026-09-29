@@ -257,6 +257,7 @@ export interface Message {
 
 export interface Attachment {
   type: 'image' | 'video' | 'file'
+  /** 源文件名，用于展示与消息记录；不能用安全化后的存储名替代。 */
   name: string
   mime: string
   /**
