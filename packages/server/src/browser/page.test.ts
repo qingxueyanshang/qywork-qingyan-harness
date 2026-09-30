@@ -1584,7 +1584,7 @@ test('同进程 iframe 已经提交时不算未就位，观察不为它等待', 
   expect(fake.sent('DOM.getDocument')).toHaveLength(1)
 })
 
-test('父页滚过之后，跨站 iframe 里的元素按现取的帧位置发事件', async () => {
+test('父页滚过之后，跨站帧输入使用子会话坐标，回执保留现取的页面坐标', async () => {
   const { fake, handle } = await newPage(addFrame)
   const { record, observation } = await observe(handle)
   const inner = observation.elements.find((e) => e.name === '帧内按钮')
@@ -1600,7 +1600,75 @@ test('父页滚过之后，跨站 iframe 里的元素按现取的帧位置发事
   })
   // 帧内中心 (60,35) + 此刻的帧位置 (100,200)。用观察时的偏移会得到 y=435。
   expect(r.point).toEqual({ x: 160, y: 235 })
-  expect(fake.mouse()[1]).toEqual({ type: 'mousePressed', x: 160, y: 235 })
+  expect(fake.mouse()[1]).toEqual({ type: 'mousePressed', x: 60, y: 35 })
+  expect(fake.sent('Input.dispatchMouseEvent').every((c) => c.sessionId === 'sf1')).toBe(true)
+})
+
+test.each(['hover', 'click', 'dblclick', 'rightclick'] as const)(
+  '嵌套跨站帧 %s 使用最内层会话坐标，仍逐层验证命中',
+  async (action) => {
+    const { fake, handle } = await newPage((f) => {
+      addFrame(f, 200)
+      addNestedFrame(f)
+    })
+    const { record, observation } = await observe(handle)
+    const r = await act(handle, record, { action, ref: refOf(observation, '第三层按钮') })
+    expect(r.point).toEqual({ x: 165, y: 285 })
+    const commands = fake.sent('Input.dispatchMouseEvent')
+    expect(commands.length).toBeGreaterThan(0)
+    for (const command of commands) {
+      expect(command.sessionId).toBe('sf2')
+      expect(command.params).toMatchObject({ x: 55, y: 25 })
+    }
+    const middle = fake.model.docs[1] as DocModel
+    middle.nodes.push({
+      backendNodeId: 91,
+      tag: 'div',
+      attrs: { 'aria-label': '帧内遮罩' },
+      box: { x: 0, y: 0, width: 400, height: 300 },
+      fixed: true,
+    })
+    await expect(
+      act(handle, record, { action, ref: refOf(observation, '第三层按钮') }),
+    ).rejects.toThrow('帧内遮罩')
+    expect(fake.sent('Input.dispatchMouseEvent')).toHaveLength(commands.length)
+  },
+)
+
+test('跨站帧点击的修饰键与鼠标落在同一会话，完成后释放', async () => {
+  const { fake, handle } = await newPage(addFrame)
+  const { record, observation } = await observe(handle)
+  await act(handle, record, {
+    action: 'click',
+    ref: refOf(observation, '帧内按钮'),
+    keys: ['ShiftLeft'],
+  })
+  expect(fake.sent('Input.dispatchKeyEvent').map((c) => [c.sessionId, c.params?.type])).toEqual([
+    ['sf1', 'rawKeyDown'],
+    ['sf1', 'keyUp'],
+  ])
+  for (const command of fake.sent('Input.dispatchMouseEvent')) {
+    expect(command.sessionId).toBe('sf1')
+    expect(command.params).toMatchObject({ x: 60, y: 35, modifiers: 8 })
+  }
+})
+
+test('跨站帧上的滚轮仍从页面落点路由，不绕过父页覆盖元素', async () => {
+  const { fake, handle } = await newPage((f) => {
+    addFrame(f, 200)
+    addMask(f, '覆盖层')
+  })
+  const { record, observation } = await observe(handle)
+  await act(handle, record, {
+    action: 'scroll',
+    ref: refOf(observation, '帧内按钮'),
+    deltaY: 100,
+  })
+  expect(fake.sent('Input.dispatchMouseEvent')).toHaveLength(1)
+  expect(fake.sent('Input.dispatchMouseEvent')[0]).toMatchObject({
+    sessionId: MAIN,
+    params: { type: 'mouseWheel', x: 160, y: 235, deltaY: 100 },
+  })
 })
 
 test('iframe 整体在可视区外时把父页一起滚上来，再按现取的位置发事件', async () => {
@@ -2571,6 +2639,71 @@ test('drag 按下之后取消，鼠标被补一次抬起，回执不报完成', 
   const released = fake.mouseDetail().filter((e) => e.type === 'mouseReleased')
   expect(released).toHaveLength(1)
   expect(released[0]).toMatchObject({ x: 50, y: 220, buttons: 0 })
+})
+
+test.each([false, true])('跨站帧拖动留在起点会话，取消=%s 时也在该会话释放', async (cancel) => {
+  const { fake, handle } = await newPage((f) => {
+    addFrame(f, 200)
+    const child = f.model.docs[1] as DocModel
+    child.nodes.push({
+      backendNodeId: 63,
+      tag: 'div',
+      attrs: { id: 'drop' },
+      box: { x: 200, y: 100, width: 100, height: 40 },
+    })
+    child.ax.push({ backendDOMNodeId: 63, role: 'button', name: '帧内终点' })
+  })
+  const { record, observation } = await observe(handle)
+  fake.model.onInput = (nth) => {
+    // Shift、移入、按下之后才取消，验证鼠标与修饰键共用现有收尾。
+    if (cancel && nth === 3) void handle.client.cancel('测试子帧取消')
+  }
+  const r = await act(handle, record, {
+    action: 'drag',
+    ref: refOf(observation, '帧内按钮'),
+    keys: ['ShiftLeft'],
+    path: [{ ref: refOf(observation, '帧内终点') }],
+  })
+  expect(r.point).toEqual({ x: 160, y: 235 })
+  expect(r.execution?.state === 'completed').toBe(!cancel)
+  const commands = fake.sent('Input.dispatchMouseEvent')
+  expect(commands.every((c) => c.sessionId === 'sf1')).toBe(true)
+  expect(commands[1]?.params).toMatchObject({ type: 'mousePressed', x: 60, y: 35 })
+  const releases = commands.filter((c) => c.params?.type === 'mouseReleased')
+  expect(releases).toHaveLength(1)
+  expect(releases[0]?.params).toMatchObject({
+    x: cancel ? 60 : 250,
+    y: cancel ? 35 : 120,
+    buttons: 0,
+  })
+  expect(fake.sent('Input.dispatchKeyEvent').at(-1)).toMatchObject({
+    sessionId: 'sf1',
+    params: { type: 'keyUp', key: 'Shift' },
+  })
+})
+
+test('跨帧拖动在终点滚动后重取起点会话原点，不把页面坐标当成子帧坐标', async () => {
+  const { fake, handle } = await newPage((f) => {
+    addFrame(f, 200)
+    addBottomButton(f)
+  })
+  const { record, observation } = await observe(handle)
+  const r = await act(handle, record, {
+    action: 'drag',
+    ref: refOf(observation, '帧内按钮'),
+    path: [{ ref: refOf(observation, '表单底部') }],
+  })
+  const commands = fake.sent('Input.dispatchMouseEvent')
+  expect(commands.every((c) => c.sessionId === 'sf1')).toBe(true)
+  const scrollY = (fake.model.docs[0] as DocModel).scrollY
+  expect(scrollY).toBeGreaterThan(0)
+  const bottom = (fake.model.docs[0] as DocModel).nodes.find((n) => n.backendNodeId === 70)
+  expect(commands.at(-1)?.params).toMatchObject({
+    type: 'mouseReleased',
+    x: (bottom?.box?.x ?? 0) + (bottom?.box?.width ?? 0) / 2 - 100,
+    y: (bottom?.box?.y ?? 0) + (bottom?.box?.height ?? 0) / 2 - 200,
+  })
+  expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 1 })
 })
 
 test('按下之前一律先把指针移到落点，且那一条不计入执行回执的单元数', async () => {

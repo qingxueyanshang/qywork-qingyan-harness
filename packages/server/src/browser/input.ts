@@ -278,7 +278,7 @@ export async function runKeyPhases(
   return run.run(client, () => keyboard.to([], run.deadline))
 }
 
-/** 发一条鼠标事件。坐标一律在页会话（顶层文档）的坐标系里。 */
+/** 发一条鼠标事件。坐标必须属于接收命令的会话本地根，不能把顶层坐标交给子帧。 */
 export async function mouseEvent(
   client: CdpClient,
   sessionId: string,
@@ -297,9 +297,8 @@ export async function mouseEvent(
 /**
  * 把指针移到落点。按下之前必须先发这一条。
  *
- * **不要省掉它。** 直接发 `mousePressed` 时 CDP 回包确认、随后的移动也带 `buttons: 1`，
- * 而渲染进程一次 mousedown 都没有派发——页内文档级捕获监听器一条都没收到。
- * 点击与拖动各跑 30 轮，各复现 1 次。它不是业务事件，不计入执行回执的单元数。
+ * 让页面先收到指针进入与悬停，再按下。移动不构成渲染同步，不能靠它保证跨帧命中；
+ * 调用方必须传入目标会话及其坐标。它不计入点击或拖动回执的单元数。
  */
 export async function aimAt(
   client: CdpClient,
