@@ -1,4 +1,13 @@
-import { createEffect, createSignal, lazy, onCleanup, onMount, Show, Suspense } from 'solid-js'
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  lazy,
+  onCleanup,
+  onMount,
+  Show,
+  Suspense,
+} from 'solid-js'
 import { Composer } from './components/Composer.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
@@ -36,7 +45,6 @@ import {
   state,
   togglePanel,
   toggleSidebar,
-  transcript,
   view,
   workspace,
 } from './lib/store/index.ts'
@@ -99,6 +107,14 @@ export function copyCode(e: MouseEvent): void {
 }
 
 export function App() {
+  // 未读、加载中和失败都不能证明会话为空，保持最近一次已确认的布局。
+  const emptyLayout = createMemo((previous: boolean) => {
+    if (!state.activeConversation) return true
+    const current = view()
+    if (current.transcript.length > 0) return false
+    if (current.history.loading !== null || current.history.error !== null) return previous
+    return true
+  }, false)
   // 抽屉只在窄屏出现；宽屏侧栏常驻，这个状态不参与布局。
   const [drawer, setDrawer] = createSignal(false)
   const [exportState, setExportState] = createSignal<'idle' | 'working' | 'done'>('idle')
@@ -274,23 +290,14 @@ export function App() {
         <WindowControls />
       </header>
 
-      {/* 空会话时把输入区居中：只在底部钉一个输入框看起来像没加载完 */}
-      <main
-        class="main"
-        classList={{
-          empty:
-            transcript().length === 0 &&
-            view().history.loading !== 'initial' &&
-            view().history.error === null,
-        }}
-      >
+      <main class="main" classList={{ empty: emptyLayout() }}>
         {/* 面板放大时正文整块卸载，不是用 CSS 藏起来：`display: none` 会把
             滚动容器的 scrollTop 清成 0，还原时用户落在几百条之前的开头，而
             重新挂载会走一遍「贴底」的初始态，还原就停在最新那条上。 */}
         <Show when={!panelMaximized()}>
           <Transcript />
         </Show>
-        <Composer />
+        <Composer empty={emptyLayout()} />
       </main>
 
       {/*

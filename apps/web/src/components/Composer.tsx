@@ -40,7 +40,6 @@ import {
   type TeamRoleRow,
   type ToolMeta,
   tauriListen,
-  transcript,
   uploadAttachment,
   workspace,
 } from '../lib/store/index.ts'
@@ -394,7 +393,7 @@ function toolOption(tool: ToolMeta): MentionOption {
  *   `Ctrl+Enter` 对单条走相反那一档。默认档在设置页，不常驻这里。
  * - 自适应高度，封顶后转内部滚动，不把会话区挤没。
  */
-export function Composer() {
+export function Composer(props: { empty: boolean }) {
   const [text, setText] = createSignal('')
   const [menuCursor, setMenuCursor] = createSignal(0)
   const [pending, setPending] = createSignal<Attachment[]>([])
@@ -875,14 +874,8 @@ export function Composer() {
       >
         <span aria-hidden="true" />
       </button>
-      {/* 空会话时的「这一轮会跑在哪」。**不写标语**——一句口号不携带任何信息，
-          而 B7 的判据是「删掉这句用户还能不能用」。留下的 chip 每一个都在
-          回答一个真问题，而且每一个都点得动。
-
-          **审批模式不在这里。** 它就在下面那条工具栏上常驻，而且是同一个
-          `<ModeChip>`——同一个开关在同一屏出现两次，用户得先判断这两个是不是
-          一回事。工作区和分支不同：工具栏上没有它们。 */}
-      <Show when={transcript().length === 0}>
+      {/* 运行位置与输入框共用空会话布局判定，历史加载期间不重新推断。 */}
+      <Show when={props.empty}>
         <div class="run-context">
           <span class="run-context-label">运行于</span>
           {/* 只显示，不可点：换项目在左栏点一下就是了，这里再放一个入口

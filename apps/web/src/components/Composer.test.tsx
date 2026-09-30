@@ -35,7 +35,7 @@ async function mountComposer(maximized = true) {
   }
   const host = document.createElement('div')
   document.body.append(host)
-  const dispose = render(() => <Composer />, host as unknown as HTMLElement)
+  const dispose = render(() => <Composer empty={true} />, host as unknown as HTMLElement)
   const wrap = host.querySelector('.composer-wrap') as HTMLDivElement
   const reveal = host.querySelector('.composer-reveal') as HTMLButtonElement
   const textarea = host.querySelector('.composer-input') as HTMLTextAreaElement

@@ -189,10 +189,11 @@ export interface ConversationView {
   transcript: TranscriptItem[]
   /**
    * 历史 REST 的纯界面态。正文真源仍是 messages/runs/steps，这里只回答：
-   * 请求在不在飞、还能不能往前翻、失败后该重试哪一页。
+   * 是否已读取、请求是否在途、还能否前翻，以及失败后的重试页。
    */
   history: {
-    loading: 'initial' | 'older' | null
+    /** unloaded 表示尚未读取；null 且无错误才表示读取完成。 */
+    loading: 'unloaded' | 'initial' | 'older' | null
     nextCursor: string | null
     error: { phase: 'initial' | 'older'; message: string } | null
   }
@@ -235,7 +236,7 @@ export interface ConversationView {
 /** 一条还没建过表的会话读到的那份。冻结，写点一律经 `openView`。 */
 const EMPTY_VIEW: ConversationView = Object.freeze({
   transcript: Object.freeze([]) as unknown as TranscriptItem[],
-  history: Object.freeze({ loading: null, nextCursor: null, error: null }),
+  history: Object.freeze({ loading: 'unloaded', nextCursor: null, error: null }),
   changes: null,
   runUserMessageId: null,
   runStartedAt: null,
@@ -380,7 +381,7 @@ export function openView(id: string): void {
   if (state.views[id]) return
   setState('views', id, {
     transcript: [],
-    history: { loading: null, nextCursor: null, error: null },
+    history: { loading: 'unloaded', nextCursor: null, error: null },
     changes: null,
     runUserMessageId: null,
     runStartedAt: null,
