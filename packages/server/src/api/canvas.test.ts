@@ -146,7 +146,7 @@ describe('画布接口', () => {
       ) as Promise<Response>
     }
     expect((await upload(`path=${PATH}&name=a.jpg`)).status).toBe(422)
-    const ok = await upload(`path=${PATH}&name=${encodeURIComponent('小满.jpg')}&x=1110&y=1082.5`)
+    const ok = await upload(`path=${PATH}&name=${encodeURIComponent('小满.jpg')}&x=1112.5&y=1084.5`)
     expect(ok.status).toBe(200)
     const r = (await ok.json()) as { nodeId: string; path: string }
     expect(r.path).toBe('uploads/小满.jpg')

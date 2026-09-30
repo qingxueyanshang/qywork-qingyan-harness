@@ -300,7 +300,7 @@ describe('画布服务：上传', () => {
     const root = await workspace()
     const { svc } = service()
     const first = await svc.upload(root, PATH, '小满 正面.png', BYTES, {
-      near: { x: 230, y: 162.5 },
+      near: { x: 232.5, y: 164.5 },
     })
     expect(first.path).toBe('uploads/小满 正面.png')
     const second = await svc.upload(root, PATH, '小满 正面.png', BYTES, { beside: first.nodeId })
@@ -308,7 +308,7 @@ describe('画布服务：上传', () => {
     const doc = await onDisk(root)
     const a = doc.nodes.find((n) => n.id === first.nodeId)!
     const b = doc.nodes.find((n) => n.id === second.nodeId)!
-    expect(a).toMatchObject({ type: 'file', x: 120, y: 80, w: 220, h: 165 })
+    expect(a).toMatchObject({ type: 'file', x: 120, y: 80, w: 225, h: 169 })
     expect(b.x).toBeGreaterThan(a.x + a.w)
     expect(new Uint8Array(await readFile(join(root, first.path)))).toEqual(BYTES)
   })
@@ -341,8 +341,8 @@ describe('画布服务：上传', () => {
       const n = doc.nodes.find((x) => x.id === id)!
       return { w: n.w, h: n.h }
     }
-    expect(box(wide.nodeId)).toEqual({ w: 233, h: 156 })
-    expect(box(refs.$t!)).toEqual({ w: 156, h: 233 })
+    expect(box(wide.nodeId)).toEqual({ w: 254, h: 169 })
+    expect(box(refs.$t!)).toEqual({ w: 113, h: 169 })
   })
 
   test('系统拖入：工作区里的直接引用，工作区外的复制进 uploads/；不存在回 404、目录回 422', async () => {
