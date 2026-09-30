@@ -28,11 +28,19 @@ export interface CanvasMade {
   at: string
 }
 
+/** 图片或视频的像素宽高。 */
+export interface CanvasPixels {
+  w: number
+  h: number
+}
+
 export interface CanvasVersion {
   id: string
   /** 产物的工作区路径；视频还在远端时是任务记录（`.task.json`）的路径。 */
   path: string
   made: CanvasMade
+  /** 产物的像素宽高，服务端落盘时从文件头读出；读不出（音频、任务记录、不认识的格式）时没有。 */
+  size?: CanvasPixels
 }
 
 export interface CanvasFileNode {
@@ -132,6 +140,8 @@ export type CanvasOp =
       y?: number
       w?: number
       h?: number
+      /** 文件的像素宽高，没给 `w` / `h` 时框按它的比例定。只由服务端核验路径时填，提交的操作里不认。 */
+      size?: CanvasPixels
     }
   | {
       op: 'add_generate'
@@ -164,6 +174,8 @@ export type CanvasOp =
       params?: Record<string, unknown>
       current?: string
       path?: string
+      /** 同 `add_file` 的 `size`，随 `path` 一起。 */
+      size?: CanvasPixels
       role?: MediaInputRole
     }
   | { op: 'connect'; ref?: string; from: string; to: string; role: MediaInputRole }
@@ -287,6 +299,31 @@ const NEW_NODE_GAP = 100
 /** `beside` 找空位时与其他节点留的间距，含节点上方的标题行。 */
 const CLEARANCE = 40
 
+/**
+ * 把框换成媒体的宽高比，面积不变：同一张卡在横图与竖图之间切换时，视觉分量不变。
+ * 界面给空卡按所选宽高比预览时用同一个函数。
+ */
+export function fitBox(
+  box: { w: number; h: number },
+  size: CanvasPixels,
+): { w: number; h: number } {
+  const area = box.w * box.h
+  const ratio = size.w / size.h
+  return { w: Math.round(Math.sqrt(area * ratio)), h: Math.round(Math.sqrt(area / ratio)) }
+}
+
+/** 新建生成卡的缺省框。界面给空卡选回「自动」宽高比时按它的比例还原。 */
+export function blankBox(output: MediaOutput): { w: number; h: number } {
+  const [w, h] = GENERATE_SIZE[output]
+  return { w, h }
+}
+
+/** 生成卡的框跟当前那一版的媒体比例走；当前版没有尺寸（音频、还在远端的视频）时不动。 */
+function fitCurrent(node: CanvasGenerateNode): void {
+  const size = node.versions.find((v) => v.id === node.current)?.size
+  if (size) Object.assign(node, fitBox(node, size))
+}
+
 class CanvasError extends Error {}
 
 function fail(message: string): never {
@@ -358,8 +395,9 @@ function applyOne(
       claim(op.ref, id)
       const kind = canvasMediaOf({ id, type: 'file', path: op.path, x: 0, y: 0, w: 0, h: 0 })
       const [dw, dh] = FILE_SIZE[kind ?? 'other']
-      const w = op.w ?? dw
-      const h = op.h ?? dh
+      const fit = op.size ? fitBox({ w: dw, h: dh }, op.size) : { w: dw, h: dh }
+      const w = op.w ?? fit.w
+      const h = op.h ?? fit.h
       const spot = placeOf(doc, op, resolve, w, h)
       const node: CanvasFileNode = {
         id,
@@ -423,6 +461,10 @@ function applyOne(
         if (op.path !== undefined) {
           if (!isRelativePath(op.path)) fail(`不是工作区里的相对路径：${op.path}`)
           node.path = op.path
+          // 换了文件就换比例；同一次操作给了 w / h 时以它们为准。
+          if (op.size && op.w === undefined && op.h === undefined) {
+            Object.assign(node, fitBox(node, op.size))
+          }
         }
         return
       }
@@ -431,7 +473,10 @@ function applyOne(
       if (op.name !== undefined) node.name = op.name
       if (op.prompt !== undefined) node.prompt = op.prompt
       if (op.params !== undefined) node.params = op.params
-      if (op.current !== undefined) node.current = op.current
+      if (op.current !== undefined) {
+        node.current = op.current
+        if (op.w === undefined && op.h === undefined) fitCurrent(node)
+      }
       if (op.provider === null) delete node.provider
       else if (op.provider !== undefined) node.provider = op.provider
       if (op.model === null) delete node.model
@@ -461,6 +506,7 @@ function applyOne(
           const last = node.versions.at(-1)
           if (last) node.current = last.id
           else delete node.current
+          fitCurrent(node)
         }
         return
       }
@@ -753,7 +799,7 @@ export function validateCanvas(doc: CanvasDoc): string | null {
 }
 
 /**
- * 追加一次生成的结果，多张就是多版，`current` 指向第一张。只由服务端画布服务调用：
+ * 追加一次生成的结果，多张就是多版，`current` 指向第一张，框按它的比例改。只由服务端画布服务调用：
  * 版本里的 `made` 记的是真正发出去的请求，界面与大模型的操作不能写版本。
  */
 export function addVersions(
@@ -767,22 +813,31 @@ export function addVersions(
   if (versions.length === 0) return { ok: true, doc: next, refs: {} }
   node.versions.push(...structuredClone(versions))
   node.current = versions[0]!.id
+  fitCurrent(node)
   const problem = validateCanvas(next)
   return problem ? { ok: false, error: problem } : { ok: true, doc: next, refs: {} }
 }
 
-/** 把一版改指到新路径（远端视频取回后由任务记录改成产物）。只由服务端画布服务调用。 */
+/**
+ * 把一版改指到新路径（远端视频取回后由任务记录改成产物），带上产物的像素宽高。
+ * 这一版是当前版时框按它的比例改。只由服务端画布服务调用。
+ */
 export function settleVersion(
   doc: CanvasDoc,
   nodeId: string,
   versionId: string,
   path: string,
+  size?: CanvasPixels,
 ): CanvasResult {
   const next = structuredClone(doc)
   const node = next.nodes.find((n) => n.id === nodeId)
   const version = node?.type === 'generate' ? node.versions.find((v) => v.id === versionId) : null
-  if (!version) return { ok: false, error: `版本已不存在：${versionId}` }
+  if (!version || node?.type !== 'generate')
+    return { ok: false, error: `版本已不存在：${versionId}` }
   version.path = path
+  if (size) version.size = size
+  else delete version.size
+  fitCurrent(node)
   const problem = validateCanvas(next)
   return problem ? { ok: false, error: problem } : { ok: true, doc: next, refs: {} }
 }
@@ -799,6 +854,7 @@ type Shape =
   | 'mode'
   | 'nullable'
   | 'point'
+  | 'size'
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -812,6 +868,15 @@ function matches(v: unknown, shape: Shape): boolean {
       return typeof v === 'string' || v === null
     case 'number':
       return typeof v === 'number' && Number.isFinite(v)
+    case 'size':
+      return (
+        isObject(v) &&
+        Object.keys(v).length === 2 &&
+        matches(v.w, 'number') &&
+        matches(v.h, 'number') &&
+        (v.w as number) > 0 &&
+        (v.h as number) > 0
+      )
     case 'point':
       return (
         isObject(v) &&
@@ -933,6 +998,7 @@ const VERSION_FIELDS: Record<string, Shape> = {
   'id!': 'string',
   'path!': 'string',
   'made!': 'object',
+  size: 'size',
 }
 const MADE_FIELDS: Record<string, Shape> = {
   'prompt!': 'string',
@@ -1042,6 +1108,7 @@ export function serializeCanvas(doc: CanvasDoc): string {
               inputs: v.made.inputs.map((x) => ({ role: x.role, path: x.path })),
               at: v.made.at,
             },
+            ...(v.size ? { size: { w: v.size.w, h: v.size.h } } : {}),
           })),
           ...(n.current !== undefined ? { current: n.current } : {}),
         },

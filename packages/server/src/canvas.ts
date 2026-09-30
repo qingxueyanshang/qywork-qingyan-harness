@@ -24,6 +24,7 @@ import {
   type CanvasNode,
   type CanvasNodeState,
   type CanvasOp,
+  type CanvasPixels,
   type CanvasResult,
   type CanvasRunResult,
   type CanvasView,
@@ -50,6 +51,7 @@ import {
   TASK_SUFFIX,
 } from '@qywork/tools'
 import { findByName } from './files.ts'
+import { mediaSizeOf } from './media-size.ts'
 
 /** 画布文件的后缀。文件树按它把文件交给画布页签打开。 */
 export const CANVAS_SUFFIX = '.canvas.json'
@@ -113,16 +115,17 @@ function videoOf(files: GeneratedFile[]): GeneratedFile {
 
 /**
  * 视频那一版改指到产物；随视频返回的尾帧图各加一个节点，名字 `<卡片名>_尾帧`，放在卡片右侧，
- * 下一段直接从它接出首帧。
+ * 下一段直接从它接出首帧。`sizes` 是各产物的像素宽高（`sizesOf`），框按它定比例。
  */
 function settleVideo(
   doc: CanvasDoc,
   nodeId: string,
   versionId: string,
   files: GeneratedFile[],
+  sizes: Map<string, CanvasPixels>,
 ): CanvasResult {
   const video = videoOf(files)
-  const settled = settleVersion(doc, nodeId, versionId, video.path)
+  const settled = settleVersion(doc, nodeId, versionId, video.path, sizes.get(video.path))
   const node = settled.ok ? settled.doc.nodes.find((n) => n.id === nodeId) : undefined
   const frames = files.filter((f) => f !== video && f.mime.startsWith('image/'))
   if (!settled.ok || !node || frames.length === 0) return settled
@@ -133,8 +136,14 @@ function settleVideo(
       path: f.path,
       name: `${displayNameOf(node)}_尾帧`,
       beside: node.id,
+      ...sizeField(sizes.get(f.path)),
     })),
   )
+}
+
+/** 可选的 `size` 字段：读不出尺寸时不写这个键。 */
+function sizeField(size: CanvasPixels | null | undefined): { size?: CanvasPixels } {
+  return size ? { size } : {}
 }
 
 export interface CanvasServiceDeps {
@@ -281,10 +290,12 @@ export class CanvasService {
         return { ok: false, message: outcome.message, pending: outcome.record !== undefined }
       }
       const files = outcome.files
+      const sizes = await this.sizesOf(ws.root, files)
       const version = (path: string) => ({
         id: newCanvasId(),
         path,
         made: made(outcome.provider, outcome.model),
+        ...sizeField(sizes.get(path)),
       })
       const id: string | null = versionId
       return this.writeBack(ws.root, rel, files, (d) => {
@@ -294,11 +305,11 @@ export class CanvasService {
             nodeId,
             files.map((f) => version(f.path)),
           )
-        if (id) return settleVideo(d, nodeId, id, files)
+        if (id) return settleVideo(d, nodeId, id, files, sizes)
         // 任务号到手时没能写进画布（被外部改写），成功后补一版。
         const late = version(videoOf(files).path)
         const added = addVersions(d, nodeId, [late])
-        return added.ok ? settleVideo(added.doc, nodeId, late.id, files) : added
+        return added.ok ? settleVideo(added.doc, nodeId, late.id, files, sizes) : added
       })
     })
     return { done }
@@ -341,8 +352,9 @@ export class CanvasService {
         }
         return { ok: false, message: outcome.message, pending: outcome.record !== undefined }
       }
+      const sizes = await this.sizesOf(ws.root, outcome.files)
       return this.writeBack(ws.root, rel, outcome.files, (d) =>
-        settleVideo(d, nodeId, version.id, outcome.files),
+        settleVideo(d, nodeId, version.id, outcome.files, sizes),
       )
     })
     return { done }
@@ -401,6 +413,16 @@ export class CanvasService {
       ...(result.ok ? { state: 'done' } : { state: 'failed', message: result.message }),
     })
     return result
+  }
+
+  /** 各产物的像素宽高，按工作区相对路径取；读不出的不在表里。 */
+  private async sizesOf(root: string, files: GeneratedFile[]): Promise<Map<string, CanvasPixels>> {
+    const sizes = new Map<string, CanvasPixels>()
+    for (const f of files) {
+      const size = await mediaSizeOf(join(root, f.path))
+      if (size) sizes.set(f.path, size)
+    }
+    return sizes
   }
 
   /** 产物已落盘，回写画布。回写不成（节点或这一版被外部改掉了）时，失败原文写明产物在哪。 */
@@ -708,7 +730,10 @@ export class CanvasService {
     }
   }
 
-  /** `add_file` / `update` 里的文件路径：必须是工作区里已有的文件，写成正斜杠相对路径。 */
+  /**
+   * `add_file` / `update` 里的文件路径：必须是工作区里已有的文件，写成正斜杠相对路径；
+   * 同时从文件头读出像素宽高填进 `size`，框按文件的比例定。操作自己给了 `w` / `h` 时不读。
+   */
   private async normalizePath(workspaceRoot: string, op: CanvasOp): Promise<CanvasOp> {
     if ((op.op !== 'add_file' && op.op !== 'update') || op.path === undefined) return op
     let abs: string
@@ -718,7 +743,9 @@ export class CanvasService {
       throw new CanvasFailure(`${op.path} 不存在或不在这个项目里`, 422)
     }
     if (!(await stat(abs)).isFile()) throw new CanvasFailure(`${op.path} 不是文件`, 422)
-    return { ...op, path: await this.relativeTo(workspaceRoot, abs) }
+    const path = await this.relativeTo(workspaceRoot, abs)
+    if (op.w !== undefined || op.h !== undefined) return { ...op, path }
+    return { ...op, path, ...sizeField(await mediaSizeOf(abs)) }
   }
 
   private async relativeTo(workspaceRoot: string, abs: string): Promise<string> {

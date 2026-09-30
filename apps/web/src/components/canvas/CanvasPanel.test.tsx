@@ -793,10 +793,11 @@ describe('画布：生成卡与生成面板', () => {
       () => server.ops.length === 3,
       () => '',
     )
+    // 还没有结果的卡：框随所选宽高比变形、面积不变；1:1 与缺省框同比例不改；选回自动还原成缺省比例。
     expect(server.ops.map((ops) => ops[0])).toEqual([
       { op: 'update', id: refs.$i!, params: { size: '2048*2048' } },
-      { op: 'update', id: refs.$i!, params: { size: '2720*1536' } },
-      { op: 'update', id: refs.$i!, params: {} },
+      { op: 'update', id: refs.$i!, params: { size: '2720*1536' }, w: 225, h: 127 },
+      { op: 'update', id: refs.$i!, params: {}, w: 169, h: 169 },
     ])
   })
 
@@ -952,6 +953,45 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
+  test('在一张卡上打字后直接选另一张卡：提示词提交给原来那张，新卡的面板是空的', async () => {
+    const { host, server, refs } = await mount([
+      { op: 'add_generate', ref: '$g1', output: 'image', x: 0, y: 0 },
+      { op: 'add_generate', ref: '$g2', output: 'image', x: 400, y: 0 },
+    ])
+    await select(host, refs.$g1!)
+    const editor = host.querySelector<HTMLElement>('.canvas-prompt')!
+    editor.textContent = '一只猫'
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+    await select(host, refs.$g2!)
+    // 浏览器在移除有焦点的元素之后发失焦，测试环境补发这一次。
+    editor.dispatchEvent(new FocusEvent('blur'))
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$g1!, prompt: '一只猫' }])
+    expect(host.querySelector('.canvas-prompt')!.textContent).toBe('')
+  })
+
+  test('打字后点空白处取消选中：面板卸载之后的失焦照样提交这张卡的提示词', async () => {
+    const { host, server, refs } = await mount(CARD)
+    await select(host, refs.$v!)
+    const editor = host.querySelector<HTMLElement>('.canvas-prompt')!
+    editor.textContent = '雨夜'
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+    pointer(host.querySelector('.canvas-stage')!, 'pointerdown', 900, 650)
+    await waitFor(
+      () => !host.querySelector('.canvas-panel'),
+      () => '',
+    )
+    editor.dispatchEvent(new FocusEvent('blur'))
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$v!, prompt: '雨夜' }])
+  })
+
   test('发送：先提交编辑中的提示词，再运行，同一次请求', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)
@@ -1058,7 +1098,7 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
-  test('生成参数：模型、参数与输入用界面名，不出现接口字段', async () => {
+  test('选中工具条只剩视频的取帧：出过结果的生成卡不出「生成参数」「打开」', async () => {
     const core = await import('@qywork/core')
     const { host, server, refs } = await mount(CARD)
     const withVersion = core.addVersions(server.doc(), refs.$v!, [
@@ -1069,8 +1109,8 @@ describe('画布：生成卡与生成面板', () => {
           prompt: '回头',
           provider: 'qwen',
           model: 'wan3.0-video',
-          params: { resolution: '1080P', duration: 5, seed: 7 },
-          inputs: [{ role: 'first_frame', path: 'a.png' }],
+          params: {},
+          inputs: [],
           at: '2026-09-29T10:00:00Z',
         },
       },
@@ -1083,29 +1123,20 @@ describe('画布：生成卡与生成面板', () => {
       () => !!node(host, refs.$v!).querySelector('.canvas-bitmap'),
       () => node(host, refs.$v!).innerHTML,
     )
+    const tools = () => [...host.querySelectorAll('.canvas-tools button')].map((b) => b.textContent)
     pointer(node(host, refs.$v!), 'pointerdown', 10, 10)
     pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
     await waitFor(
-      () =>
-        [...host.querySelectorAll('.canvas-tools button')].some(
-          (b) => b.textContent === '生成参数',
-        ),
-      () => host.querySelector('.canvas-tools')?.outerHTML ?? '',
+      () => tools().length > 0,
+      () => host.innerHTML.slice(0, 300),
     )
-    ;[...host.querySelectorAll<HTMLButtonElement>('.canvas-tools button')]
-      .find((b) => b.textContent === '生成参数')!
-      .click()
+    expect(tools()).toEqual(['取帧'])
+    pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
+    pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
     await waitFor(
-      () => !!document.querySelector('.canvas-made'),
-      () => document.body.innerHTML.slice(-400),
+      () => tools().length === 0,
+      () => JSON.stringify(tools()),
     )
-    const text = document.querySelector('.canvas-made')!.textContent!
-    for (const shown of ['万相 3.0 视频', '分辨率 1080P', '时长 5 秒', '首帧 a.png']) {
-      expect(text).toContain(shown)
-    }
-    for (const internal of ['resolution', 'first_frame', 'seed', 'qwen', '{']) {
-      expect(text).not.toContain(internal)
-    }
   })
 })
 
@@ -1163,6 +1194,123 @@ describe('画布：导航与选择的键位', () => {
       () => zoom(host) !== all,
       () => String(zoom(host)),
     )
+  })
+})
+
+describe('画布：右键菜单', () => {
+  const stageOf = (host: HTMLElement) => host.querySelector<HTMLElement>('.canvas-stage')!
+  const menu = () => document.querySelector('.canvas-context-menu')
+  const items = () =>
+    [...document.querySelectorAll<HTMLButtonElement>('.canvas-context-menu > button')].map(
+      (b) => b.querySelector('span')!.textContent,
+    )
+  const choose = (label: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>('.canvas-context-menu > button')]
+      .find((b) => b.querySelector('span')!.textContent === label)!
+      .click()
+  const rightClick = (host: HTMLElement, el: Element, x: number, y: number) => {
+    pointer(el, 'pointerdown', x, y, { button: 2 })
+    pointer(stageOf(host), 'pointerup', x, y, { button: 2 })
+  }
+
+  test('节点上右键：先选中它，菜单有复制、剪切、复制一份、改名、删除；删除删掉它', async () => {
+    const { host, server, refs } = await mount(FILES)
+    rightClick(host, node(host, refs.$b!), 10, 10)
+    await waitFor(
+      () => !!menu(),
+      () => '',
+    )
+    expect(node(host, refs.$b!).classList.contains('selected')).toBe(true)
+    for (const label of ['复制', '剪切', '复制一份', '改名', '删除'])
+      expect(items()).toContain(label)
+    expect(menu()!.textContent).toContain('Delete')
+    choose('删除')
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([{ op: 'remove', id: refs.$b! }])
+    expect(menu()).toBeNull()
+  })
+
+  test('右键拖动只平移，不弹菜单、不改选区', async () => {
+    const { host, refs } = await mount(FILES)
+    const before = stageOf(host).style.getPropertyValue('--px')
+    pointer(node(host, refs.$a!), 'pointerdown', 100, 100, { button: 2 })
+    pointer(stageOf(host), 'pointermove', 180, 100, { button: 2 })
+    pointer(stageOf(host), 'pointerup', 180, 100, { button: 2 })
+    expect(stageOf(host).style.getPropertyValue('--px')).not.toBe(before)
+    expect(menu()).toBeNull()
+    expect(node(host, refs.$a!).classList.contains('selected')).toBe(false)
+  })
+
+  test('空白处右键：新建生成卡放在右键那一点；复制过节点后有粘贴，粘在那一点', async () => {
+    const { host, server, refs } = await mount(FILES)
+    rightClick(host, stageOf(host), 700, 500)
+    await waitFor(
+      () => !!menu(),
+      () => '',
+    )
+    for (const label of ['图像生成', '视频生成', '音频生成', '从设备上传', '全选']) {
+      expect(items()).toContain(label)
+    }
+    const z = zoom(host)
+    const px = Number.parseFloat(stageOf(host).style.getPropertyValue('--px'))
+    const py = Number.parseFloat(stageOf(host).style.getPropertyValue('--py'))
+    choose('图像生成')
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    const near = (server.ops[0]![0] as { near: { x: number; y: number } }).near
+    expect(server.ops[0]![0]).toMatchObject({ op: 'add_generate', output: 'image' })
+    expect(near.x).toBeCloseTo((700 - px) / z, 3)
+    expect(near.y).toBeCloseTo((500 - py) / z, 3)
+    // 新卡在回体到了之后才被选中；等它选中再往下，免得覆盖后面右键的选区。
+    await waitFor(
+      () => {
+        const sel = host.querySelector('.canvas-node.selected')
+        return !!sel && sel !== node(host, refs.$a!) && sel !== node(host, refs.$b!)
+      },
+      () => '',
+    )
+
+    rightClick(host, node(host, refs.$a!), 10, 10)
+    await waitFor(
+      () => !!menu(),
+      () => '',
+    )
+    choose('复制')
+    rightClick(host, stageOf(host), 900, 500)
+    await waitFor(
+      () => items().includes('粘贴'),
+      () => JSON.stringify(items()),
+    )
+    choose('粘贴')
+    await waitFor(
+      () => server.ops.length === 2,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[1]![0]).toMatchObject({ op: 'add_file', path: 'a.png' })
+  })
+
+  test('连线上右键：断开这条线', async () => {
+    const { host, server } = await mount([
+      ...CARD,
+      { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+    ])
+    rightClick(host, host.querySelector('.canvas-edge-hit')!, 10, 10)
+    await waitFor(
+      () => !!menu(),
+      () => '',
+    )
+    expect(items()).toEqual(['断开'])
+    choose('断开')
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.doc().edges).toHaveLength(0)
   })
 })
 
@@ -1371,6 +1519,41 @@ describe('画布：连线', () => {
     expect(refs.$v).toBeDefined()
   })
 
+  test('指针移到连线上，中点出现剪刀；移到剪刀上不消失，点一下断开这条线', async () => {
+    const { host, server } = await mount([
+      ...CARD,
+      { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+    ])
+    const stage = host.querySelector('.canvas-stage')!
+    const cut = () => host.querySelector<HTMLButtonElement>('.canvas-edge-cut')
+    expect(cut()).toBeNull()
+    const hit = host.querySelector<SVGPathElement>('.canvas-edge-hit')!
+    pointer(hit as unknown as HTMLElement, 'pointermove', 10, 10)
+    await waitFor(
+      () => !!cut(),
+      () => '',
+    )
+    pointer(cut()!, 'pointermove', 12, 12)
+    expect(cut()).not.toBeNull()
+    pointer(stage, 'pointermove', 500, 500)
+    await waitFor(
+      () => !cut(),
+      () => '',
+    )
+    pointer(hit as unknown as HTMLElement, 'pointermove', 10, 10)
+    await waitFor(
+      () => !!cut(),
+      () => '',
+    )
+    cut()!.click()
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]![0]).toMatchObject({ op: 'remove' })
+    expect(server.doc().edges).toHaveLength(0)
+  })
+
   test('没配模型的类别：卡上写未配置模型，模型按钮通往模型库，发送键置灰', async () => {
     const { host, refs } = await mount([{ op: 'add_generate', ref: '$s', output: 'audio' }])
     const store = await import('../../lib/store/index.ts')
@@ -1494,6 +1677,44 @@ describe('画布：左侧工具条', () => {
 })
 
 describe('画布：纯函数与页签', () => {
+  test('解码宽度按铺满框所需：横图进偏竖的框按高度折算，竖图进偏横的框按框宽', async () => {
+    const { coverWidth } = await import('./Bitmap.tsx')
+    expect(coverWidth({ w: 256, h: 256 }, { w: 1536, h: 1024 })).toBe(384)
+    expect(coverWidth({ w: 256, h: 171 }, { w: 1536, h: 1024 })).toBe(257)
+    expect(coverWidth({ w: 256, h: 144 }, { w: 1024, h: 1536 })).toBe(256)
+  })
+
+  test('参数取值定下的宽高比：对照表取那一格，比例取值取本身，自动回 auto，无关参数回 null', async () => {
+    const { ratioOf } = await import('./GeneratePanel.tsx')
+    const size: Parameters<typeof ratioOf>[0] = {
+      name: 'size',
+      label: '尺寸',
+      type: 'string',
+      shapes: [
+        { tier: '2K', value: '2K' },
+        { ratio: '16:9', tier: '2K', value: '2720x1536' },
+      ],
+    }
+    const ratio: Parameters<typeof ratioOf>[0] = {
+      name: 'ratio',
+      label: '宽高比',
+      type: 'enum',
+      values: ['adaptive', '16:9', '9:16'],
+    }
+    const resolution: Parameters<typeof ratioOf>[0] = {
+      name: 'resolution',
+      label: '分辨率',
+      type: 'enum',
+      values: ['1080P', '720P'],
+    }
+    expect(ratioOf(size, '2720x1536')).toBe('16:9')
+    expect(ratioOf(size, '2K')).toBe('auto')
+    expect(ratioOf(size, '800x600')).toBeNull()
+    expect(ratioOf(ratio, '9:16')).toBe('9:16')
+    expect(ratioOf(ratio, 'adaptive')).toBe('auto')
+    expect(ratioOf(resolution, '720P')).toBeNull()
+  })
+
   test('解码档位：2 的幂，不小于 256、不大于 4096', async () => {
     const { tierOf } = await import('./Bitmap.tsx')
     expect(tierOf(40)).toBe(256)

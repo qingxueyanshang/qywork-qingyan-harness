@@ -4,7 +4,7 @@ import { createEffect, onCleanup } from 'solid-js'
 
 /** 这些浮层之内的点击不算「之外」。 */
 const INSIDE =
-  '.canvas-menu, .canvas-pick, .canvas-made, .canvas-picker, .canvas-params-panel, .canvas-bar-menu'
+  '.canvas-menu, .canvas-pick, .canvas-picker, .canvas-params-panel, .canvas-bar-menu, .canvas-context-menu'
 
 export function dismissOnOutside(
   open: () => { anchor: HTMLElement } | null,

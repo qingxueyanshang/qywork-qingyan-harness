@@ -406,6 +406,15 @@ export const IconX = (p: IconProps) => (
   </Svg>
 )
 
+/** 剪断：画布连线中点的断开按钮。 */
+export const IconScissors = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="6.5" cy="6.5" r="2.8" />
+    <circle cx="6.5" cy="17.5" r="2.8" />
+    <path d="M8.8 8.3 19.5 17M8.8 15.7 19.5 7" />
+  </Svg>
+)
+
 export const IconShield = (p: IconProps) => (
   <Svg {...p}>
     <path d="M12 3.6 5.6 6v6c0 4 2.6 7.2 6.4 8.4 3.8-1.2 6.4-4.4 6.4-8.4V6z" />

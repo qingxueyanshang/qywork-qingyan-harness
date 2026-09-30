@@ -56,9 +56,10 @@
 .canvas-edges path.hot {
   stroke: var(--border-strong);
 }
+/* 选中用浅灰细线，不用墨色：墨色粗线在画布上压过内容本身。 */
 .canvas-edges path.selected {
-  stroke: var(--accent);
-  stroke-width: 2;
+  stroke: var(--text-tertiary);
+  stroke-width: 1.5;
 }
 /* 连线的命中区：透明、比线宽得多，点得中。 */
 .canvas-edges path.canvas-edge-hit {
@@ -69,9 +70,28 @@
 }
 /* 从连接点拖出、还没连上的线。 */
 .canvas-edges path.canvas-edge-draft {
-  stroke: var(--accent);
+  stroke: var(--text-tertiary);
   stroke-width: 1.5;
   stroke-dasharray: 4 4;
+}
+/* 连线中点的剪断按钮：悬停或选中那条线时出现，按屏幕尺寸画。 */
+.canvas-edge-cut {
+  position: absolute;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  border-radius: var(--r-full);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-secondary);
+}
+.canvas-edge-cut:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
 .canvas-drop-anchor {
   position: absolute;
@@ -256,12 +276,12 @@
 .canvas-node.selected .canvas-media,
 .canvas-node.selected .canvas-text,
 .canvas-node.selected .canvas-missing {
-  outline: calc(1.5px / var(--z, 1)) solid var(--accent);
+  outline: calc(1px / var(--z, 1)) solid var(--text-tertiary);
   outline-offset: calc(3px / var(--z, 1));
 }
 /* 拖连线时指着的可连目标。 */
 .canvas-node.link-target .canvas-media {
-  outline: calc(2px / var(--z, 1)) dashed var(--accent);
+  outline: calc(1px / var(--z, 1)) dashed var(--text-tertiary);
   outline-offset: calc(3px / var(--z, 1));
 }
 
@@ -525,8 +545,9 @@
 .canvas-menu > button:hover {
   background: var(--bg-hover);
 }
-.canvas-menu > button[aria-checked="true"] {
-  background: var(--bg-active);
+/* 单选项（版本）：选中只在右侧打勾，不加底色。 */
+.canvas-menu > button[role="menuitemradio"] > span {
+  flex: 1;
 }
 /* 必须定位：取不到图时的占位图标（`.canvas-bitmap-failed`）按最近的定位祖先铺满，缺了会落到整个浮层中央。 */
 .canvas-menu-thumb {
@@ -545,33 +566,6 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-}
-
-/* 生成参数：只读的一块，与菜单分开定义。 */
-.canvas-made {
-  position: fixed;
-  z-index: 60;
-  width: 360px;
-  max-height: 360px;
-  overflow-y: auto;
-  padding: 10px 12px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  box-shadow: var(--shadow-md);
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-}
-.canvas-made dt {
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  margin-top: 6px;
-}
-.canvas-made dd {
-  margin: 2px 0 0;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 /* ── 左下角：添加与缩放 ── */
@@ -740,9 +734,9 @@
   z-index: 7;
   display: flex;
   flex-direction: column;
-  height: 272px;
-  min-height: 272px;
-  max-height: 272px;
+  height: 180px;
+  min-height: 180px;
+  max-height: 180px;
   border: 1px solid var(--border-default);
   border-radius: var(--r-xl);
   background: var(--bg-raised);
@@ -750,9 +744,9 @@
   transition: border-color var(--t-base) var(--ease);
 }
 .canvas-panel.tall {
-  height: 440px;
-  min-height: 440px;
-  max-height: 440px;
+  height: 360px;
+  min-height: 360px;
+  max-height: 360px;
 }
 .canvas-panel:focus-within {
   border-color: var(--border-strong);
@@ -766,16 +760,16 @@
   display: flex;
   gap: 6px;
   flex: none;
-  height: 60px;
-  padding: 12px 44px 0 12px;
+  height: 50px;
+  padding: 10px 44px 0 12px;
 }
 .canvas-input {
   position: relative;
   display: grid;
   place-items: center;
   flex: none;
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
   overflow: hidden;
   border-radius: var(--r-sm);
   box-shadow: inset 0 0 0 1px var(--border-default);
@@ -840,7 +834,7 @@ button.canvas-input:hover {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 10px 16px 4px;
+  padding: 8px 14px 2px;
   font-size: var(--fs-md);
   line-height: 1.75;
   white-space: pre-wrap;
@@ -1037,6 +1031,52 @@ button.canvas-input:hover {
 }
 .canvas-bar-menu > button > svg {
   flex: none;
+}
+
+/* 右键菜单：左上角落在指针处；项右侧是对应的快捷键。外观同底栏菜单，自己一条完整规则。 */
+.canvas-context-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 184px;
+  padding: 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+.canvas-context-menu > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  text-align: left;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.canvas-context-menu > button:hover {
+  background: var(--bg-hover);
+}
+/* 快捷键只写字：全局 `kbd` 的键帽描边与底色在菜单里是多一层框。 */
+.canvas-context-menu kbd {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.canvas-context-menu > hr {
+  height: 1px;
+  margin: 3px 6px;
+  border: 0;
+  background: var(--border-subtle);
 }
 
 /* 选素材：搜索框、结果列表、底部上传一行。尺寸固定，结果在框内滚动。 */

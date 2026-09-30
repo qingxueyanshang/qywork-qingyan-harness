@@ -12,7 +12,6 @@ import {
   applyCanvasOps,
   type CanvasDoc,
   type CanvasGenerateNode,
-  type CanvasMade,
   type CanvasNode,
   type CanvasOp,
   type CanvasView,
@@ -58,29 +57,52 @@ import {
   WORKSPACE_PATH_TYPE,
 } from '../../lib/store/index.ts'
 import { AnchoredMenu } from '../AnchoredMenu.tsx'
-import { IconAudio, IconCanvas, IconChevron, IconFile, IconPlus } from '../Icons.tsx'
+import {
+  IconAudio,
+  IconCanvas,
+  IconCheck,
+  IconChevron,
+  IconFile,
+  IconPlus,
+  IconScissors,
+} from '../Icons.tsx'
 import { Bitmap } from './Bitmap.tsx'
 import { dismissOnOutside } from './dismiss.ts'
 import { captureVideoFrame, type FrameAt, frameLabel } from './frame.ts'
-import { GeneratePanel, mediaOf, paramText, ROLE_LABEL } from './GeneratePanel.tsx'
+import { GeneratePanel, mediaOf } from './GeneratePanel.tsx'
 import { KindIcon, OUTPUT_LABEL } from './kinds.tsx'
 import { Rail } from './Rail.tsx'
 
-const PANEL_W = 600
-const PANEL_H = 272
-const PANEL_TALL = 440
+const PANEL_W = 480
+const PANEL_H = 180
+const PANEL_TALL = 360
 const TEXT_RE = /\.(md|txt)$/i
 
-/** `at`：从连接点拖到空白处松手时，新卡放在这一点（画布坐标）。 */
+/** 右键点中的对象：节点作用于选区（点中的不在选区里时先只选它），空白处作用于那一点。 */
+type ContextTarget = { kind: 'node'; id: string } | { kind: 'edge'; id: string } | { kind: 'blank' }
+
+/**
+ * `at`：从连接点拖到空白处松手时新卡放在这一点；右键菜单里粘贴、新建与上传也放在这一点（画布坐标）。
+ * 右键菜单（`context`）的 `nodeId` 为空串，作用对象在 `target`。
+ */
 type Menu = {
-  kind: 'frame' | 'out' | 'version' | 'made'
+  kind: 'frame' | 'out' | 'version' | 'context'
   anchor: HTMLElement
   nodeId: string
   at?: { x: number; y: number }
+  target?: ContextTarget
 }
 
 type Drag =
-  | { mode: 'pan'; sx: number; sy: number; px: number; py: number }
+  /** `context`：右键按下的那一次平移；松开时没拖动就弹出右键菜单。 */
+  | {
+      mode: 'pan'
+      sx: number
+      sy: number
+      px: number
+      py: number
+      context?: ContextTarget
+    }
   | {
       mode: 'move'
       sx: number
@@ -129,6 +151,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const [renaming, setRenaming] = createSignal<string | null>(null)
   /** 选中的连线。与选中的节点互斥。 */
   const [edgeSelected, setEdgeSelected] = createSignal<string | null>(null)
+  /** 指针下的连线：命中区与剪刀按钮都带 `data-edge`，从线移到按钮上不丢。 */
+  const [edgeHover, setEdgeHover] = createSignal<string | null>(null)
   /** 从连接点拖出的连线：起点节点与指针位置（画布坐标），以及此刻指着的可连目标。 */
   const [linking, setLinking] = createSignal<{ from: string; x: number; y: number } | null>(null)
   const [linkTarget, setLinkTarget] = createSignal<string | null>(null)
@@ -519,6 +543,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       if (target.closest('.canvas-panel, .canvas-rail, .canvas-picker, .canvas-dock')) return
       e.preventDefault()
       drag = { mode: 'pan', sx: e.clientX, sy: e.clientY, px: px(), py: py() }
+      if (e.button === 2 && !space) drag.context = contextOf(target)
       stage.classList.add('grabbing')
       stage.setPointerCapture(e.pointerId)
       return
@@ -565,7 +590,10 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const onPointerMove = (e: PointerEvent) => {
     pointerAt = toWorld(e.clientX, e.clientY)
     const d = drag
-    if (!d) return
+    if (!d) {
+      setEdgeHover((e.target as Element).closest<HTMLElement>('[data-edge]')?.dataset.edge ?? null)
+      return
+    }
     if (d.mode === 'link') {
       if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) return
       d.moved = true
@@ -618,6 +646,10 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     drag = null
     stage.classList.remove('grabbing')
     setMarquee(null)
+    if (d?.mode === 'pan' && d.context && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) {
+      openContext(d.context, e.clientX, e.clientY)
+      return
+    }
     if (d?.mode === 'link') {
       const target = linkTarget()
       setLinking(null)
@@ -697,15 +729,131 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
   // ── 新建与接出 ──
 
+  // ── 右键菜单 ──
+
+  /** 右键按下处是什么：节点、连线还是空白。选区等确定弹菜单（松开时没拖动）再改，右键拖动平移不动选区。 */
+  const contextOf = (target: HTMLElement): ContextTarget => {
+    const node = target.closest<HTMLElement>('[data-node]')?.dataset.node
+    if (node) return { kind: 'node', id: node }
+    const edge = target.closest<HTMLElement>('[data-edge]')?.dataset.edge
+    if (edge) return { kind: 'edge', id: edge }
+    return { kind: 'blank' }
+  }
+
+  const openContext = (target: ContextTarget, clientX: number, clientY: number) => {
+    if (target.kind === 'node' && !selected().has(target.id)) {
+      setSelected(new Set([target.id]))
+      setEdgeSelected(null)
+    }
+    if (target.kind === 'edge') {
+      setSelected(new Set<string>())
+      setEdgeSelected(target.id)
+    }
+    const r = stage.getBoundingClientRect()
+    dropAnchor.style.left = `${clientX - r.left}px`
+    dropAnchor.style.top = `${clientY - r.top}px`
+    setMenu({
+      kind: 'context',
+      anchor: dropAnchor,
+      nodeId: '',
+      target,
+      at: toWorld(clientX, clientY),
+    })
+  }
+
+  /** 快捷键写法：macOS 用 ⌘，其余写 Ctrl+。 */
+  const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
+
+  /** 右键菜单的项，`null` 是分隔线。执行的就是对应快捷键的那个函数。 */
+  const contextItems = (
+    target: ContextTarget,
+    at: { x: number; y: number },
+  ): ({ label: string; keys?: string; run: () => void } | null)[] => {
+    const v = view()
+    const paste = clipboard
+      ? [
+          {
+            label: '粘贴',
+            keys: `${MOD}V`,
+            run: () => clipboard && void pasteNodes(clipboard.source, clipboard.ids, at, false),
+          },
+        ]
+      : []
+    if (target.kind === 'edge') {
+      return [
+        {
+          label: '断开',
+          keys: 'Delete',
+          run: () =>
+            void apply([{ op: 'remove', id: target.id }]).then((r) => r && setEdgeSelected(null)),
+        },
+      ]
+    }
+    if (target.kind === 'blank') {
+      return [
+        ...paste,
+        ...(paste.length ? [null] : []),
+        ...MEDIA_OUTPUTS.map((o) => ({
+          label: OUTPUT_LABEL[o],
+          run: () => void addGenerate(o, at),
+        })),
+        {
+          label: '从设备上传',
+          run: () => {
+            uploadAt = at
+            contextUpload.click()
+          },
+        },
+        null,
+        {
+          label: '全选',
+          keys: `${MOD}A`,
+          run: () => setSelected(new Set(nodes().map((n) => n.id))),
+        },
+      ]
+    }
+    const ids = [...selected()]
+    const single = ids.length === 1 ? byId(ids[0]!) : undefined
+    const runnable =
+      single?.type === 'generate' &&
+      single.prompt.trim() !== '' &&
+      v?.states[single.id]?.state !== 'running' &&
+      (modelCatalog()?.media ?? []).some((m) => m.output === single.output)
+    return [
+      ...(runnable && single ? [{ label: '运行', run: () => run(single.id, []) }, null] : []),
+      { label: '复制', keys: `${MOD}C`, run: () => void copySelection() },
+      {
+        label: '剪切',
+        keys: `${MOD}X`,
+        run: () => {
+          if (copySelection()) removeSelected()
+        },
+      },
+      ...paste,
+      {
+        label: '复制一份',
+        keys: `${MOD}D`,
+        run: () => v && void pasteNodes(v.doc, ids, null, true),
+      },
+      null,
+      ...(single ? [{ label: '改名', run: () => setRenaming(single.id) }] : []),
+      { label: '删除', keys: 'Delete', run: removeSelected },
+    ]
+  }
+
+  /** 右键菜单「从设备上传」：选好的文件放在右键那一点。 */
+  let contextUpload!: HTMLInputElement
+  let uploadAt: { x: number; y: number } | null = null
+
   /** 视野中央在画布坐标里的位置。 */
   const center = () => {
     const { w, h } = size()
     return { x: (w / 2 - px()) / z(), y: (h / 2 - py()) / z() }
   }
 
-  const addGenerate = async (output: MediaOutput) => {
+  const addGenerate = async (output: MediaOutput, near = center()) => {
     setMenu(null)
-    const r = await apply([{ op: 'add_generate', ref: '$n', output, near: center() }])
+    const r = await apply([{ op: 'add_generate', ref: '$n', output, near }])
     if (r?.refs.$n) setSelected(new Set([r.refs.$n]))
   }
 
@@ -864,13 +1012,6 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (!id) return ''
     return catalogModel(n.provider ?? current?.made.provider, id)?.label ?? id
   }
-  /** 生成参数里有界面名的那几项；模型已不在目录里时一项也列不出。 */
-  const madeParams = (made: CanvasMade): string[] =>
-    (catalogModel(made.provider, made.model)?.params ?? []).flatMap((p) => {
-      if (!(p.name in made.params)) return []
-      const text = paramText(p, made.params[p.name])
-      return [typeof made.params[p.name] === 'boolean' ? text : `${p.label} ${text}`]
-    })
   const panelAt = () => {
     const n = single()
     if (n?.type !== 'generate') return null
@@ -911,6 +1052,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           y1,
           x2,
           y2,
+          // 曲线 t = 0.5 处：两个控制点的横向偏移相互抵消，正好落在两端的中点。
+          mx: (x1 + x2) / 2,
+          my: (y1 + y2) / 2,
         },
       ]
     })
@@ -935,6 +1079,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     path: string
     kind: MediaOutput | null
     w: number
+    h: number
     controls: boolean
   }) {
     const [length, setLength] = createSignal<number | null>(null)
@@ -956,7 +1101,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       >
         <Match when={p.kind === 'image'}>
           <div class="canvas-media">
-            <Bitmap src={client.fileUrl(p.path)} width={p.w * z() * window.devicePixelRatio} />
+            <Bitmap
+              src={client.fileUrl(p.path)}
+              width={p.w * z() * window.devicePixelRatio}
+              height={p.h * z() * window.devicePixelRatio}
+            />
           </div>
         </Match>
         <Match when={p.kind === 'video'}>
@@ -969,6 +1118,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                   kind="video"
                   src={client.fileUrl(p.path)}
                   width={p.w * z() * window.devicePixelRatio}
+                  height={p.h * z() * window.devicePixelRatio}
                   onDuration={setLength}
                 />
               }
@@ -1086,6 +1236,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 path={(n() as { path: string }).path}
                 kind={canvasMediaOf(n())}
                 w={n().w}
+                h={n().h}
                 controls={isSelected()}
               />
             </Show>
@@ -1196,6 +1347,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 path={v().path}
                 kind={p.node.output}
                 w={p.node.w}
+                h={p.node.h}
                 controls={p.selected}
               />
               <Show when={p.node.versions.length > 1}>
@@ -1222,18 +1374,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const tools = () => {
     const n = single()
     if (!n) return null
-    const items: { label: string; kind: 'frame' | 'made' | 'open' }[] = []
+    const items: { label: string; kind: 'frame' }[] = []
     if (isVideo(n)) items.push({ label: '取帧', kind: 'frame' })
-    if (n.type === 'generate' && currentOf(n)) items.push({ label: '生成参数', kind: 'made' })
-    if (view() && mediaOf(view()!, n.id).path) items.push({ label: '打开', kind: 'open' })
     if (!items.length) return null
     const p = pos(n)
     return { node: n, items, left: px() + (p.x + n.w / 2) * z(), top: py() + p.y * z() - 26 }
-  }
-
-  const madeOf = (nodeId: string) => {
-    const n = byId(nodeId)
-    return n?.type === 'generate' ? currentOf(n)?.made : undefined
   }
 
   return (
@@ -1328,6 +1473,27 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           <For each={nodes().map((n) => n.id)}>{(id) => <Node id={id} />}</For>
         </div>
 
+        <For each={edgePaths().filter((e) => e.id === edgeHover() || e.id === edgeSelected())}>
+          {(e) => (
+            <button
+              class="canvas-edge-cut"
+              type="button"
+              aria-label="断开"
+              data-edge={e.id}
+              style={{ left: `${px() + e.mx * z()}px`, top: `${py() + e.my * z()}px` }}
+              onClick={() =>
+                void apply([{ op: 'remove', id: e.id }]).then((ok) => {
+                  if (!ok) return
+                  setEdgeHover(null)
+                  if (edgeSelected() === e.id) setEdgeSelected(null)
+                })
+              }
+            >
+              <IconScissors size={14} />
+            </button>
+          )}
+        </For>
+
         <Show when={tools()}>
           {(t) => (
             <div class="canvas-tools" style={{ left: `${t().left}px`, top: `${t().top}px` }}>
@@ -1336,18 +1502,12 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                   <button
                     type="button"
                     aria-expanded={
-                      item.kind !== 'open' &&
                       menu()?.kind === item.kind &&
                       (menu() as { nodeId?: string }).nodeId === t().node.id
                     }
-                    onClick={(e) => {
-                      if (item.kind === 'open') {
-                        const media = mediaOf(view()!, t().node.id)
-                        if (media.path) openFileInPanel(media.path)
-                        return
-                      }
+                    onClick={(e) =>
                       setMenu({ kind: item.kind, anchor: e.currentTarget, nodeId: t().node.id })
-                    }}
+                    }
                   >
                     {item.label}
                     <Show when={item.kind === 'frame'}>
@@ -1360,22 +1520,32 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           )}
         </Show>
 
-        <Show when={panelAt()}>
-          {(at) => (
-            <GeneratePanel
-              view={view()!}
-              node={at().node}
-              state={view()?.states[at().node.id]}
-              left={at().left}
-              width={at().width}
-              top={at().top}
-              tall={tall()}
-              onTall={setTall}
-              apply={(ops) => apply(ops).then((r) => r !== null)}
-              run={(ops) => run(at().node.id, ops)}
-              place={(source) => placeInput(at().node, source)}
-            />
-          )}
+        {/* 按卡的 id 重建：面板里的草稿与菜单只属于那一张卡，换选另一张卡不沿用。 */}
+        <Show when={panelAt()?.node.id} keyed>
+          {(id) => {
+            // 卸载那一刻 `panelAt()` 已是 null，读到的仍是这张卡最后一次的位置与节点。
+            let last = panelAt()!
+            const at = () => {
+              const now = panelAt()
+              if (now?.node.id === id) last = now
+              return last
+            }
+            return (
+              <GeneratePanel
+                view={view()!}
+                node={at().node}
+                state={view()?.states[id]}
+                left={at().left}
+                width={at().width}
+                top={at().top}
+                tall={tall()}
+                onTall={setTall}
+                apply={(ops) => apply(ops).then((r) => r !== null)}
+                run={(ops) => run(id, ops)}
+                place={(source) => placeInput(at().node, source)}
+              />
+            )
+          }}
         </Show>
       </Show>
 
@@ -1408,6 +1578,17 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       />
 
       <span class="canvas-drop-anchor" ref={dropAnchor} />
+      <input
+        ref={contextUpload}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          const files = [...(e.currentTarget.files ?? [])]
+          e.currentTarget.value = ''
+          if (files.length) void uploadFiles(files, uploadAt ?? center())
+        }}
+      />
 
       <div class="canvas-dock">
         <button class="zoom" type="button" onClick={() => fit(true)}>
@@ -1418,33 +1599,34 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       <Show when={menu()}>
         {(m) => (
           <Switch>
-            <Match when={m().kind === 'made'}>
-              <Show when={madeOf((m() as { nodeId: string }).nodeId)}>
-                {(made) => (
-                  <AnchoredMenu class="canvas-made" anchor={m().anchor}>
-                    <dl>
-                      <dt>提示词</dt>
-                      <dd>{made().prompt || '（空）'}</dd>
-                      <dt>模型</dt>
-                      <dd>{catalogModel(made().provider, made().model)?.label ?? made().model}</dd>
-                      <Show when={madeParams(made()).length}>
-                        <dt>参数</dt>
-                        <dd>{madeParams(made()).join(' · ')}</dd>
+            <Match when={m().kind === 'context' && m().target}>
+              {(target) => (
+                <AnchoredMenu
+                  class="canvas-context-menu"
+                  anchor={m().anchor}
+                  placement="below-start"
+                >
+                  <For each={contextItems(target(), m().at ?? center())}>
+                    {(item) => (
+                      <Show when={item} fallback={<hr />}>
+                        {(it) => (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const act = it().run
+                              setMenu(null)
+                              act()
+                            }}
+                          >
+                            <span>{it().label}</span>
+                            <Show when={it().keys}>{(k) => <kbd>{k()}</kbd>}</Show>
+                          </button>
+                        )}
                       </Show>
-                      <Show when={made().inputs.length}>
-                        <dt>输入</dt>
-                        <dd>
-                          {made()
-                            .inputs.map((i) => `${ROLE_LABEL[i.role]} ${i.path}`)
-                            .join('\n')}
-                        </dd>
-                      </Show>
-                      <dt>时间</dt>
-                      <dd>{madeAt(made().at)}</dd>
-                    </dl>
-                  </AnchoredMenu>
-                )}
-              </Show>
+                    )}
+                  </For>
+                </AnchoredMenu>
+              )}
             </Match>
             <Match when={true}>
               <AnchoredMenu class="canvas-menu" anchor={m().anchor}>
@@ -1486,28 +1668,35 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                         return n?.type === 'generate' ? n.versions : []
                       })()}
                     >
-                      {(v, i) => (
-                        <button
-                          type="button"
-                          role="menuitemradio"
-                          aria-checked={
-                            v.id ===
-                            (
-                              byId((m() as { nodeId: string }).nodeId) as
-                                | CanvasGenerateNode
-                                | undefined
-                            )?.current
-                          }
-                          onClick={() => {
-                            // 先取节点 id 再收菜单：收起之后 `m()` 已失效。
-                            const id = (m() as { nodeId: string }).nodeId
-                            setMenu(null)
-                            void apply([{ op: 'update', id, current: v.id }])
-                          }}
-                        >
-                          {i() + 1} · {madeAt(v.made.at)}
-                        </button>
-                      )}
+                      {(v, i) => {
+                        const current = () =>
+                          v.id ===
+                          (
+                            byId((m() as { nodeId: string }).nodeId) as
+                              | CanvasGenerateNode
+                              | undefined
+                          )?.current
+                        return (
+                          <button
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={current()}
+                            onClick={() => {
+                              // 先取节点 id 再收菜单：收起之后 `m()` 已失效。
+                              const id = (m() as { nodeId: string }).nodeId
+                              setMenu(null)
+                              void apply([{ op: 'update', id, current: v.id }])
+                            }}
+                          >
+                            <span>
+                              {i() + 1} · {madeAt(v.made.at)}
+                            </span>
+                            <Show when={current()}>
+                              <IconCheck size={14} />
+                            </Show>
+                          </button>
+                        )
+                      }}
                     </For>
                   </Match>
                 </Switch>

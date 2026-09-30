@@ -363,6 +363,89 @@ describe('画布：版本', () => {
   })
 })
 
+describe('画布：框按媒体比例', () => {
+  const box = (doc: CanvasDoc, id: string) => {
+    const n = doc.nodes.find((x) => x.id === id)!
+    return { w: n.w, h: n.h }
+  }
+  const sized = (id: string, path: string, w: number, h: number): CanvasVersion => ({
+    ...version(id, path),
+    size: { w, h },
+  })
+
+  test('面积不变、换成媒体的宽高比', async () => {
+    const { fitBox } = await import('./canvas.ts')
+    expect(fitBox({ w: 169, h: 169 }, { w: 1536, h: 1024 })).toEqual({ w: 207, h: 138 })
+    expect(fitBox({ w: 169, h: 169 }, { w: 1080, h: 1920 })).toEqual({ w: 127, h: 225 })
+  })
+
+  test('出结果时框换成当前版的比例；切版本、删当前版跟着换；没有尺寸的版本不动框', () => {
+    let doc = apply(emptyCanvas(), [{ op: 'add_generate', ref: '$g', output: 'image' }])
+    expect(box(doc, 'a1')).toEqual({ w: 169, h: 169 })
+    const r = addVersions(doc, 'a1', [
+      sized('wide', 'generated/a.png', 1536, 1024),
+      sized('tall', 'generated/b.png', 1024, 1536),
+      version('plain', 'generated/c.webp'),
+    ])
+    if (!r.ok) throw new Error(r.error)
+    doc = r.doc
+    expect(box(doc, 'a1')).toEqual({ w: 207, h: 138 })
+    doc = apply(doc, [{ op: 'update', id: 'a1', current: 'tall' }])
+    expect(box(doc, 'a1')).toEqual({ w: 138, h: 207 })
+    doc = apply(doc, [{ op: 'update', id: 'a1', current: 'plain' }])
+    expect(box(doc, 'a1')).toEqual({ w: 138, h: 207 })
+    doc = apply(doc, [{ op: 'update', id: 'a1', current: 'wide' }])
+    doc = apply(doc, [{ op: 'remove', id: 'a1', version: 'wide' }])
+    expect(gen(doc, 'a1').current).toBe('plain')
+    doc = apply(doc, [{ op: 'remove', id: 'a1', version: 'plain' }])
+    expect(gen(doc, 'a1').current).toBe('tall')
+    expect(box(doc, 'a1')).toEqual({ w: 138, h: 207 })
+    // 同一次操作给了 w / h 时以它们为准。
+    doc = apply(doc, [{ op: 'update', id: 'a1', current: 'tall', w: 300, h: 100 }])
+    expect(box(doc, 'a1')).toEqual({ w: 300, h: 100 })
+  })
+
+  test('取回的视频带尺寸落定后，竖版视频的框变竖', () => {
+    const r = addVersions(
+      apply(emptyCanvas(), [{ op: 'add_generate', ref: '$v', output: 'video' }]),
+      'a1',
+      [version('task', 'generated/v.task.json')],
+    )
+    if (!r.ok) throw new Error(r.error)
+    expect(box(r.doc, 'a1')).toEqual({ w: 300, h: 169 })
+    const s = settleVersion(r.doc, 'a1', 'task', 'generated/v.mp4', { w: 720, h: 1280 })
+    if (!s.ok) throw new Error(s.error)
+    expect(gen(s.doc, 'a1').versions[0]!.size).toEqual({ w: 720, h: 1280 })
+    expect(box(s.doc, 'a1')).toEqual({ w: 169, h: 300 })
+  })
+
+  test('加文件节点带尺寸时按缺省面积与文件比例定框；换文件也换比例；尺寸随文档写出读回', () => {
+    let doc = apply(emptyCanvas(), [
+      { op: 'add_file', ref: '$p', path: 'a.png', size: { w: 1000, h: 1000 } },
+      { op: 'add_file', ref: '$q', path: 'b.png' },
+    ])
+    expect(box(doc, 'a1')).toEqual({ w: 191, h: 191 })
+    expect(box(doc, 'a2')).toEqual({ w: 220, h: 165 })
+    doc = apply(doc, [{ op: 'update', id: 'a1', path: 'c.png', size: { w: 400, h: 100 } }])
+    expect(box(doc, 'a1')).toEqual({ w: 382, h: 96 })
+
+    const r = addVersions(apply(doc, [{ op: 'add_generate', ref: '$g', output: 'image' }]), 'a3', [
+      sized('s', 'generated/s.png', 3, 2),
+    ])
+    if (!r.ok) throw new Error(r.error)
+    const text = serializeCanvas(r.doc)
+    const back = parseCanvas(text)
+    if (!back.ok) throw new Error(back.error)
+    expect(gen(back.doc, 'a3').versions[0]!.size).toEqual({ w: 3, h: 2 })
+    expect(serializeCanvas(back.doc)).toBe(text)
+  })
+
+  test('提交的操作里不认 size：只由服务端核验路径时填', () => {
+    const r = parseCanvasOps([{ op: 'add_file', path: 'a.png', size: { w: 1, h: 1 } }])
+    expect(r.ok).toBe(false)
+  })
+})
+
 describe('画布：提示词编译', () => {
   /** 小满、妈妈两张图，视频1 已有一版，视频2 引用两张图与视频1。 */
   function mixed(): CanvasDoc {

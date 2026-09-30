@@ -14,6 +14,7 @@
 export {
   addVersions,
   applyCanvasOps,
+  blankBox,
   CANVAS_SCHEMA_VERSION,
   type CanvasDoc,
   type CanvasEdge,
@@ -24,6 +25,7 @@ export {
   type CanvasNode,
   type CanvasNodeState,
   type CanvasOp,
+  type CanvasPixels,
   type CanvasResult,
   type CanvasRunResult,
   type CanvasVersion,
@@ -33,6 +35,7 @@ export {
   copyOps,
   displayNameOf,
   emptyCanvas,
+  fitBox,
   inputsOf,
   type MentionStyle,
   mentionsOf,

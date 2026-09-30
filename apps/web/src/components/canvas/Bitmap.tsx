@@ -42,6 +42,20 @@ async function limited<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
+/** 解码框：设备像素宽高，媒体按 `object-fit: cover` 铺满它。 */
+export interface DecodeBox {
+  w: number
+  h: number
+}
+
+/**
+ * 铺满（cover）一个框要解到多宽：宽度铺满要框宽，高度铺满要框高按画面宽高比折成的宽，取大者。
+ * 不要只按框宽：横图放进偏竖的框时按高度铺满，只解到框宽的位图会被放大、发糊。
+ */
+export function coverWidth(box: DecodeBox, natural: DecodeBox): number {
+  return Math.ceil(Math.max(box.w, (box.h * natural.w) / natural.h))
+}
+
 /** 等比缩到 `width` 宽；原画面不到这个宽度时保持原尺寸。 */
 async function shrink(
   source: ImageBitmap | HTMLVideoElement,
@@ -52,31 +66,33 @@ async function shrink(
   return createImageBitmap(source, { resizeWidth: Math.min(width, natural), resizeQuality: 'high' })
 }
 
-/** 取回图片并等比缩到 `width` 宽。 */
+/** 取回图片并等比缩到铺满 `box` 所需的宽度。 */
 export function decodeImage(
   url: string,
-  width: number,
+  box: DecodeBox,
   signal?: AbortSignal,
 ): Promise<ImageBitmap> {
   return limited(async () => {
     const res = await fetch(url, signal ? { signal } : {})
     if (!res.ok) throw new Error(`图片读取失败：${res.status}`)
     const full = await createImageBitmap(await res.blob())
+    const width = coverWidth(box, { w: full.width, h: full.height })
     const small = await shrink(full, full.width, width)
     if (small !== full) full.close()
     return small
   })
 }
 
-/** 取视频开头一帧并等比缩到 `width` 宽，连同时长一起回。 */
+/** 取视频开头一帧并等比缩到铺满 `box` 所需的宽度，连同时长一起回。 */
 export function decodeVideo(
   url: string,
-  width: number,
+  box: DecodeBox,
 ): Promise<{ bitmap: ImageBitmap; duration: number }> {
   return limited(async () => {
     const video = await seekVideo(url, POSTER_AT)
     try {
-      const bitmap = await shrink(video, video.videoWidth, width)
+      const natural = { w: video.videoWidth, h: video.videoHeight }
+      const bitmap = await shrink(video, video.videoWidth, coverWidth(box, natural))
       return { bitmap, duration: video.duration }
     } finally {
       releaseVideo(video)
@@ -92,12 +108,13 @@ export function paint(canvas: HTMLCanvasElement, bitmap: ImageBitmap): void {
 }
 
 /**
- * `width` 是设备像素宽度（CSS 宽度 × 缩放 × `devicePixelRatio`）。视频画开头一帧，时长经 `onDuration` 报出。
- * 解码失败显示类别图标。
+ * `width` / `height` 是框的设备像素宽高（CSS 尺寸 × 缩放 × `devicePixelRatio`）。档位按框的长边取，
+ * 解码宽度按铺满框所需（`coverWidth`）。视频画开头一帧，时长经 `onDuration` 报出。解码失败显示类别图标。
  */
 export function Bitmap(props: {
   src: string
   width: number
+  height: number
   kind?: 'image' | 'video'
   onDuration?: (seconds: number) => void
 }) {
@@ -107,23 +124,28 @@ export function Bitmap(props: {
   const src = createMemo(() => props.src)
   const video = createMemo(() => props.kind === 'video')
   let held = { src: '', tier: 0 }
+  // 宽高比单独取、取到千分位：缩放只改框的大小不改比例，解码只随档位与比例重跑；
+  // 不取整的话宽高各乘缩放后相除，末位抖动会让每次缩放都重解。
+  const aspect = createMemo(() => Math.round((props.width / props.height) * 1000) / 1000)
   const tier = createMemo(() => {
-    const need = tierOf(props.width)
+    const need = tierOf(Math.max(props.width, props.height))
     if (held.src !== src() || need > held.tier) held = { src: src(), tier: need }
     return held.tier
   })
   createEffect(() => {
     const url = src()
-    const width = tier()
+    const long = tier()
+    const r = aspect()
+    const box = r >= 1 ? { w: long, h: long / r } : { w: long * r, h: long }
     const isVideo = video()
     const abort = new AbortController()
     const timer = setTimeout(() => {
       const work = isVideo
-        ? decodeVideo(url, width).then((r) => {
+        ? decodeVideo(url, box).then((r) => {
             if (!abort.signal.aborted) props.onDuration?.(r.duration)
             return r.bitmap
           })
-        : decodeImage(url, width, abort.signal)
+        : decodeImage(url, box, abort.signal)
       work.then(
         (bitmap) => {
           if (abort.signal.aborted) bitmap.close()

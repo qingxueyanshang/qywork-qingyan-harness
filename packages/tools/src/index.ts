@@ -33,6 +33,8 @@ export {
   resumeMedia,
   TASK_SUFFIX,
 } from './generate.ts'
+// 画布按图片文件头的宽高给节点定框。
+export { type ImageSize, imageSizeOf } from './image.ts'
 // 记忆：runtime/session.ts 装配提示词时要读索引，server/api/memory.ts 要读写单条
 export {
   listAllScopedEntries,

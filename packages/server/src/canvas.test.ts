@@ -313,6 +313,38 @@ describe('画布服务：上传', () => {
     expect(new Uint8Array(await readFile(join(root, first.path)))).toEqual(BYTES)
   })
 
+  test('节点的框按文件头读出的比例定：上传与从文件树拖入同一条路径', async () => {
+    const root = await workspace()
+    const { svc } = service()
+    const head = Buffer.alloc(33)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(head, 0)
+    head.writeUInt32BE(13, 8)
+    head.write('IHDR', 12, 'latin1')
+    head.writeUInt32BE(1536, 16)
+    head.writeUInt32BE(1024, 20)
+    const wide = await svc.upload(root, PATH, '横图.png', new Uint8Array(head), {
+      near: { x: 0, y: 0 },
+    })
+    // 从文件树拖入走同一条核验路径。
+    await writeFile(
+      join(root, '竖图.png'),
+      (() => {
+        const b = Buffer.from(head)
+        b.writeUInt32BE(1024, 16)
+        b.writeUInt32BE(1536, 20)
+        return b
+      })(),
+    )
+    const { refs } = await svc.apply(root, PATH, [{ op: 'add_file', ref: '$t', path: '竖图.png' }])
+    const doc = await onDisk(root)
+    const box = (id: string) => {
+      const n = doc.nodes.find((x) => x.id === id)!
+      return { w: n.w, h: n.h }
+    }
+    expect(box(wide.nodeId)).toEqual({ w: 233, h: 156 })
+    expect(box(refs.$t!)).toEqual({ w: 156, h: 233 })
+  })
+
   test('系统拖入：工作区里的直接引用，工作区外的复制进 uploads/；不存在回 404、目录回 422', async () => {
     const root = await workspace()
     await mkdir(join(root, '角色'), { recursive: true })
