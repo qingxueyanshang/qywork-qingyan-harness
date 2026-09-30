@@ -495,8 +495,8 @@
   flex-direction: column;
   overflow: hidden;
 }
-/* 没开文件时树占满整块面板——固定 208px 会在左边留一大片空白。 */
-.file-tree-col:only-child {
+/* 只有文件预览需要分栏；右键菜单和确认框不参与树宽度的判定。 */
+.file-browser:not(:has(> .preview)) > .file-tree-col {
   flex: 1;
   width: auto;
 }
