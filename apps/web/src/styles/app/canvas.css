@@ -890,6 +890,10 @@ button.canvas-input:hover {
 .canvas-bar > .send-btn {
   flex: none;
 }
+/* 有提示词时保持发送键的实色；生成中仍由 disabled 阻止重复提交。 */
+.canvas-bar > .send-btn.has-content {
+  opacity: 1;
+}
 .canvas-bar .mode-chip.model {
   color: var(--text-primary);
 }

@@ -337,10 +337,12 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const target = e.target instanceof Element ? e.target : null
     if (target?.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]'))
       return
-    if (e.code === 'Space' && !e.repeat) {
+    if (e.code === 'Space') {
+      // 焦点可能仍在窗口或面板按钮上；长按的重复事件也必须拦截，否则松键会触发按钮。
       e.preventDefault()
       space = true
       stage.classList.add('panning')
+      return
     }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const edge = edgeSelected()
@@ -472,11 +474,14 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
   /** 按住 Space 时左键拖动是平移。 */
   let space = false
+  const releaseSpace = () => {
+    space = false
+    stage.classList.remove('panning')
+  }
   const onKeyUp = (e: KeyboardEvent) => {
-    if (e.code === 'Space') {
-      space = false
-      stage.classList.remove('panning')
-    }
+    if (e.code !== 'Space' || !space) return
+    e.preventDefault()
+    releaseSpace()
   }
 
   onMount(() => {
@@ -524,12 +529,14 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', releaseSpace)
     window.addEventListener('paste', onPaste)
     onCleanup(() => {
       ro.disconnect()
       stage.removeEventListener('wheel', onWheel)
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', releaseSpace)
       window.removeEventListener('paste', onPaste)
     })
   })
