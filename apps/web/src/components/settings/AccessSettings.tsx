@@ -127,7 +127,7 @@ export function AccessSettings() {
                     鼠标键盘」。关着时桌面工具仍然可用，只是只剩不打扰的那一半。 */}
               <Row label="前台操作" hint="用真实鼠标键盘，执行时会打断你">
                 <OnOff
-                  on={c().desktopForeground === true}
+                  on={c().desktopForeground !== false}
                   onPick={(on) => void patchConfig({ desktopForeground: on })}
                 />
               </Row>

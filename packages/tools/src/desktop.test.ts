@@ -423,6 +423,7 @@ function fakeDesktop(over: Partial<DesktopPort> = {}): {
     }
   }
   const base: DesktopPort = {
+    foregroundEnabled: () => true,
     windows: async () => {
       note('windows', null)
       return [{ windowId: 'dw_1', app: '记事本', title: '未命名' }]
@@ -1951,14 +1952,14 @@ test('窗口发现把不透明 id 与应用名交给模型', async () => {
   const { port } = fakeDesktop()
   const r = await run(desktopWindowsTool, {}, ctxWith(port))
   expect(r.status).toBe('success')
-  expect(r.data).toEqual({ windows: [{ windowId: 'dw_1', app: '记事本', title: '未命名' }] })
+  expect(r.data).toEqual({
+    windows: [{ windowId: 'dw_1', app: '记事本', title: '未命名' }],
+    foregroundEnabled: true,
+  })
 })
 
 /**
- * 前台动作：本地只按可用动作表裁决，真正的准入在宿主那一侧。
- *
- * 表里没有 foreground delivery 就是用户没启用，工具在派发之前拒；表里有就照常交下去，
- * 后台失败不会在这里被换成前台重试。
+ * 前台动作按当前配置与控件能力分别检查，宿主在派发时再次核验配置。
  */
 describe('前台动作', () => {
   function foregroundPort(over: Partial<DesktopPort> = {}) {
@@ -1973,9 +1974,9 @@ describe('前台动作', () => {
     }
   }
 
-  test('前台模式关着时表里没有前台动作，请求在派发之前被拒', async () => {
-    const { port, calls } = fakeDesktop()
-    for (const action of ['click', 'type_text', 'activate', 'close_window']) {
+  test('前台操作显式关闭时返回配置原因，不报告控件不支持', async () => {
+    const { port, calls } = fakeDesktop({ foregroundEnabled: () => false })
+    for (const action of ['click', 'type_text', 'activate', 'set_window_state', 'close_window']) {
       const r = await run(
         desktopActTool,
         {
@@ -1990,8 +1991,10 @@ describe('前台动作', () => {
       expect(r).toMatchObject({
         status: 'failure',
         executed: false,
-        errorKind: 'desktop_action_unsupported',
+        errorKind: 'desktop_foreground_disabled',
       })
+      expect(r.message).toContain('前台操作已关闭')
+      expect(r.message).not.toContain('不支持')
     }
     expect(calls).toEqual([])
   })
@@ -2015,6 +2018,65 @@ describe('前台动作', () => {
         },
       },
     ])
+  })
+
+  test('开关关闭后旧观察和图像定位都不能派发，后台动作仍可用', async () => {
+    let enabled = true
+    const { port, calls } = foregroundPort({ foregroundEnabled: () => enabled })
+    const context = ctxWith(port)
+    const listed = await run(desktopWindowsTool, {}, context)
+    expect(listed.data).toMatchObject({ foregroundEnabled: true })
+    enabled = false
+    const closed = await run(desktopWindowsTool, {}, context)
+    expect(closed.data).toMatchObject({ foregroundEnabled: false })
+    calls.length = 0
+    for (const args of [
+      { action: 'activate', ref: 'e1' },
+      { action: 'activate', ref: null },
+      { action: 'set_window_state', windowState: 'normal', ref: 'e1' },
+      { action: 'set_window_state', windowState: 'normal', ref: null },
+      { action: 'click', imageRef: 'di_1', imageX: 20, imageY: 20 },
+    ]) {
+      const result = await run(
+        desktopActTool,
+        {
+          windowId: 'dw_1',
+          observationId: 'do_1',
+          ...args,
+        },
+        context,
+      )
+      expect(result).toMatchObject({ executed: false, errorKind: 'desktop_foreground_disabled' })
+      expect(result.message).toContain('更换 ref 或重试不会启用')
+    }
+    expect(calls).toEqual([])
+    const background = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'invoke',
+        ref: 'e3',
+      },
+      context,
+    )
+    expect(background.status).toBe('success')
+  })
+
+  test('前台开启但控件不提供动作时仍报告能力不支持', async () => {
+    const { port } = fakeDesktop()
+    const result = await run(
+      desktopActTool,
+      {
+        windowId: 'dw_1',
+        observationId: 'do_1',
+        action: 'activate',
+        ref: 'e1',
+      },
+      ctxWith(port),
+    )
+    expect(result.errorKind).toBe('desktop_action_unsupported')
+    expect(result.message).not.toContain('已关闭')
   })
 
   test('双击按 count 表达，上限是 2', async () => {
@@ -2429,11 +2491,23 @@ describe('前台动作', () => {
       actions: [],
     }
     const { port } = fakeDesktop({
+      foregroundEnabled: () => false,
       observe: async () => snapshot({ elements: [后台窗口, 画布] }),
     })
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(r.message).toContain('无可操作控件')
-    expect(r.message).toContain('前台操作未启用')
+    expect(r.message).toContain('前台操作已关闭')
+    expect(r.data).toMatchObject({ foregroundEnabled: false })
+  })
+
+  test('空动作表不能被解释为前台操作已关闭', async () => {
+    const { port } = fakeDesktop({
+      foregroundEnabled: () => true,
+      observe: async () => snapshot({ elements: [{ ...窗口, actions: [] }] }),
+    })
+    const result = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(result.data).toMatchObject({ foregroundEnabled: true })
+    expect(result.message).not.toContain('前台操作已关闭')
   })
 
   /** 筛出零个控件与「这个窗口没有控件」是两回事，混起来就成了一句假话。 */
@@ -2909,6 +2983,7 @@ describe('有限动作序列', () => {
     }
 
     const port: DesktopPort = {
+      foregroundEnabled: () => true,
       windows: async () => [{ windowId: 'dw_1', app: '记事本', title: '未命名' }],
       observe: async () => snapshot({ observationId, elements: table }),
       elements: (windowId, asked) =>
@@ -2968,6 +3043,37 @@ describe('有限动作序列', () => {
     return { windowId: 'dw_1', observationId: 'do_1', steps }
   }
 
+  test('序列中关闭前台操作后停止后续前台步骤，已提交结果保留', async () => {
+    let enabled = true
+    const base = sequencePort({
+      onAct: () => {
+        enabled = false
+      },
+    })
+    const port = { ...base.port, foregroundEnabled: () => enabled }
+    const result = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'invoke', ref: 'e3' },
+        { action: 'click', imageRef: 'di_1', imageX: 20, imageY: 20 },
+        { action: 'press_key', key: 'enter' },
+      ]),
+      ctxWith(port),
+    )
+    expect(result).toMatchObject({
+      status: 'failure',
+      executed: true,
+      errorKind: 'desktop_foreground_disabled',
+    })
+    expect(result.data).toMatchObject({
+      foregroundEnabled: false,
+      dispatched: [1],
+      notExecuted: [2, 3],
+    })
+    expect(result.message).toContain('前台操作已关闭')
+    expect(base.calls.filter((call) => call.method === 'act')).toHaveLength(1)
+  })
+
   /**
    * 自绘界面的常见三连。控件表上只有窗口根：第一步按图给坐标，后两步投给窗口本身。
    * 一次调用跑完，末尾带一张动作后的整窗图。
@@ -2978,6 +3084,7 @@ describe('有限动作序列', () => {
     let observationId = 'do_1'
     let acted = 0
     const port: DesktopPort = {
+      foregroundEnabled: () => true,
       windows: async () => [{ windowId: 'dw_1', app: '自绘', title: '自绘' }],
       observe: async () => snapshot({ observationId, elements: bare }),
       elements: (windowId, asked) => (windowId === 'dw_1' && asked === observationId ? bare : null),

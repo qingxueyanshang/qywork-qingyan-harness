@@ -267,6 +267,8 @@ export interface DesktopRefusal {
 }
 
 export interface DesktopPort {
+  /** 当前配置是否允许前台操作；每次从请求使用的同一配置读取，不缓存。 */
+  foregroundEnabled(): boolean
   /** 此刻可操作的顶层窗口。每次调用重新发现，旧的 `windowId` 不因此失效。 */
   windows(): Promise<DesktopWindowInfo[]>
   /**

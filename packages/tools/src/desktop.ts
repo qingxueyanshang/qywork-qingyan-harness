@@ -801,14 +801,11 @@ function isBareWindow(s: DesktopSnapshot): boolean {
 /**
  * 自绘窗口在回执里记下来。
  *
- * 前台操作开没开按同一份 delivery 表读：关着时表里一条 `foreground` 都没有。
+ * 前台操作状态由端口读取配置，不能从控件是否支持前台动作推断。
  */
-function bareWindowNote(s: DesktopSnapshot): string {
+function bareWindowNote(s: DesktopSnapshot, foregroundEnabled: boolean): string {
   if (!isBareWindow(s)) return ''
-  const foreground = s.elements.some((e) =>
-    e.actions.some((a) => a.delivery.includes('foreground')),
-  )
-  return ` · 无可操作控件${foreground ? '' : ' · 前台操作未启用'}`
+  return ` · 无可操作控件${foregroundEnabled ? '' : ' · 前台操作已关闭'}`
 }
 
 /** 一份观察的一行读数：控件数、截断与筛选各说一次。 */
@@ -1145,7 +1142,9 @@ export const desktopWindowsTool: ToolSpec = {
   description:
     '列出用户桌面上当前打开的顶层窗口。操作本机应用应使用桌面工具，不得通过 run_command 截图或注入鼠标、键盘事件。' +
     'title 为系统窗口标题，可能与当前页面或会话不一致；操作目标应依据最新截图或控件确认。' +
-    'windowId 是后续调用的入口，窗口重建后失效。',
+    'windowId 是后续调用的入口，窗口重建后失效。' +
+    'foregroundEnabled 是当前前台操作开关；为 false 时只能使用 background 动作，' +
+    '需要前台操作的任务应说明限制并等待用户开启，不要重试或更换目标绕过。',
   parameters: { type: 'object', properties: {}, additionalProperties: false },
   actionKind: 'read',
   summary: '列出可操作的桌面窗口',
@@ -1159,7 +1158,7 @@ export const desktopWindowsTool: ToolSpec = {
         message: windows.length
           ? `${windows.length} 个窗口 · ${windows.map((w) => `${w.windowId} ${w.app} ${w.title}`).join(' · ')}`
           : '0 个窗口',
-        data: { windows },
+        data: { windows, foregroundEnabled: desktop.foregroundEnabled() },
       }
     }),
 }
@@ -1180,7 +1179,8 @@ export const desktopObserveTool: ToolSpec = {
     '控件上缺席的 enabled、offscreen、automationId 取 defaults 的值。' +
     '回执里「无可操作控件」就是自绘界面，这一次调用已经把整窗图一并给了，动作按图给坐标，不必再采一次；' +
     '「未读全」是采集没采全，调 maxNodes 或 maxDepth 重读；' +
-    '「窗口被盖住或已最小化」时浏览器等应用可能没交出页面内容，表里缺的不代表不存在，要看全先 activate 再观察；' +
+    'foregroundEnabled 表示当前前台操作开关，与控件支持哪些动作分别判断；为 false 时不能激活窗口或注入鼠标键盘。' +
+    '「窗口被盖住或已最小化」时应用可能没有交出内部内容；仅在 foregroundEnabled 为 true 且窗口提供 activate 时激活再观察。' +
     '浏览器自动填充的账号密码在页面上有点击或按键之前读不到，输入框 value 为空不代表框里没填，点一下输入框再读；' +
     '「已投 N/M 个控件」是这一次只返回了其中一部分，完整控件表已按结果里的 resource id 存好，' +
     '用 read_resource 读，不必重读。' +
@@ -1342,7 +1342,7 @@ export const desktopObserveTool: ToolSpec = {
       const snapshot = await send(() => desktop.observe(input))
       const line =
         `${snapshot.app} · ${windowTitle(snapshot.title)} · ${snapshotLine(snapshot)}` +
-        bareWindowNote(snapshot)
+        bareWindowNote(snapshot, desktop.foregroundEnabled())
       // 自绘窗口的 structure 观察直接附上整窗图：控件表里一个业务控件都没有，调用方
       // 只能看图按坐标操作，两次往返之间没有可做的判断。判据与那句「无可操作控件」
       // 同一处，见 `isBareWindow`。
@@ -1458,8 +1458,9 @@ export const desktopActTool: ToolSpec = {
     '后台动作 invoke / set_value / set_range_value / select / add_to_selection / remove_from_selection / ' +
     'set_toggle / expand / collapse / scroll / scroll_into_view / realize_item / select_text 经控件接口发出。' +
     '前台动作 click / hover / drag / wheel / type_text / press_key / activate / set_window_state / ' +
-    'move_window / resize_window / close_window 用真实指针键盘，只在用户启用前台操作时出现在动作表里，' +
-    '没出现就是没启用，不要改用别的动作代替。' +
+    'move_window / resize_window / close_window 使用真实输入或窗口接口，要求 foregroundEnabled 为 true。' +
+    '为 false 时应说明前台操作已关闭并等待用户开启；动作表中没有某个动作表示该控件不提供它，不能据此推断开关状态。' +
+    '恢复或置前窗口直接使用 activate，它会恢复最小化窗口并将其置前；set_window_state 只用于指定窗口状态，不能据此确认窗口已在前台。' +
     'type_text 点名控件时要它此刻持有键盘焦点，先 click 它；自绘界面不给控件，输入投给窗口。' +
     '指针动作可使用 imageRef 与 imageX / imageY 定位；回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
     'dispatch 表示动作派发状态：not_dispatched 未执行，submitted 已提交，unknown 结果未确认。动作提交成功不等于任务完成；结果未确认时应先观察，不得直接重复执行。' +
@@ -1536,7 +1537,7 @@ export const desktopActTool: ToolSpec = {
       const observationId = str(args.observationId, 'observationId')
       const kind = oneOf(args.action, ACTIONS, 'action')
       const table = given(args.imageRef) ? null : desktop.elements(windowId, observationId)
-      const { aim, action } = planAct(table, kind, args, TARGET_PARAMS)
+      const { aim, action } = planAct(table, kind, args, TARGET_PARAMS, desktop.foregroundEnabled())
       const field = writes(action) ? inputField(table, aim.element) : undefined
       const r = await send(() => desktop.act({ windowId, observationId, ...aim.input, action }))
       const outcome = actOutcome(ctx, action, aim.element?.ref ?? '', r, field)
@@ -1577,7 +1578,19 @@ function planAct(
   kind: DesktopActionKind,
   args: Record<string, unknown>,
   params: readonly string[],
+  foregroundEnabled: boolean,
 ): { aim: Aim; action: DesktopAction } {
+  if (
+    !foregroundEnabled &&
+    (POINTER_ACTIONS.includes(kind) ||
+      WINDOW_TARGET_ACTIONS.includes(kind) ||
+      WINDOW_ACTIONS.includes(kind))
+  ) {
+    throw new ArgError(
+      `${kind} 未执行 · 前台操作已关闭 · 用户在设置 → 权限 → 电脑控制开启前台操作后需重新观察；更换 ref 或重试不会启用`,
+      'desktop_foreground_disabled',
+    )
+  }
   if (given(args.imageRef)) {
     if (!POINTER_ACTIONS.includes(kind)) {
       throw new ArgError(
@@ -1939,7 +1952,13 @@ async function runStep(
   // 已经定位到的控件。
   let target = targetLabel(plan.args)
   try {
-    const planned = planAct(cursor.table, plan.kind, plan.args, STEP_PARAMS)
+    const planned = planAct(
+      cursor.table,
+      plan.kind,
+      plan.args,
+      STEP_PARAMS,
+      desktop.foregroundEnabled(),
+    )
     aim = planned.aim
     action = planned.action
     target = aim.label

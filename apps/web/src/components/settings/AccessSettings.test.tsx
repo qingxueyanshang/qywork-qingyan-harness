@@ -1,7 +1,7 @@
 /**
  * 「权限」页电脑控制那一张卡：状态行的判定顺序，与缺项行及其「打开系统设置」按钮。
  *
- * 覆盖范围：`AccessSettings.tsx` 的 `desktopStatus` 与缺项行。
+ * 覆盖范围：`AccessSettings.tsx` 的状态行、前台操作默认值与开关保存。
  *
  * 原始失败形状：授权事实由 worker 报之前，Mac/Linux 上 worker 没起来也显示「系统未授权」，
  * 而那时系统设置里没有任何一项可授。
@@ -61,16 +61,26 @@ test('状态依次报：宿主未连接 → 组件未就绪 → 系统未授权 
 async function mount(
   capability: DesktopCapability,
   shell: ((cmd: string) => Promise<unknown>) | null,
+  foreground?: boolean,
 ) {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
   const { setState } = await import('../../lib/store/state.ts')
   const { AccessSettings } = await import('./AccessSettings.tsx')
-  store.client.api = async <T,>(path: string) => {
+  let cfg = {
+    providers: {},
+    ...(foreground === undefined ? {} : { desktopForeground: foreground }),
+  }
+  const saved: boolean[] = []
+  store.client.api = async <T,>(path: string, init?: RequestInit) => {
     if (path === '/api/config') {
+      if (init?.method === 'PUT') {
+        cfg = JSON.parse(String(init.body)).config
+        saved.push(cfg.desktopForeground as boolean)
+      }
       return {
         path: 'config.json',
-        config: { providers: {} },
+        config: cfg,
         notices: [],
         problems: [],
         defaultEnvAllowList: [],
@@ -101,6 +111,8 @@ async function mount(
   } as never)
   const host = document.createElement('div')
   document.body.append(host)
+  const { reloadConfig } = await import('./configStore.ts')
+  await reloadConfig()
   const dispose = render(() => <AccessSettings />, host as unknown as HTMLElement)
   await until(() => (host.textContent ?? '').includes('电脑控制'))
   const card = () =>
@@ -116,6 +128,8 @@ async function mount(
   return {
     rows,
     invokes,
+    saved,
+    foreground: () => card()?.querySelector<HTMLElement>('.setting-row .seg'),
     done: () => {
       dispose()
       host.remove()
@@ -124,6 +138,27 @@ async function mount(
     },
   }
 }
+
+test('前台操作默认启用，显式关闭与重新开启均按实际选择保存', async () => {
+  for (const value of [undefined, true, false]) {
+    const page = await mount(desktop({}), null, value)
+    try {
+      const selected = () => page.foreground()?.querySelector('.active')?.textContent
+      expect(selected()).toBe(value === false ? '关闭' : '启用')
+      const buttons = page.foreground()?.querySelectorAll<HTMLButtonElement>('button')
+      click(buttons?.[0] as HTMLButtonElement)
+      expect(await until(() => page.saved.length === 1)).toBe(true)
+      expect(page.saved[0]).toBe(false)
+      expect(selected()).toBe('关闭')
+      click(buttons?.[1] as HTMLButtonElement)
+      expect(await until(() => page.saved.length === 2)).toBe(true)
+      expect(page.saved[1]).toBe(true)
+      expect(selected()).toBe('启用')
+    } finally {
+      page.done()
+    }
+  }
+})
 
 test('macOS 缺辅助功能与屏幕录制：各一行、各一个按钮，按钮按名字打开系统设置', async () => {
   const page = await mount(

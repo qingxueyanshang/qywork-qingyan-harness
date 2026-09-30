@@ -93,7 +93,7 @@ export type DesktopDispatch =
  * `scroll_into_view` 是 ScrollItemPattern，`realize_item` 是 ItemContainerPattern 加
  * VirtualizedItemPattern，`select_text` 是 TextPattern。
  *
- * 其余的由原始输入与窗口接口发出，**只在用户启用前台接管时可用**：
+ * 其余的由原始输入与窗口接口发出，只在前台操作配置启用时可用：
  * `click` / `hover` / `drag` / `wheel` 是指针事件，`type_text` / `press_key` 是键盘事件，
  * `activate` 是系统前台窗口接口，`set_window_state` / `close_window` 是 WindowPattern，
  * `move_window` / `resize_window` 是 TransformPattern。
@@ -199,8 +199,8 @@ export type DesktopAction =
  * 动作的投递方式。
  *
  * `background` 经控件模式发出，不置前台、不动指针、不设焦点。
- * `foreground` 经原始输入或前台窗口接口发出，会把前台从用户手上拿走——**它只在用户
- * 显式启用前台接管时出现**，关着时前台动作一条都不在表里。
+ * `foreground` 经原始输入或前台窗口接口发出，会改变前台窗口或真实输入状态。
+ * 前台操作配置关闭时，这些动作不在表里；配置缺省值由服务端决定。
  *
  * **后台失败不会自动升级到前台。** 两种投递方式各自可用与否由控件与模式决定，
  * 宿主不替调用方换一种再试。

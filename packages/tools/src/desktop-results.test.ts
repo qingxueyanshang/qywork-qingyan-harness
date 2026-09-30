@@ -181,6 +181,7 @@ interface Acted {
 function fakePort(table: DesktopElement[], acted: Acted): DesktopPort {
   const after = snapshot(table, { observationId: 'do_2' })
   return {
+    foregroundEnabled: () => true,
     windows: async () => [{ windowId: 'dw_1', app: '合成应用', title: '合成标题' }],
     observe: async () => snapshot(table),
     elements: (windowId, observationId) =>
@@ -287,6 +288,7 @@ type CompactElement = Omit<DesktopElement, 'actions' | 'enabled' | 'offscreen' |
 type ActionGroups = Record<string, string[] | Record<string, string>>
 
 interface DeliveredObservation {
+  foregroundEnabled?: boolean
   app: string
   title: string
   defaults: { enabled: boolean; offscreen: boolean; automationId: string }
@@ -366,7 +368,7 @@ describe('小控件表整份内联', () => {
     expect(expand(observation)).toEqual(delivered(小表))
     const { elements: _e, defaults: _d, actionSets: _a, ...meta } = observation
     const { elements: _source, ...sourceMeta } = snapshot(小表)
-    expect(meta).toEqual(sourceMeta)
+    expect(meta).toEqual({ ...sourceMeta, foregroundEnabled: true })
     expect(observation.delivery).toBeUndefined()
     expect(r.resources).toBeUndefined()
     expect(sink.landed).toHaveLength(0)

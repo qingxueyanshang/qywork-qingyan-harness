@@ -154,6 +154,11 @@ export class DesktopBridge {
     return this.#host
   }
 
+  /** 模型可见状态与请求帧共用当前配置。 */
+  foregroundEnabled(): boolean {
+    return this.#foreground()
+  }
+
   onHostChange(listener: (host: NativeDesktopHost | null) => void): () => void {
     this.#hostChanges.add(listener)
     return () => this.#hostChanges.delete(listener)
@@ -185,7 +190,7 @@ export class DesktopBridge {
       hostEpoch: host.hostEpoch,
       executorId: params.executorId,
       deadline: Date.now() + deadlineMs,
-      foreground: this.#foreground(),
+      foreground: this.foregroundEnabled(),
       op,
       ...(params.actionId !== undefined ? { actionId: params.actionId } : {}),
       ...(params.target !== undefined ? { target: params.target } : {}),

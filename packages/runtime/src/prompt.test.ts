@@ -330,6 +330,9 @@ describe('能力段', () => {
     expect(prompt).toContain('缺少可操作控件')
     expect(prompt).toContain('使用观察结果附带的截图定位')
     expect(prompt).toContain('desktop_act_sequence')
+    expect(prompt).toContain('foregroundEnabled')
+    expect(prompt).toContain('为 false 时只使用可用的后台动作')
+    expect(prompt).toContain('不得重试或自行更改设置')
   })
 
   /**

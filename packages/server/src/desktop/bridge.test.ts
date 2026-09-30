@@ -525,6 +525,7 @@ test('前台开关每条请求现读一次，运行中关掉在下一次派发�
   const first = port?.windows()
   const on = await host.next()
   expect(on.foreground).toBe(true)
+  expect(port?.foregroundEnabled()).toBe(true)
   host.reply(on)
   await first
 
@@ -532,12 +533,13 @@ test('前台开关每条请求现读一次，运行中关掉在下一次派发�
   const second = port?.windows()
   const off = await host.next()
   expect(off.foreground).toBe(false)
+  expect(port?.foregroundEnabled()).toBe(false)
   host.reply(off)
   await second
 })
 
-/** 缺席按关：配置里没有这一项时，请求帧里那一格是假而不是缺席。 */
-test('没配过前台开关时请求帧仍带一个明确的假', async () => {
+/** 配置缺席时，端口报告与请求帧均启用前台操作。 */
+test('没配过前台开关时默认启用', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
@@ -545,7 +547,8 @@ test('没配过前台开关时请求帧仍带一个明确的假', async () => {
   const port = handle.desktop?.portFor('cv_a')
   const pending = port?.windows()
   const frame = await host.next()
-  expect(frame.foreground).toBe(false)
+  expect(frame.foreground).toBe(true)
+  expect(port?.foregroundEnabled()).toBe(true)
   host.reply(frame)
   await pending
 })

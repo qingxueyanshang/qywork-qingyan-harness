@@ -187,12 +187,11 @@ export function serve(opts: ServeOptions) {
    * 存一份快照的话用户在设置里改完之后要等重启才生效。前台接管那一个随每条请求下发到
    * worker，运行中关掉在下一次派发就被拒。
    *
-   * **两个开关的缺省不同，判据也因此不同。** 电脑控制缺席按启用（`!== false`），
-   * 与浏览器控制一致：它只发后台语义动作，不动真实指针键盘。前台接管缺席按关闭
-   * （`=== true`），它会占用用户的鼠标与键盘，只能由用户显式打开。
+   * 两个开关缺席均按启用（`!== false`），显式 `false` 关闭。前台操作配置与控件能力
+   * 分别判断；模型可见状态与 worker 请求帧读取同一份配置。
    */
   const desktopBridge = opts.hostKey
-    ? new DesktopBridge(opts.hostKey, () => opts.config.desktopForeground === true)
+    ? new DesktopBridge(opts.hostKey, () => opts.config.desktopForeground !== false)
     : null
   const desktop = desktopBridge
     ? new DesktopCoordinator(desktopBridge, () => opts.config.desktopEnabled !== false)
