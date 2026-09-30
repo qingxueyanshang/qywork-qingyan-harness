@@ -64,6 +64,7 @@ interface OptionModel {
 interface NodeModel {
   backendNodeId: number
   tag: string
+  text?: string
   attrs: Record<string, string>
   /** 没有矩形的节点不参与命中测试，也不占位置（隐藏控件就是这样）。 */
   box?: Box
@@ -78,7 +79,7 @@ interface NodeModel {
   /**
    * 页内复核函数在这个节点上抛异常。
    *
-   * 文本节点就是这一类：它没有 `getBoundingClientRect`。`returnByValue` 下页内异常
+   * `returnByValue` 下页内异常
    * 不进 `result.value`，回包给的是 `exceptionDetails`。
    */
   inspectThrows?: boolean
@@ -201,7 +202,8 @@ function domTree(docs: DocModel[], doc: DocModel): Record<string, unknown> {
       return {
         backendNodeId: n.backendNodeId,
         nodeName: n.tag.toUpperCase(),
-        nodeType: 1,
+        nodeType: n.text === undefined ? 1 : 3,
+        nodeValue: n.text ?? '',
         attributes: Object.entries(n.attrs).flat(),
         children: [],
         ...(owned ? { frameId: owned.frame } : {}),
@@ -462,12 +464,10 @@ class FakePage {
   }
 
   inspect(doc: DocModel, node: NodeModel, px?: number, py?: number): Record<string, unknown> {
-    const identity = [
-      node.tag,
-      node.attrs.id ?? '',
-      node.attrs.name ?? '',
-      node.attrs.type ?? '',
-    ].join('|')
+    const identity =
+      node.text !== undefined
+        ? `#text|${node.text}`
+        : [node.tag, node.attrs.id ?? '', node.attrs.name ?? '', node.attrs.type ?? ''].join('|')
     if (this.model.gone.has(node.backendNodeId)) return { connected: false, identity }
     const r = this.rectOf(doc, node) ?? { x: 0, y: 0, width: 0, height: 0 }
     const offset = px !== undefined && py !== undefined
@@ -675,6 +675,13 @@ class FakePage {
         if (!box) return { error: 'Could not compute box model.' }
         return { model: { width: box.width, height: box.height } }
       }
+      case 'DOM.scrollIntoViewIfNeeded': {
+        const backend = Number(String(cmd.params?.objectId ?? '').replace('obj-', ''))
+        const found = this.nodeOf(backend)
+        if (!found) return { error: 'Node not found' }
+        this.scrollIntoView(found.doc, found.node)
+        return {}
+      }
       case 'Runtime.callFunctionOn': {
         const backend = Number(String(cmd.params?.objectId ?? '').replace('obj-', ''))
         const found = this.nodeOf(backend)
@@ -682,10 +689,6 @@ class FakePage {
         // 页内函数按名字分派：每个都是具名函数声明，改名字要同时改这里。
         const decl = String(cmd.params?.functionDeclaration ?? '')
         const args = (cmd.params?.arguments ?? []) as { value: unknown }[]
-        if (decl.includes('qyScrollIntoView')) {
-          this.scrollIntoView(found.doc, found.node)
-          return { result: { value: true } }
-        }
         if (decl.includes('qyFramePoint')) {
           return {
             result: {
@@ -1059,31 +1062,32 @@ test('观察把 AX 语义与节点属性合成一张元素表，无角色的容�
   expect(observation.elements.some((e) => e.tag === 'div')).toBe(false)
   expect(observation.truncated).toBe(false)
   // 观察只读：一条滚动命令都不发。
-  expect(fake.called('qyScrollIntoView')).toHaveLength(0)
+  expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
 })
 
-test('正文节点上的动作在解析引用时就拒，一条输入事件都不发', async () => {
+test('文字保留自己的引用和位置执行指针动作，控件操作仍拒绝', async () => {
   const { fake, handle } = await newPage()
-  // 文本节点在真实页面上没有 getBoundingClientRect：页内复核函数在它身上抛异常。
-  const doc = fake.model.docs[0] as DocModel
-  const text = doc.nodes.find((n) => n.backendNodeId === 13) as NodeModel
-  text.inspectThrows = true
+  const text = fake.nodeOf(13)!.node
+  text.tag = '#text'
+  text.text = '结果：42'
+  text.attrs = {}
   const { record, observation } = await observe(handle)
   const ref = refOf(observation, '结果：42')
-  expect(ref).not.toBe('')
-
-  for (const action of ['click', 'dblclick', 'rightclick', 'hover', 'type', 'fill'] as const) {
-    const err = String(
-      await act(handle, record, { action, ref, text: 'x' }).catch((e: Error) => e.message),
-    )
-    expect(err).toContain(ref)
-    expect(err).toContain('不是可操作的节点')
-    // 内部异常原文对调用方没有下一步，不许出现在失败说明里。
-    expect(err).not.toContain('TypeError')
+  expect(observation.elements.find((e) => e.ref === ref)?.role).toBe('StaticText')
+  for (const action of ['click', 'dblclick', 'rightclick', 'hover'] as const) {
+    await act(handle, record, { action, ref })
   }
-  expect(fake.sent('Input.dispatchMouseEvent')).toHaveLength(0)
-  expect(fake.sent('Input.dispatchKeyEvent')).toHaveLength(0)
-  expect(fake.called('qyInspect')).toHaveLength(0)
+  expect(fake.mouse().length).toBeGreaterThan(0)
+  expect(fake.mouse().every((c) => c.x === 100 && c.y === 150)).toBe(true)
+  const before = fake.received.length
+  for (const action of ['type', 'fill', 'select'] as const) {
+    await expect(act(handle, record, { action, ref, text: 'x' })).rejects.toThrow('不支持控件操作')
+  }
+  expect(fake.received.slice(before).some((c) => c.method.startsWith('Input.'))).toBe(false)
+  text.text = '另一层'
+  await expect(act(handle, record, { action: 'click', ref })).rejects.toBeInstanceOf(
+    BrowserStaleRefError,
+  )
 })
 
 test('页内复核抛异常时给出可判定的失败，不把内部异常原文透出去', async () => {
@@ -1265,7 +1269,7 @@ test('点击视口外的元素先滚到可见处，再按滚动后的实时坐�
   })
   // 最少必要滚动：元素底边贴住视口下沿，不是居中。
   expect((fake.model.docs[0] as DocModel).scrollY).toBe(1440)
-  expect(fake.called('qyScrollIntoView')).toHaveLength(1)
+  expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(1)
   expect(r.point).toEqual({ x: 50, y: 580 })
   expect(fake.mouse()).toEqual([
     { type: 'mouseMoved', x: 50, y: 580 },
@@ -1774,7 +1778,7 @@ test('fill 在控件上覆盖写入，不借按键也不借鼠标', async () => 
   // 覆盖输入不发按键、不发鼠标、不滚动页面。
   expect(fake.sent('Input.dispatchKeyEvent')).toHaveLength(0)
   expect(fake.mouse()).toHaveLength(0)
-  expect(fake.called('qyScrollIntoView')).toHaveLength(0)
+  expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
 })
 
 test('press 认不出的阶段一条事件都不发', async () => {
@@ -1829,7 +1833,7 @@ test('scroll 落在元素上时用实时坐标，但不为它滚动页面', asyn
     ref: bottom?.ref ?? '',
     deltaY: 120,
   })
-  expect(fake.called('qyScrollIntoView')).toHaveLength(0)
+  expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
   expect(fake.sent('Input.dispatchMouseEvent')[0]?.params?.type).toBe('mouseWheel')
 })
 
@@ -1860,7 +1864,7 @@ test('上传把路径原样交给隐藏的文件输入元素，不要求它可�
   expect(sent?.params?.files).toEqual(['C:/ws/a.txt'])
   expect(sent?.params?.backendNodeId).toBe(15)
   // 隐藏控件不滚动、不做命中裁决。
-  expect(fake.called('qyScrollIntoView')).toHaveLength(0)
+  expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
 })
 
 test('下载点击与普通点击同一套定位与说明', async () => {
@@ -1871,7 +1875,7 @@ test('下载点击与普通点击同一套定位与说明', async () => {
 
   const r = await clickForDownload(handle, record, bottom?.ref ?? '')
   expect(r.point).toEqual({ x: 50, y: 580 })
-  expect(fake.called('qyScrollIntoView')).toHaveLength(1)
+  expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(1)
 
   addMask(fake, '接受 Cookie')
   const err = await clickForDownload(handle, record, bottom?.ref ?? '').catch((e: Error) => e)
@@ -1949,7 +1953,7 @@ test('optionsFor 按旧观察读后续选项，不发新编号也不移动页面
   expect(rest.nextOffset).toBeUndefined()
   // 读选项不滚页面，也不重新采集元素表。
   expect((fake.model.docs[0] as DocModel).scrollY).toBe(scrollBefore)
-  expect(fake.called('qyScrollIntoView')).toHaveLength(0)
+  expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
   expect(fake.sent('DOM.getDocument')).toHaveLength(1)
 })
 
@@ -2072,7 +2076,7 @@ test('hover 的视口外元素同样先滚到可见处再按实时坐标发', as
   const { record, observation } = await observe(handle)
 
   const r = await act(handle, record, { action: 'hover', ref: refOf(observation, '表单底部') })
-  expect(fake.called('qyScrollIntoView')).toHaveLength(1)
+  expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(1)
   expect(r.point).toEqual({ x: 50, y: 580 })
 })
 

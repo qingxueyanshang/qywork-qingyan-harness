@@ -307,8 +307,8 @@ describe('正常响应结束不冒充任务完成', () => {
       '待办未完成时连续三次只回话不动手',
     )
     expect(tails[1]?.role).toBe('user')
-    expect(String(tails[1]?.content)).toContain('待办清单尚有 2 项未完成：完成第 7 步；完成第 8 步')
-    expect(String(tails[1]?.content)).toContain('本轮未结束')
+    expect(String(tails[1]?.content)).toContain('本轮待办仍在进行中：完成第 7 步；完成第 8 步')
+    expect(String(tails[1]?.content)).toContain('确实受阻时将进行中的项改回 pending')
   })
 
   test('相同未完成清单下连续三次只结束响应，停为 no_progress', async () => {
@@ -336,6 +336,64 @@ describe('正常响应结束不冒充任务完成', () => {
 
     expect(finished.type === 'run.finished' && finished.stopReason).toBe('no_progress')
     expect(requests).toBe(3)
+  })
+
+  test('本轮受阻清单只剩 pending，保留未完成项且一次响应后停止', async () => {
+    const todos = unfinished.map((todo) => ({ ...todo, status: 'pending' as const }))
+    const inner = fakeAdapter([null])
+    let requests = 0
+    const loop = new AgentLoop({
+      adapter: {
+        ...inner,
+        async *stream(req) {
+          requests++
+          for await (const event of inner.stream(req)) {
+            yield event.type === 'text_delta'
+              ? { ...event, delta: '当前页面缺少必要信息，无法继续。' }
+              : event
+          }
+        },
+      },
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({ ...baseCtx(runId), todos: { read: () => todos } }),
+    })
+    const finished = await runToEnd(loop)
+    expect(finished.type === 'run.finished' && finished.stopReason).toBe('no_progress')
+    expect(requests).toBe(1)
+    expect(todos.every((todo) => todo.status === 'pending')).toBe(true)
+  })
+
+  test('新一轮只解释问题，旧清单不强迫恢复执行', async () => {
+    const inner = fakeAdapter([null])
+    let requests = 0
+    const reads: unknown[] = []
+    const loop = new AgentLoop({
+      adapter: {
+        ...inner,
+        async *stream(req) {
+          requests++
+          yield* inner.stream(req)
+        },
+      },
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: noopPersistence(),
+      makeToolContext: (runId) => ({
+        ...baseCtx(runId),
+        todos: {
+          read: (owner) => {
+            reads.push(owner)
+            return owner === undefined ? unfinished : null
+          },
+        },
+      }),
+    })
+    const finished = await runToEnd(loop, { runId: 'rn_question' })
+    expect(finished.type === 'run.finished' && finished.stopReason).toBe('completed')
+    expect(requests).toBe(1)
+    expect(reads).toEqual(['rn_question'])
   })
 
   /**

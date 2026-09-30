@@ -24,6 +24,7 @@ import type {
   IntermediateResourceRef,
   MediaOutput,
   ResourceCoverage,
+  RunId,
   Schedule,
   ScheduleDraft,
   ScheduleView,
@@ -749,8 +750,8 @@ export interface FileReadPort {
  * 反过来说「修改」会在没有清单时声称改过一份不存在的清单。
  */
 export interface TodoPort {
-  /** 这条会话从 tool steps 折叠出的当前清单；没提交过就是 null。 */
-  read(): TodoItem[] | null
+  /** 从 tool steps 读取清单；指定 runId 时按本轮提交或父任务回执的接续关系取清单。 */
+  read(runId?: RunId): TodoItem[] | null
 }
 
 export interface GoalPort {

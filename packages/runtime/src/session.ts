@@ -1113,7 +1113,7 @@ export class Session {
        * 这里读回来给动作词、委派归属与 loop 收尾共用；run 级的 `ctx.state`
        * 跨轮查不到这些会话事实。
        */
-      todos: { read: () => latestTodos(store, conversationId) },
+      todos: { read: (runId) => latestTodos(store, conversationId, runId) },
       /*
        * 目标同样绑到**会话**：它的寿命就是这条会话，跨轮才有意义。
        *

@@ -220,20 +220,18 @@ export async function* concludeWithoutTools(
     return 'continue'
   }
 
-  /*
-   * `end_turn` 只证明**这一条响应**结束，不证明整个任务完成。
-   * `write_todos` 已经是任务清单的唯一账本；这里读同一份只读端口，
-   * 不另造完成状态。清单没有未完成项时保留原语义。
-   *
-   * 续起时把「清单还有几项没完成、这一轮没有结束」当事实交给下一次请求：
-   * 不说的话模型只看到自己刚说过的话。同一份未完成清单下连续三次只说不做，
-   * 则复用已有的无进展监督器停下来，免得把一次误完成改成无限空转。
-   */
-  const unfinished = ctx.todos?.read()?.filter((todo) => todo.status !== 'completed') ?? []
+  // 按本轮接续关系读清单：用户新指令需重新提交，父任务回执沿用已有清单。
+  const unfinished =
+    ctx.todos?.read(input.runId)?.filter((todo) => todo.status !== 'completed') ?? []
   // 派出去的子 agent 还在跑时，清单没完成是它们在做：这一轮结束是对的，
   // 回执到了会再起一轮。逼模型继续只会得到一段没事找事的话。
   const delegated = (ctx.delegate?.inflight().length ?? 0) > 0
   if (unfinished.length && !delegated) {
+    if (!unfinished.some((todo) => todo.status === 'in_progress')) {
+      run.stopReason = 'no_progress'
+      run.stopDetail = '待办尚未完成，当前没有进行中的项；具体原因见本轮回复'
+      return 'stop'
+    }
     const snapshot = unfinished.map((todo) => [todo.id, todo.content, todo.status])
     run.progress.push({
       cycle: cycleFingerprint('assistant_end_turn', {}, { status: 'unfinished', data: snapshot }),
@@ -245,7 +243,7 @@ export async function* concludeWithoutTools(
       return 'stop'
     }
     run.notify(
-      `待办清单尚有 ${unfinished.length} 项未完成：${unfinished.map((todo) => todo.content).join('；')}。本轮未结束。`,
+      `本轮待办仍在进行中：${unfinished.map((todo) => todo.content).join('；')}。继续执行；确实受阻时将进行中的项改回 pending，保留未完成项并在回复中说明原因，不重复观察同一阻塞。`,
     )
     return 'continue'
   }

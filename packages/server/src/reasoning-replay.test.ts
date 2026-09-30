@@ -20,6 +20,7 @@ import {
   ContentStore,
   contentPathFor,
   createConversation,
+  latestTodos,
   Store,
   upsertWorkspace,
 } from '@qywork/store'
@@ -264,7 +265,8 @@ test('待办续起的提示留在历史里，其前后的签名块都不被剥�
   await finished(before + 2)
 
   expect(bodies).toHaveLength(5)
-  const notice = (b: Record<string, unknown>) => userTexts(b).some((t) => t.includes('本轮未结束'))
+  const notice = (b: Record<string, unknown>) =>
+    userTexts(b).some((t) => t.includes('本轮待办仍在进行中'))
   // 提示从续起那次起一直在，签名块一个不少。
   expect(notice(bodies[2]!)).toBe(true)
   expect(signatures(bodies[2]!)).toEqual(['thinking:sig-a', 'thinking:sig-b'])
@@ -278,4 +280,43 @@ test('待办续起的提示留在历史里，其前后的签名块都不被剥�
     'thinking:sig-c',
     'thinking:sig-d',
   ])
+})
+
+test('受阻结束、下轮解释与明确接续都以同一份待办账本裁决', async () => {
+  bodies.length = 0
+  const before = events.filter((f) => f.event.type === 'run.finished').length
+  const cv = createConversation(store, {
+    workspaceId: workspaceId as never,
+    provider: 'fake',
+    model: 'claude-opus-5-5',
+  }).id
+  script = [
+    todoTurn('blocked-start', 'in_progress'),
+    todoTurn('blocked-pending', 'pending'),
+    textTurn('blocked-reply', '页面缺少必要信息，当前无法继续。'),
+    textTurn('explain', '暂停原因是缺少信息，任务仍未完成。'),
+    todoTurn('resume', 'in_progress'),
+    textTurn('premature', '先到这里'),
+    todoTurn('done', 'completed'),
+    textTurn('finished', '任务已完成'),
+  ]
+  await startRun(cv, '整理目录', undefined, deps())
+  await finished(before + 1)
+  expect(bodies).toHaveLength(3)
+  expect(latestTodos(store, cv)?.[0]?.status).toBe('pending')
+  const stops = () => events.filter((f) => f.event.type === 'run.finished').slice(before)
+  expect(stops()[0]?.event).toMatchObject({ stopReason: 'no_progress' })
+
+  await startRun(cv, '为什么暂停', undefined, deps())
+  await finished(before + 2)
+  expect(bodies).toHaveLength(4)
+  expect(latestTodos(store, cv)?.[0]?.status).toBe('pending')
+  expect(stops()[1]?.event).toMatchObject({ stopReason: 'completed' })
+
+  await startRun(cv, '信息已补齐，继续完成', undefined, deps())
+  await finished(before + 3)
+  expect(bodies).toHaveLength(8)
+  expect(userTexts(bodies[6]!).some((t) => t.includes('本轮待办仍在进行中'))).toBe(true)
+  expect(latestTodos(store, cv)?.[0]?.status).toBe('completed')
+  expect(stops()[2]?.event).toMatchObject({ stopReason: 'completed' })
 })

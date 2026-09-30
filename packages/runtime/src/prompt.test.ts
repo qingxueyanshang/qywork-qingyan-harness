@@ -261,7 +261,7 @@ describe('尾区注记', () => {
    * 转而询问用户下一条修哪个。成因是清单只在 `write_todos` 那次调用里出现一次，
    * 之后既不重发，压缩时也进不了事实清单。
    */
-  test('待办每次请求重发，状态用人读名，未完成时给出继续执行的指令', () => {
+  test('待办每次请求重发保留进度，跨轮清单不成为执行指令', () => {
     const notes = buildTailNotes({
       ...base,
       todos: [
@@ -276,7 +276,9 @@ describe('尾区注记', () => {
     expect(todo).toContain('3. [未开始] 汇总 bug 与证据')
     // 枚举原值不进提示词，同「平台：win32」那条。
     expect(todo).not.toContain('in_progress')
-    expect(todo).toContain('清单还有未完成项时本轮不结束')
+    expect(todo).toContain('跨轮保留的任务进度，不是继续执行的指令')
+    expect(todo).toContain('接续时先用 write_todos 提交清单')
+    expect(todo).not.toContain('清单还有未完成项时本轮不结束')
     // 派活的规则只写在工具参数里，待办注记不重复。
     expect(todo).not.toContain('parentTodo')
   })
