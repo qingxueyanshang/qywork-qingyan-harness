@@ -24,7 +24,8 @@ export function describeParam(p: MediaParamSpec): string {
   if (p.type === 'enum' && p.values) parts.push(p.values.join(' | '))
   else if (p.type === 'boolean') parts.push('true | false')
   else if (p.min !== undefined || p.max !== undefined) {
-    parts.push(`${p.type === 'integer' ? '整数' : '数值'} ${p.min ?? ''}–${p.max ?? ''}`)
+    const auto = p.auto === undefined ? '' : ` 或 ${p.auto}`
+    parts.push(`${p.type === 'integer' ? '整数' : '数值'} ${p.min ?? ''}–${p.max ?? ''}${auto}`)
   } else parts.push(p.type === 'string' ? '字符串' : '数值')
   parts.push(p.description)
   if (p.operations) parts.push(`仅${p.operations.map((o) => OPERATION_LABEL[o]).join('、')}时有效`)
@@ -103,8 +104,9 @@ function checkValue(p: MediaParamSpec, value: unknown): string | null {
     case 'number': {
       if (typeof value !== 'number' || !Number.isFinite(value)) return '要一个数'
       if (p.type === 'integer' && !Number.isInteger(value)) return '要整数'
+      if (value === p.auto) return null
       if ((p.min !== undefined && value < p.min) || (p.max !== undefined && value > p.max)) {
-        return `范围 ${p.min ?? ''}–${p.max ?? ''}`
+        return `范围 ${p.min ?? ''}–${p.max ?? ''}${p.auto === undefined ? '' : `，或 ${p.auto}`}`
       }
       return null
     }

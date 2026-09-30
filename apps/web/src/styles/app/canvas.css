@@ -528,7 +528,9 @@
 .canvas-menu > button[aria-checked="true"] {
   background: var(--bg-active);
 }
+/* 必须定位：取不到图时的占位图标（`.canvas-bitmap-failed`）按最近的定位祖先铺满，缺了会落到整个浮层中央。 */
 .canvas-menu-thumb {
+  position: relative;
   width: 28px;
   height: 28px;
   flex: none;
@@ -613,7 +615,7 @@
   position: absolute;
   left: 12px;
   top: 50%;
-  z-index: 5;
+  z-index: 8;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -673,29 +675,31 @@
   background: var(--border-subtle);
 }
 
-/* 工作区文件选择框：贴在展开后的工具条右侧，尺寸固定，结果在框内滚动。 */
+/* 工作区文件选择框：贴在展开后的工具条右侧，尺寸固定，结果在框内滚动。外观同生成面板的选素材块。
+ * 层级高于生成面板（7）：两者在画布左侧会重叠。 */
 .canvas-picker {
   position: absolute;
   left: 168px;
   top: 50%;
-  z-index: 6;
+  z-index: 9;
   display: flex;
   flex-direction: column;
   width: 320px;
   height: 360px;
+  overflow: hidden;
   transform: translateY(-50%);
   background: var(--bg-raised);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
 }
 .canvas-picker > input {
   flex: none;
   margin: 8px;
-  padding: 6px 8px;
+  padding: 7px 10px;
   border: 1px solid var(--border-default);
-  border-radius: var(--r-sm);
-  background: var(--bg-app);
+  border-radius: var(--r-md);
+  background: transparent;
   color: var(--text-primary);
   font-size: var(--fs-sm);
   outline: none;
@@ -714,9 +718,9 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  height: 28px;
+  height: 32px;
   padding: 0 8px;
-  border-radius: var(--r-xs);
+  border-radius: var(--r-md);
   color: var(--text-primary);
   font-size: var(--fs-sm);
   text-align: left;
@@ -774,8 +778,7 @@
   height: 48px;
   overflow: hidden;
   border-radius: var(--r-sm);
-  background: var(--bg-inset);
-  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  box-shadow: inset 0 0 0 1px var(--border-default);
   color: var(--text-tertiary);
 }
 .canvas-input > .canvas-bitmap {
@@ -822,7 +825,7 @@
 }
 button.canvas-input:hover {
   color: var(--text-primary);
-  background: var(--bg-active);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 .canvas-swap {
   align-self: center;
@@ -907,52 +910,133 @@ button.canvas-input:hover {
   white-space: nowrap;
 }
 
-/* 单个参数的菜单：沿用 .canvas-menu 的行与选中样式，另给宽度、自定义输入与加减按钮。 */
-.canvas-param-menu {
-  min-width: 160px;
+/* 参数面板：每个参数一节，节内一排等宽的描边格子。定宽，内容超高在框内滚动。 */
+.canvas-params-panel {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 432px;
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 16px 16px 18px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
 }
-.canvas-menu-custom {
-  display: block;
-  width: 100%;
-  height: 28px;
-  margin-top: 4px;
-  padding: 0 8px;
+.canvas-params-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.canvas-params-title {
+  font-size: var(--fs-xs);
+  line-height: 1;
+  color: var(--text-tertiary);
+}
+/* 选中只有一层：描边换成墨色、文字换成主色，不加底色，外面也不套底色容器。 */
+.canvas-seg {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr));
+  gap: 6px;
+}
+.canvas-seg > button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 4px;
   border: 1px solid var(--border-default);
-  border-radius: var(--r-xs);
-  background: transparent;
-  color: var(--text-primary);
-  font: inherit;
+  border-radius: var(--r-md);
   font-size: var(--fs-sm);
-  outline: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
 }
-.canvas-menu-custom:focus {
+.canvas-seg.drawn > button {
+  height: 50px;
+}
+.canvas-seg > button:hover {
   border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.canvas-seg > button[aria-checked="true"] {
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+.canvas-seg > button > span {
+  max-width: 100%;
+}
+.canvas-shape {
+  flex: none;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+.canvas-shape-auto {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .canvas-stepper {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  height: 32px;
 }
 .canvas-stepper > button {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--r-xs);
-  color: var(--text-secondary);
+  flex: none;
+  width: 32px;
   font-size: 16px;
-}
-.canvas-stepper > button:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
 }
 .canvas-stepper > span {
   flex: 1;
   text-align: center;
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* 生成面板底栏的模型与模式菜单：选中项右侧打勾，不加底色；底色只给悬停。 */
+.canvas-bar-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 200px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+.canvas-bar-menu > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  text-align: left;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.canvas-bar-menu > button:hover {
+  background: var(--bg-hover);
+}
+.canvas-bar-menu > button > svg {
+  flex: none;
 }
 
 /* 选素材：搜索框、结果列表、底部上传一行。尺寸固定，结果在框内滚动。 */
@@ -964,17 +1048,18 @@ button.canvas-input:hover {
   width: 300px;
   height: 340px;
   background: var(--bg-raised);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
 }
 .canvas-pick > input[type="search"] {
   flex: none;
   margin: 8px;
-  padding: 6px 8px;
+  padding: 7px 10px;
   border: 1px solid var(--border-default);
-  border-radius: var(--r-sm);
-  background: var(--bg-app);
+  border-radius: var(--r-md);
+  background: transparent;
   color: var(--text-primary);
   font-size: var(--fs-sm);
   outline: none;
@@ -995,7 +1080,7 @@ button.canvas-input:hover {
   width: 100%;
   height: 36px;
   padding: 0 6px;
-  border-radius: var(--r-xs);
+  border-radius: var(--r-md);
   color: var(--text-primary);
   font-size: var(--fs-sm);
   text-align: left;

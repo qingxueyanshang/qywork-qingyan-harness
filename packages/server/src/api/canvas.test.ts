@@ -221,8 +221,8 @@ describe('画布接口', () => {
     const models = (await (await call(d, '/api/models')).json()) as ModelsResponse
     const wan = models.media.find((m) => m.id === 'wan3.0-video')!
     expect(wan.params.map((p) => [p.name, p.label])).toEqual([
-      ['resolution', '清晰度'],
-      ['ratio', '画幅'],
+      ['ratio', '宽高比'],
+      ['resolution', '分辨率'],
       ['duration', '时长'],
     ])
     expect(JSON.stringify(wan.params)).not.toContain('description')

@@ -1,8 +1,9 @@
 /**
  * 生成面板：选中一张生成卡时贴在它下方，按屏幕尺寸画、不随缩放。外观与结构同会话输入框：
- * 顶部素材格、正文（`@` 引用是内嵌标签）、底栏（模型 · 模式 · 每个参数一个按钮 · @ · 本次花费 · 发送键）。
+ * 顶部素材格、正文（`@` 引用是内嵌标签）、底栏（模型 · 模式 · 参数 · @ · 本次花费 · 发送键）。
  *
  * 尺寸只有两档固定值（B9）；提示词在失焦与发送时提交，发送是「先提交再运行」同一次请求。
+ * 面板里的菜单都在按钮上方弹出、左缘对齐按钮，同会话输入框。
  * 编辑中的提示词不被重读覆盖：编辑框有焦点时不按画布回体重建。
  */
 
@@ -22,7 +23,17 @@ import {
   type MediaOutput,
   modeOf,
 } from '@qywork/core'
-import { createEffect, createSignal, For, Match, on, onCleanup, Show, Switch } from 'solid-js'
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  on,
+  onCleanup,
+  Show,
+  Switch,
+} from 'solid-js'
 import {
   type CanvasQuote,
   client,
@@ -34,7 +45,7 @@ import {
   quoteCard,
 } from '../../lib/store/index.ts'
 import { AnchoredMenu } from '../AnchoredMenu.tsx'
-import { IconChevron, IconExpand, IconPlus, IconSend, IconX } from '../Icons.tsx'
+import { IconCheck, IconChevron, IconExpand, IconPlus, IconSend, IconX } from '../Icons.tsx'
 import { Bitmap, decodeImage, paint } from './Bitmap.tsx'
 import { dismissOnOutside } from './dismiss.ts'
 import { promptOfEditor, promptParts } from './prompt.ts'
@@ -43,8 +54,7 @@ import { SourcePicker } from './SourcePicker.tsx'
 type Mode = 'reference' | 'first_last'
 
 type Menu =
-  | { kind: 'model' | 'mode'; anchor: HTMLElement }
-  | { kind: 'param'; anchor: HTMLElement; param: string }
+  | { kind: 'model' | 'mode' | 'params'; anchor: HTMLElement }
   | { kind: 'pick'; anchor: HTMLElement; role?: MediaInputRole }
 
 export const ROLE_LABEL: Record<MediaInputRole, string> = {
@@ -59,11 +69,14 @@ const PLACEHOLDER: Record<MediaOutput, string> = {
   video: '描述画面变化，输入 @ 引用素材',
   audio: '输入要朗读的文字',
 }
-/** 带单位的参数：时长按秒，张数按张。-1 秒表示由模型定。 */
-const DURATION = new Set(['duration', 'seconds'])
+/** 带单位的参数：时长按秒，张数按张。 */
 const UNIT: Record<string, string> = { duration: '秒', seconds: '秒', n: '张' }
 /** 整数参数的取值个数不超过这么多时逐项列出，否则用加减按钮。 */
 const MAX_LISTED = 12
+/** 分段按钮不超过这么多项时排成一行，否则每行 4 个。 */
+const ONE_ROW = 10
+
+type SizeShape = NonNullable<MediaParamOption['shapes']>[number]
 
 /** 参数取值的界面用词：布尔值写开关，接口表示自动选择的取值写「自动」，其余原样。 */
 export function valueText(v: unknown): string {
@@ -75,17 +88,105 @@ export function valueText(v: unknown): string {
 
 /** 一个参数取值的读法：没有取值或由模型定写「自动」，有单位的带单位。 */
 export function paramText(p: MediaParamOption, v: unknown): string {
-  if (v === undefined || (DURATION.has(p.name) && Number(v) < 0)) return '自动'
+  if (v === undefined || v === p.auto) return '自动'
   const unit = UNIT[p.name]
   return unit ? `${v} ${unit}` : valueText(v)
 }
 
-/** 底栏按钮上的字：只写取值，取值本身看不出是哪个参数时（自动、开关）补上参数名。 */
+/** 格子上的字：只写取值，单位由节名交代。 */
+export function cellText(p: MediaParamOption, v: unknown): string {
+  if (v === undefined || v === p.auto) return '自动'
+  return valueText(v)
+}
+
+/** 尺寸取值落在对照表的哪一格；不在表里（大模型填的其他尺寸）回 `undefined`。 */
+export function shapeAt(p: MediaParamOption, v: unknown): SizeShape | undefined {
+  return p.shapes?.find((s) => s.value === v)
+}
+
+/**
+ * 底栏按钮上的字：只写取值，取值本身看不出是哪个参数时（自动、开关）补上参数名。
+ * 带对照表的尺寸写宽高比与档位；取值不在表里时原样写。
+ */
 export function chipText(p: MediaParamOption, v: unknown): string {
+  if (p.shapes) {
+    const at = shapeAt(p, v)
+    return at ? [at.ratio ?? '自动宽高比', at.tier].filter(Boolean).join(' · ') : String(v)
+  }
   const text = paramText(p, v)
   if (text === '自动') return `自动${p.label}`
   if (typeof v === 'boolean') return `${p.label}${text}`
   return text
+}
+
+/** 参数按钮上的字：各参数取值用「 · 」连起，开关只在打开时写进去。 */
+export function paramsText(
+  params: readonly MediaParamOption[],
+  current: (p: MediaParamOption) => unknown,
+): string {
+  return params
+    .filter((p) => p.type !== 'boolean' || current(p) === true || current(p) === 'true')
+    .map((p) => chipText(p, current(p)))
+    .join(' · ')
+}
+
+/** 比例（`16:9`）或像素尺寸（`1536x1024`）画成的框：长边 14px，短边按比例、不小于 5px。其余取值回 `null`。 */
+export function shapeOf(v: unknown): { w: number; h: number } | null {
+  const m = typeof v === 'string' ? /^(\d+)\s*[:x*×]\s*(\d+)$/.exec(v) : null
+  const a = Number(m?.[1])
+  const b = Number(m?.[2])
+  if (!a || !b) return null
+  const scale = 14 / Math.max(a, b)
+  return { w: Math.max(5, Math.round(a * scale)), h: Math.max(5, Math.round(b * scale)) }
+}
+
+/** 宽高比格子上方的图形：比例画同比例的框，自动画带角标的方框。 */
+function RatioIcon(props: { of: unknown }) {
+  return (
+    <Show
+      when={shapeOf(props.of)}
+      fallback={
+        <svg class="canvas-shape-auto" viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="2" y="2" width="12" height="12" rx="2.5" />
+          <path d="M5 7.5V5h2.5M11 8.5V11H8.5" />
+        </svg>
+      }
+    >
+      {(box) => (
+        <i class="canvas-shape" style={{ width: `${box().w}px`, height: `${box().h}px` }} />
+      )}
+    </Show>
+  )
+}
+
+/** 参数面板的一节：一个参数，或尺寸对照表拆出的宽高比、分辨率之一。 */
+interface Section {
+  kind: 'param' | 'ratio' | 'tier'
+  p: MediaParamOption
+}
+
+/** 分段按钮的一格。`checked` 是取值：面板开着时参数会变。 */
+interface Cell {
+  text: string
+  of: unknown
+  checked: () => boolean
+  pick: () => void
+}
+
+/** 对照表里出现过的宽高比（`undefined` 即自动）与档位，按表内次序。 */
+const ratiosOf = (p: MediaParamOption) => [...new Set((p.shapes ?? []).map((s) => s.ratio))]
+const tiersOf = (p: MediaParamOption) =>
+  [...new Set((p.shapes ?? []).map((s) => s.tier))].filter((t): t is string => t !== undefined)
+
+/** 带对照表的参数拆成宽高比、分辨率两节；只有一项可选的那一节不列。 */
+function sectionsOf(params: readonly MediaParamOption[]): Section[] {
+  return params.flatMap((p): Section[] => {
+    if (!p.shapes) return [{ kind: 'param', p }]
+    const out: Section[] = []
+    if (ratiosOf(p).length > 1) out.push({ kind: 'ratio', p })
+    if (tiersOf(p).length > 1) out.push({ kind: 'tier', p })
+    return out
+  })
 }
 
 /** 一个节点现在指着的媒体：文件节点是它的路径，生成节点是当前那一版（还在远端时没有）。 */
@@ -160,12 +261,14 @@ export function GeneratePanel(props: {
     props.node.provider && props.node.model
       ? models().find((m) => m.provider === props.node.provider && m.id === props.node.model)
       : (models().find((m) => m.isDefault) ?? models()[0])
-  const params = (): MediaParamOption[] => model()?.params ?? []
+  // 记忆化：改参数会换掉 `props.node`，面板里的各节要沿用同一批对象，不随之重建。
+  const params = createMemo((): MediaParamOption[] => model()?.params ?? [])
+  const sections = createMemo(() => sectionsOf(params()))
   const paramValue = (p: MediaParamOption) => props.node.params[p.name] ?? p.default
-  const menuParam = () => {
-    const m = menu()
-    return m?.kind === 'param' ? params().find((p) => p.name === m.param) : undefined
-  }
+  /** 再点一次同一个按钮收起。 */
+  const toggle = (kind: 'model' | 'mode' | 'params', anchor: HTMLElement) =>
+    setMenu(menu()?.kind === kind ? null : { kind, anchor })
+  const chevron = (kind: Menu['kind']) => (menu()?.kind === kind ? 'up' : 'down')
   /** 模型支持的输入模式。 */
   const modes = (): Mode[] => {
     const ops = model()?.operations ?? []
@@ -346,15 +449,83 @@ export function GeneratePanel(props: {
     if (p.type === 'boolean') return [true, false]
     if (p.type === 'string') return [...unset, ...(p.presets ?? [])]
     if (p.type === 'integer' && p.min !== undefined && p.max !== undefined) {
-      if (p.max - p.min + 1 > MAX_LISTED) return null
-      return Array.from({ length: p.max - p.min + 1 }, (_, i) => (p.min as number) + i)
+      const auto = p.auto === undefined ? [] : [p.auto]
+      if (p.max - p.min + 1 + auto.length > MAX_LISTED) return null
+      return [
+        ...auto,
+        ...Array.from({ length: p.max - p.min + 1 }, (_, i) => (p.min as number) + i),
+      ]
     }
     return null
   }
+
+  /** 一节的格子；大范围整数回 `null`，改用加减按钮。 */
+  const cellsOf = (s: Section): Cell[] | null => {
+    const p = s.p
+    const at = () => shapeAt(p, paramValue(p))
+    if (s.kind === 'ratio') {
+      return ratiosOf(p).map((ratio) => ({
+        text: ratio ?? '自动',
+        of: ratio,
+        checked: () => at() !== undefined && at()?.ratio === ratio,
+        pick: () => pickRatio(p, ratio),
+      }))
+    }
+    if (s.kind === 'tier') {
+      return tiersOf(p).map((tier) => ({
+        text: tier,
+        of: tier,
+        checked: () => at()?.tier === tier,
+        pick: () => pickTier(p, tier),
+      }))
+    }
+    return (
+      choicesOf(p)?.map((v) => ({
+        text: cellText(p, v),
+        of: v,
+        checked: () => paramValue(p) === v,
+        pick: () => setParam(p, v),
+      })) ?? null
+    )
+  }
+  /** 宽高比那一节，以及取值是比例的参数（视频的宽高比），格子上画图形。 */
+  const drawn = (s: Section) =>
+    s.kind === 'ratio' || (s.kind === 'param' && (choicesOf(s.p) ?? []).some((v) => shapeOf(v)))
+
+  /** 换宽高比：保留当前档位，这一档没有这个宽高比时取表里第一个。 */
+  const pickRatio = (p: MediaParamOption, ratio: string | undefined) => {
+    const table = p.shapes ?? []
+    const tier = shapeAt(p, paramValue(p))?.tier
+    const hit =
+      table.find((s) => s.ratio === ratio && s.tier === tier) ??
+      table.find((s) => s.ratio === ratio)
+    if (hit) setParam(p, hit.value)
+  }
+  /** 换档位：保留当前宽高比；当前是「自动」而接口不认档位简写时取 1:1。 */
+  const pickTier = (p: MediaParamOption, tier: string) => {
+    const table = p.shapes ?? []
+    const ratio = shapeAt(p, paramValue(p))?.ratio
+    const hit =
+      table.find((s) => s.tier === tier && s.ratio === ratio) ??
+      table.find((s) => s.tier === tier && s.ratio === '1:1') ??
+      table.find((s) => s.tier === tier)
+    if (hit) setParam(p, hit.value)
+  }
+
+  /** 加减：到下限再减一次是「自动」（有 `auto` 时），从「自动」加一次回到下限。 */
   const step = (p: MediaParamOption, delta: number) => {
-    const now = Number(paramValue(p) ?? p.min ?? 0)
-    const next = Math.min(p.max ?? Number.POSITIVE_INFINITY, Math.max(p.min ?? 0, now + delta))
-    setParam(p, next)
+    const v = paramValue(p)
+    const min = p.min ?? 0
+    if (v === undefined || v === p.auto) {
+      if (delta > 0) setParam(p, min)
+      return
+    }
+    const next = Number(v) + delta
+    if (next < min) {
+      if (p.auto !== undefined) setParam(p, p.auto)
+      return
+    }
+    setParam(p, Math.min(p.max ?? Number.POSITIVE_INFINITY, next))
   }
 
   const setMode = (next: Mode) => {
@@ -519,33 +690,27 @@ export function GeneratePanel(props: {
         <button
           class="mode-chip model"
           type="button"
-          onClick={(e) => setMenu({ kind: 'model', anchor: e.currentTarget })}
+          onClick={(e) => toggle('model', e.currentTarget)}
         >
           <span class="truncate">{model()?.label ?? '未配置模型'}</span>
-          <IconChevron size={10} />
+          <IconChevron size={10} dir={chevron('model')} />
         </button>
         <Show when={props.node.output === 'video' && modes().length > 1}>
-          <button
-            class="mode-chip"
-            type="button"
-            onClick={(e) => setMenu({ kind: 'mode', anchor: e.currentTarget })}
-          >
+          <button class="mode-chip" type="button" onClick={(e) => toggle('mode', e.currentTarget)}>
             {mode() === 'first_last' ? '首尾帧' : '参考'}
-            <IconChevron size={10} />
+            <IconChevron size={10} dir={chevron('mode')} />
           </button>
         </Show>
-        <For each={params()}>
-          {(p) => (
-            <button
-              class="mode-chip"
-              type="button"
-              onClick={(e) => setMenu({ kind: 'param', anchor: e.currentTarget, param: p.name })}
-            >
-              <span class="truncate">{chipText(p, paramValue(p))}</span>
-              <IconChevron size={10} />
-            </button>
-          )}
-        </For>
+        <Show when={params().length}>
+          <button
+            class="mode-chip params"
+            type="button"
+            onClick={(e) => toggle('params', e.currentTarget)}
+          >
+            <span class="truncate">{paramsText(params(), paramValue)}</span>
+            <IconChevron size={10} dir={chevron('params')} />
+          </button>
+        </Show>
         <Show when={props.node.output !== 'audio'}>
           <button
             class="mode-chip"
@@ -575,7 +740,7 @@ export function GeneratePanel(props: {
         {(m) => (
           <Switch>
             <Match when={m().kind === 'pick'}>
-              <AnchoredMenu class="canvas-pick" anchor={m().anchor}>
+              <AnchoredMenu class="canvas-pick" anchor={m().anchor} placement="above-start">
                 <SourcePicker
                   nodes={pickable()}
                   files={roleOf(m()) !== undefined || mode() !== 'first_last'}
@@ -588,65 +753,61 @@ export function GeneratePanel(props: {
                 />
               </AnchoredMenu>
             </Match>
-            <Match when={m().kind === 'param' && menuParam()}>
-              {(p) => (
-                <AnchoredMenu class="canvas-menu canvas-param-menu" anchor={m().anchor}>
-                  <Show
-                    when={choicesOf(p())}
-                    fallback={
-                      <div class="canvas-stepper">
-                        <button type="button" aria-label="减少" onClick={() => step(p(), -1)}>
-                          −
-                        </button>
-                        <span>{paramText(p(), paramValue(p()))}</span>
-                        <button type="button" aria-label="增加" onClick={() => step(p(), 1)}>
-                          +
-                        </button>
+            <Match when={m().kind === 'params'}>
+              <AnchoredMenu class="canvas-params-panel" anchor={m().anchor} placement="above-start">
+                <For each={sections()}>
+                  {(s) => (
+                    <section class="canvas-params-section">
+                      <div class="canvas-params-title">
+                        {s.kind === 'ratio' ? '宽高比' : s.kind === 'tier' ? '分辨率' : s.p.label}
                       </div>
-                    }
-                  >
-                    {(choices) => (
-                      <For each={choices()}>
-                        {(v) => (
-                          <button
-                            type="button"
-                            role="menuitemradio"
-                            aria-checked={paramValue(p()) === v}
-                            onClick={() => {
-                              setMenu(null)
-                              setParam(p(), v)
+                      <Show
+                        when={cellsOf(s)}
+                        fallback={
+                          <div class="canvas-seg canvas-stepper">
+                            <button type="button" aria-label="减少" onClick={() => step(s.p, -1)}>
+                              −
+                            </button>
+                            <span>{paramText(s.p, paramValue(s.p))}</span>
+                            <button type="button" aria-label="增加" onClick={() => step(s.p, 1)}>
+                              +
+                            </button>
+                          </div>
+                        }
+                      >
+                        {(cells) => (
+                          <div
+                            class="canvas-seg"
+                            classList={{ drawn: drawn(s) }}
+                            style={{
+                              '--cols': String(cells().length <= ONE_ROW ? cells().length : 4),
                             }}
                           >
-                            {paramText(p(), v)}
-                          </button>
+                            <For each={cells()}>
+                              {(c) => (
+                                <button
+                                  type="button"
+                                  role="menuitemradio"
+                                  aria-checked={c.checked()}
+                                  onClick={c.pick}
+                                >
+                                  <Show when={drawn(s)}>
+                                    <RatioIcon of={c.of} />
+                                  </Show>
+                                  <span class="truncate">{c.text}</span>
+                                </button>
+                              )}
+                            </For>
+                          </div>
                         )}
-                      </For>
-                    )}
-                  </Show>
-                  <Show when={p().type === 'string'}>
-                    <input
-                      class="canvas-menu-custom"
-                      type="text"
-                      spellcheck={false}
-                      placeholder="自定义"
-                      value={
-                        typeof paramValue(p()) === 'string' &&
-                        !(p().presets ?? []).includes(paramValue(p()) as string)
-                          ? String(paramValue(p()))
-                          : ''
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key !== 'Enter') return
-                        setMenu(null)
-                        setParam(p(), e.currentTarget.value.trim() || undefined)
-                      }}
-                    />
-                  </Show>
-                </AnchoredMenu>
-              )}
+                      </Show>
+                    </section>
+                  )}
+                </For>
+              </AnchoredMenu>
             </Match>
             <Match when={m().kind === 'model' || m().kind === 'mode'}>
-              <AnchoredMenu class="canvas-menu" anchor={m().anchor}>
+              <AnchoredMenu class="canvas-bar-menu" anchor={m().anchor} placement="above-start">
                 <Show when={m().kind === 'model' && !models().length}>
                   <button
                     type="button"
@@ -672,7 +833,10 @@ export function GeneratePanel(props: {
                           ])
                         }}
                       >
-                        {o.label}
+                        <span class="truncate">{o.label}</span>
+                        <Show when={o === model()}>
+                          <IconCheck size={14} />
+                        </Show>
                       </button>
                     )}
                   </For>
@@ -686,7 +850,10 @@ export function GeneratePanel(props: {
                         aria-checked={o === mode()}
                         onClick={() => setMode(o)}
                       >
-                        {o === 'first_last' ? '首尾帧' : '参考'}
+                        <span class="truncate">{o === 'first_last' ? '首尾帧' : '参考'}</span>
+                        <Show when={o === mode()}>
+                          <IconCheck size={14} />
+                        </Show>
                       </button>
                     )}
                   </For>

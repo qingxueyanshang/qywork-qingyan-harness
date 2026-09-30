@@ -138,7 +138,16 @@ export interface MediaModelRow {
 /** 生成面板上的一个参数控件，取自目录的 `MediaParamSpec`，不带给大模型看的说明。 */
 export type MediaParamRow = Pick<
   MediaParamSpec,
-  'name' | 'type' | 'values' | 'presets' | 'min' | 'max' | 'default' | 'operations'
+  | 'name'
+  | 'type'
+  | 'values'
+  | 'presets'
+  | 'shapes'
+  | 'min'
+  | 'max'
+  | 'auto'
+  | 'default'
+  | 'operations'
 > & { label: string }
 
 /** 生成目录里的一条。`params` 是给人看的参数表，每行一个参数，与给大模型的同一份文字。 */
