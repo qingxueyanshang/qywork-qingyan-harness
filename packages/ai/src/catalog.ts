@@ -418,6 +418,16 @@ const GPT_6_SOL_LONG: LongContextTier = {
   note: '提示词超过 272K token 后整条请求按 $4 / $15（缓存 $0.4）计价',
 }
 
+const GPT_61_SOL_LONG: LongContextTier = {
+  thresholdTokens: 272_001,
+  input: 4,
+  output: 15,
+  cacheRead: 0.2,
+  cacheWrite5m: 5,
+  cacheWrite1h: 5,
+  note: '提示词超过 272K token 后整条请求按 $4 / $15（缓存 $0.2）计价',
+}
+
 const GPT_6_LUNA_LONG: LongContextTier = {
   thresholdTokens: 272_001,
   input: 0.2,
@@ -1086,6 +1096,21 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       maxOutputTokens: 128_000,
       pricing: usd(10, 50, 1, 12.5),
       longContext: [GPT_6_ASTRA_LONG],
+    },
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
+      id: 'gpt-6.1-sol',
+      displayName: 'GPT-6.1 Sol',
+      vendor: 'openai',
+      // 2026-09-30 核对：https://developers.openai.com/api/docs/models/gpt-6.1-sol
+      // 工具调用要求 Responses；不支持 none / minimal，缓存读取价为输入价的 5%。
+      provider: 'openai_responses',
+      vision: true,
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      pricing: usd(2, 10, 0.1, 2.5),
+      longContext: [GPT_61_SOL_LONG],
     },
     {
       ...base,

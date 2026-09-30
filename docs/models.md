@@ -6,6 +6,29 @@
 接口支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
 选择协议时，以所连接端点提供的接口为准。通过中转站接入时，使用中转站给出的地址与凭证。
 
+## GPT-6.1 Sol
+
+内置收录 `gpt-6.1-sol`，显示为 **GPT-6.1 Sol**，原有 `gpt-6-sol` 独立保留。
+选择 OpenAI Responses，官方 Base URL 为 `https://api.openai.com/v1`。
+官方 Chat Completions 不支持该模型的工具调用。
+
+支持文本、图片输入和文本输出；上下文 1,050,000 token，最大输出 128,000 token。
+思考档位为 `low / medium / high / xhigh / max`，未选择时使用官方默认 `medium`；
+不支持 `none` 和 `minimal`。
+
+目录采用标准处理价格，单位为美元 / 百万 token：
+
+| 提示词总 token | 未命中输入 | 缓存读取 | 缓存写入 | 输出 |
+|---|---:|---:|---:|---:|
+| ≤ 272,000 | 2 | 0.10 | 2.50 | 10 |
+| > 272,000 | 4 | 0.20 | 5 | 15 |
+
+提示词总量包括缓存读取与写入；超过分界后，整条请求使用长上下文价格。
+2026-09-30 核对：[官方模型规格](https://developers.openai.com/api/docs/models/gpt-6.1-sol)、
+[发布说明](https://developers.openai.com/api/docs/changelog)、
+[缓存规则](https://developers.openai.com/api/docs/guides/prompt-caching)。
+本地协议回归不等同于官方端点实测；中转站的可用性与价格以所接端点为准。
+
 ## 小米 MiMo
 
 内置收录 `mimo-v2.6-pro`、`mimo-v2.6-flash`、`mimo-v2.6-pro-ultraspeed`，

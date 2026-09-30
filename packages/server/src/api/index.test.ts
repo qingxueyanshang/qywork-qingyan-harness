@@ -746,6 +746,36 @@ describe('模型目录', () => {
     })
   })
 
+  test('GPT-6.1 Sol 的规格与新缓存价格进入模型库和已配置列表', async () => {
+    const b = await body(withConfig('openai_responses', 'gpt-6.1-sol'))
+    const rows = b.library
+      .find((v) => v.id === 'openai')!
+      .models.filter((m) => m.id === 'gpt-6.1-sol')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      label: 'GPT-6.1 Sol',
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      vision: true,
+      thinksByDefault: true,
+      effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      input: 2,
+      output: 10,
+      cacheRead: 0.1,
+      cacheWrite: 2.5,
+      currency: 'USD',
+    })
+    expect(b.providers[0]!.models[0]).toMatchObject({
+      id: 'gpt-6.1-sol',
+      label: 'GPT-6.1 Sol',
+      known: true,
+      defaultBaseUrl: 'https://api.openai.com/v1',
+      vision: true,
+      video: false,
+      effortLevels: rows[0]!.effortLevels,
+    })
+  })
+
   test('Claude、GPT-6 与 Qwen 新型号进入模型库和已配置列表', async () => {
     for (const [kind, id, vendor, label] of [
       ['anthropic_messages', 'claude-opus-5-5', 'anthropic', 'Claude Opus 5.5'],
