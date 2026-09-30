@@ -22,9 +22,10 @@
  * 那等于从网上取一段内容、下次加载就用它，和插件那条边界同一个理由。
  */
 
-import { cp, mkdir, readFile, rm, stat, unlink } from 'node:fs/promises'
-import { basename, join, resolve } from 'node:path'
+import { rm, stat, unlink } from 'node:fs/promises'
+import { join } from 'node:path'
 import {
+  importSkills,
   listAllScopedEntries,
   MEMORY_DIR,
   MEMORY_SUBDIR,
@@ -64,7 +65,7 @@ function safeKey(raw: string): string | null {
  *
  * **内置层不可写**：它随程序一同发布，写入后将在下次升级时丢失，而界面会显示保存成功。
  */
-function writableScope(raw: string | null): Scope | null {
+function writableScope(raw: string | null): 'project' | 'global' | null {
   if (raw === null || raw === 'project') return 'project'
   if (raw === 'global') return 'global'
   return null
@@ -133,35 +134,21 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
     })
   }
 
-  /**
-   * 导入一个技能目录：把本机上已经存在的那个整个拷进来。
-   *
-   * 拷之前先确认它里面真有 `SKILL.md`。不确认的话，指错目录会「导入成功」，
-   * 然后在列表里一条都不出现——扫描器对没有 SKILL.md 的目录是静默跳过的。
-   */
   if (p === '/api/skills/import' && req.method === 'POST') {
-    const body = (await req.json().catch(() => null)) as { scope?: string; path?: string } | null
+    const body = (await req.json().catch(() => null)) as {
+      scope?: string
+      path?: string
+      replace?: boolean
+    } | null
     const scope = writableScope(body?.scope ?? null)
     if (!scope) return json({ error: 'bad request', message: '只能写项目层或全局层' }, 400)
     const src = body?.path?.trim()
-    if (!src) return json({ error: 'bad request', message: '缺少目录路径' }, 400)
-
-    if (!(await readFile(join(src, 'SKILL.md'), 'utf8').catch(() => null))) {
-      return json({ error: 'invalid', message: `目录里没有 SKILL.md：${src}` }, 422)
-    }
-    const dirName = safeKey(basename(src))
-    if (!dirName) return json({ error: 'invalid', message: '目录名里没有可用的字符' }, 422)
-
-    const root = scopeDir(scopeRoots(d.workspaceRoot), scope, SKILLS_SUBDIR)
-    if (root === null) return json({ error: 'bad request', message: '这一层不可写' }, 400)
-    const dest = join(root, dirName)
-    if (resolve(src) === resolve(dest)) return json({ ok: true, name: dirName, dir: dest })
-    if (await stat(dest).catch(() => null)) {
-      return json({ error: 'conflict', message: `这一层已经有一个 ${dirName} 了` }, 409)
-    }
-    await mkdir(root, { recursive: true })
-    await cp(src, dest, { recursive: true })
-    return json({ ok: true, name: dirName, dir: dest })
+    if (!src) return json({ error: 'bad request', message: '缺少目录或 ZIP 路径' }, 400)
+    const result = await importSkills(d.workspaceRoot, scope, src, body?.replace === true)
+    return json(
+      { ...result, message: result.failures.map((f) => f.error).join('；') },
+      result.ok ? 200 : result.failures.some((f) => f.kind === 'conflict') ? 409 : 422,
+    )
   }
 
   const skillMatch = /^\/api\/skills\/([^/]+)$/.exec(p)

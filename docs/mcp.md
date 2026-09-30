@@ -84,6 +84,16 @@ qy mcp --tools    # 连带列出它们提供哪些工具
 
 ---
 
+## 安装与生效
+
+聊天中使用 `write_mcp_server` 新增或更新，使用 `move_mcp_server` 迁移作用域。
+设置页可以导入本地配置文件。两种入口共用配置写入与连接管理；保存后立即连接并发现能力。
+回执分别给出保存、连接及可用工具结果。鉴权、命令启动或能力发现失败时，配置仍已保存，失败原因会显示。
+
+当前任务在工具批次结束后更新工具表；其他正在执行的调用保留其连接，结束后释放。
+全局修改会更新受影响的工作区，项目层的同名服务仍优先。外部直接修改配置在下一次取得扩展或打开列表时生效。
+关闭 MCP 会等待受管进程退出或 HTTP 会话结束；关闭失败会返回实际原因，不等同于权限拒绝。
+
 ## 权限
 
 MCP 工具注册名是 `mcp__<server>__<tool>`，权限 scope 是
@@ -91,15 +101,11 @@ MCP 工具注册名是 `mcp__<server>__<tool>`，权限 scope 是
 
 注册名会被消毒成 `^[a-zA-Z0-9_-]+$`：server 名来自你的配置、工具名来自第三方 server，
 两者都可能带 `.` `:` `/`，而 provider 会直接 400 拒掉整个请求。所以配置里写
-`"my.server"` 的话，工具是 `mcp__my_server__xxx`——但 `autoApprove` 匹配的是
-**权限 scope**（`execute:mcp:my.server/`），那里用的是原名。
+`"my.server"` 的话，工具是 `mcp__my_server__xxx`，权限目标仍保留原服务名。
 
-**默认每次调用都问。** 想少弹窗，在 `~/.qywork/config.json` 的 `autoApprove` 里
-加前缀：
-
-```json
-{ "autoApprove": ["read:", "execute:mcp:filesystem/"] }
-```
+qywork 使用 `auto` 与 `full` 两档。`full` 不作权限裁决；`auto` 的命令规则用于
+`run_command`，MCP 工具沿用专用通道的判定，不逐次弹窗。旧的 `autoApprove` 配置已不生效。
+详见 [权限](permissions.md)。
 
 ### 为什么不看 `readOnlyHint`
 
@@ -114,7 +120,7 @@ MCP 的工具定义里有 `annotations.readOnlyHint`，看起来正好能拿来�
 - `destructiveHint: true` 会让权限**更严**（走 delete 闸）；
 - 任何 hint 都**不能**让权限更松。
 
-放宽只能来自 `autoApprove`——那是**你的**判断，写在你自己的配置文件里。
+这些标记描述工具的权限效果；实际是否执行由当前会话权限模式决定。
 
 ---
 

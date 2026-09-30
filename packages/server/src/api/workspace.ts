@@ -331,7 +331,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
       )
       return json({ tools: rows })
     } finally {
-      releaseExtensions(d.workspaceRoot)
+      await releaseExtensions(ext)
     }
   }
 

@@ -49,7 +49,7 @@ async function incoming(body: unknown): Promise<string> {
   return file
 }
 
-const ONE = { mcpServers: { fs: { command: 'npx', args: ['-y', 'server-filesystem'] } } }
+const ONE = { mcpServers: { fs: { command: 'fixture-disabled', enabled: false } } }
 /** 读回落盘的那份。值再往下就是 server 名到配置的映射，测试只比对它。 */
 const read = (f: string): Promise<Record<string, Record<string, unknown>>> =>
   readFile(f, 'utf8').then((t) => JSON.parse(t) as Record<string, Record<string, unknown>>)
@@ -97,7 +97,11 @@ describe('导入一份现成的 MCP 配置', () => {
 
   test('并进已有配置，原来那几条一个不动', async () => {
     const { root, file } = await workspace()
-    await writeFile(file, JSON.stringify({ mcpServers: { old: { command: 'echo' } } }), 'utf8')
+    await writeFile(
+      file,
+      JSON.stringify({ mcpServers: { old: { command: 'echo', enabled: false } } }),
+      'utf8',
+    )
     const res = await call(root, '/api/mcp/import?scope=project', {
       method: 'POST',
       body: JSON.stringify({ path: await incoming(ONE) }),
@@ -127,7 +131,11 @@ describe('导入一份现成的 MCP 配置', () => {
    */
   test('本层用的是 servers 键时就写进 servers，不另起一个 mcpServers', async () => {
     const { root, file } = await workspace()
-    await writeFile(file, JSON.stringify({ servers: { old: { command: 'echo' } } }), 'utf8')
+    await writeFile(
+      file,
+      JSON.stringify({ servers: { old: { command: 'echo', enabled: false } } }),
+      'utf8',
+    )
     const res = await call(root, '/api/mcp/import?scope=project', {
       method: 'POST',
       body: JSON.stringify({ path: await incoming(ONE) }),

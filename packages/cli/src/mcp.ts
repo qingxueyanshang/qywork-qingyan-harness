@@ -82,6 +82,6 @@ export async function runMcp(args: string[]): Promise<number> {
     return reg.failures.length > 0 ? 1 : 0
   } finally {
     // 探测完就把子进程收掉。留着的话这条命令会挂住不返回。
-    reg.stopAll()
+    await reg.stopAll()
   }
 }

@@ -49,7 +49,7 @@ export interface McpRegistry {
    * 注册由会话自己做，这样扩展能按工作区缓存，不必每条消息重连一遍 server。
    */
   toolSpecs: ToolSpec[]
-  stopAll(): void
+  stopAll(): Promise<void>
 }
 
 export function parseMcpConfig(raw: string): McpConfig {
@@ -133,8 +133,10 @@ export async function loadMcpServers(
     servers: [],
     failures: [],
     toolSpecs: [],
-    stopAll: () => {
-      for (const s of out.servers) s.client.stop()
+    stopAll: async () => {
+      const results = await Promise.allSettled(out.servers.map((s) => s.client.stop()))
+      const errors = results.filter((r) => r.status === 'rejected').map((r) => r.reason)
+      if (errors.length) throw new AggregateError(errors, 'MCP 连接未全部关闭')
     },
   }
 
@@ -149,18 +151,19 @@ export async function loadMcpServers(
     entries.map(async ([name, spec]) => {
       // HTTP server 没有工作目录这回事。给它解析一个只会在配置里
       // 写了 cwd 时报错。
-      const cwd = isHttpSpec(spec)
-        ? workspaceRoot
-        : spec.cwd
-          ? await (options.resolveCwd?.(spec.cwd) ?? Promise.resolve(workspaceRoot))
-          : workspaceRoot
-      const client = new McpClient({
-        name,
-        spec,
-        cwd,
-        ...(options.onLog ? { onLog: options.onLog } : {}),
-      })
+      let client: McpClient | undefined
       try {
+        const cwd = isHttpSpec(spec)
+          ? workspaceRoot
+          : spec.cwd
+            ? await (options.resolveCwd?.(spec.cwd) ?? Promise.resolve(workspaceRoot))
+            : workspaceRoot
+        client = new McpClient({
+          name,
+          spec,
+          cwd,
+          ...(options.onLog ? { onLog: options.onLog } : {}),
+        })
         await client.start()
         /*
          * `tools/list` **一律去调**，失败与否再看声明。
@@ -189,7 +192,9 @@ export async function loadMcpServers(
         }
         return { name, client, tools, ok: true as const }
       } catch (err) {
-        client.stop()
+        await client
+          ?.stop()
+          .catch((error) => options.onLog?.(`[mcp:${name}] 关闭失败：${String(error)}`))
         return {
           name,
           ok: false as const,

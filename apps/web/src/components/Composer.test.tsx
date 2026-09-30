@@ -81,6 +81,57 @@ function input(textarea: HTMLTextAreaElement, value: string) {
   textarea.dispatchEvent(new InputEvent('input', { bubbles: true, data: value }))
 }
 
+test('技能候选重新打开与安装事件后重新读取，过期请求不能覆盖新结果', async () => {
+  const { dispose, host, textarea } = await mountComposer(false)
+  const store = await import('../lib/store/index.ts')
+  const api = store.client.api
+  let installed = false
+  let resolveStale: ((value: unknown) => void) | undefined
+  let requests = 0
+  store.client.api = async <T,>(path: string, init?: RequestInit) => {
+    if (path !== '/api/skills') return api.call(store.client, path, init) as Promise<T>
+    requests++
+    if (requests === 1)
+      return new Promise<unknown>((done) => {
+        resolveStale = done
+      }) as Promise<T>
+    return {
+      dirs: [],
+      skills: installed
+        ? [
+            {
+              name: 'demo',
+              description: 'demo skill',
+              scope: 'project',
+              dir: '/workspace/.agents/skills/demo',
+              shadowedBy: null,
+            },
+          ]
+        : [],
+    } as T
+  }
+  try {
+    input(textarea, '#')
+    await new Promise((done) => setTimeout(done, 0))
+    input(textarea, '')
+    installed = true
+    input(textarea, '#')
+    await new Promise((done) => setTimeout(done, 0))
+    expect(host.textContent).toContain('demo')
+    resolveStale?.({ dirs: [], skills: [] })
+    await new Promise((done) => setTimeout(done, 0))
+    expect(host.textContent).toContain('demo')
+    installed = false
+    store.invalidateExtensions()
+    await new Promise((done) => setTimeout(done, 0))
+    expect(host.querySelector('[role="listbox"]')?.textContent).not.toContain('demo')
+    expect(requests).toBe(3)
+  } finally {
+    store.client.api = api
+    dispose()
+  }
+})
+
 test('补全菜单的定位基准不受运行位置行影响，选择候选不提交', async () => {
   const { createSignal } = await import('solid-js')
   const [empty, setEmpty] = createSignal(true)

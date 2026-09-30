@@ -643,13 +643,22 @@ export interface PluginPort {
  * 配置解析器在 mcp 包，作用域路径在 tools 包，两者同层不能互相依赖。工具只声明动作，runtime 同时拿到
  * 两边后实现这个端口。没有端口时不注册对应工具，避免出现一个必然失败的入口。
  */
+export interface McpActivation {
+  connected: boolean
+  toolNames: string[]
+  failures: { server: string; reason: string }[]
+  inactive: string[]
+  effectiveScopes?: Record<string, 'builtin' | 'project' | 'global'>
+}
+
 export interface McpConfigPort {
   writeServer(input: { name: string; configJson: string; scope: 'project' | 'global' }): Promise<{
     ok: boolean
     error?: string
     path?: string
     replaced?: boolean
-    restartRequired?: boolean
+    saved?: boolean
+    activation?: McpActivation
   }>
   moveServer(input: {
     name: string
@@ -660,7 +669,8 @@ export interface McpConfigPort {
     error?: string
     fromPath?: string
     toPath?: string
-    restartRequired?: boolean
+    saved?: boolean
+    activation?: McpActivation
   }>
 }
 
@@ -936,6 +946,8 @@ export interface ToolContext {
   plugins?: PluginPort
   /** MCP 配置通道；没接时 `write_mcp_server` / `move_mcp_server` 不注册。 */
   mcpConfig?: McpConfigPort
+  /** 当前会话已绑定的技能包来源，精确到附件路径。 */
+  skillSourcePaths?: () => string[]
   /**
    * 生成通道。见 `MediaPort`。
    *
@@ -1269,6 +1281,20 @@ export class ToolRegistry {
     }
     validate(spec)
     this.tools.set(spec.name, spec)
+    this.schemaCache = null
+  }
+
+  /** 校验整批替换后一次提交，不能覆盖未归属本批的工具。 */
+  replaceOwned(owned: ReadonlySet<string>, specs: readonly ToolSpec[]): void {
+    const next = new Map(this.tools)
+    for (const name of owned) next.delete(name)
+    for (const spec of specs) {
+      if (next.has(spec.name)) throw new Error(`工具名冲突：${spec.name}`)
+      validate(spec)
+      next.set(spec.name, spec)
+    }
+    this.tools.clear()
+    for (const [name, spec] of next) this.tools.set(name, spec)
     this.schemaCache = null
   }
 

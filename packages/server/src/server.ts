@@ -242,8 +242,11 @@ export function serve(opts: ServeOptions) {
    * 子进程只起一套；服务持有一份让启动项目的插件不会在两轮之间被反复拉起又杀掉。
    * 异步、不阻塞服务启动——一个慢插件不该让整个服务起不来。
    */
-  let pluginTeardown: (() => void) | null = null
-  void acquireExtensions(workspaceRoot, (line) => log.info('extensions', line))
+  const extensionsReady = acquireExtensions(
+    workspaceRoot,
+    (line) => log.info('extensions', line),
+    true,
+  )
     .then((ext) => {
       for (const f of ext.mcp.failures) {
         log.warn('extensions', `MCP ${f.server}：${f.reason}`)
@@ -252,10 +255,11 @@ export function serve(opts: ServeOptions) {
         log.warn('extensions', `插件加载失败 ${f.dir}：${f.reason}`)
       }
       if (ext.team.error) log.warn('extensions', `team 配置：${ext.team.error}`)
-      pluginTeardown = () => releaseExtensions(workspaceRoot)
+      return ext
     })
     .catch((err) => {
       log.error('extensions', `扩展加载失败：${String(err)}`)
+      return null
     })
 
   // 回收上次进程留下的 running run。必须在开始服务**之前**做：
@@ -665,7 +669,7 @@ export function serve(opts: ServeOptions) {
     lanEnabled: () => lanServer !== null,
     pairingUrl: () => pairing.qrUrl(boundPort),
     lanUrl: () => `http://${preferredLanAddress()}:${boundPort}`,
-    stop() {
+    async stop() {
       log.info('server', '停止服务', { port: boundPort })
       scheduler.stop()
       gitWatch.stop()
@@ -680,7 +684,8 @@ export function serve(opts: ServeOptions) {
       disableLan()
       server.stop(true)
       // 插件是子进程，不显式关会留下孤儿——sidecar 与截图脚本上是同一条约束。
-      pluginTeardown?.()
+      const ext = await extensionsReady
+      if (ext) await releaseExtensions(ext)
       // 只关自己开的：外部传进来的正文库归调用方管，替它关掉会让它下一次读抛错。
       if (ownsContent) content.close()
     },

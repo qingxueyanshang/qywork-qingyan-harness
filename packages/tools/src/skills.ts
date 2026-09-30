@@ -18,10 +18,10 @@
  * 成功后不保留双份。
  */
 
-import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { cp, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { basename, join, resolve } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
-import { resolveInWorkspace } from './paths.ts'
+import { resolveInWorkspace, rootsOf } from './paths.ts'
 import {
   type Scope,
   type ScopedItem,
@@ -32,6 +32,7 @@ import {
   scopeRoots,
 } from './scopes.ts'
 import { deliverReadable } from './sink.ts'
+import { commitSkillDirectory, importSkills } from './skills/install.ts'
 
 /** 各层根目录下装技能的那个子目录。`.agents/skills` 是跨客户端约定的那条。 */
 export const SKILLS_SUBDIR = 'skills'
@@ -72,7 +73,7 @@ export async function scanSkillDir(root: string, scope: Scope): Promise<SkillMet
     const meta = parseFrontmatter(text)
     // description 是模型判断「何时用这个技能」的唯一依据。没有就等于装了也不会被用到，
     // 与其静默收录一个永远不会触发的技能，不如跳过并让它在扫描结果里缺席。
-    if (!meta.description) continue
+    if (!meta.description || /^[|>][+-]?\d?$/.test(meta.description)) continue
 
     out.push({
       name: meta.name || name,
@@ -118,7 +119,7 @@ export function parseFrontmatter(text: string): { name: string; description: str
   if (!m) return { name: '', description: '' }
 
   const out = { name: '', description: '' }
-  for (const line of m[1]!.split('\n')) {
+  for (const line of m[1]!.split(/\r?\n/)) {
     const kv = /^\s*(name|description)\s*:\s*(.*)$/.exec(line)
     if (!kv) continue
     let value = kv[2]!.trim()
@@ -164,41 +165,6 @@ function skillRoot(workspaceRoot: string, scope: WritableScope): string {
   const root = scopeDir(scopeRoots(workspaceRoot), scope, SKILLS_SUBDIR)
   if (root === null) throw new Error('这一层不可写')
   return root
-}
-
-/** 先在同层临时目录组好完整技能，再用目录改名提交，避免写到一半留下残缺技能。 */
-async function commitSkill(
-  target: string,
-  markdown: string,
-  files: { path: string; content: string }[],
-): Promise<boolean> {
-  const existed = (await stat(target).catch(() => null)) !== null
-  const parent = join(target, '..')
-  await mkdir(parent, { recursive: true })
-  const temp = `${target}.qywork-writing-${crypto.randomUUID()}`
-  const backup = `${target}.qywork-backup-${crypto.randomUUID()}`
-  try {
-    if (existed) await cp(target, temp, { recursive: true, errorOnExist: true, force: false })
-    else await mkdir(temp, { recursive: false })
-    await writeFile(join(temp, 'SKILL.md'), markdown, 'utf8')
-    for (const file of files) {
-      const dest = await resolveInWorkspace(temp, file.path, { mustExist: false })
-      await mkdir(join(dest, '..'), { recursive: true })
-      await writeFile(dest, file.content, 'utf8')
-    }
-    if (existed) await rename(target, backup)
-    try {
-      await rename(temp, target)
-    } catch (err) {
-      if (existed) await rename(backup, target).catch(() => undefined)
-      throw err
-    }
-    if (existed) await rm(backup, { recursive: true, force: true })
-    return existed
-  } catch (err) {
-    await rm(temp, { recursive: true, force: true }).catch(() => undefined)
-    throw err
-  }
 }
 
 export const readSkillTool: ToolSpec = {
@@ -315,19 +281,30 @@ export const writeSkillTool: ToolSpec = {
       files.push({ path, content: String(item.content ?? '') })
     }
 
-    const root = skillRoot(ctx.workspaceRoot, scope)
-    const target = join(root, dirName)
     const markdown = `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n---\n\n${content}\n`
     try {
-      const replaced = await commitSkill(target, markdown, files)
+      const receipt = await commitSkillDirectory(
+        ctx.workspaceRoot,
+        scope,
+        dirName,
+        true,
+        async (stage, existing) => {
+          if (await stat(existing).catch(() => null)) await cp(existing, stage, { recursive: true })
+          else await mkdir(stage)
+          await writeFile(join(stage, 'SKILL.md'), markdown, 'utf8')
+          for (const file of files) {
+            const dest = await resolveInWorkspace(stage, file.path, { mustExist: false })
+            await mkdir(join(dest, '..'), { recursive: true })
+            await writeFile(dest, file.content, 'utf8')
+          }
+        },
+      )
+      const { replaced } = receipt
       return {
-        status: 'success',
-        message: `已${replaced ? '更新' : '创建'}${scope === 'global' ? '全局' : '项目'}技能 ${name}`,
+        status: receipt.cleanupError ? 'failure' : 'success',
+        message: `已${replaced ? '更新' : '创建'}${scope === 'global' ? '全局' : '项目'}技能 ${name}；${receipt.active ? '扫描与读取已验证' : `当前生效的是 ${receipt.effective.dir}`}${receipt.cleanupError ? `；${receipt.cleanupError}` : ''}`,
         data: {
-          name,
-          scope,
-          dir: target,
-          replaced,
+          ...receipt,
           files: ['SKILL.md', ...files.map((f) => f.path)],
         },
       }
@@ -379,39 +356,76 @@ export const moveSkillTool: ToolSpec = {
       return { status: 'failure', message: `${from} 层没有技能 ${wanted}`, errorKind: 'not_found' }
     }
     const target = join(skillRoot(ctx.workspaceRoot, to), basename(hit.dir))
-    if (await stat(target).catch(() => null)) {
-      return {
-        status: 'failure',
-        message: `${to} 层已有同目录技能 ${basename(hit.dir)}，未迁移任何文件`,
-      }
-    }
-
-    await mkdir(join(target, '..'), { recursive: true })
-    const temp = `${target}.qywork-moving-${crypto.randomUUID()}`
     try {
-      await cp(hit.dir, temp, { recursive: true, errorOnExist: true, force: false })
-      await rename(temp, target)
-      try {
-        await rm(hit.dir, { recursive: true, force: false })
-      } catch (err) {
-        await rm(target, { recursive: true, force: true }).catch(() => undefined)
-        throw err
+      const receipt = await commitSkillDirectory(
+        ctx.workspaceRoot,
+        to,
+        basename(hit.dir),
+        false,
+        (stage) => cp(hit.dir, stage, { recursive: true, errorOnExist: true, force: false }),
+        hit.dir,
+      )
+      return {
+        status: receipt.cleanupError ? 'failure' : 'success',
+        message: `已把技能 ${hit.name} 从 ${from} 层迁移到 ${to} 层，只保留目标副本；扫描与读取已验证${receipt.cleanupError ? `；${receipt.cleanupError}` : ''}`,
+        data: { ...receipt, from_scope: from, to_scope: to, from_dir: hit.dir, to_dir: target },
       }
-    } catch (err) {
-      await rm(temp, { recursive: true, force: true }).catch(() => undefined)
-      return { status: 'failure', message: `迁移技能失败，原件仍在 ${from} 层：${String(err)}` }
+    } catch (error) {
+      return { status: 'failure', message: `迁移技能失败：${String(error)}` }
     }
+  },
+}
 
-    return {
-      status: 'success',
-      message: `已把技能 ${hit.name} 从 ${from} 层迁移到 ${to} 层，只保留目标副本`,
-      data: {
-        name: hit.name,
-        from_scope: from,
-        to_scope: to,
-        from_dir: hit.dir,
-        to_dir: target,
-      },
+export const importSkillTool: ToolSpec = {
+  name: 'import_skill',
+  description:
+    '安装现成技能目录或 ZIP，完整保留脚本、模板和二进制资源。程序计算安装目录并验证扫描读取；不要运行包内安装脚本。默认项目层，明确全局时传 global；用户授权替换已有版本时传 replace=true。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: '本机技能目录或 ZIP 路径，可直接使用当前会话附件' },
+      scope: scopeProperty(),
+      replace: { type: 'boolean', description: '用户已授权替换同目录旧版本' },
+    },
+    required: ['path'],
+    additionalProperties: false,
+  },
+  actionKind: 'write',
+  objectLabel: '技能',
+  category: 'skills',
+  facet: '技能',
+  summary: '导入技能目录或 ZIP 并验证生效',
+  targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
+  permissionEffect: 'write',
+  parallelSafe: false,
+  resourceKeys: (a) => [`skill:${String(a.scope ?? 'project')}:*`],
+  async fn(args, ctx) {
+    const scope = writableScope(args.scope)
+    if (!scope) return { status: 'failure', message: 'scope 只能是 project 或 global' }
+    const path = String(args.path ?? '').trim()
+    if (!path) return { status: 'failure', message: '缺少 path' }
+    try {
+      const requested = resolve(ctx.workspaceRoot, path)
+      const bound = ctx
+        .skillSourcePaths?.()
+        .some((p) => resolve(ctx.workspaceRoot, p) === requested)
+      const source = bound
+        ? await realpath(requested)
+        : await resolveInWorkspace(rootsOf(ctx), path, { mustExist: true })
+      const result = await importSkills(ctx.workspaceRoot, scope, source, args.replace === true)
+      return {
+        status: result.ok ? 'success' : 'failure',
+        message: [
+          ...result.installed.map(
+            (s) =>
+              `已安装 ${s.name}：${s.dir}；${s.active ? '扫描与读取已验证' : `当前生效的是 ${s.effective.dir}`}`,
+          ),
+          ...result.failures.map((f) => `${f.source}：${f.error}`),
+        ].join('\n'),
+        data: { ...result },
+      }
+    } catch (error) {
+      return { status: 'failure', message: `导入技能失败：${String(error)}` }
     }
   },
 }

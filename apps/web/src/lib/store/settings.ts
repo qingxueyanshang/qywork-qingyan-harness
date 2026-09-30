@@ -19,7 +19,7 @@ import type {
 } from '@qywork/core'
 import { createSignal } from 'solid-js'
 import { ApiError } from '../client.ts'
-import { client } from './connection.ts'
+import { client, invalidateExtensions } from './connection.ts'
 import { tauriInvoke } from './shell.ts'
 import type { WorkspaceInfo } from './ui.ts'
 
@@ -594,6 +594,8 @@ async function scheduleWrite<T>(path: string, init: RequestInit): Promise<T> {
     return await client.api<T>(path, init)
   } catch (e) {
     throw new Error(explainApiError(e, '操作失败'))
+  } finally {
+    if (path.startsWith('/api/skills') || path.startsWith('/api/mcp')) invalidateExtensions()
   }
 }
 
@@ -700,7 +702,10 @@ export function loadSkills(): Promise<{ dirs: ScopeDir[]; skills: SkillMeta[] }>
 export function importSkill(
   scope: Scope,
   path: string,
-): Promise<{ ok: boolean; name: string; dir: string }> {
+): Promise<{
+  ok: boolean
+  installed: { name: string; dir: string; active: boolean; effective: SkillMeta }[]
+}> {
   return scheduleWrite('/api/skills/import', {
     method: 'POST',
     body: JSON.stringify({ scope, path }),
@@ -758,7 +763,15 @@ export function loadTools(): Promise<{ tools: ToolMeta[] }> {
 }
 
 /** 把本机上一份现成配置里的 server 并进某一层。同名不覆盖，服务端回 409。 */
-export function importMcp(scope: Scope, path: string): Promise<{ ok: boolean; names: string[] }> {
+export function importMcp(
+  scope: Scope,
+  path: string,
+): Promise<{
+  ok: boolean
+  names: string[]
+  saved: boolean
+  activation: { connected: boolean; failures: { server: string; reason: string }[] }
+}> {
   return scheduleWrite(`/api/mcp/import?scope=${scope}`, {
     method: 'POST',
     body: JSON.stringify({ path }),

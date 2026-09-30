@@ -171,7 +171,7 @@ describe('两种响应形态都要收得下', () => {
     await c.start()
     expect(c.serverInfo.name).toBe('fixture-http')
     expect(await c.listTools()).toHaveLength(1)
-    c.stop()
+    await c.stop()
   })
 
   test('text/event-stream：SSE 里的消息同样配对得上', async () => {
@@ -181,7 +181,7 @@ describe('两种响应形态都要收得下', () => {
     expect(c.serverInfo.name).toBe('fixture-http')
     const r = await c.callTool('echo', { text: '喂' })
     expect(r.content[0]?.text).toBe('回显：喂')
-    c.stop()
+    await c.stop()
   })
 })
 
@@ -196,8 +196,7 @@ describe('会话 id', () => {
     const c = client()
     await c.start()
     await c.listTools()
-    c.stop()
-
+    await c.stop()
     // 第一条（initialize）不该带，之后每一条都要带。
     expect(state.seenSessionIds[0]).toBeNull()
     expect(state.seenSessionIds.slice(1).every((s) => s === 'sess-fixture-1')).toBe(true)
@@ -209,7 +208,7 @@ describe('会话 id', () => {
     const c = client()
     await c.start()
     expect(await c.listTools()).toHaveLength(1)
-    c.stop()
+    await c.stop()
     expect(state.seenSessionIds.every((s) => s === null)).toBe(true)
   })
 
@@ -218,7 +217,7 @@ describe('会话 id', () => {
     const c = client()
     await c.start()
     await c.listTools()
-    c.stop()
+    await c.stop()
     expect(state.seenProtocolVersions.at(-1)).toBe('2025-06-18')
   })
 
@@ -227,7 +226,7 @@ describe('会话 id', () => {
     reset({ mode: 'json' })
     const c = client()
     await c.start()
-    c.stop()
+    await c.stop()
     await Bun.sleep(60)
     expect(state.deleted).toBe(true)
   })
@@ -239,7 +238,7 @@ describe('通知', () => {
     reset({ mode: 'json' })
     const c = client()
     await c.start()
-    c.stop()
+    await c.stop()
     expect(state.notifications).toContain('notifications/initialized')
   })
 })
@@ -269,7 +268,7 @@ describe('失败要能区分「配错了」和「对面挂了」', () => {
     await c.start()
     state.forceStatus = 404
     await expect(c.listTools()).rejects.toThrow(/会话已失效|重新连接/)
-    c.stop()
+    await c.stop()
   })
 
   test('5xx 明说是对面的问题', async () => {
@@ -296,7 +295,7 @@ describe('失败要能区分「配错了」和「对面挂了」', () => {
     const t0 = Date.now()
     await expect(c.start()).rejects.toThrow()
     expect(Date.now() - t0).toBeLessThan(5000)
-    c.stop()
+    await c.stop()
   })
 })
 
@@ -315,6 +314,6 @@ describe('批量加载里的 http server', () => {
     )
     expect(reg.toolSpecs.map((t) => t.name)).toEqual(['mcp__remote__echo'])
     expect(reg.failures.map((f) => f.server)).toEqual(['nope'])
-    reg.stopAll()
+    await reg.stopAll()
   }, 20_000)
 })

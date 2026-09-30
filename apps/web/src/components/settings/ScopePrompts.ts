@@ -18,7 +18,7 @@ export function newSkillPrompt(scope: Scope): string {
     `当前设置页选择的是${selected(scope)}。我们一起来做一个技能吧。` +
     '先说明技能在 qywork 里怎么被索引、什么时候会被加载，目录和 SKILL.md 长什么样；' +
     '然后问我这个技能要干什么、分几步。' +
-    `最终写入必须调用 write_skill 并明确传 scope=${scope}。` +
+    `创建技能必须调用 write_skill 并明确传 scope=${scope}。安装现成目录或 ZIP 必须用 import_skill，传同一 scope，以扫描读取结果确认生效。` +
     '如果我要迁移已有技能，必须调用 move_skill 完成迁移，成功后不能在两个作用域各留一份。'
   )
 }

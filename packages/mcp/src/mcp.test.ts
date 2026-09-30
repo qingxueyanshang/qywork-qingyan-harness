@@ -123,7 +123,7 @@ describe('握手', () => {
     await c.start()
     expect(c.serverInfo.name).toBe('fixture')
     expect(c.protocolVersion).toBe('2025-06-18')
-    c.stop()
+    await c.stop()
   })
 
   /**
@@ -135,7 +135,7 @@ describe('握手', () => {
     const c = client(entry, dir)
     await c.start()
     expect((await c.listTools()).map((t) => t.name)).toEqual(['echo'])
-    c.stop()
+    await c.stop()
   })
 
   test('命令不存在时立刻失败，不阻塞到超时', async () => {
@@ -148,7 +148,7 @@ describe('握手', () => {
     await expect(c.start()).rejects.toThrow()
     // 超时是 30 秒；能在几秒内返回就说明走的是 error 事件而不是超时。
     expect(Date.now() - started).toBeLessThan(10_000)
-    c.stop()
+    await c.stop()
   }, 20_000)
 
   test('stdout 上的 banner 不会破坏连接', async () => {
@@ -159,7 +159,7 @@ describe('握手', () => {
     expect(c.serverInfo.name).toBe('fixture')
     // 非协议行转成日志，不静默丢掉——丢掉的话 server 打的错误信息就没了。
     expect(logs.some((l) => l.includes('starting up'))).toBe(true)
-    c.stop()
+    await c.stop()
   })
 })
 
@@ -170,7 +170,7 @@ describe('tools/list 分页', () => {
     await c.start()
     // 只取第一页的话 second_page 会凭空消失，而且没有任何报错。
     expect((await c.listTools()).map((t) => t.name)).toEqual(['echo', 'second_page'])
-    c.stop()
+    await c.stop()
   })
 })
 
@@ -182,7 +182,7 @@ describe('tools/call', () => {
     const r = await c.callTool('echo', { text: '你好' })
     expect(r.isError).toBe(false)
     expect(r.content[0]?.text).toContain('你好')
-    c.stop()
+    await c.stop()
   })
 
   test('isError 是工具失败，不是协议错误 —— 不能抛', async () => {
@@ -192,7 +192,7 @@ describe('tools/call', () => {
     const r = await c.callTool('echo', {})
     expect(r.isError).toBe(true)
     expect(r.content[0]?.text).toBe('这个工具坏了')
-    c.stop()
+    await c.stop()
   })
 
   test('JSON-RPC error 转成异常，且带上 server 给的原因', async () => {
@@ -206,7 +206,7 @@ describe('tools/call', () => {
     )
     expect(err).toContain('没有这个工具')
     expect(err).toContain('-32602')
-    c.stop()
+    await c.stop()
   })
 
   test('进程退出时在飞的请求被逐个拒绝，不挂到超时', async () => {
@@ -214,8 +214,12 @@ describe('tools/call', () => {
     const c = client(entry, dir)
     await c.start()
     const inFlight = c.callTool('echo', { text: 'x' })
-    c.stop()
-    await expect(inFlight).rejects.toThrow()
+    const rejected = inFlight.then(
+      () => null,
+      (error: unknown) => error,
+    )
+    await c.stop()
+    expect(await rejected).toBeInstanceOf(Error)
   })
 })
 
@@ -226,7 +230,7 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     await c.start()
     const spec = specFor(c, (await c.listTools())[0]!)
     expect(spec.permissionEffect).toBe('execute')
-    c.stop()
+    await c.stop()
   })
 
   /**
@@ -241,7 +245,7 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     await c.start()
     const spec = specFor(c, (await c.listTools())[0]!)
     expect(spec.permissionEffect).toBe('execute')
-    c.stop()
+    await c.stop()
   })
 
   test('destructiveHint: true 会收紧到 delete', async () => {
@@ -252,7 +256,7 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     expect(spec.permissionEffect).toBe('delete')
     // 收紧的是权限轴。动作轴与它正交，恒为 call——外部 server 的能力不是本机执行。
     expect(spec.actionKind).toBe('call')
-    c.stop()
+    await c.stop()
   })
 
   test('scope 目标可按前缀 autoApprove', () => {
@@ -273,7 +277,7 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     expect(spec.objectLabel).toBe('MCP')
     expect(spec.targetExtractor?.({})).toBe(permissionLabel(c.name, def.name))
     expect(spec.objectLabel).not.toBe(spec.targetExtractor?.({}))
-    c.stop()
+    await c.stop()
   })
 
   test('不并行 —— 外部进程的并发行为无从预知', async () => {
@@ -281,7 +285,7 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     const c = client(entry, dir)
     await c.start()
     expect(specFor(c, (await c.listTools())[0]!).parallelSafe).toBe(false)
-    c.stop()
+    await c.stop()
   })
 })
 
@@ -314,7 +318,7 @@ describe('工具装配', () => {
     const out = await spec.fn({ text: '嗨' }, callCtx())
     expect(out.status).toBe('success')
     expect(out.message).toContain('嗨')
-    c.stop()
+    await c.stop()
   })
 
   test('isError 转成 failure 且保留正文 —— 模型要看得见为什么失败', async () => {
@@ -326,7 +330,7 @@ describe('工具装配', () => {
     expect(out.status).toBe('failure')
     expect(out.message).toBe('这个工具坏了')
     expect(out.errorKind).toBe('mcp_tool_error')
-    c.stop()
+    await c.stop()
   })
 
   test('中断能立刻打断等待', async () => {
@@ -339,7 +343,7 @@ describe('工具装配', () => {
     const out = await spec.fn({ text: 'x' }, callCtx(ac.signal))
     expect(out.status).toBe('failure')
     expect(out.message).toContain('已取消')
-    c.stop()
+    await c.stop()
   })
 
   /** 结果装不下本轮剩余额度：正文整份存进正文库、只投递头部，尾部不丢。 */
@@ -364,7 +368,7 @@ describe('工具装配', () => {
     expect(out.message).toContain('read_resource')
     expect(new TextDecoder().decode(landed[0]!)).toContain('尾部标记')
     expect(String(out.resources?.[0]?.resourceId)).toBe('rs_1')
-    c.stop()
+    await c.stop()
   })
 
   test('传输失败时 executed 取 true —— 副作用是否发生无法判定，只能保守', async () => {
@@ -372,7 +376,7 @@ describe('工具装配', () => {
     const c = client(entry, dir)
     await c.start()
     const spec = specFor(c, (await c.listTools())[0]!)
-    c.stop()
+    await c.stop()
     const out = await spec.fn({ text: 'x' }, callCtx())
     expect(out.status).toBe('failure')
     expect(out.executed).toBe(true)
@@ -460,7 +464,7 @@ describe('配置解析', () => {
       dir,
     )
     expect(reg.servers.map((s) => s.name)).toEqual(['on'])
-    reg.stopAll()
+    await reg.stopAll()
   })
 })
 
@@ -480,7 +484,7 @@ describe('批量加载', () => {
     expect(reg.servers.map((s) => s.name)).toEqual(['good'])
     expect(reg.failures.map((f) => f.server)).toEqual(['bad'])
     expect(reg.toolSpecs.map((t) => t.name)).toEqual(['mcp__good__echo'])
-    reg.stopAll()
+    await reg.stopAll()
   }, 20_000)
 
   test('产出的是规格不是注册 —— 同一份扩展能给多个会话各注册一遍', async () => {
@@ -497,6 +501,6 @@ describe('批量加载', () => {
     }
     expect(r1.has('mcp__fx__echo')).toBe(true)
     expect(r2.has('mcp__fx__echo')).toBe(true)
-    reg.stopAll()
+    await reg.stopAll()
   })
 })

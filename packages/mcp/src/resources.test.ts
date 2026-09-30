@@ -125,7 +125,7 @@ describe('capabilities 不再被丢掉', () => {
   test('握手声明的能力留在 LoadedServer 上', async () => {
     const { reg } = await load({ capabilities: { tools: {}, resources: {} }, serveTools: true })
     expect(reg.servers[0]?.capabilities).toEqual({ tools: {}, resources: {} })
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('声明了但未接入的能力要说出来', async () => {
@@ -134,7 +134,7 @@ describe('capabilities 不再被丢掉', () => {
     const { reg, logs } = await load({ capabilities: { prompts: {} } })
     expect(reg.servers[0]?.unsupported).toEqual(['prompts'])
     expect(logs.join('\n')).toContain('prompts')
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('产出为零时进 failures，理由里带上 server 声明了什么', async () => {
@@ -144,13 +144,13 @@ describe('capabilities 不再被丢掉', () => {
     expect(f?.reason).toContain('prompts')
     // 「没注册任何工具」和「连不上」是两件事，理由必须让人分得开。
     expect(f?.reason).toContain('握手成功')
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('一个能力都不声明、也不响应 tools/list → 说清是这两件事', async () => {
     const { reg } = await load({})
     expect(reg.failures[0]?.reason).toContain('没有声明任何能力')
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('不声明 capabilities 但正常提供 tools 的 server 照常工作', async () => {
@@ -159,13 +159,13 @@ describe('capabilities 不再被丢掉', () => {
     const { reg } = await load({ serveTools: true })
     expect(reg.toolSpecs.map((s) => s.name)).toContain('mcp__demo__ping')
     expect(reg.failures).toEqual([])
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('声明了 tools 却列不出来 → 是真故障，进 failures', async () => {
     const { reg } = await load({ capabilities: { tools: {} }, serveTools: false })
     expect(reg.failures.length).toBeGreaterThan(0)
-    reg.stopAll()
+    await reg.stopAll()
   })
 })
 
@@ -174,7 +174,7 @@ describe('resource 工具', () => {
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     const names = reg.toolSpecs.map((s) => s.name).sort()
     expect(names).toEqual(['mcp__demo__fetch_resource', 'mcp__demo__list_resources'])
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('没声明 resources 就不注册', async () => {
@@ -182,13 +182,13 @@ describe('resource 工具', () => {
     // 因为它没法从那条错误看出「这个 server 没这个能力」。
     const { reg } = await load({ capabilities: { tools: {} }, serveTools: true })
     expect(reg.toolSpecs.map((s) => s.name)).not.toContain('mcp__demo__list_resources')
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('工具名不叫 read_resource（那个名字被内置工具占了，而且语义相反）', async () => {
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     expect(reg.toolSpecs.map((s) => s.name)).not.toContain('read_resource')
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('工具名带 mcp__ 前缀（sink 的落盘判据靠它）', async () => {
@@ -196,7 +196,7 @@ describe('resource 工具', () => {
     // 而且不留 resource id——模型连「还有没看到的部分」都不知道。
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     for (const s of reg.toolSpecs) expect(s.name.startsWith('mcp__')).toBe(true)
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('权限声明是 read，scope 指向 mcp:<server>/resource', async () => {
@@ -207,7 +207,7 @@ describe('resource 工具', () => {
       expect(s.actionKind).toBe('call')
       expect(s.targetExtractor?.({})).toBe('mcp:demo/resource')
     }
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('列清单跟完游标，且只有元数据不含正文', async () => {
@@ -223,7 +223,7 @@ describe('resource 工具', () => {
     expect(out.message).toContain('file:///b.md')
     // 清单里**不能**有正文——整个方案 D 的前提就是「一个字节不进上下文」。
     expect(out.message).not.toContain('# 正文')
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('按 uri 读正文', async () => {
@@ -232,7 +232,7 @@ describe('resource 工具', () => {
     const out = await fetch.fn({ uri: 'file:///a.md' }, ctx())
     expect(out.status).toBe('success')
     expect(out.message).toContain('# 正文')
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('二进制只留一行占位，不内联 base64', async () => {
@@ -246,14 +246,14 @@ describe('resource 工具', () => {
     const out = await fetch.fn({ uri: 'file:///x.png' }, ctx())
     expect(out.message).toContain('二进制 resource')
     expect(out.message).not.toContain('AAAAAAAA')
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('空 uri 直接失败，不发请求', async () => {
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     const fetch = reg.toolSpecs.find((s) => s.name.endsWith('fetch_resource'))!
     expect((await fetch.fn({ uri: '  ' }, ctx())).status).toBe('failure')
-    reg.stopAll()
+    await reg.stopAll()
   })
 })
 
@@ -318,7 +318,7 @@ describe('协议版本协商', () => {
       'mcp__demo__fetch_resource',
       'mcp__demo__list_resources',
     ])
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('旧 server：不发 server/discover，沿用 initialize 的能力', async () => {
@@ -330,7 +330,7 @@ describe('协议版本协商', () => {
     })
     expect(logs.join('\n')).not.toContain('server/discover')
     expect(reg.toolSpecs).toHaveLength(2)
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('声明新版本却没实现 server/discover：记一行，沿用 initialize 那份', async () => {
@@ -342,7 +342,7 @@ describe('协议版本协商', () => {
     })
     expect(logs.join('\n')).toContain('server/discover')
     expect(reg.toolSpecs).toHaveLength(2)
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('两处都给了取并集，不是替换', async () => {
@@ -355,7 +355,7 @@ describe('协议版本协商', () => {
       serveResources: true,
     })
     expect(Object.keys(reg.servers[0]?.capabilities ?? {}).sort()).toEqual(['resources', 'tools'])
-    reg.stopAll()
+    await reg.stopAll()
   })
 
   test('server 只认旧版本时逐档回退，最终连得上', async () => {
@@ -370,6 +370,6 @@ describe('协议版本协商', () => {
     expect(reg.failures).toEqual([])
     expect(reg.toolSpecs.map((s) => s.name)).toContain('mcp__demo__ping')
     expect(logs.join('\n')).toContain('回退')
-    reg.stopAll()
+    await reg.stopAll()
   })
 })

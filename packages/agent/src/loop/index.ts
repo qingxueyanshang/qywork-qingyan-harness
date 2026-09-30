@@ -146,6 +146,7 @@ export class AgentLoop {
         }
 
         yield* injectFollowUps(this.deps, run)
+        await this.deps.beforeRequest?.()
 
         // `signal` 不在这里合成：每次尝试自带一个中止器，所以装配只出请求体，
         // 信号在尝试循环里逐次接上。

@@ -244,7 +244,7 @@ async function runExec(args: string[]): Promise<number> {
     process.off('SIGTERM', onSignal)
     // 插件与 MCP server 都是子进程。不收掉的话 `qy exec` 退出后它们可能仍在运行，
     // 而 CI 里那表现为「命令跑完了但脚本挂住不返回」。
-    session.dispose()
+    await session.dispose()
     content.close()
     store.close()
   }
@@ -355,9 +355,9 @@ async function runServe(args: string[]): Promise<number> {
   // 那条路径不会走到，留下的 qy 会占着端口和 SQLite 的 WAL 锁，
   // 下次启动直接起不来。所以由 sidecar 自己盯着父进程，谁死都不会留孤儿。
   if (flags.parentPid) {
-    watchParent(flags.parentPid, () => {
+    watchParent(flags.parentPid, async () => {
       log.info('serve', '父进程已退出，停止服务', { parentPid: flags.parentPid })
-      handle.stop()
+      await handle.stop()
       store.close()
       process.exit(0)
     })
@@ -397,10 +397,10 @@ async function runServe(args: string[]): Promise<number> {
   process.stderr.write(`${DIM}按 Ctrl-C 停止服务${RESET}\n`)
 
   await new Promise<void>((done) => {
-    const stop = () => {
+    const stop = async () => {
       process.stderr.write('\n正在停止…\n')
       log.info('serve', '收到停止信号，停止服务')
-      handle.stop()
+      await handle.stop()
       store.close()
       done()
     }

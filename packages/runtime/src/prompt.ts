@@ -88,6 +88,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line: '- 技能读取：有既定步骤的任务，先看末尾清单并用 read_skill 读正文。用户用 `#技能名` 明确选中时，先读取该技能再执行。',
   },
   {
+    tool: 'import_skill',
+    line: '- 安装现成技能：目录或 ZIP 用 import_skill，完整保留包内资源；不执行包内安装脚本，不自行猜安装路径。以工具的扫描、读取和实际生效副本为准，再用 read_skill 读取正文。',
+  },
+  {
     tool: 'write_skill',
     line: '- 技能写入：新建或更新用 write_skill；默认 scope=project，用户明确指定全局时必须传 scope=global。',
   },

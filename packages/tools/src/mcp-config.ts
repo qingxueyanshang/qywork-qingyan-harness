@@ -24,7 +24,7 @@ function writableScope(raw: unknown): 'project' | 'global' | null {
 export const writeMcpServerTool: ToolSpec = {
   name: 'write_mcp_server',
   description:
-    '新增或更新一个 MCP server。config_json 只写单个 server 的配置对象。默认写项目层；用户明确要求全局时 scope 必须传 global。写完需要重连后生效。',
+    '新增或更新一个 MCP server。config_json 只写单个 server 的配置对象。默认写项目层；用户明确要求全局时 scope 必须传 global。保存后连接并发现工具，回执区分配置保存与连接结果。',
   parameters: {
     type: 'object',
     properties: {
@@ -59,10 +59,15 @@ export const writeMcpServerTool: ToolSpec = {
     if (!ctx.mcpConfig) return { status: 'failure', message: '本次执行没有 MCP 配置通道' }
 
     const result = await ctx.mcpConfig.writeServer({ name, configJson, scope })
-    if (!result.ok) return { status: 'failure', message: result.error ?? '写入 MCP 配置失败' }
+    if (!result.ok)
+      return {
+        status: 'failure',
+        message: result.error ?? '写入 MCP 配置失败',
+        data: { ...result },
+      }
     return {
-      status: 'success',
-      message: `已${result.replaced ? '更新' : '新增'}${scope === 'global' ? '全局' : '项目'} MCP 服务 ${name}；重连后生效`,
+      status: result.activation?.connected ? 'success' : 'failure',
+      message: `已${result.replaced ? '更新' : '新增'}${scope === 'global' ? '全局' : '项目'} MCP 服务 ${name}；${activationMessage(result.activation)}${result.activation?.effectiveScopes?.[name] && result.activation.effectiveScopes[name] !== scope ? `；当前生效的是 ${result.activation.effectiveScopes[name]} 层同名服务` : ''}`,
       data: { name, scope, ...result },
     }
   },
@@ -102,11 +107,24 @@ export const moveMcpServerTool: ToolSpec = {
     if (!ctx.mcpConfig) return { status: 'failure', message: '本次执行没有 MCP 配置通道' }
 
     const result = await ctx.mcpConfig.moveServer({ name, fromScope: from, toScope: to })
-    if (!result.ok) return { status: 'failure', message: result.error ?? '迁移 MCP 配置失败' }
+    if (!result.ok)
+      return {
+        status: 'failure',
+        message: result.error ?? '迁移 MCP 配置失败',
+        data: { ...result },
+      }
     return {
-      status: 'success',
-      message: `已把 MCP 服务 ${name} 从 ${from} 层迁移到 ${to} 层，只保留目标配置；重连后生效`,
+      status: result.activation?.connected ? 'success' : 'failure',
+      message: `已把 MCP 服务 ${name} 从 ${from} 层迁移到 ${to} 层，只保留目标配置；${activationMessage(result.activation)}`,
       data: { name, from_scope: from, to_scope: to, ...result },
     }
   },
+}
+
+function activationMessage(activation: import('@qywork/agent').McpActivation | undefined): string {
+  if (!activation) return '配置已保存，尚未取得连接结果'
+  if (activation.failures.length)
+    return `配置已保存，连接或能力装配失败：${activation.failures.map((f) => `${f.server}：${f.reason}`).join('；')}`
+  if (activation.inactive.length) return `配置已保存，服务已禁用：${activation.inactive.join('、')}`
+  return `已连接，工具将在本批结束后的下一次模型请求生效：${activation.toolNames.join('、') || '无可用工具'}`
 }

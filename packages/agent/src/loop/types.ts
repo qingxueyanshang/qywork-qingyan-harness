@@ -49,6 +49,8 @@ export interface LoopDeps {
    * 除 `emit` 外的执行上下文。**`emit` 不在这里**——它要带的 stepId 只有 loop 有，
    * 理由写在 `ToolContext.emit` 上方。
    */
+  /** 工具批次结束后、构造下一请求前更新扩展。 */
+  beforeRequest?: () => Promise<void>
   makeToolContext(runId: RunId, emit: (e: AgentEvent) => void): ToolContextBase
   /** 每个 step 的持久化回调。事件发出前必须先落盘。 */
   persist: LoopPersistence
