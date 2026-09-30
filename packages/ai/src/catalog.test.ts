@@ -31,6 +31,7 @@ test('历史推理上线规则按协议与目录声明', () => {
   expect(rule('mimo-v2.6-pro', 'anthropic_messages')).toEqual({ opaque: true, text: 'all' })
   expect(rule('grok-4.7', 'openai_responses')).toEqual({ opaque: true, text: 'none' })
   expect(rule('gpt-6-sol', 'openai_responses')).toEqual({ opaque: false, text: 'none' })
+  expect(rule('gpt-6.1-sol', 'openai_responses')).toEqual({ opaque: false, text: 'none' })
   expect(rule('deepseek-flash', 'openai_chat_completions')).toEqual({ opaque: false, text: 'all' })
   expect(rule('grok-4.7', 'openai_chat_completions')).toEqual({
     opaque: false,
@@ -595,9 +596,10 @@ describe('长上下文阶梯价', () => {
     expect(computeCost(astra, { ...usage, cacheWriteTokens: 72_001 })).toBe(4.750025)
   })
 
-  test('GPT-6 Sol 与 Luna 在 272K 边界切换完整计费档', () => {
+  test('GPT-6 Sol、GPT-6.1 Sol 与 Luna 在 272K 边界切换完整计费档', () => {
     for (const [id, short, long] of [
       ['gpt-6-sol', [2, 10, 0.2, 2.5], [4, 15, 0.4, 5]],
+      ['gpt-6.1-sol', [2, 10, 0.1, 2.5], [4, 15, 0.2, 5]],
       ['gpt-6-luna', [0.1, 0.5, 0.01, 0.125], [0.2, 0.75, 0.02, 0.25]],
     ] as const) {
       const model = lookupModel(id, 'openai_responses')
@@ -611,7 +613,21 @@ describe('长上下文阶梯价', () => {
         ...short,
       ])
       expect([after.input, after.output, after.cacheRead, after.cacheWrite5m]).toEqual([...long])
+      expect(before.cacheWrite1h).toBe(short[3])
+      expect(after.cacheWrite1h).toBe(long[3])
     }
+  })
+
+  test('GPT-6.1 Sol 的缓存读写计入 272K 分界，整条请求按新缓存价格计费', () => {
+    const sol = lookupModel('gpt-6.1-sol', 'openai_responses')
+    const usage = {
+      inputTokens: 100_000,
+      cachedTokens: 100_000,
+      cacheWriteTokens: 72_000,
+      outputTokens: 10_000,
+    }
+    expect(computeCost(sol, usage)).toBeCloseTo(0.49, 10)
+    expect(computeCost(sol, { ...usage, cacheWriteTokens: 72_001 })).toBeCloseTo(0.930005, 10)
   })
 
   test('GPT-5.6 长上下文连缓存写入价一起换档', () => {

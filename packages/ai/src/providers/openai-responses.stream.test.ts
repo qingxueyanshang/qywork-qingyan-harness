@@ -23,7 +23,12 @@ import { builtinCatalog, lookupModel } from '../catalog.ts'
 import { ProviderError } from '../errors.ts'
 import { buildAdapter } from '../factory.ts'
 import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
-import { PROVIDER_HTTP, type ProviderEvent, type ProviderUsage } from '../types.ts'
+import {
+  type ChatRequest,
+  PROVIDER_HTTP,
+  type ProviderEvent,
+  type ProviderUsage,
+} from '../types.ts'
 import { OpenAIResponsesAdapter } from './openai-responses.ts'
 
 // ───────────────────────── 实测报文 ─────────────────────────
@@ -454,7 +459,7 @@ test('响应建立事件早于模型内容', async () => {
 })
 
 test('GPT-6 内置规格通过 Responses 发送工具、输出上限与推理档位', async () => {
-  for (const id of ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']) {
+  for (const id of ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna']) {
     const spec = builtinCatalog().find((m) => m.id === id)!
     expect(spec.provider).toBe('openai_responses')
     const adapter = buildAdapter({
@@ -497,6 +502,83 @@ test('GPT-6 内置规格通过 Responses 发送工具、输出上限与推理档
       }
     }
   }
+})
+
+test('GPT-6.1 Sol 的工具调用续轮保留 call_id，使用 strict schema 且不回传思考摘要', async () => {
+  const sol = buildAdapter({
+    kind: 'openai_responses',
+    model: 'gpt-6.1-sol',
+    baseUrl: BASE,
+    apiKey: 'sk-test',
+  })
+  const request: ChatRequest = {
+    model: 'gpt-6.1-sol',
+    system: [],
+    messages: [{ role: 'user', content: '北京天气如何？' }],
+    tools: [
+      {
+        name: 'get_weather',
+        description: '查询天气',
+        strict: true,
+        parameters: {
+          type: 'object',
+          properties: { city: { type: 'string' }, unit: { type: 'string' } },
+          required: ['city'],
+        },
+      },
+    ],
+    maxOutputTokens: 128_000,
+    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+    effort: 'high',
+  }
+  // 复用协议夹具验证客户端续轮，不作为 GPT-6.1 Sol 官方端点实测。
+  const collect = async (body: string) => {
+    script = { status: 200, body, contentType: 'text/event-stream', headers: {}, delayMs: 0 }
+    const events: ProviderEvent[] = []
+    for await (const event of sol.stream(request)) events.push(event)
+    return events
+  }
+  const first = await collect(TOOL_RUN)
+  const calls = first.find((e) => e.type === 'tool_calls')
+  expect(calls?.calls).toEqual([{ id: CALL_ID, name: 'get_weather', arguments: { city: '北京' } }])
+  expect(first.at(-1)).toMatchObject({ type: 'done', stopReason: 'tool_use' })
+  expect(lastBody.tools).toHaveLength(1)
+  expect(lastBody).toMatchObject({
+    tools: [
+      {
+        type: 'function',
+        name: 'get_weather',
+        description: '查询天气',
+        strict: true,
+        parameters: {
+          type: 'object',
+          properties: { city: { type: 'string' }, unit: { type: ['string', 'null'] } },
+          required: ['city', 'unit'],
+          additionalProperties: false,
+        },
+      },
+    ],
+  })
+  request.messages.push(
+    { role: 'assistant', content: '', reasoningContent: '先查天气', toolCalls: calls!.calls },
+    { role: 'tool', toolCallId: CALL_ID, content: '晴，25°C' },
+  )
+  const second = await collect(TEXT_RUN)
+  expect(lastBody.input).toHaveLength(3)
+  expect(lastBody).toMatchObject({
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: '北京天气如何？' }] },
+      {
+        type: 'function_call',
+        call_id: CALL_ID,
+        name: 'get_weather',
+        arguments: '{"city":"北京"}',
+      },
+      { type: 'function_call_output', call_id: CALL_ID, output: '晴，25°C' },
+    ],
+  })
+  expect(second.some((e) => e.type === 'text_delta')).toBe(true)
+  expect(second.at(-1)).toMatchObject({ type: 'done', stopReason: 'end_turn' })
 })
 
 describe('推理增量：两种事件名都要认', () => {
