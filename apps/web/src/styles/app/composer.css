@@ -107,10 +107,6 @@
   font: inherit;
   font-variant-numeric: tabular-nums;
 }
-.run-jump:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
 .changes-chip .add {
   color: var(--success);
 }

@@ -94,6 +94,8 @@ export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
  *    **这就是「点了会话没反应」**。
  */
 export async function selectConversation(id: string): Promise<void> {
+  const current = state.views[id]
+  if (state.activeConversation === id && current && current.history.loading !== 'unloaded') return
   setState({ activeConversation: id, fileChanges: [] })
   discardPace()
   // 建表与订阅在这里显式走一次，不等那个 effect：下面紧接着就 await，

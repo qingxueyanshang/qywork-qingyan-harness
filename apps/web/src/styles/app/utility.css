@@ -242,12 +242,14 @@
  * 往后挪不改变结果（它本来就赢），只是让两个判据不再互相打架。
  */
 
-/*
- * 空会话：输入区上浮居中，会话区收成 0 高。
- * 不加任何引导文案（需求 5、14）——输入框本身已经说明了该做什么。
- */
+/* 空会话居中；历史加载和错误提示不占据输入区的布局空间。 */
+.main.empty {
+  position: relative;
+}
 .main.empty .transcript {
-  flex: 0 1 auto;
+  position: absolute;
+  inset: 0 0 auto;
+  max-height: 50%;
 }
 .main.empty .composer-wrap {
   margin-top: auto;

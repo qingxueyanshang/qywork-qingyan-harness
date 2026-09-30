@@ -2,6 +2,7 @@
  * 覆盖 `App.tsx` 挂在根上的两个委托：`openLink`（正文里的链接落到右侧面板）
  * 与 `copyCode`（代码块右上角的复制按钮）。两者的触发元素全部由 markdown 渲染产出，
  * 根上这一处是它们唯一的落点。
+ * 另覆盖会话切换的输入区布局与运行位置、重复选择、迟到请求与失败重试。
  *
  * 普通客户端验证网页预览；桌面端用原生命令桩验证文件地址、工作区归属与页签选择。
  * 真实 WebView2 的加载与布局需另做桌面验收。
@@ -267,4 +268,146 @@ describe('连接恢复', () => {
       store.setState({ activeConversation: null, conversations: [], views: {} })
     }
   })
+})
+
+test('快速切换会话保持已确认布局，重复选择不重拉，迟到请求与失败不冒充空会话', async () => {
+  const { render } = await import('solid-js/web')
+  const { App } = await import('./App.tsx')
+  const store = await import('./lib/store/index.ts')
+  const originalApi = store.client.api
+  const originalConnect = store.client.connect
+  const originalIdle = window.requestIdleCallback
+  const originalConnection = store.state.connection
+  const pending = new Map<string, (page: unknown) => void>()
+  const failures = new Map<string, (reason: Error) => void>()
+  const signals = new Map<string, AbortSignal | null | undefined>()
+  const requests: string[] = []
+  const page = (id: string, content?: string) => ({
+    messages: content
+      ? [{ id: `msg_${id}`, conversationId: id, role: 'user', content, createdAt: 1 }]
+      : [],
+    runs: [],
+    steps: [],
+    todos: [],
+    workflowStarts: [],
+    nextCursor: null,
+    live: null,
+  })
+  store.client.connect = () => {}
+  window.requestIdleCallback = () => 0
+  store.client.api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
+    if (path === '/api/models') return { providers: [], library: [] } as T
+    if (path === '/api/workspaces') return { workspaces: [] } as T
+    if (path.includes('/history?')) {
+      const id = path.split('/')[3]!
+      requests.push(id)
+      signals.set(id, init?.signal)
+      return new Promise<T>((resolve, reject) => {
+        pending.set(id, (value) => resolve(value as T))
+        failures.set(id, reject)
+      })
+    }
+    if (path.endsWith('/context')) return { context: null } as T
+    if (path.endsWith('/goal')) return { goal: null } as T
+    if (path.endsWith('/queue')) return { queue: [] } as T
+    throw new Error(`未预期请求：${path}`)
+  }
+  store.setWorkspace(null)
+  store.setPanelMaximized(false)
+  store.setState({ activeConversation: null, conversations: [], views: {}, connection: 'closed' })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(App, host)
+  const main = host.querySelector('.main')!
+  const input = host.querySelector('.composer-input')!
+  const expectLayout = (empty: boolean) => {
+    expect(main.classList.contains('empty')).toBe(empty)
+    expect(host.querySelector('.run-context') !== null).toBe(empty)
+  }
+  try {
+    expectLayout(true)
+    store.setState('activeConversation', 'cv_layout_a')
+    expect(store.view().history.loading).toBe('unloaded')
+    const a = store.selectConversation('cv_layout_a')
+    expect(host.querySelector('.history-note')?.textContent).toContain('正在加载会话')
+    expectLayout(true)
+    await store.selectConversation('cv_layout_a')
+    expect(requests.filter((id) => id === 'cv_layout_a')).toHaveLength(1)
+    expect(signals.get('cv_layout_a')?.aborted).toBe(false)
+
+    const b = store.selectConversation('cv_layout_b')
+    expectLayout(true)
+    pending.get('cv_layout_a')!(page('cv_layout_a', '迟到的 A'))
+    await a
+    expectLayout(true)
+    expect(host.textContent).not.toContain('迟到的 A')
+    pending.get('cv_layout_b')!(page('cv_layout_b'))
+    await b
+    expectLayout(true)
+    expect(host.querySelector('.composer-input')).toBe(input)
+    await store.selectConversation('cv_layout_b')
+    expect(requests.filter((id) => id === 'cv_layout_b')).toHaveLength(1)
+    expect(store.view().history.loading).toBeNull()
+
+    const content = store.selectConversation('cv_layout_content')
+    pending.get('cv_layout_content')!(page('cv_layout_content', '已有聊天内容'))
+    await content
+    expectLayout(false)
+    expect(host.textContent).toContain('已有聊天内容')
+
+    const next = store.selectConversation('cv_layout_next')
+    expectLayout(false)
+    const last = store.selectConversation('cv_layout_last')
+    expectLayout(false)
+    pending.get('cv_layout_next')!(page('cv_layout_next'))
+    await next
+    expectLayout(false)
+    pending.get('cv_layout_last')!(page('cv_layout_last', '另一会话正文'))
+    await last
+    expectLayout(false)
+    expect(host.textContent).toContain('另一会话正文')
+    await store.selectConversation('cv_layout_last')
+    expect(requests.filter((id) => id === 'cv_layout_last')).toHaveLength(1)
+    expect(store.view().history.loading).toBeNull()
+
+    const refresh = store.reloadActiveConversation()
+    expectLayout(false)
+    pending.get('cv_layout_last')!(page('cv_layout_last', '另一会话正文'))
+    await refresh
+    expectLayout(false)
+
+    const failed = store.selectConversation('cv_layout_failed')
+    expectLayout(false)
+    failures.get('cv_layout_failed')!(new Error('历史请求失败'))
+    await failed
+    expectLayout(false)
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('历史请求失败')
+    const retry = store.retryConversationHistory('cv_layout_failed')
+    expectLayout(false)
+    pending.get('cv_layout_failed')!(page('cv_layout_failed'))
+    await retry
+    expectLayout(true)
+
+    const emptyFailure = store.selectConversation('cv_layout_empty_failed')
+    expectLayout(true)
+    failures.get('cv_layout_empty_failed')!(new Error('空会话切换失败'))
+    await emptyFailure
+    expectLayout(true)
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('空会话切换失败')
+    expect(host.querySelector('.composer-input')).toBe(input)
+  } finally {
+    for (const resolve of pending.values()) resolve(page('cleanup'))
+    dispose()
+    host.remove()
+    store.client.api = originalApi
+    store.client.connect = originalConnect
+    window.requestIdleCallback = originalIdle
+    store.setState({
+      activeConversation: null,
+      conversations: [],
+      views: {},
+      context: null,
+      connection: originalConnection,
+    })
+  }
 })

@@ -84,7 +84,11 @@ export function ConversationHistoryBoundary(props: {
 
   return (
     <Show
-      when={history().loading !== null || history().error !== null || history().nextCursor !== null}
+      when={
+        (history().loading !== 'unloaded' && history().loading !== null) ||
+        history().error !== null ||
+        history().nextCursor !== null
+      }
     >
       <div class="history-boundary" aria-live="polite">
         <Show when={history().loading === 'initial'}>
