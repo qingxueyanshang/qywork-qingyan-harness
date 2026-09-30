@@ -5,8 +5,10 @@
  * 收回；草稿属于用户未提交的数据，鼠标离开也不能替他藏起来。
  *
  * 另锁主按钮的一条判据：忙态含在跑的子 agent，那时它仍是停止。
+ * 补全菜单以输入框定位，运行位置行的显隐不改变定位基准，选择候选不提交表单。
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
 beforeAll(() => {
@@ -22,7 +24,7 @@ afterAll(async () => {
   await GlobalRegistrator.unregister()
 })
 
-async function mountComposer(maximized = true) {
+async function mountComposer(maximized = true, empty: () => boolean = () => true) {
   const { render } = await import('solid-js/web')
   const { Composer } = await import('./Composer.tsx')
   const store = await import('../lib/store/index.ts')
@@ -35,7 +37,7 @@ async function mountComposer(maximized = true) {
   }
   const host = document.createElement('div')
   document.body.append(host)
-  const dispose = render(() => <Composer empty={true} />, host as unknown as HTMLElement)
+  const dispose = render(() => <Composer empty={empty()} />, host as unknown as HTMLElement)
   const wrap = host.querySelector('.composer-wrap') as HTMLDivElement
   const reveal = host.querySelector('.composer-reveal') as HTMLButtonElement
   const textarea = host.querySelector('.composer-input') as HTMLTextAreaElement
@@ -78,6 +80,48 @@ function input(textarea: HTMLTextAreaElement, value: string) {
   }
   textarea.dispatchEvent(new InputEvent('input', { bubbles: true, data: value }))
 }
+
+test('补全菜单的定位基准不受运行位置行影响，选择候选不提交', async () => {
+  const { createSignal } = await import('solid-js')
+  const [empty, setEmpty] = createSignal(true)
+  const { dispose, host, textarea } = await mountComposer(false, empty)
+  const style = document.createElement('style')
+  style.textContent = readFileSync(new URL('../styles/app/composer.css', import.meta.url), 'utf8')
+  document.head.append(style)
+  try {
+    const form = host.querySelector('form')!
+    let submitted = false
+    form.addEventListener('submit', (event) => {
+      event.preventDefault()
+      submitted = true
+    })
+    for (const isEmpty of [true, false, true]) {
+      setEmpty(isEmpty)
+      input(textarea, '/')
+      const menu = host.querySelector<HTMLElement>('[role="listbox"]')!
+      expect(menu).not.toBeNull()
+      expect(host.querySelector('.run-context') !== null).toBe(isEmpty)
+      expect(window.getComputedStyle(menu).position).toBe('absolute')
+      let anchor = menu.parentElement
+      while (anchor) {
+        const position = window.getComputedStyle(anchor).position
+        if (position && position !== 'static') break
+        anchor = anchor.parentElement
+      }
+      expect(anchor).toBe(form)
+      const goal = Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="option"]')).find(
+        (option) => option.querySelector('code')?.textContent === '/goal',
+      )!
+      expect(goal.type).toBe('button')
+      click(goal)
+      expect(textarea.value).toBe('/goal ')
+      expect(submitted).toBe(false)
+    }
+  } finally {
+    style.remove()
+    dispose()
+  }
+})
 
 describe('放大面板里的输入区', () => {
   test('上下文详情不显示计量来源字段', async () => {

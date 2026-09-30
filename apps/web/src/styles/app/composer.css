@@ -267,6 +267,7 @@
 }
 
 .composer {
+  position: relative;
   background: transparent;
 }
 .composer-body {
@@ -657,8 +658,8 @@
 .composer-pop {
   position: absolute;
   bottom: 100%;
-  left: var(--s-5);
-  width: min(560px, calc(100% - var(--s-5) - var(--s-5)));
+  left: 0;
+  width: min(560px, 100%);
   z-index: 25;
   margin-bottom: 6px;
   padding: var(--s-1);
@@ -1010,13 +1011,12 @@
   }
 
   /*
-   * 四块都属于同一份输入表面：运行位置、整轮状态、补全面板和输入卡。
+   * 运行位置、整轮状态和输入卡共用停靠状态，补全菜单随输入卡显示。
    * 收起时保留布局高度但不接指针，面板下方的文字仍能选中；展开只做 10px 位移，
    * 不缩放文字，避免 CodeMirror 旁边出现一瞬间的模糊字体。
    */
   .app.panel-max .composer-wrap > .run-context,
   .app.panel-max .composer-wrap > .run-status,
-  .app.panel-max .composer-wrap > .composer-pop,
   .app.panel-max .composer-wrap > .composer {
     visibility: hidden;
     opacity: 0;
@@ -1029,7 +1029,6 @@
    */
   .app.panel-max .composer-wrap.panel-dock-ready > .run-context,
   .app.panel-max .composer-wrap.panel-dock-ready > .run-status,
-  .app.panel-max .composer-wrap.panel-dock-ready > .composer-pop,
   .app.panel-max .composer-wrap.panel-dock-ready > .composer {
     will-change: opacity, transform;
     transition:
@@ -1039,7 +1038,6 @@
   }
   .app.panel-max .composer-wrap.panel-dock-open > .run-context,
   .app.panel-max .composer-wrap.panel-dock-open > .run-status,
-  .app.panel-max .composer-wrap.panel-dock-open > .composer-pop,
   .app.panel-max .composer-wrap.panel-dock-open > .composer {
     visibility: visible;
     opacity: 1;
@@ -1050,7 +1048,6 @@
       visibility 0s;
   }
   .app.panel-max .composer-wrap.panel-dock-open > .run-context,
-  .app.panel-max .composer-wrap.panel-dock-open > .composer-pop,
   .app.panel-max .composer-wrap.panel-dock-open > .composer {
     pointer-events: auto;
   }
@@ -1070,7 +1067,6 @@
 @media (min-width: 821px) and (prefers-reduced-motion: reduce) {
   .app.panel-max .composer-wrap > .run-context,
   .app.panel-max .composer-wrap > .run-status,
-  .app.panel-max .composer-wrap > .composer-pop,
   .app.panel-max .composer-wrap > .composer,
   .app.panel-max .composer-reveal,
   .app.panel-max .composer-reveal > span {

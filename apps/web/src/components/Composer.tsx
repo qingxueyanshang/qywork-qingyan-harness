@@ -899,49 +899,6 @@ export function Composer(props: { empty: boolean }) {
 
       <RunStatus />
 
-      {/* 输入补全向上开：输入区贴着窗口底部。命令、技能与调用目标共用一套尺寸和键盘行为。 */}
-      <Show when={pickerOpen()}>
-        <div class="composer-pop" role="listbox" aria-label="命令与引用">
-          <For each={pickerOptions()}>
-            {(option, i) => {
-              const icon = () =>
-                option.kind === 'command' ? option.command.icon : option.item.icon
-              const name = () =>
-                option.kind === 'command' ? `/${option.command.slash}` : `@${option.item.name}`
-              const displayName = () => {
-                if (option.kind === 'command') return name()
-                return `${mentionQuery(text())?.sigil ?? '@'}${option.item.name}`
-              }
-              const label = () =>
-                option.kind === 'command' ? option.command.label : option.item.label
-              const hint = () =>
-                option.kind === 'command' ? (option.command.hint ?? '') : option.item.hint
-              return (
-                <button
-                  class="composer-option"
-                  classList={{ active: i() === menuCursor() }}
-                  type="button"
-                  role="option"
-                  aria-selected={i() === menuCursor()}
-                  onMouseEnter={() => setMenuCursor(i())}
-                  onClick={() => pickOption(option)}
-                >
-                  <span class="composer-option-icon">{icon()({ size: 14 }) as never}</span>
-                  <code class="composer-option-name">{displayName()}</code>
-                  <span class="composer-option-label truncate">{label()}</span>
-                  <Show when={hint()}>
-                    <span class="composer-option-hint truncate">{hint()}</span>
-                  </Show>
-                </button>
-              )
-            }}
-          </For>
-          <Show when={pickerNote()}>
-            {(note) => <div class="composer-pop-state">{note()}</div>}
-          </Show>
-        </div>
-      </Show>
-
       <form
         id="conversation-composer"
         class="composer"
@@ -950,6 +907,49 @@ export function Composer(props: { empty: boolean }) {
           submit()
         }}
       >
+        {/* 补全菜单以输入框定位，运行位置行不参与偏移计算。 */}
+        <Show when={pickerOpen()}>
+          <div class="composer-pop" role="listbox" aria-label="命令与引用">
+            <For each={pickerOptions()}>
+              {(option, i) => {
+                const icon = () =>
+                  option.kind === 'command' ? option.command.icon : option.item.icon
+                const name = () =>
+                  option.kind === 'command' ? `/${option.command.slash}` : `@${option.item.name}`
+                const displayName = () => {
+                  if (option.kind === 'command') return name()
+                  return `${mentionQuery(text())?.sigil ?? '@'}${option.item.name}`
+                }
+                const label = () =>
+                  option.kind === 'command' ? option.command.label : option.item.label
+                const hint = () =>
+                  option.kind === 'command' ? (option.command.hint ?? '') : option.item.hint
+                return (
+                  <button
+                    class="composer-option"
+                    classList={{ active: i() === menuCursor() }}
+                    type="button"
+                    role="option"
+                    aria-selected={i() === menuCursor()}
+                    onMouseEnter={() => setMenuCursor(i())}
+                    onClick={() => pickOption(option)}
+                  >
+                    <span class="composer-option-icon">{icon()({ size: 14 }) as never}</span>
+                    <code class="composer-option-name">{displayName()}</code>
+                    <span class="composer-option-label truncate">{label()}</span>
+                    <Show when={hint()}>
+                      <span class="composer-option-hint truncate">{hint()}</span>
+                    </Show>
+                  </button>
+                )
+              }}
+            </For>
+            <Show when={pickerNote()}>
+              {(note) => <div class="composer-pop-state">{note()}</div>}
+            </Show>
+          </div>
+        </Show>
+
         {/* Goal 与等待队列共用输入框顶部的状态栏栈：目标固定在上，队列按顺序在下。
             两者同时出现也只有一个外框、一套纵向次序，不互相覆盖。 */}
         <div class="composer-rails">
