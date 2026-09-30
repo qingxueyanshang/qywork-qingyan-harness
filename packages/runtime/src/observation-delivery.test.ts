@@ -204,6 +204,7 @@ function 快照(elements: DesktopElement[], observationId = 'do_1'): DesktopSnap
 function desktopPort(table: DesktopElement[]): DesktopPort {
   const after = 快照(table, 'do_2')
   return {
+    foregroundEnabled: () => true,
     windows: async () => [{ windowId: 'dw_1', app: '合成应用', title: '合成标题 🙂' }],
     observe: async () => 快照(table),
     elements: (windowId, observationId) =>

@@ -407,6 +407,7 @@ export class DesktopCoordinator {
     }
     this.#leases.set(lease.owner, lease)
     return {
+      foregroundEnabled: () => this.#bridge.foregroundEnabled(),
       windows: () => this.#windowList(lease),
       observe: (input) => this.#observe(lease, input),
       elements: (windowId, observationId) => this.#elements(lease, windowId, observationId),

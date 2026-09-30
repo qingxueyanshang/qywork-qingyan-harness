@@ -73,7 +73,10 @@ const BASES_KEY = 'desktop:bases'
  */
 const MIN_UNCHANGED_SHARE = 0.5
 
-type DesktopResultContext = Pick<ToolContext, 'sink' | 'contextWindow' | 'density' | 'state'>
+type DesktopResultContext = Pick<
+  ToolContext,
+  'sink' | 'contextWindow' | 'density' | 'state' | 'desktop'
+>
 
 type Actions = DesktopElement['actions']
 
@@ -152,7 +155,10 @@ export interface DesktopResultParts {
 export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const { ctx } = input
   const { shown: snapshot, hits } = viewOf(input.snapshot, input.filter)
-  const receipt = input.receipt ?? {}
+  const receipt = {
+    ...input.receipt,
+    ...(ctx.desktop ? { foregroundEnabled: ctx.desktop.foregroundEnabled() } : {}),
+  }
   const limit = input.limit ?? viewLimit(ctx, observationBudget(ctx.contextWindow))
   const lead = input.filter ? `${input.lead} · ${filterNote(snapshot)}` : input.lead
   const shaped = { ...input, snapshot, lead }
