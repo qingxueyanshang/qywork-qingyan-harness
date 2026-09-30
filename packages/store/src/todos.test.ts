@@ -8,7 +8,13 @@
 import { describe, expect, test } from 'bun:test'
 import type { ConversationId } from '@qywork/core'
 import { Store } from './db.ts'
-import { appendStep, createConversation, createRun, upsertWorkspace } from './repos.ts'
+import {
+  appendMessage,
+  appendStep,
+  createConversation,
+  createRun,
+  upsertWorkspace,
+} from './repos.ts'
 import { latestTodos } from './todos.ts'
 
 function fresh() {
@@ -115,6 +121,50 @@ describe('待办读回', () => {
     submit(store, first.id, 1, ['上一轮列的'])
     newRun(store, conversationId, ws.id, 'r2')
     expect(latestTodos(store, conversationId)?.[0]?.content).toBe('上一轮列的')
+    store.close()
+  })
+
+  test('续跑只读本轮成功提交，历史展示仍读跨轮清单', () => {
+    const { store, ws, conversationId } = fresh()
+    const first = newRun(store, conversationId, ws.id, 'r1')
+    submit(store, first.id, 1, ['旧任务'])
+    const second = newRun(store, conversationId, ws.id, 'r2')
+    expect(latestTodos(store, conversationId)?.[0]?.content).toBe('旧任务')
+    expect(latestTodos(store, conversationId, second.id)).toBeNull()
+    submit(store, second.id, 1, ['失败提交'], 'failure')
+    expect(latestTodos(store, conversationId, second.id)).toBeNull()
+    submitItems(store, second.id, 2, [{ content: '接续旧任务', status: 'in_progress' }])
+    expect(latestTodos(store, conversationId, second.id)?.[0]?.status).toBe('in_progress')
+    expect(latestTodos(store, conversationId)?.[0]?.content).toBe('接续旧任务')
+    store.close()
+  })
+
+  test('子任务与工作流回执仍接续父任务，用户追问不继承续跑权', () => {
+    const { store, ws, conversationId } = fresh()
+    const first = newRun(store, conversationId, ws.id, 'parent')
+    submitItems(store, first.id, 1, [{ content: '父任务待验收', status: 'in_progress' }])
+    for (const origin of ['subagent', 'workflow', undefined] as const) {
+      const message = appendMessage(store, {
+        conversationId,
+        role: 'user',
+        content: '回执或用户追问',
+        ...(origin ? { origin } : {}),
+      })
+      const run = createRun(store, {
+        conversationId,
+        workspaceId: ws.id,
+        model: 'm',
+        clientRequestId: origin ?? 'user',
+        userMessageId: message.id,
+        messageIdUpperBound: message.id,
+        contextSnapshot: [],
+      })
+      if (origin) {
+        expect(latestTodos(store, conversationId, run.id)?.[0]?.status).toBe('in_progress')
+      } else {
+        expect(latestTodos(store, conversationId, run.id)).toBeNull()
+      }
+    }
     store.close()
   })
 

@@ -807,6 +807,7 @@ export const browserActTool: ToolSpec = {
     '对观察返回的元素执行动作：click 点击、dblclick 双击、rightclick 右键、hover 悬停、' +
     'fill 覆盖输入框内容、type 在当前光标处逐字输入、select 选下拉项、scroll 滚动、' +
     'press 按键、drag 拖动。' +
+    '文字引用（包括 StaticText）也支持指针动作，按文字实际位置命中；fill、type、select 仍要求对应控件。' +
     'observationId 取自 observe、act、navigate 或 wait 返回的那一份。' +
     'press 用 phases 表达有时序的按键：每个阶段是这段时间里按着的完整键集合与持续毫秒数，' +
     '换阶段时只按下新增的键、抬起去掉的键，最后全部松开，按住期间不自动重复。' +
@@ -818,7 +819,7 @@ export const browserActTool: ToolSpec = {
     `单段不超过 ${INPUT_LIMITS.phaseMs} 毫秒、合计不超过 ${INPUT_LIMITS.totalMs} 毫秒；` +
     '更长的操作分多次调用，每次看结果再继续。' +
     'point 是元素内离左上角的 CSS 像素偏移，用于 canvas 这类同一元素内的不同位置，' +
-    '范围见元素的 size，缺省为元素中心。' +
+    '范围见元素的 size，缺省为元素中心，文本节点取实际文字片段中心。' +
     'holdMs 是 click / rightclick 的按住时长；keys 是指针动作期间按着的键，如 ["ShiftLeft"]。' +
     'drag 在 ref（与 point）处按下，沿 path 逐段移动后松开，每段给终点 ref、可选 point 与 durationMs。' +
     'scroll 的 deltaY 向下为正、deltaX 向右为正。' +

@@ -149,15 +149,9 @@ interface RefRecord {
    * 缺席即元素直接在会话的根文档里。这一层记的是结构不是几何——盒子在动作准备里现取。
    */
   owners?: number[]
-  /**
-   * 这一项能不能承载动作。
-   *
-   * 元素表里同时有可操作元素与正文节点（正文让模型读得到页面结果）。正文节点上
-   * 没有矩形也没有 `getBoundingClientRect`，页内复核函数在它身上抛异常，动作因此
-   * 以一句内部异常原文结束。登记时记下这一位，动作在解析引用时就拒。
-   */
+  /** 是否为控件。文字也可承载指针动作，但不能因此成为输入框或选择框。 */
   actionable: boolean
-  /** `标签|id|name|type`。动作前页内重算一遍，对不上即判失效。 */
+  /** 元素为 `标签|id|name|type`，文本为 `#text|原文`。动作前重算，不符即失效。 */
   identity: string
 }
 
@@ -195,15 +189,21 @@ const DOC_TOKEN = `(() => {
  */
 export const INSPECT_FN = `function qyInspect(px, py) {
   const el = this
+  const text = el.nodeType === 3
   const tag = (el.tagName || '').toLowerCase()
-  const identity = [tag, el.id || '', el.getAttribute ? el.getAttribute('name') || '' : '', el.getAttribute ? el.getAttribute('type') || '' : ''].join('|')
+  const identity = text ? '#text|' + el.nodeValue : [tag, el.id || '', el.getAttribute ? el.getAttribute('name') || '' : '', el.getAttribute ? el.getAttribute('type') || '' : ''].join('|')
   if (!el.isConnected) return { connected: false, identity }
-  const r = el.getBoundingClientRect()
-  const offset = typeof px === 'number' && typeof py === 'number'
-  const x = offset ? r.x + px : r.x + r.width / 2
-  const y = offset ? r.y + py : r.y + r.height / 2
-  const inBox = !offset || (px >= 0 && py >= 0 && px <= r.width && py <= r.height)
+  const range = text ? el.ownerDocument.createRange() : null
+  if (range) range.selectNodeContents(el)
+  const r = (range || el).getBoundingClientRect()
+  const rects = range ? Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0) : [r]
   const view = el.ownerDocument.defaultView
+  // 文本可跨行。选一个实际文字片段，不用父容器或多行外接矩形的中心。
+  const fragment = rects.find(r => r.right > 0 && r.bottom > 0 && r.left < view.innerWidth && r.top < view.innerHeight) || rects[0] || r
+  const offset = typeof px === 'number' && typeof py === 'number'
+  const x = offset ? r.x + px : fragment.x + fragment.width / 2
+  const y = offset ? r.y + py : fragment.y + fragment.height / 2
+  const inBox = text ? rects.some(r => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) : !offset || (px >= 0 && py >= 0 && px <= r.width && py <= r.height)
   // 可视区判定用元素自己文档的视口。这一层通过只说明它在本文档内可见，
   // 跨站 iframe 还要逐层核对父文档，见 framePoint。
   const inView = x >= 0 && y >= 0 && x <= view.innerWidth && y <= view.innerHeight
@@ -214,7 +214,7 @@ export const INSPECT_FN = `function qyInspect(px, py) {
   const scope = typeof root.elementFromPoint === 'function' ? root : el.ownerDocument
   const hit = inView ? scope.elementFromPoint(x, y) : null
   let sameTree = false
-  if (hit) sameTree = hit === el || el.contains(hit) || hit.contains(el)
+  if (hit) sameTree = text ? inBox && hit === el.parentElement : hit === el || el.contains(hit) || hit.contains(el)
   return {
     connected: true,
     identity,
@@ -227,21 +227,9 @@ export const INSPECT_FN = `function qyInspect(px, py) {
     sameTree,
     hit: hit ? (hit.tagName || '').toLowerCase() : null,
     hitLabel: hit ? (((hit.getAttribute && hit.getAttribute('aria-label')) || (hit.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) : '',
-    disabled: el.disabled === true,
-    label: (((el.getAttribute && el.getAttribute('aria-label')) || (el.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) || tag,
+    disabled: text ? !!el.parentElement?.closest(':disabled, [aria-disabled="true"], [inert]') : el.disabled === true,
+    label: ((text ? el.nodeValue.trim() : (el.getAttribute && el.getAttribute('aria-label')) || (el.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) || tag,
   }
-}`
-
-/**
- * 滚到可视区，只滚必要的那一段。
- *
- * `block/inline: 'nearest'` 已经可见时不滚；`behavior: 'instant'` 不受页面
- * `scroll-behavior: smooth` 影响——按 auto 走的话，滚动在动画中途，随后量到的矩形
- * 不是发事件那一刻的位置。
- */
-const SCROLL_FN = `function qyScrollIntoView() {
-  this.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
-  return true
 }`
 
 /**
@@ -439,7 +427,7 @@ interface DomNode {
 }
 
 /** 一个元素节点在 DOM 快照里的标签与属性。 */
-type DomInfo = { tag: string; attrs: Record<string, string> }
+type DomInfo = { tag: string; attrs: Record<string, string>; text?: string }
 
 interface AxNode {
   ignored?: boolean
@@ -771,6 +759,8 @@ function splitDocs(
       const flat = node.attributes ?? []
       for (let i = 0; i + 1 < flat.length; i += 2) attrs[flat[i] as string] = flat[i + 1] as string
       nodes.set(node.backendNodeId, { tag: node.nodeName.toLowerCase(), attrs })
+    } else if (node.nodeType === 3) {
+      nodes.set(node.backendNodeId, { tag: '#text', attrs: {}, text: node.nodeValue ?? '' })
     }
     for (const child of node.children ?? []) walk(child, scope, nodes)
     for (const shadow of node.shadowRoots ?? []) walk(shadow, scope, nodes)
@@ -915,7 +905,10 @@ function axCandidates(
         ...(frame.frame ? { frame: frame.frame } : {}),
         ...(frame.owners ? { owners: frame.owners } : {}),
         actionable,
-        identity: [tag, attrs.id ?? '', attrs.name ?? '', attrs.type ?? ''].join('|'),
+        identity:
+          domInfo?.text !== undefined
+            ? `#text|${domInfo.text}`
+            : [tag, attrs.id ?? '', attrs.name ?? '', attrs.type ?? ''].join('|'),
       },
     })
   }
@@ -1234,12 +1227,13 @@ async function resolveRef(
   ref: string,
   deadline = Date.now() + PREPARE_BUDGET_MS,
   point?: BrowserPoint,
+  pointer = false,
 ): Promise<{ entry: RefRecord; objectId: string; inspect: Inspection }> {
   const { client } = page
   const entry = record.refs.get(ref)
   if (!entry) throw new BrowserStaleRefError(`这次观察里没有元素 ${ref}，请重新观察`)
-  if (!entry.actionable) {
-    throw new CdpError(`元素 ${ref} 是正文，不是可操作的节点；在元素表里挑一个带可操作角色的项`)
+  if (!entry.actionable && !pointer) {
+    throw new CdpError(`元素 ${ref} 是正文，不支持控件操作；可使用指针动作点击文字`)
   }
 
   const resolved = await client
@@ -1323,7 +1317,14 @@ async function prepareAction(
 ): Promise<{ entry: RefRecord; objectId: string; inspect: Inspection; point: Point }> {
   const deadline = opts.deadline ?? Date.now() + PREPARE_BUDGET_MS
   const { client } = page
-  const { entry, objectId, inspect } = await resolveRef(page, record, ref, deadline, opts.point)
+  const { entry, objectId, inspect } = await resolveRef(
+    page,
+    record,
+    ref,
+    deadline,
+    opts.point,
+    true,
+  )
   let view = inspect
   if (opts.scroll && (await scrollIntoView(client, entry, objectId, view, deadline))) {
     view = await inspectNode(client, entry.sessionId, objectId, ref, deadline, opts.point)
@@ -1349,7 +1350,7 @@ function outsideBox(ref: string, point: BrowserPoint, view: Inspection): CdpErro
  * 需要时把元素滚进可视区，返回是否真的发了滚动命令。
  *
  * 跨站 iframe 里的元素一律滚一次：帧内可见不代表这个帧在父页的可视区内，而把父页带上
- * 只有 `scrollIntoView` 做得到。已经可见时 `nearest` 不动页面。
+ * 通过 CDP 滚动原节点，文本节点和元素共用这一条路径，不改点父容器。
  */
 async function scrollIntoView(
   client: CdpClient,
@@ -1360,8 +1361,8 @@ async function scrollIntoView(
 ): Promise<boolean> {
   if (entry.frame === undefined && view.inView === true && view.sameTree === true) return false
   await client.send(
-    'Runtime.callFunctionOn',
-    { objectId, functionDeclaration: SCROLL_FN, returnByValue: true },
+    'DOM.scrollIntoViewIfNeeded',
+    { objectId },
     { sessionId: entry.sessionId, ...within(deadline, PREPARE_TIMEOUT_MS) },
   )
   return true
@@ -2047,8 +2048,8 @@ async function dragTarget(
     if (pass === MAX_DRAG_SCROLLS) return null
     await client
       .send(
-        'Runtime.callFunctionOn',
-        { objectId: end.objectId, functionDeclaration: SCROLL_FN, returnByValue: true },
+        'DOM.scrollIntoViewIfNeeded',
+        { objectId: end.objectId },
         { sessionId: end.entry.sessionId, ...within(run.deadline, PREPARE_TIMEOUT_MS) },
       )
       .catch(() => null)
@@ -2081,9 +2082,10 @@ async function dragOnPage(
   const run = new Execution()
   const deadline = run.deadline
   // 先只读核全部端点：任一端已经不在了就不必滚动页面，更不该按下鼠标。
-  await resolveRef(page, record, ref, deadline, opts.point)
+  await resolveRef(page, record, ref, deadline, opts.point, true)
   const ends: { entry: RefRecord; objectId: string; inspect: Inspection }[] = []
-  for (const step of path) ends.push(await resolveRef(page, record, step.ref, deadline, step.point))
+  for (const step of path)
+    ends.push(await resolveRef(page, record, step.ref, deadline, step.point, true))
   // 先滚第一段的终点、后量起点：滚终点会把起点带到别的位置，先量到的那一份从此不成立。
   const first = ends[0]
   if (first) await scrollIntoView(client, first.entry, first.objectId, first.inspect, deadline)

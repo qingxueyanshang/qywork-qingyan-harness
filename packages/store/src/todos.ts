@@ -13,27 +13,37 @@
  * 账本记的就是这个字符串，改工具名要连同迁移一起改，与这里同步。
  */
 
-import type { ConversationId, TodoItem } from '@qywork/core'
+import type { ConversationId, RunId, TodoItem } from '@qywork/core'
 import type { Store } from './db.ts'
 
 /**
  * 这条会话此刻的待办清单；没提交过就是 `null`。
  *
  * 按「run 的先后 + run 内的 seq」倒着取第一条。跨 run 是必须的：一轮做三条、
- * 下一轮接着做第四条是常态。
+ * 下一轮接着做第四条是常态。传 runId 时，用户新消息只读本轮提交；子任务或工作流
+ * 回执沿用会话清单，因为它们是在接续父任务，而不是用户发起了新指令。
  */
-export function latestTodos(store: Store, conversationId: ConversationId): TodoItem[] | null {
+export function latestTodos(
+  store: Store,
+  conversationId: ConversationId,
+  runId?: RunId,
+): TodoItem[] | null {
   const row = store.db
-    .query<{ payload: string | null }, [string]>(
+    .query<{ payload: string | null }, [string, string | null, string | null, string | null]>(
       `SELECT s.payload FROM steps s
          JOIN runs r ON r.id = s.run_id
         WHERE r.conversation_id = ?
+          AND (? IS NULL OR r.id = ? OR (
+            SELECT m.origin FROM runs current
+              JOIN messages m ON m.id = current.user_message_id
+             WHERE current.id = ? AND current.conversation_id = r.conversation_id
+          ) IN ('subagent', 'workflow'))
           AND s.tool_name = 'write_todos'
           AND s.status = 'success'
         ORDER BY r.created_at DESC, r.id DESC, s.seq DESC
         LIMIT 1`,
     )
-    .get(conversationId)
+    .get(conversationId, runId ?? null, runId ?? null, runId ?? null)
   if (!row?.payload) return null
 
   try {
