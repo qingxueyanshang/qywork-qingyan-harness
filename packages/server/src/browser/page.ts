@@ -8,10 +8,9 @@
  *    重新定位成另一个同名按钮。
  * 2. **语义来自 AX 树与节点属性，不是整页 HTML。** 每一步把整页 HTML 塞进模型既装不下
  *    也读不准；元素表给角色、名称、类型、状态与正文摘要，超出上限时如实报截断。
- * 3. **鼠标坐标一律在顶层文档的坐标系里，键盘落在元素自己的会话上。** 跨站 iframe 的
- *    元素矩形是它自己文档里的值，必须逐层叠加帧在父文档中的偏移；偏移在动作准备里
- *    现取，观察时量到的那一份在父页滚动后不成立。焦点与文本插入由该帧的渲染进程处理，
- *    发到顶层会话会落在别处。
+ * 3. **指向元素的鼠标输入与键盘落在元素自己的会话上。** 鼠标使用该会话本地根的坐标，
+ *    避免滚动后依赖顶层合成器尚未更新的跨进程命中信息；回执仍用顶层坐标。帧偏移在
+ *    动作准备里现取，并逐层核对父文档遮挡。滚轮按页面落点分发，不绕过覆盖落点的元素。
  * 4. **动作只发 CDP 的 Input 事件。** 不调系统鼠标键盘，不置前窗口。
  */
 
@@ -481,7 +480,7 @@ const TEXT_ROLES = new Set(['StaticText', 'heading', 'paragraph', 'cell', 'colum
 
 export interface PageHandle {
   client: CdpClient
-  /** 页会话。所有鼠标事件与截图都发到这里。 */
+  /** 顶层页会话。截图发到这里；输入发到目标所在的会话。 */
   sessionId: string
   tabId: string
 }
@@ -1314,7 +1313,13 @@ async function prepareAction(
   record: ObservationRecord,
   ref: string,
   opts: { scroll: boolean; hit: boolean; deadline?: number; point?: BrowserPoint },
-): Promise<{ entry: RefRecord; objectId: string; inspect: Inspection; point: Point }> {
+): Promise<{
+  entry: RefRecord
+  objectId: string
+  inspect: Inspection
+  point: Point
+  inputPoint: Point
+}> {
   const deadline = opts.deadline ?? Date.now() + PREPARE_BUDGET_MS
   const { client } = page
   const { entry, objectId, inspect } = await resolveRef(
@@ -1333,8 +1338,8 @@ async function prepareAction(
   if (opts.point && view.inBox === false) throw outsideBox(ref, opts.point, view)
   if (opts.hit && view.disabled === true) throw new CdpError(`元素 ${ref} 当前不可用`)
   if (opts.hit) assertHittable(`元素 ${ref}`, view)
-  const point = await toInputPoint(page, entry, view, ref, deadline, opts.hit)
-  return { entry, objectId, inspect: view, point }
+  const points = await pointerPoints(page, entry, view, ref, deadline, opts.hit)
+  return { entry, objectId, inspect: view, ...points }
 }
 
 /** 落点不在元素此刻的矩形里。给出此刻的尺寸，调用方据此换一个点。 */
@@ -1349,8 +1354,8 @@ function outsideBox(ref: string, point: BrowserPoint, view: Inspection): CdpErro
 /**
  * 需要时把元素滚进可视区，返回是否真的发了滚动命令。
  *
- * 跨站 iframe 里的元素一律滚一次：帧内可见不代表这个帧在父页的可视区内，而把父页带上
- * 通过 CDP 滚动原节点，文本节点和元素共用这一条路径，不改点父容器。
+ * 跨站 iframe 里的元素一律滚一次：帧内可见不代表这个帧在父页的可视区内。
+ * 通过 CDP 滚动原节点及父页，文本节点和元素共用这一条路径。
  */
 async function scrollIntoView(
   client: CdpClient,
@@ -1369,20 +1374,20 @@ async function scrollIntoView(
 }
 
 /**
- * 把元素在自己文档里的中心点换算成页会话的输入坐标。
+ * 同一次定位产出目标会话的输入坐标与顶层页面的回执坐标。
  *
  * 主文档的点不用换算。有帧的逐层向上：同进程帧的一跳按登记的 iframe 节点在同一个会话里
  * 现取盒子，跨站帧的一跳跨会话找承载它的文档。每换算一层就在那一层复核命中，
  * 父层遮罩因此拦得住。任一层查不到就抛失效，不继续用一个半成品坐标。
  */
-async function toInputPoint(
+async function pointerPoints(
   page: PageHandle,
   entry: RefRecord,
   view: Inspection,
   ref: string,
   deadline: number,
   requireHit: boolean,
-): Promise<Point> {
+): Promise<{ point: Point; inputPoint: Point }> {
   let point: Point = { x: view.x ?? 0, y: view.y ?? 0 }
   for (const owner of entry.owners ?? []) {
     if (leftMs(deadline) <= 0) {
@@ -1392,10 +1397,26 @@ async function toInputPoint(
     if (requireHit) assertHittable(`元素 ${ref} 所在的 iframe`, mapped)
     point = { x: mapped.x, y: mapped.y }
   }
-  // 跨站帧的起点是元素所在子会话对应的那一帧；同进程帧的换算上面已经走完。
+  const inputPoint = point
+  point = await toPagePoint(page, entry.sessionId, point, ref, deadline, requireHit)
+  return { point, inputPoint }
+}
+
+/** 将一个会话本地根的坐标投影到顶层；父页遮挡必须在发送到子会话之前校验。 */
+async function toPagePoint(
+  page: PageHandle,
+  sessionId: string,
+  point: Point,
+  ref: string,
+  deadline: number,
+  requireHit: boolean,
+): Promise<Point> {
   let frame = page.client
     .childSessionsOf(page.sessionId)
-    .find((c) => c.sessionId === entry.sessionId)?.targetId
+    .find((c) => c.sessionId === sessionId)?.targetId
+  if (sessionId !== page.sessionId && !frame) {
+    throw new BrowserStaleRefError(`元素 ${ref} 所在的 iframe 已经不在页面上，请重新观察`)
+  }
   for (let depth = 0; frame; depth += 1) {
     if (depth >= MAX_FRAME_DEPTH) {
       throw new BrowserStaleRefError(`元素 ${ref} 的帧层数超过上限，无法定位，请重新观察`)
@@ -1534,7 +1555,7 @@ export async function actOnPage(
   record: ObservationRecord,
   input: BrowserActInput,
 ): Promise<BrowserActReceipt> {
-  const { client, sessionId } = page
+  const { client } = page
   await assertDoc(page, record)
 
   if (input.action === 'press') return pressOnPage(page, record, input.ref, input.phases ?? [])
@@ -1547,13 +1568,13 @@ export async function actOnPage(
     case 'rightclick':
       return clickOnPage(page, record, ref, input, input.action === 'click' ? 'left' : 'right')
     case 'hover': {
-      const { inspect, point } = await prepareAction(page, record, ref, {
+      const { entry, inspect, point, inputPoint } = await prepareAction(page, record, ref, {
         scroll: true,
         hit: true,
         ...(input.point ? { point: input.point } : {}),
       })
       // 只移动，不按下。悬停层什么时候出现由页面决定，动作之后的观察采到什么就是什么。
-      await aimAt(client, sessionId, point, 0)
+      await aimAt(client, entry.sessionId, inputPoint, 0)
       return { element: inspect.label ?? ref, point }
     }
     case 'dblclick':
@@ -1724,14 +1745,15 @@ async function clickOnPage(
   const hold = opts.holdMs ?? 0
   const bad = checkDuration(hold, 'holdMs')
   if (bad) throw new CdpError(bad)
-  const { client, sessionId } = page
+  const { client } = page
   const run = new Execution()
-  const { inspect, point } = await prepareAction(page, record, ref, {
+  const { entry, inspect, point, inputPoint } = await prepareAction(page, record, ref, {
     scroll: true,
     hit: true,
     deadline: run.deadline,
     ...(opts.point ? { point: opts.point } : {}),
   })
+  const { sessionId } = entry
   const keyboard = new Keyboard(client, sessionId)
   const send = (type: 'mousePressed' | 'mouseReleased', buttons: number) =>
     run.run(client, () =>
@@ -1739,7 +1761,7 @@ async function clickOnPage(
         client,
         sessionId,
         type,
-        point,
+        inputPoint,
         { button, buttons, clickCount: 1, modifiers: keyboard.modifiers },
         run.deadline,
       ),
@@ -1747,7 +1769,7 @@ async function clickOnPage(
   const sequence = async (): Promise<boolean> => {
     if (!(await run.run(client, () => keyboard.to(keys, run.deadline)))) return false
     const aimed = await run.run(client, () =>
-      aimAt(client, sessionId, point, keyboard.modifiers, run.deadline),
+      aimAt(client, sessionId, inputPoint, keyboard.modifiers, run.deadline),
     )
     if (!aimed || !(await send('mousePressed', button === 'right' ? 2 : 1))) return false
     run.unit()
@@ -1773,19 +1795,20 @@ async function doubleClickOnPage(
   opts: PointerOptions,
 ): Promise<BrowserActReceipt> {
   const keys = heldKeysOf(opts.keys)
-  const { client, sessionId } = page
+  const { client } = page
   const run = new Execution()
-  const { inspect, point } = await prepareAction(page, record, ref, {
+  const { entry, inspect, point, inputPoint } = await prepareAction(page, record, ref, {
     scroll: true,
     hit: true,
     deadline: run.deadline,
     ...(opts.point ? { point: opts.point } : {}),
   })
+  const { sessionId } = entry
   const keyboard = new Keyboard(client, sessionId)
   const sequence = async (): Promise<boolean> => {
     if (!(await run.run(client, () => keyboard.to(keys, run.deadline)))) return false
     const aimed = await run.run(client, () =>
-      aimAt(client, sessionId, point, keyboard.modifiers, run.deadline),
+      aimAt(client, sessionId, inputPoint, keyboard.modifiers, run.deadline),
     )
     if (!aimed) return false
     for (const clickCount of [1, 2]) {
@@ -1795,7 +1818,7 @@ async function doubleClickOnPage(
           client,
           sessionId,
           'mousePressed',
-          point,
+          inputPoint,
           { ...extra, buttons: 1 },
           run.deadline,
         )
@@ -1803,7 +1826,7 @@ async function doubleClickOnPage(
           client,
           sessionId,
           'mouseReleased',
-          point,
+          inputPoint,
           { ...extra, buttons: 0 },
           run.deadline,
         )
@@ -2043,7 +2066,9 @@ async function dragTarget(
     if (!view || !view.connected || view.identity !== end.entry.identity) return null
     if (view.inBox === false) return null
     if (view.inView === true) {
-      return toInputPoint(page, end.entry, view, ref, run.deadline, false).catch(() => null)
+      return pointerPoints(page, end.entry, view, ref, run.deadline, false)
+        .then((points) => points.point)
+        .catch(() => null)
     }
     if (pass === MAX_DRAG_SCROLLS) return null
     await client
@@ -2078,7 +2103,7 @@ async function dragOnPage(
   const problem = checkPath(path)
   if (problem) throw new CdpError(problem)
   const keys = heldKeysOf(opts.keys)
-  const { client, sessionId } = page
+  const { client } = page
   const run = new Execution()
   const deadline = run.deadline
   // 先只读核全部端点：任一端已经不在了就不必滚动页面，更不该按下鼠标。
@@ -2095,6 +2120,10 @@ async function dragOnPage(
     deadline,
     ...(opts.point ? { point: opts.point } : {}),
   })
+  // 一段按下到抬起属于同一输入会话，取消时也由该会话释放。
+  const { sessionId } = start.entry
+  let origin = { x: start.point.x - start.inputPoint.x, y: start.point.y - start.inputPoint.y }
+  const localPoint = (point: Point): Point => ({ x: point.x - origin.x, y: point.y - origin.y })
   const keyboard = new Keyboard(client, sessionId)
   const send = (
     type: 'mousePressed' | 'mouseReleased' | 'mouseMoved',
@@ -2106,7 +2135,7 @@ async function dragOnPage(
         client,
         sessionId,
         type,
-        point,
+        localPoint(point),
         {
           button: 'left',
           buttons,
@@ -2120,7 +2149,7 @@ async function dragOnPage(
   const sequence = async (): Promise<boolean> => {
     if (!(await run.run(client, () => keyboard.to(keys, deadline)))) return false
     const aimed = await run.run(client, () =>
-      aimAt(client, sessionId, at, keyboard.modifiers, deadline),
+      aimAt(client, sessionId, localPoint(at), keyboard.modifiers, deadline),
     )
     if (!aimed || !(await send('mousePressed', at, 1))) return false
     for (const [i, step] of path.entries()) {
@@ -2130,6 +2159,20 @@ async function dragOnPage(
         run.stop(`第 ${i + 1} 段的终点 ${step.ref} 已经量不到`)
         return false
       }
+      // 终点的滚动可能移动起点所在 iframe；每段都重算输入会话原点，不缓存观察时的偏移。
+      const currentOrigin = await toPagePoint(
+        page,
+        sessionId,
+        { x: 0, y: 0 },
+        ref,
+        deadline,
+        false,
+      ).catch(() => null)
+      if (!currentOrigin) {
+        run.stop('拖动所在的 iframe 已经量不到')
+        return false
+      }
+      origin = currentOrigin
       const ms = step.durationMs ?? 0
       const steps = Math.max(2, Math.round(ms / DRAG_STEP_MS))
       for (let k = 1; k <= steps; k++) {
