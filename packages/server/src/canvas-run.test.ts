@@ -154,7 +154,7 @@ describe('画布运行：图像', () => {
     expect(g.versions[0]!.path).toMatch(/^generated\/\d{8}-\d{6}\.png$/)
   })
 
-  test('落地的图带像素宽高，卡片的框换成图的比例、面积不变', async () => {
+  test('落地的图带像素宽高，卡片的框换成图的比例、高度不变', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -167,7 +167,7 @@ describe('画布运行：图像', () => {
     expect(await done).toMatchObject({ ok: true })
     const g = await node(ws.root, ids.$g!)
     expect(g.versions[0]!.size).toEqual({ w: 1024, h: 1536 })
-    expect({ w: g.w, h: g.h }).toEqual({ w: 138, h: 207 })
+    expect({ w: g.w, h: g.h }).toEqual({ w: 113, h: 169 })
   })
 
   test('事件依次是 running → file.changed → done', async () => {

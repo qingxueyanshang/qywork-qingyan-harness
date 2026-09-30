@@ -319,11 +319,15 @@ describe('画布：操作', () => {
       [{ op: 'add_file', path: 'x.png', near: { x: 1000, y: 500 } }],
       ids('n'),
     )
-    expect(free.nodes.at(-1)).toMatchObject({ x: 890, y: 418, w: 220, h: 165 })
-    const busy = apply(base, [{ op: 'add_file', path: 'x.png', near: { x: 110, y: 82 } }], ids('n'))
+    expect(free.nodes.at(-1)).toMatchObject({ x: 888, y: 416, w: 225, h: 169 })
+    const busy = apply(
+      base,
+      [{ op: 'add_file', path: 'x.png', near: { x: 112.5, y: 84.5 } }],
+      ids('n'),
+    )
     const added = busy.nodes.at(-1)!
     expect(added.x).toBe(0)
-    expect(added.y).toBeGreaterThanOrEqual(165)
+    expect(added.y).toBeGreaterThanOrEqual(169)
     expect(parseCanvasOps([{ op: 'add_generate', output: 'video', near: { x: 1, y: 2 } }]).ok).toBe(
       true,
     )
@@ -373,10 +377,10 @@ describe('画布：框按媒体比例', () => {
     size: { w, h },
   })
 
-  test('面积不变、换成媒体的宽高比', async () => {
+  test('高度不变、宽度按媒体的宽高比', async () => {
     const { fitBox } = await import('./canvas.ts')
-    expect(fitBox({ w: 169, h: 169 }, { w: 1536, h: 1024 })).toEqual({ w: 207, h: 138 })
-    expect(fitBox({ w: 169, h: 169 }, { w: 1080, h: 1920 })).toEqual({ w: 127, h: 225 })
+    expect(fitBox({ w: 169, h: 169 }, { w: 1536, h: 1024 })).toEqual({ w: 254, h: 169 })
+    expect(fitBox({ w: 169, h: 169 }, { w: 1080, h: 1920 })).toEqual({ w: 95, h: 169 })
   })
 
   test('出结果时框换成当前版的比例；切版本、删当前版跟着换；没有尺寸的版本不动框', () => {
@@ -389,17 +393,17 @@ describe('画布：框按媒体比例', () => {
     ])
     if (!r.ok) throw new Error(r.error)
     doc = r.doc
-    expect(box(doc, 'a1')).toEqual({ w: 207, h: 138 })
+    expect(box(doc, 'a1')).toEqual({ w: 254, h: 169 })
     doc = apply(doc, [{ op: 'update', id: 'a1', current: 'tall' }])
-    expect(box(doc, 'a1')).toEqual({ w: 138, h: 207 })
+    expect(box(doc, 'a1')).toEqual({ w: 113, h: 169 })
     doc = apply(doc, [{ op: 'update', id: 'a1', current: 'plain' }])
-    expect(box(doc, 'a1')).toEqual({ w: 138, h: 207 })
+    expect(box(doc, 'a1')).toEqual({ w: 113, h: 169 })
     doc = apply(doc, [{ op: 'update', id: 'a1', current: 'wide' }])
     doc = apply(doc, [{ op: 'remove', id: 'a1', version: 'wide' }])
     expect(gen(doc, 'a1').current).toBe('plain')
     doc = apply(doc, [{ op: 'remove', id: 'a1', version: 'plain' }])
     expect(gen(doc, 'a1').current).toBe('tall')
-    expect(box(doc, 'a1')).toEqual({ w: 138, h: 207 })
+    expect(box(doc, 'a1')).toEqual({ w: 113, h: 169 })
     // 同一次操作给了 w / h 时以它们为准。
     doc = apply(doc, [{ op: 'update', id: 'a1', current: 'tall', w: 300, h: 100 }])
     expect(box(doc, 'a1')).toEqual({ w: 300, h: 100 })
@@ -416,18 +420,18 @@ describe('画布：框按媒体比例', () => {
     const s = settleVersion(r.doc, 'a1', 'task', 'generated/v.mp4', { w: 720, h: 1280 })
     if (!s.ok) throw new Error(s.error)
     expect(gen(s.doc, 'a1').versions[0]!.size).toEqual({ w: 720, h: 1280 })
-    expect(box(s.doc, 'a1')).toEqual({ w: 169, h: 300 })
+    expect(box(s.doc, 'a1')).toEqual({ w: 95, h: 169 })
   })
 
-  test('加文件节点带尺寸时按缺省面积与文件比例定框；换文件也换比例；尺寸随文档写出读回', () => {
+  test('加文件节点带尺寸时按缺省高度与文件比例定框；换文件也换比例；尺寸随文档写出读回', () => {
     let doc = apply(emptyCanvas(), [
       { op: 'add_file', ref: '$p', path: 'a.png', size: { w: 1000, h: 1000 } },
       { op: 'add_file', ref: '$q', path: 'b.png' },
     ])
-    expect(box(doc, 'a1')).toEqual({ w: 191, h: 191 })
-    expect(box(doc, 'a2')).toEqual({ w: 220, h: 165 })
+    expect(box(doc, 'a1')).toEqual({ w: 169, h: 169 })
+    expect(box(doc, 'a2')).toEqual({ w: 225, h: 169 })
     doc = apply(doc, [{ op: 'update', id: 'a1', path: 'c.png', size: { w: 400, h: 100 } }])
-    expect(box(doc, 'a1')).toEqual({ w: 382, h: 96 })
+    expect(box(doc, 'a1')).toEqual({ w: 676, h: 169 })
 
     const r = addVersions(apply(doc, [{ op: 'add_generate', ref: '$g', output: 'image' }]), 'a3', [
       sized('s', 'generated/s.png', 3, 2),

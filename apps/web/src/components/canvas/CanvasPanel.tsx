@@ -831,7 +831,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       },
       ...paste,
       {
-        label: '复制一份',
+        label: '创建副本',
         keys: `${MOD}D`,
         run: () => v && void pasteNodes(v.doc, ids, null, true),
       },

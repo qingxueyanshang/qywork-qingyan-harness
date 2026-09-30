@@ -793,10 +793,10 @@ describe('画布：生成卡与生成面板', () => {
       () => server.ops.length === 3,
       () => '',
     )
-    // 还没有结果的卡：框随所选宽高比变形、面积不变；1:1 与缺省框同比例不改；选回自动还原成缺省比例。
+    // 还没有结果的卡：框随所选宽高比变宽变窄、高度不变；1:1 与缺省框同比例不改；选回自动还原成缺省比例。
     expect(server.ops.map((ops) => ops[0])).toEqual([
       { op: 'update', id: refs.$i!, params: { size: '2048*2048' } },
-      { op: 'update', id: refs.$i!, params: { size: '2720*1536' }, w: 225, h: 127 },
+      { op: 'update', id: refs.$i!, params: { size: '2720*1536' }, w: 300, h: 169 },
       { op: 'update', id: refs.$i!, params: {}, w: 169, h: 169 },
     ])
   })
@@ -1213,7 +1213,7 @@ describe('画布：右键菜单', () => {
     pointer(stageOf(host), 'pointerup', x, y, { button: 2 })
   }
 
-  test('节点上右键：先选中它，菜单有复制、剪切、复制一份、改名、删除；删除删掉它', async () => {
+  test('节点上右键：先选中它，菜单有复制、剪切、创建副本、改名、删除；删除删掉它', async () => {
     const { host, server, refs } = await mount(FILES)
     rightClick(host, node(host, refs.$b!), 10, 10)
     await waitFor(
@@ -1221,7 +1221,7 @@ describe('画布：右键菜单', () => {
       () => '',
     )
     expect(node(host, refs.$b!).classList.contains('selected')).toBe(true)
-    for (const label of ['复制', '剪切', '复制一份', '改名', '删除'])
+    for (const label of ['复制', '剪切', '创建副本', '改名', '删除'])
       expect(items()).toContain(label)
     expect(menu()!.textContent).toContain('Delete')
     choose('删除')

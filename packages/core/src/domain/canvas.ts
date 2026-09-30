@@ -289,7 +289,7 @@ const GENERATE_SIZE: Record<MediaOutput, [number, number]> = {
   audio: [169, 169],
 }
 const FILE_SIZE: Record<MediaOutput | 'other', [number, number]> = {
-  image: [220, 165],
+  image: [225, 169],
   video: [300, 169],
   audio: [169, 169],
   other: [220, 138],
@@ -300,16 +300,14 @@ const NEW_NODE_GAP = 100
 const CLEARANCE = 40
 
 /**
- * 把框换成媒体的宽高比，面积不变：同一张卡在横图与竖图之间切换时，视觉分量不变。
- * 界面给空卡按所选宽高比预览时用同一个函数。
+ * 把框换成媒体的宽高比：高度不变，宽度按比例。媒体节点缺省都是同一个高度，一排节点一样高、宽度随内容，
+ * 横图不会被压矮、竖图不会被拉高。界面给空卡按所选宽高比预览时用同一个函数。
  */
 export function fitBox(
   box: { w: number; h: number },
   size: CanvasPixels,
 ): { w: number; h: number } {
-  const area = box.w * box.h
-  const ratio = size.w / size.h
-  return { w: Math.round(Math.sqrt(area * ratio)), h: Math.round(Math.sqrt(area / ratio)) }
+  return { w: Math.round((box.h * size.w) / size.h), h: box.h }
 }
 
 /** 新建生成卡的缺省框。界面给空卡选回「自动」宽高比时按它的比例还原。 */
