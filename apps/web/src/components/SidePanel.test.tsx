@@ -3,8 +3,11 @@
  *
  * 它在「树 + 已打开文件」共用的文件页里，用户点的是整页刷新，不是只重读左边索引。
  * 原始失败形状是：树请求发出去了，右边已经打开的文件仍停在旧正文上，看起来像按钮没反应。
+ * 另覆盖右键菜单与预览切换时的树宽规则；真实尺寸由浏览器复测验证。
  */
+
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
 beforeAll(() => {
@@ -41,6 +44,68 @@ afterEach(async () => {
 
 afterAll(async () => {
   await GlobalRegistrator.unregister()
+})
+
+test('右键菜单不改变文件树的伸展规则，只有文件预览参与分栏', async () => {
+  const store = await import('../lib/store/index.ts')
+  const originalApi = store.client.api
+  store.client.api = async <T,>(path: string): Promise<T> => {
+    if (path.startsWith('/api/files/tree'))
+      return { nodes: [{ name: 'a.bin', path: 'a.bin', kind: 'file', size: 1, mtime: 1 }] } as T
+    if (path.startsWith('/api/files/preview'))
+      return { path: 'a.bin', kind: 'binary', note: '测试预览', truncated: false } as T
+    throw new Error(`未预期请求：${path}`)
+  }
+  restoreApi = () => {
+    store.client.api = originalApi
+  }
+  store.setWorkspace({ id: 'ws_tree_menu', root: 'C:/work', name: 'work' })
+  store.setOpenFile(null)
+  store.setSidePanel('files')
+  const { render } = await import('solid-js/web')
+  const { default: SidePanel } = await import('./SidePanel.tsx')
+  const host = document.createElement('div')
+  const style = document.createElement('style')
+  style.textContent = readFileSync(new URL('../styles/app/panel.css', import.meta.url), 'utf8')
+  document.head.append(style)
+  document.body.append(host)
+  dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+  try {
+    await waitFor(
+      () => !!host.querySelector('.tree-top .tree-item'),
+      () => host.innerHTML,
+    )
+    const tree = host.querySelector<HTMLElement>('.file-tree-col')!
+    expect(window.getComputedStyle(tree).flexGrow).toBe('1')
+    for (let i = 0; i < 3; i++) {
+      const row = host.querySelector('.tree-top .tree-item')!
+      row.dispatchEvent(
+        new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 300,
+          clientY: 120,
+        }),
+      )
+      const menu = host.querySelector<HTMLElement>('.tree-menu')!
+      expect(menu).not.toBeNull()
+      expect(window.getComputedStyle(tree).flexGrow).toBe('1')
+      expect(window.getComputedStyle(menu).position).toBe('fixed')
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+      expect(host.querySelector('.tree-menu')).toBeNull()
+      expect(window.getComputedStyle(tree).flexGrow).toBe('1')
+    }
+    store.setOpenFile('a.bin')
+    await waitFor(
+      () => !!host.querySelector('.preview'),
+      () => host.innerHTML,
+    )
+    expect(window.getComputedStyle(tree).width).toBe('208px')
+    store.setOpenFile(null)
+    expect(window.getComputedStyle(tree).flexGrow).toBe('1')
+  } finally {
+    style.remove()
+  }
 })
 
 async function waitFor(done: () => boolean, detail: () => string) {
