@@ -606,7 +606,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(live.getAttribute('stroke')).toBeNull()
   })
 
-  test('正文为空时发送键置灰；在跑时置灰', async () => {
+  test('生成中禁止发送', async () => {
     const { host, refs } = await mount(CARD, { n2: { state: 'running', startedAt: Date.now() } })
     await select(host, refs.$v!)
     const send = host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!
@@ -1143,6 +1143,73 @@ describe('画布：生成卡与生成面板', () => {
 describe('画布：导航与选择的键位', () => {
   const stageOf = (host: HTMLElement) => host.querySelector<HTMLElement>('.canvas-stage')!
   const pan = (host: HTMLElement) => stageOf(host).style.getPropertyValue('--px')
+  const spaceKey = (target: EventTarget, type: 'keydown' | 'keyup', repeat = false) => {
+    const event = new KeyboardEvent(type, {
+      key: ' ',
+      code: 'Space',
+      bubbles: true,
+      cancelable: true,
+      repeat,
+    })
+    target.dispatchEvent(event)
+    return event
+  }
+
+  test('按钮仍持有焦点时，空格平移拦截首次按下、长按重复和松键的默认操作', async () => {
+    const { host, server } = await mount(FILES)
+    const button = document.createElement('button')
+    button.textContent = '最大化'
+    document.body.append(button)
+    button.focus()
+    const before = Number.parseFloat(pan(host))
+    const scale = zoom(host)
+    expect(spaceKey(button, 'keydown').defaultPrevented).toBe(true)
+    pointer(stageOf(host), 'pointerdown', 100, 100)
+    pointer(stageOf(host), 'pointermove', 160, 130)
+    for (let i = 0; i < 3; i += 1) {
+      expect(spaceKey(button, 'keydown', true).defaultPrevented).toBe(true)
+    }
+    pointer(stageOf(host), 'pointerup', 160, 130)
+    expect(spaceKey(button, 'keyup').defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(button)
+    expect(Number.parseFloat(pan(host)) - before).toBe(60)
+    expect(zoom(host)).toBe(scale)
+    expect(stageOf(host).classList.contains('panning')).toBe(false)
+    expect(server.ops).toEqual([])
+  })
+
+  test('输入控件里的空格按下、重复与松键不被画布拦截', async () => {
+    const { host } = await mount(FILES)
+    const editor = document.createElement('div')
+    editor.setAttribute('contenteditable', 'true')
+    for (const input of [
+      document.createElement('input'),
+      document.createElement('textarea'),
+      document.createElement('select'),
+      editor,
+    ]) {
+      host.append(input)
+      input.focus()
+      expect(spaceKey(input, 'keydown').defaultPrevented).toBe(false)
+      expect(spaceKey(input, 'keydown', true).defaultPrevented).toBe(false)
+      expect(spaceKey(input, 'keyup').defaultPrevented).toBe(false)
+      expect(stageOf(host).classList.contains('panning')).toBe(false)
+    }
+  })
+
+  test('长按空格时窗口失焦会退出平移，回来后的左键拖动仍是框选', async () => {
+    const { host } = await mount(FILES)
+    spaceKey(window, 'keydown')
+    expect(stageOf(host).classList.contains('panning')).toBe(true)
+    window.dispatchEvent(new Event('blur'))
+    expect(stageOf(host).classList.contains('panning')).toBe(false)
+    const before = pan(host)
+    pointer(stageOf(host), 'pointerdown', 100, 100)
+    pointer(stageOf(host), 'pointermove', 160, 130)
+    pointer(stageOf(host), 'pointerup', 160, 130)
+    expect(pan(host)).toBe(before)
+    expect(spaceKey(window, 'keyup').defaultPrevented).toBe(false)
+  })
 
   test('左键拖空白是框选，不平移', async () => {
     const { host, refs } = await mount(FILES)

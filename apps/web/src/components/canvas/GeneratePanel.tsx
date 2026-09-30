@@ -780,6 +780,7 @@ export function GeneratePanel(props: {
         </Show>
         <button
           class="send-btn"
+          classList={{ 'has-content': !!draft().trim() }}
           type="button"
           aria-label="生成"
           disabled={!draft().trim() || running() || !model()}
