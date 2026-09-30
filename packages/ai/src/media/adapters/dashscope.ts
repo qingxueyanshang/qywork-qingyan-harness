@@ -167,6 +167,7 @@ const MEDIA_TYPE: Record<MediaInput['role'], string> = {
   last_frame: 'last_frame',
   reference: 'reference_image',
   video: 'reference_video',
+  audio: 'reference_audio',
 }
 
 export class DashScopeVideosAdapter implements MediaAdapter {

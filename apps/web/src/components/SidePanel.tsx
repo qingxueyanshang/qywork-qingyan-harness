@@ -22,16 +22,21 @@ import {
   absPath,
   activePanelTab,
   browserReady,
+  CANVAS_SUFFIX,
   type ChangesView,
   type ChangeTurn,
+  canvasAvailable,
+  canvasTitle,
   client,
   closePanel,
   closePanelTab,
+  createCanvas,
   explainApiError,
   isDesktopShell,
   loadConversationChanges,
   loadOlderConversationChanges,
   openBrowserTab,
+  openCanvasTab,
   openFile,
   openFileInPanel,
   openPanelTab,
@@ -47,6 +52,7 @@ import {
   state,
   togglePanelMax,
   view,
+  WORKSPACE_PATH_TYPE,
   workspace,
 } from '../lib/store/index.ts'
 import { ConfirmDialog } from './ConfirmDialog.tsx'
@@ -87,6 +93,8 @@ const CliPanel = lazy(() => import('./CliPanel.tsx'))
 
 // 同样懒加载：它带着 CodeMirror 核心（约 300 kB），而只看待办 / 变更的人碰不到它。
 const FileView = lazy(() => import('./FileView.tsx'))
+// 画布页：只有真的开画布才下载。
+const CanvasPanel = lazy(() => import('./canvas/CanvasPanel.tsx'))
 
 // 同样懒加载：运行那一页一挂上就去拉两个接口，不翻到它的人不该为它付首屏成本。
 const RunDetails = lazy(() => import('./RunDetails.tsx'))
@@ -124,6 +132,18 @@ const VIEWS: { view: PanelView; label: string }[] = [
 /** 桌面外壳判定一次就够：它在一次运行里不会变。 */
 const DESKTOP = isDesktopShell()
 
+/** 看板上的「无限画布」：在工作区根新建一张空画布并打开它。 */
+async function openNewCanvas(): Promise<void> {
+  const path = await createCanvas()
+  openCanvasTab(path, canvasTitle(path))
+}
+
+/** 文件树里点一个文件：画布文件在鼠标端开画布页，其余在主区看。 */
+function openPath(path: string): void {
+  if (path.endsWith(CANVAS_SUFFIX) && canvasAvailable()) openCanvasTab(path, canvasTitle(path))
+  else openFileInPanel(path)
+}
+
 /**
  * 「新开预览」看板上有哪几行。**每一行都是新开一页**，所以固定的那几格不在这里
  * ——它们一直在页签条上，列进来点了也不会新开一页。
@@ -134,7 +154,7 @@ const DESKTOP = isDesktopShell()
  *
  * 现状（核过码，别照着标签猜）：终端在 Rust 侧有 PTY，只在桌面端有；内置浏览器由
  * 桌面外壳的宿主承载（Windows 嵌在面板里，macOS 与 Linux 在浏览器自己的窗口里），
- * 要宿主连上才有，别的端换成 HTTP 网页预览（一个 iframe，只能看）。无限画布没有实现；
+ * 要宿主连上才有，别的端换成 HTTP 网页预览（一个 iframe，只能看）。无限画布只在鼠标端给入口（`canvasAvailable`）；
  * Word / PPT 不在 `packages/server/src/files.ts` 的分类表里；Excel 虽然分到 `tabular`，但 xlsx 是
  * 二进制、走到 `looksBinary` 就退成「无法以文本预览」——真能开的只有 csv / tsv，
  * 那条路文件那一页本来就有。
@@ -177,7 +197,13 @@ const PREVIEW_SOURCES: {
   { key: 'word', label: 'Word', icon: IconFile },
   { key: 'ppt', label: 'PPT', icon: IconFile },
   { key: 'excel', label: 'Excel', icon: IconFile },
-  { key: 'canvas', label: '无限画布', icon: IconCanvas },
+  {
+    key: 'canvas',
+    label: '无限画布',
+    icon: IconCanvas,
+    show: canvasAvailable,
+    open: () => void openNewCanvas(),
+  },
 ]
 
 /** 每次渲染现算：内置浏览器要等宿主连上，那是应用启动之后才发生的事。 */
@@ -490,6 +516,11 @@ export default function SidePanel() {
                         <Match when={t.kind === 'cli'}>
                           <CliPanel id={t.id} />
                         </Match>
+                        <Match when={t.kind === 'canvas' && t.path}>
+                          {(path) => (
+                            <CanvasPanel path={path()} active={activePanelTab() === t.id} />
+                          )}
+                        </Match>
                       </Switch>
                     </Suspense>
                   </div>
@@ -670,7 +701,7 @@ function FileBrowser() {
     },
     pick: (node) => {
       setSelected(node)
-      openFileInPanel(node.path)
+      openPath(node.path)
     },
     menu: (node, x, y) => {
       setSelected(node)
@@ -1224,6 +1255,8 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
       classList={{ selected: props.ctx.selected() === props.node.path }}
       type="button"
       style={{ 'padding-left': `${treeIndent(props.depth)}px` }}
+      draggable={props.node.kind === 'file'}
+      onDragStart={(e) => e.dataTransfer?.setData(WORKSPACE_PATH_TYPE, props.node.path)}
       onClick={onClick}
       onContextMenu={(e) => {
         e.preventDefault()

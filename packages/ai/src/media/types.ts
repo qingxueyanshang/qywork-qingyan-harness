@@ -4,7 +4,7 @@
  * 与对话适配器（`LlmAdapter`）分开：生成接口不是流，没有 token 事件，结果是一组文件。
  */
 
-import type { Currency, MediaKind } from '@qywork/core'
+import type { Currency, MediaInputRole, MediaKind } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation } from './catalog.ts'
 
 /** 发一次生成请求需要的端点与凭证。 */
@@ -16,14 +16,9 @@ export interface MediaProfile {
   headers?: Record<string, string>
 }
 
-/**
- * 一个输入文件。字节由调用方读好，适配器只负责按协议放进请求。
- *
- * `role`：`reference` 是参考图（出图时即待修改的图），`first_frame` / `last_frame` 是视频的首尾帧，
- * `video` 是参考视频（编辑、延长或参考生成，具体是哪一种由模型的原生参数或提示词决定）。
- */
+/** 一个输入文件。字节由调用方读好，适配器只负责按协议放进请求。用途的含义见 `MediaInputRole`。 */
 export interface MediaInput {
-  role: 'reference' | 'first_frame' | 'last_frame' | 'video'
+  role: MediaInputRole
   bytes: Uint8Array
   mime: string
   /** 工作区里的绝对路径。百炼的大文件走临时上传时按路径读。 */

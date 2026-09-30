@@ -20,12 +20,13 @@ import {
   outcomeTokens,
   recordBatchSpent,
   type ToolContext,
+  type ToolOutcome,
   type ToolSpec,
   tokensToMaxBytes,
 } from '@qywork/agent'
 import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
-import { isInlineImage, mimeOf } from '@qywork/core'
+import { isInlineImage, isInlineVideo, mimeOf } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import { shrinkImage } from './image.ts'
@@ -217,16 +218,41 @@ async function* oneChunk(text: string): AsyncGenerator<string> {
  * 读不成文本的那一类的回执。
  *
  * **必须带下一步，且明说不要再读。** 只回「无法作为文本读取」的话，模型除了换个
- * 参数再读一遍没有别的选择，而每一遍都会失败。视频与音频还多一条：本仓的请求体里
- * 只有文本和图像两种内容块，任何模型都收不到它们，换模型也没用。
+ * 参数再读一遍没有别的选择，而每一遍都会失败。音频与压缩包还多一条：请求体里没有
+ * 它们的内容块，换模型也没用。视频在前面单独分派（`readVideo`）。
  */
 function notText(path: string): { status: 'failure'; message: string } {
   return {
     status: 'failure',
     message:
       `${path} 不是文本文件，读不出内容。不要再读它——` +
-      `音视频与压缩包无法作为文本读取，也不能作为内容发给模型；` +
+      `音频与压缩包无法作为文本读取，也不能作为内容发给模型；` +
       `需要里面的信息就用 run_command 调外部工具处理，或请用户描述。`,
+  }
+}
+
+/**
+ * 读一段视频：交出路径引用，由请求装配在发出前按模型能力读字节（`agent` 的 `videosOf` 与 `materialize`）。
+ *
+ * 当前模型或接口不收视频时**在这里就回绝**，并说明下一步：交出去的话，发送时会被替换成一句说明，
+ * 这次读取没有产出，而回执显示成功。
+ * 视频按一份 `MEDIA_TOKENS` 扣投递额度，与图片同口径；真实用量以接口回报为准。
+ */
+function readVideo(ctx: ToolContext, abs: string): ToolOutcome {
+  const shown = displayPath(ctx.workspaceRoot, abs)
+  if (!ctx.video) {
+    return {
+      status: 'failure',
+      message:
+        `当前模型或接口不接受视频输入，${shown} 读不出内容。` +
+        `不要再读这个文件——换一个支持视频的模型，或请用户描述视频内容。`,
+    }
+  }
+  if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
+  return {
+    status: 'success',
+    message: `读取 ${shown}（视频）`,
+    data: { videos: [{ path: abs, mime: mimeOf(abs) }] },
   }
 }
 
@@ -234,6 +260,7 @@ export const readFileTool: ToolSpec = {
   name: 'read_file',
   description:
     '读取工作区内一个文件。文本返回带行号的正文；PNG/JPG/GIF/WebP 作为图片返回；' +
+    'MP4/MOV/WebM/MKV 在当前模型支持视频输入时作为视频返回；' +
     'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配）。' +
     '修改任何已存在的文件前必须先用它读一次——' +
     'write_file 和 edit_file 会校验你读到的内容是否仍是磁盘上的最新版本。' +
@@ -333,6 +360,8 @@ export const readFileTool: ToolSpec = {
         data: { images: [shrunk] },
       }
     }
+
+    if (isInlineVideo(abs)) return readVideo(ctx, abs)
 
     let pdf: string | null = null
     if (abs.toLowerCase().endsWith('.pdf')) {

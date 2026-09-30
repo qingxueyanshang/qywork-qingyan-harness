@@ -365,7 +365,8 @@ export function toolResultContent(
   data: Record<string, unknown> | undefined,
 ): string | ContentBlock[] {
   const images = imagesOf(data)
-  if (!images.length) return envelope
+  const videos = videosOf(data)
+  if (!images.length && !videos.length) return envelope
   return [
     { type: 'text', text: envelope },
     ...images.map(
@@ -375,7 +376,36 @@ export function toolResultContent(
         source: { kind: 'base64', data: i.data },
       }),
     ),
+    ...videos.map(
+      (v): ContentBlock => ({
+        type: 'video',
+        mimeType: v.mime,
+        source: { kind: 'path', path: v.path },
+      }),
+    ),
   ]
+}
+
+/**
+ * `outcome.data.videos` 里那几段：工作区里的绝对路径与类型。
+ *
+ * 视频给路径不给字节：动辄几十上百 MB，定格进执行记录代价过大；发出前由 `materialize` 按模型能力
+ * 读字节或换成说明。视频文件由生成落盘时不覆盖，路径指向的就是读取那一刻的内容。
+ */
+export function videosOf(
+  data: Record<string, unknown> | undefined,
+): { path: string; mime: string }[] {
+  const raw = data?.videos
+  if (!Array.isArray(raw)) return []
+  const out: { path: string; mime: string }[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const { path, mime } = item as { path?: unknown; mime?: unknown }
+    if (typeof path === 'string' && path) {
+      out.push({ path, mime: typeof mime === 'string' ? mime : 'video/mp4' })
+    }
+  }
+  return out
 }
 /**
  * 这一批工具结果里还剩几个图像块。
@@ -399,13 +429,13 @@ export function batchImageCount(messages: readonly WireMessage[], batchId: strin
   for (let i = start + 1; i < messages.length; i++) {
     const m = messages[i]!
     if (m.role !== 'tool' || m._batch !== batchId || typeof m.content === 'string') continue
-    count += m.content.filter((b) => b.type === 'image').length
+    count += m.content.filter((b) => b.type === 'image' || b.type === 'video').length
   }
   return count
 }
 
 /**
- * 把带图的工具结果换成只有信封的形态，信封里的 `images_omitted` 写明图已提供过（`IMAGES_OMITTED`）。
+ * 把带图或视频的工具结果换成只有信封的形态，信封里的 `images_omitted` 写明已提供过（`IMAGES_OMITTED`）。
  *
  * 与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）：模型据这一位知道图不在场，
  * 缺了它会把图当成仍然可见。`result` 保留，只有图像块被摘掉。
@@ -415,7 +445,7 @@ export function batchImageCount(messages: readonly WireMessage[], batchId: strin
  */
 export function omitImages(m: WireMessage): WireMessage {
   if (m.role !== 'tool' || typeof m.content === 'string' || !m.content) return m
-  if (!m.content.some((b) => b.type === 'image')) return m
+  if (!m.content.some((b) => b.type === 'image' || b.type === 'video')) return m
   const text = m.content.find((b) => b.type === 'text')
   if (!text || text.type !== 'text') return m
   let env: Record<string, unknown>
@@ -459,8 +489,8 @@ export function imagesOf(
 export function envelopeResult(
   data: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
-  if (!data || !('images' in data)) return data
-  const { images: _bytes, ...rest } = data
+  if (!data || !('images' in data || 'videos' in data)) return data
+  const { images: _bytes, videos: _paths, ...rest } = data
   return Object.keys(rest).length ? rest : undefined
 }
 
@@ -481,7 +511,7 @@ export interface InputMediaCapabilities {
  * - `req.messages` 的元素与 `transcript` 是同一批对象，原地改等于把 base64 留在
  *   内存里常驻整个 run。
  *
- * path 形态只来自当前轮用户附件。工具读到的图在观察时已经是字节，历史附件只保留引用说明。
+ * path 形态来自当前轮用户附件与工具读到的视频。工具读到的图在观察时已经是字节，历史附件只保留引用说明。
  *
  * 图片按模型能力裁决；视频还要求当前适配器实现原生视频传输。
  *

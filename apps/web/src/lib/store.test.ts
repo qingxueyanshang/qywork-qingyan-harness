@@ -1524,6 +1524,41 @@ describe('文件快照失效序号', () => {
     expect(state.fileChanges.length).toBe(2)
     expect(state.fileVersion).toBe(2)
   })
+
+  test('画布服务写盘的空 changes 只推进序号，不进「本轮改动」', () => {
+    setState({ activeConversation: 'cv_1', fileChanges: [], fileVersion: 0 })
+    applyEvent({
+      seq: 3,
+      at: 0,
+      event: { type: 'file.changed', runId: null, changes: [] },
+    } as never)
+    expect(state.fileVersion).toBe(1)
+    expect(state.fileChanges.length).toBe(0)
+  })
+})
+
+describe('画布运行事件', () => {
+  const run = (seq: number, workspaceId: string) =>
+    applyEvent({
+      seq,
+      at: 0,
+      event: {
+        type: 'canvas.run',
+        workspaceId,
+        path: 'a.canvas.json',
+        nodeId: 'n1',
+        state: 'done',
+      },
+    } as never)
+
+  test('本项目的推进画布序号，别的项目的丢掉', () => {
+    setWorkspace(WS_A)
+    setState({ canvasVersion: 0 })
+    run(1, WS_A.id)
+    expect(state.canvasVersion).toBe(1)
+    run(2, WS_B.id)
+    expect(state.canvasVersion).toBe(1)
+  })
 })
 
 /**

@@ -2,7 +2,7 @@
  * `ark_videos`：火山方舟的视频生成任务（Seedance）。
  *
  * 提交 `POST {base}/contents/generations/tasks`，查询 `GET {base}/contents/generations/tasks/{id}`。
- * 输入全放进 `content[]`：文字一条，图片与视频各一条并带 `role`（首帧、尾帧、参考图、参考视频）。
+ * 输入全放进 `content[]`：文字一条，图片、视频、音频各一条并带 `role`（首帧、尾帧、参考图、参考视频、参考音频）。
  * 参数（分辨率、画幅、时长……）是请求体顶层字段。
  */
 
@@ -27,6 +27,7 @@ const ROLE: Record<MediaInput['role'], string> = {
   last_frame: 'last_frame',
   reference: 'reference_image',
   video: 'reference_video',
+  audio: 'reference_audio',
 }
 
 /**
@@ -59,6 +60,13 @@ export class ArkVideosAdapter implements MediaAdapter {
     if (!taskId) {
       const content: Record<string, unknown>[] = [{ type: 'text', text: req.prompt }]
       for (const input of req.inputs) {
+        if (input.role === 'audio') {
+          // 音频的 data URI 写格式名（`data:audio/mp3`），不写 MIME 类型 `audio/mpeg`。
+          const format = input.mime === 'audio/mpeg' ? 'audio/mp3' : input.mime
+          const url = dataUri(input.bytes, format)
+          content.push({ type: 'audio_url', audio_url: { url }, role: ROLE.audio })
+          continue
+        }
         const url = dataUri(input.bytes, input.mime)
         content.push(
           input.role === 'video'
@@ -82,7 +90,11 @@ export class ArkVideosAdapter implements MediaAdapter {
     const videoInput = req.inputs.some((i) => i.role === 'video')
     return afterSubmit(id, signal, async () => {
       const done = await waitTask(id, () => this.check(base, id, auth, signal), opts)
-      return { files: [await download(done.url, signal)], usage: { ...done.usage, videoInput } }
+      const extra = await Promise.all((done.extra ?? []).map((url) => download(url, signal)))
+      return {
+        files: [await download(done.url, signal), ...extra],
+        usage: { ...done.usage, videoInput },
+      }
     })
   }
 
@@ -99,8 +111,18 @@ export class ArkVideosAdapter implements MediaAdapter {
     )
     const status = String(body.status ?? '')
     if (status === 'succeeded') {
-      const url = (body.content as { video_url?: unknown } | undefined)?.video_url
-      if (typeof url === 'string') return { state: 'done', url, usage: taskUsage(body) }
+      const content = body.content as { video_url?: unknown; last_frame_url?: unknown } | undefined
+      const url = content?.video_url
+      // 请求里带了 `return_last_frame` 才有尾帧地址，有效期同视频地址。
+      const last = content?.last_frame_url
+      if (typeof url === 'string') {
+        return {
+          state: 'done',
+          url,
+          ...(typeof last === 'string' ? { extra: [last] } : {}),
+          usage: taskUsage(body),
+        }
+      }
       return { state: 'failed', message: '任务成功但没有返回视频地址' }
     }
     if (status === 'failed' || status === 'cancelled' || status === 'expired') {

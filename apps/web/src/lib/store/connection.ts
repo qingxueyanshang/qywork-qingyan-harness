@@ -316,6 +316,15 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     return
   }
 
+  /*
+   * 画布卡片的运行状态：工作区级事件，同 `git.state` 按项目丢掉别处的。
+   * 在归属判定之前处理：它不属于任何一条会话，也不该冲正文缓冲。
+   */
+  if (ev.type === 'canvas.run') {
+    if (ev.workspaceId === workspace()?.id) setState('canvasVersion', (n) => n + 1)
+    return
+  }
+
   const from = frame.conversationId
   // 没有归属的是工作区级事件（git 状态那类），按当前会话算。
   const mine = !from || from === state.activeConversation
@@ -840,6 +849,7 @@ function foldRunState(ev: AgentEvent): void {
         compactAt: ev.compactAt,
         breakdown: ev.breakdown,
         omitted: ev.omitted,
+        unmeasuredVideos: ev.unmeasuredVideos ?? 0,
       })
       return
 
@@ -1519,6 +1529,8 @@ export async function reloadActiveConversation(): Promise<void> {
               compactAt: ctx.compactAt,
               breakdown: ctx.breakdown,
               omitted: ctx.omitted,
+              // 读回的是账本里的读数，不描述一条正在发的请求，没有未计的视频。
+              unmeasuredVideos: 0,
             }
           : null
       }),

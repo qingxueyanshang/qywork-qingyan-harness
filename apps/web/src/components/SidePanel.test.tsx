@@ -1044,14 +1044,15 @@ describe('文件预览的切换与 PDF', () => {
   })
 
   /**
-   * 原始失败形状：图片与音视频以 data URI 内联，超过 4 MB 只给一句「超出内联上限」，
-   * 生成的 4K 图与视频点开看不到。现在与 PDF 一样取原始字节。
+   * 图片与音视频用直链：元素自己按 Range 取，视频边播边取、能拖进度，内存不随文件大小涨。
+   * 令牌在查询串里（元素带不了请求头），修改时间进地址，文件改了地址就变。
    */
-  test('图片与视频也取原始字节，不依赖预览里的内联数据', async () => {
+  test('图片与视频的 src 是带令牌的直链，修改时间进地址，不整份取字节', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     const originalRaw = store.client.raw
     const rawCalls: string[] = []
+    let mtime = 1
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
       path: string,
     ) => {
@@ -1062,7 +1063,7 @@ describe('文件预览的切换与 PDF', () => {
         kind: video ? 'video' : 'image',
         mime: video ? 'video/mp4' : 'image/png',
         size: 20 * 1024 * 1024,
-        mtime: 1,
+        mtime,
         truncated: false,
       }
     }
@@ -1072,36 +1073,44 @@ describe('文件预览的切换与 PDF', () => {
       rawCalls.push(path)
       return new Response('bytes')
     }
-    const { createObjectURL, revokeObjectURL } = URL
-    URL.createObjectURL = () => 'about:blank'
-    URL.revokeObjectURL = () => {}
     restoreApi = () => {
       ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
       ;(store.client as unknown as { raw: typeof originalRaw }).raw = originalRaw
-      URL.createObjectURL = createObjectURL
-      URL.revokeObjectURL = revokeObjectURL
     }
 
     const { createSignal } = await import('solid-js')
     const { render } = await import('solid-js/web')
     const { default: FileView } = await import('./FileView.tsx')
     const [path, setPath] = createSignal('generated/a.png')
+    const [refresh, setRefresh] = createSignal(0)
     const host = document.createElement('div')
     document.body.append(host)
-    dispose = render(() => <FileView path={path()} />, host as unknown as HTMLElement)
-
-    await waitFor(
-      () => host.querySelector('img.preview-media')?.getAttribute('src') === 'about:blank',
-      () => `raw=${rawCalls.join(',')} html=${host.innerHTML.slice(0, 300)}`,
+    dispose = render(
+      () => <FileView path={path()} refresh={refresh()} />,
+      host as unknown as HTMLElement,
     )
+
+    const src = (selector: string) => host.querySelector(selector)?.getAttribute('src') ?? ''
+    await waitFor(
+      () => src('img.preview-media').includes(`path=${encodeURIComponent('generated/a.png')}`),
+      () => `html=${host.innerHTML.slice(0, 300)}`,
+    )
+    expect(src('img.preview-media')).toContain('/api/files/raw?')
+    expect(src('img.preview-media')).toContain('&v=1')
+    expect(src('img.preview-media')).toContain('token=')
+
+    mtime = 2
+    setRefresh(1)
+    await waitFor(
+      () => src('img.preview-media').includes('&v=2'),
+      () => `html=${host.innerHTML.slice(0, 300)}`,
+    )
+
     setPath('generated/b.mp4')
     await waitFor(
-      () => host.querySelector('video.preview-media') !== null,
-      () => `raw=${rawCalls.join(',')} html=${host.innerHTML.slice(0, 300)}`,
+      () => src('video.preview-media').includes(encodeURIComponent('generated/b.mp4')),
+      () => `html=${host.innerHTML.slice(0, 300)}`,
     )
-    expect(rawCalls).toEqual([
-      `/api/files/raw?path=${encodeURIComponent('generated/a.png')}`,
-      `/api/files/raw?path=${encodeURIComponent('generated/b.mp4')}`,
-    ])
+    expect(rawCalls).toEqual([])
   })
 })

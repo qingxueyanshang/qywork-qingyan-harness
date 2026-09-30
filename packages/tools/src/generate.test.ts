@@ -1,17 +1,24 @@
 /**
- * 生成工具：`generate.ts` 的 `generate_image`、`generate_video`、`generate_audio`，以及 `index.ts` 里按类别注册的那一条。
+ * 生成：`generate.ts` 的 `generate_image`、`generate_video`、`generate_audio`、`generateMedia`、`landFiles`，
+ * 以及 `index.ts` 里按类别注册的那一条。
  *
  * 端口用一个记录调用的假实现：这里验的是工具这一侧的事——输入怎么读、参数怎么解析、
  * 产物落在哪、已存在的输出路径在调接口之前就拒绝、视频任务记录何时写何时删。
  */
 
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, setSystemTime, test } from 'bun:test'
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type MediaCall, type MediaCallResult, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
-import { generateImageTool, generateVideoTool, MEDIA_TOOLS } from './generate.ts'
+import {
+  generateImageTool,
+  generateMedia,
+  generateVideoTool,
+  landFiles,
+  MEDIA_TOOLS,
+} from './generate.ts'
 import { registerBuiltinTools } from './index.ts'
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
@@ -314,4 +321,112 @@ test('请求的扩展名与实际格式不符时换成实际格式的，不认�
   }
   const jpeg = await run(root, { prompt: 'x', output: 'cat.jpeg' })
   expect(jpeg.fileChanges?.map((c) => c.path)).toEqual(['cat.jpeg'])
+})
+
+describe('generateMedia / landFiles', () => {
+  const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
+
+  test('同一秒并发两次不给输出路径的视频生成，各有各的任务记录与产物', async () => {
+    setSystemTime(new Date(2026, 8, 29, 10, 10, 10))
+    try {
+      const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
+      answer = {
+        ok: true,
+        provider: 'qwen',
+        model: 'wan',
+        files: [{ bytes: MP4, mime: 'video/mp4' }],
+      }
+      let submitted = 0
+      let bothSubmitted: () => void = () => {}
+      const barrier = new Promise<void>((resolve) => {
+        bothSubmitted = resolve
+      })
+      let records: string[] = []
+      during = async (call) => {
+        await call.onTask?.({ taskId: `task-${++submitted}`, provider: 'qwen', model: 'wan' })
+        if (submitted === 2) {
+          const dir = join(root, 'generated')
+          records = await Promise.all(
+            (await readdir(dir)).map((f) => readFile(join(dir, f), 'utf8')),
+          )
+          bothSubmitted()
+        }
+        await barrier
+      }
+      const video = (args: Record<string, unknown>) => generateVideoTool.fn(args, ctx(root))
+      const [a, b] = await Promise.all([video({ prompt: '一' }), video({ prompt: '二' })])
+      expect(records.map((r) => JSON.parse(r).taskId).sort()).toEqual(['task-1', 'task-2'])
+      expect(a.status).toBe('success')
+      expect(b.status).toBe('success')
+      expect((await readdir(join(root, 'generated'))).sort()).toEqual([
+        '20260929-101010-2.mp4',
+        '20260929-101010.mp4',
+      ])
+    } finally {
+      setSystemTime()
+    }
+  })
+
+  test('generateMedia 按路径读输入，任务号到手时回报记录的工作区路径', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
+    await writeFile(join(root, 'a.png'), PNG)
+    const seen: string[] = []
+    const outcome = await generateMedia({
+      roots: root,
+      media: {
+        async generate(call) {
+          await call.onTask?.({ taskId: 't', provider: 'ark', model: 'seedance' })
+          return { ok: false, message: '等待超时', pendingTaskId: 't' }
+        },
+      },
+      signal: new AbortController().signal,
+      type: 'video',
+      prompt: '走',
+      inputs: [{ role: 'first_frame', path: 'a.png' }],
+      params: {},
+      output: 'clips/walk',
+      onTask: ({ record }) => {
+        seen.push(record)
+      },
+    })
+    expect(seen).toEqual(['clips/walk.task.json'])
+    expect(outcome).toEqual({
+      ok: false,
+      executed: true,
+      message: '等待超时',
+      record: 'clips/walk.task.json',
+    })
+  })
+
+  test('landFiles 不覆盖已有文件，返回工作区相对路径', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-land-'))
+    await mkdir(join(root, 'generated'))
+    await writeFile(join(root, 'generated', 'v_尾帧.png'), 'taken')
+    const landed = await landFiles(root, [{ bytes: PNG, mime: 'image/png' }], 'generated/v_尾帧')
+    expect(landed).toEqual([
+      { path: 'generated/v_尾帧-2.png', mime: 'image/png', bytes: PNG.length },
+    ])
+  })
+})
+
+describe('generate_video 的参考音频', () => {
+  test('audios 按 wav / mp3 读好、用途为 audio；不是音频的在调接口之前退回', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gena-'))
+    await writeFile(join(root, 'a.png'), PNG)
+    await writeFile(join(root, 'v.wav'), 'RIFF')
+    await writeFile(join(root, 'v.txt'), 'x')
+    answer = { ok: false, message: '停在这里' }
+    await generateVideoTool.fn({ prompt: '说话', images: ['a.png'], audios: ['v.wav'] }, ctx(root))
+    expect(calls[0]?.inputs.map((i) => [i.role, i.mime])).toEqual([
+      ['reference', 'image/png'],
+      ['audio', 'audio/wav'],
+    ])
+    const bad = await generateVideoTool.fn(
+      { prompt: '说话', images: ['a.png'], audios: ['v.txt'] },
+      ctx(root),
+    )
+    expect(bad.errorKind).toBe('invalid_tool_arguments')
+    expect(bad.message).toContain('wav / mp3 音频')
+    expect(calls).toHaveLength(1)
+  })
 })

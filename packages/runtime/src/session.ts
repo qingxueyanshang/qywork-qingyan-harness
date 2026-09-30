@@ -10,6 +10,7 @@ import { basename, isAbsolute, resolve } from 'node:path'
 import {
   AgentLoop,
   type BrowserPort,
+  type CanvasPort,
   type CompactionPort,
   type DelegatePort,
   type DesktopPort,
@@ -24,6 +25,7 @@ import {
   type Summarizer,
   type ToolContextBase,
   ToolRegistry,
+  videosOf,
 } from '@qywork/agent'
 import {
   buildAdapter,
@@ -179,6 +181,10 @@ export interface SessionOptions {
    */
   browser?: BrowserPort
   /**
+   * 画布通道。见 `CanvasPort`。由服务端注入它的画布服务；没传（CLI 会话）即没有 `canvas` 工具。
+   */
+  canvas?: CanvasPort
+  /**
    * 电脑控制通道。见 `DesktopPort`。
    *
    * 由装配方依据用户的启用开关与当前宿主状态实时判定后传入；没传即这一轮没有
@@ -309,6 +315,7 @@ export class Session {
       mcpConfig: true,
       browser: opts.browser !== undefined,
       desktop: opts.desktop !== undefined,
+      canvas: opts.canvas !== undefined,
       // 生成工具按配了模型的类别注册；与其他内置工具同一规则，角色的 allowedTools 点名时按点名过滤。
       media: [...new Set(listMediaModels(opts.config).map((m) => m.output))],
     }
@@ -1074,7 +1081,8 @@ export class Session {
     const store = this.opts.store
     // 三项逐模型的能力取自同一份 spec：分开各取一次的话，换模型时它们会来自
     // 两次不同的解析结果。
-    const spec = buildAdapter(this.resolveProfile(target)).spec
+    const adapter = buildAdapter(this.resolveProfile(target))
+    const spec = adapter.spec
     return {
       workspaceRoot: this.opts.workspaceRoot,
       conversationId,
@@ -1086,6 +1094,8 @@ export class Session {
       // 扣账那把尺与窗口同源，理由见 `ToolContext.density`。
       density: spec.density,
       vision: spec.vision,
+      // 与发送时 `materialize` 的视频判据同一条：模型能力且适配器能传。
+      video: spec.video && adapter.transmits.video === true,
       resources: new Map(),
       state: new Map(),
       // sink 绑定到本 run：登记行要能追溯到哪一轮产生的正文，
@@ -1155,6 +1165,7 @@ export class Session {
       ...(this.opts.plugins ? { plugins: this.opts.plugins } : {}),
       ...(this.opts.browser ? { browser: this.opts.browser } : {}),
       ...(this.opts.desktop ? { desktop: this.opts.desktop } : {}),
+      ...(this.opts.canvas ? { canvas: this.opts.canvas } : {}),
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
       ...(listMediaModels(this.opts.config).length
         ? {
@@ -1403,6 +1414,7 @@ function stepRecord(st: Step): HistoryStep {
       ? (outcome.data as Record<string, unknown>)
       : undefined
   const images = imagesOf(data)
+  const videos = videosOf(data)
   const rest = envelopeResult(data)
   const { data: _dropped, ...withoutData } = outcome
   return {
@@ -1411,6 +1423,7 @@ function stepRecord(st: Step): HistoryStep {
     args: JSON.stringify(payload.args ?? {}),
     outcome: JSON.stringify(data ? { ...withoutData, ...(rest ? { data: rest } : {}) } : outcome),
     ...(images.length ? { images } : {}),
+    ...(videos.length ? { videos } : {}),
   }
 }
 

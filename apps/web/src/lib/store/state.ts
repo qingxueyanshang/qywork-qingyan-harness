@@ -284,6 +284,8 @@ export interface AppState {
     compactAt: number
     breakdown: ContextBreakdown
     omitted: ContextOmitted
+    /** 这次请求里没计入 `tokens` 的视频段数。非 0 时读数显示「未知」。 */
+    unmeasuredVideos: number
   } | null
   /**
    * 当前会话排着的跟进消息。整表快照语义——`queue.changed` 每次整体替换。
@@ -321,6 +323,11 @@ export interface AppState {
    * 这个数不描述磁盘内容，只表达“上一份文件快照已经过期”。
    */
   fileVersion: number
+  /**
+   * 画布卡片运行状态的变化序号。每收到一条本项目的 `canvas.run` 就递增一次，开着的画布页签据此重读；
+   * 卡片状态与失败原文以读画布接口的回体为准，这里不另存一份。
+   */
+  canvasVersion: number
   /** 这一轮的每一次写入，按到达先后；净效果由 `foldFileChanges` 折，与变更页同一份口径。 */
   fileChanges: FileChange[]
   git: Omit<GitStateEvent, 'type'> | null
@@ -343,6 +350,7 @@ const initial: AppState = {
   busyConversations: [],
   context: null,
   fileVersion: 0,
+  canvasVersion: 0,
   fileChanges: [],
   git: null,
   desktopTarget: null,

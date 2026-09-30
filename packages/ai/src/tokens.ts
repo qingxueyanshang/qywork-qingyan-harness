@@ -133,6 +133,8 @@ export function estimateJson(value: unknown, d: TokenDensity): number {
  * 不在这里判——`estimateContent` 拿不到角色。
  *
  * 图片/文档走固定值，**绝不落到 JSON 序列化那条路**——那正是 base64 暴涨的来源。
+ * 视频计 0：它的占用随时长与抽帧规则变化，本地没有可用的算法，只有接口回报的真值可信，
+ * 读数那侧据 `videoBlocksOf` 标「未计」（`agent` 的 `contextEvent`）。
  */
 export function estimateContent(
   content: string | ContentBlock[] | undefined,
@@ -144,9 +146,18 @@ export function estimateContent(
   let total = 0
   for (const block of content) {
     if (block.type === 'text') total += count(block.text, d, charsPerToken)
-    else total += MEDIA_TOKENS
+    else if (block.type === 'image') total += MEDIA_TOKENS
   }
   return total
+}
+
+/** 一组消息里的视频块数。估算不含它们（见 `estimateContent`）。 */
+export function videoBlocksOf(messages: readonly WireMessage[]): number {
+  let n = 0
+  for (const m of messages) {
+    if (typeof m.content !== 'string') n += m.content.filter((b) => b.type === 'video').length
+  }
+  return n
 }
 
 /**

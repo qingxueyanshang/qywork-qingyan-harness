@@ -76,6 +76,7 @@ export type AgentEvent =
   | CompactionEvent
   // ── 工作区实时性 ──
   | FileChangedEvent
+  | CanvasRunEvent
   | GitStateEvent
   | BrowserStateEvent
   | DesktopStateEvent
@@ -473,6 +474,11 @@ export interface ContextEvent {
   type: 'context'
   runId: RunId
   tokens: number
+  /**
+   * 这次请求里有几段视频没计入 `tokens`：视频的占用只有接口回报的真值可信，本地估算不含它。
+   * 缺席即 0。界面据此把读数显示成「未知」。
+   */
+  unmeasuredVideos?: number
   limit: number
   /** 保留一位小数。1M 窗口下取整会把 2139 显示成 0%，那一位是有信息量的。 */
   percent: number
@@ -547,6 +553,24 @@ export interface FileChangedEvent {
   changes: FileChange[]
   /** 归属的 run；外部编辑器改的文件为 null。 */
   runId: RunId | null
+}
+
+/**
+ * 画布上一张生成卡的运行状态。**工作区级事件，信封上不带 `conversationId`。**
+ *
+ * 与 `file.changed` 分开发：那条回答「磁盘变了」，这条回答「这张卡怎么样了」。出图失败不写任何文件，
+ * 只有 `file.changed` 的话界面收不到失败，卡片一直停在生成中。
+ */
+export interface CanvasRunEvent {
+  type: 'canvas.run'
+  /** 画布所在的项目。同时开着多个项目时按它丢掉别的项目的事件，同 `git.state`。 */
+  workspaceId: string
+  /** 画布文件的工作区相对路径（正斜杠）。 */
+  path: string
+  nodeId: string
+  state: 'running' | 'done' | 'failed'
+  /** `failed` 时的原文。 */
+  message?: string
 }
 
 export interface GitStateEvent {

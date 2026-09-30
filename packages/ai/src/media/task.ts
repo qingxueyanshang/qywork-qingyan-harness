@@ -14,7 +14,8 @@ const MAX_INTERVAL_MS = 15_000
 
 export type TaskState =
   | { state: 'pending'; status: string }
-  | { state: 'done'; url: string; usage?: MediaUsage }
+  /** `extra`：结果地址之外随任务返回的产物地址（方舟的尾帧图），与视频一起下载、一起落盘。 */
+  | { state: 'done'; url: string; extra?: string[]; usage?: MediaUsage }
   | { state: 'failed'; message: string }
 
 /** 任务完成：结果地址与查询结果里的计量。 */

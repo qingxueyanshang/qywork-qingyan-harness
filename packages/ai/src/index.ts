@@ -41,16 +41,18 @@ export {
 } from './errors.ts'
 // 唯一的 adapter 构造入口
 export { buildAdapter } from './factory.ts'
-// 生成模型：目录（设置页与生成工具共用）、参数校验、唯一的生成适配器构造入口
+// 生成模型：目录（设置页与生成工具共用）、参数校验、发送前的花费、唯一的生成适配器构造入口
 export {
   findMediaModel,
   lookupMediaModel,
+  type MediaInputCount,
   type MediaModelSpec,
   type MediaOperation,
   type MediaParamSpec,
   type MediaPrice,
   mediaCatalog,
   mediaCost,
+  quoteMedia,
 } from './media/catalog.ts'
 export { buildMediaAdapter } from './media/index.ts'
 export { describeParam, operationLabel, validateMediaCall } from './media/params.ts'
@@ -84,6 +86,7 @@ export {
   estimateText,
   MEDIA_TOKENS,
   type TokenDensity,
+  videoBlocksOf,
 } from './tokens.ts'
 // 流空闲上限的基准：agent 按思考档位放宽它，runtime 的摘要直接用它
 export { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'

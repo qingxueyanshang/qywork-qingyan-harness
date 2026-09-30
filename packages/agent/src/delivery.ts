@@ -112,7 +112,7 @@ export function deliveredTokens(text: string, density: TokenDensity): number {
 
 /**
  * 一条结果进信封后的占用：message 与 data 按落进 JSON 的形状量，换行等转义字符计入；
- * 图像按 `MEDIA_TOKENS` 一张计，与请求那侧同口径。
+ * 图像与视频按 `MEDIA_TOKENS` 一份计，与请求那侧同口径。
  *
  * 信封里 `call_id` / `tool` / `status` 等固定键约几十 token，不在这里算，由软阈值以上的预留覆盖。
  */
@@ -122,10 +122,11 @@ export function outcomeTokens(
 ): number {
   const data = parts.data ?? {}
   const images = Array.isArray(data.images) ? data.images.length : 0
-  const { images: _bytes, ...rest } = data
+  const videos = Array.isArray(data.videos) ? data.videos.length : 0
+  const { images: _bytes, videos: _paths, ...rest } = data
   return (
     deliveredTokens(JSON.stringify({ summary: parts.message, result: rest }), density) +
-    images * MEDIA_TOKENS
+    (images + videos) * MEDIA_TOKENS
   )
 }
 

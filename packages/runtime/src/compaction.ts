@@ -37,7 +37,7 @@ import type {
   MessageId,
   Step,
 } from '@qywork/core'
-import { isNoticeStep } from '@qywork/core'
+import { isInlineVideo, isNoticeStep } from '@qywork/core'
 import {
   getConversation,
   latestSentProviderRequest,
@@ -484,8 +484,10 @@ export class RuntimeCompaction implements CompactionPort {
       units.push({
         key: cutKey(cut),
         cut,
-        // 附件按固定值计，与装配那侧同一口径；按 base64 长度估会高出两个数量级。
-        tokens: estimateMessages([...context, wire], density) + m.attachments.length * MEDIA_TOKENS,
+        // 附件按固定值计、视频不计，与装配那侧（`estimateContent`）同一口径；按 base64 长度估会高出两个数量级。
+        tokens:
+          estimateMessages([...context, wire], density) +
+          m.attachments.filter((a) => !isInlineVideo(a.path)).length * MEDIA_TOKENS,
         messages: [...context, wire],
         row: {
           id: m.id,
@@ -508,7 +510,9 @@ export class RuntimeCompaction implements CompactionPort {
           units.push({
             key: cutKey(stepCut),
             cut: stepCut,
-            tokens: estimateMessages(u.messages, density) + files.length * MEDIA_TOKENS,
+            tokens:
+              estimateMessages(u.messages, density) +
+              files.filter((a) => !isInlineVideo(a.path)).length * MEDIA_TOKENS,
             messages: u.messages,
             /*
              * run 内注入的那句用户消息也要有 `row`，否则它折进摘要线之后

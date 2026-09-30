@@ -12,6 +12,7 @@
 
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { lookupMediaModel } from '@qywork/ai'
 import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame } from '@qywork/core'
 import { log, NATIVE_BROWSER_PATH, NATIVE_DESKTOP_PATH } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
@@ -22,6 +23,7 @@ import {
   configDir,
   importLegacySchedules,
   releaseExtensions,
+  resolveMediaModel,
 } from '@qywork/runtime'
 import type { ProcessExitObservation, ScheduleClaim, Store } from '@qywork/store'
 import {
@@ -38,6 +40,7 @@ import { BrowserBridge } from './browser/bridge.ts'
 import { browserCapability } from './browser/capability.ts'
 import { BrowserCoordinator } from './browser/coordinator.ts'
 import { EventBus } from './bus.ts'
+import { CanvasService } from './canvas.ts'
 import { handleCommand, reject } from './commands.ts'
 import type { SocketData } from './deps.ts'
 import { DesktopBridge } from './desktop/bridge.ts'
@@ -152,6 +155,14 @@ export function serve(opts: ServeOptions) {
   // 在跑的子 agent 与 run 同级：它们的生命期跟着会话，不跟着派它们的那一轮。
   const subagents = new SubagentRegistry()
   const runs = new RunManager(opts.store, bus, subagents)
+  // 画布的写入与画布上的生成只经这一个实例；事件不带会话 id，推给所有客户端。
+  const canvas = new CanvasService({
+    publish: (event) => bus.publish(event),
+    mentionStyleOf: (output, pick) => {
+      const target = resolveMediaModel(opts.config, output, pick)
+      return target ? lookupMediaModel(target.model, target.kind).mention : undefined
+    },
+  })
   /*
    * 浏览器宿主连接与控制协调器。**没有凭据就没有这两样**：宿主路径不接受连接，
    * 会话装配也拿不到端口，界面上不会出现一个点了报错的入口。
@@ -324,6 +335,7 @@ export function serve(opts: ServeOptions) {
         bus,
         runs,
         subagents,
+        canvas,
         ...(browser ? { browser } : {}),
         ...(desktop ? { desktop } : {}),
       },
@@ -476,6 +488,7 @@ export function serve(opts: ServeOptions) {
             config: opts.config,
             bus,
             runs,
+            canvas,
             pairing,
             token,
             port: srv.port ?? opts.port,
@@ -570,6 +583,7 @@ export function serve(opts: ServeOptions) {
             bus,
             runs,
             subagents,
+            canvas,
             ...(browser ? { browser } : {}),
             ...(desktop ? { desktop } : {}),
           })

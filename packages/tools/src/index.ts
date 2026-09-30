@@ -22,8 +22,17 @@ import { moveSkillTool, readSkillTool, writeSkillTool } from './skills.ts'
 import { writeTodosTool } from './todos.ts'
 import { webFetchTool, webSearchTool } from './web.ts'
 
-// 生成工具按类别查：runtime 据此判断本轮快照要不要列那一类模型
-export { MEDIA_TOOLS } from './generate.ts'
+// 生成工具按类别查：runtime 据此判断本轮快照要不要列那一类模型。
+// 生成的执行路径与任务记录后缀：server 的画布服务与生成工具走同一个 `generateMedia`
+export {
+  type GeneratedFile,
+  type GenerateOutcome,
+  generateMedia,
+  landFiles,
+  MEDIA_TOOLS,
+  resumeMedia,
+  TASK_SUFFIX,
+} from './generate.ts'
 // 记忆：runtime/session.ts 装配提示词时要读索引，server/api/memory.ts 要读写单条
 export {
   listAllScopedEntries,
@@ -45,6 +54,7 @@ export {
   resolveInWorkspace,
   rootsOf,
 } from './paths.ts'
+export { renameWithRetry } from './rename.ts'
 // 命令跑在一个「先于监听端口出生」的子进程里。`qy serve` 绑端口前起它，
 // 隐藏的 `runner` 子命令是它那一侧的入口。
 export {
@@ -106,6 +116,7 @@ export {
 export { type ChangeWindow, openChangeWindow } from './workspace-watch.ts'
 
 import type { MediaOutput } from '@qywork/core'
+import { canvasTool, readCanvasTool } from './canvas.ts'
 import { defineRoleTool } from './define-role.ts'
 import { MEDIA_TOOLS } from './generate.ts'
 import { readHistoryTool } from './history.ts'
@@ -129,6 +140,8 @@ export function registerBuiltinTools(
     mcpConfig?: boolean
     browser?: boolean
     desktop?: boolean
+    /** 有画布通道（服务端注入了 `CanvasPort`）。 */
+    canvas?: boolean
     /** 配了模型的生成类别。每一类的生成工具只在这一类有模型时注册。 */
     media?: readonly MediaOutput[]
   } = {},
@@ -165,6 +178,8 @@ export function registerBuiltinTools(
     ...(opts.mcpConfig ? [writeMcpServerTool, moveMcpServerTool] : []),
     // 生成按类别注册：没有图像模型的出图工具调一次必失败（B5）。
     ...(opts.media ?? []).map((output) => MEDIA_TOOLS[output]),
+    // 画布按通道注册：没有服务端（CLI 会话）就没有画布服务，工具调一次必失败。
+    ...(opts.canvas ? [readCanvasTool, canvasTool] : []),
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,

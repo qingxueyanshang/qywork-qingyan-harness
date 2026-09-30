@@ -1,7 +1,7 @@
 /**
  * 生成模型的目录、参数校验与两个出图适配器。
  *
- * 覆盖范围：`media/catalog.ts` 的查法与计价（`mediaCost` 与各模型的单价）、`media/params.ts` 的校验、
+ * 覆盖范围：`media/catalog.ts` 的查法与计价（`mediaCost`、`quoteMedia` 与各模型的单价）、`media/params.ts` 的校验、
  * `media/adapters/openai-images.ts` 与 `media/adapters/dashscope.ts` 出图时实际发出的请求与对响应（含计量）的读法、
  * `media/http.ts` 的错误原文与格式识别。视频适配器与任务等待见 `media-videos.test.ts`。
  *
@@ -10,7 +10,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import type { MediaKind } from '@qywork/core'
-import { findMediaModel, lookupMediaModel, mediaCost } from './catalog.ts'
+import { findMediaModel, lookupMediaModel, mediaCost, quoteMedia } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
 import { validateMediaCall } from './params.ts'
 import { MediaError, type MediaUsage } from './types.ts'
@@ -299,6 +299,54 @@ describe('dashscope_images', () => {
       .run({ operation: 'generate', prompt: 'x', inputs: [], params: {} }, { signal: signal() })
       .catch((e: unknown) => e)
     expect((err as Error).message).toBe('接口没有返回图片：DataInspectionFailed 输入内容不合规')
+  })
+})
+
+/**
+ * 发送前显示的金额必须等于成功后账本记的金额：同一组参数下，`quoteMedia` 与按接口回报的计量
+ * （`adapters/dashscope.ts` 的 `videoUsage` 规整后的形状）走 `mediaCost` 算出来的相等。
+ */
+describe('发送前的花费', () => {
+  const quote = (
+    id: string,
+    kind: MediaKind,
+    params: Record<string, unknown>,
+    inputs = { images: 0, videos: 0 },
+  ) => quoteMedia(lookupMediaModel(id, kind), params, inputs)
+  const ledger = (id: string, kind: MediaKind, usage: MediaUsage) =>
+    mediaCost(lookupMediaModel(id, kind), usage)
+
+  test('万相 3.0 720P 5 秒 ¥3.00，与账本同一个数；没填的参数按接口默认值', () => {
+    const q = quote('wan3.0-video', 'dashscope_videos', { resolution: '720P', duration: 5 })
+    expect(q).toEqual({ cost: expect.closeTo(3, 10), currency: 'CNY' })
+    expect(ledger('wan3.0-video', 'dashscope_videos', { seconds: 5, resolution: '720p' })).toEqual(
+      q!,
+    )
+    // 默认 1080P、5 秒。
+    expect(quote('wan3.0-video', 'dashscope_videos', {})?.cost).toBeCloseTo(6, 10)
+  })
+
+  test('可灵（百炼）按清晰度档位与声音估算，与账本同一个数', () => {
+    const id = 'kling/kling-v3-video-generation'
+    const q = quote(id, 'dashscope_videos', { mode: 'std', audio: true, duration: 5 })
+    expect(q?.cost).toBeCloseTo(4.5, 10)
+    expect(
+      ledger(id, 'dashscope_videos', { seconds: 5, resolution: '720p', audio: true }).cost,
+    ).toBeCloseTo(q!.cost, 10)
+  })
+
+  test('Seedream Flash 每张 ¥0.12', () => {
+    expect(
+      quote('doubao-seedream-5-0-flash-260915', 'openai_images', {}, { images: 2, videos: 0 }),
+    ).toEqual({ cost: 0.12, currency: 'CNY' })
+  })
+
+  test('计量要等接口回报的不估：Seedance、千问图像、万相带参考视频、时长由模型定、可灵官方', () => {
+    expect(quote('doubao-seedance-2-0-260128', 'ark_videos', { resolution: '720p' })).toBeNull()
+    expect(quote('qwen-image-3.0-pro', 'dashscope_images', {})).toBeNull()
+    expect(quote('wan3.0-video', 'dashscope_videos', {}, { images: 0, videos: 1 })).toBeNull()
+    expect(quote('wan3.0-video', 'dashscope_videos', { duration: -1 })).toBeNull()
+    expect(quote('kling-3.0', 'kling_videos', {})).toBeNull()
   })
 })
 

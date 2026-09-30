@@ -46,7 +46,7 @@ export function validateMediaCall(
   spec: MediaModelSpec,
   operation: MediaOperation,
   params: Record<string, unknown>,
-  counts: { images: number; videos: number },
+  counts: { images: number; videos: number; audios?: number },
 ): string[] {
   const problems: string[] = []
   if (!spec.operations.includes(operation)) {
@@ -62,6 +62,13 @@ export function validateMediaCall(
   if (counts.videos > spec.inputs.maxVideos) {
     problems.push(
       `${spec.id} 最多收 ${spec.inputs.maxVideos} 个参考视频，这次给了 ${counts.videos} 个`,
+    )
+  }
+  if ((counts.audios ?? 0) > (spec.inputs.maxAudios ?? 0)) {
+    problems.push(
+      spec.inputs.maxAudios
+        ? `${spec.id} 最多收 ${spec.inputs.maxAudios} 段参考音频，这次给了 ${counts.audios} 段`
+        : `${spec.id} 不收参考音频`,
     )
   }
   const known = new Map(spec.params.map((p) => [p.name, p]))

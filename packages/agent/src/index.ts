@@ -85,6 +85,7 @@ export {
   omitImages,
   softLimit,
   toolResultContent,
+  videosOf,
 } from './loop/request.ts'
 export { createSummaryTrace } from './loop/summary-trace.ts'
 export type { CompactionPort, CompactionRunInput, LoopPersistence } from './loop/types.ts'
@@ -111,6 +112,7 @@ export {
   type BrowserWaitReceipt,
   type BrowserWaitResult,
   type BrowserWaitState,
+  type CanvasPort,
   compactionEpoch,
   type DelegatePort,
   type FileReadPort,

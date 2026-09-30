@@ -1677,25 +1677,26 @@ describe('read_file 认图片', () => {
     expect(ok.status).toBe('success')
   })
 
-  /**
-   * 视频这条：**模型收不到视频**——请求体里只有文本和图像两种内容块，
-   * 三个适配器都没有视频的编码器，任何模型都一样。所以这里回的不是
-   * 「换个模型」，是「不要再读它」。
-   *
-   * 盯的是那句话不能落到「分段读取」上：分段读一个二进制文件走不通，模型只能反复试。
-   * 判据取内容不取扩展名。
-   */
-  test('读视频：报「不是文本」而不是「分段读取」', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'qywork-mp4-'))
-    // 前 4 KB 里有 NUL 就够判：真 mp4 的头部一定有。
-    const head = Buffer.concat([Buffer.from('    ftypisom'), Buffer.alloc(4096)])
-    await writeFile(join(root, 'clip.mp4'), Buffer.concat([head, Buffer.alloc(2 * 1024 * 1024)]))
+  /** 视频交出路径引用，发出前才读字节；模型或接口不收视频时当场回绝并带下一步，同图片。 */
+  test('读视频：收视频时交出路径引用，不收时回绝', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-video-'))
+    await writeFile(join(root, 'clip.mp4'), new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]))
 
-    const out = await registry().execute('read_file', { path: 'clip.mp4' }, ctx(root))
-    expect(out.status).toBe('failure')
-    expect(out.message).toContain('不是文本文件')
-    expect(out.message).toContain('不要再读')
-    expect(out.message).not.toContain('分段读取')
+    const refused = await registry().execute('read_file', { path: 'clip.mp4' }, ctx(root))
+    expect(refused.status).toBe('failure')
+    expect(refused.message).toContain('不接受视频输入')
+    expect(refused.message).toContain('不要再读')
+    expect(refused.message).not.toContain('分段读取')
+
+    const ok = await registry().execute(
+      'read_file',
+      { path: 'clip.mp4' },
+      { ...ctx(root), video: true },
+    )
+    expect(ok.status).toBe('success')
+    expect(ok.data).toEqual({
+      videos: [{ path: await realpath(join(root, 'clip.mp4')), mime: 'video/mp4' }],
+    })
   })
 
   /** 超过嗅探大小线的图片必须走图片那条，不能被判成二进制拒绝。 */

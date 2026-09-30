@@ -14,6 +14,7 @@ import type { ConversationId } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import type { ScheduleClaim, Store } from '@qywork/store'
 import type { EventBus } from '../bus.ts'
+import type { CanvasService } from '../canvas.ts'
 import type { Pairing } from '../pairing.ts'
 import type { RunManager } from '../runs.ts'
 
@@ -22,6 +23,8 @@ export interface ApiDeps {
   config: QyConfig
   bus: EventBus
   runs: RunManager
+  /** 画布服务：界面与 Agent 共用这一个实例，画布的写入与生成只经它。 */
+  canvas: CanvasService
   pairing: Pairing
   token: string
   port: number

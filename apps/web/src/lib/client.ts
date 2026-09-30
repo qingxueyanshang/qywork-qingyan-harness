@@ -446,4 +446,16 @@ export class QyClient {
     given.set('authorization', `Bearer ${this.endpoint.token}`)
     return fetch(`${this.endpoint.base}${withWorkspace(path)}`, { ...init, headers: given })
   }
+
+  /**
+   * 工作区文件的直链，给 `<img>` / `<video>` / `<audio>` 的 `src`。
+   *
+   * 媒体元素自己发请求，带不了 Authorization 头，令牌只能放查询串（服务端对 `/api/` 认 query 令牌，
+   * 同 WebSocket 握手；服务端不记请求地址）。直链让视频边播边取、能拖进度，内存不随文件大小涨。
+   * `version`（修改时间）进地址：文件改了地址就变，元素重新加载。
+   */
+  fileUrl(path: string, version?: number): string {
+    const query = `/api/files/raw?path=${encodeURIComponent(path)}${version === undefined ? '' : `&v=${version}`}`
+    return `${this.endpoint.base}${withWorkspace(query)}&token=${encodeURIComponent(this.endpoint.token)}`
+  }
 }

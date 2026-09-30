@@ -295,6 +295,23 @@ export interface MediaModelOption {
   isDefault: boolean
   /** false = 生成目录里没有，参数表是协议默认。 */
   known: boolean
+  /** 画布生成面板上的参数控件：目录里标了界面名的那几项。 */
+  params: MediaParamOption[]
+}
+
+/** 生成面板上的一个参数控件。取值约束与服务端的参数校验同一份目录。 */
+export interface MediaParamOption {
+  name: string
+  label: string
+  type: 'enum' | 'integer' | 'number' | 'string' | 'boolean'
+  values?: (string | number)[]
+  /** string 参数的常用取值；界面另留自定义输入。 */
+  presets?: string[]
+  min?: number
+  max?: number
+  default?: string | number | boolean
+  /** 只在这些操作下有效。不写 = 全部。 */
+  operations?: MediaOperationName[]
 }
 
 /** 生成目录里的一条。`params` 每行一个参数，与交给大模型的是同一份文字。 */
