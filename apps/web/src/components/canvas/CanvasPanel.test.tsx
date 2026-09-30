@@ -81,13 +81,28 @@ const MODELS = {
       known: true,
       params: [
         {
+          name: 'ratio',
+          label: '宽高比',
+          type: 'enum',
+          values: ['adaptive', '16:9', '9:16'],
+          default: 'adaptive',
+        },
+        {
           name: 'resolution',
-          label: '清晰度',
+          label: '分辨率',
           type: 'enum',
           values: ['1080P', '720P'],
           default: '1080P',
         },
-        { name: 'duration', label: '时长', type: 'integer', min: -1, max: 30, default: 5 },
+        {
+          name: 'duration',
+          label: '时长',
+          type: 'integer',
+          min: 2,
+          max: 30,
+          auto: -1,
+          default: 5,
+        },
       ],
     },
     {
@@ -104,7 +119,13 @@ const MODELS = {
           name: 'size',
           label: '尺寸',
           type: 'string',
-          presets: ['1024x1024'],
+          shapes: [
+            {},
+            { ratio: '16:9', tier: '1K', value: '1360*768' },
+            { ratio: '1:1', tier: '1K', value: '1024*1024' },
+            { ratio: '16:9', tier: '2K', value: '2720*1536' },
+            { ratio: '1:1', tier: '2K', value: '2048*2048' },
+          ],
         },
         { name: 'n', label: '张数', type: 'integer', min: 1, max: 4, default: 1 },
       ],
@@ -609,12 +630,14 @@ describe('画布：生成卡与生成面板', () => {
     )!
     modeChip.click()
     await waitFor(
-      () => !!document.querySelector('.canvas-menu'),
+      () => !!document.querySelector('.canvas-bar-menu'),
       () => '',
     )
-    const items = [...document.querySelectorAll('.canvas-menu button')].map((b) => b.textContent)
+    const items = [...document.querySelectorAll('.canvas-bar-menu button')].map(
+      (b) => b.textContent,
+    )
     expect(items).toEqual(['参考', '首尾帧'])
-    ;[...document.querySelectorAll<HTMLButtonElement>('.canvas-menu button')]
+    ;[...document.querySelectorAll<HTMLButtonElement>('.canvas-bar-menu button')]
       .find((b) => b.textContent === '首尾帧')!
       .click()
     await waitFor(
@@ -624,89 +647,157 @@ describe('画布：生成卡与生成面板', () => {
     expect(server.ops[0]).toEqual([{ op: 'set_mode', id: refs.$v!, mode: 'first_last' }])
   })
 
-  test('每个参数一个按钮：列举值选一项即提交；范围大的整数用加减', async () => {
+  test('参数合成一个按钮：面板分节、点选即提交且不收起；Esc 与再点按钮收起', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)
-    const chip = (text: string) =>
-      [...host.querySelectorAll<HTMLButtonElement>('.canvas-bar .mode-chip')].find(
-        (b) => b.textContent === text,
-      )
+    const chip = () => host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')
+    const panel = () => document.querySelector('.canvas-params-panel')
     await waitFor(
-      () => !!chip('1080P') && !!chip('5 秒'),
+      () => chip()?.textContent === '自动宽高比 · 1080P · 5 秒',
       () => host.querySelector('.canvas-bar')?.textContent ?? '',
     )
-    chip('1080P')!.click()
+    chip()!.click()
     await waitFor(
-      () => !!document.querySelector('.canvas-param-menu'),
+      () => !!panel(),
       () => '',
     )
-    // Esc 只收菜单，面板与选中都还在。
+    // Esc 只收参数面板，生成面板与选中都还在。
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await waitFor(
-      () => !document.querySelector('.canvas-param-menu'),
+      () => !panel(),
       () => '',
     )
     expect(host.querySelector('.canvas-panel')).not.toBeNull()
-    chip('1080P')!.click()
+    chip()!.click()
     await waitFor(
-      () => !!document.querySelector('.canvas-param-menu'),
+      () => !!panel(),
       () => '',
     )
-    const rows = [...document.querySelectorAll<HTMLButtonElement>('.canvas-param-menu > button')]
-    expect(rows.map((b) => b.textContent)).toEqual(['1080P', '720P'])
-    expect(rows[0]!.getAttribute('aria-checked')).toBe('true')
-    rows[1]!.click()
+    expect(
+      [...panel()!.querySelectorAll('.canvas-params-title')].map((t) => t.textContent),
+    ).toEqual(['宽高比', '分辨率', '时长'])
+    const cells = (i: number) => [
+      ...[...panel()!.querySelectorAll('.canvas-params-section')][i]!.querySelectorAll<HTMLElement>(
+        '.canvas-seg > button',
+      ),
+    ]
+    // 宽高比的格子上画图形：自动是带角标的方框，比例按比例；分辨率不画。
+    expect(cells(0).map((b) => b.textContent)).toEqual(['自动', '16:9', '9:16'])
+    expect(cells(0)[0]!.querySelector('.canvas-shape-auto')).not.toBeNull()
+    expect(cells(0)[1]!.querySelector<HTMLElement>('.canvas-shape')!.style.width).toBe('14px')
+    expect(cells(0)[2]!.querySelector<HTMLElement>('.canvas-shape')!.style.height).toBe('14px')
+    expect(cells(1).map((b) => b.textContent)).toEqual(['1080P', '720P'])
+    expect(cells(1)[0]!.getAttribute('aria-checked')).toBe('true')
+    expect(cells(1)[0]!.querySelector('.canvas-shape, .canvas-shape-auto')).toBeNull()
+    cells(1)[1]!.click()
     await waitFor(
       () => server.ops.length === 1,
       () => '',
     )
     expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$v!, params: { resolution: '720P' } }])
-
-    chip('5 秒')!.click()
     await waitFor(
-      () => !!document.querySelector('.canvas-stepper'),
-      () => document.body.innerHTML.slice(-400),
+      () => chip()?.textContent === '自动宽高比 · 720P · 5 秒',
+      () => chip()?.textContent ?? '',
     )
-    document.querySelector<HTMLButtonElement>('.canvas-stepper button[aria-label="增加"]')!.click()
+    // 面板不收起；再点按钮收起。
+    expect(panel()).not.toBeNull()
+    chip()!.click()
     await waitFor(
-      () => server.ops.length === 2,
+      () => !panel(),
       () => '',
     )
-    expect(server.ops[1]![0]).toMatchObject({ params: { resolution: '720P', duration: 6 } })
   })
 
-  test('字符串参数：没有缺省值时第一项是自动，另列常用取值与自定义；尺寸与张数各占一个按钮', async () => {
+  test('时长加减：到下限再减是「自动」，不经过下限以下的值；从「自动」加回到下限', async () => {
+    const { host, server, refs } = await mount(CARD)
+    await select(host, refs.$v!)
+    const chip = () => host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')
+    await waitFor(
+      () => !!chip(),
+      () => '',
+    )
+    chip()!.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-stepper'),
+      () => '',
+    )
+    const shown = () => document.querySelector('.canvas-stepper > span')?.textContent
+    const press = async (label: '减少' | '增加', expected: string) => {
+      document
+        .querySelector<HTMLButtonElement>(`.canvas-stepper button[aria-label="${label}"]`)!
+        .click()
+      await waitFor(
+        () => shown() === expected,
+        () => `${shown()} ≠ ${expected}`,
+      )
+    }
+    for (const n of [4, 3, 2]) await press('减少', `${n} 秒`)
+    await press('减少', '自动')
+    await press('增加', '2 秒')
+    const durations = server.ops.map((ops) => {
+      const op = ops[0]
+      return op?.op === 'update' ? op.params?.duration : undefined
+    })
+    expect(durations).toEqual([4, 3, 2, -1, 2])
+  })
+
+  test('尺寸按对照表拆成宽高比与分辨率两节；没有取值时宽高比是自动、分辨率不选；张数只写数字', async () => {
     const { host, server, refs } = await mount([{ op: 'add_generate', ref: '$i', output: 'image' }])
     await select(host, refs.$i!)
-    const chips = () =>
-      [...host.querySelectorAll<HTMLButtonElement>('.canvas-bar .mode-chip')].map(
-        (b) => b.textContent,
-      )
+    const chip = () => host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')
     await waitFor(
-      () => chips().includes('自动尺寸'),
-      () => JSON.stringify(chips()),
+      () => chip()?.textContent === '自动宽高比 · 1 张',
+      () => host.querySelector('.canvas-bar')?.textContent ?? '',
     )
-    expect(chips()).toContain('1 张')
-    ;[...host.querySelectorAll<HTMLButtonElement>('.canvas-bar .mode-chip')]
-      .find((b) => b.textContent === '自动尺寸')!
-      .click()
+    chip()!.click()
     await waitFor(
-      () => !!document.querySelector('.canvas-param-menu'),
+      () => !!document.querySelector('.canvas-params-panel'),
       () => '',
     )
-    expect(
-      [...document.querySelectorAll('.canvas-param-menu > button')].map((b) => b.textContent),
-    ).toEqual(['自动', '1024x1024'])
-    const custom = document.querySelector<HTMLInputElement>(
-      '.canvas-param-menu .canvas-menu-custom',
-    )!
-    custom.value = '800x600'
-    custom.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    const panel = document.querySelector('.canvas-params-panel')!
+    expect([...panel.querySelectorAll('.canvas-params-title')].map((t) => t.textContent)).toEqual([
+      '宽高比',
+      '分辨率',
+      '张数',
+    ])
+    const cells = (i: number) => [
+      ...[...panel.querySelectorAll('.canvas-params-section')][i]!.querySelectorAll<HTMLElement>(
+        '.canvas-seg > button',
+      ),
+    ]
+    const checked = (i: number) =>
+      cells(i)
+        .filter((b) => b.getAttribute('aria-checked') === 'true')
+        .map((b) => b.textContent)
+    expect(cells(0).map((b) => b.textContent)).toEqual(['自动', '16:9', '1:1'])
+    expect(cells(1).map((b) => b.textContent)).toEqual(['1K', '2K'])
+    expect(cells(2).map((b) => b.textContent)).toEqual(['1', '2', '3', '4'])
+    expect(checked(0)).toEqual(['自动'])
+    expect(checked(1)).toEqual([])
+    expect(panel.querySelector('input')).toBeNull()
+
+    // 从「自动」选档位：接口不认档位简写，取这一档的 1:1。
+    cells(1)[1]!.click()
     await waitFor(
-      () => server.ops.length === 1,
+      () => chip()?.textContent === '1:1 · 2K · 1 张',
+      () => chip()?.textContent ?? '',
+    )
+    // 换宽高比保留档位；再选自动即不传尺寸。
+    cells(0)[1]!.click()
+    await waitFor(
+      () => chip()?.textContent === '16:9 · 2K · 1 张',
+      () => chip()?.textContent ?? '',
+    )
+    cells(0)[0]!.click()
+    await waitFor(
+      () => server.ops.length === 3,
       () => '',
     )
-    expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$i!, params: { size: '800x600' } }])
+    expect(server.ops.map((ops) => ops[0])).toEqual([
+      { op: 'update', id: refs.$i!, params: { size: '2048*2048' } },
+      { op: 'update', id: refs.$i!, params: { size: '2720*1536' } },
+      { op: 'update', id: refs.$i!, params: {} },
+    ])
   })
 
   test('画布上没有别的素材时 @ 仍有搜索与上传；选工作区文件先放上画布再插入引用', async () => {
@@ -1009,7 +1100,7 @@ describe('画布：生成卡与生成面板', () => {
       () => document.body.innerHTML.slice(-400),
     )
     const text = document.querySelector('.canvas-made')!.textContent!
-    for (const shown of ['万相 3.0 视频', '清晰度 1080P', '时长 5 秒', '首帧 a.png']) {
+    for (const shown of ['万相 3.0 视频', '分辨率 1080P', '时长 5 秒', '首帧 a.png']) {
       expect(text).toContain(shown)
     }
     for (const internal of ['resolution', 'first_frame', 'seed', 'qwen', '{']) {
@@ -1294,10 +1385,10 @@ describe('画布：连线', () => {
     expect(host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!.disabled).toBe(true)
     chip.click()
     await waitFor(
-      () => !!document.querySelector('.canvas-menu'),
+      () => !!document.querySelector('.canvas-bar-menu'),
       () => '',
     )
-    document.querySelector<HTMLButtonElement>('.canvas-menu button')!.click()
+    document.querySelector<HTMLButtonElement>('.canvas-bar-menu button')!.click()
     expect(store.settingsPage()).toBe('models')
     store.closeSettings()
   })
@@ -1411,30 +1502,64 @@ describe('画布：纯函数与页签', () => {
     expect(tierOf(9000)).toBe(4096)
   })
 
-  test('参数取值的界面用词：自动选择与布尔值换词，时长带单位', async () => {
-    const { paramText, valueText } = await import('./GeneratePanel.tsx')
+  test('参数取值的界面用词：自动选择与布尔值换词，时长带单位，格子上只写取值', async () => {
+    const { cellText, paramText, valueText } = await import('./GeneratePanel.tsx')
     expect(valueText('adaptive')).toBe('自动')
     expect(valueText('auto')).toBe('自动')
     expect(valueText('16:9')).toBe('16:9')
-    const duration = { name: 'duration', label: '时长', type: 'integer' } as const
+    const duration = { name: 'duration', label: '时长', type: 'integer', auto: -1 } as const
     expect(paramText(duration, -1)).toBe('自动')
     expect(paramText(duration, 5)).toBe('5 秒')
+    expect(cellText(duration, 5)).toBe('5')
+    expect(cellText(duration, -1)).toBe('自动')
     const lastFrame = { name: 'return_last_frame', label: '返回尾帧', type: 'boolean' } as const
     expect(paramText(lastFrame, true)).toBe('开')
   })
 
-  test('底栏按钮上的字：只写取值，自动与开关补参数名', async () => {
-    const { chipText } = await import('./GeneratePanel.tsx')
+  test('参数按钮上的字：只写取值，自动与开关补参数名，各参数用「 · 」连起、关着的开关不写', async () => {
+    const { chipText, paramsText } = await import('./GeneratePanel.tsx')
     const size = { name: 'size', label: '尺寸', type: 'string' } as const
     const n = { name: 'n', label: '张数', type: 'integer' } as const
-    const duration = { name: 'duration', label: '时长', type: 'integer' } as const
+    const duration = { name: 'duration', label: '时长', type: 'integer', auto: -1 } as const
     const lastFrame = { name: 'return_last_frame', label: '返回尾帧', type: 'boolean' } as const
     expect(chipText(size, 'auto')).toBe('自动尺寸')
     expect(chipText(size, undefined)).toBe('自动尺寸')
     expect(chipText(size, '1024x1024')).toBe('1024x1024')
     expect(chipText(n, 2)).toBe('2 张')
     expect(chipText(duration, -1)).toBe('自动时长')
-    expect(chipText(lastFrame, false)).toBe('返回尾帧关')
+    const values: Record<string, unknown> = { size: 'auto', n: 2, return_last_frame: false }
+    expect(paramsText([size, n, lastFrame], (p) => values[p.name])).toBe('自动尺寸 · 2 张')
+    values.return_last_frame = true
+    expect(paramsText([duration, lastFrame], (p) => values[p.name])).toBe('自动时长 · 返回尾帧开')
+  })
+
+  test('带对照表的尺寸：按钮写宽高比与档位，表外的取值原样写', async () => {
+    const { chipText } = await import('./GeneratePanel.tsx')
+    const size: Parameters<typeof chipText>[0] = {
+      name: 'size',
+      label: '尺寸',
+      type: 'string',
+      shapes: [
+        { tier: '2K', value: '2K' },
+        { ratio: '16:9', tier: '2K', value: '2720x1536' },
+        { ratio: '1:1', value: '1024x1024' },
+      ],
+    }
+    expect(chipText(size, '2K')).toBe('自动宽高比 · 2K')
+    expect(chipText(size, '2720x1536')).toBe('16:9 · 2K')
+    expect(chipText(size, '1024x1024')).toBe('1:1')
+    expect(chipText(size, '800x600')).toBe('800x600')
+  })
+
+  test('比例与像素尺寸画成的框：长边 14，短边按比例；其余取值不画', async () => {
+    const { shapeOf } = await import('./GeneratePanel.tsx')
+    expect(shapeOf('16:9')).toEqual({ w: 14, h: 8 })
+    expect(shapeOf('21:9')).toEqual({ w: 14, h: 6 })
+    expect(shapeOf('1024x1536')).toEqual({ w: 9, h: 14 })
+    expect(shapeOf('1:1')).toEqual({ w: 14, h: 14 })
+    expect(shapeOf('adaptive')).toBeNull()
+    expect(shapeOf('2K')).toBeNull()
+    expect(shapeOf(undefined)).toBeNull()
   })
 
   test('提示词与编辑框互转：引用写回 @[id]，换行保留', async () => {

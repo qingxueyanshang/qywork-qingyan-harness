@@ -42,8 +42,9 @@ export interface MediaParamSpec {
   /** 接口字段名，原样发出。 */
   name: string
   /**
-   * 界面上的名字。只有用户要手选的几项（尺寸、时长、清晰度、画幅、音色、张数、返回尾帧）有，画布生成面板只列有它的参数；
+   * 界面上的名字。只有用户要手选的几项（尺寸、宽高比、分辨率、时长、音色、张数、返回尾帧）有，画布生成面板只列有它的参数；
    * 其余参数（水印、种子、扩写等）只给大模型用，不进界面。
+   * 标了界面名的 string 参数必须带 `presets` 或 `shapes`：界面只给点选，不给手填。
    */
   label?: string
   type: 'enum' | 'integer' | 'number' | 'string' | 'boolean'
@@ -51,10 +52,14 @@ export interface MediaParamSpec {
   values?: readonly (string | number)[]
   min?: number
   max?: number
+  /** 表示「由模型定」的取值（时长的 -1）。它不在 `min`–`max` 之内也合法。 */
+  auto?: number
   /** string 的格式，正则源码。 */
   pattern?: string
-  /** string 参数在界面上列出的常用取值，取自 `description` 里写明的文档原值；界面另留自定义输入。 */
+  /** string 参数在界面上列出的取值，取自 `description` 里写明的文档原值。 */
   presets?: readonly string[]
+  /** 尺寸参数在界面上的「宽高比 × 分辨率」对照表，见 `MediaShape`。 */
+  shapes?: readonly MediaShape[]
   /** 接口在不填时用的值。只用于告诉大模型，本地不补值。 */
   default?: string | number | boolean
   /** 一句话含义与约束，给大模型看。 */
@@ -62,6 +67,51 @@ export interface MediaParamSpec {
   /** 只在这些操作下有效。不写 = 全部。 */
   operations?: readonly MediaOperation[]
 }
+
+/**
+ * 界面上一格「宽高比 × 分辨率」对应的尺寸取值。`ratio` 缺席即宽高比由模型定；`tier` 缺席即没有档位；
+ * `value` 缺席即不传这个参数。
+ */
+export interface MediaShape {
+  ratio?: string
+  tier?: string
+  value?: string
+}
+
+/** 宽高比，次序即界面次序。 */
+const RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'] as const
+
+/**
+ * 按档位算出各宽高比的尺寸：总像素取档位边长的平方，宽、高取 16 的倍数并向下取整，
+ * 所以总像素不超过该档。调用方要保证每档都落在接口文档的像素范围内（目录测试逐项核）。
+ *
+ * `shorthand`：接口认档位简写（「2K」），这时「自动」就是简写本身、宽高比由模型定；不认时「自动」为 `auto`
+ * 这个取值，没有 `auto` 即不传。`maxSide`：单边上限，超出时按比例缩到上限以内。
+ */
+function sizeTable(opts: {
+  tiers: readonly { tier: string; side: number }[]
+  sep: 'x' | '*'
+  shorthand: boolean
+  auto?: string
+  maxSide?: number
+}): MediaShape[] {
+  const out: MediaShape[] = opts.shorthand ? [] : [opts.auto ? { value: opts.auto } : {}]
+  const down16 = (n: number) => Math.floor(n / 16) * 16
+  for (const { tier, side } of opts.tiers) {
+    if (opts.shorthand) out.push({ tier, value: tier })
+    for (const ratio of RATIOS) {
+      const [a, b] = ratio.split(':').map(Number) as [number, number]
+      const w = side * Math.sqrt(a / b)
+      const h = side * Math.sqrt(b / a)
+      const fit = Math.min(1, (opts.maxSide ?? Number.POSITIVE_INFINITY) / Math.max(w, h))
+      out.push({ ratio, tier, value: `${down16(w * fit)}${opts.sep}${down16(h * fit)}` })
+    }
+  }
+  return out
+}
+
+const TIER_1K = { tier: '1K', side: 1024 }
+const TIER_2K = { tier: '2K', side: 2048 }
 
 export interface MediaModelSpec {
   id: string
@@ -285,9 +335,17 @@ const gptImageParams: readonly MediaParamSpec[] = [
     type: 'string',
     pattern: '^(auto|\\d+x\\d+)$',
     default: 'auto',
-    presets: ['auto', '1024x1024', '1536x1024', '1024x1536'],
+    // 4K 一档按总像素上限（3840x2160）取边长 2880；21:9 等宽幅再受单边 3840 限制。
+    shapes: sizeTable({
+      tiers: [TIER_1K, TIER_2K, { tier: '4K', side: 2880 }],
+      sep: 'x',
+      shorthand: false,
+      auto: 'auto',
+      maxSide: 3840,
+    }),
     description:
-      '宽x高，边长须为 16 的倍数，宽高比 1:3 到 3:1，单边不超过 3840；常用 1024x1024、1536x1024（横）、1024x1536（竖）',
+      '宽x高，边长须为 16 的倍数，宽高比 1:3 到 3:1，单边不超过 3840，总像素 655360 到 8294400；' +
+      '常用 1024x1024、1536x1024（横）、1024x1536（竖）、2048x2048、3840x2160',
   },
   {
     name: 'quality',
@@ -336,7 +394,11 @@ const seedreamParams: readonly MediaParamSpec[] = [
     type: 'string',
     pattern: '^(1K|1\\.5K|2K|\\d+x\\d+)$',
     default: '2K',
-    presets: ['1K', '1.5K', '2K'],
+    shapes: sizeTable({
+      tiers: [TIER_1K, { tier: '1.5K', side: 1536 }, TIER_2K],
+      sep: 'x',
+      shorthand: true,
+    }),
     description:
       '分辨率档位 1K / 1.5K / 2K（宽高比写在提示词里，由模型定），或宽x高：总像素 921600 到 4624220、宽高比 1/16 到 16',
   },
@@ -365,6 +427,7 @@ const qwenImageParams: readonly MediaParamSpec[] = [
     label: '尺寸',
     type: 'string',
     pattern: '^\\d+\\*\\d+$',
+    shapes: sizeTable({ tiers: [TIER_1K, TIER_2K], sep: '*', shorthand: false }),
     description: '宽*高，用星号分隔，512*512 到 2048*2048；不填由模型定',
   },
   {
@@ -396,17 +459,34 @@ const qwenImageParams: readonly MediaParamSpec[] = [
   { name: 'watermark', type: 'boolean', default: false, description: '加「Qwen-Image」水印' },
 ]
 
-// ── 百炼万相 2.7 图像（2026-09-25 对「万相图像生成与编辑 API」）──
-const wanImageParams: readonly MediaParamSpec[] = [
-  {
-    name: 'size',
-    label: '尺寸',
-    type: 'string',
-    pattern: '^(1K|2K|4K|\\d+x\\d+)$',
-    presets: ['1K', '2K', '4K'],
-    description:
-      '1K / 2K / 4K 或宽x高；文生图 768x768 到 4096x4096，修改时最大 2K（2048x2048），4K 仅 wan2.7-image-pro 文生图',
-  },
+/**
+ * 百炼万相 2.7 图像（2026-09-30 对「万相-图像生成与编辑 2.7 API 参考」）。
+ * Pro 收 1K / 2K / 4K（4K 仅文生图），普通版只收 1K / 2K，由调用方给出档位。
+ */
+function wanImageParams(pro: boolean): readonly MediaParamSpec[] {
+  return [
+    {
+      name: 'size',
+      label: '尺寸',
+      type: 'string',
+      pattern: pro ? '^(1K|2K|4K|\\d+\\*\\d+)$' : '^(1K|2K|\\d+\\*\\d+)$',
+      default: '2K',
+      shapes: sizeTable({
+        tiers: pro ? [TIER_1K, TIER_2K, { tier: '4K', side: 4096 }] : [TIER_1K, TIER_2K],
+        sep: '*',
+        shorthand: true,
+      }),
+      description: pro
+        ? '1K / 2K / 4K 或宽*高（星号分隔），宽高比 1:8 到 8:1；文生图总像素 768*768 到 4096*4096，' +
+          '有输入图时最大 2048*2048，4K 仅文生图；只给档位时文生图出正方形，有输入图时随最后一张的宽高比'
+        : '1K / 2K 或宽*高（星号分隔），总像素 768*768 到 2048*2048，宽高比 1:8 到 8:1；' +
+          '只给档位时文生图出正方形，有输入图时随最后一张的宽高比',
+    },
+    ...wanImageRest,
+  ]
+}
+
+const wanImageRest: readonly MediaParamSpec[] = [
   {
     name: 'n',
     label: '张数',
@@ -436,27 +516,28 @@ const wanImageParams: readonly MediaParamSpec[] = [
 // ── 百炼万相 3.0 视频（2026-09-25 对「万相 3.0 视频生成 API」）──
 const wanVideoParams: readonly MediaParamSpec[] = [
   {
-    name: 'resolution',
-    label: '清晰度',
-    type: 'enum',
-    values: ['1080P', '720P', '480P'],
-    default: '1080P',
-    description: '分辨率',
-  },
-  {
     name: 'ratio',
-    label: '画幅',
+    label: '宽高比',
     type: 'enum',
     values: ['adaptive', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
     default: 'adaptive',
     description: '画幅；adaptive 按输入自动适配，竖版用 9:16',
   },
   {
+    name: 'resolution',
+    label: '分辨率',
+    type: 'enum',
+    values: ['1080P', '720P', '480P'],
+    default: '1080P',
+    description: '分辨率',
+  },
+  {
     name: 'duration',
     label: '时长',
     type: 'integer',
-    min: -1,
+    min: 2,
     max: 30,
+    auto: -1,
     default: 5,
     description: '时长（秒），2 到 30；-1 由模型定；有参考视频时由输入决定上限',
   },
@@ -475,27 +556,28 @@ const wanVideoParams: readonly MediaParamSpec[] = [
 // ── 火山方舟 Seedance 2.5（2026-09-25 对方舟「创建视频生成任务 API」与模型列表）──
 const seedanceParams: readonly MediaParamSpec[] = [
   {
-    name: 'resolution',
-    label: '清晰度',
-    type: 'enum',
-    values: ['480p', '720p', '1080p'],
-    default: '720p',
-    description: '分辨率',
-  },
-  {
     name: 'ratio',
-    label: '画幅',
+    label: '宽高比',
     type: 'enum',
     values: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
     default: 'adaptive',
     description: '画幅；首帧、首尾帧、编辑、延长时只能 adaptive',
   },
   {
+    name: 'resolution',
+    label: '分辨率',
+    type: 'enum',
+    values: ['480p', '720p', '1080p'],
+    default: '720p',
+    description: '分辨率',
+  },
+  {
     name: 'duration',
     label: '时长',
     type: 'integer',
-    min: -1,
+    min: 4,
     max: 30,
+    auto: -1,
     default: -1,
     description: '时长（秒），4 到 30；-1 由模型定；编辑时只能 -1',
   },
@@ -534,27 +616,28 @@ const seedanceParams: readonly MediaParamSpec[] = [
 function seedance20Params(resolutions: readonly string[]): readonly MediaParamSpec[] {
   return [
     {
-      name: 'resolution',
-      label: '清晰度',
-      type: 'enum',
-      values: resolutions,
-      default: '720p',
-      description: '分辨率',
-    },
-    {
       name: 'ratio',
-      label: '画幅',
+      label: '宽高比',
       type: 'enum',
       values: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
       default: 'adaptive',
       description: '画幅；adaptive 按输入或提示词自动选',
     },
     {
+      name: 'resolution',
+      label: '分辨率',
+      type: 'enum',
+      values: resolutions,
+      default: '720p',
+      description: '分辨率',
+    },
+    {
       name: 'duration',
       label: '时长',
       type: 'integer',
-      min: -1,
+      min: 4,
       max: 15,
+      auto: -1,
       description: '时长（秒），4 到 15；-1 由模型定',
     },
     { name: 'generate_audio', type: 'boolean', default: true, description: '是否带同步声音' },
@@ -585,7 +668,7 @@ function klingBailianParams(opts: { modes: readonly string[]; audio: boolean }):
     },
     {
       name: 'aspect_ratio',
-      label: '画幅',
+      label: '宽高比',
       type: 'enum',
       values: ['16:9', '9:16', '1:1'],
       default: '16:9',
@@ -639,21 +722,21 @@ function klingParams(opts: {
 }): MediaParamSpec[] {
   return [
     {
-      name: 'resolution',
-      label: '清晰度',
-      type: 'enum',
-      values: opts.resolutions,
-      default: '720p',
-      description: '分辨率',
-    },
-    {
       name: 'aspect_ratio',
-      label: '画幅',
+      label: '宽高比',
       type: 'enum',
       values: ['16:9', '9:16', '1:1'],
       default: '16:9',
       operations: ['text_to_video', 'reference_to_video'],
       description: '画幅',
+    },
+    {
+      name: 'resolution',
+      label: '分辨率',
+      type: 'enum',
+      values: opts.resolutions,
+      default: '720p',
+      description: '分辨率',
     },
     {
       name: 'duration',
@@ -912,7 +995,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     'dashscope_images',
     IMAGE_OPERATIONS,
     { maxImages: 9, maxVideos: 0, transport: 'json' },
-    wanImageParams,
+    wanImageParams(true),
     perImage('CNY', () => 0.5),
   ),
   spec(
@@ -922,7 +1005,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     'dashscope_images',
     IMAGE_OPERATIONS,
     { maxImages: 9, maxVideos: 0, transport: 'json' },
-    wanImageParams,
+    wanImageParams(false),
     perImage('CNY', () => 0.2),
   ),
   spec(
@@ -1118,7 +1201,6 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     params: [
       {
         name: 'size',
-        label: '尺寸',
         type: 'string',
         pattern: '^(auto|\\d+x\\d+)$',
         description: '宽x高，如 1024x1024',
@@ -1141,7 +1223,7 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     operations: IMAGE_OPERATIONS,
     inputs: { maxImages: 3, maxVideos: 0, transport: 'json' },
     params: [
-      { name: 'size', label: '尺寸', type: 'string', description: '尺寸，写法以该模型文档为准' },
+      { name: 'size', type: 'string', description: '尺寸，写法以该模型文档为准' },
       {
         name: 'n',
         label: '张数',
@@ -1167,7 +1249,6 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     params: [
       {
         name: 'seconds',
-        label: '时长',
         type: 'string',
         description: '时长（秒），写成字符串，如 "5"',
       },
@@ -1175,7 +1256,7 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
         name: 'size',
         label: '尺寸',
         type: 'string',
-        presets: ['1280x720', '720x1280'],
+        shapes: [{}, { ratio: '16:9', value: '1280x720' }, { ratio: '9:16', value: '720x1280' }],
         description: '宽x高，如 1280x720、720x1280',
       },
     ],

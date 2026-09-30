@@ -305,10 +305,14 @@ export interface MediaParamOption {
   label: string
   type: 'enum' | 'integer' | 'number' | 'string' | 'boolean'
   values?: (string | number)[]
-  /** string 参数的常用取值；界面另留自定义输入。 */
+  /** string 参数的可选值。 */
   presets?: string[]
+  /** 尺寸的「宽高比 × 分辨率」对照表：`ratio` 缺席即由模型定，`tier` 缺席即无档位，`value` 缺席即不传。 */
+  shapes?: { ratio?: string; tier?: string; value?: string }[]
   min?: number
   max?: number
+  /** 表示「由模型定」的取值，不在 `min`–`max` 之内也合法。 */
+  auto?: number
   default?: string | number | boolean
   /** 只在这些操作下有效。不写 = 全部。 */
   operations?: MediaOperationName[]

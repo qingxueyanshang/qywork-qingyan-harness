@@ -9,7 +9,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
-import type { MediaKind } from '@qywork/core'
+import { MEDIA_KINDS, type MediaKind } from '@qywork/core'
 import { findMediaModel, lookupMediaModel, mediaCost, quoteMedia } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
 import { validateMediaCall } from './params.ts'
@@ -122,6 +122,88 @@ describe('参数校验', () => {
     expect(
       validateMediaCall(wan, 'edit', { thinking_mode: false }, { images: 1, videos: 0 })[0],
     ).toContain('只在生成时有效')
+  })
+
+  test('时长的「由模型定」不在范围内也合法，下限以下的其他值报错', () => {
+    const wan = lookupMediaModel('wan3.0-video', 'dashscope_videos')
+    const call = (duration: number) =>
+      validateMediaCall(wan, 'text_to_video', { duration }, { images: 0, videos: 0 })
+    expect(call(-1)).toEqual([])
+    expect(call(2)).toEqual([])
+    expect(call(1)[0]).toContain('范围 2–30，或 -1')
+  })
+})
+
+describe('界面参数', () => {
+  /** 各家文档的总像素范围与宽高比范围（2026-09-30 核）。 */
+  const LIMITS: Record<
+    string,
+    { area: [number, number]; ratio: number; tiers: string[]; side?: number }
+  > = {
+    'gpt-image-2.5-flare': {
+      area: [655360, 8294400],
+      ratio: 3,
+      tiers: ['1K', '2K', '4K'],
+      side: 3840,
+    },
+    'gpt-image-2.5-sunburst': {
+      area: [655360, 8294400],
+      ratio: 3,
+      tiers: ['1K', '2K', '4K'],
+      side: 3840,
+    },
+    'doubao-seedream-5-0-pro-260628': {
+      area: [921600, 4624220],
+      ratio: 16,
+      tiers: ['1K', '1.5K', '2K'],
+    },
+    'doubao-seedream-5-0-flash-260915': {
+      area: [921600, 4624220],
+      ratio: 16,
+      tiers: ['1K', '1.5K', '2K'],
+    },
+    'wan2.7-image-pro': { area: [768 * 768, 4096 * 4096], ratio: 8, tiers: ['1K', '2K', '4K'] },
+    'wan2.7-image': { area: [768 * 768, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
+    'qwen-image-3.0-pro': { area: [512 * 512, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
+    'qwen-image-3.0': { area: [512 * 512, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
+  }
+
+  test('标了界面名的字符串参数都有可选值或尺寸对照表：界面不给手填', () => {
+    for (const kind of MEDIA_KINDS) {
+      for (const p of lookupMediaModel('some-relay-model', kind).params) {
+        if (p.label && p.type === 'string') expect(p.presets ?? p.shapes).toBeDefined()
+      }
+    }
+    for (const id of Object.keys(LIMITS)) {
+      for (const p of findMediaModel(id)!.params) {
+        if (p.label && p.type === 'string') expect(p.presets ?? p.shapes).toBeDefined()
+      }
+    }
+  })
+
+  test('尺寸对照表每一格都合格式、落在文档的像素与宽高比范围内，档位与文档一致', () => {
+    for (const [id, limit] of Object.entries(LIMITS)) {
+      const size = findMediaModel(id)!.params.find((p) => p.name === 'size')!
+      const pattern = new RegExp(size.pattern!)
+      const tiers = new Set<string>()
+      for (const s of size.shapes!) {
+        if (s.tier) tiers.add(s.tier)
+        if (s.value === undefined) continue
+        expect(pattern.test(s.value)).toBe(true)
+        const px = /^(\d+)[x*](\d+)$/.exec(s.value)
+        if (!px) continue
+        const w = Number(px[1])
+        const h = Number(px[2])
+        expect(w * h).toBeGreaterThanOrEqual(limit.area[0])
+        expect(w * h).toBeLessThanOrEqual(limit.area[1])
+        expect(Math.max(w / h, h / w)).toBeLessThanOrEqual(limit.ratio)
+        expect(Math.max(w, h)).toBeLessThanOrEqual(limit.side ?? Number.POSITIVE_INFINITY)
+        expect((w % 16) + (h % 16)).toBe(0)
+        const [a, b] = s.ratio!.split(':').map(Number) as [number, number]
+        expect(Math.abs(w / h - a / b) / (a / b)).toBeLessThan(0.03)
+      }
+      expect([...tiers]).toEqual(limit.tiers)
+    }
   })
 })
 
