@@ -347,7 +347,9 @@ export async function startRun(
       // 每条消息一个 Session，每个 Session 都持有扩展的一份引用。
       // 不释放的话引用只增不减，插件与 MCP 子进程到进程退出都关不掉。
       // null = 序言没走到装配就停了（查不到项目、没有模型、装配抛错）。
-      session?.dispose()
+      await session?.dispose().catch((error) => {
+        log.error('extensions', `会话扩展关闭失败：${String(error)}`, { conversationId })
+      })
       const interrupted = controller.signal.aborted || stopReason === 'user_interrupt'
       /*
        * 「调整方向」只对发出它的那一轮成立。这一轮收尾了，没赶上 step 边界的那些

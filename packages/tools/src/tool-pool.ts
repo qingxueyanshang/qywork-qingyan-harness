@@ -158,6 +158,10 @@ export const LOAD_TOOL_SPEC: Omit<ToolSpec, 'fn'> = {
 export function makeLoadToolTool(pool: PendingToolPool): ToolSpec {
   return {
     ...LOAD_TOOL_SPEC,
+    description: `${LOAD_TOOL_SPEC.description} 当前可加载：${pool
+      .index()
+      .map((s) => s.name)
+      .join('、')}`,
 
     async fn(args) {
       const names = Array.isArray(args.names)

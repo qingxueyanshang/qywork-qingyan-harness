@@ -44,7 +44,18 @@ describe('模型侧 MCP 配置工具', () => {
         mcpConfig: {
           writeServer: async (input) => {
             received = input
-            return { ok: true, path: 'C:/home/.qywork/mcp.json', replaced: false }
+            return {
+              ok: true,
+              saved: true,
+              activation: {
+                connected: true,
+                toolNames: ['mcp__docs__ping'],
+                failures: [],
+                inactive: [],
+              },
+              path: 'C:/home/.qywork/mcp.json',
+              replaced: false,
+            }
           },
           moveServer: async () => ({ ok: false }),
         },
@@ -64,7 +75,18 @@ describe('模型侧 MCP 配置工具', () => {
           moveServer: async (input) => {
             calls += 1
             expect(input).toEqual({ name: 'docs', fromScope: 'project', toScope: 'global' })
-            return { ok: true, fromPath: 'project', toPath: 'global' }
+            return {
+              ok: true,
+              saved: true,
+              activation: {
+                connected: true,
+                toolNames: ['mcp__docs__ping'],
+                failures: [],
+                inactive: [],
+              },
+              fromPath: 'project',
+              toPath: 'global',
+            }
           },
         },
       }),

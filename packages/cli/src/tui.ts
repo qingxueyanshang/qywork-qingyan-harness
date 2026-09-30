@@ -151,7 +151,7 @@ export async function runTui(workspaceRoot: string): Promise<number> {
           `\n${RED}✗${RESET} ${err instanceof Error ? err.message : String(err)}\n`,
         )
       } finally {
-        session.dispose()
+        await session.dispose()
         running = null
       }
       process.stdout.write('\n')

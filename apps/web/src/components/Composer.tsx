@@ -17,6 +17,7 @@ import {
   type CliAgentRow,
   composerSeed,
   dropFollowUp,
+  extensionsRevision,
   followUpMode,
   hasRun,
   interrupt,
@@ -454,10 +455,12 @@ export function Composer(props: { empty: boolean }) {
    * workspace id；切换途中回来的旧结果直接丢弃。
    */
   let suggestionWorkspace: string | null | undefined
+  let suggestionEpoch = 0
   createEffect(() => {
-    const next = workspace()?.id ?? null
+    const next = `${workspace()?.id ?? ''}:${extensionsRevision()}`
     if (next === suggestionWorkspace) return
     suggestionWorkspace = next
+    suggestionEpoch++
     setSkillOptions([])
     setTargetOptions([])
     setSkillLoad('idle')
@@ -469,11 +472,12 @@ export function Composer(props: { empty: boolean }) {
   const ensureSkills = async () => {
     if (skillLoad() !== 'idle') return
     const owner = workspace()?.id ?? null
+    const epoch = suggestionEpoch
     setSkillLoad('loading')
     setSkillLoadNote(null)
     try {
       const loaded = await loadSkills()
-      if ((workspace()?.id ?? null) !== owner) return
+      if (epoch !== suggestionEpoch || (workspace()?.id ?? null) !== owner) return
       setSkillOptions(
         loaded.skills
           // 与运行时 `scanSkills` 的生效集合一致；被高优先级同名技能盖住的不冒充可选。
@@ -488,7 +492,7 @@ export function Composer(props: { empty: boolean }) {
       )
       setSkillLoad('ready')
     } catch (error) {
-      if ((workspace()?.id ?? null) !== owner) return
+      if (epoch !== suggestionEpoch || (workspace()?.id ?? null) !== owner) return
       setSkillLoad('error')
       setSkillLoadNote(`技能读取失败：${error instanceof Error ? error.message : String(error)}`)
     }
@@ -497,6 +501,7 @@ export function Composer(props: { empty: boolean }) {
   const ensureTargets = async () => {
     if (targetLoad() !== 'idle') return
     const owner = workspace()?.id ?? null
+    const epoch = suggestionEpoch
     setTargetLoad('loading')
     setTargetLoadNote(null)
 
@@ -509,7 +514,7 @@ export function Composer(props: { empty: boolean }) {
       loadTeam(),
       loadTeamClis(),
     ])
-    if ((workspace()?.id ?? null) !== owner) return
+    if (epoch !== suggestionEpoch || (workspace()?.id ?? null) !== owner) return
 
     const failed: string[] = []
     const roles = teamResult.status === 'fulfilled' ? teamResult.value.roles : []
@@ -533,10 +538,21 @@ export function Composer(props: { empty: boolean }) {
     setTargetLoadNote(failed.length ? `部分来源读取失败：${failed.join('、')}` : null)
   }
 
+  let mentionKind: string | null = null
   createEffect(() => {
     const query = mentionQuery(text())
-    if (query?.kind === 'skill') void ensureSkills()
-    if (query?.kind === 'target') void ensureTargets()
+    if (!query) {
+      if (mentionKind !== null) suggestionEpoch++
+      mentionKind = null
+      setSkillLoad('idle')
+      setTargetLoad('idle')
+      return
+    }
+    const current = `${workspace()?.id ?? ''}:${extensionsRevision()}:${query.kind}`
+    if (mentionKind === current) return
+    mentionKind = current
+    if (query.kind === 'skill') void ensureSkills()
+    if (query.kind === 'target') void ensureTargets()
   })
 
   /*

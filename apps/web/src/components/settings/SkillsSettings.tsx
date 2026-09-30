@@ -3,11 +3,14 @@ import { loaded } from '../../lib/resource.ts'
 import {
   askInChat,
   deleteSkill,
+  extensionsRevision,
   importSkill,
   isDesktopShell,
   loadSkills,
+  pickFiles,
   pickWorkspace,
   type Scope,
+  workspace,
 } from '../../lib/store/index.ts'
 import { IconTrash } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
@@ -35,7 +38,10 @@ function dirName(dir: string): string {
 }
 
 export default function SkillsSettings() {
-  const [data, { refetch }] = createResource(loadSkills)
+  const [data, { refetch }] = createResource(
+    () => [workspace()?.id, extensionsRevision()],
+    loadSkills,
+  )
   const [scope, setScope] = createSignal<Scope>('project')
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
@@ -62,7 +68,9 @@ export default function SkillsSettings() {
   const doImport = (path: string) =>
     void run(async () => {
       const r = await importSkill(scope(), path)
-      return `已导入 ${r.name}`
+      return r.installed
+        .map((s) => `已导入 ${s.name}${s.active ? '' : `，当前生效的是 ${s.effective.scope} 层`}`)
+        .join('；')
     })
 
   /**
@@ -75,7 +83,15 @@ export default function SkillsSettings() {
           留一个点了没反应的按钮比不给更糟（B5）。 */}
       <Show when={isDesktopShell()}>
         <button class="btn-ghost sm" type="button" disabled={busy()} onClick={() => void browse()}>
-          导入
+          导入目录
+        </button>
+        <button
+          class="btn-ghost sm"
+          type="button"
+          disabled={busy()}
+          onClick={() => void browseZip()}
+        >
+          导入 ZIP
         </button>
       </Show>
       <button class="btn-ghost sm" type="button" onClick={() => askInChat(newSkillPrompt(scope()))}>
@@ -94,6 +110,15 @@ export default function SkillsSettings() {
       if (picked) doImport(picked)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const browseZip = async () => {
+    try {
+      const path = (await pickFiles())[0]
+      if (path) doImport(path)
+    } catch (error) {
+      setError(String(error))
     }
   }
 

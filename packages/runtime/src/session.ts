@@ -258,6 +258,7 @@ export class Session {
    * 池子里的工具不在注册表里，所以不进请求；模型用 `load_tool` 取出来。
    */
   private pendingTools: PendingToolPool | null = null
+  private externalToolNames = new Set<string>()
 
   /**
    * 规范化后的额外根目录。**只算一次**：三个消费者（路径层、静态规则、沙箱）
@@ -407,6 +408,9 @@ export class Session {
             },
           }
         : {}),
+      beforeRequest: async () => {
+        await this.loadExtensionTools(adapter.spec.density, conversationId)
+      },
       makeToolContext: (runId, emit) =>
         this.makeToolContext(runId, emit, target, conversationId as ConversationId),
       persist: this.makePersistence(conversationId),
@@ -804,74 +808,63 @@ export class Session {
   private async loadExtensionTools(
     density: TokenDensity,
     conversationId?: ConversationId,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const ext = await acquireExtensions(this.opts.workspaceRoot, (line) =>
       log.info('extensions', line),
     )
-    this.extensions = ext
-
-    // 角色的 allowedTools 同样约束插件与 MCP 工具。
-    // 只过滤内置工具的话，一个「只读」角色照样能调插件里的写工具。
-    const allow = this.opts.allowedTools ? new Set(this.opts.allowedTools) : null
-    const eligible = ext.toolSpecs.filter(
-      (spec) => !(allow && !allow.has(spec.name)) && !this.registry.has(spec.name),
-    )
-
-    /*
-     * **角色点名的那一套不进池子。**
-     *
-     * `allowedTools` 是人挑过的一小把工具，把它们塞进池子有两个后果：模型要多花
-     * 一轮把角色本来就该有的工具装回来；而且下面的引用校验会把池子里的名字
-     * 全报成无效引用。
-     */
-    const onDemand =
-      !allow && externalSchemaTokens(eligible, density) > EXTERNAL_SCHEMA_BUDGET_TOKENS
-
-    if (onDemand) {
-      const pool = new PendingToolPool({
-        registry: this.registry,
-        onLoaded: (names) => {
-          // 没有会话就没有会话级存储。只有 `capabilities()` 那条路是这样——
-          // 它只为报一份能力清单，不跑模型，也就没有「下一轮」要记给谁。
-          if (conversationId) recordLoadedTools(this.opts.store, conversationId, names)
-        },
-      })
-      for (const spec of eligible) pool.add(spec)
-      this.registry.register(makeLoadToolTool(pool))
-      // 上几轮已经装过的直接放回工具表：模型在 transcript 里看得见自己装过，
-      // 工具表里却没有的话它会反复去试。池子里没有的（server 拆了、开关关了）
-      // 自然落空，不必另外清理账本——那张表记的是「装过」，不是「还在」。
-      if (conversationId) pool.load([...listLoadedTools(this.opts.store, conversationId)])
+    const previous = this.extensions
+    if (previous?.mcp === ext.mcp) {
+      await ext.stop()
+      return false
+    }
+    try {
+      const allow = this.opts.allowedTools ? new Set(this.opts.allowedTools) : null
+      const eligible = ext.toolSpecs.filter((spec) => !allow || allow.has(spec.name))
+      const owned = new Set([
+        ...this.externalToolNames,
+        ...(this.pendingTools ? ['load_tool'] : []),
+      ])
+      const loaded = new Set([
+        ...this.registry
+          .list()
+          .filter((spec) => this.externalToolNames.has(spec.name))
+          .map((spec) => spec.name),
+        ...(conversationId ? listLoadedTools(this.opts.store, conversationId) : []),
+      ])
+      const onDemand =
+        !allow && externalSchemaTokens(eligible, density) > EXTERNAL_SCHEMA_BUDGET_TOKENS
+      let pool: PendingToolPool | null = null
+      let resident = eligible
+      if (onDemand) {
+        pool = new PendingToolPool({
+          registry: this.registry,
+          onLoaded: (names) => {
+            if (conversationId) recordLoadedTools(this.opts.store, conversationId, names)
+          },
+        })
+        resident = eligible.filter((spec) => loaded.has(spec.name))
+        for (const spec of eligible) if (!loaded.has(spec.name)) pool.add(spec)
+        resident = [...resident, makeLoadToolTool(pool)]
+      }
+      this.registry.replaceOwned(owned, resident)
       this.pendingTools = pool
-    } else {
-      for (const spec of eligible) {
-        try {
-          this.registry.register(spec)
-        } catch (err) {
-          log.warn('session', `工具注册失败 ${spec.name}：${String(err)}`)
-        }
-      }
+      this.externalToolNames = new Set(eligible.map((spec) => spec.name))
+      this.extensions = ext
+    } catch (error) {
+      await ext.stop()
+      throw error
     }
-
-    // 名字写错了要说出来。静默忽略的话，配了 "read_files"（多了个 s）
-    // 的角色会安安静静地一个工具都没有，表现为「它什么也不干」。
-    //
-    // 判定必须**等扩展加载完**再做：插件和 MCP 工具是异步来的，
-    // 在构造函数里只比内置集合的话，一个合法的 `mcp__github__x` 会被误报成
-    // 无效工具引用，比不提示更糟。
-    if (allow) {
-      const invalid = [...allow].filter((n) => !this.registry.has(n))
-      if (invalid.length) {
+    if (previous) await previous.stop()
+    for (const failure of ext.plugins.failures)
+      log.warn('extensions', `插件加载失败 ${failure.dir}：${failure.reason}`)
+    for (const failure of ext.mcp.failures)
+      log.warn('extensions', `MCP ${failure.server}：${failure.reason}`)
+    if (this.opts.allowedTools) {
+      const invalid = this.opts.allowedTools.filter((name) => !this.registry.has(name))
+      if (invalid.length)
         log.warn('session', `角色 allowedTools 含无效工具引用，已忽略：${invalid.join('、')}`)
-      }
     }
-
-    for (const f of ext.plugins.failures) {
-      log.warn('extensions', `插件加载失败 ${f.dir}：${f.reason}`)
-    }
-    for (const f of ext.mcp.failures) {
-      log.warn('extensions', `MCP ${f.server}：${f.reason}`)
-    }
+    return true
   }
 
   /**
@@ -883,7 +876,7 @@ export class Session {
    * **它必须真的被调用。** 没有调用点的话，server 每条消息新建的 Session 各自
    * 起一套插件子进程，一个都不会关——公开方法有定义不等于有人调。
    */
-  dispose(): void {
+  async dispose(): Promise<void> {
     /*
      * 浏览器控制跟着会话走：这一轮收尾即撤销控制归属与未消费的下载授权，页面保留
      * 给用户接手。不释放的话下一轮起来会拿到 busy，而没有任何入口能解开它。
@@ -899,8 +892,9 @@ export class Session {
       log.warn('desktop', `撤销电脑控制失败：${err instanceof Error ? err.message : String(err)}`)
     })
     if (!this.extensions) return
+    const ext = this.extensions
     this.extensions = null
-    releaseExtensions(this.opts.workspaceRoot)
+    await releaseExtensions(ext)
   }
 
   private nextSeq(runId: string): number {
@@ -1167,6 +1161,8 @@ export class Session {
       ...(this.opts.desktop ? { desktop: this.opts.desktop } : {}),
       ...(this.opts.canvas ? { canvas: this.opts.canvas } : {}),
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
+      skillSourcePaths: () =>
+        listMessages(store, conversationId, null).flatMap((m) => m.attachments.map((a) => a.path)),
       ...(listMediaModels(this.opts.config).length
         ? {
             media: makeMediaPort(this.opts.config, (spend) =>

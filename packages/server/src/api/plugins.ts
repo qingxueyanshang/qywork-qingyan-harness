@@ -132,7 +132,7 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
         failures: ext.plugins.failures.map((f) => ({ dir: f.dir, reason: f.reason })),
       })
     } finally {
-      releaseExtensions(d.workspaceRoot)
+      await releaseExtensions(ext)
     }
   }
 

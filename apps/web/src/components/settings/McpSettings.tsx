@@ -2,11 +2,13 @@ import { createResource, createSignal, For, Match, Show, Switch } from 'solid-js
 import { loaded } from '../../lib/resource.ts'
 import {
   askInChat,
+  extensionsRevision,
   importMcp,
   isDesktopShell,
   loadMcp,
   pickFiles,
   type Scope,
+  workspace,
 } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
@@ -34,7 +36,7 @@ import { newMcpPrompt } from './ScopePrompts.ts'
  */
 
 export default function McpSettings() {
-  const [data, { refetch }] = createResource(loadMcp)
+  const [data, { refetch }] = createResource(() => [workspace()?.id, extensionsRevision()], loadMcp)
   const [scope, setScope] = createSignal<Scope>('project')
   const [error, setError] = createSignal<string | null>(null)
 
@@ -50,7 +52,11 @@ export default function McpSettings() {
       const picked = (await pickFiles())[0]
       // 取消不是错误。
       if (!picked) return
-      await importMcp(scope(), picked)
+      const result = await importMcp(scope(), picked)
+      if (!result.activation.connected)
+        setError(
+          `配置已保存，连接失败：${result.activation.failures.map((f) => f.reason).join('；')}`,
+        )
       await refetch()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

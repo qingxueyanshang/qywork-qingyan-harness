@@ -120,6 +120,7 @@ export {
   type GoalPort,
   type HistoryPort,
   type HistoryStep,
+  type McpActivation,
   type McpConfigPort,
   type MediaCall,
   type MediaCallResult,

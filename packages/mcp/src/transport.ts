@@ -46,7 +46,7 @@ export interface McpTransport {
   start(handlers: TransportHandlers): Promise<void>
   /** 发一条消息。HTTP 下这是一次真实请求，可能 reject。 */
   send(payload: Record<string, unknown>): Promise<void>
-  stop(): void
+  stop(): Promise<void>
   /** 已经断开时返回原因；连接正常时返回 null。 */
   deadReason(): string | null
   /** 握手完成后通知传输层。HTTP 之后每一条请求都要带上协议版本头。 */
@@ -57,6 +57,8 @@ export interface McpTransport {
 
 export class StdioTransport implements McpTransport {
   private proc: ChildProcess | null = null
+  private stopping: Promise<void> | null = null
+  private closed: Promise<void> = Promise.resolve()
   private buffer = ''
   private dead: string | null = null
   private handlers: TransportHandlers | null = null
@@ -97,8 +99,11 @@ export class StdioTransport implements McpTransport {
       },
       // Windows 上 npx / uvx 这类是 .cmd，不走 shell 起不来。
       shell: process.platform === 'win32',
+      windowsHide: true,
+      detached: process.platform !== 'win32',
     })
     this.proc = proc
+    this.closed = new Promise((done) => proc.once('close', () => done()))
 
     // stdin 上必须挂 error 监听。进程刚起来就退出时（命令不存在、启动即崩），
     // 那条 `initialize` 很可能已经写出去了，写向一个已经关掉的管道
@@ -148,32 +153,62 @@ export class StdioTransport implements McpTransport {
     stdin.write(`${JSON.stringify(payload)}\n`)
   }
 
-  /**
-   * 停掉 server。
-   *
-   * **Windows 上必须杀整棵进程树。** 那边 `spawn` 带 `shell: true`（npx / uvx 是
-   * .cmd，不走 shell 起不来），因此 `this.proc` 是 cmd.exe，server 本体是它的孙进程。
-   * 只 `proc.kill()` 的话 cmd 没了、node 还在——每跑一次 `qy mcp` / `qy doctor`、
-   * 每次扩展缓存释放都漏一批常驻进程。`taskkill /T` 是这台机器上唯一能连孙进程一起
-   * 收掉的办法（Node 没有跨平台的进程组 API）。
-   */
-  stop(): void {
+  /** 等待受管进程树退出及管道关闭；重复关闭共享同一个完成结果。 */
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping
     const proc = this.proc
-    if (!proc) return
-    this.proc = null
-
-    if (process.platform === 'win32' && proc.pid !== undefined) {
-      // /T 连子孙一起，/F 强制。失败（进程已经没了）不用管，下面的 kill 是兜底。
-      spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
-        stdio: 'ignore',
-        windowsHide: true,
-      }).on('error', () => {})
-      return
-    }
-
-    proc.kill()
-    const timer = setTimeout(() => proc.kill('SIGKILL'), 2000)
-    timer.unref?.()
+    this.dead = '已停止'
+    this.stopping = (async () => {
+      if (proc?.pid !== undefined) {
+        if (process.platform === 'win32') {
+          await new Promise<void>((done, fail) => {
+            const killer = spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
+              stdio: 'ignore',
+              windowsHide: true,
+              timeout: 5000,
+            })
+            killer.once('error', fail)
+            killer.once('exit', (code) => {
+              if (code !== 0 && proc.exitCode === null && proc.signalCode === null)
+                fail(new Error(`MCP 进程树关闭失败：${this.name}，taskkill=${code}`))
+              else done()
+            })
+          })
+        } else {
+          try {
+            process.kill(-proc.pid, 'SIGTERM')
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+          }
+        }
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let force: ReturnType<typeof setTimeout> | undefined
+      try {
+        if (proc?.pid && process.platform !== 'win32') {
+          const pid = proc.pid
+          force = setTimeout(() => {
+            try {
+              process.kill(-pid, 'SIGKILL')
+            } catch {}
+          }, 2000)
+        }
+        await Promise.race([
+          this.closed,
+          new Promise<never>((_, fail) => {
+            timer = setTimeout(
+              () => fail(new Error(`MCP 关闭超时：${this.name}，进程资源可能仍被占用`)),
+              5000,
+            )
+          }),
+        ])
+      } finally {
+        clearTimeout(timer)
+        clearTimeout(force)
+      }
+      this.proc = null
+    })()
+    return this.stopping
   }
 
   deadReason(): string | null {
@@ -213,8 +248,9 @@ export class HttpTransport implements McpTransport {
   private dead: string | null = null
   private handlers: TransportHandlers | null = null
   private stopped = false
+  private closing: Promise<void> | null = null
   /** 在飞的 SSE 读取。stop() 时需一并中止，否则进程退不出去。 */
-  private readonly inflight = new Set<AbortController>()
+  private readonly inflight = new Map<AbortController, { settled: Promise<void>; finish(): void }>()
 
   constructor(
     private readonly name: string,
@@ -237,7 +273,11 @@ export class HttpTransport implements McpTransport {
     const isRequest = payload.id !== undefined && payload.id !== null
 
     const abort = new AbortController()
-    this.inflight.add(abort)
+    let finish!: () => void
+    const settled = new Promise<void>((done) => {
+      finish = done
+    })
+    this.inflight.set(abort, { settled, finish })
     const timer = setTimeout(() => abort.abort(), HTTP_CONNECT_TIMEOUT_MS)
 
     let res: Response
@@ -258,14 +298,15 @@ export class HttpTransport implements McpTransport {
       })
     } catch (err) {
       clearTimeout(timer)
-      this.inflight.delete(abort)
+      this.finishRequest(abort)
       throw new Error(this.describeTransportFailure(err))
     }
     clearTimeout(timer)
 
     if (!res.ok) {
-      this.inflight.delete(abort)
-      throw new Error(this.describeHttpStatus(res.status, await safeText(res)))
+      const text = await safeText(res)
+      this.finishRequest(abort)
+      throw new Error(this.describeHttpStatus(res.status, text))
     }
 
     // initialize 的响应头里带会话 id。这一步要在读 body 之前做——
@@ -278,8 +319,8 @@ export class HttpTransport implements McpTransport {
     // 通知没有响应体，规范里是 202 Accepted。这里不区分 202 与空体，
     // 只要没内容就当发完了——有的实现回 200 + 空体。
     if (!isRequest || res.status === 202) {
-      this.inflight.delete(abort)
       await res.body?.cancel().catch(() => {})
+      this.finishRequest(abort)
       return
     }
 
@@ -291,8 +332,8 @@ export class HttpTransport implements McpTransport {
       return
     }
 
-    this.inflight.delete(abort)
     const text = await safeText(res)
+    this.finishRequest(abort)
     const msg = tryParse(text)
     if (msg) {
       this.handlers?.onMessage(msg)
@@ -310,26 +351,46 @@ export class HttpTransport implements McpTransport {
     })
   }
 
-  stop(): void {
-    if (this.stopped) return
+  stop(): Promise<void> {
+    if (this.closing) return this.closing
     this.stopped = true
     this.dead = '已停止'
-    for (const a of this.inflight) a.abort()
-    this.inflight.clear()
+    this.handlers?.onClose(this.dead)
+    const pending = [...this.inflight.values()].map((request) => request.settled)
+    for (const abort of this.inflight.keys()) abort.abort()
+    this.closing = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          Promise.all(pending),
+          new Promise<never>((_, fail) => {
+            timer = setTimeout(() => fail(new Error(`MCP 在飞请求关闭超时：${this.name}`)), 3000)
+          }),
+        ])
+      } finally {
+        clearTimeout(timer)
+      }
+      if (this.sessionId) {
+        const response = await fetch(this.spec.url, {
+          method: 'DELETE',
+          headers: {
+            'mcp-session-id': this.sessionId,
+            ...(this.protocolVersion ? { 'mcp-protocol-version': this.protocolVersion } : {}),
+            ...(this.spec.headers ?? {}),
+          },
+          signal: AbortSignal.timeout(3000),
+        })
+        await response.body?.cancel()
+        if (!response.ok && response.status !== 404 && response.status !== 405)
+          throw new Error(`MCP 会话关闭失败：HTTP ${response.status}（${this.name}）`)
+      }
+    })()
+    return this.closing
+  }
 
-    // 显式结束会话。**不等它完成也不报错**：本端正在关闭，对面是否记住这次结束
-    // 已经不影响本地任何状态；为一个清理动作把关闭流程变成可能失败的，代价是
-    // 退出时卡住。
-    if (this.sessionId) {
-      void fetch(this.spec.url, {
-        method: 'DELETE',
-        headers: {
-          'mcp-session-id': this.sessionId,
-          ...(this.protocolVersion ? { 'mcp-protocol-version': this.protocolVersion } : {}),
-          ...(this.spec.headers ?? {}),
-        },
-      }).catch(() => {})
-    }
+  private finishRequest(abort: AbortController): void {
+    this.inflight.get(abort)?.finish()
+    this.inflight.delete(abort)
   }
 
   deadReason(): string | null {
@@ -358,7 +419,7 @@ export class HttpTransport implements McpTransport {
   ): Promise<void> {
     const body = res.body
     if (!body) {
-      this.inflight.delete(abort)
+      this.finishRequest(abort)
       return
     }
     const decoder = new TextDecoder()
@@ -386,7 +447,7 @@ export class HttpTransport implements McpTransport {
     } catch (err) {
       failure = this.describeTransportFailure(err)
     } finally {
-      this.inflight.delete(abort)
+      this.finishRequest(abort)
     }
 
     if (answered || this.stopped) return

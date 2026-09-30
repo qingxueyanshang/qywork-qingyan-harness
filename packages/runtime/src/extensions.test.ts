@@ -330,7 +330,7 @@ describe('插件端到端', () => {
     expect(ext.plugins.plugins).toHaveLength(0)
     expect(ext.plugins.failures).toHaveLength(0)
     expect(ext.toolSpecs.map((t) => t.name)).not.toContain('test_probe__run')
-    ext.stop()
+    await ext.stop()
   })
 })
 
@@ -393,7 +393,7 @@ describe('MCP 接线', () => {
     expect(ext.mcp.failures).toEqual([])
     expect(ext.mcp.servers.map((s) => s.name)).toEqual(['demo'])
     expect(ext.toolSpecs.map((t) => t.name)).toContain('mcp__demo__ping')
-    ext.stop()
+    await ext.stop()
   })
 
   test('注册进 registry 后能真的调通', async () => {
@@ -409,14 +409,14 @@ describe('MCP 接线', () => {
     } as never)
     expect(out.status).toBe('success')
     expect(out.message).toBe('pong')
-    ext.stop()
+    await ext.stop()
   })
 
   test('连不上的 server 只记 failure，不影响能连上的', async () => {
     const { ext } = await withMcp({ broken: { command: 'qywork-绝对不存在', args: [] } })
     expect(ext.mcp.servers.map((s) => s.name)).toEqual(['demo'])
     expect(ext.mcp.failures.map((f) => f.server)).toEqual(['broken'])
-    ext.stop()
+    await ext.stop()
   }, 20_000)
 
   test('没有 mcp.json 时是空注册表，不是错误', async () => {
@@ -424,7 +424,7 @@ describe('MCP 接线', () => {
     const ext = await loadExtensions(root)
     expect(ext.mcp.servers).toEqual([])
     expect(ext.mcp.failures).toEqual([])
-    ext.stop()
+    await ext.stop()
   })
 })
 
@@ -435,15 +435,15 @@ describe('扩展按工作区共享', () => {
     const b = await acquireExtensions(root)
     // 同一个对象说明只加载了一次——server 每条消息新建一个 Session，
     // 每次都重新加载的话插件和 MCP 子进程会一直往上堆。
-    expect(a).toBe(b)
-    releaseExtensions(root)
+    expect(a.mcp).toBe(b.mcp)
+    await releaseExtensions(a)
     const c = await acquireExtensions(root)
-    expect(c).toBe(a)
-    releaseExtensions(root)
-    releaseExtensions(root)
+    expect(c.mcp).toBe(a.mcp)
+    await releaseExtensions(b)
+    await releaseExtensions(c)
     // 归零之后再取是一份新的。
     const d = await acquireExtensions(root)
-    expect(d).not.toBe(a)
-    releaseExtensions(root)
+    expect(d.mcp).not.toBe(a.mcp)
+    await releaseExtensions(d)
   })
 })

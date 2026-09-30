@@ -51,6 +51,7 @@ export {
   MCP_CONFIG,
   MCP_FILE,
   pluginToolPrefix,
+  refreshExtensions,
   releaseExtensions,
   toolNamePrefix,
 } from './extensions.ts'

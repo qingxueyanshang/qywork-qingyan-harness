@@ -32,7 +32,7 @@ describe('MCP 配置写入与迁移', () => {
       const port = makeMcpConfigPort(root)
       const result = await port.writeServer({
         name: 'docs',
-        configJson: JSON.stringify({ url: 'https://example.com/mcp' }),
+        configJson: JSON.stringify({ url: 'https://example.com/mcp', enabled: false }),
         scope: 'global',
       })
       expect(result.ok).toBe(true)
@@ -47,7 +47,7 @@ describe('MCP 配置写入与迁移', () => {
       const port = makeMcpConfigPort(root)
       await port.writeServer({
         name: 'local',
-        configJson: JSON.stringify({ command: 'bun', args: ['x.ts'] }),
+        configJson: JSON.stringify({ command: 'bun', args: ['x.ts'], enabled: false }),
         scope: 'project',
       })
       const moved = await port.moveServer({
@@ -67,12 +67,12 @@ describe('MCP 配置写入与迁移', () => {
       const port = makeMcpConfigPort(root)
       await port.writeServer({
         name: 'same',
-        configJson: JSON.stringify({ command: 'project-command' }),
+        configJson: JSON.stringify({ command: 'project-command', enabled: false }),
         scope: 'project',
       })
       await port.writeServer({
         name: 'same',
-        configJson: JSON.stringify({ command: 'global-command' }),
+        configJson: JSON.stringify({ command: 'global-command', enabled: false }),
         scope: 'global',
       })
       const moved = await port.moveServer({

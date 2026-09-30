@@ -147,6 +147,7 @@ interface Pending {
 export class McpClient {
   private readonly pending = new Map<number, Pending>()
   private nextId = 1
+  private stopping: Promise<void> | null = null
   private transport: McpTransport | null = null
   /** 传输层断开的原因。留着是为了让「server 未运行」这条错误说得出**为什么**。 */
   private closedReason: string | null = null
@@ -358,12 +359,14 @@ export class McpClient {
     }
   }
 
-  stop(): void {
-    const t = this.transport
-    if (!t) return
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping
+    const transport = this.transport
     this.transport = null
-    this.closedReason = this.closedReason ?? '已停止'
-    t.stop()
+    this.closedReason ??= '已停止'
+    this.failAll(new Error(this.closedReason))
+    this.stopping = transport?.stop() ?? Promise.resolve()
+    return this.stopping
   }
 
   // ───────────────────────── JSON-RPC ─────────────────────────

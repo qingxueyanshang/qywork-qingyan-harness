@@ -260,7 +260,9 @@ export async function runBuiltinMember(
   } finally {
     if (runId) deps.runs.unregister(runId)
     input.signal.removeEventListener('abort', abortFromParent)
-    session.dispose()
+    await session.dispose().catch((reason) => {
+      error = `扩展关闭失败：${String(reason)}`
+    })
   }
 
   const output = text.trim()

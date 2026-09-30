@@ -7,7 +7,7 @@
  */
 
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
 import {
   loadMcpServers,
@@ -25,6 +25,7 @@ import {
   type Scope,
   scopePaths,
   scopeRoots,
+  withFileLocks,
 } from '@qywork/tools'
 import { makeCapabilityHandler } from './capabilities.ts'
 
@@ -61,11 +62,12 @@ export const TEAM_CONFIG = '.qy/team.json'
 export interface Extensions {
   plugins: PluginRegistry
   team: WorkspaceTeamConfig
-  mcp: McpRegistry
+  mcp: Omit<McpRegistry, 'stopAll'>
+  mcpConfig: ScopedMcpConfig
   /** 插件与 MCP 一起贡献的工具规格，已按名去重。由会话注册进自己的表。 */
   toolSpecs: ToolSpec[]
   /** 关掉本份扩展持有的全部子进程。 */
-  stop(): void
+  stop(): Promise<void>
 }
 
 export interface WorkspaceTeamConfig {
@@ -85,81 +87,206 @@ export async function loadExtensions(
   workspaceRoot: string,
   onLog?: (line: string) => void,
 ): Promise<Extensions> {
-  const plugins = await loadInstalledPlugins(workspaceRoot, onLog)
-
-  const mcp = await loadWorkspaceMcp(workspaceRoot, onLog)
-
-  // 插件先到先得，MCP 撞名时丢弃并记 failure。顺序固定（插件在前）才能保证
-  // 同一份配置在不同机器上得到相同结果。
-  const toolSpecs = [...plugins.toolSpecs]
-  const taken = new Set(toolSpecs.map((t) => t.name))
-  for (const spec of mcp.toolSpecs) {
-    if (taken.has(spec.name)) {
-      mcp.failures.push({ server: 'mcp', reason: `工具名已被插件占用：${spec.name}` })
-      continue
-    }
-    taken.add(spec.name)
-    toolSpecs.push(spec)
-  }
-
-  return {
-    plugins,
-    team: await loadTeamConfig(workspaceRoot),
-    mcp,
-    toolSpecs,
-    stop: () => {
-      for (const p of plugins.plugins) p.host?.stop()
-      mcp.stopAll()
-    },
-  }
+  return acquireExtensions(workspaceRoot, onLog)
 }
 
 // ───────────────────────── 按工作区缓存 ─────────────────────────
 
-/**
- * 扩展按工作区共享，引用计数决定何时真的关掉子进程。
- *
- * 为什么需要：server 是**每条消息新建一个 Session**的。加载扩展如果绑在 Session 上，
- * 每发一句话就重起一遍全部插件子进程和 MCP server（npx 起的 server 要几秒），
- * 而旧的那批没有任何人关——实测这是一条真实的进程泄漏，只是之前
- * `dispose()` 从没被调用过，所以连泄漏都看不见。
- *
- * 缓存的是 **Promise** 而不是结果：两条消息几乎同时进来时，第二条要等第一条那次
- * 加载，而不是自己再起一遍。
- */
-interface Entry {
-  promise: Promise<Extensions>
+interface Connection {
+  fingerprint: string
+  registry: McpRegistry
   refs: number
+}
+interface Entry {
+  root: string
+  key: string
+  users: number
+  plugins: Promise<PluginRegistry>
+  connections: Map<string, Connection>
+  snapshot: Omit<Extensions, 'stop'> | null
+  configKey: string
 }
 const shared = new Map<string, Entry>()
 
+function cacheKey(root: string): string {
+  const key = `${resolve(root)}|${resolve(globalScopeRoot())}`
+  return process.platform === 'win32' ? key.toLowerCase() : key
+}
+
+async function releaseConnection(connection: Connection): Promise<void> {
+  connection.refs--
+  if (connection.refs === 0) await connection.registry.stopAll()
+}
+
+async function refreshEntry(
+  entry: Entry,
+  onLog?: (line: string) => void,
+  retryNames: readonly string[] = [],
+): Promise<void> {
+  await withFileLocks(
+    [`${entry.root}/.agents/.extensions-${entry.key.replace(/[^a-z0-9]/gi, '_')}`],
+    async () => {
+      const config = await loadScopedMcpConfig(entry.root)
+      const configKey = JSON.stringify(config)
+      const retry = new Set(
+        retryNames.filter((name) => entry.connections.get(name)?.registry.failures.length),
+      )
+      if (entry.snapshot && entry.configKey === configKey && retry.size === 0) return
+      const plugins = await entry.plugins
+      const connections = new Map<string, Connection>()
+      const resolved = await Promise.all(
+        Object.entries(config.servers)
+          .filter(([, spec]) => spec.enabled !== false)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(async ([name, spec]): Promise<[string, Connection]> => {
+            const fingerprint = JSON.stringify(spec)
+            const prior = entry.connections.get(name)
+            if (prior?.fingerprint === fingerprint && !retry.has(name)) return [name, prior]
+            const registry = await loadMcpServers(
+              { servers: { [name]: spec }, error: null },
+              entry.root,
+              {
+                ...(onLog ? { onLog } : {}),
+                resolveCwd: (path) => resolveInWorkspace(entry.root, path, { mustExist: true }),
+              },
+            )
+            return [name, { fingerprint, registry, refs: 1 }]
+          }),
+      )
+      for (const [name, connection] of resolved) connections.set(name, connection)
+      const mcp: Extensions['mcp'] = {
+        servers: [...connections.values()].flatMap((c) => c.registry.servers),
+        failures: [...connections.values()].flatMap((c) => c.registry.failures),
+        toolSpecs: [],
+      }
+      if (config.error) mcp.failures.push({ server: MCP_CONFIG, reason: config.error })
+      const toolSpecs = [...plugins.toolSpecs]
+      const taken = new Set(toolSpecs.map((t) => t.name))
+      for (const [name, connection] of connections) {
+        for (const spec of connection.registry.toolSpecs) {
+          if (taken.has(spec.name)) {
+            mcp.failures.push({ server: name, reason: `工具名冲突：${spec.name}` })
+            continue
+          }
+          taken.add(spec.name)
+          mcp.toolSpecs.push(spec)
+          toolSpecs.push(spec)
+        }
+      }
+      const retired = [...entry.connections]
+        .filter(([name, value]) => connections.get(name) !== value)
+        .map(([, value]) => value)
+      entry.connections = connections
+      entry.configKey = configKey
+      entry.snapshot = {
+        plugins,
+        team: await loadTeamConfig(entry.root),
+        mcp,
+        mcpConfig: config,
+        toolSpecs,
+      }
+      // 当前连接的持有权已转移；旧会话仍持有的连接只由它们自己的 release 关闭。
+      const closed = await Promise.allSettled(retired.map(releaseConnection))
+      for (const result of closed)
+        if (result.status === 'rejected')
+          mcp.failures.push({
+            server: MCP_CONFIG,
+            reason: `旧连接关闭失败：${String(result.reason)}`,
+          })
+    },
+  )
+}
+
+/** 每次取得独立句柄。live 仅用于后台常驻持有，不固定旧 MCP 快照。 */
 export async function acquireExtensions(
   workspaceRoot: string,
   onLog?: (line: string) => void,
+  live = false,
+  retryNames: readonly string[] = [],
 ): Promise<Extensions> {
-  let entry = shared.get(workspaceRoot)
+  const key = cacheKey(workspaceRoot)
+  let entry = shared.get(key)
   if (!entry) {
-    entry = { promise: loadExtensions(workspaceRoot, onLog), refs: 0 }
-    shared.set(workspaceRoot, entry)
+    entry = {
+      root: workspaceRoot,
+      key,
+      users: 0,
+      plugins: loadInstalledPlugins(workspaceRoot, onLog),
+      connections: new Map(),
+      snapshot: null,
+      configKey: '',
+    }
+    shared.set(key, entry)
   }
-  entry.refs++
+  const owner = entry
+  owner.users++
+  let held: Connection[] = []
+  let released: Promise<void> | null = null
+  const release = (): Promise<void> => {
+    if (released) return released
+    released = (async () => {
+      const results = await Promise.allSettled(held.map(releaseConnection))
+      owner.users--
+      if (owner.users === 0) {
+        if (shared.get(key) === owner) shared.delete(key)
+        results.push(
+          ...(await Promise.allSettled([...owner.connections.values()].map(releaseConnection))),
+        )
+        for (const plugin of (await owner.plugins).plugins) plugin.host?.stop()
+      }
+      const errors = results.filter((r) => r.status === 'rejected').map((r) => r.reason)
+      if (errors.length) throw new AggregateError(errors, '扩展资源关闭失败')
+    })()
+    return released
+  }
   try {
-    return await entry.promise
-  } catch (err) {
-    // 加载整体失败时不能把坏 Promise 留在缓存里，否则后面每次都拿到同一个失败。
-    entry.refs--
-    if (entry.refs <= 0) shared.delete(workspaceRoot)
-    throw err
+    await refreshEntry(owner, onLog, retryNames)
+    const snapshot = owner.snapshot!
+    if (!live) {
+      held = [...owner.connections.values()]
+      for (const connection of held) connection.refs++
+    }
+    return {
+      get plugins() {
+        return (live ? owner.snapshot! : snapshot).plugins
+      },
+      get team() {
+        return (live ? owner.snapshot! : snapshot).team
+      },
+      get mcpConfig() {
+        return (live ? owner.snapshot! : snapshot).mcpConfig
+      },
+      get mcp() {
+        return (live ? owner.snapshot! : snapshot).mcp
+      },
+      get toolSpecs() {
+        return (live ? owner.snapshot! : snapshot).toolSpecs
+      },
+      stop: release,
+    }
+  } catch (error) {
+    await release()
+    throw error
   }
 }
 
-export function releaseExtensions(workspaceRoot: string): void {
-  const entry = shared.get(workspaceRoot)
-  if (!entry) return
-  entry.refs--
-  if (entry.refs > 0) return
-  shared.delete(workspaceRoot)
-  void entry.promise.then((ext) => ext.stop()).catch(() => {})
+export function releaseExtensions(handle: Extensions): Promise<void> {
+  return handle.stop()
+}
+
+/** 全局修改刷新已缓存工作区；项目覆盖使有效配置未变时保留原连接。 */
+export async function refreshExtensions(
+  workspaceRoot: string,
+  global: boolean,
+  retryNames: readonly string[] = [],
+): Promise<void> {
+  const entries = [...shared.values()].filter(
+    (entry) => global || cacheKey(entry.root) === cacheKey(workspaceRoot),
+  )
+  for (const entry of entries) {
+    const lease = await acquireExtensions(entry.root, undefined, false, retryNames)
+    await lease.stop()
+  }
 }
 
 /**
@@ -218,15 +345,16 @@ async function loadInstalledPlugins(
 export async function loadWorkspaceMcp(
   workspaceRoot: string,
   onLog?: (line: string) => void,
+  loadedConfig?: ScopedMcpConfig,
 ): Promise<McpRegistry> {
   const empty: McpRegistry = {
     servers: [],
     failures: [],
     toolSpecs: [],
-    stopAll: () => {},
+    stopAll: async () => {},
   }
 
-  const config = await loadScopedMcpConfig(workspaceRoot)
+  const config = loadedConfig ?? (await loadScopedMcpConfig(workspaceRoot))
   if (config.error) onLog?.(`[qy] ${MCP_FILE}：${config.error}`)
 
   if (Object.keys(config.servers).length === 0) return empty

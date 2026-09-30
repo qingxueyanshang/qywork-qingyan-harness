@@ -18,7 +18,7 @@ import { commandShell } from './sandbox.ts'
 import { createScheduleTool, deleteScheduleTool, listSchedulesTool } from './schedules.ts'
 import { globTool, grepTool } from './search.ts'
 import { makeShellTool } from './shell.ts'
-import { moveSkillTool, readSkillTool, writeSkillTool } from './skills.ts'
+import { importSkillTool, moveSkillTool, readSkillTool, writeSkillTool } from './skills.ts'
 import { writeTodosTool } from './todos.ts'
 import { webFetchTool, webSearchTool } from './web.ts'
 
@@ -172,6 +172,7 @@ export function registerBuiltinTools(
     writeMemoryTool,
     deleteMemoryTool,
     moveMemoryTool,
+    importSkillTool,
     readSkillTool,
     writeSkillTool,
     moveSkillTool,
@@ -192,3 +193,6 @@ export function registerBuiltinTools(
     registry.register(spec)
   }
 }
+
+export { withFileLocks } from './file-lock.ts'
+export { importSkills } from './skills/install.ts'

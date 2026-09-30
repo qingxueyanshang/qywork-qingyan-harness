@@ -23,7 +23,7 @@ import type {
   Step,
 } from '@qywork/core'
 import { isNoticeStep } from '@qywork/core'
-import { createEffect, createRoot } from 'solid-js'
+import { createEffect, createRoot, createSignal } from 'solid-js'
 import { produce } from 'solid-js/store'
 import { QyClient } from '../client.ts'
 import { createFramer, createPacer } from '../stream-pace.ts'
@@ -44,6 +44,11 @@ import {
   type TranscriptItem,
 } from './state.ts'
 import { panelTabs, tabConversationId, workspace } from './ui.ts'
+
+export const [extensionsRevision, setExtensionsRevision] = createSignal(0)
+export function invalidateExtensions(): void {
+  setExtensionsRevision((value) => value + 1)
+}
 
 export const client = new QyClient({
   onState: (s, detail) => setState({ connection: s, connectionDetail: detail ?? '' }),
@@ -503,6 +508,18 @@ function foldContent(cid: string, ev: AgentEvent): void {
       return
 
     case 'tool.finished':
+      if (
+        [
+          'import_skill',
+          'write_skill',
+          'move_skill',
+          'write_mcp_server',
+          'move_mcp_server',
+        ].includes(
+          state.views[cid]?.transcript.find((item) => item.id === ev.stepId)?.toolName ?? '',
+        )
+      )
+        invalidateExtensions()
       setState(
         produce((s) => {
           const v = s.views[cid]

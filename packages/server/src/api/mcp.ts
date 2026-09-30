@@ -15,7 +15,7 @@
 
 import { readFile } from 'node:fs/promises'
 import { parseMcpConfig } from '@qywork/mcp'
-import { loadScopedMcpConfig, MCP_CONFIG, mergeMcpServers } from '@qywork/runtime'
+import { MCP_CONFIG, mergeMcpServers } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
 
 /** 只有项目层和全局层可写。内置随程序发布，写进去下次升级就没了。 */
@@ -47,7 +47,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
     const { acquireExtensions, releaseExtensions } = await import('@qywork/runtime')
     const ext = await acquireExtensions(d.workspaceRoot)
     try {
-      const config = await loadScopedMcpConfig(d.workspaceRoot)
+      const config = ext.mcpConfig
       return json({
         configPath: MCP_CONFIG,
         files: config.files,
@@ -68,7 +68,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
         error: config.error,
       })
     } finally {
-      releaseExtensions(d.workspaceRoot)
+      await releaseExtensions(ext)
     }
   }
 
@@ -99,7 +99,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
     const names = Object.keys(incoming.servers)
     // 一条都解析不出来就拒绝：指错文件会「导入成功」然后列表一条不变，
     // 而用户完全无从知道为什么。`error` 里装的是被忽略的那几条的原因。
-    if (names.length === 0) {
+    if (incoming.error || names.length === 0) {
       return json(
         { error: 'invalid', message: incoming.error ?? '这个文件里没有能用的 MCP server' },
         422,
@@ -117,7 +117,7 @@ export const handleMcpApi: ApiHandler = async (url, req, d) => {
         merged.kind === 'conflict' ? 409 : 422,
       )
     }
-    // 同 PUT：改完要重连才生效，说出来。
+    // 保存与实际连接结果一并返回。
     return json(merged)
   }
 
