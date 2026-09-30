@@ -15,6 +15,13 @@ describe('菜单摆位', () => {
     expect(placeMenu(at(500, 900), box, view, 'above-start')).toEqual({ top: 296, left: 692 })
   })
 
+  test('below-start：左上角落在锚点处；下方放不下翻到上方，越过窗口右沿收回', () => {
+    const point = (top: number, left: number) => ({ top, bottom: top, left, right: left })
+    expect(placeMenu(point(300, 400), box, view, 'below-start')).toEqual({ top: 304, left: 400 })
+    expect(placeMenu(point(700, 400), box, view, 'below-start')).toEqual({ top: 496, left: 400 })
+    expect(placeMenu(point(300, 900), box, view, 'below-start')).toEqual({ top: 304, left: 692 })
+  })
+
   test('below-end：下方、右缘对齐按钮；下方放不下翻到上方；越过窗口左沿收回', () => {
     expect(placeMenu(at(100, 500), box, view, 'below-end')).toEqual({ top: 134, left: 300 })
     expect(placeMenu(at(700, 500), box, view, 'below-end')).toEqual({ top: 496, left: 300 })

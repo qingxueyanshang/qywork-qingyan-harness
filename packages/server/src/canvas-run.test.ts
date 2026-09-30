@@ -26,6 +26,17 @@ const PATH = 'board.canvas.json'
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
 const MP4 = new Uint8Array([0, 0, 0, 24])
 
+/** 带真实 IHDR 的 PNG 头：服务端从这 24 字节读宽高。 */
+function pngHead(w: number, h: number): Uint8Array {
+  const b = Buffer.alloc(33)
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0)
+  b.writeUInt32BE(13, 8)
+  b.write('IHDR', 12, 'latin1')
+  b.writeUInt32BE(w, 16)
+  b.writeUInt32BE(h, 20)
+  return new Uint8Array(b)
+}
+
 /** 一次端口调用：`submit` 触发任务号回调，`finish` 让调用返回。 */
 interface Pending {
   call: MediaCall
@@ -141,6 +152,22 @@ describe('画布运行：图像', () => {
       inputs: [{ role: 'reference', path: 'a.png' }],
     })
     expect(g.versions[0]!.path).toMatch(/^generated\/\d{8}-\d{6}\.png$/)
+  })
+
+  test('落地的图带像素宽高，卡片的框换成图的比例、面积不变', async () => {
+    const { ws, svc, ids } = await setup(IMAGE_CARD)
+    const fake = fakePort()
+    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    ;(await fake.next()).finish({
+      ok: true,
+      provider: 'q',
+      model: 'm',
+      files: [{ bytes: pngHead(1024, 1536), mime: 'image/png' }],
+    })
+    expect(await done).toMatchObject({ ok: true })
+    const g = await node(ws.root, ids.$g!)
+    expect(g.versions[0]!.size).toEqual({ w: 1024, h: 1536 })
+    expect({ w: g.w, h: g.h }).toEqual({ w: 138, h: 207 })
   })
 
   test('事件依次是 running → file.changed → done', async () => {

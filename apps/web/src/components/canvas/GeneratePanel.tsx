@@ -8,12 +8,14 @@
  */
 
 import {
+  blankBox,
   type CanvasGenerateNode,
   type CanvasNodeState,
   type CanvasOp,
   type CanvasView,
   canvasMediaOf,
   displayNameOf,
+  fitBox,
   formatMoney,
   inputsOf,
   isInlineAudio,
@@ -130,6 +132,21 @@ export function paramsText(
     .join(' · ')
 }
 
+const RATIO_RE = /^\d+:\d+$/
+
+/**
+ * 这个取值定下的宽高比：带对照表的尺寸取表里那一格的宽高比，取值列里有比例的参数（视频的宽高比）取取值本身；
+ * 由模型定时回 `auto`，参数与宽高比无关（分辨率、张数）或取值不在表里时回 `null`。
+ */
+export function ratioOf(p: MediaParamOption, v: unknown): string | null {
+  if (p.shapes) {
+    const at = shapeAt(p, v)
+    return at ? (at.ratio ?? 'auto') : null
+  }
+  if (!(p.values ?? []).some((x) => RATIO_RE.test(String(x)))) return null
+  return typeof v === 'string' && RATIO_RE.test(v) ? v : 'auto'
+}
+
 /** 比例（`16:9`）或像素尺寸（`1536x1024`）画成的框：长边 14px，短边按比例、不小于 5px。其余取值回 `null`。 */
 export function shapeOf(v: unknown): { w: number; h: number } | null {
   const m = typeof v === 'string' ? /^(\d+)\s*[:x*×]\s*(\d+)$/.exec(v) : null
@@ -211,11 +228,20 @@ function Thumb(props: { view: CanvasView; nodeId: string }) {
           when={media().kind === 'video'}
           fallback={
             <Show when={media().kind === 'image'}>
-              <Bitmap src={client.fileUrl(path())} width={48 * window.devicePixelRatio} />
+              <Bitmap
+                src={client.fileUrl(path())}
+                width={40 * window.devicePixelRatio}
+                height={40 * window.devicePixelRatio}
+              />
             </Show>
           }
         >
-          <Bitmap kind="video" src={client.fileUrl(path())} width={48 * window.devicePixelRatio} />
+          <Bitmap
+            kind="video"
+            src={client.fileUrl(path())}
+            width={40 * window.devicePixelRatio}
+            height={40 * window.devicePixelRatio}
+          />
         </Show>
       )}
     </Show>
@@ -238,6 +264,13 @@ export function GeneratePanel(props: {
 }) {
   void ensureModelCatalog()
   let editor!: HTMLDivElement
+  /*
+   * 一个面板实例只属于一张卡（外层按卡的 id 重建）。提示词在失焦时提交，而取消选中会先卸载面板、
+   * 失焦发生在卸载之后，那时 `props.node` 已不可读；所以卡的 id、已提交的提示词与提交函数在挂载时取下。
+   */
+  const nodeId = props.node.id
+  const apply = props.apply
+  let saved = props.node.prompt
   const [draft, setDraft] = createSignal(props.node.prompt)
   const [menu, setMenu] = createSignal<Menu | null>(null)
   const [emptyMode, setEmptyMode] = createSignal<Mode>('reference')
@@ -286,6 +319,7 @@ export function GeneratePanel(props: {
     on(
       () => props.node.prompt,
       (prompt) => {
+        saved = prompt
         if (document.activeElement === editor) return
         render(prompt)
         setDraft(prompt)
@@ -303,7 +337,8 @@ export function GeneratePanel(props: {
     if (media.kind === 'image' && media.path) {
       const thumb = document.createElement('canvas')
       thumb.className = 'canvas-bitmap'
-      void decodeImage(client.fileUrl(media.path), 32 * window.devicePixelRatio).then(
+      const side = 32 * window.devicePixelRatio
+      void decodeImage(client.fileUrl(media.path), { w: side, h: side }).then(
         (bitmap) => paint(thumb, bitmap),
         () => thumb.remove(),
       )
@@ -323,8 +358,12 @@ export function GeneratePanel(props: {
 
   const commit = async (): Promise<boolean> => {
     const d = draft()
-    if (d === props.node.prompt) return true
-    return props.apply([{ op: 'update', id: props.node.id, prompt: d }])
+    if (d === saved) return true
+    const before = saved
+    saved = d
+    const ok = await apply([{ op: 'update', id: nodeId, prompt: d }])
+    if (!ok) saved = before
+    return ok
   }
 
   const send = () => {
@@ -438,7 +477,21 @@ export function GeneratePanel(props: {
     const next = { ...props.node.params }
     if (value === undefined || value === '') delete next[p.name]
     else next[p.name] = value
-    void props.apply([{ op: 'update', id: props.node.id, params: next }])
+    void props.apply([
+      { op: 'update', id: props.node.id, params: next, ...previewBox(ratioOf(p, value)) },
+    ])
+  }
+
+  /**
+   * 还没有结果的卡：选宽高比时框先按所选比例变形（面积不变），选回「自动」还原成缺省比例；
+   * 有结果之后框跟结果的实际尺寸走（服务端落盘时定），这里不动。不是宽高比的参数回空。
+   */
+  const previewBox = (ratio: string | null): { w?: number; h?: number } => {
+    if (ratio === null || props.node.versions.length > 0) return {}
+    const [a, b] = ratio.split(':').map(Number) as [number, number]
+    const target = ratio === 'auto' ? blankBox(props.node.output) : { w: a, h: b }
+    const box = fitBox(props.node, target)
+    return box.w === props.node.w && box.h === props.node.h ? {} : box
   }
 
   /** 一个参数菜单里的逐项取值；整数范围太大时回 `null`，改用加减按钮。 */
@@ -611,7 +664,7 @@ export function GeneratePanel(props: {
             aria-label={ROLE_LABEL[role]}
             onClick={(e) => openPicker(e.currentTarget, role)}
           >
-            <IconPlus size={18} stroke={1.8} />
+            <IconPlus size={16} stroke={1.8} />
             <span class="cap">{ROLE_LABEL[role]}</span>
           </button>
         }
@@ -649,7 +702,7 @@ export function GeneratePanel(props: {
                   aria-label="添加素材"
                   onClick={(e) => openPicker(e.currentTarget, 'reference')}
                 >
-                  <IconPlus size={18} stroke={1.8} />
+                  <IconPlus size={16} stroke={1.8} />
                 </button>
               </>
             }
@@ -732,7 +785,7 @@ export function GeneratePanel(props: {
           disabled={!draft().trim() || running() || !model()}
           onClick={send}
         >
-          <IconSend size={15} />
+          <IconSend size={16} />
         </button>
       </div>
 
