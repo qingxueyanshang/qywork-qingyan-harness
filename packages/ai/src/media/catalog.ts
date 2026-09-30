@@ -17,7 +17,7 @@
  * 账本上一个编出来的金额看起来和真的一样。
  */
 
-import { type Currency, MEDIA_KIND_OUTPUT, type MediaKind } from '@qywork/core'
+import { type Currency, MEDIA_KIND_OUTPUT, type MediaKind, type MentionStyle } from '@qywork/core'
 import type { MediaInput, MediaUsage } from './types.ts'
 
 /**
@@ -41,6 +41,11 @@ export type MediaOperation =
 export interface MediaParamSpec {
   /** 接口字段名，原样发出。 */
   name: string
+  /**
+   * 界面上的名字。只有用户要手选的几项（尺寸、时长、清晰度、画幅、音色、张数、返回尾帧）有，画布生成面板只列有它的参数；
+   * 其余参数（水印、种子、扩写等）只给大模型用，不进界面。
+   */
+  label?: string
   type: 'enum' | 'integer' | 'number' | 'string' | 'boolean'
   /** enum 的可选值。 */
   values?: readonly (string | number)[]
@@ -48,6 +53,8 @@ export interface MediaParamSpec {
   max?: number
   /** string 的格式，正则源码。 */
   pattern?: string
+  /** string 参数在界面上列出的常用取值，取自 `description` 里写明的文档原值；界面另留自定义输入。 */
+  presets?: readonly string[]
   /** 接口在不填时用的值。只用于告诉大模型，本地不补值。 */
   default?: string | number | boolean
   /** 一句话含义与约束，给大模型看。 */
@@ -70,6 +77,8 @@ export interface MediaModelSpec {
   inputs: {
     maxImages: number
     maxVideos: number
+    /** 参考音频的段数上限。不写 = 不收（总时长上限各家另有规定，本地不校验，由接口判）。 */
+    maxAudios?: number
     transport: 'multipart' | 'json'
     types?: Partial<Record<MediaInput['role'], string>>
   }
@@ -81,12 +90,47 @@ export interface MediaModelSpec {
    * 接口不回报计量的模型（OpenAI 语音合成）。接口直接回报扣费金额的（可灵官方）不需要单价。
    */
   price?: MediaPrice
+  /**
+   * 提示词里指代第 n 个参考素材的写法（`{n}` 从 1 起、按类别分别计数），用接口原生写法，不做统一翻译。
+   * 画布把 `@` 引用编译成它；大模型的本轮快照里也列出它。没有登记的模型按素材名写进提示词。
+   */
+  mention?: MentionStyle
 }
 
 export interface MediaPrice {
   currency: Currency
   /** 缺计价所需的量时返回 null。 */
   cost(u: MediaUsage): number | null
+  /**
+   * 按发送前就定下来的参数与输入推出计量，给界面在发送前显示本次花费（`quoteMedia`）。
+   * 计量要等接口回报才知道的（按 token 计价、档位由接口定、计费秒数含输入视频时长）不写，或返回 null。
+   * 推出的计量必须与接口成功后回报的同一口径，否则发送前显示的金额与账本对不上。
+   */
+  usageOf?(params: Record<string, unknown>, inputs: MediaInputCount): MediaUsage | null
+}
+
+/** 一次请求里参考图与参考视频的数量（首尾帧计入图）。 */
+export interface MediaInputCount {
+  images: number
+  videos: number
+}
+
+/**
+ * 发送前的花费：计量由 `usageOf` 按参数推出（没填的参数按目录里的接口默认值），金额走同一个 `cost`。
+ * 推不出、或金额不明时返回 null，界面不显示。
+ */
+export function quoteMedia(
+  spec: MediaModelSpec,
+  params: Record<string, unknown>,
+  inputs: MediaInputCount,
+): { cost: number; currency: Currency } | null {
+  const price = spec.price
+  if (!price?.usageOf) return null
+  const defaults: Record<string, unknown> = {}
+  for (const p of spec.params) if (p.default !== undefined) defaults[p.name] = p.default
+  const usage = price.usageOf({ ...defaults, ...params }, inputs)
+  const cost = usage ? price.cost(usage) : null
+  return cost !== null && cost > 0 ? { cost, currency: price.currency } : null
 }
 
 /**
@@ -180,15 +224,26 @@ const seedreamProPrice = perImage(
         : 0.6,
   { rate: 0.02, firstInputFree: true },
 )
-const seedreamFlashPrice = perImage('CNY', () => 0.12)
+const seedreamFlashPrice: MediaPrice = {
+  ...perImage('CNY', () => 0.12),
+  // 每次一张，输入图免费。
+  usageOf: (_params, inputs) => ({ images: 1, inputImages: inputs.images }),
+}
 // 百炼「模型调用价格」：千问图像 3.0 Pro 输出 1k ¥0.25、2k ¥0.5，3.0 输出 ¥0.18，输入均 ¥0.02 每张；
 // 档位取接口回报的 `output_image_type`。
 const qwenImagePrice = (rates: Record<string, number>) =>
   perImage('CNY', (u) => tier(rates, u.imageTier), { rate: 0.02 })
 // 万相图像 2.7 Pro ¥0.50、2.7 ¥0.20 每张，只按输出计费。
 // 万相视频 3.0 Prime 480P ¥0.45、720P ¥0.9、1080P ¥1.8 每秒；3.0 ¥0.3、¥0.6、¥1.2；计费秒数含输入视频时长。
-const wanVideoPrice = (rates: Record<string, number>) =>
-  perSecond('CNY', (u) => tier(rates, u.resolution))
+const wanVideoPrice = (rates: Record<string, number>): MediaPrice => ({
+  ...perSecond('CNY', (u) => tier(rates, u.resolution)),
+  // 有参考视频时计费秒数含输入视频时长，发送前不知道，不估；-1（由模型定）同样不估。
+  usageOf: (p, inputs) => {
+    const seconds = Number(p.duration)
+    if (inputs.videos > 0 || !(seconds > 0) || typeof p.resolution !== 'string') return null
+    return { seconds, resolution: p.resolution.toLowerCase() }
+  },
+})
 // 火山方舟「模型价格」：Seedance 每百万 token，按输出分辨率与输入是否含视频分档；480p 与 720p 同价。
 const seedancePrice = (rates: Record<string, [number, number]>) =>
   perMillionOutputTokens('CNY', (u) => {
@@ -204,19 +259,33 @@ const qwenSpeechPrice: MediaPrice = {
 // 无声 ¥0.6 / ¥0.8 / ¥3.0，有声 ¥0.9 / ¥1.2 / ¥3.0；Omni 有参考视频（只能无声）与有声同价；Turbo 固定有声 ¥0.8 / ¥1.0。
 const KLING_SILENT = { '720p': 0.6, '1080p': 0.8, '4k': 3.0 }
 const KLING_SOUND = { '720p': 0.9, '1080p': 1.2, '4k': 3.0 }
-const klingBailianPrice = (rates: (u: MediaUsage) => Record<string, number> | undefined) =>
-  perSecond('CNY', (u) => {
+/** 百炼上可灵的清晰度档位到接口回报的 `SR`（`videoUsage` 规整成 `720p` / `1080p` / `4k`）。 */
+const KLING_MODE_RESOLUTION: Record<string, string> = { std: '720p', pro: '1080p', '4k': '4k' }
+const klingBailianPrice = (
+  rates: (u: MediaUsage) => Record<string, number> | undefined,
+): MediaPrice => ({
+  ...perSecond('CNY', (u) => {
     const table = rates(u)
     return table ? tier(table, u.resolution) : undefined
-  })
+  }),
+  // 有参考视频时时长由输入视频决定（编辑）或另有上限，不估。
+  usageOf: (p, inputs) => {
+    const seconds = Number(p.duration)
+    const resolution = KLING_MODE_RESOLUTION[String(p.mode)]
+    if (inputs.videos > 0 || !(seconds > 0) || !resolution) return null
+    return { seconds, resolution, ...(typeof p.audio === 'boolean' ? { audio: p.audio } : {}) }
+  },
+})
 
 // ── OpenAI GPT Image（2026-09-25 对 developers.openai.com 图像生成指南与 edits 参考）──
 const gptImageParams: readonly MediaParamSpec[] = [
   {
     name: 'size',
+    label: '尺寸',
     type: 'string',
     pattern: '^(auto|\\d+x\\d+)$',
     default: 'auto',
+    presets: ['auto', '1024x1024', '1536x1024', '1024x1536'],
     description:
       '宽x高，边长须为 16 的倍数，宽高比 1:3 到 3:1，单边不超过 3840；常用 1024x1024、1536x1024（横）、1024x1536（竖）',
   },
@@ -227,7 +296,15 @@ const gptImageParams: readonly MediaParamSpec[] = [
     default: 'auto',
     description: '画质档位，越高越慢越贵',
   },
-  { name: 'n', type: 'integer', min: 1, max: 10, default: 1, description: '一次生成几张' },
+  {
+    name: 'n',
+    label: '张数',
+    type: 'integer',
+    min: 1,
+    max: 10,
+    default: 1,
+    description: '一次生成几张',
+  },
   {
     name: 'output_format',
     type: 'enum',
@@ -255,9 +332,11 @@ const gptImageParams: readonly MediaParamSpec[] = [
 const seedreamParams: readonly MediaParamSpec[] = [
   {
     name: 'size',
+    label: '尺寸',
     type: 'string',
     pattern: '^(1K|1\\.5K|2K|\\d+x\\d+)$',
     default: '2K',
+    presets: ['1K', '1.5K', '2K'],
     description:
       '分辨率档位 1K / 1.5K / 2K（宽高比写在提示词里，由模型定），或宽x高：总像素 921600 到 4624220、宽高比 1/16 到 16',
   },
@@ -283,11 +362,20 @@ const seedreamParams: readonly MediaParamSpec[] = [
 const qwenImageParams: readonly MediaParamSpec[] = [
   {
     name: 'size',
+    label: '尺寸',
     type: 'string',
     pattern: '^\\d+\\*\\d+$',
     description: '宽*高，用星号分隔，512*512 到 2048*2048；不填由模型定',
   },
-  { name: 'n', type: 'integer', min: 1, max: 6, default: 1, description: '一次生成几张' },
+  {
+    name: 'n',
+    label: '张数',
+    type: 'integer',
+    min: 1,
+    max: 6,
+    default: 1,
+    description: '一次生成几张',
+  },
   { name: 'negative_prompt', type: 'string', description: '不希望出现的内容，最多 500 字' },
   {
     name: 'seed',
@@ -312,12 +400,22 @@ const qwenImageParams: readonly MediaParamSpec[] = [
 const wanImageParams: readonly MediaParamSpec[] = [
   {
     name: 'size',
+    label: '尺寸',
     type: 'string',
     pattern: '^(1K|2K|4K|\\d+x\\d+)$',
+    presets: ['1K', '2K', '4K'],
     description:
       '1K / 2K / 4K 或宽x高；文生图 768x768 到 4096x4096，修改时最大 2K（2048x2048），4K 仅 wan2.7-image-pro 文生图',
   },
-  { name: 'n', type: 'integer', min: 1, max: 4, default: 1, description: '一次生成几张' },
+  {
+    name: 'n',
+    label: '张数',
+    type: 'integer',
+    min: 1,
+    max: 4,
+    default: 1,
+    description: '一次生成几张',
+  },
   {
     name: 'thinking_mode',
     type: 'boolean',
@@ -339,6 +437,7 @@ const wanImageParams: readonly MediaParamSpec[] = [
 const wanVideoParams: readonly MediaParamSpec[] = [
   {
     name: 'resolution',
+    label: '清晰度',
     type: 'enum',
     values: ['1080P', '720P', '480P'],
     default: '1080P',
@@ -346,6 +445,7 @@ const wanVideoParams: readonly MediaParamSpec[] = [
   },
   {
     name: 'ratio',
+    label: '画幅',
     type: 'enum',
     values: ['adaptive', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
     default: 'adaptive',
@@ -353,6 +453,7 @@ const wanVideoParams: readonly MediaParamSpec[] = [
   },
   {
     name: 'duration',
+    label: '时长',
     type: 'integer',
     min: -1,
     max: 30,
@@ -375,6 +476,7 @@ const wanVideoParams: readonly MediaParamSpec[] = [
 const seedanceParams: readonly MediaParamSpec[] = [
   {
     name: 'resolution',
+    label: '清晰度',
     type: 'enum',
     values: ['480p', '720p', '1080p'],
     default: '720p',
@@ -382,6 +484,7 @@ const seedanceParams: readonly MediaParamSpec[] = [
   },
   {
     name: 'ratio',
+    label: '画幅',
     type: 'enum',
     values: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
     default: 'adaptive',
@@ -389,6 +492,7 @@ const seedanceParams: readonly MediaParamSpec[] = [
   },
   {
     name: 'duration',
+    label: '时长',
     type: 'integer',
     min: -1,
     max: 30,
@@ -405,6 +509,13 @@ const seedanceParams: readonly MediaParamSpec[] = [
       '有参考素材时的任务类型：reference 参考生成、edit 编辑参考视频、extend 延长参考视频；显式指定时参数不合规会在提交时直接报错、不扣费',
   },
   { name: 'generate_audio', type: 'boolean', default: true, description: '是否带同步声音' },
+  {
+    name: 'return_last_frame',
+    label: '返回尾帧',
+    type: 'boolean',
+    default: false,
+    description: '同时返回尾帧图（jpeg，与视频同尺寸、无水印），用作下一段的首帧',
+  },
   {
     name: 'output_format',
     type: 'enum',
@@ -424,6 +535,7 @@ function seedance20Params(resolutions: readonly string[]): readonly MediaParamSp
   return [
     {
       name: 'resolution',
+      label: '清晰度',
       type: 'enum',
       values: resolutions,
       default: '720p',
@@ -431,6 +543,7 @@ function seedance20Params(resolutions: readonly string[]): readonly MediaParamSp
     },
     {
       name: 'ratio',
+      label: '画幅',
       type: 'enum',
       values: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
       default: 'adaptive',
@@ -438,12 +551,20 @@ function seedance20Params(resolutions: readonly string[]): readonly MediaParamSp
     },
     {
       name: 'duration',
+      label: '时长',
       type: 'integer',
       min: -1,
       max: 15,
       description: '时长（秒），4 到 15；-1 由模型定',
     },
     { name: 'generate_audio', type: 'boolean', default: true, description: '是否带同步声音' },
+    {
+      name: 'return_last_frame',
+      label: '返回尾帧',
+      type: 'boolean',
+      default: false,
+      description: '同时返回尾帧图（jpeg，与视频同尺寸、无水印），用作下一段的首帧',
+    },
     { name: 'watermark', type: 'boolean', default: false, description: '右下角加「AI 生成」水印' },
   ]
 }
@@ -464,6 +585,7 @@ function klingBailianParams(opts: { modes: readonly string[]; audio: boolean }):
     },
     {
       name: 'aspect_ratio',
+      label: '画幅',
       type: 'enum',
       values: ['16:9', '9:16', '1:1'],
       default: '16:9',
@@ -472,6 +594,7 @@ function klingBailianParams(opts: { modes: readonly string[]; audio: boolean }):
     },
     {
       name: 'duration',
+      label: '时长',
       type: 'integer',
       min: 3,
       max: 15,
@@ -517,6 +640,7 @@ function klingParams(opts: {
   return [
     {
       name: 'resolution',
+      label: '清晰度',
       type: 'enum',
       values: opts.resolutions,
       default: '720p',
@@ -524,6 +648,7 @@ function klingParams(opts: {
     },
     {
       name: 'aspect_ratio',
+      label: '画幅',
       type: 'enum',
       values: ['16:9', '9:16', '1:1'],
       default: '16:9',
@@ -532,6 +657,7 @@ function klingParams(opts: {
     },
     {
       name: 'duration',
+      label: '时长',
       type: 'integer',
       min: 3,
       max: 15,
@@ -567,8 +693,24 @@ function klingParams(opts: {
 const openaiSpeechParams: readonly MediaParamSpec[] = [
   {
     name: 'voice',
+    label: '音色',
     type: 'string',
     default: 'alloy',
+    presets: [
+      'alloy',
+      'ash',
+      'ballad',
+      'coral',
+      'echo',
+      'fable',
+      'nova',
+      'onyx',
+      'sage',
+      'shimmer',
+      'verse',
+      'marin',
+      'cedar',
+    ],
     description:
       '音色：alloy、ash、ballad、coral、echo、fable、nova、onyx、sage、shimmer、verse、marin、cedar',
   },
@@ -591,8 +733,39 @@ const openaiSpeechParams: readonly MediaParamSpec[] = [
 const qwenSpeechParams: readonly MediaParamSpec[] = [
   {
     name: 'voice',
+    label: '音色',
     type: 'string',
     default: 'Cherry',
+    presets: [
+      'Cherry',
+      'Serena',
+      'Ethan',
+      'Moon',
+      'Kai',
+      'Neil',
+      'Maia',
+      'Momo',
+      'Vivian',
+      'Chelsie',
+      'Bella',
+      'Ryan',
+      'Katerina',
+      'Eldric Sage',
+      'Mia',
+      'Mochi',
+      'Bellona',
+      'Vincent',
+      'Bunny',
+      'Elias',
+      'Arthur',
+      'Nini',
+      'Seren',
+      'Pip',
+      'Stella',
+      'Nofish',
+      'Jennifer',
+      'Aiden',
+    ],
     description:
       '系统音色：Cherry（明快女声）、Serena（温柔女声）、Ethan（北方口音男声）、Moon（随性男声）、Kai（舒缓男声）、' +
       'Neil（新闻播音男声）、Maia、Momo、Vivian、Chelsie、Bella、Ryan、Katerina、Eldric Sage、Mia、Mochi、Bellona、' +
@@ -644,6 +817,7 @@ const spec = (
   inputs: MediaModelSpec['inputs'],
   params: readonly MediaParamSpec[],
   price?: MediaPrice,
+  mention?: MentionStyle,
 ): MediaModelSpec => ({
   id,
   displayName,
@@ -654,7 +828,21 @@ const spec = (
   params,
   catalogued: true,
   ...(price ? { price } : {}),
+  ...(mention ? { mention } : {}),
 })
+
+// ── 提示词里指代素材的写法（2026-09-29 对官方文档原文）──
+// 方舟 Seedance 2.0 系列：「提示词中必须使用"素材类型+序号"格式引用素材，序号为请求体中该素材在同类素材中的排序」。
+const SEEDANCE_20_MENTION: MentionStyle = { image: '图片{n}', video: '视频{n}', audio: '音频{n}' }
+// 方舟 Seedance 2.5：「使用 @图片1、@视频1、@音频1 指代参考素材」。
+const SEEDANCE_25_MENTION: MentionStyle = {
+  image: '@图片{n}',
+  video: '@视频{n}',
+  audio: '@音频{n}',
+}
+// 百炼万相 3.0：「prompt中可以用"图1""视频1""音频1"等指代 media 数组中对应顺序的媒体素材」，「图和视频分别计数」。
+// 百炼上的可灵写 `<<<>>>`，文档没有写明是否按类别分别计数，未登记。
+const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: '音频{n}' }
 
 const SEEDS: readonly MediaModelSpec[] = [
   spec(
@@ -743,9 +931,10 @@ const SEEDS: readonly MediaModelSpec[] = [
     '阿里云',
     'dashscope_videos',
     VIDEO_OPERATIONS,
-    { maxImages: 10, maxVideos: 5, transport: 'json' },
+    { maxImages: 10, maxVideos: 5, maxAudios: 5, transport: 'json' },
     wanVideoParams,
     wanVideoPrice({ '480p': 0.3, '720p': 0.6, '1080p': 1.2 }),
+    WAN_MENTION,
   ),
   spec(
     'wan3.0-video-prime',
@@ -753,9 +942,10 @@ const SEEDS: readonly MediaModelSpec[] = [
     '阿里云',
     'dashscope_videos',
     VIDEO_OPERATIONS,
-    { maxImages: 10, maxVideos: 5, transport: 'json' },
+    { maxImages: 10, maxVideos: 5, maxAudios: 5, transport: 'json' },
     wanVideoParams,
     wanVideoPrice({ '480p': 0.45, '720p': 0.9, '1080p': 1.8 }),
+    WAN_MENTION,
   ),
   spec(
     'doubao-seedance-2-5-260628',
@@ -763,9 +953,10 @@ const SEEDS: readonly MediaModelSpec[] = [
     '火山引擎',
     'ark_videos',
     VIDEO_OPERATIONS,
-    { maxImages: 30, maxVideos: 10, transport: 'json' },
+    { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'json' },
     seedanceParams,
     seedancePrice({ '720p': [70, 42], '1080p': [77, 46] }),
+    SEEDANCE_25_MENTION,
   ),
   spec(
     'doubao-seedance-2-0-260128',
@@ -773,9 +964,10 @@ const SEEDS: readonly MediaModelSpec[] = [
     '火山引擎',
     'ark_videos',
     VIDEO_OPERATIONS,
-    { maxImages: 9, maxVideos: 3, transport: 'json' },
+    { maxImages: 9, maxVideos: 3, maxAudios: 3, transport: 'json' },
     seedance20Params(['480p', '720p', '1080p', '4k']),
     seedancePrice({ '720p': [46, 28], '1080p': [51, 31], '4k': [26, 16] }),
+    SEEDANCE_20_MENTION,
   ),
   spec(
     'doubao-seedance-2-0-fast-260128',
@@ -783,9 +975,10 @@ const SEEDS: readonly MediaModelSpec[] = [
     '火山引擎',
     'ark_videos',
     VIDEO_OPERATIONS,
-    { maxImages: 9, maxVideos: 3, transport: 'json' },
+    { maxImages: 9, maxVideos: 3, maxAudios: 3, transport: 'json' },
     seedance20Params(['480p', '720p']),
     seedancePrice({ '720p': [37, 22] }),
+    SEEDANCE_20_MENTION,
   ),
   spec(
     'doubao-seedance-2-0-mini-260615',
@@ -793,9 +986,10 @@ const SEEDS: readonly MediaModelSpec[] = [
     '火山引擎',
     'ark_videos',
     VIDEO_OPERATIONS,
-    { maxImages: 9, maxVideos: 3, transport: 'json' },
+    { maxImages: 9, maxVideos: 3, maxAudios: 3, transport: 'json' },
     seedance20Params(['480p', '720p']),
     seedancePrice({ '720p': [23, 14] }),
+    SEEDANCE_20_MENTION,
   ),
   spec(
     'kling/kling-v3-omni-video-generation',
@@ -924,11 +1118,20 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     params: [
       {
         name: 'size',
+        label: '尺寸',
         type: 'string',
         pattern: '^(auto|\\d+x\\d+)$',
         description: '宽x高，如 1024x1024',
       },
-      { name: 'n', type: 'integer', min: 1, max: 10, default: 1, description: '一次生成几张' },
+      {
+        name: 'n',
+        label: '张数',
+        type: 'integer',
+        min: 1,
+        max: 10,
+        default: 1,
+        description: '一次生成几张',
+      },
     ],
     catalogued: false,
   },
@@ -938,8 +1141,16 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     operations: IMAGE_OPERATIONS,
     inputs: { maxImages: 3, maxVideos: 0, transport: 'json' },
     params: [
-      { name: 'size', type: 'string', description: '尺寸，写法以该模型文档为准' },
-      { name: 'n', type: 'integer', min: 1, max: 4, default: 1, description: '一次生成几张' },
+      { name: 'size', label: '尺寸', type: 'string', description: '尺寸，写法以该模型文档为准' },
+      {
+        name: 'n',
+        label: '张数',
+        type: 'integer',
+        min: 1,
+        max: 4,
+        default: 1,
+        description: '一次生成几张',
+      },
     ],
     catalogued: false,
   },
@@ -954,8 +1165,19 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     operations: ['text_to_video'],
     inputs: { maxImages: 0, maxVideos: 0, transport: 'json' },
     params: [
-      { name: 'seconds', type: 'string', description: '时长（秒），写成字符串，如 "5"' },
-      { name: 'size', type: 'string', description: '宽x高，如 1280x720、720x1280' },
+      {
+        name: 'seconds',
+        label: '时长',
+        type: 'string',
+        description: '时长（秒），写成字符串，如 "5"',
+      },
+      {
+        name: 'size',
+        label: '尺寸',
+        type: 'string',
+        presets: ['1280x720', '720x1280'],
+        description: '宽x高，如 1280x720、720x1280',
+      },
     ],
     catalogued: false,
   },

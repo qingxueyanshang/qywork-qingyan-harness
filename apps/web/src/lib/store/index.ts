@@ -7,11 +7,36 @@
 
 export * from './actions.ts'
 export * from './browser.ts'
+// 画布：具名，理由同下面 theme 那一行。
+export {
+  CANVAS_SUFFIX,
+  type CanvasEdit,
+  type CanvasQuote,
+  canvasAvailable,
+  canvasTitle,
+  captureFrame,
+  createCanvas,
+  editCanvas,
+  importToCanvas,
+  quoteCard,
+  readCanvas,
+  restoreCanvas,
+  retrieveCard,
+  runCard,
+  uploadToCanvas,
+  WORKSPACE_PATH_TYPE,
+} from './canvas.ts'
 export * from './connection.ts'
 export * from './settings.ts'
 // 具名，不跟上面几行的 `export *`——B6 的判据是「这个模块对外承诺了什么」，
 // 而 theme 只承诺三个符号。
-export { isDesktopShell, tauriInvoke, tauriListen } from './shell.ts'
+export {
+  type DropSink,
+  isDesktopShell,
+  registerDropSink,
+  tauriInvoke,
+  tauriListen,
+} from './shell.ts'
 export * from './state.ts'
 export { initTheme, setTheme, type ThemePref, theme } from './theme.ts'
 export * from './ui.ts'

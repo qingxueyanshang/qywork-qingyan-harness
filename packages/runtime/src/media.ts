@@ -40,10 +40,15 @@ export function operationOf(
   const last = count('last_frame')
   const references = count('reference')
   const videos = count('video')
+  const audios = count('audio')
   if (first > 1 || last > 1) return { problem: '首帧、尾帧各只能给一张' }
   if (last && !first) return { problem: '给了尾帧就要给首帧' }
   // 各家都把首尾帧与参考素材列为互斥的两类任务。
-  if (first && (references || videos)) return { problem: '首尾帧不能与参考图、参考视频同时给' }
+  if (first && (references || videos || audios)) {
+    return { problem: '首尾帧不能与参考图、参考视频、参考音频同时给' }
+  }
+  // 方舟 Seedance 2.0 系列不收单独的音频；各家都收「图或视频 + 音频」，统一按这一条。
+  if (audios && !references && !videos) return { problem: '参考音频要与参考图或参考视频同时给' }
   if (videos) return { operation: 'video_to_video' }
   if (first && last) return { operation: 'first_last_frame' }
   if (first) return { operation: 'image_to_video' }
@@ -112,6 +117,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
         const problems = validateMediaCall(spec, op, call.params, {
           images: call.inputs.filter((i) => i.role === 'reference').length,
           videos: call.inputs.filter((i) => i.role === 'video').length,
+          audios: call.inputs.filter((i) => i.role === 'audio').length,
         })
         if (problems.length > 0) {
           const others = candidates

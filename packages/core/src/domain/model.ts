@@ -292,6 +292,7 @@ export interface Attachment {
  */
 const INLINE_IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i
 const INLINE_VIDEO_RE = /\.(mp4|mov|webm|mkv)$/i
+const INLINE_AUDIO_RE = /\.(wav|mp3)$/i
 
 /** 这个路径或文件名算不算可内联的图片。 */
 export function isInlineImage(pathOrName: string): boolean {
@@ -301,6 +302,11 @@ export function isInlineImage(pathOrName: string): boolean {
 /** 这个路径或文件名算不算可直接提交给视频模型的视频。 */
 export function isInlineVideo(pathOrName: string): boolean {
   return INLINE_VIDEO_RE.test(pathOrName)
+}
+
+/** 这个路径或文件名算不算可直接提交给视频模型的参考音频。各家都只收 wav 与 mp3。 */
+export function isInlineAudio(pathOrName: string): boolean {
+  return INLINE_AUDIO_RE.test(pathOrName)
 }
 
 /** 扩展名 → mime。只覆盖可内联的那几种，其余交给通用二进制类型。 */
@@ -314,6 +320,8 @@ export function mimeOf(pathOrName: string): string {
   if (ext === 'mov') return 'video/quicktime'
   if (ext === 'webm') return 'video/webm'
   if (ext === 'mkv') return 'video/x-matroska'
+  if (ext === 'wav') return 'audio/wav'
+  if (ext === 'mp3') return 'audio/mpeg'
   return 'application/octet-stream'
 }
 

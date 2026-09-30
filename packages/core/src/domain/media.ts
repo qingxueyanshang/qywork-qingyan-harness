@@ -27,6 +27,22 @@ export type MediaKind = (typeof MEDIA_KINDS)[number]
 export const MEDIA_OUTPUTS = ['image', 'video', 'audio'] as const
 export type MediaOutput = (typeof MEDIA_OUTPUTS)[number]
 
+/**
+ * 生成输入的用途。生成请求（`MediaInput.role`）与画布连线用同一组词。
+ *
+ * `reference` 是参考图（出图时即待修改的图），`first_frame` / `last_frame` 是视频的首尾帧，
+ * `video` 是参考视频（编辑、延长或参考生成，具体是哪一种由模型的原生参数或提示词决定），
+ * `audio` 是生视频的参考音频（wav / mp3），须与参考图或参考视频同时给，不能与首尾帧同时给。
+ */
+export const MEDIA_INPUT_ROLES = [
+  'reference',
+  'first_frame',
+  'last_frame',
+  'video',
+  'audio',
+] as const
+export type MediaInputRole = (typeof MEDIA_INPUT_ROLES)[number]
+
 /** 生成花费里数量那一格的单位：图片按张、视频按秒、语音按字符，都是各家计费的口径。 */
 export const MEDIA_OUTPUT_UNIT: Record<MediaOutput, '张' | '秒' | '字符'> = {
   image: '张',

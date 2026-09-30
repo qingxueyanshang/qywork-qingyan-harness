@@ -10,6 +10,7 @@ import type { ContentStore, Store } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import type { BrowserCoordinator } from './browser/coordinator.ts'
 import type { EventBus } from './bus.ts'
+import type { CanvasService } from './canvas.ts'
 import type { DesktopCoordinator } from './desktop/coordinator.ts'
 import type { RunManager } from './runs.ts'
 import type { SubagentRegistry } from './subagents.ts'
@@ -41,6 +42,8 @@ export interface CommandDeps {
    * 桌面能力；用户有没有启用由协调器自己按配置现判。
    */
   desktop?: DesktopCoordinator
+  /** 画布服务：会话里的 `canvas` 工具与界面共用这一个实例。没传时会话里没有 `canvas` 工具。 */
+  canvas?: CanvasService
 }
 
 /** 每条 WebSocket 连接自带的状态。握手前 `authed` 为 false。 */

@@ -1,0 +1,1038 @@
+/*
+ * 画布页（`components/canvas/`）。颜色、圆角、阴影、动效全部取自 tokens.css；
+ * 彩色只有银河色一种，只表示「正在生成」（读数条 `.run-galaxy` 与会话工作流图的同一组色站）。
+ * 每个浮层自带一条完整规则，不与别的浮层共用选择器（B8）。
+ */
+
+.canvas-stage {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  /* 不用 hidden：hidden 的容器仍能被滚动（元素获得焦点、scrollIntoView），滚动后工具条与缩放条整体错位。 */
+  overflow: clip;
+  background-color: var(--bg-sunken);
+  background-image: radial-gradient(circle, var(--border-subtle) 1px, transparent 1.3px);
+  background-size: var(--grid, 24px) var(--grid, 24px);
+  background-position: var(--px, 0) var(--py, 0);
+  touch-action: none;
+  outline: none;
+  /* 拖动、框选时不选中文字；提示词与输入框在下面单独放开。 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+.canvas-stage input,
+.canvas-stage textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+/* 桌面外壳里系统文件拖到画布区上方时。 */
+.canvas-stage.drop-over {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.canvas-stage.panning {
+  cursor: grab;
+}
+.canvas-stage.grabbing {
+  cursor: grabbing;
+}
+.canvas-world,
+.canvas-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+.canvas-edges {
+  overflow: visible;
+  pointer-events: none;
+}
+.canvas-edges path {
+  fill: none;
+  stroke: var(--border-default);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.canvas-edges path.hot {
+  stroke: var(--border-strong);
+}
+.canvas-edges path.selected {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+/* 连线的命中区：透明、比线宽得多，点得中。 */
+.canvas-edges path.canvas-edge-hit {
+  stroke: transparent;
+  stroke-width: 12;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+/* 从连接点拖出、还没连上的线。 */
+.canvas-edges path.canvas-edge-draft {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+.canvas-drop-anchor {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+/* 流向正在生成的卡：银河梯度 + 虚线流动，节奏同会话工作流图。 */
+.canvas-edges path.live {
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  animation: canvas-flow 0.7s linear infinite;
+}
+@keyframes canvas-flow {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+
+.canvas-fault {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 5;
+  max-width: 70%;
+  transform: translateX(-50%);
+  font-size: var(--fs-sm);
+  color: var(--danger);
+  text-align: center;
+}
+
+.canvas-note {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+/* ── 节点 ── */
+.canvas-node {
+  position: absolute;
+}
+.canvas-node-title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-bottom: 5px;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.canvas-node-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.canvas-node-title > svg {
+  flex: none;
+}
+.canvas-node-title .model {
+  margin-left: auto;
+  flex: none;
+}
+.canvas-node-title input {
+  width: 100%;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  padding: 0 4px;
+}
+.canvas-node.selected .canvas-node-title {
+  color: var(--text-primary);
+}
+.canvas-media {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.canvas-media > .canvas-bitmap,
+.canvas-media > video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.canvas-bitmap.failed {
+  display: none;
+}
+.canvas-bitmap-failed {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+}
+.canvas-media > audio {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: calc(100% - 16px);
+}
+.canvas-badge {
+  position: absolute;
+  padding: 3px 5px;
+  border-radius: var(--r-xs);
+  font: var(--fs-xs) / 1 var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+}
+.canvas-badge.version {
+  right: 6px;
+  top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+}
+.canvas-text {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  mask-image: linear-gradient(#000 70%, transparent);
+}
+.canvas-other {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.canvas-missing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+}
+.canvas-missing .label {
+  color: var(--warning);
+}
+.canvas-ghost {
+  padding: 4px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.canvas-ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.canvas-node.selected .canvas-media,
+.canvas-node.selected .canvas-text,
+.canvas-node.selected .canvas-missing {
+  outline: calc(1.5px / var(--z, 1)) solid var(--accent);
+  outline-offset: calc(3px / var(--z, 1));
+}
+/* 拖连线时指着的可连目标。 */
+.canvas-node.link-target .canvas-media {
+  outline: calc(2px / var(--z, 1)) dashed var(--accent);
+  outline-offset: calc(3px / var(--z, 1));
+}
+
+/* 生成卡的空位与状态：底是 --bg-inset，里面只放状态本身。 */
+.canvas-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+}
+.canvas-slot.empty {
+  background: linear-gradient(160deg, var(--bg-raised), var(--bg-inset));
+  box-shadow: inset 0 0 0 1px var(--border-default);
+}
+.canvas-slot .error {
+  max-width: 88%;
+  color: var(--danger);
+  text-align: center;
+  line-height: 1.5;
+}
+/* 加载图与计时按屏幕尺寸画：缩放不低于 50% 时恒为 8px 一格，更小时随节点一起缩。 */
+.canvas-live {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  transform: scale(min(calc(1 / var(--z, 1)), 2));
+}
+.canvas-live .time {
+  font: var(--fs-xs) / 1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+
+/*
+ * 「生成中」：五个小方块排成一条蛇，沿 5×5 方框的外圈顺时针跳格，方框本身不画。
+ * 格宽 8、缝 4 与读数条相同；由头到尾取同一组色站由深到浅，星点由密到疏。
+ * 16 个位置 × 110ms = 1.76s 一圈；`step-end` 让每一步是跳格。
+ */
+.canvas-snake {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex: none;
+}
+.canvas-snake > span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  overflow: hidden;
+  animation: canvas-orbit 1.76s step-end infinite;
+  animation-delay: calc((var(--j) - 4) * 110ms);
+}
+.canvas-snake > span:nth-child(1) {
+  --j: 0;
+  background: #6d28d9;
+}
+.canvas-snake > span:nth-child(2) {
+  --j: 1;
+  background: #8b5cf6;
+}
+.canvas-snake > span:nth-child(3) {
+  --j: 2;
+  background: #a78bfa;
+}
+.canvas-snake > span:nth-child(4) {
+  --j: 3;
+  background: #c4b5fd;
+}
+.canvas-snake > span:nth-child(5) {
+  --j: 4;
+  background: #ddd6fe;
+}
+.canvas-snake > span::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.canvas-snake > span:nth-child(1)::before {
+  background-image:
+    radial-gradient(circle at 2.3px 2.2px, rgba(255, 255, 255, 0.96) 0 0.65px, transparent 1px),
+    radial-gradient(circle at 4.4px 5.9px, rgba(250, 249, 255, 0.92) 0 0.55px, transparent 0.9px),
+    radial-gradient(circle at 6.8px 3.4px, rgba(244, 242, 255, 0.9) 0 0.6px, transparent 0.95px);
+}
+.canvas-snake > span:nth-child(2)::before {
+  background-image:
+    radial-gradient(circle at 2.1px 6.2px, rgba(255, 255, 255, 0.95) 0 0.6px, transparent 0.95px),
+    radial-gradient(circle at 5.6px 2.4px, rgba(250, 249, 255, 0.9) 0 0.55px, transparent 0.9px);
+}
+.canvas-snake > span:nth-child(3)::before {
+  background-image:
+    radial-gradient(circle at 2.7px 5.5px, rgba(255, 255, 255, 0.95) 0 0.6px, transparent 0.95px),
+    radial-gradient(circle at 6.1px 2.5px, rgba(250, 249, 255, 0.9) 0 0.55px, transparent 0.9px);
+}
+.canvas-snake > span:nth-child(4)::before {
+  background-image: radial-gradient(
+    circle at 2.6px 5.4px,
+    rgba(255, 255, 255, 0.93) 0 0.6px,
+    transparent 0.95px
+  );
+}
+.canvas-snake > span:nth-child(5)::before {
+  background-image: radial-gradient(
+    circle at 4px 4.2px,
+    rgba(255, 255, 255, 0.92) 0 0.6px,
+    transparent 0.95px
+  );
+}
+@keyframes canvas-orbit {
+  0% {
+    transform: translate(0, 0);
+  }
+  6.25% {
+    transform: translate(12px, 0);
+  }
+  12.5% {
+    transform: translate(24px, 0);
+  }
+  18.75% {
+    transform: translate(36px, 0);
+  }
+  25% {
+    transform: translate(48px, 0);
+  }
+  31.25% {
+    transform: translate(48px, 12px);
+  }
+  37.5% {
+    transform: translate(48px, 24px);
+  }
+  43.75% {
+    transform: translate(48px, 36px);
+  }
+  50% {
+    transform: translate(48px, 48px);
+  }
+  56.25% {
+    transform: translate(36px, 48px);
+  }
+  62.5% {
+    transform: translate(24px, 48px);
+  }
+  68.75% {
+    transform: translate(12px, 48px);
+  }
+  75% {
+    transform: translate(0, 48px);
+  }
+  81.25% {
+    transform: translate(0, 36px);
+  }
+  87.5% {
+    transform: translate(0, 24px);
+  }
+  93.75% {
+    transform: translate(0, 12px);
+  }
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+/* 两侧连接点：选中或悬停时出现，大小不随缩放。 */
+.canvas-port {
+  position: absolute;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: calc(18px / var(--z, 1));
+  height: calc(18px / var(--z, 1));
+  margin-top: calc(-9px / var(--z, 1));
+  border-radius: var(--r-full);
+  background: var(--bg-sunken);
+  box-shadow: 0 0 0 calc(1px / var(--z, 1)) var(--border-strong);
+  color: var(--text-secondary);
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease);
+}
+.canvas-port > svg {
+  width: calc(12px / var(--z, 1));
+  height: calc(12px / var(--z, 1));
+}
+.canvas-port.in {
+  left: calc(-30px / var(--z, 1));
+}
+.canvas-port.out {
+  right: calc(-30px / var(--z, 1));
+}
+.canvas-node:hover .canvas-port,
+.canvas-node.selected .canvas-port {
+  opacity: 1;
+}
+
+.canvas-marquee {
+  position: absolute;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  pointer-events: none;
+}
+
+/* ── 选中工具条 ── */
+.canvas-tools {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-md);
+  transform: translate(-50%, -100%);
+  white-space: nowrap;
+}
+.canvas-tools > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.canvas-tools > button:hover,
+.canvas-tools > button[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ── 画布上的下拉菜单（取帧、添加、接出、选素材、切版本） ── */
+.canvas-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 128px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-md);
+}
+.canvas-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-sm);
+  text-align: left;
+  color: var(--text-primary);
+}
+.canvas-menu > button:hover {
+  background: var(--bg-hover);
+}
+.canvas-menu > button[aria-checked="true"] {
+  background: var(--bg-active);
+}
+.canvas-menu-thumb {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  overflow: hidden;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+}
+.canvas-menu-thumb > .canvas-bitmap {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 生成参数：只读的一块，与菜单分开定义。 */
+.canvas-made {
+  position: fixed;
+  z-index: 60;
+  width: 360px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.canvas-made dt {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  margin-top: 6px;
+}
+.canvas-made dd {
+  margin: 2px 0 0;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── 左下角：添加与缩放 ── */
+.canvas-dock {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-sm);
+}
+.canvas-dock > button {
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.canvas-dock > button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.canvas-dock .zoom {
+  min-width: 44px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 左侧工具条：平时只露图标，悬停、键盘焦点或打开选择框时展开名字。两档宽度都是定值，展开不移动图标。 */
+.canvas-rail {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 42px;
+  padding: 4px;
+  overflow: hidden;
+  transform: translateY(-50%);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
+  transition: width var(--t-base) var(--ease);
+}
+.canvas-rail:hover,
+.canvas-rail:has(:focus-visible),
+.canvas-rail.expanded {
+  width: 148px;
+}
+.canvas-rail > button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 7px;
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+.canvas-rail > button > svg {
+  flex: none;
+}
+.canvas-rail > button > span {
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease);
+}
+.canvas-rail:hover > button > span,
+.canvas-rail:has(:focus-visible) > button > span,
+.canvas-rail.expanded > button > span {
+  opacity: 1;
+}
+.canvas-rail > button:hover:not(:disabled),
+.canvas-rail > button[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.canvas-rail > button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.canvas-rail > hr {
+  flex: none;
+  height: 1px;
+  margin: 3px 4px;
+  border: 0;
+  background: var(--border-subtle);
+}
+
+/* 工作区文件选择框：贴在展开后的工具条右侧，尺寸固定，结果在框内滚动。 */
+.canvas-picker {
+  position: absolute;
+  left: 168px;
+  top: 50%;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  height: 360px;
+  transform: translateY(-50%);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-md);
+}
+.canvas-picker > input {
+  flex: none;
+  margin: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  outline: none;
+}
+.canvas-picker > input:focus {
+  border-color: var(--border-strong);
+}
+.canvas-picker-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 4px 4px;
+}
+.canvas-picker-list > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--r-xs);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.canvas-picker-list > button:hover {
+  background: var(--bg-hover);
+}
+.canvas-picker-error {
+  padding: 6px 8px;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+/* ── 生成面板：贴在选中的生成卡下方，按屏幕尺寸画，外观即会话输入框。两档高度都是固定值（B9）。 ── */
+.canvas-panel {
+  position: absolute;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  height: 272px;
+  min-height: 272px;
+  max-height: 272px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xl);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+  transition: border-color var(--t-base) var(--ease);
+}
+.canvas-panel.tall {
+  height: 440px;
+  min-height: 440px;
+  max-height: 440px;
+}
+.canvas-panel:focus-within {
+  border-color: var(--border-strong);
+}
+.canvas-panel-expand {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+}
+.canvas-inputs {
+  display: flex;
+  gap: 6px;
+  flex: none;
+  height: 60px;
+  padding: 12px 44px 0 12px;
+}
+.canvas-input {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  color: var(--text-tertiary);
+}
+.canvas-input > .canvas-bitmap {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.canvas-input > i {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  padding: 2px 3px;
+  border-radius: 3px;
+  font-style: normal;
+  font-size: 10px;
+  line-height: 1;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+}
+.canvas-input > .cap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 3px;
+  text-align: center;
+  font-size: 10px;
+}
+.canvas-input-remove {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-full);
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease);
+}
+.canvas-input:hover .canvas-input-remove {
+  opacity: 1;
+}
+button.canvas-input:hover {
+  color: var(--text-primary);
+  background: var(--bg-active);
+}
+.canvas-swap {
+  align-self: center;
+  color: var(--text-tertiary);
+}
+.canvas-swap:hover {
+  color: var(--text-primary);
+}
+.canvas-prompt {
+  user-select: text;
+  -webkit-user-select: text;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 16px 4px;
+  font-size: var(--fs-md);
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+  outline: none;
+  color: var(--text-primary);
+}
+.canvas-prompt:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-tertiary);
+}
+.canvas-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  margin: 0 1px;
+  padding: 0 6px 0 2px;
+  vertical-align: -4px;
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  font-size: var(--fs-sm);
+  line-height: 1;
+  white-space: nowrap;
+  user-select: all;
+}
+.canvas-chip > .canvas-bitmap {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  object-fit: cover;
+}
+.canvas-panel-error {
+  flex: none;
+  padding: 0 16px 4px;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+.canvas-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding: 4px 8px 8px;
+}
+/* 画布区窄时模型与参数两格截短，花费与发送键保持原宽。 */
+.canvas-bar > .mode-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.canvas-bar > .mode-chip > svg,
+.canvas-bar > .send-btn {
+  flex: none;
+}
+.canvas-bar .mode-chip.model {
+  color: var(--text-primary);
+}
+.canvas-bar .dot {
+  color: var(--text-tertiary);
+}
+.canvas-price {
+  padding: 0 8px 0 4px;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* 单个参数的菜单：沿用 .canvas-menu 的行与选中样式，另给宽度、自定义输入与加减按钮。 */
+.canvas-param-menu {
+  min-width: 160px;
+}
+.canvas-menu-custom {
+  display: block;
+  width: 100%;
+  height: 28px;
+  margin-top: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+.canvas-menu-custom:focus {
+  border-color: var(--border-strong);
+}
+.canvas-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  height: 32px;
+}
+.canvas-stepper > button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: 16px;
+}
+.canvas-stepper > button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.canvas-stepper > span {
+  flex: 1;
+  text-align: center;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 选素材：搜索框、结果列表、底部上传一行。尺寸固定，结果在框内滚动。 */
+.canvas-pick {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  height: 340px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-md);
+}
+.canvas-pick > input[type="search"] {
+  flex: none;
+  margin: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  outline: none;
+}
+.canvas-pick > input[type="search"]:focus {
+  border-color: var(--border-strong);
+}
+.canvas-pick-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 4px;
+}
+.canvas-pick-list > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.canvas-pick-list > button:hover {
+  background: var(--bg-hover);
+}
+.canvas-pick-file {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+}
+.canvas-pick-upload {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.canvas-pick-upload:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-snake > span {
+    animation: none;
+    opacity: 0.5;
+    transform: translate(calc(var(--j) * 12px), 0);
+  }
+  .canvas-edges path.live {
+    animation: none;
+  }
+}

@@ -142,9 +142,11 @@ export const readHistoryTool: ToolSpec = {
         }
       }
       const images = st.images ?? []
-      const message = `读回执行记录 ${shown}（${st.tool} · ${st.status}${images.length ? '，含图片' : ''}）`
+      const videos = st.videos ?? []
+      const kinds = [images.length ? '图片' : '', videos.length ? '视频' : ''].filter(Boolean)
+      const message = `读回执行记录 ${shown}（${st.tool} · ${st.status}${kinds.length ? `，含${kinds.join('与')}` : ''}）`
       // 图按 `read_file` 同一口径计入额度，一张一份 `MEDIA_TOKENS`（`outcomeTokens` 里算）。
-      const media = images.length ? { images } : {}
+      const media = { ...(images.length ? { images } : {}), ...(videos.length ? { videos } : {}) }
       return deliverReadable(ctx, {
         toolName: 'read_history',
         sourceType: 'history:step',

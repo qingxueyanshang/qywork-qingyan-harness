@@ -53,3 +53,47 @@ export function tauriListen<T>(event: string, handler: (payload: T) => void): Pr
     handler: id,
   }) as Promise<void>
 }
+
+/**
+ * 桌面外壳的系统拖放分发。
+ *
+ * **HTML5 的 `ondrop` 在桌面端不触发**：Tauri 的 `drag_drop_handler_enabled` 默认为真，OS 拖放被外壳截获，
+ * 外壳 emit 的载荷里是绝对路径。事件是全窗的，按落点交给命中测试为真的那一个接收方（输入区、画布区）。
+ *
+ * 监听在模块级且只接一次：`tauriListen` 不提供退订。接收方挂载时登记、卸载时注销，事件照收，没有接收方就丢弃。
+ */
+export interface DropSink {
+  hit(pos: { x: number; y: number }): boolean
+  over(on: boolean): void
+  paths(paths: string[], pos: { x: number; y: number }): void
+}
+
+const dropSinks = new Set<DropSink>()
+let dropWired = false
+
+export function registerDropSink(sink: DropSink): () => void {
+  dropSinks.add(sink)
+  wireShellDrop()
+  return () => {
+    dropSinks.delete(sink)
+  }
+}
+
+function wireShellDrop(): void {
+  if (dropWired) return
+  dropWired = true
+  type DropPayload = { paths?: string[]; position?: { x: number; y: number } }
+  void tauriListen<DropPayload>('tauri://drag-over', (pl) => {
+    for (const sink of dropSinks) sink.over(!!pl.position && sink.hit(pl.position))
+  })
+  void tauriListen<DropPayload>('tauri://drag-leave', () => {
+    for (const sink of dropSinks) sink.over(false)
+  })
+  void tauriListen<DropPayload>('tauri://drag-drop', (pl) => {
+    for (const sink of dropSinks) sink.over(false)
+    const pos = pl.position
+    if (!pos) return
+    const target = [...dropSinks].find((sink) => sink.hit(pos))
+    target?.paths(pl.paths ?? [], pos)
+  })
+}

@@ -3,6 +3,7 @@ import { describeParam, lookupMediaModel, operationLabel } from '@qywork/ai'
 import {
   MEDIA_OUTPUTS,
   type MediaOutput,
+  type MentionStyle,
   type RunContextSegment,
   SUBAGENT_KIND_LABEL,
   type TodoItem,
@@ -47,7 +48,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 
 命令失败时先把输出读完再决定怎么改，不要立刻重试同一条。
 
-工具结果中的图像只随紧接着的一次请求提供，之后在历史中替换为带 images_omitted 的说明，当时看图的推理不保留。看到这类说明，表示你已看过该图像，不要据此判断自己没有看过；需要画面细节时用 read_history 按 call_id 取回。`
+工具结果中的图像与视频只随紧接着的一次请求提供，之后在历史中替换为带 images_omitted 的说明，当时看图的推理不保留。看到这类说明，表示你已看过该图像或视频，不要据此判断自己没有看过；需要画面细节时用 read_history 按 call_id 取回。`
 
 /**
  * 能力段。**每个类目一条不少地告诉模型**——不说它就想不起来自己能做这件事，
@@ -243,6 +244,18 @@ const TODO_LABEL: Record<TodoItem['status'], string> = {
 
 const MEDIA_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
 
+/** 提示词里指代参考素材的写法，写成一行给大模型。序号按类别分别计数，顺序同 images / videos / audios 参数。 */
+function mentionNote(style: MentionStyle): string {
+  const kinds = MEDIA_OUTPUTS.flatMap((k) =>
+    style[k]
+      ? [
+          `${MEDIA_LABEL[k]}写「${style[k].replaceAll('{n}', '1')}」「${style[k].replaceAll('{n}', '2')}」`,
+        ]
+      : [],
+  )
+  return `提示词里指代参考素材：${kinds.join('，')}，按类别分别计数，顺序同参数里的 images / videos / audios`
+}
+
 /** 生成模型与各自的参数表。参数名是接口原生字段，原样写进 `params_json`。 */
 function mediaModelsNote(models: MediaModelEntry[]): string {
   const sections: string[] = []
@@ -261,6 +274,7 @@ function mediaModelsNote(models: MediaModelEntry[]): string {
         .join('、')
       lines.push(
         `- provider \`${m.provider}\`；model \`${m.model}\`${m.isDefault ? '（默认）' : ''}：${ops}${limits ? `，${limits}` : ''}`,
+        ...(spec.mention ? [`  - ${mentionNote(spec.mention)}`] : []),
         ...spec.params.map((p) => `  - ${describeParam(p)}`),
       )
     }

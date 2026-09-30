@@ -126,7 +126,7 @@ export function condenseMessage(m: WireMessage): WireMessage {
  * 必须逐字稳定，投影每次构造请求都会重写这一段。
  */
 export const IMAGES_OMITTED =
-  '你已在紧接此次调用的请求中看过此图像，此处省略；需要画面细节时通过 read_history 按 call_id 取回。'
+  '你已在紧接此次调用的请求中看过此图像或视频，此处省略；需要画面细节时通过 read_history 按 call_id 取回。'
 
 function condenseToolResult(content: WireMessage['content']): WireMessage['content'] {
   /*
@@ -144,7 +144,7 @@ function condenseToolResult(content: WireMessage['content']): WireMessage['conte
     if (!text) return content
     const env = parseEnvelope(text.text)
     if (!env) return text.text
-    const dropped = content.some((b) => b.type === 'image')
+    const dropped = content.some((b) => b.type === 'image' || b.type === 'video')
     return condenseToolResult(
       JSON.stringify(dropped ? { ...env, images_omitted: IMAGES_OMITTED } : env),
     )

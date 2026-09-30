@@ -2,7 +2,7 @@
 
 import { rm } from 'node:fs/promises'
 import { MAX_RESENDS } from '@qywork/agent'
-import type { MediaOperation, ModelSpec } from '@qywork/ai'
+import type { MediaOperation, MediaParamSpec, ModelSpec } from '@qywork/ai'
 import {
   applySpecOverride,
   applyTransportCapabilities,
@@ -131,7 +131,15 @@ export interface MediaModelRow {
   isDefault: boolean
   /** false = 生成目录里没有，参数表是协议默认。 */
   known: boolean
+  /** 画布生成面板上的参数控件。只有目录里标了 `label` 的几项，其余参数只给大模型用。 */
+  params: MediaParamRow[]
 }
+
+/** 生成面板上的一个参数控件，取自目录的 `MediaParamSpec`，不带给大模型看的说明。 */
+export type MediaParamRow = Pick<
+  MediaParamSpec,
+  'name' | 'type' | 'values' | 'presets' | 'min' | 'max' | 'default' | 'operations'
+> & { label: string }
 
 /** 生成目录里的一条。`params` 是给人看的参数表，每行一个参数，与给大模型的同一份文字。 */
 export interface MediaLibraryModel {
@@ -364,6 +372,9 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         operations: [...spec.operations],
         isDefault: m.isDefault,
         known: spec.catalogued,
+        params: spec.params.flatMap(({ description: _d, pattern: _p, label, ...rest }) =>
+          label ? [{ ...rest, label }] : [],
+        ),
       }
     })
     const mediaLibrary: MediaLibraryModel[] = mediaCatalog().map((spec) => ({

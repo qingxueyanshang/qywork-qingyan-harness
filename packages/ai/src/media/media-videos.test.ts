@@ -17,6 +17,7 @@ import { MediaError } from './types.ts'
 
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
+const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 2])
 
 interface Seen {
   method: string
@@ -50,6 +51,9 @@ beforeAll(() => {
         entry.json = (await req.json()) as Record<string, unknown>
       }
       seen.push(entry)
+      if (url.pathname.endsWith('/last.jpg')) {
+        return new Response(JPEG, { headers: { 'content-type': 'image/jpeg' } })
+      }
       if (url.pathname.endsWith('/out.mp4') || url.pathname.endsWith('/content')) {
         return new Response(downloadStatus === 200 ? MP4 : 'gone', {
           status: downloadStatus,
@@ -242,6 +246,90 @@ describe('dashscope_videos', () => {
   })
 })
 
+/**
+ * 参考音频的请求形状照两家「创建视频生成任务」原文：方舟 `content[]` 一项 `type: audio_url`、`role: reference_audio`，
+ * data URI 写格式名 `data:audio/mp3`；万相 `media[]` 一项 `type: reference_audio`。
+ */
+describe('参考音频', () => {
+  const WAV = new Uint8Array([0x52, 0x49, 0x46, 0x46])
+  const MP3 = new Uint8Array([0x49, 0x44, 0x33])
+
+  test('方舟：audio_url + reference_audio，mp3 写成 data:audio/mp3', async () => {
+    submit = () => Response.json({ id: 'cgt-a' })
+    polls = [
+      () =>
+        Response.json({ status: 'succeeded', content: { video_url: `${origin()}/files/out.mp4` } }),
+    ]
+    const adapter = buildMediaAdapter({
+      kind: 'ark_videos',
+      model: 'doubao-seedance-2-0-260128',
+      apiKey: 'sk-ark',
+      baseUrl: `${origin()}/api/v3`,
+    })
+    await adapter.run(
+      {
+        operation: 'reference_to_video',
+        prompt: '图片1 开口说话',
+        inputs: [
+          { role: 'reference', bytes: PNG, mime: 'image/png', path: '/w/a.png' },
+          { role: 'audio', bytes: MP3, mime: 'audio/mpeg', path: '/w/v.mp3' },
+        ],
+        params: {},
+      },
+      opts(),
+    )
+    const content = seen.find((s) => s.method === 'POST')?.json?.content as unknown[]
+    expect(content[2]).toEqual({
+      type: 'audio_url',
+      audio_url: { url: `data:audio/mp3;base64,${Buffer.from(MP3).toString('base64')}` },
+      role: 'reference_audio',
+    })
+  })
+
+  test('万相：media 里一项 reference_audio', async () => {
+    submit = () => Response.json({ output: { task_id: 'task-a', task_status: 'PENDING' } })
+    polls = [
+      () =>
+        Response.json({
+          output: { task_status: 'SUCCEEDED', video_url: `${origin()}/files/out.mp4` },
+        }),
+    ]
+    await buildMediaAdapter({
+      kind: 'dashscope_videos',
+      model: 'wan3.0-video',
+      apiKey: 'sk-ds',
+      baseUrl: `${origin()}/compatible-mode/v1`,
+    }).run(
+      {
+        operation: 'reference_to_video',
+        prompt: '图1 唱歌',
+        inputs: [
+          { role: 'reference', bytes: PNG, mime: 'image/png', path: '/w/a.png' },
+          { role: 'audio', bytes: WAV, mime: 'audio/wav', path: '/w/v.wav' },
+        ],
+        params: {},
+      },
+      opts(),
+    )
+    const media = (seen.find((s) => s.method === 'POST')?.json?.input as { media: unknown[] }).media
+    expect(media[1]).toEqual({
+      type: 'reference_audio',
+      url: `data:audio/wav;base64,${Buffer.from(WAV).toString('base64')}`,
+    })
+  })
+
+  test('段数按目录退回；目录没写上限的不收', () => {
+    const seedance = lookupMediaModel('doubao-seedance-2-0-260128', 'ark_videos')
+    expect(
+      validateMediaCall(seedance, 'reference_to_video', {}, { images: 1, videos: 0, audios: 4 }),
+    ).toEqual([`${seedance.id} 最多收 3 段参考音频，这次给了 4 段`])
+    const kling = lookupMediaModel('kling/kling-v3-omni-video-generation', 'dashscope_videos')
+    expect(
+      validateMediaCall(kling, 'reference_to_video', {}, { images: 1, videos: 0, audios: 1 }),
+    ).toEqual([`${kling.id} 不收参考音频`])
+  })
+})
+
 describe('ark_videos', () => {
   test('输入进 content 并带 role，参数在顶层，状态词按方舟的读', async () => {
     submit = () => Response.json({ id: 'cgt-1' })
@@ -295,6 +383,41 @@ describe('ark_videos', () => {
       audio: true,
       videoInput: true,
     })
+  })
+
+  test('要了尾帧：查询结果带尾帧地址时下载为第二个产物，是图片', async () => {
+    submit = () => Response.json({ id: 'cgt-2' })
+    polls = [
+      () =>
+        Response.json({
+          status: 'succeeded',
+          content: {
+            video_url: `${origin()}/files/out.mp4`,
+            last_frame_url: `${origin()}/files/last.jpg`,
+          },
+          usage: { completion_tokens: 1000 },
+        }),
+    ]
+    const adapter = buildMediaAdapter({
+      kind: 'ark_videos',
+      model: 'doubao-seedance-2-0-260128',
+      apiKey: 'sk-ark',
+      baseUrl: `${origin()}/api/v3`,
+    })
+    const out = await adapter.run(
+      {
+        operation: 'text_to_video',
+        prompt: '雨夜',
+        inputs: [],
+        params: { return_last_frame: true },
+      },
+      opts(),
+    )
+    expect(seen.find((s) => s.method === 'POST')?.json).toMatchObject({ return_last_frame: true })
+    expect(out.files).toEqual([
+      { bytes: MP4, mime: 'video/mp4' },
+      { bytes: JPEG, mime: 'image/jpeg' },
+    ])
   })
 })
 

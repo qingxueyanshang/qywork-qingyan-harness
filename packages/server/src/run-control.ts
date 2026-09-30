@@ -52,6 +52,7 @@ import {
   workspaceOf,
 } from '@qywork/store'
 import { redactSecrets } from '@qywork/tools'
+import { canvasPort } from './canvas.ts'
 import { makeDelegate } from './delegate.ts'
 import type { CommandDeps } from './deps.ts'
 import { publishGitState } from './http-util.ts'
@@ -272,6 +273,9 @@ export async function startRun(
          * 排队请求，不会连带撤掉另一条会话正在做的动作。
          */
         ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(conversationId) } : {}),
+        ...(deps.canvas
+          ? { canvas: canvasPort(deps.canvas, { id: ws.id, root: ws.rootPath }) }
+          : {}),
         // 跟进消息队列同样只给顶层会话：成员会话不在界面上，没有人往它里面插话。
         followUps: (id) => deps.runs.takeSteered(id),
       })

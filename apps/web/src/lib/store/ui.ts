@@ -35,8 +35,10 @@ export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
  * `conversation` 与 `cli` 都没有看板入口：只能从图卡上点开（看哪一条由那张卡说了算），
  * 所以也没有序号，标题就是那个节点的名字。两者分开是因为背后的来源不同：
  * 一个是子会话（有正文、有工具卡），一个是本机另一个进程写出来的一段流。
+ *
+ * `canvas` 是一张画布，一页对应一个 `*.canvas.json`（`path`），从看板新建或从文件树点开。
  */
-export type PanelTabKind = 'terminal' | 'browser' | 'preview' | 'conversation' | 'cli'
+export type PanelTabKind = 'terminal' | 'browser' | 'preview' | 'conversation' | 'cli' | 'canvas'
 
 export interface PanelTab {
   id: string
@@ -58,6 +60,8 @@ export interface PanelTab {
    * **内置浏览器页没有这个字段**：那一页的地址在原生宿主手里，前端只投影。
    */
   url?: string
+  /** 画布页指着的画布文件（工作区相对路径）。其余几种页没有这个字段。 */
+  path?: string
   /**
    * 创建序号，页签条按它排。
    *
@@ -355,6 +359,22 @@ export function openConversationTab(conversationId: string, title: string): void
     tabs: cur.tabs.some((t) => t.id === id)
       ? cur.tabs
       : [...cur.tabs, { id, kind: 'conversation', title, createdSeq: nextLocalSeq() }],
+    page: { tab: id },
+  }))
+}
+
+/**
+ * 打开一张画布。同一个文件已经开着就翻回那页，不并排开出第二页（同 `openConversationTab`）。
+ * 页签上的字是文件名去掉 `.canvas.json`，建出来就不再改。
+ */
+export function openCanvasTab(path: string, title: string): void {
+  const wsId = workspace()?.id
+  if (!wsId) return
+  const id = `canvas-${path}`
+  updatePanel(wsId, (cur) => ({
+    tabs: cur.tabs.some((t) => t.id === id)
+      ? cur.tabs
+      : [...cur.tabs, { id, kind: 'canvas', title, path, createdSeq: nextLocalSeq() }],
     page: { tab: id },
   }))
 }

@@ -29,6 +29,7 @@ import {
   modelCatalog,
   panelMaximized,
   pickFiles,
+  registerDropSink,
   resumeGoal,
   type SkillMeta,
   sendMessage,
@@ -39,7 +40,6 @@ import {
   steerFollowUp,
   type TeamRoleRow,
   type ToolMeta,
-  tauriListen,
   uploadAttachment,
   workspace,
 } from '../lib/store/index.ts'
@@ -199,42 +199,6 @@ function GoalChip() {
       )}
     </Show>
   )
-}
-
-/**
- * 桌面外壳的拖放接线。
- *
- * **HTML5 的 `ondrop` 在桌面端不触发**：Tauri 的 `drag_drop_handler_enabled`
- * 默认为真，OS 拖放被外壳截获。这不是障碍——被截获之后外壳 emit 的载荷里是
- * **绝对路径**，而 HTML5 那条永远只能给到 `File`，拿不到路径。
- *
- * 注册在模块级且只做一次：`tauriListen` 刻意不提供退订（见它的注释），
- * 挂进组件的话每次重挂载都会多一份永远摘不掉的监听。挂载点通过 `dropSink`
- * 换手，卸载时置空——事件照收，只是没有去处。
- *
- * 落点要做命中测试：这是**全窗**事件，拖到会话流上松手不该变成附件。
- */
-type DropSink = {
-  hit: (pos: { x: number; y: number }) => boolean
-  over: (v: boolean) => void
-  paths: (p: string[]) => void
-}
-let dropSink: DropSink | null = null
-let dropWired = false
-
-function wireShellDrop(): void {
-  if (dropWired) return
-  dropWired = true
-  type DropPayload = { paths?: string[]; position?: { x: number; y: number } }
-  void tauriListen<DropPayload>('tauri://drag-over', (pl) => {
-    dropSink?.over(!!pl.position && dropSink.hit(pl.position))
-  })
-  void tauriListen<DropPayload>('tauri://drag-leave', () => dropSink?.over(false))
-  void tauriListen<DropPayload>('tauri://drag-drop', (pl) => {
-    dropSink?.over(false)
-    if (!pl.position || !dropSink?.hit(pl.position)) return
-    dropSink.paths(pl.paths ?? [])
-  })
 }
 
 /**
@@ -644,25 +608,20 @@ export function Composer(props: { empty: boolean }) {
   }
 
   /**
-   * 把这个组件登记成拖放的落点：命中测试按输入区的矩形，路径交给 `takePaths`。
-   * 机制与为什么不用 HTML5 `ondrop`，见 `DropSink` 的注释。
-   *
-   * 只在挂载时注册一次：`tauriListen` 不提供退订，而这个组件是常驻单挂载。
+   * 把输入区登记成外壳拖放的接收方：命中测试按输入区的矩形，路径交给 `takePaths`。
+   * 机制与为什么不用 HTML5 `ondrop`，见 `registerDropSink` 的注释。
    */
   onMount(() => {
     if (!isDesktopShell()) return
-    dropSink = {
+    const unregister = registerDropSink({
       hit: (pos) => {
         const r = wrap?.getBoundingClientRect()
         return !!r && pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom
       },
       over: setDragOver,
       paths: takePaths,
-    }
-    wireShellDrop()
-    onCleanup(() => {
-      dropSink = null
     })
+    onCleanup(unregister)
   })
 
   /**
@@ -1323,18 +1282,20 @@ function ContextMeter() {
             onClick={() => setOpen((v) => !v)}
           >
             <ContextRing percent={c().percent} />
-            <span class="ctx-meter-num">{c().percent}%</span>
+            <span class="ctx-meter-num">{c().unmeasuredVideos ? '未知' : `${c().percent}%`}</span>
           </button>
           <Show when={open()}>
             <div class="ctx-pop" role="dialog" aria-label="上下文占用明细">
               <div class="ctx-head">
                 <span>
                   上下文
-                  {c().source === 'estimated'
-                    ? '（估算）'
-                    : c().source === 'projected'
-                      ? '（含估算）'
-                      : ''}
+                  {c().unmeasuredVideos
+                    ? '（视频未计入）'
+                    : c().source === 'estimated'
+                      ? '（估算）'
+                      : c().source === 'projected'
+                        ? '（含估算）'
+                        : ''}
                 </span>
                 <span class="ctx-head-nums">
                   {fmtTok(c().tokens)} / {fmtLimit(c().limit)}

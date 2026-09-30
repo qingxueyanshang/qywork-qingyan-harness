@@ -12,7 +12,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type AgentEvent, runCosts } from '@qywork/core'
+import { type AgentEvent, type MediaInputRole, runCosts } from '@qywork/core'
 import { getRun, Store } from '@qywork/store'
 import type { QyConfig } from './config.ts'
 import { listMediaModels } from './config.ts'
@@ -301,13 +301,51 @@ describe('参数表快照', () => {
     const notes = buildTailNotes({ workspaceRoot: '/w', platform: 'linux', mode: 'auto' })
     expect(notes.map((n) => n.content).join('\n')).not.toContain('可用的生成模型')
   })
+
+  test('登记了指代写法的模型多一行写法，没登记的不出现', () => {
+    const notes = buildTailNotes({
+      workspaceRoot: '/w',
+      platform: 'linux',
+      mode: 'auto',
+      mediaModels: [
+        {
+          provider: 'ark',
+          model: 'doubao-seedance-2-5-260628',
+          kind: 'ark_videos',
+          output: 'video',
+          isDefault: true,
+        },
+        {
+          provider: 'qwen',
+          model: 'wan3.0-video',
+          kind: 'dashscope_videos',
+          output: 'video',
+          isDefault: false,
+        },
+        {
+          provider: 'qwen',
+          model: 'kling/kling-v3-video-generation',
+          kind: 'dashscope_videos',
+          output: 'video',
+          isDefault: false,
+        },
+      ],
+    })
+    const text = notes.map((n) => n.content).join('\n')
+    expect(text).toContain(
+      '提示词里指代参考素材：图像写「@图片1」「@图片2」，视频写「@视频1」「@视频2」',
+    )
+    expect(text).toContain('图像写「图1」「图2」')
+    const kling = text.slice(text.indexOf('kling/kling-v3-video-generation'))
+    expect(kling.split('\n- ')[0]).not.toContain('指代参考素材')
+  })
 })
 
 describe('视频：由输入推操作', () => {
-  const input = (role: 'reference' | 'first_frame' | 'last_frame' | 'video') => ({
+  const input = (role: MediaInputRole) => ({
     role,
     bytes: new Uint8Array([1]),
-    mime: role === 'video' ? 'video/mp4' : 'image/png',
+    mime: role === 'video' ? 'video/mp4' : role === 'audio' ? 'audio/wav' : 'image/png',
     path: `/w/${role}`,
   })
 
@@ -328,6 +366,21 @@ describe('视频：由输入推操作', () => {
     expect(operationOf('video', [input('last_frame')])).toEqual({ problem: '给了尾帧就要给首帧' })
     expect(operationOf('video', [input('first_frame'), input('reference')])).toMatchObject({
       problem: expect.stringContaining('不能与参考图'),
+    })
+  })
+
+  test('参考音频：随参考图或参考视频给；单独给、与首尾帧同给都退回', () => {
+    expect(operationOf('video', [input('reference'), input('audio')])).toEqual({
+      operation: 'reference_to_video',
+    })
+    expect(operationOf('video', [input('video'), input('audio')])).toEqual({
+      operation: 'video_to_video',
+    })
+    expect(operationOf('video', [input('audio')])).toEqual({
+      problem: '参考音频要与参考图或参考视频同时给',
+    })
+    expect(operationOf('video', [input('first_frame'), input('audio')])).toMatchObject({
+      problem: expect.stringContaining('参考音频'),
     })
   })
 })

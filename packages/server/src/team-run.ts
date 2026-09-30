@@ -13,6 +13,7 @@ import type { AgentEvent, ConversationId, RunId, StepId, StopReason } from '@qyw
 import { type ModelRef, NO_MODEL_MESSAGE, type QyConfig, Session } from '@qywork/runtime'
 import { getConversation } from '@qywork/store'
 import type { Role } from '@qywork/team'
+import { canvasPort } from './canvas.ts'
 import type { CommandDeps } from './deps.ts'
 
 /**
@@ -216,6 +217,10 @@ export async function runBuiltinMember(
      * `conversation.interrupt`，而那条指令只认顶层会话。
      */
     ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(ownerConversation) } : {}),
+    // 画布与顶层会话同一个服务：成员改的节点同样当下推给界面。
+    ...(deps.canvas && workspaceId
+      ? { canvas: canvasPort(deps.canvas, { id: workspaceId, root: ctx.workspaceRoot }) }
+      : {}),
   })
 
   let text = ''

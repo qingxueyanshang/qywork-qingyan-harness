@@ -16,6 +16,8 @@ import type { JSX } from 'solid-js'
 
 interface IconProps {
   size?: number
+  /** 线宽（屏幕像素）。缺省 1.5。 */
+  stroke?: number | undefined
   class?: string
   style?: JSX.CSSProperties
 }
@@ -28,7 +30,7 @@ function Svg(props: IconProps & { children: JSX.Element; label?: string }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      stroke-width="1.5"
+      stroke-width={props.stroke ?? 1.5}
       stroke-linecap="round"
       stroke-linejoin="round"
       vector-effect="non-scaling-stroke"
@@ -273,10 +275,38 @@ export const IconCanvas = (p: IconProps) => (
   </Svg>
 )
 
+/** 画布节点的类别：图片、视频、音频。 */
+export const IconImage = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
+    <path d="M4 17l5-5 4 4 3-3 4 4" />
+  </Svg>
+)
+
+export const IconVideo = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3.5" y="5" width="17" height="14" rx="3" />
+    <path d="M10.5 9.5v5l4-2.5z" />
+  </Svg>
+)
+
+export const IconAudio = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2" />
+  </Svg>
+)
+
 /** 下载：对称的向下箭头落到横线，避免 U 形托盘造成视觉重心偏低。 */
 export const IconDownload = (p: IconProps) => (
   <Svg {...p}>
     <path d="M12 4.5v10M8.2 10.8 12 14.6l3.8-3.8" />
+    <path d="M5 19.5h14" />
+  </Svg>
+)
+
+export const IconUpload = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 15.5v-11M8.2 8.3 12 4.5l3.8 3.8" />
     <path d="M5 19.5h14" />
   </Svg>
 )

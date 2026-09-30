@@ -14,6 +14,9 @@ import type { MediaFile, MediaInput, TokenDensity, ToolSchema } from '@qywork/ai
 import type {
   ActionDescriptor,
   ActionKind,
+  CanvasOp,
+  CanvasRunResult,
+  CanvasView,
   FileChange,
   Goal,
   GoalAction,
@@ -373,6 +376,30 @@ export interface BrowserDownloadResult {
 export interface BrowserRefusal {
   errorKind: 'browser_busy' | 'invalid_argument' | 'browser_disconnected'
   executed: false
+}
+
+/**
+ * 画布端口：Agent 读、改、运行画布，交给服务端画布服务执行。与界面用同一个实例，
+ * 画布的写入次序与哪张卡在跑只有那一份。接口在这里、实现由 server 注入（同 `BrowserPort`）；
+ * 没有服务端的会话（CLI）不注入，`canvas` 工具不注册。
+ *
+ * 失败以抛出 `Error` 表示，`message` 原样交给大模型。
+ */
+export interface CanvasPort {
+  /** 工作区里的画布文件，工作区相对路径。 */
+  list(): Promise<string[]>
+  read(path: string): Promise<CanvasView>
+  edit(path: string, ops: CanvasOp[]): Promise<{ view: CanvasView; refs: Record<string, string> }>
+  /** 运行一张生成卡并等到结束。花费记在 `media` 上：Agent 传本轮的 `ctx.media`，花费进本轮。 */
+  run(path: string, nodeId: string, media: MediaPort, signal: AbortSignal): Promise<CanvasRunResult>
+  /** 取回一版还在远端的视频。`version` 不给取当前版或最新的待取回版。 */
+  retrieve(
+    path: string,
+    nodeId: string,
+    version: string | undefined,
+    media: MediaPort,
+    signal: AbortSignal,
+  ): Promise<CanvasRunResult>
 }
 
 export interface BrowserPort {
@@ -776,6 +803,8 @@ export interface HistoryStep {
   args: string
   outcome: string
   images?: { data: string; mime: string }[]
+  /** 读取时交出的视频：路径引用，见 `loop/request.ts` 的 `videosOf`。 */
+  videos?: { path: string; mime: string }[]
 }
 
 export interface HistoryPort {
@@ -852,6 +881,11 @@ export interface ToolContext {
    * 扣完投递预算，又在装配请求一步被替换为一句提示，导致本次执行无效。
    */
   vision: boolean | null
+  /**
+   * 这一轮那个模型与接口收不收原生视频：模型能力（`ModelSpec.video`）且适配器实现了视频传输。
+   * 与 `vision` 同理在执行时判；`read_file` 据它决定读视频是交出去还是直接回绝。没给即不收。
+   */
+  video?: boolean
   /** 环境注入的只读资源；插件按名取自己需要的，核心不为业务字段扩张。 */
   resources: Map<string, unknown>
   /** 插件的 run 内可变状态。 */
@@ -908,6 +942,12 @@ export interface ToolContext {
    * 没有配置任何生成模型时不接，生成工具不注册：没有模型的生成工具没有任何降级形态。
    */
   media?: MediaPort
+  /**
+   * 画布通道。见 `CanvasPort`。
+   *
+   * 没有服务端时不接，`canvas` 工具不注册。
+   */
+  canvas?: CanvasPort
   /**
    * 内置浏览器通道。见 `BrowserPort`。
    *

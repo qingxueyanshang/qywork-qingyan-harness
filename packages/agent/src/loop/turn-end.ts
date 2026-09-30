@@ -3,6 +3,7 @@
  * 停机判定。
  */
 
+import { videoBlocksOf } from '@qywork/ai'
 import type { AgentEvent } from '@qywork/core'
 import { envelopeHeadTokens, log } from '@qywork/core'
 import { cycleFingerprint } from '../progress.ts'
@@ -88,7 +89,11 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
       (turnUsage.cachedTokens ?? 0) +
       (turnUsage.cacheWriteTokens ?? 0) +
       turnUsage.outputTokens
-    if (total > 0)
+    /*
+     * 带视频的请求不当锚点：它的真值里含视频的占用，而视频在下一次请求里就摘掉了
+     * （`omitImages`），拿它当锚点会把之后的读数整体抬高、提前触发压缩。锚点留在上一次。
+     */
+    if (total > 0 && videoBlocksOf(turn.req.messages) === 0)
       run.anchor = {
         tokens: total,
         uncovered: 0,
