@@ -59,7 +59,7 @@ function text(value: unknown): string | undefined {
  * 界面发起的生成用的端口：花费写成一行 `kind='media'`、无轮次无会话、带项目的账。
  * Agent 发起的不走这里，用它本轮的 `ctx.media`，花费进本轮。
  */
-function uiMediaPort(d: ApiRequestDeps) {
+export function uiMediaPort(d: Pick<ApiRequestDeps, 'config' | 'store' | 'workspaceId'>) {
   return makeMediaPort(d.config, (spend) => {
     recordUsage(d.store, {
       kind: 'media',

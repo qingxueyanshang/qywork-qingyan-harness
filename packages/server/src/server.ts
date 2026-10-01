@@ -30,11 +30,13 @@ import {
   ContentStore,
   contentPathFor,
   getWorkspaceByPath,
+  listWorkspaces,
   mostRecentWorkspace,
   recoverStaleRuns,
   upsertWorkspace,
 } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
+import { uiMediaPort } from './api/canvas.ts'
 import { handleApi, json } from './api/index.ts'
 import { BrowserBridge } from './browser/bridge.ts'
 import { browserCapability } from './browser/capability.ts'
@@ -158,6 +160,7 @@ export function serve(opts: ServeOptions) {
   // 画布的写入与画布上的生成只经这一个实例；事件不带会话 id，推给所有客户端。
   const canvas = new CanvasService({
     publish: (event) => bus.publish(event),
+    updating: () => runs.updating,
     mentionStyleOf: (output, pick) => {
       const target = resolveMediaModel(opts.config, output, pick)
       return target ? lookupMediaModel(target.model, target.kind).mention : undefined
@@ -423,7 +426,10 @@ export function serve(opts: ServeOptions) {
           return json({ claimed: false })
         }
         if (body.action !== 'claim') return json({ error: 'invalid action' }, 400)
-        return json({ claimed: runs.claimUpdate(), busy: runs.busyConversations().length })
+        return json({
+          claimed: canvas.busyCount === 0 && runs.claimUpdate(),
+          busy: runs.busyConversations().length + canvas.busyCount,
+        })
       }
 
       /*
@@ -651,6 +657,17 @@ export function serve(opts: ServeOptions) {
   // 分支名跟着 `.git/HEAD` 走，理由与边界都在 `git-watch.ts`。
   gitWatch.retarget()
 
+  void canvas
+    .recover(
+      listWorkspaces(opts.store).map((ws) => ({ id: ws.id, root: ws.rootPath })),
+      (ws, version) => {
+        // 配置暂不可用时保留任务号，不能把启动恢复当成远端任务失败。
+        if (!resolveMediaModel(opts.config, 'video', version.made)?.apiKey) return undefined
+        return uiMediaPort({ store: opts.store, config: opts.config, workspaceId: ws.id })
+      },
+    )
+    .catch((err: unknown) => log.error('canvas', `接续任务失败：${String(err)}`))
+
   return {
     server,
     bus,
@@ -680,6 +697,7 @@ export function serve(opts: ServeOptions) {
       runs.interruptAll()
       // 子 agent 跟会话不跟 run，关服时要单独停：不停就是一批没人收回执的进程。
       subagents.interruptAll()
+      await canvas.stop()
       disableLan()
       server.stop(true)
       // 插件是子进程，不显式关会留下孤儿——sidecar 与截图脚本上是同一条约束。

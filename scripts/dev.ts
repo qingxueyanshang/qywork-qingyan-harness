@@ -34,10 +34,8 @@
  * 代价是「保存到生效」多等一轮，而那正是这条规则要换的结果。
  */
 
-import { Database } from 'bun:sqlite'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
-import { dataPath } from '@qywork/runtime'
 import { externalBinPath } from './external-bin.ts'
 import {
   createReloadSupervisor,
@@ -46,6 +44,7 @@ import {
   isWebSourceChange,
 } from './reload-supervisor.ts'
 import { watchSource } from './source-watch.ts'
+import { requestUpdateClaim } from './update/claim.ts'
 import { handoffSourceUpdate } from './update/handoff.ts'
 import { startSourceUpdater } from './update/source.ts'
 
@@ -245,34 +244,9 @@ process.stderr.write(
   `[dev] sidecar 就绪，正在启动${MODE === 'desktop' ? '桌面外壳' : 'Web 界面'}\n`,
 )
 
-/**
- * 这个 sidecar 手上还有没有没跑完的 run。
- *
- * **账本是唯一真源**，只读打开，不写任何行——不为这件事新开一条接口或一本账。
- * `owner_pid` 就是 sidecar 自己的 pid（`recoverStaleRuns` 的 `isOrphan` 拿它跟
- * `process.pid` 比），所以这里问的确实是「**这个**进程手上有没有活」，
- * 而不是「机器上有没有人在跑」——那台机器上可能还有别的 qywork。
- *
- * 读不到（账本还没建、正在迁移、被独占）当作没有：那退化成改动之前的行为，不会更差。
- */
-function busy(pid: number): boolean {
-  try {
-    const db = new Database(dataPath(), { readonly: true })
-    try {
-      const row = db
-        .query("SELECT 1 FROM runs WHERE status IN ('running','queued') AND owner_pid = ? LIMIT 1")
-        .get(pid)
-      return row !== null
-    } finally {
-      db.close()
-    }
-  } catch {
-    return false
-  }
-}
-
 supervisor = createReloadSupervisor({
-  busy: () => busy(agent.pid),
+  // 由服务端同时检查对话、子任务与画布生成，并阻止占位之后再启动任务。
+  busy: async () => !(await requestUpdateClaim(PORT, UPDATE_KEY, 'claim')).claimed,
   restart: async () => {
     agent.kill()
     await agent.exited

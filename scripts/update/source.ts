@@ -3,6 +3,7 @@ import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { UpdateAction, UpdatePreferences, UpdateSnapshot } from '@qywork/core'
 import { configPath } from '@qywork/runtime'
+import { requestUpdateClaim } from './claim.ts'
 import {
   fetchRelease,
   newerVersion,
@@ -60,16 +61,8 @@ export async function startSourceUpdater(options: SourceUpdateOptions) {
   let job: AbortController | null = null
   let closed = false
   let downloadPaused = false
-  const claim = async (action: 'claim' | 'cancel') => {
-    const response = await fetch(`http://127.0.0.1:${options.sidecarPort}/internal/app-update`, {
-      method: 'POST',
-      headers: { 'x-qywork-update-key': options.hostKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-      signal: AbortSignal.timeout(5000),
-    })
-    if (!response.ok) throw new Error('无法确认任务是否空闲')
-    return (await response.json()) as { claimed: boolean; busy: number }
-  }
+  const claim = (action: 'claim' | 'cancel') =>
+    requestUpdateClaim(options.sidecarPort, options.hostKey, action)
 
   async function run(action: Exclude<UpdateAction, 'status' | 'cancel'>): Promise<void> {
     if (!supported || job || closed) return
