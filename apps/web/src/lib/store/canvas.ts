@@ -115,17 +115,20 @@ export function importToCanvas(
   })
 }
 
-/** 把浏览器截下的一帧交给服务端落盘，并在视频右侧加一个节点。 */
-export async function captureFrame(
+/**
+ * 把浏览器做好的媒体交给服务端落盘，在源节点右侧加一个节点：从视频取的一帧（PNG，带帧名 `label`），
+ * 或时间线导出的成片（mp4，不带 `label`）。
+ */
+export async function landRendered(
   path: string,
   nodeId: string,
-  label: string,
-  png: Blob,
+  bytes: Blob,
+  label?: string,
 ): Promise<{ nodeId: string; path: string }> {
-  const query = `path=${encodeURIComponent(path)}&nodeId=${encodeURIComponent(nodeId)}&label=${encodeURIComponent(label)}`
-  return client.api(`/api/canvas/frame?${query}`, {
+  const query = new URLSearchParams({ path, nodeId, ...(label ? { label } : {}) })
+  return client.api(`/api/canvas/render?${query}`, {
     method: 'POST',
-    body: png,
-    headers: { 'content-type': 'image/png' },
+    body: bytes,
+    headers: { 'content-type': bytes.type || 'application/octet-stream' },
   })
 }

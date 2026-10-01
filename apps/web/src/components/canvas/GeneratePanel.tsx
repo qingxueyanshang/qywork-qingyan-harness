@@ -214,6 +214,7 @@ export function mediaOf(
   const node = view.doc.nodes.find((n) => n.id === nodeId)
   if (!node) return { kind: null, path: null }
   if (node.type === 'file') return { kind: canvasMediaOf(node), path: node.path }
+  if (node.type === 'timeline') return { kind: null, path: null }
   const current = node.versions.find((v) => v.id === node.current)
   const path = current && !current.path.endsWith('.task.json') ? current.path : null
   return { kind: node.output, path }

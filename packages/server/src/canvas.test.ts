@@ -1,5 +1,6 @@
 /**
- * 覆盖 `canvas.ts` 的画布服务：串行写入、改名前复读、写失败不留半截、路径边界、节点状态、取帧与上传。
+ * 覆盖 `canvas.ts` 的画布服务：串行写入、改名前复读、写失败不留半截、路径边界、节点状态、
+ * 收浏览器做好的媒体（取帧、时间线成片）、时间线片段核对与上传。
  * 生成、取回与通知时序在 `canvas-run.test.ts`。
  */
 
@@ -393,8 +394,11 @@ describe('画布服务：上传', () => {
   })
 })
 
-describe('画布服务：取帧', () => {
+describe('画布服务：收浏览器做好的媒体', () => {
   const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2])
+  const MP4 = new Uint8Array([
+    0, 0, 0, 16, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0,
+  ])
 
   async function withVideo(): Promise<{ root: string; video: string }> {
     const r = applyCanvasOps(emptyCanvas(), [
@@ -409,9 +413,9 @@ describe('画布服务：取帧', () => {
   test('落成 generated/<视频名>_尾帧.png，重名加 -2；节点在视频右侧，第二帧排在第一帧下方', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
-    const first = await svc.captureFrame(root, PATH, video, '尾帧', PNG)
+    const first = await svc.landRendered(root, PATH, video, '尾帧', PNG)
     expect(first.path).toBe('generated/视频1_尾帧.png')
-    const second = await svc.captureFrame(root, PATH, video, '尾帧', PNG)
+    const second = await svc.landRendered(root, PATH, video, '尾帧', PNG)
     expect(second.path).toBe('generated/视频1_尾帧-2.png')
     const doc = await onDisk(root)
     const node = doc.nodes.find((n) => n.id === first.nodeId)!
@@ -425,20 +429,97 @@ describe('画布服务：取帧', () => {
   test('按时刻取的帧名字带小数点，仍落成 .png', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
-    expect((await svc.captureFrame(root, PATH, video, '1.6s', PNG)).path).toBe(
+    expect((await svc.landRendered(root, PATH, video, '1.6s', PNG)).path).toBe(
       'generated/视频1_1.6s.png',
     )
   })
 
-  test('不是 PNG 回 422；不是视频节点回 422，都不落盘', async () => {
+  test('不是 PNG 也不是 mp4 回 422；PNG 不来自视频节点或不带帧名回 422，都不落盘', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
     expect(
-      (await failure(svc.captureFrame(root, PATH, video, '首帧', new Uint8Array([1, 2])))).status,
+      (await failure(svc.landRendered(root, PATH, video, '首帧', new Uint8Array([1, 2])))).status,
     ).toBe(422)
     const other = await svc.apply(root, PATH, [{ op: 'add_file', path: '角色/0.png' }])
     const image = other.doc.nodes.at(-1)!.id
-    expect((await failure(svc.captureFrame(root, PATH, image, '首帧', PNG))).status).toBe(422)
+    expect((await failure(svc.landRendered(root, PATH, image, '首帧', PNG))).status).toBe(422)
+    expect((await failure(svc.landRendered(root, PATH, video, null, PNG))).status).toBe(422)
     expect((await readdir(root)).includes('generated')).toBe(false)
+  })
+
+  test('时间线导出的 mp4 落成 generated/<时间线名>.mp4，放在时间线右侧；mp4 只收时间线、不带帧名', async () => {
+    const { root, video } = await withVideo()
+    const { svc } = service()
+    const { refs } = await svc.apply(root, PATH, [
+      { op: 'add_timeline', ref: '$t', name: '粗剪', x: 0, y: 400 },
+    ])
+    const landed = await svc.landRendered(root, PATH, refs.$t!, null, MP4)
+    expect(landed.path).toBe('generated/粗剪.mp4')
+    expect(new Uint8Array(await readFile(join(root, landed.path)))).toEqual(MP4)
+    const node = (await onDisk(root)).nodes.find((n) => n.id === landed.nodeId)!
+    expect(node).toMatchObject({ type: 'file', path: 'generated/粗剪.mp4', x: 740, y: 400 })
+    expect((await failure(svc.landRendered(root, PATH, video, null, MP4))).status).toBe(422)
+    expect((await failure(svc.landRendered(root, PATH, refs.$t!, '首帧', MP4))).status).toBe(422)
+  })
+})
+
+describe('画布服务：时间线片段', () => {
+  /** 只有 `moov/mvhd` 的 mp4：时长 = duration / 1000 秒。 */
+  function mp4Of(ms: number): Buffer {
+    const box = (type: string, body: Buffer) => {
+      const head = Buffer.alloc(8)
+      head.writeUInt32BE(body.length + 8, 0)
+      head.write(type, 4, 'latin1')
+      return Buffer.concat([head, body])
+    }
+    const mvhd = Buffer.alloc(100)
+    mvhd.writeUInt32BE(1000, 12)
+    mvhd.writeUInt32BE(ms, 16)
+    return Buffer.concat([
+      box('ftyp', Buffer.from('isom0000', 'latin1')),
+      box('moov', box('mvhd', mvhd)),
+    ])
+  }
+
+  test('片段路径按工作区核实并写成正斜杠；文件不存在、出点超过视频时长回 422，不落盘', async () => {
+    const root = await workspace()
+    await mkdir(join(root, '素材'))
+    await writeFile(join(root, '素材', 'a.mp4'), mp4Of(5000))
+    const { svc } = service()
+    const before = await readFile(join(root, PATH), 'utf8')
+    const missing = await failure(
+      svc.apply(root, PATH, [
+        { op: 'add_timeline', clips: [{ path: '素材/没有.mp4', in: 0, out: 1 }] },
+      ]),
+    )
+    expect(missing.status).toBe(422)
+    const over = await failure(
+      svc.apply(root, PATH, [
+        { op: 'add_timeline', clips: [{ path: '素材/a.mp4', in: 0, out: 6 }] },
+      ]),
+    )
+    expect([over.status, over.message]).toEqual([
+      422,
+      '片段超出视频时长：素材/a.mp4 只有 5 秒，出点是 6 秒',
+    ])
+    expect(await readFile(join(root, PATH), 'utf8')).toBe(before)
+    const { doc } = await svc.apply(root, PATH, [
+      { op: 'add_timeline', clips: [{ path: '素材\\a.mp4', in: 1, out: 5 }] },
+    ])
+    expect(doc.nodes[0]).toMatchObject({
+      type: 'timeline',
+      clips: [{ path: '素材/a.mp4', in: 1, out: 5 }],
+    })
+  })
+
+  test('片段的文件没了，时间线标缺失', async () => {
+    const root = await workspace()
+    await writeFile(join(root, 'a.mp4'), mp4Of(3000))
+    const { svc } = service()
+    await svc.apply(root, PATH, [{ op: 'add_timeline', clips: [{ path: 'a.mp4', in: 0, out: 2 }] }])
+    const id = (await onDisk(root)).nodes[0]!.id
+    expect((await svc.read(root, PATH)).states[id]).toEqual({ state: 'normal' })
+    await rm(join(root, 'a.mp4'))
+    expect((await svc.read(root, PATH)).states[id]).toEqual({ state: 'missing' })
   })
 })

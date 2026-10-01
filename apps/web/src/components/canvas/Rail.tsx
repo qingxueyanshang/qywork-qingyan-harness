@@ -1,5 +1,5 @@
 /**
- * 画布左侧的工具条：新建生成卡、从工作区选文件、从本机上传。
+ * 画布左侧的工具条：新建生成卡与时间线、从工作区选文件、从本机上传。
  *
  * 平时只露图标，悬停或打开选择框时向右展开名字。展开只加宽度，图标位置不动，瞄准中的按钮不会移开。
  * 生成卡的类别全列：没配模型的类别也能建卡，卡上的模型按钮通往模型库。
@@ -25,6 +25,7 @@ export function Rail(props: {
   /** 能放上画布的文件；选择框只列这些。 */
   accepts: (path: string) => boolean
   onGenerate: (output: MediaOutput) => void
+  onTimeline: () => void
   onPick: OnPick
   onUpload: (files: File[]) => void
 }) {
@@ -44,9 +45,11 @@ export function Rail(props: {
             </button>
           )}
         </For>
-        <Show when={props.outputs.length}>
-          <hr />
-        </Show>
+        <button type="button" disabled={props.disabled} onClick={() => props.onTimeline()}>
+          <KindIcon kind="timeline" {...ICON} />
+          <span>时间线</span>
+        </button>
+        <hr />
         <button
           type="button"
           disabled={props.disabled}

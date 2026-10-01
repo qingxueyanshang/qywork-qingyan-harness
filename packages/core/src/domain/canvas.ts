@@ -1,7 +1,7 @@
 /**
  * 画布文档：工作区里的一个 `*.canvas.json`。
  *
- * 只存布局、节点名、生成节点的提示词与历次版本、连线。图片、视频、音频、文本一律是工作区路径的引用，
+ * 只存布局、节点名、生成节点的提示词与历次版本、时间线的片段、连线。图片、视频、音频、文本一律是工作区路径的引用，
  * 画布不存字节。修改只经 `applyCanvasOps`（界面与大模型可提交的操作）与 `addVersions` / `settleVersion`
  * （只由服务端画布服务调用），两者都是纯函数，结果都经 `validateCanvas`。
  *
@@ -75,7 +75,30 @@ export interface CanvasGenerateNode {
   current?: string
 }
 
-export type CanvasNode = CanvasFileNode | CanvasGenerateNode
+/** 时间线上的一段：源视频 `path` 里从 `in` 到 `out` 秒（`0 ≤ in < out`）。 */
+export interface CanvasClip {
+  path: string
+  in: number
+  out: number
+}
+
+/**
+ * 时间线：一条视频轨，片段按数组顺序首尾相接。剪辑只改片段的入点出点与顺序，不改源文件；
+ * 成片由界面导出成新文件。`muted` 为真时整条轨道静音，导出不带音轨。
+ */
+export interface CanvasTimelineNode {
+  id: string
+  type: 'timeline'
+  name: string
+  x: number
+  y: number
+  w: number
+  h: number
+  clips: CanvasClip[]
+  muted?: true
+}
+
+export type CanvasNode = CanvasFileNode | CanvasGenerateNode | CanvasTimelineNode
 
 /** 输入线：`from` 的内容作为 `to` 的输入，用途见 `MediaInputRole`。线在数组里的顺序即输入顺序。 */
 export interface CanvasEdge {
@@ -161,6 +184,18 @@ export type CanvasOp =
       h?: number
     }
   | {
+      op: 'add_timeline'
+      ref?: string
+      name?: string
+      clips?: CanvasClip[]
+      muted?: boolean
+      /** 同 `add_file` 的 `beside` 与 `near`。 */
+      beside?: string
+      near?: { x: number; y: number }
+      x?: number
+      y?: number
+    }
+  | {
       op: 'update'
       id: string
       x?: number
@@ -177,6 +212,9 @@ export type CanvasOp =
       /** 同 `add_file` 的 `size`，随 `path` 一起。 */
       size?: CanvasPixels
       role?: MediaInputRole
+      /** 时间线的全部片段，整组替换。 */
+      clips?: CanvasClip[]
+      muted?: boolean
     }
   | { op: 'connect'; ref?: string; from: string; to: string; role: MediaInputRole }
   | { op: 'remove'; id: string; version?: string }
@@ -215,6 +253,7 @@ export function mentionsOf(prompt: string): string[] {
 /** 节点能作为哪一类输入。文件按扩展名判；判不出的（文本、压缩包等）不能作为生成的输入。 */
 export function canvasMediaOf(node: CanvasNode): MediaOutput | null {
   if (node.type === 'generate') return node.output
+  if (node.type === 'timeline') return null
   if (isInlineImage(node.path)) return 'image'
   if (isInlineVideo(node.path)) return 'video'
   if (AUDIO_RE.test(node.path)) return 'audio'
@@ -223,7 +262,7 @@ export function canvasMediaOf(node: CanvasNode): MediaOutput | null {
 
 /** 节点在界面与提示词纯文本里的名字。 */
 export function displayNameOf(node: CanvasNode): string {
-  if (node.type === 'generate' || node.name) return node.name ?? ''
+  if (node.type !== 'file' || node.name) return node.name ?? ''
   const base = baseNameOf(node.path)
   const dot = base.lastIndexOf('.')
   return dot > 0 ? base.slice(0, dot) : base
@@ -294,6 +333,34 @@ const FILE_SIZE: Record<MediaOutput | 'other', [number, number]> = {
   audio: [169, 169],
   other: [220, 138],
 }
+/**
+ * 时间线的框：宽度固定；空时只有工具行、刻度与轨道，有片段后上方多出预览区。
+ * 界面按 `h` 减去 `TIMELINE_BARE` 得到预览区高度，两处必须同用这两个常量。
+ */
+export const TIMELINE_W = 640
+export const TIMELINE_BARE = 120
+const TIMELINE_FULL = 360
+
+/** 时间线的框高：有片段时带预览区。 */
+function timelineHeight(clips: readonly CanvasClip[]): number {
+  return clips.length ? TIMELINE_FULL : TIMELINE_BARE
+}
+
+/** 片段不成立的原因，成立回 null。源文件的时长由服务端核对。 */
+function clipProblem(clip: CanvasClip): string | null {
+  if (!isRelativePath(clip.path)) return `不是工作区里的相对路径：${clip.path}`
+  if (!isInlineVideo(clip.path)) return `只有视频能放进时间线：${clip.path}`
+  if (
+    !Number.isFinite(clip.in) ||
+    !Number.isFinite(clip.out) ||
+    clip.in < 0 ||
+    clip.out <= clip.in
+  ) {
+    return `片段的入点出点不合法：${clip.path} ${clip.in}–${clip.out}`
+  }
+  return null
+}
+
 /** 没给位置时新节点放在最右边那个节点再往右这么远；`beside` 放在那个节点右侧同样远处。 */
 const NEW_NODE_GAP = 100
 /** `beside` 找空位时与其他节点留的间距，含节点上方的标题行。 */
@@ -421,7 +488,7 @@ function applyOne(
         id,
         type: 'generate',
         output: op.output,
-        name: op.name || defaultName(doc, op.output),
+        name: op.name || defaultName(doc, OUTPUT_NAME[op.output]),
         x: op.x ?? spot?.x ?? rightEdge(doc),
         y: op.y ?? spot?.y ?? 0,
         w,
@@ -432,6 +499,26 @@ function applyOne(
       }
       if (op.provider !== undefined) node.provider = op.provider
       if (op.model !== undefined) node.model = op.model
+      doc.nodes.push(node)
+      return
+    }
+    case 'add_timeline': {
+      const id = mint()
+      claim(op.ref, id)
+      const clips = structuredClone(op.clips ?? [])
+      const h = timelineHeight(clips)
+      const spot = placeOf(doc, op, resolve, TIMELINE_W, h)
+      const node: CanvasTimelineNode = {
+        id,
+        type: 'timeline',
+        name: op.name || defaultName(doc, TIMELINE_NAME),
+        x: op.x ?? spot?.x ?? rightEdge(doc),
+        y: op.y ?? spot?.y ?? 0,
+        w: TIMELINE_W,
+        h,
+        clips,
+      }
+      if (op.muted) node.muted = true
       doc.nodes.push(node)
       return
     }
@@ -450,6 +537,22 @@ function applyOne(
       if (op.y !== undefined) node.y = op.y
       if (op.w !== undefined) node.w = op.w
       if (op.h !== undefined) node.h = op.h
+      if (node.type === 'timeline') {
+        for (const key of ['prompt', 'provider', 'model', 'params', 'current', 'path'] as const) {
+          if (op[key] !== undefined) fail(`时间线没有 ${key}`)
+        }
+        if (op.name === null || op.name === '') fail('时间线必须有名字')
+        if (op.name !== undefined) node.name = op.name
+        if (op.muted === true) node.muted = true
+        else if (op.muted === false) delete node.muted
+        if (op.clips !== undefined) {
+          node.clips = structuredClone(op.clips)
+          // 有无片段决定有没有预览区；同一次操作给了 h 时以它为准。
+          if (op.h === undefined) node.h = timelineHeight(node.clips)
+        }
+        return
+      }
+      if (op.clips !== undefined || op.muted !== undefined) fail('只有时间线有片段与静音')
       if (node.type === 'file') {
         for (const key of ['prompt', 'provider', 'model', 'params', 'current'] as const) {
           if (op[key] !== undefined) fail(`文件节点没有 ${key}`)
@@ -589,9 +692,10 @@ function freeSpot(
   }
 }
 
-/** 「视频3」这类默认名：同类里已有的最大序号加一。 */
-function defaultName(doc: CanvasDoc, output: MediaOutput): string {
-  const prefix = OUTPUT_NAME[output]
+const TIMELINE_NAME = '时间线'
+
+/** 「视频3」「时间线2」这类默认名：同前缀里已有的最大序号加一。 */
+function defaultName(doc: CanvasDoc, prefix: string): string {
   let max = 0
   for (const n of doc.nodes) {
     const m = n.name?.startsWith(prefix) ? /^\d+$/.exec(n.name.slice(prefix.length)) : null
@@ -665,6 +769,18 @@ export function copyOps(
     const ref = refOf.get(n.id)!
     if (n.type === 'file') {
       ops.push({ op: 'add_file', ref, path: n.path, ...(n.name ? { name: n.name } : {}), ...box })
+      continue
+    }
+    if (n.type === 'timeline') {
+      ops.push({
+        op: 'add_timeline',
+        ref,
+        name: n.name,
+        clips: structuredClone(n.clips),
+        ...(n.muted ? { muted: true } : {}),
+        x: box.x,
+        y: box.y,
+      })
       continue
     }
     const prompt = n.prompt.replace(MENTION_RE, (whole, id: string) => {
@@ -742,6 +858,12 @@ export function validateCanvas(doc: CanvasDoc): string | null {
     }
     if (n.type === 'file') {
       if (!isRelativePath(n.path)) return `不是工作区里的相对路径：${n.path}`
+      continue
+    }
+    if (n.type === 'timeline') {
+      if (!n.name) return '时间线必须有名字'
+      const bad = n.clips.map(clipProblem).find(Boolean)
+      if (bad) return `「${n.name}」${bad}`
       continue
     }
     if (!n.name) return '生成节点必须有名字'
@@ -853,6 +975,9 @@ type Shape =
   | 'nullable'
   | 'point'
   | 'size'
+  | 'boolean'
+  | 'true'
+  | 'clips'
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -892,6 +1017,12 @@ function matches(v: unknown, shape: Shape): boolean {
       return (MEDIA_OUTPUTS as readonly unknown[]).includes(v)
     case 'mode':
       return v === 'reference' || v === 'first_last'
+    case 'boolean':
+      return typeof v === 'boolean'
+    case 'true':
+      return v === true
+    case 'clips':
+      return Array.isArray(v) && v.every((c) => checkFields('片段', c, CLIP_FIELDS) === null)
   }
 }
 
@@ -938,6 +1069,17 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     near: 'point',
     ...BOX,
   },
+  add_timeline: {
+    'op!': 'string',
+    ref: 'string',
+    name: 'string',
+    clips: 'clips',
+    muted: 'boolean',
+    beside: 'string',
+    near: 'point',
+    x: 'number',
+    y: 'number',
+  },
   update: {
     'op!': 'string',
     'id!': 'string',
@@ -950,6 +1092,8 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     current: 'string',
     path: 'string',
     role: 'role',
+    clips: 'clips',
+    muted: 'boolean',
   },
   connect: { 'op!': 'string', ref: 'string', 'from!': 'string', 'to!': 'string', 'role!': 'role' },
   remove: { 'op!': 'string', 'id!': 'string', version: 'string' },
@@ -992,6 +1136,15 @@ const GENERATE_FIELDS: Record<string, Shape> = {
   'versions!': 'array',
   current: 'string',
 }
+const TIMELINE_FIELDS: Record<string, Shape> = {
+  'id!': 'string',
+  'type!': 'string',
+  'name!': 'string',
+  ...boxRequired(),
+  'clips!': 'clips',
+  muted: 'true',
+}
+const CLIP_FIELDS: Record<string, Shape> = { 'path!': 'string', 'in!': 'number', 'out!': 'number' }
 const VERSION_FIELDS: Record<string, Shape> = {
   'id!': 'string',
   'path!': 'string',
@@ -1044,10 +1197,12 @@ function structureProblem(raw: unknown): string | null {
   for (const [i, n] of doc.nodes.entries()) {
     const where = `第 ${i + 1} 个节点`
     const type = isObject(n) ? n.type : undefined
-    if (type !== 'file' && type !== 'generate') return `${where} 的 type 不认识`
-    const bad = checkFields(where, n, type === 'file' ? FILE_FIELDS : GENERATE_FIELDS)
+    if (type !== 'file' && type !== 'generate' && type !== 'timeline')
+      return `${where} 的 type 不认识`
+    const fields = { file: FILE_FIELDS, generate: GENERATE_FIELDS, timeline: TIMELINE_FIELDS }[type]
+    const bad = checkFields(where, n, fields)
     if (bad) return bad
-    if (type === 'file') continue
+    if (type !== 'generate') continue
     for (const [j, v] of (n as { versions: unknown[] }).versions.entries()) {
       const at = `${where}的第 ${j + 1} 版`
       const made = isObject(v) ? v.made : undefined
@@ -1082,34 +1237,46 @@ export function serializeCanvas(doc: CanvasDoc): string {
           w: n.w,
           h: n.h,
         }
-      : {
-          id: n.id,
-          type: n.type,
-          output: n.output,
-          name: n.name,
-          x: n.x,
-          y: n.y,
-          w: n.w,
-          h: n.h,
-          prompt: n.prompt,
-          ...(n.provider !== undefined ? { provider: n.provider } : {}),
-          ...(n.model !== undefined ? { model: n.model } : {}),
-          params: n.params,
-          versions: n.versions.map((v) => ({
-            id: v.id,
-            path: v.path,
-            made: {
-              prompt: v.made.prompt,
-              provider: v.made.provider,
-              model: v.made.model,
-              params: v.made.params,
-              inputs: v.made.inputs.map((x) => ({ role: x.role, path: x.path })),
-              at: v.made.at,
-            },
-            ...(v.size ? { size: { w: v.size.w, h: v.size.h } } : {}),
-          })),
-          ...(n.current !== undefined ? { current: n.current } : {}),
-        },
+      : n.type === 'timeline'
+        ? {
+            id: n.id,
+            type: n.type,
+            name: n.name,
+            x: n.x,
+            y: n.y,
+            w: n.w,
+            h: n.h,
+            clips: n.clips.map((c) => ({ path: c.path, in: c.in, out: c.out })),
+            ...(n.muted ? { muted: true } : {}),
+          }
+        : {
+            id: n.id,
+            type: n.type,
+            output: n.output,
+            name: n.name,
+            x: n.x,
+            y: n.y,
+            w: n.w,
+            h: n.h,
+            prompt: n.prompt,
+            ...(n.provider !== undefined ? { provider: n.provider } : {}),
+            ...(n.model !== undefined ? { model: n.model } : {}),
+            params: n.params,
+            versions: n.versions.map((v) => ({
+              id: v.id,
+              path: v.path,
+              made: {
+                prompt: v.made.prompt,
+                provider: v.made.provider,
+                model: v.made.model,
+                params: v.made.params,
+                inputs: v.made.inputs.map((x) => ({ role: x.role, path: x.path })),
+                at: v.made.at,
+              },
+              ...(v.size ? { size: { w: v.size.w, h: v.size.h } } : {}),
+            })),
+            ...(n.current !== undefined ? { current: n.current } : {}),
+          },
   )
   const edges = doc.edges.map((e) => ({ id: e.id, from: e.from, to: e.to, role: e.role }))
   return `${JSON.stringify({ version: doc.version, nodes, edges }, null, 2)}\n`

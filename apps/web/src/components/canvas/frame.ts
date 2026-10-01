@@ -82,14 +82,30 @@ export async function captureVideoFrame(src: string, at: number): Promise<Blob> 
   )
 }
 
+/** 视频时长（秒）。只读元数据，读完即释放。 */
+export async function videoDuration(src: string): Promise<number> {
+  const video = document.createElement('video')
+  video.preload = 'metadata'
+  video.muted = true
+  video.src = src
+  try {
+    await once(video, 'loadedmetadata')
+    return Number.isFinite(video.duration) ? video.duration : 0
+  } finally {
+    releaseVideo(video)
+  }
+}
+
 /**
  * 在 `canvas` 上从左到右排一行帧：格数取按视频比例铺满所需，第 i 格取第 i 段时长的中点，
- * 格比视频窄时从画面中间截取。用一个临时视频元素逐格定位；`signal` 中止后不再定位，元素随即释放。
+ * 格比视频窄时从画面中间截取。`range` 限定取帧的时间段（秒），缺省是整段。
+ * 用一个临时视频元素逐格定位；`signal` 中止后不再定位，元素随即释放。
  */
 export async function drawFilmstrip(
   src: string,
   canvas: HTMLCanvasElement,
   signal: AbortSignal,
+  range?: { from: number; to: number },
 ): Promise<void> {
   const ctx = canvas.getContext('2d')
   if (!ctx || !canvas.width || !canvas.height) return
@@ -97,12 +113,14 @@ export async function drawFilmstrip(
   try {
     const { videoWidth: vw, videoHeight: vh, duration } = video
     if (!vw || !vh) return
+    const from = range?.from ?? 0
+    const span = (range?.to ?? duration) - from
     const count = Math.max(1, Math.ceil(canvas.width / ((canvas.height * vw) / vh)))
     const cell = canvas.width / count
     const sw = Math.min(vw, (vh * cell) / canvas.height)
     for (let i = 0; i < count && !signal.aborted; i++) {
       const seeked = once(video, 'seeked')
-      video.currentTime = frameTime(((i + 0.5) / count) * duration, duration)
+      video.currentTime = frameTime(from + ((i + 0.5) / count) * span, duration)
       await seeked
       ctx.drawImage(video, (vw - sw) / 2, 0, sw, vh, i * cell, 0, cell, canvas.height)
     }

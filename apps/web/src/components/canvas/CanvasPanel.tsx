@@ -14,6 +14,7 @@ import {
   type CanvasGenerateNode,
   type CanvasNode,
   type CanvasOp,
+  type CanvasTimelineNode,
   type CanvasView,
   canvasMediaOf,
   copyOps,
@@ -36,15 +37,16 @@ import {
   Show,
   Switch,
 } from 'solid-js'
+import { Portal } from 'solid-js/web'
 import {
   type CanvasEdit,
-  captureFrame,
   client,
   editCanvas,
   ensureModelCatalog,
   explainApiError,
   importToCanvas,
   isDesktopShell,
+  landRendered,
   modelCatalog,
   openFileInPanel,
   readCanvas,
@@ -73,25 +75,41 @@ import { GeneratePanel, mediaOf } from './GeneratePanel.tsx'
 import { KindIcon, OUTPUT_LABEL } from './kinds.tsx'
 import { clock, FrameBar, type PlayerHandle, VideoPlayer } from './Player.tsx'
 import { Rail } from './Rail.tsx'
+import { renderTimeline } from './render.ts'
+import { SourcePicker } from './SourcePicker.tsx'
+import { durationOf, Timeline } from './Timeline.tsx'
+import { gapAt, insertClips, sessionOf, splitAt, withoutClip } from './timeline.ts'
 
 const PANEL_W = 480
 const PANEL_H = 180
 const PANEL_TALL = 360
 const TEXT_RE = /\.(md|txt)$/i
 
-/** 右键点中的对象：节点作用于选区（点中的不在选区里时先只选它），空白处作用于那一点。 */
-type ContextTarget = { kind: 'node'; id: string } | { kind: 'edge'; id: string } | { kind: 'blank' }
+/**
+ * 右键点中的对象：节点作用于选区（点中的不在选区里时先只选它），空白处作用于那一点；
+ * 时间线上的一段（`clip`）记下第几段与指针处的成片时刻 `t`。
+ */
+type ContextTarget =
+  | { kind: 'node'; id: string }
+  | { kind: 'edge'; id: string }
+  | { kind: 'blank' }
+  | { kind: 'clip'; id: string; index: number; t: number }
+
+/** 从片段推出来的「视频 → 时间线」的线：id 是这个前缀加时间线 id 与视频节点 id。画布 id 不含冒号，不会撞上。 */
+const CLIP_LINK = 'clip:'
 
 /**
  * `at`：从连接点拖到空白处松手时新卡放在这一点；右键菜单里粘贴、新建与上传也放在这一点（画布坐标）。
  * 右键菜单（`context`）的 `nodeId` 为空串，作用对象在 `target`。
+ * 时间线的「+」（`clip`）：选中的视频插在第 `gap` 个间隙。
  */
 type Menu = {
-  kind: 'frame' | 'out' | 'version' | 'context'
+  kind: 'frame' | 'out' | 'version' | 'context' | 'clip'
   anchor: HTMLElement
   nodeId: string
   at?: { x: number; y: number }
   target?: ContextTarget
+  gap?: number
 }
 
 type Drag =
@@ -162,6 +180,13 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const [now, setNow] = createSignal(Date.now())
   /** 选中的视频节点的播放器；取帧条读写它的时刻。 */
   const players = new Map<string, PlayerHandle>()
+  /** 全屏编辑中的时间线。打开时画布的按键处理只留撤销与重做。 */
+  const [fullscreen, setFullscreen] = createSignal<string | null>(null)
+  /** 导出中的时间线与进度（0–1）。 */
+  const [exports, setExports] = createSignal<Readonly<Record<string, number>>>({})
+  const exportAborts = new Map<string, AbortController>()
+  /** 拖动视频节点时指针下的时间线：松手就把这些视频放进它的轨道。 */
+  const [clipTarget, setClipTarget] = createSignal<string | null>(null)
   let stage!: HTMLDivElement
   let fitted = false
   let drag: Drag | null = null
@@ -333,6 +358,15 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const target = e.target instanceof Element ? e.target : null
     if (target?.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]'))
       return
+    if (fullscreen()) {
+      const mod = e.ctrlKey || e.metaKey
+      const key = e.key.toLowerCase()
+      if (mod && (key === 'z' || key === 'y')) {
+        e.preventDefault()
+        void travel(key === 'z' && !e.shiftKey)
+      }
+      return
+    }
     if (e.code === 'Space') {
       // 焦点可能仍在窗口或面板按钮上；长按的重复事件也必须拦截，否则松键会触发按钮。
       e.preventDefault()
@@ -344,11 +378,12 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       const edge = edgeSelected()
       if (edge) {
         e.preventDefault()
-        void apply([{ op: 'remove', id: edge }]).then((r) => r && setEdgeSelected(null))
+        void cutLink(edge).then((ok) => ok && setEdgeSelected(null))
         return
       }
       if (!selected().size) return
       e.preventDefault()
+      if (removeSelectedClip()) return
       removeSelected()
     }
     if (e.key === 'Escape') {
@@ -396,6 +431,30 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       e.preventDefault()
       zoomAt(z() * (e.key === '-' ? 1 / 1.25 : 1.25))
     }
+  }
+
+  /** 选中的是一条时间线、且它的轨道上选着一段时，删的是那一段。删了回真。 */
+  const removeSelectedClip = (): boolean => {
+    const n = single()
+    const index = n?.type === 'timeline' ? sessionOf(n.id)?.selected() : null
+    if (n?.type !== 'timeline' || index === null || index === undefined) return false
+    sessionOf(n.id)?.select(null)
+    void apply([{ op: 'update', id: n.id, clips: withoutClip(n.clips, index) }])
+    return true
+  }
+
+  /** 断开一条线。从片段推出来的线：删掉时间线里引用那个视频文件的全部片段。成功回真。 */
+  const cutLink = async (id: string): Promise<boolean> => {
+    if (!id.startsWith(CLIP_LINK)) return (await apply([{ op: 'remove', id }])) !== null
+    const [timeline, source] = id.slice(CLIP_LINK.length).split(':')
+    const n = byId(timeline!)
+    const path = view() ? mediaOf(view()!, source!).path : null
+    if (n?.type !== 'timeline' || !path) return false
+    sessionOf(n.id)?.select(null)
+    const r = await apply([
+      { op: 'update', id: n.id, clips: n.clips.filter((c) => c.path !== path) },
+    ])
+    return r !== null
   }
 
   const removeSelected = () => {
@@ -512,10 +571,19 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         over: (on) => stage.classList.toggle('drop-over', on),
         paths: (paths, pos) => {
           if (!paths.length) return
+          // 落在时间线上：先放上画布，再把其中的视频插进轨道。
+          const into = timelineAt(pos.x, pos.y)
+          const gap = into ? gapFor(into, pos.x, onTracksAt(into, pos.x, pos.y)) : undefined
           void importToCanvas(props.path, paths, toWorld(pos.x, pos.y)).then(
-            () => {
+            async ({ ids }) => {
               setFault(null)
-              void load()
+              await load()
+              if (!into) return
+              const added = ids.flatMap((id) => {
+                const n = byId(id)
+                return n?.type === 'file' ? [n.path] : []
+              })
+              await addClips(into, added, gap)
             },
             (e: unknown) => setFault(explainApiError(e, '没有放上画布')),
           )
@@ -604,7 +672,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       const over = document
         .elementFromPoint(e.clientX, e.clientY)
         ?.closest<HTMLElement>('[data-node]')?.dataset.node
-      setLinkTarget(over && linkRole(d.from, over) ? over : null)
+      setLinkTarget(over && (linkRole(d.from, over) || clipsInto(d.from, over)) ? over : null)
       return
     }
     if (d.mode === 'pan') {
@@ -618,6 +686,13 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       const dx = (e.clientX - d.sx) / z()
       const dy = (e.clientY - d.sy) / z()
       setMoving(Object.fromEntries(d.start.map((s) => [s.id, { x: s.x + dx, y: s.y + dy }])))
+      setClipTarget(
+        timelineUnder(
+          e.clientX,
+          e.clientY,
+          d.start.map((s) => s.id),
+        ),
+      )
       return
     }
     const r = stage.getBoundingClientRect()
@@ -659,6 +734,15 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       setLinkTarget(null)
       if (!d.moved) {
         setMenu({ kind: 'out', anchor: d.anchor, nodeId: d.from })
+      } else if (target && byId(target)?.type === 'timeline') {
+        const path = mediaOf(view()!, d.from).path
+        if (path) {
+          void addClips(
+            target,
+            [path],
+            gapFor(target, e.clientX, onTracksAt(target, e.clientX, e.clientY)),
+          )
+        }
       } else if (target) {
         void connect(d.from, target)
       } else if (e.type === 'pointerup' && extendable(d.from).length) {
@@ -675,6 +759,15 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       return
     }
     if (d?.mode !== 'move' || !d.moved) return
+    const into = clipTarget()
+    setClipTarget(null)
+    if (into) {
+      // 放进时间线：节点回原位，它们的视频按指针处的间隙插入。
+      const paths = d.start.flatMap((s) => mediaOf(view()!, s.id).path ?? [])
+      setMoving({})
+      void addClips(into, paths, gapFor(into, e.clientX, onTracksAt(into, e.clientX, e.clientY)))
+      return
+    }
     const moved = moving()
     const ops: CanvasOp[] = Object.entries(moved).map(([id, p]) => ({
       op: 'update',
@@ -714,7 +807,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (!path && files.length) {
       // 浏览器里从系统拖入；桌面外壳里系统拖放由外壳截获，走 shell-drop。
       e.preventDefault()
-      void uploadFiles(files, toWorld(e.clientX, e.clientY))
+      const into = timelineAt(e.clientX, e.clientY)
+      if (into) void uploadClips(into, files, gapFor(into, e.clientX, dropOnTracks(e)))
+      else void uploadFiles(files, toWorld(e.clientX, e.clientY))
       return
     }
     if (!path) return
@@ -724,6 +819,10 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     // 拖到一个缺失的文件节点上即替换它的路径。
     if (onto?.type === 'file' && view()?.states[onto.id]?.state === 'missing') {
       void apply([{ op: 'update', id: onto.id, path }])
+      return
+    }
+    if (onto?.type === 'timeline') {
+      void addClips(onto.id, [path], gapFor(onto.id, e.clientX, dropOnTracks(e)))
       return
     }
     const at = toWorld(e.clientX, e.clientY)
@@ -764,6 +863,19 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     })
   }
 
+  /** 时间线上一段的右键菜单：锚点放在指针处，全屏编辑里同样用这一个菜单。 */
+  const openClipMenu = (id: string, index: number, t: number, clientX: number, clientY: number) => {
+    const r = stage.getBoundingClientRect()
+    dropAnchor.style.left = `${clientX - r.left}px`
+    dropAnchor.style.top = `${clientY - r.top}px`
+    setMenu({
+      kind: 'context',
+      anchor: dropAnchor,
+      nodeId: '',
+      target: { kind: 'clip', id, index, t },
+    })
+  }
+
   /** 快捷键写法：macOS 用 ⌘，其余写 Ctrl+。 */
   const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
 
@@ -787,8 +899,28 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         {
           label: '断开',
           keys: 'Delete',
-          run: () =>
-            void apply([{ op: 'remove', id: target.id }]).then((r) => r && setEdgeSelected(null)),
+          run: () => void cutLink(target.id).then((ok) => ok && setEdgeSelected(null)),
+        },
+      ]
+    }
+    if (target.kind === 'clip') {
+      const n = byId(target.id)
+      const clip = n?.type === 'timeline' ? n.clips[target.index] : undefined
+      if (n?.type !== 'timeline' || !clip) return []
+      const set = (clips: CanvasTimelineNode['clips']) => () =>
+        void apply([{ op: 'update', id: n.id, clips }])
+      const split = splitAt(n.clips, target.t)
+      return [
+        ...(split ? [{ label: '在此处分割', run: set(split) }] : []),
+        { label: '创建副本', run: set(insertClips(n.clips, target.index + 1, [clip])) },
+        null,
+        {
+          label: '删除',
+          keys: 'Delete',
+          run: () => {
+            sessionOf(n.id)?.select(null)
+            set(withoutClip(n.clips, target.index))()
+          },
         },
       ]
     }
@@ -800,6 +932,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           label: OUTPUT_LABEL[o],
           run: () => void addGenerate(o, at),
         })),
+        { label: '时间线', run: () => void addTimeline(at) },
         {
           label: '从设备上传',
           run: () => {
@@ -860,6 +993,118 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (r?.refs.$n) setSelected(new Set([r.refs.$n]))
   }
 
+  const addTimeline = async (near = center()) => {
+    setMenu(null)
+    const r = await apply([{ op: 'add_timeline', ref: '$t', near }])
+    if (r?.refs.$t) setSelected(new Set([r.refs.$t]))
+  }
+
+  /** 屏幕上这一点下面的时间线，`skip` 里的节点（拖动中的）透过去不算。 */
+  const timelineAt = (clientX: number, clientY: number, skip: string[] = []): string | null => {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      const id = el.closest<HTMLElement>('[data-node]')?.dataset.node
+      if (id && !skip.includes(id)) return byId(id)?.type === 'timeline' ? id : null
+    }
+    return null
+  }
+
+  /** 落点在时间线的轨道上时，插在指针处的间隙；落在工具行、预览上回 `undefined`（放最后）。 */
+  const gapFor = (id: string, clientX: number, onTracks: boolean): number | undefined => {
+    const n = byId(id)
+    if (n?.type !== 'timeline' || !onTracks) return undefined
+    const t = sessionOf(id)?.timeAtClient?.(clientX)
+    return t === undefined ? undefined : gapAt(n.clips, t)
+  }
+
+  /** 屏幕上这一点是否落在时间线 `id` 的轨道上。拖动中指针被画布捕获，事件目标不是指针下的元素，只能按坐标查。 */
+  const onTracksAt = (id: string, clientX: number, clientY: number): boolean =>
+    document
+      .elementsFromPoint(clientX, clientY)
+      .some(
+        (el) =>
+          el.closest('.canvas-tl-tracks') &&
+          el.closest<HTMLElement>('[data-node]')?.dataset.node === id,
+      )
+
+  /** 拖放事件的目标是否落在轨道上。 */
+  const dropOnTracks = (e: DragEvent): boolean =>
+    (e.target as Element).closest('.canvas-tl-tracks') !== null
+
+  /** 从 `from` 拖线到时间线 `to` 上能不能放进去：`from` 得是有文件的视频。 */
+  const clipsInto = (from: string, to: string): boolean => {
+    const v = view()
+    return (
+      !!v &&
+      byId(to)?.type === 'timeline' &&
+      mediaOf(v, from).kind === 'video' &&
+      mediaOf(v, from).path !== null
+    )
+  }
+
+  /** 拖动节点时指针下的时间线；拖的节点里没有视频时不算。 */
+  const timelineUnder = (clientX: number, clientY: number, dragged: string[]): string | null => {
+    const v = view()
+    if (!v || !dragged.some((id) => mediaOf(v, id).kind === 'video' && mediaOf(v, id).path)) {
+      return null
+    }
+    return timelineAt(clientX, clientY, dragged)
+  }
+
+  /**
+   * 往时间线的第 `gap` 个间隙（缺省放最后）插入整段的视频：时长读源文件，不是视频或读不出时长的跳过。
+   */
+  const addClips = async (id: string, paths: string[], gap?: number) => {
+    const videos = paths.filter(
+      (p) => canvasMediaOf({ id: '', type: 'file', path: p, x: 0, y: 0, w: 0, h: 0 }) === 'video',
+    )
+    const added = (
+      await Promise.all(
+        videos.map(async (path) => {
+          const d = await durationOf(client.fileUrl(path))
+          return d > 0 ? [{ path, in: 0, out: Math.floor(d * 1000) / 1000 }] : []
+        }),
+      )
+    ).flat()
+    const n = byId(id)
+    if (n?.type !== 'timeline') return
+    if (!added.length) {
+      setFault('只有视频能放进时间线')
+      return
+    }
+    await apply([{ op: 'update', id, clips: insertClips(n.clips, gap ?? n.clips.length, added) }])
+  }
+
+  /** 导出成片：浏览器里合成 mp4，交服务端落进 `generated/`，时间线右侧出现新视频节点。 */
+  const exportTimeline = async (id: string) => {
+    const n = byId(id)
+    if (n?.type !== 'timeline' || !n.clips.length || exportAborts.has(id)) return
+    const ac = new AbortController()
+    exportAborts.set(id, ac)
+    setExports((x) => ({ ...x, [id]: 0 }))
+    try {
+      const blob = await renderTimeline(
+        n.clips.map((c) => ({
+          url: client.fileUrl(c.path),
+          name: c.path.split('/').pop() ?? c.path,
+          in: c.in,
+          out: c.out,
+        })),
+        !!n.muted,
+        (ratio) => setExports((x) => ({ ...x, [id]: ratio })),
+        ac.signal,
+      )
+      const r = await landRendered(props.path, id, blob)
+      setFault(null)
+      if (!fullscreen()) setSelected(new Set([r.nodeId]))
+      void load()
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') setFault(explainApiError(e, '没有导出'))
+    } finally {
+      exportAborts.delete(id)
+      setExports(({ [id]: _, ...rest }) => rest)
+    }
+  }
+
   /**
    * 选择框里连着选的文件：第一个放在视野中央附近的空位，之后的排在上一个右侧的空位。
    * 依次提交：前一个的回体到了才知道它的 id，并发提交的话后一个会落在视野中央、压住前一个。
@@ -874,6 +1119,21 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       ])
       if (r?.refs.$f) lastPicked = r.refs.$f
     })
+  }
+
+  /** 时间线「+」里从本机上传的视频：先放上画布（时间线右侧），再按路径插进轨道。 */
+  const uploadClips = async (id: string, files: File[], gap?: number) => {
+    const paths: string[] = []
+    for (const file of files) {
+      try {
+        paths.push((await uploadToCanvas(props.path, file, { beside: id })).path)
+      } catch (e) {
+        setFault(explainApiError(e, `没有传上去：${file.name}`))
+        break
+      }
+    }
+    await load()
+    if (paths.length) await addClips(id, paths, gap)
   }
 
   /** 从本机选的文件逐个上传：第一个放在视野中央附近的空位，之后的排在上一个右侧。有一个失败就停下并报出。 */
@@ -986,7 +1246,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (!media?.path) return
     try {
       const blob = await captureVideoFrame(client.fileUrl(media.path), at)
-      const r = await captureFrame(props.path, nodeId, frameLabel(at, duration), blob)
+      const r = await landRendered(props.path, nodeId, blob, frameLabel(at, duration))
       setFault(null)
       setSelected(new Set([r.nodeId]))
       void load()
@@ -1030,10 +1290,28 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     }
   }
 
+  /**
+   * 画出来的线：连线，加上每条时间线从片段推出来的线——画布上当前显示某个被片段引用的文件的节点，各连一条到时间线。
+   * 推出来的线不存盘，片段是唯一的账。
+   */
+  const links = (v: CanvasView): { id: string; from: string; to: string }[] => [
+    ...v.doc.edges,
+    ...v.doc.nodes.flatMap((t) => {
+      if (t.type !== 'timeline' || !t.clips.length) return []
+      const used = new Set(t.clips.map((c) => c.path))
+      return v.doc.nodes.flatMap((n) => {
+        const path = n.id === t.id ? null : mediaOf(v, n.id).path
+        return path && used.has(path)
+          ? [{ id: `${CLIP_LINK}${t.id}:${n.id}`, from: n.id, to: t.id }]
+          : []
+      })
+    }),
+  ]
+
   const edgePaths = () => {
     const v = view()
     if (!v) return []
-    return v.doc.edges.flatMap((e) => {
+    return links(v).flatMap((e) => {
       const a = byId(e.from)
       const b = byId(e.to)
       if (!a || !b) return []
@@ -1166,24 +1444,27 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const st = () => view()?.states[n().id]
     const at = () => pos(n())
     const isSelected = () => selected().has(n().id)
-    const kind = (): MediaOutput | 'text' | null =>
-      n().type === 'generate'
-        ? (n() as CanvasGenerateNode).output
-        : TEXT_RE.test((n() as { path: string }).path)
-          ? 'text'
-          : canvasMediaOf(n())
+    const kind = (): MediaOutput | 'text' | 'timeline' | null => {
+      const node = n()
+      if (node.type === 'generate') return node.output
+      if (node.type === 'timeline') return 'timeline'
+      return TEXT_RE.test(node.path) ? 'text' : canvasMediaOf(node)
+    }
     const commitName = (value: string) => {
       setRenaming(null)
       const name = value.trim()
       if (name === displayNameOf(n())) return
-      if (n().type === 'generate' && !name) return
+      if (n().type !== 'file' && !name) return
       void apply([{ op: 'update', id: n().id, name: name || null }])
     }
 
     return (
       <div
         class="canvas-node"
-        classList={{ selected: isSelected(), 'link-target': linkTarget() === n().id }}
+        classList={{
+          selected: isSelected(),
+          'link-target': linkTarget() === n().id || clipTarget() === n().id,
+        }}
         data-node={n().id}
         style={{
           left: `${at().x}px`,
@@ -1211,35 +1492,61 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         </div>
 
         <Show
-          when={n().type === 'generate'}
+          when={n().type !== 'timeline'}
           fallback={
-            <Show
-              when={st()?.state !== 'missing'}
-              fallback={
-                <div class="canvas-missing">
-                  <span class="label">缺失</span>
-                  <button
-                    class="canvas-ghost"
-                    type="button"
-                    onClick={() => void apply([{ op: 'remove', id: n().id }])}
-                  >
-                    移除
-                  </button>
-                </div>
+            <Timeline
+              node={n() as CanvasTimelineNode}
+              mode="node"
+              showPreview={fullscreen() !== n().id}
+              urlOf={(path) => client.fileUrl(path)}
+              exporting={exports()[n().id] ?? null}
+              setClips={(clips) =>
+                apply([{ op: 'update', id: n().id, clips }]).then((r) => r !== null)
               }
-            >
-              <Media
-                nodeId={n().id}
-                path={(n() as { path: string }).path}
-                kind={canvasMediaOf(n())}
-                w={n().w}
-                h={n().h}
-                controls={isSelected()}
-              />
-            </Show>
+              setMuted={(muted) => void apply([{ op: 'update', id: n().id, muted }])}
+              onFocus={() => {
+                setEdgeSelected(null)
+                if (!selected().has(n().id)) setSelected(new Set([n().id]))
+              }}
+              onAdd={(anchor, gap) => setMenu({ kind: 'clip', anchor, nodeId: n().id, gap })}
+              onClipMenu={(index, t, x, y) => openClipMenu(n().id, index, t, x, y)}
+              onExport={() => void exportTimeline(n().id)}
+              onCancelExport={() => exportAborts.get(n().id)?.abort()}
+              onFullscreen={() => setFullscreen(n().id)}
+            />
           }
         >
-          <GenerateBody node={n() as CanvasGenerateNode} selected={isSelected()} />
+          <Show
+            when={n().type === 'generate'}
+            fallback={
+              <Show
+                when={st()?.state !== 'missing'}
+                fallback={
+                  <div class="canvas-missing">
+                    <span class="label">缺失</span>
+                    <button
+                      class="canvas-ghost"
+                      type="button"
+                      onClick={() => void apply([{ op: 'remove', id: n().id }])}
+                    >
+                      移除
+                    </button>
+                  </div>
+                }
+              >
+                <Media
+                  nodeId={n().id}
+                  path={(n() as { path: string }).path}
+                  kind={canvasMediaOf(n())}
+                  w={n().w}
+                  h={n().h}
+                  controls={isSelected()}
+                />
+              </Show>
+            }
+          >
+            <GenerateBody node={n() as CanvasGenerateNode} selected={isSelected()} />
+          </Show>
         </Show>
 
         <Show when={n().type === 'generate' && (n() as CanvasGenerateNode).output !== 'audio'}>
@@ -1248,6 +1555,23 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
             type="button"
             aria-label="添加素材"
             onClick={() => setSelected(new Set([n().id]))}
+          >
+            <IconPlus stroke={1.8} />
+          </button>
+        </Show>
+        <Show when={n().type === 'timeline'}>
+          <button
+            class="canvas-port in"
+            type="button"
+            aria-label="添加视频"
+            onClick={(e) =>
+              setMenu({
+                kind: 'clip',
+                anchor: e.currentTarget,
+                nodeId: n().id,
+                gap: (n() as CanvasTimelineNode).clips.length,
+              })
+            }
           >
             <IconPlus stroke={1.8} />
           </button>
@@ -1484,7 +1808,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
               data-edge={e.id}
               style={{ left: `${px() + e.mx * z()}px`, top: `${py() + e.my * z()}px` }}
               onClick={() =>
-                void apply([{ op: 'remove', id: e.id }]).then((ok) => {
+                void cutLink(e.id).then((ok) => {
                   if (!ok) return
                   setEdgeHover(null)
                   if (edgeSelected() === e.id) setEdgeSelected(null)
@@ -1561,6 +1885,38 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         </Show>
       </Show>
 
+      <Show
+        when={(() => {
+          const id = fullscreen()
+          const n = id ? byId(id) : undefined
+          return n?.type === 'timeline' ? n : null
+        })()}
+      >
+        {(n) => (
+          <Portal>
+            <div class="canvas-tl-layer">
+              <Timeline
+                node={n()}
+                mode="full"
+                showPreview={true}
+                urlOf={(path) => client.fileUrl(path)}
+                exporting={exports()[n().id] ?? null}
+                setClips={(clips) =>
+                  apply([{ op: 'update', id: n().id, clips }]).then((r) => r !== null)
+                }
+                setMuted={(muted) => void apply([{ op: 'update', id: n().id, muted }])}
+                onFocus={() => {}}
+                onAdd={(anchor, gap) => setMenu({ kind: 'clip', anchor, nodeId: n().id, gap })}
+                onClipMenu={(index, t, x, y) => openClipMenu(n().id, index, t, x, y)}
+                onExport={() => void exportTimeline(n().id)}
+                onCancelExport={() => exportAborts.get(n().id)?.abort()}
+                onFullscreen={() => setFullscreen(null)}
+              />
+            </div>
+          </Portal>
+        )}
+      </Show>
+
       <Show when={marquee()}>
         {(m) => (
           <div
@@ -1585,6 +1941,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           TEXT_RE.test(p)
         }
         onGenerate={(o) => void addGenerate(o)}
+        onTimeline={() => void addTimeline()}
         onPick={pickFile}
         onUpload={(files) => void uploadFiles(files)}
       />
@@ -1639,6 +1996,38 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                   </For>
                 </AnchoredMenu>
               )}
+            </Match>
+            <Match when={m().kind === 'clip'}>
+              <AnchoredMenu class="canvas-pick" anchor={m().anchor} placement="below-start">
+                <SourcePicker
+                  nodes={nodes().filter(
+                    (n) => mediaOf(view()!, n.id).kind === 'video' && mediaOf(view()!, n.id).path,
+                  )}
+                  files={true}
+                  accepts={(p) =>
+                    canvasMediaOf({ id: '', type: 'file', path: p, x: 0, y: 0, w: 0, h: 0 }) ===
+                    'video'
+                  }
+                  accept="video/*"
+                  thumb={(id) => <KindIcon kind={mediaOf(view()!, id).kind} size={14} />}
+                  onNode={(id) => {
+                    const { nodeId, gap } = m()
+                    const path = mediaOf(view()!, id).path
+                    setMenu(null)
+                    if (path) void addClips(nodeId, [path], gap)
+                  }}
+                  onFile={(path) => {
+                    const { nodeId, gap } = m()
+                    setMenu(null)
+                    void addClips(nodeId, [path], gap)
+                  }}
+                  onUpload={(files) => {
+                    const { nodeId, gap } = m()
+                    setMenu(null)
+                    void uploadClips(nodeId, files, gap)
+                  }}
+                />
+              </AnchoredMenu>
             </Match>
             <Match when={m().kind === 'out' || m().kind === 'version'}>
               <AnchoredMenu class="canvas-menu" anchor={m().anchor}>

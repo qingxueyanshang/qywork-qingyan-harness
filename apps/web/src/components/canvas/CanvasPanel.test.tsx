@@ -1,6 +1,6 @@
 /**
  * 覆盖 `canvas/CanvasPanel.tsx`、`canvas/GeneratePanel.tsx`、`canvas/SourcePicker.tsx`、`canvas/search.ts`、
- * `canvas/Rail.tsx`、`canvas/Bitmap.tsx`、`canvas/Player.tsx`、`canvas/prompt.ts` 与 `canvas/frame.ts` 的纯函数，
+ * `canvas/Rail.tsx`、`canvas/Bitmap.tsx`、`canvas/Player.tsx`、`canvas/Timeline.tsx`、`canvas/prompt.ts` 与 `canvas/frame.ts` 的纯函数，
  * 以及 `lib/store/ui.ts` 的 `openCanvasTab`。
  *
  * 服务端用内存里的一份画布代替：`client.api` 的桩按路径分派，操作经 core 的 `applyCanvasOps` 应用，
@@ -145,6 +145,8 @@ interface Server {
   uploads: URLSearchParams[]
   /** 撤销 / 重做请求，按顺序。 */
   restores: { from: string; to: string }[]
+  /** 收浏览器做好的媒体（取帧、时间线成片）的查询串。 */
+  renders: URLSearchParams[]
 }
 
 async function mount(
@@ -180,6 +182,7 @@ async function mount(
     quote: null,
     uploads: [],
     restores: [],
+    renders: [],
   }
   const original = store.client.api
   ;(
@@ -273,6 +276,10 @@ async function mount(
       if (!r.ok) throw new Error(r.error)
       doc = r.doc
       return { nodeId: r.refs.$u, path: file }
+    }
+    if (path.startsWith('/api/canvas/render')) {
+      server.renders.push(new URLSearchParams(path.split('?')[1]))
+      throw new Error('测试里不落盘')
     }
     throw new Error(`没有桩这条：${path}`)
   }
@@ -1710,7 +1717,14 @@ describe('画布：左侧工具条', () => {
 
   test('生成类别全列，没配模型的也列；点一项在视野中央加一张卡', async () => {
     const { host, server } = await mount(FILES)
-    expect(labels(host)).toEqual(['图像生成', '视频生成', '音频生成', '从工作区选择', '从设备上传'])
+    expect(labels(host)).toEqual([
+      '图像生成',
+      '视频生成',
+      '音频生成',
+      '时间线',
+      '从工作区选择',
+      '从设备上传',
+    ])
     rail(host)[1]!.click()
     await waitFor(
       () => server.ops.length === 1,
@@ -1944,5 +1958,367 @@ describe('画布：纯函数与页签', () => {
     ])
     expect(store.canvasTitle('分镜/第一集.canvas.json')).toBe('第一集')
     store.setWorkspace(null)
+  })
+})
+
+describe('画布：时间线', () => {
+  /** happy-dom 不解码视频：任何 `<video>` 设了地址就报出时长 `seconds`。 */
+  function fakeDurations(seconds: number): () => void {
+    const proto = HTMLVideoElement.prototype
+    const src = Object.getOwnPropertyDescriptor(proto, 'src')
+    const duration = Object.getOwnPropertyDescriptor(proto, 'duration')
+    Object.defineProperty(proto, 'duration', { configurable: true, get: () => seconds })
+    Object.defineProperty(proto, 'src', {
+      configurable: true,
+      get(this: HTMLVideoElement) {
+        return this.getAttribute('src') ?? ''
+      },
+      set(this: HTMLVideoElement, value: string) {
+        this.setAttribute('src', value)
+        setTimeout(() => this.dispatchEvent(new Event('loadedmetadata')))
+      },
+    })
+    return () => {
+      if (src) Object.defineProperty(proto, 'src', src)
+      else delete (proto as unknown as Record<string, unknown>).src
+      if (duration) Object.defineProperty(proto, 'duration', duration)
+      else delete (proto as unknown as Record<string, unknown>).duration
+    }
+  }
+
+  const TIMELINE: CanvasOp[] = [
+    {
+      op: 'add_timeline',
+      ref: '$t',
+      x: 0,
+      y: 0,
+      clips: [
+        { path: 'a.mp4', in: 0, out: 2 },
+        { path: 'b.mp4', in: 1, out: 4 },
+      ],
+    },
+    { op: 'add_file', ref: '$v', path: 'clip.mp4', x: 0, y: 500 },
+  ]
+
+  test('左侧工具条新建时间线：发 add_timeline、选中它；空轨道只有「添加视频」', async () => {
+    const { host, server } = await mount(FILES)
+    ;[...host.querySelectorAll<HTMLButtonElement>('.canvas-rail > button')]
+      .find((b) => b.textContent === '时间线')!
+      .click()
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]![0]).toMatchObject({ op: 'add_timeline' })
+    const id = server.doc().nodes.at(-1)!.id
+    await waitFor(
+      () => !!host.querySelector(`[data-node="${id}"].selected .canvas-tl-empty`),
+      () => host.innerHTML.slice(0, 300),
+    )
+    expect(host.querySelector(`[data-node="${id}"] .canvas-tl-empty`)!.textContent).toBe('添加视频')
+    expect(host.querySelector(`[data-node="${id}"] .canvas-tl-view`)).toBeNull()
+  })
+
+  test('从文件树把视频拖到时间线上：整段插进轨道；拖进图片报出，不发操作', async () => {
+    const restoreVideo = fakeDurations(5)
+    try {
+      const { host, server, refs } = await mount(TIMELINE)
+      const store = await import('../../lib/store/index.ts')
+      const drop = (path: string) => {
+        const ev = new Event('drop', { bubbles: true, cancelable: true })
+        Object.defineProperties(ev, {
+          dataTransfer: {
+            value: {
+              types: [store.WORKSPACE_PATH_TYPE],
+              getData: (type: string) => (type === store.WORKSPACE_PATH_TYPE ? path : ''),
+            },
+          },
+          clientX: { value: 100 },
+          clientY: { value: 100 },
+        })
+        node(host, refs.$t!).dispatchEvent(ev)
+      }
+      drop('镜头/雨夜.mp4')
+      await waitFor(
+        () => server.ops.length === 1,
+        () => JSON.stringify(server.ops),
+      )
+      expect(server.ops[0]).toEqual([
+        {
+          op: 'update',
+          id: refs.$t!,
+          clips: [
+            { path: 'a.mp4', in: 0, out: 2 },
+            { path: 'b.mp4', in: 1, out: 4 },
+            { path: '镜头/雨夜.mp4', in: 0, out: 5 },
+          ],
+        },
+      ])
+      drop('角色/小满.png')
+      await waitFor(
+        () => host.querySelector('.canvas-fault')?.textContent === '只有视频能放进时间线',
+        () => host.querySelector('.canvas-fault')?.textContent ?? '',
+      )
+      expect(server.ops).toHaveLength(1)
+    } finally {
+      restoreVideo()
+    }
+  })
+
+  test('从系统把视频拖到时间线上：先传进 uploads/（放在时间线右侧），再整段插进轨道', async () => {
+    const restoreVideo = fakeDurations(3)
+    const original = document.elementsFromPoint
+    try {
+      const { host, server, refs } = await mount(TIMELINE)
+      const tl = node(host, refs.$t!)
+      document.elementsFromPoint = () => [tl]
+      const ev = new Event('drop', { bubbles: true, cancelable: true })
+      Object.defineProperties(ev, {
+        dataTransfer: {
+          value: {
+            types: ['Files'],
+            getData: () => '',
+            files: [new File([new Uint8Array([1])], '雨夜.mp4', { type: 'video/mp4' })],
+          },
+        },
+        clientX: { value: 100 },
+        clientY: { value: 100 },
+      })
+      tl.dispatchEvent(ev)
+      await waitFor(
+        () => server.ops.length === 1,
+        () => JSON.stringify(server.ops),
+      )
+      expect(server.uploads[0]!.get('beside')).toBe(refs.$t!)
+      expect(server.ops[0]![0]).toMatchObject({
+        op: 'update',
+        id: refs.$t!,
+        clips: [
+          { path: 'a.mp4', in: 0, out: 2 },
+          { path: 'b.mp4', in: 1, out: 4 },
+          { path: 'uploads/雨夜.mp4', in: 0, out: 3 },
+        ],
+      })
+    } finally {
+      document.elementsFromPoint = original
+      restoreVideo()
+    }
+  })
+
+  test('从片段推出线：画布上被片段引用的视频各连一条线到时间线；剪断即删掉引用它的片段', async () => {
+    const { host, server, refs } = await mount([
+      ...TIMELINE,
+      { op: 'add_file', ref: '$a', path: 'a.mp4', x: 0, y: 900 },
+    ])
+    const line = `clip:${refs.$t!}:${refs.$a!}`
+    await waitFor(
+      () => !!host.querySelector(`.canvas-edge-hit[data-edge="${line}"]`),
+      () => host.querySelector('.canvas-edges')!.innerHTML.slice(0, 300),
+    )
+    expect(host.querySelector(`[data-edge="clip:${refs.$t!}:${refs.$v!}"]`)).toBeNull()
+    const hit = host.querySelector<SVGPathElement>(`.canvas-edge-hit[data-edge="${line}"]`)!
+    pointer(hit as unknown as HTMLElement, 'pointerdown', 10, 10)
+    await waitFor(
+      () => !!host.querySelector('.canvas-edges path.selected'),
+      () => host.querySelector('.canvas-edges')!.innerHTML.slice(0, 300),
+    )
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }))
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([
+      { op: 'update', id: refs.$t!, clips: [{ path: 'b.mp4', in: 1, out: 4 }] },
+    ])
+    await waitFor(
+      () => !host.querySelector(`[data-edge="${line}"]`),
+      () => host.querySelector('.canvas-edges')!.innerHTML.slice(0, 300),
+    )
+  })
+
+  test('从视频节点的连接点拖线到时间线上：落在轨道外时整段放最后', async () => {
+    const restoreVideo = fakeDurations(5)
+    const point = document.elementFromPoint
+    const points = document.elementsFromPoint
+    try {
+      const { host, server, refs } = await mount(TIMELINE)
+      const stage = host.querySelector('.canvas-stage')!
+      document.elementFromPoint = () => node(host, refs.$t!)
+      document.elementsFromPoint = () => [node(host, refs.$t!)]
+      pointer(node(host, refs.$v!).querySelector('.canvas-port.out')!, 'pointerdown', 10, 10)
+      pointer(stage, 'pointermove', 120, 40)
+      await waitFor(
+        () => node(host, refs.$t!).classList.contains('link-target'),
+        () => node(host, refs.$t!).className,
+      )
+      pointer(stage, 'pointerup', 120, 40)
+      await waitFor(
+        () => server.ops.length === 1,
+        () => JSON.stringify(server.ops),
+      )
+      expect(server.ops[0]).toEqual([
+        {
+          op: 'update',
+          id: refs.$t!,
+          clips: [
+            { path: 'a.mp4', in: 0, out: 2 },
+            { path: 'b.mp4', in: 1, out: 4 },
+            { path: 'clip.mp4', in: 0, out: 5 },
+          ],
+        },
+      ])
+    } finally {
+      document.elementFromPoint = point
+      document.elementsFromPoint = points
+      restoreVideo()
+    }
+  })
+
+  test('右键一段：菜单作用于这一段，创建副本插在它后面，删除删掉它', async () => {
+    const { host, server, refs } = await mount(TIMELINE)
+    const clipAt = (i: number) => node(host, refs.$t!).querySelectorAll('.canvas-tl-clip')[i]!
+    const menuFor = async (i: number) => {
+      clipAt(i).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+      await waitFor(
+        () => !!document.querySelector('.canvas-context-menu'),
+        () => document.body.innerHTML.slice(-300),
+      )
+      return [...document.querySelectorAll<HTMLButtonElement>('.canvas-context-menu button')]
+    }
+    const items = await menuFor(1)
+    expect(items.map((b) => b.querySelector('span')!.textContent)).toContain('创建副本')
+    items.find((b) => b.textContent?.startsWith('创建副本'))!.click()
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([
+      {
+        op: 'update',
+        id: refs.$t!,
+        clips: [
+          { path: 'a.mp4', in: 0, out: 2 },
+          { path: 'b.mp4', in: 1, out: 4 },
+          { path: 'b.mp4', in: 1, out: 4 },
+        ],
+      },
+    ])
+    await waitFor(
+      () => node(host, refs.$t!).querySelectorAll('.canvas-tl-clip').length === 3,
+      () => '',
+    )
+    ;(await menuFor(0)).find((b) => b.textContent?.startsWith('删除'))!.click()
+    await waitFor(
+      () => server.ops.length === 2,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[1]).toEqual([
+      {
+        op: 'update',
+        id: refs.$t!,
+        clips: [
+          { path: 'b.mp4', in: 1, out: 4 },
+          { path: 'b.mp4', in: 1, out: 4 },
+        ],
+      },
+    ])
+  })
+
+  test('Delete：轨道上选着片段时删那一段，不删节点；没选片段时删节点', async () => {
+    const { host, server, refs } = await mount(TIMELINE)
+    const { sessionOf } = await import('./timeline.ts')
+    const tl = node(host, refs.$t!)
+    pointer(tl.querySelector('.canvas-tl-bar')!, 'pointerdown', 10, 10)
+    pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
+    await waitFor(
+      () => tl.classList.contains('selected'),
+      () => tl.className,
+    )
+    sessionOf(refs.$t!)!.select(1)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }))
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([
+      { op: 'update', id: refs.$t!, clips: [{ path: 'a.mp4', in: 0, out: 2 }] },
+    ])
+    expect(sessionOf(refs.$t!)!.selected()).toBeNull()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }))
+    await waitFor(
+      () => server.ops.length === 2,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[1]).toEqual([{ op: 'remove', id: refs.$t! }])
+  })
+
+  test('分割在播放头处一分为二；播放头不在段内时按钮不可用', async () => {
+    const { host, server, refs } = await mount(TIMELINE)
+    const { sessionOf } = await import('./timeline.ts')
+    const split = node(host, refs.$t!).querySelector<HTMLButtonElement>(
+      'button[aria-label="分割"]',
+    )!
+    sessionOf(refs.$t!)!.seek(0)
+    await waitFor(
+      () => split.disabled,
+      () => String(split.disabled),
+    )
+    sessionOf(refs.$t!)!.seek(3)
+    await waitFor(
+      () => !split.disabled,
+      () => String(split.disabled),
+    )
+    split.click()
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([
+      {
+        op: 'update',
+        id: refs.$t!,
+        clips: [
+          { path: 'a.mp4', in: 0, out: 2 },
+          { path: 'b.mp4', in: 1, out: 2 },
+          { path: 'b.mp4', in: 2, out: 4 },
+        ],
+      },
+    ])
+  })
+
+  test('全屏编辑盖住应用、预览移过去；全屏里 Delete 不删节点，Esc 退出、预览回到节点', async () => {
+    const { host, server, refs } = await mount(TIMELINE)
+    const tl = node(host, refs.$t!)
+    pointer(tl.querySelector('.canvas-tl-bar')!, 'pointerdown', 10, 10)
+    pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
+    tl.querySelector<HTMLButtonElement>('.canvas-tl-full-btn')!.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-tl-layer .canvas-tl.full .canvas-tl-screen'),
+      () => document.body.innerHTML.slice(-300),
+    )
+    expect(tl.querySelector('.canvas-tl-screen')).toBeNull()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(server.ops).toHaveLength(0)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await waitFor(
+      () => !document.querySelector('.canvas-tl-layer') && !!tl.querySelector('.canvas-tl-screen'),
+      () => document.body.innerHTML.slice(-300),
+    )
+  })
+
+  test('导出失败：报出原因，按钮回到可再导出，不留进度', async () => {
+    const { host, refs } = await mount(TIMELINE)
+    const button = node(host, refs.$t!).querySelector<HTMLButtonElement>('.canvas-tl-export')!
+    button.click()
+    await waitFor(
+      () => !!host.querySelector('.canvas-fault'),
+      () => button.outerHTML,
+    )
+    await waitFor(
+      () => button.getAttribute('aria-label') === '导出',
+      () => button.outerHTML,
+    )
+    expect(button.textContent).toBe('')
   })
 })
