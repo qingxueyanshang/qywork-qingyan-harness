@@ -2,7 +2,7 @@
  * 设置页里的生成模型：接口页添加、默认、删除，以及模型库的类别页签。
  *
  * 覆盖范围：`ModelSettings.tsx` 的 `addModel` 分流、生成模型行、`removeMediaModel` 与 `withMediaDefaults`；
- * `ModelLibrary.tsx` 的类别页签与 `MediaTable`。
+ * `ModelLibrary.tsx` 的类别页签、未知单价显示与 `MediaTable`。
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -56,6 +56,56 @@ const QWEN_IMAGE: MediaLibraryModel = {
   maxVideos: 0,
   params: ['size：字符串；宽*高', 'n：整数 1–6；一次生成几张；默认 1', 'seed：整数 0–2147483647'],
 }
+
+test('模型库未知单价显示横线，并直接显示订阅限制', async () => {
+  const { render } = await import('solid-js/web')
+  const { ModelLibrary } = await import('./ModelLibrary.tsx')
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(
+    () => (
+      <ModelLibrary
+        loading={false}
+        error={null}
+        media={[]}
+        vendors={[
+          {
+            id: 'minimax',
+            displayName: 'MiniMax',
+            models: [
+              {
+                id: 'MiniMax-M3.1-Flash-Preview',
+                label: 'MiniMax M3.1 Flash Preview',
+                contextWindow: 1_000_000,
+                maxOutputTokens: 524_288,
+                vision: true,
+                input: null,
+                output: null,
+                cacheRead: null,
+                cacheWrite: null,
+                currency: 'USD',
+                effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+                thinksByDefault: true,
+                priceNotes: ['仅 M Plan 订阅 Key 可用；尚未公布按 token 单价'],
+              },
+            ],
+          },
+        ]}
+      />
+    ),
+    host,
+  )
+  try {
+    expect(
+      Array.from(host.querySelectorAll('td')).filter((td) => td.textContent === '—'),
+    ).toHaveLength(4)
+    expect(host.textContent).not.toContain('$0')
+    expect(host.querySelector('.lib-note')?.textContent).toContain('仅 M Plan 订阅 Key 可用')
+  } finally {
+    dispose()
+    host.remove()
+  }
+})
 
 test('Google 与 xAI 添加后保留生成类别和原生协议，模型库显示对应页签', async () => {
   const { render } = await import('solid-js/web')

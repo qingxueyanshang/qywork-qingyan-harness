@@ -27,16 +27,19 @@ import type { TransportCapabilities } from './types.ts'
  * 要不要合计——而不是在这里换算成一个没有出处的美元数字。
  */
 export interface Pricing {
-  input: number
-  output: number
+  /** null = 未公布按 token 单价，不代表免费。 */
+  input: number | null
+  output: number | null
   /** 省略即 `'USD'`。缺省不写是为了不用给已有的每一条都加一遍。 */
   currency?: 'USD' | 'CNY'
   /** 缓存读取，通常是 input 的 0.1 倍。 */
-  cacheRead: number
+  cacheRead: number | null
   /** 缓存写入（5 分钟 TTL），通常是 input 的 1.25 倍。 */
-  cacheWrite5m: number
+  cacheWrite5m: number | null
   /** 缓存写入（1 小时 TTL），通常是 input 的 2 倍。 */
-  cacheWrite1h: number
+  cacheWrite1h: number | null
+  /** 订阅或单价可用范围，随模型库价目显示。 */
+  note?: string
 }
 
 /** 历史思考内容的回放规则；自定义模型覆盖与内置目录共用。 */
@@ -293,6 +296,14 @@ export const VENDORS: readonly Vendor[] = [
       openai_chat_completions: 'https://api.minimax.cn/v1',
       openai_responses: 'https://api.minimax.cn/v1',
       anthropic_messages: 'https://api.minimax.cn/anthropic',
+    },
+  },
+  {
+    id: 'stepfun',
+    displayName: '阶跃星辰',
+    baseUrls: {
+      openai_chat_completions: 'https://api.stepfun.com/v1',
+      anthropic_messages: 'https://api.stepfun.com',
     },
   },
 ]
@@ -649,11 +660,11 @@ export function priceAt(
   if (rate === 1) return base
   return {
     ...base,
-    input: round(base.input * rate),
-    output: round(base.output * rate),
-    cacheRead: round(base.cacheRead * rate),
-    cacheWrite5m: round(base.cacheWrite5m * rate),
-    cacheWrite1h: round(base.cacheWrite1h * rate),
+    input: base.input === null ? null : round(base.input * rate),
+    output: base.output === null ? null : round(base.output * rate),
+    cacheRead: base.cacheRead === null ? null : round(base.cacheRead * rate),
+    cacheWrite5m: base.cacheWrite5m === null ? null : round(base.cacheWrite5m * rate),
+    cacheWrite1h: base.cacheWrite1h === null ? null : round(base.cacheWrite1h * rate),
   }
 }
 
@@ -826,7 +837,7 @@ export function claudeCatalog(): ModelSpec[] {
 }
 
 /** DeepSeek 当前模型规格。价格为人民币高峰价，空闲时段五折。 */
-function deepseekCatalog(now: number): ModelSpec[] {
+function deepseekCatalog(): ModelSpec[] {
   const flash: ModelSpec = {
     id: 'deepseek-flash',
     displayName: 'DeepSeek V4.1 Flash',
@@ -855,20 +866,15 @@ function deepseekCatalog(now: number): ModelSpec[] {
       cacheWrite1h: 0,
     },
   }
-  // 北京时间 2026-09-14 12:00 起，DeepSeek 停用 Pro，请求由 V4.1 Flash 服务并按 Flash 计价。
-  // id 与显示名保留（已有配置和引用不失效）；那之后按 Flash 的规格与计价走，图片能力除外：
-  // 发给 Pro 的图片只被计数、内容不可见，标成能收图会让模型对着看不到的图作答。
-  const pro: ModelSpec =
-    now >= Date.UTC(2026, 8, 14, 4)
-      ? { ...flash, id: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', vision: false }
-      : {
-          ...flash,
-          id: 'deepseek-v4-pro',
-          displayName: 'DeepSeek V4 Pro',
-          density: DEEPSEEK_DENSITY,
-          vision: false,
-          pricing: { ...flash.pricing, input: 9, output: 27, cacheRead: 0.3 },
-        }
+  // 官方撤回 Pro 下线安排，继续按 Pro 单价提供服务；不能再按日期切换到 Flash。
+  const pro: ModelSpec = {
+    ...flash,
+    id: 'deepseek-v4-pro',
+    displayName: 'DeepSeek V4 Pro',
+    density: DEEPSEEK_DENSITY,
+    vision: false,
+    pricing: { ...flash.pricing, input: 9, output: 27, cacheRead: 0.3 },
+  }
   return [flash, pro].flatMap((model): ModelSpec[] => [
     model,
     {
@@ -1632,6 +1638,34 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     },
 
     // ── MiniMax ──
+    ...(['openai_chat_completions', 'openai_responses', 'anthropic_messages'] as const).map(
+      (provider): ModelSpec => ({
+        ...base,
+        ...effort(['low', 'medium', 'high', 'xhigh', 'max']),
+        id: 'MiniMax-M3.1-Flash-Preview',
+        displayName: 'MiniMax M3.1 Flash Preview',
+        vendor: 'minimax',
+        provider,
+        thinking: provider === 'anthropic_messages' ? 'always_on' : 'reasoning_effort',
+        chatReasoningProtocol: 'preserved',
+        reasoningEcho: provider === 'openai_responses' ? 'reasoning_text' : 'none',
+        chatToolSchema: 'native',
+        cacheRouting: 'none',
+        minCacheablePrefix: 1024,
+        vision: true,
+        video: provider === 'openai_chat_completions',
+        contextWindow: 1_000_000,
+        maxOutputTokens: 524_288,
+        pricing: {
+          input: null,
+          output: null,
+          cacheRead: null,
+          cacheWrite5m: null,
+          cacheWrite1h: null,
+          note: '仅 M Plan 订阅 Key 可用；尚未公布按 token 单价',
+        },
+      }),
+    ),
     {
       ...base,
       ...thinksNoDial,
@@ -1646,6 +1680,26 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       pricing: usd(0.3, 1.2, 0.06),
       longContext: [MINIMAX_M3_LONG],
     },
+    // ── 阶跃星辰 ──
+    ...(['openai_chat_completions', 'anthropic_messages'] as const).map(
+      (provider): ModelSpec => ({
+        ...base,
+        ...effort(['low', 'medium', 'high']),
+        id: 'step-5-preview',
+        displayName: 'Step 5 Preview',
+        vendor: 'stepfun',
+        provider,
+        thinking: provider === 'anthropic_messages' ? 'always_on' : 'reasoning_effort',
+        chatToolSchema: 'native',
+        cacheRouting: 'none',
+        minCacheablePrefix: 256,
+        vision: true,
+        video: provider === 'openai_chat_completions',
+        contextWindow: 1_000_000,
+        maxOutputTokens: 64_000,
+        pricing: { ...cny(7, 20, 0.35), cacheWrite5m: 7, cacheWrite1h: 7 },
+      }),
+    ),
   ]
 }
 
@@ -1787,12 +1841,7 @@ export function applyTransportCapabilities(
 
 /** 全部内置模型。提供默认规格与计价，不限制未收录模型的接入或探测。 */
 export function builtinCatalog(now = Date.now()): ModelSpec[] {
-  return [
-    ...claudeCatalog(),
-    ...deepseekCatalog(now),
-    ...mimoCatalog(),
-    ...openAiCompatCatalog(now),
-  ]
+  return [...claudeCatalog(), ...deepseekCatalog(), ...mimoCatalog(), ...openAiCompatCatalog(now)]
 }
 
 /**
@@ -1914,6 +1963,8 @@ export function computeCost(
   // **参考数据**（它是真实价格），不是可达的代码分支。别为它加一个 cacheTtl 参数：
   // 没有调用方会传，那条 1h 分支永远走不到。
   const writeRate = p.cacheWrite5m
+  // 沿用运行用量的 0 = 金额不明口径；没有单价时不估填订阅费用。
+  if (p.input === null || p.output === null || p.cacheRead === null || writeRate === null) return 0
   const total =
     (usage.inputTokens * p.input +
       usage.outputTokens * p.output +

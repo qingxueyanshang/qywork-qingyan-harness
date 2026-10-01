@@ -6,6 +6,44 @@
 接口支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
 选择协议时，以所连接端点提供的接口为准。通过中转站接入时，使用中转站给出的地址与凭证。
 
+## MiniMax M3.1 Flash Preview 与 Step 5 Preview
+
+本次新增 `MiniMax-M3.1-Flash-Preview` 与 `step-5-preview`，不追加 MiniMax M2.x、Step 3.x 历史型号。
+原有 MiniMax M3 仍按自己的规格保留。
+
+| 模型 | 上下文 | 最大输出 | 思考强度 | 接口 |
+|---|---:|---:|---|---|
+| MiniMax-M3.1-Flash-Preview | 1,000,000 | 524,288 | low / medium / high / xhigh / max | Chat、Responses、Messages |
+| step-5-preview | 1,000,000 | 64,000 | low / medium / high | Chat、Messages |
+
+MiniMax M3.1 Preview 需要 **M Plan 订阅 Key**，目前不面向普通按量 Key。
+国内 Chat / Responses Base URL 为 `https://api.minimax.cn/v1`，Messages 为
+`https://api.minimax.cn/anthropic`；国际账户使用相应的 `api.minimax.io` 地址。
+模型默认以 `max` 强度思考，不支持关闭思考。未公布按 token 单价，模型库显示“—”，
+不沿用 M3 的价格；现有运行用量中的零金额表示未估算费用，不表示订阅免费。
+
+Step 普通 API 的 Chat Base URL 为 `https://api.stepfun.com/v1`，Messages 为
+`https://api.stepfun.com`。Step Plan 应按订阅文档使用其专用地址和 Key。
+标准价格为人民币 / 百万 token：未命中输入 7、缓存命中 0.35、输出 20；首次缓存写入按普通输入计费。
+Chat 返回的顶层 `usage.cached_tokens` 计入缓存命中，不再按普通输入重复计费。
+
+两款模型均支持图片；当前 Chat 适配器支持视频输入，Responses / Messages 不声明尚未接入的视频传法。
+MiniMax 的历史思考按协议完整回传，工具定义保留原生 required / optional 语义。
+本地协议回归不等同于官方端点实测。
+
+2026-10-01 核对：[MiniMax 接口](https://platform.minimax.io/docs/api-reference/text-chat-openai)、
+[M Plan 接入](https://platform.minimax.io/docs/m-plan/other-tools)、
+[Step 模型规格](https://platform.stepfun.com/docs/zh/guides/models/step-5-preview)、
+[Step 定价](https://platform.stepfun.com/docs/zh/guides/pricing/details)。
+
+## DeepSeek Pro 计价
+
+`deepseek-v4-pro` 继续独立提供服务，不再按原定下线日期自动改用 Flash 单价。
+人民币 / 百万 token 高峰价为输入 9、缓存命中 0.30、输出 27；空闲时段按现有分时规则减半。
+Pro 保持文本模型能力，`deepseek-flash` 的规格与价格独立维护。
+2026-10-01 核对：[官方价格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)、
+[服务保留说明](https://api-docs.deepseek.com/updates/)。
+
 ## Google 与 xAI 图片、视频生成
 
 在设置的接口页添加下列模型 ID 后，模型会进入对应的图像或视频类别。

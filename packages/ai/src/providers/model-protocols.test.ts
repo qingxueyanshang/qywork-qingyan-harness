@@ -1,6 +1,13 @@
+/** 覆盖 catalog.ts 与 Chat、Responses 适配器的实际请求、思考回放、工具续轮和用量解析。 */
 import { describe, expect, test } from 'bun:test'
 import type { ResponseReasoning } from '@qywork/core'
-import { applyTransportCapabilities, builtinCatalog, lookupModel, priceAt } from '../catalog.ts'
+import {
+  applyTransportCapabilities,
+  builtinCatalog,
+  computeCost,
+  lookupModel,
+  priceAt,
+} from '../catalog.ts'
 import { buildAdapter } from '../factory.ts'
 import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ChatRequest, ProviderEvent } from '../types.ts'
@@ -67,6 +74,165 @@ async function exchange(
     server.stop(true)
   }
 }
+
+describe('MiniMax M3.1 与 Step 5 协议映射', () => {
+  test('Chat 原生工具 schema、思考输出和工具续轮；Step 根级缓存命中只计一次', async () => {
+    for (const model of ['MiniMax-M3.1-Flash-Preview', 'step-5-preview']) {
+      const { body, events } = await exchange(
+        model,
+        'openai_chat_completions',
+        [
+          {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  [model === 'step-5-preview' ? 'reasoning' : 'reasoning_content']: '先读取',
+                },
+              },
+            ],
+          },
+          {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'c2',
+                      type: 'function',
+                      function: { name: 'read_file', arguments: '{"path":"b.ts"}' },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+          {
+            choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+            usage: { prompt_tokens: 591, completion_tokens: 120, cached_tokens: 512 },
+          },
+        ],
+        {
+          messages: [
+            {
+              role: 'assistant',
+              content: '',
+              reasoningContent: '历史思考',
+              toolCalls: [{ id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } }],
+            },
+            { role: 'tool', toolCallId: 'c1', content: '内容' },
+          ],
+        },
+      )
+      expect(body.reasoning_effort).toBe('high')
+      expect(body.thinking).toBeUndefined()
+      expect(body.tools).toEqual([
+        {
+          type: 'function',
+          function: {
+            name: tools[0]!.name,
+            description: tools[0]!.description,
+            parameters: tools[0]!.parameters,
+          },
+        },
+      ])
+      expect(body.messages).toMatchObject([
+        {
+          role: 'assistant',
+          reasoning_content: '历史思考',
+          tool_calls: [{ id: 'c1', function: { arguments: '{"path":"a.ts"}' } }],
+        },
+        { role: 'tool', tool_call_id: 'c1', content: '内容' },
+      ])
+      expect(events).toContainEqual({
+        type: 'thinking_delta',
+        delta: '先读取',
+        at: expect.any(Number),
+      })
+      expect(events).toContainEqual({
+        type: 'tool_calls',
+        calls: [{ id: 'c2', name: 'read_file', arguments: { path: 'b.ts' } }],
+        at: expect.any(Number),
+      })
+      const usage = events.find((e) => e.type === 'usage')
+      expect(usage).toMatchObject({
+        usage: { inputTokens: 79, cachedTokens: 512, outputTokens: 120, source: 'provider' },
+      })
+      if (model === 'step-5-preview' && usage?.type === 'usage')
+        expect(computeCost(lookupModel(model, 'openai_chat_completions'), usage.usage)).toBe(
+          0.003132,
+        )
+    }
+  })
+
+  test('MiniMax Responses 用 reasoning_text 数组回放，工具结果继续同一轮', async () => {
+    const { body, events } = await exchange(
+      'MiniMax-M3.1-Flash-Preview',
+      'openai_responses',
+      [
+        { type: 'response.reasoning_text.delta', delta: '接着读' },
+        {
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            output: [
+              {
+                type: 'function_call',
+                call_id: 'c2',
+                name: 'read_file',
+                arguments: '{"path":"b.ts"}',
+              },
+            ],
+          },
+        },
+      ],
+      {
+        effort: 'xhigh',
+        maxOutputTokens: 600_000,
+        messages: [
+          { role: 'assistant', content: '计划', reasoningContent: '文本轮思考' },
+          { role: 'user', content: '继续' },
+          {
+            role: 'assistant',
+            content: '',
+            reasoningContent: '工具轮思考',
+            toolCalls: [{ id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } }],
+          },
+          { role: 'tool', toolCallId: 'c1', content: '内容' },
+        ],
+      },
+    )
+    expect(body.reasoning).toEqual({ effort: 'xhigh' })
+    expect(body.max_output_tokens).toBe(524_288)
+    expect(body.prompt_cache_key).toBeUndefined()
+    const input = body.input as Record<string, unknown>[]
+    expect(input.filter((i) => i.type === 'reasoning')).toEqual([
+      { type: 'reasoning', content: [{ type: 'reasoning_text', text: '文本轮思考' }] },
+      { type: 'reasoning', content: [{ type: 'reasoning_text', text: '工具轮思考' }] },
+    ])
+    expect(input).toContainEqual({ type: 'function_call_output', call_id: 'c1', output: '内容' })
+    expect(body.tools).toEqual([
+      {
+        type: 'function',
+        name: tools[0]!.name,
+        description: tools[0]!.description,
+        parameters: tools[0]!.parameters,
+      },
+    ])
+    expect(events).toContainEqual({
+      type: 'thinking_delta',
+      delta: '接着读',
+      at: expect.any(Number),
+    })
+    expect(events).toContainEqual({
+      type: 'tool_calls',
+      calls: [{ id: 'c2', name: 'read_file', arguments: { path: 'b.ts' } }],
+      at: expect.any(Number),
+    })
+  })
+})
 
 describe('GLM 5.3 与 Grok 4.7 官方协议映射', () => {
   test('FlashX 精确收录两协议；Responses 不借用 Chat 档位与视频能力', () => {

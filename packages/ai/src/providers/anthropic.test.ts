@@ -154,6 +154,43 @@ describe('思考档位严格遵守用户选择', () => {
     ])
   })
 
+  test('MiniMax 和 Step 的 Messages 档位与工具结果按原生协议发送', async () => {
+    for (const model of ['MiniMax-M3.1-Flash-Preview', 'step-5-preview']) {
+      for (const effort of lookupModel(model, 'anthropic_messages').effortLevels) {
+        const body = await send(
+          [
+            { role: 'user', content: '开始' },
+            {
+              role: 'assistant',
+              content: '',
+              reasoningContent: '先读文件',
+              toolCalls: [{ id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } }],
+            },
+            { role: 'tool', toolCallId: 'c1', content: '内容' },
+          ],
+          effort,
+          model,
+        )
+        expect(body.thinking).toBeUndefined()
+        expect(body.output_config).toEqual({ effort })
+        // send 只申请 64 token，恒开思考按适配器已有规则预留到 16K。
+        expect(body.max_tokens).toBe(16_000)
+        const history = body.messages as { content: Record<string, unknown>[] }[]
+        expect(history[1]?.content).toContainEqual({
+          type: 'tool_use',
+          id: 'c1',
+          name: 'read_file',
+          input: { path: 'a.ts' },
+        })
+        expect(history[2]?.content).toEqual([
+          { type: 'tool_result', tool_use_id: 'c1', content: '内容' },
+        ])
+        if (model === 'MiniMax-M3.1-Flash-Preview')
+          expect(history[1]?.content[0]).toEqual({ type: 'thinking', thinking: '先读文件' })
+      }
+    }
+  })
+
   test('DeepSeek 三档使用 output_config，并完整回传文本轮和工具轮思考', async () => {
     const messages: WireMessage[] = [
       { role: 'user', content: '第一问' },

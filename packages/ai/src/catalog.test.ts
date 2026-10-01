@@ -20,6 +20,55 @@ import {
   reasoningReplay,
 } from './catalog.ts'
 
+test('MiniMax 与阶跃星辰只补当前新型号，能力按实际接通的协议声明', () => {
+  const catalog = builtinCatalog()
+  expect([...new Set(catalog.filter((m) => m.vendor === 'minimax').map((m) => m.id))]).toEqual([
+    'MiniMax-M3.1-Flash-Preview',
+    'MiniMax-M3',
+  ])
+  expect([...new Set(catalog.filter((m) => m.vendor === 'stepfun').map((m) => m.id))]).toEqual([
+    'step-5-preview',
+  ])
+  for (const kind of [
+    'openai_chat_completions',
+    'openai_responses',
+    'anthropic_messages',
+  ] as const) {
+    const minimax = lookupModel('MiniMax-M3.1-Flash-Preview', kind)
+    expect(minimax).toMatchObject({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 524_288,
+      effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      vision: true,
+      video: kind === 'openai_chat_completions',
+      thinksByDefault: true,
+      pricing: {
+        input: null,
+        output: null,
+        cacheRead: null,
+        cacheWrite5m: null,
+        cacheWrite1h: null,
+      },
+    })
+    expect(minimax.pricing.note).toContain('M Plan')
+    expect(computeCost(minimax, { inputTokens: 1_000_000, outputTokens: 1_000 })).toBe(0)
+  }
+  for (const kind of ['openai_chat_completions', 'anthropic_messages'] as const) {
+    expect(lookupModel('step-5-preview', kind)).toMatchObject({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 64_000,
+      effortLevels: ['low', 'medium', 'high'],
+      vision: true,
+      video: kind === 'openai_chat_completions',
+      thinksByDefault: true,
+      pricing: { currency: 'CNY', input: 7, output: 20, cacheRead: 0.35, cacheWrite5m: 7 },
+    })
+  }
+  expect(catalog.some((m) => m.id === 'step-5-preview' && m.provider === 'openai_responses')).toBe(
+    false,
+  )
+})
+
 /**
  * 历史推理的上线规则逐协议锁住：装配点裁剪与三个适配器的翻译共用它，
  * 任何一格变了，本地估算与线上字节就会各数一份。
@@ -127,19 +176,29 @@ describe('DeepSeek 当前规格', () => {
     expect(responses.reasoningEcho).toBe('reasoning_text')
     expect(responses.cacheRouting).toBe('none')
   })
-  test('Pro 在公告时间切换到 Flash 的价格与规格，仍不收图片', () => {
+  test('Pro 在原定下线日期前后均保持独立价格与文本能力', () => {
     for (const kind of [
       'openai_chat_completions',
       'openai_responses',
       'anthropic_messages',
     ] as const) {
-      const pro = lookupModel('deepseek-v4-pro', kind, cutover - 1)
-      expect(pro.vision).toBe(false)
-      expect(pro.pricing.output).toBe(27)
-      const routed = lookupModel('deepseek-v4-pro', kind, cutover)
-      expect(routed.id).toBe('deepseek-v4-pro')
-      expect(routed.vision).toBe(false)
-      expect(routed.pricing).toEqual(lookupModel('deepseek-flash', kind, cutover).pricing)
+      for (const now of [cutover - 1, cutover, Date.UTC(2026, 9, 1)]) {
+        const pro = lookupModel('deepseek-v4-pro', kind, now)
+        expect(pro.vision).toBe(false)
+        expect(pro.pricing).toMatchObject({ input: 9, output: 27, cacheRead: 0.3 })
+        expect(pro.pricing).not.toEqual(lookupModel('deepseek-flash', kind, now).pricing)
+      }
+      const pro = lookupModel('deepseek-v4-pro', kind)
+      expect(priceAt(pro, { now: Date.UTC(2026, 8, 15, 2) })).toMatchObject({
+        input: 9,
+        output: 27,
+        cacheRead: 0.3,
+      })
+      expect(priceAt(pro, { now: Date.UTC(2026, 8, 15, 12) })).toMatchObject({
+        input: 4.5,
+        output: 13.5,
+        cacheRead: 0.15,
+      })
     }
   })
   test('Haiku 的预算模式不声明 effort 档位', () => {
@@ -392,6 +451,7 @@ describe('视频输入', () => {
     expect(supported).toEqual(
       [
         'openai_chat_completions:MiniMax-M3',
+        'openai_chat_completions:MiniMax-M3.1-Flash-Preview',
         'openai_chat_completions:glm-4.6v',
         'openai_chat_completions:glm-5.3-flash',
         'openai_chat_completions:glm-5.3-flashx',
@@ -404,6 +464,7 @@ describe('视频输入', () => {
         'openai_chat_completions:qwen3.8-flash',
         'openai_chat_completions:qwen3.8-max',
         'openai_chat_completions:qwen3.8-omni-flash',
+        'openai_chat_completions:step-5-preview',
       ].sort(),
     )
   })
