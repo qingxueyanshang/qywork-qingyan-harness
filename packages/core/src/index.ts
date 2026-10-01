@@ -16,6 +16,7 @@ export {
   applyCanvasOps,
   blankBox,
   CANVAS_SCHEMA_VERSION,
+  type CanvasClip,
   type CanvasDoc,
   type CanvasEdge,
   type CanvasFileNode,
@@ -28,6 +29,7 @@ export {
   type CanvasPixels,
   type CanvasResult,
   type CanvasRunResult,
+  type CanvasTimelineNode,
   type CanvasVersion,
   type CanvasView,
   canvasMediaOf,
@@ -45,6 +47,8 @@ export {
   parseCanvasOps,
   serializeCanvas,
   settleVersion,
+  TIMELINE_BARE,
+  TIMELINE_W,
   validateCanvas,
 } from './domain/canvas.ts'
 // id 与构造器：账本、事件、协议三处都按它们对齐类型

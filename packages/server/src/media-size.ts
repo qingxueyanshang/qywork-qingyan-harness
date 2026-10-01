@@ -1,5 +1,5 @@
 /**
- * 读工作区里图片、视频的像素宽高，给画布节点按实际比例定框。只读文件头与索引，不解码画面。
+ * 读工作区里图片、视频的像素宽高，给画布节点按实际比例定框；读视频时长，核对时间线片段。只读文件头与索引，不解码画面。
  *
  * 图片认 PNG / JPEG / GIF / WebP（`imageSizeOf`）；视频认 ISO 基础媒体格式（mp4 / mov / m4v），
  * 取第一条宽高非零的轨道。其余格式与读不出的文件回 `null`，调用方按缺省框处理。
@@ -25,6 +25,17 @@ export async function mediaSizeOf(abs: string): Promise<CanvasPixels | null> {
   return null
 }
 
+/** 视频的时长（秒），取 `mvhd`。不是 mp4 / mov / m4v 或读不出时回 `null`，调用方不做时长核对。 */
+export async function mediaDurationOf(abs: string): Promise<number | null> {
+  try {
+    if (!VIDEO_RE.test(abs)) return null
+    const moov = await readMoov(abs)
+    return moov ? movieDuration(moov) : null
+  } catch {
+    return null
+  }
+}
+
 async function imageHead(abs: string): Promise<CanvasPixels | null> {
   const fh = await open(abs, 'r')
   try {
@@ -37,8 +48,13 @@ async function imageHead(abs: string): Promise<CanvasPixels | null> {
   }
 }
 
-/** 顶层逐个读 box 头跳过 `mdat` 等大块，找到 `moov` 整块读进来再找轨道。`moov` 在文件尾也能找到。 */
 async function videoSize(abs: string): Promise<CanvasPixels | null> {
+  const moov = await readMoov(abs)
+  return moov ? trackSize(moov) : null
+}
+
+/** 顶层逐个读 box 头跳过 `mdat` 等大块，找到 `moov` 整块读进来。`moov` 在文件尾也能找到。 */
+async function readMoov(abs: string): Promise<Buffer | null> {
   const fh = await open(abs, 'r')
   try {
     const total = (await fh.stat()).size
@@ -52,7 +68,7 @@ async function videoSize(abs: string): Promise<CanvasPixels | null> {
         if (box.size > MAX_MOOV) return null
         const body = Buffer.alloc(box.size - box.header)
         await fh.read(body, 0, body.length, at + box.header)
-        return trackSize(body)
+        return body
       }
       at += box.size
     }
@@ -80,6 +96,19 @@ function boxAt(
     size = left
   }
   return size >= header ? { type, size, header } : null
+}
+
+/** `mvhd`：版本 0 的时间字段 4 字节、版本 1 的 8 字节，时长 = duration / timescale。 */
+function movieDuration(moov: Buffer): number | null {
+  for (const mvhd of children(moov, 'mvhd')) {
+    const wide = mvhd[0] === 1
+    const at = wide ? 20 : 12
+    if (mvhd.length < at + (wide ? 12 : 8)) return null
+    const scale = mvhd.readUInt32BE(at)
+    const duration = wide ? Number(mvhd.readBigUInt64BE(at + 4)) : mvhd.readUInt32BE(at + 4)
+    return scale > 0 ? duration / scale : null
+  }
+  return null
 }
 
 /** `moov` 里各 `trak` 的 `tkhd`：第一条宽高非零的就是画面轨道。 */

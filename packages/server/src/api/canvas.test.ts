@@ -162,6 +162,32 @@ describe('画布接口', () => {
     expect(doc.nodes.filter((n) => n.path === 'uploads/a.jpg')).toHaveLength(0)
   })
 
+  test('收浏览器做好的媒体：帧名不合法回 422；时间线的 mp4 不带帧名，落进 generated/', async () => {
+    const { d, root } = await setup()
+    const made = await call(d, '/api/canvas/ops', {
+      path: PATH,
+      ops: [{ op: 'add_timeline', ref: '$t', name: '粗剪' }],
+    })
+    const timeline = ((await made.json()) as { refs: Record<string, string> }).refs.$t!
+    const render = (query: string, bytes: Uint8Array) => {
+      const url = `http://127.0.0.1/api/canvas/render?${query}&ws=${d.workspaceId}`
+      return handleApi(
+        new URL(url),
+        new Request(url, { method: 'POST', body: bytes }),
+        d,
+      ) as Promise<Response>
+    }
+    const mp4 = new Uint8Array([
+      0, 0, 0, 16, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0,
+    ])
+    expect((await render(`path=${PATH}&nodeId=${timeline}&label=x`, mp4)).status).toBe(422)
+    const ok = await render(`path=${PATH}&nodeId=${timeline}`, mp4)
+    expect(ok.status).toBe(200)
+    const r = (await ok.json()) as { path: string }
+    expect(r.path).toBe('generated/粗剪.mp4')
+    expect(new Uint8Array(await readFile(join(root, r.path)))).toEqual(mp4)
+  })
+
   test('运行立刻返回；生成完成后账本多一行无轮次无会话、带项目的 media 账，用量页列得出', async () => {
     const { d, root, nodeId, done } = await setup()
     held = new Promise((resolve) => {

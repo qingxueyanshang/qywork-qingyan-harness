@@ -26,14 +26,14 @@
     },
     "apps/desktop": {
       "name": "@qywork/desktop",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "devDependencies": {
         "@tauri-apps/cli": "^2.11.4",
       },
     },
     "apps/web": {
       "name": "@qywork/web",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "dependencies": {
         "@codemirror/lang-css": "^6.3.1",
         "@codemirror/lang-html": "^6.4.9",
@@ -50,6 +50,7 @@
         "codemirror": "^6.0.2",
         "highlight.js": "^11.11.1",
         "marked": "^18.0.9",
+        "mediabunny": "^1.61.0",
         "qrcode": "^1.5.4",
         "solid-js": "^1.9.9",
         "xss": "^1.0.15",
@@ -63,7 +64,7 @@
     },
     "packages/agent": {
       "name": "@qywork/agent",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "dependencies": {
         "@qywork/ai": "workspace:*",
         "@qywork/core": "workspace:*",
@@ -72,7 +73,7 @@
     },
     "packages/ai": {
       "name": "@qywork/ai",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.80.0",
         "@qywork/core": "workspace:*",
@@ -81,7 +82,7 @@
     },
     "packages/cli": {
       "name": "@qywork/cli",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "bin": {
         "qy": "./src/index.ts",
       },
@@ -100,11 +101,11 @@
     },
     "packages/core": {
       "name": "@qywork/core",
-      "version": "0.1.14",
+      "version": "0.1.20",
     },
     "packages/mcp": {
       "name": "@qywork/mcp",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/core": "workspace:*",
@@ -112,7 +113,7 @@
     },
     "packages/plugins": {
       "name": "@qywork/plugins",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/core": "workspace:*",
@@ -120,7 +121,7 @@
     },
     "packages/runtime": {
       "name": "@qywork/runtime",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/ai": "workspace:*",
@@ -134,7 +135,7 @@
     },
     "packages/server": {
       "name": "@qywork/server",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/ai": "workspace:*",
@@ -149,14 +150,14 @@
     },
     "packages/store": {
       "name": "@qywork/store",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "dependencies": {
         "@qywork/core": "workspace:*",
       },
     },
     "packages/team": {
       "name": "@qywork/team",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "dependencies": {
         "@qywork/core": "workspace:*",
         "@qywork/tools": "workspace:*",
@@ -164,7 +165,7 @@
     },
     "packages/tools": {
       "name": "@qywork/tools",
-      "version": "0.1.14",
+      "version": "0.1.20",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/ai": "workspace:*",
@@ -482,6 +483,10 @@
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
+    "@types/dom-mediacapture-transform": ["@types/dom-mediacapture-transform@0.1.12", "", { "dependencies": { "@types/dom-webcodecs": "*" } }, "sha512-d7/QsLRwF864A5mgIM/YrfiglHoYn7zgCcAoJgW404r+2DwnNr7EBbLnCWpmOMgH8y0te73L1AV6H1bmauaWFw=="],
+
+    "@types/dom-webcodecs": ["@types/dom-webcodecs@0.1.13", "", {}, "sha512-O5hkiFIcjjszPIYyUSyvScyvrBoV3NOEEZx/pMlsu44TKzWNkLVBBxnxJz42in5n3QIolYOcBYFCPZZ0h8SkwQ=="],
+
     "@types/estree": ["@types/estree@1.0.9", "", {}, "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg=="],
 
     "@types/node": ["@types/node@26.2.0", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-5IviulTZeRNp2vAJ514cc/HUlY5nZ9fCbq9DMyC52BrhFZACo3nI0R7qBxhQmo/d27NFe96ur/b7Wwxklda+kg=="],
@@ -586,6 +591,8 @@
 
     "marked": ["marked@18.0.9", "", { "bin": { "marked": "bin/marked.js" } }, "sha512-/Sa4qiiHZxf0/FQdBBowr9q4r10krCwMvpK48FUBdXdUXScDxiQGR9zCPrFgRVR5LU3iySOiIjy09ZQvADir1w=="],
 
+    "mediabunny": ["mediabunny@1.61.0", "", { "dependencies": { "@types/dom-mediacapture-transform": "^0.1.11", "@types/dom-webcodecs": "0.1.13" } }, "sha512-WciPOYwKZwgYkoBKcEK6JzzIf+w5whypPzFdOihOylZ/5Qv19FmNfRnTcaprH+jD136YpEASU30Eb6VNCJiz3A=="],
+
     "merge-anything": ["merge-anything@5.1.7", "", { "dependencies": { "is-what": "^4.1.8" } }, "sha512-eRtbOb1N5iyH0tkQDAoQ4Ipsp/5qSR79Dzrz8hEPxRX10RWWR/iQXdoKmBSRCThY1Fh5EhISDtpSc93fpxUniQ=="],
 
     "ms": ["ms@2.1.3", "", {}, "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="],
@@ -683,8 +690,6 @@
     "yargs": ["yargs@15.4.1", "", { "dependencies": { "cliui": "^6.0.0", "decamelize": "^1.2.0", "find-up": "^4.1.0", "get-caller-file": "^2.0.1", "require-directory": "^2.1.1", "require-main-filename": "^2.0.0", "set-blocking": "^2.0.0", "string-width": "^4.2.0", "which-module": "^2.0.0", "y18n": "^4.0.0", "yargs-parser": "^18.1.2" } }, "sha512-aePbxDmcYW++PaqBsJ+HYUFwCdv4LVvdnhBy78E57PIor8/OVvhMrADFFEDh8DHDFRv/O9i3lPhsENjO7QX0+A=="],
 
     "yargs-parser": ["yargs-parser@18.1.3", "", { "dependencies": { "camelcase": "^5.0.0", "decamelize": "^1.2.0" } }, "sha512-o50j0JeToy/4K6OZcaQmW6lyXXKhq7csREXcDwk2omFPJEwUNOVtJKvmDr9EI1fAJZUyZcRF7kxGBWmRXudrCQ=="],
-
-    "zod": ["zod@4.3.6", "", {}, "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg=="],
 
     "babel-plugin-jsx-dom-expressions/@babel/helper-module-imports": ["@babel/helper-module-imports@7.18.6", "", { "dependencies": { "@babel/types": "^7.18.6" } }, "sha512-0NFvs3VkuSYbFi1x2Vd6tKrywq+z/cLeYC/RJNFrIX/30Bf5aiGYbtvGXolEktzJH8o5E5KJ3tT+nkxuuZFVlA=="],
 

@@ -335,6 +335,15 @@ export const IconStop = (p: IconProps) => (
   </Svg>
 )
 
+/** 时间线：一条刻度与其下排着的两段片段。 */
+export const IconTimeline = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
+    <path d="M3.5 9h17M8 4.5V9M16 4.5V9" />
+    <path d="M7 13.5h4.5M13.5 13.5H17M7 16h7" />
+  </Svg>
+)
+
 export const IconPlay = (p: IconProps) => (
   <Svg {...p}>
     <path d="M8 5.6v12.8L18.4 12z" fill="currentColor" />

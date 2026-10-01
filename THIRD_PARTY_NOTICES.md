@@ -25,6 +25,7 @@
 | `fflate` | 0.8.2 | MIT |
 | `highlight.js` | 11.11.1 | BSD-3-Clause |
 | `marked` | 18.0.9 | MIT |
+| `mediabunny` | 1.61.0 | MPL-2.0 |
 | `openai` | 6.49.0 | Apache-2.0 |
 | `qrcode` | 1.5.4 | MIT |
 | `solid-js` | 1.9.14 | MIT |

@@ -18,6 +18,7 @@ import {
   type AgentEvent,
   addVersions,
   applyCanvasOps,
+  type CanvasClip,
   type CanvasDoc,
   type CanvasGenerateNode,
   type CanvasMade,
@@ -52,7 +53,7 @@ import {
   TASK_SUFFIX,
 } from '@qywork/tools'
 import { findByName } from './files.ts'
-import { mediaSizeOf } from './media-size.ts'
+import { mediaDurationOf, mediaSizeOf } from './media-size.ts'
 
 /** 画布文件的后缀。文件树按它把文件交给画布页签打开。 */
 export const CANVAS_SUFFIX = '.canvas.json'
@@ -307,10 +308,13 @@ export class CanvasService {
     const inputs: CanvasMade['inputs'] = []
     for (const edge of inputsOf(doc, nodeId)) {
       const source = doc.nodes.find((n) => n.id === edge.from)!
+      // 时间线不能作为输入（`validateCanvas` 拒绝），不会走到这里。
       const file =
         source.type === 'file'
           ? source.path
-          : source.versions.find((v) => v.id === source.current)?.path
+          : source.type === 'generate'
+            ? source.versions.find((v) => v.id === source.current)?.path
+            : undefined
       if (!file || file.endsWith(TASK_SUFFIX)) {
         throw new CanvasFailure(`「${displayNameOf(source)}」还没有结果`, 422)
       }
@@ -540,39 +544,43 @@ export class CanvasService {
   }
 
   /**
-   * 收下浏览器从一个视频节点截的一帧（PNG），按生成的落盘规则写成 `generated/<视频名>_<label>.png`
-   * （不覆盖，撞名加 `-2`），在视频右边加一个引用它的节点。返回新节点的 id 与文件路径。
+   * 收下浏览器做好的媒体，按生成的落盘规则写进 `generated/`（不覆盖，撞名加 `-2`），在源节点右边加一个引用它的节点。
+   * 按文件头分两种：PNG 是从视频节点取的一帧，落成 `<视频名>_<label>.png`；mp4 是时间线导出的成片，落成 `<时间线名>.mp4`，
+   * 不带 `label`。返回新节点的 id 与文件路径。
    */
-  async captureFrame(
+  async landRendered(
     workspaceRoot: string,
     path: string,
-    videoNodeId: string,
-    label: string,
+    sourceId: string,
+    label: string | null,
     bytes: Uint8Array,
   ): Promise<{ nodeId: string; path: string }> {
-    if (!PNG_SIGNATURE.every((b, i) => bytes[i] === b)) {
-      throw new CanvasFailure('收到的不是 PNG 图片', 422)
-    }
+    const png = PNG_SIGNATURE.every((b, i) => bytes[i] === b)
+    const mp4 = !png && new TextDecoder().decode(bytes.subarray(4, 8)) === 'ftyp'
+    if (!png && !mp4) throw new CanvasFailure('收到的不是 PNG 图片或 mp4 视频', 422)
     const doc = await this.load(await this.locate(workspaceRoot, path))
-    const video = doc.nodes.find((n) => n.id === videoNodeId)
-    if (!video) throw new CanvasFailure(`目标已不存在：${videoNodeId}`, 404)
-    if (canvasMediaOf(video) !== 'video') throw new CanvasFailure('只能从视频节点取帧', 422)
-    const name = `${displayNameOf(video)}_${label}`.replace(/[\\/:*?"<>|]/g, '_')
+    const source = doc.nodes.find((n) => n.id === sourceId)
+    if (!source) throw new CanvasFailure(`目标已不存在：${sourceId}`, 404)
+    if (png && (canvasMediaOf(source) !== 'video' || !label)) {
+      throw new CanvasFailure('图片只能是从视频节点取的帧', 422)
+    }
+    if (mp4 && (source.type !== 'timeline' || label)) {
+      throw new CanvasFailure('视频只能是时间线导出的成片', 422)
+    }
+    const name = (png ? `${displayNameOf(source)}_${label}` : displayNameOf(source)).replace(
+      /[\\/:*?"<>|]/g,
+      '_',
+    )
     // 扩展名写全：`12.4s` 这种名字不带的话，`.4s` 会被当成扩展名，文件落成不认识的类型。
     const [landed] = await landFiles(
       workspaceRoot,
-      [{ bytes, mime: 'image/png' }],
-      `generated/${name}.png`,
+      [{ bytes, mime: png ? 'image/png' : 'video/mp4' }],
+      `generated/${name}${png ? '.png' : '.mp4'}`,
     )
     const { refs } = await this.apply(workspaceRoot, path, [
-      {
-        op: 'add_file',
-        ref: '$frame',
-        path: landed!.path,
-        beside: video.id,
-      },
+      { op: 'add_file', ref: '$landed', path: landed!.path, beside: source.id },
     ])
-    return { nodeId: refs.$frame!, path: landed!.path }
+    return { nodeId: refs.$landed!, path: landed!.path }
   }
 
   /**
@@ -783,6 +791,10 @@ export class CanvasService {
     if (node.type === 'file') {
       return (await exists(node.path)) ? { state: 'normal' } : { state: 'missing' }
     }
+    if (node.type === 'timeline') {
+      const found = await Promise.all(node.clips.map((c) => exists(c.path)))
+      return found.every(Boolean) ? { state: 'normal' } : { state: 'missing' }
+    }
     const key = `${canvasKey}#${node.id}`
     const startedAt = this.running.get(key)?.startedAt
     if (startedAt !== undefined) return { state: 'running', startedAt }
@@ -820,17 +832,41 @@ export class CanvasService {
    * 同时从文件头读出像素宽高填进 `size`，框按文件的比例定。操作自己给了 `w` / `h` 时不读。
    */
   private async normalizePath(workspaceRoot: string, op: CanvasOp): Promise<CanvasOp> {
-    if ((op.op !== 'add_file' && op.op !== 'update') || op.path === undefined) return op
-    let abs: string
-    try {
-      abs = await resolveInWorkspace(workspaceRoot, op.path, { mustExist: true, literal: true })
-    } catch {
-      throw new CanvasFailure(`${op.path} 不存在或不在这个项目里`, 422)
+    if ((op.op === 'add_timeline' || op.op === 'update') && op.clips !== undefined) {
+      const clips = await Promise.all(op.clips.map((c) => this.normalizeClip(workspaceRoot, c)))
+      op = { ...op, clips }
     }
-    if (!(await stat(abs)).isFile()) throw new CanvasFailure(`${op.path} 不是文件`, 422)
+    if ((op.op !== 'add_file' && op.op !== 'update') || op.path === undefined) return op
+    const abs = await this.existingFile(workspaceRoot, op.path)
     const path = await this.relativeTo(workspaceRoot, abs)
     if (op.w !== undefined || op.h !== undefined) return { ...op, path }
     return { ...op, path, ...sizeField(await mediaSizeOf(abs)) }
+  }
+
+  /** 时间线片段：文件同 `normalizePath` 核实；出点超过视频时长（读得出时）回 422。 */
+  private async normalizeClip(workspaceRoot: string, clip: CanvasClip): Promise<CanvasClip> {
+    const abs = await this.existingFile(workspaceRoot, clip.path)
+    const path = await this.relativeTo(workspaceRoot, abs)
+    const duration = await mediaDurationOf(abs)
+    // 容差一帧：界面按播放器读到的时长裁剪，与 `mvhd` 的取整可能差几毫秒。
+    if (duration !== null && clip.out > duration + 1 / 30) {
+      throw new CanvasFailure(
+        `片段超出视频时长：${path} 只有 ${Math.round(duration * 100) / 100} 秒，出点是 ${clip.out} 秒`,
+        422,
+      )
+    }
+    return { ...clip, path }
+  }
+
+  private async existingFile(workspaceRoot: string, path: string): Promise<string> {
+    let abs: string
+    try {
+      abs = await resolveInWorkspace(workspaceRoot, path, { mustExist: true, literal: true })
+    } catch {
+      throw new CanvasFailure(`${path} 不存在或不在这个项目里`, 422)
+    }
+    if (!(await stat(abs)).isFile()) throw new CanvasFailure(`${path} 不是文件`, 422)
+    return abs
   }
 
   private async relativeTo(workspaceRoot: string, abs: string): Promise<string> {

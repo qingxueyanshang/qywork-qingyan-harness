@@ -583,6 +583,346 @@
   color: var(--text-primary);
 }
 
+/* ── 时间线：节点里按画布单位定尺寸（随缩放），全屏里按屏幕像素。框高由 core 定（空 120、有片段 360），
+   这里的工具行 34 + 刻度 18 + 轨道 60 + 下边距 8 必须等于 120，多出的高度给预览。 ── */
+.canvas-tl {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 8px;
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.canvas-node.selected .canvas-tl {
+  outline: calc(1px / var(--z, 1)) solid var(--text-tertiary);
+  outline-offset: calc(3px / var(--z, 1));
+}
+.canvas-node.link-target .canvas-tl {
+  outline: calc(1px / var(--z, 1)) dashed var(--text-tertiary);
+  outline-offset: calc(3px / var(--z, 1));
+}
+.canvas-tl-bar {
+  order: -1;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  padding: 0 8px;
+}
+.canvas-tl-bar button,
+.canvas-tl-head button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.canvas-tl-bar button:hover:not(:disabled),
+.canvas-tl-head button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.canvas-tl-bar button:disabled,
+.canvas-tl-head button:disabled {
+  opacity: 0.4;
+}
+.canvas-tl-play {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.canvas-tl-full-btn {
+  padding: 0 8px;
+}
+.canvas-tl-zoom {
+  width: 120px;
+  accent-color: var(--text-secondary);
+}
+.canvas-tl-view {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 0 8px 6px;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  background: #000;
+}
+.canvas-tl-screen,
+.canvas-tl-screen > video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.canvas-tl-screen > video {
+  object-fit: contain;
+}
+.canvas-tl-tracks {
+  flex: none;
+  display: flex;
+  height: 78px;
+  padding-right: 8px;
+}
+.canvas-tl-gutter {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  padding-top: 18px;
+}
+.canvas-tl-gutter > button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+}
+.canvas-tl-gutter > button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.canvas-tl-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.canvas-tl-inner {
+  position: relative;
+  height: 100%;
+}
+.canvas-tl-ruler {
+  position: relative;
+  height: 18px;
+  cursor: pointer;
+}
+.canvas-tl-ruler > i {
+  position: absolute;
+  bottom: 1px;
+  width: 1px;
+  height: 3px;
+  background: var(--border-strong);
+}
+.canvas-tl-ruler > i.major {
+  height: 6px;
+  background: var(--text-tertiary);
+}
+.canvas-tl-ruler > span {
+  position: absolute;
+  top: 1px;
+  padding-left: 3px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  line-height: 10px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.canvas-tl-lane {
+  position: relative;
+  height: 60px;
+  cursor: pointer;
+}
+.canvas-tl-clip {
+  position: absolute;
+  top: 6px;
+  height: 48px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--bg-inset);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  cursor: grab;
+}
+.canvas-tl-clip > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.canvas-tl-clip.selected {
+  box-shadow: inset 0 0 0 1.5px var(--text-secondary);
+}
+.canvas-tl-clip.lifted {
+  z-index: 2;
+  opacity: 0.85;
+  box-shadow: var(--shadow-md);
+  cursor: grabbing;
+}
+.canvas-tl-clip.missing {
+  background: var(--bg-hover);
+}
+.canvas-tl-missing {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--danger);
+}
+.canvas-tl-trim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+.canvas-tl-trim.in {
+  left: 0;
+}
+.canvas-tl-trim.out {
+  right: 0;
+}
+.canvas-tl-clip:hover > .canvas-tl-trim::after,
+.canvas-tl-clip.selected > .canvas-tl-trim::after {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.canvas-tl-add {
+  position: absolute;
+  top: 6px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 48px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.canvas-tl-add:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+.canvas-tl-empty {
+  position: absolute;
+  inset: 6px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.canvas-tl-empty:hover {
+  color: var(--text-secondary);
+}
+.canvas-tl-gap {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text-primary);
+}
+.canvas-tl-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  margin-left: -0.75px;
+  background: var(--text-primary);
+  pointer-events: none;
+}
+.canvas-tl-playhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 7.5px;
+  height: 7.5px;
+  border-radius: 2px;
+  background: var(--text-primary);
+}
+
+/* 全屏编辑：盖住窗口标题栏以下的整个应用，菜单（60）与对话框在它之上。 */
+.canvas-tl-layer {
+  position: fixed;
+  top: calc(var(--header-h) + var(--safe-top));
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 55;
+  display: flex;
+  background: var(--bg-app);
+}
+.canvas-tl.full {
+  position: relative;
+  flex: 1;
+  padding-bottom: 16px;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--bg-app);
+  font-size: var(--fs-sm);
+}
+.canvas-tl-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 16px;
+  color: var(--text-primary);
+  font-size: var(--fs-md);
+}
+.canvas-tl-head > span {
+  flex: 1;
+  min-width: 0;
+}
+.canvas-tl.full .canvas-tl-bar {
+  order: 0;
+  height: 44px;
+  padding: 0 16px;
+}
+.canvas-tl.full .canvas-tl-view {
+  margin: 0 16px 8px;
+}
+.canvas-tl.full .canvas-tl-tracks {
+  height: 110px;
+  padding-right: 16px;
+}
+.canvas-tl.full .canvas-tl-gutter {
+  width: 48px;
+  padding-top: 22px;
+}
+.canvas-tl.full .canvas-tl-scroll {
+  overflow-x: auto;
+}
+.canvas-tl.full .canvas-tl-ruler {
+  height: 22px;
+}
+.canvas-tl.full .canvas-tl-lane {
+  height: 88px;
+}
+.canvas-tl.full .canvas-tl-clip,
+.canvas-tl.full .canvas-tl-add {
+  top: 8px;
+  height: 72px;
+}
+.canvas-tl.full .canvas-tl-empty {
+  inset: 8px 0;
+}
+
 /* ── 取帧条：占选中工具条的位置，屏幕像素定尺寸 ── */
 .canvas-frame-bar {
   position: absolute;

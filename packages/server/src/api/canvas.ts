@@ -31,7 +31,7 @@ export interface CanvasQuoteResponse {
   quote: { cost: number; currency: string } | null
 }
 
-/** 取帧菜单的三项：首帧、尾帧、当前帧（`12.4s`）。帧的名字进文件名，只收这三种形状。 */
+/** 取帧的名字：首帧、尾帧或时刻（`12.4s`）。名字进文件名，只收这三种形状。 */
 const FRAME_LABEL = /^(首帧|尾帧|\d{1,5}(\.\d)?s)$/
 
 function failed(err: unknown): Response {
@@ -91,16 +91,16 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
 
     if (req.method !== 'POST') return null
 
-    // 取帧：请求体是浏览器导出的 PNG 字节，其余参数在查询串里。
-    if (p === '/api/canvas/frame') {
+    // 浏览器做好的媒体（取的帧、时间线导出的成片）：请求体是文件字节，其余参数在查询串里；成片不带 label。
+    if (p === '/api/canvas/render') {
       const q = url.searchParams
       const path = q.get('path')
       const nodeId = q.get('nodeId')
-      const label = q.get('label') ?? ''
+      const label = q.get('label')
       if (!path || !nodeId) return invalid('缺少画布路径或节点 id')
-      if (!FRAME_LABEL.test(label)) return invalid(`帧的名字不合法：${label}`)
+      if (label !== null && !FRAME_LABEL.test(label)) return invalid(`帧的名字不合法：${label}`)
       const bytes = new Uint8Array(await req.arrayBuffer())
-      return json(await d.canvas.captureFrame(d.workspaceRoot, path, nodeId, label, bytes))
+      return json(await d.canvas.landRendered(d.workspaceRoot, path, nodeId, label, bytes))
     }
 
     if (p === '/api/canvas/upload') {

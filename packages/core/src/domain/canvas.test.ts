@@ -508,3 +508,81 @@ describe('画布：参考音频', () => {
     )
   })
 })
+
+describe('画布：时间线', () => {
+  const clip = (path: string, from: number, to: number) => ({ path, in: from, out: to })
+
+  test('新建空时间线只有轨道高度；放进片段后长出预览区，清空后收回；默认名按序号', () => {
+    let doc = apply(emptyCanvas(), [
+      { op: 'add_timeline', ref: '$t' },
+      { op: 'add_timeline', clips: [clip('素材/a.mp4', 0, 2)] },
+    ])
+    const [first, second] = doc.nodes
+    expect(first).toMatchObject({ type: 'timeline', name: '时间线1', w: 640, h: 120, clips: [] })
+    expect(second).toMatchObject({ name: '时间线2', h: 360 })
+    doc = apply(doc, [{ op: 'update', id: 'a1', clips: [clip('素材/a.mp4', 1, 3.5)] }])
+    expect(doc.nodes[0]).toMatchObject({ h: 360, clips: [clip('素材/a.mp4', 1, 3.5)] })
+    doc = apply(doc, [{ op: 'update', id: 'a1', clips: [] }])
+    expect(doc.nodes[0]!.h).toBe(120)
+  })
+
+  test('片段只收工作区里的视频、入点小于出点；不合法整批拒绝', () => {
+    const doc = apply(emptyCanvas(), [{ op: 'add_timeline' }])
+    expect(rejects(doc, [{ op: 'update', id: 'a1', clips: [clip('素材/a.png', 0, 1)] }])).toContain(
+      '只有视频',
+    )
+    expect(rejects(doc, [{ op: 'update', id: 'a1', clips: [clip('素材/a.mp4', 2, 2)] }])).toContain(
+      '入点出点不合法',
+    )
+    expect(
+      rejects(doc, [{ op: 'update', id: 'a1', clips: [clip('素材/a.mp4', -1, 2)] }]),
+    ).toContain('入点出点不合法')
+    expect(rejects(doc, [{ op: 'update', id: 'a1', clips: [clip('../a.mp4', 0, 1)] }])).toContain(
+      '相对路径',
+    )
+  })
+
+  test('静音开关；时间线没有提示词，生成卡与文件没有片段；改名不能清空', () => {
+    let doc = apply(emptyCanvas(), [{ op: 'add_timeline' }, { op: 'add_file', path: '素材/a.mp4' }])
+    doc = apply(doc, [{ op: 'update', id: 'a1', muted: true }])
+    expect(doc.nodes[0]).toMatchObject({ muted: true })
+    doc = apply(doc, [{ op: 'update', id: 'a1', muted: false }])
+    expect('muted' in doc.nodes[0]!).toBe(false)
+    expect(rejects(doc, [{ op: 'update', id: 'a1', prompt: 'x' }])).toContain('时间线没有 prompt')
+    expect(rejects(doc, [{ op: 'update', id: 'a2', clips: [] }])).toContain('只有时间线')
+    expect(rejects(doc, [{ op: 'update', id: 'a1', name: '' }])).toContain('必须有名字')
+  })
+
+  test('时间线不能作为生成的输入，也不能被连线指向', () => {
+    const doc = apply(sample(), [{ op: 'add_timeline', ref: '$t' }])
+    const t = doc.nodes.at(-1)!.id
+    expect(rejects(doc, [{ op: 'connect', from: t, to: 'a3', role: 'video' }])).toContain(
+      '不能作为',
+    )
+    expect(rejects(doc, [{ op: 'connect', from: 'a1', to: t, role: 'reference' }])).toContain(
+      '只能连到生成节点',
+    )
+  })
+
+  test('写出再读回不变；复制带上片段与静音；提交的操作按字段表核对', () => {
+    const doc = apply(emptyCanvas(), [
+      { op: 'add_timeline', name: '粗剪', muted: true, clips: [clip('素材/a.mp4', 0.5, 2)] },
+    ])
+    const text = serializeCanvas(doc)
+    const back = parseCanvas(text)
+    expect(back.ok && serializeCanvas(back.doc)).toBe(text)
+    const copied = apply(doc, copyOps(doc, ['a1'], doc, { dx: 0, dy: 400 }, false), ids('c'))
+    expect(copied.nodes[1]).toMatchObject({
+      type: 'timeline',
+      name: '粗剪',
+      muted: true,
+      clips: [clip('素材/a.mp4', 0.5, 2)],
+      y: 400,
+    })
+    expect(parseCanvasOps([{ op: 'add_timeline', clips: [{ path: 'a.mp4', in: 0 }] }]).ok).toBe(
+      false,
+    )
+    expect(parseCanvasOps([{ op: 'update', id: 'a1', muted: 'yes' }]).ok).toBe(false)
+    expect(parseCanvas(text.replace('"muted": true', '"muted": false')).ok).toBe(false)
+  })
+})
