@@ -100,9 +100,28 @@ export interface GeneratedFile {
 }
 
 /**
+ * 产物落在哪：`target` 按实际格式定扩展名（`landingPath`）后，从第 `first` 个编号起找第一个没被占的位置
+ * （第 1 个不加编号，之后加 `-2`、`-3`），回绝对路径。已存在的文件不覆盖。
+ */
+export async function freeLandingPath(
+  roots: RootsInput,
+  target: string,
+  mime: string,
+  first = 1,
+): Promise<string> {
+  const base = landingPath(target, mime)
+  const { dir, name, ext } = parse(base)
+  for (let suffix = first; ; suffix++) {
+    const candidate = suffix === 1 ? base : join(dir, `${name}-${suffix}${ext}`)
+    const abs = await resolveWritablePath(roots, candidate, { followFinalSymlink: false })
+    if (!(await occupied(abs))) return abs
+  }
+}
+
+/**
  * 把产物写进工作区。先写 `.part` 再改名：半截文件不会出现在工作区里，写失败时删掉 `.part`。
  *
- * 已存在的文件不覆盖：多张时从第二张起加 `-2`、`-3`，撞名继续往后加。扩展名按实际格式定（`landingPath`）。
+ * 多张时从第二张起加 `-2`、`-3`，撞名继续往后加（`freeLandingPath`）。
  */
 export async function landFiles(
   roots: RootsInput,
@@ -111,14 +130,7 @@ export async function landFiles(
 ): Promise<GeneratedFile[]> {
   const landed: GeneratedFile[] = []
   for (const [index, file] of files.entries()) {
-    const base = landingPath(target, file.mime)
-    const { dir, name, ext } = parse(base)
-    let abs = ''
-    for (let suffix = index + 1; ; suffix++) {
-      const candidate = suffix === 1 ? base : join(dir, `${name}-${suffix}${ext}`)
-      abs = await resolveWritablePath(roots, candidate, { followFinalSymlink: false })
-      if (!(await occupied(abs))) break
-    }
+    const abs = await freeLandingPath(roots, target, file.mime, index + 1)
     await mkdir(dirname(abs), { recursive: true })
     const part = `${abs}.part`
     try {

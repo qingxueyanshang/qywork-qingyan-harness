@@ -6,6 +6,8 @@
  *   「这一刻正在显示的那一帧」，帧率不固定的源也得到均匀的输出。
  * - 声音：按成片时间每 `WINDOW` 秒一段做离线混音（48 kHz 双声道），没有音轨的段是静音；`muted` 时不带音轨。
  *   混好一段就送编码器、随即释放，与画面按时间交替写入：内存只占一段，不随成片时长增长。
+ * - 输出：编码出的字节按块交给 `write`（写到成片文件的指定位置），成片不整段留在内存里。
+ *   索引（moov）预留在文件开头、结尾回填，与整段在内存里生成的文件同样是「快速启动」布局。
  */
 
 /** 一段：源视频的地址与入点出点（秒）。 */
@@ -19,6 +21,10 @@ export interface RenderClip {
 
 const FPS = 30
 const RATE = 48000
+/** 交给 `write` 的每块的上限：一块就是一次上传请求。 */
+const CHUNK = 4 * 1024 * 1024
+/** AAC 每个包 1024 个采样。预留索引按包数算；多估的包数只在索引后面留一段空白（`free`），不影响播放。 */
+const AAC_FRAME = 1024
 /** 混音一段的长度（秒）：一段 48 kHz 双声道约 3.8 MB。 */
 const WINDOW = 10
 /**
@@ -38,14 +44,17 @@ function outputSize(w: number, h: number): { width: number; height: number } {
 }
 
 /**
- * 导出成片。`onProgress` 收 0–1 的进度（按已编码的帧数）；`signal` 中止时丢弃已写的内容并抛出 `AbortError`。
+ * 导出成片。`onProgress` 收 0–1 的进度（按已编码的帧数）；`signal` 中止时停下并抛出 `AbortError`。
+ * `write(bytes, at)` 把一块写到成片文件的 `at` 处，结束前会回写开头，所以不是追加；它返回的 promise
+ * 完成之前不出下一块。中途失败时已写的部分由调用方丢弃。
  */
 export async function renderTimeline(
   clips: RenderClip[],
   muted: boolean,
   onProgress: (ratio: number) => void,
   signal: AbortSignal,
-): Promise<Blob> {
+  write: (bytes: Uint8Array<ArrayBuffer>, at: number) => Promise<void>,
+): Promise<void> {
   const mb = await import('mediabunny')
   const inputs = clips.map(
     (c) =>
@@ -70,17 +79,24 @@ export async function renderTimeline(
 
     const canvas = new OffscreenCanvas(width, height)
     const ctx = canvas.getContext('2d')!
-    const target = new mb.BufferTarget()
+    const target = new mb.StreamTarget(
+      new WritableStream({ write: (chunk) => write(chunk.data, chunk.position) }),
+      { chunked: true, chunkSize: CHUNK },
+    )
     const output = new mb.Output({
-      format: new mb.Mp4OutputFormat({ fastStart: 'in-memory' }),
+      format: new mb.Mp4OutputFormat({ fastStart: 'reserve' }),
       target,
     })
+    const total = clips.reduce((n, c) => n + Math.max(1, Math.round((c.out - c.in) * FPS)), 0)
+    const length = clips.reduce((n, c) => n + c.out - c.in, 0)
     const video = new mb.CanvasSource(canvas, { codec: 'avc', bitrate: mb.QUALITY_HIGH })
-    output.addVideoTrack(video, { frameRate: FPS })
+    output.addVideoTrack(video, { frameRate: FPS, maximumPacketCount: total })
     const audio = muted
       ? null
       : new mb.AudioBufferSource({ codec: 'aac', bitrate: mb.QUALITY_HIGH })
-    if (audio) output.addAudioTrack(audio)
+    // 编码器开头有预热包、结尾补齐最后一包：按时长算的包数再加一成与固定余量。
+    const packets = Math.ceil(((length * RATE) / AAC_FRAME) * 1.1) + 64
+    if (audio) output.addAudioTrack(audio, { maximumPacketCount: packets })
 
     try {
       const voices = audio
@@ -91,7 +107,6 @@ export async function renderTimeline(
             }),
           )
         : []
-      const length = clips.reduce((n, c) => n + c.out - c.in, 0)
       /** 声音已写到成片的哪一秒。 */
       let mixedTo = 0
       const mixUntil = async (t: number) => {
@@ -103,7 +118,6 @@ export async function renderTimeline(
       }
       await output.start()
 
-      const total = clips.reduce((n, c) => n + Math.max(1, Math.round((c.out - c.in) * FPS)), 0)
       let done = 0
       for (const [i, c] of clips.entries()) {
         const track = tracks[i]
@@ -133,7 +147,6 @@ export async function renderTimeline(
       await output.cancel().catch(() => {})
       throw err
     }
-    return new Blob([target.buffer!], { type: 'video/mp4' })
   } finally {
     for (const input of inputs) input.dispose()
   }

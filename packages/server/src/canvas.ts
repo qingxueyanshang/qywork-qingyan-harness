@@ -10,9 +10,19 @@
  * 字节变了就在新内容上重新应用，不覆盖别人的改动。
  */
 
-import { createHash } from 'node:crypto'
-import { readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import {
+  type FileHandle,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { CanvasPort, MediaPort } from '@qywork/agent'
 import {
   type AgentEvent,
@@ -44,6 +54,7 @@ import {
   toPosixPath,
 } from '@qywork/core'
 import {
+  freeLandingPath,
   type GeneratedFile,
   generateMedia,
   landFiles,
@@ -162,7 +173,29 @@ export interface CanvasServiceDeps {
   io?: Partial<CanvasIo>
   /** 新节点、新连线的 id。只在测试里注入，让两条路径写出的文件可以逐字节比较。 */
   newId?: () => string
+  /** 导出会话多久没有写入就作废（毫秒）。只在测试里缩短。 */
+  exportIdleMs?: number
 }
+
+/** 时间线导出的上传会话。`part` 是正在写的临时文件的绝对路径，`target` 是想落成的工作区路径（完成时再按撞名规则挑）。 */
+interface ExportSession {
+  root: string
+  canvas: string
+  source: string
+  target: string
+  part: string
+  /** 先登记会话、再建文件：启动清理按会话号判断临时文件是否在用，登记在后会删到正在建的那一个。 */
+  file: Promise<FileHandle>
+  timer: ReturnType<typeof setTimeout>
+}
+
+/** 成片与导出临时文件所在的工作区目录。 */
+const EXPORT_DIR = 'generated'
+/** 导出临时文件名 `.<会话号>.part`。启动清理只删这个形状的文件，不碰生成落盘的 `.part` 与用户文件。 */
+const EXPORT_PART = /^\.([0-9a-f-]{36})\.part$/
+
+/** 导出会话的空闲上限：编码一块不会超过它，超过说明浏览器那头已经不在了。 */
+const EXPORT_IDLE_MS = 10 * 60_000
 
 /** 画布所在的项目：根目录定位文件，id 写进 `canvas.run` 事件。 */
 export interface CanvasWorkspace {
@@ -194,8 +227,12 @@ export class CanvasService {
   private readonly failures = new Map<string, string>()
   private readonly io: CanvasIo
 
+  private readonly exports = new Map<string, ExportSession>()
+  private readonly exportIdleMs: number
+
   constructor(private readonly deps: CanvasServiceDeps) {
     this.io = { ...NODE_IO, ...deps.io }
+    this.exportIdleMs = deps.exportIdleMs ?? EXPORT_IDLE_MS
   }
 
   /** 扫描中的恢复也算忙，防止尚未找到待接续卡片时就取得更新占位。 */
@@ -214,6 +251,8 @@ export class CanvasService {
       const pending: Promise<void>[] = []
       try {
         for (const ws of workspaces) {
+          // 删不掉的留到下次启动再删，不影响接续任务。
+          await this.sweepExports(ws.root).catch(() => {})
           for (const path of await this.list(ws.root)) {
             if (this.shutdown.signal.aborted) return
             const view = await this.read(ws.root, path).catch(() => null)
@@ -254,9 +293,10 @@ export class CanvasService {
     return this.recovery
   }
 
-  /** 停止本地等待，保留远端任务记录；等待收尾后再关闭账本。 */
+  /** 停止本地等待，保留远端任务记录；结束在办导出并删掉临时文件；等待收尾后再关闭账本。 */
   async stop(): Promise<void> {
     this.shutdown.abort()
+    await Promise.all([...this.exports.keys()].map((id) => this.dropExport(id)))
     await this.recovery?.catch(() => {})
     await Promise.all([...this.running.values()].map((run) => run.done))
   }
@@ -544,43 +584,168 @@ export class CanvasService {
   }
 
   /**
-   * 收下浏览器做好的媒体，按生成的落盘规则写进 `generated/`（不覆盖，撞名加 `-2`），在源节点右边加一个引用它的节点。
-   * 按文件头分两种：PNG 是从视频节点取的一帧，落成 `<视频名>_<label>.png`；mp4 是时间线导出的成片，落成 `<时间线名>.mp4`，
-   * 不带 `label`。返回新节点的 id 与文件路径。
+   * 收下浏览器从一个视频节点截的一帧（PNG），按生成的落盘规则写成 `generated/<视频名>_<label>.png`
+   * （不覆盖，撞名加 `-2`），在视频右边加一个引用它的节点。返回新节点的 id 与文件路径。
    */
-  async landRendered(
+  async captureFrame(
     workspaceRoot: string,
     path: string,
-    sourceId: string,
-    label: string | null,
+    videoNodeId: string,
+    label: string,
     bytes: Uint8Array,
   ): Promise<{ nodeId: string; path: string }> {
-    const png = PNG_SIGNATURE.every((b, i) => bytes[i] === b)
-    const mp4 = !png && new TextDecoder().decode(bytes.subarray(4, 8)) === 'ftyp'
-    if (!png && !mp4) throw new CanvasFailure('收到的不是 PNG 图片或 mp4 视频', 422)
+    if (!PNG_SIGNATURE.every((b, i) => bytes[i] === b)) {
+      throw new CanvasFailure('收到的不是 PNG 图片', 422)
+    }
     const doc = await this.load(await this.locate(workspaceRoot, path))
-    const source = doc.nodes.find((n) => n.id === sourceId)
-    if (!source) throw new CanvasFailure(`目标已不存在：${sourceId}`, 404)
-    if (png && (canvasMediaOf(source) !== 'video' || !label)) {
-      throw new CanvasFailure('图片只能是从视频节点取的帧', 422)
-    }
-    if (mp4 && (source.type !== 'timeline' || label)) {
-      throw new CanvasFailure('视频只能是时间线导出的成片', 422)
-    }
-    const name = (png ? `${displayNameOf(source)}_${label}` : displayNameOf(source)).replace(
-      /[\\/:*?"<>|]/g,
-      '_',
-    )
+    const video = doc.nodes.find((n) => n.id === videoNodeId)
+    if (!video) throw new CanvasFailure(`目标已不存在：${videoNodeId}`, 404)
+    if (canvasMediaOf(video) !== 'video') throw new CanvasFailure('只能从视频节点取帧', 422)
+    const name = `${displayNameOf(video)}_${label}`.replace(/[\\/:*?"<>|]/g, '_')
     // 扩展名写全：`12.4s` 这种名字不带的话，`.4s` 会被当成扩展名，文件落成不认识的类型。
     const [landed] = await landFiles(
       workspaceRoot,
-      [{ bytes, mime: png ? 'image/png' : 'video/mp4' }],
-      `generated/${name}${png ? '.png' : '.mp4'}`,
+      [{ bytes, mime: 'image/png' }],
+      `generated/${name}.png`,
     )
     const { refs } = await this.apply(workspaceRoot, path, [
-      { op: 'add_file', ref: '$landed', path: landed!.path, beside: source.id },
+      { op: 'add_file', ref: '$frame', path: landed!.path, beside: video.id },
     ])
-    return { nodeId: refs.$landed!, path: landed!.path }
+    return { nodeId: refs.$frame!, path: landed!.path }
+  }
+
+  /**
+   * 时间线导出成片：浏览器边编码边把字节按位置写进 `generated/.<会话号>.part`（`exportWrite`），
+   * 完成时（`exportFinish`）核 mp4 文件头、落成 `generated/<时间线名>.mp4`（撞名加 `-2`）、在时间线右边加节点。回会话号。
+   *
+   * 临时文件的终态：完成时改名；失败、放弃、停服、`EXPORT_IDLE_MS` 没有写入时删掉（标签页关掉、网络断开时没有人会来调
+   * `exportAbort`）；进程被结束时留下的由下次启动的 `recover` 删掉。
+   */
+  async exportStart(workspaceRoot: string, path: string, nodeId: string): Promise<string> {
+    const canvas = await this.locate(workspaceRoot, path)
+    const node = (await this.load(canvas)).nodes.find((n) => n.id === nodeId)
+    if (!node) throw new CanvasFailure(`目标已不存在：${nodeId}`, 404)
+    if (node.type !== 'timeline') throw new CanvasFailure('只有时间线能导出成片', 422)
+    const target = `${EXPORT_DIR}/${displayNameOf(node).replace(/[\\/:*?"<>|]/g, '_')}.mp4`
+    // 临时文件与成片同目录：完成时改名不跨卷。
+    const dir = dirname(await freeLandingPath(workspaceRoot, target, 'video/mp4'))
+    await mkdir(dir, { recursive: true })
+    const id = randomUUID()
+    const part = join(dir, `.${id}.part`)
+    const session: ExportSession = {
+      root: workspaceRoot,
+      canvas: path,
+      source: nodeId,
+      target,
+      part,
+      file: open(part, 'wx+'),
+      timer: setTimeout(() => void this.dropExport(id), this.exportIdleMs),
+    }
+    this.exports.set(id, session)
+    try {
+      await session.file
+    } catch (err) {
+      this.exports.delete(id)
+      clearTimeout(session.timer)
+      throw err
+    }
+    return id
+  }
+
+  /** 把一块字节写到 `.part` 的 `at` 处。编码器结尾会回写文件开头的索引，所以按位置写、不是追加。 */
+  async exportWrite(
+    workspaceRoot: string,
+    id: string,
+    at: number,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    const session = this.exportOf(workspaceRoot, id)
+    clearTimeout(session.timer)
+    session.timer = setTimeout(() => void this.dropExport(id), this.exportIdleMs)
+    await (await session.file).write(bytes, 0, bytes.length, at)
+  }
+
+  async exportFinish(workspaceRoot: string, id: string): Promise<{ nodeId: string; path: string }> {
+    const session = this.exportOf(workspaceRoot, id)
+    this.exports.delete(id)
+    clearTimeout(session.timer)
+    const file = await session.file
+    try {
+      const head = new Uint8Array(8)
+      await file.read(head, 0, 8, 0)
+      await file.close()
+      if (new TextDecoder().decode(head.subarray(4, 8)) !== 'ftyp') {
+        throw new CanvasFailure('收到的不是 mp4 视频', 422)
+      }
+      const doc = await this.load(await this.locate(workspaceRoot, session.canvas))
+      if (!doc.nodes.some((n) => n.id === session.source)) {
+        throw new CanvasFailure(`时间线已不存在：${session.source}`, 404)
+      }
+      const final = await this.claimExportName(workspaceRoot, session.target)
+      try {
+        await renameWithRetry(session.part, final)
+      } catch (err) {
+        await rm(final, { force: true })
+        throw err
+      }
+      const rel = await this.relativeTo(workspaceRoot, final)
+      const { refs } = await this.apply(workspaceRoot, session.canvas, [
+        { op: 'add_file', ref: '$export', path: rel, beside: session.source },
+      ])
+      return { nodeId: refs.$export!, path: rel }
+    } catch (err) {
+      await file.close().catch(() => {})
+      await rm(session.part, { force: true })
+      throw err
+    }
+  }
+
+  /**
+   * 占一个成片名字：按撞名规则挑，独占创建空文件占住，被同时完成的另一次导出抢先就再挑。回绝对路径。
+   * 不要改成挑完直接改名：改名会覆盖已存在的文件，两次导出同时挑中同一个名字时后一个覆盖前一个。
+   */
+  private async claimExportName(workspaceRoot: string, target: string): Promise<string> {
+    for (;;) {
+      const abs = await freeLandingPath(workspaceRoot, target, 'video/mp4')
+      try {
+        await (await open(abs, 'wx')).close()
+        return abs
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      }
+    }
+  }
+
+  /** 放弃导出：删掉 `.part`。会话已结束或不属于这个项目时什么也不做。 */
+  async exportAbort(workspaceRoot: string, id: string): Promise<void> {
+    if (this.exports.get(id)?.root !== workspaceRoot) return
+    await this.dropExport(id)
+  }
+
+  private exportOf(workspaceRoot: string, id: string): ExportSession {
+    const session = this.exports.get(id)
+    if (!session || session.root !== workspaceRoot) {
+      throw new CanvasFailure('这次导出已经结束或超时，重新导出', 404)
+    }
+    return session
+  }
+
+  private async dropExport(id: string): Promise<void> {
+    const session = this.exports.get(id)
+    if (!session) return
+    this.exports.delete(id)
+    clearTimeout(session.timer)
+    await (await session.file.catch(() => null))?.close().catch(() => {})
+    await rm(session.part, { force: true })
+  }
+
+  /** 删掉这个项目 `generated/` 里不属于在办会话的导出临时文件，即进程被结束时没来得及删的那些。 */
+  private async sweepExports(root: string): Promise<void> {
+    const dir = join(root, EXPORT_DIR)
+    for (const name of await readdir(dir)) {
+      const id = EXPORT_PART.exec(name)?.[1]
+      if (id && !this.exports.has(id)) await rm(join(dir, name), { force: true })
+    }
   }
 
   /**

@@ -34,6 +34,9 @@ export interface CanvasQuoteResponse {
 /** 取帧的名字：首帧、尾帧或时刻（`12.4s`）。名字进文件名，只收这三种形状。 */
 const FRAME_LABEL = /^(首帧|尾帧|\d{1,5}(\.\d)?s)$/
 
+/** 导出会话号：服务端 `randomUUID` 生成。 */
+const EXPORT_ID = /^[0-9a-f-]{36}$/
+
 function failed(err: unknown): Response {
   if (!(err instanceof CanvasFailure)) throw err
   const error = err.status === 404 ? 'not_found' : err.status === 409 ? 'conflict' : 'invalid'
@@ -91,16 +94,48 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
 
     if (req.method !== 'POST') return null
 
-    // 浏览器做好的媒体（取的帧、时间线导出的成片）：请求体是文件字节，其余参数在查询串里；成片不带 label。
-    if (p === '/api/canvas/render') {
+    // 取帧：请求体是浏览器导出的 PNG 字节，其余参数在查询串里。
+    if (p === '/api/canvas/frame') {
       const q = url.searchParams
       const path = q.get('path')
       const nodeId = q.get('nodeId')
-      const label = q.get('label')
+      const label = q.get('label') ?? ''
       if (!path || !nodeId) return invalid('缺少画布路径或节点 id')
-      if (label !== null && !FRAME_LABEL.test(label)) return invalid(`帧的名字不合法：${label}`)
+      if (!FRAME_LABEL.test(label)) return invalid(`帧的名字不合法：${label}`)
       const bytes = new Uint8Array(await req.arrayBuffer())
-      return json(await d.canvas.landRendered(d.workspaceRoot, path, nodeId, label, bytes))
+      return json(await d.canvas.captureFrame(d.workspaceRoot, path, nodeId, label, bytes))
+    }
+
+    // 时间线导出：开始拿会话号，按位置写字节块，完成落盘，或放弃。写的请求体是字节，位置在查询串里。
+    if (p === '/api/canvas/export/start') {
+      const b = await body(req)
+      const path = text(b?.path)
+      const nodeId = text(b?.nodeId)
+      if (!path || !nodeId) return invalid('缺少画布路径或节点 id')
+      return json({ upload: await d.canvas.exportStart(d.workspaceRoot, path, nodeId) })
+    }
+    if (p === '/api/canvas/export/write') {
+      const q = url.searchParams
+      const upload = q.get('upload')
+      const at = Number(q.get('at'))
+      if (!upload || !EXPORT_ID.test(upload)) return invalid('缺少导出会话号')
+      if (!Number.isSafeInteger(at) || at < 0) return invalid('写入位置不合法')
+      await d.canvas.exportWrite(
+        d.workspaceRoot,
+        upload,
+        at,
+        new Uint8Array(await req.arrayBuffer()),
+      )
+      return json({ ok: true })
+    }
+    if (p === '/api/canvas/export/finish' || p === '/api/canvas/export/abort') {
+      const upload = text((await body(req))?.upload)
+      if (!upload || !EXPORT_ID.test(upload)) return invalid('缺少导出会话号')
+      if (p.endsWith('/abort')) {
+        await d.canvas.exportAbort(d.workspaceRoot, upload)
+        return json({ ok: true })
+      }
+      return json(await d.canvas.exportFinish(d.workspaceRoot, upload))
     }
 
     if (p === '/api/canvas/upload') {
