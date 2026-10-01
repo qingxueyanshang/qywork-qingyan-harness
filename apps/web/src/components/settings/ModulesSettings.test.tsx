@@ -1,5 +1,5 @@
 /**
- * 「模块」页电脑控制那一组：组头的开关读的是 `desktopEnabled`，写的也是它。
+ * 「模块」页电脑控制与 Office 文档两组：组头的开关读的是 `desktopEnabled` / `officeEnabled`，写的也是它。
  *
  * 覆盖范围：`ModulesSettings.tsx` 的组头开关与工具行分组、`OnOff.tsx` 的两格形态。
  *
@@ -39,16 +39,16 @@ const TOOLS = {
   ],
 }
 
-/** 电脑控制那一组的组头里那两格开关。 */
-function segOf(host: HTMLElement): HTMLButtonElement[] {
+/** 一组的组头里那两格开关。 */
+function segOf(host: HTMLElement, title = '电脑控制'): HTMLButtonElement[] {
   const head = Array.from(host.querySelectorAll<HTMLElement>('.settings-block-head')).find((h) =>
-    h.querySelector('h3')?.textContent?.includes('电脑控制'),
+    h.querySelector('h3')?.textContent?.includes(title),
   )
   return Array.from(head?.querySelectorAll<HTMLButtonElement>('.seg-item') ?? [])
 }
 
-function activeLabel(host: HTMLElement): string | undefined {
-  return segOf(host).find((b) => b.classList.contains('active'))?.textContent ?? undefined
+function activeLabel(host: HTMLElement, title = '电脑控制'): string | undefined {
+  return segOf(host, title).find((b) => b.classList.contains('active'))?.textContent ?? undefined
 }
 
 /** 等一个条件成立。配置、工具清单与 PUT 各自异步完成，不要换成固定时长的 sleep。 */
@@ -67,6 +67,10 @@ test('开关读数：缺席按启用，只有显式 false 才关', async () => {
   expect(desktopSwitchOn({})).toBe(true)
   expect(desktopSwitchOn({ desktopEnabled: true })).toBe(true)
   expect(desktopSwitchOn({ desktopEnabled: false })).toBe(false)
+  const { officeSwitchOn } = await import('./ModulesSettings.tsx')
+  expect(officeSwitchOn(null)).toBe(true)
+  expect(officeSwitchOn({ officeEnabled: true })).toBe(true)
+  expect(officeSwitchOn({ officeEnabled: false })).toBe(false)
 })
 
 test('组头开关：缺席按启用，点一下写出去的是 desktopEnabled', async () => {
@@ -121,6 +125,13 @@ test('组头开关：缺席按启用，点一下写出去的是 desktopEnabled',
     expect(config()?.desktopEnabled).toBe(true)
     expect(activeLabel(host)).toBe('启用')
     expect(await until(() => stored.desktopEnabled === true)).toBe(true)
+
+    // Office 文档一组：同一种组头开关，写的是 officeEnabled，不动电脑控制那一格。
+    expect(activeLabel(host, 'Office 文档')).toBe('启用')
+    click(segOf(host, 'Office 文档').find((b) => b.textContent === '关闭') as HTMLButtonElement)
+    expect(config()?.officeEnabled).toBe(false)
+    expect(await until(() => stored.officeEnabled === false)).toBe(true)
+    expect(stored.desktopEnabled).toBe(true)
   } finally {
     dispose()
     host.remove()

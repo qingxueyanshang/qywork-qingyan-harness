@@ -8,9 +8,42 @@
 import { Database } from 'bun:sqlite'
 import { MIGRATIONS, SCHEMA_VERSION } from './schema.ts'
 
+/**
+ * 打开账本的是哪一类进程：`serve`（`qy serve`，桌面端与手机端连的服务）或 `cli`（终端里的
+ * `qy exec` 与交互式 `qy`）。建轮时写进 `runs.owner_kind`，同一会话被另一个进程占着时，
+ * 提示据此说出占用方在哪里。
+ */
+export type RunOwner = 'serve' | 'cli'
+
 export interface StoreOptions {
   /** 数据库文件路径；':memory:' 用于测试。 */
   path: string
+  /** 会建轮的进程入口必须给；只读账本的命令（导出、用量、体检）与测试不给，记为未声明。 */
+  owner?: RunOwner
+}
+
+/** 写锁的等待上限。主库与正文库的 `busy_timeout` 和 `enableWal` 的重试时长都取它。 */
+export const BUSY_TIMEOUT_MS = 5000
+
+/**
+ * 把连接切到 WAL。
+ *
+ * 切日志模式要取排他锁，而 SQLite 在这一步不调用 busy handler：全新库被几个进程同时打开时，
+ * 后到的连接 0 毫秒就收到 SQLITE_BUSY，构造函数当场抛出。这里按 `BUSY_TIMEOUT_MS` 同一时长重试，
+ * 补上 busy_timeout 在这条语句上缺的那段等待。库已经是 WAL 时这条是空操作，不会进入重试。
+ */
+export function enableWal(db: Database): void {
+  const deadline = Date.now() + BUSY_TIMEOUT_MS
+  for (;;) {
+    try {
+      db.exec('PRAGMA journal_mode = WAL')
+      return
+    } catch (err) {
+      const code = String((err as { code?: unknown }).code ?? '')
+      if (!code.startsWith('SQLITE_BUSY') || Date.now() >= deadline) throw err
+      Bun.sleepSync(10)
+    }
+  }
 }
 
 /**
@@ -64,8 +97,11 @@ function splitStatements(sql: string): string[] {
 
 export class Store {
   readonly db: Database
+  /** 见 `RunOwner`。null = 未声明。 */
+  readonly owner: RunOwner | null
 
   constructor(opts: StoreOptions) {
+    this.owner = opts.owner ?? null
     this.db = new Database(opts.path, { create: true })
     this.applyPragmas()
     this.migrate()
@@ -79,9 +115,9 @@ export class Store {
      * WAL 库时，先到的那个在做 WAL 恢复并持有排他锁，后到的收到 SQLITE_BUSY_RECOVERY。
      * 等待上限还没设，这一条就没有重试余地，构造函数当场抛。
      */
-    this.db.exec('PRAGMA busy_timeout = 5000')
+    this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`)
     // WAL：读写不互相阻塞。agent 边写 step 边有 UI 在读，没有 WAL 会互相卡住。
-    this.db.exec('PRAGMA journal_mode = WAL')
+    enableWal(this.db)
     // NORMAL：WAL 下已经足够安全（崩溃不丢已提交事务，只可能丢最后一次 checkpoint），
     // 比 FULL 快一个数量级。agent 每步都写盘，这个差别是可感知的。
     this.db.exec('PRAGMA synchronous = NORMAL')
@@ -116,12 +152,16 @@ export class Store {
       )
     }
     for (const m of MIGRATIONS) {
+      // 上面读到的列表只用于跳过：已登记的迁移不会被撤销，跳过它总是对的。
       if (applied.has(m.id)) continue
       // 每条迁移一个事务：失败就整条回滚，不留半迁移状态。
       // IMMEDIATE 在进回调前取写权：`apply()` 可能先读后写，DEFERRED 下的升级在另一个
       // 实例同时初始化时直接回 SQLITE_BUSY，不走 busy_timeout。
       this.db
         .transaction(() => {
+          // 拿到写权之后再查一次：另一个进程可能在本进程读完列表之后刚跑完这一条。
+          // 不要只凭上面那份列表决定执行，否则会把已完成的迁移重跑一遍。
+          if (this.db.query('SELECT 1 FROM _migrations WHERE id = ?').get(m.id)) return
           executeMigration(this.db, m)
           this.db
             .query('INSERT INTO _migrations (id, name, applied_at) VALUES (?, ?, ?)')

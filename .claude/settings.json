@@ -12,6 +12,17 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run scripts/guard-real-home.ts"
+          }
+        ]
+      }
     ]
   }
 }

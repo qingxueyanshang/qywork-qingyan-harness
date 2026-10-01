@@ -48,7 +48,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 
 命令失败时先把输出读完再决定怎么改，不要立刻重试同一条。
 
-工具结果中的图像与视频只随紧接着的一次请求提供，之后在历史中替换为带 images_omitted 的说明，当时看图的推理不保留。看到这类说明，表示你已看过该图像或视频，不要据此判断自己没有看过；需要画面细节时用 read_history 按 call_id 取回。`
+工具结果与用户附件中的图像和视频会留在之后的请求里，需要时直接查看历史中的原图和视频，不必重新读取。累计较多时最早的一批会换成带 images_omitted 的说明，需要其中的画面时用 read_history 按 call_id 取回。`
 
 /**
  * 能力段。**每个类目一条不少地告诉模型**——不说它就想不起来自己能做这件事，
@@ -75,6 +75,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
       '前台操作开启且自绘界面缺少可操作控件时，使用观察结果附带的截图定位。同一窗口内的连续动作使用 desktop_act_sequence。' +
       '按图定位的动作回执附带操作后的截图，应据此核验结果；证据不足或状态尚未确定时，应重新观察。' +
       '动作提交成功不等于任务完成。未经核验，不得报告任务完成，也不得仅因结果未确认而重复执行可能产生副作用的动作。',
+  },
+  {
+    tool: 'office',
+    line: '- Office 文档：制作、修改、检查 Word / PPT / Excel 用 office，不用 run_command 另起一套生成或导出流程。先用 office(action=guide) 取该格式的做法，交付前用 office(action=view) 看过页面。',
   },
   {
     tool: 'write_memory',

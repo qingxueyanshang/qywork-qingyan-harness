@@ -143,7 +143,11 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
      * 乐观并发校验：多个客户端同时修改时，后发起的写入基于修改前的完整配置，整体回写
      * 会覆盖前一次已保存的字段（典型为 API Key）。基线版本不一致时拒绝，由客户端重新
      * 读取并重放本次修改。未携带 baseVersion 的旧客户端不受此校验限制。
+     *
+     * 比较基准是盘上的当前内容，先读盘再比。不要改回只和进程内这份比：它只在 GET 时刷新，
+     * 两次请求之间别的进程（`qy probe`、另一个 qywork 实例）写进文件的改动会被整份覆盖。
      */
+    adoptConfig(d.config, await loadConfig())
     if (typeof body.baseVersion === 'string' && body.baseVersion !== configVersion(d.config)) {
       return json({ error: 'conflict', message: '配置在别处被改动，已基于最新内容重试' }, 409)
     }

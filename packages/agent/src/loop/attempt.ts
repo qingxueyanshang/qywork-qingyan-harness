@@ -194,7 +194,7 @@ export async function* sendTurn(
     }
 
     try {
-      const stream = await host.openStream(turn.req, turn.requestId)
+      const stream = await host.openStream(turn.req)
       persist.markRequestSent(turn.requestId)
       yield {
         type: 'run.request',

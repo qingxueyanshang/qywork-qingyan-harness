@@ -1,14 +1,12 @@
 /**
  * 工具图片在「下一次请求被回绝」之后还能不能回到模型面前。
  *
- * 覆盖范围：`agent/loop/index.ts` 的图片裁剪与 `openStream` 的输入引用确认、
- * `store/repos.ts` 的 `markProviderRequestInputImages` /
- * `hasReceivedRequestWithImages`、`runtime/transcript.ts` 把执行记录投影回 history，
+ * 覆盖范围：`agent/loop/index.ts` 的媒体去留（`loop/request.ts` 的 `evictedMedia`：
+ * 最后一条 assistant 之后的媒体不换出）、`runtime/transcript.ts` 把执行记录投影回 history，
  * 经 `@qywork/ai` 的三协议故障端点跑真实 HTTP、真实 `Store`。
  *
  * 原始失败形状：工具成功之后那次请求 503 耗尽预算，换一个 run 带着 history 续跑时
- * 图片按「旧轮次」被省略，模型在没有观察结果的情况下接着做。
- * 裁剪判据与请求体逐一对照——只断言「有没有写引用」会放过「引用写了但图没发出去」。
+ * 图片被当成旧图省略，模型在没有观察结果的情况下接着做。断言落在线上那份请求体上。
  */
 
 import { expect, test } from 'bun:test'
@@ -28,10 +26,8 @@ import {
   createConversation,
   createRun,
   failThinkingSteps,
-  hasReceivedRequestWithImages,
   listProviderRequests,
   listSteps,
-  markProviderRequestInputImages,
   markProviderRequestSent,
   markStepExecuting,
   openProviderRequest,
@@ -97,9 +93,6 @@ function harness(): Harness {
     recordCompaction: () => {},
     openRequest: (input) => openProviderRequest(store, input).id,
     markRequestSent: (id) => markProviderRequestSent(store, id as never),
-    markRequestInputImages: (id, batchId) =>
-      markProviderRequestInputImages(store, id as never, batchId),
-    inputImagesConsumed: (batchId) => hasReceivedRequestWithImages(store, conv.id, batchId),
     settleRequest: (id, status, usage, errorCode, finishReason, errorMessage) =>
       settleProviderRequest(
         store,
@@ -232,11 +225,7 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
         // 工具跑了一次；其后每一次请求都带着那张图，直到预算耗尽。
         expect(counter.runs).toBe(1)
         const failedRows = turnRows(h, failed)
-        expect(failedRows[0]!.inputImageBatchId).toBeNull()
-        const batch = failedRows[1]!.inputImageBatchId
-        expect(batch).toBe(failedRows[0]!.id)
         expect(failedRows.slice(1).every((r) => r.status === 'rejected')).toBe(true)
-        expect(failedRows.slice(1).every((r) => r.inputImageBatchId === batch)).toBe(true)
 
         // 跨 run 续跑：history 由执行记录投影而来，那张图从来没被对端接收过。
         const history = [
@@ -251,21 +240,17 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
         const resumedRows = turnRows(h, resumed)
         expect(resumedRows).toHaveLength(1)
         expect(resumedRows[0]!.status).toBe('received')
-        expect(resumedRows[0]!.inputImageBatchId).toBe(batch)
 
-        // 这一次真的被接收了，再往后的请求按信封省略。
+        // 图在保留上限以内：之后的 run 仍带着它，前缀不变。
         const after = newRun(h, 'images-after')
         await drainRun({ h, runId: after, baseUrl, profile: { kind, model }, history, registry })
         const afterRows = turnRows(h, after)
         expect(afterRows).toHaveLength(1)
-        expect(afterRows[0]!.inputImageBatchId).toBeNull()
 
-        // 引用与线上那份字节逐一对应：写了引用的必须带图，没写的必须不带。
+        // 线上那份字节：调工具之前那次没有图，此后每一次都带着它。
         const rows = [...failedRows, ...resumedRows, ...afterRows]
         expect(fault.bodies).toHaveLength(rows.length)
-        expect(rows.map((r) => r.inputImageBatchId !== null)).toEqual(
-          fault.bodies.map((b) => b.includes(BYTES)),
-        )
+        expect(fault.bodies.map((b) => b.includes(BYTES))).toEqual(rows.map((_, i) => i > 0))
       })
     } finally {
       h.store.close()

@@ -17,7 +17,7 @@ import type {
   HelloOkFrame,
 } from '@qywork/core'
 import { log } from '@qywork/core'
-import type { QyConfig } from '@qywork/runtime'
+import type { OfficeHost, QyConfig } from '@qywork/runtime'
 import { detectSandbox } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import pkg from '../package.json' with { type: 'json' }
@@ -43,6 +43,8 @@ export function handleHello(
     config: QyConfig
     /** 报「此刻哪几条会话在跑」的那份权威，见 `busyConversations`。 */
     runs: RunManager
+    /** Office 执行程序的宿主。「运行环境」里文档库那一行读它最近一次的探测结果。 */
+    office?: OfficeHost
     /**
      * 内置浏览器此刻可用到什么程度。
      *
@@ -132,7 +134,10 @@ export function handleHello(
       sandbox: sandboxCapability(),
       // 同样**每次握手重新探测**：装完之后重连一下就该显示出来，
       // 而不是让用户重启整个服务——他不会知道要重启。这几个探针都不缓存。
-      environment: probeEnvironment(),
+      environment: probeEnvironment({
+        config: deps.config,
+        ...(deps.office ? { office: deps.office } : {}),
+      }),
       mode: deps.config.mode ?? 'auto',
       browser: deps.browser(),
       desktop: deps.desktop(),

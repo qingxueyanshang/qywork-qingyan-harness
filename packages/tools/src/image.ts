@@ -5,8 +5,8 @@
  * 的网页截图 485 KB，本来就在上限内，重编码成 PNG 之后是 **1174 KB——大了 2.4 倍**。浏览器与截图
  * 工具的 PNG 编码器比这个库好得多，原样通过才是对的。
  *
- * 所以先从文件头把宽高抠出来（几十字节，不解码），在上限内就一个字节不动。
- * 绝大多数截图走的都是这一条。
+ * 所以先从文件头把宽高抠出来（几十字节，不解码），在上限内就不重编码成 PNG。
+ * 唯一的例外是在上限内、超过 300 KB 的不透明 PNG：只试 JPEG，小一半以上才换（`REENCODE_ABOVE_BYTES`）。
  *
  * **超标了才解码，输出取更小的那个。** 同一次实测：3200×2400 的 2764 KB 缩到 1568 长边之后，PNG 是
  * 1143 KB、JPEG(82) 是 88 KB。差一个数量级，**必须两个都编一遍取小的**——只出 PNG 等于没压。
@@ -122,9 +122,19 @@ export function imageSizeOf(bytes: Uint8Array): ImageSize | null {
 }
 
 /**
- * 需要的话把图缩到长边 `MAX_EDGE`。
+ * 长边在上限内、但字节超过它的 PNG，再试一次 JPEG。
  *
- * **在上限内原样返回同一个引用**，不重编码（见文件头那段实测）。
+ * 图会留在之后的每次请求里（`agent` 的 `evictedMedia`），字节每一步都要再传一遍，中转的响应头
+ * 时间随请求体增长。实测 1280×720 的渲染截图 PNG 560–670 KB，JPEG(82) 96–153 KB。
+ * 小一半以上才换：编码好的 PNG 截图换成 JPEG 省不下多少，还多一层压缩噪点。
+ * 有透明像素的不换：JPEG 没有透明通道，透明处会变成实色，画面与原图不符。
+ */
+const REENCODE_ABOVE_BYTES = 300 * 1024
+
+/**
+ * 需要的话把图缩到长边 `MAX_EDGE`，或把在上限内的大 PNG 换成更小的 JPEG。
+ *
+ * **其余情况原样返回同一个引用**，不重编码（见文件头那段实测）。
  * 解码或缩放失败也原样返回——一张图发大一点只是费流量，
  * 而为此让一次 `read_file` 失败是本末倒置。
  */
@@ -133,7 +143,20 @@ export async function shrinkImage(
   mime: string,
 ): Promise<{ bytes: Uint8Array; mime: string }> {
   const size = imageSizeOf(bytes)
-  if (!size || Math.max(size.width, size.height) <= MAX_EDGE) return { bytes, mime }
+  if (!size) return { bytes, mime }
+  if (Math.max(size.width, size.height) <= MAX_EDGE) {
+    if (mime !== 'image/png' || bytes.length <= REENCODE_ABOVE_BYTES) return { bytes, mime }
+    try {
+      const photon = await import('@silvia-odwyer/photon-node')
+      const img = photon.PhotonImage.new_from_byteslice(bytes)
+      const pixels = img.get_raw_pixels()
+      for (let i = 3; i < pixels.length; i += 4) if (pixels[i]! < 255) return { bytes, mime }
+      const jpeg = img.get_bytes_jpeg(JPEG_QUALITY)
+      return jpeg.length * 2 <= bytes.length ? { bytes: jpeg, mime: 'image/jpeg' } : { bytes, mime }
+    } catch {
+      return { bytes, mime }
+    }
+  }
 
   try {
     // 动态 import：photon 带着 2.2 MB 的 wasm，而绝大多数会话一张超标的图都碰不到。

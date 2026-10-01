@@ -397,7 +397,8 @@ bun run gate
 ```
 
 它按顺序跑：`typecheck`（`packages/*` 的 solution build **加** `apps/web`）→
-`biome check` → `bun run test` → sidecar 编译与版本自检（`check:sidecar`，产物落 `.tmp/gate-sidecar`，
+`biome check` → `bun run test` → `test:office`（Office worker 的 Python 纯逻辑单测，找不到 Python 即失败）→
+sidecar 编译与版本自检（`check:sidecar`，产物落 `.tmp/gate-sidecar`，
 不写 `bin/`）→ 外壳 `apps/desktop/src-tauri` 的 `cargo check` 与 `cargo test` →
 worker `apps/desktop/native/computer-host` 的 `cargo check` 与 `cargo test`。
 sidecar 那一步挡的是只在打包时才暴露的失败（例如 Bun 升级后从脚本里启动 Bun 的方式被拒）。

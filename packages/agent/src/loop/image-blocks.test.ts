@@ -2,7 +2,8 @@
  * 图像块的两种形态。
  *
  * 覆盖范围：`loop/request.ts` 的 `toolResultContent` / `materialize` / `breakdownOf` 的
- * tool 分支，以及 `compaction.ts` 的 `condenseMessage` 对块数组的处置。
+ * tool 分支、`mediaBytes` / `evictedMedia` / `omitImages` 的按字节预算换出，以及
+ * `compaction.ts` 的 `condenseMessage` 对块数组的处置。
  *
  * 这一组盯着三个**完全静默**的方向：图片跨轮变成两种形状、收纳收不掉图、
  * 以及附件的 base64 被回写进 transcript。
@@ -14,7 +15,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ContentBlock, WireMessage } from '@qywork/ai'
 import { condenseMessage, IMAGES_OMITTED } from '../compaction.ts'
-import { envelopeResult, materialize, omitImages, toolResultContent } from './request.ts'
+import {
+  ATTACHMENT_MEDIA_OMITTED,
+  envelopeResult,
+  evictedMedia,
+  MEDIA_RETAIN_LOW_BYTES,
+  materialize,
+  mediaBytes,
+  omitImages,
+  toolResultContent,
+} from './request.ts'
 
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -347,7 +357,7 @@ describe('收纳', () => {
   })
 })
 
-describe('图像块只在产生它的那一轮出现', () => {
+describe('换出的媒体换成说明', () => {
   const withImage = (): WireMessage => ({
     role: 'tool',
     toolCallId: 'c1',
@@ -368,18 +378,37 @@ describe('图像块只在产生它的那一轮出现', () => {
   })
 
   /**
-   * 实测形状：标记只写 `true` 或只写「已提供」时，模型看过截图后下一轮读到信封，判断自己从未看过，
-   * 向用户否认上一轮的检查并反复读回同一张图。标记必须写明模型已看过与取回方式。
+   * 标记只写 `true` 或只写「已提供」时，模型读到信封会判断自己从未收到过这张图，
+   * 向用户否认之前的检查并反复读回。写成「你已看过」则超出传输记录能证明的事实：
+   * 端点收到请求不等于模型读到了图。标记写明此前已发送、现已移出、怎么取回。
    */
-  test('省略标记写明模型已看过该图像，并给出取回方式', () => {
+  test('省略标记只陈述传输事实并给出取回方式', () => {
     const env = JSON.parse(omitImages(withImage()).content as string) as Record<string, unknown>
-    expect(env.images_omitted).toContain('你已在紧接此次调用的请求中看过此图像')
+    expect(env.images_omitted).toContain('此前已随请求发送给你')
+    expect(env.images_omitted).toContain('现已从请求中移出')
     expect(env.images_omitted).toContain('read_history')
     expect(env.images_omitted).toContain('call_id')
+    expect(env.images_omitted).not.toContain('看过')
   })
 
-  /** 投影每次请求都跑：无图必须回原引用，有图必须逐字稳定，否则前缀缓存全失配。 */
-  test('无图原引用返回，有图两次产物逐字相同', () => {
+  /** 用户消息的附件媒体换成一行说明，正文不动；路径在附件说明里，说明指过去。 */
+  test('用户消息的附件媒体换成说明，正文保留', () => {
+    const user: WireMessage = {
+      role: 'user',
+      content: [
+        { type: 'image', mimeType: 'image/jpeg', source: { kind: 'base64', data: 'QUJD' } },
+        { type: 'text', text: '看看这张图\n（附件 a.jpg：D:/x/a.jpg）' },
+      ],
+    }
+    const out = omitImages(user)
+    expect(out.content).toEqual([
+      { type: 'text', text: ATTACHMENT_MEDIA_OMITTED },
+      { type: 'text', text: '看看这张图\n（附件 a.jpg：D:/x/a.jpg）' },
+    ])
+  })
+
+  /** 投影每次请求都跑：无媒体必须回原引用，有媒体必须逐字稳定，否则前缀缓存全失配。 */
+  test('无媒体原引用返回，有媒体两次产物逐字相同', () => {
     const plain: WireMessage = { role: 'tool', toolCallId: 'c2', content: envelope }
     expect(omitImages(plain)).toBe(plain)
     const user: WireMessage = { role: 'user', content: 'x' }
@@ -394,5 +423,93 @@ describe('图像块只在产生它的那一轮出现', () => {
       unknown
     >
     expect(env.images_omitted).toBe(IMAGES_OMITTED)
+  })
+})
+
+describe('媒体按字节预算换出', () => {
+  /** 解码后正好 `bytes` 字节的 base64 图。 */
+  const shot = (bytes: number): ContentBlock => ({
+    type: 'image',
+    mimeType: 'image/jpeg',
+    source: { kind: 'base64', data: 'A'.repeat(Math.ceil((bytes * 4) / 3)) },
+  })
+  const MB = 1024 * 1024
+  const call = (id: string): WireMessage => ({
+    role: 'assistant',
+    content: '',
+    toolCalls: [{ id, name: 'read_file', arguments: {} }],
+  })
+  const result = (id: string, bytes: number): WireMessage => ({
+    role: 'tool',
+    toolCallId: id,
+    content: [{ type: 'text', text: envelope }, shot(bytes)],
+  })
+  /** 每步一张图：assistant 调用 + 结果，共 n 步。 */
+  const steps = (sizes: number[]): WireMessage[] =>
+    sizes.flatMap((size, i) => [call(`c${i}`), result(`c${i}`, size)])
+
+  test('base64 按解码后的字节计，路径按文件大小计，读不到记 0', async () => {
+    expect(mediaBytes(result('c', MB))).toBeGreaterThanOrEqual(MB)
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
+    const path = join(dir, 'clip.mp4')
+    await writeFile(path, new Uint8Array(3 * MB))
+    const video: WireMessage = {
+      role: 'user',
+      content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+    }
+    expect(mediaBytes(video)).toBe(3 * MB)
+    const gone: WireMessage = {
+      role: 'user',
+      content: [
+        {
+          type: 'video',
+          mimeType: 'video/mp4',
+          source: { kind: 'path', path: join(dir, 'x.mp4') },
+        },
+      ],
+    }
+    expect(mediaBytes(gone)).toBe(0)
+  })
+
+  test('总量在上限内一张都不换', () => {
+    expect(evictedMedia(steps([MB, MB, MB])).size).toBe(0)
+  })
+
+  /** 超上限时从最早的起整条换出，直到不超过下限：换一次少变几次前缀。 */
+  test('超过上限时从最早的整批换出，降到下限以内', () => {
+    const messages = steps([MB, MB, MB, MB, MB])
+    const evicted = evictedMedia(messages)
+    // 第 5 张让总量到 5 MB（> 4 MB），换出最早的三张，剩 2 MB。
+    expect([...evicted]).toEqual([1, 3, 5])
+    const left = messages.reduce((n, m, i) => n + (evicted.has(i) ? 0 : mediaBytes(m)), 0)
+    expect(left).toBeLessThanOrEqual(MEDIA_RETAIN_LOW_BYTES)
+  })
+
+  /** 最后一条 assistant 之后的媒体还没随任何一次得到回应的请求发出去过，单张超限也不换。 */
+  test('最后一条 assistant 之后的媒体不换出', () => {
+    const messages = [...steps([MB, MB]), call('big'), result('big', 6 * MB)]
+    const evicted = evictedMedia(messages)
+    expect(evicted.has(messages.length - 1)).toBe(false)
+    expect([...evicted]).toEqual([1, 3])
+  })
+
+  /** 用户消息带的附件同样计入，第一次请求（没有 assistant）时全部保留。 */
+  test('附件计入同一预算；还没有 assistant 时一张都不换', () => {
+    const user: WireMessage = { role: 'user', content: [shot(5 * MB), { type: 'text', text: 'x' }] }
+    expect(evictedMedia([user]).size).toBe(0)
+    expect([...evictedMedia([user, call('c0'), result('c0', MB)])]).toEqual([0])
+  })
+
+  /** 追加消息只会多换出，已换出的不会回来：前缀只在换出那一刻变。 */
+  test('同一历史结果相同，追加消息不让已换出的回来', () => {
+    const sizes = [MB, 2 * MB, MB, 3 * MB, MB, MB, 2 * MB, MB]
+    let previous = new Set<number>()
+    for (let n = 1; n <= sizes.length; n++) {
+      const messages = steps(sizes.slice(0, n))
+      const evicted = evictedMedia(messages)
+      expect([...evictedMedia(messages)]).toEqual([...evicted])
+      for (const i of previous) expect(evicted.has(i)).toBe(true)
+      previous = evicted
+    }
   })
 })

@@ -119,6 +119,8 @@ const env = {
   // QYWORK_* 给 vite.config.ts 关 HMR；VITE_* 给页面接收 sidecar 换代信号后整页刷新。
   QYWORK_COORDINATED_RELOAD: '1',
   VITE_QYWORK_COORDINATED_RELOAD: '1',
+  // Office 执行程序的源码位置；安装态由桌面外壳传安装资源目录下的 office/。
+  QYWORK_OFFICE_DIR: join(ROOT, 'packages', 'runtime', 'office'),
 }
 
 /** 只有这两个进程拿得到宿主凭据。 */

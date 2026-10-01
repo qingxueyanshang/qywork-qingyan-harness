@@ -61,6 +61,14 @@ export { type FileLogSink, fileLogSink, LOG_FILE } from './log-file.ts'
 export { makeMcpConfigPort, mergeMcpServers, type WritableMcpScope } from './mcp-config-store.ts'
 // 生成端口：会话里的生成工具与 server 的画布（界面发起的生成）共用同一份选模型、校验与计价
 export { makeMediaPort } from './media.ts'
+// Office 执行程序的宿主侧：服务端与 CLI 各建一个，会话按它给出的端口注册 `office`。
+export {
+  createOfficeHost,
+  findPython,
+  type OfficeHost,
+  type OfficeStatus,
+  officeDir,
+} from './office.ts'
 // 提示词装配：agent 的前缀审计测试要拿真实的那一份来审（走动态 import）
 export { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 // 主请求与摘要请求共用的持久化边界。

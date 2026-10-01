@@ -311,8 +311,12 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
     // 402 Payment Required 不看正文：余额不足时正文里的 `code` 可能是 `invalid_request_error`。
     case 402:
       return build('insufficient_quota', '账户额度不足')
+    // 403 也有两种：无权访问（换 key 或换模型能好）和余额耗尽（中转站以 403 + `billing_error`
+    // 回报），后者报成无权访问会把用户引向检查 key 与模型权限。
     case 403:
-      return build('auth_failed', '当前 Key 无权访问该模型')
+      return quotaExhausted(err, message)
+        ? build('insufficient_quota', '账户额度不足')
+        : build('auth_failed', '当前 Key 无权访问该模型')
     case 404:
       return build('model_not_found', `模型不存在：检查模型 ID 与接口地址`)
     case 413:

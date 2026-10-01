@@ -103,6 +103,11 @@ export interface WorkspaceRoots {
    * 非绝对路径在配置体检期就会被指出来，这里再滤一道（防止绕过上游校验）。
    */
   additional?: readonly string[]
+  /**
+   * 只读根目录（已安装技能的目录）。读取按与上面相同的真实路径判定放行；
+   * `resolveWritablePath` 不认这一组，写入落不进来。
+   */
+  readOnly?: readonly string[]
 }
 
 /** 调用方可以只传工作区字符串——绝大多数地方没有额外根目录。 */
@@ -121,11 +126,13 @@ export type RootsInput = string | WorkspaceRoots
 export function rootsOf(ctx: {
   workspaceRoot: string
   additionalDirectories?: readonly string[]
+  readOnlyRoots?: readonly string[]
   unrestrictedPaths?: boolean
 }): WorkspaceRoots {
   return {
     workspaceRoot: ctx.workspaceRoot,
     ...(ctx.additionalDirectories?.length ? { additional: ctx.additionalDirectories } : {}),
+    ...(ctx.readOnlyRoots?.length ? { readOnly: ctx.readOnlyRoots } : {}),
     ...(ctx.unrestrictedPaths ? { unrestricted: true } : {}),
   }
 }
@@ -172,6 +179,15 @@ function normalizeRoots(input: RootsInput): WorkspaceRoots {
 }
 
 /**
+ * 去掉只读根目录后的清单。写入目标与命令的工作目录只按它判定：
+ * 命令工作目录落进技能目录的话，命令里的相对路径写入就写进了只读根。
+ */
+export function writableRoots(roots: RootsInput): WorkspaceRoots {
+  const { readOnly: _readOnly, ...rest } = normalizeRoots(roots)
+  return rest
+}
+
+/**
  * 把工具参数里的相对路径解析成允许范围内的绝对路径。
  *
  * `mustExist=false`（写入新文件）时目标可能还不存在，但**判定与返回值都必须是
@@ -187,7 +203,7 @@ export async function resolveInWorkspace(
   candidate: string,
   opts: { mustExist?: boolean; literal?: boolean; followFinalSymlink?: boolean } = {},
 ): Promise<string> {
-  const { workspaceRoot, additional, unrestricted } = normalizeRoots(roots)
+  const { workspaceRoot, additional, readOnly, unrestricted } = normalizeRoots(roots)
   // 从 file URL 解出的路径已是文件系统字面值，不再解码文件名中的百分号。
   const raw = opts.literal ? candidate : decodeSafely(candidate)
 
@@ -243,6 +259,16 @@ export async function resolveInWorkspace(
       // **判定用的和返回的是同一个路径。** 两者不同的话，判的是 A、写的是 B，
       // 边界就只是看起来在那里；调用方按返回值记账时也会与读路径对不上
       // （否则 `files.ts` 的「本轮读过没有」在软链根下恒判 stale）。
+      return targetReal
+    }
+  }
+
+  // 只读根目录在可写根之后判：同一路径同时落在两类根里时按可写根返回。
+  // 判的是真实路径，技能目录里指向目录外的链接因此不放行。
+  for (const extra of readOnly ?? []) {
+    const real = await realpath(extra).catch(() => null)
+    if (real !== null && isInside(real, targetReal)) {
+      if (opts.mustExist) await assertExists(targetReal, candidate)
       return targetReal
     }
   }
@@ -432,8 +458,9 @@ export async function resolveWritablePath(
   candidate: string,
   opts: { mustExist?: boolean; followFinalSymlink?: boolean } = {},
 ): Promise<string> {
-  const { workspaceRoot, unrestricted } = normalizeRoots(roots)
-  const resolved = await resolveInWorkspace(roots, candidate, opts)
+  const writable = writableRoots(roots)
+  const { workspaceRoot, unrestricted } = writable
+  const resolved = await resolveInWorkspace(writable, candidate, opts)
   if (!unrestricted && isProtectedPath(workspaceRoot, resolved)) {
     throw new ProtectedPathError(candidate)
   }

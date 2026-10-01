@@ -356,15 +356,32 @@ describe('能力段', () => {
     const prompt = buildSystemPrompt(new Set(['run_command']))
     expect(prompt).not.toContain('desktop_windows')
   })
+
+  /** 已安装技能可能写着别的产品的生成或导出命令；工具注册了才点名执行一律走 office。 */
+  test('注册了 office 时点名先取做法、交付前看页，没注册就不提', () => {
+    const prompt = buildSystemPrompt(new Set(['run_command', 'office']))
+    expect(prompt).toContain('不用 run_command 另起一套生成或导出流程')
+    expect(prompt).toContain('office(action=guide)')
+    expect(prompt).toContain('office(action=view)')
+    expect(buildSystemPrompt(new Set(['run_command']))).not.toContain('office(')
+  })
 })
 
 describe('工具图像的生命周期', () => {
-  /** 摘图使看图时的思考失效；不写明这条规则，模型读到省略说明会判断自己没有看过。 */
-  test('系统提示词写明图像与视频只提供一次、省略说明表示已看过、细节用 read_history 取回', () => {
+  /**
+   * 媒体留在请求里，模型不必重新读取；超出保留上限时最早的一批换成说明。
+   * 「历史中的原图」不能省：省掉后 GPT 重建 PPT 时少回看原图，3 次里 2 次漏掉照片上的浮层文字（保留这句时 6 次全中）。
+   * 规则只陈述传输事实，不替模型断言它看过。
+   */
+  test('系统提示词写明图像与视频留在之后的请求里、指向历史中的原图、超限换成说明、细节用 read_history 取回', () => {
     const prompt = buildSystemPrompt(new Set(['read_history']))
-    expect(prompt).toContain('工具结果中的图像与视频只随紧接着的一次请求提供')
-    expect(prompt).toContain('表示你已看过该图像或视频')
+    expect(prompt).toContain(
+      '图像和视频会留在之后的请求里，需要时直接查看历史中的原图和视频，不必重新读取',
+    )
+    expect(prompt).toContain('最早的一批会换成带 images_omitted 的说明')
     expect(prompt).toContain('read_history 按 call_id 取回')
+    expect(prompt).not.toContain('只随紧接着的一次请求发送给你')
+    expect(prompt).not.toContain('表示你已看过')
   })
 })
 

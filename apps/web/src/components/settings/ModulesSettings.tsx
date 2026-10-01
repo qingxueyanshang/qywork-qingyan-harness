@@ -67,6 +67,25 @@ export function desktopSwitchOn(cfg: { desktopEnabled?: boolean } | null): boole
   return cfg?.desktopEnabled !== false
 }
 
+/** Office 组头开关的读数：缺席按开，与服务端取端口的判据（`officeEnabled !== false`）同一条。 */
+export function officeSwitchOn(cfg: { officeEnabled?: boolean } | null): boolean {
+  return cfg?.officeEnabled !== false
+}
+
+/**
+ * Office 这一组能不能用：Python 与文档库两行都齐才可用，缺项的原因在「通用 → 运行环境」。
+ * 读的是握手里的运行环境表，与那两行同一份探测。
+ */
+function officeState(): { text: string; missing: boolean } {
+  const rows = state.capabilities?.environment
+  const python = rows?.find((d) => d.id === 'python')
+  const libs = rows?.find((d) => d.id === 'office-libs')
+  if (!python || !libs) return { text: '读取中…', missing: false }
+  if (!python.path) return { text: '需要安装 Python', missing: true }
+  if (!libs.path) return { text: '需要安装 Office 文档库', missing: true }
+  return { text: '可用', missing: false }
+}
+
 /** 命令语法由探测决定（bash → pwsh 7 → Windows PowerShell 5.1），握手只报 bash 那一格。 */
 function shellNote(): string {
   const row = state.capabilities?.environment.find((d) => d.id === 'bash')
@@ -165,6 +184,22 @@ const MODULES: Module[] = [
       on: () => desktopSwitchOn(config()),
       onPick: (on) => void patchConfig({ desktopEnabled: on }),
     },
+  },
+  /*
+   * 组头是开关，与电脑控制同一条理由。缺 Python 或文档库时开着也用不了：
+   * 第一行给出当前状态，安装入口在「通用 → 运行环境」；第二行是能力边界。
+   */
+  {
+    id: 'office',
+    label: 'Office 文档',
+    toggle: {
+      on: () => officeSwitchOn(config()),
+      onPick: (on) => void patchConfig({ officeEnabled: on }),
+    },
+    notes: [
+      { label: 'office', text: () => officeState().text, warn: () => officeState().missing },
+      { label: 'render', text: () => '渲染、重算与目录页码回填用本机 Word 或 WPS，仅 Windows。' },
+    ],
   },
   /*
    * 记忆和技能是两个类目，不是一个「记忆与技能」。

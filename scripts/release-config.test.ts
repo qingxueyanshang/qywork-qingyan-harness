@@ -213,6 +213,10 @@ describe('桌面发布清单', () => {
       '../../../LICENSE': 'licenses/LICENSE',
       '../../../NOTICE': 'licenses/NOTICE',
       '../../../THIRD_PARTY_NOTICES.md': 'licenses/THIRD_PARTY_NOTICES.md',
+      // Office 执行程序：worker、依赖清单与三份做法说明；单测目录不进安装包。
+      '../../../packages/runtime/office/*.py': 'office/',
+      '../../../packages/runtime/office/requirements.txt': 'office/requirements.txt',
+      '../../../packages/runtime/office/guides/*.md': 'office/guides/',
     })
   })
 

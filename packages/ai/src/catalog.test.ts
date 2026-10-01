@@ -127,7 +127,7 @@ describe('DeepSeek 当前规格', () => {
     expect(responses.reasoningEcho).toBe('reasoning_text')
     expect(responses.cacheRouting).toBe('none')
   })
-  test('Pro 在公告时间切换到 Flash 的能力与价格', () => {
+  test('Pro 在公告时间切换到 Flash 的价格与规格，仍不收图片', () => {
     for (const kind of [
       'openai_chat_completions',
       'openai_responses',
@@ -138,7 +138,7 @@ describe('DeepSeek 当前规格', () => {
       expect(pro.pricing.output).toBe(27)
       const routed = lookupModel('deepseek-v4-pro', kind, cutover)
       expect(routed.id).toBe('deepseek-v4-pro')
-      expect(routed.vision).toBe(true)
+      expect(routed.vision).toBe(false)
       expect(routed.pricing).toEqual(lookupModel('deepseek-flash', kind, cutover).pricing)
     }
   })

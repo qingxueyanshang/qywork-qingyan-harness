@@ -535,11 +535,27 @@ function dedupe(items: readonly string[]): string[] {
 
 // ───────────────────────── 唯一的 spawn 出口 ─────────────────────────
 
-export interface GuardedSpawnInput {
-  /** 调用方选定的解释器，必须与命令语法及工具说明一致。 */
-  shell: CommandShell | null
-  /** 要执行的命令原文。由调用方保证已经过裁决。 */
-  command: string
+/**
+ * 起子进程的两种写法：交给 shell 的一条命令，或直接执行的参数数组。
+ *
+ * 参数数组给产品自己的执行程序用（`office` 的 Python worker）：程序与参数都由产品确定，
+ * 模型代码经文件传递，不经 shell 转义。两种写法共用下面的沙箱、runner 与返回形状。
+ */
+export type GuardedSpawnInput = GuardedSpawnCommon &
+  (
+    | {
+        /** 调用方选定的解释器，必须与命令语法及工具说明一致。 */
+        shell: CommandShell | null
+        /** 要执行的命令原文。由调用方保证已经过裁决。 */
+        command: string
+      }
+    | {
+        /** 可执行文件的绝对路径在前，其后是参数。 */
+        argv: readonly string[]
+      }
+  )
+
+interface GuardedSpawnCommon {
   /** 已解析的绝对工作目录。 */
   cwd: string
   /** 已剥过凭证的环境变量。这个函数**不做脱敏**——那是调用方的事。 */
@@ -861,9 +877,12 @@ export function setCommandRunner(next: CommandRunner | null): void {
   runner = next
 }
 
-export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpawn> {
-  const status = detectSandbox()
-  const isWindows = process.platform === 'win32'
+/** 沙箱与 runner 之内真正执行的 argv；命令写法在 Windows 上另有一个随进程删除的脚本文件。 */
+async function innerArgv(
+  input: GuardedSpawnInput,
+  isWindows: boolean,
+): Promise<{ inner: string[]; scriptPath: string | null }> {
+  if ('argv' in input) return { inner: [...input.argv], scriptPath: null }
 
   // `run_command` 在一个 shell 都没有时不注册，所以正常路径到不了这里；
   // 插件的 `exec.run` 走的是同一个函数，它需要一个明确的错误信息，而非在 argv 处崩溃。
@@ -889,7 +908,13 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
   if (scriptPath) await writeFile(scriptPath, input.command, 'utf8')
   const inner =
     scriptRun && scriptPath ? [...scriptRun(scriptPath)] : [...shell.argv, input.command]
+  return { inner, scriptPath }
+}
 
+export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpawn> {
+  const status = detectSandbox()
+  const isWindows = process.platform === 'win32'
+  const { inner, scriptPath } = await innerArgv(input, isWindows)
   const policy = input.policy
 
   const argv =

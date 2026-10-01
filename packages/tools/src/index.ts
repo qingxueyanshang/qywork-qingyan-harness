@@ -34,7 +34,7 @@ export {
   TASK_SUFFIX,
 } from './generate.ts'
 // 画布按图片文件头的宽高给节点定框。
-export { type ImageSize, imageSizeOf } from './image.ts'
+export { type ImageSize, imageSizeOf, shrinkImage } from './image.ts'
 // 记忆：runtime/session.ts 装配提示词时要读索引，server/api/memory.ts 要读写单条
 export {
   listAllScopedEntries,
@@ -122,6 +122,7 @@ import { canvasTool, readCanvasTool } from './canvas.ts'
 import { defineRoleTool } from './define-role.ts'
 import { MEDIA_TOOLS } from './generate.ts'
 import { readHistoryTool } from './history.ts'
+import { officeTool } from './office.ts'
 import { installPluginTool } from './plugin-install.ts'
 import { subagentTool } from './subagent.ts'
 import { workflowTool } from './workflow.ts'
@@ -144,6 +145,8 @@ export function registerBuiltinTools(
     desktop?: boolean
     /** 有画布通道（服务端注入了 `CanvasPort`）。 */
     canvas?: boolean
+    /** 有 Office 执行程序（宿主注入了 `OfficePort`）。 */
+    office?: boolean
     /** 配了模型的生成类别。每一类的生成工具只在这一类有模型时注册。 */
     media?: readonly MediaOutput[]
   } = {},
@@ -170,6 +173,8 @@ export function registerBuiltinTools(
     // 电脑控制同样按通道注册：没启用、宿主没连上、worker 没就绪、系统没授权，
     // 四种情况都拿不到端口，此时注册进来的是四个必然报错的名字。
     ...(opts.desktop ? desktopTools : []),
+    // Office 同样按通道注册：没有 Python 与文档库时调一次必失败。
+    ...(opts.office ? [officeTool] : []),
     readMemoryTool,
     writeMemoryTool,
     deleteMemoryTool,

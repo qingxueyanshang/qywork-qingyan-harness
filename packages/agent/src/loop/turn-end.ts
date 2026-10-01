@@ -90,8 +90,9 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
       (turnUsage.cacheWriteTokens ?? 0) +
       turnUsage.outputTokens
     /*
-     * 带视频的请求不当锚点：它的真值里含视频的占用，而视频在下一次请求里就摘掉了
-     * （`omitImages`），拿它当锚点会把之后的读数整体抬高、提前触发压缩。锚点留在上一次。
+     * 带视频的请求不当锚点：它的真值里含视频的占用，本地估算对视频记 0，而视频常常单个就
+     * 超过媒体保留上限、在下一批结果到来时被换出（`evictedMedia`）。拿它当锚点会把之后的
+     * 读数整体抬高、提前触发压缩。锚点留在上一次。
      */
     if (total > 0 && videoBlocksOf(turn.req.messages) === 0)
       run.anchor = {

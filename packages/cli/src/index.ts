@@ -22,6 +22,7 @@ import {
   configDir,
   configNotices,
   configPath,
+  createOfficeHost,
   dataPath,
   diagnoseConfig,
   diagnoseRunnable,
@@ -100,7 +101,8 @@ const USAGE = `qy —— qywork 编码 agent
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv
 
-  if (cmd === '--help' || cmd === '-h') {
+  // 子命令后面的 --help 同样只打用法：落进 exec 会被当成任务描述，开库并发出一次真实请求。
+  if (cmd === '--help' || cmd === '-h' || rest.includes('--help') || rest.includes('-h')) {
     process.stdout.write(USAGE)
     return 0
   }
@@ -166,8 +168,19 @@ async function main(argv: string[]): Promise<number> {
   return 2
 }
 
+/** 有不认识的参数就报错并返回退出码 2；没有返回 null。 */
+function rejectUnknown(flags: Flags): number | null {
+  if (!flags.unknown.length) return null
+  process.stderr.write(`不认识的参数：${flags.unknown.join(' ')}
+
+${USAGE}`)
+  return 2
+}
+
 async function runExec(args: string[]): Promise<number> {
   const flags = parseFlags(args)
+  const bad = rejectUnknown(flags)
+  if (bad !== null) return bad
   const prompt = flags.positional.join(' ').trim()
   if (!prompt) {
     process.stderr.write('需要一个任务描述。例：qy exec "把 README 里的安装步骤补上"\n')
@@ -194,7 +207,7 @@ async function runExec(args: string[]): Promise<number> {
   // 把它并进上面的 problems 会让「开了完全访问」变成「一条命令都跑不了」。
   for (const n of configNotices(config)) process.stderr.write(`\n${YELLOW}⚠${RESET} ${n}\n`)
 
-  const store = new Store({ path: dataPath() })
+  const store = new Store({ path: dataPath(), owner: 'cli' })
   // 定时任务的旧文件在这里也要导：本次会话注入了定时任务端口，不导的话在 `qy serve`
   // 跑过之前 `list_schedules` 读不到已经排好的任务。不合法就抛，与 serve 同一条语义。
   importLegacySchedules(store)
@@ -218,12 +231,17 @@ async function runExec(args: string[]): Promise<number> {
   process.on('SIGINT', onSignal)
   process.on('SIGTERM', onSignal)
 
+  // 一次性执行也有 `office`：探测完再起这一轮，与 `qy serve` 同一个宿主实现。
+  const office = createOfficeHost(() => config)
+  await office.refresh()
+  const officePort = office.port()
   const session = new Session({
     store,
     config,
     content,
     workspaceRoot,
     signal: controller.signal,
+    ...(officePort ? { office: officePort } : {}),
   })
 
   let exitCode = 0
@@ -299,7 +317,7 @@ async function runServe(args: string[]): Promise<number> {
     ...configNotices(config),
   ]
 
-  const store = new Store({ path: dataPath() })
+  const store = new Store({ path: dataPath(), owner: 'serve' })
   const previousProcessExit = processExitObservationFromEnv(process.env)
   // 退出现场只消费一次。runner 与之后的命令都不需要继承这段 stderr。
   for (const name of [
@@ -463,6 +481,8 @@ function renderHuman(ev: AgentEvent): void {
 
 interface Flags {
   positional: string[]
+  /** 形如参数、但不在本表里的词。exec 遇到就报错退出，不当成任务描述发出请求。 */
+  unknown: string[]
   cwd?: string
   json?: boolean
   port?: number
@@ -473,7 +493,7 @@ interface Flags {
 }
 
 function parseFlags(args: string[]): Flags {
-  const out: Flags = { positional: [] }
+  const out: Flags = { positional: [], unknown: [] }
   const takeValue = (i: number): [string | undefined, number] => {
     const v = args[i + 1]
     return v !== undefined && !v.startsWith('--') ? [v, i + 1] : [undefined, i]
@@ -502,6 +522,7 @@ function parseFlags(args: string[]): Flags {
       i = ni
     } else if (a === '--json') out.json = true
     else if (a === '--print-token') out.printToken = true
+    else if (/^--?[A-Za-z][\w-]*$/.test(a)) out.unknown.push(a)
     else out.positional.push(a)
   }
   return out

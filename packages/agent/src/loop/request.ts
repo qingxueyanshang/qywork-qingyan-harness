@@ -3,6 +3,7 @@
  * 工具结果信封与媒体物化。
  */
 
+import { statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import type {
   ChatRequest,
@@ -408,44 +409,92 @@ export function videosOf(
   return out
 }
 /**
- * 这一批工具结果里还剩几个图像块。
+ * 请求里挂着的媒体（工具结果与用户消息里的图像、视频块）的字节上限，以及超限后换出到的目标。
  *
- * 从最后一条归属该批次的 assistant 消息往后数，只数 tool 消息里的图像块。
- * 装配时与 `materialize` 之后各数一次，两个数相等才算「这一批完整进了请求体」。
- * **两处必须调同一个函数**：各写一遍会漂移，而漂移了不会有任何报错，
- * 代价是给一次没带图的请求写上引用。
+ * 媒体留在请求里前缀才不变：摘一次图，`replayReasoning` 就剥掉其后全部原生推理，模型看不到图，
+ * 看图时得出的判断也随之丢失，只能反复取回。全部常驻又会让长任务的请求体涨过端点上限（实测 98 张图、50 MB
+ * 被 413 拒绝），中转的响应头时间也随请求体增长（实测小于 1 MB 约 3–5 秒，3–6 MB 约 11–15 秒）。
+ * 超限时整批换出到下限，不要改成每次只换最早的一张：换出改前缀，逐张换会让前缀每一步都变。
  */
-export function batchImageCount(messages: readonly WireMessage[], batchId: string): number {
-  let start = -1
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!
-    if (m.role === 'assistant' && m.toolCalls?.length && m._batch === batchId) {
-      start = i
-      break
+export const MEDIA_RETAIN_HIGH_BYTES = 4 * 1024 * 1024
+export const MEDIA_RETAIN_LOW_BYTES = 2 * 1024 * 1024
+
+/** 一条消息里媒体块的字节数：base64 按解码后的长度，路径按文件大小，读不到记 0。 */
+export function mediaBytes(m: WireMessage): number {
+  if (typeof m.content === 'string' || !m.content) return 0
+  let total = 0
+  for (const b of m.content) {
+    if (b.type !== 'image' && b.type !== 'video') continue
+    if (b.source.kind === 'base64') total += Math.floor((b.source.data.length * 3) / 4)
+    else if (b.source.kind === 'path') {
+      try {
+        total += statSync(b.source.path).size
+      } catch {
+        // 文件已不在：`materialize` 会把它换成一行说明，不占媒体字节。
+      }
     }
   }
-  if (start < 0) return 0
-  let count = 0
-  for (let i = start + 1; i < messages.length; i++) {
-    const m = messages[i]!
-    if (m.role !== 'tool' || m._batch !== batchId || typeof m.content === 'string') continue
-    count += m.content.filter((b) => b.type === 'image' || b.type === 'video').length
-  }
-  return count
+  return total
 }
 
 /**
- * 把带图或视频的工具结果换成只有信封的形态，信封里的 `images_omitted` 写明已提供过（`IMAGES_OMITTED`）。
+ * 这次请求里哪些消息的媒体换成说明，返回下标集合，交给 `omitImages`。
  *
- * 与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）：模型据这一位知道图不在场，
- * 缺了它会把图当成仍然可见。`result` 保留，只有图像块被摘掉。
+ * 按消息顺序累计媒体字节；累计超过上限时，从最早仍挂着的那条起整条换出，直到降到下限以下。
+ * 最后一条 assistant 消息之后的媒体不换出：它们还没随任何一次得到回应的请求发出去过。
+ * 工具成功后那次请求被拒、换一个 run 续跑时，那批图仍在这一段里，所以不需要另记送达凭证。
  *
- * **必须逐字稳定且无图时返回原引用**：投影每次构造请求都跑一遍，产物抖动会让缓存
+ * 只依赖消息序列：同一历史每次得到同一结果，追加消息只会多换出、不会让已换出的回来。
+ */
+export function evictedMedia(messages: readonly WireMessage[]): Set<number> {
+  let protectFrom = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === 'assistant') {
+      protectFrom = i + 1
+      break
+    }
+  }
+  const evicted = new Set<number>()
+  const mounted: { index: number; bytes: number }[] = []
+  let total = 0
+  messages.forEach((m, index) => {
+    const bytes = mediaBytes(m)
+    if (!bytes) return
+    mounted.push({ index, bytes })
+    total += bytes
+    if (total <= MEDIA_RETAIN_HIGH_BYTES) return
+    while (total > MEDIA_RETAIN_LOW_BYTES && mounted.length && mounted[0]!.index < protectFrom) {
+      const out = mounted.shift()!
+      evicted.add(out.index)
+      total -= out.bytes
+    }
+  })
+  return evicted
+}
+
+/** 用户消息的附件媒体被换出后留下的一行。路径在同一条消息的附件说明里。 */
+export const ATTACHMENT_MEDIA_OMITTED =
+  '（这条消息附带的图片或视频此前已随请求发送给你，现已从请求中移出；需要时按本条消息附件说明里的路径读取。）'
+
+/**
+ * 把一条消息的媒体换成说明，交给 `evictedMedia` 选中的消息用。
+ *
+ * - 工具结果：换成只有信封的形态，信封里的 `images_omitted` 写明已发送过（`IMAGES_OMITTED`），
+ *   与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）。模型据这一位知道图不在场，
+ *   缺了它会把图当成仍然可见。`result` 保留，只有媒体块被摘掉。
+ * - 用户消息：媒体块换成 `ATTACHMENT_MEDIA_OMITTED` 一行，正文不动。
+ *
+ * **必须逐字稳定且无媒体时返回原引用**：投影每次构造请求都跑一遍，产物抖动会让缓存
  * 断点之前的字节每次都变。
  */
 export function omitImages(m: WireMessage): WireMessage {
-  if (m.role !== 'tool' || typeof m.content === 'string' || !m.content) return m
+  if (typeof m.content === 'string' || !m.content) return m
   if (!m.content.some((b) => b.type === 'image' || b.type === 'video')) return m
+  if (m.role === 'user') {
+    const rest = m.content.filter((b) => b.type !== 'image' && b.type !== 'video')
+    return { ...m, content: [{ type: 'text', text: ATTACHMENT_MEDIA_OMITTED }, ...rest] }
+  }
+  if (m.role !== 'tool') return m
   const text = m.content.find((b) => b.type === 'text')
   if (!text || text.type !== 'text') return m
   let env: Record<string, unknown>
@@ -511,7 +560,8 @@ export interface InputMediaCapabilities {
  * - `req.messages` 的元素与 `transcript` 是同一批对象，原地改等于把 base64 留在
  *   内存里常驻整个 run。
  *
- * path 形态来自当前轮用户附件与工具读到的视频。工具读到的图在观察时已经是字节，历史附件只保留引用说明。
+ * path 形态只剩视频（用户附件与工具读到的视频）。图片进入消息时已经是字节：工具图定格在执行记录里，
+ * 附件图由 `runtime` 的 `withAttachments` 编码。
  *
  * 图片按模型能力裁决；视频还要求当前适配器实现原生视频传输。
  *

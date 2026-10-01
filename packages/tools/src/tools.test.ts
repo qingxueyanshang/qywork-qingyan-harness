@@ -330,6 +330,49 @@ describe('额外根目录', () => {
   })
 })
 
+describe('只读根目录', () => {
+  async function withSkills(): Promise<{ root: string; skills: string }> {
+    const root = await workspace()
+    const skills = await mkdtemp(join(tmpdir(), 'qywork-skills-'))
+    await writeFile(join(skills, 'SKILL.md'), '# skill\n', 'utf8')
+    return { root, skills }
+  }
+
+  test('读取放行，写入与命令工作目录拒绝', async () => {
+    const { root, skills } = await withSkills()
+    const c = { ...ctx(root), readOnlyRoots: [skills] }
+    await expect(
+      resolveInWorkspace(rootsOf(c), join(skills, 'SKILL.md'), { mustExist: true }),
+    ).resolves.toContain('SKILL.md')
+    await expect(resolveWritablePath(rootsOf(c), join(skills, 'out.md'))).rejects.toBeInstanceOf(
+      PathEscapeError,
+    )
+    const out = await registry().execute('run_command', { command: 'echo x', cwd: skills }, c)
+    expect(out.status).toBe('failure')
+    expect(out.executed).toBe(false)
+  })
+
+  test('只读根里指向界外的软链不放行', async () => {
+    const { root, skills } = await withSkills()
+    const outside = await mkdtemp(join(tmpdir(), 'qywork-escape-'))
+    await writeFile(join(outside, 'secret.txt'), 'nope', 'utf8')
+    try {
+      await symlink(outside, join(skills, 'link'))
+    } catch {
+      return // Windows 上无权限建符号链接时跳过
+    }
+    await expect(
+      resolveInWorkspace(
+        { workspaceRoot: root, readOnly: [skills] },
+        join(skills, 'link/secret.txt'),
+        {
+          mustExist: true,
+        },
+      ),
+    ).rejects.toBeInstanceOf(PathEscapeError)
+  })
+})
+
 describe('文件工具', () => {
   test('读取返回带行号的正文', async () => {
     const root = await workspace()

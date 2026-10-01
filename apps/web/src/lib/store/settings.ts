@@ -107,6 +107,8 @@ export interface RedactedConfig {
   /** 允不允许 agent 操作本机上别的应用。缺省即关。 */
   desktopEnabled?: boolean
   desktopForeground?: boolean
+  /** 允不允许 agent 用 `office` 工具。缺席按启用，只有显式 `false` 才关。 */
+  officeEnabled?: boolean
 }
 export interface ConfigPayload {
   path: string

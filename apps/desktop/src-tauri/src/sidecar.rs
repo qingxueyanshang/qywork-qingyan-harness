@@ -116,6 +116,11 @@ fn spawn_process(
         .sidecar("qy")
         .map_err(|e| anyhow!("找不到 qy sidecar：{e}"))?
         .args(args);
+    // Office 执行程序在安装资源目录的 office/ 下，显式交给 sidecar。macOS 上资源目录是
+    // Contents/Resources，与可执行文件不在同一目录，sidecar 按自身位置找不到。
+    if let Ok(dir) = app.path().resource_dir() {
+        command = command.env("QYWORK_OFFICE_DIR", dir.join("office"));
+    }
     command = command.env(
         "QYWORK_UPDATE_KEY",
         &app.state::<crate::updater::UpdateOwner>().key,

@@ -31,7 +31,10 @@
     "resources": {
       "../../../LICENSE": "licenses/LICENSE",
       "../../../NOTICE": "licenses/NOTICE",
-      "../../../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md"
+      "../../../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "../../../packages/runtime/office/*.py": "office/",
+      "../../../packages/runtime/office/requirements.txt": "office/requirements.txt",
+      "../../../packages/runtime/office/guides/*.md": "office/guides/"
     },
     "icon": [
       "icons/32x32.png",

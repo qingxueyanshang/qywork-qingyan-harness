@@ -856,10 +856,11 @@ function deepseekCatalog(now: number): ModelSpec[] {
     },
   }
   // 北京时间 2026-09-14 12:00 起，DeepSeek 停用 Pro，请求由 V4.1 Flash 服务并按 Flash 计价。
-  // id 与显示名保留（已有配置和引用不失效）；那之后按 Flash 的规格与计价走。
+  // id 与显示名保留（已有配置和引用不失效）；那之后按 Flash 的规格与计价走，图片能力除外：
+  // 发给 Pro 的图片只被计数、内容不可见，标成能收图会让模型对着看不到的图作答。
   const pro: ModelSpec =
     now >= Date.UTC(2026, 8, 14, 4)
-      ? { ...flash, id: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro' }
+      ? { ...flash, id: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', vision: false }
       : {
           ...flash,
           id: 'deepseek-v4-pro',

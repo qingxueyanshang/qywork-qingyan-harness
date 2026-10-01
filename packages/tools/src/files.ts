@@ -50,12 +50,13 @@ const READ_STATE_KEY = 'files.readHashes'
  * 就是会话级；没接上退回 run 内的便签——那是更严的一侧（每轮头一次写要先读），
  * 所以漏接不会放宽边界。这里只管「读的时候记、写之前比」。
  */
-interface ReadHashes {
+export interface ReadHashes {
   get(path: string): string | null
   set(path: string, hash: string): void
 }
 
-function readHashes(ctx: ToolContext): ReadHashes {
+/** `office` 用同一个记录口：读过的 Office 文件按文件字节的 SHA-256 记账，写之前比对。 */
+export function readHashes(ctx: ToolContext): ReadHashes {
   if (ctx.reads) {
     const port = ctx.reads
     return { get: (p) => port.seen(p), set: (p, h) => port.mark(p, h) }
@@ -221,7 +222,13 @@ async function* oneChunk(text: string): AsyncGenerator<string> {
  * 参数再读一遍没有别的选择，而每一遍都会失败。音频与压缩包还多一条：请求体里没有
  * 它们的内容块，换模型也没用。视频在前面单独分派（`readVideo`）。
  */
-function notText(path: string): { status: 'failure'; message: string } {
+function notText(path: string, office: boolean): { status: 'failure'; message: string } {
+  if (office && OFFICE_FILE.test(path)) {
+    return {
+      status: 'failure',
+      message: `${path} 是 Office 文件，read_file 读不出内容。用 office(action=read) 读取它的结构与文字。`,
+    }
+  }
   return {
     status: 'failure',
     message:
@@ -230,6 +237,9 @@ function notText(path: string): { status: 'failure'; message: string } {
       `需要里面的信息就用 run_command 调外部工具处理，或请用户描述。`,
   }
 }
+
+/** `office` 工具处理的文件类型。 */
+const OFFICE_FILE = /\.(docx|dotx|xlsx|xltx|pptx|potx)$/i
 
 /**
  * 读一段视频：交出路径引用，由请求装配在发出前按模型能力读字节（`agent` 的 `videosOf` 与 `materialize`）。
@@ -261,7 +271,7 @@ export const readFileTool: ToolSpec = {
   description:
     '读取工作区内一个文件。文本返回带行号的正文；PNG/JPG/GIF/WebP 作为图片返回；' +
     'MP4/MOV/WebM/MKV 在当前模型支持视频输入时作为视频返回；' +
-    'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配）。' +
+    'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配；没有文字层时返回失败）。' +
     '修改任何已存在的文件前必须先用它读一次——' +
     'write_file 和 edit_file 会校验你读到的内容是否仍是磁盘上的最新版本。' +
     '默认读整份；超出上下文剩余空间时返回放得下的部分与续读位置。需要某一段时用 offset/limit。',
@@ -375,6 +385,17 @@ export const readFileTool: ToolSpec = {
       if (pdf === null) {
         return { status: 'failure', message: `${args.path} 解析失败，可能不是有效的 PDF` }
       }
+      // 没有文字层（扫描件、纯图片页）时返回空正文会被当成「这份 PDF 是空的」。
+      // 下一步只指向这一轮真的能用的能力：office 关着或模型不收图时，指过去就是一次必然失败的调用。
+      if (!pdf.trim()) {
+        return {
+          status: 'failure',
+          message:
+            ctx.office?.enabled() === true && ctx.vision !== false
+              ? `${args.path} 没有文字层（扫描件或纯图片页），read_file 读不出内容。用 office(action=view) 按页查看。`
+              : `${args.path} 没有文字层（扫描件或纯图片页），read_file 读不出内容，当前也没有查看 PDF 页面的工具。`,
+        }
+      }
     }
 
     // 读不出整数就在这里终止。`Math.max` 是下界钳位（`offset: 0` 取 1），它挡不住 NaN：
@@ -400,7 +421,7 @@ export const readFileTool: ToolSpec = {
       limit,
       keepBytes,
     )
-    if (scan === 'binary') return notText(String(args.path))
+    if (scan === 'binary') return notText(String(args.path), ctx.office !== undefined)
     const slice = scan.lines
     const totalLines = scan.total
     const shown = displayPath(ctx.workspaceRoot, abs)

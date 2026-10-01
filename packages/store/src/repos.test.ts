@@ -15,7 +15,6 @@ import {
   getConversation,
   getRun,
   getWorkspaceByPath,
-  hasReceivedRequestWithImages,
   interruptRunningNodes,
   latestAnchoredProviderRequest,
   latestSentProviderRequest,
@@ -31,7 +30,6 @@ import {
   markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
-  markProviderRequestInputImages,
   markProviderRequestSent,
   openProviderRequest,
   providerFinishRates,
@@ -101,76 +99,9 @@ describe('逐请求传输证据', () => {
     expect(found.firstContentAt).toBe(1_700_000_010_000)
     expect(found.lastContentAt).toBe(1_700_000_012_000)
     expect(found.completedAt).toBeNumber()
-    expect(found.inputImageBatchId).toBeNull()
     store.close()
   })
 
-  /**
-   * 「这批图模型收到过吗」的判据。发出去不等于对端收到，所以 `rejected` 与
-   * `uncertain` 都不算；摘要请求发的是摘要提示词，它携不携图与会话无关。
-   */
-  test('只有已接收的主请求带着这批图才算送达过模型', () => {
-    const { store, ws } = fresh()
-    const cv = createConversation(store, { workspaceId: ws.id, provider: 'relay', model: 'm' })
-    const run = createRun(store, {
-      conversationId: cv.id,
-      workspaceId: ws.id,
-      model: 'm',
-      clientRequestId: 'input-images',
-      userMessageId: null,
-      messageIdUpperBound: null,
-      contextSnapshot: [],
-    })
-    const open = (turnIndex: number, purpose: 'turn' | 'summary') =>
-      openProviderRequest(store, {
-        runId: run.id,
-        turnIndex,
-        retryIndex: 0,
-        purpose,
-        model: 'm',
-        measuredInputTokens: 1,
-        sentCategories: {} as never,
-        omittedCategories: {} as never,
-        payloadHash: 'h',
-      })
-
-    // 没有任何记录时不能断言模型看过。
-    expect(hasReceivedRequestWithImages(store, cv.id, 'pr_gen')).toBe(false)
-
-    const rejected = open(0, 'turn')
-    markProviderRequestSent(store, rejected.id)
-    markProviderRequestInputImages(store, rejected.id, 'pr_gen')
-    settleProviderRequest(store, rejected.id, 'rejected', null, 'provider_unavailable')
-    expect(hasReceivedRequestWithImages(store, cv.id, 'pr_gen')).toBe(false)
-
-    const summary = open(1, 'summary')
-    markProviderRequestSent(store, summary.id)
-    markProviderRequestInputImages(store, summary.id, 'pr_gen')
-    settleProviderRequest(store, summary.id, 'received', null, null, 'stop')
-    expect(hasReceivedRequestWithImages(store, cv.id, 'pr_gen')).toBe(false)
-
-    // 未携图的成功请求不能替它作数。
-    const noImages = open(2, 'turn')
-    markProviderRequestSent(store, noImages.id)
-    settleProviderRequest(store, noImages.id, 'received', null, null, 'stop')
-    expect(hasReceivedRequestWithImages(store, cv.id, 'pr_gen')).toBe(false)
-
-    const delivered = open(3, 'turn')
-    markProviderRequestSent(store, delivered.id)
-    markProviderRequestInputImages(store, delivered.id, 'pr_gen')
-    settleProviderRequest(store, delivered.id, 'received', null, null, 'stop')
-    expect(hasReceivedRequestWithImages(store, cv.id, 'pr_gen')).toBe(true)
-    // 判的是这一批，不是「有没有带过图」。
-    expect(hasReceivedRequestWithImages(store, cv.id, 'pr_other')).toBe(false)
-
-    // 别的会话的成功请求不算数。
-    const other = createConversation(store, { workspaceId: ws.id, provider: 'relay', model: 'm' })
-    expect(hasReceivedRequestWithImages(store, other.id, 'pr_gen')).toBe(false)
-    store.close()
-  })
-})
-
-describe('会话列表排序', () => {
   /**
    * 回归用例：同一毫秒创建的多个会话，updated_at 全相等。
    * 只按 updated_at DESC 排序时 SQLite 退回插入顺序，列表看起来完全是反的

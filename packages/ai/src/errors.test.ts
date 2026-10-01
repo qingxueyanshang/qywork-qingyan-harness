@@ -324,6 +324,21 @@ describe('按用户的下一步动作分类', () => {
     )
   })
 
+  /** 中转站余额耗尽回 403；原文按 Anthropic 与 OpenAI 两种正文各取一份。 */
+  test('403 带余额不足正文归账户额度不足，其余 403 仍是无权访问', () => {
+    const anthropic = Object.assign(new Error('403 insufficient balance'), {
+      status: 403,
+      error: { error: { message: 'insufficient balance', type: 'billing_error' }, type: 'error' },
+    })
+    expect(classifyProviderError(P, anthropic).code).toBe('insufficient_quota')
+    const openai = classifyProviderError(P, http(403, 'insufficient balance'))
+    expect(openai.code).toBe('insufficient_quota')
+    expect(openai.message).toBe('账户额度不足')
+    const denied = classifyProviderError(P, http(403, 'You do not have access to this model'))
+    expect(denied.code).toBe('auth_failed')
+    expect(denied.message).toBe('当前 Key 无权访问该模型')
+  })
+
   /**
    * 402 是 Payment Required，不看正文：DeepSeek 的正文里 `code` 是 `invalid_request_error`，
    * 按字段判会落到参数错误。经三协议真实适配器走 HTTP，断言的是界面最终拿到的码。

@@ -1,4 +1,4 @@
-/** 覆盖 CLI 读取自定义模型规格、发送探针及 --save 写回传输结论。 */
+/** 覆盖 CLI 读取自定义模型规格、发送探针及 --save 写回传输结论（写回前重读配置，只改被探测模型的 transport）。 */
 import { expect, test } from 'bun:test'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -121,3 +121,79 @@ test.each([true, false])(
   },
   10_000,
 )
+
+/**
+ * 原始失败形状：`qy probe --save` 开头读一次配置，探测期间别处保存的改动在写回时被整份覆盖。
+ * 这里在端点收到第一个探测请求时改写配置文件（加一个接口、改权限模式），探测结束后两处改动都在，
+ * 校准结果也写进了被探测的那个模型。
+ */
+test('qy probe --save 只写回校准字段，探测期间别处保存的改动保留', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'qy-probe-'))
+  const file = join(home, 'config.json')
+  let touched = false
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = (await req.json()) as { reasoning_effort?: string }
+      if (!touched) {
+        touched = true
+        const other = JSON.parse(await readFile(file, 'utf8')) as QyConfig
+        other.mode = 'full'
+        other.providers.other = {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-saved-during-probe',
+          models: { m: {} },
+        }
+        await writeFile(file, JSON.stringify(other))
+      }
+      if (body.reasoning_effort && !['low', 'high', 'max'].includes(body.reasoning_effort)) {
+        return Response.json({ error: { message: 'unsupported effort' } }, { status: 400 })
+      }
+      return new Response(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
+        { headers: { 'content-type': 'text/event-stream' } },
+      )
+    },
+  })
+  try {
+    await writeFile(
+      file,
+      JSON.stringify({
+        active: { provider: 'test', model: 'custom' },
+        providers: {
+          test: {
+            kind: 'openai_chat_completions',
+            baseUrl: `http://127.0.0.1:${server.port}/v1`,
+            models: { custom: {} },
+          },
+        },
+        catalog: {
+          'custom|openai_chat_completions': {
+            thinking: 'reasoning_effort',
+            effortLevels: ['high', 'max'],
+          },
+        },
+        mode: 'auto',
+      }),
+    )
+    const child = Bun.spawn(
+      [process.execPath, 'packages/cli/src/index.ts', 'probe', 'custom', '--save', '--json'],
+      {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, QYWORK_HOME: home },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    const [code, err] = await Promise.all([child.exited, new Response(child.stderr).text()])
+    expect({ code, err: code === 0 ? '' : err }).toEqual({ code: 0, err: '' })
+    expect(touched).toBe(true)
+    const saved = JSON.parse(await readFile(file, 'utf8')) as QyConfig
+    expect(saved.mode).toBe('full')
+    expect(saved.providers.other?.apiKey).toBe('sk-saved-during-probe')
+    expect(saved.providers.test?.models.custom?.transport?.effort).toBe(true)
+  } finally {
+    server.stop(true)
+    await rm(home, { recursive: true, force: true })
+  }
+}, 10_000)

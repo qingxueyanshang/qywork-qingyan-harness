@@ -50,6 +50,18 @@ runs:
       shell: bash
       run: bun install --frozen-lockfile
 
+    # office 的 worker 是 Python，门禁跑它的纯逻辑单测（`bun run test:office`）。
+    # 用 runner 自带的解释器建虚拟环境，按产品附带的固定版本清单装依赖；
+    # 系统解释器在 Ubuntu 上禁止直接 pip 安装，所以不装进系统目录。
+    - name: Prepare Office worker Python
+      shell: bash
+      run: |
+        if command -v python3 >/dev/null 2>&1; then BASE=python3; else BASE=python; fi
+        "$BASE" -m venv .tmp/office-venv
+        if [ -x .tmp/office-venv/Scripts/python.exe ]; then PY="$PWD/.tmp/office-venv/Scripts/python.exe"; else PY="$PWD/.tmp/office-venv/bin/python"; fi
+        "$PY" -m pip install -r packages/runtime/office/requirements.txt
+        echo "QYWORK_TEST_PYTHON=$PY" >> "$GITHUB_ENV"
+
     - name: Check version manifests
       shell: bash
       run: bun run scripts/sync-version.ts --check

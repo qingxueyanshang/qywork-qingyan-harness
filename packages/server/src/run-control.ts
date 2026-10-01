@@ -54,7 +54,7 @@ import {
 import { redactSecrets } from '@qywork/tools'
 import { canvasPort } from './canvas.ts'
 import { makeDelegate } from './delegate.ts'
-import type { CommandDeps } from './deps.ts'
+import { type CommandDeps, officePortOf } from './deps.ts'
 import { publishGitState } from './http-util.ts'
 import { makePluginPort } from './plugin-port.ts'
 import type { GoalArm } from './runs.ts'
@@ -273,6 +273,8 @@ export async function startRun(
          * 排队请求，不会连带撤掉另一条会话正在做的动作。
          */
         ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(conversationId) } : {}),
+        // Office 同样现判：开关关着或本机缺 Python 与文档库时不给端口，这一轮没有 `office`。
+        ...officePortOf(deps),
         ...(deps.canvas
           ? { canvas: canvasPort(deps.canvas, { id: ws.id, root: ws.rootPath }) }
           : {}),
