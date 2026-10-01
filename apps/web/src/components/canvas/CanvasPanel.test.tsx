@@ -1,6 +1,6 @@
 /**
  * 覆盖 `canvas/CanvasPanel.tsx`、`canvas/GeneratePanel.tsx`、`canvas/SourcePicker.tsx`、`canvas/search.ts`、
- * `canvas/Rail.tsx`、`canvas/Bitmap.tsx`、`canvas/prompt.ts` 与 `canvas/frame.ts` 的纯函数，
+ * `canvas/Rail.tsx`、`canvas/Bitmap.tsx`、`canvas/Player.tsx`、`canvas/prompt.ts` 与 `canvas/frame.ts` 的纯函数，
  * 以及 `lib/store/ui.ts` 的 `openCanvasTab`。
  *
  * 服务端用内存里的一份画布代替：`client.api` 的桩按路径分派，操作经 core 的 `applyCanvasOps` 应用，
@@ -356,7 +356,7 @@ describe('画布：节点操作', () => {
     }
   })
 
-  test('视频节点平时只画封面，选中才挂播放器', async () => {
+  test('视频节点平时只画封面，选中才挂播放器，用自己的控件不用浏览器自带的', async () => {
     const { host, refs } = await mount([
       { op: 'add_file', ref: '$v', path: 'clip.mp4', x: 0, y: 0 },
     ])
@@ -366,8 +366,66 @@ describe('画布：节点操作', () => {
     pointer(video, 'pointerdown', 10, 10)
     pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
     await waitFor(
-      () => !!video.querySelector('video[controls]'),
+      () => !!video.querySelector('video') && !!video.querySelector('.canvas-player'),
       () => video.innerHTML,
+    )
+    expect(video.querySelector('video')!.hasAttribute('controls')).toBe(false)
+  })
+
+  test('静音的选择换选节点后沿用', async () => {
+    const { host, refs } = await mount([
+      { op: 'add_file', ref: '$v', path: 'clip.mp4', x: 0, y: 0 },
+      { op: 'add_file', ref: '$w', path: 'other.mp4', x: 400, y: 0 },
+    ])
+    const stage = host.querySelector('.canvas-stage')!
+    const select = async (id: string) => {
+      pointer(node(host, id), 'pointerdown', 10, 10)
+      pointer(stage, 'pointerup', 10, 10)
+      await waitFor(
+        () => !!node(host, id).querySelector('video'),
+        () => node(host, id).innerHTML,
+      )
+      return node(host, id).querySelector('video')!
+    }
+    expect((await select(refs.$v!)).muted).toBe(false)
+    node(host, refs.$v!).querySelector<HTMLButtonElement>('button[aria-label="静音"]')!.click()
+    expect(node(host, refs.$v!).querySelector('video')!.muted).toBe(true)
+    expect((await select(refs.$w!)).muted).toBe(true)
+    expect((await select(refs.$v!)).muted).toBe(true)
+    node(host, refs.$v!).querySelector<HTMLButtonElement>('button[aria-label="开启声音"]')!.click()
+    expect((await select(refs.$w!)).muted).toBe(false)
+  })
+
+  test('取帧打开取帧条、占工具条的位置；拖时刻定位播放器；Esc 收起', async () => {
+    const { host, refs } = await mount([
+      { op: 'add_file', ref: '$v', path: 'clip.mp4', x: 0, y: 0 },
+    ])
+    pointer(node(host, refs.$v!), 'pointerdown', 10, 10)
+    pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
+    await waitFor(
+      () => !!host.querySelector('.canvas-tools button'),
+      () => host.innerHTML.slice(0, 300),
+    )
+    const video = node(host, refs.$v!).querySelector('video')!
+    Object.defineProperty(video, 'duration', { configurable: true, value: 5 })
+    video.dispatchEvent(new Event('loadedmetadata'))
+    host.querySelector<HTMLButtonElement>('.canvas-tools button')!.click()
+    await waitFor(
+      () => !!host.querySelector('.canvas-frame-bar'),
+      () => host.innerHTML.slice(0, 300),
+    )
+    expect(host.querySelector('.canvas-tools')).toBeNull()
+    const bar = host.querySelector('.canvas-frame-bar')!
+    const time = bar.querySelector<HTMLInputElement>('input[aria-label="时刻"]')!
+    time.value = '5'
+    time.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(video.currentTime).toBeCloseTo(5 - 1 / 30, 6)
+    expect(bar.querySelector('.canvas-frame-row span')!.textContent).toBe('00:05.0 / 00:05')
+    expect(bar.querySelector<HTMLButtonElement>('.canvas-frame-take')!.disabled).toBe(false)
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await waitFor(
+      () => !host.querySelector('.canvas-frame-bar') && !!host.querySelector('.canvas-tools'),
+      () => host.innerHTML.slice(0, 300),
     )
   })
 
@@ -1866,12 +1924,14 @@ describe('画布：纯函数与页签', () => {
     expect(promptOfEditor(root)).toBe('@[n1] 走出\n下雨')
   })
 
-  test('取帧的时刻与名字：尾帧取 duration - 1/30 秒', async () => {
+  test('取帧的时刻与名字：起点为首帧，终点为尾帧且取 duration - 1/30 秒，其余按 0.1 秒', async () => {
     const { frameLabel, frameTime } = await import('./frame.ts')
-    expect(frameTime('first', 5)).toBe(0)
-    expect(frameTime('last', 5)).toBeCloseTo(5 - 1 / 30, 6)
-    expect(frameLabel('last')).toBe('尾帧')
-    expect(frameLabel(12.43)).toBe('12.4s')
+    expect(frameTime(0, 5)).toBe(0)
+    expect(frameTime(5, 5)).toBeCloseTo(5 - 1 / 30, 6)
+    expect(frameTime(1.6, 5)).toBe(1.6)
+    expect(frameLabel(0, 5)).toBe('首帧')
+    expect(frameLabel(5, 5)).toBe('尾帧')
+    expect(frameLabel(12.43, 20)).toBe('12.4s')
   })
 
   test('同一张画布开两次只有一页', async () => {

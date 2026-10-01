@@ -558,10 +558,11 @@ export class CanvasService {
     if (!video) throw new CanvasFailure(`目标已不存在：${videoNodeId}`, 404)
     if (canvasMediaOf(video) !== 'video') throw new CanvasFailure('只能从视频节点取帧', 422)
     const name = `${displayNameOf(video)}_${label}`.replace(/[\\/:*?"<>|]/g, '_')
+    // 扩展名写全：`12.4s` 这种名字不带的话，`.4s` 会被当成扩展名，文件落成不认识的类型。
     const [landed] = await landFiles(
       workspaceRoot,
       [{ bytes, mime: 'image/png' }],
-      `generated/${name}`,
+      `generated/${name}.png`,
     )
     const { refs } = await this.apply(workspaceRoot, path, [
       {

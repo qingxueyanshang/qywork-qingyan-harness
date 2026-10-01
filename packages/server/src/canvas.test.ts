@@ -422,6 +422,14 @@ describe('画布服务：取帧', () => {
     expect(new Uint8Array(await readFile(join(root, first.path)))).toEqual(PNG)
   })
 
+  test('按时刻取的帧名字带小数点，仍落成 .png', async () => {
+    const { root, video } = await withVideo()
+    const { svc } = service()
+    expect((await svc.captureFrame(root, PATH, video, '1.6s', PNG)).path).toBe(
+      'generated/视频1_1.6s.png',
+    )
+  })
+
   test('不是 PNG 回 422；不是视频节点回 422，都不落盘', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
