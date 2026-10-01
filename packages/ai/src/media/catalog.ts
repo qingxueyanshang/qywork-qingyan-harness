@@ -18,6 +18,7 @@
  */
 
 import { type Currency, MEDIA_KIND_OUTPUT, type MediaKind, type MentionStyle } from '@qywork/core'
+import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
 
 /**
@@ -928,6 +929,7 @@ const SEEDANCE_25_MENTION: MentionStyle = {
 const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: '音频{n}' }
 
 const SEEDS: readonly MediaModelSpec[] = [
+  ...GOOGLE_XAI_MODELS,
   spec(
     'gpt-image-2.5-flare',
     'GPT Image 2.5 Flare',
@@ -1193,6 +1195,7 @@ const SEEDS: readonly MediaModelSpec[] = [
  * 参数表保守：多写一个接口不认的字段，请求就被拒；少写只是大模型少了一个可调项。
  */
 const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayName'>> = {
+  ...GOOGLE_XAI_DEFAULTS,
   openai_images: {
     vendor: null,
     kind: 'openai_images',

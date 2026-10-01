@@ -61,6 +61,10 @@ export interface MediaUsage {
   inputTextTokens?: number
   inputImageTokens?: number
   outputTokens?: number
+  /** Gemini 的全部输入 token，以及按模态拆分的输出；文字输出含思考。 */
+  inputTokens?: number
+  outputTextTokens?: number
+  outputMediaTokens?: number
   /** 接口直接回报的扣费金额。有它时不按单价计算。 */
   billed?: { amount: number; currency: Currency }
 }

@@ -9,16 +9,27 @@ import {
   DashScopeSpeechAdapter,
   DashScopeVideosAdapter,
 } from './adapters/dashscope.ts'
+import { GeminiMediaAdapter, VeoVideosAdapter } from './adapters/google.ts'
 import { KlingVideosAdapter } from './adapters/kling.ts'
 import { OpenAIImagesAdapter } from './adapters/openai-images.ts'
 import { OpenAISpeechAdapter } from './adapters/openai-speech.ts'
 import { OpenAIVideosAdapter } from './adapters/openai-videos.ts'
+import { XaiImagesAdapter, XaiVideosAdapter } from './adapters/xai.ts'
 import { lookupMediaModel } from './catalog.ts'
 import type { MediaAdapter, MediaProfile } from './types.ts'
 
 export function buildMediaAdapter(profile: MediaProfile): MediaAdapter {
   const spec = lookupMediaModel(profile.model, profile.kind)
   switch (profile.kind) {
+    case 'gemini_images':
+    case 'gemini_videos':
+      return new GeminiMediaAdapter(profile, spec)
+    case 'veo_videos':
+      return new VeoVideosAdapter(profile, spec)
+    case 'xai_images':
+      return new XaiImagesAdapter(profile, spec)
+    case 'xai_videos':
+      return new XaiVideosAdapter(profile, spec)
     case 'openai_images':
       return new OpenAIImagesAdapter(profile, spec)
     case 'dashscope_images':

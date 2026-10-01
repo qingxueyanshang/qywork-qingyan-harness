@@ -6,6 +6,49 @@
 接口支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
 选择协议时，以所连接端点提供的接口为准。通过中转站接入时，使用中转站给出的地址与凭证。
 
+## Google 与 xAI 图片、视频生成
+
+在设置的接口页添加下列模型 ID 后，模型会进入对应的图像或视频类别。
+Google 官方 Base URL 为 `https://generativelanguage.googleapis.com/v1beta`，
+xAI 官方 Base URL 为 `https://api.x.ai/v1`；添加时按地址与目录选择生成协议。
+已保存模型的协议以配置为准，修改地址不会自动迁移协议。
+
+| 类别 | 模型 ID | 显示名称 |
+|---|---|---|
+| 图像 | `gemini-3.1-flash-lite-image` | Nano Banana 2 Lite |
+| 图像 | `gemini-3.1-flash-image` | Nano Banana 2 |
+| 图像 | `gemini-3-pro-image` | Nano Banana Pro |
+| 图像 | `grok-imagine-image-2.0` | Grok Imagine Image 2.0 |
+| 视频 | `gemini-omni-1.1-flash` | Gemini Omni Flash |
+| 视频 | `veo-3.1-generate-preview` | Veo 3.1 |
+| 视频 | `veo-3.1-fast-generate-preview` | Veo 3.1 Fast |
+| 视频 | `veo-3.1-lite-generate-preview` | Veo 3.1 Lite |
+| 视频 | `grok-imagine-video-1.5` | Grok Imagine Video 1.5 |
+
+Gemini 图片支持生成与参考图修改。Omni 接入文生、首帧、首尾帧、参考图和单个视频输入；
+Veo 接入文生、首帧、首尾帧，Standard / Fast 另支持参考图；Veo 的视频延长未接入。
+Grok 图片支持最多五张参考图修改，视频接入文生、首帧、首尾帧与参考图；
+未开放的自定义音频参考和旧版视频编辑能力不列入新模型能力。
+
+参数使用各家原生名称。Gemini 使用 `aspect_ratio` / `image_size`，
+Veo 使用 `aspectRatio` / `durationSeconds`，Grok 使用 `aspect_ratio` / `duration`。
+目录约束会在请求前检查；Veo 高分辨率与参考图生成要求 8 秒，Grok 参考图和首尾帧最高 720p。
+异步任务沿用现有任务记录，失败后可按任务号查询、下载，恢复时不重复提交。
+
+Gemini 按接口回报的输入、文字/思考输出和图片/视频输出 token 分别计费；
+xAI 优先采用响应中的 `usage.cost_in_usd_ticks` 实际扣费。
+Veo 的生成响应未提供计价所需的实际时长、分辨率，用量账本金额显示 N/A；
+发送前可按选择的时长与分辨率显示目录报价。任何接口缺少计量时均不估填实际金额。
+中转站沿用其兼容协议，能力取协议与模型交集，官方单价不自动用于中转账单。
+
+2026-10-01 核对：[Gemini 图片](https://ai.google.dev/gemini-api/docs/image-generation)、
+[Omni](https://ai.google.dev/gemini-api/docs/omni)、[Veo](https://ai.google.dev/gemini-api/docs/veo)、
+[Google 价格](https://ai.google.dev/gemini-api/docs/pricing)、
+[Grok 图片](https://docs.x.ai/developers/model-capabilities/images/generation)、
+[Grok 视频](https://docs.x.ai/developers/model-capabilities/video/generation)、
+[xAI 价格](https://docs.x.ai/developers/pricing)、[xAI 实际扣费](https://docs.x.ai/developers/cost-tracking)。
+本地协议回归不等同于官方端点实际生成验证。
+
 ## GPT-6.1 Sol
 
 内置收录 `gpt-6.1-sol`，显示为 **GPT-6.1 Sol**，原有 `gpt-6-sol` 独立保留。

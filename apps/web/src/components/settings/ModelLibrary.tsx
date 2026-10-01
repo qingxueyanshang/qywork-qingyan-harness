@@ -21,10 +21,15 @@ const CATEGORY_LABEL: Record<Category, string> = {
 const MEDIA_KIND_LABEL: Record<MediaKind, string> = {
   openai_images: 'OpenAI 兼容',
   dashscope_images: '百炼',
+  gemini_images: 'Gemini',
+  xai_images: 'xAI',
   openai_videos: '中转 /v1/videos',
   ark_videos: '火山方舟',
   dashscope_videos: '百炼',
   kling_videos: '可灵',
+  gemini_videos: 'Gemini',
+  veo_videos: 'Veo',
+  xai_videos: 'xAI',
   openai_speech: 'OpenAI 兼容',
   dashscope_speech: '百炼',
 }
