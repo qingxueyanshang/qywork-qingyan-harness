@@ -182,12 +182,12 @@ export interface LibraryModel {
    * 界面按三态显示，不要把它折成布尔。
    */
   vision: boolean | null
-  input: number
-  output: number
+  input: number | null
+  output: number | null
   /** 缓存命中价。 */
-  cacheRead: number
+  cacheRead: number | null
   /** 缓存写入价（5 分钟档）。`computeCost` 只按这一档算。 */
-  cacheWrite: number
+  cacheWrite: number | null
   currency: 'USD' | 'CNY'
   effortLevels: EffortLevel[]
   /**
@@ -254,9 +254,11 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
   const custom: LibraryVendor = { id: '', displayName: '自定义', models: [] }
 
   for (const spec of rows.values()) {
-    const notes = [spec.offPeak?.note, ...(spec.longContext ?? []).map((t) => t.note)].filter(
-      (n) => n !== undefined,
-    )
+    const notes = [
+      spec.pricing.note,
+      spec.offPeak?.note,
+      ...(spec.longContext ?? []).map((t) => t.note),
+    ].filter((n) => n !== undefined)
     const row: LibraryModel = {
       id: spec.id,
       label: spec.displayName,

@@ -287,6 +287,7 @@ function compact(n: number): string {
 }
 
 /** 每百万 token 的单价。币种是数据的一部分——¥6 当成 $6 差七倍。 */
-function price(n: number, currency: 'USD' | 'CNY'): string {
+function price(n: number | null, currency: 'USD' | 'CNY'): string {
+  if (n === null) return '—'
   return `${currency === 'CNY' ? '¥' : '$'}${n}`
 }

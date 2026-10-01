@@ -482,6 +482,33 @@ describe('模型目录', () => {
   /** 摊平成一张表只是为了断言好写；界面拿到的是分好组的。 */
   const models = async (d: ApiDeps) => (await body(d)).providers.flatMap((p) => p.models)
 
+  test('新编码模型只出一行，订阅限制和未知单价不被丢失', async () => {
+    const response = await body(withConfig('openai_chat_completions', 'step-5-preview'))
+    expect(response.providers[0]?.models[0]).toMatchObject({
+      known: true,
+      defaultBaseUrl: 'https://api.stepfun.com/v1',
+      effortLevels: ['low', 'medium', 'high'],
+    })
+    expect(response.library.find((v) => v.id === 'stepfun')?.models.map((m) => m.id)).toEqual([
+      'step-5-preview',
+    ])
+    const minimax = response.library.find((v) => v.id === 'minimax')!.models
+    expect(minimax.map((m) => m.id)).toEqual(['MiniMax-M3.1-Flash-Preview', 'MiniMax-M3'])
+    expect(minimax[0]).toMatchObject({
+      input: null,
+      output: null,
+      cacheRead: null,
+      cacheWrite: null,
+    })
+    expect(minimax[0]?.priceNotes?.join('')).toContain('M Plan')
+    expect(
+      (await models(withConfig('anthropic_messages', 'step-5-preview')))[0]?.defaultBaseUrl,
+    ).toBe('https://api.stepfun.com')
+    expect(
+      (await models(withConfig('openai_responses', 'MiniMax-M3.1-Flash-Preview')))[0],
+    ).toMatchObject({ known: true, effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] })
+  })
+
   test('官方默认地址按模型与协议下发，显式端点不被写回覆盖', async () => {
     const d = withConfig('openai_chat_completions', 'deepseek-flash')
     d.config.providers.p!.baseUrl = 'https://relay.example/v1'
@@ -858,6 +885,7 @@ describe('模型目录', () => {
       'minimax',
       'moonshot',
       'openai',
+      'stepfun',
       'xai',
       'xiaomi',
       'zhipu',

@@ -672,6 +672,8 @@ interface CompatUsage {
   prompt_cache_miss_tokens?: number
   /** OpenAI 的写法。 */
   prompt_tokens_details?: { cached_tokens?: number }
+  /** Step 的缓存命中量在 usage 顶层。 */
+  cached_tokens?: number
   completion_tokens_details?: { reasoning_tokens?: number }
 }
 
@@ -932,13 +934,15 @@ function applyUsage(acc: ProviderUsage, u: CompatUsage) {
   if (typeof u.completion_tokens === 'number') acc.outputTokens = u.completion_tokens
 
   // 各家字段名不统一：DeepSeek 是 prompt_cache_hit_tokens，OpenAI 是
-  // prompt_tokens_details.cached_tokens。都认，认不出就保持 null（未回报）。
+  // prompt_tokens_details.cached_tokens，Step 是根级 cached_tokens；未回报保持 null。
   const details = u.prompt_tokens_details
   let cached: number | null = null
   if (typeof u.prompt_cache_hit_tokens === 'number') {
     cached = u.prompt_cache_hit_tokens
   } else if (details && typeof details.cached_tokens === 'number') {
     cached = details.cached_tokens
+  } else if (typeof u.cached_tokens === 'number') {
+    cached = u.cached_tokens
   }
   if (cached !== null) acc.cachedTokens = cached
 

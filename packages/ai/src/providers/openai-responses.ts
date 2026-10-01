@@ -424,9 +424,12 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     return {
       reasoning: {
         ...(effort ? { effort } : {}),
-        // 要拿到 thinking_delta 就必须显式要摘要；不要的话推理过程完全不可见，
-        // 而用户看到的是「模型停了很久然后突然出结果」。
-        ...(this.spec.reasoningEcho === 'reasoning_text_object' ? {} : { summary: 'auto' }),
+        // 原文型协议直接返回 reasoning_text；摘要型协议才需要显式请求摘要。
+        // MiniMax 的 reasoning 只声明 effort，不能把 OpenAI 的摘要字段一并塞过去。
+        ...(this.spec.reasoningEcho === 'reasoning_text' ||
+        this.spec.reasoningEcho === 'reasoning_text_object'
+          ? {}
+          : { summary: 'auto' }),
       },
     }
   }

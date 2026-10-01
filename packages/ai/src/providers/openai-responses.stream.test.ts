@@ -542,6 +542,7 @@ test('GPT-6.1 Sol 的工具调用续轮保留 call_id，使用 strict schema 且
   const calls = first.find((e) => e.type === 'tool_calls')
   expect(calls?.calls).toEqual([{ id: CALL_ID, name: 'get_weather', arguments: { city: '北京' } }])
   expect(first.at(-1)).toMatchObject({ type: 'done', stopReason: 'tool_use' })
+  expect(lastBody.reasoning?.summary).toBe('auto')
   expect(lastBody.tools).toHaveLength(1)
   expect(lastBody).toMatchObject({
     tools: [
@@ -808,9 +809,10 @@ describe('发出去的请求', () => {
 })
 
 describe('思考字段', () => {
-  test('默认要摘要 —— 不要的话推理过程完全不可见', async () => {
-    await run(TEXT_RUN)
-    expect(lastBody.reasoning?.summary).toBe('auto')
+  test('DeepSeek 直接返回思考原文，不请求无效的摘要字段', async () => {
+    const events = await run(TEXT_RUN)
+    expect(lastBody.reasoning?.summary).toBeUndefined()
+    expect(events.some((e) => e.type === 'thinking_delta')).toBe(true)
   })
 
   test('DeepSeek 三档分别发送，映射别名不当成额外档位', async () => {

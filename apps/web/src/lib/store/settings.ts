@@ -251,12 +251,13 @@ export interface LibraryModel {
   maxOutputTokens: number | null
   /** 接不接受图片输入。`null` = 厂商规格页没写，**不是「不支持」**。 */
   vision: boolean | null
-  input: number
-  output: number
+  /** null = 厂商尚未公布单价。 */
+  input: number | null
+  output: number | null
   /** 缓存命中价。 */
-  cacheRead: number
+  cacheRead: number | null
   /** 缓存写入价（5 分钟档）。计价只按这一档算。 */
-  cacheWrite: number
+  cacheWrite: number | null
   currency: 'USD' | 'CNY'
   effortLevels: EffortLevel[]
   /** 不选强度时会不会思考。 */
