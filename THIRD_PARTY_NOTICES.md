@@ -22,6 +22,7 @@
 | `@xterm/addon-fit` | 0.11.0 | MIT |
 | `@xterm/xterm` | 6.0.0 | MIT |
 | `codemirror` | 6.0.2 | MIT |
+| `fflate` | 0.8.2 | MIT |
 | `highlight.js` | 11.11.1 | BSD-3-Clause |
 | `marked` | 18.0.9 | MIT |
 | `openai` | 6.49.0 | Apache-2.0 |
@@ -35,17 +36,22 @@
 | 组件 | 锁定版本 | 许可证 |
 | --- | ---: | --- |
 | `anyhow` | 1.0.104 | MIT OR Apache-2.0 |
-| `notify` | 8.2.0 | CC0-1.0 |
-| `notify-debouncer-full` | 0.5.0 | MIT OR Apache-2.0 |
+| `atspi` | 0.30.0 | Apache-2.0 OR MIT |
+| `libc` | 0.2.189 | MIT OR Apache-2.0 |
+| `log` | 0.4.33 | MIT OR Apache-2.0 |
+| `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | `parking_lot` | 0.12.5 | MIT OR Apache-2.0 |
 | `portable-pty` | 0.9.0 | MIT |
+| `reqwest` | 0.12.28 | MIT OR Apache-2.0 |
 | `serde` | 1.0.229 | MIT OR Apache-2.0 |
 | `serde_json` | 1.0.151 | MIT OR Apache-2.0 |
 | `tauri` | 2.11.5 | Apache-2.0 OR MIT |
 | `tauri-plugin-dialog` | 2.7.2 | Apache-2.0 OR MIT |
 | `tauri-plugin-opener` | 2.5.4 | Apache-2.0 OR MIT |
 | `tauri-plugin-shell` | 2.3.5 | Apache-2.0 OR MIT |
+| `tauri-plugin-updater` | 2.11.0 | Apache-2.0 OR MIT |
 | `tokio` | 1.53.1 | MIT |
+| `zbus` | 5.19.0 | MIT |
 | `windows` | 0.61.3 | MIT OR Apache-2.0 |
 
 ## 构建与开发依赖
@@ -54,10 +60,16 @@
 
 | 组件 | 锁定版本 | 许可证 |
 | --- | ---: | --- |
+| `@babel/core` | 7.29.7 | MIT |
+| `@babel/preset-typescript` | 7.29.7 | MIT |
 | `@biomejs/biome` | 2.3.5 | MIT OR Apache-2.0 |
+| `@happy-dom/global-registrator` | 20.11.6 | MIT |
 | `@tauri-apps/cli` | 2.11.4 | Apache-2.0 OR MIT |
+| `@types/babel__core` | 7.20.5 | MIT |
 | `@types/bun` | 1.3.14 | MIT |
 | `@types/qrcode` | 1.5.6 | MIT |
+| `babel-preset-solid` | 1.9.15 | MIT |
+| `happy-dom` | 20.11.6 | MIT |
 | `playwright` | 1.62.1 | Apache-2.0 |
 | `tauri-build` | 2.6.3 | Apache-2.0 OR MIT |
 | `typescript` | 5.9.3 | Apache-2.0 |
