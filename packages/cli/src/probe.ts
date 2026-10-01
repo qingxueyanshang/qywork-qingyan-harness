@@ -91,20 +91,28 @@ export async function runProbe(args: string[]): Promise<number> {
     return 0
   }
 
-  // 只写当前接口下的模型格子，不改全局模型目录。
-  const owner = config.providers[stored.provider]
-  const model = owner?.models[stored.model]
-  if (!owner || !model) return 2
   if (Object.keys(transport).length === 0) {
     process.stderr.write(`\n没有可写的传输结论，配置保持不变。\n`)
     return 0
   }
 
+  // 写回前重读配置，只改这一个模型格子的 `transport`，不改全局模型目录。
+  // 不要把开头读到的那份整份写回：探测要几十秒到几分钟，期间在设置页或别的进程里
+  // 保存的改动会被整份覆盖。
+  const latest = await loadConfig()
+  const owner = latest.providers[stored.provider]
+  const model = owner?.models[stored.model]
+  if (!owner || !model) {
+    process.stderr.write(
+      `\n探测期间接口 ${stored.provider} / ${stored.model} 已从配置中移除，未写回。\n`,
+    )
+    return 2
+  }
   owner.models[stored.model] = {
     ...model,
     transport: { ...model.transport, ...transport },
   }
-  await saveConfig(config)
+  await saveConfig(latest)
   process.stderr.write(
     `\n已写回接口 ${stored.provider} / ${stored.model} 的传输校准：` +
       `${Object.keys(transport).join('、')}\n`,

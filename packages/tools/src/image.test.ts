@@ -1,7 +1,7 @@
 /**
  * 图片尺寸解析与缩放策略。
  *
- * 覆盖范围：`image.ts` 全部（`imageSizeOf` + `shrinkImage`）。
+ * 覆盖范围：`image.ts` 全部（`imageSizeOf` + `shrinkImage`，含上限内大 PNG 换 JPEG 的规则）。
  *
  * 盯的是一个**反直觉的方向**：无条件重编码会把常见的截图变大。所以「在上限内原样
  * 返回同一个引用」这条必须被锁住——它坏掉不报错，只是每张图静默大一倍。
@@ -74,6 +74,52 @@ describe('缩放策略', () => {
   test('超标但解码失败时原样返回，不抛', async () => {
     const bytes = png(4000, 3000)
     const out = await shrinkImage(bytes, 'image/png')
+    expect(out.bytes).toBe(bytes)
+  })
+})
+
+/** 一张带颗粒的渐变画面，接近渲染截图：PNG 压不小，JPEG 能小一个数量级。 */
+async function scene(alpha: number): Promise<Uint8Array> {
+  const photon = await import('@silvia-odwyer/photon-node')
+  const w = 640
+  const h = 360
+  const raw = new Uint8Array(w * h * 4)
+  let seed = 7
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      const n = seed % 24
+      const o = (y * w + x) * 4
+      raw[o] = (x / w) * 200 + n
+      raw[o + 1] = (y / h) * 180 + n
+      raw[o + 2] = 120 + Math.sin(x / 9) * 60 + n
+      raw[o + 3] = alpha
+    }
+  return new photon.PhotonImage(raw, w, h).get_bytes()
+}
+
+describe('上限内的大 PNG', () => {
+  test('不透明、超过 300 KB：换成小一半以上的 JPEG', async () => {
+    const bytes = await scene(255)
+    expect(bytes.length).toBeGreaterThan(300 * 1024)
+    const out = await shrinkImage(bytes, 'image/png')
+    expect(out.mime).toBe('image/jpeg')
+    expect(out.bytes.length * 2).toBeLessThanOrEqual(bytes.length)
+    expect(imageSizeOf(out.bytes)).toEqual({ width: 640, height: 360 })
+  })
+
+  /** JPEG 没有透明通道：换了之后透明处变成实色，模型看到的画面与原图不符。 */
+  test('有透明像素：原样返回', async () => {
+    const bytes = await scene(128)
+    const out = await shrinkImage(bytes, 'image/png')
+    expect(out.bytes).toBe(bytes)
+    expect(out.mime).toBe('image/png')
+  })
+
+  /** 只处理 PNG：JPEG 已经压过，GIF 换成 JPEG 会丢掉动画。 */
+  test('不是 PNG：原样返回', async () => {
+    const bytes = await scene(255)
+    const out = await shrinkImage(bytes, 'image/gif')
     expect(out.bytes).toBe(bytes)
   })
 })

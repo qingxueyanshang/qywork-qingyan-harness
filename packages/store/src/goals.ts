@@ -57,31 +57,35 @@ export function createGoal(
     return { ok: false, code: 'invalid_objective', message: 'objective 不能为空' }
   }
 
-  const existing = currentGoal(store, input.conversationId)
-  if (existing && existing.status !== 'completed') {
-    return {
-      ok: false,
-      code: 'goal_exists',
-      message:
-        `这条会话已经有一个目标（${existing.id}，状态 ${existing.status}）：${existing.objective}。` +
-        '同时只能有一个目标——先用 update_goal 把它 complete 掉，或者 resume 接着做它。',
+  // 查「有没有未完成的目标」与追加必须在同一个写事务里：拆开的话，两个进程同时立目标，
+  // 两边都查到没有，会同时出现两个进行中的目标（不同 goal_id，主键挡不住）。
+  return store.tx(() => {
+    const existing = currentGoal(store, input.conversationId)
+    if (existing && existing.status !== 'completed') {
+      return {
+        ok: false,
+        code: 'goal_exists',
+        message:
+          `这条会话已经有一个目标（${existing.id}，状态 ${existing.status}）：${existing.objective}。` +
+          '同时只能有一个目标——先用 update_goal 把它 complete 掉，或者 resume 接着做它。',
+      }
     }
-  }
 
-  const now = Date.now()
-  const goal: Goal = {
-    id: newGoalId(),
-    conversationId: input.conversationId,
-    objective,
-    status: 'active',
-    revision: 1,
-    blockedCode: null,
-    blockedReason: null,
-    createdAt: now,
-    updatedAt: now,
-  }
-  append(store, goal)
-  return { ok: true, goal }
+    const now = Date.now()
+    const goal: Goal = {
+      id: newGoalId(),
+      conversationId: input.conversationId,
+      objective,
+      status: 'active',
+      revision: 1,
+      blockedCode: null,
+      blockedReason: null,
+      createdAt: now,
+      updatedAt: now,
+    }
+    append(store, goal)
+    return { ok: true, goal }
+  })
 }
 
 /**
@@ -89,6 +93,9 @@ export function createGoal(
  *
  * `revision` 是必填的乐观锁：拿旧版本号提交直接拒，不静默覆盖中间那次变更。
  * 模型手里的目标可能是若干轮之前读到的。
+ *
+ * 校验 revision 与追加在同一个写事务里：拆开的话，两个进程拿同一个 revision 同时改，
+ * 后到的撞主键抛异常，而不是收到 `stale_revision`。
  */
 export function updateGoal(
   store: Store,
@@ -102,55 +109,57 @@ export function updateGoal(
     blockedReason?: string
   },
 ): GoalWriteResult {
-  const found = load(store, input.conversationId, input.goalId, input.revision)
-  if (!found.ok) return found
-  const goal = found.goal
+  return store.tx(() => {
+    const found = load(store, input.conversationId, input.goalId, input.revision)
+    if (!found.ok) return found
+    const goal = found.goal
 
-  const next: GoalStatus =
-    input.action === 'pause'
-      ? 'paused'
-      : input.action === 'resume'
-        ? 'active'
-        : input.action === 'complete'
-          ? 'completed'
-          : input.action === 'blocked'
-            ? 'blocked'
-            : goal.status
+    const next: GoalStatus =
+      input.action === 'pause'
+        ? 'paused'
+        : input.action === 'resume'
+          ? 'active'
+          : input.action === 'complete'
+            ? 'completed'
+            : input.action === 'blocked'
+              ? 'blocked'
+              : goal.status
 
-  const denied = checkTransition(goal.status, next, input.action)
-  if (denied) return denied
+    const denied = checkTransition(goal.status, next, input.action)
+    if (denied) return denied
 
-  const patch: Partial<Goal> = { status: next }
+    const patch: Partial<Goal> = { status: next }
 
-  if (input.action === 'edit') {
-    const objective = (input.objective ?? '').trim()
-    if (!objective) {
-      return { ok: false, code: 'invalid_objective', message: 'action="edit" 必须带 objective' }
-    }
-    patch.objective = objective
-  }
-
-  if (input.action === 'blocked') {
-    const reason = (input.blockedReason ?? '').trim()
-    // 没有理由的 blocked 是最坏的一种停：循环停了，而没有人知道为什么，
-    // 界面上只剩一个「受阻」两个字。
-    if (!reason) {
-      return {
-        ok: false,
-        code: 'missing_reason',
-        message: 'action="blocked" 必须带 blocked_reason，说清卡在哪、需要什么才能继续',
+    if (input.action === 'edit') {
+      const objective = (input.objective ?? '').trim()
+      if (!objective) {
+        return { ok: false, code: 'invalid_objective', message: 'action="edit" 必须带 objective' }
       }
+      patch.objective = objective
     }
-    patch.blockedCode = input.blockedCode ?? 'needs_human'
-    patch.blockedReason = reason
-  } else {
-    // 离开 blocked 时把理由一并清掉。留着的话，下一次因为别的原因停下时，
-    // 界面上会显示一条几轮之前的旧理由。
-    patch.blockedCode = null
-    patch.blockedReason = null
-  }
 
-  return commit(store, goal, patch)
+    if (input.action === 'blocked') {
+      const reason = (input.blockedReason ?? '').trim()
+      // 没有理由的 blocked 是最坏的一种停：循环停了，而没有人知道为什么，
+      // 界面上只剩一个「受阻」两个字。
+      if (!reason) {
+        return {
+          ok: false,
+          code: 'missing_reason',
+          message: 'action="blocked" 必须带 blocked_reason，说清卡在哪、需要什么才能继续',
+        }
+      }
+      patch.blockedCode = input.blockedCode ?? 'needs_human'
+      patch.blockedReason = reason
+    } else {
+      // 离开 blocked 时把理由一并清掉。留着的话，下一次因为别的原因停下时，
+      // 界面上会显示一条几轮之前的旧理由。
+      patch.blockedCode = null
+      patch.blockedReason = null
+    }
+
+    return commit(store, goal, patch)
+  })
 }
 
 // ─────────────────────────────── 内部 ───────────────────────────────

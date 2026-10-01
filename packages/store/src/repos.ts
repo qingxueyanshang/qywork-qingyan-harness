@@ -52,7 +52,7 @@ import {
   newStepId,
   newWorkspaceId,
 } from '@qywork/core'
-import type { Store } from './db.ts'
+import type { RunOwner, Store } from './db.ts'
 import { readJson, writeJson } from './db.ts'
 import type {
   ConversationRow,
@@ -90,33 +90,27 @@ export function normalizeWorkspaceRoot(rootPath: string): string {
   return resolve(rootPath)
 }
 
+/**
+ * 没有就插一行，有就更新 `last_opened_at` 与名字。
+ *
+ * 一条语句完成：不要拆成先 SELECT 再 INSERT。同一目录第一次被两个进程同时打开时，
+ * 两边都查到「没有」，后插的那个撞 `root_path` 的 UNIQUE，启动当场失败。
+ *
+ * `removed_at` 一并清掉：重新添加一个移除过的路径就是「把它加回来」，
+ * 它的会话随之回到列表——那些数据从来没被删过（见 `removeWorkspace`）。
+ */
 export function upsertWorkspace(store: Store, rootPath: string, name: string): Workspace {
   const now = Date.now()
-  const root = normalizeWorkspaceRoot(rootPath)
-  const existing = store.db
-    .query<WorkspaceRow, [string]>('SELECT * FROM workspaces WHERE root_path = ?')
-    .get(root)
-  if (existing) {
-    // `removed_at` 一并清掉：重新添加一个移除过的路径就是「把它加回来」，
-    // 它的会话随之回到列表——那些数据从来没被删过（见 `removeWorkspace`）。
-    store.db
-      .query('UPDATE workspaces SET last_opened_at = ?, name = ?, removed_at = NULL WHERE id = ?')
-      .run(now, name, existing.id)
-    return { ...rowToWorkspace(existing), lastOpenedAt: now, name }
-  }
-  const ws: Workspace = {
-    id: newWorkspaceId(),
-    name,
-    rootPath: root,
-    lastOpenedAt: now,
-    createdAt: now,
-  }
-  store.db
-    .query(
-      'INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES (?,?,?,?,?)',
+  const row = store.db
+    .query<WorkspaceRow, [string, string, string, number, number]>(
+      `INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES (?,?,?,?,?)
+       ON CONFLICT(root_path) DO UPDATE
+         SET last_opened_at = excluded.last_opened_at, name = excluded.name, removed_at = NULL
+       RETURNING *`,
     )
-    .run(ws.id, ws.name, ws.rootPath, ws.lastOpenedAt, ws.createdAt)
-  return ws
+    .get(newWorkspaceId(), name, normalizeWorkspaceRoot(rootPath), now, now)
+  if (!row) throw new Error('[qywork] 写入工作区没有返回行')
+  return rowToWorkspace(row)
 }
 
 /**
@@ -429,14 +423,22 @@ export function deleteConversation(store: Store, id: ConversationId): boolean {
 
 /**
  * 重命名。**不动 `updated_at`**：改名不是「有了新内容」，推进它会让列表重排、
- * 侧栏那个时间与实际内容更新时间不符。返回 null = 会话不存在。
+ * 侧栏那个时间与实际内容更新时间不符。返回 null = 会话不存在，或给了 `onlyIfEmpty` 而标题已有。
+ *
+ * `onlyIfEmpty` 给自动起标题用：「标题为空」在写入的同一条语句里判断。不要改成调用方先读再写，
+ * 读与写之间用户改的名字会被自动标题覆盖。
  */
 export function setConversationTitle(
   store: Store,
   id: ConversationId,
   title: string,
+  opts: { onlyIfEmpty?: boolean } = {},
 ): Conversation | null {
-  const changed = store.db.query('UPDATE conversations SET title = ? WHERE id = ?').run(title, id)
+  const changed = store.db
+    .query(
+      `UPDATE conversations SET title = ? WHERE id = ?${opts.onlyIfEmpty ? " AND title = ''" : ''}`,
+    )
+    .run(title, id)
   if (changed.changes === 0) return null
   return getConversation(store, id)
 }
@@ -919,6 +921,32 @@ export function listConversationChangesPage(
 
 // ─────────────────────────────── Run ───────────────────────────────
 
+/** 同一会话的轮被另一个仍在运行的进程占着。 */
+export class ConversationBusyError extends Error {
+  constructor(readonly holder: { runId: RunId; ownerPid: number; ownerKind: RunOwner | null }) {
+    const where =
+      holder.ownerKind === 'serve'
+        ? '桌面端'
+        : holder.ownerKind === 'cli'
+          ? '终端里的 qy 中'
+          : '另一个进程中'
+    super(`该会话已在${where}执行（pid ${holder.ownerPid}），请先在那里中断`)
+    this.name = 'ConversationBusyError'
+  }
+}
+
+/**
+ * 建一轮。**「这条会话此刻能不能起轮」跨进程的唯一判定就在这里**：服务端与 CLI 的每一轮、
+ * 压缩轮都经过它。
+ *
+ * 在同一个 IMMEDIATE 事务里先查这条会话有没有别的进程占着的 running / queued 行，
+ * 占着就抛 `ConversationBusyError`，不插入。「占着」= `isOrphan` 判为不可回收：
+ * 那个进程还在、心跳没过期，与崩溃回收同一个判据。进程崩了（pid 不在）或挂住（心跳停了）
+ * 都不算占着，所以不会永久锁死。本进程自己的行被 `isOrphan` 排除：本进程内的并发由
+ * 服务端的 `RunManager` 在同步块里挡，CLI 一个进程同时只跑一轮。
+ *
+ * 不要把查询挪到事务外：两个进程会同时查到「没人占」，各建一轮。
+ */
 export function createRun(
   store: Store,
   input: {
@@ -933,6 +961,43 @@ export function createRun(
     dispatch?: { stepId: StepId; nodeId: string }
   },
 ): Run {
+  return store.tx(() => {
+    const holder = liveHolder(store, input.conversationId)
+    if (holder) throw new ConversationBusyError(holder)
+    return insertRun(store, input)
+  })
+}
+
+/** 这条会话被别的进程占着的那一轮；没有返回 null。判据见 `createRun`。 */
+function liveHolder(
+  store: Store,
+  conversationId: ConversationId,
+): ConversationBusyError['holder'] | null {
+  const rows = store.db
+    .query<
+      {
+        id: RunId
+        owner_pid: number | null
+        owner_kind: string | null
+        heartbeat_at: number | null
+      },
+      [string]
+    >(
+      `SELECT id, owner_pid, owner_kind, heartbeat_at FROM runs
+       WHERE conversation_id = ? AND status IN ('running','queued')`,
+    )
+    .all(conversationId)
+  const held = rows.find((r) => !isOrphan(r.owner_pid, r.heartbeat_at))
+  if (!held) return null
+  const kind = held.owner_kind
+  return {
+    runId: held.id,
+    ownerPid: Number(held.owner_pid),
+    ownerKind: kind === 'serve' || kind === 'cli' ? kind : null,
+  }
+}
+
+function insertRun(store: Store, input: Parameters<typeof createRun>[1]): Run {
   const now = Date.now()
   const run: Run = {
     id: newRunId(),
@@ -960,8 +1025,8 @@ export function createRun(
        (id, conversation_id, workspace_id, user_message_id, message_id_upper_bound,
         model, client_request_id, status, stop_reason, input_tokens, output_tokens, cached_tokens,
          cache_write_tokens, reasoning_tokens, cost, currency, usage_turns, step_count, error_message, error_code,
-         context_snapshot, created_at, finished_at, owner_pid, heartbeat_at, dispatch_step_id, dispatch_node_id)
-        VALUES (?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,?,NULL,?,?,?,?)`,
+         context_snapshot, created_at, finished_at, owner_pid, owner_kind, heartbeat_at, dispatch_step_id, dispatch_node_id)
+        VALUES (?,?,?,?,?,?,?,?,?,0,0,NULL,NULL,0,0,'USD','[]',0,NULL,NULL,?,?,NULL,?,?,?,?,?)`,
     )
     .run(
       run.id,
@@ -979,6 +1044,7 @@ export function createRun(
       // 无归属行会被下一个进程按老规矩回收——那正是本来就该发生的事，
       // 但归属如果只在跑起来之后才补，同一条路径上会多出一段判据不同的窗口。
       process.pid,
+      store.owner,
       now,
       run.dispatchStepId,
       run.dispatchNodeId,
@@ -1521,7 +1587,6 @@ export function openProviderRequest(
     payloadHash: input.payloadHash,
     requestBytes: input.requestBytes ?? null,
     cacheRouteFingerprint: input.cacheRouteFingerprint ?? null,
-    inputImageBatchId: null,
     sentAt: null,
     headersAt: null,
     firstEventAt: null,
@@ -1581,44 +1646,6 @@ export function markProviderRequestHeaders(store: Store, id: ProviderRequestId, 
   store.db
     .query('UPDATE provider_requests SET headers_at = COALESCE(headers_at, ?) WHERE id = ?')
     .run(at, id)
-}
-
-/**
- * 本次输入实际完整携带的工具图片批次。**在请求发出之前、图片块已经确认在请求体里
- * 之后调用**；没带图、只剩文字或部分缺失时一律不调，该列保持 NULL。
- */
-export function markProviderRequestInputImages(
-  store: Store,
-  id: ProviderRequestId,
-  batchId: string,
-): void {
-  store.db
-    .query('UPDATE provider_requests SET input_image_batch_id = ? WHERE id = ?')
-    .run(batchId, id)
-}
-
-/**
- * 这批工具图片有没有被一次已接收的主请求真的送到模型。
- *
- * 四个条件缺一不可：同会话、主请求、这一批的引用、已发出且终态为 `received`。
- * `rejected` / `uncertain` / 摘要请求都不算——发出去不等于对端收到。
- * 时间先后不参与判断：同毫秒的两行按引用各自成立。
- */
-export function hasReceivedRequestWithImages(
-  store: Store,
-  conversationId: ConversationId,
-  batchId: string,
-): boolean {
-  const row = store.db
-    .query<{ one: number }, [string, string]>(
-      `SELECT 1 AS one FROM provider_requests pr
-       JOIN runs r ON r.id = pr.run_id
-       WHERE r.conversation_id = ? AND pr.purpose = 'turn' AND pr.input_image_batch_id = ?
-         AND pr.sent_at IS NOT NULL AND pr.status = 'received'
-       LIMIT 1`,
-    )
-    .get(conversationId, batchId)
-  return row !== null
 }
 
 /** provider 的第一个真实流事件。重复调用保持第一次，不让后续事件覆盖。 */
@@ -1785,7 +1812,6 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     requestBytes: r.request_bytes,
     finishReason: r.finish_reason ?? '',
     cacheRouteFingerprint: r.cache_route_fingerprint,
-    inputImageBatchId: r.input_image_batch_id,
     sentAt: r.sent_at,
     headersAt: r.headers_at,
     firstEventAt: r.first_event_at,

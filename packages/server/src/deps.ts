@@ -5,7 +5,8 @@
  * 而它们都要这个类型。放在任何一边都会让两个模块互相 import。
  */
 
-import type { QyConfig } from '@qywork/runtime'
+import type { OfficePort } from '@qywork/agent'
+import type { OfficeHost, QyConfig } from '@qywork/runtime'
 import type { ContentStore, Store } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
 import type { BrowserCoordinator } from './browser/coordinator.ts'
@@ -44,6 +45,14 @@ export interface CommandDeps {
   desktop?: DesktopCoordinator
   /** 画布服务：会话里的 `canvas` 工具与界面共用这一个实例。没传时会话里没有 `canvas` 工具。 */
   canvas?: CanvasService
+  /** Office 执行程序的宿主。会话按它此刻给不给端口决定注册不注册 `office`。 */
+  office?: OfficeHost
+}
+
+/** 会话装配时的 Office 端口：宿主此刻给了就带上，否则不带（工具不注册）。 */
+export function officePortOf(deps: Pick<CommandDeps, 'office'>): { office?: OfficePort } {
+  const port = deps.office?.port()
+  return port ? { office: port } : {}
 }
 
 /** 每条 WebSocket 连接自带的状态。握手前 `authed` 为 false。 */

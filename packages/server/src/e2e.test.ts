@@ -780,7 +780,8 @@ describe('图片附件', () => {
     expect(body).toContain(png.toString('base64').slice(0, 40))
   })
 
-  test('当前轮视频进入 video_url，下一轮历史不重复传字节', async () => {
+  /** 媒体按字节预算换出（`agent` 的 `evictedMedia`）：小视频在上限内，下一轮仍在请求里。 */
+  test('当前轮视频进入 video_url，下一轮在保留上限内仍带着它', async () => {
     const video = Buffer.from('native-video-e2e')
     await writeFile(join(ws_dir, 'clip.mp4'), video)
     const conv = (await (
@@ -854,8 +855,8 @@ describe('图片附件', () => {
     const bodies = seenBodies.slice(before)
     expect(bodies).toHaveLength(2)
     expect(bodies[0]).toContain(`data:video/mp4;base64,${video.toString('base64')}`)
-    expect(bodies[1]).toContain('历史附件 clip.mp4')
-    expect(bodies[1]).not.toContain(video.toString('base64'))
+    expect(bodies[1]).toContain('附件 clip.mp4')
+    expect(bodies[1]).toContain(`data:video/mp4;base64,${video.toString('base64')}`)
   })
 
   /**

@@ -6,7 +6,7 @@
 // 正文库：超预算的工具输出落这里，模型用 read_resource 读回
 export { ContentStore, contentPathFor } from './content.ts'
 // 主账本句柄
-export { Store } from './db.ts'
+export { type RunOwner, Store } from './db.ts'
 // 目标与自动续起：runtime 用端口交给工具，server 在 run 收尾处判续起
 export { createGoal, currentGoal, updateGoal } from './goals.ts'
 // 按需加载的外部工具：runtime 在装配工具表时读回、在 load_tool 成功后写入
@@ -18,6 +18,7 @@ export {
   appendTextToStep,
   archiveConversation,
   archiveWorkspaceConversations,
+  ConversationBusyError,
   countConversations,
   createConversation,
   createRun,
@@ -29,7 +30,6 @@ export {
   getRun,
   getWorkspace,
   getWorkspaceByPath,
-  hasReceivedRequestWithImages,
   interruptRunningNodes,
   latestAnchoredProviderRequest,
   latestSentProviderRequest,
@@ -48,7 +48,6 @@ export {
   markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
-  markProviderRequestInputImages,
   markProviderRequestSent,
   markRunRunning,
   markStepExecuting,

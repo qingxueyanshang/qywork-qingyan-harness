@@ -2,7 +2,7 @@
  * 配置脱敏与回填。
  *
  * **覆盖范围**：`config.ts` 的 `redactConfig` / `mergeConfig`，以及
- * `GET /api/config` 的读盘时机、`PUT /api/config` 的落盘门禁。
+ * `GET /api/config` 的读盘时机、`PUT /api/config` 的落盘门禁与以盘上内容为基准的版本校验。
  *
  * 这两个函数是**明文 key 不出进程**这条边界的全部实现，所以这里测得比别处细。
  * 最严重的一条不是「key 泄漏了」——那种当场就看得出来；是**「打开设置页看一眼再保存」
@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { QyConfig } from '@qywork/runtime'
@@ -275,6 +275,8 @@ describe('落盘门禁', () => {
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home
     try {
+      // 进程内的配置总是从盘上读来的：夹具先把同一份写到盘上。
+      await writeFile(join(home, 'config.json'), JSON.stringify(cfg()))
       const d = { config: cfg() } as unknown as ApiDeps
       const res = await put(d, {
         active: { provider: 'newp', model: 'm1' },
@@ -302,6 +304,7 @@ describe('落盘门禁', () => {
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home
     try {
+      await writeFile(join(home, 'config.json'), JSON.stringify(cfg()))
       const d = { config: cfg() } as unknown as ApiDeps
       const res = await put(d, {
         active: { provider: '不存在', model: 'm1' },
@@ -413,6 +416,39 @@ describe('落盘门禁', () => {
       // 不带 baseVersion：老客户端照旧放行。
       const legacy = await put(d, body)
       expect(legacy!.status).toBe(200)
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
+  /**
+   * 原始失败形状：设置页 GET 之后、PUT 之前，另一个进程（`qy probe`、另一个 qywork 实例）往配置里
+   * 加了一个接口；设置页带着 GET 时的版本号保存。返回 200 就意味着那个接口连同 key 被整份抹掉。
+   */
+  test('GET 之后别的进程写了配置：旧版本号保存回 409，文件里别的进程的改动保留', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    try {
+      const file = join(home, 'config.json')
+      await writeFile(file, JSON.stringify(cfg()))
+      const d = { config: cfg() } as unknown as ApiDeps
+      const seen = await get(d)
+
+      const other = JSON.parse(await readFile(file, 'utf8')) as QyConfig
+      other.providers.other = {
+        kind: 'openai_chat_completions',
+        apiKey: 'sk-from-another-process',
+        models: { m: {} },
+      }
+      await writeFile(file, JSON.stringify(other))
+
+      const res = await put(d, { ...seen.config, mode: 'full' }, seen.version)
+      expect(res!.status).toBe(409)
+      const onDisk = JSON.parse(await readFile(file, 'utf8')) as QyConfig
+      expect(onDisk.providers.other?.apiKey).toBe('sk-from-another-process')
+      expect(onDisk.mode).not.toBe('full')
     } finally {
       if (prev === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = prev

@@ -1,12 +1,10 @@
 /**
- * 工具图片带进哪一次请求，以及这一次有没有真的带上。
+ * 工具图片与附件图片在之后的请求里留多久。
  *
- * 覆盖范围：`loop/index.ts` 的 `buildRequest` 图片裁剪（最近待续批次、已消费批次、更早批次）
- * 与 `openStream` 里的输入引用确认（`LoopPersistence.markRequestInputImages` /
- * `inputImagesConsumed`），以及它们与 `materialize` 能力过滤、`compaction.ts` 收纳的
- * 先后关系。
+ * 覆盖范围：`loop/index.ts` 的 `buildRequest` 媒体去留（`loop/request.ts` 的 `evictedMedia`），
+ * 以及它与 `materialize` 能力过滤、`compaction.ts` 收纳的先后关系。
  *
- * 断言落在**适配器实际收到的那份请求**上：裁剪、投影、能力过滤三道都在它之前，
+ * 断言落在**适配器实际收到的那份请求**上：去留、投影、能力过滤三道都在它之前，
  * 只看装配中间结果会把「模型不收图、图被换成文字注记」这一支放过去。
  * 三协议序列化不丢图由 `runtime/input-image-recovery.test.ts` 用真实 HTTP 锁。
  */
@@ -20,24 +18,10 @@ import type { ToolContextBase } from '../registry.ts'
 import { ToolRegistry } from '../registry.ts'
 import type { LoopPersistence } from './types.ts'
 
-interface Ledger {
-  persist: LoopPersistence
-  /** 请求 id → 本次输入完整携带的图片批次。 */
-  references: Map<string, string>
-  /** 请求 id → 终态。 */
-  settled: Map<string, string>
-  /** 预置一行「已接收且携过这批图」的请求，模拟更早的成功往返。 */
-  seed(batchId: string): void
-}
-
-function ledger(): Ledger {
-  let requests = 0
-  const references = new Map<string, string>()
-  const settled = new Map<string, string>()
-  const consumed = (batchId: string): boolean =>
-    [...references].some(([id, b]) => b === batchId && settled.get(id) === 'received')
+function persistence(): LoopPersistence {
   let seq = 0
-  const persist: LoopPersistence = {
+  let requests = 0
+  return {
     nextSeq: () => ++seq,
     landUserStep: () => `st_user_${seq}`,
     openTextStep: () => `st_text_${seq}`,
@@ -51,23 +35,7 @@ function ledger(): Ledger {
     recordCompaction: () => {},
     openRequest: () => `pr_${++requests}`,
     markRequestSent: () => {},
-    markRequestInputImages: (requestId, batchId) => {
-      references.set(requestId, batchId)
-    },
-    inputImagesConsumed: consumed,
-    settleRequest: (requestId, status) => {
-      settled.set(requestId, status)
-    },
-  }
-  return {
-    persist,
-    references,
-    settled,
-    seed: (batchId) => {
-      const id = `pr_seed_${batchId}`
-      references.set(id, batchId)
-      settled.set(id, 'received')
-    },
+    settleRequest: () => {},
   }
 }
 
@@ -196,93 +164,88 @@ function imagesIn(req: ChatRequest | undefined): string[] {
 
 const USER: WireMessage = { role: 'user', content: '看一下', _group: 'historyMessages' }
 
-test('最近一批尚未送达的工具图片整批进请求，引用记在这一行上', async () => {
-  const l = ledger()
-  const adapter = capturingAdapter()
-  await askOnce(adapter, l.persist, [USER, ...wave('pr_gen', 'shot')], 'rn_keep')
+/** 解码后约 `mb` MB 的 base64，前缀区分是哪一张。 */
+const big = (tag: string, mb: number): string =>
+  tag + 'A'.repeat(Math.ceil((mb * 1024 * 1024 * 4) / 3))
+const tagOf = (data: string): string => data.replace(/A+$/, '')
 
-  expect(imagesIn(adapter.seen[0])).toEqual(['SHOTA', 'SHOTB'])
-  expect(l.references.get('pr_1')).toBe('pr_gen')
-  expect(l.settled.get('pr_1')).toBe('received')
-})
+/** 一批单图的工具波次。 */
+function bigWave(batchId: string, tag: string, mb: number): WireMessage[] {
+  return [callsMessage(batchId, [tag]), shot(tag, batchId, big(tag, mb))]
+}
 
-test('这批图被一次已接收的请求带过之后，下一次换成 images_omitted 信封', async () => {
-  const l = ledger()
-  l.seed('pr_gen')
-  const adapter = capturingAdapter()
-  await askOnce(adapter, l.persist, [USER, ...wave('pr_gen', 'shot')], 'rn_consumed')
-
-  expect(imagesIn(adapter.seen[0])).toEqual([])
-  const tools = (adapter.seen[0]?.messages ?? []).filter((m) => m.role === 'tool')
-  expect(tools).toHaveLength(2)
-  for (const t of tools) {
-    expect(JSON.parse(String(t.content))).toMatchObject({ images_omitted: IMAGES_OMITTED })
-  }
-  // 没带图就不写引用：这一行答的是「本次输入携带了什么」。
-  expect(l.references.has('pr_1')).toBe(false)
-})
-
-test('更早的批次一律省略，只留最近待续的那一批', async () => {
-  const l = ledger()
+test('总量在上限内时更早批次的图都留在请求里', async () => {
   const adapter = capturingAdapter()
   await askOnce(
     adapter,
-    l.persist,
+    persistence(),
     [USER, ...wave('pr_old', 'first'), ...wave('pr_new', 'second')],
-    'rn_scope',
+    'rn_keep',
   )
+  expect(imagesIn(adapter.seen[0])).toEqual(['FIRSTA', 'FIRSTB', 'SECONDA', 'SECONDB'])
+})
 
-  expect(imagesIn(adapter.seen[0])).toEqual(['SECONDA', 'SECONDB'])
-  expect(l.references.get('pr_1')).toBe('pr_new')
+/** 超上限时从最早的整批换成信封，最后一批（还没得到过回应）一定在。 */
+test('超过上限时最早的换成 images_omitted 信封，最后一批保留', async () => {
+  const adapter = capturingAdapter()
+  await askOnce(
+    adapter,
+    persistence(),
+    [
+      USER,
+      ...bigWave('pr_1', 'one', 1.5),
+      ...bigWave('pr_2', 'two', 1.5),
+      ...bigWave('pr_3', 'three', 1.5),
+      ...bigWave('pr_4', 'four', 1.5),
+    ],
+    'rn_evict',
+  )
+  // 第 3 张让总量到 4.5 MB，换出前两张降到 1.5 MB；第 4 张之后 3 MB，未再超限。
+  expect(imagesIn(adapter.seen[0]).map(tagOf)).toEqual(['three', 'four'])
+  const tools = (adapter.seen[0]?.messages ?? []).filter((m) => m.role === 'tool')
+  for (const t of tools.slice(0, 2)) {
+    expect(JSON.parse(String(t.content))).toMatchObject({ images_omitted: IMAGES_OMITTED })
+  }
+})
+
+/** 附件图片与工具图同一预算：在上限内时历史轮次的附件仍在请求里。 */
+test('历史用户消息的附件图片在上限内时留在请求里', async () => {
+  const adapter = capturingAdapter()
+  const attached: WireMessage = {
+    role: 'user',
+    content: [
+      { type: 'image', mimeType: 'image/jpeg', source: { kind: 'base64', data: 'PHOTO' } },
+      { type: 'text', text: '这是上一轮发的图' },
+    ],
+    _group: 'historyMessages',
+  }
+  await askOnce(adapter, persistence(), [attached, ...wave('pr_gen', 'shot')], 'rn_attach')
+  expect(imagesIn(adapter.seen[0])).toEqual(['PHOTO', 'SHOTA', 'SHOTB'])
 })
 
 /**
- * 能力过滤把图换成文字注记时请求仍会成功。据此认定模型见过图，等于替它声明
- * 一件没发生的事——切回可接图的模型之后那一批就再也带不上了。
+ * 能力过滤把图换成文字注记只发生在请求副本上：历史不变，换回可接图的模型时原图仍在。
  */
-test('模型不收图时请求成功也不写引用，换回可接图模型仍带原图', async () => {
-  const l = ledger()
+test('模型不收图时换成文字注记，换回可接图模型仍带原图', async () => {
   const history = [USER, ...wave('pr_gen', 'shot')]
-
   const blind = capturingAdapter({ vision: false })
-  await askOnce(blind, l.persist, history, 'rn_blind')
+  await askOnce(blind, persistence(), history, 'rn_blind')
   expect(imagesIn(blind.seen[0])).toEqual([])
-  expect(l.references.has('pr_1')).toBe(false)
-  expect(l.settled.get('pr_1')).toBe('received')
 
   const seeing = capturingAdapter()
-  await askOnce(seeing, l.persist, history, 'rn_seeing')
+  await askOnce(seeing, persistence(), history, 'rn_seeing')
   expect(imagesIn(seeing.seen[0])).toEqual(['SHOTA', 'SHOTB'])
-  expect(l.references.get('pr_2')).toBe('pr_gen')
 })
 
-/** 收纳去图留文字：请求成功，但模型看到的是信封，不能记成已送达。 */
-test('压缩把最近一批收纳掉时不写引用', async () => {
-  const l = ledger()
+/** 收纳去图留文字，信封标 images_omitted。 */
+test('压缩把带图的结果收纳掉时请求里没有图，信封带标记', async () => {
   const adapter = capturingAdapter()
-  await askOnce(adapter, l.persist, [USER, ...wave('pr_gen', 'shot')], 'rn_condensed', {
+  await askOnce(adapter, persistence(), [USER, ...wave('pr_gen', 'shot')], 'rn_condensed', {
     project: (messages) => messages.map(condenseMessage),
   })
-
   expect(imagesIn(adapter.seen[0])).toEqual([])
-  expect(l.references.has('pr_1')).toBe(false)
-})
-
-test('旧批次查不到引用记录时保守保留，批次归属缺失时只保留不记引用', async () => {
-  const legacy = ledger()
-  const withLegacy = capturingAdapter()
-  await askOnce(withLegacy, legacy.persist, [USER, ...wave('bt_legacy', 'shot')], 'rn_legacy')
-  expect(imagesIn(withLegacy.seen[0])).toEqual(['SHOTA', 'SHOTB'])
-  expect(legacy.references.get('pr_1')).toBe('bt_legacy')
-
-  const anonymous = ledger()
-  const noBatch = capturingAdapter()
-  await askOnce(
-    noBatch,
-    anonymous.persist,
-    [USER, callsMessage(null, ['a1']), shot('a1', null, 'ONLY')],
-    'rn_anonymous',
-  )
-  expect(imagesIn(noBatch.seen[0])).toEqual(['ONLY'])
-  expect(anonymous.references.size).toBe(0)
+  const tools = (adapter.seen[0]?.messages ?? []).filter((m) => m.role === 'tool')
+  for (const t of tools) {
+    expect(JSON.parse(String(t.content))).toMatchObject({ images_omitted: IMAGES_OMITTED })
+  }
 })

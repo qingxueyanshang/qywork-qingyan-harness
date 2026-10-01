@@ -35,7 +35,7 @@ import { join } from 'node:path'
 import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } from '@qywork/agent'
 import type { FileChange, IntermediateResourceRef } from '@qywork/core'
 import { classifyAddress } from './net-safety.ts'
-import { PROTECTED_DIRS, resolveInWorkspace, rootsOf } from './paths.ts'
+import { PROTECTED_DIRS, resolveInWorkspace, rootsOf, writableRoots } from './paths.ts'
 import {
   type CommandShell,
   collectProcess,
@@ -96,6 +96,24 @@ function trackReported(reported: Set<string>, changes: FileChange[]): void {
   for (const c of changes) {
     if (c.changeType === 'deleted') reported.delete(c.path)
     else reported.add(c.path)
+  }
+}
+
+/**
+ * 执行模型代码的子进程所用的环境变量：剥掉凭证、加上非交互设置、临时目录指向工作区 `.tmp`。
+ *
+ * `run_command` 与 `office` 共用这一份：两处各拼一遍的话，一处漏剥凭证不会有任何报错。
+ * NON_INTERACTIVE_ENV 放在剥离之后：它由本文件注入，里面没有凭证，也不该被名字规则误伤。
+ */
+export async function commandEnv(
+  ctx: Pick<ToolContext, 'secrets' | 'envAllowList' | 'workspaceRoot'>,
+): Promise<Record<string, string>> {
+  return {
+    ...scrubEnv(process.env, ctx.secrets ?? { values: [] }, {
+      allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW,
+    }),
+    ...NON_INTERACTIVE_ENV,
+    ...(await tmpEnv(ctx.workspaceRoot)),
   }
 }
 
@@ -190,7 +208,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       const command = String(args.command ?? '').trim()
       if (!command) return { status: 'failure', executed: false, message: '命令为空' }
 
-      const cwd = await resolveInWorkspace(rootsOf(ctx), String(args.cwd ?? '.'), {
+      const cwd = await resolveInWorkspace(writableRoots(rootsOf(ctx)), String(args.cwd ?? '.'), {
         mustExist: true,
       })
       const timeout = resolveCommandTimeout(args.timeout_ms)
@@ -236,13 +254,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         ...(ctx.denyNetwork ? { denyNetwork: true } : {}),
       }
 
-      // NON_INTERACTIVE_ENV 放在剥离**之后**：它由本文件注入，
-      // 里面没有凭证，也不该被名字规则误伤（比如将来加个带 TOKEN 的变量）。
-      const env = {
-        ...scrubEnv(process.env, secrets, { allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW }),
-        ...NON_INTERACTIVE_ENV,
-        ...(await tmpEnv(ctx.workspaceRoot)),
-      }
+      const env = await commandEnv(ctx)
 
       // 命令改了哪些文件由工作区观察器给：shell 没有精确明细，路径与变更类型是它能知道的全部。
       // 必须先开窗再起进程：窗口起点之前写下的文件判不出是这条命令新建的。

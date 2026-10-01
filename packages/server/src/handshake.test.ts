@@ -163,7 +163,14 @@ describe('能力上报', () => {
   test('environment 逐条报路径、缺失影响与能不能一键装', () => {
     const env = shake(new EventBus(), {}).ok().capabilities.environment
     // 表里每一条都对应代码里一处真实的 spawn。
-    expect(env.map((d) => d.id)).toEqual(['bash', 'git', 'ripgrep', 'node'])
+    expect(env.map((d) => d.id)).toEqual([
+      'bash',
+      'git',
+      'ripgrep',
+      'node',
+      'python',
+      'office-libs',
+    ])
     for (const d of env) {
       expect(d.label.length).toBeGreaterThan(0)
       // 「缺了会怎样」没装时必填：一行「未安装」不告诉用户要不要管它。

@@ -11,7 +11,7 @@
  */
 
 import type { ConversationId } from '@qywork/core'
-import type { QyConfig } from '@qywork/runtime'
+import type { OfficeHost, QyConfig } from '@qywork/runtime'
 import type { ScheduleClaim, Store } from '@qywork/store'
 import type { EventBus } from '../bus.ts'
 import type { CanvasService } from '../canvas.ts'
@@ -58,6 +58,8 @@ export interface ApiDeps {
    * 归属在原生宿主上按会话记（见 `browser/coordinator.ts`）；没有内置浏览器时是 no-op。
    */
   closeBrowserPages(conversationId: ConversationId): Promise<void>
+  /** Office 执行程序的宿主。「运行环境」里 Python 与文档库两行读它的探测结果。 */
+  office?: OfficeHost
 }
 
 /**

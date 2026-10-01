@@ -1,6 +1,7 @@
 /**
  * 覆盖 `openai-compat.ts` 的 `buildReasoning`（实际发出去的思考控制字段）
- * 与 `createThinkingSplitter`（正文里的思考标签改判通道）、strict 参数约束，
+ * 与 `createThinkingSplitter`（正文里的思考标签改判通道）、strict 参数约束、
+ * `buildMessages` 对工具结果媒体的编码（观察消息），
  * 以及它用来判断百炼官方端点的 `@qywork/core` 的 `isDashScopeEndpoint`。
  *
  * **必须看真实请求体**，不能只测那个纯函数：这条链路上一次出问题正是
@@ -25,6 +26,7 @@ import {
   OpenAICompatAdapter,
   prepareDashScopeMedia,
   strictify,
+  TOOL_MEDIA_NOTE,
   uploadDashScopeMedia,
 } from './openai-compat.ts'
 
@@ -138,12 +140,21 @@ describe('输出上限：没测过就整个字段不发', () => {
 /*
  * ── 工具结果图片的 wire 形状 ──
  *
- * 官方文档把 tool 消息的 content 写成字符串；带图数组是实测立住的形状
- * （依据见 `openai-compat.ts` 的 `buildMessages` 注释）。这里锁请求体：
- * 图片块必须原样落进 tool 消息，不得被压成字符串或静默丢弃。
+ * tool 消息只发文本，媒体块移到紧跟整批回执的一条用户观察消息里（依据见
+ * `openai-compat.ts` 的 `buildMessages` 注释）。这里锁请求体：媒体不在 tool 消息里、
+ * 观察消息排在整批回执之后、每个媒体块前标出 call_id 与序号、没有媒体时形状不变。
  */
 describe('工具结果带图片', () => {
-  test('tool 消息发成 text + image_url 数组，call id 与块顺序保留', async () => {
+  const png = (data: string) =>
+    ({ type: 'image', mimeType: 'image/png', source: { kind: 'base64', data } }) as const
+  const label = (id: string, what: string) => ({ type: 'text', text: `call_id ${id} · ${what}` })
+  const imageUrl = (data: string) => ({
+    type: 'image_url',
+    image_url: { url: `data:image/png;base64,${data}` },
+  })
+  const note = { type: 'text', text: TOOL_MEDIA_NOTE }
+
+  test('图像不进 tool 消息，放进紧跟回执的用户观察消息', async () => {
     const body = await send(
       'deepseek-flash',
       undefined,
@@ -158,20 +169,144 @@ describe('工具结果带图片', () => {
         {
           role: 'tool',
           toolCallId: 'c_img',
+          content: [{ type: 'text', text: '{"call_id":"c_img","status":"success"}' }, png('QUJD')],
+        },
+      ],
+    )
+    const messages = body.messages as Record<string, unknown>[]
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'user'])
+    expect(messages[2]).toEqual({
+      role: 'tool',
+      tool_call_id: 'c_img',
+      content: '{"call_id":"c_img","status":"success"}\n[图像 1：见本批工具结果之后的观察消息]',
+    })
+    expect(messages[3]!.content).toEqual([note, label('c_img', '图像 1'), imageUrl('QUJD')])
+  })
+
+  test('并行工具：回执连续，观察消息排在整批之后，按调用与序号标注', async () => {
+    const body = await send(
+      'deepseek-flash',
+      undefined,
+      [],
+      [
+        { role: 'user', content: '看两张' },
+        {
+          role: 'assistant',
+          content: '',
+          reasoningContent: '先读两张图',
+          toolCalls: [
+            { id: 'c1', name: 'read_file', arguments: { path: 'a.png' } },
+            { id: 'c2', name: 'read_file', arguments: { path: 'b.png' } },
+          ],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'c1',
+          content: [{ type: 'text', text: 'A' }, png('A1'), png('A2')],
+        },
+        { role: 'tool', toolCallId: 'c2', content: [png('B1')] },
+        { role: 'assistant', content: '看完了' },
+      ],
+    )
+    const messages = body.messages as Record<string, unknown>[]
+    expect(messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'tool',
+      'user',
+      'assistant',
+    ])
+    expect(messages[1]!.reasoning_content).toBe('先读两张图')
+    expect(messages[2]!.content).toBe(
+      'A\n[图像 1：见本批工具结果之后的观察消息]\n[图像 2：见本批工具结果之后的观察消息]',
+    )
+    // 只有图像的结果也有非空回执。
+    expect(messages[3]!.content).toBe('[图像 1：见本批工具结果之后的观察消息]')
+    expect(messages[4]!.content).toEqual([
+      note,
+      label('c1', '图像 1'),
+      imageUrl('A1'),
+      label('c1', '图像 2'),
+      imageUrl('A2'),
+      label('c2', '图像 1'),
+      imageUrl('B1'),
+    ])
+    expect(JSON.stringify([messages[2], messages[3]])).not.toContain('image_url')
+  })
+
+  test('真实用户消息紧跟其后时原样保留，观察消息排在它前面', async () => {
+    const body = await send(
+      'deepseek-flash',
+      undefined,
+      [],
+      [
+        { role: 'user', content: '看图' },
+        { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'x', arguments: {} }] },
+        { role: 'tool', toolCallId: 'c1', content: [png('QUJD')] },
+        { role: 'user', content: '换一张' },
+      ],
+    )
+    const messages = body.messages as Record<string, unknown>[]
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'user', 'user'])
+    expect(messages[3]!.content).toEqual([note, label('c1', '图像 1'), imageUrl('QUJD')])
+    expect(messages[4]).toEqual({ role: 'user', content: '换一张' })
+  })
+
+  test('视频块同样移到观察消息，保持 video_url 形状', async () => {
+    const body = await send(
+      'qwen3.7-plus',
+      undefined,
+      [],
+      [
+        { role: 'user', content: '看视频' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'c_v', name: 'read_file', arguments: {} }],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'c_v',
           content: [
-            { type: 'text', text: '{"call_id":"c_img","status":"success"}' },
-            { type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: 'QUJD' } },
+            { type: 'text', text: '{"call_id":"c_v"}' },
+            { type: 'video', mimeType: 'video/mp4', source: { kind: 'base64', data: 'QUJD' } },
           ],
         },
       ],
     )
     const messages = body.messages as Record<string, unknown>[]
-    const tool = messages.find((m) => m.role === 'tool')
-    expect(tool).toBeDefined()
-    expect(tool!.tool_call_id).toBe('c_img')
-    expect(tool!.content).toEqual([
-      { type: 'text', text: '{"call_id":"c_img","status":"success"}' },
-      { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+    expect(messages[2]!.content).toBe('{"call_id":"c_v"}\n[视频 1：见本批工具结果之后的观察消息]')
+    expect(messages[3]!.content).toEqual([
+      note,
+      label('c_v', '视频 1'),
+      { type: 'video_url', video_url: { url: 'data:video/mp4;base64,QUJD' } },
+    ])
+  })
+
+  test('只有文本块的工具结果保持原形状，不追加观察消息', async () => {
+    const body = await send(
+      'deepseek-flash',
+      undefined,
+      [],
+      [
+        { role: 'user', content: '看' },
+        { role: 'assistant', content: '', toolCalls: [{ id: 'c_t', name: 'x', arguments: {} }] },
+        {
+          role: 'tool',
+          toolCallId: 'c_t',
+          content: [
+            { type: 'text', text: '甲' },
+            { type: 'text', text: '乙' },
+          ],
+        },
+      ],
+    )
+    const messages = body.messages as Record<string, unknown>[]
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool'])
+    expect(messages[2]!.content).toEqual([
+      { type: 'text', text: '甲' },
+      { type: 'text', text: '乙' },
     ])
   })
 

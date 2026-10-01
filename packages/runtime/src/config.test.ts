@@ -205,6 +205,17 @@ describe('配置体检', () => {
     ])
   })
 
+  test('Office 开关只接受布尔值，解释器只接受绝对路径', () => {
+    const abs = process.platform === 'win32' ? 'C:\\Python312\\python.exe' : '/usr/bin/python3'
+    expect(diagnoseConfig(cfg({ officeEnabled: false, officePython: abs }))).toEqual([])
+    expect(diagnoseConfig(cfg({ officeEnabled: 'no' as unknown as boolean }))).toEqual([
+      'officeEnabled 必须是 true 或 false',
+    ])
+    expect(diagnoseConfig(cfg({ officePython: 'python.exe' }))).toEqual([
+      'officePython 必须是 Python 解释器的绝对路径',
+    ])
+  })
+
   test('一个接口都没有时也不崩', () => {
     expect(diagnoseConfig({ active: { provider: 'x', model: 'm' }, providers: {} })).toHaveLength(1)
   })

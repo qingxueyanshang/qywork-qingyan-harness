@@ -19,6 +19,7 @@ import {
   createRun,
   fileReadHash,
   listConversations,
+  listMessages,
   listRecentConversations,
   listRunContextSnapshots,
   listWorkspaces,
@@ -110,27 +111,69 @@ describe('派活工具只给有派活通道的会话', () => {
 })
 
 describe('附件请求形状', () => {
-  test('历史媒体降级为普通文本，只有当前媒体使用内容块数组', async () => {
+  /** 1×1 的 PNG：在缩图上限与 300 KB 以内，按原样编码。 */
+  const PNG_1X1 = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  )
+  const attachment = (name: string, type: 'image' | 'video' | 'file') => ({
+    type,
+    name,
+    mime: '',
+    size: 0,
+    path: name,
+  })
+
+  /** 每一轮的图片都进内容块，正文里留名字与路径：换出之后模型凭这一行找到原文件。 */
+  test('图片编码成 base64 图块，正文留名字与路径', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))
-    await writeFile(join(root, 'chart.png'), Buffer.from([0]))
-    const attachment = {
-      type: 'image' as const,
-      name: 'chart.png',
-      mime: 'image/png',
-      size: 1,
-      path: 'chart.png',
-    }
-
-    const historical = await withAttachments(root, '继续分析', [attachment], false)
-    expect(typeof historical).toBe('string')
-    expect(historical).toContain('历史附件 chart.png')
-
-    const current = await withAttachments(root, '分析这张图', [attachment])
-    expect(Array.isArray(current)).toBe(true)
-    expect(current).toEqual([
-      expect.objectContaining({ type: 'image' }),
-      { type: 'text', text: '分析这张图' },
+    await writeFile(join(root, 'chart.png'), PNG_1X1)
+    const out = await withAttachments(root, '分析这张图', [attachment('chart.png', 'image')])
+    expect(out).toEqual([
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        source: { kind: 'base64', data: PNG_1X1.toString('base64') },
+      },
+      { type: 'text', text: expect.stringContaining('分析这张图') },
     ])
+    const text = (out as { type: string; text?: string }[])[1]!.text!
+    expect(text).toContain(`（附件 chart.png：${join(root, 'chart.png').replaceAll('\\', '/')}）`)
+  })
+
+  test('视频进路径块，普通文件只留路径，读不到的留一行说明', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))
+    await writeFile(join(root, 'clip.mp4'), Buffer.from([0, 0, 0]))
+    await writeFile(join(root, 'notes.txt'), 'x')
+    const out = (await withAttachments(root, '看看', [
+      attachment('clip.mp4', 'video'),
+      attachment('notes.txt', 'file'),
+      attachment('gone.png', 'image'),
+    ])) as { type: string; text?: string; source?: unknown }[]
+    expect(out[0]).toMatchObject({
+      type: 'video',
+      source: { kind: 'path', path: join(root, 'clip.mp4').replaceAll('\\', '/') },
+    })
+    expect(out[1]!.type).toBe('text')
+    expect(out[1]!.text).toContain('（附件 notes.txt：')
+    expect(out[1]!.text).toContain('（附件 gone.png 已不存在，跳过）')
+  })
+
+  /** 附件是活引用：文件改了，下一轮读到新内容，不返回缓存里的旧编码。 */
+  test('文件改动后重新编码', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))
+    const path = join(root, 'live.png')
+    await writeFile(path, PNG_1X1)
+    const first = (await withAttachments(root, 'a', [attachment('live.png', 'image')])) as {
+      source?: { data?: string }
+    }[]
+    const changed = Buffer.concat([PNG_1X1, Buffer.from([0])])
+    await writeFile(path, changed)
+    const second = (await withAttachments(root, 'a', [attachment('live.png', 'image')])) as {
+      source?: { data?: string }
+    }[]
+    expect(first[0]!.source!.data).toBe(PNG_1X1.toString('base64'))
+    expect(second[0]!.source!.data).toBe(changed.toString('base64'))
   })
 })
 
@@ -850,6 +893,28 @@ describe('会话标题', () => {
     expect(listRecentConversations(store, 1)[0]?.title).toBe('我自己起的名字')
     store.close()
   })
+
+  /*
+   * 第一句话读会话与写自动标题之间隔着若干 await。在其中必经的 `delegate.targets()` 里改名，
+   * 复现「发出第一句话后立刻改名」：自动标题不许盖掉这个名字。
+   */
+  test('读会话之后、写自动标题之前用户改了名：保留用户的名字', async () => {
+    let target: Store | null = null
+    const renaming: DelegatePort = {
+      ...delegate,
+      targets: async () => {
+        const conv = target ? listRecentConversations(target, 1)[0] : undefined
+        if (target && conv) setConversationTitle(target, conv.id, '中途改的名字')
+        return delegate.targets()
+      },
+    }
+    const { s, store } = await session({ delegate: renaming })
+    target = store
+    await firstEvent(s, '第一句')
+    expect(listRecentConversations(store, 1)[0]?.title).toBe('中途改的名字')
+    s.dispose()
+    store.close()
+  })
 })
 
 /*
@@ -1173,4 +1238,70 @@ describe('浏览器控制跟着这一轮执行走', () => {
     s.dispose()
     store.close()
   })
+})
+
+/*
+ * 同一会话被另一个进程占着（例如终端里的 qy 正在跑这条会话，桌面端又发了一句）。
+ * 占用进程是 `store` 包的测试子进程，建一轮后不退出。
+ */
+describe('会话被另一个进程占着', () => {
+  test('起轮被拒并说出占用方，这句话不落库', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-sess-busy-'))
+    const path = join(dir, 'ledger.sqlite3')
+    const store = new Store({ path, owner: 'serve' })
+    const s = new Session({
+      store,
+      config,
+      workspaceRoot: dir,
+      signal: new AbortController().signal,
+    })
+    const ws = listWorkspaces(store)[0]!
+    const conv = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'p',
+      model: 'deepseek-v4-flash',
+    })
+    const holder = Bun.spawn(
+      [process.execPath, join(import.meta.dir, '../../store/src/concurrency-child.ts')],
+      {
+        env: {
+          ...process.env,
+          QY_CC_MODE: 'hold',
+          QY_CC_DB: path,
+          QY_CC_ARG: `${conv.id}|${ws.id}`,
+          QY_CC_OWNER: 'cli',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    try {
+      const reader = holder.stdout.getReader()
+      let text = ''
+      while (!text.includes(String.fromCharCode(10))) {
+        const { value, done } = await reader.read()
+        if (done) break
+        text += new TextDecoder().decode(value)
+      }
+      expect(JSON.parse(text.trim()).ok).toBe(true)
+
+      let error: unknown = null
+      try {
+        for await (const _ of s.ask('桌面端发的一句', conv.id)) {
+          // 被拒时一个事件都不该产生。
+        }
+      } catch (err) {
+        error = err
+      }
+      expect(String((error as Error | null)?.message)).toContain(
+        `该会话已在终端里的 qy 中执行（pid ${holder.pid}）`,
+      )
+      expect(listMessages(store, conv.id)).toEqual([])
+    } finally {
+      holder.kill()
+      await holder.exited
+      s.dispose()
+      store.close()
+    }
+  }, 30_000)
 })

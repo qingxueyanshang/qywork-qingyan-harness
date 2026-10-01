@@ -30,6 +30,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { log } from '@qywork/core'
+import { BUSY_TIMEOUT_MS, enableWal } from './db.ts'
 
 /** 分片大小。太小则行数暴涨，太大则单次读放大明显。 */
 export const CHUNK_BYTES = 256 * 1024
@@ -74,14 +75,14 @@ export class ContentStore {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
     this.db = new Database(path, { create: true })
     // 等待上限必须先设，理由与主库的 `applyPragmas` 相同：`journal_mode` 自己就要取锁。
-    this.db.exec('PRAGMA busy_timeout = 5000')
+    this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`)
     /*
      * auto_vacuum 记在数据库头里，只有在头写下之前设才作数，而 `journal_mode = WAL`
      * 就会写头——所以这一条必须排在它前面。正文是会被大量删除的，没有它文件只增不减，
      * `collectGarbage` 末尾那句 `incremental_vacuum` 也退化成空操作。
      */
     this.db.exec('PRAGMA auto_vacuum = INCREMENTAL')
-    this.db.exec('PRAGMA journal_mode = WAL')
+    enableWal(this.db)
     this.db.exec('PRAGMA synchronous = NORMAL')
     this.db.exec('PRAGMA foreign_keys = ON')
     /*

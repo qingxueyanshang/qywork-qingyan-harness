@@ -14,7 +14,7 @@ import { type ModelRef, NO_MODEL_MESSAGE, type QyConfig, Session } from '@qywork
 import { getConversation } from '@qywork/store'
 import type { Role } from '@qywork/team'
 import { canvasPort } from './canvas.ts'
-import type { CommandDeps } from './deps.ts'
+import { type CommandDeps, officePortOf } from './deps.ts'
 
 /**
  * 成员会话用哪一对「接口 × 模型」。优先级：角色点名 > 父会话当前那一对 > 配置默认。
@@ -217,6 +217,8 @@ export async function runBuiltinMember(
      * `conversation.interrupt`，而那条指令只认顶层会话。
      */
     ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(ownerConversation) } : {}),
+    // 成员会话与顶层会话同一条判定：做文档的成员同样需要 `office`。
+    ...officePortOf(deps),
     // 画布与顶层会话同一个服务：成员改的节点同样当下推给界面。
     ...(deps.canvas && workspaceId
       ? { canvas: canvasPort(deps.canvas, { id: workspaceId, root: ctx.workspaceRoot }) }

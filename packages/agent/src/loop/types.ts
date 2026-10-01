@@ -293,21 +293,6 @@ export interface LoopPersistence {
    * **不是本方法被调用的时刻**。
    */
   markRequestHeaders?(requestId: string, at: number): void
-  /**
-   * 本次输入实际完整携带了哪一批工具图片。`batchId` 是产出那批调用的请求 id。
-   *
-   * **只在图片块逐张确认还在请求体里之后调用**：能力过滤或压缩把图换成文字之后
-   * 仍然调，等于替模型声明它看过一张没发出去的图。
-   */
-  markRequestInputImages?(requestId: string, batchId: string): void
-  /**
-   * 这批工具图片有没有被一次已接收的主请求真的送到过模型。
-   *
-   * 读的是同一份请求账（`markRequestInputImages` 写的那一列），所以放在这个 port 上：
-   * 它要按轮重新回答——同一批图在本轮还没送达、下一轮就送达了，`RunInput` 里的
-   * 一个值答不了。没有记录一律 false，无记录不等于模型看过。
-   */
-  inputImagesConsumed?(batchId: string): boolean
   /** 可选是为了旧测试夹具；生产装配必须提供。 */
   markRequestFirstEvent?(requestId: string): void
   /**

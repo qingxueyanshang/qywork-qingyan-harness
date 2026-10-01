@@ -118,22 +118,25 @@ export function condenseMessage(m: WireMessage): WireMessage {
 }
 
 /**
- * 图像块被摘掉后信封里 `images_omitted` 的值，装配时省略（`loop/request.ts` 的 `omitImages`）与收纳共用。
+ * 媒体块被换掉后信封里 `images_omitted` 的值，装配换出（`loop/request.ts` 的 `evictedMedia`
+ * 与 `omitImages`）与收纳共用。
  *
- * 两处都只摘已随一次已接收的请求送达的图，所以直接说明模型已看过。摘图同时使其后的思考块失效，
- * 模型在上下文里找不到看过的痕迹；只写 `true` 或只说「已提供」时，它会判断自己没看过，
- * 向用户否认上一轮的检查并反复读回。系统提示词「工作方式」段有同一条规则。
+ * 陈述「此前已发送给你、现已移出」这一传输事实：装配换出只动最后一条 assistant 之前的媒体，
+ * 它们已随得到回应的请求发出过；收纳只作用于收纳线以前的较早轮次。
+ * 不要写成「你已看过」：端点收到请求不等于模型读到了图，部分端点会丢弃媒体块而不报错。
+ * 也不要只写 `true` 或「已提供」：摘图会让其后的原生推理失效，模型会判断自己没收到过这张图，
+ * 向用户否认之前的检查并反复读回。系统提示词「工作方式」段有同一条规则。
  * 必须逐字稳定，投影每次构造请求都会重写这一段。
  */
 export const IMAGES_OMITTED =
-  '你已在紧接此次调用的请求中看过此图像或视频，此处省略；需要画面细节时通过 read_history 按 call_id 取回。'
+  '此图像或视频此前已随请求发送给你，现已从请求中移出（较早的媒体超出保留上限，或这段上下文已压缩）。需要画面细节时，通过 read_history 按 call_id 取回。'
 
 function condenseToolResult(content: WireMessage['content']): WireMessage['content'] {
   /*
-   * 块数组：**丢掉图像块，只把文本信封收起来，并在信封里标 `images_omitted`**。
+   * 块数组：**丢掉媒体块，只把文本信封收起来，并在信封里标 `images_omitted`**。
    *
-   * 图像块只出现在当前工具波次（`loop/request.ts` 的 `omitImages` 在装配时已把更早的换成信封），
-   * 折叠线扫到当前波次时这里做同一件事。标记不可省：收纳后的信封与新鲜的成功信封同形，
+   * 装配时还挂着的媒体（`loop/request.ts` 的 `evictedMedia` 没换出的那些），到了收纳线以前也一并丢掉：
+   * 压缩说明上下文已经吃紧，较早轮次的媒体最先让位。标记不可省：收纳后的信封与新鲜的成功信封同形，
    * 缺这一位模型会把图当成仍然可见。要再看按原路径重新 `read_file`，或用 `call_id`
    * 经 `read_history` 取回。
    *

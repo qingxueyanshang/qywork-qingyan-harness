@@ -3,6 +3,7 @@ dist/
 dist-*/
 target/
 *.tsbuildinfo
+__pycache__/
 .DS_Store
 Thumbs.db
 

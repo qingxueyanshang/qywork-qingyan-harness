@@ -21,6 +21,7 @@ import {
   collectResourceGarbage,
   collectSecrets,
   configDir,
+  createOfficeHost,
   importLegacySchedules,
   releaseExtensions,
   resolveMediaModel,
@@ -205,6 +206,12 @@ export function serve(opts: ServeOptions) {
   const offDesktopTarget = desktop?.onTargetChange((target) => {
     bus.publish({ type: 'desktop.target', target })
   })
+  /*
+   * Office 执行程序：启动时探测一次本机的 Python、文档库与办公软件，之后按缓存给会话发端口。
+   * 开关现读 `opts.config`，与电脑控制同一理由：设置里改完不用重启。
+   */
+  const office = createOfficeHost(() => opts.config)
+  void office.refresh()
   const gitWatch = createGitWatch(opts.store, bus)
   // 令牌只有这一个持有者。外部注入的也交给它，鉴权才只有一条路径。
   const pairing = new Pairing({
@@ -342,6 +349,7 @@ export function serve(opts: ServeOptions) {
         runs,
         subagents,
         canvas,
+        office,
         ...(browser ? { browser } : {}),
         ...(desktop ? { desktop } : {}),
       },
@@ -523,6 +531,7 @@ export function serve(opts: ServeOptions) {
             collectGarbage,
             closeBrowserPages: (conversationId) =>
               browser?.closeConversation(conversationId) ?? Promise.resolve(),
+            office,
           })
           if (res) return withCors(res)
         } catch (err) {
@@ -565,6 +574,7 @@ export function serve(opts: ServeOptions) {
             unsubscribers,
             config: opts.config,
             runs,
+            office,
             browser: () => browserCapability(browserBridge),
             desktop: () => desktopCapability(desktopBridge),
             announceGit: () => gitWatch.announce(),
@@ -593,6 +603,7 @@ export function serve(opts: ServeOptions) {
             runs,
             subagents,
             canvas,
+            office,
             ...(browser ? { browser } : {}),
             ...(desktop ? { desktop } : {}),
           })

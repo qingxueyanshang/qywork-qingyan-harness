@@ -19,6 +19,7 @@ import { formatCosts, formatMoney } from '@qywork/core'
 import {
   collectResourceGarbage,
   configNotices,
+  createOfficeHost,
   dataPath,
   diagnoseConfig,
   diagnoseRunnable,
@@ -59,7 +60,7 @@ export async function runTui(workspaceRoot: string): Promise<number> {
     process.stderr.write(`\n${YELLOW}⚠${RESET} ${p}\n`)
   }
 
-  const store = new Store({ path: dataPath() })
+  const store = new Store({ path: dataPath(), owner: 'cli' })
   // 定时任务的旧文件在这里也要导：本次会话注入了定时任务端口，不导的话在 `qy serve`
   // 跑过之前 `list_schedules` 读不到已经排好的任务。不合法就抛，与 serve 同一条语义。
   importLegacySchedules(store)
@@ -75,6 +76,10 @@ export async function runTui(workspaceRoot: string): Promise<number> {
   } catch (err) {
     process.stderr.write(`[qy] 正文回收失败：${err instanceof Error ? err.message : String(err)}\n`)
   }
+
+  // Office 执行程序：启动时探测一次，此后每轮按缓存给端口，与 `qy serve` 同一个宿主实现。
+  const office = createOfficeHost(() => config)
+  await office.refresh()
 
   let conversationId: ConversationId | undefined
   // 出厂不预设模型：没配时是 undefined，`/model` 可切、发送时由 session.ask 兜底拒绝。
@@ -131,12 +136,14 @@ export async function runTui(workspaceRoot: string): Promise<number> {
       }
 
       running = new AbortController()
+      const officePort = office.port()
       const session = new Session({
         store,
         config,
         content,
         workspaceRoot,
         signal: running.signal,
+        ...(officePort ? { office: officePort } : {}),
       })
 
       try {

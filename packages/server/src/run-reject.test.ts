@@ -1,9 +1,9 @@
 /**
  * 起轮前被拒时发出的事件序列。
  *
- * **覆盖范围**：`run-control.ts` 里 `startRun` 的五条拒绝出口（占位失败、项目目录
- * 查不到、三处都取不到模型、会话装配抛错、装配 adapter 抛错），以及 `runs.ts` 在
- * 释放占位时广播忙闲那一手。这五条都不产生 run 行，因此**不会有 `run.finished`**，
+ * **覆盖范围**：`run-control.ts` 里 `startRun` 的六条拒绝出口（占位失败、项目目录
+ * 查不到、三处都取不到模型、会话装配抛错、装配 adapter 抛错、会话被另一个进程占着），
+ * 以及 `runs.ts` 在释放占位时广播忙闲那一手。这六条都不产生 run 行，因此**不会有 `run.finished`**，
  * 终态是 `conversation.busy: false`（约定写在 `core` 的 `RunErrorEvent` 上）。
  * 目标续起与跟进消息那两条路在 `goal-loop.test.ts` / `followup.test.ts`。
  *
@@ -24,6 +24,7 @@ import {
   ContentStore,
   contentPathFor,
   createConversation,
+  listMessages,
   Store,
   upsertWorkspace,
 } from '@qywork/store'
@@ -33,6 +34,7 @@ import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
 
 let dir = ''
+let dbPath = ''
 let store: Store
 let content: ContentStore
 let bus: EventBus
@@ -66,8 +68,8 @@ function deps(cfg: QyConfig) {
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'qywork-reject-'))
-  const dbPath = join(dir, 'reject.sqlite3')
-  store = new Store({ path: dbPath })
+  dbPath = join(dir, 'reject.sqlite3')
+  store = new Store({ path: dbPath, owner: 'serve' })
   content = new ContentStore(contentPathFor(dbPath))
   bus = new EventBus()
   subagents = new SubagentRegistry()
@@ -142,6 +144,54 @@ test('会话已有任务在跑 —— 只回错误，不动忙闲', async () => 
   expect(runs.hasRun(cv)).toBe(true)
   runs.release(cv)
 })
+
+/**
+ * 同一会话被另一个进程占着（终端里的 qy 正在跑它）。占用进程是 `store` 包的测试子进程，
+ * 建一轮后不退出。跨进程的判定在账本的 `createRun`，本进程的占位表里没有这条会话，
+ * 所以序列与「装配抛错」同形，`run.error` 的正文说出占用方。
+ */
+test('会话被另一个进程占着 —— 回错误并说出占用方，这句话不落库，忙闲落回闲', async () => {
+  const cv = conversation()
+  const holder = Bun.spawn(
+    [process.execPath, join(import.meta.dir, '../../store/src/concurrency-child.ts')],
+    {
+      env: {
+        ...process.env,
+        QY_CC_MODE: 'hold',
+        QY_CC_DB: dbPath,
+        QY_CC_ARG: `${cv}|${workspaceId}`,
+        QY_CC_OWNER: 'cli',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  )
+  try {
+    const reader = holder.stdout.getReader()
+    let text = ''
+    while (!text.includes(String.fromCharCode(10))) {
+      const { value, done } = await reader.read()
+      if (done) break
+      text += new TextDecoder().decode(value)
+    }
+    expect(JSON.parse(text.trim()).ok).toBe(true)
+    events = []
+
+    await startRun(cv, '你好', undefined, deps(config('sk-fake')))
+    await Bun.sleep(300)
+
+    expect(trace()).toEqual(['busy=true', 'run.error internal_error runId=""', 'busy=false'])
+    const error = events.map((f) => f.event).find((e) => e.type === 'run.error')
+    expect(error?.type === 'run.error' ? error.message : '').toContain(
+      `该会话已在终端里的 qy 中执行（pid ${holder.pid}）`,
+    )
+    expect(listMessages(store, cv)).toEqual([])
+    expect(runs.hasRun(cv)).toBe(false)
+  } finally {
+    holder.kill()
+    await holder.exited
+  }
+}, 30_000)
 
 /**
  * 起轮序言里抛出的错。

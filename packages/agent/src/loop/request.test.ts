@@ -8,7 +8,6 @@ import type { ChatRequest, LlmAdapter } from '@qywork/ai'
 import { buildAdapter, DEFAULT_DENSITY, estimateText, lookupModel } from '@qywork/ai'
 import type { ContextBreakdown } from '@qywork/core'
 import { CONTEXT_GROUPS } from '@qywork/core'
-import { IMAGES_OMITTED } from '../compaction.ts'
 import { AgentLoop, type ToolContext } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
 import { baseCtx, fakeAdapter, noopPersistence } from './fixtures.test-helper.ts'
@@ -533,10 +532,10 @@ describe('上下文读数：一把尺', () => {
 
 describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
   /**
-   * 复现原始失败形状的最小版：每一波读一张图，第三次请求体里只能有第二张。
-   * 第一张的 tool 消息必须是字符串信封且标 `images_omitted`：缺了标记，信封与图仍在场的成功信封同形。
+   * 每一波读一张图，第三次请求体里两张都在：总量在保留上限内时图不摘，前缀不变，
+   * 模型不必重新读取。每张图跟在自己那一批回执之后的观察消息里。
    */
-  test('只有最后一个工具波次的图进请求体，更早的换成 images_omitted 信封', async () => {
+  test('上限内每个工具波次的图都留在之后的请求体里，各自跟在本批回执之后', async () => {
     const bodies: Record<string, unknown>[] = []
     let requestIndex = 0
     const call = (id: string) => ({
@@ -629,23 +628,27 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
       }
 
       expect(bodies).toHaveLength(3)
-      const tools = (bodies[2]!.messages as { role?: string; content?: unknown }[]).filter(
-        (m) => m.role === 'tool',
-      )
+      const messages = bodies[2]!.messages as { role?: string; content?: unknown }[]
+      const tools = messages.filter((m) => m.role === 'tool')
       expect(tools).toHaveLength(2)
-      // 第一波：字符串信封，带标记，一个图像字节都没有。
-      expect(typeof tools[0]!.content).toBe('string')
-      expect(JSON.parse(tools[0]!.content as string)).toMatchObject({
-        call_id: 'call_1',
-        images_omitted: IMAGES_OMITTED,
-      })
-      expect(JSON.stringify(bodies[2])).not.toContain('IMG1')
-      // 第二波：图仍在。
-      const second = tools[1]!.content as { type?: string; image_url?: { url?: string } }[]
-      expect(second[1]).toEqual({
-        type: 'image_url',
-        image_url: { url: 'data:image/png;base64,IMG2' },
-      })
+      for (const t of tools) {
+        expect(t.content).toContain('[图像 1：见本批工具结果之后的观察消息]')
+        expect(String(t.content)).not.toContain('images_omitted')
+      }
+      // 两张图都在，各自放在紧跟本批回执的观察消息里，不在 tool 消息里。
+      const observations = messages.filter((m) => m.role === 'user' && Array.isArray(m.content))
+      expect(observations.map((m) => m.content)).toEqual([
+        [
+          { type: 'text', text: expect.any(String) },
+          { type: 'text', text: 'call_id call_1 · 图像 1' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,IMG1' } },
+        ],
+        [
+          { type: 'text', text: expect.any(String) },
+          { type: 'text', text: 'call_id call_2 · 图像 1' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,IMG2' } },
+        ],
+      ])
     } finally {
       endpoint.stop(true)
     }
@@ -748,18 +751,20 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
         tool_call_id?: string
         content?: unknown
       }[]
-      const tool = messages.find((message) => message.role === 'tool')
+      const toolIndex = messages.findIndex((message) => message.role === 'tool')
+      const tool = messages[toolIndex]
       expect(tool?.tool_call_id).toBe('call_image')
-      const content = tool?.content as {
-        type?: string
-        text?: string
-        image_url?: { url?: string }
-      }[]
-      expect(content[1]).toEqual({
-        type: 'image_url',
-        image_url: { url: 'data:image/png;base64,QUJD' },
+      const [envelope, placeholder] = String(tool?.content).split('\n')
+      expect(placeholder).toBe('[图像 1：见本批工具结果之后的观察消息]')
+      expect(messages[toolIndex + 1]).toEqual({
+        role: 'user',
+        content: [
+          { type: 'text', text: expect.any(String) },
+          { type: 'text', text: 'call_id call_image · 图像 1' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+        ],
       })
-      expect(JSON.parse(content[0]!.text ?? '')).toMatchObject({
+      expect(JSON.parse(envelope ?? '')).toMatchObject({
         call_id: 'call_image',
         tool: 'read_image',
         status: 'success',

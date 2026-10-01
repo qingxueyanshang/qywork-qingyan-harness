@@ -2,11 +2,11 @@
  * 消息级缓存断点的位置与每一步的缓存命中。
  *
  * 覆盖范围：`loop/index.ts` 的 `buildRequest` 打在 history 末条、最后一批工具调用所属的
- * assistant 消息与末尾的三个断点，以及它们与 `loop/request.ts` 的 `omitImages` 的配合。
+ * assistant 消息与末尾的三个断点，以及它们与 `loop/request.ts` 的 `evictedMedia` 换出的配合。
  * 断言落在适配器收到的请求上，按 Anthropic 的缓存规则算每一步命中到哪一条。
  *
- * 原始失败形状：工具每一步带回一张图，上一批的图在下一步被摘掉，上一步末尾断点的前缀随之
- * 对不上；最后一批工具调用上没有断点时，缓存只命中到 history 末条，其后的内容每一步整段重写。
+ * 盯两件事：图留在请求里时每一步命中上一步的全部内容；媒体超过保留上限时只有换出的那一步
+ * 改写一次前缀，之后恢复整段命中。
  */
 
 import { expect, test } from 'bun:test'
@@ -54,7 +54,8 @@ function hasImage(m: WireMessage | undefined): boolean {
   return Array.isArray(m?.content) && m.content.some((b) => b.type === 'image')
 }
 
-test('工具每一步带回一张图：每一步的缓存命中到上一批的图被摘掉之前', async () => {
+/** 每一步截一张图、跑 `steps` 步，返回每次请求的消息。 */
+async function shootSteps(steps: number, data: () => string): Promise<WireMessage[][]> {
   const registry = new ToolRegistry()
   let shots = 0
   registry.register({
@@ -72,15 +73,12 @@ test('工具每一步带回一张图：每一步的缓存命中到上一批的�
       return {
         status: 'success',
         message: `第 ${shots} 张截图`,
-        data: { images: [{ data: PNG, mime: 'image/png' }] },
+        data: { images: [{ data: data(), mime: 'image/png' }] },
       }
     },
   })
   const scripted = fakeAdapter([
-    [call('screenshot')],
-    [call('screenshot')],
-    [call('screenshot')],
-    [call('screenshot')],
+    ...Array.from({ length: steps - 1 }, () => [call('screenshot')]),
     null,
   ])
   const seen: WireMessage[][] = []
@@ -105,24 +103,38 @@ test('工具每一步带回一张图：每一步的缓存命中到上一批的�
   })) {
     // 断言落在适配器收到的请求上。
   }
+  return seen
+}
 
+test('工具每一步带回一张图：图留在请求里，每一步命中上一步的全部内容', async () => {
+  const seen = await shootSteps(5, () => PNG)
   expect(seen).toHaveLength(5)
-  // 只有最后一批带图，更早的批次都换成了 images_omitted 信封。
   const tools = (seen[4] ?? []).filter((m) => m.role === 'tool')
-  expect(tools.map(hasImage)).toEqual([false, false, false, true])
-  for (const m of tools.slice(0, -1)) {
-    expect((JSON.parse(String(m.content)) as { images_omitted?: string }).images_omitted).toBe(
-      IMAGES_OMITTED,
-    )
-  }
+  expect(tools.map(hasImage)).toEqual([true, true, true, true])
   const changes = seen.slice(1).map((cur, k) => firstChange(seen[k]!, cur))
-  // 从第三步起，上一步末条的图都被摘掉：场景确实走到了改写上一步前缀的路径。
-  for (const [k, at] of changes.entries()) {
-    if (k >= 1) expect(at).toBeLessThan(seen[k]!.length)
-  }
+  expect(changes).toEqual(seen.slice(0, -1).map((m) => m.length))
   expect(cachedPrefixes(seen).slice(1)).toEqual(changes)
   // 系统提示词另占一个，Anthropic 一次请求最多 4 个断点。
   for (const messages of seen) {
     expect(messages.filter((m) => m.cacheBreakpoint).length).toBeLessThanOrEqual(3)
   }
+})
+
+/** 解码后约 1.5 MB 的图：第 3 张让总量过 4 MB，换出前两张。 */
+const LARGE = () => 'A'.repeat(2 * 1024 * 1024)
+
+test('媒体超过保留上限：只有换出的那一步改写前缀，之后恢复整段命中', async () => {
+  const seen = await shootSteps(5, LARGE)
+  expect(seen).toHaveLength(5)
+  const tools = (seen[4] ?? []).filter((m) => m.role === 'tool')
+  expect(tools.map(hasImage)).toEqual([false, false, true, true])
+  for (const m of tools.slice(0, 2)) {
+    expect((JSON.parse(String(m.content)) as { images_omitted?: string }).images_omitted).toBe(
+      IMAGES_OMITTED,
+    )
+  }
+  const changes = seen.slice(1).map((cur, k) => firstChange(seen[k]!, cur))
+  const rewrites = changes.filter((at, k) => at < seen[k]!.length)
+  expect(rewrites).toHaveLength(1)
+  expect(cachedPrefixes(seen).slice(1)).toEqual(changes)
 })

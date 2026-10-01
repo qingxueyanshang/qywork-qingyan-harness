@@ -126,6 +126,7 @@ export {
   type MediaCallResult,
   type MediaPort,
   markCompacted,
+  type OfficePort,
   type PermissionVerdict,
   type PluginPort,
   type SchedulePort,

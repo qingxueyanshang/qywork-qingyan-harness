@@ -2237,6 +2237,16 @@ ALTER TABLE runs DROP COLUMN assistant_message_id;
     name: 'provider_request_configuration',
     sql: `ALTER TABLE provider_requests ADD COLUMN configuration TEXT;`,
   },
+  {
+    id: 68,
+    name: 'run_owner_kind',
+    /**
+     * 占着这一轮的是哪一类进程：`serve`（桌面端与手机端连的服务）或 `cli`（终端里的 qy）。
+     * 另一个进程在同一会话上起轮被拒时，提示据此说出占用方在哪里。
+     * NULL = 迁移前的旧行，或建库时没有声明进程类别（测试）。不回填。
+     */
+    sql: `ALTER TABLE runs ADD COLUMN owner_kind TEXT;`,
+  },
 ]
 
 /**
@@ -2335,6 +2345,8 @@ export interface RunRow {
   context_snapshot: string | null
   owner_pid: number | null
   heartbeat_at: number | null
+  /** `RunOwner`；NULL = 迁移前旧行或未声明进程类别。 */
+  owner_kind: string | null
   /** 派活来源，见 `Run.dispatchStepId`。NULL = 不是派出来的。 */
   dispatch_step_id: StepId | null
   dispatch_node_id: string | null
@@ -2393,7 +2405,7 @@ export interface ProviderRequestRow {
   payload_hash: string
   request_bytes: number | null
   cache_route_fingerprint: string | null
-  /** 本次输入实际完整携带的工具图片批次；见 `ProviderRequest.inputImageBatchId`。 */
+  /** 已停止写入：媒体去留改为按字节预算换出后不再记批次送达凭证。存量行保留原值，列不删。 */
   input_image_batch_id: string | null
   sent_at: number | null
   headers_at: number | null
@@ -2496,6 +2508,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'interruption_detail',
     'context_snapshot',
     'owner_pid',
+    'owner_kind',
     'heartbeat_at',
     'created_at',
     'finished_at',

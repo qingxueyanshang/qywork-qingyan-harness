@@ -1,8 +1,16 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, win32 } from 'node:path'
-import { installArgv, resolveWinget } from './host.ts'
+import type { EnvDependency } from '@qywork/core'
+import type { OfficeHost, OfficeStatus, QyConfig } from '@qywork/runtime'
+import {
+  handleHostApi,
+  installArgv,
+  pipInstallArgv,
+  probeEnvironment,
+  resolveWinget,
+} from './host.ts'
 
 describe('winget 执行位置', () => {
   const localAppData = 'C:\\Users\\Test User\\AppData\\Local'
@@ -76,5 +84,73 @@ describe('winget 执行位置', () => {
     const result = Bun.spawnSync(inner, { stdout: 'pipe', stderr: 'pipe' })
     expect(result.exitCode).toBe(0)
     expect(result.stdout.toString().trim()).toBe('install --id Git.Git -e --source winget')
+  })
+})
+
+describe('Office 依赖两行', () => {
+  const missingPython = { providers: {}, officePython: join(tmpdir(), 'qywork-no-python.exe') }
+  const host = (missing: string[]): OfficeHost => {
+    const status: OfficeStatus = {
+      enabled: true,
+      available: missing.length === 0,
+      reason: '',
+      python: process.execPath,
+      version: '3.12.0',
+      missing,
+      apps: null,
+    }
+    return { refresh: async () => status, status: () => status, port: () => undefined }
+  }
+  const row = (rows: EnvDependency[], id: string) => rows.find((r) => r.id === id)
+
+  test('指定的解释器不存在：两行都缺，文档库提示先装 Python', () => {
+    const rows = probeEnvironment({ config: missingPython as QyConfig })
+    expect(row(rows, 'python')).toMatchObject({ path: null, hint: 'Office 文档工具不可用。' })
+    expect(row(rows, 'office-libs')).toMatchObject({ path: null, hint: '需要先安装 Python。' })
+    expect(row(rows, 'office-libs')?.canInstall).toBe(false)
+  })
+
+  test('文档库缺项取 Office 宿主的探测结果', () => {
+    const config = { providers: {}, officePython: process.execPath } as QyConfig
+    const missing = probeEnvironment({ config, office: host(['pypdfium2', 'openpyxl']) })
+    expect(row(missing, 'office-libs')).toMatchObject({
+      path: null,
+      hint: '缺少 pypdfium2、openpyxl。',
+    })
+    const ok = probeEnvironment({ config, office: host([]) })
+    expect(row(ok, 'office-libs')).toMatchObject({ path: process.execPath, hint: '' })
+  })
+
+  test('没有解释器时安装文档库回 409，不起进程', async () => {
+    if (process.platform !== 'win32') return
+    const url = new URL('http://localhost/api/host/install')
+    const res = await handleHostApi(
+      url,
+      new Request(url.href, { method: 'POST', body: JSON.stringify({ id: 'office-libs' }) }),
+      { config: missingPython } as never,
+    )
+    expect(res?.status).toBe(409)
+  })
+
+  test('虚拟环境里的解释器不带 --user，系统解释器带', async () => {
+    const venv = await mkdtemp(join(tmpdir(), 'qywork-venv-'))
+    await mkdir(join(venv, 'Scripts'))
+    await writeFile(join(venv, 'pyvenv.cfg'), 'include-system-site-packages = false\n')
+    expect(pipInstallArgv(join(venv, 'Scripts', 'python.exe'))).not.toContain('--user')
+    const plain = await mkdtemp(join(tmpdir(), 'qywork-python-'))
+    expect(pipInstallArgv(join(plain, 'python.exe'))).toContain('--user')
+  })
+
+  test('pip 安装命令在含空格的解释器与清单目录下照常执行', async () => {
+    if (process.platform !== 'win32') return
+    const root = await mkdtemp(join(tmpdir(), 'qywork-python '))
+    const stub = join(root, 'python.cmd')
+    await writeFile(stub, '@echo off\r\necho %*\r\nexit /b 0\r\n')
+    const argv = pipInstallArgv(stub)
+    const inner = argv.slice(argv.indexOf('cmd'))
+    inner[inner.indexOf('/k')] = '/c'
+    const result = Bun.spawnSync(inner, { cwd: root, stdout: 'pipe', stderr: 'pipe' })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.toString().trim()).toBe('-m pip install --user -r requirements.txt')
   })
 })

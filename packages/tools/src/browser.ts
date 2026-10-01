@@ -45,7 +45,7 @@ import {
   type ToolSpec,
 } from '@qywork/agent'
 import { browserResult, isOptionsPage, MAX_META_CHARS } from './browser-results.ts'
-import { resolveInWorkspace, rootsOf } from './paths.ts'
+import { resolveInWorkspace, rootsOf, writableRoots } from './paths.ts'
 
 /** 一次等待的上限。超过这个值的请求按它截断，不接受任意时长。 */
 const MAX_WAIT_MS = 60_000
@@ -1107,9 +1107,11 @@ export const browserDownloadTool: ToolSpec = {
     onBrowser(ctx, async (browser, send) => {
       // 先裁决路径再触发：授权按这个绝对路径登记，顺序反过来就成了
       // 「先让网站开始下载，再看它能不能落盘」。
-      const absolutePath = await resolveInWorkspace(rootsOf(ctx), str(args.path, 'path'), {
-        mustExist: false,
-      })
+      const absolutePath = await resolveInWorkspace(
+        writableRoots(rootsOf(ctx)),
+        str(args.path, 'path'),
+        { mustExist: false },
+      )
       const input = {
         tabId: str(args.tabId, 'tabId'),
         observationId: str(args.observationId, 'observationId'),

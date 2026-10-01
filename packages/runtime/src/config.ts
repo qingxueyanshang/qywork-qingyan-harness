@@ -5,8 +5,8 @@
  * 不做云同步、不做登录、不上报。
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { dirname, isAbsolute, join } from 'node:path'
 import {
   CHAT_REASONING_PROTOCOLS,
   type ChatReasoningProtocol,
@@ -101,6 +101,17 @@ export interface QyConfig {
    * 它随每条桌面请求下发到执行组件：运行中关掉，下一次派发就被拒。
    */
   desktopForeground?: boolean
+  /**
+   * 允不允许 agent 用 `office` 工具制作 Word / PPT / Excel。**缺席按启用，只有显式 `false` 才关。**
+   *
+   * 关着时装配方不注入 Office 端口，工具不注册。本机没有可用的 Python 与文档库时，
+   * 开着也不注册，那是能力状态，不是这一格。
+   */
+  officeEnabled?: boolean
+  /**
+   * `office` 用的 Python 解释器绝对路径。缺席时在 PATH 里找 `python`，排除 Windows 商店别名。
+   */
+  officePython?: string
   /**
    * 工作区之外**额外**可读写的绝对路径。
    *
@@ -545,9 +556,38 @@ export async function loadConfig(): Promise<QyConfig> {
   return cfg
 }
 
+/** 改名撞上读方占用时的重试上限。读配置只占用文件几十微秒。 */
+const RENAME_RETRY_MS = 1000
+
+/**
+ * 整份写回配置文件。
+ *
+ * 先写同目录的临时文件再改名：直接覆盖写到一半时进程退出，文件停在截断状态，下次读取解析失败、
+ * 退回默认配置，接口与 key 全部不见。改名在同一卷上是原子的，读方只会读到旧文件或新文件。
+ *
+ * Windows 上目标文件正被另一个进程读取时改名返回 EPERM / EBUSY（读方打开文件时不允许删除共享），
+ * 所以在 `RENAME_RETRY_MS` 内短睡重试。
+ */
 export async function saveConfig(cfg: QyConfig): Promise<void> {
-  await mkdir(dirname(configPath()), { recursive: true })
-  await writeFile(configPath(), `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
+  const path = configPath()
+  await mkdir(dirname(path), { recursive: true })
+  const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
+    const deadline = Date.now() + RENAME_RETRY_MS
+    for (;;) {
+      try {
+        await rename(temporary, path)
+        return
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        if ((code !== 'EPERM' && code !== 'EBUSY') || Date.now() >= deadline) throw err
+        await Bun.sleep(10)
+      }
+    }
+  } finally {
+    await rm(temporary, { force: true })
+  }
 }
 
 /**
@@ -728,6 +768,15 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   }
   if (cfg.desktopForeground !== undefined && typeof cfg.desktopForeground !== 'boolean') {
     problems.push('desktopForeground 必须是 true 或 false')
+  }
+  if (cfg.officeEnabled !== undefined && typeof cfg.officeEnabled !== 'boolean') {
+    problems.push('officeEnabled 必须是 true 或 false')
+  }
+  if (
+    cfg.officePython !== undefined &&
+    (typeof cfg.officePython !== 'string' || !isAbsolute(cfg.officePython))
+  ) {
+    problems.push('officePython 必须是 Python 解释器的绝对路径')
   }
 
   /*

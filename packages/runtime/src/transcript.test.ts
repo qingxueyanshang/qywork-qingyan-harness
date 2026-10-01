@@ -408,7 +408,8 @@ describe('历史装配', () => {
     expect(history).toHaveLength(4)
   })
 
-  test('只让当前用户消息发送媒体，历史附件保留引用', async () => {
+  /** 媒体去留由装配按字节预算决定（`agent` 的 `evictedMedia`），历史轮次的附件与当前轮同样转换。 */
+  test('历史与当前用户消息的附件都经同一个转换', async () => {
     const { store, conv } = fixture()
     appendMessage(store, {
       conversationId: conv.id,
@@ -426,13 +427,13 @@ describe('历史装配', () => {
         { type: 'video', name: 'now.mp4', mime: 'video/mp4', size: 1, path: 'now.mp4' },
       ],
     }).id
-    const mediaFlags: boolean[] = []
-    await buildHistory(store, conv.id, current, async (content, _files, includeMedia) => {
-      mediaFlags.push(includeMedia)
+    const passed: string[][] = []
+    await buildHistory(store, conv.id, current, async (content, files) => {
+      passed.push((files as { name: string }[]).map((f) => f.name))
       return content
     })
 
-    expect(mediaFlags).toEqual([false, true])
+    expect(passed).toEqual([['old.png'], ['now.mp4']])
   })
 
   test('run 的上下文只出现在所属真实用户消息之前，与上一轮相同的段不再回放，重复重建不漂移', async () => {

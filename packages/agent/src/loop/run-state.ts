@@ -45,7 +45,7 @@ export interface LoopHost {
     run: RunState,
     turnIndex: number,
   ): SummaryTrace & { opened: boolean; merged: boolean }
-  openStream(req: ChatRequest, requestId: string): Promise<AsyncIterable<ProviderEvent>>
+  openStream(req: ChatRequest): Promise<AsyncIterable<ProviderEvent>>
   buildRequest(run: RunState): ChatRequest
   /** 最近一次 `buildRequest` 算出的省略量。 */
   lastOmitted(): ContextOmitted

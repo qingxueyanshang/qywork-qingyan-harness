@@ -22,10 +22,23 @@ const ROOT = join(import.meta.dir, '..')
  */
 const ROOTS = ['packages', 'apps/web', 'apps/desktop/src-tauri', 'apps/desktop/native', 'scripts']
 
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'target', 'gen', '.git'])
-/** `.ps1` / `.toml` 走 `#` 行注释，其余走 C 系。 */
-const EXTS = new Set(['.ts', '.tsx', '.mjs', '.js', '.rs', '.css', '.ps1', '.toml'])
-const HASH_EXTS = new Set(['.ps1', '.toml'])
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'target', 'gen', '.git', '__pycache__'])
+/** `.ps1` / `.toml` / `.py` 走 `#` 行注释（`.py` 另加文档字符串），其余走 C 系。 */
+const EXTS = new Set(['.ts', '.tsx', '.mjs', '.js', '.rs', '.css', '.ps1', '.toml', '.py'])
+const HASH_EXTS = new Set(['.ps1', '.toml', '.py'])
+
+/**
+ * Python 的文档字符串：三引号块逐行取出。模块、函数与类的说明写在这里，
+ * 只扫 `#` 行会把它们漏在外面。
+ */
+export function pythonDocstrings(src: string): Comment[] {
+  const out: Comment[] = []
+  for (const m of src.matchAll(/("""|''')([\s\S]*?)\1/g)) {
+    const start = src.slice(0, m.index).split('\n').length
+    for (const [k, text] of (m[2] ?? '').split('\n').entries()) out.push({ line: start + k, text })
+  }
+  return out
+}
 
 export interface Violation {
   file: string
@@ -213,7 +226,10 @@ export function sourceFiles(): string[] {
 export function scanFile(file: string): Violation[] {
   const src = readFileSync(file, 'utf8')
   const ext = extname(file)
-  const comments = extractComments(src, ext !== '.css', HASH_EXTS.has(ext))
+  const comments = [
+    ...extractComments(src, ext !== '.css', HASH_EXTS.has(ext)),
+    ...(ext === '.py' ? pythonDocstrings(src) : []),
+  ]
   const out: Violation[] = []
   for (const { line, text } of comments) {
     for (const rule of RULES) {

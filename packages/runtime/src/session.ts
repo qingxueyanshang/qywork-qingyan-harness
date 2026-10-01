@@ -5,7 +5,7 @@
  * 不各自再拼一遍——三套装配就是三套会漂移的行为。
  */
 
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { basename, isAbsolute, resolve } from 'node:path'
 import {
   AgentLoop,
@@ -20,6 +20,7 @@ import {
   type HistoryStep,
   imagesOf,
   type LoopPersistence,
+  type OfficePort,
   type PermissionVerdict,
   type PluginPort,
   type Summarizer,
@@ -83,7 +84,6 @@ import {
   finishRun,
   getConversation,
   getRun,
-  hasReceivedRequestWithImages,
   latestAnchoredProviderRequest,
   latestTodos,
   listLoadedTools,
@@ -92,7 +92,6 @@ import {
   listSchedules,
   listSteps,
   listWorkflowRecords,
-  markProviderRequestInputImages,
   markRunRunning,
   markStepExecuting,
   recordFileRead,
@@ -120,6 +119,7 @@ import {
   registerBuiltinTools,
   scanSkills,
   scopeRoots,
+  shrinkImage,
 } from '@qywork/tools'
 import { RuntimeCompaction } from './compaction.ts'
 import {
@@ -191,6 +191,13 @@ export interface SessionOptions {
    * 桌面能力。会话结束时 `dispose` 会撤销它名下尚未派发的请求。
    */
   desktop?: DesktopPort
+  /**
+   * Office 执行程序。见 `OfficePort`。
+   *
+   * 由装配方从进程级的 Office 宿主取（`createOfficeHost`）；开关关着或本机缺 Python 与文档库时
+   * 不传，这一轮没有 `office` 工具。
+   */
+  office?: OfficePort
   /**
    * 取走此刻标了「调整方向」的跟进消息。**每个 step 边界调一次。**
    *
@@ -269,6 +276,9 @@ export class Session {
    */
   private readonly extraDirs: string[]
 
+  /** 本轮技能索引里各技能的目录，在冻结上下文时取一次，作为工具的只读根。 */
+  private skillDirs: string[] = []
+
   /**
    * 各轮次的生成花费。生成通道成功时追加并写进 `runs.media_usage`（`recordMediaSpend`），
    * 本轮 usage 事件经过 `ask` 时附上，轮次结束时逐条入账后清掉。
@@ -317,6 +327,7 @@ export class Session {
       browser: opts.browser !== undefined,
       desktop: opts.desktop !== undefined,
       canvas: opts.canvas !== undefined,
+      office: opts.office !== undefined,
       // 生成工具按配了模型的类别注册；与其他内置工具同一规则，角色的 allowedTools 点名时按点名过滤。
       media: [...new Set(listMediaModels(opts.config).map((m) => m.output))],
     }
@@ -413,7 +424,7 @@ export class Session {
       },
       makeToolContext: (runId, emit) =>
         this.makeToolContext(runId, emit, target, conversationId as ConversationId),
-      persist: this.makePersistence(conversationId),
+      persist: this.makePersistence(),
       ...(compaction ? { compaction } : {}),
     })
   }
@@ -483,6 +494,7 @@ export class Session {
     }
     const roots = scopeRoots(this.opts.workspaceRoot)
     const skills = await scanSkills(roots).catch(() => [])
+    this.skillDirs = skills.map((s) => s.dir)
     const memories = await listScopedEntries(roots).catch(() => [])
     const canAssignModels = ['define_role', 'subagent', 'workflow'].some((name) =>
       this.registry.has(name),
@@ -522,37 +534,47 @@ export class Session {
       ...(canAssignModels ? { workflows: unfinishedWorkflows(store, conversationId) } : {}),
     })
 
-    const userMessageId = appendMessage(store, {
-      conversationId,
-      role: 'user',
-      content: prompt,
-      ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
-      ...(options?.origin ? { origin: options.origin } : {}),
-    }).id
-
     /*
-     * 标题在第一条用户消息落库之后产生，**全项目只有这一处产生点**。
-     * 建会话时不取：界面端先建会话、后发第一句话，那时正文还不存在。
-     *
-     * 只在标题空着时写——用户改过的名字不许被下一句话盖掉。
+     * 追加用户消息、起标题、建轮、标 running 在同一个写事务里。`createRun` 发现这条会话被
+     * 另一个进程占着时抛 `ConversationBusyError`，整段回滚：被拒的这句话不落库，
+     * 不留一条没有回答的用户消息。
      */
-    if (!conversation?.title) {
-      const derived = deriveConversationTitle(prompt)
-      if (derived) setConversationTitle(store, conversationId, derived)
-    }
+    const run = store.tx(() => {
+      const userMessageId = appendMessage(store, {
+        conversationId,
+        role: 'user',
+        content: prompt,
+        ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
+        ...(options?.origin ? { origin: options.origin } : {}),
+      }).id
 
-    const run = createRun(store, {
-      conversationId,
-      workspaceId: this.workspaceId as never,
-      model,
-      clientRequestId: options?.clientRequestId ?? crypto.randomUUID(),
-      userMessageId,
-      // 高水位：本轮定格在刚写入的消息。排队期间新到的消息不进本轮视野。
-      messageIdUpperBound: userMessageId,
-      contextSnapshot,
-      ...(options?.dispatch ? { dispatch: options.dispatch } : {}),
+      /*
+       * 标题在第一条用户消息落库之后产生，**全项目只有这一处产生点**。
+       * 建会话时不取：界面端先建会话、后发第一句话，那时正文还不存在。
+       *
+       * 只在标题空着时写——用户改过的名字不许被下一句话盖掉。上面读到的 `conversation` 之后
+       * 隔着若干 await，用户可能刚改过名，所以「标题为空」由写入语句自己判断（`onlyIfEmpty`）。
+       */
+      if (!conversation?.title) {
+        const derived = deriveConversationTitle(prompt)
+        if (derived) setConversationTitle(store, conversationId, derived, { onlyIfEmpty: true })
+      }
+
+      const created = createRun(store, {
+        conversationId,
+        workspaceId: this.workspaceId as never,
+        model,
+        clientRequestId: options?.clientRequestId ?? crypto.randomUUID(),
+        userMessageId,
+        // 高水位：本轮定格在刚写入的消息。排队期间新到的消息不进本轮视野。
+        messageIdUpperBound: userMessageId,
+        contextSnapshot,
+        ...(options?.dispatch ? { dispatch: options.dispatch } : {}),
+      })
+      markRunRunning(store, created.id)
+      return created
     })
-    markRunRunning(store, run.id)
+    const userMessageId = run.userMessageId
 
     /*
      * 历史 = 消息 + **由 steps 投影出来的 assistant/tool 回合**。
@@ -566,8 +588,7 @@ export class Session {
       store,
       conversationId,
       run.messageIdUpperBound,
-      (content, list, includeMedia) =>
-        withAttachments(this.opts.workspaceRoot, content, list as Attachment[], includeMedia),
+      (content, list) => withAttachments(this.opts.workspaceRoot, content, list as Attachment[]),
       { preserveAssistantReasoning },
     )
 
@@ -903,7 +924,7 @@ export class Session {
     return next
   }
 
-  private makePersistence(conversationId: ConversationId): LoopPersistence {
+  private makePersistence(): LoopPersistence {
     const { store } = this.opts
     return {
       nextSeq: (runId) => this.nextSeq(runId),
@@ -981,10 +1002,6 @@ export class Session {
         })
       },
       ...requestPersistence(store, this.opts.config),
-      markRequestInputImages: (requestId, batchId) =>
-        markProviderRequestInputImages(store, requestId as never, batchId),
-      inputImagesConsumed: (batchId) =>
-        hasReceivedRequestWithImages(store, conversationId, batchId),
     }
   }
 
@@ -1178,6 +1195,9 @@ export class Session {
       secrets,
       ...(this.opts.config.envAllowList ? { envAllowList: this.opts.config.envAllowList } : {}),
       ...(this.extraDirs.length ? { additionalDirectories: this.extraDirs } : {}),
+      // 本轮技能索引里各技能的目录：附带的参考文档、模板与代码可读，不可写。
+      ...(this.skillDirs.length ? { readOnlyRoots: this.skillDirs } : {}),
+      ...(this.opts.office ? { office: this.opts.office } : {}),
       // 「完全访问」= 全部权限，路径边界也归它管。与下面 `decide` 里那句
       // `full` 的定义就是「不裁决」是同一件事的两面——只放开权限闸而留着路径层，
       // 就是「read_file 被拒、run_command 读到」那种两套账。
@@ -1378,10 +1398,43 @@ function interruptionMessage(interruption: RunInterruption | null): string | nul
 const NEWLINE = String.fromCharCode(10)
 
 /**
+ * 附件图片缩图编码后的结果，按「路径 + 修改时间 + 大小」缓存在进程内。
+ *
+ * 附件是活引用：文件改了，键随之变，下一轮读到的是新内容。每一轮装配都要把历史里的附件
+ * 全部编码一遍，不缓存的话一条带几十张照片的会话每轮起步都要重新解码、缩放一遍。
+ * 条目数有上限，超出时丢最早放进去的。
+ */
+const ATTACHMENT_CACHE_LIMIT = 64
+const attachmentCache = new Map<string, { data: string; mime: string }>()
+
+async function encodedAttachment(
+  path: string,
+  mtimeMs: number,
+  size: number,
+  mime: string,
+): Promise<{ data: string; mime: string } | null> {
+  const key = `${path}|${mtimeMs}|${size}`
+  const hit = attachmentCache.get(key)
+  if (hit) return hit
+  const bytes = await readFile(path).catch(() => null)
+  if (!bytes) return null
+  const fit = await shrinkImage(new Uint8Array(bytes), mime)
+  const out = { data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime }
+  if (attachmentCache.size >= ATTACHMENT_CACHE_LIMIT) {
+    const oldest = attachmentCache.keys().next().value
+    if (oldest !== undefined) attachmentCache.delete(oldest)
+  }
+  attachmentCache.set(key, out)
+  return out
+}
+
+/**
  * 把附件变成 provider 认得的内容。
  *
- * 当前轮的图片和视频进入内容块，其余附件只把路径写进正文。历史媒体只保留路径说明，
- * 不在每一轮重复读取和传输。
+ * 每一轮的图片都进内容块，按工具图同一条规则缩图编码（`tools` 的 `shrinkImage`）；视频进路径块，
+ * 发出前由 `materialize` 读字节。去留不在这里定：挂着的媒体超过保留上限时，由装配
+ * （`agent` 的 `evictedMedia`）把最早的整批换成说明。每个附件都在正文里留一行名字与路径，
+ * 媒体被换出之后模型凭这一行找到原文件。
  *
  * **路径不按工作区裁决。** `resolveInWorkspace` 那道边界约束的是**模型**——它挡的是模型自己构造出
  * 来的路径。附件路径来自用户在界面上的拖 / 选 / 粘，是一次显式授权，与系统文件选择器同性质；判据
@@ -1427,7 +1480,6 @@ export async function withAttachments(
   workspaceRoot: string,
   text: string,
   attachments: Attachment[],
-  includeMedia = true,
 ): Promise<string | ContentBlock[]> {
   const blocks: ContentBlock[] = []
   const notes: string[] = []
@@ -1439,34 +1491,25 @@ export async function withAttachments(
       notes.push(`（附件 ${a.name} 已不存在，跳过）`)
       continue
     }
-    const image = isInlineImage(a.path)
-    const video = isInlineVideo(a.path)
-    if (!includeMedia && (image || video)) {
-      notes.push(`（历史附件 ${a.name}：${toPosixPath(abs)}）`)
-      continue
-    }
+    // 给位置：模型读不到时 `read_file` 会明确报越界或不存在，不是静默失败。
+    notes.push(`（附件 ${a.name}：${toPosixPath(abs)}）`)
     // 分类按扩展名，与界面附件入口使用同一份判据。
     // 按 `a.type` 判会读到历史行里那个按 mime 算出来的旧值，两处给出不同答案。
-    if (!image && !video) {
-      // 给位置不给字节。模型读不到时 `read_file` 会明确报越界或不存在，不是静默失败。
-      notes.push(`（附件 ${a.name}：${toPosixPath(abs)}）`)
+    if (isInlineVideo(a.path)) {
+      blocks.push({
+        type: 'video',
+        mimeType: mimeOf(a.path),
+        source: { kind: 'path', path: toPosixPath(abs) },
+      })
       continue
     }
-    // 只给位置，不读字节。读盘由 `agent/loop/request.ts` 的 `materialize` 在发出前做一次——
-    // 被压缩折掉的那些轮次因此完全不必读盘，而这里读的话它们每一轮都白读一遍。
-    blocks.push(
-      image
-        ? {
-            type: 'image',
-            mimeType: mimeOf(a.path),
-            source: { kind: 'path', path: toPosixPath(abs) },
-          }
-        : {
-            type: 'video',
-            mimeType: mimeOf(a.path),
-            source: { kind: 'path', path: toPosixPath(abs) },
-          },
-    )
+    if (!isInlineImage(a.path)) continue
+    const fit = await encodedAttachment(abs, info.mtimeMs, info.size, mimeOf(a.path))
+    if (!fit) {
+      notes.push(`（附件 ${a.name} 读取失败，跳过）`)
+      continue
+    }
+    blocks.push({ type: 'image', mimeType: fit.mime, source: { kind: 'base64', data: fit.data } })
   }
 
   // 文本块放最后：附件是这句话的**语境**，先看图再读要求更符合阅读顺序。

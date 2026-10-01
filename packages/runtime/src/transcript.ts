@@ -432,11 +432,7 @@ export async function buildHistory(
   store: Store,
   conversationId: ConversationId,
   upperBound: MessageId | null,
-  attachments: (
-    content: string,
-    list: unknown[],
-    includeMedia: boolean,
-  ) => Promise<string | ContentBlock[]>,
+  attachments: (content: string, list: unknown[]) => Promise<string | ContentBlock[]>,
   opts: Pick<ProjectOptions, 'preserveAssistantReasoning'> = {},
 ): Promise<WireMessage[]> {
   const byUser = new Map<string, ReturnType<typeof listRuns>>()
@@ -461,9 +457,7 @@ export async function buildHistory(
     }
     out.push({
       role: m.role,
-      content: m.attachments.length
-        ? await attachments(m.content, m.attachments, m.id === upperBound)
-        : m.content,
+      content: m.attachments.length ? await attachments(m.content, m.attachments) : m.content,
       _group: 'historyMessages',
       _messageId: m.id,
     })
@@ -482,7 +476,6 @@ export async function buildHistory(
                   content: await attachments(
                     typeof msg.content === 'string' ? msg.content : '',
                     files,
-                    false,
                   ),
                 }
               : msg,

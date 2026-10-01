@@ -24,10 +24,10 @@ import { sendTurn } from './attempt.ts'
 import { compactBeforeSend } from './compact.ts'
 import { contextEvent } from './context.ts'
 import {
-  batchImageCount,
   breakdownOf,
   declaredMaxOutput,
   envelopeHashOf,
+  evictedMedia,
   idleTimeoutFor,
   materialize,
   omitImages,
@@ -52,14 +52,6 @@ export class AgentLoop {
 
   /** 上一次装配丢掉了多少原文。由 `buildRequest` 写，`context` 事件与账本读。 */
   private lastOmitted: ContextOmitted = emptyOmitted()
-
-  /**
-   * 上一次装配打算带上的那批工具图片：批次 id 与张数。`null` = 这次没有待带的图。
-   *
-   * 由 `buildRequest` 写、`openStream` 在 `materialize` 之后读。张数是**装配前**
-   * 数出来的，能力过滤或压缩去掉任意一张都会让两侧对不上，引用因此不写。
-   */
-  private lastInputImages: { batchId: string; images: number } | null = null
 
   /**
    * 压缩端口。**恒非空**——缺省时是下面那个透传实现。
@@ -88,7 +80,7 @@ export class AgentLoop {
       compaction: this.compaction,
       backoff,
       summaryTrace: (run, turnIndex) => this.summaryTrace(run, turnIndex),
-      openStream: (req, requestId) => this.openStream(req, requestId),
+      openStream: (req) => this.openStream(req),
       buildRequest: (run) => this.buildRequest(run),
       lastOmitted: () => this.lastOmitted,
     }
@@ -110,27 +102,14 @@ export class AgentLoop {
     )
   }
 
-  /**
-   * 装配完的请求交给适配器，并在这里确认那批工具图片有没有真的进请求体。
-   *
-   * 确认点只有这一个，位置是 `materialize` 之后：压缩投影、能力过滤三道都在它之前，
-   * 三个适配器把图像块一比一序列化，所以这里数到的张数就是线上那份字节里的张数。
-   * 放在装配处确认会漏掉「模型不收图、图被换成文字注记」这一支。
-   */
-  private async openStream(
-    req: ChatRequest,
-    requestId: string,
-  ): Promise<AsyncIterable<ProviderEvent>> {
+  /** 装配完的请求按模型能力物化媒体后交给适配器。 */
+  private async openStream(req: ChatRequest): Promise<AsyncIterable<ProviderEvent>> {
     const { adapter } = this.deps
     const materialized = await materialize(req, {
       image: adapter.spec.vision,
       video: adapter.spec.video && adapter.transmits.video === true,
       mediaPaths: adapter.transmits.mediaPaths === true,
     })
-    const pending = this.lastInputImages
-    if (pending && batchImageCount(materialized.messages, pending.batchId) === pending.images) {
-      this.deps.persist.markRequestInputImages?.(requestId, pending.batchId)
-    }
     return adapter.stream(materialized)
   }
 
@@ -257,19 +236,6 @@ export class AgentLoop {
         ]
       : input.history
     const assembledRaw: WireMessage[] = [...history, ...transcript]
-    /*
-     * 图像块只在**模型还没收到过的那一批**工具结果上出现：history 与 transcript
-     * 合起来的最后一条带 toolCalls 的 assistant 及其后的 tool 结果，若请求账里没有
-     * 「它的图已被一次已接收的主请求完整携带」的记录，整批保留；其余带图的工具结果
-     * 换成 `images_omitted` 信封。模型在看图的那一轮已经把观察写进正文，之后每轮
-     * 重放的是它看过的像素，而字节随张数线性累积。要再看按路径重读，或用信封里的
-     * `call_id` 经 `read_history` 取回定格的那一张。
-     *
-     * 判据不能是「这批图在不在当前 transcript 里」：工具成功之后那次请求被拒、
-     * 换一个 run 带着 history 续跑时，图从来没送达过却会被当成旧图省略，
-     * 模型因此在没有观察结果的情况下接着做。批次归属查不到引用记录时保守保留——
-     * 无记录不等于模型看过。
-     */
     let lastCall = -1
     for (let i = assembledRaw.length - 1; i >= 0; i--) {
       const m = assembledRaw[i]!
@@ -281,24 +247,24 @@ export class AgentLoop {
     /*
      * 缓存断点之三：最后一批工具结果所属的 assistant 消息。
      *
-     * 下一步装配时，这一批结果可能被摘掉图像块，末尾断点的前缀随之对不上。Anthropic 只在
-     * 断点处写入缓存条目，命中只发生在以往请求写过条目的位置；不在这里打断点，下一步只能
-     * 命中 history 末条，其后的内容每一步整段重写。
+     * Anthropic 只在断点处写入缓存条目，读取时从断点往前回查约 20 个块。一批并行调用的
+     * assistant 与工具结果块数可以超过 20，只靠末尾断点时，下一步回查不到上一次末尾写下的条目，
+     * 其后的内容整段重写；这里的断点紧挨上一次的末尾，下一步仍能命中。
      * 一次请求最多 4 个断点：系统提示词、history 末条、这里、末尾，不要再加第五个，
      * 超出会被 400 拒绝。
      */
     if (lastCall >= 0)
       assembledRaw[lastCall] = { ...assembledRaw[lastCall]!, cacheBreakpoint: true }
-    const pendingBatch = lastCall < 0 ? null : (assembledRaw[lastCall]!._batch ?? null)
-    const consumed =
-      pendingBatch !== null && this.deps.persist.inputImagesConsumed?.(pendingBatch) === true
-    const keepFrom = lastCall < 0 || consumed ? assembledRaw.length : lastCall
-    const scoped = assembledRaw.map((m, i) => (i >= keepFrom ? m : omitImages(m)))
-    const pendingImages = pendingBatch === null ? 0 : batchImageCount(scoped, pendingBatch)
-    this.lastInputImages =
-      pendingBatch !== null && pendingImages > 0
-        ? { batchId: pendingBatch, images: pendingImages }
-        : null
+    /*
+     * 媒体去留：工具结果与附件里的图像、视频留在之后的请求里，挂着的总字节超过上限时，
+     * 从最早的整批换成说明（`evictedMedia`）。不要改回「每一步只留最后一批」：每摘一次图
+     * 请求前缀就变，`replayReasoning` 随之剥掉其后全部原生推理，模型看不到图，看图时得出的
+     * 判断也随之丢失，只能反复取回，实测因连续无进展被循环保护判失败。
+     */
+    const evicted = evictedMedia(assembledRaw)
+    const scoped = evicted.size
+      ? assembledRaw.map((m, i) => (evicted.has(i) ? omitImages(m) : m))
+      : assembledRaw
     const projected = this.compaction.project(scoped)
     const tools = registry.schemas()
     const messages: WireMessage[] = replayReasoning(
