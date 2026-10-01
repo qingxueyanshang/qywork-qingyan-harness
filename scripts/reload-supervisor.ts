@@ -11,7 +11,7 @@
 
 export interface ReloadDeps {
   /** 这个 sidecar 手上还有没有没跑完的 run。 */
-  busy(): boolean
+  busy(): boolean | Promise<boolean>
   /** 真去换代码：杀掉旧的、起新的、等就绪。抛错不致命，下一次改动还会再来。 */
   restart(): Promise<void>
   /** 一次保存常常连着来好几个事件（编辑器先写临时文件再改名），攒一下再动。 */
@@ -47,6 +47,8 @@ export function isConsoleInterrupt(code: number | null, platform = process.platf
 export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
   let timer: unknown = null
   let reloading = false
+  let checking = false
+  let generation = 0
   let crashes = 0
 
   const schedule = (ms: number): void => {
@@ -57,12 +59,23 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
   const tick = async (): Promise<void> => {
     timer = null
     // 正在换的时候又有改动：排到后面去，不要并发两个换代码。
-    if (reloading) return schedule(deps.debounceMs)
-    if (deps.busy()) return schedule(deps.idlePollMs)
-
-    reloading = true
-    deps.log('源码已变更且当前无运行中的 run，重启 sidecar')
+    if (reloading || checking) return schedule(deps.debounceMs)
+    const checkedGeneration = generation
+    checking = true
     try {
+      if (await deps.busy()) return schedule(deps.idlePollMs)
+    } catch (err) {
+      deps.log(`无法确认任务空闲，稍后重试：${err instanceof Error ? err.message : String(err)}`)
+      return schedule(deps.idlePollMs)
+    } finally {
+      checking = false
+    }
+    // 查询期间旧进程可能自己退出，不能拿它的回执再重启刚补起来的新进程。
+    if (checkedGeneration !== generation) return schedule(deps.debounceMs)
+    reloading = true
+    generation++
+    try {
+      deps.log('源码已变更且当前无运行中的任务，重启 sidecar')
       await deps.restart()
       // 换成功了说明这棵源码树是能跑起来的，之前那几次崩溃不再计入。
       crashes = 0
@@ -78,6 +91,7 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
   const onExit = (code: number | null): void => {
     // 换代码时的退出由 supervisor 自己发起，不是崩溃。
     if (reloading) return
+    generation++
     crashes++
     if (crashes > MAX_CRASH_RESTARTS) {
       deps.log(

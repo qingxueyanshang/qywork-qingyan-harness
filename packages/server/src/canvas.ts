@@ -27,6 +27,7 @@ import {
   type CanvasPixels,
   type CanvasResult,
   type CanvasRunResult,
+  type CanvasVersion,
   type CanvasView,
   canvasMediaOf,
   compilePrompt,
@@ -149,6 +150,8 @@ function sizeField(size: CanvasPixels | null | undefined): { size?: CanvasPixels
 export interface CanvasServiceDeps {
   /** 发一条全局事件（不带会话 id）。 */
   publish(event: AgentEvent): void
+  /** 与对话共用更新占位；文件校验结束后、开始生成前再检查一次。 */
+  updating?(): boolean
   /** 这一次生成要用的模型在提示词里怎么指代素材；不给就按节点名写进提示词。 */
   mentionStyleOf?(
     output: MediaOutput,
@@ -178,7 +181,13 @@ export interface CanvasRunOptions {
 export class CanvasService {
   private readonly queues = new Map<string, Promise<unknown>>()
   /** 键：`画布绝对路径#节点 id`。多个工作区并存时相对路径会撞。 */
-  private readonly running = new Map<string, number>()
+  private readonly running = new Map<
+    string,
+    { startedAt: number; done?: Promise<CanvasRunResult> }
+  >()
+  private readonly shutdown = new AbortController()
+  private recovering = false
+  private recovery: Promise<void> | undefined
   /** 按画布文件的绝对路径记下本服务读过、写过的文档（规范化后的文本），键是指纹。只增不改，超出上限丢最早的。 */
   private readonly snapshots = new Map<string, Map<string, string>>()
   private readonly failures = new Map<string, string>()
@@ -186,6 +195,69 @@ export class CanvasService {
 
   constructor(private readonly deps: CanvasServiceDeps) {
     this.io = { ...NODE_IO, ...deps.io }
+  }
+
+  /** 扫描中的恢复也算忙，防止尚未找到待接续卡片时就取得更新占位。 */
+  get busyCount(): number {
+    return Math.max(this.running.size, Number(this.recovering))
+  }
+
+  /** 启动时接续各工作区已有的视频任务，沿用原任务号与取回路径，绝不重新生成。 */
+  recover(
+    workspaces: CanvasWorkspace[],
+    media: (ws: CanvasWorkspace, version: CanvasVersion) => MediaPort | undefined,
+  ): Promise<void> {
+    if (this.recovery) return this.recovery
+    this.recovering = true
+    this.recovery = (async () => {
+      const pending: Promise<void>[] = []
+      try {
+        for (const ws of workspaces) {
+          for (const path of await this.list(ws.root)) {
+            if (this.shutdown.signal.aborted) return
+            const view = await this.read(ws.root, path).catch(() => null)
+            if (!view) continue
+            for (const node of view.doc.nodes) {
+              if (node.type !== 'generate') continue
+              const versions = node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))
+              if (!versions.length) continue
+              pending.push(
+                (async () => {
+                  for (const version of versions) {
+                    if (this.shutdown.signal.aborted) return
+                    try {
+                      const port = media(ws, version)
+                      if (!port) continue
+                      const { done } = await this.retrieve(ws, path, node.id, version.id, {
+                        media: port,
+                      })
+                      await done
+                    } catch (err) {
+                      // 用户先取回了同一卡片时沿用那次调用；其余错误保留任务记录供手动重试。
+                      if (!(err instanceof CanvasFailure && err.status === 409)) {
+                        this.failures.set(`${keyOf(ws.root, path)}#${node.id}`, String(err))
+                      }
+                      return
+                    }
+                  }
+                })(),
+              )
+            }
+          }
+        }
+      } finally {
+        await Promise.all(pending)
+        this.recovering = false
+      }
+    })()
+    return this.recovery
+  }
+
+  /** 停止本地等待，保留远端任务记录；等待收尾后再关闭账本。 */
+  async stop(): Promise<void> {
+    this.shutdown.abort()
+    await this.recovery?.catch(() => {})
+    await Promise.all([...this.running.values()].map((run) => run.done))
   }
 
   /** 画布文件的绝对路径。不在工作区里、不存在、不是画布文件，都按入参问题回 422 / 404。 */
@@ -267,7 +339,7 @@ export class CanvasService {
       const outcome = await generateMedia({
         roots: ws.root,
         media: opts.media,
-        signal: opts.signal ?? new AbortController().signal,
+        signal: this.signalFor(opts.signal),
         type: node.output,
         prompt,
         inputs,
@@ -312,6 +384,7 @@ export class CanvasService {
         return added.ok ? settleVideo(added.doc, nodeId, late.id, files, sizes) : added
       })
     })
+    this.running.get(key)!.done = done
     return { done }
   }
 
@@ -343,7 +416,7 @@ export class CanvasService {
       const outcome = await resumeMedia({
         roots: ws.root,
         media: opts.media,
-        signal: opts.signal ?? new AbortController().signal,
+        signal: this.signalFor(opts.signal),
         record: version.path,
       })
       if (!outcome.ok) {
@@ -357,6 +430,7 @@ export class CanvasService {
         settleVideo(d, nodeId, version.id, outcome.files, sizes),
       )
     })
+    this.running.get(key)!.done = done
     return { done }
   }
 
@@ -378,7 +452,10 @@ export class CanvasService {
   }
 
   private begin(key: string, ws: CanvasWorkspace, rel: string, nodeId: string): void {
-    this.running.set(key, Date.now())
+    if (this.shutdown.signal.aborted || this.deps.updating?.())
+      throw new CanvasFailure('应用正在更新或关闭，请稍后重试', 409)
+    if (this.running.has(key)) throw new CanvasFailure('这张卡正在生成', 409)
+    this.running.set(key, { startedAt: Date.now() })
     this.failures.delete(key)
     this.deps.publish({
       type: 'canvas.run',
@@ -387,6 +464,10 @@ export class CanvasService {
       nodeId,
       state: 'running',
     })
+  }
+
+  private signalFor(signal?: AbortSignal): AbortSignal {
+    return signal ? AbortSignal.any([signal, this.shutdown.signal]) : this.shutdown.signal
   }
 
   /** 收尾：清在跑、记失败、发结束事件。`work` 抛出也收成失败，`done` 不会拒绝。 */
@@ -563,7 +644,10 @@ export class CanvasService {
 
   /** 工作区里的画布文件（工作区相对路径），按名搜索，跳过依赖与构建产物目录（同文件树的搜索）。 */
   async list(workspaceRoot: string): Promise<string[]> {
-    const { matches } = await findByName(workspaceRoot, CANVAS_SUFFIX)
+    const { matches } = await findByName(workspaceRoot, CANVAS_SUFFIX, {
+      hits: Number.POSITIVE_INFINITY,
+      entries: Number.POSITIVE_INFINITY,
+    })
     return matches
       .filter((m) => m.kind === 'file' && m.path.endsWith(CANVAS_SUFFIX))
       .map((m) => m.path)
@@ -699,7 +783,7 @@ export class CanvasService {
       return (await exists(node.path)) ? { state: 'normal' } : { state: 'missing' }
     }
     const key = `${canvasKey}#${node.id}`
-    const startedAt = this.running.get(key)
+    const startedAt = this.running.get(key)?.startedAt
     if (startedAt !== undefined) return { state: 'running', startedAt }
     const tasks = node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))
     const pending = tasks.find((v) => v.id === node.current) ?? tasks.at(-1)

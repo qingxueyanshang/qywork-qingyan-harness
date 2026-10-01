@@ -324,6 +324,7 @@ const FIND_MAX_ENTRIES = 20_000
 export async function findByName(
   workspaceRoot: string,
   query: string,
+  limits: { hits: number; entries: number } = { hits: FIND_MAX_HITS, entries: FIND_MAX_ENTRIES },
 ): Promise<{ matches: FindHit[]; truncated: boolean }> {
   // 空查询回空结果，**判定放在这里而不是调用方**：空字符串表示「匹配全部」，
   // 由 HTTP 那层挡的话，第二个调用方一来就会拿到整棵树。
@@ -339,7 +340,7 @@ export async function findByName(
     const dir = queue.shift()!
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
     for (const e of entries) {
-      if (matches.length >= FIND_MAX_HITS || scanned >= FIND_MAX_ENTRIES) {
+      if (matches.length >= limits.hits || scanned >= limits.entries) {
         truncated = true
         return { matches, truncated }
       }

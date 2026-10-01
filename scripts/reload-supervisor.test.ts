@@ -60,7 +60,9 @@ function clock() {
   }
 }
 
-function harness(opts: { busy?: () => boolean; restart?: () => Promise<void> } = {}) {
+function harness(
+  opts: { busy?: () => boolean | Promise<boolean>; restart?: () => Promise<void> } = {},
+) {
   const c = clock()
   const restarts: number[] = []
   const logs: string[] = []
@@ -81,6 +83,41 @@ function harness(opts: { busy?: () => boolean; restart?: () => Promise<void> } =
 }
 
 describe('换代码的时机', () => {
+  test('异步空闲确认失败时保留旧进程，恢复后再换代', async () => {
+    let available = false
+    const { c, sup, restarts } = harness({
+      busy: async () => {
+        if (!available) throw new Error('sidecar 暂时无法应答')
+        return false
+      },
+    })
+    sup.onChange()
+    await c.fire()
+    expect(restarts).toEqual([])
+    expect(c.waiting()).toBe(2000)
+    available = true
+    await c.fire()
+    expect(restarts).toEqual([1])
+  })
+
+  test('查询空闲时进程退出仍会补起，旧查询回执不重复重启', async () => {
+    let answer!: (busy: boolean) => void
+    const { c, sup, restarts } = harness({
+      busy: () =>
+        new Promise((resolve) => {
+          answer = resolve
+        }),
+    })
+    sup.onChange()
+    await c.fire()
+    sup.onExit(1)
+    await Bun.sleep(0)
+    expect(restarts).toEqual([1])
+    answer(false)
+    await Bun.sleep(0)
+    expect(restarts).toEqual([1])
+  })
+
   test('连着几次改动只换一次 —— 一次保存会来好几个事件', async () => {
     const { c, sup, restarts } = harness()
     sup.onChange()

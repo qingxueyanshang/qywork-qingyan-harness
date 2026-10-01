@@ -307,9 +307,12 @@
 }
 /* 加载图与计时按屏幕尺寸画：缩放不低于 50% 时恒为 8px 一格，更小时随节点一起缩。 */
 .canvas-live {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  display: grid;
+  grid-template-columns: 56px;
+  justify-items: center;
+  width: max-content;
+  min-width: 56px;
+  flex: none;
   gap: 10px;
   transform: scale(min(calc(1 / var(--z, 1)), 2));
 }
@@ -328,7 +331,9 @@
   position: relative;
   width: 56px;
   height: 56px;
-  flex: none;
+  min-width: 56px;
+  aspect-ratio: 1;
+  overflow: visible;
 }
 .canvas-snake > span {
   position: absolute;
