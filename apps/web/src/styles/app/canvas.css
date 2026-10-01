@@ -1004,25 +1004,28 @@ button.canvas-input:hover {
   content: attr(data-placeholder);
   color: var(--text-tertiary);
 }
+/*
+ * 不要改回 inline-flex：它的基线取第一个子项，缩略图在前时是缩略图的下沿，有图与无图的标签高低不一。
+ * inline-block 的基线是框内文字的基线，与正文的基线对齐。
+ */
 .canvas-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: inline-block;
   height: 20px;
   margin: 0 1px;
   padding: 0 6px 0 2px;
-  vertical-align: -4px;
   border-radius: var(--r-xs);
   background: var(--bg-inset);
   box-shadow: inset 0 0 0 1px var(--border-subtle);
   font-size: var(--fs-sm);
-  line-height: 1;
+  line-height: 20px;
   white-space: nowrap;
   user-select: all;
 }
 .canvas-chip > .canvas-bitmap {
+  vertical-align: top;
   width: 16px;
   height: 16px;
+  margin: 2px 4px 0 0;
   border-radius: 3px;
   object-fit: cover;
 }
