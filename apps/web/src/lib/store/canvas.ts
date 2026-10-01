@@ -115,20 +115,55 @@ export function importToCanvas(
   })
 }
 
-/**
- * 把浏览器做好的媒体交给服务端落盘，在源节点右侧加一个节点：从视频取的一帧（PNG，带帧名 `label`），
- * 或时间线导出的成片（mp4，不带 `label`）。
- */
-export async function landRendered(
+/** 把浏览器截下的一帧交给服务端落盘，并在视频右侧加一个节点。 */
+export async function captureFrame(
   path: string,
   nodeId: string,
-  bytes: Blob,
-  label?: string,
+  label: string,
+  png: Blob,
 ): Promise<{ nodeId: string; path: string }> {
-  const query = new URLSearchParams({ path, nodeId, ...(label ? { label } : {}) })
-  return client.api(`/api/canvas/render?${query}`, {
+  const query = new URLSearchParams({ path, nodeId, label })
+  return client.api(`/api/canvas/frame?${query}`, {
+    method: 'POST',
+    body: png,
+    headers: { 'content-type': 'image/png' },
+  })
+}
+
+/**
+ * 时间线导出的上传会话：开始拿会话号，编码出的字节块按位置写给服务端，完成后服务端改名落盘、在时间线右侧加节点。
+ * 中途失败或取消要调 `exportAbort`，否则服务端到空闲上限才删掉半截文件。
+ */
+export async function exportStart(path: string, nodeId: string): Promise<string> {
+  const r = await client.api<{ upload: string }>('/api/canvas/export/start', {
+    method: 'POST',
+    body: JSON.stringify({ path, nodeId }),
+  })
+  return r.upload
+}
+
+export async function exportWrite(
+  upload: string,
+  at: number,
+  bytes: Uint8Array<ArrayBuffer>,
+): Promise<void> {
+  await client.api(`/api/canvas/export/write?${new URLSearchParams({ upload, at: String(at) })}`, {
     method: 'POST',
     body: bytes,
-    headers: { 'content-type': bytes.type || 'application/octet-stream' },
+    headers: { 'content-type': 'application/octet-stream' },
+  })
+}
+
+export function exportFinish(upload: string): Promise<{ nodeId: string; path: string }> {
+  return client.api('/api/canvas/export/finish', {
+    method: 'POST',
+    body: JSON.stringify({ upload }),
+  })
+}
+
+export async function exportAbort(upload: string): Promise<void> {
+  await client.api('/api/canvas/export/abort', {
+    method: 'POST',
+    body: JSON.stringify({ upload }),
   })
 }

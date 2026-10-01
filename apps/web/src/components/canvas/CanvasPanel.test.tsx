@@ -145,8 +145,8 @@ interface Server {
   uploads: URLSearchParams[]
   /** 撤销 / 重做请求，按顺序。 */
   restores: { from: string; to: string }[]
-  /** 收浏览器做好的媒体（取帧、时间线成片）的查询串。 */
-  renders: URLSearchParams[]
+  /** 时间线导出会话的请求，按顺序：开始、写、完成、放弃。 */
+  exports: string[]
 }
 
 async function mount(
@@ -182,7 +182,7 @@ async function mount(
     quote: null,
     uploads: [],
     restores: [],
-    renders: [],
+    exports: [],
   }
   const original = store.client.api
   ;(
@@ -277,8 +277,10 @@ async function mount(
       doc = r.doc
       return { nodeId: r.refs.$u, path: file }
     }
-    if (path.startsWith('/api/canvas/render')) {
-      server.renders.push(new URLSearchParams(path.split('?')[1]))
+    if (path.startsWith('/api/canvas/export/')) {
+      server.exports.push(path.split('?')[0]!.slice('/api/canvas/export/'.length))
+      if (path.startsWith('/api/canvas/export/start')) return { upload: 'u1' }
+      if (path.startsWith('/api/canvas/export/abort')) return { ok: true }
       throw new Error('测试里不落盘')
     }
     throw new Error(`没有桩这条：${path}`)
@@ -2307,8 +2309,8 @@ describe('画布：时间线', () => {
     )
   })
 
-  test('导出失败：报出原因，按钮回到可再导出，不留进度', async () => {
-    const { host, refs } = await mount(TIMELINE)
+  test('导出失败：报出原因、通知服务端放弃这次导出，按钮回到可再导出，不留进度', async () => {
+    const { host, server, refs } = await mount(TIMELINE)
     const button = node(host, refs.$t!).querySelector<HTMLButtonElement>('.canvas-tl-export')!
     button.click()
     await waitFor(
@@ -2320,5 +2322,10 @@ describe('画布：时间线', () => {
       () => button.outerHTML,
     )
     expect(button.textContent).toBe('')
+    await waitFor(
+      () => server.exports.includes('abort'),
+      () => JSON.stringify(server.exports),
+    )
+    expect(server.exports).toEqual(['start', 'abort'])
   })
 })

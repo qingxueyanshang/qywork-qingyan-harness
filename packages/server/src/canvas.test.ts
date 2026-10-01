@@ -1,10 +1,11 @@
 /**
  * 覆盖 `canvas.ts` 的画布服务：串行写入、改名前复读、写失败不留半截、路径边界、节点状态、
- * 收浏览器做好的媒体（取帧、时间线成片）、时间线片段核对与上传。
+ * 取帧、时间线导出的上传会话、时间线片段核对与上传。
  * 生成、取回与通知时序在 `canvas-run.test.ts`。
  */
 
 import { describe, expect, test } from 'bun:test'
+import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -394,11 +395,8 @@ describe('画布服务：上传', () => {
   })
 })
 
-describe('画布服务：收浏览器做好的媒体', () => {
+describe('画布服务：取帧', () => {
   const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2])
-  const MP4 = new Uint8Array([
-    0, 0, 0, 16, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0,
-  ])
 
   async function withVideo(): Promise<{ root: string; video: string }> {
     const r = applyCanvasOps(emptyCanvas(), [
@@ -413,9 +411,9 @@ describe('画布服务：收浏览器做好的媒体', () => {
   test('落成 generated/<视频名>_尾帧.png，重名加 -2；节点在视频右侧，第二帧排在第一帧下方', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
-    const first = await svc.landRendered(root, PATH, video, '尾帧', PNG)
+    const first = await svc.captureFrame(root, PATH, video, '尾帧', PNG)
     expect(first.path).toBe('generated/视频1_尾帧.png')
-    const second = await svc.landRendered(root, PATH, video, '尾帧', PNG)
+    const second = await svc.captureFrame(root, PATH, video, '尾帧', PNG)
     expect(second.path).toBe('generated/视频1_尾帧-2.png')
     const doc = await onDisk(root)
     const node = doc.nodes.find((n) => n.id === first.nodeId)!
@@ -429,37 +427,123 @@ describe('画布服务：收浏览器做好的媒体', () => {
   test('按时刻取的帧名字带小数点，仍落成 .png', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
-    expect((await svc.landRendered(root, PATH, video, '1.6s', PNG)).path).toBe(
+    expect((await svc.captureFrame(root, PATH, video, '1.6s', PNG)).path).toBe(
       'generated/视频1_1.6s.png',
     )
   })
 
-  test('不是 PNG 也不是 mp4 回 422；PNG 不来自视频节点或不带帧名回 422，都不落盘', async () => {
+  test('不是 PNG 回 422；不是视频节点回 422，都不落盘', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
     expect(
-      (await failure(svc.landRendered(root, PATH, video, '首帧', new Uint8Array([1, 2])))).status,
+      (await failure(svc.captureFrame(root, PATH, video, '首帧', new Uint8Array([1, 2])))).status,
     ).toBe(422)
     const other = await svc.apply(root, PATH, [{ op: 'add_file', path: '角色/0.png' }])
     const image = other.doc.nodes.at(-1)!.id
-    expect((await failure(svc.landRendered(root, PATH, image, '首帧', PNG))).status).toBe(422)
-    expect((await failure(svc.landRendered(root, PATH, video, null, PNG))).status).toBe(422)
+    expect((await failure(svc.captureFrame(root, PATH, image, '首帧', PNG))).status).toBe(422)
     expect((await readdir(root)).includes('generated')).toBe(false)
   })
+})
 
-  test('时间线导出的 mp4 落成 generated/<时间线名>.mp4，放在时间线右侧；mp4 只收时间线、不带帧名', async () => {
-    const { root, video } = await withVideo()
-    const { svc } = service()
+describe('画布服务：时间线导出', () => {
+  /** ftyp 头 + 一段内容：导出完成时只核 ftyp。 */
+  const MP4 = new Uint8Array([
+    0, 0, 0, 16, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0, 1, 2, 3, 4,
+  ])
+
+  async function withTimeline(idleMs?: number) {
+    const root = await workspace()
+    const svc = new CanvasService({
+      publish: () => {},
+      ...(idleMs !== undefined ? { exportIdleMs: idleMs } : {}),
+    })
     const { refs } = await svc.apply(root, PATH, [
       { op: 'add_timeline', ref: '$t', name: '粗剪', x: 0, y: 400 },
+      { op: 'add_file', ref: '$f', path: '角色/0.png', x: 0, y: 0 },
     ])
-    const landed = await svc.landRendered(root, PATH, refs.$t!, null, MP4)
+    return { root, svc, timeline: refs.$t!, file: refs.$f! }
+  }
+
+  const parts = async (root: string) =>
+    (await readdir(join(root, 'generated')).catch(() => [] as string[])).filter((n) =>
+      n.endsWith('.part'),
+    )
+
+  test('按位置写入（先写后半、最后回写开头）拼出整个文件，完成后落成 generated/<时间线名>.mp4、在时间线右侧加节点', async () => {
+    const { root, svc, timeline } = await withTimeline()
+    const id = await svc.exportStart(root, PATH, timeline)
+    expect(await parts(root)).toEqual([`.${id}.part`])
+    await svc.exportWrite(root, id, 16, MP4.subarray(16))
+    await svc.exportWrite(root, id, 0, MP4.subarray(0, 16))
+    const landed = await svc.exportFinish(root, id)
     expect(landed.path).toBe('generated/粗剪.mp4')
     expect(new Uint8Array(await readFile(join(root, landed.path)))).toEqual(MP4)
+    expect(await parts(root)).toEqual([])
     const node = (await onDisk(root)).nodes.find((n) => n.id === landed.nodeId)!
     expect(node).toMatchObject({ type: 'file', path: 'generated/粗剪.mp4', x: 740, y: 400 })
-    expect((await failure(svc.landRendered(root, PATH, video, null, MP4))).status).toBe(422)
-    expect((await failure(svc.landRendered(root, PATH, refs.$t!, '首帧', MP4))).status).toBe(422)
+    // 会话完成即结束，不能再写。
+    expect((await failure(svc.exportWrite(root, id, 0, MP4))).status).toBe(404)
+  })
+
+  test('两次导出同时完成：各落一个名字（撞名加 -2），谁也不覆盖谁', async () => {
+    const { root, svc, timeline } = await withTimeline()
+    const first = await svc.exportStart(root, PATH, timeline)
+    const second = await svc.exportStart(root, PATH, timeline)
+    const other = new Uint8Array([...MP4, 9, 9])
+    await svc.exportWrite(root, first, 0, MP4)
+    await svc.exportWrite(root, second, 0, other)
+    const [a, b] = await Promise.all([
+      svc.exportFinish(root, first),
+      svc.exportFinish(root, second),
+    ])
+    expect([a.path, b.path].sort()).toEqual(['generated/粗剪-2.mp4', 'generated/粗剪.mp4'])
+    expect(new Uint8Array(await readFile(join(root, a.path)))).toEqual(MP4)
+    expect(new Uint8Array(await readFile(join(root, b.path)))).toEqual(other)
+    expect(await parts(root)).toEqual([])
+  })
+
+  test('不是时间线回 422；收到的不是 mp4 回 422 并删掉 .part；放弃删掉 .part；别的项目拿不到这个会话', async () => {
+    const { root, svc, timeline, file } = await withTimeline()
+    expect((await failure(svc.exportStart(root, PATH, file))).status).toBe(422)
+    const bad = await svc.exportStart(root, PATH, timeline)
+    await svc.exportWrite(root, bad, 0, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]))
+    expect((await failure(svc.exportFinish(root, bad))).status).toBe(422)
+    expect(await parts(root)).toEqual([])
+    const other = await workspace()
+    const aborted = await svc.exportStart(root, PATH, timeline)
+    expect((await failure(svc.exportWrite(other, aborted, 0, MP4))).status).toBe(404)
+    await svc.exportAbort(root, aborted)
+    expect(await parts(root)).toEqual([])
+    expect((await readdir(join(root, 'generated'))).filter((n) => n.endsWith('.mp4'))).toEqual([])
+  })
+
+  test('会话超过空闲上限没有写入：作废并删掉 .part', async () => {
+    const { root, svc, timeline } = await withTimeline(30)
+    const id = await svc.exportStart(root, PATH, timeline)
+    await svc.exportWrite(root, id, 0, MP4)
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(await parts(root)).toEqual([])
+    expect((await failure(svc.exportFinish(root, id))).status).toBe(404)
+  })
+
+  test('停服时结束在办导出并删掉临时文件', async () => {
+    const { root, svc, timeline } = await withTimeline()
+    const id = await svc.exportStart(root, PATH, timeline)
+    await svc.exportWrite(root, id, 0, MP4)
+    await svc.stop()
+    expect(await parts(root)).toEqual([])
+    expect((await failure(svc.exportFinish(root, id))).status).toBe(404)
+  })
+
+  test('启动时删掉上一个进程被结束时留下的导出临时文件；在办会话的、生成落盘的 .part 不动', async () => {
+    const { root, svc, timeline } = await withTimeline()
+    const live = await svc.exportStart(root, PATH, timeline)
+    const dir = join(root, 'generated')
+    await writeFile(join(dir, `.${randomUUID()}.part`), MP4)
+    await writeFile(join(dir, '视频.mp4.part'), MP4)
+    await svc.recover([{ id: 'w', root }], () => undefined)
+    expect((await parts(root)).sort()).toEqual([`.${live}.part`, '视频.mp4.part'])
+    await svc.exportAbort(root, live)
   })
 })
 

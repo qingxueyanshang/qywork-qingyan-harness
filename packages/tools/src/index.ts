@@ -25,6 +25,7 @@ import { webFetchTool, webSearchTool } from './web.ts'
 // 生成工具按类别查：runtime 据此判断本轮快照要不要列那一类模型。
 // 生成的执行路径与任务记录后缀：server 的画布服务与生成工具走同一个 `generateMedia`
 export {
+  freeLandingPath,
   type GeneratedFile,
   type GenerateOutcome,
   generateMedia,

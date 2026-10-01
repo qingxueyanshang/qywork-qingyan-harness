@@ -40,13 +40,17 @@ import {
 import { Portal } from 'solid-js/web'
 import {
   type CanvasEdit,
+  captureFrame,
   client,
   editCanvas,
   ensureModelCatalog,
   explainApiError,
+  exportAbort,
+  exportFinish,
+  exportStart,
+  exportWrite,
   importToCanvas,
   isDesktopShell,
-  landRendered,
   modelCatalog,
   openFileInPanel,
   readCanvas,
@@ -1074,15 +1078,18 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     await apply([{ op: 'update', id, clips: insertClips(n.clips, gap ?? n.clips.length, added) }])
   }
 
-  /** 导出成片：浏览器里合成 mp4，交服务端落进 `generated/`，时间线右侧出现新视频节点。 */
+  /** 导出成片：浏览器里边合成 mp4 边写给服务端，完成后落进 `generated/`，时间线右侧出现新视频节点。 */
   const exportTimeline = async (id: string) => {
     const n = byId(id)
     if (n?.type !== 'timeline' || !n.clips.length || exportAborts.has(id)) return
     const ac = new AbortController()
     exportAborts.set(id, ac)
     setExports((x) => ({ ...x, [id]: 0 }))
+    let upload: string | null = null
     try {
-      const blob = await renderTimeline(
+      const session = await exportStart(props.path, id)
+      upload = session
+      await renderTimeline(
         n.clips.map((c) => ({
           url: client.fileUrl(c.path),
           name: c.path.split('/').pop() ?? c.path,
@@ -1092,12 +1099,16 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         !!n.muted,
         (ratio) => setExports((x) => ({ ...x, [id]: ratio })),
         ac.signal,
+        (bytes, at) => exportWrite(session, at, bytes),
       )
-      const r = await landRendered(props.path, id, blob)
+      const r = await exportFinish(session)
+      upload = null
       setFault(null)
       if (!fullscreen()) setSelected(new Set([r.nodeId]))
       void load()
     } catch (e) {
+      // 半截文件由服务端删；这一步失败时服务端到空闲上限也会删。
+      if (upload) void exportAbort(upload).catch(() => {})
       if ((e as Error).name !== 'AbortError') setFault(explainApiError(e, '没有导出'))
     } finally {
       exportAborts.delete(id)
@@ -1246,7 +1257,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (!media?.path) return
     try {
       const blob = await captureVideoFrame(client.fileUrl(media.path), at)
-      const r = await landRendered(props.path, nodeId, blob, frameLabel(at, duration))
+      const r = await captureFrame(props.path, nodeId, frameLabel(at, duration), blob)
       setFault(null)
       setSelected(new Set([r.nodeId]))
       void load()

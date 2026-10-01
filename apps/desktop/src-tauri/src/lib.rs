@@ -229,10 +229,24 @@ fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
         .initialization_script(script);
 
     // 保留 wry 默认禁用项；语音识别使用既有服务端点，避开新服务的连接失败。
+    // 开发构建下 `QYWORK_WEBVIEW_DEBUG_PORT` 给主窗口开调试端口，自动化测试经 CDP 接上。
+    // 发布构建（`tauri build` 打开 `custom-protocol`）按条件编译不含这段。
+    // 不能改用 WebView2 的 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量：这里经接口传了参数，那个变量被忽略。
     #[cfg(windows)]
-    let window = window.additional_browser_args(
-        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msSpeechRecognitionServiceUseCetoService",
-    );
+    let window = {
+        let args = String::from(
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msSpeechRecognitionServiceUseCetoService",
+        );
+        #[cfg(not(feature = "custom-protocol"))]
+        let args = match std::env::var("QYWORK_WEBVIEW_DEBUG_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+        {
+            Some(port) => format!("{args} --remote-debugging-port={port}"),
+            None => args,
+        };
+        window.additional_browser_args(&args)
+    };
     let window = window.build()?;
 
     // `build()` 返回 Ok 不等于窗口存在：运行时把创建失败写进 log 后照样返回。
