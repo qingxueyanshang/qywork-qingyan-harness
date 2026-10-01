@@ -6,6 +6,7 @@
  */
 
 import type { MediaModelSpec, MediaOperation, MediaParamSpec } from './catalog.ts'
+import { nativeMediaProblems } from './catalog-google-xai.ts'
 
 const OPERATION_LABEL: Record<MediaOperation, string> = {
   generate: '生成',
@@ -90,7 +91,7 @@ export function validateMediaCall(
     const bad = checkValue(p, value)
     if (bad) problems.push(`参数 ${name} 的值 ${JSON.stringify(value)} 不合法：${bad}`)
   }
-  return problems
+  return [...problems, ...nativeMediaProblems(spec.kind, operation, params)]
 }
 
 /** 值不合法时回一句合法取值，合法回 null。 */

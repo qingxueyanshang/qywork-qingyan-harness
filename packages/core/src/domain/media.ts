@@ -14,10 +14,15 @@ import type { Currency } from './model.ts'
 export const MEDIA_KINDS = [
   'openai_images',
   'dashscope_images',
+  'gemini_images',
+  'xai_images',
   'openai_videos',
   'ark_videos',
   'dashscope_videos',
   'kling_videos',
+  'gemini_videos',
+  'veo_videos',
+  'xai_videos',
   'openai_speech',
   'dashscope_speech',
 ] as const
@@ -73,10 +78,15 @@ export interface MediaSpend {
 export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   openai_images: 'image',
   dashscope_images: 'image',
+  gemini_images: 'image',
+  xai_images: 'image',
   openai_videos: 'video',
   ark_videos: 'video',
   dashscope_videos: 'video',
   kling_videos: 'video',
+  gemini_videos: 'video',
+  veo_videos: 'video',
+  xai_videos: 'video',
   openai_speech: 'audio',
   dashscope_speech: 'audio',
 }
@@ -127,7 +137,23 @@ export function isKlingEndpoint(baseUrl: string): boolean {
  * **只在添加的那一刻用一次。** 落盘的 `media[id].kind` 才是权威，之后不再按地址重算：
  * 重算会把用户在 `config.json` 里手改的协议改回默认值。
  */
-export function defaultMediaKind(output: MediaOutput, baseUrl: string | undefined): MediaKind {
+export function defaultMediaKind(
+  output: MediaOutput,
+  baseUrl: string | undefined,
+  catalogKind?: MediaKind,
+): MediaKind {
+  let host = ''
+  try {
+    host = new URL(baseUrl ?? '').hostname.toLowerCase()
+  } catch {}
+  if (host === 'generativelanguage.googleapis.com') {
+    if (output === 'image') return 'gemini_images'
+    if (output === 'video') return catalogKind === 'veo_videos' ? 'veo_videos' : 'gemini_videos'
+  }
+  if (host === 'api.x.ai') {
+    if (output === 'image') return 'xai_images'
+    if (output === 'video') return 'xai_videos'
+  }
   const dashScope = baseUrl !== undefined && isDashScopeEndpoint(baseUrl)
   switch (output) {
     case 'image':

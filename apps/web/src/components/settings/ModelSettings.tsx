@@ -193,7 +193,7 @@ export function ModelSettings() {
       void replaceConfig((cur) => {
         const owner = cur.providers[provider]
         if (!owner || id in owner.models || id in (owner.media ?? {})) return null
-        const kind = defaultMediaKind(generator.output, owner.baseUrl)
+        const kind = defaultMediaKind(generator.output, owner.baseUrl, generator.kind)
         return {
           ...cur,
           providers: {

@@ -36,6 +36,7 @@ export async function send(url: string, init: RequestInit, signal: AbortSignal):
     const reason = err instanceof Error ? err.message : String(err)
     throw new MediaError(`请求没有到达接口或没有收到响应：${reason}`)
   }
+  if (init.redirect === 'manual' && [301, 302, 303, 307, 308].includes(res.status)) return res
   if (!res.ok) {
     throw new MediaError(`HTTP ${res.status}：${await providerMessage(res)}`, {
       status: res.status,
@@ -84,7 +85,25 @@ export async function download(
 ): Promise<{ bytes: Uint8Array; mime: string }> {
   let res: Response
   try {
-    res = await send(url, { method: 'GET', headers }, signal)
+    const origin = new URL(url).origin
+    let target = url
+    for (let redirects = 0; ; redirects++) {
+      // 自定义鉴权头（如 x-goog-api-key）不会被 fetch 在跨源重定向时自动清除。
+      res = await send(
+        target,
+        {
+          method: 'GET',
+          redirect: 'manual',
+          headers: new URL(target).origin === origin ? headers : {},
+        },
+        signal,
+      )
+      if (res.ok) break
+      const location = res.headers.get('location')
+      await res.body?.cancel()
+      if (!location || redirects >= 5) throw new MediaError('下载重定向无效或次数过多')
+      target = new URL(location, target).href
+    }
   } catch (err) {
     if (signal.aborted) throw err
     const reason = err instanceof Error ? err.message : String(err)

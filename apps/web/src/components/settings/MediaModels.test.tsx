@@ -6,6 +6,7 @@
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
+import { MEDIA_KIND_OUTPUT, type MediaKind } from '@qywork/core'
 import type { MediaLibraryModel, RedactedConfig } from '../../lib/store/index.ts'
 
 beforeAll(() => GlobalRegistrator.register({ url: 'http://localhost/' }))
@@ -55,6 +56,119 @@ const QWEN_IMAGE: MediaLibraryModel = {
   maxVideos: 0,
   params: ['size：字符串；宽*高', 'n：整数 1–6；一次生成几张；默认 1', 'seed：整数 0–2147483647'],
 }
+
+test('Google 与 xAI 添加后保留生成类别和原生协议，模型库显示对应页签', async () => {
+  const { render } = await import('solid-js/web')
+  const store = await import('../../lib/store/index.ts')
+  const { config, configBusy, reloadConfig } = await import('./configStore.ts')
+  const { ModelSettings } = await import('./ModelSettings.tsx')
+  const cases: { id: string; kind: MediaKind; baseUrl: string; vendor: string }[] = [
+    {
+      id: 'gemini-3.1-flash-image',
+      kind: 'gemini_images',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      vendor: 'Google',
+    },
+    {
+      id: 'gemini-omni-1.1-flash',
+      kind: 'gemini_videos',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      vendor: 'Google',
+    },
+    {
+      id: 'veo-3.1-generate-preview',
+      kind: 'veo_videos',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      vendor: 'Google',
+    },
+    {
+      id: 'grok-imagine-image-2.0',
+      kind: 'xai_images',
+      baseUrl: 'https://api.x.ai/v1',
+      vendor: 'xAI',
+    },
+    {
+      id: 'grok-imagine-video-1.5',
+      kind: 'xai_videos',
+      baseUrl: 'https://api.x.ai/v1',
+      vendor: 'xAI',
+    },
+  ]
+  const mediaLibrary: MediaLibraryModel[] = cases.map((m) => ({
+    ...QWEN_IMAGE,
+    ...m,
+    label: m.id,
+    output: MEDIA_KIND_OUTPUT[m.kind],
+  }))
+  for (const model of cases) {
+    let stored: RedactedConfig = {
+      providers: {
+        native: {
+          kind: 'openai_chat_completions',
+          baseUrl: model.baseUrl,
+          hasApiKey: true,
+          models: {},
+        },
+      },
+    }
+    store.client.api = async <T,>(path: string, init?: RequestInit) => {
+      if (path === '/api/models')
+        return { providers: [], media: [], library: [], mediaLibrary } as T
+      if (path === '/api/config' && init?.method === 'PUT') {
+        stored = (JSON.parse(String(init.body)) as { config: RedactedConfig }).config
+        return { ok: true } as T
+      }
+      if (path === '/api/config')
+        return {
+          path: 'config.json',
+          config: stored,
+          version: 'v',
+          notices: [],
+          problems: [],
+          defaultEnvAllowList: [],
+        } as T
+      throw new Error(`unexpected ${path}`)
+    }
+    await reloadConfig()
+    await store.reloadModelCatalog()
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(() => <ModelSettings />, host as unknown as HTMLElement)
+    try {
+      fire(
+        Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
+          (b) => b.textContent === 'native',
+        )!,
+        'click',
+      )
+      const input = host.querySelector<HTMLInputElement>('.model-row.add input')!
+      input.value = model.id
+      fire(input, 'keydown', { key: 'Enter' })
+      expect(await until(() => !configBusy())).toBe(true)
+      expect(stored.providers.native?.media?.[model.id]).toEqual({ kind: model.kind })
+      expect(config()?.providers.native?.models).toEqual({})
+      const output = MEDIA_KIND_OUTPUT[model.kind]
+      expect(stored.mediaDefaults?.[output]).toEqual({ provider: 'native', model: model.id })
+      fire(
+        Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find((b) =>
+          b.textContent?.includes('模型库'),
+        )!,
+        'click',
+      )
+      fire(
+        Array.from(host.querySelectorAll<HTMLButtonElement>('.lib-tab')).find(
+          (b) => b.textContent === (output === 'image' ? '图像' : '视频'),
+        )!,
+        'click',
+      )
+      expect(host.querySelector('.lib-table.media')?.textContent).toContain(model.id)
+      expect(host.querySelector('.lib-table.media')?.textContent).toContain(model.vendor)
+    } finally {
+      dispose()
+      host.remove()
+    }
+  }
+})
 
 test('目录里的图像模型挂成生成模型：协议按地址定、首个成为默认、没有检测、删掉后默认一并清掉', async () => {
   const { render } = await import('solid-js/web')

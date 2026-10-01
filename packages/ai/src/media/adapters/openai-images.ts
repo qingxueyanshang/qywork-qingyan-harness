@@ -87,7 +87,7 @@ function readUsage(body: Record<string, unknown>, received: number): MediaUsage 
 }
 
 /** 响应里的 `data[]`：每项是 `b64_json` 或 `url`。单项失败（火山会逐张报错）并进消息，不静默丢。 */
-async function readImages(
+export async function readImages(
   body: Record<string, unknown>,
   signal: AbortSignal,
 ): Promise<MediaFile[]> {

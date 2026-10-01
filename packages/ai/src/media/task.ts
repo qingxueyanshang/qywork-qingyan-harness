@@ -12,14 +12,20 @@ export const TASK_WAIT_MS = 20 * 60_000
 const FIRST_INTERVAL_MS = 5_000
 const MAX_INTERVAL_MS = 15_000
 
-export type TaskState =
+interface TaskOutput {
+  url: string
+  extra?: string[]
+  usage?: MediaUsage
+}
+
+export type TaskState<T = TaskOutput> =
   | { state: 'pending'; status: string }
   /** `extra`：结果地址之外随任务返回的产物地址（方舟的尾帧图），与视频一起下载、一起落盘。 */
-  | { state: 'done'; url: string; extra?: string[]; usage?: MediaUsage }
+  | ({ state: 'done' } & T)
   | { state: 'failed'; message: string }
 
 /** 任务完成：结果地址与查询结果里的计量。 */
-export type TaskDone = Extract<TaskState, { state: 'done' }>
+export type TaskDone<T = TaskOutput> = Extract<TaskState<T>, { state: 'done' }>
 
 /** 远端明确报了失败：终态，任务号没有接续的意义。 */
 class RemoteTaskFailed extends MediaError {}
@@ -42,11 +48,11 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * 等任务完成，返回结果地址与计量。第一次查询不等待：接续取回时任务通常已经完成。
  * 状态变化时经 `onStatus` 回报一句，不按查询次数回报。
  */
-export async function waitTask(
+export async function waitTask<T = TaskOutput>(
   taskId: string,
-  check: () => Promise<TaskState>,
+  check: () => Promise<TaskState<T>>,
   opts: MediaRunOptions,
-): Promise<TaskDone> {
+): Promise<TaskDone<T>> {
   const deadline = Date.now() + TASK_WAIT_MS
   let interval = FIRST_INTERVAL_MS
   let last = ''

@@ -83,6 +83,76 @@ const call = (over: Record<string, unknown> = {}) => ({
 })
 
 describe('生成端口', () => {
+  test('Gemini 与 Grok 图片生成通过同一端口交出文件与费用', async () => {
+    const models = [
+      {
+        id: 'gemini-3.1-flash-image',
+        kind: 'gemini_images' as const,
+        body: {
+          id: 'google-task',
+          status: 'completed',
+          steps: [
+            {
+              type: 'model_output',
+              content: [
+                {
+                  type: 'image',
+                  mime_type: 'image/jpeg',
+                  data: Buffer.from(JPEG).toString('base64'),
+                },
+              ],
+            },
+          ],
+          usage: {
+            total_input_tokens: 100,
+            total_output_tokens: 1000,
+            total_thought_tokens: 0,
+            output_tokens_by_modality: [{ modality: 'image', tokens: 1000 }],
+          },
+        },
+        cost: 0.06005,
+      },
+      {
+        id: 'grok-imagine-image-2.0',
+        kind: 'xai_images' as const,
+        body: {
+          data: [{ b64_json: Buffer.from(JPEG).toString('base64') }],
+          usage: { cost_in_usd_ticks: 400000000 },
+        },
+        cost: 0.04,
+      },
+    ]
+    for (const model of models) {
+      reply = () => Response.json(model.body)
+      const cfg: QyConfig = {
+        providers: {
+          native: {
+            kind: 'openai_chat_completions',
+            apiKey: 'test-key',
+            baseUrl: `http://127.0.0.1:${server.port}/v1beta`,
+            models: {},
+            media: { [model.id]: { kind: model.kind } },
+          },
+        },
+        mediaDefaults: { image: { provider: 'native', model: model.id } },
+      }
+      expect(listMediaModels(cfg)).toMatchObject([
+        { provider: 'native', model: model.id, output: 'image' },
+      ])
+      const spends: { cost: number; kind: string; quantity: number | null }[] = []
+      const result = await makeMediaPort(cfg, (s) => spends.push(s)).generate(call(), signal())
+      expect(result).toMatchObject({
+        ok: true,
+        model: model.id,
+        files: [{ bytes: JPEG, mime: 'image/jpeg' }],
+      })
+      expect(spends).toHaveLength(1)
+      expect(spends[0]!.kind).toBe(model.kind)
+      expect(spends[0]!.quantity).toBe(1)
+      expect(spends[0]!.cost).toBeCloseTo(model.cost, 8)
+    }
+  })
+
   test('不点名用默认模型，结果是下载好的字节', async () => {
     const out = await makeMediaPort(config()).generate(
       call({ params: { size: '1024*1536' } }),
