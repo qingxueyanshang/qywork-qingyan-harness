@@ -335,6 +335,33 @@ export const IconStop = (p: IconProps) => (
   </Svg>
 )
 
+export const IconPlay = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 5.6v12.8L18.4 12z" fill="currentColor" />
+  </Svg>
+)
+
+export const IconPause = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="6.8" y="5.6" width="3.2" height="12.8" rx="1" fill="currentColor" stroke="none" />
+    <rect x="14" y="5.6" width="3.2" height="12.8" rx="1" fill="currentColor" stroke="none" />
+  </Svg>
+)
+
+export const IconVolume = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4.5 9.5v5h3.2l4.3 3.6V5.9L7.7 9.5z" />
+    <path d="M15.5 9.2a4 4 0 0 1 0 5.6M18.3 6.6a7.6 7.6 0 0 1 0 10.8" />
+  </Svg>
+)
+
+export const IconVolumeOff = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4.5 9.5v5h3.2l4.3 3.6V5.9L7.7 9.5z" />
+    <path d="m15.6 9.6 4.8 4.8M20.4 9.6l-4.8 4.8" />
+  </Svg>
+)
+
 export const IconPlus = (p: IconProps) => (
   <Svg {...p}>
     <path d="M12 5.6v12.8M5.6 12h12.8" />

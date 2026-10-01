@@ -5,22 +5,20 @@
  * 这样画进 `<canvas>` 之后画布不被污染，`toBlob` 才导得出来；不带就是跨源污染，导出直接抛错。
  */
 
-/** 取帧菜单的三项。 */
-export type FrameAt = 'first' | 'last' | number
-
 /**
- * 截哪一刻。尾帧取 `duration - 1/30` 秒：定位到恰好 `duration` 时常解不出画面或是黑帧。
+ * 截哪一刻：限在 `[0, duration - 1/30]` 秒。定位到恰好 `duration` 时常解不出画面或是黑帧。
  */
-export function frameTime(at: FrameAt, duration: number): number {
-  if (at === 'first') return 0
-  if (at === 'last') return Math.max(0, duration - 1 / 30)
+export function frameTime(at: number, duration: number): number {
   return Math.min(Math.max(0, at), Math.max(0, duration - 1 / 30))
 }
 
-/** 帧的名字，进文件名：`首帧` / `尾帧` / `12.4s`。与服务端取帧接口收的三种形状一致。 */
-export function frameLabel(at: FrameAt): string {
-  if (at === 'first') return '首帧'
-  if (at === 'last') return '尾帧'
+/**
+ * 帧的名字，进文件名：时刻在起点为 `首帧`、在终点为 `尾帧`，其余为 `12.4s`。
+ * 与服务端取帧接口收的三种形状一致。
+ */
+export function frameLabel(at: number, duration: number): string {
+  if (at <= 0) return '首帧'
+  if (at >= duration) return '尾帧'
   return `${Math.round(at * 10) / 10}s`
 }
 
@@ -45,7 +43,7 @@ function once(target: HTMLVideoElement, event: string): Promise<void> {
  * 载入视频并定位到那一刻，回一个停在该帧上的视频元素。
  * 用完必须调 `releaseVideo`：不释放的话解码器一直占着。
  */
-export async function seekVideo(src: string, at: FrameAt): Promise<HTMLVideoElement> {
+export async function seekVideo(src: string, at: number): Promise<HTMLVideoElement> {
   const video = document.createElement('video')
   video.crossOrigin = 'anonymous'
   video.muted = true
@@ -69,7 +67,7 @@ export function releaseVideo(video: HTMLVideoElement): void {
 }
 
 /** 载入视频、定位到那一刻、画进画布导出 PNG。 */
-export async function captureVideoFrame(src: string, at: FrameAt): Promise<Blob> {
+export async function captureVideoFrame(src: string, at: number): Promise<Blob> {
   const video = await seekVideo(src, at)
   const canvas = document.createElement('canvas')
   canvas.width = video.videoWidth
@@ -82,4 +80,33 @@ export async function captureVideoFrame(src: string, at: FrameAt): Promise<Blob>
       'image/png',
     ),
   )
+}
+
+/**
+ * 在 `canvas` 上从左到右排一行帧：格数取按视频比例铺满所需，第 i 格取第 i 段时长的中点，
+ * 格比视频窄时从画面中间截取。用一个临时视频元素逐格定位；`signal` 中止后不再定位，元素随即释放。
+ */
+export async function drawFilmstrip(
+  src: string,
+  canvas: HTMLCanvasElement,
+  signal: AbortSignal,
+): Promise<void> {
+  const ctx = canvas.getContext('2d')
+  if (!ctx || !canvas.width || !canvas.height) return
+  const video = await seekVideo(src, 0)
+  try {
+    const { videoWidth: vw, videoHeight: vh, duration } = video
+    if (!vw || !vh) return
+    const count = Math.max(1, Math.ceil(canvas.width / ((canvas.height * vw) / vh)))
+    const cell = canvas.width / count
+    const sw = Math.min(vw, (vh * cell) / canvas.height)
+    for (let i = 0; i < count && !signal.aborted; i++) {
+      const seeked = once(video, 'seeked')
+      video.currentTime = frameTime(((i + 0.5) / count) * duration, duration)
+      await seeked
+      ctx.drawImage(video, (vw - sw) / 2, 0, sw, vh, i * cell, 0, cell, canvas.height)
+    }
+  } finally {
+    releaseVideo(video)
+  }
 }

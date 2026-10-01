@@ -68,9 +68,10 @@ import {
 } from '../Icons.tsx'
 import { Bitmap } from './Bitmap.tsx'
 import { dismissOnOutside } from './dismiss.ts'
-import { captureVideoFrame, type FrameAt, frameLabel } from './frame.ts'
+import { captureVideoFrame, frameLabel } from './frame.ts'
 import { GeneratePanel, mediaOf } from './GeneratePanel.tsx'
 import { KindIcon, OUTPUT_LABEL } from './kinds.tsx'
+import { clock, FrameBar, type PlayerHandle, VideoPlayer } from './Player.tsx'
 import { Rail } from './Rail.tsx'
 
 const PANEL_W = 480
@@ -126,11 +127,6 @@ function madeAt(iso: string): string {
     : `${d.getMonth() + 1}/${d.getDate()} ${hm}`
 }
 
-function clock(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
-}
-
 export default function CanvasPanel(props: { path: string; active: boolean }) {
   void ensureModelCatalog()
   const [view, setView] = createSignal<CanvasView | null>(null)
@@ -164,8 +160,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const [menu, setMenu] = createSignal<Menu | null>(null)
   const [tall, setTall] = createSignal(false)
   const [now, setNow] = createSignal(Date.now())
-  /** 视频节点的播放器，「当前帧」取它此刻的位置。 */
-  const players = new Map<string, HTMLVideoElement>()
+  /** 选中的视频节点的播放器；取帧条读写它的时刻。 */
+  const players = new Map<string, PlayerHandle>()
   let stage!: HTMLDivElement
   let fitted = false
   let drag: Drag | null = null
@@ -558,7 +554,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (e.button !== 0) return
     if (
       target.closest(
-        'button, input, select, audio, .canvas-panel, .canvas-tools, .canvas-dock, .canvas-rail, .canvas-picker, video[controls]',
+        'button, input, select, audio, .canvas-panel, .canvas-tools, .canvas-frame-bar, .canvas-player, .canvas-dock, .canvas-rail, .canvas-picker',
       )
     )
       return
@@ -984,14 +980,13 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
   // ── 取帧 ──
 
-  const capture = async (nodeId: string, at: FrameAt | 'current') => {
+  const capture = async (nodeId: string, at: number, duration: number) => {
     setMenu(null)
     const media = view() ? mediaOf(view()!, nodeId) : null
     if (!media?.path) return
-    const when: FrameAt = at === 'current' ? (players.get(nodeId)?.currentTime ?? 0) : at
     try {
-      const blob = await captureVideoFrame(client.fileUrl(media.path), when)
-      const r = await captureFrame(props.path, nodeId, frameLabel(when), blob)
+      const blob = await captureVideoFrame(client.fileUrl(media.path), at)
+      const r = await captureFrame(props.path, nodeId, frameLabel(at, duration), blob)
       setFault(null)
       setSelected(new Set([r.nodeId]))
       void load()
@@ -1117,7 +1112,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         </Match>
         <Match when={p.kind === 'video'}>
           <div class="canvas-media">
-            {/* 选中时才挂播放器：播放、拖进度与「当前帧」都要它；平时只画封面。 */}
+            {/* 选中时才挂播放器：播放与取帧都要它；平时只画封面。 */}
             <Show
               when={p.controls}
               fallback={
@@ -1130,18 +1125,13 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 />
               }
             >
-              <video
-                ref={(el) => {
-                  players.set(p.nodeId, el)
+              <VideoPlayer
+                src={client.fileUrl(p.path)}
+                register={(player) => {
+                  players.set(p.nodeId, player)
                   onCleanup(() => players.delete(p.nodeId))
                 }}
-                src={`${client.fileUrl(p.path)}#t=0.1`}
-                preload="metadata"
-                muted
-                playsinline
-                crossOrigin="anonymous"
-                controls
-                onLoadedMetadata={(e) => setLength(e.currentTarget.duration)}
+                onDuration={setLength}
               />
             </Show>
             <Show when={!p.controls && length()}>
@@ -1378,6 +1368,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
   // ── 选中工具条 ──
 
+  const framing = (nodeId: string) => {
+    const m = menu()
+    return m?.kind === 'frame' && m.nodeId === nodeId ? players.get(nodeId) : undefined
+  }
+
   const tools = () => {
     const n = single()
     if (!n) return null
@@ -1503,27 +1498,37 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
         <Show when={tools()}>
           {(t) => (
-            <div class="canvas-tools" style={{ left: `${t().left}px`, top: `${t().top}px` }}>
-              <For each={t().items}>
-                {(item) => (
-                  <button
-                    type="button"
-                    aria-expanded={
-                      menu()?.kind === item.kind &&
-                      (menu() as { nodeId?: string }).nodeId === t().node.id
-                    }
-                    onClick={(e) =>
-                      setMenu({ kind: item.kind, anchor: e.currentTarget, nodeId: t().node.id })
-                    }
-                  >
-                    {item.label}
-                    <Show when={item.kind === 'frame'}>
-                      <IconChevron size={10} />
-                    </Show>
-                  </button>
-                )}
-              </For>
-            </div>
+            <Show
+              when={framing(t().node.id)}
+              fallback={
+                <div class="canvas-tools" style={{ left: `${t().left}px`, top: `${t().top}px` }}>
+                  <For each={t().items}>
+                    {(item) => (
+                      <button
+                        type="button"
+                        aria-expanded={
+                          menu()?.kind === item.kind &&
+                          (menu() as { nodeId?: string }).nodeId === t().node.id
+                        }
+                        onClick={(e) =>
+                          setMenu({ kind: item.kind, anchor: e.currentTarget, nodeId: t().node.id })
+                        }
+                      >
+                        {item.label}
+                      </button>
+                    )}
+                  </For>
+                </div>
+              }
+            >
+              {(player) => (
+                <FrameBar
+                  player={player()}
+                  style={{ left: `${t().left}px`, top: `${t().top}px` }}
+                  onCapture={(at, duration) => void capture(t().node.id, at, duration)}
+                />
+              )}
+            </Show>
           )}
         </Show>
 
@@ -1635,29 +1640,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 </AnchoredMenu>
               )}
             </Match>
-            <Match when={true}>
+            <Match when={m().kind === 'out' || m().kind === 'version'}>
               <AnchoredMenu class="canvas-menu" anchor={m().anchor}>
                 <Switch>
-                  <Match when={m().kind === 'frame'}>
-                    <button
-                      type="button"
-                      onClick={() => void capture((m() as { nodeId: string }).nodeId, 'first')}
-                    >
-                      首帧
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void capture((m() as { nodeId: string }).nodeId, 'last')}
-                    >
-                      尾帧
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void capture((m() as { nodeId: string }).nodeId, 'current')}
-                    >
-                      当前帧
-                    </button>
-                  </Match>
                   <Match when={m().kind === 'out'}>
                     <For each={extendable((m() as { nodeId: string }).nodeId)}>
                       {(o) => (
