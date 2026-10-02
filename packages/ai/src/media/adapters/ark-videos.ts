@@ -7,10 +7,11 @@
  */
 
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, getJson, postJson } from '../http.ts'
+import { count, dataUri, defined, download, getJson, postJson, send } from '../http.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
+  type MediaCancel,
   MediaError,
   type MediaInput,
   type MediaProfile,
@@ -96,6 +97,33 @@ export class ArkVideosAdapter implements MediaAdapter {
         usage: { ...done.usage, videoInput },
       }
     })
+  }
+
+  /**
+   * 撤销任务：`DELETE {base}/contents/generations/tasks/{id}`，方舟只撤得动排队中（`queued`）的任务。
+   * 先查状态、排队中才删：同一个接口对已结束的任务是删掉任务记录，结果就取不回了。
+   * 删除被拒时再查一次，已不在排队（查询与删除之间开始了）回 `started`，仍在排队原样抛。
+   */
+  async cancel(taskId: string, signal: AbortSignal): Promise<MediaCancel> {
+    const base = (this.profile.baseUrl ?? '').trim().replace(/\/+$/, '') || DEFAULT_BASE
+    const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
+    const queued = async () => {
+      const now = await this.check(base, taskId, auth, signal)
+      return now.state === 'pending' && now.status === 'queued'
+    }
+    if (!(await queued())) return 'started'
+    try {
+      await send(
+        `${base}/contents/generations/tasks/${encodeURIComponent(taskId)}`,
+        { method: 'DELETE', headers: auth },
+        signal,
+      )
+      return 'cancelled'
+    } catch (err) {
+      if (signal.aborted || !(err instanceof MediaError) || err.status === undefined) throw err
+      if (await queued()) throw err
+      return 'started'
+    }
   }
 
   private async check(

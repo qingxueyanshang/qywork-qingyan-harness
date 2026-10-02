@@ -383,6 +383,13 @@
   gap: 10px;
   transform: scale(min(calc(1 / var(--z, 1)), 2));
 }
+/* 远端任务排队中还是生成中：排队中点停止撤得动，生成中撤不回。 */
+.canvas-live .phase {
+  font-size: var(--fs-xs);
+  line-height: 1;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
 .canvas-live .time {
   font: var(--fs-xs) / 1 var(--font-mono);
   font-variant-numeric: tabular-nums;

@@ -60,6 +60,22 @@ export function runCard(path: string, nodeId: string, ops: CanvasOp[] = []): Pro
   return post<CanvasView>('/api/canvas/run', { path, nodeId, ...(ops.length ? { ops } : {}) })
 }
 
+/**
+ * 停止一张卡的生成。`cancelled`：远端已撤销、不计费，卡回到这次生成之前；`started`：远端已开始，撤不回；
+ * `unsupported`：接口没有撤销或是一次请求的生成；`ended`：已经结束了。后三种生成照常进行、按结果计费。
+ */
+export async function cancelCard(
+  path: string,
+  nodeId: string,
+): Promise<'cancelled' | 'started' | 'unsupported' | 'ended'> {
+  return (
+    await post<{ outcome: 'cancelled' | 'started' | 'unsupported' | 'ended' }>(
+      '/api/canvas/cancel',
+      { path, nodeId },
+    )
+  ).outcome
+}
+
 export function retrieveCard(path: string, nodeId: string, version?: string): Promise<CanvasView> {
   return post<CanvasView>('/api/canvas/retrieve', {
     path,

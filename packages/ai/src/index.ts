@@ -56,8 +56,10 @@ export {
 } from './media/catalog.ts'
 export { buildMediaAdapter } from './media/index.ts'
 export { describeParam, operationLabel, validateMediaCall } from './media/params.ts'
+export { type TaskPhase, taskPhase } from './media/task.ts'
 export {
   type MediaAdapter,
+  type MediaCancel,
   MediaError,
   type MediaFile,
   type MediaInput,

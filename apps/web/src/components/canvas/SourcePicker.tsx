@@ -6,7 +6,7 @@
  * 再按选中画布节点的同一条路径连线或插入引用。尺寸固定，结果在框内滚动。
  */
 
-import { type CanvasNode, displayNameOf } from '@qywork/core'
+import { type CanvasFileKind, type CanvasNode, displayNameOf } from '@qywork/core'
 import { createSignal, For, type JSX, Show } from 'solid-js'
 import FileTypeIcon from '../FileTypeIcon.tsx'
 import { IconUpload } from '../Icons.tsx'
@@ -17,8 +17,10 @@ export function SourcePicker(props: {
   nodes: CanvasNode[]
   /** 是否提供工作区文件与上传；为假时只筛画布节点。 */
   files: boolean
-  /** 可选的工作区文件路径。 */
-  accepts: (path: string) => boolean
+  /** 列哪几类工作区文件。 */
+  kinds: readonly CanvasFileKind[]
+  /** 在类别之上再筛一道：要的范围比类别窄时给。 */
+  accepts?: (path: string) => boolean
   /** 上传框的 `accept`。 */
   accept: string
   thumb: (nodeId: string) => JSX.Element
@@ -27,7 +29,11 @@ export function SourcePicker(props: {
   onUpload: (files: File[]) => void
 }) {
   const [query, setQuery] = createSignal('')
-  const files = createFileSearch((path) => props.accepts(path))
+  const files = createFileSearch(
+    () => props.kinds,
+    (path) => props.accepts?.(path) ?? true,
+  )
+  if (props.files) files.search('')
   let upload!: HTMLInputElement
 
   const nodes = () => {

@@ -157,6 +157,43 @@ describe('按名搜索', () => {
   test('空查询回空结果，不回整棵树', async () => {
     expect(await findByName(await workspace(), '')).toEqual({ matches: [], truncated: false })
   })
+
+  test('给了筛选：只回它接受的文件、不回目录；空查询列出它接受的全部，有查询时两者都要满足', async () => {
+    const dir = await workspace()
+    await writeFile(join(dir, 'src', 'cover.png'), 'png')
+    const images = (p: string) => p.endsWith('.png') || p === 'src'
+    expect((await findByName(dir, '', undefined, images)).matches).toEqual([
+      { path: 'src/cover.png', kind: 'file' },
+    ])
+    expect((await findByName(dir, 'main', undefined, images)).matches).toEqual([])
+  })
+
+  test('接口带 kinds：按画布文件类别列出，查询允许为空；类别不合法回 422', async () => {
+    const dir = await workspace()
+    await mkdir(join(dir, 'generated'), { recursive: true })
+    await writeFile(join(dir, 'generated', 'a.mp4'), 'mp4')
+    await writeFile(join(dir, 'generated', 'b.png'), 'png')
+    await writeFile(join(dir, 'notes.md'), '# 笔记')
+    const find = async (query: string) => {
+      const url = new URL(`http://x/api/files/find?${query}`)
+      return (await handleWorkspaceFsApi(url, new Request(url.href), {
+        workspaceRoot: dir,
+      } as never)) as Response
+    }
+    const paths = async (query: string) =>
+      ((await (await find(query)).json()) as { matches: { path: string }[] }).matches.map(
+        (m) => m.path,
+      )
+    expect(await paths('kinds=video')).toEqual(['generated/a.mp4'])
+    expect((await paths('kinds=image,video,text')).sort()).toEqual([
+      'generated/a.mp4',
+      'generated/b.png',
+      'notes.md',
+    ])
+    expect(await paths('q=b&kinds=image,video')).toEqual(['generated/b.png'])
+    expect(await paths('q=')).toEqual([])
+    expect((await find('kinds=video,exe')).status).toBe(422)
+  })
 })
 
 describe('预览分类', () => {

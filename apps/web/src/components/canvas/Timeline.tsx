@@ -41,6 +41,7 @@ import {
   moveClip,
   splitAt,
   startsOf,
+  thumbCanvas,
   totalOf,
   trimClip,
   useSession,
@@ -56,8 +57,6 @@ const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800]
 const LABEL_GAP = 64
 /** 「+」格的宽（画布单位）。 */
 const ADD_W = 28
-/** 片段缩略图的最大宽度（画布单位）。 */
-const THUMB_MAX = 2048
 
 /** `mm:ss.s`。 */
 function clockTenths(seconds: number): string {
@@ -522,16 +521,15 @@ function ClipBlock(props: {
   )
   createEffect(
     on(key, (k) => {
-      const [url, from, to, width] = JSON.parse(k) as [string, number, number, number]
+      const [url, from, to] = JSON.parse(k) as [string, number, number, number]
       const ac = new AbortController()
       // 先画在另一块画布上，画完再换上：直接改宽度会清空，取帧期间块是空的。
-      // 块宽超过 `THUMB_MAX` 时画布按比例整体缩小、显示时再拉回块的大小：全屏放大后块可以很宽，
-      // 画布超出浏览器上限会画不出，帧数也跟着变多。只缩宽不缩高的话帧会被横向拉长。
-      const scale = Math.min(1, THUMB_MAX / width)
       const timer = setTimeout(() => {
+        // 块高在节点里与全屏里不同，按块在页面上的实际宽高取。
+        const size = thumbCanvas(canvas.clientWidth, canvas.clientHeight)
         const next = document.createElement('canvas')
-        next.width = Math.round(width * scale * 2)
-        next.height = Math.max(8, Math.round(88 * scale))
+        next.width = size.width
+        next.height = size.height
         drawFilmstrip(url, next, ac.signal, { from, to }).then(
           () => {
             if (ac.signal.aborted) return

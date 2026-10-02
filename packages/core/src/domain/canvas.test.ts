@@ -6,6 +6,7 @@ import {
   type CanvasGenerateNode,
   type CanvasOp,
   type CanvasVersion,
+  canvasFileKind,
   compilePrompt,
   copyOps,
   emptyCanvas,
@@ -58,6 +59,17 @@ function sample(): CanvasDoc {
 }
 
 describe('画布：格式', () => {
+  test('文件类别按扩展名判：图片、视频、音频、正文，其余回 null', () => {
+    expect(['a.PNG', 'b.mp4', 'c.m4a', 'd.md', 'e.txt', 'f.pdf'].map(canvasFileKind)).toEqual([
+      'image',
+      'video',
+      'audio',
+      'text',
+      'text',
+      null,
+    ])
+  })
+
   test('写出再读回，字节不变', () => {
     const text = serializeCanvas(sample())
     const back = parseCanvas(text)

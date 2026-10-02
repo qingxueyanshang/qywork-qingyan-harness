@@ -1,5 +1,5 @@
 /**
- * 覆盖 `canvas/timeline.ts` 的片段编辑纯函数：定位、分割与分割按钮可用性、删除、换位、插入、裁剪、间隙。
+ * 覆盖 `canvas/timeline.ts` 的片段编辑纯函数：定位、分割与分割按钮可用性、缩略图画布尺寸、删除、换位、插入、裁剪、间隙。
  * 本地播放会话依赖 `<video>`，在 `CanvasPanel.test.tsx` 与真实窗口里验证。
  */
 
@@ -13,6 +13,7 @@ import {
   moveClip,
   splitAt,
   startsOf,
+  thumbCanvas,
   totalOf,
   trimClip,
   withoutClip,
@@ -42,6 +43,15 @@ describe('时间线：片段编辑', () => {
     ])
     expect(splitAt(clips, 2 + MIN_CLIP / 2)).toBeNull()
     expect(splitAt([], 1)).toBeNull()
+  })
+
+  test('缩略图画布：宽高按同一倍数取，节点里（块高 48）与全屏里（块高 72）都不拉伸；超宽时等比缩小', () => {
+    const ratio = (s: { width: number; height: number }) => s.width / s.height
+    expect(ratio(thumbCanvas(144, 48))).toBeCloseTo(144 / 48, 5)
+    expect(ratio(thumbCanvas(460, 72))).toBeCloseTo(460 / 72, 5)
+    const wide = thumbCanvas(8192, 72)
+    expect(wide.width).toBe(4096)
+    expect(ratio(wide)).toBeCloseTo(8192 / 72, 0)
   })
 
   test('分割按钮：播放经过片段交界时一直可用，停下时按停下处判断', () => {

@@ -5,7 +5,7 @@
  * 生成卡的类别全列：没配模型的类别也能建卡，卡上的模型按钮通往模型库。
  */
 
-import type { MediaOutput } from '@qywork/core'
+import { CANVAS_FILE_KINDS, type MediaOutput } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import FileTypeIcon from '../FileTypeIcon.tsx'
 import { IconFolder, IconUpload } from '../Icons.tsx'
@@ -22,8 +22,6 @@ type OnPick = (path: string, first: boolean) => void
 export function Rail(props: {
   outputs: MediaOutput[]
   disabled: boolean
-  /** 能放上画布的文件；选择框只列这些。 */
-  accepts: (path: string) => boolean
   onGenerate: (output: MediaOutput) => void
   onTimeline: () => void
   onPick: OnPick
@@ -80,15 +78,16 @@ export function Rail(props: {
         />
       </div>
       <Show when={picking()}>
-        <Picker accepts={props.accepts} onPick={props.onPick} />
+        <Picker onPick={props.onPick} />
       </Show>
     </>
   )
 }
 
-/** 工作区文件的搜索选择框。选一个加一个，框不收起，可以连着选。 */
-function Picker(props: { accepts: (path: string) => boolean; onPick: OnPick }) {
-  const { hits, error, search } = createFileSearch((path) => props.accepts(path))
+/** 工作区文件的选择框：打开即列出能放上画布的文件，输入按名筛。选一个加一个，框不收起，可以连着选。 */
+function Picker(props: { onPick: OnPick }) {
+  const { hits, error, search } = createFileSearch(() => CANVAS_FILE_KINDS)
+  search('')
   let picked = 0
 
   return (

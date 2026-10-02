@@ -147,6 +147,11 @@ interface Server {
   restores: { from: string; to: string }[]
   /** 时间线导出会话的请求，按顺序：开始、写、完成、放弃。 */
   exports: string[]
+  /** 停止请求的节点 id，按顺序；回的结果取 `cancelOutcome`。 */
+  cancels: string[]
+  cancelOutcome: 'cancelled' | 'started' | 'unsupported' | 'ended'
+  /** 给了时，编辑的回体先按收到请求时的画布算好，等它兑现才回：模拟回包晚于其后的重读到达。 */
+  hold: Promise<void> | null
 }
 
 async function mount(
@@ -166,6 +171,9 @@ async function mount(
   const snapshots = new Map<string, CanvasDoc>([['d0', doc]])
   const view = (): CanvasView => ({ path: 'board.canvas.json', doc, states: extraStates })
   const server: Server = {
+    hold: null,
+    cancels: [],
+    cancelOutcome: 'started',
     ops: [],
     runs: [],
     reads: 0,
@@ -214,7 +222,9 @@ async function mount(
       doc = r.doc
       fingerprint = `d${++written}`
       snapshots.set(fingerprint, doc)
-      return { ...view(), refs: r.refs, step: { before, after: fingerprint } }
+      const reply = { ...view(), refs: r.refs, step: { before, after: fingerprint } }
+      if (server.hold) await server.hold
+      return reply
     }
     if (path.startsWith('/api/canvas/restore')) {
       server.restores.push({ from: body.from, to: body.to })
@@ -230,6 +240,10 @@ async function mount(
       fingerprint = body.to
       return { ...view(), refs: {}, step: { before: body.from, after: body.to } }
     }
+    if (path.startsWith('/api/canvas/cancel')) {
+      server.cancels.push(body.nodeId)
+      return { outcome: server.cancelOutcome }
+    }
     if (path.startsWith('/api/canvas/run')) {
       server.runs.push({ nodeId: body.nodeId, ops: body.ops ?? [] })
       if (body.ops) {
@@ -240,18 +254,27 @@ async function mount(
     }
     if (path.startsWith('/api/canvas/quote')) return { quote: server.quote }
     if (path.startsWith('/api/files/find')) {
-      const q = new URLSearchParams(path.split('?')[1]).get('q')
+      const params = new URLSearchParams(path.split('?')[1])
+      const q = params.get('q')
       if (q === '坏') {
         const { ApiError } = await import('../../lib/client.ts')
         throw new ApiError(500, path, '{"error":"internal","message":"磁盘读不了"}')
       }
+      // 同服务端：带 `kinds` 时只回这几类文件，查询允许为空。
+      const kinds = params.get('kinds')
+      const wanted = kinds === null ? null : new Set(kinds.split(','))
+      const all = [
+        { path: '角色/小满.png', kind: 'file' },
+        { path: '角色', kind: 'dir' },
+        { path: '合同.pdf', kind: 'file' },
+        { path: '镜头/雨夜.mp4', kind: 'file' },
+      ]
       return {
-        matches: [
-          { path: '角色/小满.png', kind: 'file' },
-          { path: '角色', kind: 'dir' },
-          { path: '合同.pdf', kind: 'file' },
-          { path: '镜头/雨夜.mp4', kind: 'file' },
-        ],
+        matches: all.filter(
+          (m) =>
+            (wanted ? m.kind === 'file' && wanted.has(core.canvasFileKind(m.path) ?? '') : !!q) &&
+            (!q || m.path.includes(q)),
+        ),
         truncated: false,
       }
     }
@@ -512,6 +535,33 @@ describe('画布：节点操作', () => {
     expect(host.querySelector('.canvas-guide')).toBeNull()
   })
 
+  test('编辑的回包晚于其后的重读到达：不盖掉重读拿到的更新状态', async () => {
+    const { host, server, refs } = await mount(FILES)
+    const store = await import('../../lib/store/index.ts')
+    const stage = host.querySelector('.canvas-stage')!
+    let release = () => {}
+    server.hold = new Promise((r) => {
+      release = r
+    })
+    pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
+    pointer(stage, 'pointermove', 210, 110)
+    pointer(stage, 'pointerup', 210, 110)
+    await waitFor(
+      () => server.ops.length === 1,
+      () => '',
+    )
+    // 编辑发出之后，别处的变化引起一次重读：$b 的文件没了。
+    server.setView({ states: { [refs.$b!]: { state: 'missing' } } })
+    store.setState('canvasVersion', (n) => n + 1)
+    await waitFor(
+      () => node(host, refs.$b!).textContent?.includes('缺失') === true,
+      () => node(host, refs.$b!).innerHTML,
+    )
+    release()
+    await new Promise((r) => setTimeout(r, 30))
+    expect(node(host, refs.$b!).textContent).toContain('缺失')
+  })
+
   test('拖动中收到文件变更重读，被拖的节点不跳回', async () => {
     const { host, server, refs } = await mount(FILES)
     const store = await import('../../lib/store/index.ts')
@@ -709,11 +759,32 @@ describe('画布：生成卡与生成面板', () => {
     expect(host.querySelector(`linearGradient#${id}`)).not.toBeNull()
   })
 
-  test('生成中禁止发送', async () => {
-    const { host, refs } = await mount(CARD, { n2: { state: 'running', startedAt: Date.now() } })
+  test('生成中的卡显示平台回报的步骤：排队中 / 生成中；没回报时只有计时', async () => {
+    const { host, refs } = await mount(
+      [...CARD, { op: 'add_generate', ref: '$w', output: 'video', x: 600, y: 0 }],
+      {
+        n2: { state: 'running', startedAt: Date.now(), phase: 'queued' },
+        n3: { state: 'running', startedAt: Date.now() },
+      },
+    )
+    expect(node(host, refs.$v!).querySelector('.canvas-live .phase')?.textContent).toBe('排队中')
+    expect(node(host, refs.$w!).querySelector('.canvas-live .phase')).toBeNull()
+    expect(node(host, refs.$w!).querySelector('.canvas-live .time')).not.toBeNull()
+  })
+
+  test('生成中发送键换成停止键：点了发出停止；远端撤不回时底部说明照常计费', async () => {
+    const { host, server, refs } = await mount(CARD, {
+      n2: { state: 'running', startedAt: Date.now() },
+    })
     await select(host, refs.$v!)
-    const send = host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!
-    expect(send.disabled).toBe(true)
+    const stop = host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!
+    expect(stop.getAttribute('aria-label')).toBe('停止')
+    stop.click()
+    await waitFor(
+      () => host.querySelector('.canvas-fault')?.textContent?.includes('照常计费') === true,
+      () => host.querySelector('.canvas-fault')?.textContent ?? '',
+    )
+    expect(server.cancels).toEqual([refs.$v!])
   })
 
   test('参数按钮只列标了界面名的参数；模式只列模型支持的，切到首尾帧发一条 set_mode', async () => {
@@ -1383,6 +1454,19 @@ describe('画布：右键菜单', () => {
     pointer(stageOf(host), 'pointerup', x, y, { button: 2 })
   }
 
+  test('写好提示词的生成卡上右键没有「运行」：付费生成只从面板的发送按钮发起，那里标着价格', async () => {
+    const { host, refs } = await mount([
+      { op: 'add_generate', ref: '$v', output: 'video', prompt: '街口回头', x: 0, y: 0 },
+    ])
+    rightClick(host, node(host, refs.$v!), 10, 10)
+    await waitFor(
+      () => !!menu(),
+      () => '',
+    )
+    expect(items()).toContain('复制')
+    expect(items()).not.toContain('运行')
+  })
+
   test('节点上右键：先选中它，菜单有复制、剪切、创建副本、改名、删除；删除删掉它', async () => {
     const { host, server, refs } = await mount(FILES)
     rightClick(host, node(host, refs.$b!), 10, 10)
@@ -1771,20 +1855,11 @@ describe('画布：左侧工具条', () => {
     expect(server.ops[0]![0]).toMatchObject({ op: 'add_generate', output: 'video' })
   })
 
-  test('从工作区选择：只列能放上画布的文件；连着选，第二个排在第一个右侧', async () => {
+  test('从工作区选择：打开不输入就列出能放上画布的文件；连着选，第二个排在第一个右侧', async () => {
     const { host, server } = await mount(FILES)
     rail(host)
       .find((b) => b.textContent === '从工作区选择')!
       .click()
-    const input = await (async () => {
-      await waitFor(
-        () => !!host.querySelector('.canvas-picker input'),
-        () => host.innerHTML.slice(-300),
-      )
-      return host.querySelector<HTMLInputElement>('.canvas-picker input')!
-    })()
-    input.value = '小'
-    input.dispatchEvent(new Event('input', { bubbles: true }))
     const hits = () => [...host.querySelectorAll<HTMLButtonElement>('.canvas-picker-list > button')]
     await waitFor(
       () => hits().length === 2,

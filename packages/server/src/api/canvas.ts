@@ -6,7 +6,7 @@
  * 关掉页签不中断已付费的调用，结果经 `canvas.run` 与 `file.changed` 事件送达。
  */
 
-import { lookupMediaModel, quoteMedia } from '@qywork/ai'
+import { lookupMediaModel, MediaError, quoteMedia } from '@qywork/ai'
 import {
   type CanvasOp,
   type CanvasView,
@@ -14,7 +14,7 @@ import {
   type MediaOutput,
   parseCanvasOps,
 } from '@qywork/core'
-import { makeMediaPort, resolveMediaModel } from '@qywork/runtime'
+import { cancelMediaTask, makeMediaPort, resolveMediaModel } from '@qywork/runtime'
 import { recordUsage } from '@qywork/store'
 import { CanvasFailure, type CanvasStep } from '../canvas.ts'
 import { type ApiHandler, type ApiRequestDeps, json } from './types.ts'
@@ -243,6 +243,19 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
 
     const nodeId = text(b.nodeId)
     if (!nodeId) return invalid('缺少节点 id')
+
+    // 停止：按接口能力撤销远端任务，回 `outcome`。撤不回时生成照常进行，由界面说明会照常计费。
+    if (p === '/api/canvas/cancel') {
+      try {
+        const outcome = await d.canvas.cancel(d.workspaceRoot, path, nodeId, (task) =>
+          cancelMediaTask(d.config, task, new AbortController().signal),
+        )
+        return json({ outcome })
+      } catch (err) {
+        if (!(err instanceof MediaError)) throw err
+        return json({ error: 'upstream', message: `没有取消：${err.message}` }, 502)
+      }
+    }
 
     // 发送 = 先提交面板里的改动再运行，同一次请求：运行用的就是刚提交的那一份。
     if (p === '/api/canvas/run') {

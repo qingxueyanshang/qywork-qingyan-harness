@@ -12,10 +12,11 @@ import {
   uploadDashScopeMedia,
 } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, getJson, postJson, sniffMime } from '../http.ts'
+import { count, dataUri, defined, download, getJson, postJson, send, sniffMime } from '../http.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
+  type MediaCancel,
   MediaError,
   type MediaInput,
   type MediaProfile,
@@ -221,6 +222,28 @@ export class DashScopeVideosAdapter implements MediaAdapter {
       const done = await waitTask(id, () => this.check(origin, id, auth, signal), opts)
       return { files: [await download(done.url, signal)], usage: { ...done.usage, videoInput } }
     })
+  }
+
+  /**
+   * 撤销任务：`POST /api/v1/tasks/{task_id}/cancel`。百炼只撤得动排队中（`PENDING`）的任务，其余状态回 400；
+   * 被拒时再查一次状态，已不在排队就回 `started`，仍在排队说明是别的原因，原样抛。
+   */
+  async cancel(taskId: string, signal: AbortSignal): Promise<MediaCancel> {
+    const origin = dashScopeOrigin(this.profile.baseUrl)
+    const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
+    try {
+      await send(
+        `${origin}/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`,
+        { method: 'POST', headers: auth },
+        signal,
+      )
+      return 'cancelled'
+    } catch (err) {
+      if (signal.aborted || !(err instanceof MediaError) || err.status === undefined) throw err
+      const now = await this.check(origin, taskId, auth, signal)
+      if (now.state === 'pending' && now.status === 'PENDING') throw err
+      return 'started'
+    }
   }
 
   private async check(

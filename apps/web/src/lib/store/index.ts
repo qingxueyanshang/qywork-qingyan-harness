@@ -12,6 +12,7 @@ export {
   CANVAS_SUFFIX,
   type CanvasEdit,
   type CanvasQuote,
+  cancelCard,
   canvasAvailable,
   canvasTitle,
   captureFrame,
