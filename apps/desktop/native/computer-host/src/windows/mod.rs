@@ -27,7 +27,7 @@ use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use ::windows::core::{Interface, BOOL, BSTR};
+use ::windows::core::{Interface, BOOL, BSTR, PCWSTR};
 use ::windows::Win32::Foundation::{HWND, LPARAM, RECT, TRUE};
 use ::windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
@@ -82,7 +82,8 @@ use ::windows::Win32::UI::Accessibility::{
 use ::windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use ::windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindow, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId,
+    EnumWindows, FindWindowExW, GetClassNameW, GetWindow, GetWindowLongW, GetWindowTextW,
+    GetWindowThreadProcessId,
     IsIconic, IsWindow, IsWindowVisible, GWL_EXSTYLE, GW_HWNDPREV, WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 
@@ -1270,6 +1271,9 @@ impl Walk<'_> {
 ///
 /// 标题为空的可见窗口一律不收：那一类是工具窗口与消息宿主窗口，不是可操作目标。代价是
 /// 标题恰好为空的应用窗口在这里也看不见，调用方拿不到它的句柄。
+///
+/// 被 DWM 隐藏的窗口也不收：其他虚拟桌面上的窗口、已关闭但进程还在的应用窗口、浏览器
+/// 标签的代理窗口都不在屏幕上。
 pub fn list_windows() -> Result<Observation, String> {
     Ok(Observation::Windows {
         captured_at: now_ms(),
@@ -1277,40 +1281,81 @@ pub fn list_windows() -> Result<Observation, String> {
     })
 }
 
+/// 列表在读取期间变化时整份重读的次数上限。
+const SCAN_ATTEMPTS: usize = 3;
+
+/// 屏幕上有标题的顶层窗口，按 z 序从上到下。
+///
+/// 不要换成 `EnumWindows`：它从 Windows 8 起只列桌面程序的窗口，开始菜单、搜索面板这类
+/// 系统界面（`Windows.UI.Core.CoreWindow`）不在其中，模型打开开始菜单后找不到它。
+/// `FindWindowExW` 逐个读取的是实时列表：读到一半时窗口被销毁或调整 z 序，这一份不完整，
+/// 整份重读。
 fn top_level_windows() -> Result<Vec<WindowInfo>, String> {
-    let mut found: Vec<WindowInfo> = Vec::new();
-    // SAFETY: 回调只在本次调用期间运行，lparam 指向本栈帧上的 found。
-    unsafe {
-        EnumWindows(
-            Some(collect),
-            LPARAM(std::ptr::addr_of_mut!(found) as isize),
-        )
-    }
-    .map_err(|e| format!("枚举窗口失败：{e}"))?;
-    Ok(found)
+    (0..SCAN_ATTEMPTS)
+        .find_map(|_| scan_top_level())
+        .ok_or_else(|| format!("枚举窗口失败：读取期间窗口列表连续 {SCAN_ATTEMPTS} 次发生变化"))
 }
 
-unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let found = &mut *(lparam.0 as *mut Vec<WindowInfo>);
-    if !IsWindowVisible(hwnd).as_bool() {
-        return TRUE;
+/// 读一遍顶层窗口。列表在读取期间变化时返回 `None`。
+fn scan_top_level() -> Option<Vec<WindowInfo>> {
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
+    let mut after: Option<HWND> = None;
+    loop {
+        // SAFETY: 只读查询；类名与标题都不限定。
+        let Ok(next) = (unsafe { FindWindowExW(None, after, PCWSTR::null(), PCWSTR::null()) }) else {
+            // 读不到下一个有两种成因：读完了，或上一个窗口刚被销毁，后者这一份不完整。
+            // SAFETY: 只读查询。
+            let complete = after.is_none_or(|w| unsafe { IsWindow(Some(w)) }.as_bool());
+            return complete.then_some(found);
+        };
+        // 再次读到同一个窗口说明 z 序在读取期间变过。
+        if !seen.insert(next.0 as isize) {
+            return None;
+        }
+        after = Some(next);
+        found.extend(shown_window(next));
     }
-    let mut title = [0u16; 512];
-    let written = GetWindowTextW(hwnd, &mut title);
-    if written <= 0 {
-        return TRUE;
+}
+
+/// 可见、没被 DWM 隐藏且有标题的窗口。
+fn shown_window(hwnd: HWND) -> Option<WindowInfo> {
+    // SAFETY: 都是只读查询，出参是本栈帧上的缓冲区与整数。
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() || cloaked(hwnd) {
+            return None;
+        }
+        let mut title = [0u16; 512];
+        let written = GetWindowTextW(hwnd, &mut title);
+        if written <= 0 {
+            return None;
+        }
+        let mut class_name = [0u16; 256];
+        let class_written = GetClassNameW(hwnd, &mut class_name);
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        Some(WindowInfo {
+            window: hwnd.0 as i64,
+            pid,
+            title: String::from_utf16_lossy(&title[..written as usize]),
+            class_name: String::from_utf16_lossy(&class_name[..class_written.max(0) as usize]),
+        })
     }
-    let mut class_name = [0u16; 256];
-    let class_written = GetClassNameW(hwnd, &mut class_name);
-    let mut pid = 0u32;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    found.push(WindowInfo {
-        window: hwnd.0 as i64,
-        pid,
-        title: String::from_utf16_lossy(&title[..written as usize]),
-        class_name: String::from_utf16_lossy(&class_name[..class_written.max(0) as usize]),
-    });
-    TRUE
+}
+
+/// DWM 把这个窗口隐藏了。读不出时按没隐藏算。
+fn cloaked(hwnd: HWND) -> bool {
+    let mut cloaked = 0u32;
+    // SAFETY: 只读查询，出参是本栈帧上的整数。
+    let read = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            std::ptr::addr_of_mut!(cloaked).cast(),
+            u32::try_from(std::mem::size_of::<u32>()).unwrap_or(4),
+        )
+    };
+    read.is_ok() && cloaked != 0
 }
 
 /// 第一次读一个窗口时两次读取之间隔多久。Edge 的无障碍树在第一次请求后约 0.3 s 建好。
@@ -1363,7 +1408,7 @@ fn window_covered(window: i64) -> bool {
 
 /// 这个窗口能不能挡住它下面的窗口。
 fn covers_others(hwnd: HWND) -> bool {
-    // SAFETY: 四项都是只读查询，出参是本栈帧上的整数。
+    // SAFETY: 三项都是只读查询。
     unsafe {
         if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
             return false;
@@ -1372,15 +1417,8 @@ fn covers_others(hwnd: HWND) -> bool {
         if style & (WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0) != 0 {
             return false;
         }
-        let mut cloaked = 0u32;
-        let read = DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_CLOAKED,
-            std::ptr::addr_of_mut!(cloaked).cast(),
-            u32::try_from(std::mem::size_of::<u32>()).unwrap_or(4),
-        );
-        read.is_err() || cloaked == 0
     }
+    !cloaked(hwnd)
 }
 
 /// UIA 用空指针表示「没有这个子节点」「不支持这个模式」。
