@@ -968,7 +968,7 @@ function FileBrowser() {
  *
  * 只列**真的能用**的项。Qoder 那份菜单里的剪切 / 复制 / 粘贴不进来：文件级剪贴板
  * 需要一套「待粘贴条目」的状态，没有它的话那三项点了什么也不会发生（B5）。
- * 「在文件资源管理器中显示」只有桌面外壳有，别的端整项不渲染。
+ * 「在资源管理器中显示」只有桌面外壳有，别的端整项不渲染。
  */
 function TreeMenu(props: {
   node: FileNode
@@ -1046,7 +1046,7 @@ function TreeMenu(props: {
             })
           }
         >
-          在文件资源管理器中显示
+          在资源管理器中显示
         </button>
       </Show>
       <button
