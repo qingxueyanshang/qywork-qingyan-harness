@@ -298,7 +298,7 @@ describe('materialize', () => {
   test('收原生视频、超过常驻上限又不能上传：换成说明；能上传时交出路径', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-video-big-'))
     const path = join(dir, 'big.mp4').replaceAll('\\', '/')
-    await writeFile(path, new Uint8Array(5 * 1024 * 1024))
+    await writeFile(path, new Uint8Array(6 * 1024 * 1024))
     const send = (caps: Parameters<typeof materialize>[1]) =>
       materialize(
         req([
@@ -311,7 +311,7 @@ describe('materialize', () => {
       ).then((out) => (out.messages[0]?.content as ContentBlock[])[0])
     const inline = (await send({ image: true, video: true })) as { type: string; text: string }
     expect(inline.type).toBe('text')
-    expect(inline.text).toContain('5.0 MB')
+    expect(inline.text).toContain('6.0 MB')
     expect(inline.text).toContain('read_file')
     expect(
       await send({ image: true, video: true, mediaPaths: true, mediaUploadAbove: 2 * 1024 * 1024 }),
@@ -556,10 +556,10 @@ describe('媒体按字节预算换出', () => {
 
   /** 超上限时从最早的起整条换出，直到不超过下限：换一次少变几次前缀。 */
   test('超过上限时从最早的整批换出，降到下限以内', () => {
-    const messages = steps([MB, MB, MB, MB, MB])
+    const messages = steps([MB, MB, MB, MB, MB, MB])
     const evicted = evictedMedia(messages, CAPS)
-    // 第 5 张让总量到 5 MB（> 4 MB），换出最早的三张，剩 2 MB。
-    expect([...evicted]).toEqual([1, 3, 5])
+    // 第 6 张让总量到 6 MB（> 5 MB），换出最早的四张，剩 2 MB。
+    expect([...evicted]).toEqual([1, 3, 5, 7])
     const left = messages.reduce((n, m, i) => n + (evicted.has(i) ? 0 : mediaBytes(m, CAPS)), 0)
     expect(left).toBeLessThanOrEqual(MEDIA_RETAIN_LOW_BYTES)
   })
