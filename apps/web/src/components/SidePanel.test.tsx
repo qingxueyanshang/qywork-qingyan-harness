@@ -4,6 +4,7 @@
  * 它在「树 + 已打开文件」共用的文件页里，用户点的是整页刷新，不是只重读左边索引。
  * 原始失败形状是：树请求发出去了，右边已经打开的文件仍停在旧正文上，看起来像按钮没反应。
  * 另覆盖右键菜单与预览切换时的树宽规则；真实尺寸由浏览器复测验证。
+ * 覆盖资源管理器菜单的本机目录参数与失败提示。
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
@@ -16,6 +17,7 @@ beforeAll(() => {
 
 let dispose: (() => void) | undefined
 let restoreApi: (() => void) | undefined
+let restoreShell: (() => void) | undefined
 
 beforeEach(async () => {
   const store = await import('../lib/store/index.ts')
@@ -28,6 +30,8 @@ afterEach(async () => {
   document.body.replaceChildren()
   restoreApi?.()
   restoreApi = undefined
+  restoreShell?.()
+  restoreShell = undefined
 
   const store = await import('../lib/store/index.ts')
   store.setOpenFile(null)
@@ -115,6 +119,131 @@ async function waitFor(done: () => boolean, detail: () => string) {
   }
   throw new Error(`界面没有在时限内更新：${detail()}`)
 }
+
+describe('在文件资源管理器中显示', () => {
+  async function mount(root: string, reveal: (path: string) => Promise<void>) {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    store.client.api = async <T,>(path: string): Promise<T> => {
+      if (path.startsWith('/api/files/tree')) {
+        return {
+          nodes: [
+            { name: '根目录.txt', path: '根目录.txt', kind: 'file', size: 1, mtime: 1 },
+            {
+              name: '素材 文件',
+              path: '素材 文件',
+              kind: 'dir',
+              size: 0,
+              mtime: 1,
+              children: [
+                {
+                  name: '视频 1.mp4',
+                  path: '素材 文件/视频 1.mp4',
+                  kind: 'file',
+                  size: 1,
+                  mtime: 1,
+                },
+              ],
+            },
+          ],
+        } as T
+      }
+      throw new Error(`未预期请求：${path}`)
+    }
+    restoreApi = () => {
+      store.client.api = originalApi
+    }
+    const g = globalThis as Record<string, unknown>
+    const previousShell = g.__TAURI_INTERNALS__
+    g.__TAURI_INTERNALS__ = {
+      invoke: (cmd: string, args: { path: string }) => {
+        if (cmd !== 'reveal_workspace') throw new Error(`未预期命令：${cmd}`)
+        return reveal(args.path)
+      },
+    }
+    restoreShell = () => {
+      g.__TAURI_INTERNALS__ = previousShell
+    }
+    store.setWorkspace({ id: 'ws_reveal', root, name: '项目' })
+    store.setSidePanel('files')
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+    await waitFor(
+      () => !!host.querySelector('.tree-top .tree-item'),
+      () => host.innerHTML,
+    )
+    const row = (name: string) => {
+      const item = Array.from(
+        host.querySelectorAll<HTMLButtonElement>('.tree-top .tree-item'),
+      ).find((item) => item.textContent?.includes(name))
+      expect(item).toBeDefined()
+      return item!
+    }
+    return {
+      host,
+      row,
+      clickReveal: (name: string) => {
+        row(name).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+        const button = Array.from(host.querySelectorAll<HTMLButtonElement>('.tree-menu-item')).find(
+          (item) => item.textContent === '在文件资源管理器中显示',
+        )
+        expect(button).toBeDefined()
+        button!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+        button!.click()
+      },
+    }
+  }
+
+  test.each([
+    ['C:\\项目 工作', 'C:\\项目 工作\\', 'C:\\项目 工作\\素材 文件'],
+    [
+      '\\\\server\\share\\项目 工作',
+      '\\\\server\\share\\项目 工作\\',
+      '\\\\server\\share\\项目 工作\\素材 文件',
+    ],
+    ['/tmp/项目 工作', '/tmp/项目 工作/', '/tmp/项目 工作/素材 文件'],
+  ])('%s：文件打开父目录，目录打开自身', async (root, expectedRoot, expectedDir) => {
+    const paths: string[] = []
+    const page = await mount(root, async (path) => {
+      paths.push(path)
+    })
+    page.clickReveal('根目录.txt')
+    expect(paths).toEqual([expectedRoot])
+    expect(page.host.querySelector('.tree-menu')).toBeNull()
+    page.clickReveal('素材 文件')
+    expect(paths.at(-1)).toBe(expectedDir)
+    page.row('素材 文件').click()
+    await waitFor(
+      () => page.host.textContent?.includes('视频 1.mp4') ?? false,
+      () => page.host.innerHTML,
+    )
+    page.clickReveal('视频 1.mp4')
+    expect(paths).toEqual([expectedRoot, expectedDir, expectedDir])
+    expect(page.host.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  test('桌面命令失败后显示原因，再次操作清除旧错误', async () => {
+    let fail = true
+    const page = await mount('C:\\项目 工作', async () => {
+      if (fail) throw '不是一个目录：C:\\项目 工作'
+    })
+    page.clickReveal('根目录.txt')
+    await waitFor(
+      () => !!page.host.querySelector('[role="alert"]'),
+      () => page.host.innerHTML,
+    )
+    expect(page.host.querySelector('[role="alert"]')?.textContent).toContain(
+      '不是一个目录：C:\\项目 工作',
+    )
+    expect(page.host.querySelector('.tree-menu')).toBeNull()
+    fail = false
+    page.clickReveal('根目录.txt')
+    expect(page.host.querySelector('[role="alert"]')).toBeNull()
+  })
+})
 
 describe('文件页刷新', () => {
   test('点一次同时重取文件树与当前预览', async () => {
