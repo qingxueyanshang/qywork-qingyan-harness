@@ -353,17 +353,16 @@ describe('能力段', () => {
   })
 
   /**
-   * 原始失败形状：用户附上画布页的截图说「写进画布的这个提示词里」，模型手里有画布工具，
-   * 却用 desktop_windows → desktop_observe 去操作 QyWork 自己的窗口。能力段原先没有画布这一行。
+   * 原始失败形状：用户附带画布页截图要求「写进画布的这个提示词里」，工具表含画布工具，
+   * 模型仍调用 desktop_windows 与 desktop_observe 操作 QyWork 窗口。能力段缺少画布一行时出现该行为。
    */
-  test('注册了画布工具时点名画布走 read_canvas / canvas，画布界面的截图也不走电脑控制；没注册就不提', () => {
+  test('注册画布工具时写明画布的定义与对应工具，不限制电脑控制；未注册时不出现', () => {
     const prompt = buildSystemPrompt(new Set(['read_canvas', 'canvas', 'desktop_windows']))
     expect(prompt).toContain('*.canvas.json')
-    expect(prompt).toContain('用 read_canvas')
-    expect(prompt).toContain('用 canvas')
-    expect(prompt).toContain(
-      '附上画布界面的截图时同样使用这两个工具，不通过电脑控制操作 QyWork 自己的界面',
-    )
+    expect(prompt).toContain('界面画布页呈现该文件的内容')
+    expect(prompt).toContain('使用 read_canvas')
+    expect(prompt).toContain('使用 canvas')
+    expect(prompt).not.toContain('不得使用电脑控制')
     expect(prompt.indexOf('- 画布：')).toBeLessThan(prompt.indexOf('- 电脑控制：'))
     expect(buildSystemPrompt(new Set(['desktop_windows']))).not.toContain('read_canvas')
   })
