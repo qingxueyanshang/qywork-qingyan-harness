@@ -193,14 +193,14 @@ test('超过上限时最早的换成 images_omitted 信封，最后一批保留'
     persistence(),
     [
       USER,
-      ...bigWave('pr_1', 'one', 1.5),
-      ...bigWave('pr_2', 'two', 1.5),
-      ...bigWave('pr_3', 'three', 1.5),
-      ...bigWave('pr_4', 'four', 1.5),
+      ...bigWave('pr_1', 'one', 1.9),
+      ...bigWave('pr_2', 'two', 1.9),
+      ...bigWave('pr_3', 'three', 1.9),
+      ...bigWave('pr_4', 'four', 1.9),
     ],
     'rn_evict',
   )
-  // 第 3 张让总量到 4.5 MB，换出前两张降到 1.5 MB；第 4 张之后 3 MB，未再超限。
+  // 第 3 张让总量到约 5.7 MB，换出前两张降到 1.9 MB；第 4 张之后 3.8 MB，未再超限。
   expect(imagesIn(adapter.seen[0]).map(tagOf)).toEqual(['three', 'four'])
   const tools = (adapter.seen[0]?.messages ?? []).filter((m) => m.role === 'tool')
   for (const t of tools.slice(0, 2)) {

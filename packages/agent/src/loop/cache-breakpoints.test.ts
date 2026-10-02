@@ -120,15 +120,15 @@ test('工具每一步带回一张图：图留在请求里，每一步命中上�
   }
 })
 
-/** 解码后约 1.5 MB 的图：第 3 张让总量过 4 MB，换出前两张。 */
+/** 解码后约 1.5 MB 的图：第 4 张让总量过 5 MB，换出前三张。 */
 const LARGE = () => 'A'.repeat(2 * 1024 * 1024)
 
 test('媒体超过保留上限：只有换出的那一步改写前缀，之后恢复整段命中', async () => {
   const seen = await shootSteps(5, LARGE)
   expect(seen).toHaveLength(5)
   const tools = (seen[4] ?? []).filter((m) => m.role === 'tool')
-  expect(tools.map(hasImage)).toEqual([false, false, true, true])
-  for (const m of tools.slice(0, 2)) {
+  expect(tools.map(hasImage)).toEqual([false, false, false, true])
+  for (const m of tools.slice(0, 3)) {
     expect((JSON.parse(String(m.content)) as { images_omitted?: string }).images_omitted).toBe(
       IMAGES_OMITTED,
     )

@@ -295,7 +295,7 @@ describe('read_file 读视频：不收原生视频时按时间抽帧', () => {
    */
   test('收原生视频但太大：能上传交路径，不能上传改为抽帧', async () => {
     const root = await workspace()
-    await writeFile(join(root, 'big.mp4'), new Uint8Array(5 * 1024 * 1024))
+    await writeFile(join(root, 'big.mp4'), new Uint8Array(6 * 1024 * 1024))
     const upload = await readFileTool.fn(
       { path: 'big.mp4' },
       { ...ctx(root), video: true, videoUploadAbove: 2 * 1024 * 1024 },
@@ -305,7 +305,7 @@ describe('read_file 读视频：不收原生视频时按时间抽帧', () => {
     })
     const inline = await readFileTool.fn({ path: 'big.mp4' }, { ...ctx(root), video: true })
     expect(inline.status).toBe('success')
-    expect(inline.message.startsWith('这段视频 5.0 MB')).toBe(true)
+    expect(inline.message.startsWith('这段视频 6.0 MB')).toBe(true)
     expect(inline.message).toContain('改为按时间抽帧')
     expect((inline.data as { images: unknown[] }).images).toHaveLength(2)
   })
