@@ -1,5 +1,4 @@
 /** Google 与 xAI 生成模型规格，2026-10-01 核对官方生成指南与价格页。 */
-import type { MediaKind } from '@qywork/core'
 import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
 
 const ratios = ['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
@@ -20,6 +19,8 @@ const imageParams = (sizes: string[], wide = false): MediaParamSpec[] => [
   choice('image_size', '分辨率', sizes, '输出分辨率档位'),
   {
     name: 'mime_type',
+    label: '输出格式',
+    advanced: true,
     type: 'enum',
     values: ['image/png', 'image/jpeg'],
     description: '输出图像格式',
@@ -50,6 +51,10 @@ const veoParams = (lite = false): MediaParamSpec[] => [
   {
     ...choice('durationSeconds', '时长', [4, 6, 8], '参考图生成与高分辨率输出须为 8 秒'),
     default: 8,
+    rules: [
+      { when: { operations: ['reference_to_video'] }, values: [8] },
+      { when: { params: { resolution: ['1080p', '4k'] } }, values: [8] },
+    ],
   },
   {
     name: 'personGeneration',
@@ -86,6 +91,7 @@ const xaiImageParams: MediaParamSpec[] = [
   { ...choice('resolution', '分辨率', ['1k', '2k'], '输出分辨率'), default: '1k' },
   {
     name: 'quality',
+    label: '画质',
     type: 'enum',
     values: ['low', 'medium', 'auto'],
     default: 'auto',
@@ -112,6 +118,12 @@ const xaiVideoParams: MediaParamSpec[] = [
   {
     ...choice('resolution', '分辨率', ['480p', '720p', '1080p'], '参考图与首尾帧最高 720p'),
     default: '480p',
+    rules: [
+      {
+        when: { operations: ['reference_to_video', 'first_last_frame'] },
+        values: ['480p', '720p'],
+      },
+    ],
   },
   {
     name: 'duration',
@@ -121,7 +133,13 @@ const xaiVideoParams: MediaParamSpec[] = [
     max: 15,
     description: '输出视频秒数',
   },
-  { name: 'generate_audio', type: 'boolean', default: true, description: '生成声音' },
+  {
+    name: 'generate_audio',
+    label: '声音',
+    type: 'boolean',
+    default: true,
+    description: '生成声音',
+  },
 ]
 
 /** https://ai.google.dev/gemini-api/docs/pricing；缺少模态计量时不推算金额。 */
@@ -294,27 +312,3 @@ export const GOOGLE_XAI_MODELS: readonly MediaModelSpec[] = [
   model('grok-imagine-image-2.0', 'Grok Imagine Image 2.0', 'xai_images', xaiImagePrice),
   model('grok-imagine-video-1.5', 'Grok Imagine Video 1.5', 'xai_videos', xaiVideoPrice),
 ]
-
-/** 原生协议的联合参数约束；中转协议由其自己的参数规则处理。 */
-export function nativeMediaProblems(
-  kind: MediaKind,
-  operation: string,
-  p: Record<string, unknown>,
-): string[] {
-  if (
-    kind === 'veo_videos' &&
-    (operation === 'reference_to_video' || p.resolution === '1080p' || p.resolution === '4k') &&
-    p.durationSeconds !== undefined &&
-    p.durationSeconds !== 8
-  ) {
-    return ['Veo 参考图生成与 1080p、4k 输出只支持 8 秒']
-  }
-  if (
-    kind === 'xai_videos' &&
-    (operation === 'reference_to_video' || operation === 'first_last_frame') &&
-    p.resolution === '1080p'
-  ) {
-    return ['Grok 参考图与首尾帧生成最高支持 720p']
-  }
-  return []
-}

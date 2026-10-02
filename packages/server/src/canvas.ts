@@ -27,6 +27,7 @@ import type { CanvasPort, MediaPort } from '@qywork/agent'
 import { type TaskPhase, taskPhase } from '@qywork/ai'
 import {
   type AgentEvent,
+  activeMediaParams,
   addVersions,
   applyCanvasOps,
   type CanvasClip,
@@ -47,7 +48,9 @@ import {
   emptyCanvas,
   inputsOf,
   type MediaOutput,
+  type MediaParamDefinition,
   type MentionStyle,
+  mediaOperationFor,
   newCanvasId,
   parseCanvas,
   serializeCanvas,
@@ -161,6 +164,11 @@ function sizeField(size: CanvasPixels | null | undefined): { size?: CanvasPixels
 }
 
 export interface CanvasServiceDeps {
+  /** 当前模型的参数表，用于投影画布偏好为实际发送参数。 */
+  paramSpecsOf?(
+    output: MediaOutput,
+    pick: { provider: string; model: string } | undefined,
+  ): readonly MediaParamDefinition[] | undefined
   /** 发一条全局事件（不带会话 id）。 */
   publish(event: AgentEvent): void
   /** 与对话共用更新占位；文件校验结束后、开始生成前再检查一次。 */
@@ -401,11 +409,23 @@ export class CanvasService {
         ? { provider: node.provider, model: node.model }
         : undefined
     const prompt = compilePrompt(doc, nodeId, this.deps.mentionStyleOf?.(node.output, pick))
+    const specs = this.deps.paramSpecsOf?.(node.output, pick)
+    const params = specs
+      ? activeMediaParams(
+          specs,
+          mediaOperationFor(
+            node.output,
+            inputs.map((i) => i.role),
+          ),
+          node.params,
+          inputs.filter((i) => i.role === 'reference').length,
+        )
+      : node.params
     const made = (provider: string, model: string): CanvasMade => ({
       prompt,
       provider,
       model,
-      params: node.params,
+      params,
       inputs,
       at: new Date().toISOString(),
     })
@@ -421,7 +441,7 @@ export class CanvasService {
         type: node.output,
         prompt,
         inputs,
-        params: node.params,
+        params,
         ...(pick ? { pick } : {}),
         onTask: async ({ record, taskId, provider, model }) => {
           const id = newCanvasId()

@@ -10,6 +10,7 @@ import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/agent'
+import { findMediaModel } from '@qywork/ai'
 import {
   type AgentEvent,
   applyCanvasOps,
@@ -128,6 +129,49 @@ const VIDEO_CARD: CanvasOp[] = [
 ]
 
 describe('画布运行：图像', () => {
+  test('隐藏参数不进请求或历史记录，原选择保留并在恢复模式后重新发送', async () => {
+    const model = findMediaModel('wan2.7-image-pro')!
+    const prefs = { size: '4K', thinking_mode: true, seed: 42 }
+    const { ws, ids } = await setup([
+      { op: 'add_file', ref: '$i', path: 'a.png' },
+      {
+        op: 'add_generate',
+        ref: '$g',
+        output: 'image',
+        prompt: '一只猫',
+        provider: 'qwen',
+        model: model.id,
+        params: prefs,
+      },
+      { op: 'connect', ref: '$e', from: '$i', to: '$g', role: 'reference' },
+    ])
+    const svc = new CanvasService({ publish: () => {}, paramSpecsOf: () => model.params })
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const first = await fake.next()
+    expect(first.call.params).toEqual({ seed: 42 })
+    first.finish({
+      ok: true,
+      provider: 'qwen',
+      model: model.id,
+      files: [{ bytes: PNG, mime: 'image/png' }],
+    })
+    expect(await run.done).toMatchObject({ ok: true })
+    const saved = await node(ws.root, ids.$g!)
+    expect(saved.params).toEqual(prefs)
+    expect(saved.versions[0]!.made.params).toEqual({ seed: 42 })
+    await svc.apply(ws.root, PATH, [{ op: 'remove', id: ids.$e! }])
+    const again = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const second = await fake.next()
+    expect(second.call.params).toEqual(prefs)
+    second.finish({
+      ok: true,
+      provider: 'qwen',
+      model: model.id,
+      files: [{ bytes: PNG, mime: 'image/png' }],
+    })
+    expect(await again.done).toMatchObject({ ok: true })
+  })
   test('成功后追加版本；made 记编译后的提示词，之后改提示词不影响它', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()

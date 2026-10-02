@@ -70,6 +70,8 @@ export interface CanvasGenerateNode {
   provider?: string
   model?: string
   params: Record<string, unknown>
+  /** 各模型的参数选择；当前模型以 params 为准，键是 [provider, model] 的 JSON。 */
+  paramsByModel?: Record<string, Record<string, unknown>>
   versions: CanvasVersion[]
   /** 有版本时必有。 */
   current?: string
@@ -587,6 +589,15 @@ function applyOne(
       if (op.name === null || op.name === '') fail('生成节点必须有名字')
       if (op.name !== undefined) node.name = op.name
       if (op.prompt !== undefined) node.prompt = op.prompt
+      const beforeModel = JSON.stringify([node.provider ?? null, node.model ?? null])
+      const afterModel = JSON.stringify([
+        op.provider === undefined ? (node.provider ?? null) : op.provider,
+        op.model === undefined ? (node.model ?? null) : op.model,
+      ])
+      if (beforeModel !== afterModel) {
+        node.paramsByModel = { ...node.paramsByModel, [beforeModel]: structuredClone(node.params) }
+        node.params = structuredClone(node.paramsByModel[afterModel] ?? {})
+      }
       if (op.params !== undefined) node.params = op.params
       if (op.current !== undefined) {
         node.current = op.current
@@ -1147,6 +1158,7 @@ const GENERATE_FIELDS: Record<string, Shape> = {
   provider: 'string',
   model: 'string',
   'params!': 'object',
+  paramsByModel: 'object',
   'versions!': 'array',
   current: 'string',
 }
@@ -1217,6 +1229,12 @@ function structureProblem(raw: unknown): string | null {
     const bad = checkFields(where, n, fields)
     if (bad) return bad
     if (type !== 'generate') continue
+    if (
+      isObject(n) &&
+      isObject(n.paramsByModel) &&
+      Object.values(n.paramsByModel).some((p) => !isObject(p))
+    )
+      return `${where} 的模型参数记录不合法`
     for (const [j, v] of (n as { versions: unknown[] }).versions.entries()) {
       const at = `${where}的第 ${j + 1} 版`
       const made = isObject(v) ? v.made : undefined
@@ -1276,6 +1294,7 @@ export function serializeCanvas(doc: CanvasDoc): string {
             ...(n.provider !== undefined ? { provider: n.provider } : {}),
             ...(n.model !== undefined ? { model: n.model } : {}),
             params: n.params,
+            ...(n.paramsByModel ? { paramsByModel: n.paramsByModel } : {}),
             versions: n.versions.map((v) => ({
               id: v.id,
               path: v.path,

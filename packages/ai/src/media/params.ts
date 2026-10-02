@@ -5,8 +5,8 @@
  * 一张不是想要的图，两种都已计费。退回的消息里带合法取值，大模型下一步就能自己改对。
  */
 
+import { mediaParamProblem, mediaParamValues, resolveMediaParam } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation, MediaParamSpec } from './catalog.ts'
-import { nativeMediaProblems } from './catalog-google-xai.ts'
 
 const OPERATION_LABEL: Record<MediaOperation, string> = {
   generate: '生成',
@@ -73,6 +73,7 @@ export function validateMediaCall(
         : `${spec.id} 不收参考音频`,
     )
   }
+  const values = mediaParamValues(spec.params, params)
   const known = new Map(spec.params.map((p) => [p.name, p]))
   for (const [name, value] of Object.entries(params)) {
     const p = known.get(name)
@@ -88,32 +89,9 @@ export function validateMediaCall(
       )
       continue
     }
-    const bad = checkValue(p, value)
-    if (bad) problems.push(`参数 ${name} 的值 ${JSON.stringify(value)} 不合法：${bad}`)
+    const bad = mediaParamProblem(resolveMediaParam(p, operation, values, counts.images), value)
+    if (bad)
+      problems.push(`参数 ${name} 的值 ${JSON.stringify(value)} 不合法：${bad}；${p.description}`)
   }
-  return [...problems, ...nativeMediaProblems(spec.kind, operation, params)]
-}
-
-/** 值不合法时回一句合法取值，合法回 null。 */
-function checkValue(p: MediaParamSpec, value: unknown): string | null {
-  switch (p.type) {
-    case 'enum':
-      return p.values?.includes(value as string | number) ? null : `可选 ${p.values?.join(' | ')}`
-    case 'boolean':
-      return typeof value === 'boolean' ? null : '要 true 或 false'
-    case 'integer':
-    case 'number': {
-      if (typeof value !== 'number' || !Number.isFinite(value)) return '要一个数'
-      if (p.type === 'integer' && !Number.isInteger(value)) return '要整数'
-      if (value === p.auto) return null
-      if ((p.min !== undefined && value < p.min) || (p.max !== undefined && value > p.max)) {
-        return `范围 ${p.min ?? ''}–${p.max ?? ''}${p.auto === undefined ? '' : `，或 ${p.auto}`}`
-      }
-      return null
-    }
-    case 'string':
-      if (typeof value !== 'string') return '要字符串'
-      if (p.pattern && !new RegExp(p.pattern).test(value)) return p.description
-      return null
-  }
+  return problems
 }

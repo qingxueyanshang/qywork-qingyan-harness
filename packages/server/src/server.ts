@@ -160,6 +160,10 @@ export function serve(opts: ServeOptions) {
   const runs = new RunManager(opts.store, bus, subagents)
   // 画布的写入与画布上的生成只经这一个实例；事件不带会话 id，推给所有客户端。
   const canvas = new CanvasService({
+    paramSpecsOf: (output, pick) => {
+      const target = resolveMediaModel(opts.config, output, pick)
+      return target ? lookupMediaModel(target.model, target.kind).params : undefined
+    },
     publish: (event) => bus.publish(event),
     updating: () => runs.updating,
     mentionStyleOf: (output, pick) => {

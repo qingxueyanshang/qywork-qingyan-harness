@@ -136,19 +136,7 @@ export interface MediaModelRow {
 }
 
 /** 生成面板上的一个参数控件，取自目录的 `MediaParamSpec`，不带给大模型看的说明。 */
-export type MediaParamRow = Pick<
-  MediaParamSpec,
-  | 'name'
-  | 'type'
-  | 'values'
-  | 'presets'
-  | 'shapes'
-  | 'min'
-  | 'max'
-  | 'auto'
-  | 'default'
-  | 'operations'
-> & { label: string }
+export type MediaParamRow = Omit<MediaParamSpec, 'description'> & { label: string }
 
 /** 生成目录里的一条。`params` 是给人看的参数表，每行一个参数，与给大模型的同一份文字。 */
 export interface MediaLibraryModel {
@@ -383,7 +371,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         operations: [...spec.operations],
         isDefault: m.isDefault,
         known: spec.catalogued,
-        params: spec.params.flatMap(({ description: _d, pattern: _p, label, ...rest }) =>
+        params: spec.params.flatMap(({ description: _d, label, ...rest }) =>
           label ? [{ ...rest, label }] : [],
         ),
       }

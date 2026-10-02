@@ -1450,9 +1450,40 @@ button.canvas-input:hover {
   gap: 10px;
 }
 .canvas-params-title {
+  display: flex;
+  justify-content: space-between;
   font-size: var(--fs-xs);
   line-height: 1;
   color: var(--text-tertiary);
+}
+.canvas-params-title > button {
+  color: var(--text-secondary);
+}
+.canvas-params-advanced > summary {
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.canvas-params-advanced .canvas-params-section {
+  margin-top: 18px;
+}
+.canvas-param-text,
+.canvas-stepper > input {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+}
+.canvas-param-text {
+  resize: vertical;
+  min-height: 64px;
+}
+.canvas-stepper > input {
+  flex: 1;
+  width: 80px;
 }
 /* 选中只有一层：描边换成墨色、文字换成主色，不加底色，外面也不套底色容器。 */
 .canvas-seg {
@@ -1514,7 +1545,7 @@ button.canvas-input:hover {
   font-size: 16px;
 }
 .canvas-stepper > span {
-  flex: 1;
+  flex: none;
   text-align: center;
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
