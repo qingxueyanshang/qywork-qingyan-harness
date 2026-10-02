@@ -87,9 +87,9 @@ describe('winget 执行位置', () => {
   })
 })
 
-describe('Office 依赖两行', () => {
+describe('Office 依赖三行', () => {
   const missingPython = { providers: {}, officePython: join(tmpdir(), 'qywork-no-python.exe') }
-  const host = (missing: string[]): OfficeHost => {
+  const host = (missing: string[], videoDecoder = true): OfficeHost => {
     const status: OfficeStatus = {
       enabled: true,
       available: missing.length === 0,
@@ -97,6 +97,7 @@ describe('Office 依赖两行', () => {
       python: process.execPath,
       version: '3.12.0',
       missing,
+      videoDecoder,
       apps: null,
     }
     return { refresh: async () => status, status: () => status, port: () => undefined }
@@ -119,6 +120,24 @@ describe('Office 依赖两行', () => {
     })
     const ok = probeEnvironment({ config, office: host([]) })
     expect(row(ok, 'office-libs')).toMatchObject({ path: process.execPath, hint: '' })
+  })
+
+  /** 视频解码库可选：缺它时文档库那一行照样齐全，它自己那一行报缺并给出影响。 */
+  test('视频解码库单独一行，缺它不影响文档库', () => {
+    const config = { providers: {}, officePython: process.execPath } as QyConfig
+    const rows = probeEnvironment({ config, office: host([], false) })
+    expect(row(rows, 'office-libs')).toMatchObject({ path: process.execPath, hint: '' })
+    expect(row(rows, 'video-decoder')).toMatchObject({
+      path: null,
+      hint: '不支持原生视频的模型读不了视频。',
+    })
+    const ok = probeEnvironment({ config, office: host([], true) })
+    expect(row(ok, 'video-decoder')).toMatchObject({ path: process.execPath, hint: '' })
+    const noPython = probeEnvironment({ config: missingPython as QyConfig })
+    expect(row(noPython, 'video-decoder')).toMatchObject({
+      path: null,
+      hint: '需要先安装 Python。',
+    })
   })
 
   test('没有解释器时安装文档库回 409，不起进程', async () => {

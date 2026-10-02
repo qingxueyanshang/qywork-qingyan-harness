@@ -170,6 +170,7 @@ describe('能力上报', () => {
       'node',
       'python',
       'office-libs',
+      'video-decoder',
     ])
     for (const d of env) {
       expect(d.label.length).toBeGreaterThan(0)

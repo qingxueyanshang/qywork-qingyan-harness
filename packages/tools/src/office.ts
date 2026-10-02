@@ -5,14 +5,11 @@
  * 交付件从不经办公软件另存（WPS 另存会写最近文档与账号打开记录，并重写整个文件包）。
  * 执行程序的位置与本机能力由宿主注入（`ctx.office`），没有可用的 Python 与文档库时本工具不注册。
  *
- * worker 的调用约定：请求写进 `.tmp/office/<调用>/request.json`，worker 写回同目录的 `response.json`
- * 后以 0 退出。超时或取消时 worker 进程树被结束，办公软件进程不在其中，所以随后以 `cleanup`
- * 再起一次 worker，按调用目录里的实例登记处理残留。
+ * worker 的调用约定见 `office-worker.ts`。
  */
 
-import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { extname, join } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { extname } from 'node:path'
 import {
   chargeBatchBudget,
   type OfficePort,
@@ -25,74 +22,25 @@ import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
 import { readHashes } from './files.ts'
 import { shrinkImage } from './image.ts'
+import { noResponse, READ_TIMEOUT_MS, residueNote, runWorker, stageNote } from './office-worker.ts'
 import {
   displayPath,
-  PROTECTED_DIRS,
   resolveInWorkspace,
   resolveWritablePath,
   rootsOf,
   writableRoots,
 } from './paths.ts'
-import { collectProcess, type SandboxPolicy, spawnGuarded } from './sandbox.ts'
 import { redactSecrets } from './secrets.ts'
-import { commandEnv } from './shell.ts'
 import { deliverReadable } from './sink.ts'
 
 /** `write` 执行模型脚本并渲染整份文件，大文档导出要几十秒；其余动作只读。 */
 const WRITE_TIMEOUT_MS = 600_000
-const READ_TIMEOUT_MS = 180_000
-const CLEANUP_TIMEOUT_MS = 60_000
 
 /** 回执里脚本输出的保留长度。完整输出在调用目录的 `response.json` 里。 */
 const SCRIPT_OUTPUT_CHARS = 4000
 
 const FORMATS = ['docx', 'pptx', 'xlsx'] as const
 type Format = (typeof FORMATS)[number]
-
-interface WorkerStage {
-  name: string
-  file: string | null
-  status: 'completed' | 'failed' | 'unavailable' | 'not_run'
-  detail: string
-}
-
-interface WorkerCheck {
-  level: 'error' | 'warning' | 'info'
-  code: string
-  message: string
-}
-
-interface WorkerFile {
-  path: string
-  committed: boolean
-  sha256: string | null
-  candidate: string | null
-  pages: number | null
-  sheets?: { name: string; pages: number; ranges: string[] }[] | null
-  checks?: WorkerCheck[]
-}
-
-interface WorkerResponse {
-  ok: boolean
-  action: string
-  message: string
-  stages?: WorkerStage[]
-  files?: WorkerFile[]
-  text?: string
-  images?: { path: string; label: string; width: number; height: number }[]
-  script_output?: string
-  residue?: { pid: number; name: string; cmdline: string }[]
-  errors?: string[]
-}
-
-interface WorkerRun {
-  response: WorkerResponse | null
-  timedOut: boolean
-  aborted: boolean
-  stderr: string
-  cleanup: WorkerResponse | null
-  callDir: string
-}
 
 function formatOf(path: string): Format | null {
   const ext = extname(path).slice(1).toLowerCase()
@@ -106,101 +54,6 @@ function viewable(path: string): boolean {
 
 function sha256(bytes: Uint8Array): string {
   return new Bun.CryptoHasher('sha256').update(bytes).digest('hex')
-}
-
-/** 起一次 worker 并收回 `response.json`；没收回时以 `cleanup` 处理残留的办公软件进程。 */
-async function runWorker(
-  ctx: ToolContext,
-  port: OfficePort,
-  request: Record<string, unknown>,
-  timeoutMs: number,
-): Promise<WorkerRun> {
-  const officeRoot = join(ctx.workspaceRoot, '.tmp', 'office')
-  const callDir = join(officeRoot, `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`)
-  await mkdir(callDir, { recursive: true })
-  const base = {
-    call_dir: callDir,
-    workspace: ctx.workspaceRoot,
-    cache_dir: join(officeRoot, 'cache'),
-  }
-  // 模型代码在 worker 里执行，沙箱与路径层用 `run_command` 的同一份根目录清单。
-  const policy: SandboxPolicy = {
-    workspaceRoot: ctx.workspaceRoot,
-    ...(ctx.additionalDirectories?.length ? { writableRoots: ctx.additionalDirectories } : {}),
-    readOnlySubdirs: PROTECTED_DIRS,
-    ...(ctx.denyNetwork ? { denyNetwork: true } : {}),
-  }
-  // 不写 `__pycache__`：安装目录可能不可写，源码运行时会在仓库里留下编译缓存。
-  const env = { ...(await commandEnv(ctx)), PYTHONDONTWRITEBYTECODE: '1' }
-
-  const invoke = async (body: Record<string, unknown>, ms: number, signal?: AbortSignal) => {
-    const reqPath = join(callDir, `${String(body.action)}-request.json`)
-    await writeFile(reqPath, JSON.stringify({ ...base, ...body }), 'utf8')
-    const { proc } = await spawnGuarded({
-      argv: [port.python, port.worker, reqPath],
-      cwd: ctx.workspaceRoot,
-      env,
-      policy,
-    })
-    const got = await collectProcess(proc, {
-      timeoutMs: ms,
-      ...(signal ? { signal } : {}),
-      maxChars: 100_000,
-    })
-    const response = await readFile(join(callDir, 'response.json'), 'utf8')
-      .then((t) => JSON.parse(t) as WorkerResponse)
-      .catch(() => null)
-    return { got, response }
-  }
-
-  const main = await invoke(request, timeoutMs, ctx.signal)
-  const aborted = ctx.signal.aborted
-  let cleanup: WorkerResponse | null = null
-  if (main.got.timedOut || aborted || main.response === null) {
-    // 清理不随本次调用的取消信号走：用户点了停止，残留的办公软件进程仍要处理。
-    cleanup = (await invoke({ action: 'cleanup' }, CLEANUP_TIMEOUT_MS)).response
-  }
-  const secrets = ctx.secrets ?? { values: [] }
-  return {
-    response: main.response,
-    timedOut: main.got.timedOut,
-    aborted,
-    stderr: redactSecrets(main.got.stderr.slice(-2000), secrets),
-    cleanup,
-    callDir,
-  }
-}
-
-/** worker 没有给出结果时的回执：说明超时、取消或崩溃，以及残留处理的结果。 */
-function noResponse(run: WorkerRun): ToolOutcome {
-  const why = run.timedOut
-    ? '执行超时，已结束执行程序'
-    : run.aborted
-      ? '已取消'
-      : `执行程序没有写出结果${run.stderr ? `：${run.stderr}` : ''}`
-  const cleanup = run.cleanup ? `；残留处理：${run.cleanup.message}` : ''
-  return {
-    status: 'failure',
-    message: `${why}${cleanup}。调用目录：${run.callDir}`,
-    ...(run.timedOut ? { errorKind: 'timeout' } : {}),
-  }
-}
-
-function residueNote(res: WorkerResponse): string {
-  if (!res.residue?.length) return ''
-  const list = res.residue.map((r) => `${r.name}（PID ${r.pid}）`).join('、')
-  return `\n开始前已存在的办公软件自动化进程：${list}。未处理。`
-}
-
-function stageNote(res: WorkerResponse): string {
-  const bad = (res.stages ?? []).filter((s) => s.status === 'failed' || s.status === 'unavailable')
-  if (!bad.length) return ''
-  return `\n未完成的阶段：\n${bad
-    .map(
-      (s) =>
-        `- ${s.name}${s.file ? `（${s.file}）` : ''}：${s.status === 'failed' ? '失败' : '不可用'}，${s.detail}`,
-    )
-    .join('\n')}`
 }
 
 async function guide(ctx: ToolContext, port: OfficePort, args: Record<string, unknown>) {

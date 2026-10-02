@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type OfficePort, openBatchBudget, type ToolContext, ToolRegistry } from '@qywork/agent'
@@ -260,5 +260,66 @@ describe('注册与指路', () => {
       expect(res.message).not.toContain('office')
       expect(res.message).toContain('没有文字层')
     }
+  })
+})
+
+describe('read_file 读视频：不收原生视频时按时间抽帧', () => {
+  async function clip(): Promise<string> {
+    const root = await workspace()
+    await writeFile(join(root, 'clip.mp4'), new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]))
+    return root
+  }
+
+  /** 帧作为图片返回，说明原样交给模型；start / end 传到 worker，回执里看得到。 */
+  test('收图片、不收视频：经 worker 抽帧，帧作为图片返回', async () => {
+    const root = await clip()
+    const res = await readFileTool.fn(
+      { path: 'clip.mp4', start: 2, end: 8 },
+      { ...ctx(root), video: false, vision: true },
+    )
+    expect(res.status).toBe('success')
+    const images = (res.data as { images: { mime: string }[] }).images
+    expect(images).toHaveLength(2)
+    expect(res.message).toBe('区间 2–8；声音没有处理')
+    expect(res.data).not.toHaveProperty('videos')
+    // 帧已经定格进回执，调用目录里那批图要删掉，不在工作区里越积越多。
+    const calls = await readdir(join(root, '.tmp', 'office'))
+    for (const call of calls.filter((c) => c !== 'cache' && !c.endsWith('.jsonl'))) {
+      expect(await readdir(join(root, '.tmp', 'office', call))).not.toContain('frames')
+    }
+  })
+
+  test('区间不成立时不起 worker，直接说原因', async () => {
+    const root = await clip()
+    const res = await readFileTool.fn(
+      { path: 'clip.mp4', start: 5, end: 5 },
+      { ...ctx(root), video: false, vision: true },
+    )
+    expect(res).toEqual({ status: 'failure', message: 'end 必须大于 start' })
+  })
+
+  test('收原生视频的模型照旧交出路径，不抽帧', async () => {
+    const root = await clip()
+    const res = await readFileTool.fn({ path: 'clip.mp4' }, { ...ctx(root), video: true })
+    expect(res.status).toBe('success')
+    expect(res.data).toEqual({
+      videos: [{ path: await realpath(join(root, 'clip.mp4')), mime: 'video/mp4' }],
+    })
+  })
+
+  test('没有 Office 环境，或模型连图片也不收：回绝并带下一步', async () => {
+    const root = await clip()
+    const noOffice = await readFileTool.fn(
+      { path: 'clip.mp4' },
+      { ...ctx(root, null), video: false, vision: true },
+    )
+    expect(noOffice.status).toBe('failure')
+    expect(noOffice.message).toContain('不接受原生视频')
+    expect(noOffice.message).toContain('不要再读')
+    const noImages = await readFileTool.fn(
+      { path: 'clip.mp4' },
+      { ...ctx(root), video: false, vision: false },
+    )
+    expect(noImages.message).toContain('既不接受视频也不接受图片')
   })
 })

@@ -2,7 +2,7 @@
 
 用法：python worker.py <call_dir>/request.json
 写完 response.json 后以 0 退出，动作失败也一样；只有 worker 自身崩溃才以非 0 退出。
-动作：probe、guide、read、write、view、cleanup。
+动作：probe、guide、read、write、view、frames、cleanup。
 
 顶层只导入标准库与 util、com：缺第三方包时 probe 仍要能跑出缺项清单。
 """
@@ -24,13 +24,13 @@ sys.path.insert(0, str(HERE))
 import com  # noqa: E402
 import util  # noqa: E402
 
-# (发行包名, 导入名)。matplotlib 只在脚本用 office.figure 时需要，缺了不算缺项。
+# (发行包名, 导入名)。matplotlib 只在脚本用 office.figure 时需要，av 只在视频抽帧时需要，缺了都不算缺项。
 PACKAGES = [("python-docx", "docx"), ("openpyxl", "openpyxl"), ("python-pptx", "pptx"),
             ("lxml", "lxml"), ("Pillow", "PIL"), ("pypdfium2", "pypdfium2"),
-            ("psutil", "psutil"), ("matplotlib", "matplotlib")]
+            ("psutil", "psutil"), ("matplotlib", "matplotlib"), ("av", "av")]
 if sys.platform == "win32":
     PACKAGES.append(("pywin32", "win32com"))
-OPTIONAL = {"matplotlib"}
+OPTIONAL = {"matplotlib", "av"}
 SCRIPT_OUTPUT_LIMIT = 20000
 CJK_FONTS = ("Microsoft YaHei", "SimHei", "SimSun", "DengXian", "Noto Sans CJK SC",
              "Source Han Sans SC", "PingFang SC")
@@ -475,8 +475,36 @@ def do_write(req, resp, apps_factory=com.Apps):
                        + ("" if resp["ok"] else "，其余见 stages"))
 
 
+# ───────────────────────── frames ─────────────────────────
+
+def do_frames(req, resp):
+    """视频抽帧：带时间戳的 JPEG 与一段说明。缺 av 时如实报缺解码库，不影响其余动作。"""
+    path = Path(req["path"])
+    if not path.is_file():
+        resp["message"] = f"{req['path']} 不存在"
+        return
+    import video
+
+    try:
+        import av  # noqa: F401
+    except ImportError:
+        resp["message"] = "缺少视频解码库 av（PyAV）"
+        return
+    try:
+        result = video.sample(path, Path(req["call_dir"]) / "frames", req.get("start"), req.get("end"),
+                              req.get("max_frames") or 12, req.get("max_edge") or 1024)
+    except video.Unreadable as e:
+        resp["message"] = str(e)
+        return
+    resp["images"] = [{"path": f["path"], "label": video.clock(f["time"]), "width": f["width"],
+                       "height": f["height"]} for f in result["frames"]]
+    resp["text"] = video.describe(path.name, result)
+    resp["ok"] = True
+    resp["message"] = f"返回 {len(resp['images'])} 帧"
+
+
 HANDLERS = {"probe": do_probe, "guide": do_guide, "read": do_read, "write": do_write,
-            "view": do_view, "cleanup": do_cleanup}
+            "view": do_view, "frames": do_frames, "cleanup": do_cleanup}
 
 
 def main(argv):

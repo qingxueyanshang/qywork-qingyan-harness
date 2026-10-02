@@ -27,6 +27,8 @@ export interface OfficeStatus {
   version: string | null
   /** 必需而缺失的 Python 包。 */
   missing: string[]
+  /** 视频解码库 av 装没装。可选：缺它只有视频抽帧不可用，不计入 `missing`。 */
+  videoDecoder: boolean
   apps: OfficePort['apps'] | null
 }
 
@@ -82,12 +84,14 @@ const UNPROBED: OfficeStatus = {
   python: null,
   version: null,
   missing: [],
+  videoDecoder: false,
   apps: null,
 }
 
 interface ProbeResult {
   python?: string
   missing?: string[]
+  packages?: Record<string, string | null>
   apps?: Record<string, { available?: boolean; reason?: string }>
 }
 
@@ -152,6 +156,7 @@ export function createOfficeHost(config: () => QyConfig): OfficeHost {
         reason: missing.length ? `缺少 Python 包：${missing.join('、')}` : '',
         version: p.python ?? null,
         missing,
+        videoDecoder: typeof p.packages?.av === 'string',
         apps: appsOf(p),
       }
     } catch (err) {
