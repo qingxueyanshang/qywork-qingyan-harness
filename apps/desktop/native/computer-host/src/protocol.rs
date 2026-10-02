@@ -454,7 +454,7 @@ pub enum ActionSpec {
         direction: ScrollDirection,
         amount: u32,
     },
-    /// 文字按 UTF-16 码元投成字符消息，不产生键盘事件。代理对的两个码元相邻投出。
+    /// 文字按 UTF-16 码元投给焦点，投法由各平台按收件窗口定。代理对的两个码元相邻投出。
     TypeText { text: String },
     /// SendInput 的物理按键。修饰键按给出的顺序按下，逆序释放。
     PressKey {

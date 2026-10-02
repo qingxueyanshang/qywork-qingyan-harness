@@ -1,22 +1,26 @@
 //! 前台原始输入的真实派发口：`SendInput` 与 `WM_CHAR`。整个进程只有这里向系统发输入。
 //!
-//! 文字不走键盘事件：`post_text` 按 UTF-16 码元投字符消息。不要为文字新增键盘事件：
-//! `KEYEVENTF_UNICODE` 注入时系统对 U+002D、U+2010–2015、U+3000–303F、U+FF00–FFDF
-//! 只投递按下、不投递配对的抬起，自己记按键状态的应用把下一个按下当成自动重复，
-//! 重复前字、吞掉后字。
+//! 文字按收件窗口选投法（`text_delivery`），一个码元只走其中一种：
+//!
+//! - 一般窗口投 `WM_CHAR`。不要改成注入 `KEYEVENTF_UNICODE` 键盘事件：系统对 U+002D、
+//!   U+2010–2015、U+3000–303F、U+FF00–FFDF 只投递按下、不投递配对的抬起，自己记按键
+//!   状态的应用（微信）把下一个按下当成自动重复，重复前字、吞掉后字。
+//! - UWP 的 `CoreWindow` 注入 `KEYEVENTF_UNICODE`。不要改成投 `WM_CHAR`：其中的文本框
+//!   （开始菜单搜索框）只从系统输入队列取字，投递的字符消息不报错也不落字。在这类窗口上
+//!   注入上述区间的码元与连续重复字符，实测逐字一致。
 
 use std::ffi::c_void;
 
 use ::windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{
     MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-    KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC,
     MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT,
     MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
 };
-use ::windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CHAR};
+use ::windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, PostMessageW, WM_CHAR};
 
 use super::foreground::virtual_desktop;
 use super::keys::virtual_key;
@@ -50,7 +54,7 @@ fn to_absolute(point: ScreenPoint, desktop: ScreenRect) -> (i32, i32) {
     )
 }
 
-/// 真实派发口。整个进程只有这一处调 `SendInput`。
+/// 按键与指针的真实派发口。
 pub struct SystemSink;
 
 impl Sink for SystemSink {
@@ -68,7 +72,7 @@ impl Sink for SystemSink {
     }
 }
 
-/// 真实文字投递口。整个进程只有这一处投 `WM_CHAR`。
+/// 真实文字投递口。投法由收件窗口的类名定（`text_delivery`）。
 pub struct SystemCharSink;
 
 /// `WM_CHAR` 的 lParam：重复次数 1，扫描码 0，非扩展键。
@@ -77,34 +81,90 @@ pub struct SystemCharSink;
 /// 出来会让按扫描码分派的目标收到一个不存在的键。
 const CHAR_LPARAM: isize = 1;
 
-impl CharSink for SystemCharSink {
-    fn post(&self, window: i64, units: &[u16]) -> u32 {
-        let hwnd = HWND(window as *mut c_void);
-        let mut sent = 0u32;
-        for unit in units {
-            // SAFETY: 句柄由调用方核对过归属，消息与参数都是常量形状。
-            let ok = unsafe {
-                PostMessageW(
-                    Some(hwnd),
-                    WM_CHAR,
-                    WPARAM(*unit as usize),
-                    LPARAM(CHAR_LPARAM),
-                )
-            }
-            .is_ok();
-            if !ok {
-                break;
-            }
-            sent += 1;
-        }
-        sent
+/// UWP 应用与系统界面（开始菜单、搜索面板）承载内容的窗口类。
+const CORE_WINDOW_CLASS: &str = "Windows.UI.Core.CoreWindow";
+
+/// 一段文字怎么投进收件窗口。理由见文件头。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextDelivery {
+    /// `PostMessageW(WM_CHAR)` 投给收件窗口。
+    CharMessage,
+    /// `SendInput` 注入 `KEYEVENTF_UNICODE` 键盘事件，进系统输入队列。
+    UnicodeInput,
+}
+
+fn text_delivery(class_name: &str) -> TextDelivery {
+    if class_name == CORE_WINDOW_CLASS {
+        TextDelivery::UnicodeInput
+    } else {
+        TextDelivery::CharMessage
     }
 }
 
-/// 把一批 UTF-16 码元作为字符消息投给一个窗口。
+fn class_of(hwnd: HWND) -> String {
+    let mut name = [0u16; 256];
+    // SAFETY: 只读查询，出参是本栈帧上的缓冲区。
+    let written = unsafe { GetClassNameW(hwnd, &mut name) };
+    String::from_utf16_lossy(&name[..written.max(0) as usize])
+}
+
+impl CharSink for SystemCharSink {
+    fn post(&self, window: i64, units: &[u16]) -> u32 {
+        let hwnd = HWND(window as *mut c_void);
+        match text_delivery(&class_of(hwnd)) {
+            TextDelivery::CharMessage => post_char_messages(hwnd, units),
+            TextDelivery::UnicodeInput => send_unicode_input(units),
+        }
+    }
+}
+
+fn post_char_messages(hwnd: HWND, units: &[u16]) -> u32 {
+    let mut sent = 0u32;
+    for unit in units {
+        // SAFETY: 句柄由调用方核对过归属，消息与参数都是常量形状。
+        let ok = unsafe {
+            PostMessageW(
+                Some(hwnd),
+                WM_CHAR,
+                WPARAM(*unit as usize),
+                LPARAM(CHAR_LPARAM),
+            )
+        }
+        .is_ok();
+        if !ok {
+            break;
+        }
+        sent += 1;
+    }
+    sent
+}
+
+/// 注入进系统输入队列，落到前台线程的焦点上；调用方已在这一批之前核对前台与焦点归属。
+fn send_unicode_input(units: &[u16]) -> u32 {
+    let inputs = unicode_inputs(units);
+    let size = i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(0);
+    // SAFETY: 切片与结构体尺寸都由本函数构造，调用期间不会被改动。
+    let inserted = unsafe { SendInput(&inputs, size) };
+    inserted / 2
+}
+
+/// 每个码元一对按下与抬起，按原文顺序排。
+fn unicode_inputs(units: &[u16]) -> Vec<INPUT> {
+    units
+        .iter()
+        .flat_map(|&unit| {
+            [
+                keyboard(0, unit, KEYEVENTF_UNICODE),
+                keyboard(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
+            ]
+        })
+        .collect()
+}
+
+/// 把一批 UTF-16 码元投给一个窗口。
 ///
-/// 返回真的进了目标消息队列的码元数。逐条判，**不要改成只看最后一条的返回值**：
-/// UIPI 拦截是逐条生效的。
+/// 返回真的进了目标消息队列或系统输入队列的码元数。逐条判，**不要改成只看最后一条的
+/// 返回值**：UIPI 拦截是逐条生效的。
 pub trait CharSink {
     fn post(&self, window: i64, units: &[u16]) -> u32;
 }
@@ -435,6 +495,45 @@ mod tests {
         assert_eq!(out.sent, 1);
         assert_eq!(out.requested, 4);
         assert_eq!(out.interrupted, None);
+    }
+
+    /// 只有 `CoreWindow` 走注入；其余窗口（含 UWP 的外框 `ApplicationFrameWindow`）投字符消息。
+    #[test]
+    fn only_core_windows_receive_injected_text() {
+        assert_eq!(
+            text_delivery("Windows.UI.Core.CoreWindow"),
+            TextDelivery::UnicodeInput
+        );
+        for class in [
+            "Edit",
+            "RichEditD2DPT",
+            "Chrome_RenderWidgetHostHWND",
+            "ApplicationFrameWindow",
+        ] {
+            assert_eq!(text_delivery(class), TextDelivery::CharMessage, "{class}");
+        }
+    }
+
+    /// 注入的每个码元是一对 Unicode 按下与抬起，扫描码位放码元本身，虚拟键码为 0。
+    #[test]
+    fn injected_text_is_one_down_up_pair_per_code_unit() {
+        let units: Vec<u16> = "a，👍".encode_utf16().collect();
+        let events: Vec<(u16, u16, u32)> = unicode_inputs(&units)
+            .iter()
+            .map(|input| {
+                // SAFETY: `unicode_inputs` 只构造 `ki` 这一支。
+                let ki = unsafe { input.Anonymous.ki };
+                (ki.wVk.0, ki.wScan, ki.dwFlags.0)
+            })
+            .collect();
+        let down = KEYEVENTF_UNICODE.0;
+        let up = KEYEVENTF_UNICODE.0 | KEYEVENTF_KEYUP.0;
+        let expected: Vec<(u16, u16, u32)> = units
+            .iter()
+            .flat_map(|&u| [(0, u, down), (0, u, up)])
+            .collect();
+        assert_eq!(units.len(), 4);
+        assert_eq!(events, expected);
     }
 
     /// 空文字一条消息都不投。
