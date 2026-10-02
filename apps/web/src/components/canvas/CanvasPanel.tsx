@@ -573,7 +573,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     ro.observe(stage)
     // 滚轮要 `passive: false` 才能拦住页面滚动。
     const onWheel = (e: WheelEvent) => {
-      if ((e.target as Element).closest('.canvas-panel, .canvas-picker')) return
+      if ((e.target as Element).closest('.canvas-panel, .canvas-picker, .canvas-media-notice'))
+        return
       e.preventDefault()
       const r = stage.getBoundingClientRect()
       const mx = e.clientX - r.left
@@ -1656,6 +1657,13 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       return s?.state === 'failed' && !p.node.versions.length ? s : null
     }
     const current = () => currentOf(p.node)
+    const notice = () => {
+      const s = st()
+      if (s?.state === 'failed')
+        return { failed: true, title: '本次生成失败，已保留原结果', message: s.message }
+      const warning = current()?.warning
+      return warning ? { failed: false, title: '生成结果与设置不符', message: warning } : null
+    }
     const index = () => p.node.versions.findIndex((v) => v.id === p.node.current) + 1
     return (
       <Switch
@@ -1703,7 +1711,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           {(s) => (
             <div class="canvas-media canvas-slot">
               <KindIcon kind={p.node.output} size={22} />
-              <span class="error">{s().message}</span>
+              <span class="error" role="alert">
+                {s().message}
+              </span>
             </div>
           )}
         </Match>
@@ -1723,15 +1733,29 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 h={p.node.h}
                 controls={p.selected}
               />
+              <Show when={notice()}>
+                {(n) => (
+                  <div
+                    class="canvas-media-notice"
+                    classList={{ failed: n().failed }}
+                    role={n().failed ? 'alert' : 'status'}
+                    onPointerDown={(e) => e.stopPropagation()}
+                  >
+                    <strong>{n().title}</strong>
+                    <span>{n().message}</span>
+                  </div>
+                )}
+              </Show>
               <Show when={p.node.versions.length > 1}>
                 <button
                   class="canvas-badge version"
                   type="button"
+                  aria-label={`切换版本（${index()} / ${p.node.versions.length}）`}
                   onClick={(e) =>
                     setMenu({ kind: 'version', anchor: e.currentTarget, nodeId: p.node.id })
                   }
                 >
-                  {index()}
+                  {index()} / {p.node.versions.length}
                   <IconChevron size={10} />
                 </button>
               </Show>

@@ -72,6 +72,8 @@ export interface MediaUsage {
 export interface MediaResult {
   files: MediaFile[]
   usage?: MediaUsage
+  /** 已有可用产物，但接口同时报告了部分失败。保留产物并把原因交给调用方。 */
+  warning?: string
 }
 
 export interface MediaRunOptions {

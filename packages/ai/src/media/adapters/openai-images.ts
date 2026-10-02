@@ -65,8 +65,8 @@ export class OpenAIImagesAdapter implements MediaAdapter {
         signal,
       )
     }
-    const files = await readImages(body, signal)
-    return { files, usage: readUsage(body, files.length) }
+    const result = await readImages(body, signal)
+    return { ...result, usage: readUsage(body, result.files.length) }
   }
 }
 
@@ -90,7 +90,7 @@ function readUsage(body: Record<string, unknown>, received: number): MediaUsage 
 export async function readImages(
   body: Record<string, unknown>,
   signal: AbortSignal,
-): Promise<MediaFile[]> {
+): Promise<Pick<MediaResult, 'files' | 'warning'>> {
   const data = Array.isArray(body.data) ? (body.data as Record<string, unknown>[]) : []
   const files: MediaFile[] = []
   const errors: string[] = []
@@ -109,5 +109,8 @@ export async function readImages(
       errors.length ? `接口没有返回图片：${errors.join('；')}` : '接口没有返回图片',
     )
   }
-  return files
+  return {
+    files,
+    ...(errors.length ? { warning: `部分图片生成失败：${errors.join('；')}` } : {}),
+  }
 }

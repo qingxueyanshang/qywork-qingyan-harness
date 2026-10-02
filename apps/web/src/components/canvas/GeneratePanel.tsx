@@ -945,12 +945,6 @@ export function GeneratePanel(props: {
         }}
       />
 
-      <Show when={props.state?.state === 'failed' && props.node.versions.length > 0}>
-        <div class="canvas-panel-error">
-          {props.state?.state === 'failed' ? props.state.message : ''}
-        </div>
-      </Show>
-
       <div class="canvas-bar">
         <button
           class="mode-chip model"
@@ -1096,7 +1090,12 @@ export function GeneratePanel(props: {
                                   },
                                 ]
                               : []),
-                            { op: 'update', id: props.node.id, provider: o.provider, model: o.id },
+                            {
+                              op: 'update',
+                              id: props.node.id,
+                              provider: o.provider,
+                              model: o.id,
+                            },
                           ])
                         }}
                       >

@@ -78,7 +78,7 @@ export interface MediaCall {
  * `pendingTaskId`：远端任务还在（等待超时、查询或下载失败），可以接续取回；没有它的失败是终态。
  */
 export type MediaCallResult =
-  | { ok: true; provider: string; model: string; files: MediaFile[] }
+  | { ok: true; provider: string; model: string; files: MediaFile[]; warning?: string }
   | { ok: false; message: string; pendingTaskId?: string }
 
 /**

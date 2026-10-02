@@ -50,8 +50,8 @@ export class XaiImagesAdapter implements MediaAdapter {
       auth,
       opts.signal,
     )
-    const files = await readImages(body, opts.signal)
-    return { files, usage: { ...usageOf(body), images: files.length } }
+    const result = await readImages(body, opts.signal)
+    return { ...result, usage: { ...usageOf(body), images: result.files.length } }
   }
 }
 

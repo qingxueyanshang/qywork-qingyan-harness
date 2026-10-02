@@ -21,6 +21,7 @@ import {
   type MediaSpend,
   mimeOf,
 } from '@qywork/core'
+import { imageSizeOf } from './image.ts'
 import {
   displayPath,
   type RootsInput,
@@ -230,7 +231,7 @@ export interface GenerateRequest {
  * `record` 表示远端任务还在、任务记录留着，可以按它取回。
  */
 export type GenerateOutcome =
-  | { ok: true; provider: string; model: string; files: GeneratedFile[] }
+  | { ok: true; provider: string; model: string; files: GeneratedFile[]; warning?: string }
   | { ok: false; message: string; executed: boolean; errorKind?: string; record?: string }
 
 function refused(message: string, errorKind: string): GenerateOutcome {
@@ -309,7 +310,13 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
       if (req.onStatus) call.onStatus = req.onStatus
     }
     const result = await req.media.generate(call, req.signal)
-    return await settle(req.roots, result, slot.target, recordPath)
+    return await settle(
+      req.roots,
+      result,
+      slot.target,
+      recordPath,
+      req.type === 'image' ? req.params : undefined,
+    )
   } finally {
     slot.release()
   }
@@ -358,6 +365,7 @@ async function settle(
   result: MediaCallResult,
   target: string,
   recordPath: string | null,
+  imageParams?: Record<string, unknown>,
 ): Promise<GenerateOutcome> {
   if (!result.ok) {
     if (result.pendingTaskId && recordPath) {
@@ -373,7 +381,51 @@ async function settle(
   }
   const files = await landFiles(roots, result.files, target)
   if (recordPath) await rm(recordPath, { force: true })
-  return { ok: true, provider: result.provider, model: result.model, files }
+  const warning = [imageResultWarning(result.files, imageParams), result.warning]
+    .filter(Boolean)
+    .join('；')
+  return {
+    ok: true,
+    provider: result.provider,
+    model: result.model,
+    files,
+    ...(warning ? { warning } : {}),
+  }
+}
+
+/** 用实际产物核对张数与明确指定的像素尺寸；不把接口少返或降分辨率当作完整成功。 */
+function imageResultWarning(
+  files: MediaFile[],
+  params: Record<string, unknown> | undefined,
+): string {
+  if (!params) return ''
+  const images = files.filter((f) => f.mime.startsWith('image/'))
+  const warnings: string[] = []
+  const requested = params.n
+  if (typeof requested === 'number' && Number.isInteger(requested) && requested > images.length) {
+    warnings.push(`请求 ${requested} 张，实际返回 ${images.length} 张`)
+  }
+  // auto、2K 等由模型决定具体边长的取值不做精确尺寸比较。
+  const size = typeof params.size === 'string' ? /^(\d+)[x*](\d+)$/.exec(params.size) : null
+  if (size) {
+    const width = Number(size[1])
+    const height = Number(size[2])
+    const different = new Set<string>()
+    for (const image of images) {
+      const actual = imageSizeOf(image.bytes)
+      if (
+        actual &&
+        actual.width > 0 &&
+        actual.height > 0 &&
+        (actual.width !== width || actual.height !== height)
+      ) {
+        different.add(`${actual.width}×${actual.height}`)
+      }
+    }
+    if (different.size)
+      warnings.push(`请求尺寸 ${width}×${height}，实际返回 ${[...different].join('、')}`)
+  }
+  return warnings.join('；')
 }
 
 // ── 工具 ──
@@ -444,11 +496,14 @@ function receipt(outcome: GenerateOutcome, noun: (count: number) => string): Too
   }
   return {
     status: 'success',
-    message: `已生成${noun(outcome.files.length)}（${outcome.provider} / ${outcome.model}）：${outcome.files.map((f) => f.path).join('、')}`,
+    message:
+      `已生成${noun(outcome.files.length)}（${outcome.provider} / ${outcome.model}）：${outcome.files.map((f) => f.path).join('、')}` +
+      (outcome.warning ? `\n${outcome.warning}` : ''),
     data: {
       provider: outcome.provider,
       model: outcome.model,
       files: outcome.files.map((f) => ({ path: f.path, mime: f.mime, bytes: f.bytes })),
+      ...(outcome.warning ? { warning: outcome.warning } : {}),
     },
     fileChanges: outcome.files.map((f) => ({ path: f.path, changeType: 'created' as const })),
   }

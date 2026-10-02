@@ -204,8 +204,8 @@ export const canvasTool: ToolSpec = {
       }
       return {
         status: 'success',
-        message: `已生成：${result.paths.join('、')}`,
-        data: { paths: result.paths },
+        message: `已生成：${result.paths.join('、')}${result.warning ? `\n${result.warning}` : ''}`,
+        data: { paths: result.paths, ...(result.warning ? { warning: result.warning } : {}) },
         fileChanges: result.paths.map((p) => ({ path: p, changeType: 'created' as const })),
       }
     } catch (err) {

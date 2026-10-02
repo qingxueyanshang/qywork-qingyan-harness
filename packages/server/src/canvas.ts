@@ -490,21 +490,28 @@ export class CanvasService {
         path,
         made: made(outcome.provider, outcome.model),
         ...sizeField(sizes.get(path)),
+        ...(outcome.warning ? { warning: outcome.warning } : {}),
       })
       const id: string | null = versionId
-      return this.writeBack(ws.root, rel, files, (d) => {
-        if (node.output !== 'video')
-          return addVersions(
-            d,
-            nodeId,
-            files.map((f) => version(f.path)),
-          )
-        if (id) return settleVideo(d, nodeId, id, files, sizes)
-        // 任务号到手时没能写进画布（被外部改写），成功后补一版。
-        const late = version(videoOf(files).path)
-        const added = addVersions(d, nodeId, [late])
-        return added.ok ? settleVideo(added.doc, nodeId, late.id, files, sizes) : added
-      })
+      return this.writeBack(
+        ws.root,
+        rel,
+        files,
+        (d) => {
+          if (node.output !== 'video')
+            return addVersions(
+              d,
+              nodeId,
+              files.map((f) => version(f.path)),
+            )
+          if (id) return settleVideo(d, nodeId, id, files, sizes)
+          // 任务号到手时没能写进画布（被外部改写），成功后补一版。
+          const late = version(videoOf(files).path)
+          const added = addVersions(d, nodeId, [late])
+          return added.ok ? settleVideo(added.doc, nodeId, late.id, files, sizes) : added
+        },
+        outcome.warning,
+      )
     })
     this.running.get(key)!.done = done
     return { done }
@@ -755,11 +762,12 @@ export class CanvasService {
     rel: string,
     files: GeneratedFile[],
     change: (doc: CanvasDoc) => CanvasResult,
+    warning?: string,
   ): Promise<CanvasRunResult> {
     const paths = files.map((f) => f.path)
     try {
       await this.mutate(root, rel, change)
-      return { ok: true, paths }
+      return { ok: true, paths, ...(warning ? { warning } : {}) }
     } catch (err) {
       return {
         ok: false,
