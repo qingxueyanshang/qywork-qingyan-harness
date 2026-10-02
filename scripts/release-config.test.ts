@@ -7,7 +7,8 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
+import { findPython } from '@qywork/runtime'
 import { probeBash } from '../packages/tools/src/sandbox.ts'
 import { collect } from './collect-installer.ts'
 
@@ -25,6 +26,42 @@ function actionText(name: string): string {
 }
 
 describe('桌面发布清单', () => {
+  test('Office 门禁解释器导出宿主原生路径，可由 Bun 直接启动', () => {
+    const setup = Bun.YAML.parse(actionText('setup-build')) as {
+      runs: { steps: { name: string; run?: string }[] }
+    }
+    const script = setup.runs.steps.find((step) => step.name === 'Prepare Office worker Python')!
+      .run!
+    const exportAt = script.indexOf('PY="$("$PY" -c')
+    expect(exportAt).toBeGreaterThan(-1)
+    const python = process.env.QYWORK_TEST_PYTHON || findPython({ providers: {} })
+    expect(python).not.toBeNull()
+    const bash = probeBash().path
+    expect(bash).not.toBeNull()
+    const dir = mkdtempSync(join(tmpdir(), 'release-python-'))
+    try {
+      const result = Bun.spawnSync(
+        [
+          bash!,
+          '-c',
+          `${process.platform === 'win32' ? 'PY="$(cygpath -u "$PY")"\n' : ''}${script.slice(exportAt)}`,
+        ],
+        { cwd: dir, env: { ...process.env, PY: python!, GITHUB_ENV: 'github-env' } },
+      )
+      expect(result.exitCode).toBe(0)
+      const exported = readFileSync(join(dir, 'github-env'), 'utf8').trim()
+      expect(exported).toStartWith('QYWORK_TEST_PYTHON=')
+      const executable = exported.slice('QYWORK_TEST_PYTHON='.length)
+      expect(isAbsolute(executable)).toBe(true)
+      expect(existsSync(executable)).toBe(true)
+      expect(Bun.spawnSync([executable, '-c', 'print("ready")']).stdout.toString().trim()).toBe(
+        'ready',
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('发布准备把同一公钥写入打包配置和客户端编译环境', () => {
     const action = Bun.YAML.parse(actionText('release-prepare')) as {
       runs: { steps: { name: string; run?: string }[] }

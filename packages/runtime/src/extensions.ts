@@ -274,14 +274,15 @@ export function releaseExtensions(handle: Extensions): Promise<void> {
   return handle.stop()
 }
 
-/** 全局修改刷新已缓存工作区；项目覆盖使有效配置未变时保留原连接。 */
+/** 全局修改只刷新同一配置根的缓存工作区；有效配置未变时保留原连接。 */
 export async function refreshExtensions(
   workspaceRoot: string,
   global: boolean,
   retryNames: readonly string[] = [],
 ): Promise<void> {
   const entries = [...shared.values()].filter(
-    (entry) => global || cacheKey(entry.root) === cacheKey(workspaceRoot),
+    (entry) =>
+      entry.key === cacheKey(entry.root) && (global || entry.key === cacheKey(workspaceRoot)),
   )
   for (const entry of entries) {
     const lease = await acquireExtensions(entry.root, undefined, false, retryNames)
