@@ -28,6 +28,7 @@ import {
 } from '@qywork/core'
 import {
   createEffect,
+  createMemo,
   createResource,
   createSignal,
   For,
@@ -40,6 +41,7 @@ import {
 } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import {
+  absPath,
   type CanvasEdit,
   cancelCard,
   captureFrame,
@@ -59,6 +61,7 @@ import {
   registerDropSink,
   restoreCanvas,
   retrieveCard,
+  revealFile,
   runCard,
   state,
   uploadToCanvas,
@@ -308,10 +311,13 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     )
   }
 
-  // 有卡在跑时每秒走一次计时。
+  // 只在开始 / 全部结束时启停计时；状态回报和其他画布更新不重置一秒间隔。
+  const hasRunning = createMemo(() =>
+    Object.values(view()?.states ?? {}).some((s) => s.state === 'running'),
+  )
   createEffect(() => {
-    const v = view()
-    if (!v || !Object.values(v.states).some((s) => s.state === 'running')) return
+    if (!hasRunning()) return
+    setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 1000)
     onCleanup(() => clearInterval(timer))
   })
@@ -998,6 +1004,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     }
     const ids = [...selected()]
     const single = ids.length === 1 ? byId(ids[0]!) : undefined
+    const file = single && v ? mediaOf(v, single.id).path : null
     return [
       { label: '复制', keys: `${MOD}C`, run: () => void copySelection() },
       {
@@ -1014,7 +1021,20 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         run: () => v && void pasteNodes(v.doc, ids, null, true),
       },
       null,
-      ...(single ? [{ label: '改名', run: () => setRenaming(single.id) }] : []),
+      ...(file && isDesktopShell()
+        ? [
+            {
+              label: '在资源管理器中显示',
+              run: () => {
+                setFault(null)
+                void revealFile(absPath(file)).catch((err: unknown) =>
+                  setFault(explainApiError(err, '无法定位文件')),
+                )
+              },
+            },
+          ]
+        : []),
+      ...(single ? [{ label: '重命名', run: () => setRenaming(single.id) }] : []),
       { label: '删除', keys: 'Delete', run: removeSelected },
     ]
   }
@@ -1684,11 +1704,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                   <span />
                   <span />
                 </span>
-                <Show when={s().phase}>
-                  {(phase) => (
-                    <span class="phase">{phase() === 'queued' ? '排队中' : '生成中'}</span>
-                  )}
-                </Show>
+                <span class="phase">
+                  {s().phase === 'queued' || (!s().phase && p.node.output === 'video')
+                    ? '排队中'
+                    : '生成中'}
+                </span>
                 <span class="time">{clock(now() - s().startedAt)}</span>
               </div>
             </div>
