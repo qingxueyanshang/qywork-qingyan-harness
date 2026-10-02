@@ -9,6 +9,7 @@ import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/agent'
 import {
   buildMediaAdapter,
   lookupMediaModel,
+  type MediaCancel,
   MediaError,
   type MediaInput,
   type MediaModelSpec,
@@ -174,4 +175,27 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
       }
     },
   }
+}
+
+/**
+ * 撤销一个已提交的视频任务。`unsupported`：这个接口没有撤销，撤不回、按结果计费。
+ * 模型已从配置里删掉或没有密钥时抛错：撤不撤得动都无从知道，不能当成撤不回。
+ */
+export async function cancelMediaTask(
+  config: QyConfig,
+  task: { provider: string; model: string; taskId: string },
+  signal: AbortSignal,
+): Promise<MediaCancel | 'unsupported'> {
+  const target = resolveMediaModel(config, 'video', { provider: task.provider, model: task.model })
+  if (!target?.apiKey) {
+    throw new MediaError(`接口 ${task.provider} / ${task.model} 不在配置里或没有 API Key，没有撤销`)
+  }
+  const adapter = buildMediaAdapter({
+    kind: target.kind,
+    model: target.model,
+    apiKey: target.apiKey,
+    ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
+    ...(target.headers ? { headers: target.headers } : {}),
+  })
+  return adapter.cancel ? adapter.cancel(task.taskId, signal) : 'unsupported'
 }

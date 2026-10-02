@@ -24,6 +24,25 @@ export type TaskState<T = TaskOutput> =
   | ({ state: 'done' } & T)
   | { state: 'failed'; message: string }
 
+/** 远端任务进行到哪一步：排队中还是生成中。排队中的任务百炼与方舟撤得动，生成中的撤不回。 */
+export type TaskPhase = 'queued' | 'running'
+
+const PHASES: Record<string, TaskPhase> = {
+  // 百炼 PENDING / RUNNING，方舟与 OpenAI queued，可灵 submitted / processing，xAI pending / processing，
+  // Gemini 交互 queued / in_progress。Veo 未完成时只有 processing，分不出排队，按生成中算。
+  pending: 'queued',
+  queued: 'queued',
+  submitted: 'queued',
+  running: 'running',
+  in_progress: 'running',
+  processing: 'running',
+}
+
+/** 各家查询结果里的进行中状态词归成两步；认不出的回 null。 */
+export function taskPhase(status: string): TaskPhase | null {
+  return PHASES[status.toLowerCase()] ?? null
+}
+
 /** 任务完成：结果地址与查询结果里的计量。 */
 export type TaskDone<T = TaskOutput> = Extract<TaskState<T>, { state: 'done' }>
 

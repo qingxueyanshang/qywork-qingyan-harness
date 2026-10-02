@@ -77,6 +77,21 @@ export function splitAt(clips: readonly CanvasClip[], t: number): CanvasClip[] |
   ]
 }
 
+/** 片段缩略图画布的最大宽度（块宽单位）。 */
+const THUMB_MAX = 2048
+
+/**
+ * 片段缩略图画布的像素宽高：块在页面上的宽高各乘 2。宽高必须按同一倍数取，倍数不同帧会被拉长或压扁。
+ * 块宽超过 `THUMB_MAX` 时宽高按同一比例缩小、显示时再拉回块的大小：全屏放大后块可以很宽，画布超出浏览器上限会画不出。
+ */
+export function thumbCanvas(w: number, h: number): { width: number; height: number } {
+  const scale = Math.min(1, THUMB_MAX / Math.max(1, w))
+  return {
+    width: Math.max(8, Math.round(w * scale * 2)),
+    height: Math.max(8, Math.round(h * scale * 2)),
+  }
+}
+
 /**
  * 分割按钮可不可用。播放中不按播放头判断：离段的两端不足 `MIN_CLIP` 时不能分割，逐帧判断会让按钮在每个片段交界处
  * 禁用约 0.2 秒。播放中点下时由调用方先停下，再按停下处分割。

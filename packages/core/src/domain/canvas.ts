@@ -122,7 +122,8 @@ export type CanvasNodeState =
   | { state: 'normal' }
   | { state: 'missing' }
   | { state: 'empty' }
-  | { state: 'running'; startedAt: number }
+  /** `phase`：远端任务排队中还是生成中，平台回报过才有；图像与音频这类一次请求的生成没有。 */
+  | { state: 'running'; startedAt: number; phase?: 'queued' | 'running' }
   /** `version`：点「取回」时取哪一版。 */
   | { state: 'pending'; version: string }
   | { state: 'failed'; message: string }
@@ -250,14 +251,26 @@ export function mentionsOf(prompt: string): string[] {
   return [...new Set([...prompt.matchAll(MENTION_RE)].map((m) => m[1]!))]
 }
 
+const TEXT_RE = /\.(md|txt)$/i
+
+/** 工作区文件放上画布按哪一类显示：图片、视频、音频按媒体，`.md` / `.txt` 显示正文，其余回 null（只显示文件名）。 */
+export type CanvasFileKind = MediaOutput | 'text'
+export const CANVAS_FILE_KINDS: readonly CanvasFileKind[] = [...MEDIA_OUTPUTS, 'text']
+
+export function canvasFileKind(path: string): CanvasFileKind | null {
+  if (isInlineImage(path)) return 'image'
+  if (isInlineVideo(path)) return 'video'
+  if (AUDIO_RE.test(path)) return 'audio'
+  if (TEXT_RE.test(path)) return 'text'
+  return null
+}
+
 /** 节点能作为哪一类输入。文件按扩展名判；判不出的（文本、压缩包等）不能作为生成的输入。 */
 export function canvasMediaOf(node: CanvasNode): MediaOutput | null {
   if (node.type === 'generate') return node.output
   if (node.type === 'timeline') return null
-  if (isInlineImage(node.path)) return 'image'
-  if (isInlineVideo(node.path)) return 'video'
-  if (AUDIO_RE.test(node.path)) return 'audio'
-  return null
+  const kind = canvasFileKind(node.path)
+  return kind === 'text' ? null : kind
 }
 
 /** 节点在界面与提示词纯文本里的名字。 */

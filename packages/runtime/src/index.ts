@@ -60,7 +60,7 @@ export { type FileLogSink, fileLogSink, LOG_FILE } from './log-file.ts'
 // MCP 配置：server 的导入接口与会话里的模型工具共用同一份写入实现
 export { makeMcpConfigPort, mergeMcpServers, type WritableMcpScope } from './mcp-config-store.ts'
 // 生成端口：会话里的生成工具与 server 的画布（界面发起的生成）共用同一份选模型、校验与计价
-export { makeMediaPort } from './media.ts'
+export { cancelMediaTask, makeMediaPort } from './media.ts'
 // Office 执行程序的宿主侧：服务端与 CLI 各建一个，会话按它给出的端口注册 `office`。
 export {
   createOfficeHost,

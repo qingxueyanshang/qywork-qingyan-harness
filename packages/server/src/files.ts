@@ -320,16 +320,20 @@ const FIND_MAX_ENTRIES = 20_000
  *
  * 只 `readdir` 不 `stat`：命中列表不显示大小与时间，为两万条各取一次元数据
  * 是白花的几百毫秒。
+ *
+ * 给了 `accept`（工作区相对路径 → 要不要）时只回它接受的文件、不回目录；这时查询允许为空，
+ * 回的是它接受的全部文件，同样受两个上限约束。
  */
 export async function findByName(
   workspaceRoot: string,
   query: string,
   limits: { hits: number; entries: number } = { hits: FIND_MAX_HITS, entries: FIND_MAX_ENTRIES },
+  accept?: (path: string) => boolean,
 ): Promise<{ matches: FindHit[]; truncated: boolean }> {
-  // 空查询回空结果，**判定放在这里而不是调用方**：空字符串表示「匹配全部」，
+  // 没有 `accept` 时空查询回空结果，**判定放在这里而不是调用方**：空字符串表示「匹配全部」，
   // 由 HTTP 那层挡的话，第二个调用方一来就会拿到整棵树。
   const needle = query.trim().toLowerCase()
-  if (!needle) return { matches: [], truncated: false }
+  if (!needle && !accept) return { matches: [], truncated: false }
 
   const matches: FindHit[] = []
   let scanned = 0
@@ -346,12 +350,10 @@ export async function findByName(
       }
       scanned++
       const abs = join(dir, e.name)
-      if (e.name.toLowerCase().includes(needle)) {
-        matches.push({
-          path: toPosix(relative(workspaceRoot, abs)),
-          kind: e.isDirectory() ? 'dir' : 'file',
-        })
-      }
+      const path = toPosix(relative(workspaceRoot, abs))
+      const named = e.name.toLowerCase().includes(needle)
+      const kept = !accept || (!e.isDirectory() && accept(path))
+      if (named && kept) matches.push({ path, kind: e.isDirectory() ? 'dir' : 'file' })
       if (e.isDirectory() && !IGNORED_DIRS.has(e.name)) queue.push(abs)
     }
   }

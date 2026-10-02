@@ -1,8 +1,8 @@
 /**
- * 覆盖 `canvas.ts` 的运行与取回（`run` / `retrieve`），以及 `canvas.run` 与 `file.changed` 的时序。
+ * 覆盖 `canvas.ts` 的运行、取回与取消（`run` / `retrieve` / `cancel`），以及 `canvas.run` 与 `file.changed` 的时序。
  *
  * 生成端口是假的：每次调用交出一个可以从外面推进的句柄（任务号回调、完成、失败），
- * 测试据此控制「生成到一半」的时刻。
+ * 测试据此控制「生成到一半」的时刻。中止信号到达时调用以中止原因拒绝，同真实端口。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -48,8 +48,9 @@ function fakePort(): { port: MediaPort; calls: Pending[]; next(): Promise<Pendin
   const calls: Pending[] = []
   const waiters: ((p: Pending) => void)[] = []
   const port: MediaPort = {
-    generate(call) {
-      return new Promise((resolve) => {
+    generate(call, signal) {
+      return new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
         const p: Pending = {
           call,
           submit: async (taskId = `task-${calls.length}`) => {
@@ -463,5 +464,144 @@ describe('画布运行：视频', () => {
       state: 'failed',
       message: 'b',
     })
+  })
+})
+
+describe('画布运行：取消', () => {
+  const finished = {
+    ok: true as const,
+    provider: 'ark',
+    model: 'seedance',
+    files: [{ bytes: MP4, mime: 'video/mp4' }],
+  }
+
+  test('远端撤成了：停下本地等待，删掉这一版与任务记录，不记失败，卡回到生成之前', async () => {
+    const { ws, svc, events, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit('t-1')
+    const asked: unknown[] = []
+    const outcome = await svc.cancel(ws.root, PATH, ids.$v!, async (task) => {
+      asked.push(task)
+      return 'cancelled'
+    })
+    expect(outcome).toBe('cancelled')
+    expect(asked).toEqual([
+      {
+        taskId: 't-1',
+        provider: 'ark',
+        model: 'seedance',
+        record: expect.any(String),
+        versionId: expect.any(String),
+      },
+    ])
+    expect(await done).toEqual({ ok: false, message: '已取消生成', pending: false })
+    expect((await node(ws.root, ids.$v!)).versions).toEqual([])
+    expect(await readdir(join(ws.root, 'generated'))).toEqual([])
+    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'empty' })
+    expect(events.at(-1)).toMatchObject({ type: 'canvas.run', state: 'done' })
+  })
+
+  test('远端已开始：撤不回，生成照常进行到成功', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit('t-1')
+    expect(await svc.cancel(ws.root, PATH, ids.$v!, async () => 'started')).toBe('started')
+    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
+    p.finish(finished)
+    expect(await done).toMatchObject({ ok: true })
+    expect((await node(ws.root, ids.$v!)).versions[0]!.path).toMatch(/\.mp4$/)
+  })
+
+  test('任务号还没到手时先等它，到手后再撤；图像这类一次请求的生成不撤；没在生成回 409', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    let asked = 0
+    const cancelling = svc.cancel(ws.root, PATH, ids.$v!, async () => {
+      asked++
+      return 'cancelled'
+    })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(asked).toBe(0)
+    await p.submit('t-1')
+    expect(await cancelling).toBe('cancelled')
+    expect(asked).toBe(1)
+    await done
+    expect(
+      (await failure(svc.cancel(ws.root, PATH, ids.$v!, async () => 'cancelled'))).status,
+    ).toBe(409)
+
+    const image = await setup(IMAGE_CARD)
+    const imageFake = fakePort()
+    const run = await image.svc.run(image.ws, PATH, image.ids.$g!, { media: imageFake.port })
+    const q = await imageFake.next()
+    expect(
+      await image.svc.cancel(image.ws.root, PATH, image.ids.$g!, async () => 'cancelled'),
+    ).toBe('unsupported')
+    q.finish({
+      ok: true,
+      provider: 'ark',
+      model: 'img',
+      files: [{ bytes: PNG, mime: 'image/png' }],
+    })
+    expect(await run.done).toMatchObject({ ok: true })
+  })
+
+  test('取回中也能撤：任务号从任务记录里读', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit('t-9')
+    p.finish({ ok: false, message: '等待超时', pendingTaskId: 't-9' })
+    await run.done
+    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    await fake.next()
+    const asked: { taskId: string }[] = []
+    const outcome = await svc.cancel(ws.root, PATH, ids.$v!, async (task) => {
+      asked.push(task)
+      return 'cancelled'
+    })
+    expect(outcome).toBe('cancelled')
+    expect(asked[0]!.taskId).toBe('t-9')
+    expect(await again.done).toMatchObject({ ok: false, message: '已取消生成' })
+    expect((await node(ws.root, ids.$v!)).versions).toEqual([])
+  })
+})
+
+describe('画布运行：排队中与生成中', () => {
+  test('平台回报的状态记进卡片状态，变了才发 canvas.run；认不出的状态词不改', async () => {
+    const { ws, svc, events, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit('t-1')
+    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).not.toHaveProperty('phase')
+    const runningEvents = () =>
+      events.filter((e) => e.type === 'canvas.run' && e.state === 'running').length
+    const before = runningEvents()
+    p.call.onStatus?.('PENDING')
+    p.call.onStatus?.('PENDING')
+    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({
+      state: 'running',
+      phase: 'queued',
+    })
+    expect(runningEvents()).toBe(before + 1)
+    p.call.onStatus?.('RUNNING')
+    p.call.onStatus?.('WHATEVER')
+    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ phase: 'running' })
+    expect(runningEvents()).toBe(before + 2)
+    p.finish({
+      ok: true,
+      provider: 'ark',
+      model: 'seedance',
+      files: [{ bytes: MP4, mime: 'video/mp4' }],
+    })
+    await done
   })
 })

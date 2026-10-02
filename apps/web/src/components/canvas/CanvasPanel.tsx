@@ -16,6 +16,7 @@ import {
   type CanvasOp,
   type CanvasTimelineNode,
   type CanvasView,
+  canvasFileKind,
   canvasMediaOf,
   copyOps,
   displayNameOf,
@@ -40,6 +41,7 @@ import {
 import { Portal } from 'solid-js/web'
 import {
   type CanvasEdit,
+  cancelCard,
   captureFrame,
   client,
   editCanvas,
@@ -88,7 +90,6 @@ import { gapAt, insertClips, metaOf, sessionOf, splitAt, withoutClip } from './t
 const PANEL_W = 480
 const PANEL_H = 180
 const PANEL_TALL = 360
-const TEXT_RE = /\.(md|txt)$/i
 
 /**
  * 右键点中的对象：节点作用于选区（点中的不在选区里时先只选它），空白处作用于那一点；
@@ -204,7 +205,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
   // ── 读与写 ──
 
-  /** 只采纳最后一次：连续重读时先发的可能后到；写操作的回体同样作废在它之前发出的读。 */
+  /** 只采纳最后一次：连续重读时先发的可能后到；读与写共用一个序号，按发出的先后算（见 `write`）。 */
   let seq = 0
   const load = async () => {
     const mine = ++seq
@@ -224,10 +225,17 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     ),
   )
 
-  const settle = (next: CanvasView) => {
-    seq += 1
-    setView(next)
+  /**
+   * 写操作的回体：发出时占序号，回来时只在此后没有发出过更新的读才采纳。
+   * 不要改成回来时才占序号：那会作废写操作发出之后才发起、内容比它新的读（例如生成中平台回报状态引起的重读），
+   * 画布停在旧的样子，直到下一次变化。
+   */
+  const write = async <T extends CanvasView>(request: Promise<T>): Promise<T> => {
+    const mine = ++seq
+    const next = await request
+    if (mine === seq) setView(() => next)
     setFault(null)
+    return next
   }
 
   /**
@@ -236,37 +244,39 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
    */
   const undoStack: CanvasEdit['step'][] = []
   const redoStack: CanvasEdit['step'][] = []
+  /** 本页最近一次编辑：撤销与重做先等它回来，否则刚松手就按撤销时这一步还没进撤销栈，撤销没有反应。 */
+  let editing: Promise<unknown> = Promise.resolve()
 
-  const apply = async (ops: CanvasOp[]): Promise<CanvasEdit | null> => {
-    if (broken()) return null
-    try {
-      const next = await editCanvas(props.path, ops)
-      settle(next)
-      if (next.step.before !== next.step.after) {
-        undoStack.push(next.step)
-        if (undoStack.length > 100) undoStack.shift()
-        redoStack.length = 0
+  const apply = (ops: CanvasOp[]): Promise<CanvasEdit | null> => {
+    const job = (async () => {
+      if (broken()) return null
+      try {
+        const next = await write(editCanvas(props.path, ops))
+        if (next.step.before !== next.step.after) {
+          undoStack.push(next.step)
+          if (undoStack.length > 100) undoStack.shift()
+          redoStack.length = 0
+        }
+        return next
+      } catch (e) {
+        setFault(explainApiError(e, '没有改成'))
+        return null
       }
-      return next
-    } catch (e) {
-      setFault(explainApiError(e, '没有改成'))
-      return null
-    }
+    })()
+    editing = job
+    return job
   }
 
   /** 撤销（`back` 为真）或重做一步。服务端拒绝时两个栈都清空：文件已经不是栈里记的那条历史。 */
   const travel = async (back: boolean) => {
+    await editing
     const from = back ? undoStack : redoStack
     const to = back ? redoStack : undoStack
     const step = from.pop()
     if (!step) return
     try {
-      settle(
-        await restoreCanvas(
-          props.path,
-          back ? step.after : step.before,
-          back ? step.before : step.after,
-        ),
+      await write(
+        restoreCanvas(props.path, back ? step.after : step.before, back ? step.before : step.after),
       )
       to.push(step)
     } catch (e) {
@@ -277,13 +287,25 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
 
   const run = (nodeId: string, ops: CanvasOp[]) => {
-    void runCard(props.path, nodeId, ops).then(settle, (e: unknown) =>
+    write(runCard(props.path, nodeId, ops)).catch((e: unknown) =>
       setFault(explainApiError(e, '没有开始生成')),
     )
   }
 
+  /** 停止：撤不回时用一句话说明照常计费；撤成了由 `canvas.run` 事件刷新，卡回到这次生成之前。 */
+  const cancel = (nodeId: string) =>
+    cancelCard(props.path, nodeId).then(
+      (outcome) => {
+        if (outcome === 'started') setFault('已开始生成，平台不支持中途取消，完成后照常计费')
+        else if (outcome === 'unsupported') setFault('这个平台不支持取消，完成后照常计费')
+      },
+      (e: unknown) => {
+        setFault(explainApiError(e, '没有取消'))
+      },
+    )
+
   const retrieve = (nodeId: string, version?: string) => {
-    void retrieveCard(props.path, nodeId, version).then(settle, (e: unknown) =>
+    write(retrieveCard(props.path, nodeId, version)).catch((e: unknown) =>
       setFault(explainApiError(e, '没有开始取回')),
     )
   }
@@ -977,13 +999,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     }
     const ids = [...selected()]
     const single = ids.length === 1 ? byId(ids[0]!) : undefined
-    const runnable =
-      single?.type === 'generate' &&
-      single.prompt.trim() !== '' &&
-      v?.states[single.id]?.state !== 'running' &&
-      (modelCatalog()?.media ?? []).some((m) => m.output === single.output)
     return [
-      ...(runnable && single ? [{ label: '运行', run: () => run(single.id, []) }, null] : []),
       { label: '复制', keys: `${MOD}C`, run: () => void copySelection() },
       {
         label: '剪切',
@@ -1401,7 +1417,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       <Switch
         fallback={
           <Show
-            when={TEXT_RE.test(p.path)}
+            when={canvasFileKind(p.path) === 'text'}
             fallback={
               <div class="canvas-media canvas-other">
                 <IconFile size={20} />
@@ -1482,7 +1498,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       const node = n()
       if (node.type === 'generate') return node.output
       if (node.type === 'timeline') return 'timeline'
-      return TEXT_RE.test(node.path) ? 'text' : canvasMediaOf(node)
+      return canvasFileKind(node.path)
     }
     const commitName = (value: string) => {
       setRenaming(null)
@@ -1663,6 +1679,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                   <span />
                   <span />
                 </span>
+                <Show when={s().phase}>
+                  {(phase) => (
+                    <span class="phase">{phase() === 'queued' ? '排队中' : '生成中'}</span>
+                  )}
+                </Show>
                 <span class="time">{clock(now() - s().startedAt)}</span>
               </div>
             </div>
@@ -1915,6 +1936,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 onTall={setTall}
                 apply={(ops) => apply(ops).then((r) => r !== null)}
                 run={(ops) => run(id, ops)}
+                cancel={() => cancel(id)}
                 place={(source) => placeInput(at().node, source)}
               />
             )
@@ -1973,10 +1995,6 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       <Rail
         outputs={[...MEDIA_OUTPUTS]}
         disabled={!view() || !!broken()}
-        accepts={(p) =>
-          canvasMediaOf({ id: '', type: 'file', path: p, x: 0, y: 0, w: 0, h: 0 }) !== null ||
-          TEXT_RE.test(p)
-        }
         onGenerate={(o) => void addGenerate(o)}
         onTimeline={() => void addTimeline()}
         onPick={pickFile}
@@ -2041,10 +2059,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                     (n) => mediaOf(view()!, n.id).kind === 'video' && mediaOf(view()!, n.id).path,
                   )}
                   files={true}
-                  accepts={(p) =>
-                    canvasMediaOf({ id: '', type: 'file', path: p, x: 0, y: 0, w: 0, h: 0 }) ===
-                    'video'
-                  }
+                  kinds={['video']}
                   accept="video/*"
                   thumb={(id) => <KindIcon kind={mediaOf(view()!, id).kind} size={14} />}
                   onNode={(id) => {

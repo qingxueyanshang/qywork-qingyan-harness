@@ -24,6 +24,7 @@ import {
 } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { CanvasPort, MediaPort } from '@qywork/agent'
+import { type TaskPhase, taskPhase } from '@qywork/ai'
 import {
   type AgentEvent,
   addVersions,
@@ -212,13 +213,45 @@ export interface CanvasRunOptions {
   signal?: AbortSignal
 }
 
+/** 生成卡的一次远端视频任务，以及指向它的那一版（任务号到手时没能写进画布则为 null）。 */
+interface CanvasTask {
+  taskId: string
+  provider: string
+  model: string
+  /** 任务记录的工作区路径。 */
+  record: string
+  versionId: string | null
+}
+
+/** 撤销远端任务的结果：`unsupported` 是接口没有撤销。由调用方按配置实现，见 `cancel`。 */
+export type CanvasCancelTask = (task: {
+  taskId: string
+  provider: string
+  model: string
+}) => Promise<'cancelled' | 'started' | 'unsupported'>
+
+/** 一张卡的一次生成（运行或取回）。 */
+interface RunEntry {
+  startedAt: number
+  done?: Promise<CanvasRunResult>
+  /** 只停这一次生成的本地等待：远端撤销成功后用。 */
+  stop: AbortController
+  /** 这次生成会不会有远端任务：视频会，图像与音频是一次请求、没有任务号。 */
+  expectsTask: boolean
+  task?: CanvasTask
+  /** 平台回报的排队中 / 生成中；回报之前没有。 */
+  phase?: TaskPhase
+  /** 任务号到手时兑现：取消在任务号到手之前到达时等它。 */
+  taskArrived: Promise<void>
+  arrive: () => void
+  /** 远端已撤销：收尾时删掉这一版与任务记录，不记失败。 */
+  cancelled?: true
+}
+
 export class CanvasService {
   private readonly queues = new Map<string, Promise<unknown>>()
   /** 键：`画布绝对路径#节点 id`。多个工作区并存时相对路径会撞。 */
-  private readonly running = new Map<
-    string,
-    { startedAt: number; done?: Promise<CanvasRunResult> }
-  >()
+  private readonly running = new Map<string, RunEntry>()
   private readonly shutdown = new AbortController()
   private recovering = false
   private recovery: Promise<void> | undefined
@@ -377,19 +410,20 @@ export class CanvasService {
       at: new Date().toISOString(),
     })
 
-    this.begin(key, ws, rel, nodeId)
+    const entry = this.begin(key, ws, rel, nodeId, node.output === 'video')
     const done = this.settleRun(key, ws, rel, nodeId, async () => {
       let versionId: string | null = null
       const outcome = await generateMedia({
         roots: ws.root,
         media: opts.media,
-        signal: this.signalFor(opts.signal),
+        signal: this.signalFor(entry, opts.signal),
+        onStatus: (status) => this.advance(entry, ws, rel, nodeId, status),
         type: node.output,
         prompt,
         inputs,
         params: node.params,
         ...(pick ? { pick } : {}),
-        onTask: async ({ record, provider, model }) => {
+        onTask: async ({ record, taskId, provider, model }) => {
           const id = newCanvasId()
           await this.mutate(ws.root, rel, (d) =>
             addVersions(d, nodeId, [{ id, path: record, made: made(provider, model) }]),
@@ -399,6 +433,8 @@ export class CanvasService {
             },
             () => {},
           )
+          entry.task = { taskId, provider, model, record, versionId }
+          entry.arrive()
         },
       })
       if (!outcome.ok) {
@@ -451,16 +487,20 @@ export class CanvasService {
         : (tasks.find((v) => v.id === node.current) ?? tasks.at(-1))
     if (!version) throw new CanvasFailure(`「${node.name}」没有待取回的任务`, 422)
 
-    this.begin(key, ws, rel, nodeId)
+    const entry = this.begin(key, ws, rel, nodeId, true)
     const done = this.settleRun(key, ws, rel, nodeId, async () => {
       if (!(await this.isFile(ws.root, version.path))) {
         await this.dropVersion(ws.root, rel, nodeId, version.id)
         return { ok: false, message: `任务记录已不存在：${version.path}`, pending: false }
       }
+      const task = await this.readTask(ws.root, version.path)
+      if (task) entry.task = { ...task, record: version.path, versionId: version.id }
+      entry.arrive()
       const outcome = await resumeMedia({
         roots: ws.root,
         media: opts.media,
-        signal: this.signalFor(opts.signal),
+        signal: this.signalFor(entry, opts.signal),
+        onStatus: (status) => this.advance(entry, ws, rel, nodeId, status),
         record: version.path,
       })
       if (!outcome.ok) {
@@ -495,12 +535,50 @@ export class CanvasService {
     return { rel, key, doc, node }
   }
 
-  private begin(key: string, ws: CanvasWorkspace, rel: string, nodeId: string): void {
+  private begin(
+    key: string,
+    ws: CanvasWorkspace,
+    rel: string,
+    nodeId: string,
+    expectsTask: boolean,
+  ): RunEntry {
     if (this.shutdown.signal.aborted || this.deps.updating?.())
       throw new CanvasFailure('应用正在更新或关闭，请稍后重试', 409)
     if (this.running.has(key)) throw new CanvasFailure('这张卡正在生成', 409)
-    this.running.set(key, { startedAt: Date.now() })
+    let arrive = () => {}
+    const taskArrived = new Promise<void>((resolve) => {
+      arrive = resolve
+    })
+    const entry: RunEntry = {
+      startedAt: Date.now(),
+      stop: new AbortController(),
+      expectsTask,
+      taskArrived,
+      arrive,
+    }
+    this.running.set(key, entry)
     this.failures.delete(key)
+    this.deps.publish({
+      type: 'canvas.run',
+      workspaceId: ws.id,
+      path: rel,
+      nodeId,
+      state: 'running',
+    })
+    return entry
+  }
+
+  /** 平台回报的状态变了：记下排队中 / 生成中，发一条 `canvas.run` 让界面重读。认不出的状态词不改。 */
+  private advance(
+    entry: RunEntry,
+    ws: CanvasWorkspace,
+    rel: string,
+    nodeId: string,
+    status: string,
+  ): void {
+    const phase = taskPhase(status)
+    if (!phase || phase === entry.phase) return
+    entry.phase = phase
     this.deps.publish({
       type: 'canvas.run',
       workspaceId: ws.id,
@@ -510,8 +588,51 @@ export class CanvasService {
     })
   }
 
-  private signalFor(signal?: AbortSignal): AbortSignal {
-    return signal ? AbortSignal.any([signal, this.shutdown.signal]) : this.shutdown.signal
+  private signalFor(entry: RunEntry, signal?: AbortSignal): AbortSignal {
+    return AbortSignal.any([entry.stop.signal, this.shutdown.signal, ...(signal ? [signal] : [])])
+  }
+
+  /** 任务记录里的任务号、接口与模型；读不出回 null（取消时当作撤不回）。 */
+  private async readTask(
+    root: string,
+    record: string,
+  ): Promise<{ taskId: string; provider: string; model: string } | null> {
+    try {
+      const r = JSON.parse(await readFile(join(root, record), 'utf8')) as Record<string, unknown>
+      const { taskId, provider, model } = r
+      return typeof taskId === 'string' && typeof provider === 'string' && typeof model === 'string'
+        ? { taskId, provider, model }
+        : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 取消一张卡正在进行的生成。视频提交之后才有远端任务，任务号还没到手时先等它（与这次生成的结束赛跑）。
+   * 撤销由 `cancelTask` 按接口能力做：撤成了停掉本地等待，收尾时删掉这一版与任务记录、不记失败，回 `cancelled`。
+   * 撤不回时这次生成照常进行：远端已开始或已结束回 `started`，接口没有撤销、图像与音频这类一次请求回 `unsupported`；
+   * 生成在任务号到手之前就结束了回 `ended`。撤销请求本身失败（网络、鉴权）原样抛，生成照常进行。
+   */
+  async cancel(
+    workspaceRoot: string,
+    path: string,
+    nodeId: string,
+    cancelTask: CanvasCancelTask,
+  ): Promise<'cancelled' | 'started' | 'unsupported' | 'ended'> {
+    const entry = this.running.get(`${keyOf(workspaceRoot, path)}#${nodeId}`)
+    if (!entry) throw new CanvasFailure('这张卡没有在生成', 409)
+    if (entry.cancelled) return 'cancelled'
+    if (!entry.expectsTask) return 'unsupported'
+    if (!entry.task) await Promise.race([entry.taskArrived, entry.done])
+    const task = entry.task
+    if (!task) return 'ended'
+    const outcome = await cancelTask(task)
+    if (outcome !== 'cancelled') return outcome
+    entry.cancelled = true
+    entry.stop.abort()
+    await entry.done
+    return 'cancelled'
   }
 
   /** 收尾：清在跑、记失败、发结束事件。`work` 抛出也收成失败，`done` 不会拒绝。 */
@@ -528,14 +649,23 @@ export class CanvasService {
     } catch (err) {
       result = { ok: false, message: (err as Error).message, pending: false }
     }
+    const entry = this.running.get(key)
+    // 远端已撤销：这一版与任务记录一起删掉，卡回到这次生成之前的样子，不记失败。
+    if (entry?.cancelled && entry.task) {
+      if (entry.task.versionId) await this.dropVersion(ws.root, rel, nodeId, entry.task.versionId)
+      await rm(join(ws.root, entry.task.record), { force: true })
+      result = { ok: false, message: '已取消生成', pending: false }
+    }
     this.running.delete(key)
-    if (!result.ok) this.failures.set(key, result.message)
+    if (!result.ok && !entry?.cancelled) this.failures.set(key, result.message)
     this.deps.publish({
       type: 'canvas.run',
       workspaceId: ws.id,
       path: rel,
       nodeId,
-      ...(result.ok ? { state: 'done' } : { state: 'failed', message: result.message }),
+      ...(result.ok || entry?.cancelled
+        ? { state: 'done' }
+        : { state: 'failed', message: result.message }),
     })
     return result
   }
@@ -961,8 +1091,14 @@ export class CanvasService {
       return found.every(Boolean) ? { state: 'normal' } : { state: 'missing' }
     }
     const key = `${canvasKey}#${node.id}`
-    const startedAt = this.running.get(key)?.startedAt
-    if (startedAt !== undefined) return { state: 'running', startedAt }
+    const run = this.running.get(key)
+    if (run) {
+      return {
+        state: 'running',
+        startedAt: run.startedAt,
+        ...(run.phase ? { phase: run.phase } : {}),
+      }
+    }
     const tasks = node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))
     const pending = tasks.find((v) => v.id === node.current) ?? tasks.at(-1)
     if (pending) return { state: 'pending', version: pending.id }

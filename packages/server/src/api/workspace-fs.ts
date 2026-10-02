@@ -12,6 +12,7 @@
  * `followFinalSymlink: false`：跟随末段软链时，删除和改名会作用到软链指向的目标。
  */
 
+import { CANVAS_FILE_KINDS, canvasFileKind } from '@qywork/core'
 import { resolveInWorkspace } from '@qywork/tools'
 import {
   createEntry,
@@ -39,7 +40,18 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
 
   if (p === '/api/files/find') {
     // 空查询由 `findByName` 判（它回空结果，不回整棵树）——这里不重复一遍。
-    return json(await findByName(d.workspaceRoot, q.get('q') ?? ''))
+    // 带 `kinds`（逗号分隔的画布文件类别）时只回这几类文件，查询允许为空：画布上选素材的框打开即列出。
+    const kinds = q.get('kinds')
+    if (kinds === null) return json(await findByName(d.workspaceRoot, q.get('q') ?? ''))
+    const wanted = new Set(kinds.split(','))
+    if (![...wanted].every((k) => (CANVAS_FILE_KINDS as readonly string[]).includes(k))) {
+      return json({ error: 'invalid', message: `类别不合法：${kinds}` }, 422)
+    }
+    const accept = (path: string) => {
+      const kind = canvasFileKind(path)
+      return kind !== null && wanted.has(kind)
+    }
+    return json(await findByName(d.workspaceRoot, q.get('q') ?? '', undefined, accept))
   }
 
   /*

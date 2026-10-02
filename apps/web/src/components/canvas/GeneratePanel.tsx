@@ -47,7 +47,15 @@ import {
   quoteCard,
 } from '../../lib/store/index.ts'
 import { AnchoredMenu } from '../AnchoredMenu.tsx'
-import { IconCheck, IconChevron, IconExpand, IconPlus, IconSend, IconX } from '../Icons.tsx'
+import {
+  IconCheck,
+  IconChevron,
+  IconExpand,
+  IconPlus,
+  IconSend,
+  IconStop,
+  IconX,
+} from '../Icons.tsx'
 import { Bitmap, decodeImage, paint } from './Bitmap.tsx'
 import { dismissOnOutside } from './dismiss.ts'
 import { promptOfEditor, promptParts } from './prompt.ts'
@@ -260,6 +268,8 @@ export function GeneratePanel(props: {
   onTall: (tall: boolean) => void
   apply: (ops: CanvasOp[]) => Promise<boolean>
   run: (ops: CanvasOp[]) => void
+  /** 停止这张卡的生成。兑现时请求已经回来。 */
+  cancel: () => Promise<void>
   /** 把工作区文件或本机文件放上画布（在这张卡附近），回新节点的 id；没放成回 `null`。 */
   place: (source: { path: string } | { file: File }) => Promise<string | null>
 }) {
@@ -288,6 +298,8 @@ export function GeneratePanel(props: {
         ? modeOf(props.view.doc, props.node.id)
         : emptyMode()
   const running = () => props.state?.state === 'running'
+  /** 停止请求还没回来：停止键禁用，免得重复撤销。 */
+  const [stopping, setStopping] = createSignal(false)
 
   const models = (): MediaModelOption[] =>
     (modelCatalog()?.media ?? []).filter((m) => m.output === props.node.output)
@@ -779,16 +791,35 @@ export function GeneratePanel(props: {
         <Show when={price()}>
           {(q) => <span class="canvas-price">{formatMoney(q().cost, q().currency as never)}</span>}
         </Show>
-        <button
-          class="send-btn"
-          classList={{ 'has-content': !!draft().trim() }}
-          type="button"
-          aria-label="生成"
-          disabled={!draft().trim() || running() || !model()}
-          onClick={send}
+        {/* 生成中发送键换成停止键，同会话输入框。 */}
+        <Show
+          when={running()}
+          fallback={
+            <button
+              class="send-btn"
+              classList={{ 'has-content': !!draft().trim() }}
+              type="button"
+              aria-label="生成"
+              disabled={!draft().trim() || !model()}
+              onClick={send}
+            >
+              <IconSend size={16} />
+            </button>
+          }
         >
-          <IconSend size={16} />
-        </button>
+          <button
+            class="send-btn"
+            type="button"
+            aria-label="停止"
+            disabled={stopping()}
+            onClick={() => {
+              setStopping(true)
+              void props.cancel().finally(() => setStopping(false))
+            }}
+          >
+            <IconStop size={16} />
+          </button>
+        </Show>
       </div>
 
       <Show when={menu()}>
@@ -799,6 +830,7 @@ export function GeneratePanel(props: {
                 <SourcePicker
                   nodes={pickable()}
                   files={roleOf(m()) !== undefined || mode() !== 'first_last'}
+                  kinds={imagesOnly() ? ['image'] : ['image', 'video', 'audio']}
                   accepts={acceptsPath}
                   accept={uploadAccept()}
                   thumb={(id) => <Thumb view={props.view} nodeId={id} />}

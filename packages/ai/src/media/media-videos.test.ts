@@ -3,7 +3,8 @@
  *
  * 覆盖范围：`media/adapters/dashscope.ts` 的 `DashScopeVideosAdapter`、`media/adapters/ark-videos.ts`、
  * `media/adapters/openai-videos.ts`、`media/adapters/kling.ts` 实际发出的提交与查询、`media/task.ts` 的终态与可接续的区分，
- * `media/catalog.ts` 视频模型按 id 兜底时的操作交集与按型号的参数表，以及 `@qywork/core` 的 `defaultMediaKind` 对视频的选择。
+ * `media/catalog.ts` 视频模型按 id 兜底时的操作交集与按型号的参数表，以及 `@qywork/core` 的 `defaultMediaKind` 对视频的选择；
+ * 百炼与方舟的撤销任务（`cancel`），各家进行中状态词归成排队中 / 生成中（`taskPhase`）。
  *
  * 起一个本机端点当远端：记下每个请求，查询按预设的状态序列回答。
  */
@@ -13,6 +14,7 @@ import { defaultMediaKind } from '@qywork/core'
 import { lookupMediaModel } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
 import { validateMediaCall } from './params.ts'
+import { taskPhase } from './task.ts'
 import { MediaError } from './types.ts'
 
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
@@ -33,6 +35,8 @@ let seen: Seen[] = []
 let submit: () => Response = () => Response.json({})
 /** 每次查询依次取一个回复，取到最后一个后一直用它。 */
 let polls: (() => Response)[] = []
+/** DELETE 的回复（方舟撤销）。 */
+let remove: () => Response = () => Response.json({})
 let downloadStatus = 200
 const origin = () => `http://127.0.0.1:${server.port}`
 
@@ -61,6 +65,7 @@ beforeAll(() => {
         })
       }
       if (req.method === 'POST') return submit()
+      if (req.method === 'DELETE') return remove()
       const next = polls.length > 1 ? polls.shift()! : polls[0]!
       return next()
     },
@@ -602,5 +607,88 @@ describe('openai_videos', () => {
     expect(spec.operations).toEqual(['text_to_video'])
     expect(spec.inputs).toMatchObject({ maxImages: 0, maxVideos: 0 })
     expect(spec.params.map((p) => p.name)).toContain('omni_reference_task_type')
+  })
+})
+
+describe('撤销任务', () => {
+  const dashscope = () =>
+    buildMediaAdapter({
+      kind: 'dashscope_videos',
+      model: 'wan3.0-video',
+      apiKey: 'sk-ds',
+      baseUrl: `${origin()}/compatible-mode/v1`,
+    })
+  const ark = () =>
+    buildMediaAdapter({
+      kind: 'ark_videos',
+      model: 'doubao-seedance-2-5-260628',
+      apiKey: 'sk-ark',
+      baseUrl: `${origin()}/api/v3`,
+    })
+  const signal = new AbortController().signal
+  const status = (task_status: string) => () => Response.json({ output: { task_status } })
+  const refused = () =>
+    Response.json(
+      {
+        code: 'UnsupportedOperation',
+        message: 'Failed to cancel the task, please confirm if the task is in PENDING status.',
+      },
+      { status: 400 },
+    )
+
+  test('百炼：排队中撤得动；已开始时撤销被拒，查到不在排队回 started；仍在排队说明是别的原因，原样抛', async () => {
+    submit = () => Response.json({ request_id: 'r1' })
+    expect(await dashscope().cancel!('t-1', signal)).toBe('cancelled')
+    const post = seen.find((x) => x.method === 'POST')!
+    expect(post.path).toBe('/api/v1/tasks/t-1/cancel')
+    expect(post.headers.authorization).toBe('Bearer sk-ds')
+
+    submit = refused
+    polls = [status('RUNNING')]
+    expect(await dashscope().cancel!('t-2', signal)).toBe('started')
+    polls = [status('PENDING')]
+    expect((await rejection(dashscope().cancel!('t-3', signal))).status).toBe(400)
+  })
+
+  test('方舟：先查状态，排队中才删；运行中或已结束不发删除（删除对已结束的任务是删掉记录）', async () => {
+    polls = [() => Response.json({ status: 'queued' })]
+    expect(await ark().cancel!('cgt-1', signal)).toBe('cancelled')
+    const del = seen.find((x) => x.method === 'DELETE')!
+    expect(del.path).toBe('/api/v3/contents/generations/tasks/cgt-1')
+
+    for (const state of ['running', 'succeeded']) {
+      seen = []
+      polls = [
+        () => Response.json({ status: state, content: { video_url: `${origin()}/files/out.mp4` } }),
+      ]
+      expect(await ark().cancel!('cgt-2', signal)).toBe('started')
+      expect(seen.some((x) => x.method === 'DELETE')).toBe(false)
+    }
+  })
+
+  test('方舟：查询与删除之间开始了，删除被拒后再查不在排队，回 started', async () => {
+    polls = [() => Response.json({ status: 'queued' }), () => Response.json({ status: 'running' })]
+    remove = () => Response.json({ error: { code: 'InvalidParameter' } }, { status: 400 })
+    expect(await ark().cancel!('cgt-3', signal)).toBe('started')
+    remove = () => Response.json({})
+  })
+
+  test('其余视频接口没有撤销：可灵、Veo、Sora、Grok 的适配器不带 cancel', () => {
+    for (const [kind, model] of [
+      ['kling_videos', 'kling-v3'],
+      ['openai_videos', 'sora-2'],
+    ] as const) {
+      expect(buildMediaAdapter({ kind, model, apiKey: 'k' }).cancel).toBeUndefined()
+    }
+  })
+})
+
+describe('排队中与生成中', () => {
+  test('各家的进行中状态词归成两步，认不出的回 null', () => {
+    for (const s of ['PENDING', 'queued', 'pending', 'submitted'])
+      expect(taskPhase(s)).toBe('queued')
+    for (const s of ['RUNNING', 'running', 'in_progress', 'processing'])
+      expect(taskPhase(s)).toBe('running')
+    expect(taskPhase('SUCCEEDED')).toBeNull()
   })
 })

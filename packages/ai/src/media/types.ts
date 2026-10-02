@@ -93,7 +93,18 @@ export interface MediaAdapter {
   readonly kind: MediaKind
   readonly spec: MediaModelSpec
   run(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult>
+  /**
+   * 撤销已提交的异步任务。只有接口提供撤销的适配器才有；没有它的接口一律当作撤不回。
+   * 撤销失败（网络、鉴权）抛 `MediaError`，调用方不能据此当成已撤销。
+   */
+  cancel?(taskId: string, signal: AbortSignal): Promise<MediaCancel>
 }
+
+/**
+ * 撤销的结果。`cancelled`：远端已撤销，不计费。`started`：远端已开始生成或已经结束，撤不回，
+ * 按结果计费（成功计费、失败不计费）。
+ */
+export type MediaCancel = 'cancelled' | 'started'
 
 /**
  * 生成接口的失败。`status` 是 HTTP 状态码（网络层失败时没有），`message` 带接口原文。
