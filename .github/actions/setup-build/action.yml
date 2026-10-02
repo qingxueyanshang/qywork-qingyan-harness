@@ -60,6 +60,7 @@ runs:
         "$BASE" -m venv .tmp/office-venv
         if [ -x .tmp/office-venv/Scripts/python.exe ]; then PY="$PWD/.tmp/office-venv/Scripts/python.exe"; else PY="$PWD/.tmp/office-venv/bin/python"; fi
         "$PY" -m pip install -r packages/runtime/office/requirements.txt
+        PY="$("$PY" -c 'import sys; print(sys.executable)')"
         echo "QYWORK_TEST_PYTHON=$PY" >> "$GITHUB_ENV"
 
     - name: Check version manifests

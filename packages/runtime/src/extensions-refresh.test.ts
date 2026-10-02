@@ -259,6 +259,27 @@ test('连接拒绝如实保留 saved；禁用后新快照不含旧工具', async
   expect((await call(held, 'mcp__probe__ping')).status).toBe('success')
 })
 
+test('全局刷新不把其他配置根的缓存工作区接入当前 MCP', async () => {
+  const service = mcp()
+  const foreign = await acquire(root, true)
+  await makeMcpConfigPort(root).writeServer({
+    name: 'probe',
+    scope: 'global',
+    configJson: JSON.stringify({ url: `${service.url}/stable` }),
+  })
+  const currentRoot = await mkdtemp(join(tmpdir(), 'mcp-current-'))
+  process.env.QYWORK_HOME = join(home, 'separate')
+  const current = await acquire(currentRoot, true)
+  await makeMcpConfigPort(currentRoot).writeServer({
+    name: 'probe',
+    scope: 'global',
+    configJson: JSON.stringify({ url: `${service.url}/first` }),
+  })
+  expect((await call(foreign, 'mcp__probe__ping')).message).toContain('/stable:pong')
+  expect((await call(current, 'mcp__probe__ping')).message).toContain('/first:pong')
+  expect(service.initialized()).toBe(2)
+})
+
 test('全局变更更新多个缓存工作区，项目覆盖不重连；并发写入不丢配置', async () => {
   const service = mcp()
   const second = await mkdtemp(join(tmpdir(), 'mcp-other-'))
