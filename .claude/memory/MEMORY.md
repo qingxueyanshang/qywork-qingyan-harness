@@ -20,3 +20,4 @@ qywork 自己的记忆放这里，一条一个文件，下面一行一条指向�
 - [参照 agent 仓库在 view-agent](reference-agents-in-view-agent.md) — 「看看开源项目」指桌面 view-agent 下 pi / prime / cc-haha / deepseek-harness 四个；出处只进 docs/plans
 - [上一版没发布就不升版本号](version-bump-only-after-publish.md) — v0.1.20 未公开时新改动并进 0.1.20，本地打包安装用同一版本号，说明改当前版本那份
 - [执行 qy 必须隔离数据目录](qy-needs-isolated-home.md) — 同一条命令里设 `QYWORK_HOME` 指向 .tmp；钩子 `scripts/guard-real-home.ts` 拦没设的；误跑过一次用户真实账本
+- [Git Bash 的 /tmp 指向已删的测试目录](git-bash-tmp-points-at-deleted-test-dir.md) — bash 先打「could not find /tmp」、shell 工具测试报「投递额度未开账」；`mount` 看指向，把目录建回来，不结束别人的 sh

@@ -7,9 +7,21 @@
 
 import type { CanvasClip } from '@qywork/core'
 import { type Accessor, createSignal, onCleanup } from 'solid-js'
+import { type VideoMeta, videoMeta } from './frame.ts'
 
 /** 片段最短 0.1 秒：再短的段在轨道上抓不住，导出也不足 3 帧。 */
 export const MIN_CLIP = 0.1
+
+/** 源视频的元数据按地址缓存：裁剪出点的上限、新片段的整段长度、预览画框的比例都要它。读不到时各项为 0。 */
+const metas = new Map<string, Promise<VideoMeta>>()
+export function metaOf(url: string): Promise<VideoMeta> {
+  let m = metas.get(url)
+  if (!m) {
+    m = videoMeta(url).catch(() => ({ duration: 0, width: 0, height: 0 }))
+    metas.set(url, m)
+  }
+  return m
+}
 
 /** 入点出点取到毫秒：拖动换算出的秒数带十几位小数，写进画布文件没有意义。 */
 function ms(seconds: number): number {
@@ -63,6 +75,14 @@ export function splitAt(clips: readonly CanvasClip[], t: number): CanvasClip[] |
     { path: c.path, in: cut, out: c.out },
     ...clips.slice(at.index + 1),
   ]
+}
+
+/**
+ * 分割按钮可不可用。播放中不按播放头判断：离段的两端不足 `MIN_CLIP` 时不能分割，逐帧判断会让按钮在每个片段交界处
+ * 禁用约 0.2 秒。播放中点下时由调用方先停下，再按停下处分割。
+ */
+export function canSplit(clips: readonly CanvasClip[], t: number, playing: boolean): boolean {
+  return playing ? clips.length > 0 : splitAt(clips, t) !== null
 }
 
 export function withoutClip(clips: readonly CanvasClip[], index: number): CanvasClip[] {
@@ -181,6 +201,21 @@ function createSession(): { session: TimelineSession; dispose(): void } {
   let urls: string[] = []
   let clips: CanvasClip[] = []
   let key = ''
+  /** 预览画框的比例取第一段：导出的成片按第一段定尺寸，其余段在画框里等比留边。 */
+  let framed = ''
+  const frameTo = (url: string | undefined) => {
+    if (url === framed) return
+    framed = url ?? ''
+    if (!url) {
+      preview.style.removeProperty('--tl-ratio')
+      return
+    }
+    void metaOf(url).then(({ width, height }) => {
+      if (framed === url && width && height) {
+        preview.style.setProperty('--tl-ratio', String(width / height))
+      }
+    })
+  }
   let active = 0
   /** 两个视频元素各装着第几段；-1 是空。 */
   const holds = [-1, -1]
@@ -260,6 +295,7 @@ function createSession(): { session: TimelineSession; dispose(): void } {
       pause()
       urls = nextUrls
       clips = nextClips
+      frameTo(urls[0])
       holds[0] = -1
       holds[1] = -1
       const sel = selected()

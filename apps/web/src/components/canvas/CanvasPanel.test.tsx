@@ -495,6 +495,23 @@ describe('画布：节点操作', () => {
     ])
   })
 
+  test('拖动时向其余节点的边对齐：几个像素内吸过去并画对齐线，松手提交对齐后的位置', async () => {
+    const { host, server, refs } = await mount(FILES)
+    const stage = host.querySelector('.canvas-stage')!
+    const z = zoom(host)
+    // $b 原与 $a 顶边齐平；横移 120、往下 3 个屏幕像素，仍在吸附范围内，吸回顶边。
+    pointer(node(host, refs.$b!), 'pointerdown', 10, 10)
+    pointer(stage, 'pointermove', 10 + 120 * z, 13)
+    expect(host.querySelectorAll('.canvas-guide').length).toBe(1)
+    pointer(stage, 'pointerup', 10 + 120 * z, 13)
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$b!, x: 420, y: 0 }])
+    expect(host.querySelector('.canvas-guide')).toBeNull()
+  })
+
   test('拖动中收到文件变更重读，被拖的节点不跳回', async () => {
     const { host, server, refs } = await mount(FILES)
     const store = await import('../../lib/store/index.ts')
@@ -667,10 +684,29 @@ describe('画布：生成卡与生成面板', () => {
       { n2: { state: 'running', startedAt: Date.now() } },
     )
     const live = host.querySelector<SVGPathElement>('.canvas-edges path.live')!
-    const id = /url\(#([^)]+)\)/.exec(live.style.stroke)?.[1]
+    const id = /url\("?#([^)"]+)"?\)/.exec(live.style.stroke)?.[1]
     expect(id).toBeDefined()
     expect(host.querySelector(`linearGradient#${id}`)).not.toBeNull()
     expect(live.getAttribute('stroke')).toBeNull()
+  })
+
+  test('选中节点时它的连线常驻同一套梯度，其余连线不带', async () => {
+    const { host, refs } = await mount([
+      ...CARD,
+      { op: 'add_file', ref: '$b', path: 'b.png', x: 0, y: 300 },
+      { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+      { op: 'connect', from: '$b', to: '$v', role: 'reference' },
+    ])
+    expect(host.querySelector('.canvas-edges path.hot')).toBeNull()
+    pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
+    pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
+    await waitFor(
+      () => host.querySelectorAll('.canvas-edges path.hot').length === 1,
+      () => host.querySelector('.canvas-edges')!.innerHTML,
+    )
+    const hot = host.querySelector<SVGPathElement>('.canvas-edges path.hot')!
+    const id = /url\("?#([^)"]+)"?\)/.exec(hot.style.stroke)?.[1]
+    expect(host.querySelector(`linearGradient#${id}`)).not.toBeNull()
   })
 
   test('生成中禁止发送', async () => {

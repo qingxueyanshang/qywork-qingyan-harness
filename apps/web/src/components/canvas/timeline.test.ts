@@ -1,10 +1,11 @@
 /**
- * 覆盖 `canvas/timeline.ts` 的片段编辑纯函数：定位、分割、删除、换位、插入、裁剪、间隙。
+ * 覆盖 `canvas/timeline.ts` 的片段编辑纯函数：定位、分割与分割按钮可用性、删除、换位、插入、裁剪、间隙。
  * 本地播放会话依赖 `<video>`，在 `CanvasPanel.test.tsx` 与真实窗口里验证。
  */
 
 import { describe, expect, test } from 'bun:test'
 import {
+  canSplit,
   gapAt,
   insertClips,
   locate,
@@ -41,6 +42,14 @@ describe('时间线：片段编辑', () => {
     ])
     expect(splitAt(clips, 2 + MIN_CLIP / 2)).toBeNull()
     expect(splitAt([], 1)).toBeNull()
+  })
+
+  test('分割按钮：播放经过片段交界时一直可用，停下时按停下处判断', () => {
+    // 从 0 播到终点，逐帧（60 Hz）取按钮状态：一帧都不能不可用。
+    for (let t = 0; t < totalOf(clips); t += 1 / 60) expect(canSplit(clips, t, true)).toBe(true)
+    expect(canSplit(clips, 2 + MIN_CLIP / 2, false)).toBe(false)
+    expect(canSplit(clips, 3, false)).toBe(true)
+    expect(canSplit([], 0, true)).toBe(false)
   })
 
   test('删除、插入与换位；换到原处回 null', () => {

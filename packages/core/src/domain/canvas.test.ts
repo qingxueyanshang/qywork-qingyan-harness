@@ -518,10 +518,11 @@ describe('画布：时间线', () => {
       { op: 'add_timeline', clips: [clip('素材/a.mp4', 0, 2)] },
     ])
     const [first, second] = doc.nodes
-    expect(first).toMatchObject({ type: 'timeline', name: '时间线1', w: 640, h: 120, clips: [] })
-    expect(second).toMatchObject({ name: '时间线2', h: 360 })
+    expect(first).toMatchObject({ type: 'timeline', name: '时间线1', w: 480, h: 120, clips: [] })
+    // 预览区按 16:9 铺满框宽：(480 - 16) × 9 / 16 = 261。
+    expect(second).toMatchObject({ name: '时间线2', h: 381 })
     doc = apply(doc, [{ op: 'update', id: 'a1', clips: [clip('素材/a.mp4', 1, 3.5)] }])
-    expect(doc.nodes[0]).toMatchObject({ h: 360, clips: [clip('素材/a.mp4', 1, 3.5)] })
+    expect(doc.nodes[0]).toMatchObject({ h: 381, clips: [clip('素材/a.mp4', 1, 3.5)] })
     doc = apply(doc, [{ op: 'update', id: 'a1', clips: [] }])
     expect(doc.nodes[0]!.h).toBe(120)
   })

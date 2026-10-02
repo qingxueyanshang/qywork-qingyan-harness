@@ -81,8 +81,9 @@ import { clock, FrameBar, type PlayerHandle, VideoPlayer } from './Player.tsx'
 import { Rail } from './Rail.tsx'
 import { renderTimeline } from './render.ts'
 import { SourcePicker } from './SourcePicker.tsx'
-import { durationOf, Timeline } from './Timeline.tsx'
-import { gapAt, insertClips, sessionOf, splitAt, withoutClip } from './timeline.ts'
+import { boundsOf, type Guide, snap } from './snap.ts'
+import { Timeline } from './Timeline.tsx'
+import { gapAt, insertClips, metaOf, sessionOf, splitAt, withoutClip } from './timeline.ts'
 
 const PANEL_W = 480
 const PANEL_H = 180
@@ -101,6 +102,8 @@ type ContextTarget =
 
 /** 从片段推出来的「视频 → 时间线」的线：id 是这个前缀加时间线 id 与视频节点 id。画布 id 不含冒号，不会撞上。 */
 const CLIP_LINK = 'clip:'
+/** 拖动节点时的吸附范围（屏幕像素）：按缩放折成画布单位，缩放后手感不变。 */
+const SNAP = 6
 
 /**
  * `at`：从连接点拖到空白处松手时新卡放在这一点；右键菜单里粘贴、新建与上传也放在这一点（画布坐标）。
@@ -174,6 +177,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   /** 从连接点拖出的连线：起点节点与指针位置（画布坐标），以及此刻指着的可连目标。 */
   const [linking, setLinking] = createSignal<{ from: string; x: number; y: number } | null>(null)
   const [linkTarget, setLinkTarget] = createSignal<string | null>(null)
+  /** 拖动节点时吸附到的对齐线（画布坐标），松手清空。 */
+  const [guides, setGuides] = createSignal<Guide[]>([])
   let dropAnchor!: HTMLSpanElement
   /** 指针最近在画布区里的位置（画布坐标）；粘贴与拖入放在这里，指针不在画布区时放视野中央。 */
   let pointerAt: { x: number; y: number } | null = null
@@ -689,7 +694,24 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       d.moved = true
       const dx = (e.clientX - d.sx) / z()
       const dy = (e.clientY - d.sy) / z()
-      setMoving(Object.fromEntries(d.start.map((s) => [s.id, { x: s.x + dx, y: s.y + dy }])))
+      const ids = new Set(d.start.map((s) => s.id))
+      const boxes = d.start.flatMap((s) => {
+        const n = byId(s.id)
+        return n ? [{ x: s.x + dx, y: s.y + dy, w: n.w, h: n.h }] : []
+      })
+      const fit = boxes.length
+        ? snap(
+            boundsOf(boxes),
+            nodes().filter((n) => !ids.has(n.id)),
+            SNAP / z(),
+          )
+        : { dx: 0, dy: 0, guides: [] }
+      setGuides(fit.guides)
+      setMoving(
+        Object.fromEntries(
+          d.start.map((s) => [s.id, { x: s.x + dx + fit.dx, y: s.y + dy + fit.dy }]),
+        ),
+      )
       setClipTarget(
         timelineUnder(
           e.clientX,
@@ -728,6 +750,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     drag = null
     stage.classList.remove('grabbing')
     setMarquee(null)
+    setGuides([])
     if (d?.mode === 'pan' && d.context && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) {
       openContext(d.context, e.clientX, e.clientY)
       return
@@ -1064,7 +1087,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const added = (
       await Promise.all(
         videos.map(async (path) => {
-          const d = await durationOf(client.fileUrl(path))
+          const d = (await metaOf(client.fileUrl(path))).duration
           return d > 0 ? [{ path, in: 0, out: Math.floor(d * 1000) / 1000 }] : []
         }),
       )
@@ -1753,10 +1776,10 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           style={{ transform: `translate(${px()}px, ${py()}px) scale(${z()})` }}
         >
           <defs>
-            <For each={edgePaths().filter((e) => e.live)}>
+            <For each={edgePaths().filter((e) => e.live || e.hot)}>
               {(e) => (
                 <linearGradient
-                  id={`canvas-live-${e.id}`}
+                  id={`canvas-flow-${e.id}`}
                   gradientUnits="userSpaceOnUse"
                   x1={e.x1}
                   y1={e.y1}
@@ -1782,7 +1805,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                     selected: edgeSelected() === e.id,
                   }}
                   // 梯度写在内联样式里：写成 `stroke` 属性会被 `.canvas-edges path` 的描边色覆盖。
-                  style={e.live ? { stroke: `url(#canvas-live-${e.id})` } : {}}
+                  style={e.live || e.hot ? { stroke: `url("#canvas-flow-${e.id}")` } : {}}
                 />
                 <path class="canvas-edge-hit" data-edge={e.id} d={e.d} />
               </>
@@ -1802,6 +1825,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
               return <path class="canvas-edge-draft" d={d()} />
             }}
           </Show>
+          <For each={guides()}>
+            {(g) => <line class="canvas-guide" x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} />}
+          </For>
         </svg>
         <div
           class="canvas-world"

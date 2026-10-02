@@ -31,11 +31,13 @@ import {
   IconVolumeOff,
   IconX,
 } from '../Icons.tsx'
-import { drawFilmstrip, videoDuration } from './frame.ts'
+import { drawFilmstrip } from './frame.ts'
 import { clock } from './Player.tsx'
 import {
+  canSplit,
   gapAt,
   lengthOf,
+  metaOf,
   moveClip,
   splitAt,
   startsOf,
@@ -56,17 +58,6 @@ const LABEL_GAP = 64
 const ADD_W = 28
 /** 片段缩略图的最大宽度（画布单位）。 */
 const THUMB_MAX = 2048
-
-/** 源时长按地址缓存：裁剪出点的上限与新片段的整段长度都要它。 */
-const durations = new Map<string, Promise<number>>()
-export function durationOf(url: string): Promise<number> {
-  let d = durations.get(url)
-  if (!d) {
-    d = videoDuration(url).catch(() => 0)
-    durations.set(url, d)
-  }
-  return d
-}
 
 /** `mm:ss.s`。 */
 function clockTenths(seconds: number): string {
@@ -213,8 +204,8 @@ export function Timeline(props: TimelineProps) {
     begin(e, { kind: 'trim', index, edge, sx: e.clientX, base, duration: Number.POSITIVE_INFINITY })
     session.select(index)
     const g = gesture
-    void durationOf(props.urlOf(base[index]!.path)).then((d) => {
-      if (g?.kind === 'trim' && d > 0) g.duration = d
+    void metaOf(props.urlOf(base[index]!.path)).then(({ duration }) => {
+      if (g?.kind === 'trim' && duration > 0) g.duration = duration
     })
   }
   const onMove = (e: PointerEvent) => {
@@ -262,14 +253,17 @@ export function Timeline(props: TimelineProps) {
 
   // ── 操作 ──
 
-  const split = () => void commit(splitAt(props.node.clips, session.playhead()))
+  const split = () => {
+    session.pause()
+    void commit(splitAt(props.node.clips, session.playhead()))
+  }
   const remove = () => {
     const i = session.selected()
     if (i === null) return
     session.select(null)
     void commit(withoutClip(props.node.clips, i))
   }
-  const canSplit = () => splitAt(props.node.clips, session.playhead()) !== null
+  const splittable = () => canSplit(props.node.clips, session.playhead(), session.playing())
 
   // 全屏：Space 播放、Delete 删片段、Esc 退出；Ctrl+滚轮缩放时间轴，滚轮横向滚动。
   onMount(() => {
@@ -335,7 +329,13 @@ export function Timeline(props: TimelineProps) {
         <div class="canvas-tl-view" ref={setView} />
       </Show>
       <div class="canvas-tl-bar">
-        <button type="button" title="分割" aria-label="分割" disabled={!canSplit()} onClick={split}>
+        <button
+          type="button"
+          title="分割"
+          aria-label="分割"
+          disabled={!splittable()}
+          onClick={split}
+        >
           <IconScissors size={14} />
         </button>
         <button

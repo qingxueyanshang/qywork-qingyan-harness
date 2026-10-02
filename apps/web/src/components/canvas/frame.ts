@@ -51,13 +51,39 @@ export async function seekVideo(src: string, at: number): Promise<HTMLVideoEleme
   video.src = src
   try {
     await once(video, 'loadedmetadata')
-    const seeked = once(video, 'seeked')
-    video.currentTime = frameTime(at, video.duration || 0)
-    await seeked
+    await seekTo(video, at)
     return video
   } catch (e) {
     releaseVideo(video)
     throw e
+  }
+}
+
+/**
+ * 定位到那一刻，等到画面可以画了才返回。
+ * 不要只等 `seeked`：解码器延后出帧时它先于画面到达，这时 `drawImage` 画出空白、`createImageBitmap`
+ * 报「图像源不可用」。呈现回调要在定位前登记：定位前后位置相同时不会再呈现，但那时画面已在，探测一次就过。
+ */
+async function seekTo(video: HTMLVideoElement, at: number): Promise<void> {
+  const presented = new Promise<void>((resolve, reject) => {
+    video.requestVideoFrameCallback(() => resolve())
+    video.addEventListener('error', () => reject(new Error('视频加载失败')), { once: true })
+  })
+  presented.catch(() => {})
+  const seeked = once(video, 'seeked')
+  video.currentTime = frameTime(at, video.duration || 0)
+  await seeked
+  if (!(await drawable(video))) await presented
+}
+
+/** 当前画面能不能画：取左上角 1×1 像素试一次。 */
+async function drawable(video: HTMLVideoElement): Promise<boolean> {
+  try {
+    const probe = await createImageBitmap(video, 0, 0, 1, 1)
+    probe.close()
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -82,15 +108,26 @@ export async function captureVideoFrame(src: string, at: number): Promise<Blob> 
   )
 }
 
-/** 视频时长（秒）。只读元数据，读完即释放。 */
-export async function videoDuration(src: string): Promise<number> {
+/** 视频的时长（秒）与显示宽高（已按旋转转正）。读不到的项为 0。 */
+export interface VideoMeta {
+  duration: number
+  width: number
+  height: number
+}
+
+/** 读视频元数据，读完即释放。 */
+export async function videoMeta(src: string): Promise<VideoMeta> {
   const video = document.createElement('video')
   video.preload = 'metadata'
   video.muted = true
   video.src = src
   try {
     await once(video, 'loadedmetadata')
-    return Number.isFinite(video.duration) ? video.duration : 0
+    return {
+      duration: Number.isFinite(video.duration) ? video.duration : 0,
+      width: video.videoWidth,
+      height: video.videoHeight,
+    }
   } finally {
     releaseVideo(video)
   }
@@ -119,9 +156,7 @@ export async function drawFilmstrip(
     const cell = canvas.width / count
     const sw = Math.min(vw, (vh * cell) / canvas.height)
     for (let i = 0; i < count && !signal.aborted; i++) {
-      const seeked = once(video, 'seeked')
-      video.currentTime = frameTime(from + ((i + 0.5) / count) * span, duration)
-      await seeked
+      await seekTo(video, from + ((i + 0.5) / count) * span)
       ctx.drawImage(video, (vw - sw) / 2, 0, sw, vh, i * cell, 0, cell, canvas.height)
     }
   } finally {
