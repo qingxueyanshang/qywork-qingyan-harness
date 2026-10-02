@@ -7,3 +7,5 @@ pypdfium2==5.10.1
 psutil==7.2.2
 matplotlib==3.10.9
 pywin32==311; sys_platform == "win32"
+--only-binary=av
+av>=14.1,<20

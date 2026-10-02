@@ -30,6 +30,7 @@ import { isInlineImage, isInlineVideo, mimeOf } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import { shrinkImage } from './image.ts'
+import { readVideoFrames } from './office-worker.ts'
 import {
   displayPath,
   IGNORED_DIRS,
@@ -238,25 +239,53 @@ function notText(path: string, office: boolean): { status: 'failure'; message: s
   }
 }
 
+/** 视频读取的区间（秒）。不合法时交回给模型看的一句原因。 */
+function timeRange(args: Record<string, unknown>): { start?: number; end?: number } | string {
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+  const start = num(args.start)
+  const end = num(args.end)
+  if (start !== undefined && start < 0) return 'start 不能小于 0'
+  if (start !== undefined && end !== undefined && end <= start) return 'end 必须大于 start'
+  return { ...(start !== undefined ? { start } : {}), ...(end !== undefined ? { end } : {}) }
+}
+
 /** `office` 工具处理的文件类型。 */
 const OFFICE_FILE = /\.(docx|dotx|xlsx|xltx|pptx|potx)$/i
 
 /**
- * 读一段视频：交出路径引用，由请求装配在发出前按模型能力读字节（`agent` 的 `videosOf` 与 `materialize`）。
+ * 读一段视频。当前模型与接口收原生视频时交出路径引用，由请求装配在发出前读字节
+ * （`agent` 的 `videosOf` 与 `materialize`），按一份 `MEDIA_TOKENS` 扣投递额度。
  *
- * 当前模型或接口不收视频时**在这里就回绝**，并说明下一步：交出去的话，发送时会被替换成一句说明，
- * 这次读取没有产出，而回执显示成功。
- * 视频按一份 `MEDIA_TOKENS` 扣投递额度，与图片同口径；真实用量以接口回报为准。
+ * 不收原生视频、但收图片时，经 Office 的 Python worker 按时间抽帧，帧作为图片返回
+ * （`readVideoFrames`），`start` / `end` 指定区间。两样都收不了时**在这里就回绝**并说明下一步：
+ * 交出路径的话，发送时会被替换成一句说明，这次读取没有产出，而回执显示成功。
  */
-function readVideo(ctx: ToolContext, abs: string): ToolOutcome {
+async function readVideo(
+  ctx: ToolContext,
+  abs: string,
+  args: Record<string, unknown>,
+): Promise<ToolOutcome> {
   const shown = displayPath(ctx.workspaceRoot, abs)
   if (!ctx.video) {
-    return {
-      status: 'failure',
-      message:
-        `当前模型或接口不接受视频输入，${shown} 读不出内容。` +
-        `不要再读这个文件——换一个支持视频的模型，或请用户描述视频内容。`,
+    if (ctx.vision === false) {
+      return {
+        status: 'failure',
+        message:
+          `当前模型既不接受视频也不接受图片，${shown} 读不出内容。` +
+          `不要再读这个文件——换一个支持图片或视频的模型，或请用户描述视频内容。`,
+      }
     }
+    if (!ctx.office) {
+      return {
+        status: 'failure',
+        message:
+          `当前模型不接受原生视频，按时间抽帧要用 Office 的 Python 运行环境，这里没有可用的环境，${shown} 读不出内容。` +
+          `不要再读这个文件——换一个支持视频的模型，或请用户描述视频内容。`,
+      }
+    }
+    const range = timeRange(args)
+    if (typeof range === 'string') return { status: 'failure', message: range }
+    return readVideoFrames(ctx, ctx.office, abs, shown, range)
   }
   if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
   return {
@@ -270,7 +299,8 @@ export const readFileTool: ToolSpec = {
   name: 'read_file',
   description:
     '读取工作区内一个文件。文本返回带行号的正文；PNG/JPG/GIF/WebP 作为图片返回；' +
-    'MP4/MOV/WebM/MKV 在当前模型支持视频输入时作为视频返回；' +
+    'MP4/MOV/WebM/MKV 在当前模型支持视频输入时作为视频返回，否则按时间抽取若干帧作为图片返回，' +
+    '回执写明看到的时间点与未看到的区间，start/end（秒）指定一段续读；' +
     'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配；没有文字层时返回失败）。' +
     '修改任何已存在的文件前必须先用它读一次——' +
     'write_file 和 edit_file 会校验你读到的内容是否仍是磁盘上的最新版本。' +
@@ -281,6 +311,8 @@ export const readFileTool: ToolSpec = {
       path: { type: 'string', description: '工作区相对路径' },
       offset: { type: 'integer', description: '起始行号（1 起），默认 1' },
       limit: { type: 'integer', description: '最多读取行数，默认读到文件末尾' },
+      start: { type: 'number', description: '视频抽帧区间的起点（秒），默认从头。只对视频有效' },
+      end: { type: 'number', description: '视频抽帧区间的终点（秒），默认到结尾。只对视频有效' },
     },
     required: ['path'],
     additionalProperties: false,
@@ -364,14 +396,14 @@ export const readFileTool: ToolSpec = {
          * 的自然动作），历史里那一张就再也取不回来了。**捕获必须发生在观察的那一刻**，
          * 之后再想补是物理上做不到的。
          *
-         * 附件那条**不走这里**，它仍然是路径引用（`runtime` 的 `withAttachments`）：
+         * 附件那条**不走这里**，由 `runtime` 的 `withAttachments` 在每次发送前按路径编码：
          * 那是用户自己的文件，没有理由复制它。判据是「这是一次观察，还是一个引用」。
          */
         data: { images: [shrunk] },
       }
     }
 
-    if (isInlineVideo(abs)) return readVideo(ctx, abs)
+    if (isInlineVideo(abs)) return readVideo(ctx, abs, args)
 
     let pdf: string | null = null
     if (abs.toLowerCase().endsWith('.pdf')) {

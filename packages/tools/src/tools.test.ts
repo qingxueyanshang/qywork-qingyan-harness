@@ -1720,14 +1720,17 @@ describe('read_file 认图片', () => {
     expect(ok.status).toBe('success')
   })
 
-  /** 视频交出路径引用，发出前才读字节；模型或接口不收视频时当场回绝并带下一步，同图片。 */
-  test('读视频：收视频时交出路径引用，不收时回绝', async () => {
+  /**
+   * 视频交出路径引用，发出前才读字节；不收原生视频、又没有抽帧环境时当场回绝并带下一步，同图片。
+   * 有抽帧环境时的那一支在 `office.test.ts`。
+   */
+  test('读视频：收视频时交出路径引用，不收且没有抽帧环境时回绝', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-video-'))
     await writeFile(join(root, 'clip.mp4'), new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]))
 
     const refused = await registry().execute('read_file', { path: 'clip.mp4' }, ctx(root))
     expect(refused.status).toBe('failure')
-    expect(refused.message).toContain('不接受视频输入')
+    expect(refused.message).toContain('不接受原生视频')
     expect(refused.message).toContain('不要再读')
     expect(refused.message).not.toContain('分段读取')
 

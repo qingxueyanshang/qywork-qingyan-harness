@@ -1181,6 +1181,8 @@ describe('工具清单', () => {
       { name: 'path', required: true },
       { name: 'offset', required: false },
       { name: 'limit', required: false },
+      { name: 'start', required: false },
+      { name: 'end', required: false },
     ])
     // 整份 schema 的体积由第三方 server 决定，不受控——一个键都不该漏出去
     expect(row).not.toHaveProperty('parameters')

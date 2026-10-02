@@ -11,6 +11,7 @@
  * | node | `plugins/runtime.ts` 的 `probeNode()` | 插件跑不了 |
  * | Python | `tools/office.ts` 起 worker、`runtime/office.ts` 探测 | `office` 工具不注册 |
  * | Office 文档库 | worker 导入 | `office` 工具不注册；按清单用 pip 装，不经 winget |
+ * | 视频解码库 | worker 的 `frames` 动作 | 不支持原生视频的模型读不了视频；同一份清单、同一条 pip 路线 |
  *
  * 「装了更好」「同类工具都列一下」不进表。那种清单的后果是用户第一次点开设置页
  * 看到一片红，而真正坏掉的那条淹在里面。同理 `required` 必须分档：
@@ -230,6 +231,21 @@ const DEPS: DepSpec[] = [
       if (!python) return { path: null, required: false, hint: '需要先安装 Python。' }
       if (missing.length) {
         return { path: null, required: false, hint: `缺少 ${missing.join('、')}。` }
+      }
+      return { path: python, required: false, hint: '' }
+    },
+  },
+  {
+    id: 'video-decoder',
+    label: '视频解码库',
+    winget: null,
+    // 与 Office 文档库同一份依赖清单、同一个解释器，一键装走同一条 pip 路线。
+    pip: true,
+    probe: ({ config, office }) => {
+      const python = findPython(config)
+      if (!python) return { path: null, required: false, hint: '需要先安装 Python。' }
+      if (!office?.status().videoDecoder) {
+        return { path: null, required: false, hint: '不支持原生视频的模型读不了视频。' }
       }
       return { path: python, required: false, hint: '' }
     },

@@ -1,5 +1,5 @@
 /**
- * `office.test.ts` 用的假 worker：按协议读请求、写 `response.json`，行为由脚本文件名决定。
+ * `office.test.ts` 与 `tools.test.ts`（视频抽帧）用的假 worker：按协议读请求、写 `response.json`，行为由脚本文件名决定。
  *
  * - `crash.py`：不写结果，以 1 退出（工具随后应以 cleanup 再起一次）。
  * - 其余脚本：给每个输出写一份内容，回报已写入、页数与一条提示。
@@ -66,6 +66,23 @@ switch (req.action) {
       action: 'view',
       message: '',
       images: [{ path: img, label: `第 ${(req.pages as string[])[0]} 页`, width: 1, height: 1 }],
+    })
+    break
+  }
+  case 'frames': {
+    // 两帧，说明里回显收到的区间，测试据此核对 start / end 传到了 worker。
+    // 与真 worker 一样写进调用目录下的 frames/，工具读完要删掉它。
+    mkdirSync(join(callDir, 'frames'), { recursive: true })
+    const images = [0, 1].map((i) => {
+      const img = join(callDir, 'frames', `frame-${i}.jpg`)
+      writeFileSync(img, PNG)
+      return { path: img, label: `00:0${i}.0`, width: 1, height: 1 }
+    })
+    respond({
+      action: 'frames',
+      message: '返回 2 帧',
+      text: `区间 ${String(req.start ?? '头')}–${String(req.end ?? '尾')}；声音没有处理`,
+      images,
     })
     break
   }

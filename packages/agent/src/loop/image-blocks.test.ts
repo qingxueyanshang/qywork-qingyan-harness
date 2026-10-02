@@ -290,6 +290,27 @@ describe('materialize', () => {
     })
   })
 
+  /** 用户附件的视频是路径块：不收原生视频、收图片的模型由说明指向 read_file 抽帧，不另做一套。 */
+  test('不收原生视频、收图片：路径视频换成指向 read_file 的说明', async () => {
+    const path = '/ws/clip.mp4'
+    const block = (image: boolean | null) =>
+      materialize(
+        req([
+          {
+            role: 'user',
+            content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+          },
+        ]),
+        media(image, false),
+      ).then((out) => (out.messages[0]?.content as ContentBlock[])[0])
+    expect(await block(true)).toEqual({
+      type: 'text',
+      text: `［视频 ${path}：当前模型或接口不接受原生视频输入，这一段没有发出去；需要画面时用 read_file 读这个路径，会按时间抽取若干帧］`,
+    })
+    const noImages = (await block(false)) as { text: string }
+    expect(noImages.text).not.toContain('read_file')
+  })
+
   test('模型或适配器不支持视频时不发送视频块', async () => {
     const out = await materialize(
       req([

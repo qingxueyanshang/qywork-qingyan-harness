@@ -602,8 +602,16 @@ async function loadBlock(
   if (b.type === 'image' && capabilities.image === false) {
     return note('当前模型不接受图片输入，这一张没有发出去')
   }
+  /*
+   * 不收原生视频：收图片、又有路径时指向 `read_file`，它按时间抽帧返回图片。
+   * 用户附件的视频走这一条，不另做一套抽帧：附件与工具读到的视频由同一个入口转成帧。
+   */
   if (b.type === 'video' && !capabilities.video) {
-    return note('当前模型或接口不接受原生视频输入，这一段没有发出去')
+    const next =
+      b.source.kind === 'path' && capabilities.image !== false
+        ? '；需要画面时用 read_file 读这个路径，会按时间抽取若干帧'
+        : ''
+    return note(`当前模型或接口不接受原生视频输入，这一段没有发出去${next}`)
   }
 
   if (b.source.kind !== 'path') return b
