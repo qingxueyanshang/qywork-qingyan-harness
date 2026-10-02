@@ -509,6 +509,11 @@ export function revealWorkspace(path: string): Promise<void> {
   return tauriInvoke<void>('reveal_workspace', { path })
 }
 
+/** 在系统文件管理器中选中一个本机文件；调用方只在桌面端提供入口。 */
+export function revealFile(path: string): Promise<void> {
+  return tauriInvoke<void>('reveal_file', { path })
+}
+
 /**
  * 把一个本机目录加成项目，并把它顶成「最近打开」。
  *

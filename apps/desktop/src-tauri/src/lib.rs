@@ -426,6 +426,22 @@ fn reveal_workspace(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// 在系统文件管理器中选中已存在的文件，不启动文件关联的程序。
+#[tauri::command]
+fn reveal_file(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let file = PathBuf::from(&path);
+    if !file.is_absolute() {
+        return Err("需要文件的绝对路径".to_string());
+    }
+    if !file.is_file() {
+        return Err(format!("文件不存在或不是普通文件：{path}"));
+    }
+    app.opener()
+        .reveal_item_in_dir(file)
+        .map_err(|e| e.to_string())
+}
+
 /// 打开系统设置里授予电脑控制某项前提的那一页。`grant` 是 worker 报的缺项名。
 ///
 /// 页面地址由这里按名字查表，不接受前端给的地址：WebView 能让本进程打开任意 URL 就等于
@@ -511,6 +527,7 @@ pub fn run() {
             pick_files,
             save_session_export,
             reveal_workspace,
+            reveal_file,
             desktop_open_settings,
             remember_workspace,
             window_minimize,

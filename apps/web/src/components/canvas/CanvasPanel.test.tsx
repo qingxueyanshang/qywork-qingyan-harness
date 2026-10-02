@@ -7,7 +7,7 @@
  * 每次提交的操作都记下来，断言落在「发了哪几批操作」上。
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { CanvasDoc, CanvasOp, CanvasView } from '@qywork/core'
 
@@ -791,17 +791,65 @@ describe('画布：生成卡与生成面板', () => {
     expect(host.querySelector(`linearGradient#${id}`)).not.toBeNull()
   })
 
-  test('生成中的卡显示平台回报的步骤：排队中 / 生成中；没回报时只有计时', async () => {
-    const { host, refs } = await mount(
-      [...CARD, { op: 'add_generate', ref: '$w', output: 'video', x: 600, y: 0 }],
+  test('加载首帧就显示阶段和计时；阶段变化只更新文字，不插入布局行', async () => {
+    const { host, server, refs } = await mount(
+      [
+        ...CARD,
+        { op: 'add_generate', ref: '$w', output: 'video', x: 600, y: 0 },
+        { op: 'add_generate', ref: '$g', output: 'image', x: 900, y: 0 },
+      ],
       {
         n2: { state: 'running', startedAt: Date.now(), phase: 'queued' },
         n3: { state: 'running', startedAt: Date.now() },
+        n4: { state: 'running', startedAt: Date.now() },
       },
     )
     expect(node(host, refs.$v!).querySelector('.canvas-live .phase')?.textContent).toBe('排队中')
-    expect(node(host, refs.$w!).querySelector('.canvas-live .phase')).toBeNull()
-    expect(node(host, refs.$w!).querySelector('.canvas-live .time')).not.toBeNull()
+    const live = node(host, refs.$w!).querySelector('.canvas-live')!
+    const phase = live.querySelector('.phase')!
+    const snake = live.querySelector('.canvas-snake')!
+    expect(phase.textContent).toBe('排队中')
+    expect(live.querySelector('.time')?.textContent).toBe('00:00')
+    expect(node(host, refs.$g!).querySelector('.canvas-live .phase')?.textContent).toBe('生成中')
+    server.setView({
+      states: { n3: { state: 'running', startedAt: Date.now(), phase: 'running' } },
+    })
+    const store = await import('../../lib/store/index.ts')
+    store.setState('canvasVersion', 1)
+    await waitFor(
+      () => phase.textContent === '生成中',
+      () => live.textContent ?? '',
+    )
+    expect(live.querySelector('.phase')).toBe(phase)
+    expect(live.querySelector('.canvas-snake')).toBe(snake)
+    expect(live.children).toHaveLength(3)
+  })
+
+  test('开始运行立即刷新计时，连续状态刷新不推迟下一次计时', async () => {
+    let time = Date.now()
+    const date = spyOn(Date, 'now').mockImplementation(() => time)
+    try {
+      const { host, server, refs } = await mount(CARD)
+      const store = await import('../../lib/store/index.ts')
+      time += 60_000
+      const startedAt = time - 23_000
+      server.setView({ states: { n2: { state: 'running', startedAt } } })
+      store.setState('canvasVersion', 1)
+      const elapsed = () => node(host, refs.$v!).querySelector('.canvas-live .time')?.textContent
+      await waitFor(
+        () => elapsed() === '00:23',
+        () => elapsed() ?? '',
+      )
+      time += 4_000
+      for (let i = 0; i < 7; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        server.setView({ states: { n2: { state: 'running', startedAt } } })
+        store.setState('canvasVersion', (v) => v + 1)
+      }
+      expect(elapsed()).toBe('00:27')
+    } finally {
+      date.mockRestore()
+    }
   })
 
   test('生成中发送键换成停止键：点了发出停止；远端撤不回时底部说明照常计费', async () => {
@@ -1850,6 +1898,31 @@ describe('画布：导航与选择的键位', () => {
 })
 
 describe('画布：右键菜单', () => {
+  let restoreDesktop: (() => void) | undefined
+  afterEach(() => {
+    restoreDesktop?.()
+    restoreDesktop = undefined
+  })
+
+  const desktop = async (root: string, reveal: (path: string) => Promise<void>) => {
+    const store = await import('../../lib/store/index.ts')
+    const g = globalThis as Record<string, unknown>
+    const previous = g.__TAURI_INTERNALS__
+    const workspace = store.workspace()
+    // 挂载完成后才启用菜单用的桌面桥，不占用外壳拖放测试的常驻事件订阅。
+    g.__TAURI_INTERNALS__ = {
+      invoke: (cmd: string, args: { path: string }) => {
+        if (cmd !== 'reveal_file') throw new Error(`未预期命令：${cmd}`)
+        return reveal(args.path)
+      },
+    }
+    store.setWorkspace({ id: 'ws_canvas_reveal', root, name: '画布项目' })
+    restoreDesktop = () => {
+      g.__TAURI_INTERNALS__ = previous
+      store.setWorkspace(workspace)
+    }
+  }
+
   const stageOf = (host: HTMLElement) => host.querySelector<HTMLElement>('.canvas-stage')!
   const menu = () => document.querySelector('.canvas-context-menu')
   const items = () =>
@@ -1865,6 +1938,119 @@ describe('画布：右键菜单', () => {
     pointer(stageOf(host), 'pointerup', x, y, { button: 2 })
   }
 
+  test.each([
+    ['C:\\素材 项目', 'C:\\素材 项目\\generated\\视频 2.mp4'],
+    ['\\\\server\\共享 项目', '\\\\server\\共享 项目\\generated\\视频 2.mp4'],
+    ['/tmp/素材 项目', '/tmp/素材 项目/generated/视频 2.mp4'],
+  ])('桌面菜单在重命名前定位当前版本文件：%s', async (root, expected) => {
+    const paths: string[] = []
+    const { host, server, refs } = await mount(CARD)
+    await desktop(root, async (path) => {
+      paths.push(path)
+    })
+    const core = await import('@qywork/core')
+    const store = await import('../../lib/store/index.ts')
+    const made = {
+      prompt: '视频',
+      provider: 'qwen',
+      model: 'wan3.0-video',
+      params: {},
+      inputs: [],
+      at: '2026-10-02T16:00:00Z',
+    }
+    const r = core.addVersions(server.doc(), refs.$v!, [
+      { id: 'v1', path: 'generated/视频 1.mp4', made },
+      { id: 'v2', path: 'generated/视频 2.mp4', made },
+    ])
+    if (!r.ok) throw new Error(r.error)
+    const card = r.doc.nodes.find((n) => n.id === refs.$v)!
+    if (card.type !== 'generate') throw new Error('不是生成节点')
+    card.current = 'v2'
+    server.setView({ doc: r.doc })
+    store.setState('canvasVersion', 1)
+    await waitFor(
+      () => !!node(host, refs.$v!).querySelector('.canvas-badge.version'),
+      () => '',
+    )
+    rightClick(host, node(host, refs.$v!), 10, 10)
+    await waitFor(
+      () => items().includes('在资源管理器中显示'),
+      () => JSON.stringify(items()),
+    )
+    expect(items().indexOf('在资源管理器中显示')).toBe(items().indexOf('重命名') - 1)
+    choose('在资源管理器中显示')
+    await waitFor(
+      () => paths.length === 1,
+      () => '',
+    )
+    expect(paths).toEqual([expected])
+    expect(server.ops).toEqual([])
+    expect(menu()).toBeNull()
+  })
+
+  test('素材文件可定位，桌面命令失败时显示原因', async () => {
+    const paths: string[] = []
+    const { host, refs } = await mount([{ op: 'add_file', ref: '$a', path: '素材 图片.png' }])
+    await desktop('C:\\项目', async (path) => {
+      paths.push(path)
+      throw '文件不存在：C:\\项目\\素材 图片.png'
+    })
+    rightClick(host, node(host, refs.$a!), 10, 10)
+    await waitFor(
+      () => items().includes('在资源管理器中显示'),
+      () => JSON.stringify(items()),
+    )
+    choose('在资源管理器中显示')
+    await waitFor(
+      () => host.querySelector('.canvas-fault')?.textContent?.includes('文件不存在') === true,
+      () => host.textContent ?? '',
+    )
+    expect(paths).toEqual(['C:\\项目\\素材 图片.png'])
+  })
+
+  test('没有产物或只有任务记录时不提供文件定位', async () => {
+    const { host, server, refs } = await mount(CARD)
+    await desktop('C:\\项目', async () => {
+      throw new Error('不应调用')
+    })
+    rightClick(host, node(host, refs.$v!), 10, 10)
+    await waitFor(
+      () => !!menu(),
+      () => '',
+    )
+    expect(items()).not.toContain('在资源管理器中显示')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    const core = await import('@qywork/core')
+    const store = await import('../../lib/store/index.ts')
+    const r = core.addVersions(server.doc(), refs.$v!, [
+      {
+        id: 'pending',
+        path: 'generated/video.task.json',
+        made: {
+          prompt: '视频',
+          provider: 'qwen',
+          model: 'wan3.0-video',
+          params: {},
+          inputs: [],
+          at: '2026-10-02T16:00:00Z',
+        },
+      },
+    ])
+    if (!r.ok) throw new Error(r.error)
+    server.setView({ doc: r.doc, states: { [refs.$v!]: { state: 'pending', version: 'pending' } } })
+    store.setState('canvasVersion', 1)
+    await waitFor(
+      () => node(host, refs.$v!).textContent?.includes('取回') === true,
+      () => '',
+    )
+    rightClick(host, node(host, refs.$v!), 10, 10)
+    await waitFor(
+      () => !!menu(),
+      () => '',
+    )
+    expect(items()).not.toContain('在资源管理器中显示')
+  })
+
   test('写好提示词的生成卡上右键没有「运行」：付费生成只从面板的发送按钮发起，那里标着价格', async () => {
     const { host, refs } = await mount([
       { op: 'add_generate', ref: '$v', output: 'video', prompt: '街口回头', x: 0, y: 0 },
@@ -1878,7 +2064,7 @@ describe('画布：右键菜单', () => {
     expect(items()).not.toContain('运行')
   })
 
-  test('节点上右键：先选中它，菜单有复制、剪切、创建副本、改名、删除；删除删掉它', async () => {
+  test('节点上右键：先选中它，菜单有复制、剪切、创建副本、重命名、删除；删除删掉它', async () => {
     const { host, server, refs } = await mount(FILES)
     rightClick(host, node(host, refs.$b!), 10, 10)
     await waitFor(
@@ -1886,8 +2072,9 @@ describe('画布：右键菜单', () => {
       () => '',
     )
     expect(node(host, refs.$b!).classList.contains('selected')).toBe(true)
-    for (const label of ['复制', '剪切', '创建副本', '改名', '删除'])
+    for (const label of ['复制', '剪切', '创建副本', '重命名', '删除'])
       expect(items()).toContain(label)
+    expect(items()).not.toContain('在资源管理器中显示')
     expect(menu()!.textContent).toContain('Delete')
     choose('删除')
     await waitFor(
