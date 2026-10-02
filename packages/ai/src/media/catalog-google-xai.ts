@@ -91,9 +91,10 @@ const xaiImageParams: MediaParamSpec[] = [
   { ...choice('resolution', '分辨率', ['1k', '2k'], '输出分辨率'), default: '1k' },
   {
     name: 'quality',
-    label: '画质',
+    label: '生成质量',
     type: 'enum',
     values: ['low', 'medium', 'auto'],
+    valueLabels: { low: '低', medium: '中', auto: '自动' },
     default: 'auto',
     description: '输出质量；auto 由接口决定实际计费档位',
   },
