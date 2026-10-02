@@ -26,7 +26,7 @@ use std::ffi::c_void;
 use std::time::Duration;
 
 use ::windows::core::w;
-use ::windows::Win32::Foundation::{HWND, POINT, RECT};
+use ::windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use ::windows::Win32::UI::Accessibility::{
     IUIAutomationElement, IUIAutomationTransformPattern, IUIAutomationWindowPattern,
     UIA_TransformPatternId, UIA_WindowPatternId, WindowVisualState,
@@ -36,8 +36,9 @@ use ::windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics,
     FindWindowW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsZoomed,
-    SetForegroundWindow,
-    ShowWindow, WindowFromPoint, GA_ROOT, GA_ROOTOWNER, GUITHREADINFO, SM_CXVIRTUALSCREEN,
+    SendMessageTimeoutW, SetForegroundWindow,
+    ShowWindow, WindowFromPoint, GA_ROOT, GA_ROOTOWNER, GUITHREADINFO, HTCAPTION,
+    SMTO_ABORTIFHUNG, SM_CXVIRTUALSCREEN, WM_NCHITTEST,
     SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
 };
@@ -518,12 +519,14 @@ enum Raised {
 
 /// 把目标窗口提到前台。
 ///
-/// 两级，第二级只在第一级没到位时走：直接 `SetForegroundWindow`；被系统前台锁拒绝之后
+/// 三级，后一级只在前一级没到位时走：直接 `SetForegroundWindow`；被系统前台锁拒绝之后
 /// 挂到当前前台窗口的线程上再调一次——挂接期间两个线程共用输入状态，系统据此把调用方
-/// 算作前台线程并放行。任何返回路径都解除挂接。
+/// 算作前台线程并放行，任何返回路径都解除挂接；仍被拒时在目标窗口露在外面的标题栏上
+/// 点一下（`caption_click`）。前两级在本进程拿不到前台权时都会被拒：宿主的转让只在它自己
+/// 处在前台时成立，前台一旦被别的进程拿走（开始菜单、用户的应用），挂接也会失败。
 ///
 /// **不要改成模拟 Alt 按键。** 那条写法向用户此刻正在用的应用投一次真实按键，
-/// 而这个函数只能改前台归属。
+/// 而这个函数只能改前台归属。标题栏点击落在目标窗口自己身上，不进用户正在用的应用。
 ///
 /// 最小化的窗口先还原：最小化状态下前台切换只恢复任务栏按钮，窗口本身不上来。
 fn raise(window: i64) -> Raised {
@@ -543,7 +546,11 @@ fn raise(window: i64) -> Raised {
     if settled(ACTIVATE_SETTLE, || foreground_window() == window) {
         return Raised::Reached;
     }
-    if direct || attached {
+    let clicked = caption_click(hwnd, &SystemSink);
+    if clicked && settled(ACTIVATE_SETTLE, || foreground_window() == window) {
+        return Raised::Reached;
+    }
+    if direct || attached || clicked {
         Raised::Accepted
     } else {
         Raised::Refused
@@ -582,6 +589,80 @@ fn attached_raise(hwnd: HWND) -> bool {
         let _ = AttachThreadInput(own_thread, front_thread, false);
     }
     accepted
+}
+
+/// 在目标窗口的标题栏上单击一次。返回真表示点击进了输入队列。
+///
+/// 点击由系统输入线程按落点激活窗口，不受前台锁约束。落点只取同时满足两条的位置：
+/// 窗口自己答 `HTCAPTION`（避开标题栏按钮、标签页与地址栏），`WindowFromPoint` 的根窗口
+/// 就是目标（没被别的窗口盖住）。找不到这样的位置时不点。
+fn caption_click(hwnd: HWND, sink: &dyn Sink) -> bool {
+    let Some(point) = caption_point(hwnd) else {
+        return false;
+    };
+    let events = [
+        Event::Move { to: point },
+        Event::Button {
+            button: MouseButton::Left,
+            down: true,
+        },
+        Event::Button {
+            button: MouseButton::Left,
+            down: false,
+        },
+    ];
+    sink.send(&events) == 3
+}
+
+/// 标题栏上一个露在外面的点。候选点沿窗口顶部取，按顺序试。
+fn caption_point(hwnd: HWND) -> Option<ScreenPoint> {
+    let rect = window_rect(hwnd.0 as i64).ok()?;
+    if rect.width < 40 || rect.height < 40 {
+        return None;
+    }
+    for y in [12, 20, 6] {
+        for fraction in [0.5, 0.35, 0.65, 0.2, 0.8] {
+            let point = ScreenPoint {
+                x: rect.x + (f64::from(rect.width) * fraction) as i32,
+                y: rect.y + y,
+            };
+            if hits_caption(hwnd, point) && exposed(hwnd, point) {
+                return Some(point);
+            }
+        }
+    }
+    None
+}
+
+/// 窗口对这个屏幕坐标的命中测试答不答标题栏。窗口卡住时 200 毫秒内没答就按否算。
+fn hits_caption(hwnd: HWND, point: ScreenPoint) -> bool {
+    let packed = ((point.y as u32 & 0xFFFF) << 16) | (point.x as u32 & 0xFFFF);
+    let mut answer = 0usize;
+    // SAFETY: 只发一条命中测试消息，坐标打包在 lParam 里，结果写进本地变量。
+    let replied = unsafe {
+        SendMessageTimeoutW(
+            hwnd,
+            WM_NCHITTEST,
+            WPARAM(0),
+            LPARAM(packed as i32 as isize),
+            SMTO_ABORTIFHUNG,
+            200,
+            Some(&mut answer),
+        )
+    };
+    replied.0 != 0 && answer as u32 == HTCAPTION
+}
+
+/// 这个屏幕坐标上最顶层的窗口是不是目标自己。
+fn exposed(hwnd: HWND, point: ScreenPoint) -> bool {
+    // SAFETY: 纯查询，参数是屏幕坐标。
+    let hit = unsafe { WindowFromPoint(POINT { x: point.x, y: point.y }) };
+    if hit.0.is_null() {
+        return false;
+    }
+    // SAFETY: 句柄来自上一行的查询。
+    let root = unsafe { GetAncestor(hit, GA_ROOT) };
+    root == hwnd
 }
 
 /// 激活目标窗口。三种终态：到达前台记已执行，调用被接受而前台没变记结果未知，
