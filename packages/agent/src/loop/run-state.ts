@@ -14,7 +14,7 @@ import type {
   WireMessage,
   WireToolCall,
 } from '@qywork/ai'
-import { estimateMessages, estimateRequest } from '@qywork/ai'
+import { estimateMessages, estimateRequest, videoBlocksOf } from '@qywork/ai'
 import type {
   ContextBreakdown,
   ContextOmitted,
@@ -55,6 +55,8 @@ export interface LoopHost {
 export interface ContextAnchor {
   tokens: number
   uncovered: number
+  /** `uncovered` 那一段里的视频段数。估算对视频记 0，它们不在 `uncovered` 里。 */
+  uncoveredVideos: number
   transcriptIndex: number
   /** 产生这个真值的那次请求用的模型。与本轮不同就整条作废。 */
   model: string
@@ -152,21 +154,22 @@ export class RunState {
       currency: deps.adapter.spec.pricing.currency ?? 'USD',
       turns: [],
     }
+    const uncovered = input.anchor
+      ? input.history.filter(
+          (m) =>
+            !input.anchor?.throughMessageId ||
+            !m._messageId ||
+            m._messageId > input.anchor.throughMessageId,
+        )
+      : []
     this.anchor = input.anchor
       ? {
           envelope: input.anchor.envelopeFingerprint,
           model: input.anchor.model,
           headTokens: input.anchor.headTokens,
           tokens: input.anchor.tokens,
-          uncovered: estimateMessages(
-            input.history.filter(
-              (m) =>
-                !input.anchor?.throughMessageId ||
-                !m._messageId ||
-                m._messageId > input.anchor.throughMessageId,
-            ),
-            deps.adapter.spec.density,
-          ),
+          uncovered: estimateMessages(uncovered, deps.adapter.spec.density),
+          uncoveredVideos: videoBlocksOf(uncovered),
           transcriptIndex: 0,
         }
       : null
@@ -221,6 +224,17 @@ export class RunState {
    */
   occupancyOf(req: ChatRequest): number {
     return this.anchor ? this.meter(0).tokens : estimateRequest(req, this.density)
+  }
+
+  /**
+   * 读数里没算进去的视频段数：估算对视频记 0，只有接口回报的真值含它们。
+   * 锚点之前的视频已在真值里；之后新进来的还没有。
+   */
+  unmeasuredVideos(req: ChatRequest): number {
+    const anchor = this.anchor
+    return anchor
+      ? anchor.uncoveredVideos + videoBlocksOf(this.transcript.slice(anchor.transcriptIndex))
+      : videoBlocksOf(req.messages)
   }
 
   /** 空转判据：满三次就停；满两次先把「你在重复」当事实交给模型。 */

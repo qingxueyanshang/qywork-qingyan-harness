@@ -2,8 +2,8 @@
  * 工具读到的视频：怎么进请求、怎么计读数。
  *
  * 覆盖范围：`loop/request.ts` 的 `toolResultContent` / `videosOf` / `envelopeResult` / `omitImages`
- * 对视频块的处理，`ai` 的 `estimateContent` 对视频计 0，`loop/context.ts` 的 `contextEvent` 标出未计的视频，
- * `loop/turn-end.ts` 不拿带视频的请求当锚点。
+ * 对视频块的处理，`ai` 的 `estimateContent` 对视频计 0，`loop/context.ts` 的 `contextEvent` 与
+ * `loop/run-state.ts` 的 `unmeasuredVideos` 标出还没有真值的视频，`loop/turn-end.ts` 拿带视频的请求当锚点。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -92,7 +92,7 @@ function adapter(): LlmAdapter & { seen: ChatRequest[] } {
   }
 }
 
-test('带视频的请求标出未计的视频；它的回执不当锚点，读数不跳到含视频的真值', async () => {
+test('带视频的请求发出前标出未计的视频；回执之后读数采用含视频的真值', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'qy-video-'))
   const real = { path: join(dir, 'a.mp4'), mime: 'video/mp4' }
   await writeFile(real.path, new Uint8Array([0, 0, 0, 24]))
@@ -132,8 +132,8 @@ test('带视频的请求标出未计的视频；它的回执不当锚点，读�
   )
   expect(withVideo).toBe(true)
   expect(contexts.some((e) => e.type === 'context' && e.unmeasuredVideos === 1)).toBe(true)
-  // 收尾的读数不采用那次含视频的 5 万真值。
+  // 视频留在请求里，之后每次都随请求发出：收尾的读数采用那次含视频的 5 万真值，不再标未计。
   const last = contexts.at(-1)
-  expect(last?.type === 'context' && last.tokens).toBeLessThan(50_000)
+  expect(last?.type === 'context' && last.tokens).toBeGreaterThanOrEqual(50_000)
   expect(last?.type === 'context' && last.unmeasuredVideos).toBeFalsy()
 })

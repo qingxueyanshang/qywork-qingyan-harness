@@ -485,7 +485,7 @@ async function* consumeStream(
         }
         break
       case 'request_prepared': {
-        yield contextEvent(host, run, turn, ev.measuredInputTokens, true)
+        yield contextEvent(host, run, turn, ev.measuredInputTokens)
         break
       }
       case 'thinking_delta': {
