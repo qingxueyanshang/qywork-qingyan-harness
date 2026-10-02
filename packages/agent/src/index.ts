@@ -85,6 +85,8 @@ export {
   omitImages,
   softLimit,
   toolResultContent,
+  type VideoDelivery,
+  videoDelivery,
   videosOf,
 } from './loop/request.ts'
 export { createSummaryTrace } from './loop/summary-trace.ts'

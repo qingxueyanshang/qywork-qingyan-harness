@@ -913,6 +913,11 @@ export interface ToolContext {
    * 与 `vision` 同理在执行时判；`read_file` 据它决定读视频是交出去还是直接回绝。没给即不收。
    */
   video?: boolean
+  /**
+   * 适配器把本地视频上传成地址的字节门槛（`transmits.mediaUploadAbove`），缺席表示一律内联。
+   * `read_file` 与 `videoDelivery` 一起用它判断一段视频走原生还是抽帧，与发送时同一条判据。
+   */
+  videoUploadAbove?: number
   /** 环境注入的只读资源；插件按名取自己需要的，核心不为业务字段扩张。 */
   resources: Map<string, unknown>
   /** 插件的 run 内可变状态。 */

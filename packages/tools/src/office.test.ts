@@ -289,6 +289,27 @@ describe('read_file 读视频：不收原生视频时按时间抽帧', () => {
     }
   })
 
+  /**
+   * 收原生视频的模型：接口能上传就交路径；不能上传又超过常驻上限时同样抽帧，并说明原因，
+   * 判据与发送时的 `videoDelivery` 同一条。
+   */
+  test('收原生视频但太大：能上传交路径，不能上传改为抽帧', async () => {
+    const root = await workspace()
+    await writeFile(join(root, 'big.mp4'), new Uint8Array(5 * 1024 * 1024))
+    const upload = await readFileTool.fn(
+      { path: 'big.mp4' },
+      { ...ctx(root), video: true, videoUploadAbove: 2 * 1024 * 1024 },
+    )
+    expect(upload.data).toEqual({
+      videos: [{ path: await realpath(join(root, 'big.mp4')), mime: 'video/mp4' }],
+    })
+    const inline = await readFileTool.fn({ path: 'big.mp4' }, { ...ctx(root), video: true })
+    expect(inline.status).toBe('success')
+    expect(inline.message.startsWith('这段视频 5.0 MB')).toBe(true)
+    expect(inline.message).toContain('改为按时间抽帧')
+    expect((inline.data as { images: unknown[] }).images).toHaveLength(2)
+  })
+
   test('区间不成立时不起 worker，直接说原因', async () => {
     const root = await clip()
     const res = await readFileTool.fn(

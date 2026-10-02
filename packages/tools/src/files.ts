@@ -23,6 +23,7 @@ import {
   type ToolOutcome,
   type ToolSpec,
   tokensToMaxBytes,
+  videoDelivery,
 } from '@qywork/agent'
 import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
@@ -253,25 +254,35 @@ function timeRange(args: Record<string, unknown>): { start?: number; end?: numbe
 const OFFICE_FILE = /\.(docx|dotx|xlsx|xltx|pptx|potx)$/i
 
 /**
- * 读一段视频。当前模型与接口收原生视频时交出路径引用，由请求装配在发出前读字节
- * （`agent` 的 `videosOf` 与 `materialize`），按一份 `MEDIA_TOKENS` 扣投递额度。
+ * 读一段视频。走原生还是抽帧由 `agent` 的 `videoDelivery` 判，与发送时同一条判据：
+ * 原生时交出路径引用，由请求装配在发出前内联或上传（`videosOf` 与 `materialize`），
+ * 按一份 `MEDIA_TOKENS` 扣投递额度。
  *
- * 不收原生视频、但收图片时，经 Office 的 Python worker 按时间抽帧，帧作为图片返回
- * （`readVideoFrames`），`start` / `end` 指定区间。两样都收不了时**在这里就回绝**并说明下一步：
- * 交出路径的话，发送时会被替换成一句说明，这次读取没有产出，而回执显示成功。
+ * 抽帧时经 Office 的 Python worker 按时间取帧，帧作为图片返回（`readVideoFrames`），
+ * `start` / `end` 指定区间。读不了时**在这里就回绝**并说明下一步：交出路径的话，
+ * 发送时会被替换成一句说明，这次读取没有产出，而回执显示成功。
  */
 async function readVideo(
   ctx: ToolContext,
   abs: string,
+  size: number,
   args: Record<string, unknown>,
 ): Promise<ToolOutcome> {
   const shown = displayPath(ctx.workspaceRoot, abs)
-  if (!ctx.video) {
+  const delivery = videoDelivery(size, {
+    video: ctx.video === true,
+    ...(ctx.videoUploadAbove !== undefined ? { mediaUploadAbove: ctx.videoUploadAbove } : {}),
+  })
+  if (delivery === 'frames') {
+    // 收原生视频、但这段太大又不能上传时同样抽帧：内联的话下一步就被换出，模型只看到一眼。
+    const cause = ctx.video
+      ? `这段视频 ${(size / 1024 / 1024).toFixed(1)} MB，超出请求里常驻媒体的上限，当前接口又不能上传`
+      : '当前模型不接受原生视频'
     if (ctx.vision === false) {
       return {
         status: 'failure',
         message:
-          `当前模型既不接受视频也不接受图片，${shown} 读不出内容。` +
+          `${ctx.video ? `${cause}，` : ''}当前模型既不接受视频也不接受图片，${shown} 读不出内容。` +
           `不要再读这个文件——换一个支持图片或视频的模型，或请用户描述视频内容。`,
       }
     }
@@ -279,13 +290,16 @@ async function readVideo(
       return {
         status: 'failure',
         message:
-          `当前模型不接受原生视频，按时间抽帧要用 Office 的 Python 运行环境，这里没有可用的环境，${shown} 读不出内容。` +
+          `${cause}，按时间抽帧要用 Office 的 Python 运行环境，这里没有可用的环境，${shown} 读不出内容。` +
           `不要再读这个文件——换一个支持视频的模型，或请用户描述视频内容。`,
       }
     }
     const range = timeRange(args)
     if (typeof range === 'string') return { status: 'failure', message: range }
-    return readVideoFrames(ctx, ctx.office, abs, shown, range)
+    const read = await readVideoFrames(ctx, ctx.office, abs, shown, range)
+    return ctx.video && read.status === 'success'
+      ? { ...read, message: `${cause}，改为按时间抽帧。\n${read.message}` }
+      : read
   }
   if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
   return {
@@ -403,7 +417,7 @@ export const readFileTool: ToolSpec = {
       }
     }
 
-    if (isInlineVideo(abs)) return readVideo(ctx, abs, args)
+    if (isInlineVideo(abs)) return readVideo(ctx, abs, info.size, args)
 
     let pdf: string | null = null
     if (abs.toLowerCase().endsWith('.pdf')) {

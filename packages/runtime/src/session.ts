@@ -1107,6 +1107,9 @@ export class Session {
       vision: spec.vision,
       // 与发送时 `materialize` 的视频判据同一条：模型能力且适配器能传。
       video: spec.video && adapter.transmits.video === true,
+      ...(adapter.transmits.mediaUploadAbove !== undefined
+        ? { videoUploadAbove: adapter.transmits.mediaUploadAbove }
+        : {}),
       resources: new Map(),
       state: new Map(),
       // sink 绑定到本 run：登记行要能追溯到哪一轮产生的正文，

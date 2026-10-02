@@ -419,19 +419,48 @@ export function videosOf(
 export const MEDIA_RETAIN_HIGH_BYTES = 4 * 1024 * 1024
 export const MEDIA_RETAIN_LOW_BYTES = 2 * 1024 * 1024
 
-/** 一条消息里媒体块的字节数：base64 按解码后的长度，路径按文件大小，读不到记 0。 */
-export function mediaBytes(m: WireMessage): number {
+/** 一段路径视频这一轮怎么发：内联字节、上传成地址，或不直接发、换成指向 `read_file` 抽帧的说明。 */
+export type VideoDelivery = 'inline' | 'upload' | 'frames'
+
+/**
+ * 一段路径视频的发法。换出预算（`mediaBytes`）、发送前物化（`materialize`）与 `read_file` 读视频
+ * 共用这一条，三处判定因此一致。
+ *
+ * 不收原生视频时走抽帧；适配器能上传的大文件上传，请求里只带地址；不能上传、又超过常驻上限的也走抽帧：
+ * 内联的视频按字节计入常驻预算，超过上限的在下一步就被整批换出，模型只看到一眼，与图片只发一次是同一形状。
+ */
+export function videoDelivery(
+  size: number,
+  caps: Pick<InputMediaCapabilities, 'video' | 'mediaUploadAbove'>,
+): VideoDelivery {
+  if (!caps.video) return 'frames'
+  if (caps.mediaUploadAbove !== undefined && size > caps.mediaUploadAbove) return 'upload'
+  return size > MEDIA_RETAIN_HIGH_BYTES ? 'frames' : 'inline'
+}
+
+/**
+ * 一条消息里媒体块实际放进请求体的字节数。base64 按解码后的长度；路径视频按 `videoDelivery`：
+ * 内联的按文件大小，上传成地址的与不直接发的记 0。不发的图片（模型不收图）记 0，读不到的文件记 0。
+ *
+ * 不要改回按文件大小一律计：上传成地址的大视频会被算成几十 MB，下一步就被换出，模型只看到一眼。
+ */
+export function mediaBytes(m: WireMessage, caps: InputMediaCapabilities): number {
   if (typeof m.content === 'string' || !m.content) return 0
   let total = 0
   for (const b of m.content) {
     if (b.type !== 'image' && b.type !== 'video') continue
+    if (b.type === 'image' && caps.image === false) continue
+    if (b.type === 'video' && !caps.video) continue
     if (b.source.kind === 'base64') total += Math.floor((b.source.data.length * 3) / 4)
     else if (b.source.kind === 'path') {
+      let size = 0
       try {
-        total += statSync(b.source.path).size
+        size = statSync(b.source.path).size
       } catch {
         // 文件已不在：`materialize` 会把它换成一行说明，不占媒体字节。
+        continue
       }
+      if (b.type === 'image' || videoDelivery(size, caps) === 'inline') total += size
     }
   }
   return total
@@ -444,9 +473,13 @@ export function mediaBytes(m: WireMessage): number {
  * 最后一条 assistant 消息之后的媒体不换出：它们还没随任何一次得到回应的请求发出去过。
  * 工具成功后那次请求被拒、换一个 run 续跑时，那批图仍在这一段里，所以不需要另记送达凭证。
  *
- * 只依赖消息序列：同一历史每次得到同一结果，追加消息只会多换出、不会让已换出的回来。
+ * 只依赖消息序列与这一轮的媒体发法：同一历史、同一模型每次得到同一结果，追加消息只会多换出、
+ * 不会让已换出的回来。换模型会改发法，换出集合随之重算，前缀在那一次改写。
  */
-export function evictedMedia(messages: readonly WireMessage[]): Set<number> {
+export function evictedMedia(
+  messages: readonly WireMessage[],
+  caps: InputMediaCapabilities,
+): Set<number> {
   let protectFrom = 0
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]!.role === 'assistant') {
@@ -458,7 +491,7 @@ export function evictedMedia(messages: readonly WireMessage[]): Set<number> {
   const mounted: { index: number; bytes: number }[] = []
   let total = 0
   messages.forEach((m, index) => {
-    const bytes = mediaBytes(m)
+    const bytes = mediaBytes(m, caps)
     if (!bytes) return
     mounted.push({ index, bytes })
     total += bytes
@@ -543,10 +576,16 @@ export function envelopeResult(
   return Object.keys(rest).length ? rest : undefined
 }
 
+/**
+ * 这一轮请求的媒体发法：模型收不收图片与原生视频，适配器收不收本地路径、能不能把大文件上传成地址。
+ * 由 `AgentLoop` 按当前适配器算一次，换出预算与发送前物化用同一份。
+ */
 export interface InputMediaCapabilities {
   image: boolean | null
   video: boolean
   mediaPaths?: boolean
+  /** 本地路径媒体超过这个字节数时适配器上传成地址，请求里只带地址；缺席表示一律内联。 */
+  mediaUploadAbove?: number
 }
 
 /**
@@ -563,10 +602,11 @@ export interface InputMediaCapabilities {
  * path 形态只剩视频（用户附件与工具读到的视频）。图片进入消息时已经是字节：工具图定格在执行记录里，
  * 附件图由 `runtime` 的 `withAttachments` 编码。
  *
- * 图片按模型能力裁决；视频还要求当前适配器实现原生视频传输。
+ * 图片按模型能力裁决；视频还要求当前适配器实现原生视频传输，发法按 `videoDelivery`。
  *
- * 文件不存在或能力不支持时换成文本说明，不让整轮静默丢失媒体。媒体大小由实际
- * Provider 协议裁决；这里使用统一阈值会把支持大文件的端点提前截断。
+ * 文件不存在或能力不支持时换成文本说明，不让整轮静默丢失媒体。视频只在一种情况下按大小拦：
+ * 适配器不能上传、视频又超过请求里常驻媒体的上限，内联进去下一步就被换出，换成指向 `read_file`
+ * 抽帧的说明。其余的大小上限仍由实际 Provider 协议裁决。
  */
 export async function materialize(
   req: ChatRequest,
@@ -619,6 +659,14 @@ async function loadBlock(
 
   const info = await stat(path).catch(() => null)
   if (!info?.isFile()) return note('已不存在')
+  if (b.type === 'video' && videoDelivery(info.size, capabilities) === 'frames') {
+    const mb = (info.size / 1024 / 1024).toFixed(1)
+    const next =
+      capabilities.image !== false ? '；需要画面时用 read_file 读这个路径，会按时间抽取若干帧' : ''
+    return note(
+      `这段视频 ${mb} MB，超出请求里常驻媒体的上限，当前接口又不能上传，没有直接发送${next}`,
+    )
+  }
   if (capabilities.mediaPaths) return b
   const bytes = await readFile(path).catch(() => null)
   if (!bytes) return note('读取失败')
