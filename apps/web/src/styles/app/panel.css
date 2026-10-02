@@ -849,8 +849,85 @@
 }
 .preview-media {
   display: block;
+}
+.preview-video {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: var(--s-4);
+  overflow: hidden;
+}
+.preview-video .preview-media {
   max-width: 100%;
-  margin: var(--s-4) auto;
+  max-height: 100%;
+  object-fit: contain;
+}
+.image-preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.image-preview-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  min-width: 0;
+  margin: 0;
+  padding: var(--s-1) var(--s-2);
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.image-preview-tools button {
+  padding: 3px var(--s-2);
+  border-radius: var(--r-sm);
+  white-space: nowrap;
+}
+.image-preview-tools button:hover,
+.image-preview-tools button[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.image-preview-tools button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.image-preview-zoom {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+.image-preview-zoom output {
+  min-width: 5ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.image-preview-viewport {
+  flex: 1;
+  min-height: 0;
+  padding: var(--s-4);
+  overflow: auto;
+}
+.image-preview-viewport[data-mode="fit"] {
+  overflow: hidden;
+}
+/* 自动边距只分配剩余空间；放大后从左上开始滚动，图像边缘仍可到达。 */
+.image-preview-stage {
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  min-height: 100%;
+}
+.image-preview-stage .preview-media {
+  flex: none;
+  max-width: none;
+  margin: auto;
 }
 .preview-audio {
   display: block;
