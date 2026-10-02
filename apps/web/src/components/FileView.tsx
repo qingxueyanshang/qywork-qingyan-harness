@@ -14,6 +14,7 @@ import { ApiError } from '../lib/client.ts'
 import { createReadonlyEditor } from '../lib/editor.ts'
 import { loaded } from '../lib/resource.ts'
 import { absPath, client, explainApiError, setOpenFile } from '../lib/store/index.ts'
+import FileImageView from './FileImageView.tsx'
 import { IconX } from './Icons.tsx'
 
 interface PreviewResult {
@@ -85,14 +86,17 @@ export default function FileView(props: { path: string; refresh?: number }) {
                 <PdfView path={r().path} mtime={r().mtime} />
               </Match>
               <Match when={r().kind === 'image'}>
-                <img
-                  class="preview-media"
-                  src={client.fileUrl(r().path, r().mtime)}
-                  alt={r().path}
-                />
+                <FileImageView src={client.fileUrl(r().path, r().mtime)} alt={r().path} />
               </Match>
               <Match when={r().kind === 'video'}>
-                <video class="preview-media" src={client.fileUrl(r().path, r().mtime)} controls />
+                <div class="preview-video">
+                  <video
+                    class="preview-media"
+                    src={client.fileUrl(r().path, r().mtime)}
+                    controls
+                    playsinline
+                  />
+                </div>
               </Match>
               <Match when={r().kind === 'audio'}>
                 <audio class="preview-audio" src={client.fileUrl(r().path, r().mtime)} controls />
