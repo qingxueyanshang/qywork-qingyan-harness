@@ -19,11 +19,13 @@ import {
   ATTACHMENT_MEDIA_OMITTED,
   envelopeResult,
   evictedMedia,
+  MEDIA_RETAIN_HIGH_BYTES,
   MEDIA_RETAIN_LOW_BYTES,
   materialize,
   mediaBytes,
   omitImages,
   toolResultContent,
+  videoDelivery,
 } from './request.ts'
 
 const PNG = Buffer.from(
@@ -244,10 +246,11 @@ describe('materialize', () => {
     })
   })
 
-  test('大于 10 MB 的本地视频仍进入请求副本', async () => {
+  /** 常驻上限以内的视频整份内联进请求副本，首尾字节不变。 */
+  test('常驻上限以内的本地视频整份进入请求副本', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-video-large-'))
     const path = join(dir, 'clip.mp4').replaceAll('\\', '/')
-    const bytes = Buffer.alloc(10 * 1024 * 1024 + 1)
+    const bytes = Buffer.alloc(MEDIA_RETAIN_HIGH_BYTES)
     bytes[0] = 7
     bytes[bytes.length - 1] = 9
     await writeFile(path, bytes)
@@ -291,6 +294,30 @@ describe('materialize', () => {
   })
 
   /** 用户附件的视频是路径块：不收原生视频、收图片的模型由说明指向 read_file 抽帧，不另做一套。 */
+  /** 收原生视频但不能上传：超过常驻上限的视频内联进去下一步就被换出，换成指向 read_file 抽帧的说明。 */
+  test('收原生视频、超过常驻上限又不能上传：换成说明；能上传时交出路径', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-video-big-'))
+    const path = join(dir, 'big.mp4').replaceAll('\\', '/')
+    await writeFile(path, new Uint8Array(5 * 1024 * 1024))
+    const send = (caps: Parameters<typeof materialize>[1]) =>
+      materialize(
+        req([
+          {
+            role: 'user',
+            content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
+          },
+        ]),
+        caps,
+      ).then((out) => (out.messages[0]?.content as ContentBlock[])[0])
+    const inline = (await send({ image: true, video: true })) as { type: string; text: string }
+    expect(inline.type).toBe('text')
+    expect(inline.text).toContain('5.0 MB')
+    expect(inline.text).toContain('read_file')
+    expect(
+      await send({ image: true, video: true, mediaPaths: true, mediaUploadAbove: 2 * 1024 * 1024 }),
+    ).toEqual({ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } })
+  })
+
   test('不收原生视频、收图片：路径视频换成指向 read_file 的说明', async () => {
     const path = '/ws/clip.mp4'
     const block = (image: boolean | null) =>
@@ -455,6 +482,8 @@ describe('媒体按字节预算换出', () => {
     source: { kind: 'base64', data: 'A'.repeat(Math.ceil((bytes * 4) / 3)) },
   })
   const MB = 1024 * 1024
+  /** 收图片、收原生视频、适配器只内联：大多数原生视频接口的发法。 */
+  const CAPS = { image: true, video: true }
   const call = (id: string): WireMessage => ({
     role: 'assistant',
     content: '',
@@ -469,8 +498,8 @@ describe('媒体按字节预算换出', () => {
   const steps = (sizes: number[]): WireMessage[] =>
     sizes.flatMap((size, i) => [call(`c${i}`), result(`c${i}`, size)])
 
-  test('base64 按解码后的字节计，路径按文件大小计，读不到记 0', async () => {
-    expect(mediaBytes(result('c', MB))).toBeGreaterThanOrEqual(MB)
+  test('base64 按解码后的字节计，内联的路径视频按文件大小计，读不到记 0', async () => {
+    expect(mediaBytes(result('c', MB), CAPS)).toBeGreaterThanOrEqual(MB)
     const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
     const path = join(dir, 'clip.mp4')
     await writeFile(path, new Uint8Array(3 * MB))
@@ -478,7 +507,7 @@ describe('媒体按字节预算换出', () => {
       role: 'user',
       content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } }],
     }
-    expect(mediaBytes(video)).toBe(3 * MB)
+    expect(mediaBytes(video, CAPS)).toBe(3 * MB)
     const gone: WireMessage = {
       role: 'user',
       content: [
@@ -489,27 +518,56 @@ describe('媒体按字节预算换出', () => {
         },
       ],
     }
-    expect(mediaBytes(gone)).toBe(0)
+    expect(mediaBytes(gone, CAPS)).toBe(0)
+  })
+
+  /**
+   * 路径视频按这一轮的发法计：上传成地址的、超过常驻上限又不能上传的（改走抽帧）、模型不收的都不进请求体，记 0。
+   * 按文件大小一律计的话，上传成地址的 18 MB 视频下一步就被换出，模型只看到一眼（Qwen3.8 Flash 实测）。
+   */
+  test('路径视频按发法计字节：上传、抽帧、不收都记 0', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
+    const big = join(dir, 'big.mp4')
+    await writeFile(big, new Uint8Array(6 * MB))
+    const video: WireMessage = {
+      role: 'user',
+      content: [{ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path: big } }],
+    }
+    expect(mediaBytes(video, { ...CAPS, mediaPaths: true, mediaUploadAbove: 2 * MB })).toBe(0)
+    expect(mediaBytes(video, CAPS)).toBe(0)
+    expect(mediaBytes(video, { image: true, video: false })).toBe(0)
+    expect(videoDelivery(6 * MB, { video: true, mediaUploadAbove: 2 * MB })).toBe('upload')
+    expect(videoDelivery(6 * MB, { video: true })).toBe('frames')
+    expect(videoDelivery(MB, { video: true })).toBe('inline')
+    expect(videoDelivery(MB, { video: false })).toBe('frames')
+    // 上传成地址的视频不计字节，就一直留在请求里，模型之后的每一步都看得到。
+    const messages = [video, call('c0'), result('c0', MB), call('c1'), result('c1', MB)]
+    const upload = { ...CAPS, mediaPaths: true, mediaUploadAbove: 2 * MB }
+    expect(evictedMedia(messages, upload).has(0)).toBe(false)
+  })
+
+  test('模型不收图片时图片不计字节', () => {
+    expect(mediaBytes(result('c', MB), { image: false, video: false })).toBe(0)
   })
 
   test('总量在上限内一张都不换', () => {
-    expect(evictedMedia(steps([MB, MB, MB])).size).toBe(0)
+    expect(evictedMedia(steps([MB, MB, MB]), CAPS).size).toBe(0)
   })
 
   /** 超上限时从最早的起整条换出，直到不超过下限：换一次少变几次前缀。 */
   test('超过上限时从最早的整批换出，降到下限以内', () => {
     const messages = steps([MB, MB, MB, MB, MB])
-    const evicted = evictedMedia(messages)
+    const evicted = evictedMedia(messages, CAPS)
     // 第 5 张让总量到 5 MB（> 4 MB），换出最早的三张，剩 2 MB。
     expect([...evicted]).toEqual([1, 3, 5])
-    const left = messages.reduce((n, m, i) => n + (evicted.has(i) ? 0 : mediaBytes(m)), 0)
+    const left = messages.reduce((n, m, i) => n + (evicted.has(i) ? 0 : mediaBytes(m, CAPS)), 0)
     expect(left).toBeLessThanOrEqual(MEDIA_RETAIN_LOW_BYTES)
   })
 
   /** 最后一条 assistant 之后的媒体还没随任何一次得到回应的请求发出去过，单张超限也不换。 */
   test('最后一条 assistant 之后的媒体不换出', () => {
     const messages = [...steps([MB, MB]), call('big'), result('big', 6 * MB)]
-    const evicted = evictedMedia(messages)
+    const evicted = evictedMedia(messages, CAPS)
     expect(evicted.has(messages.length - 1)).toBe(false)
     expect([...evicted]).toEqual([1, 3])
   })
@@ -517,8 +575,8 @@ describe('媒体按字节预算换出', () => {
   /** 用户消息带的附件同样计入，第一次请求（没有 assistant）时全部保留。 */
   test('附件计入同一预算；还没有 assistant 时一张都不换', () => {
     const user: WireMessage = { role: 'user', content: [shot(5 * MB), { type: 'text', text: 'x' }] }
-    expect(evictedMedia([user]).size).toBe(0)
-    expect([...evictedMedia([user, call('c0'), result('c0', MB)])]).toEqual([0])
+    expect(evictedMedia([user], CAPS).size).toBe(0)
+    expect([...evictedMedia([user, call('c0'), result('c0', MB)], CAPS)]).toEqual([0])
   })
 
   /** 追加消息只会多换出，已换出的不会回来：前缀只在换出那一刻变。 */
@@ -527,8 +585,8 @@ describe('媒体按字节预算换出', () => {
     let previous = new Set<number>()
     for (let n = 1; n <= sizes.length; n++) {
       const messages = steps(sizes.slice(0, n))
-      const evicted = evictedMedia(messages)
-      expect([...evictedMedia(messages)]).toEqual([...evicted])
+      const evicted = evictedMedia(messages, CAPS)
+      expect([...evictedMedia(messages, CAPS)]).toEqual([...evicted])
       for (const i of previous) expect(evicted.has(i)).toBe(true)
       previous = evicted
     }

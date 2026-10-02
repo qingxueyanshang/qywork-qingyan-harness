@@ -487,12 +487,13 @@ describe('百炼媒体上传', () => {
     })
   })
 
-  test('小文件内联，大文件交给临时 URL 上传', async () => {
+  /** 3 MB 在端点 7 MB 的内联上限以内，也要上传：内联的视频按字节计入常驻媒体，下一步就被换出。 */
+  test('小文件内联，超过 2 MB 交给临时 URL 上传', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-dashscope-media-'))
     const small = join(dir, 'small.mp4')
     const large = join(dir, 'large.mp4')
     await writeFile(small, 'abc')
-    await writeFile(large, Buffer.alloc(7 * 1024 * 1024 + 1))
+    await writeFile(large, Buffer.alloc(3 * 1024 * 1024))
     const uploaded: { path: string; size: number }[] = []
     const prepared = await prepareDashScopeMedia(
       {
@@ -529,7 +530,7 @@ describe('百炼媒体上传', () => {
       source: { kind: 'url', url: 'oss://dashscope-instant/test/large.mp4' },
     })
     expect(uploaded).toHaveLength(1)
-    expect(uploaded[0]).toMatchObject({ path: large, size: 7 * 1024 * 1024 + 1 })
+    expect(uploaded[0]).toMatchObject({ path: large, size: 3 * 1024 * 1024 })
   })
 
   test('按官方凭证表单上传并返回 oss URI', async () => {

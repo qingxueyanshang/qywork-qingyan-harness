@@ -398,6 +398,8 @@ export interface LlmAdapter {
     video?: boolean
     /** 本地路径由适配器内联或上传；Agent 不预先读取整份媒体。 */
     mediaPaths?: boolean
+    /** 本地路径媒体超过这个字节数时上传成地址，请求里只带地址；缺席表示一律内联。 */
+    mediaUploadAbove?: number
   }
   stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown>
 }

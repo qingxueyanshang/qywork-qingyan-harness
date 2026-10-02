@@ -51,13 +51,20 @@ export class OpenAICompatAdapter implements LlmAdapter {
    * 未收录的模型 `effortLevels` 是 `[]`，一个字节都不会多发——所以自建端点
    * 不会因为这个改动开始收到它不认识的字段。
    */
-  get transmits(): { effort: boolean; video: boolean; mediaPaths?: boolean } {
+  get transmits(): {
+    effort: boolean
+    video: boolean
+    mediaPaths?: boolean
+    mediaUploadAbove?: number
+  } {
     // 判据只有 `effortIsTransmittable` 一份，与 `buildReasoning` 实际发的字段同源。
     // 恒 true 会让 `qy probe` 的 effort 探针在发不出该字段的模型上全部假通过。
     return {
       effort: effortIsTransmittable(this.spec),
       video: true,
-      ...(this.dashScopeMedia ? { mediaPaths: true } : {}),
+      ...(this.dashScopeMedia
+        ? { mediaPaths: true, mediaUploadAbove: DASHSCOPE_CHAT_INLINE_BYTES }
+        : {}),
     }
   }
   readonly spec: ModelSpec
@@ -393,6 +400,14 @@ export function normalizeBaseUrl(raw: string | undefined): string {
 
 /** Base64 会增加约三分之一，7 MB 原文件可稳定落在百炼的 10 MB Data URL 上限内。 */
 export const DASHSCOPE_INLINE_SOURCE_BYTES = 7 * 1024 * 1024
+/**
+ * 对话里的本地视频超过它就上传成 `oss://` 地址。
+ *
+ * 不要改用上面那个 7 MB：那是端点能收的内联上限，不是合适的阈值。内联的视频每次请求都整份重发，
+ * 并按字节计入请求里常驻的媒体（`agent` 的 4 MB 上限），4 MB 以上的在下一步就被换出；
+ * 上传成地址后请求里只剩一个地址，视频一直留在请求里。
+ */
+export const DASHSCOPE_CHAT_INLINE_BYTES = 2 * 1024 * 1024
 /** 百炼临时文件服务的官方硬上限；模型/凭证仍可返回更小的动态上限。 */
 const DASHSCOPE_TEMP_FILE_MAX_BYTES = 1024 * 1024 * 1024
 
@@ -407,7 +422,7 @@ export async function prepareDashScopeMedia(
         message.content.map(async (block) => {
           if (block.type === 'text' || block.source.kind !== 'path') return block
           const info = await stat(block.source.path)
-          if (info.size <= DASHSCOPE_INLINE_SOURCE_BYTES) {
+          if (info.size <= DASHSCOPE_CHAT_INLINE_BYTES) {
             const data = Buffer.from(await Bun.file(block.source.path).arrayBuffer()).toString(
               'base64',
             )

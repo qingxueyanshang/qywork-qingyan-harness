@@ -28,6 +28,7 @@ import {
   declaredMaxOutput,
   envelopeHashOf,
   evictedMedia,
+  type InputMediaCapabilities,
   idleTimeoutFor,
   materialize,
   omitImages,
@@ -102,15 +103,22 @@ export class AgentLoop {
     )
   }
 
-  /** 装配完的请求按模型能力物化媒体后交给适配器。 */
-  private async openStream(req: ChatRequest): Promise<AsyncIterable<ProviderEvent>> {
+  /** 这一轮的媒体发法。换出预算与发送前物化必须用同一份，否则两处对同一段视频算出不同的字节。 */
+  private mediaCapabilities(): InputMediaCapabilities {
     const { adapter } = this.deps
-    const materialized = await materialize(req, {
+    const upload = adapter.transmits.mediaUploadAbove
+    return {
       image: adapter.spec.vision,
       video: adapter.spec.video && adapter.transmits.video === true,
       mediaPaths: adapter.transmits.mediaPaths === true,
-    })
-    return adapter.stream(materialized)
+      ...(upload !== undefined ? { mediaUploadAbove: upload } : {}),
+    }
+  }
+
+  /** 装配完的请求按模型能力物化媒体后交给适配器。 */
+  private async openStream(req: ChatRequest): Promise<AsyncIterable<ProviderEvent>> {
+    const materialized = await materialize(req, this.mediaCapabilities())
+    return this.deps.adapter.stream(materialized)
   }
 
   async *run(input: RunInput): AsyncGenerator<AgentEvent, void, unknown> {
@@ -261,7 +269,7 @@ export class AgentLoop {
      * 请求前缀就变，`replayReasoning` 随之剥掉其后全部原生推理，模型看不到图，看图时得出的
      * 判断也随之丢失，只能反复取回，实测因连续无进展被循环保护判失败。
      */
-    const evicted = evictedMedia(assembledRaw)
+    const evicted = evictedMedia(assembledRaw, this.mediaCapabilities())
     const scoped = evicted.size
       ? assembledRaw.map((m, i) => (evicted.has(i) ? omitImages(m) : m))
       : assembledRaw
