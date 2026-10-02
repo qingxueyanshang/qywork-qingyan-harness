@@ -1,9 +1,9 @@
 /**
  * 画布文档：工作区里的一个 `*.canvas.json`。
  *
- * 只存布局、节点名、生成节点的提示词与历次版本、时间线的片段、连线。图片、视频、音频、文本一律是工作区路径的引用，
- * 画布不存字节。修改只经 `applyCanvasOps`（界面与大模型可提交的操作）与 `addVersions` / `settleVersion`
- * （只由服务端画布服务调用），两者都是纯函数，结果都经 `validateCanvas`。
+ * 只存布局、节点名、生成节点的提示词与历次版本、时间线的片段、连线，以及每次生成的记录。图片、视频、音频、文本一律是
+ * 工作区路径的引用，画布不存字节。修改只经 `applyCanvasOps`（界面与大模型可提交的操作）与 `addVersions` /
+ * `settleVersion` / `recordRun`（只由服务端画布服务调用），都是纯函数。
  *
  * 不变式：
  * - 节点、连线、版本的 id 全文唯一，由本模块分配，不复用；
@@ -114,6 +114,38 @@ export interface CanvasDoc {
   version: typeof CANVAS_SCHEMA_VERSION
   nodes: CanvasNode[]
   edges: CanvasEdge[]
+  /** 生成记录，按结束先后排。没有记录时文件里不写这个键。 */
+  runs?: CanvasRunRecord[]
+}
+
+/**
+ * 一次生成（提交或取回）的记录，界面与 Agent 发起的都记，结束时追加一条。删节点、删版本都不删记录。
+ * 失败原文只在这里落盘；`cost` 与账本记的是同一笔，账本是全局合计，这里只管本画布。
+ */
+export interface CanvasRunRecord {
+  /** 生成卡的节点 id。 */
+  node: string
+  /** `retrieve`：取回已提交的视频任务，不再提交、不重复计费。 */
+  action: 'run' | 'retrieve'
+  /** 开始与结束时刻，ISO 8601。 */
+  start: string
+  end: string
+  /** `pending`：远端任务还在，可以取回。`cancelled`：排队中撤销，不计费。 */
+  result: 'done' | 'failed' | 'pending' | 'cancelled'
+  /** 没有发出请求就失败（没有可用模型）时没有。 */
+  provider?: string
+  model?: string
+  /** 远端任务号。只有视频有。 */
+  task?: string
+  /** 发出的提示词（编译后）、参数与输入。取回不提交，没有这三项。 */
+  prompt?: string
+  params?: Record<string, unknown>
+  inputs?: { role: MediaInputRole; path: string }[]
+  /** 失败、未能取回时的原文。 */
+  message?: string
+  /** 接口回报用量折算的花费。拿到结果才计费，其余结果没有。 */
+  cost?: number
+  currency?: string
 }
 
 /**
@@ -383,14 +415,18 @@ const NEW_NODE_GAP = 100
 const CLEARANCE = 40
 
 /**
- * 把框换成媒体的宽高比：高度不变，宽度按比例。媒体节点缺省都是同一个高度，一排节点一样高、宽度随内容，
- * 横图不会被压矮、竖图不会被拉高。界面给空卡按所选宽高比预览时用同一个函数。
+ * 把框换成媒体的宽高比：短边长度不变，长边按比例。横图的高、竖图的宽都是原框的短边。
+ * 不要改成固定高度：竖图沿用横图的高度时宽度只剩横图的几分之一（9:16 只有 16:9 的约三分之一）。
+ * 界面给空卡按所选宽高比预览时用同一个函数。
  */
 export function fitBox(
   box: { w: number; h: number },
   size: CanvasPixels,
 ): { w: number; h: number } {
-  return { w: Math.round((box.h * size.w) / size.h), h: box.h }
+  const side = Math.min(box.w, box.h)
+  return size.w >= size.h
+    ? { w: Math.round((side * size.w) / size.h), h: side }
+    : { w: side, h: Math.round((side * size.h) / size.w) }
 }
 
 /** 新建生成卡的缺省框。界面给空卡选回「自动」宽高比时按它的比例还原。 */
@@ -987,6 +1023,15 @@ export function settleVersion(
   return problem ? { ok: false, error: problem } : { ok: true, doc: next, refs: {} }
 }
 
+/** 追加一条生成记录。节点已删掉也照记：记录的是发生过的事。只由服务端画布服务调用。 */
+export function recordRun(doc: CanvasDoc, record: CanvasRunRecord): CanvasResult {
+  const problem = checkFields('生成记录', record, RUN_FIELDS)
+  if (problem) return { ok: false, error: problem }
+  const next = structuredClone(doc)
+  next.runs = [...(next.runs ?? []), structuredClone(record)]
+  return { ok: true, doc: next, refs: {} }
+}
+
 // ── 读写 ──
 
 type Shape =
@@ -1003,6 +1048,9 @@ type Shape =
   | 'boolean'
   | 'true'
   | 'clips'
+  | 'inputs'
+  | 'action'
+  | 'result'
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -1048,6 +1096,12 @@ function matches(v: unknown, shape: Shape): boolean {
       return v === true
     case 'clips':
       return Array.isArray(v) && v.every((c) => checkFields('片段', c, CLIP_FIELDS) === null)
+    case 'inputs':
+      return Array.isArray(v) && v.every((x) => checkFields('输入', x, INPUT_FIELDS) === null)
+    case 'action':
+      return v === 'run' || v === 'retrieve'
+    case 'result':
+      return v === 'done' || v === 'failed' || v === 'pending' || v === 'cancelled'
   }
 }
 
@@ -1186,6 +1240,22 @@ const MADE_FIELDS: Record<string, Shape> = {
   'at!': 'string',
 }
 const INPUT_FIELDS: Record<string, Shape> = { 'role!': 'role', 'path!': 'string' }
+const RUN_FIELDS: Record<string, Shape> = {
+  'node!': 'string',
+  'action!': 'action',
+  'start!': 'string',
+  'end!': 'string',
+  'result!': 'result',
+  provider: 'string',
+  model: 'string',
+  task: 'string',
+  prompt: 'string',
+  params: 'object',
+  inputs: 'inputs',
+  message: 'string',
+  cost: 'number',
+  currency: 'string',
+}
 const EDGE_FIELDS: Record<string, Shape> = {
   'id!': 'string',
   'from!': 'string',
@@ -1216,9 +1286,10 @@ function structureProblem(raw: unknown): string | null {
     'version!': 'number',
     'nodes!': 'array',
     'edges!': 'array',
+    runs: 'array',
   })
   if (top) return top
-  const doc = raw as { version: number; nodes: unknown[]; edges: unknown[] }
+  const doc = raw as { version: number; nodes: unknown[]; edges: unknown[]; runs?: unknown[] }
   if (doc.version !== CANVAS_SCHEMA_VERSION) return `不认识的画布版本：${doc.version}`
   for (const [i, n] of doc.nodes.entries()) {
     const where = `第 ${i + 1} 个节点`
@@ -1250,6 +1321,10 @@ function structureProblem(raw: unknown): string | null {
   }
   for (const [i, e] of doc.edges.entries()) {
     const bad = checkFields(`第 ${i + 1} 条连线`, e, EDGE_FIELDS)
+    if (bad) return bad
+  }
+  for (const [i, r] of (doc.runs ?? []).entries()) {
+    const bad = checkFields(`第 ${i + 1} 条生成记录`, r, RUN_FIELDS)
     if (bad) return bad
   }
   return null
@@ -1312,5 +1387,26 @@ export function serializeCanvas(doc: CanvasDoc): string {
           },
   )
   const edges = doc.edges.map((e) => ({ id: e.id, from: e.from, to: e.to, role: e.role }))
-  return `${JSON.stringify({ version: doc.version, nodes, edges }, null, 2)}\n`
+  const runs = (doc.runs ?? []).map((r) => ({
+    node: r.node,
+    action: r.action,
+    start: r.start,
+    end: r.end,
+    result: r.result,
+    ...(r.provider !== undefined ? { provider: r.provider } : {}),
+    ...(r.model !== undefined ? { model: r.model } : {}),
+    ...(r.task !== undefined ? { task: r.task } : {}),
+    ...(r.prompt !== undefined ? { prompt: r.prompt } : {}),
+    ...(r.params !== undefined ? { params: r.params } : {}),
+    ...(r.inputs !== undefined
+      ? { inputs: r.inputs.map((x) => ({ role: x.role, path: x.path })) }
+      : {}),
+    ...(r.message !== undefined ? { message: r.message } : {}),
+    ...(r.cost !== undefined ? { cost: r.cost } : {}),
+    ...(r.currency !== undefined ? { currency: r.currency } : {}),
+  }))
+  const top = runs.length
+    ? { version: doc.version, nodes, edges, runs }
+    : { version: doc.version, nodes, edges }
+  return `${JSON.stringify(top, null, 2)}\n`
 }

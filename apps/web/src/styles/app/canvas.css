@@ -11,6 +11,8 @@
   height: 100%;
   /* 不用 hidden：hidden 的容器仍能被滚动（元素获得焦点、scrollIntoView），滚动后工具条与缩放条整体错位。 */
   overflow: clip;
+  /* 画布里的层级只在画布区内比较：不自成层叠上下文时，工具条（8）、生成面板（7）会盖住会话输入框里的菜单。 */
+  isolation: isolate;
   background-color: var(--bg-sunken);
   background-image: radial-gradient(circle, var(--border-subtle) 1px, transparent 1.3px);
   background-size: var(--grid, 24px) var(--grid, 24px);

@@ -720,13 +720,44 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
-  test('画布区比面板窄时面板收到画布区宽度，不越出左边', async () => {
+  test('画布区比面板窄时面板收到画布区宽度', async () => {
     const { host, refs } = await mount(CARD)
     resize(host.querySelector<HTMLElement>('.canvas-stage')!, 380, 800)
     await select(host, refs.$v!)
     const panel = host.querySelector<HTMLElement>('.canvas-panel')!
     expect(panel.style.width).toBe('364px')
-    expect(panel.style.left).toBe('8px')
+  })
+
+  test('面板只按节点定位：节点贴近画布区底边时面板留在节点下方，不收回画布区内压住节点', async () => {
+    const { host, server, refs } = await mount(CARD)
+    const stage = host.querySelector<HTMLElement>('.canvas-stage')!
+    resize(stage, 1000, 300)
+    await waitFor(
+      () => zoom(host) !== 1,
+      () => String(zoom(host)),
+    )
+    await select(host, refs.$v!)
+    const n = server.doc().nodes.find((x) => x.id === refs.$v)!
+    const z = zoom(host)
+    const px = Number.parseFloat(stage.style.getPropertyValue('--px'))
+    const py = Number.parseFloat(stage.style.getPropertyValue('--py'))
+    const panel = host.querySelector<HTMLElement>('.canvas-panel')!
+    const bottom = py + (n.y + n.h) * z
+    // 面板（180）放在节点下方会越过画布区底边。
+    expect(bottom + 16 + 180).toBeGreaterThan(300 - 8)
+    expect(Number.parseFloat(panel.style.top)).toBeCloseTo(bottom + 16, 3)
+    expect(Number.parseFloat(panel.style.left)).toBeCloseTo(px + (n.x + n.w / 2) * z - 240, 3)
+  })
+
+  test('画布上的菜单挂在文档根上，不在画布区的层叠上下文里', async () => {
+    const { host, refs } = await mount(CARD)
+    pointer(node(host, refs.$v!), 'pointerdown', 10, 10, { button: 2 })
+    pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10, { button: 2 })
+    await waitFor(
+      () => !!document.querySelector('.canvas-context-menu'),
+      () => document.body.innerHTML.slice(0, 300),
+    )
+    expect(document.querySelector('.canvas-context-menu')!.closest('.canvas-stage')).toBeNull()
   })
 
   test('流向在跑的卡的连线用内联样式描银河梯度，其余连线不带', async () => {
@@ -1179,7 +1210,7 @@ describe('画布：生成卡与生成面板', () => {
       () => server.ops.length === 3,
       () => '',
     )
-    // 还没有结果的卡：框随所选宽高比变宽变窄、高度不变；1:1 与缺省框同比例不改；选回自动还原成缺省比例。
+    // 还没有结果的卡：框随所选宽高比变形、短边不变；1:1 与缺省框同比例不改；选回自动还原成缺省比例。
     expect(server.ops.map((ops) => ops[0])).toEqual([
       { op: 'update', id: refs.$i!, params: { size: '2048*2048' } },
       { op: 'update', id: refs.$i!, params: { size: '2720*1536' }, w: 300, h: 169 },

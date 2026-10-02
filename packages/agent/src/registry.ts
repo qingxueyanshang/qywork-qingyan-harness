@@ -23,6 +23,7 @@ import type {
   GoalWriteResult,
   IntermediateResourceRef,
   MediaOutput,
+  MediaSpend,
   ResourceCoverage,
   RunId,
   Schedule,
@@ -68,6 +69,8 @@ export interface MediaCall {
   onTask?: (task: { taskId: string; provider: string; model: string }) => void | Promise<void>
   /** 远端任务状态变化时回报一句。 */
   onStatus?: (status: string) => void
+  /** 这次生成的花费，拿到结果时回报一次；失败不计费，不回报。 */
+  onSpend?: (spend: MediaSpend) => void
 }
 
 /**

@@ -201,7 +201,7 @@ describe('生成端口', () => {
     expect(!out.ok && out.message).toBe('qwen / qwen-image-3.0：HTTP 400：size 不合法')
   })
 
-  test('成功时按接口回报的计量交出花费，失败时不交', async () => {
+  test('成功时按接口回报的计量交出花费（记账与本次调用各一份、同一个数），失败时不交', async () => {
     reply = () =>
       Response.json({
         output: {
@@ -216,7 +216,12 @@ describe('生成端口', () => {
         },
       })
     const spends: unknown[] = []
-    await makeMediaPort(config(), (s) => spends.push(s)).generate(call(), signal())
+    const own: unknown[] = []
+    await makeMediaPort(config(), (s) => spends.push(s)).generate(
+      { ...call(), onSpend: (s) => own.push(s) },
+      signal(),
+    )
+    expect(own).toEqual(spends)
     expect(spends).toEqual([
       {
         kind: 'dashscope_images',
@@ -231,8 +236,12 @@ describe('生成端口', () => {
     ])
 
     reply = () => Response.json({ code: 'InvalidParameter', message: 'x' }, { status: 400 })
-    await makeMediaPort(config(), (s) => spends.push(s)).generate(call(), signal())
+    await makeMediaPort(config(), (s) => spends.push(s)).generate(
+      { ...call(), onSpend: (s) => own.push(s) },
+      signal(),
+    )
     expect(spends).toHaveLength(1)
+    expect(own).toHaveLength(1)
   })
 })
 

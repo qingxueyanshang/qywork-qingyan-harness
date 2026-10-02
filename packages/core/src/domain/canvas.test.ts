@@ -13,6 +13,7 @@ import {
   modeOf,
   parseCanvas,
   parseCanvasOps,
+  recordRun,
   serializeCanvas,
   settleVersion,
 } from './canvas.ts'
@@ -105,6 +106,43 @@ describe('画布：格式', () => {
     const extra = JSON.parse(serializeCanvas(sample()))
     extra.nodes[0].color = 'red'
     expect(parseCanvas(JSON.stringify(extra)).ok).toBe(false)
+  })
+
+  test('生成记录：追加在文档末尾，写出再读回字节不变；没有记录时文件里没有这个键', () => {
+    const doc = sample()
+    expect(JSON.parse(serializeCanvas(doc))).not.toHaveProperty('runs')
+    const r = recordRun(doc, {
+      node: 'gone',
+      action: 'run',
+      start: '2026-10-02T01:00:00.000Z',
+      end: '2026-10-02T01:00:09.000Z',
+      result: 'failed',
+      provider: 'ark',
+      model: 'seedance',
+      prompt: '走出校门',
+      params: { duration: 5 },
+      inputs: [{ role: 'first_frame', path: 'a.png' }],
+      message: '内容审核未通过',
+    })
+    if (!r.ok) throw new Error(r.error)
+    expect(doc.runs).toBeUndefined()
+    const text = serializeCanvas(r.doc)
+    expect(Object.keys(JSON.parse(text))).toEqual(['version', 'nodes', 'edges', 'runs'])
+    const back = parseCanvas(text)
+    if (!back.ok) throw new Error(back.error)
+    expect(back.doc.runs).toEqual(r.doc.runs!)
+    expect(serializeCanvas(back.doc)).toBe(text)
+  })
+
+  test('生成记录：结果词不认识、多出字段、输入不合法的都拒绝', () => {
+    const base = { node: 'a1', action: 'run', start: 's', end: 'e', result: 'done' } as const
+    expect(recordRun(sample(), { ...base, result: 'ok' as 'done' }).ok).toBe(false)
+    const text = (run: unknown) =>
+      JSON.stringify({ ...JSON.parse(serializeCanvas(sample())), runs: [run] })
+    expect(parseCanvas(text(base)).ok).toBe(true)
+    expect(parseCanvas(text({ ...base, color: 'red' })).ok).toBe(false)
+    expect(parseCanvas(text({ ...base, inputs: [{ role: 'x', path: 'a.png' }] })).ok).toBe(false)
+    expect(parseCanvas(text({ ...base, cost: '1' })).ok).toBe(false)
   })
 
   test('手改出悬空 @ 的文件读不进来', () => {
@@ -411,10 +449,10 @@ describe('画布：框按媒体比例', () => {
     size: { w, h },
   })
 
-  test('高度不变、宽度按媒体的宽高比', async () => {
+  test('短边不变、长边按媒体的宽高比：竖图的宽取横图的高', async () => {
     const { fitBox } = await import('./canvas.ts')
     expect(fitBox({ w: 169, h: 169 }, { w: 1536, h: 1024 })).toEqual({ w: 254, h: 169 })
-    expect(fitBox({ w: 169, h: 169 }, { w: 1080, h: 1920 })).toEqual({ w: 95, h: 169 })
+    expect(fitBox({ w: 169, h: 169 }, { w: 1080, h: 1920 })).toEqual({ w: 169, h: 300 })
   })
 
   test('出结果时框换成当前版的比例；切版本、删当前版跟着换；没有尺寸的版本不动框', () => {
@@ -429,15 +467,15 @@ describe('画布：框按媒体比例', () => {
     doc = r.doc
     expect(box(doc, 'a1')).toEqual({ w: 254, h: 169 })
     doc = apply(doc, [{ op: 'update', id: 'a1', current: 'tall' }])
-    expect(box(doc, 'a1')).toEqual({ w: 113, h: 169 })
+    expect(box(doc, 'a1')).toEqual({ w: 169, h: 254 })
     doc = apply(doc, [{ op: 'update', id: 'a1', current: 'plain' }])
-    expect(box(doc, 'a1')).toEqual({ w: 113, h: 169 })
+    expect(box(doc, 'a1')).toEqual({ w: 169, h: 254 })
     doc = apply(doc, [{ op: 'update', id: 'a1', current: 'wide' }])
     doc = apply(doc, [{ op: 'remove', id: 'a1', version: 'wide' }])
     expect(gen(doc, 'a1').current).toBe('plain')
     doc = apply(doc, [{ op: 'remove', id: 'a1', version: 'plain' }])
     expect(gen(doc, 'a1').current).toBe('tall')
-    expect(box(doc, 'a1')).toEqual({ w: 113, h: 169 })
+    expect(box(doc, 'a1')).toEqual({ w: 169, h: 254 })
     // 同一次操作给了 w / h 时以它们为准。
     doc = apply(doc, [{ op: 'update', id: 'a1', current: 'tall', w: 300, h: 100 }])
     expect(box(doc, 'a1')).toEqual({ w: 300, h: 100 })
@@ -454,10 +492,10 @@ describe('画布：框按媒体比例', () => {
     const s = settleVersion(r.doc, 'a1', 'task', 'generated/v.mp4', { w: 720, h: 1280 })
     if (!s.ok) throw new Error(s.error)
     expect(gen(s.doc, 'a1').versions[0]!.size).toEqual({ w: 720, h: 1280 })
-    expect(box(s.doc, 'a1')).toEqual({ w: 95, h: 169 })
+    expect(box(s.doc, 'a1')).toEqual({ w: 169, h: 300 })
   })
 
-  test('加文件节点带尺寸时按缺省高度与文件比例定框；换文件也换比例；尺寸随文档写出读回', () => {
+  test('加文件节点带尺寸时按缺省框的短边与文件比例定框；换文件也换比例；尺寸随文档写出读回', () => {
     let doc = apply(emptyCanvas(), [
       { op: 'add_file', ref: '$p', path: 'a.png', size: { w: 1000, h: 1000 } },
       { op: 'add_file', ref: '$q', path: 'b.png' },

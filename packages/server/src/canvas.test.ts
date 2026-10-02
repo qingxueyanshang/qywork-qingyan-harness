@@ -344,7 +344,7 @@ describe('画布服务：上传', () => {
       return { w: n.w, h: n.h }
     }
     expect(box(wide.nodeId)).toEqual({ w: 254, h: 169 })
-    expect(box(refs.$t!)).toEqual({ w: 113, h: 169 })
+    expect(box(refs.$t!)).toEqual({ w: 169, h: 254 })
   })
 
   test('系统拖入：工作区里的直接引用，工作区外的复制进 uploads/；不存在回 404、目录回 422', async () => {

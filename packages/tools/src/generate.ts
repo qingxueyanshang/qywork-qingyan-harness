@@ -18,6 +18,7 @@ import {
   isInlineVideo,
   type MediaInputRole,
   type MediaOutput,
+  type MediaSpend,
   mimeOf,
 } from '@qywork/core'
 import {
@@ -220,6 +221,8 @@ export interface GenerateRequest {
     model: string
   }) => void | Promise<void>
   onStatus?: (status: string) => void
+  /** 拿到结果时回报这次的花费。 */
+  onSpend?: (spend: MediaSpend) => void
 }
 
 /**
@@ -285,6 +288,7 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
       inputs,
       params: req.params,
       ...(req.pick ?? {}),
+      ...(req.onSpend ? { onSpend: req.onSpend } : {}),
     }
     if (req.type === 'video') {
       call.onTask = async ({ taskId, provider, model }) => {
@@ -319,6 +323,7 @@ export async function resumeMedia(req: {
   /** 任务记录的路径。 */
   record: string
   onStatus?: (status: string) => void
+  onSpend?: (spend: MediaSpend) => void
 }): Promise<GenerateOutcome> {
   const recordPath = await resolveWritablePath(req.roots, req.record, { mustExist: true })
   let record: TaskRecord
@@ -338,6 +343,7 @@ export async function resumeMedia(req: {
     provider: record.provider,
     model: record.model,
     resumeTaskId: record.taskId,
+    ...(req.onSpend ? { onSpend: req.onSpend } : {}),
   }
   if (req.onStatus) call.onStatus = req.onStatus
   const result = await req.media.generate(call, req.signal)

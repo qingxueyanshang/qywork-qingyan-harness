@@ -163,7 +163,9 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
             ...(call.resumeTaskId ? { resumeTaskId: call.resumeTaskId } : {}),
           },
         )
-        onSpend?.(spendOf(adapter.spec, result.usage ?? {}, call.type, target))
+        const spend = spendOf(adapter.spec, result.usage ?? {}, call.type, target)
+        onSpend?.(spend)
+        call.onSpend?.(spend)
         return { ok: true, provider: target.provider, model: target.model, files: result.files }
       } catch (err) {
         if (signal.aborted || !(err instanceof MediaError)) throw err

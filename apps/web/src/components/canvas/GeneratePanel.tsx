@@ -555,7 +555,7 @@ export function GeneratePanel(props: {
   }
 
   /**
-   * 还没有结果的卡：选宽高比时框先按所选比例变形（面积不变），选回「自动」还原成缺省比例；
+   * 还没有结果的卡：选宽高比时框先按所选比例变形（短边不变），选回「自动」还原成缺省比例；
    * 有结果之后框跟结果的实际尺寸走（服务端落盘时定），这里不动。不是宽高比的参数回空。
    */
   const previewBox = (ratio: string | null): { w?: number; h?: number } => {
