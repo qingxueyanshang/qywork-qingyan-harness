@@ -4,7 +4,8 @@
  *
  * 独占的事实：
  * - 写入次序：同一个画布文件的修改串行执行（读 → 应用 → 写 `.part` → 改名前复读 → 改名）；
- * - 哪张卡在跑、每张卡最近一次失败的原文：只在进程内，重启即无。
+ * - 哪张卡在跑、卡片上显示的最近一次失败：只在进程内，重启即无。每次生成的结果（含失败原文）
+ *   在收尾时追加进画布文件的生成记录（`runs`），那份随文件保留。
  *
  * 画布文件之外还有写入者（Agent 的 `write_file`、CLI 会话、外部编辑器），所以改名前再读一次：
  * 字节变了就在新内容上重新应用，不覆盖别人的改动。
@@ -39,6 +40,7 @@ import {
   type CanvasOp,
   type CanvasPixels,
   type CanvasResult,
+  type CanvasRunRecord,
   type CanvasRunResult,
   type CanvasVersion,
   type CanvasView,
@@ -53,6 +55,7 @@ import {
   mediaOperationFor,
   newCanvasId,
   parseCanvas,
+  recordRun,
   serializeCanvas,
   settleVersion,
   toPosixPath,
@@ -220,6 +223,9 @@ export interface CanvasRunOptions {
   media: MediaPort
   signal?: AbortSignal
 }
+
+/** 一条生成记录里开始时定下、生成过程中补上的字段；结果、结束时刻与失败原文在收尾时补。 */
+type RunFacts = Omit<CanvasRunRecord, 'node' | 'end' | 'result' | 'message'>
 
 /** 生成卡的一次远端视频任务，以及指向它的那一版（任务号到手时没能写进画布则为 null）。 */
 interface CanvasTask {
@@ -430,20 +436,34 @@ export class CanvasService {
       at: new Date().toISOString(),
     })
 
+    const facts: RunFacts = {
+      action: 'run',
+      start: new Date().toISOString(),
+      ...(pick ?? {}),
+      prompt,
+      params,
+      inputs,
+    }
     const entry = this.begin(key, ws, rel, nodeId, node.output === 'video')
-    const done = this.settleRun(key, ws, rel, nodeId, async () => {
+    const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
       let versionId: string | null = null
       const outcome = await generateMedia({
         roots: ws.root,
         media: opts.media,
         signal: this.signalFor(entry, opts.signal),
         onStatus: (status) => this.advance(entry, ws, rel, nodeId, status),
+        onSpend: (spend) => {
+          facts.cost = spend.cost
+          facts.currency = spend.currency
+        },
         type: node.output,
         prompt,
         inputs,
         params,
         ...(pick ? { pick } : {}),
         onTask: async ({ record, taskId, provider, model }) => {
+          facts.provider = provider
+          facts.model = model
           const id = newCanvasId()
           await this.mutate(ws.root, rel, (d) =>
             addVersions(d, nodeId, [{ id, path: record, made: made(provider, model) }]),
@@ -461,6 +481,8 @@ export class CanvasService {
         if (versionId && !outcome.record) await this.dropVersion(ws.root, rel, nodeId, versionId)
         return { ok: false, message: outcome.message, pending: outcome.record !== undefined }
       }
+      facts.provider = outcome.provider
+      facts.model = outcome.model
       const files = outcome.files
       const sizes = await this.sizesOf(ws.root, files)
       const version = (path: string) => ({
@@ -507,8 +529,9 @@ export class CanvasService {
         : (tasks.find((v) => v.id === node.current) ?? tasks.at(-1))
     if (!version) throw new CanvasFailure(`「${node.name}」没有待取回的任务`, 422)
 
+    const facts: RunFacts = { action: 'retrieve', start: new Date().toISOString() }
     const entry = this.begin(key, ws, rel, nodeId, true)
-    const done = this.settleRun(key, ws, rel, nodeId, async () => {
+    const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
       if (!(await this.isFile(ws.root, version.path))) {
         await this.dropVersion(ws.root, rel, nodeId, version.id)
         return { ok: false, message: `任务记录已不存在：${version.path}`, pending: false }
@@ -521,6 +544,10 @@ export class CanvasService {
         media: opts.media,
         signal: this.signalFor(entry, opts.signal),
         onStatus: (status) => this.advance(entry, ws, rel, nodeId, status),
+        onSpend: (spend) => {
+          facts.cost = spend.cost
+          facts.currency = spend.currency
+        },
         record: version.path,
       })
       if (!outcome.ok) {
@@ -661,6 +688,7 @@ export class CanvasService {
     ws: CanvasWorkspace,
     rel: string,
     nodeId: string,
+    facts: RunFacts,
     work: () => Promise<CanvasRunResult>,
   ): Promise<CanvasRunResult> {
     let result: CanvasRunResult
@@ -676,6 +704,27 @@ export class CanvasService {
       await rm(join(ws.root, entry.task.record), { force: true })
       result = { ok: false, message: '已取消生成', pending: false }
     }
+    const task = entry?.task
+    const provider = facts.provider ?? task?.provider
+    const model = facts.model ?? task?.model
+    const record: CanvasRunRecord = {
+      ...facts,
+      node: nodeId,
+      end: new Date().toISOString(),
+      result: entry?.cancelled
+        ? 'cancelled'
+        : result.ok
+          ? 'done'
+          : result.pending
+            ? 'pending'
+            : 'failed',
+      ...(provider !== undefined ? { provider } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(task ? { task: task.taskId } : {}),
+      ...(!result.ok && !entry?.cancelled ? { message: result.message } : {}),
+    }
+    // 画布文件已被删除或改坏时记不进去；生成本身的结果不因此改判。
+    await this.mutate(ws.root, rel, (d) => recordRun(d, record)).catch(() => {})
     this.running.delete(key)
     if (!result.ok && !entry?.cancelled) this.failures.set(key, result.message)
     this.deps.publish({

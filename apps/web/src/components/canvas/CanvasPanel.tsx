@@ -88,8 +88,6 @@ import { Timeline } from './Timeline.tsx'
 import { gapAt, insertClips, metaOf, sessionOf, splitAt, withoutClip } from './timeline.ts'
 
 const PANEL_W = 480
-const PANEL_H = 180
-const PANEL_TALL = 360
 
 /**
  * 右键点中的对象：节点作用于选区（点中的不在选区里时先只选它），空白处作用于那一点；
@@ -1328,15 +1326,14 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const n = single()
     if (n?.type !== 'generate') return null
     const p = pos(n)
-    const { w, h } = size()
-    const height = tall() ? PANEL_TALL : PANEL_H
-    // 画布区比面板窄时面板收到画布区宽度，否则左侧被画布区裁掉。
-    const width = Math.min(PANEL_W, w - 16)
+    // 画布区比面板窄时面板收到画布区宽度：更宽的面板放在哪都有一部分在画布区外。
+    const width = Math.min(PANEL_W, size().w - 16)
+    // 只按节点定位，不按画布区边缘收回：收回后面板盖住节点本身和相邻节点，平移时也不跟节点走。
     return {
       node: n,
       width,
-      left: Math.max(8, Math.min(px() + (p.x + n.w / 2) * z() - width / 2, w - width - 8)),
-      top: Math.max(8, Math.min(py() + (p.y + n.h) * z() + 16, h - height - 8)),
+      left: px() + (p.x + n.w / 2) * z() - width / 2,
+      top: py() + (p.y + n.h) * z() + 16,
     }
   }
 
@@ -2020,124 +2017,128 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         </button>
       </div>
 
-      <Show when={menu()}>
-        {(m) => (
-          <Switch>
-            <Match when={m().kind === 'context' && m().target}>
-              {(target) => (
-                <AnchoredMenu
-                  class="canvas-context-menu"
-                  anchor={m().anchor}
-                  placement="below-start"
-                >
-                  <For each={contextItems(target(), m().at ?? center())}>
-                    {(item) => (
-                      <Show when={item} fallback={<hr />}>
-                        {(it) => (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const act = it().run
-                              setMenu(null)
-                              act()
-                            }}
-                          >
-                            <span>{it().label}</span>
-                            <Show when={it().keys}>{(k) => <kbd>{k()}</kbd>}</Show>
-                          </button>
-                        )}
-                      </Show>
-                    )}
-                  </For>
-                </AnchoredMenu>
-              )}
-            </Match>
-            <Match when={m().kind === 'clip'}>
-              <AnchoredMenu class="canvas-pick" anchor={m().anchor} placement="below-start">
-                <SourcePicker
-                  nodes={nodes().filter(
-                    (n) => mediaOf(view()!, n.id).kind === 'video' && mediaOf(view()!, n.id).path,
-                  )}
-                  files={true}
-                  kinds={['video']}
-                  accept="video/*"
-                  thumb={(id) => <KindIcon kind={mediaOf(view()!, id).kind} size={14} />}
-                  onNode={(id) => {
-                    const { nodeId, gap } = m()
-                    const path = mediaOf(view()!, id).path
-                    setMenu(null)
-                    if (path) void addClips(nodeId, [path], gap)
-                  }}
-                  onFile={(path) => {
-                    const { nodeId, gap } = m()
-                    setMenu(null)
-                    void addClips(nodeId, [path], gap)
-                  }}
-                  onUpload={(files) => {
-                    const { nodeId, gap } = m()
-                    setMenu(null)
-                    void uploadClips(nodeId, files, gap)
-                  }}
-                />
-              </AnchoredMenu>
-            </Match>
-            <Match when={m().kind === 'out' || m().kind === 'version'}>
-              <AnchoredMenu class="canvas-menu" anchor={m().anchor}>
-                <Switch>
-                  <Match when={m().kind === 'out'}>
-                    <For each={extendable((m() as { nodeId: string }).nodeId)}>
-                      {(o) => (
-                        <button type="button" onClick={() => void extend(m().nodeId, o, m().at)}>
-                          <KindIcon kind={o} size={14} />
-                          {OUTPUT_LABEL[o]}
-                        </button>
+      {/* 菜单挂到文档根：画布区自成层叠上下文，留在里面会被全屏时间线（55）盖住。
+          可见性按本页是否在前，挂在根上不再随本页一起隐藏。 */}
+      <Portal>
+        <Show when={props.active ? menu() : null}>
+          {(m) => (
+            <Switch>
+              <Match when={m().kind === 'context' && m().target}>
+                {(target) => (
+                  <AnchoredMenu
+                    class="canvas-context-menu"
+                    anchor={m().anchor}
+                    placement="below-start"
+                  >
+                    <For each={contextItems(target(), m().at ?? center())}>
+                      {(item) => (
+                        <Show when={item} fallback={<hr />}>
+                          {(it) => (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const act = it().run
+                                setMenu(null)
+                                act()
+                              }}
+                            >
+                              <span>{it().label}</span>
+                              <Show when={it().keys}>{(k) => <kbd>{k()}</kbd>}</Show>
+                            </button>
+                          )}
+                        </Show>
                       )}
                     </For>
-                  </Match>
-                  <Match when={m().kind === 'version'}>
-                    <For
-                      each={(() => {
-                        const n = byId((m() as { nodeId: string }).nodeId)
-                        return n?.type === 'generate' ? n.versions : []
-                      })()}
-                    >
-                      {(v, i) => {
-                        const current = () =>
-                          v.id ===
-                          (
-                            byId((m() as { nodeId: string }).nodeId) as
-                              | CanvasGenerateNode
-                              | undefined
-                          )?.current
-                        return (
-                          <button
-                            type="button"
-                            role="menuitemradio"
-                            aria-checked={current()}
-                            onClick={() => {
-                              // 先取节点 id 再收菜单：收起之后 `m()` 已失效。
-                              const id = (m() as { nodeId: string }).nodeId
-                              setMenu(null)
-                              void apply([{ op: 'update', id, current: v.id }])
-                            }}
-                          >
-                            <span>
-                              {i() + 1} · {madeAt(v.made.at)}
-                            </span>
-                            <Show when={current()}>
-                              <IconCheck size={14} />
-                            </Show>
+                  </AnchoredMenu>
+                )}
+              </Match>
+              <Match when={m().kind === 'clip'}>
+                <AnchoredMenu class="canvas-pick" anchor={m().anchor} placement="below-start">
+                  <SourcePicker
+                    nodes={nodes().filter(
+                      (n) => mediaOf(view()!, n.id).kind === 'video' && mediaOf(view()!, n.id).path,
+                    )}
+                    files={true}
+                    kinds={['video']}
+                    accept="video/*"
+                    thumb={(id) => <KindIcon kind={mediaOf(view()!, id).kind} size={14} />}
+                    onNode={(id) => {
+                      const { nodeId, gap } = m()
+                      const path = mediaOf(view()!, id).path
+                      setMenu(null)
+                      if (path) void addClips(nodeId, [path], gap)
+                    }}
+                    onFile={(path) => {
+                      const { nodeId, gap } = m()
+                      setMenu(null)
+                      void addClips(nodeId, [path], gap)
+                    }}
+                    onUpload={(files) => {
+                      const { nodeId, gap } = m()
+                      setMenu(null)
+                      void uploadClips(nodeId, files, gap)
+                    }}
+                  />
+                </AnchoredMenu>
+              </Match>
+              <Match when={m().kind === 'out' || m().kind === 'version'}>
+                <AnchoredMenu class="canvas-menu" anchor={m().anchor}>
+                  <Switch>
+                    <Match when={m().kind === 'out'}>
+                      <For each={extendable((m() as { nodeId: string }).nodeId)}>
+                        {(o) => (
+                          <button type="button" onClick={() => void extend(m().nodeId, o, m().at)}>
+                            <KindIcon kind={o} size={14} />
+                            {OUTPUT_LABEL[o]}
                           </button>
-                        )
-                      }}
-                    </For>
-                  </Match>
-                </Switch>
-              </AnchoredMenu>
-            </Match>
-          </Switch>
-        )}
-      </Show>
+                        )}
+                      </For>
+                    </Match>
+                    <Match when={m().kind === 'version'}>
+                      <For
+                        each={(() => {
+                          const n = byId((m() as { nodeId: string }).nodeId)
+                          return n?.type === 'generate' ? n.versions : []
+                        })()}
+                      >
+                        {(v, i) => {
+                          const current = () =>
+                            v.id ===
+                            (
+                              byId((m() as { nodeId: string }).nodeId) as
+                                | CanvasGenerateNode
+                                | undefined
+                            )?.current
+                          return (
+                            <button
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={current()}
+                              onClick={() => {
+                                // 先取节点 id 再收菜单：收起之后 `m()` 已失效。
+                                const id = (m() as { nodeId: string }).nodeId
+                                setMenu(null)
+                                void apply([{ op: 'update', id, current: v.id }])
+                              }}
+                            >
+                              <span>
+                                {i() + 1} · {madeAt(v.made.at)}
+                              </span>
+                              <Show when={current()}>
+                                <IconCheck size={14} />
+                              </Show>
+                            </button>
+                          )
+                        }}
+                      </For>
+                    </Match>
+                  </Switch>
+                </AnchoredMenu>
+              </Match>
+            </Switch>
+          )}
+        </Show>
+      </Portal>
       <Show when={!view() && !broken()}>
         <div class="canvas-note">
           <IconCanvas size={20} />

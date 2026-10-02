@@ -199,7 +199,7 @@ describe('画布运行：图像', () => {
     expect(g.versions[0]!.path).toMatch(/^generated\/\d{8}-\d{6}\.png$/)
   })
 
-  test('落地的图带像素宽高，卡片的框换成图的比例、高度不变', async () => {
+  test('落地的图带像素宽高，卡片的框换成图的比例、短边不变', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -212,10 +212,10 @@ describe('画布运行：图像', () => {
     expect(await done).toMatchObject({ ok: true })
     const g = await node(ws.root, ids.$g!)
     expect(g.versions[0]!.size).toEqual({ w: 1024, h: 1536 })
-    expect({ w: g.w, h: g.h }).toEqual({ w: 113, h: 169 })
+    expect({ w: g.w, h: g.h }).toEqual({ w: 169, h: 254 })
   })
 
-  test('事件依次是 running → file.changed → done', async () => {
+  test('事件依次是 running → file.changed（版本、生成记录各一次）→ done', async () => {
     const { ws, svc, ids, events } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -229,19 +229,21 @@ describe('画布运行：图像', () => {
     expect(events.map((e) => (e.type === 'canvas.run' ? `run:${e.state}` : e.type))).toEqual([
       'run:running',
       'file.changed',
+      'file.changed',
       'run:done',
     ])
     expect(events[0]).toMatchObject({ workspaceId: 'ws1', path: PATH, nodeId: ids.$g })
   })
 
-  test('出图失败：failed 带原文、没有 file.changed，状态显示原文', async () => {
+  test('出图失败：failed 带原文，状态显示原文；画布只多一条生成记录', async () => {
     const { ws, svc, ids, events } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({ ok: false, message: '内容审核未通过' })
     expect(await done).toEqual({ ok: false, message: '内容审核未通过', pending: false })
-    expect(events.map((e) => e.type)).toEqual(['canvas.run', 'canvas.run'])
-    expect(events[1]).toMatchObject({ state: 'failed', message: '内容审核未通过' })
+    expect(events.map((e) => e.type)).toEqual(['canvas.run', 'file.changed', 'canvas.run'])
+    expect(events[2]).toMatchObject({ state: 'failed', message: '内容审核未通过' })
+    expect((await node(ws.root, ids.$g!)).versions).toEqual([])
     expect((await svc.read(ws.root, PATH)).states[ids.$g!]).toEqual({
       state: 'failed',
       message: '内容审核未通过',
@@ -647,5 +649,116 @@ describe('画布运行：排队中与生成中', () => {
       files: [{ bytes: MP4, mime: 'video/mp4' }],
     })
     await done
+  })
+})
+
+describe('画布运行：生成记录', () => {
+  const spend = (cost: number) => ({
+    kind: 'ark_videos' as const,
+    provider: 'ark',
+    model: 'seedance',
+    output: 'video' as const,
+    quantity: 5,
+    cost,
+    currency: 'CNY' as const,
+    at: Date.now(),
+  })
+
+  test('成功：一条 done，记发出的提示词、参数、输入、接口、模型与花费', async () => {
+    const { ws, svc, ids } = await setup(IMAGE_CARD)
+    const fake = fakePort()
+    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const p = await fake.next()
+    p.call.onSpend?.({ ...spend(0.2), kind: 'dashscope_images', output: 'image', quantity: 1 })
+    p.finish({
+      ok: true,
+      provider: 'qwen',
+      model: 'img',
+      files: [{ bytes: PNG, mime: 'image/png' }],
+    })
+    await done
+    const runs = (await onDisk(ws.root)).runs ?? []
+    expect(runs).toEqual([
+      {
+        node: ids.$g!,
+        action: 'run',
+        start: expect.any(String),
+        end: expect.any(String),
+        result: 'done',
+        provider: 'qwen',
+        model: 'img',
+        prompt: '小满 戴一顶帽子',
+        params: {},
+        inputs: [{ role: 'reference', path: 'a.png' }],
+        cost: 0.2,
+        currency: 'CNY',
+      },
+    ])
+    expect(Date.parse(runs[0]!.end)).toBeGreaterThanOrEqual(Date.parse(runs[0]!.start))
+  })
+
+  test('失败：一条 failed，带失败原文、没有花费；重启后原文仍在画布文件里', async () => {
+    const { ws, svc, ids } = await setup(IMAGE_CARD)
+    const fake = fakePort()
+    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    ;(await fake.next()).finish({ ok: false, message: 'qwen / img：内容审核未通过' })
+    await done
+    const fresh = new CanvasService({ publish: () => {} })
+    const runs = (await fresh.read(ws.root, PATH)).doc.runs ?? []
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toMatchObject({ result: 'failed', message: 'qwen / img：内容审核未通过' })
+    expect(runs[0]).not.toHaveProperty('cost')
+  })
+
+  test('视频超时留待取回、之后取回成功：两条记录，任务号相同，花费记在取回那条', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit('t-9')
+    p.finish({ ok: false, message: '等待超过 20 分钟仍未完成', pendingTaskId: 't-9' })
+    await run.done
+    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    const r = await fake.next()
+    r.call.onSpend?.(spend(1.5))
+    r.finish({
+      ok: true,
+      provider: 'ark',
+      model: 'seedance',
+      files: [{ bytes: MP4, mime: 'video/mp4' }],
+    })
+    await again.done
+    const runs = (await onDisk(ws.root)).runs ?? []
+    expect(runs.map((x) => [x.action, x.result, x.task, x.provider, x.model, x.cost])).toEqual([
+      ['run', 'pending', 't-9', 'ark', 'seedance', undefined],
+      ['retrieve', 'done', 't-9', 'ark', 'seedance', 1.5],
+    ])
+    expect(runs[0]!.message).toBe('等待超过 20 分钟仍未完成')
+    expect(runs[1]).not.toHaveProperty('prompt')
+  })
+
+  test('排队中撤销：一条 cancelled，不记失败原文', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    await (await fake.next()).submit('t-1')
+    await svc.cancel(ws.root, PATH, ids.$v!, async () => 'cancelled')
+    await done
+    const runs = (await onDisk(ws.root)).runs ?? []
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toMatchObject({ result: 'cancelled', task: 't-1' })
+    expect(runs[0]).not.toHaveProperty('message')
+  })
+
+  test('删掉生成卡之后记录仍在', async () => {
+    const { ws, svc, ids } = await setup(IMAGE_CARD)
+    const fake = fakePort()
+    const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    ;(await fake.next()).finish({ ok: false, message: '失败' })
+    await done
+    await svc.apply(ws.root, PATH, [{ op: 'remove', id: ids.$g! }])
+    const doc = await onDisk(ws.root)
+    expect(doc.nodes.some((n) => n.id === ids.$g)).toBe(false)
+    expect(doc.runs?.map((x) => x.node)).toEqual([ids.$g!])
   })
 })
