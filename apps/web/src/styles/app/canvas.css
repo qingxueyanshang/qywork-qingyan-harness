@@ -1428,7 +1428,7 @@ button.canvas-input:hover {
   white-space: nowrap;
 }
 
-/* 参数面板固定尺寸；展开更多设置只改变内部滚动内容。 */
+/* 先按内容收紧；挂载后锁定实际高度，更多设置在框内滚动。 */
 .canvas-params-panel {
   position: fixed;
   z-index: 60;
@@ -1436,7 +1436,7 @@ button.canvas-input:hover {
   flex-direction: column;
   gap: 18px;
   width: min(432px, calc(100vw - 16px));
-  height: min(480px, calc(100dvh - 16px));
+  max-height: min(480px, calc(100dvh - 16px));
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
@@ -1451,6 +1451,14 @@ button.canvas-input:hover {
 }
 .canvas-params-panel > * {
   flex-shrink: 0;
+}
+.canvas-params-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.canvas-params-row > .canvas-params-section {
+  min-width: 0;
 }
 .canvas-params-section {
   display: flex;
