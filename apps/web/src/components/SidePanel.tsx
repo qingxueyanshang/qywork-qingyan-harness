@@ -129,9 +129,6 @@ const VIEWS: { view: PanelView; label: string }[] = [
   { view: 'runs', label: '运行' },
 ]
 
-/** 桌面外壳判定一次就够：它在一次运行里不会变。 */
-const DESKTOP = isDesktopShell()
-
 /** 看板上的「无限画布」：在工作区根新建一张空画布并打开它。 */
 async function openNewCanvas(): Promise<void> {
   const path = await createCanvas()
@@ -172,7 +169,7 @@ const PREVIEW_SOURCES: {
     key: 'terminal',
     label: '终端',
     icon: IconTerminal,
-    show: () => DESKTOP,
+    show: isDesktopShell,
     open: () => openPanelTab('terminal'),
   },
   {
@@ -191,7 +188,7 @@ const PREVIEW_SOURCES: {
     key: 'preview',
     label: '网页预览',
     icon: IconGlobe,
-    show: () => !DESKTOP,
+    show: () => !isDesktopShell(),
     open: () => openPanelTab('preview'),
   },
   { key: 'word', label: 'Word', icon: IconFile },
@@ -633,6 +630,7 @@ function FileBrowser() {
   const [renaming, setRenaming] = createSignal<FileNode | null>(null)
   const [nameError, setNameError] = createSignal<string | null>(null)
   const [menuAt, setMenuAt] = createSignal<{ node: FileNode; x: number; y: number } | null>(null)
+  const [revealError, setRevealError] = createSignal<string | null>(null)
   const [doomed, setDoomed] = createSignal<FileNode | null>(null)
   const [query, setQuery] = createSignal('')
   const [rootOpen, setRootOpen] = createSignal(true)
@@ -705,6 +703,7 @@ function FileBrowser() {
     },
     menu: (node, x, y) => {
       setSelected(node)
+      setRevealError(null)
       setMenuAt({ node, x, y })
     },
     creating,
@@ -882,6 +881,22 @@ function FileBrowser() {
           )}
         </Show>
 
+        <Show when={revealError()}>
+          {(msg) => (
+            <div class="tree-hint" role="alert">
+              无法打开目录：{msg()}
+              <button
+                class="icon-btn"
+                type="button"
+                aria-label="关闭错误提示"
+                onClick={() => setRevealError(null)}
+              >
+                <IconX size={12} />
+              </button>
+            </div>
+          )}
+        </Show>
+
         <Show
           when={query().trim()}
           fallback={
@@ -914,6 +929,7 @@ function FileBrowser() {
             x={at().x}
             y={at().y}
             onClose={() => setMenuAt(null)}
+            onError={setRevealError}
             onRename={() => {
               setCreating(null)
               setNameError(null)
@@ -959,6 +975,7 @@ function TreeMenu(props: {
   x: number
   y: number
   onClose: () => void
+  onError: (message: string) => void
   onRename: () => void
   onDelete: () => void
 }) {
@@ -1012,17 +1029,20 @@ function TreeMenu(props: {
       ref={el}
       style={{ left: `${Math.max(8, props.x - 4)}px`, top: `${Math.max(8, props.y - 4)}px` }}
     >
-      <Show when={DESKTOP}>
+      <Show when={isDesktopShell()}>
         <button
           class="tree-menu-item"
           type="button"
           role="menuitem"
           onClick={() =>
             run(() => {
-              // 外壳那条命令只收目录（它 `is_dir` 校验过），所以文件给它父目录
-              // ——用户要的是「在资源管理器里看到它在哪」。
-              const dir = props.node.kind === 'dir' ? abs() : parentDir(abs())
-              void revealWorkspace(dir)
+              // 先从使用斜杠的相对路径取父目录，再转换为本机路径。
+              const dir = absPath(
+                props.node.kind === 'dir' ? props.node.path : parentDir(props.node.path),
+              )
+              void revealWorkspace(dir).catch((err) =>
+                props.onError(err instanceof Error ? err.message : String(err)),
+              )
             })
           }
         >
