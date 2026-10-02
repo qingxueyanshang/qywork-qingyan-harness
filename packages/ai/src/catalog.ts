@@ -1139,6 +1139,9 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'gpt-6-luna',
       displayName: 'GPT-6 Luna',
       vendor: 'openai',
+      // 2026-10-02 核对：https://developers.openai.com/api/docs/models/gpt-6-luna
+      // 官方另支持 none；产品只提供正向思考档位，未选择时沿用默认 medium。
+      // 思考开启时的工具调用使用 Responses；Chat 仅在 none 下支持工具调用。
       provider: 'openai_responses',
       vision: true,
       contextWindow: 1_050_000,

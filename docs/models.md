@@ -87,6 +87,31 @@ Veo 的生成响应未提供计价所需的实际时长、分辨率，用量账�
 [xAI 价格](https://docs.x.ai/developers/pricing)、[xAI 实际扣费](https://docs.x.ai/developers/cost-tracking)。
 本地协议回归不等同于官方端点实际生成验证。
 
+## GPT-6 Luna
+
+内置模型 ID 与官方当前快照均为 `gpt-6-luna`，显示为 **GPT-6 Luna**。
+选择 OpenAI Responses，官方 Base URL 为 `https://api.openai.com/v1`。
+支持文本、图片输入和文本输出；上下文 1,050,000 token，最大输出 128,000 token。
+
+产品提供 `low / medium / high / xhigh / max` 思考档位，未选择时使用官方默认 `medium`。
+官方另支持 `none`，但产品统一不提供关闭思考选项；`none` 与 `minimal` 不等价。
+Chat Completions 仅在 `reasoning_effort: none` 时支持函数调用，因此内置接入使用 Responses。
+
+目录采用标准处理价格，单位为美元 / 百万 token：
+
+| 提示词总 token | 未命中输入 | 缓存读取 | 缓存写入 | 输出 |
+|---|---:|---:|---:|---:|
+| ≤ 272,000 | 0.10 | 0.01 | 0.125 | 0.50 |
+| > 272,000 | 0.20 | 0.02 | 0.25 | 0.75 |
+
+提示词总量包括缓存读取与写入；超过分界后，整条请求使用长上下文价格。
+官方 2026-09-25 修复了 Luna 的图像编码问题；当前模型 ID 仍为 `gpt-6-luna`，无需新增映射。
+
+2026-10-02 核对：[官方模型规格](https://developers.openai.com/api/docs/models/gpt-6-luna)、
+[价格](https://developers.openai.com/api/docs/pricing)、
+[发布说明](https://developers.openai.com/api/docs/changelog)。
+本地协议回归不等同于官方端点实测；中转站的可用性与价格以所接端点为准。
+
 ## GPT-6.1 Sol
 
 内置收录 `gpt-6.1-sol`，显示为 **GPT-6.1 Sol**，原有 `gpt-6-sol` 独立保留。
