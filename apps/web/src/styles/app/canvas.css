@@ -1390,10 +1390,32 @@ button.canvas-input:hover {
   border-radius: 3px;
   object-fit: cover;
 }
-.canvas-panel-error {
-  flex: none;
-  padding: 0 16px 4px;
-  font-size: var(--fs-sm);
+.canvas-media-notice {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 65%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-default);
+  background: var(--bg-raised);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.canvas-media-notice > strong {
+  color: var(--warning);
+}
+.canvas-media-notice.failed > strong {
   color: var(--danger);
 }
 .canvas-bar {

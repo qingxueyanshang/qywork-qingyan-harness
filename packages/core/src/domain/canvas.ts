@@ -41,6 +41,8 @@ export interface CanvasVersion {
   made: CanvasMade
   /** 产物的像素宽高，服务端落盘时从文件头读出；读不出（音频、任务记录、不认识的格式）时没有。 */
   size?: CanvasPixels
+  /** 本次生成有可用产物但未完整返回；跟随结果保存，切换版本或重启后仍可查看。 */
+  warning?: string
 }
 
 export interface CanvasFileNode {
@@ -172,7 +174,7 @@ export interface CanvasView {
 
 /** 一次运行或取回的结果。`pending`：远端任务还在，这一版留着等取回。 */
 export type CanvasRunResult =
-  | { ok: true; paths: string[] }
+  | { ok: true; paths: string[]; warning?: string }
   | { ok: false; message: string; pending: boolean }
 
 /** 视频生成节点的输入模式。不存盘，由输入线的用途推出（`modeOf`）。 */
@@ -1230,6 +1232,7 @@ const VERSION_FIELDS: Record<string, Shape> = {
   'path!': 'string',
   'made!': 'object',
   size: 'size',
+  warning: 'string',
 }
 const MADE_FIELDS: Record<string, Shape> = {
   'prompt!': 'string',
@@ -1382,6 +1385,7 @@ export function serializeCanvas(doc: CanvasDoc): string {
                 at: v.made.at,
               },
               ...(v.size ? { size: { w: v.size.w, h: v.size.h } } : {}),
+              ...(v.warning ? { warning: v.warning } : {}),
             })),
             ...(n.current !== undefined ? { current: n.current } : {}),
           },

@@ -68,6 +68,20 @@ beforeEach(() => {
 })
 
 describe('generate_image', () => {
+  test('部分返回仍保存图片，回执同时带上缺少张数的提示', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gen-partial-'))
+    const reason = '部分图片生成失败：内容审核未通过'
+    const warning = `请求 4 张，实际返回 1 张；${reason}`
+    if (!answer.ok) throw new Error('测试需要成功的图片产物')
+    answer = { ...answer, warning: reason }
+    const out = await run(root, { prompt: '海报', params_json: '{"n":4}' })
+    expect(out.status).toBe('success')
+    expect(out.message).toContain(warning)
+    expect(out.data).toMatchObject({ warning })
+    expect(out.fileChanges).toHaveLength(1)
+    expect(calls).toHaveLength(1)
+  })
+
   test('没给输出路径时写到 generated/，结果只带路径不带字节', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
     const out = await run(root, { prompt: '一只猫', params_json: '{"size":"1024*1536"}' })

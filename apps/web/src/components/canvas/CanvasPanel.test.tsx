@@ -914,6 +914,89 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
+  test('选择 16:9、4K、最高质量、四张后，生成使用全部选择', async () => {
+    const catalog = {
+      ...MODELS,
+      media: [
+        {
+          provider: 'test',
+          id: 'gpt-image-2.5-sunburst',
+          kind: 'openai_images',
+          output: 'image',
+          label: 'GPT Image 2.5 Sunburst',
+          operations: ['generate', 'edit'],
+          isDefault: true,
+          known: true,
+          params: [
+            {
+              name: 'size',
+              label: '尺寸',
+              type: 'string',
+              default: 'auto',
+              shapes: [
+                { value: 'auto' },
+                { ratio: '16:9', tier: '1K', value: '1360x768' },
+                { ratio: '16:9', tier: '4K', value: '3840x2160' },
+              ],
+            },
+            {
+              name: 'quality',
+              label: '生成质量',
+              type: 'enum',
+              default: 'auto',
+              values: ['auto', 'max'],
+              valueLabels: { auto: '自动', max: '最高' },
+            },
+            { name: 'n', label: '张数', type: 'integer', min: 1, max: 10, default: 1 },
+          ],
+        },
+      ],
+    }
+    const { host, server, refs } = await mount(
+      [{ op: 'add_generate', ref: '$g', output: 'image', prompt: '海报' }],
+      {},
+      catalog,
+    )
+    await select(host, refs.$g!)
+    host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-params-panel'),
+      () => '',
+    )
+    const values: [string, string, string | number][] = [
+      ['16:9', 'size', '1360x768'],
+      ['4K', 'size', '3840x2160'],
+      ['最高', 'quality', 'max'],
+      ['4', 'n', 4],
+    ]
+    for (const [label, key, value] of values) {
+      const button = [
+        ...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button'),
+      ].find((b) => b.textContent === label)!
+      button.click()
+      await waitFor(
+        () => {
+          const n = server.doc().nodes.find((n) => n.id === refs.$g)
+          return (
+            n?.type === 'generate' &&
+            n.params[key] === value &&
+            button.getAttribute('aria-checked') === 'true'
+          )
+        },
+        () => JSON.stringify(server.ops),
+      )
+    }
+    host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!.click()
+    await waitFor(
+      () => server.runs.length === 1,
+      () => JSON.stringify(server.runs),
+    )
+    const n = server.doc().nodes.find((n) => n.id === refs.$g)
+    expect(n?.type === 'generate' && n.params).toEqual({ size: '3840x2160', quality: 'max', n: 4 })
+    expect(server.runs[0]?.nodeId).toBe(refs.$g!)
+    expect(server.runs[0]?.ops).toEqual([])
+  })
+
   test('质量中文选项发送原生值；更多设置默认不传，恢复默认后清除，换模型保留选择', async () => {
     const catalog = {
       ...MODELS,
@@ -1513,6 +1596,91 @@ describe('画布：生成卡与生成面板', () => {
       () => host.textContent?.includes('内容审核未通过') === true,
       () => `final=${host.innerHTML.slice(0, 400)}`,
     )
+  })
+
+  test('一次返回四张图片可逐版切换，部分返回与再次失败都在图片节点内提示', async () => {
+    const core = await import('@qywork/core')
+    const store = await import('../../lib/store/index.ts')
+    const { host, server, refs } = await mount([
+      { op: 'add_generate', ref: '$g', output: 'image', prompt: '海报', params: { n: 4 } },
+    ])
+    const id = refs.$g!
+    const made = {
+      prompt: '海报',
+      provider: 'qwen',
+      model: 'qwen-image-3.0',
+      params: { n: 4 },
+      inputs: [],
+      at: '2026-10-02T12:00:00Z',
+    }
+    const r = core.addVersions(
+      server.doc(),
+      id,
+      [1, 2, 3, 4].map((i) => ({ id: `v${i}`, path: `generated/${i}.png`, made })),
+    )
+    if (!r.ok) throw new Error(r.error)
+    server.setView({ doc: r.doc, states: { [id]: { state: 'normal' } } })
+    store.setState('canvasVersion', 1)
+    await waitFor(
+      () => !!host.querySelector('.canvas-badge.version'),
+      () => host.textContent ?? '',
+    )
+    await select(host, id)
+    host.querySelector<HTMLButtonElement>('.canvas-badge.version')!.click()
+    await waitFor(
+      () => document.querySelectorAll('.canvas-menu button').length === 4,
+      () => document.body.textContent ?? '',
+    )
+    document.querySelectorAll<HTMLButtonElement>('.canvas-menu button')[3]!.click()
+    await waitFor(
+      () => host.querySelector('.canvas-badge.version')?.textContent?.includes('4 / 4') === true,
+      () => host.textContent ?? '',
+    )
+    const updated = server.doc().nodes.find((n) => n.id === id)
+    expect(updated?.type === 'generate' && updated.current).toBe('v4')
+
+    const partial = structuredClone(r.doc)
+    const card = partial.nodes.find((n) => n.id === id)!
+    if (card.type !== 'generate') throw new Error('不是生成节点')
+    card.versions = [card.versions[0]!]
+    card.versions[0]!.warning = '请求 4 张，实际返回 1 张'
+    server.setView({ doc: partial })
+    store.setState('canvasVersion', 2)
+    await waitFor(
+      () =>
+        node(host, id)
+          .querySelector('.canvas-media .canvas-media-notice')
+          ?.textContent?.includes('请求 4 张，实际返回 1 张') === true,
+      () => host.textContent ?? '',
+    )
+    const panel = host.querySelector<HTMLElement>('.canvas-panel')!
+    const editor = panel.querySelector<HTMLElement>('.canvas-prompt')!
+    expect(panel.querySelector('.canvas-media-notice')).toBeNull()
+    expect(host.querySelector('.canvas-result-notice')).toBeNull()
+    expect(editor.textContent).toBe('海报')
+    expect(host.querySelector('.canvas-badge.version')).toBeNull()
+
+    server.setView({
+      states: { [id]: { state: 'failed', message: 'HTTP 400：rejected by the safety system' } },
+    })
+    store.setState('canvasVersion', 3)
+    await waitFor(
+      () =>
+        node(host, id)
+          .querySelector('.canvas-media .canvas-media-notice')
+          ?.textContent?.includes('本次生成失败，已保留原结果') === true,
+      () => host.textContent ?? '',
+    )
+    expect(node(host, id).querySelector('.canvas-media-notice')?.getAttribute('role')).toBe('alert')
+    expect(node(host, id).querySelector('.canvas-bitmap')).not.toBeNull()
+    expect(panel.textContent).not.toContain('HTTP 400')
+    expect(editor.textContent).toBe('海报')
+    panel.querySelector<HTMLButtonElement>('.send-btn')!.click()
+    await waitFor(
+      () => server.runs.length === 1,
+      () => JSON.stringify(server.runs),
+    )
+    expect(server.runs[0]?.ops).toEqual([])
   })
 
   test('选中工具条只剩视频的取帧：出过结果的生成卡不出「生成参数」「打开」', async () => {
