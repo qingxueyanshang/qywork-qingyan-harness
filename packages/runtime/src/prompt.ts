@@ -68,7 +68,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'read_canvas',
-    line: '- 画布：无限画布是工作区里的 *.canvas.json，界面上的画布页显示的就是这个文件。读节点、提示词与参数用 read_canvas，改提示词、参数、连线或发起生成用 canvas。用户提到画布或附上画布界面的截图时同样使用这两个工具，不通过电脑控制操作 QyWork 自己的界面。',
+    line: '- 画布：无限画布即工作区中的 *.canvas.json 文件，界面画布页呈现该文件的内容。读取节点、提示词与参数使用 read_canvas；修改提示词、参数、连线或发起生成使用 canvas。',
   },
   {
     tool: 'desktop_windows',
