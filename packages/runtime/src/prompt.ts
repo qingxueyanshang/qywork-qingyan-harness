@@ -67,6 +67,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line: '- 命令：用 run_command 执行 shell 命令。临时文件、缓存放工作区的 .tmp/，那里不计入变更。起 Chrome 必须带 --user-data-dir=.tmp/chrome，不带时每次启动都在临时目录留一份删不掉的崩溃指标文件。',
   },
   {
+    tool: 'read_canvas',
+    line: '- 画布：无限画布是工作区里的 *.canvas.json，界面上的画布页显示的就是这个文件。读节点、提示词与参数用 read_canvas，改提示词、参数、连线或发起生成用 canvas。用户提到画布或附上画布界面的截图时同样使用这两个工具，不通过电脑控制操作 QyWork 自己的界面。',
+  },
+  {
     tool: 'desktop_windows',
     line:
       '- 电脑控制：已有桌面窗口及其内容属于用户。操作本机应用应使用 desktop_windows → desktop_observe → desktop_act，不得通过 run_command 截图或注入鼠标、键盘事件。' +

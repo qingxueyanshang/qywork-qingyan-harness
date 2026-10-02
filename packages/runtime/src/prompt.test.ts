@@ -352,6 +352,22 @@ describe('能力段', () => {
     expect(prompt).not.toContain('先新建标签页')
   })
 
+  /**
+   * 原始失败形状：用户附上画布页的截图说「写进画布的这个提示词里」，模型手里有画布工具，
+   * 却用 desktop_windows → desktop_observe 去操作 QyWork 自己的窗口。能力段原先没有画布这一行。
+   */
+  test('注册了画布工具时点名画布走 read_canvas / canvas，画布界面的截图也不走电脑控制；没注册就不提', () => {
+    const prompt = buildSystemPrompt(new Set(['read_canvas', 'canvas', 'desktop_windows']))
+    expect(prompt).toContain('*.canvas.json')
+    expect(prompt).toContain('用 read_canvas')
+    expect(prompt).toContain('用 canvas')
+    expect(prompt).toContain(
+      '附上画布界面的截图时同样使用这两个工具，不通过电脑控制操作 QyWork 自己的界面',
+    )
+    expect(prompt.indexOf('- 画布：')).toBeLessThan(prompt.indexOf('- 电脑控制：'))
+    expect(buildSystemPrompt(new Set(['desktop_windows']))).not.toContain('read_canvas')
+  })
+
   test('没有桌面工具就不提它们', () => {
     const prompt = buildSystemPrompt(new Set(['run_command']))
     expect(prompt).not.toContain('desktop_windows')
