@@ -21,3 +21,4 @@ qywork 自己的记忆放这里，一条一个文件，下面一行一条指向�
 - [上一版没发布就不升版本号](version-bump-only-after-publish.md) — v0.1.20 未公开时新改动并进 0.1.20，本地打包安装用同一版本号，说明改当前版本那份
 - [执行 qy 必须隔离数据目录](qy-needs-isolated-home.md) — 同一条命令里设 `QYWORK_HOME` 指向 .tmp；钩子 `scripts/guard-real-home.ts` 拦没设的；误跑过一次用户真实账本
 - [Git Bash 的 /tmp 指向已删的测试目录](git-bash-tmp-points-at-deleted-test-dir.md) — bash 先打「could not find /tmp」、shell 工具测试报「投递额度未开账」；`mount` 看指向，把目录建回来，不结束别人的 sh
+- [和并行会话改了同一批文件时只提交自己的段](partial-commit-shared-files.md) — 按内容判段、从 HEAD 构造写进索引、临时工作树自检、按索引提交；带 pathspec 会卷走对方的段
