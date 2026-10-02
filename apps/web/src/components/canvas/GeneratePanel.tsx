@@ -363,6 +363,12 @@ export function GeneratePanel(props: {
       return true
     }),
   )
+  const videoControls = createMemo(() => {
+    const basic = sections().filter((s) => !s.p.advanced)
+    const duration = basic.find((s) => s.kind === 'param' && UNIT[s.p.name] === '秒')
+    const audio = basic.find((s) => s.p.name === 'audio' || s.p.name === 'generate_audio')
+    return duration && audio ? [duration, audio] : []
+  })
   const paramValue = (p: MediaParamOption) => activeParams()[p.name] ?? p.default
   /** 再点一次同一个按钮收起。 */
   const toggle = (kind: 'model' | 'mode' | 'params', anchor: HTMLElement) =>
@@ -1034,8 +1040,20 @@ export function GeneratePanel(props: {
               </AnchoredMenu>
             </Match>
             <Match when={m().kind === 'params'}>
-              <AnchoredMenu class="canvas-params-panel" anchor={m().anchor} placement="above-start">
-                <For each={sections().filter((s) => !s.p.advanced)}>{paramSection}</For>
+              <AnchoredMenu
+                class="canvas-params-panel"
+                anchor={m().anchor}
+                placement="above-start"
+                lockHeight
+              >
+                <For each={sections().filter((s) => !s.p.advanced && !videoControls().includes(s))}>
+                  {paramSection}
+                </For>
+                <Show when={videoControls().length}>
+                  <div class="canvas-params-row">
+                    <For each={videoControls()}>{paramSection}</For>
+                  </div>
+                </Show>
                 <Show when={sections().some((s) => s.p.advanced)}>
                   <details class="canvas-params-advanced">
                     <summary>更多设置</summary>
