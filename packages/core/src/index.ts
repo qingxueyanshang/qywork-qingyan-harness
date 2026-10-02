@@ -47,7 +47,6 @@ export {
   parseCanvasOps,
   serializeCanvas,
   settleVersion,
-  TIMELINE_BARE,
   TIMELINE_W,
   validateCanvas,
 } from './domain/canvas.ts'

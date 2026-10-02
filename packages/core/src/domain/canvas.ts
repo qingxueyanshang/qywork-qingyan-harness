@@ -334,12 +334,13 @@ const FILE_SIZE: Record<MediaOutput | 'other', [number, number]> = {
   other: [220, 138],
 }
 /**
- * 时间线的框：宽度固定；空时只有工具行、刻度与轨道，有片段后上方多出预览区。
- * 界面按 `h` 减去 `TIMELINE_BARE` 得到预览区高度，两处必须同用这两个常量。
+ * 时间线的框：宽度固定；空时只有工具行、刻度与轨道（`TIMELINE_BARE`），有片段后上方多出预览区。
+ * 预览区按 16:9 铺满框宽：框宽减去预览区左右各 8 的外边距（`canvas.css` 的 `.canvas-tl-view`），再按 16:9 折成高。
+ * 改这两个常量或那几处样式时两边一起改，否则 16:9 的画面两侧会留边。
  */
-export const TIMELINE_W = 640
-export const TIMELINE_BARE = 120
-const TIMELINE_FULL = 360
+export const TIMELINE_W = 480
+const TIMELINE_BARE = 120
+const TIMELINE_FULL = TIMELINE_BARE + Math.round(((TIMELINE_W - 16) * 9) / 16)
 
 /** 时间线的框高：有片段时带预览区。 */
 function timelineHeight(clips: readonly CanvasClip[]): number {

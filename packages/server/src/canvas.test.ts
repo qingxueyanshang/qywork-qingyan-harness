@@ -480,7 +480,7 @@ describe('画布服务：时间线导出', () => {
     expect(new Uint8Array(await readFile(join(root, landed.path)))).toEqual(MP4)
     expect(await parts(root)).toEqual([])
     const node = (await onDisk(root)).nodes.find((n) => n.id === landed.nodeId)!
-    expect(node).toMatchObject({ type: 'file', path: 'generated/粗剪.mp4', x: 740, y: 400 })
+    expect(node).toMatchObject({ type: 'file', path: 'generated/粗剪.mp4', x: 580, y: 400 })
     // 会话完成即结束，不能再写。
     expect((await failure(svc.exportWrite(root, id, 0, MP4))).status).toBe(404)
   })

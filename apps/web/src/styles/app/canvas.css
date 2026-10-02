@@ -53,8 +53,15 @@
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
+/* 选中节点的连线：与生成中的线同一套梯度（内联描边），实线不流动，以示区别。 */
 .canvas-edges path.hot {
-  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+/* 拖动节点时的对齐线。 */
+.canvas-edges line.canvas-guide {
+  stroke: #8b5cf6;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
 }
 /* 选中用浅灰细线，不用墨色：墨色粗线在画布上压过内容本身。 */
 .canvas-edges path.selected {
@@ -653,23 +660,28 @@
   width: 120px;
   accent-color: var(--text-secondary);
 }
+/* 预览区只负责留出位置；黑底画框按成片比例（`--tl-ratio`，第一段的宽高比）在其中等比放到最大并居中。 */
 .canvas-tl-view {
-  position: relative;
   flex: 1;
   min-height: 0;
   margin: 0 8px 6px;
+  container-type: size;
+  display: grid;
+  place-items: center;
+}
+.canvas-tl-screen {
+  position: relative;
+  width: min(100cqw, 100cqh * var(--tl-ratio, 1.7778));
+  aspect-ratio: var(--tl-ratio, 1.7778);
   overflow: hidden;
   border-radius: var(--r-sm);
   background: #000;
 }
-.canvas-tl-screen,
 .canvas-tl-screen > video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-}
-.canvas-tl-screen > video {
   object-fit: contain;
 }
 .canvas-tl-tracks {
