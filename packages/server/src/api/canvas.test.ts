@@ -255,6 +255,10 @@ describe('画布接口', () => {
       ['ratio', '宽高比'],
       ['resolution', '分辨率'],
       ['duration', '时长'],
+      ['audio', '声音'],
+      ['seed', '随机种子'],
+      ['prompt_extend', '提示词扩写'],
+      ['watermark', '水印'],
     ])
     expect(JSON.stringify(wan.params)).not.toContain('description')
   })

@@ -88,6 +88,15 @@ export {
   type MediaOutput,
   type MediaSpend,
 } from './domain/media.ts'
+export {
+  activeMediaParams,
+  type MediaParamDefinition,
+  type MediaParamValue,
+  mediaOperationFor,
+  mediaParamProblem,
+  mediaParamValues,
+  resolveMediaParam,
+} from './domain/media-params.ts'
 // 领域模型：落库形状与读数口径，几乎每个包都要
 export {
   type Attachment,

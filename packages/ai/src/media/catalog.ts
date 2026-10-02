@@ -17,7 +17,13 @@
  * 账本上一个编出来的金额看起来和真的一样。
  */
 
-import { type Currency, MEDIA_KIND_OUTPUT, type MediaKind, type MentionStyle } from '@qywork/core'
+import {
+  type Currency,
+  MEDIA_KIND_OUTPUT,
+  type MediaKind,
+  type MediaParamDefinition,
+  type MentionStyle,
+} from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
 
@@ -39,30 +45,7 @@ export type MediaOperation =
   | 'video_to_video'
   | 'speech'
 
-export interface MediaParamSpec {
-  /** 接口字段名，原样发出。 */
-  name: string
-  /**
-   * 界面上的名字。只有用户要手选的几项（尺寸、宽高比、分辨率、时长、音色、张数、返回尾帧）有，画布生成面板只列有它的参数；
-   * 其余参数（水印、种子、扩写等）只给大模型用，不进界面。
-   * 标了界面名的 string 参数必须带 `presets` 或 `shapes`：界面只给点选，不给手填。
-   */
-  label?: string
-  type: 'enum' | 'integer' | 'number' | 'string' | 'boolean'
-  /** enum 的可选值。 */
-  values?: readonly (string | number)[]
-  min?: number
-  max?: number
-  /** 表示「由模型定」的取值（时长的 -1）。它不在 `min`–`max` 之内也合法。 */
-  auto?: number
-  /** string 的格式，正则源码。 */
-  pattern?: string
-  /** string 参数在界面上列出的取值，取自 `description` 里写明的文档原值。 */
-  presets?: readonly string[]
-  /** 尺寸参数在界面上的「宽高比 × 分辨率」对照表，见 `MediaShape`。 */
-  shapes?: readonly MediaShape[]
-  /** 接口在不填时用的值。只用于告诉大模型，本地不补值。 */
-  default?: string | number | boolean
+export interface MediaParamSpec extends MediaParamDefinition {
   /** 一句话含义与约束，给大模型看。 */
   description: string
   /** 只在这些操作下有效。不写 = 全部。 */
@@ -336,6 +319,7 @@ const gptImageParams: readonly MediaParamSpec[] = [
     type: 'string',
     pattern: '^(auto|\\d+x\\d+)$',
     default: 'auto',
+    sizeLimits: { minPixels: 655360, maxPixels: 8294400, maxRatio: 3, maxSide: 3840, multiple: 16 },
     // 4K 一档按总像素上限（3840x2160）取边长 2880；21:9 等宽幅再受单边 3840 限制。
     shapes: sizeTable({
       tiers: [TIER_1K, TIER_2K, { tier: '4K', side: 2880 }],
@@ -350,6 +334,7 @@ const gptImageParams: readonly MediaParamSpec[] = [
   },
   {
     name: 'quality',
+    label: '画质',
     type: 'enum',
     values: ['low', 'medium', 'high', 'xhigh', 'max', 'auto'],
     default: 'auto',
@@ -366,23 +351,32 @@ const gptImageParams: readonly MediaParamSpec[] = [
   },
   {
     name: 'output_format',
+    label: '输出格式',
+    advanced: true,
     type: 'enum',
     values: ['png', 'jpeg', 'webp'],
     default: 'png',
+    rules: [{ when: { params: { background: ['transparent'] } }, values: ['png', 'webp'] }],
     description: '输出格式',
   },
   {
     name: 'output_compression',
+    label: '压缩质量',
+    advanced: true,
     type: 'integer',
     min: 0,
     max: 100,
+    rules: [{ when: { params: { output_format: ['png'] } }, available: false }],
     description: 'jpeg / webp 的压缩质量',
   },
   {
     name: 'background',
+    label: '背景',
+    advanced: true,
     type: 'enum',
     values: ['transparent', 'opaque', 'auto'],
     default: 'auto',
+    rules: [{ when: { params: { output_format: ['jpeg'] } }, values: ['opaque', 'auto'] }],
     description: '背景；transparent 需配 png 或 webp',
   },
 ]
@@ -395,6 +389,12 @@ const seedreamParams: readonly MediaParamSpec[] = [
     type: 'string',
     pattern: '^(1K|1\\.5K|2K|\\d+x\\d+)$',
     default: '2K',
+    sizeLimits: {
+      minPixels: 921600,
+      maxPixels: 4624220,
+      maxRatio: 16,
+      tiers: { '1K': 1024 ** 2, '1.5K': 1536 ** 2, '2K': 2048 ** 2 },
+    },
     shapes: sizeTable({
       tiers: [TIER_1K, { tier: '1.5K', side: 1536 }, TIER_2K],
       sep: 'x',
@@ -405,20 +405,34 @@ const seedreamParams: readonly MediaParamSpec[] = [
   },
   {
     name: 'output_format',
+    label: '输出格式',
+    advanced: true,
     type: 'enum',
     values: ['png', 'jpeg'],
     default: 'jpeg',
+    rules: [{ when: { params: { background: ['transparent'] } }, values: ['png'], default: 'png' }],
     description: '输出格式',
   },
   {
     name: 'background',
+    label: '背景',
+    advanced: true,
     type: 'enum',
     values: ['transparent', 'opaque'],
     default: 'opaque',
     operations: ['edit'],
     description: '透明背景，只在输入一张带透明通道的图时可用，输出为 png',
+    available: false,
+    rules: [{ when: { imageCount: 1 }, available: true }],
   },
-  { name: 'watermark', type: 'boolean', default: true, description: '右下角加「AI 生成」水印' },
+  {
+    name: 'watermark',
+    label: '水印',
+    advanced: true,
+    type: 'boolean',
+    default: true,
+    description: '右下角加「AI 生成」水印',
+  },
 ]
 
 // ── 百炼千问图像 3.0（2026-09-25 对「千问图像生成与编辑 API」）──
@@ -428,6 +442,7 @@ const qwenImageParams: readonly MediaParamSpec[] = [
     label: '尺寸',
     type: 'string',
     pattern: '^\\d+\\*\\d+$',
+    sizeLimits: { minPixels: 512 ** 2, maxPixels: 2048 ** 2, maxRatio: 8 },
     shapes: sizeTable({ tiers: [TIER_1K, TIER_2K], sep: '*', shorthand: false }),
     description: '宽*高，用星号分隔，512*512 到 2048*2048；不填由模型定',
   },
@@ -440,24 +455,61 @@ const qwenImageParams: readonly MediaParamSpec[] = [
     default: 1,
     description: '一次生成几张',
   },
-  { name: 'negative_prompt', type: 'string', description: '不希望出现的内容，最多 500 字' },
+  {
+    name: 'negative_prompt',
+    label: '反向提示词',
+    advanced: true,
+    type: 'string',
+    maxLength: 500,
+    description: '不希望出现的内容，最多 500 字',
+  },
   {
     name: 'seed',
+    label: '随机种子',
+    advanced: true,
     type: 'integer',
     min: 0,
     max: 2147483647,
     description: '随机种子；同一种子与提示词得到相近结果',
   },
-  { name: 'prompt_extend', type: 'boolean', default: true, description: '由模型扩写提示词' },
+  {
+    name: 'prompt_extend',
+    label: '提示词扩写',
+    advanced: true,
+    type: 'boolean',
+    default: true,
+    description: '由模型扩写提示词',
+  },
   {
     name: 'prompt_extend_mode',
+    label: '扩写方式',
+    advanced: true,
     type: 'enum',
     values: ['direct', 'agent'],
     default: 'direct',
+    rules: [
+      { when: { operations: ['edit'] }, values: ['direct'] },
+      { when: { params: { prompt_extend: [false] } }, available: false },
+    ],
     description: '扩写方式',
   },
-  { name: 'enable_thinking', type: 'boolean', default: true, description: '生成前先推理' },
-  { name: 'watermark', type: 'boolean', default: false, description: '加「Qwen-Image」水印' },
+  {
+    name: 'enable_thinking',
+    label: '思考',
+    advanced: true,
+    type: 'boolean',
+    default: true,
+    rules: [{ when: { params: { prompt_extend: [false] } }, available: false }],
+    description: '生成前先推理；仅开启提示词扩写时生效',
+  },
+  {
+    name: 'watermark',
+    label: '水印',
+    advanced: true,
+    type: 'boolean',
+    default: false,
+    description: '加「Qwen-Image」水印',
+  },
 ]
 
 /**
@@ -472,6 +524,23 @@ function wanImageParams(pro: boolean): readonly MediaParamSpec[] {
       type: 'string',
       pattern: pro ? '^(1K|2K|4K|\\d+\\*\\d+)$' : '^(1K|2K|\\d+\\*\\d+)$',
       default: '2K',
+      sizeLimits: {
+        minPixels: 768 ** 2,
+        maxPixels: (pro ? 4096 : 2048) ** 2,
+        maxRatio: 8,
+        tiers: { '1K': 1024 ** 2, '2K': 2048 ** 2, ...(pro ? { '4K': 4096 ** 2 } : {}) },
+      },
+      rules: [
+        {
+          when: { operations: ['edit'] },
+          sizeLimits: {
+            minPixels: 768 ** 2,
+            maxPixels: 2048 ** 2,
+            maxRatio: 8,
+            tiers: { '1K': 1024 ** 2, '2K': 2048 ** 2, '4K': 4096 ** 2 },
+          },
+        },
+      ],
       shapes: sizeTable({
         tiers: pro ? [TIER_1K, TIER_2K, { tier: '4K', side: 4096 }] : [TIER_1K, TIER_2K],
         sep: '*',
@@ -499,6 +568,8 @@ const wanImageRest: readonly MediaParamSpec[] = [
   },
   {
     name: 'thinking_mode',
+    label: '思考',
+    advanced: true,
     type: 'boolean',
     default: true,
     operations: ['generate'],
@@ -506,12 +577,21 @@ const wanImageRest: readonly MediaParamSpec[] = [
   },
   {
     name: 'seed',
+    label: '随机种子',
+    advanced: true,
     type: 'integer',
     min: 0,
     max: 2147483647,
     description: '随机种子；同一种子与提示词得到相近结果',
   },
-  { name: 'watermark', type: 'boolean', default: false, description: '加水印' },
+  {
+    name: 'watermark',
+    label: '水印',
+    advanced: true,
+    type: 'boolean',
+    default: false,
+    description: '加水印',
+  },
 ]
 
 // ── 百炼万相 3.0 视频（2026-09-25 对「万相 3.0 视频生成 API」）──
@@ -542,16 +622,32 @@ const wanVideoParams: readonly MediaParamSpec[] = [
     default: 5,
     description: '时长（秒），2 到 30；-1 由模型定；有参考视频时由输入决定上限',
   },
-  { name: 'audio', type: 'boolean', default: true, description: '是否带声音' },
+  { name: 'audio', label: '声音', type: 'boolean', default: true, description: '是否带声音' },
   {
     name: 'seed',
+    label: '随机种子',
+    advanced: true,
     type: 'integer',
     min: -1,
     max: 2147483647,
     description: '随机种子；同一种子得到相近结果',
   },
-  { name: 'prompt_extend', type: 'boolean', default: true, description: '由模型扩写提示词' },
-  { name: 'watermark', type: 'boolean', default: false, description: '加水印' },
+  {
+    name: 'prompt_extend',
+    label: '提示词扩写',
+    advanced: true,
+    type: 'boolean',
+    default: true,
+    description: '由模型扩写提示词',
+  },
+  {
+    name: 'watermark',
+    label: '水印',
+    advanced: true,
+    type: 'boolean',
+    default: false,
+    description: '加水印',
+  },
 ]
 
 // ── 火山方舟 Seedance 2.5（2026-09-25 对方舟「创建视频生成任务 API」与模型列表）──
@@ -563,6 +659,10 @@ const seedanceParams: readonly MediaParamSpec[] = [
     values: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
     default: 'adaptive',
     description: '画幅；首帧、首尾帧、编辑、延长时只能 adaptive',
+    rules: [
+      { when: { operations: ['image_to_video', 'first_last_frame'] }, values: ['adaptive'] },
+      { when: { params: { omni_reference_task_type: ['edit', 'extend'] } }, values: ['adaptive'] },
+    ],
   },
   {
     name: 'resolution',
@@ -581,17 +681,26 @@ const seedanceParams: readonly MediaParamSpec[] = [
     auto: -1,
     default: -1,
     description: '时长（秒），4 到 30；-1 由模型定；编辑时只能 -1',
+    rules: [{ when: { params: { omni_reference_task_type: ['edit'] } }, values: [-1] }],
   },
   {
     name: 'omni_reference_task_type',
+    label: '任务类型',
     type: 'enum',
     values: ['auto', 'reference', 'edit', 'extend'],
     default: 'auto',
     operations: ['reference_to_video', 'video_to_video'],
+    rules: [{ when: { operations: ['reference_to_video'] }, values: ['auto', 'reference'] }],
     description:
       '有参考素材时的任务类型：reference 参考生成、edit 编辑参考视频、extend 延长参考视频；显式指定时参数不合规会在提交时直接报错、不扣费',
   },
-  { name: 'generate_audio', type: 'boolean', default: true, description: '是否带同步声音' },
+  {
+    name: 'generate_audio',
+    label: '声音',
+    type: 'boolean',
+    default: true,
+    description: '是否带同步声音',
+  },
   {
     name: 'return_last_frame',
     label: '返回尾帧',
@@ -602,11 +711,20 @@ const seedanceParams: readonly MediaParamSpec[] = [
   {
     name: 'output_format',
     type: 'enum',
+    label: '输出格式',
+    advanced: true,
     values: ['mp4', 'mov'],
     default: 'mp4',
     description: '输出格式；mov 色彩精度高、播放兼容性差',
   },
-  { name: 'watermark', type: 'boolean', default: false, description: '右下角加「AI 生成」水印' },
+  {
+    name: 'watermark',
+    label: '水印',
+    advanced: true,
+    type: 'boolean',
+    default: false,
+    description: '右下角加「AI 生成」水印',
+  },
 ]
 
 /**
@@ -641,7 +759,13 @@ function seedance20Params(resolutions: readonly string[]): readonly MediaParamSp
       auto: -1,
       description: '时长（秒），4 到 15；-1 由模型定',
     },
-    { name: 'generate_audio', type: 'boolean', default: true, description: '是否带同步声音' },
+    {
+      name: 'generate_audio',
+      label: '声音',
+      type: 'boolean',
+      default: true,
+      description: '是否带同步声音',
+    },
     {
       name: 'return_last_frame',
       label: '返回尾帧',
@@ -649,7 +773,14 @@ function seedance20Params(resolutions: readonly string[]): readonly MediaParamSp
       default: false,
       description: '同时返回尾帧图（jpeg，与视频同尺寸、无水印），用作下一段的首帧',
     },
-    { name: 'watermark', type: 'boolean', default: false, description: '右下角加「AI 生成」水印' },
+    {
+      name: 'watermark',
+      label: '水印',
+      advanced: true,
+      type: 'boolean',
+      default: false,
+      description: '右下角加「AI 生成」水印',
+    },
   ]
 }
 
@@ -662,6 +793,7 @@ function klingBailianParams(opts: { modes: readonly string[]; audio: boolean }):
   return [
     {
       name: 'mode',
+      label: '清晰度',
       type: 'enum',
       values: opts.modes,
       default: 'pro',
@@ -684,14 +816,23 @@ function klingBailianParams(opts: { modes: readonly string[]; audio: boolean }):
       max: 15,
       default: 5,
       description: '时长（秒）；有参考视频时 3 到 10，编辑视频时按输入视频时长、这个值无效',
+      rules: [
+        { when: { operations: ['video_to_video'] }, max: 10 },
+        {
+          when: { operations: ['video_to_video'], params: { video_type: ['base'] } },
+          available: false,
+        },
+      ],
     },
     ...(opts.audio
       ? [
           {
             name: 'audio',
+            label: '声音',
             type: 'boolean',
             default: false,
             description: '是否生成声音；输入里有视频时只能 false',
+            rules: [{ when: { operations: ['video_to_video'] }, values: [false] }],
           } as const,
         ]
       : []),
@@ -704,6 +845,7 @@ function klingBailianParams(opts: { modes: readonly string[]; audio: boolean }):
  */
 const klingBailianVideoType: MediaParamSpec = {
   name: 'video_type',
+  label: '视频用途',
   type: 'enum',
   values: ['feature', 'base'],
   default: 'feature',
@@ -752,6 +894,7 @@ function klingParams(opts: {
       ? [
           {
             name: 'audio',
+            label: '声音',
             type: 'enum',
             values: opts.audio,
             default: 'off',
@@ -763,6 +906,8 @@ function klingParams(opts: {
       ? [
           {
             name: 'multi_shot',
+            label: '多镜头',
+            advanced: true,
             type: 'boolean',
             default: true,
             description:

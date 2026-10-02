@@ -168,15 +168,17 @@ describe('界面参数', () => {
     'qwen-image-3.0': { area: [512 * 512, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
   }
 
-  test('标了界面名的字符串参数都有可选值或尺寸对照表：界面不给手填', () => {
+  test('字符串参数提供选项、尺寸表，或受长度限制的高级文本输入', () => {
     for (const kind of MEDIA_KINDS) {
       for (const p of lookupMediaModel('some-relay-model', kind).params) {
-        if (p.label && p.type === 'string') expect(p.presets ?? p.shapes).toBeDefined()
+        if (p.label && p.type === 'string')
+          expect(p.presets ?? p.shapes ?? (p.advanced && p.maxLength)).toBeTruthy()
       }
     }
     for (const id of Object.keys(LIMITS)) {
       for (const p of findMediaModel(id)!.params) {
-        if (p.label && p.type === 'string') expect(p.presets ?? p.shapes).toBeDefined()
+        if (p.label && p.type === 'string')
+          expect(p.presets ?? p.shapes ?? (p.advanced && p.maxLength)).toBeTruthy()
       }
     }
   })
@@ -223,7 +225,7 @@ describe('openai_images', () => {
         operation: 'generate',
         prompt: '一只猫',
         inputs: [],
-        params: { size: '1024x1536', quality: 'high' },
+        params: { size: '1024x1536', quality: 'max' },
       },
       { signal: signal() },
     )
@@ -233,7 +235,7 @@ describe('openai_images', () => {
       model: 'gpt-image-2.5-flare',
       prompt: '一只猫',
       size: '1024x1536',
-      quality: 'high',
+      quality: 'max',
     })
     expect(out.files).toEqual([{ bytes: PNG, mime: 'image/png' }])
   })
@@ -245,7 +247,7 @@ describe('openai_images', () => {
         operation: 'edit',
         prompt: '背景换成蓝色',
         inputs: [{ role: 'reference', bytes: PNG, mime: 'image/png', path: '/w/a.png' }],
-        params: { n: 2 },
+        params: { n: 2, quality: 'max', output_format: 'webp', output_compression: 90 },
       },
       { signal: signal() },
     )
@@ -253,6 +255,9 @@ describe('openai_images', () => {
     const form = seen[0]?.form
     expect(form?.get('model')).toBe('gpt-image-2.5-flare')
     expect(form?.get('n')).toBe('2')
+    expect(form?.get('quality')).toBe('max')
+    expect(form?.get('output_format')).toBe('webp')
+    expect(form?.get('output_compression')).toBe('90')
     const file = form?.get('image[]') as File
     expect(new Uint8Array(await file.arrayBuffer())).toEqual(PNG)
   })

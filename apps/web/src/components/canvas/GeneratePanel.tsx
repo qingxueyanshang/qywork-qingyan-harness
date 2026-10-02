@@ -8,6 +8,7 @@
  */
 
 import {
+  activeMediaParams,
   blankBox,
   type CanvasGenerateNode,
   type CanvasNodeState,
@@ -23,7 +24,10 @@ import {
   isInlineVideo,
   type MediaInputRole,
   type MediaOutput,
+  mediaOperationFor,
+  mediaParamValues,
   modeOf,
+  resolveMediaParam,
 } from '@qywork/core'
 import {
   createEffect,
@@ -80,7 +84,12 @@ const PLACEHOLDER: Record<MediaOutput, string> = {
   audio: '输入要朗读的文字',
 }
 /** 带单位的参数：时长按秒，张数按张。 */
-const UNIT: Record<string, string> = { duration: '秒', seconds: '秒', n: '张' }
+const UNIT: Record<string, string> = {
+  duration: '秒',
+  durationSeconds: '秒',
+  seconds: '秒',
+  n: '张',
+}
 /** 整数参数的取值个数不超过这么多时逐项列出，否则用加减按钮。 */
 const MAX_LISTED = 12
 /** 分段按钮不超过这么多项时排成一行，否则每行 4 个。 */
@@ -135,6 +144,7 @@ export function paramsText(
   current: (p: MediaParamOption) => unknown,
 ): string {
   return params
+    .filter((p) => !p.advanced)
     .filter((p) => p.type !== 'boolean' || current(p) === true || current(p) === 'true')
     .map((p) => chipText(p, current(p)))
     .join(' · ')
@@ -307,10 +317,35 @@ export function GeneratePanel(props: {
     props.node.provider && props.node.model
       ? models().find((m) => m.provider === props.node.provider && m.id === props.node.model)
       : (models().find((m) => m.isDefault) ?? models()[0])
-  // 记忆化：改参数会换掉 `props.node`，面板里的各节要沿用同一批对象，不随之重建。
-  const params = createMemo((): MediaParamOption[] => model()?.params ?? [])
+  // 参数可见性与实际发送值都按目录和输入模式解析。
+  const operation = () =>
+    mediaOperationFor(
+      props.node.output,
+      edges().map((e) => e.role),
+    )
+  const activeParams = createMemo(() =>
+    activeMediaParams(
+      model()?.params ?? [],
+      operation(),
+      props.node.params,
+      edges().filter((e) => e.role === 'reference').length,
+    ),
+  )
+  const resolvedParams = createMemo(() => {
+    const specs = model()?.params ?? []
+    const values = mediaParamValues(specs, activeParams())
+    return specs.map((p) =>
+      resolveMediaParam(
+        p,
+        operation(),
+        values,
+        edges().filter((e) => e.role === 'reference').length,
+      ),
+    )
+  })
+  const params = createMemo(() => resolvedParams().filter((p) => p.available !== false))
   const sections = createMemo(() => sectionsOf(params()))
-  const paramValue = (p: MediaParamOption) => props.node.params[p.name] ?? p.default
+  const paramValue = (p: MediaParamOption) => activeParams()[p.name] ?? p.default
   /** 再点一次同一个按钮收起。 */
   const toggle = (kind: 'model' | 'mode' | 'params', anchor: HTMLElement) =>
     setMenu(menu()?.kind === kind ? null : { kind, anchor })
@@ -511,9 +546,10 @@ export function GeneratePanel(props: {
   const choicesOf = (p: MediaParamOption): (string | number | boolean | undefined)[] | null => {
     // 没有缺省值的参数多一项「自动」：去掉取值，交给接口。
     const unset = p.default === undefined ? [undefined] : []
+    if (p.values) return [...unset, ...p.values]
     if (p.type === 'enum') return [...unset, ...(p.values ?? [])]
     if (p.type === 'boolean') return [true, false]
-    if (p.type === 'string') return [...unset, ...(p.presets ?? [])]
+    if (p.type === 'string') return p.presets ? [...unset, ...p.presets] : null
     if (p.type === 'integer' && p.min !== undefined && p.max !== undefined) {
       const auto = p.auto === undefined ? [] : [p.auto]
       if (p.max - p.min + 1 + auto.length > MAX_LISTED) return null
@@ -594,6 +630,101 @@ export function GeneratePanel(props: {
     setParam(p, Math.min(p.max ?? Number.POSITIVE_INFINITY, next))
   }
 
+  const paramSection = (s: Section) => (
+    <section class="canvas-params-section">
+      <div class="canvas-params-title">
+        <span>{s.kind === 'ratio' ? '宽高比' : s.kind === 'tier' ? '分辨率' : s.p.label}</span>
+        <Show when={s.kind !== 'tier' && props.node.params[s.p.name] !== undefined}>
+          <button
+            type="button"
+            aria-label={`重置${s.p.label}`}
+            onClick={() => setParam(s.p, undefined)}
+          >
+            重置
+          </button>
+        </Show>
+      </div>
+      <Show
+        when={cellsOf(s)}
+        fallback={
+          <Show
+            when={s.p.type === 'string'}
+            fallback={
+              <div class="canvas-seg canvas-stepper">
+                <button type="button" aria-label="减少" onClick={() => step(s.p, -1)}>
+                  −
+                </button>
+                <input
+                  type="number"
+                  aria-label={s.p.label}
+                  min={s.p.auto === undefined ? s.p.min : Math.min(s.p.min ?? s.p.auto, s.p.auto)}
+                  max={s.p.max}
+                  step={s.p.type === 'integer' ? 1 : 'any'}
+                  placeholder="自动"
+                  value={paramValue(s.p) === s.p.auto ? '' : String(paramValue(s.p) ?? '')}
+                  onChange={(e) => {
+                    const value = e.currentTarget.value.trim()
+                    if (value === '') return setParam(s.p, undefined)
+                    const parsed = Number(value)
+                    const numeric = s.p.type === 'integer' ? Math.trunc(parsed) : parsed
+                    setParam(
+                      s.p,
+                      numeric === s.p.auto
+                        ? numeric
+                        : Math.max(
+                            s.p.min ?? Number.NEGATIVE_INFINITY,
+                            Math.min(s.p.max ?? Number.POSITIVE_INFINITY, numeric),
+                          ),
+                    )
+                  }}
+                />
+                <Show when={UNIT[s.p.name]}>
+                  <span>{UNIT[s.p.name]}</span>
+                </Show>
+                <button type="button" aria-label="增加" onClick={() => step(s.p, 1)}>
+                  +
+                </button>
+              </div>
+            }
+          >
+            <textarea
+              class="canvas-param-text"
+              aria-label={s.p.label}
+              maxLength={s.p.maxLength}
+              placeholder="未设置"
+              value={String(activeParams()[s.p.name] ?? '')}
+              onChange={(e) => setParam(s.p, e.currentTarget.value)}
+            />
+          </Show>
+        }
+      >
+        {(cells) => (
+          <div
+            class="canvas-seg"
+            classList={{ drawn: drawn(s) }}
+            style={{ '--cols': String(cells().length <= ONE_ROW ? cells().length : 4) }}
+          >
+            <For each={cells()}>
+              {(c) => (
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={c.checked()}
+                  onClick={c.pick}
+                >
+                  <Show when={drawn(s)}>
+                    <RatioIcon of={c.of} />
+                  </Show>
+                  <span class="truncate">{c.text}</span>
+                </button>
+              )}
+            </For>
+          </div>
+        )}
+      </Show>
+    </section>
+  )
+
   const setMode = (next: Mode) => {
     setMenu(null)
     if (edges().length) void props.apply([{ op: 'set_mode', id: props.node.id, mode: next }])
@@ -635,7 +766,7 @@ export function GeneratePanel(props: {
             output: props.node.output,
             provider: m.provider,
             model: m.id,
-            params: props.node.params,
+            params: activeParams(),
             inputs: {
               images: roles.filter((r) => r !== 'video' && r !== 'audio').length,
               videos: roles.filter((r) => r === 'video').length,
@@ -842,55 +973,13 @@ export function GeneratePanel(props: {
             </Match>
             <Match when={m().kind === 'params'}>
               <AnchoredMenu class="canvas-params-panel" anchor={m().anchor} placement="above-start">
-                <For each={sections()}>
-                  {(s) => (
-                    <section class="canvas-params-section">
-                      <div class="canvas-params-title">
-                        {s.kind === 'ratio' ? '宽高比' : s.kind === 'tier' ? '分辨率' : s.p.label}
-                      </div>
-                      <Show
-                        when={cellsOf(s)}
-                        fallback={
-                          <div class="canvas-seg canvas-stepper">
-                            <button type="button" aria-label="减少" onClick={() => step(s.p, -1)}>
-                              −
-                            </button>
-                            <span>{paramText(s.p, paramValue(s.p))}</span>
-                            <button type="button" aria-label="增加" onClick={() => step(s.p, 1)}>
-                              +
-                            </button>
-                          </div>
-                        }
-                      >
-                        {(cells) => (
-                          <div
-                            class="canvas-seg"
-                            classList={{ drawn: drawn(s) }}
-                            style={{
-                              '--cols': String(cells().length <= ONE_ROW ? cells().length : 4),
-                            }}
-                          >
-                            <For each={cells()}>
-                              {(c) => (
-                                <button
-                                  type="button"
-                                  role="menuitemradio"
-                                  aria-checked={c.checked()}
-                                  onClick={c.pick}
-                                >
-                                  <Show when={drawn(s)}>
-                                    <RatioIcon of={c.of} />
-                                  </Show>
-                                  <span class="truncate">{c.text}</span>
-                                </button>
-                              )}
-                            </For>
-                          </div>
-                        )}
-                      </Show>
-                    </section>
-                  )}
-                </For>
+                <For each={sections().filter((s) => !s.p.advanced)}>{paramSection}</For>
+                <Show when={sections().some((s) => s.p.advanced)}>
+                  <details class="canvas-params-advanced">
+                    <summary>高级参数</summary>
+                    <For each={sections().filter((s) => s.p.advanced)}>{paramSection}</For>
+                  </details>
+                </Show>
               </AnchoredMenu>
             </Match>
             <Match when={m().kind === 'model' || m().kind === 'mode'}>
@@ -916,6 +1005,17 @@ export function GeneratePanel(props: {
                         onClick={() => {
                           setMenu(null)
                           void props.apply([
+                            ...(!props.node.model && model()
+                              ? [
+                                  {
+                                    op: 'update' as const,
+                                    id: props.node.id,
+                                    provider: model()!.provider,
+                                    model: model()!.id,
+                                    params: props.node.params,
+                                  },
+                                ]
+                              : []),
                             { op: 'update', id: props.node.id, provider: o.provider, model: o.id },
                           ])
                         }}

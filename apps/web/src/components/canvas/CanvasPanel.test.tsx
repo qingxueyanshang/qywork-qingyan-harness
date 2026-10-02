@@ -157,6 +157,7 @@ interface Server {
 async function mount(
   seed: CanvasOp[],
   states: CanvasView['states'] = {},
+  catalog: unknown = MODELS,
 ): Promise<{ host: HTMLElement; server: Server; refs: Record<string, string> }> {
   const core = await import('@qywork/core')
   const store = await import('../../lib/store/index.ts')
@@ -197,7 +198,7 @@ async function mount(
     store.client as unknown as { api: (path: string, init?: RequestInit) => Promise<unknown> }
   ).api = async (path: string, init?: RequestInit) => {
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-    if (path.startsWith('/api/models')) return MODELS
+    if (path.startsWith('/api/models')) return catalog
     if (path.startsWith('/api/canvas?')) {
       server.reads += 1
       if (server.broken) {
@@ -882,6 +883,140 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
+  test('质量可选择，换模型自动隐藏，切回来恢复；高级种子和反向提示词可输入', async () => {
+    const catalog = {
+      ...MODELS,
+      media: [
+        {
+          provider: 'test',
+          id: 'gpt-image-2.5-sunburst',
+          kind: 'openai_images',
+          output: 'image',
+          label: 'GPT Image 2.5 Sunburst',
+          operations: ['generate', 'edit'],
+          isDefault: true,
+          known: true,
+          params: [
+            {
+              name: 'quality',
+              label: '画质',
+              type: 'enum',
+              values: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'],
+              default: 'auto',
+            },
+          ],
+        },
+        {
+          provider: 'test',
+          id: 'qwen-image-3.0',
+          kind: 'dashscope_images',
+          output: 'image',
+          label: '千问图像 3.0',
+          operations: ['generate', 'edit'],
+          isDefault: false,
+          known: true,
+          params: [
+            {
+              name: 'seed',
+              label: '随机种子',
+              type: 'integer',
+              min: 0,
+              max: 2147483647,
+              advanced: true,
+            },
+            {
+              name: 'negative_prompt',
+              label: '反向提示词',
+              type: 'string',
+              maxLength: 500,
+              advanced: true,
+            },
+          ],
+        },
+      ],
+    }
+    const { host, server, refs } = await mount(
+      [{ op: 'add_generate', ref: '$i', output: 'image', prompt: '猫' }],
+      {},
+      catalog,
+    )
+    await select(host, refs.$i!)
+    const paramsButton = () =>
+      host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!
+    await waitFor(
+      () => !!paramsButton(),
+      () => host.textContent ?? '',
+    )
+    paramsButton().click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-params-panel'),
+      () => '',
+    )
+    const choice = (text: string) =>
+      [...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button')].find(
+        (b) => b.textContent === text,
+      )!
+    choice('max').click()
+    await waitFor(
+      () => paramsButton().textContent?.includes('max') === true,
+      () => paramsButton().textContent ?? '',
+    )
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    const switchTo = async (label: string) => {
+      host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.model')!.click()
+      await waitFor(
+        () => !!document.querySelector('.canvas-bar-menu'),
+        () => '',
+      )
+      ;[...document.querySelectorAll<HTMLButtonElement>('.canvas-bar-menu button')]
+        .find((b) => b.textContent === label)!
+        .click()
+      await waitFor(
+        () => host.querySelector('.canvas-bar .mode-chip.model')?.textContent === label,
+        () => host.textContent ?? '',
+      )
+    }
+    await switchTo('千问图像 3.0')
+    expect(paramsButton().textContent).not.toContain('max')
+    paramsButton().click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-params-panel'),
+      () => '',
+    )
+    expect(document.querySelector('.canvas-params-panel')?.textContent).not.toContain('画质')
+    document.querySelector<HTMLDetailsElement>('.canvas-params-advanced')!.open = true
+    const seed = document.querySelector<HTMLInputElement>('input[aria-label="随机种子"]')!
+    seed.value = '12345'
+    seed.dispatchEvent(new Event('change', { bubbles: true }))
+    await waitFor(
+      () => (server.doc().nodes[0] as { params: Record<string, unknown> }).params.seed === 12345,
+      () => '',
+    )
+    const negative = document.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="反向提示词"]',
+    )!
+    negative.value = '文字、水印'
+    negative.dispatchEvent(new Event('change', { bubbles: true }))
+    await waitFor(
+      () =>
+        (server.doc().nodes[0] as { params: Record<string, unknown> }).params.negative_prompt ===
+        '文字、水印',
+      () => '',
+    )
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await switchTo('GPT Image 2.5 Sunburst')
+    expect(paramsButton().textContent).toContain('max')
+    expect((server.doc().nodes[0] as { params: Record<string, unknown> }).params).toEqual({
+      quality: 'max',
+    })
+    await switchTo('千问图像 3.0')
+    expect((server.doc().nodes[0] as { params: Record<string, unknown> }).params).toEqual({
+      seed: 12345,
+      negative_prompt: '文字、水印',
+    })
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+  })
+
   test('时长加减：到下限再减是「自动」，不经过下限以下的值；从「自动」加回到下限', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)
@@ -895,7 +1030,10 @@ describe('画布：生成卡与生成面板', () => {
       () => !!document.querySelector('.canvas-stepper'),
       () => '',
     )
-    const shown = () => document.querySelector('.canvas-stepper > span')?.textContent
+    const shown = () => {
+      const input = document.querySelector<HTMLInputElement>('.canvas-stepper > input')!
+      return input.value ? `${input.value} 秒` : input.placeholder
+    }
     const press = async (label: '减少' | '增加', expected: string) => {
       document
         .querySelector<HTMLButtonElement>(`.canvas-stepper button[aria-label="${label}"]`)!

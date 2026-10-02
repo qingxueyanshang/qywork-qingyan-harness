@@ -59,6 +59,28 @@ function sample(): CanvasDoc {
 }
 
 describe('画布：格式', () => {
+  test('模型参数按节点与接口分别记忆，换回来和重开画布均恢复', () => {
+    let doc = apply(emptyCanvas(), [
+      {
+        op: 'add_generate',
+        output: 'image',
+        provider: 'a',
+        model: 'gpt',
+        params: { quality: 'max' },
+      },
+    ])
+    doc = apply(doc, [{ op: 'update', id: 'a1', provider: 'b', model: 'qwen' }])
+    expect(gen(doc, 'a1').params).toEqual({})
+    doc = apply(doc, [{ op: 'update', id: 'a1', params: { seed: 42 } }])
+    const reopened = parseCanvas(serializeCanvas(doc))
+    if (!reopened.ok) throw new Error(reopened.error)
+    doc = apply(reopened.doc, [{ op: 'update', id: 'a1', provider: 'a', model: 'gpt' }])
+    expect(gen(doc, 'a1').params).toEqual({ quality: 'max' })
+    doc = apply(doc, [{ op: 'update', id: 'a1', provider: 'b', model: 'qwen' }])
+    expect(gen(doc, 'a1').params).toEqual({ seed: 42 })
+    doc = apply(doc, [{ op: 'update', id: 'a1', provider: 'other', model: 'qwen' }])
+    expect(gen(doc, 'a1').params).toEqual({})
+  })
   test('文件类别按扩展名判：图片、视频、音频、正文，其余回 null', () => {
     expect(['a.PNG', 'b.mp4', 'c.m4a', 'd.md', 'e.txt', 'f.pdf'].map(canvasFileKind)).toEqual([
       'image',
