@@ -120,7 +120,7 @@ async function waitFor(done: () => boolean, detail: () => string) {
   throw new Error(`界面没有在时限内更新：${detail()}`)
 }
 
-describe('在文件资源管理器中显示', () => {
+describe('在资源管理器中显示', () => {
   async function mount(root: string, reveal: (path: string) => Promise<void>) {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
@@ -188,7 +188,7 @@ describe('在文件资源管理器中显示', () => {
       clickReveal: (name: string) => {
         row(name).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
         const button = Array.from(host.querySelectorAll<HTMLButtonElement>('.tree-menu-item')).find(
-          (item) => item.textContent === '在文件资源管理器中显示',
+          (item) => item.textContent === '在资源管理器中显示',
         )
         expect(button).toBeDefined()
         button!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
