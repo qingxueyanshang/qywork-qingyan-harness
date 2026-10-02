@@ -17,6 +17,7 @@ use connect::open;
 use std::cell::{Cell, OnceCell};
 
 use x11rb::connection::Connection as _;
+use x11rb::protocol::res::{ClientIdMask, ClientIdSpec, ConnectionExt as _};
 use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, MapState, Window};
 use x11rb::rust_connection::RustConnection;
 
@@ -62,7 +63,8 @@ pub struct Top {
 pub struct Client {
     pub window: Window,
     pub title: String,
-    /// `_NET_WM_PID`，没设置时为 0。flatpak 应用给的是沙箱内的进程号。
+    /// `_NET_WM_PID`；没设置时取 X-Resource 查到的客户端进程号，都取不到时为 0。
+    /// flatpak 应用的 `_NET_WM_PID` 是沙箱内的进程号。
     pub pid: u32,
     /// `WM_CLASS` 的类名部分。
     pub class_name: String,
@@ -213,6 +215,7 @@ impl Display {
         let pid = self
             .property(window, self.atoms.net_wm_pid, AtomEnum::CARDINAL.into())
             .and_then(|b| words(&b).next())
+            .or_else(|| self.client_pid(window))
             .unwrap_or(0);
         let class_name = self
             .property(window, AtomEnum::WM_CLASS.into(), AtomEnum::STRING.into())
@@ -229,6 +232,25 @@ impl Display {
             top: self.top(window),
             hidden,
         })
+    }
+
+    /// 创建这个窗口的本机客户端的进程号，经 X-Resource 扩展向 X 服务器查。
+    ///
+    /// Xt / Xaw 程序（xcalc、xterm）不设 `_NET_WM_PID`。不要删掉这一步：宿主补窗口身份时
+    /// 取不到进程就丢掉整个窗口，这类程序在清单里看不见，也就操作不了。远程客户端与没有
+    /// 这个扩展的服务器交回 `None`。
+    fn client_pid(&self, window: Window) -> Option<u32> {
+        let spec = ClientIdSpec {
+            client: window,
+            mask: ClientIdMask::LOCAL_CLIENT_PID,
+        };
+        let reply = self.conn.res_query_client_ids(&[spec]).ok()?.reply().ok()?;
+        reply
+            .ids
+            .iter()
+            .find(|id| id.spec.mask == ClientIdMask::LOCAL_CLIENT_PID)
+            .and_then(|id| id.value.first().copied())
+            .filter(|pid| *pid != 0)
     }
 
     /// 客户区的屏幕矩形：窗口原点换算到根窗口坐标，尺寸取窗口自己的几何。

@@ -609,7 +609,7 @@ impl DesktopHost {
 
     /// 一个窗口的进程启动时刻与可执行文件名。Windows 上句柄与 pid 对不上即认不出。
     ///
-    /// 别的平台窗口的归属进程只有 worker 的窗口清单一个来源（X11 的 `_NET_WM_PID`、AX 的
+    /// 别的平台窗口的归属进程只有 worker 的窗口清单一个来源（X11 的 `_NET_WM_PID` 或 X-Resource、AX 的
     /// `AXUIElementGetPid`），宿主不另查一次。
     #[cfg_attr(not(windows), allow(unused_variables))]
     fn identify(&self, handle: i64, pid: u32) -> Option<(i64, String)> {
