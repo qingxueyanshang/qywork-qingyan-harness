@@ -883,7 +883,7 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
-  test('质量可选择，换模型自动隐藏，切回来恢复；高级种子和反向提示词可输入', async () => {
+  test('质量中文选项发送原生值；更多设置默认不传，恢复默认后清除，换模型保留选择', async () => {
     const catalog = {
       ...MODELS,
       media: [
@@ -899,10 +899,28 @@ describe('画布：生成卡与生成面板', () => {
           params: [
             {
               name: 'quality',
-              label: '画质',
+              label: '生成质量',
               type: 'enum',
               values: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'],
+              valueLabels: { low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
               default: 'auto',
+            },
+            {
+              name: 'output_format',
+              label: '输出格式',
+              type: 'enum',
+              values: ['png', 'jpeg', 'webp'],
+              default: 'png',
+              advanced: true,
+            },
+            {
+              name: 'background',
+              label: '背景',
+              type: 'enum',
+              values: ['transparent', 'opaque', 'auto'],
+              valueLabels: { transparent: '透明', opaque: '不透明', auto: '自动' },
+              default: 'auto',
+              advanced: true,
             },
           ],
         },
@@ -926,7 +944,7 @@ describe('画布：生成卡与生成面板', () => {
             },
             {
               name: 'negative_prompt',
-              label: '反向提示词',
+              label: '排除内容',
               type: 'string',
               maxLength: 500,
               advanced: true,
@@ -956,9 +974,67 @@ describe('画布：生成卡与生成面板', () => {
       [...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button')].find(
         (b) => b.textContent === text,
       )!
-    choice('max').click()
+    const advanced = () => document.querySelector<HTMLDetailsElement>('.canvas-params-advanced')!
+    const openPanel = document.querySelector<HTMLElement>('.canvas-params-panel')!
+    const canvasStyle = host.querySelector<HTMLElement>('.canvas-stage')!.style.cssText
+    expect(advanced().open).toBe(false)
+    advanced().open = true
+    expect(advanced().querySelector('summary')?.textContent).toBe('更多设置')
+    const format = document.querySelector<HTMLSelectElement>('select[aria-label="输出格式"]')!
+    expect(format.selectedOptions[0]!.textContent).toBe('默认（PNG）')
+    expect(server.ops).toHaveLength(0)
+    const background = () => document.querySelector<HTMLSelectElement>('select[aria-label="背景"]')!
+    const backgroundControl = background()
+    backgroundControl.focus()
+    background().value = JSON.stringify('opaque')
+    background().dispatchEvent(new Event('change', { bubbles: true }))
     await waitFor(
-      () => paramsButton().textContent?.includes('max') === true,
+      () =>
+        (server.doc().nodes[0] as { params: Record<string, unknown> }).params.background ===
+        'opaque',
+      () => '',
+    )
+    expect(background() === backgroundControl).toBe(true)
+    expect(document.activeElement === backgroundControl).toBe(true)
+    expect(document.querySelector('.canvas-params-panel') === openPanel).toBe(true)
+    expect(advanced().open).toBe(true)
+    expect(host.querySelector<HTMLElement>('.canvas-stage')!.style.cssText).toBe(canvasStyle)
+    const store = await import('../../lib/store/index.ts')
+    const beforeRead = server.reads
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => server.reads > beforeRead,
+      () => '',
+    )
+    expect(background() === backgroundControl).toBe(true)
+    expect(document.activeElement === backgroundControl).toBe(true)
+    expect(document.querySelector('[aria-label^="重置"]')).toBeNull()
+    background().value = ''
+    background().dispatchEvent(new Event('change', { bubbles: true }))
+    await waitFor(
+      () =>
+        (server.doc().nodes[0] as { params: Record<string, unknown> }).params.background ===
+        undefined,
+      () => '',
+    )
+    const qualityControl = choice('最高')
+    qualityControl.focus()
+    qualityControl.click()
+    await waitFor(
+      () => paramsButton().textContent?.includes('生成质量最高') === true,
+      () => paramsButton().textContent ?? '',
+    )
+    expect(choice('最高') === qualityControl).toBe(true)
+    expect(document.activeElement === qualityControl).toBe(true)
+    choice('自动').click()
+    await waitFor(
+      () =>
+        (server.doc().nodes[0] as { params: Record<string, unknown> }).params.quality === undefined,
+      () => '',
+    )
+    choice('最高').click()
+    await waitFor(
+      () => paramsButton().textContent?.includes('生成质量最高') === true,
       () => paramsButton().textContent ?? '',
     )
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
@@ -977,13 +1053,13 @@ describe('画布：生成卡与生成面板', () => {
       )
     }
     await switchTo('千问图像 3.0')
-    expect(paramsButton().textContent).not.toContain('max')
+    expect(paramsButton().textContent).not.toContain('生成质量')
     paramsButton().click()
     await waitFor(
       () => !!document.querySelector('.canvas-params-panel'),
       () => '',
     )
-    expect(document.querySelector('.canvas-params-panel')?.textContent).not.toContain('画质')
+    expect(document.querySelector('.canvas-params-panel')?.textContent).not.toContain('生成质量')
     document.querySelector<HTMLDetailsElement>('.canvas-params-advanced')!.open = true
     const seed = document.querySelector<HTMLInputElement>('input[aria-label="随机种子"]')!
     seed.value = '12345'
@@ -992,9 +1068,7 @@ describe('画布：生成卡与生成面板', () => {
       () => (server.doc().nodes[0] as { params: Record<string, unknown> }).params.seed === 12345,
       () => '',
     )
-    const negative = document.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="反向提示词"]',
-    )!
+    const negative = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="排除内容"]')!
     negative.value = '文字、水印'
     negative.dispatchEvent(new Event('change', { bubbles: true }))
     await waitFor(
@@ -1005,7 +1079,7 @@ describe('画布：生成卡与生成面板', () => {
     )
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await switchTo('GPT Image 2.5 Sunburst')
-    expect(paramsButton().textContent).toContain('max')
+    expect(paramsButton().textContent).toContain('生成质量最高')
     expect((server.doc().nodes[0] as { params: Record<string, unknown> }).params).toEqual({
       quality: 'max',
     })

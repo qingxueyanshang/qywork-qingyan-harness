@@ -35,6 +35,8 @@ export interface MediaParamLimits {
 export interface MediaParamDefinition extends MediaParamLimits {
   name: string
   label?: string
+  /** 界面文案与原生取值分开；提交仍使用 values 中的值。 */
+  valueLabels?: Readonly<Record<string, string>>
   type: 'enum' | 'integer' | 'number' | 'string' | 'boolean'
   auto?: number
   pattern?: string

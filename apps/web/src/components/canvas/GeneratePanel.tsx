@@ -102,6 +102,7 @@ export function valueText(v: unknown): string {
   if (v === true || v === 'true') return '开'
   if (v === false || v === 'false') return '关'
   if (v === 'adaptive' || v === 'auto') return '自动'
+  if (typeof v === 'string' && /^(png|jpeg|webp|mp4|mov)$/.test(v)) return v.toUpperCase()
   return String(v)
 }
 
@@ -109,13 +110,18 @@ export function valueText(v: unknown): string {
 export function paramText(p: MediaParamOption, v: unknown): string {
   if (v === undefined || v === p.auto) return '自动'
   const unit = UNIT[p.name]
-  return unit ? `${v} ${unit}` : valueText(v)
+  return unit ? `${v} ${unit}` : cellText(p, v)
 }
 
 /** 格子上的字：只写取值，单位由节名交代。 */
 export function cellText(p: MediaParamOption, v: unknown): string {
   if (v === undefined || v === p.auto) return '自动'
-  return valueText(v)
+  return p.valueLabels?.[String(v)] ?? valueText(v)
+}
+
+/** 未覆盖接口默认值时的选项文案；不把固定默认值写成自动识别。 */
+function defaultText(p: MediaParamOption): string {
+  return p.default === undefined ? '默认' : `默认（${cellText(p, p.default)}）`
 }
 
 /** 尺寸取值落在对照表的哪一格；不在表里（大模型填的其他尺寸）回 `undefined`。 */
@@ -134,6 +140,7 @@ export function chipText(p: MediaParamOption, v: unknown): string {
   }
   const text = paramText(p, v)
   if (text === '自动') return `自动${p.label}`
+  if (p.name === 'quality') return `${p.label}${text}`
   if (typeof v === 'boolean') return `${p.label}${text}`
   return text
 }
@@ -317,6 +324,7 @@ export function GeneratePanel(props: {
     props.node.provider && props.node.model
       ? models().find((m) => m.provider === props.node.provider && m.id === props.node.model)
       : (models().find((m) => m.isDefault) ?? models()[0])
+  const modelParams = createMemo(() => model()?.params ?? [])
   // 参数可见性与实际发送值都按目录和输入模式解析。
   const operation = () =>
     mediaOperationFor(
@@ -325,14 +333,14 @@ export function GeneratePanel(props: {
     )
   const activeParams = createMemo(() =>
     activeMediaParams(
-      model()?.params ?? [],
+      modelParams(),
       operation(),
       props.node.params,
       edges().filter((e) => e.role === 'reference').length,
     ),
   )
   const resolvedParams = createMemo(() => {
-    const specs = model()?.params ?? []
+    const specs = modelParams()
     const values = mediaParamValues(specs, activeParams())
     return specs.map((p) =>
       resolveMediaParam(
@@ -344,7 +352,17 @@ export function GeneratePanel(props: {
     )
   })
   const params = createMemo(() => resolvedParams().filter((p) => p.available !== false))
-  const sections = createMemo(() => sectionsOf(params()))
+  // 节的身份只随模型目录变化；保存参数与重读画布时保留控件、焦点和滚动锚点。
+  const sectionDefinitions = createMemo(() => sectionsOf(modelParams()))
+  const sections = createMemo(() =>
+    sectionDefinitions().filter((s) => {
+      const p = params().find((p) => p.name === s.p.name)
+      if (!p) return false
+      if (s.kind === 'ratio') return ratiosOf(p).length > 1
+      if (s.kind === 'tier') return tiersOf(p).length > 1
+      return true
+    }),
+  )
   const paramValue = (p: MediaParamOption) => activeParams()[p.name] ?? p.default
   /** 再点一次同一个按钮收起。 */
   const toggle = (kind: 'model' | 'mode' | 'params', anchor: HTMLElement) =>
@@ -523,7 +541,7 @@ export function GeneratePanel(props: {
   /** 设一个参数；`undefined` 表示去掉，交给接口的缺省值。 */
   const setParam = (p: MediaParamOption, value: string | number | boolean | undefined) => {
     const next = { ...props.node.params }
-    if (value === undefined || value === '') delete next[p.name]
+    if (value === undefined || value === '' || value === p.default) delete next[p.name]
     else next[p.name] = value
     void props.apply([
       { op: 'update', id: props.node.id, params: next, ...previewBox(ratioOf(p, value)) },
@@ -630,100 +648,144 @@ export function GeneratePanel(props: {
     setParam(p, Math.min(p.max ?? Number.POSITIVE_INFINITY, next))
   }
 
-  const paramSection = (s: Section) => (
-    <section class="canvas-params-section">
-      <div class="canvas-params-title">
-        <span>{s.kind === 'ratio' ? '宽高比' : s.kind === 'tier' ? '分辨率' : s.p.label}</span>
-        <Show when={s.kind !== 'tier' && props.node.params[s.p.name] !== undefined}>
-          <button
-            type="button"
-            aria-label={`重置${s.p.label}`}
-            onClick={() => setParam(s.p, undefined)}
-          >
-            重置
-          </button>
-        </Show>
-      </div>
-      <Show
-        when={cellsOf(s)}
-        fallback={
-          <Show
-            when={s.p.type === 'string'}
-            fallback={
-              <div class="canvas-seg canvas-stepper">
-                <button type="button" aria-label="减少" onClick={() => step(s.p, -1)}>
-                  −
-                </button>
-                <input
-                  type="number"
-                  aria-label={s.p.label}
-                  min={s.p.auto === undefined ? s.p.min : Math.min(s.p.min ?? s.p.auto, s.p.auto)}
-                  max={s.p.max}
-                  step={s.p.type === 'integer' ? 1 : 'any'}
-                  placeholder="自动"
-                  value={paramValue(s.p) === s.p.auto ? '' : String(paramValue(s.p) ?? '')}
-                  onChange={(e) => {
-                    const value = e.currentTarget.value.trim()
-                    if (value === '') return setParam(s.p, undefined)
-                    const parsed = Number(value)
-                    const numeric = s.p.type === 'integer' ? Math.trunc(parsed) : parsed
-                    setParam(
-                      s.p,
-                      numeric === s.p.auto
-                        ? numeric
-                        : Math.max(
-                            s.p.min ?? Number.NEGATIVE_INFINITY,
-                            Math.min(s.p.max ?? Number.POSITIVE_INFINITY, numeric),
-                          ),
-                    )
-                  }}
-                />
-                <Show when={UNIT[s.p.name]}>
-                  <span>{UNIT[s.p.name]}</span>
-                </Show>
-                <button type="button" aria-label="增加" onClick={() => step(s.p, 1)}>
-                  +
-                </button>
-              </div>
-            }
-          >
-            <textarea
-              class="canvas-param-text"
-              aria-label={s.p.label}
-              maxLength={s.p.maxLength}
-              placeholder="未设置"
-              value={String(activeParams()[s.p.name] ?? '')}
-              onChange={(e) => setParam(s.p, e.currentTarget.value)}
-            />
-          </Show>
-        }
-      >
-        {(cells) => (
-          <div
-            class="canvas-seg"
-            classList={{ drawn: drawn(s) }}
-            style={{ '--cols': String(cells().length <= ONE_ROW ? cells().length : 4) }}
-          >
-            <For each={cells()}>
-              {(c) => (
-                <button
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={c.checked()}
-                  onClick={c.pick}
-                >
-                  <Show when={drawn(s)}>
-                    <RatioIcon of={c.of} />
+  const paramSection = (definition: Section) => {
+    const s: Section = {
+      kind: definition.kind,
+      get p() {
+        return resolvedParams().find((p) => p.name === definition.p.name) ?? definition.p
+      },
+    }
+    return (
+      <section class="canvas-params-section" classList={{ 'canvas-param-optional': s.p.advanced }}>
+        <div class="canvas-params-title">
+          <span>{s.kind === 'ratio' ? '宽高比' : s.kind === 'tier' ? '分辨率' : s.p.label}</span>
+        </div>
+        <Show
+          when={cellsOf(s)}
+          fallback={
+            <Show
+              when={s.p.type === 'string'}
+              fallback={
+                <div class="canvas-seg canvas-stepper">
+                  <Show when={!s.p.advanced}>
+                    <button type="button" aria-label="减少" onClick={() => step(s.p, -1)}>
+                      −
+                    </button>
                   </Show>
-                  <span class="truncate">{c.text}</span>
-                </button>
-              )}
-            </For>
-          </div>
-        )}
-      </Show>
-    </section>
-  )
+                  <input
+                    type="number"
+                    aria-label={s.p.label}
+                    min={s.p.auto === undefined ? s.p.min : Math.min(s.p.min ?? s.p.auto, s.p.auto)}
+                    max={s.p.max}
+                    step={s.p.type === 'integer' ? 1 : 'any'}
+                    placeholder={
+                      s.p.name === 'seed' ? '随机' : s.p.advanced ? defaultText(s.p) : '自动'
+                    }
+                    value={
+                      s.p.advanced
+                        ? String(activeParams()[s.p.name] ?? '')
+                        : paramValue(s.p) === s.p.auto
+                          ? ''
+                          : String(paramValue(s.p) ?? '')
+                    }
+                    onChange={(e) => {
+                      const value = e.currentTarget.value.trim()
+                      if (value === '') return setParam(s.p, undefined)
+                      const parsed = Number(value)
+                      const numeric = s.p.type === 'integer' ? Math.trunc(parsed) : parsed
+                      setParam(
+                        s.p,
+                        numeric === s.p.auto
+                          ? numeric
+                          : Math.max(
+                              s.p.min ?? Number.NEGATIVE_INFINITY,
+                              Math.min(s.p.max ?? Number.POSITIVE_INFINITY, numeric),
+                            ),
+                      )
+                    }}
+                  />
+                  <Show when={UNIT[s.p.name]}>
+                    <span>{UNIT[s.p.name]}</span>
+                  </Show>
+                  <Show when={!s.p.advanced}>
+                    <button type="button" aria-label="增加" onClick={() => step(s.p, 1)}>
+                      +
+                    </button>
+                  </Show>
+                </div>
+              }
+            >
+              <textarea
+                class="canvas-param-text"
+                aria-label={s.p.label}
+                maxLength={s.p.maxLength}
+                placeholder="可选"
+                value={String(activeParams()[s.p.name] ?? '')}
+                onChange={(e) => setParam(s.p, e.currentTarget.value)}
+              />
+            </Show>
+          }
+        >
+          {(cells) => (
+            <Show
+              when={s.p.advanced}
+              fallback={
+                <div
+                  class="canvas-seg"
+                  classList={{ drawn: drawn(s) }}
+                  style={{ '--cols': String(cells().length <= ONE_ROW ? cells().length : 4) }}
+                >
+                  <For each={cells().map((c) => c.of)}>
+                    {(value) => {
+                      const cell = () => cells().find((c) => c.of === value)
+                      return (
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={cell()?.checked() ?? false}
+                          onClick={() => cell()?.pick()}
+                        >
+                          <Show when={drawn(s)}>
+                            <RatioIcon of={value} />
+                          </Show>
+                          <span class="truncate">{cell()?.text}</span>
+                        </button>
+                      )
+                    }}
+                  </For>
+                </div>
+              }
+            >
+              <select
+                class="canvas-param-select"
+                aria-label={s.p.label}
+                value={
+                  activeParams()[s.p.name] === undefined || activeParams()[s.p.name] === s.p.default
+                    ? ''
+                    : JSON.stringify(activeParams()[s.p.name])
+                }
+                onChange={(e) =>
+                  setParam(
+                    s.p,
+                    e.currentTarget.value === '' ? undefined : JSON.parse(e.currentTarget.value),
+                  )
+                }
+              >
+                <option value="">{defaultText(s.p)}</option>
+                <For
+                  each={cells()
+                    .filter((c) => c.of !== undefined && c.of !== s.p.default)
+                    .map((c) => c.of)}
+                >
+                  {(value) => <option value={JSON.stringify(value)}>{cellText(s.p, value)}</option>}
+                </For>
+              </select>
+            </Show>
+          )}
+        </Show>
+      </section>
+    )
+  }
 
   const setMode = (next: Mode) => {
     setMenu(null)
@@ -976,7 +1038,7 @@ export function GeneratePanel(props: {
                 <For each={sections().filter((s) => !s.p.advanced)}>{paramSection}</For>
                 <Show when={sections().some((s) => s.p.advanced)}>
                   <details class="canvas-params-advanced">
-                    <summary>高级参数</summary>
+                    <summary>更多设置</summary>
                     <For each={sections().filter((s) => s.p.advanced)}>{paramSection}</For>
                   </details>
                 </Show>

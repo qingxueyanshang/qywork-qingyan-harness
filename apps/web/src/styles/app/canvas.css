@@ -1428,21 +1428,29 @@ button.canvas-input:hover {
   white-space: nowrap;
 }
 
-/* 参数面板：每个参数一节，节内一排等宽的描边格子。定宽，内容超高在框内滚动。 */
+/* 参数面板固定尺寸；展开更多设置只改变内部滚动内容。 */
 .canvas-params-panel {
   position: fixed;
   z-index: 60;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  width: 432px;
-  max-height: 480px;
+  width: min(432px, calc(100vw - 16px));
+  height: min(480px, calc(100dvh - 16px));
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
   padding: 16px 16px 18px;
   background: var(--bg-raised);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-lg);
+}
+.canvas-params-panel::-webkit-scrollbar {
+  display: none;
+}
+.canvas-params-panel > * {
+  flex-shrink: 0;
 }
 .canvas-params-section {
   display: flex;
@@ -1456,18 +1464,19 @@ button.canvas-input:hover {
   line-height: 1;
   color: var(--text-tertiary);
 }
-.canvas-params-title > button {
-  color: var(--text-secondary);
-}
 .canvas-params-advanced > summary {
   cursor: pointer;
   font-size: var(--fs-xs);
   color: var(--text-secondary);
 }
-.canvas-params-advanced .canvas-params-section {
-  margin-top: 18px;
+.canvas-param-optional {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  align-items: center;
+  margin-top: 12px;
 }
 .canvas-param-text,
+.canvas-param-select,
 .canvas-stepper > input {
   min-width: 0;
   padding: 6px 8px;

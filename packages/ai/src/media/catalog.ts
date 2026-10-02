@@ -6,8 +6,8 @@
  *
  * **只收各家当前最新一代。** 旧型号挂在接口下照样能用，走协议默认的参数表。
  *
- * **参数用接口自己的字段名，不做跨厂商统一。** 同一个「清晰度」，OpenAI 写 `quality`，火山写 `size: 2K`，
- * 百炼写 `size: 2048*2048`；统一后再逐家翻译就多出一份对照表，厂商改字段时大模型填得对、发出去的却是错的。
+ * **参数用接口自己的字段名，不做跨厂商统一。** 生成质量 `quality` 与分辨率 `size` 分别声明；
+ * 火山的尺寸可以写 `size: 2K`，百炼可以写 `size: 2048*2048`，各自遵守接口约束。
  * 参数原样发给接口，发之前按这里的表校验（`params.ts`）。
  *
  * 种子逐条对过官方文档，核对日期写在每组上方。
@@ -334,11 +334,12 @@ const gptImageParams: readonly MediaParamSpec[] = [
   },
   {
     name: 'quality',
-    label: '画质',
+    label: '生成质量',
     type: 'enum',
     values: ['low', 'medium', 'high', 'xhigh', 'max', 'auto'],
+    valueLabels: { low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高', auto: '自动' },
     default: 'auto',
-    description: '画质档位，越高越慢越贵',
+    description: '生成质量档位，影响细节、耗时与费用，不改变输出分辨率',
   },
   {
     name: 'n',
@@ -375,6 +376,7 @@ const gptImageParams: readonly MediaParamSpec[] = [
     advanced: true,
     type: 'enum',
     values: ['transparent', 'opaque', 'auto'],
+    valueLabels: { transparent: '透明', opaque: '不透明', auto: '自动' },
     default: 'auto',
     rules: [{ when: { params: { output_format: ['jpeg'] } }, values: ['opaque', 'auto'] }],
     description: '背景；transparent 需配 png 或 webp',
@@ -419,6 +421,7 @@ const seedreamParams: readonly MediaParamSpec[] = [
     advanced: true,
     type: 'enum',
     values: ['transparent', 'opaque'],
+    valueLabels: { transparent: '透明', opaque: '不透明' },
     default: 'opaque',
     operations: ['edit'],
     description: '透明背景，只在输入一张带透明通道的图时可用，输出为 png',
@@ -457,7 +460,7 @@ const qwenImageParams: readonly MediaParamSpec[] = [
   },
   {
     name: 'negative_prompt',
-    label: '反向提示词',
+    label: '排除内容',
     advanced: true,
     type: 'string',
     maxLength: 500,
@@ -486,6 +489,7 @@ const qwenImageParams: readonly MediaParamSpec[] = [
     advanced: true,
     type: 'enum',
     values: ['direct', 'agent'],
+    valueLabels: { direct: '直接扩写', agent: '智能扩写' },
     default: 'direct',
     rules: [
       { when: { operations: ['edit'] }, values: ['direct'] },
@@ -688,6 +692,7 @@ const seedanceParams: readonly MediaParamSpec[] = [
     label: '任务类型',
     type: 'enum',
     values: ['auto', 'reference', 'edit', 'extend'],
+    valueLabels: { auto: '自动', reference: '参考生成', edit: '编辑', extend: '延长' },
     default: 'auto',
     operations: ['reference_to_video', 'video_to_video'],
     rules: [{ when: { operations: ['reference_to_video'] }, values: ['auto', 'reference'] }],
@@ -796,6 +801,7 @@ function klingBailianParams(opts: { modes: readonly string[]; audio: boolean }):
       label: '清晰度',
       type: 'enum',
       values: opts.modes,
+      valueLabels: { std: '720P', pro: '1080P', '4k': '4K' },
       default: 'pro',
       description: '清晰度档位：std 为 720P，pro 为 1080P，4k 为 4K',
     },
@@ -848,6 +854,7 @@ const klingBailianVideoType: MediaParamSpec = {
   label: '视频用途',
   type: 'enum',
   values: ['feature', 'base'],
+  valueLabels: { feature: '参考生成', base: '编辑视频' },
   default: 'feature',
   operations: ['video_to_video'],
   description:
@@ -897,6 +904,7 @@ function klingParams(opts: {
             label: '声音',
             type: 'enum',
             values: opts.audio,
+            valueLabels: { native: '有声', off: '无声' },
             default: 'off',
             description: 'native 生成匹配画面的声音，off 无声',
           } as const,
