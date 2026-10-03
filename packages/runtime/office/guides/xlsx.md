@@ -2,10 +2,10 @@
 
 ## 流程
 
-1. 有原文件先 `office(action=read)`：拿到工作表、公式与缓存值和 `sha256`；`range` 填工作表名可看到更多行。
+1. 有原文件先 `read_office`：拿到工作表、公式与缓存值和 `sha256`；`range` 填工作表名可看到更多行。
 2. 用 `write_file` 写 Python 制作脚本。
-3. `office(action=write)` 执行：脚本写出工作副本 → 办公软件只读打开全量重算，把每个公式的计算结果写回文件 → 结构检查 → 按工作表渲染 → 提交。
-4. 看检查项里的错误值；`office(action=view)` 看页，页码写成「工作表名:页码」，结果里标着每页对应的单元格区域。
+3. `write_office` 执行：脚本写出工作副本 → 办公软件只读打开全量重算，把每个公式的计算结果写回文件 → 结构检查 → 按工作表渲染 → 提交。
+4. 看检查项里的错误值；`view_office` 看页，页码写成「工作表名:页码」，结果里标着每页对应的单元格区域。
 5. 看出问题就改脚本再 `write`。
 
 ## 脚本 API
@@ -53,7 +53,7 @@ openpyxl 只写公式、不算结果。`write` 会用办公软件只读打开工
 
 - 带宏的文件（.xlsm 等）一律拒绝打开。
 - 重算、渲染需要 Windows 上的 WPS 或 Microsoft Office；没有时这两个阶段返回 unavailable。WPS 与 Excel 的公式支持不完全相同。
-- 技能里写的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）只当做法参考，执行一律用 office；技能附带的专属代码要改写成这里支持的 Python。
+- 技能里写的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）只当做法参考，执行一律用 write_office；技能附带的专属代码要改写成这里支持的 Python。
 
 ## 最小示例
 

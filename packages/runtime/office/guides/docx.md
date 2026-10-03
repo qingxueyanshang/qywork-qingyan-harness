@@ -2,10 +2,10 @@
 
 ## 流程
 
-1. 有原文件先 `office(action=read)`：拿到结构和 `sha256`。
+1. 有原文件先 `read_office`：拿到结构和 `sha256`。
 2. 用 `write_file` 写一个 Python 制作脚本，放在工作区里。
-3. `office(action=write)` 执行脚本：脚本写出工作副本 → 按请求回填目录页码 → 结构检查 → 渲染 → 提交到正式路径。结果里有每个文件的页数、检查项和各阶段状态。
-4. `office(action=view)` 看页：一次可取多页；密集的表格、图表、小字用 `region` 取局部。
+3. `write_office` 执行脚本：脚本写出工作副本 → 按请求回填目录页码 → 结构检查 → 渲染 → 提交到正式路径。结果里有每个文件的页数、检查项和各阶段状态。
+4. `view_office` 看页：一次可取多页；密集的表格、图表、小字用 `region` 取局部。
 5. 看出问题就改脚本，再 `write`。改完重看改动的页；分页变了，后面受影响的页也要重看。
 
 生成成功不等于合格：交付前每一页都要看过，并写下看到了什么。
@@ -92,7 +92,7 @@ def add_toc(paragraph, levels="1-3"):
 
 - 带宏的文件（.docm 等）一律拒绝打开。
 - 渲染、目录回填需要 Windows 上的 WPS 或 Microsoft Office；没有时这两个阶段返回 unavailable，不能当成看过页面。
-- 技能里写的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）只当做法参考，执行一律用 office；技能附带的专属代码要改写成这里支持的 Python。
+- 技能里写的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）只当做法参考，执行一律用 write_office；技能附带的专属代码要改写成这里支持的 Python。
 
 ## 最小示例
 

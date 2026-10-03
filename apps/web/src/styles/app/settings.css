@@ -354,6 +354,18 @@
  * 和正文用同一种字形就没法一眼扫出来。
  *
  * 权限钉在行尾右缘：找「哪些会改动本机」时眼睛只扫右缘，不用逐行读完中文。 */
+.module-environment {
+  min-width: 0;
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.module-environment.warn {
+  color: var(--warning);
+}
 .module-tool {
   display: flex;
   align-items: baseline;

@@ -228,7 +228,7 @@ function notText(path: string, office: boolean): { status: 'failure'; message: s
   if (office && OFFICE_FILE.test(path)) {
     return {
       status: 'failure',
-      message: `${path} 是 Office 文件，read_file 读不出内容。用 office(action=read) 读取它的结构与文字。`,
+      message: `${path} 是 Office 文件，read_file 读不出内容。用 read_office 读取它的结构与文字。`,
     }
   }
   return {
@@ -438,7 +438,7 @@ export const readFileTool: ToolSpec = {
           status: 'failure',
           message:
             ctx.office?.enabled() === true && ctx.vision !== false
-              ? `${args.path} 没有文字层（扫描件或纯图片页），read_file 读不出内容。用 office(action=view) 按页查看。`
+              ? `${args.path} 没有文字层（扫描件或纯图片页），read_file 读不出内容。用 view_office 按页查看。`
               : `${args.path} 没有文字层（扫描件或纯图片页），read_file 读不出内容，当前也没有查看 PDF 页面的工具。`,
         }
       }

@@ -109,14 +109,14 @@ export interface QyConfig {
    */
   desktopForeground?: boolean
   /**
-   * 允不允许 agent 用 `office` 工具制作 Word / PPT / Excel。**缺席按启用，只有显式 `false` 才关。**
+   * 允不允许 agent 用 Office 工具制作 Word / PPT / Excel。**缺席按启用，只有显式 `false` 才关。**
    *
    * 关着时装配方不注入 Office 端口，工具不注册。本机没有可用的 Python 与文档库时，
    * 开着也不注册，那是能力状态，不是这一格。
    */
   officeEnabled?: boolean
   /**
-   * 允不允许 agent 用画布与生成工具（`read_canvas`、`canvas`、`generate_*`）。
+   * 允不允许 agent 用画布与生成工具（`read_canvas`、`edit_canvas`、`run_canvas`、`retrieve_canvas`、`generate_*`、`retrieve_video`）。
    * **缺席按启用，只有显式 `false` 才关。**
    *
    * 关着时这几个工具都不注册，提示词里的画布能力行与生成模型参数表随之不出现。
@@ -125,7 +125,7 @@ export interface QyConfig {
    */
   mediaEnabled?: boolean
   /**
-   * `office` 用的 Python 解释器绝对路径。缺席时在 PATH 里找 `python`，排除 Windows 商店别名。
+   * Office 工具使用的 Python 解释器绝对路径。缺席时在 PATH 里找 `python`，排除 Windows 商店别名。
    */
   officePython?: string
   /**

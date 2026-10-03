@@ -2,7 +2,7 @@
  * 生成：经生成端口调用已配置的生成模型，产物写进工作区。
  *
  * `generateMedia` / `resumeMedia` 是唯一的执行路径：读输入、调端口、记远端任务、落盘、收尾都在这里，
- * 与 `read_file` / `write_file` 走同一条路径边界与可写判定。三个生成工具与服务端画布服务都调它们，
+ * 与 `read_file` / `write_file` 走同一条路径边界与可写判定。生成、取回工具与服务端画布服务都调它们，
  * 工具只负责解析参数和把结果写成给大模型读的回执。选模型、推操作、校验参数、调接口在端口实现里。
  *
  * 结果只回产物的工作区路径，不带字节：用户点路径在右侧预览里看，大模型要看图就自己 `read_file`。
@@ -489,7 +489,7 @@ function receipt(outcome: GenerateOutcome, noun: (count: number) => string): Too
       status: 'failure',
       executed: outcome.executed,
       message: outcome.record
-        ? `${outcome.message}\n任务记录在 ${outcome.record}，用 generate_video 的 resume 传这个路径取回，不会重新提交。`
+        ? `${outcome.message}\n任务记录在 ${outcome.record}，用 retrieve_video 的 path 传这个路径取回，不会重新提交。`
         : outcome.message,
       ...(outcome.errorKind ? { errorKind: outcome.errorKind } : {}),
     }
@@ -588,7 +588,7 @@ export const generateVideoTool: ToolSpec = {
     '提供 audios 为参考音频，须与 images 或 videos 同时提供。' +
     'first_frame、last_frame 不能与 images、videos、audios 同时提供。' +
     PARAMS_NOTE +
-    '提交后在输出位置旁写入 .task.json 任务记录；等待中断或超时后，以 resume 传入该记录路径取回结果，不会重新提交，也不会重复计费。' +
+    '提交后在输出位置旁写入 .task.json 任务记录；等待中断或超时后，用 retrieve_video 传入该记录路径取回结果，不会重新提交，也不会重复计费。' +
     DISPLAY_NOTE,
   parameters: {
     type: 'object',
@@ -616,12 +616,8 @@ export const generateVideoTool: ToolSpec = {
         type: 'string',
         description: `输出文件的工作区路径；省略时写入 ${DEFAULT_DIR}/`,
       },
-      resume: {
-        type: 'string',
-        description: `待取回任务的记录文件路径（${TASK_SUFFIX}）；提供该参数时无需提供其他参数`,
-      },
     },
-    required: [],
+    required: ['prompt'],
     additionalProperties: false,
   },
   actionKind: 'write',
@@ -634,18 +630,6 @@ export const generateVideoTool: ToolSpec = {
   async fn(args, ctx) {
     if (!ctx.media) return failure('本次执行没有生成通道')
     const onStatus = (status: string) => ctx.emit('progress', `${status}\n`)
-    const resume = text(args.resume)
-    if (resume) {
-      const outcome = await resumeMedia({
-        roots: rootsOf(ctx),
-        media: ctx.media,
-        signal: ctx.signal,
-        record: resume,
-        onStatus,
-      })
-      return receipt(outcome, () => '视频')
-    }
-
     const common = commonArgs(args)
     if ('status' in common) return common
     const inputs = (
@@ -670,6 +654,42 @@ export const generateVideoTool: ToolSpec = {
       onTask: ({ taskId, record }) =>
         ctx.emit('progress', `已提交远端任务 ${taskId}，记录在 ${record}\n`),
       onStatus,
+    })
+    return receipt(outcome, () => '视频')
+  },
+}
+
+export const retrieveVideoTool: ToolSpec = {
+  name: 'retrieve_video',
+  description:
+    '根据 generate_video 返回的 .task.json 任务记录取回已有视频结果，不重新提交、不重复计费。' +
+    '模型、远端任务 id 与输出位置均从记录中读取；画布中的待取回版本使用 retrieve_canvas。' +
+    DISPLAY_NOTE,
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: `待取回任务的记录文件路径（${TASK_SUFFIX}）` },
+    },
+    required: ['path'],
+    additionalProperties: false,
+  },
+  actionKind: 'write',
+  objectLabel: '视频',
+  category: 'media',
+  facet: '生成',
+  summary: '取回独立生成的视频结果',
+  targetExtractor: (a) => text(a.path) ?? null,
+  permissionEffect: 'write',
+  async fn(args, ctx) {
+    if (!ctx.media) return failure('本次执行没有生成通道')
+    const path = text(args.path)
+    if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+    const outcome = await resumeMedia({
+      roots: rootsOf(ctx),
+      media: ctx.media,
+      signal: ctx.signal,
+      record: path,
+      onStatus: (status: string) => ctx.emit('progress', `${status}\n`),
     })
     return receipt(outcome, () => '视频')
   },

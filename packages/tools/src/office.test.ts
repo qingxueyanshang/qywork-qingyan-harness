@@ -1,5 +1,5 @@
 /**
- * `office.ts` 的 `officeTool`：请求组装、读后再写的冲突检查、结果映射（写入记录、文件变更、图片）、
+ * `office.ts` 的 `officeTools`：请求组装、读后再写的冲突检查、结果映射（写入记录、文件变更、图片）、
  * worker 没有写出结果时以 cleanup 再起一次；`index.ts` 按通道注册的那一条；
  * `files.ts` 遇到 Office 文件与没有文字层的 PDF 时的指路。
  *
@@ -15,7 +15,13 @@ import { type OfficePort, openBatchBudget, type ToolContext, ToolRegistry } from
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { readFileTool } from './files.ts'
 import { registerBuiltinTools } from './index.ts'
-import { officeTool } from './office.ts'
+import {
+  officeTools,
+  readOfficeGuideTool,
+  readOfficeTool,
+  viewOfficeTool,
+  writeOfficeTool,
+} from './office.ts'
 
 const PORT: OfficePort = {
   python: process.execPath,
@@ -87,20 +93,14 @@ describe('office write', () => {
   test('新建输出：回执带页数与检查，文件变更为 created，之后再写同一路径不需要先读', async () => {
     const root = await workspace()
     const c = ctx(root)
-    const first = await officeTool.fn(
-      { action: 'write', script: 'make.py', outputs: ['out/report.docx'] },
-      c,
-    )
+    const first = await writeOfficeTool.fn({ script: 'make.py', outputs: ['out/report.docx'] }, c)
     expect(first.status).toBe('success')
     expect(first.message).toContain('out/report.docx：已写入（3 页）')
     expect(first.message).toContain('[warning] 预期 无')
     expect(first.message).toContain('脚本输出')
     expect(first.fileChanges).toEqual([{ path: 'out/report.docx', changeType: 'created' }])
 
-    const second = await officeTool.fn(
-      { action: 'write', script: 'make.py', outputs: ['out/report.docx'] },
-      c,
-    )
+    const second = await writeOfficeTool.fn({ script: 'make.py', outputs: ['out/report.docx'] }, c)
     expect(second.status).toBe('success')
     expect(second.fileChanges).toEqual([{ path: 'out/report.docx', changeType: 'modified' }])
     const [, again] = await requests(root)
@@ -111,13 +111,10 @@ describe('office write', () => {
   test('已存在而没读取过的输出：不起 worker，直接拒绝', async () => {
     const root = await workspace()
     await writeFile(join(root, 'old.xlsx'), 'user data')
-    const res = await officeTool.fn(
-      { action: 'write', script: 'make.py', outputs: ['old.xlsx'] },
-      ctx(root),
-    )
+    const res = await writeOfficeTool.fn({ script: 'make.py', outputs: ['old.xlsx'] }, ctx(root))
     expect(res.status).toBe('failure')
     expect(res.executed).toBe(false)
-    expect(res.message).toContain('先用 office(action=read) 读取')
+    expect(res.message).toContain('先用 read_office 读取')
     expect(await requests(root)).toEqual([])
     expect(await readFile(join(root, 'old.xlsx'), 'utf8')).toBe('user data')
   })
@@ -126,11 +123,11 @@ describe('office write', () => {
     const root = await workspace()
     await writeFile(join(root, 'deck.pptx'), 'v1')
     const c = ctx(root)
-    const read = await officeTool.fn({ action: 'read', path: 'deck.pptx' }, c)
+    const read = await readOfficeTool.fn({ path: 'deck.pptx' }, c)
     expect(read.status).toBe('success')
     expect(read.message).toContain('段落 1：标题')
-    const res = await officeTool.fn(
-      { action: 'write', script: 'make.py', outputs: ['deck.pptx'], export_pdf: true },
+    const res = await writeOfficeTool.fn(
+      { script: 'make.py', outputs: ['deck.pptx'], export_pdf: true },
       c,
     )
     expect(res.status).toBe('success')
@@ -143,10 +140,7 @@ describe('office write', () => {
   test('worker 没有写出结果：以 cleanup 再起一次，回执写明残留处理', async () => {
     const root = await workspace()
     await writeFile(join(root, 'crash.py'), 'raise SystemExit(1)\n')
-    const res = await officeTool.fn(
-      { action: 'write', script: 'crash.py', outputs: ['a.docx'] },
-      ctx(root),
-    )
+    const res = await writeOfficeTool.fn({ script: 'crash.py', outputs: ['a.docx'] }, ctx(root))
     expect(res.status).toBe('failure')
     expect(res.message).toContain('残留处理：已结束 1 个本次调用的办公软件进程')
     expect((await requests(root)).map((r) => r.action)).toEqual(['write', 'cleanup'])
@@ -154,14 +148,8 @@ describe('office write', () => {
 
   test('脚本不是 .py、输出不是 Office 文件：参数错误，不起 worker', async () => {
     const root = await workspace()
-    const bad1 = await officeTool.fn(
-      { action: 'write', script: 'make.sh', outputs: ['a.docx'] },
-      ctx(root),
-    )
-    const bad2 = await officeTool.fn(
-      { action: 'write', script: 'make.py', outputs: ['a.txt'] },
-      ctx(root),
-    )
+    const bad1 = await writeOfficeTool.fn({ script: 'make.sh', outputs: ['a.docx'] }, ctx(root))
+    const bad2 = await writeOfficeTool.fn({ script: 'make.py', outputs: ['a.txt'] }, ctx(root))
     expect(bad1.errorKind).toBe('invalid_args')
     expect(bad2.errorKind).toBe('invalid_args')
     expect(await requests(root)).toEqual([])
@@ -172,7 +160,7 @@ describe('office view 与 guide', () => {
   test('view 返回图片字节与页标签，请求带当前文件哈希', async () => {
     const root = await workspace()
     await writeFile(join(root, 'r.docx'), 'doc')
-    const res = await officeTool.fn({ action: 'view', path: 'r.docx', pages: ['2'] }, ctx(root))
+    const res = await viewOfficeTool.fn({ path: 'r.docx', pages: ['2'] }, ctx(root))
     expect(res.status).toBe('success')
     expect(res.message).toContain('第 2 页')
     const images = (res.data as { images: { data: string; mime: string }[] }).images
@@ -185,12 +173,12 @@ describe('office view 与 guide', () => {
   test('view 收 PDF 原件，read 不收', async () => {
     const root = await workspace()
     await writeFile(join(root, 'scan.pdf'), 'pdf')
-    const view = await officeTool.fn({ action: 'view', path: 'scan.pdf' }, ctx(root))
+    const view = await viewOfficeTool.fn({ path: 'scan.pdf' }, ctx(root))
     expect(view.status).toBe('success')
     expect((await requests(root)).find((r) => r.action === 'view')?.path).toBe(
       join(root, 'scan.pdf'),
     )
-    const read = await officeTool.fn({ action: 'read', path: 'scan.pdf' }, ctx(root))
+    const read = await readOfficeTool.fn({ path: 'scan.pdf' }, ctx(root))
     expect(read.status).toBe('failure')
     expect(read.errorKind).toBe('invalid_args')
     expect((await requests(root)).filter((r) => r.action === 'read')).toEqual([])
@@ -199,18 +187,15 @@ describe('office view 与 guide', () => {
   test('模型不收图片时 view 直接拒绝', async () => {
     const root = await workspace()
     await writeFile(join(root, 'r.docx'), 'doc')
-    const res = await officeTool.fn(
-      { action: 'view', path: 'r.docx' },
-      { ...ctx(root), vision: false },
-    )
+    const res = await viewOfficeTool.fn({ path: 'r.docx' }, { ...ctx(root), vision: false })
     expect(res.status).toBe('failure')
     expect(await requests(root)).toEqual([])
   })
 
   test('开关在调用前现判：关掉之后的调用不起 worker', async () => {
     const root = await workspace()
-    const res = await officeTool.fn(
-      { action: 'guide', format: 'docx' },
+    const res = await readOfficeGuideTool.fn(
+      { format: 'docx' },
       ctx(root, { ...PORT, enabled: () => false }),
     )
     expect(res.status).toBe('failure')
@@ -220,36 +205,70 @@ describe('office view 与 guide', () => {
 
   test('guide 返回该格式的说明', async () => {
     const root = await workspace()
-    const res = await officeTool.fn({ action: 'guide', format: 'xlsx' }, ctx(root))
+    const res = await readOfficeGuideTool.fn({ format: 'xlsx' }, ctx(root))
     expect(res.message).toBe('做法：xlsx')
   })
 })
 
 describe('注册与指路', () => {
+  test('每个工具的必填参数缺失时不启动 worker；脚本执行被拒绝时不写文件', async () => {
+    const root = await workspace()
+    const registry = new ToolRegistry()
+    registerBuiltinTools(registry, { office: true })
+    const c = ctx(root)
+    const requested: string[] = []
+    c.requestPermission = async ({ toolName }) => {
+      requested.push(toolName)
+      return { allowed: false, reason: '不允许运行脚本' }
+    }
+    for (const tool of officeTools) {
+      expect(await registry.execute(tool.name, {}, c)).toMatchObject({
+        status: 'failure',
+        executed: false,
+        errorKind: 'invalid_tool_arguments',
+      })
+      expect(tool.parameters.properties).not.toHaveProperty('action')
+      expect(tool.permissionEffect).toBe(tool === writeOfficeTool ? 'execute' : 'read')
+    }
+    expect(requested).toEqual([])
+    expect(
+      await registry.execute('write_office', { script: 'make.py', outputs: ['out.docx'] }, c),
+    ).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'permission_denied',
+      message: '不允许运行脚本',
+    })
+    expect(requested).toEqual(['write_office'])
+    expect(await requests(root)).toEqual([])
+    expect(await readdir(root)).toEqual(['make.py'])
+  })
+
   test('有 Office 通道才注册 office', () => {
     const without = new ToolRegistry()
     registerBuiltinTools(without, {})
-    expect(without.has('office')).toBe(false)
+    for (const tool of officeTools) expect(without.has(tool.name)).toBe(false)
     const withOffice = new ToolRegistry()
     registerBuiltinTools(withOffice, { office: true })
-    expect(withOffice.has('office')).toBe(true)
+    for (const tool of officeTools) expect(withOffice.has(tool.name)).toBe(true)
+    expect(withOffice.has('office')).toBe(false)
   })
 
-  test('read_file 读 Office 文件：有 office 时指向 office(action=read)，没有时照旧', async () => {
+  test('read_file 读 Office 文件：有 office 时指向 read_office，没有时照旧', async () => {
     const root = await workspace()
     await writeFile(join(root, 'a.docx'), new Uint8Array([0x50, 0x4b, 0, 0, 1]))
     const withOffice = await readFileTool.fn({ path: 'a.docx' }, ctx(root))
-    expect(withOffice.message).toContain('office(action=read)')
+    expect(withOffice.message).toContain('read_office')
     const withoutOffice = await readFileTool.fn({ path: 'a.docx' }, ctx(root, null))
     expect(withoutOffice.message).toContain('run_command')
   })
 
-  test('read_file 读没有文字层的 PDF：能看页面时指向 office(action=view)，否则写明没有这个能力', async () => {
+  test('read_file 读没有文字层的 PDF：能看页面时指向 view_office，否则写明没有这个能力', async () => {
     const root = await workspace()
     await writeFile(join(root, 'scan.pdf'), blankPdf())
     const viewable = await readFileTool.fn({ path: 'scan.pdf' }, ctx(root))
     expect(viewable.status).toBe('failure')
-    expect(viewable.message).toContain('office(action=view)')
+    expect(viewable.message).toContain('view_office')
     for (const c of [
       ctx(root, null),
       { ...ctx(root), vision: false as const },

@@ -9,7 +9,7 @@
  * | git | `server/git.ts` 的 `git()` | 版本面板读不到状态与差异 |
  * | rg | `tools/search.ts` 的 `runRipgrep()` | **只是慢**，内置遍历顶上（那条路已经写好了） |
  * | node | `plugins/runtime.ts` 的 `probeNode()` | 插件跑不了 |
- * | Python | `tools/office.ts` 起 worker、`runtime/office.ts` 探测 | `office` 工具不注册 |
+ * | Python | `tools/office.ts` 起 worker、`runtime/office.ts` 探测 | Office 工具不注册 |
  * | Office 文档库 | worker 导入 | `office` 工具不注册；按清单用 pip 装，不经 winget |
  * | 视频解码库 | worker 的 `frames` 动作 | 不支持原生视频的模型读不了视频；同一份清单、同一条 pip 路线 |
  *

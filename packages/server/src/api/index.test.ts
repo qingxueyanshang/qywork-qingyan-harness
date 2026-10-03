@@ -1234,7 +1234,10 @@ describe('工具清单', () => {
     const category = (name: string) => rows.find((t) => t.name === name)?.category
     for (const name of [
       'read_canvas',
-      'canvas',
+      'edit_canvas',
+      'run_canvas',
+      'retrieve_canvas',
+      'retrieve_video',
       'generate_image',
       'generate_video',
       'generate_audio',
@@ -1252,6 +1255,25 @@ describe('工具清单', () => {
   test('只回 tools 一个键 —— mcpServers 没有任何消费者', async () => {
     const res = await call('/api/tools')
     expect(Object.keys((await res?.json()) as object)).toEqual(['tools'])
+  })
+
+  test('工具目录列出 Office 与协作工具，画布参数按职责拆分', async () => {
+    const rows = await tools()
+    const names = rows.map((row) => row.name)
+    expect(names).not.toContain('canvas')
+    expect(names).not.toContain('office')
+    for (const name of ['read_office_guide', 'read_office', 'write_office', 'view_office']) {
+      const row = rows.find((row) => row.name === name)
+      expect(row?.category).toBe('office')
+      expect(row?.permissionEffect).toBe(name === 'write_office' ? 'execute' : 'read')
+      expect(row?.params.map((param) => param.name)).not.toContain('action')
+    }
+    for (const name of ['subagent', 'workflow', 'define_role']) expect(names).toContain(name)
+    for (const name of ['edit_canvas', 'run_canvas', 'retrieve_canvas']) {
+      expect(
+        rows.find((row) => row.name === name)?.params.map((param) => param.name),
+      ).not.toContain('action')
+    }
   })
 
   /**

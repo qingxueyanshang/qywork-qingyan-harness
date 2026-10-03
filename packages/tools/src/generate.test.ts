@@ -18,6 +18,7 @@ import {
   generateVideoTool,
   landFiles,
   MEDIA_TOOLS,
+  retrieveVideoTool,
 } from './generate.ts'
 import { registerBuiltinTools } from './index.ts'
 
@@ -241,7 +242,7 @@ describe('generate_video', () => {
     answer = { ok: false, message: '等待超过 20 分钟仍未完成', pendingTaskId: 'task-1' }
     const pending = await video(root, { prompt: '海浪', output: 'wave' })
     expect(pending.message).toContain('wave.task.json')
-    expect(pending.message).toContain('resume')
+    expect(pending.message).toContain('retrieve_video')
     expect(await readdir(root)).toEqual(['wave.task.json'])
 
     answer = { ok: false, message: '远端任务失败：不合规' }
@@ -262,7 +263,9 @@ describe('generate_video', () => {
       model: 'wan3.0-video',
       files: [{ bytes: MP4, mime: 'video/mp4' }],
     }
-    const out = await video(root, { resume: 'wave.task.json' })
+    const out = await retrieveVideoTool.fn({ path: 'wave.task.json' }, ctx(root))
+    expect(out.status).toBe('success')
+    expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({
       provider: 'qwen',
       model: 'wan3.0-video',
@@ -270,6 +273,25 @@ describe('generate_video', () => {
     })
     expect(out.fileChanges?.map((c) => c.path)).toEqual(['wave.mp4'])
     expect(await readdir(root)).toEqual(['wave.mp4'])
+  })
+
+  test('取回必须提供任务路径，生成必须提供提示词；无效记录不提交生成', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
+    const registry = new ToolRegistry()
+    registerBuiltinTools(registry, { media: ['video'] })
+    expect(generateVideoTool.parameters.properties).not.toHaveProperty('resume')
+    for (const name of ['generate_video', 'retrieve_video']) {
+      expect(await registry.execute(name, {}, ctx(root))).toMatchObject({
+        status: 'failure',
+        executed: false,
+        errorKind: 'invalid_tool_arguments',
+      })
+    }
+    await writeFile(join(root, 'invalid.task.json'), '{}')
+    for (const path of ['invalid.task.json', 'missing.task.json']) {
+      expect((await registry.execute('retrieve_video', { path }, ctx(root))).status).toBe('failure')
+    }
+    expect(calls).toEqual([])
   })
 
   test('参考视频必须是视频文件', async () => {
@@ -285,7 +307,11 @@ test('只配了视频模型时只注册出视频的工具', () => {
   const registry = new ToolRegistry()
   registerBuiltinTools(registry, { media: ['video'] })
   expect(registry.has('generate_video')).toBe(true)
+  expect(registry.has('retrieve_video')).toBe(true)
   expect(registry.has('generate_image')).toBe(false)
+  const imagesOnly = new ToolRegistry()
+  registerBuiltinTools(imagesOnly, { media: ['image'] })
+  expect(imagesOnly.has('retrieve_video')).toBe(false)
 })
 
 describe('generate_audio', () => {
