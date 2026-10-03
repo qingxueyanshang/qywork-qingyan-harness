@@ -593,9 +593,9 @@ const EMPTY_SECRETS = { values: [] }
 export const writeFileTool: ToolSpec = {
   name: 'write_file',
   description:
-    '整份写入文件，必须用 mode 明确区分新建与覆盖修改。' +
-    'create 只新建，绝不覆盖已有文件；普通重名会提示先 list_dir 核对目录。' +
-    '用户要新作品且没有指定固定文件名时，使用 create 和 on_conflict=rename：工具在本地自动选空闲名称，直接写入本次 content，无需重新生成。后续操作使用回执里的实际 path。' +
+    '写入整个文件，必须用 mode 明确区分新建与覆盖修改。' +
+    'create 只新建，不覆盖已有文件；重名时自动追加 -2、-3 等后缀，写入未占用的名称，无需重新生成，后续操作使用回执中的实际 path。' +
+    '用户明确要求必须使用原文件名时传 on_conflict=error，重名即失败、不写入。' +
     'overwrite 只修改已有文件，必须先 read_file 且内容未变；局部修改优先 edit_file。',
   parameters: {
     type: 'object',
@@ -610,7 +610,7 @@ export const writeFileTool: ToolSpec = {
         type: 'string',
         enum: ['error', 'rename'],
         description:
-          '新建重名时的处理，默认 error。仅当文件名可以自由选择时用 rename，自动追加 -2、-3 等后缀；固定文件名使用 error。覆盖修改不能使用 rename。',
+          '新建重名时的处理，默认 rename：自动追加 -2、-3 等后缀。error：重名即失败，用于用户明确要求必须使用原文件名的情况。覆盖修改不能使用 rename。',
       },
       content: { type: 'string', description: '文件完整内容' },
     },
@@ -626,7 +626,7 @@ export const writeFileTool: ToolSpec = {
   permissionEffect: 'write',
   async fn(args, ctx) {
     const mode = args.mode
-    const conflict = args.on_conflict ?? 'error'
+    const conflict = args.on_conflict ?? (mode === 'create' ? 'rename' : 'error')
     if (
       (mode !== 'create' && mode !== 'overwrite') ||
       (conflict !== 'error' && conflict !== 'rename') ||
@@ -636,7 +636,7 @@ export const writeFileTool: ToolSpec = {
         status: 'failure',
         executed: false,
         message:
-          'mode 必须为 create 或 overwrite；on_conflict 必须为 error 或 rename，rename 仅用于允许自由命名的新建文件。',
+          'mode 必须为 create 或 overwrite；on_conflict 必须为 error 或 rename，rename 仅用于新建文件。',
         errorKind: 'invalid_tool_arguments',
       }
     }
@@ -645,6 +645,8 @@ export const writeFileTool: ToolSpec = {
     let abs: string
     let existing: string | null = null
     let bytes = content
+    /** 原名已被占用，已改用带后缀的名称。 */
+    let renamed = false
     if (mode === 'create') {
       const { dir, name, ext } = parse(requested)
       for (let suffix = 1; ; suffix++) {
@@ -664,6 +666,7 @@ export const writeFileTool: ToolSpec = {
           try {
             // 独占创建处理查名后被其他创建者占用的情况，内容在本次调用内复用。
             await writeFile(abs, bytes, { encoding: 'utf8', flag: 'wx' })
+            renamed = suffix > 1
             break
           } catch (err) {
             if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
@@ -721,7 +724,12 @@ export const writeFileTool: ToolSpec = {
     }
     return {
       status: 'success',
-      message: `${existing === null ? '创建' : '写入'} ${change.path}`,
+      message:
+        existing !== null
+          ? `写入 ${change.path}`
+          : renamed
+            ? `${requested} 已存在，已创建 ${change.path}`
+            : `创建 ${change.path}`,
       data: { path: change.path },
       fileChanges: [change],
     }

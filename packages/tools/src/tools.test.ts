@@ -427,57 +427,60 @@ describe('文件工具', () => {
     expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello\nworld\n')
   })
 
-  test.each(['.', 'nested output'])('重名后按回执列目录再新建：%s', async (parent) => {
-    const root = await workspace()
-    const r = registry()
-    const c = ctx(root)
-    const target = (name: string) => (parent === '.' ? name : `${parent}/${name}`)
-    await mkdir(join(root, parent), { recursive: true })
-    await writeFile(join(root, parent, 'output.html'), 'original page', 'utf8')
-    await writeFile(join(root, parent, 'output-2.html'), 'another page', 'utf8')
+  test.each(['.', 'nested output'])(
+    'on_conflict=error 重名后按回执列目录再新建：%s',
+    async (parent) => {
+      const root = await workspace()
+      const r = registry()
+      const c = ctx(root)
+      const target = (name: string) => (parent === '.' ? name : `${parent}/${name}`)
+      await mkdir(join(root, parent), { recursive: true })
+      await writeFile(join(root, parent, 'output.html'), 'original page', 'utf8')
+      await writeFile(join(root, parent, 'output-2.html'), 'another page', 'utf8')
 
-    const conflict = await r.execute(
-      'write_file',
-      { path: target('output.html'), mode: 'create', content: 'new page' },
-      c,
-    )
-    expect(conflict.status).toBe('failure')
-    expect(conflict.errorKind).toBe('file_exists')
-    expect(conflict.executed).toBe(false)
-    expect(conflict.message).not.toContain('read_file')
-    const directoryArgs = conflict.message.match(/list_dir (\{[^\n]+?\}) /)?.[1]
-    expect(directoryArgs).toBeDefined()
-    expect(JSON.parse(directoryArgs!)).toEqual({ path: parent })
-    const listed = await r.execute('list_dir', JSON.parse(directoryArgs!), c)
-    expect(listed.status).toBe('success')
-    const entries = listed.data?.entries as string[]
-    expect(entries).toContain('output.html')
-    expect(entries).toContain('output-2.html')
-    expect(JSON.stringify(listed)).not.toContain('original page')
-    expect(JSON.stringify(listed)).not.toContain('another page')
+      const conflict = await r.execute(
+        'write_file',
+        { path: target('output.html'), mode: 'create', on_conflict: 'error', content: 'new page' },
+        c,
+      )
+      expect(conflict.status).toBe('failure')
+      expect(conflict.errorKind).toBe('file_exists')
+      expect(conflict.executed).toBe(false)
+      expect(conflict.message).not.toContain('read_file')
+      const directoryArgs = conflict.message.match(/list_dir (\{[^\n]+?\}) /)?.[1]
+      expect(directoryArgs).toBeDefined()
+      expect(JSON.parse(directoryArgs!)).toEqual({ path: parent })
+      const listed = await r.execute('list_dir', JSON.parse(directoryArgs!), c)
+      expect(listed.status).toBe('success')
+      const entries = listed.data?.entries as string[]
+      expect(entries).toContain('output.html')
+      expect(entries).toContain('output-2.html')
+      expect(JSON.stringify(listed)).not.toContain('original page')
+      expect(JSON.stringify(listed)).not.toContain('another page')
 
-    // 列目录只查询名称，不授予覆盖已有文件的读取凭据。
-    const overwrite = await r.execute(
-      'write_file',
-      { path: target('output.html'), mode: 'overwrite', content: 'new page' },
-      c,
-    )
-    expect(overwrite.status).toBe('failure')
-    expect(overwrite.errorKind).toBe('stale_write')
-    const available = ['output.html', 'output-2.html', 'output-3.html'].find(
-      (name) => !entries.includes(name),
-    )!
-    const created = await r.execute(
-      'write_file',
-      { path: target(available), mode: 'create', content: 'new page' },
-      c,
-    )
-    expect(created.status).toBe('success')
-    expect(created.fileChanges?.[0]?.changeType).toBe('created')
-    expect(await readFile(join(root, parent, available), 'utf8')).toBe('new page')
-    expect(await readFile(join(root, parent, 'output.html'), 'utf8')).toBe('original page')
-    expect(await readFile(join(root, parent, 'output-2.html'), 'utf8')).toBe('another page')
-  })
+      // 列目录只查询名称，不授予覆盖已有文件的读取凭据。
+      const overwrite = await r.execute(
+        'write_file',
+        { path: target('output.html'), mode: 'overwrite', content: 'new page' },
+        c,
+      )
+      expect(overwrite.status).toBe('failure')
+      expect(overwrite.errorKind).toBe('stale_write')
+      const available = ['output.html', 'output-2.html', 'output-3.html'].find(
+        (name) => !entries.includes(name),
+      )!
+      const created = await r.execute(
+        'write_file',
+        { path: target(available), mode: 'create', content: 'new page' },
+        c,
+      )
+      expect(created.status).toBe('success')
+      expect(created.fileChanges?.[0]?.changeType).toBe('created')
+      expect(await readFile(join(root, parent, available), 'utf8')).toBe('new page')
+      expect(await readFile(join(root, parent, 'output.html'), 'utf8')).toBe('original page')
+      expect(await readFile(join(root, parent, 'output-2.html'), 'utf8')).toBe('another page')
+    },
+  )
 
   test('读过之后允许覆盖，并报告行级增删', async () => {
     const root = await workspace()
@@ -505,12 +508,16 @@ describe('文件工具', () => {
     expect(out.fileChanges?.[0]?.changeType).toBe('created')
   })
 
-  test('读过的文件在新建模式下仍然报重名，不能覆盖', async () => {
+  test('读取过的文件在新建模式（on_conflict=error）下仍报告重名，不能覆盖', async () => {
     const root = await workspace()
     const r = registry()
     const c = ctx(root)
     await r.execute('read_file', { path: 'a.txt' }, c)
-    const out = await r.execute('write_file', { path: 'a.txt', mode: 'create', content: 'new' }, c)
+    const out = await r.execute(
+      'write_file',
+      { path: 'a.txt', mode: 'create', on_conflict: 'error', content: 'new' },
+      c,
+    )
     expect(out.errorKind).toBe('file_exists')
     expect(out.message).toContain('list_dir')
     expect(out.message).not.toContain('read_file')
@@ -586,7 +593,32 @@ describe('文件工具', () => {
     }
   })
 
-  test('固定名称并发新建只有一个成功，其余报重名且不覆盖', async () => {
+  /**
+   * 原始失败：用户要求「新建一个 notes.md」而该文件已存在，模型按「固定文件名用 error」停下来询问用户。
+   * 不传 on_conflict 时新建重名直接改名写入，回执写明原名已被占用与实际路径。
+   */
+  test('不传 on_conflict 时新建重名自动改名，回执写明原名已存在与实际路径', async () => {
+    const root = await workspace()
+    await writeFile(join(root, 'notes.md'), '原内容')
+    const out = await registry().execute(
+      'write_file',
+      { path: 'notes.md', mode: 'create', content: '今天的计划' },
+      ctx(root),
+    )
+    expect(out.status).toBe('success')
+    expect(out.data?.path).toBe('notes-2.md')
+    expect(out.message).toBe('notes.md 已存在，已创建 notes-2.md')
+    expect(await readFile(join(root, 'notes.md'), 'utf8')).toBe('原内容')
+    expect(await readFile(join(root, 'notes-2.md'), 'utf8')).toBe('今天的计划')
+    const fresh = await registry().execute(
+      'write_file',
+      { path: 'other.md', mode: 'create', content: 'x' },
+      ctx(root),
+    )
+    expect(fresh.message).toBe('创建 other.md')
+  })
+
+  test('on_conflict=error 时固定名称并发新建只有一个成功，其余报告重名且不覆盖', async () => {
     const root = await workspace()
     const r = registry()
     const contents = ['first', 'second', 'third']
@@ -597,6 +629,7 @@ describe('文件工具', () => {
           {
             path: 'fixed.txt',
             mode: 'create',
+            on_conflict: 'error',
             content,
           },
           ctx(root),
