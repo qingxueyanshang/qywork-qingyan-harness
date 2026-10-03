@@ -449,6 +449,35 @@ describe('画布：框按媒体比例', () => {
     size: { w, h },
   })
 
+  test('音频文件与生成节点使用横向紧凑框，放置相邻节点时使用相同尺寸', () => {
+    const doc = apply(emptyCanvas(), [
+      { op: 'add_file', ref: '$a', path: 'voice.wav' },
+      { op: 'add_generate', output: 'audio', beside: '$a' },
+    ])
+    expect(box(doc, 'a1')).toEqual({ w: 300, h: 96 })
+    expect(box(doc, 'a2')).toEqual({ w: 300, h: 96 })
+    expect(doc.nodes[1]!.x).toBeGreaterThanOrEqual(doc.nodes[0]!.x + 300)
+  })
+
+  test('读取方形默认音频框时更新布局，保留坐标、自定义尺寸与其他媒体，重复读写结果一致', () => {
+    const source = apply(emptyCanvas(), [
+      { op: 'add_file', path: 'voice.mp3', w: 169, h: 169, x: 70, y: 40 },
+      { op: 'add_generate', output: 'audio', w: 169, h: 169 },
+      { op: 'add_file', path: 'other.wav', w: 400, h: 120 },
+      { op: 'add_generate', output: 'image', w: 169, h: 169 },
+    ])
+    const parsed = parseCanvas(serializeCanvas(source))
+    if (!parsed.ok) throw new Error(parsed.error)
+    expect(parsed.doc.nodes[0]).toMatchObject({ x: 70, y: 40, w: 300, h: 96 })
+    expect(box(parsed.doc, 'a2')).toEqual({ w: 300, h: 96 })
+    expect(parsed.doc.nodes.slice(2)).toEqual(source.nodes.slice(2))
+    const text = serializeCanvas(parsed.doc)
+    const again = parseCanvas(text)
+    if (!again.ok) throw new Error(again.error)
+    expect(serializeCanvas(again.doc)).toBe(text)
+    expect(box(source, 'a1')).toEqual({ w: 169, h: 169 })
+  })
+
   test('短边不变、长边按媒体的宽高比：竖图的宽取横图的高', async () => {
     const { fitBox } = await import('./canvas.ts')
     expect(fitBox({ w: 169, h: 169 }, { w: 1536, h: 1024 })).toEqual({ w: 254, h: 169 })

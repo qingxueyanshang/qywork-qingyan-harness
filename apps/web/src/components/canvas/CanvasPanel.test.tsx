@@ -405,6 +405,73 @@ describe('画布：节点操作', () => {
     expect(video.querySelector('video')!.hasAttribute('controls')).toBe(false)
   })
 
+  test('音频控件读取时长、同步播放进度与静音，操作进度时不拖动节点', async () => {
+    const { host, refs, server } = await mount([{ op: 'add_file', ref: '$a', path: 'voice.wav' }])
+    const card = node(host, refs.$a!)
+    const audio = card.querySelector('audio')!
+    const track = card.querySelector<HTMLInputElement>('input[aria-label="音频进度"]')!
+    expect(card.style.width).toBe('300px')
+    expect(card.style.height).toBe('96px')
+    expect(audio.hasAttribute('controls')).toBe(false)
+    expect(track.disabled).toBe(true)
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 125 })
+    audio.dispatchEvent(new Event('loadedmetadata'))
+    expect(track.disabled).toBe(false)
+    expect(card.querySelector('.canvas-audio-time')!.textContent).toBe('00:0002:05')
+    audio.currentTime = 12
+    audio.dispatchEvent(new Event('timeupdate'))
+    expect(track.value).toBe('12')
+    audio.dispatchEvent(new Event('play'))
+    expect(card.querySelector('button[aria-label="暂停"]')).not.toBeNull()
+    audio.dispatchEvent(new Event('pause'))
+    expect(card.querySelector('button[aria-label="播放"]')).not.toBeNull()
+
+    const stage = host.querySelector('.canvas-stage')!
+    pointer(track, 'pointerdown', 30, 30)
+    track.value = '62'
+    track.dispatchEvent(new Event('input', { bubbles: true }))
+    pointer(stage, 'pointermove', 100, 30)
+    pointer(stage, 'pointerup', 100, 30)
+    expect(audio.currentTime).toBe(62)
+    expect(server.ops).toEqual([])
+    card.querySelector<HTMLButtonElement>('button[aria-label="静音"]')!.click()
+    expect(audio.muted).toBe(true)
+    card.querySelector<HTMLButtonElement>('button[aria-label="开启声音"]')!.click()
+    expect(audio.muted).toBe(false)
+    audio.dispatchEvent(new Event('ended'))
+    expect(track.value).toBe('125')
+    expect(card.querySelector('button[aria-label="播放"]')).not.toBeNull()
+    audio.dispatchEvent(new Event('error'))
+    expect(card.querySelector('output')!.textContent).toBe('无法播放，请重试')
+  })
+
+  test('更换音频来源时释放旧播放器，进度和失败状态随来源重置', async () => {
+    const { host, refs, server } = await mount([{ op: 'add_file', ref: '$a', path: 'old.wav' }])
+    const card = node(host, refs.$a!)
+    const before = card.querySelector('audio')!
+    const pause = spyOn(before, 'pause')
+    before.currentTime = 18
+    before.dispatchEvent(new Event('timeupdate'))
+    before.dispatchEvent(new Event('error'))
+    const core = await import('@qywork/core')
+    const next = core.applyCanvasOps(server.doc(), [
+      { op: 'update', id: refs.$a!, path: 'new.wav' },
+    ])
+    if (!next.ok) throw new Error(next.error)
+    server.setView({ doc: next.doc })
+    const store = await import('../../lib/store/index.ts')
+    store.setState('fileVersion', 1)
+    await waitFor(
+      () => card.querySelector('audio') !== before,
+      () => card.innerHTML,
+    )
+    expect(pause).toHaveBeenCalled()
+    expect(before.hasAttribute('src')).toBe(false)
+    expect(card.querySelector<HTMLInputElement>('input')!.value).toBe('0')
+    expect(card.querySelector('output')!.textContent).toBe('音频')
+    pause.mockRestore()
+  })
+
   test('静音的选择换选节点后沿用', async () => {
     const { host, refs } = await mount([
       { op: 'add_file', ref: '$v', path: 'clip.mp4', x: 0, y: 0 },
