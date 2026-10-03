@@ -374,12 +374,12 @@ const OUTPUT_NAME: Record<MediaOutput, string> = { image: '图片', video: '视�
 const GENERATE_SIZE: Record<MediaOutput, [number, number]> = {
   image: [169, 169],
   video: [300, 169],
-  audio: [169, 169],
+  audio: [300, 96],
 }
 const FILE_SIZE: Record<MediaOutput | 'other', [number, number]> = {
   image: [225, 169],
   video: [300, 169],
-  audio: [169, 169],
+  audio: [300, 96],
   other: [220, 138],
 }
 /**
@@ -1281,7 +1281,15 @@ export function parseCanvas(
     return { ok: false, error: '不是合法的 JSON' }
   }
   const problem = structureProblem(raw) ?? validateCanvas(raw as CanvasDoc)
-  return problem ? { ok: false, error: problem } : { ok: true, doc: raw as CanvasDoc }
+  if (problem) return { ok: false, error: problem }
+  const doc = raw as CanvasDoc
+  // 旧版音频使用 169×169 的默认框；读取时统一升级布局，自定义尺寸和其他媒体保持原样。
+  for (const node of doc.nodes) {
+    if (canvasMediaOf(node) === 'audio' && node.w === 169 && node.h === 169) {
+      Object.assign(node, blankBox('audio'))
+    }
+  }
+  return { ok: true, doc }
 }
 
 function structureProblem(raw: unknown): string | null {

@@ -1,11 +1,19 @@
 /**
- * 视频节点的播放控件与取帧条。
+ * 音视频节点的播放控件与视频取帧条。
  *
  * 不用浏览器自带控件：那套控件按固定像素绘制，在 169 高的节点里占去近一半，且按住它拖不动节点。
  */
 
-import { type Accessor, createSignal, type JSX, onCleanup, onMount, Show } from 'solid-js'
-import { IconPause, IconPlay, IconVolume, IconVolumeOff } from '../Icons.tsx'
+import {
+  type Accessor,
+  createEffect,
+  createSignal,
+  type JSX,
+  onCleanup,
+  onMount,
+  Show,
+} from 'solid-js'
+import { IconAudio, IconPause, IconPlay, IconVolume, IconVolumeOff } from '../Icons.tsx'
 import { drawFilmstrip, frameTime } from './frame.ts'
 
 /** `mm:ss`。 */
@@ -126,6 +134,119 @@ export function VideoPlayer(props: {
         </button>
       </div>
     </>
+  )
+}
+
+/** 音频常驻紧凑卡片；切换来源时由调用方重新挂载，离开画布或卸载时停止播放。 */
+export function AudioPlayer(props: { src: string; active: boolean }) {
+  let audio!: HTMLAudioElement
+  let disposed = false
+  const [at, setAt] = createSignal(0)
+  const [length, setLength] = createSignal(0)
+  const [playing, setPlaying] = createSignal(false)
+  const [failed, setFailed] = createSignal(false)
+  const duration = () => setLength(Number.isFinite(audio.duration) ? audio.duration : 0)
+  const toggle = () => {
+    if (!audio.paused) {
+      audio.pause()
+      return
+    }
+    setFailed(false)
+    if (audio.error) audio.load()
+    if (audio.ended) audio.currentTime = 0
+    void audio.play().catch((error: unknown) => {
+      if (error instanceof Error && error.name === 'AbortError') return
+      if (!disposed && props.active) setFailed(true)
+    })
+  }
+  createEffect(() => {
+    if (!props.active) audio.pause()
+  })
+  onCleanup(() => {
+    disposed = true
+    audio.pause()
+    audio.removeAttribute('src')
+    audio.load()
+  })
+  return (
+    <div class="canvas-media canvas-audio">
+      <audio
+        ref={audio}
+        src={props.src}
+        preload="metadata"
+        muted={muted()}
+        onLoadedMetadata={duration}
+        onDurationChange={duration}
+        onTimeUpdate={() => setAt(audio.currentTime)}
+        onPlay={() => {
+          setPlaying(true)
+          setFailed(false)
+        }}
+        onPause={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false)
+          setAt(length())
+        }}
+        onError={() => {
+          setPlaying(false)
+          setFailed(true)
+        }}
+      />
+      <div class="canvas-audio-label" classList={{ failed: failed() }}>
+        <IconAudio size={12} />
+        <output>{failed() ? '无法播放，请重试' : '音频'}</output>
+      </div>
+      <div class="canvas-audio-controls">
+        <button
+          type="button"
+          class="canvas-audio-play"
+          aria-label={playing() ? '暂停' : '播放'}
+          onClick={toggle}
+          onKeyDown={(e) => e.stopPropagation()}
+          onKeyUp={(e) => e.stopPropagation()}
+        >
+          <Show when={playing()} fallback={<IconPlay size={16} />}>
+            <IconPause size={16} />
+          </Show>
+        </button>
+        <div class="canvas-audio-track">
+          <div class="canvas-audio-time">
+            <span>{clock(at() * 1000)}</span>
+            <span>{length() ? clock(length() * 1000) : '--:--'}</span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max={length() || 1}
+            step="any"
+            value={at()}
+            disabled={!length()}
+            aria-label="音频进度"
+            onKeyDown={(e) => e.stopPropagation()}
+            onKeyUp={(e) => e.stopPropagation()}
+            aria-valuetext={`${clock(at() * 1000)} / ${clock(length() * 1000)}`}
+            style={{ '--p': `${length() ? (at() / length()) * 100 : 0}%` }}
+            onInput={(e) => {
+              const next = Math.min(length(), Math.max(0, Number(e.currentTarget.value)))
+              audio.currentTime = next
+              setAt(next)
+            }}
+          />
+        </div>
+        <button
+          type="button"
+          class="canvas-audio-volume"
+          aria-label={muted() ? '开启声音' : '静音'}
+          onClick={() => setMuted(!muted())}
+          onKeyDown={(e) => e.stopPropagation()}
+          onKeyUp={(e) => e.stopPropagation()}
+        >
+          <Show when={muted()} fallback={<IconVolume size={16} />}>
+            <IconVolumeOff size={16} />
+          </Show>
+        </button>
+      </div>
+    </div>
   )
 }
 

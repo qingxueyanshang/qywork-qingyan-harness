@@ -68,21 +68,13 @@ import {
   WORKSPACE_PATH_TYPE,
 } from '../../lib/store/index.ts'
 import { AnchoredMenu } from '../AnchoredMenu.tsx'
-import {
-  IconAudio,
-  IconCanvas,
-  IconCheck,
-  IconChevron,
-  IconFile,
-  IconPlus,
-  IconScissors,
-} from '../Icons.tsx'
+import { IconCanvas, IconCheck, IconChevron, IconFile, IconPlus, IconScissors } from '../Icons.tsx'
 import { Bitmap } from './Bitmap.tsx'
 import { dismissOnOutside } from './dismiss.ts'
 import { captureVideoFrame, frameLabel } from './frame.ts'
 import { GeneratePanel, mediaOf } from './GeneratePanel.tsx'
 import { KindIcon, OUTPUT_LABEL } from './kinds.tsx'
-import { clock, FrameBar, type PlayerHandle, VideoPlayer } from './Player.tsx'
+import { AudioPlayer, clock, FrameBar, type PlayerHandle, VideoPlayer } from './Player.tsx'
 import { Rail } from './Rail.tsx'
 import { renderTimeline } from './render.ts'
 import { SourcePicker } from './SourcePicker.tsx'
@@ -1485,10 +1477,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           </div>
         </Match>
         <Match when={p.kind === 'audio'}>
-          <div class="canvas-media canvas-other">
-            <IconAudio size={20} />
-            <audio src={client.fileUrl(p.path)} controls preload="none" />
-          </div>
+          <Show when={client.fileUrl(p.path)} keyed>
+            {(src) => <AudioPlayer src={src} active={props.active} />}
+          </Show>
         </Match>
       </Switch>
     )
@@ -1526,6 +1517,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         class="canvas-node"
         classList={{
           selected: isSelected(),
+          audio: kind() === 'audio',
           'link-target': linkTarget() === n().id || clipTarget() === n().id,
         }}
         data-node={n().id}
