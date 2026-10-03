@@ -2,13 +2,12 @@
  * 百炼原生的生成接口：`dashscope_images` 同步出图（千问图像、万相图像），
  * `dashscope_videos` 异步视频任务（万相视频），`dashscope_speech` 同步语音合成（千问语音合成）。
  *
- * 路径挂在接口地址的 origin 上。接口里填的通常是对话用的 `…/compatible-mode/v1`，
- * 百炼原生路径是 `/api/v1/services/…`，只取 origin 才拼得对；按业务空间分配的
- * `*.maas.aliyuncs.com` 与旧的公共域名同一套路径。
+ * 原生路径为 `/api/v1/services/…`，与上传共用地址规范化：去除兼容接口后缀，保留部署前缀。
  */
 
 import {
   DASHSCOPE_INLINE_SOURCE_BYTES,
+  dashScopeBaseUrl,
   uploadDashScopeMedia,
 } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
@@ -26,21 +25,10 @@ import {
   type MediaUsage,
 } from '../types.ts'
 
-const DEFAULT_ORIGIN = 'https://dashscope.aliyuncs.com'
-
 /** 同步出图。修改与生成同一个端点，参考图放进消息内容。 */
 const SYNC_PATH = '/api/v1/services/aigc/multimodal-generation/generation'
 /** 视频任务。只能异步：不带 `X-DashScope-Async: enable` 接口直接报错。 */
 const VIDEO_PATH = '/api/v1/services/aigc/video-generation/video-synthesis'
-
-export function dashScopeOrigin(baseUrl: string | undefined): string {
-  if (!baseUrl?.trim()) return DEFAULT_ORIGIN
-  try {
-    return new URL(baseUrl).origin
-  } catch {
-    return DEFAULT_ORIGIN
-  }
-}
 
 export class DashScopeImagesAdapter implements MediaAdapter {
   readonly kind = 'dashscope_images' as const
@@ -57,7 +45,7 @@ export class DashScopeImagesAdapter implements MediaAdapter {
       { text: req.prompt },
     ]
     const body = await postJson(
-      `${dashScopeOrigin(this.profile.baseUrl)}${SYNC_PATH}`,
+      `${dashScopeBaseUrl(this.profile.baseUrl)}${SYNC_PATH}`,
       {
         model: this.profile.model,
         input: { messages: [{ role: 'user', content }] },
@@ -135,8 +123,15 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
   async run(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult> {
     const { signal } = opts
     const body = await postJson(
-      `${dashScopeOrigin(this.profile.baseUrl)}${SYNC_PATH}`,
-      { model: this.profile.model, input: { text: req.prompt, ...req.params } },
+      `${dashScopeBaseUrl(this.profile.baseUrl)}${SYNC_PATH}`,
+      {
+        model: this.profile.model,
+        input: {
+          text: req.prompt,
+          voice: this.spec.params.find((p) => p.name === 'voice')?.default,
+          ...req.params,
+        },
+      },
       { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers },
       signal,
     )
@@ -171,6 +166,20 @@ const MEDIA_TYPE: Record<MediaInput['role'], string> = {
   audio: 'reference_audio',
 }
 
+/** 原生与中转共用百炼的素材类型及参数层级，地址由各自的传输提供。 */
+export async function dashScopeVideoPayload(
+  req: MediaRequest,
+  spec: MediaModelSpec,
+  source: (input: MediaInput) => string | Promise<string>,
+) {
+  const { video_type: videoType, ...parameters } = req.params
+  const types = { ...MEDIA_TYPE, ...spec.inputs.types }
+  if (typeof videoType === 'string') types.video = videoType
+  const media = []
+  for (const input of req.inputs) media.push({ type: types[input.role], url: await source(input) })
+  return { input: { prompt: req.prompt, ...(media.length ? { media } : {}) }, parameters }
+}
+
 export class DashScopeVideosAdapter implements MediaAdapter {
   readonly kind = 'dashscope_videos' as const
 
@@ -181,29 +190,24 @@ export class DashScopeVideosAdapter implements MediaAdapter {
 
   async run(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult> {
     const { signal } = opts
-    const origin = dashScopeOrigin(this.profile.baseUrl)
+    const origin = dashScopeBaseUrl(this.profile.baseUrl)
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
     let taskId = opts.resumeTaskId
     if (!taskId) {
-      const { video_type: videoType, ...parameters } = req.params
-      const types = { ...MEDIA_TYPE, ...this.spec.inputs.types }
-      if (typeof videoType === 'string') types.video = videoType
-      const media = []
-      for (const input of req.inputs) {
-        media.push({ type: types[input.role], url: await this.source(input, origin, signal) })
-      }
+      const payload = await dashScopeVideoPayload(req, this.spec, (input) =>
+        this.source(input, signal),
+      )
       const body = await postJson(
         `${origin}${VIDEO_PATH}`,
         {
           model: this.profile.model,
-          input: { prompt: req.prompt, ...(media.length ? { media } : {}) },
-          ...(Object.keys(parameters).length ? { parameters } : {}),
+          ...payload,
         },
         {
           ...auth,
           'x-dashscope-async': 'enable',
           // 输入里有 `oss://` 临时地址时必须带这个头，否则接口不解析它。
-          ...(media.some((m) => m.url.startsWith('oss://'))
+          ...(payload.input.media?.some((m) => m.url.startsWith('oss://'))
             ? { 'x-dashscope-ossresourceresolve': 'enable' }
             : {}),
         },
@@ -229,7 +233,7 @@ export class DashScopeVideosAdapter implements MediaAdapter {
    * 被拒时再查一次状态，已不在排队就回 `started`，仍在排队说明是别的原因，原样抛。
    */
   async cancel(taskId: string, signal: AbortSignal): Promise<MediaCancel> {
-    const origin = dashScopeOrigin(this.profile.baseUrl)
+    const origin = dashScopeBaseUrl(this.profile.baseUrl)
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
     try {
       await send(
@@ -271,20 +275,34 @@ export class DashScopeVideosAdapter implements MediaAdapter {
   }
 
   /**
-   * 输入放进请求的形式：小文件直接 data URI；超过内联上限的走百炼临时上传换 `oss://` 地址，
+   * 小图像使用 data URI；视频、音频与超过内联上限的图像经临时上传换成 `oss://` 地址，
    * 与对话里的大附件同一套上传。
    */
-  private source(input: MediaInput, origin: string, signal: AbortSignal): Promise<string> {
-    if (input.bytes.length <= DASHSCOPE_INLINE_SOURCE_BYTES) {
-      return Promise.resolve(dataUri(input.bytes, input.mime))
+  private async source(input: MediaInput, signal: AbortSignal): Promise<string> {
+    if (
+      input.role !== 'video' &&
+      input.role !== 'audio' &&
+      this.spec.inputs.inlineImages !== false &&
+      input.bytes.length <= DASHSCOPE_INLINE_SOURCE_BYTES
+    ) {
+      return dataUri(input.bytes, input.mime)
     }
-    return uploadDashScopeMedia({
-      apiKey: this.profile.apiKey,
-      baseUrl: origin,
-      model: this.profile.model,
-      path: input.path,
-      size: input.bytes.length,
-      signal,
-    })
+    try {
+      return await uploadDashScopeMedia({
+        apiKey: this.profile.apiKey,
+        baseUrl: this.profile.baseUrl ?? '',
+        model: this.profile.model,
+        path: input.path,
+        size: input.bytes.length,
+        signal,
+      })
+    } catch (error) {
+      if (signal.aborted) throw error
+      const status = (error as { status?: number })?.status
+      throw new MediaError(
+        `素材上传失败：${error instanceof Error ? error.message : String(error)}`,
+        typeof status === 'number' ? { status } : {},
+      )
+    }
   }
 }

@@ -1,5 +1,5 @@
 /**
- * 生成模型的协议与类别：出图等生成接口的请求形状，以及添加模型时按接口地址给出的默认协议。
+ * 生成模型的协议与类别：出图等生成接口的请求形状，以及添加模型时的默认协议。
  *
  * 与对话协议 `PROVIDER_KINDS` 分列：那一组的每个值都是对话协议，对话目录、协议下拉与对话适配器
  * 都按它分派，混进来就得在每一处排除生成协议。
@@ -94,7 +94,7 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
 /**
  * 百炼官方端点：旧的公共域名与按业务空间分配的 `*.maas.aliyuncs.com`。
  *
- * 对话适配器据此决定大媒体走不走 `oss://` 上传，添加生成模型时据此选百炼原生协议。
+ * 对话适配器据此决定大媒体是否使用 `oss://` 上传；未收录生成模型可据此选择协议默认值。
  * 两处必须共用这一个判断：各写一份时，百炼换域名只会改到其中一处。
  */
 export function isDashScopeEndpoint(baseUrl: string): boolean {
@@ -132,16 +132,15 @@ export function isKlingEndpoint(baseUrl: string): boolean {
 }
 
 /**
- * 添加生成模型时的默认协议，按「类别 × 接口地址」查。
- *
- * **只在添加的那一刻用一次。** 落盘的 `media[id].kind` 才是权威，之后不再按地址重算：
- * 重算会把用户在 `config.json` 里手改的协议改回默认值。
+ * 已收录模型默认使用目录协议；未收录时才按类别与官方地址给出默认值。
+ * 仅在添加时使用。请求以保存的 `media[id].kind` 为准，修改地址不改变协议。
  */
 export function defaultMediaKind(
   output: MediaOutput,
   baseUrl: string | undefined,
   catalogKind?: MediaKind,
 ): MediaKind {
+  if (catalogKind && MEDIA_KIND_OUTPUT[catalogKind] === output) return catalogKind
   let host = ''
   try {
     host = new URL(baseUrl ?? '').hostname.toLowerCase()

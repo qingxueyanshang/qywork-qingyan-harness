@@ -14,7 +14,7 @@ const OPERATION_LABEL: Record<MediaOperation, string> = {
   text_to_video: '文生视频',
   image_to_video: '首帧生视频',
   first_last_frame: '首尾帧生视频',
-  reference_to_video: '参考图生视频',
+  reference_to_video: '参考素材生视频',
   video_to_video: '参考视频（编辑、延长、参考）',
   speech: '语音合成',
 }
@@ -48,9 +48,51 @@ export function validateMediaCall(
   spec: MediaModelSpec,
   operation: MediaOperation,
   params: Record<string, unknown>,
-  counts: { images: number; videos: number; audios?: number },
+  counts: {
+    images: number
+    videos: number
+    audios?: number
+    firstFrames?: number
+    lastFrames?: number
+  },
 ): string[] {
   const problems: string[] = []
+  const first = counts.firstFrames ?? 0
+  const last = counts.lastFrames ?? 0
+  const audios = counts.audios ?? 0
+  const values = mediaParamValues(spec.params, params)
+  if (last && !first && !spec.inputs.lastFrameAlone) {
+    problems.push('提供尾帧时必须同时提供首帧')
+  }
+  if (
+    (first || last) &&
+    (counts.images || counts.videos || audios) &&
+    !spec.inputs.framesWithReferences &&
+    !spec.inputs.combinations
+  ) {
+    problems.push('首尾帧不能与参考图、参考视频、参考音频同时提供')
+  }
+  if (audios && !counts.images && !counts.videos && spec.inputs.audioRequiresVisual) {
+    problems.push('参考音频必须与参考图或参考视频同时提供')
+  }
+  if (spec.inputs.combinations) {
+    const present = {
+      first_frame: first,
+      last_frame: last,
+      reference: counts.images,
+      video: counts.videos,
+      audio: audios,
+    }
+    const allowed = spec.inputs.combinations.some(
+      (combination) =>
+        Object.entries(present).every(
+          ([role, n]) => Boolean(n) === combination.roles.some((r) => r === role),
+        ) &&
+        (combination.maxImages === undefined || counts.images <= combination.maxImages) &&
+        Object.entries(combination.params ?? {}).every(([key, value]) => values[key] === value),
+    )
+    if (!allowed) problems.push(`${spec.id} 不支持当前素材组合或数量`)
+  }
   if (!spec.operations.includes(operation)) {
     problems.push(
       `${spec.id} 不支持${OPERATION_LABEL[operation]}；它支持：${spec.operations.map((o) => OPERATION_LABEL[o]).join('、')}`,
@@ -73,7 +115,6 @@ export function validateMediaCall(
         : `${spec.id} 不收参考音频`,
     )
   }
-  const values = mediaParamValues(spec.params, params)
   const known = new Map(spec.params.map((p) => [p.name, p]))
   for (const [name, value] of Object.entries(params)) {
     const p = known.get(name)

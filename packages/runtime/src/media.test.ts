@@ -14,6 +14,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CanvasPort } from '@qywork/agent'
+import { lookupMediaModel, validateMediaCall } from '@qywork/ai'
 import { type AgentEvent, type MediaInputRole, runCosts } from '@qywork/core'
 import { getRun, Store } from '@qywork/store'
 import type { QyConfig } from './config.ts'
@@ -26,7 +27,7 @@ const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 1])
 
 let server: ReturnType<typeof Bun.serve>
 let hits: string[] = []
-let reply: () => Response = () => Response.json({})
+let reply: (req: Request) => Response | Promise<Response> = () => Response.json({})
 /** 对话接口的回复，按调用次序给出 SSE 正文。 */
 let chat: () => string = () => ''
 
@@ -41,7 +42,7 @@ beforeAll(() => {
         return new Response(chat(), { headers: { 'content-type': 'text/event-stream' } })
       }
       hits.push(path)
-      return reply()
+      return reply(req)
     },
   })
 })
@@ -470,14 +471,19 @@ describe('视频：由输入推操作', () => {
     expect(operationOf('image', [input('reference')])).toEqual({ operation: 'edit' })
   })
 
-  test('不成立的组合直接退回', () => {
-    expect(operationOf('video', [input('last_frame')])).toEqual({ problem: '给了尾帧就要给首帧' })
-    expect(operationOf('video', [input('first_frame'), input('reference')])).toMatchObject({
-      problem: expect.stringContaining('不能与参考图'),
+  test('尾帧与参考组合由具体型号校验，重复帧仍直接拒绝', () => {
+    expect(operationOf('video', [input('last_frame')])).toEqual({
+      operation: 'first_last_frame',
+    })
+    expect(operationOf('video', [input('first_frame'), input('reference')])).toEqual({
+      operation: 'reference_to_video',
+    })
+    expect(operationOf('video', [input('first_frame'), input('first_frame')])).toMatchObject({
+      problem: expect.any(String),
     })
   })
 
-  test('参考音频：随参考图或参考视频给；单独给、与首尾帧同给都退回', () => {
+  test('参考音频参与操作推断，组合限制由型号决定', () => {
     expect(operationOf('video', [input('reference'), input('audio')])).toEqual({
       operation: 'reference_to_video',
     })
@@ -485,10 +491,226 @@ describe('视频：由输入推操作', () => {
       operation: 'video_to_video',
     })
     expect(operationOf('video', [input('audio')])).toEqual({
-      problem: '参考音频要与参考图或参考视频同时给',
+      operation: 'reference_to_video',
     })
     expect(operationOf('video', [input('first_frame'), input('audio')])).toMatchObject({
-      problem: expect.stringContaining('参考音频'),
+      operation: 'reference_to_video',
+    })
+    const counts = { images: 0, videos: 0, audios: 1 }
+    for (const [id, kind] of [
+      ['wan3.0-video-prime', 'dashscope_videos'],
+      ['doubao-seedance-2-5-260628', 'ark_videos'],
+    ] as const) {
+      expect(
+        validateMediaCall(lookupMediaModel(id, kind), 'reference_to_video', {}, counts),
+      ).toEqual([])
+    }
+    expect(
+      validateMediaCall(
+        lookupMediaModel('doubao-seedance-2-0-260128', 'ark_videos'),
+        'reference_to_video',
+        {},
+        counts,
+      ),
+    ).toContain('参考音频必须与参考图或参考视频同时提供')
+  })
+})
+
+describe('生成模型协议映射', () => {
+  test('百炼素材上传失败作为生成失败返回，不提交视频任务', async () => {
+    reply = () => new Response('upload denied', { status: 403 })
+    const cfg = config()
+    cfg.providers.qwen!.media!['wan3.0-video-prime'] = { kind: 'dashscope_videos' }
+    const out = await makeMediaPort(cfg).generate(
+      {
+        type: 'video',
+        provider: 'qwen',
+        model: 'wan3.0-video-prime',
+        prompt: '音乐',
+        params: {},
+        inputs: [
+          { role: 'audio', bytes: new Uint8Array([1]), mime: 'audio/wav', path: '/w/a.wav' },
+        ],
+      },
+      signal(),
+    )
+    expect(!out.ok && out.message).toContain('素材上传失败：upload denied')
+    expect(hits).toEqual(['/api/v1/uploads'])
+  })
+  const image = (role: MediaInputRole = 'reference') => ({
+    role,
+    bytes: JPEG,
+    mime: 'image/jpeg',
+    path: '/w/input.jpg',
+  })
+  const mappedConfig = (
+    model: string,
+    kind: NonNullable<QyConfig['providers'][string]['media']>[string]['kind'],
+  ): QyConfig => ({
+    providers: {
+      relay: {
+        kind: 'openai_chat_completions',
+        apiKey: 'test',
+        baseUrl: `http://127.0.0.1:${server.port}/v1`,
+        models: {},
+        media: { [model]: { kind } },
+      },
+    },
+    mediaDefaults: { video: { provider: 'relay', model } },
+  })
+
+  test('Prime 两张参考图通过校验并发送，时长、尺寸与声音设置完整保留，成功后下载产物', async () => {
+    let body: Record<string, unknown> = {}
+    reply = async (req) => {
+      if (req.method === 'POST') {
+        body = (await req.json()) as Record<string, unknown>
+        return Response.json({ id: 'wan-task' })
+      }
+      if (req.url.endsWith('/content'))
+        return new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'video/mp4' } })
+      return Response.json({ status: 'completed', seconds: '20' })
+    }
+    const result = await makeMediaPort(
+      mappedConfig('wan3.0-video-prime', 'openai_videos'),
+    ).generate(
+      {
+        type: 'video',
+        prompt: '两个人物对战',
+        inputs: [image(), image()],
+        params: { resolution: '480P', ratio: '9:16', duration: 20, audio: false },
+      },
+      signal(),
+    )
+    expect(result.ok).toBe(true)
+    expect(body).toEqual({
+      model: 'wan3.0-video-prime',
+      prompt: '两个人物对战',
+      metadata: {
+        input: {
+          prompt: '两个人物对战',
+          media: [
+            {
+              type: 'reference_image',
+              url: `data:image/jpeg;base64,${Buffer.from(JPEG).toString('base64')}`,
+            },
+            {
+              type: 'reference_image',
+              url: `data:image/jpeg;base64,${Buffer.from(JPEG).toString('base64')}`,
+            },
+          ],
+        },
+        parameters: { resolution: '480P', ratio: '9:16', duration: 20, audio: false },
+      },
+    })
+    expect(hits).toEqual(['/v1/videos', '/v1/videos/wan-task', '/v1/videos/wan-task/content'])
+  })
+
+  test('Seedance 2.5 的单独音频能到达中转，2.0 的同类输入在发送前拒绝', async () => {
+    let body: Record<string, unknown> = {}
+    reply = async (req) => {
+      body = (await req.json()) as Record<string, unknown>
+      return Response.json({ error: { message: 'request captured' } }, { status: 400 })
+    }
+    const input = {
+      role: 'audio' as const,
+      bytes: new Uint8Array([1]),
+      mime: 'audio/mpeg',
+      path: '/w/voice.mp3',
+    }
+    const generate = (model: string) =>
+      makeMediaPort(mappedConfig(model, 'openai_videos')).generate(
+        {
+          type: 'video',
+          prompt: '随音乐生成',
+          inputs: [input],
+          params: { duration: 10, generate_audio: true },
+        },
+        signal(),
+      )
+    await generate('doubao-seedance-2-5-260628')
+    expect(hits).toHaveLength(1)
+    expect(body.metadata).toMatchObject({
+      duration: 10,
+      generate_audio: true,
+      content: [
+        { type: 'text', text: '随音乐生成' },
+        {
+          type: 'audio_url',
+          role: 'reference_audio',
+          audio_url: { url: 'data:audio/mp3;base64,AQ==' },
+        },
+      ],
+    })
+    hits = []
+    const bad = await generate('doubao-seedance-2-0-260128')
+    expect(!bad.ok && bad.message).toContain('参考音频必须')
+    expect(hits).toHaveLength(0)
+  })
+
+  test('Grok 尾帧单独输入和帧与参考图组合会发送，万相仍保留互斥限制', async () => {
+    let body: Record<string, unknown> = {}
+    reply = async (req) => {
+      body = (await req.json()) as Record<string, unknown>
+      return Response.json({ message: 'captured' }, { status: 400 })
+    }
+    for (const inputs of [
+      [image('last_frame')],
+      [image('first_frame'), image('last_frame'), image()],
+    ]) {
+      await makeMediaPort(mappedConfig('grok-imagine-video-1.5', 'xai_videos')).generate(
+        { type: 'video', prompt: '动作', inputs, params: { resolution: '720p' } },
+        signal(),
+      )
+      expect(body.last_frame).toMatchObject({ url: expect.stringContaining('data:image/jpeg') })
+    }
+    expect(body.reference_images).toHaveLength(1)
+    expect(hits).toHaveLength(2)
+    hits = []
+    const bad = await makeMediaPort(mappedConfig('wan3.0-video-prime', 'openai_videos')).generate(
+      { type: 'video', prompt: '动作', inputs: [image('first_frame'), image()], params: {} },
+      signal(),
+    )
+    expect(!bad.ok && bad.message).toContain('首尾帧不能')
+    expect(hits).toHaveLength(0)
+  })
+
+  test('Veo 中转传递首帧和参数，千问多图兼容请求使用 JSON 并保留所有参考图', async () => {
+    let body: Record<string, unknown> = {}
+    reply = async (req) => {
+      body = (await req.json()) as Record<string, unknown>
+      return Response.json({ message: 'captured' }, { status: 400 })
+    }
+    await makeMediaPort(mappedConfig('veo-3.1-generate-preview', 'openai_videos')).generate(
+      {
+        type: 'video',
+        prompt: '动作',
+        inputs: [image('first_frame')],
+        params: { durationSeconds: 8, resolution: '1080p', aspectRatio: '9:16' },
+      },
+      signal(),
+    )
+    expect(body).toMatchObject({
+      seconds: '8',
+      images: [expect.stringContaining('data:image/jpeg')],
+      metadata: { durationSeconds: 8, resolution: '1080p', aspectRatio: '9:16' },
+    })
+    const cfg = mappedConfig('qwen-image-3.0', 'openai_images')
+    await makeMediaPort(cfg).generate(
+      {
+        type: 'image',
+        provider: 'relay',
+        model: 'qwen-image-3.0',
+        prompt: '合成',
+        inputs: [image(), image()],
+        params: { size: '1024x1024', prompt_extend: false },
+      },
+      signal(),
+    )
+    expect(hits.at(-1)).toBe('/v1/images/generations')
+    expect(body).toMatchObject({
+      size: '1024x1024',
+      image: [expect.any(String), expect.any(String)],
+      prompt_extend: false,
     })
   })
 })

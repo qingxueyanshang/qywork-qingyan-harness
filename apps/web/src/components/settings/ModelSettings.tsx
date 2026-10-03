@@ -1,6 +1,7 @@
 import {
   defaultMediaKind,
   MEDIA_KIND_OUTPUT,
+  type MediaKind,
   type MediaOutput,
   matchesToolCallCheck,
   PROVIDER_KINDS,
@@ -31,7 +32,7 @@ import {
   reportConfigWriteError,
 } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
-import { ModelLibrary } from './ModelLibrary.tsx'
+import { MEDIA_KIND_LABEL, ModelLibrary } from './ModelLibrary.tsx'
 import { Field, Row } from './Row.tsx'
 
 /**
@@ -59,9 +60,8 @@ const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视
  * baseUrl 各抄三份。改一次端点得改三处，漏一处的表现是「有的模型可用有的不可用」，
  * 而界面上三条卡片长得一模一样，看不出哪条漏了。
  *
- * **协议只在这一页选。** 协议（`kind`）是**接口**的属性：同一个模型经中转站以 OpenAI 协议调 Claude
- * 是常见配置。所以模型列表里一个协议字样都不出现——摆进去就是让用户在两条「看起来一样的模型」之
- * 间选，而他手里没有判据。
+ * 对话协议由接口配置；生成模型各自保存接入方式，选项来自目录的原生协议及兼容映射。
+ * 两者共用接口地址与密钥。
  *
  * **明文 key 不回传。** 服务端只回 `hasApiKey` 布尔。保存时没带 `apiKey` 的接口沿用服务端已有的那
  * 份，所以「打开设置改个 baseUrl 再保存」不会把 key 洗掉——这类破坏在保存那一刻毫无反馈，要等下
@@ -176,7 +176,7 @@ export function ModelSettings() {
    * 参数不在这里写——它们照着 id 从模型库查（`lookupModel` + 库里的覆盖）。
    * 在这里再存一份窗口和价格，就是同一件事记两本账。
    *
-   * id 在生成目录里就挂成生成模型，协议按接口地址给默认值（`defaultMediaKind`），之后以落盘的为准；
+   * id 在生成目录里就挂成生成模型，默认使用目录协议，之后以保存的接入方式为准；
    * 这一类还没有默认模型时它成为默认。目录里没有的 id 照旧当对话模型。
    */
   const addModel = (provider: string, id: string) => {
@@ -401,7 +401,7 @@ export function ModelSettings() {
                         />
                       </Row>
 
-                      <Row label="协议">
+                      <Row label="对话协议">
                         <select
                           value={p().kind}
                           onChange={(e) => patchProvider(name(), { kind: e.currentTarget.value })}
@@ -519,6 +519,13 @@ export function ModelSettings() {
                       <For each={Object.entries(p().media ?? {})}>
                         {([id, m]) => {
                           const output = MEDIA_KIND_OUTPUT[m.kind]
+                          const kinds = () => {
+                            const spec = modelCatalog()?.mediaLibrary.find(
+                              (entry) => entry.id === id,
+                            )
+                            const supported = spec?.kinds ?? (spec ? [spec.kind] : [])
+                            return supported.includes(m.kind) ? supported : [m.kind, ...supported]
+                          }
                           const isDefault = () => {
                             const ref = c().mediaDefaults?.[output]
                             return ref?.provider === name() && ref.model === id
@@ -544,6 +551,41 @@ export function ModelSettings() {
                                 </button>
                                 <span class="model-id">{id}</span>
                                 <span class="model-output">{OUTPUT_LABEL[output]}</span>
+                                <label class="model-access">
+                                  接入方式
+                                  <select
+                                    aria-label={`接入方式 ${id}`}
+                                    value={m.kind}
+                                    disabled={configBusy() || kinds().length < 2}
+                                    onChange={(e) => {
+                                      const provider = name()
+                                      const kind = e.currentTarget.value as MediaKind
+                                      void replaceConfig((cur) => {
+                                        const owner = cur.providers[provider]
+                                        if (!owner?.media?.[id]) return null
+                                        return {
+                                          ...cur,
+                                          providers: {
+                                            ...cur.providers,
+                                            [provider]: {
+                                              ...owner,
+                                              media: {
+                                                ...owner.media,
+                                                [id]: { ...owner.media[id], kind },
+                                              },
+                                            },
+                                          },
+                                        }
+                                      })
+                                    }}
+                                  >
+                                    <For each={kinds()}>
+                                      {(kind) => (
+                                        <option value={kind}>{MEDIA_KIND_LABEL[kind]}</option>
+                                      )}
+                                    </For>
+                                  </select>
+                                </label>
                                 {/* 没有「检测」：探测一次就是真生成一次、真扣一次费。 */}
                                 <button
                                   class="icon-btn"

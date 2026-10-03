@@ -43,7 +43,12 @@ export class OpenAISpeechAdapter implements MediaAdapter {
           authorization: `Bearer ${this.profile.apiKey}`,
           ...this.profile.headers,
         },
-        body: JSON.stringify({ model: this.profile.model, input: req.prompt, ...req.params }),
+        body: JSON.stringify({
+          model: this.profile.model,
+          input: req.prompt,
+          voice: this.spec.params.find((p) => p.name === 'voice')?.default,
+          ...req.params,
+        }),
       },
       opts.signal,
     )

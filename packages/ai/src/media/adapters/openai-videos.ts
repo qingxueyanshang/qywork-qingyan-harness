@@ -2,13 +2,12 @@
  * `openai_videos`：中转站的 `/v1/videos`（New API 等按 OpenAI 视频接口的形状转发各家视频模型）。
  *
  * 提交 `POST {base}/videos`，查询 `GET {base}/videos/{id}`，取内容 `GET {base}/videos/{id}/content`
- * （要带同一把 key）。`seconds` 与 `size` 是这个形状自己的字段，放顶层；其余参数是厂商字段，
- * 放进 `metadata` 由中转站原样转给厂商。只做文生，理由见目录的协议默认。
+ * （要带同一把 key）。厂商扩展结构由目录声明，素材与参数按对应结构发送。
  */
 
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, defined, download, getJson, postJson } from '../http.ts'
+import { count, dataUri, defined, download, getJson, postJson } from '../http.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
@@ -19,9 +18,31 @@ import {
   type MediaRunOptions,
   type MediaUsage,
 } from '../types.ts'
+import { arkVideoContent } from './ark-videos.ts'
+import { dashScopeVideoPayload } from './dashscope.ts'
 
-/** OpenAI 视频接口自己的字段。其余参数一律进 `metadata`。 */
-const OWN_FIELDS = new Set(['seconds', 'size'])
+/** 按目录声明构造已核实的中转请求；未知型号只发送通用字段。 */
+async function payloadOf(
+  req: MediaRequest,
+  spec: MediaModelSpec,
+): Promise<Record<string, unknown>> {
+  switch (spec.videoFormat) {
+    case 'dashscope':
+      return { metadata: await dashScopeVideoPayload(req, spec, (i) => dataUri(i.bytes, i.mime)) }
+    case 'ark':
+      return { metadata: { ...req.params, content: arkVideoContent(req) } }
+    case 'veo':
+      return {
+        ...(req.params.durationSeconds !== undefined
+          ? { seconds: String(req.params.durationSeconds) }
+          : {}),
+        ...(req.inputs.length ? { images: req.inputs.map((i) => dataUri(i.bytes, i.mime)) } : {}),
+        metadata: req.params,
+      }
+    default:
+      return req.params
+  }
+}
 
 export class OpenAIVideosAdapter implements MediaAdapter {
   readonly kind = 'openai_videos' as const
@@ -37,19 +58,12 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
     let taskId = opts.resumeTaskId
     if (!taskId) {
-      const own: Record<string, unknown> = {}
-      const metadata: Record<string, unknown> = {}
-      for (const [key, value] of Object.entries(req.params)) {
-        if (OWN_FIELDS.has(key)) own[key] = value
-        else metadata[key] = value
-      }
       const body = await postJson(
         `${base}/videos`,
         {
           model: this.profile.model,
           prompt: req.prompt,
-          ...own,
-          ...(Object.keys(metadata).length ? { metadata } : {}),
+          ...(await payloadOf(req, this.spec)),
         },
         auth,
         signal,

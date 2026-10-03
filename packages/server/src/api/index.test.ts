@@ -482,6 +482,21 @@ describe('模型目录', () => {
   /** 摊平成一张表只是为了断言好写；界面拿到的是分好组的。 */
   const models = async (d: ApiDeps) => (await body(d)).providers.flatMap((p) => p.models)
 
+  test('生成接入方式由目录下发，不因自定义地址改变原生协议或添加其他厂商协议', async () => {
+    const d = withConfig('openai_chat_completions', 'm')
+    d.config.providers.p!.baseUrl = 'https://relay.example/v1'
+    const catalog = (await body(d)).mediaLibrary
+    expect(catalog.find((m) => m.id === 'wan3.0-video-prime')?.kinds).toEqual([
+      'dashscope_videos',
+      'openai_videos',
+    ])
+    expect(catalog.find((m) => m.id === 'grok-imagine-video-1.5')?.kinds).toEqual(['xai_videos'])
+    expect(catalog.find((m) => m.id === 'doubao-seedance-2-5-260628')?.kinds).toEqual([
+      'ark_videos',
+      'openai_videos',
+    ])
+  })
+
   test('新编码模型只出一行，订阅限制和未知单价不被丢失', async () => {
     const response = await body(withConfig('openai_chat_completions', 'step-5-preview'))
     expect(response.providers[0]?.models[0]).toMatchObject({

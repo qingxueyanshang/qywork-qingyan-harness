@@ -18,12 +18,12 @@ const CATEGORY_LABEL: Record<Category, string> = {
 }
 
 /** 生成协议的显示名：用户认得的接口形状，不是内部枚举名。 */
-const MEDIA_KIND_LABEL: Record<MediaKind, string> = {
+export const MEDIA_KIND_LABEL: Record<MediaKind, string> = {
   openai_images: 'OpenAI 兼容',
   dashscope_images: '百炼',
   gemini_images: 'Gemini',
   xai_images: 'xAI',
-  openai_videos: '中转 /v1/videos',
+  openai_videos: 'OpenAI 兼容视频',
   ark_videos: '火山方舟',
   dashscope_videos: '百炼',
   kling_videos: '可灵',

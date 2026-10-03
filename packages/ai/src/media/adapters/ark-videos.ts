@@ -31,6 +31,19 @@ const ROLE: Record<MediaInput['role'], string> = {
   audio: 'reference_audio',
 }
 
+/** 原生与中转共用素材的类型、用途及 Base64 格式。 */
+export function arkVideoContent(req: MediaRequest): Record<string, unknown>[] {
+  return [
+    { type: 'text', text: req.prompt },
+    ...req.inputs.map((input) => {
+      const type =
+        input.role === 'audio' ? 'audio_url' : input.role === 'video' ? 'video_url' : 'image_url'
+      const mime = input.mime === 'audio/mpeg' ? 'audio/mp3' : input.mime
+      return { type, [type]: { url: dataUri(input.bytes, mime) }, role: ROLE[input.role] }
+    }),
+  ]
+}
+
 /**
  * 任务的计量。计费按 `usage.completion_tokens`（有参考视频时不足最低用量按最低用量回报）；
  * `duration` 是输出秒数，`resolution` 与 `generate_audio` 是实际生成的规格。
@@ -59,25 +72,9 @@ export class ArkVideosAdapter implements MediaAdapter {
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
     let taskId = opts.resumeTaskId
     if (!taskId) {
-      const content: Record<string, unknown>[] = [{ type: 'text', text: req.prompt }]
-      for (const input of req.inputs) {
-        if (input.role === 'audio') {
-          // 音频的 data URI 写格式名（`data:audio/mp3`），不写 MIME 类型 `audio/mpeg`。
-          const format = input.mime === 'audio/mpeg' ? 'audio/mp3' : input.mime
-          const url = dataUri(input.bytes, format)
-          content.push({ type: 'audio_url', audio_url: { url }, role: ROLE.audio })
-          continue
-        }
-        const url = dataUri(input.bytes, input.mime)
-        content.push(
-          input.role === 'video'
-            ? { type: 'video_url', video_url: { url }, role: ROLE.video }
-            : { type: 'image_url', image_url: { url }, role: ROLE[input.role] },
-        )
-      }
       const body = await postJson(
         `${base}/contents/generations/tasks`,
-        { model: this.profile.model, content, ...req.params },
+        { model: this.profile.model, content: arkVideoContent(req), ...req.params },
         auth,
         signal,
       )

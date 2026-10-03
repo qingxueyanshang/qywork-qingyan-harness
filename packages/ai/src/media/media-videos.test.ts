@@ -9,7 +9,10 @@
  * 起一个本机端点当远端：记下每个请求，查询按预设的状态序列回答。
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { defaultMediaKind } from '@qywork/core'
 import { lookupMediaModel } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
@@ -38,9 +41,15 @@ let polls: (() => Response)[] = []
 /** DELETE 的回复（方舟撤销）。 */
 let remove: () => Response = () => Response.json({})
 let downloadStatus = 200
+let inputDir: string
+let uploadFetch: ReturnType<typeof spyOn<typeof globalThis, 'fetch'>> | undefined
 const origin = () => `http://127.0.0.1:${server.port}`
 
-beforeAll(() => {
+beforeAll(async () => {
+  inputDir = await mkdtemp(join(tmpdir(), 'media-upload-'))
+  await writeFile(join(inputDir, 'a.mp4'), MP4)
+  await writeFile(join(inputDir, 'b.png'), PNG)
+  await writeFile(join(inputDir, 'v.wav'), new Uint8Array([0x52, 0x49, 0x46, 0x46]))
   server = Bun.serve({
     port: 0,
     hostname: '127.0.0.1',
@@ -51,10 +60,23 @@ beforeAll(() => {
         headers[k] = v
       })
       const entry: Seen = { method: req.method, path: url.pathname, search: url.search, headers }
-      if (req.headers.get('content-type')?.includes('json')) {
+      if (req.method === 'POST' && req.headers.get('content-type')?.includes('json')) {
         entry.json = (await req.json()) as Record<string, unknown>
       }
       seen.push(entry)
+      if (url.pathname.endsWith('/api/v1/uploads')) {
+        return Response.json({
+          data: {
+            policy: 'policy',
+            signature: 'signature',
+            upload_dir: 'dashscope-instant/test',
+            upload_host: 'https://bucket.oss-cn-beijing.aliyuncs.com',
+            oss_access_key_id: 'test',
+            x_oss_object_acl: 'private',
+            x_oss_forbid_overwrite: 'true',
+          },
+        })
+      }
       if (url.pathname.endsWith('/last.jpg')) {
         return new Response(JPEG, { headers: { 'content-type': 'image/jpeg' } })
       }
@@ -72,6 +94,10 @@ beforeAll(() => {
   })
 })
 afterAll(() => server.stop(true))
+afterEach(() => {
+  uploadFetch?.mockRestore()
+  uploadFetch = undefined
+})
 beforeEach(() => {
   seen = []
   polls = []
@@ -93,6 +119,18 @@ const opts = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 })
 
+function captureUpload(...bytes: Uint8Array[]) {
+  const original = globalThis.fetch
+  uploadFetch = spyOn(globalThis, 'fetch').mockImplementation((async (url, init) => {
+    if (String(url) !== 'https://bucket.oss-cn-beijing.aliyuncs.com/') return original(url, init)
+    const form = init?.body as FormData
+    const uploaded = Buffer.from(await (form.get('file') as File).arrayBuffer())
+    expect(bytes.some((expected) => uploaded.equals(Buffer.from(expected)))).toBe(true)
+    seen.push({ method: 'POST', path: '/oss-upload', search: '', headers: {} })
+    return new Response('')
+  }) as typeof fetch)
+}
+
 describe('dashscope_videos', () => {
   const adapter = () =>
     buildMediaAdapter({
@@ -101,6 +139,55 @@ describe('dashscope_videos', () => {
       apiKey: 'sk-ds',
       baseUrl: `${origin()}/compatible-mode/v1`,
     })
+
+  test('带前缀的原生接口在上传、提交、查询和撤销时使用同一地址', async () => {
+    captureUpload(MP4)
+    const addresses = ['', '/compatible-mode', '/compatible-mode/v1', '/api/v1', '/v1/'].map(
+      (suffix) => ({ path: `/gateway/ali${suffix}`, prefix: '/gateway/ali' }),
+    )
+    addresses.push({ path: '/gateway/v1/compatible-mode/v1', prefix: '/gateway/v1' })
+    for (const { path, prefix } of addresses) {
+      seen = []
+      submit = () => Response.json({ output: { task_id: 'prefix-task', task_status: 'PENDING' } })
+      polls = [
+        () =>
+          Response.json({
+            output: { task_status: 'SUCCEEDED', video_url: `${origin()}/files/out.mp4` },
+          }),
+      ]
+      const a = buildMediaAdapter({
+        kind: 'dashscope_videos',
+        model: 'wan3.0-video',
+        apiKey: 'sk-ds',
+        baseUrl: `${origin()}${path}`,
+      })
+      const result = await a.run(
+        {
+          operation: 'video_to_video',
+          prompt: '花开',
+          inputs: [{ role: 'video', bytes: MP4, mime: 'video/mp4', path: join(inputDir, 'a.mp4') }],
+          params: { duration: 2 },
+        },
+        opts(),
+      )
+      expect(result.files[0]?.bytes).toEqual(MP4)
+      expect(seen.map((entry) => entry.path)).toEqual([
+        `${prefix}/api/v1/uploads`,
+        '/oss-upload',
+        `${prefix}/api/v1/services/aigc/video-generation/video-synthesis`,
+        `${prefix}/api/v1/tasks/prefix-task`,
+        '/files/out.mp4',
+      ])
+      expect(seen[0]?.headers.authorization).toBe('Bearer sk-ds')
+      expect(seen[2]?.json).toMatchObject({
+        input: { media: [{ type: 'reference_video', url: expect.stringMatching(/^oss:\/\//) }] },
+        parameters: { duration: 2 },
+      })
+      submit = () => Response.json({})
+      expect(await a.cancel!('prefix-task', opts().signal)).toBe('cancelled')
+      expect(seen.at(-1)?.path).toBe(`${prefix}/api/v1/tasks/prefix-task/cancel`)
+    }
+  })
 
   test('提交带异步头、输入按用途放进 media，任务号交出后查询到成功就下载', async () => {
     submit = () => Response.json({ output: { task_id: 'task-1', task_status: 'PENDING' } })
@@ -208,6 +295,7 @@ describe('dashscope_videos', () => {
 
   /** 同一端点上的可灵用另一套素材类型名；视频的用途由 `video_type` 指定，它不作为参数发出。 */
   test('可灵按目录的类型名放素材，video_type 写进视频那一项', async () => {
+    captureUpload(MP4, PNG)
     submit = () => Response.json({ output: { task_id: 'task-k' } })
     polls = [
       () =>
@@ -233,19 +321,21 @@ describe('dashscope_videos', () => {
         operation: 'video_to_video',
         prompt: '把视频里的人换成图里的人',
         inputs: [
-          { role: 'video', bytes: MP4, mime: 'video/mp4', path: '/w/a.mp4' },
-          { role: 'reference', bytes: PNG, mime: 'image/png', path: '/w/b.png' },
+          { role: 'video', bytes: MP4, mime: 'video/mp4', path: join(inputDir, 'a.mp4') },
+          { role: 'reference', bytes: PNG, mime: 'image/png', path: join(inputDir, 'b.png') },
         ],
         params: { video_type: 'base', mode: 'std' },
       },
       opts(),
     )
-    const post = seen.find((s) => s.method === 'POST')!
+    const post = seen.find((s) => s.path.endsWith('/video-synthesis'))!
     expect(post.json).toMatchObject({
       model: 'kling/kling-v3-omni-video-generation',
       input: { media: [{ type: 'base' }, { type: 'refer' }] },
     })
     expect(post.json?.parameters).toEqual({ mode: 'std' })
+    expect(post.headers['x-dashscope-ossresourceresolve']).toBe('enable')
+    expect(seen.filter((s) => s.path === '/oss-upload')).toHaveLength(2)
     // 可灵的 `SR` 是字符串，另回 `audio`；输入含视频由请求决定。
     expect(out.usage).toEqual({ seconds: 5, resolution: '720p', audio: false, videoInput: true })
   })
@@ -256,6 +346,15 @@ describe('dashscope_videos', () => {
  * data URI 写格式名 `data:audio/mp3`；万相 `media[]` 一项 `type: reference_audio`。
  */
 describe('参考音频', () => {
+  test('百炼可灵仅允许已声明的素材组合，有视频时最多四张参考图', () => {
+    const spec = lookupMediaModel('kling/kling-v3-omni-video-generation', 'dashscope_videos')
+    const validate = (images: number, firstFrames = 0, video_type = 'feature') =>
+      validateMediaCall(spec, 'video_to_video', { video_type }, { images, videos: 1, firstFrames })
+    expect(validate(4)).toEqual([])
+    expect(validate(5).join()).toContain('素材组合或数量')
+    expect(validate(0, 1)).toEqual([])
+    expect(validate(0, 1, 'base').join()).toContain('素材组合或数量')
+  })
   const WAV = new Uint8Array([0x52, 0x49, 0x46, 0x46])
   const MP3 = new Uint8Array([0x49, 0x44, 0x33])
 
@@ -292,6 +391,7 @@ describe('参考音频', () => {
   })
 
   test('万相：media 里一项 reference_audio', async () => {
+    captureUpload(WAV)
     submit = () => Response.json({ output: { task_id: 'task-a', task_status: 'PENDING' } })
     polls = [
       () =>
@@ -310,17 +410,20 @@ describe('参考音频', () => {
         prompt: '图1 唱歌',
         inputs: [
           { role: 'reference', bytes: PNG, mime: 'image/png', path: '/w/a.png' },
-          { role: 'audio', bytes: WAV, mime: 'audio/wav', path: '/w/v.wav' },
+          { role: 'audio', bytes: WAV, mime: 'audio/wav', path: join(inputDir, 'v.wav') },
         ],
         params: {},
       },
       opts(),
     )
-    const media = (seen.find((s) => s.method === 'POST')?.json?.input as { media: unknown[] }).media
+    const post = seen.find((s) => s.path.endsWith('/video-synthesis'))!
+    const media = (post.json?.input as { media: unknown[] }).media
     expect(media[1]).toEqual({
       type: 'reference_audio',
-      url: `data:audio/wav;base64,${Buffer.from(WAV).toString('base64')}`,
+      url: expect.stringMatching(/^oss:\/\/dashscope-instant\/test\/.+-v.wav$/),
     })
+    expect(post.headers['x-dashscope-ossresourceresolve']).toBe('enable')
+    expect(seen.filter((s) => s.path === '/oss-upload')).toHaveLength(1)
   })
 
   test('段数按目录退回；目录没写上限的不收', () => {
@@ -331,7 +434,7 @@ describe('参考音频', () => {
     const kling = lookupMediaModel('kling/kling-v3-omni-video-generation', 'dashscope_videos')
     expect(
       validateMediaCall(kling, 'reference_to_video', {}, { images: 1, videos: 0, audios: 1 }),
-    ).toEqual([`${kling.id} 不收参考音频`])
+    ).toContain(`${kling.id} 不收参考音频`)
   })
 })
 
@@ -436,6 +539,42 @@ describe('kling_videos', () => {
         { id, status: 'succeeded', outputs: [{ type: 'video', url: `${origin()}/files/out.mp4` }] },
       ],
     })
+
+  test('Omni 的文生与首尾帧均使用 Omni 端点，允许首帧与参考图组合', async () => {
+    const spec = lookupMediaModel('kling-3.0-omni', 'kling_videos')
+    for (const inputs of [
+      [],
+      [
+        { role: 'first_frame' as const, bytes: PNG, mime: 'image/png', path: '/w/a.png' },
+        { role: 'last_frame' as const, bytes: PNG, mime: 'image/png', path: '/w/b.png' },
+      ],
+    ]) {
+      seen = []
+      submit = () => Response.json({ code: 0, data: { id: 'omni' } })
+      polls = [succeeded('omni')]
+      const operation = inputs.length ? 'first_last_frame' : 'text_to_video'
+      expect(
+        validateMediaCall(
+          spec,
+          operation,
+          {},
+          {
+            images: 0,
+            videos: 0,
+            firstFrames: inputs.length ? 1 : 0,
+            lastFrames: inputs.length ? 1 : 0,
+          },
+        ),
+      ).toEqual([])
+      await adapter('kling-3.0-omni').run({ operation, prompt: '动作', inputs, params: {} }, opts())
+      expect(seen[0]?.path).toBe('/omni-video/kling-3.0-omni')
+      expect(seen[0]?.json?.contents).toHaveLength(inputs.length + 1)
+      expect(seen[0]?.json).not.toHaveProperty('prompt')
+    }
+    expect(
+      validateMediaCall(spec, 'reference_to_video', {}, { images: 1, videos: 0, firstFrames: 1 }),
+    ).toEqual([])
+  })
 
   test('文生只发 prompt 与 settings，按任务号查询，取 outputs 里的视频', async () => {
     submit = () => Response.json({ code: 0, data: { id: 'kt-1', status: 'submitted' } })
@@ -569,7 +708,7 @@ describe('目录与默认协议', () => {
 })
 
 describe('openai_videos', () => {
-  test('seconds 与 size 在顶层，厂商字段进 metadata，内容带 key 下载', async () => {
+  test('Seedance 参数和素材放入 metadata，下载内容时携带 key', async () => {
     submit = () => Response.json({ id: 'video_1', status: 'queued' })
     polls = [() => Response.json({ id: 'video_1', status: 'completed' })]
     const adapter = buildMediaAdapter({
@@ -583,7 +722,7 @@ describe('openai_videos', () => {
         operation: 'text_to_video',
         prompt: '海浪',
         inputs: [],
-        params: { seconds: '5', size: '720x1280', resolution: '720p' },
+        params: { duration: 5, ratio: '9:16', resolution: '720p' },
       },
       opts(),
     )
@@ -592,21 +731,26 @@ describe('openai_videos', () => {
     expect(post.json).toEqual({
       model: 'doubao-seedance-2-5-260628',
       prompt: '海浪',
-      seconds: '5',
-      size: '720x1280',
-      metadata: { resolution: '720p' },
+      metadata: {
+        duration: 5,
+        ratio: '9:16',
+        resolution: '720p',
+        content: [{ type: 'text', text: '海浪' }],
+      },
     })
     const content = seen.find((s) => s.path === '/v1/videos/video_1/content')
     expect(content?.headers.authorization).toBe('Bearer sk-relay')
     expect(out.files[0]?.bytes).toEqual(MP4)
   })
 
-  /** 中转站的参考图形状没有核实过，按 id 兜底时只留两边都支持的操作。 */
-  test('目录里的视频模型挂在中转站上时只剩文生', () => {
+  test('Seedance 中转保留已核实的素材能力，未知型号仍只提供通用参数', () => {
     const spec = lookupMediaModel('doubao-seedance-2-5-260628', 'openai_videos')
-    expect(spec.operations).toEqual(['text_to_video'])
-    expect(spec.inputs).toMatchObject({ maxImages: 0, maxVideos: 0 })
+    expect(spec.operations).toContain('reference_to_video')
+    expect(spec.inputs).toMatchObject({ maxImages: 30, maxVideos: 10, maxAudios: 10 })
     expect(spec.params.map((p) => p.name)).toContain('omni_reference_task_type')
+    const unknown = lookupMediaModel('custom-video', 'openai_videos')
+    expect(unknown.operations).toEqual(['text_to_video'])
+    expect(unknown.params.map((p) => p.name)).toEqual(['seconds', 'size'])
   })
 })
 

@@ -122,8 +122,11 @@ export class XaiVideosAdapter implements MediaAdapter {
         },
         opts,
       )
+      const url = new URL(done.url, `${base}/`)
       return {
-        files: [await download(done.url, opts.signal)],
+        files: [
+          await download(url.href, opts.signal, url.origin === new URL(base).origin ? auth : {}),
+        ],
         ...(done.usage ? { usage: done.usage } : {}),
       }
     })

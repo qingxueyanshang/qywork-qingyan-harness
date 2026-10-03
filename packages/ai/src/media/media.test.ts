@@ -71,11 +71,11 @@ describe('目录查法', () => {
     expect(spec.params.map((p) => p.name)).toContain('prompt_extend')
   })
 
-  /** 中转站上的同一个模型：参数名不变，参考图的传法按中转站那条协议走。 */
-  test('协议对不上时按 id 兜底，保留参数表、换协议与传法', () => {
+  /** 图片兼容接口与百炼原生使用不同的尺寸格式。 */
+  test('千问图片兼容接口使用 JSON 参考图和宽x高尺寸', () => {
     const spec = lookupMediaModel('qwen-image-3.0', 'openai_images')
     expect(spec.kind).toBe('openai_images')
-    expect(spec.inputs.transport).toBe('multipart')
+    expect(spec.inputs.transport).toBe('json')
     expect(spec.params.map((p) => p.name)).toContain('prompt_extend')
   })
 

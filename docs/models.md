@@ -48,8 +48,8 @@ Pro 保持文本模型能力，`deepseek-flash` 的规格与价格独立维护�
 
 在设置的接口页添加下列模型 ID 后，模型会进入对应的图像或视频类别。
 Google 官方 Base URL 为 `https://generativelanguage.googleapis.com/v1beta`，
-xAI 官方 Base URL 为 `https://api.x.ai/v1`；添加时按地址与目录选择生成协议。
-已保存模型的协议以配置为准，修改地址不会自动迁移协议。
+xAI 官方 Base URL 为 `https://api.x.ai/v1`；已收录生成模型默认使用目录协议。
+已保存模型的协议以配置为准，修改地址不会改变协议；可在生成模型行的「接入方式」中修改。
 
 | 类别 | 模型 ID | 显示名称 |
 |---|---|---|
@@ -77,7 +77,8 @@ Gemini 按接口回报的输入、文字/思考输出和图片/视频输出 toke
 xAI 优先采用响应中的 `usage.cost_in_usd_ticks` 实际扣费。
 Veo 的生成响应未提供计价所需的实际时长、分辨率，用量账本金额显示 N/A；
 发送前可按选择的时长与分辨率显示目录报价。任何接口缺少计量时均不估填实际金额。
-中转站沿用其兼容协议，能力取协议与模型交集，官方单价不自动用于中转账单。
+中转站沿用其兼容协议，仅使用目录已核实的映射；未登记的组合采用协议默认规格，
+官方单价不自动用于不同协议的中转账单。
 
 2026-10-01 核对：[Gemini 图片](https://ai.google.dev/gemini-api/docs/image-generation)、
 [Omni](https://ai.google.dev/gemini-api/docs/omni)、[Veo](https://ai.google.dev/gemini-api/docs/veo)、
@@ -277,13 +278,72 @@ bun run packages/cli/src/index.ts probe my-model --save
 「模型库」图像、视频、音频页签中列出的模型 ID，回车即挂上；每类第一个成为该类的默认模型。
 生成模型不出现在对话的模型选择里，也没有「检测」按钮：检测一次就是真实生成一次。
 
-接口协议按服务地址决定：百炼官方地址走百炼原生接口；火山方舟官方地址的视频走方舟任务接口，
-出图走 OpenAI 兼容接口；可灵开放平台官方地址（`https://api-beijing.klingai.com`、`https://api-singapore.klingai.com`）
-的视频走可灵接口，使用可灵控制台创建的 API Key；其他地址（包括中转站）走 OpenAI 兼容的 `/images`、`/videos`、`/audio/speech`。
-中转站的 `/v1/videos` 只支持文生视频。
+新增生成模型默认使用模型库的原生协议，不根据中转域名改变协议。每个生成模型行的「接入方式」
+只列出该模型已实现的原生协议与兼容映射，保存后由 `media[id].kind` 决定调用方式。
+修改 Base URL 不会覆盖已保存的选择；上方「对话协议」只作用于对话模型。
+旧配置中未收录的协议选择继续显示并保留，可在生成模型行改选已实现的接入方式。
+
+中转站的 `/v1/videos` 按已核实的模型映射发送素材：万相使用 `metadata.input.media`，
+Seedance 使用 `metadata.content`，Veo 使用 `images` 首帧字段。其他型号采用通用文生参数。
+这三类扩展已与 New API 官方仓库的转换器核对；所接中转站仍须提供相同接口扩展。
+Sub2API 提供 xAI 格式的 Grok 视频与方舟格式的 Seedance 接口时，分别选择「xAI」「火山方舟」，
+复用现有适配器。Grok 返回相对结果地址时按接口地址解析，同源下载携带鉴权，跨域下载不携带接口凭证。
+百炼原生接口保留 Base URL 中的部署路径前缀（例如 `/ali`），上传、生成和任务查询使用相同前缀。
+这些接入方式不探测中转缺少的参数，不静默删参数或降级重试；中转须实现所选接口的约定。
 
 可灵也可以经百炼调用，模型 ID 形如 `kling/kling-v3-video-generation`，仅北京地域，需先在百炼控制台开通。
 可灵官方接口的视频素材只接受网络地址，因此以参考视频编辑只能经百炼调用。
+
+### 生成模型核查（2026-10-03）
+
+以下覆盖目录中的全部 **32 个生成模型：12 个图像、17 个视频、3 个语音**。
+核查输入用途及数量、参数约束、请求结构和协议映射。数量为当前接入上限，参考图不含首尾帧；
+没有接入的厂商能力不显示为可用。未改动模型价格。
+
+| 模型 ID | 已接入能力及核查结果 |
+|---|---|
+| `gemini-3.1-flash-lite-image`、`gemini-3.1-flash-image`、`gemini-3-pro-image` | 生成和修改，最多 14 张参考图；分别按型号提供图片尺寸 |
+| `grok-imagine-image-2.0` | 生成和修改，最多 5 张参考图；原生图片接口保留分辨率、质量和张数 |
+| `gpt-image-2.5-flare`、`gpt-image-2.5-sunburst` | 生成和修改，最多 16 张参考图；修改使用 multipart，质量与尺寸分别校验 |
+| `doubao-seedream-5-0-pro-260628`、`doubao-seedream-5-0-flash-260915` | 生成和修改，最多 10 张参考图；使用 JSON `image` 数组 |
+| `qwen-image-3.0-pro`、`qwen-image-3.0` | 最多 3 张参考图；修复兼容协议误用 multipart、尺寸分隔符错误，使用 JSON 图片数组和 `宽x高` |
+| `wan2.7-image-pro`、`wan2.7-image` | 最多 9 张参考图；兼容协议同样使用 JSON 图片数组和 `宽x高`；Pro 的 4K 仅限文生单图 |
+| `gemini-omni-1.1-flash` | 文生、首帧、首尾帧、最多 6 张参考图及 1 个视频；允许帧与参考图组合，按官方声明格式区分帧与参考图 |
+| `veo-3.1-generate-preview`、`veo-3.1-fast-generate-preview` | 原生接口支持文生、首帧、首尾帧和最多 3 张参考图；高分辨率或参考图要求 8 秒；兼容映射支持文生和首帧 |
+| `veo-3.1-lite-generate-preview` | 原生接口支持文生、首帧、首尾帧；兼容映射支持文生和首帧 |
+| `grok-imagine-video-1.5` | 文生、首帧、尾帧、首尾帧、最多 7 张参考图；修复尾帧单独输入及帧与参考图组合被错误拒绝 |
+| `wan3.0-video`、`wan3.0-video-prime` | 原生最多 10 张参考图、5 个视频、5 段音频，可仅带音频；修复兼容协议参考图上限为零、素材丢弃及参数层级错误 |
+| `doubao-seedance-2-5-260628` | 最多 30 张参考图、10 个视频、10 段音频，可仅带音频；兼容协议按原生 `content` 内容发送 |
+| `doubao-seedance-2-0-260128`、`doubao-seedance-2-0-fast-260128`、`doubao-seedance-2-0-mini-260615` | 最多 9 张参考图、3 个视频、3 段音频；音频须同时带参考图或视频；修复兼容协议素材传输 |
+| `kling/kling-v3-omni-video-generation` | 百炼接口支持文生、首帧、首尾帧、最多 7 张参考图或 1 个视频；含视频时最多 4 张参考图；特征参考视频可配首帧 |
+| `kling/kling-v3-video-generation` | 百炼接口支持文生、首帧、首尾帧；图片使用地址传输 |
+| `kling/kling-v3-turbo-video-generation` | 百炼接口支持文生和首帧；图片使用地址传输 |
+| `kling-3.0-omni` | 官方接口支持文生、首帧、首尾帧和最多 7 张参考图；修复遗漏的操作，统一使用 Omni 端点；允许帧与参考图组合 |
+| `kling-3.0`、`kling-3.0-turbo` | 官方接口均支持文生和首帧，3.0 另支持首尾帧；请求使用 `settings` 参数结构 |
+| `gpt-4o-mini-tts` | 修复省略参数时缺少必填 `voice`；使用目录默认音色，保留格式、语速和指令参数 |
+| `qwen3-tts-flash`、`qwen3-tts-instruct-flash` | 修复省略参数时缺少必填音色；文字、音色、语言及指令按百炼原生 `input` 结构发送 |
+
+百炼原生视频接口的本地视频和音频通过临时上传取得 OSS 地址；只接受图片地址的可灵也使用该上传路径。
+万相兼容映射支持参考图与首尾帧，当前未接入中转站的视频、音频上传，因此不声明这两类输入可用。
+Veo 兼容转换器只读取一张首帧，不将原生接口的首尾帧和参考图能力直接套用。
+Google、xAI、可灵及千问语音的其他兼容组合未取得对应转换依据，使用协议默认规格，避免显示无法正确发送的参数。
+
+官方依据：
+
+- OpenAI：[图片生成](https://developers.openai.com/api/docs/guides/image-generation)、[语音合成](https://developers.openai.com/api/reference/resources/audio/subresources/speech/methods/create)。
+- 阿里云：[千问图片](https://help.aliyun.com/zh/model-studio/qwen-image-generation-and-editing-api-reference)、[万相图片](https://help.aliyun.com/zh/model-studio/wan-image-generation-and-editing-api-reference)、[万相 3.0 视频](https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference)、[千问语音](https://help.aliyun.com/zh/model-studio/qwen-tts-api)、[可灵视频](https://help.aliyun.com/zh/model-studio/kling-video-generation-api-reference/)、[临时上传](https://help.aliyun.com/zh/model-studio/get-temporary-file-url)。
+- 火山引擎：[视频任务接口](https://docs.volcengine.com/docs/ark/create-video-generation-task-api?lang=zh)、[Seedance 2.5](https://docs.volcengine.com/docs/ark/seedance-2-5?lang=zh)、[图片生成接口](https://docs.volcengine.com/docs/ark/image-generation-api?lang=zh)。
+- Google：[Gemini 图片](https://ai.google.dev/gemini-api/docs/image-generation)、[Omni](https://ai.google.dev/gemini-api/docs/omni)、[Veo](https://ai.google.dev/gemini-api/docs/veo)。
+- xAI：[图片](https://docs.x.ai/developers/model-capabilities/images/generation)、[视频](https://docs.x.ai/developers/model-capabilities/video/generation)、[参考素材视频](https://docs.x.ai/developers/model-capabilities/video/reference-to-video)。
+- 可灵：[能力表](https://kling.ai/document-api/guides/capability-map/video)、[Omni 文生视频](https://kling.ai/document-api/api/video/3-0-omni/text-to-video)、[Omni 图片输入](https://kling.ai/document-api/api/video/3-0-omni/image-to-video)、[Omni 多模态](https://kling.ai/document-api/api/video/3-0-omni/video-omni)。
+- New API 项目官方源码：[阿里云转换器](https://github.com/QuantumNous/new-api/blob/main/plugins/tasks/alibaba/plugin.js)、[火山转换器](https://github.com/QuantumNous/new-api/blob/main/plugins/tasks/doubao/plugin.js)、[Google 转换器](https://github.com/QuantumNous/new-api/blob/main/plugins/tasks/google/plugin.js)。
+- Sub2API 项目官方源码：[生成接口路由](https://github.com/Wei-Shaw/sub2api/blob/b8dece9000c68815a5b867ca5a1e6f236e173905/backend/internal/server/routes/gateway.go)、[Seedance 原生接口](https://github.com/Wei-Shaw/sub2api/blob/b8dece9000c68815a5b867ca5a1e6f236e173905/docs/seedance-api.md)。
+
+已通过本地运行时请求捕获和 13 个型号的官方转换器对照。后续使用本机配置完成了 GPT Image、
+千问图像、Grok 视频及万相双参考图视频的真实生成、下载和解码；万相实测型号为 `wan3.0-video`，
+不将结果扩展为 Prime 或全部 32 个型号的云端验收。语音尚未进行真实调用。
+GPT Image 的该次中转调用请求尺寸为 `1024x1024`，返回文件为 `1254x1254`，因此只确认生成与下载成功，
+未确认该中转遵守全部参数。客户端未据此修改参数或缩放产物。
 
 对话中，模型通过 `generate_image`、`generate_video`、`generate_audio` 调用生成模型，
 按「模型库」里该模型的参数表自行填写尺寸、时长、音色等参数；参数不合法时在发出请求前拦下。

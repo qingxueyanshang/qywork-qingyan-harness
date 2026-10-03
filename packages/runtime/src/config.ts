@@ -203,7 +203,7 @@ export interface StoredProvider {
 
 /** 一个生成模型挂在这个接口下的那一格。 */
 export interface StoredMediaModel {
-  /** 走哪种生成协议。添加时按接口地址给默认值（`defaultMediaKind`），之后以这里为准。 */
+  /** 生成请求使用的协议。添加时默认取目录协议，保存后不随接口地址变化。 */
   kind: MediaKind
 }
 

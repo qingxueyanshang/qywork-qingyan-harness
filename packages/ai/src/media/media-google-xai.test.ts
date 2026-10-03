@@ -105,7 +105,7 @@ describe('Google 与 xAI 目录', () => {
     )
   })
 
-  test('官方端点按目录选择 Gemini / Veo；中转站保留兼容协议', () => {
+  test('已收录模型默认使用目录协议，自定义地址不改变生成能力', () => {
     expect(defaultMediaKind('image', 'https://generativelanguage.googleapis.com/v1beta')).toBe(
       'gemini_images',
     )
@@ -121,12 +121,16 @@ describe('Google 与 xAI 目录', () => {
     ).toBe('gemini_videos')
     expect(defaultMediaKind('image', 'https://api.x.ai/v1')).toBe('xai_images')
     expect(defaultMediaKind('video', 'https://api.x.ai/v1')).toBe('xai_videos')
-    expect(defaultMediaKind('video', 'https://relay.example/v1', 'veo_videos')).toBe(
-      'openai_videos',
-    )
+    expect(defaultMediaKind('video', 'https://relay.example/v1', 'veo_videos')).toBe('veo_videos')
     expect(defaultMediaKind('image', 'https://api.x.ai.evil.example/v1', 'xai_images')).toBe(
-      'openai_images',
+      'xai_images',
     )
+    for (const spec of mediaCatalog()) {
+      expect(
+        defaultMediaKind(MEDIA_KIND_OUTPUT[spec.kind], 'https://relay.example/v1', spec.kind),
+      ).toBe(spec.kind)
+      expect(defaultMediaKind(MEDIA_KIND_OUTPUT[spec.kind], undefined, spec.kind)).toBe(spec.kind)
+    }
     expect(lookupMediaModel('grok-imagine-video-1.5', 'openai_videos').price).toBeUndefined()
   })
 
@@ -279,7 +283,9 @@ describe('Gemini Interactions', () => {
     )
     const body = requests[0]!.body!
     expect(body.response_format).toEqual({ type: 'video', resolution: '720p' })
-    expect((body.input as { text?: string }[])[2]!.text).toBe('<FIRST_FRAME> <LAST_FRAME> 一只猫')
+    expect((body.input as { text?: string }[])[2]!.text).toBe(
+      '[# Sources <FIRST_FRAME>@Image1 <LAST_FRAME>@Image2] 一只猫',
+    )
     expect(result.files).toEqual([{ bytes: MP4, mime: 'video/mp4' }])
     requests = []
     await a.run(request(), { signal: signal(), resumeTaskId: 'task-1' })
@@ -304,6 +310,24 @@ describe('Gemini Interactions', () => {
       .run(request(), { signal: signal(), resumeTaskId: 'task-1' })
       .catch((e: unknown) => e)
     expect((err as MediaError).pendingTaskId).toBe('task-1')
+  })
+
+  test('Omni 首帧与参考图组合按实际图片顺序声明用途', async () => {
+    reply = () => Response.json(completed('video'))
+    const a = adapter('gemini_videos', 'gemini-omni-1.1-flash')
+    expect(
+      validateMediaCall(a.spec, 'reference_to_video', {}, { images: 1, videos: 0, firstFrames: 1 }),
+    ).toEqual([])
+    await a.run(
+      request({
+        operation: 'reference_to_video',
+        inputs: [input('reference'), input('first_frame')],
+      }),
+      { signal: signal() },
+    )
+    expect((requests[0]!.body!.input as { text?: string }[])[2]!.text).toBe(
+      '[# Sources <FIRST_FRAME>@Image1] [# References <IMAGE_REF_0>@Image2] 一只猫',
+    )
   })
 
   test('URI 产物从同源文件接口带 key 下载', async () => {
@@ -432,7 +456,7 @@ describe('xAI 生成', () => {
     expect(requests[0]!.body!.images).toBeUndefined()
   })
 
-  test('视频使用 request_id，首尾帧是独立字段，下载不携带 API key', async () => {
+  test('视频使用 request_id，首尾帧是独立字段，同源下载携带 API key', async () => {
     reply = (path, method) =>
       method === 'POST'
         ? Response.json({ request_id: 'xai-task' })
@@ -462,12 +486,76 @@ describe('xAI 生成', () => {
       },
     })
     expect(requests[1]!.path).toBe('/v1beta/videos/xai-task')
-    expect(requests[2]!.auth).toBeNull()
+    expect(requests[2]!.auth).toBe('Bearer test-secret')
     expect(result.usage!.seconds).toBe(8)
     expect(mediaCost(a.spec, result.usage!).cost).toBe(0.1)
     requests = []
     await a.run(request(), { signal: signal(), resumeTaskId: 'xai-task' })
     expect(requests.every((r) => r.method === 'GET')).toBe(true)
+  })
+
+  test('相对结果地址按接口解析，同源下载带鉴权，恢复任务不重新提交', async () => {
+    const a = adapter('xai_videos', 'grok-imagine-video-1.5')
+    for (const url of ['/v1beta/videos/xai-task/content', 'videos/xai-task/content']) {
+      requests = []
+      reply = (path) =>
+        path.endsWith('/content')
+          ? requests.at(-1)?.auth === 'Bearer test-secret'
+            ? new Response(MP4)
+            : new Response(null, { status: 401 })
+          : Response.json({ status: 'done', video: { url } })
+      const result = await a.run(request(), { signal: signal(), resumeTaskId: 'xai-task' })
+      expect(requests.map((r) => [r.method, r.path])).toEqual([
+        ['GET', '/v1beta/videos/xai-task'],
+        ['GET', '/v1beta/videos/xai-task/content'],
+      ])
+      expect(result.files[0]?.bytes).toEqual(MP4)
+    }
+  })
+
+  test('外域结果与跨域下载跳转均不携带接口凭证', async () => {
+    const credentials: { auth: string | null; key: string | null }[] = []
+    const storage = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(req) {
+        credentials.push({
+          auth: req.headers.get('authorization'),
+          key: req.headers.get('x-goog-api-key'),
+        })
+        return new Response(MP4)
+      },
+    })
+    try {
+      const external = `http://127.0.0.1:${storage.port}/video.mp4`
+      const a = buildMediaAdapter({
+        kind: 'xai_videos',
+        model: 'grok-imagine-video-1.5',
+        baseUrl: `${base()}/v1`,
+        apiKey: 'test-secret',
+        headers: { 'x-goog-api-key': 'custom-secret' },
+      })
+      for (const url of [external, '/v1/videos/xai-task/content']) {
+        requests = []
+        reply = (path) =>
+          path.endsWith('/content')
+            ? new Response(null, { status: 302, headers: { location: external } })
+            : Response.json({ status: 'done', video: { url } })
+        const result = await a.run(request(), { signal: signal(), resumeTaskId: 'xai-task' })
+        expect(result.files[0]?.bytes).toEqual(MP4)
+        if (url.startsWith('/'))
+          expect(requests.at(-1)).toMatchObject({
+            auth: 'Bearer test-secret',
+            key: 'custom-secret',
+          })
+      }
+      expect(credentials).toEqual([
+        { auth: null, key: null },
+        { auth: null, key: null },
+      ])
+    } finally {
+      storage.stop(true)
+    }
   })
 
   test('xAI 失败、过期、审核失败均不作为可取回任务', async () => {

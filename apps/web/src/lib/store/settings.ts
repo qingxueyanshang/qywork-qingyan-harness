@@ -316,6 +316,8 @@ export interface MediaLibraryModel {
   label: string
   vendor: string | null
   kind: MediaKind
+  /** 由服务端模型目录给出的接入方式。 */
+  kinds: MediaKind[]
   output: MediaOutput
   operations: MediaOperationName[]
   maxImages: number

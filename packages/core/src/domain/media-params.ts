@@ -6,9 +6,10 @@ export function mediaOperationFor(output: MediaOutput, roles: readonly MediaInpu
   if (output === 'image') return roles.length ? 'edit' : 'generate'
   if (output === 'audio') return 'speech'
   if (roles.includes('video')) return 'video_to_video'
+  if (roles.includes('reference') || roles.includes('audio')) return 'reference_to_video'
   if (roles.includes('last_frame')) return 'first_last_frame'
   if (roles.includes('first_frame')) return 'image_to_video'
-  return roles.includes('reference') ? 'reference_to_video' : 'text_to_video'
+  return 'text_to_video'
 }
 
 export type MediaParamValue = string | number | boolean

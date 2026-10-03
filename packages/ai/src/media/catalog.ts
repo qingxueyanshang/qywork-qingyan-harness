@@ -1,8 +1,8 @@
 /**
  * 生成模型目录：每个生成模型在某条生成协议上支持哪些操作、收几张参考图、有哪些参数。
  *
- * 与对话目录（`../catalog.ts`）同一套查法：按「模型 id × 协议」精确匹配，没有就按 id 兜底，
- * 再没有就回该协议的保守默认。字段完全不同：生成模型没有上下文窗口与思考档，有的是操作与参数表。
+ * 按「模型 id × 协议」精确匹配，或使用该模型已声明的协议映射；其他组合使用协议默认规格。
+ * 字段与对话目录不同：生成模型没有上下文窗口与思考档位，只有操作与参数表。
  *
  * **只收各家当前最新一代。** 旧型号挂在接口下照样能用，走协议默认的参数表。
  *
@@ -31,7 +31,7 @@ import type { MediaInput, MediaUsage } from './types.ts'
  * 生成操作。由调用时给了哪些输入推出来，不让大模型选。
  *
  * 出图：`generate` 按提示词生成，`edit` 在参考图上修改。
- * 视频：`text_to_video` 文生，`image_to_video` 首帧，`first_last_frame` 首尾帧，`reference_to_video` 参考图，
+ * 视频：`text_to_video` 文生，`image_to_video` 首帧，`first_last_frame` 首尾帧，`reference_to_video` 参考素材，
  * `video_to_video` 以参考视频为输入（编辑、延长还是参考，由模型的原生参数或提示词决定）。
  * 语音：`speech` 文字转语音。
  */
@@ -115,6 +115,19 @@ export interface MediaModelSpec {
     maxAudios?: number
     transport: 'multipart' | 'json'
     types?: Partial<Record<MediaInput['role'], string>>
+    /** 允许尾帧单独输入，或首尾帧与参考素材组合。省略时各组合互斥且尾帧需要首帧。 */
+    lastFrameAlone?: boolean
+    framesWithReferences?: boolean
+    /** 音频必须同时带参考图或参考视频。 */
+    audioRequiresVisual?: boolean
+    /** 百炼中仅接受图像地址的模型也使用临时上传。 */
+    inlineImages?: boolean
+    /** 允许的素材用途组合；参数条件按目录默认值求值。 */
+    combinations?: readonly {
+      roles: readonly MediaInput['role'][]
+      maxImages?: number
+      params?: Readonly<Record<string, string>>
+    }[]
   }
   params: readonly MediaParamSpec[]
   /** false = 目录里没有这个 id，用的是协议默认。 */
@@ -129,7 +142,15 @@ export interface MediaModelSpec {
    * 画布把 `@` 引用编译成它；大模型的本轮快照里也列出它。没有登记的模型按素材名写进提示词。
    */
   mention?: MentionStyle
+  /** 已核实的其他协议映射；未声明的协议不继承原生参数与能力。 */
+  mappings?: Partial<Record<MediaKind, MediaMapping>>
+  /** 通用视频端点中厂商扩展字段的请求结构。 */
+  videoFormat?: 'dashscope' | 'ark' | 'veo' | 'kling-omni'
 }
+
+type MediaMapping = Partial<
+  Pick<MediaModelSpec, 'operations' | 'inputs' | 'params' | 'videoFormat'>
+>
 
 export interface MediaPrice {
   currency: Currency
@@ -1055,6 +1076,7 @@ const spec = (
   params: readonly MediaParamSpec[],
   price?: MediaPrice,
   mention?: MentionStyle,
+  mappings?: MediaModelSpec['mappings'],
 ): MediaModelSpec => ({
   id,
   displayName,
@@ -1066,7 +1088,36 @@ const spec = (
   catalogued: true,
   ...(price ? { price } : {}),
   ...(mention ? { mention } : {}),
+  ...(mappings ? { mappings } : {}),
 })
+
+/** 万相视频的中转只接受内联图像；本机视频、音频需要百炼原生的临时上传。 */
+const WAN_VIDEO_MAPPING: MediaModelSpec['mappings'] = {
+  openai_videos: {
+    videoFormat: 'dashscope',
+    operations: ['text_to_video', 'image_to_video', 'first_last_frame', 'reference_to_video'],
+    inputs: { maxImages: 10, maxVideos: 0, maxAudios: 0, transport: 'json' },
+  },
+}
+const ARK_VIDEO_MAPPING: MediaModelSpec['mappings'] = {
+  openai_videos: { videoFormat: 'ark' },
+}
+
+/** 图片兼容接口接受宽x高；原生接口使用宽*高，目录中的尺寸与界面选项一起转换。 */
+function compatibleImageParams(params: readonly MediaParamSpec[]): MediaParamSpec[] {
+  return params.map((p) => {
+    if (p.name !== 'size') return p
+    const next = { ...p, description: p.description.replaceAll('*', 'x') }
+    if (next.pattern) next.pattern = next.pattern.replace('\\*', 'x')
+    if (typeof next.default === 'string') next.default = next.default.replace('*', 'x')
+    if (next.shapes)
+      next.shapes = next.shapes.map((s) => ({
+        ...s,
+        ...(s.value ? { value: s.value.replace('*', 'x') } : {}),
+      }))
+    return next
+  })
+}
 
 // ── 提示词里指代素材的写法（2026-09-29 对官方文档原文）──
 // 方舟 Seedance 2.0 系列：「提示词中必须使用"素材类型+序号"格式引用素材，序号为请求体中该素材在同类素材中的排序」。
@@ -1132,6 +1183,8 @@ const SEEDS: readonly MediaModelSpec[] = [
     { maxImages: 3, maxVideos: 0, transport: 'json' },
     qwenImageParams,
     qwenImagePrice({ qima_output_1k: 0.25, qima_output_2k: 0.5 }),
+    undefined,
+    { openai_images: { params: compatibleImageParams(qwenImageParams) } },
   ),
   spec(
     'qwen-image-3.0',
@@ -1142,6 +1195,8 @@ const SEEDS: readonly MediaModelSpec[] = [
     { maxImages: 3, maxVideos: 0, transport: 'json' },
     qwenImageParams,
     qwenImagePrice({ qima_output_1k: 0.18, qima_output_2k: 0.18 }),
+    undefined,
+    { openai_images: { params: compatibleImageParams(qwenImageParams) } },
   ),
   spec(
     'wan2.7-image-pro',
@@ -1152,6 +1207,8 @@ const SEEDS: readonly MediaModelSpec[] = [
     { maxImages: 9, maxVideos: 0, transport: 'json' },
     wanImageParams(true),
     perImage('CNY', () => 0.5),
+    undefined,
+    { openai_images: { params: compatibleImageParams(wanImageParams(true)) } },
   ),
   spec(
     'wan2.7-image',
@@ -1162,6 +1219,8 @@ const SEEDS: readonly MediaModelSpec[] = [
     { maxImages: 9, maxVideos: 0, transport: 'json' },
     wanImageParams(false),
     perImage('CNY', () => 0.2),
+    undefined,
+    { openai_images: { params: compatibleImageParams(wanImageParams(false)) } },
   ),
   spec(
     'wan3.0-video',
@@ -1173,6 +1232,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     wanVideoParams,
     wanVideoPrice({ '480p': 0.3, '720p': 0.6, '1080p': 1.2 }),
     WAN_MENTION,
+    WAN_VIDEO_MAPPING,
   ),
   spec(
     'wan3.0-video-prime',
@@ -1184,6 +1244,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     wanVideoParams,
     wanVideoPrice({ '480p': 0.45, '720p': 0.9, '1080p': 1.8 }),
     WAN_MENTION,
+    WAN_VIDEO_MAPPING,
   ),
   spec(
     'doubao-seedance-2-5-260628',
@@ -1195,6 +1256,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     seedanceParams,
     seedancePrice({ '720p': [70, 42], '1080p': [77, 46] }),
     SEEDANCE_25_MENTION,
+    ARK_VIDEO_MAPPING,
   ),
   spec(
     'doubao-seedance-2-0-260128',
@@ -1202,10 +1264,11 @@ const SEEDS: readonly MediaModelSpec[] = [
     '火山引擎',
     'ark_videos',
     VIDEO_OPERATIONS,
-    { maxImages: 9, maxVideos: 3, maxAudios: 3, transport: 'json' },
+    { maxImages: 9, maxVideos: 3, maxAudios: 3, transport: 'json', audioRequiresVisual: true },
     seedance20Params(['480p', '720p', '1080p', '4k']),
     seedancePrice({ '720p': [46, 28], '1080p': [51, 31], '4k': [26, 16] }),
     SEEDANCE_20_MENTION,
+    ARK_VIDEO_MAPPING,
   ),
   spec(
     'doubao-seedance-2-0-fast-260128',
@@ -1213,10 +1276,11 @@ const SEEDS: readonly MediaModelSpec[] = [
     '火山引擎',
     'ark_videos',
     VIDEO_OPERATIONS,
-    { maxImages: 9, maxVideos: 3, maxAudios: 3, transport: 'json' },
+    { maxImages: 9, maxVideos: 3, maxAudios: 3, transport: 'json', audioRequiresVisual: true },
     seedance20Params(['480p', '720p']),
     seedancePrice({ '720p': [37, 22] }),
     SEEDANCE_20_MENTION,
+    ARK_VIDEO_MAPPING,
   ),
   spec(
     'doubao-seedance-2-0-mini-260615',
@@ -1224,10 +1288,11 @@ const SEEDS: readonly MediaModelSpec[] = [
     '火山引擎',
     'ark_videos',
     VIDEO_OPERATIONS,
-    { maxImages: 9, maxVideos: 3, maxAudios: 3, transport: 'json' },
+    { maxImages: 9, maxVideos: 3, maxAudios: 3, transport: 'json', audioRequiresVisual: true },
     seedance20Params(['480p', '720p']),
     seedancePrice({ '720p': [23, 14] }),
     SEEDANCE_20_MENTION,
+    ARK_VIDEO_MAPPING,
   ),
   spec(
     'kling/kling-v3-omni-video-generation',
@@ -1235,7 +1300,22 @@ const SEEDS: readonly MediaModelSpec[] = [
     '快手',
     'dashscope_videos',
     VIDEO_OPERATIONS,
-    { maxImages: 7, maxVideos: 1, transport: 'json', types: KLING_BAILIAN_TYPES },
+    {
+      maxImages: 7,
+      maxVideos: 1,
+      transport: 'json',
+      types: KLING_BAILIAN_TYPES,
+      inlineImages: false,
+      combinations: [
+        { roles: [] },
+        { roles: ['first_frame'] },
+        { roles: ['first_frame', 'last_frame'] },
+        { roles: ['reference'] },
+        { roles: ['video'] },
+        { roles: ['video', 'reference'], maxImages: 4 },
+        { roles: ['video', 'first_frame'], params: { video_type: 'feature' } },
+      ],
+    },
     [...klingBailianParams({ modes: ['std', 'pro', '4k'], audio: true }), klingBailianVideoType],
     klingBailianPrice((u) =>
       u.videoInput || u.audio ? KLING_SOUND : u.audio === false ? KLING_SILENT : undefined,
@@ -1247,7 +1327,7 @@ const SEEDS: readonly MediaModelSpec[] = [
     '快手',
     'dashscope_videos',
     ['text_to_video', 'image_to_video', 'first_last_frame'],
-    NO_INPUTS,
+    { ...NO_INPUTS, inlineImages: false },
     klingBailianParams({ modes: ['std', 'pro', '4k'], audio: true }),
     klingBailianPrice((u) =>
       u.audio ? KLING_SOUND : u.audio === false ? KLING_SILENT : undefined,
@@ -1259,24 +1339,27 @@ const SEEDS: readonly MediaModelSpec[] = [
     '快手',
     'dashscope_videos',
     ['text_to_video', 'image_to_video'],
-    NO_INPUTS,
+    { ...NO_INPUTS, inlineImages: false },
     klingBailianParams({ modes: ['std', 'pro'], audio: false }),
     klingBailianPrice(() => ({ '720p': 0.8, '1080p': 1.0 })),
   ),
-  // 官方接口的视频素材只收 URL，本机文件没有可传的地方，所以 Omni 在这条协议上只做参考图。
-  spec(
-    'kling-3.0-omni',
-    '可灵 3.0 Omni',
-    '快手',
-    'kling_videos',
-    ['reference_to_video'],
-    { maxImages: 7, maxVideos: 0, transport: 'json' },
-    klingParams({
-      resolutions: ['720p', '1080p', '4k'],
-      audio: ['native', 'off'],
-      multiShot: true,
-    }),
-  ),
+  // Omni 的文生、首尾帧与参考图均使用同一端点；视频仍要求公网地址。
+  {
+    ...spec(
+      'kling-3.0-omni',
+      '可灵 3.0 Omni',
+      '快手',
+      'kling_videos',
+      ['text_to_video', 'image_to_video', 'first_last_frame', 'reference_to_video'],
+      { maxImages: 7, maxVideos: 0, transport: 'json', framesWithReferences: true },
+      klingParams({
+        resolutions: ['720p', '1080p', '4k'],
+        audio: ['native', 'off'],
+        multiShot: true,
+      }),
+    ),
+    videoFormat: 'kling-omni',
+  },
   spec(
     'kling-3.0',
     '可灵 3.0',
@@ -1393,9 +1476,8 @@ const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayN
     catalogued: false,
   },
   /*
-   * 中转站的 `/v1/videos`：共用的只有提交、查询、取内容三条路径与 `seconds` / `size` 两个字段，
-   * 参考图与首尾帧各家插件要的形状不同（火山插件只收 metadata 里的地址），没有核实过的形状不发，
-   * 所以只做文生。
+   * 中转站的 `/v1/videos`：各家共用的只有提交、查询、获取内容三条路径与 `seconds` / `size` 两个字段。
+   * 未登记型号只提供通用文生字段；已核实型号使用目录中声明的映射。
    */
   openai_videos: {
     vendor: null,
@@ -1477,9 +1559,8 @@ export function findMediaModel(id: string): MediaModelSpec | undefined {
 /**
  * 这个模型在这条协议上的规格。
  *
- * 精确匹配没有时**按 id 兜底**：保留参数表，协议换成调用方的；操作与输入上限取两者都支持的部分，
- * 传法取该协议的默认。中转站转发的生成模型参数名不变（New API 原样透传厂商字段），
- * 不兜底的话参数表整张丢失；不取交集的话会让大模型传这条协议发不出去的输入。
+ * 精确匹配未命中时只使用已登记的协议映射。没有映射的组合使用协议默认，
+ * 不继承无法正确序列化的原生参数、输入能力或官方单价。
  */
 export function lookupMediaModel(id: string, kind: MediaKind): MediaModelSpec {
   const exact = SEEDS.find((m) => m.id === id && m.kind === kind)
@@ -1488,18 +1569,13 @@ export function lookupMediaModel(id: string, kind: MediaKind): MediaModelSpec {
   const byId = SEEDS.find(
     (m) => m.id === id && MEDIA_KIND_OUTPUT[m.kind] === MEDIA_KIND_OUTPUT[kind],
   )
-  if (byId) {
-    // 单价不跟过去：同一个模型经中转站或别的协议调用，价格以那一方为准，目录里没有。
-    const { price: _price, ...rest } = byId
+  const mapping = byId?.mappings?.[kind]
+  if (byId && mapping) {
+    const { price: _price, mappings: _mappings, ...rest } = byId
     return {
       ...rest,
+      ...mapping,
       kind,
-      operations: byId.operations.filter((o) => base.operations.includes(o)),
-      inputs: {
-        maxImages: Math.min(byId.inputs.maxImages, base.inputs.maxImages),
-        maxVideos: Math.min(byId.inputs.maxVideos, base.inputs.maxVideos),
-        transport: base.inputs.transport,
-      },
     }
   }
   return { ...base, id, displayName: id }
