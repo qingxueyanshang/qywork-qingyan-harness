@@ -174,8 +174,6 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const [renaming, setRenaming] = createSignal<string | null>(null)
   /** 选中的连线。与选中的节点互斥。 */
   const [edgeSelected, setEdgeSelected] = createSignal<string | null>(null)
-  /** 指针下的连线：命中区与剪刀按钮都带 `data-edge`，从线移到按钮上不丢。 */
-  const [edgeHover, setEdgeHover] = createSignal<string | null>(null)
   /** 从连接点拖出的连线：起点节点与指针位置（画布坐标），以及此刻指着的可连目标。 */
   const [linking, setLinking] = createSignal<{ from: string; x: number; y: number } | null>(null)
   const [linkTarget, setLinkTarget] = createSignal<string | null>(null)
@@ -697,10 +695,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const onPointerMove = (e: PointerEvent) => {
     pointerAt = toWorld(e.clientX, e.clientY)
     const d = drag
-    if (!d) {
-      setEdgeHover((e.target as Element).closest<HTMLElement>('[data-edge]')?.dataset.edge ?? null)
-      return
-    }
+    if (!d) return
     if (d.mode === 'link') {
       if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) return
       d.moved = true
@@ -1898,7 +1893,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           <For each={nodes().map((n) => n.id)}>{(id) => <Node id={id} />}</For>
         </div>
 
-        <For each={edgePaths().filter((e) => e.id === edgeHover() || e.id === edgeSelected())}>
+        <For each={edgePaths().filter((e) => e.id === edgeSelected())}>
           {(e) => (
             <button
               class="canvas-edge-cut"
@@ -1909,7 +1904,6 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
               onClick={() =>
                 void cutLink(e.id).then((ok) => {
                   if (!ok) return
-                  setEdgeHover(null)
                   if (edgeSelected() === e.id) setEdgeSelected(null)
                 })
               }

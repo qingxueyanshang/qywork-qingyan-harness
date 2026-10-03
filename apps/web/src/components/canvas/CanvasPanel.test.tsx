@@ -2371,16 +2371,22 @@ describe('画布：连线', () => {
     expect(refs.$v).toBeDefined()
   })
 
-  test('指针移到连线上，中点出现剪刀；移到剪刀上不消失，点一下断开这条线', async () => {
-    const { host, server } = await mount([
+  test('连线仅选中后出现剪刀：悬停不出现，改选节点后隐藏，单击剪刀断开连线', async () => {
+    const { host, server, refs } = await mount([
       ...CARD,
       { op: 'connect', from: '$a', to: '$v', role: 'reference' },
     ])
     const stage = host.querySelector('.canvas-stage')!
     const cut = () => host.querySelector<HTMLButtonElement>('.canvas-edge-cut')
     expect(cut()).toBeNull()
-    const hit = host.querySelector<SVGPathElement>('.canvas-edge-hit')!
-    pointer(hit as unknown as HTMLElement, 'pointermove', 10, 10)
+    const hit = () => host.querySelector<SVGPathElement>('.canvas-edge-hit')!
+    pointer(hit(), 'pointermove', 10, 10)
+    expect(cut()).toBeNull()
+    pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
+    pointer(stage, 'pointerup', 10, 10)
+    pointer(hit(), 'pointermove', 10, 10)
+    expect(cut()).toBeNull()
+    pointer(hit(), 'pointerdown', 10, 10)
     await waitFor(
       () => !!cut(),
       () => '',
@@ -2388,11 +2394,16 @@ describe('画布：连线', () => {
     pointer(cut()!, 'pointermove', 12, 12)
     expect(cut()).not.toBeNull()
     pointer(stage, 'pointermove', 500, 500)
+    expect(cut()).not.toBeNull()
+    pointer(node(host, refs.$v!), 'pointerdown', 10, 10)
+    pointer(stage, 'pointerup', 10, 10)
     await waitFor(
       () => !cut(),
       () => '',
     )
-    pointer(hit as unknown as HTMLElement, 'pointermove', 10, 10)
+    pointer(hit(), 'pointermove', 10, 10)
+    expect(cut()).toBeNull()
+    pointer(hit(), 'pointerdown', 10, 10)
     await waitFor(
       () => !!cut(),
       () => '',
