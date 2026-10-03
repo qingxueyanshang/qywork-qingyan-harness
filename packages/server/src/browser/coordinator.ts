@@ -70,6 +70,11 @@ export class BrowserBusyError extends Error implements BrowserRefusal {
 }
 /** 这个端口已经释放过。上一条消息的 Run 收尾后再调工具走到这里，不复活。 */
 export class BrowserReleasedError extends Error {}
+/** 用户关闭了浏览器控制（`browserEnabled`）。判定先于任何帧，因此声明 `executed:false`。 */
+export class BrowserUnavailableError extends Error implements BrowserRefusal {
+  readonly errorKind = 'browser_unavailable' as const
+  readonly executed = false as const
+}
 /**
  * 这个 tabId 不在本次执行看得见的清单里：跨工作区、跨会话、未接管的用户页、认不出的 id
  * 都走这条。
@@ -218,6 +223,7 @@ export function meetsRuntimeFloor(version: string, floor = MIN_CHROMIUM_MAJOR): 
 
 export class BrowserCoordinator {
   #bridge: BrowserBridge
+  #enabled: () => boolean
   /** owner → 控制槽。每次执行一个，互不相干；碰同一页才互斥。 */
   #controls = new Map<number, Control>()
   #nextOwner = 0
@@ -225,8 +231,9 @@ export class BrowserCoordinator {
   #offHostChange: () => void
   #offClosed: () => void
 
-  constructor(bridge: BrowserBridge) {
+  constructor(bridge: BrowserBridge, enabled: () => boolean) {
     this.#bridge = bridge
+    this.#enabled = enabled
     // 断开与重连都让全部控制作废：重连后的调试端点是新的，旧连接上的页会话已经不存在。
     this.#offHostChange = bridge.onHostChange(() => this.#dropAll())
     // 宿主侧关掉的页（用户关、按会话关）要从持有它的控制槽里摘掉会话，
@@ -239,11 +246,12 @@ export class BrowserCoordinator {
   /**
    * AI 控制能力是否可用。
    *
-   * 宿主没连上、或它报的运行时版本低于下限，都不发布——不是握手里写死一个 true，
-   * 也不做一个点了必然报错的入口。
+   * 用户关闭了浏览器控制、宿主没连上、或它报的运行时版本低于下限，都不发布——
+   * 不是握手里写死一个 true，也不做一个点了必然报错的入口。
+   * 开关只管 AI 控制：握手里的浏览器能力取自宿主状态，用户手动浏览不受它影响。
    */
   available(): boolean {
-    return this.#host() !== null
+    return this.#enabled() && this.#host() !== null
   }
 
   /**
@@ -406,8 +414,11 @@ export class BrowserCoordinator {
    *
    * 本 owner 的槽正在清理时等它结束再建新的——宿主断连与初始化失败会在端口不知情的
    * 情况下拆掉槽。这一等是本槽自己的收尾，有界（`RELEASE_BUDGET_MS`），不是全局队列。
+   *
+   * 开关在这里逐次判定：建页、接管与全部页面操作都经过这一处，运行中关闭后下一次操作即被拒。
    */
   async #acquire(lease: Lease): Promise<Control> {
+    if (!this.#enabled()) throw new BrowserUnavailableError('浏览器控制已关闭')
     for (;;) {
       if (lease.released) throw new BrowserReleasedError('本次执行的浏览器控制已经结束')
       const existing = this.#controls.get(lease.owner)

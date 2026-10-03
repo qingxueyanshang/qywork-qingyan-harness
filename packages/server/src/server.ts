@@ -176,7 +176,9 @@ export function serve(opts: ServeOptions) {
    * 会话装配也拿不到端口，界面上不会出现一个点了报错的入口。
    */
   const browserBridge = opts.hostKey ? new BrowserBridge(opts.hostKey) : null
-  const browser = browserBridge ? new BrowserCoordinator(browserBridge) : null
+  const browser = browserBridge
+    ? new BrowserCoordinator(browserBridge, () => opts.config.browserEnabled !== false)
+    : null
   /*
    * 宿主连上 / 断开时把能力投影重播一份。
    *

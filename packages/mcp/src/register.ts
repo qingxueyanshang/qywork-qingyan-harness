@@ -67,9 +67,9 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     // 对象名是「MCP」这一类，不是具体哪个工具——卡片是「动词 + 对象 + 目标」三层，
     // 对象与目标填同一个串等于把目标那一层浪费掉（标题与目标一字不差）。
     objectLabel: 'MCP',
-    // 一律归「外部扩展」：这一类的存在理由就是不与内置分类学混排——
+    // 一律归「MCP」：这一类的存在理由就是不与内置分类学混排——
     // 第三方 server 提供什么、算哪个领域，本地无从判断，猜一个填进去更糟。
-    category: 'external',
+    category: 'mcp',
     facet: `MCP ${server}`,
     summary: def.description?.trim() || def.name,
     // target 同时是权限 scope 的载体（scope = `<effect>:<target>`）。

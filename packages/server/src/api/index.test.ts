@@ -1225,6 +1225,30 @@ describe('工具清单', () => {
     expect(row?.source).toBe('builtin')
   })
 
+  /**
+   * 「模块」页按类目分组。内置工具中只有管理 MCP 配置的归 `mcp`、安装插件的归 `plugins`；
+   * 画布与生成工具标成这两类时，会与 MCP server 提供的工具列在同一组。
+   */
+  test('内置工具按领域分组：画布与生成自成一类，MCP 与插件各自一类', async () => {
+    const rows = await tools()
+    const category = (name: string) => rows.find((t) => t.name === name)?.category
+    for (const name of [
+      'read_canvas',
+      'canvas',
+      'generate_image',
+      'generate_video',
+      'generate_audio',
+    ])
+      expect(category(name)).toBe('media')
+    const builtinIn = (c: string) =>
+      rows
+        .filter((t) => t.source === 'builtin' && t.category === c)
+        .map((t) => t.name)
+        .sort()
+    expect(builtinIn('mcp')).toEqual(['move_mcp_server', 'write_mcp_server'])
+    expect(builtinIn('plugins')).toEqual(['install_plugin'])
+  })
+
   test('只回 tools 一个键 —— mcpServers 没有任何消费者', async () => {
     const res = await call('/api/tools')
     expect(Object.keys((await res?.json()) as object)).toEqual(['tools'])

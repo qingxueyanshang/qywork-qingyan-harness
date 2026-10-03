@@ -75,9 +75,9 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
       // 权限轴另算，是 read——两条轴正交，见文件头第 3 条。
       actionKind: 'call',
       objectLabel: 'MCP',
-      // MCP 的工具一律归「外部扩展」：类目由第三方决定，混进内置分类学会让
+      // MCP 的工具一律归「MCP」：类目由第三方决定，混进内置分类学会让
       // 「文件与草稿」那一栏突然冒出外部来源的工具。
-      category: 'external',
+      category: 'mcp',
       facet: `MCP ${server}`,
       summary: `列出 ${server} 提供的 resource`,
       targetExtractor: () => target,
@@ -126,7 +126,7 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
       },
       actionKind: 'call',
       objectLabel: 'MCP',
-      category: 'external',
+      category: 'mcp',
       facet: `MCP ${server}`,
       summary: `读 ${server} 的一个 resource 正文`,
       targetExtractor: (a) => (typeof a.uri === 'string' ? a.uri : target),

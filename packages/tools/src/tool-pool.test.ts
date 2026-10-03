@@ -25,7 +25,7 @@ function fakeExternal(name: string, description = '一个外部工具'): ToolSpe
     parameters: { type: 'object', properties: { q: { type: 'string' } } },
     actionKind: 'call',
     objectLabel: 'MCP',
-    category: 'external',
+    category: 'mcp',
     facet: 'MCP demo',
     summary: description,
     permissionEffect: 'execute',

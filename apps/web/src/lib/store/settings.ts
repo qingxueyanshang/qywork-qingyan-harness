@@ -105,11 +105,15 @@ export interface RedactedConfig {
   mode?: PermissionMode
   additionalDirectories?: string[]
   envAllowList?: string[]
+  /** 允不允许 agent 控制内置浏览器。缺席按启用，只有显式 `false` 才关。 */
+  browserEnabled?: boolean
   /** 允不允许 agent 操作本机上别的应用。缺省即关。 */
   desktopEnabled?: boolean
   desktopForeground?: boolean
   /** 允不允许 agent 用 `office` 工具。缺席按启用，只有显式 `false` 才关。 */
   officeEnabled?: boolean
+  /** 允不允许 agent 用画布与生成工具。缺席按启用，只有显式 `false` 才关。 */
+  mediaEnabled?: boolean
 }
 export interface ConfigPayload {
   path: string

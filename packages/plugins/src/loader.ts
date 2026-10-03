@@ -214,9 +214,9 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
       // 两类外置工具的 scope 才不会撞成同一个串。
       targetExtractor: () => `plugin:${manifest.id}/${t.name}`,
       permissionEffect: t.permissionEffect,
-      // 插件工具同 MCP，归「外部扩展」——清单里不让插件自己声明类目，
+      // 插件工具归「插件」，与 MCP 同一条理由——清单里不让插件自己声明类目，
       // 否则一个插件就能把自己塞进「文件与草稿」，和内置工具混在一栏里。
-      category: 'external',
+      category: 'plugins',
       facet: plugin.manifest.id,
       summary: t.description,
       // 跨进程调用。**ctx 不出宿主进程**——它带着 sink 句柄、AbortSignal 这些

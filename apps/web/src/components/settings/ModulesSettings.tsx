@@ -46,13 +46,6 @@ interface Module {
   toggle?: { on: () => boolean; onPick: (on: boolean) => void }
   /** 不由工具承担的那部分。文案取实时读数，所以是函数。 */
   notes?: { label: string; text: () => string; warn?: () => boolean }[]
-  /**
-   * 一个工具都没有时整组不出现。
-   *
-   * 只有外部扩展是这样：执行循环、版本控制本来就没有工具，说明照样成立；
-   * 而没装 MCP 也没装插件时，这一组能写的只剩一句「还没有装」——那是引导文案（B7）。
-   */
-  hideWhenEmpty?: boolean
 }
 
 const sandbox = () => state.capabilities?.sandbox ?? null
@@ -67,9 +60,19 @@ export function desktopSwitchOn(cfg: { desktopEnabled?: boolean } | null): boole
   return cfg?.desktopEnabled !== false
 }
 
+/** 浏览器控制开关的读数：字段缺失视为开启，与服务端装配浏览器端口的判据（`browserEnabled !== false`）一致。 */
+export function browserSwitchOn(cfg: { browserEnabled?: boolean } | null): boolean {
+  return cfg?.browserEnabled !== false
+}
+
 /** Office 组头开关的读数：缺席按开，与服务端取端口的判据（`officeEnabled !== false`）同一条。 */
 export function officeSwitchOn(cfg: { officeEnabled?: boolean } | null): boolean {
   return cfg?.officeEnabled !== false
+}
+
+/** 「画布与生成」开关的读数：字段缺失视为开启，与会话注册这组工具的判据（`mediaEnabled !== false`）一致。 */
+export function mediaSwitchOn(cfg: { mediaEnabled?: boolean } | null): boolean {
+  return cfg?.mediaEnabled !== false
 }
 
 /**
@@ -169,7 +172,15 @@ const MODULES: Module[] = [
       },
     ],
   },
-  { id: 'browser', label: '浏览器控制' },
+  // 分组标题为开关，理由同电脑控制。
+  {
+    id: 'browser',
+    label: '浏览器控制',
+    toggle: {
+      on: () => browserSwitchOn(config()),
+      onPick: (on) => void patchConfig({ browserEnabled: on }),
+    },
+  },
   /*
    * 组头是开关，不是「去配置」：这一组能不能用就由这一格决定，没有别处可去。
    * 占用真实鼠标键盘的前台操作在「权限」页，它是另一个问题。
@@ -200,6 +211,15 @@ const MODULES: Module[] = [
       { label: 'office', text: () => officeState().text, warn: () => officeState().missing },
       { label: 'render', text: () => '渲染、重算与目录页码回填用本机 Word 或 WPS，仅 Windows。' },
     ],
+  },
+  // 分组标题为开关，理由同电脑控制。
+  {
+    id: 'media',
+    label: '画布与生成',
+    toggle: {
+      on: () => mediaSwitchOn(config()),
+      onPick: (on) => void patchConfig({ mediaEnabled: on }),
+    },
   },
   /*
    * 记忆和技能是两个类目，不是一个「记忆与技能」。
@@ -270,21 +290,9 @@ const MODULES: Module[] = [
       },
     ],
   },
-  {
-    id: 'external',
-    label: '外部扩展',
-    hideWhenEmpty: true,
-    consoles: [
-      { page: 'mcp', label: '去 MCP' },
-      { page: 'plugins', label: '去插件' },
-    ],
-    notes: [
-      {
-        label: 'PendingToolPool',
-        text: () => '外部工具超过一定数量后不再常驻：模型只看到一行摘要，需要时用 load_tool 加载。',
-      },
-    ],
-  },
+  // 按需加载的边界已在「上下文」分组 load_tool 一行的用途中写明，此处不重复。
+  { id: 'mcp', label: 'MCP', consoles: [{ page: 'mcp', label: '去配置' }] },
+  { id: 'plugins', label: '插件', consoles: [{ page: 'plugins', label: '去配置' }] },
   {
     id: 'loop',
     label: '执行循环',
@@ -364,7 +372,7 @@ export function ModulesSettings() {
       g.rows.push(row)
     }
     for (const m of MODULES) {
-      if (!m.notes || m.hideWhenEmpty) continue
+      if (!m.notes) continue
       if (!out.some((g) => g.mod.id === m.id)) out.push({ mod: m, rows: [] })
     }
     /*
