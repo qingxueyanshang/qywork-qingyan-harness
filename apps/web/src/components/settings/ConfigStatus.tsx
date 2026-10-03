@@ -13,7 +13,7 @@ import { configNotices, configProblems, configWriteError } from './configStore.t
  *    这是**当前配置的状态**，和「刚才那一下」是两回事，两个都显示但不合并。
  * 3. `notices`：`configNotices` 的提醒——不阻断运行、但每次都要说的事实
  *    （放开了工作区之外的目录、模型不在内置目录所以计价按 0、sandboxNetwork
- *    在本机没生效、权限模式是 full）。**这一条必须渲染出来**：服务端发了、store
+ *    在本机没生效）。**这一条必须渲染出来**：服务端发了、store
  *    也收了，界面上没人读的话，就成了「配了但没生效」的那几件事，
  *    桌面端用户一件都看不到。
  *

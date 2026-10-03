@@ -969,12 +969,8 @@ export function diagnoseRunnable(cfg: QyConfig): string[] {
  *
  * 与 `diagnoseConfig` 分开是因为调用方对两者的处置完全不同：
  * `qy exec` 遇到 `diagnoseConfig` 的问题会**直接退出**（没有 key 就发不出请求，
- * 让它跑下去只会拿到一条 401）。而「权限模式是 full」不该阻断执行——
- * 它只是一件必须反复说清的事实。
- *
- * **不要合并成一个函数。** 合并之后加一条 full 模式的提醒，`qy exec` 在 full 下
- * 会**完全拒绝运行**：开了「完全访问」却一条命令都跑不了。
- * 「该说的」和「该拦的」是两件事，混在一个返回值里必然出这种错。
+ * 继续执行只会得到一条 401）。而模型未收录等提醒不应阻断执行，
+ * 因此不能与配置错误合并。
  */
 export function configNotices(cfg: QyConfig): string[] {
   const notices: string[] = []
@@ -1054,16 +1050,6 @@ export function configNotices(cfg: QyConfig): string[] {
         '（Linux / WSL2 的 bubblewrap、macOS 的 seatbelt）。' +
         '本机档位见「权限与沙箱」一节，或 `qy config` 输出末行的「shell 沙箱」' +
         '——显示 none 即表示该配置未生效。',
-    )
-  }
-
-  if (cfg.mode === 'full') {
-    // 不是错误，是**必须每次都说**的事实。一个放弃了全部裁决的模式
-    // 如果安静地跑，用户会忘记自己开过它。
-    notices.push(
-      `权限模式为 full：模型可以不经裁决执行任何命令、读写任何位置，` +
-        `工作区内的 .qy/ 与 .agents/mcp.json 也一并可写。\n` +
-        `仍然生效的只有凭证剥离——明文 key 不进子进程，这条与权限模式无关。`,
     )
   }
 
