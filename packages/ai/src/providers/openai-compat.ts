@@ -475,6 +475,15 @@ interface DashScopeUploadPolicy {
   x_oss_forbid_overwrite: string
 }
 
+/** 保留部署路径前缀，仅去除百炼兼容接口或 API 版本后缀。 */
+export function dashScopeBaseUrl(baseUrl?: string): string {
+  const url = new URL(baseUrl?.trim() || 'https://dashscope.aliyuncs.com')
+  const prefix = url.pathname
+    .replace(/\/+$/, '')
+    .replace(/\/(?:compatible-mode(?:\/v1)?|api\/v1|v1)$/, '')
+  return `${url.origin}${prefix}`
+}
+
 export async function uploadDashScopeMedia(input: {
   apiKey: string
   baseUrl: string
@@ -488,10 +497,7 @@ export async function uploadDashScopeMedia(input: {
     throw new Error('媒体超过百炼临时文件协议的 1 GB 上限')
   }
   const send = input.fetcher ?? fetch
-  const source = new URL(input.baseUrl)
-  // 工作区专属域名的 Key 与 workspace 绑定。官方 Base URL 规则要求只替换路径，
-  // 不能擅自切回 dashscope.aliyuncs.com，否则同一把 Key 可能失去所属空间。
-  const policyUrl = new URL('/api/v1/uploads', source.origin)
+  const policyUrl = new URL(`${dashScopeBaseUrl(input.baseUrl)}/api/v1/uploads`)
   policyUrl.searchParams.set('action', 'getPolicy')
   policyUrl.searchParams.set('model', input.model)
   const policyResponse = await send(policyUrl, {

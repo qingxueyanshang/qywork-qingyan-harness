@@ -49,6 +49,16 @@ test('按文件头认出音视频格式', () => {
 })
 
 describe('openai_speech', () => {
+  test('未指定音色时发送目录中的必填默认音色', async () => {
+    reply = () => new Response(MP3)
+    await buildMediaAdapter({
+      kind: 'openai_speech',
+      model: 'gpt-4o-mini-tts',
+      apiKey: 'test',
+      baseUrl: origin(),
+    }).run({ operation: 'speech', prompt: '你好', inputs: [], params: {} }, signal())
+    expect(seen[0]?.json?.voice).toBe('alloy')
+  })
   test('文字放 input、参数原样发，响应体就是音频', async () => {
     reply = () => new Response(MP3, { headers: { 'content-type': 'audio/mpeg' } })
     const out = await buildMediaAdapter({
@@ -117,5 +127,6 @@ describe('dashscope_speech', () => {
       signal(),
     )
     expect(out.files[0]).toEqual({ bytes: WAV, mime: 'audio/wav' })
+    expect(seen[0]?.json?.input).toMatchObject({ voice: 'Cherry' })
   })
 })

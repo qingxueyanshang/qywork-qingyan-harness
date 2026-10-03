@@ -103,13 +103,24 @@ export class GeminiMediaAdapter implements MediaAdapter {
         data: Buffer.from(i.bytes).toString('base64'),
         mime_type: i.mime,
       }))
-      const frames =
-        req.operation === 'first_last_frame'
-          ? '<FIRST_FRAME> <LAST_FRAME> '
-          : req.operation === 'image_to_video'
-            ? '<FIRST_FRAME> '
-            : ''
-      input.push({ type: 'text', text: frames + req.prompt })
+      const sources: string[] = []
+      const references: string[] = []
+      let imageIndex = 0
+      let referenceIndex = 0
+      if (type === 'video') {
+        for (const item of ordered) {
+          if (item.role === 'video') continue
+          imageIndex++
+          if (item.role === 'first_frame') sources.push(`<FIRST_FRAME>@Image${imageIndex}`)
+          else if (item.role === 'last_frame') sources.push(`<LAST_FRAME>@Image${imageIndex}`)
+          else references.push(`<IMAGE_REF_${referenceIndex++}>@Image${imageIndex}`)
+        }
+      }
+      const declarations = [
+        ...(sources.length ? [`[# Sources ${sources.join(' ')}]`] : []),
+        ...(references.length ? [`[# References ${references.join(' ')}]`] : []),
+      ]
+      input.push({ type: 'text', text: [...declarations, req.prompt].join(' ') })
       initial = await postJson(
         `${base}/interactions`,
         {

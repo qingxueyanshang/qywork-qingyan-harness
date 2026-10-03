@@ -873,6 +873,24 @@ textarea.code-area::placeholder {
 .model-row-main .icon-btn {
   margin-left: auto;
 }
+.model-row-main:has(.model-access) {
+  flex-wrap: wrap;
+}
+.model-access {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.model-access select {
+  padding: 3px var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xs);
+  background-color: var(--bg-inset);
+  color: var(--text-primary);
+  font-size: var(--fs-xs);
+}
 .model-id {
   flex: none;
   font-size: var(--fs-sm);

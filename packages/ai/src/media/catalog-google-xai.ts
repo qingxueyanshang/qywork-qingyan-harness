@@ -226,7 +226,7 @@ export const GOOGLE_XAI_DEFAULTS: Record<NativeKind, Defaults> = {
       'reference_to_video',
       'video_to_video',
     ],
-    inputs: { maxImages: 6, maxVideos: 1, transport: 'json' },
+    inputs: { maxImages: 6, maxVideos: 1, transport: 'json', framesWithReferences: true },
     params: omniParams,
     catalogued: false,
   },
@@ -250,7 +250,13 @@ export const GOOGLE_XAI_DEFAULTS: Record<NativeKind, Defaults> = {
     vendor: null,
     kind: 'xai_videos',
     operations: ['text_to_video', 'image_to_video', 'first_last_frame', 'reference_to_video'],
-    inputs: { maxImages: 7, maxVideos: 0, transport: 'json' },
+    inputs: {
+      maxImages: 7,
+      maxVideos: 0,
+      transport: 'json',
+      lastFrameAlone: true,
+      framesWithReferences: true,
+    },
     params: xaiVideoParams,
     catalogued: false,
   },
@@ -297,6 +303,13 @@ export const GOOGLE_XAI_MODELS: readonly MediaModelSpec[] = [
   ).map(([id, name, rates]) =>
     model(id, name, 'veo_videos', veoPrice(rates), {
       params: veoParams(!('4k' in rates)),
+      mappings: {
+        openai_videos: {
+          videoFormat: 'veo',
+          operations: ['text_to_video', 'image_to_video'],
+          inputs: { maxImages: 0, maxVideos: 0, transport: 'json' },
+        },
+      },
       ...('4k' in rates
         ? ({
             operations: [

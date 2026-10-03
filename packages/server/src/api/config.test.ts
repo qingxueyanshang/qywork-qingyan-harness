@@ -62,6 +62,48 @@ describe('脱敏', () => {
 })
 
 describe('回填', () => {
+  test('修改接口地址保留所有已保存的生成协议，包括与旧默认值相同的选择', () => {
+    const current = cfg()
+    current.providers.main!.media = {
+      'wan3.0-video-prime': { kind: 'openai_videos' },
+      'qwen-image-3.0': { kind: 'openai_images' },
+      'qwen3-tts-flash': { kind: 'openai_speech' },
+      'custom-video': { kind: 'ark_videos' },
+    }
+    const wire = redactConfig(current)
+    wire.providers.main!.baseUrl =
+      'https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'
+    const next = mergeConfig(current, wire)
+    expect(next.providers.main!.media).toEqual(current.providers.main!.media)
+    expect(current.providers.main!.media!['wan3.0-video-prime']!.kind).toBe('openai_videos')
+    const back = redactConfig(next)
+    back.providers.main!.baseUrl = 'https://relay.example/v1'
+    expect(mergeConfig(next, back).providers.main!.media!['wan3.0-video-prime']!.kind).toBe(
+      'openai_videos',
+    )
+  })
+
+  test('原生转发更换域名时保持协议，显式切换接入方式仍能保存', () => {
+    const current = cfg()
+    current.providers.main!.media = {
+      'veo-3.1-fast-generate-preview': { kind: 'veo_videos' },
+      'gemini-omni-1.1-flash': { kind: 'gemini_videos' },
+      'grok-imagine-video-1.5': { kind: 'xai_videos' },
+    }
+    expect(mergeConfig(current, redactConfig(current)).providers.main!.media).toEqual(
+      current.providers.main!.media,
+    )
+    const wire = redactConfig(current)
+    wire.providers.main!.baseUrl = 'https://relay.example/v1'
+    expect(mergeConfig(current, wire).providers.main!.media).toEqual(current.providers.main!.media)
+    wire.providers.main!.media = {
+      ...wire.providers.main!.media,
+      'veo-3.1-fast-generate-preview': { kind: 'openai_videos' },
+    }
+    const next = mergeConfig(current, wire)
+    expect(next.providers.main!.media!['veo-3.1-fast-generate-preview']!.kind).toBe('openai_videos')
+    expect(next.providers.main!.media!['grok-imagine-video-1.5']!.kind).toBe('xai_videos')
+  })
   const roundTrip = (mutate: (r: RedactedConfig) => void): QyConfig => {
     const current = cfg()
     const wire = redactConfig(current)

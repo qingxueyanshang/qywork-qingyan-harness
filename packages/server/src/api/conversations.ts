@@ -144,6 +144,8 @@ export interface MediaLibraryModel {
   label: string
   vendor: string | null
   kind: MediaKind
+  /** 目录中的原生协议及已实现的兼容映射。 */
+  kinds: MediaKind[]
   output: MediaOutput
   operations: MediaOperation[]
   maxImages: number
@@ -381,6 +383,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       label: spec.displayName,
       vendor: spec.vendor,
       kind: spec.kind,
+      kinds: [spec.kind, ...(Object.keys(spec.mappings ?? {}) as MediaKind[])],
       output: MEDIA_KIND_OUTPUT[spec.kind],
       operations: [...spec.operations],
       maxImages: spec.inputs.maxImages,

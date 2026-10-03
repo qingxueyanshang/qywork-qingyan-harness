@@ -50,6 +50,7 @@ const QWEN_IMAGE: MediaLibraryModel = {
   label: '千问图像 3.0',
   vendor: '阿里云',
   kind: 'dashscope_images',
+  kinds: ['dashscope_images', 'openai_images'],
   output: 'image',
   operations: ['generate', 'edit'],
   maxImages: 3,
@@ -107,7 +108,7 @@ test('模型库未知单价显示横线，并直接显示订阅限制', async ()
   }
 })
 
-test('Google 与 xAI 添加后保留生成类别和原生协议，模型库显示对应页签', async () => {
+test('官方及自定义地址添加 Google 与 xAI 均使用目录协议，模型库显示对应页签', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
   const { config, configBusy, reloadConfig } = await import('./configStore.ts')
@@ -149,8 +150,9 @@ test('Google 与 xAI 添加后保留生成类别和原生协议，模型库显�
     ...m,
     label: m.id,
     output: MEDIA_KIND_OUTPUT[m.kind],
+    kinds: [m.kind],
   }))
-  for (const model of cases) {
+  for (const model of cases.flatMap((m) => [m, { ...m, baseUrl: 'https://relay.example/v1' }])) {
     let stored: RedactedConfig = {
       providers: {
         native: {
@@ -199,6 +201,24 @@ test('Google 与 xAI 添加后保留生成类别和原生协议，模型库显�
       expect(config()?.providers.native?.models).toEqual({})
       const output = MEDIA_KIND_OUTPUT[model.kind]
       expect(stored.mediaDefaults?.[output]).toEqual({ provider: 'native', model: model.id })
+      if (model.kind === 'xai_videos' && model.baseUrl === 'https://relay.example/v1') {
+        stored = structuredClone(stored)
+        stored.providers.native!.media![model.id] = { kind: 'openai_videos' }
+        await reloadConfig()
+        const access = host.querySelector<HTMLSelectElement>(
+          `select[aria-label="接入方式 ${model.id}"]`,
+        )!
+        expect(access.value).toBe('openai_videos')
+        expect(Array.from(access.options, (option) => option.value)).toEqual([
+          'openai_videos',
+          'xai_videos',
+        ])
+        access.value = 'xai_videos'
+        access.dispatchEvent(new Event('change', { bubbles: true }))
+        expect(await until(() => !configBusy())).toBe(true)
+        expect(stored.providers.native!.media![model.id]!.kind).toBe('xai_videos')
+        expect(stored.providers.native!.kind).toBe('openai_chat_completions')
+      }
       fire(
         Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find((b) =>
           b.textContent?.includes('模型库'),
@@ -220,7 +240,7 @@ test('Google 与 xAI 添加后保留生成类别和原生协议，模型库显�
   }
 })
 
-test('目录里的图像模型挂成生成模型：协议按地址定、首个成为默认、没有检测、删掉后默认一并清掉', async () => {
+test('生成模型默认取目录协议，接入方式可独立保存，删除时清理默认模型', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
   const { config, configBusy, reloadConfig } = await import('./configStore.ts')
@@ -287,6 +307,23 @@ test('目录里的图像模型挂成生成模型：协议按地址定、首个�
     expect(row()?.textContent).toContain('默认')
     expect(row()?.textContent).not.toContain('检测')
 
+    const access = () => row()!.querySelector<HTMLSelectElement>('select')!
+    expect(Array.from(access().options, (option) => option.value)).toEqual([
+      'dashscope_images',
+      'openai_images',
+    ])
+    access().value = 'openai_images'
+    access().dispatchEvent(new Event('change', { bubbles: true }))
+    expect(await until(() => !configBusy())).toBe(true)
+    expect(stored.providers.qwen?.media?.['qwen-image-3.0']?.kind).toBe('openai_images')
+    expect(stored.providers.qwen?.kind).toBe('openai_chat_completions')
+    expect(stored.providers.qwen?.hasApiKey).toBe(true)
+    expect(stored.mediaDefaults?.image).toEqual({ provider: 'qwen', model: 'qwen-image-3.0' })
+    access().value = 'dashscope_images'
+    access().dispatchEvent(new Event('change', { bubbles: true }))
+    expect(await until(() => !configBusy())).toBe(true)
+    expect(access().value).toBe('dashscope_images')
+
     // 目录外的 id 照旧当对话模型。
     input().value = 'some-chat-model'
     fire(input(), 'keydown', { key: 'Enter' })
@@ -298,7 +335,7 @@ test('目录里的图像模型挂成生成模型：协议按地址定、首个�
     // 那一类删空了：默认一并删掉，否则保存会被服务端以「默认指向已删模型」挡回。
     expect(config()?.mediaDefaults).toBeUndefined()
 
-    // 三次编辑依次落盘，最后一次 PUT 的是删掉生成模型之后的整份。
+    // 编辑依次保存，最后一次 PUT 已删除生成模型。
     expect(await until(() => !configBusy())).toBe(true)
     expect(stored.providers.qwen?.media).toEqual({})
     expect(stored.providers.qwen?.models).toEqual({ 'some-chat-model': {} })

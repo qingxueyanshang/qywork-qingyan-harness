@@ -72,8 +72,9 @@ export class KlingVideosAdapter implements MediaAdapter {
     let taskId = opts.resumeTaskId
     if (!taskId) {
       const settings = Object.keys(req.params).length ? { settings: req.params } : {}
+      const omni = this.spec.videoFormat === 'kling-omni'
       const payload =
-        req.operation === 'text_to_video'
+        req.operation === 'text_to_video' && !omni
           ? { prompt: req.prompt, ...settings }
           : {
               contents: [
@@ -87,7 +88,7 @@ export class KlingVideosAdapter implements MediaAdapter {
               ...settings,
             }
       const body = await postJson(
-        `${base}/${pathOf(req.operation)}/${encodeURIComponent(this.profile.model)}`,
+        `${base}/${omni ? 'omni-video' : pathOf(req.operation)}/${encodeURIComponent(this.profile.model)}`,
         payload,
         auth,
         signal,
