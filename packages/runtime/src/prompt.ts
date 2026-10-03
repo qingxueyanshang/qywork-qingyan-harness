@@ -68,7 +68,19 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'read_canvas',
-    line: '- 画布：无限画布即工作区中的 *.canvas.json 文件，界面画布页呈现该文件的内容。读取节点、提示词与参数使用 read_canvas；修改提示词、参数、连线或发起生成使用 canvas。',
+    line: '- 画布：无限画布即工作区中的 *.canvas.json 文件，界面画布页呈现该文件的内容。读取节点、提示词与参数使用 read_canvas。',
+  },
+  {
+    tool: 'edit_canvas',
+    line: '- 画布编辑：修改节点、提示词、参数与连线使用 edit_canvas。',
+  },
+  {
+    tool: 'run_canvas',
+    line: '- 画布生成：运行生成节点使用 run_canvas，每次提交新的生成任务并计费。',
+  },
+  {
+    tool: 'retrieve_canvas',
+    line: '- 画布取回：取回已有远端视频结果使用 retrieve_canvas，不重新提交生成。',
   },
   {
     tool: 'desktop_windows',
@@ -81,8 +93,20 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
       '动作提交成功不等于任务完成。未经核验，不得报告任务完成，也不得仅因结果未确认而重复执行可能产生副作用的动作。',
   },
   {
-    tool: 'office',
-    line: '- Office 文档：制作、修改、检查 Word / PPT / Excel 用 office，不用 run_command 另起一套生成或导出流程。先用 office(action=guide) 取该格式的做法，交付前用 office(action=view) 看过页面。',
+    tool: 'read_office_guide',
+    line: '- Office 操作说明：制作前先用 read_office_guide 获取对应格式的说明。',
+  },
+  {
+    tool: 'read_office',
+    line: '- Office 读取：修改已有 Word / PPT / Excel 文件前，先用 read_office 读取结构与文字。',
+  },
+  {
+    tool: 'write_office',
+    line: '- Office 制作：制作、修改 Word / PPT / Excel 使用 write_office，不用 run_command 另行实现生成或导出流程。',
+  },
+  {
+    tool: 'view_office',
+    line: '- Office 页面：交付前用 view_office 检查页面；查看 PDF 的扫描件、图表与版式也使用该工具。',
   },
   {
     tool: 'write_memory',

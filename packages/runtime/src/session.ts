@@ -195,7 +195,7 @@ export interface SessionOptions {
    * Office 执行程序。见 `OfficePort`。
    *
    * 由装配方从进程级的 Office 宿主取（`createOfficeHost`）；开关关着或本机缺 Python 与文档库时
-   * 不传，这一轮没有 `office` 工具。
+   * 不传，这一轮没有 Office 工具。
    */
   office?: OfficePort
   /**

@@ -385,7 +385,7 @@ export interface BrowserRefusal {
 /**
  * 画布端口：Agent 读、改、运行画布，交给服务端画布服务执行。与界面用同一个实例，
  * 画布的写入次序与哪张卡在跑只有那一份。接口在这里、实现由 server 注入（同 `BrowserPort`）；
- * 没有服务端的会话（CLI）不注入，`canvas` 工具不注册。
+ * 没有服务端的会话（CLI）不注入，画布工具不注册。
  *
  * 失败以抛出 `Error` 表示，`message` 原样交给大模型。
  */
@@ -407,7 +407,7 @@ export interface CanvasPort {
 }
 
 /**
- * `office` 工具的执行程序：Python 解释器与 worker 入口的位置，以及本机各格式的办公软件能力。
+ * Office 工具的执行程序：Python 解释器与 worker 入口的位置，以及本机各格式的办公软件能力。
  *
  * 宿主在进程启动时探测一次并缓存，按轮注入；工具据此起 worker，不自己找解释器。
  * `apps` 里某个格式不可用时，该格式仍可读取与制作，只是重算、目录回填与渲染报告不可用。
@@ -1002,7 +1002,7 @@ export interface ToolContext {
   /**
    * Office 文档执行程序。见 `OfficePort`。
    *
-   * 没有可用的 Python 与文档库、或用户关闭了「Office 文档」时不接，`office` 工具不注册。
+   * 没有可用的 Python 与文档库、或用户关闭了「Office 文档」时不接，Office 工具不注册。
    */
   office?: OfficePort
   /**
@@ -1081,7 +1081,7 @@ export interface ToolContext {
   /**
    * 只读可读的根目录：已安装技能各自的目录（绝对路径），由装配方按本轮扫描结果给出。
    *
-   * 技能附带的参考文档、模板与示例代码在这些目录里，读取类工具与 `office` 的输入可以读，
+   * 技能附带的参考文档、模板与示例代码在这些目录里，读取类工具与 Office 工具的输入可以读，
    * 任何写入仍按工作区与额外目录判定。shell 那侧只读命令本来就能读到这些目录，两侧同宽。
    */
   readOnlyRoots?: string[]

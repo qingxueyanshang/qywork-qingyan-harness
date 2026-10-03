@@ -44,6 +44,8 @@ interface Module {
    * 「去别处配它」是同一个问题的两种答法，摆在一起用户不知道该点哪个。
    */
   toggle?: { on: () => boolean; onPick: (on: boolean) => void }
+  /** 分组标题旁的运行环境状态，与模块启用开关独立。 */
+  environment?: () => { text: string; missing: boolean }
   /** 不由工具承担的那部分。文案取实时读数，所以是函数。 */
   notes?: { label: string; text: () => string; warn?: () => boolean }[]
 }
@@ -198,17 +200,17 @@ const MODULES: Module[] = [
   },
   /*
    * 组头是开关，与电脑控制同一条理由。缺 Python 或文档库时开着也用不了：
-   * 第一行给出当前状态，安装入口在「通用 → 运行环境」；第二行是能力边界。
+   * 标题旁显示环境状态，安装入口在「通用 → 运行环境」；render 行说明能力边界。
    */
   {
     id: 'office',
     label: 'Office 文档',
+    environment: officeState,
     toggle: {
       on: () => officeSwitchOn(config()),
       onPick: (on) => void patchConfig({ officeEnabled: on }),
     },
     notes: [
-      { label: 'office', text: () => officeState().text, warn: () => officeState().missing },
       { label: 'render', text: () => '渲染、重算与目录页码回填用本机 Word 或 WPS，仅 Windows。' },
     ],
   },
@@ -400,6 +402,13 @@ export function ModulesSettings() {
           <section class="settings-block">
             <div class="settings-block-head">
               <h3>{g.mod.label}</h3>
+              <Show when={g.mod.environment?.()}>
+                {(environment) => (
+                  <span class="module-environment" classList={{ warn: environment().missing }}>
+                    运行环境：{environment().text}
+                  </span>
+                )}
+              </Show>
               {/* 开关要等配置到手再画：还没到手时点下去写不出去，而界面上看不出来。 */}
               <Show when={g.mod.toggle}>
                 {(t) => (

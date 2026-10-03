@@ -1,6 +1,6 @@
 /**
  * `office.ts` 的 Office 宿主（开关与缺 Python 时不给端口），以及 `session.ts` 里与 `office`
- * 相关的装配：有端口才注册 `office`；本轮技能索引里的目录成为工具的只读根。
+ * 相关的装配：有端口才注册 Office 工具；本轮技能索引里的目录成为工具的只读根。
  *
  * 真实探测（起 Python、导入文档库、识别办公软件）由 `bun run test:office` 与真机验收覆盖。
  */
@@ -134,9 +134,11 @@ async function session(office?: OfficePort) {
 describe('会话装配', () => {
   test('有端口才注册 office', async () => {
     const withPort = await session(PORT)
-    expect(withPort.names()).toContain('office')
+    const tools = ['read_office_guide', 'read_office', 'write_office', 'view_office']
+    expect(withPort.names()).toEqual(expect.arrayContaining(tools))
+    expect(withPort.names()).not.toContain('office')
     const without = await session()
-    expect(without.names()).not.toContain('office')
+    for (const name of tools) expect(without.names()).not.toContain(name)
     withPort.store.close()
     without.store.close()
   })

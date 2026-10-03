@@ -119,11 +119,11 @@ export {
 export { type ChangeWindow, openChangeWindow } from './workspace-watch.ts'
 
 import type { MediaOutput } from '@qywork/core'
-import { canvasTool, readCanvasTool } from './canvas.ts'
+import { editCanvasTool, readCanvasTool, retrieveCanvasTool, runCanvasTool } from './canvas.ts'
 import { defineRoleTool } from './define-role.ts'
-import { MEDIA_TOOLS } from './generate.ts'
+import { MEDIA_TOOLS, retrieveVideoTool } from './generate.ts'
 import { readHistoryTool } from './history.ts'
-import { officeTool } from './office.ts'
+import { officeTools } from './office.ts'
 import { installPluginTool } from './plugin-install.ts'
 import { subagentTool } from './subagent.ts'
 import { workflowTool } from './workflow.ts'
@@ -175,7 +175,7 @@ export function registerBuiltinTools(
     // 四种情况都拿不到端口，此时注册进来的是四个必然报错的名字。
     ...(opts.desktop ? desktopTools : []),
     // Office 同样按通道注册：没有 Python 与文档库时调一次必失败。
-    ...(opts.office ? [officeTool] : []),
+    ...(opts.office ? officeTools : []),
     readMemoryTool,
     writeMemoryTool,
     deleteMemoryTool,
@@ -187,8 +187,9 @@ export function registerBuiltinTools(
     ...(opts.mcpConfig ? [writeMcpServerTool, moveMcpServerTool] : []),
     // 生成按类别注册：没有图像模型的出图工具调一次必失败（B5）。
     ...(opts.media ?? []).map((output) => MEDIA_TOOLS[output]),
+    ...(opts.media?.includes('video') ? [retrieveVideoTool] : []),
     // 画布按通道注册：没有服务端（CLI 会话）就没有画布服务，工具调一次必失败。
-    ...(opts.canvas ? [readCanvasTool, canvasTool] : []),
+    ...(opts.canvas ? [readCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool] : []),
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,

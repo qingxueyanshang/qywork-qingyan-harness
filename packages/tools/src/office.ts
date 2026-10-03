@@ -1,5 +1,5 @@
 /**
- * `office` 工具：Word / PPT / Excel 的做法说明、读取、制作与看页，四个动作共用一个执行程序（Python worker）。
+ * Office 工具分别提供操作说明、读取、制作与页面查看，共用一个执行程序（Python worker）。
  *
  * 模型写 Python 制作脚本，`write` 执行它；办公软件只以只读方式打开文件做重算、目录页码回填、导出与渲染，
  * 交付件从不经办公软件另存（WPS 另存会写最近文档与账号打开记录，并重写整个文件包）。
@@ -65,7 +65,7 @@ async function guide(ctx: ToolContext, port: OfficePort, args: Record<string, un
   if (!run.response) return noResponse(run)
   const text = run.response.text ?? ''
   return deliverReadable(ctx, {
-    toolName: 'office',
+    toolName: 'read_office_guide',
     sourceType: 'office_guide',
     whole: { message: text },
     body: text,
@@ -91,7 +91,7 @@ async function read(ctx: ToolContext, port: OfficePort, args: Record<string, unk
   const head = `${displayPath(ctx.workspaceRoot, abs)}\n`
   const text = res.text ?? ''
   return deliverReadable(ctx, {
-    toolName: 'office',
+    toolName: 'read_office',
     sourceType: 'office_read',
     whole: { message: head + text },
     body: text,
@@ -127,7 +127,7 @@ async function write(ctx: ToolContext, port: OfficePort, args: Record<string, un
       return {
         status: 'failure' as const,
         executed: false,
-        message: `${displayPath(ctx.workspaceRoot, abs)} 已存在但没读取过。先用 office(action=read) 读取，再修改。`,
+        message: `${displayPath(ctx.workspaceRoot, abs)} 已存在但没读取过。先用 read_office 读取，再修改。`,
       }
     }
     existed.add(abs)
@@ -188,7 +188,7 @@ async function write(ctx: ToolContext, port: OfficePort, args: Record<string, un
     stageNote(res) +
     residueNote(res) +
     outputNote +
-    (res.ok ? '\n用 office(action=view) 查看页面。' : '')
+    (res.ok ? '\n用 view_office 查看页面。' : '')
   return {
     status: res.ok ? ('success' as const) : ('failure' as const),
     message,
@@ -255,45 +255,127 @@ function failArgs(message: string): ToolOutcome {
   return { status: 'failure', executed: false, message, errorKind: 'invalid_args' }
 }
 
-export const officeTool: ToolSpec = {
-  name: 'office',
+function withOffice(
+  run: (ctx: ToolContext, port: OfficePort, args: Record<string, unknown>) => Promise<ToolOutcome>,
+): ToolSpec['fn'] {
+  return async (args, ctx) => {
+    const port = ctx.office
+    if (!port) {
+      return { status: 'failure', executed: false, message: '本次执行没有 Office 执行程序' }
+    }
+    if (!port.enabled()) return { status: 'failure', executed: false, message: 'Office 文档已关闭' }
+    return run(ctx, port, args)
+  }
+}
+
+export const readOfficeGuideTool: ToolSpec = {
+  name: 'read_office_guide',
   description:
-    '读取、制作、查看 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）。' +
-    '制作前先用 action=guide 取该格式的做法；把制作代码写成工作区里的 Python 脚本，用 action=write 执行；' +
-    '之后用 action=view 看页面，有问题改脚本再 write。修改已有文件前先 action=read。' +
-    'PDF 的页面（扫描件、图表、版式）也用 action=view 看。' +
-    '技能里写的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）只当做法参考，执行一律用本工具。',
+    '获取 Word / PPT / Excel 文件的制作说明。制作前先读取对应格式的说明，' +
+    '然后将制作代码保存为工作区中的 Python 脚本，用 write_office 执行，最后用 view_office 检查页面。',
   parameters: {
     type: 'object',
     properties: {
-      action: {
-        type: 'string',
-        enum: ['guide', 'read', 'write', 'view'],
-        description: 'guide：取做法说明；read：读结构与文字；write：执行制作脚本；view：看页面',
-      },
-      format: { type: 'string', enum: [...FORMATS], description: 'guide：说明的格式' },
-      path: { type: 'string', description: 'read / view：文件的工作区相对路径；view 另收 .pdf' },
+      format: { type: 'string', enum: [...FORMATS], description: '操作说明对应的格式' },
+    },
+    required: ['format'],
+    additionalProperties: false,
+  },
+  actionKind: 'query',
+  objectLabel: '文档',
+  category: 'office',
+  facet: '文档',
+  summary: '获取 Word / PPT / Excel 制作说明',
+  targetExtractor: (a) => (typeof a.format === 'string' ? a.format : null),
+  permissionEffect: 'read',
+  parallelSafe: true,
+  fn: withOffice(guide),
+}
+
+export const readOfficeTool: ToolSpec = {
+  name: 'read_office',
+  description:
+    '读取 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）的结构与文字。' +
+    '修改已有文件前必须先读取，用于写入时的版本冲突检查。查看页面使用 view_office。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: '文件的工作区相对路径' },
       range: {
         type: 'string',
-        description: 'read：可选。docx 段落区间如 P1-P80；pptx 幻灯片区间如 2-5；xlsx 工作表名',
+        description: '可选。docx 段落区间如 P1-P80；pptx 幻灯片区间如 2-5；xlsx 工作表名',
       },
-      script: { type: 'string', description: 'write：制作脚本（.py）的工作区相对路径' },
+    },
+    required: ['path'],
+    additionalProperties: false,
+  },
+  actionKind: 'read',
+  objectLabel: '文档',
+  category: 'office',
+  facet: '文档',
+  summary: '读取 Word / PPT / Excel 的结构与文字',
+  targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
+  permissionEffect: 'read',
+  parallelSafe: true,
+  resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
+  fn: withOffice(read),
+}
+
+export const writeOfficeTool: ToolSpec = {
+  name: 'write_office',
+  description:
+    '执行工作区中的 Python 脚本，制作或修改 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）。' +
+    '先用 read_office_guide 获取该格式的操作说明；修改已有文件前先用 read_office 读取。' +
+    '完成后用 view_office 检查页面，有问题时修改脚本再执行。' +
+    '技能中描述的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）仅作操作方法参考，执行一律使用本工具。',
+  parameters: {
+    type: 'object',
+    properties: {
+      script: { type: 'string', description: '制作脚本（.py）的工作区相对路径' },
       inputs: {
         type: 'array',
         items: { type: 'string' },
-        description: 'write：脚本要读的文件（模板、素材、数据）',
+        description: '脚本要读的文件（模板、素材、数据）',
       },
       outputs: {
         type: 'array',
         items: { type: 'string' },
-        description: 'write：要生成或修改的 Office 文件；脚本用 office.output(路径) 取工作副本',
+        description: '要生成或修改的 Office 文件；脚本用 office.output(路径) 获取工作副本',
       },
-      update_toc: { type: 'boolean', description: 'write：docx 按页面渲染结果回填目录页码' },
-      export_pdf: { type: 'boolean', description: 'write：同时在每个输出旁导出同名 PDF' },
+      update_toc: { type: 'boolean', description: 'docx 按页面渲染结果回填目录页码' },
+      export_pdf: { type: 'boolean', description: '同时在每个输出旁导出同名 PDF' },
+    },
+    required: ['script', 'outputs'],
+    additionalProperties: false,
+  },
+  actionKind: 'run',
+  objectLabel: '文档',
+  category: 'office',
+  facet: '文档',
+  summary: '执行脚本制作或修改 Word / PPT / Excel',
+  targetExtractor: (a) => stringList(a.outputs)[0] ?? null,
+  permissionEffect: 'execute',
+  parallelSafe: false,
+  resourceKeys: (a) => stringList(a.outputs).map((p) => `file:${p}`),
+  fn: withOffice(write),
+}
+
+export const viewOfficeTool: ToolSpec = {
+  name: 'view_office',
+  description:
+    '将 Word / PPT / Excel / PDF 文件的指定页面渲染为图片，用于检查版式、图表和扫描件。' +
+    '交付文档前应查看页面，当前模型须支持图片输入。读取结构与文字使用 read_office。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: '文件的工作区相对路径，支持 .docx / .pptx / .xlsx / .pdf',
+      },
       pages: {
         type: 'array',
         items: { type: 'string' },
-        description: 'view：页码，可一次给多页，默认第 1 页；xlsx 写「工作表名:页码」',
+        description: '页码，可一次给多页，默认第 1 页；xlsx 写「工作表名:页码」',
       },
       region: {
         type: 'object',
@@ -305,45 +387,22 @@ export const officeTool: ToolSpec = {
         },
         required: ['left', 'top', 'width', 'height'],
         additionalProperties: false,
-        description: 'view：可选，按页面比例（0 到 1）裁出局部，从原始渲染图裁取',
+        description: '可选，按页面比例（0 到 1）裁出局部，从原始渲染图裁取',
       },
     },
-    required: ['action'],
+    required: ['path'],
     additionalProperties: false,
   },
-  actionKind: (a) => (a.action === 'write' ? 'run' : a.action === 'guide' ? 'query' : 'read'),
+  actionKind: 'read',
   objectLabel: '文档',
   category: 'office',
   facet: '文档',
-  summary: '读取、制作、查看 Word / PPT / Excel 文件',
-  targetExtractor: (a) =>
-    typeof a.path === 'string' ? a.path : (stringList(a.outputs)[0] ?? null),
-  // 执行模型脚本的只有 write；它与 `run_command` 运行 Python 脚本同等放行。
-  permissionEffect: (a) => (a.action === 'write' ? 'execute' : 'read'),
-  parallelSafe: (a) => a.action === 'guide' || a.action === 'read',
-  resourceKeys: (a) =>
-    a.action === 'write'
-      ? stringList(a.outputs).map((p) => `file:${p}`)
-      : typeof a.path === 'string'
-        ? [`file:${a.path}`]
-        : [],
-  async fn(args, ctx) {
-    const port = ctx.office
-    if (!port) {
-      return { status: 'failure', executed: false, message: '本次执行没有 Office 执行程序' }
-    }
-    if (!port.enabled()) return { status: 'failure', executed: false, message: 'Office 文档已关闭' }
-    switch (args.action) {
-      case 'guide':
-        return guide(ctx, port, args)
-      case 'read':
-        return read(ctx, port, args)
-      case 'write':
-        return write(ctx, port, args)
-      case 'view':
-        return view(ctx, port, args)
-      default:
-        return failArgs('action 须是 guide、read、write 或 view')
-    }
-  },
+  summary: '查看 Word / PPT / Excel / PDF 页面',
+  targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
+  permissionEffect: 'read',
+  parallelSafe: false,
+  resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
+  fn: withOffice(view),
 }
+
+export const officeTools = [readOfficeGuideTool, readOfficeTool, writeOfficeTool, viewOfficeTool]

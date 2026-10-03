@@ -1,5 +1,5 @@
 /**
- * 覆盖 `canvas.ts` 的 `read_canvas` 与 `canvas` 两个工具，以及 `index.ts` 里按通道注册的那一条。
+ * 覆盖 `canvas.ts` 的 读取、编辑、运行与取回工具，以及 `index.ts` 里按通道注册的那一条。
  *
  * 端口是假的：这里验的是工具这一侧的事——按有无通道注册、按动作声明权限、参数解析、
  * 运行用本轮的生成端口与中止信号、结果写成回执。端口背后的画布服务在 server 包测。
@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { type CanvasPort, type MediaPort, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { applyCanvasOps, type CanvasOp, type CanvasView, emptyCanvas } from '@qywork/core'
-import { canvasTool, readCanvasTool } from './canvas.ts'
+import { editCanvasTool, readCanvasTool, retrieveCanvasTool, runCanvasTool } from './canvas.ts'
 import { registerBuiltinTools } from './index.ts'
 
 function view(): CanvasView {
@@ -35,6 +35,13 @@ function view(): CanvasView {
 interface Seen {
   edits: CanvasOp[][]
   runs: { media: MediaPort; signal: AbortSignal }[]
+  retrieves: {
+    path: string
+    node: string
+    version: string | undefined
+    media: MediaPort
+    signal: AbortSignal
+  }[]
 }
 
 function ctx(port: CanvasPort | undefined, media?: MediaPort): ToolContext {
@@ -61,7 +68,7 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
   port: CanvasPort
   seen: Seen
 } {
-  const seen: Seen = { edits: [], runs: [] }
+  const seen: Seen = { edits: [], runs: [], retrieves: [] }
   return {
     seen,
     port: {
@@ -75,8 +82,8 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
         seen.runs.push({ media, signal })
         return result
       },
-      retrieve: async (_path, _node, _version, media, signal) => {
-        seen.runs.push({ media, signal })
+      retrieve: async (path, node, version, media, signal) => {
+        seen.retrieves.push({ path, node, version, media, signal })
         return result
       },
     },
@@ -93,15 +100,23 @@ describe('canvas 工具', () => {
     expect(none.has('read_canvas')).toBe(false)
     const withPort = new ToolRegistry()
     registerBuiltinTools(withPort, { canvas: true })
-    expect(withPort.has('canvas')).toBe(true)
+    expect(withPort.has('canvas')).toBe(false)
+    for (const name of ['edit_canvas', 'run_canvas', 'retrieve_canvas']) {
+      expect(none.has(name)).toBe(false)
+      expect(withPort.has(name)).toBe(true)
+    }
     expect(withPort.has('read_canvas')).toBe(true)
   })
 
-  test('read_canvas 固定为读，canvas 固定为写（设置页要求权限效果不随参数变）', () => {
+  test('画布工具分别声明动作，编辑、运行与取回均需要写权限', () => {
     expect(readCanvasTool.actionKind).toBe('read')
     expect(readCanvasTool.permissionEffect).toBe('read')
-    expect(canvasTool.actionKind).toBe('write')
-    expect(canvasTool.permissionEffect).toBe('write')
+    expect(editCanvasTool.actionKind).toBe('edit')
+    expect(runCanvasTool.actionKind).toBe('run')
+    for (const tool of [editCanvasTool, runCanvasTool, retrieveCanvasTool]) {
+      expect(tool.permissionEffect).toBe('write')
+      expect(tool.parameters.properties).not.toHaveProperty('action')
+    }
   })
 
   test('read 不给路径列出画布；给路径写出节点、状态与连线', async () => {
@@ -119,9 +134,8 @@ describe('canvas 工具', () => {
 
   test('edit 解析 ops_json 交给端口；不是 JSON 数组或操作不合法时不调端口', async () => {
     const { port, seen } = fakePort({ ok: true, paths: [] })
-    const ok = await canvasTool.fn(
+    const ok = await editCanvasTool.fn(
       {
-        action: 'edit',
         path: 'board.canvas.json',
         ops_json: '[{"op":"add_generate","ref":"$x","output":"image"}]',
       },
@@ -130,17 +144,13 @@ describe('canvas 工具', () => {
     expect(ok.status).toBe('success')
     expect(ok.message).toContain('$x = id9')
     expect(seen.edits).toEqual([[{ op: 'add_generate', ref: '$x', output: 'image' }]])
-    const bad = await canvasTool.fn(
-      { action: 'edit', path: 'board.canvas.json', ops_json: '{"op":"remove"}' },
+    const bad = await editCanvasTool.fn(
+      { path: 'board.canvas.json', ops_json: '{"op":"remove"}' },
       ctx(port),
     )
     expect(bad.errorKind).toBe('invalid_tool_arguments')
-    const versions = await canvasTool.fn(
-      {
-        action: 'edit',
-        path: 'board.canvas.json',
-        ops_json: '[{"op":"update","id":"id2","versions":[]}]',
-      },
+    const versions = await editCanvasTool.fn(
+      { path: 'board.canvas.json', ops_json: '[{"op":"update","id":"id2","versions":[]}]' },
       ctx(port),
     )
     expect(versions.errorKind).toBe('invalid_tool_arguments')
@@ -150,7 +160,7 @@ describe('canvas 工具', () => {
   test('run 用本轮的生成端口与中止信号，产物进改动清单', async () => {
     const { port, seen } = fakePort({ ok: true, paths: ['generated/a.mp4'] })
     const c = ctx(port, media)
-    const out = await canvasTool.fn({ action: 'run', path: 'board.canvas.json', node: 'id2' }, c)
+    const out = await runCanvasTool.fn({ path: 'board.canvas.json', node: 'id2' }, c)
     expect(seen.runs[0]!.media).toBe(media)
     expect(seen.runs[0]!.signal).toBe(c.signal)
     expect(out.fileChanges).toEqual([{ path: 'generated/a.mp4', changeType: 'created' }])
@@ -158,15 +168,12 @@ describe('canvas 工具', () => {
 
   test('远端还在时回执说明怎么取回；没有生成通道时不调端口', async () => {
     const { port, seen } = fakePort({ ok: false, message: '等待超时', pending: true })
-    const pending = await canvasTool.fn(
-      { action: 'run', path: 'board.canvas.json', node: 'id2' },
+    const pending = await runCanvasTool.fn(
+      { path: 'board.canvas.json', node: 'id2' },
       ctx(port, media),
     )
-    expect(pending.message).toContain('action=retrieve')
-    const noMedia = await canvasTool.fn(
-      { action: 'run', path: 'board.canvas.json', node: 'id2' },
-      ctx(port),
-    )
+    expect(pending.message).toContain('retrieve_canvas')
+    const noMedia = await runCanvasTool.fn({ path: 'board.canvas.json', node: 'id2' }, ctx(port))
     expect(noMedia.message).toContain('没有生成通道')
     expect(seen.runs).toHaveLength(1)
   })
@@ -181,5 +188,59 @@ describe('canvas 工具', () => {
       status: 'failure',
       message: 'board.canvas.json 不存在或不在这个项目里',
     })
+  })
+
+  test('取回指定版本只调用 retrieve，保留本轮端口、信号与文件回执', async () => {
+    const { port, seen } = fakePort({
+      ok: true,
+      paths: ['generated/a.mp4'],
+      warning: '部分结果可用',
+    })
+    const c = ctx(port, media)
+    const registry = new ToolRegistry()
+    registerBuiltinTools(registry, { canvas: true })
+    const out = await registry.execute(
+      'retrieve_canvas',
+      {
+        path: 'board.canvas.json',
+        node: 'id2',
+        version: 'v1',
+      },
+      c,
+    )
+    expect(out.status).toBe('success')
+    expect(out.message).toContain('部分结果可用')
+    expect(out.fileChanges).toEqual([{ path: 'generated/a.mp4', changeType: 'created' }])
+    expect(seen.retrieves).toEqual([
+      { path: 'board.canvas.json', node: 'id2', version: 'v1', media, signal: c.signal },
+    ])
+    expect(seen.runs).toEqual([])
+    expect(seen.edits).toEqual([])
+    await registry.execute('retrieve_canvas', { path: 'board.canvas.json', node: 'id2' }, c)
+    expect(seen.retrieves[1]?.version).toBeUndefined()
+    expect(seen.runs).toEqual([])
+  })
+
+  test('缺少编辑操作或生成节点时在权限检查前拒绝，端口不执行', async () => {
+    const { port, seen } = fakePort({ ok: true, paths: [] })
+    const c = ctx(port, media)
+    const permissions: string[] = []
+    c.requestPermission = async ({ toolName }) => {
+      permissions.push(toolName)
+      return { allowed: true }
+    }
+    const registry = new ToolRegistry()
+    registerBuiltinTools(registry, { canvas: true })
+    for (const name of ['edit_canvas', 'run_canvas', 'retrieve_canvas']) {
+      for (const args of [{}, { path: 'board.canvas.json' }]) {
+        expect(await registry.execute(name, args, c)).toMatchObject({
+          status: 'failure',
+          executed: false,
+          errorKind: 'invalid_tool_arguments',
+        })
+      }
+    }
+    expect(permissions).toEqual([])
+    expect(seen).toEqual({ edits: [], runs: [], retrieves: [] })
   })
 })

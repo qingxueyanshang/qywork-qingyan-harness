@@ -303,7 +303,7 @@ def check_targets(outputs):
         if cur == exp:
             continue
         if exp is None:
-            conflicts.append(f"{o['path']} 已存在；修改已有文件先用 office(action=read) 读取，再写")
+            conflicts.append(f"{o['path']} 已存在；修改已有文件先用 read_office 读取，再写")
         elif cur is None:
             conflicts.append(f"{o['path']} 在读取之后被删除；重新 read 后再写")
         else:

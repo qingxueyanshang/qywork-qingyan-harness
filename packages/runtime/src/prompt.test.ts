@@ -357,11 +357,15 @@ describe('能力段', () => {
    * 模型仍调用 desktop_windows 与 desktop_observe 操作 QyWork 窗口。能力段缺少画布一行时出现该行为。
    */
   test('注册画布工具时写明画布的定义与对应工具，不限制电脑控制；未注册时不出现', () => {
-    const prompt = buildSystemPrompt(new Set(['read_canvas', 'canvas', 'desktop_windows']))
+    const prompt = buildSystemPrompt(
+      new Set(['read_canvas', 'edit_canvas', 'run_canvas', 'retrieve_canvas', 'desktop_windows']),
+    )
     expect(prompt).toContain('*.canvas.json')
     expect(prompt).toContain('界面画布页呈现该文件的内容')
     expect(prompt).toContain('使用 read_canvas')
-    expect(prompt).toContain('使用 canvas')
+    expect(prompt).toContain('使用 edit_canvas')
+    expect(prompt).toContain('使用 run_canvas')
+    expect(prompt).toContain('使用 retrieve_canvas')
     expect(prompt).not.toContain('不得使用电脑控制')
     expect(prompt.indexOf('- 画布：')).toBeLessThan(prompt.indexOf('- 电脑控制：'))
     expect(buildSystemPrompt(new Set(['desktop_windows']))).not.toContain('read_canvas')
@@ -372,13 +376,15 @@ describe('能力段', () => {
     expect(prompt).not.toContain('desktop_windows')
   })
 
-  /** 已安装技能可能写着别的产品的生成或导出命令；工具注册了才点名执行一律走 office。 */
+  /** 已安装技能可能包含其他产品的生成或导出命令；write_office 工具注册后才写明执行一律使用该工具。 */
   test('注册了 office 时点名先取做法、交付前看页，没注册就不提', () => {
-    const prompt = buildSystemPrompt(new Set(['run_command', 'office']))
-    expect(prompt).toContain('不用 run_command 另起一套生成或导出流程')
-    expect(prompt).toContain('office(action=guide)')
-    expect(prompt).toContain('office(action=view)')
-    expect(buildSystemPrompt(new Set(['run_command']))).not.toContain('office(')
+    const prompt = buildSystemPrompt(
+      new Set(['run_command', 'read_office_guide', 'read_office', 'write_office', 'view_office']),
+    )
+    expect(prompt).toContain('不用 run_command 另行实现生成或导出流程')
+    expect(prompt).toContain('read_office_guide')
+    expect(prompt).toContain('view_office')
+    expect(buildSystemPrompt(new Set(['run_command']))).not.toContain('Office')
   })
 })
 

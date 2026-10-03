@@ -1,19 +1,15 @@
 /**
  * 画布工具：大模型经画布端口（`ctx.canvas`）读、改、运行工作区里的 `*.canvas.json`。
  *
- * 分成 `read_canvas`（读）与 `canvas`（改、运行、取回）两个：设置页的工具目录要求权限效果不随参数变，
- * 读画布也不该像写入那样在结束时让各客户端的文件快照失效。
+ * 读取、编辑、运行与取回分别声明工具及参数；取回只查询已有任务，不重新提交生成。
  *
  * 读写与运行全部由服务端画布服务执行，与界面同一个实例：写入次序、在跑状态与失败原文只有那一份，
  * 大模型写进的节点在写入当下就推给界面，不等本次工具调用结束。
  * 运行用本轮的生成端口（`ctx.media`），花费进本轮。
  */
 
-import type { ToolOutcome, ToolSpec } from '@qywork/agent'
+import type { CanvasPort, ToolOutcome, ToolSpec } from '@qywork/agent'
 import { type CanvasView, displayNameOf, parseCanvasOps } from '@qywork/core'
-
-const ACTIONS = ['edit', 'run', 'retrieve'] as const
-type Action = (typeof ACTIONS)[number]
 
 function failure(message: string, errorKind?: string): ToolOutcome {
   return { status: 'failure', executed: false, message, ...(errorKind ? { errorKind } : {}) }
@@ -21,10 +17,6 @@ function failure(message: string, errorKind?: string): ToolOutcome {
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
-}
-
-function actionOf(args: Record<string, unknown>): Action | undefined {
-  return (ACTIONS as readonly unknown[]).includes(args.action) ? (args.action as Action) : undefined
 }
 
 /** 画布写成给大模型读的几行：节点（id、类型、名字、状态、路径或提示词）与连线。 */
@@ -76,7 +68,7 @@ function describe(view: CanvasView): string {
   return lines.join('\n')
 }
 
-/** 画布的结构说明，两个工具共用。 */
+/** 读取与编辑工具共用的画布结构说明。 */
 const CANVAS_NOTE =
   '画布是工作区里的 *.canvas.json，只引用工作区文件：file 节点是一个文件路径，' +
   'generate 节点是一张生成卡（输出类别、提示词、模型、参数与历次结果），timeline 节点是一条视频时间线' +
@@ -126,88 +118,153 @@ export const readCanvasTool: ToolSpec = {
   },
 }
 
-export const canvasTool: ToolSpec = {
-  name: 'canvas',
+export const editCanvasTool: ToolSpec = {
+  name: 'edit_canvas',
   description:
-    '改画布、运行画布上的生成卡。' +
+    '修改画布的节点、提示词、参数与连线，不发起生成。' +
     CANVAS_NOTE +
     '先用 read_canvas 看节点与 id。' +
-    'action=edit：ops_json 是一批操作的 JSON 数组，整批生效或整批不生效。操作：' +
+    'ops_json 是一批操作的 JSON 数组，整批生效或整批不生效。操作：' +
     '{"op":"add_file","path":"工作区路径"}、{"op":"add_generate","output":"image|video|audio","prompt":"…"}、' +
     '{"op":"update","id":"节点或连线 id",…要改的字段}、{"op":"connect","from":"id","to":"生成卡 id","role":"…"}、' +
     '{"op":"remove","id":"节点或连线 id"}（删某一版再加 "version"）、{"op":"set_mode","id":"视频卡 id","mode":"reference|first_last"}、' +
     '{"op":"add_timeline","clips":[…]}（改片段用 update 的 clips 整组替换，muted 切换整条静音）；' +
     'add_file、add_generate、add_timeline 可选 name、x、y，或用 "beside":"节点 id" 放在该节点右侧的空位、"near":{"x":…,"y":…} 放在该点附近的空位；add_generate 可选 provider、model、params（取值见本轮「可用的生成模型」）。' +
     'add_* 与 connect 可带 "ref":"$名字"，同一批后面的操作与提示词里用它代替新节点的 id。' +
-    '提示词里用 @[节点 id] 指代素材，引用了未连线的素材时自动连上。' +
-    'action=run：运行 node 指定的生成卡并等到结果，按次计费，不得为试探效果重复调用。' +
-    'action=retrieve：取回 node 上还在远端的视频（version 可选），不重新提交、不重复计费。',
+    '提示词中用 @[节点 id] 指代素材，引用未连线的素材时自动连线。运行生成卡使用 run_canvas。',
   parameters: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: [...ACTIONS], description: '要做什么' },
       path: { type: 'string', description: '画布文件的工作区路径' },
-      ops_json: { type: 'string', description: 'edit 的操作数组，JSON' },
-      node: { type: 'string', description: 'run / retrieve 的生成卡 id' },
-      version: { type: 'string', description: 'retrieve 取哪一版；不给取当前版或最新的待取回版' },
+      ops_json: { type: 'string', description: '画布操作数组，JSON' },
     },
-    required: ['action', 'path'],
+    required: ['path', 'ops_json'],
+    additionalProperties: false,
+  },
+  actionKind: 'edit',
+  objectLabel: '画布',
+  category: 'media',
+  facet: '生成',
+  summary: '修改画布的节点、提示词、参数与连线',
+  targetExtractor: (a) => text(a.path) ?? null,
+  permissionEffect: 'write',
+  async fn(args, ctx) {
+    const canvas = ctx.canvas
+    if (!canvas) return failure('本次执行没有画布通道')
+    const path = text(args.path)
+    if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+    try {
+      let raw: unknown
+      try {
+        raw = JSON.parse(String(args.ops_json ?? ''))
+      } catch {
+        return failure('ops_json 必须是 JSON 数组', 'invalid_tool_arguments')
+      }
+      const parsed = parseCanvasOps(raw)
+      if (!parsed.ok) return failure(parsed.error, 'invalid_tool_arguments')
+      const { view, refs } = await canvas.edit(path, parsed.ops)
+      const named = Object.entries(refs).map(([ref, id]) => `${ref} = ${id}`)
+      return {
+        status: 'success',
+        message: `${named.length ? `新建：${named.join('、')}\n` : ''}${describe(view)}`,
+        data: { refs },
+      }
+    } catch (err) {
+      return { status: 'failure', executed: true, message: (err as Error).message }
+    }
+  },
+}
+
+function generationReceipt(result: Awaited<ReturnType<CanvasPort['run']>>): ToolOutcome {
+  if (!result.ok) {
+    return {
+      status: 'failure',
+      executed: true,
+      message: result.pending
+        ? `${result.message}\n远端任务仍存在，该版本保留在画布上，使用 retrieve_canvas 取回，不会重复计费。`
+        : result.message,
+    }
+  }
+  return {
+    status: 'success',
+    message: `已取得结果：${result.paths.join('、')}${result.warning ? `\n${result.warning}` : ''}`,
+    data: { paths: result.paths, ...(result.warning ? { warning: result.warning } : {}) },
+    fileChanges: result.paths.map((p) => ({ path: p, changeType: 'created' as const })),
+  }
+}
+
+export const runCanvasTool: ToolSpec = {
+  name: 'run_canvas',
+  description:
+    '运行画布上 node 指定的生成卡并等待结果。先用 read_canvas 查看节点与 id。' +
+    '每次运行提交新的生成任务，按次计费，不得为试探效果重复调用。' +
+    '已有待取回版本使用 retrieve_canvas，不重新运行。修改提示词、参数与连线使用 edit_canvas。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: '画布文件的工作区路径' },
+      node: { type: 'string', description: '要运行的生成卡 id' },
+    },
+    required: ['path', 'node'],
+    additionalProperties: false,
+  },
+  actionKind: 'run',
+  objectLabel: '画布',
+  category: 'media',
+  facet: '生成',
+  summary: '运行画布中的生成节点',
+  targetExtractor: (a) => text(a.path) ?? null,
+  permissionEffect: 'write',
+  async fn(args, ctx) {
+    const canvas = ctx.canvas
+    if (!canvas) return failure('本次执行没有画布通道')
+    const path = text(args.path)
+    if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+    const node = text(args.node)
+    if (!node) return failure('缺少 node', 'invalid_tool_arguments')
+    if (!ctx.media) return failure('本次执行没有生成通道：尚未配置生成模型')
+    try {
+      return generationReceipt(await canvas.run(path, node, ctx.media, ctx.signal))
+    } catch (err) {
+      return { status: 'failure', executed: true, message: (err as Error).message }
+    }
+  },
+}
+
+export const retrieveCanvasTool: ToolSpec = {
+  name: 'retrieve_canvas',
+  description:
+    '取回画布上 node 指定生成卡仍在远端的视频结果，不重新提交、不重复计费。' +
+    '先用 read_canvas 查看待取回的节点与版本；version 省略时取当前版或最新的待取回版。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: '画布文件的工作区路径' },
+      node: { type: 'string', description: '待取回结果的生成卡 id' },
+      version: { type: 'string', description: '取回的版本；省略时取当前版或最新的待取回版' },
+    },
+    required: ['path', 'node'],
     additionalProperties: false,
   },
   actionKind: 'write',
   objectLabel: '画布',
   category: 'media',
   facet: '生成',
-  summary: '改画布、运行画布上的生成卡',
+  summary: '取回画布视频并更新节点',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
   async fn(args, ctx) {
     const canvas = ctx.canvas
     if (!canvas) return failure('本次执行没有画布通道')
-    const action = actionOf(args)
-    if (!action) return failure('action 只能是 edit、run、retrieve', 'invalid_tool_arguments')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+    const node = text(args.node)
+    if (!node) return failure('缺少 node', 'invalid_tool_arguments')
+    if (!ctx.media) return failure('本次执行没有生成通道：尚未配置生成模型')
     try {
-      if (action === 'edit') {
-        let raw: unknown
-        try {
-          raw = JSON.parse(String(args.ops_json ?? ''))
-        } catch {
-          return failure('ops_json 必须是 JSON 数组', 'invalid_tool_arguments')
-        }
-        const parsed = parseCanvasOps(raw)
-        if (!parsed.ok) return failure(parsed.error, 'invalid_tool_arguments')
-        const { view, refs } = await canvas.edit(path, parsed.ops)
-        const named = Object.entries(refs).map(([ref, id]) => `${ref} = ${id}`)
-        return {
-          status: 'success',
-          message: `${named.length ? `新建：${named.join('、')}\n` : ''}${describe(view)}`,
-          data: { refs },
-        }
-      }
-      const node = text(args.node)
-      if (!node) return failure('缺少 node', 'invalid_tool_arguments')
-      if (!ctx.media) return failure('本次执行没有生成通道：还没有配置生成模型')
-      const result =
-        action === 'run'
-          ? await canvas.run(path, node, ctx.media, ctx.signal)
-          : await canvas.retrieve(path, node, text(args.version), ctx.media, ctx.signal)
-      if (!result.ok) {
-        return {
-          status: 'failure',
-          executed: true,
-          message: result.pending
-            ? `${result.message}\n远端任务还在，这一版留在画布上，用 action=retrieve 取回，不会重复计费。`
-            : result.message,
-        }
-      }
-      return {
-        status: 'success',
-        message: `已生成：${result.paths.join('、')}${result.warning ? `\n${result.warning}` : ''}`,
-        data: { paths: result.paths, ...(result.warning ? { warning: result.warning } : {}) },
-        fileChanges: result.paths.map((p) => ({ path: p, changeType: 'created' as const })),
-      }
+      return generationReceipt(
+        await canvas.retrieve(path, node, text(args.version), ctx.media, ctx.signal),
+      )
     } catch (err) {
       return { status: 'failure', executed: true, message: (err as Error).message }
     }
