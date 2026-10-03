@@ -83,7 +83,7 @@
   stroke-width: 1.5;
   stroke-dasharray: 4 4;
 }
-/* 连线中点的剪断按钮：悬停或选中那条线时出现，按屏幕尺寸画。 */
+/* 连线中点的剪断按钮：仅选中该连线时出现，按屏幕尺寸绘制。 */
 .canvas-edge-cut {
   position: absolute;
   z-index: 5;
@@ -532,7 +532,7 @@
   }
 }
 
-/* 两侧连接点：选中或悬停时出现，大小不随缩放。 */
+/* 两侧连接点：仅选中节点时出现；隐藏时不接收点击或键盘焦点，大小不随缩放变化。 */
 .canvas-port {
   position: absolute;
   top: 50%;
@@ -545,6 +545,7 @@
   background: var(--bg-sunken);
   box-shadow: 0 0 0 calc(1px / var(--z, 1)) var(--border-strong);
   color: var(--text-secondary);
+  visibility: hidden;
   opacity: 0;
   transition: opacity var(--t-fast) var(--ease);
 }
@@ -558,8 +559,8 @@
 .canvas-port.out {
   right: calc(-30px / var(--z, 1));
 }
-.canvas-node:hover .canvas-port,
 .canvas-node.selected .canvas-port {
+  visibility: visible;
   opacity: 1;
 }
 
