@@ -82,6 +82,13 @@ export interface QyConfig {
   /** 权限模式，默认 auto。 */
   mode?: PermissionMode
   /**
+   * 允不允许 agent 控制内置浏览器。**缺席按启用，只有显式 `false` 才关。**
+   *
+   * 关着时装配方不注入浏览器端口，浏览器工具整组不注册；运行中关闭后，下一次页面操作即被拒。
+   * 只管 AI 控制：用户在内置浏览器里手动浏览不受它影响。
+   */
+  browserEnabled?: boolean
+  /**
    * 允不允许 agent 操作本机上别的应用（电脑控制）。**缺席按启用，只有显式 `false` 才关。**
    *
    * 关着时装配方不注入桌面端口，桌面工具整组不注册——不是注册一组必然报错的名字。
@@ -108,6 +115,15 @@ export interface QyConfig {
    * 开着也不注册，那是能力状态，不是这一格。
    */
   officeEnabled?: boolean
+  /**
+   * 允不允许 agent 用画布与生成工具（`read_canvas`、`canvas`、`generate_*`）。
+   * **缺席按启用，只有显式 `false` 才关。**
+   *
+   * 关着时这几个工具都不注册，提示词里的画布能力行与生成模型参数表随之不出现。
+   * 只管 agent：用户在画布页直接运行生成卡不受它影响。开着而没有配置某一类生成模型时，
+   * 那一类的生成工具同样不注册，那是模型配置，不是这一格。
+   */
+  mediaEnabled?: boolean
   /**
    * `office` 用的 Python 解释器绝对路径。缺席时在 PATH 里找 `python`，排除 Windows 商店别名。
    */
@@ -763,6 +779,9 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   }
   // 非布尔值落盘之后按真值判定，「关着」会被读成「开着」，而界面上那个开关显示的是
   // 它自己算出来的另一个结果。
+  if (cfg.browserEnabled !== undefined && typeof cfg.browserEnabled !== 'boolean') {
+    problems.push('browserEnabled 必须是 true 或 false')
+  }
   if (cfg.desktopEnabled !== undefined && typeof cfg.desktopEnabled !== 'boolean') {
     problems.push('desktopEnabled 必须是 true 或 false')
   }
@@ -771,6 +790,9 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
   }
   if (cfg.officeEnabled !== undefined && typeof cfg.officeEnabled !== 'boolean') {
     problems.push('officeEnabled 必须是 true 或 false')
+  }
+  if (cfg.mediaEnabled !== undefined && typeof cfg.mediaEnabled !== 'boolean') {
+    problems.push('mediaEnabled 必须是 true 或 false')
   }
   if (
     cfg.officePython !== undefined &&

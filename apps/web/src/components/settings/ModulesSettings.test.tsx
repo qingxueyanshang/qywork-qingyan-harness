@@ -1,5 +1,6 @@
 /**
- * 「模块」页电脑控制与 Office 文档两组：组头的开关读的是 `desktopEnabled` / `officeEnabled`，写的也是它。
+ * 「模块」页浏览器控制、电脑控制、Office 文档、画布与生成四组：组头的开关读的是
+ * `browserEnabled` / `desktopEnabled` / `officeEnabled` / `mediaEnabled`，写的也是它。
  *
  * 覆盖范围：`ModulesSettings.tsx` 的组头开关与工具行分组、`OnOff.tsx` 的两格形态。
  *
@@ -33,6 +34,28 @@ const TOOLS = {
       summary: '列出可操作的桌面窗口',
       actionKind: 'read',
       permissionEffect: 'desktop',
+      params: [],
+      source: 'builtin',
+    },
+    {
+      name: 'browser_tabs',
+      category: 'browser',
+      facet: '页面',
+      objectLabel: '浏览器控制',
+      summary: '列出、新建、接管或关闭标签页',
+      actionKind: 'read',
+      permissionEffect: 'browser',
+      params: [],
+      source: 'builtin',
+    },
+    {
+      name: 'read_canvas',
+      category: 'media',
+      facet: '生成',
+      objectLabel: '画布',
+      summary: '读取画布或列出工作区里的画布',
+      actionKind: 'read',
+      permissionEffect: 'read',
       params: [],
       source: 'builtin',
     },
@@ -71,6 +94,14 @@ test('开关读数：缺席按启用，只有显式 false 才关', async () => {
   expect(officeSwitchOn(null)).toBe(true)
   expect(officeSwitchOn({ officeEnabled: true })).toBe(true)
   expect(officeSwitchOn({ officeEnabled: false })).toBe(false)
+  const { browserSwitchOn } = await import('./ModulesSettings.tsx')
+  expect(browserSwitchOn(null)).toBe(true)
+  expect(browserSwitchOn({ browserEnabled: true })).toBe(true)
+  expect(browserSwitchOn({ browserEnabled: false })).toBe(false)
+  const { mediaSwitchOn } = await import('./ModulesSettings.tsx')
+  expect(mediaSwitchOn(null)).toBe(true)
+  expect(mediaSwitchOn({ mediaEnabled: true })).toBe(true)
+  expect(mediaSwitchOn({ mediaEnabled: false })).toBe(false)
 })
 
 test('组头开关：缺席按启用，点一下写出去的是 desktopEnabled', async () => {
@@ -132,6 +163,24 @@ test('组头开关：缺席按启用，点一下写出去的是 desktopEnabled',
     expect(config()?.officeEnabled).toBe(false)
     expect(await until(() => stored.officeEnabled === false)).toBe(true)
     expect(stored.desktopEnabled).toBe(true)
+
+    // 画布与生成一组：组头是开关而不是「去配置」，写的是 mediaEnabled。
+    const media = Array.from(host.querySelectorAll<HTMLElement>('.settings-block-head')).find(
+      (h) => h.querySelector('h3')?.textContent === '画布与生成',
+    )
+    expect(media?.querySelector('.module-console')).toBeNull()
+    expect(activeLabel(host, '画布与生成')).toBe('启用')
+    click(segOf(host, '画布与生成').find((b) => b.textContent === '关闭') as HTMLButtonElement)
+    expect(config()?.mediaEnabled).toBe(false)
+    expect(await until(() => stored.mediaEnabled === false)).toBe(true)
+    expect(stored.officeEnabled).toBe(false)
+
+    // 浏览器控制一组：同一种组头开关，写的是 browserEnabled。
+    expect(activeLabel(host, '浏览器控制')).toBe('启用')
+    click(segOf(host, '浏览器控制').find((b) => b.textContent === '关闭') as HTMLButtonElement)
+    expect(config()?.browserEnabled).toBe(false)
+    expect(await until(() => stored.browserEnabled === false)).toBe(true)
+    expect(stored.mediaEnabled).toBe(false)
   } finally {
     dispose()
     host.remove()

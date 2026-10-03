@@ -38,7 +38,7 @@ export const installPluginTool: ToolSpec = {
   },
   actionKind: 'run',
   objectLabel: '插件',
-  category: 'external',
+  category: 'plugins',
   facet: '扩展',
   summary: '装一个插件',
   targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),

@@ -375,10 +375,10 @@ export interface BrowserDownloadResult {
  * 页面操作执行前拒绝：页级准入失败，或控制连接准备失败，尚未发出页面业务动作。
  * 已发出的动作遇到断连或超时不得声明 `executed:false`，应保留结果不明的回执。
  * `browser_disconnected` 需先对原页重新观察；`browser_busy` 等持有者释放；
- * `invalid_argument` 需修正参数。
+ * `invalid_argument` 需修正参数；`browser_unavailable` 表示用户已关闭浏览器控制，重试无效。
  */
 export interface BrowserRefusal {
-  errorKind: 'browser_busy' | 'invalid_argument' | 'browser_disconnected'
+  errorKind: 'browser_busy' | 'invalid_argument' | 'browser_disconnected' | 'browser_unavailable'
   executed: false
 }
 
@@ -1148,7 +1148,7 @@ export interface ToolOutcome {
 // ─────────────────────────────── 工具声明 ───────────────────────────────
 
 /**
- * 工具能力大类。**十个内置 + 一个类外的 `external`，没有「其他」。**
+ * 工具能力大类。**没有「其他」。**
  *
  * 这是一条与动作轴（`ActionKind`）、权限轴（`PermissionEffect`）**正交**的第三条轴：
  * 动作说「做了什么」，权限说「有什么副作用」，这条说「属于哪个领域」。
@@ -1158,9 +1158,9 @@ export interface ToolOutcome {
  * 分类是三层：`category`（大类）+ `facet`（类内功能方向）+ `summary`（一句话用途），
  * 注册期必填，缺一即注册失败。
  *
- * `external` 不算在内置里：MCP 与插件的工具自动归它，因为它们的类目由第三方决定，
- * 混进内置分类会使「文件与草稿」一栏出现来自外部来源的工具。**它不是兜底桶**——
- * 内置工具漏标不会落进来，那种情况注册直接失败。
+ * `mcp` 与 `plugins` 各是一个领域：MCP server 提供的工具一律归 `mcp`，插件提供的工具
+ * 一律归 `plugins`，因为它们的类目由第三方决定；内置工具只有管理 MCP 配置的归 `mcp`、
+ * 安装插件的归 `plugins`。两者不是兜底桶：内置工具漏标时注册直接失败，不会落进来。
  *
  * 枚举顺序即界面呈现顺序。
  */
@@ -1171,13 +1171,15 @@ export type ToolCategory =
   | 'browser'
   | 'desktop'
   | 'office'
+  | 'media'
   | 'memory'
   | 'skills'
   | 'planning'
   | 'goal'
   | 'session'
   | 'schedule'
-  | 'external'
+  | 'mcp'
+  | 'plugins'
 
 /**
  * 全部类目，**顺序即界面顺序**。
@@ -1192,13 +1194,15 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
   'browser',
   'desktop',
   'office',
+  'media',
   'memory',
   'skills',
   'planning',
   'goal',
   'session',
   'schedule',
-  'external',
+  'mcp',
+  'plugins',
 ]
 
 /** 权限副作用轴。注册时必填——没有默认值，忘了填就注册失败。 */

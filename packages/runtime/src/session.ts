@@ -320,16 +320,18 @@ export class Session {
     // 派活与装插件都跟着各自的通道走：成员会话两条都拿不到，因此它那边既没有
     // `subagent`（子 agent 不得再派活，递归没有终止条件），也没有 `install_plugin`
     // （子 agent 不该给整台机器装插件）。
+    // 画布与生成共用一个开关（`mediaEnabled`），缺席按启用，与设置页的读数同一条判据。
+    const mediaOn = opts.config.mediaEnabled !== false
     const withDelegate = {
       delegate: opts.delegate !== undefined,
       plugins: opts.plugins !== undefined,
       mcpConfig: true,
       browser: opts.browser !== undefined,
       desktop: opts.desktop !== undefined,
-      canvas: opts.canvas !== undefined,
+      canvas: mediaOn && opts.canvas !== undefined,
       office: opts.office !== undefined,
       // 生成工具按配了模型的类别注册；与其他内置工具同一规则，角色的 allowedTools 点名时按点名过滤。
-      media: [...new Set(listMediaModels(opts.config).map((m) => m.output))],
+      media: mediaOn ? [...new Set(listMediaModels(opts.config).map((m) => m.output))] : [],
     }
     if (opts.allowedTools === undefined) {
       registerBuiltinTools(this.registry, withDelegate)

@@ -205,7 +205,14 @@ describe('配置体检', () => {
     ])
   })
 
-  test('Office 开关只接受布尔值，解释器只接受绝对路径', () => {
+  test('浏览器控制开关只接受布尔值，缺席放行', () => {
+    expect(diagnoseConfig(cfg({ browserEnabled: false }))).toEqual([])
+    expect(diagnoseConfig(cfg({ browserEnabled: 'off' as unknown as boolean }))).toEqual([
+      'browserEnabled 必须是 true 或 false',
+    ])
+  })
+
+  test('Office 与画布生成开关只接受布尔值，解释器只接受绝对路径', () => {
     const abs = process.platform === 'win32' ? 'C:\\Python312\\python.exe' : '/usr/bin/python3'
     expect(diagnoseConfig(cfg({ officeEnabled: false, officePython: abs }))).toEqual([])
     expect(diagnoseConfig(cfg({ officeEnabled: 'no' as unknown as boolean }))).toEqual([
@@ -213,6 +220,10 @@ describe('配置体检', () => {
     ])
     expect(diagnoseConfig(cfg({ officePython: 'python.exe' }))).toEqual([
       'officePython 必须是 Python 解释器的绝对路径',
+    ])
+    expect(diagnoseConfig(cfg({ mediaEnabled: false }))).toEqual([])
+    expect(diagnoseConfig(cfg({ mediaEnabled: 'off' as unknown as boolean }))).toEqual([
+      'mediaEnabled 必须是 true 或 false',
     ])
   })
 

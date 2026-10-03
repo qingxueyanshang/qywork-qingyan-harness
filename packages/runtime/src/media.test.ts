@@ -2,7 +2,8 @@
  * 生成端口、参数表快照与生成花费的记账。
  *
  * 覆盖范围：`media.ts` 的 `makeMediaPort`（选模型、发出前校验、接口错误的转述、成功时交出花费）与 `operationOf`，
- * `prompt.ts` 里「可用的生成模型」那一节，以及 `session.ts` 把生成花费写进本轮 usage、`runs` 行与账本。
+ * `prompt.ts` 里「可用的生成模型」那一节，`session.ts` 按 `mediaEnabled` 注册画布与生成工具，
+ * 以及 `session.ts` 把生成花费写进本轮 usage、`runs` 行与账本。
  *
  * 端口对面是一个本机假百炼端点：参数不合法时它必须一次都没收到请求。
  * 记账那一组另起一个假的对话接口，脚本化地先调出图工具、再收尾，跑完整的一轮。
@@ -12,6 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { CanvasPort } from '@qywork/agent'
 import { type AgentEvent, type MediaInputRole, runCosts } from '@qywork/core'
 import { getRun, Store } from '@qywork/store'
 import type { QyConfig } from './config.ts'
@@ -356,6 +358,33 @@ describe('生成花费', () => {
       s.dispose()
       store.close()
     }
+  })
+})
+
+describe('画布与生成开关', () => {
+  /** 设置页「画布与生成」组头的开关写的是 `mediaEnabled`；会话据此决定注册不注册这组工具。 */
+  test('mediaEnabled 为 false 时画布与生成工具都不注册；缺席按启用', async () => {
+    const names = async (over: Partial<QyConfig>) => {
+      const store = new Store({ path: ':memory:' })
+      const s = new Session({
+        store,
+        config: config(over),
+        workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-media-switch-')),
+        signal: signal(),
+        canvas: {} as CanvasPort,
+      })
+      const list = (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
+        .schemas()
+        .map((t) => t.name)
+      store.close()
+      return list
+    }
+    const tools = ['read_canvas', 'canvas', 'generate_image']
+    expect(await names({})).toEqual(expect.arrayContaining(tools))
+    expect(await names({ mediaEnabled: true })).toEqual(expect.arrayContaining(tools))
+    const off = await names({ mediaEnabled: false })
+    for (const name of tools) expect(off).not.toContain(name)
+    expect(off).toContain('read_file')
   })
 })
 

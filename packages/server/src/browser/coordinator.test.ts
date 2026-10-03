@@ -1,7 +1,7 @@
 /**
  * 浏览器控制的会话归属与并发。
  *
- * 覆盖范围：`coordinator.ts` 的按执行者控制槽与页级独占、版本准入、会话归属校验、
+ * 覆盖范围：`coordinator.ts` 的按执行者控制槽与页级独占、版本准入、`browserEnabled` 开关、会话归属校验、
  * 按会话关页、释放与迟到回包的收尾、宿主断开重连，动作与导航之后的静默等待、
  * 观察登记与失败说明，
  * 选项页读取不发新编号、多事件动作没做完时仍带回观察，
@@ -698,6 +698,31 @@ test('一页被占住后，另一个执行的每种页面操作都被拒，宿�
   await settle()
   const taken = await other?.observe({ tabId })
   expect(taken?.observationId).toBeTruthy()
+})
+
+/**
+ * 设置页「浏览器控制」组头的开关写的是 `browserEnabled`。关闭后不再发布能力，
+ * 运行中已经取得的端口在下一次操作时被拒，且一帧不发。
+ */
+test('关闭浏览器控制后能力不发布，已发出的端口按未执行拒绝，重新开启后照常', async () => {
+  const { handle, host } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  expect(handle.browser?.available()).toBe(true)
+  config.browserEnabled = false
+  try {
+    expect(handle.browser?.available()).toBe(false)
+    const frames = host.received.length
+    for (const call of [port?.open('http://127.0.0.1:1/page'), port?.bind('bt_u')]) {
+      const err = await failure(call)
+      expect((err as Error & { errorKind?: string }).errorKind).toBe('browser_unavailable')
+      expect((err as Error & { executed?: boolean }).executed).toBe(false)
+    }
+    expect(host.received).toHaveLength(frames)
+  } finally {
+    delete config.browserEnabled
+  }
+  expect(handle.browser?.available()).toBe(true)
+  expect((await port?.open('http://127.0.0.1:1/page'))?.tabId).toBeTruthy()
 })
 
 /**
