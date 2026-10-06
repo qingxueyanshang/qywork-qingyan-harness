@@ -523,8 +523,7 @@ export function ModelSettings() {
                             const spec = modelCatalog()?.mediaLibrary.find(
                               (entry) => entry.id === id,
                             )
-                            const supported = spec?.kinds ?? (spec ? [spec.kind] : [])
-                            return supported.includes(m.kind) ? supported : [m.kind, ...supported]
+                            return spec ? spec.kinds : [m.kind]
                           }
                           const isDefault = () => {
                             const ref = c().mediaDefaults?.[output]

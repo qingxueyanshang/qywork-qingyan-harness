@@ -52,6 +52,7 @@ export {
   type MediaPrice,
   mediaCatalog,
   mediaCost,
+  mediaKindsOf,
   quoteMedia,
 } from './media/catalog.ts'
 export { buildMediaAdapter } from './media/index.ts'

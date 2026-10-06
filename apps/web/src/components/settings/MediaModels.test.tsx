@@ -201,24 +201,6 @@ test('官方及自定义地址添加 Google 与 xAI 均使用目录协议，模�
       expect(config()?.providers.native?.models).toEqual({})
       const output = MEDIA_KIND_OUTPUT[model.kind]
       expect(stored.mediaDefaults?.[output]).toEqual({ provider: 'native', model: model.id })
-      if (model.kind === 'xai_videos' && model.baseUrl === 'https://relay.example/v1') {
-        stored = structuredClone(stored)
-        stored.providers.native!.media![model.id] = { kind: 'openai_videos' }
-        await reloadConfig()
-        const access = host.querySelector<HTMLSelectElement>(
-          `select[aria-label="接入方式 ${model.id}"]`,
-        )!
-        expect(access.value).toBe('openai_videos')
-        expect(Array.from(access.options, (option) => option.value)).toEqual([
-          'openai_videos',
-          'xai_videos',
-        ])
-        access.value = 'xai_videos'
-        access.dispatchEvent(new Event('change', { bubbles: true }))
-        expect(await until(() => !configBusy())).toBe(true)
-        expect(stored.providers.native!.media![model.id]!.kind).toBe('xai_videos')
-        expect(stored.providers.native!.kind).toBe('openai_chat_completions')
-      }
       fire(
         Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find((b) =>
           b.textContent?.includes('模型库'),

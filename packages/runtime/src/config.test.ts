@@ -9,6 +9,7 @@ import {
   type ModelSpec,
   type ProviderKind,
 } from '@qywork/ai'
+import type { MediaKind } from '@qywork/core'
 import {
   catalogKey,
   collectSecrets,
@@ -1057,5 +1058,55 @@ describe('生成模型', () => {
     expect(problems.some((p) => p.includes('生成协议 "dalle"'))).toBe(true)
     expect(problems.some((p) => p.includes('默认生成模型 "qwen / qwen-image-3.0"'))).toBe(true)
     expect(diagnoseConfig(withMedia())).toEqual([])
+  })
+})
+
+describe('生成协议校正', () => {
+  let home: string
+  const prevHome = process.env.QYWORK_HOME
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'qy-media-kind-'))
+    process.env.QYWORK_HOME = home
+  })
+  afterEach(async () => {
+    if (prevHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = prevHome
+    await rm(home, { recursive: true, force: true }).catch(() => {})
+  })
+
+  const relay = (media: Record<string, { kind: MediaKind }>): QyConfig =>
+    cfg({
+      providers: {
+        ...cfg().providers,
+        relay: {
+          kind: 'openai_chat_completions',
+          apiKey: 'sk-relay',
+          baseUrl: 'https://relay.example/v1',
+          models: {},
+          media,
+        },
+      },
+    })
+
+  async function load(raw: QyConfig): Promise<QyConfig> {
+    await writeFile(join(home, 'config.json'), JSON.stringify(raw), 'utf8')
+    return loadConfig()
+  }
+
+  test('经中转站保存为 OpenAI 兼容协议的 Grok 视频改为 xAI 协议，且幂等', async () => {
+    const loaded = await load(relay({ 'grok-imagine-video-1.5': { kind: 'openai_videos' } }))
+    expect(
+      resolveMediaModel(loaded, 'video', { provider: 'relay', model: 'grok-imagine-video-1.5' }),
+    ).toMatchObject({ kind: 'xai_videos', baseUrl: 'https://relay.example/v1' })
+    expect(await load(loaded)).toEqual(loaded)
+  })
+
+  test('已核实的兼容协议与未收录模型的协议不改写', async () => {
+    const raw = relay({
+      'veo-3.1-generate-preview': { kind: 'openai_videos' },
+      'relay-video-x': { kind: 'openai_videos' },
+    })
+    expect((await load(raw)).providers.relay?.media).toEqual(raw.providers.relay?.media)
   })
 })

@@ -10,7 +10,9 @@ import { dirname, isAbsolute, join } from 'node:path'
 import {
   CHAT_REASONING_PROTOCOLS,
   type ChatReasoningProtocol,
+  findMediaModel,
   lookupModel,
+  mediaKindsOf,
   type TransportCapabilities,
 } from '@qywork/ai'
 import {
@@ -527,6 +529,30 @@ function migrateRetiredDeepSeekOverrides(cfg: QyConfig): string[] {
   return notices
 }
 
+/**
+ * 已收录生成模型保存的协议不在 `mediaKindsOf` 中时，改为目录协议。
+ *
+ * 此类协议没有已核实的请求格式：经中转站以 OpenAI 兼容协议调用 Grok 视频时，上游按 xAI 格式
+ * 返回 `request_id`，适配器无法取得任务号。添加模型时按目录协议保存，设置页也只提供已核实的协议；
+ * 已核实的选择不改写。
+ *
+ * 只修改内存，与模型库迁移相同；用户下一次保存配置时随整份写回。
+ */
+function migrateUnverifiedMediaKinds(cfg: QyConfig): string[] {
+  const notices: string[] = []
+  for (const [providerName, provider] of Object.entries(cfg.providers ?? {})) {
+    for (const [id, stored] of Object.entries(provider.media ?? {})) {
+      const spec = findMediaModel(id)
+      if (!spec || mediaKindsOf(spec).includes(stored.kind)) continue
+      notices.push(
+        `接口 ${providerName} / ${id} 的生成协议 ${stored.kind} 不是该模型已核实的协议，已改为 ${spec.kind}。`,
+      )
+      stored.kind = spec.kind
+    }
+  }
+  return notices
+}
+
 export async function loadConfig(): Promise<QyConfig> {
   const raw = await readFile(configPath(), 'utf8').catch(() => null)
   if (raw === null) return structuredClone(DEFAULT_CONFIG)
@@ -547,6 +573,7 @@ export async function loadConfig(): Promise<QyConfig> {
   for (const n of migrateModelLibrary(cfg)) log.warn('config', n)
   for (const n of migrateDisabledEffort(cfg)) log.warn('config', n)
   for (const n of migrateRetiredDeepSeekOverrides(cfg)) log.warn('config', n)
+  for (const n of migrateUnverifiedMediaKinds(cfg)) log.warn('config', n)
 
   /*
    * `providers` 为对象时即两层格式，原样加载。
