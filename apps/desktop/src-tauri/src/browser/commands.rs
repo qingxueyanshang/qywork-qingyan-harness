@@ -1,18 +1,18 @@
-//! 界面调内置浏览器的那几条命令。
+//! 界面调用内置浏览器的命令。
 //!
 //! 界面是宿主状态的投影：标签页清单、地址、标题、控制归属都由宿主经
-//! `browser:tabs` 事件推过来，这里只有「请宿主做一件事」。**前端不生成 tabId，
-//! 也不自己改地址**——那两样在宿主手里，前端写一份就是第二本账。
+//! `browser:tabs` 事件推送，此处只有向宿主发出的请求。**前端不生成 tabId，
+//! 也不自行修改地址**：两者由宿主管理，前端另写一份即形成第二本账。
 //!
-//! 移动端没有浏览器宿主，每条命令回同一句话。界面按握手里的
-//! `capabilities.browser` 决定入口显示与否，不会调到这里。
+//! 移动端没有浏览器宿主，每条命令返回同一条错误。界面按握手中的
+//! `capabilities.browser` 决定是否显示入口，不会调用此处。
 
 use serde::Serialize;
 
-/// 界面看得见的一页。**只有 id / 地址 / 标题 / 工作区 / 创建序号**：会话归属是协调器的事，
-/// 工具栏是标准浏览器 chrome，不区分人工页与 AI 页。
-/// 工作区在这里出现，是因为界面要按它决定这一页在不在当前页签条上；
-/// 创建序号与终端会话共用一个计数器，界面按它把两份清单排成一条页签条。
+/// 界面可见的页面。**只有 id / 地址 / 标题 / 工作区 / 创建序号**：会话归属由协调器负责，
+/// 工具栏是标准浏览器 chrome，不区分人工页面与 AI 页面。
+/// 包含工作区，是因为界面按它决定该页面是否显示在当前页签条上；
+/// 创建序号与终端会话共用一个计数器，界面按它把两份清单合并排列为一条页签条。
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TabView {
@@ -24,7 +24,7 @@ pub struct TabView {
 }
 
 #[cfg(not(desktop))]
-const UNSUPPORTED: &str = "这个平台没有内置浏览器";
+const UNSUPPORTED: &str = "当前平台没有内置浏览器";
 
 #[tauri::command]
 pub fn browser_tabs() -> Vec<TabView> {
@@ -38,9 +38,9 @@ pub fn browser_tabs() -> Vec<TabView> {
     }
 }
 
-/// 新开一页。`url` 缺席即一页空标签；`workspaceId` 必带，这一页从此归那个工作区。
+/// 新建页面。`url` 缺省时为空白标签页；`workspaceId` 为必填，该页面此后归属该工作区。
 ///
-/// **必须是 async**：建页要等主线程或 CDP 回包，同步命令跑在主线程上会死锁。
+/// **必须是 async**：新建页面需要等待主线程或 CDP 响应，同步命令运行在主线程上会死锁。
 #[tauri::command]
 pub async fn browser_open(
     app: tauri::AppHandle,
@@ -53,7 +53,7 @@ pub async fn browser_open(
             super::user_open(&app, url.as_deref(), &workspace_id)
         })
         .await
-        .map_err(|e| format!("建页任务失败：{e}"))?
+        .map_err(|e| format!("新建页面任务失败：{e}"))?
     }
     #[cfg(not(desktop))]
     {
@@ -62,14 +62,14 @@ pub async fn browser_open(
     }
 }
 
-/// 关页与导航在 Chromium 引擎上要等 CDP 回包，与建页同一条理由放到阻塞线程上。
+/// 关闭页面与导航在 Chromium 引擎上需要等待 CDP 响应，理由与新建页面相同，因此放到阻塞线程上执行。
 #[tauri::command]
 pub async fn browser_close(tab_id: String) -> Result<(), String> {
     #[cfg(desktop)]
     {
         tauri::async_runtime::spawn_blocking(move || super::user_close(&tab_id))
             .await
-            .map_err(|e| format!("关页任务失败：{e}"))?
+            .map_err(|e| format!("关闭页面任务失败：{e}"))?
     }
     #[cfg(not(desktop))]
     {
@@ -99,8 +99,8 @@ pub async fn browser_navigate(
     }
 }
 
-/// 把一页所在的浏览器窗口提到前面。只有页在独立窗口里的 macOS 与 Linux 有这件事；
-/// Windows 的页嵌在面板里，界面不会调到这里。要等 CDP 回包，理由同建页。
+/// 把页面所在的浏览器窗口置于前台。只有页面位于独立窗口的 macOS 与 Linux 需要此操作；
+/// Windows 的页面嵌在面板中，界面不会调用此处。需要等待 CDP 响应，理由同新建页面。
 #[tauri::command]
 pub async fn browser_activate(tab_id: String) -> Result<(), String> {
     #[cfg(all(desktop, not(windows)))]
@@ -112,7 +112,7 @@ pub async fn browser_activate(tab_id: String) -> Result<(), String> {
     #[cfg(windows)]
     {
         let _ = tab_id;
-        Err("浏览器页嵌在面板里，没有独立窗口".to_owned())
+        Err("浏览器页面嵌在面板中，没有独立窗口".to_owned())
     }
     #[cfg(not(desktop))]
     {
@@ -121,14 +121,14 @@ pub async fn browser_activate(tab_id: String) -> Result<(), String> {
     }
 }
 
-/// 摆放子视图。矩形是**物理像素**（DOM 矩形乘 `devicePixelRatio`），原点是窗口客户区左上角。
+/// 放置子视图。矩形使用**物理像素**（DOM 矩形乘以 `devicePixelRatio`），原点为窗口客户区左上角。
 ///
-/// `tabId` 缺席表示这一刻一页都不该露出来：面板收起、翻到别的页、浮层盖上来，以及界面
-/// 整页加载时收起上一份页面摆出来的子视图。原生子视图是窗口的子 HWND，画在所有 DOM 之上，
-/// CSS 的层叠对它无效。
+/// `tabId` 缺省表示此刻不应显示任何页面：面板收起、切换到其他页签、浮层覆盖，以及界面
+/// 整体加载时收起上一次界面放置的子视图。原生子视图是窗口的子 HWND，渲染在所有 DOM 之上，
+/// CSS 的层叠对其无效。
 ///
-/// macOS 与 Linux 的页在浏览器自己的窗口里，面板里本来没有摆出来的页：收起全部即已成立，
-/// 摆放某一页做不到，如实报错。界面加载时还不知道宿主是哪一种，所以收起全部两端都要接。
+/// macOS 与 Linux 的页面位于浏览器自身的窗口中，面板中没有放置的页面：收起全部的请求直接视为完成，
+/// 放置某个页面无法完成，如实报错。界面加载时尚不知道宿主类型，因此两类宿主都必须接受收起全部的请求。
 #[tauri::command]
 pub fn browser_layout(
     tab_id: Option<String>,
@@ -146,7 +146,7 @@ pub fn browser_layout(
         let _ = (x, y, width, height);
         match tab_id {
             None => Ok(()),
-            Some(_) => Err("浏览器页在独立窗口里，不在面板内摆放".to_owned()),
+            Some(_) => Err("浏览器页面位于独立窗口中，不在面板内放置".to_owned()),
         }
     }
     #[cfg(not(desktop))]

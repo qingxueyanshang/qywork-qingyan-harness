@@ -1,12 +1,12 @@
-//! 前台原始输入的真实派发口：`SendInput` 与 `WM_CHAR`。整个进程只有这里向系统发输入。
+//! 前台原始输入的实际派发端：`SendInput` 与 `WM_CHAR`。整个进程只有此处向系统发送输入。
 //!
-//! 文字按收件窗口选投法（`text_delivery`），一个码元只走其中一种：
+//! 文字按接收窗口选择投递方式（`text_delivery`），每个码元只使用其中一种：
 //!
-//! - 一般窗口投 `WM_CHAR`。不要改成注入 `KEYEVENTF_UNICODE` 键盘事件：系统对 U+002D、
-//!   U+2010–2015、U+3000–303F、U+FF00–FFDF 只投递按下、不投递配对的抬起，自己记按键
-//!   状态的应用（微信）把下一个按下当成自动重复，重复前字、吞掉后字。
-//! - UWP 的 `CoreWindow` 注入 `KEYEVENTF_UNICODE`。不要改成投 `WM_CHAR`：其中的文本框
-//!   （开始菜单搜索框）只从系统输入队列取字，投递的字符消息不报错也不落字。在这类窗口上
+//! - 一般窗口投递 `WM_CHAR`。不要改为注入 `KEYEVENTF_UNICODE` 键盘事件：系统对 U+002D、
+//!   U+2010–2015、U+3000–303F、U+FF00–FFDF 只投递按下、不投递配对的抬起，自行记录按键
+//!   状态的应用（微信）把下一个按下视为自动重复，重复输入前一个字符并丢弃后一个字符。
+//! - UWP 的 `CoreWindow` 注入 `KEYEVENTF_UNICODE`。不要改为投递 `WM_CHAR`：其中的文本框
+//!   （开始菜单搜索框）只从系统输入队列读取字符，投递的字符消息既不报错也不写入文字。在这类窗口上
 //!   注入上述区间的码元与连续重复字符，实测逐字一致。
 
 use std::ffi::c_void;
@@ -28,20 +28,20 @@ use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::input::{text_batches, Event, Sink};
 use crate::protocol::MouseButton;
 
-/// 一格滚动的轮值。系统按它换算成实际行数。
+/// 滚轮滚动一格的数值。系统按该值换算为实际行数。
 const WHEEL_DELTA: i32 = 120;
 
-/// 绝对指针坐标的满量程。`SendInput` 把 0 到这个数铺在虚拟桌面的宽高上。
+/// 绝对指针坐标的满量程。`SendInput` 把 0 到该值映射到虚拟桌面的宽高上。
 const ABSOLUTE_SPAN: i32 = 65_535;
 
 /// 屏幕物理像素点 → `SendInput` 的绝对指针坐标。
 ///
-/// 三条约束，换错任一条指针都会落在别处：
+/// 三项约束，任一项出错都会使指针落在其他位置：
 ///
-/// 1. **铺的是虚拟桌面矩形，不是主显示器矩形**，因此事件要带
-///    `MOUSEEVENTF_VIRTUALDESK`；虚拟桌面原点在主显示器左侧或上方有显示器时是负数。
-/// 2. **分母取宽高减一**：最后一个像素要落在满量程上，用宽高本身会整体差一格。
-/// 3. 结果夹在 0 与满量程之间：桌面外的点没有对应的绝对坐标。
+/// 1. **映射范围是虚拟桌面矩形，不是主显示器矩形**，因此事件必须带
+///    `MOUSEEVENTF_VIRTUALDESK`；主显示器左侧或上方有显示器时，虚拟桌面原点为负数。
+/// 2. **分母取宽高减一**：最后一个像素必须对应满量程，使用宽高本身会整体偏差一个单位。
+/// 3. 结果限制在 0 与满量程之间：桌面外的点没有对应的绝对坐标。
 fn to_absolute(point: ScreenPoint, desktop: ScreenRect) -> (i32, i32) {
     let span = |value: i32, origin: i32, size: i32| -> i32 {
         let range = f64::from((size - 1).max(1));
@@ -54,7 +54,7 @@ fn to_absolute(point: ScreenPoint, desktop: ScreenRect) -> (i32, i32) {
     )
 }
 
-/// 按键与指针的真实派发口。
+/// 按键与指针的实际派发端。
 pub struct SystemSink;
 
 impl Sink for SystemSink {
@@ -62,7 +62,7 @@ impl Sink for SystemSink {
         if events.is_empty() {
             return 0;
         }
-        // 键名换算不了时整批不发：发一半会让组合键停在半按下的状态。
+        // 键名无法换算时整批不发送：只发送一部分会使组合键停留在部分按下的状态。
         let Some(inputs) = events.iter().map(build).collect::<Option<Vec<INPUT>>>() else {
             return 0;
         };
@@ -72,24 +72,24 @@ impl Sink for SystemSink {
     }
 }
 
-/// 真实文字投递口。投法由收件窗口的类名定（`text_delivery`）。
+/// 实际文字投递端。投递方式由接收窗口的类名决定（`text_delivery`）。
 pub struct SystemCharSink;
 
 /// `WM_CHAR` 的 lParam：重复次数 1，扫描码 0，非扩展键。
 ///
-/// 不要改成从虚拟键码算出来的扫描码：这一条消息不对应任何一次按键，编一个扫描码
-/// 出来会让按扫描码分派的目标收到一个不存在的键。
+/// 不要改为从虚拟键码计算出的扫描码：该消息不对应任何一次按键，构造一个扫描码
+/// 会使按扫描码分派的目标收到一个不存在的键。
 const CHAR_LPARAM: isize = 1;
 
 /// UWP 应用与系统界面（开始菜单、搜索面板）承载内容的窗口类。
 const CORE_WINDOW_CLASS: &str = "Windows.UI.Core.CoreWindow";
 
-/// 一段文字怎么投进收件窗口。理由见文件头。
+/// 一段文字投递到接收窗口的方式。理由见文件头。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextDelivery {
-    /// `PostMessageW(WM_CHAR)` 投给收件窗口。
+    /// `PostMessageW(WM_CHAR)` 投递给接收窗口。
     CharMessage,
-    /// `SendInput` 注入 `KEYEVENTF_UNICODE` 键盘事件，进系统输入队列。
+    /// `SendInput` 注入 `KEYEVENTF_UNICODE` 键盘事件，进入系统输入队列。
     UnicodeInput,
 }
 
@@ -121,7 +121,7 @@ impl CharSink for SystemCharSink {
 fn post_char_messages(hwnd: HWND, units: &[u16]) -> u32 {
     let mut sent = 0u32;
     for unit in units {
-        // SAFETY: 句柄由调用方核对过归属，消息与参数都是常量形状。
+        // SAFETY: 句柄的归属已由调用方核对，消息与参数的格式固定。
         let ok = unsafe {
             PostMessageW(
                 Some(hwnd),
@@ -139,7 +139,7 @@ fn post_char_messages(hwnd: HWND, units: &[u16]) -> u32 {
     sent
 }
 
-/// 注入进系统输入队列，落到前台线程的焦点上；调用方已在这一批之前核对前台与焦点归属。
+/// 注入系统输入队列，由前台线程的焦点接收；调用方已在本批之前核对前台与焦点归属。
 fn send_unicode_input(units: &[u16]) -> u32 {
     let inputs = unicode_inputs(units);
     let size = i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(0);
@@ -148,7 +148,7 @@ fn send_unicode_input(units: &[u16]) -> u32 {
     inserted / 2
 }
 
-/// 每个码元一对按下与抬起，按原文顺序排。
+/// 每个码元对应一对按下与抬起事件，按原文顺序排列。
 fn unicode_inputs(units: &[u16]) -> Vec<INPUT> {
     units
         .iter()
@@ -161,10 +161,10 @@ fn unicode_inputs(units: &[u16]) -> Vec<INPUT> {
         .collect()
 }
 
-/// 把一批 UTF-16 码元投给一个窗口。
+/// 将一批 UTF-16 码元投递给一个窗口。
 ///
-/// 返回真的进了目标消息队列或系统输入队列的码元数。逐条判，**不要改成只看最后一条的
-/// 返回值**：UIPI 拦截是逐条生效的。
+/// 返回实际进入目标消息队列或系统输入队列的码元数。逐条判定，**不要改为只检查最后一条的
+/// 返回值**：UIPI 拦截逐条生效。
 pub trait CharSink {
     fn post(&self, window: i64, units: &[u16]) -> u32;
 }
@@ -172,19 +172,19 @@ pub trait CharSink {
 /// 一次文字投递的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivered {
-    /// 真的进了目标消息队列的码元数。
+    /// 实际进入目标消息队列的码元数。
     pub sent: u32,
-    /// 这段文字一共有多少个码元。
+    /// 该段文字的码元总数。
     pub requested: u32,
-    /// 中途停下来的原因。停下来时 `sent` 是已经投出去的那一段。
+    /// 中途停止的原因。停止时 `sent` 是已投递部分的码元数。
     pub interrupted: Option<String>,
 }
 
-/// 把文字逐码元投给收件窗口。
+/// 将文字逐码元投递给接收窗口。
 ///
-/// `target` 在每一批之前重新求收件窗口，返回 `Err` 即停止投递并把原因带回；
-/// 前台核对与焦点归属都在它里面判。批与批之间因此至少重核一次，一批之内不重核：
-/// 一个代理对的两个码元不能被中途停在中间，那不是任何字符。
+/// `target` 在每一批之前重新确定接收窗口，返回 `Err` 即停止投递并返回原因；
+/// 前台核对与焦点归属都由它判定。因此每两批之间至少重新核对一次，一批之内不重新核对：
+/// 代理对的两个码元之间不能停止投递，单个代理码元不构成任何字符。
 pub fn post_text(
     chars: &dyn CharSink,
     text: &str,
@@ -247,14 +247,14 @@ fn keyboard(vk: u16, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
     }
 }
 
-/// 虚拟键码对应的扫描码。取不到时交 0：部分应用只读虚拟键码，多一个 0 不会让它们
+/// 虚拟键码对应的扫描码。无法取得时返回 0：部分应用只读取虚拟键码，扫描码为 0 不会使这些应用
 /// 收不到按键。
 fn scan_of(vk: u16) -> u16 {
     // SAFETY: 纯查询，参数是键码常量。
     u16::try_from(unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) }).unwrap_or(0)
 }
 
-/// 一个事件对应的 `INPUT`。键名不在换算表里时返回 `None`。
+/// 一个事件对应的 `INPUT`。键名不在换算表中时返回 `None`。
 fn build(event: &Event) -> Option<INPUT> {
     Some(match *event {
         Event::Move { to } => {
@@ -324,7 +324,7 @@ mod tests {
         ScreenPoint { x, y }
     }
 
-    /// 单屏：左上角落在 0，右下角那个像素落在满量程上。
+    /// 单屏：左上角对应 0，右下角的像素对应满量程。
     #[test]
     fn absolute_coordinates_span_the_whole_desktop() {
         let desktop = rect(0, 0, 2560, 1440);
@@ -333,17 +333,17 @@ mod tests {
         assert_eq!(to_absolute(point(1280, 720), desktop), (32_780, 32_790));
     }
 
-    /// 负原点：主显示器左上方还有一台时，虚拟桌面原点是负的，换算要从那里起算。
+    /// 负原点：主显示器左上方还有一台显示器时，虚拟桌面原点为负数，换算从该原点起算。
     #[test]
     fn a_negative_desktop_origin_is_the_zero_of_the_absolute_range() {
         let desktop = rect(-1920, -200, 4480, 1640);
         assert_eq!(to_absolute(point(-1920, -200), desktop), (0, 0));
         assert_eq!(to_absolute(point(2559, 1439), desktop), (65_535, 65_535));
-        // 主显示器左上角落在虚拟桌面中间偏左：1920 / 4479 与 200 / 1639 的满量程比例。
+        // 主显示器左上角位于虚拟桌面中部偏左：1920 / 4479 与 200 / 1639 的满量程比例。
         assert_eq!(to_absolute(point(0, 0), desktop), (28_093, 7_997));
     }
 
-    /// 桌面外的点夹在量程两端，不绕回另一侧。
+    /// 桌面外的点限制在量程两端，不回绕到另一侧。
     #[test]
     fn a_point_outside_the_desktop_is_clamped_to_the_range() {
         let desktop = rect(0, 0, 2560, 1440);
@@ -351,13 +351,13 @@ mod tests {
         assert_eq!(to_absolute(point(9999, 9999), desktop), (65_535, 65_535));
     }
 
-    /// 单像素宽的桌面不会让分母变成 0。
+    /// 单像素宽的桌面不会使分母变为 0。
     #[test]
     fn a_one_pixel_desktop_does_not_divide_by_zero() {
         assert_eq!(to_absolute(point(0, 0), rect(0, 0, 1, 1)), (0, 0));
     }
 
-    /// 滚轮格数按 `WHEEL_DELTA` 换成轮值，符号与轴原样带过去。
+    /// 滚轮格数按 `WHEEL_DELTA` 换算为滚轮数值，符号与轴保持不变。
     #[test]
     fn wheel_notches_become_multiples_of_the_wheel_delta() {
         let data = |notches: i32, horizontal: bool| {
@@ -365,8 +365,8 @@ mod tests {
                 notches,
                 horizontal,
             })
-            .expect("滚轮事件一定换算得出");
-            // SAFETY: `build` 对滚轮事件构造的是 `mi` 这一支。
+            .expect("滚轮事件必定换算成功");
+            // SAFETY: `build` 对滚轮事件构造的是 `mi` 成员。
             let mi = unsafe { input.Anonymous.mi };
             (mi.mouseData as i32, mi.dwFlags)
         };
@@ -376,11 +376,11 @@ mod tests {
         assert_eq!(data(-1, true), (-120, MOUSEEVENTF_HWHEEL));
     }
 
-    /// 单测用的文字投递记录器。它不向任何窗口投消息。
+    /// 单元测试使用的文字投递记录器。它不向任何窗口投递消息。
     #[derive(Default)]
     struct CharRecorder {
         posted: Mutex<Vec<(i64, Vec<u16>)>>,
-        /// 每次调用只接受这么多个码元。默认全接受，用来构造 UIPI 拦截的形状。
+        /// 每次调用接受的码元数上限。默认全部接受，用于模拟 UIPI 拦截。
         accept: Option<u32>,
     }
 
@@ -396,7 +396,7 @@ mod tests {
     }
 
     impl CharRecorder {
-        /// 投出去的全部码元，按投递顺序接在一起。
+        /// 已投递的全部码元，按投递顺序拼接。
         fn units(&self) -> Vec<u16> {
             self.posted
                 .lock()
@@ -419,7 +419,7 @@ mod tests {
         move || Ok(window)
     }
 
-    /// 文字按码元逐条投给收件窗口，顺序与原文一致，一个码元一条消息。
+    /// 文字按码元逐条投递给接收窗口，顺序与原文一致，每个码元一条消息。
     #[test]
     fn text_is_delivered_one_code_unit_at_a_time_in_order() {
         let chars = CharRecorder::default();
@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(chars.windows(), vec![77]);
     }
 
-    /// 代理对的两个码元在同一批里投出去，批边界不会把它们分开。
+    /// 代理对的两个码元在同一批中投递，批边界不会将其分开。
     #[test]
     fn a_surrogate_pair_is_delivered_inside_one_batch() {
         let chars = CharRecorder::default();
@@ -450,7 +450,7 @@ mod tests {
         }
     }
 
-    /// 收件窗口每一批之前重新求：焦点在批之间换到别的控件时，后面的码元跟着走。
+    /// 每一批之前重新确定接收窗口：焦点在两批之间移到其他控件时，后续码元随之投递到该控件。
     #[test]
     fn the_receiving_window_is_resolved_once_per_batch() {
         let chars = CharRecorder::default();
@@ -464,7 +464,7 @@ mod tests {
         assert_eq!(chars.windows(), vec![11, 22]);
     }
 
-    /// 收件窗口求不到时停下来，已经投出去的那一段如实带回，后面的不再投。
+    /// 无法确定接收窗口时停止投递，如实返回已投递的部分，不再投递后续码元。
     #[test]
     fn delivery_stops_when_the_receiving_window_is_gone() {
         let chars = CharRecorder::default();
@@ -484,7 +484,7 @@ mod tests {
         assert_eq!(chars.units(), vec![0x0061, 0x0062]);
     }
 
-    /// 消息被拦下时停在那一条，已投数小于请求数。
+    /// 消息被拦截时在该条停止，已投递数小于请求数。
     #[test]
     fn a_blocked_message_stops_the_rest_of_the_text() {
         let chars = CharRecorder {
@@ -497,7 +497,7 @@ mod tests {
         assert_eq!(out.interrupted, None);
     }
 
-    /// 只有 `CoreWindow` 走注入；其余窗口（含 UWP 的外框 `ApplicationFrameWindow`）投字符消息。
+    /// 只有 `CoreWindow` 使用注入；其余窗口（含 UWP 的外框 `ApplicationFrameWindow`）投递字符消息。
     #[test]
     fn only_core_windows_receive_injected_text() {
         assert_eq!(
@@ -514,14 +514,14 @@ mod tests {
         }
     }
 
-    /// 注入的每个码元是一对 Unicode 按下与抬起，扫描码位放码元本身，虚拟键码为 0。
+    /// 注入的每个码元是一对 Unicode 按下与抬起事件，扫描码字段存放码元本身，虚拟键码为 0。
     #[test]
     fn injected_text_is_one_down_up_pair_per_code_unit() {
         let units: Vec<u16> = "a，👍".encode_utf16().collect();
         let events: Vec<(u16, u16, u32)> = unicode_inputs(&units)
             .iter()
             .map(|input| {
-                // SAFETY: `unicode_inputs` 只构造 `ki` 这一支。
+                // SAFETY: `unicode_inputs` 只构造 `ki` 成员。
                 let ki = unsafe { input.Anonymous.ki };
                 (ki.wVk.0, ki.wScan, ki.dwFlags.0)
             })
@@ -536,7 +536,7 @@ mod tests {
         assert_eq!(events, expected);
     }
 
-    /// 空文字一条消息都不投。
+    /// 空文字不投递任何消息。
     #[test]
     fn empty_text_posts_nothing() {
         let chars = CharRecorder::default();
@@ -546,7 +546,7 @@ mod tests {
         assert!(chars.units().is_empty());
     }
 
-    /// 词表里的每个键名、每个修饰键都换算得出虚拟键码：换算不了的键名会让整批输入不发。
+    /// 词表中的每个键名、每个修饰键都能成功换算为虚拟键码：无法换算的键名会使整批输入不发送。
     #[test]
     fn every_protocol_key_has_a_virtual_key() {
         let modifiers = [Modifier::Ctrl, Modifier::Alt, Modifier::Shift, Modifier::Meta];
@@ -560,22 +560,22 @@ mod tests {
             key: key.to_owned(),
             down,
         })?;
-        // SAFETY: `build` 对按键事件构造的是 `ki` 这一支。
+        // SAFETY: `build` 对按键事件构造的是 `ki` 成员。
         Some(unsafe { input.Anonymous.ki.dwFlags })
     }
 
-    /// 扩展键标志跟着按下与抬起两个事件走：抬起少了它，按下的那个键停在按下状态。
+    /// 扩展键标志同时附加在按下与抬起两个事件上：抬起事件缺少该标志时，对应的键会停留在按下状态。
     #[test]
     fn the_extended_flag_travels_with_both_halves_of_a_key_press() {
         for down in [true, false] {
-            let flags = key_flags("up", down).expect("up 在词表里");
+            let flags = key_flags("up", down).expect("up 在词表中");
             assert_eq!(flags.0 & KEYEVENTF_EXTENDEDKEY.0, KEYEVENTF_EXTENDEDKEY.0);
             assert_eq!(flags.0 & KEYEVENTF_KEYUP.0 != 0, !down);
         }
         assert_eq!(key_flags("a", true).map(|f| f.0 & KEYEVENTF_EXTENDEDKEY.0), Some(0));
     }
 
-    /// 换算不了的键名让整批一个事件都不发。
+    /// 无法换算的键名使整批不发送任何事件。
     #[test]
     fn a_batch_with_an_unknown_key_sends_nothing() {
         let events = [

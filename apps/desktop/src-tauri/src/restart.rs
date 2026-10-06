@@ -1,19 +1,19 @@
-//! 外壳拉起的子进程退出后的重启退避。电脑控制 worker 与 macOS / Linux 的浏览器进程共用这一份。
+//! 外壳启动的子进程退出后的重启退避。电脑控制 worker 与 macOS / Linux 的浏览器进程共用本实现。
 //!
-//! 一启动就退出的进程不能被无限拉起：连续短命退出到上限即停止重启，对应能力发布为不可用；
-//! 活过 `HEALTHY_RUN_MS` 才算这一次启动成功，计数归零。
+//! 启动后立即退出的进程不能被无限重启：连续短时退出达到上限即停止重启，对应能力发布为不可用；
+//! 运行超过 `HEALTHY_RUN_MS` 才视为本次启动成功，计数归零。
 
 use std::time::Duration;
 
 /// 重启退避的起点与上界。
 const RESTART_BASE_MS: u64 = 500;
 const RESTART_MAX_MS: u64 = 15_000;
-/// 连续失败多少次之后不再重启。
+/// 连续失败达到该次数后不再重启。
 const RESTART_MAX_ATTEMPTS: u32 = 5;
-/// 活过这个时长即认为这次启动是成功的，下一次失败从头退避。
+/// 运行超过该时长即视为本次启动成功，下一次失败从头开始退避。
 const HEALTHY_RUN_MS: u128 = 60_000;
 
-/// 第 `attempt` 次重启等多久。`None` = 到达上限，不再重启。
+/// 第 `attempt` 次重启前的等待时长。`None` 表示已达上限，不再重启。
 pub fn restart_delay(attempt: u32) -> Option<Duration> {
     if attempt >= RESTART_MAX_ATTEMPTS {
         return None;
@@ -25,7 +25,7 @@ pub fn restart_delay(attempt: u32) -> Option<Duration> {
     Some(Duration::from_millis(ms))
 }
 
-/// 这一次进程活了 `ran_for` 之后退出，下一次重启算第几次。
+/// 进程运行 `ran_for` 后退出时，返回下一次重启的序号。
 pub fn next_attempt(attempt: u32, ran_for: Duration) -> u32 {
     if ran_for.as_millis() >= HEALTHY_RUN_MS {
         0
@@ -49,8 +49,8 @@ mod tests {
         assert_eq!(restart_delay(99), None);
     }
 
-    /// 一启动就崩的进程退避到上限即停；活过一分钟的那一次让计数归零，
-    /// 否则跑了一整天才崩一次的进程也会在第五次之后永远不再起来。
+    /// 启动即崩溃的进程退避到上限即停止；运行超过一分钟的一次启动使计数归零，
+    /// 否则每天崩溃一次的进程也会在第五次之后永久停止重启。
     #[test]
     fn a_healthy_run_resets_the_backoff() {
         assert_eq!(next_attempt(0, Duration::from_millis(80)), 1);

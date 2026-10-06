@@ -1,8 +1,8 @@
 //! Windows 的浏览器引擎：主窗口下的 WebView2 子视图。
 //!
-//! 所有子视图共用同一个 `data_directory` 与同一串 `additional_browser_args`，
-//! 因此它们合流进同一个 WebView2 environment：一个 CDP 端点、一份登录状态。
-//! 参数串有任何差别都会另起一个 environment，而那会让同一份 profile 被开两次。
+//! 所有子视图共用同一个 `data_directory` 与同一组 `additional_browser_args`，
+//! 因此它们并入同一个 WebView2 environment：一个 CDP 端点、一份登录状态。
+//! 参数有任何差别都会另建一个 environment，使同一份 profile 被打开两次。
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -28,43 +28,43 @@ use super::address::{navigation_url, BLANK};
 use super::profile::{self, ProfileLock};
 use super::{marker_script, DownloadVerdict, Opened, OpenSpec, Runtime};
 
-/// 子视图里挂的 Tauri 运行时类型。钩子签名要它。
+/// 子视图使用的 Tauri 运行时类型。钩子签名需要该类型。
 type Wv = Wry;
 
-/// `host.ready` 报的显示位置：页是主窗口里的子视图，由界面摆进面板。
+/// `host.ready` 上报的显示位置：页面是主窗口中的子视图，由界面放入面板。
 pub const PRESENTATION: &str = "embedded";
 
-/// wry 在未指定 `additional_browser_args` 时传的默认值。
-/// 指定该方法会**整体替换**默认值，所以必须自己带上。
+/// wry 在未指定 `additional_browser_args` 时使用的默认值。
+/// 调用该方法会整体替换默认值，因此必须自行包含这些参数。
 const WRY_DEFAULT_BROWSER_ARGS: &str =
     "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
 
-/// 面板接上之前，子视图停在可视区之外。
-/// 只能用位置避让：`hide()` 会让页面不再出帧，截图与依赖出帧的等待一起挂起。
+/// 面板挂载之前，子视图位于可视区之外。
+/// 只能通过位置移出：`hide()` 会使页面停止渲染新帧，截图与依赖新帧的等待都会挂起。
 const OFFSCREEN: (f64, f64) = (-8000.0, -8000.0);
-/// 子视图建出时的尺寸。还没摆过的页移出可视区时也按它停。
+/// 子视图创建时的尺寸。尚未放置过的页移出可视区时也使用该尺寸。
 const DEFAULT_SIZE: (f64, f64) = (1280.0, 800.0);
 
-/// 建页之后等目标文档加载的上限。
+/// 创建页面后等待目标文档加载的时间上限。
 ///
-/// `add_child` 返回时子视图还停在 `about:blank`，注入的标记要等目标文档创建出来才存在；
-/// 实测这段是 700 ms 量级。不等就返回的话，调用方按标记去认页必然认不到。
+/// `add_child` 返回时子视图仍处于 `about:blank`，注入的标记在目标文档创建后才存在；
+/// 实测该间隔约为 700 ms。不等待就返回时，调用方必然无法按标记识别页面。
 const FIRST_LOAD_WAIT: Duration = Duration::from_secs(20);
 
-/// 下载钩子绑到原生对象上的等待上限。
+/// 将下载钩子绑定到原生对象的等待上限。
 ///
-/// `with_webview` 把闭包排到主线程再执行，因此这里必须等一个回执：不等就返回的话，
-/// 绑定失败会以「这一页的下载全部按未授权取消」的形式出现在很久之后。
+/// `with_webview` 把闭包排入主线程执行，因此此处必须等待回执：不等待就返回时，
+/// 绑定失败要到很久之后才以「该页的下载全部按未授权取消」的形式暴露。
 const DOWNLOAD_HOOK_WAIT: Duration = Duration::from_secs(10);
 
-/// 这一进程的 WebView2 environment：profile 占用、回环 CDP 端口与运行时版本。
+/// 本进程的 WebView2 environment：profile 占用、回环 CDP 端口与运行时版本。
 pub struct Engine {
     profile: ProfileLock,
     debug_port: u16,
     runtime_version: String,
 }
 
-/// 一页的原生句柄与最后一次摆出来的物理尺寸。移出可视区时按尺寸停，不缩小页面视口。
+/// 页面的原生句柄与最后一次放置时的物理尺寸。移出可视区时保持该尺寸，不缩小页面视口。
 #[derive(Clone)]
 pub struct Page {
     webview: Webview<Wv>,
@@ -72,11 +72,11 @@ pub struct Page {
 }
 
 impl Engine {
-    /// 占用 profile、分配回环 CDP 端口。子视图共用一个 environment，端口整个进程只分配一次。
+    /// 占用 profile 并分配回环 CDP 端口。子视图共用一个 environment，端口在整个进程中只分配一次。
     pub fn start(_app: &AppHandle) -> Result<Engine, String> {
-        let dir = profile::profile_dir().ok_or("取不到配置根目录")?;
+        let dir = profile::profile_dir().ok_or("无法取得配置根目录")?;
         let profile = profile::lock(&dir)?;
-        let debug_port = free_loopback_port().ok_or("分配不到回环调试端口")?;
+        let debug_port = free_loopback_port().ok_or("无法分配回环调试端口")?;
         let runtime_version = tauri::webview_version().unwrap_or_default();
         log::info!(
             "浏览器宿主已就绪 profile={} debugPort={debug_port} runtime={runtime_version}",
@@ -85,22 +85,22 @@ impl Engine {
         Ok(Engine { profile, debug_port, runtime_version })
     }
 
-    /// 子视图建出来之前端口就已分配，因此一经启动即就绪。
+    /// 端口在创建子视图之前已分配，因此启动后即就绪。
     pub fn settled(&self) -> Result<Runtime, &'static str> {
         Ok(Runtime { debug_port: self.debug_port, version: self.runtime_version.clone() })
     }
 
-    /// 建一个子视图。**不能在主线程调用**：`add_child` 内部是 `run_on_main_thread`
+    /// 创建一个子视图。**不得在主线程调用**：`add_child` 内部是 `run_on_main_thread`
     /// 加阻塞等待，在主线程上调用会死锁。
     pub fn open(&self, app: &AppHandle, spec: OpenSpec) -> Result<Opened, String> {
         let window = app
             .get_window("main")
-            .ok_or("主窗口不存在，建不出子视图")?;
+            .ok_or("主窗口不存在，无法创建子视图")?;
         let url = navigation_url(spec.url)?;
         let args =
             format!("{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port={}", self.debug_port);
 
-        // WebView2 不为 `about:blank` 发 `on_page_load`（实测等满 20 秒），所以空白页不等。
+        // WebView2 不为 `about:blank` 触发 `on_page_load`（实测会等待满 20 秒），因此空白页不等待。
         let blank_target = spec.url == BLANK;
         let event_tab = spec.tab_id.to_owned();
         let title_tab = spec.tab_id.to_owned();
@@ -109,7 +109,7 @@ impl Engine {
         let builder = WebviewBuilder::new(spec.tab_id, WebviewUrl::External(url))
             .data_directory(self.profile.dir().to_path_buf())
             .additional_browser_args(&args)
-            // AI 建页不切换系统焦点。默认是 true，必须显式关掉。
+            // AI 创建的页不切换系统焦点。默认值为 true，必须显式关闭。
             .focused(false)
             .initialization_script(marker_script(spec.marker))
             .on_navigation(move |url| {
@@ -123,7 +123,7 @@ impl Engine {
                     host.note_title(&title_tab, &title);
                 }
             })
-            // 等的是**目标文档**：`about:blank` 是创建后的初始文档，不算数。
+            // 等待的是目标文档：`about:blank` 是创建后的初始文档，不计入。
             .on_page_load(move |_webview, payload| {
                 if payload.url().as_str() == BLANK {
                     return;
@@ -141,18 +141,18 @@ impl Engine {
                 LogicalPosition::new(OFFSCREEN.0, OFFSCREEN.1),
                 LogicalSize::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
             )
-            .map_err(|e| format!("建子视图失败：{e}"))?;
+            .map_err(|e| format!("创建子视图失败：{e}"))?;
 
-        // 绑在等首个文档之前：文档一加载出来就可能发起下载，那时钩子必须已经在。
-        // 失败即回收这一个子视图：`add_child` 已经把它挂上窗口，直接返回错误会留下一个
-        // 存活表里没有、界面也关不掉的视图。
+        // 在等待首个文档之前绑定：文档加载后即可能发起下载，此时钩子必须已经存在。
+        // 绑定失败时回收该子视图：`add_child` 已将其附加到窗口，直接返回错误会留下一个
+        // 不在存活表中、界面也无法关闭的视图。
         if let Err(e) = bind_downloads(&webview, spec.tab_id) {
             close_view(webview);
             return Err(e);
         }
 
         if !blank_target && loaded_rx.recv_timeout(FIRST_LOAD_WAIT).is_err() {
-            log::warn!("子视图 {} 在期限内没有加载出首个文档", spec.tab_id);
+            log::warn!("子视图 {} 未在期限内加载首个文档", spec.tab_id);
         }
         let url = webview.url().map(|u| u.to_string()).unwrap_or_else(|_| spec.url.to_owned());
 
@@ -167,7 +167,7 @@ impl Engine {
         close_view(page.webview);
     }
 
-    /// 人工导航。地址走引擎自己的导航接口，前进后退走历史接口，`on_navigation` 照常回投。
+    /// 用户导航。地址使用引擎自身的导航接口，前进与后退使用历史接口，`on_navigation` 照常回传。
     pub fn navigate(&self, page: &Page, action: &str, url: Option<&str>) -> Result<(), String> {
         let view = &page.webview;
         match action {
@@ -179,29 +179,29 @@ impl Engine {
             "reload" => view.reload().map_err(|e| e.to_string()),
             "back" => view.eval("history.back()").map_err(|e| e.to_string()),
             "forward" => view.eval("history.forward()").map_err(|e| e.to_string()),
-            other => Err(format!("认不出的导航动作 {other}")),
+            other => Err(format!("无法识别的导航动作 {other}")),
         }
     }
 
-    /// 逐下载钩子直接指定落点，不需要按授权切换引擎级的下载行为。
+    /// 每次下载的钩子直接指定保存路径，无需按授权切换引擎级的下载行为。
     pub fn sync_downloads(&self) -> Result<(), String> {
         Ok(())
     }
 
-    /// 子视图随主窗口关闭，引擎本身没有要收的进程。
+    /// 子视图随主窗口关闭，引擎自身没有需要回收的进程。
     pub fn shutdown(&self) {}
 }
 
-/// 让内核挑一个空闲回环端口。
+/// 由内核分配一个空闲的回环端口。
 fn free_loopback_port() -> Option<u16> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
     listener.local_addr().ok().map(|a| a.port())
 }
 
-/// 摆放子视图：`active` 那一页落在给定的物理矩形上，其余全部移出可视区。
+/// 摆放子视图：`active` 指定的页放在给定的物理矩形上，其余全部移出可视区。
 ///
-/// 一次调用摆完所有页，因此「哪一页该露出来」只有界面这一个说法。
-/// `active` 为 `None`（面板收起、翻到别的页、浮层盖上来）时全部移出可视区。
+/// 一次调用摆放所有页，因此哪一页可见只由界面决定。
+/// `active` 为 `None`（面板收起、切换到其他页、被浮层遮挡）时全部移出可视区。
 pub fn layout(active: Option<&str>, x: i32, y: i32, width: u32, height: u32) -> Result<(), String> {
     let host = super::host().ok_or(super::NO_HOST)?;
     let pages: Vec<(String, Page)> = {
@@ -228,18 +228,18 @@ pub fn layout(active: Option<&str>, x: i32, y: i32, width: u32, height: u32) -> 
     Ok(())
 }
 
-/// 关掉一个子视图。构造中途失败的回收与正常关闭走同一条路。
+/// 关闭一个子视图。构造中途失败时的回收与正常关闭使用同一路径。
 fn close_view(view: Webview<Wv>) {
     if let Err(e) = view.close() {
         log::warn!("关闭子视图失败：{e}");
     }
 }
 
-/// 把子视图摆到窗口客户区的这个物理矩形上。
+/// 把子视图摆放到窗口客户区的指定物理矩形上。
 ///
-/// **只能传物理像素。** `set_bounds` 收到 `Logical` 会按子视图 HWND 的 DPI 再乘一次
-/// 缩放；前端量到的 DOM 矩形已经是 CSS 像素乘 `devicePixelRatio` 的结果，再乘一次
-/// 在 100% 之外的缩放下就摆错位置。坐标原点是父窗口客户区左上角。
+/// **只能传入物理像素。** `set_bounds` 收到 `Logical` 时会按子视图 HWND 的 DPI 再乘一次
+/// 缩放；前端测得的 DOM 矩形已经是 CSS 像素乘以 `devicePixelRatio` 的结果，再乘一次
+/// 会在非 100% 的缩放下放错位置。坐标原点是父窗口客户区左上角。
 fn place(view: &Webview<Wv>, x: i32, y: i32, width: u32, height: u32) {
     let bounds = Rect {
         position: PhysicalPosition::new(x, y).into(),
@@ -250,11 +250,11 @@ fn place(view: &Webview<Wv>, x: i32, y: i32, width: u32, height: u32) {
     }
 }
 
-/// 把子视图移出可视区。**尺寸保持原样**：收缩到 1×1 等于把页面视口也缩成 1×1，
-/// 页面会按那个宽度重排，截图和坐标一起失真。
+/// 把子视图移出可视区，尺寸保持不变：缩小到 1×1 会使页面视口同样变为 1×1，
+/// 页面按该宽度重排，截图与坐标随之失真。
 ///
-/// **不要改成 `hide()`**：它是 `ShowWindow(SW_HIDE)` 加 `SetIsVisible(false)`，
-/// 页面不再出帧，`Page.captureScreenshot` 与依赖出帧的等待一起挂起。
+/// **不要改成 `hide()`**：它执行 `ShowWindow(SW_HIDE)` 与 `SetIsVisible(false)`，
+/// 页面停止渲染新帧，`Page.captureScreenshot` 与依赖新帧的等待都会挂起。
 fn park(view: &Webview<Wv>, width: u32, height: u32) {
     let scale = view.window().scale_factor().unwrap_or(1.0);
     let x = (OFFSCREEN.0 * scale) as i32;
@@ -262,21 +262,21 @@ fn park(view: &Webview<Wv>, width: u32, height: u32) {
     place(view, x, y, width, height);
 }
 
-/// 在这一页的 WebView2 上接管下载。
+/// 在该页的 WebView2 上接管下载。
 ///
-/// 绑的是 `DownloadStarting` 交出的那个 `ICoreWebView2DownloadOperation`：终态由该对象的
-/// `StateChanged` 回报，一次下载的结果因此只能归发起它的那一次调用。
-/// **不要换回 `WebviewBuilder::on_download`**：那条路的完成回报只带 tab 与路径，
-/// 同一页上两次下载的终态分不开，先发起的那次会认领后发起的那次的结果。
+/// 绑定的是 `DownloadStarting` 提供的 `ICoreWebView2DownloadOperation`：终态由该对象的
+/// `StateChanged` 上报，因此一次下载的结果只能归属于发起它的调用。
+/// **不要改用 `WebviewBuilder::on_download`**：其完成通知只携带 tab 与路径，
+/// 无法区分同一页上两次下载的终态，先发起的下载会认领后发起的下载的结果。
 fn bind_downloads(view: &Webview<Wv>, tab_id: &str) -> Result<(), String> {
     let tab = tab_id.to_owned();
     let (tx, rx) = channel::<Result<(), String>>();
     view.with_webview(move |platform| {
         let _ = tx.send(register_downloads(&platform, tab));
     })
-    .map_err(|e| format!("取不到子视图的原生句柄：{e}"))?;
+    .map_err(|e| format!("无法取得子视图的原生句柄：{e}"))?;
     rx.recv_timeout(DOWNLOAD_HOOK_WAIT)
-        .map_err(|_| "下载钩子在期限内没有注册成功".to_owned())?
+        .map_err(|_| "下载钩子未在期限内注册成功".to_owned())?
 }
 
 /// 注册 `DownloadStarting`。在主线程上执行，句柄由 `PlatformWebview` 给出。
@@ -286,10 +286,10 @@ fn register_downloads(platform: &PlatformWebview, tab_id: String) -> Result<(), 
         let core = platform
             .controller()
             .CoreWebView2()
-            .map_err(|e| format!("取不到 CoreWebView2：{e}"))?;
+            .map_err(|e| format!("无法取得 CoreWebView2：{e}"))?;
         let core4: ICoreWebView2_4 = core
             .cast()
-            .map_err(|e| format!("这个 WebView2 运行时没有下载事件：{e}"))?;
+            .map_err(|e| format!("该 WebView2 运行时不支持下载事件：{e}"))?;
         core4
             .add_DownloadStarting(
                 &DownloadStartingEventHandler::create(Box::new(move |_, args| {
@@ -303,9 +303,9 @@ fn register_downloads(platform: &PlatformWebview, tab_id: String) -> Result<(), 
     Ok(())
 }
 
-/// 一次下载开始。裁决在宿主的授权表里做完，放行的那一次把身份绑到下载对象上。
+/// 下载开始。裁决在宿主的授权表中完成，放行时把身份绑定到下载对象上。
 ///
-/// 宿主不在时取消：没有授权表就判不了这次下载该不该放行，放行等于无裁决写盘。
+/// 宿主不存在时取消：没有授权表就无法判定是否放行本次下载，放行即未经裁决写入磁盘。
 fn starting(
     tab_id: &str,
     args: &ICoreWebView2DownloadStartingEventArgs,
@@ -324,23 +324,23 @@ fn starting(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned());
         match host.decide_download(Some(tab_id), &url, suggested) {
-            // 人工页沿用浏览器提议的目标路径；`SetHandled` 只是不弹默认下载 UI。
+            // 用户页使用浏览器建议的目标路径；`SetHandled` 只用于不显示默认下载 UI。
             DownloadVerdict::Default => args.SetHandled(true),
             DownloadVerdict::Allow(path, download_id) => {
                 args.SetResultFilePath(&HSTRING::from(path.as_os_str()))?;
                 args.SetHandled(true)?;
                 watch_state(tab_id, &operation, download_id)
             }
-            // 宿主在裁决时已经发过 `download.blocked`，这里只执行取消。
+            // 宿主在裁决时已发送 `download.blocked`，此处只执行取消。
             DownloadVerdict::Cancel => args.SetCancel(true),
         }
     }
 }
 
-/// 把本次身份绑到下载对象上，终态由它自己回报。
+/// 把本次身份绑定到下载对象上，终态由该对象上报。
 ///
-/// 回调在终态时就地解除：注册与解除都在这个下载对象上完成，不留一个跟着对象到析构的闭包。
-/// `IN_PROGRESS` 不是终态，收到它不回报。
+/// 回调在终态时当场解除：注册与解除都在该下载对象上完成，不保留一个存续到对象析构的闭包。
+/// `IN_PROGRESS` 不是终态，收到时不上报。
 fn watch_state(
     tab_id: &str,
     operation: &ICoreWebView2DownloadOperation,

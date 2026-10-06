@@ -1,22 +1,22 @@
-//! 前台原始输入里不分平台的那一部分：事件序列的构造与按下状态账。
+//! 前台原始输入中与平台无关的部分：事件序列的构造与按下状态账本。
 //!
 //! 六条边界：
 //!
-//! 1. **派发只经 `Sink`。** 真实实现在平台后端里，单测换成记录器，
+//! 1. **派发只经由 `Sink`。** 真实实现位于平台后端，单元测试替换为记录器，
 //!    测试不向系统发出任何输入。
-//! 2. **按下之前先记账，释放之后再清账。** 顺序不能反：反过来的话，按下与记账之间
-//!    worker 被强杀，那个键就没有人知道它按住了。多记一次的代价是宿主补发一个多余的
-//!    抬起事件，应用收到没有配对按下的抬起一律忽略。
-//! 3. **持有用 `Hold`，不要手写释放调用。** 中途返回与取消都会跳过那一行。
-//!    release 档位是 `panic = "abort"`，`Drop` 在 panic 时不运行，所以持有期间的代码
+//! 2. **按下之前先记账，释放之后再清账。** 顺序不能颠倒：颠倒时若 worker 在按下与记账之间
+//!    被强制终止，该键处于按住状态而没有任何记录。多记一次的代价是宿主补发一个多余的
+//!    抬起事件，应用对没有配对按下的抬起一律忽略。
+//! 3. **持有使用 `Hold`，不要手写释放调用。** 中途返回与取消都会跳过手写的释放调用。
+//!    release 配置为 `panic = "abort"`，`Drop` 在 panic 时不运行，因此持有期间的代码
 //!    不得 panic。
 //! 4. **本模块不做目标核对。** 前台窗口、包围盒与遮挡由调用方在派发之前判定，
-//!    这里只把已经定好的事件交给系统。
-//! 5. **事件里只有平台无关的量。** 坐标是屏幕物理像素，滚轮是格数，键是协议键名；
-//!    换成本平台的形状（Windows 是绝对坐标满量程、轮值与虚拟键码，X11 是根窗口坐标、
-//!    滚轮按钮与当前键盘映射里的键码）在平台的 `Sink` 里做。
-//! 6. **文字不经 `Event`。** 各平台的文字投递方式不同，由平台后端自己实现；按 UTF-16 码元
-//!    切批（`text_batches`）是按码元投递的平台共用的一步。
+//!    本模块只把已确定的事件交给系统。
+//! 5. **事件中只有与平台无关的量。** 坐标为屏幕物理像素，滚轮为格数，键为协议键名；
+//!    转换为本平台的表示（Windows 为绝对坐标满量程、滚轮值与虚拟键码，X11 为根窗口坐标、
+//!    滚轮按钮与当前键盘映射中的键码）由平台的 `Sink` 完成。
+//! 6. **文字不经由 `Event`。** 各平台的文字投递方式不同，由平台后端各自实现；按 UTF-16 码元
+//!    分批（`text_batches`）是按码元投递的平台共用的步骤。
 
 use std::sync::{Mutex, OnceLock};
 
@@ -26,7 +26,7 @@ use crate::protocol::{HeldInput, MouseButton, ScrollDirection};
 /// 一个待派发的输入事件。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    /// 指针移到这个屏幕物理像素点。
+    /// 指针移动到该屏幕物理像素点。
     Move { to: ScreenPoint },
     /// 鼠标键按下或抬起。
     Button { button: MouseButton, down: bool },
@@ -38,14 +38,14 @@ pub enum Event {
 
 /// 把一批事件交给系统。
 ///
-/// 返回真的进了输入队列的事件数，**它可能小于请求数**（Windows 上目标进程完整性比本进程
-/// 高时 UIPI 会把这一批挡掉）。调用方按这个数判执行事实，不按调用有没有报错判。
-/// 批里有本平台换算不了的键名时整批不发，返回 0。
+/// 返回实际进入输入队列的事件数，**该值可能小于请求数**（Windows 上目标进程完整性级别高于本进程
+/// 时 UIPI 会拦截整批事件）。调用方按该值判定执行事实，不按调用是否报错判定。
+/// 批中有本平台无法换算的键名时整批不发送，返回 0。
 pub trait Sink {
     fn send(&self, events: &[Event]) -> u32;
 }
 
-// ── 按下状态账 ──
+// ── 按下状态账本 ──
 
 #[derive(Debug, Default)]
 struct Ledger {
@@ -66,15 +66,15 @@ static LEDGER: Mutex<Option<Ledger>> = Mutex::new(None);
 type Notify = Box<dyn Fn(HeldInput) + Send + Sync>;
 static NOTIFY: OnceLock<Notify> = OnceLock::new();
 
-/// 登记账目变化的通报口。服务循环启动时注册一次，此后每次账目变化都发一行。
+/// 账目变化的通知回调。服务循环启动时注册一次，此后每次账目变化都发送一行。
 ///
-/// 宿主按最后一次通报在确认 worker 退出之后补发释放；没有这个通报，被强杀的 worker
-/// 按住的键会留在用户的桌面上。
+/// 宿主在确认 worker 退出后按最后一次通知补发释放；没有该通知时，被强制终止的 worker
+/// 按住的键会一直保持按下状态。
 pub fn on_change(notify: impl Fn(HeldInput) + Send + Sync + 'static) {
     let _ = NOTIFY.set(Box::new(notify));
 }
 
-/// 此刻按住的鼠标键与键名。
+/// 当前按住的鼠标键与键名。
 pub fn held() -> HeldInput {
     LEDGER
         .lock()
@@ -105,9 +105,9 @@ pub const fn button_name(button: MouseButton) -> &'static str {
 
 /// 一次「按下之后必须释放」的持有。
 ///
-/// 按下的账在构造时就记上，释放在 `release` 或 `Drop` 里做。**不要换成手写的释放
-/// 调用**：取消、目标失效与提前返回都会跳过那一行，而按住不放的鼠标键会留在用户的
-/// 桌面上。
+/// 按下记录在构造时写入，释放在 `release` 或 `Drop` 中执行。**不要改为手写的释放
+/// 调用**：取消、目标失效与提前返回都会跳过手写的释放调用，
+/// 使鼠标键一直保持按下状态。
 pub struct Hold<'a> {
     sink: &'a dyn Sink,
     buttons: Vec<MouseButton>,
@@ -116,7 +116,7 @@ pub struct Hold<'a> {
 }
 
 impl<'a> Hold<'a> {
-    /// 记下将要按住的鼠标键与键名，**在派发按下事件之前调用**。
+    /// 记录将要按住的鼠标键与键名，**在派发按下事件之前调用**。
     pub fn record(sink: &'a dyn Sink, buttons: Vec<MouseButton>, keys: Vec<String>) -> Self {
         edit(|ledger| {
             for button in &buttons {
@@ -140,8 +140,8 @@ impl<'a> Hold<'a> {
 
     /// 只清账，不发释放事件。
     ///
-    /// **只在本次按下的键已经由别的事件抬起来时用**：组合键的整条序列自带抬起，
-    /// 那时再发一遍抬起会让目标应用收到没有配对按下的第二个抬起事件。
+    /// **只在本次按下的键已由其他事件抬起时使用**：组合键的完整序列自带抬起事件，
+    /// 此时再发送一次抬起会使目标应用收到没有配对按下的第二个抬起事件。
     pub fn clear(&mut self) {
         if self.released {
             return;
@@ -150,7 +150,7 @@ impl<'a> Hold<'a> {
         drop_from_ledger(&self.buttons, &self.keys);
     }
 
-    /// 释放本次记下的那一份并清账。重复调用是空操作。
+    /// 释放本次记录的按键并清账。重复调用为空操作。
     pub fn release(&mut self) -> u32 {
         if self.released {
             return 0;
@@ -196,8 +196,8 @@ impl Drop for Hold<'_> {
 
 /// 组合键的事件序列：修饰键按给出的顺序按下，主键按下抬起，修饰键**逆序**释放。
 ///
-/// 逆序释放是硬要求：按 Ctrl、Shift 的顺序按下却按同序释放，目标应用在中间那一刻
-/// 收到的是一个只按着 Shift 的状态，而很多快捷键表按修饰键组合判。
+/// 逆序释放是强制要求：按 Ctrl、Shift 的顺序按下却按同序释放时，目标应用在中间时刻
+/// 收到的是只按住 Shift 的状态，而许多快捷键表按修饰键组合判定。
 pub fn key_stroke(key: &str, modifiers: &[String]) -> Vec<Event> {
     let press = |key: &str, down: bool| Event::Key {
         key: key.to_owned(),
@@ -224,12 +224,12 @@ pub const fn wheel_of(direction: ScrollDirection, amount: u32) -> (i32, bool) {
     }
 }
 
-/// 把文字按 UTF-16 码元切成批，**代理对不跨批**。
+/// 把文字按 UTF-16 码元分批，**代理对不跨批**。
 ///
-/// 一个补充平面字符占两个码元，两个码元分在两批发出去的话，目标应用先收到一个孤立的
-/// 高位代理，那不是任何字符。
+/// 一个补充平面字符占两个码元，两个码元分在两批发送时，目标应用先收到一个孤立的
+/// 高位代理，它不对应任何字符。
 ///
-/// X11 按字符借用键码，不按码元投递，Linux 不编译它。
+/// X11 按字符借用键码，不按码元投递，Linux 不编译该函数。
 #[cfg(any(windows, target_os = "macos", test))]
 pub fn text_batches(text: &str, max_units: usize) -> Vec<Vec<u16>> {
     let limit = max_units.max(2);
@@ -251,8 +251,8 @@ pub fn text_batches(text: &str, max_units: usize) -> Vec<Vec<u16>> {
 
 /// 拖拽途中的落点序列，**不含起点，末尾恰好是终点**。
 ///
-/// 分段发是必要的：一次跳到终点的话，按住拖动的控件收不到中间的移动消息，
-/// 很多实现据此判断拖动有没有开始。
+/// 必须分段发送：一次跳到终点时，被拖动的控件收不到中间的移动消息，
+/// 而许多实现据此判断拖动是否开始。
 pub fn drag_path(from: ScreenPoint, to: ScreenPoint, steps: u32) -> Vec<ScreenPoint> {
     let count = steps.max(1);
     (1..=count)
@@ -270,15 +270,15 @@ pub fn drag_path(from: ScreenPoint, to: ScreenPoint, steps: u32) -> Vec<ScreenPo
 mod tests {
     use super::*;
 
-    /// 账目是进程级的，读写它的用例要排队跑：测试线程默认并行，两条用例同时改同一本账
-    /// 会互相看到对方的按下记录。
+    /// 账目是进程级的，读写账目的用例须串行执行：测试线程默认并行，两条用例同时修改同一账目
+    /// 会读到对方的按下记录。
     static LEDGER_TESTS: Mutex<()> = Mutex::new(());
 
-    /// 单测用的派发记录器。它不向系统发任何输入。
+    /// 单元测试使用的派发记录器。它不向系统发送任何输入。
     #[derive(Default)]
     struct Recorder {
         sent: Mutex<Vec<Event>>,
-        /// 每次调用只接受这么多个事件。默认全接受，用来构造 UIPI 拦截的形状。
+        /// 每次调用只接受该数量的事件。默认全部接受，用于构造 UIPI 拦截的情形。
         accept: Option<u32>,
     }
 
@@ -325,7 +325,7 @@ mod tests {
                 key("ctrl", false),
             ]
         );
-        // 没有修饰键时就是一对按下抬起。
+        // 没有修饰键时只有一对按下与抬起。
         assert_eq!(key_stroke("enter", &[]), vec![key("enter", true), key("enter", false)]);
     }
 
@@ -335,7 +335,7 @@ mod tests {
         assert_eq!(wheel_of(ScrollDirection::Down, 3), (-3, false));
         assert_eq!(wheel_of(ScrollDirection::Right, 2), (2, true));
         assert_eq!(wheel_of(ScrollDirection::Left, 1), (-1, true));
-        // 0 格按 1 格算：一次不动的滚动没有意义。
+        // 0 格按 1 格计算：不产生位移的滚动没有意义。
         assert_eq!(wheel_of(ScrollDirection::Down, 0), (-1, false));
     }
 
@@ -354,14 +354,14 @@ mod tests {
             ScreenPoint { x: 145, y: 200 },
             to,
         ]);
-        // 段数为 0 时仍然至少走一步，落在终点上。
+        // 段数为 0 时仍至少移动一步，落在终点。
         assert_eq!(drag_path(from, to, 0), vec![to]);
     }
 
-    /// 代理对的两个码元在同一批里。分批发会让目标应用先收到一个孤立的高位代理。
+    /// 代理对的两个码元在同一批中。分批发送会使目标应用先收到一个孤立的高位代理。
     #[test]
     fn a_surrogate_pair_is_never_split_across_batches() {
-        // 每个字符两个码元，上限 3 只装得下一个字符。
+        // 每个字符占两个码元，上限 3 只能容纳一个字符。
         let batches = text_batches("𠮷𠮷", 3);
         assert_eq!(batches.len(), 2);
         assert!(batches.iter().all(|b| b.len() == 2));
@@ -369,13 +369,13 @@ mod tests {
             assert!((0xD800..0xDC00).contains(&batch[0]));
             assert!((0xDC00..0xE000).contains(&batch[1]));
         }
-        // 上限装得下时不拆。
+        // 上限能容纳时不拆分。
         assert_eq!(text_batches("𠮷", 4), vec![vec![0xD842, 0xDFB7]]);
-        // 上限比一个代理对还小时仍然不拆：拆出来的半个码元不是任何字符。
+        // 上限小于一个代理对时仍不拆分：拆出的单个码元不对应任何字符。
         assert_eq!(text_batches("𠮷", 1), vec![vec![0xD842, 0xDFB7]]);
     }
 
-    /// 中文按码元切批，批的长度不超过上限。
+    /// 中文按码元分批，每批长度不超过上限。
     #[test]
     fn text_is_batched_by_utf16_units() {
         let batches = text_batches("张三李四王五", 4);
@@ -383,7 +383,7 @@ mod tests {
         assert!(text_batches("", 4).is_empty());
     }
 
-    /// 持有在 `Drop` 时释放，且释放事件是抬起、顺序与按下相反。
+    /// 持有在 `Drop` 时释放，释放事件为抬起，顺序与按下相反。
     #[test]
     fn a_hold_releases_what_it_recorded_when_it_goes_out_of_scope() {
         let _guard = LEDGER_TESTS.lock().expect("用例锁");
@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(held(), HeldInput::default());
     }
 
-    /// 显式释放之后 `Drop` 不再发第二遍。
+    /// 显式释放后 `Drop` 不再重复发送。
     #[test]
     fn releasing_twice_sends_the_release_once() {
         let _guard = LEDGER_TESTS.lock().expect("用例锁");
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(held(), HeldInput::default());
     }
 
-    /// UIPI 把整批挡掉时记录器一个事件都不收，返回 0。
+    /// UIPI 拦截整批事件时记录器不接收任何事件，返回 0。
     #[test]
     fn a_blocked_batch_reports_zero_sent() {
         let sink = Recorder {

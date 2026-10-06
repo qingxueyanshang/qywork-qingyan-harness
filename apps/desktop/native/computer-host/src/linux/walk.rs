@@ -1,9 +1,9 @@
-//! 经总线读控件树：一个对象的事实、子节点、深度优先遍历、按 `ref` 重新定位，以及注册表
-//! 上的应用与它们的顶层 frame。
+//! 经由总线读取控件树：对象的事实、子节点、深度优先遍历、按 `ref` 重新定位，以及注册表
+//! 上的应用与其顶层 frame。
 //!
-//! 子节点顺序只有一处来源：`children` 的 `GetChildren`，窗口根再接上 `root_children` 里的弹出
-//! 窗口。读树与重新定位共用它们，`ref` 里的下标才对得上；不要在一处改用 `GetChildAtIndex`，
-//! 两者的顺序不保证一致。
+//! 子节点顺序只有一处来源：`children` 的 `GetChildren`；窗口根的子节点之后再追加 `root_children`
+//! 中的弹出窗口。读树与重新定位共用这两个函数，`ref` 中的下标才能一致；不要在其中一处改用
+//! `GetChildAtIndex`，两者的顺序不保证一致。
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -27,11 +27,11 @@ use crate::tree::{decode_ref, first_sighting, flatten, Collected};
 /// 注册表的根对象：它的子节点是各应用的根。
 const REGISTRY: &str = "org.a11y.atspi.Registry";
 
-/// 一个对象的子节点，顺序即回复里的顺序，空引用不计。每一格各自成败：读不出的那一格只丢它
-/// 自己，占着的下标不让给后面的兄弟。
+/// 对象的子节点，顺序即回复中的顺序，空引用不计入。每一项独立成败：无法读取的一项只丢弃
+/// 该项本身，其下标保留，不让给后续的兄弟节点。
 ///
-/// 回复按 `a(so)` 原样取，不要改用 atspi 的 `get_children`：它的引用类型要求总线名是唯一名，
-/// 一格众所周知名就让整条回复解析失败，总线名为空的一格则直接 panic。
+/// 回复按 `a(so)` 原样读取，不要改用 atspi 的 `get_children`：它的引用类型要求总线名是唯一名，
+/// 一项众所周知名即会使整条回复解析失败，总线名为空的一项则直接 panic。
 pub fn children(conn: &Connection, obj: &Obj) -> Result<Vec<Result<Obj, Failure>>, Failure> {
     let accessible: AccessibleProxyBlocking = obj.proxy(conn)?;
     let refs: Vec<(String, OwnedObjectPath)> = accessible
@@ -46,10 +46,10 @@ pub fn children(conn: &Connection, obj: &Obj) -> Result<Vec<Result<Obj, Failure>
         .collect())
 }
 
-/// 接口上的一项可选读取：应用不应答或对象已经消失照常交出去，其余失败按读不到算。
+/// 接口上的一项可选读取：应用不应答或对象已经消失时照常向上返回失败，其余失败视为无法读取。
 ///
-/// 不要改成一律交出去：应用声明了接口而某个属性读不出来是常态（Chrome 的部分节点声明
-/// Value 接口，读 `MinimumValue` 回 `Get failed`），交出去会让整窗读取为一个节点失败。
+/// 不要改为一律向上返回：应用声明了接口而某个属性无法读取是常见情况（Chrome 的部分节点声明
+/// Value 接口，读取 `MinimumValue` 时返回 `Get failed`），向上返回会使整个窗口的读取因一个节点而失败。
 fn optional<T>(read: Result<T, Failure>) -> Result<Option<T>, Failure> {
     match read {
         Ok(v) => Ok(Some(v)),
@@ -58,24 +58,24 @@ fn optional<T>(read: Result<T, Failure>) -> Result<Option<T>, Failure> {
     }
 }
 
-/// 读一个对象的事实。`fields.value` 为假时不读文本；数值只在要状态、或对象是滚动条时读。
+/// 读取对象的事实。`fields.value` 为假时不读取文本；数值只在请求状态或对象是滚动条时读取。
 ///
-/// 角色、状态、接口与名称必须读到，读不到即这个节点失败；其余各接口的读取见 `optional`。
+/// 角色、状态、接口与名称必须读取成功，无法读取即该节点失败；其余各接口的读取见 `optional`。
 pub fn facts(conn: &Connection, obj: &Obj, fields: Fields) -> Result<Facts, Failure> {
     let accessible: AccessibleProxyBlocking = obj.proxy(conn)?;
-    let role = accessible.get_role().map_err(dbus("读角色"))?;
-    let states = accessible.get_state().map_err(dbus("读状态"))?;
-    let interfaces = accessible.get_interfaces().map_err(dbus("读接口"))?;
-    let name = accessible.name().map_err(dbus("读名称"))?;
-    // 2.34 之前的 AT-SPI 没有这一项：读不到按空串算，与应用没设置同一个含义。
+    let role = accessible.get_role().map_err(dbus("读取角色"))?;
+    let states = accessible.get_state().map_err(dbus("读取状态"))?;
+    let interfaces = accessible.get_interfaces().map_err(dbus("读取接口"))?;
+    let name = accessible.name().map_err(dbus("读取名称"))?;
+    // 2.34 之前的 AT-SPI 没有该属性：无法读取时按空串处理，与应用未设置含义相同。
     let accessible_id =
-        optional(accessible.accessible_id().map_err(dbus("读稳定标识")))?.unwrap_or_default();
+        optional(accessible.accessible_id().map_err(dbus("读取稳定标识")))?.unwrap_or_default();
     let extents = if interfaces.contains(Interface::Component) {
         let component: ComponentProxyBlocking = obj.proxy(conn)?;
         optional(
             component
                 .get_extents(CoordType::Screen)
-                .map_err(dbus("读包围盒")),
+                .map_err(dbus("读取包围盒")),
         )?
         .and_then(|(x, y, w, h)| node::extents(x, y, w, h))
     } else {
@@ -83,11 +83,11 @@ pub fn facts(conn: &Connection, obj: &Obj, fields: Fields) -> Result<Facts, Fail
     };
     let actions = if interfaces.contains(Interface::Action) {
         let action: ActionProxyBlocking = obj.proxy(conn)?;
-        // 动作名缺一个就整张不要：下标对不上时按名字挑出来的是别的动作。
+        // 任一动作名无法读取即丢弃整张动作表：下标不一致时按名称选中的是其他动作。
         optional((|| {
-            let n = action.n_actions().map_err(dbus("读动作数"))?;
+            let n = action.n_actions().map_err(dbus("读取动作数"))?;
             (0..n)
-                .map(|index| action.get_name(index).map_err(dbus("读动作名")))
+                .map(|index| action.get_name(index).map_err(dbus("读取动作名")))
                 .collect::<Result<Vec<_>, _>>()
         })())?
         .unwrap_or_default()
@@ -104,9 +104,9 @@ pub fn facts(conn: &Connection, obj: &Obj, fields: Fields) -> Result<Facts, Fail
     let text = if interfaces.contains(Interface::Text) && fields.value {
         let text: TextProxyBlocking = obj.proxy(conn)?;
         optional((|| {
-            let count = text.character_count().map_err(dbus("读字符数"))?;
+            let count = text.character_count().map_err(dbus("读取字符数"))?;
             if (0..=VALUE_TEXT_LIMIT).contains(&count) {
-                text.get_text(0, count).map(Some).map_err(dbus("读文本"))
+                text.get_text(0, count).map(Some).map_err(dbus("读取文本"))
             } else {
                 Ok(None)
             }
@@ -128,44 +128,44 @@ pub fn facts(conn: &Connection, obj: &Obj, fields: Fields) -> Result<Facts, Fail
     })
 }
 
-/// 对象此刻的屏幕包围盒。读不出或尚未摆放时缺席，读取见 `optional`。
+/// 对象当前的屏幕包围盒。无法读取或尚未布局时缺失，读取规则见 `optional`。
 fn screen_rect(conn: &Connection, obj: &Obj) -> Result<Option<ScreenRect>, Failure> {
     let component: ComponentProxyBlocking = obj.proxy(conn)?;
     Ok(optional(
         component
             .get_extents(CoordType::Screen)
-            .map_err(dbus("读包围盒")),
+            .map_err(dbus("读取包围盒")),
     )?
     .and_then(|(x, y, w, h)| node::extents(x, y, w, h)))
 }
 
-/// Value 接口此刻的四个数。
+/// Value 接口当前的四个数值。
 pub fn numbers(conn: &Connection, obj: &Obj) -> Result<Numbers, Failure> {
     let value: ValueProxyBlocking = obj.proxy(conn)?;
     Ok(Numbers {
-        current: value.current_value().map_err(dbus("读当前值"))?,
-        min: value.minimum_value().map_err(dbus("读下界"))?,
-        max: value.maximum_value().map_err(dbus("读上界"))?,
-        increment: value.minimum_increment().map_err(dbus("读步长"))?,
+        current: value.current_value().map_err(dbus("读取当前值"))?,
+        min: value.minimum_value().map_err(dbus("读取下界"))?,
+        max: value.maximum_value().map_err(dbus("读取上界"))?,
+        increment: value.minimum_increment().map_err(dbus("读取步长"))?,
     })
 }
 
-/// 父对象里与子节点可用动作有关的事实，`grandparent` 是父对象的父对象。
+/// 父对象中与子节点可用动作相关的事实，`grandparent` 是父对象的父对象。
 pub fn context_of(
     conn: &Connection,
     obj: &Obj,
     grandparent: Option<&Obj>,
 ) -> Result<Context, Failure> {
     let accessible: AccessibleProxyBlocking = obj.proxy(conn)?;
-    let role = accessible.get_role().map_err(dbus("读父节点角色"))?;
-    let states = accessible.get_state().map_err(dbus("读父节点状态"))?;
-    let interfaces = accessible.get_interfaces().map_err(dbus("读父节点接口"))?;
+    let role = accessible.get_role().map_err(dbus("读取父节点角色"))?;
+    let states = accessible.get_state().map_err(dbus("读取父节点状态"))?;
+    let interfaces = accessible.get_interfaces().map_err(dbus("读取父节点接口"))?;
     let above = match grandparent {
         Some(grandparent) => {
             let accessible: AccessibleProxyBlocking = grandparent.proxy(conn)?;
             let role = accessible
                 .get_role()
-                .map_err(dbus("读父节点的父节点角色"))?;
+                .map_err(dbus("读取父节点的父节点角色"))?;
             Context::of(
                 role,
                 StateSet::empty(),
@@ -178,15 +178,15 @@ pub fn context_of(
     Ok(Context::of(role, states, interfaces, above))
 }
 
-/// 目标窗口拥有的一个弹出窗口：应用顶层里的那个对象与它的屏幕矩形。读树与重新定位把它们接在
-/// 窗口根自己的子节点后面，下标从窗口根的子节点数往后排。
+/// 目标窗口拥有的弹出窗口：应用顶层中对应的对象及其屏幕矩形。读树与重新定位将弹出窗口追加在
+/// 窗口根自身的子节点之后，下标从窗口根的子节点数开始递增。
 #[derive(Debug, Clone)]
 pub struct Popup {
     pub obj: Obj,
     pub rect: ScreenRect,
 }
 
-/// 窗口根在树里的子节点：它自己的子节点，接上目标窗口拥有的弹出窗口。第二项是自己的子节点数。
+/// 窗口根在树中的子节点：其自身的子节点，后接目标窗口拥有的弹出窗口。第二项是自身的子节点数。
 fn root_children(
     conn: &Connection,
     root: &Obj,
@@ -203,17 +203,17 @@ pub struct Located {
     pub obj: Obj,
     pub path: Vec<usize>,
     pub facts: Facts,
-    /// 父对象的事实。目标就是窗口根时取默认值：根没有可经父对象改的选择。
+    /// 父对象的事实。目标即窗口根时取默认值：根节点没有可经由父对象更改的选择。
     pub context: Context,
-    /// 父对象。目标就是窗口根时缺席。
+    /// 父对象。目标即窗口根时缺失。
     pub parent: Option<Obj>,
-    /// 目标画在弹出窗口里时，那个弹出窗口里内容的屏幕矩形：目标所在的组合框下拉列表，或路径
-    /// 起头的那个弹出窗口。不在弹出窗口里或读不出时缺席。
+    /// 目标绘制在弹出窗口中时，该弹出窗口内容的屏幕矩形：目标所在的组合框下拉列表，或路径
+    /// 起始处的弹出窗口。目标不在弹出窗口中或无法读取时缺失。
     pub popup: Option<ScreenRect>,
 }
 
 /// 从窗口根出发按下标路径重新定位，并核对身份段与核对串，见 `node::verify`。`popups` 与读树时
-/// 接在窗口根后面的是同一份，见 `Popup`。
+/// 追加在窗口根之后的是同一份，见 `Popup`。
 pub fn locate(
     conn: &Connection,
     root: &Obj,
@@ -265,8 +265,8 @@ pub fn locate(
     })
 }
 
-/// 一个应用顶层对象是不是它自己那些子节点的父对象。GTK 把组合框下拉菜单所在的弹出窗口也列成
-/// 应用顶层，而下拉菜单把组合框报成父对象：那份内容已经在组合框底下，不再接一次。
+/// 判断应用顶层对象是否为其子节点的父对象。GTK 把组合框下拉菜单所在的弹出窗口也列为
+/// 应用顶层，而下拉菜单把组合框报告为父对象：该内容已位于组合框之下，不再追加一次。
 pub fn owns_children(conn: &Connection, top: &Obj) -> Result<bool, Failure> {
     let Some(first) = children(conn, top)?.into_iter().next() else {
         return Ok(false);
@@ -275,7 +275,7 @@ pub fn owns_children(conn: &Connection, top: &Obj) -> Result<bool, Failure> {
     let (name, path): (String, OwnedObjectPath) = accessible
         .inner()
         .get_property("Parent")
-        .map_err(dbus("读父对象"))?;
+        .map_err(dbus("读取父对象"))?;
     let parent = Reference::parse(&name, path.as_str()).resolve(|name| bus::owner(conn, name));
     Ok(matches!(parent, Some(Ok(p)) if p == *top))
 }
@@ -286,8 +286,8 @@ pub struct Walked {
     pub completeness: Completeness,
 }
 
-/// 从 `root`（位于窗口里 `root_path` 处）开始深度优先读，三个上限限的是遍历过的节点数。
-/// 从窗口根读时 `popups` 接在它自己的子节点后面，见 `Popup`。
+/// 从 `root`（位于窗口中 `root_path` 处）开始深度优先读取，三个上限针对的是已遍历的节点数。
+/// 从窗口根读取时 `popups` 追加在其自身的子节点之后，见 `Popup`。
 pub fn walk(
     conn: &Connection,
     root: &Located,
@@ -308,7 +308,7 @@ pub fn walk(
         seen: HashSet::new(),
     };
     let mut path = root.path.clone();
-    // 根节点读不到就整体失败：没有根就没有这次观察。
+    // 根节点无法读取即整体失败：没有根节点，本次观察不成立。
     walk.visit(
         &root.obj,
         Some(&root.facts),
@@ -338,7 +338,7 @@ struct Walk<'a> {
     visited: u32,
     truncated_by: Vec<&'static str>,
     collected: Vec<Collected>,
-    /// 本次遍历已输出的对象。应用交回的子节点里可能含祖先，照常展开会逐层复制同一棵子树。
+    /// 本次遍历已输出的对象。应用返回的子节点中可能包含祖先，照常展开会逐层复制同一棵子树。
     seen: HashSet<String>,
 }
 
@@ -349,8 +349,8 @@ impl Walk<'_> {
         }
     }
 
-    /// 子节点级失败的处置：超时即整体失败，后面每个节点会各等一次；对象在遍历途中消失是
-    /// 常态，记一条截断原因后接着走。
+    /// 子节点级失败的处理：超时即整体失败，否则后续每个节点都会各等待一次超时；对象在遍历过程中
+    /// 消失属于常见情况，记录一条截断原因后继续遍历。
     fn tolerate(&mut self, failure: Failure) -> Result<(), Failure> {
         if failure.is_timeout() {
             return Err(failure);
@@ -398,8 +398,8 @@ impl Walk<'_> {
             Err(f) => return self.tolerate(f),
         };
         let own = Context::of(facts.role, facts.states, facts.interfaces, context);
-        // 下标照常递增：跳过一个子节点不能让它后面的兄弟换 ref。引用读不出的一格与读到一半
-        // 消失的子节点同样处置。
+        // 下标照常递增：跳过一个子节点不得改变其后兄弟节点的 ref。引用无法读取的一项与读取中途
+        // 消失的子节点按同样方式处理。
         for (offset, child) in kids.into_iter().enumerate() {
             if self.visited >= self.bounds.max_nodes {
                 self.mark("max_nodes");
@@ -424,23 +424,23 @@ impl Walk<'_> {
 /// 注册表上的一个应用。
 pub struct App {
     pub root: Obj,
-    /// 总线连接的进程号，由总线守护进程给出，不经应用。读不到时为 0。
+    /// 总线连接的进程号，由总线守护进程给出，不经应用。无法读取时为 0。
     pub pid: u32,
 }
 
-/// 注册表上的全部应用，每个根对象只出现一次。只问注册表与总线守护进程，不经任何应用。
+/// 注册表上的全部应用，每个根对象只出现一次。只查询注册表与总线守护进程，不经由任何应用。
 pub fn apps(conn: &Connection) -> Result<Vec<App>, Failure> {
     let registry = Obj::root_of(REGISTRY);
     let roots = unique(
         children(conn, &registry)?
             .into_iter()
             .filter_map(|root| {
-                root.map_err(|e| eprintln!("跳过注册表里的一项：{}", e.into_reason()))
+                root.map_err(|e| eprintln!("跳过注册表中的一项：{}", e.into_reason()))
                     .ok()
             })
             .collect(),
     );
-    let daemon = DBusProxy::new(conn).map_err(dbus("建总线守护进程代理"))?;
+    let daemon = DBusProxy::new(conn).map_err(dbus("创建总线守护进程代理"))?;
     Ok(roots
         .into_iter()
         .map(|root| {
@@ -453,11 +453,11 @@ pub fn apps(conn: &Connection) -> Result<Vec<App>, Failure> {
         .collect())
 }
 
-/// 同一个对象（总线唯一名 + 对象路径）只留第一次出现的那一个，其余顺序不变。
+/// 同一对象（总线唯一名 + 对象路径）只保留首次出现的一项，其余顺序不变。
 ///
-/// 注册表会把同一个应用列两遍（无障碍总线重启、应用重新注册之后实测如此）。不去重的话它的
-/// 每个 frame 都出现两次：两份同标题同位置的 frame 让窗口关联判成不唯一，窗口清单里同一个
-/// 编号列两遍。
+/// 注册表会把同一个应用列出两次（无障碍总线重启、应用重新注册之后实测如此）。不去重时该应用的
+/// 每个 frame 都出现两次：标题与位置相同的两个 frame 使窗口关联判定为不唯一，窗口清单中同一个
+/// 编号出现两次。
 fn unique(objs: Vec<Obj>) -> Vec<Obj> {
     let mut seen = HashSet::new();
     objs.into_iter().filter(|o| seen.insert(o.clone())).collect()
@@ -471,11 +471,11 @@ pub struct Frame {
     pub rect: Option<crate::geometry::ScreenRect>,
 }
 
-/// 一组应用此刻可见的顶层 frame。
+/// 一组应用当前可见的顶层 frame。
 ///
-/// 应用的根对象的子节点就是它的顶层窗口，角色不定（Qt 的普通顶层控件报 `filler`），所以
-/// 不按角色筛，只留带 `visible` 的。一个应用第一次调用就超时，跳过它剩下的调用：
-/// 后面每一次都会再等一个上界。
+/// 应用根对象的子节点即其顶层窗口，角色不固定（Qt 的普通顶层控件报告为 `filler`），因此
+/// 不按角色筛选，只保留带 `visible` 状态的项。某个应用的调用一旦超时，即跳过该应用其余的调用：
+/// 否则后续每次调用都会再等待一个超时上限。
 pub fn frames<'a>(conn: &Connection, apps: impl IntoIterator<Item = &'a App>) -> Vec<Frame> {
     let mut out = Vec::new();
     for app in apps {
@@ -503,16 +503,16 @@ pub fn frames<'a>(conn: &Connection, apps: impl IntoIterator<Item = &'a App>) ->
 
 fn frame(conn: &Connection, obj: &Obj, pid: u32) -> Result<Option<Frame>, Failure> {
     let accessible: AccessibleProxyBlocking = obj.proxy(conn)?;
-    let states = accessible.get_state().map_err(dbus("读 frame 状态"))?;
+    let states = accessible.get_state().map_err(dbus("读取 frame 状态"))?;
     if !states.contains(State::Visible) {
         return Ok(None);
     }
-    let title = accessible.name().map_err(dbus("读 frame 名称"))?;
+    let title = accessible.name().map_err(dbus("读取 frame 名称"))?;
     let component: ComponentProxyBlocking = obj.proxy(conn)?;
     let rect = optional(
         component
             .get_extents(CoordType::Screen)
-            .map_err(dbus("读 frame 包围盒")),
+            .map_err(dbus("读取 frame 包围盒")),
     )?
     .and_then(|(x, y, w, h)| node::extents(x, y, w, h));
     Ok(Some(Frame {
@@ -527,7 +527,7 @@ fn frame(conn: &Connection, obj: &Obj, pid: u32) -> Result<Option<Frame>, Failur
 mod tests {
     use super::*;
 
-    /// 可选读取只吞掉「读不出来」，不吞超时与对象消失：前者要整体失败，后者要记截断。
+    /// 可选读取只忽略普通读取失败，不忽略超时与对象消失：前者须整体失败，后者须记录截断。
     #[test]
     fn an_optional_read_swallows_only_plain_failures() {
         assert!(matches!(optional(Ok::<_, Failure>(3)), Ok(Some(3))));
@@ -543,7 +543,7 @@ mod tests {
         assert!(optional::<u8>(Err(gone)).is_err());
     }
 
-    /// 注册表把同一个应用列两遍时只留一个，别的应用与顺序不动；总线名相同而路径不同的是两个对象。
+    /// 注册表把同一个应用列出两次时只保留一项，其他应用与顺序不变；总线名相同而路径不同的是两个对象。
     #[test]
     fn a_registry_entry_listed_twice_is_kept_once() {
         let obj = |bus: &str, path: &str| Obj {

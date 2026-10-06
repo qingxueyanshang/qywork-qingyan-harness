@@ -1,17 +1,17 @@
-//! Wayland 会话里原生 Wayland 窗口的取图与前台键鼠，经 xdg-desktop-portal 的 ScreenCast
-//! （按窗口共享）与 RemoteDesktop（键盘与指针）同一个会话。
+//! Wayland 会话中原生 Wayland 窗口的采图与前台键盘、指针输入，经由 xdg-desktop-portal 的
+//! ScreenCast（按窗口共享）与 RemoteDesktop（键盘与指针）共用的同一个会话。
 //!
 //! 五条边界：
 //!
-//! 1. **一个进程一个共享授权。** 执行线程与等待线程共用 `Portal`；会话、在等回答的请求与
-//!    流到窗口的对应都记在 `ledger`，判定也只在那里做。
-//! 2. **授权由用户在系统授权框里给，worker 不替用户点，也不无限期地等。** 要授权的调用立刻以
-//!    `consent_pending` 拒绝，后台线程等用户回答，上限 `CONSENT_LIMIT`；同意之后下一次调用
-//!    照常执行。
-//! 3. **只对已经对上流的窗口取图与投递。** 对应规则见 `ledger`；对不上一律拒绝，不猜。
+//! 1. **每个进程只有一个共享授权。** 执行线程与等待线程共用 `Portal`；会话、等待答复的请求与
+//!    流到窗口的对应都记录在 `ledger` 中，判定也只在该处执行。
+//! 2. **授权由用户在系统授权框中给出，worker 不替用户确认，也不无限期等待。** 需要授权的调用
+//!    立即以 `consent_pending` 拒绝，后台线程等待用户答复，上限为 `CONSENT_LIMIT`；用户同意之后
+//!    下一次调用照常执行。
+//! 3. **只对已与流对应的窗口采图与投递输入。** 对应规则见 `ledger`；无法对应一律拒绝，不推测。
 //! 4. **坐标是流的逻辑坐标**：原点是窗口左上角，单位是合成器的逻辑像素。Wayland 没有全局坐标，
-//!    这类窗口的图像几何 `screen` 与按图定位的落点都在这一套坐标里，只对这一个窗口成立。
-//! 5. **没有 RemoteDesktop 的合成器与没有 libpipewire 的系统如实报不可用**，不弹授权框。
+//!    这类窗口的图像几何 `screen` 与按图定位的落点都使用这套坐标，只对该窗口成立。
+//! 5. **没有 RemoteDesktop 的合成器与没有 libpipewire 的系统如实报告不可用**，不弹出授权框。
 
 mod act;
 mod capture;
@@ -33,22 +33,22 @@ use ledger::{Decision, Ledger};
 
 pub use ledger::Coverage;
 
-/// 等用户在授权框里回答的上限。到点即关掉那个授权框，下一次调用重新问。
+/// 等待用户在授权框中答复的上限。到达上限即关闭该授权框，下一次调用重新询问。
 const CONSENT_LIMIT: Duration = Duration::from_secs(180);
-/// 发出请求之后本次调用等多久。带着有效 restore token 时 portal 不弹框、在这段时间内就回答，
-/// 本次调用即可继续；要弹框时到点即以 `consent_pending` 拒绝。
+/// 发出请求之后本次调用的等待时长。携带有效 restore token 时 portal 不弹出授权框，并在此时长内
+/// 响应，本次调用即可继续；需要弹出授权框时，到达时长即以 `consent_pending` 拒绝。
 const QUICK_GRANT: Duration = Duration::from_millis(1_500);
 
-const CONSENT_DENIED: &str = "consent_denied: 用户在系统授权框里取消了共享";
+const CONSENT_DENIED: &str = "consent_denied: 用户在系统授权框中取消了共享";
 const SESSION_CLOSED: &str =
-    "portal_session_closed: 共享已经结束（用户停止了共享，或共享的窗口已关闭）";
+    "portal_session_closed: 共享已结束（用户停止了共享，或共享的窗口已关闭）";
 
 /// 本进程的共享授权。
 struct Portal {
     bus: Arc<Bus>,
     caps: Caps,
     ledger: Mutex<Ledger>,
-    /// 一次请求有了结论时通知在等的调用。
+    /// 一次请求得出结论时通知等待中的调用。
     changed: Condvar,
 }
 
@@ -58,7 +58,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// 本进程的共享授权，第一次要用时建。建不成时不缓存：portal 可能稍后才启动。
+/// 本进程的共享授权，首次使用时创建。创建失败时不缓存：portal 可能稍后才启动。
 fn portal(call: Duration) -> Result<Arc<Portal>, String> {
     let mut slot = lock(&PORTAL);
     if let Some(portal) = slot.as_ref() {
@@ -77,19 +77,19 @@ fn portal(call: Duration) -> Result<Arc<Portal>, String> {
 }
 
 impl Portal {
-    /// 取得账目，先记下收到的「会话已结束」。生效的会话被结束时作废存下的 token。
+    /// 取得授权状态，先记录已收到的「会话已结束」信号。生效的会话被结束时作废已保存的 token。
     fn ledger(&self) -> MutexGuard<'_, Ledger> {
         let mut ledger = lock(&self.ledger);
         for handle in self.bus.take_closed() {
             if ledger.closed(&handle, SESSION_CLOSED) {
                 token::discard();
-                eprintln!("Wayland 共享会话 {handle} 已结束，存下的 restore token 已作废");
+                eprintln!("Wayland 共享会话 {handle} 已结束，已保存的 restore token 已作废");
             }
         }
         ledger
     }
 
-    /// 发一次请求。`restore` 为真时带上存下的 token。已经有请求在等回答时不再发。
+    /// 发送一次请求。`restore` 为真时携带已保存的 token。已有请求在等待答复时不再发送。
     fn ask(self: &Arc<Self>, restore: bool, call: Duration) {
         if !self.ledger().begin_ask() {
             return;
@@ -115,7 +115,7 @@ impl Portal {
                         ledger.granted(session)
                     }
                     Err(reason) => {
-                        eprintln!("Wayland 共享没有获准：{reason}");
+                        eprintln!("Wayland 共享未获准：{reason}");
                         ledger.refused(reason);
                         None
                     }
@@ -128,7 +128,7 @@ impl Portal {
         });
     }
 
-    /// 建会话并等用户回答。
+    /// 创建会话并等待用户答复。
     fn request(
         &self,
         restore: Option<&str>,
@@ -139,11 +139,11 @@ impl Portal {
         let outcome = match answer {
             Ok((RESPONSE_SUCCESS, results)) => dbus::started(started.session.clone(), &results),
             Ok((RESPONSE_CANCELLED, _)) => Err(CONSENT_DENIED.to_owned()),
-            Ok((code, _)) => Err(format!("portal_failed: 系统授权框回答码 {code}")),
+            Ok((code, _)) => Err(format!("portal_failed: 系统授权框响应码 {code}")),
             Err(_) => {
                 self.bus.close_request(&started.request);
                 Err(format!(
-                    "consent_expired: 系统授权框 {} 秒内没有得到回答，已关闭",
+                    "consent_expired: 系统授权框在 {} 秒内未得到用户答复，已关闭",
                     CONSENT_LIMIT.as_secs()
                 ))
             }
@@ -154,7 +154,7 @@ impl Portal {
         outcome
     }
 
-    /// 等在途的请求有结论，至多 `limit`。
+    /// 等待进行中的请求得出结论，至多等待 `limit`。
     fn await_answer(&self, limit: Duration) {
         let until = Instant::now() + limit;
         let mut ledger = self.ledger();
@@ -172,25 +172,25 @@ impl Portal {
     }
 }
 
-/// 一个窗口此刻有没有被共享。只读状态：不建连接、不取帧、不弹窗。
+/// 一个窗口当前是否被共享。只读取状态：不建立连接、不取帧、不弹出授权框。
 pub fn covers(key: &str) -> Option<Coverage> {
     let portal = lock(&PORTAL).clone()?;
     let covered = portal.ledger().covers(key);
     covered
 }
 
-/// 要取图或投递的那个原生 Wayland 窗口。
+/// 需要采图或投递输入的原生 Wayland 窗口。
 pub struct Want<'a> {
     /// AT-SPI frame 的对象串。
     pub key: &'a str,
     pub title: &'a str,
-    /// 它此刻的 AT-SPI 尺寸。
+    /// 该窗口当前的 AT-SPI 尺寸。
     pub size: (i32, i32),
-    /// 此刻全部原生 Wayland 窗口的对象串与 AT-SPI 尺寸，流按它们对应。
+    /// 当前全部原生 Wayland 窗口的对象串与 AT-SPI 尺寸，流按这些尺寸对应。
     pub frames: &'a [(String, (i32, i32))],
 }
 
-/// 一个已经被共享的窗口，以及投递它要用的连接。
+/// 一个已被共享的窗口，以及向其投递输入所用的连接。
 pub struct Grant {
     portal: Arc<Portal>,
     pub coverage: Coverage,
@@ -201,15 +201,15 @@ impl Grant {
         &self.portal.bus
     }
 
-    /// 这个会话是不是第一次投指针事件，见 `Ledger::first_pointer`。
+    /// 该会话是否首次投递指针事件，见 `Ledger::first_pointer`。
     fn first_pointer(&self) -> bool {
         self.portal.ledger().first_pointer(&self.coverage.session)
     }
 }
 
-/// 拿到这个窗口的共享授权。没有时按 `ledger` 的判定去量流、对应或问用户，见本模块第 2 条。
+/// 取得该窗口的共享授权。没有授权时按 `ledger` 的判定测量流、对应窗口或询问用户，见本模块第 2 条。
 ///
-/// `call` 是方法调用上界，`budget` 是量流时等一帧的上界。
+/// `call` 是方法调用上界，`budget` 是测量流尺寸时等待一帧的上界。
 pub fn grant(want: &Want<'_>, call: Duration, budget: Duration) -> Result<Grant, String> {
     pipewire::available()?;
     let portal = portal(call)?;
@@ -235,13 +235,13 @@ pub fn grant(want: &Want<'_>, call: Duration, budget: Duration) -> Result<Grant,
             Decision::Pending => return Err(pending(want.title, portal.ledger().ended())),
             Decision::Ambiguous(n) => {
                 return Err(format!(
-                    "portal_ambiguous: 共享的窗口与 {n} 个窗口一样大，判不出是不是「{}」",
+                    "portal_ambiguous: 共享的窗口与 {n} 个窗口尺寸相同，无法判定是否为「{}」",
                     want.title
                 ))
             }
             Decision::Ask { .. } if asked => {
                 return Err(format!(
-                    "portal_window_not_shared: 用户共享的窗口里没有「{}」；下一次调用会重新请求",
+                    "portal_window_not_shared: 用户共享的窗口中没有「{}」；下一次调用会重新请求",
                     want.title
                 ))
             }
@@ -249,8 +249,8 @@ pub fn grant(want: &Want<'_>, call: Duration, budget: Duration) -> Result<Grant,
                 asked = true;
                 portal.ask(restore, call);
                 portal.await_answer(QUICK_GRANT);
-                // 这次请求很快就没换来会话（凭 token 恢复时记住的窗口不在、portal 出错）：原因照报，
-                // 不要落到下面的 `portal_window_not_shared`。
+                // 本次请求在短时间内未取得会话（凭 token 恢复时记住的窗口不存在、portal 出错）：照常报告
+                // 原因，不要进入下方的 `portal_window_not_shared`。
                 let ledger = portal.ledger();
                 if let (false, Some(ended)) = (ledger.asking(), ledger.ended()) {
                     return Err(format!("{ended}；下一次调用会重新请求"));
@@ -262,8 +262,8 @@ pub fn grant(want: &Want<'_>, call: Duration, budget: Duration) -> Result<Grant,
 
 fn pending(title: &str, ended: Option<&str>) -> String {
     let mut reason = format!(
-        "consent_pending: 已在系统授权框里请求共享窗口并允许远程控制，等用户选择「{title}」并点「共享」；\
-         用户同意之后重试这一步"
+        "consent_pending: 已在系统授权框中请求共享窗口并允许远程控制，等待用户选择「{title}」并点击「共享」；\
+         用户同意之后重试此步骤"
     );
     if let Some(ended) = ended {
         reason.push_str("；上一次请求：");
@@ -272,9 +272,9 @@ fn pending(title: &str, ended: Option<&str>) -> String {
     reason
 }
 
-/// 原生 Wayland 窗口的几何代际：AT-SPI 尺寸与流的节点号。窗口缩放或换了一条流即变。
+/// 原生 Wayland 窗口的几何代际：AT-SPI 尺寸与流的节点号。窗口缩放或更换流时即改变。
 ///
-/// 只用 AT-SPI 尺寸：它在动作前读得到，不必再从流里取一帧。
+/// 只使用 AT-SPI 尺寸：该尺寸在动作前即可读取，无需再从流中取一帧。
 pub fn generation(size: (i32, i32), node: u32) -> String {
     let window = ScreenRect {
         x: 0,

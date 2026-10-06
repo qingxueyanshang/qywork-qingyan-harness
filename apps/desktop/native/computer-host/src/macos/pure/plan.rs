@@ -1,8 +1,8 @@
-//! 动作的发法：后台语义动作按动作与元素事实挑一次 AX 调用，窗口的显示状态按现状与目标排出
-//! 要写的属性；两者都可能给出「可证明没有发出调用」的拒绝原因。
+//! 动作的调用方式：后台语义动作按动作与元素事实选择一次 AX 调用，窗口的显示状态按现状与目标确定
+//! 需要写入的属性；两者都可能返回「可证明没有发出调用」的拒绝原因。
 //!
-//! 本模块不调用 AX。拒绝一律是派发之前判得出的前置条件：只读、越界、缺发法、已在目标状态，
-//! 归 `not_dispatched`。调用发出之后的结果由 FFI 层按 AX 错误码定，一律不在这里判。
+//! 本模块不调用 AX。拒绝一律基于派发之前即可判定的前置条件：只读、越界、缺少调用方式、已在目标状态，
+//! 归为 `not_dispatched`。调用发出之后的结果由 FFI 层按 AX 错误码判定，一律不在本模块判定。
 
 use super::facts::{action, attr, on_boundary, utf16_len, Facts, Value};
 use super::node::{self, Axis, Click, Context, Expander, Selector};
@@ -17,11 +17,11 @@ pub enum Call {
     Perform(&'static str),
     /// `AXUIElementSetAttributeValue`。
     Set(&'static str, Setting),
-    /// 把父元素这一项的选中集合写成只有目标元素。
+    /// 把父元素该属性的选中集合写为只含目标元素。
     SelectInParent(&'static str),
 }
 
-/// 写进属性的值。
+/// 写入属性的值。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Setting {
     Text(String),
@@ -44,24 +44,24 @@ pub enum Setting {
     },
 }
 
-/// 一次 `set_toggle` 最多按几下。三态环最长三格。
+/// 一次 `set_toggle` 的最大按下次数。三态环最长三步。
 ///
-/// 按到目标态即停，不按 `toggle_steps` 算出的格数按满：三态环的顺序由应用决定，按固定格数
-/// 会停在别的状态上。
+/// 到达目标态即停止，不一次按完 `toggle_steps` 算出的步数：三态环的顺序由应用决定，按固定步数
+/// 按下会停在其他状态上。
 pub const MAX_TOGGLE_STEPS: u32 = 3;
 
 fn missing(what: &str) -> String {
     format!("pattern_missing: {what}")
 }
 
-/// 一次动作的发法。`Err` 一律是「可证明没有发出调用」。
+/// 选择一次动作的调用方式。`Err` 一律表示「可证明没有发出调用」。
 ///
-/// `select_text` 要判选区边界，调用方交进来的 `facts.value` 必须是全文。
+/// `select_text` 需要判定选区边界，调用方传入的 `facts.value` 必须是全文。
 pub fn plan(facts: &Facts, context: Context, spec: &ActionSpec) -> Result<Call, String> {
     match spec {
         ActionSpec::Invoke => match node::claim(facts) {
             Some(Click::Invoke) => Ok(Call::Perform(action::PRESS)),
-            _ => Err(missing("这个控件没有默认动作")),
+            _ => Err(missing("该控件没有默认动作")),
         },
         ActionSpec::SetValue { value } => {
             if !node::text_editable(facts) {
@@ -79,10 +79,10 @@ pub fn plan(facts: &Facts, context: Context, spec: &ActionSpec) -> Result<Call, 
             if !facts.settable.value {
                 return Err("read_only".to_owned());
             }
-            // 越界不夹到边上：夹出来的值看着合法，而它不是调用方要的那一个。
+            // 越界时不截断到边界：截断后的值看似合法，但不是调用方请求的值。
             if !value.is_finite() || *value < numbers.min || *value > numbers.max {
                 return Err(format!(
-                    "out_of_range: {value}，允许 {} 到 {}",
+                    "out_of_range: {value}，允许范围为 {} 到 {}",
                     numbers.min, numbers.max
                 ));
             }
@@ -95,12 +95,12 @@ pub fn plan(facts: &Facts, context: Context, spec: &ActionSpec) -> Result<Call, 
             None => Err(missing("可写的选中状态")),
         },
         ActionSpec::AddToSelection | ActionSpec::RemoveFromSelection => Err(
-            "unsupported: AX 不报容器是否允许多选，macOS 上不提供增选与取消选中 · 改用 select"
+            "unsupported: AX 不报告容器是否允许多选，macOS 上不提供增选与取消选中 · 改用 select"
                 .to_owned(),
         ),
         ActionSpec::Expand | ActionSpec::Collapse => {
             let Some(route) = node::expand_route(facts) else {
-                return Err(missing("这个控件没有展开动作"));
+                return Err(missing("该控件没有展开动作"));
             };
             let expand = matches!(spec, ActionSpec::Expand);
             if node::expand_state(facts) == Some(expand) {
@@ -120,7 +120,7 @@ pub fn plan(facts: &Facts, context: Context, spec: &ActionSpec) -> Result<Call, 
             };
             let vertical = matches!(direction, ScrollDirection::Up | ScrollDirection::Down);
             if vertical != (axis == Axis::Vertical) {
-                return Err("not_scrollable: 这个方向滚不动".to_owned());
+                return Err("not_scrollable: 该方向无法滚动".to_owned());
             }
             if *step == ScrollStep::Page {
                 return Err(
@@ -132,7 +132,7 @@ pub fn plan(facts: &Facts, context: Context, spec: &ActionSpec) -> Result<Call, 
             if (forward && numbers.current >= numbers.max)
                 || (!forward && numbers.current <= numbers.min)
             {
-                return Err("not_scrollable: 已经滚到尽头".to_owned());
+                return Err("not_scrollable: 已滚动到尽头".to_owned());
             }
             let name = if forward {
                 action::INCREMENT
@@ -141,7 +141,7 @@ pub fn plan(facts: &Facts, context: Context, spec: &ActionSpec) -> Result<Call, 
             };
             if !facts.has_action(name) {
                 return Err(format!(
-                    "line_step_unavailable: 这个滚动条没有 {name} · 改用 set_range_value"
+                    "line_step_unavailable: 该滚动条没有 {name} · 改用 set_range_value"
                 ));
             }
             Ok(Call::Perform(name))
@@ -158,16 +158,16 @@ pub fn plan(facts: &Facts, context: Context, spec: &ActionSpec) -> Result<Call, 
         }
         ActionSpec::SelectText { start, length } => {
             if !node::text_selectable(facts) {
-                return Err("selection_unsupported: 这个控件不支持选区".to_owned());
+                return Err("selection_unsupported: 该控件不支持选区".to_owned());
             }
             let Value::Text(text) = &facts.value else {
-                return Err("text_unavailable: 读不到这个控件的文本，判不出选区边界".to_owned());
+                return Err("text_unavailable: 无法读取该控件的文本，无法判定选区边界".to_owned());
             };
             let end = start.saturating_add(*length);
-            // 偏移落在代理对中间或超出末尾即拒绝，不就近取整：取整之后选中的不是调用方要的那一段。
+            // 偏移落在代理对中间或超出末尾即拒绝，不就近取整：取整后选中的不是调用方请求的范围。
             if !on_boundary(text, *start) || !on_boundary(text, end) {
                 return Err(format!(
-                    "out_of_range: 起点 {start} 长度 {length} 不落在字符边界上，或超出文本的 {} 个码元",
+                    "out_of_range: 起点 {start} 长度 {length} 不在字符边界上，或超出文本的 {} 个码元",
                     utf16_len(text)
                 ));
             }
@@ -179,9 +179,9 @@ pub fn plan(facts: &Facts, context: Context, spec: &ActionSpec) -> Result<Call, 
                 },
             ))
         }
-        // 上面一条条列完，剩下的是单独分流的那些。逐条列而不是写一个 `_`：新增一个后台动作
-        // 忘了接进来时要在这里编译失败，不是变成一句拒绝。
-        ActionSpec::SetToggle { .. } => Err("not_planned: set_toggle 走它自己的路径".to_owned()),
+        // 以下是由其他路径处理的动作。逐条列出而不写 `_`：新增后台动作
+        // 未在此处处理时必须编译失败，而不是变成一条拒绝。
+        ActionSpec::SetToggle { .. } => Err("not_planned: set_toggle 使用独立的执行路径".to_owned()),
         ActionSpec::Click { .. }
         | ActionSpec::Hover
         | ActionSpec::Drag { .. }
@@ -192,35 +192,35 @@ pub fn plan(facts: &Facts, context: Context, spec: &ActionSpec) -> Result<Call, 
         | ActionSpec::SetWindowState { .. }
         | ActionSpec::MoveWindow { .. }
         | ActionSpec::ResizeWindow { .. }
-        | ActionSpec::CloseWindow => Err("not_planned: 前台动作不经后台动作路径".to_owned()),
+        | ActionSpec::CloseWindow => Err("not_planned: 前台动作不经由后台动作路径".to_owned()),
     }
 }
 
-/// `set_toggle` 派发之前的判定：有切换动作、现态读得出、不在目标态、目标态在环上。交回现态。
+/// `set_toggle` 派发之前的判定：有切换动作、现态可读取、不在目标态、目标态在环上。返回现态。
 pub fn toggle_precheck(facts: &Facts, want: ToggleState) -> Result<ToggleState, String> {
     if node::claim(facts) != Some(Click::Toggle) {
-        return Err(missing("这个控件没有切换动作"));
+        return Err(missing("该控件没有切换动作"));
     }
     let Some(current) = node::toggle_state(facts) else {
-        return Err("toggle_state_unknown: 读不出这个控件的复选状态".to_owned());
+        return Err("toggle_state_unknown: 无法读取该控件的复选状态".to_owned());
     };
     if current == want {
         return Err(format!(
-            "already_in_state: 这个控件已经是 {}",
+            "already_in_state: 该控件已处于 {}",
             want.as_str()
         ));
     }
     let tri_state = current == ToggleState::Indeterminate || want == ToggleState::Indeterminate;
     if toggle_steps(current, want, tri_state).is_none() {
         return Err(format!(
-            "toggle_state_unsupported: 到不了 {}",
+            "toggle_state_unsupported: 无法切换到 {}",
             want.as_str()
         ));
     }
     Ok(current)
 }
 
-/// 窗口此刻的显示状态：最小化优先，其次全屏，否则是普通状态。读不出的项按否算。
+/// 窗口当前的显示状态：最小化优先，其次全屏，否则为普通状态。无法读取的项按否处理。
 pub fn window_state(minimized: Option<bool>, full_screen: Option<bool>) -> WindowState {
     if minimized == Some(true) {
         WindowState::Minimized
@@ -231,11 +231,11 @@ pub fn window_state(minimized: Option<bool>, full_screen: Option<bool>) -> Windo
     }
 }
 
-/// 把窗口从 `current` 改到 `target` 要依次写的布尔属性：先离开现状，再进入目标状态。
+/// 把窗口从 `current` 改为 `target` 需要依次写入的布尔属性：先退出当前状态，再进入目标状态。
 ///
-/// 协议的「最大化」对应全屏（`AXFullScreen`）：它是绿色按钮的默认动作，而且读得回；缩放（zoom）
-/// 在 AX 里没有可读的状态，写了也判不出生效没有。全屏窗口的最小化按钮不可用，所以全屏到最小化
-/// 先退出全屏。
+/// 协议的「最大化」对应全屏（`AXFullScreen`）：它是绿色按钮的默认动作，且状态可读取；缩放（zoom）
+/// 在 AX 中没有可读取的状态，写入后也无法判定是否生效。全屏窗口的最小化按钮不可用，因此从全屏切换到最小化
+/// 须先退出全屏。
 pub fn window_steps(
     current: WindowState,
     target: WindowState,
@@ -261,7 +261,7 @@ mod tests {
     use super::*;
     use crate::macos::pure::node::kind;
 
-    /// 每一对现状与目标都排得出写法；已经在目标状态即拒绝，不写任何属性。
+    /// 每一对现状与目标都能确定写入步骤；已在目标状态即拒绝，不写入任何属性。
     #[test]
     fn window_steps_leave_the_current_state_before_entering_the_target() {
         use WindowState::{Maximized, Minimized, Normal};
@@ -333,7 +333,7 @@ mod tests {
         assert!(refused(&check, &ActionSpec::Invoke).starts_with("pattern_missing"));
     }
 
-    /// 只读输入框设值被拒且没有派发；可写的写 `AXValue`。
+    /// 只读输入框设值被拒绝且未派发；可写的输入框写入 `AXValue`。
     #[test]
     fn set_value_writes_text_only_when_settable() {
         let mut field = facts(kind::TEXT_FIELD, &[]);
@@ -350,7 +350,7 @@ mod tests {
         assert!(refused(&facts(kind::STATIC_TEXT, &[]), &spec).starts_with("pattern_missing"));
     }
 
-    /// 越界不夹到边上，只读不发。
+    /// 越界时不截断到边界；只读时不发出调用。
     #[test]
     fn set_range_value_checks_bounds_first() {
         let mut slider = facts("AXSlider", &[]);
@@ -368,7 +368,7 @@ mod tests {
         );
     }
 
-    /// 行经父元素的集合选中；单选按钮按一下；增选与取消选中一律拒绝。
+    /// 行经由父元素的集合选中；单选按钮按一次；增选与取消选中一律拒绝。
     #[test]
     fn select_follows_the_route_and_multi_selection_is_refused() {
         let mut row = facts(kind::ROW, &[]);
@@ -398,7 +398,7 @@ mod tests {
         }
     }
 
-    /// 已经在目标状态即拒绝；否则按发法写属性或按一下三角。
+    /// 已在目标状态即拒绝；否则按调用方式写入属性或按一次展开三角。
     #[test]
     fn expand_and_collapse_refuse_the_current_state() {
         let mut row = facts(kind::ROW, &[]);
@@ -425,7 +425,7 @@ mod tests {
         ActionSpec::Scroll { direction, step }
     }
 
-    /// 滚动条按行滚走增减动作；错轴、页步长、到头与缺动作各自拒绝。
+    /// 滚动条按行滚动时经由增减动作；方向与轴不符、页步长、已到尽头与缺少动作分别拒绝。
     #[test]
     fn scroll_steps_through_the_bar_actions() {
         let mut bar = facts(kind::SCROLL_BAR, &[action::INCREMENT]);
@@ -449,7 +449,7 @@ mod tests {
         );
         assert!(
             refused(&bar, &scroll(ScrollDirection::Up, ScrollStep::Line))
-                .starts_with("not_scrollable: 已经滚到尽头")
+                .starts_with("not_scrollable: 已滚动到尽头")
         );
         bar.value = Value::Number(0.5);
         assert!(
@@ -495,7 +495,7 @@ mod tests {
         assert!(refused(&field, &select(0, 1)).starts_with("text_unavailable"));
     }
 
-    /// 切换之前的判定：已在目标态、到不了、读不出现态都在派发之前拒绝。
+    /// 切换之前的判定：已在目标态、无法到达目标态、无法读取现态均在派发之前拒绝。
     #[test]
     fn toggle_prechecks_run_before_any_press() {
         let mut check = facts(kind::CHECK_BOX, &[action::PRESS]);

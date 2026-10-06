@@ -1,16 +1,16 @@
-//! X11 取图：Composite 取窗口自己的内容，窗口被盖住或部分在屏幕外也取得到。
+//! X11 图像采集：经由 Composite 取得窗口自身的内容，窗口被遮挡或部分位于屏幕外时同样可以取得。
 //!
 //! 四条边界：
 //!
-//! 1. **按窗口取，不取屏再裁。** 取的是窗口在根窗口下那一层祖先（窗口管理器的外框）的
-//!    pixmap，再按客户区裁；客户区外面是窗口管理器画的边框与标题栏。
-//! 2. **重定向用 automatic。** 服务器照常把窗口画到屏幕上；不要改成 manual，那会让窗口从
-//!    屏幕上消失，直到有合成器去画它。重定向随本进程的 X 连接存续，连接断开时服务器撤销。
-//! 3. **本进程新重定向的窗口，重定向那一刻被盖住或在屏幕外的部分是屏幕上别的内容**：服务器
-//!    按屏幕上的像素初始化 pixmap，再让应用重绘那几块。等 Damage 报的区域盖满它们才取；预算内
-//!    没盖满即撤销重定向并拒绝，不交一张混着别的窗口的图。已经重定向过的窗口（合成器或本进程
-//!    之前的采集）直接取。
-//! 4. 不置前台、不设焦点、不动指针。
+//! 1. **按窗口采集，不采集整屏后裁剪。** 采集的是窗口在根窗口下一层的祖先（窗口管理器的外框）
+//!    的 pixmap，再按客户区裁剪；客户区之外是窗口管理器绘制的边框与标题栏。
+//! 2. **重定向使用 automatic。** 服务器照常把窗口绘制到屏幕上；不要改为 manual，那会使窗口从
+//!    屏幕上消失，直到有合成器绘制它。重定向随本进程的 X 连接存续，连接断开时由服务器撤销。
+//! 3. **本进程新重定向的窗口，在重定向时被遮挡或位于屏幕外的部分是屏幕上的其他内容**：服务器
+//!    按屏幕上的像素初始化 pixmap，再让应用重绘这些区域。Damage 报告的区域完全覆盖这些区域后
+//!    才采集；预算内未完全覆盖即撤销重定向并拒绝，不交出混有其他窗口内容的图像。已重定向过的
+//!    窗口（合成器或本进程之前的采集）直接采集。
+//! 4. 不切换前台、不设置焦点、不移动指针。
 
 use std::time::{Duration, Instant};
 
@@ -29,29 +29,29 @@ use crate::geometry::{crop_for, fully_covered, generation_matches, Geometry, Scr
 use crate::png;
 use crate::protocol::{base64, now_ms, Image};
 
-/// 采集方式。图像观察如实带上它。
+/// 采集方式。图像观察如实附带该值。
 pub const SOURCE_COMPOSITE: &str = "x11_composite";
 
 impl Display {
-    /// 采一张窗口的图。返回 `Err(原因)` 时没有交出任何像素。
+    /// 采集窗口图像。返回 `Err(原因)` 时未交出任何像素。
     pub fn capture(&self, window: Window, req: &CaptureRequest<'_>) -> Result<Image, String> {
         let client = self
             .client(window)
-            .ok_or_else(|| "target_lost: 窗口已经不在".to_owned())?;
+            .ok_or_else(|| "target_lost: 窗口已不存在".to_owned())?;
         if client.hidden {
-            return Err("window_minimized: 窗口已最小化，采不到内容".to_owned());
+            return Err("window_minimized: 窗口已最小化，无法采集内容".to_owned());
         }
         let frame = self.frame(&client)?;
         let generation = frame.generation();
         if !generation_matches(req.expect_generation, &generation) {
             return Err(format!(
-                "geometry_changed: 窗口几何已经变了（{} → {generation}），请重新采图",
+                "geometry_changed: 窗口几何已改变（{} → {generation}），请重新采图",
                 req.expect_generation.unwrap_or_default()
             ));
         }
         let area = frame.visible;
         if area.width <= 0 || area.height <= 0 {
-            return Err("window_zero_size: 窗口尺寸为零，采不到内容".to_owned());
+            return Err("window_zero_size: 窗口尺寸为零，无法采集内容".to_owned());
         }
         let crop = crop_for(
             (area.x, area.y),
@@ -62,13 +62,13 @@ impl Display {
         )
         .ok_or_else(|| {
             format!(
-                "region_outside_window: 要采的区域与窗口覆盖的 {},{} {}×{} 没有交集",
+                "region_outside_window: 采集区域与窗口覆盖的 {},{} {}×{} 没有交集",
                 area.x, area.y, area.width, area.height
             )
         })?;
         let top = client
             .top
-            .ok_or_else(|| "target_lost: 读不出窗口几何".to_owned())?;
+            .ok_or_else(|| "target_lost: 无法读取窗口几何".to_owned())?;
         self.negotiate()?;
         let pixmap = self.pixmap(top, crop.screen, req.budget)?;
         let rgb = self.read(top, pixmap, crop.screen);
@@ -87,7 +87,7 @@ impl Display {
         let bytes = png::encode(&rgb, crop.image_width, crop.image_height);
         if bytes.len() > req.max_bytes as usize {
             return Err(format!(
-                "image_too_large: 编码后 {} 字节，上限 {}，改小区域再试",
+                "image_too_large: 编码后 {} 字节，上限 {}，请缩小区域后重试",
                 bytes.len(),
                 req.max_bytes
             ));
@@ -108,7 +108,7 @@ impl Display {
         })
     }
 
-    /// 与服务器协商 Composite 与 Damage 的版本。每条连接只做一次，扩展缺席即拒绝取图。
+    /// 与服务器协商 Composite 与 Damage 的版本。每条连接只协商一次，扩展缺失即拒绝采集。
     fn negotiate(&self) -> Result<(), String> {
         self.extensions
             .get_or_init(|| {
@@ -135,7 +135,7 @@ impl Display {
             .clone()
     }
 
-    /// 取 `top` 的 pixmap，必要时先重定向它并等重绘，见本模块第 3 条。
+    /// 取得 `top` 的 pixmap，必要时先重定向该窗口并等待重绘，见本模块第 3 条。
     fn pixmap(&self, top: Top, need: ScreenRect, budget: Duration) -> Result<Pixmap, String> {
         if let Some(pixmap) = self.name_pixmap(top.window)? {
             return Ok(pixmap);
@@ -160,16 +160,16 @@ impl Display {
                     .composite_unredirect_window(top.window, Redirect::AUTOMATIC);
                 let _ = self.conn.flush();
                 return Err(format!(
-                    "capture_incomplete: 窗口被盖住或在屏幕外的部分在 {} ms 内没有重绘完，没有取图",
+                    "capture_incomplete: 窗口被遮挡或位于屏幕外的部分在 {} ms 内未完成重绘，未采集图像",
                     budget.as_millis()
                 ));
             }
         }
         self.name_pixmap(top.window)?
-            .ok_or_else(|| "capture_failed: 重定向之后仍取不到窗口的 pixmap".to_owned())
+            .ok_or_else(|| "capture_failed: 重定向之后仍无法取得窗口的 pixmap".to_owned())
     }
 
-    /// 取窗口的 pixmap。窗口没有被重定向时服务器回 `BadMatch`，交回 `None`。
+    /// 取得窗口的 pixmap。窗口未被重定向时服务器返回 `BadMatch`，此时返回 `None`。
     fn name_pixmap(&self, window: Window) -> Result<Option<Pixmap>, String> {
         let pixmap = self
             .conn
@@ -183,14 +183,14 @@ impl Display {
         match named {
             Ok(()) => Ok(Some(pixmap)),
             Err(ReplyError::X11Error(e)) if e.error_kind == ErrorKind::Match => Ok(None),
-            Err(e) => Err(format!("capture_failed: 取窗口 pixmap 失败 {e}")),
+            Err(e) => Err(format!("capture_failed: 取得窗口 pixmap 失败 {e}")),
         }
     }
 
-    /// `need` 里此刻看不见的部分：在屏幕外，或被层叠序在 `top` 上面、已映射的窗口盖住。
+    /// `need` 中当前不可见的部分：位于屏幕外，或被层叠序在 `top` 之上的已映射窗口遮挡。
     ///
-    /// 盖在上面的窗口按矩形算，形状窗口透明的角也算盖住。按根窗口的子窗口算而不按
-    /// `_NET_CLIENT_LIST_STACKING`：弹出菜单这类不归窗口管理器管理的窗口只在前者里。
+    /// 上层窗口按矩形计算，形状窗口的透明角也视为遮挡。按根窗口的子窗口计算而不按
+    /// `_NET_CLIENT_LIST_STACKING` 计算：弹出菜单等不由窗口管理器管理的窗口只出现在前者中。
     fn unseen(&self, top: Window, need: ScreenRect) -> Vec<ScreenRect> {
         let mut out = need.subtract(&self.screen);
         let Some(inside) = need.intersect(&self.screen) else {
@@ -204,7 +204,7 @@ impl Display {
         else {
             return out;
         };
-        // 请求先全部发出再收回执，一次往返读完所有兄弟窗口。
+        // 先发出全部请求再接收回执，一次往返读取所有兄弟窗口。
         let cookies: Vec<_> = tree
             .children
             .iter()
@@ -249,11 +249,11 @@ impl Display {
             .damage_create(damage, window, ReportLevel::RAW_RECTANGLES)
             .map_err(|e| e.to_string())
             .and_then(|c| c.check().map_err(|e| e.to_string()))
-            .map_err(|e| format!("capture_failed: 建 Damage 失败 {e}"))?;
+            .map_err(|e| format!("capture_failed: 创建 Damage 失败 {e}"))?;
         Ok(damage)
     }
 
-    /// 等应用重绘的区域盖满 `unseen`。Damage 报的矩形以 `top` 边框内的左上角为原点。
+    /// 等待应用重绘的区域完全覆盖 `unseen`。Damage 报告的矩形以 `top` 边框内的左上角为原点。
     fn await_repaint(
         &self,
         damage: u32,
@@ -278,10 +278,10 @@ impl Display {
         })
     }
 
-    /// 从 pixmap 读出 `area` 那一块并换成 RGB。pixmap 的原点是外框（含 X 边框）的左上角。
+    /// 从 pixmap 读取 `area` 区域并转换为 RGB。pixmap 的原点是外框（含 X 边框）的左上角。
     fn read(&self, top: Top, pixmap: Pixmap, area: ScreenRect) -> Result<Vec<u8>, String> {
         let layout = self.layout(top.window)?;
-        let fail = |e: String| format!("capture_failed: 读窗口像素失败 {e}");
+        let fail = |e: String| format!("capture_failed: 读取窗口像素失败 {e}");
         let reply = self
             .conn
             .get_image(
@@ -303,7 +303,7 @@ impl Display {
         )
     }
 
-    /// 窗口像素在 ZPixmap 里的排法：每像素位数、行对齐、字节序与三个颜色通道的掩码。
+    /// 窗口像素在 ZPixmap 中的排列方式：每像素位数、行对齐、字节序与三个颜色通道的掩码。
     fn layout(&self, window: Window) -> Result<Layout, String> {
         let unsupported = |why: String| format!("unsupported_pixel_format: {why}");
         let visual = self
@@ -311,14 +311,14 @@ impl Display {
             .get_window_attributes(window)
             .map_err(|e| e.to_string())
             .and_then(|c| c.reply().map_err(|e| e.to_string()))
-            .map_err(|e| format!("target_lost: 读窗口属性失败 {e}"))?
+            .map_err(|e| format!("target_lost: 读取窗口属性失败 {e}"))?
             .visual;
         let depth = self
             .conn
             .get_geometry(window)
             .map_err(|e| e.to_string())
             .and_then(|c| c.reply().map_err(|e| e.to_string()))
-            .map_err(|e| format!("target_lost: 读窗口几何失败 {e}"))?
+            .map_err(|e| format!("target_lost: 读取窗口几何失败 {e}"))?
             .depth;
         let setup = self.conn.setup();
         let format = setup
@@ -338,7 +338,7 @@ impl Display {
             .flat_map(|s| s.allowed_depths.iter())
             .flat_map(|d| d.visuals.iter())
             .find(|v| v.visual_id == visual)
-            .ok_or_else(|| unsupported(format!("找不到视觉 {visual}")))?;
+            .ok_or_else(|| unsupported(format!("未找到视觉 {visual}")))?;
         let shift = |mask: u32| -> Result<u32, String> {
             let at = mask.trailing_zeros();
             (mask >> at == 0xff && at <= 24)
@@ -356,9 +356,9 @@ impl Display {
         })
     }
 
-    /// 逐个取事件交给 `seen`，它返回真即停。到期返回假。
+    /// 逐个取出事件交给 `seen`，`seen` 返回真即停止。到期返回假。
     ///
-    /// 本连接只订阅调用方此刻在等的那一类事件，其余事件交给 `seen` 之后丢弃。
+    /// 本连接只订阅调用方当前等待的那一类事件，其余事件交给 `seen` 之后丢弃。
     pub(super) fn wait_event(
         &self,
         deadline: Instant,
@@ -384,15 +384,15 @@ impl Display {
     }
 }
 
-/// 等事件时两次取事件之间隔多久。
+/// 等待事件时相邻两次取事件之间的间隔。
 const EVENT_POLL: Duration = Duration::from_millis(4);
 
-/// ZPixmap 的像素排法，见 `Display::layout`。
+/// ZPixmap 的像素排列方式，见 `Display::layout`。
 struct Layout {
-    /// 每行按多少位对齐。
+    /// 每行的对齐位数。
     pad: usize,
     msb: bool,
-    /// 红、绿、蓝在 32 位像素字里的位移。
+    /// 红、绿、蓝在 32 位像素字中的位移。
     shifts: [u32; 3],
 }
 
@@ -429,7 +429,7 @@ impl Layout {
 mod tests {
     use super::*;
 
-    /// 小端 BGRX：蓝在最低字节，读出来是 RGB 顺序。
+    /// 小端 BGRX：蓝色位于最低字节，读出的结果为 RGB 顺序。
     #[test]
     fn a_little_endian_word_splits_into_rgb() {
         let layout = Layout {
@@ -444,7 +444,7 @@ mod tests {
         );
     }
 
-    /// 大端 XRGB 与小端同一个像素值。
+    /// 大端 XRGB 与小端表示同一像素值时，读出的 RGB 相同。
     #[test]
     fn a_big_endian_word_splits_into_the_same_rgb() {
         let layout = Layout {

@@ -1,7 +1,7 @@
-//! AX 元素的事实换算成协议节点：角色与状态进共用词表，可用动作按元素真实暴露的动作名与
-//! 可写属性列出，身份段与核对串按身份表编出，包围盒按窗口的那一套换算成屏幕物理像素。
+//! 把 AX 元素的事实换算为协议节点：角色与状态映射到共用词表，可用动作按元素实际暴露的动作名与
+//! 可写属性列出，身份段与核对串按身份表生成，包围盒按窗口所用的换算转换为屏幕物理像素。
 //!
-//! 本模块不调用 AX。动作那一刻按同一套判定挑调用（`claim`、`select_route`、`expand_route`），
+//! 本模块不调用 AX。执行动作时按同一套判定选择调用（`claim`、`select_route`、`expand_route`），
 //! 列出的动作与派发的调用因此只有一处来源。
 
 use super::facts::{action, attr, utf16_len, Facts, Frame, Value, VALUE_TEXT_LIMIT};
@@ -9,7 +9,7 @@ use super::screen::Mapping;
 use crate::protocol::{range_state, Node, NodeAction, Role, ScrollState, ToggleState, REF_STALE};
 use crate::tree::{encode_ref, fingerprint, Identity, RefParts};
 
-/// 换算里要认的 AX 角色与子角色名。
+/// 换算中需要识别的 AX 角色与子角色名。
 pub mod kind {
     pub const RADIO_BUTTON: &str = "AXRadioButton";
     pub const CHECK_BOX: &str = "AXCheckBox";
@@ -27,21 +27,21 @@ pub mod kind {
     pub const OUTLINE_ROW: &str = "AXOutlineRow";
 }
 
-/// 这一次读取要取哪些可选字段。含义同其他后端：前两项不影响可用动作表。
+/// 本次读取包含哪些可选字段。含义与其他后端相同：前两项不影响可用动作表。
 #[derive(Debug, Clone, Copy)]
 pub struct Fields {
     pub value: bool,
     pub state: bool,
-    /// 报键盘焦点并列前台动作。调用方只在前台模式开着、且窗口对应上 CG 窗口时置真。
+    /// 报告键盘焦点并列出前台动作。调用方只在前台模式开启且窗口已对应到 CG 窗口时置真。
     pub foreground: bool,
 }
 
-/// 父元素里与子节点可用动作有关的事实。
+/// 父元素中与子节点可用动作有关的事实。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Context {
-    /// 父元素的 `AXSelectedRows` 可写：表格与大纲的行经它改选中。
+    /// 父元素的 `AXSelectedRows` 可写：表格与大纲的行经由该属性修改选中状态。
     pub rows: bool,
-    /// 父元素的 `AXSelectedChildren` 可写：列表类容器的项经它改选中。
+    /// 父元素的 `AXSelectedChildren` 可写：列表类容器的项经由该属性修改选中状态。
     pub children: bool,
 }
 
@@ -54,19 +54,19 @@ impl Context {
     }
 }
 
-/// 一个元素的 `AXPress` 承担的是哪一种语义。一个元素只取一种：复选框的 `AXPress` 是
-/// `set_toggle`，不再同时列成 `invoke`。
+/// 元素的 `AXPress` 承担的语义。每个元素只取一种：复选框的 `AXPress` 是
+/// `set_toggle`，不再同时列为 `invoke`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Click {
     Invoke,
     Toggle,
-    /// 单选按钮与标签页按钮：`select` 经它的 `AXPress` 发出。
+    /// 单选按钮与标签页按钮：`select` 经由其 `AXPress` 发出。
     Radio,
-    /// 展开三角：`expand` / `collapse` 经它的 `AXPress` 发出。
+    /// 展开三角：`expand` / `collapse` 经由其 `AXPress` 发出。
     Expand,
 }
 
-/// 这个元素的 `AXPress` 归哪一种语义。没有 `AXPress` 时缺席。
+/// 该元素的 `AXPress` 所属的语义。没有 `AXPress` 时缺席。
 pub fn claim(facts: &Facts) -> Option<Click> {
     if !facts.has_action(action::PRESS) {
         return None;
@@ -79,7 +79,7 @@ pub fn claim(facts: &Facts) -> Option<Click> {
     })
 }
 
-/// 复选状态：`AXValue` 0 未选中、1 选中、2 中间态。别的值判不出。
+/// 复选状态：`AXValue` 0 未选中、1 选中、2 中间态。其他值无法判定。
 pub fn toggle_state(facts: &Facts) -> Option<ToggleState> {
     match facts.value.number()? {
         n if n == 0.0 => Some(ToggleState::Off),
@@ -89,7 +89,7 @@ pub fn toggle_state(facts: &Facts) -> Option<ToggleState> {
     }
 }
 
-/// 展开状态：`AXExpanded`、大纲行的 `AXDisclosing`、展开三角的 `AXValue`，取先有的那一项。
+/// 展开状态：`AXExpanded`、大纲行的 `AXDisclosing`、展开三角的 `AXValue`，按此顺序取第一个存在的属性。
 pub fn expand_state(facts: &Facts) -> Option<bool> {
     facts.expanded.or(facts.disclosing).or_else(|| {
         (facts.role == kind::DISCLOSURE_TRIANGLE)
@@ -98,16 +98,16 @@ pub fn expand_state(facts: &Facts) -> Option<bool> {
     })
 }
 
-/// 展开与收起怎么发。
+/// 展开与收起的调用方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expander {
-    /// 写这个布尔属性。
+    /// 写入该布尔属性。
     Attribute(&'static str),
-    /// 按一下展开三角。
+    /// 按一次展开三角。
     Press,
 }
 
-/// 展开与收起的发法。顺序：可写的 `AXExpanded` → 可写的 `AXDisclosing` → 展开三角。
+/// 选择展开与收起的调用方式。顺序：可写的 `AXExpanded` → 可写的 `AXDisclosing` → 展开三角。
 pub fn expand_route(facts: &Facts) -> Option<Expander> {
     if facts.expanded.is_some() && facts.settable.expanded {
         return Some(Expander::Attribute(attr::EXPANDED));
@@ -119,21 +119,21 @@ pub fn expand_route(facts: &Facts) -> Option<Expander> {
         .then_some(Expander::Press)
 }
 
-/// `select` 怎么发。
+/// `select` 的调用方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selector {
-    /// 按一下单选按钮。
+    /// 按一次单选按钮。
     Press,
-    /// 把父元素这一项的选中集合换成只有这个元素。
+    /// 把父元素该属性的选中集合替换为只含该元素。
     Parent(&'static str),
-    /// 写这个元素自己的 `AXSelected`。
+    /// 写入该元素自身的 `AXSelected`。
     Own,
 }
 
-/// `select` 的发法。顺序：单选按钮 → 父元素的 `AXSelectedRows`（行）→ 父元素的
-/// `AXSelectedChildren`（带选中状态的项）→ 自己可写的 `AXSelected`。
+/// 选择 `select` 的调用方式。顺序：单选按钮 → 父元素的 `AXSelectedRows`（行）→ 父元素的
+/// `AXSelectedChildren`（带选中状态的项）→ 自身可写的 `AXSelected`。
 ///
-/// 父元素那两项排在自己的 `AXSelected` 前面：写集合是「换成只有这一项」，语义确定；写自己的
+/// 父元素的两个属性排在自身的 `AXSelected` 之前：写入集合的语义确定，即替换为只含该项；写入自身的
 /// `AXSelected` 是增选还是替换由应用决定。
 pub fn select_route(facts: &Facts, context: Context) -> Option<Selector> {
     if claim(facts) == Some(Click::Radio) {
@@ -148,7 +148,7 @@ pub fn select_route(facts: &Facts, context: Context) -> Option<Selector> {
     (facts.selected.is_some() && facts.settable.selected).then_some(Selector::Own)
 }
 
-/// 选中状态。单选按钮的选中状态是它的 `AXValue`。
+/// 选中状态。单选按钮的选中状态是其 `AXValue`。
 pub fn selected(facts: &Facts) -> Option<bool> {
     if facts.role == kind::RADIO_BUTTON {
         return facts.value.number().map(|n| n != 0.0);
@@ -164,10 +164,10 @@ pub struct Numbers {
     pub max: f64,
 }
 
-/// 这个元素的值是一个有上下界的数：数值是 `AXValue`，界是 `AXMinValue` / `AXMaxValue`。
+/// 该元素的值是有上下界的数值：数值取 `AXValue`，上下界取 `AXMinValue` / `AXMaxValue`。
 ///
-/// 滚动条不给界时按 0 到 1 算：它的 `AXValue` 是滑块位置占可滚范围的比例。复选、单选与展开三角
-/// 的数值是状态，不算区间。
+/// 滚动条未提供上下界时按 0 到 1 计算：其 `AXValue` 是滑块位置占可滚动范围的比例。复选、单选与展开三角
+/// 的数值表示状态，不计为区间。
 pub fn numbers(facts: &Facts) -> Option<Numbers> {
     if matches!(
         facts.role.as_str(),
@@ -190,7 +190,7 @@ pub enum Axis {
     Vertical,
 }
 
-/// 滚动条的方向与数值。方向取 `AXOrientation`，没给时按矩形的长边判；两样都没有时判不出。
+/// 滚动条的方向与数值。方向取 `AXOrientation`，未提供时按矩形的长边判定；两者均缺失时无法判定。
 pub fn scroll_bar(facts: &Facts) -> Option<(Axis, Numbers)> {
     if facts.role != kind::SCROLL_BAR {
         return None;
@@ -212,7 +212,7 @@ pub fn scroll_bar(facts: &Facts) -> Option<(Axis, Numbers)> {
     Some((axis, numbers(facts)?))
 }
 
-/// 可编辑文本：输入框、文本区与组合框，值是文本（或长到这一次没读值）。
+/// 可编辑文本：输入框、文本区与组合框，值是文本（或因过长本次未读取值）。
 pub fn text_editable(facts: &Facts) -> bool {
     matches!(
         facts.role.as_str(),
@@ -220,14 +220,14 @@ pub fn text_editable(facts: &Facts) -> bool {
     ) && (matches!(facts.value, Value::Text(_)) || facts.characters.is_some())
 }
 
-/// 能不能设文本选区：有文本模型且 `AXSelectedTextRange` 可写。
+/// 能否设置文本选区：有文本模型且 `AXSelectedTextRange` 可写。
 pub fn text_selectable(facts: &Facts) -> bool {
     facts.characters.is_some() && facts.text_range.is_some() && facts.settable.text_range
 }
 
-/// 要问哪几项可写。只问与可用动作有关、且元素有这一项的属性：每问一项是一次跨进程调用。
+/// 需要查询可写性的属性。只查询与可用动作有关且元素具有的属性：每查询一项是一次跨进程调用。
 ///
-/// 父元素已经能改选中时不问自己的 `AXSelected`：`select_route` 不会用到它。
+/// 父元素已能修改选中状态时不查询自身的 `AXSelected`：`select_route` 不会使用它。
 pub fn settable_queries(facts: &Facts, context: Context) -> Vec<&'static str> {
     let mut out = Vec::new();
     if text_editable(facts) || numbers(facts).is_some() {
@@ -250,7 +250,7 @@ pub fn settable_queries(facts: &Facts, context: Context) -> Vec<&'static str> {
     out
 }
 
-/// 选择容器要问的那几项：子节点的 `Context` 只由它们定。重新定位时读父元素只问这几项。
+/// 选择容器需要查询的属性：子节点的 `Context` 只由它们决定。重新定位时读取父元素只查询这些属性。
 pub fn container_queries(facts: &Facts) -> Vec<&'static str> {
     let mut out = Vec::new();
     if facts.selects_rows {
@@ -262,9 +262,9 @@ pub fn container_queries(facts: &Facts) -> Vec<&'static str> {
     out
 }
 
-/// 这个元素列出的后台动作。缺了发法的动作不列；前台动作由 `foreground_offers` 列。
+/// 该元素列出的后台动作。缺少调用方式的动作不列出；前台动作由 `foreground_offers` 列出。
 ///
-/// 增选与取消选中不列：AX 不报容器是否允许多选，写选中集合时单选容器会换掉已有的选中项。
+/// 增选与取消选中不列出：AX 不报告容器是否允许多选，写入选中集合时单选容器会替换已有的选中项。
 pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
     let mut out = Vec::new();
     let click = claim(facts);
@@ -309,12 +309,12 @@ pub fn offers(facts: &Facts, context: Context) -> Vec<NodeAction> {
     out
 }
 
-/// 这个元素列出的前台动作。
+/// 该元素列出的前台动作。
 ///
-/// 指针动作只列在有矩形、落在窗口可见范围里、窗口没有最小化的元素上：没有矩形就指不出落点。
-/// 键盘动作列在持有键盘焦点的元素与窗口根上：自绘界面给不出持有焦点的控件，只列前者等于对它
-/// 关掉整条键盘路径。窗口动作只列在窗口根上，这个窗口支不支持由派发那一刻判。`path` 为空才是
-/// 窗口根自己。
+/// 指针动作只列在有矩形、位于窗口可见范围内且窗口未最小化的元素上：没有矩形就无法确定落点。
+/// 键盘动作列在持有键盘焦点的元素与窗口根上：自绘界面无法提供持有焦点的控件，只列前者等于对它
+/// 关闭整条键盘路径。窗口动作只列在窗口根上，该窗口是否支持由派发时判定。`path` 为空时即
+/// 窗口根本身。
 pub fn foreground_offers(facts: &Facts, path: &[usize], offscreen: bool) -> Vec<NodeAction> {
     let mut out = Vec::new();
     if facts.frame.is_some() && !offscreen && facts.minimized != Some(true) {
@@ -340,7 +340,7 @@ pub fn foreground_offers(facts: &Facts, path: &[usize], offscreen: bool) -> Vec<
     out
 }
 
-/// 控件名称：`AXTitle`，没有时取 `AXDescription`；静态文本两者都没有时取它的文本。
+/// 控件名称：`AXTitle`，没有时取 `AXDescription`；静态文本两者均缺失时取其文本。
 pub fn name(facts: &Facts) -> String {
     if !facts.title.is_empty() {
         return facts.title.clone();
@@ -356,7 +356,7 @@ pub fn name(facts: &Facts) -> String {
 
 /// 核对串：原始角色、子角色与稳定标识的指纹，写在 `ref` 的 `#` 之前，重新定位时与身份段一起核对。
 ///
-/// 名称不进核对串：组合框、标签与列表行的名称随内容变，改了内容仍是同一个控件。
+/// 名称不计入核对串：组合框、标签与列表行的名称随内容变化，内容改变后仍是同一个控件。
 pub fn check(facts: &Facts) -> String {
     fingerprint(
         &format!("{}.{}", facts.role, facts.subrole),
@@ -365,24 +365,24 @@ pub fn check(facts: &Facts) -> String {
     )
 }
 
-/// 身份段：身份表编号。段首不是 `~`，协调器按它给稳定短编号。
+/// 身份段：身份表编号。段首不是 `~`，协调器据此分配稳定短编号。
 ///
-/// 不要把指纹或名称放进身份段：名称随内容变的控件会被协调器当成删掉一个、新增一个。
+/// 不要把指纹或名称放入身份段：名称随内容变化的控件会被协调器视为删除一个控件并新增一个控件。
 pub fn identity(id: u64) -> Identity {
     Identity::Stable(id.to_string())
 }
 
-/// 按 `ref` 重新定位到的元素是不是 `ref` 记的那一个：身份段与核对串都要对上。
+/// 按 `ref` 重新定位到的元素是否为 `ref` 记录的元素：身份段与核对串必须都一致。
 pub fn verify(expected: &RefParts, id: u64, actual: &str) -> Result<(), String> {
     if expected.identity != identity(id) {
         return Err(format!(
-            "{REF_STALE}: 该位置现在是控件 {id}，ref 里记的是 {}，请重新观察",
+            "{REF_STALE}: 该位置当前是控件 {id}，ref 中记录的是 {}，请重新观察",
             describe(&expected.identity)
         ));
     }
     if expected.check.as_deref() != Some(actual) {
         return Err(format!(
-            "{REF_STALE}: 控件 {id} 的角色或稳定标识已经变了（核对串 {actual}，ref 里记的是 {}），请重新观察",
+            "{REF_STALE}: 控件 {id} 的角色或稳定标识已改变（核对串 {actual}，ref 中记录的是 {}），请重新观察",
             expected.check.as_deref().unwrap_or("缺席")
         ));
     }
@@ -396,10 +396,10 @@ fn describe(identity: &Identity) -> String {
     }
 }
 
-/// 换算成协议节点。`parent_ref` 与 `depth` 由遍历填。
+/// 换算为协议节点。`parent_ref` 与 `depth` 由遍历填入。
 ///
-/// `window` 是元素所在窗口的 AX 矩形，判「在不在窗口可见范围里」用。`mapping` 是这个窗口的
-/// 点到像素换算：窗口没有对应上 CG 窗口时缺席，节点就不带包围盒，与这种窗口不给图、不给坐标
+/// `window` 是元素所在窗口的 AX 矩形，用于判定元素是否在窗口可见范围内。`mapping` 是该窗口的
+/// 点到像素换算：窗口未对应到 CG 窗口时缺席，节点不带包围盒，与这类窗口不提供图像、不提供坐标
 /// 动作一致。
 pub fn node(
     facts: &Facts,
@@ -467,7 +467,7 @@ pub fn node(
             .map(|open| if open { "expanded" } else { "collapsed" })
             .filter(|_| fields.state),
         selected: selected(facts).filter(|_| fields.state),
-        // AX 不报容器是否允许多选、是否要求始终选中一项，给不出完整的容器约束。
+        // AX 不报告容器是否允许多选、是否要求始终选中一项，无法提供完整的容器约束。
         selection: None,
         scroll,
         text: facts.characters.is_some(),
@@ -475,7 +475,7 @@ pub fn node(
     }
 }
 
-/// AX 角色换算成协议角色名。词表里没有对应的角色交回 `ax_<角色名>`，不猜一个相近的。
+/// 把 AX 角色换算为协议角色名。词表中没有对应的角色返回 `ax_<角色名>`，不推测相近的角色。
 pub fn role_name(role: &str, subrole: &str) -> String {
     vocabulary(role, subrole).map_or_else(
         || format!("ax_{}", snake(role.strip_prefix("AX").unwrap_or(role))),
@@ -483,8 +483,8 @@ pub fn role_name(role: &str, subrole: &str) -> String {
     )
 }
 
-/// `DateField` → `date_field`，`URLField` → `url_field`。只留小写字母、数字与下划线；
-/// 空串交回 `unknown`。
+/// `DateField` → `date_field`，`URLField` → `url_field`。只保留小写字母、数字与下划线；
+/// 空串返回 `unknown`。
 fn snake(name: &str) -> String {
     let chars: Vec<char> = name.chars().collect();
     let mut out = String::new();
@@ -582,7 +582,7 @@ mod tests {
         foreground: false,
     };
 
-    /// 按钮的 `AXPress` 列成 `invoke`；没有 `AXPress` 的按钮一条动作都不列。
+    /// 按钮的 `AXPress` 列为 `invoke`；没有 `AXPress` 的按钮不列出任何动作。
     #[test]
     fn a_button_offers_invoke_through_press() {
         let button = facts("AXButton", &[action::PRESS, "AXShowMenu"]);
@@ -591,7 +591,7 @@ mod tests {
         assert!(offers(&facts("AXButton", &[]), Context::default()).is_empty());
     }
 
-    /// 复选框的 `AXPress` 只列成 `set_toggle`，状态读 `AXValue` 的 0 / 1 / 2。
+    /// 复选框的 `AXPress` 只列为 `set_toggle`，状态取 `AXValue` 的 0 / 1 / 2。
     #[test]
     fn a_check_box_offers_set_toggle_and_reports_its_state() {
         let mut check = facts(kind::CHECK_BOX, &[action::PRESS]);
@@ -602,12 +602,12 @@ mod tests {
         assert_eq!(names(&node.actions), ["set_toggle"]);
         assert_eq!(node.toggle, Some("indeterminate"));
         assert_eq!(node.role, "check_box");
-        // 状态判不出时不列：切换要靠重读状态判断停在哪里。
+        // 状态无法判定时不列出：切换需要重读状态以判定当前所处的状态。
         check.value = Value::Absent;
         assert!(offers(&check, Context::default()).is_empty());
     }
 
-    /// 单选按钮与标签页按钮的 `select` 经 `AXPress` 发出，选中状态是它的 `AXValue`。
+    /// 单选按钮与标签页按钮的 `select` 经由 `AXPress` 发出，选中状态取其 `AXValue`。
     #[test]
     fn a_radio_button_offers_select_and_reports_its_value_as_selected() {
         let mut tab = facts(kind::RADIO_BUTTON, &[action::PRESS]);
@@ -624,7 +624,7 @@ mod tests {
         assert_eq!(role_name(kind::RADIO_BUTTON, ""), "radio_button");
     }
 
-    /// 可写的输入框列 `set_value`；只读的照列，标成此刻不可用。静态文本不列。
+    /// 可写的输入框列出 `set_value`；只读的输入框照常列出，标记为当前不可用。静态文本不列出。
     #[test]
     fn text_fields_offer_set_value_by_settability() {
         let mut field = facts(kind::TEXT_FIELD, &[]);
@@ -652,7 +652,7 @@ mod tests {
         assert!(settable_queries(&label, Context::default()).is_empty());
     }
 
-    /// 静态文本没有标题时名称就是它的文本，值不再重复一遍；输入框的值是文本，空串也给。
+    /// 静态文本没有标题时名称即其文本，值不再重复；输入框的值是文本，空串同样提供。
     #[test]
     fn static_text_names_itself_by_its_text() {
         let mut label = facts(kind::STATIC_TEXT, &[]);
@@ -677,7 +677,7 @@ mod tests {
             super::node(&field, Context::default(), &[], 3, None, None, skip).value,
             None
         );
-        // 超过上限的文本不进节点值。
+        // 超过上限的文本不写入节点值。
         field.value = Value::Text("字".repeat(VALUE_TEXT_LIMIT as usize + 1));
         assert_eq!(
             super::node(&field, Context::default(), &[], 3, None, None, FIELDS).value,
@@ -685,7 +685,7 @@ mod tests {
         );
     }
 
-    /// 名称先取标题，再取描述：只有图标的按钮只给描述。
+    /// 名称先取标题，再取描述：只有图标的按钮只提供描述。
     #[test]
     fn the_name_falls_back_to_the_description() {
         let mut icon = facts("AXButton", &[action::PRESS]);
@@ -694,7 +694,7 @@ mod tests {
         assert_eq!(name(&icon), "共享");
     }
 
-    /// 滑块的数值带界；只读的列成此刻不可用。滚动条不给界时按 0 到 1。
+    /// 滑块的数值带上下界；只读的标记为当前不可用。滚动条未提供上下界时按 0 到 1 计算。
     #[test]
     fn range_values_need_bounds_except_on_scroll_bars() {
         let mut slider = facts("AXSlider", &[action::INCREMENT, action::DECREMENT]);
@@ -725,7 +725,7 @@ mod tests {
         assert_eq!(node.scroll.and_then(|s| s.vertical), Some(25.0));
     }
 
-    /// 滚动条有增减动作才列 `scroll`；方向没给时按矩形长边判。
+    /// 滚动条具有增减动作时才列出 `scroll`；未提供方向时按矩形长边判定。
     #[test]
     fn a_scroll_bar_offers_scroll_only_with_step_actions() {
         let mut bar = facts(kind::SCROLL_BAR, &[]);
@@ -742,8 +742,8 @@ mod tests {
         assert!(names(&offers(&bar, Context::default())).contains(&"scroll"));
     }
 
-    /// 表格的行经父元素的 `AXSelectedRows` 选中；带选中状态的列表项经 `AXSelectedChildren`；
-    /// 父元素都不能改时才用自己可写的 `AXSelected`，此时才问它可不可写。
+    /// 表格的行经由父元素的 `AXSelectedRows` 选中；带选中状态的列表项经由 `AXSelectedChildren` 选中；
+    /// 父元素均无法修改时才使用自身可写的 `AXSelected`，此时才查询其可写性。
     #[test]
     fn selection_prefers_the_parent_collection() {
         let mut row = facts(kind::ROW, &[]);
@@ -775,12 +775,12 @@ mod tests {
         assert_eq!(select_route(&item, Context::default()), None);
         item.settable.selected = true;
         assert_eq!(select_route(&item, Context::default()), Some(Selector::Own));
-        // 增选与取消选中一律不列。
+        // 增选与取消选中一律不列出。
         let offered = names(&offers(&item, Context::default()));
         assert_eq!(offered, ["select"]);
     }
 
-    /// 选择容器问两项集合的可写性，子元素的上下文按它来。
+    /// 选择容器查询两个集合属性的可写性，子元素的上下文据此确定。
     #[test]
     fn a_container_asks_about_its_selection_collections() {
         let mut table = facts("AXOutline", &[]);
@@ -800,7 +800,7 @@ mod tests {
         );
     }
 
-    /// 展开的三种发法：可写的 `AXExpanded`、可写的 `AXDisclosing`、展开三角的 `AXPress`。
+    /// 展开的三种调用方式：可写的 `AXExpanded`、可写的 `AXDisclosing`、展开三角的 `AXPress`。
     #[test]
     fn expansion_uses_the_first_available_route() {
         let mut combo = facts(kind::COMBO_BOX, &[action::PRESS]);
@@ -833,7 +833,7 @@ mod tests {
         assert_eq!(role_name(&triangle.role, ""), "button");
     }
 
-    /// 元素矩形与窗口矩形不相交即在可见范围之外；矩形读不出时按在屏幕上报。
+    /// 元素矩形与窗口矩形不相交即位于可见范围之外；无法读取矩形时按在屏幕上报告。
     #[test]
     fn offscreen_is_judged_against_the_window() {
         let window = Frame {
@@ -858,7 +858,7 @@ mod tests {
         assert!(!node(&row, Context::default(), &[], 1, None, None, FIELDS).offscreen);
     }
 
-    /// 焦点只在前台模式开着时报。
+    /// 焦点只在前台模式开启时报告。
     #[test]
     fn focus_is_reported_only_in_foreground_mode() {
         let mut field = facts(kind::TEXT_FIELD, &[]);
@@ -875,7 +875,7 @@ mod tests {
         assert!(names(&node.actions).contains(&"type_text"));
     }
 
-    /// Retina 屏上的窗口：包围盒按窗口的那一套换算成像素；窗口没有换算时不带包围盒。
+    /// Retina 屏上的窗口：包围盒按窗口所用的换算转换为像素；窗口没有换算时不带包围盒。
     #[test]
     fn the_bounding_box_is_reported_in_pixels_of_the_windows_display() {
         use super::super::screen::{place, Display};
@@ -937,8 +937,8 @@ mod tests {
         .is_none());
     }
 
-    /// 前台模式开着时：有矩形且在窗口里的元素列指针动作；持有焦点的元素与窗口根列键盘动作；
-    /// 窗口动作只在根上。前台模式关着时一条都不列。
+    /// 前台模式开启时：有矩形且位于窗口内的元素列出指针动作；持有焦点的元素与窗口根列出键盘动作；
+    /// 窗口动作只列在根上。前台模式关闭时不列出任何前台动作。
     #[test]
     fn foreground_actions_follow_bounds_focus_and_the_window_root() {
         let foreground = Fields {
@@ -1023,7 +1023,7 @@ mod tests {
                 "resize_window",
             ]
         );
-        // 最小化的窗口不列指针动作，窗口动作照列：恢复它要靠它们。
+        // 最小化的窗口不列出指针动作，窗口动作照常列出：恢复窗口需要这些动作。
         root.minimized = Some(true);
         let minimized = names(
             &node(
@@ -1065,13 +1065,13 @@ mod tests {
             FIELDS,
         )
         .reference;
-        let (head, segment) = reference.split_once('#').expect("ref 带身份段");
+        let (head, segment) = reference.split_once('#').expect("ref 必须带身份段");
         assert_eq!(segment, "42");
         assert!(head.starts_with("w.0.3@"));
         assert!(!identity(42).is_weak());
     }
 
-    /// 原始失败形状：组合框换了选中项、名称随之改变，整条 ref 不变，旧 ref 照样核对得上。
+    /// 原始失败形状：组合框的选中项改变、名称随之改变，整条 ref 不变，旧 ref 仍能通过核对。
     #[test]
     fn a_control_whose_name_follows_its_content_keeps_its_ref() {
         let mut combo = facts("AXPopUpButton", &[action::PRESS]);
@@ -1083,18 +1083,18 @@ mod tests {
             node(&combo, Context::default(), &[1], 9, None, None, FIELDS).reference,
             before
         );
-        let parts = crate::tree::decode_ref(&before).expect("解得开");
+        let parts = crate::tree::decode_ref(&before).expect("应能解析");
         assert_eq!(verify(&parts, 9, &check(&combo)), Ok(()));
     }
 
-    /// 同一个位置换成了另一个身份表编号，或同一个元素换了角色、子角色、稳定标识：`ref_stale`。
+    /// 同一位置对应另一个身份表编号，或同一元素的角色、子角色、稳定标识改变：`ref_stale`。
     #[test]
     fn a_different_number_or_check_is_stale() {
         let button = facts("AXButton", &[action::PRESS]);
         let old = crate::tree::decode_ref(
             &node(&button, Context::default(), &[0], 9, None, None, FIELDS).reference,
         )
-        .expect("解得开");
+        .expect("应能解析");
         let other = verify(&old, 10, &check(&button)).expect_err("应当拒绝");
         assert!(other.starts_with("ref_stale: "), "{other}");
         for changed in [
@@ -1114,12 +1114,12 @@ mod tests {
             let refused = verify(&old, 9, &check(&changed)).expect_err("应当拒绝");
             assert!(refused.starts_with("ref_stale: "), "{refused}");
         }
-        // 不带核对串的 ref 不是这个后端交出的。
-        let bare = crate::tree::decode_ref("w.0#9").expect("解得开");
+        // 不带核对串的 ref 不是本后端生成的。
+        let bare = crate::tree::decode_ref("w.0#9").expect("应能解析");
         assert!(verify(&bare, 9, &check(&button)).is_err());
     }
 
-    /// 词表里有的角色交回协议名，没有的交回带前缀的原名，不落进词表。
+    /// 词表中有的角色返回协议名，没有的返回带前缀的原名，不归入词表。
     #[test]
     fn roles_map_into_the_vocabulary_or_keep_their_own_name() {
         assert_eq!(role_name("AXButton", "AXCloseButton"), "button");

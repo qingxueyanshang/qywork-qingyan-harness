@@ -1,12 +1,12 @@
-//! 地址栏与建页共用的地址解析。两种引擎按同一条规则放行地址。
+//! 地址栏与新建页面共用的地址解析。两种引擎按同一规则放行地址。
 
 use std::path::Path;
 
 use tauri::Url;
 
-/// 用户新开一页时的落点。地址栏空着，由用户输入真实地址。
+/// 用户新开页面时的初始地址。地址栏为空，由用户输入实际地址。
 ///
-/// 这一页没有要等的目标文档：标记在用户导航出的那个文档上注入，AI 要认页也只可能认那一个。
+/// 该页面没有需要等待的目标文档：标记在用户导航到的文档上注入，AI 识别页面时也只能识别该文档。
 pub const BLANK: &str = "about:blank";
 
 /// 绝对文件路径保留字面字符，file URL 保留查询与锚点。
@@ -19,7 +19,7 @@ pub fn navigation_url(raw: &str) -> Result<Url, String> {
     if Path::new(value).is_absolute() {
         return Url::from_file_path(value).map_err(|_| "本地文件路径无法解析".to_owned());
     }
-    // 裸域名与 localhost:端口沿用地址栏的 HTTP 补全；其他协议交给下面统一裁决。
+    // 裸域名与 localhost:端口沿用地址栏的 HTTP 补全；其他协议交由下方统一裁决。
     let has_port = value.split_once(':').is_some_and(|(_, tail)| {
         tail.split(['/', '?', '#'])
             .next()
@@ -42,7 +42,7 @@ pub fn navigation_url(raw: &str) -> Result<Url, String> {
 mod tests {
     use super::{navigation_url, BLANK};
 
-    /// 路径写法按本机平台取：Windows 的盘符路径在 unix 上不是绝对路径。
+    /// 路径写法按本机平台选择：Windows 的盘符路径在 unix 上不是绝对路径。
     #[test]
     fn local_paths_and_file_urls_keep_literal_characters() {
         #[cfg(windows)]

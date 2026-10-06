@@ -1,20 +1,20 @@
 //! 采集帧的缩放与 PNG 编码。输入输出都是自上而下、每像素 3 字节的 RGB 行。
 //!
-//! 缩放按面积加权平均：每个输出像素取它在源图上覆盖的那一块，边上只覆盖一部分的源像素按
-//! 覆盖比例计。不要改成最近邻取样：界面截图里一两个像素宽的文字笔画与边框会整条丢掉。
+//! 缩放按面积加权平均：每个输出像素取其在源图上覆盖的区域，边缘只被部分覆盖的源像素按
+//! 覆盖比例计入。不要改为最近邻取样：界面截图中一两个像素宽的文字笔画与边框会整条丢失。
 
 use miniz_oxide::deflate::compress_to_vec_zlib;
 
 /// DEFLATE 的压缩级别。6 是 zlib 的缺省级别。
 const LEVEL: u8 = 6;
 
-/// 把 `width × height` 的 RGB 缩到 `out_width × out_height`。只用于缩小。
+/// 把 `width × height` 的 RGB 缩放到 `out_width × out_height`。只用于缩小。
 pub fn scale(rgb: &[u8], width: u32, height: u32, out_width: u32, out_height: u32) -> Vec<u8> {
     let (w, h) = (width as usize, height as usize);
     let (ow, oh) = (out_width as usize, out_height as usize);
     let columns = taps(w, ow);
     let rows = taps(h, oh);
-    // 先横向：每一源行缩成 `ow` 个像素。
+    // 先横向缩放：每个源行缩为 `ow` 个像素。
     let mut wide = vec![0f32; ow * h * 3];
     for y in 0..h {
         let line = &rgb[y * w * 3..(y + 1) * w * 3];
@@ -27,7 +27,7 @@ pub fn scale(rgb: &[u8], width: u32, height: u32, out_width: u32, out_height: u3
             }
         }
     }
-    // 再纵向。
+    // 再纵向缩放。
     let mut out = vec![0u8; ow * oh * 3];
     for (y, row) in rows.iter().enumerate() {
         for x in 0..ow {
@@ -43,7 +43,7 @@ pub fn scale(rgb: &[u8], width: u32, height: u32, out_width: u32, out_height: u3
     out
 }
 
-/// 每个输出位置取哪些源位置、各占多少权重。一个输出位置的权重和为 1。
+/// 每个输出位置对应的源位置及各自的权重。每个输出位置的权重和为 1。
 fn taps(source: usize, target: usize) -> Vec<Vec<(usize, f32)>> {
     let ratio = source as f64 / target as f64;
     (0..target)
@@ -64,9 +64,9 @@ fn taps(source: usize, target: usize) -> Vec<Vec<(usize, f32)>> {
         .collect()
 }
 
-/// 编码成 8 位 RGB、不隔行的 PNG。
+/// 编码为 8 位 RGB、非隔行的 PNG。
 ///
-/// 每一行按五种滤波各算一遍，取滤波后字节按有符号数求绝对值之和最小的那一种。
+/// 每一行分别按五种滤波计算，取滤波后字节按有符号数求绝对值之和最小的滤波。
 pub fn encode(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
     let row = width as usize * 3;
     let mut filtered = Vec::with_capacity((row + 1) * height as usize);
@@ -100,7 +100,7 @@ pub fn encode(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
     let mut header = Vec::with_capacity(13);
     header.extend_from_slice(&width.to_be_bytes());
     header.extend_from_slice(&height.to_be_bytes());
-    // 位深 8、颜色类型 2（RGB）、压缩 0、滤波 0、不隔行。
+    // 位深 8、颜色类型 2（RGB）、压缩 0、滤波 0、非隔行。
     header.extend_from_slice(&[8, 2, 0, 0, 0]);
     let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
     chunk(&mut out, b"IHDR", &header);
@@ -140,7 +140,7 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 
-/// 写一个数据块：长度、类型、数据，以及类型加数据的 CRC-32。
+/// 写入一个数据块：长度、类型、数据，以及类型与数据的 CRC-32。
 fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&u32::try_from(data.len()).unwrap_or(u32::MAX).to_be_bytes());
     out.extend_from_slice(kind);
@@ -180,7 +180,7 @@ mod tests {
     use super::*;
     use miniz_oxide::inflate::decompress_to_vec_zlib;
 
-    /// 解一张本模块编出来的 PNG：核对各块的 CRC，解压并逆滤波，交回尺寸与 RGB。
+    /// 解码本模块生成的 PNG：核对各块的 CRC，解压并逆滤波，返回尺寸与 RGB。
     fn decode(png: &[u8]) -> (u32, u32, Vec<u8>) {
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         let mut at = 8;
@@ -205,7 +205,7 @@ mod tests {
             }
             at += 12 + len;
         }
-        let raw = decompress_to_vec_zlib(&idat).expect("IDAT 解得开");
+        let raw = decompress_to_vec_zlib(&idat).expect("IDAT 应能解压");
         let row = size.0 as usize * 3;
         let mut out: Vec<u8> = Vec::new();
         for y in 0..size.1 as usize {
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(crc32(b"IEND".iter()), 0xae42_6082);
     }
 
-    /// 编出来的 PNG 解回来与原像素逐字节相同：渐变、纯色块与噪声都覆盖到五种滤波。
+    /// 生成的 PNG 解码后与原像素逐字节相同：渐变、纯色块与噪声覆盖全部五种滤波。
     #[test]
     fn an_encoded_image_decodes_back_to_the_same_pixels() {
         let (w, h) = (37u32, 23u32);
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(back, rgb);
     }
 
-    /// 缩小按面积平均：整块同色的区域缩完仍是那个颜色，两色各半的像素取中间值。
+    /// 缩小按面积平均：同色区域缩小后颜色不变，两色各占一半的像素取中间值。
     #[test]
     fn scaling_averages_the_area_each_output_pixel_covers() {
         // 4×2：左半红、右半蓝。
@@ -275,9 +275,9 @@ mod tests {
             }
         }
         assert_eq!(scale(&rgb, 4, 2, 2, 1), vec![255, 0, 0, 0, 0, 255]);
-        // 缩成 1×1：两色各占一半。
+        // 缩小为 1×1：两色各占一半。
         assert_eq!(scale(&rgb, 4, 2, 1, 1), vec![128, 0, 128]);
-        // 3 → 2：中间那一列一半归左、一半归右。
+        // 3 → 2：中间一列一半计入左侧、一半计入右侧。
         let line = [0u8, 0, 0, 90, 90, 90, 180, 180, 180];
         assert_eq!(scale(&line, 3, 1, 2, 1), vec![30, 30, 30, 150, 150, 150]);
     }

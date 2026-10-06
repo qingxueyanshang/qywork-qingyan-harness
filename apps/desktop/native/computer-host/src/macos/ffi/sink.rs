@@ -1,14 +1,14 @@
-//! 前台原始输入的真实派发口：CGEvent 投到 HID 事件流。整个进程只有这里向系统发输入。
+//! 前台原始输入的实际派发端：CGEvent 投递到 HID 事件流。整个进程只有此处向系统发送输入。
 //!
 //! 三条边界：
 //!
-//! 1. **事件的形状由 `events::Tracker` 定**（类型、点击次数、修饰键标志位），这里只建事件与投递。
-//!    一个派发口对应一次动作，按住的键与指针位置在它的批与批之间接着算。
-//! 2. **事件源用私有状态表**：合成事件的修饰键标志位只由这里设的那几位决定，不混入用户此刻
-//!    实际按着的键。
-//! 3. **文字经 `CGEventKeyboardSetUnicodeString` 投递**，每个按键事件带一批 UTF-16 码元，代理对
-//!    不跨批。应用可能不读这段文字、改按键码翻译成别的字符，投递结果因此只算「已发出」，
-//!    写进去的是什么由动作之后的重读核对。
+//! 1. **事件的形状由 `events::Tracker` 确定**（类型、点击次数、修饰键标志位），此处只负责创建与
+//!    投递事件。一个派发端对应一次动作，按下的键与指针位置在该动作的各批之间连续计算。
+//! 2. **事件源使用私有状态表**：合成事件的修饰键标志位只由此处设置的标志位决定，不混入用户当前
+//!    实际按下的键。
+//! 3. **文字经由 `CGEventKeyboardSetUnicodeString` 投递**，每个按键事件携带一批 UTF-16 码元，代理对
+//!    不跨批。应用可能不读取这段文字，而按键码翻译为其他字符，投递结果因此只记为「已发出」，
+//!    实际写入的内容由动作之后的重读核对。
 
 use std::cell::RefCell;
 
@@ -23,7 +23,7 @@ use crate::macos::keys::keycode;
 use crate::macos::pure::events::{flags_with, Cg, Tracker};
 use crate::macos::pure::screen::Mapping;
 
-/// 一个按键事件最多带多少个 UTF-16 码元。单个事件带的文字以 20 个码元为限，超出的部分不保证送达。
+/// 一个按键事件携带的 UTF-16 码元数上限。单个事件携带的文字以 20 个码元为限，超出的部分不保证送达。
 const TEXT_UNITS_PER_EVENT: usize = 20;
 
 pub struct MacSink {
@@ -37,16 +37,16 @@ pub struct MacSink {
 pub struct Typed {
     pub sent: u32,
     pub requested: u32,
-    /// 中途停下来的原因。
+    /// 中途停止的原因。
     pub interrupted: Option<String>,
 }
 
 impl MacSink {
-    /// `mapping` 是目标窗口的点到像素换算：协议给的屏幕物理像素落点按它换回点。
+    /// `mapping` 是目标窗口的点与像素之间的换算：协议提供的屏幕物理像素落点按它换算为点。
     pub fn new(mapping: Mapping) -> Result<Self, String> {
         let source = CGEventSource::new(CGEventSourceStateID::Private)
-            .ok_or_else(|| "input_unavailable: 建不了事件源".to_owned())?;
-        // 派发开始那一刻的指针位置：按下与抬起事件要带位置，第一个事件可能不是移动。
+            .ok_or_else(|| "input_unavailable: 无法创建事件源".to_owned())?;
+        // 派发开始时的指针位置：按下与抬起事件必须携带位置，第一个事件可能不是移动。
         let at =
             CGEvent::new(None).map_or(CGPoint { x: 0.0, y: 0.0 }, |e| CGEvent::location(Some(&e)));
         Ok(Self {
@@ -56,7 +56,7 @@ impl MacSink {
         })
     }
 
-    /// 这个协议键名在 macOS 键盘上有没有键码。
+    /// 该协议键名在 macOS 键盘上是否有键码。
     pub fn resolves(&self, key: &str) -> bool {
         keycode(key).is_some()
     }
@@ -109,7 +109,7 @@ impl MacSink {
         }
     }
 
-    /// 投出一段文字。`target` 在每一批之前核对前台窗口与焦点，返回 `Err` 即停下并把原因带回。
+    /// 投递一段文字。`target` 在每一批之前核对前台窗口与焦点，返回 `Err` 即停止并返回原因。
     pub fn type_text(&self, text: &str, target: &dyn Fn() -> Result<(), String>) -> Typed {
         let batches = text_batches(text, TEXT_UNITS_PER_EVENT);
         let mut typed = Typed {
@@ -123,7 +123,7 @@ impl MacSink {
                 break;
             }
             let posted = [true, false].into_iter().all(|down| {
-                // 键码 0 只是载体：应用读的是这段文字。修饰键位清零，按住的物理键不改写字符。
+                // 键码 0 只是载体：应用读取的是这段文字。修饰键位清零，按下的物理键不改写字符。
                 let Some(event) = CGEvent::new_keyboard_event(Some(&self.source), 0, down) else {
                     return false;
                 };
@@ -141,7 +141,7 @@ impl MacSink {
                 true
             });
             if !posted {
-                typed.interrupted = Some("input_unavailable: 建不了按键事件".to_owned());
+                typed.interrupted = Some("input_unavailable: 无法创建按键事件".to_owned());
                 break;
             }
             typed.sent += u32::try_from(batch.len()).unwrap_or(u32::MAX);
@@ -156,7 +156,7 @@ impl Sink for MacSink {
             return 0;
         }
         let mapping = self.mapping;
-        // 键名换算不了时整批不发，状态也不动：发一半会让组合键停在半按下的状态。
+        // 键名无法换算时整批不发送，状态也不改变：只发送一部分会使组合键停留在部分按下的状态。
         let Some(planned) = self.tracker.borrow_mut().plan(events, |p| mapping.point(p)) else {
             return 0;
         };

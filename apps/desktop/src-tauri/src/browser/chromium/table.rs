@@ -1,26 +1,26 @@
-//! 这个浏览器进程里的页、会话与帧，按顶层页归拢。
+//! 本浏览器进程中的页面、会话与帧，按顶层页面归类。
 //!
-//! 每个页会话与它的跨站子帧会话都记到顶层页上，各会话报来的帧也记到顶层页上：
-//! 下载事件只带 frameId，归属靠这张表从帧查到页、再查到 tabId。
+//! 每个页面会话及其跨站子帧会话都记录到顶层页面上，各会话报告的帧也记录到顶层页面上：
+//! 下载事件只带 frameId，归属依靠本表从帧查到页面、再查到 tabId。
 
 use std::collections::HashMap;
 
-/// 一个顶层页。
+/// 顶层页面。
 pub struct PageEntry {
-    /// 宿主连接上这一页的会话。
+    /// 宿主连接上该页面的会话。
     pub session: String,
-    /// 宿主给它的 tabId。`None` = 不在存活集合里的页（用户在浏览器窗口里自己开的页）。
+    /// 宿主分配的 tabId。`None` = 不在存活集合中的页面（用户在浏览器窗口中自行打开的页面）。
     pub tab: Option<String>,
-    /// 浏览器最近一次报出的地址与标题，经 `page_info` 写入。
+    /// 浏览器最近一次报告的地址与标题，经 `page_info` 写入。
     pub url: String,
     pub title: String,
-    /// Page 域已开、已放行。宿主建页要等到这一步才注入标记。
+    /// Page 域已启用、已放行。宿主新建页面时须等到此步骤才注入标记。
     pub ready: bool,
     /// 主帧提交过一次非初始文档。
     pub committed: bool,
-    /// 提交之后主帧停止加载。宿主建页以它为「导航完成」。
+    /// 提交之后主帧停止加载。宿主新建页面时以此作为导航完成。
     pub loaded: bool,
-    /// 页面自己开出来、开它的页在存活集合里：等主帧第一次提交时进存活集合。
+    /// 由页面自行打开、且打开它的页面在存活集合中：主帧首次提交时加入存活集合。
     pub popup: Option<Popup>,
 }
 
@@ -29,7 +29,7 @@ pub struct Popup {
     pub marker: String,
 }
 
-/// 一次地址与标题投影里要报给宿主的变化，只含变了的那几项。
+/// 一次地址与标题投影中需要报告给宿主的变化，只含变化的项。
 #[derive(Debug, PartialEq, Eq)]
 pub struct InfoChange {
     pub tab: String,
@@ -40,14 +40,14 @@ pub struct InfoChange {
 #[derive(Default)]
 pub struct Table {
     pages: HashMap<String, PageEntry>,
-    /// 会话 → 顶层页。页会话与子帧会话都在这里。
+    /// 会话 → 顶层页面。页面会话与子帧会话都在此表中。
     sessions: HashMap<String, String>,
-    /// 帧 → 顶层页。主帧的 id 就是页的 targetId，跨站子帧的 id 就是它的 targetId。
+    /// 帧 → 顶层页面。主帧的 id 即页面的 targetId，跨站子帧的 id 即其自身的 targetId。
     frames: HashMap<String, String>,
 }
 
 impl Table {
-    /// 一个顶层页附上来。
+    /// 顶层页面附加。
     pub fn page_attached(&mut self, target: &str, session: &str, url: &str, title: &str) {
         self.pages.insert(
             target.to_owned(),
@@ -66,7 +66,7 @@ impl Table {
         self.frames.insert(target.to_owned(), target.to_owned());
     }
 
-    /// 某个已知会话下附上来一个跨站子帧会话。父会话不认识时返回 `false`，调用方只放行不跟踪。
+    /// 已知会话下附加了一个跨站子帧会话。父会话未知时返回 `false`，调用方只放行不跟踪。
     pub fn child_attached(&mut self, parent_session: &str, session: &str, target: &str) -> bool {
         let Some(top) = self.sessions.get(parent_session).cloned() else { return false };
         self.sessions.insert(session.to_owned(), top.clone());
@@ -78,7 +78,7 @@ impl Table {
         self.sessions.remove(session);
     }
 
-    /// 页没了。它的会话与帧一并摘掉，返回被摘掉的那一页。
+    /// 页面已销毁。其会话与帧一并移除，返回被移除的页面。
     pub fn page_destroyed(&mut self, target: &str) -> Option<PageEntry> {
         let entry = self.pages.remove(target)?;
         self.sessions.retain(|_, top| top != target);
@@ -86,14 +86,14 @@ impl Table {
         Some(entry)
     }
 
-    /// 会话报来一个帧。会话不认识时不记：那不是这张表跟踪的页。
+    /// 会话报告一个帧。会话未知时不记录：该帧不属于本表跟踪的页面。
     pub fn frame_seen(&mut self, session: &str, frame: &str) {
         if let Some(top) = self.sessions.get(session).cloned() {
             self.frames.insert(frame.to_owned(), top);
         }
     }
 
-    /// 帧被移除。换进程（`swap`）的帧在新会话下仍在，不摘。
+    /// 帧被移除。更换进程（`swap`）的帧在新会话下仍存在，不移除。
     pub fn frame_removed(&mut self, frame: &str) {
         if self.pages.contains_key(frame) {
             return;
@@ -101,20 +101,20 @@ impl Table {
         self.frames.remove(frame);
     }
 
-    /// 这个会话下的这一帧是不是某个顶层页的主帧。是则返回那一页。
+    /// 该会话下的该帧是否为某个顶层页面的主帧。是则返回该页面。
     pub fn main_frame(&mut self, session: &str, frame: &str) -> Option<&mut PageEntry> {
         let entry = self.pages.get_mut(frame)?;
         (entry.session == session).then_some(entry)
     }
 
-    /// 这个会话是不是某个顶层页自己的会话。是则返回那一页的 targetId；子帧会话不算。
+    /// 该会话是否为某个顶层页面自身的会话。是则返回该页面的 targetId；子帧会话不计入。
     pub fn page_of_session(&self, session: &str) -> Option<&str> {
         let top = self.sessions.get(session)?;
         (self.pages.get(top)?.session == session).then_some(top.as_str())
     }
 
-    /// 记下浏览器报出的一页此刻的地址与标题。存活集合里的页有变化时返回要报的那几项；
-    /// 不在存活集合里的页只记不报。
+    /// 记录浏览器报告的页面当前地址与标题。存活集合中的页面有变化时返回需要报告的项；
+    /// 不在存活集合中的页面只记录不报告。
     pub fn page_info(&mut self, target: &str, url: &str, title: &str) -> Option<InfoChange> {
         let entry = self.pages.get_mut(target)?;
         let url_changed = entry.url != url;
@@ -137,7 +137,7 @@ impl Table {
         self.pages.get_mut(target)
     }
 
-    /// 一次下载来自哪个存活页。帧不属于任何顶层页，或那一页不在存活集合里，都是 `None`。
+    /// 下载来自哪个存活页面。帧不属于任何顶层页面，或该页面不在存活集合中时，均为 `None`。
     pub fn tab_of_frame(&self, frame: &str) -> Option<String> {
         let top = self.frames.get(frame)?;
         self.pages.get(top)?.tab.clone()
@@ -159,7 +159,7 @@ mod tests {
         t
     }
 
-    /// 主帧、同进程子帧、跨站子帧、跨站子帧里的同进程子帧，四种来源的下载都归到同一页。
+    /// 主帧、同进程子帧、跨站子帧、跨站子帧中的同进程子帧，四种来源的下载都归属同一页面。
     #[test]
     fn downloads_from_every_kind_of_frame_resolve_to_the_top_page() {
         let mut t = table_with_tab();
@@ -172,14 +172,14 @@ mod tests {
         assert_eq!(t.tab_of_frame("F-unknown"), None);
     }
 
-    /// 不在存活集合里的页（用户自己开的）有帧、没有 tabId：它的下载按用户下载处理。
+    /// 不在存活集合中的页面（用户自行打开）有帧、没有 tabId：其下载按用户下载处理。
     #[test]
     fn frames_of_an_untracked_page_have_no_tab() {
         let mut t = Table::default();
         t.page_attached("P2", "S2", "about:blank", "");
         t.frame_seen("S2", "F2");
         assert_eq!(t.tab_of_frame("F2"), None);
-        assert!(!t.child_attached("S-unknown", "S3", "F3"), "父会话不认识的子帧不跟踪");
+        assert!(!t.child_attached("S-unknown", "S3", "F3"), "父会话未知的子帧不跟踪");
     }
 
     #[test]
@@ -187,11 +187,11 @@ mod tests {
         let mut t = table_with_tab();
         t.child_attached("S1", "S-oopif", "F-oopif");
         t.frame_seen("S-oopif", "F-nested");
-        let entry = t.page_destroyed("P1").expect("页在表里");
+        let entry = t.page_destroyed("P1").expect("页面在表中");
         assert_eq!(entry.tab.as_deref(), Some("bt_1"));
         assert_eq!(t.tab_of_frame("F-nested"), None);
         t.frame_seen("S-oopif", "F-late");
-        assert_eq!(t.tab_of_frame("F-late"), None, "会话随页一起摘掉");
+        assert_eq!(t.tab_of_frame("F-late"), None, "会话随页面一并移除");
         assert!(t.page_destroyed("P1").is_none());
     }
 
@@ -205,8 +205,8 @@ mod tests {
         assert_eq!(t.tab_of_frame("P1").as_deref(), Some("bt_1"));
     }
 
-    /// 导航提交时浏览器报的标题还是地址，文档标题要等之后重读才有：重读到的标题必须作为一次
-    /// 标题变化报出去，同样的读数再来一次不报。
+    /// 导航提交时浏览器报告的标题仍是地址，文档标题要在之后重新读取时才能取得：重新读取到的标题必须作为一次
+    /// 标题变化报告，相同的读数再次出现时不报告。
     #[test]
     fn a_title_read_after_the_commit_is_reported_once() {
         let mut t = table_with_tab();
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(t.page("P1").unwrap().title, "标题一");
     }
 
-    /// 不在存活集合里的页只记不报；建页等导航完成时读的就是记下的这一份。
+    /// 不在存活集合中的页面只记录不报告；新建页面等待导航完成时读取的正是此记录。
     #[test]
     fn untracked_and_unknown_pages_report_nothing() {
         let mut t = Table::default();
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(t.page_info("P-unknown", "http://h/x", "X"), None);
     }
 
-    /// 重读只对顶层页自己的会话做：子帧会话报的加载事件不是这一页的。
+    /// 只对顶层页面自身的会话重新读取：子帧会话报告的加载事件不属于该页面。
     #[test]
     fn only_the_page_session_maps_back_to_its_page() {
         let mut t = table_with_tab();
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(t.page_of_session("S-unknown"), None);
     }
 
-    /// 主帧只认页会话上报的那一帧：子帧会话里的根帧不是顶层页的主帧。
+    /// 主帧只认页面会话报告的帧：子帧会话中的根帧不是顶层页面的主帧。
     #[test]
     fn only_the_page_session_reports_the_main_frame() {
         let mut t = table_with_tab();

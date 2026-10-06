@@ -1,14 +1,14 @@
 //! `qy serve` 的生命周期托管。
 //!
-//! 桌面端不实现任何业务逻辑，它只做三件事：把 sidecar 拉起来、把令牌和端口交给
-//! WebView、在退出时确保子进程被收干净。
+//! 桌面端不实现任何业务逻辑，只负责三件事：启动 sidecar、把令牌与端口交给
+//! WebView、在退出时确保子进程被完全终止。
 //!
-//! 两条容易出事的地方：
+//! 两个易错点：
 //!
-//! 1. **必须等 sidecar 打印出令牌再建窗口。** 否则 WebView 先加载、拿不到令牌，
-//!    会先闪一个「未配对」再自己恢复——看起来像启动失败。
-//! 2. **退出时必须真的杀掉子进程。** Windows 上父进程结束不会带走子进程；
-//!    残留的 `qy serve` 会占着端口和 SQLite 的 WAL 锁，下次启动直接起不来。
+//! 1. **必须等 sidecar 输出令牌后再创建窗口。** 否则 WebView 先加载且无法取得令牌，
+//!    会先短暂显示「未配对」再自行恢复，与启动失败无法区分。
+//! 2. **退出时必须确实终止子进程。** Windows 上父进程结束不会终止子进程；
+//!    残留的 `qy serve` 会占用端口和 SQLite 的 WAL 锁，导致下次无法启动。
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
@@ -22,8 +22,8 @@ use tokio::sync::mpsc::Receiver;
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const RESTART_MAX_DELAY_MS: u64 = 15_000;
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
-/// 启动失败对话框里带多少 stderr。比 `STDERR_TAIL_BYTES` 小得多：MessageBox 不滚动，
-/// 文本撑出屏幕高度时确定按钮就点不到了。取尾部——退出前最后打印的那段就是错误本身。
+/// 启动失败对话框中附带的 stderr 长度。远小于 `STDERR_TAIL_BYTES`：MessageBox 不支持滚动，
+/// 文本超出屏幕高度时无法点击确定按钮。取尾部：退出前最后输出的内容即错误本身。
 const FATAL_STDERR_TAIL_BYTES: usize = 1024;
 
 #[derive(Debug, Clone)]
@@ -42,7 +42,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/** 尾部至多 `max` 字节，按 UTF-8 字符边界切。 */
+/** 尾部至多 `max` 字节，按 UTF-8 字符边界截取。 */
 fn tail_of(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
@@ -54,7 +54,7 @@ fn tail_of(text: &str, max: usize) -> &str {
     &text[cut..]
 }
 
-/** 只留退出前最后 8 KiB；上限同时避免撑满 Windows 环境块。 */
+/** 只保留退出前最后 8 KiB；该上限同时避免占满 Windows 环境块。 */
 fn append_stderr_tail(tail: &mut String, text: &str) {
     tail.push_str(text);
     let keep = tail_of(tail, STDERR_TAIL_BYTES).len();
@@ -73,17 +73,17 @@ pub struct SidecarInfo {
 #[derive(Default)]
 struct SidecarState {
     child: Option<CommandChild>,
-    /** 正常退出与异常终止的唯一分界。置上后监督循环绝不再拉起进程。 */
+    /** 正常退出与异常终止的唯一判据。置位后监督循环不再启动进程。 */
     stopping: bool,
 }
 
-/// 子进程句柄与生命周期终态。放进 Tauri state，退出与监督循环共用这一份。
+/// 子进程句柄与生命周期终态。存放在 Tauri state 中，由退出流程与监督循环共用。
 #[derive(Default)]
 pub struct SidecarHandle(Arc<Mutex<SidecarState>>);
 
 /**
- * 拉起一份 qy serve。首次启动允许内核选择端口与令牌；异常恢复固定复用原值，
- * 这样已经加载的 WebView 和手机端都不需要第二套端点更新协议。
+ * 启动一个 qy serve。首次启动时端口与令牌不预先指定；异常恢复时固定复用原值，
+ * 使已加载的 WebView 与手机端都无需另一套端点更新协议。
  */
 fn spawn_process(
     app: &AppHandle,
@@ -97,12 +97,12 @@ fn spawn_process(
         "serve".to_string(),
         "--port".to_string(),
         port.to_string(),
-        // 只绑本机：局域网访问由用户在应用内显式开启（扫码配对），
-        // 不能一启动就把工作区暴露在整个 Wi-Fi 上。
+        // 只绑定本机地址：局域网访问由用户在应用内显式开启（扫码配对），
+        // 不能在启动时就把工作区暴露给整个 Wi-Fi 网络。
         "--host".to_string(),
         "127.0.0.1".to_string(),
         "--print-token".to_string(),
-        // 宿主异常退出时 sidecar 自己收场，不留 SQLite 锁与监听端口。
+        // 宿主异常退出时 sidecar 自行退出，不遗留 SQLite 锁与监听端口。
         "--parent-pid".to_string(),
         std::process::id().to_string(),
     ];
@@ -114,10 +114,10 @@ fn spawn_process(
     let mut command = app
         .shell()
         .sidecar("qy")
-        .map_err(|e| anyhow!("找不到 qy sidecar：{e}"))?
+        .map_err(|e| anyhow!("未找到 qy sidecar：{e}"))?
         .args(args);
-    // Office 执行程序在安装资源目录的 office/ 下，显式交给 sidecar。macOS 上资源目录是
-    // Contents/Resources，与可执行文件不在同一目录，sidecar 按自身位置找不到。
+    // Office 执行程序位于安装资源目录的 office/ 下，显式交给 sidecar。macOS 上资源目录是
+    // Contents/Resources，与可执行文件不在同一目录，sidecar 按自身位置无法找到。
     if let Ok(dir) = app.path().resource_dir() {
         command = command.env("QYWORK_OFFICE_DIR", dir.join("office"));
     }
@@ -126,14 +126,14 @@ fn spawn_process(
         &app.state::<crate::updater::UpdateOwner>().key,
     );
     if let Some(value) = token {
-        // CLI 的 serve 以这一变量作为显式令牌。恢复时必须复用，否则旧 WebView
-        // 会拿原令牌连到同一端口，再被永久判成 unauthorized。
+        // CLI 的 serve 以该变量作为显式令牌。恢复时必须复用，否则旧 WebView
+        // 会以原令牌连接同一端口，并被永久判定为 unauthorized。
         command = command.env("QYWORK_TOKEN", value);
     }
     if let Some(value) = host_key {
-        // 原生宿主连接的凭据，一份管浏览器与电脑控制两条路径。只交给这一个子进程：
-        // 它不注入页面、不进命令行参数、不落盘，也不传给插件。恢复时复用同一份，
-        // 否则宿主连不回新起的 sidecar。
+        // 原生宿主连接的凭据，同一份用于浏览器与电脑控制两条路径。只交给该子进程：
+        // 凭据不注入页面、不进入命令行参数、不落盘，也不传给插件。恢复时复用同一份，
+        // 否则宿主无法重新连接新启动的 sidecar。
         command = command.env("QYWORK_HOST_KEY", value);
     }
     if let Some(exit) = previous_exit {
@@ -158,7 +158,7 @@ fn spawn_process(
         .map_err(|e| anyhow!("启动 qy serve 失败：{e}"))
 }
 
-/** 把当前子进程交给生命周期 state；退出已经开始时，当场收掉新进程。 */
+/** 把当前子进程交给生命周期 state；退出已开始时立即终止新进程。 */
 fn hold_child(handle: &SidecarHandle, child: CommandChild) -> bool {
     let mut state = handle.0.lock();
     if state.stopping {
@@ -170,7 +170,7 @@ fn hold_child(handle: &SidecarHandle, child: CommandChild) -> bool {
     true
 }
 
-/** 只收当前进程，不把整个监督器置成停止。用于启动失败后的下一次重试。 */
+/** 只终止当前进程，不把整个监督器置为停止。用于启动失败后的下一次重试。 */
 fn kill_current(handle: &SidecarHandle) {
     let child = handle.0.lock().child.take();
     if let Some(child) = child {
@@ -178,10 +178,10 @@ fn kill_current(handle: &SidecarHandle) {
     }
 }
 
-/// 从 sidecar 的稳定两行输出中取回真正开始监听后的端点。
+/// 从 sidecar 固定格式的两行输出中取得实际开始监听后的端点。
 ///
-/// stderr 边转发边攒进 `tail`：握手失败时那一段是唯一说得出原因的证据，
-/// 而 release 下没有控制台，转发出去的那份谁也看不见。
+/// stderr 在转发的同时累积到 `tail`：握手失败时这段输出是唯一能说明原因的证据，
+/// 而 release 下没有控制台，转发的输出不可见。
 async fn await_handshake(rx: &mut Receiver<CommandEvent>, tail: &mut String) -> Result<SidecarInfo> {
     let mut token: Option<String> = None;
     let mut port: Option<u16> = None;
@@ -216,14 +216,14 @@ async fn await_handshake(rx: &mut Receiver<CommandEvent>, tail: &mut String) -> 
             }
             CommandEvent::Terminated(payload) => {
                 return Err(anyhow!(
-                    "qy serve 在报出令牌前退出，code={:?}",
+                    "qy serve 在输出令牌前退出，code={:?}",
                     payload.code
                 ));
             }
             _ => {}
         }
     }
-    Err(anyhow!("qy serve 输出结束但未报出令牌"))
+    Err(anyhow!("qy serve 输出结束但未输出令牌"))
 }
 
 async fn handshake_with_timeout(
@@ -232,16 +232,16 @@ async fn handshake_with_timeout(
 ) -> Result<SidecarInfo> {
     match tokio::time::timeout(HANDSHAKE_TIMEOUT, await_handshake(rx, tail)).await {
         Ok(result) => result,
-        Err(_) => Err(anyhow!("qy serve 启动超过 20 秒仍未报出令牌")),
+        Err(_) => Err(anyhow!("qy serve 启动超过 20 秒仍未输出令牌")),
     }
 }
 
 /**
  * 持续消费进程事件并监督异常退出。
  *
- * 以前握手一完成就丢掉 receiver，也再没人观察 CommandEvent::Terminated：长任务里
- * sidecar 一旦退出，前端只会永远重连旧端口。现在恢复仍复用同一端口与令牌；新的
- * streamId 会让连接层走已有的 resync，全量从账本重建会话。
+ * 握手完成后不能丢弃 receiver：没有代码观察 CommandEvent::Terminated 时，
+ * sidecar 退出后前端会无限重连旧端口。恢复时复用同一端口与令牌；新的
+ * streamId 使连接层执行已有的 resync，从账本全量重建会话。
  */
 fn supervise(
     app: AppHandle,
@@ -294,14 +294,14 @@ fn supervise(
                 if state.stopping {
                     return;
                 }
-                // Terminated 后句柄只是一份已结束进程的所有权；通道异常关闭时也先
-                // kill，避免一份失联进程与新进程同时争同一端口。
+                // Terminated 后句柄仅代表已结束进程的所有权；通道异常关闭时同样先
+                // kill，避免失去联系的进程与新进程争用同一端口。
                 if let Some(child) = state.child.take() {
                     let _ = child.kill();
                 }
             }
-            // 尾部原样带上：这是 sidecar 退出原因唯一留在壳这边的记录。续行缩进四格，
-            // 与 sidecar 自己的日志行格式一致。
+            // 原样附带尾部输出：这是外壳侧唯一保留的 sidecar 退出原因记录。第二行起缩进四格，
+            // 与 sidecar 自身的日志行格式一致。
             log::error!(
                 "qy serve 异常终止（kind={} code={:?} signal={:?}），准备恢复\n    {}",
                 previous_exit.kind,
@@ -353,7 +353,7 @@ fn supervise(
                             }
                         }
                     }
-                    Err(error) => log::error!("qy serve 重新拉起失败：{error}"),
+                    Err(error) => log::error!("qy serve 重新启动失败：{error}"),
                 }
 
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -363,9 +363,9 @@ fn supervise(
     });
 }
 
-/// 启动 sidecar 并等它报出令牌与端口。
+/// 启动 sidecar 并等待其输出令牌与端口。
 ///
-/// `--port 0` 让内核挑空闲端口：写死端口会在用户同时开两个工作区时直接撞车。
+/// `--port 0` 由内核选择空闲端口：固定端口会在用户同时打开两个工作区时发生冲突。
 pub async fn spawn(
     app: &AppHandle,
     workspace: &str,
@@ -380,28 +380,28 @@ pub async fn spawn(
     }
 
     /*
-     * 握手要有上限。
+     * 握手必须设置时限。
      *
-     * **不能写成裸的 `while rx.recv().await`**：那样只有拿到两个 KV、进程
-     * Terminated、或流关闭才退出。qy 起来了却卡在打印令牌之前（server 初始化阻塞、
-     * 端口探测挂住）时，这个循环**永远不返回**——而主窗口是在它之后才建的
-     * （`lib.rs` 的 `build_main_window`）。表现是 qywork.exe 和 qy.exe 都在后台
-     * 都在运行、桌面上没有窗口，任务管理器里只剩一条常驻的 qy.exe。
+     * **不能写成不带时限的 `while rx.recv().await`**：该循环只在取得两个 KV、进程
+     * Terminated 或流关闭时退出。qy 已启动但停滞在输出令牌之前（server 初始化阻塞、
+     * 端口探测无响应）时，该循环**永不返回**，而主窗口在它之后才创建
+     * （`lib.rs` 的 `build_main_window`），因此 qywork.exe 与 qy.exe 均在后台
+     * 运行而桌面上没有窗口。
      *
-     * 20 秒：冷启动需读取配置、打开 SQLite、并可能预热扩展，因此留出比预估更宽裕的时间。；
-     * 判错的代价（把一次很慢的启动掐掉）比判漏（无声挂死）小得多。
+     * 20 秒：冷启动需读取配置、打开 SQLite、并可能预热扩展，因此留出比预估更宽裕的时间；
+     * 误判的代价（中止一次很慢的启动）远小于漏判的代价（无提示地停滞）。
      */
     let mut tail = String::new();
     match handshake_with_timeout(&mut rx, &mut tail).await {
         Ok(info) => {
-            log::info!("qy serve 已拉起 pid={pid} port={}", info.port);
+            log::info!("qy serve 已启动 pid={pid} port={}", info.port);
             supervise(app.clone(), info.clone(), rx, host_key.map(str::to_owned));
             Ok(info)
         }
         Err(error) => {
-            // 首次启动仍然是可见终态：收干净后让 lib.rs 弹启动失败对话框。
-            // 错误本身只说得出「在报出令牌前退出」，退出的原因在 sidecar 的 stderr 里，
-            // 所以把尾巴一并带上——对话框是用户唯一能看到的输出。
+            // 首次启动失败同样有可见终态：终止子进程后由 lib.rs 弹出启动失败对话框。
+            // 错误本身只能说明「在输出令牌前退出」，退出原因位于 sidecar 的 stderr，
+            // 因此一并附带 stderr 尾部：对话框是用户唯一能看到的输出。
             kill_current(&handle);
             let tail = tail_of(tail.trim_end(), FATAL_STDERR_TAIL_BYTES);
             Err(if tail.is_empty() {
@@ -413,7 +413,7 @@ pub async fn spawn(
     }
 }
 
-/// 收掉子进程。退出路径上必须调用，且要能被重复调用而不出错。
+/// 终止子进程。退出路径上必须调用，且必须支持重复调用而不出错。
 pub fn shutdown(app: &AppHandle) {
     shutdown_handle(&app.state::<SidecarHandle>());
 }
@@ -423,7 +423,7 @@ pub fn stop_for_update(app: &AppHandle) {
     kill_current(&app.state::<SidecarHandle>());
 }
 
-/// 同上，但直接拿句柄——握手超时那条路径上还没有可用的 app state 引用。
+/// 同上，但直接接收句柄：握手超时路径上尚无可用的 app state 引用。
 fn shutdown_handle(handle: &SidecarHandle) {
     let child = {
         let mut state = handle.0.lock();
@@ -431,8 +431,8 @@ fn shutdown_handle(handle: &SidecarHandle) {
         state.child.take()
     };
     if let Some(c) = child {
-        // kill 失败只能记日志——此时进程可能已经自己退了，
-        // 不该因此阻断应用退出。
+        // kill 失败只记录日志：此时进程可能已自行退出，
+        // 不应因此阻断应用退出。
         if let Err(e) = c.kill() {
             log::error!("停止 qy serve 失败：{e}");
         }
@@ -440,10 +440,10 @@ fn shutdown_handle(handle: &SidecarHandle) {
 }
 
 /// 读取 dev.ts 交给外壳的 sidecar 端点。只在 devUrl 模式下调用：页面来自 Vite 源码，
-/// 后端必须是同一棵源码树里起的那个。
+/// 后端必须是从同一源码树启动的进程。
 ///
-/// 不探活。端口上暂时没有进程在听（dev.ts 正在换代 sidecar）由 WebView 的连接层
-/// 重连处理；探不通就改用别的后端，会把源码页面绑到预编译的 `bin/qy` 上。
+/// 不做存活探测。端口上暂时没有进程监听（dev.ts 正在重启 sidecar）时，由 WebView 的连接层
+/// 重连处理；探测失败即改用其他后端，会把源码页面绑定到预编译的 `bin/qy`。
 pub fn from_env() -> Option<SidecarInfo> {
     let token = std::env::var("QYWORK_TOKEN").ok()?;
     let port: u16 = std::env::var("QYWORK_PORT").ok()?.parse().ok()?;
@@ -456,8 +456,8 @@ pub fn from_env() -> Option<SidecarInfo> {
 
 /// 供前端读取的注入脚本。
 ///
-/// 走初始化脚本而不是 Tauri 命令：WebView 里的连接层在首帧就要拿到令牌，
-/// 走异步命令会晚一拍，导致先渲染出「未配对」。
+/// 使用初始化脚本而不是 Tauri 命令：WebView 中的连接层在首帧即需要令牌，
+/// 异步命令返回较晚，会先渲染出「未配对」。
 pub fn init_script(info: &SidecarInfo) -> String {
     format!(
         "globalThis.__QYWORK__ = {{ token: {}, base: {} }};",
@@ -466,25 +466,24 @@ pub fn init_script(info: &SidecarInfo) -> String {
     )
 }
 
-/// 记住上次打开的工作区。
+/// 记录上次打开的工作区。
 ///
-/// 没有这个的话，「切换工作区」只在本次运行有效，下次从开始菜单启动又回到
-/// `current_dir()` 或家目录——界面上等同于切换没保存。
+/// 没有该记录时，切换工作区只在本次运行中有效。
 ///
-/// 存成一行纯文本而不是 JSON：它只有一个值，加一层结构只会让手动修正变麻烦。
+/// 保存为一行纯文本而不是 JSON：只有一个值，增加结构只会使手动修改更困难。
 fn last_workspace_file() -> Option<PathBuf> {
     Some(crate::logfile::data_dir()?.join("last-workspace"))
 }
 
 pub fn read_last_workspace() -> Option<PathBuf> {
     let p = std::fs::read_to_string(last_workspace_file()?).ok()?;
-    // 去掉 BOM。这个文件是给人看、也允许人手改的，而 Windows 记事本存 UTF-8
-    // 默认就带 BOM——不剥的话路径里会多出一个不可见字符，`is_dir()` 判假，
-    // 因此静默回落到 cwd。现象是改了这个文件却不生效，且没有任何提示。
-    // 实测复现方式：PowerShell 的 Set-Content -Encoding utf8。
+    // 去除 BOM。该文件允许手动修改，而 Windows 记事本保存 UTF-8 时
+    // 默认带 BOM：不剥离时路径中多出一个不可见字符，`is_dir()` 返回 false，
+    // 修改后的记录静默失效。
+    // 复现方式：PowerShell 的 Set-Content -Encoding utf8。
     let path = PathBuf::from(p.trim_start_matches('\u{feff}').trim());
-    // 记下的目录可能已经被删掉或改名了。存在性检查放在这里而不是调用方，
-    // 因为「记录失效」的正确反应是**回落到下一级优先级**，不是报错。
+    // 记录的目录可能已被删除或重命名。存在性检查放在此处而不是调用方，
+    // 因为记录失效时的正确处理是**回退到下一级优先级**，而不是报错。
     if path.is_dir() {
         Some(path)
     } else {
@@ -499,7 +498,7 @@ pub fn write_last_workspace(path: &str) {
     if let Some(parent) = file.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    // 写失败只记日志：记不住上次的工作区是体验问题，不该让切换本身失败。
+    // 写入失败只记录日志：无法记录上次的工作区只影响体验，不应使切换本身失败。
     if let Err(e) = std::fs::write(&file, path) {
         log::error!("记录工作区失败：{e}");
     }
@@ -509,7 +508,7 @@ pub fn write_last_workspace(path: &str) {
 mod tests {
     use super::{append_stderr_tail, from_env, STDERR_TAIL_BYTES};
 
-    /// 端口上没有进程在听也不能改用别的后端：外壳可能在 dev.ts 换代 sidecar 的间隙里启动。
+    /// 端口上没有进程监听时也不能改用其他后端：外壳可能在 dev.ts 重启 sidecar 的间隙中启动。
     #[test]
     fn from_env_keeps_the_given_port_even_when_nothing_listens() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -522,7 +521,7 @@ mod tests {
         std::env::remove_var("QYWORK_TOKEN");
         std::env::remove_var("QYWORK_PORT");
 
-        let info = info.expect("两个变量都设了就必须返回端点");
+        let info = info.expect("两个变量均已设置时必须返回端点");
         assert_eq!(info.port, port);
         assert_eq!(info.token, "t");
         assert_eq!(info.base, format!("http://127.0.0.1:{port}"));

@@ -1,16 +1,16 @@
-//! 连本机 X 服务器。
+//! 连接本机 X 服务器。
 //!
-//! worker 与外壳（worker 退出后补发抬起）要用同一条建连路径，外壳经 `#[path]` 引入本文件。
-//! 不要在外壳里另写一份：只在一侧补了抽象套接字的话，另一侧在同一个环境里连不上。
+//! worker 与外壳（worker 退出后补发抬起事件）必须使用同一条建连路径，外壳经由 `#[path]` 引入
+//! 本文件。不要在外壳中另写一份：只在一侧增加抽象套接字时，另一侧在同一环境中无法连接。
 //! 因此本文件只依赖标准库与 x11rb，不引用任何 crate 内的路径。
 
 use x11rb::rust_connection::RustConnection;
 
-/// 先按 x11rb 的地址顺序连（文件系统上的套接字、TCP），都失败而显示在本机时再连同名的
+/// 先按 x11rb 的地址顺序连接（文件系统上的套接字、TCP），均失败且显示位于本机时再连接同名的
 /// 抽象套接字。返回连接与默认屏幕号。
 ///
-/// 不要删掉第二步：`/tmp/.X11-unix` 不可写的环境里 X 服务器只在抽象命名空间监听（WSL 的
-/// 这个目录是 WSLg 的只读挂载），libxcb 先连抽象套接字，x11rb 0.14 只连文件系统上的那个。
+/// 不要删除第二步：`/tmp/.X11-unix` 不可写的环境中 X 服务器只在抽象命名空间监听（WSL 中
+/// 该目录是 WSLg 的只读挂载），libxcb 先连接抽象套接字，x11rb 0.14 只连接文件系统上的套接字。
 pub fn open() -> Result<(RustConnection, usize), String> {
     x11rb::connect(None).or_else(|first| {
         abstract_socket()
@@ -32,7 +32,7 @@ fn abstract_socket() -> Result<(RustConnection, usize), String> {
         std::os::unix::net::UnixStream::connect_addr(&address).map_err(|e| e.to_string())?;
     let (stream, (family, peer)) = x11rb::rust_connection::DefaultStream::from_unix_stream(socket)
         .map_err(|e| e.to_string())?;
-    // 与 x11rb 自己建连时同一个取法：读不到授权信息就不带授权连。
+    // 与 x11rb 自身建连时的读取方式相同：无法读取授权信息时不带授权连接。
     let (auth_name, auth_data) = xauth::get_auth(family, &peer, parsed.display)
         .ok()
         .flatten()

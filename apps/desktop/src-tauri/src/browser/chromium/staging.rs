@@ -1,20 +1,20 @@
-//! 下载暂存目录里的文件搬到它该去的地方。
+//! 把下载暂存目录中的文件移动到目标位置。
 //!
-//! CDP 只能按浏览器上下文设一个下载目录，逐次下载的落点由宿主在完成后搬出：
-//! 暂存目录里的文件名就是下载的 guid，路径因此由宿主确定，不依赖浏览器报的文件路径。
+//! CDP 只能按浏览器上下文设置一个下载目录，每次下载的最终位置由宿主在完成后移出：
+//! 暂存目录中的文件名即下载的 guid，因此路径由宿主确定，不依赖浏览器报告的文件路径。
 
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// profile 目录下的暂存目录名。浏览器每次拉起前清空，残留只可能来自上一个进程。
+/// profile 目录下的暂存目录名。浏览器每次启动前清空，残留文件只可能来自上一个进程。
 pub const DIR: &str = "qywork-downloads";
 
 /// `rename` 跨文件系统时的 errno，Linux 与 macOS 相同。
 const EXDEV: i32 = 18;
 
-/// 把暂存文件搬到 `to`。目标已存在时拒绝，不覆盖；上级目录缺席时建出。
+/// 把暂存文件移动到 `to`。目标已存在时拒绝，不覆盖；上级目录不存在时创建。
 ///
-/// 跨文件系统时改为复制后删除：`rename` 只在同一文件系统内成立，授权路径可以落在任何挂载点上。
+/// 跨文件系统时改为复制后删除：`rename` 只在同一文件系统内成立，授权路径可以位于任何挂载点。
 pub fn move_to(from: &Path, to: &Path) -> io::Result<()> {
     if to.exists() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "目标文件已存在"));
@@ -31,9 +31,9 @@ pub fn move_to(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-/// 用户下载目录里一个不与现有文件重名的路径：`a.bin` 已在时依次取 `a (1).bin`、`a (2).bin`。
+/// 用户下载目录中一个不与现有文件重名的路径：`a.bin` 已存在时依次尝试 `a (1).bin`、`a (2).bin`。
 ///
-/// 名字取站点建议名的最后一段：建议名来自网页，不能让它带着路径分隔符跳出下载目录。
+/// 文件名取站点建议名的最后一段：建议名来自网页，不能让其中的路径分隔符使文件离开下载目录。
 pub fn free_name(dir: &Path, suggested: &str, fallback: &str) -> PathBuf {
     let name = Path::new(suggested)
         .file_name()
@@ -53,11 +53,11 @@ pub fn free_name(dir: &Path, suggested: &str, fallback: &str) -> PathBuf {
             None => dir.join(format!("{stem} ({n})")),
         })
         .find(|candidate| !candidate.exists())
-        .expect("编号无上限，总能找到空位")
+        .expect("编号无上限，总能找到可用名称")
 }
 
-/// 用户的下载目录，与浏览器默认下载目录同一个判据：Linux 取 XDG 用户目录里的
-/// `XDG_DOWNLOAD_DIR`，缺席时是 `~/Downloads`；macOS 是 `~/Downloads`。
+/// 用户的下载目录，判定依据与浏览器默认下载目录相同：Linux 取 XDG 用户目录中的
+/// `XDG_DOWNLOAD_DIR`，未设置时为 `~/Downloads`；macOS 为 `~/Downloads`。
 pub fn user_downloads() -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
     #[cfg(target_os = "linux")]
@@ -74,7 +74,7 @@ pub fn user_downloads() -> Option<PathBuf> {
     Some(home.join("Downloads"))
 }
 
-/// 从 `user-dirs.dirs` 的正文里取下载目录。格式是 shell 赋值：`XDG_DOWNLOAD_DIR="$HOME/下载"`。
+/// 从 `user-dirs.dirs` 的正文中取得下载目录。格式是 shell 赋值：`XDG_DOWNLOAD_DIR="$HOME/下载"`。
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn xdg_download_dir(text: &str, home: &Path) -> Option<PathBuf> {
     let value = text

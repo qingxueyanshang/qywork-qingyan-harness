@@ -1,16 +1,16 @@
-//! Windows 图像采集：Windows Graphics Capture 取帧、WIC 缩放与 PNG 编码。
+//! Windows 图像采集：经由 Windows Graphics Capture 获取帧，经由 WIC 缩放并编码为 PNG。
 //!
 //! 五条边界：
 //!
-//! 1. **按窗口采，不采屏再裁。** 采屏再裁会把别的窗口的内容带进来，还要求目标窗口在
-//!    前台；WGC 的窗口采集对被遮挡的窗口同样交回它自己的内容。
-//! 2. **退路只有 `PrintWindow(PW_RENDERFULLCONTENT)`。** 它依赖目标应用响应 `WM_PRINT`，
-//!    画不全的部分在图上是黑的，因此采集方式如实记进观察，调用方分得出两者。
-//! 3. **不置前台、不设焦点、不动指针。** 采集全程只读窗口属性与合成器的帧。
+//! 1. **按窗口采集，不采集整个屏幕再裁剪。** 采集屏幕再裁剪会混入其他窗口的内容，且要求目标
+//!    窗口位于前台；WGC 的窗口采集对被遮挡的窗口同样返回该窗口自身的内容。
+//! 2. **回退路径只有 `PrintWindow(PW_RENDERFULLCONTENT)`。** 它依赖目标应用响应 `WM_PRINT`，
+//!    未绘制的部分在图上为黑色，因此采集方式如实记入观察，调用方可区分两种方式。
+//! 3. **不置前台、不设置焦点、不移动指针。** 采集全程只读取窗口属性与合成器的帧。
 //! 4. **WGC 帧的原点是 DWM 的可见边框，不是 `GetWindowRect`。** 后者含不可见的调整边框，
-//!    拿它当原点会让图像坐标与屏幕坐标整体错开几个像素。
-//! 5. **进程必须是 per-monitor v2 DPI 感知。** 不是的话窗口矩形被系统虚拟化过，图像几何
-//!    与控件包围盒不在同一套坐标上，采集请求一律拒绝。
+//!    以它为原点会使图像坐标与屏幕坐标整体偏移几个像素。
+//! 5. **进程必须是 per-monitor v2 DPI 感知。** 否则窗口矩形经过系统虚拟化，图像几何
+//!    与控件包围盒不在同一套坐标中，采集请求一律拒绝。
 
 use std::ffi::c_void;
 #[cfg(debug_assertions)]
@@ -63,26 +63,26 @@ use crate::backend::CaptureRequest;
 use crate::geometry::{crop_for, generation_matches, Geometry, ScreenRect, WindowFrame};
 use crate::protocol::{base64, now_ms, Image};
 
-/// 采集方式。图像观察如实带上它。
+/// 采集方式。图像观察如实附带该值。
 pub const SOURCE_WGC: &str = "wgc";
 pub const SOURCE_PRINT_WINDOW: &str = "print_window";
 
-/// 取帧的轮询间隔。WGC 的帧由合成器推过来，第一帧通常在一两个合成周期内到。
+/// 获取帧的轮询间隔。WGC 的帧由合成器推送，第一帧通常在一到两个合成周期内到达。
 const FRAME_POLL: Duration = Duration::from_millis(8);
 
-/// 采集计数。只在 debug 构建里存在，与读树的跨进程调用计数同一套做法：
-/// 取出即清零，因此一次结构化观察打出来的那一行恒为 0。
+/// 采集计数。只在 debug 构建中存在，与读树的跨进程调用计数采用相同做法：
+/// 取出即清零，因此一次结构化观察输出的那一行恒为 0。
 #[cfg(debug_assertions)]
 static CAPTURES: AtomicU64 = AtomicU64::new(0);
 
-/// 记一次真的取到了像素的采集。
+/// 记录一次实际取得像素的采集。
 #[inline(always)]
 fn note_capture() {
     #[cfg(debug_assertions)]
     CAPTURES.fetch_add(1, Ordering::Relaxed);
 }
 
-/// 取出并清零采集计数。release 构建里恒为 0。
+/// 取出并清零采集计数。release 构建中恒为 0。
 pub fn take_captures() -> u64 {
     #[cfg(debug_assertions)]
     {
@@ -94,12 +94,12 @@ pub fn take_captures() -> u64 {
     }
 }
 
-/// 把本进程设成 per-monitor v2 DPI 感知，并把实际生效的模式读回来。
+/// 把本进程设置为 per-monitor v2 DPI 感知，并读取实际生效的模式。
 ///
-/// **必须在任何窗口矩形或 DPI 查询之前调用一次。** 设晚了，系统已经按虚拟化的坐标
-/// 回答过问题，而那些答案不会重来。返回值是读回来的实际模式，不是设置调用的成败。
+/// **必须在任何窗口矩形或 DPI 查询之前调用一次。** 设置过晚时，系统已按虚拟化的坐标
+/// 返回过查询结果，这些结果不会重新计算。返回值是读取到的实际模式，不是设置调用的成败。
 pub fn set_per_monitor_v2() -> bool {
-    // SAFETY: 两个调用都只改本进程本线程的 DPI 感知模式，不接受外部指针。
+    // SAFETY: 两个调用只涉及本进程与本线程的 DPI 感知模式，不接受外部指针。
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         AreDpiAwarenessContextsEqual(
@@ -110,15 +110,15 @@ pub fn set_per_monitor_v2() -> bool {
     }
 }
 
-/// 采集器。D3D 设备、WinRT 设备与 WIC 工厂各建一次，按 worker 进程存活。
+/// 采集器。D3D 设备、WinRT 设备与 WIC 工厂各创建一次，生命周期与 worker 进程相同。
 ///
-/// 与 `Uia` 同理：COM 单元属于线程，必须在要用它的那条线程上构造。
+/// 与 `Uia` 同理：COM 单元属于线程，必须在使用它的线程上构造。
 pub struct Capturer {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     winrt_device: ::windows::Graphics::DirectX::Direct3D11::IDirect3DDevice,
     wic: IWICImagingFactory,
-    /// 这台机器支不支持 WGC。不支持时整条路径直接走退路。
+    /// 本机是否支持 WGC。不支持时直接使用回退路径。
     wgc: bool,
 }
 
@@ -141,21 +141,21 @@ impl Capturer {
                 Some(&mut context),
             )
         }
-        .map_err(|e| format!("建 D3D11 设备失败：{e}"))?;
+        .map_err(|e| format!("创建 D3D11 设备失败：{e}"))?;
         let device = device.ok_or("D3D11 设备为空")?;
         let context = context.ok_or("D3D11 设备上下文为空")?;
         let dxgi: IDXGIDevice = device
             .cast()
-            .map_err(|e| format!("取 DXGI 设备失败：{e}"))?;
+            .map_err(|e| format!("获取 DXGI 设备失败：{e}"))?;
         // SAFETY: dxgi 由本函数持有，出参是局部变量。
         let winrt_device = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi) }
-            .map_err(|e| format!("建 WinRT D3D 设备失败：{e}"))?
+            .map_err(|e| format!("创建 WinRT D3D 设备失败：{e}"))?
             .cast()
             .map_err(|e| format!("WinRT D3D 设备转换失败：{e}"))?;
         // SAFETY: CLSID 是常量，无外部指针。
         let wic: IWICImagingFactory =
             unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
-                .map_err(|e| format!("建 WIC 工厂失败：{e}"))?;
+                .map_err(|e| format!("创建 WIC 工厂失败：{e}"))?;
         let wgc = GraphicsCaptureSession::IsSupported().unwrap_or(false);
         Ok(Self {
             device,
@@ -166,7 +166,7 @@ impl Capturer {
         })
     }
 
-    /// 采一张图。返回 `Err(原因)` 时一个像素都没采。
+    /// 采集一张图。返回 `Err(原因)` 时未采集任何像素。
     pub fn capture(&self, req: &CaptureRequest<'_>) -> Result<Image, String> {
         let hwnd = HWND(req.window as *mut c_void);
         // SAFETY: 只读窗口状态。
@@ -175,18 +175,18 @@ impl Capturer {
         }
         // SAFETY: 同上。
         if unsafe { IsIconic(hwnd) }.as_bool() {
-            return Err("window_minimized: 窗口已最小化，采不到内容".to_owned());
+            return Err("window_minimized: 窗口已最小化，无法采集内容".to_owned());
         }
         let frame = window_frame(hwnd)?;
         let generation = frame.generation();
         if !generation_matches(req.expect_generation, &generation) {
             return Err(format!(
-                "geometry_changed: 窗口几何已经变了（{} → {generation}），请重新采图",
+                "geometry_changed: 窗口几何已改变（{} → {generation}），请重新采图",
                 req.expect_generation.unwrap_or_default()
             ));
         }
         if frame.window.width <= 0 || frame.window.height <= 0 {
-            return Err("window_zero_size: 窗口尺寸为零，采不到内容".to_owned());
+            return Err("window_zero_size: 窗口尺寸为零，无法采集内容".to_owned());
         }
 
         let started = Instant::now();
@@ -194,24 +194,24 @@ impl Capturer {
             Some(Ok(pixels)) => (pixels, SOURCE_WGC),
             Some(Err(wgc_error)) => (
                 self.print_window_pixels(hwnd, &frame)
-                    .map_err(|e| format!("capture_failed: WGC {wgc_error}；退路 {e}"))?,
+                    .map_err(|e| format!("capture_failed: WGC {wgc_error}；回退路径：{e}"))?,
                 SOURCE_PRINT_WINDOW,
             ),
             None => (
                 self.print_window_pixels(hwnd, &frame)
-                    .map_err(|e| format!("capture_failed: 本机不支持 WGC；退路 {e}"))?,
+                    .map_err(|e| format!("capture_failed: 本机不支持 WGC；回退路径：{e}"))?,
                 SOURCE_PRINT_WINDOW,
             ),
         };
         note_capture();
-        // 取到像素之后一律报一行成本：计数器在这里清零，漏报一次会让它累加到下一条
-        // 请求的那一行上，而「结构化观察采集计数为零」正是按那一行判的。
+        // 取得像素之后一律输出一行成本：计数器在此处清零，遗漏一次会使计数累加到下一条
+        // 请求的那一行上，而「结构化观察采集计数为零」正是按那一行判定的。
         let built = self.finish(req, &frame, generation, source, &pixels);
         report_capture_cost(source, built.as_ref(), started);
         built
     }
 
-    /// 裁剪、编码、核字节上限，成功即组装观察。
+    /// 裁剪、编码、核对字节上限，成功后组装观察。
     fn finish(
         &self,
         req: &CaptureRequest<'_>,
@@ -229,7 +229,7 @@ impl Capturer {
         )
         .ok_or_else(|| {
             format!(
-                "region_outside_window: 要采的区域与窗口覆盖的 {},{} {}×{} 没有交集",
+                "region_outside_window: 采集区域与窗口覆盖的 {},{} {}×{} 没有交集",
                 pixels.origin.0, pixels.origin.1, pixels.width, pixels.height
             )
         })?;
@@ -237,7 +237,7 @@ impl Capturer {
         let bytes = self.encode_png(pixels, crop)?;
         if bytes.len() > req.max_bytes as usize {
             return Err(format!(
-                "image_too_large: 编码后 {} 字节，上限 {}，改小区域再试",
+                "image_too_large: 编码后 {} 字节，上限 {}，请缩小区域后重试",
                 bytes.len(),
                 req.max_bytes
             ));
@@ -258,18 +258,18 @@ impl Capturer {
         })
     }
 
-    /// 走 WGC 取一帧。
+    /// 经由 WGC 获取一帧。
     ///
-    /// 用自由线程的帧池并轮询：事件回调要一条带消息泵的线程，而 worker 的执行线程是
-    /// MTA，回调进不来。
+    /// 使用自由线程的帧池并轮询：事件回调需要一条带消息泵的线程，而 worker 的执行线程是
+    /// MTA，回调无法送达。
     fn wgc_pixels(&self, hwnd: HWND, frame: &WindowFrame, budget: Duration) -> Result<Pixels, String> {
         let interop: IGraphicsCaptureItemInterop =
             ::windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
-                .map_err(|e| format!("取采集接口失败：{e}"))?;
-        // SAFETY: 句柄在上一层已经核过还在。
+                .map_err(|e| format!("获取采集接口失败：{e}"))?;
+        // SAFETY: 句柄的有效性已在上一层核对。
         let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(hwnd) }
-            .map_err(|e| format!("窗口建采集项失败：{e}"))?;
-        let size: SizeInt32 = item.Size().map_err(|e| format!("读采集项尺寸失败：{e}"))?;
+            .map_err(|e| format!("为窗口创建采集项失败：{e}"))?;
+        let size: SizeInt32 = item.Size().map_err(|e| format!("读取采集项尺寸失败：{e}"))?;
         if size.Width <= 0 || size.Height <= 0 {
             return Err("采集项尺寸为零".to_owned());
         }
@@ -279,16 +279,16 @@ impl Capturer {
             1,
             size,
         )
-        .map_err(|e| format!("建帧池失败：{e}"))?;
+        .map_err(|e| format!("创建帧池失败：{e}"))?;
         let session = pool
             .CreateCaptureSession(&item)
-            .map_err(|e| format!("建采集会话失败：{e}"))?;
-        // 指针不进图：模型按控件包围盒与图像几何定位，多一个随时在动的光标只会让同一个
-        // 界面采两次得到两张不同的图。
+            .map_err(|e| format!("创建采集会话失败：{e}"))?;
+        // 图像中不包含指针：模型按控件包围盒与图像几何定位，多出一个随时移动的光标只会使同一个
+        // 界面两次采集得到两张不同的图。
         let _ = session.SetIsCursorCaptureEnabled(false);
-        // 关采集边框的开关在 `IGraphicsCaptureSession3` 上，只有 Windows 11 提供；
-        // 更早的系统上这一句返回接口不存在。图上有没有那一圈边框只能靠人眼核，
-        // debug 构建把接口的返回码打出来，人眼看图时对得上号。
+        // 关闭采集边框的开关在 `IGraphicsCaptureSession3` 上，只有 Windows 11 提供；
+        // 更早的系统上该调用返回接口不存在。图上是否有边框只能人工核对，
+        // debug 构建输出接口的返回码，供人工看图时对照。
         let border = session.SetIsBorderRequired(false);
         #[cfg(debug_assertions)]
         eprintln!(
@@ -308,20 +308,20 @@ impl Capturer {
                 Ok(captured) => break self.read_frame(&captured, frame),
                 Err(e) => {
                     if Instant::now() >= until {
-                        break Err(format!("等不到采集帧：{e}"));
+                        break Err(format!("未等到采集帧：{e}"));
                     }
                     std::thread::sleep(FRAME_POLL);
                 }
             }
         };
-        // 会话与帧池都要显式关：它们持着合成器那一侧的资源，等 Drop 会让同一个窗口的
-        // 下一次采集撞上一个还没释放的会话。
+        // 会话与帧池都必须显式关闭：它们持有合成器一侧的资源，等待 Drop 会使同一个窗口的
+        // 下一次采集遇到尚未释放的会话。
         let _ = session.Close();
         let _ = pool.Close();
         outcome
     }
 
-    /// 把一帧的像素读到内存。
+    /// 把一帧的像素读取到内存。
     fn read_frame(
         &self,
         captured: &::windows::Graphics::Capture::Direct3D11CaptureFrame,
@@ -329,18 +329,18 @@ impl Capturer {
     ) -> Result<Pixels, String> {
         let content = captured
             .ContentSize()
-            .map_err(|e| format!("读帧内容尺寸失败：{e}"))?;
-        let surface = captured.Surface().map_err(|e| format!("取帧表面失败：{e}"))?;
+            .map_err(|e| format!("读取帧内容尺寸失败：{e}"))?;
+        let surface = captured.Surface().map_err(|e| format!("获取帧表面失败：{e}"))?;
         let access: IDirect3DDxgiInterfaceAccess = surface
             .cast()
-            .map_err(|e| format!("取帧表面的 DXGI 接口失败：{e}"))?;
+            .map_err(|e| format!("获取帧表面的 DXGI 接口失败：{e}"))?;
         // SAFETY: access 由本函数持有，出参是局部变量。
         let texture: ID3D11Texture2D = unsafe { access.GetInterface() }
-            .map_err(|e| format!("取帧纹理失败：{e}"))?;
+            .map_err(|e| format!("获取帧纹理失败：{e}"))?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: desc 是本栈帧上的结构体。
         unsafe { texture.GetDesc(&mut desc) };
-        // 帧池按采集项尺寸分配，内容尺寸可能小于纹理：多出来的那一圈是上一帧的残留。
+        // 帧池按采集项尺寸分配，内容尺寸可能小于纹理：超出内容尺寸的部分是上一帧的残留。
         let width = desc.Width.min(content.Width.max(0) as u32);
         let height = desc.Height.min(content.Height.max(0) as u32);
         if width == 0 || height == 0 {
@@ -356,7 +356,7 @@ impl Capturer {
         })
     }
 
-    /// 把 GPU 纹理复制到暂存纹理再映射到内存。GPU 纹理本身不能直接被 CPU 读。
+    /// 把 GPU 纹理复制到暂存纹理再映射到内存。GPU 纹理本身不能直接被 CPU 读取。
     fn download(
         &self,
         texture: &ID3D11Texture2D,
@@ -374,17 +374,17 @@ impl Capturer {
         let mut staging: Option<ID3D11Texture2D> = None;
         // SAFETY: 描述符是本栈帧上的结构体，出参是局部变量。
         unsafe { self.device.CreateTexture2D(&staging_desc, None, Some(&mut staging)) }
-            .map_err(|e| format!("建暂存纹理失败：{e}"))?;
+            .map_err(|e| format!("创建暂存纹理失败：{e}"))?;
         let staging = staging.ok_or("暂存纹理为空")?;
         // SAFETY: 两个纹理都由本函数持有。
         unsafe { self.context.CopyResource(&staging, texture) };
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-        // SAFETY: mapped 是本栈帧上的结构体；出口处一定 Unmap。
+        // SAFETY: mapped 是本栈帧上的结构体；出口处必定 Unmap。
         unsafe { self.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) }
             .map_err(|e| format!("映射暂存纹理失败：{e}"))?;
         let row = width as usize * 4;
         let mut out = vec![0u8; row * height as usize];
-        // SAFETY: 映射有效期内按 RowPitch 逐行复制，每行只读 row 个字节，不越出纹理宽度。
+        // SAFETY: 映射有效期内按 RowPitch 逐行复制，每行只读取 row 个字节，不超出纹理宽度。
         unsafe {
             let src = mapped.pData.cast::<u8>();
             for y in 0..height as usize {
@@ -399,10 +399,10 @@ impl Capturer {
         Ok(out)
     }
 
-    /// 退路：让窗口把自己画进一张位图。
+    /// 回退路径：让窗口把自身绘制到一张位图中。
     ///
-    /// 它不要求窗口在前台，但要目标应用响应 `WM_PRINT`；不响应的那些交回全黑或半张图，
-    /// 因此采集方式要如实记进观察。
+    /// 它不要求窗口位于前台，但要求目标应用响应 `WM_PRINT`；不响应的应用返回全黑或不完整的图，
+    /// 因此采集方式必须如实记入观察。
     fn print_window_pixels(&self, hwnd: HWND, frame: &WindowFrame) -> Result<Pixels, String> {
         let width = frame.window.width;
         let height = frame.window.height;
@@ -410,13 +410,13 @@ impl Capturer {
         unsafe {
             let screen = GetDC(None);
             if screen.is_invalid() {
-                return Err("取屏幕 DC 失败".to_owned());
+                return Err("获取屏幕 DC 失败".to_owned());
             }
             let memory = CreateCompatibleDC(Some(screen));
             let bitmap = CreateCompatibleBitmap(screen, width, height);
             let previous = SelectObject(memory, HGDIOBJ(bitmap.0));
-            // PW_RENDERFULLCONTENT 要求连非客户区一起画。少了它，DirectComposition 窗口
-            // （Chromium 一类）交回的是一张全黑的图。
+            // PW_RENDERFULLCONTENT 要求连同非客户区一起绘制。缺少该标志时，DirectComposition 窗口
+            // （Chromium 一类）返回一张全黑的图。
             let printed = PrintWindow(hwnd, memory, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT));
             let mut info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
@@ -450,7 +450,7 @@ impl Capturer {
                 return Err("PrintWindow 被目标窗口拒绝".to_owned());
             }
             if copied == 0 {
-                return Err("GetDIBits 没有取到像素".to_owned());
+                return Err("GetDIBits 未取得像素".to_owned());
             }
             Ok(Pixels {
                 bgra: out,
@@ -461,7 +461,7 @@ impl Capturer {
         }
     }
 
-    /// 裁剪、缩放并编码成 PNG。缩放与编码都走 WIC，不引第三方图像库。
+    /// 裁剪、缩放并编码为 PNG。缩放与编码都经由 WIC，不引入第三方图像库。
     fn encode_png(&self, pixels: &Pixels, crop: crate::geometry::Crop) -> Result<Vec<u8>, String> {
         let row = pixels.width as usize * 4;
         let mut cropped = Vec::with_capacity(crop.width as usize * 4 * crop.height as usize);
@@ -480,7 +480,7 @@ impl Capturer {
                     crop.width * 4,
                     &cropped,
                 )
-                .map_err(|e| format!("建 WIC 位图失败：{e}"))?;
+                .map_err(|e| format!("创建 WIC 位图失败：{e}"))?;
             let source: IWICBitmapSource = if crop.image_width == crop.width
                 && crop.image_height == crop.height
             {
@@ -489,7 +489,7 @@ impl Capturer {
                 let scaler = self
                     .wic
                     .CreateBitmapScaler()
-                    .map_err(|e| format!("建缩放器失败：{e}"))?;
+                    .map_err(|e| format!("创建缩放器失败：{e}"))?;
                 scaler
                     .Initialize(
                         &bitmap,
@@ -501,11 +501,11 @@ impl Capturer {
                 scaler.cast().map_err(|e| format!("缩放器转换失败：{e}"))?
             };
             let stream = CreateStreamOnHGlobal(HGLOBAL(std::ptr::null_mut()), true)
-                .map_err(|e| format!("建内存流失败：{e}"))?;
+                .map_err(|e| format!("创建内存流失败：{e}"))?;
             let encoder = self
                 .wic
                 .CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())
-                .map_err(|e| format!("建 PNG 编码器失败：{e}"))?;
+                .map_err(|e| format!("创建 PNG 编码器失败：{e}"))?;
             encoder
                 .Initialize(&stream, WICBitmapEncoderNoCache)
                 .map_err(|e| format!("初始化编码器失败：{e}"))?;
@@ -513,21 +513,21 @@ impl Capturer {
             let mut options: Option<IPropertyBag2> = None;
             encoder
                 .CreateNewFrame(&mut frame, &mut options)
-                .map_err(|e| format!("建编码帧失败：{e}"))?;
+                .map_err(|e| format!("创建编码帧失败：{e}"))?;
             let frame = frame.ok_or("编码帧为空")?;
             frame
                 .Initialize(options.as_ref())
                 .map_err(|e| format!("初始化编码帧失败：{e}"))?;
             frame
                 .SetSize(crop.image_width, crop.image_height)
-                .map_err(|e| format!("设编码尺寸失败：{e}"))?;
+                .map_err(|e| format!("设置编码尺寸失败：{e}"))?;
             let mut format = GUID_WICPixelFormat32bppBGR;
             frame
                 .SetPixelFormat(&mut format)
-                .map_err(|e| format!("设编码像素格式失败：{e}"))?;
+                .map_err(|e| format!("设置编码像素格式失败：{e}"))?;
             frame
                 .WriteSource(&source, std::ptr::null())
-                .map_err(|e| format!("写编码帧失败：{e}"))?;
+                .map_err(|e| format!("写入编码帧失败：{e}"))?;
             frame.Commit().map_err(|e| format!("提交编码帧失败：{e}"))?;
             encoder
                 .Commit()
@@ -536,12 +536,12 @@ impl Capturer {
             let mut stat = STATSTG::default();
             stream
                 .Stat(&mut stat, STATFLAG_NONAME)
-                .map_err(|e| format!("读流长度失败：{e}"))?;
+                .map_err(|e| format!("读取流长度失败：{e}"))?;
             let length = usize::try_from(stat.cbSize).map_err(|_| "流长度越界".to_owned())?;
             let handle = ::windows::Win32::System::Com::StructuredStorage::GetHGlobalFromStream(
                 &stream,
             )
-            .map_err(|e| format!("取流内存失败：{e}"))?;
+            .map_err(|e| format!("获取流内存失败：{e}"))?;
             let base = GlobalLock(handle);
             if base.is_null() {
                 return Err("锁定流内存失败".to_owned());
@@ -562,15 +562,15 @@ struct Pixels {
     origin: (i32, i32),
 }
 
-/// 读窗口此刻的几何事实。
+/// 读取窗口当前的几何事实。
 pub fn window_frame(hwnd: HWND) -> Result<WindowFrame, String> {
     let mut window = RECT::default();
     // SAFETY: 出参是本栈帧上的结构体。
-    unsafe { GetWindowRect(hwnd, &mut window) }.map_err(|e| format!("读窗口矩形失败：{e}"))?;
+    unsafe { GetWindowRect(hwnd, &mut window) }.map_err(|e| format!("读取窗口矩形失败：{e}"))?;
     let mut visible = RECT::default();
-    // DWM 的可见边框取不到时退回窗口矩形：两者只差不可见的调整边框，
-    // 而 `PrintWindow` 退路本来就按窗口矩形取景。
-    // SAFETY: 出参是本栈帧上的结构体，长度按类型给。
+    // 无法取得 DWM 的可见边框时回退到窗口矩形：两者只相差不可见的调整边框，
+    // 而 `PrintWindow` 回退路径本身按窗口矩形取景。
+    // SAFETY: 出参是本栈帧上的结构体，长度按类型给出。
     let visible = unsafe {
         DwmGetWindowAttribute(
             hwnd,
@@ -580,7 +580,7 @@ pub fn window_frame(hwnd: HWND) -> Result<WindowFrame, String> {
         )
     }
     .map_or(window, |()| visible);
-    // SAFETY: 只读窗口所在显示器与它的 DPI。
+    // SAFETY: 只读取窗口所在的显示器及其 DPI。
     let (dpi, monitor) = unsafe {
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         (GetDpiForWindow(hwnd), monitor.0 as i64)
@@ -588,7 +588,7 @@ pub fn window_frame(hwnd: HWND) -> Result<WindowFrame, String> {
     Ok(WindowFrame {
         window: rect_of(window),
         visible: rect_of(visible),
-        // DPI 读不出来时按 96 记：它只进几何供调用方读，不参与坐标换算。
+        // 无法读取 DPI 时按 96 记录：该值只写入几何供调用方读取，不参与坐标换算。
         dpi: if dpi == 0 { 96 } else { dpi },
         monitor,
     })
@@ -603,9 +603,9 @@ fn rect_of(r: RECT) -> ScreenRect {
     }
 }
 
-/// 本机的显示器配置与虚拟桌面范围，进 worker 启动日志。只读，不改任何显示设置。
+/// 本机的显示器配置与虚拟桌面范围，写入 worker 启动日志。只读取，不修改任何显示设置。
 ///
-/// 它要在 `set_per_monitor_v2` 之后读：DPI 感知没设上时系统交回的是虚拟化过的尺寸。
+/// 必须在 `set_per_monitor_v2` 之后读取：DPI 感知未设置成功时，系统返回的是虚拟化后的尺寸。
 pub fn monitor_report() -> String {
     // SAFETY: 五个指标都是无参只读查询。
     let virtual_screen = unsafe {
@@ -656,9 +656,9 @@ unsafe extern "system" fn collect_monitor(
     ::windows::Win32::Foundation::TRUE
 }
 
-/// 把一次采集的方式、结果、字节数与耗时写到 stderr。只在 debug 构建里输出。
+/// 把一次采集的方式、结果、字节数与耗时写入 stderr。只在 debug 构建中输出。
 ///
-/// 成功与失败都要打：计数器在这里清零，失败时不打会让它累加到下一条请求那一行上。
+/// 成功与失败都必须输出：计数器在此处清零，失败时不输出会使计数累加到下一条请求的那一行上。
 fn report_capture_cost(source: &str, built: Result<&Image, &String>, started: Instant) {
     let captures = take_captures();
     #[cfg(debug_assertions)]
@@ -691,12 +691,12 @@ fn report_capture_cost(source: &str, built: Result<&Image, &String>, started: In
 mod tests {
     use super::*;
 
-    /// 最小化的窗口与失效句柄在采集之前就被挡下，一个像素都不采。
+    /// 最小化的窗口与失效句柄在采集之前即被拒绝，不采集任何像素。
     #[test]
     fn an_invalid_handle_never_reaches_the_capture_path() {
         let capturer = match Capturer::new() {
             Ok(c) => c,
-            // 没有图形会话或没有 D3D 设备的环境里这条用例不成立，跳过而不是假装通过。
+            // 没有图形会话或 D3D 设备的环境中本用例不适用，直接跳过。
             Err(_) => return,
         };
         let before = take_captures();
@@ -710,15 +710,15 @@ mod tests {
         });
         assert!(outcome.is_err());
         assert!(outcome.unwrap_err().starts_with("target_lost"));
-        assert_eq!(take_captures(), 0, "被拒的请求不得记一次采集");
+        assert_eq!(take_captures(), 0, "被拒绝的请求不得计入采集次数");
         let _ = before;
     }
 
-    /// DPI 感知模式是从 OS 读回来的实际值。worker 在构造第一个后端时设过一次，
-    /// 单测进程没设，因此这里只要求这个查询本身可用。
+    /// DPI 感知模式是从 OS 读取的实际值。worker 在构造第一个后端时设置过一次，
+    /// 单元测试进程未设置，因此本测试只要求该查询本身可用。
     #[test]
     fn the_dpi_awareness_query_reads_back_from_the_os() {
         let first = set_per_monitor_v2();
-        assert_eq!(first, set_per_monitor_v2(), "同一进程里读回来的模式必须稳定");
+        assert_eq!(first, set_per_monitor_v2(), "同一进程中读取到的模式必须稳定");
     }
 }

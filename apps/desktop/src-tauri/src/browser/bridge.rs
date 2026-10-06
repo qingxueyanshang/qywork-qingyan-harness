@@ -1,10 +1,10 @@
-//! 宿主连接：Rust 主动连回 sidecar 的宿主专用路径。
+//! 宿主连接：Rust 主动连接 sidecar 的宿主专用通道。
 //!
-//! 方向是 Rust → sidecar，发布版与开发版走同一条路径。反过来不行：开发版的
-//! sidecar 不由 Rust 父进程启动，建立在父子 stdio 上的桥只在发布版成立。
+//! 方向为 Rust → sidecar，发布版与开发版使用同一路径。不能反向：开发版的
+//! sidecar 不由 Rust 父进程启动，基于父子进程 stdio 的桥接只在发布版中成立。
 //!
-//! 连接在专用线程上跑，请求就地执行——`add_child` 要求不在主线程上调用，
-//! Chromium 引擎的调用要阻塞等 CDP 回包，这个线程两样都满足。
+//! 连接在专用线程上运行，请求就地执行：`add_child` 要求不在主线程上调用，
+//! Chromium 引擎的调用需要阻塞等待 CDP 响应，该线程同时满足这两项。
 
 use std::sync::Arc;
 
@@ -54,7 +54,7 @@ fn run(
         .map_err(|e| std::io::Error::other(format!("宿主首帧序列化失败：{e}")))?;
     sender.send_text(&text)?;
     backoff.connected();
-    log::info!("浏览器宿主已连上 sidecar epoch={epoch}");
+    log::info!("浏览器宿主已连接 sidecar epoch={epoch}");
 
     while let Some(raw) = client.read_text()? {
         let Some(reply) = handle(app, host, &raw) else { continue };
@@ -65,12 +65,12 @@ fn run(
     Ok(())
 }
 
-/// 处理一帧。认不出的帧不回复，也不猜测意图。
+/// 处理一帧。无法识别的帧不回复，也不推测意图。
 fn handle(app: &AppHandle, host: &Arc<BrowserHost>, raw: &str) -> Option<ResultFrame> {
     let frame: RequestFrame = match serde_json::from_str(raw) {
         Ok(f) => f,
         Err(e) => {
-            log::warn!("认不出的宿主帧：{e}");
+            log::warn!("无法识别的宿主帧：{e}");
             return None;
         }
     };

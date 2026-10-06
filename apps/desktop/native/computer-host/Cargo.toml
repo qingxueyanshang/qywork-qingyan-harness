@@ -1,7 +1,7 @@
 [package]
 name = "qy-computer-host"
-# 这一行与 Cargo.lock 里本 crate 的 version 由 `scripts/sync-version.ts` 按仓库根
-# `VERSION` 一起灌入，不要手改：只改其中一处，带 `--locked` 的检查、测试与构建全部失败。
+# 本行与 Cargo.lock 中本 crate 的 version 由 `scripts/sync-version.ts` 按仓库根
+# `VERSION` 同时写入，不要手工修改：只修改其中一处时，带 `--locked` 的检查、测试与构建全部失败。
 version = "0.2.2"
 edition = "2021"
 rust-version = "1.80"
@@ -11,31 +11,31 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# 版本跟 apps/desktop/src-tauri 的那份对齐（0.61）。两个 crate 各自独立编译，
-# 版本分叉不会报错，但同一套 Win32 类型会有两份定义，共享代码时对不上。
+# 版本与 apps/desktop/src-tauri 中的版本一致（0.61）。两个 crate 各自独立编译，
+# 版本不一致不会报错，但同一套 Win32 类型会有两份定义，共享代码时类型不一致。
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
   # IUIAutomation 及控件模式接口。
   "Win32_UI_Accessibility",
   # CoInitializeEx / CoCreateInstance。
   "Win32_System_Com",
-  # 编码后的 PNG 先进一个 HGLOBAL 流，再从流里取字节。
+  # 编码后的 PNG 先写入 HGLOBAL 流，再从流中读取字节。
   "Win32_System_Com_StructuredStorage",
   # 剪贴板投递：枚举格式、读写内容、序列号。
   "Win32_System_DataExchange",
   "Win32_System_Memory",
-  # RuntimeId 是 SAFEARRAY，读它的函数在 Ole 下。
+  # RuntimeId 是 SAFEARRAY，读取它的函数位于 Ole 下。
   "Win32_System_Ole",
-  # 缓存属性按 VARIANT 交回，RuntimeId 那一项要从里面取 SAFEARRAY。
+  # 缓存属性以 VARIANT 返回，RuntimeId 一项须从中取出 SAFEARRAY。
   "Win32_System_Variant",
   # 窗口枚举、标题、类名、所属进程与窗口矩形。
   "Win32_UI_WindowsAndMessaging",
-  # IsWindowEnabled 在这个模块下：模态对话框把属主窗口禁用是动作已生效的证据之一。
-  # AttachThreadInput 也在这里：前台锁拒绝激活之后挂到前台线程上再要一次前台。
+  # IsWindowEnabled 位于此模块：模态对话框禁用属主窗口是动作已生效的证据之一。
+  # AttachThreadInput 同样位于此模块：前台锁拒绝激活之后，附加到前台线程的输入队列再请求一次前台。
   "Win32_UI_Input_KeyboardAndMouse",
   # GetCurrentThreadId，AttachThreadInput 的本端线程号。
   "Win32_System_Threading",
-  # PrintWindow 在这个模块下，不在 WindowsAndMessaging。
+  # PrintWindow 位于此模块，不在 WindowsAndMessaging 中。
   "Win32_Storage_Xps",
   # 进程 DPI 感知模式与窗口所在显示器的 DPI。
   "Win32_UI_HiDpi",
@@ -43,41 +43,41 @@ windows = { version = "0.61", features = [
   "Win32_Graphics_Gdi",
   # WGC 帧覆盖的屏幕矩形取自 DWM 的可见边框，不是 GetWindowRect。
   "Win32_Graphics_Dwm",
-  # Windows Graphics Capture：按窗口采集，窗口被遮挡也采得到自身内容。
+  # Windows Graphics Capture：按窗口采集，窗口被遮挡时也能采集其自身内容。
   "Graphics_Capture",
   "Graphics_DirectX_Direct3D11",
   "Win32_System_WinRT_Graphics_Capture",
   "Win32_System_WinRT_Direct3D11",
-  # 采集帧是 D3D11 纹理，取像素要经暂存纹理映射到内存。
+  # 采集帧是 D3D11 纹理，读取像素需要经暂存纹理映射到内存。
   "Win32_Graphics_Direct3D",
   "Win32_Graphics_Direct3D11",
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",
-  # WIC 负责缩放与 PNG 编码，不引第三方图像库。
+  # WIC 负责缩放与 PNG 编码，不引入第三方图像库。
   "Win32_Graphics_Imaging",
 ] }
 
 # Linux 后端：控件树与语义动作经 AT-SPI，窗口清单与几何经 X11。
 [target.'cfg(target_os = "linux")'.dependencies]
-# 只取代理与公共类型：总线连接由后端自己建，不监听事件。
+# 只使用代理与公共类型：总线连接由后端自行建立，不监听事件。
 atspi = { version = "0.30", default-features = false, features = ["proxies"] }
-# `blocking-api` 让 atspi 的代理同时生成阻塞版本：worker 是线程模型，没有异步运行时，
+# `blocking-api` 使 atspi 的代理同时生成阻塞版本：worker 是线程模型，没有异步运行时，
 # 不要为它引入第二套调度。
 zbus = { version = "5.5", default-features = false, features = ["async-io", "blocking-api"] }
-# 纯 Rust 的 X11 客户端：核心协议，加 Composite（按窗口取图）、Damage（等被盖住的部分重绘完）
-# 与 XTest（前台键鼠）。
+# 纯 Rust 的 X11 客户端：核心协议，以及 Composite（按窗口采图）、Damage（等待被遮挡部分重绘完成）
+# 与 XTest（前台键盘与指针输入）。
 x11rb = { version = "0.14", default-features = false, features = ["composite", "damage", "res", "xtest"] }
 
-# Linux 与 macOS 的采集帧由 `src/png.rs` 自己编码。
+# Linux 与 macOS 的采集帧由 `src/png.rs` 编码。
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-# PNG 的 DEFLATE 压缩。版本跟 apps/desktop/src-tauri 依赖树里的那份对齐（0.8）。
+# PNG 的 DEFLATE 压缩。版本与 apps/desktop/src-tauri 依赖树中的版本一致（0.8）。
 miniz_oxide = "0.8"
-# Wayland 取图：运行时 dlopen libpipewire-0.3，构建不要它的头文件与链接库，没装它的系统上
-# worker 照常启动。`dlopen` / `dlsym` 与 `timespec` 经这个 crate 取。
+# Wayland 采图：运行时 dlopen libpipewire-0.3，构建不需要其头文件与链接库，未安装它的系统上
+# worker 仍能正常启动。`dlopen` / `dlsym` 与 `timespec` 由该 crate 提供。
 libc = { version = "0.2", default-features = false }
 
 # macOS 后端：控件树、语义动作与窗口动作经 AX（ApplicationServices），窗口层叠序、显示器与
-# 前台键鼠经 CoreGraphics，取图经 ScreenCaptureKit。
+# 前台键盘与指针输入经由 CoreGraphics，采图经由 ScreenCaptureKit。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = { version = "0.3", default-features = false, features = [
   "std",
@@ -100,25 +100,25 @@ objc2-application-services = { version = "0.3", default-features = false, featur
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
   "std",
   "CGWindow",
-  # 窗口信息里的矩形是字典，经 CGRectMakeWithDictionaryRepresentation 换回 CGRect。
+  # 窗口信息中的矩形是字典，经 CGRectMakeWithDictionaryRepresentation 转换为 CGRect。
   "CGGeometry",
   # 显示器清单、全局矩形与显示模式：点到像素的换算按窗口所在显示器的比例。
-  # 取显示器清单的函数返回 CGError。
+  # 获取显示器清单的函数返回 CGError。
   "CGDirectDisplay",
   "CGError",
-  # 前台键鼠：建事件、设修饰键与点击次数、投到 HID 事件流。键盘事件的键码类型在 CGRemoteOperation 下。
+  # 前台键盘与指针输入：创建事件、设置修饰键与点击次数、投递到 HID 事件流。键盘事件的键码类型位于 CGRemoteOperation 下。
   "CGEvent",
   "CGEventTypes",
   "CGEventSource",
   "CGRemoteOperation",
-  # 取回的 CGImage 画进一块已知排法的位图，读出 RGB。
+  # 取回的 CGImage 绘制到像素布局已知的位图中，再读取 RGB。
   "CGImage",
   "CGBitmapContext",
   "CGContext",
   "CGColorSpace",
 ] }
-# 按窗口取图。这个框架从 macOS 12.3 起才有，`SCScreenshotManager` 从 14.0 起才有，而应用最低支持
-# 11.0：`build.rs` 把它改成弱链接，运行时先查类在不在。
+# 按窗口采图。该框架自 macOS 12.3 起提供，`SCScreenshotManager` 自 14.0 起提供，而应用最低支持
+# 11.0：`build.rs` 将其改为弱链接，运行时先检查类是否存在。
 objc2-screen-capture-kit = { version = "0.3", default-features = false, features = [
   "std",
   "SCScreenshotManager",
@@ -128,7 +128,7 @@ objc2-screen-capture-kit = { version = "0.3", default-features = false, features
   "objc2-core-foundation",
   "objc2-core-graphics",
 ] }
-# 查类在不在、持有 Objective-C 对象。不要开 `exception`：它要 Apple 的 C 编译器。
+# 检查类是否存在、持有 Objective-C 对象。不要启用 `exception`：它需要 Apple 的 C 编译器。
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
   "std",
@@ -138,11 +138,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 ] }
 # ScreenCaptureKit 的完成回调是块。
 block2 = { version = "0.6", default-features = false, features = ["std"] }
-# `kill(pid, 0)`：进程退出后 AX 对它的调用与应用不应答回同一个错误码，只能另查进程在不在。
+# `kill(pid, 0)`：进程已退出与应用不响应时，AX 调用返回同一个错误码，只能另行检查进程是否存在。
 libc = { version = "0.2", default-features = false }
 
 [profile.release]
-# 单文件体积优先：这个二进制随安装包分发。
+# 单文件体积优先：该二进制随安装包分发。
 opt-level = "s"
 lto = true
 codegen-units = 1

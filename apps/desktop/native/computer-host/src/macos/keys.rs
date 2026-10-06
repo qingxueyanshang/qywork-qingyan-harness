@@ -1,17 +1,17 @@
 //! 协议键名 → macOS 虚拟键码（`CGKeyCode`）。
 //!
-//! worker 派发按键与外壳在 worker 退出后补发抬起要用同一张表，外壳经 `#[path]` 引入本文件。
-//! 不要在外壳里另写一张表：两张表一旦不一致，补发抬起的就不是 worker 按下的那个键。
+//! worker 派发按键与外壳在 worker 退出后补发抬起事件必须使用同一张表，外壳经由 `#[path]` 引入
+//! 本文件。不要在外壳中另写一张表：两张表一旦不一致，补发抬起的就不是 worker 按下的键。
 //! 因此本文件只依赖标准库，不引用任何 crate 内的路径。
 
 /// 键名 → 虚拟键码。键名是协议写法（全小写的主键名，或修饰键名 `ctrl` / `alt` / `shift` /
-/// `meta`）；认不出的名字返回 `None`，不猜。
+/// `meta`）；无法识别的名称返回 `None`，不推测。
 ///
 /// 两条边界：
 ///
-/// 1. 虚拟键码按 ANSI 键盘上的键位编号，不随键盘布局换：非 QWERTY 布局下 `a` 那个键按出的
-///    是该布局在这个键位上的字符。
-/// 2. macOS 没有 F21–F24 的虚拟键码，这四个名字返回 `None`。
+/// 1. 虚拟键码按 ANSI 键盘上的键位编号，不随键盘布局变化：非 QWERTY 布局下 `a` 键位输入的
+///    是该布局在此键位上的字符。
+/// 2. macOS 没有 F21–F24 的虚拟键码，这四个键名返回 `None`。
 pub fn keycode(name: &str) -> Option<u16> {
     let code = match name {
         "a" => 0x00,
@@ -64,7 +64,7 @@ pub fn keycode(name: &str) -> Option<u16> {
         "tab" => 0x30,
         "space" => 0x31,
         "backquote" => 0x32,
-        // macOS 的 Delete 是向左删除的那个键。
+        // macOS 的 Delete 是向左删除的键。
         "backspace" => 0x33,
         "escape" => 0x35,
         "meta" => 0x37,
@@ -88,7 +88,7 @@ pub fn keycode(name: &str) -> Option<u16> {
         "f10" => 0x6D,
         "f12" => 0x6F,
         "f15" => 0x71,
-        // PC 键盘的 Insert 在 macOS 上报的是 Help 键码。
+        // PC 键盘的 Insert 在 macOS 上报告为 Help 键码。
         "insert" => 0x72,
         "home" => 0x73,
         "page_up" => 0x74,
@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(keycode("enter"), Some(0x24));
         assert_eq!(keycode("backspace"), Some(0x33));
         assert_eq!(keycode("delete"), Some(0x75));
-        // 认不出的名字不猜：没有这个键就没有这次按键。键名是规范写法，大写不认。
+        // 无法识别的名称不推测：不存在该键即不执行此次按键。键名使用规范写法，不接受大写。
         for unknown in [
             "f21", "f24", "f25", "f0", "f01", "any", "", "A", "win", "cmd",
         ] {
@@ -132,7 +132,7 @@ mod tests {
         }
     }
 
-    /// 修饰键取左侧那一个：`meta` 是 Command，`alt` 是 Option。
+    /// 修饰键取左侧键：`meta` 对应 Command，`alt` 对应 Option。
     #[test]
     fn modifiers_map_to_the_left_hand_keys() {
         assert_eq!(keycode("meta"), Some(0x37));

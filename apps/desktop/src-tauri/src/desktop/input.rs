@@ -1,23 +1,23 @@
-//! worker 被强杀之后的输入清账。
+//! worker 被强制终止后的输入状态清理。
 //!
 //! 三条边界：
 //!
-//! 1. **只发抬起，发不出按下。** 因此它不是第二个执行入口：输入的唯一权威仍是 worker，
-//!    宿主这一侧只收拾 worker 已经来不及收拾的那一份。
-//! 2. **只释放 worker 记录在案的那几个。** 不做「把常用修饰键都抬一遍」的全局清扫——
-//!    那会把用户此刻正按着的键一起抬掉。
-//! 3. **在确认 worker 进程退出之后调。** 它没退出时自己会释放，两边同时发抬起没有收益。
+//! 1. **只发送抬起事件，不能发送按下事件。** 因此它不是第二个执行入口：输入的唯一权威仍是 worker，
+//!    宿主一侧只清理 worker 未能清理的输入状态。
+//! 2. **只释放 worker 记录的键。** 不对常用修饰键做全局抬起：
+//!    那会同时抬起用户当前正按住的键。
+//! 3. **在确认 worker 进程退出之后调用。** worker 未退出时会自行释放，两侧同时发送抬起事件没有收益。
 
 use super::frames::HeldInput;
 
-/// 协议键名到本平台键码的换算表，与 worker 派发按键用的是同一个文件。
+/// 协议键名到本平台键码的换算表，与 worker 派发按键时使用同一个文件。
 #[cfg(windows)]
 #[path = "../../../native/computer-host/src/windows/keys.rs"]
 mod keys;
 #[cfg(target_os = "linux")]
 #[path = "../../../native/computer-host/src/linux/x11/keys.rs"]
 mod keys;
-/// 连 X 服务器的路径，与 worker 用的是同一个文件。
+/// 连接 X 服务器的代码，与 worker 使用同一个文件。
 #[cfg(target_os = "linux")]
 #[path = "../../../native/computer-host/src/linux/x11/connect.rs"]
 mod connect;
@@ -25,7 +25,7 @@ mod connect;
 #[path = "../../../native/computer-host/src/macos/keys.rs"]
 mod keys;
 
-/// 释放这份账里的键与鼠标键。返回真的进了输入队列的事件数。
+/// 释放输入状态中记录的键与鼠标键。返回实际进入输入队列的事件数。
 #[cfg(windows)]
 pub fn release(held: &HeldInput) -> u32 {
     use ::windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -36,9 +36,9 @@ pub fn release(held: &HeldInput) -> u32 {
     };
 
     let mut inputs: Vec<INPUT> = Vec::new();
-    // 顺序与按下相反：修饰键要在主键之后抬起，鼠标键最后。
+    // 顺序与按下相反：修饰键必须在主键之后抬起，鼠标键最后抬起。
     for key in held.keys.iter().rev() {
-        // 认不出的键名不猜一个键抬起来：抬错的那一个本来就没有按下。
+        // 无法识别的键名不推测对应的键来抬起：推测错误的键并未被按下。
         let Some((vk, extended)) = keys::virtual_key(key) else {
             continue;
         };
@@ -67,7 +67,7 @@ pub fn release(held: &HeldInput) -> u32 {
             "left" => MOUSEEVENTF_LEFTUP,
             "right" => MOUSEEVENTF_RIGHTUP,
             "middle" => MOUSEEVENTF_MIDDLEUP,
-            // 认不出的名字不猜一个键抬起来：抬错的那一个本来就没有按下。
+            // 无法识别的按钮名不推测对应的按钮来抬起：推测错误的按钮并未被按下。
             _ => continue,
         };
         inputs.push(INPUT {
@@ -92,9 +92,9 @@ pub fn release(held: &HeldInput) -> u32 {
     unsafe { SendInput(&inputs, size) }
 }
 
-/// 同上，经 XTest。宿主自己连一次 X 服务器（与 worker 同一条建连路径），按此刻的键盘映射把
-/// 键名换成键码，换算规则与 worker 派发时相同（`keys::keycode`）。连不上 X 服务器时一个都发
-/// 不出，返回 0。
+/// 同上，经由 XTest。宿主自行连接一次 X 服务器（与 worker 使用同一条连接路径），按当前的键盘映射把
+/// 键名转换为键码，换算规则与 worker 派发时相同（`keys::keycode`）。无法连接 X 服务器时不发送任何
+/// 事件，返回 0。
 #[cfg(target_os = "linux")]
 pub fn release(held: &HeldInput) -> u32 {
     use x11rb::connection::Connection as _;
@@ -109,7 +109,7 @@ pub fn release(held: &HeldInput) -> u32 {
     let (conn, screen) = match connect::open() {
         Ok(connected) => connected,
         Err(e) => {
-            log::warn!("补发抬起连不上 X 服务器：{e}");
+            log::warn!("补发抬起事件时无法连接 X 服务器：{e}");
             return 0;
         }
     };
@@ -123,15 +123,15 @@ pub fn release(held: &HeldInput) -> u32 {
     {
         Ok(mapping) => mapping,
         Err(e) => {
-            log::warn!("补发抬起读不到键盘映射：{e}");
+            log::warn!("补发抬起时无法读取键盘映射：{e}");
             return 0;
         }
     };
     let per = usize::from(mapping.keysyms_per_keycode);
     let mut fakes: Vec<(u8, u8)> = Vec::new();
-    // 顺序与按下相反：修饰键要在主键之后抬起，鼠标键最后。
+    // 顺序与按下相反：修饰键必须在主键之后抬起，鼠标键最后抬起。
     for key in held.keys.iter().rev() {
-        // 认不出的键名不猜一个键抬起来：抬错的那一个本来就没有按下。
+        // 无法识别的键名不推测对应的键来抬起：推测错误的键并未被按下。
         let Some(code) = keys::keysym(key).and_then(|sym| keys::keycode(min, per, &mapping.keysyms, sym))
         else {
             continue;
@@ -153,16 +153,16 @@ pub fn release(held: &HeldInput) -> u32 {
             conn.xtest_fake_input(*kind, *detail, 0, root, 0, 0, 0).is_ok()
         })
         .count();
-    // 等服务器处理完再返回：进程一退出连接就断，没送到的请求随之丢掉。
+    // 等待服务器处理完成后再返回：进程退出时连接立即断开，未送达的请求随之丢失。
     if conn.sync().is_err() {
         return 0;
     }
     u32::try_from(queued).unwrap_or(u32::MAX)
 }
 
-/// 同上，经 CGEvent 投到 HID 事件流。鼠标抬起事件带指针此刻的位置，不移动指针。
+/// 同上，经由 CGEvent 投递到 HID 事件流。鼠标抬起事件携带指针当前的位置，不移动指针。
 ///
-/// 投递要本进程有辅助功能授权，没有时系统静默丢弃：返回的是投出去的事件数，不是生效数。
+/// 投递需要本进程具有辅助功能授权，否则系统静默丢弃：返回的是已投递的事件数，不是生效的事件数。
 #[cfg(target_os = "macos")]
 pub fn release(held: &HeldInput) -> u32 {
     use std::ffi::c_void;
@@ -200,12 +200,12 @@ pub fn release(held: &HeldInput) -> u32 {
         fn CFRelease(object: *const c_void);
     }
 
-    /// 投出一个事件并释放它。建不出事件时交回 0。
+    /// 投递一个事件并释放它。无法创建事件时返回 0。
     fn post(event: *mut c_void) -> u32 {
         if event.is_null() {
             return 0;
         }
-        // SAFETY: 事件是本函数的调用方刚建出、归本函数所有的 CGEvent，投出之后释放一次。
+        // SAFETY: 事件是调用方刚创建、归本函数所有的 CGEvent，投递之后释放一次。
         unsafe {
             CGEventPost(HID_EVENT_TAP, event);
             CFRelease(event);
@@ -214,24 +214,24 @@ pub fn release(held: &HeldInput) -> u32 {
     }
 
     let mut sent = 0;
-    // 顺序与按下相反：修饰键要在主键之后抬起，鼠标键最后。
+    // 顺序与按下相反：修饰键必须在主键之后抬起，鼠标键最后抬起。
     for key in held.keys.iter().rev() {
-        // 认不出的键名不猜一个键抬起来：抬错的那一个本来就没有按下。
+        // 无法识别的键名不推测对应的键来抬起：推测错误的键并未被按下。
         let Some(code) = keys::keycode(key) else {
             continue;
         };
-        // SAFETY: 事件源传空指针，由系统用默认的事件源。
+        // SAFETY: 事件源传入空指针，由系统使用默认事件源。
         sent += post(unsafe { CGEventCreateKeyboardEvent(ptr::null(), code, false) });
     }
     if held.buttons.is_empty() {
         return sent;
     }
-    // SAFETY: 空事件源；建出的事件只用来读指针位置，读完即释放。
+    // SAFETY: 空事件源；创建的事件只用于读取指针位置，读取后即释放。
     let here = unsafe { CGEventCreate(ptr::null()) };
     if here.is_null() {
         return sent;
     }
-    // SAFETY: `here` 非空，是本函数刚建出的事件。
+    // SAFETY: `here` 非空，是本函数刚创建的事件。
     let at = unsafe {
         let at = CGEventGetLocation(here);
         CFRelease(here);

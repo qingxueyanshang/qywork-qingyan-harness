@@ -1,17 +1,17 @@
-//! 电脑控制宿主的端到端夹具：只链接宿主模块，连一个本地起的服务端。
+//! 电脑控制宿主的端到端夹具：只链接宿主模块，连接一个本地启动的服务端。
 //!
-//! 与真实启动路径的差别只有两处：worker 的路径由环境变量给，而不是经 Tauri 的
+//! 与真实启动路径只有两处差别：worker 的路径由环境变量指定，而不是经 Tauri 的
 //! `externalBin` 定位；没有 Tauri 应用，因此退出钩子由本进程的 stdin 关闭代替。
-//! 宿主模块、worker 子进程、宿主 WS 与两段协议的翻译都是产品那一份。
+//! 宿主模块、worker 子进程、宿主 WS 与两段协议的转换都使用产品代码。
 //!
-//! 用法：`QYWORK_HOST_PORT` / `QYWORK_HOST_KEY` / `QYWORK_COMPUTER_HOST` 三个环境变量，
-//! worker 换代时向 stdout 打一行 `WORKER_PID=<pid>`，驱动按它定位要杀的进程。
+//! 用法：设置 `QYWORK_HOST_PORT` / `QYWORK_HOST_KEY` / `QYWORK_COMPUTER_HOST` 三个环境变量；
+//! worker 更换时向 stdout 输出一行 `WORKER_PID=<pid>`，测试驱动据此定位要终止的进程。
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// 日志转 stderr。产品里的 logger 装在 `run()` 里，这个夹具不走那条路径。
+/// 日志输出到 stderr。产品的 logger 在 `run()` 中安装，本夹具不经过该路径。
 struct Stderr;
 
 impl log::Log for Stderr {
@@ -36,12 +36,12 @@ fn main() {
     let _ = log::set_logger(&LOGGER);
     log::set_max_level(log::LevelFilter::Info);
 
-    let port: u16 = env("QYWORK_HOST_PORT").parse().expect("端口要是一个数");
+    let port: u16 = env("QYWORK_HOST_PORT").parse().expect("端口必须是数字");
     let key = env("QYWORK_HOST_KEY");
     let worker = PathBuf::from(env("QYWORK_COMPUTER_HOST"));
     let host = qywork_lib::desktop::start_with_worker(worker, port, key);
 
-    // stdin 关闭即收尾：产品里这一步挂在 Tauri 的退出事件上。
+    // stdin 关闭即收尾：产品中这一步由 Tauri 的退出事件触发。
     std::thread::spawn(|| {
         for line in std::io::stdin().lock().lines() {
             match line {

@@ -1,4 +1,4 @@
-//! 安装包的检查、验签下载和更新退出；任务退出时机由 Sidecar 裁决。
+//! 安装包的检查、验签下载与更新退出；任务退出时机由 Sidecar 裁决。
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -70,7 +70,7 @@ fn preferences(raw: &str) -> Option<(bool, bool)> {
 pub fn owner() -> UpdateOwner {
     #[cfg(windows)]
     let key = crate::hostkey::new_host_key();
-    // 非 Windows 没有安装更新实现，空串即不给 sidecar 发 `updateHostKey`，这条能力整条不存在。
+    // 非 Windows 平台没有安装更新实现，空串表示不向 sidecar 发送 `updateHostKey`，该能力不存在。
     #[cfg(not(windows))]
     let key = String::new();
     let enabled = cfg!(windows)
@@ -184,8 +184,8 @@ async fn execute(app: &AppHandle, owner: &UpdateOwner, action: &str) -> Result<(
             .timeout(Duration::from_secs(120))
             .on_before_exit(move || {
                 crate::terminal::shutdown(&exit_app.state::<crate::terminal::TerminalHandle>());
-                // 桌面 worker 是独立进程，安装程序会替换它的可执行文件，必须先结清在途
-                // 请求再收掉它。边界：安装失败时电脑控制不再恢复，能力发布为不可用，
+                // 桌面 worker 是独立进程，安装程序会替换其可执行文件，必须先结算进行中的
+                // 请求再终止它。边界：安装失败时电脑控制不再恢复，能力发布为不可用，
                 // 由用户重启应用恢复。
                 crate::desktop::shutdown();
                 // WebView 随外壳退出释放；此时安装程序仍可能启动失败，不能永久关闭浏览器宿主。

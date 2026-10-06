@@ -1,40 +1,40 @@
-//! 共享授权的状态：此刻生效的那一个会话、在等用户回答的那一次请求，以及上一次为什么结束。
-//! 只做判定，不调任何接口；调接口与等回答在 `super`。
+//! 共享授权的状态：当前生效的会话、等待用户答复的请求，以及上一次结束的原因。
+//! 只做判定，不调用任何接口；调用接口与等待响应在 `super` 中完成。
 //!
 //! 三条规则：
 //!
-//! 1. **生效的会话至多一个，在等回答的请求至多一个。** 新请求获准之后替换旧会话，旧会话由
-//!    调用方关闭；等回答期间旧会话照常可用。
-//! 2. **流与窗口按尺寸对应，两个方向都唯一才算对上。** portal 不告诉调用方用户选了哪个窗口，
-//!    只给流；流里一帧的逻辑尺寸与恰好一个原生 Wayland 窗口的 AT-SPI 尺寸相同、且没有别的流
-//!    同样大，才算对上。对上之后一直算数，直到会话结束。
-//! 3. **判不出是哪一个窗口时不再弹窗。** 共享的窗口与目标窗口一样大却不唯一时如实拒绝：
-//!    再问一次，用户选的还是同一个窗口，结论不变。
+//! 1. **生效的会话至多一个，等待答复的请求至多一个。** 新请求获准之后替换旧会话，旧会话由
+//!    调用方关闭；等待答复期间旧会话照常可用。
+//! 2. **流与窗口按尺寸对应，两个方向都唯一才视为匹配。** portal 不告知调用方用户选择了哪个
+//!    窗口，只提供流；流中一帧的逻辑尺寸与恰好一个原生 Wayland 窗口的 AT-SPI 尺寸相同，且没有
+//!    其他流尺寸相同，才视为匹配。匹配之后持续有效，直到会话结束。
+//! 3. **无法判定是哪一个窗口时不再弹出授权框。** 共享的窗口与目标窗口尺寸相同但不唯一时如实
+//!    拒绝：再次询问时用户选择的仍是同一个窗口，结论不变。
 
 /// portal 的输入设备位：键盘与指针。
 pub const KEYBOARD: u32 = 1;
 pub const POINTER: u32 = 2;
 
-/// 两个尺寸算同一个的误差上限，逻辑像素。流的逻辑尺寸由像素尺寸按缩放比换算，分数缩放下
-/// 取整会差 1。
+/// 两个尺寸视为相同的误差上限，单位为逻辑像素。流的逻辑尺寸由像素尺寸按缩放比换算，分数缩放下
+/// 取整会相差 1。
 const SIZE_SLACK: i32 = 1;
 
-/// 一条流共享的是哪个窗口。
+/// 一条流共享的窗口。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bound {
-    /// 还没从这条流里取过帧，不知道它多大。
+    /// 尚未从该流中取过帧，尺寸未知。
     Unmeasured,
-    /// 取过帧，窗口的逻辑尺寸是这个，但没对上唯一一个窗口；`matches` 是同样大的窗口数。
+    /// 已取过帧，`logical` 为窗口的逻辑尺寸，但未匹配到唯一一个窗口；`matches` 是尺寸相同的窗口数。
     Measured { logical: (i32, i32), matches: usize },
-    /// 对上了这个 AT-SPI frame（对象串）。
+    /// 已匹配到该 AT-SPI frame（对象串）。
     Frame(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct Stream {
-    /// PipeWire 节点号，也是 portal 输入接口里点名这条流的编号。
+    /// PipeWire 节点号，也是 portal 输入接口中指定该流的编号。
     pub node: u32,
-    /// portal 给的 `size`：流的逻辑坐标范围。缺席时按缩放比 1 算。
+    /// portal 提供的 `size`：流的逻辑坐标范围。缺失时按缩放比 1 计算。
     pub size: Option<(i32, i32)>,
     pub bound: Bound,
 }
@@ -43,14 +43,14 @@ pub struct Stream {
 pub struct Session {
     /// portal 的会话对象路径。
     pub handle: String,
-    /// 用户允许的输入设备位。关掉「允许远程交互」时为 0，只能取图。
+    /// 用户允许的输入设备位。关闭「允许远程交互」时为 0，只能采图。
     pub devices: u32,
     pub streams: Vec<Stream>,
-    /// 这个会话已经投过指针事件。见 `Ledger::first_pointer`。
+    /// 该会话已投递过指针事件。见 `Ledger::first_pointer`。
     pub pointer_used: bool,
 }
 
-/// 一个窗口此刻被共享的方式。
+/// 一个窗口当前被共享的方式。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Coverage {
     pub session: String,
@@ -60,20 +60,20 @@ pub struct Coverage {
     pub pointer: bool,
 }
 
-/// 一次调用要这个窗口时该做什么。
+/// 一次调用请求该窗口时应执行的操作。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Covered(Coverage),
-    /// 先从这些流里各取一帧量出尺寸，再对应一次。每项是节点号与它的逻辑范围。
+    /// 先从这些流中各取一帧测量尺寸，再执行一次对应。每项是节点号与其逻辑范围。
     Measure {
         session: String,
         nodes: Vec<(u32, Option<(i32, i32)>)>,
     },
-    /// 已经问过用户，还没有回答。
+    /// 已询问用户，尚未得到答复。
     Pending,
-    /// 有一条共享的流与目标窗口一样大，但同样大的窗口不止一个。
+    /// 有一条共享的流与目标窗口尺寸相同，但尺寸相同的窗口不止一个。
     Ambiguous(usize),
-    /// 要问用户。`restore` 为真时可以带上存下的 restore token：此刻没有生效的会话。
+    /// 需要询问用户。`restore` 为真时可以携带已保存的 restore token：当前没有生效的会话。
     Ask {
         restore: bool,
     },
@@ -91,7 +91,7 @@ fn near(a: (i32, i32), b: (i32, i32)) -> bool {
 }
 
 impl Ledger {
-    /// 这个窗口此刻有没有被共享。只读已经对上的流，不取帧、不弹窗。
+    /// 该窗口当前是否被共享。只读取已匹配的流，不取帧、不弹出授权框。
     pub fn covers(&self, key: &str) -> Option<Coverage> {
         let session = self.active.as_ref()?;
         let stream = session
@@ -107,7 +107,7 @@ impl Ledger {
         })
     }
 
-    /// `size` 是目标窗口此刻的 AT-SPI 尺寸。
+    /// `size` 是目标窗口当前的 AT-SPI 尺寸。
     pub fn decide(&self, key: &str, size: (i32, i32)) -> Decision {
         if let Some(covered) = self.covers(key) {
             return Decision::Covered(covered);
@@ -143,7 +143,7 @@ impl Ledger {
         }
     }
 
-    /// 记下开始问用户。已经在问时交回假，调用方不再发第二次请求。
+    /// 记录开始询问用户。已在询问时返回假，调用方不再发送第二次请求。
     pub fn begin_ask(&mut self) -> bool {
         if self.asking {
             return false;
@@ -156,20 +156,20 @@ impl Ledger {
         self.asking
     }
 
-    /// 用户同意了：新会话生效，交回被替换的旧会话，由调用方关闭。
+    /// 用户已同意：新会话生效，返回被替换的旧会话，由调用方关闭。
     pub fn granted(&mut self, session: Session) -> Option<Session> {
         self.asking = false;
         self.ended = None;
         self.active.replace(session)
     }
 
-    /// 这次请求没有换来会话：用户取消、超时或 portal 出错。生效的旧会话不受影响。
+    /// 本次请求未取得会话：用户取消、超时或 portal 出错。生效的旧会话不受影响。
     pub fn refused(&mut self, reason: String) {
         self.asking = false;
         self.ended = Some(reason);
     }
 
-    /// 合成器或用户结束了一个会话。是生效的那一个才算数，交回真；调用方据此作废 restore token。
+    /// 合成器或用户结束了一个会话。仅当该会话是生效的会话时才处理并返回真；调用方据此作废 restore token。
     pub fn closed(&mut self, handle: &str, reason: &str) -> bool {
         if self.active.as_ref().is_none_or(|s| s.handle != handle) {
             return false;
@@ -179,15 +179,15 @@ impl Ledger {
         true
     }
 
-    /// 上一次请求或会话为什么结束。
+    /// 上一次请求或会话结束的原因。
     pub fn ended(&self) -> Option<&str> {
         self.ended.as_deref()
     }
 
-    /// 生效的会话 `handle` 是不是第一次投指针事件。是的话记下并交回真。
+    /// 生效的会话 `handle` 是否首次投递指针事件。是首次时记录并返回真。
     ///
-    /// 合成器在一个会话第一次投指针事件时才建它的虚拟指针设备，应用要等合成器通告了指针能力、
-    /// 自己绑好指针之后才收得到事件；在那之前投的移动与按键应用收不到。
+    /// 合成器在一个会话首次投递指针事件时才创建该会话的虚拟指针设备，应用在合成器通告指针能力、
+    /// 且应用绑定指针之后才能收到事件；在此之前投递的移动与按键，应用收不到。
     pub fn first_pointer(&mut self, handle: &str) -> bool {
         match self.active.as_mut() {
             Some(session) if session.handle == handle && !session.pointer_used => {
@@ -198,7 +198,7 @@ impl Ledger {
         }
     }
 
-    /// 记下一条流里一帧的逻辑尺寸。流不在生效的会话里时不记：会话已经换过。
+    /// 记录一条流中一帧的逻辑尺寸。流不在生效的会话中时不记录：会话已更换。
     pub fn measured(&mut self, session: &str, node: u32, logical: (i32, i32)) {
         let Some(active) = self.active.as_mut().filter(|s| s.handle == session) else {
             return;
@@ -211,8 +211,8 @@ impl Ledger {
         }
     }
 
-    /// 把量过尺寸、还没对上的流对到窗口上。`frames` 是此刻全部原生 Wayland 窗口的对象串与
-    /// AT-SPI 尺寸；已经对上别的流的窗口不参与。
+    /// 将已测量尺寸、尚未匹配的流对应到窗口上。`frames` 是当前全部原生 Wayland 窗口的对象串与
+    /// AT-SPI 尺寸；已与其他流匹配的窗口不参与。
     pub fn bind(&mut self, frames: &[(String, (i32, i32))]) {
         let Some(active) = self.active.as_mut() else {
             return;
@@ -259,10 +259,10 @@ impl Ledger {
     }
 }
 
-/// 流里一帧的逻辑尺寸：帧的像素尺寸按「流的逻辑范围 / 视频尺寸」换算。
+/// 流中一帧的逻辑尺寸：帧的像素尺寸按「流的逻辑范围 / 视频尺寸」换算。
 ///
-/// 按窗口共享的流，视频尺寸是整块显示器的像素，逻辑范围是那块显示器的逻辑尺寸，窗口只占
-/// 帧左上角裁剪区那一块；两者之比就是缩放比。没有逻辑范围时按缩放比 1 算。
+/// 按窗口共享的流中，视频尺寸是整块显示器的像素尺寸，逻辑范围是该显示器的逻辑尺寸，窗口只占据
+/// 帧左上角的裁剪区；两者之比即缩放比。没有逻辑范围时按缩放比 1 计算。
 pub fn logical_size(crop: (u32, u32), video: (u32, u32), size: Option<(i32, i32)>) -> (i32, i32) {
     let scale = |pixels: u32, video: u32, logical: Option<i32>| -> i32 {
         match logical {
@@ -305,8 +305,8 @@ mod tests {
         list.iter().map(|(k, s)| ((*k).to_owned(), *s)).collect()
     }
 
-    /// 原始失败形状：原生 Wayland 窗口没有取图与输入路径。第一次要它时去问用户，问的期间
-    /// 不再发第二次请求；用户同意之后先量流、再对应，对上之后才交出流。
+    /// 原始失败形状：原生 Wayland 窗口没有采图与输入路径。首次请求该窗口时询问用户，询问期间
+    /// 不再发送第二次请求；用户同意之后先测量流尺寸、再执行对应，匹配之后才提供流。
     #[test]
     fn a_window_is_covered_only_after_consent_measurement_and_binding() {
         let mut ledger = Ledger::default();
@@ -343,14 +343,14 @@ mod tests {
             Decision::Covered(covered.clone())
         );
         assert_eq!(ledger.covers(A), Some(covered));
-        // 别的窗口没被共享：再问一次，不带 restore token，旧会话照常可用。
+        // 其他窗口未被共享：再次询问，不携带 restore token，旧会话照常可用。
         assert_eq!(
             ledger.decide(B, (640, 480)),
             Decision::Ask { restore: false }
         );
     }
 
-    /// 用户关掉「允许远程交互」：只能取图，键盘与指针不可用。
+    /// 用户关闭「允许远程交互」：只能采图，键盘与指针不可用。
     #[test]
     fn a_session_without_devices_covers_capture_only() {
         let mut ledger = Ledger::default();
@@ -358,11 +358,11 @@ mod tests {
         ledger.granted(session("/s/1", &[44], 0));
         ledger.measured("/s/1", 44, (412, 389));
         ledger.bind(&frames(&[(A, (412, 389))]));
-        let covered = ledger.covers(A).expect("取图仍然可用");
+        let covered = ledger.covers(A).expect("采图仍然可用");
         assert!(!covered.keyboard && !covered.pointer);
     }
 
-    /// 两个一样大的窗口：判不出共享的是哪一个，如实拒绝，不再弹窗。
+    /// 两个尺寸相同的窗口：无法判定共享的是哪一个，如实拒绝，不再弹出授权框。
     #[test]
     fn two_windows_of_the_shared_size_are_ambiguous_and_not_asked_again() {
         let mut ledger = Ledger::default();
@@ -372,14 +372,14 @@ mod tests {
         ledger.bind(&frames(&[(A, (412, 389)), (B, (412, 389))]));
         assert!(ledger.covers(A).is_none() && ledger.covers(B).is_none());
         assert_eq!(ledger.decide(A, (412, 389)), Decision::Ambiguous(2));
-        // 尺寸不同的窗口不在其列：它确实没被共享，照常去问。
+        // 尺寸不同的窗口不在其列：该窗口确实未被共享，照常询问。
         assert_eq!(
             ledger.decide(":1.9/x", (300, 200)),
             Decision::Ask { restore: false }
         );
     }
 
-    /// 两条流一样大、只有一个窗口对得上：同样判不出，两条都不对应。
+    /// 两条流尺寸相同、只有一个窗口匹配：同样无法判定，两条流都不对应。
     #[test]
     fn two_streams_of_one_size_bind_to_nothing() {
         let mut ledger = Ledger::default();
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(ledger.decide(A, (412, 389)), Decision::Ambiguous(2));
     }
 
-    /// 已经对上一条流的窗口不参与下一条流的对应。
+    /// 已匹配一条流的窗口不参与下一条流的对应。
     #[test]
     fn a_bound_window_is_not_offered_to_another_stream() {
         let mut ledger = Ledger::default();
@@ -406,7 +406,7 @@ mod tests {
         assert_eq!(ledger.covers(B).map(|c| c.node), Some(45));
     }
 
-    /// 取消、超时与出错：不留会话，记下原因；生效的旧会话不受影响。
+    /// 取消、超时与出错：不保留会话，记录原因；生效的旧会话不受影响。
     #[test]
     fn a_refused_request_keeps_the_previous_session() {
         let mut ledger = Ledger::default();
@@ -421,7 +421,7 @@ mod tests {
         assert!(ledger.covers(A).is_some());
     }
 
-    /// 替换：新会话获准之后交回旧会话；旧会话随后发来的「已结束」不算数。
+    /// 替换：新会话获准之后返回旧会话；旧会话随后发来的「已结束」信号不予处理。
     #[test]
     fn a_replaced_session_is_handed_back_and_its_close_is_ignored() {
         let mut ledger = Ledger::default();
@@ -434,7 +434,7 @@ mod tests {
         assert!(ledger.ended().is_none());
     }
 
-    /// 撤销：合成器或用户结束生效的会话，能力随之撤回，下一次调用重新问用户。
+    /// 撤销：合成器或用户结束生效的会话，能力随之撤回，下一次调用重新询问用户。
     #[test]
     fn a_closed_session_drops_coverage() {
         let mut ledger = Ledger::default();
@@ -451,7 +451,7 @@ mod tests {
         );
     }
 
-    /// 每个会话只有第一次投指针事件时要等合成器通告指针能力；换了会话重新算。
+    /// 每个会话只有首次投递指针事件时需要等待合成器通告指针能力；更换会话后重新计算。
     #[test]
     fn only_the_first_pointer_event_of_a_session_waits() {
         let mut ledger = Ledger::default();
@@ -465,7 +465,7 @@ mod tests {
         assert!(ledger.first_pointer("/s/2"));
     }
 
-    /// 会话换过之后，旧会话那条流的尺寸不记。
+    /// 会话更换之后，不记录旧会话中流的尺寸。
     #[test]
     fn a_measurement_for_a_replaced_session_is_ignored() {
         let mut ledger = Ledger::default();
@@ -478,7 +478,7 @@ mod tests {
         ));
     }
 
-    /// 缩放比 1：逻辑尺寸就是裁剪区的像素尺寸；缩放比 2：减半；没有逻辑范围按 1 算。
+    /// 缩放比 1：逻辑尺寸即裁剪区的像素尺寸；缩放比 2：尺寸减半；没有逻辑范围时按 1 计算。
     #[test]
     fn the_logical_size_follows_the_stream_scale() {
         assert_eq!(

@@ -1,20 +1,20 @@
-//! 点与屏幕物理像素之间的换算。AX 与 CoreGraphics 给的是点，原点是主显示器左上角、y 向下；
-//! 协议里的矩形、落点与图像几何是屏幕物理像素。
+//! 点与屏幕物理像素之间的换算。AX 与 CoreGraphics 使用点为单位，原点是主显示器左上角、y 向下；
+//! 协议中的矩形、落点与图像几何使用屏幕物理像素。
 //!
 //! 四条规则：
 //!
-//! 1. **一个窗口只用一套换算**：窗口所在显示器的那一套。所在显示器是与窗口矩形相交面积最大的
-//!    那一台，都不相交时取主显示器。窗口矩形、控件包围盒、图像几何与指针落点都按这一套换算，
-//!    跨显示器的窗口伸到另一台上的那部分也按它算，同一个窗口里的坐标因此前后一致、能原样换回点。
-//! 2. **像素 = 显示器原点像素 + (点 − 显示器原点) × 这台显示器的每点像素数**。显示器原点像素是
-//!    它的原点乘以全部显示器里最大的每点像素数：每台显示器的像素矩形落在它的点矩形按这个最大
-//!    比例放大后的范围里，点矩形互不重叠，像素矩形因此也互不重叠。主显示器的原点是 (0,0)，
-//!    只有一台显示器时像素就是点乘它的每点像素数。
+//! 1. **每个窗口只使用一套换算**：即窗口所在显示器的换算。所在显示器是与窗口矩形相交面积最大的
+//!    显示器，均不相交时取主显示器。窗口矩形、控件包围盒、图像几何与指针落点均按这一套换算，
+//!    跨显示器的窗口延伸到另一台显示器上的部分同样按它计算，同一窗口内的坐标因此前后一致，且能原样换算回点。
+//! 2. **像素 = 显示器原点像素 + (点 − 显示器原点) × 该显示器的每点像素数**。显示器原点像素是
+//!    其原点乘以全部显示器中最大的每点像素数：每台显示器的像素矩形位于其点矩形按该最大
+//!    比例放大后的范围内，点矩形互不重叠，像素矩形因此也互不重叠。主显示器的原点是 (0,0)，
+//!    只有一台显示器时像素即为点乘以其每点像素数。
 //! 3. **矩形按四条边分别取整**：相邻的两个矩形换算之后仍然相邻。
-//! 4. `dpi` 按 96 × 每点像素数报，与其他平台「96 是 100%」同一个读法；代际里的显示器标识是
-//!    CGDirectDisplayID。显示器排列或每点像素数变化时像素矩形随之变化，代际跟着变。
+//! 4. `dpi` 按 96 × 每点像素数报告，与其他平台「96 即 100%」的约定一致；代际中的显示器标识是
+//!    CGDirectDisplayID。显示器排列或每点像素数变化时像素矩形随之变化，代际也随之变化。
 //!
-//! 本模块不调用任何接口，显示器清单由调用方读好交进来。
+//! 本模块不调用任何接口，显示器清单由调用方读取后传入。
 
 use super::facts::Frame;
 use crate::geometry::{ScreenPoint, ScreenRect, WindowFrame};
@@ -24,9 +24,9 @@ use crate::geometry::{ScreenPoint, ScreenRect, WindowFrame};
 pub struct Display {
     /// CGDirectDisplayID。
     pub id: u32,
-    /// 全局坐标里的矩形，单位是点。
+    /// 全局坐标中的矩形，单位是点。
     pub bounds: Frame,
-    /// 每点多少个物理像素：显示模式的像素宽度除以点宽度。
+    /// 每点的物理像素数：显示模式的像素宽度除以点宽度。
     pub scale: f64,
 }
 
@@ -39,7 +39,7 @@ impl Display {
     }
 }
 
-/// 一个窗口的点与像素之间的换算，见文件头第 1、2 条。
+/// 单个窗口的点与像素之间的换算，见文件头第 1、2 条。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mapping {
     display: u32,
@@ -88,17 +88,17 @@ impl Mapping {
     }
 }
 
-/// 一个窗口此刻的几何：点矩形、它用的那一套换算，以及按像素算的窗口事实。
+/// 窗口当前的几何：点矩形、所用的换算，以及按像素计算的窗口事实。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Placed {
     /// 窗口矩形，单位是点。
     pub bounds: Frame,
     pub mapping: Mapping,
-    /// 窗口矩形与可见边框都是像素化之后的窗口矩形：按窗口取的图覆盖的就是这一块，不含阴影。
+    /// 窗口矩形与可见边框均为换算为像素后的窗口矩形：按窗口截取的图像覆盖的即为该区域，不含阴影。
     pub frame: WindowFrame,
 }
 
-/// 按窗口矩形挑显示器、定换算。显示器清单里没有可用的显示器时缺席。
+/// 按窗口矩形选择显示器并确定换算。显示器清单中没有可用的显示器时缺席。
 pub fn place(displays: &[Display], bounds: Frame) -> Option<Placed> {
     let usable: Vec<&Display> = displays.iter().filter(|d| d.usable()).collect();
     let widest = usable.iter().map(|d| d.scale).fold(0.0_f64, f64::max);
@@ -106,7 +106,7 @@ pub fn place(displays: &[Display], bounds: Frame) -> Option<Placed> {
         .iter()
         .map(|d| (overlap(&d.bounds, &bounds), *d))
         .filter(|(area, _)| *area > 0.0)
-        // 面积相同取清单里靠前的那一台：`max_by` 在相等时取后者，所以倒着找。
+        // 面积相同时取清单中靠前的显示器：`max_by` 在相等时取后者，因此逆序查找。
         .rev()
         .max_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, d)| d)
@@ -147,7 +147,7 @@ fn overlap(a: &Frame, b: &Frame) -> f64 {
     }
 }
 
-/// CGWindowList 给的整点矩形换回点矩形。
+/// 把 CGWindowList 提供的整点矩形转换为点矩形。
 pub fn frame_of(rect: ScreenRect) -> Frame {
     Frame {
         x: f64::from(rect.x),
@@ -191,7 +191,7 @@ mod tests {
         scale: 2.0,
     };
 
-    /// 接在右侧、顶边高出 200 点的 1080p 外接屏，每点 1 个像素。
+    /// 位于右侧、顶边高出 200 点的 1080p 外接屏，每点 1 个像素。
     const EXTERNAL: Display = Display {
         id: 2,
         bounds: Frame {
@@ -203,7 +203,7 @@ mod tests {
         scale: 1.0,
     };
 
-    /// 单台 Retina 屏：像素就是点乘 2，dpi 报 192，代际里是这台显示器。
+    /// 单台 Retina 屏：像素即为点乘 2，dpi 报告 192，代际中是该显示器。
     #[test]
     fn a_retina_window_doubles_its_points() {
         let placed = place(&[BUILT_IN], frame(100.0, 50.0, 800.0, 600.0)).expect("有显示器");
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(placed.frame.generation(), "200,100,1600,1200@192#1");
     }
 
-    /// 像素换回点再换回像素是原值：按图给的落点要能原样落回屏幕上的那个位置。
+    /// 像素换算回点再换算回像素等于原值：按图像给出的落点必须能原样对应到屏幕上的同一位置。
     #[test]
     fn pixels_convert_back_to_the_same_points() {
         for display in [BUILT_IN, EXTERNAL] {
@@ -228,7 +228,7 @@ mod tests {
         }
     }
 
-    /// 两台显示器：外接屏的像素原点是它的点原点乘最大比例 2，它自己按每点 1 个像素换算。
+    /// 两台显示器：外接屏的像素原点是其点原点乘以最大比例 2，其自身按每点 1 个像素换算。
     #[test]
     fn a_window_on_the_external_display_uses_that_displays_scale() {
         let placed =
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(placed.frame.monitor, 2);
     }
 
-    /// 两台显示器各自的像素矩形互不重叠，哪怕低比例的那台排在高比例那台的右边或左边。
+    /// 各显示器的像素矩形互不重叠，低比例显示器位于高比例显示器的右侧或左侧时同样如此。
     #[test]
     fn display_pixel_rects_never_overlap() {
         let left = Display {
@@ -268,13 +268,13 @@ mod tests {
         }
     }
 
-    /// 跨两台显示器的窗口归相交面积大的那一台，整窗按它换算。
+    /// 跨两台显示器的窗口归属于相交面积较大的显示器，整个窗口按其换算。
     #[test]
     fn a_straddling_window_belongs_to_the_display_it_mostly_covers() {
         let mostly_external = frame(1400.0, 0.0, 800.0, 600.0);
         let placed = place(&[BUILT_IN, EXTERNAL], mostly_external).expect("有显示器");
         assert_eq!(placed.frame.monitor, 2);
-        // 伸到内建屏上的那 112 点也按外接屏的每点 1 个像素算。
+        // 延伸到内建屏上的 112 点同样按外接屏的每点 1 个像素计算。
         assert_eq!(placed.frame.window, rect(2912, -200, 800, 600));
         let mostly_built_in = frame(1000.0, 0.0, 800.0, 600.0);
         assert_eq!(
@@ -286,7 +286,7 @@ mod tests {
         );
     }
 
-    /// 不与任何显示器相交的窗口按主显示器换算；面积相同时取清单里靠前的那一台。
+    /// 不与任何显示器相交的窗口按主显示器换算；面积相同时取清单中靠前的显示器。
     #[test]
     fn an_offscreen_window_falls_back_to_the_main_display() {
         let lost = frame(-9000.0, -9000.0, 100.0, 100.0);
@@ -307,7 +307,7 @@ mod tests {
         );
     }
 
-    /// 没有可用的显示器时不给换算：比例为零或非有限的显示器不算。
+    /// 没有可用的显示器时不提供换算：比例为零或非有限的显示器不计入。
     #[test]
     fn without_a_usable_display_there_is_no_mapping() {
         assert!(place(&[], frame(0.0, 0.0, 10.0, 10.0)).is_none());
@@ -331,7 +331,7 @@ mod tests {
         assert_eq!(a.right(), b.x);
     }
 
-    /// 窗口换到另一台显示器、或者显示器的比例变了，代际都变。
+    /// 窗口移到另一台显示器，或显示器的比例改变时，代际均改变。
     #[test]
     fn the_generation_follows_the_display_and_its_scale() {
         let bounds = frame(100.0, 100.0, 400.0, 300.0);

@@ -1,11 +1,11 @@
-//! 回环 WebSocket 客户端：握手、收发文本帧、应答控制帧。宿主连接共用这一份，
-//! 不按平台分叉。
+//! 回环 WebSocket 客户端：握手、收发文本帧、应答控制帧。宿主连接共用本实现，
+//! 不按平台区分。
 //!
-//! 只覆盖宿主连接需要的形态——明文 `ws://127.0.0.1`、文本帧、客户端掩码。
+//! 只覆盖宿主连接需要的形式：明文 `ws://127.0.0.1`、文本帧、客户端掩码。
 //! 不实现扩展协商、permessage-deflate、分片发送。
 //!
-//! 读写用两个 `TcpStream` 句柄：读在专用线程上阻塞，写由请求线程加锁发出。
-//! 关闭走 `shutdown`，读线程因此从阻塞里返回，不靠标志位轮询。
+//! 读写使用两个 `TcpStream` 句柄：读取在专用线程上阻塞，写入由请求线程加锁发出。
+//! 关闭使用 `shutdown`，读线程因此从阻塞中返回，不依赖标志位轮询。
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
@@ -18,11 +18,11 @@ const OP_CLOSE: u8 = 0x8;
 const OP_PING: u8 = 0x9;
 const OP_PONG: u8 = 0xA;
 
-/// 单帧上限。宿主连接上的帧是状态快照与动作回执，远小于这个数；
-/// 超限即判协议错误并断开，不为一条畸形帧分配任意大的缓冲区。
+/// 单帧上限。宿主连接上的帧是状态快照与动作回执，远小于该值；
+/// 超限即判定为协议错误并断开，不为畸形帧分配任意大的缓冲区。
 const MAX_FRAME_BYTES: u64 = 8 * 1024 * 1024;
 
-/// 发送端。掩码状态与写句柄同锁，保证一帧的头与体不会被另一帧插进来。
+/// 发送端。掩码状态与写句柄使用同一把锁，保证一帧的头部与正文之间不会插入另一帧。
 pub struct WsSender {
     inner: Mutex<(TcpStream, u64)>,
 }
@@ -32,7 +32,7 @@ pub struct WsClient {
     sender: Arc<WsSender>,
 }
 
-/// 掩码源。掩码防的是中间代理缓存，不承担机密性——那由宿主凭据负责。
+/// 掩码源。掩码用于防范中间代理缓存，不承担机密性：机密性由宿主凭据负责。
 fn next_mask(state: &mut u64) -> [u8; 4] {
     *state ^= *state << 13;
     *state ^= *state >> 7;
@@ -88,7 +88,7 @@ impl WsSender {
         stream.flush()
     }
 
-    /// 断开底层连接。读线程随之从阻塞里返回。
+    /// 断开底层连接。读线程随之从阻塞中返回。
     pub fn shutdown(&self) {
         if let Ok(guard) = self.inner.lock() {
             let _ = guard.0.shutdown(Shutdown::Both);
@@ -97,7 +97,7 @@ impl WsSender {
 }
 
 impl WsClient {
-    /// 连回环端口并完成升级。`headers` 里放宿主凭据，不进 URL。
+    /// 连接回环端口并完成升级。宿主凭据放在 `headers` 中，不放入 URL。
     pub fn connect(
         port: u16,
         path: &str,
@@ -132,7 +132,7 @@ impl WsClient {
         let mut status = String::new();
         reader.read_line(&mut status)?;
         if !status.contains(" 101") {
-            return Err(io_err(format!("升级被拒：{}", status.trim_end())));
+            return Err(io_err(format!("升级被拒绝：{}", status.trim_end())));
         }
         loop {
             let mut line = String::new();
@@ -154,7 +154,7 @@ impl WsClient {
         Arc::clone(&self.sender)
     }
 
-    /// 读一条文本消息。`Ok(None)` = 对端关闭。控制帧就地应答，不返回给调用方。
+    /// 读取一条文本消息。`Ok(None)` 表示对端关闭。控制帧就地应答，不返回给调用方。
     pub fn read_text(&mut self) -> std::io::Result<Option<String>> {
         let mut buffer: Vec<u8> = Vec::new();
         let mut text_message = false;
@@ -231,11 +231,11 @@ impl WsClient {
 const RECONNECT_BASE_MS: u64 = 400;
 const RECONNECT_MAX_MS: u64 = 15_000;
 
-/// 宿主连接断开之后的重连间隔：从 `RECONNECT_BASE_MS` 起每次翻倍，封顶 `RECONNECT_MAX_MS`；
-/// 连上并发出首帧之后回到起点。
+/// 宿主连接断开后的重连间隔：从 `RECONNECT_BASE_MS` 起每次翻倍，上限为 `RECONNECT_MAX_MS`；
+/// 连接成功并发出首帧后重置为起始值。
 ///
-/// 不要去掉 `connected` 的归零：不归零时间隔只增不减，sidecar 重启过几次之后宿主每次都要等满
-/// 封顶值才重连，这段时间里对应的能力按「宿主未连接」发布。
+/// 不要删除 `connected` 中的归零：不归零时间隔只增不减，sidecar 重启数次后宿主每次都要等待
+/// 上限值才重连，期间对应的能力按「宿主未连接」发布。
 pub struct Reconnect {
     next_ms: u64,
 }
@@ -245,12 +245,12 @@ impl Reconnect {
         Self { next_ms: RECONNECT_BASE_MS }
     }
 
-    /// 这一次连上了：下一次断开从起点重连。
+    /// 本次连接成功：下一次断开后从起始间隔开始重连。
     pub fn connected(&mut self) {
         self.next_ms = RECONNECT_BASE_MS;
     }
 
-    /// 这一次断开之后等多久再连。
+    /// 本次断开后等待多久再重连。
     pub fn next_delay(&mut self) -> std::time::Duration {
         let ms = self.next_ms;
         self.next_ms = (ms * 2).min(RECONNECT_MAX_MS);
@@ -263,7 +263,7 @@ mod tests {
     use super::{base64, Reconnect};
     use std::time::Duration;
 
-    /// 原始失败形状：连上过一次之后间隔不归零，下一次断开直接等封顶值。
+    /// 原始失败形状：连接成功一次后间隔不归零，下一次断开直接等待上限值。
     #[test]
     fn reconnect_backs_off_and_starts_over_once_connected() {
         let mut r = Reconnect::new();

@@ -1,16 +1,16 @@
-//! 交互式终端：一条会话一个 PTY，输出按事件推给 WebView。
+//! 交互式终端：每个会话对应一个 PTY，输出以事件推送给 WebView。
 //!
-//! **为什么这一层破例持有状态。** lib.rs 顶上写着「外壳不持业务状态、WebView 直连
-//! sidecar」——那条针对的是会话、账本、权限这些**两端都该有**的状态。PTY 不是：
-//! 它是一个真实的本机子进程和一对操作系统句柄，跨不过网络，手机端也不可能有。
-//! 放进 sidecar 就等于把「在这台机器上跑任意命令」开到局域网上（CLAUDE.md E）。
-//! 所以终端是桌面独有能力，握手之外由 `isDesktopShell()` 判定，别的端不显示入口。
+//! **本层例外地持有状态。** lib.rs 文件头规定「外壳不持有业务状态、WebView 直接连接
+//! sidecar」，该规定针对会话、账本、权限等**两端都应具备**的状态。PTY 不属于此类：
+//! 它是真实的本机子进程与一对操作系统句柄，无法跨网络传递，手机端也不可能具备。
+//! 放入 sidecar 等于把「在本机运行任意命令」开放到局域网（CLAUDE.md E）。
+//! 因此终端是桌面端独有能力，在握手之外由 `isDesktopShell()` 判定，其他端不显示入口。
 //!
-//! 会话不随面板切换而销毁：用户切去查看文件、甚至将整块面板收起时，命令仍需继续运行。
-//! 销毁只发生在显式关闭（页签上的 ×）、子进程自己退出、以及应用退出时。
+//! 会话不随面板切换而销毁：用户切换到文件视图或收起整个面板时，命令仍需继续运行。
+//! 只在显式关闭（页签上的 ×）、子进程自行退出与应用退出时销毁。
 //!
-//! 一条 id 一条会话，前端可以同时开几条（页签由 `panelTabs` 管）。每条会话记住它属于
-//! 哪个工作区：前端按工作区分开显示页签，换工作区不关任何一条。
+//! 每个 id 对应一个会话，前端可同时打开多个（页签由 `panelTabs` 管理）。每个会话记录其所属的
+//! 工作区：前端按工作区分别显示页签，切换工作区不关闭任何会话。
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -22,30 +22,30 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, Pt
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-/// 一次读取的上限。太小会让长输出被切成大量事件（每个事件一次 IPC 序列化），
-/// 太大则拖长首字节延迟——8K 是 ConPTY 与 pty 常见的一次写入量级。
+/// 一次读取的上限。过小会使长输出被切分为大量事件（每个事件一次 IPC 序列化），
+/// 过大则增加首字节延迟。8K 是 ConPTY 与 pty 常见的单次写入量级。
 const READ_CHUNK: usize = 8 * 1024;
 
-/// 回放缓冲的上限。**这是屏幕重建用的，不是滚动历史**：够装下一屏全屏 TUI 的
-/// 重绘（清屏 + 定位 + 满屏字符，几十 K 量级）并留出余量即可，翻历史归 xterm
-/// 自己的 5000 行回滚管。再大只是以常驻内存换取一段不会被查看的字节。
+/// 回放缓冲的上限。**它用于重建屏幕，不是滚动历史**：能容纳一屏全屏 TUI 的
+/// 重绘（清屏 + 定位 + 满屏字符，几十 K 量级）并留出余量即可，历史记录由 xterm
+/// 自身的 5000 行回滚缓冲管理。更大的上限只会占用常驻内存保存不会被查看的字节。
 const BACKLOG_CAP: usize = 256 * 1024;
 
 struct Session {
-    /// 这条会话属于哪个工作区。**建出来就不再改**：id 与 PTY 是一一对应的，
-    /// 改归属等于把一个正在跑的 shell 记到另一个工作区名下。
+    /// 会话所属的工作区。**创建后不再修改**：id 与 PTY 一一对应，
+    /// 修改归属等于把一个正在运行的 shell 记到另一个工作区名下。
     workspace_id: String,
-    /// 外壳进程里的创建序号，与浏览器页共用一个计数器。界面按它排页签条。
+    /// 外壳进程中的创建序号，与浏览器页共用一个计数器。界面按它排列页签栏。
     created_seq: u64,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
-    /// 最近这些输出的原样副本，供前端重新接上来时回放。
+    /// 最近输出的原样副本，供前端重新接入时回放。
     ///
-    /// **前端那块 xterm 是随页面走的**：整页刷新之后它是全新的一块空屏，而 shell
-    /// 还在原地跑——不回放的话，用户接回来看到的是一片黑，敲一下才看得出它仍在运行。
-    /// 存原始字节序列（含转义序列）而不是渲染后的文本：回放就是把这段重新写回
-    /// xterm 重新解析，模式、颜色、光标位置都跟着一起回来。
+    /// **前端的 xterm 实例随页面存在**：整页刷新后它是新的空白屏幕，而 shell
+    /// 仍在运行；不回放时，用户重新接入后只能看到空白屏幕。
+    /// 保存原始字节序列（含转义序列）而不是渲染后的文本：回放即把这段字节重新写入
+    /// xterm 解析，模式、颜色、光标位置随之恢复。
     backlog: Arc<Mutex<String>>,
 }
 
@@ -70,19 +70,19 @@ struct Output {
 #[derive(Clone, Serialize)]
 struct Exit {
     id: String,
-    /// 退出码。拿不到（被信号杀掉、平台不报）时是 `None`，不要伪造成 0——
-    /// 「正常结束」和「不知道怎么结束的」对用户是两件事。
+    /// 退出码。无法取得（被信号终止、平台不报告）时为 `None`，不要伪造为 0：
+    /// 「正常结束」与「结束方式未知」对用户是两种不同的情况。
     code: Option<u32>,
 }
 
-/// 开一条会话，**返回要回放的那段输出**。
+/// 打开一个会话，**返回需要回放的输出**。
 ///
-/// 已经存在的 id 不报错，直接把它的回放缓冲交出去：前端在面板重新挂载时会无条件
-/// 调一次，报错时用户看到的是一个已打开的终端，配一句「已存在」的红字。新起的会话
-/// 没有可回放的，回空串。
+/// 已存在的 id 不报错，直接返回其回放缓冲：前端在面板重新挂载时会无条件
+/// 调用一次，报错会使已打开的终端显示「已存在」错误。新建的会话
+/// 没有可回放的内容，返回空串。
 ///
-/// **重接必须报同一个工作区**，否则拒绝：接受的话这条 PTY 会同时出现在两个工作区的
-/// 页签上，而它只有一份 cwd 和一个子进程。
+/// **重新接入必须提供同一个工作区**，否则拒绝：接受时该 PTY 会同时出现在两个工作区的
+/// 页签上，而它只有一份 cwd 与一个子进程。
 #[tauri::command]
 pub fn terminal_open(
     app: AppHandle,
@@ -95,7 +95,7 @@ pub fn terminal_open(
 ) -> Result<String, String> {
     if let Some(session) = state.0.lock().get(&id) {
         if session.workspace_id != workspace_id {
-            return Err("这条终端属于另一个项目".to_owned());
+            return Err("该终端属于另一个项目".to_owned());
         }
         return Ok(session.backlog.lock().clone());
     }
@@ -108,43 +108,43 @@ pub fn terminal_open(
     };
     let pair = native_pty_system()
         .openpty(size)
-        .map_err(|e| format!("打不开 PTY：{e}"))?;
+        .map_err(|e| format!("无法打开 PTY：{e}"))?;
 
     let mut cmd = CommandBuilder::new(default_shell());
-    // 目录不存在就交给系统默认，不要直接失败：账本里的项目可能已经被用户挪走，
-    // 那种情况下开一个家目录的终端比开不出来有用。
+    // 目录不存在时使用系统默认目录，不要直接失败：账本中的项目可能已被用户移动，
+    // 此时打开家目录的终端比打开失败更有用。
     let dir = PathBuf::from(&cwd);
     if dir.is_dir() {
         cmd.cwd(dir);
     }
-    // 不声明的话大量程序会退化成最基础的输出（无色、无光标定位），
-    // 而 xterm.js 这一侧是按 256 色终端渲染的。
+    // 不声明时许多程序会退化为最基础的输出（无颜色、无光标定位），
+    // 而 xterm.js 按 256 色终端渲染。
     cmd.env("TERM", "xterm-256color");
 
     let mut child = pair
         .slave
         .spawn_command(cmd)
-        .map_err(|e| format!("起不了 shell：{e}"))?;
-    // slave 端必须在这里就地丢掉。留着它的话读端永远等不到 EOF——
-    // 子进程已退出，读线程仍阻塞在 read() 上，界面表现为「命令已结束但终端无响应」。
+        .map_err(|e| format!("无法启动 shell：{e}"))?;
+    // slave 端必须在此处立即释放。保留它时读端永远收不到 EOF：
+    // 子进程退出后读线程仍阻塞在 read() 上，终端停止响应。
     drop(pair.slave);
 
     let killer = child.clone_killer();
     let writer = pair
         .master
         .take_writer()
-        .map_err(|e| format!("拿不到写端：{e}"))?;
+        .map_err(|e| format!("无法取得写端：{e}"))?;
     let reader = pair
         .master
         .try_clone_reader()
-        .map_err(|e| format!("拿不到读端：{e}"))?;
+        .map_err(|e| format!("无法取得读端：{e}"))?;
 
     let backlog = Arc::new(Mutex::new(String::new()));
     state.0.lock().insert(
         id.clone(),
         Session {
             workspace_id,
-            // 重接已存在的 id 在函数开头就返回了，序号只在这里领一次。
+            // 重新接入已存在的 id 时在函数开头已返回，序号只在此处分配一次。
             created_seq: crate::next_created_seq(),
             master: pair.master,
             writer,
@@ -155,12 +155,11 @@ pub fn terminal_open(
 
     spawn_reader(app.clone(), id.clone(), reader, backlog);
 
-    // 等子进程回收的线程。**不能和读线程合并**：读端要等 EOF，而 EOF 之后
-    // 还得知道退出码；分开之后两件事各自阻塞在自己的句柄上，谁先到都不误事。
+    // 等待回收子进程的线程。**不能与读线程合并**：读端需等待 EOF，而 EOF 之后
+    // 还需取得退出码；分开后两者各自阻塞在自己的句柄上，到达顺序不影响结果。
     //
-    // **先把会话从表里摘掉再报退出。** 留着的话这个 id 就永远「已存在」，
-    // 用户按「重开」时 `terminal_open` 直接返回成功却什么也没起——
-    // 界面上是一个点了没反应的按钮。
+    // **先把会话从表中移除，再上报退出。** 保留时该 id 永远「已存在」，
+    // 用户点击「重开」时 `terminal_open` 直接返回成功，但不会启动新的 shell。
     std::thread::spawn(move || {
         let code = child.wait().ok().map(|s| s.exit_code());
         app.state::<TerminalHandle>().0.lock().remove(&id);
@@ -170,11 +169,11 @@ pub fn terminal_open(
     Ok(String::new())
 }
 
-/// 现在还开着哪几条会话。
+/// 当前打开的会话。
 ///
-/// **前端的页签是这张表的镜像。** 镜像会因为前端整个重建被清空（整页重载、
-/// 开发期热更换掉那个模块都算），而 shell 还在跑——不对一次账，那条会话就没有
-/// 任何界面碰得到它，只能等应用退出时被 `shutdown` 收掉。
+/// **前端的页签是此表的镜像。** 镜像会因前端整体重建而清空（整页重载、
+/// 开发期热更新替换该模块），而 shell 仍在运行；不与此表核对时，该会话
+/// 没有任何界面入口，只能在应用退出时由 `shutdown` 终止。
 #[tauri::command]
 pub fn terminal_list(state: State<TerminalHandle>) -> Vec<TerminalSession> {
     state
@@ -189,12 +188,12 @@ pub fn terminal_list(state: State<TerminalHandle>) -> Vec<TerminalSession> {
         .collect()
 }
 
-/// 键盘输入。原样写进 PTY，不做任何解释——回车、Ctrl-C、方向键都是字节，
-/// 由 shell 自己去认。
+/// 键盘输入。原样写入 PTY，不做任何解析：回车、Ctrl-C、方向键都是字节，
+/// 由 shell 自行识别。
 #[tauri::command]
 pub fn terminal_write(state: State<TerminalHandle>, id: String, data: String) -> Result<(), String> {
     let mut map = state.0.lock();
-    let session = map.get_mut(&id).ok_or("这条终端会话已经不在了")?;
+    let session = map.get_mut(&id).ok_or("终端会话已不存在")?;
     session
         .writer
         .write_all(data.as_bytes())
@@ -202,8 +201,8 @@ pub fn terminal_write(state: State<TerminalHandle>, id: String, data: String) ->
     session.writer.flush().map_err(|e| e.to_string())
 }
 
-/// 改尺寸。**必须真的告诉 PTY**：只改 xterm 那一侧的话，`less`、`vim`、
-/// 任何按 COLUMNS 换行的程序都会按旧宽度排版，表现为错误折行。
+/// 调整尺寸。**必须通知 PTY**：只修改 xterm 一侧时，`less`、`vim` 等
+/// 按 COLUMNS 换行的程序都会按旧宽度排版，导致错误折行。
 #[tauri::command]
 pub fn terminal_resize(
     state: State<TerminalHandle>,
@@ -212,7 +211,7 @@ pub fn terminal_resize(
     rows: u16,
 ) -> Result<(), String> {
     let map = state.0.lock();
-    let session = map.get(&id).ok_or("这条终端会话已经不在了")?;
+    let session = map.get(&id).ok_or("终端会话已不存在")?;
     session
         .master
         .resize(PtySize {
@@ -224,14 +223,14 @@ pub fn terminal_resize(
         .map_err(|e| e.to_string())
 }
 
-/// 关掉一条会话：杀掉 shell 并从表里摘掉。
+/// 关闭一个会话：终止 shell 并从表中移除。
 ///
-/// **不存在的 id 直接返回成功。** 子进程可能自己先退了（回收线程已经把它摘掉），
-/// 而用户随后点击页签上的 ×，此时报「会话已不存在」，界面上便是一个无法关闭的页签按钮。
+/// **不存在的 id 直接返回成功。** 子进程可能已自行退出（回收线程已将其移除），
+/// 用户随后点击页签上的 × 时若报「会话已不存在」，该页签将无法关闭。
 ///
-/// 杀掉之后回收线程会照常 emit 一次 `terminal:exit`。前端那一侧在杀之前就把这个 id
-/// 的监听摘了（见 `apps/web/src/lib/terminal.ts` 的 `closeTerminal`），
-/// 所以那条事件落地即丢，不会打到一个已经销毁的 xterm 上。
+/// 终止后回收线程仍会 emit 一次 `terminal:exit`。前端在终止之前已移除该 id
+/// 的监听（见 `apps/web/src/lib/terminal.ts` 的 `closeTerminal`），
+/// 因此该事件到达即被丢弃，不会写入已销毁的 xterm。
 #[tauri::command]
 pub fn terminal_close(state: State<TerminalHandle>, id: String) -> Result<(), String> {
     if let Some(mut session) = state.0.lock().remove(&id) {
@@ -240,8 +239,8 @@ pub fn terminal_close(state: State<TerminalHandle>, id: String) -> Result<(), St
     Ok(())
 }
 
-/// 应用退出时收干净。同 sidecar 那条理由：Windows 上父进程退出不带走子进程，
-/// 留下的 shell 会持有工作区里的文件句柄。
+/// 应用退出时终止全部会话。理由与 sidecar 相同：Windows 上父进程退出不会终止子进程，
+/// 残留的 shell 会持有工作区中的文件句柄。
 pub fn shutdown(state: &TerminalHandle) {
     for (_, mut session) in state.0.lock().drain() {
         let _ = session.killer.kill();
@@ -250,9 +249,9 @@ pub fn shutdown(state: &TerminalHandle) {
 
 /// 读线程：PTY → 事件。
 ///
-/// **不能按 chunk 直接 `from_utf8_lossy`。** 一个中文字是三个字节，读到的块随时可能
-/// 从字中间断开，逐块解码会把断口两侧各变成一个替换字符，中文输出会稳定地出现乱码。
-/// 所以未完成的尾巴留在 `carry` 里等下一块。
+/// **不能对每个 chunk 直接调用 `from_utf8_lossy`。** 一个汉字占三个字节，读取的块可能
+/// 在字符中间断开，逐块解码会把断点两侧各变成一个替换字符，使中文输出出现乱码。
+/// 因此不完整的尾部字节保留在 `carry` 中，等待下一块。
 fn spawn_reader(
     app: AppHandle,
     id: String,
@@ -283,11 +282,11 @@ fn spawn_reader(
     });
 }
 
-/// 往回放缓冲里追加，超出上限就从头切。
+/// 向回放缓冲追加，超出上限时从头部截断。
 ///
-/// **切点必须落在字符边界上**，否则缓冲里会留下半个字符，回放时那个位置是替换字符。
-/// 从头切必然会把某条转义序列切成两半，回放的第一行可能带几个乱码字符——
-/// 不为它加对齐逻辑：全屏程序下一次重绘就盖掉了，而普通输出多的是换行。
+/// **截断点必须位于字符边界**，否则缓冲中会留下半个字符，回放时该位置显示为替换字符。
+/// 从头部截断可能把某条转义序列切成两半，回放的第一行可能出现几个乱码字符；
+/// 不为此增加对齐逻辑：全屏程序的下一次重绘会覆盖这些字符，普通输出中换行很多。
 fn push_backlog(buf: &mut String, text: &str) {
     buf.push_str(text);
     if buf.len() <= BACKLOG_CAP {
@@ -300,10 +299,10 @@ fn push_backlog(buf: &mut String, text: &str) {
     buf.drain(..cut);
 }
 
-/// 取出 `carry` 前面那段完整的 UTF-8，剩下的半个字符留在原地。
+/// 取出 `carry` 开头完整的 UTF-8 部分，不完整的字符保留在原处。
 ///
-/// 真正非法的字节（不是「还没读全」，而是本来就不是 UTF-8）要丢弃并换成替换字符，
-/// 否则它会永远卡在缓冲区头部，后面所有输出都发不出去。
+/// 确实非法的字节（不是尚未读完，而是本身不是 UTF-8）须丢弃并换成替换字符，
+/// 否则它会永远停滞在缓冲区头部，后续所有输出都无法发出。
 fn take_valid(carry: &mut Vec<u8>) -> String {
     match std::str::from_utf8(carry) {
         Ok(s) => {
@@ -328,15 +327,15 @@ fn take_valid(carry: &mut Vec<u8>) -> String {
     }
 }
 
-/// 用哪个 shell。
+/// 选择使用的 shell。
 ///
-/// Windows 上是 PowerShell 而不是 Git Bash：这一格是**用户自己的终端**，
-/// 该给系统默认的那个。agent 侧优先 Git Bash 是另一回事——那是为了让模型写的
-/// POSIX 组合命令能跑（见 `packages/tools/src/shell.ts`），和人手敲命令的预期相反。
+/// Windows 上使用 PowerShell 而不是 Git Bash：该终端是**用户自己的终端**，
+/// 应使用系统默认 shell。agent 侧优先使用 Git Bash 是为了使模型编写的
+/// POSIX 组合命令能够执行（见 `packages/tools/src/shell.ts`），与用户手动输入命令的预期不同。
 fn default_shell() -> String {
     if cfg!(windows) {
-        // 写死 powershell.exe，不读 COMSPEC——那个变量指的是 cmd.exe，
-        // 它是「批处理解释器」而不是这台机器上的默认交互 shell。
+        // 固定使用 powershell.exe，不读取 COMSPEC：该变量指向 cmd.exe，
+        // 它是批处理解释器，而不是本机的默认交互 shell。
         "powershell.exe".to_owned()
     } else {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned())

@@ -1,6 +1,6 @@
-//! AX、CF、CGWindowList 与显示器清单的薄封装：CF 值换成 `facts::Raw`，AX 错误码以整数原样交回。
+//! AX、CF、CGWindowList 与显示器清单的轻量封装：CF 值转换为 `facts::Raw`，AX 错误码以整数原样返回。
 //!
-//! 本模块只做调用与类型换算，判定一律在纯换算模块里。
+//! 本模块只负责调用与类型换算，判定一律位于纯换算模块中。
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -26,12 +26,12 @@ use crate::macos::pure::identity::Handle;
 use crate::macos::pure::plan::Setting;
 use crate::macos::pure::screen::Display;
 
-/// 一个 AX 元素引用：进程号加元素标识的令牌，比较按 `CFEqual`。
+/// AX 元素引用：进程号加元素标识的令牌，按 `CFEqual` 比较。
 #[derive(Clone)]
 pub struct Element(CFRetained<AXUIElement>);
 
 // SAFETY: 元素引用是不可变的 CF 对象，引用计数的增减是线程安全的；AX 客户端调用不绑定
-// 调用线程。执行线程、等待线程与动作调用线程各自持有引用并各自发调用。
+// 调用线程。执行线程、等待线程与动作调用线程各自持有引用并各自发起调用。
 unsafe impl Send for Element {}
 
 impl Handle for Element {
@@ -52,11 +52,11 @@ fn status(err: AXError) -> Result<(), i32> {
     }
 }
 
-/// 出参里的 +1 引用接成 `CFRetained`。调用成功却交回空指针时按「没有值」算。
+/// 将出参中的 +1 引用包装为 `CFRetained`。调用成功但返回空指针时视为「没有值」。
 ///
 /// # Safety
 ///
-/// `ptr` 必须是 Copy 规则交回的、调用方持有一次引用的 `T`，或空指针。
+/// `ptr` 必须是按 Copy 规则返回、调用方持有一次引用的 `T`，或空指针。
 unsafe fn owned<T: objc2_core_foundation::Type>(ptr: *const T) -> Result<CFRetained<T>, i32> {
     NonNull::new(ptr.cast_mut())
         .map(|p| unsafe { CFRetained::from_raw(p) })
@@ -64,14 +64,14 @@ unsafe fn owned<T: objc2_core_foundation::Type>(ptr: *const T) -> Result<CFRetai
 }
 
 impl Element {
-    /// 系统范围元素。在它上面设的消息上界对本进程全局生效。
+    /// 系统范围元素。在该元素上设置的消息上界对本进程全局生效。
     pub fn system_wide() -> Self {
-        // SAFETY: 无参数；系统保证交回非空引用。
+        // SAFETY: 无参数；系统保证返回非空引用。
         Self(unsafe { AXUIElement::new_system_wide() })
     }
 
     pub fn application(pid: i32) -> Self {
-        // SAFETY: 任意进程号都能建引用，进程不存在时之后的调用返回错误码。
+        // SAFETY: 任意进程号都能创建引用，进程不存在时后续调用返回错误码。
         Self(unsafe { AXUIElement::new_application(pid) })
     }
 
@@ -89,7 +89,7 @@ impl Element {
     fn copy(&self, attribute: &str) -> Result<CFRetained<CFType>, i32> {
         let name = CFString::from_str(attribute);
         let mut value: *const CFType = std::ptr::null();
-        // SAFETY: 出参指向局部变量；成功时交回的引用归调用方。
+        // SAFETY: 出参指向局部变量；成功时返回的引用归调用方。
         status(unsafe {
             self.0
                 .copy_attribute_value(&name, NonNull::from(&mut value))
@@ -97,7 +97,7 @@ impl Element {
         unsafe { owned(value) }
     }
 
-    /// 一个属性的值。元素不支持这一项、这一项没有值时交回 `Raw::Missing`，其余错误交回错误码。
+    /// 属性的值。元素不支持该属性或该属性没有值时返回 `Raw::Missing`，其余错误返回错误码。
     pub fn raw(&self, attribute: &str) -> Result<Raw, i32> {
         match self.copy(attribute) {
             Ok(value) => Ok(raw(&value)),
@@ -106,7 +106,7 @@ impl Element {
         }
     }
 
-    /// 一个元素属性（前台应用、焦点窗口、关闭按钮）。不支持、没有值或值不是元素时缺席。
+    /// 元素类型的属性（前台应用、焦点窗口、关闭按钮）。不支持、没有值或值不是元素时缺失。
     pub fn element(&self, attribute: &str) -> Result<Option<Element>, i32> {
         match self.copy(attribute) {
             Ok(value) => Ok(value.downcast::<AXUIElement>().ok().map(Element)),
@@ -115,10 +115,10 @@ impl Element {
         }
     }
 
-    /// 系统范围元素上的命中测试：全局坐标（点）处最深的那个元素。
+    /// 系统范围元素上的命中测试：全局坐标（点）处层级最深的元素。
     pub fn element_at(&self, x: f32, y: f32) -> Result<Element, i32> {
         let mut found: *const AXUIElement = std::ptr::null();
-        // SAFETY: 出参指向局部变量；成功时交回的引用归调用方。
+        // SAFETY: 出参指向局部变量；成功时返回的引用归调用方。
         status(unsafe {
             self.0
                 .copy_element_at_position(x, y, NonNull::from(&mut found))
@@ -126,7 +126,7 @@ impl Element {
         unsafe { owned(found) }.map(Element)
     }
 
-    /// 一个元素数组属性（子节点、窗口、选中行）。不支持或没有值时交回空表。
+    /// 元素数组类型的属性（子节点、窗口、选中行）。不支持或没有值时返回空表。
     pub fn elements(&self, attribute: &str) -> Result<Vec<Element>, i32> {
         match self.copy(attribute) {
             Ok(value) => Ok(elements(&value)),
@@ -135,8 +135,8 @@ impl Element {
         }
     }
 
-    /// 一次跨进程调用读 `attributes` 与追加在末尾的 `children` 那一项，前者按位置换成 `Raw`，
-    /// 后者换成元素表。单项错误放在对应位置上，不让整次读取失败。
+    /// 一次跨进程调用读取 `attributes` 与追加在末尾的 `children` 属性，前者按位置转换为 `Raw`，
+    /// 后者转换为元素表。单项错误放在对应位置上，不使整次读取失败。
     pub fn batch(
         &self,
         attributes: &[&str],
@@ -147,7 +147,7 @@ impl Element {
         names.push(CFString::from_str(children));
         let request = CFArray::from_retained_objects(&names);
         let mut values: *const CFArray = std::ptr::null();
-        // SAFETY: 请求数组的元素都是 CFString；出参指向局部变量，成功时交回的数组归调用方。
+        // SAFETY: 请求数组的元素都是 CFString；出参指向局部变量，成功时返回的数组归调用方。
         status(unsafe {
             self.0.copy_multiple_attribute_values(
                 request.as_opaque(),
@@ -156,7 +156,7 @@ impl Element {
             )
         })?;
         let values = unsafe { owned(values) }?;
-        // SAFETY: 交回的数组按位置对应请求，每一项都是 CF 对象。
+        // SAFETY: 返回的数组按位置对应请求，每一项都是 CF 对象。
         let values: &CFArray<CFType> = unsafe { values.cast_unchecked() };
         let mut out: Vec<Raw> = Vec::with_capacity(attributes.len());
         let mut kids = Vec::new();
@@ -172,11 +172,11 @@ impl Element {
 
     pub fn action_names(&self) -> Result<Vec<String>, i32> {
         let mut names: *const CFArray = std::ptr::null();
-        // SAFETY: 出参指向局部变量；成功时交回的数组归调用方。
+        // SAFETY: 出参指向局部变量；成功时返回的数组归调用方。
         let err = unsafe { self.0.copy_action_names(NonNull::from(&mut names)) };
         match status(err) {
             Ok(()) => {}
-            // 没有动作的元素回这几个码之一，不是失败。
+            // 没有动作的元素返回以下错误码之一，不属于失败。
             Err(code::ACTION_UNSUPPORTED | code::ATTRIBUTE_UNSUPPORTED | code::NO_VALUE) => {
                 return Ok(Vec::new())
             }
@@ -190,7 +190,7 @@ impl Element {
         Ok(names.iter().map(|n| n.to_string()).collect())
     }
 
-    /// 这一项可不可写。元素不支持这一项时按不可写算。
+    /// 该属性是否可写。元素不支持该属性时视为不可写。
     pub fn settable(&self, attribute: &str) -> Result<bool, i32> {
         let name = CFString::from_str(attribute);
         let mut settable: u8 = 0;
@@ -258,7 +258,7 @@ impl Element {
         }
     }
 
-    /// 把一个元素数组属性写成给定的元素表。
+    /// 将元素数组类型的属性写为给定的元素表。
     pub fn set_elements(&self, attribute: &str, members: &[Element]) -> Result<(), i32> {
         let retained: Vec<CFRetained<AXUIElement>> = members.iter().map(|e| e.0.clone()).collect();
         let array = CFArray::from_retained_objects(&retained);
@@ -277,7 +277,7 @@ impl Element {
     }
 }
 
-/// 一个 CF 值换成 `Raw`。
+/// 将 CF 值转换为 `Raw`。
 fn raw(value: &CFType) -> Raw {
     if let Some(text) = value.downcast_ref::<CFString>() {
         return Raw::Text(text.to_string());
@@ -294,7 +294,7 @@ fn raw(value: &CFType) -> Raw {
     let Some(boxed) = value.downcast_ref::<AXValue>() else {
         return Raw::Other;
     };
-    // SAFETY: 每一支的出参类型都与读出的类型标记一致。
+    // SAFETY: 每个分支的出参类型都与读取的类型标记一致。
     unsafe {
         match boxed.r#type() {
             AXValueType::CGPoint => {
@@ -324,7 +324,7 @@ fn raw(value: &CFType) -> Raw {
                     };
                 }
             }
-            // 批量读取把单项错误装成这个类型放在对应位置上。
+            // 批量读取把单项错误封装为该类型放在对应位置上。
             AXValueType::AXError => return Raw::Missing,
             _ => {}
         }
@@ -332,12 +332,12 @@ fn raw(value: &CFType) -> Raw {
     Raw::Other
 }
 
-/// 一个 CF 值里的 AX 元素。不是数组、或数组里的项不是元素时跳过那些项。
+/// CF 值中的 AX 元素。不是数组，或数组中的项不是元素时，跳过这些项。
 fn elements(value: &CFType) -> Vec<Element> {
     let Some(array) = value.downcast_ref::<CFArray>() else {
         return Vec::new();
     };
-    // SAFETY: 只把每一项当 CF 对象读，是不是元素逐项判。
+    // SAFETY: 只把每一项作为 CF 对象读取，是否为元素逐项判定。
     let array: &CFArray<CFType> = unsafe { array.cast_unchecked() };
     array
         .iter()
@@ -346,18 +346,18 @@ fn elements(value: &CFType) -> Vec<Element> {
         .collect()
 }
 
-/// 本进程是不是受信任的辅助功能客户端。每次调用现问：用户可以在 worker 运行期间开关授权。
+/// 本进程是否为受信任的辅助功能客户端。每次调用时实时查询：用户可以在 worker 运行期间开启或关闭授权。
 pub fn trusted() -> bool {
     // SAFETY: 无参数。
     unsafe { AXIsProcessTrusted() }
 }
 
-/// 本进程有没有屏幕录制授权。只查，不弹授权框。
+/// 本进程是否有屏幕录制授权。只查询，不弹出授权框。
 pub fn screen_capture_allowed() -> bool {
     CGPreflightScreenCaptureAccess()
 }
 
-/// 这个进程此刻还在不在。没有权限发信号（`EPERM`）也说明进程在。
+/// 该进程当前是否存在。没有发送信号的权限（`EPERM`）同样说明进程存在。
 pub fn alive(pid: i32) -> bool {
     if pid <= 0 {
         return false;
@@ -369,7 +369,7 @@ pub fn alive(pid: i32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// 此刻在用的显示器：全局矩形（点）与每点像素数。清单读不出时交回空表。
+/// 当前使用的显示器：全局矩形（点）与每点像素数。无法读取清单时返回空表。
 pub fn displays() -> Vec<Display> {
     const MAX_DISPLAYS: u32 = 32;
     let mut ids: [CGDirectDisplayID; MAX_DISPLAYS as usize] = [0; MAX_DISPLAYS as usize];
@@ -394,7 +394,7 @@ pub fn displays() -> Vec<Display> {
                     width: bounds.size.width,
                     height: bounds.size.height,
                 },
-                // 显示模式读不出时比例为 0，`screen::place` 不用这台显示器。
+                // 无法读取显示模式时比例为 0，`screen::place` 不使用该显示器。
                 scale: if points == 0 {
                     0.0
                 } else {
@@ -405,7 +405,7 @@ pub fn displays() -> Vec<Display> {
         .collect()
 }
 
-/// 全部窗口，从前到后。不在屏幕上的窗口（最小化、隐藏、在别的桌面空间）也在里面。
+/// 全部窗口，从前到后。不在屏幕上的窗口（最小化、隐藏、位于其他桌面空间）也包含在内。
 pub fn cg_windows() -> Vec<CgWindow> {
     let option = CGWindowListOption::OptionAll | CGWindowListOption::ExcludeDesktopElements;
     let Some(list) = CGWindowListCopyWindowInfo(option, kCGNullWindowID) else {
@@ -442,7 +442,7 @@ fn cg_window(info: &CFDictionary<CFString, CFType>) -> Option<CgWindow> {
     let rect = info.get(bounds).and_then(|v| {
         let dict = v.downcast_ref::<CFDictionary>()?;
         let mut rect = CGRect::default();
-        // SAFETY: 字典是窗口信息里的矩形表示；出参指向局部变量。
+        // SAFETY: 字典是窗口信息中的矩形表示；出参指向局部变量。
         unsafe { CGRectMakeWithDictionaryRepresentation(Some(dict), &mut rect) }.then(|| Frame {
             x: rect.origin.x,
             y: rect.origin.y,
@@ -457,7 +457,7 @@ fn cg_window(info: &CFDictionary<CFString, CFType>) -> Option<CgWindow> {
         bounds: rect
             .filter(|r| r.width > 0.0 && r.height > 0.0)
             .map(|r| r.rounded()),
-        // 不在屏幕上的窗口没有这一项。
+        // 不在屏幕上的窗口没有该键。
         on_screen: info.get(on_screen).is_some_and(|v| match raw(&v) {
             Raw::Bool(b) => b,
             Raw::Number(n) => n != 0.0,

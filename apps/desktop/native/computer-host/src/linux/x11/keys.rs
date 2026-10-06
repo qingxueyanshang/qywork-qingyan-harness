@@ -1,13 +1,13 @@
-//! 协议键名 → X11 keysym → 键码。键盘映射由各自的 X 连接读，换算规则只在这里写一次。
+//! 协议键名 → X11 keysym → 键码。键盘映射由各自的 X 连接读取，换算规则只在此处定义一次。
 //!
-//! worker 派发按键与外壳在 worker 退出后补发抬起要用同一张表与同一条换算规则，外壳经 `#[path]`
-//! 引入本文件。不要在外壳里另写一份：两份一旦不一致，补发抬起的就不是 worker 按下的那个键。
+//! worker 派发按键与外壳在 worker 退出后补发抬起事件必须使用同一张表与同一条换算规则，外壳经由
+//! `#[path]` 引入本文件。不要在外壳中另写一份：两份一旦不一致，补发抬起的就不是 worker 按下的键。
 //! 因此本文件只依赖标准库，不引用任何 crate 内的路径。
 
 /// 键名 → keysym。键名是协议写法（全小写的主键名，或修饰键名 `ctrl` / `alt` / `shift` /
-/// `meta`）；认不出的名字返回 `None`，不猜。
+/// `meta`）；无法识别的名称返回 `None`，不推测。
 ///
-/// 字母取小写那一个 keysym：它在第一组第一级上，按下时不带 Shift。
+/// 字母取小写的 keysym：它位于第一组第一级，按下时不带 Shift。
 pub fn keysym(name: &str) -> Option<u32> {
     match name.as_bytes() {
         [letter @ b'a'..=b'z'] => return Some(u32::from(*letter)),
@@ -56,10 +56,10 @@ pub fn keysym(name: &str) -> Option<u32> {
     Some(named)
 }
 
-/// 不带修饰就能按出 `sym` 的键码：键盘映射里第一组第一级上是它的那一个。
+/// 无需修饰键即可输入 `sym` 的键码：键盘映射中第一组第一级为 `sym` 的键码。
 ///
-/// `syms` 是 `GetKeyboardMapping` 从 `min` 起逐键码排的 keysym 表，每个键码 `per` 个。
-/// 只在更高一级上的 keysym 返回 `None`：按下那个键得到的是另一个字符。
+/// `syms` 是 `GetKeyboardMapping` 从 `min` 起按键码排列的 keysym 表，每个键码 `per` 个。
+/// 只位于更高级别的 keysym 返回 `None`：按下该键得到的是另一个字符。
 pub fn keycode(min: u8, per: usize, syms: &[u32], sym: u32) -> Option<u8> {
     syms.chunks(per.max(1))
         .position(|levels| levels.first() == Some(&sym))
@@ -70,14 +70,14 @@ pub fn keycode(min: u8, per: usize, syms: &[u32], sym: u32) -> Option<u8> {
 mod tests {
     use super::{keycode, keysym};
 
-    /// 键码 8 空，9 是 a/A，10 空，11 只在第二级上有分号，12 是 Return。
+    /// 键码 8 为空，9 为 a/A，10 为空，11 只在第二级上有分号，12 为 Return。
     const SYMS: [u32; 10] = [0, 0, 0x61, 0x41, 0, 0, 0x2c, 0x3b, 0xff0d, 0];
 
     #[test]
     fn a_keysym_resolves_only_on_the_first_level() {
         assert_eq!(keycode(8, 2, &SYMS, 0x61), Some(9));
         assert_eq!(keycode(8, 2, &SYMS, 0xff0d), Some(12));
-        // 大写 A 与分号只在第二级：按下那个键得到的是别的字符。
+        // 大写 A 与分号只位于第二级：按下该键得到的是其他字符。
         assert_eq!(keycode(8, 2, &SYMS, 0x41), None);
         assert_eq!(keycode(8, 2, &SYMS, 0x3b), None);
     }
@@ -93,13 +93,13 @@ mod tests {
         assert_eq!(keysym("f24"), Some(0xffd5));
         assert_eq!(keysym("enter"), Some(0xff0d));
         assert_eq!(keysym("backspace"), Some(0xff08));
-        // 认不出的名字不猜：没有这个键就没有这次按键。键名是规范写法，大写不认。
+        // 无法识别的名称不推测：不存在该键即不执行此次按键。键名使用规范写法，不接受大写。
         for unknown in ["f25", "f0", "f01", "f+1", "any", "", "A", "win"] {
             assert_eq!(keysym(unknown), None, "{unknown}");
         }
     }
 
-    /// 修饰键取左侧那一个：`meta` 是 Super_L。
+    /// 修饰键取左侧键：`meta` 对应 Super_L。
     #[test]
     fn modifiers_map_to_the_left_hand_keysyms() {
         assert_eq!(keysym("shift"), Some(0xffe1));

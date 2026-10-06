@@ -1,20 +1,20 @@
-//! 前台接管：指针、键盘与窗口动作，经 XTest 与窗口管理器。
+//! 前台接管：指针、键盘与窗口动作，经由 XTest 与窗口管理器执行。
 //!
 //! 七条边界：
 //!
-//! 1. **这里的每一个动作都会把前台从用户手上拿走**，因此只在用户显式启用前台模式时才走得到
-//!    这里；关着时准入判定在 `protocol::admit` 就拒了，一个请求都不发给 X 服务器。
-//! 2. **落点在派发那一刻重新求。** 控件重新定位、读此刻的包围盒、核对落点处最上面的窗口
-//!    收这次动作（目标窗口，或控件所在的、目标窗口拥有的弹出窗口），三步缺一不可。
-//! 3. **按住的键随按随记，任何中止路径都释放。** 记账与释放由 `input::Hold` 做，本模块不手写
-//!    释放调用。
-//! 4. **指针与键盘输入在派发前先把目标窗口激活到前台**（`ensure_foreground`），再做各自的
-//!    核对：指针核对落点归目标窗口，键盘核对前台窗口是目标窗口且键盘焦点在它里面。点名了
-//!    控件时再核对它持有键盘焦点，焦点不在它上面就拒绝，不替用户改焦点。
-//! 5. **中途前台或焦点变了立即停止**，已发出多少如实带回，执行事实落 `unknown`，不向另一个
-//!    窗口续输。
-//! 6. **窗口动作的生效证据按动作各自读回**：前台窗口、显示状态、窗口矩形、窗口是否还在。
-//!    请求由窗口管理器异步处理，发出去不等于生效。
+//! 1. **本模块的每个动作都会占用用户的前台**，因此只在用户显式启用前台模式时执行；前台模式
+//!    关闭时，准入判定在 `protocol::admit` 中拒绝请求，不向 X 服务器发送任何请求。
+//! 2. **落点在派发时重新计算。** 重新定位控件、读取当前包围盒、核对落点处最上层的窗口是本次
+//!    动作的接收方（目标窗口，或目标窗口拥有的、控件所在的弹出窗口），三步缺一不可。
+//! 3. **按下的键在按下时登记，任何中止路径都释放。** 登记与释放由 `input::Hold` 负责，本模块
+//!    不直接编写释放调用。
+//! 4. **指针与键盘输入在派发前先将目标窗口激活到前台**（`ensure_foreground`），再分别核对：
+//!    指针核对落点属于目标窗口，键盘核对前台窗口是目标窗口且键盘焦点在该窗口内。指定了
+//!    控件时还核对该控件持有键盘焦点，焦点不在该控件上即拒绝，不替用户更改焦点。
+//! 5. **中途前台或焦点改变时立即停止**，如实返回已发出的数量，执行事实记为 `unknown`，
+//!    不向另一个窗口继续输入。
+//! 6. **窗口动作的生效证据按动作分别读取**：前台窗口、显示状态、窗口矩形、窗口是否存在。
+//!    请求由窗口管理器异步处理，请求已发出不等于已生效。
 //! 7. **文字只有一条投递路径**：临时借用空闲键码，见 `x11::sink`。
 
 use std::cell::Cell;
@@ -33,34 +33,34 @@ use crate::protocol::{
     WindowState,
 };
 
-/// 一次拖拽分几段移动。一次跳到终点的话，被拖的控件收不到中间的移动事件。
+/// 一次拖拽分段移动的段数。一次移动到终点时，被拖拽的控件收不到中间的移动事件。
 const DRAG_STEPS: u32 = 12;
-/// 拖拽两段之间隔多久。
+/// 拖拽相邻两段之间的间隔。
 const DRAG_STEP_MS: u64 = 16;
-/// 激活之后等前台窗口与键盘焦点真的改过来多久。窗口管理器异步处理激活请求。
+/// 激活之后等待前台窗口与键盘焦点完成切换的时长。窗口管理器异步处理激活请求。
 const ACTIVATE_SETTLE: Duration = Duration::from_millis(400);
-/// 读回窗口状态或矩形的等待上限。
+/// 读取窗口状态或矩形的等待上限。
 const WINDOW_SETTLE: Duration = Duration::from_millis(400);
-/// 请求关闭之后等窗口消失或冒出新顶层窗口（未保存提示）多久。与后台调用找生效证据的
+/// 请求关闭之后等待窗口消失或出现新顶层窗口（未保存提示）的时长。与后台调用查找生效证据的
 /// 总时长相同。
 const CLOSE_SETTLE: Duration = Duration::from_millis(1_800);
 
-/// 一次指针动作的落点。非指针动作三项都缺席。
+/// 一次指针动作的落点。非指针动作三项均缺失。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Aim {
     /// 指针落点，屏幕物理像素。
     pub anchor: Option<ScreenPoint>,
-    /// 拖拽终点。只有拖拽有。
+    /// 拖拽终点。仅拖拽动作具有此项。
     pub destination: Option<ScreenPoint>,
-    /// 按控件定位时，控件所在的顶层窗口：目标窗口，或目标窗口拥有、画着这个控件的弹出窗口；
-    /// 按图像坐标定位时缺席。
+    /// 按控件定位时，控件所在的顶层窗口：目标窗口，或目标窗口拥有的、绘制该控件的弹出窗口；
+    /// 按图像坐标定位时缺失。
     pub host: Option<i64>,
 }
 
-/// 点名控件的键盘输入要核对的那一项：控件此刻有没有键盘焦点。读的是实时状态。
+/// 指定控件的键盘输入需要核对的条件：控件当前是否持有键盘焦点。读取的是实时状态。
 pub type Focus<'a> = Option<&'a dyn Fn() -> Result<bool, String>>;
 
-/// 执行一个前台动作。`window` 是目标的 X 窗口号。
+/// 执行一个前台动作。`window` 是目标窗口的 X 窗口号。
 pub fn perform(
     display: &Display,
     window: Window,
@@ -98,8 +98,8 @@ pub fn perform(
             resize_window(display, window, *width, *height)
         }
         ActionSpec::CloseWindow => close_window(display, window),
-        // 后台动作不走这里。逐条列而不是写 `_`：新增一个前台动作忘了接进来时要在这里
-        // 编译失败，不是落到一句拒绝上。
+        // 后台动作不经由此处。逐项列出而不写 `_`：新增前台动作而未接入时，应在此处编译失败，
+        // 而不是进入拒绝分支。
         ActionSpec::Invoke
         | ActionSpec::SetValue { .. }
         | ActionSpec::SetRangeValue { .. }
@@ -113,16 +113,16 @@ pub fn perform(
         | ActionSpec::ScrollIntoView
         | ActionSpec::RealizeItem { .. }
         | ActionSpec::SelectText { .. } => {
-            Attempt::Refused("not_foreground: 这个动作不走前台路径".to_owned())
+            Attempt::Refused("not_foreground: 该动作不经由前台路径".to_owned())
         }
     }
 }
 
-/// 这次请求带的窗口几何代际还成不成立。按图定位的落点必须过这一关。
+/// 核对本次请求携带的窗口几何代际是否仍然有效。按图定位的落点必须通过此项核对。
 pub fn check_generation(display: &Display, window: Window, expected: &str) -> Result<(), String> {
     let client = display
         .client(window)
-        .ok_or_else(|| "target_lost: 窗口已经不在".to_owned())?;
+        .ok_or_else(|| "target_lost: 窗口已不存在".to_owned())?;
     let actual = display.frame(&client)?.generation();
     if actual == expected {
         return Ok(());
@@ -155,7 +155,7 @@ fn click(
             down: false,
         });
     }
-    // 双击的两下要在应用的双击间隔内：整批一次交给服务器，两下之间没有可测的间隔。
+    // 双击的两次点击必须在应用的双击间隔内：整批事件一次提交给服务器，两次点击之间没有可测量的间隔。
     settle(sink.send(&events), &events)
 }
 
@@ -179,7 +179,7 @@ fn wheel(
         Ok(point) => point,
         Err(reason) => return Attempt::Refused(reason),
     };
-    // 滚轮事件去的是指针底下那个窗口，所以要先把指针移到目标上。
+    // 滚轮事件发往指针下方的窗口，因此先将指针移到目标上。
     let events = [
         Event::Move { to: anchor },
         Event::Wheel {
@@ -207,7 +207,7 @@ fn drag(
     let Some(destination) = aim.destination else {
         return Attempt::Refused("missing_target: 拖拽没有终点".to_owned());
     };
-    // 终点同样要落在目标窗口里：拖到别的窗口上等于把这次放手交给了另一个应用。
+    // 终点同样必须位于目标窗口内：拖到其他窗口上等于把本次释放交给另一个应用。
     match window_rect(display, window) {
         Err(reason) => return Attempt::Refused(reason),
         Ok(rect) if !rect.contains(destination) => {
@@ -221,7 +221,7 @@ fn drag(
     if sink.send(&[Event::Move { to: anchor }]) == 0 {
         return blocked(1);
     }
-    // 记账在按下之前：按下与记账之间 worker 被强杀的话，那个键就没有人知道它按住了。
+    // 在按下之前登记：worker 若在按下与登记之间被强制终止，任何一方都无法得知该键处于按下状态。
     let mut hold = Hold::record(sink, vec![MouseButton::Left], Vec::new());
     if sink.send(&[Event::Button {
         button: MouseButton::Left,
@@ -231,7 +231,7 @@ fn drag(
         hold.release();
         return Attempt::Called(Outcome::returned(
             Dispatch::NotDispatched,
-            Some("input_blocked: 按下没有进入输入队列，指针已在起点".to_owned()),
+            Some("input_blocked: 按下事件未进入输入队列，指针已位于起点".to_owned()),
         ));
     }
     let path = drag_path(anchor, destination, DRAG_STEPS);
@@ -260,10 +260,10 @@ fn drag(
     Attempt::Called(Outcome::returned(dispatch, reason))
 }
 
-/// 这次指针动作落在哪个屏幕坐标上，并核对那个位置确实属于这次动作，判据见 `lands_on_target`。
+/// 计算本次指针动作的屏幕落点，并核对该位置属于本次动作，判据见 `lands_on_target`。
 ///
-/// 目标窗口不在前台那一种由 `ensure_foreground` 在派发前处理完；走到这里仍被盖住的是
-/// 置顶窗口、盖在控件上的弹出窗口或别的窗口，如实拒绝。
+/// 目标窗口不在前台的情形由 `ensure_foreground` 在派发前处理；执行到此处仍被遮挡时，遮挡方是
+/// 置顶窗口、覆盖控件的弹出窗口或其他窗口，如实拒绝。
 fn landing(display: &Display, window: Window, aim: Aim) -> Result<ScreenPoint, String> {
     let anchor = aim.anchor.ok_or("missing_target: 指针动作没有落点")?;
     let rect = window_rect(display, window)?;
@@ -277,14 +277,14 @@ fn landing(display: &Display, window: Window, aim: Aim) -> Result<ScreenPoint, S
     Ok(anchor)
 }
 
-/// 一批事件发完之后的执行事实。
+/// 一批事件发送完毕后的执行事实。
 fn settle(sent: u32, events: &[Event]) -> Attempt {
     let requested = u32::try_from(events.len()).unwrap_or(u32::MAX);
     let (dispatch, reason) = classify_input(sent, requested);
     Attempt::Called(Outcome::returned(dispatch, reason))
 }
 
-/// 一个事件都没进输入队列时的终态。
+/// 没有任何事件进入输入队列时的终态。
 fn blocked(requested: u32) -> Attempt {
     let (dispatch, reason) = classify_input(0, requested);
     Attempt::Called(Outcome::returned(dispatch, reason))
@@ -292,11 +292,11 @@ fn blocked(requested: u32) -> Attempt {
 
 // ── 键盘 ──
 
-/// 键盘输入的前置条件：目标窗口是前台窗口，键盘焦点在它里面。
+/// 键盘输入的前置条件：目标窗口是前台窗口，且键盘焦点在该窗口内。
 ///
-/// **不给控件即以窗口为目标**，判定到此为止：自绘界面不暴露业务控件，要求点名一个持有焦点的
-/// 控件等于对它们关掉整条键盘路径。给了控件再加一条：它此刻持有键盘焦点。刚激活的窗口里
-/// 工具包要处理完焦点事件才更新控件的焦点状态，所以这时在激活的等待上限内重读。
+/// **未指定控件时以窗口为目标**，判定到此结束：自绘界面不暴露业务控件，要求指定一个持有焦点的
+/// 控件等于对这类界面关闭整条键盘路径。指定了控件时增加一项条件：该控件当前持有键盘焦点。
+/// 刚激活的窗口中，工具包处理完焦点事件后才更新控件的焦点状态，因此此时在激活的等待上限内重读。
 fn keyboard_target(
     display: &Display,
     window: Window,
@@ -325,7 +325,7 @@ fn keyboard_target(
         return Err(reason);
     }
     if !holds {
-        return Err("not_focused: 这个控件没有键盘焦点 · 先 click 它".to_owned());
+        return Err("not_focused: 该控件没有键盘焦点 · 请先对该控件执行 click".to_owned());
     }
     Ok(())
 }
@@ -338,7 +338,7 @@ fn foreground_ok(display: &Display, window: Window) -> Result<(), String> {
     Err(format!("not_foreground: {at}"))
 }
 
-/// 投进文字。每一批之前重核前台与焦点，变了立即停下并如实带回已投出多少。
+/// 输入文字。每一批之前重新核对前台与焦点，发生变化时立即停止，并如实返回已发送的数量。
 fn type_text(display: &Display, window: Window, sink: &XSink<'_>, text: &str) -> Attempt {
     if text.is_empty() {
         return Attempt::Refused("empty_text: 文字为空".to_owned());
@@ -352,8 +352,8 @@ fn type_text(display: &Display, window: Window, sink: &XSink<'_>, text: &str) ->
         Err(reason) => return Attempt::Refused(reason),
     };
     let (dispatch, reason) = classify_input(typed.sent, typed.requested);
-    // 中途停下来时原因由停下来的那一步说。按键全部送达之后才停下（应用没有应答）的那一次，
-    // 最后几个字符可能按改回之后的映射换算，只能记 `unknown`。
+    // 中途停止时，原因由触发停止的步骤给出。按键全部送达之后才停止（应用无应答）时，
+    // 最后几个字符可能按恢复后的映射换算，只能记为 `unknown`。
     let (dispatch, reason) = match typed.interrupted {
         Some(note) => (
             if typed.sent == 0 {
@@ -362,7 +362,7 @@ fn type_text(display: &Display, window: Window, sink: &XSink<'_>, text: &str) ->
                 Dispatch::Unknown
             },
             Some(format!(
-                "{note} · 已投出 {} / {} 个字符",
+                "{note} · 已发送 {} / {} 个字符",
                 typed.sent, typed.requested
             )),
         ),
@@ -371,7 +371,7 @@ fn type_text(display: &Display, window: Window, sink: &XSink<'_>, text: &str) ->
     Attempt::Called(Outcome::returned(dispatch, reason))
 }
 
-/// 一次组合键。整条序列一次刷给服务器，中间没有别的输入插得进来。
+/// 一次组合键。整条序列一次提交给服务器，其他输入无法插入其中。
 fn press_key(sink: &XSink<'_>, key: &str, modifiers: &[Modifier]) -> Attempt {
     let Some(main) = key_name(key) else {
         return Attempt::Refused(format!("unknown_key: {key}"));
@@ -379,12 +379,12 @@ fn press_key(sink: &XSink<'_>, key: &str, modifiers: &[Modifier]) -> Attempt {
     let held: Vec<String> = modifiers.iter().map(|m| m.key_name().to_owned()).collect();
     if let Some(missing) = held.iter().chain([&main]).find(|k| !sink.resolves(k)) {
         return Attempt::Refused(format!(
-            "key_unmapped: 当前键盘映射里没有不带修饰就能按出 {missing} 的键"
+            "key_unmapped: 当前键盘映射中没有无需修饰键即可输入 {missing} 的键"
         ));
     }
     let events = key_stroke(&main, &held);
     let requested = u32::try_from(events.len()).unwrap_or(u32::MAX);
-    // 记账在派发之前：整条序列自带抬起，但只发出去一半时修饰键会停在按下状态。
+    // 在派发之前登记：整条序列自带抬起事件，但只发出一部分时修饰键会停留在按下状态。
     let mut hold = Hold::record(sink, Vec::new(), {
         let mut keys = held.clone();
         keys.push(main);
@@ -392,7 +392,7 @@ fn press_key(sink: &XSink<'_>, key: &str, modifiers: &[Modifier]) -> Attempt {
     });
     let sent = sink.send(&events);
     if sent >= requested {
-        // 序列自己已经把每个键都抬起来了，这里只清账不再发一遍抬起。
+        // 序列自身已抬起每个键，此处只清除登记，不再重复发送抬起事件。
         hold.clear();
     } else {
         hold.release();
@@ -403,9 +403,9 @@ fn press_key(sink: &XSink<'_>, key: &str, modifiers: &[Modifier]) -> Attempt {
 
 // ── 窗口 ──
 
-/// 派发前把目标窗口激活到前台。已经在前台且键盘焦点在它里面时不发请求。返回有没有发出激活。
+/// 派发前将目标窗口激活到前台。已在前台且键盘焦点在该窗口内时不发送请求。返回是否发出了激活请求。
 ///
-/// 提不上来不在这里裁决：随后那次核对照原样给原因码。
+/// 激活失败不在此处裁决：随后的核对会给出原因码。
 fn ensure_foreground(display: &Display, window: Window) -> bool {
     let ready = || display.active_window() == window && display.focus_within(window).is_ok();
     if ready() {
@@ -418,7 +418,7 @@ fn ensure_foreground(display: &Display, window: Window) -> bool {
     true
 }
 
-/// 激活目标窗口。到达前台记已执行，请求发出而前台没变记结果未知。
+/// 激活目标窗口。到达前台记为已执行，请求已发出而前台未变化记为结果未知。
 fn activate(display: &Display, window: Window) -> Attempt {
     if let Err(reason) = display.request_activate(window) {
         return Attempt::Refused(reason);
@@ -428,7 +428,7 @@ fn activate(display: &Display, window: Window) -> Attempt {
     }
     Attempt::Called(Outcome::returned(
         Dispatch::Unknown,
-        Some("调用成功，前台窗口没有变成目标窗口".to_owned()),
+        Some("调用成功，前台窗口未变为目标窗口".to_owned()),
     ))
 }
 
@@ -455,8 +455,8 @@ fn set_window_state(display: &Display, window: Window, target: WindowState) -> A
 
 /// 移动外框左上角。
 ///
-/// 窗口管理器会按自己的规则夹住位置，夹出来的值不是失败：矩形的实际值随动作后的重读一起
-/// 交给调用方。读回只用来等请求生效，等不到也不改执行事实。
+/// 窗口管理器会按自身规则限制位置，被限制后的值不视为失败：矩形的实际值随动作后的重读
+/// 一并返回调用方。读取只用于等待请求生效，等待超时也不改变执行事实。
 fn move_window(display: &Display, window: Window, x: i32, y: i32) -> Attempt {
     if !display.allows(window, WmAction::Move) {
         return Attempt::Refused("transform_unsupported: 移动".to_owned());
@@ -470,17 +470,17 @@ fn move_window(display: &Display, window: Window, x: i32, y: i32) -> Attempt {
     Attempt::Called(Outcome::returned(Dispatch::Submitted, None))
 }
 
-/// 缩放到外框尺寸 `width × height`。EWMH 请求的是客户区尺寸，差值取此刻外框与客户区之差。
-/// 夹住的值同 `move_window`。
+/// 缩放到外框尺寸 `width × height`。EWMH 请求的是客户区尺寸，差值取当前外框与客户区之差。
+/// 被限制后的值的处理同 `move_window`。
 fn resize_window(display: &Display, window: Window, width: i32, height: i32) -> Attempt {
     if !display.allows(window, WmAction::Resize) {
         return Attempt::Refused("transform_unsupported: 缩放".to_owned());
     }
     let Some(client) = display.client(window) else {
-        return Attempt::Refused("target_lost: 窗口已经不在".to_owned());
+        return Attempt::Refused("target_lost: 窗口已不存在".to_owned());
     };
     let (Some(outer), Some(area)) = (client.outer(), client.client) else {
-        return Attempt::Refused("target_lost: 读不出窗口几何".to_owned());
+        return Attempt::Refused("target_lost: 无法读取窗口几何".to_owned());
     };
     let inner = (
         width - (outer.width - area.width),
@@ -488,7 +488,7 @@ fn resize_window(display: &Display, window: Window, width: i32, height: i32) -> 
     );
     if inner.0 < 1 || inner.1 < 1 {
         return Attempt::Refused(format!(
-            "invalid_size: {width}×{height} 放不下窗口边框（{}×{}）",
+            "invalid_size: {width}×{height} 无法容纳窗口边框（{}×{}）",
             outer.width - area.width,
             outer.height - area.height
         ));
@@ -502,13 +502,13 @@ fn resize_window(display: &Display, window: Window, width: i32, height: i32) -> 
     Attempt::Called(Outcome::returned(Dispatch::Submitted, None))
 }
 
-/// 关闭窗口。发的是关闭请求，不是强杀进程。
+/// 关闭窗口。发送的是关闭请求，不是强制终止进程。
 ///
-/// 生效证据与后台调用同一套：目标窗口已关闭，或同进程多出一个顶层窗口（未保存提示）。
-/// **不替用户选**提示框上的按钮。
+/// 生效证据与后台调用相同：目标窗口已关闭，或同一进程新增一个顶层窗口（未保存提示）。
+/// **不替用户选择**提示框上的按钮。
 fn close_window(display: &Display, window: Window) -> Attempt {
     if !display.allows(window, WmAction::Close) {
-        return Attempt::Refused("close_unsupported: 窗口管理器不允许关闭这个窗口".to_owned());
+        return Attempt::Refused("close_unsupported: 窗口管理器不允许关闭该窗口".to_owned());
     }
     let pid = display.client(window).map_or(0, |c| c.pid);
     let watch = CallWatch::before(Some(display), Some(window), pid);
@@ -524,7 +524,7 @@ fn close_window(display: &Display, window: Window) -> Attempt {
         Some((dispatch, reason)) => Attempt::Called(Outcome::returned(dispatch, reason)),
         None => Attempt::Called(Outcome::returned(
             Dispatch::Unknown,
-            Some("调用成功，目标窗口没有关闭，也没有出现新的顶层窗口".to_owned()),
+            Some("调用成功，目标窗口未关闭，也未出现新的顶层窗口".to_owned()),
         )),
     }
 }
@@ -534,5 +534,5 @@ fn window_rect(display: &Display, window: Window) -> Result<ScreenRect, String> 
     display
         .client(window)
         .and_then(|c| c.outer())
-        .ok_or_else(|| "target_lost: 读窗口矩形失败".to_owned())
+        .ok_or_else(|| "target_lost: 读取窗口矩形失败".to_owned())
 }
