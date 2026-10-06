@@ -1,6 +1,6 @@
 /**
- * 覆盖 `session-env.ts`：钩子按仓库根解析 `CLAUDE_SCRATCHPAD` 并建好目录；
- * 没有这个变量时退出码非零。
+ * 覆盖 `session-env.ts`：钩子按仓库根解析 `CLAUDE_SCRATCHPAD` 并创建目录；
+ * 缺少该变量时退出码非零。
  */
 import { describe, expect, test } from 'bun:test'
 import { mkdtemp, stat } from 'node:fs/promises'
@@ -20,7 +20,7 @@ async function run(value: string | null): Promise<{ code: number; stderr: string
 }
 
 describe('SessionStart 钩子', () => {
-  test('相对路径按仓库根解析并建好目录', async () => {
+  test('相对路径按仓库根解析并创建目录', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'session-env-'))
     const target = join(dir, 'scratch')
     const { code, stderr } = await run(relative(ROOT, target).replaceAll('\\', '/'))
@@ -29,7 +29,7 @@ describe('SessionStart 钩子', () => {
     expect((await stat(target)).isDirectory()).toBe(true)
   })
 
-  test('没有 CLAUDE_SCRATCHPAD 时报错退出', async () => {
+  test('缺少 CLAUDE_SCRATCHPAD 时报错退出', async () => {
     const { code, stderr } = await run(null)
     expect(code).toBe(1)
     expect(stderr).toContain('CLAUDE_SCRATCHPAD')

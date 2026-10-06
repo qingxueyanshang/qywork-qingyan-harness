@@ -1,4 +1,4 @@
-/** 真 HTTP 生成与重启：重载等待画布、接续只查询原任务、更新占位后不再启动生成。 */
+/** 真实 HTTP 下的生成与重启：重载等待画布、接续时只查询原任务、更新占位后不再启动生成。 */
 import { expect, test } from 'bun:test'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -28,7 +28,7 @@ async function until(check: () => Promise<boolean>) {
   throw new Error('任务未在时限内达到预期状态')
 }
 
-test('画布生成阻止重载，后端重启自动接续并只落一版；空闲后才允许换代码', async () => {
+test('画布生成阻止重载，后端重启后自动接续且只保存一个版本；空闲后才允许更换代码', async () => {
   const root = await mkdtemp(join(tmpdir(), 'canvas-recovery-'))
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, root, 'canvas')
@@ -219,7 +219,7 @@ test('恢复扫描不受搜索的 300 条上限截断，配置不可用时保留
   expect(persisted).toEqual(doc)
 })
 
-test('文件校验期间取得更新占位，生成在真正调用接口之前被拒绝', async () => {
+test('文件校验期间取得更新占位，生成在实际调用接口之前被拒绝', async () => {
   const root = await mkdtemp(join(tmpdir(), 'canvas-claim-race-'))
   const seeded = applyCanvasOps(emptyCanvas(), [
     { op: 'add_generate', ref: '$v', output: 'video', prompt: 'test' },

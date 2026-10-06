@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 /**
- * Claude Code 的 PreToolUse 钩子（Bash 与 PowerShell）：拦下没设 `QYWORK_HOME` 就执行 `qy` 的命令。
+ * Claude Code 的 PreToolUse 钩子（Bash 与 PowerShell）：拦截未设置 `QYWORK_HOME` 即执行 `qy` 的命令。
  *
- * 不设时 `qy` 读写用户真实的 `~/.qywork`：配置里的密钥、账本、会话列表。`qy exec` 会按当前目录建工作区与会话，
- * 并用用户的模型发出真实请求。开发与验收一律把 `QYWORK_HOME` 指到仓库 `.tmp/` 下的隔离目录。
+ * 未设置时 `qy` 读写用户真实的 `~/.qywork`：配置中的密钥、账本、会话列表。`qy exec` 会按当前目录创建工作区与会话，
+ * 并使用用户的模型发出真实请求。开发与验收一律把 `QYWORK_HOME` 指向仓库 `.tmp/` 下的隔离目录。
  *
- * 只认执行位置上的 `qy` / `qy.exe` / `qy-<三元组>.exe` 与 `bun … packages/cli/src/index.ts`；
- * 读取、搜索这个文件的命令不拦。命令里任何位置出现 `QYWORK_HOME` 即放行（前缀赋值与 `$env:` 两种写法）。
- * 退出码 2 表示拦下，stderr 的内容交给模型。
+ * 只识别执行位置上的 `qy` / `qy.exe` / `qy-<三元组>.exe` 与 `bun … packages/cli/src/index.ts`；
+ * 读取、搜索该文件的命令不拦截。命令中任何位置出现 `QYWORK_HOME` 即放行（前缀赋值与 `$env:` 两种写法）。
+ * 退出码 2 表示拦截，stderr 的内容交给模型。
  */
 
 const CLI_ENTRY = /(^|[\\/])packages[\\/]cli[\\/]src[\\/]index\.ts$/i
@@ -23,7 +23,7 @@ function basename(token: string): string {
   )
 }
 
-/** 这条命令会不会在没有隔离数据目录的情况下执行 qy。 */
+/** 判断该命令是否会在没有隔离数据目录的情况下执行 qy。 */
 export function runsQyAgainstRealHome(
   command: string,
   env: Record<string, string | undefined> = {},

@@ -1,19 +1,19 @@
 /**
- * Tauri `externalBin` 的产物命名与落点。
+ * Tauri `externalBin` 的产物命名与存放位置。
  *
- * `externalBin: ["bin/<名字>"]` 在打包时找的是 `bin/<名字>-<目标三元组>[.exe]`
- * （macOS 上还会因 arm64/x86_64 分成两个）。名字差一个字会等到打包末尾才报错，
- * 所以三元组由 `rustc -vV` 现问，而不是照着平台猜。
+ * `externalBin: ["bin/<名称>"]` 打包时查找 `bin/<名称>-<目标三元组>[.exe]`
+ * （macOS 上还会按 arm64/x86_64 分为两个）。名称相差一个字符时，到打包末尾才会报错，
+ * 因此三元组由 `rustc -vV` 实时查询，而不是按平台推测。
  *
- * 声明过的条目在编译期就必须存在：文件不在时 tauri 的构建脚本以 101 退出，
- * `cargo check` 与 `tauri dev` 同样会走到那一步。
+ * 已声明的条目在编译期必须存在：文件不存在时 tauri 的构建脚本以 101 退出，
+ * `cargo check` 与 `tauri dev` 同样会执行该步骤。
  */
 
 import { join } from 'node:path'
 
 const ROOT = join(import.meta.dir, '..')
 
-/** `externalBin` 里那个相对的 `bin/` 在磁盘上的位置。 */
+/** `externalBin` 中相对路径 `bin/` 在磁盘上的位置。 */
 export const BIN_DIR = join(ROOT, 'apps/desktop/src-tauri/bin')
 
 /** 本机的 Rust 目标三元组。 */

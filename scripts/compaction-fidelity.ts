@@ -3,16 +3,16 @@
 /**
  * 压缩保真度验证。
  *
- * **为什么单测不够。** `compaction.test.ts` 能测「触发了压缩」「manifest 结构正确」「事实包非空」。
- * 它**测不出**压缩后模型还记不记得关键信息——而那才是压缩的全部价值所在。
+ * **单元测试的局限。** `compaction.test.ts` 能验证「触发了压缩」「manifest 结构正确」「事实包非空」，
+ * 但**无法验证**压缩后模型是否仍记得关键信息，而这正是压缩的全部价值所在。
  *
- * 不做这件事的后果不是「测试覆盖率低」，是**压缩上线后无从判断它有没有在静默丢信息**：
- * 模型忘掉用户三十轮前定下的约束，现象是它改了本该不动的目录，
- * 而报错与日志里没有任何指向压缩的线索。
+ * 缺少该验证时，**压缩上线后无法判断它是否在静默丢失信息**：
+ * 模型遗忘用户在三十轮之前设定的约束时，
+ * 报错与日志中没有任何指向压缩的线索。
  *
- * **怎么验。** 造一段长会话，其中埋入若干**可判定的事实**（约束、路径、决定），
- * 压缩后把投影发给真实模型，逐条问它还记不记得。
- * 记不住的条目就是压缩丢掉的信息。
+ * **验证方法。** 构造一段长会话，其中嵌入若干**可判定的事实**（约束、路径、决定），
+ * 压缩后把投影发给真实模型，逐条询问它是否记得。
+ * 模型无法回答的条目即为压缩丢失的信息。
  *
  *   bun run scripts/compaction-fidelity.ts
  */
@@ -39,7 +39,7 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 
-/** 埋进会话的可判定事实。`probe` 是压缩后要问的问题，`expect` 是答案里必须出现的关键词。 */
+/** 嵌入会话的可判定事实。`probe` 是压缩后询问的问题，`expect` 是答案中必须出现的关键词。 */
 const FACTS = [
   {
     turn: 1,
@@ -73,10 +73,10 @@ const FACTS = [
   },
 ]
 
-/** 会话总轮数。要足够长，让上面那些事实真的被压进摘要。 */
+/** 会话总轮数。必须足够长，使上述事实确实被压缩进摘要。 */
 const TOTAL_TURNS = 40
 
-/** 只有 message 类标记能在这个夹具里对账——它没有真实 step。 */
+/** 只有 message 类标记能在本夹具中核对：本夹具没有真实 step。 */
 function mk_isMessage(id: string): boolean {
   return id.startsWith('ms_')
 }
@@ -108,9 +108,9 @@ async function main(): Promise<number> {
     title: '保真度验证',
   })
 
-  // 造长会话：埋入的事实按 turn 落位，其余轮次是噪音。
-  // 噪声并非凑数：没有它，摘要面对的是一份「每句都重要」的输入，
-  // 而真实会话里绝大多数内容是可丢的过程性探索。
+  // 构造长会话：嵌入的事实按 turn 放置，其余轮次为噪声。
+  // 噪声不可省略：没有噪声时，摘要面对的是一份「每句都重要」的输入，
+  // 而真实会话中绝大多数内容是可丢弃的过程性探索。
   for (let i = 1; i <= TOTAL_TURNS; i++) {
     const planted = FACTS.find((f) => f.turn === i)
     const user = appendMessage(store, {
@@ -118,7 +118,7 @@ async function main(): Promise<number> {
       role: 'user',
       content: planted ? planted.text : `第 ${i} 轮：继续，看看 src/mod${i}.ts 里还有什么要改的。`,
     })
-    // 助手回复按真实形状落成 run 里的 text step，消息表只存用户发的话。
+    // 助手回复按真实结构写入 run 中的 text step，消息表只存储用户消息。
     const run = createRun(store, {
       conversationId: conv.id,
       workspaceId: ws.id,
@@ -136,8 +136,8 @@ async function main(): Promise<number> {
       content: planted
         ? `明白，我记下了。`
         : `我看过 src/mod${i}.ts 了，调整了几处类型标注，没有行为变化。` +
-          // 噪音要有真实体积：几十字符的夹具里，摘要与事实清单的固定开销
-          // 就超过被折内容，压缩率断言必然失败而线上不会——两者不是一个数量级。
+          // 噪声必须具有真实体积：只有几十字符的夹具中，摘要与事实清单的固定开销
+          // 即超过被折叠的内容，压缩率断言必然失败而线上不会，两者不在同一数量级。
           `具体来说，把 ${i} 处隐式 any 补成了显式类型，${i} 个可选参数补了默认值，` +
           `顺带核对了导出边界。这一轮没有改动运行时行为，测试全绿。`.repeat(4),
     })
@@ -185,9 +185,9 @@ async function main(): Promise<number> {
     conversationId: conv.id,
     messageIdUpperBound: null,
     /*
-     * **走真实装配**，不要在这里自己拼一个摘要器。
+     * **使用真实装配**，不要在此处自行拼装摘要器。
      *
-     * 摘要与线上共用思考档、输出预算和请求记账；自拼请求会让验证量到另一种行为。
+     * 摘要与线上共用思考档位、输出预算和请求记账；自行拼装请求会使验证测量到另一种行为。
      */
     summarize: async (prompt, budgetTokens, trace) => {
       process.stdout.write(
@@ -202,15 +202,15 @@ async function main(): Promise<number> {
   })
 
   /*
-   * 造一个刚好越线、但摘要仍放得下的窗口。
+   * 构造一个刚好超过阈值、但仍能容纳摘要的窗口。
    *
-   * **不要把窗口设成等于占用**：那样软阈值（80%）扣掉保留预算之后几乎不剩空间，
-   * 摘要段仅分配到数十 token 的预算，模型无法产出正文，结果是
-   * `summary_empty`——而线上 1M 窗口占用 80 万时触发，预算是六位数。
-   * 夹具与线上走不同的数量级，验出来的结论不作数。
+   * **不要把窗口设为等于占用**：此时软阈值（80%）扣除保留预算之后几乎没有剩余空间，
+   * 摘要段仅分配到数十 token 的预算，模型无法产出正文，结果为
+   * `summary_empty`；而线上 1M 窗口在占用 80 万时触发，预算为六位数。
+   * 夹具与线上的数量级不同时，验证结论无效。
    *
-   * 取 1.2 倍：软阈值 = 0.96×占用（仍越线），保留预算 = 窗口的 1/4，
-   * 摘要还剩约六成占用可用。
+   * 取 1.2 倍：软阈值 = 0.96×占用（仍超过阈值），保留预算 = 窗口的 1/4，
+   * 摘要仍有约六成占用的空间可用。
    */
   const occupancy = estimateMessages(history, adapter.spec.density)
   const contextWindow = Math.round(occupancy * 1.2)
@@ -237,7 +237,7 @@ async function main(): Promise<number> {
       model: adapter.spec.id,
       latestUnitSeen: true,
       occupancy,
-      // 这里的占用本来就是本地估算，两把尺重合，比值为 1。
+      // 此处的占用本身是本地估算值，两种计量一致，比值为 1。
       estimatedOccupancy: occupancy,
       contextWindow,
       density: adapter.spec.density,
@@ -257,16 +257,16 @@ async function main(): Promise<number> {
   }
 
   /*
-   * **走真实投影**，不要自己拼 `projectManifest`。
+   * **使用真实投影**，不要自行调用 `projectManifest` 拼装。
    *
-   * manifest 现在有两条边界：摘要线与收纳线。只收纳没摘要时摘要线不动，
-   * 而 `projectManifest` 无条件产出「摘要 + 事实清单」两条——直接调它，
-   * 量到的是一份不会发给模型的内容。
+   * manifest 有两条边界：摘要线与收纳线。只收纳而未摘要时摘要线不变，
+   * 而 `projectManifest` 无条件产出「摘要 + 事实清单」两项；直接调用它时，
+   * 测量的是一份不会发给模型的内容。
    */
   const projected = compaction.project(history)
   const projectedText = projected.map((p) => String(p.content)).join('\n\n')
   const originalChars = FACTS.reduce((n, f) => n + f.text.length, 0) + TOTAL_TURNS * 480
-  // 替换物 = 摘要 + 事实清单，即 `projectManifest` 产出的那两条。
+  // 替换内容 = 摘要 + 事实清单，即 `projectManifest` 产出的两项。
   const replacementChars =
     outcome.manifest.summary.length + JSON.stringify(outcome.manifest.facts).length
 
@@ -278,7 +278,7 @@ async function main(): Promise<number> {
       `投影总长 ${projectedText.length} 字符（原会话约 ${originalChars} 字符，压到 ${Math.round((projectedText.length / originalChars) * 100)}%）\n\n`,
   )
 
-  // ── 逐条问 ──
+  // ── 逐条询问 ──
   process.stdout.write('压缩后的记忆保真度\n')
   const system =
     '下面是一段被压缩过的会话记录。只根据它回答问题。' +
@@ -294,18 +294,18 @@ async function main(): Promise<number> {
   /*
    * ── 定位符必须完整穿过摘要 ──
    *
-   * 提示词要求模型把 `[message:…]` / `[action:…]` 原样带上，因为那是原文的地址，
-   * 模型之后靠它用 `read_history` 回到原文。**提示词写了不等于模型照做**，
-   * 而这一条只有真实调用能验——单测里的假摘要器想输出什么就输出什么。
+   * 提示词要求模型原样保留 `[message:…]` / `[action:…]`，因为它们是原文的地址，
+   * 模型之后依据它们经由 `read_history` 取回原文。**提示词有要求不等于模型遵从**，
+   * 而这一项只有真实调用能验证：单元测试中模拟摘要器的输出完全由测试决定。
    *
-   * 标记丢了不判失败（与保真度同理，模型有随机性），但必须打出来：
-   * 它是「压缩是不是真的可回溯」的唯一实测信号。
+   * 标记丢失不判定为失败（与保真度同理，模型有随机性），但必须输出：
+   * 它是「压缩是否确实可回溯」的唯一实测信号。
    */
   process.stdout.write('\n定位符保留\n')
   /*
-   * 两种形式都算数：`[message:ms_x]` 与模型常写的简写 `[ms_x]`。
-   * 判据是 **id 完不完整**，不是前缀在不在——`read_history` 要的就是那个 id，
-   * 前缀只是给人读的。要求模型逐字照抄前缀反而会让它把 id 也一起改写。
+   * 两种形式均有效：`[message:ms_x]` 与模型常用的简写 `[ms_x]`。
+   * 判据是 **id 是否完整**，不是前缀是否存在：`read_history` 需要的是 id，
+   * 前缀只供人阅读。要求模型逐字照抄前缀反而会使它连同 id 一起改写。
    */
   const marks = [
     ...outcome.manifest.summary.matchAll(/\[(?:(?:message|action):)?((?:ms|rn)_[a-z0-9:]+)\]/gi),
@@ -315,8 +315,8 @@ async function main(): Promise<number> {
     marks.length > 0,
     `摘要前 300 字符：${outcome.manifest.summary.slice(0, 300)}`,
   )
-  // 带回来的标记必须指向真实存在的 id，编出来的标记比没有更坏：
-  // 模型会拿它去调 read_history，然后拿到一串 not_found。
+  // 摘要返回的标记必须指向真实存在的 id，编造的标记比缺失更有害：
+  // 模型会用它调用 read_history，得到的结果全部是 not_found。
   const realIds = new Set<string>(listMessages(store, conv.id, null).map((m) => String(m.id)))
   const fabricated = marks.filter((id) => mk_isMessage(id) && !realIds.has(id))
   check('没有编造的定位符', fabricated.length === 0, fabricated.slice(0, 5).join(', '))
@@ -324,9 +324,9 @@ async function main(): Promise<number> {
   /*
    * ── 压缩率 ──
    *
-   * 比的是**被折掉那一段**与替换它的摘要，不是「投影 vs 整条原会话」：
-   * 保留区原样留在投影里，拿它去比会把一份正常的压缩判成变大了。
-   * 这也正是 `compact()` 里「必须更小」闸的口径。
+   * 比较的是**被折叠的部分**与替换它的摘要，不是「投影与完整原会话」：
+   * 保留区原样留在投影中，用投影比较会把正常的压缩误判为变大。
+   * 这也是 `compact()` 中「必须更小」检查的口径。
    */
   process.stdout.write('\n压缩率\n')
   const foldedChars = originalChars - projectedText.length + replacementChars
@@ -340,8 +340,8 @@ async function main(): Promise<number> {
   content.close()
 
   process.stdout.write(`\n${failures === 0 ? '全部保真' : `${failures} 条信息在压缩中丢失`}\n`)
-  // 保真度失败**不返回非零**：模型有随机性，单次未命中不足以判定压缩坏了。
-  // 这个脚本的用途是「改压缩策略前后跑一次，看丢失条目有没有变多」。
+  // 保真度失败**不返回非零**：模型有随机性，单次未命中不足以判定压缩有缺陷。
+  // 本脚本的用途是在修改压缩策略前后各运行一次，对比丢失条目是否增多。
   return 0
 }
 

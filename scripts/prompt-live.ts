@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
 /**
- * 三层提示词与尾区注记的真机验证。
+ * 三层提示词与上下文末尾注记的真实模型验证。
  *
- * **为什么单测不够。** 单测只能断言提示词里有哪几个字，答不了「模型看了以后照做没有」。
- * 这里验的是行为：告诉它权限模式之后它还撞不撞、能力段列了子 agent 之后它派不派、
- * 待办那两句禁止复述之后它还写不写「继续执行第 N 项」。
+ * **单元测试无法覆盖的部分。** 单元测试只能断言提示词中包含哪些文字，无法判定模型读取后是否遵循。
+ * 本脚本验证行为：告知权限模式后模型是否仍触发拒绝、能力段列出子 agent 后模型是否派发、
+ * 待办加入两句禁止复述的要求后模型是否仍写「继续执行第 N 项」。
  *
- * 会话落在**主库**，跑完能在面板里逐条翻开看。工作区在 `.tmp/prompt-live/<接口>-<模型>`，一个模型一个，
- * 面板上会按模型多出几个 work。
+ * 会话写入主库，执行完毕后可在面板中逐条查看。工作区位于 `.tmp/prompt-live/<接口>-<模型>`，每个模型一个，
+ * 面板上按模型各增加一个 work。
  *
- *   bun run scripts/prompt-live.ts                       # 配置里全部模型
- *   bun run scripts/prompt-live.ts deepseek/deepseek-v4-pro   # 指定几个
+ *   bun run scripts/prompt-live.ts                       # 配置中的全部模型
+ *   bun run scripts/prompt-live.ts deepseek/deepseek-v4-pro   # 指定模型
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -32,24 +32,24 @@ const WS_ROOT = join(import.meta.dir, '..', '.tmp', 'prompt-live')
 /**
  * 每个模型一个工作区。
  *
- * 记忆落在工作区的 `.agents/memory/`，共用一个目录的话第一个模型写进去的那条
- * 会留给后面所有模型：它们在尾区看到这条记忆已存在，用 read_memory 确认一下
- * 就回「无需重复写入」——那是正确行为，却被断言按「没写进记忆」计失败，
- * 表现为通过率随执行顺序递减，易被误判为模型能力差异。
+ * 记忆保存在工作区的 `.agents/memory/`。若共用一个目录，第一个模型写入的记忆
+ * 会保留给后续所有模型：它们在上下文末尾看到该记忆已存在，用 read_memory 确认后
+ * 即回复「无需重复写入」。这是正确行为，却被断言按「未写入记忆」计为失败，
+ * 导致通过率随执行顺序递减，易被误判为模型能力差异。
  *
- * 用独立目录而不是每轮删：Windows 上前一个 serve 还持着目录，删会 EBUSY。
+ * 使用独立目录而不是每轮删除：Windows 上前一个 serve 仍持有目录，删除会报 EBUSY。
  */
 export function wsFor(ref: ModelRef): string {
   return join(WS_ROOT, `${ref.provider}-${ref.model}`.replace(/[^\w.-]/g, '_'))
 }
-/** 换行。写进模板串里，避免转义在工具链上被折半。 */
+/** 换行符。不在模板字符串中写转义序列，避免工具链处理时反斜杠被减半。 */
 const NL = String.fromCharCode(10)
 const RUN_TIMEOUT_MS = Number(process.env.QYWORK_PROMPT_LIVE_TIMEOUT_MS ?? 300_000)
 
 interface Verdict {
   ref: string
   turns: number
-  /** 每条断言的名字与结果。跑挂的模型这里是空的，由 `error` 说明。 */
+  /** 每条断言的名称与结果。执行失败的模型此处为空，由 `error` 说明原因。 */
   checks: { name: string; ok: boolean; detail: string }[]
   cachedRatio: number | null
   conversationId: string
@@ -60,7 +60,7 @@ function line(s: string): void {
   process.stdout.write(s + NL)
 }
 
-/** 起一轮对话并等它跑完。返回这一轮的 runId。 */
+/** 发起一轮对话并等待其执行完毕。返回该轮的 runId。 */
 async function turn(live: Live, conversationId: string, content: string): Promise<RunId | null> {
   const ws = new WebSocket(
     `ws://127.0.0.1:${new URL(live.base).port}/stream?token=${live.token}&origin=desktop`,
@@ -78,10 +78,10 @@ async function turn(live: Live, conversationId: string, content: string): Promis
     const ev = msg.event
     if (ev.type === 'run.started') runId = ev.runId
     /*
-     * **收尾事件必须核 runId。** 上一个模型超时后它的 run 还挂在服务端，
-     * 下一轮的连接会收到那条残留的 run.finished，不核对就把「这一轮跑完了」
-     * 判在一个从没发出去的请求上——表现是会话里 run 数为 0，而断言全部按
-     * 「模型没调工具」计失败，看起来像模型不听话。
+     * 收尾事件必须核对 runId。上一个模型超时后其 run 仍保留在服务端，
+     * 下一轮的连接会收到残留的 run.finished；不核对时会把「该轮已执行完毕」
+     * 判定在一个从未发出的请求上：会话中 run 数为 0，而断言全部按
+     * 「模型未调用工具」计为失败，被误判为模型未遵循指令。
      */ else if (ev.type === 'run.error' && ev.runId === runId) {
       done.reject(new Error(`${ev.code}: ${ev.message}`))
     } else if (ev.type === 'run.finished' && ev.runId === runId) {
@@ -109,13 +109,13 @@ async function turn(live: Live, conversationId: string, content: string): Promis
   let interruptTimer: ReturnType<typeof setTimeout> | null = null
   const timer = setTimeout(() => {
     timedOut = true
-    if (!runId) return done.reject(new Error('这一轮超时'))
+    if (!runId) return done.reject(new Error('本轮超时'))
     ws.send(JSON.stringify({ type: 'conversation.interrupt', conversationId }))
-    interruptTimer = setTimeout(() => done.reject(new Error('这一轮超时，中断后仍未收尾')), 10_000)
+    interruptTimer = setTimeout(() => done.reject(new Error('本轮超时，中断后仍未结束')), 10_000)
   }, RUN_TIMEOUT_MS)
   try {
     await done.promise
-    if (timedOut) throw new Error('这一轮超时，已中断')
+    if (timedOut) throw new Error('本轮超时，已中断')
   } finally {
     clearTimeout(timer)
     if (interruptTimer) clearTimeout(interruptTimer)
@@ -149,8 +149,8 @@ async function newConversation(live: Live, title: string): Promise<string> {
 /**
  * 把会话切到指定模型。
  *
- * **接口与模型要成对给**：只给模型名会被回执拒掉，而拒了以后这一轮照样跑默认模型，
- * 看起来像切过去了。
+ * 接口与模型必须成对传入：只传模型名时请求被回执拒绝，而拒绝后该轮仍运行默认模型，
+ * 与切换成功无法区分。
  */
 async function setModel(live: Live, conversationId: string, ref: ModelRef): Promise<void> {
   const ws = new WebSocket(
@@ -175,10 +175,10 @@ async function setModel(live: Live, conversationId: string, ref: ModelRef): Prom
 }
 
 /**
- * 这条会话里模型说过的话，按 step 类型分开。
+ * 该会话中模型输出的内容，按 step 类型区分。
  *
- * **正文与思考必须分开量。** 禁止复述待办管的是用户读到的那段正文；
- * 思考里规划「下一步做第几条」是正常推理，一起禁会伤到它的执行能力。
+ * 正文与思考必须分开统计。禁止复述待办的要求只针对用户可见的正文；
+ * 思考中规划「下一步做第几条」是正常推理，一并禁止会损害模型的执行能力。
  */
 function saidBy(store: Store, conversationId: string, kind: 'text' | 'thinking'): string {
   return listRuns(store, conversationId as ConversationId)
@@ -188,7 +188,7 @@ function saidBy(store: Store, conversationId: string, kind: 'text' | 'thinking')
     .join(NL)
 }
 
-/** 指定一轮里模型说过的话。 */
+/** 指定一轮中模型输出的内容。 */
 function saidIn(store: Store, runId: RunId | null, kind: 'text' | 'thinking'): string {
   if (!runId) return ''
   return listSteps(store, runId)
@@ -197,7 +197,7 @@ function saidIn(store: Store, runId: RunId | null, kind: 'text' | 'thinking'): s
     .join(NL)
 }
 
-/** 这条会话里调过的所有工具名，按顺序。 */
+/** 该会话中调用过的全部工具名，按调用顺序排列。 */
 function toolCalls(store: Store, conversationId: string): string[] {
   return listRuns(store, conversationId as ConversationId)
     .flatMap((r) => listSteps(store, r.id))
@@ -206,11 +206,11 @@ function toolCalls(store: Store, conversationId: string): string[] {
 }
 
 /**
- * 单独一轮里调过的工具名。
+ * 单独一轮中调用过的工具名。
  *
- * 按轮分开是必须的：「用户明确要求写记忆」与「模型自主判断要不要沉淀」是两件事，
- * 前者没做到是缺陷，后者是模型自己的判断，不该按同一条断言计分。
- * 整条会话合起来数，这两件事分不开。
+ * 必须按轮区分：「用户明确要求写记忆」与「模型自主判断是否沉淀」是两件事，
+ * 前者未完成是缺陷，后者是模型自身的判断，不应按同一条断言计分。
+ * 按整条会话合并统计时，两者无法区分。
  */
 function toolCallsIn(store: Store, runId: RunId | null): string[] {
   if (!runId) return []
@@ -219,7 +219,7 @@ function toolCallsIn(store: Store, runId: RunId | null): string[] {
     .map((s) => s.toolName as string)
 }
 
-/** 这条会话里所有工具结果的正文，用来找「被拒」与错误原文。 */
+/** 该会话中全部工具结果的正文，用于查找「被拒」与错误原文。 */
 function toolOutputs(store: Store, conversationId: string): string {
   return listRuns(store, conversationId as ConversationId)
     .flatMap((r) => listSteps(store, r.id))
@@ -244,15 +244,15 @@ function cachedRatio(store: Store, conversationId: string): number | null {
 }
 
 /**
- * 「继续执行第 N 项」这个开场白，连同它指的是第几项。
+ * 匹配「继续执行第 N 项」形式的开场白，并取出其中的项号。
  *
- * **报某一条做完了不算问题**，要挡的是同一条被反复拿来开场：
- * 「继续第 4 项验证：写脚本」「继续第 4 项验证：运行脚本」——
- * 待办清单每轮重发，不禁止的话模型每次调工具前都把它念一遍。
+ * 报告某一项已完成不算问题，需要检出的是同一项被反复用作开场白：
+ * 「继续第 4 项验证：写脚本」「继续第 4 项验证：运行脚本」。
+ * 待办清单每轮重新发送，不加禁止时模型每次调用工具前都会复述一遍。
  */
 const CONTINUE_RE = /继续(?:执行)?第\s*([0-9一二三四五六七八九十]+)\s*(?:项|条|步)/g
 
-/** 被重复开场的编号，以及各自重复了几次。 */
+/** 被重复用作开场白的编号及各自的重复次数。 */
 function repeatedOpeners(text: string): [string, number][] {
   const count = new Map<string, number>()
   for (const m of text.matchAll(CONTINUE_RE)) {
@@ -263,7 +263,7 @@ function repeatedOpeners(text: string): [string, number][] {
 }
 
 /**
- * 每个 run 独立检查重复开头。两个不同任务都有“第 5 条”不算重复。
+ * 每个 run 独立检查重复开头。两个不同任务各出现一次「第 5 条」不算重复。
  */
 export function repeatedOpenersInRuns(texts: string[]): [number, string, number][] {
   return texts.flatMap((text, index) =>
@@ -279,33 +279,33 @@ const TASKS = {
   /**
    * 权限边界。
    *
-   * 尾区已经写明 auto 模式拒什么。看它是直接依据那句话回答，
-   * 还是先去撞一次工具、拿到拒绝再回答——后者每次多付一轮 token。
+   * 上下文末尾已写明 auto 模式拒绝哪些操作。检查模型是直接依据该句回答，
+   * 还是先调用一次工具、取得拒绝后再回答：后者每次多消耗一轮 token。
    */
   permission:
     '不要动手做任何事，直接回答：你现在这条会话处在什么权限模式下？' +
     '这个模式下有哪些操作会被拒绝？',
 
   /**
-   * 用户点名要求写进长期记忆。
+   * 用户明确要求写入长期记忆。
    *
-   * 措辞不留歧义——「写进你的长期记忆」直接对应 write_memory。
-   * 这一轮不写才是缺陷；模型平时自己判断要不要沉淀，那是它的判断，另算。
+   * 措辞无歧义：「写进你的长期记忆」直接对应 write_memory。
+   * 该轮未写入才是缺陷；模型在其他轮次自主判断是否沉淀，另行统计。
    */
   memory: '把这条写进你的长期记忆：本项目一律用 bun，不要用 npm。',
 
   /**
    * 能力段里的定时任务。
    *
-   * 与记忆分开一轮：混在一句里的话，模型漏掉哪一个从工具序列上看不出来。
+   * 与记忆分为两轮：合并在一句中时，无法从工具序列判断模型遗漏了哪一项。
    */
   capability: '每天早上九点提醒我跑一次测试。',
 
   /**
-   * 多步任务，验待办不复述。
+   * 多步任务，验证模型不复述待办。
    *
-   * **六步且其中两步各要两次工具调用**：四步的短任务复现不出「同一条清单项内
-   * 连着调两次工具、每次都先报一遍进行到第几项」这个形状，而那正是要挡的形状。
+   * 六步，其中两步各需两次工具调用：四步的短任务无法复现「同一清单项内
+   * 连续调用两次工具、每次先报告进行到第几项」的形状，而该形状正是需要检出的。
    */
   todos:
     '在工作区里按顺序做六件事，每做完一件就更新一次待办清单：' +
@@ -313,7 +313,7 @@ const TASKS = {
     '4) 把 a.txt 改成 ALPHA，改完读回来确认；5) 把 b.txt 改成 BETA，改完读回来确认；' +
     '6) 用 grep 逐个核对三个文件的内容，然后报告。',
 
-  /** 第一份清单完成后的第二个长任务，复现“二次指令不新建 Todo”。 */
+  /** 第一份清单完成后的第二个长任务，用于复现「二次指令不新建 Todo」。 */
   todosFollowup:
     '上一项工作已经结束。现在开始一项新的六步任务，每做完一件就更新一次待办清单：' +
     '1) 新建 d.txt 写入 delta；2) 新建 e.txt 写入 epsilon；3) 新建 f.txt 写入 zeta；' +
@@ -321,18 +321,18 @@ const TASKS = {
     '6) 用 grep 逐个核对 d.txt、e.txt、f.txt 的内容，然后报告。',
 
   /**
-   * 派子 agent。
+   * 派发子 agent。
    *
-   * 验的是模型把「不填 model」写成字符串 `"null"` 时不再派活失败。
+   * 验证模型把「不填 model」写成字符串 `"null"` 时不再派发任务失败。
    */
   delegate:
     '派两个子 agent 并行去做：一个数一下工作区里有几个 .txt 文件，' +
     '另一个报告 a.txt 的内容。不要指定模型，用当前会话的模型。',
 
   /**
-   * 修改力度。
+   * 修改范围。
    *
-   * 明确说了「只改这一处」，看它有没有连带改动别的文件。
+   * 用户明确要求「只改这一处」，检查模型是否连带改动其他文件。
    */
   scope: '把 b.txt 的内容改成 BETA。只改这一个文件，别的什么都不要动。',
 }
@@ -341,24 +341,24 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
   const name = `${ref.provider}/${ref.model}`
   const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
   const ws = wsFor(ref)
-  // 只清当前模型的 fixture：分批跑模型时，先前已完成的真实验收工作区必须保留。
+  // 只清理当前模型的 fixture：分批运行模型时，先前已完成的验收工作区必须保留。
   await rm(ws, { recursive: true, force: true })
   await mkdir(ws, { recursive: true })
-  await writeFile(join(ws, 'README.txt'), `提示词真机验证的工作区。${NL}`, 'utf8')
+  await writeFile(join(ws, 'README.txt'), `提示词真实模型验证的工作区。${NL}`, 'utf8')
   const live = start(store, config, ws)
   try {
-    const conv = await newConversation(live, `提示词真机 · ${name}`)
-    if (!conv) throw new Error('建会话失败')
+    const conv = await newConversation(live, `提示词验证 · ${name}`)
+    if (!conv) throw new Error('创建会话失败')
     v.conversationId = conv
     await setModel(live, conv, ref)
 
-    // 记下每轮的 runId：按轮取工具序列，才分得开「点名要求」与「自主判断」。
+    // 记录每轮的 runId：按轮取得工具序列，才能区分「明确要求」与「自主判断」。
     const runOf: Record<string, RunId | null> = {}
     let firstTodosComplete = false
     for (const [key, task] of Object.entries(TASKS)) {
       const id = await turn(live, conv, task)
-      // 没拿到 runId = 这一轮没有起 run。当场抛，不要让它变成一串「模型没调工具」。
-      if (!id) throw new Error(`${key} 这一轮没有起 run`)
+      // 未取得 runId 说明该轮未启动 run。立即抛错，避免其表现为多条「模型未调用工具」失败。
+      if (!id) throw new Error(`${key} 轮未启动 run`)
       runOf[key] = id
       v.turns++
       if (key === 'todos') {
@@ -374,29 +374,29 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
     const outputs = toolOutputs(store, conv)
     const add = (n: string, ok: boolean, d = '') => v.checks.push({ name: n, ok, detail: d })
 
-    // 权限段：说得出模式名，且这一轮没有靠撞出来。
+    // 权限段：能答出模式名，且该轮答案不是通过试错得出的。
     add(
-      '权限模式答得出来（尾区告知生效）',
+      '能答出权限模式（上下文末尾告知生效）',
       /auto|自动|完全访问|full/i.test(text),
       text.slice(0, 120).replace(/\s+/g, ' '),
     )
     add(
-      '权限那一轮没有先撞一次被拒的工具',
+      '权限轮未先触发一次被拒的工具调用',
       !/denied|被拒|拒绝执行/.test(outputs.split(NL).slice(0, 6).join(NL)),
     )
 
     /*
      * 记忆分两条，判据不同。
      *
-     * **点名要求那一轮没写才是缺陷**：用户说了「写进你的长期记忆」，写成工作区
-     * 里的文件就是没照做。其余几轮里自发存了几条只报数——要不要沉淀由模型自己
-     * 判断，按断言计分等于逼它每轮都存。
+     * 明确要求的那一轮未写入才是缺陷：用户要求「写进你的长期记忆」，写成工作区
+     * 中的文件即为未遵循。其余各轮自主写入的条数只报告、不判定：是否沉淀由模型自行
+     * 判断，按断言计分等于要求模型每轮都写入。
      */
     const namedRun = toolCallsIn(store, runOf.memory ?? null)
     add(
-      '点名要求时写进了长期记忆',
+      '明确要求时写入了长期记忆',
       namedRun.includes('write_memory'),
-      namedRun.join(',') || '这一轮一个工具都没调',
+      namedRun.join(',') || '该轮未调用任何工具',
     )
     const spontaneous = Object.entries(runOf)
       .filter(([k]) => k !== 'memory')
@@ -404,9 +404,9 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
         (n, [, id]) => n + toolCallsIn(store, id).filter((t) => t === 'write_memory').length,
         0,
       )
-    add('自主沉淀（不计失败）', true, `其余几轮自发存了 ${spontaneous} 条`)
-    add('能力段·定时：调了 create_schedule', tools.includes('create_schedule'))
-    add('能力段·派活：调了 subagent', tools.includes('subagent'))
+    add('自主沉淀（不计失败）', true, `其余各轮自主写入 ${spontaneous} 条`)
+    add('能力段·定时：调用了 create_schedule', tools.includes('create_schedule'))
+    add('能力段·派发：调用了 subagent', tools.includes('subagent'))
     const firstTodoTools = toolCallsIn(store, runOf.todos ?? null)
     const followupTodoTools = toolCallsIn(store, runOf.todosFollowup ?? null)
     const followupContext = listRunContextSnapshots(store, conv as ConversationId).find(
@@ -419,34 +419,34 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
     )
     const finalTodos = latestTodos(store, conv as ConversationId)
     add('首个长任务建立了 Todo', firstTodoTools.includes('write_todos'))
-    add('首个长任务的 Todo 正常收尾', firstTodosComplete)
-    add('二次指令的 run 快照没有继承已完成旧清单', oldTodoProjected === false)
+    add('首个长任务的 Todo 全部完成', firstTodosComplete)
+    add('二次指令的 run 快照未继承已完成的旧清单', oldTodoProjected === false)
     add('二次长任务重新建立了 Todo', followupTodoTools.includes('write_todos'))
     add(
-      '二次长任务的 Todo 正常收尾',
+      '二次长任务的 Todo 全部完成',
       Boolean(finalTodos?.length && finalTodos.every((todo) => todo.status === 'completed')),
     )
 
-    // 只卡正文里同一条被反复开场；思考里的次数一并报出来，但不判失败。
+    // 只检查正文中同一项被反复用作开场白；思考中的次数一并报告，但不判定失败。
     const runIds = Object.values(runOf)
     const repeated = repeatedOpenersInRuns(runIds.map((id) => saidIn(store, id, 'text')))
     const inThinking = repeatedOpenersInRuns(
       runIds.map((id) => saidIn(store, id, 'thinking')),
     ).length
     add(
-      '正文没有把同一条反复拿来开场',
+      '正文未反复以同一项作为开场白',
       repeated.length === 0,
       repeated.length
         ? repeated.map(([run, item, count]) => `第 ${run} 轮·第 ${item} 条 ×${count}`).join('、')
-        : `思考里 ${inThinking} 条重复（不计失败）`,
+        : `思考中 ${inThinking} 条重复（不计失败）`,
     )
 
-    // 子 agent 的 model 归一化：不该再出现「配置里没有模型 null」。
-    add('派活没有因为 model=null 失败', !/配置里没有模型\s*(null|undefined)/.test(outputs))
+    // 子 agent 的 model 归一化：不应再出现「配置中没有模型 null」。
+    add('派发未因 model=null 失败', !/配置中没有模型\s*(null|undefined)/.test(outputs))
 
     v.cachedRatio = cachedRatio(store, conv)
     add(
-      '缓存有命中（冻结前缀没被打散）',
+      '缓存命中（冻结前缀未被打乱）',
       (v.cachedRatio ?? 0) > 0,
       `命中占比 ${((v.cachedRatio ?? 0) * 100).toFixed(1)}%`,
     )
@@ -460,7 +460,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
 
 async function main(): Promise<number> {
   const config = await loadConfig()
-  // 落主库，跑完能在面板里翻开看每一轮。
+  // 写入主库，执行完毕后可在面板中查看每一轮。
   const store = new Store({ path: dataPath() })
 
   const args = process.argv.slice(2)
@@ -481,7 +481,7 @@ async function main(): Promise<number> {
     const v = await runFor(store, config, ref)
     all.push(v)
     if (v.error) {
-      line(`  ✗ 跑挂了：${v.error}（跑完 ${v.turns} 轮）`)
+      line(`  ✗ 执行失败：${v.error}（已完成 ${v.turns} 轮）`)
       continue
     }
     for (const c of v.checks) {
@@ -495,18 +495,18 @@ async function main(): Promise<number> {
   const alive = all.filter((v) => !v.error)
   for (const v of all) {
     if (v.error) {
-      line(`  ${v.ref.padEnd(38)} 跑挂：${v.error}`)
+      line(`  ${v.ref.padEnd(38)} 执行失败：${v.error}`)
       continue
     }
     const pass = v.checks.filter((c) => c.ok).length
     const ratio = v.cachedRatio === null ? '—' : `${(v.cachedRatio * 100).toFixed(1)}%`
     line(`  ${v.ref.padEnd(38)} ${pass}/${v.checks.length} 通过　缓存命中 ${ratio}`)
   }
-  // 逐条看哪一项在多少个模型上没过：某一项全线不过说明是提示词的问题，
-  // 只在个别模型上不过说明是那个模型的服从度。
+  // 逐项统计在多少个模型上未通过：某一项在全部模型上均未通过说明是提示词的问题，
+  // 只在个别模型上未通过说明是该模型的遵循程度。
   if (alive.length) {
     line('')
-    line('逐项跨模型：')
+    line('各项跨模型结果：')
     for (const c of alive[0]!.checks) {
       const ok = alive.filter((v) => v.checks.find((x) => x.name === c.name)?.ok).length
       line(`  ${ok === alive.length ? '✓' : ok === 0 ? '✗' : '△'} ${c.name}　${ok}/${alive.length}`)
@@ -518,7 +518,7 @@ async function main(): Promise<number> {
   line('')
   line(
     alive.length === 0
-      ? '没有一个模型跑通'
+      ? '没有模型执行成功'
       : failed === 0
         ? '全部通过'
         : `${failed} 个模型有未通过项`,

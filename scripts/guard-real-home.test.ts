@@ -1,5 +1,5 @@
 /**
- * `guard-real-home.ts`：执行 qy 却没设隔离数据目录的命令被拦，读取文件、设了 `QYWORK_HOME` 的放行；
+ * `guard-real-home.ts`：执行 qy 而未设置隔离数据目录的命令被拦截，读取文件、已设置 `QYWORK_HOME` 的命令放行；
  * 以及钩子进程本身的退出码。
  */
 
@@ -7,7 +7,7 @@ import { expect, test } from 'bun:test'
 import { join } from 'node:path'
 import { runsQyAgainstRealHome } from './guard-real-home.ts'
 
-test('执行位置上的 qy 与 bun 源码入口被拦', () => {
+test('执行位置上的 qy 与 bun 源码入口被拦截', () => {
   for (const cmd of [
     'bun packages/cli/src/index.ts exec --help',
     'cd /c/x && bun run packages\\cli\\src\\index.ts serve',
@@ -20,7 +20,7 @@ test('执行位置上的 qy 与 bun 源码入口被拦', () => {
   }
 })
 
-test('读取、搜索入口文件与设了 QYWORK_HOME 的命令放行', () => {
+test('读取、搜索入口文件与已设置 QYWORK_HOME 的命令放行', () => {
   for (const cmd of [
     'grep -n parseFlags packages/cli/src/index.ts',
     'sed -n 1,20p packages/cli/src/index.ts',
@@ -34,7 +34,7 @@ test('读取、搜索入口文件与设了 QYWORK_HOME 的命令放行', () => {
   expect(runsQyAgainstRealHome('qy exec x', { QYWORK_HOME: 'C:\\tmp\\home' })).toBe(false)
 })
 
-test('钩子进程：拦下时退出码 2 并说明原因，放行时退出码 0', async () => {
+test('钩子进程：拦截时退出码为 2 并说明原因，放行时退出码为 0', async () => {
   const hook = join(import.meta.dir, 'guard-real-home.ts')
   const run = async (command: string) => {
     const env = { ...process.env }

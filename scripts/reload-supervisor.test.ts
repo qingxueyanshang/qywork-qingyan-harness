@@ -1,9 +1,9 @@
 /**
- * 覆盖范围：`reload-supervisor.ts` 的全部策略（防抖合并、有活时不换、换的过程中
- * 又来改动、restart 抛错后不卡死），`isSourceChange` 的过滤，以及 `dev.ts` 初次启动
+ * 覆盖范围：`reload-supervisor.ts` 的全部策略（防抖合并、有进行中的 run 时不替换、替换过程中
+ * 出现新改动、restart 抛错后不停滞、崩溃后重启），`isConsoleInterrupt` 的识别，`isSourceChange` 与 `isWebSourceChange` 的过滤，以及 `dev.ts` 初次启动
  * 立即失败时的退出路径。
  *
- * 定时器是注入的假的：真等 300ms / 2s 会让这份测试变成秒级，而且时序断言会随机红。
+ * 定时器为注入的模拟实现：真实等待 300ms / 2s 会使本测试耗时达到秒级，且时序断言会随机失败。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -17,7 +17,7 @@ import {
   isWebSourceChange,
 } from './reload-supervisor.ts'
 
-test('控制台中断只在 Windows 按原始或截断的状态码识别，其它错误保留', () => {
+test('控制台中断只在 Windows 上按原始或截断的状态码识别，其他退出码不视为中断', () => {
   for (const code of [58, 0xc000013a, -1073741510]) {
     expect(isConsoleInterrupt(code, 'win32')).toBe(true)
   }
@@ -35,7 +35,7 @@ function unusedPort(): number {
   return port
 }
 
-/** 手动推进的定时器。同一时刻只可能有一个待触发的——策略本身就是这么设计的。 */
+/** 手动推进的定时器。按策略设计，同一时刻至多有一个待触发的定时器。 */
 function clock() {
   let pending: { fn: () => void; ms: number; id: number } | null = null
   let seq = 1
@@ -47,9 +47,9 @@ function clock() {
     clearTimer(handle: unknown) {
       if (pending && pending.id === handle) pending = null
     },
-    /** 下一次触发要等多少毫秒；没有待触发的就是 null。 */
+    /** 下一次触发的等待毫秒数；没有待触发的定时器时为 null。 */
     waiting: () => pending?.ms ?? null,
-    /** 触发它，并把 restart 那条 promise 链上的微任务放干净。 */
+    /** 触发定时器，并执行完 restart 所在 promise 链上的全部微任务。 */
     async fire() {
       const p = pending
       pending = null
@@ -82,8 +82,8 @@ function harness(
   return { c, sup, restarts, logs }
 }
 
-describe('换代码的时机', () => {
-  test('异步空闲确认失败时保留旧进程，恢复后再换代', async () => {
+describe('替换代码的时机', () => {
+  test('异步空闲确认失败时保留旧进程，恢复后再替换', async () => {
     let available = false
     const { c, sup, restarts } = harness({
       busy: async () => {
@@ -100,7 +100,7 @@ describe('换代码的时机', () => {
     expect(restarts).toEqual([1])
   })
 
-  test('查询空闲时进程退出仍会补起，旧查询回执不重复重启', async () => {
+  test('查询空闲期间进程退出时仍会重新启动，旧查询的结果不触发重复重启', async () => {
     let answer!: (busy: boolean) => void
     const { c, sup, restarts } = harness({
       busy: () =>
@@ -118,7 +118,7 @@ describe('换代码的时机', () => {
     expect(restarts).toEqual([1])
   })
 
-  test('连着几次改动只换一次 —— 一次保存会来好几个事件', async () => {
+  test('连续多次改动只替换一次：一次保存会产生多个事件', async () => {
     const { c, sup, restarts } = harness()
     sup.onChange()
     sup.onChange()
@@ -126,18 +126,18 @@ describe('换代码的时机', () => {
     expect(c.waiting()).toBe(300)
     await c.fire()
     expect(restarts.length).toBe(1)
-    // 攒完就没有下一次了，不会自己空转。
+    // 合并处理后不再有待触发的定时器，不会重复触发。
     expect(c.waiting()).toBeNull()
   })
 
-  test('手上有 run 就不换，按回看间隔排队；跑完了才换', async () => {
+  test('有 run 进行时不替换，按复查间隔排队；执行完毕后才替换', async () => {
     let running = true
     const { c, sup, restarts } = harness({ busy: () => running })
 
     sup.onChange()
     await c.fire()
     expect(restarts.length).toBe(0)
-    // 排的是回看间隔，不是防抖——这两个数混了的话，有活时会 300ms 空转一轮又一轮。
+    // 排队使用复查间隔而不是防抖间隔：两者混用时，有任务运行期间会每 300ms 重复检查一次。
     expect(c.waiting()).toBe(2000)
 
     await c.fire()
@@ -149,8 +149,8 @@ describe('换代码的时机', () => {
     expect(restarts.length).toBe(1)
   })
 
-  /** 原始失败形状：跑了 8 分钟的一轮，中途保存源码，它必须活到跑完。 */
-  test('复现原始形状：跑着的那一轮不会被换代码打断', async () => {
+  /** 原始失败形状：一轮已运行 8 分钟，中途保存源码，该轮必须持续到执行完毕。 */
+  test('复现原始形状：运行中的一轮不会被代码替换中断', async () => {
     let running = true
     const killed: string[] = []
     const { c, sup } = harness({
@@ -169,7 +169,7 @@ describe('换代码的时机', () => {
     expect(killed).toEqual(['空闲时换的'])
   })
 
-  test('换的过程中又有改动：排到后面，不并发换两次', async () => {
+  test('替换过程中出现新改动：排到之后处理，不并发替换两次', async () => {
     let release = () => {}
     const gate = new Promise<void>((r) => {
       release = r
@@ -186,7 +186,7 @@ describe('换代码的时机', () => {
     await c.fire()
     expect(started).toBe(1)
 
-    // 第一次还没回来，这时又有改动。
+    // 第一次替换尚未完成时出现新改动。
     sup.onChange()
     await c.fire()
     expect(started).toBe(1)
@@ -198,7 +198,7 @@ describe('换代码的时机', () => {
     expect(started).toBe(2)
   })
 
-  test('restart 抛错不把自己卡死 —— 下一次改动照样换', async () => {
+  test('restart 抛错不会导致自身停滞：下一次改动仍会替换', async () => {
     let fail = true
     let calls = 0
     const { c, sup, logs } = harness({
@@ -220,26 +220,26 @@ describe('换代码的时机', () => {
   })
 })
 
-describe('哪些文件算源码变了', () => {
-  test('带子目录的相对路径能判出 src', () => {
+describe('哪些文件属于源码变化', () => {
+  test('带子目录的相对路径能识别出 src', () => {
     expect(isSourceChange('tools\\src\\files.ts')).toBe(true)
     expect(isSourceChange('tools/src/files.ts')).toBe(true)
   })
 
-  test('测试文件、构建产物、非 ts 都不算', () => {
+  test('测试文件、构建产物与非 ts 文件均不属于源码变化', () => {
     expect(isSourceChange('tools\\src\\files.test.ts')).toBe(false)
     expect(isSourceChange('core\\dist\\bundle.ts')).toBe(false)
     expect(isSourceChange('tools\\src\\readme.md')).toBe(false)
     expect(isSourceChange('core')).toBe(false)
   })
 
-  /** watch 的回调可能给 null（拿不到文件名），那时不能当成「有改动」。 */
-  test('拿不到文件名时不算', () => {
+  /** watch 的回调可能传入 null（无法取得文件名），此时不能视为「有改动」。 */
+  test('无法取得文件名时不算作改动', () => {
     expect(isSourceChange(null)).toBe(false)
     expect(isSourceChange(undefined)).toBe(false)
   })
 
-  test('前端 TSX、样式和资源都进入同一个换代闸门，测试文件不进入', () => {
+  test('前端 TSX、样式与资源都触发同一个替换判定，测试文件不触发', () => {
     expect(isWebSourceChange('components\\ConversationPanel.tsx')).toBe(true)
     expect(isWebSourceChange('styles\\transcript.css')).toBe(true)
     expect(isWebSourceChange('assets\\status.svg')).toBe(true)
@@ -248,19 +248,19 @@ describe('哪些文件算源码变了', () => {
     expect(isWebSourceChange(null)).toBe(false)
   })
 })
-describe('sidecar 自己没了', () => {
-  test('崩了就重新起一个 —— 否则界面变成连不上后端的空壳', async () => {
+describe('sidecar 自行退出', () => {
+  test('崩溃后重新启动，否则界面无法连接后端', async () => {
     const { c, sup, restarts } = harness()
     sup.onExit(1)
     await Bun.sleep(0)
     await Bun.sleep(0)
     expect(restarts.length).toBe(1)
-    // 崩溃重起不走防抖：不是「攒一下」，是立刻补上。
+    // 崩溃后的重启不经过防抖：不合并等待，立即重启。
     expect(c.waiting()).toBeNull()
   })
 
-  /** 换代码时的退出由 supervisor 自己发起，不是崩溃——再补一次就成了双起。 */
-  test('换代码期间的退出不算崩溃', async () => {
+  /** 替换代码时的退出由 supervisor 自身发起，不是崩溃；再次重启会启动两个进程。 */
+  test('替换代码期间的退出不算崩溃', async () => {
     let release = () => {}
     const gate = new Promise<void>((r) => {
       release = r
@@ -282,7 +282,7 @@ describe('sidecar 自己没了', () => {
     release()
   })
 
-  test('连着起不来就停手，并说清楚', async () => {
+  test('连续启动失败后停止重试，并说明原因', async () => {
     const { sup, logs } = harness({
       restart: async () => {
         throw new Error('端口被占着')
@@ -296,7 +296,7 @@ describe('sidecar 自己没了', () => {
     expect(logs.some((l) => l.includes('不再重试'))).toBe(true)
   })
 
-  test('成功换过一次代码之后，崩溃计数清零', async () => {
+  test('成功替换一次代码之后，崩溃计数清零', async () => {
     let fail = true
     let starts = 0
     const { c, sup, logs } = harness({
@@ -312,7 +312,7 @@ describe('sidecar 自己没了', () => {
     }
     expect(logs.some((l) => l.includes('不再重试'))).toBe(true)
 
-    // 改一次代码并成功换上去，计数清零，之后崩溃还会再被接住。
+    // 修改一次代码并替换成功后计数清零，之后的崩溃仍会触发重启。
     fail = false
     sup.onChange()
     await c.fire()
