@@ -19,6 +19,7 @@ import {
   onMount,
   Show,
 } from 'solid-js'
+import { sessionSignal } from '../../lib/session.ts'
 import {
   IconDownload,
   IconExpand,
@@ -106,8 +107,8 @@ export function Timeline(props: TimelineProps) {
   const [draft, setDraft] = createSignal<CanvasClip[] | null>(null)
   /** 换位拖动中：被拖动的段、其横向偏移（画布单位）与插入的间隙。 */
   const [moving, setMoving] = createSignal<{ index: number; dx: number; gap: number } | null>(null)
-  /** 全屏中的时间轴缩放倍数；节点中恒为 1。 */
-  const [zoom, setZoom] = createSignal(1)
+  /** 全屏中的时间轴缩放倍数；节点中恒为 1。按显示方式分别记录，刷新后恢复。 */
+  const [zoom, setZoom] = sessionSignal(`qywork.timeline.zoom:${props.mode}:${props.node.id}`, 1)
   /** 全屏中轨道区的实际宽度（画布单位）；节点中为 `LANE_W`。 */
   const [laneW, setLaneW] = createSignal(LANE_W)
   let inner!: HTMLDivElement

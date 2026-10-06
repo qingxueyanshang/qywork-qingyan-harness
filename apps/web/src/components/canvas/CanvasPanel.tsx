@@ -41,6 +41,7 @@ import {
   Switch,
 } from 'solid-js'
 import { Portal } from 'solid-js/web'
+import { readSession, SET_CODEC, sessionSignal } from '../../lib/session.ts'
 import {
   absPath,
   type CanvasEdit,
@@ -67,6 +68,7 @@ import {
   state,
   uploadToCanvas,
   WORKSPACE_PATH_TYPE,
+  workspace,
 } from '../../lib/store/index.ts'
 import { AnchoredMenu } from '../AnchoredMenu.tsx'
 import { IconCanvas, IconCheck, IconChevron, IconFile, IconPlus, IconScissors } from '../Icons.tsx'
@@ -149,24 +151,30 @@ function madeAt(iso: string): string {
 
 export default function CanvasPanel(props: { path: string; active: boolean }) {
   void ensureModelCatalog()
+  /** 本页记录的键前缀。视口、选中、全屏中的时间线与面板展开态按项目与画布文件记录，刷新后恢复。 */
+  const key = `qywork.canvas:${workspace()?.id ?? ''}:${props.path}`
   const [view, setView] = createSignal<CanvasView | null>(null)
   /** 无法读取画布时的原因（格式错误、文件已删除）。此时不发送任何写操作。 */
   const [broken, setBroken] = createSignal<string | null>(null)
   /** 最近一次操作失败的原文，下一次操作成功时清空。 */
   const [fault, setFault] = createSignal<string | null>(null)
-  const [z, setZ] = createSignal(1)
-  const [px, setPx] = createSignal(40)
-  const [py, setPy] = createSignal(60)
+  const [z, setZ] = sessionSignal(`${key}.z`, 1)
+  const [px, setPx] = sessionSignal(`${key}.px`, 40)
+  const [py, setPy] = sessionSignal(`${key}.py`, 60)
   /** 画布区的实际尺寸，由 ResizeObserver 写入；尚未测得时为 0。 */
   const [size, setSize] = createSignal({ w: 0, h: 0 })
-  const [selected, setSelected] = createSignal<ReadonlySet<string>>(new Set())
+  const [selected, setSelected] = sessionSignal<ReadonlySet<string>>(
+    `${key}.selected`,
+    new Set(),
+    SET_CODEC,
+  )
   const [moving, setMoving] = createSignal<Readonly<Record<string, { x: number; y: number }>>>({})
   const [marquee, setMarquee] = createSignal<{ x: number; y: number; w: number; h: number } | null>(
     null,
   )
   const [renaming, setRenaming] = createSignal<string | null>(null)
   /** 选中的连线。与选中的节点互斥。 */
-  const [edgeSelected, setEdgeSelected] = createSignal<string | null>(null)
+  const [edgeSelected, setEdgeSelected] = sessionSignal<string | null>(`${key}.edge`, null)
   /** 从连接点拖出的连线：起点节点与指针位置（画布坐标），以及当前指向的可连接目标。 */
   const [linking, setLinking] = createSignal<{ from: string; x: number; y: number } | null>(null)
   const [linkTarget, setLinkTarget] = createSignal<string | null>(null)
@@ -178,19 +186,20 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   /** 按下 Ctrl+Shift+V 时为真，随后的 paste 事件同时复制外部输入连线。 */
   let pasteWithInputs = false
   const [menu, setMenu] = createSignal<Menu | null>(null)
-  const [tall, setTall] = createSignal(false)
+  const [tall, setTall] = sessionSignal(`${key}.tall`, false)
   const [now, setNow] = createSignal(Date.now())
   /** 选中的视频节点的播放器；取帧条读写它的时刻。 */
   const players = new Map<string, PlayerHandle>()
   /** 全屏编辑中的时间线。全屏打开时画布的按键处理只保留撤销与重做。 */
-  const [fullscreen, setFullscreen] = createSignal<string | null>(null)
+  const [fullscreen, setFullscreen] = sessionSignal<string | null>(`${key}.fullscreen`, null)
   /** 导出中的时间线与进度（0–1）。 */
   const [exports, setExports] = createSignal<Readonly<Record<string, number>>>({})
   const exportAborts = new Map<string, AbortController>()
   /** 拖动视频节点时指针下的时间线：松开指针时把这些视频加入其轨道。 */
   const [clipTarget, setClipTarget] = createSignal<string | null>(null)
   let stage!: HTMLDivElement
-  let fitted = false
+  /** 有视口记录（刷新前的视口）时不执行首次适配。 */
+  let fitted = readSession(`${key}.z`) !== undefined
   let drag: Drag | null = null
 
   dismissOnOutside(menu, () => setMenu(null))

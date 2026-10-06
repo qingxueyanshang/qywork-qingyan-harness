@@ -40,6 +40,7 @@ import {
   Show,
   Switch,
 } from 'solid-js'
+import { readSession, sessionSignal, writeSession } from '../../lib/session.ts'
 import {
   type CanvasQuote,
   client,
@@ -49,6 +50,7 @@ import {
   modelCatalog,
   openSettings,
   quoteCard,
+  workspace,
 } from '../../lib/store/index.ts'
 import { AnchoredMenu } from '../AnchoredMenu.tsx'
 import {
@@ -299,9 +301,20 @@ export function GeneratePanel(props: {
   const nodeId = props.node.id
   const apply = props.apply
   let saved = props.node.prompt
-  const [draft, setDraft] = createSignal(props.node.prompt)
+  /** 本卡片记录的键前缀：未提交的提示词草稿与空卡的输入模式刷新后恢复。 */
+  const key = `qywork.canvas.card:${workspace()?.id ?? ''}:${props.view.path}:${nodeId}`
+  /**
+   * 未提交的草稿与其所依据的提示词。依据的提示词已被修改时（模型或另一端编辑）丢弃草稿：
+   * 恢复后失焦即提交，会覆盖那次修改。
+   */
+  const kept = readSession<{ base: string; text: string }>(`${key}.draft`)
+  const [draft, setDraft] = createSignal(kept?.base === saved ? kept.text : saved)
   const [menu, setMenu] = createSignal<Menu | null>(null)
-  const [emptyMode, setEmptyMode] = createSignal<Mode>('reference')
+  const [emptyMode, setEmptyMode] = sessionSignal<Mode>(`${key}.mode`, 'reference')
+  createEffect(() => {
+    const text = draft()
+    writeSession(`${key}.draft`, text === saved ? undefined : { base: saved, text })
+  })
   const [price, setPrice] = createSignal<CanvasQuote | null>(null)
   dismissOnOutside(menu, () => setMenu(null))
   /** `@` 打开选择框时光标所在的位置；选中后在此处插入标签。 */
@@ -386,15 +399,21 @@ export function GeneratePanel(props: {
     return out
   }
 
-  // 服务端返回的画布中提示词变化且编辑框没有焦点时，按返回的提示词重建；有焦点时以编辑框内容为准。
+  /*
+   * 画布每次重新读取后重建编辑框（素材标签的名称随节点更新）。编辑框有焦点时以编辑框内容为准；
+   * 没有焦点时，返回的提示词变化则按它重建，未变化则保留当前草稿。不要改为一律按返回的提示词重建：
+   * 刷新后恢复的草稿尚未提交、编辑框也没有焦点，下一次重新读取会清除它。
+   */
   createEffect(
     on(
       () => props.node.prompt,
       (prompt) => {
+        const changed = prompt !== saved
         saved = prompt
         if (document.activeElement === editor) return
-        render(prompt)
-        setDraft(prompt)
+        const text = changed ? prompt : draft()
+        render(text)
+        setDraft(text)
       },
     ),
   )
