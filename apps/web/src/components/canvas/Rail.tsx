@@ -103,7 +103,11 @@ function Picker(props: { onPick: OnPick }) {
         <Show when={error()}>{(m) => <div class="canvas-picker-error">{m()}</div>}</Show>
         <For each={hits()}>
           {(path) => (
-            <button type="button" title={path} onClick={() => props.onPick(path, picked++ === 0)}>
+            <button
+              type="button"
+              data-tip={path}
+              onClick={() => props.onPick(path, picked++ === 0)}
+            >
               <FileTypeIcon name={path} />
               <span class="truncate">{path}</span>
             </button>

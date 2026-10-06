@@ -83,13 +83,13 @@ export function SchedulesPanel() {
               {(s) => (
                 <div class="schedule-card" classList={{ off: !s.enabled }}>
                   <div class="schedule-head">
-                    <span class="schedule-title" title={s.title}>
+                    <span class="schedule-title" data-tip={s.title}>
                       {s.title}
                     </span>
                     {/* 上次结果跟任务名称同行；正文可很长，结果不能排在它后面。 */}
                     <Show when={outcome(s)}>
                       {(text) => (
-                        <span class="schedule-outcome field-hint bad" title={text()}>
+                        <span class="schedule-outcome field-hint bad" data-tip={text()}>
                           {text()}
                         </span>
                       )}

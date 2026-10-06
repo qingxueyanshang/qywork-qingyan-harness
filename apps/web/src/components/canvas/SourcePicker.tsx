@@ -67,7 +67,7 @@ export function SourcePicker(props: {
         </Show>
         <For each={props.files ? files.hits() : []}>
           {(path) => (
-            <button type="button" title={path} onClick={() => props.onFile(path)}>
+            <button type="button" data-tip={path} onClick={() => props.onFile(path)}>
               <span class="canvas-pick-file">
                 <FileTypeIcon name={path} />
               </span>

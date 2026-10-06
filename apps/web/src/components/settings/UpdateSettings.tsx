@@ -25,7 +25,7 @@ export function UpdateSettings() {
           <section class="settings-block app-update-section" aria-label="更新">
             <div class="settings-block-head app-update-heading">
               <h3>更新</h3>
-              <div class="app-update-version" title="当前版本与运行方式">
+              <div class="app-update-version" data-tip="当前版本与运行方式">
                 <span>{value().currentVersion}</span>
                 <span>{MODES[value().mode]}</span>
               </div>
@@ -71,7 +71,7 @@ export function UpdateSettings() {
                 <span
                   class="app-update-status"
                   classList={{ bad: value().stage === 'error' }}
-                  title={view().text}
+                  data-tip={view().text}
                   aria-live="polite"
                 >
                   {view().text}
