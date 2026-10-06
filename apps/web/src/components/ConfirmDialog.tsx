@@ -4,26 +4,26 @@ import { holdOverlay } from '../lib/store/index.ts'
 /**
  * 确认弹窗。
  *
- * **为什么不是就地展开。** 别把确认句塞进侧栏那一行里：左栏只有 232px，一句带边界声明的话要折三行，
- * 把下面的项目挤开；而它盖在列表上，看起来像列表自己坏了。
- * 破坏性动作的确认属于「打断」——它就该是一个夺焦点的弹窗。
+ * **不采用就地展开。** 不要把确认句放进侧栏的行内：左栏只有 232px，一句带边界声明的文字要折成三行，
+ * 把下方的项目挤开；且它覆盖在列表上，看起来像列表显示异常。
+ * 破坏性操作的确认属于中断操作，应使用获取焦点的弹窗。
  *
- * **开合不进全局状态。** 确认框的开合只属于按下按钮的那一行。做成全局状态就要为每个调用点编一个名
- * 字，还得把上下文塞进全局 store。这里只受 `open` 这一个 prop 控制。
+ * **开合状态不进入全局状态。** 确认框的开合只属于触发它的那一行。做成全局状态需要为每个调用点命名，
+ * 还要把上下文写入全局 store。此处只受 `open` 一个 prop 控制。
  */
 export function ConfirmDialog(props: {
   open: boolean
   title: string
   /** 仅补充标题未包含的必要信息。 */
   message?: string | undefined
-  /** 确认按钮的文字。用动词本身（「移除」「归档」），不写「确定」。 */
+  /** 确认按钮的文字。使用动词本身（「移除」「归档」），不写「确定」。 */
   confirmLabel: string
-  /** 真的会造成不可逆改动时才给 true，按钮转成危险色。 */
+  /** 仅在操作不可逆时设为 true，按钮显示为危险色。 */
   danger?: boolean
   onConfirm: () => void
   onCancel: () => void
 }) {
-  // 内置浏览器那一页是原生子视图，画在所有 DOM 之上；开着的浮层要让它先让位。
+  // 内置浏览器页是原生子视图，渲染在所有 DOM 之上；浮层打开时需先将其移出可视区。
   holdOverlay(() => props.open)
 
   createEffect(() => {
@@ -40,8 +40,8 @@ export function ConfirmDialog(props: {
 
   return (
     <Show when={props.open}>
-      {/* 遮罩是对话框的兄弟节点而不是父节点：套成父节点是无效 HTML
-          （button 里不能放交互内容），还得靠 stopPropagation 才不误触发。 */}
+      {/* 遮罩是对话框的兄弟节点而不是父节点：作为父节点是无效 HTML
+          （button 内不能放交互内容），且需要 stopPropagation 才能避免误触发。 */}
       <button class="backdrop-close" type="button" aria-label="取消" onClick={props.onCancel} />
       <div class="sheet-backdrop pass-through">
         <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-label={props.title}>

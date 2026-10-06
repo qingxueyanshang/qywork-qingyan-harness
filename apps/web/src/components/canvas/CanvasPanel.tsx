@@ -1,11 +1,11 @@
 /**
- * 画布页：一个 `*.canvas.json` 的视图与编辑。
+ * 画布页：`*.canvas.json` 的查看与编辑。
  *
- * 画布文件与节点状态以服务端为准（`readCanvas`）：文件快照序号或画布事件序号一变就重读，
- * 每次修改提交一批操作、回体直接是应用后的画布。本地只多两样：视口（不存盘）与拖动中的位置。
- * 拖动中的节点在松手提交之前一直用本地位置，这期间的重读不改它的位置。
+ * 画布文件与节点状态以服务端为准（`readCanvas`）：文件快照序号或画布事件序号变化时重新读取，
+ * 每次修改提交一批操作，响应体即应用后的画布。本地只额外保存两项：视口（不保存到文件）与拖动中的位置。
+ * 拖动中的节点在松开指针提交之前始终使用本地位置，其间的重新读取不改变它的位置。
  *
- * 渲染用 DOM + CSS transform 平移缩放，一层 SVG 画线：节点里有播放器、面板里是输入框。
+ * 渲染使用 DOM + CSS transform 实现平移缩放，用一层 SVG 绘制连线：节点中有播放器，面板中有输入框。
  */
 
 import {
@@ -85,8 +85,8 @@ import { gapAt, insertClips, metaOf, sessionOf, splitAt, withoutClip } from './t
 const PANEL_W = 480
 
 /**
- * 右键点中的对象：节点作用于选区（点中的不在选区里时先只选它），空白处作用于那一点；
- * 时间线上的一段（`clip`）记下第几段与指针处的成片时刻 `t`。
+ * 右键点击的对象：节点作用于选区（点击的节点不在选区中时先只选中它），空白处作用于点击位置；
+ * 时间线上的片段（`clip`）记录片段序号与指针处的成片时刻 `t`。
  */
 type ContextTarget =
   | { kind: 'node'; id: string }
@@ -94,15 +94,15 @@ type ContextTarget =
   | { kind: 'blank' }
   | { kind: 'clip'; id: string; index: number; t: number }
 
-/** 从片段推出来的「视频 → 时间线」的线：id 是这个前缀加时间线 id 与视频节点 id。画布 id 不含冒号，不会撞上。 */
+/** 从片段推导出的「视频 → 时间线」连线：id 由该前缀、时间线 id 与视频节点 id 组成。画布 id 不含冒号，不会冲突。 */
 const CLIP_LINK = 'clip:'
-/** 拖动节点时的吸附范围（屏幕像素）：按缩放折成画布单位，缩放后手感不变。 */
+/** 拖动节点时的吸附范围（屏幕像素）：按缩放换算为画布单位，缩放后吸附距离不变。 */
 const SNAP = 6
 
 /**
- * `at`：从连接点拖到空白处松手时新卡放在这一点；右键菜单里粘贴、新建与上传也放在这一点（画布坐标）。
- * 右键菜单（`context`）的 `nodeId` 为空串，作用对象在 `target`。
- * 时间线的「+」（`clip`）：选中的视频插在第 `gap` 个间隙。
+ * `at`：从连接点拖到空白处松开时新卡片放在该点；右键菜单中的粘贴、新建与上传也放在该点（画布坐标）。
+ * 右键菜单（`context`）的 `nodeId` 为空字符串，作用对象在 `target` 中。
+ * 时间线的「+」（`clip`）：选中的视频插入第 `gap` 个间隙。
  */
 type Menu = {
   kind: 'frame' | 'out' | 'version' | 'context' | 'clip'
@@ -114,7 +114,7 @@ type Menu = {
 }
 
 type Drag =
-  /** `context`：右键按下的那一次平移；松开时没拖动就弹出右键菜单。 */
+  /** `context`：按下右键开始的平移；松开时未拖动则弹出右键菜单。 */
   | {
       mode: 'pan'
       sx: number
@@ -133,10 +133,10 @@ type Drag =
   | { mode: 'box'; sx: number; sy: number; base: ReadonlySet<string> }
   | { mode: 'link'; from: string; sx: number; sy: number; moved: boolean; anchor: HTMLElement }
 
-/** 画布之间共用的剪贴板：复制那一刻的整份文档与选中的节点。只在本应用内，跨画布粘贴要求文件在同一工作区。 */
+/** 各画布共用的剪贴板：复制时的完整文档与选中的节点。仅在本应用内有效，跨画布粘贴要求文件位于同一工作区。 */
 let clipboard: { source: CanvasDoc; ids: string[] } | null = null
 
-/** 版本的生成时间：当天只写时分，跨天补月日。 */
+/** 版本的生成时间：当天只显示时分，非当天加上月日。 */
 function madeAt(iso: string): string {
   const d = new Date(iso)
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -149,14 +149,14 @@ function madeAt(iso: string): string {
 export default function CanvasPanel(props: { path: string; active: boolean }) {
   void ensureModelCatalog()
   const [view, setView] = createSignal<CanvasView | null>(null)
-  /** 读不出这张画布（格式错误、文件没了）。此时不发任何写操作。 */
+  /** 无法读取画布时的原因（格式错误、文件已删除）。此时不发送任何写操作。 */
   const [broken, setBroken] = createSignal<string | null>(null)
-  /** 最近一次操作没做成的原文，下一次成功即清。 */
+  /** 最近一次操作失败的原文，下一次操作成功时清空。 */
   const [fault, setFault] = createSignal<string | null>(null)
   const [z, setZ] = createSignal(1)
   const [px, setPx] = createSignal(40)
   const [py, setPy] = createSignal(60)
-  /** 画布区的实际尺寸，由 ResizeObserver 写入；未量到时为 0。 */
+  /** 画布区的实际尺寸，由 ResizeObserver 写入；尚未测得时为 0。 */
   const [size, setSize] = createSignal({ w: 0, h: 0 })
   const [selected, setSelected] = createSignal<ReadonlySet<string>>(new Set())
   const [moving, setMoving] = createSignal<Readonly<Record<string, { x: number; y: number }>>>({})
@@ -166,27 +166,27 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const [renaming, setRenaming] = createSignal<string | null>(null)
   /** 选中的连线。与选中的节点互斥。 */
   const [edgeSelected, setEdgeSelected] = createSignal<string | null>(null)
-  /** 从连接点拖出的连线：起点节点与指针位置（画布坐标），以及此刻指着的可连目标。 */
+  /** 从连接点拖出的连线：起点节点与指针位置（画布坐标），以及当前指向的可连接目标。 */
   const [linking, setLinking] = createSignal<{ from: string; x: number; y: number } | null>(null)
   const [linkTarget, setLinkTarget] = createSignal<string | null>(null)
-  /** 拖动节点时吸附到的对齐线（画布坐标），松手清空。 */
+  /** 拖动节点时吸附到的对齐线（画布坐标），松开指针时清空。 */
   const [guides, setGuides] = createSignal<Guide[]>([])
   let dropAnchor!: HTMLSpanElement
-  /** 指针最近在画布区里的位置（画布坐标）；粘贴与拖入放在这里，指针不在画布区时放视野中央。 */
+  /** 指针最近在画布区中的位置（画布坐标）；粘贴与拖入的内容放在此处，指针不在画布区时放在视野中央。 */
   let pointerAt: { x: number; y: number } | null = null
-  /** 按下 Ctrl+Shift+V 时为真，随后的 paste 事件带上外部输入线。 */
+  /** 按下 Ctrl+Shift+V 时为真，随后的 paste 事件同时复制外部输入连线。 */
   let pasteWithInputs = false
   const [menu, setMenu] = createSignal<Menu | null>(null)
   const [tall, setTall] = createSignal(false)
   const [now, setNow] = createSignal(Date.now())
   /** 选中的视频节点的播放器；取帧条读写它的时刻。 */
   const players = new Map<string, PlayerHandle>()
-  /** 全屏编辑中的时间线。打开时画布的按键处理只留撤销与重做。 */
+  /** 全屏编辑中的时间线。全屏打开时画布的按键处理只保留撤销与重做。 */
   const [fullscreen, setFullscreen] = createSignal<string | null>(null)
   /** 导出中的时间线与进度（0–1）。 */
   const [exports, setExports] = createSignal<Readonly<Record<string, number>>>({})
   const exportAborts = new Map<string, AbortController>()
-  /** 拖动视频节点时指针下的时间线：松手就把这些视频放进它的轨道。 */
+  /** 拖动视频节点时指针下的时间线：松开指针时把这些视频加入其轨道。 */
   const [clipTarget, setClipTarget] = createSignal<string | null>(null)
   let stage!: HTMLDivElement
   let fitted = false
@@ -194,9 +194,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
   dismissOnOutside(menu, () => setMenu(null))
 
-  // ── 读与写 ──
+  // ── 读取与写入 ──
 
-  /** 只采纳最后一次：连续重读时先发的可能后到；读与写共用一个序号，按发出的先后算（见 `write`）。 */
+  /** 只采纳最后一次：连续重新读取时先发出的请求可能后返回；读写共用一个序号，按发出顺序计算（见 `write`）。 */
   let seq = 0
   const load = async () => {
     const mine = ++seq
@@ -206,7 +206,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       setView(next)
       setBroken(null)
     } catch (e) {
-      if (mine === seq) setBroken(explainApiError(e, '打不开这张画布'))
+      if (mine === seq) setBroken(explainApiError(e, '无法打开画布'))
     }
   }
   createEffect(
@@ -217,9 +217,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   )
 
   /**
-   * 写操作的回体：发出时占序号，回来时只在此后没有发出过更新的读才采纳。
-   * 不要改成回来时才占序号：那会作废写操作发出之后才发起、内容比它新的读（例如生成中平台回报状态引起的重读），
-   * 画布停在旧的样子，直到下一次变化。
+   * 写操作的响应体：发出时占用序号，返回时只有在此后未发出新的读取时才采纳。
+   * 不要改为返回时才占用序号：那样会作废在写操作之后发起、内容更新的读取（例如生成中平台报告状态引起的
+   * 重新读取），画布停留在旧状态，直到下一次变化。
    */
   const write = async <T extends CanvasView>(request: Promise<T>): Promise<T> => {
     const mine = ++seq
@@ -230,12 +230,12 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
 
   /**
-   * 本页自己的编辑：每步记下前后两份文档的指纹。撤销换回前一份、重做换回后一份，由服务端核对当前文件仍是那一份。
-   * 上传、拖入、取帧与生成回写不在栈里。
+   * 本页发起的编辑：每一步记录修改前后两份文档的指纹。撤销恢复修改前的文档，重做恢复修改后的文档，
+   * 由服务端核对当前文件仍是记录中的那一份。上传、拖入、取帧与生成结果写回不进入栈。
    */
   const undoStack: CanvasEdit['step'][] = []
   const redoStack: CanvasEdit['step'][] = []
-  /** 本页最近一次编辑：撤销与重做先等它回来，否则刚松手就按撤销时这一步还没进撤销栈，撤销没有反应。 */
+  /** 本页最近一次编辑：撤销与重做先等待其返回，否则松开指针后立即撤销时该步尚未进入撤销栈，撤销无效。 */
   let editing: Promise<unknown> = Promise.resolve()
 
   const apply = (ops: CanvasOp[]): Promise<CanvasEdit | null> => {
@@ -250,7 +250,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         }
         return next
       } catch (e) {
-        setFault(explainApiError(e, '没有改成'))
+        setFault(explainApiError(e, '修改失败'))
         return null
       }
     })()
@@ -258,7 +258,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     return job
   }
 
-  /** 撤销（`back` 为真）或重做一步。服务端拒绝时两个栈都清空：文件已经不是栈里记的那条历史。 */
+  /** 撤销（`back` 为真）或重做一步。服务端拒绝时清空两个栈：文件已不再对应栈中记录的历史。 */
   const travel = async (back: boolean) => {
     await editing
     const from = back ? undoStack : redoStack
@@ -273,35 +273,35 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     } catch (e) {
       undoStack.length = 0
       redoStack.length = 0
-      setFault(explainApiError(e, back ? '没有撤销' : '没有重做'))
+      setFault(explainApiError(e, back ? '撤销失败' : '重做失败'))
     }
   }
 
   const run = (nodeId: string, ops: CanvasOp[]) => {
     write(runCard(props.path, nodeId, ops)).catch((e: unknown) =>
-      setFault(explainApiError(e, '没有开始生成')),
+      setFault(explainApiError(e, '无法开始生成')),
     )
   }
 
-  /** 停止：撤不回时用一句话说明照常计费；撤成了由 `canvas.run` 事件刷新，卡回到这次生成之前。 */
+  /** 停止：无法撤回时用一句话说明照常计费；撤回成功时由 `canvas.run` 事件刷新，卡片恢复到本次生成之前。 */
   const cancel = (nodeId: string) =>
     cancelCard(props.path, nodeId).then(
       (outcome) => {
         if (outcome === 'started') setFault('已开始生成，平台不支持中途取消，完成后照常计费')
-        else if (outcome === 'unsupported') setFault('这个平台不支持取消，完成后照常计费')
+        else if (outcome === 'unsupported') setFault('该平台不支持取消，完成后照常计费')
       },
       (e: unknown) => {
-        setFault(explainApiError(e, '没有取消'))
+        setFault(explainApiError(e, '取消失败'))
       },
     )
 
   const retrieve = (nodeId: string, version?: string) => {
     write(retrieveCard(props.path, nodeId, version)).catch((e: unknown) =>
-      setFault(explainApiError(e, '没有开始取回')),
+      setFault(explainApiError(e, '无法开始取回')),
     )
   }
 
-  // 只在开始 / 全部结束时启停计时；状态回报和其他画布更新不重置一秒间隔。
+  // 只在开始与全部结束时启动或停止计时；状态报告与其他画布更新不重置一秒的间隔。
   const hasRunning = createMemo(() =>
     Object.values(view()?.states ?? {}).some((s) => s.state === 'running'),
   )
@@ -317,7 +317,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const nodes = () => view()?.doc.nodes ?? []
   const byId = (id: string) => nodes().find((n) => n.id === id)
   const pos = (n: CanvasNode) => moving()[n.id] ?? { x: n.x, y: n.y }
-  /** 屏幕上的点距靠近 24px：画布点距取 20 × 2ⁿ，n 取让屏幕点距最接近 24px 的那一档。 */
+  /** 屏幕上的网格点距接近 24px：画布点距取 20 × 2ⁿ，n 取使屏幕点距最接近 24px 的值。 */
   const grid = () => {
     const n = Math.max(-2, Math.min(6, Math.round(Math.log2(24 / (20 * z())))))
     return 20 * 2 ** n * z()
@@ -327,7 +327,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     return { x: (clientX - r.left - px()) / z(), y: (clientY - r.top - py()) / z() }
   }
 
-  /** 让 `list`（缺省是全部节点）整体落进视野。 */
+  /** 使 `list`（缺省为全部节点）整体位于视野内。 */
   const fit = (animate: boolean, list: CanvasNode[] = nodes()) => {
     const { w, h } = size()
     if (!list.length) {
@@ -367,7 +367,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     requestAnimationFrame(step)
   }
 
-  // 首次适配等画布区量到尺寸：页签在后台打开时尺寸为 0，按缺省尺寸算出的视口与实际不符。
+  // 首次适配等待画布区测得尺寸：标签页在后台打开时尺寸为 0，按缺省尺寸计算的视口与实际不符。
   createEffect(() => {
     if (fitted || !view() || size().w === 0) return
     fitted = true
@@ -375,8 +375,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   })
 
   /**
-   * 删除选中的节点。在窗口上听，只在这一页显示着、按键不在输入框或编辑框里时生效：
-   * 画布本身不抢焦点，点过画布之后焦点仍可能在别处。
+   * 删除选中的节点。监听挂在窗口上，只在本页可见且按键不在输入框或编辑框中时生效：
+   * 画布本身不获取焦点，点击画布之后焦点仍可能在其他元素上。
    */
   const onKeyDown = (e: KeyboardEvent) => {
     if (!props.active) return
@@ -393,7 +393,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       return
     }
     if (e.code === 'Space') {
-      // 焦点可能仍在窗口或面板按钮上；长按的重复事件也必须拦截，否则松键会触发按钮。
+      // 焦点可能仍在窗口或面板按钮上；长按产生的重复事件也必须拦截，否则松开按键会触发按钮。
       e.preventDefault()
       space = true
       stage.classList.add('panning')
@@ -436,7 +436,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       const ids = [...selected()]
       if (v && ids.length) void pasteNodes(v.doc, ids, null, true)
     }
-    // 粘贴本身在 paste 事件里做：那里才拿得到系统剪贴板里的图片。
+    // 粘贴本身在 paste 事件中处理：只有在该事件中才能取得系统剪贴板中的图片。
     if (mod && key === 'v') pasteWithInputs = e.shiftKey
     if (mod && e.key.toLowerCase() === 'a') {
       e.preventDefault()
@@ -458,7 +458,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     }
   }
 
-  /** 选中的是一条时间线、且它的轨道上选着一段时，删的是那一段。删了回真。 */
+  /** 选中的是一条时间线且其轨道上选中了片段时，删除该片段。已删除时返回 true。 */
   const removeSelectedClip = (): boolean => {
     const n = single()
     const index = n?.type === 'timeline' ? sessionOf(n.id)?.selected() : null
@@ -468,7 +468,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     return true
   }
 
-  /** 断开一条线。从片段推出来的线：删掉时间线里引用那个视频文件的全部片段。成功回真。 */
+  /** 断开一条连线。对于从片段推导出的连线，删除时间线中引用该视频文件的全部片段。成功时返回 true。 */
   const cutLink = async (id: string): Promise<boolean> => {
     if (!id.startsWith(CLIP_LINK)) return (await apply([{ op: 'remove', id }])) !== null
     const [timeline, source] = id.slice(CLIP_LINK.length).split(':')
@@ -499,7 +499,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
 
   /**
-   * 把 `source` 里的一组节点复制到这张画布：整组中心落在 `at`；`at` 为 `null` 时在原位右下错开一点（复制一份）。
+   * 把 `source` 中的一组节点复制到当前画布：整组中心位于 `at`；`at` 为 `null` 时放在原位置右下方稍作偏移（创建副本）。
    * 粘贴后选中副本。
    */
   const pasteNodes = async (
@@ -525,7 +525,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     }
   }
 
-  /** 粘贴：系统剪贴板里有文件（截图、复制的图片）就上传，否则粘贴本应用剪贴板里的节点。 */
+  /** 粘贴：系统剪贴板中有文件（截图、复制的图片）时上传，否则粘贴本应用剪贴板中的节点。 */
   const onPaste = (e: ClipboardEvent) => {
     if (!props.active) return
     const target = e.target instanceof Element ? e.target : null
@@ -567,7 +567,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   onMount(() => {
     const ro = new ResizeObserver(() => setSize({ w: stage.clientWidth, h: stage.clientHeight }))
     ro.observe(stage)
-    // 滚轮要 `passive: false` 才能拦住页面滚动。
+    // 滚轮监听必须设为 `passive: false` 才能阻止页面滚动。
     const onWheel = (e: WheelEvent) => {
       if ((e.target as Element).closest('.canvas-panel, .canvas-picker, .canvas-media-notice'))
         return
@@ -586,7 +586,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       }
     }
     stage.addEventListener('wheel', onWheel, { passive: false })
-    // 桌面外壳里系统拖放由外壳截获、给绝对路径：画布区登记成接收方。
+    // 桌面外壳中的系统拖放由外壳截获并提供绝对路径：画布区注册为接收方。
     if (isDesktopShell()) {
       const unregister = registerDropSink({
         hit: (pos) => {
@@ -597,7 +597,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         over: (on) => stage.classList.toggle('drop-over', on),
         paths: (paths, pos) => {
           if (!paths.length) return
-          // 落在时间线上：先放上画布，再把其中的视频插进轨道。
+          // 拖放到时间线上：先添加到画布，再把其中的视频插入轨道。
           const into = timelineAt(pos.x, pos.y)
           const gap = into ? gapFor(into, pos.x, onTracksAt(into, pos.x, pos.y)) : undefined
           void importToCanvas(props.path, paths, toWorld(pos.x, pos.y)).then(
@@ -611,7 +611,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
               })
               await addClips(into, added, gap)
             },
-            (e: unknown) => setFault(explainApiError(e, '没有放上画布')),
+            (e: unknown) => setFault(explainApiError(e, '无法添加到画布')),
           )
         },
       })
@@ -635,7 +635,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
   const onPointerDown = (e: PointerEvent) => {
     const target = e.target as HTMLElement
-    // 平移：中键、右键或按住 Space 的左键，在画布上任何地方都行。
+    // 平移：中键、右键或按住 Space 时的左键，在画布任意位置均可。
     if (e.button === 1 || e.button === 2 || (e.button === 0 && space)) {
       if (target.closest('.canvas-panel, .canvas-rail, .canvas-picker, .canvas-dock')) return
       e.preventDefault()
@@ -675,7 +675,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       })
       drag = { mode: 'move', sx: e.clientX, sy: e.clientY, start, moved: false }
     } else {
-      // 左键拖空白是框选；按住 Shift 时叠加到已有选区。
+      // 左键拖动空白处为框选；按住 Shift 时叠加到已有选区。
       const base = e.shiftKey ? selected() : new Set<string>()
       if (!e.shiftKey) setSelected(base)
       const r = stage.getBoundingClientRect()
@@ -803,7 +803,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const into = clipTarget()
     setClipTarget(null)
     if (into) {
-      // 放进时间线：节点回原位，它们的视频按指针处的间隙插入。
+      // 加入时间线：节点回到原位置，其视频按指针处的间隙插入。
       const paths = d.start.flatMap((s) => mediaOf(view()!, s.id).path ?? [])
       setMoving({})
       void addClips(into, paths, gapFor(into, e.clientX, onTracksAt(into, e.clientX, e.clientY)))
@@ -816,11 +816,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       x: Math.round(p.x),
       y: Math.round(p.y),
     }))
-    // 松手才提交一次；回体到之前一直用本地位置，免得节点先跳回再跳过去。
+    // 松开指针时提交一次；响应体返回之前始终使用本地位置，避免节点先跳回原处再移到新位置。
     void apply(ops).then(() => setMoving({}))
   }
 
-  /** 双击标题改名，双击内容在主区打开那个文件。 */
+  /** 双击标题重命名，双击内容在主区打开对应文件。 */
   const onDblClick = (e: MouseEvent) => {
     const target = e.target as HTMLElement
     const nodeEl = target.closest<HTMLElement>('[data-node]')
@@ -846,7 +846,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const path = e.dataTransfer?.getData(WORKSPACE_PATH_TYPE)
     const files = [...(e.dataTransfer?.files ?? [])]
     if (!path && files.length) {
-      // 浏览器里从系统拖入；桌面外壳里系统拖放由外壳截获，走 shell-drop。
+      // 浏览器中处理从系统拖入的文件；桌面外壳中的系统拖放由外壳截获，经由 shell-drop 处理。
       e.preventDefault()
       const into = timelineAt(e.clientX, e.clientY)
       if (into) void uploadClips(into, files, gapFor(into, e.clientX, dropOnTracks(e)))
@@ -857,7 +857,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     e.preventDefault()
     const target = (e.target as HTMLElement).closest<HTMLElement>('[data-node]')
     const onto = target ? byId(target.dataset.node!) : undefined
-    // 拖到一个缺失的文件节点上即替换它的路径。
+    // 拖放到缺失的文件节点上即替换该节点的路径。
     if (onto?.type === 'file' && view()?.states[onto.id]?.state === 'missing') {
       void apply([{ op: 'update', id: onto.id, path }])
       return
@@ -870,11 +870,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     void apply([{ op: 'add_file', path, x: Math.round(at.x - 110), y: Math.round(at.y - 80) }])
   }
 
-  // ── 新建与接出 ──
+  // ── 新建与后续生成 ──
 
   // ── 右键菜单 ──
 
-  /** 右键按下处是什么：节点、连线还是空白。选区等确定弹菜单（松开时没拖动）再改，右键拖动平移不动选区。 */
+  /** 右键按下处的对象：节点、连线或空白。确定弹出菜单（松开时未拖动）后再修改选区，右键拖动平移不改变选区。 */
   const contextOf = (target: HTMLElement): ContextTarget => {
     const node = target.closest<HTMLElement>('[data-node]')?.dataset.node
     if (node) return { kind: 'node', id: node }
@@ -904,7 +904,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     })
   }
 
-  /** 时间线上一段的右键菜单：锚点放在指针处，全屏编辑里同样用这一个菜单。 */
+  /** 时间线片段的右键菜单：锚点位于指针处，全屏编辑中使用同一菜单。 */
   const openClipMenu = (id: string, index: number, t: number, clientX: number, clientY: number) => {
     const r = stage.getBoundingClientRect()
     dropAnchor.style.left = `${clientX - r.left}px`
@@ -917,10 +917,10 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     })
   }
 
-  /** 快捷键写法：macOS 用 ⌘，其余写 Ctrl+。 */
+  /** 快捷键的显示形式：macOS 使用 ⌘，其他系统使用 Ctrl+。 */
   const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
 
-  /** 右键菜单的项，`null` 是分隔线。执行的就是对应快捷键的那个函数。 */
+  /** 右键菜单的菜单项，`null` 表示分隔线。菜单项执行的是对应快捷键调用的同一函数。 */
   const contextItems = (
     target: ContextTarget,
     at: { x: number; y: number },
@@ -1026,11 +1026,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     ]
   }
 
-  /** 右键菜单「从设备上传」：选好的文件放在右键那一点。 */
+  /** 右键菜单「从设备上传」：选中的文件放在右键点击的位置。 */
   let contextUpload!: HTMLInputElement
   let uploadAt: { x: number; y: number } | null = null
 
-  /** 视野中央在画布坐标里的位置。 */
+  /** 视野中央在画布坐标中的位置。 */
   const center = () => {
     const { w, h } = size()
     return { x: (w / 2 - px()) / z(), y: (h / 2 - py()) / z() }
@@ -1048,7 +1048,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (r?.refs.$t) setSelected(new Set([r.refs.$t]))
   }
 
-  /** 屏幕上这一点下面的时间线，`skip` 里的节点（拖动中的）透过去不算。 */
+  /** 屏幕上该点下方的时间线；`skip` 中的节点（拖动中的节点）不参与判定。 */
   const timelineAt = (clientX: number, clientY: number, skip: string[] = []): string | null => {
     for (const el of document.elementsFromPoint(clientX, clientY)) {
       const id = el.closest<HTMLElement>('[data-node]')?.dataset.node
@@ -1057,7 +1057,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     return null
   }
 
-  /** 落点在时间线的轨道上时，插在指针处的间隙；落在工具行、预览上回 `undefined`（放最后）。 */
+  /** 落点在时间线轨道上时，返回指针处的间隙；落在工具行或预览上时返回 `undefined`（插入末尾）。 */
   const gapFor = (id: string, clientX: number, onTracks: boolean): number | undefined => {
     const n = byId(id)
     if (n?.type !== 'timeline' || !onTracks) return undefined
@@ -1065,7 +1065,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     return t === undefined ? undefined : gapAt(n.clips, t)
   }
 
-  /** 屏幕上这一点是否落在时间线 `id` 的轨道上。拖动中指针被画布捕获，事件目标不是指针下的元素，只能按坐标查。 */
+  /** 屏幕上该点是否位于时间线 `id` 的轨道上。拖动中指针被画布捕获，事件目标不是指针下的元素，只能按坐标判定。 */
   const onTracksAt = (id: string, clientX: number, clientY: number): boolean =>
     document
       .elementsFromPoint(clientX, clientY)
@@ -1075,11 +1075,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           el.closest<HTMLElement>('[data-node]')?.dataset.node === id,
       )
 
-  /** 拖放事件的目标是否落在轨道上。 */
+  /** 拖放事件的目标是否位于轨道上。 */
   const dropOnTracks = (e: DragEvent): boolean =>
     (e.target as Element).closest('.canvas-tl-tracks') !== null
 
-  /** 从 `from` 拖线到时间线 `to` 上能不能放进去：`from` 得是有文件的视频。 */
+  /** 从 `from` 拖线到时间线 `to` 时能否加入：`from` 必须是有文件的视频。 */
   const clipsInto = (from: string, to: string): boolean => {
     const v = view()
     return (
@@ -1090,7 +1090,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     )
   }
 
-  /** 拖动节点时指针下的时间线；拖的节点里没有视频时不算。 */
+  /** 拖动节点时指针下的时间线；拖动的节点中没有视频时返回 null。 */
   const timelineUnder = (clientX: number, clientY: number, dragged: string[]): string | null => {
     const v = view()
     if (!v || !dragged.some((id) => mediaOf(v, id).kind === 'video' && mediaOf(v, id).path)) {
@@ -1100,7 +1100,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
 
   /**
-   * 往时间线的第 `gap` 个间隙（缺省放最后）插入整段的视频：时长读源文件，不是视频或读不出时长的跳过。
+   * 在时间线的第 `gap` 个间隙（缺省为末尾）插入完整的视频：时长读取自源文件，非视频或无法读取时长的文件被跳过。
    */
   const addClips = async (id: string, paths: string[], gap?: number) => {
     const videos = paths.filter(
@@ -1117,13 +1117,13 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const n = byId(id)
     if (n?.type !== 'timeline') return
     if (!added.length) {
-      setFault('只有视频能放进时间线')
+      setFault('只有视频可以加入时间线')
       return
     }
     await apply([{ op: 'update', id, clips: insertClips(n.clips, gap ?? n.clips.length, added) }])
   }
 
-  /** 导出成片：浏览器里边合成 mp4 边写给服务端，完成后落进 `generated/`，时间线右侧出现新视频节点。 */
+  /** 导出成片：浏览器一边合成 mp4 一边写入服务端，完成后保存到 `generated/`，时间线右侧出现新的视频节点。 */
   const exportTimeline = async (id: string) => {
     const n = byId(id)
     if (n?.type !== 'timeline' || !n.clips.length || exportAborts.has(id)) return
@@ -1152,9 +1152,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       if (!fullscreen()) setSelected(new Set([r.nodeId]))
       void load()
     } catch (e) {
-      // 半截文件由服务端删；这一步失败时服务端到空闲上限也会删。
+      // 未完成的文件由服务端删除；该请求失败时，服务端在空闲超时后同样会删除。
       if (upload) void exportAbort(upload).catch(() => {})
-      if ((e as Error).name !== 'AbortError') setFault(explainApiError(e, '没有导出'))
+      if ((e as Error).name !== 'AbortError') setFault(explainApiError(e, '导出失败'))
     } finally {
       exportAborts.delete(id)
       setExports(({ [id]: _, ...rest }) => rest)
@@ -1162,8 +1162,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
 
   /**
-   * 选择框里连着选的文件：第一个放在视野中央附近的空位，之后的排在上一个右侧的空位。
-   * 依次提交：前一个的回体到了才知道它的 id，并发提交的话后一个会落在视野中央、压住前一个。
+   * 在选择框中连续选择的文件：第一个放在视野中央附近的空位，之后的依次放在上一个右侧的空位。
+   * 必须依次提交：前一个的响应体返回后才能取得其 id，并发提交时后一个会放在视野中央并遮挡前一个。
    */
   let lastPicked: string | null = null
   let picks = Promise.resolve()
@@ -1177,14 +1177,14 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     })
   }
 
-  /** 时间线「+」里从本机上传的视频：先放上画布（时间线右侧），再按路径插进轨道。 */
+  /** 通过时间线的「+」从本机上传的视频：先添加到画布（时间线右侧），再按路径插入轨道。 */
   const uploadClips = async (id: string, files: File[], gap?: number) => {
     const paths: string[] = []
     for (const file of files) {
       try {
         paths.push((await uploadToCanvas(props.path, file, { beside: id })).path)
       } catch (e) {
-        setFault(explainApiError(e, `没有传上去：${file.name}`))
+        setFault(explainApiError(e, `上传失败：${file.name}`))
         break
       }
     }
@@ -1192,7 +1192,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (paths.length) await addClips(id, paths, gap)
   }
 
-  /** 从本机选的文件逐个上传：第一个放在视野中央附近的空位，之后的排在上一个右侧。有一个失败就停下并报出。 */
+  /** 逐个上传从本机选择的文件：第一个放在视野中央附近的空位，之后的依次放在上一个右侧。任一文件失败即停止并报告原因。 */
   const uploadFiles = async (files: File[], near = center()) => {
     let prev: string | null = null
     for (const file of files) {
@@ -1201,7 +1201,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         prev = r.nodeId
         setFault(null)
       } catch (e) {
-        setFault(explainApiError(e, `没有传上去：${file.name}`))
+        setFault(explainApiError(e, `上传失败：${file.name}`))
         break
       }
     }
@@ -1209,8 +1209,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
 
   /**
-   * 生成面板里放上画布的素材：放在卡左侧、与卡中线对齐的空位（连线从左往右进卡）。
-   * 本机文件先上传；回新节点的 id，没放成回 `null` 并报出原因。
+   * 从生成面板添加到画布的素材：放在卡片左侧、与卡片中线对齐的空位（连线从左向右进入卡片）。
+   * 本机文件先上传；返回新节点的 id，添加失败时返回 `null` 并报告原因。
    */
   const placeInput = async (
     card: CanvasNode,
@@ -1228,12 +1228,12 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       await load()
       return r.nodeId
     } catch (e) {
-      setFault(explainApiError(e, `没有传上去：${source.file.name}`))
+      setFault(explainApiError(e, `上传失败：${source.file.name}`))
       return null
     }
   }
 
-  /** 从一个节点接出一张生成卡，并把它连为输入：视频节点连成参考视频，图片连成首帧（视频）或参考（出图）。 */
+  /** 从节点新建一张后续生成卡，并把该节点连接为输入：视频节点作为参考视频，图片作为首帧（视频生成）或参考（图像生成）。 */
   const extend = async (nodeId: string, output: MediaOutput, at?: { x: number; y: number }) => {
     setMenu(null)
     const source = byId(nodeId)
@@ -1249,8 +1249,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
 
   /**
-   * 从 `from` 连到 `to` 时的用途；连不上回 `null`。先按素材类别与目标的模式定一个用途，
-   * 再交给 core 的操作校验试一次：能连与否只有 core 一处说了算。
+   * 从 `from` 连接到 `to` 时的用途；无法连接时返回 `null`。先按素材类别与目标的模式确定用途，
+   * 再交给 core 的操作校验检查一次：能否连接只由 core 判定。
    */
   const linkRole = (from: string, to: string): MediaInputRole | null => {
     const v = view()
@@ -1270,7 +1270,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (role) await apply([{ op: 'connect', from, to, role }])
   }
 
-  /** 从连接点按下：拖出去是连线，原地松开是点击（开接出菜单）。 */
+  /** 在连接点按下：拖出为连线，原地松开为点击（打开后续生成菜单）。 */
   const startLink = (e: PointerEvent, from: string) => {
     if (e.button !== 0) return
     e.stopPropagation()
@@ -1286,7 +1286,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     stage.setPointerCapture(e.pointerId)
   }
 
-  /** 能从这个节点接出哪几类生成卡。 */
+  /** 可以从该节点新建的后续生成卡类别。 */
   const extendable = (nodeId: string): MediaOutput[] => {
     const kind = view() ? mediaOf(view()!, nodeId).kind : null
     return MEDIA_OUTPUTS.filter((o) =>
@@ -1307,11 +1307,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       setSelected(new Set([r.nodeId]))
       void load()
     } catch (e) {
-      setFault(explainApiError(e, '没有取到这一帧'))
+      setFault(explainApiError(e, '取帧失败'))
     }
   }
 
-  // ── 派生 ──
+  // ── 派生状态 ──
 
   const single = () => {
     const ids = [...selected()]
@@ -1334,9 +1334,9 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const n = single()
     if (n?.type !== 'generate') return null
     const p = pos(n)
-    // 画布区比面板窄时面板收到画布区宽度：更宽的面板放在哪都有一部分在画布区外。
+    // 画布区比面板窄时，面板宽度缩小到画布区宽度：更宽的面板无论放在何处都有一部分位于画布区外。
     const width = Math.min(PANEL_W, size().w - 16)
-    // 只按节点定位，不按画布区边缘收回：收回后面板盖住节点本身和相邻节点，平移时也不跟节点走。
+    // 只按节点定位，不按画布区边缘向内收回：收回后面板会遮挡节点本身与相邻节点，平移时也不随节点移动。
     return {
       node: n,
       width,
@@ -1346,8 +1346,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
 
   /**
-   * 画出来的线：连线，加上每条时间线从片段推出来的线——画布上当前显示某个被片段引用的文件的节点，各连一条到时间线。
-   * 推出来的线不存盘，片段是唯一的账。
+   * 绘制的线：连线，以及每条时间线从片段推导出的线，即画布上显示被片段引用的文件的每个节点各有一条线连到时间线。
+   * 推导出的线不保存到文件，片段是唯一的数据来源。
    */
   const links = (v: CanvasView): { id: string; from: string; to: string }[] => [
     ...v.doc.edges,
@@ -1387,7 +1387,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           y1,
           x2,
           y2,
-          // 曲线 t = 0.5 处：两个控制点的横向偏移相互抵消，正好落在两端的中点。
+          // 曲线 t = 0.5 处：两个控制点的横向偏移相互抵消，该点恰好位于两端的中点。
           mx: (x1 + x2) / 2,
           my: (y1 + y2) / 2,
         },
@@ -1408,7 +1408,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     return <div class="canvas-text">{text() ?? ''}</div>
   }
 
-  /** `w` 是节点的画布宽度，图片按它乘当前缩放与设备像素比解码。 */
+  /** `w` 是节点的画布宽度，图片按该宽度乘以当前缩放与设备像素比解码。 */
   function Media(p: {
     nodeId: string
     path: string
@@ -1445,7 +1445,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         </Match>
         <Match when={p.kind === 'video'}>
           <div class="canvas-media">
-            {/* 选中时才挂播放器：播放与取帧都要它；平时只画封面。 */}
+            {/* 选中时才挂载播放器：播放与取帧都需要它；未选中时只绘制封面。 */}
             <Show
               when={p.controls}
               fallback={
@@ -1486,8 +1486,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
 
   /**
-   * 按 id 取节点：每次写操作回来的文档是新对象，按对象挂载的话每改一处全部节点重建、图片全部重新解码。
-   * 节点被删的那次更新里，组件内的计算可能先于列表重算，这时沿用最后一份。
+   * 按 id 取节点：每次写操作返回的文档都是新对象，按对象挂载时每修改一处都会重建全部节点、重新解码全部图片。
+   * 删除节点的那次更新中，组件内的计算可能先于列表重新计算，此时沿用最后一次取得的节点。
    */
   function Node(p: { id: string }) {
     let last!: CanvasNode
@@ -1635,10 +1635,10 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           <button
             class="canvas-port out"
             type="button"
-            aria-label="接出生成"
+            aria-label="从此节点生成"
             onPointerDown={(e) => startLink(e, n().id)}
             onClick={(e) => {
-              // 指针的按下与松开由 startLink 与 onPointerUp 处理；这里只接键盘触发的点击。
+              // 指针的按下与松开由 startLink 与 onPointerUp 处理；此处只处理键盘触发的点击。
               if (e.detail === 0) setMenu({ kind: 'out', anchor: e.currentTarget, nodeId: n().id })
             }}
           >
@@ -1812,7 +1812,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       onDragOver={onDragOver}
       onDrop={onDrop}
       onDblClick={onDblClick}
-      // 画布里不起浏览器自带的拖拽：选中的文字或图片被拖起来后指针事件被接管，节点拖不动、光标变成禁止。
+      // 画布中禁用浏览器自带的拖拽：选中的文字或图片被拖起后指针事件被接管，节点无法拖动，光标变为禁止符号。
       onDragStart={(e) => e.preventDefault()}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -1853,7 +1853,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                     hot: !e.live && e.hot,
                     selected: edgeSelected() === e.id,
                   }}
-                  // 梯度写在内联样式里：写成 `stroke` 属性会被 `.canvas-edges path` 的描边色覆盖。
+                  // 渐变写在内联样式中：写成 `stroke` 属性会被 `.canvas-edges path` 的描边色覆盖。
                   style={e.live || e.hot ? { stroke: `url("#canvas-flow-${e.id}")` } : {}}
                 />
                 <path class="canvas-edge-hit" data-edge={e.id} d={e.d} />
@@ -1941,10 +1941,10 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           )}
         </Show>
 
-        {/* 按卡的 id 重建：面板里的草稿与菜单只属于那一张卡，换选另一张卡不沿用。 */}
+        {/* 按卡片 id 重建：面板中的草稿与菜单只属于当前卡片，选中另一张卡片时不沿用。 */}
         <Show when={panelAt()?.node.id} keyed>
           {(id) => {
-            // 卸载那一刻 `panelAt()` 已是 null，读到的仍是这张卡最后一次的位置与节点。
+            // 卸载时 `panelAt()` 已为 null，此处读取的仍是该卡片最后一次的位置与节点。
             let last = panelAt()!
             const at = () => {
               const now = panelAt()
@@ -2047,8 +2047,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         </button>
       </div>
 
-      {/* 菜单挂到文档根：画布区自成层叠上下文，留在里面会被全屏时间线（55）盖住。
-          可见性按本页是否在前，挂在根上不再随本页一起隐藏。 */}
+      {/* 菜单挂载到文档根节点：画布区自成层叠上下文，菜单留在其中会被全屏时间线（z-index 55）遮挡。
+          可见性按本页是否处于前台判定：挂载在根节点后，菜单不再随本页一同隐藏。 */}
       <Portal>
         <Show when={props.active ? menu() : null}>
           {(m) => (
@@ -2145,7 +2145,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                               role="menuitemradio"
                               aria-checked={current()}
                               onClick={() => {
-                                // 先取节点 id 再收菜单：收起之后 `m()` 已失效。
+                                // 先取得节点 id 再关闭菜单：关闭之后 `m()` 已失效。
                                 const id = (m() as { nodeId: string }).nodeId
                                 setMenu(null)
                                 void apply([{ op: 'update', id, current: v.id }])

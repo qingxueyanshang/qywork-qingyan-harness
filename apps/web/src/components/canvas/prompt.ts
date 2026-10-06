@@ -1,13 +1,13 @@
 /**
- * 生成面板的提示词：存盘形态是带 `@[节点 id]` 的纯文本，编辑框里引用显示成缩略图加名字的标签。
- * 两个方向的转换都在这里，编辑框只认这两个函数。
+ * 生成面板的提示词：保存格式是带 `@[节点 id]` 的纯文本，编辑框中的引用显示为缩略图加名称的标签。
+ * 两个方向的转换均在本文件中，编辑框只使用这两个函数。
  */
 
 const MENTION_RE = /@\[([A-Za-z0-9_-]{1,64})\]/g
 
 export type PromptPart = { text: string } | { id: string }
 
-/** 存盘的提示词拆成文字段与引用段，顺序不变。 */
+/** 保存的提示词拆分为文字段与引用段，顺序不变。 */
 export function promptParts(prompt: string): PromptPart[] {
   const parts: PromptPart[] = []
   let last = 0
@@ -21,8 +21,8 @@ export function promptParts(prompt: string): PromptPart[] {
 }
 
 /**
- * 编辑框的内容写回存盘形态：文字原样，带 `data-node` 的标签写回 `@[id]`，换行保留。
- * 回车在不同浏览器里产生 `<br>` 或 `<div>`，两种都按一个换行算。
+ * 编辑框的内容转换为保存格式：文字原样保留，带 `data-node` 的标签转换为 `@[id]`，保留换行。
+ * 回车在不同浏览器中产生 `<br>` 或 `<div>`，两种均按一个换行计算。
  */
 export function promptOfEditor(root: Node): string {
   let out = ''

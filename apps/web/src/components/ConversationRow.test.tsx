@@ -1,20 +1,20 @@
 /**
- * 覆盖 `ConversationRow.tsx` 的删除路径，以及 `Sidebar.tsx` 里承接它的那一格
- * （`.side-error`）——两条失败语义必须落在同一处，所以连着侧栏一起挂起来测。
+ * 覆盖 `ConversationRow.tsx` 的删除路径，以及 `Sidebar.tsx` 中承接它的提示区域
+ * （`.side-error`）。两种失败语义必须显示在同一处，因此连同侧栏一起挂载测试。
  *
- * 原始失败形状是：会话删掉了、空间没收回来，而界面上一个字都没有。服务端把这两件事分开回
- * （`{ ok: true, reclaimError }`），前端也必须分开：会话行照常消失，那一句挂在既有的提示格上，
- * 不冒充「删除失败」——用户看到删除失败会再点一次，第二次收到的是 404。
+ * 原始失败形状：会话已删除、空间未回收，而界面上没有任何提示。服务端分别返回这两件事
+ * （`{ ok: true, reclaimError }`），前端也必须分别处理：会话行照常消失，该提示显示在既有的提示区域中，
+ * 不显示为「删除失败」：用户看到删除失败会再点击一次，第二次收到的是 404。
  *
- * **DOM 在这里装，用完卸掉**，理由同 `LoadState.test.tsx`。
+ * 测试 DOM 在本文件内注册，结束后注销，理由同 `LoadState.test.tsx`。
  *
- * **装完必须重新 `delegateEvents(['click'])`。** Solid 把 `onClick` 编译成事件委托：监听器挂在
- * `document` 上，由编译产物在模块求值时调一次 `delegateEvents` 装上，并把已装的事件名记在那个
- * `document` 自己身上。`App.tsx` 静态 import 了 `Sidebar.tsx` → `ConversationRow.tsx`，所以这两个
- * 模块在 `App.test.tsx` 那一份 `document` 上就求过值了；那份 `document` 被它的 `afterAll` 卸掉之后，
- * 这里 `register()` 出来的是新的一份，而模块已缓存、`delegateEvents` 不会再跑——新文档上没有任何
- * click 监听器，`.click()` 一律石沉大海。补这一句是修隔离，不是放宽判据。
- * 走 `lazy()` 的组件（`SidePanel.tsx`、设置页）碰不到这条，它们在各自的测试里才第一次求值。
+ * **注册后必须重新调用 `delegateEvents(['click'])`。** Solid 把 `onClick` 编译为事件委托：监听器注册在
+ * `document` 上，由编译产物在模块求值时调用一次 `delegateEvents` 完成注册，并把已注册的事件名记录在该
+ * `document` 对象上。`App.tsx` 静态导入了 `Sidebar.tsx` → `ConversationRow.tsx`，因此这两个
+ * 模块已在 `App.test.tsx` 的 `document` 上求值；该 `document` 被其 `afterAll` 注销之后，
+ * 此处 `register()` 创建的是新的 `document`，而模块已缓存，`delegateEvents` 不会再次执行，新文档上没有任何
+ * click 监听器，`.click()` 均无响应。重新调用是为了修复测试隔离，不是放宽判据。
+ * 经由 `lazy()` 加载的组件（`SidePanel.tsx`、设置页）不受此影响，它们在各自的测试中才首次求值。
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -74,7 +74,7 @@ async function waitFor(done: () => boolean, detail: () => string) {
   throw new Error(`界面没有在时限内更新：${detail()}`)
 }
 
-/** 侧栏挂起来要一份项目清单；删除那一条按调用方给的应答回。 */
+/** 挂载侧栏需要一份项目清单；删除请求按调用方提供的应答返回。 */
 async function mountSidebar(onDelete: () => unknown) {
   const store = await import('../lib/store/index.ts')
   const original = store.client.api
@@ -113,7 +113,7 @@ async function mountSidebar(onDelete: () => unknown) {
   return host
 }
 
-/** 走完「⋯ → 删除 → 确认」。 */
+/** 依次执行「⋯ → 删除 → 确认」。 */
 async function confirmDelete(host: HTMLElement) {
   host.querySelector<HTMLButtonElement>('.conv-more')?.click()
   await waitFor(
@@ -129,7 +129,7 @@ async function confirmDelete(host: HTMLElement) {
 }
 
 describe('删除会话的两种失败语义', () => {
-  test('删掉了但空间没收回来：行照常消失，那一句落在侧栏既有的提示格上', async () => {
+  test('会话已删除但空间未回收：行照常消失，提示显示在侧栏既有的提示区域中', async () => {
     const host = await mountSidebar(() => ({
       ok: true,
       reclaimError: '正文回收失败：database is locked',
@@ -141,11 +141,11 @@ describe('删除会话的两种失败语义', () => {
       () => host.textContent ?? '',
     )
     expect(host.querySelector('.side-error')?.textContent).toBe('正文回收失败：database is locked')
-    // 会话确实删掉了——这一句不是「删除失败」，再点一次只会拿到 404。
+    // 会话已删除：该提示不是「删除失败」，再点击一次只会得到 404。
     expect(host.querySelectorAll('.conv-row').length).toBe(0)
   })
 
-  test('删除本身失败：同一格给出原文，会话行还在', async () => {
+  test('删除本身失败：同一提示区域显示原文，会话行保留', async () => {
     const host = await mountSidebar(() => {
       throw new Error('404 /api/conversations/cv_1')
     })
@@ -159,7 +159,7 @@ describe('删除会话的两种失败语义', () => {
     expect(host.querySelectorAll('.conv-row').length).toBe(1)
   })
 
-  test('回收也成功时不留任何提示', async () => {
+  test('回收也成功时不显示任何提示', async () => {
     const host = await mountSidebar(() => ({ ok: true }))
     await confirmDelete(host)
 

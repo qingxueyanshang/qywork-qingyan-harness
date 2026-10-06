@@ -1,33 +1,33 @@
 /**
- * 斜杠判定的口径。覆盖 `lib/slash.ts`。
+ * 斜杠判定规则。覆盖 `lib/slash.ts`。
  *
- * 命令表在 `commands.ts`，那个文件 import 图标（.tsx），测试加载它会去找
- * JSX runtime 并失败。判定逻辑不该拖着整批 SVG 才能被验证，所以拆了出来。
+ * 命令表位于 `commands.ts`，该文件 import 图标（.tsx），测试加载它时会查找
+ * JSX runtime 并失败。判定逻辑不应依赖全部 SVG 才能验证，因此单独拆出。
  */
 import { describe, expect, test } from 'bun:test'
 import { slashCall, slashDispatch, slashQuery } from './slash.ts'
 
 describe('斜杠查询', () => {
-  test('整段就是一个 /xxx 才算命令', () => {
+  test('仅当整段恰好是一个 /xxx 时视为命令', () => {
     expect(slashQuery('/')).toBe('')
     expect(slashQuery('/com')).toBe('com')
     expect(slashQuery('/compact')).toBe('compact')
   })
 
-  test('正文里的斜杠不弹面板', () => {
-    // 路径：用户在描述要改哪个文件，不是要执行命令。
+  test('正文中的斜杠不弹出面板', () => {
+    // 路径：用户在描述要修改的文件，不是要执行命令。
     expect(slashQuery('/compact 然后呢')).toBeNull()
     expect(slashQuery('看下 src/lib')).toBeNull()
     expect(slashQuery('')).toBeNull()
-    // 换行也算空白：多行草稿里第一行像命令也不该弹。
+    // 换行也属于空白：多行草稿的第一行即使形似命令也不弹出面板。
     expect(slashQuery('/new\n第二行')).toBeNull()
   })
 })
 
 /**
- * 回车那一刻的判定。和 `slashQuery` 是两件事——那个管补全面板弹不弹
- * （打到一半就要判，带空格就收起来），这个管「这句话是不是一条带参数的命令」
- * （那时候参数已经打完了，带空格才是常态）。
+ * 回车时的判定。与 `slashQuery` 职责不同：`slashQuery` 决定补全面板是否弹出
+ * （输入过程中即需判断，出现空格即收起），此处判定整段输入是否为一条带参数的命令
+ * （此时参数已输入完毕，包含空格是常态）。
  */
 describe('带参数的命令', () => {
   test('第一个词是命令名，其余整段是参数', () => {
@@ -35,10 +35,10 @@ describe('带参数的命令', () => {
   })
 
   /**
-   * **不解析第二个参数。** `/goal 3 个 bug 都修掉` 里的 3 是轮数还是正文？
-   * 猜错一次就是按一个用户没说过的数开跑，而他不会知道。
+   * 不解析第二个参数：`/goal 3 个 bug 都修掉` 中的 3 无法确定是轮数还是正文。
+   * 推测错误会按用户未指定的数值开始执行，而用户无从得知。
    */
-  test('参数里的数字不被当成第二个参数切走', () => {
+  test('参数中的数字不被拆分为第二个参数', () => {
     expect(slashCall('/goal 3 个 bug 都修掉')?.arg).toBe('3 个 bug 都修掉')
   })
 
@@ -46,13 +46,13 @@ describe('带参数的命令', () => {
     expect(slashCall('/goal 甲\n乙')?.arg).toBe('甲\n乙')
   })
 
-  /** 光杆命令 arg 是空串：调用方据此决定「填进草稿等用户打字」还是「直接跑」。 */
-  test('光杆命令的参数是空串，不是 null', () => {
+  /** 不带参数的命令 arg 为空字符串：调用方据此决定「填入草稿等待用户输入」还是「直接执行」。 */
+  test('不带参数的命令，其参数为空字符串而不是 null', () => {
     expect(slashCall('/goal')).toEqual({ name: 'goal', arg: '' })
     expect(slashCall('/goal   ')).toEqual({ name: 'goal', arg: '' })
   })
 
-  test('不是斜杠开头的一律不算', () => {
+  test('不以斜杠开头的输入一律不视为命令', () => {
     expect(slashCall('看下 src/lib')).toBeNull()
     expect(slashCall('')).toBeNull()
     expect(slashCall('/')).toBeNull()

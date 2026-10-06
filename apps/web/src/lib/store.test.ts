@@ -1,25 +1,25 @@
 /**
- * 前端状态里两块**纯逻辑**的回归锁。
+ * 前端状态中纯逻辑部分的回归测试。
  *
- * 只测不需要连接、不需要 DOM 的部分。组件级行为（面板真的展开了没有、密钥有没有
- * 出现在响应里）不在这里测：那些要么已由端到端实测覆盖，要么该由服务端测试锁，
- * 搬进单测只会变成测桩。
+ * 只测试不需要连接与 DOM 的部分。组件级行为（面板是否实际展开、密钥是否
+ * 出现在响应中）不在此测试：它们或已由端到端实测覆盖，或应由服务端测试锁定，
+ * 移入单测只会变成对测试桩的测试。
  *
- * **为什么要先补几个浏览器全局。** `store.ts` 顶层 `new QyClient(...)`，而 `QyClient` 有个**字段初
- * 始化器** `private readonly endpoint = resolveEndpoint()`——构造函数体是空的，但字段在实例化时就
- * 跑，它要读 `location` / `sessionStorage` / `matchMedia`。所以这里先把这几样补上再动态 import，而
- * 不是去改产品代码加 `typeof location === 'undefined'` 的判断：那种判断只为测试存在，生产路径上永
- * 远走不到，属于 CLAUDE.md B5 说的空壳分支。
+ * 先补全浏览器全局对象的原因：`store.ts` 顶层执行 `new QyClient(...)`，而 `QyClient` 有字段初始化器
+ * `private readonly endpoint = resolveEndpoint()`：构造函数体为空，但字段在实例化时即执行，
+ * 需要读取 `location` / `sessionStorage` / `matchMedia`。因此此处先补全这些对象再动态 import，
+ * 而不是在产品代码中添加 `typeof location === 'undefined'` 判断：该判断只为测试存在，生产路径上
+ * 永远不会执行，属于 CLAUDE.md B5 所述的空壳分支。
  *
- * `localStorage` 是同样的理由：面板宽度要落盘，没有它整条走进 catch。
+ * `localStorage` 同理：面板宽度需要落盘，缺少它时整个写入路径进入 catch。
  *
- * 覆盖范围（B6：一个 test 覆盖多个源文件时要在这里列清楚）：`store/ui.ts` 的面板宽度与
+ * 覆盖范围（B6：一个 test 覆盖多个源文件时须在此列明）：`store/ui.ts` 的面板宽度与
  * 页签、`store/browser.ts` 的内置浏览器归属、`store/connection.ts` 的 `applyEvent`
  * 归属过滤与能力投影替换、`store/settings.ts` 的 API 错误解释。
  *
- * **别在这里断言「模块加载时读出来的宽度」**：`bun test` 一次跑多个文件共用一份
- * 模块表，`client.test.ts` 先一步 import 过 `client.ts`，`store/ui.ts` 在这几行
- * 补全局之前就已经求值完了。断言它的结果，单跑这个文件是绿的，跑全量是红的。
+ * 不要在此断言模块加载时读取的宽度：`bun test` 一次执行多个文件时共用一份
+ * 模块表，`client.test.ts` 先行 import 了 `client.ts`，`store/ui.ts` 在此处
+ * 补全全局对象之前已完成求值。断言该结果时，单独执行本文件通过，执行全量时失败。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -38,7 +38,7 @@ g.sessionStorage = {
   removeItem: () => {},
 }
 g.matchMedia = () => ({ matches: false })
-// 面板宽度那几条要用：localStorage 是它落盘的地方。
+// 面板宽度相关用例需要：localStorage 是其落盘位置。
 const stored = new Map<string, string>()
 g.localStorage = {
   getItem: (k: string) => stored.get(k) ?? null,
@@ -102,7 +102,7 @@ const {
 } = await import('./store/index.ts')
 
 describe('激活项目复用服务端返回的会话列表', () => {
-  test('新项目不再追加会话列表请求与第二次创建请求', async () => {
+  test('新项目不追加会话列表请求与第二次创建请求', async () => {
     const calls: string[] = []
     const invokes: string[] = []
     const apiBefore = client.api
@@ -172,37 +172,37 @@ describe('激活项目复用服务端返回的会话列表', () => {
   })
 })
 
-/** 这条会话现开一份空表：上一条用例往里写过条目，下一条要从空的开始。 */
+/** 为该会话新建一份空表：前一条用例写入过条目，下一条用例须从空表开始。 */
 const freshView = (id: string) => {
   dropView(id)
   openView(id)
 }
 
-/** 页签与当前页按项目分账，所以凡是碰这两样的用例都要先站在一个具体项目上。 */
+/** 页签与当前页按项目分别记录，因此涉及二者的用例都须先切换到一个具体项目。 */
 const WS_A = { id: 'ws_tab_a', root: 'C:/a', name: 'A' }
 const WS_B = { id: 'ws_tab_b', root: 'C:/b', name: 'B' }
 
-describe('右侧面板：一个按钮管开合，并记住上次看的视图', () => {
-  test('收起状态下点开，回到默认的文件视图', () => {
+describe('右侧面板：同一按钮控制展开与收起，并记住上次显示的视图', () => {
+  test('收起状态下点击时展开为默认的文件视图', () => {
     setSidePanel(null)
     togglePanel()
     expect(sidePanel()).toBe('files')
   })
 
-  test('展开状态下点，收起', () => {
+  test('展开状态下点击时收起', () => {
     openPanel('changes')
     togglePanel()
     expect(sidePanel()).toBe(null)
   })
 
-  test('收起再展开，回到上次待的地方而不是一律跳回文件', () => {
+  test('收起后再展开时回到上次的视图，而不是一律回到文件视图', () => {
     openPanel('changes')
     togglePanel()
     togglePanel()
     expect(sidePanel()).toBe('changes')
   })
 
-  test('换过几次视图后，记住的是最后那个', () => {
+  test('多次切换视图后记住最后一个', () => {
     openPanel('files')
     openPanel('changes')
     openPanel('todos')
@@ -211,7 +211,7 @@ describe('右侧面板：一个按钮管开合，并记住上次看的视图', (
     expect(sidePanel()).toBe('todos')
   })
 
-  test('反复开合不漂移 —— 偶数次回到展开，奇数次收起，视图始终是那一个', () => {
+  test('反复切换时视图不变：切换偶数次后为展开，奇数次后为收起', () => {
     openPanel('todos')
     for (let i = 0; i < 6; i++) togglePanel()
     expect(sidePanel()).toBe('todos')
@@ -221,7 +221,7 @@ describe('右侧面板：一个按钮管开合，并记住上次看的视图', (
     expect(sidePanel()).toBe('todos')
   })
 
-  test('面板头上的 × 也记住当前视图 —— 它和顶栏开关走同一条收起路径', () => {
+  test('面板标题栏的 × 同样记住当前视图：它与顶栏开关使用同一收起路径', () => {
     openPanel('changes')
     closePanel()
     togglePanel()
@@ -229,8 +229,8 @@ describe('右侧面板：一个按钮管开合，并记住上次看的视图', (
   })
 })
 
-describe('面板放大：跟着面板走，不留下一个自己开着的态', () => {
-  test('收起面板一并复位 —— 下次展开不该直接落进放大态', () => {
+describe('面板放大状态随面板复位，不单独保留', () => {
+  test('收起面板时一并复位，下次展开不直接进入放大态', () => {
     openPanel('files')
     togglePanelMax()
     expect(panelMaximized()).toBe(true)
@@ -240,7 +240,7 @@ describe('面板放大：跟着面板走，不留下一个自己开着的态', (
     expect(panelMaximized()).toBe(false)
   })
 
-  test('换视图不影响放大 —— 放大的是这块面板，不是某一个视图', () => {
+  test('切换视图不影响放大：放大的对象是面板，不是某个视图', () => {
     openPanel('files')
     togglePanelMax()
     setSidePanel('changes')
@@ -251,40 +251,40 @@ describe('面板放大：跟着面板走，不留下一个自己开着的态', (
 })
 
 /**
- * 可多开的那些页（终端、浏览器）。
+ * 可多开的页（终端、浏览器）。
  *
- * 测的是**关掉一页之后停在哪、什么被收掉**——这两条错了的表现分别是「面板莫名收起」
- * 和「PTY 留在后台，工作区里的文件句柄被占用」，都不会报错。
+ * 测试关闭一页后切换到哪一页、释放了哪些资源：这两项出错的结果分别是面板意外收起、
+ * PTY 留在后台并占用工作区中的文件句柄，且均无报错。
  */
 /*
- * 面板宽度这一节**只锁「要多宽」这半边**。
+ * 面板宽度一节只锁定期望宽度。
  *
- * 「实际排多宽」由 `.app.with-panel` 的 `minmax(var(--chat-min), 1fr)` 裁决，
- * 那是网格的事，这里没有 DOM 也没有窗口，量不到——所以下面不会出现任何一条
- * 「窗口 1280、存了 1632，因此应该是 800」的断言。**那条断言写在这里就是假的**：
- * 它只能证明这个文件里又抄了一遍 CSS 的算法。原始失败形状（存 1632、窗口 1280）
- * 由浏览器里跑的那次实测覆盖。
+ * 实际宽度由 `.app.with-panel` 的 `minmax(var(--chat-floor), 1fr)` 决定，
+ * 属于网格布局；此处没有 DOM 与窗口，无法测量，因此下面不包含
+ * 「窗口 1280、保存值 1632，因此应为 800」之类的断言。此类断言在此处不成立：
+ * 它只能证明本文件重复实现了一遍 CSS 的算法。原始失败形状（保存值 1632、窗口 1280）
+ * 由浏览器中的实测覆盖。
  */
-describe('面板宽度：拖出来的数照原样记住', () => {
-  test('拖不足夹在下限——再窄这块面板就没法看了', () => {
+describe('面板宽度：按拖动结果原样保存', () => {
+  test('小于下限时限制为下限：更窄时面板内容无法显示', () => {
     resizePanel(100)
     expect(panelWidth()).toBe(PANEL_MIN)
-    // 负数尤其要挡：`minmax(0, -50px)` 会让整条 grid-template-columns 失效，
-    // 网格退回隐式 auto 列，那正是要防的失效形状。
+    // 负数必须拦截：`minmax(0, -50px)` 会使整条 grid-template-columns 失效，
+    // 网格回退为隐式 auto 列，即要防止的布局失效。
     resizePanel(-50)
     expect(panelWidth()).toBe(PANEL_MIN)
   })
 
-  test('窗口放不下也不改小它——网格自己会收，设置得留着', () => {
-    // 2560 的窗口里拖到 1632，换到 1280 的窗口再打开：这个数照旧是 1632，
-    // 窗口再变宽就还给用户。反过来抹掉它，等于拿一次临时的窗口尺寸改用户的设置。
+  test('窗口空间不足时也不缩小该值：网格自行收缩，设置保持不变', () => {
+    // 在 2560 宽的窗口中拖到 1632，再在 1280 宽的窗口中打开：该值仍为 1632，
+    // 窗口变宽后恢复。在窗口变窄时缩小该值，等于以一次临时的窗口尺寸覆盖用户的设置。
     resizePanel(1632)
     expect(panelWidth()).toBe(1632)
     expect(stored.get('qywork.panelWidth')).toBe('1632')
   })
 })
 
-describe('可多开的页：+ 开出来，× 关掉', () => {
+describe('可多开的页：+ 新建，× 关闭', () => {
   const reset = () => {
     for (const ws of [WS_A, WS_B]) {
       setWorkspace(ws)
@@ -295,14 +295,14 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     setSidePanel('files')
   }
 
-  test('新开一页就翻到它', () => {
+  test('新建一页后切换到该页', () => {
     reset()
     openPanelTab('terminal')
     expect(panelTabs().length).toBe(1)
     expect(activePanelTab()).toBe(panelTabs()[0]!.id)
   })
 
-  test('正文里的链接开出网页预览页，同一个地址再点是翻回去', () => {
+  test('正文中的链接打开网页预览页，再次点击同一地址时切换到已有页', () => {
     reset()
     openPreviewTab('http://localhost:8000')
     const [tab] = panelTabs()
@@ -314,17 +314,17 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(panelTabs().length).toBe(1)
     expect(activePanelTab()).toBe(tab!.id)
 
-    // 地址栏跳走之后记的是新地址，翻回去认的也是它。
+    // 地址栏导航后记录新地址，按地址查找已有页时也以新地址为准。
     setPanelTabUrl(tab!.id, 'http://localhost:8000/about')
     openPreviewTab('http://localhost:8000')
     expect(panelTabs().length).toBe(2)
   })
 
   /**
-   * 内置浏览器的页签是**宿主存活页的投影**：整页刷新之后清单从宿主重建，
-   * 宿主那边关掉的页在这里消失，而且不回头再关一次那个已经没了的 tabId。
+   * 内置浏览器的页签是宿主存活页的投影：整页刷新后清单由宿主重建，
+   * 宿主侧关闭的页在此移除，且不对已不存在的 tabId 再次执行关闭。
    */
-  test('内置浏览器页签跟着宿主的存活页走', () => {
+  test('内置浏览器页签与宿主的存活页同步', () => {
     reset()
     syncBrowserTabs([
       { id: 'bt_1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
@@ -335,21 +335,21 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
       ['bt_2', 'browser', '浏览器 2'],
     ])
 
-    // 页签 id 就是宿主的 tabId，前端不另编一个。
+    // 页签 id 即宿主的 tabId，前端不另行生成。
     setSidePanel({ tab: 'bt_2' })
     let closed = 0
     holdPanelTab('bt_2', () => {
       closed += 1
     })
 
-    // 宿主那边关掉 bt_2：页签跟着没，落到左边那页，收尾**不再走一遍**。
+    // 宿主侧关闭 bt_2：页签随之移除，切换到左侧相邻页，且不再执行收尾。
     syncBrowserTabs([{ id: 'bt_1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 }])
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_1'])
     expect(activePanelTab()).toBe('bt_1')
     expect(closed).toBe(0)
   })
 
-  test('两个工作区各一页 —— 各自只见自己的', () => {
+  test('两个工作区各有一页时只显示各自的页', () => {
     reset()
     syncBrowserTabs([
       { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
@@ -361,10 +361,10 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
   })
 
   /**
-   * 最后一页关掉之后那个工作区不再出现在宿主清单里，对齐范围仍要覆盖它
-   * ——只按清单里的工作区对齐的话，B 的页签会留在条上而宿主那边已经没有这一页。
+   * 最后一页关闭后，该工作区不再出现在宿主清单中，同步范围仍须覆盖它：
+   * 只按清单中的工作区同步时，B 的页签会留在页签条上，而宿主侧已没有该页。
    */
-  test('后台工作区最后一页关掉 —— 那个条目的页签清空、当前页修正', () => {
+  test('后台工作区的最后一页关闭后，该条目的页签清空，当前页随之修正', () => {
     reset()
     syncBrowserTabs([
       { id: 'bt_a1', title: '浏览器 1', workspaceId: WS_A.id, createdSeq: 1 },
@@ -381,7 +381,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(sidePanel()).toBe('files')
   })
 
-  test('没有活动项目时宿主投影照样按每页自己的工作区落账', () => {
+  test('没有活动项目时，宿主投影仍按每页自带的工作区记录', () => {
     reset()
     setWorkspace(null)
     syncBrowserTabs([
@@ -394,7 +394,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_b1'])
   })
 
-  test('关掉当前那一页 —— 落到右边那页，不收起面板', () => {
+  test('关闭当前页时切换到右侧相邻页，不收起面板', () => {
     reset()
     openPanelTab('terminal')
     openPanelTab('preview')
@@ -404,7 +404,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(activePanelTab()).toBe(second!.id)
   })
 
-  test('关掉最右那一页 —— 落到左边那页', () => {
+  test('关闭最右侧的页时切换到左侧相邻页', () => {
     reset()
     openPanelTab('terminal')
     openPanelTab('preview')
@@ -414,7 +414,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(activePanelTab()).toBe(first!.id)
   })
 
-  test('关掉最后一页 —— 回文件视图而不是把面板收起来', () => {
+  test('关闭最后一页时回到文件视图，不收起面板', () => {
     reset()
     openPanelTab('preview')
     closePanelTab(panelTabs()[0]!.id)
@@ -422,7 +422,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(sidePanel()).toBe('files')
   })
 
-  test('关掉的不是当前那一页 —— 当前这页不动', () => {
+  test('关闭非当前页时当前页保持不变', () => {
     reset()
     openPanelTab('terminal')
     openPanelTab('preview')
@@ -432,7 +432,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(activePanelTab()).toBe(second!.id)
   })
 
-  test('关一页收一次它登记的资源，只收自己那一份', () => {
+  test('关闭一页时释放一次该页登记的资源，不影响其他页', () => {
     reset()
     openPanelTab('terminal')
     openPanelTab('terminal')
@@ -446,12 +446,12 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     })
     closePanelTab(first!.id)
     expect(closed).toBe('a')
-    // 已经关掉的再关一次不该再收一遍：那一侧是 kill 进程。
+    // 重复关闭已关闭的页不得再次释放：释放操作会结束进程。
     closePanelTab(first!.id)
     expect(closed).toBe('a')
   })
 
-  test('换项目只是换一份页签 —— 切过去只见 B，切回来 A 原样，一个 disposer 都没跑', () => {
+  test('切换项目只切换页签集合：切到 B 只显示 B，切回后 A 保持原样，不执行任何 disposer', () => {
     reset()
     openPanelTab('terminal')
     openPanelTab('preview')
@@ -478,7 +478,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(closed).toBe(0)
   })
 
-  test('直接写 A 的条目不动 B 的选择', () => {
+  test('写入 A 的条目不改变 B 的页签与当前页', () => {
     reset()
     openPanelTab('terminal')
     setWorkspace(WS_B)
@@ -495,7 +495,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(sidePanel()).toEqual(bPage)
   })
 
-  test('没有活动项目时一页都不生成', () => {
+  test('没有活动项目时不创建任何页', () => {
     reset()
     setWorkspace(null)
     openPanelTab('terminal')
@@ -508,7 +508,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(panelTabs()).toEqual([])
   })
 
-  test('收起再展开回到那一页 —— 和固定视图同一条路', () => {
+  test('收起后再展开时回到原页，与固定视图使用同一路径', () => {
     reset()
     openPanelTab('terminal')
     const id = panelTabs()[0]!.id
@@ -518,7 +518,7 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
     expect(activePanelTab()).toBe(id)
   })
 
-  test('记着的那一页在收起期间没了 —— 展开回文件视图，不是一块点不掉的空白', () => {
+  test('记录的页在收起期间被关闭时，展开后回到文件视图，而不是无法关闭的空白', () => {
     reset()
     openPanelTab('terminal')
     const id = panelTabs()[0]!.id
@@ -530,12 +530,12 @@ describe('可多开的页：+ 开出来，× 关掉', () => {
 })
 
 /**
- * 外壳那边还在跑的 PTY 按记录归属补回页签。
+ * 外壳侧仍在运行的 PTY 按记录的归属恢复为页签。
  *
- * 锁的是两条失败形状：整份清单按当前项目写入时，别的项目那几条 PTY 再也没有界面
- * 碰得到；序号只按当前项目那几条抬，下一次新开会撞上一个已经存在的 id。
+ * 锁定两种失败形状：整份清单按当前项目写入时，其他项目的 PTY 不再有任何界面
+ * 可以访问；序号只按当前项目的条目递增时，下一次新建的 id 会与已有 id 冲突。
  */
-describe('外壳还在跑的终端按项目补回页签', () => {
+describe('外壳中仍在运行的终端按项目恢复页签', () => {
   const reset = () => {
     for (const ws of [WS_A, WS_B]) {
       setWorkspace(ws)
@@ -545,7 +545,7 @@ describe('外壳还在跑的终端按项目补回页签', () => {
     setSidePanel('files')
   }
 
-  test('两个项目的记录都建立，当前只显示自己那几条', () => {
+  test('两个项目的记录均建立，当前项目只显示自己的条目', () => {
     reset()
     restoreTerminalTabs([
       { id: 'terminal-41', workspaceId: WS_A.id, createdSeq: 1 },
@@ -556,7 +556,7 @@ describe('外壳还在跑的终端按项目补回页签', () => {
     expect(panelTabs().map((t) => t.id)).toEqual(['terminal-42'])
   })
 
-  test('没有活动项目时照样按记录恢复，切进去就看得见', () => {
+  test('没有活动项目时仍按记录恢复，切换进入后即可看到', () => {
     reset()
     setWorkspace(null)
     restoreTerminalTabs([{ id: 'terminal-51', workspaceId: WS_B.id, createdSeq: 3 }])
@@ -564,7 +564,7 @@ describe('外壳还在跑的终端按项目补回页签', () => {
     expect(panelTabs().map((t) => t.id)).toEqual(['terminal-51'])
   })
 
-  test('新开的序号高过整份清单，别的项目那几条也算', () => {
+  test('新建页的序号高于整份清单的最大值，包括其他项目的条目', () => {
     reset()
     restoreTerminalTabs([
       { id: 'terminal-70', workspaceId: WS_A.id, createdSeq: 4 },
@@ -575,11 +575,11 @@ describe('外壳还在跑的终端按项目补回页签', () => {
   })
 
   /**
-   * 原始失败形状：整页刷新后终端清单与浏览器清单各自异步回来，先到的那一份整块排在
-   * 前面，页签顺序与刷新前不同。判据是两种到达顺序给出同一条页签条。
+   * 原始失败形状：整页刷新后终端清单与浏览器清单分别异步返回，先到达的清单整体排在
+   * 前面，页签顺序与刷新前不同。判据是两种到达顺序得到相同的页签条。
    */
-  test('两份清单以相反顺序回来 —— 页签仍按创建顺序排', () => {
-    // 外壳里的创建顺序：终端、浏览器、终端、浏览器，序号由外壳进程统一发。
+  test('两份清单以相反顺序返回时，页签仍按创建顺序排列', () => {
+    // 外壳中的创建顺序：终端、浏览器、终端、浏览器，序号由外壳进程统一分配。
     const terminals = [
       { id: 'terminal-201', workspaceId: WS_A.id, createdSeq: 201 },
       { id: 'terminal-203', workspaceId: WS_A.id, createdSeq: 203 },
@@ -602,11 +602,11 @@ describe('外壳还在跑的终端按项目补回页签', () => {
   })
 })
 
-describe('接口错误还原成人话', () => {
+describe('将接口错误转换为可读的说明', () => {
   const err = (body: unknown) =>
     new Error(`422 /api/config: ${typeof body === 'string' ? body : JSON.stringify(body)}`)
 
-  test('挖出 problems 数组，逐条说清哪里不合格', () => {
+  test('提取 problems 数组，逐条列出不合格项', () => {
     const msg = explainApiError(
       err({ error: 'invalid', problems: ['缺 model', '缺 baseUrl'] }),
       '保存失败',
@@ -614,7 +614,7 @@ describe('接口错误还原成人话', () => {
     expect(msg).toBe('缺 model；缺 baseUrl')
   })
 
-  test('没有 problems 就用 message', () => {
+  test('没有 problems 时使用 message', () => {
     expect(explainApiError(err({ message: '档案不存在' }), '保存失败')).toBe('档案不存在')
   })
 
@@ -622,24 +622,24 @@ describe('接口错误还原成人话', () => {
     expect(explainApiError(err({ problems: ['甲'], message: '乙' }), 'x')).toBe('甲')
   })
 
-  test('空的 problems 数组不算数，继续找 message', () => {
+  test('空的 problems 数组视为不存在，继续读取 message', () => {
     expect(explainApiError(err({ problems: [], message: '乙' }), 'x')).toBe('乙')
   })
 
-  test('响应体被截断解析不了时，回落到原文而不是泛化提示 —— 原文再难看也带着信息', () => {
+  test('响应体被截断而无法解析时返回原文而不是通用提示：原文仍包含有效信息', () => {
     const raw = '422 /api/config: {"problems":["缺 mod'
     expect(explainApiError(new Error(raw), '保存失败')).toBe(raw)
   })
 
-  test('不是 JSON 的错误，原样交出去', () => {
+  test('非 JSON 的错误原样返回', () => {
     expect(explainApiError(new Error('fetch failed'), '保存失败')).toBe('fetch failed')
   })
 
-  test('非 Error 抛出物也不崩', () => {
+  test('抛出值不是 Error 时也能正常处理', () => {
     expect(explainApiError('炸了', '保存失败')).toBe('炸了')
   })
 
-  test('只有空消息时才用兜底文案', () => {
+  test('仅在消息为空时使用默认文案', () => {
     expect(explainApiError(new Error(''), '保存失败')).toBe('保存失败')
   })
 })
@@ -647,11 +647,11 @@ describe('接口错误还原成人话', () => {
 /**
  * 事件的会话归属校验（`store/connection.ts` 的 `applyEvent`）。
  *
- * 这一组锁的是一个**症状**：切了会话，正文却是上一条会话的；偶尔还会卡死。
- * 根因不在切换那段代码里——服务端的订阅过滤挡不住 `subscribe` 指令的往返窗口，
- * 那一段是物理存在的，所以接收端必须自己判一次。
+ * 本组锁定的症状：切换会话后显示的正文属于上一条会话，偶尔还会无响应。
+ * 根因不在切换逻辑中：服务端的订阅过滤无法覆盖 `subscribe` 指令的往返时间窗口，
+ * 该窗口必然存在，因此接收端必须自行判定一次。
  *
- * 断言形状是原始失败形状：喂一条**别的会话**的事件，看当前会话的投影有没有被污染。
+ * 断言采用原始失败形状：输入一条其他会话的事件，检查当前会话的投影是否被污染。
  */
 describe('事件按会话归属过滤', () => {
   const reset = (activeConversation: string | null) => {
@@ -668,22 +668,22 @@ describe('事件按会话归属过滤', () => {
       event: { type: 'text.delta', runId: 'run_1', stepId: 'st_1', delta },
     }) as never
 
-  test('别的会话的正文不写进当前 transcript —— 这就是「切了还是上一条」', () => {
+  test('其他会话的正文不写入当前 transcript：对应症状「切了还是上一条」', () => {
     reset('cv_now')
     applyEvent(deltaFrame('cv_other', '别人的话'))
     expect(transcript()).toHaveLength(0)
   })
 
   /**
-   * 右侧开着的那一页子会话同时在收事件。
+   * 右侧打开的子会话页同时接收事件。
    *
-   * **原始失败形状**：子 agent 跑着的时候那一页一个字都没有——它的帧因为「不是当前
-   * 会话」被整帧丢掉。开着那一页时必须落进它自己那一份，且不许溢到当前会话这一份上。
+   * 原始失败形状：子 agent 运行时该页没有任何内容，其帧因不属于当前会话被整帧丢弃。
+   * 该页打开时，帧必须写入该页自己的投影，且不得写入当前会话的投影。
    *
-   * 走的是真路径：开页 → `syncViews` 建表并报订阅。直接 `openView` 建的表会被
-   * 下一次 `syncViews` 撤掉——没有哪一页开着它。
+   * 使用真实路径：打开页 → `syncViews` 建表并上报订阅。直接用 `openView` 建的表会在
+   * 下一次 `syncViews` 时被撤销，因为没有任何页打开它。
    */
-  test('开着那一页的子会话，帧落进它自己那一份', () => {
+  test('子会话页打开时，其帧写入该页自己的投影', () => {
     reset('cv_now')
     openConversationTab('cv_child', '子 agent')
     syncViews()
@@ -738,7 +738,7 @@ describe('事件按会话归属过滤', () => {
         .transcript.map((t) => t.text)
         .join(''),
     ).toContain('子 agent 在写的话')
-    // 当前会话这一份一个字都不该多。
+    // 当前会话的投影不得增加任何内容。
     expect(transcript()).toHaveLength(0)
     expect(state.todos).toHaveLength(0)
     expect(viewOf('cv_child').usage?.inputTokens).toBe(12)
@@ -749,7 +749,7 @@ describe('事件按会话归属过滤', () => {
     syncViews()
   })
 
-  test('新派出的单个子 agent 只在卡片规范字段保存子会话 id', () => {
+  test('新派发的单个子 agent 只在卡片的规范字段中保存子会话 id', () => {
     reset('cv_parent')
     applyEvent({
       seq: 1,
@@ -785,7 +785,7 @@ describe('事件按会话归属过滤', () => {
     })
   })
 
-  test('子会话历史里的待办不另建顶部投影，也不写进父会话清单', async () => {
+  test('子会话历史中的待办不另建顶部投影，也不写入父会话清单', async () => {
     reset('cv_now')
     openConversationTab('cv_child_done', '已完成的子 agent')
     syncViews()
@@ -814,8 +814,8 @@ describe('事件按会话归属过滤', () => {
     syncViews()
   })
 
-  /** 关掉那一页之后再到达的帧没有落点，整帧丢弃——不能落回当前会话。 */
-  test('关掉那一页之后，它的帧不再有落点', () => {
+  /** 子会话页关闭后到达的帧没有写入目标，整帧丢弃，不得写入当前会话。 */
+  test('子会话页关闭后，其帧不再写入任何投影', () => {
     reset('cv_now')
     openConversationTab('cv_child', '子 agent')
     syncViews()
@@ -832,10 +832,10 @@ describe('事件按会话归属过滤', () => {
     expect(viewOf('cv_child').transcript).toHaveLength(0)
   })
 
-  test('自己会话的正文照常写入', () => {
+  test('当前会话的正文正常写入', () => {
     reset('cv_now')
     applyEvent(deltaFrame('cv_now', '我的话'))
-    // 正文走匀速呈现，先冲一次再看：flush 由下一条非 delta 事件触发。
+    // 正文经由匀速呈现，断言前先清空一次缓冲：flush 由下一条非 delta 事件触发。
     applyEvent({
       seq: 2,
       at: 0,
@@ -850,11 +850,11 @@ describe('事件按会话归属过滤', () => {
   })
 
   /**
-   * `git.state` 由服务端在握手、切项目、`.git/HEAD` 变了时广播。它不进 transcript，
-   * 冲缓冲毫无必要，而冲了的现象是：正文匀速输出一阵、到这一条时把攒着的几十个字
-   * 一次性排空。
+   * `git.state` 由服务端在握手、切换项目、`.git/HEAD` 变化时广播。它不写入 transcript，
+   * 无需清空正文缓冲；清空的结果是正文匀速输出一段后，在该事件到达时把积压的数十个字
+   * 一次性输出。
    */
-  test('git 轮询不冲正文缓冲', () => {
+  test('git 轮询不清空正文缓冲', () => {
     reset('cv_now')
     applyEvent(deltaFrame('cv_now', '正在写的一段话'))
     applyEvent({
@@ -864,7 +864,7 @@ describe('事件按会话归属过滤', () => {
     } as never)
     expect(transcript()).toHaveLength(0)
 
-    // 真要落 transcript 的事件照旧冲——否则读数条会排在半段正文后面。
+    // 需要写入 transcript 的事件仍须先清空缓冲，否则读数条会插在正文中间。
     applyEvent({
       seq: 3,
       at: 0,
@@ -878,7 +878,7 @@ describe('事件按会话归属过滤', () => {
     ).toContain('正在写的一段话')
   })
 
-  test('没有归属的是工作区级事件，照样放行', () => {
+  test('没有归属的事件属于工作区级事件，正常处理', () => {
     reset('cv_now')
     applyEvent({
       seq: 3,
@@ -893,7 +893,7 @@ describe('事件按会话归属过滤', () => {
     expect(view().error?.message).toBe('工作区级错误')
   })
 
-  test('别的会话的 run.started 不会写进当前会话的 run 投影', () => {
+  test('其他会话的 run.started 不写入当前会话的 run 投影', () => {
     reset('cv_now')
     setState({ lastRunId: null })
     applyEvent({
@@ -914,11 +914,11 @@ describe('事件按会话归属过滤', () => {
   })
 
   /*
-   * 服务端自己发起的那几轮（目标续起、定时触发、跟进消息火发）没有客户端的
-   * 乐观插入，用户那句话只能从 `run.started` 带的正文来。
+   * 服务端自行发起的轮次（目标自动继续、定时触发、跟进消息自动发送）没有客户端的
+   * 乐观插入，用户消息只能取自 `run.started` 携带的正文。
    *
-   * 真机上先漏了这一手：排队的消息跑完自动起了下一轮，账本里那条消息在、
-   * 模型的回答也在，唯独用户自己那句话在界面上不存在，要刷新一次才出现。
+   * 真机上的失败形状：排队的消息执行完毕后自动开始下一轮，账本中有该消息，
+   * 也有模型的回答，唯独用户消息不在界面上，刷新一次后才出现。
    */
   const runStarted = (
     conversationId: string,
@@ -939,7 +939,7 @@ describe('事件按会话归属过滤', () => {
       },
     }) as never
 
-  test('服务端自己发起的那一轮，用户消息由 run.started 补出来', () => {
+  test('服务端自行发起的轮次，用户消息由 run.started 补充', () => {
     reset('cv_now')
     applyEvent(runStarted('cv_now', 'ms_1', { content: '排着的那一句' }))
     expect(transcript().map((i) => [i.kind, i.text, i.id])).toEqual([
@@ -947,20 +947,20 @@ describe('事件按会话归属过滤', () => {
     ])
   })
 
-  test('界面上按回车那条不会因此变成两条，且 id 换成账本里的真值', () => {
+  test('按回车发送的消息不因此重复，且 id 替换为账本中的实际值', () => {
     reset('cv_now')
     setState('views', 'cv_now', 'transcript', [{ id: 'local_1', kind: 'user', text: '我打的那句' }])
     applyEvent(runStarted('cv_now', 'ms_2', { content: '我打的那句' }))
     expect(transcript()).toHaveLength(1)
-    // id 对齐之后，活的这一份与刷新后从账本投影出来的那一份是同一个键。
+    // id 对齐后，实时投影的条目与刷新后从账本投影的条目使用同一个键。
     expect(transcript()[0]?.id).toBe('ms_2')
   })
 
   /*
-   * 原始失败形状：定时任务每次发的是同一句 prompt，第二轮的 `run.started` 认领了上一轮
-   * 那条已落库的气泡，界面上这一轮的用户消息不存在。只与 `local_` 前缀那条对齐才不会。
+   * 原始失败形状：定时任务每次发送同一句 prompt，第二轮的 `run.started` 认领了上一轮
+   * 已落库的气泡，界面上缺少本轮的用户消息。只与 `local_` 前缀的条目对齐即可避免。
    */
-  test('同一会话连着两次同正文的 run.started 出两条用户气泡', () => {
+  test('同一会话连续两次相同正文的 run.started 生成两条用户气泡', () => {
     reset('cv_now')
     applyEvent(runStarted('cv_now', 'ms_1', { content: '检查一次群消息' }))
     applyEvent(runStarted('cv_now', 'ms_2', { content: '检查一次群消息' }))
@@ -971,10 +971,10 @@ describe('事件按会话归属过滤', () => {
   })
 
   /**
-   * 忙闲反过来：它是**工作区级事件**，别的会话那条必须收下——左栏要为列表里
-   * 每一条画状态。原始失败形状是「只有点开的那条会话才转圈，别的在跑也看不出来」。
+   * 忙闲状态相反：它是工作区级事件，其他会话的忙闲必须接收，左栏需要为列表中
+   * 每一条会话显示状态。原始失败形状是「只有打开的那条会话显示转圈，其他会话在运行也看不出来」。
    */
-  test('别的会话的忙闲照收，左栏据此点亮那一行', () => {
+  test('其他会话的忙闲状态正常接收，左栏据此标记对应行', () => {
     reset('cv_now')
     applyEvent({
       seq: 5,
@@ -982,7 +982,7 @@ describe('事件按会话归属过滤', () => {
       event: { type: 'conversation.busy', conversationId: 'cv_other', busy: true },
     } as never)
     expect(state.busyConversations).toEqual(['cv_other'])
-    // 当前这条没在跑，输入框不能跟着变成停止按钮。
+    // 当前会话未在运行，输入框不得变为停止按钮。
     expect(isRunning()).toBe(false)
 
     applyEvent({
@@ -994,15 +994,15 @@ describe('事件按会话归属过滤', () => {
   })
 
   /**
-   * 起轮前被拒的那一轮怎么收场。服务端在 run 建立之前拒绝时不发 `run.finished`
+   * 开始前被拒绝的一轮如何结束。服务端在 run 建立之前拒绝时不发送 `run.finished`
    * （约定写在 `RunErrorEvent` 上），终态只有 `conversation.busy: false`。
    *
-   * **原始失败形状**：按下回车那一刻客户端乐观置忙，只认 `run.finished` 的话
-   * 这一格永远放不下来，输入框停在停止按钮上。
+   * 原始失败形状：按下回车时客户端乐观置为忙，若只依据 `run.finished` 清除，
+   * 忙状态永远不会清除，输入框停留在停止按钮。
    */
-  test('没配 key 被拒 —— run.error 不放下忙闲，随后那条忙闲才放', () => {
+  test('未配置 key 被拒绝时，run.error 不清除忙状态，由随后的忙闲事件清除', () => {
     reset('cv_now')
-    // 按下回车那一刻的乐观置忙（`sendMessage` 走的同一张表）。
+    // 按下回车时的乐观置忙（与 `sendMessage` 使用同一张表）。
     setState('busyConversations', ['cv_now'])
     applyEvent({
       seq: 7,
@@ -1022,11 +1022,11 @@ describe('事件按会话归属过滤', () => {
   })
 
   /**
-   * 被拒的指令怎么收场。服务端从未为它置忙，因此**不会有任何 `conversation.busy`**
-   * 来放下按回车时乐观置上的那一格——冲销只能挂在「这条指令被拒」这一事实上。
+   * 被拒绝的指令如何结束。服务端从未将其置为忙，因此不会有任何 `conversation.busy`
+   * 清除按回车时乐观设置的忙状态，冲销只能依据「该指令被拒绝」这一事实。
    *
-   * **原始失败形状**：应用更新期间按回车，指令被回绝，输入框停在停止按钮上，
-   * 直到重连由握手快照重置。
+   * 原始失败形状：应用更新期间按回车，指令被拒绝，输入框停留在停止按钮，
+   * 直到重连后由握手快照重置。
    */
   const captureSend = () => {
     const sent: { type: string; clientRequestId?: string }[] = []
@@ -1051,7 +1051,7 @@ describe('事件按会话归属过滤', () => {
       ...(clientRequestId ? { clientRequestId } : {}),
     }) as never
 
-  test('这条指令被拒 —— 它预支的那一笔忙落回闲', () => {
+  test('指令被拒绝时，其预先设置的忙状态恢复为闲', () => {
     reset('cv_now')
     const sent = captureSend()
     try {
@@ -1066,9 +1066,9 @@ describe('事件按会话归属过滤', () => {
     expect(state.notice?.message).toBe('应用正在更新，请稍后重试')
   })
 
-  test('会话本来就在跑 —— 后发的指令被拒，仍为忙', () => {
+  test('会话已在运行时后发的指令被拒绝，状态仍为忙', () => {
     reset('cv_now')
-    // 服务端置忙在先：这一格不是客户端预支的，被拒也不该动它。
+    // 服务端先置为忙：该忙状态不是客户端预先设置的，指令被拒绝时不得修改。
     setState('busyConversations', ['cv_now'])
     const sent = captureSend()
     try {
@@ -1079,13 +1079,13 @@ describe('事件按会话归属过滤', () => {
 
     applyRejected(rejection(sent.requestId()))
     expect(isRunning()).toBe(true)
-    // 不带幂等键的指令（`followup.steer` 那类）被拒同样不动忙闲。
+    // 不带幂等键的指令（如 `followup.steer`）被拒绝时同样不修改忙闲状态。
     applyRejected(rejection())
     expect(isRunning()).toBe(true)
   })
 
-  /** 断线时客户端自己合成的那条回执走同一条冲销路径，它带着同一个幂等键。 */
-  test('连接断开时按回车 —— 没发出去，忙闲不留在界面上', () => {
+  /** 断线时客户端自行合成的回执使用同一冲销路径，且携带同一个幂等键。 */
+  test('连接断开时按回车：消息未发出，界面不保留忙状态', () => {
     reset('cv_now')
     sendMessage('在吗')
     expect(state.notice?.reason).toBe('not_ready')
@@ -1095,9 +1095,9 @@ describe('事件按会话归属过滤', () => {
   /*
    * ── 当前请求投影：阶段、次数、退避截止点与最后内容时刻 ──
    *
-   * 服务端不发配对的「重发结束」事件（理由在 `RunRetryingEvent` 上），
-   * 收场靠的是下一条 `run.request`。这一组锁的是阶段推进：不推进的表现是
-   * 整轮跑完了，阶段那一格还钉在「正在重连 3 / 5」。
+   * 服务端不发送配对的「重发结束」事件（理由在 `RunRetryingEvent` 上），
+   * 结束依据下一条 `run.request`。本组锁定阶段推进：不推进时，
+   * 整轮执行完毕后阶段字段仍停留在「正在重连 3 / 5」。
    */
   let projectionSeq = 0
   const retryFrame = (attempt: number, backoffMs = 60_000, at = 1_000) =>
@@ -1141,7 +1141,7 @@ describe('事件按会话归属过滤', () => {
       event: { type: 'tool.generating', runId: 'run_1', at },
     }) as never
 
-  test('退避事件写下阶段、次数与截止点', () => {
+  test('退避事件写入阶段、次数与截止点', () => {
     reset('cv_now')
     applyEvent(retryFrame(3))
     expect(viewOf('cv_now').request).toMatchObject({
@@ -1153,7 +1153,7 @@ describe('事件按会话归属过滤', () => {
     })
   })
 
-  test('重发按 AgentLoop 给出的 step id 撤掉失败半截，已完成思考不受影响', () => {
+  test('重发时按 AgentLoop 给出的 step id 撤销失败的部分输出，已完成的思考不受影响', () => {
     reset('cv_now')
     applyEvent({
       seq: 1,
@@ -1202,8 +1202,8 @@ describe('事件按会话归属过滤', () => {
     ).toEqual(['st_done'])
   })
 
-  /** 发出只结束等待：截止点清掉、次数留着，界面因此从「等待重试」换成「正在重连 N / M」。 */
-  test('下一次发出结束退避，次数保留到那一次身上', () => {
+  /** 请求发出只结束等待：清除截止点、保留次数，界面因此从「等待重试」变为「正在重连 N / M」。 */
+  test('下一次请求发出时结束退避，次数保留到该次请求', () => {
     reset('cv_now')
     applyEvent(retryFrame(2))
     applyEvent(requestFrame('sent', 2))
@@ -1253,8 +1253,8 @@ describe('事件按会话归属过滤', () => {
     syncViews()
   })
 
-  /** 心跳与空增量在服务端就不发内容事件，界面这一侧因此一个字段都不动。 */
-  test('工作区级事件不推进阶段——后台一次文件改动不该把这句话抹掉', () => {
+  /** 服务端不为心跳与空增量发送内容事件，因此界面不修改任何字段。 */
+  test('工作区级事件不推进阶段：后台的文件改动不得清除当前阶段文字', () => {
     reset('cv_now')
     applyEvent(retryFrame(2))
     applyEvent({
@@ -1265,7 +1265,7 @@ describe('事件按会话归属过滤', () => {
     expect(viewOf('cv_now').request).toMatchObject({ attempt: 2, phase: 'backoff' })
   })
 
-  test('额度用满整轮报错，投影清空', () => {
+  test('额度用尽导致整轮报错时清空投影', () => {
     reset('cv_now')
     applyEvent(retryFrame(5))
     applyEvent({
@@ -1283,10 +1283,10 @@ describe('事件按会话归属过滤', () => {
   })
 
   /**
-   * 旧请求的迟到内容事件不许把新请求的阶段退回去。序号比投影上那个小就丢弃，
-   * 这条规则同时挡住「旧快照晚于新事件返回」。
+   * 旧请求迟到的内容事件不得使新请求的阶段回退。序号小于投影上的序号时丢弃，
+   * 该规则同时拦截「旧快照晚于新事件返回」的情况。
    */
-  test('序号更小的迟到事件退不回已经推进的阶段', () => {
+  test('序号更小的迟到事件不能使已推进的阶段回退', () => {
     reset('cv_now')
     const late = contentFrame(6_000)
     applyEvent(requestFrame('sent', 1))
@@ -1295,10 +1295,10 @@ describe('事件按会话归属过滤', () => {
   })
 
   /**
-   * 一轮收尾之后到达的工作区级事件与 `goal` 不属于任何一次请求，不许凭空造出一个阶段。
-   * `run.started` 同样不造——阶段只由 `run.request` 写，那才是真的发出去了。
+   * 一轮结束后到达的工作区级事件与 `goal` 不属于任何一次请求，不得凭空生成阶段。
+   * `run.started` 同样不生成：阶段只由 `run.request` 写入，它表示请求已实际发出。
    */
-  test('收尾后到达的工作区级事件、goal 与起轮都不造出请求阶段', () => {
+  test('结束后到达的工作区级事件、goal 与 run.started 均不生成请求阶段', () => {
     reset('cv_now')
     applyEvent(requestFrame('sent', 0))
     applyEvent({
@@ -1337,10 +1337,10 @@ describe('事件按会话归属过滤', () => {
   })
 
   /**
-   * 反过来的那一半：`conversation.updated` 改的是**左栏列表**，不是 transcript，
-   * 对后台会话同样有意义。一刀切按当前会话丢，会让后台会话的标题永远停在「新对话」。
+   * 另一方面：`conversation.updated` 修改的是左栏列表，不是 transcript，
+   * 对后台会话同样有意义。一律按当前会话丢弃时，后台会话的标题会一直停留在「新对话」。
    */
-  test('后台会话的属性变更仍然落到列表上', () => {
+  test('后台会话的属性变更仍写入列表', () => {
     reset('cv_now')
     setState('conversations', [
       { id: 'cv_now', title: '当前', model: 'a', effort: null } as never,
@@ -1363,8 +1363,8 @@ describe('事件按会话归属过滤', () => {
   })
 
   /*
-   * 服务端自己建的会话（定时任务认领）要当场出现在左栏。它是**工作区级**事件：
-   * 信封不带归属，按归属路由会被整帧丢掉，而列表里本来就没有这一条。
+   * 服务端自行创建的会话（定时任务认领）须立即出现在左栏。它是工作区级事件：
+   * 信封不带归属，按归属路由会被整帧丢弃，而列表中原本没有该会话。
    */
   const created = (id: string, workspaceId: string) =>
     ({
@@ -1390,21 +1390,21 @@ describe('事件按会话归属过滤', () => {
       },
     }) as never
 
-  test('本项目新建的会话插到列表顶上', () => {
+  test('本项目新建的会话插入列表顶部', () => {
     reset('cv_now')
     setState('conversations', [{ id: 'cv_now', title: '当前', model: 'a' } as never])
     applyEvent(created('cv_made', WS_A.id))
     expect(state.conversations.map((c) => String(c.id))).toEqual(['cv_made', 'cv_now'])
   })
 
-  test('别的项目建的会话不进这一份列表', () => {
+  test('其他项目新建的会话不进入本列表', () => {
     reset('cv_now')
     setState('conversations', [{ id: 'cv_now', title: '当前', model: 'a' } as never])
     applyEvent(created('cv_elsewhere', WS_B.id))
     expect(state.conversations.map((c) => String(c.id))).toEqual(['cv_now'])
   })
 
-  test('同一条重复到达不插第二遍', () => {
+  test('同一会话重复到达时不重复插入', () => {
     reset('cv_now')
     setState('conversations', [])
     applyEvent(created('cv_made', WS_A.id))
@@ -1414,13 +1414,13 @@ describe('事件按会话归属过滤', () => {
 })
 
 /**
- * 运行面板的重取判据（`store/state.ts` 的 `ledgerRevision`）。
+ * 运行面板的重新获取判据（`store/state.ts` 的 `ledgerRevision`）。
  *
- * 原始失败形状：一轮跑了十分钟，运行面板上的步数、金额、逐请求表停在开跑那一刻
- * ——判据只报会话与忙闲，而账本每落一步、每次 usage 回报都在变。
- * 所以断言的是「账本变了，号跟着变」，不是「重取了几次」。
+ * 原始失败形状：一轮运行了十分钟，运行面板上的步数、金额、逐请求表停留在开始执行时：
+ * 判据只包含会话与忙闲，而账本每写入一步、每次 usage 回报都在变化。
+ * 因此断言的是「账本变化时修订号随之变化」，不是「重新获取了几次」。
  */
-describe('账本修订号跟着落库走', () => {
+describe('账本修订号随落库更新', () => {
   const startRun = () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
@@ -1438,7 +1438,7 @@ describe('账本修订号跟着落库走', () => {
     } as never)
   }
 
-  test('多落一步就换一个号', () => {
+  test('每写入一步更新一次修订号', () => {
     startRun()
     const before = ledgerRevision()
     applyEvent({
@@ -1458,7 +1458,7 @@ describe('账本修订号跟着落库走', () => {
     expect(ledgerRevision()).not.toBe(before)
   })
 
-  test('provider 回报一次用量就换一个号', () => {
+  test('provider 每回报一次用量更新一次修订号', () => {
     startRun()
     const before = ledgerRevision()
     applyEvent({
@@ -1483,8 +1483,8 @@ describe('账本修订号跟着落库走', () => {
     expect(ledgerRevision()).not.toBe(before)
   })
 
-  /** 只有动静、没有落库的那一类不能换号，否则重取被拉到 token 频率。 */
-  test('当前请求的内容时刻变了不换号', () => {
+  /** 只有活动、没有落库的事件不得更新修订号，否则重新获取的频率会升至 token 频率。 */
+  test('当前请求的内容时刻变化时不更新修订号', () => {
     startRun()
     const before = ledgerRevision()
     setState('views', 'cv_1', 'request', {
@@ -1502,7 +1502,7 @@ describe('账本修订号跟着落库走', () => {
   })
 })
 
-/** 文件快照统一失效；它与给用户看的逐路径变更摘要不是一份状态。 */
+/** 文件快照统一失效；它与展示给用户的逐路径变更摘要不是同一份状态。 */
 describe('文件快照失效序号', () => {
   const changed = (seq: number, path: string, additions: number, deletions: number) =>
     applyEvent({
@@ -1516,7 +1516,7 @@ describe('文件快照失效序号', () => {
       },
     } as never)
 
-  test('每条事件都推进一次，同一文件连续修改也不漏', () => {
+  test('每条事件推进一次，同一文件的连续修改也不遗漏', () => {
     setState({ activeConversation: 'cv_1', fileChanges: [], fileVersion: 0 })
     changed(1, 'src/main.ts', 3, 1)
     expect(state.fileVersion).toBe(1)
@@ -1525,7 +1525,7 @@ describe('文件快照失效序号', () => {
     expect(state.fileVersion).toBe(2)
   })
 
-  test('画布服务写盘的空 changes 只推进序号，不进「本轮改动」', () => {
+  test('画布服务写入磁盘时的空 changes 只推进序号，不进入「本轮改动」', () => {
     setState({ activeConversation: 'cv_1', fileChanges: [], fileVersion: 0 })
     applyEvent({
       seq: 3,
@@ -1551,7 +1551,7 @@ describe('画布运行事件', () => {
       },
     } as never)
 
-  test('本项目的推进画布序号，别的项目的丢掉', () => {
+  test('本项目的事件推进画布序号，其他项目的事件丢弃', () => {
     setWorkspace(WS_A)
     setState({ canvasVersion: 0 })
     run(1, WS_A.id)
@@ -1562,14 +1562,14 @@ describe('画布运行事件', () => {
 })
 
 /**
- * 刷新 / 重连之后的会话投影（`store/connection.ts` 的 `reloadActiveConversation`）。
+ * 刷新或重连后的会话投影（`store/connection.ts` 的 `reloadActiveConversation`）。
  *
- * 这一组锁的是**账本里有、界面上却没了**的那一类。它们全都只在重拉这条路上出现，
- * 实时那条路是正常的，所以看起来一切正常——直到刷新一次。
+ * 本组锁定「账本中有、界面上缺失」的一类问题。它们只出现在重新拉取路径上，
+ * 实时路径正常，因此刷新之前无法察觉。
  *
- * 用假的 `client.api` 喂账本回体，走的是真的折叠逻辑。
+ * 用模拟的 `client.api` 提供账本响应体，执行真实的折叠逻辑。
  */
-describe('重拉会话：账本里有的，界面上就得有', () => {
+describe('重新拉取会话：账本中的内容必须出现在界面上', () => {
   const stub = (steps: unknown[], runs: unknown[], workflowStarts: unknown[] = []) => {
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
       if (p.includes('/history')) {
@@ -1623,7 +1623,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     usage: null,
   }
 
-  test('独立思考 step 折回来，位置在工具卡之前', async () => {
+  test('独立的思考 step 折叠回会话流，位于工具卡之前', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
     stub(
@@ -1647,7 +1647,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     expect(transcript()[1]?.text).toBe('先看看这台机器的显卡')
   })
 
-  test('失败重发留下的半截思考只留在诊断账本，不折回普通会话流', async () => {
+  test('失败重发留下的部分思考只保留在诊断账本中，不折叠回普通会话流', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
     stub(
@@ -1682,7 +1682,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     ).toEqual(['重发后完整的思考'])
   })
 
-  test('没有思考的工具 step 不平白多出一条空折叠', async () => {
+  test('没有思考的工具 step 不生成空的折叠条目', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
     stub([toolStep()], [interruptedRun])
@@ -1717,8 +1717,8 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   })
 
   /**
-   * 原始失败形状：图跑着时刷新页面，正在跑的节点回到「等着跑」且点不开，直到整批结束。
-   * 运行期的 `team.member` 已经错过，这条 step 的 `$.nodes` 是每一格状态的唯一来源。
+   * 原始失败形状：图运行时刷新页面，正在运行的节点回到「等待执行」且无法打开，直到整批结束。
+   * 运行期的 `team.member` 事件已经错过，该 step 的 `$.nodes` 是每个节点状态的唯一来源。
    */
   test('运行中的 workflow 节点入口按节点随 step 回放', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
@@ -1766,10 +1766,10 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   })
 
   /**
-   * 原始失败形状：续接调用所在的页里没有首派，图的形状无处可取，那张卡只剩「当前会话」一格。
-   * 服务端把被引用的首派随页带回，前端先把它放进流，折叠时就能画全。
+   * 原始失败形状：续接调用所在的页中没有首次派发，图的结构无从获取，该卡片只剩「当前会话」一个节点。
+   * 服务端将被引用的首次派发随页返回，前端先将其放入会话流，折叠时即可完整渲染。
    */
-  test('页里只有续接调用时，随页带回的首派进流并折成一张带节点的卡', async () => {
+  test('页中只有续接调用时，随页返回的首次派发进入会话流，并折叠为一张带节点的卡片', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     const start = {
@@ -1840,8 +1840,8 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     expect((card.item.args?.nodes as unknown[]).length).toBe(2)
   })
 
-  /** 终态之后每一格的状态照样从 step 回放：耗时、子会话入口都在 `nodes` 里。 */
-  test('已收尾的 workflow step 的节点状态随 step 回放', async () => {
+  /** 进入终态后，每个节点的状态仍从 step 回放：耗时与子会话入口都在 `nodes` 中。 */
+  test('已结束的 workflow step 的节点状态随 step 回放', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     stub(
@@ -1871,8 +1871,8 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     })
   })
 
-  /** 被打断的 step 没有 transition，nodes 要随条目带出去，折叠时才折得出节点状态。 */
-  test('被打断的 workflow step 把 nodes 带进条目', async () => {
+  /** 被中断的 step 没有 transition，nodes 必须随条目一并输出，折叠时才能得到节点状态。 */
+  test('被中断的 workflow step 将 nodes 写入条目', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     stub(
@@ -1907,12 +1907,12 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   })
 
   /**
-   * 后台进程被杀之后，账本里那一轮已经是 `interrupted`，界面要据此把那一轮的收尾
-   * 画出来。**「在不在跑」不从这里读**：账本那行在进程崩过之后可能还挂着
-   * `running`，照它写就会把界面永久钉在执行中，而新进程的 `RunManager` 里
-   * 没有这条 run。放下它的是握手报的那份忙闲快照。
+   * 后台进程被终止后，账本中该轮已是 `interrupted`，界面须据此渲染该轮的收尾条目。
+   * 「是否在运行」不从账本读取：进程崩溃后账本中的该行可能仍是
+   * `running`，按其写入会使界面永久停留在执行中，而新进程的 `RunManager` 中
+   * 没有该 run。清除运行状态的是握手上报的忙闲快照。
    */
-  test('账本里那一轮是中断态，重拉之后收尾条目在，执行中不再由账本决定', async () => {
+  test('账本中该轮为中断状态时，重新拉取后显示收尾条目，运行状态不由账本决定', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     stub([toolStep()], [interruptedRun])
@@ -1922,8 +1922,8 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     expect(transcript().at(-1)?.run?.stopReason).toBe('user_interrupt')
   })
 
-  /** 反过来的那一半：账本那行还挂着 `running`，重拉也不许把界面点回执行中。 */
-  test('账本里还挂着在跑，忙闲快照说没跑 —— 以快照为准', async () => {
+  /** 另一方面：账本中该行仍为 `running` 时，重新拉取也不得将界面恢复为执行中。 */
+  test('账本中仍记为运行中、忙闲快照显示未运行时，以快照为准', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     stub(
@@ -1936,11 +1936,11 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
   })
 
   /**
-   * 原始失败形状：一轮跑到一半重连，读数条上的 `↓入 ↑出 / 命中 / 金额` 整组消失，
-   * 要等下一次模型调用回报 usage 才凭空长回来。它不是易失量——`runs` 行有这一列，
-   * 每收到一次 provider 的 usage 就写一次。
+   * 原始失败形状：一轮执行过程中重连，读数条上的 `↓入 ↑出 / 命中 / 金额` 整组消失，
+   * 下一次模型调用回报 usage 后才重新出现。它不是易失值：`runs` 行有对应列，
+   * 每收到一次 provider 的 usage 即写入一次。
    */
-  test('正在跑的那一轮，用量跟着重拉一起回来，不清空', async () => {
+  test('运行中的一轮，用量随重新拉取一并恢复，不被清空', async () => {
     const liveRun = {
       ...interruptedRun,
       finishedAt: null,
@@ -1965,13 +1965,13 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     stub([toolStep()], [liveRun])
     await reloadActiveConversation()
 
-    // 重拉不许把忙闲那张表洗掉：它由握手快照与 `conversation.busy` 维持。
+    // 重新拉取不得清除忙闲表：它由握手快照与 `conversation.busy` 维护。
     expect(isRunning()).toBe(true)
     expect(viewOf('cv_1').usage?.inputTokens).toBe(30_000)
     expect(viewOf('cv_1').usage?.cost).toBe(0.02)
   })
 
-  test('首屏和更早页各只发一个历史请求，前插后顺序不乱', async () => {
+  test('首屏与更早的页各只发送一个历史请求，前插后顺序正确', async () => {
     const id = 'cv_paged'
     setState({ activeConversation: id, todos: [] })
     freshView(id)
@@ -2053,7 +2053,7 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
     expect(viewOf(id).history.nextCursor).toBeNull()
   })
 
-  test('快速从 A 点到 B 会撤销 A，A 的迟到结果不能覆盖 B', async () => {
+  test('从 A 快速切换到 B 时撤销 A 的请求，A 的迟到结果不得覆盖 B', async () => {
     const apiBefore = client.api
     let releaseStarted!: () => void
     const started = new Promise<void>((resolve) => {
@@ -2116,14 +2116,14 @@ describe('重拉会话：账本里有的，界面上就得有', () => {
 })
 
 /**
- * 当前目标（`store/connection.ts` 里 `goal` 事件与重拉时的读回）。
+ * 当前目标（`store/connection.ts` 中的 `goal` 事件与重新拉取时的读取）。
  *
- * 两条路都要锁，因为**它们各自补的是对方的盲区**：事件那条只在目标变更的那一刻
- * 发一次，读回那条只在打开会话时跑一次。少了读回，进程重启之后账本里那个目标
- * 在界面上凭空消失——而续起标记不落盘，它是**不会自己再跑**的那一个，
- * 只能等用户点继续。自动循环不可见时，用户无从判断它还在不在跑。
+ * 两条路径都须锁定，因为二者互补：事件路径只在目标变更时
+ * 发送一次，读取路径只在打开会话时执行一次。缺少读取路径时，进程重启后账本中的目标
+ * 在界面上消失，而自动继续标记不落盘，该目标不会自动再次执行，
+ * 只能等待用户点击继续。自动循环不可见时，用户无法判断它是否仍在运行。
  */
-describe('当前目标：事件推过来，刷新之后还得在', () => {
+describe('当前目标：由事件推送，刷新后仍须存在', () => {
   const goal = {
     id: 'gl_1',
     conversationId: 'cv_1',
@@ -2136,13 +2136,13 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
     updatedAt: 2,
   }
 
-  test('目标变更实时落进 state', () => {
+  test('目标变更实时写入 state', () => {
     setState({ activeConversation: 'cv_1', goal: null })
     applyEvent({ seq: 1, at: 0, conversationId: 'cv_1', event: { type: 'goal', goal } } as never)
     expect(state.goal?.objective).toBe('把门禁跑绿')
   })
 
-  test('别的会话的目标不落到当前会话上', () => {
+  test('其他会话的目标不写入当前会话', () => {
     setState({ activeConversation: 'cv_now', goal: null })
     applyEvent({
       seq: 2,
@@ -2154,10 +2154,10 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
   })
 
   /**
-   * **原始失败形状**：目标停在受阻上，用户刷新一次页面——目标是什么、为什么停，
-   * 界面上一样都没有，只剩一条看起来正常结束的会话。
+   * 原始失败形状：目标因受阻而停止，用户刷新一次页面后，目标内容与停止原因
+   * 在界面上都不存在，只剩一条看似正常结束的会话。
    */
-  test('重拉会话时从账本读回来，理由跟着一起回来', async () => {
+  test('重新拉取会话时从账本读取目标，受阻理由一并恢复', async () => {
     setState({ activeConversation: 'cv_1', goal: null })
     freshView('cv_1')
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
@@ -2177,7 +2177,7 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
             ...goal,
             status: 'blocked',
             blockedCode: 'no_progress',
-            blockedReason: '上一轮在原地打转：同样的调用、同样的结果。',
+            blockedReason: '上一轮因连续无进展而终止：同样的调用、同样的结果。',
           },
         }
       }
@@ -2186,18 +2186,18 @@ describe('当前目标：事件推过来，刷新之后还得在', () => {
     await reloadActiveConversation()
 
     expect(state.goal?.status).toBe('blocked')
-    expect(state.goal?.blockedReason).toContain('原地打转')
+    expect(state.goal?.blockedReason).toContain('连续无进展')
   })
 })
 
 /**
- * 报错正文的落点。覆盖 `store/connection.ts` 的 `run.error` / `run.finished` 两支。
+ * 报错正文的显示位置。覆盖 `store/connection.ts` 的 `run.error` / `run.finished` 两个分支。
  *
- * **原始失败形状**：一轮因为连不上接口而停了，读数条上只有「模型服务出错」
- * 五个字，真正说得出该干什么的那句（「网络不可达：检查接口地址与代理」）
- * 挂在另一张卡上——同一件事两个地方说，而那张卡刷新一次就没了。
+ * 原始失败形状：一轮因无法连接接口而停止，读数条上只有「模型服务出错」
+ * 五个字，说明处理方法的那句（「网络不可达：检查接口地址与代理」）
+ * 显示在另一张卡片上：同一件事在两处说明，且那张卡片刷新一次即消失。
  */
-describe('报错正文并进这一轮的读数条', () => {
+describe('报错正文并入本轮的读数条', () => {
   const errorFrame = (message: string) =>
     ({
       seq: 1,
@@ -2223,7 +2223,7 @@ describe('报错正文并进这一轮的读数条', () => {
       },
     }) as never
 
-  test('收尾时正文进条目，全局那份放下——不能两处都说', () => {
+  test('结束时正文写入条目并清除全局错误，不在两处显示', () => {
     setState({
       activeConversation: 'cv_now',
       busyConversations: ['cv_now'],
@@ -2237,8 +2237,8 @@ describe('报错正文并进这一轮的读数条', () => {
     expect(view().error).toBe(null)
   })
 
-  /** 正常收尾没有正文，读数条回落到停止原因的通用说法。 */
-  test('没出错的那一轮 errorMessage 是 null', () => {
+  /** 正常结束时没有报错正文，读数条使用停止原因的通用文字。 */
+  test('未出错的一轮 errorMessage 为 null', () => {
     setState({
       activeConversation: 'cv_now',
       busyConversations: ['cv_now'],
@@ -2249,10 +2249,10 @@ describe('报错正文并进这一轮的读数条', () => {
   })
 
   /**
-   * 另一半：`run.error` 之后**没有** `run.finished`（没配 key、档案解析失败）。
-   * 那一半没有 run 行可挂，全局那份必须留着，否则一个字都看不到。
+   * 另一方面：`run.error` 之后没有 `run.finished`（未配置 key、档案解析失败）。
+   * 此时没有 run 行可以写入，全局错误必须保留，否则用户看不到任何报错。
    */
-  test('没有收尾事件时全局那份留着', () => {
+  test('没有结束事件时保留全局错误', () => {
     setState({
       activeConversation: 'cv_now',
       busyConversations: ['cv_now'],
@@ -2267,14 +2267,14 @@ describe('报错正文并进这一轮的读数条', () => {
 /**
  * 「多久没动静了」。
  *
- * 起因是一次真实断流：服务端 262 秒一个字节都没收到，而界面上只有一个越走越大的
- * 总耗时配一句「正在思考…」——两者都没说出真相，用户直到最后报错才知道断了。
+ * 起因是一次实际断流：服务端 262 秒未收到任何字节，而界面上只有一个持续增长的
+ * 总耗时与一句「正在思考…」，二者都未反映实际状态，用户直到最终报错才知道连接已断开。
  *
- * 静默时长按**当前请求的最后内容时刻**算，而那个时刻由适配器观察、随内容事件带来，
- * 与落库的 `provider_requests.last_content_at` 是同一个值。这一组锁的是
- * 「只有真内容推进它」：按任意一帧计时的话，心跳撑着的一条死流永远报不出静默。
+ * 静默时长按当前请求的最后内容时刻计算，该时刻由适配器观察、随内容事件传入，
+ * 与落库的 `provider_requests.last_content_at` 是同一个值。本组锁定
+ * 「只有实际内容推进该时刻」：按任意一帧计时时，仅有心跳的无内容流永远不会报告静默。
  */
-describe('内容时刻只由真内容推进', () => {
+describe('内容时刻只由实际内容推进', () => {
   const sent = (seq: number) =>
     applyEvent({
       seq,
@@ -2291,7 +2291,7 @@ describe('内容时刻只由真内容推进', () => {
       },
     } as never)
 
-  test('非内容事件不推进它——心跳撑着的死流才报得出静默', () => {
+  test('非内容事件不推进内容时刻：仅有心跳的流才能报告静默', () => {
     setState({ activeConversation: 'cv_now' })
     freshView('cv_now')
     sent(1)
@@ -2312,10 +2312,10 @@ describe('内容时刻只由真内容推进', () => {
   })
 
   /**
-   * 归属不是这条会话的帧不能动它——否则后台会话每动一下，
-   * 前台这条就被判成「刚有动静」，静默永远不会显示出来。
+   * 不属于本会话的帧不得修改该时刻：否则后台会话每到达一帧，
+   * 前台会话就被判定为刚有活动，静默永远不会显示。
    */
-  test('别的会话的帧不动它', () => {
+  test('其他会话的帧不修改内容时刻', () => {
     setState({ activeConversation: 'cv_now' })
     freshView('cv_now')
     sent(4)
@@ -2328,8 +2328,8 @@ describe('内容时刻只由真内容推进', () => {
     expect(viewOf('cv_now').request).toMatchObject({ lastContentAt: null })
   })
 
-  /** 收尾之后清掉：留着的话下一轮开头会拿上一轮的时刻算，起手就报出错误的静默时长。 */
-  test('run 收尾后清空', () => {
+  /** 结束后清除：保留时，下一轮开始时按上一轮的时刻计算，起始即显示错误的静默时长。 */
+  test('run 结束后清空', () => {
     setState({
       activeConversation: 'cv_now',
       busyConversations: ['cv_now'],
@@ -2356,13 +2356,13 @@ describe('内容时刻只由真内容推进', () => {
 })
 
 /**
- * 刷新之后当前请求的阶段、次数与截止点原样还原。
+ * 刷新后当前请求的阶段、次数与截止点原样恢复。
  *
- * 事件环有界（`server/bus.ts` 按帧数与字节数淘汰），断线久了补不回来，所以刷新
- * 不能靠重放实时事件。服务端把这一份从 `RunManager` 与同一份请求账现取，随历史页
- * 一起回来，客户端按同一条规则折进同一个投影——两条路恢复出来的必须是同一个状态。
+ * 事件环有界（`server/bus.ts` 按帧数与字节数淘汰），断线时间较长时无法补齐，因此刷新
+ * 不能依赖重放实时事件。服务端从 `RunManager` 与同一份请求账实时读取该状态，随历史页
+ * 一并返回，客户端按同一规则折叠进同一投影：两条路径恢复出的状态必须相同。
  *
- * 四组分别对应四个阶段；另两条锁竞态与请求数。
+ * 四组分别对应四个阶段；另两条用例锁定竞态与请求数。
  */
 describe('刷新按同一份请求账恢复当前请求', () => {
   let historyCalls = 0
@@ -2416,7 +2416,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     await reloadActiveConversation()
   }
 
-  test('退避中：阶段、N / M 与截止点都还原', async () => {
+  test('退避中：阶段、N / M 与截止点均恢复', async () => {
     await reload(
       snapshot({ ...baseRequest, status: 'rejected', sentAt: 500, backoffUntil: 61_000 }),
     )
@@ -2429,7 +2429,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     })
   })
 
-  test('已发送未回头：阶段停在发出，等待时长按 sent_at 算', async () => {
+  test('已发送未响应：阶段停留在已发出，等待时长按 sent_at 计算', async () => {
     await reload(snapshot(baseRequest))
     expect(viewOf('cv_live').request).toMatchObject({
       phase: 'sent',
@@ -2440,7 +2440,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     })
   })
 
-  test('已回头无内容：阶段是等待响应，内容时刻仍为空', async () => {
+  test('已响应无内容：阶段为等待响应，内容时刻仍为空', async () => {
     await reload(snapshot({ ...baseRequest, headersAt: 1_400 }))
     expect(viewOf('cv_live').request).toMatchObject({
       phase: 'headers',
@@ -2470,10 +2470,10 @@ describe('刷新按同一份请求账恢复当前请求', () => {
   })
 
   /**
-   * 持续输出之后刷新：还原的是**最后一段内容**的时刻，不是重拉那一刻。
-   * 拿重拉时刻顶替的表现是刷新一次静默归零，一条已经卡住的流看起来刚有过动静。
+   * 持续输出后刷新：恢复的是最后一段内容的时刻，不是重新拉取的时刻。
+   * 以重新拉取时刻代替时，每次刷新都会使静默时长归零，已停滞的流看起来刚有过活动。
    */
-  test('有内容：还原最后一段内容的时刻，不是重拉时刻', async () => {
+  test('有内容：恢复最后一段内容的时刻，而不是重新拉取的时刻', async () => {
     setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
     freshView('cv_live')
     applyEvent({
@@ -2523,12 +2523,12 @@ describe('刷新按同一份请求账恢复当前请求', () => {
       lastContentAt: 61_500,
       lastVisibleAt: 61_500,
     })
-    // 刷新只打一次历史接口，运行中快照随它一起回来，没有第二个接口。
+    // 刷新只调用一次历史接口，运行中快照随其一并返回，没有第二个接口。
     expect(historyCalls).toBe(1)
     expect(otherCalls).toBeGreaterThan(0)
   })
 
-  /** 加载期间先到的新事件比快照新，快照不许把它盖回去。 */
+  /** 加载期间先到达的事件比快照新，快照不得覆盖它。 */
   test('序号更旧的快照不覆盖已经到达的新事件', async () => {
     setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
     freshView('cv_live')
@@ -2566,25 +2566,25 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     expect(viewOf('cv_live').generatingToolCall).toBe(false)
   })
 
-  /** 已落终态的 run 不带快照，投影随之清空——界面不会把它画成还在执行。 */
-  test('没有 run 在跑时投影清空', async () => {
+  /** 已进入终态的 run 不带快照，投影随之清空，界面不会将其显示为执行中。 */
+  test('没有运行中的 run 时投影清空', async () => {
     await reload(null)
     expect(viewOf('cv_live').request).toBe(null)
   })
 })
 
 /**
- * 模型目录是配置的派生态，**失效点只有一个**：配置落盘那一处。
+ * 模型目录是配置的派生状态，失效点只有一个：配置落盘处。
  *
- * 各个组件自己持一份缓存的实测后果：设置页校准完思考写回了配置，
- * 输入区那份目录还是开屏时拉的，档位要整页重载才出现。
+ * 各组件各自缓存一份时的实测后果：设置页校准思考后写回了配置，
+ * 输入区的目录仍是启动时获取的，档位要整页重载才出现。
  */
-describe('配置一落盘，模型目录跟着重算', () => {
-  test('保存之后目录是保存后的那一份', async () => {
+describe('配置落盘后模型目录随之重新计算', () => {
+  test('保存后获取的目录是保存后的版本', async () => {
     const calls: string[] = []
     let levels = ['low']
-    // 与上面几组同样直接替换 `client.api`：这一条测的是「谁在什么时候重算」，
-    // 不是 HTTP 那一层。
+    // 与前几组相同，直接替换 `client.api`：本用例测试重新计算的触发方与时机，
+    // 不测试 HTTP 层。
     ;(client as unknown as { api: (p: string, init?: RequestInit) => Promise<unknown> }).api =
       async (p: string, init?: RequestInit) => {
         calls.push(`${init?.method ?? 'GET'} ${p}`)
@@ -2610,7 +2610,7 @@ describe('配置一落盘，模型目录跟着重算', () => {
     await saveServerConfig({ active: { provider: 'p', model: 'm' }, providers: {} } as never)
 
     expect(modelCatalog()?.providers[0]?.models[0]?.effortLevels).toEqual(['low', 'high'])
-    // 目录是保存**之后**取的：反过来取到的是落盘前那一份，看起来像没生效。
+    // 目录在保存之后获取：顺序相反时取到的是落盘前的版本，看起来如同保存未生效。
     expect(calls.indexOf('GET /api/models')).toBeGreaterThan(calls.indexOf('PUT /api/config'))
   })
 })
@@ -2618,9 +2618,9 @@ describe('配置一落盘，模型目录跟着重算', () => {
 /**
  * 工具卡的实时输出（`store/connection.ts` 的 `tool.delta`）。
  *
- * 断言形状是原始失败形状：`tool.delta` 的 stepId 为空串时（服务端装配执行上下文
- * 时还没有 step），这里 `find` 一条也匹配不上，`if (!item) return` 把整条通道
- * 静默丢掉——命令跑多久，卡片就空多久，而事件一直在发。
+ * 断言采用原始失败形状：`tool.delta` 的 stepId 为空串时（服务端装配执行上下文
+ * 时尚无 step），此处 `find` 无法匹配任何条目，`if (!item) return` 将整条通道
+ * 静默丢弃：命令运行期间卡片始终为空，而事件持续发送。
  */
 describe('工具卡按 stepId 认领实时输出', () => {
   const started = (stepId: string) =>
@@ -2667,10 +2667,10 @@ describe('工具卡按 stepId 认领实时输出', () => {
     }) as never
 
   /**
-   * 中途输出是合帧落地的（同一档里的若干段并成一次），所以这里用一个会冲缓冲的
-   * 事件来断言，而不是靠等定时器——**任何要读 transcript 的事件之前一定先落地**。
+   * 中途输出合帧后写入（同一档内的若干段合并为一次），因此此处用一个会清空缓冲的
+   * 事件断言，而不是等待定时器：任何需要读取 transcript 的事件之前都会先写入。
    */
-  test('落到 tool.started 开出来的那张卡上', () => {
+  test('写入 tool.started 创建的卡片', () => {
     setState({ activeConversation: 'cv_now' })
     freshView('cv_now')
     applyEvent(started('st_tool_1'))
@@ -2681,10 +2681,10 @@ describe('工具卡按 stepId 认领实时输出', () => {
   })
 
   /**
-   * 认不出归属就丢掉，**不要退化成「贴到最后一张正在跑的卡上」**：
-   * 一波里可以有多个工具同时在跑，贴错的输出比没有输出更难查。
+   * 无法识别归属时丢弃，不要改为写入最后一张正在运行的卡片：
+   * 一批中可以有多个工具同时运行，写错卡片的输出比没有输出更难排查。
    */
-  test('认不出 stepId 的一律不落卡', () => {
+  test('无法识别 stepId 的输出一律不写入卡片', () => {
     setState({ activeConversation: 'cv_now' })
     freshView('cv_now')
     applyEvent(started('st_tool_1'))
@@ -2695,10 +2695,10 @@ describe('工具卡按 stepId 认领实时输出', () => {
 })
 
 /**
- * 收尾走两帧：`run.finished` 落下收尾条并交接读数，`conversation.busy` 随后才放闲。
- * 中间那一帧按忙闲判的话，流尾同一个位置上下画着两条读数条。
+ * 结束分两帧：`run.finished` 写入收尾条并交接读数，`conversation.busy` 随后才置为闲。
+ * 中间一帧若按忙闲判定，会话流末尾的同一位置会上下显示两条读数条。
  */
-describe('收尾条落下就算这一轮完了，不等忙闲', () => {
+describe('收尾条写入即视为本轮结束，不等待忙闲', () => {
   const started = (runId: string) =>
     ({
       seq: 1,
@@ -2739,13 +2739,13 @@ describe('收尾条落下就算这一轮完了，不等忙闲', () => {
     freshView('cv_tail')
   }
 
-  test('跑着的时候不算完', () => {
+  test('运行期间不视为结束', () => {
     fresh()
     applyEvent(started('run_a'))
     expect(runClosed()).toBe(false)
   })
 
-  test('收尾条一落下就算完，此时忙闲还挂着', () => {
+  test('收尾条写入即视为结束，此时忙状态尚未清除', () => {
     fresh()
     applyEvent(started('run_a'))
     applyEvent(finished('run_a'))
@@ -2753,7 +2753,7 @@ describe('收尾条落下就算这一轮完了，不等忙闲', () => {
     expect(runClosed()).toBe(true)
   })
 
-  test('下一轮起来就不算完了', () => {
+  test('下一轮开始后不再视为结束', () => {
     fresh()
     applyEvent(started('run_a'))
     applyEvent(finished('run_a'))
@@ -2762,16 +2762,16 @@ describe('收尾条落下就算这一轮完了，不等忙闲', () => {
   })
 
   /**
-   * 另一头不能一起收掉：按下回车到 `run.started` 之间那段，读数条要在
-   * （它那一格说的是「正在请求…」，而那正是用户唯一的反馈）。
+   * 另一端不能一并清除：按下回车到 `run.started` 之间，读数条必须存在
+   * （它显示「正在请求…」，这是用户唯一的反馈）。
    */
-  test('按下回车之后、run.started 之前，活的那条读数条照挂', () => {
+  test('按下回车后、run.started 之前，实时读数条保持显示', () => {
     fresh()
     applyEvent(started('run_a'))
     applyEvent(finished('run_a'))
     setState('busyConversations', [])
-    // 指令要真发出去：换不掉 `client.send` 的话，这里没有连接，它当场回一条
-    // `not_ready` 把乐观置忙冲销掉——那是断线，不是这条用例要测的那一段。
+    // 指令必须实际发出：不替换 `client.send` 时此处没有连接，它会立即返回
+    // `not_ready` 并冲销乐观置忙，那属于断线场景，不是本用例测试的阶段。
     const before = client.send
     ;(client as unknown as { send: (cmd: unknown) => void }).send = () => {}
     try {
@@ -2784,10 +2784,10 @@ describe('收尾条落下就算这一轮完了，不等忙闲', () => {
   })
 
   /**
-   * 服务端自发起的轮次（目标续起、定时触发、跟进火发）没有客户端乐观插入，
-   * 流尾仍是上一轮的收尾条，而新那一轮真的在跑。按末条的 kind 判会漏掉它。
+   * 服务端自行发起的轮次（目标自动继续、定时触发、跟进消息自动发送）没有客户端乐观插入，
+   * 会话流末尾仍是上一轮的收尾条，而新的一轮确实在运行。按末条的 kind 判定会遗漏它。
    */
-  test('流尾是上一轮的收尾条时，新那一轮照样算在跑', () => {
+  test('流尾是上一轮的收尾条时，新的一轮仍算作运行中', () => {
     fresh()
     applyEvent(started('run_a'))
     applyEvent(finished('run_a'))
@@ -2805,7 +2805,7 @@ describe('停止按会话寻址', () => {
       sent.push(cmd as { type: string })
     }
     return {
-      // 切会话的订阅指令与它同走 `client.send`，只看中断这一种。
+      // 切换会话的订阅指令与中断指令都经由 `client.send`，此处只检查中断指令。
       interrupts: () => sent.filter((c) => c.type === 'conversation.interrupt'),
       restore: () => {
         ;(client as unknown as { send: typeof before }).send = before
@@ -2813,7 +2813,7 @@ describe('停止按会话寻址', () => {
     }
   }
 
-  test('发的是当前会话的中断指令', () => {
+  test('发送的是当前会话的中断指令', () => {
     const { interrupts, restore } = capture()
     try {
       setState({ activeConversation: 'cv_stop' })
@@ -2824,8 +2824,8 @@ describe('停止按会话寻址', () => {
     expect(interrupts()).toEqual([{ type: 'conversation.interrupt', conversationId: 'cv_stop' }])
   })
 
-  /** 一条会话都没打开时点不到停止按钮，指令也不该发出去。 */
-  test('没有活动会话就不发', () => {
+  /** 没有打开任何会话时无法点击停止按钮，也不应发出指令。 */
+  test('没有活动会话时不发送', () => {
     const { interrupts, restore } = capture()
     try {
       setState({ activeConversation: null })
@@ -2838,10 +2838,10 @@ describe('停止按会话寻址', () => {
 })
 
 /**
- * 回执与人打的字在 wire 上都是 user 角色，分辨只有 `origin`。两条投影路各锁一次：
- * 起轮那条落 `messages.origin`，run 内注入那条落 step 的 `payload.origin`。
+ * 回执与用户输入在 wire 上都是 user 角色，只能通过 `origin` 区分。两条投影路径各锁定一次：
+ * 开始一轮的回执写入 `messages.origin`，run 内注入的回执写入 step 的 `payload.origin`。
  */
-describe('带 origin 的用户消息折成回执条目', () => {
+describe('带 origin 的用户消息折叠为回执条目', () => {
   const CV = 'cv_receipt'
   const run = {
     id: 'rn_1',
@@ -2901,7 +2901,7 @@ describe('带 origin 的用户消息折成回执条目', () => {
     }
   }
 
-  test('起轮的那条回执不画成气泡，人打的字照旧', async () => {
+  test('开始一轮的回执不渲染为气泡，用户输入仍为气泡', async () => {
     await load(
       [
         message('ms_1', '为什么动不了', null),
@@ -2917,7 +2917,7 @@ describe('带 origin 的用户消息折成回执条目', () => {
     })
   })
 
-  test('run 内注入的那条按 payload.origin 分，同一轮里两种都在', async () => {
+  test('run 内注入的消息按 payload.origin 区分，同一轮中两种消息并存', async () => {
     await load(
       [message('ms_1', '为什么动不了', null)],
       [
@@ -2934,11 +2934,11 @@ describe('带 origin 的用户消息折成回执条目', () => {
 })
 
 /**
- * 排队与否的闸在服务端是「有没有 run」（`runs.hasRun`），而忙态含在跑的子 agent。
- * 按忙态判的话，只有子 agent 在跑时用户发的消息在界面上排进队列卡，
- * 服务端却当场起了一轮。
+ * 服务端判定是否排队的依据是「是否存在 run」（`runs.hasRun`），而忙状态包含正在运行的子 agent。
+ * 按忙状态判定时，只有子 agent 在运行时用户发送的消息在界面上进入队列卡片，
+ * 服务端却立即开始了一轮。
  */
-describe('只有子 agent 在跑时发消息不排队', () => {
+describe('仅子 agent 运行中时发送消息不排队', () => {
   const CV = 'cv_send'
   const runItem = {
     id: 'run_rn_1',
@@ -2965,7 +2965,7 @@ describe('只有子 agent 在跑时发消息不排队', () => {
     }
   }
 
-  test('收尾条在流尾：消息进会话流，不出乐观队列卡', () => {
+  test('收尾条位于会话流末尾时，消息进入会话流，不显示乐观队列卡片', () => {
     const restore = seed([runItem])
     try {
       sendMessage('再看一眼那个文件')
@@ -2976,7 +2976,7 @@ describe('只有子 agent 在跑时发消息不排队', () => {
     expect(transcript().at(-1)).toMatchObject({ kind: 'user', text: '再看一眼那个文件' })
   })
 
-  test('run 还在跑就照旧排队', () => {
+  test('run 仍在运行时正常排队', () => {
     const restore = seed([{ id: 'st_text', kind: 'text', text: '在查了' }])
     try {
       sendMessage('顺带看看日志')
@@ -2989,10 +2989,10 @@ describe('只有子 agent 在跑时发消息不排队', () => {
 })
 
 /**
- * 实时到达的那一帧与刷新后折出来的那一条必须同 id、同形态。
- * 只分一处的话，回执在页面开着时画成用户气泡，刷新一次才变回执行。
+ * 实时到达的帧与刷新后折叠出的条目必须 id 相同、形态相同。
+ * 只在一处区分时，回执在页面打开期间显示为用户气泡，刷新一次后才变为回执行。
  */
-describe('实时到达的回执也建成回执条目', () => {
+describe('实时到达的回执同样建为回执条目', () => {
   const CV = 'cv_receipt_live'
   const RECEIPT = '[子 agent 回执] 临时 查资料 已返回'
 
@@ -3024,7 +3024,7 @@ describe('实时到达的回执也建成回执条目', () => {
       userMessage: { content, ...(origin ? { origin } : {}) },
     })
 
-  test('run 内注入的回执是回执行，人打的字仍是气泡', () => {
+  test('run 内注入的回执为回执行，用户输入仍为气泡', () => {
     open()
     applyEvent(injected('st_receipt', RECEIPT, 'subagent'))
     applyEvent(injected('st_human', '接着干'))
@@ -3032,14 +3032,14 @@ describe('实时到达的回执也建成回执条目', () => {
     expect(transcript()[0]).toMatchObject({ id: 'st_receipt', origin: 'subagent' })
   })
 
-  test('回执起的那一轮不走气泡对齐，当场建成回执行', () => {
+  test('由回执开始的一轮不经过气泡对齐，直接建为回执行', () => {
     open()
     applyEvent(started('ms_1', '[workflow 回执] 检查点 主会话审查 的上游已经全部返回', 'workflow'))
     expect(transcript().map((t) => t.kind)).toEqual(['receipt'])
     expect(transcript()[0]).toMatchObject({ id: 'ms_1', origin: 'workflow' })
   })
 
-  test('刷新之后账本折出来的是同一条，不是第二条', async () => {
+  test('刷新后从账本折叠出的是同一条目，不产生第二条', async () => {
     open()
     applyEvent(started('ms_1', RECEIPT, 'subagent'))
     applyEvent(injected('st_receipt', RECEIPT, 'subagent'))
@@ -3105,8 +3105,8 @@ describe('实时到达的回执也建成回执条目', () => {
 })
 
 /**
- * 思考流走合帧器（`store/connection.ts` 的 `thinking.delta`）：一帧合一次写，不逐 token 写。
- * 正文到了先把攒着的思考落地，否则同一次回复里思考会排到正文后面。
+ * 思考流经由合帧器（`store/connection.ts` 的 `thinking.delta`）：每帧合并写入一次，不逐 token 写入。
+ * 正文到达时先写入积压的思考，否则同一次回复中思考会排在正文之后。
  */
 describe('思考流合帧', () => {
   const think = (stepId: string, delta: string) =>
@@ -3124,32 +3124,32 @@ describe('思考流合帧', () => {
       event: { type: 'text.delta', runId: 'run_1', stepId, delta },
     }) as never
 
-  test('几片思考合成一条，正文到达时先落地', () => {
+  test('多段思考合并为一条，正文到达时先写入', () => {
     setState({ activeConversation: 'cv_think' })
     freshView('cv_think')
     applyEvent(think('st_think', '先想'))
     applyEvent(think('st_think', '再想'))
-    // 攒着，还没写进 transcript。
+    // 仍在缓冲中，尚未写入 transcript。
     expect(viewOf('cv_think').transcript.find((t) => t.id === 'st_think')).toBeUndefined()
     applyEvent(text('st_text', '完成'))
     const items = viewOf('cv_think').transcript
     const thinking = items.findIndex((t) => t.id === 'st_think')
     expect(items[thinking]?.text).toBe('先想再想')
-    // 正文还在节拍器里或已落在思考之后，思考不能排在它后面。
+    // 正文仍在节拍器中或已写在思考之后，思考不得排在正文之后。
     const textAt = items.findIndex((t) => t.id === 'st_text')
     expect(textAt === -1 || textAt > thinking).toBe(true)
-    // 正文还攒在节拍器里，不丢掉的话它的定时器会让进程退不出去。
+    // 正文仍积压在节拍器中，不丢弃时其定时器会阻止进程退出。
     discardPace()
   })
 })
 
 /**
- * 变更面板的数据：账本页（`/changes`）与实时回执（`tool.finished`）要落成同一份。
+ * 变更面板的数据：账本页（`/changes`）与实时回执（`tool.finished`）必须合并为同一份。
  *
- * 锁三件事：首页在飞时到达的写入不丢也不重；没取过面板时实时回执不追加；
- * 翻页只在有游标时发请求。
+ * 锁定三项：首页请求进行中到达的写入不丢失也不重复；未获取过面板数据时实时回执不追加；
+ * 只在有游标时请求下一页。
  */
-describe('变更面板：账本页与实时回执落成同一份', () => {
+describe('变更面板：账本页与实时回执合并为同一份', () => {
   const change = (path: string, additions: number, deletions: number) => ({
     path,
     changeType: 'modified',
@@ -3183,7 +3183,7 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
         durationMs: 1,
       },
     }) as never
-  /** 一次实时回执，变更类型任选：折叠规则要按它分档。 */
+  /** 一次实时回执，变更类型可任选：折叠规则按变更类型分档。 */
   const changed = (stepId: string, path: string, changeType: 'created' | 'deleted') =>
     ({
       seq: 1,
@@ -3236,7 +3236,7 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
     }
   }
 
-  test('首页在飞时到达的写入：页里有的去重，页里没有的并回去，合计只加没并进去的', async () => {
+  test('首页请求进行中到达的写入：页中已有的去重，页中没有的并入，合计只累加页中没有的部分', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
     setState('views', 'cv_1', 'transcript', [
@@ -3280,7 +3280,7 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
         ['改 a', ['st_1', 'st_2']],
       ])
       expect(changes?.totals).toEqual({ paths: ['a.ts', 'b.ts'], additions: 5, deletions: 1 })
-      // 再来一遍同一条回执：不重复进账
+      // 再次到达同一条回执：不重复计入
       applyEvent(finished('st_2', 'b.ts', 2, 0))
       expect(viewOf('cv_1').changes?.totals.additions).toBe(5)
     } finally {
@@ -3289,7 +3289,7 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
     }
   })
 
-  test('没取过面板时回执不追加；取过之后新一轮的写入按 run.started 的用户消息新建一节放最前', async () => {
+  test('未获取过面板数据时回执不追加；获取后，新一轮的写入按 run.started 的用户消息新建一节并置于最前', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
     setState('views', 'cv_1', 'transcript', [
@@ -3342,7 +3342,7 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
     }
   })
 
-  test('翻页：有游标才发请求，新页接在末尾；到头后不再发', async () => {
+  test('翻页：有游标时才发送请求，新页追加在末尾；到达末页后不再发送', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     const requested: string[] = []
@@ -3369,7 +3369,7 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
       expect(viewOf('cv_1').changes?.nextCursor).toBeNull()
       expect(await loadOlderConversationChanges('cv_1')).toBe(false)
       expect(requested).toHaveLength(2)
-      // 已取过就不再取
+      // 已获取过时不再获取
       await loadConversationChanges('cv_1')
       expect(requested).toHaveLength(2)
     } finally {
@@ -3378,7 +3378,7 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
     }
   })
 
-  test('派活的一格落终态：重取最新一轮替换进去，合计以账本为准', async () => {
+  test('派发任务的节点进入终态时，重新获取最新一轮并替换，合计以账本为准', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
     const requested: string[] = []
@@ -3449,11 +3449,11 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
     }
   })
 
-  test('这一轮跑完了：重取那一节，建了又删的路径行上与合计里一起消失', async () => {
+  test('本轮执行完毕：重新获取该节，创建后又删除的路径从行与合计中一并消失', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
     const requested: string[] = []
-    // 账本那一份两边都折过：那个路径在这一轮没有净效果，行与合计都不含它。
+    // 账本数据的行与合计均已折叠：该路径在本轮没有净效果，行与合计均不包含它。
     const restore = stubApi(async (p) => {
       requested.push(p)
       return {
@@ -3480,7 +3480,7 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
       setState('views', 'cv_1', 'runUserMessageId', 'ms_1')
       applyEvent(changed('st_1', 'cache/a.bin', 'created'))
       applyEvent(changed('st_2', 'cache/a.bin', 'deleted'))
-      // 实时追加只加到达的那一条：这时它还在行上、也在合计里。
+      // 实时追加只加入到达的那一条：此时该路径仍在行中，也计入合计。
       expect(viewOf('cv_1').changes?.totals.paths).toContain('cache/a.bin')
 
       applyEvent(runFinished('rn_1'))
@@ -3496,7 +3496,7 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
     }
   })
 
-  test('首页失败有终态，再调一次即重试', async () => {
+  test('首页请求失败时有终态，再次调用即重试', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: [] })
     freshView('cv_1')
     let fail = true
@@ -3525,8 +3525,8 @@ describe('变更面板：账本页与实时回执落成同一份', () => {
 /**
  * 内置浏览器能力投影（`store/connection.ts` 对 `browser.state` 的处理）。
  *
- * 原生宿主是应用启动之后才连上来的，握手那一份能力里它还没到；`browser.state`
- * 是进程级事件，整份替换 `capabilities.browser`，界面据此决定露不露出浏览器入口。
+ * 原生宿主在应用启动之后才连接，握手时的能力中尚不包含它；`browser.state`
+ * 是进程级事件，整份替换 `capabilities.browser`，界面据此决定是否显示浏览器入口。
  */
 describe('内置浏览器能力投影', () => {
   const caps = (connected: boolean) =>
@@ -3550,7 +3550,7 @@ describe('内置浏览器能力投影', () => {
     } as never)
     expect(state.capabilities?.browser.connected).toBe(true)
     expect(state.capabilities?.browser.runtimeSupported).toBe(true)
-    // 同一份投影里别的格子不受影响。
+    // 同一投影中的其他字段不受影响。
     expect(state.capabilities?.mode).toBe('auto')
   })
 })

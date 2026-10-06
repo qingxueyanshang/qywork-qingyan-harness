@@ -22,7 +22,7 @@ describe('聊天中的本地 HTML 链接', () => {
     )
   })
 
-  test('网页、其他文件、页内锚点和脚本协议不当成本地 HTML', () => {
+  test('网页、其他文件、页内锚点和脚本协议不识别为本地 HTML', () => {
     for (const href of [
       'https://example.com/a.html',
       '//example.com/a.html',
@@ -39,7 +39,7 @@ describe('聊天中的本地 HTML 链接', () => {
 })
 
 describe('聊天中的本机文件地址', () => {
-  test('相对路径去掉查询与锚点、解码后原样作工作区路径', () => {
+  test('相对路径去除查询与锚点并解码后直接作为工作区路径', () => {
     expect(workspaceFile('generated/20260926-000432.png', 'C:\\ws')).toBe(
       'generated/20260926-000432.png',
     )
@@ -47,14 +47,14 @@ describe('聊天中的本机文件地址', () => {
     expect(workspaceFile('out\\a.png', 'C:\\ws')).toBe('out/a.png')
   })
 
-  test('绝对路径落在工作区里才换成相对路径，大小写按 Windows 不敏感', () => {
+  test('绝对路径位于工作区内时才转换为相对路径，按 Windows 规则不区分大小写', () => {
     expect(workspaceFile('C:\\WS\\generated\\a.png', 'c:\\ws')).toBe('generated/a.png')
     expect(workspaceFile('/work/generated/a.png', '/work/')).toBe('generated/a.png')
     expect(workspaceFile('D:\\other\\a.png', 'C:\\ws')).toBeNull()
     expect(workspaceFile('/workspace2/a.png', '/work')).toBeNull()
   })
 
-  test('网址、协议地址、网络地址与页内锚点不算本机文件', () => {
+  test('网址、协议地址、网络地址与页内锚点不属于本机文件', () => {
     for (const href of [
       'https://example.com/a.png',
       '//example.com/a.png',

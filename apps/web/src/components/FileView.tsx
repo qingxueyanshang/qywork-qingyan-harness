@@ -30,20 +30,20 @@ interface PreviewResult {
 }
 
 /**
- * 打开的文件长在**主内容区**，不在右侧面板里。
+ * 打开的文件显示在**主内容区**，不在右侧面板中。
  *
- * 面板那一列只有 `--panel-w` 宽，代码每行都要折；而看文件时文件树必须还在，
- * 否则「看下一个」得先返回。所以树留在面板、内容占主区——两块同时看得见。
+ * 面板列只有 `--panel-w` 宽，代码每行都需要折行；而查看文件时文件树必须保留，
+ * 否则查看下一个文件需要先返回。因此文件树留在面板中、内容占据主区，两者同时可见。
  *
- * 输入区仍可随时唤出：面板放大时默认收在底部，悬浮或聚焦才展开，避免长期遮住
- * 正在看的文件；有草稿时保持展开。
+ * 输入区仍可随时唤出：面板放大时默认收起在底部，悬浮或聚焦时才展开，避免长时间遮挡
+ * 正在查看的文件；有草稿时保持展开。
  *
- * 默认导出给 `lazy()` 用：`CodeView` 拖着 CodeMirror 核心约 300 kB，
- * 只想聊天的用户不该为它付首屏成本。
+ * 默认导出供 `lazy()` 使用：`CodeView` 依赖约 300 kB 的 CodeMirror 核心，
+ * 只使用聊天功能的用户不应为它承担首屏加载成本。
  */
 export default function FileView(props: { path: string; refresh?: number }) {
-  // 路径与文件页的统一失效序号直接走资源判据。失效序号不在 `run.started` 清空，
-  // 因此发起新一轮不会把“摘要从非空变空”误判成一次磁盘改动。
+  // 路径与文件页的统一失效序号直接作为资源判据。失效序号不在 `run.started` 时清空，
+  // 因此发起新一轮不会把「摘要从非空变为空」误判为一次磁盘改动。
   const [result] = createResource(
     () => `${props.path}:${props.refresh ?? 0}`,
     () => client.api<PreviewResult>(`/api/files/preview?path=${encodeURIComponent(props.path)}`),
@@ -52,11 +52,11 @@ export default function FileView(props: { path: string; refresh?: number }) {
   return (
     <div class="preview">
       <header class="preview-head">
-        {/* **完整的本机路径**，不是工作区相对路径：根目录下的文件相对路径就只剩一个
-            文件名，看不出它在哪个项目里。挤不下时从左边截——尾部的文件名比盘符要紧。 */}
+        {/* 显示完整的本机路径，而不是工作区相对路径：根目录下文件的相对路径只剩
+            文件名，无法看出所属项目。空间不足时从左侧截断：末尾的文件名比盘符更重要。 */}
         <code class="truncate-left" data-tip={absPath(props.path)}>
-          {/* `dir="ltr"` 是这一对里不能省的一半：外层 `rtl` 把省略号挪到左边，
-              内层 `ltr` 保证路径本身还是正着读的。只写外层，`C:\` 会跑到右边去。 */}
+          {/* `dir="ltr"` 与外层的 `rtl` 必须同时存在：外层 `rtl` 把省略号移到左侧，
+              内层 `ltr` 保证路径本身仍按从左到右显示。只写外层时，`C:\` 会移到右侧。 */}
           <span dir="ltr">{absPath(props.path)}</span>
         </code>
         <span class="spacer" />
@@ -66,14 +66,14 @@ export default function FileView(props: { path: string; refresh?: number }) {
       </header>
 
       <div class="preview-body">
-        {/* 取不回来要给一句话。`loaded()` 而不是 `result()`：后者出错时是 `throw`，
-            而这一层外面只有给 `lazy()` 用的 Suspense，接不住抛出来的错——
-            表现是这块地方永远停在加载态。 */}
+        {/* 获取失败时必须给出说明。使用 `loaded()` 而不是 `result()`：后者出错时会 `throw`，
+            而这一层外部只有供 `lazy()` 使用的 Suspense，无法捕获抛出的错误，
+            该区域会一直停留在加载状态。 */}
         <Show
           when={loaded(result)}
           fallback={
             <Show when={result.error} fallback={<div class="preview-loading" />}>
-              {(e) => <div class="preview-note">{explainApiError(e(), '打不开这个文件')}</div>}
+              {(e) => <div class="preview-note">{explainApiError(e(), '无法打开此文件')}</div>}
             </Show>
           }
         >
@@ -114,13 +114,13 @@ export default function FileView(props: { path: string; refresh?: number }) {
 }
 
 /**
- * PDF：取原始字节做成 blob URL 交给 iframe，由 WebView 内建的阅读器渲染。图片与音视频走直链（`client.fileUrl`）。
+ * PDF：取得原始字节并生成 blob URL 交给 iframe，由 WebView 内置的阅读器渲染。图片与音视频使用直链（`client.fileUrl`）。
  *
- * - 用 blob URL，不用直链或 data URI：桌面端 CSP 的 `frame-src` 只放行 `blob:`；data URI 还要整份 base64 进 JSON。
- * - 只在路径或修改时间变了才重取。判据必须经 memo 且是字符串：预览每重取一次都返回一个新对象，
- *   直接依赖它的话，会话里任何一次写文件都会让阅读器重新加载、回到第一页；只看修改时间的话，
- *   同一个预览里换到修改时间恰好相同的另一个文件时不会重取，显示的还是上一个文件。
- * - blob URL 换下来就撤销，卸载时撤销最后一个：不撤销的话整份字节占着内存直到整页刷新。
+ * - 使用 blob URL，不使用直链或 data URI：桌面端 CSP 的 `frame-src` 只放行 `blob:`；data URI 还需要把整个文件以 base64 写入 JSON。
+ * - 只在路径或修改时间变化时重新获取。判据必须经过 memo 且为字符串：预览每次重新获取都返回一个新对象，
+ *   直接依赖它时，会话中任何一次写文件都会使阅读器重新加载并回到第一页；只判断修改时间时，
+ *   在同一个预览中切换到修改时间恰好相同的另一个文件不会重新获取，显示的仍是上一个文件。
+ * - blob URL 被替换时立即撤销，卸载时撤销最后一个：不撤销时整份字节会占用内存直到整页刷新。
  */
 function PdfView(props: { path: string; mtime: number }) {
   const [src, setSrc] = createSignal<string | null>(null)
@@ -133,7 +133,7 @@ function PdfView(props: { path: string; mtime: number }) {
     if (old) URL.revokeObjectURL(old)
   }
 
-  /** 只有最后一次请求算数：文件连续改写时先发的可能后到。 */
+  /** 只采用最后一次请求的结果：文件连续改写时，先发出的请求可能后返回。 */
   let generation = 0
   createEffect(
     on(source, () => {
@@ -183,14 +183,14 @@ function CodeView(props: { content: string; path: string }) {
   let host!: HTMLDivElement
   let view: EditorView | null = null
   let mountedPath: string | null = null
-  /** 只有最后一次装配算数：语言包是动态 import，两次改动挨得近时后发的可能先到。 */
+  /** 只采用最后一次装配的结果：语言包是动态 import，两次改动间隔很短时，后发出的可能先完成。 */
   let generation = 0
 
-  // 只有路径变了才整块重建（语言包跟路径走）。同一个文件的正文更新直接派发到
-  // 现有 CodeMirror：重建实例会把 `.cm-scroller` 换掉，用户读到中间时就回到顶部。
+  // 只有路径变化时才整体重建（语言包由路径决定）。同一文件的正文更新直接派发到
+  // 现有 CodeMirror：重建实例会替换 `.cm-scroller`，用户阅读到中间时会回到顶部。
   //
-  // 装在 `createEffect` 里，不装在 `ref` 回调里：ref 只在建元素那一下跑一次，
-  // 而外层的 `Show` 不是 keyed，内容变了这个组件实例是留着的。
+  // 放在 `createEffect` 中，不放在 `ref` 回调中：ref 只在创建元素时执行一次，
+  // 而外层的 `Show` 不是 keyed，内容变化时本组件实例保持不变。
   createEffect(() => {
     const content = props.content
     const path = props.path
@@ -200,7 +200,7 @@ function CodeView(props: { content: string; path: string }) {
       if (view.state.doc.toString() === content) return
       const { scrollLeft, scrollTop } = view.scrollDOM
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: content } })
-      // 全文替换会重算文档高度；恢复像素位置，内容变短时浏览器自然夹到新的底部。
+      // 全文替换会重新计算文档高度；恢复像素位置，内容变短时浏览器自动将位置限制在新的底部。
       view.scrollDOM.scrollLeft = scrollLeft
       view.scrollDOM.scrollTop = scrollTop
       return

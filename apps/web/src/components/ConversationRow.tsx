@@ -8,10 +8,10 @@ import { IconArchive, IconMore, IconPencil, IconTrash } from './Icons.tsx'
 const pad = (n: number) => String(n).padStart(2, '0')
 
 /**
- * 侧栏那一行的时间：今天给时刻，昨天给「昨天」，更早给日期。
+ * 侧栏行中的时间：今天显示时刻，昨天显示「昨天」，更早显示日期。
  *
- * **不写「N 分钟前」**：相对时间需要定时重渲染，否则渲染后即过期。
- * 按当日零点分界，不按「差 24 小时」：凌晨一点的消息当晚应显示为「昨天」。
+ * **不写「N 分钟前」**：相对时间需要定时重新渲染，否则渲染后即过期。
+ * 按当日零点分界，不按「相差 24 小时」：凌晨一点的消息当晚应显示为「昨天」。
  */
 function fmtWhen(t: number): string {
   const d = new Date(t)
@@ -26,23 +26,23 @@ function fmtWhen(t: number): string {
 /**
  * 一行会话：标题 + 最近修改时间 + `⋯` 菜单（重命名 / 归档 / 删除）。
  *
- * 整行是 button，`⋯` 也是 button，**两个 button 不能嵌套**（浏览器会把内层拎出去，
- * 点击区随之错位），所以外层只能是 div。
+ * 整行是 button，`⋯` 也是 button，**两个 button 不能嵌套**（浏览器会把内层移出，
+ * 点击区域随之错位），因此外层只能是 div。
  *
- * 菜单与 `ProjectRow` 的各写各的：项完全不同，抽通用组件要先有第三个调用点（B2）；
+ * 菜单与 `ProjectRow` 的菜单分别实现：菜单项完全不同，抽取通用组件需要先出现第三个调用点（B2）；
  * `.conv-menu` 的样式同样自带完整规则，不与 `.project-menu` 共用选择器（B8）。
  */
 export function ConversationRow(props: {
   conversation: Conversation
   active: boolean
-  /** 这条会话正在跑。**列表里每一条都判得出**，判据是 `state.busyConversations`。 */
+  /** 该会话正在运行。列表中每一条都能判定，判据是 `state.busyConversations`。 */
   running: boolean
   onOpen: () => void
   onError?: (message: string) => void
 }) {
   const [menuOpen, setMenuOpen] = createSignal(false)
   const [renaming, setRenaming] = createSignal(false)
-  /** 正在等确认的动作。null = 没有。同时只可能有一个。 */
+  /** 等待确认的操作。null 表示没有。同一时刻最多一个。 */
   const [armed, setArmed] = createSignal<'archive' | 'delete' | null>(null)
 
   const close = () => {
@@ -50,18 +50,18 @@ export function ConversationRow(props: {
     setArmed(null)
   }
 
-  /** 菜单卡片钉在这颗 `⋯` 上，收起判断也按这一行的容器算。 */
+  /** 菜单卡片固定在本行的 `⋯` 按钮上，收起判断也以本行的容器为准。 */
   let wrapEl: HTMLDivElement | undefined
   let moreEl!: HTMLButtonElement
 
   /*
-   * 点到本行之外就收起菜单。捕获阶段监听，否则会被内部的 stopPropagation 拦住。
+   * 点击本行之外时收起菜单。在捕获阶段监听，否则会被内部的 stopPropagation 拦截。
    *
-   * **按本行的容器判，不用类选择器**：`closest('.conv-menu-wrap')` 对别的会话行
-   * 同样成立，点另一行的 `⋯` 时这一行的菜单不关，两张卡片叠在一起。
+   * **按本行的容器判定，不使用类选择器**：`closest('.conv-menu-wrap')` 对其他会话行
+   * 同样成立，点击另一行的 `⋯` 时本行的菜单不会关闭，两张卡片重叠。
    *
-   * **确认弹窗打开时一律不处理**：它渲染在 `.conv-menu-wrap` 之外，确认键的
-   * mousedown 会先命中这里并清掉 `armed`，弹窗随之卸载，click 不再触发。
+   * **确认弹窗打开时一律不处理**：弹窗渲染在 `.conv-menu-wrap` 之外，确认按钮的
+   * mousedown 会先命中此处并清除 `armed`，弹窗随之卸载，click 不再触发。
    */
   const onDocDown = (e: MouseEvent) => {
     if (armed() !== null) return
@@ -72,10 +72,10 @@ export function ConversationRow(props: {
     if (e.key === 'Escape') close()
   }
   /*
-   * 卡片是 fixed 的，坐标只在展开那一刻算一次——列表滚动或窗口改尺寸之后它会停在
-   * 原地，与那一行脱节，所以收起来让用户重开。确认弹窗立着时不动它：那时菜单在
-   * 弹窗后面，收掉会连着把弹窗的来源一起抽走。
-   * scroll 不冒泡，容器内的滚动只有捕获阶段收得到。
+   * 卡片使用 fixed 定位，坐标只在展开时计算一次：列表滚动或窗口尺寸改变后它会停留在
+   * 原位置，与对应行错位，因此收起菜单，由用户重新打开。确认弹窗显示时不收起：此时菜单在
+   * 弹窗后方，收起会连同弹窗的来源一并移除。
+   * scroll 不冒泡，容器内的滚动只能在捕获阶段接收。
    */
   const onReflow = () => {
     if (armed() === null) setMenuOpen(false)
@@ -91,7 +91,7 @@ export function ConversationRow(props: {
     window.removeEventListener('resize', onReflow)
   })
 
-  /** 每个动作都走这里：统一收起菜单、统一把失败说出来，不静默吞掉。 */
+  /** 所有操作都经由此处：统一收起菜单、统一显示失败，不静默丢弃。 */
   const run = async (fn: () => Promise<unknown>) => {
     try {
       await fn()
@@ -110,7 +110,7 @@ export function ConversationRow(props: {
           <>
             <button class="conv-open" type="button" onClick={() => props.onOpen()}>
               <span class="truncate">{props.conversation.title || '新对话'}</span>
-              {/* `aria-hidden`：它是会话流那条读数条的余光重复，读屏那边已经听到了。 */}
+              {/* `aria-hidden`：它与会话流中的读数条重复，屏幕阅读器已播报过该信息。 */}
               <Show when={props.running}>
                 <span class="conv-run" aria-hidden="true">
                   <span />
@@ -192,7 +192,7 @@ export function ConversationRow(props: {
         />
       </Show>
 
-      {/* 确认是弹窗，不在行里就地展开——232px 的栏放不下。 */}
+      {/* 确认使用弹窗，不在行内就地展开：232px 宽的侧栏无法容纳。 */}
       <ConfirmDialog
         open={armed() !== null}
         title={armed() === 'delete' ? '删除会话？' : '归档会话？'}
@@ -202,7 +202,7 @@ export function ConversationRow(props: {
         onConfirm={() =>
           void run(async () => {
             if (armed() !== 'delete') return archiveConversation(props.conversation.id)
-            // 删掉了但空间没收回来：走 onError 那一格，与删除失败同一处显示。
+            // 会话已删除但空间未回收：经由 onError 显示，与删除失败显示在同一处。
             const reclaimError = await deleteConversation(props.conversation.id)
             if (reclaimError) props.onError?.(reclaimError)
           })
@@ -214,10 +214,10 @@ export function ConversationRow(props: {
 }
 
 /**
- * 行内改名。
+ * 行内重命名。
  *
- * **自己取焦点，不用 `autofocus`**：该属性只在文档解析时生效，而这一格是动态插入的。
- * 连带失效的是失焦即取消（未获得过焦点就不会失焦），输入框将无法退出。
+ * **自行获取焦点，不使用 `autofocus`**：该属性只在文档解析时生效，而该输入框是动态插入的。
+ * 随之失效的还有失焦即取消（从未获得焦点就不会失焦），输入框将无法退出。
  */
 function RenameInput(props: {
   value: string
@@ -233,7 +233,7 @@ function RenameInput(props: {
 
   const submit = () => {
     const title = name().trim()
-    // 清空再回车不是「改成空名字」，当取消处理，不发那趟必然 422 的请求。
+    // 清空后按回车不是「改为空名称」，按取消处理，不发送必然返回 422 的请求。
     if (title) props.onSubmit(title)
     else props.onCancel()
   }

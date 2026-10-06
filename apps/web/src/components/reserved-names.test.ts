@@ -1,10 +1,10 @@
 /**
  * 覆盖 `apps/web/src` 下全部 `.tsx`：本地组件不得与 Solid 的控制流组件同名。
  *
- * 开发模式下 solid-refresh 按组件名登记模块内的组件。本地组件取名 `Switch` 时，
- * 渲染到它的那一刻抛 `Cannot read properties of undefined (reading 'when')`，
+ * 开发模式下 solid-refresh 按组件名登记模块内的组件。本地组件命名为 `Switch` 时，
+ * 渲染该组件即抛出 `Cannot read properties of undefined (reading 'when')`，
  * 外层 `<Switch>/<Match>` 随之停止切换，整个设置弹窗不再响应。生产构建与 happy-dom
- * 下的组件测试都复现不出来，所以按名字守。
+ * 下的组件测试都无法复现该问题，因此按名称检查。
  */
 import { expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'

@@ -1,17 +1,17 @@
 /**
  * 内置浏览器投影的初始化（`store/browser.ts` 的 `initBrowserProjection`）。
  *
- * 锁的是一个真实布局 bug：原生子视图是窗口的子 HWND，不受 Solid 生命周期管辖。
- * 页面被硬刷新（dev 协调重载、整页 reload）时上一份页面的 `onCleanup` 不会跑，
- * 摆开着的子视图停在旧矩形上盖住聊天；而刷新后面板从收起态起、没有 `BrowserPanel`
- * 去收它。原始失败形状：刷新后一条约 300px 的窄条浮在会话正文上，既不铺满面板也不消失。
- * 修法是初始化时无条件 park 一次。
+ * 锁定一项布局缺陷：原生子视图是窗口的子 HWND，不受 Solid 生命周期管理。
+ * 页面被硬刷新（开发编排重载、整页 reload）时，上一份页面的 `onCleanup` 不会执行，
+ * 已展开的子视图停留在旧矩形上覆盖聊天区；而刷新后面板处于收起状态，没有 `BrowserPanel`
+ * 将其收起。原始失败形状：刷新后一条约 300px 的窄条覆盖在会话正文上，既不铺满面板也不消失。
+ * 因此初始化时无条件 park 一次。
  *
- * `store/browser.ts` 顶层 `new QyClient` 不在这条链上，但它经 `state.ts` / `ui.ts` 间接
- * 触到几个浏览器全局，所以这里先补齐再动态 import（同 `store.test.ts` 的理由）。
+ * `store/browser.ts` 顶层的 `new QyClient` 不在该调用链上，但它经由 `state.ts` / `ui.ts` 间接
+ * 访问几个浏览器全局对象，因此此处先补齐这些对象再动态 import（理由同 `store.test.ts`）。
  *
  * 覆盖范围（B6）：`store/browser.ts` 的 `initBrowserProjection`、`openBrowserTab`、`browserTabLabel`、
- * `openLinkInPanel` 与 `browserUnavailableText`，连同它们经 `store/ui.ts` 按工作区落账的那一段。
+ * `openLinkInPanel` 与 `browserUnavailableText`，以及它们经由 `store/ui.ts` 按工作区记录的部分。
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -47,10 +47,10 @@ interface Invoke {
 }
 
 /**
- * 装成桌面外壳，记录所有原生调用。返回 restore。UA 取 Linux 的：宿主是哪一种只由握手能力说，
+ * 模拟桌面外壳，记录全部原生调用，返回 restore。UA 使用 Linux 的值：宿主类型只由握手能力声明，
  * 与 UA 无关。
  *
- * `reply` 给某条命令自定回包，返回 `undefined` 的走默认回包。
+ * `reply` 为指定命令自定义响应，返回 `undefined` 时使用默认响应。
  */
 function asShell(
   invokes: Invoke[],
@@ -93,12 +93,12 @@ function hostTab(tabId: string, workspaceId: string): HostTab {
   return { tabId, url: 'about:blank', title: '', workspaceId, createdSeq: seq }
 }
 
-/** 等宿主回包与投影跑完：`openBrowserTab` 与初始化对账都要过几个微任务。 */
+/** 等待宿主响应与投影执行完毕：`openBrowserTab` 与初始化对账都需要经过若干微任务。 */
 function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-/** 清掉两个工作区的浏览器页签与选择。空清单按并集对齐，两边一起收。 */
+/** 清除两个工作区的浏览器页签与选择。空清单按并集对齐，两个工作区同时清除。 */
 function reset(): void {
   syncBrowserTabs([])
   for (const ws of [WS_A, WS_B]) {
@@ -115,13 +115,13 @@ describe('内置浏览器投影初始化', () => {
     restore = undefined
   })
 
-  test('在桌面外壳里初始化时，先把所有子视图移出可视区', () => {
+  test('在桌面外壳中初始化时，先把所有子视图移出可视区', () => {
     const invokes: Invoke[] = []
     restore = asShell(invokes)
 
     initBrowserProjection()
 
-    // park：`browser_layout` 不带 tabId、宽高为 0 —— 宿主据此把每一页都收出可视区。
+    // park：`browser_layout` 不带 tabId、宽高为 0，宿主据此把每个页面都移出可视区。
     const park = invokes.find((i) => i.cmd === 'browser_layout')
     expect(park).toBeDefined()
     expect(park?.args?.tabId).toBeUndefined()
@@ -129,7 +129,7 @@ describe('内置浏览器投影初始化', () => {
     expect(park?.args?.height).toBe(0)
   })
 
-  test('不是桌面外壳时一条原生命令都不发', () => {
+  test('不在桌面外壳中时不发送任何原生命令', () => {
     const invokes: Invoke[] = []
     const origNav = g.navigator
     const origTauri = g.__TAURI_INTERNALS__
@@ -146,14 +146,14 @@ describe('内置浏览器投影初始化', () => {
   })
 })
 
-describe('内置浏览器页按工作区落账', () => {
+describe('内置浏览器页面按工作区记录', () => {
   let restore: (() => void) | undefined
   afterEach(() => {
     restore?.()
     restore = undefined
   })
 
-  test('整页刷新后两个工作区各自恢复自己的页', async () => {
+  test('整页刷新后两个工作区各自恢复自己的页面', async () => {
     reset()
     const host = [hostTab('bt_a1', WS_A.id), hostTab('bt_b1', WS_B.id)]
     restore = asShell([], (cmd) => (cmd === 'browser_tabs' ? Promise.resolve(host) : undefined))
@@ -168,10 +168,10 @@ describe('内置浏览器页按工作区落账', () => {
   })
 
   /**
-   * 原始失败形状：页签写死成「浏览器 N」，会话流里指这一页时只剩内部 id `bt_N`，
-   * 两处都认不出是哪个网页。页签名取网页标题，标题未到用主机名，空标签用「新标签页」。
+   * 原始失败形状：页签固定显示为「浏览器 N」，会话流中引用该页面时只显示内部 id `bt_N`，
+   * 两处都无法识别是哪个网页。页签名取网页标题，标题尚未到达时使用主机名，空标签页使用「新标签页」。
    */
-  test('页签名跟着网页标题走，会话流取同一个名字', async () => {
+  test('页签名随网页标题变化，会话流使用同一名称', async () => {
     reset()
     const tab = hostTab('bt_a1', WS_A.id)
     let host: HostTab[] = [tab]
@@ -193,7 +193,7 @@ describe('内置浏览器页按工作区落账', () => {
     expect(browserTabLabel('bt_gone')).toBeUndefined()
   })
 
-  test('开页翻到新开的那一页', async () => {
+  test('打开页面后切换到新打开的页面', async () => {
     reset()
     const tab = hostTab('bt_a9', WS_A.id)
     restore = asShell([], (cmd) => {
@@ -210,10 +210,10 @@ describe('内置浏览器页按工作区落账', () => {
   })
 
   /**
-   * 原始失败形状：开页请求在途时切到 B，回包按「完成时的当前工作区」写，
-   * B 的页签条上多出 A 的那一页，B 原来停的那一页也被顶掉。
+   * 原始失败形状：打开页面的请求尚未完成时切换到 B，响应按完成时的当前工作区写入，
+   * B 的页签栏多出 A 的页面，B 原先选中的页面也被替换。
    */
-  test('开页回包迟到 —— B 的页签与当前页一动不动，切回 A 见到新页', async () => {
+  test('打开页面的响应延迟到达：B 的页签与当前页面保持不变，切回 A 后显示新页面', async () => {
     reset()
     const aTab = hostTab('bt_a9', WS_A.id)
     const bTab = hostTab('bt_b1', WS_B.id)
@@ -245,12 +245,12 @@ describe('内置浏览器页按工作区落账', () => {
     expect(sidePanel()).toEqual({ tab: 'bt_a9' })
   })
 
-  test('回包到达前这一页已被关掉 —— 不复活也不选中', async () => {
+  test('响应到达前页面已被关闭：不恢复也不选中', async () => {
     reset()
     const tab = hostTab('bt_a9', WS_A.id)
     restore = asShell([], (cmd) => {
       if (cmd === 'browser_open') return Promise.resolve(tab)
-      // 对账时它已经不在宿主的存活清单里。
+      // 对账时该页面已不在宿主的存活清单中。
       if (cmd === 'browser_tabs') return Promise.resolve([])
       return undefined
     })
@@ -262,7 +262,7 @@ describe('内置浏览器页按工作区落账', () => {
     expect(sidePanel()).toBe('files')
   })
 
-  test('没有活动工作区时不开页', async () => {
+  test('没有活动工作区时不打开页面', async () => {
     reset()
     const invokes: Invoke[] = []
     restore = asShell(invokes)
@@ -275,10 +275,10 @@ describe('内置浏览器页按工作区落账', () => {
 })
 
 /**
- * 正文里的链接落到内置浏览器。
+ * 正文中的链接交给内置浏览器打开。
  *
- * 原始失败形状：macOS 与 Linux 的外壳里宿主已经连上，点本地 HTML 仍提示「本地网页预览需要
- * Windows 桌面端。」；宿主报了找不到浏览器，提示却是「尚未连接，请稍后重试」。
+ * 原始失败形状：macOS 与 Linux 外壳中宿主已连接，点击本地 HTML 仍提示「本地网页预览需要
+ * Windows 桌面端。」；宿主报告未找到浏览器，提示却是「尚未连接，请稍后重试」。
  */
 describe('正文链接交给内置浏览器', () => {
   let restore: (() => void) | undefined
@@ -298,7 +298,7 @@ describe('正文链接交给内置浏览器', () => {
       browser,
     }) as never
 
-  test('页在独立窗口里的宿主：本地 HTML 按工作区文件地址开页', async () => {
+  test('页面位于独立窗口的宿主：本地 HTML 按工作区文件地址打开', async () => {
     reset()
     const tab = hostTab('bt_link', WS_A.id)
     const opened: (Record<string, unknown> | undefined)[] = []
@@ -324,7 +324,7 @@ describe('正文链接交给内置浏览器', () => {
     expect(state.notice?.reason).not.toBe('preview_failed')
   })
 
-  test('宿主报找不到浏览器：提示原因，不开页', () => {
+  test('宿主报告未找到浏览器：提示原因，不打开页面', () => {
     reset()
     const invokes: Invoke[] = []
     restore = asShell(invokes)

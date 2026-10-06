@@ -1,22 +1,22 @@
 /**
  * 图标集。
  *
- * 自己画而不用图标库，为的是三条能统一的规则——套用现成库时这三条几乎必然被打破：
+ * 自行绘制而不使用图标库，目的是统一以下三条规则；套用现成图标库时这三条通常无法同时满足：
  *
- * 1. **统一 24 网格、1.5 描边、round 端点与拐角。** 「圆润」是通过
- *    `stroke-linecap/linejoin: round` 落实的结构属性，不是靠给容器加圆角。
- *    描边取 1.5：这套界面是细线语言（1px 描边、1px 分隔线），2.0 的图标摆在里面
- *    重一档，而 13px 显示尺寸下那么粗的线在拐角处会糊成一团。
+ * 1. **统一 24 网格、1.5 描边、round 端点与拐角。** 「圆润」通过
+ *    `stroke-linecap/linejoin: round` 这一结构属性实现，而不是给容器加圆角。
+ *    描边取 1.5：本界面采用细线风格（1px 描边、1px 分隔线），2.0 的图标在其中
+ *    显得偏重，且在 13px 显示尺寸下过粗的线条会在拐角处粘连。
  * 2. **描边不随尺寸缩放**（`vector-effect: non-scaling-stroke`），
- *    16px 和 20px 下视觉粗细一致。
- * 3. **颜色恒为 currentColor**，由父级文字色决定，不在图标里写死颜色。
+ *    16px 与 20px 下视觉粗细一致。
+ * 3. **颜色恒为 currentColor**，由父级文字颜色决定，不在图标中写死颜色。
  */
 
 import type { JSX } from 'solid-js'
 
 interface IconProps {
   size?: number
-  /** 线宽（屏幕像素）。缺省 1.5。 */
+  /** 线宽（屏幕像素）。默认 1.5。 */
   stroke?: number | undefined
   class?: string
   style?: JSX.CSSProperties
@@ -48,9 +48,9 @@ function Svg(props: IconProps & { children: JSX.Element; label?: string }) {
 /**
  * 补全菜单的分类标记。
  *
- * 这组故意不用上面的细线语言：它们不是普通操作按钮，而是在一列相似结果里帮助
- * 用户一眼分出技能、MCP 与插件的路标。小尺寸下用实心轮廓比脑形、插头等
- * 细节繁多的线稿更稳，也不会把「技能」误读成「记忆」。
+ * 这一组有意不采用上方的细线风格：它们不是普通操作按钮，而是在一列相似结果中帮助
+ * 用户快速区分技能、MCP 与插件的标识。小尺寸下实心轮廓比脑形、插头等
+ * 细节繁多的线稿更易辨认，也不会把「技能」误读为「记忆」。
  */
 function SolidSvg(props: IconProps & { children: JSX.Element; label?: string }) {
   return (
@@ -70,7 +70,7 @@ function SolidSvg(props: IconProps & { children: JSX.Element; label?: string }) 
   )
 }
 
-/** 技能：能力闪光，不再复用脑形记忆图标。 */
+/** 技能：表示能力的闪光图形，不复用脑形的记忆图标。 */
 export const IconSkillSolid = (p: IconProps) => (
   <SolidSvg {...p}>
     <path d="M11.9 2.4c.8 4.8 2.8 6.9 7.7 7.7-4.9.8-6.9 3-7.7 8-.8-5-2.8-7.2-7.7-8 4.9-.8 6.9-2.9 7.7-7.7Z" />
@@ -88,7 +88,7 @@ export const IconMcpSolid = (p: IconProps) => (
   </SolidSvg>
 )
 
-/** 插件：实心拼图片。 */
+/** 插件：实心拼图块。 */
 export const IconPluginSolid = (p: IconProps) => (
   <SolidSvg {...p}>
     <path d="M4 4h6.1a2.4 2.4 0 1 0 3.8 0H20v6.1a2.4 2.4 0 1 1 0 3.8V20h-6.1a2.4 2.4 0 1 1-3.8 0H4v-6.1a2.4 2.4 0 1 0 0-3.8V4Z" />
@@ -98,10 +98,10 @@ export const IconPluginSolid = (p: IconProps) => (
 /**
  * 新建会话。
  *
- * 「方框缺一角 + 一支笔」，不是「对话气泡加一个加号」。改掉的理由：
- * 气泡是**读**的符号（一条已经存在的消息），加号叠上去表达的是「多一条消息」；
- * 而这个按钮的语义是「开始写一篇新的」。它还要和旁边的 `⋯` 同为线性笔画——
- * 气泡那个实心感的闭合轮廓在 14px 下明显更重。
+ * 采用「缺一角的方框 + 一支笔」，不采用「对话气泡 + 加号」：
+ * 气泡表示阅读（一条已存在的消息），叠加加号表达的是「增加一条消息」；
+ * 而该按钮的语义是「开始撰写新内容」。它还需与旁边的 `⋯` 同为线性笔画：
+ * 气泡的实心闭合轮廓在 14px 下明显更重。
  */
 export const IconNewChat = (p: IconProps) => (
   <Svg {...p}>
@@ -111,8 +111,8 @@ export const IconNewChat = (p: IconProps) => (
 )
 
 /* ── 窗口按钮 ──
-   刻意画得比其他图标细、比其他图标小：它们是系统级控件的替身，
-   照 Windows 的观感应当是 1px 细线，跟 UI 图标的 2.0 描边不是一套语言。 */
+   有意绘制得比其他图标更细、更小：它们代替系统级控件，
+   按 Windows 的外观应为 1px 细线，与 UI 图标的 1.5 描边不属于同一风格。 */
 export const IconWinMin = (p: IconProps) => (
   <svg width={p.size ?? 10} height={p.size ?? 10} viewBox="0 0 10 10" aria-hidden="true">
     <path d="M0 5h10" stroke="currentColor" stroke-width="1" />
@@ -172,7 +172,7 @@ export const IconClock = (p: IconProps) => (
   </Svg>
 )
 
-/** 目标：靶心。别换成旗子——旗子在这套界面里已经是「标记」的意思。 */
+/** 目标：靶心。不要改为旗帜：旗帜在本界面中已表示「标记」。 */
 export const IconTarget = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="12" cy="12" r="8" />
@@ -226,8 +226,8 @@ export const IconFile = (p: IconProps) => (
   </Svg>
 )
 
-/* 文件树工具条那四颗。加号一律画在右下角，和图形本体分开——叠在中间的话
-   14px 下加号的两笔会和文件夹的折角糊成一团。 */
+/* 文件树工具条的四个图标。加号一律绘制在右下角，与图形主体分开：叠加在中间时，
+   14px 下加号的两笔会与文件夹的折角粘连。 */
 export const IconFilePlus = (p: IconProps) => (
   <Svg {...p}>
     <path d="M13.4 3.8H7.6A2.6 2.6 0 0 0 5 6.4v11.2a2.6 2.6 0 0 0 2.6 2.6h4" />
@@ -250,8 +250,8 @@ export const IconRefresh = (p: IconProps) => (
   </Svg>
 )
 
-/** 全部折叠：两条向内合的箭头。和 `IconExpand` 的对角箭头不是一回事——
-    那个说的是「这块面板放大 / 还原」，这个说的是「树收起来」。 */
+/** 全部折叠：两条向内合拢的箭头。与 `IconExpand` 的对角箭头含义不同：
+    后者表示「面板放大 / 还原」，本图标表示「收起文件树」。 */
 export const IconCollapseAll = (p: IconProps) => (
   <Svg {...p}>
     <path d="M8 4.8l4 4 4-4" />
@@ -267,7 +267,7 @@ export const IconTerminal = (p: IconProps) => (
   </Svg>
 )
 
-/** 无限画布：一个画框，四角向外挑出去，表示边界之外还有。 */
+/** 无限画布：一个画框，四角向外延伸，表示边界之外仍有内容。 */
 export const IconCanvas = (p: IconProps) => (
   <Svg {...p}>
     <rect x="7.2" y="7.2" width="9.6" height="9.6" rx="1.6" />
@@ -296,7 +296,7 @@ export const IconAudio = (p: IconProps) => (
   </Svg>
 )
 
-/** 下载：对称的向下箭头落到横线，避免 U 形托盘造成视觉重心偏低。 */
+/** 下载：对称的向下箭头指向横线，避免 U 形托盘使视觉重心偏低。 */
 export const IconDownload = (p: IconProps) => (
   <Svg {...p}>
     <path d="M12 4.5v10M8.2 10.8 12 14.6l3.8-3.8" />
@@ -335,7 +335,7 @@ export const IconStop = (p: IconProps) => (
   </Svg>
 )
 
-/** 时间线：一条刻度与其下排着的两段片段。 */
+/** 时间线：一条刻度及其下方排列的两段片段。 */
 export const IconTimeline = (p: IconProps) => (
   <Svg {...p}>
     <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
@@ -377,7 +377,7 @@ export const IconPlus = (p: IconProps) => (
   </Svg>
 )
 
-/** 溢出菜单。三点横排——竖排在这一栏里会和滚动条抢同一条视觉竖线。 */
+/** 溢出菜单。三点横排：竖排在该栏中会与滚动条重叠在同一条视觉竖线上。 */
 export const IconMore = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none" />
@@ -386,7 +386,7 @@ export const IconMore = (p: IconProps) => (
   </Svg>
 )
 
-/** 重命名：一支笔。不带方框——带框的是 `IconNewChat`，两者在同一栏里同时出现。 */
+/** 重命名：一支笔。不带方框：带方框的是 `IconNewChat`，两者在同一栏中同时出现。 */
 export const IconPencil = (p: IconProps) => (
   <Svg {...p}>
     <path d="M16.8 3.9a1.9 1.9 0 0 1 2.7 2.7L9.4 16.7l-3.6.8.8-3.6z" />
@@ -394,7 +394,7 @@ export const IconPencil = (p: IconProps) => (
   </Svg>
 )
 
-/** 置顶。图钉朝左上斜，和「固定在顶部」这个动作方向一致。 */
+/** 置顶。图钉向左上倾斜，与「固定在顶部」的动作方向一致。 */
 export const IconPin = (p: IconProps) => (
   <Svg {...p}>
     <path d="M9.5 4.5 19.5 14.5M14 4l6 6M8.4 10.1l-3 3a1 1 0 0 0 0 1.4l4.1 4.1a1 1 0 0 0 1.4 0l3-3" />
@@ -402,7 +402,7 @@ export const IconPin = (p: IconProps) => (
   </Svg>
 )
 
-/** 归档：一个盖子 + 一只箱子。不用向下箭头——那读起来是「下载」。 */
+/** 归档：一个盖子与一只箱子。不使用向下箭头：向下箭头会被读作「下载」。 */
 export const IconArchive = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4 5.6h16v3.2H4z" />
@@ -421,7 +421,7 @@ export const IconTrash = (p: IconProps) => (
   </Svg>
 )
 
-/** 在文件管理器里打开：文件夹 + 一支斜向外的箭头。 */
+/** 在文件管理器中打开：文件夹与一支斜向外的箭头。 */
 export const IconFolderOpen = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4 16.4V7.6A2.6 2.6 0 0 1 6.6 5h2.5a2 2 0 0 1 1.5.7l1 1.2h2.6" />
@@ -473,10 +473,10 @@ export const IconPanel = (p: IconProps) => (
 )
 
 /**
- * 面板放大 / 还原。两支对角箭头：朝外是「占满」，朝内是「还原」。
+ * 面板放大 / 还原。两支对角箭头：朝外表示「占满」，朝内表示「还原」。
  *
- * 不用方框类图标——那和顶栏的 `IconPanel`（开合面板）撞形，两个按钮并排时
- * 会被读成同一件事的两个说法。
+ * 不使用方框类图标：它与顶栏的 `IconPanel`（开合面板）形状相近，两个按钮并排时
+ * 会被误读为同一操作的两种表示。
  */
 export const IconExpand = (p: IconProps & { collapse?: boolean }) => (
   <Svg {...p}>

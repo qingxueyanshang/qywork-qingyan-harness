@@ -1,4 +1,4 @@
-/* 基础重置与全局元素样式。组件样式各自就近，不往这里堆。 */
+/* 基础重置与全局元素样式。组件样式写在各自的文件中，不放在此处。 */
 
 *,
 *::before,
@@ -21,9 +21,9 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  /* 移动端下拉刷新会把整个 WebView 弹走，禁掉。 */
+  /* 禁用移动端下拉刷新：它会使整个 WebView 随手势位移。 */
   overscroll-behavior: none;
-  /* 双击缩放在这种密集 UI 上永远是误触。 */
+  /* 禁用双击缩放：在高密度界面上双击缩放均为误触。 */
   touch-action: manipulation;
 }
 
@@ -40,29 +40,29 @@ button {
   border: none;
   padding: 0;
   cursor: pointer;
-  /* iOS Safari 会给 button 加圆角和渐变，清掉。 */
+  /* 清除 iOS Safari 为 button 添加的圆角与渐变。 */
   -webkit-appearance: none;
   appearance: none;
 }
 
 /*
- * 原生控件里那几个「系统自己画的部件」。
+ * 原生控件中由系统绘制的部件。
  *
- * 上面 `button` 已经清过一次，这里补 input 那几类。它们都不受本仓任何样式管辖，
- * 表现是同一行里一半是自己的控件、一半是系统部件。
- * `select` 不在这里——它要连箭头一起重画，跟着它的其他规则放在 `settings.css`。
+ * 上方已重置 `button`，此处处理 input 的各类部件。这些部件不受本仓库其他样式控制，
+ * 不处理时同一行中会混有自定义控件与系统部件两种外观。
+ * `select` 不在此处：它需要连同箭头一起重绘，与其他相关规则一起放在 `settings.css`。
  */
 
-/* 勾选框不自己重画，只把它染成本仓的强调色。`appearance: none` 之后要靠
-   `::after` 补一个勾，而 `<input>` 是替换元素，伪元素在哪些引擎上生效是不保证的
-   ——`accent-color` 是标准属性，配上 `color-scheme` 亮暗两套都对。 */
+/* 勾选框不重绘，只设为本仓库的强调色。`appearance: none` 之后需要用 `::after` 绘制勾号，
+   而 `<input>` 是替换元素，伪元素是否生效因引擎而异；`accent-color` 是标准属性，
+   配合 `color-scheme` 在亮暗两种主题下均正确。 */
 input[type="checkbox"],
 input[type="radio"] {
   accent-color: var(--accent);
   cursor: pointer;
 }
 
-/* 数字框右侧的上下箭头。它只在悬停时出现，因此那一格的内容会随鼠标横跳。 */
+/* 隐藏数字框右侧的上下箭头：箭头只在悬停时出现，会使输入框内容随鼠标进出横向移动。 */
 input[type="number"] {
   appearance: textfield;
 }
@@ -72,14 +72,14 @@ input[type="number"]::-webkit-inner-spin-button {
   margin: 0;
 }
 
-/* Edge/Chromium 给密码框加的「眼睛」。**必须去掉**：这一栏填的是 API Key，
-   而本仓的口径是明文 key 不出服务端、界面上没有一条把它读回来的路
-   （CLAUDE.md E 节）。留着一颗一键显形的按钮就是自己给它开了一条。 */
+/* Edge/Chromium 为密码框添加的显示密码按钮，必须隐藏：该输入框填写 API Key，
+   而本仓库的约定是明文 key 不离开服务端、界面上没有读取明文的途径（CLAUDE.md E 节）。
+   保留该按钮等于提供一条显示明文的途径。 */
 input[type="password"]::-ms-reveal {
   display: none;
 }
 
-/* 搜索框的清除叉：系统那颗是深色实心的，在暗色底上直接消失。按本仓的灰重画。 */
+/* 搜索框的清除按钮：系统样式为深色实心，在暗色背景上不可见。按本仓库的灰色重绘。 */
 input[type="search"]::-webkit-search-cancel-button {
   appearance: none;
   width: 12px;
@@ -97,14 +97,12 @@ input[type="search"]::-webkit-search-cancel-button:hover {
 /*
  * 焦点环：只在键盘导航时出现，鼠标点击不显示。
  *
- * **画在元素里面（负 offset），不往外扩。** 这一层的使用者大量是「整宽的一行」
- * ——文件树的行、会话列表的行、待办的行——它们左右两边正贴着一个 `overflow` 容器
- * 的内沿。往外扩 2px 的话左右那两段被容器裁掉，只剩上下两道蓝线夹着一行字，
- * 看起来像这一行裂成了两半（用户报过一次）。负 offset 之后整圈都在行内，裁不掉。
+ * 绘制在元素内部（负 offset），不向外扩展。使用焦点环的元素多为整宽的行（文件树的行、
+ * 会话列表的行、待办的行），其左右两侧紧贴 `overflow` 容器的内沿。向外扩 2px 时左右两段
+ * 被容器裁切，只剩上下两条线。负 offset 使整圈位于行内，不被裁切。
  *
- * **不要再写 `border-radius`。** 描边自己会跟着元素的圆角走；这里再写一条是在
- * 「元素获得焦点」时**改元素的形状**——`.send-btn` 是个圆形按钮，键盘走到它上面
- * 会当场变成圆角方块。
+ * 不要在此处设置 `border-radius`。outline 会随元素自身的圆角绘制；在此设置圆角会在
+ * 元素获得焦点时改变元素形状：圆形的 `.send-btn` 获得键盘焦点后会变成圆角方块。
  */
 :focus-visible {
   outline: 1px solid var(--text-secondary);
@@ -114,14 +112,13 @@ input[type="search"]::-webkit-search-cancel-button:hover {
   outline: none;
 }
 
-/* 滚动条：细、无箭头、悬停才明显。WebKit 与 Firefox 各写一套。
+/* 滚动条：细、无箭头、悬停时加深。WebKit 与 Firefox 各写一套。
  *
- * 两套**必须互斥**，不能并排写：Chromium 只要看见 `scrollbar-width` /
- * `scrollbar-color`，就整套忽略 `::-webkit-scrollbar`，回退到系统原生滚动条——
- * Windows 上那条原生滚动条上下各挂一个箭头按钮。「无箭头」的注释和实际渲染
- * 对不上就是这么来的：注释描述的是下面那几条，而下面那几条没生效。
+ * 两套必须互斥，不能同时生效：Chromium 一旦识别到 `scrollbar-width` 或
+ * `scrollbar-color`，就忽略全部 `::-webkit-scrollbar` 规则，回退到系统原生滚动条，
+ * 而 Windows 的原生滚动条上下各有一个箭头按钮。
  *
- * 所以标准属性只发给**不认识** `::-webkit-scrollbar` 的引擎（Firefox）。 */
+ * 因此标准属性只对不支持 `::-webkit-scrollbar` 的引擎（Firefox）生效。 */
 @supports not selector(::-webkit-scrollbar) {
   * {
     scrollbar-width: thin;
@@ -136,12 +133,12 @@ input[type="search"]::-webkit-search-cancel-button:hover {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  /* 静置态用 subtle 而不是 default：滑块加宽到 8px 之后，同一个灰的面积大了一倍，
-     看起来就比当边框时重。悬停仍跳到 strong，手感不丢。 */
+  /* 静止状态使用 subtle 而不是 default：滑块宽 8px，面积约为边框的两倍，同一灰色
+     在滑块上显得更重。悬停时切换为 strong。 */
   background: var(--border-subtle);
   border-radius: var(--r-full);
-  /* 用透明边框把滑块视觉宽度收窄，避免贴边太粗：轨道 12px - 两侧 2px = 滑块 8px。
-     轨道宽同时是 `scrollbar-gutter` 两侧预留的槽宽，改它会连带改会话区可用宽度
+  /* 用透明边框缩小滑块的可见宽度，使其不紧贴边缘：轨道 12px - 两侧各 2px = 滑块 8px。
+     轨道宽同时是 `scrollbar-gutter` 两侧预留的槽宽，修改它会同时改变会话区可用宽度
      （两侧对称，正文的居中线不变）。 */
   border: 2px solid transparent;
   background-clip: content-box;

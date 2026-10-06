@@ -5,7 +5,7 @@ import './styles/app.css'
 import { App } from './App.tsx'
 import { initTheme } from './lib/store/index.ts'
 
-// 先落主题再 render：反过来的话，系统是亮色而用户选了深色时会先闪一帧白的。
+// 先应用主题再 render：顺序相反时，若系统为浅色而用户选择深色，首帧会以浅色闪现。
 initTheme()
 
 const root = document.getElementById('root')

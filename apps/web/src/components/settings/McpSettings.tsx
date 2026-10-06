@@ -18,21 +18,21 @@ import { newMcpPrompt } from './ScopePrompts.ts'
 /**
  * MCP。
  *
- * **标签页选层，列表跟着过滤。** 不按层过滤的话，用户会在「项目」这一栏里看到全局配的那些，而这一栏
- * 的路径指的是另一个文件。
+ * 标签页选择层级，列表随之过滤。若不按层过滤，用户会在「项目」标签页中看到全局配置的 server，而该标签页
+ * 显示的路径指向另一个文件。
  *
- * **失败和成功一起列。** 连不上的那个是用户最需要看到的部分。而更隐蔽的一种是**握手成功但一个工具
- * 都没有**——一个只提供 prompts 的 server 会连上、`tools/list` 返回空、不报任何
- * 错，用户看到「配了但什么都没发生」。所以 `unsupported` 也要显示出来。
+ * 失败与成功一并列出。连接失败的 server 是用户最需要看到的部分。更隐蔽的一种情况是握手成功但没有任何
+ * 工具：只提供 prompts 的 server 能够连接，`tools/list` 返回空列表，不报告任何
+ * 错误，用户看到的是已配置但没有任何效果。因此 `unsupported` 也必须显示。
  *
- * 认不出属于哪一层的失败（整份文件解析失败之类）**两层都显示**：它没有层可归，
- * 藏在另一栏里等于没报。
+ * 无法确定所属层级的失败（如整个文件解析失败）在两层都显示：它没有可归属的层级，
+ * 只显示在另一个标签页中等于未报告。
  *
- * **这一页只报结果，不编辑配置。** server 的形状按 transport 分两种（stdio 要
- * command/args/env/cwd，http 要 url 和 headers），还要知道那个包的命令行怎么写——
- * 这几格填什么，用户在界面上判断不了。
- * 所以「新增」把当前标签页的作用域一并递给模型（`askInChat`），由专用工具写对应层的 `mcp.json`；
- * 「导入」并一份现成的进来。这一页只回答：连上了哪些、没连上哪些。
+ * 本页只显示连接结果，不编辑配置。server 的配置格式按 transport 分为两种（stdio 需要
+ * command/args/env/cwd，http 需要 url 和 headers），还需要了解对应包的命令行写法，
+ * 用户无法在界面上判断这些字段应填写的内容。
+ * 因此「新增」把当前标签页的作用域一并交给模型（`askInChat`），由专用工具写入对应层的 `mcp.json`；
+ * 「导入」合并一份现有配置。本页只显示哪些 server 已连接、哪些未连接。
  */
 
 export default function McpSettings() {
@@ -41,9 +41,9 @@ export default function McpSettings() {
   const [error, setError] = createSignal<string | null>(null)
 
   /**
-   * 从本机一份现成的配置里并进来。通常是从别的 MCP 客户端整段拷来的那一份。
+   * 从本机的现有配置文件合并。通常是从其他 MCP 客户端完整复制的配置。
    *
-   * 只取选中的第一个：并两份配置要先解决它们之间的同名冲突，那是另一件事。
+   * 只取选中的第一个文件：合并两份配置需要先解决它们之间的同名冲突，不在本功能范围内。
    */
   const browse = async () => {
     if (!isDesktopShell()) return
@@ -64,13 +64,13 @@ export default function McpSettings() {
   }
 
   /**
-   * 「新增」/「导入」。**区头和空态框共用同一份**——两处各写一遍的话迟早只改一处，
-   * 而空的时候用户看到的是空态框里那一份。
+   * 「新增」/「导入」。区段标题与空状态框共用同一份定义：两处分别编写时容易只修改一处，
+   * 而列表为空时用户看到的是空状态框中的那一份。
    */
   const AddButton = () => (
     <>
-      {/* 导入只有桌面外壳有：网页里没有系统文件选择器，
-          留一个点了没反应的按钮比不给更糟（B5）。 */}
+      {/* 导入只在桌面外壳中提供：网页中没有系统文件选择器，
+          保留一个点击无响应的按钮比不提供更差（B5）。 */}
       <Show when={isDesktopShell()}>
         <button class="btn-ghost sm" type="button" onClick={() => void browse()}>
           导入
@@ -84,7 +84,7 @@ export default function McpSettings() {
 
   const servers = () => (loaded(data)?.servers ?? []).filter((s) => s.scope === scope())
 
-  /** 这一轮配了但没连上的：配置里有、servers 里没有的那些。 */
+  /** 本次已配置但未连接的 server：配置中存在而 servers 中不存在的项。 */
   const missing = () =>
     (loaded(data)?.configured ?? []).filter(
       (c) => c.scope === scope() && !loaded(data)?.servers.some((s) => s.name === c.name),
@@ -97,76 +97,73 @@ export default function McpSettings() {
     })
 
   return (
-    <>
-      {/* 页头在 `Show` 外面：连一批 server 要几秒，这几秒里这一页也该有名字。 */}
-      <Show
-        when={loaded(data)}
-        fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
-      >
-        {(d) => (
-          <>
-            <ScopeTabs
-              value={scope()}
-              onChange={(s) => {
-                setScope(s)
-                setError(null)
-              }}
-              dirs={d().files.map((f) => ({ scope: f.scope, dir: f.path }))}
-              actions={<AddButton />}
-            />
+    <Show
+      when={loaded(data)}
+      fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
+    >
+      {(d) => (
+        <>
+          <ScopeTabs
+            value={scope()}
+            onChange={(s) => {
+              setScope(s)
+              setError(null)
+            }}
+            dirs={d().files.map((f) => ({ scope: f.scope, dir: f.path }))}
+            actions={<AddButton />}
+          />
 
-            <Show when={d().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
+          <Show when={d().error}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
 
-            <Section>
-              <Switch fallback={<EmptyBox label="这一层没有连上的服务" actions={<AddButton />} />}>
-                <Match when={servers().length > 0}>
-                  <div class="entry-list">
-                    <For each={servers()}>
-                      {(s) => (
-                        <EntryCard
-                          name={s.name}
-                          desc={`${s.tools.length} 个工具 · MCP ${s.protocolVersion}`}
-                        >
-                          <Show when={s.tools.length > 0}>
-                            <div class="entry-extra">
-                              <For each={s.tools}>{(t) => <code>{t.name}</code>}</For>
-                            </div>
-                          </Show>
-                          {/* 声明了、本仓未实现的能力。不写的话「连上了却没有工具」
-                          就是一个查不出原因的现象。 */}
-                          <Show when={s.unsupported.length > 0}>
-                            <div class="entry-extra bad">
-                              这个 server 还声明了 {s.unsupported.join(' / ')}，qywork 没有实现，
-                              它们不会生效
-                            </div>
-                          </Show>
-                        </EntryCard>
-                      )}
-                    </For>
-                  </div>
-                </Match>
-              </Switch>
-              {/* 导入失败挂在带「导入」按钮的这一段上。 */}
-              <Show when={error()}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
-            </Section>
-
-            <Show when={missing().length > 0 || failures().length > 0}>
-              <Section title="没连上">
+          <Section>
+            <Switch fallback={<EmptyBox label="该层没有已连接的服务" actions={<AddButton />} />}>
+              <Match when={servers().length > 0}>
                 <div class="entry-list">
-                  <For each={missing()}>{(c) => <EntryCard name={c.name} />}</For>
-                  <For each={failures()}>
-                    {(f) => (
-                      <EntryCard name={f.server}>
-                        <div class="entry-extra bad">{f.reason}</div>
+                  <For each={servers()}>
+                    {(s) => (
+                      <EntryCard
+                        name={s.name}
+                        desc={`${s.tools.length} 个工具 · MCP ${s.protocolVersion}`}
+                      >
+                        <Show when={s.tools.length > 0}>
+                          <div class="entry-extra">
+                            <For each={s.tools}>{(t) => <code>{t.name}</code>}</For>
+                          </div>
+                        </Show>
+                        {/* server 声明而本仓库未实现的能力。不显示时，已连接却没有工具
+                          将成为无法查明原因的现象。 */}
+                        <Show when={s.unsupported.length > 0}>
+                          <div class="entry-extra bad">
+                            该 server 还声明了 {s.unsupported.join(' / ')}，qywork 未实现，
+                            这些能力不会生效
+                          </div>
+                        </Show>
                       </EntryCard>
                     )}
                   </For>
                 </div>
-              </Section>
-            </Show>
-          </>
-        )}
-      </Show>
-    </>
+              </Match>
+            </Switch>
+            {/* 导入失败显示在带「导入」按钮的区段中。 */}
+            <Show when={error()}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
+          </Section>
+
+          <Show when={missing().length > 0 || failures().length > 0}>
+            <Section title="未连接">
+              <div class="entry-list">
+                <For each={missing()}>{(c) => <EntryCard name={c.name} />}</For>
+                <For each={failures()}>
+                  {(f) => (
+                    <EntryCard name={f.server}>
+                      <div class="entry-extra bad">{f.reason}</div>
+                    </EntryCard>
+                  )}
+                </For>
+              </div>
+            </Section>
+          </Show>
+        </>
+      )}
+    </Show>
   )
 }

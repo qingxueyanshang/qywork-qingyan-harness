@@ -9,11 +9,11 @@ interface Branch {
 }
 
 /**
- * 服务端那句话，不是 HTTP 信封。
+ * 取服务端返回的错误原文，而不是 HTTP 错误的完整包装。
  *
- * `ApiError.message` 长成 `409 /api/git/switch: {"error":"…"}`——状态码、路径、
- * 一整段 JSON 全在里面。而这里唯一要给用户看的是 git 的原话
- * （「以下文件的本地改动会被覆盖：f.txt」），`detail` 就是它。
+ * `ApiError.message` 的形式为 `409 /api/git/switch: {"error":"…"}`，包含状态码、路径与
+ * 整段 JSON。此处需要显示给用户的只有 git 的原文
+ * （「以下文件的本地改动会被覆盖：f.txt」），即 `detail`。
  */
 function said(e: unknown, fallback: string): string {
   if (e instanceof ApiError) return e.detail
@@ -21,18 +21,18 @@ function said(e: unknown, fallback: string): string {
 }
 
 /**
- * 当前分支 + 切到别条。
+ * 显示当前分支，并切换到其他分支。
  *
- * **这是界面上唯一一个会改用户磁盘文件的按钮。** 切不过去时贴一句话，
- * 里面点名是哪几个文件挡着——那是用户唯一能动手的地方（服务端的 `refusal`）。
+ * **这是界面上唯一会修改用户磁盘文件的按钮。** 切换失败时显示一句说明，
+ * 其中列出阻止切换的文件，这是用户唯一可以处理的位置（服务端的 `refusal`）。
  *
- * **跑着的时候不禁用。** 文件在模型读过之后变了这件事由文件工具裁决
- * （`edit_file` 落笔前比哈希，对不上就 `stale_write` 要求重读），这里再拦一次
- * 是第二个裁决者，挡的还是用户明确要做的动作。
+ * **运行期间不禁用。** 文件在模型读取之后是否变化由文件工具裁决
+ * （`edit_file` 写入前比对哈希，不一致时以 `stale_write` 要求重新读取），此处再拦截一次
+ * 会形成第二个裁决者，拦截的又是用户明确要执行的操作。
  *
- * 清单点开才拉：不是每次开会话都会切分支，而 `for-each-ref` 是要起进程的。
- * 每次点开都重拉一遍——分支是用户在终端里随时会加的，缓存住的清单
- * 会让刚建好的分支不在列表里。
+ * 分支列表在点开时才获取：并非每次打开会话都会切换分支，而 `for-each-ref` 需要启动进程。
+ * 每次点开都重新获取：用户随时可能在终端中新建分支，缓存的列表
+ * 会缺少刚建好的分支。
  */
 export function BranchPicker() {
   const [open, setOpen] = createSignal(false)
@@ -63,8 +63,8 @@ export function BranchPicker() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ branch: name }),
       })
-      // 新分支名由服务端切完当场广播，这里不自己写 `state.git`——
-      // 两处都写就是两本账，而广播那一份才是真的（切失败时它不会来）。
+      // 新分支名由服务端在切换完成后立即广播，此处不自行写入 `state.git`：
+      // 两处都写入会形成两本账，而广播的值才是权威（切换失败时不会广播）。
       setOpen(false)
     } catch (e) {
       setError(said(e, '切换失败'))
@@ -102,8 +102,8 @@ export function BranchPicker() {
               </button>
             )}
           </For>
-          {/* 报错在列表**下面**：追加在上面会把用户刚点过的那一行整体推下去。
-              浮层往下弹也是为了这个（css 里那段注释）。 */}
+          {/* 报错显示在列表下方：显示在上方会把用户刚点击的行整体下推。
+              浮层向下弹出也是出于同一原因（见 CSS 中的对应注释）。 */}
           <Show when={error()}>
             <div class="branch-error">{error()}</div>
           </Show>

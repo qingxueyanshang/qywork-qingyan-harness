@@ -1,10 +1,10 @@
 /**
  * 覆盖右侧面板放大时的输入区停靠交互。
  *
- * CSS 负责“藏到哪、怎么浮出来”，这里锁状态边界：空输入默认收起、悬浮展开并延迟
- * 收回；草稿属于用户未提交的数据，鼠标离开也不能替他藏起来。
+ * CSS 负责「隐藏位置与浮出方式」，本文件锁定状态边界：空输入默认收起、悬浮时展开并延迟
+ * 收起；草稿属于用户未提交的数据，鼠标离开时也不得替用户隐藏。
  *
- * 另锁主按钮的一条判据：忙态含在跑的子 agent，那时它仍是停止。
+ * 另锁定主按钮的一条判据：忙态包含运行中的子 agent，此时主按钮仍是停止。
  * 补全菜单以输入框定位，运行位置行的显隐不改变定位基准，选择候选不提交表单。
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
@@ -29,7 +29,7 @@ async function mountComposer(maximized = true, empty: () => boolean = () => true
   const { Composer } = await import('./Composer.tsx')
   const store = await import('../lib/store/index.ts')
   store.setPanelMaximized(maximized)
-  // ModelPicker 挂载时会取一次目录；本测试只测停靠交互，不应依赖本地服务是否启动。
+  // ModelPicker 挂载时会获取一次目录；本测试只测试停靠交互，不应依赖本地服务是否启动。
   const originalApi = store.client.api
   store.client.api = async <T,>(path: string, init?: RequestInit) => {
     if (path === '/api/models') return { providers: [], library: [] } as T
@@ -81,7 +81,7 @@ function input(textarea: HTMLTextAreaElement, value: string) {
   textarea.dispatchEvent(new InputEvent('input', { bubbles: true, data: value }))
 }
 
-test('技能候选重新打开与安装事件后重新读取，过期请求不能覆盖新结果', async () => {
+test('重新打开技能候选或收到安装事件后重新读取，过期请求不得覆盖新结果', async () => {
   const { dispose, host, textarea } = await mountComposer(false)
   const store = await import('../lib/store/index.ts')
   const api = store.client.api
@@ -174,7 +174,7 @@ test('补全菜单的定位基准不受运行位置行影响，选择候选不�
   }
 })
 
-describe('放大面板里的输入区', () => {
+describe('放大面板中的输入区', () => {
   test('上下文详情不显示计量来源字段', async () => {
     const { dispose, host } = await mountComposer(false)
     try {
@@ -212,7 +212,7 @@ describe('放大面板里的输入区', () => {
     }
   })
 
-  test('空输入默认收起，悬浮立即展开，离开后延迟收回', async () => {
+  test('空输入默认收起，悬浮时立即展开，离开后延迟收起', async () => {
     const { dispose, reveal, wrap } = await mountComposer()
     try {
       expect(wrap.classList.contains('panel-dock-open')).toBe(false)
@@ -230,7 +230,7 @@ describe('放大面板里的输入区', () => {
     }
   })
 
-  test('点击触发条聚焦；已有草稿时离开也保持展开', async () => {
+  test('点击触发条后聚焦；已有草稿时鼠标离开仍保持展开', async () => {
     const { dispose, reveal, textarea, wrap } = await mountComposer()
     try {
       const nativeFocus = textarea.focus.bind(textarea)
@@ -254,7 +254,7 @@ describe('放大面板里的输入区', () => {
     }
   })
 
-  test('普通输入区不预热悬浮状态；放大首帧直接收起再启用过渡', async () => {
+  test('普通输入区不预先启用悬浮状态；放大后首帧直接收起，再启用过渡', async () => {
     const { dispose, reveal, wrap } = await mountComposer(false)
     try {
       pointer(wrap, 'pointerenter')
@@ -275,11 +275,11 @@ describe('放大面板里的输入区', () => {
 })
 
 /**
- * 主按钮的判据是忙态，而忙态含在跑的子 agent。这一轮收尾之后仍有格在跑时，
- * 那枚按钮必须还是停止——否则界面上没有第二个地方停得掉它们。
+ * 主按钮的判据是忙态，而忙态包含运行中的子 agent。本轮收尾之后仍有子 agent 在运行时，
+ * 该按钮必须仍是停止，否则界面上没有其他入口能停止它们。
  */
-describe('只有子 agent 在跑时主按钮仍是停止', () => {
-  test('收尾条已在流尾、输入为空，按钮是停止', async () => {
+describe('仅子 agent 运行中时主按钮仍是停止', () => {
+  test('收尾条已位于会话流末尾且输入为空时，按钮是停止', async () => {
     const store = await import('../lib/store/index.ts')
     store.setState({
       activeConversation: 'cv_subagent_only',
@@ -309,8 +309,8 @@ describe('只有子 agent 在跑时主按钮仍是停止', () => {
       expect(store.runClosed()).toBe(true)
       expect(store.isRunning()).toBe(true)
       expect(host.querySelector('.send-btn')?.getAttribute('aria-label')).toBe('停止')
-      // 队列卡上那枚按钮与 `sendMessage` 读同一个判据：没有 run 在跑就是「发送」，
-      // 两处分开写的话，卡上写着「加入队列」而服务端当场起了一轮。
+      // 队列卡片上的按钮与 `sendMessage` 使用同一判据：没有运行中的 run 时显示「发送」；
+      // 两处分别判定时，卡片上显示「加入队列」而服务端已立即启动一轮。
       expect(host.querySelector('.followup-act')?.textContent).toBe('发送')
     } finally {
       dispose()

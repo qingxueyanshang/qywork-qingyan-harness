@@ -1,13 +1,13 @@
 /**
- * 覆盖 `App.tsx` 挂在根上的两个委托：`openLink`（正文里的链接落到右侧面板）
+ * 覆盖 `App.tsx` 注册在根节点上的两个事件委托：`openLink`（正文中的链接在右侧面板打开）
  * 与 `copyCode`（代码块右上角的复制按钮）。两者的触发元素全部由 markdown 渲染产出，
- * 根上这一处是它们唯一的落点。
- * 另覆盖会话切换的输入区布局与运行位置、重复选择、迟到请求与失败重试。
+ * 根节点是它们唯一的处理位置。
+ * 另覆盖会话切换时的输入区布局与运行位置、重复选择、延迟返回的请求与失败重试。
  *
  * 普通客户端验证网页预览；桌面端用原生命令桩验证文件地址、工作区归属与页签选择。
  * 真实 WebView2 的加载与布局需另做桌面验收。
  *
- * DOM 在这里装、用完卸掉，理由同 `components/RunStatus.test.tsx`。
+ * 测试 DOM 在本文件内注册，结束后注销，理由同 `components/RunStatus.test.tsx`。
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -19,7 +19,7 @@ afterAll(async () => {
   await GlobalRegistrator.unregister()
 })
 
-/** 挂一个和 `.app` 同形状的容器，往里贴一条渲染好的链接，点它。 */
+/** 创建与 `.app` 结构相同的容器，放入一条渲染完成的链接并点击。 */
 async function clickLink(html: string) {
   const { openLink } = await import('./App.tsx')
   const root = document.createElement('div')
@@ -30,8 +30,8 @@ async function clickLink(html: string) {
   return event
 }
 
-describe('正文里的链接', () => {
-  /** 页签按项目分账，所以这一组要先有一个当前项目；用完把页都关掉还回去。 */
+describe('正文中的链接', () => {
+  /** 页签按项目分别记录，因此本组测试需要先设置当前项目；结束后关闭全部页签并恢复状态。 */
   async function freshWorkspace() {
     const store = await import('./lib/store/index.ts')
     store.setWorkspace({ id: 'ws_link', root: 'C:/ws', name: 'ws' })
@@ -39,7 +39,7 @@ describe('正文里的链接', () => {
     return store
   }
 
-  test('落到右侧面板的网页预览页，并挡下默认跳转', async () => {
+  test('在右侧面板的网页预览页打开，并阻止默认跳转', async () => {
     const store = await freshWorkspace()
     const event = await clickLink('<a href="http://localhost:8000">http://localhost:8000</a>')
     expect(event.defaultPrevented).toBe(true)
@@ -114,7 +114,7 @@ describe('正文里的链接', () => {
     }
   })
 
-  test('工作区里的其他文件在右侧文件预览里打开，图片也是', async () => {
+  test('工作区中的其他文件在右侧文件预览中打开，图片同样如此', async () => {
     const store = await freshWorkspace()
     const { renderMarkdown } = await import('./lib/markdown.ts')
     try {
@@ -129,7 +129,7 @@ describe('正文里的链接', () => {
         expect(store.openFile()).toBe('generated/a.png')
         expect(store.sidePanel()).toBe('files')
       }
-      // 工作区外的文件不接管：没有能打开它的面板。
+      // 不处理工作区外的文件：没有能够打开它的面板。
       store.setOpenFile(null)
       const outside = await clickLink('<a href="D:/other/a.png">a.png</a>')
       expect(outside.defaultPrevented).toBe(false)
@@ -153,7 +153,7 @@ describe('正文里的链接', () => {
 })
 
 describe('代码块的复制按钮', () => {
-  /** 拿一份真的渲染结果，点它右上角的按钮。 */
+  /** 取得真实的渲染结果，点击其右上角的按钮。 */
   async function clickCopy(md: string) {
     const { copyCode } = await import('./App.tsx')
     const { renderMarkdown } = await import('./lib/markdown.ts')
@@ -176,17 +176,17 @@ describe('代码块的复制按钮', () => {
     return { written: written as string | null, btn }
   }
 
-  test('复制的是代码正文 —— 高亮把它切成了一串 span', async () => {
+  test('复制内容为代码正文，不受高亮生成的多个 span 影响', async () => {
     const { written } = await clickCopy('```js\nconst a = 1\n```')
     expect(written).toBe('const a = 1')
   })
 
-  test('复制成功后按钮进回执态', async () => {
+  test('复制成功后按钮进入完成状态', async () => {
     const { btn } = await clickCopy('```js\nconst a = 1\n```')
     expect(btn?.classList.contains('done')).toBe(true)
   })
 
-  test('点代码正文不会触发复制', async () => {
+  test('点击代码正文不触发复制', async () => {
     const { copyCode } = await import('./App.tsx')
     const { renderMarkdown } = await import('./lib/markdown.ts')
     let called = false
@@ -270,7 +270,7 @@ describe('连接恢复', () => {
   })
 })
 
-test('快速切换会话保持已确认布局，重复选择不重拉，迟到请求与失败不冒充空会话', async () => {
+test('快速切换会话时保持已确认的布局，重复选择不重新获取，延迟返回的请求与失败不显示为空会话', async () => {
   const { render } = await import('solid-js/web')
   const { App } = await import('./App.tsx')
   const store = await import('./lib/store/index.ts')

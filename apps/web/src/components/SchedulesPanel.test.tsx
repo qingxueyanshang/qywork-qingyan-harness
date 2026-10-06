@@ -1,15 +1,15 @@
 /**
  * 覆盖 `SchedulesPanel.tsx`。
  *
- * 面板读的 API 与仓储另有测试（`packages/server/src/scheduler.test.ts`），这里只验面板自己：
- * 上次触发的三种结果各印哪一行、什么变化会让它重取、启停开关发出去的是什么。
+ * 面板读取的 API 与仓储另有测试（`packages/server/src/scheduler.test.ts`），本文件只验证面板本身：
+ * 上次触发的三种结果各显示哪一行、哪些变化触发重取、启停开关发送的请求内容。
  *
- * **DOM 在这里装，用完卸掉**，理由同 `LoadState.test.tsx`：happy-dom 的全局带着它自己那份
- * `fetch`，装成全局会让服务端那些包的测试全红。
+ * **DOM 在本文件内注册、用后注销**，理由同 `LoadState.test.tsx`：happy-dom 的全局对象带有自身的
+ * `fetch`，注册为全局会使服务端各包的测试全部失败。
  *
- * **桩打在 `client.api` 上，不打在 `settings.ts` 的导出上**：面板经 `loadSchedules` /
- * `updateSchedule` 走到那一个出口，桩在出口才连带验到请求方法与请求体。`ws=` 由 `api()`
- * 内部拼，桩收到的是拼之前的路径。
+ * **桩设在 `client.api` 上，不设在 `settings.ts` 的导出上**：面板经由 `loadSchedules` /
+ * `updateSchedule` 到达同一个出口，桩设在出口才能同时验证请求方法与请求体。`ws=` 由 `api()`
+ * 内部拼接，桩收到的是拼接前的路径。
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -56,7 +56,7 @@ interface Call {
   body: string | null
 }
 
-/** 记下每一条请求，并按调用方给的应答回。 */
+/** 记录每条请求，并返回调用方提供的应答。 */
 async function stub(reply: (path: string, init?: RequestInit) => unknown): Promise<Call[]> {
   const store = await import('../lib/store/index.ts')
   const original = store.client.api
@@ -105,7 +105,7 @@ async function mount() {
 }
 
 describe('上次触发的结果', () => {
-  test('没有执行记录 / 失败带正文 / 被中断 各印一行，跑完的那条一个字不印', async () => {
+  test('没有执行记录 / 失败带正文 / 被中断 各显示一行，执行完毕的任务不显示文字', async () => {
     await stub(() => ({
       runtimeOnly: '仅在应用运行时触发',
       schedules: [
@@ -157,11 +157,11 @@ describe('上次触发的结果', () => {
     expect(badOf(0)).toBe('没有执行记录')
     expect(badOf(1)).toBe('上次失败：Incorrect API key provided')
     expect(badOf(2)).toBe('上次被中断')
-    // 跑完的那条没有话说，那一行整个不出现——空着不写「成功」。
+    // 执行完毕的任务无需说明，该行不显示，不写「成功」。
     expect(badOf(3)).toBeNull()
   })
 
-  test('失败但没有报错正文时说出来，不留一句半截的话', async () => {
+  test('失败但没有报错正文时明确显示，不显示不完整的句子', async () => {
     await stub(() => ({
       runtimeOnly: '仅在应用运行时触发',
       schedules: [
@@ -185,8 +185,8 @@ describe('上次触发的结果', () => {
   })
 })
 
-describe('什么变化会让它重取', () => {
-  test('换项目重取，列出的是新项目那一份', async () => {
+describe('触发重取的变化', () => {
+  test('切换项目时重取，列出新项目的定时任务', async () => {
     const store = await import('../lib/store/index.ts')
     const calls = await stub(() => ({
       runtimeOnly: '仅在应用运行时触发',
@@ -214,7 +214,7 @@ describe('什么变化会让它重取', () => {
     expect(calls.filter((c) => c.path === '/api/schedules').length).toBe(2)
   })
 
-  test('在跑的会话集合变了就重取：后台触发不经过这个面板', async () => {
+  test('运行中的会话集合变化时重新获取：后台触发不经过此面板', async () => {
     const store = await import('../lib/store/index.ts')
     let turn = 0
     const calls = await stub(() => {
@@ -232,7 +232,7 @@ describe('什么变化会让它重取', () => {
       () => host.textContent ?? '',
     )
 
-    // 一次触发建的会话进了 busy 集合，跑完又出来——两次变化各重取一次。
+    // 一次触发创建的会话进入 busy 集合，执行完毕后移出，两次变化各触发一次重取。
     store.setState({ busyConversations: ['cv_sched'] })
     await waitFor(
       () => host.querySelector('.schedule-title')?.textContent === '第 2 次',
@@ -248,7 +248,7 @@ describe('什么变化会让它重取', () => {
 })
 
 describe('启停开关', () => {
-  test('只发 enabled 一个字段，回来之后重取一次', async () => {
+  test('只发送 enabled 一个字段，返回后重取一次', async () => {
     const store = await import('../lib/store/index.ts')
     let enabled = true
     const calls = await stub((_path, init) => {
@@ -278,13 +278,13 @@ describe('启停开关', () => {
     const put = calls.filter((c) => c.method === 'PUT')
     expect(put.length).toBe(1)
     expect(put[0]?.path).toBe('/api/schedules/sc_1')
-    // 时间字段一个都不带：服务端按现值兜底，带上等于让面板复述一份它没有权威的配置。
+    // 不带任何时间字段：服务端沿用现值，带上时间字段等于让面板复述一份它不具有权威的配置。
     expect(JSON.parse(String(put[0]?.body))).toEqual({ enabled: false })
     expect(calls.filter((c) => c.path === '/api/schedules').length).toBe(2)
     expect(host.querySelector('.schedule-card')?.classList.contains('off')).toBe(true)
   })
 
-  test('写失败时把原文摆出来，卡片仍在', async () => {
+  test('写入失败时显示错误原文，卡片保留', async () => {
     const store = await import('../lib/store/index.ts')
     await stub((_path, init) => {
       if (init?.method === 'PUT') throw new Error('间隔必须是不小于 1 的分钟数')

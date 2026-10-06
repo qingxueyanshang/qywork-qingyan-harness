@@ -1,4 +1,4 @@
-/** 画布上各类节点的图标与生成类别的名字，工具条、菜单与节点标题共用。 */
+/** 画布上各类节点的图标与生成类别的名称，工具条、菜单与节点标题共用。 */
 
 import type { MediaOutput } from '@qywork/core'
 import { Match, Switch } from 'solid-js'

@@ -1,8 +1,8 @@
 /**
  * 输入区的斜杠命令表。
  *
- * 这里只放「在打字途中会想用」的动作：新对话、压缩与立目标。设置和面板都有
- * 自己的可见入口，不再为它们维护一套搜索导航。
+ * 此处只放输入过程中需要使用的动作：新对话、压缩上下文、设定目标与创建角色。
+ * 设置与面板各有可见入口，不为它们另建搜索导航。
  */
 
 import { ROLE_COMMAND } from '@qywork/core'
@@ -14,13 +14,13 @@ import { compactContext, newConversation, sendMessage, setGoal, state } from './
 export interface Command {
   id: string
   label: string
-  /** 输入框里使用的斜杠名。 */
+  /** 输入框中使用的斜杠命令名。 */
   slash: string
-  /** 一句话说清代价或去处。 */
+  /** 用一句话说明代价或结果去向。 */
   hint?: string
   icon: (p: { size?: number }) => JSX.Element
   /**
-   * 这条命令后面要跟一段话。选中时只把 `/名字 ` 填进草稿，等用户打完再回车。
+   * 该命令需要参数。选中时只把 `/名字 ` 填入草稿，由用户输入参数后回车提交。
    */
   arg?: { placeholder: string }
   run(arg?: string): void
@@ -32,26 +32,26 @@ export function buildCommands(): Command[] {
       id: 'new',
       label: '新对话',
       slash: 'new',
-      hint: '当前对话留在列表里',
+      hint: '当前对话保留在列表中',
       icon: IconNewChat,
       run: () => void newConversation(),
     },
     {
       id: 'compact',
-      // 标题带上当前占用：这个数决定按不按，藏在别处等于让用户先去查一次。
+      // 标题显示当前占用：用户依据该数值决定是否压缩，放在别处会迫使用户另行查询。
       label: state.context ? `压缩上下文（当前 ${state.context.percent}%）` : '压缩上下文',
       slash: 'compact',
-      hint: '早期轮次折成摘要，原文模型看不到',
+      hint: '早期轮次压缩为摘要，模型不再读取原文',
       icon: IconSpinner,
       run: compactContext,
     },
     {
       id: 'goal',
-      label: '立目标',
+      label: '设定目标',
       slash: 'goal',
-      // 边界：它会自己一轮轮跑下去。
-      hint: '持续逐轮执行，直到完成或你点击停止',
-      arg: { placeholder: '要做到什么' },
+      // 边界：该命令会自动逐轮执行。
+      hint: '逐轮自动执行，直到完成或点击停止',
+      arg: { placeholder: '描述要达成的目标' },
       icon: IconTarget,
       run: (objective) => setGoal(objective ?? ''),
     },
@@ -59,11 +59,11 @@ export function buildCommands(): Command[] {
       id: 'role',
       label: '创建角色',
       slash: ROLE_COMMAND.slice(1),
-      hint: '写入当前项目的 Agent Team，之后可用 @ 指名调用',
+      hint: '写入当前项目的 Agent Team，之后可通过 @ 调用',
       arg: { placeholder: '描述角色的职责与工作方式' },
       icon: IconUsers,
-      // 原文作为用户消息进入同一条会话；提示词按这个前缀说明这是一次明确的建角色要求。
-      // 角色是持久定义，不是这次任务的子 agent。
+      // 原文作为用户消息进入当前会话；提示词依据该前缀将其识别为明确的创建角色请求。
+      // 角色是持久定义，不是本次任务的子 agent。
       run: (description) => sendMessage(`${ROLE_COMMAND} ${description ?? ''}`.trimEnd()),
     },
   ]

@@ -8,31 +8,30 @@ import {
 } from '../../lib/store/index.ts'
 
 /**
- * 设置页共用的那一份服务端配置。
+ * 设置页共用的服务端配置。
  *
- * **为什么是模块级的一份，不是每页一份。** 三个设置页改的是**同一个** `~/.qywork/config.json`。每页
- * 各自 `createResource(loadServerConfig)` + 各自一份草稿的话，切类目组件一卸载，没保存的改动就没了
- * ——最坏的一格是 API Key，password 框永远显示为空，丢没丢从界面上看不出来，保存显示成功，下一次
- * 调模型才失败。
+ * 采用模块级的一份而不是每页一份：多个设置页修改的是同一个 `~/.qywork/config.json`。若每页
+ * 各自调用 `createResource(loadServerConfig)` 并持有一份草稿，切换类目导致组件卸载时，未保存的修改随之丢失。
+ * 影响最大的是 API Key：password 输入框始终显示为空，界面无法反映是否丢失，保存显示成功，直到下一次
+ * 调用模型才失败。
  *
- * 一份共享的状态让这个问题在结构上消失，也不用每次切页重发一次 GET。
+ * 共享状态从结构上消除了该问题，且切换页面时无需重新发送 GET。
  *
- * **为什么没有「保存」按钮了。** 改一格就写一次，和主题、LAN 开关、审批模式对齐——那三个本来就是即
- * 时生效的，而思考强度、路径清单要滚到底点保存。**同一个设置面里两种生效模型并存**的话，用户没法
- * 预测哪个控件属于哪种。
+ * 不设「保存」按钮：每修改一个字段即写入一次，与主题、LAN 开关、审批模式的即时生效方式一致。
+ * 同一设置界面中并存两种生效方式时，用户无法预测各控件属于哪一种。
  *
- * 不新增写路径：`setPermissionMode` 早就是「读全量 → 改一格 → 整份 PUT」，
- * 走的同一条 `/api/config`。即时生效不需要新接口，真源数不变。
+ * 不新增写路径：`setPermissionMode` 同样是「读取完整配置 → 修改一个字段 → 整份 PUT」，
+ * 使用同一个 `/api/config`。即时生效无需新接口，真源数不变。
  *
- * **乐观更新 + 失败回滚。** `patch` 先把新值写进本地信号（控件立刻反映用户的操作），再发 PUT。
- * 失败就重新拉服务端那份盖回来——**权威始终是服务端**，本地这份只是它的回声。
- * 不这么做的话，一次 422 之后界面显示的是一个从未落盘的值，
- * 而它在界面上与已生效的值无从区分。
+ * 乐观更新与失败回滚：`patch` 先把新值写入本地信号（控件立即反映用户的操作），再发送 PUT。
+ * 失败时重新读取服务端配置并覆盖本地值：权威始终是服务端，本地状态只是它的投影。
+ * 不回滚时，一次 422 之后界面显示的是从未落盘的值，
+ * 且与已生效的值无法区分。
  */
 
 const [payload, setPayload] = createSignal<ConfigPayload | null>(null)
 const [error, setError] = createSignal<unknown>(null)
-/** 最近一次写失败的原因。写成功就清空——它描述的是「刚才那一下」。 */
+/** 最近一次写入失败的原因。写入成功即清空：它只描述最近一次写入。 */
 const [writeError, setWriteError] = createSignal<string | null>(null)
 const [busy, setBusy] = createSignal(false)
 
@@ -48,14 +47,14 @@ export const configWriteError = writeError
 export const configBusy = busy
 
 /**
- * 把一次**本地**校验失败显示到同一处写错误位（如添加了已存在的模型 id）。
- * 走这条而不是各控件自己画一行：失败提示只该有一处，下一次成功写入自动清空。
+ * 把一次本地校验失败显示在写入错误的同一位置（如添加已存在的模型 id）。
+ * 不要由各控件各自渲染错误：失败提示只应有一处，下一次写入成功时自动清空。
  */
 export function reportConfigWriteError(message: string): void {
   setWriteError(message)
 }
 
-/** 第一次有页面要用它时才拉。重复调用无副作用。 */
+/** 首次有页面使用时才请求。重复调用无副作用。 */
 export function ensureConfig(): void {
   if (started) return
   started = true
@@ -72,11 +71,11 @@ export async function reloadConfig(): Promise<void> {
 }
 
 /**
- * 改一格并立刻落盘。
+ * 修改顶层字段并立即落盘。
  *
- * `patch` 是**顶层字段**的浅合并。要同时动两个字段（比如删接口并改 active）
- * 的场景用 `replaceConfig`——分两次 patch 会让中间那一刻的配置不自洽，
- * 而每一次 patch 都会真的写盘。
+ * `patch` 是顶层字段的浅合并。需要同时修改两个相关字段（例如删除接口并修改 active）时
+ * 使用 `replaceConfig`：分两次 patch 会使中间状态的配置不一致，
+ * 而每一次 patch 都会实际写入磁盘。
  */
 export function patchConfig(p: Partial<RedactedConfig>): Promise<void> {
   return replaceConfig((cur) => ({ ...cur, ...p }))
@@ -91,29 +90,29 @@ export function patchConfig(p: Partial<RedactedConfig>): Promise<void> {
 type ConfigEdit = (cur: RedactedConfig) => RedactedConfig | null
 const writeQueue: { edit: ConfigEdit; resolve: () => void }[] = []
 
-/** 保存回执上仍叠加尚未完成的编辑，避免前一次回执把后一次操作闪回旧值。 */
+/** 在保存回执上叠加尚未完成的编辑，避免前一次回执使后一次操作短暂显示为旧值。 */
 function publishConfig(fresh: ConfigPayload): void {
   const projected = writeQueue.reduce((cur, { edit }) => edit(cur) ?? cur, fresh.config)
   setPayload({ ...fresh, config: projected })
 }
 
 /**
- * 改配置。**传的是改法，不是改完的那份。**
+ * 修改配置。参数是编辑函数，而不是修改后的完整配置。
  *
- * 保存走整份 PUT，写进文件的就是这里交出去的整份。传一份算好的结果，
- * 那它算在什么之上就定死了——页面打开时拉的那一份。这中间 `qy probe`、
- * 手编 JSON、另一个实例往文件里写的改动，全会被这一次保存整份盖掉。
+ * 保存使用整份 PUT，写入文件的就是此处提交的完整配置。若传入计算好的结果，
+ * 其计算基础固定为页面打开时读取的配置，期间 `qy probe`、
+ * 手动编辑 JSON、其他实例写入文件的修改都会被这次保存整体覆盖。
  *
- * 传改法就能在写之前重新拿一次服务端真值、在它之上再算一遍。
- * 返回 `null` 表示放弃这次写（前提在新数据上不再成立）。
+ * 传入编辑函数时，可以在写入前重新读取服务端真值，并在其上重新计算。
+ * 返回 `null` 表示放弃本次写入（前提在新数据上不再成立）。
  */
 export async function replaceConfig(edit: ConfigEdit): Promise<void> {
   const prev = payload()
   if (!prev) return
   const optimistic = edit(prev.config)
   if (!optimistic) return
-  // 乐观更新立即做，不进队列：控件要马上反映操作。此刻 payload 已含前一次的乐观值，
-  // 所以连续改两格叠加正确；真正要串行的只是下面读服务端 + PUT 那一段。
+  // 乐观更新立即执行，不进入队列：控件须立即反映操作。此时 payload 已包含前一次的乐观值，
+  // 因此连续修改两个字段时叠加正确；需要串行的只有下方读取服务端配置与 PUT 的部分。
   setPayload({ ...prev, config: optimistic })
   return new Promise<void>((resolve) => {
     writeQueue.push({ edit, resolve })
@@ -161,7 +160,7 @@ async function flushWrite(edit: ConfigEdit): Promise<ConfigPayload | null> {
       }
     }
   } catch (e) {
-    // 失败必须回滚到服务端真值，否则界面显示的是一个从未落盘的值。
+    // 失败时必须回滚到服务端真值，否则界面显示从未落盘的值。
     setWriteError(explainApiError(e, '保存失败'))
     try {
       const fresh = await loadServerConfig()

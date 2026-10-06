@@ -54,8 +54,8 @@ class RecognitionStub implements SpeechRecognitionLike {
 }
 
 async function mount() {
-  // 其他 DOM 测试会注册/注销自己的 happy-dom 全局；显式重设描述符，避免沿用旧 window
-  // 上的转发属性后赋值落空。
+  // 其他 DOM 测试会注册与注销各自的 happy-dom 全局对象；此处显式重设属性描述符，
+  // 避免沿用旧 window 上的转发属性导致赋值无效。
   Object.defineProperty(globalThis, 'SpeechRecognition', {
     configurable: true,
     writable: true,
@@ -105,7 +105,7 @@ function result(transcript: string): ResultEvent {
 }
 
 describe('语音输入的停止边界', () => {
-  test('点麦克风停止时走 stop，保留浏览器随后送达的最终识别结果', async () => {
+  test('点击麦克风停止时调用 stop，保留浏览器随后送达的最终识别结果', async () => {
     const { button, dispose, recognition } = await mount()
 
     click(button)
@@ -115,7 +115,7 @@ describe('语音输入的停止边界', () => {
     dispose()
   })
 
-  test('提交时立即 abort，且迟到的识别结果不把已清空草稿重新填回去', async () => {
+  test('提交时立即调用 abort，迟到的识别结果不会重新填入已清空的草稿', async () => {
     const { button, dispose, recognition, submitStop, text } = await mount()
     const lateResult = recognition.onresult
 

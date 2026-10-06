@@ -1,8 +1,8 @@
 /**
- * 画布左侧的工具条：新建生成卡与时间线、从工作区选文件、从本机上传。
+ * 画布左侧的工具条：新建生成卡与时间线、从工作区选择文件、从本机上传。
  *
- * 平时只露图标，悬停或打开选择框时向右展开名字。展开只加宽度，图标位置不动，瞄准中的按钮不会移开。
- * 生成卡的类别全列：没配模型的类别也能建卡，卡上的模型按钮通往模型库。
+ * 默认只显示图标，悬停或打开选择框时向右展开名称。展开只增加宽度，图标位置不变，指针下的按钮不会移位。
+ * 列出全部生成类别：未配置模型的类别也能创建卡片，卡片上的模型按钮打开模型库。
  */
 
 import { CANVAS_FILE_KINDS, type MediaOutput } from '@qywork/core'
@@ -13,10 +13,10 @@ import { dismissOnOutside } from './dismiss.ts'
 import { KindIcon, OUTPUT_LABEL } from './kinds.tsx'
 import { createFileSearch } from './search.ts'
 
-/** 工具条图标的尺寸与线宽：比正文里的图标大一号、线条更实。 */
+/** 工具条图标的尺寸与线宽：比正文中的图标大一号，线条更粗。 */
 const ICON = { size: 18, stroke: 1.9 }
 
-/** `first` 表示这次打开选择框之后选的第一个。 */
+/** `first` 表示本次打开选择框后选择的第一个文件。 */
 type OnPick = (path: string, first: boolean) => void
 
 export function Rail(props: {
@@ -84,7 +84,7 @@ export function Rail(props: {
   )
 }
 
-/** 工作区文件的选择框：打开即列出能放上画布的文件，输入按名筛。选一个加一个，框不收起，可以连着选。 */
+/** 工作区文件的选择框：打开即列出可添加到画布的文件，输入时按名称筛选。每选择一个即添加一个，选择框不收起，可连续选择。 */
 function Picker(props: { onPick: OnPick }) {
   const { hits, error, search } = createFileSearch(() => CANVAS_FILE_KINDS)
   search('')

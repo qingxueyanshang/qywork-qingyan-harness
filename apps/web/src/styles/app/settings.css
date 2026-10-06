@@ -1,18 +1,18 @@
 /* 设置、插件、定时任务、工作区列表。
  *
- * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
+ * 由 `../app.css` 按固定顺序引入，**引入顺序决定层叠顺序**；不要单独 import 本文件。 */
 
 /* ───────────────────────── 设置弹窗 ───────────────────────── */
 
 /*
- * 左类目右内容，两栏都通到顶——**没有横贯整条的标题栏**：弹窗的名字就是当前
- * 类目的名字，在最上面再横一条「设置」等于把同一件事说两遍，还把类目栏压下一格。
- * 标题和关闭都在右栏那一行里。
+ * 左栏为类目、右栏为内容，两栏均延伸到顶部，**不设横跨整个弹窗的标题栏**：弹窗标题即当前
+ * 类目名称，顶部另加一条「设置」标题栏会重复显示同一信息，并使类目栏下移一行。
+ * 标题与关闭按钮均位于右栏顶部。
  *
- * **尺寸写死，不随内容变**（B9）：类目从「系统设置」切到「模型」，内容长度差着
- * 好几屏；让内容去撑的话对话框会在用户眼皮底下伸缩，刚才瞄准的那个类目
- * 就跑到别处去了。宽度取一档能放下模型档案那组并排字段的值——760px 下
- * baseUrl 这类长值看不到自己在改什么；高度取一个定值，内容长了在右栏里滚。
+ * **尺寸固定，不随内容变化**（B9）：类目从「系统设置」切换到「模型」时，内容长度相差
+ * 数屏；若由内容决定尺寸，对话框会随之伸缩，用户正要点击的类目
+ * 会移位。宽度取能容纳模型档案并排字段的值：760px 时
+ * baseUrl 等长值无法完整显示；高度取固定值，内容超出时在右栏内滚动。
  */
 .settings-dialog {
   width: min(1040px, 100%);
@@ -31,62 +31,62 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  /* 左内距的唯一真源。页头在滚动区外、内容在滚动区里，两处必须同值才排得成
-     一条竖线；各写各的话窄屏那一档就会漂开（改过内容忘了改页头）。 */
+  /* 左内距的唯一定义处。页头在滚动区外、内容在滚动区内，两处必须取同一值才能
+     左对齐；分别定义时，只修改其中一处（如窄屏断点下的取值）会使两者错位。 */
   --settings-inset: var(--s-6);
 }
-/* 关闭钉在右上角，**不占标题那一行**：它是整个弹窗的出口，不是这一页的动作。
-   定位基准是内容区而不是弹窗，所以窄屏（类目栏横在上面）时它会跟着落到
-   类目栏下面，而不是压在最后一个类目上。 */
+/* 关闭按钮固定在右上角，**不占用标题行**：它关闭整个弹窗，不属于当前页的操作。
+   定位基准是内容区而不是弹窗，因此窄屏时（类目栏位于顶部）它随内容区位于
+   类目栏下方，不会覆盖最后一个类目。 */
 .settings-close {
   position: absolute;
   top: var(--s-2);
   right: var(--s-2);
   z-index: 1;
 }
-/* 滚动条只在内容上，不在对话框上——外层滚起来的话标题和类目栏会跟着走，
-   而类目栏是用来来回切的。 */
+/* 滚动条只在内容区，不在对话框上：外层滚动时标题与类目栏会随之移出视口，
+   而类目栏需要始终可用于切换。 */
 .settings-scroll {
   flex: 1;
-  /* 同 .transcript：不写 0 的话这一块把外面撑破，overflow 形同虚设。 */
+  /* 同 .transcript：不设为 0 时，本区域会撑开外层容器，overflow 不生效。 */
   min-height: 0;
   min-width: 0;
   overflow-y: auto;
-  /* 槽位常留。类目之间内容长度差好几屏，滚动条出没一次内容就横移一整条轨道宽
-     （`base.css` 定的 12px）——切类目时看到的那一下横向抖动就是它。 */
+  /* 始终保留滚动条槽位。各类目的内容长度相差数屏，滚动条每出现或消失一次，内容就横移一条轨道的宽度
+     （`base.css` 定义的 12px），切换类目时的横向抖动即由此产生。 */
   scrollbar-gutter: stable;
 }
-/* 左对齐而不是居中——设置是逐条读下来的表单，居中会让第一列的标签飘到中间。
-   不再写 `max-width`：宽度已经由对话框那一档定死了，再限一次就是第二本账。
-   右内距给关闭键让位：它是绝对定位钉在右上角的，不占任何行。 */
+/* 左对齐而不是居中：设置页是逐项阅读的表单，居中会使首列标签偏离左缘。
+   不设 `max-width`：宽度已由对话框固定，再限制一次会形成第二处定义。
+   右内距为关闭按钮留出位置：它绝对定位于右上角，不占用任何行。 */
 .settings-inner {
   padding: 0 var(--s-8) var(--s-8) var(--settings-inset);
   display: flex;
   flex-direction: column;
-  /* 块与块 16：算上两侧行盒的余量，落到眼里是 20 出头，比块内「分区名→卡」的
-     12 大一档，层级就分得开。给 24 的时候作用域页签那一行还要再加下划线的 7px，
-     那一档空到像少了一块内容。 */
+  /* 块间距 16：计入两侧行盒的余量后，视觉间距略大于 20，比块内「分区名→卡片」的
+     12 大一级，层级可以区分。取 24 时，作用域页签一行还要另加下划线的 7px，
+     间距过大，看似缺少一块内容。 */
   gap: var(--s-4);
 }
 
-/* 一页内的分组。用小标题分段而不是再套一层卡片——设置页最容易长成
-   多层嵌套的圆角盒子，而分组要表达的只是「这几格是一类」。 */
+/* 页内分组。用小标题分段，不再嵌套一层卡片：设置页容易形成
+   多层嵌套的圆角容器，而分组只需表达「这些项属于同一类」。 */
 /*
- * 分节之间**不画横线**。
+ * 分节之间**不绘制分隔线**。
  *
- * 一条横跨整列 840px 的 border-top 配不上这里的控件——它们只有 340~560px 宽，
- * 那条线一头顶着内容、另一头伸进空白里。分节的界已经由
- * 小标题和 `--s-6` 的行距给出来了，再加一条线是第二遍说同一件事。
+ * 横跨整列 840px 的 border-top 与此处的控件宽度不匹配：控件只有 340~560px 宽，
+ * 分隔线一端与内容相接、另一端延伸到空白区域。分节边界已由
+ * 小标题与 `--s-6` 的行距表达，再加分隔线会重复表达同一信息。
  *
- * 卡**内部**行与行之间那条线要留：它分的是同一张卡里的两格，两头都顶着内容。
+ * 卡片**内部**行间的分隔线保留：它分隔同一张卡片中的两项，两端都与内容相接。
  */
 .settings-block {
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
 }
-/* 既当 `<h3>` 用，也当「标题 + 右侧一个动作」的那一行用（模型页的删接口）。
-   两种写法共用一套字号，否则同一层级的标题在两个页面上大小不一样。 */
+/* 既用作 `<h3>`，也用作「标题 + 右侧操作」行（模型页的删除接口）。
+   两种用法共用同一字号，否则同一层级的标题在两个页面上字号不同。 */
 .settings-block-head {
   display: flex;
   align-items: center;
@@ -95,10 +95,10 @@
   font-size: var(--fs-sm);
   color: var(--text-secondary);
 }
-/* **600 只给标题，不给整条区头。** 挂在区头上的话，路径、说明、动作按钮全都跟着
-   变粗，然后每一个都要写一条 `font-weight: 400` 把自己捞回来——漏掉哪个就哪个
-   与别处的同类控件长得不一样。实测：区头里的「导入 / 新增」是 600，空态框里
-   同一个组件是 400。 */
+/* **字重 600 只用于标题，不用于整个区头。** 设在区头上时，路径、说明与操作按钮都会
+   继承粗体，每一项都要另写 `font-weight: 400` 恢复，遗漏的一项
+   就与别处的同类控件样式不一致。实测：区头中的「导入 / 新增」为 600，空态框中
+   同一组件为 400。 */
 .settings-block-head h3 {
   margin: 0;
   font: inherit;
@@ -274,18 +274,18 @@
 
 /* ── 行式设置卡 ──
  *
- * 若干行叠成一张卡，行间一条分隔线。左标题右控件，控件右缘对齐——
- * 找某个开关时眼睛只扫右缘，不用从上往下读一遍标题。
+ * 若干行组成一张卡片，行间以分隔线分隔。标题在左、控件在右，控件右缘对齐：
+ * 查找某个开关时只需沿右缘查看，无需逐行阅读标题。
  *
- * `overflow: hidden` 是给圆角用的：行自己的底色不裁的话会从卡的四角漏出来。
- * 只给有界控件用，理由见 `Row.tsx`。 */
+ * `overflow: hidden` 用于圆角：不裁剪时，行自身的底色会超出卡片的圆角。
+ * 只用于有界控件，理由见 `Row.tsx`。 */
 .setting-rows {
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   overflow: hidden;
 }
-/* **卡内文字一律从 `--s-4` 起排。** 模型行、条目卡、两张表的首列都按这个数，
-   各给各的话同一页上会排出三条竖线。 */
+/* **卡片内文字一律从 `--s-4` 处开始排列。** 模型行、条目卡、两张表的首列均使用该值，
+   分别取值会使同一页上出现三条不同的左对齐线。 */
 .setting-row {
   display: flex;
   align-items: center;
@@ -306,8 +306,8 @@
   padding: 0;
   justify-content: space-between;
 }
-/* 控件无界的那一格：标题和说明在上，控件自己占满一行。
-   绝对路径、多行清单挤到右边一列只会被截断，而截断的路径没用。 */
+/* 控件无界的行：标题与说明在上，控件独占一行。
+   绝对路径与多行清单放在右侧一列只会被截断，而截断后的路径无法使用。 */
 .setting-row.stack {
   flex-direction: column;
   align-items: stretch;
@@ -335,25 +335,25 @@
   align-items: center;
   min-width: 0;
 }
-/* 行里的控件不再铺满——它的宽度由内容定，这正是「有界」的意思。 */
+/* 行内控件不铺满整行：宽度由内容决定，即「有界」的含义。 */
 .setting-row-control select {
   width: auto;
   min-width: 140px;
 }
 
-/* 没有内核沙箱是**危险的默认**，必须一眼看到——所以标题染警告色而不是
-   和普通状态行长得一样。这不是装饰，是这套权限模型里最容易被误解的一格。 */
+/* 没有内核沙箱是**危险的默认状态**，必须醒目显示，因此标题使用警告色，不与
+   普通状态行使用相同样式。这是该权限模型中最容易被误解的一项。 */
 .setting-row.warn .setting-row-label {
   color: var(--warning);
   font-weight: 500;
 }
 
-/* ── 「模块」那一页 ──
+/* ── 「模块」页 ──
  *
- * 一行给全四样：底层名 + 一句话 + 权限 + 参数。名字用等宽，它是模型看到的那个串，
- * 和正文用同一种字形就没法一眼扫出来。
+ * 每行显示四项：底层名称 + 一句用途 + 权限 + 参数。名称使用等宽字体：它是模型看到的字符串，
+ * 与正文使用同一字体时难以快速辨认。
  *
- * 权限钉在行尾右缘：找「哪些会改动本机」时眼睛只扫右缘，不用逐行读完中文。 */
+ * 权限固定在行尾右缘：查找「哪些会改动本机」时只需沿右缘查看，无需逐行读完用途说明。 */
 .module-environment {
   min-width: 0;
   font-size: var(--fs-xs);
@@ -378,7 +378,7 @@
   font-size: var(--fs-sm);
   color: var(--text-primary);
 }
-/* 用途只占一行：外置工具的这段文本来自它的清单，长度不受控，折行会把整页撑成段落。 */
+/* 用途只占一行：外置工具的用途文本来自其清单，长度不受控制，折行会使整页变成大段文字。 */
 .module-summary {
   flex: 1 1 auto;
   min-width: 0;
@@ -395,7 +395,7 @@
   color: var(--text-tertiary);
   white-space: nowrap;
 }
-/* 参数另起一行，跟着名字缩进。挤进上面那行的话，名字长一点就把中文用途挤没了。 */
+/* 参数另起一行，与名称对齐缩进。放在上一行时，名称稍长就会使用途文本无法显示。 */
 .module-params {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -403,7 +403,7 @@
   line-height: 1.5;
   word-break: break-word;
 }
-/* 组头右侧的跳转。**只有真有操作台的组才出现**——指向空页比不指更糟。 */
+/* 分组标题右侧的跳转按钮。**只在有对应设置页的分组上显示**：指向空页面比不提供跳转更糟。 */
 .module-consoles {
   margin-left: auto;
   display: flex;
@@ -415,8 +415,8 @@
   gap: 2px;
 }
 
-/* 三态分段控件。用一排按钮而不是下拉：三个选项全部可见时，
-   「跟随系统」和「浅色」的区别一眼看得到，下拉要点开才知道有第三个。 */
+/* 三态分段控件。使用一排按钮而不是下拉框：三个选项全部可见时，
+   「跟随系统」与「浅色」的区别可直接看到；下拉框需要展开才能看到第三个选项。 */
 .seg {
   display: inline-flex;
   align-self: flex-start;
@@ -442,16 +442,16 @@
   font-weight: 500;
   box-shadow: var(--shadow-sm);
 }
-/* 组头右侧的开关。与「去配置」按钮占同一个位置，同一组不会两者都有。
-   这一条要排在 `.seg` 之后：写在前面的话 lint 按降序特异性判它可能不生效。 */
+/* 分组标题右侧的开关。与「去配置」按钮占同一位置，同一分组不会同时具有两者。
+   本规则必须排在 `.seg` 之后：排在前面时，lint 按降序特异性规则判定它可能不生效。 */
 .settings-block-head .seg {
   margin-left: auto;
 }
 
 /* ── 类目导航 ──
-   弹窗里的左边一栏，类目本身沿用 `.nav-item`，这里只管排布和组间分隔。
-   底色比内容区暗一档：两栏之间那条线是边界，但光靠一条 1px 的线，
-   十个类目会读成内容的一部分。宽度写死——它跟着内容变宽就等于尺寸会跳。 */
+   弹窗左栏，类目本身沿用 `.nav-item`，此处只定义排布与组间分隔。
+   底色比内容区暗一级：两栏之间的分隔线是边界，但只有一条 1px 的线时，
+   十个类目容易被视为内容的一部分。宽度固定：随内容变宽会导致版面尺寸跳变。 */
 .settings-nav {
   flex: none;
   width: 208px;
@@ -469,13 +469,13 @@
   transform: translateY(-0.5px);
   transform-origin: center;
 }
-/* 齿轮的路径几乎占满整个 24px 画布，比其余图标的标准 keyline 大一圈；
-   导航里单独收小，避免首项在同一图标槽内显得向两侧凸出。 */
+/* 齿轮图标的路径几乎占满 24px 画布，大于其余图标的标准 keyline；
+   在导航中单独缩小，避免首项图标在同一图标槽内显得向两侧凸出。 */
 .settings-nav .settings-nav-icon-general {
   transform: translateY(-0.5px) scale(0.9);
 }
-/* 与输入补全面板里的 `#技能` 使用同一枚图形，也固定在同一明度；导航项是否选中
-   只改变文字和底色，不再把这枚实心闪光额外压深。 */
+/* 与输入补全面板中的 `#技能` 使用同一图标，明度也相同；导航项的选中状态
+   只改变文字与底色，不加深该实心闪光图标的颜色。 */
 .settings-nav-skill-icon {
   color: var(--text-tertiary);
 }
@@ -486,24 +486,24 @@
 }
 
 /*
- * 窄屏：类目栏从左边一栏转成顶上一条。
+ * 窄屏：类目栏从左侧竖栏改为顶部横栏。
  *
- * 390px 的屏上留一栏 208px 的类目，内容只剩 180px——一条绝对路径要折六行。
- * 所以这里换向：类目横着排、自己横向滚，内容拿满整宽。这是**同一套类目的
- * 两种排布**，不是第二套导航——两边点的都是 `.nav-item`，状态还是同一个信号。
+ * 390px 宽的屏幕上保留 208px 的类目栏时，内容区只剩 180px，一条绝对路径要折成六行。
+ * 因此改为横向排列：类目横排并可横向滚动，内容区占满整宽。这是**同一套类目的
+ * 两种排布**，不是第二套导航：两种排布中点击的都是 `.nav-item`，状态仍是同一个信号。
  *
- * `.nav-item` / `.nav-list` 是左栏也在用的通用件，所以这里的覆盖一律限定在
- * `.settings-nav` 里面：不限定的话，窄屏的会话抽屉会跟着横过来。
+ * `.nav-item` / `.nav-list` 是左栏也使用的通用组件，因此此处的覆盖一律限定在
+ * `.settings-nav` 内：不加限定时，窄屏下的会话抽屉也会变为横向排列。
  *
- * **这个断点必须写在这里**，不能放进 `utility.css`：那个文件先于本文件引入，
- * 同名选择器写在那边会被上面几条基准规则原样盖掉：弹窗仍是 700px 高。
+ * **该断点必须写在本文件中**，不能放入 `utility.css`：该文件先于本文件引入，
+ * 写在其中的同名选择器会被上方的基准规则覆盖，弹窗高度仍为 700px。
  */
 @media (max-width: 820px) {
   .settings-dialog {
     height: 100%;
     flex-direction: column;
     border-radius: var(--r-lg) var(--r-lg) 0 0;
-    /* 铺满整屏之后安全区得自己让：类目栏会顶到状态栏，底部会被小白条压住。 */
+    /* 铺满全屏后需自行留出安全区：否则类目栏与状态栏重叠，底部被主屏幕指示条遮挡。 */
     padding-top: var(--safe-top);
     padding-bottom: var(--safe-bottom);
   }
@@ -523,7 +523,7 @@
     width: auto;
     white-space: nowrap;
   }
-  /* 组间那条线跟着转 90 度：竖排时它在上，横排时它在左。 */
+  /* 组间分隔线随之旋转 90 度：竖排时位于上方，横排时位于左侧。 */
   .settings-nav .nav-group-split {
     margin: 0 0 0 var(--s-2);
     padding: 0 0 0 var(--s-2);
@@ -540,7 +540,7 @@
 
 /* ───────────────────────── 浮层 ───────────────────────── */
 
-/* 内容比视口高时自己滚，不把弹窗撑出屏幕。 */
+/* 内容高于视口时在内部滚动，不使弹窗超出屏幕。 */
 .sheet {
   max-height: min(82vh, 900px);
   display: flex;
@@ -556,7 +556,7 @@
   color: var(--text-tertiary);
   font-size: var(--fs-sm);
 }
-/* 失败必须和加载中长得不一样，并且带着「再试一次」的路。 */
+/* 失败状态的样式必须与加载中不同，并提供重试操作。 */
 .settings-error {
   display: flex;
   flex-direction: column;
@@ -566,8 +566,8 @@
   color: var(--danger);
 }
 
-/* 同一页里的第二组：模型档案。用一条分隔线和一个小标题分段，
-   而不是再开一个选项卡——它们改的是同一个文件。 */
+/* 同一页中的第二组：模型档案。以分隔线与小标题分段，
+   不另设选项卡：两组修改的是同一个文件。 */
 .settings-section {
   display: flex;
   flex-direction: column;
@@ -591,7 +591,7 @@
   font-size: var(--fs-sm);
   color: var(--text-secondary);
 }
-/* 提示行恒为次要级：它解释代价与边界，不该和输入框抢注意力 */
+/* 提示行始终为次要层级：它说明代价与边界，不应与输入框争夺注意力 */
 .field-hint {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
@@ -604,10 +604,10 @@
   word-break: break-all;
 }
 
-/* 控件样式要**两种容器都给到**：`.field`（标签包着控件）和 `Row` / `Field`
-   渲染的 `.setting-row`。只写一种的代价是实打实的——「权限与沙箱」里那两个
-   多行清单落在 `.setting-row.stack` 里，因此整块掉回浏览器默认样式：
-   方角、系统边框、和旁边的输入框不是同一套样式。 */
+/* 控件样式必须**同时覆盖两种容器**：`.field`（标签包裹控件）与 `Row` / `Field`
+   渲染的 `.setting-row`。只覆盖一种时，「权限与沙箱」中的两个
+   多行清单位于 `.setting-row.stack` 内，会整体回退为浏览器默认样式：
+   直角、系统边框，与相邻输入框样式不一致。 */
 .field input,
 .field select,
 .field textarea,
@@ -617,21 +617,21 @@
   padding: 6px var(--s-2);
   border: 1px solid var(--border-default);
   border-radius: var(--r-xs);
-  /* 写 `background-color` 而不是 `background` 简写：下面的 `select` 要往
-     `background-image` 上挂自绘箭头，简写会把它清掉。 */
+  /* 使用 `background-color` 而不是 `background` 简写：下方的 `select` 在
+     `background-image` 上绘制自定义箭头，简写会将其重置。 */
   background-color: var(--bg-app);
   color: var(--text-primary);
   font-size: var(--fs-sm);
   font-family: inherit;
 }
 /*
- * 下拉框整个重画。不清掉 `appearance` 的话，Windows 上它是一颗系统控件——
- * 自带边框、自带按钮式的箭头，和旁边的输入框不是同一套样式。
+ * 下拉框完全自绘。不清除 `appearance` 时，它在 Windows 上是系统控件：
+ * 自带边框与按钮式箭头，与相邻输入框样式不一致。
  *
- * 箭头用两道 `linear-gradient` 拼，**不用 SVG 的 data URI**：data URI 里取不到
- * CSS 变量，颜色只能写死一个灰，而本仓只有一条中性色阶（`tokens.css` 开头那段）。
- * 渐变认 `currentColor`，亮暗两套自动跟着走。
- * 右内距是给箭头让的位置，改箭头的 `background-position` 要同步改它。
+ * 箭头由两道 `linear-gradient` 拼成，**不使用 SVG 的 data URI**：data URI 中无法读取
+ * CSS 变量，颜色只能固定为某个灰色，而本仓库只有一条中性色阶（`tokens.css` 开头部分）。
+ * 渐变支持 `currentColor`，可自动适配亮色与暗色主题。
+ * 右内距为箭头预留位置，修改箭头的 `background-position` 时须同步修改右内距。
  */
 .field select,
 .setting-row select {
@@ -646,8 +646,8 @@
   background-size: 4px 4px;
   background-repeat: no-repeat;
 }
-/* 铺满只给「宽度无界」的那类格子。行式里的下拉宽度由内容定
-   （见上面 `.setting-row-control select`），铺满会把一个三选项的下拉拉成一条横杠。 */
+/* 铺满宽度只用于「宽度无界」的控件。行式布局中的下拉框宽度由内容决定
+   （见上方 `.setting-row-control select`），铺满会把三个选项的下拉框拉伸为整行宽度。 */
 .field input,
 .field select,
 .field textarea,
@@ -670,14 +670,14 @@
 }
 /* 代码 / 配置编辑块（mcp.json、team.json、记忆正文、技能正文）。
  *
- * **选择器必须带上元素名。** 上面那套输入框样式是 `.setting-row textarea`
- * 这种「类 + 元素」的形状，特异度比裸 `.code-area` 高；而这些编辑块有一半
- * 不在 `.field` / `.setting-row` 里（MCP 的配置、team.json 都是分区的直接
- * 子节点），那一半会掉回浏览器默认的 textarea——方角、系统边框、纯白底，
- * 和这一页其余部分不是同一套样式。写成 `textarea.code-area` 才两种位置都盖得住。
+ * **选择器必须带元素名。** 上方的输入框样式是 `.setting-row textarea`
+ * 这类「类 + 元素」形式，特异度高于单独的 `.code-area`；而这些编辑块中有一半
+ * 不在 `.field` / `.setting-row` 内（MCP 配置与 team.json 都是分区的直接
+ * 子节点），这一半会回退为浏览器默认的 textarea 样式：直角、系统边框、纯白底色，
+ * 与本页其余部分样式不一致。写成 `textarea.code-area` 才能同时覆盖两种位置。
  *
- * 底色取 `--bg-sunken`、圆角取卡片那一档：它和条目卡是同一层「凹进去的内容」，
- * 不该比卡片更抢眼。 */
+ * 底色取 `--bg-sunken`、圆角与卡片相同：它与条目卡同属「凹陷内容」层级，
+ * 不应比卡片更醒目。 */
 textarea.code-area {
   width: 100%;
   padding: var(--s-3);
@@ -688,7 +688,7 @@ textarea.code-area {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   line-height: 1.7;
-  /* 配置是逐行读的，不换行——软换行会让缩进对不上，一段 JSON 的层级就没了。 */
+  /* 配置按行阅读，不自动换行：软换行会使缩进错位，JSON 层级无法辨认。 */
   white-space: pre;
   overflow-x: auto;
   resize: vertical;
@@ -703,11 +703,11 @@ textarea.code-area::placeholder {
 
 /* ── 接口横向切换 ──
  *
- * 接口是**上下文而不是内容**：选中哪个决定下面整块字段属于谁。所以做成一排标签，
- * 而不是把每个接口铺成一张卡竖着排——竖排时用户要滚很远才知道自己配了几个。
+ * 接口是**上下文而不是内容**：选中的接口决定下方全部字段的归属。因此使用一排标签，
+ * 而不是每个接口一张卡片纵向排列：纵向排列时用户需要滚动很远才能看出已配置的接口数量。
  *
- * `active`（正在看）和 `live`（当前生效）是两件事，各给各的标记：
- * 看的是 B 接口、跑的是另一个，是这一页最容易犯的错，而后果要到账单上才显形。 */
+ * `active`（正在查看）与 `live`（当前生效）是两种状态，分别使用各自的标记：
+ * 查看 B 接口而实际生效的是另一个接口，是本页最常见的错误，其后果直到账单上才会显现。 */
 .tab-strip {
   display: flex;
   flex-wrap: wrap;
@@ -717,14 +717,14 @@ textarea.code-area::placeholder {
 
 /* ── 分段切换 ──
  *
- * 三处共用这一套：作用域（项目 / 全局）、接口（上面那一排）、用量的两组筛选。
- * 它们答的是同一个问题——「现在看的是哪一段」——分成三种控件等于宣称
+ * 三处共用这套样式：作用域（项目 / 全局）、接口（上方的标签栏）、用量的两组筛选。
+ * 它们回答的是同一个问题，即「当前查看的是哪一部分」；使用三种样式等于表明
  * 它们是三类控件。
  *
- * **选中靠下面一条线，不靠底色块。** 底色块得用内边距把字撑开，因此一行里的
- * 第一项被推离正文那条竖线整整一档；线画在伪元素上，不占位置，第一项的字
- * 就落在竖线上。
- * 伪元素而不是 `border-bottom`：后者会让未选中的那些也占掉 2px，切换时整行上下跳。 */
+ * **选中状态用下划线表示，不用底色块。** 底色块需要内边距，因此一行中的
+ * 第一项会偏离正文的左对齐线一个间距单位；下划线绘制在伪元素上，不占布局空间，第一项的文字
+ * 与左对齐线对齐。
+ * 使用伪元素而不是 `border-bottom`：后者要求未选中项同样占用 2px，否则切换时整行上下跳动。 */
 .scope-tab,
 .tab-chip,
 .usage-chip,
@@ -763,8 +763,8 @@ textarea.code-area::placeholder {
   border-radius: 1px;
   background: var(--accent);
 }
-/* 当前生效的那个接口前面点一个圆点。`active`（正在看）与 `live`（当前生效）
-   各占一个视觉通道：前者是下划线，后者是这个点，叠不到一起去。 */
+/* 当前生效的接口前显示一个圆点。`active`（正在查看）与 `live`（当前生效）
+   各占一种视觉标记：前者为下划线，后者为圆点，两者互不重叠。 */
 .tab-chip.live::before {
   content: "";
   width: 5px;
@@ -772,8 +772,8 @@ textarea.code-area::placeholder {
   border-radius: 50%;
   background: var(--accent);
 }
-/* 「添加接口」是动作不是分段，所以不跟着上面那套长：一颗虚线钮，
-   基线与那一排标签对齐（`.tab-strip` 按基线排）。 */
+/* 「添加接口」是操作而不是分段，因此不沿用上方的分段样式：使用虚线边框按钮，
+   基线与同行标签对齐（`.tab-strip` 按基线排列）。 */
 .tab-chip.add {
   padding: 2px var(--s-2);
   border: 1px dashed var(--border-default);
@@ -783,8 +783,8 @@ textarea.code-area::placeholder {
 
 /* ── 作用域标签页 ──
  *
- * 项目 / 全局两栏，样子归上面那套分段切换，这里只管这一行怎么排：
- * 标签在左，落盘路径压到行尾。 */
+ * 项目 / 全局两个标签，样式由上方的分段切换定义，此处只定义该行的排布：
+ * 标签在左，落盘路径位于行尾。 */
 .scope-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -796,8 +796,8 @@ textarea.code-area::placeholder {
   gap: var(--s-4);
 }
 
-/* 一条落盘路径。**单行、从左边截**（写法同 `.truncate-left`）：绝对路径换行之后
-   比正文还显眼，而它只是「文件在哪儿」的一条说明；尾巴才带信息。 */
+/* 落盘路径。**单行显示，从左侧截断**（写法同 `.truncate-left`）：绝对路径换行后
+   比正文更显眼，而它只是文件位置的说明；有效信息位于路径末尾。 */
 .path-line {
   min-width: 0;
   max-width: 100%;
@@ -810,10 +810,10 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
 }
-/* 作用域标签那一行里，路径压到行尾，且不许把标签挤走。 */
-/* 路径与动作贴行尾。路径 `min-width: 0` 让它先让步，按钮（`.btn-ghost.sm`
-   自带 `flex: none`）不参与挤压。间距与 `.section-actions` / `.empty-actions`
-   同为 `--s-2`：同一排动作按钮在三处的疏密必须一样。 */
+/* 作用域标签行中，路径位于行尾，且不得挤压标签。 */
+/* 路径与操作按钮靠行尾排列。路径设 `min-width: 0` 以优先收缩，按钮（`.btn-ghost.sm`
+   自带 `flex: none`）不参与收缩。间距与 `.section-actions` / `.empty-actions`
+   同为 `--s-2`：三处的操作按钮间距必须一致。 */
 .scope-tail {
   min-width: 0;
   margin-left: auto;
@@ -821,13 +821,13 @@ textarea.code-area::placeholder {
   align-items: center;
   gap: var(--s-2);
 }
-/* 区头里的路径贴着标题排。右侧动作靠 `.section-actions` 的 `margin-left: auto`
-   顶到行尾，所以这里限宽只为不把它们挤出去。 */
+/* 区头中的路径紧随标题排列。右侧操作按钮由 `.section-actions` 的 `margin-left: auto`
+   推至行尾，因此此处限制宽度只为避免将按钮挤出行外。 */
 .settings-block-head .path-line {
   max-width: 55%;
 }
 
-/* 被更高优先级的层盖住的那条。橙色是**警告**不是强调——它说明这条不生效。 */
+/* 被更高优先级的层覆盖的条目。橙色表示**警告**而不是强调：它表明该条目不生效。 */
 .shadow-tag {
   flex: none;
   padding: 1px 7px;
@@ -838,7 +838,7 @@ textarea.code-area::placeholder {
   white-space: nowrap;
 }
 
-/* 一行动作按钮 + 结果消息。显式保存只剩三处：记忆正文、team.json、mcp.json。 */
+/* 一行操作按钮 + 结果消息。需要显式保存的只有三处：记忆正文、team.json、mcp.json。 */
 .row-actions {
   display: flex;
   flex-wrap: wrap;
@@ -912,9 +912,9 @@ textarea.code-area::placeholder {
   color: var(--accent);
   cursor: default;
 }
-/* 最后一行是「加一个」：主操作和空区同位，接口一个模型都没有时它就是唯一那行。
-   **输入框要自己写一条**：上面那套表单样式挂在 `.setting-row` / `.field` 下，
-   这一行两者都不是，不写就是浏览器原生外观。 */
+/* 最后一行用于添加模型：主操作与空状态位于同一位置，接口没有任何模型时它是唯一的一行。
+   **输入框需要单独定义样式**：上方的表单样式限定在 `.setting-row` / `.field` 下，
+   本行不属于两者，不单独定义时显示为浏览器原生外观。 */
 .model-row.add {
   flex-direction: row;
   align-items: center;
@@ -936,21 +936,21 @@ textarea.code-area::placeholder {
   border-color: var(--accent);
 }
 
-/* 模型库那个 tab 和接口不是同一类，隔开一点，别读成「又一个接口」。 */
+/* 模型库标签与接口不属于同一类，与接口标签隔开，避免被视为另一个接口。 */
 .tab-chip.lib {
   margin-left: auto;
 }
 
 /* ── 模型库 ──
  *
- * 一张模型参数表：这一屏要回答的是**横向比较**（这个比那个贵多少、窗口大多少），
- * 而横排小标签让同一项落在不同横坐标上，眼睛得逐条读。表格把每项钉在一列上。
+ * 模型参数表：本页用于**横向比较**（模型之间的价格差与窗口差），
+ * 而横排小标签使同一项位于不同横坐标，需要逐条阅读。表格将每项固定在同一列。
  *
- * **这一节不设自己的 max-height。** `max-height: 60vh` 加上 flex 竖排会让每个
- * 厂商块被压缩、内容被裁——界面上是「每家只剩一行，后面几家整个是空的」。
- * 设置面板本来就有一条滚动轴，这里再加一条就是两条。 */
-/* 一个厂商一张卡，各自带表头。竖排用普通 flow：**不给容器设高度**，
-   `max-height` + flex 竖排会把每张卡压扁并裁掉内容。 */
+ * **本节不单独设置 max-height。** `max-height: 60vh` 与 flex 纵向排列会使每个
+ * 厂商块被压缩、内容被裁剪：每个厂商只显示一行，后几个厂商完全为空。
+ * 设置面板已有一条滚动轴，此处再设一条会形成两条。 */
+/* 每个厂商一张卡片，各自带表头。纵向排列使用普通文档流：**不为容器设置高度**，
+   `max-height` 与 flex 纵向排列会压缩每张卡片并裁剪内容。 */
 .lib > * + * {
   margin-top: var(--s-4);
 }
@@ -964,7 +964,7 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
 }
-/* 窄窗口下表格自己横向滚，不把整页撑宽。 */
+/* 窄窗口下表格在内部横向滚动，不撑宽整页。 */
 .lib-scroll {
   overflow-x: auto;
 }
@@ -975,7 +975,7 @@ textarea.code-area::placeholder {
   table-layout: fixed;
   font-size: var(--fs-sm);
 }
-/* 每家各有一张表，列宽必须共用同一组值，否则内容多少会改变标题位置。
+/* 每个厂商各有一张表，列宽必须共用同一组值，否则内容长短会改变标题位置。
    第一列只保留模型 id 所需宽度，其余空间留给思考强度。 */
 .lib-table th:nth-child(1) {
   width: 136px;
@@ -1012,8 +1012,8 @@ textarea.code-area::placeholder {
 .lib-table td:last-child {
   padding-right: var(--s-3);
 }
-/* **只有这一行标题**：厂商名坐在第一列，其余是列名。
-   再单开一条灰色的厂商栏就是同一件事写两遍，上下各占一行。 */
+/* **只有这一行标题**：厂商名位于第一列，其余为列名。
+   另设一条灰色厂商栏会重复显示同一信息，并多占一行。 */
 .lib-table thead th {
   padding: 5px var(--s-2);
   background: var(--bg-inset);
@@ -1023,31 +1023,31 @@ textarea.code-area::placeholder {
   font-weight: 400;
   white-space: nowrap;
 }
-/* 厂商名是这一行里唯一的「名字」，不是列名，所以按正文的字号和颜色给。 */
+/* 厂商名是该行中唯一的名称，不是列名，因此使用正文的字号与颜色。 */
 .lib-table thead .vendor {
   color: var(--text-primary);
   font-size: var(--fs-sm);
   font-weight: 500;
 }
-/* 档位那一列不换行：换行会把整行撑成两行高，而一屏里十几行都跟着变高。
-   撑不下时整张表横向滚（`.lib-scroll`）。 */
+/* 档位列不换行：换行会使整行变为两行高，一屏中十几行都会随之变高。
+   宽度不足时整张表横向滚动（`.lib-scroll`）。 */
 .lib-table .lv {
   white-space: nowrap;
 }
-/* 所有列都从左边缘起排；数字只保留等宽字形，标题与正文不会出现两套对齐。 */
+/* 所有列均左对齐；数字只使用等宽字形，标题与正文不会出现两种对齐方式。 */
 .lib-table .num {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-/* 模型库的类别页签：对话与各类生成。与下面的表同在一个 `.settings-block` 里，间距取块内那一档。 */
+/* 模型库的类别页签：对话与各类生成。与下方的表同在一个 `.settings-block` 内，间距取块内间距。 */
 .lib-tabs {
   display: flex;
   gap: var(--s-4);
 }
-/* 生成类的表按内容定列宽：每类一张表，不与别的表对齐列，写死的列宽装不下视频那一行的操作。
+/* 生成类的表按内容确定列宽：每类一张表，不与其他表对齐列，固定列宽无法容纳视频行的操作。
    各列不换行、宽度取 auto，表宽多出的部分由浏览器按内容宽度比例分给各列。
-   不要给某一列 `width: 1%` 收成内容宽：余下宽度会全部落到剩下那一列，表的右侧整块空着。
-   参数展开在跨全部列的下一行；不要放回最后一列，那一列只剩一窄条。 */
+   不要给某一列设 `width: 1%` 收缩为内容宽度：剩余宽度会全部分配给剩下的一列，表的右侧整块留空。
+   参数展开在跨全部列的下一行；不要放回最后一列，该列宽度过窄。 */
 .lib-table.media {
   table-layout: auto;
 }
@@ -1056,7 +1056,7 @@ textarea.code-area::placeholder {
   padding-right: var(--s-3);
   white-space: nowrap;
 }
-/* 盖掉对话表按列序写死的列宽。 */
+/* 覆盖对话表按列序固定的列宽。 */
 .lib-table.media th:nth-child(n) {
   width: auto;
 }
@@ -1089,10 +1089,10 @@ textarea.code-area::placeholder {
 .lib-table tbody tr + tr td {
   border-top: 1px solid var(--border-subtle);
 }
-/* 模型 id 不断行。**不要用 `word-break: break-all`**：它会在词中间断
-   （`deepseek-v4-flash` → `deepseek-v4-f` / `lash`），而这一列的其余各列都是
-   `nowrap`，因此表格把全部挤压量都摊给唯一能换行的这一列，一个名字能占三行。
-   撑不下时整张表横向滚（`.lib-scroll`）。 */
+/* 模型 id 不换行。**不要使用 `word-break: break-all`**：它会在单词中间断行
+   （`deepseek-v4-flash` → `deepseek-v4-f` / `lash`），而本列以外的各列都是
+   `nowrap`，表格会把全部压缩量分配给唯一可换行的本列，一个名称可能占三行。
+   宽度不足时整张表横向滚动（`.lib-scroll`）。 */
 .lib-id {
   display: block;
   overflow: hidden;
@@ -1102,21 +1102,21 @@ textarea.code-area::placeholder {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 「上面那个是标准价」这类话是能力边界，占满一整行、不降对比度。
-   压成小标签的话它和旁边的规格一样容易被略过，而略过它的代价是账单上差两倍。 */
+/* 「上方价格为标准价」这类说明属于能力边界，占满整行、不降低对比度。
+   压缩为小标签时，它与相邻规格同样容易被忽略，而忽略它会导致账单金额相差两倍。 */
 .lib-note td {
   padding-top: 0;
   color: var(--warning);
   font-size: var(--fs-xs);
 }
 
-/* 探测结论。坐在模型那一行里，占掉 id 右边剩下的宽度。
+/* 探测结论。位于模型行内，占用 id 右侧的剩余宽度。
  *
- * **一行到底，长了截断**，完整内容在 `title` 里。换行会把这一行撑高，
- * 而按钮就在同一行上——尺寸一变按钮就跑（CLAUDE.md B9）。
+ * **单行显示，过长时截断**，完整内容在 `title` 中。换行会增加行高，
+ * 而按钮位于同一行，尺寸变化会使按钮移位（CLAUDE.md B9）。
  *
- * **「没探测」和「不支持」分开写**，合并成一个否就是把没验过的事写成了结论
- * ——而用户会据此去查一处没坏的配置。 */
+ * **「未探测」与「不支持」分别显示**：合并为同一个否定结果，会把未经验证的事项表述为结论，
+ * 用户会据此排查一处没有问题的配置。 */
 .probe-line {
   flex: 1 1 auto;
   min-width: 0;
@@ -1134,7 +1134,7 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
 }
-/* 失败必须显眼且带原因。只说「保存失败」等于让用户猜哪一条不合格。 */
+/* 失败提示必须醒目并附带原因。只显示「保存失败」会使用户无法得知哪一项不合格。 */
 .save-msg.bad {
   color: var(--danger);
 }
@@ -1142,21 +1142,21 @@ textarea.code-area::placeholder {
 /* ───────────────────────── 设置页版面 ─────────────────────────
  *
  * 页头 + 作用域标签页 + 分区 + 条目卡 + 空态框。记忆 / 技能 / MCP / 插件 /
- * Agent Team 五页共用这一套——它们说的是同一件事的五个实例。 */
+ * Agent Team 五页共用这套版面：它们是同一类页面的五个实例。 */
 
-/* 页头在滚动区**外面**（`.settings-pane` 的第一个子节点），所以它天然不动，
-   不需要 `sticky`，滚动条的轨道也不会盖到它旁边。
-   左内距取 `--settings-inset`，与 `.settings-inner` 同一个数，标题才和下面的
-   内容落在同一条竖线上。
-   **上紧下松（4 / 12）**：内容是从这块底下滚过去的，下面那档留白就是滚过来的
-   行与标题之间的唯一间隙，给小了会贴在标题下沿；上面那档只是标题到窗口边，
-   给大了整块头部空着一条。
-   不画分隔线：它的底色和内容卡只差一档，一条线在这里比它隔开的两块还显眼。 */
+/* 页头位于滚动区**外部**（`.settings-pane` 的第一个子节点），因此本身不随内容滚动，
+   无需 `sticky`，滚动条轨道也不会延伸到页头旁。
+   左内距取 `--settings-inset`，与 `.settings-inner` 取值相同，标题才能与下方
+   内容左对齐。
+   **上内距小、下内距大（4 / 12）**：内容在页头下方滚动，下内距是滚动中的
+   内容行与标题之间唯一的间隙，过小时内容会紧贴标题下沿；上内距只是标题到窗口边缘的距离，
+   过大时页头顶部会留出一条空白。
+   不绘制分隔线：页头底色与内容卡片只差一级，分隔线在此处比它分隔的两部分更显眼。 */
 .page-head {
   flex: none;
   padding: var(--s-1) var(--s-8) var(--s-3) var(--settings-inset);
 }
-/* 标题和右上角动作同一行。动作靠右，标题短的时候不要让它跟着跑到中间去。 */
+/* 标题与右上角操作按钮位于同一行。操作按钮靠右，标题较短时不得随之移到中间。 */
 .page-head-row {
   display: flex;
   align-items: center;
@@ -1167,9 +1167,9 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xl);
   font-weight: 600;
   letter-spacing: -0.01em;
-  /* 左移半格：字框对齐了，看着仍比下面的分区名靠右——20px 的字，字形自带的
-     左侧留白比 12px 那几个分区名多出约 0.5px（量的是渲染出来的像素，不是盒子）。
-     用 `transform` 而不是 margin：它不参与布局，同一行右边的说明不会跟着动。 */
+  /* 左移 0.5px。字框已对齐，但视觉上仍比下方的分区名靠右：20px 字号的字形自带的
+     左侧留白比 12px 的分区名多约 0.5px（测量的是渲染后的像素，不是盒模型）。
+     使用 `transform` 而不是 margin：它不参与布局，同一行右侧的说明不会随之移动。 */
   transform: translateX(-0.5px);
 }
 .page-head-actions {
@@ -1178,8 +1178,8 @@ textarea.code-area::placeholder {
   align-items: center;
   gap: var(--s-2);
 }
-/* 页级说明跟在标题右边，压一档灰。**单行，放不下自己截断**——
-   它和标题在同一行，换行会把钉住的页头整体抬高一档。 */
+/* 页级说明位于标题右侧，颜色降低一级。**单行显示，超出宽度时截断**：
+   它与标题在同一行，换行会使固定的页头整体增高。 */
 .page-desc {
   margin: 0;
   min-width: 0;
@@ -1189,8 +1189,8 @@ textarea.code-area::placeholder {
   color: var(--text-tertiary);
   font-size: var(--fs-sm);
 }
-/* 段级说明跟在段标题右边。区头是 600 字重的标题行，说明要挑回常规字重，
-   并且限宽——它长起来会把右侧动作顶出去。 */
+/* 段级说明位于段标题右侧。区头是 600 字重的标题行，说明需恢复常规字重，
+   并限制宽度：说明过长会把右侧操作按钮挤出行外。 */
 .section-desc {
   margin: 0;
   min-width: 0;
@@ -1210,9 +1210,9 @@ textarea.code-area::placeholder {
 
 /* ── 条目卡 ──
  *
- * 浅底、无强边框：一页里可能有十几条，每条一个描边框会把整页变成一片方格。
- * 底色取 `--bg-sunken`（对话框自己是 `--bg-raised`），所以卡是**凹**下去的，
- * 亮暗两套都成立。 */
+ * 浅底色、无强边框：一页中可能有十几个条目，每个条目带描边框会使整页呈现为密集的方格。
+ * 底色取 `--bg-sunken`（对话框本身为 `--bg-raised`），因此卡片呈**凹陷**效果，
+ * 亮色与暗色主题下均成立。 */
 .entry-list {
   display: flex;
   flex-direction: column;
@@ -1227,7 +1227,7 @@ textarea.code-area::placeholder {
   border-radius: var(--r-lg);
   background: var(--bg-sunken);
 }
-/* 装失败的必须显眼：它是用户排查「放进去了却没出现」的唯一依据。 */
+/* 加载失败的条目必须醒目：它是用户排查「已放入但未出现」问题的唯一依据。 */
 .entry-card.failed {
   border-color: var(--danger);
 }
@@ -1237,8 +1237,8 @@ textarea.code-area::placeholder {
   gap: var(--s-2);
   min-width: 0;
 }
-/* 名字那一块可点时是 `<button>`，不可点时是 `<div>`，两者共用这条规则——
-   否则可点的那些会因为按钮的默认样式比不可点的矮一档。 */
+/* 名称区域可点击时是 `<button>`，不可点击时是 `<div>`，两者共用本规则：
+   否则可点击的条目会因按钮的默认样式而比不可点击的条目矮一级。 */
 .entry-main {
   flex: 1 1 auto;
   min-width: 0;
@@ -1260,15 +1260,15 @@ textarea.code-area::placeholder {
   color: var(--text-primary);
   word-break: break-all;
 }
-/* 说明压成一行：条目多的时候，三行的说明会让「有哪些」这个问题要滚三屏才答得出。
-   要看全的那条点开就是。 */
+/* 说明压缩为一行：条目较多时，三行说明会使用户需要滚动三屏才能看完全部条目。
+   需要查看完整说明时点击展开该条目。 */
 .entry-desc {
   min-width: 0;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
-/* 条目上的一枚中性标签（角色跑在哪个后端、条目属于哪一类）。
-   不用颜色区分——颜色在这套界面里只留给状态（危险 / 成功 / 警告）。 */
+/* 条目上的中性标签（角色运行的后端、条目所属类别）。
+   不使用颜色区分：本界面中颜色只用于表示状态（危险 / 成功 / 警告）。 */
 .entry-tag {
   flex: none;
   padding: 1px 7px;
@@ -1284,7 +1284,7 @@ textarea.code-area::placeholder {
   align-items: center;
   gap: var(--s-1);
 }
-/* 卡下面挂的那一段（工具名、隔离状态、失败原因）。 */
+/* 卡片下方的附加信息（工具名、隔离状态、失败原因）。 */
 .entry-extra {
   display: flex;
   flex-wrap: wrap;
@@ -1302,7 +1302,7 @@ textarea.code-area::placeholder {
 
 /* ── 空态框 ──
  *
- * 高度写死。空态和有内容时高度差一大截的话，加完第一条整页会往下窜一段（B9）。 */
+ * 高度固定。空态与有内容时高度相差较大时，添加第一个条目后整页内容会向下跳动（B9）。 */
 .empty-box {
   display: flex;
   flex-direction: column;
@@ -1325,20 +1325,20 @@ textarea.code-area::placeholder {
   gap: var(--s-2);
 }
 
-/* ── 设置内容区对上面这些表单规则的覆盖 ──
-   **必须写在被覆盖的规则之后**：这几条特异性更高，写在前面的话「顺序」和
-   「特异性」会给出相反的答案，biome 的 noDescendingSpecificity 就是在拦这个。 */
+/* ── 设置内容区对上方表单规则的覆盖 ──
+   **必须写在被覆盖的规则之后**：以下规则特异性更高，写在前面时「顺序」与
+   「特异性」会得出相反的结果，biome 的 noDescendingSpecificity 规则用于拦截这种情况。 */
 
 /*
- * 内容区里的控件不铺满整列。
+ * 内容区中的控件不铺满整列。
  *
- * 授权那种 520px 的小浮层里输入框铺满正好；设置的内容区有八百来像素宽，
- * 一个只填 `high` 的下拉拉到那么宽，等于暗示那里要填一长串内容——
- * 控件宽度是对内容长度的暗示。
+ * 授权浮层宽 520px，其中的输入框铺满宽度合适；设置内容区宽约八百像素，
+ * 只需填写 `high` 的下拉框拉伸到该宽度，会暗示此处需要填写很长的内容：
+ * 控件宽度暗示内容长度。
  *
- * **多行清单不在此列。** `.setting-row.stack` 的定义就是「标题说明在上、控件占满
- * 一行」，再给它一个上限，卡片右侧会空出两百来像素，而那一格装的是一行一个的
- * 绝对路径，是这一页最需要宽度的控件。
+ * **多行清单不在此列。** `.setting-row.stack` 的定义即「标题与说明在上、控件占满
+ * 一行」，再为它设置宽度上限，卡片右侧会空出约两百像素，而该控件的内容是每行一条的
+ * 绝对路径，是本页最需要宽度的控件。
  */
 .settings-inner .field input,
 .settings-inner .field select {
@@ -1347,13 +1347,13 @@ textarea.code-area::placeholder {
 .settings-inner .field textarea {
   max-width: 560px;
 }
-/* 行式卡里的自由文本不收窄：baseUrl 和 key 都是长值，而卡本身已经把宽度限住了。 */
+/* 行式卡片中的自由文本输入框不收窄：baseUrl 与 key 都是长值，且卡片本身已限制宽度。 */
 .settings-inner .setting-row.stack input {
   max-width: 560px;
 }
 
-/* 配置提醒与诊断。每条自己是一段 markdown（列表、行内代码都可能出现），
-   所以外层不再画列表符号——条与条之间靠间距分开，条内的层级由 markdown 自己给。 */
+/* 配置提醒与诊断。每条都是一段 markdown（可能包含列表与行内代码），
+   因此外层不绘制列表符号：条目之间以间距分隔，条目内的层级由 markdown 表达。 */
 .settings-notices {
   display: flex;
   flex-direction: column;
@@ -1366,7 +1366,7 @@ textarea.code-area::placeholder {
 .settings-notices.bad {
   color: var(--danger);
 }
-/* markdown 段落在会话流里带着 12px 段距，这里一条提醒就三五行，撑得太散。 */
+/* markdown 段落在会话流中带有 12px 段距，此处每条提醒只有三至五行，该段距过于松散。 */
 .settings-notices .markdown p {
   margin-bottom: var(--s-1);
 }
@@ -1397,7 +1397,7 @@ textarea.code-area::placeholder {
 .btn-ghost:hover {
   background: var(--bg-hover);
 }
-/* 挤在一行里的那种：模型行上的测连接 / 校准思考。 */
+/* 行内紧凑按钮：模型行上的测试连接 / 校准思考。 */
 .btn-ghost.sm {
   flex: none;
   align-self: auto;
@@ -1410,8 +1410,8 @@ textarea.code-area::placeholder {
 
 /* ───────────────────────── 插件 ───────────────────────── */
 
-/* 「有」和「无」都照实显示，两者都不是错误状态——
-   把「无」画成红色会让「node 版本不够所以没有出网闸」看起来像故障 */
+/* 「有」与「无」均如实显示，两者都不是错误状态：
+   将「无」显示为红色会使「node 版本不足因而没有网络访问限制」看似故障 */
 .iso-flag {
   padding: 1px 7px;
   border-radius: var(--r-xs);
@@ -1429,8 +1429,8 @@ textarea.code-area::placeholder {
 
 /* ───────────────────────── 定时任务 ───────────────────────── */
 
-/* 前提写在最前面，不折叠、不淡化：
-   一条界面上显示已排期、实际不会触发的定时任务，比没有这个功能坏得多。 */
+/* 前提条件放在最前面，不折叠、不淡化：
+   界面上显示已排期而实际不会触发的定时任务，比不提供该功能危害更大。 */
 .schedule-caveat {
   display: flex;
   align-items: center;
@@ -1442,9 +1442,9 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xs);
   line-height: 1.6;
 }
-/* 「新增」贴右边沿。这一格里只有边界那句话和它，中间的空白全归 auto。
-   底色必须显式给 `--bg-raised`：`.btn-ghost` 自身透明，落在这一格的浅色底上
-   只剩一圈边框。悬停同理不能用半透明的 `--bg-hover`，它会透出下面那层。 */
+/* 「新增」按钮靠右边缘。该区域中只有边界说明与该按钮，中间空白全部由 auto 占据。
+   底色必须显式设为 `--bg-raised`：`.btn-ghost` 自身透明，在该区域的浅色底上
+   只显示一圈边框。悬停状态同样不能使用半透明的 `--bg-hover`，它会透出下层底色。 */
 .schedule-caveat .btn-ghost {
   margin-left: auto;
   background: var(--bg-raised);
@@ -1460,8 +1460,8 @@ textarea.code-area::placeholder {
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
 }
-/* 停用的整条压暗，但**照常显示全部内容**：
-   折叠起来会让人忘了自己还有这条任务。 */
+/* 停用的任务整体变暗，但**仍显示全部内容**：
+   折叠后用户容易忽略该任务的存在。 */
 .schedule-card.off {
   opacity: 0.55;
 }
@@ -1501,7 +1501,7 @@ textarea.code-area::placeholder {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* 周期与下次时刻在左，两个动作贴行尾。动作用 `.btn-ghost.sm`，字号与这一行的读数同为 `--fs-xs`。 */
+/* 周期与下次执行时刻在左，两个操作按钮靠行尾。按钮使用 `.btn-ghost.sm`，字号与该行的读数同为 `--fs-xs`。 */
 .schedule-meta {
   display: flex;
   align-items: center;
@@ -1514,8 +1514,8 @@ textarea.code-area::placeholder {
 }
 
 /* ── 用量账本 ── */
-/* 两组筛选并排一行：时间范围在左、分组在右。分两行的话，光是「看哪段时间、
-   按什么分」就要占掉两行才轮到数字。 */
+/* 两组筛选并排于一行：时间范围在左、分组在右。分为两行时，仅时间范围与
+   分组方式两项筛选就占用两行，之后才显示数字。 */
 .usage-bar {
   display: flex;
   align-items: baseline;
@@ -1526,12 +1526,12 @@ textarea.code-area::placeholder {
   display: flex;
   gap: var(--s-4);
 }
-/* 分组那一组推到右沿：两组挨着的话，七颗钮读成一排同类选项，而它们是两条互不相干
-   的轴（看哪段时间 / 按什么分）。 */
+/* 分组筛选推至右侧边缘：两组相邻时，七个按钮会被视为一排同类选项，而它们是两个互不相关
+   的维度（时间范围 / 分组方式）。 */
 .usage-bar > .usage-chips + .usage-chips {
   margin-left: auto;
 }
-/* 合计。这一页唯一的大字。 */
+/* 合计。本页唯一使用大字号的内容。 */
 .usage-total {
   display: flex;
   align-items: baseline;
@@ -1548,9 +1548,9 @@ textarea.code-area::placeholder {
   font-variant-numeric: tabular-nums;
 }
 
-/* 表的外框。与设置页其他成组内容（`.model-list` / `.lib-card`）同一张配方：
-   细边 + 大圆角 + 自身裁切，表头那块底色才会跟着圆角收口。
-   窄窗口下表格自己横向滚，不把整页撑宽。 */
+/* 表格外框。与设置页其他成组内容（`.model-list` / `.lib-card`）使用相同样式：
+   细边框 + 大圆角 + 自身裁剪，表头底色才能随圆角裁剪。
+   窄窗口下表格在内部横向滚动，不撑宽整页。 */
 .usage-scroll {
   overflow-x: auto;
   border: 1px solid var(--border-subtle);
@@ -1583,8 +1583,8 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xs);
   font-weight: 400;
 }
-/* 数字列右对齐 + 等宽数字：不对齐的话 `$0.2` 和 `$12.5` 的小数点错位，
-   量级差看着像不差。 */
+/* 数字列右对齐并使用等宽数字：不对齐时 `$0.2` 与 `$12.5` 的小数点错位，
+   量级差异难以辨认。 */
 .usage-table .num {
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -1592,7 +1592,7 @@ textarea.code-area::placeholder {
 .usage-table tbody tr + tr td {
   border-top: 1px solid var(--border-subtle);
 }
-/* 生成模型行上的类别词：同一列里对话与各类生成各有一个「默认」，靠它分清。 */
+/* 生成模型行上的类别标签：同一列中对话与各类生成各有一个「默认」，以该标签区分。 */
 .model-output {
   flex: none;
   font-size: var(--fs-xs);

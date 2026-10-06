@@ -5,15 +5,15 @@ import { IconFolder, IconPlus } from './Icons.tsx'
 /**
  * 新建 work。
  *
- * **为什么是弹窗，不是直接开目录选择器。** 点一下就弹系统目录选择器的话，「项目」被迫等于「一个已经
- * 存在的目录」——名字只能取目录名，也没法先建一个空目录再开始。这里把两件事分开：**名字是项目
- * 的，路径是它落在哪**。
+ * **使用弹窗，而不是直接打开目录选择器。** 点击后直接弹出系统目录选择器时，「项目」只能等于「一个已经
+ * 存在的目录」：名称只能取目录名，也无法先新建空目录再开始。此处把两件事分开：**名称属于项目，
+ * 路径表示项目所在位置**。
  *
- * **源文件夹可以留空。** 留空就在 `~/.qywork/workspaces/<名称>/` 建一个新的。会话挂的是项目 id，
- * 不是路径——所以以后改名字不会丢会话。
+ * **源文件夹可以留空。** 留空时在 `~/.qywork/workspaces/<名称>/` 新建目录。会话关联的是项目 id，
+ * 而不是路径，因此日后修改名称不会丢失会话。
  *
- * **选目录只有桌面端有。** 系统目录选择器是外壳能力，浏览器拿不到。那边这颗按钮不渲染（B5），
- * 但输入名字建默认工作区仍然可用——不是整个功能都没了。
+ * **只有桌面端可以选择目录。** 系统目录选择器是外壳能力，浏览器无法调用。浏览器端不渲染该按钮（B5），
+ * 但输入名称新建默认工作区仍然可用。
  */
 export function NewProjectDialog(props: {
   open: boolean
@@ -27,10 +27,10 @@ export function NewProjectDialog(props: {
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
 
-  // 内置浏览器那一页是原生子视图，画在所有 DOM 之上；开着的浮层要让它先让位。
+  // 内置浏览器页是原生子视图，渲染在所有 DOM 之上；浮层打开时需先将其移出可视区。
   holdOverlay(() => props.open)
 
-  // 每次打开都是干净的一张表：留着上一次的输入读起来像是它记住了什么。
+  // 每次打开都使用空白表单：保留上一次的输入会被误认为弹窗记住了某些设置。
   createEffect(() => {
     if (props.open) {
       setName('')
@@ -52,7 +52,7 @@ export function NewProjectDialog(props: {
     onCleanup(() => window.removeEventListener('keydown', onKey))
   })
 
-  /** 选了文件夹而没填名字时，名字就是那个文件夹名——不逼用户填两遍。 */
+  /** 选择了文件夹而未填写名称时，名称取该文件夹名，无需用户重复填写。 */
   const effectiveName = () =>
     name().trim() || (folder() ? (folder() as string).split(/[/\\]/).pop() : '')
 
@@ -96,7 +96,7 @@ export function NewProjectDialog(props: {
               class="np-input"
               type="text"
               value={name()}
-              placeholder={folder() ? '留空就用文件夹名' : '例如：青学研上'}
+              placeholder={folder() ? '留空则使用文件夹名' : '例如：青学研上'}
               onInput={(e) => setName(e.currentTarget.value)}
             />
           </label>
@@ -109,15 +109,15 @@ export function NewProjectDialog(props: {
                 <div class="np-folder empty">
                   <Show
                     when={props.canPickFolder}
-                    fallback={<span class="np-hint">在本机新建一个文件夹</span>}
+                    fallback={<span class="np-hint">在本机新建文件夹</span>}
                   >
                     <button class="np-pick" type="button" onClick={() => void pick()}>
                       <IconPlus size={14} />
-                      选一个本机文件夹
+                      选择本机文件夹
                     </button>
                   </Show>
-                  {/* 边界声明留全（B7）：不写的话「留空会发生什么」没有任何提示。 */}
-                  <span class="np-hint">留空就在 qywork 的数据目录下新建一个</span>
+                  {/* 边界声明完整保留（B7）：不写时「留空会怎样」没有任何提示。 */}
+                  <span class="np-hint">留空则在 qywork 数据目录下新建文件夹</span>
                 </div>
               }
             >
@@ -133,7 +133,7 @@ export function NewProjectDialog(props: {
             </Show>
           </div>
 
-          {/* 失败要有终态：名字不合法、目录建不出来，都在这里说出来。 */}
+          {/* 失败必须有终态：名称不合法、目录无法创建，都在此处显示。 */}
           <Show when={error()}>{(e) => <p class="np-error">{e()}</p>}</Show>
 
           <div class="confirm-actions">

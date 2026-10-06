@@ -1,18 +1,18 @@
 /**
  * 时间线的片段编辑与本地播放。
  *
- * 片段编辑是纯函数：返回新的一组片段，由调用方提交成一次 `update clips`。
- * 播放头、播放状态与选中的片段只在本地、不存盘；同一条时间线的节点与全屏编辑共用一份会话（`useSession`）。
+ * 片段编辑是纯函数：返回新的一组片段，由调用方提交为一次 `update clips`。
+ * 播放头、播放状态与选中的片段只保存在本地，不写入磁盘；同一条时间线的节点与全屏编辑共用一个会话（`useSession`）。
  */
 
 import type { CanvasClip } from '@qywork/core'
 import { type Accessor, createSignal, onCleanup } from 'solid-js'
 import { type VideoMeta, videoMeta } from './frame.ts'
 
-/** 片段最短 0.1 秒：再短的段在轨道上抓不住，导出也不足 3 帧。 */
+/** 片段最短 0.1 秒：更短的段在轨道上无法选中，导出也不足 3 帧。 */
 export const MIN_CLIP = 0.1
 
-/** 源视频的元数据按地址缓存：裁剪出点的上限、新片段的整段长度、预览画框的比例都要它。读不到时各项为 0。 */
+/** 源视频的元数据按地址缓存：裁剪出点的上限、新片段的整段长度、预览画框的比例都依赖它。无法读取时各项为 0。 */
 const metas = new Map<string, Promise<VideoMeta>>()
 export function metaOf(url: string): Promise<VideoMeta> {
   let m = metas.get(url)
@@ -23,7 +23,7 @@ export function metaOf(url: string): Promise<VideoMeta> {
   return m
 }
 
-/** 入点出点取到毫秒：拖动换算出的秒数带十几位小数，写进画布文件没有意义。 */
+/** 入点出点精确到毫秒：拖动换算出的秒数带十几位小数，写入画布文件没有意义。 */
 function ms(seconds: number): number {
   return Math.round(seconds * 1000) / 1000
 }
@@ -36,7 +36,7 @@ export function totalOf(clips: readonly CanvasClip[]): number {
   return clips.reduce((n, c) => n + lengthOf(c), 0)
 }
 
-/** 每段在成片里的起点。 */
+/** 每段在成片中的起点。 */
 export function startsOf(clips: readonly CanvasClip[]): number[] {
   let at = 0
   return clips.map((c) => {
@@ -46,7 +46,7 @@ export function startsOf(clips: readonly CanvasClip[]): number[] {
   })
 }
 
-/** 成片时刻 `t` 落在第几段、对应源文件里的哪一秒；`t` 在终点时落在最后一段的出点。没有片段回 `null`。 */
+/** 成片时刻 `t` 所在的段序号与对应的源文件时间；`t` 位于终点时对应最后一段的出点。没有片段时返回 `null`。 */
 export function locate(
   clips: readonly CanvasClip[],
   t: number,
@@ -62,7 +62,7 @@ export function locate(
   return null
 }
 
-/** 在成片时刻 `t` 把所在的段一分为二；离段的两端不足 `MIN_CLIP` 时不分，回 `null`。 */
+/** 在成片时刻 `t` 把所在的段一分为二；距段的两端不足 `MIN_CLIP` 时不分割，返回 `null`。 */
 export function splitAt(clips: readonly CanvasClip[], t: number): CanvasClip[] | null {
   const at = locate(clips, t)
   if (!at) return null
@@ -81,8 +81,8 @@ export function splitAt(clips: readonly CanvasClip[], t: number): CanvasClip[] |
 const THUMB_MAX = 2048
 
 /**
- * 片段缩略图画布的像素宽高：块在页面上的宽高各乘 2。宽高必须按同一倍数取，倍数不同帧会被拉长或压扁。
- * 块宽超过 `THUMB_MAX` 时宽高按同一比例缩小、显示时再拉回块的大小：全屏放大后块可以很宽，画布超出浏览器上限会画不出。
+ * 片段缩略图画布的像素宽高：块在页面上的宽高各乘 2。宽高必须按同一倍数计算，倍数不同时帧会被拉伸或压缩。
+ * 块宽超过 `THUMB_MAX` 时宽高按同一比例缩小，显示时再缩放回块的大小：全屏放大后块可能很宽，画布尺寸超出浏览器上限时无法绘制。
  */
 export function thumbCanvas(w: number, h: number): { width: number; height: number } {
   const scale = Math.min(1, THUMB_MAX / Math.max(1, w))
@@ -93,8 +93,8 @@ export function thumbCanvas(w: number, h: number): { width: number; height: numb
 }
 
 /**
- * 分割按钮可不可用。播放中不按播放头判断：离段的两端不足 `MIN_CLIP` 时不能分割，逐帧判断会让按钮在每个片段交界处
- * 禁用约 0.2 秒。播放中点下时由调用方先停下，再按停下处分割。
+ * 分割按钮是否可用。播放中不按播放头判断：距段的两端不足 `MIN_CLIP` 时不能分割，逐帧判断会使按钮在每个片段交界处
+ * 禁用约 0.2 秒。播放中点击时由调用方先暂停，再按暂停位置分割。
  */
 export function canSplit(clips: readonly CanvasClip[], t: number, playing: boolean): boolean {
   return playing ? clips.length > 0 : splitAt(clips, t) !== null
@@ -104,7 +104,7 @@ export function withoutClip(clips: readonly CanvasClip[], index: number): Canvas
   return clips.filter((_, i) => i !== index)
 }
 
-/** 把第 `from` 段挪到第 `to` 个间隙（0 是最前，`clips.length` 是最后）。位置不变时回 `null`。 */
+/** 把第 `from` 段移动到第 `to` 个间隙（0 为最前，`clips.length` 为最后）。位置不变时返回 `null`。 */
 export function moveClip(
   clips: readonly CanvasClip[],
   from: number,
@@ -126,7 +126,7 @@ export function insertClips(
 }
 
 /**
- * 拖第 `index` 段的入点（`edge` 为 `in`）或出点到源时间 `value`：入点不小于 0，出点不超过源时长 `duration`，
+ * 把第 `index` 段的入点（`edge` 为 `in`）或出点拖动到源时间 `value`：入点不小于 0，出点不超过源时长 `duration`，
  * 段长不短于 `MIN_CLIP`。
  */
 export function trimClip(
@@ -144,7 +144,7 @@ export function trimClip(
   return clips.map((x, i) => (i === index ? next : x))
 }
 
-/** 成片时刻 `t` 落在片段之间的第几个间隙：数中点在 `t` 之前的段，`skip` 那段不算（拖动中的段）。 */
+/** 成片时刻 `t` 位于片段之间的第几个间隙：统计中点在 `t` 之前的段，不计 `skip` 指定的段（拖动中的段）。 */
 export function gapAt(clips: readonly CanvasClip[], t: number, skip = -1): number {
   const starts = startsOf(clips)
   let gap = 0
@@ -161,20 +161,20 @@ export interface TimelineSession {
   playing: Accessor<boolean>
   selected: Accessor<number | null>
   select(index: number | null): void
-  /** 预览：两个 `<video>` 叠放、轮流播放。同一时刻只挂在一处（节点或全屏），移动它会暂停播放。 */
+  /** 预览：两个 `<video>` 叠放、轮流播放。同一时刻只挂载在一处（节点或全屏），移动它会暂停播放。 */
   preview: HTMLDivElement
-  /** 节点改了片段或静音时调用：片段变了就停下、按原播放头重新定位。 */
+  /** 节点修改片段或静音时调用：片段变化时暂停，并按原播放头重新定位。 */
   sync(urls: string[], clips: CanvasClip[], muted: boolean): void
   seek(t: number): void
   toggle(): void
   pause(): void
-  /** 当前显示的视图登记的：屏幕横坐标对应的成片时刻。拖进来的片段插在哪、右键「在此处分割」分在哪，都按它算。 */
+  /** 由当前显示的视图注册：屏幕横坐标对应的成片时刻。拖入片段的插入位置、右键「在此处分割」的分割位置均按它计算。 */
   timeAtClient?: (clientX: number) => number
 }
 
 const sessions = new Map<string, { session: TimelineSession; users: number; dispose(): void }>()
 
-/** 在组件里取这条时间线的会话；最后一个使用它的组件卸载时释放。 */
+/** 在组件中获取该时间线的会话；最后一个使用它的组件卸载时释放。 */
 export function useSession(id: string): TimelineSession {
   let entry = sessions.get(id)
   if (!entry) {
@@ -192,12 +192,12 @@ export function useSession(id: string): TimelineSession {
   return held.session
 }
 
-/** 已挂载的时间线的会话；没有回 `undefined`。画布按 Delete 时据此判断是删片段还是删节点。 */
+/** 已挂载的时间线的会话；不存在时返回 `undefined`。画布处理 Delete 时据此判断删除片段还是删除节点。 */
 export function sessionOf(id: string): TimelineSession | undefined {
   return sessions.get(id)?.session
 }
 
-/** 终点停在最后一帧之前：定位到恰好出点时常解不出画面。 */
+/** 终点停在最后一帧之前：定位到恰好出点时常无法解码出画面。 */
 const LAST_FRAME = 1 / 30
 
 function createSession(): { session: TimelineSession; dispose(): void } {
@@ -216,7 +216,7 @@ function createSession(): { session: TimelineSession; dispose(): void } {
   let urls: string[] = []
   let clips: CanvasClip[] = []
   let key = ''
-  /** 预览画框的比例取第一段：导出的成片按第一段定尺寸，其余段在画框里等比留边。 */
+  /** 预览画框的比例取第一段：导出的成片按第一段确定尺寸，其余段在画框中等比缩放并留边。 */
   let framed = ''
   const frameTo = (url: string | undefined) => {
     if (url === framed) return
@@ -232,7 +232,7 @@ function createSession(): { session: TimelineSession; dispose(): void } {
     })
   }
   let active = 0
-  /** 两个视频元素各装着第几段；-1 是空。 */
+  /** 两个视频元素各自载入的段序号；-1 表示空。 */
   const holds = [-1, -1]
   let raf = 0
 
@@ -279,7 +279,7 @@ function createSession(): { session: TimelineSession; dispose(): void } {
       }
       const other = 1 - active
       if (holds[other] !== index + 1) load(other, index + 1, clips[index + 1]!.in)
-      // 先切显示再停旧的：旧元素的 pause 事件到达时它已不是当前元素，不会被当成意外暂停。
+      // 先切换显示再暂停旧元素：旧元素的 pause 事件到达时它已不是当前元素，不会被视为意外暂停。
       show(other)
       videos[other]!.play().catch(pause)
       v.pause()
@@ -289,7 +289,7 @@ function createSession(): { session: TimelineSession; dispose(): void } {
     setPlayhead(startsOf(clips)[now]! + videos[active]!.currentTime - clips[now]!.in)
     raf = requestAnimationFrame(tick)
   }
-  // 当前元素被浏览器停下（预览挂到别处、系统暂停）时，播放状态跟着停。
+  // 当前元素被浏览器暂停（预览挂载到别处、系统暂停）时，播放状态随之停止。
   for (const v of videos) {
     v.addEventListener('pause', () => {
       if (playing() && v === videos[active] && !v.ended) pause()

@@ -7,8 +7,8 @@ import { ModelSettings } from './ModelSettings.tsx'
 import { PageHead } from './Page.tsx'
 import { pageMeta, SettingsNav } from './SettingsNav.tsx'
 
-// 内容类目各自带着自己的请求和列表，进设置才下载。
-// 只想换个主题的用户不该为「定时任务」付首屏成本。
+// 各内容类目自带请求与列表，打开设置后才加载。
+// 只切换主题时不应加载「定时任务」等页面的代码。
 const ModulesSettings = lazy(() =>
   import('./ModulesSettings.tsx').then((m) => ({ default: m.ModulesSettings })),
 )
@@ -25,23 +25,23 @@ const SchedulesPanel = lazy(() =>
 )
 
 /**
- * 系统设置弹窗。左边类目、右边内容，盖在会话上面。
+ * 系统设置弹窗：左侧为类目，右侧为内容，覆盖在会话之上。
  *
- * **为什么类目导航在弹窗里，不在左栏。** 做成整页（左栏换成类目、主区换成内容、会话整个让出去）的代
- * 价是「改一格就走」被做成一次场景切换——顶栏的会话导出和面板开关得跟着藏起来，回来还要点一次「返
- * 回」。类目导航塞得进弹窗，左边那一栏就是。
+ * 类目导航放在弹窗内而不放在左栏：做成整页（左栏换成类目、主区换成内容、会话完全隐藏）时，
+ * 修改单个设置项也要切换整个页面，顶栏的会话导出与面板开关须随之隐藏，返回时还要点击「返回」。
+ * 弹窗左侧一栏即可容纳类目导航。
  *
- * **没有横贯整条的标题栏。** 类目栏直接通到弹窗顶部。**弹窗的名字就是当前类目的名字**——横一条「设
- * 置」在最上面等于把同一件事说两遍，还把类目栏往下压了一格。
+ * 不设通栏标题栏：类目栏直达弹窗顶部，弹窗标题即当前类目名称。顶部再放一条「设置」
+ * 会重复显示同一信息，并使类目栏下移一行。
  *
- * **标题在这里画，且在滚动区外面。** 放进滚动区的话，滚动条的轨道会从对话框顶边
- * 一直盖到标题旁边——标题不动，旁边却有一条能拖的轨道。
- * 名字与那句说明取自导航那张表（`pageMeta`），页面组件不再各画一份。
+ * 标题在此处渲染，且位于滚动区之外。放入滚动区时，滚动条轨道会从对话框顶边
+ * 延伸到标题旁，而标题本身不随滚动移动。
+ * 名称与说明取自导航表（`pageMeta`），各页面组件不另行渲染。
  *
- * **尺寸写死。** 见 `settings.css` 里 `.settings-dialog` 那段：切类目不许改变对话框尺寸。
+ * 尺寸固定，见 `settings.css` 中的 `.settings-dialog`：切换类目时不得改变对话框尺寸。
  */
 export function SettingsDialog() {
-  // 内置浏览器那一页是原生子视图，画在所有 DOM 之上；开着的浮层要让它先让位。
+  // 内置浏览器页面是原生子视图，渲染在所有 DOM 之上；弹窗打开期间登记为浮层，使原生子视图移出可视区。
   holdOverlay(() => true)
 
   createEffect(() => {
@@ -57,16 +57,16 @@ export function SettingsDialog() {
 
   return (
     <>
-      {/* 关闭遮罩是对话框的**兄弟节点**，不是父节点——理由见 overlays.css 里那段。 */}
+      {/* 关闭遮罩是对话框的兄弟节点而非父节点，原因见 overlays.css 中的说明。 */}
       <button class="backdrop-close" type="button" aria-label="关闭设置" onClick={closeSettings} />
       <div class="sheet-backdrop pass-through">
         <div class="settings-dialog" role="dialog" aria-modal="true" aria-label="设置">
           <SettingsNav />
 
           <div class="settings-pane">
-            {/* 关闭钉在右上角，不跟标题排在同一行——它是整个弹窗的出口，
-                不是这一页的一个动作。位置跟着内容区走：宽屏时内容区就顶到
-                弹窗顶边，窄屏时类目栏横在上面，它跟着落到类目栏下面那一行。 */}
+            {/* 关闭按钮固定在右上角，不与标题同行：它是整个弹窗的出口，
+                不是当前页面的动作。位置随内容区变化：宽屏时内容区位于
+                弹窗顶边，窄屏时类目栏横排在上方，关闭按钮位于类目栏下方一行。 */}
             <button
               class="icon-btn settings-close"
               type="button"
@@ -78,19 +78,19 @@ export function SettingsDialog() {
 
             <PageHead title={pageMeta(settingsPage()).label} desc={pageMeta(settingsPage()).desc} />
 
-            {/* 滚动条只在内容上，理由在 `settings.css` 的 `.settings-scroll` 上。 */}
+            {/* 滚动条只作用于内容区，原因见 `settings.css` 的 `.settings-scroll`。 */}
             <div class="settings-scroll">
               <div class="settings-inner">
                 {/*
-                 * **内容区自带 Suspense，边界不许再往外借。**
+                 * 内容区自带 Suspense 边界，不要依赖外层边界。
                  *
-                 * 每一页都靠 `createResource` 取数，而 Solid 的 Suspense 对子树里
-                 * 任何一个在飞的 resource 一视同仁。不在这里画边界的话，最近的
-                 * 边界是 `App.tsx` 那个给 `lazy()` 用的——切一次类目，整个弹窗
-                 * 连同遮罩的模糊层一起被摘出 DOM 再挂回来。
+                 * 每一页都通过 `createResource` 取数，而 Solid 的 Suspense 对子树中
+                 * 任何一个未完成的 resource 都会生效。此处不设边界时，最近的
+                 * 边界是 `App.tsx` 中供 `lazy()` 使用的边界：每次切换类目，整个弹窗
+                 * 连同遮罩的模糊层都会被移出 DOM 再重新挂载。
                  *
-                 * 没有 fallback 是有意的：内容区空一下即可，摆一句「读取中…」
-                 * 反而会闪一下就没。
+                 * 有意不设 fallback：内容区短暂留空即可，显示「读取中…」
+                 * 只会一闪而过。
                  */}
                 <Suspense>
                   <Switch>

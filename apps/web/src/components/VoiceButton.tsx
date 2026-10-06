@@ -5,20 +5,19 @@ import { IconMic } from './Icons.tsx'
 /**
  * 语音输入。
  *
- * **不经过服务端，也和大模型无关。** 用的是浏览器内置的 `SpeechRecognition`，识别结果直接是文字，拼
- * 进草稿就完了。**后端没有任何 STT 通路**，别去那边找。
+ * 不经过服务端，与模型无关：使用浏览器内置的 `SpeechRecognition`，识别结果直接是文字，
+ * 拼接到草稿即可。后端没有 STT 链路，不要在后端查找。
  *
- * **拿不到 API 就不渲染。** Tauri 的 WebView2 未必带这套 API。**特性检测不通过时整个按钮不出现**，
- * 而不是渲染一个点了没反应的麦克风——后者比没有这个功能更糟，用户会反复去点
- * 而点下去没有任何反馈。
+ * 无法取得 API 时不渲染。Tauri 的 WebView2 不一定提供该 API；特性检测不通过时整个按钮不显示，
+ * 而不是渲染一个点击无响应的麦克风按钮：用户会反复点击而得不到任何反馈。
  *
- * **中途结果也写进草稿。** `interimResults` 开着，说到一半就能看到字。**基线是开始录音那一刻的草稿
- * **，已定稿的部分累加在它后面——不这么记的话，每来一段中途结果都会把用户已经打好的字覆盖掉。
+ * 中间结果同样写入草稿。`interimResults` 已开启，说话过程中即可看到文字。基线是开始录音时的草稿，
+ * 已定稿的部分追加在其后；不记录基线时，每段中间结果都会覆盖用户已输入的文字。
  */
 export function VoiceButton(props: {
   draft: string
   onText: (next: string) => void
-  /** 提交方拿到这一个停止入口：发送时冻结当前草稿，不再接收随后到达的识别结果。 */
+  /** 向提交方提供停止函数：发送时冻结当前草稿，不再接收此后到达的识别结果。 */
   bindSubmitStop?: (stop: () => void) => void
 }) {
   const Ctor = speechRecognitionCtor()
@@ -36,8 +35,8 @@ export function VoiceButton(props: {
   })
 
   /*
-   * 提交与按钮停止不是同一种语义：按钮停止要收下最后一段定稿；提交已经按此刻草稿
-   * 发出，之后到达的 onresult 不能再把已清空的输入框填回来。`abort()` 同时立即释放
+   * 提交与按钮停止的语义不同：按钮停止需要接收最后一段定稿；提交已按当前草稿发出，
+   * 此后到达的 onresult 不得重新填充已清空的输入框。`abort()` 同时立即释放
    * 麦克风，避免 continuous 模式继续占用设备。
    */
   const stopForSubmit = () => {
@@ -49,7 +48,7 @@ export function VoiceButton(props: {
     try {
       active.abort()
     } catch {
-      // 识别实例已经自行结束时 abort 可能抛；不能因此挡住发送。
+      // 识别实例已自行结束时 abort 可能抛出异常，不得因此阻止发送。
     }
   }
   props.bindSubmitStop?.(stopForSubmit)
@@ -78,19 +77,19 @@ export function VoiceButton(props: {
     }
     r.onerror = (e) => {
       if (rec !== r) return
-      // **每一种失败都要说出来。**
+      // 每一种失败都必须显示。
       //
-      // 这里最危险的不是权限被拒，而是「API 在、但识别服务不可用」：
-      // WebView2 是 Chromium 内核，`SpeechRecognition` 构造得出来，
-      // 但官方 Chrome 才带着语音服务的凭据。那种情况下 start() 不抛异常，
-      // 只是稍后回一个 `network` / `service-not-allowed` 错误然后 onend——
-      // 用户看到的就是「点了、亮了一下、什么都没有」。
+      // 最难察觉的情况不是权限被拒，而是 API 存在但识别服务不可用：
+      // WebView2 基于 Chromium，可以构造 `SpeechRecognition`，
+      // 但只有官方 Chrome 带有语音服务的凭据。此时 start() 不抛出异常，
+      // 稍后返回 `network` / `service-not-allowed` 错误并触发 onend，
+      // 按钮高亮后随即恢复，没有任何输出。
       setFailure(errorLabel(e.error))
       acceptsResults = false
       setRecording(false)
     }
     r.onend = () => {
-      // 旧实例在提交后才送达 onend 时，不能把随后新开的实例一并清掉。
+      // 旧实例在提交后才触发 onend 时，不得清除此后新建的实例。
       if (rec !== r) return
       acceptsResults = false
       setRecording(false)
@@ -101,7 +100,7 @@ export function VoiceButton(props: {
       r.start()
       setRecording(true)
     } catch {
-      // 已经在录时再调 start() 会抛，按无操作处理。
+      // 正在录音时再次调用 start() 会抛出异常，按无操作处理。
       rec = null
     }
   }
@@ -120,8 +119,8 @@ export function VoiceButton(props: {
         >
           <IconMic size={15} />
         </button>
-        {/* 失败原因显示在按钮旁边，不塞进全局提示条：它只和这一个按钮有关，
-            而全局提示会盖住用户正在打的字。 */}
+        {/* 失败原因显示在按钮旁边，不放入全局提示条：它只与该按钮有关，
+            而全局提示会遮挡用户正在输入的文字。 */}
         <Show when={failure()}>
           <span class="voice-error">{failure()}</span>
         </Show>
@@ -130,14 +129,14 @@ export function VoiceButton(props: {
   )
 }
 
-/** 错误码 → 用户能据以行动的一句话。看不懂的原样带出来，不糊成「识别失败」。 */
+/** 错误码到提示文字的映射，提示说明用户可采取的操作。未知错误码原样显示，不笼统写成「识别失败」。 */
 function errorLabel(code: string): string {
   const map: Record<string, string> = {
     'not-allowed': '麦克风权限被拒绝，请在系统设置中开启',
     'service-not-allowed': '当前 WebView 无可用的语音服务',
     network: '无法连接语音服务，当前 WebView 可能不含识别后端',
     'no-speech': '未检测到语音输入',
-    'audio-capture': '找不到麦克风',
+    'audio-capture': '未找到麦克风',
     aborted: '',
   }
   return map[code] ?? `语音识别失败：${code}`

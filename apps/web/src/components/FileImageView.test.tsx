@@ -56,7 +56,7 @@ async function mount() {
   return { host, setPreview, image, load, button }
 }
 
-test('同一资源的预览结果刷新保留缩放与长图阅读位置，切换图片才重置', async () => {
+test('同一资源的预览结果刷新时保留缩放与长图阅读位置，仅在切换图片时重置', async () => {
   const { host, setPreview, image, load, button } = await mount()
   load(1000, 10000)
   button('适应宽度').click()
@@ -77,7 +77,7 @@ test('同一资源的预览结果刷新保留缩放与长图阅读位置，切�
   expect(image.style.visibility).toBe('visible')
 })
 
-test('加载失败显示错误并禁用缩放，切换到有效图片恢复', async () => {
+test('加载失败时显示错误并禁用缩放，切换到有效图片后恢复', async () => {
   const { host, setPreview, image, load } = await mount()
   image.dispatchEvent(new Event('error'))
   expect(host.textContent).toContain('无法加载图片')

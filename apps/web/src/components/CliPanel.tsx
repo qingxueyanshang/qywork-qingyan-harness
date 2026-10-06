@@ -1,12 +1,12 @@
 /**
- * 右侧面板里的外部 CLI 页：跑着的时候看它在写什么，跑完看它交回来的那段。
+ * 右侧面板中的外部 CLI 页：运行期间显示其输出，执行完毕后显示其返回的产出。
  *
- * **不是终端**：这里不能输入，也就不能在里面 Ctrl-C——被调度的 CLI 是非交互跑的
- * （`cli-detect.ts` 的厂商表），没有可交互的那一端。要停一个失控的 CLI，
- * 用这一轮的停止按钮，它按进程树终止。
+ * **不是终端**：此处不能输入，因此也无法按 Ctrl-C。被调度的 CLI 以非交互方式运行
+ * （`cli-detect.ts` 的厂商表），没有可交互的输入端。要停止失控的 CLI，
+ * 使用本轮的停止按钮，它按进程树终止。
  *
- * **也不用 xterm**：那一包三百多 K，而这里的字节里没有 ANSI——`cli-backend.ts`
- * 起进程时给的是 `NO_COLOR=1` / `TERM=dumb`。
+ * **也不使用 xterm**：该依赖包三百多 KB，而此处的输出不含 ANSI 控制序列：`cli-backend.ts`
+ * 启动进程时设置了 `NO_COLOR=1` / `TERM=dumb`。
  */
 
 import { Show } from 'solid-js'
@@ -18,21 +18,21 @@ export default function CliPanel(props: { id: string }) {
   const where = () => tabCliNode(props.id)
   const card = () => {
     const items = transcript()
-    // workflow 的面板 stepId 是稳定 workflowId，而实时输出落在最近一轮真实 step。
-    // 与主列表走同一折叠，才能同时拿到最近 live 节点和累计回执。
+    // workflow 面板的 stepId 是稳定的 workflowId，而实时输出记录在最近一轮的真实 step 上。
+    // 与主列表使用同一折叠逻辑，才能同时取得最近的运行中节点与累计回执。
     return collapseWorkflowItems(items).find((item) => item.id === where().stepId)
   }
 
   /**
-   * 运行期间是攒起来的中途输出，跑完 / 刷新之后是落库的那段产出。
+   * 运行期间显示累积的中间输出，执行完毕或刷新之后显示已落库的产出。
    *
-   * 两条各管一段，不互相兜底：中途输出不落库（`team.output`），而产出只有跑完才有。
+   * 两者各负责一个阶段，不互为后备：中间输出不落库（`team.output`），而产出只在执行完毕后才存在。
    */
   const body = () => {
     const live = card()?.cliOutput?.[where().nodeId]
     if (live) return live
     const data = card()?.outcome?.data as { output?: unknown } | undefined
-    // 一张图的产出按节点分开落；派一件只有一格，产出就在结果顶层。
+    // 编排图的产出按节点分别落库；单次派发只有一个节点，产出位于结果顶层。
     if (card()?.toolName === 'workflow') {
       return card()?.workflow?.results[where().nodeId]?.output ?? ''
     }
