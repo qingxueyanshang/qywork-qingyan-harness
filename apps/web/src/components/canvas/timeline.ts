@@ -3,10 +3,12 @@
  *
  * 片段编辑是纯函数：返回新的一组片段，由调用方提交为一次 `update clips`。
  * 播放头、播放状态与选中的片段只保存在本地，不写入磁盘；同一条时间线的节点与全屏编辑共用一个会话（`useSession`）。
+ * 选中的片段刷新后恢复；播放头与播放状态不恢复，刷新后预览的视频重新加载。
  */
 
 import type { CanvasClip } from '@qywork/core'
 import { type Accessor, createSignal, onCleanup } from 'solid-js'
+import { sessionSignal } from '../../lib/session.ts'
 import { type VideoMeta, videoMeta } from './frame.ts'
 
 /** 片段最短 0.1 秒：更短的段在轨道上无法选中，导出也不足 3 帧。 */
@@ -178,7 +180,7 @@ const sessions = new Map<string, { session: TimelineSession; users: number; disp
 export function useSession(id: string): TimelineSession {
   let entry = sessions.get(id)
   if (!entry) {
-    entry = { ...createSession(), users: 0 }
+    entry = { ...createSession(id), users: 0 }
     sessions.set(id, entry)
   }
   entry.users += 1
@@ -200,10 +202,10 @@ export function sessionOf(id: string): TimelineSession | undefined {
 /** 终点停在最后一帧之前：定位到恰好出点时常无法解码出画面。 */
 const LAST_FRAME = 1 / 30
 
-function createSession(): { session: TimelineSession; dispose(): void } {
+function createSession(id: string): { session: TimelineSession; dispose(): void } {
   const [playhead, setPlayhead] = createSignal(0)
   const [playing, setPlaying] = createSignal(false)
-  const [selected, setSelected] = createSignal<number | null>(null)
+  const [selected, setSelected] = sessionSignal<number | null>(`qywork.timeline.clip:${id}`, null)
   const preview = document.createElement('div')
   preview.className = 'canvas-tl-screen'
   const videos = [0, 1].map(() => {

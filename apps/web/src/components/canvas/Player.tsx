@@ -13,6 +13,7 @@ import {
   onMount,
   Show,
 } from 'solid-js'
+import { sessionSignal } from '../../lib/session.ts'
 import { IconAudio, IconPause, IconPlay, IconVolume, IconVolumeOff } from '../Icons.tsx'
 import { drawFilmstrip, frameTime } from './frame.ts'
 
@@ -29,7 +30,7 @@ function clockTenths(seconds: number): string {
 }
 
 /** 静音是整个界面共用的偏好：切换选中节点、播放器重新挂载时均沿用上一次的选择。 */
-const [muted, setMuted] = createSignal(false)
+const [muted, setMuted] = sessionSignal('qywork.player.muted', false)
 
 /**
  * 已挂载的播放器。`at` 是所选时刻：播放时随播放进度更新，暂停时为最后一次定位的值。

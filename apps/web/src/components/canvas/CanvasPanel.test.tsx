@@ -51,6 +51,10 @@ afterEach(async () => {
   document.body.replaceChildren()
   const store = await import('../../lib/store/index.ts')
   store.setState({ fileVersion: 0, canvasVersion: 0 })
+  // 视口、选中与草稿在挂载之间保留（刷新恢复），每条用例从未记录的状态开始。
+  const { flushSession } = await import('../../lib/session.ts')
+  flushSession()
+  sessionStorage.clear()
 })
 
 afterAll(async () => {
@@ -2230,6 +2234,85 @@ describe('画布：右键菜单', () => {
       () => JSON.stringify(server.ops),
     )
     expect(server.doc().edges).toHaveLength(0)
+  })
+})
+
+/**
+ * 原始失败形状：整页刷新后画布按全部节点重新适配视口，选中与未提交的提示词丢失。
+ * 刷新以「卸载、`flushSession`、以同一份文档重新挂载」模拟：挂载时只能从记录取得刷新前的状态。
+ */
+describe('画布：刷新后恢复', () => {
+  const reload = async () => {
+    dispose?.()
+    dispose = undefined
+    restore?.()
+    restore = undefined
+    document.body.replaceChildren()
+    const { flushSession } = await import('../../lib/session.ts')
+    flushSession()
+  }
+  const viewport = (host: HTMLElement) => {
+    const stage = host.querySelector<HTMLElement>('.canvas-stage')!
+    return ['--z', '--px', '--py'].map((v) => stage.style.getPropertyValue(v))
+  }
+
+  test('视口与选中的节点按刷新前恢复，不重新适配', async () => {
+    const first = await mount(CARD)
+    resize(first.host.querySelector<HTMLElement>('.canvas-stage')!, 1000, 700)
+    const stage = first.host.querySelector<HTMLElement>('.canvas-stage')!
+    stage.dispatchEvent(new WheelEvent('wheel', { deltaX: 120, deltaY: 80, bubbles: true }))
+    pointer(node(first.host, first.refs.$a!), 'pointerdown', 10, 10)
+    pointer(stage, 'pointerup', 10, 10)
+    const before = viewport(first.host)
+    await reload()
+
+    const second = await mount(CARD)
+    resize(second.host.querySelector<HTMLElement>('.canvas-stage')!, 1000, 700)
+    expect(viewport(second.host)).toEqual(before)
+    expect(node(second.host, second.refs.$a!).classList.contains('selected')).toBe(true)
+  })
+
+  test('未提交的提示词草稿按刷新前恢复；提示词已被修改时丢弃草稿', async () => {
+    const select = async (host: HTMLElement, id: string) => {
+      pointer(node(host, id), 'pointerdown', 10, 10)
+      pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
+      await waitFor(
+        () => !!host.querySelector('.canvas-panel'),
+        () => host.innerHTML.slice(0, 200),
+      )
+    }
+    const first = await mount(CARD)
+    await select(first.host, first.refs.$v!)
+    const editor = first.host.querySelector<HTMLElement>('.canvas-prompt')!
+    editor.textContent = '雨夜'
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+    await reload()
+
+    const second = await mount(CARD)
+    await waitFor(
+      () => !!second.host.querySelector('.canvas-panel'),
+      () => second.host.innerHTML.slice(0, 200),
+    )
+    expect(second.host.querySelector('.canvas-prompt')!.textContent).toBe('雨夜')
+    expect(second.server.ops).toEqual([])
+    // 恢复的草稿未提交、编辑框没有焦点；此后画布重新读取一次（提示词未变化）不得清除草稿。
+    const store = await import('../../lib/store/index.ts')
+    const reads = second.server.reads
+    store.setState('fileVersion', (v) => v + 1)
+    await waitFor(
+      () => second.server.reads > reads,
+      () => '',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(second.host.querySelector('.canvas-prompt')!.textContent).toBe('雨夜')
+    await reload()
+
+    const third = await mount([...CARD, { op: 'update', id: '$v', prompt: '晴天' }])
+    await waitFor(
+      () => !!third.host.querySelector('.canvas-panel'),
+      () => third.host.innerHTML.slice(0, 200),
+    )
+    expect(third.host.querySelector('.canvas-prompt')!.textContent).toBe('晴天')
   })
 })
 
