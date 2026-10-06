@@ -30,6 +30,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde::Deserialize;
 use tauri::AppHandle;
 use tauri_plugin_shell::ShellExt;
 
@@ -356,10 +357,17 @@ impl DesktopHost {
                 return;
             }
         };
-        let frame: RequestFrame = match serde_json::from_value(value) {
+        let frame = match RequestFrame::deserialize(&value) {
             Ok(f) => f,
             Err(e) => {
                 log::warn!("桌面宿主帧字段不合法：{e}");
+                if let Some((request_id, reply)) = RequestFrame::identity(&value) {
+                    self.send_frame(&ResultFrame::refused(
+                        request_id,
+                        &reply,
+                        format!("bad_request: {e}"),
+                    ));
+                }
                 return;
             }
         };

@@ -154,6 +154,23 @@ pub struct RequestFrame {
     pub max_bytes: Option<u32>,
 }
 
+impl RequestFrame {
+    /// 从未通过字段校验的请求帧中取出请求 id 与三项身份，用于回执拒绝。
+    /// 任一项缺失或类型不符时返回 `None`：服务端按这四项配对回执，缺项的回执无法完成任何调用。
+    pub fn identity(value: &Value) -> Option<(String, Binding)> {
+        let text = |key: &str| value.get(key)?.as_str().map(str::to_owned);
+        let number = |key: &str| value.get(key)?.as_u64();
+        Some((
+            text("requestId")?,
+            Binding {
+                host_id: text("hostId")?,
+                host_epoch: number("hostEpoch")?,
+                connection_epoch: number("connectionEpoch")?,
+            },
+        ))
+    }
+}
+
 /// 目标窗口身份。三项一起给，派发前重新核对，句柄复用因此识别得出。
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[cfg_attr(test, derive(Serialize))]
@@ -887,6 +904,40 @@ mod tests {
                 "{op}"
             );
         }
+    }
+
+    /// 字段不合法的请求仍须回执：服务端按请求 id 与三项身份配对，取不出这四项时回执无法完成任何调用。
+    #[test]
+    fn an_invalid_request_still_yields_its_identity_for_the_refusal() {
+        let raw = json!({
+            "type": "desktop.request",
+            "requestId": "dr_9",
+            "connectionEpoch": 5,
+            "hostId": "h1",
+            "hostEpoch": 2,
+            "deadline": "不是数字",
+            "op": "act",
+        });
+        assert!(RequestFrame::deserialize(&raw).is_err());
+        let (request_id, reply) = RequestFrame::identity(&raw).expect("身份四项齐全");
+        let frame = serde_json::to_value(ResultFrame::refused(request_id, &reply, "bad_request: x"))
+            .expect("回执可序列化");
+        assert_eq!(
+            frame,
+            json!({
+                "type": "desktop.result",
+                "requestId": "dr_9",
+                "connectionEpoch": 5,
+                "hostId": "h1",
+                "hostEpoch": 2,
+                "dispatch": "not_dispatched",
+                "reason": "bad_request: x",
+            })
+        );
+
+        let mut partial = raw.clone();
+        partial.as_object_mut().expect("对象").remove("hostEpoch");
+        assert!(RequestFrame::identity(&partial).is_none());
     }
 
     #[test]
