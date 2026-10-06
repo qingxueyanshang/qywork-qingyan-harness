@@ -301,7 +301,7 @@ export function Timeline(props: TimelineProps) {
     <button
       type="button"
       class="canvas-tl-export"
-      title={props.exporting === null ? '导出' : '取消导出'}
+      data-tip={props.exporting === null ? '导出' : '取消导出'}
       aria-label={props.exporting === null ? '导出' : '取消导出'}
       disabled={!props.node.clips.length}
       onClick={() => (props.exporting === null ? props.onExport() : props.onCancelExport())}
@@ -330,7 +330,7 @@ export function Timeline(props: TimelineProps) {
       <div class="canvas-tl-bar">
         <button
           type="button"
-          title="分割"
+          data-tip="分割"
           aria-label="分割"
           disabled={!splittable()}
           onClick={split}
@@ -339,7 +339,7 @@ export function Timeline(props: TimelineProps) {
         </button>
         <button
           type="button"
-          title="删除片段"
+          data-tip="删除片段"
           aria-label="删除片段"
           disabled={session.selected() === null}
           onClick={remove}
@@ -390,7 +390,7 @@ export function Timeline(props: TimelineProps) {
         <div class="canvas-tl-gutter">
           <button
             type="button"
-            title={props.node.muted ? '开启声音' : '静音'}
+            data-tip={props.node.muted ? '开启声音' : '静音'}
             aria-label={props.node.muted ? '开启声音' : '静音'}
             onClick={() => props.setMuted(!props.node.muted)}
           >

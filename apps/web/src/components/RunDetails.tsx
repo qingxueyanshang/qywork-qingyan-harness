@@ -363,7 +363,7 @@ function RequestLedger(props: { run: Run }) {
                 只有成功的生成才有这一行（失败各家都不计费），结果列与成功的请求同写「已完成」。 */}
             <For each={media()}>
               {(m) => (
-                <tr title={m.model}>
+                <tr data-tip={m.model}>
                   <td>{MEDIA_REQUEST[m.output]}</td>
                   <td>{NA}</td>
                   <td>

@@ -276,6 +276,6 @@ describe('运行页', () => {
     )
     const cells = [...host.querySelectorAll('.run-req tbody tr td')].map((td) => td.textContent)
     expect(cells).toEqual(['图像', 'N/A', '1 张', 'N/A', 'N/A', '¥0.18', '已完成'])
-    expect(host.querySelector('.run-req tbody tr')?.getAttribute('title')).toBe('qwen-image-3.0')
+    expect(host.querySelector('.run-req tbody tr')?.getAttribute('data-tip')).toBe('qwen-image-3.0')
   })
 })

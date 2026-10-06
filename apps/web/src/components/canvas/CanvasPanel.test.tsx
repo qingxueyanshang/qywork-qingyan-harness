@@ -1496,7 +1496,7 @@ describe('画布：生成卡与生成面板', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }))
     const file = () =>
       [...document.querySelectorAll<HTMLButtonElement>('.canvas-pick-list > button')].find(
-        (b) => b.title === '角色/小满.png',
+        (b) => b.dataset.tip === '角色/小满.png',
       )
     await waitFor(
       () => !!file(),
