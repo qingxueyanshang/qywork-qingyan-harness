@@ -7,14 +7,13 @@ import { client } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
 
 /**
- * 用量账本。这台机器最近这些天的全部模型花费。
+ * 用量账本：本机在所选天数内的全部模型花费。
  *
- * **为什么在设置里，不在会话的运行页。** 它的尺度是**机器**与**天**，而运行页的尺度是这一条会话。两
- * 者并排放在同一页时，两套筛选钮会先于任何数字占掉两行，两组合计还会互相冒充。运行页底部留一行 30
- * 天合计当入口，明细在这里。
+ * 放在设置中而不放在会话的运行页：它的统计范围是本机与天数，而运行页的统计范围是单个会话。两
+ * 者放在同一页时，两组筛选按钮会在数字之前占用两行，两组合计也容易混淆。运行页底部保留一行 30
+ * 天合计作为入口，明细在此处显示。
  *
- * **不做「本工作区」单独一格。** 「按工作区」这个分组本来就把它列出来了，再单给一格就是同一个数两处
- * 显示。
+ * 不单独显示「本工作区」：「按工作区」分组已列出该数值，单独显示会使同一数值出现在两处。
  */
 
 const RANGES = [7, 30, 90] as const
@@ -26,17 +25,17 @@ const GROUPS = [
 ] as const
 
 /**
- * 「此处无可用值」。**与运行页同一个术语**，同一个含义：这个数不存在，而不是它等于 0。
- * 两处各写一个词的话，同一件事在界面上会有两种说法。
+ * 「此处无可用值」。与运行页使用同一术语、同一含义：该数值不存在，而不是等于 0。
+ * 两处使用不同的词时，同一件事在界面上会有两种说法。
  */
 const NA = 'N/A'
 
-/** 金额。一笔计价都没有即这个模型没有价目，写成 $0.00 是把「不知道」说成「免费」。 */
+/** 金额。没有任何一笔计价表示该模型没有价目；显示为 $0.00 会把「未知」显示为「免费」。 */
 function money(cost: Record<string, number>): string {
   return Object.values(cost).some((v) => v > 0) ? formatCosts(cost) : NA
 }
 
-/** 「输入」给含缓存命中的口径：中转站后台账单就是这个数，两边同口径才能对账。 */
+/** 「输入」采用包含缓存命中的口径：与中转站后台账单的口径一致，才能对账。 */
 function input(t: UsageTotals): number {
   return t.inputTokens + (t.cachedTokens ?? 0)
 }
@@ -51,8 +50,6 @@ export default function UsageSettings() {
 
   return (
     <>
-      {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。 */}
-
       <div class="usage-bar">
         <div class="usage-chips">
           <For each={RANGES}>
@@ -95,9 +92,9 @@ export default function UsageSettings() {
               <span class="usage-total-meta">{u().totals.entries.toLocaleString()} 笔</span>
             </div>
 
-            {/* 一笔都没有时整张表不画：一排只有表头的空列读起来像加载没完成。 */}
+            {/* 没有记录时不渲染表格：只有表头的空表会被误认为尚未加载完成。 */}
             <Show when={u().rows.length > 0}>
-              {/* 窄窗口下表格自己横向滚，不把整页撑宽。 */}
+              {/* 窄窗口下表格在自身容器内横向滚动，不撑宽整个页面。 */}
               <div class="usage-scroll">
                 <table class="usage-table">
                   <thead>
@@ -116,11 +113,11 @@ export default function UsageSettings() {
                         <tr>
                           <td>{r.key}</td>
                           <td class="num">{r.entries.toLocaleString()}</td>
-                          {/* 汇总量到亿位，逐位对账在运行页的逐请求表，这里收成 K/M。 */}
+                          {/* 汇总值可达亿级，逐位对账使用运行页的逐请求表，此处以 K/M 缩写显示。 */}
                           <td class="num">{compact(input(r))}</td>
                           <td class="num">{compact(r.outputTokens)}</td>
-                          {/* `null` 是「接口没回报这个字段」，写成 0 会让「缓存没生效」
-                              看起来像「生效了但没命中」。术语与运行页同一个。 */}
+                          {/* `null` 表示接口未返回该字段；显示为 0 会使「缓存未生效」
+                              看起来像「缓存生效但未命中」。术语与运行页相同。 */}
                           <td class="num">
                             {r.cachedTokens === null ? NA : compact(r.cachedTokens)}
                           </td>

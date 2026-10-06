@@ -1,18 +1,18 @@
 /* 输入区。
  *
- * 由 `../app.css` 按固定顺序引入——**顺序即层叠**，不要单独 import 这个文件。 */
+ * 由 `../app.css` 按固定顺序引入：引入顺序决定层叠顺序，不要单独 import 本文件。 */
 
 /* ── 输入区 ── */
 .composer-wrap {
   position: relative;
   flex: none;
-  /* 上边距必须是 0。
+  /* 上边距必须为 0。
    *
-   * 输入区不是悬浮层，它和会话流是上下两格；会话流的裁切边就是这里的上沿。
-   * 一旦给它补 padding-top，裁切边就被顶到输入框上方的空白里——往回拖历史时
-   * 正文会在半空中被齐刷刷切掉半行，看起来像那儿摆着一个看不见的盒子。
-   * 正文和输入框之间的呼吸感由 `.transcript-inner` 的 padding-bottom 给，
-   * 那样裁切边和框的上沿重合，滚动时正文是「滑进框底下」而不是被凭空切断。 */
+   * 输入区不是浮层，它与会话流是上下相邻的两行；会话流的裁切边即此处的上沿。
+   * 添加 padding-top 后，裁切边会上移到输入框上方的空白中：向上滚动历史时，
+   * 正文会在空白处被截去半行。
+   * 正文与输入框之间的间距由 `.transcript-inner` 的 padding-bottom 提供，
+   * 使裁切边与输入框上沿重合，滚动时正文从输入框下方经过，而不是在空白处被截断。 */
   padding: 0 var(--s-5) calc(var(--s-4) + var(--safe-bottom));
   max-width: 760px;
   width: 100%;
@@ -43,26 +43,26 @@
   }
 }
 
-/* 整轮状态条：居中，且**悬浮在输入框上沿之上，不占流**。
+/* 整轮状态条：居中，且悬浮在输入框上沿之上，不占据文档流。
  *
- * 居中是因为它不属于左右任何一侧的控件，是这一轮的状态——左对齐时看起来像
- * 输入框长出来的一个附件。居中交给外层，chip 自己仍然按内容宽度收缩。
+ * 居中是因为它不属于左右任一侧的控件，而是本轮的状态；左对齐时看起来像
+ * 输入框的附件。居中由外层负责，chip 本身仍按内容宽度收缩。
  *
- * 不占流是实测逼出来的：占流时 `.composer-wrap` 在输入框上方多出一条 35px 的
- * **整宽**带子（27 的行 + 8 的间距），而会话流的裁切边就落在那条带子的顶上
- * ——量出来 `.transcript` 底边 744、输入框卡片上沿 779。因此正文在离框 35px 的
- * 半空中被齐刷刷切断。这与本文件开头 `.composer-wrap` 那条「padding-top 必须是 0」
- * 拦的是同一个坑。
+ * 不占据文档流由实测确定：占据时 `.composer-wrap` 在输入框上方多出一条 35px 的
+ * 整宽区域（27 的行 + 8 的间距），而会话流的裁切边恰好位于该区域顶部
+ * （实测 `.transcript` 底边 744、输入框卡片上沿 779），因此正文在距卡片 35px 处
+ * 被整齐截断。这与本文件开头 `.composer-wrap` 的「上边距必须为 0」
+ * 针对的是同一个问题。
  *
- * 悬浮之后裁切边回到卡片上沿（实测 clipGap 0），chip 挡住的只剩正文最底下那一小截。
- * **整条不吃指针**，否则输入框上方那 35px 会挡住正文的选中和点击。
+ * 悬浮后裁切边回到卡片上沿（实测 clipGap 0），chip 只遮挡正文最底部的一小段。
+ * 整条不接收指针事件，否则输入框上方的 35px 会阻挡对正文的选择与点击。
  */
 .run-status {
   position: absolute;
-  /* `bottom: 100%` 把整条的下沿贴到 `.composer-wrap` 的上沿，间距再由
-     margin 让开。不要改回 `top: 0` + `translateY(-100% - 缝)`：那种写法里
-     `--composer-stack-gap` 一旦读不到，整条 transform 作废、chip 落回 top 0，
-     形状是它盖在跟进卡片的上半截上，而不是缝变宽变窄。 */
+  /* `bottom: 100%` 将整条的下沿贴到 `.composer-wrap` 的上沿，间距由
+     margin 提供。不要改为 `top: 0` + `translateY(-100% - 间距)`：该写法中
+     `--composer-stack-gap` 一旦无法解析，整条 transform 失效、chip 回到 top 0，
+     结果是覆盖跟进卡片的上半部，而不是间距变化。 */
   bottom: 100%;
   left: 0;
   right: 0;
@@ -72,33 +72,33 @@
   pointer-events: none;
 }
 .changes-chip {
-  /* 指针在 `.run-status` 那一层被关掉了，这里单独开回来：关掉的是整宽那条带子
-     （它悬在正文上面），开回来的是 chip 自己——里面的待办与文件读数是按钮。 */
+  /* `.run-status` 层关闭了指针事件，此处单独恢复：关闭的是悬在正文上方的整宽区域，
+     恢复的是 chip 本身，其中的待办与文件读数是按钮。 */
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
   gap: var(--s-2);
-  /* 定高，不由内容撑：会话流底部按这个数留位置，让它上下两道缝一样宽。 */
+  /* 固定高度，不由内容决定：会话流底部按该值预留位置，使其上下两侧间隙等宽。 */
   height: var(--run-status-h);
   padding: 0 var(--s-3);
-  /* 与工具栏上的 chip 同阶。不做药丸形：tokens.css 的圆角阶梯写死了
+  /* 与工具栏上的 chip 使用同一圆角档位。不使用胶囊形：tokens.css 的圆角阶梯规定
      「带文字的标签一律不用 `--r-full`」。 */
   border-radius: var(--r-sm);
-  /* 最淡的一档中性叠加。它是相对底色的百分比，明暗两套都只抬一档，
-     不像 `--bg-inset` 那样在暗色下比正文纸还亮。 */
+  /* 最淡一档的中性叠加色。它是相对底色的百分比，明暗两套主题都只提高一档，
+     不像 `--bg-inset` 那样在暗色主题下比正文底色还亮。 */
   background: var(--bg-hover);
-  /* 次级文字色：它是余光里的读数，不是要被读出来的一句话。
-     正文色会让这一枚小 chip 比它上面那条读数条还重。 */
+  /* 次级文字色：它是辅助读数，不是需要逐字阅读的文字。
+     使用正文色会使这个小 chip 比上方的读数条更醒目。 */
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
 }
-/* 分隔点压暗：它是标点不是内容，跟两侧一样重会把一条读成三块。 */
+/* 分隔点调暗：它是标点而非内容，与两侧同等醒目时会把一条读数分割成三块。 */
 .changes-chip .sep {
   color: var(--text-tertiary);
 }
-/* 待办与文件两段读数是按钮（点开对应面板），但不画成按钮：画边框或底色会让整条读成
-   「一个控件旁边挂着几个数字」。 */
+/* 待办与文件两段读数是按钮（点击打开对应面板），但不绘制为按钮样式：绘制边框或底色会使整条
+   看起来像一个控件旁边附带几个数字。 */
 .run-jump {
   display: inline-flex;
   align-items: center;
@@ -114,8 +114,8 @@
   color: var(--danger);
 }
 
-/* Goal 与等待队列是输入框后方的内缩扩展层；正文壳在前景盖住它的底边。
- * 目标永远在第一行，队列依次排在下面。空栈不占高度。 */
+/* Goal 与等待队列是输入框后方的内缩扩展层；正文容器在前景遮住其底边。
+ * 目标始终在第一行，队列依次排在下方。空栈不占高度。 */
 .composer-rails {
   position: relative;
   z-index: 0;
@@ -142,7 +142,7 @@
   flex: none;
   color: var(--text-tertiary);
 }
-/* 正文占满剩余宽度并在这里截断：`min-width: 0` 由 `.truncate` 给。 */
+/* 正文占满剩余宽度并在此截断：`min-width: 0` 由 `.truncate` 提供。 */
 .goal-text {
   flex: 1 1 auto;
   color: var(--text-primary);
@@ -165,21 +165,21 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
-/* 状态：受阻理由 / 已暂停 / 自动续行中共用这一格，就排在轮数前面。
-   **可以被压缩，但排在目标正文之后让**：两个都长的时候先截目标——目标是用户
-   自己写的那句话，他记得；状态是这一格唯一在变的读数，截了就白显示。 */
+/* 状态：受阻理由、已暂停、自动继续中共用此位置，排在轮数之前。
+   可以被压缩，但晚于目标正文压缩：两者都较长时先截断目标。目标是用户
+   自己写的文字，用户记得其内容；状态是此行唯一变化的读数，截断后失去显示意义。 */
 .goal-note {
   flex: 0 1 auto;
   min-width: 0;
   color: var(--text-secondary);
 }
-/* 受阻不压暗：它是「循环为什么停了」，是这一格里唯一需要被追问的一种。 */
+/* 受阻状态不调暗：它说明循环停止的原因，是此处唯一需要用户处理的状态。 */
 .goal-note.blocked {
   color: var(--danger);
 }
 
-/* 等待队列是 `.composer` 的顶部扩展栏，不在输入框外另起悬浮卡。
- * 每行定高，正文过长就在本行截断；多条队列之间只用一条分隔线。 */
+/* 等待队列是 `.composer` 的顶部扩展栏，不在输入框外另建悬浮卡片。
+ * 每行固定高度，正文过长时在本行截断；多条队列之间只用一条分隔线。 */
 .followup-cards {
   display: flex;
   flex-direction: column;
@@ -204,7 +204,7 @@
   flex: none;
   color: var(--text-tertiary);
 }
-/* 正文占满剩余宽度并在这里截断：`min-width: 0` 由 `.truncate` 给。 */
+/* 正文占满剩余宽度并在此截断：`min-width: 0` 由 `.truncate` 提供。 */
 .followup-text {
   flex: 1 1 auto;
   color: var(--text-primary);
@@ -228,7 +228,7 @@
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }
-/* 右侧操作严格共用 24px 高度与同一条中心线，默认不画按钮盒。 */
+/* 右侧操作严格共用 24px 高度与同一条中心线，默认不绘制按钮边框与底色。 */
 .followup-actions {
   flex: none;
   display: inline-flex;
@@ -294,18 +294,18 @@
   background: none;
   resize: none;
   outline: none;
-  /* 移动端 Safari 对 <16px 的输入框会自动放大页面，锁死 16px 避免。 */
+  /* 移动端 Safari 对字号小于 16px 的输入框会自动放大页面，固定为 16px 以避免。 */
   font-size: 16px;
   line-height: 1.6;
   /*
-   * 起步两行，不是一行。
+   * 初始高度为两行，不是一行。
    *
-   * 写成 em + 上下内边距而不是一个像素数：桌面 14px、手机 16px 两档字号下
-   * 它都正好是**两行文字加原本的内边距**，换字号不用回来改这个数。
+   * 写成 em 加上下内边距而不是固定像素值：桌面 14px、手机 16px 两档字号下
+   * 它都恰好是两行文字加原有内边距，更换字号时无需修改该值。
    * `3.2em` = 2 × line-height 1.6。
    *
-   * 只管起步高度，长起来仍由 autosize 顶到 200px 封顶——min-height 会把
-   * autosize 写进来的行内 height 兜住，两边不打架。
+   * 只控制初始高度，内容增加时仍由 autosize 增高至 200px 上限；min-height 作为
+   * autosize 写入的行内 height 的下限，两者不冲突。
    */
   min-height: calc(3.2em + var(--s-3) + var(--s-1));
   max-height: 200px;
@@ -320,8 +320,8 @@
 .composer-bar {
   display: flex;
   align-items: center;
-  /* 2px 而不是一格间距：这排 chip 自带 6px 内边距，真正的视觉间隔是
-     两侧内边距加这个 gap。给 4px 就是 14px 的空档，整排 chip 散开。 */
+  /* 取 2px 而不是一档间距：这排 chip 自带 6px 内边距，实际视觉间隔是
+     两侧内边距加该 gap。取 4px 时间隔为 14px，整排 chip 显得松散。 */
   gap: 2px;
   padding: var(--s-1) var(--s-2) var(--s-2);
 }
@@ -334,8 +334,8 @@
   border-radius: var(--r-sm);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
-  /* **必须 nowrap**：390px 宽下「自动审批」会断成「自动审 / 批」两行，
-     把整条工具栏撑高一倍。实测截出来的。 */
+  /* 必须 nowrap：390px 宽度下「自动审批」会断成「自动审 / 批」两行，
+     使整条工具栏高度加倍（截图实测）。 */
   white-space: nowrap;
 }
 .mode-chip:hover {
@@ -345,18 +345,18 @@
   opacity: 0.45;
   cursor: default;
 }
-/* 「完全访问」必须看得出来。
-   只挂类名而没有对应 CSS 规则时，高危模式和普通模式除了两个字的文案完全一样——
-   而它是**能力边界**（B7：边界声明不许折叠、不许降对比度），
-   最不该只靠读文字才能发现。用警告色描边而不是整块填充：
-   它常驻在输入区，填充会一直抢注意力。 */
+/* 「完全访问」必须一眼可辨。
+   只有类名而没有对应 CSS 规则时，高危模式与普通模式除两个字的文案外完全相同，
+   而它是能力边界（B7：边界声明不得折叠、不得降低对比度），
+   不应只能通过阅读文字发现。使用警告色描边而不是整块填充：
+   它常驻在输入区，填充会持续分散注意力。 */
 .mode-chip.full {
   color: var(--warning);
   box-shadow: inset 0 0 0 1px currentColor;
 }
 
-/* 只读的那一个（「运行于 <项目>」）：不是控件就不要有悬停反馈——
-   有反馈就是在宣称它可点。 */
+/* 只读的 chip（「运行于 <项目>」）：不是控件，不设悬停反馈；
+   有悬停反馈即暗示它可以点击。 */
 .mode-chip.static {
   cursor: default;
 }
@@ -367,23 +367,23 @@
   background: transparent;
 }
 
-/* 模型选择器：向上弹出——输入区贴着窗口底部，向下会被裁掉 */
+/* 模型选择器：向上弹出。输入区贴近窗口底部，向下弹出会被裁切。 */
 .model-picker {
   position: relative;
 }
-/* 模型名 + 档位两截共用这个上限：两截合成一个 chip，总宽比各占一个 chip 时小。 */
+/* 模型名与档位两部分共用该上限：两部分合为一个 chip 时，总宽度小于各占一个 chip。 */
 .model-picker .mode-chip {
   max-width: 240px;
 }
-/* chip 上「模型 + 档位」两截。档位压到三级色：它是模型的旋钮，
-   读的顺序是先模型后档位。 */
+/* chip 上的模型与档位两部分。档位使用三级文字色：它是模型的参数，
+   阅读顺序是先模型后档位。 */
 .model-chip-effort {
   flex-shrink: 0;
   color: var(--text-tertiary);
 }
 
-/* 一级面板：模型 / 推理等级两行。**尺寸不随内容变**（B9）——两行都是定值，
-   列表在二级面板里，撑不到这一层。 */
+/* 一级面板：模型与推理等级两行。尺寸不随内容变化（B9）：两行均为定值，
+   列表位于二级面板中，不影响本层尺寸。 */
 .model-menu {
   position: absolute;
   bottom: calc(100% + 6px);
@@ -411,7 +411,7 @@
   text-align: left;
   cursor: pointer;
 }
-/* 展开的那一行保持高亮：二级面板开在旁边，不这样标就看不出它属于哪一行。 */
+/* 已展开的行保持高亮：二级面板显示在旁边，不标记时无法看出它属于哪一行。 */
 .model-entry:hover,
 .model-entry.open {
   background: var(--bg-hover);
@@ -433,17 +433,17 @@
 }
 
 /*
- * 二级面板：模型列表 / 档位列表。
+ * 二级面板：模型列表与档位列表。
  *
- * **自带一整套规则，不与 `.model-menu` 共用选择器**（B8）。
+ * 自带一整套规则，不与 `.model-menu` 共用选择器（B8）。
  *
- * 开在一级旁边而不是替换掉它：替换会让那一层的高度跟着列表长度变，
- * 用户刚点过的那一行当场跑位（B9）。下沿对齐一级面板，往上长。
+ * 显示在一级面板旁边而不是替换它：替换会使该层高度随列表长度变化，
+ * 用户刚点击的行随即移位（B9）。下沿与一级面板对齐，向上延伸。
  */
 .model-sub {
   position: absolute;
   left: calc(100% + 4px);
-  /* 下沿与一级面板的外边沿齐平：抵掉它的内边距和边框。 */
+  /* 下沿与一级面板的外边沿齐平：抵消其内边距与边框。 */
   bottom: calc(-1px - var(--s-1));
   z-index: 31;
   min-width: 220px;
@@ -459,8 +459,8 @@
   background: var(--bg-raised);
   box-shadow: var(--shadow-lg);
 }
-/* 接口名当分组标题。选择器里第一层是接口不是模型——凭证和端点挂在接口上，
-   「切模型」实质是「切接口 + 切模型」。 */
+/* 接口名作为分组标题。选择器的第一层是接口而不是模型：凭证与端点属于接口，
+   切换模型实质上是切换接口与模型。 */
 .model-group-name {
   padding: var(--s-2) var(--s-3) 4px;
   color: var(--text-tertiary);
@@ -489,9 +489,9 @@
 .model-item.active {
   color: var(--accent);
 }
-/* 用自己的类，不拿 `.truncate` 当钩子。
- * 组件去改一个工具类的表现，会让这个工具类的行为取决于它在谁里面；
- * 而 `.truncate` 全仓有二十来处在用。 */
+/* 使用独立的类，不借用 `.truncate` 作为选择器。
+ * 由组件修改工具类的表现，会使该工具类的行为取决于其所在的父元素；
+ * 而 `.truncate` 在全仓约有二十处使用。 */
 .model-name {
   flex: 1;
 }
@@ -518,7 +518,7 @@
   color: var(--warning);
   background: var(--bg-inset);
 }
-/* 数字定宽：位数从「0%」涨到「100%」时，右边那个按钮不许跟着挪。 */
+/* 数字固定宽度：位数从「0%」增加到「100%」时，右侧按钮不得移位。 */
 .ctx-meter-num {
   min-width: 30px;
   text-align: left;
@@ -529,7 +529,7 @@
 .ctx-ring-track {
   stroke: var(--border-default);
 }
-/* 环取 currentColor：过线变黄由 `.warn` 一处说了算，不在两个地方各写一遍色。 */
+/* 圆环取 currentColor：超过阈值变黄只由 `.warn` 一处决定，不在两处分别设置颜色。 */
 .ctx-ring-fill {
   stroke: currentColor;
   transition: stroke-dashoffset var(--t-fast) var(--ease);
@@ -538,7 +538,7 @@
 .send-btn {
   display: grid;
   place-items: center;
-  /* 同 `.icon-btn`：尺寸是它的定义，不参与工具栏挤压。 */
+  /* 同 `.icon-btn`：尺寸是其定义的一部分，不参与工具栏挤压。 */
   flex: none;
   width: 30px;
   height: 30px;
@@ -557,7 +557,7 @@
   transform: scale(0.94);
 }
 /* ── 上下文占用弹层 ──
-   向上开：输入区在窗口底部，向下会开到窗外。 */
+   向上弹出：输入区位于窗口底部，向下弹出会超出窗口。 */
 .ctx-wrap {
   position: relative;
   display: inline-flex;
@@ -567,8 +567,8 @@
   bottom: calc(100% + 6px);
   left: 0;
   z-index: 20;
-  /* 宽度按最长的那一行定（「工作区与状态 948.3k 94.8%」），不留富余空隙——
-     行内本来就短，多出来的宽度全变成名字和数字之间的空档。 */
+  /* 宽度按最长的一行确定（「工作区与状态 948.3k 94.8%」），不留多余空间：
+     各行本身较短，多出的宽度会全部成为名称与数字之间的空白。 */
   width: 240px;
   padding: var(--s-3);
   border: 1px solid var(--border-default);
@@ -589,8 +589,8 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-/* 堆叠条：段宽按占**窗口**的比例，不是占已用量的比例——
-   否则「剩余空间」永远画不出来，而它正是这条最该表达的量。 */
+/* 堆叠条：段宽按占上下文窗口的比例计算，不按占已用量的比例：
+   否则无法显示「剩余空间」，而它正是该条最需要表达的量。 */
 .ctx-stack {
   display: flex;
   margin: var(--s-2) 0;
@@ -651,10 +651,10 @@
 }
 
 /* ── 输入补全弹层 ──
-   贴在输入框上沿，向上开。`/` 命令、`#` 技能与 `@` 调用目标共用这一个面板。
+   贴在输入框上沿，向上弹出。`/` 命令、`#` 技能与 `@` 调用目标共用这一个面板。
 
-   桌面宽度封在 560px：候选每行只有名字、来源与一句说明，拉到输入框全宽会把
-   三者拆成相距很远的三座孤岛。窄屏则退回两侧各留一格，不产生横向滚动。 */
+   桌面宽度上限为 560px：候选每行只有名称、来源与一句说明，拉伸到输入框全宽会使
+   三者相距过远。窄屏时宽度不超过容器，不产生横向滚动。 */
 .composer-pop {
   position: absolute;
   bottom: 100%;
@@ -715,7 +715,7 @@
 }
 
 /* ── 附件 ──
-   已发送附件继续使用紧凑 chip；待发附件使用 `.pending` 修饰，挂在输入框内部。 */
+   已发送附件使用紧凑 chip；待发附件使用 `.pending` 修饰，位于输入框内部。 */
 .attach-row {
   display: flex;
   flex-wrap: wrap;
@@ -755,7 +755,7 @@
 .attach-row.pending .attach-chip.file {
   height: 32px;
 }
-/* 定尺格子。宽高由行内样式给（两处用不同边长），这里只管它不许被内容改形状。 */
+/* 固定尺寸的容器。宽高由行内样式指定（两处使用不同边长），此处只保证其形状不随内容改变。 */
 .attach-thumb {
   display: grid;
   place-items: center;
@@ -768,7 +768,7 @@
 .attach-thumb img {
   width: 100%;
   height: 100%;
-  /* cover 而不是 contain：格子是定尺的，contain 会在长图两侧留出空条。 */
+  /* 使用 cover 而不是 contain：容器尺寸固定，contain 会在长图两侧留出空白。 */
   object-fit: cover;
 }
 .attach-image {
@@ -799,7 +799,7 @@
 .attach-image-x:hover {
   background: var(--danger);
 }
-/* 已发送的那一列 chip 竖着排：缩略图大一圈，横着排一行放不下两张。 */
+/* 已发送的 chip 纵向排列：缩略图较大，一行无法横向容纳两张。 */
 .attach-row.sent .attach-chip {
   max-width: 260px;
 }
@@ -814,8 +814,8 @@
 }
 
 /* ── 空会话时的「运行于」──
-   三个 chip 各回答一个真问题：改哪个工作区、要不要逐条问、在哪条分支上。
-   它们决定了这一轮 agent 能碰什么，而以前用户在发第一句话之前完全看不到。 */
+   三个 chip 各回答一个实际问题：修改哪个工作区、是否逐条审批、位于哪个分支。
+   它们决定本轮 agent 可以访问的范围，必须在用户发送第一条消息之前可见。 */
 .run-context {
   display: flex;
   flex-wrap: wrap;
@@ -830,8 +830,8 @@
   margin-right: 2px;
 }
 
-/* 录音中：图标呼吸，不加红点也不改底色——一个持续闪烁的红点在输入区太吵，
-   而这个按钮本来就在用户眼皮底下。 */
+/* 录音中：图标呼吸动画，不加红点也不改底色：持续闪烁的红点在输入区过于醒目，
+   而该按钮本身就在用户视线范围内。 */
 .icon-btn.recording {
   color: var(--danger);
   animation: live-pulse 1.4s ease-in-out infinite;
@@ -842,13 +842,13 @@
   align-items: center;
   gap: 4px;
   min-width: 0;
-  /* 同 `.icon-btn`：里面装的就是一颗按钮，不参与工具栏挤压。 */
+  /* 同 `.icon-btn`：其中只有一个按钮，不参与工具栏挤压。 */
   flex: none;
 }
 .icon-btn.bad {
   color: var(--danger);
 }
-/* 失败原因就近显示。它只和这个按钮有关，塞进全局提示条会盖住用户正在打的字。 */
+/* 失败原因就近显示。它只与该按钮有关，放入全局提示条会遮挡用户正在输入的文字。 */
 .voice-error {
   max-width: 200px;
   color: var(--danger);
@@ -861,8 +861,8 @@
 /* ── 窄屏的输入区工具栏 ──
  *
  * 桌面上这一行有六个控件（附件 / 权限 / 上下文 / 模型 / 语音 / 发送），
- * 390px 下挤不开。**不删控件**——每一个都有真实去处；改成挤压可压缩的那部分：
- * 模型名截短、间距归零。模型名是这里唯一长度不可控的一格。
+ * 390px 宽度下无法容纳。不删除控件，因为每一个都有实际用途；改为压缩可压缩的部分：
+ * 截断模型名、间距归零。模型名是此处唯一长度不可控的项。
  */
 @media (max-width: 820px) {
   .composer-bar {
@@ -871,7 +871,7 @@
   .model-picker .mode-chip {
     max-width: 140px;
   }
-  /* 并排两栏在这个宽度下会伸出窗口。改成叠在一级面板正上方，左边沿对齐。 */
+  /* 两栏并排在该宽度下会超出窗口。改为叠放在一级面板正上方，左边沿对齐。 */
   .model-sub {
     left: 0;
     bottom: calc(100% + 4px);
@@ -883,19 +883,18 @@
 
 /* ── 分支选择器 ──
  *
- * **自带一整套规则，不与 `.model-menu` 共用选择器。** 共用过一次的代价是删掉其中
- * 一个浮层时把另一个的定位、边框、底色、投影一起带走——菜单退化成无样式文本，
- * 而 CSS 不会为此报任何错。 */
+ * 自带一整套规则，不与 `.model-menu` 共用选择器：共用时删除其中一个浮层会连带移除
+ * 另一个的定位、边框、底色与投影，菜单退化为无样式文本，且 CSS 不会报错。 */
 .branch-picker {
   position: relative;
 }
 /*
- * **往下弹，不往上弹。**
+ * 向下弹出，不向上弹出。
  *
- * 上弹（`bottom: 100%`）钉住的是下边沿，切换失败时那段 git 原话追加进来会把整个
- * 列表往上顶——用户刚点过的那一行跑到别的位置去了。往下弹钉住上边沿，追加什么
- * 都不会动到已经画出来的行（B9）。代价是盖住输入框上沿，而选分支的那一刻
- * 用户不在打字。
+ * 向上弹出（`bottom: 100%`）固定的是下边沿，切换失败时追加的 git 原文会把整个
+ * 列表向上推，用户刚点击的行随之移位。向下弹出固定上边沿，追加任何内容
+ * 都不会移动已绘制的行（B9）。代价是遮挡输入框上沿，而选择分支时
+ * 用户不在输入。
  */
 .branch-menu {
   position: absolute;
@@ -929,19 +928,19 @@
 .branch-item:hover:not(:disabled) {
   background: var(--bg-hover);
 }
-/* 当前那条：底色标出来 + 点不动。
+/* 当前分支：用底色标出，且不可点击。
  *
- * **不要用 `color: var(--accent)` 标它**——那两个 token 在明暗两套主题下是同一个
- * 色值（`tokens.css`），标了等于没标，三行长得一模一样。底色是这个仓库标
- * 「当前这一条」的既有写法（文件树的行、会话列表的行）。
- * 点不动是因为切到自己身上什么也不会发生，而一颗点了没反应的按钮会被读成
- * 「这次没生效」。 */
+ * 不要用 `color: var(--accent)` 标记：`--accent` 与 `--text-primary` 在明暗两套主题下
+ * 色值相同或几乎相同（`tokens.css`），标记无效，各行外观一致。底色是本仓库标记
+ * 当前项的既有写法（文件树的行、会话列表的行）。
+ * 不可点击是因为切换到当前分支没有任何效果，而点击后无反应的按钮会被理解为
+ * 操作未生效。 */
 .branch-item.active {
   background: var(--bg-active);
   cursor: default;
 }
-/* 一句话，挤不下就折行。在列表**下面**，不在上面：追加在上面会把列表整体推下去。
-   `pre-wrap` 留着是为了服务端认不出的那一档——那时贴回来的是 git 的多行原文。 */
+/* 一句话，容纳不下时折行。位于列表下方而不是上方：追加在上方会把列表整体下推。
+   保留 `pre-wrap` 是为了服务端无法识别的错误：此时返回的是 git 的多行原文。 */
 .branch-error {
   padding: var(--s-2) var(--s-3);
   color: var(--danger);
@@ -951,16 +950,16 @@
   word-break: break-word;
 }
 
-/* 拖着文件悬在输入区上。**只给边框，不加文案**——「拖到这里」是解释性文本，
-   边框已经说完了。 */
+/* 拖动文件悬停在输入区上方。只显示边框，不加文案：「拖到这里」是解释性文本，
+   边框已经表达了这一点。 */
 .composer-wrap.drag-over .composer-body {
   border-color: var(--accent);
 }
 
 /* ── 面板放大时的底部停靠 ──
  *
- * 放在全部输入区基础规则之后：这一段只覆盖放大态。如果写在文件开头，后面的
- * `.composer` / `.run-status` 会形成“低特异性规则写在高特异性之后”的假顺序。 */
+ * 放在全部输入区基础规则之后：本段只覆盖放大态。若写在文件开头，后续的
+ * `.composer` / `.run-status` 会形成「低特异性规则写在高特异性规则之后」的错误顺序。 */
 
 /* 普通会话里没有第二种输入形态；底部触发条只属于宽屏面板放大态。 */
 .composer-reveal {
@@ -969,8 +968,8 @@
 
 @media (min-width: 821px) {
   /*
-   * 面板放大后输入框默认不遮文件正文，只在底部留一枚 72 × 24 的命中区。
-   * 实际画出来的是中间那根 36px 细线：够发现，但不会读成又一颗工具按钮。
+   * 面板放大后输入框默认不遮挡文件正文，只在底部保留一个 72 × 24 的命中区。
+   * 实际绘制的是中间一条 36px 细线：足以被发现，又不会被误认为另一个工具按钮。
    */
   .app.panel-max .composer-wrap {
     padding-bottom: calc(28px + var(--safe-bottom));
@@ -1011,9 +1010,9 @@
   }
 
   /*
-   * 运行位置、整轮状态和输入卡共用停靠状态，补全菜单随输入卡显示。
-   * 收起时保留布局高度但不接指针，面板下方的文字仍能选中；展开只做 10px 位移，
-   * 不缩放文字，避免 CodeMirror 旁边出现一瞬间的模糊字体。
+   * 运行位置、整轮状态与输入卡共用停靠状态，补全菜单随输入卡显示。
+   * 收起时保留布局高度但不接收指针事件，面板下方的文字仍可选中；展开只做 10px 位移，
+   * 不缩放文字，避免 CodeMirror 旁边出现短暂的模糊字体。
    */
   .app.panel-max .composer-wrap > .run-context,
   .app.panel-max .composer-wrap > .run-status,
@@ -1024,8 +1023,8 @@
     pointer-events: none;
   }
   /*
-   * 放大布局先无动画落到收起态，再由组件在下一帧加 ready。这样模式切换不会把
-   * 普通输入框的可见状态过渡成一次闪烁，后续悬浮开合仍保留完整动效。
+   * 放大布局先无动画地进入收起态，再由组件在下一帧添加 ready。这样模式切换不会把
+   * 普通输入框的可见状态过渡为一次闪烁，此后悬停展开与收起仍保留完整动效。
    */
   .app.panel-max .composer-wrap.panel-dock-ready > .run-context,
   .app.panel-max .composer-wrap.panel-dock-ready > .run-status,
@@ -1051,14 +1050,14 @@
   .app.panel-max .composer-wrap.panel-dock-open > .composer {
     pointer-events: auto;
   }
-  /* 状态条本身仍不截整行指针，只有里面那枚 chip 可点；沿用既有命中边界。 */
+  /* 状态条本身仍不拦截整行的指针事件，只有其中的 chip 可点击；沿用既有命中边界。 */
   .app.panel-max .composer-wrap.panel-dock-open > .run-status {
     pointer-events: none;
   }
   .app.panel-max .composer-wrap.panel-dock-open .changes-chip {
     pointer-events: auto;
   }
-  /* 悬在文件正文上时比普通上下布局多一档阴影，边界看得清但不加新的描边。 */
+  /* 悬浮在文件正文上方时比普通上下布局多一档阴影，边界清晰且不增加新的描边。 */
   .app.panel-max .composer-wrap.panel-dock-open .composer-body {
     box-shadow: var(--shadow-md);
   }

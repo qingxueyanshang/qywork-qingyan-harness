@@ -15,12 +15,12 @@ import { Transcript } from './components/Transcript.tsx'
 import { localHtmlUrl, workspaceFile } from './lib/links.ts'
 import { observeAppUpdate } from './lib/store/app-update.ts'
 
-// 懒加载：这个模块带着 CodeMirror 核心，约 300 kB。
-// 只想聊天的用户不该为文件预览付首屏成本。
+// 懒加载：该模块包含 CodeMirror 核心，约 300 kB。
+// 只使用聊天功能的用户不应为文件预览承担首屏加载成本。
 const SidePanel = lazy(() => import('./components/SidePanel.tsx'))
 
-// 设置弹窗只在真的打开设置时才下载。它下面还挂着十个类目，其中七个各自
-// 又是懒加载的——见 SettingsDialog 里的说明。
+// 设置弹窗仅在打开设置时下载。其下包含十个类目，其中七个各自懒加载，
+// 见 SettingsDialog 中的说明。
 const SettingsDialog = lazy(() =>
   import('./components/settings/SettingsDialog.tsx').then((m) => ({ default: m.SettingsDialog })),
 )
@@ -50,17 +50,17 @@ import {
 } from './lib/store/index.ts'
 
 /**
- * 正文里的链接落到右侧面板：有内置浏览器就开一页真的网页，否则开网页预览；
- * 工作区里的其他文件（图片、文档等）开在文件预览里。
+ * 正文中的链接在右侧面板打开：有内置浏览器时打开真实网页，否则打开网页预览；
+ * 工作区中的其他文件（图片、文档等）在文件预览中打开。
  *
- * **挂在根上，不在每个渲染点各接一次**：应用里的 `<a>` 全部由 markdown 渲染产出
+ * **注册在根节点上，不在每个渲染位置分别绑定**：应用中的 `<a>` 全部由 markdown 渲染产出
  * （模型正文、配置提醒），没有手写的锚点。
  *
- * 桌面外壳里 `target="_blank"` 什么也不会发生——WebView 没有开新窗口这回事，
- * 点了没反应。本地 HTML 链接按工作区解析后交给同一个浏览器入口。
+ * 桌面外壳中 `target="_blank"` 不产生任何效果：WebView 不支持打开新窗口。
+ * 本地 HTML 链接按工作区解析后交给同一个浏览器入口。
  *
- * **网页预览那条路上外站不一定框得进来**：`X-Frame-Options` / `frame-ancestors`
- * 拒绝时那一页是空白，而跨源 iframe 的加载结果读不到，这一侧看不出被拒。
+ * **网页预览无法保证嵌入外部站点**：`X-Frame-Options` / `frame-ancestors`
+ * 拒绝时该页显示空白，而跨源 iframe 的加载结果无法读取，本侧无法判断是否被拒。
  * 内置浏览器不受此限，它是真实的浏览器页。
  */
 export function openLink(e: MouseEvent): void {
@@ -71,17 +71,17 @@ export function openLink(e: MouseEvent): void {
     openLinkInPanel(href)
     return
   }
-  // 工作区里的其他文件在右侧文件预览里打开，与工具产物的路径同一个入口。
+  // 工作区中的其他文件在右侧文件预览中打开，与工具产物路径使用同一个入口。
   const file = workspaceFile(href, workspace()?.root ?? '')
   if (!file) return
   e.preventDefault()
   openFileInPanel(file)
 }
 
-/** 复制回执停留的时长。短于这个数看不清图标换过，长了会跨到下一次点击。 */
+/** 完成状态的停留时长。短于此值时图标切换难以察觉，过长则会延续到下一次点击。 */
 const COPY_DONE_MS = 1200
 
-/** 连接恢复后的全量入口。顺序是协议的一部分：先恢复项目，再按该项目拉会话。 */
+/** 连接恢复后的完整恢复入口。顺序属于协议约定：先恢复项目，再按该项目获取会话。 */
 export async function restoreWorkspaceSession(): Promise<void> {
   const ws = await loadWorkspace()
   setWorkspace(ws)
@@ -91,10 +91,10 @@ export async function restoreWorkspaceSession(): Promise<void> {
 /**
  * 代码块右上角的复制按钮。
  *
- * 挂在根上，理由同 openLink：按钮由 markdown 渲染产出，正文与配置提醒两处的 HTML
- * 都是整段替换的，逐处接等于每次重渲染后再接一遍。
+ * 注册在根节点上，理由同 openLink：按钮由 markdown 渲染产出，正文与配置提醒两处的 HTML
+ * 均为整段替换，逐处绑定需要在每次重新渲染后重新绑定。
  *
- * 取 textContent 不取 innerHTML——高亮把代码切成了一串 span。
+ * 取 textContent 而不取 innerHTML：高亮会把代码拆分为多个 span。
  */
 export function copyCode(e: MouseEvent): void {
   const btn = (e.target as Element).closest('.code-copy')
@@ -107,7 +107,7 @@ export function copyCode(e: MouseEvent): void {
 }
 
 export function App() {
-  // 未读、加载中和失败都不能证明会话为空，保持最近一次已确认的布局。
+  // 尚未读取、加载中与加载失败都不能证明会话为空，保持最近一次已确认的布局。
   const emptyLayout = createMemo((previous: boolean) => {
     if (!state.activeConversation) return true
     const current = view()
@@ -115,7 +115,7 @@ export function App() {
     if (current.history.loading !== null || current.history.error !== null) return previous
     return true
   }, false)
-  // 抽屉只在窄屏出现；宽屏侧栏常驻，这个状态不参与布局。
+  // 抽屉只在窄屏出现；宽屏下侧栏常驻，该状态不参与布局。
   const [drawer, setDrawer] = createSignal(false)
   const [exportState, setExportState] = createSignal<'idle' | 'working' | 'done'>('idle')
   let exportReceipt: ReturnType<typeof setTimeout> | undefined
@@ -145,15 +145,15 @@ export function App() {
   })
 
   /*
-   * 每次连接真正可用时，从服务端恢复当前项目与会话。
+   * 每次连接进入可用状态时，从服务端恢复当前项目与会话。
    *
-   * 不能把这两次 REST 请求只挂在 `onMount`：刷新恰好撞上 sidecar 重启时，首发会
-   * 失败；即使 WebSocket 随后成功重连，页面仍停在空的「新对话」。这里认
-   * `reconnecting -> ready` 的状态翻转，因此首次握手与异常恢复走的是同一条路径。
+   * 不能只在 `onMount` 中发起这两次 REST 请求：刷新恰好遇到 sidecar 重启时，首次请求会
+   * 失败；即使 WebSocket 随后成功重连，页面仍停留在空的「新对话」。此处以
+   * `reconnecting -> ready` 的状态变化为触发条件，因此首次握手与异常恢复使用同一条路径。
    *
-   * 先取项目再取会话。`client.api` 会按当前项目自动补 `ws=`；顺序反过来时，重连后
-   * 的第一份会话可能仍按上一个项目查询。失败留给下一次连接翻转重试，不在这里另造
-   * 一套定时器——连接是否可用只有 WebSocket 那一份权威。
+   * 先获取项目再获取会话。`client.api` 会按当前项目自动附加 `ws=`；顺序相反时，重连后
+   * 的第一份会话可能仍按上一个项目查询。失败由下一次连接状态变化重试，不在此处另建
+   * 一套定时器：连接是否可用只以 WebSocket 为唯一权威。
    */
   createEffect((wasReady: boolean) => {
     const ready = state.connection === 'ready'
@@ -174,14 +174,14 @@ export function App() {
     onCleanup(stopUpdates)
 
     /*
-     * 空闲时先把面板那块代码取回来。
+     * 空闲时预先加载面板模块的代码。
      *
-     * 它是首屏之外最可能被点开的一块，而**点开它的时机主线程最忙**——用户通常是
-     * 在模型正输出时想看文件或改动，那时主线程被 markdown 重解析占着，
-     * 这一次动态导入会从几十毫秒拉长到肉眼可见。空闲时取回来就没有这一下。
+     * 它是首屏之外最可能被打开的模块，而打开它时主线程最繁忙：用户通常
+     * 在模型输出期间查看文件或改动，此时主线程被 markdown 重新解析占用，
+     * 这一次动态导入会从几十毫秒延长到可察觉的程度。空闲时预先加载可消除这段延迟。
      *
-     * 用 `requestIdleCallback`，没有就退到定时器：这只是提前量，早晚都行，
-     * 唯独不能和首屏抢。
+     * 使用 `requestIdleCallback`，不支持时回退到定时器：预加载的时机早晚均可，
+     * 只是不能与首屏渲染争用主线程。
      */
     const idle =
       window.requestIdleCallback?.bind(window) ?? ((cb: () => void) => setTimeout(cb, 2000))
@@ -197,11 +197,11 @@ export function App() {
         'panel-max': panelMaximized(),
         'sidebar-collapsed': sidebarCollapsed(),
       }}
-      // 面板宽度的真源是 `panelWidth`（用户拖出来的，记在 localStorage）。
-      // 写成 `.app` 上的行内变量：网格那一列本来就是 `var(--panel-w)`，
-      // tokens.css 里那条只当默认值，布局规则一行不用改。
-      // 这里**不夹**：窗口放不下由网格自己收（`.app.with-panel` 的 minmax），
-      // 在这儿再夹一次就是把布局知识抄进 JS，而它只在写的那一刻是对的。
+      // 面板宽度的真源是 `panelWidth`（由用户拖动设定，保存在 localStorage）。
+      // 写成 `.app` 上的行内变量：网格对应列本身就是 `var(--panel-w)`，
+      // tokens.css 中的定义只作为默认值，布局规则无需修改。
+      // 此处不限制取值范围：窗口宽度不足时由网格自行收缩（`.app.with-panel` 的 minmax），
+      // 在此再限制一次等于把布局规则复制进 JS，布局调整后两者会不一致。
       style={{ '--panel-w': `${panelWidth()}px`, '--panel-min-w': `${PANEL_MIN}px` }}
       on:click={(e) => {
         openLink(e)
@@ -218,9 +218,9 @@ export function App() {
         <Sidebar onClose={() => setDrawer(false)} />
       </aside>
 
-      {/* 窄屏下点遮罩关抽屉。宽屏时它被 CSS 隐藏，不会挡住内容。
-          用 button 而不是 div：只有 onClick 的 div 键盘用户根本够不着，
-          而「关闭」是这里唯一的操作，button 的语义正好对上。 */}
+      {/* 窄屏下点击遮罩关闭抽屉。宽屏时遮罩由 CSS 隐藏，不遮挡内容。
+          使用 button 而不是 div：只有 onClick 的 div 无法通过键盘访问，
+          而「关闭」是此处唯一的操作，与 button 的语义一致。 */}
       <button
         class="drawer-scrim"
         type="button"
@@ -228,13 +228,13 @@ export function App() {
         onClick={() => setDrawer(false)}
       />
 
-      {/* 顶栏是 .app 网格的第一行，横跨会话区与右侧面板——它不属于会话区。
-          放在 .main 里的后果是：一开右侧面板，顶栏跟着缩短，窗口按钮被挤到
-          窗口中间，右上角让给了面板的标签页。窗口按钮必须钉在窗口右上角。
+      {/* 顶栏是 .app 网格的第一行，横跨会话区与右侧面板，不属于会话区。
+          放在 .main 中时，打开右侧面板会使顶栏随之缩短，窗口按钮被挤到
+          窗口中部，右上角被面板的标签页占据。窗口按钮必须固定在窗口右上角。
 
-          整条是拖拽区。Tauri 判定的是**事件目标身上有没有这个属性**，
-          所以里面的按钮（都没有它）照常可点，不需要额外「取消拖拽」的声明。
-          双击最大化由拖拽区自带，不用自己接。 */}
+          整条顶栏是拖拽区。Tauri 判定的是事件目标自身是否带有该属性，
+          因此其中的按钮（均不带该属性）可正常点击，无需额外声明「取消拖拽」。
+          双击最大化由拖拽区自带，无需另行实现。 */}
       <header class="topbar" data-tauri-drag-region>
         <button
           class="icon-btn drawer-toggle"
@@ -244,8 +244,8 @@ export function App() {
         >
           <IconChevron size={16} dir="right" />
         </button>
-        {/* 左栏收起之后它自己身上的开关也跟着不在了，展开的入口只能长在顶栏。
-            只在收起时出现——左栏已经展开时再放一个「展开」按钮没有作用。 */}
+        {/* 左栏收起后其自身的开关随之隐藏，展开入口只能放在顶栏。
+            仅在收起时显示：左栏已展开时「展开」按钮没有作用。 */}
         <Show when={sidebarCollapsed()}>
           <button
             class="icon-btn sidebar-expand"
@@ -272,10 +272,10 @@ export function App() {
               <IconCheck size={16} />
             </Show>
           </button>
-          {/* 右侧面板只留**一个**开关。
-              两个按钮各 toggle 一个视图、面板内部再放三个 tab，是两套并列且不等价的
-              机制：顶栏点不出「协作」，tab 点不掉面板。
-              职责分开：顶栏管开关，tab 管看哪个视图。 */}
+          {/* 右侧面板只保留一个开关。
+              两个按钮各切换一个视图、面板内部再放三个 tab，构成两套并列且不等价的
+              机制：顶栏无法打开「协作」，tab 无法关闭面板。
+              职责划分：顶栏负责开关，tab 负责选择视图。 */}
           <button
             class="icon-btn"
             type="button"
@@ -291,9 +291,9 @@ export function App() {
       </header>
 
       <main class="main" classList={{ empty: emptyLayout() }}>
-        {/* 面板放大时正文整块卸载，不是用 CSS 藏起来：`display: none` 会把
-            滚动容器的 scrollTop 清成 0，还原时用户落在几百条之前的开头，而
-            重新挂载会走一遍「贴底」的初始态，还原就停在最新那条上。 */}
+        {/* 面板放大时正文整块卸载，而不是用 CSS 隐藏：`display: none` 会把
+            滚动容器的 scrollTop 重置为 0，还原时位置回到几百条之前的开头；而
+            重新挂载会执行「滚动到底部」的初始化，还原后停在最新一条。 */}
         <Show when={!panelMaximized()}>
           <Transcript />
         </Show>
@@ -301,15 +301,15 @@ export function App() {
       </main>
 
       {/*
-       * **每个懒加载都要自己的 `Suspense`。**
+       * 每个懒加载组件都需要自己的 `Suspense`。
        *
-       * 不给边界的话，挂起会逐层冒到根：打开面板那一下不只是面板空着，整棵树
-       * 都被挂起，正文跟着一起消失，等 chunk 到了才恢复。平时几十毫秒看不出来，
-       * 流式输出时主线程被 markdown 重解析占满，这一下就拉长到肉眼可见。
+       * 没有边界时，挂起会逐层传递到根：打开面板时不只面板为空，整棵组件树
+       * 都被挂起，正文随之消失，chunk 到达后才恢复。平时几十毫秒难以察觉，
+       * 流式输出时主线程被 markdown 重新解析占满，这段空白会延长到可察觉的程度。
        *
-       * fallback 是一个**同样尺寸的空壳**，不是转圈也不是文案：网格已经按
-       * `with-panel` 给这一列留好了位置，占位块只要把那块位置占住，
-       * 否则会看到栏宽先塌一下再弹回来。
+       * fallback 是同样尺寸的空占位元素，不是加载动画也不是文案：网格已经按
+       * `with-panel` 为该列预留位置，占位元素只需占住该位置，
+       * 否则栏宽会先收缩再恢复。
        */}
       <Show when={sidePanel()}>
         <Suspense fallback={<aside class="side-panel" />}>
@@ -317,7 +317,7 @@ export function App() {
         </Suspense>
       </Show>
       <Tooltip />
-      {/* 设置是弹窗：改一格就走，不必把会话整个换掉。 */}
+      {/* 设置以弹窗形式打开：修改一项后即可关闭，无需替换整个会话视图。 */}
       <Show when={settingsPage()}>
         <Suspense>
           <SettingsDialog />

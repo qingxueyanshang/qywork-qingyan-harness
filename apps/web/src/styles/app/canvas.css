@@ -1,6 +1,6 @@
 /*
  * 画布页（`components/canvas/`）。颜色、圆角、阴影、动效全部取自 tokens.css；
- * 彩色只有银河色一种，只表示「正在生成」（读数条 `.run-galaxy` 与会话工作流图的同一组色站）。
+ * 只有一种彩色渐变，仅表示「正在生成」（与读数条 `.run-galaxy`、会话工作流图使用同一组色标）。
  * 每个浮层自带一条完整规则，不与别的浮层共用选择器（B8）。
  */
 
@@ -11,7 +11,7 @@
   height: 100%;
   /* 不用 hidden：hidden 的容器仍能被滚动（元素获得焦点、scrollIntoView），滚动后工具条与缩放条整体错位。 */
   overflow: clip;
-  /* 画布里的层级只在画布区内比较：不自成层叠上下文时，工具条（8）、生成面板（7）会盖住会话输入框里的菜单。 */
+  /* 画布中的层级只在画布区内比较：不建立独立层叠上下文时，工具条（8）、生成面板（7）会遮挡会话输入框中的菜单。 */
   isolation: isolate;
   background-color: var(--bg-sunken);
   background-image: radial-gradient(circle, var(--border-subtle) 1px, transparent 1.3px);
@@ -19,7 +19,7 @@
   background-position: var(--px, 0) var(--py, 0);
   touch-action: none;
   outline: none;
-  /* 拖动、框选时不选中文字；提示词与输入框在下面单独放开。 */
+  /* 拖动与框选时禁止选中文字；提示词与输入框在下方的规则中单独允许。 */
   user-select: none;
   -webkit-user-select: none;
 }
@@ -28,7 +28,7 @@
   user-select: text;
   -webkit-user-select: text;
 }
-/* 桌面外壳里系统文件拖到画布区上方时。 */
+/* 桌面外壳中系统文件拖到画布区上方时的样式。 */
 .canvas-stage.drop-over {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
@@ -55,7 +55,7 @@
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
-/* 选中节点的连线：与生成中的线同一套梯度（内联描边），实线不流动，以示区别。 */
+/* 选中节点的连线：与生成中的连线使用同一套渐变（内联描边），实线不流动，以示区别。 */
 .canvas-edges path.hot {
   stroke-width: 1.5;
 }
@@ -65,19 +65,19 @@
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
-/* 选中用浅灰细线，不用墨色：墨色粗线在画布上压过内容本身。 */
+/* 选中使用浅灰细线，不使用墨色：墨色粗线在画布上比内容本身更醒目。 */
 .canvas-edges path.selected {
   stroke: var(--text-tertiary);
   stroke-width: 1.5;
 }
-/* 连线的命中区：透明、比线宽得多，点得中。 */
+/* 连线的命中区：透明，宽度远大于线宽，便于点击。 */
 .canvas-edges path.canvas-edge-hit {
   stroke: transparent;
   stroke-width: 12;
   pointer-events: stroke;
   cursor: pointer;
 }
-/* 从连接点拖出、还没连上的线。 */
+/* 从连接点拖出、尚未连接的线。 */
 .canvas-edges path.canvas-edge-draft {
   stroke: var(--text-tertiary);
   stroke-width: 1.5;
@@ -108,7 +108,7 @@
   height: 0;
   pointer-events: none;
 }
-/* 流向正在生成的卡：银河梯度 + 虚线流动，节奏同会话工作流图。 */
+/* 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变 + 虚线流动，节奏与会话工作流图相同。 */
 .canvas-edges path.live {
   stroke-width: 1.5;
   stroke-dasharray: 4 4;
@@ -333,7 +333,7 @@
   color: #fff;
   background: rgba(0, 0, 0, 0.5);
 }
-/* 选中的视频节点底部的播放控件。尺寸随画布缩放：按节点的 169 高定，不按屏幕像素。 */
+/* 选中的视频节点底部的播放控件。尺寸随画布缩放：按节点高度 169 确定，不按屏幕像素。 */
 .canvas-player {
   position: absolute;
   left: 0;
@@ -387,7 +387,7 @@
   border-radius: 50%;
   background: #fff;
 }
-/* 竖版视频的节点窄：时间让给进度条。 */
+/* 竖版视频的节点较窄：时间显示的位置让给进度条。 */
 @container (max-width: 160px) {
   .canvas-player > span {
     display: none;
@@ -457,13 +457,13 @@
   outline: calc(1px / var(--z, 1)) solid var(--text-tertiary);
   outline-offset: calc(3px / var(--z, 1));
 }
-/* 拖连线时指着的可连目标。 */
+/* 拖动连线时指向的可连接目标。 */
 .canvas-node.link-target .canvas-media {
   outline: calc(1px / var(--z, 1)) dashed var(--text-tertiary);
   outline-offset: calc(3px / var(--z, 1));
 }
 
-/* 生成卡的空位与状态：底是 --bg-inset，里面只放状态本身。 */
+/* 生成卡的空位与状态：底色为 --bg-inset，内部只放状态。 */
 .canvas-slot {
   display: flex;
   flex-direction: column;
@@ -483,7 +483,7 @@
   text-align: center;
   line-height: 1.5;
 }
-/* 加载图与计时按屏幕尺寸画：缩放不低于 50% 时恒为 8px 一格，更小时随节点一起缩。 */
+/* 加载图与计时按屏幕尺寸绘制：缩放不低于 50% 时每格恒为 8px，更小时随节点一起缩小。 */
 .canvas-live {
   display: grid;
   grid-template-columns: 56px;
@@ -495,7 +495,7 @@
   gap: 10px;
   transform: scale(min(calc(1 / var(--z, 1)), 2));
 }
-/* 阶段与计时始终各占一行，状态文字变化时不挤动加载动画。 */
+/* 阶段与计时始终各占一行，状态文字变化时不移动加载动画。 */
 .canvas-live .phase {
   font-size: var(--fs-xs);
   line-height: 14px;
@@ -509,9 +509,9 @@
 }
 
 /*
- * 「生成中」：五个小方块排成一条蛇，沿 5×5 方框的外圈顺时针跳格，方框本身不画。
- * 格宽 8、缝 4 与读数条相同；由头到尾取同一组色站由深到浅，星点由密到疏。
- * 16 个位置 × 110ms = 1.76s 一圈；`step-end` 让每一步是跳格。
+ * 「生成中」：五个小方块首尾相接，沿 5×5 方框的外圈顺时针逐格跳动，方框本身不绘制。
+ * 格宽 8、间隙 4 与读数条相同；由头到尾取同一组色标，颜色由深到浅，星点由密到疏。
+ * 16 个位置 × 110ms = 每圈 1.76s；`step-end` 使每一步都是跳格。
  */
 .canvas-snake {
   position: relative;
@@ -710,8 +710,8 @@
   color: var(--text-primary);
 }
 
-/* ── 时间线：节点里按画布单位定尺寸（随缩放），全屏里按屏幕像素。框高由 core 定（空 120、有片段 360），
-   这里的工具行 34 + 刻度 18 + 轨道 60 + 下边距 8 必须等于 120，多出的高度给预览。 ── */
+/* ── 时间线：节点内按画布单位确定尺寸（随缩放），全屏时按屏幕像素。框高由 core 确定（空 120、有片段 360），
+   此处的工具行 34 + 刻度 18 + 轨道 60 + 下边距 8 必须等于 120，多出的高度分配给预览。 ── */
 .canvas-tl {
   position: absolute;
   inset: 0;
@@ -780,7 +780,7 @@
   width: 120px;
   accent-color: var(--text-secondary);
 }
-/* 预览区只负责留出位置；黑底画框按成片比例（`--tl-ratio`，第一段的宽高比）在其中等比放到最大并居中。 */
+/* 预览区只负责预留位置；黑底画框按成片比例（`--tl-ratio`，第一段的宽高比）在其中等比放大至最大并居中。 */
 .canvas-tl-view {
   flex: 1;
   min-height: 0;
@@ -987,7 +987,7 @@
   background: var(--text-primary);
 }
 
-/* 全屏编辑：盖住窗口标题栏以下的整个应用，菜单（60）与对话框在它之上。 */
+/* 全屏编辑：覆盖窗口标题栏以下的整个应用，菜单（60）与对话框位于其上。 */
 .canvas-tl-layer {
   position: fixed;
   top: calc(var(--header-h) + var(--safe-top));
@@ -1055,7 +1055,7 @@
   inset: 8px 0;
 }
 
-/* ── 取帧条：占选中工具条的位置，屏幕像素定尺寸 ── */
+/* ── 取帧条：占用选中工具条的位置，按屏幕像素确定尺寸 ── */
 .canvas-frame-bar {
   position: absolute;
   z-index: 6;
@@ -1179,7 +1179,7 @@
 .canvas-menu > button[role="menuitemradio"] > span {
   flex: 1;
 }
-/* 必须定位：取不到图时的占位图标（`.canvas-bitmap-failed`）按最近的定位祖先铺满，缺了会落到整个浮层中央。 */
+/* 必须设置定位：无法获取图片时的占位图标（`.canvas-bitmap-failed`）按最近的定位祖先铺满，缺少定位时会显示在整个浮层中央。 */
 .canvas-menu-thumb {
   position: relative;
   width: 28px;
@@ -1234,7 +1234,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 左侧工具条：平时只露图标，悬停、键盘焦点或打开选择框时展开名字。两档宽度都是定值，展开不移动图标。 */
+/* 左侧工具条：平时只显示图标，悬停、键盘聚焦或打开选择框时展开名称。两档宽度均为定值，展开时图标不移动。 */
 .canvas-rail {
   position: absolute;
   left: 12px;
@@ -1299,7 +1299,7 @@
   background: var(--border-subtle);
 }
 
-/* 工作区文件选择框：贴在展开后的工具条右侧，尺寸固定，结果在框内滚动。外观同生成面板的选素材块。
+/* 工作区文件选择框：贴在展开后的工具条右侧，尺寸固定，结果在框内滚动。外观同生成面板的选素材区域。
  * 层级高于生成面板（7）：两者在画布左侧会重叠。 */
 .canvas-picker {
   position: absolute;
@@ -1358,7 +1358,7 @@
   font-size: var(--fs-sm);
 }
 
-/* ── 生成面板：贴在选中的生成卡下方，按屏幕尺寸画，外观即会话输入框。两档高度都是固定值（B9）。 ── */
+/* ── 生成面板：贴在选中的生成卡下方，按屏幕尺寸绘制，外观与会话输入框相同。两档高度都是固定值（B9）。 ── */
 .canvas-panel {
   position: absolute;
   z-index: 7;
@@ -1477,7 +1477,7 @@ button.canvas-input:hover {
   color: var(--text-tertiary);
 }
 /*
- * 不要改回 inline-flex：它的基线取第一个子项，缩略图在前时是缩略图的下沿，有图与无图的标签高低不一。
+ * 不要改为 inline-flex：其基线取第一个子项，缩略图在前时基线是缩略图的下沿，有图与无图的标签高度不一致。
  * inline-block 的基线是框内文字的基线，与正文的基线对齐。
  */
 .canvas-chip {
@@ -1536,7 +1536,7 @@ button.canvas-input:hover {
   flex: none;
   padding: 4px 8px 8px;
 }
-/* 画布区窄时模型与参数两格截短，花费与发送键保持原宽。 */
+/* 画布区较窄时模型与参数两项截断，花费与发送键保持原宽。 */
 .canvas-bar > .mode-chip {
   flex: 0 1 auto;
   min-width: 0;
@@ -1563,7 +1563,7 @@ button.canvas-input:hover {
   white-space: nowrap;
 }
 
-/* 先按内容收紧；挂载后锁定实际高度，更多设置在框内滚动。 */
+/* 先按内容确定高度；挂载后锁定实际高度，更多设置在框内滚动。 */
 .canvas-params-panel {
   position: fixed;
   z-index: 60;
@@ -1637,7 +1637,7 @@ button.canvas-input:hover {
   flex: 1;
   width: 80px;
 }
-/* 选中只有一层：描边换成墨色、文字换成主色，不加底色，外面也不套底色容器。 */
+/* 选中态只有一层：描边改为墨色、文字改为主色，不加底色，外层也不加底色容器。 */
 .canvas-seg {
   display: grid;
   grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr));
@@ -1704,7 +1704,7 @@ button.canvas-input:hover {
   color: var(--text-primary);
 }
 
-/* 生成面板底栏的模型与模式菜单：选中项右侧打勾，不加底色；底色只给悬停。 */
+/* 生成面板底栏的模型与模式菜单：选中项右侧打勾，不加底色；底色只用于悬停。 */
 .canvas-bar-menu {
   position: fixed;
   z-index: 60;
@@ -1740,7 +1740,7 @@ button.canvas-input:hover {
   flex: none;
 }
 
-/* 右键菜单：左上角落在指针处；项右侧是对应的快捷键。外观同底栏菜单，自己一条完整规则。 */
+/* 右键菜单：左上角位于指针处；菜单项右侧是对应的快捷键。外观同底栏菜单，自带一条完整规则。 */
 .canvas-context-menu {
   position: fixed;
   z-index: 60;
@@ -1770,7 +1770,7 @@ button.canvas-input:hover {
 .canvas-context-menu > button:hover {
   background: var(--bg-hover);
 }
-/* 快捷键只写字：全局 `kbd` 的键帽描边与底色在菜单里是多一层框。 */
+/* 快捷键只显示文字：全局 `kbd` 的键帽描边与底色在菜单中会多出一层边框。 */
 .canvas-context-menu kbd {
   padding: 0;
   border: 0;

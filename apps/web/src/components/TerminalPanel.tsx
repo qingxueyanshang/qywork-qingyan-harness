@@ -22,40 +22,40 @@ import {
 } from '../lib/terminal-behavior.ts'
 
 /**
- * 终端页。渲染在 xterm.js 里，进程在 Rust 侧的 PTY 里（见 `src-tauri/src/terminal.rs`）。
+ * 终端页。由 xterm.js 渲染，进程运行在 Rust 侧的 PTY 中（见 `src-tauri/src/terminal.rs`）。
  *
- * **实例挂在模块上，按页签 id 存。** 切去看文件、甚至把整块面板收起来，命令都还得在跑、滚动历史还得
- * 在。而这两件事都会把组件整个卸载——所以 xterm 实例和它的宿主 div 存在模块级的 `panes` 里，组件
- * 挂载时把宿主搬进来、卸载时搬出去。**不要改成每次挂载新建一个 Terminal**：新实例没有历史，用户看
- * 到的是一块空白，而 PTY 那边还在跑。
+ * **实例保存在模块级，按页签 id 存储。** 切换到文件页乃至收起整个面板时，命令必须继续运行、滚动历史
+ * 必须保留。而这两种操作都会卸载组件，因此 xterm 实例及其宿主 div 保存在模块级的 `panes` 中，组件
+ * 挂载时移入宿主、卸载时移出。**不要改为每次挂载新建 Terminal**：新实例没有历史，显示为空白，
+ * 而 PTY 仍在运行。
  *
- * 因此**卸载不销毁**。真正的销毁只发生在这一页被关掉时，入口是 store 的
- * `holdPanelTab`（页签上那颗 × 走它），见 `disposePane`。换工作区只是把这一页
- * 从当前那份页签里派生掉，PTY 与实例都留着。
+ * 因此**卸载不销毁实例**。销毁只在关闭该页时发生，入口是 store 的
+ * `holdPanelTab`（页签上的 × 经由它），见 `disposePane`。切换工作区只是使该页
+ * 不再出现在当前页签列表中，PTY 与实例均保留。
  */
 
-/** Shift + 滚轮查看历史时一格翻三行。 */
+/** Shift + 滚轮查看历史时每格滚动三行。 */
 const WHEEL_LINES = 3
 
 interface Pane {
   term: Terminal
   fit: FitAddon
-  /** 常驻宿主。组件卸载只是把它摘下来，xterm 的 DOM 与滚动历史都留在上面。 */
+  /** 常驻宿主元素。组件卸载时只将其从文档中移除，xterm 的 DOM 与滚动历史保留在其中。 */
   host: HTMLDivElement
-  /** PTY 会话可用时为 `true`；退出或连接断开后回 `false`。 */
+  /** PTY 会话可用时为 `true`；退出或连接断开后变为 `false`。 */
   started: boolean
   /** `null` 表示仍在运行；非空值区分进程退出与 PTY 连接断开。 */
   end: Accessor<TerminalEnd | null>
   setEnd: Setter<TerminalEnd | null>
 }
 
-/** 开着的终端，按页签 id 存。id 就是传给 Rust 的会话 id。 */
+/** 已打开的终端，按页签 id 存储。该 id 即传给 Rust 的会话 id。 */
 const panes = new Map<string, Pane>()
 
 /**
- * ANSI 十六色。**不走设计令牌**：那套是给应用界面的，而 ANSI 是终端自己的约定，
- * 程序按色号输出，混用会让 `ls` 的目录色跟着按钮色变。亮暗各一套，只有底色、
- * 前景色、光标取自 CSS 变量——那三样才是「跟着主题走」的部分。
+ * ANSI 十六色。**不使用设计令牌**：设计令牌用于应用界面，而 ANSI 是终端自身的约定，
+ * 程序按色号输出，混用会使 `ls` 的目录颜色随按钮颜色变化。亮色与暗色各一套，只有背景色、
+ * 前景色与光标取自 CSS 变量：这三项需要随主题变化。
  */
 const ANSI_DARK = {
   black: '#3b3b40',
@@ -95,10 +95,10 @@ const ANSI_LIGHT = {
 }
 
 /**
- * 现在是不是暗色。
+ * 当前是否为暗色主题。
  *
- * 判据和 `tokens.css` 完全一致：显式选了就按显式的，`system` 档没有 `data-theme`
- * 属性、交给系统偏好。两处各判一次必然出现「界面暗了终端还白着」。
+ * 判据与 `tokens.css` 完全一致：用户显式选择时按显式值，`system` 档没有 `data-theme`
+ * 属性，按系统偏好判定。两处判据不一致时，会出现界面为暗色而终端仍为亮色的情况。
  */
 function isDark(): boolean {
   const pref = document.documentElement.getAttribute('data-theme')
@@ -117,11 +117,11 @@ function applyTheme(pane: Pane): void {
   pane.term.options.theme = {
     background: cssVar('--bg-app', dark ? '#16161a' : '#ffffff'),
     foreground: cssVar('--text-primary', dark ? '#f2f2f3' : '#16161a'),
-    // **光标用前景色，不用 `--accent`。** 强调色在这个仓库里只归「当前选中」和
-    // 「主操作」用，拿它画光标，那一格会被读成一块蓝色高亮而不是输入位置。
+    // **光标使用前景色，不使用 `--accent`。** 强调色在本仓库中只用于「当前选中」与
+    // 「主操作」；用它绘制光标，该单元格会被误读为蓝色高亮而不是输入位置。
     cursor: cssVar('--text-primary', dark ? '#f2f2f3' : '#16161a'),
-    // 光标底下那个字符的颜色。程序可以用 DECSCUSR 把光标切回实心块，
-    // 那时不给这个值，字会和光标同色、直接看不见。
+    // 光标下方字符的颜色。程序可以用 DECSCUSR 将光标切换为实心块，
+    // 此时不设置该值，字符会与光标同色而无法辨认。
     cursorAccent: cssVar('--bg-app', dark ? '#16161a' : '#ffffff'),
     selectionBackground: cssVar('--accent-soft', 'rgba(128, 128, 128, 0.25)'),
     ...(dark ? ANSI_DARK : ANSI_LIGHT),
@@ -129,14 +129,14 @@ function applyTheme(pane: Pane): void {
 }
 
 /**
- * 主题跟着走，**挂在模块上而不是组件里**，而且一次管所有实例。
+ * 主题同步**注册在模块级而不是组件中**，一次作用于所有实例。
  *
- * 挂在组件里的话：收起面板期间切主题，实例仍存活但没人给它换色，切回来是旧配色。
- * 两条路都要有——显式切换走 `theme()`，`system` 档没有 `data-theme` 属性，只能听
- * 系统偏好；缺一条就有一半情况不跟随。
+ * 注册在组件中时，收起面板期间切换主题，实例仍存在但不会更新配色，重新打开后仍是旧配色。
+ * 两条路径都必须存在：显式切换经由 `theme()`，`system` 档没有 `data-theme` 属性，只能监听
+ * 系统偏好；缺少任一条，都有一类情况不随主题变化。
  *
- * `createRoot` 只为给这个 effect 一个所有者。它随模块常驻，没有该销毁的时机，
- * 所以不接 dispose。
+ * `createRoot` 只为该 effect 提供所有者。它随模块常驻，没有销毁时机，
+ * 因此不调用 dispose。
  */
 let themeWatched = false
 function watchTheme(): void {
@@ -155,10 +155,10 @@ function watchTheme(): void {
 }
 
 /**
- * 建实例，已经有就把宿主搬回 `slot`。
+ * 创建实例；实例已存在时把宿主移回 `slot`。
  *
- * **必须传一个已经在文档里的容器**：`term.open()` 一挂上就去量字符宽高，而游离节点
- * 量出来是 0——后面任何一次按尺寸算行列的代码都会拿 0 当除数。
+ * **必须传入已在文档中的容器**：`term.open()` 挂载后立即测量字符宽高，游离节点
+ * 的测量结果为 0，之后按尺寸计算行列的代码都会以 0 作除数。
  */
 function ensurePane(id: string, slot: HTMLElement): Pane {
   const existing = panes.get(id)
@@ -172,17 +172,17 @@ function ensurePane(id: string, slot: HTMLElement): Pane {
   slot.appendChild(host)
 
   const term = new Terminal({
-    // **写字面字体栈，不要写 var(--font-mono)。** xterm 用 canvas 量字符宽度，
-    // 量的时候不解析 CSS 变量，拿到的是一个非法字体名 → 回落到比例字体 →
-    // 每一列都对不齐。
+    // **写字面字体栈，不要写 var(--font-mono)。** xterm 用 canvas 测量字符宽度，
+    // 测量时不解析 CSS 变量，得到的是非法字体名，随后回退到比例字体，
+    // 各列无法对齐。
     fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
     fontSize: 12,
-    // **竖线 + 闪烁。** 实心方块和「选中一个字符」长得一模一样，不闪就更像——
-    // 用户看不出那是输入位置，整块终端读起来像只读的。
-    // 这只是默认形状：程序自己发 DECSCUSR 换形状时以程序为准（vim 就会换）。
+    // **竖线 + 闪烁。** 实心方块与选中单个字符的外观相同，不闪烁时更难区分，
+    // 用户无法识别输入位置，终端看起来像只读区域。
+    // 这只是默认形状：程序发送 DECSCUSR 更换形状时以程序为准（如 vim）。
     cursorStyle: 'bar',
     cursorBlink: true,
-    // 回滚缓冲。再大就是拿内存换一段用户几乎不会翻到的历史。
+    // 回滚缓冲行数。更大的值会占用更多内存，而增加的历史用户几乎不会查看。
     scrollback: 5000,
   })
   const fit = new FitAddon()
@@ -195,9 +195,9 @@ function ensurePane(id: string, slot: HTMLElement): Pane {
   applyTheme(pane)
   watchTheme()
 
-  // 键盘输入原样送进 PTY。**不在这里解释按键**——回车、Ctrl-C、方向键都是字节，
-  // 由 shell 自己认；前端插一层翻译就会和真终端的行为对不上。
-  // 鼠标报文走的也是这一条（开了鼠标追踪的 TUI），所以写失败等于点击也失败。
+  // 键盘输入原样写入 PTY。**不在此处解释按键**：回车、Ctrl-C、方向键都是字节，
+  // 由 shell 自行识别；前端增加一层转换会与真实终端的行为不一致。
+  // 鼠标报文也经由此路径（启用鼠标追踪的 TUI），因此写入失败时点击同样失效。
   term.onData((d) => void writeTerminal(id, d).catch((error) => markGone(id, pane, 'write', error)))
 
   /*
@@ -215,19 +215,19 @@ function ensurePane(id: string, slot: HTMLElement): Pane {
     { capture: true, passive: false },
   )
 
-  // 这一页被关掉时才收，组件卸载不算——理由见文件头与 store 的 `holdPanelTab`。
+  // 只在关闭该页时回收，组件卸载不触发回收：理由见文件头与 store 的 `holdPanelTab`。
   holdPanelTab(id, () => disposePane(id))
 
   return pane
 }
 
 /**
- * 会话在外壳那边已经用不了了：落到和退出事件同一个终态。
+ * 外壳侧的会话已不可用：进入与退出事件相同的终态。
  *
- * PTY 会话表在 Rust 侧，`started` 只是它在前端的镜像，平时靠 `terminal:exit`
- * 一条事件同步。事件没送到时镜像会一直停在「开着」，键盘与鼠标报文继续写进一个
- * 不存在的会话——用户面前是一块画着上一帧、点了没反应的终端。命令被拒是权威
- * 本身的答复，**要就地消费掉，不能吞**。
+ * PTY 会话表在 Rust 侧，`started` 只是它在前端的镜像，平时依靠 `terminal:exit`
+ * 事件同步。该事件未送达时，镜像始终停留在「已打开」，键盘与鼠标报文持续写入一个
+ * 不存在的会话，终端停留在上一帧且不响应操作。命令被拒是权威方的答复，
+ * **必须就地处理，不能忽略**。
  *
  * 断连状态保留失败操作与错误原文，界面只显示简短状态。
  */
@@ -239,27 +239,27 @@ function markGone(id: string, pane: Pane, operation: TerminalOperation, error: u
   pane.setEnd(end)
 }
 
-/** 收掉一条终端：杀进程、销毁实例、摘掉 DOM。只由 `holdPanelTab` 那条路调。 */
+/** 关闭一个终端：终止进程、销毁实例、移除 DOM。只由 `holdPanelTab` 调用。 */
 function disposePane(id: string): void {
   const pane = panes.get(id)
   if (!pane) return
   panes.delete(id)
   pane.host.remove()
   pane.term.dispose()
-  // 关不掉也没有下一步可给：页签已经没了，这条 shell 最迟在应用退出时被 `shutdown` 收掉。
+  // 关闭失败时没有可执行的后续操作：页签已移除，该 shell 最迟在应用退出时由 `shutdown` 回收。
   void closeTerminal(id).catch(() => {})
 }
 
 /**
- * 把 xterm 量出来的行列数同步给 PTY，尺寸算不出来就整个跳过。
+ * 将 xterm 测得的行列数同步给 PTY，无法计算尺寸时跳过。
  *
- * **不要直接调 `fit.fit()`。** 它只挡 `NaN` 不挡 `Infinity`：字符宽度还没量到时
- * （容器刚进 DOM、这一页正被藏起来）单元格宽是 0，`可用宽度 / 0` 得到 `Infinity`，
- * 它照样交给 `term.resize()`，一次就让实例失效——之后不滚动、不回显、不响应键盘，
- * 而且控制台不一定有报错。所以自己取 `proposeDimensions()` 并逐项校验。
+ * **不要直接调用 `fit.fit()`。** 它只排除 `NaN`，不排除 `Infinity`：尚未测得字符宽度时
+ * （容器刚插入 DOM、该页处于隐藏状态）单元格宽度为 0，`可用宽度 / 0` 得到 `Infinity`，
+ * 该值仍会传给 `term.resize()`，一次即可使实例失效：之后不滚动、不回显、不响应键盘，
+ * 控制台也不一定报错。因此自行调用 `proposeDimensions()` 并逐项校验。
  *
- * 会话还没建好时只改本地不发给 PTY：那时候发过去必然是「会话不存在」。
- * 开完之后 `ensureStarted` 会自己补一次。
+ * 会话尚未建立时只调整本地尺寸，不发送给 PTY：此时发送必然返回「会话不存在」。
+ * 会话建立后 `ensureStarted` 会补发一次。
  */
 function syncSize(id: string, pane: Pane): void {
   const dims = pane.fit.proposeDimensions()
@@ -274,10 +274,10 @@ function syncSize(id: string, pane: Pane): void {
 }
 
 /**
- * 起这条会话的 PTY。
+ * 启动该会话的 PTY。
  *
- * **归属与目录取自同一份工作区快照**：分两次读的话，中间切了工作区就会把 A 的 id
- * 配上 B 的根目录。没有活动工作区时不起——那条 PTY 归不到任何页签条上。
+ * **归属与目录取自同一份工作区快照**：分两次读取时，若期间切换了工作区，会把 A 的 id
+ * 与 B 的根目录配对。没有活动工作区时不启动：该 PTY 无法归属任何页签列表。
  */
 async function ensureStarted(id: string, pane: Pane): Promise<void> {
   if (pane.started) return
@@ -296,73 +296,73 @@ async function ensureStarted(id: string, pane: Pane): Promise<void> {
         pane.setEnd({ kind: 'exited', code })
       },
     })
-    // 接上一条已经在跑的会话时，先把外壳存着的那段重放进来，否则用户接回来
-    // 面对的是一块空屏——shell 仍在运行，但要敲一下才看得出来。
+    // 连接到已在运行的会话时，先重放外壳保存的输出，否则重新连接后
+    // 显示为空屏：shell 仍在运行，但需按键后才有输出。
     if (backlog) pane.term.write(backlog)
-    // 开完再对一次：从调用到会话建好这段时间里，面板可能已经被拖宽或放大了。
+    // 会话建立后再同步一次尺寸：从调用到会话建立期间，面板可能已被拖宽或放大。
     syncSize(id, pane)
   } catch (e) {
-    // 起不来要说在终端里，不是静默留一块黑：用户盯着的就是这块地方。
+    // 启动失败时在终端内显示错误，而不是静默留下空白区域：用户关注的正是此处。
     pane.term.write(`\r\n\x1b[31m${e instanceof Error ? e.message : String(e)}\x1b[0m\r\n`)
     markGone(id, pane, 'open', e)
   }
 }
 
 /**
- * 重开：先收掉旧会话，再开新的。
+ * 重开：先关闭旧会话，再打开新会话。
  *
- * **不能只调 `ensureStarted`。** 落到终态的另一条路是命令被拒（见 `markGone`），
- * 那时 Rust 侧的会话可能还在表里——`terminal_open` 认得这个 id 就直接返回成功，
- * 什么也不起，按钮点下去没反应。关一个已经不在的 id 是允许的，外壳返回成功。
+ * **不能只调用 `ensureStarted`。** 进入终态的另一条路径是命令被拒（见 `markGone`），
+ * 此时 Rust 侧的会话可能仍在表中：`terminal_open` 识别到该 id 会直接返回成功而不启动进程，
+ * 按钮点击后没有响应。关闭一个已不存在的 id 是允许的，外壳返回成功。
  *
- * 这一步只属于「重开」这颗按钮：挂载时那次 `ensureStarted` 不能先关——
- * 页面刷新后前端的镜像是空的而 shell 还在跑，先关就把用户手上的进程杀了。
+ * 该步骤只用于「重开」按钮，挂载时调用 `ensureStarted` 之前不能先关闭会话：
+ * 页面刷新后前端镜像为空而 shell 仍在运行，先关闭会终止用户正在使用的进程。
  */
 async function restart(id: string, pane: Pane): Promise<void> {
   await closeTerminal(id).catch(() => {})
   await ensureStarted(id, pane)
-  // 焦点要跟回终端：按钮随终态条一起消失，焦点会掉到 body 上，
-  // 因此新起的 shell 收不到任何按键，与退出前那块终端的形状一致。
+  // 焦点必须回到终端：按钮随终态栏一起移除后，焦点会落到 body 上，
+  // 新启动的 shell 收不到任何按键，外观与退出前的终端相同。
   pane.term.focus()
 }
 
 export default function TerminalPanel(props: { id: string }) {
   const [slot, setSlot] = createSignal<HTMLDivElement>()
-  /** 拿到实例之后才画得出退出那一条。首帧还没有，所以是信号而不是 `panes.get()`。 */
+  /** 取得实例后才能渲染退出状态栏。首帧时实例尚不存在，因此使用信号而不是 `panes.get()`。 */
   const [pane, setPane] = createSignal<Pane>()
 
   onMount(() => {
     const el = slot()
     if (!el) return
     const id = props.id
-    // 容器先进 DOM 再建实例，理由见 `ensurePane`。
+    // 先将容器插入 DOM 再创建实例，理由见 `ensurePane`。
     const p = ensurePane(id, el)
     setPane(p)
     syncSize(id, p)
     void ensureStarted(id, p)
 
-    // 尺寸跟着容器走：面板可以拖宽、可以放大到大半屏，而 PTY 那边必须同步收到
+    // 尺寸随容器变化：面板可拖宽或放大，PTY 必须同步收到
     // 新的行列数，否则 less / vim 会按旧宽度排版。
-    // 首帧那次量不到字符宽高，`syncSize` 会自己跳过；观察器随后立刻会再来一次。
+    // 首帧无法测得字符宽高，`syncSize` 会自行跳过；观察器随后会立即再次触发。
     const ro = new ResizeObserver(() => syncSize(id, p))
     ro.observe(el)
 
     onCleanup(() => {
       ro.disconnect()
-      // 只把宿主摘下来，不销毁：进程还在跑，下次切回来要接着看。
+      // 只移除宿主元素，不销毁实例：进程仍在运行，切回后需继续查看。
       p.host.remove()
     })
   })
 
   /*
-   * 翻到这一页就把焦点给它。
+   * 切换到该页时将焦点交给终端。
    *
-   * **必须是 effect，不能只在 `onMount` 里做一次**：切页签不重挂这个组件（那些页
-   * 一直挂着，只是被藏起来），只在挂载时聚焦的话，从别的页切回来光标不闪——
-   * 而 xterm 失焦时画的就是一个不闪的光标，与终端不响应时的形状一致。
+   * **必须使用 effect，不能只在 `onMount` 中执行一次**：切换页签不会重新挂载该组件（各页
+   * 始终挂载，只是隐藏），只在挂载时聚焦时，从其他页切回后光标不闪烁，
+   * 而 xterm 失焦时绘制的正是不闪烁的光标，与终端无响应时外观相同。
    *
-   * 藏起来的那一页不抢焦点：`display: none` 里的元素聚焦本来就是空操作，而这一条
-   * 会在每次切页签时对每一页各跑一次。
+   * 隐藏的页不获取焦点：对 `display: none` 中的元素聚焦是空操作，而该 effect
+   * 会在每次切换页签时对每一页各执行一次。
    */
   createEffect(() => {
     if (activePanelTab() === props.id) pane()?.term.focus()

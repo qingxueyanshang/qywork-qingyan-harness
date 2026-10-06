@@ -1,23 +1,23 @@
 /**
- * 画布上的图片与视频封面按显示宽度解码后画进 `<canvas>`。
+ * 画布上的图片与视频封面按显示宽度解码后绘制到 `<canvas>`。
  *
  * 不要改用 `<img>` 或常驻的 `<video>`：`<img>` 按原图分辨率解码，一张 4K 图约 33 MB，五十张 4K 图实测进程树
- * 内存增量 1.5 GB，缩放时解码缓存被逐出后重解，单帧卡住数秒；每个 `<video>` 各占一套解码器，二十个视频节点实测
- * 约 500 MB。这里取回原文件（视频定位到开头一帧）后用 `createImageBitmap` 缩到档位宽度，只留缩小后的位图。
+ * 内存增量 1.5 GB，缩放时解码缓存被逐出后重新解码，单帧停滞数秒；每个 `<video>` 各占一套解码器，二十个视频节点
+ * 实测约 500 MB。此处取得原文件（视频定位到开头一帧）后用 `createImageBitmap` 缩小到档位宽度，只保留缩小后的位图。
  */
 
 import { createEffect, createMemo, createSignal, onCleanup, Show } from 'solid-js'
 import { IconImage, IconVideo } from '../Icons.tsx'
 import { releaseVideo, seekVideo } from './frame.ts'
 
-/** 档位是 2 的幂，最小 256、最大 4096。缩放越过更高一档才重新解码，缩小不重解。 */
+/** 档位是 2 的幂，最小 256、最大 4096。放大越过更高一档时才重新解码，缩小时不重新解码。 */
 const MIN_TIER = 256
 const MAX_TIER = 4096
-/** 同时解码的个数上限：每个解码期间原文件与整幅画面同时在内存里。 */
+/** 同时解码的数量上限：每次解码期间原文件与完整画面同时占用内存。 */
 const PARALLEL = 4
-/** 缩放停下这么久之后才按新档位解码，连续滚轮不逐档解码。 */
+/** 缩放停止该时长后才按新档位解码，连续滚动滚轮时不逐档解码。 */
 const SETTLE_MS = 150
-/** 视频封面取这一刻：第 0 秒常是黑帧。 */
+/** 视频封面所取的时刻（秒）：第 0 秒常为黑帧。 */
 const POSTER_AT = 0.1
 
 export function tierOf(px: number): number {
@@ -29,7 +29,7 @@ export function tierOf(px: number): number {
 let active = 0
 const waiting: (() => void)[] = []
 
-/** 并发上限内执行。名额直接交给下一个等待者，不先释放再抢。 */
+/** 在并发上限内执行。名额直接移交给下一个等待者，不先释放再重新竞争。 */
 async function limited<T>(work: () => Promise<T>): Promise<T> {
   if (active < PARALLEL) active += 1
   else await new Promise<void>((resolve) => waiting.push(resolve))
@@ -42,21 +42,22 @@ async function limited<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-/** 解码框：设备像素宽高，媒体按 `object-fit: cover` 铺满它。 */
+/** 解码框：以设备像素计的宽高，媒体按 `object-fit: cover` 填满该框。 */
 export interface DecodeBox {
   w: number
   h: number
 }
 
 /**
- * 铺满（cover）一个框要解到多宽：宽度铺满要框宽，高度铺满要框高按画面宽高比折成的宽，取大者。
- * 不要只按框宽：横图放进偏竖的框时按高度铺满，只解到框宽的位图会被放大、发糊。
+ * 按 cover 方式填满一个框所需的解码宽度：按宽度填满需要框宽，按高度填满需要框高按画面宽高比
+ * 换算的宽度，取两者中的较大值。不要只按框宽：横图放入偏竖的框时按高度填满，只解码到框宽的
+ * 位图会被放大而模糊。
  */
 export function coverWidth(box: DecodeBox, natural: DecodeBox): number {
   return Math.ceil(Math.max(box.w, (box.h * natural.w) / natural.h))
 }
 
-/** 等比缩到 `width` 宽；原画面不到这个宽度时保持原尺寸。 */
+/** 等比缩小到 `width` 宽；原画面窄于该宽度时保持原尺寸。 */
 async function shrink(
   source: ImageBitmap | HTMLVideoElement,
   natural: number,
@@ -66,7 +67,7 @@ async function shrink(
   return createImageBitmap(source, { resizeWidth: Math.min(width, natural), resizeQuality: 'high' })
 }
 
-/** 取回图片并等比缩到铺满 `box` 所需的宽度。 */
+/** 获取图片并等比缩小到填满 `box` 所需的宽度。 */
 export function decodeImage(
   url: string,
   box: DecodeBox,
@@ -83,7 +84,7 @@ export function decodeImage(
   })
 }
 
-/** 取视频开头一帧并等比缩到铺满 `box` 所需的宽度，连同时长一起回。 */
+/** 取视频开头一帧并等比缩小到填满 `box` 所需的宽度，与时长一起返回。 */
 export function decodeVideo(
   url: string,
   box: DecodeBox,
@@ -108,8 +109,9 @@ export function paint(canvas: HTMLCanvasElement, bitmap: ImageBitmap): void {
 }
 
 /**
- * `width` / `height` 是框的设备像素宽高（CSS 尺寸 × 缩放 × `devicePixelRatio`）。档位按框的长边取，
- * 解码宽度按铺满框所需（`coverWidth`）。视频画开头一帧，时长经 `onDuration` 报出。解码失败显示类别图标。
+ * `width` / `height` 是框的设备像素宽高（CSS 尺寸 × 缩放 × `devicePixelRatio`）。档位按框的长边确定，
+ * 解码宽度按填满框所需的宽度确定（`coverWidth`）。视频绘制开头一帧，时长经 `onDuration` 报告。
+ * 解码失败时显示类别图标。
  */
 export function Bitmap(props: {
   src: string
@@ -120,12 +122,12 @@ export function Bitmap(props: {
 }) {
   let canvas!: HTMLCanvasElement
   const [failed, setFailed] = createSignal(false)
-  // 地址与类别经 memo 取值：`props.src` 的取值依赖整份画布，不隔一层的话画布上任何一处改动都会重新解码。
+  // 地址与类别经 memo 取值：`props.src` 的取值依赖整个画布文档，不经 memo 隔离时，画布上任何一处修改都会触发重新解码。
   const src = createMemo(() => props.src)
   const video = createMemo(() => props.kind === 'video')
   let held = { src: '', tier: 0 }
-  // 宽高比单独取、取到千分位：缩放只改框的大小不改比例，解码只随档位与比例重跑；
-  // 不取整的话宽高各乘缩放后相除，末位抖动会让每次缩放都重解。
+  // 宽高比单独计算并取到千分位：缩放只改变框的大小、不改变比例，解码只随档位与比例重新执行；
+  // 不取整时宽高各乘缩放后再相除，末位误差会使每次缩放都重新解码。
   const aspect = createMemo(() => Math.round((props.width / props.height) * 1000) / 1000)
   const tier = createMemo(() => {
     const need = tierOf(Math.max(props.width, props.height))

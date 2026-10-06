@@ -1,11 +1,11 @@
 /**
- * 工具步骤的**纯呈现逻辑**——截断、分桶、取值、格式化。
+ * 工具步骤的纯呈现逻辑：截断、分类、取值、格式化。
  *
- * 单独一个文件是为了**能被测**：组件文件是 `.tsx`，`bun test` 一加载就去找 JSX
- * runtime 并失败（`lib/slash.ts` 同因拆出）。这些函数每一个都有真实的边界条件，
- * 靠肉眼看渲染结果验不出来。
+ * 单独成文件是为了可测试：组件文件是 `.tsx`，`bun test` 加载时会查找 JSX
+ * runtime 并失败（`lib/slash.ts` 因同一原因拆出）。每个函数都有实际的边界条件，
+ * 仅凭目视检查渲染结果无法验证。
  *
- * 判据很简单：**不碰 DOM、不读 store 的，都不该待在组件文件里。**
+ * 判据：不访问 DOM、不读取 store 的函数都不应放在组件文件中。
  */
 
 import {
@@ -19,20 +19,20 @@ import {
 const NEWLINE = String.fromCharCode(10)
 const CARRIAGE_RETURN = String.fromCharCode(13)
 
-/** 只取第一行：卡顶那一格是这次派活的名字，不是任务书，多行会把卡撑高。 */
+/** 只取第一行：卡片顶部的标题是本次派发任务的名称，不是任务说明，多行会撑高卡片。 */
 export function firstLine(text: string): string {
   const cut = text.indexOf(NEWLINE)
   return cut < 0 ? text : text.slice(0, cut)
 }
 
-/** 大数收成 12.3K / 1.2M：读数条是一行扫过去的，六位数字读不出量级。 */
+/** 大数缩写为 12.3K / 1.2M：读数条供快速浏览，六位数字难以直接看出数量级。 */
 export function compact(n: number): string {
   if (n < 1000) return String(n)
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`
   return `${(n / 1_000_000).toFixed(2)}M`
 }
 
-/** 命中率要用到的那几格。写成结构类型而不是 import `RunUsage`：这个文件要能被单测直接喂数据。 */
+/** 命中率需要的字段。写成结构类型而不是 import `RunUsage`：单元测试须能直接传入数据。 */
 interface UsageLike {
   inputTokens: number
   cachedTokens: number | null
@@ -41,7 +41,7 @@ interface UsageLike {
     input: number
     cached: number | null
     cacheWrite: number | null
-    /** provider = 模型真回报；estimated = 本地估算兜底。 */
+    /** provider 表示模型实际回报；estimated 表示本地估算。 */
     source: 'provider' | 'estimated'
   }[]
 }
@@ -49,28 +49,28 @@ interface UsageLike {
 /**
  * 缓存命中率。
  *
- * **报比例不报绝对值**：绝对值要和输入量对着看才有意义，那个除法不该让用户做。
+ * 报告比例而不是绝对值：绝对值须与输入量对照才有意义，该除法不应由用户计算。
  *
- * **分母是「这次请求的输入总量」，不是 `inputTokens`。** 三家适配器统一收敛到**排他口径**：
- * `inputTokens` 里只装未命中的那部分（`providers/anthropic.ts` 原生如此，`openai-compat.ts` /
- * `openai-responses.ts` 明确减掉了命中量）。拿它当分母等于把命中的那一大块从分母里抠掉，算出来的比
- * 例恒偏高——命中量大时会超过 100%：794K 命中 / 2K 未命中打印成 39700%。正确的分母是
+ * 分母是本次请求的输入总量，而不是 `inputTokens`。三家适配器统一采用排他口径：
+ * `inputTokens` 只包含未命中部分（`providers/anthropic.ts` 原生如此，`openai-compat.ts` /
+ * `openai-responses.ts` 显式减去了命中量）。以它作分母会把命中部分从分母中扣除，计算出的比例
+ * 始终偏高，命中量大时会超过 100%：794K 命中、2K 未命中会输出 39700%。正确的分母是
  * `未命中 + 命中 + 写入`。
  *
- * **看**最后一次**模型调用，不看整轮累计。** 一轮里第一次调用必然没有命中，累计口径把它摊进去，长轮
- * 次的率会被压低；而用户盯着这个数字想知道的是「现在缓存生效了吗」。**不要改成整轮累计**——这一
- * 格的语义就是最新那一次，同一行上其余几格是累计不构成改它的理由。没有逐轮记录（老数据、断流）才回
- * 落到整轮累计，**回落不能显示 `—`**：「有缓存但没逐轮记录」和「没有缓存」是两回事。
+ * 取最后一次模型调用，而不是整轮累计。一轮中的第一次调用必然未命中，按累计计算会把它平摊进去，
+ * 使长轮次的命中率偏低；而用户查看该数值是为了确认缓存当前是否生效。不要改为整轮累计：该字段的
+ * 语义就是最近一次调用，同一行其余字段为累计值不构成修改它的理由。只有没有逐轮记录（旧数据、
+ * 流中断）时才回落到整轮累计，且回落时不得显示 `—`：「有缓存但没有逐轮记录」与「没有缓存」含义不同。
  *
- * **最后一次没回报缓存字段就是 `N/A`，而不是 0，更不能往前找。** `null` 表示 provider
- * 没给这个数；把它强转成 0 是编数据，往前找则会把旧命中率冒充成当前命中率。只有 provider
+ * 最后一次调用未回报缓存字段时显示 `N/A`，不显示 0，也不向前查找。`null` 表示 provider
+ * 未提供该数值；强制转换为 0 是编造数据，向前查找则会把旧命中率显示为当前命中率。只有 provider
  * 明确回报的 0 才显示 0。
  *
- * 本地估算兜底同样显示 `N/A`：那时命中多少、输入多少都未知。
+ * 使用本地估算时同样显示 `N/A`：此时命中量与输入量均未知。
  */
 export function hitRate(usage: UsageLike): string {
   const last = usage.turns[usage.turns.length - 1]
-  // 这一次连 usage 都没回来：命中多少、输入多少都不知道，写 0 是编造数据。
+  // 本次调用没有返回 usage：命中量与输入量均未知，显示 0 是编造数据。
   if (last && last.source !== 'provider') return 'N/A'
   const cached = last ? last.cached : usage.cachedTokens
   if (cached === null) return 'N/A'
@@ -78,7 +78,7 @@ export function hitRate(usage: UsageLike): string {
   const denom = last
     ? last.input + cached + (last.cacheWrite ?? 0)
     : usage.inputTokens + cached + (usage.cacheWriteTokens ?? 0)
-  // provider 明确回报 0 就是 0；不能因为这一调用没有 token 又把它改写成未知。
+  // provider 明确回报 0 时显示 0；不得因本次调用没有 token 而改写为未知。
   if (denom <= 0) return cached === 0 ? '0.00%' : 'N/A'
   return `${((cached / denom) * 100).toFixed(2)}%`
 }
@@ -86,10 +86,10 @@ export function hitRate(usage: UsageLike): string {
 export const TARGET_MAX = 48
 
 /**
- * 动作行 target 净化：压空白、超长截断。
+ * 动作行 target 的净化：压缩空白，截断超长内容。
  *
- * **路径保尾部**（`…/submit/submit_core.py`），其余保头部（长正则、长模式串）。
- * 信息在哪一头就留哪一头——两头都截同一侧，必然有一类会被截掉有用的那半。
+ * 路径保留尾部（`…/submit/submit_core.py`），其余保留头部（长正则、长模式串）。
+ * 有效信息在哪一端就保留哪一端：两类都截断同一侧时，必然有一类丢失有效的部分。
  */
 export function sanitizeTarget(target: string): string {
   const clean = target.replace(/\s+/g, ' ').trim()
@@ -100,30 +100,30 @@ export function sanitizeTarget(target: string): string {
 }
 
 /**
- * 外置工具的目标去掉 `mcp:` / `plugin:` 前缀。**只在显示时剥。**
+ * 外置工具的目标去除 `mcp:` / `plugin:` 前缀，只在显示时去除。
  *
- * 后端那份必须带前缀：权限 scope 是 `${effect}:${target}`，target 是它唯一的载体，
- * 剥掉之后一个 id 叫 `github` 的插件的 `search` 和那个 MCP server 的 `search`
- * 会撞出同一个 scope 串。而卡片上对象名已经写着「MCP」/「插件」，
- * 目标里再说一遍就成了「调用 MCP · mcp:github/search」。
+ * 后端的值必须带前缀：权限 scope 是 `${effect}:${target}`，target 是前缀的唯一载体，
+ * 去除后，id 为 `github` 的插件的 `search` 与同名 MCP server 的 `search`
+ * 会得到相同的 scope 字符串，产生冲突。而卡片上的对象名已注明「MCP」/「插件」，
+ * 目标中再重复一次会显示为「调用 MCP · mcp:github/search」。
  */
 export function displayTarget(target: string): string {
   return target.replace(/^(?:mcp|plugin):/, '')
 }
 
-/** 终态字样。**成功是空字符串**——一屏几十行全写「成功」等于没有信息。 */
+/** 终态文字。成功时为空字符串：一屏几十行都显示「成功」不提供任何信息。 */
 export function statusWord(status: 'running' | 'success' | 'failure' | undefined): string {
   return status === 'failure' ? '失败' : ''
 }
 
 /**
- * 一次调用改了多少行：`+N −M`。
+ * 一次调用修改的行数：`+N −M`。
  *
- * 两个数随 `ToolOutcome.fileChanges` 落进账本（`tools/src/files.ts` 的 `countDiff`
- * 算的）。一次调用可能动多个文件，所以求和。
+ * 两个数随 `ToolOutcome.fileChanges` 写入账本（由 `tools/src/files.ts` 的 `countDiff`
+ * 计算）。一次调用可能修改多个文件，因此求和。
  *
- * **两个数都是 0 就不给角标**：`+0 −0` 占着行尾却什么也没说。
- * 没有行数的写入（工作区观察器判出来的，shell 与外部 CLI）不计入。
+ * 两个数都为 0 时不显示角标：`+0 −0` 占用行尾却不提供信息。
+ * 没有行数的写入（由工作区观察器判定的 shell 与外部 CLI 写入）不计入。
  */
 export function fileDelta(
   changes: readonly { additions?: number; deletions?: number }[] | undefined,
@@ -138,7 +138,7 @@ export function fileDelta(
   return additions === 0 && deletions === 0 ? null : { additions, deletions }
 }
 
-/** 列表型结果：目录项、命中行、匹配文件——形状都是 string[]，渲染方式也一样。 */
+/** 列表型结果：目录项、命中行、匹配文件，形状都是 string[]，渲染方式相同。 */
 export function listOf(data: Record<string, unknown>): string[] | null {
   for (const key of ['entries', 'matches', 'files']) {
     const v = data[key]
@@ -155,11 +155,11 @@ export interface ResultImage {
 }
 
 /**
- * 从明确要求展示的工具结果里校验图片字节。
+ * 校验明确要求展示的工具结果中的图片字节。
  *
- * 图片字节随结果原样落进 step 账本，供模型视觉输入与历史重建使用；是否展示由
- * `ToolOutcomeWire.presentation` 单独裁决。这里只接受模型接口同样支持的四种栅格格式，
- * 第三方工具塞进任意 data URL 或 SVG 时不替它扩大执行面。
+ * 图片字节随结果原样写入 step 账本，供模型视觉输入与历史重建使用；是否展示由
+ * `ToolOutcomeWire.presentation` 单独裁决。此处只接受模型接口同样支持的四种栅格格式，
+ * 第三方工具写入任意 data URL 或 SVG 时不为其扩大执行面。
  */
 export function resultImages(data: unknown): ResultImage[] {
   if (!data || typeof data !== 'object') return []
@@ -183,7 +183,7 @@ export function resultImages(data: unknown): ResultImage[] {
   return images
 }
 
-/** 参数表：跳过空值与大值——长文本走专用块，塞进键值表会把卡片撑开。 */
+/** 参数表：跳过空值与超长值；长文本使用专用块显示，放入键值表会撑大卡片。 */
 export function argsRows(args: Record<string, unknown>): [string, string][] {
   const rows: [string, string][] = []
   for (const [k, v] of Object.entries(args)) {
@@ -198,11 +198,11 @@ export function argsRows(args: Record<string, unknown>): [string, string][] {
 /**
  * 待办清单型参数：`{ todos: [{ content, status }, …] }`。
  *
- * **按形状认，不按工具名认**——同文件的 `listOf` / `diffFrom` 是同一个路子，
- * 展开体里那个 Switch 从来不问「这一步是谁调的」。
+ * 按形状识别，不按工具名识别：同文件的 `listOf` / `diffFrom` 采用相同做法，
+ * 展开内容中的 Switch 不判断步骤由哪个工具调用。
  *
- * 认不出就返回 null（不是空数组）：空数组会让调用方渲染出一个空的清单框，
- * 而「没有清单」应该走通用参数表那一支。
+ * 无法识别时返回 null（而不是空数组）：空数组会使调用方渲染出一个空的清单框，
+ * 而没有清单时应使用通用参数表。
  */
 export function todosOf(
   args: Record<string, unknown>,
@@ -216,7 +216,7 @@ export function todosOf(
     if (typeof t.content !== 'string') return null
     const status = t.status
     if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') return null
-    // 落库的 args 里没有 id（那是工具补的），行渲染又要一个稳定 key，所以按位置补。
+    // 数据库中的 args 不含 id（id 由工具补充），按行渲染需要稳定的 key，因此按位置补充。
     out.push({ id: typeof t.id === 'string' ? t.id : `todo_${i + 1}`, content: t.content, status })
   }
   return out
@@ -231,13 +231,13 @@ export function firstString(args: Record<string, unknown>, ...keys: string[]): s
 }
 
 /**
- * 把回车符覆盖掉的中间帧丢掉，每行只留最后一帧。
+ * 丢弃被回车符覆盖的中间帧，每行只保留最后一帧。
  *
- * 带进度显示的命令（curl、npm、pip、cargo）用裸回车符回到行首重画同一行，
- * 终端里只显示最后一帧。`<pre>` 把它当普通空白，不折叠就会把全部帧一起排出来。
+ * 带进度显示的命令（curl、npm、pip、cargo）用单独的回车符回到行首重绘同一行，
+ * 终端中只显示最后一帧。`<pre>` 把它当作普通空白，不折叠时会把全部帧依次显示出来。
  *
- * **必须先剥掉行尾的回车符**：CRLF 行尾的那个不是覆盖标记，
- * 按覆盖处理会把整行当成残留丢空。
+ * 必须先去除行尾的回车符：CRLF 行尾的回车符不是覆盖标记，
+ * 按覆盖处理会把整行当作残留内容丢弃。
  */
 export function collapseCarriageReturns(text: string): string {
   if (!text.includes(CARRIAGE_RETURN)) return text
@@ -252,18 +252,18 @@ export function collapseCarriageReturns(text: string): string {
 
 export const CLAMP = 20_000
 
-/** 超长正文截断并**说清还剩多少**：只截不说，读起来就是文件只有这么长。 */
+/** 超长正文截断并注明剩余字数：只截断而不注明，会被理解为文件只有这么长。 */
 export function clamp(text: string): string {
   return text.length <= CLAMP
     ? text
-    : `${text.slice(0, CLAMP)}${NEWLINE}…（还有 ${text.length - CLAMP} 字）`
+    : `${text.slice(0, CLAMP)}${NEWLINE}…（剩余 ${text.length - CLAMP} 字）`
 }
 
 /**
- * 从编辑参数里取出可以红绿呈现的两段。
+ * 从编辑参数中取出可按删除与新增两侧呈现的两段内容。
  *
- * 先认 old/new 这类成对字段，再回落到整段 patch。都取不到返回 null——
- * 返回一个空 diff 会在界面上画出一个空的红绿框。
+ * 先识别 old/new 这类成对字段，再回落到整段 patch。都无法取得时返回 null：
+ * 返回空 diff 会在界面上渲染出一个空的差异框。
  */
 export function diffFrom(args: Record<string, unknown>): { removed: string; added: string } | null {
   const removed = firstString(args, 'old_string', 'old', 'old_text', 'before')
@@ -281,22 +281,22 @@ export function diffFrom(args: Record<string, unknown>): { removed: string; adde
 }
 
 /**
- * 停止原因的说法。
+ * 停止原因的文案。
  *
- * **住在这里而不是组件里**：会话流的收尾条和运行详情面板都要显示它。
- * 抄第二份的代价是面板那边会把协议停止码直接贴给用户。
+ * 放在此处而不是组件中：会话流的收尾条与运行详情面板都要显示它。
+ * 复制第二份会使面板把协议停止码直接显示给用户。
  *
- * 协议词只负责传输，界面只显示这张完整映射里的产品文案。认不出的值省略：
- * 把内部枚举直接贴给用户既不能解释问题，也会在前后端短暂错版时制造“新状态”。
+ * 协议值只用于传输，界面只显示这张完整映射中的产品文案。无法识别的值省略：
+ * 把内部枚举直接显示给用户既不能解释问题，也会在前后端版本短暂不一致时显示不存在的状态。
  */
 export function stopReasonLabel(reason: string): string | null {
   const map: Record<StopReason, string> = {
     completed: '已完成',
-    // 当前真正负责制止空转的是进展判据，多给轮数也没有用。
+    // 当前负责在连续无进展时终止的是进展判据，增加轮数无助于恢复。
     no_progress: '模型执行出错，多次重复，已暂停',
     user_interrupt: '已中断',
-    // 与「已中断」分开说：用户没点过停止，是服务进程退出了（热重载、崩溃、关机）。
-    // 两句都说「已中断」的话，用户看到的是一个自己没做过的动作。
+    // 与「已中断」区分：用户未点击停止，是服务进程退出（热重载、崩溃、关机）。
+    // 若两者都显示「已中断」，界面会显示一个用户未执行过的操作。
     process_exit: '服务进程退出',
     output_truncated: '输出被截断',
     provider_error: '模型服务出错',
@@ -330,12 +330,12 @@ const RETRY_LABELS: Record<ProviderRetryDecision, string> = {
   context_compaction: '已压缩后重发',
   context_compaction_failed: '压缩失败，未重发',
   process_exit: '服务进程退出，结果不明',
-  run_ended: '本轮已结束，请求结果未收齐',
+  run_ended: '本轮已结束，未取得完整的请求结果',
 }
 
 interface RequestOutcomeLike {
   status: ProviderRequestStatus
-  /** 不给按主请求算。摘要请求的产出就是压缩摘要，结果列写它。 */
+  /** 未提供时按主请求处理。摘要请求的产出是压缩摘要，结果列显示该项。 */
   purpose?: 'turn' | 'summary'
   finishReason: string
   errorCode: string | null
@@ -363,15 +363,15 @@ function appendFact(base: string, fact: string): string {
 }
 
 /**
- * 一次 provider 请求的用户可见结局。
+ * 一次 provider 请求的用户可见结果。
  *
- * provider 原始 finish reason、错误码和重试裁决都保留在账本，但不能直接当 UI 文案；
- * 这一个出口穷举重试裁决，避免结果列与悬浮说明各维护半张映射。
+ * provider 原始 finish reason、错误码与重试裁决都保留在账本中，但不能直接作为界面文案；
+ * 由这一个出口穷举重试裁决，避免结果列与悬浮说明各自维护一部分映射。
  */
 export function requestOutcome(q: RequestOutcomeLike): string {
   if (q.status === 'received') {
     const label = finishReasonLabel(q.finishReason)
-    // 截断与拒绝仍按原样说：那正是摘要段没做成的原因。
+    // 截断与拒绝仍显示原有文案：它们正是摘要未生成的原因。
     if (q.purpose === 'summary' && (label === '已完成' || label === '已回报')) return '上下文压缩'
     return label
   }
@@ -389,56 +389,56 @@ export function requestOutcome(q: RequestOutcomeLike): string {
   return decision ? appendFact(base, RETRY_LABELS[decision]) : base
 }
 
-// ─────────────────────────────── 派活图 ───────────────────────────────
+// ────────────────────────────── 派发任务图 ──────────────────────────────
 
 /**
- * 图上那两个会话端点的 key。用不可打印字符开头，模型自己起的节点 id 撞不上——
- * 撞上的话那个节点会连到端点该在的位置上去。
+ * 图上两个会话端点的 key。以不可打印字符开头，模型自行命名的节点 id 不会与之冲突；
+ * 发生冲突时，该节点会连接到端点所在的位置。
  */
 const ENTRY = `${String.fromCharCode(0)}entry`
 const EXIT = `${String.fromCharCode(0)}exit`
 
-/** 图上的一格。 */
+/** 图上的一个节点。 */
 export interface GraphNode {
-  /** 认领进度与连线定位都用它。子 agent 那一格的 key 就是 `team.member` 的 nodeId。 */
+  /** 用于认领进度与定位连线。子 agent 节点的 key 即 `team.member` 的 nodeId。 */
   key: string
   /** 主行。 */
   title: string
   /** 会话端点不可点开，也没有执行者。 */
   kind: 'session' | 'agent'
-  /** 次行印的指令内容：任务的第一行。 */
+  /** 次行显示的指令内容：任务的第一行。 */
   task?: string
   needs: string[]
 }
 
 export interface DelegateGraph {
-  /** 全部格子，含两端。连线按 `needs` 逐条画，所以这一份要带依赖。 */
+  /** 全部节点，含两端。连线按 `needs` 逐条绘制，因此须包含依赖。 */
   nodes: GraphNode[]
   /** 按依赖分层的视图：第 0 层是派出端，最后一层是收回端。 */
   layers: GraphNode[][]
   /**
-   * 三格横着摆，中间执行者钉在画布的几何中线。判据是**只派了一件事**，不是工具名
-   * ——一个节点的编排与一次派活形状相同，本来就该长得一样。
+   * 三个节点横向排列，中间的执行者固定在画布的几何中线。判据是只派发了一项任务，而不是工具名：
+   * 只有一个节点的编排与一次派发任务形状相同，应呈现相同样式。
    *
-   * 两侧会话端点使用对称的弹性列，窄面板里共同收缩；不能按三个可见节点的内容宽度
-   * 居中整组，否则两端字宽或留白不等时，中间执行者就会偏离画布中心。
+   * 两侧会话端点使用对称的弹性列，在窄面板中同时收缩；不能按三个可见节点的内容宽度
+   * 使整组居中，否则两端字宽或留白不等时，中间执行者会偏离画布中心。
    */
   horizontal: boolean
 }
 
 /**
- * 一次派活画成什么样。**形状只来自调用参数**——它随 `tool.started` 就到，
- * 所以第一帧就能把整张图画全，等着跑的格子也在图上。状态是另一条路（见 `WorkflowCard`）。
+ * 一次派发任务绘制为何种形状。形状只来自调用参数：参数随 `tool.started` 到达，
+ * 因此第一帧即可绘制完整的图，等待执行的节点也显示在图上。状态经由另一条路径提供（见 `WorkflowCard`）。
  *
- * 两端那两格是**同一条会话的两个时刻**：交出去、收回来。画成两格而不是一格加一条
- * 返回边，是因为返回边要绕回起点，那条线必然横穿已经分好的层。
+ * 两端的两个节点是同一条会话的两个时刻：派出与收回。绘制为两个节点，而不是一个节点加一条
+ * 返回边，是因为返回边须绕回起点，必然横穿已分好的层。
  */
 export function delegateGraph(item: {
   toolName?: string | undefined
   args?: Record<string, unknown> | undefined
 }): DelegateGraph {
   const kids = childNodes(item)
-  // 没有下游的那几格汇进收回端；没有上游的那几格从派出端接出来。
+  // 没有下游的节点汇入收回端；没有上游的节点从派出端连出。
   const leaves = kids.filter((n) => !kids.some((m) => m.needs.includes(n.key))).map((n) => n.key)
   const leafNodes = kids.filter((node) => leaves.includes(node.key))
   const needsExit =
@@ -472,7 +472,7 @@ function childNodes(item: {
           needs,
         }
       }
-      // 主行是那一格的名字，次行是它的指令；节点 id 只用来连线与认领进度。
+      // 主行是节点名称，次行是其指令；节点 id 只用于连线与认领进度。
       return {
         key: id,
         title: targetTitle(o),
@@ -495,21 +495,21 @@ function childNodes(item: {
 }
 
 /**
- * 一格的名字，只凭调用参数就能算：刷新之后回放、进度事件没到之前都用它。
- * 临时子 agent 是建时给的名字，角色是角色 id（状态到了换成角色名），外部 CLI 是 CLI id。
+ * 节点名称，仅凭调用参数即可计算：刷新后回放、进度事件到达之前都使用它。
+ * 临时子 agent 为创建时指定的名称，角色为角色 id（状态到达后替换为角色名），外部 CLI 为 CLI id。
  */
 function targetTitle(o: Record<string, unknown>): string {
   const pick = (key: string) => (typeof o[key] === 'string' ? (o[key] as string).trim() : '')
   return pick('subagent') || pick('name') || pick('role') || pick('cli') || '子 agent'
 }
 
-/** 按依赖分层：一格落在「它所有上游的最深层 + 1」。 */
+/** 按依赖分层：节点位于其全部上游中最深一层的下一层。 */
 function layered(nodes: GraphNode[]): GraphNode[][] {
   const depth = new Map<string, number>()
   const of = (key: string, seen: Set<string>): number => {
     const known = depth.get(key)
     if (known !== undefined) return known
-    // 成环时就地断开：模型写出的图由编排器校验，这里只保证画得出来。
+    // 成环时就地断开：模型生成的图由编排器校验，此处只保证能够绘制。
     if (seen.has(key)) return 0
     seen.add(key)
     const n = nodes.find((x) => x.key === key)

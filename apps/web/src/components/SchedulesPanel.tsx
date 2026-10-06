@@ -16,26 +16,26 @@ import { LoadState } from './settings/LoadState.tsx'
 /**
  * 定时任务。
  *
- * **界面上必须写死一句话。** 「仅在应用运行时触发」。这不是提示，是这个功能的**前提**：sidecar 的生
- * 命周期挂在窗口上，关掉应用就不会触发；重新打开后已到期的任务跑一次，关闭期间欠下的次数不逐次
- * 补跑。一条界面上显示已排期、实际不会触发的定时任务，比没有这个功能坏得多。
+ * **界面上必须固定显示一句边界声明：**「仅在应用运行时触发」。它是该功能的**前提**，不是提示：
+ * sidecar 的生命周期绑定在窗口上，关闭应用后不会触发；重新打开后已到期的任务执行一次，关闭期间
+ * 错过的次数不逐次补执行。界面显示已排期而实际不会触发的定时任务，比不提供该功能更容易误导用户。
  *
- * 这句话由服务端下发（`runtimeOnly`），不在前端各写一遍——措辞漂移会让
- * 手机端和桌面端对同一件事给出两种说法。
+ * 这句话由服务端下发（`runtimeOnly`），不在各前端分别书写：分别书写时措辞会出现差异，
+ * 手机端与桌面端对同一件事给出两种表述。
  *
- * **「立刻跑一次」是这里最重要的按钮。** 定时触发要等到点，而「配好了会不会跑」是用户第一个想知道
- * 的。没有这个按钮的话，验证一条每天 9 点的任务得等到明天早上。
+ * **「立即运行」是本页最重要的按钮。** 定时触发要等到设定时刻，而用户首先需要确认配置后能否运行。
+ * 没有该按钮时，验证每天 9 点执行的任务必须等到次日早上。
  */
-/** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
+/** 「新增」送入输入框的初始指令。不自动发送：用户可先修改再发送。 */
 const NEW_SCHEDULE =
   '新建一个定时任务。请先说明定时任务在 qywork 中如何工作、触发后在何处运行；然后询问需要它做什么、何时运行。'
 
 export function SchedulesPanel() {
   /*
-   * 重取的判据挂在两个已有事实上：当前项目，以及在跑的会话集合。
+   * 重取的判据基于两项已有状态：当前项目，以及运行中的会话集合。
    *
-   * 后台触发不经过这个面板，只有 `conversation.busy` 会把这次触发的会话进出记到状态里；
-   * 拿它当失效信号，一轮跑完就能读到新的终态。不加轮询定时器：这一页可能一直开着。
+   * 后台触发不经过本面板，只有 `conversation.busy` 会把触发所建会话的进入与移出记录到状态中；
+   * 以它作为失效信号，一轮执行完毕即可读取新的终态。不使用轮询定时器：本页可能长时间保持打开。
    */
   const [data, { refetch }] = createResource(
     () => `${workspace()?.id ?? ''}|${state.busyConversations.join(',')}`,
@@ -59,17 +59,17 @@ export function SchedulesPanel() {
 
   return (
     <div class="settings-form">
-      {/* `loaded()` 而不是 `data()`：增删改之后要重取，重取期间留住上一份；
-          出错时给 undefined，由 `LoadState` 说明原因并给一条重试的路——
-          写成 `data()` 的话它会先抛，`fallback` 永远轮不到。 */}
+      {/* 使用 `loaded()` 而不是 `data()`：增删改之后需重取，重取期间保留上一次的结果；
+          出错时返回 undefined，由 `LoadState` 显示原因并提供重试入口；
+          写成 `data()` 时它会先抛出错误，`fallback` 永远不会渲染。 */}
       <Show
         when={loaded(data)}
         fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
       >
         {(d) => (
           <>
-            {/* 前提写在最前面，不折叠、不淡化。「新增」并排在这一格右侧：
-                这一页只有它一个动作，单独占一行等于把一颗按钮吊在空白里。 */}
+            {/* 前提显示在最前面，不折叠、不降低对比度。「新增」放在同一行右侧：
+                本页只有这一个操作，单独占一行会使按钮孤立于空白区域。 */}
             <div class="schedule-caveat">
               <span>{d().runtimeOnly}</span>
               <button class="btn-ghost sm" type="button" onClick={() => askInChat(NEW_SCHEDULE)}>
@@ -86,7 +86,7 @@ export function SchedulesPanel() {
                     <span class="schedule-title" data-tip={s.title}>
                       {s.title}
                     </span>
-                    {/* 上次结果跟任务名称同行；正文可很长，结果不能排在它后面。 */}
+                    {/* 上次结果与任务名称同行；正文可能很长，结果不能排在正文之后。 */}
                     <Show when={outcome(s)}>
                       {(text) => (
                         <span class="schedule-outcome field-hint bad" data-tip={text()}>
@@ -105,7 +105,7 @@ export function SchedulesPanel() {
                     </button>
                   </div>
 
-                  {/* 周期、下次时刻与两个动作同在一行：动作贴行尾，不单独占卡片底部一行。 */}
+                  {/* 周期、下次时间与两个操作位于同一行：操作靠行尾，不单独占用卡片底部一行。 */}
                   <div class="schedule-meta">
                     <span class="field-hint">{describe(s)}</span>
                     <Show when={s.lastRunAt}>
@@ -131,7 +131,7 @@ export function SchedulesPanel() {
                         disabled={busy() === s.id}
                         onClick={() => void act(s.id, () => runScheduleNow(s.id))}
                       >
-                        立刻跑一次
+                        立即运行
                       </button>
                     </div>
                   </div>
@@ -155,10 +155,10 @@ function describe(s: ScheduleView): string {
 }
 
 /**
- * 上次触发的结果。正常跑完与从没触发过都返回 null，只在有话说时显示。
+ * 上次触发的结果。正常执行完毕与从未触发都返回 null，只在需要说明时显示。
  *
- * 有触发时刻却没有执行记录，如实说出来：认领之后、起轮之前进程退出会留下这个状态，
- * 把它显示成成功是给账本注水。
+ * 有触发时间却没有执行记录时如实显示：认领之后、启动轮次之前进程退出会留下该状态，
+ * 显示为成功会使记录失实。
  */
 function outcome(s: ScheduleView): string | null {
   if (s.lastRunAt === undefined) return null
@@ -169,7 +169,7 @@ function outcome(s: ScheduleView): string | null {
   return null
 }
 
-/** 用本机时区显示。定时任务的语义就是本地时间，显示成 UTC 会对不上用户设的那个点。 */
+/** 用本机时区显示。定时任务按本地时间设定，显示为 UTC 会与用户设定的时间不一致。 */
 function fmt(t: number): string {
   const d = new Date(t)
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`

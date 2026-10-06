@@ -7,56 +7,46 @@ import { LoadState } from './LoadState.tsx'
 import { OnOff } from './OnOff.tsx'
 
 /**
- * 这个 agent 由什么组成。
+ * 设置页「模块」：列出 agent 的组成部分，即各类工具与不由工具承担的机制。
  *
- * **要改的配置在各自的操作台上**，有操作台的组在组头给一个跳转。
- * **没有操作台的组不给跳转按钮**——指向一个空页比不指更糟。
- * 例外是「这一组能不能用」本身：它没有别处可去，就在组头给一个开关（`Module.toggle`）。
- *
- * **列底层名，不只列中文用途。** 「机制字段只在 CLI 里露面」这条判据撑不住：
- * 同一个 `edit_file`，工具卡上写「修改文件」、参数表里写
- * `edit_file`、错误正文里又是别的说法，用户在三处见到三个名字，
- * 而能把它们对上的只有底层名。所以一行给全四样——**底层名 + 一句话 + 参数 + 权限**。
- *
- * 分组只有一层（`category`）。`facet` 那一层去掉了：它分的是「功能方向」，
- * 而这一页回答的是「能调什么」，一个工具名一行本来就看得完，再套一层是纯缩进。
- * 后端已按类目排好序，这里只分组不重排。
- *
- * **非工具的模块也占格子。** 上下文压缩、执行循环、版本控制、权限模式、沙箱——用户天天看得见，一个
- * 工具都不对应。不给它们格子，这一页读起来就像这些能力不存在。
- * **每一条都指着界面上真实存在的能力**，没有「以后会有」的行。
- *
- * **加类目要同时改三处**：`registry.ts` 的联合类型、同处的 `TOOL_CATEGORIES` 数组、
- * 这里的 `MODULES`。漏了第三处不会报错——回落会拿类目 id 当标题显示，
- * 因此一整页中文里冒出一个英文 id。
+ * - 有设置页的分组在分组标题右侧提供跳转按钮；没有设置页的分组不提供按钮，指向空页面没有意义。
+ *   例外是分组本身的启用状态：它没有其他设置位置，在分组标题右侧提供开关（`Module.toggle`）。
+ * - 每行列出底层名称、用途、参数与权限。同一工具在工具卡、参数表与错误信息中的中文说法可能不同，
+ *   只有底层名称（如 `edit_file`）能把三处对应起来。
+ * - 分组只有一层（`category`），不再按 `facet` 细分：本页说明可调用哪些工具，每个工具一行即可浏览。
+ *   后端已按类目排序，此处只分组，不重新排序。
+ * - 不对应工具的模块（上下文压缩、执行循环、版本控制、权限模式、沙箱）同样列出，否则本页会显得这些能力不存在。
+ *   每一条都对应界面上已有的能力，不列尚未实现的条目。
+ * - 新增类目须同时修改三处：`registry.ts` 的联合类型、同文件的 `TOOL_CATEGORIES` 数组与本文件的 `MODULES`。
+ *   遗漏本文件不会报错，分组标题会回退为英文类目 id。
  */
 
-/** 一个模块。`id` 与 `ToolCategory` 同名的会收到工具行；`loop` / `vcs` 不是类目，永远只有说明。 */
+/** 一个模块。`id` 与 `ToolCategory` 同名时接收该类目的工具行；`loop` / `vcs` 不是类目，只显示说明行。 */
 interface Module {
   id: string
   label: string
-  /** 这个模块的操作台。没有就不给按钮。 */
+  /** 该模块的设置页。没有设置页时不显示按钮。 */
   consoles?: { page: SettingsPage; label: string }[]
   /**
-   * 组头右侧的开关，读写配置里的一格。
+   * 分组标题右侧的开关，读写配置中的一个字段。
    *
-   * 给了开关就不要再给 `consoles`：两者占同一个位置，而「这组能不能用」与
-   * 「去别处配它」是同一个问题的两种答法，摆在一起用户不知道该点哪个。
+   * 提供开关时不再提供 `consoles`：两者占用同一位置，且「本组是否启用」与「前往设置页」
+   * 回答的是同一个问题，并列显示时用户无法判断应点击哪一个。
    */
   toggle?: { on: () => boolean; onPick: (on: boolean) => void }
   /** 分组标题旁的运行环境状态，与模块启用开关独立。 */
   environment?: () => { text: string; missing: boolean }
-  /** 不由工具承担的那部分。文案取实时读数，所以是函数。 */
+  /** 不由工具承担的部分。文案取自实时状态，因此是函数。 */
   notes?: { label: string; text: () => string; warn?: () => boolean }[]
 }
 
 const sandbox = () => state.capabilities?.sandbox ?? null
 
 /**
- * 组头那个开关的读数：**缺席按开，只有显式 `false` 才关**。
+ * 电脑控制开关的读数：字段缺失视为开启，只有显式 `false` 才视为关闭。
  *
- * 与服务端装配桌面端口的判据是同一条（`server.ts` 的 `desktopEnabled !== false`）。
- * 两处写法不一致的结果是界面写着「启用」而模型手里没有这组工具。
+ * 与服务端装配桌面端口的判据（`server.ts` 的 `desktopEnabled !== false`）一致；
+ * 两处不一致时，界面显示已启用，而模型没有这组工具。
  */
 export function desktopSwitchOn(cfg: { desktopEnabled?: boolean } | null): boolean {
   return cfg?.desktopEnabled !== false
@@ -67,7 +57,7 @@ export function browserSwitchOn(cfg: { browserEnabled?: boolean } | null): boole
   return cfg?.browserEnabled !== false
 }
 
-/** Office 组头开关的读数：缺席按开，与服务端取端口的判据（`officeEnabled !== false`）同一条。 */
+/** Office 开关的读数：字段缺失视为开启，与服务端获取端口的判据（`officeEnabled !== false`）一致。 */
 export function officeSwitchOn(cfg: { officeEnabled?: boolean } | null): boolean {
   return cfg?.officeEnabled !== false
 }
@@ -78,8 +68,8 @@ export function mediaSwitchOn(cfg: { mediaEnabled?: boolean } | null): boolean {
 }
 
 /**
- * Office 这一组能不能用：Python 与文档库两行都齐才可用，缺项的原因在「通用 → 运行环境」。
- * 读的是握手里的运行环境表，与那两行同一份探测。
+ * Office 分组的可用状态：Python 与文档库均已安装才可用，缺失项在「通用 → 运行环境」中安装。
+ * 读取握手中的运行环境表，与该页的两行使用同一次检测结果。
  */
 function officeState(): { text: string; missing: boolean } {
   const rows = state.capabilities?.environment
@@ -91,13 +81,13 @@ function officeState(): { text: string; missing: boolean } {
   return { text: '可用', missing: false }
 }
 
-/** 命令语法由探测决定（bash → pwsh 7 → Windows PowerShell 5.1），握手只报 bash 那一格。 */
+/** 命令语法由检测结果决定（bash → pwsh 7 → Windows PowerShell 5.1）；握手只报告 bash 一项。 */
 function shellNote(): string {
   const row = state.capabilities?.environment.find((d) => d.id === 'bash')
   if (!row) return '读取中…'
-  if (row.path) return '有 bash，命令按 POSIX 语法写。'
-  if (row.required) return '三种 shell 都未探测到，run_command 未注册。'
-  return '无 bash，命令按 PowerShell 语法写。'
+  if (row.path) return '已检测到 bash，命令使用 POSIX 语法。'
+  if (row.required) return '未检测到可用的 shell，run_command 未注册。'
+  return '未检测到 bash，命令使用 PowerShell 语法。'
 }
 
 const MODULES: Module[] = [
@@ -107,22 +97,21 @@ const MODULES: Module[] = [
     notes: [
       {
         label: 'read_before_write',
-        text: () => '改已存在的文件前必须先读过；读完又被动过会挡回重读。',
+        text: () => '修改已有文件前必须先读取；读取后文件再被修改时，写入被拒绝并要求重新读取。',
       },
     ],
   },
   /*
-   * 「命令怎么跑」与「准不准跑」是两件事，两个分类。
+   * 「命令如何运行」与「是否准许运行」分为两个分类。
    *
-   * 合在一个「命令与进程」里的时候，`run_command`、`sandbox`、`shell` 讲的是
-   * 这条命令落到哪个 shell、跑在什么边界里，而 `mode` 讲的是它该不该被放行——
-   * 用户要改审批模式时得在大量 shell 探测结果里找。
+   * 合为一个分类时，`run_command`、`sandbox`、`shell` 说明命令由哪个 shell 执行、在什么边界内执行，
+   * 而 `mode` 说明命令是否放行；用户修改审批模式时需要在 shell 检测结果中查找。
    */
   {
     id: 'code',
     label: '终端',
-    // 终端这一组能配的只有 shell 本身（装 bash / 看探测到哪个），那在「通用 →
-    // 运行环境」。指向「权限」是错的：那一页管的是能碰哪些路径，不管命令怎么跑。
+    // 终端分组可配置的只有 shell（安装 bash、查看检测结果），位于「通用 → 运行环境」。
+    // 不要指向「权限」：该页管理可访问的路径，不管理命令的执行方式。
     consoles: [{ page: 'general', label: '去配置' }],
     notes: [
       {
@@ -147,16 +136,17 @@ const MODULES: Module[] = [
         text: () =>
           state.capabilities?.mode === 'full'
             ? '完全访问 · 沙箱与凭证剥离不受影响'
-            : '自动审批 · MCP 与插件的工具不过这道闸',
+            : '自动审批 · MCP 与插件工具不经权限检查',
       },
       {
         label: 'additionalDirectories',
         text: () =>
-          '工作区之外额外可读写的目录，软链接按真实路径判。.qy 与 .agents 由文件工具拦，shell 不拦；full 模式下这一层不设。',
+          '工作区之外额外允许读写的目录；符号链接按实际路径判定。.qy 与 .agents 目录由文件工具拦截，shell 不拦截；完全访问模式下不设此限制。',
       },
       {
         label: 'envAllowList',
-        text: () => '显式放行的环境变量名。只豁免「名字像凭证」这一条，值命中已知 key 的仍然剥。',
+        text: () =>
+          '明确放行的环境变量名。仅豁免按名称识别凭证的规则；值与已知 API key 相同的变量仍会被剥离。',
       },
     ],
   },
@@ -166,11 +156,11 @@ const MODULES: Module[] = [
     notes: [
       {
         label: 'ssrf_guard',
-        text: () => '私网与云元数据地址、非 http(s) 协议、非常规端口一律拒；重定向最多 5 跳。',
+        text: () => '拒绝访问内网与云元数据地址、非 http(s) 协议及非常用端口；重定向最多 5 次。',
       },
       {
         label: 'sandboxNetwork',
-        text: () => '配置文件里两档 allow / deny。deny 只在有内核沙箱的平台上生效，界面不给开关。',
+        text: () => '在配置文件中设置为 allow 或 deny；deny 仅在具备内核沙箱的平台上生效。',
       },
     ],
   },
@@ -184,11 +174,11 @@ const MODULES: Module[] = [
     },
   },
   /*
-   * 组头是开关，不是「去配置」：这一组能不能用就由这一格决定，没有别处可去。
-   * 占用真实鼠标键盘的前台操作在「权限」页，它是另一个问题。
+   * 分组标题为开关而不是「去配置」：本组是否启用只由这一项决定，没有其他设置位置。
+   * 占用真实鼠标与键盘的前台操作在「权限」页设置，属于另一个问题。
    *
-   * 两条以内部键名为标签的说明行删掉了：`desktopEnabled` 说的事开关自己就写着，
-   * `dispatch` 是宿主回执的协议字段，用户既判断不了也不按它做任何决定（B7）。
+   * 不添加以内部键名为标签的说明行：`desktopEnabled` 的含义已由开关表达，
+   * `dispatch` 是宿主回执的协议字段，用户无法据此作出判断（B7）。
    */
   {
     id: 'desktop',
@@ -199,7 +189,7 @@ const MODULES: Module[] = [
     },
   },
   /*
-   * 组头是开关，与电脑控制同一条理由。缺 Python 或文档库时开着也用不了：
+   * 分组标题为开关，理由同电脑控制。缺少 Python 或文档库时，开关开启也无法使用：
    * 标题旁显示环境状态，安装入口在「通用 → 运行环境」；render 行说明能力边界。
    */
   {
@@ -211,7 +201,10 @@ const MODULES: Module[] = [
       onPick: (on) => void patchConfig({ officeEnabled: on }),
     },
     notes: [
-      { label: 'render', text: () => '渲染、重算与目录页码回填用本机 Word 或 WPS，仅 Windows。' },
+      {
+        label: 'render',
+        text: () => '渲染、公式重算与目录页码更新依赖本机的 Word 或 WPS，仅支持 Windows。',
+      },
     ],
   },
   // 分组标题为开关，理由同电脑控制。
@@ -224,11 +217,10 @@ const MODULES: Module[] = [
     },
   },
   /*
-   * 记忆和技能是两个类目，不是一个「记忆与技能」。
+   * 记忆与技能是两个类目，不合并为「记忆与技能」。
    *
-   * 合着的时候这一组的说明行只能起中文名（「标题常驻，正文按需」「条数上限」）——
-   * 因为它描述的是两个模块的共同点，代码里没有哪个标识对得上。拆开之后各自都有：
-   * 上限是 `MAX_ENTRIES`（`tools/src/memory.ts`），进尾区的索引是
+   * 合并时说明行描述的是两个模块的共同点，代码中没有对应的标识符，只能另起中文名称。
+   * 分开后各自有对应的标识符：上限为 `MAX_ENTRIES`（`tools/src/memory.ts`），上下文末尾的索引为
    * `buildTailNotes` 的 `memory` / `skills` 两个分组（`runtime/src/prompt.ts`）。
    */
   {
@@ -236,22 +228,24 @@ const MODULES: Module[] = [
     label: '记忆',
     consoles: [{ page: 'memory', label: '去配置' }],
     notes: [
-      { label: 'memory', text: () => '记忆的 key 与首行常驻上下文尾区，正文按需读。' },
-      { label: 'MAX_ENTRIES', text: () => '最多 200 条，满了之后写入失败。' },
+      { label: 'memory', text: () => '记忆的名称与首行始终附在上下文末尾，正文按需读取。' },
+      { label: 'MAX_ENTRIES', text: () => '最多 200 条，达到上限后无法写入。' },
     ],
   },
   {
     id: 'skills',
     label: '技能',
     consoles: [{ page: 'skills', label: '去配置' }],
-    notes: [{ label: 'skills', text: () => '技能名与一句话描述常驻上下文尾区，正文按需读。' }],
+    notes: [
+      { label: 'skills', text: () => '技能名称与简短描述始终附在上下文末尾，正文按需读取。' },
+    ],
   },
   {
     id: 'planning',
     label: '待办',
     notes: [
-      { label: 'MAX_ITEMS', text: () => '每次提交的是整张清单，不是增删一条；最多 40 条。' },
-      { label: 'in_progress', text: () => '同时最多一条；多于一条当场判失败，不会替它纠正。' },
+      { label: 'MAX_ITEMS', text: () => '每次提交完整清单，而非单条增删；最多 40 条。' },
+      { label: 'in_progress', text: () => '同一时间最多一条；超过一条时提交失败，不会自动修正。' },
     ],
   },
   {
@@ -259,14 +253,13 @@ const MODULES: Module[] = [
     label: '目标',
     notes: [
       /*
-       * **没有轮数上限。** 不要在这里写「默认 12 轮，最多 50 轮」之类的数字：
-       * 代码里不存在这样的配额（`core/domain/model.ts` 的 `Goal` 注释写明了），
-       * 写了就是一条用户会照着算的假数据。
+       * 不设轮数上限。不要在此写「默认 12 轮，最多 50 轮」之类的数字：代码中没有这样的配额
+       * （见 `core/domain/model.ts` 中 `Goal` 的注释），写入即构成用户会据以计算的错误数据。
        */
       {
         label: 'CONTINUABLE',
         text: () =>
-          '只有正常收尾才续起下一轮。没有轮数上限：出口是模型宣布做完、空转拦截、不可恢复错误或用户停止。',
+          '仅在本轮正常结束后自动开始下一轮。轮数不设上限；模型声明目标完成、连续无进展、发生不可恢复的错误或用户停止时终止。',
       },
     ],
   },
@@ -276,7 +269,7 @@ const MODULES: Module[] = [
     notes: [
       {
         label: 'TRIGGER_RATIO',
-        text: () => '每次发请求前判定；上下文占用超过窗口的 80% 时先压缩再发出。',
+        text: () => '每次请求前检查；上下文用量超过窗口的 80% 时先压缩再发送。',
       },
     ],
   },
@@ -288,7 +281,7 @@ const MODULES: Module[] = [
       {
         label: 'isDue',
         text: () =>
-          '触发时新开一条会话执行给定的提示词，最小粒度 1 分钟。仅在应用运行时触发；关闭期间错过的不逐次补跑，重新打开后每条任务最多跑一次。',
+          '触发时新建会话执行指定的提示词，最小间隔 1 分钟。仅在应用运行时触发；关闭期间错过的执行不逐次补齐，重新打开后每条任务最多补执行一次。',
       },
     ],
   },
@@ -299,44 +292,49 @@ const MODULES: Module[] = [
     id: 'loop',
     label: '执行循环',
     notes: [
-      { label: 'run', text: () => '没有固定回合上限；模型完成、空转拦截、错误或用户停止时结束。' },
+      {
+        label: 'run',
+        text: () => '不设固定轮数上限；模型完成任务、连续无进展、出错或用户停止时结束。',
+      },
       {
         label: 'isParallelSafe',
-        text: () => '声明了可并行、且不涉及同一份资源的连续调用才并成一波。',
+        text: () => '声明可并行且不涉及同一资源的连续调用合并为一批并行执行。',
       },
-      { label: 'StopReason', text: () => '收尾那一行标明本轮的停止原因。' },
+      { label: 'StopReason', text: () => '每轮末尾的摘要行显示本轮的停止原因。' },
     ],
   },
   {
     id: 'vcs',
     label: '版本控制',
     notes: [
-      { label: 'FileChange', text: () => '改动实时统计在输入框上方，侧面板里逐份审阅。' },
-      { label: 'git', text: () => '提交与分支由模型执行 git 命令完成，没有单独的工具。' },
+      {
+        label: 'FileChange',
+        text: () => '改动统计实时显示在输入框上方，可在侧面板中逐个文件审阅。',
+      },
+      { label: 'git', text: () => '提交与分支操作由模型执行 git 命令完成，不提供单独的工具。' },
     ],
   },
 ]
 
 /**
- * 权限副作用的中文名与轻重。
+ * 权限副作用的中文名称与警示级别。
  *
- * 轻重不是装饰：`execute` 是唯一能绕开路径约束与 SSRF 闸的那条路，
- * 它和「写一个文件」不该在同一行里长得一样。
+ * 警示级别用于区分风险：`execute` 是唯一能绕过路径约束与 SSRF 防护的方式，不应与写入文件显示为同一级别。
  *
- * `internal_control` 说「不走权限闸」而不是留空——留空看起来像漏填。
+ * `internal_control` 显示「不经权限检查」而不是留空，留空会被看作漏填。
  */
 const PERMS: Record<string, { label: string; warn?: number }> = {
   read: { label: '读取' },
   write: { label: '写入', warn: 1 },
   delete: { label: '删除', warn: 1 },
-  network: { label: '出网', warn: 1 },
+  network: { label: '网络访问', warn: 1 },
   browser: { label: '浏览器控制', warn: 1 },
   desktop: { label: '电脑控制', warn: 2 },
   execute: { label: '执行', warn: 2 },
-  internal_control: { label: '不走权限闸' },
+  internal_control: { label: '不经权限检查' },
 }
 
-/** 后端遇到函数型字段会下发「不固定」，那时原样显示——填一个具体值就是编数据。 */
+/** 后端遇到函数型字段时下发「不固定」，此时原样显示；填入具体值即构成虚构数据。 */
 function permText(effect: string): string {
   const p = PERMS[effect]
   if (!p) return effect
@@ -352,11 +350,11 @@ interface ToolRow {
 }
 
 export function ModulesSettings() {
-  // 组头那个开关读写的是同一份服务端配置，和各设置页共用一份（见 `configStore.ts`）。
+  // 分组标题的开关读写同一份服务端配置，与各设置页共用（见 `configStore.ts`）。
   ensureConfig()
   const [data, { refetch }] = createResource(() => client.api<{ tools: ToolRow[] }>('/api/tools'))
 
-  /** 后端已按类目排好序，这里只分组不重排；只有说明没有工具的模块补在末尾。 */
+  /** 后端已按类目排序，此处只分组，不重新排序；只有说明行、没有工具的模块追加在末尾。 */
   const groups = () => {
     const out: { mod: Module; rows: ToolRow[] }[] = []
     for (const row of loaded(data)?.tools ?? []) {
@@ -378,12 +376,12 @@ export function ModulesSettings() {
       if (!out.some((g) => g.mod.id === m.id)) out.push({ mod: m, rows: [] })
     }
     /*
-     * 顺序按 `MODULES` 写的来。
+     * 按 `MODULES` 中的顺序排列。
      *
-     * 不要按「先排带工具的、纯说明的放最后」来排：那样「权限」这种没有工具的模块
-     * 会掉到页尾，离它对应的「终端」隔着半屏。
-     * 后端认得的类目在 `MODULES` 里都有一条，所以这一次排序对它们是恒等；
-     * 真排不到的（后端加了类目而这里漏登记）留在末尾，那正好是需要被看见的位置。
+     * 不要改为「有工具的在前、只有说明行的在后」：那样「权限」这类没有工具的模块会移到页面末尾，
+     * 与对应的「终端」相隔半屏。
+     * 后端已知的类目在 `MODULES` 中都有一条，因此这次排序不改变它们的相对顺序；
+     * 未登记的类目（后端新增而此处遗漏）排在末尾，便于发现。
      */
     const rank = (id: string) => {
       const i = MODULES.findIndex((m) => m.id === id)
@@ -409,7 +407,7 @@ export function ModulesSettings() {
                   </span>
                 )}
               </Show>
-              {/* 开关要等配置到手再画：还没到手时点下去写不出去，而界面上看不出来。 */}
+              {/* 配置加载完成后才渲染开关：加载前点击无法写入，且界面上不显示失败。 */}
               <Show when={g.mod.toggle}>
                 {(t) => (
                   <Show when={config()}>
@@ -453,8 +451,7 @@ export function ModulesSettings() {
                   </div>
                 )}
               </For>
-              {/* 说明行的名字取的是代码里那个标识（`mode`、`sandbox`…），
-                  所以和工具名同一种写法——一个用等宽一个用正文，那本身就是中英混排。 */}
+              {/* 说明行的名称取自代码中的标识符（`mode`、`sandbox` 等），因此与工具名同样使用等宽字体。 */}
               <For each={g.mod.notes}>
                 {(n) => (
                   <div class="setting-row stack" classList={{ warn: n.warn?.() === true }}>

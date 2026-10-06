@@ -36,28 +36,28 @@ interface PluginsPayload {
 /**
  * 插件。
  *
- * **不分层。** 只有 `~/.qywork/plugins/` 一个目录。插件贡献的是工具、预览器、供应商——
- * 那些是这个 agent 的能力，不是某个仓库的内容。分层的代价是同一个插件在两个
- * 仓库里各存一份、各自升级。「这个项目要不要加载它」是开关，不是第二份拷贝。
+ * **不分层。** 只有 `~/.qywork/plugins/` 一个目录。插件提供的是工具、预览器、供应商，
+ * 属于本 agent 的能力，不属于某个仓库的内容。分层的代价是同一个插件在两个
+ * 仓库中各存一份、各自升级。「本项目是否加载它」是开关，不是第二份副本。
  *
- * **为什么不叫「插件市场」。** 这个项目没有中心 registry，也不该现造一个。一个叫「市场」而里面没有
- * 任何可安装内容的页面，就是把空壳换个名字再造一遍。所以这里只做 **已安装**——它有真实
+ * **不称为「插件市场」。** 本项目没有中心 registry，也不应临时建立。名为「市场」却没有
+ * 任何可安装内容的页面，只是换名重建的空壳。因此此处只做 **已安装**：它有真实
  * 数据源，而「市场」没有。
  *
- * **与 `qy plugins` 同源。** 走的是同一个 `loadExtensions`，所以命令行与界面对「装了什么、隔离到什
- * 么程度」不会给出两种答案。两套读法迟早分叉，而分叉的那一刻没有人会发现。
+ * **与 `qy plugins` 同源。** 两者使用同一个 `loadExtensions`，因此命令行与界面对「安装了什么、隔离到什
+ * 么程度」不会给出两种答案。两套读取逻辑终将分叉，且分叉发生时无法察觉。
  *
- * **失败的也要列。** 装失败的插件是最需要被看到的：只列成功的，「放进去了却没出现」就完全无从查起。
+ * **失败的插件也要列出。** 安装失败的插件最需要被看到：只列出成功的插件时，「已放入目录却未出现」将无从排查。
  *
- * **MCP 不在这一页。** 它自己有一页。不要因为 `/api/plugins` 一并回了一个名字数组就把 MCP 挂回这
- * 里。
+ * **MCP 不在本页。** MCP 有独立的页面。不要因为 `/api/plugins` 同时返回了一个名称数组就把 MCP 放回
+ * 本页。
  */
-/** 插件目录的最后一段。绝对路径当标题会把整张卡撑成两行，而原因才是要看的。 */
+/** 插件目录路径的最后一段。用绝对路径作标题会把整张卡片撑成两行，而需要查看的是失败原因。 */
 function dirName(dir: string): string {
   return dir.split(/[\\/]/).pop() ?? dir
 }
 
-/** 「新增」递给模型的话头。不自动发送——用户可以改了再发。 */
+/** 「新增」时交给模型的初始指令。不自动发送：用户可以修改后再发送。 */
 const NEW_PLUGIN =
   '新建一个插件。请先说明插件在 qywork 中如何加载、运行在何处、可获得哪些权限，以及目录需包含哪些文件；然后询问该插件要提供哪些工具。'
 
@@ -66,10 +66,6 @@ export function PluginsPanel() {
   const [busy, setBusy] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [okMsg, setOkMsg] = createSignal<string | null>(null)
-  /** 新建表单。null = 没在建。 */
-
-  /** 导入框开着没有。分开一个状态是因为两条路各自有各自的取消。 */
-
   const act = async (key: string, fn: () => Promise<unknown>, ok: (r: never) => string) => {
     setBusy(key)
     setError(null)
@@ -77,7 +73,7 @@ export function PluginsPanel() {
     try {
       const r = (await fn()) as never
       setOkMsg(ok(r))
-      // 装完 / 卸完立刻重拉：列表不刷新的话界面上等同于没生效，用户会再点一次。
+      // 安装或卸载后立即重新获取：列表不刷新时界面上相当于未生效，用户会再次点击。
       await refetch()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -91,12 +87,12 @@ export function PluginsPanel() {
       'install',
       () => installPlugin(path),
       (r: { id: string }) =>
-        // 说清「装好了但还没生效」：插件在服务启动时加载，不是热插拔。
-        // 不写这句的话，装完发现工具列表没变，会被当成安装失败。
-        `已装入 ${r.id}。插件在服务启动时加载，重启后生效。`,
+        // 说明「已安装但尚未生效」：插件在服务启动时加载，不支持热插拔。
+        // 不写这句时，安装后发现工具列表未变化，会被当作安装失败。
+        `已安装 ${r.id}。插件在服务启动时加载，重启后生效。`,
     )
 
-  /** 选一个本机上已经存在的插件目录，选完就装。 */
+  /** 选择本机上已存在的插件目录，选择后立即安装。 */
   const browse = async () => {
     if (!isDesktopShell()) return
     setError(null)
@@ -110,13 +106,13 @@ export function PluginsPanel() {
   }
 
   /**
-   * 这一段的两个动作。**区头和空态框共用同一份**——两处各写一遍的话迟早只改一处，
-   * 而空的时候用户看到的是空态框里那一份。
+   * 本区域的两个操作。**区域标题与空状态框共用同一份定义**：两处分别实现时终将只修改其中一处，
+   * 而列表为空时用户看到的是空状态框中的那一份。
    */
   const Actions = () => (
     <>
-      {/* 导入只有桌面外壳有：网页里没有系统文件选择器，
-          留一个点了没反应的按钮比不给更糟（B5）。 */}
+      {/* 导入只在桌面外壳中提供：网页中没有系统文件选择器，
+          保留一个点击无响应的按钮比不提供更差（B5）。 */}
       <Show when={isDesktopShell()}>
         <button
           class="btn-ghost sm"
@@ -135,9 +131,9 @@ export function PluginsPanel() {
 
   return (
     <>
-      {/* `loaded()` 而不是 `data()`：装/卸插件之后要重取，重取期间留住上一份；
-          出错时给 undefined，由 `LoadState` 说明原因并给一条重试的路——
-          写成 `data()` 的话它会先抛，`fallback` 永远轮不到。 */}
+      {/* 使用 `loaded()` 而不是 `data()`：安装或卸载插件后需要重新获取，重新获取期间保留上一份数据；
+          出错时返回 undefined，由 `LoadState` 说明原因并提供重试入口。
+          写成 `data()` 时它会先抛出错误，`fallback` 永远不会显示。 */}
       <Show
         when={loaded(data)}
         fallback={<LoadState error={data.error} onRetry={() => void refetch()} />}
@@ -147,7 +143,7 @@ export function PluginsPanel() {
             <Section title="已安装" path={d().dir} actions={<Actions />}>
               <Show
                 when={d().plugins.length > 0}
-                fallback={<EmptyBox label="还没有装插件" actions={<Actions />} />}
+                fallback={<EmptyBox label="尚未安装插件" actions={<Actions />} />}
               >
                 <div class="entry-list">
                   <For each={d().plugins}>
@@ -177,11 +173,11 @@ export function PluginsPanel() {
                         }
                       >
                         {/* 隔离状态分三种，不能合并显示。
-                          「纯声明式插件没有进程」和「有进程但没隔离」是完全不同的事，
-                          显示成同一个「无」会把前者读成一处安全问题。 */}
+                          「纯声明式插件没有进程」与「有进程但未隔离」完全不同，
+                          显示为同一个「无」会把前者误读为安全问题。 */}
                         <div class="entry-extra">
                           <Show when={p.process === 'declarative'}>
-                            <span>纯声明式插件，没有代码进程</span>
+                            <span>纯声明式插件，无代码进程</span>
                           </Show>
                           <Show when={p.process === 'unknown'}>
                             <span>进程未启动，隔离状态未知</span>
@@ -191,7 +187,7 @@ export function PluginsPanel() {
                               沙箱 {p.sandboxed ? '有' : '无'}
                             </span>
                             <span class="iso-flag" classList={{ off: !p.netGuarded }}>
-                              出网闸 {p.netGuarded ? '有' : '无'}
+                              网络访问限制 {p.netGuarded ? '有' : '无'}
                             </span>
                             <Show when={p.note}>{(n) => <span>{n()}</span>}</Show>
                           </Show>
@@ -209,7 +205,7 @@ export function PluginsPanel() {
             </Section>
 
             <Show when={d().failures.length > 0}>
-              <Section title="没装上">
+              <Section title="安装失败">
                 <div class="entry-list">
                   <For each={d().failures}>
                     {(f) => (
@@ -229,10 +225,10 @@ export function PluginsPanel() {
               </Section>
             </Show>
 
-            {/* 结果落在页面上，不挂在某一个表单里——建完之后表单就关了，
-              挂在里面的话那句「已建好」跟着一起消失。
-              `error()` / `okMsg()` 必须排在这串 `&&` 的最后：`Show` 把 `when` 的
-              求值结果原样交给子函数，布尔 `true` 渲染出来是一个空框。 */}
+            {/* 结果显示在页面上，不放在某个表单中：创建完成后表单即关闭，
+              放在表单中的「已创建」提示会随之消失。
+              `when` 中以 `&&` 组合条件时，`error()` / `okMsg()` 必须排在最后：`Show` 把 `when` 的
+              求值结果原样传给子函数，布尔值 `true` 会渲染为一个空框。 */}
             <Show when={error()}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
             <Show when={okMsg()}>{(m) => <p class="settings-notices">{m()}</p>}</Show>
           </>

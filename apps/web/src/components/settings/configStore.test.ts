@@ -1,14 +1,14 @@
 /**
  * 配置写串行化与乐观并发（`configStore.ts` 的 `replaceConfig`）。
  *
- * 锁两个真实的丢 key：
- * 1. 同一页面里先填 API Key、紧接着填 Base URL，两次「读整份 → 改一格 → 整份 PUT」
- *    重叠，url 那次在 key 落盘前读到旧值，写回把 key 覆盖成空。串行化让写不重叠。
- * 2. 两个窗口/设备同时改，后写的那次基于旧整份，把前一次刚落的字段盖掉。服务端按
- *    版本指纹回 409，客户端重读最新整份、在其上重放这次编辑再提交，两处改动都留住。
+ * 锁定两种 key 丢失场景：
+ * 1. 同一页面中先填写 API Key、紧接着填写 Base URL，两次「读取完整配置 → 修改一个字段 → 整份 PUT」
+ *    重叠，写入 url 的一次在 key 落盘前读到旧值，写回时把 key 覆盖为空。串行化使两次写入不重叠。
+ * 2. 两个窗口或设备同时修改，后写入的一次基于旧的完整配置，覆盖前一次刚保存的字段。服务端按
+ *    版本指纹返回 409，客户端重新读取最新的完整配置、在其上重放本次编辑后再提交，两处修改均得到保留。
  *
- * 服务端由 `client.api` 的替身模拟，`/api/config` 的 PUT 复刻真实语义：`mergeConfig` 的
- * `hasApiKey:false` 且不带明文 = 清 key；`baseVersion` 对不上当前版本 = 回 409。
+ * 服务端由 `client.api` 的替身模拟，`/api/config` 的 PUT 复现真实语义：按 `mergeConfig`，
+ * `hasApiKey:false` 且不带明文表示清除 key；`baseVersion` 与当前版本不一致时返回 409。
  *
  * 不要改成用 `mock.module` 替换 store 模块：Bun 的模块替身在整个测试进程内有效，
  * `mock.restore()` 不撤销它，之后导入 store 的测试文件读写的都是这里的内存服务端。
@@ -31,9 +31,9 @@ let server: {
   updates: { autoCheck: boolean; autoDownload: boolean }
 }
 let serverVersion = 0
-/** 下一次 PUT 先注入一次「别处的并发改动」，逼出一次 409。 */
+/** 下一次 PUT 前注入一次来自其他客户端的并发修改，以触发一次 409。 */
 let injectConflictOnce: (() => void) | null = null
-/** 每次 PUT 先取出队首的一项执行完再落盘；它抛出即这次保存失败。 */
+/** 每次 PUT 先取出队首的一项并执行完毕，再落盘；该项抛出异常即表示本次保存失败。 */
 const beforePut: (() => Promise<void>)[] = []
 
 function payloadFromServer(): ConfigPayload {
@@ -92,7 +92,7 @@ async function serverApi<T>(path: string, init?: RequestInit): Promise<T> {
   return { ok: true } as T
 }
 
-// store 模块求值时按 `location` 建连接客户端，DOM 必须先于它注册。
+// store 模块求值时按 `location` 创建连接客户端，DOM 必须先于它注册。
 beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
   store = await import('../../lib/store/index.ts')
@@ -148,8 +148,8 @@ describe('配置写串行化与乐观并发', () => {
     await configStore.reloadConfig()
   })
 
-  test('先填 key 紧接着填 url，并发两次写不丢 key', async () => {
-    // 不等第一次完成就发第二次——正是用户「填完 key 立刻填 url」的节奏。
+  test('先填写 key 紧接着填写 url，两次并发写入不丢失 key', async () => {
+    // 不等待第一次完成即发起第二次，对应用户填写 key 后立即填写 url 的操作。
     const a = configStore.replaceConfig(setKey('sk-x'))
     const b = configStore.replaceConfig(setUrl('https://api.example.com/v1'))
     await Promise.all([a, b])
@@ -157,7 +157,7 @@ describe('配置写串行化与乐观并发', () => {
     expect(server.providers.ds?.baseUrl).toBe('https://api.example.com/v1')
   })
 
-  test('反过来先填 url 再填 key 同样不丢', async () => {
+  test('顺序相反，先填写 url 再填写 key，同样不丢失', async () => {
     const a = configStore.replaceConfig(setUrl('https://api.example.com/v1'))
     const b = configStore.replaceConfig(setKey('sk-y'))
     await Promise.all([a, b])
@@ -165,19 +165,19 @@ describe('配置写串行化与乐观并发', () => {
     expect(server.providers.ds?.baseUrl).toBe('https://api.example.com/v1')
   })
 
-  test('别处并发改配置引发 409：重读重放，两处改动都留住', async () => {
-    // 本次要填 key。保存那一刻，模拟另一个窗口刚把 baseUrl 写了进去（版本随之变）。
+  test('其他客户端并发修改配置引发 409：重新读取并重放，两处修改均保留', async () => {
+    // 本次填写 key。保存时模拟另一个窗口刚写入 baseUrl（版本随之改变）。
     injectConflictOnce = () => {
       server.providers.ds = { kind: 'openai_chat_completions', baseUrl: 'https://other.example/v1' }
       serverVersion++
     }
     await configStore.replaceConfig(setKey('sk-z'))
-    // 第一次 save 撞 409；重读拿到别处那次的 baseUrl，重放本次 setKey 后再存。
+    // 第一次保存遇到 409；重新读取得到另一个窗口写入的 baseUrl，重放本次 setKey 后再保存。
     expect(server.providers.ds?.apiKey).toBe('sk-z')
     expect(server.providers.ds?.baseUrl).toBe('https://other.example/v1')
   })
 
-  test('连续改两个开关，前一次保存返回时不覆盖后一次的即时显示', async () => {
+  test('连续修改两个开关，前一次保存返回时不覆盖后一次的即时显示', async () => {
     const first = pause()
     const second = pause()
     beforePut.push(

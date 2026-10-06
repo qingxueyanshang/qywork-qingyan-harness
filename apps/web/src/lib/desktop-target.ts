@@ -1,9 +1,9 @@
 /**
- * 电脑控制那几条动作行行尾显示的目标。
+ * 电脑控制动作行行尾显示的目标。
  *
- * `action.target` 存的是协调器发的不透明窗口编号（`dw_N`），只供权限与冲突判定；
- * 显示用这一步自己的结果里带回的窗口标题，没有标题用应用名，两者都没有就不显示。
- * 不要回落到 `action.target`：那个编号用户认不出，也对不上屏幕上的任何窗口。
+ * `action.target` 存储协调器分配的不透明窗口编号（`dw_N`），仅用于权限与冲突判定；
+ * 显示时使用该步骤结果中携带的窗口标题，没有标题时使用应用名，两者都没有时不显示。
+ * 不要回落到 `action.target`：该编号用户无法识别，也不对应屏幕上的任何窗口。
  */
 export function desktopWindowLabel(data: unknown): string | undefined {
   const own = labelOf(data)

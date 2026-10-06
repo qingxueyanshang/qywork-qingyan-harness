@@ -18,7 +18,7 @@ describe('输入区引用', () => {
     })
   })
 
-  test('邮箱与已经结束的引用不弹面板', () => {
+  test('邮箱地址与已结束的引用不弹出面板', () => {
     expect(mentionQuery('name@example.com')).toBeNull()
     expect(mentionQuery('使用 #release 发版')).toBeNull()
     expect(mentionQuery('普通正文')).toBeNull()

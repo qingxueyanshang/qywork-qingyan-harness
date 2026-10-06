@@ -3,8 +3,8 @@
  * `canvas/Rail.tsx`、`canvas/Bitmap.tsx`、`canvas/Player.tsx`、`canvas/Timeline.tsx`、`canvas/prompt.ts` 与 `canvas/frame.ts` 的纯函数，
  * 以及 `lib/store/ui.ts` 的 `openCanvasTab`。
  *
- * 服务端用内存里的一份画布代替：`client.api` 的桩按路径分派，操作经 core 的 `applyCanvasOps` 应用，
- * 每次提交的操作都记下来，断言落在「发了哪几批操作」上。
+ * 服务端由内存中的一份画布模拟：`client.api` 的桩按路径分派，操作经 core 的 `applyCanvasOps` 应用，
+ * 每次提交的操作都被记录，断言针对发送了哪几批操作。
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test'
@@ -13,7 +13,7 @@ import type { CanvasDoc, CanvasOp, CanvasView } from '@qywork/core'
 
 beforeAll(() => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
-  // happy-dom 没有这两样；真实 WebView 里都有。尺寸由 `resize` 手动上报。
+  // happy-dom 不提供这两个 API，真实 WebView 中均有提供。尺寸由 `resize` 手动报告。
   ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
     constructor(private readonly callback: () => void) {}
     observe(el: Element) {
@@ -22,7 +22,7 @@ beforeAll(() => {
     disconnect() {}
   }
   HTMLElement.prototype.setPointerCapture = () => {}
-  // 图片由 Bitmap 自己取文件；测试里一律取不到，走解码失败的那一支。
+  // 图片由 Bitmap 自行获取文件；测试中一律获取失败，进入解码失败分支。
   globalThis.fetch = ((url: string) => {
     fetched.push(String(url))
     return Promise.reject(new Error('测试里不取文件'))
@@ -30,10 +30,10 @@ beforeAll(() => {
 })
 
 const observed = new Map<Element, () => void>()
-/** Bitmap 发出的取文件请求，按顺序记下地址。 */
+/** Bitmap 发出的文件请求，按请求顺序记录地址。 */
 const fetched: string[] = []
 
-/** 让画布区「量到」一个尺寸：happy-dom 不排版，`clientWidth` 恒为 0。 */
+/** 为画布区设定测得的尺寸：happy-dom 不进行布局，`clientWidth` 恒为 0。 */
 function resize(el: HTMLElement, width: number, height: number) {
   Object.defineProperty(el, 'clientWidth', { configurable: true, value: width })
   Object.defineProperty(el, 'clientHeight', { configurable: true, value: height })
@@ -141,16 +141,16 @@ interface Server {
   setView(next: Partial<CanvasView>): void
   broken: boolean
   quote: { cost: number; currency: string } | null
-  /** 上传请求的查询串，按顺序。 */
+  /** 上传请求的查询字符串，按请求顺序记录。 */
   uploads: URLSearchParams[]
-  /** 撤销 / 重做请求，按顺序。 */
+  /** 撤销与重做请求，按请求顺序记录。 */
   restores: { from: string; to: string }[]
-  /** 时间线导出会话的请求，按顺序：开始、写、完成、放弃。 */
+  /** 时间线导出会话的请求，按请求顺序记录：开始、写入、完成、放弃。 */
   exports: string[]
-  /** 停止请求的节点 id，按顺序；回的结果取 `cancelOutcome`。 */
+  /** 停止请求的节点 id，按请求顺序记录；返回结果取 `cancelOutcome`。 */
   cancels: string[]
   cancelOutcome: 'cancelled' | 'started' | 'unsupported' | 'ended'
-  /** 给了时，编辑的回体先按收到请求时的画布算好，等它兑现才回：模拟回包晚于其后的重读到达。 */
+  /** 设置时，编辑的响应体先按收到请求时的画布计算，等该 Promise 兑现后才返回：模拟响应晚于其后的重新读取到达。 */
   hold: Promise<void> | null
 }
 
@@ -182,7 +182,7 @@ async function mount(
     setView(next) {
       if (next.doc) {
         doc = next.doc
-        // 外部改动：文档换了、指纹跟着换，撤销应当被拒。
+        // 外部修改：文档被替换，指纹随之变化，撤销应被拒绝。
         fingerprint = `x${++written}`
       }
       if (next.states) extraStates = next.states
@@ -218,7 +218,7 @@ async function mount(
         const { ApiError } = await import('../../lib/client.ts')
         throw new ApiError(422, path, JSON.stringify({ error: 'invalid', message: r.error }))
       }
-      // 与服务端同一约定：每次写盘记下前后两份文档的指纹。
+      // 与服务端约定相同：每次写入文件时记录修改前后两份文档的指纹。
       const before = fingerprint
       doc = r.doc
       fingerprint = `d${++written}`
@@ -234,7 +234,7 @@ async function mount(
         throw new ApiError(
           409,
           path,
-          '{"error":"conflict","message":"画布在这之后被改过，撤销不了"}',
+          '{"error":"conflict","message":"画布在此之后已被修改，无法撤销"}',
         )
       }
       doc = snapshots.get(body.to)!
@@ -261,7 +261,7 @@ async function mount(
         const { ApiError } = await import('../../lib/client.ts')
         throw new ApiError(500, path, '{"error":"internal","message":"磁盘读不了"}')
       }
-      // 同服务端：带 `kinds` 时只回这几类文件，查询允许为空。
+      // 与服务端相同：带 `kinds` 时只返回这几类文件，查询可以为空。
       const kinds = params.get('kinds')
       const wanted = kinds === null ? null : new Set(kinds.split(','))
       const all = [
@@ -280,7 +280,7 @@ async function mount(
       }
     }
     if (path.startsWith('/api/canvas/upload')) {
-      // 与服务端同一写法：落进 uploads/ 并加节点。
+      // 与服务端行为相同：保存到 uploads/ 并添加节点。
       const q = new URLSearchParams(path.split('?')[1])
       server.uploads.push(q)
       const file = `uploads/${q.get('name')}`
@@ -312,7 +312,7 @@ async function mount(
   restore = () => {
     ;(store.client as unknown as { api: typeof original }).api = original
   }
-  // 模型目录在模块里只拉一次；同一进程里先跑的测试文件可能已经拉过别的目录。
+  // 模型目录在模块中只获取一次；同一进程中先运行的测试文件可能已获取过其他目录。
   await store.reloadModelCatalog()
   const { render } = await import('solid-js/web')
   const { default: CanvasPanel } = await import('./CanvasPanel.tsx')
@@ -328,7 +328,7 @@ async function mount(
   return { host, server, refs: seeded.refs }
 }
 
-/** 当前视口缩放（`--z`）。屏幕上的位移除以它才是画布坐标里的位移。 */
+/** 当前视口缩放（`--z`）。屏幕上的位移除以该值才是画布坐标中的位移。 */
 function zoom(host: HTMLElement): number {
   return Number(host.querySelector<HTMLElement>('.canvas-stage')!.style.getPropertyValue('--z'))
 }
@@ -364,7 +364,7 @@ const FILES: CanvasOp[] = [
 ]
 
 describe('画布：节点操作', () => {
-  test('图片取不到时节点里显示图片图标', async () => {
+  test('无法获取图片时节点中显示图片图标', async () => {
     const { host } = await mount(FILES)
     await waitFor(
       () => host.querySelectorAll('.canvas-bitmap-failed').length === 2,
@@ -372,7 +372,7 @@ describe('画布：节点操作', () => {
     )
   })
 
-  test('首次适配等画布区量到尺寸，量到之后全部节点落在画布区内', async () => {
+  test('首次适配等待画布区测得尺寸，测得后全部节点位于画布区内', async () => {
     const { host, server } = await mount(FILES)
     const stage = host.querySelector<HTMLElement>('.canvas-stage')!
     await new Promise((resolve) => setTimeout(resolve, 30))
@@ -389,7 +389,7 @@ describe('画布：节点操作', () => {
     }
   })
 
-  test('视频节点平时只画封面，选中才挂播放器，用自己的控件不用浏览器自带的', async () => {
+  test('视频节点未选中时只绘制封面，选中后才挂载播放器，使用自有控件而非浏览器自带控件', async () => {
     const { host, refs } = await mount([
       { op: 'add_file', ref: '$v', path: 'clip.mp4', x: 0, y: 0 },
     ])
@@ -472,7 +472,7 @@ describe('画布：节点操作', () => {
     pause.mockRestore()
   })
 
-  test('静音的选择换选节点后沿用', async () => {
+  test('切换选中节点后沿用静音设置', async () => {
     const { host, refs } = await mount([
       { op: 'add_file', ref: '$v', path: 'clip.mp4', x: 0, y: 0 },
       { op: 'add_file', ref: '$w', path: 'other.mp4', x: 400, y: 0 },
@@ -496,7 +496,7 @@ describe('画布：节点操作', () => {
     expect((await select(refs.$w!)).muted).toBe(false)
   })
 
-  test('取帧打开取帧条、占工具条的位置；拖时刻定位播放器；Esc 收起', async () => {
+  test('取帧打开取帧条并占据工具条的位置；拖动时刻定位播放器；Esc 关闭', async () => {
     const { host, refs } = await mount([
       { op: 'add_file', ref: '$v', path: 'clip.mp4', x: 0, y: 0 },
     ])
@@ -529,7 +529,7 @@ describe('画布：节点操作', () => {
     )
   })
 
-  test('改一个节点不让任何图片重新取文件', async () => {
+  test('修改一个节点不会使任何图片重新获取文件', async () => {
     const { host, server, refs } = await mount(FILES)
     await waitFor(
       () => host.querySelectorAll('.canvas-bitmap-failed').length === 2,
@@ -548,7 +548,7 @@ describe('画布：节点操作', () => {
     expect(fetched.slice(before)).toEqual([])
   })
 
-  test('改一个节点后其余节点的元素原样保留，不重建', async () => {
+  test('修改一个节点后其余节点的元素保持不变，不重建', async () => {
     const { host, server, refs } = await mount(FILES)
     const other = node(host, refs.$b!)
     const stage = host.querySelector('.canvas-stage')!
@@ -563,7 +563,7 @@ describe('画布：节点操作', () => {
     expect(node(host, refs.$b!)).toBe(other)
   })
 
-  test('拖动只在松手时提交一次位置', async () => {
+  test('拖动只在松开指针时提交一次位置', async () => {
     const { host, server, refs } = await mount(FILES)
     const stage = host.querySelector('.canvas-stage')!
     pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
@@ -586,11 +586,11 @@ describe('画布：节点操作', () => {
     ])
   })
 
-  test('拖动时向其余节点的边对齐：几个像素内吸过去并画对齐线，松手提交对齐后的位置', async () => {
+  test('拖动时向其余节点的边对齐：相距数个像素内时吸附并绘制对齐线，松开指针时提交对齐后的位置', async () => {
     const { host, server, refs } = await mount(FILES)
     const stage = host.querySelector('.canvas-stage')!
     const z = zoom(host)
-    // $b 原与 $a 顶边齐平；横移 120、往下 3 个屏幕像素，仍在吸附范围内，吸回顶边。
+    // $b 原与 $a 顶边齐平；横向移动 120、向下移动 3 个屏幕像素后仍在吸附范围内，吸附回顶边。
     pointer(node(host, refs.$b!), 'pointerdown', 10, 10)
     pointer(stage, 'pointermove', 10 + 120 * z, 13)
     expect(host.querySelectorAll('.canvas-guide').length).toBe(1)
@@ -603,7 +603,7 @@ describe('画布：节点操作', () => {
     expect(host.querySelector('.canvas-guide')).toBeNull()
   })
 
-  test('编辑的回包晚于其后的重读到达：不盖掉重读拿到的更新状态', async () => {
+  test('编辑的响应晚于其后的重新读取到达：不覆盖重新读取取得的更新状态', async () => {
     const { host, server, refs } = await mount(FILES)
     const store = await import('../../lib/store/index.ts')
     const stage = host.querySelector('.canvas-stage')!
@@ -618,7 +618,7 @@ describe('画布：节点操作', () => {
       () => server.ops.length === 1,
       () => '',
     )
-    // 编辑发出之后，别处的变化引起一次重读：$b 的文件没了。
+    // 编辑发出之后，其他位置的修改引起一次重新读取：$b 的文件已被删除。
     server.setView({ states: { [refs.$b!]: { state: 'missing' } } })
     store.setState('canvasVersion', (n) => n + 1)
     await waitFor(
@@ -630,7 +630,7 @@ describe('画布：节点操作', () => {
     expect(node(host, refs.$b!).textContent).toContain('缺失')
   })
 
-  test('拖动中收到文件变更重读，被拖的节点不跳回', async () => {
+  test('拖动中因文件变更重新读取时，被拖动的节点不跳回原位', async () => {
     const { host, server, refs } = await mount(FILES)
     const store = await import('../../lib/store/index.ts')
     const stage = host.querySelector('.canvas-stage')!
@@ -655,10 +655,10 @@ describe('画布：节点操作', () => {
     )
   })
 
-  test('框选后按 Delete 发一批删除', async () => {
+  test('框选后按 Delete 发送一批删除操作', async () => {
     const { host, server, refs } = await mount(FILES)
     const stage = host.querySelector('.canvas-stage')!
-    // 视口在测试里没有尺寸：初始平移由 fit 算成 (w/2, h/2) 之外的值，直接按屏幕坐标框住两个节点。
+    // 测试中视口没有尺寸：fit 把初始平移计算为 (w/2, h/2) 以外的值，因此直接按屏幕坐标框选两个节点。
     pointer(stage, 'pointerdown', -5000, -5000, { shiftKey: true })
     pointer(stage, 'pointermove', 5000, 5000, { shiftKey: true })
     pointer(stage, 'pointerup', 5000, 5000)
@@ -677,7 +677,7 @@ describe('画布：节点操作', () => {
     ])
   })
 
-  test('从文件树拖入加一个文件节点；拖到缺失节点上即替换路径', async () => {
+  test('从文件树拖入时添加一个文件节点；拖放到缺失节点上即替换路径', async () => {
     const { host, server, refs } = await mount(FILES, { n2: { state: 'missing' } })
     const store = await import('../../lib/store/index.ts')
     const stage = host.querySelector('.canvas-stage')!
@@ -709,7 +709,7 @@ describe('画布：节点操作', () => {
     expect(server.ops[1]).toEqual([{ op: 'update', id: refs.$b!, path: 'b2.png' }])
   })
 
-  test('双击标题改名', async () => {
+  test('双击标题重命名', async () => {
     const { host, server, refs } = await mount(FILES)
     const title = node(host, refs.$a!).querySelector('.canvas-node-title')!
     title.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
@@ -727,7 +727,7 @@ describe('画布：节点操作', () => {
     expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$a!, name: '小满（校服）' }])
   })
 
-  test('文件快照或画布事件序号变了就重读', async () => {
+  test('文件快照或画布事件序号变化时重新读取', async () => {
     const { server } = await mount(FILES)
     const store = await import('../../lib/store/index.ts')
     const before = server.reads
@@ -743,7 +743,7 @@ describe('画布：节点操作', () => {
     )
   })
 
-  test('画布文件坏了：显示原文，按 Delete 不发任何写操作', async () => {
+  test('画布文件损坏时显示原文，按 Delete 不发送任何写操作', async () => {
     const { host, server, refs } = await mount(FILES)
     const store = await import('../../lib/store/index.ts')
     pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
@@ -770,7 +770,7 @@ describe('画布：生成卡与生成面板', () => {
     )
   }
 
-  test('选中生成卡出现面板，取消选中收起；两档高度都是固定值', async () => {
+  test('选中生成卡时显示面板，取消选中时关闭；两档高度都是固定值', async () => {
     const { host, refs } = await mount(CARD)
     await select(host, refs.$v!)
     const panel = host.querySelector<HTMLElement>('.canvas-panel')!
@@ -787,7 +787,7 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
-  test('画布区比面板窄时面板收到画布区宽度', async () => {
+  test('画布区比面板窄时面板宽度缩小到画布区宽度', async () => {
     const { host, refs } = await mount(CARD)
     resize(host.querySelector<HTMLElement>('.canvas-stage')!, 380, 800)
     await select(host, refs.$v!)
@@ -795,7 +795,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(panel.style.width).toBe('364px')
   })
 
-  test('面板只按节点定位：节点贴近画布区底边时面板留在节点下方，不收回画布区内压住节点', async () => {
+  test('面板只按节点定位：节点靠近画布区底边时面板仍位于节点下方，不向画布区内收回而遮挡节点', async () => {
     const { host, server, refs } = await mount(CARD)
     const stage = host.querySelector<HTMLElement>('.canvas-stage')!
     resize(stage, 1000, 300)
@@ -810,13 +810,13 @@ describe('画布：生成卡与生成面板', () => {
     const py = Number.parseFloat(stage.style.getPropertyValue('--py'))
     const panel = host.querySelector<HTMLElement>('.canvas-panel')!
     const bottom = py + (n.y + n.h) * z
-    // 面板（180）放在节点下方会越过画布区底边。
+    // 面板（180）放在节点下方时超出画布区底边。
     expect(bottom + 16 + 180).toBeGreaterThan(300 - 8)
     expect(Number.parseFloat(panel.style.top)).toBeCloseTo(bottom + 16, 3)
     expect(Number.parseFloat(panel.style.left)).toBeCloseTo(px + (n.x + n.w / 2) * z - 240, 3)
   })
 
-  test('画布上的菜单挂在文档根上，不在画布区的层叠上下文里', async () => {
+  test('画布上的菜单挂载在文档根节点，不在画布区的层叠上下文中', async () => {
     const { host, refs } = await mount(CARD)
     pointer(node(host, refs.$v!), 'pointerdown', 10, 10, { button: 2 })
     pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10, { button: 2 })
@@ -827,7 +827,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(document.querySelector('.canvas-context-menu')!.closest('.canvas-stage')).toBeNull()
   })
 
-  test('流向在跑的卡的连线用内联样式描银河梯度，其余连线不带', async () => {
+  test('流向运行中卡片的连线用内联样式绘制渐变，其余连线不使用渐变', async () => {
     const { host } = await mount(
       [...CARD, { op: 'connect', from: '$a', to: '$v', role: 'reference' }],
       { n2: { state: 'running', startedAt: Date.now() } },
@@ -839,7 +839,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(live.getAttribute('stroke')).toBeNull()
   })
 
-  test('选中节点时它的连线常驻同一套梯度，其余连线不带', async () => {
+  test('选中节点时其连线持续显示同一渐变，其余连线不使用渐变', async () => {
     const { host, refs } = await mount([
       ...CARD,
       { op: 'add_file', ref: '$b', path: 'b.png', x: 0, y: 300 },
@@ -858,7 +858,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(host.querySelector(`linearGradient#${id}`)).not.toBeNull()
   })
 
-  test('加载首帧就显示阶段和计时；阶段变化只更新文字，不插入布局行', async () => {
+  test('加载后的第一帧即显示阶段与计时；阶段变化只更新文字，不插入布局行', async () => {
     const { host, server, refs } = await mount(
       [
         ...CARD,
@@ -892,7 +892,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(live.children).toHaveLength(3)
   })
 
-  test('开始运行立即刷新计时，连续状态刷新不推迟下一次计时', async () => {
+  test('开始运行时立即刷新计时，连续的状态刷新不推迟下一次计时', async () => {
     let time = Date.now()
     const date = spyOn(Date, 'now').mockImplementation(() => time)
     try {
@@ -919,7 +919,7 @@ describe('画布：生成卡与生成面板', () => {
     }
   })
 
-  test('生成中发送键换成停止键：点了发出停止；远端撤不回时底部说明照常计费', async () => {
+  test('生成中发送键变为停止键：点击后发送停止请求；远端无法撤回时底部说明照常计费', async () => {
     const { host, server, refs } = await mount(CARD, {
       n2: { state: 'running', startedAt: Date.now() },
     })
@@ -934,7 +934,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(server.cancels).toEqual([refs.$v!])
   })
 
-  test('参数按钮只列标了界面名的参数；模式只列模型支持的，切到首尾帧发一条 set_mode', async () => {
+  test('参数按钮只列出标有界面名称的参数；模式只列出模型支持的模式，切换到首尾帧时发送一条 set_mode', async () => {
     const { host, server, refs } = await mount([
       ...CARD,
       { op: 'connect', from: '$a', to: '$v', role: 'reference' },
@@ -968,7 +968,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(server.ops[0]).toEqual([{ op: 'set_mode', id: refs.$v!, mode: 'first_last' }])
   })
 
-  test('参数合成一个按钮：面板分节、点选即提交且不收起；Esc 与再点按钮收起', async () => {
+  test('参数合并为一个按钮：面板分节，点选即提交且不关闭；按 Esc 或再次点击按钮时关闭', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)
     const chip = () => host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')
@@ -982,7 +982,7 @@ describe('画布：生成卡与生成面板', () => {
       () => !!panel(),
       () => '',
     )
-    // Esc 只收参数面板，生成面板与选中都还在。
+    // Esc 只关闭参数面板，生成面板与选中状态保留。
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await waitFor(
       () => !panel(),
@@ -1002,7 +1002,7 @@ describe('画布：生成卡与生成面板', () => {
         '.canvas-seg > button',
       ),
     ]
-    // 宽高比的格子上画图形：自动是带角标的方框，比例按比例；分辨率不画。
+    // 宽高比选项上绘制图形：自动为带角标的方框，比例值按比例绘制；分辨率不绘制。
     expect(cells(0).map((b) => b.textContent)).toEqual(['自动', '16:9', '9:16'])
     expect(cells(0)[0]!.querySelector('.canvas-shape-auto')).not.toBeNull()
     expect(cells(0)[1]!.querySelector<HTMLElement>('.canvas-shape')!.style.width).toBe('14px')
@@ -1020,7 +1020,7 @@ describe('画布：生成卡与生成面板', () => {
       () => chip()?.textContent === '自动宽高比 · 720P · 5 秒',
       () => chip()?.textContent ?? '',
     )
-    // 面板不收起；再点按钮收起。
+    // 面板不关闭；再次点击按钮时关闭。
     expect(panel()).not.toBeNull()
     chip()!.click()
     await waitFor(
@@ -1112,7 +1112,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(server.runs[0]?.ops).toEqual([])
   })
 
-  test('质量中文选项发送原生值；更多设置默认不传，恢复默认后清除，换模型保留选择', async () => {
+  test('质量的中文选项发送原生值；更多设置默认不发送，恢复默认后清除，切换模型时保留选择', async () => {
     const catalog = {
       ...MODELS,
       media: [
@@ -1320,7 +1320,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(host.querySelector('[role="alert"]')).toBeNull()
   })
 
-  test('时长加减：到下限再减是「自动」，不经过下限以下的值；从「自动」加回到下限', async () => {
+  test('时长加减：到达下限后再减为「自动」，不经过下限以下的值；从「自动」增加时回到下限', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)
     const chip = () => host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')
@@ -1356,7 +1356,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(durations).toEqual([4, 3, 2, -1, 2])
   })
 
-  test('尺寸按对照表拆成宽高比与分辨率两节；没有取值时宽高比是自动、分辨率不选；张数只写数字', async () => {
+  test('尺寸按对照表拆分为宽高比与分辨率两节；没有取值时宽高比为自动、分辨率不选中；张数只显示数字', async () => {
     const { host, server, refs } = await mount([{ op: 'add_generate', ref: '$i', output: 'image' }])
     await select(host, refs.$i!)
     const chip = () => host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')
@@ -1391,13 +1391,13 @@ describe('画布：生成卡与生成面板', () => {
     expect(checked(1)).toEqual([])
     expect(panel.querySelector('input')).toBeNull()
 
-    // 从「自动」选档位：接口不认档位简写，取这一档的 1:1。
+    // 从「自动」选择档位：接口不接受档位简写，取该档位的 1:1。
     cells(1)[1]!.click()
     await waitFor(
       () => chip()?.textContent === '1:1 · 2K · 1 张',
       () => chip()?.textContent ?? '',
     )
-    // 换宽高比保留档位；再选自动即不传尺寸。
+    // 切换宽高比时保留档位；再选择自动即不发送尺寸。
     cells(0)[1]!.click()
     await waitFor(
       () => chip()?.textContent === '16:9 · 2K · 1 张',
@@ -1408,7 +1408,7 @@ describe('画布：生成卡与生成面板', () => {
       () => server.ops.length === 3,
       () => '',
     )
-    // 还没有结果的卡：框随所选宽高比变形、短边不变；1:1 与缺省框同比例不改；选回自动还原成缺省比例。
+    // 尚无结果的卡片：框随所选宽高比改变形状、短边不变；1:1 与缺省框比例相同，不改变；重新选择自动时恢复缺省比例。
     expect(server.ops.map((ops) => ops[0])).toEqual([
       { op: 'update', id: refs.$i!, params: { size: '2048*2048' } },
       { op: 'update', id: refs.$i!, params: { size: '2720*1536' }, w: 300, h: 169 },
@@ -1416,7 +1416,7 @@ describe('画布：生成卡与生成面板', () => {
     ])
   })
 
-  test('画布上没有别的素材时 @ 仍有搜索与上传；选工作区文件先放上画布再插入引用', async () => {
+  test('画布上没有其他素材时 @ 仍提供搜索与上传；选择工作区文件时先添加到画布再插入引用', async () => {
     const { host, server, refs } = await mount([{ op: 'add_generate', ref: '$i', output: 'image' }])
     await select(host, refs.$i!)
     ;[...host.querySelectorAll<HTMLButtonElement>('.canvas-bar button')]
@@ -1433,7 +1433,7 @@ describe('画布：生成卡与生成面板', () => {
     const hits = () => [
       ...document.querySelectorAll<HTMLButtonElement>('.canvas-pick-list > button'),
     ]
-    // 出图卡只收图片：视频不列。
+    // 图像生成卡只接受图片：不列出视频。
     await waitFor(
       () => hits().length === 1,
       () => document.querySelector('.canvas-pick')!.innerHTML,
@@ -1449,7 +1449,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(server.ops[1]).toEqual([{ op: 'update', id: refs.$i!, prompt: `@[${added.id}] ` }])
   })
 
-  test('首尾帧模式下 @ 只列已连上的帧、不给文件与上传；从尾帧空位打开时给', async () => {
+  test('首尾帧模式下 @ 只列出已连接的帧，不提供文件与上传；从尾帧空位打开时提供', async () => {
     const { host, refs } = await mount([
       ...CARD,
       { op: 'connect', from: '$a', to: '$v', role: 'first_frame' },
@@ -1478,7 +1478,7 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
-  test('选到已在画布上的工作区文件：直接引用那个节点，不再加一个', async () => {
+  test('选择已在画布上的工作区文件：直接引用该节点，不再添加新节点', async () => {
     const { host, server, refs } = await mount([
       { op: 'add_file', ref: '$f', path: '角色/小满.png', x: 0, y: 0 },
       { op: 'add_generate', ref: '$i', output: 'image', x: 300, y: 0 },
@@ -1510,7 +1510,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$i!, prompt: `@[${refs.$f!}] ` }])
   })
 
-  test('从素材格的「+」上传：上传到这张卡旁边并连成参考', async () => {
+  test('从素材栏的「+」上传：上传到该卡片旁边并连接为参考', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)
     host.querySelector<HTMLButtonElement>('.canvas-inputs button[aria-label="添加素材"]')!.click()
@@ -1542,7 +1542,7 @@ describe('画布：生成卡与生成面板', () => {
     ])
   })
 
-  test('点 @ 选一个素材：提示词里插入引用并立刻提交', async () => {
+  test('点击 @ 选择一个素材：在提示词中插入引用并立即提交', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)
     const at = [...host.querySelectorAll<HTMLButtonElement>('.canvas-bar button')].find(
@@ -1561,14 +1561,14 @@ describe('画布：生成卡与生成面板', () => {
       () => '',
     )
     expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$v!, prompt: `@[${refs.$a!}] ` }])
-    // 服务端在同一批里补了参考线，素材格里多了一张。
+    // 服务端在同一批操作中补充了参考连线，素材栏中增加一项。
     await waitFor(
       () => host.querySelectorAll('.canvas-inputs .canvas-input i').length === 1,
       () => '',
     )
   })
 
-  test('在一张卡上打字后直接选另一张卡：提示词提交给原来那张，新卡的面板是空的', async () => {
+  test('在一张卡片上输入后直接选中另一张卡片：提示词提交给原卡片，新卡片的面板为空', async () => {
     const { host, server, refs } = await mount([
       { op: 'add_generate', ref: '$g1', output: 'image', x: 0, y: 0 },
       { op: 'add_generate', ref: '$g2', output: 'image', x: 400, y: 0 },
@@ -1578,7 +1578,7 @@ describe('画布：生成卡与生成面板', () => {
     editor.textContent = '一只猫'
     editor.dispatchEvent(new Event('input', { bubbles: true }))
     await select(host, refs.$g2!)
-    // 浏览器在移除有焦点的元素之后发失焦，测试环境补发这一次。
+    // 浏览器在移除有焦点的元素之后触发失焦事件，测试环境手动补发该事件。
     editor.dispatchEvent(new FocusEvent('blur'))
     await waitFor(
       () => server.ops.length === 1,
@@ -1588,7 +1588,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(host.querySelector('.canvas-prompt')!.textContent).toBe('')
   })
 
-  test('打字后点空白处取消选中：面板卸载之后的失焦照样提交这张卡的提示词', async () => {
+  test('输入后点击空白处取消选中：面板卸载之后的失焦仍提交该卡片的提示词', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)
     const editor = host.querySelector<HTMLElement>('.canvas-prompt')!
@@ -1607,7 +1607,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$v!, prompt: '雨夜' }])
   })
 
-  test('发送：先提交编辑中的提示词，再运行，同一次请求', async () => {
+  test('发送：在同一次请求中先提交编辑中的提示词，再运行', async () => {
     const { host, server, refs } = await mount(CARD)
     await select(host, refs.$v!)
     const editor = host.querySelector<HTMLElement>('.canvas-prompt')!
@@ -1629,7 +1629,7 @@ describe('画布：生成卡与生成面板', () => {
     })
   })
 
-  test('推不出花费时不显示；推得出时显示', async () => {
+  test('无法推算花费时不显示；可以推算时显示', async () => {
     const { host, server, refs } = await mount(CARD)
     server.quote = { cost: 3, currency: 'CNY' }
     await select(host, refs.$v!)
@@ -1640,7 +1640,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(host.querySelector('.canvas-price')!.textContent).toBe('¥3.00')
   })
 
-  test('右侧「+」接出一张视频卡并把图片连为首帧', async () => {
+  test('右侧「+」新建一张后续视频生成卡并把图片连接为首帧', async () => {
     const { host, server, refs } = await mount(FILES)
     node(host, refs.$a!).querySelector<HTMLButtonElement>('.canvas-port.out')!.click()
     await waitFor(
@@ -1660,7 +1660,7 @@ describe('画布：生成卡与生成面板', () => {
     ])
   })
 
-  test('多版时角标切换当前版；失败原文显示在空位里', async () => {
+  test('有多个版本时用角标切换当前版本；失败原文显示在空位中', async () => {
     const core = await import('@qywork/core')
     const made = {
       prompt: 'p',
@@ -1798,7 +1798,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(server.runs[0]?.ops).toEqual([])
   })
 
-  test('选中工具条只剩视频的取帧：出过结果的生成卡不出「生成参数」「打开」', async () => {
+  test('选中工具条只保留视频的取帧：已有结果的生成卡不显示「生成参数」「打开」', async () => {
     const core = await import('@qywork/core')
     const { host, server, refs } = await mount(CARD)
     const withVersion = core.addVersions(server.doc(), refs.$v!, [
@@ -1840,7 +1840,7 @@ describe('画布：生成卡与生成面板', () => {
   })
 })
 
-describe('画布：导航与选择的键位', () => {
+describe('画布：导航与选择的快捷键', () => {
   const stageOf = (host: HTMLElement) => host.querySelector<HTMLElement>('.canvas-stage')!
   const pan = (host: HTMLElement) => stageOf(host).style.getPropertyValue('--px')
   const spaceKey = (target: EventTarget, type: 'keydown' | 'keyup', repeat = false) => {
@@ -1855,7 +1855,7 @@ describe('画布：导航与选择的键位', () => {
     return event
   }
 
-  test('按钮仍持有焦点时，空格平移拦截首次按下、长按重复和松键的默认操作', async () => {
+  test('按钮仍持有焦点时，空格平移拦截首次按下、长按重复与松开按键的默认操作', async () => {
     const { host, server } = await mount(FILES)
     const button = document.createElement('button')
     button.textContent = '最大化'
@@ -1878,7 +1878,7 @@ describe('画布：导航与选择的键位', () => {
     expect(server.ops).toEqual([])
   })
 
-  test('输入控件里的空格按下、重复与松键不被画布拦截', async () => {
+  test('输入控件中空格的按下、重复与松开不被画布拦截', async () => {
     const { host } = await mount(FILES)
     const editor = document.createElement('div')
     editor.setAttribute('contenteditable', 'true')
@@ -1897,7 +1897,7 @@ describe('画布：导航与选择的键位', () => {
     }
   })
 
-  test('长按空格时窗口失焦会退出平移，回来后的左键拖动仍是框选', async () => {
+  test('长按空格时窗口失焦会退出平移，恢复焦点后的左键拖动仍为框选', async () => {
     const { host } = await mount(FILES)
     spaceKey(window, 'keydown')
     expect(stageOf(host).classList.contains('panning')).toBe(true)
@@ -1911,7 +1911,7 @@ describe('画布：导航与选择的键位', () => {
     expect(spaceKey(window, 'keyup').defaultPrevented).toBe(false)
   })
 
-  test('左键拖空白是框选，不平移', async () => {
+  test('左键拖动空白处为框选，不平移', async () => {
     const { host, refs } = await mount(FILES)
     const before = pan(host)
     pointer(stageOf(host), 'pointerdown', -5000, -5000)
@@ -1922,7 +1922,7 @@ describe('画布：导航与选择的键位', () => {
     expect(node(host, refs.$b!).classList.contains('selected')).toBe(true)
   })
 
-  test('中键拖动、按住 Space 左键拖动都是平移，不改选区', async () => {
+  test('中键拖动与按住 Space 时左键拖动均为平移，不改变选区', async () => {
     const { host, refs } = await mount(FILES)
     pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
     pointer(stageOf(host), 'pointerup', 10, 10)
@@ -1950,7 +1950,7 @@ describe('画布：导航与选择的键位', () => {
       () => '',
     )
     expect(node(host, refs.$a!).classList.contains('selected')).toBe(true)
-    // 只选一张，缩放到它：视野里它占满，缩放比全选时大。
+    // 只选中一张并缩放到选中：该节点占满视野，缩放比例大于全选时。
     const all = zoom(host)
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
@@ -1976,7 +1976,7 @@ describe('画布：右键菜单', () => {
     const g = globalThis as Record<string, unknown>
     const previous = g.__TAURI_INTERNALS__
     const workspace = store.workspace()
-    // 挂载完成后才启用菜单用的桌面桥，不占用外壳拖放测试的常驻事件订阅。
+    // 挂载完成后才启用菜单所用的桌面桥接，不占用外壳拖放测试的常驻事件订阅。
     g.__TAURI_INTERNALS__ = {
       invoke: (cmd: string, args: { path: string }) => {
         if (cmd !== 'reveal_file') throw new Error(`未预期命令：${cmd}`)
@@ -2118,7 +2118,7 @@ describe('画布：右键菜单', () => {
     expect(items()).not.toContain('在资源管理器中显示')
   })
 
-  test('写好提示词的生成卡上右键没有「运行」：付费生成只从面板的发送按钮发起，那里标着价格', async () => {
+  test('已填写提示词的生成卡右键菜单中没有「运行」：付费生成只从面板的发送按钮发起，该处标有价格', async () => {
     const { host, refs } = await mount([
       { op: 'add_generate', ref: '$v', output: 'video', prompt: '街口回头', x: 0, y: 0 },
     ])
@@ -2131,7 +2131,7 @@ describe('画布：右键菜单', () => {
     expect(items()).not.toContain('运行')
   })
 
-  test('节点上右键：先选中它，菜单有复制、剪切、创建副本、重命名、删除；删除删掉它', async () => {
+  test('在节点上右键：先选中该节点，菜单包含复制、剪切、创建副本、重命名、删除；删除即移除该节点', async () => {
     const { host, server, refs } = await mount(FILES)
     rightClick(host, node(host, refs.$b!), 10, 10)
     await waitFor(
@@ -2152,7 +2152,7 @@ describe('画布：右键菜单', () => {
     expect(menu()).toBeNull()
   })
 
-  test('右键拖动只平移，不弹菜单、不改选区', async () => {
+  test('右键拖动只平移，不弹出菜单，不改变选区', async () => {
     const { host, refs } = await mount(FILES)
     const before = stageOf(host).style.getPropertyValue('--px')
     pointer(node(host, refs.$a!), 'pointerdown', 100, 100, { button: 2 })
@@ -2163,7 +2163,7 @@ describe('画布：右键菜单', () => {
     expect(node(host, refs.$a!).classList.contains('selected')).toBe(false)
   })
 
-  test('空白处右键：新建生成卡放在右键那一点；复制过节点后有粘贴，粘在那一点', async () => {
+  test('在空白处右键：新建的生成卡放在右键点击的位置；复制节点后菜单提供粘贴，粘贴到该位置', async () => {
     const { host, server, refs } = await mount(FILES)
     rightClick(host, stageOf(host), 700, 500)
     await waitFor(
@@ -2185,7 +2185,7 @@ describe('画布：右键菜单', () => {
     expect(server.ops[0]![0]).toMatchObject({ op: 'add_generate', output: 'image' })
     expect(near.x).toBeCloseTo((700 - px) / z, 3)
     expect(near.y).toBeCloseTo((500 - py) / z, 3)
-    // 新卡在回体到了之后才被选中；等它选中再往下，免得覆盖后面右键的选区。
+    // 新卡片在响应体到达之后才被选中；等待其被选中后再继续，避免覆盖之后右键操作的选区。
     await waitFor(
       () => {
         const sel = host.querySelector('.canvas-node.selected')
@@ -2213,7 +2213,7 @@ describe('画布：右键菜单', () => {
     expect(server.ops[1]![0]).toMatchObject({ op: 'add_file', path: 'a.png' })
   })
 
-  test('连线上右键：断开这条线', async () => {
+  test('在连线上右键：断开该连线', async () => {
     const { host, server } = await mount([
       ...CARD,
       { op: 'connect', from: '$a', to: '$v', role: 'reference' },
@@ -2266,7 +2266,7 @@ describe('画布：撤销与重做', () => {
     expect(server.restores[1]).toEqual({ from: 'd0', to: 'd1' })
   })
 
-  test('中间被别处改过：撤销被拒、报出原因，撤销栈清空', async () => {
+  test('文件在期间被其他位置修改：撤销被拒绝并显示原因，撤销栈清空', async () => {
     const { host, server, refs } = await mount(FILES)
     dragA(host, refs.$a!)
     await waitFor(
@@ -2276,7 +2276,7 @@ describe('画布：撤销与重做', () => {
     server.setView({ doc: server.doc() })
     key('z')
     await waitFor(
-      () => host.querySelector('.canvas-fault')?.textContent?.includes('撤销不了') === true,
+      () => host.querySelector('.canvas-fault')?.textContent?.includes('无法撤销') === true,
       () => host.querySelector('.canvas-fault')?.textContent ?? '',
     )
     key('z')
@@ -2286,7 +2286,7 @@ describe('画布：撤销与重做', () => {
 })
 
 describe('画布：复制、剪切、粘贴', () => {
-  /** happy-dom 的 ClipboardEvent 不带 clipboardData：自己挂一个只有 files 的。 */
+  /** happy-dom 的 ClipboardEvent 不含 clipboardData：此处手动附加一个只含 files 的对象。 */
   function paste(files: File[] = []) {
     const ev = new Event('paste', { bubbles: true, cancelable: true })
     Object.defineProperty(ev, 'clipboardData', { value: { files } })
@@ -2295,7 +2295,7 @@ describe('画布：复制、剪切、粘贴', () => {
   const key = (k: string, extra: KeyboardEventInit = {}) =>
     window.dispatchEvent(new KeyboardEvent('keydown', { key: k, ctrlKey: true, ...extra }))
 
-  test('Ctrl+C 再粘贴：加出副本并选中副本，原节点不动', async () => {
+  test('Ctrl+C 后粘贴：添加副本并选中副本，原节点不变', async () => {
     const { host, server, refs } = await mount(FILES)
     pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
     pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
@@ -2317,7 +2317,7 @@ describe('画布：复制、剪切、粘贴', () => {
     expect(server.doc().nodes).toHaveLength(3)
   })
 
-  test('Ctrl+D 复制一份带上输入线；Ctrl+X 剪切', async () => {
+  test('Ctrl+D 创建副本并保留输入连线；Ctrl+X 剪切', async () => {
     const { host, server, refs } = await mount([
       ...CARD,
       { op: 'connect', from: '$a', to: '$v', role: 'reference' },
@@ -2344,7 +2344,7 @@ describe('画布：复制、剪切、粘贴', () => {
     expect(server.ops[1]).toEqual([{ op: 'remove', id: copy.id }])
   })
 
-  test('系统剪贴板里有图片时粘贴即上传', async () => {
+  test('系统剪贴板中有图片时粘贴即上传', async () => {
     const { server } = await mount(FILES)
     paste([new File(['x'], '截图.png', { type: 'image/png' })])
     await waitFor(
@@ -2356,7 +2356,7 @@ describe('画布：复制、剪切、粘贴', () => {
 })
 
 describe('画布：连线', () => {
-  /** 在元素上按下，再在某个元素上松开。elementFromPoint 在 happy-dom 里不排版，直接替成松手处的元素。 */
+  /** 在元素上按下，再在目标元素上松开。happy-dom 不进行布局，elementFromPoint 直接替换为返回松开处的元素。 */
   async function dragLink(host: HTMLElement, from: HTMLElement, onto: Element | null) {
     const stage = host.querySelector('.canvas-stage')!
     const original = document.elementFromPoint
@@ -2370,7 +2370,7 @@ describe('画布：连线', () => {
     }
   }
 
-  test('从图片的输出连接点拖到视频卡上：连成参考图', async () => {
+  test('从图片的输出连接点拖到视频卡上：连接为参考图', async () => {
     const { host, server, refs } = await mount(CARD)
     const port = node(host, refs.$a!).querySelector<HTMLElement>('.canvas-port.out')!
     await dragLink(host, port, node(host, refs.$v!))
@@ -2383,7 +2383,7 @@ describe('画布：连线', () => {
     ])
   })
 
-  test('连不上的目标（文件节点、已连过的卡）松手不发请求', async () => {
+  test('在无法连接的目标（文件节点、已连接的卡片）上松开时不发送请求', async () => {
     const { host, server, refs } = await mount([
       ...CARD,
       { op: 'add_file', ref: '$b', path: 'b.png', x: 0, y: 300 },
@@ -2396,7 +2396,7 @@ describe('画布：连线', () => {
     expect(server.ops).toEqual([])
   })
 
-  test('拖到空白处松手：在落点打开接出菜单，选一项新卡放在落点并连好', async () => {
+  test('拖到空白处松开：在落点打开后续生成菜单，选择一项后新卡片放在落点并完成连接', async () => {
     const { host, server, refs } = await mount(CARD)
     const port = node(host, refs.$a!).querySelector<HTMLElement>('.canvas-port.out')!
     await dragLink(host, port, host.querySelector('.canvas-stage'))
@@ -2416,7 +2416,7 @@ describe('画布：连线', () => {
     expect(server.ops[0]![1]).toMatchObject({ op: 'connect', from: refs.$a!, role: 'reference' })
   })
 
-  test('点连线选中它，按 Delete 删掉', async () => {
+  test('点击连线将其选中，按 Delete 删除', async () => {
     const { host, server, refs } = await mount([
       ...CARD,
       { op: 'connect', from: '$a', to: '$v', role: 'reference' },
@@ -2484,7 +2484,7 @@ describe('画布：连线', () => {
     expect(server.doc().edges).toHaveLength(0)
   })
 
-  test('没配模型的类别：卡上写未配置模型，模型按钮通往模型库，发送键置灰', async () => {
+  test('未配置模型的类别：卡片显示「未配置模型」，模型按钮打开模型库，发送键禁用', async () => {
     const { host, refs } = await mount([{ op: 'add_generate', ref: '$s', output: 'audio' }])
     const store = await import('../../lib/store/index.ts')
     pointer(node(host, refs.$s!), 'pointerdown', 10, 10)
@@ -2513,7 +2513,7 @@ describe('画布：左侧工具条', () => {
   ]
   const labels = (host: HTMLElement) => rail(host).map((b) => b.textContent)
 
-  test('生成类别全列，没配模型的也列；点一项在视野中央加一张卡', async () => {
+  test('列出全部生成类别，包括未配置模型的类别；点击一项在视野中央添加一张卡片', async () => {
     const { host, server } = await mount(FILES)
     expect(labels(host)).toEqual([
       '图像生成',
@@ -2531,7 +2531,7 @@ describe('画布：左侧工具条', () => {
     expect(server.ops[0]![0]).toMatchObject({ op: 'add_generate', output: 'video' })
   })
 
-  test('从工作区选择：打开不输入就列出能放上画布的文件；连着选，第二个排在第一个右侧', async () => {
+  test('从工作区选择：打开后无需输入即列出可添加到画布的文件；连续选择时第二个放在第一个右侧', async () => {
     const { host, server } = await mount(FILES)
     rail(host)
       .find((b) => b.textContent === '从工作区选择')!
@@ -2565,7 +2565,7 @@ describe('画布：左侧工具条', () => {
     })
   })
 
-  test('搜索失败时列表里显示一行原因', async () => {
+  test('搜索失败时列表中显示一行原因', async () => {
     const { host } = await mount(FILES)
     rail(host)
       .find((b) => b.textContent === '从工作区选择')!
@@ -2584,7 +2584,7 @@ describe('画布：左侧工具条', () => {
     )
   })
 
-  test('从设备上传：逐个上传，第一个放在视野中央，第二个排在第一个右侧', async () => {
+  test('从设备上传：逐个上传，第一个放在视野中央，第二个放在第一个右侧', async () => {
     const { host, server } = await mount(FILES)
     const input = host.querySelector<HTMLInputElement>('.canvas-rail input[type="file"]')!
     const files = [new File(['a'], '小满.png'), new File(['b'], '雨夜.mp4')]
@@ -2604,15 +2604,15 @@ describe('画布：左侧工具条', () => {
   })
 })
 
-describe('画布：纯函数与页签', () => {
-  test('解码宽度按铺满框所需：横图进偏竖的框按高度折算，竖图进偏横的框按框宽', async () => {
+describe('画布：纯函数与标签页', () => {
+  test('解码宽度按填满框所需计算：横图放入偏竖的框时按高度换算，竖图放入偏横的框时取框宽', async () => {
     const { coverWidth } = await import('./Bitmap.tsx')
     expect(coverWidth({ w: 256, h: 256 }, { w: 1536, h: 1024 })).toBe(384)
     expect(coverWidth({ w: 256, h: 171 }, { w: 1536, h: 1024 })).toBe(257)
     expect(coverWidth({ w: 256, h: 144 }, { w: 1024, h: 1536 })).toBe(256)
   })
 
-  test('参数取值定下的宽高比：对照表取那一格，比例取值取本身，自动回 auto，无关参数回 null', async () => {
+  test('参数取值决定的宽高比：对照表取对应项，比例取值取其本身，自动返回 auto，无关参数返回 null', async () => {
     const { ratioOf } = await import('./GeneratePanel.tsx')
     const size: Parameters<typeof ratioOf>[0] = {
       name: 'size',
@@ -2651,7 +2651,7 @@ describe('画布：纯函数与页签', () => {
     expect(tierOf(9000)).toBe(4096)
   })
 
-  test('参数取值的界面用词：自动选择与布尔值换词，时长带单位，格子上只写取值', async () => {
+  test('参数取值的界面文字：自动选择与布尔值替换为对应文字，时长带单位，选项上只显示取值', async () => {
     const { cellText, paramText, valueText } = await import('./GeneratePanel.tsx')
     expect(valueText('adaptive')).toBe('自动')
     expect(valueText('auto')).toBe('自动')
@@ -2665,7 +2665,7 @@ describe('画布：纯函数与页签', () => {
     expect(paramText(lastFrame, true)).toBe('开')
   })
 
-  test('参数按钮上的字：只写取值，自动与开关补参数名，各参数用「 · 」连起、关着的开关不写', async () => {
+  test('参数按钮上的文字：只显示取值，自动与开关补充参数名，各参数用「 · 」连接，关闭的开关不显示', async () => {
     const { chipText, paramsText } = await import('./GeneratePanel.tsx')
     const size = { name: 'size', label: '尺寸', type: 'string' } as const
     const n = { name: 'n', label: '张数', type: 'integer' } as const
@@ -2682,7 +2682,7 @@ describe('画布：纯函数与页签', () => {
     expect(paramsText([duration, lastFrame], (p) => values[p.name])).toBe('自动时长 · 返回尾帧开')
   })
 
-  test('带对照表的尺寸：按钮写宽高比与档位，表外的取值原样写', async () => {
+  test('带对照表的尺寸：按钮显示宽高比与档位，表外的取值原样显示', async () => {
     const { chipText } = await import('./GeneratePanel.tsx')
     const size: Parameters<typeof chipText>[0] = {
       name: 'size',
@@ -2700,7 +2700,7 @@ describe('画布：纯函数与页签', () => {
     expect(chipText(size, '800x600')).toBe('800x600')
   })
 
-  test('比例与像素尺寸画成的框：长边 14，短边按比例；其余取值不画', async () => {
+  test('比例与像素尺寸绘制成的框：长边 14，短边按比例；其余取值不绘制', async () => {
     const { shapeOf } = await import('./GeneratePanel.tsx')
     expect(shapeOf('16:9')).toEqual({ w: 14, h: 8 })
     expect(shapeOf('21:9')).toEqual({ w: 14, h: 6 })
@@ -2711,7 +2711,7 @@ describe('画布：纯函数与页签', () => {
     expect(shapeOf(undefined)).toBeNull()
   })
 
-  test('提示词与编辑框互转：引用写回 @[id]，换行保留', async () => {
+  test('提示词与编辑框互相转换：引用写回 @[id]，保留换行', async () => {
     const { promptOfEditor, promptParts } = await import('./prompt.ts')
     expect(promptParts('@[n1] 走出 @[n2]\n下雨')).toEqual([
       { id: 'n1' },
@@ -2727,7 +2727,7 @@ describe('画布：纯函数与页签', () => {
     expect(promptOfEditor(root)).toBe('@[n1] 走出\n下雨')
   })
 
-  test('取帧的时刻与名字：起点为首帧，终点为尾帧且取 duration - 1/30 秒，其余按 0.1 秒', async () => {
+  test('取帧的时刻与名称：起点为首帧，终点为尾帧且取 duration - 1/30 秒，其余按 0.1 秒', async () => {
     const { frameLabel, frameTime } = await import('./frame.ts')
     expect(frameTime(0, 5)).toBe(0)
     expect(frameTime(5, 5)).toBeCloseTo(5 - 1 / 30, 6)
@@ -2737,7 +2737,7 @@ describe('画布：纯函数与页签', () => {
     expect(frameLabel(12.43, 20)).toBe('12.4s')
   })
 
-  test('同一张画布开两次只有一页', async () => {
+  test('同一张画布打开两次只有一个标签页', async () => {
     const store = await import('../../lib/store/index.ts')
     store.setWorkspace({ id: 'ws_canvas', root: 'C:/w', name: 'w' })
     store.openCanvasTab('分镜/第一集.canvas.json', '第一集')
@@ -2751,7 +2751,7 @@ describe('画布：纯函数与页签', () => {
 })
 
 describe('画布：时间线', () => {
-  /** happy-dom 不解码视频：任何 `<video>` 设了地址就报出时长 `seconds`。 */
+  /** happy-dom 不解码视频：任何 `<video>` 设置地址后即报告时长 `seconds`。 */
   function fakeDurations(seconds: number): () => void {
     const proto = HTMLVideoElement.prototype
     const src = Object.getOwnPropertyDescriptor(proto, 'src')
@@ -2789,7 +2789,7 @@ describe('画布：时间线', () => {
     { op: 'add_file', ref: '$v', path: 'clip.mp4', x: 0, y: 500 },
   ]
 
-  test('左侧工具条新建时间线：发 add_timeline、选中它；空轨道只有「添加视频」', async () => {
+  test('左侧工具条新建时间线：发送 add_timeline 并选中该时间线；空轨道只有「添加视频」', async () => {
     const { host, server } = await mount(FILES)
     ;[...host.querySelectorAll<HTMLButtonElement>('.canvas-rail > button')]
       .find((b) => b.textContent === '时间线')!
@@ -2808,7 +2808,7 @@ describe('画布：时间线', () => {
     expect(host.querySelector(`[data-node="${id}"] .canvas-tl-view`)).toBeNull()
   })
 
-  test('从文件树把视频拖到时间线上：整段插进轨道；拖进图片报出，不发操作', async () => {
+  test('从文件树把视频拖到时间线上：完整插入轨道；拖入图片时报告错误，不发送操作', async () => {
     const restoreVideo = fakeDurations(5)
     try {
       const { host, server, refs } = await mount(TIMELINE)
@@ -2845,7 +2845,7 @@ describe('画布：时间线', () => {
       ])
       drop('角色/小满.png')
       await waitFor(
-        () => host.querySelector('.canvas-fault')?.textContent === '只有视频能放进时间线',
+        () => host.querySelector('.canvas-fault')?.textContent === '只有视频可以加入时间线',
         () => host.querySelector('.canvas-fault')?.textContent ?? '',
       )
       expect(server.ops).toHaveLength(1)
@@ -2854,7 +2854,7 @@ describe('画布：时间线', () => {
     }
   })
 
-  test('从系统把视频拖到时间线上：先传进 uploads/（放在时间线右侧），再整段插进轨道', async () => {
+  test('从系统把视频拖到时间线上：先上传到 uploads/（放在时间线右侧），再完整插入轨道', async () => {
     const restoreVideo = fakeDurations(3)
     const original = document.elementsFromPoint
     try {
@@ -2894,7 +2894,7 @@ describe('画布：时间线', () => {
     }
   })
 
-  test('从片段推出线：画布上被片段引用的视频各连一条线到时间线；剪断即删掉引用它的片段', async () => {
+  test('从片段推导连线：画布上被片段引用的视频各有一条连线连到时间线；断开连线即删除引用该视频的片段', async () => {
     const { host, server, refs } = await mount([
       ...TIMELINE,
       { op: 'add_file', ref: '$a', path: 'a.mp4', x: 0, y: 900 },
@@ -2925,7 +2925,7 @@ describe('画布：时间线', () => {
     )
   })
 
-  test('从视频节点的连接点拖线到时间线上：落在轨道外时整段放最后', async () => {
+  test('从视频节点的连接点拖线到时间线上：落在轨道外时完整插入到末尾', async () => {
     const restoreVideo = fakeDurations(5)
     const point = document.elementFromPoint
     const points = document.elementsFromPoint
@@ -2963,7 +2963,7 @@ describe('画布：时间线', () => {
     }
   })
 
-  test('右键一段：菜单作用于这一段，创建副本插在它后面，删除删掉它', async () => {
+  test('在片段上右键：菜单作用于该片段，创建副本插入其后，删除即移除该片段', async () => {
     const { host, server, refs } = await mount(TIMELINE)
     const clipAt = (i: number) => node(host, refs.$t!).querySelectorAll('.canvas-tl-clip')[i]!
     const menuFor = async (i: number) => {
@@ -3013,7 +3013,7 @@ describe('画布：时间线', () => {
     ])
   })
 
-  test('Delete：轨道上选着片段时删那一段，不删节点；没选片段时删节点', async () => {
+  test('Delete：轨道上选中片段时删除该片段而不删除节点；未选中片段时删除节点', async () => {
     const { host, server, refs } = await mount(TIMELINE)
     const { sessionOf } = await import('./timeline.ts')
     const tl = node(host, refs.$t!)
@@ -3041,7 +3041,7 @@ describe('画布：时间线', () => {
     expect(server.ops[1]).toEqual([{ op: 'remove', id: refs.$t! }])
   })
 
-  test('分割在播放头处一分为二；播放头不在段内时按钮不可用', async () => {
+  test('分割在播放头处把片段一分为二；播放头不在片段内时按钮不可用', async () => {
     const { host, server, refs } = await mount(TIMELINE)
     const { sessionOf } = await import('./timeline.ts')
     const split = node(host, refs.$t!).querySelector<HTMLButtonElement>(
@@ -3075,7 +3075,7 @@ describe('画布：时间线', () => {
     ])
   })
 
-  test('全屏编辑盖住应用、预览移过去；全屏里 Delete 不删节点，Esc 退出、预览回到节点', async () => {
+  test('全屏编辑覆盖应用，预览移入全屏；全屏中 Delete 不删除节点，Esc 退出且预览回到节点', async () => {
     const { host, server, refs } = await mount(TIMELINE)
     const tl = node(host, refs.$t!)
     pointer(tl.querySelector('.canvas-tl-bar')!, 'pointerdown', 10, 10)
@@ -3096,7 +3096,7 @@ describe('画布：时间线', () => {
     )
   })
 
-  test('导出失败：报出原因、通知服务端放弃这次导出，按钮回到可再导出，不留进度', async () => {
+  test('导出失败：显示原因，通知服务端放弃本次导出，按钮恢复为可再次导出，不保留进度', async () => {
     const { host, server, refs } = await mount(TIMELINE)
     const button = node(host, refs.$t!).querySelector<HTMLButtonElement>('.canvas-tl-export')!
     button.click()

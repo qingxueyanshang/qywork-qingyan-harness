@@ -16,24 +16,24 @@ import { IconChevron } from './Icons.tsx'
 import { LoadState } from './settings/LoadState.tsx'
 
 /**
- * 运行：这条会话花了多少，以及每一笔花在哪。
+ * 运行页：当前会话的费用合计与逐项明细。
  *
- * **只做对话流做不到的两件事：合计与下钻。** 对话流每一轮末尾那条读数条（`.run-strip`）已经逐轮显示
- * 耗时、入出 token、命中率、金额、停止原因。这一页重印那些字段就是同一件事说两遍。对话流给不出的只
- * 有两样：跨轮的合计（滚多少屏也加不出来），和一轮里逐次请求的账（一行装不下）。
+ * **只提供会话流无法提供的两项内容：合计与明细。** 会话流每轮末尾的读数条（`.run-strip`）已逐轮显示
+ * 耗时、输入与输出 token、命中率、金额与停止原因，本页不重复显示这些字段。会话流无法提供的是：
+ * 跨轮次的合计，以及单轮内逐次请求的明细（一行无法容纳）。
  *
- * **合计取账本，不取 runs 相加。** 账本（`usage_ledger`）按会话 id 收着这条会话引发的**每一笔**：每
- * 一轮，以及夹在轮次之间的压缩摘要调用。把 run 加起来必然少算压缩那几笔——那不是口径选择，是漏
- * 账。清单里同样把非轮次的那几笔列出来，所以合计与清单对得上，不需要任何一句解释差额的话。
+ * **合计取自账本，不由 runs 相加得出。** 账本（`usage_ledger`）按会话 id 记录该会话产生的**每一笔**费用：
+ * 每一轮，以及轮次之间的压缩摘要调用。由 runs 相加会遗漏压缩调用的费用。清单同样列出
+ * 非轮次的条目，因此合计与清单一致，无需另加说明差额的文字。
  */
 export default function RunDetails() {
   /*
-   * 判据按值去重，不能是每次都新建的那个对象字面量。
+   * 重取判据必须按值去重，不能直接使用每次新建的对象字面量。
    *
-   * `createResource` 把 source 包进 memo 按 `===` 比，对象字面量每次都不相等——
-   * `ledgerRevision()` 那份「没变就别重取」因此白写：别的会话开跑一次、某一轮的
-   * 金额原地改一次（分量都没动），这两张表就各重取一遍。同文件另外两处的判据是串，
-   * 天生按值比。
+   * `createResource` 把 source 包进 memo 并按 `===` 比较，对象字面量每次都不相等，
+   * `ledgerRevision()` 的「未变化则不重取」因此失效：其他会话每开始执行一次、某一轮的
+   * 金额每原地更新一次（各分量均未变化），两张表都会各重取一次。同文件另外两处的判据是
+   * 字符串，本身按值比较。
    */
   const key = createMemo(
     () => ({ id: state.activeConversation, rev: ledgerRevision() }),
@@ -52,20 +52,20 @@ export default function RunDetails() {
       : await client.api<ConversationUsageResponse>(`/api/conversations/${k.id}/usage`),
   )
 
-  // `loaded()` 而不是 `data()`：后者出错时 `throw`，而这个应用没有 `ErrorBoundary`。
+  // 使用 `loaded()` 而不是 `data()`：后者出错时 `throw`，而本应用没有 `ErrorBoundary`。
   const runs = createMemo(() => [...(loaded(runData)?.runs ?? [])].reverse())
-  /** 子会话的轮次：派出去的那几件，钱记在同一条会话名下。 */
+  /** 子会话的轮次：派发的子任务，费用计入当前会话。 */
   const childRuns = createMemo(() => loaded(runData)?.childRuns ?? [])
   /**
-   * 账本里不属于任何一轮的那几笔（手动压缩的摘要等）。轮次那几笔由 `runs` 提供，它带得动展开区。
-   * 一轮之内的压缩请求是这一轮的普通请求，在那一轮的逐请求表里；带 runId 的账本行属于那一轮，
-   * 不单列。
+   * 账本中不属于任何轮次的条目（手动压缩的摘要等）。轮次条目由 `runs` 提供，它带有展开区所需的数据。
+   * 轮次内的压缩请求是该轮的普通请求，显示在该轮的逐请求表中；带 runId 的账本行归属该轮，
+   * 不单独成行。
    */
   const extras = createMemo(() =>
     (loaded(ledger)?.entries ?? []).filter((e) => e.kind !== 'run' && e.runId === null),
   )
 
-  /** 清单：本会话轮次、子会话轮次与不属于任何一轮的那几笔按时间倒序并成一列。 */
+  /** 清单：本会话轮次、子会话轮次与不属于任何轮次的条目按时间倒序合并为一列。 */
   const rows = createMemo(() =>
     [
       ...runs().map((r) => ({
@@ -89,7 +89,7 @@ export default function RunDetails() {
     ].sort((a, b) => b.at - a.at),
   )
 
-  /** 展开的是哪一条。同时只展开一条：一次要读的是一轮的账，不是几轮并排。 */
+  /** 当前展开的行。同一时刻只展开一行：每次查看的是单轮明细，不并排比较多轮。 */
   const [picked, setPicked] = createSignal<string | null>(null)
 
   const retry = () => {
@@ -108,7 +108,7 @@ export default function RunDetails() {
             </div>
           }
         >
-          {/* 一笔都没有就空着：摆一排 0 是把「还没开始」说成「花了零元」。 */}
+          {/* 没有任何条目时留空：显示一排 0 会把「尚未开始」表达为「费用为零」。 */}
           <Show when={rows().length > 0}>
             <Summary
               runs={[...runs(), ...childRuns().map((c) => c.run)]}
@@ -138,7 +138,7 @@ export default function RunDetails() {
   )
 }
 
-/** 读数卡里的一格。名字在上、值在下——每个数都自带标签，不靠位置去猜它是什么。 */
+/** 读数卡中的一项。名称在上、值在下：每个数值都带有标签，无需按位置推断含义。 */
 function Stat(props: { label: string; value: string }) {
   return (
     <div class="run-stat">
@@ -149,17 +149,17 @@ function Stat(props: { label: string; value: string }) {
 }
 
 /**
- * 会话合计：「本会话」旁边是边界一句，金额靠右，下面一张六格读数卡。
+ * 会话合计：「本会话」旁边是一句边界声明，金额靠右，下方是六项读数卡。
  *
- * **六格是一份完整的账。** 轮次 / 输入 / 输出 / 命中率 / 缓存命中 / 缓存写入，与中转站后台的读数同
- * 名同序。少任何一格都会让「这条会话的花销构成」缺一块：命中率答「缓存生效没有」，命中与写入答
- * 「省下多少、又为建缓存付了多少」。
+ * **六项构成完整的用量数据。** 轮次 / 输入 / 输出 / 命中率 / 缓存命中 / 缓存写入，与中转站后台的读数
+ * 同名同序。缺少任何一项，会话的费用构成都不完整：命中率表示缓存是否生效，缓存命中与缓存写入
+ * 分别表示节省的用量与建立缓存的开销。
  *
- * **正在跑的那一轮单独加。** 账本在**收尾时**才记一笔，所以正在跑的那一轮还不在里面。判据取
- * `finishedAt === null`——未结算的轮次一定不在账本里，两边不会重复计。
- * 不加的话，清单里那一行的金额在涨而上面的合计不动。
+ * **运行中的轮次单独累加。** 账本在轮次**收尾时**才写入记录，运行中的轮次尚未计入。判据为
+ * `finishedAt === null`：未结算的轮次一定不在账本中，因此不会重复计算。
+ * 不累加时，清单中该行的金额持续增长而合计保持不变。
  *
- * **收成 K/M。** 这里回答量级，逐位对账在展开区那张逐请求表里——一格 110px 装不下九位数字。
+ * **数值缩写为 K/M。** 此处只显示量级，精确数值在展开区的逐请求表中：110px 宽的读数项无法容纳九位数字。
  */
 function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
   const totals = createMemo(() =>
@@ -184,11 +184,11 @@ function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
   )
 
   /**
-   * 缓存命中率。分母是「未命中 + 命中 + 写入」——`inputTokens` 只装未命中的那部分，
-   * 拿它当分母算出来的比例恒偏高，命中高时能超过 100%。
+   * 缓存命中率。分母为「未命中 + 命中 + 写入」：`inputTokens` 只包含未命中的部分，
+   * 以它为分母算出的比例偏高，命中率高时可超过 100%。
    *
-   * 与读数条那一格问的不是同一件事：那里看最后一次调用，答「现在缓存生效了吗」；
-   * 这里看整条会话，答「这条会话总共省下多少」。
+   * 与读数条中的命中率含义不同：读数条按最后一次调用计算，表示缓存当前是否生效；
+   * 此处按整个会话计算，表示会话总共节省的用量。
    */
   const hit = () => {
     const t = totals()
@@ -201,13 +201,13 @@ function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
     <header class="run-sum">
       <div class="run-sum-top">
         <span class="run-sum-scope">本会话</span>
-        {/* 边界：外部 CLI 是本机另一个进程，它的钱花在别家账上，这里拿不到。 */}
+        {/* 边界：外部 CLI 是本机的另一个进程，其费用由其他服务商计费，此处无法取得。 */}
         <span class="run-sum-note">不含外部 CLI</span>
         <span class="run-sum-cost">{money(totals().cost)}</span>
       </div>
       <div class="run-stats">
         <Stat label="轮次" value={String(props.runs.length)} />
-        {/* 输入给**含缓存命中**的口径：中转站后台账单就是这个数，两边同口径才能对账。 */}
+        {/* 输入按**包含缓存命中**的口径显示：中转站后台账单使用同一口径，口径一致才能对账。 */}
         <Stat label="输入" value={compact(totals().input + (totals().cached ?? 0))} />
         <Stat label="输出" value={compact(totals().output)} />
         <Stat label="命中率" value={hit()} />
@@ -219,16 +219,16 @@ function Summary(props: { runs: Run[]; ledger: UsageTotals }) {
 }
 
 /**
- * 一轮一行。**这一行就是这一轮的全部标题**：什么时候、哪个模型、跑了几步多久、
- * 出没出事、多少钱。
+ * 每轮一行。**该行即该轮的完整标题**：开始时间、模型、执行步数与耗时、
+ * 是否出错、金额。
  *
- * 模型名与步数耗时不进展开区——放进去等于给同一轮做两个标题，上面一个时间、
- * 下面一个模型名，而它们说的是同一件事。展开区留给只有展开才看的内容：逐请求的账。
+ * 模型名与步数耗时不放入展开区：放入后同一轮会有两个标题。
+ * 展开区只放需要展开才查看的内容：逐请求明细。
  */
 function RunRow(props: { run: Run; name: string; open: boolean; onPick: () => void }) {
   const r = () => props.run
   const mark = () => runMark(r())
-  /** 跑完才给耗时。还在跑的那一轮由「进行中」标记说，两处都说就是同一件事说两遍。 */
+  /** 执行完毕后才显示耗时。运行中的轮次由「进行中」标记表示，不重复显示耗时。 */
   const elapsed = () => {
     const end = r().finishedAt
     return end === null ? null : `${((end - r().createdAt) / 1000).toFixed(1)}s`
@@ -239,9 +239,9 @@ function RunRow(props: { run: Run; name: string; open: boolean; onPick: () => vo
       <button class="run-row" type="button" aria-expanded={props.open} onClick={props.onPick}>
         <IconChevron size={10} dir={props.open ? 'down' : 'right'} />
         <span class="run-when">{clockOf(r().createdAt)}</span>
-        {/* 派给谁。本会话自己那几轮没有这一格——那一行就是用户正在看的这条会话。 */}
+        {/* 派发对象。本会话自身的轮次不显示该字段：这些行属于用户当前查看的会话。 */}
         <Show when={props.name}>{(name) => <span class="run-role truncate">{name()}</span>}</Show>
-        {/* 模型名是这一行唯一长度不可控的一格，所以只有它让位。 */}
+        {/* 模型名是该行唯一长度不可控的字段，因此只截断模型名。 */}
         <span class="run-model truncate">{r().model}</span>
         <span class="run-meta">{r().stepCount} 步</span>
         <Show when={elapsed()}>{(e) => <span class="run-meta">{e()}</span>}</Show>
@@ -262,10 +262,10 @@ function RunRow(props: { run: Run; name: string; open: boolean; onPick: () => vo
 }
 
 /**
- * 不属于任何一轮的那一笔（手动压缩的摘要）。
+ * 不属于任何轮次的条目（手动压缩的摘要）。
  *
- * **列出来是为了合计对得上**：这笔钱真花了，只是它不在任何一轮的 usage 里。
- * 它没有 run，所以没有展开区，也不给折叠符号——占位空格保证时间列还在同一条竖线上。
+ * **列出该条目是为了使合计与清单一致**：这项费用已实际产生，但不在任何轮次的 usage 中。
+ * 它没有 run，因此没有展开区与折叠符号；占位元素使时间列保持对齐。
  */
 function ExtraRow(props: { entry: UsageLedgerRow }) {
   return (
@@ -283,26 +283,26 @@ function ExtraRow(props: { entry: UsageLedgerRow }) {
 }
 
 /**
- * 展开之后才看的那份账：这一轮逐次请求的明细。
+ * 展开后显示的明细：该轮逐次请求的用量与金额。
  *
- * **只有这张表。** 行上已经说了什么时候、哪个模型、几步多久、出没出事、多少钱；会话流末尾那条读数条
- * 说了为什么停、报错正文是什么。在这里再印一遍就是同一件事说两遍。
- * 出错的是某一次请求，它记在那一行的「结果」列上，不在轮次上另挂一块。
+ * **展开区只有这张表。** 轮次行已显示时间、模型、步数、耗时、是否出错与金额；会话流末尾的读数条
+ * 已显示停止原因与报错正文，此处不重复显示。
+ * 某一次请求出错时，错误记在该请求行的「结果」列，不在轮次上另行显示。
  *
- * **真源是 `provider_requests` 而不是 `usage.turns`。** 「这一轮发了几次」只有它答得出来：它在**发
- * 出之前**就落行，连接层失败后的重发是独立一行（`retry_index`）。`usage.turns` 只在拿到 usage 回报
- * 时才 push，所以发出去没回执的那几次在它里面不存在。
+ * **真源是 `provider_requests` 而不是 `usage.turns`。** 只有它能给出该轮的请求次数：它在**发出之前**
+ * 就写入一行，连接层失败后的重发是独立一行（`retry_index`）。`usage.turns` 只在取得 usage 回报
+ * 时才写入，已发出但无回执的请求不在其中。
  *
- * **金额仍从 `usage.turns` 取。** 计价发生在拿到 usage 之后，`provider_requests` 上没有这个事实。两
- * 者按 `turnIndex` 对齐：成功那次对得上，重发失败那次对不上——而对不上正是实话，那一次收没收费不知
- * 道。
+ * **金额仍从 `usage.turns` 取得。** 计价发生在取得 usage 之后，`provider_requests` 中没有金额。两者
+ * 按 `turnIndex` 对齐：成功的请求能对齐，重发失败的请求无法对齐，与该请求是否计费无法确定的事实
+ * 一致。
  *
- * **列序对齐中转站后台。** 请求编号之后是账单字段：
- * 输入 → 输出 → 命中 → 写入 → 金额 → 结果，同序逐行扫下来。
+ * **列序与中转站后台一致。** 请求编号之后是账单字段：
+ * 输入 → 输出 → 命中 → 写入 → 金额 → 结果，便于逐行对照。
  */
 function RequestLedger(props: { run: Run }) {
-  // 跑完的那一轮不会再多请求，判据里就不放账本修订号——否则每落一步都要为一张
-  // 不会变的表重取一次。
+  // 执行完毕的轮次不会再有新请求，判据中不包含账本修订号，否则每写入一步都会
+  // 重取一张不再变化的表。
   const [data] = createResource(
     () => `${props.run.id}:${props.run.finishedAt === null ? ledgerRevision() : ''}`,
     () => client.api<{ requests: ProviderRequest[] }>(`/api/runs/${props.run.id}/requests`),
@@ -310,7 +310,7 @@ function RequestLedger(props: { run: Run }) {
   const requests = () => loaded(data)?.requests ?? []
   const costOf = (turnIndex: number) =>
     (props.run.usage?.turns ?? []).find((t) => t.turnIndex === turnIndex)?.costUsd ?? 0
-  /** 这一轮里的生成（出图、视频、语音）。每次一行，排在模型请求之后。 */
+  /** 该轮中的生成（图像、视频、语音）。每次生成一行，排在模型请求之后。 */
   const media = () => props.run.usage?.media ?? []
 
   return (
@@ -319,9 +319,9 @@ function RequestLedger(props: { run: Run }) {
         <table class="run-req">
           <thead>
             <tr>
-              {/* 列名写「请求」而不是 `#`：行上那个「N 步」数的是 steps 表的行数
-                  （每段思考、每段正文、每次工具调用各一条），这里数的是模型往返次数，
-                  两个数不该、也不会相等。列名把单位说出来，省掉一次「为什么对不上」。 */}
+              {/* 列名写「请求」而不是 `#`：轮次行上的「N 步」是 steps 表的行数
+                  （每段思考、每段正文、每次工具调用各一条），此处计数的是模型往返次数，
+                  两个数值不相等。列名写明计数对象，避免两者被误认为同一计数。 */}
               <th>请求</th>
               <th>输入</th>
               <th>输出</th>
@@ -334,7 +334,7 @@ function RequestLedger(props: { run: Run }) {
           <tbody>
             <For each={requests()}>
               {(q) => {
-                // 输入给**含缓存命中**的口径：中转站后台账单就是这个数。
+                // 输入按**包含缓存命中**的口径显示，与中转站后台账单一致。
                 const input =
                   q.providerInputTokens === null
                     ? null
@@ -343,7 +343,7 @@ function RequestLedger(props: { run: Run }) {
                 const outcome = requestOutcome(q)
                 return (
                   <tr>
-                    {/* 重发是同一轮的第 N 次，编号要看得出来，否则两行长得一样。 */}
+                    {/* 重发是同一请求编号下的第 N 次尝试，编号必须标出重发序号，否则两行无法区分。 */}
                     <td>
                       {q.turnIndex + 1}
                       {q.retryIndex > 0 ? `.${q.retryIndex + 1}` : ''}
@@ -358,9 +358,9 @@ function RequestLedger(props: { run: Run }) {
                 )
               }}
             </For>
-            {/* 生成行：请求列写类别，模型名在 title 里——面板窄，这张表多出十几像素最右一列就被裁掉；
-                按模型的花费在「用量」页。输出列写接口回报的数量（张 / 秒 / 字符），没有 token 与缓存。
-                只有成功的生成才有这一行（失败各家都不计费），结果列与成功的请求同写「已完成」。 */}
+            {/* 生成行：请求列显示类别，模型名放在 title 中：面板较窄，表格宽度增加十几像素即会裁掉最右一列；
+                按模型统计的费用在「用量」页。输出列显示接口返回的数量（张 / 秒 / 字符），没有 token 与缓存数据。
+                只有成功的生成才有对应行（各服务商对失败的生成均不计费），结果列与成功的请求相同，显示「已完成」。 */}
             <For each={media()}>
               {(m) => (
                 <tr data-tip={m.model}>
@@ -386,10 +386,10 @@ function RequestLedger(props: { run: Run }) {
 }
 
 /**
- * 通向账本的那一行。**只给一个数**：这台机器近 30 天一共多少钱。
+ * 账本入口行。**只显示一个数值**：本机近 30 天的费用合计。
  *
- * 它是「这个月花了多少」的入口，明细在设置的「用量」页。这一行不做加载态与错误态
- * ——值位保持「—」，行高恒定；完整的两种状态在它点进去的那一页。
+ * 它是近期费用的入口，明细在设置的「用量」页。该行不显示加载态与错误态：
+ * 取得数值之前显示 `N/A`，行高保持不变；完整的加载态与错误态在「用量」页中显示。
  */
 function LedgerLink() {
   const [data] = createResource(ledgerRevision, () =>
@@ -410,11 +410,11 @@ function LedgerLink() {
 }
 
 /**
- * 这一行要不要挂标记，挂哪一个。**最多一枚**：三个标记同时出现的那一行会长过金额列。
- * 正常完成的轮次不挂任何标记——一列干净的行本身就是「都正常」。
+ * 决定该行是否显示标记以及显示哪一个。**最多一个**：三个标记同时出现时，该行会超出金额列。
+ * 正常完成的轮次不显示标记，没有标记即表示正常。
  */
 function runMark(r: Run): { text: string; bad?: boolean } | null {
-  // 中文说法和会话流里的收尾条共用一张表，别在这里直接贴英文码。
+  // 中文名称与会话流的收尾条共用同一张映射表，不要在此处直接显示英文代码。
   if (r.stopReason && r.stopReason !== 'completed') {
     const text = stopReasonLabel(r.stopReason)
     return text ? { text, bad: true } : null
@@ -423,7 +423,7 @@ function runMark(r: Run): { text: string; bad?: boolean } | null {
   return null
 }
 
-/** 行首的时间。当天只给时分，跨天补日期——不另做日期分隔行，那会把清单切成几段。 */
+/** 行首的时间。当天只显示时分，非当天加上日期；不另设日期分隔行，以免清单被分成多段。 */
 function clockOf(at: number): string {
   const d = new Date(at)
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -437,26 +437,26 @@ function clockOf(at: number): string {
 }
 
 /**
- * 这一轮的金额：模型调用加生成，与会话流读数条同一个口径（`runCosts`）。
- * 计价为 0 即没有价目，写 $0.00 是把「不知道」说成「免费」。
+ * 该轮的金额：模型调用与生成之和，与会话流读数条口径相同（`runCosts`）。
+ * 计价为 0 表示没有价目，显示 $0.00 会把「未知」表达为「免费」。
  */
 function runCost(r: Run): string {
   return r.usage ? money(runCosts(r.usage)) : NA
 }
 
-/** 金额合计。同上：一笔计价都没有时不是零元，是没有价目。 */
+/** 金额合计。同上：没有任何计价时表示没有价目，而不是零元。 */
 function money(cost: Record<string, number>): string {
   return Object.values(cost).some((v) => v > 0) ? formatCosts(cost) : NA
 }
 
 /**
- * 没有这个数时写它。
+ * 数值不存在时显示的文字。
  *
- * **是术语，不是符号**：一根横线读者认不出它在说什么——是零、是省略、还是没取到。
- * `N/A` 是数据表里「此处无可用值」的通用写法，含义唯一，也不会被当成数字。
+ * **使用术语，不使用符号**：一条横线无法区分零、省略与未取得。
+ * `N/A` 是数据表中「此处无可用值」的通用写法，含义唯一，也不会被误读为数字。
  *
- * 它盖着两种情形，两种都是「这个数不存在」而不是「这个数是 0」：
- * 接口没有回报这个字段（缓存那几格的 `null`），以及这个模型没有计价（金额为 0）。
+ * 它覆盖两种情形，均表示数值不存在而不是数值为 0：
+ * 接口未返回该字段（缓存相关字段为 `null`），以及该模型没有计价（金额为 0）。
  */
 const NA = 'N/A'
 
@@ -470,7 +470,7 @@ function num(n: number | null): string {
   return n === null ? NA : n.toLocaleString()
 }
 
-/** 把一轮的花费并进按币种分的桶里。**不跨币种相加。** */
+/** 把一轮的费用按币种累加。**不跨币种相加。** */
 function addCosts(
   acc: Record<string, number>,
   costs: Record<string, number>,
@@ -480,24 +480,24 @@ function addCosts(
   return out
 }
 
-/** 累加一个「可能没给」的计数。两边都没给过时保持 `null`。 */
+/** 累加可能缺失的计数。两侧均缺失时保持 `null`。 */
 function addMaybe(acc: number | null, v: number | null | undefined): number | null {
   return v === null || v === undefined ? acc : (acc ?? 0) + v
 }
 
-/** 逐请求表里生成行的请求列：写类别，用模型库页签的叫法。 */
+/** 逐请求表中生成行的请求列：显示类别，名称与模型库页签一致。 */
 const MEDIA_REQUEST: Record<MediaOutput, string> = {
   image: '图像',
   video: '视频',
   audio: '音频',
 }
 
-/** 账本里非轮次那一笔的中文名。键取自 `UsageKind`。 */
+/** 账本中非轮次条目的中文名称。键取自 `UsageKind`。 */
 const KIND_LABEL: Record<string, string> = {
   summary: '压缩摘要',
 }
 
-/** 没有活动会话时的空账。给一份而不是不取，界面才有恒定的形状。 */
+/** 没有活动会话时的空合计。返回空合计而不是跳过获取，使界面结构保持不变。 */
 function emptyTotals(): UsageTotals {
   return {
     entries: 0,

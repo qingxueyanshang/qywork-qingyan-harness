@@ -1,4 +1,4 @@
-/** 把 Markdown 中的本地 HTML 链接解析到所属工作区，不使用应用页面的 HTTP 地址作基准。 */
+/** 把 Markdown 中的本地 HTML 链接解析到所属工作区，不以应用页面的 HTTP 地址作为基准。 */
 export function localHtmlUrl(href: string, workspaceRoot: string): string | null {
   const value = href.trim()
   if (!value || /\p{Cc}/u.test(value)) return null
@@ -17,7 +17,7 @@ export function localHtmlUrl(href: string, workspaceRoot: string): string | null
 }
 
 /**
- * Markdown 里指向本机文件的地址：相对路径、Windows 或 POSIX 绝对路径。去掉查询与锚点、解码后以正斜杠返回；
+ * Markdown 中指向本机文件的地址：相对路径、Windows 或 POSIX 绝对路径。去除查询与锚点并解码后以正斜杠形式返回；
  * 网址、带协议的地址、`//` 开头的网络地址与页内锚点返回 null。
  */
 export function localPath(href: string): string | null {
@@ -32,7 +32,7 @@ export function localPath(href: string): string | null {
   }
 }
 
-/** 本机文件地址 → 工作区相对路径，交给右侧文件预览；落在工作区外返回 null。 */
+/** 本机文件地址 → 工作区相对路径，供右侧文件预览使用；位于工作区之外时返回 null。 */
 export function workspaceFile(href: string, workspaceRoot: string): string | null {
   const path = localPath(href)
   if (!path) return null
@@ -46,7 +46,7 @@ export function workspaceFile(href: string, workspaceRoot: string): string | nul
   return inside ? path.slice(root.length + 1) : null
 }
 
-/** 根目录和裸 Windows 路径是文件系统字面值，其中的百分号、问号和井号不是 URL 分隔符。 */
+/** 根目录与不带协议的 Windows 路径是文件系统字面值，其中的百分号、问号与井号不是 URL 分隔符。 */
 function fileUrl(path: string): URL {
   const normalized = path.replaceAll('\\', '/')
   const encoded = encodeURI(normalized).replaceAll('?', '%3F').replaceAll('#', '%23')

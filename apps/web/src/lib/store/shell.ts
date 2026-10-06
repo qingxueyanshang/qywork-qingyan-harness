@@ -1,17 +1,17 @@
 /**
  * 桌面外壳的调用桥：`__TAURI_INTERNALS__` 的唯一封装。
  *
- * **这个模块不许 import 本包内的任何模块。** 它必须是叶子：`ui.ts` 要用它，
- * 而 `connection.ts` 又 import 了 `ui.ts`——桥只要落在 `settings.ts` 那一侧，
- * 这条边就成环，表现是 `Cannot access 'QyClient' before initialization`。
+ * 本模块不得 import 本包内的任何模块，必须是叶子模块：`ui.ts` 依赖它，
+ * 而 `connection.ts` 又 import 了 `ui.ts`；桥位于 `settings.ts` 一侧时，
+ * 该依赖边形成环，报错为 `Cannot access 'QyClient' before initialization`。
  */
 
 /**
- * 桌面外壳才有的能力：系统目录选择器、窗口控制。
+ * 仅桌面外壳具备的能力：系统目录选择器、窗口控制。
  *
- * **换项目不在这个名单里**：服务端一次服务多个项目，换项目只是换一个 `?ws=`
- * 参数，浏览器和手机上照样能换。这里只剩「挑一个本机目录」需要外壳——
- * 那是系统对话框，Web 拿不到。
+ * 切换项目不在此列：服务端同时服务多个项目，切换项目只需更换 `?ws=`
+ * 参数，浏览器与手机上同样可以切换。此处只有选择本机目录需要外壳：
+ * 它是系统对话框，Web 端无法调用。
  */
 export function isDesktopShell(): boolean {
   return typeof (globalThis as Record<string, unknown>).__TAURI_INTERNALS__ === 'object'
@@ -19,7 +19,7 @@ export function isDesktopShell(): boolean {
 
 interface TauriInternals {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>
-  /** 把一个 JS 回调换成 Rust 那边能 emit 回来的数字句柄。 */
+  /** 将 JS 回调转换为 Rust 侧可以通过 emit 回调的数字句柄。 */
   transformCallback(cb: (payload: unknown) => void, once?: boolean): number
 }
 
@@ -29,23 +29,23 @@ function internals(): TauriInternals | undefined {
 
 export function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const api = internals()
-  if (!api) return Promise.reject(new Error('不在桌面端，用不了这个能力'))
+  if (!api) return Promise.reject(new Error('该功能仅在桌面端可用'))
   return api.invoke(cmd, args) as Promise<T>
 }
 
 /**
  * 订阅一个 Rust 侧 emit 的事件。
  *
- * 走 `plugin:event|listen` 这条内部通道，而不是引 `@tauri-apps/api`：
- * 前端这份代码桌面与手机共用，多引一个只有桌面能用的包，手机端的构建里
- * 就会多出一段永远不执行的代码（同 `lib.rs` 里那几个窗口命令的理由）。
+ * 经由 `plugin:event|listen` 内部通道，而不是引入 `@tauri-apps/api`：
+ * 前端代码由桌面与手机共用，引入只有桌面可用的包会使手机端的构建
+ * 包含一段永不执行的代码（与 `lib.rs` 中窗口命令的理由相同）。
  *
- * **不给退订**：现在的调用方都是「开一次听到进程结束」的常驻订阅，
- * 加一个没人调的退订接口等于宣称它该配对使用。真需要时再补。
+ * 不提供退订：现有调用方都是订阅一次并持续到进程结束的常驻订阅，
+ * 提供无人调用的退订接口等于声明它应配对使用。需要时再添加。
  */
 export function tauriListen<T>(event: string, handler: (payload: T) => void): Promise<void> {
   const api = internals()
-  if (!api) return Promise.reject(new Error('不在桌面端，用不了这个能力'))
+  if (!api) return Promise.reject(new Error('该功能仅在桌面端可用'))
   const id = api.transformCallback((raw) => handler((raw as { payload: T }).payload))
   return api.invoke('plugin:event|listen', {
     event,
@@ -57,10 +57,10 @@ export function tauriListen<T>(event: string, handler: (payload: T) => void): Pr
 /**
  * 桌面外壳的系统拖放分发。
  *
- * **HTML5 的 `ondrop` 在桌面端不触发**：Tauri 的 `drag_drop_handler_enabled` 默认为真，OS 拖放被外壳截获，
- * 外壳 emit 的载荷里是绝对路径。事件是全窗的，按落点交给命中测试为真的那一个接收方（输入区、画布区）。
+ * HTML5 的 `ondrop` 在桌面端不触发：Tauri 的 `drag_drop_handler_enabled` 默认为真，系统拖放被外壳截获，
+ * 外壳 emit 的载荷中是绝对路径。事件作用于整个窗口，按落点交给命中测试为真的接收方（输入区、画布区）。
  *
- * 监听在模块级且只接一次：`tauriListen` 不提供退订。接收方挂载时登记、卸载时注销，事件照收，没有接收方就丢弃。
+ * 监听位于模块级且只注册一次：`tauriListen` 不提供退订。接收方挂载时登记、卸载时注销；监听持续接收事件，没有接收方时丢弃。
  */
 export interface DropSink {
   hit(pos: { x: number; y: number }): boolean

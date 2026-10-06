@@ -1,10 +1,10 @@
 /**
- * 覆盖 `store/shell.ts` 的外壳拖放分发：按落点交给命中的那一个接收方，悬停状态广播给全部接收方，注销后不再收。
+ * 覆盖 `store/shell.ts` 的外壳拖放分发：按落点交给命中的接收方，悬停状态广播给全部接收方，注销后不再接收。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 
-/** 外壳事件桥的桩：记下每个事件的回调，由测试手动触发。 */
+/** 外壳事件桥的桩：记录每个事件的回调，由测试手动触发。 */
 const handlers = new Map<string, (raw: unknown) => void>()
 
 beforeAll(() => {
@@ -29,7 +29,7 @@ afterAll(() => {
 const fire = (event: string, payload: unknown) => handlers.get(event)!({ payload })
 
 describe('外壳拖放分发', () => {
-  test('落点在哪个接收方的区域里就交给哪个；悬停广播给全部；注销后不再收', async () => {
+  test('拖放交给落点所在区域的接收方；悬停状态广播给全部接收方；注销后不再接收', async () => {
     const { registerDropSink } = await import('./shell.ts')
     const got: string[] = []
     const over: string[] = []

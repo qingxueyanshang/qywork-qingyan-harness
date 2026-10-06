@@ -1,9 +1,9 @@
 /**
  * 运行页的清单与合计。
  *
- * 锁的是一条真实失败形状：四个子 agent 跑了几十分钟、几块钱，而这一页只查当前会话，
- * 那几笔钱一分都不显示。子会话的轮次必须与本会话的轮次同一行型出现在清单里，
- * 并且进合计；行上要说得出这一轮是派给谁的。
+ * 锁定的失败形状：四个子 agent 运行数十分钟、产生数元费用，而运行页只查询当前会话，
+ * 这些费用均未显示。子会话的轮次必须以与本会话轮次相同的行格式出现在清单中，
+ * 并计入合计；行上须标明该轮派发给哪个角色。
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -53,7 +53,7 @@ function run(id: string, cost: number, currency: 'USD' | 'CNY') {
 }
 
 describe('运行页', () => {
-  test('子会话的轮次进清单也进合计，行上带角色 id', async () => {
+  test('子会话的轮次计入清单与合计，行上显示角色 id', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
@@ -102,19 +102,19 @@ describe('运行页', () => {
     )
     const roles = [...host.querySelectorAll('.run-role')].map((el) => el.textContent)
     expect(roles.sort()).toEqual(['GLM 车组', 'Qwen 车组'])
-    // 轮次合计数的是三条，不是本会话那一条。
+    // 轮次合计为三轮，包含子会话的轮次，不只是本会话的一轮。
     const stats = [...host.querySelectorAll('.run-stat')].map((el) => el.textContent)
     expect(stats.some((text) => text?.startsWith('轮次3'))).toBe(true)
-    // 金额按币种分桶，不跨币种相加。
+    // 金额按币种分别合计，不跨币种相加。
     const cost = host.querySelector('.run-sum-cost')?.textContent ?? ''
     expect(cost).toContain('3')
     expect(cost).toContain('4')
-    // 边界只留这一句。
+    // 边界声明仅保留「不含外部 CLI」一句。
     expect(host.querySelector('.run-sum-note')?.textContent).toBe('不含外部 CLI')
   })
 
-  /** 一轮之内的压缩请求在那一轮的逐请求表里；带 runId 的账本行不再单列成一行。 */
-  test('带 runId 的摘要账本行不单列，没记轮次的按时间排在轮次之间', async () => {
+  /** 轮次内的压缩请求显示在该轮次的逐请求表中；带 runId 的账本行不单独成行。 */
+  test('带 runId 的摘要账本行不单独成行，未记录轮次的按时间排在轮次之间', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     const entry = (id: string, runId: string | null, occurredAt: number) => ({
@@ -182,18 +182,18 @@ describe('运行页', () => {
       () => `清单里只有 ${host.querySelectorAll('.run-row').length} 行`,
     )
     const rows = [...host.querySelectorAll('.run-row')]
-    // 倒序：rn_b、没记轮次的那笔、rn_a；带 runId 的那笔不出现。
+    // 倒序：rn_b、未记录轮次的条目、rn_a；带 runId 的条目不显示。
     expect(rows[1]!.classList.contains('static')).toBe(true)
     expect(rows[1]!.querySelector('.run-mark')?.textContent).toBe('压缩摘要')
     expect(host.querySelectorAll('.run-row.static')).toHaveLength(1)
   })
 
   /**
-   * 原始失败形状：一轮里生成了图片，面板上这一轮的金额与逐请求表都看不到这笔花费。
-   * 生成花费计入这一轮的金额（不同币种并列），展开后逐请求表里一次生成占一行；
-   * 账本里带 runId 的生成行属于这一轮，不单列。
+   * 原始失败形状：某一轮生成了图片，面板上该轮的金额与逐请求表均未包含这项费用。
+   * 生成费用计入该轮金额（不同币种并列显示），展开后逐请求表中每次生成占一行；
+   * 账本中带 runId 的生成行归属该轮，不单独成行。
    */
-  test('生成花费计入这一轮的金额，展开后在逐请求表里占一行', async () => {
+  test('生成费用计入所在轮次的金额，展开后在逐请求表中占一行', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     const withMedia = {

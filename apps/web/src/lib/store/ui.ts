@@ -1,8 +1,8 @@
 /**
- * 纯界面状态：右侧面板、几个浮层，以及当前工作区。
+ * 纯界面状态：右侧面板、浮层与当前工作区。
  *
- * 这些和服务端无关，也不进 `state` ——它们的生命周期是「这一次打开」，
- * 混进业务 store 只会让每次事件推送都要绕过大量与服务端无关的字段。
+ * 这些状态与服务端无关，不放入 `state`：其生命周期是单次页面加载，
+ * 放入业务 store 会使每次事件推送都需要跳过大量与服务端无关的字段。
  */
 
 import { createEffect, createSignal, onCleanup } from 'solid-js'
@@ -11,32 +11,32 @@ import type { TerminalSession } from '../terminal.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
 
 /**
- * 右侧面板**固定的那几页**。关不掉，永远在页签条最前面。
+ * 右侧面板的固定页。不可关闭，始终位于页签条最前面。
  *
- * **这里的每个值都必须在 `SidePanel` 的 `<Switch>` 里有对应的 `Match`**，
- * 否则设成它的结果是面板展开、内容空白。
+ * 每个值都必须在 `SidePanel` 的 `<Switch>` 中有对应的 `Match`，
+ * 否则设为该值时面板展开而内容为空。
  *
- * 打开的文件**不是这里的一个值**：它长在文件那一页里（`openFile` + `FileView`），
- * 和文件树并排。
+ * 打开的文件不是其中一个值：它显示在文件页中（`openFile` + `FileView`），
+ * 与文件树并排。
  *
- * 终端不在这里：它是可多开、可关掉的一页，见 `PanelTabKind`。
+ * 终端不在此列：终端页可多开、可关闭，见 `PanelTabKind`。
  */
 export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
 
 /**
- * 可多开的那几种页。
+ * 可多开的页类型。
  *
- * `terminal` 只有桌面端有（PTY 是本机进程和一对系统句柄）。`browser` 是 Windows
- * 桌面外壳里的内置浏览器，一页就是一个原生子 WebView，页签 id 由宿主给；
- * `preview` 是别的端上的 HTTP 网页预览，一页就是一个 iframe，地址由用户给。
- * **两者不是同一件事的两档**：一个能被 AI 操作、有登录状态，另一个只能看。
- * **这一层不判端**：判在入口那边（`SidePanel` 的看板），这里只管开了哪几页。
+ * `terminal` 仅桌面端存在（PTY 是本机进程与一对系统句柄）。`browser` 是 Windows
+ * 桌面外壳中的内置浏览器，每页对应一个原生子 WebView，页签 id 由宿主分配；
+ * `preview` 是其他端上的 HTTP 网页预览，每页对应一个 iframe，地址由用户输入。
+ * 两者不是同一功能的两个档位：前者可由 AI 操作并保留登录状态，后者只能浏览。
+ * 本层不判断运行端：判断在入口处（`SidePanel` 的看板）完成，本层只记录打开了哪些页。
  *
- * `conversation` 与 `cli` 都没有看板入口：只能从图卡上点开（看哪一条由那张卡说了算），
- * 所以也没有序号，标题就是那个节点的名字。两者分开是因为背后的来源不同：
- * 一个是子会话（有正文、有工具卡），一个是本机另一个进程写出来的一段流。
+ * `conversation` 与 `cli` 没有看板入口，只能从图卡上打开（显示哪一条由该卡片决定），
+ * 因此没有序号，标题即对应节点的名称。两者区分是因为来源不同：
+ * 前者是子会话（有正文与工具卡），后者是本机另一个进程输出的文本流。
  *
- * `canvas` 是一张画布，一页对应一个 `*.canvas.json`（`path`），从看板新建或从文件树点开。
+ * `canvas` 是画布，每页对应一个 `*.canvas.json`（`path`），从看板新建或从文件树打开。
  */
 export type PanelTabKind = 'terminal' | 'browser' | 'preview' | 'conversation' | 'cli' | 'canvas'
 
@@ -44,48 +44,48 @@ export interface PanelTab {
   id: string
   kind: PanelTabKind
   /**
-   * 页签上的字。**建出来就不再改。**
+   * 页签标题。创建后不再修改。
    *
-   * 不要改成「跟着内容走」（终端里的当前命令、浏览器页的站点名）：标题一变页签就变宽，
-   * 用户正瞄着的那颗 × 会跑到别的地方去。
+   * 不要改为随内容变化（终端中的当前命令、浏览器页的站点名）：标题变化会改变页签宽度，
+   * 使用户正要点击的 × 移位。
    */
   title: string
   /**
-   * 网页预览页现在指着的地址。**这一页的地址只有这一份**：收起面板会把 `PreviewPanel`
-   * 卸载，地址记在组件里的话再展开就是一个空地址栏。其余几种页没有这个字段。
+   * 网页预览页的当前地址，且是该地址的唯一记录：收起面板会卸载 `PreviewPanel`，
+   * 若地址保存在组件内，再次展开时地址栏为空。其他类型的页没有此字段。
    *
-   * 只记地址，不保页面状态：iframe 从 DOM 上摘下来再插回去就是重新加载，
-   * 这是浏览器的行为，前端这一侧没有第二条路。
+   * 只记录地址，不保留页面状态：iframe 从 DOM 移除后再插入即重新加载，
+   * 这是浏览器的行为，前端无法规避。
    *
-   * **内置浏览器页没有这个字段**：那一页的地址在原生宿主手里，前端只投影。
+   * 内置浏览器页没有此字段：其地址由原生宿主维护，前端只做投影。
    */
   url?: string
-  /** 画布页指着的画布文件（工作区相对路径）。其余几种页没有这个字段。 */
+  /** 画布页对应的画布文件（工作区相对路径）。其他类型的页没有此字段。 */
   path?: string
   /**
-   * 创建序号，页签条按它排。
+   * 创建序号，页签条按它排序。
    *
-   * 外壳给的页（终端、内置浏览器）用外壳进程那个计数器的值：两份清单各自异步回来，
-   * 按到达顺序追加会让整页刷新后的页签顺序与创建顺序不同，而 `terminal-N` 与 `bt_N`
-   * 是两个互不相关的计数，跨类型比不了。纯前端的页用 `nextLocalSeq`。
+   * 外壳创建的页（终端、内置浏览器）使用外壳进程计数器的值：两份清单分别异步返回，
+   * 按到达顺序追加会使整页刷新后的页签顺序与创建顺序不同，而 `terminal-N` 与 `bt_N`
+   * 是两个互不相关的计数，无法跨类型比较。纯前端的页使用 `nextLocalSeq`。
    */
   createdSeq: number
 }
 
 /**
- * 面板现在翻开的是哪一页。`null` = 收起。
+ * 面板当前显示的页。`null` 表示收起。
  *
- * 固定视图用它自己的名字，可多开的页用 `{ tab: id }`——**一个信号，不是「固定视图」
- * 加「当前页签」两个**：两个信号的时候「翻开文件页」和「翻开终端页」在类型上可以
- * 同时成立，谁盖过谁只能靠每个调用点自觉，那就是第二本账。
+ * 固定视图使用视图名，可多开的页使用 `{ tab: id }`。必须是一个信号，不要拆成「固定视图」
+ * 与「当前页签」两个信号：拆开后「显示文件页」与「显示终端页」在类型上可以同时成立，
+ * 优先级只能由每个调用点自行保证，形成第二本账。
  */
 export type PanelPage = PanelView | { tab: string }
 
 /**
- * 一个工作区的面板：开着哪几页，翻开的是哪一页。
+ * 单个工作区的面板：打开了哪些页，当前显示哪一页。
  *
- * 两样合在一个条目里，不是两张按工作区的表：翻开的那一页通常就是这份 `tabs` 里的一条，
- * 分开存的时候「页签换成了 B 的、当前页还是 A 的那一条」在类型上完全合法。
+ * 两者放在同一个条目中，而不是两张按工作区索引的表：当前页通常是 `tabs` 中的一项，
+ * 分开存储时「页签已是 B 的、当前页仍是 A 的」在类型上合法。
  */
 interface WorkspacePanel {
   tabs: readonly PanelTab[]
@@ -95,10 +95,10 @@ interface WorkspacePanel {
 const EMPTY_PANEL: WorkspacePanel = { tabs: [], page: null }
 
 /**
- * 面板状态按工作区分账。切工作区不收任何资源，只是换一个键去读。
+ * 面板状态按工作区分别记录。切换工作区不释放任何资源，只改用另一个键读取。
  *
- * **键只能是 `WorkspaceInfo.id`。** 没有活动工作区时一律不建条目：空字符串键的条目
- * 切进任何工作区都读不到，里面登记的 PTY 与原生页从此没有界面碰得到。
+ * 键只能是 `WorkspaceInfo.id`。没有活动工作区时不创建条目：空字符串键的条目
+ * 在任何工作区下都无法读取，其中登记的 PTY 与原生页此后没有任何界面可以访问。
  */
 const [panels, setPanels] = createSignal<Readonly<Record<string, WorkspacePanel>>>({})
 
@@ -107,26 +107,26 @@ function panelOf(wsId: string | undefined): WorkspacePanel {
 }
 
 /**
- * 按**显式**工作区改一条条目。
+ * 按显式指定的工作区修改条目。
  *
- * 宿主投影与异步回包必须拿资源自带的工作区调它，不要在 await 之后读当前工作区：
- * 请求期间用户可能已经切走，回包时的当前工作区可能是 B，写过去就是把 A 的页记进 B 的条目。
+ * 宿主投影与异步响应必须使用资源自带的工作区调用它，不要在 await 之后读取当前工作区：
+ * 请求期间用户可能已切换工作区，响应时的当前工作区可能是 B，写入会把 A 的页记入 B 的条目。
  */
 function updatePanel(wsId: string, next: (cur: WorkspacePanel) => WorkspacePanel): void {
   setPanels((all) => ({ ...all, [wsId]: next(all[wsId] ?? EMPTY_PANEL) }))
 }
 
-/** 当前工作区开着哪几页可多开的页。顺序即页签条上的顺序。 */
+/** 当前工作区打开的可多开页。顺序即页签条上的顺序。 */
 export function panelTabs(): readonly PanelTab[] {
   return panelOf(workspace()?.id).tabs
 }
 
-/** 当前工作区的面板翻开在哪一页。`null` = 收起；没有活动工作区时也是 `null`。 */
+/** 当前工作区的面板显示的页。`null` 表示收起；没有活动工作区时也为 `null`。 */
 export function sidePanel(): PanelPage | null {
   return panelOf(workspace()?.id).page
 }
 
-/** 翻到某一页。没有活动工作区时不写——那一页没有归属得上的条目。 */
+/** 切换到指定页。没有活动工作区时不写入：该页没有可归属的条目。 */
 export function setSidePanel(page: PanelPage | null): void {
   const wsId = workspace()?.id
   if (!wsId) return
@@ -134,42 +134,42 @@ export function setSidePanel(page: PanelPage | null): void {
 }
 
 /**
- * 按**显式**工作区翻到某一页。
+ * 按显式指定的工作区切换到指定页。
  *
- * 异步回包用它，不要用 `setSidePanel`：那个读的是回包时的当前工作区，
- * 而请求期间用户可能已经切走。
+ * 异步响应使用此函数，不要使用 `setSidePanel`：后者读取响应时的当前工作区，
+ * 而请求期间用户可能已切换工作区。
  */
 export function showPanelTab(wsId: string, id: string): void {
   updatePanel(wsId, (cur) => ({ ...cur, page: { tab: id } }))
 }
 
-/** 当前翻开的那一页的 id；停在固定视图上时是 `null`。派生量，不是第二份状态。 */
+/** 当前显示的页 id；显示固定视图时为 `null`。这是派生值，不是第二份状态。 */
 export function activePanelTab(): string | null {
   const page = sidePanel()
   return page !== null && typeof page === 'object' ? page.tab : null
 }
 
-/** 从一条条目里取出它翻开的那一页的 id。给不便读当前工作区的投影入口用。 */
+/** 从条目中取出当前显示页的 id。供不便读取当前工作区的投影入口使用。 */
 function activeTabOf(panel: WorkspacePanel): string | null {
   const page = panel.page
   return page !== null && typeof page === 'object' ? page.tab : null
 }
 
 /**
- * 关掉一页时要收的本机资源：终端的 PTY 与 xterm 实例、浏览器页记着的地址。
+ * 关闭一页时需要释放的本机资源：终端的 PTY 与 xterm 实例、浏览器页记录的地址。
  *
- * **为什么不放在组件的 `onCleanup` 里**：收起面板会把整块面板卸载，而那时终端必须
- * 保持存活——用户收起去看会话，切回来命令还得在跑、滚动历史还得在。所以「组件卸载」和
- * 「这一页被关掉」是两件不同的事，只有后者该收资源，而后者唯一的入口在这里。
+ * 不放在组件的 `onCleanup` 中：收起面板会卸载整个面板，而此时终端必须保持运行，
+ * 用户收起面板查看会话后再切回时，命令必须仍在运行、滚动历史必须保留。「组件卸载」与
+ * 「页被关闭」是两件不同的事，只有后者应释放资源，且后者的唯一入口在此。
  *
- * 关页入口清单——浏览器页：用户点页签 ×、AI 的 `browser_tabs(action=close)`、
- * 删除所属会话、应用退出、宿主建页中途失败时回收未登记的视图；终端：用户点页签 ×、
+ * 关闭页的入口：浏览器页为用户点击页签 ×、AI 调用 `browser_tabs(action=close)`、
+ * 删除所属会话、应用退出、宿主创建页中途失败时回收未登记的视图；终端为用户点击页签 ×、
  * 应用退出、「重开」按钮替换旧 PTY、子进程自行退出。切换与移除工作区、归档会话、
- * 停止、一轮结束、宿主重连都不关页。
+ * 停止、一轮结束、宿主重连均不关闭页。
  */
 const tabDisposers = new Map<string, () => void>()
 
-/** 登记「这一页被关掉时收什么」。同一个 id 重复登记以最后一次为准。 */
+/** 登记页被关闭时需释放的资源。同一 id 重复登记时以最后一次为准。 */
 export function holdPanelTab(id: string, dispose: () => void): void {
   tabDisposers.set(id, dispose)
 }
@@ -181,19 +181,19 @@ function disposeTab(id: string): void {
 }
 
 /**
- * 每种页各自的序号。**只增不减**：关掉「终端 1」之后剩下那页仍然叫「终端 2」，
- * 不在用户眼皮底下改名。
+ * 每种页各自的序号，只增不减：关闭「终端 1」后，剩余的页仍名为「终端 2」，
+ * 已显示的页签不改名。
  */
 const TAB_LABEL = { terminal: '终端', preview: '网页预览' } as const
 type NumberedKind = keyof typeof TAB_LABEL
 const tabSeq: Record<NumberedKind, number> = { terminal: 0, preview: 0 }
 
 /**
- * 纯前端那几种页（网页预览、子会话、外部 CLI）的创建序号。
+ * 纯前端页（网页预览、子会话、外部 CLI）的创建序号。
  *
- * **跟着见过的外壳序号抬。** 不抬的话，先开三页网页预览再开一页内置浏览器时，
- * 那一页的外壳序号比它们都小，会被插到中间去，而新开的页该落在页签条末尾。
- * 这几种页刷新后不存在，所以序号不必与外壳对得上，只要大小关系成立。
+ * 该计数须随已见到的外壳序号提升。否则先打开三页网页预览再打开一页内置浏览器时，
+ * 后者的外壳序号小于前三页，会被插入中间，而新打开的页应位于页签条末尾。
+ * 这些页刷新后不再存在，因此序号无需与外壳一致，只需保持大小关系。
  */
 let localSeq = 0
 
@@ -202,12 +202,12 @@ function nextLocalSeq(): number {
   return localSeq
 }
 
-/** 记下一个外壳序号，抬高本地计数的起点。 */
+/** 记录一个外壳序号，提高本地计数的起点。 */
 function noteHostSeq(seq: number): void {
   if (seq > localSeq) localSeq = seq
 }
 
-/** 按创建序号把几页插进清单：序号相同的排在已有那一页后面。 */
+/** 按创建序号将新页插入清单：序号相同时排在已有页之后。 */
 function insertBySeq(tabs: readonly PanelTab[], added: readonly PanelTab[]): PanelTab[] {
   const list = [...tabs]
   for (const tab of added) {
@@ -218,10 +218,10 @@ function insertBySeq(tabs: readonly PanelTab[], added: readonly PanelTab[]): Pan
 }
 
 /**
- * 新开一页并翻到它。`url` 只有网页预览页用得上：新开出来就指着它。
+ * 新建一页并切换到该页。`url` 仅用于网页预览页，作为其初始地址。
  *
- * 没有活动工作区时不开：这一页背后是 PTY 或 iframe，开出来就没有条目装得下它。
- * 序号也不在那时消耗掉。
+ * 没有活动工作区时不新建：该页对应 PTY 或 iframe，新建后没有条目可以记录它。
+ * 此时也不消耗序号。
  */
 export function openPanelTab(kind: NumberedKind, url?: string): void {
   const wsId = workspace()?.id
@@ -230,16 +230,16 @@ export function openPanelTab(kind: NumberedKind, url?: string): void {
   const n = tabSeq[kind]
   const id = `${kind}-${n}`
   const tab: PanelTab = { id, kind, title: `${TAB_LABEL[kind]} ${n}`, createdSeq: nextLocalSeq() }
-  // `exactOptionalPropertyTypes` 开着：没有地址时这个键必须不存在，不能写 undefined。
+  // 已开启 `exactOptionalPropertyTypes`：没有地址时该键必须不存在，不能写入 undefined。
   if (url) tab.url = url
   updatePanel(wsId, (cur) => ({ tabs: [...cur.tabs, tab], page: { tab: id } }))
 }
 
 /**
- * 在网页预览页里打开一个地址。
+ * 在网页预览页中打开地址。
  *
- * **已经有一页指着这个地址就翻回去**，不并排开出第二页——两页看同一个地址，
- * 内容逐字相同（同 `openConversationTab`）。
+ * 已有页显示该地址时切换到该页，不并排新建第二页：两页显示同一地址，
+ * 内容完全相同（同 `openConversationTab`）。
  */
 export function openPreviewTab(url: string): void {
   const open = panelTabs().find((t) => t.kind === 'preview' && t.url === url)
@@ -250,12 +250,12 @@ export function openPreviewTab(url: string): void {
   openPanelTab('preview', url)
 }
 
-/** 某一页现在指着的地址。没有地址（或不是网页预览页）时是空串。 */
+/** 指定页的当前地址。没有地址或不是网页预览页时为空串。 */
 export function panelTabUrl(id: string): string {
   return panelTabs().find((t) => t.id === id)?.url ?? ''
 }
 
-/** 网页预览页跳到另一个地址。 */
+/** 网页预览页导航到另一个地址。 */
 export function setPanelTabUrl(id: string, url: string): void {
   const wsId = workspace()?.id
   if (!wsId) return
@@ -266,19 +266,19 @@ export function setPanelTabUrl(id: string, url: string): void {
 }
 
 /**
- * 按宿主的存活页对齐内置浏览器的页签。**只投影**：这里加出来或去掉的页签
- * 不反过来决定宿主开着哪几页，页签 id 就是宿主给的 tabId。
+ * 按宿主的存活页同步内置浏览器的页签。本函数只做投影：此处增删的页签
+ * 不反向决定宿主打开哪些页，页签 id 即宿主分配的 tabId。
  *
- * 少了它，整页刷新之后页签是空的而原生页还在——那几页只能等应用退出时被收掉
+ * 缺少此同步时，整页刷新后页签为空而原生页仍存在，这些页只能在应用退出时回收
  * （同 `restoreTerminalTabs`）。
  *
- * **每页按它自带的工作区落账，不读当前工作区**：这一次调用可能发生在模块建立时
- * （那时还没有活动工作区），清单里也可能有后台工作区的页。对齐范围是
- * 「已有条目里有浏览器页的工作区」并上「本次清单里的工作区」——某工作区最后一页
- * 关掉后它不出现在清单里，旧页签与失效的当前页仍要在这一轮清掉。
+ * 每页按其自带的工作区记录，不读取当前工作区：本次调用可能发生在模块初始化时
+ * （此时尚无活动工作区），清单中也可能包含后台工作区的页。同步范围是
+ * 「已有条目中含浏览器页的工作区」与「本次清单中的工作区」的并集：某工作区的最后一页
+ * 关闭后，该工作区不出现在清单中，其旧页签与失效的当前页仍须在本次清除。
  *
- * 宿主那边已经没了的页**不走 `tabDisposers`**：它是「关掉这一页」的收尾，
- * 而这一页已经被关掉了，再走一次就是对着一个不存在的 tabId 再关一次。
+ * 宿主侧已不存在的页不调用 `tabDisposers`：它负责关闭页时的收尾，
+ * 而该页已经关闭，再次调用会对不存在的 tabId 重复执行关闭。
  */
 export function syncBrowserTabs(
   tabs: readonly { id: string; title: string; workspaceId: string; createdSeq: number }[],
@@ -303,11 +303,11 @@ interface HostTab {
 }
 
 /**
- * 把一个工作区的浏览器页签对齐到给定清单。**只按传进来的工作区寻址**，不读当前工作区。
- * 页签名跟着清单里的 `title` 走：它是网页标题的投影，页面跳转后会变。
+ * 将一个工作区的浏览器页签同步到给定清单。只按传入的工作区寻址，不读取当前工作区。
+ * 页签名取清单中的 `title`：它是网页标题的投影，页面导航后会变化。
  *
- * 新页按 `createdSeq` 插入而不是追加到末尾：这份清单与终端那份各自异步回来，
- * 追加的话整页刷新后的页签顺序取决于谁先回来。
+ * 新页按 `createdSeq` 插入而不是追加到末尾：本清单与终端清单分别异步返回，
+ * 追加会使整页刷新后的页签顺序取决于返回先后。
  */
 function alignBrowserTabs(wsId: string, tabs: readonly HostTab[]): void {
   const cur = panelOf(wsId)
@@ -346,10 +346,10 @@ function alignBrowserTabs(wsId: string, tabs: readonly HostTab[]): void {
 }
 
 /**
- * 打开某条子会话那一页。
+ * 打开子会话页。
  *
- * **页 id 就是会话 id**：同一条子会话再点一次是翻回去，不是并排开出第二页
- * ——两页看同一条已经跑完的会话，内容逐字相同。
+ * 页 id 由会话 id 构成：再次打开同一子会话时切换到已有页，不并排新建第二页，
+ * 因为两页显示同一条已执行完毕的会话，内容完全相同。
  */
 export function openConversationTab(conversationId: string, title: string): void {
   const wsId = workspace()?.id
@@ -364,8 +364,8 @@ export function openConversationTab(conversationId: string, title: string): void
 }
 
 /**
- * 打开一张画布。同一个文件已经开着就翻回那页，不并排开出第二页（同 `openConversationTab`）。
- * 页签上的字是文件名去掉 `.canvas.json`，建出来就不再改。
+ * 打开画布。同一文件已打开时切换到该页，不并排新建第二页（同 `openConversationTab`）。
+ * 页签标题是去掉 `.canvas.json` 的文件名，创建后不再修改。
  */
 export function openCanvasTab(path: string, title: string): void {
   const wsId = workspace()?.id
@@ -379,23 +379,23 @@ export function openCanvasTab(path: string, title: string): void {
   }))
 }
 
-/** 从页 id 反取会话 id。`openConversationTab` 是唯一的生产者。 */
+/** 从页 id 解析会话 id。`openConversationTab` 是唯一的生产者。 */
 export function tabConversationId(tabId: string): string {
   return tabId.slice('conversation-'.length)
 }
 
 /**
- * 打开某个外部 CLI 节点那一页：看它此刻在写什么。
+ * 打开外部 CLI 节点页，显示该节点当前的输出。
  *
- * 页 id 是「哪张卡 + 哪个节点」，与那个节点的输出缓冲同一个键——同一个节点再点一次
- * 是翻回去，不是并排开出第二页。
+ * 页 id 由 step id 与节点 id 组成，与该节点的输出缓冲使用同一个键：再次打开同一节点时
+ * 切换到已有页，不并排新建第二页。
  */
 export function openCliTab(stepId: string, nodeId: string, title: string): void {
   const wsId = workspace()?.id
   if (!wsId) return
   const id = `cli-${stepId}-${nodeId}`
-  // 标题单独给，不拿 `nodeId` 顶：派一件那张卡的节点 id 是个内部常量，
-  // 直接送上去页签就叫那个常量。
+  // 标题由调用方单独传入，不以 `nodeId` 代替：单任务派发卡片的节点 id 是内部常量，
+  // 直接使用会使页签标题显示为该常量。
   updatePanel(wsId, (cur) => ({
     tabs: cur.tabs.some((t) => t.id === id)
       ? cur.tabs
@@ -404,32 +404,32 @@ export function openCliTab(stepId: string, nodeId: string, title: string): void 
   }))
 }
 
-/** 从页 id 反取「哪张卡 + 哪个节点」。`openCliTab` 是唯一的生产者。 */
+/** 从页 id 解析 step id 与节点 id。`openCliTab` 是唯一的生产者。 */
 export function tabCliNode(tabId: string): { stepId: string; nodeId: string } {
   const rest = tabId.slice('cli-'.length)
-  // step id 里没有 `-`（`st_` 加一串 base36），所以第一个 `-` 就是分界。
+  // step id 不含 `-`（`st_` 加 base36 串），因此第一个 `-` 即分隔位置。
   const cut = rest.indexOf('-')
   return { stepId: rest.slice(0, cut), nodeId: rest.slice(cut + 1) }
 }
 
 /**
- * 把外壳那边仍存活的终端会话补回页签。
+ * 将外壳中仍存活的终端会话恢复为页签。
  *
- * `panelTabs` 是 Rust 那张会话表的镜像，而整页重载会把镜像清空——开发期改一个
- * `store/` 或 `packages/` 下的文件，vite 走的就是整页刷新。清空之后 shell 还在跑，
- * 却没有任何界面碰得到它：页签不是走 `closePanelTab` 没的，`tabDisposers` 一次都
- * 没被调用，那条会话只能等应用退出时被 `shutdown` 收掉。所以镜像建立时要跟权威
- * 对一次账，不能只靠 `openPanelTab` 往上加。
+ * `panelTabs` 是 Rust 会话表的镜像，整页重载会清空该镜像；开发期修改
+ * `store/` 或 `packages/` 下的文件时，vite 执行的即是整页刷新。清空后 shell 仍在运行，
+ * 却没有任何界面可以访问：页签不是经 `closePanelTab` 移除的，`tabDisposers` 未被调用，
+ * 该会话只能在应用退出时由 `shutdown` 回收。因此镜像建立时必须与权威核对一次，
+ * 不能只依靠 `openPanelTab` 增加。
  *
- * **只补不删。** 认不出的 id 一律不动：浏览器页在外壳那边本来就没有对应物。
+ * 只补充，不删除。无法识别的 id 一律不处理：浏览器页在终端清单中没有对应项。
  *
- * **每条按它自己报的工作区补，不看当前工作区**：这一次调用发生在模块建立时，
- * 那时通常还没有活动工作区，按当前工作区写就是把全部 PTY 丢掉。
- * 序号取整份清单的最大值，包括别的工作区那几条——`terminal-N` 是 Rust 那张表的键，
- * 全进程唯一，按当前工作区算会让下一次新开撞上一个已经存在的 id。
+ * 每条按其自身报告的工作区恢复，不读取当前工作区：本次调用发生在模块初始化时，
+ * 此时通常尚无活动工作区，按当前工作区写入会丢弃全部 PTY。
+ * 序号取整份清单的最大值，包括其他工作区的条目：`terminal-N` 是 Rust 会话表的键，
+ * 在进程内唯一，只按当前工作区计算会使下一次新建的 id 与已有 id 冲突。
  *
- * 补回来的页按 `createdSeq` 插入而不是追加到末尾：这份清单与浏览器那份各自异步回来，
- * 追加的话整页刷新后的页签顺序取决于谁先回来。
+ * 恢复的页按 `createdSeq` 插入而不是追加到末尾：本清单与浏览器清单分别异步返回，
+ * 追加会使整页刷新后的页签顺序取决于返回先后。
  */
 export function restoreTerminalTabs(sessions: readonly TerminalSession[]): void {
   const found = new Map<string, PanelTab[]>()
@@ -456,10 +456,10 @@ export function restoreTerminalTabs(sessions: readonly TerminalSession[]): void 
 }
 
 /**
- * 关掉一页。**这是收资源的唯一入口**（见 `tabDisposers`）。
+ * 关闭一页。这是释放资源的唯一入口（见 `tabDisposers`）。
  *
- * 关掉的正是当前那一页时，落到右边那页，没有就落到左边那页，一页都不剩就回文件视图
- * ——**不连带把面板收起来**：用户点的是这一页的 ×，不是面板的 ×。
+ * 关闭的是当前页时切换到右侧相邻页，没有则切换到左侧相邻页，没有任何页时回到文件视图。
+ * 不连带收起面板：用户点击的是该页的 ×，不是面板的 ×。
  */
 export function closePanelTab(id: string): void {
   const wsId = workspace()?.id
@@ -476,12 +476,12 @@ export function closePanelTab(id: string): void {
 }
 
 /**
- * 此刻盖着多少个浮层（设置、确认框、新建项目）。
+ * 当前打开的浮层数量（设置、确认框、新建项目）。
  *
- * **原生子视图按它让位。** 内置浏览器那一页是窗口的子 HWND，画在所有 DOM 之上，
- * 浮层的 `z-index` 对它无效；不让位的话浮层被网页盖在下面。
- * 浮层自己占一格而不是由这里嗅探 DOM：嗅探要挑一个 class 当判据，
- * 而那个 class 改名不会有任何报错。
+ * 原生子视图据此让位：内置浏览器页是窗口的子 HWND，绘制在所有 DOM 之上，
+ * 浮层的 `z-index` 对它无效，不让位时浮层被网页遮挡。
+ * 由浮层自行计数，而不是在此检测 DOM：检测需要选定某个 class 作为判据，
+ * 而该 class 改名时不会产生任何报错。
  */
 const [overlays, setOverlays] = createSignal(0)
 
@@ -490,9 +490,9 @@ export function overlayOpen(): boolean {
 }
 
 /**
- * 浮层出现时占一格，收起或组件卸载时还回去。必须在组件作用域里调。
+ * 浮层打开时计数加一，关闭或组件卸载时减一。必须在组件作用域中调用。
  *
- * 收 `open` 而不是只看挂载：确认框那一类组件一直挂着，只有内容按 `open` 显示。
+ * 接收 `open` 而不是只依据挂载：确认框等组件始终挂载，只按 `open` 显示内容。
  */
 export function holdOverlay(open: () => boolean): void {
   createEffect(() => {
@@ -503,19 +503,19 @@ export function holdOverlay(open: () => boolean): void {
 }
 
 /**
- * 面板最窄：树 + 一列内容还看得见的最窄。
+ * 面板最小宽度：文件树与一列内容仍可显示的最小值。
  *
- * **这里只有下限，没有上限。** 上限是布局的事，由 `.app.with-panel` 的
- * `minmax(var(--chat-min), 1fr)` 说了算——网格知道窗口现在多宽、左栏收没收起，
- * 这里不知道。在这儿再算一遍就是同一件事的第二本账，而那本账只在拖动那一刻对：
- * 大屏上拖出来的宽度换到小窗口就成了一个撑破布局的定长。
+ * 此处只设下限，不设上限。上限属于布局，由 `.app.with-panel` 的
+ * `minmax(var(--chat-floor), 1fr)` 决定：网格知道当前窗口宽度与左栏是否收起，
+ * 此处不知道。在此重复计算会形成第二本账，且只在拖动时成立：
+ * 大屏上拖出的宽度换到小窗口后会成为撑破布局的固定宽度。
  */
 export const PANEL_MIN = 337
 const PANEL_KEY = 'qywork.panelWidth'
 const PANEL_DEFAULT = 380
 
-/** 负数和 0 不只是难看：`minmax(0, -50px)` 会让整条 `grid-template-columns` 失效，
- *  网格退回隐式的 auto 列，那正是要防的失效形状。 */
+/** 必须排除负数与 0：`minmax(0, -50px)` 会使整条 `grid-template-columns` 失效，
+ *  网格回退为隐式的 auto 列，即本函数要防止的布局失效。 */
 function clampPanelWidth(px: number): number {
   return Math.max(PANEL_MIN, Math.round(px))
 }
@@ -525,32 +525,32 @@ function readPanelWidth(): number {
     const v = Number(localStorage.getItem(PANEL_KEY))
     return clampPanelWidth(Number.isFinite(v) && v > 0 ? v : PANEL_DEFAULT)
   } catch {
-    // 隐私模式下 localStorage 直接抛。记不住宽度不该让应用起不来。
+    // 隐私模式下 localStorage 会直接抛出异常。无法保存宽度时不应导致应用无法启动。
     return PANEL_DEFAULT
   }
 }
 
 /**
- * 右侧面板**要多宽**（像素）。由用户拖左边沿改，记在 localStorage 里。
+ * 右侧面板的期望宽度（像素）。由用户拖动左边沿修改，保存在 localStorage 中。
  *
- * 真源是这个信号，不是 `tokens.css` 的 `--panel-w`：那条只是首次启动的默认值。
- * `App.tsx` 把它写成 `.app` 上的行内 `--panel-w`，因此网格那一列跟着变，
- * 布局规则一行不用改。
+ * 真源是该信号，不是 `tokens.css` 的 `--panel-w`：后者只是首次启动的默认值。
+ * `App.tsx` 将其写为 `.app` 上的行内 `--panel-w`，网格对应列随之变化，
+ * 布局规则无需修改。
  *
- * **它是「要多宽」，不是「实际多宽」**：窗口放不下时网格只给到上限，这个数照旧
- * 是用户拖出来的那个。窗口再变宽就还它——反过来（拖窄窗口时把它改小）等于
- * 拿一次临时的窗口尺寸抹掉用户的设置。
+ * 它是期望宽度，不是实际宽度：窗口无法容纳时网格只分配到上限，该值仍保持
+ * 用户拖出的数值，窗口变宽后恢复。不要在窗口变窄时缩小该值：那会以一次临时的
+ * 窗口尺寸覆盖用户的设置。
  *
- * 面板里是「内容 + 树」两块并排，所以宽度必须可拖：不给拖的话内容那半永远只剩
+ * 面板中「内容 + 树」两栏并排，因此宽度必须可拖动：不可拖动时内容栏只剩
  * 一百多像素。
  */
 export const [panelWidth, setPanelWidthSignal] = createSignal(readPanelWidth())
 
 /**
- * 改宽度的**唯一入口**：拖动和方向键都走它。夹住下限，并同步落盘。
+ * 修改宽度的唯一入口：拖动与方向键都经由此函数。限制下限，并同步落盘。
  *
- * 值没变就直接返回：拖到头了还在拉，每一帧都会调到这里，
- * 不拦的话就是每秒几十次无意义的 localStorage 写入。
+ * 值未变化时直接返回：拖到下限后继续拖动，每一帧都会调用此函数，
+ * 不拦截会产生每秒数十次无意义的 localStorage 写入。
  */
 export function resizePanel(px: number): void {
   const next = clampPanelWidth(px)
@@ -559,16 +559,16 @@ export function resizePanel(px: number): void {
   try {
     localStorage.setItem(PANEL_KEY, String(next))
   } catch {
-    // 同上：这一次的拖动已经生效了，存不下只影响下次启动。
+    // 同上：本次拖动已生效，保存失败只影响下次启动。
   }
 }
 
 /**
- * 面板放大：会话正文让位，面板独占内容区；输入框默认收成底部触发条，悬浮、
- * 聚焦或带草稿时再展开（布局见 `shell.css` 与 `composer.css` 的 `.app.panel-max`）。
+ * 面板放大：会话正文让出位置，面板独占内容区；输入框默认收为底部触发条，悬停、
+ * 聚焦或有草稿时展开（布局见 `shell.css` 与 `composer.css` 的 `.app.panel-max`）。
  *
- * 面板收起时一并复位——不复位的话下次展开直接落进放大态，而用户上次关掉它
- * 可能正是因为不想要放大。所以这个标志没有独立的「关」路径，只跟着面板走。
+ * 面板收起时一并复位：不复位时下次展开会直接进入放大态，而用户上次关闭面板
+ * 可能正是因为不需要放大。因此该标志没有独立的关闭路径，只随面板变化。
  */
 export const [panelMaximized, setPanelMaximized] = createSignal(false)
 export function togglePanelMax(): void {
@@ -576,27 +576,27 @@ export function togglePanelMax(): void {
 }
 
 /**
- * 上一次翻开的那一页。
+ * 上一次显示的页。
  *
- * 顶栏只有一个按钮负责「展开 / 收起」，展开时要回到用户上次待的地方而不是
- * 一律跳回文件——否则在变更视图里手滑收起，再展开就得重新点一次 tab。
+ * 顶栏只有一个按钮负责展开与收起，展开时应回到用户上次所在的页，而不是
+ * 一律回到文件页：否则在变更视图中误触收起后，再展开需要重新选择页签。
  */
 const [lastPage, setLastPage] = createSignal<PanelPage>('files')
 
 /**
- * 这一页在当前工作区还在不在。**记着的那一页随时可能落空**：它被关掉了，
- * 或者它属于另一个工作区（`lastPage` 只有一份，跨工作区共用）
- * ——不判一下的话展开出来是一块谁也点不掉的空白。
+ * 判断该页在当前工作区是否仍存在。记录的页随时可能失效：已被关闭，
+ * 或属于另一个工作区（`lastPage` 只有一份，跨工作区共用）。
+ * 不做此判断时，展开后显示一块无法关闭的空白。
  */
 function pageAlive(page: PanelPage): boolean {
   return typeof page === 'string' || panelTabs().some((t) => t.id === page.tab)
 }
 
 /**
- * 收起面板。**唯一的收起入口**——顶栏那个开关和面板头上的 × 都走这里。
+ * 收起面板。这是唯一的收起入口：顶栏开关与面板标题栏的 × 都经由此函数。
  *
- * 两处各写各的时候，× 只做了 `setSidePanel(null)`：它既不记「上次看的是哪一页」，
- * 将来也不会复位放大态。同一个动作两本账，差异只会越拉越大。
+ * 不要为 × 单独实现收起：单独实现只执行 `setSidePanel(null)`，既不记录上次显示的页，
+ * 也不复位放大态，同一动作形成两套实现，差异会持续扩大。
  */
 export function closePanel(): void {
   const page = sidePanel()
@@ -621,11 +621,11 @@ export function openPanel(view: PanelView): void {
 /**
  * 左栏收起。
  *
- * **只对宽屏成立。** 窄屏的左栏本来就是浮动抽屉（见 utility.css 的断点），
- * 那里「收起」等于关抽屉，已经有 `drawer` 那套在管；两套机制在同一屏并存
- * 就是第二本账，所以收起的样式整体锁在 `min-width: 821px` 里。
+ * 只适用于宽屏。窄屏的左栏是浮动抽屉（见 utility.css 的断点），
+ * 收起即关闭抽屉，已由 `drawer` 机制处理；两套机制在同一屏幕宽度下并存会形成
+ * 第二本账，因此收起的样式整体限定在 `min-width: 821px` 内。
  *
- * 收起后重新展开的入口在顶栏——左栏自己都不在了，开关不能只长在它身上。
+ * 收起后重新展开的入口在顶栏：左栏已隐藏，开关不能只放在左栏上。
  */
 export const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false)
 export function toggleSidebar(): void {
@@ -633,19 +633,18 @@ export function toggleSidebar(): void {
 }
 
 /**
- * 设置弹窗当前看的类目。`null` = 没在看设置。
+ * 设置弹窗当前显示的类目。`null` 表示设置未打开。
  *
- * **为什么是一个弹窗，不是十个平行浮层。** 最早那版是六个平行浮层（定时、记忆、插件、团队、手机、设
- * 置），每个自己一套开关——「设置和配对同时开着」在类型上完全合法。类目导航就是解药：一个弹窗，
- * 左边一栏列类目，全部类目共用同一个状态。
+ * 使用一个弹窗，不要拆成多个平行浮层：平行浮层各有一套开关，「设置与配对同时打开」
+ * 在类型上合法。类目导航避免了这一点：一个弹窗，左栏列出类目，全部类目共用同一个状态。
  *
- * **不要做成整页**（左栏换类目导航、主区换设置内容）：那会把「改一格就走」变成
- * 一次场景切换——顶栏的会话导出和面板开关得跟着藏，回来还要点一次「返回」。
- * 类目导航塞得进弹窗，整页那一层没有存在的理由。
+ * 不要做成整页（左栏换成类目导航、主区换成设置内容）：那会把一次简单修改变成
+ * 场景切换，顶栏的会话导出与面板开关需要随之隐藏，返回时还要点击「返回」。
+ * 类目导航可以放入弹窗，不需要整页。
  *
- * **横线上下是两类页。** 横线上面是「这个 agent 是什么、花了多少」，其中 `modules` 是说明书——只
- * 读，不配置，`usage` 是账本——只读，不配置；横线下面每一项都是一个模块的操作台，有真实的表单。
- * **没有可配项的模块不给独立页**，它在 `modules` 里有条目就够了，开一个空页就是空壳。
+ * 分隔线上下是两类页。分隔线以上说明 agent 的组成与用量：`modules` 是说明页，
+ * `usage` 是账本，二者只读、不可配置；分隔线以下每一项都是一个模块的设置页，有实际表单。
+ * 没有可配置项的模块不设独立页：在 `modules` 中列出即可，单独的空页属于空壳。
  */
 export type SettingsPage =
   | 'general'
@@ -661,7 +660,7 @@ export type SettingsPage =
   | 'schedules'
 export const [settingsPage, setSettingsPage] = createSignal<SettingsPage | null>(null)
 
-/** 打开设置。不带参数回到「通用」——它是唯一不需要前置知识的类目。 */
+/** 打开设置。不带参数时打开「通用」：它是唯一不需要前置知识的类目。 */
 export function openSettings(page: SettingsPage = 'general'): void {
   setSettingsPage(page)
 }
@@ -670,23 +669,23 @@ export function closeSettings(): void {
 }
 
 /**
- * 面板里正在看哪个文件（工作区相对路径）。`null` = 只有树。
+ * 面板中当前打开的文件（工作区相对路径）。`null` 表示只显示文件树。
  *
- * **内容和树在同一块面板里并排**：树在右、内容在左（`FileBrowser`）。会话正文
- * 不让位——看文件和看对话是两块地方的事，不该互相顶掉。
+ * 内容与树在同一面板中并排：树在左、内容在右（`FileBrowser`）。会话正文
+ * 不让出位置：查看文件与查看对话位于两个区域，不应互相替换。
  *
- * 这是「开着哪个文件」的唯一权威。别在面板里再存一份，两份必然对不上。
- * 注意它**不负责高亮哪一行**：那是 `FileBrowser` 里的 `selected`
- * （最后点过的那一行），两者混用过一次，症状是点文件夹不亮。
+ * 这是「打开了哪个文件」的唯一权威。不要在面板中另存一份，两份必然不一致。
+ * 它不负责高亮哪一行：高亮由 `FileBrowser` 中的 `selected`（最后点击的行）决定，
+ * 两者混用会导致点击文件夹时不高亮。
  */
 export const [openFile, setOpenFile] = createSignal<string | null>(null)
 
 /**
- * 打开一个文件。**必须走这里**：它同时保证面板是开着的、且停在文件那一页。
+ * 打开文件。必须经由此函数：它同时保证面板已展开且显示文件页。
  *
- * 直接设 `openFile` 的话，从别的地方触发时
- * 面板可能收着或停在「变更」页，用户点一下什么都看不到。
- * 放大态**不动**：那个模式下面板占满内容区，正好是看文件最舒服的形状。
+ * 直接设置 `openFile` 时，若从其他位置触发，
+ * 面板可能处于收起状态或显示「变更」页，用户点击后看不到任何内容。
+ * 不改变放大态：放大时面板占满内容区，适合查看文件。
  */
 export function openFileInPanel(path: string): void {
   setOpenFile(path)
@@ -694,11 +693,11 @@ export function openFileInPanel(path: string): void {
 }
 
 /**
- * **当前项目**。
+ * 当前项目。
  *
- * 会话、文件树、git、扩展清单全部按它取；`client.api` 也按它给每条 REST
- * 拼 `?ws=`。它是前端这一侧「当前在看哪个项目」的唯一权威——服务端那边没有
- * 对应的可变状态，只有 `workspaces` 表和每条请求自带的参数。
+ * 会话、文件树、git、扩展清单都按它获取；`client.api` 也按它为每个 REST 请求
+ * 拼接 `?ws=`。它是前端「当前项目」的唯一权威：服务端没有对应的可变状态，
+ * 只有 `workspaces` 表与每个请求自带的参数。
  */
 export interface WorkspaceInfo {
   id: string
@@ -708,28 +707,28 @@ export interface WorkspaceInfo {
 export const [workspace, setWorkspace] = createSignal<WorkspaceInfo | null>(null)
 
 /**
- * 工作区相对路径 → **本机绝对路径**。
+ * 将工作区相对路径转换为本机绝对路径。
  *
- * 分隔符跟着项目根走：根用反斜杠就拼反斜杠，用斜杠就拼斜杠。后端一律回 posix
- * 风格的相对路径（`server/files.ts` 的 `toPosix`），直接拼出来的混合写法
- * （`C:\ws/src/a.ts`）复制到别处用不了。
+ * 分隔符与项目根一致：根使用反斜杠时拼接反斜杠，使用斜杠时拼接斜杠。后端统一返回 posix
+ * 风格的相对路径（`server/files.ts` 的 `toPosix`），直接拼接得到的混合写法
+ * （`C:\ws/src/a.ts`）复制到其他程序中无法使用。
  *
- * 一处定义：文件视图的标题栏和右键菜单的「复制路径」必须拼出同一个字符串，
- * 各写一遍必然分叉。
+ * 统一在此定义：文件视图的标题栏与右键菜单的「复制路径」必须生成相同的字符串，
+ * 分别实现必然产生差异。
  */
 /**
- * 投递给输入框的一条起手指令。
+ * 投递给输入框的一条初始指令。
  *
- * **一次性，不是第二份正文。** `Composer` 读到就写进自己的 `text`、聚焦、随即把这里
- * 清空。正文的唯一权威始终是 `Composer` 内部那个 `text`——不要拿这个信号当
- * 「输入框现在是什么」来读，它绝大多数时候是 `null`。
+ * 只使用一次，不是第二份正文。`Composer` 读取后写入自身的 `text`、聚焦，随即将此信号
+ * 清空。正文的唯一权威始终是 `Composer` 内部的 `text`：不要把此信号当作
+ * 输入框的当前内容读取，它绝大多数时候为 `null`。
  *
- * 用途：设置页里那些「新增」按钮。建一条记忆 / 一个技能 / 一个定时任务，靠面板里填
- * 几个格子填不全（技能要写正文和触发条件、插件要写代码），所以改成把话头递给模型。
+ * 用途：设置页中的「新增」按钮。新建记忆、技能或定时任务时，面板中的几个字段
+ * 无法填写完整（技能需要正文与触发条件，插件需要代码），因此将初始指令交给模型处理。
  */
 export const [composerSeed, setComposerSeed] = createSignal<string | null>(null)
 
-/** 关掉设置，把一条起手指令送进输入框。设置盖在输入框上面，不关就看不见。 */
+/** 关闭设置，将一条初始指令送入输入框。设置弹窗遮挡输入框，不关闭则无法看到。 */
 export function askInChat(prompt: string): void {
   closeSettings()
   setComposerSeed(prompt)
@@ -742,12 +741,12 @@ export function absPath(rel: string): string {
 }
 
 /*
- * 模块建立时跟外壳对一次账。
+ * 模块初始化时与外壳核对一次终端会话。
  *
- * 放在模块顶层，不挂在某个组件的 `onMount` 上：页签这份镜像随这个模块一起建立，
- * 对账就跟它在同一处，不引入「谁先跑」这个问题。
+ * 放在模块顶层，而不是某个组件的 `onMount` 中：页签镜像随本模块建立，
+ * 核对与其放在同一处，不引入执行先后顺序的问题。
  *
- * 只有桌面端有 PTY；调不通就算了，那只意味着这一次没能补回页签。
+ * 仅桌面端有 PTY；调用失败时忽略，其结果仅是本次未能恢复页签。
  */
 if (isDesktopShell()) {
   void tauriInvoke<TerminalSession[]>('terminal_list')
@@ -758,16 +757,16 @@ if (isDesktopShell()) {
 const FOLLOWUP_KEY = 'qywork.followUpMode'
 
 /**
- * 会话在跑时发出去的消息，默认走哪一档。
+ * 会话运行期间发送消息的默认方式。
  *
- * `queue` = 等这一轮跑完再作为下一轮发起；`steer` = 注入当前这一轮，
- * 模型下一次请求就看到。界面上这两个词是「加入队列」与「调整方向」。
+ * `queue` 表示等当前一轮执行完毕后作为下一轮发起；`steer` 表示注入当前一轮，
+ * 模型在下一次请求中即可看到。界面上对应「加入队列」与「调整方向」。
  *
- * **真源在客户端，服务端不存也不读。** 它是输入习惯，与主题、面板宽度同层；
- * 服务端存一份就是第二本账，而且和用户此刻按的键可能不一致——意图随每条
+ * 真源在客户端，服务端既不存储也不读取。它属于输入习惯，与主题、面板宽度同层；
+ * 服务端另存一份会形成第二本账，且可能与用户当前的按键不一致：意图随每条
  * `message.send` 的 `steer` 字段显式携带。
  *
- * 按设备记：手机上没有 `Ctrl+Enter`，两端的习惯本来就不必相同。
+ * 按设备保存：手机上没有 `Ctrl+Enter`，两端的习惯无需一致。
  */
 export type FollowUpMode = 'queue' | 'steer'
 
@@ -775,28 +774,28 @@ function readFollowUpMode(): FollowUpMode {
   try {
     return localStorage.getItem(FOLLOWUP_KEY) === 'steer' ? 'steer' : 'queue'
   } catch {
-    // 隐私模式下 localStorage 直接抛。记不住默认档不该让应用起不来。
+    // 隐私模式下 localStorage 会直接抛出异常。无法保存默认方式时不应导致应用无法启动。
     return 'queue'
   }
 }
 
 export const [followUpMode, setFollowUpModeSignal] = createSignal<FollowUpMode>(readFollowUpMode())
 
-/** 改默认档的唯一入口，同步落盘。 */
+/** 修改默认方式的唯一入口，同步落盘。 */
 export function setFollowUpMode(next: FollowUpMode): void {
   if (next === followUpMode()) return
   setFollowUpModeSignal(next)
   try {
     localStorage.setItem(FOLLOWUP_KEY, next)
   } catch {
-    // 同上：这一次的选择已经生效，存不下只影响下次启动。
+    // 同上：本次选择已生效，保存失败只影响下次启动。
   }
 }
 
 /**
- * 会话流里折叠条目的开合，按条目 key。**开合的权威在这里，不在 `<details>` 节点上**：
- * 节点的寿命由渲染投影决定——组卡多一个成员、单条工具并进组卡，节点就换新，
- * 记在节点上的展开态跟着丢。只有用户点开合才写；没记过的条目视为合着。
+ * 会话流中折叠条目的展开状态，按条目 key 记录。展开状态的权威在此，不在 `<details>` 节点上：
+ * 节点的生命周期由渲染投影决定，组卡增加成员或单条工具并入组卡时节点会重建，
+ * 记录在节点上的展开状态随之丢失。只有用户切换展开状态时才写入；未记录的条目视为折叠。
  */
 const [folds, setFolds] = createStore<Record<string, boolean>>({})
 
@@ -808,7 +807,7 @@ export function setFoldOpen(key: string, open: boolean): void {
   setFolds(key, open)
 }
 
-/** 只在这条还没记过决定时写：给新出生的组卡定初始开合用，之后归用户。 */
+/** 仅在该条目尚无记录时写入：用于为新建的组卡设置初始展开状态，此后由用户决定。 */
 export function seedFoldOpen(key: string, open: boolean): void {
   if (folds[key] === undefined) setFolds(key, open)
 }

@@ -1,17 +1,17 @@
 /**
  * CodeMirror 装配。
  *
- * 选 CodeMirror 而不是 Monaco：Monaco 约 5MB 且强依赖 Web Worker，
- * 在 WKWebView（macOS 的 Tauri）里 worker 路径和 CSP 都要额外处理；
- * CodeMirror 6 约 200KB、按语言按需加载、无 worker，行为在三个平台一致。
+ * 选用 CodeMirror 而不是 Monaco：Monaco 约 5MB 且依赖 Web Worker，
+ * 在 WKWebView（macOS 的 Tauri）中 worker 路径与 CSP 都需要额外处理；
+ * CodeMirror 6 约 200KB，按语言按需加载，不使用 worker，行为在三个平台上一致。
  *
- * 语言包全部动态导入：一次只会用到一两种，全量打进首屏没有道理。
+ * 语言包全部动态导入：一次只用到一两种，全部打入首屏包没有收益。
  */
 
 import { EditorState, type Extension } from '@codemirror/state'
 import { EditorView, highlightActiveLine, lineNumbers } from '@codemirror/view'
 
-/** 扩展名 → 语言包加载器。找不到就用无高亮的纯文本，不报错。 */
+/** 扩展名 → 语言包加载器。未找到时使用无高亮的纯文本，不报错。 */
 const LOADERS: Record<string, () => Promise<Extension>> = {
   ts: async () => (await import('@codemirror/lang-javascript')).javascript({ typescript: true }),
   tsx: async () =>
@@ -39,7 +39,7 @@ export async function languageFor(path: string): Promise<Extension[]> {
   try {
     return [await load()]
   } catch {
-    // 语言包加载失败只影响高亮，不该让预览整体打不开。
+    // 语言包加载失败只影响高亮，不应导致预览无法打开。
     return []
   }
 }
@@ -47,8 +47,8 @@ export async function languageFor(path: string): Promise<Extension[]> {
 /**
  * 主题。
  *
- * 全部颜色走 CSS 变量，不写死——这样编辑器跟着应用的亮/暗切换走，
- * 不需要维护两份主题，也不会出现「界面暗了但代码区还是白的」。
+ * 全部颜色使用 CSS 变量，不写死数值：编辑器随应用的亮色 / 暗色切换，
+ * 无需维护两份主题，也不会出现界面已切换为暗色而代码区仍为亮色的情况。
  */
 export const theme = EditorView.theme({
   '&': {
@@ -83,7 +83,7 @@ export async function createReadonlyEditor(
       extensions: [
         lineNumbers(),
         highlightActiveLine(),
-        // 只读预览：不给编辑能力，避免出现一个改了存不下去的编辑器。
+        // 只读预览：不提供编辑能力，避免出现可修改但无法保存的编辑器。
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
         EditorView.lineWrapping,

@@ -60,7 +60,7 @@ export default function FileImageView(props: { src: string; alt: string }) {
     const y = (centerY - before.top) / before.height
     setMode(Math.min(8, Math.max(0.01, scale() * factor)))
     cancelAnimationFrame(zoomFrame)
-    // 缩放后保留视口中心对应的图像位置，长图中段不会跳回开头。
+    // 缩放后按比例调整滚动位置，使视口中心仍对应缩放前的图像位置。
     zoomFrame = requestAnimationFrame(() => {
       const after = image.getBoundingClientRect()
       viewport.scrollLeft += after.left + x * after.width - centerX

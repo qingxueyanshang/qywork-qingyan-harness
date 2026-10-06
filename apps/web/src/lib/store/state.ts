@@ -1,12 +1,12 @@
 /**
- * 应用状态的形状与那一份 store。
+ * 应用状态的类型定义与唯一的 store 实例。
  *
- * 用 Solid 的 `createStore` 而不是把整个 transcript 塞进一个 signal——
- * 这正是选 Solid 的理由：模型每产出一个 token，只有那一条 step 的 text 字段变化，
- * 只有绑定它的那个文本节点会更新。长会话（几百条 step）下滚动依然不掉帧，
- * 不需要给列表做 memo 化。
+ * 使用 Solid 的 `createStore`，而不是把整个 transcript 放入一个 signal：
+ * 这是选用 Solid 的原因。模型每输出一个 token，只有对应 step 的 text 字段变化，
+ * 只有绑定该字段的文本节点更新。长会话（数百条 step）下滚动仍不掉帧，
+ * 无需对列表做 memo 化。
  *
- * **这里只有形状和那一份实例，没有任何动作。** 谁改它见 `connection.ts`
+ * 本文件只定义状态结构与 store 实例，不包含业务动作。修改状态的代码见 `connection.ts`
  * （事件驱动）与 `actions.ts`（用户驱动）。
  */
 
@@ -35,28 +35,28 @@ import { createStore, produce } from 'solid-js/store'
 import type { ConnectionState } from '../client.ts'
 
 /**
- * 乐观插入的那条用户气泡的 id 前缀。
+ * 乐观插入的用户气泡的 id 前缀。
  *
- * 按回车时本地生成，`run.started` 到达后换成账本里的真值。**两侧必须用同一个常量**：
- * 对齐判定靠它认出「这条是本地的」，各写一遍字面量的话，改了一侧的表现是气泡变成两条。
+ * 按回车时本地生成，`run.started` 到达后替换为账本中的真实 id。两侧必须使用同一个常量：
+ * 对齐判定依据它识别本地插入的条目；两侧各写一份字面量时，只修改其中一侧会使气泡重复为两条。
  */
 export const LOCAL_ID_PREFIX = 'local_'
 
 export interface TranscriptItem {
   id: string
   /**
-   * `receipt` 是子 agent / workflow 投回来的那条消息。它在 wire 上与用户消息同为 user
-   * 角色，分辨只有 `origin` 这一格：缺席才是用户本人打的字。
+   * `receipt` 是子 agent / workflow 投递回来的消息。它在 wire 上与用户消息同为 user
+   * 角色，只能通过 `origin` 字段区分：该字段缺失时才是用户本人输入的消息。
    */
   kind: 'user' | 'receipt' | 'text' | 'tool' | 'thinking' | 'compaction' | 'run'
   text: string
   /**
-   * kind='run' 专有：这一轮的收尾读数（停止原因 + 真实用量 + 耗时）。
+   * kind='run' 专有：本轮的收尾读数（停止原因、实际用量与耗时）。
    *
-   * **它必须是条目，不能读运行中那份 `ConversationView.usage`。** 后者每条会话也只有
-   * 一份：第二轮跑完会清空，刷新后只恢复当前运行中的那一轮。
-   * 而 run 行本来就逐轮落库（`runs` 表带 usage / stop_reason / created_at /
-   * finished_at），投影层照着折回来即可。
+   * 它必须是条目，不能读取运行中的 `ConversationView.usage`：后者每条会话只有
+   * 一份，下一轮执行完毕时被清空，刷新后只恢复当前运行中的一轮。
+   * run 行已逐轮落库（`runs` 表含 usage / stop_reason / created_at /
+   * finished_at），投影层据此折叠还原即可。
    */
   run?: {
     runId: string
@@ -64,12 +64,12 @@ export interface TranscriptItem {
     usage: RunUsage | null
     /** 本地时钟。回放历史时用落库的 created_at / finished_at，两者含义相同。 */
     startedAt: number
-    /** null = 还在跑，读数条自己按帧走。 */
+    /** null = 仍在运行，读数条自行按帧计时。 */
     endedAt: number | null
     /**
-     * 报错正文。**读数条上「为什么停」那一格就用它**，没有才回落到停止原因的
-     * 通用说法。落库在 `runs.error_message`，所以刷新之后还在——错误卡是活的
-     * 全局单份状态，重连即丢，不能拿它当唯一落点。
+     * 报错正文。读数条上的停止原因使用它，为空时回退到停止原因的
+     * 通用说法。落库于 `runs.error_message`，因此刷新后仍保留；错误卡是实时的
+     * 全局单份状态，重连即丢失，不能作为唯一存储位置。
      */
     errorMessage: string | null
   }
@@ -77,37 +77,37 @@ export interface TranscriptItem {
   compaction?: {
     phase: 'started' | 'done' | 'skipped' | 'failed'
     reasonCode?: string
-    /** phase='done' 专有：摘要线跟着前移了，还是只收纳了工具正文。 */
+    /** phase='done' 专有：摘要线是否随之前移；为 false 时只收纳了工具正文。 */
     summarized?: boolean
     compactedMessages?: number
     revision?: number
   }
-  /** kind='user' 专有：这条消息带的附件，只存定位事实不存字节。 */
+  /** kind='user' 专有：该消息携带的附件，只保存定位信息，不保存字节。 */
   attachments?: Attachment[]
-  /** kind='receipt' 专有：谁投的回执。标题行按它决定去掉哪一个来源前缀。 */
+  /** kind='receipt' 专有：回执的投递方。标题行据此决定移除哪一个来源前缀。 */
   origin?: 'subagent' | 'workflow'
   /** kind='tool' 专有 */
   toolName?: string
   action?: ActionDescriptor
   /**
-   * 调用参数。`tool.started` 带着它，`applyEvent` 必须留下：丢掉的话工具卡展开后
-   * 只剩一句 `outcome.message`，那句话是标题行的复述，等于「展开了什么也没有」。
-   * 改的 diff、跑的命令、读的范围全在这里面。
+   * 调用参数。`tool.started` 携带它，`applyEvent` 必须保留：丢弃后工具卡展开时
+   * 只有一句 `outcome.message`，而它复述标题行，展开区等于没有内容。
+   * 修改的 diff、执行的命令与读取的范围都在其中。
    */
   args?: Record<string, unknown>
   status?: 'running' | 'success' | 'failure'
   outcome?: ToolOutcomeWire
   durationMs?: number
-  /** 长工具的中途输出 */
+  /** 长时间运行的工具的中途输出 */
   stdout?: string
   /**
-   * 派活那两个工具专有：卡上每一格的状态，键是节点 id。流式期由 `team.member` 逐格替换，
-   * 回放时从 step payload 整份带回，两边同一形状——画图只认这一个字段。
+   * 派发任务的两个工具专有：卡片上各节点的状态，键为节点 id。流式阶段由 `team.member` 逐个替换，
+   * 回放时从 step payload 整体恢复，两者结构相同；绘图只读取该字段。
    */
   nodes?: Record<string, NodeState>
   /**
-   * 外部 CLI 节点运行期间写出来的输出（`team.output` 攒起来的），键是节点 id。
-   * **不落库**：刷新之后是空的，那时看落库的产出。
+   * 外部 CLI 节点运行期间的输出（由 `team.output` 累积），键为节点 id。
+   * 不落库：刷新后为空，此时显示落库的产出。
    */
   cliOutput?: Record<string, string>
   /** 同一 workflow 的多次 tool step 由 transcript 纯折叠得到的累计视图。 */
@@ -116,21 +116,10 @@ export interface TranscriptItem {
   waveIndex?: number
 }
 
-/**
- * 一条会话此刻的样子。
- *
- * **按会话 id 存一张表（`views`），当前会话只是其中一个键。** 右侧面板那一页看的是
- * 另一条会话——派活起的子会话，它和当前会话同时在收事件。单例的时候两条会话的正文
- * 会写进同一个数组，而界面上没有任何地方说得出哪一段是谁的。
- *
- * 表里还放这条会话**正在跑的那一轮**的易失读数。当前会话与右侧子会话会同时收事件，
- * 用量、重试与静默时刻不带会话这一维就必然互相覆盖。跑完后的终态仍落成 transcript
- * 里的 run 条目，不在这里留第二份。
- */
-/** 一次写入，与服务端投影同一形状：三种来源（本会话、子 agent、shell / 外部 CLI）都是它。 */
+/** 一次写入，与服务端投影结构相同：三种来源（本会话、子 agent、shell / 外部 CLI）均使用该类型。 */
 export type ChangeStep = ConversationChangeStep
 
-/** 一轮里写过文件的调用。键是这一轮的用户消息 id，与服务端 `runs.user_message_id` 同一个。 */
+/** 一轮中写过文件的调用。键为该轮的用户消息 id，即服务端的 `runs.user_message_id`。 */
 export interface ChangeTurn {
   userMessageId: string
   text: string
@@ -140,8 +129,8 @@ export interface ChangeTurn {
 }
 
 /**
- * 变更面板的数据。服务端按「写过文件的轮」投影分页（`/changes`），实时期由
- * `tool.finished` 的回执追加进来。`totals` 是整条会话的合计，`paths` 是去重后的路径。
+ * 变更面板的数据。服务端按写过文件的轮次投影并分页（`/changes`），运行期间由
+ * `tool.finished` 的回执追加。`totals` 是整条会话的合计，`paths` 是去重后的路径。
  */
 export interface ChangesView {
   /** 最新的轮在前。 */
@@ -153,11 +142,11 @@ export interface ChangesView {
 }
 
 /**
- * 当前请求投影：这一次请求是哪一条、第几次、走到哪一阶段、各阶段的时刻。
+ * 当前请求投影：本次请求的 id、重发次数、所处阶段与各阶段的时刻。
  *
- * 四个阶段按事实推进，只有 `run.request` / `run.retrying` / 内容事件与刷新快照能写它。
- * `backoff` 与 `sent` 之间不是同一次请求：退避结束之后 `requestId` 换成新的一行，
- * 而次数留着——那正是「正在重连 N / M」要说的事。
+ * 四个阶段按实际到达的事件推进，只有 `run.request` / `run.retrying` / 内容事件与刷新快照能写入它。
+ * `backoff` 与 `sent` 不属于同一次请求：退避结束后 `requestId` 更换为新的一行，
+ * 次数保留，供「正在重连 N / M」显示。
  */
 export interface RequestProjection {
   requestId: string
@@ -176,20 +165,31 @@ export interface RequestProjection {
   /** 最后一次可见思考或正文的时刻；工具参数增量不推进。 */
   lastVisibleAt: number | null
   /**
-   * 写下这个投影的那条事件的序号（快照写的是它携带的边界）。
+   * 写入该投影的事件的序号（快照写入的是其携带的边界）。
    *
-   * **先后只按它裁决。** 序号不大于它的事件属于已经折进来的那一段，丢弃；
-   * 加载期间先到的新事件因此不会被较旧的快照覆盖回去，旧请求的迟到事件也
-   * 退不回新请求的阶段。
+   * 先后顺序只按该序号裁决。序号不大于它的事件已折叠在内，予以丢弃；
+   * 因此加载期间先到达的新事件不会被较旧的快照覆盖，旧请求的迟到事件也
+   * 无法使新请求的阶段回退。
    */
   seq: number
 }
 
+/**
+ * 一条会话的当前视图。
+ *
+ * 按会话 id 存放在一张表（`views`）中，当前会话只是其中一个键。右侧面板的页签显示
+ * 另一条会话，即派发任务创建的子会话，它与当前会话同时接收事件。使用单例时两条会话的正文
+ * 会写入同一个数组，界面上无法区分各段的归属。
+ *
+ * 表中还存放该会话正在运行的一轮的易失读数。当前会话与右侧子会话同时接收事件，
+ * 用量、重试与静默时刻不按会话区分就必然互相覆盖。执行完毕后的终态仍写入 transcript
+ * 中的 run 条目，不在此处另存一份。
+ */
 export interface ConversationView {
   transcript: TranscriptItem[]
   /**
-   * 历史 REST 的纯界面态。正文真源仍是 messages/runs/steps，这里只回答：
-   * 是否已读取、请求是否在途、还能否前翻，以及失败后的重试页。
+   * 历史 REST 请求的界面状态。正文真源仍是 messages/runs/steps，此处只记录：
+   * 是否已读取、请求是否在途、能否继续向前翻页，以及失败后需重试的页。
    */
   history: {
     /** unloaded 表示尚未读取；null 且无错误才表示读取完成。 */
@@ -197,43 +197,43 @@ export interface ConversationView {
     nextCursor: string | null
     error: { phase: 'initial' | 'older'; message: string } | null
   }
-  /** 变更面板那一页。`null` = 还没取过，面板打开时才取。 */
+  /** 变更面板的数据。`null` 表示尚未获取，打开面板时获取。 */
   changes: ChangesView | null
   /**
-   * 正在跑的这一轮回答的是哪条用户消息。实时到达的变更按它归轮，
-   * 与服务端 `runs.user_message_id` 同一个键——两边的归轮口径必须一致。
+   * 正在运行的一轮所回复的用户消息。实时到达的变更按它归入轮次，
+   * 与服务端 `runs.user_message_id` 是同一个键：两侧的归轮口径必须一致。
    */
   runUserMessageId: string | null
   /**
-   * 这一轮什么时候开始的（本地时钟，毫秒）。`null` = 没在跑。
+   * 本轮的开始时刻（本地时钟，毫秒）。`null` 表示未在运行。
    *
-   * **取本地收到事件的时刻，不取服务端时间戳**：这里要回答的是用户等待时长，
-   * 而不是服务端计算时长，两者在手机走蜂窝网时能差出好几百毫秒，
-   * 而用户看的是本机时钟。跑完之后耗时归条目管，这里清空。
+   * 取本地收到事件的时刻，不取服务端时间戳：此处表示用户的等待时长，
+   * 而不是服务端的计算时长，手机使用蜂窝网络时两者可相差数百毫秒，
+   * 而用户参照的是本机时钟。执行完毕后耗时由条目记录，此处清空。
    */
   runStartedAt: number | null
   /** 运行中这一轮的实时用量；收尾后转入 run 条目并清空。 */
   usage: RunUsage | null
-  /** 来自 tool.generating；参数尚未收齐，工具还没有开始执行。 */
+  /** 来自 tool.generating；参数尚未接收完整，工具尚未开始执行。 */
   generatingToolCall: boolean
   /**
-   * 这条会话当前那一次 provider 请求走到哪了。`null` = 没有请求在身上。
+   * 该会话当前 provider 请求的进度。`null` 表示没有进行中的请求。
    *
-   * **阶段、次数、等待截止点与最后内容时刻收在同一个对象里。** 拆成几个并列字段时，
-   * 退避结束的事件只清得掉其中一个，界面因此同时挂着「正在重连 2 / 5」和新请求的
-   * 思考内容。实时事件与刷新快照按同一条规则写它，两条路恢复出来的是同一个状态。
+   * 阶段、次数、等待截止点与最后内容时刻存放在同一个对象中。拆成并列字段时，
+   * 退避结束的事件只能清除其中一个，界面因此同时显示「正在重连 2 / 5」与新请求的
+   * 思考内容。实时事件与刷新快照按同一规则写入它，两条路径恢复出相同的状态。
    */
   request: RequestProjection | null
   /**
-   * 这条会话最后一次报错。
+   * 该会话最近一次报错。
    *
-   * 收尾条的报错正文从这里取，所以它必须跟着会话走：单例的话，子会话报的错
-   * 会写进当前会话的收尾条。
+   * 收尾条的报错正文从此处读取，因此它必须按会话存放：使用单例时，子会话的报错
+   * 会写入当前会话的收尾条。
    */
   error: { code: string; message: string } | null
 }
 
-/** 一条还没建过表的会话读到的那份。冻结，写点一律经 `openView`。 */
+/** 尚未建表的会话读取到的视图。已冻结，写入一律经由 `openView`。 */
 const EMPTY_VIEW: ConversationView = Object.freeze({
   transcript: Object.freeze([]) as unknown as TranscriptItem[],
   history: Object.freeze({ loading: 'unloaded', nextCursor: null, error: null }),
@@ -255,23 +255,23 @@ export interface AppState {
   activeConversation: string | null
 
   /**
-   * 收着事件的那几条会话，按 id。键 = 当前会话 + 右侧开着的那几页子会话，
-   * 与 `client.subscribe` 报上去的那一组同源（见 `connection.ts` 的订阅集）。
+   * 正在接收事件的会话，按 id 存放。键为当前会话与右侧已打开的子会话页，
+   * 与 `client.subscribe` 上报的集合同源（见 `connection.ts` 的订阅集）。
    */
   views: Record<string, ConversationView>
   /**
-   * 正在跑的会话 id。**「谁在跑」全仓只有这一份账**，当前那条在不在跑由
-   * `isRunning()` 从这里派生，不另记一个布尔。
+   * 正在运行的会话 id。全仓只有这一份运行状态记录，当前会话是否在运行由
+   * `isRunning()` 从此处派生，不另记布尔值。
    *
-   * 记的是**一张表而不是一个布尔**：左栏要为列表里每一条画状态，而客户端只订阅
-   * 当前会话的事件——布尔只答得了当前打开的这条，别的会话在跑与否，
-   * 界面上无从得知。这张表由工作区级的 `conversation.busy` 事件维持，
-   * 快照在握手里给（`HelloOkFrame.busyConversations`）。
+   * 记录的是一张表而不是布尔值：左栏需要为列表中的每条会话显示状态，而客户端只订阅
+   * 当前会话的事件；布尔值只能表示当前打开的会话，其他会话是否在运行
+   * 界面无从得知。该表由工作区级的 `conversation.busy` 事件维护，
+   * 快照在握手时下发（`HelloOkFrame.busyConversations`）。
    */
   busyConversations: string[]
   /**
-   * 上下文占用。`breakdown` 回答「被谁占的」，`omitted` 回答「什么被拿掉了」——
-   * 只有前者是半张账：用户看到占用下降却不知道降在哪里。
+   * 上下文占用。`breakdown` 表示占用的构成，`omitted` 表示被移除的内容。
+   * 只有前者时信息不完整：用户看到占用下降，却无法得知下降的来源。
    *
    * 计量来源只在服务端用于诊断，不进入界面状态。
    */
@@ -280,29 +280,29 @@ export interface AppState {
     tokens: number
     limit: number
     percent: number
-    /** 越过它就会在下一次发送前压一次。读数条上那道刻度。 */
+    /** 超过该值时在下一次发送前执行一次压缩。对应读数条上的刻度线。 */
     compactAt: number
     breakdown: ContextBreakdown
     omitted: ContextOmitted
-    /** 这次请求里没计入 `tokens` 的视频段数。非 0 时读数显示「未知」。 */
+    /** 本次请求中未计入 `tokens` 的视频段数。非 0 时读数显示「未知」。 */
     unmeasuredVideos: number
   } | null
   /**
-   * 当前会话排着的跟进消息。整表快照语义——`queue.changed` 每次整体替换。
+   * 当前会话排队中的跟进消息。整表快照语义：`queue.changed` 每次整体替换。
    *
-   * 真源在服务端进程内（`RunManager`），这里只是它的投影：入队时先乐观加一条
-   * （id 用 `clientRequestId`，与服务端同源），随后被快照整体覆盖。
-   * 不维护本地增量——两份增量账在「服务端按 id 去重掉一条」时必然分叉。
+   * 真源在服务端进程内（`RunManager`），此处只是其投影：入队时先乐观添加一条
+   * （id 使用 `clientRequestId`，与服务端同源），随后被快照整体覆盖。
+   * 不维护本地增量：服务端按 id 去重一条时，两份增量记录必然不一致。
    */
   followUps: FollowUp[]
-  /** 当前待办清单。整表快照语义——每次 todos 事件整体替换。 */
+  /** 当前待办清单。整表快照语义：每次 todos 事件整体替换。 */
   todos: TodoItem[]
   /**
-   * 当前目标。**同时只有一个**，null = 这条会话没立过目标。
+   * 当前目标。同一时刻只有一个，null 表示该会话未设定过目标。
    *
-   * 它比 run 活得久：一轮跑完自动再起一轮就是照着它跑的。所以既由 `goal` 事件
-   * 实时更新，也在重拉会话时从账本读回来——只靠事件的话刷新一次就看不见了，
-   * 而看不见的自动循环，用户无从判断它还在不在跑。
+   * 它的生命周期长于 run：一轮执行完毕后自动开始下一轮，依据的就是它。因此既由 `goal` 事件
+   * 实时更新，也在重新获取会话时从账本读取；只依赖事件时，刷新后目标不再显示，
+   * 而对于不可见的自动循环，用户无从判断它是否仍在运行。
    */
   goal: Goal | null
   /** 当前会话最后一个 run，重试的目标。 */
@@ -310,32 +310,32 @@ export interface AppState {
   /**
    * 服务端拒绝指令的提示。
    *
-   * 这是 fail-closed 在 UI 上的落点：拒绝必须被看见。只存最后一条——
-   * 连续拒绝时用户需要的是「现在为什么不行」，不是一份历史。
+   * 这是 fail-closed 在界面上的体现：拒绝必须可见。只保存最后一条：
+   * 连续拒绝时用户需要的是当前被拒绝的原因，而不是历史记录。
    */
   notice: { message: string; reason: string } | null
 
   /**
    * 工作区文件视图的失效序号。每收到一条 `file.changed` 就递增一次。
    *
-   * `fileChanges` 是给用户看的精确增删摘要，不能拿它的长度兼任刷新信号：
-   * `run_command` / 格式化器只能确认「可能改了文件」而列不出路径。
-   * 这个数不描述磁盘内容，只表达“上一份文件快照已经过期”。
+   * `fileChanges` 是展示给用户的精确增删摘要，不能用其长度兼作刷新信号：
+   * `run_command` / 格式化器只能确认可能修改了文件，无法列出路径。
+   * 该值不描述磁盘内容，只表示上一份文件快照已过期。
    */
   fileVersion: number
   /**
-   * 画布卡片运行状态的变化序号。每收到一条本项目的 `canvas.run` 就递增一次，开着的画布页签据此重读；
-   * 卡片状态与失败原文以读画布接口的回体为准，这里不另存一份。
+   * 画布卡片运行状态的变化序号。每收到一条本项目的 `canvas.run` 就递增一次，已打开的画布页签据此重新读取；
+   * 卡片状态与失败原文以画布读取接口的响应为准，此处不另存一份。
    */
   canvasVersion: number
-  /** 这一轮的每一次写入，按到达先后；净效果由 `foldFileChanges` 折，与变更页同一份口径。 */
+  /** 本轮的每一次写入，按到达顺序排列；净效果由 `foldFileChanges` 折叠计算，与变更页口径相同。 */
   fileChanges: FileChange[]
   git: Omit<GitStateEvent, 'type'> | null
   /**
    * 服务端桌面占用快照，带所属会话。保留后台会话的目标，切回时立即可读。
    *
-   * `null` = 没有执行者持着桌面目标。服务端在执行者释放、宿主断开时都会推 `null`，
-   * 前端不自己推断超时清空：那样两边会各存一份判定。
+   * `null` 表示没有执行者占用桌面目标。服务端在执行者释放与宿主断开时都会推送 `null`，
+   * 前端不自行推断超时并清空：否则前后端各存一份判定。
    */
   desktopTarget: DesktopTargetEvent['target']
 }
@@ -364,14 +364,14 @@ const initial: AppState = {
 export const [state, setState] = createStore<AppState>(initial)
 
 /**
- * 某条会话此刻的样子。没建过表的回那份冻结的空视图——调用点因此不必各写一遍
- * `?? []`，而漏写一次的表现是整个界面白屏。
+ * 指定会话的当前视图。尚未建表的会话返回冻结的空视图，因此调用点无需各自编写
+ * `?? []`；遗漏一处即导致整个界面白屏。
  */
 export function viewOf(id: string | null): ConversationView {
   return (id && state.views[id]) || EMPTY_VIEW
 }
 
-/** 当前会话那一份。界面上绝大多数地方要的是这个。 */
+/** 当前会话的视图。界面上绝大多数位置使用它。 */
 export function view(): ConversationView {
   return viewOf(state.activeConversation)
 }
@@ -382,8 +382,8 @@ export function transcript(): TranscriptItem[] {
 }
 
 /**
- * 建一条会话的表（幂等）。**开始收它的事件之前必须先建**：
- * 表里没有这一条时事件整帧丢弃（见 `connection.ts` 的归属判定）。
+ * 为一条会话建表（幂等）。开始接收其事件之前必须先建表：
+ * 表中没有该会话时，事件整帧丢弃（见 `connection.ts` 的归属判定）。
  */
 export function openView(id: string): void {
   if (state.views[id]) return
@@ -401,15 +401,15 @@ export function openView(id: string): void {
 }
 
 /**
- * 撤掉一条会话的表：切走的那条、关掉的那一页子会话。
+ * 移除一条会话的表：已切换离开的会话，或已关闭的子会话页。
  *
- * **不留着**：一条跑过几百步的会话在表里就是几百个条目，留着等于每开一次子会话页
- * 就多占一份，而再打开时本来就要按 id 重拉一次。
+ * 不保留：执行过数百步的会话在表中有数百个条目，保留会使每打开一次子会话页
+ * 就多占用一份内存，而重新打开时仍需按 id 重新获取。
  */
 export function dropView(id: string): void {
   if (!state.views[id]) return
-  // 必须 `produce` + `delete`：store 的对象写点是**合并**语义，
-  // 交回一个少了这个键的新对象不会把它删掉，那一份正文会原地留着。
+  // 必须使用 `produce` + `delete`：store 的对象写入是合并语义，
+  // 传入缺少该键的新对象不会删除该键，对应的正文会保留在原处。
   setState(
     'views',
     produce((all) => {
@@ -419,10 +419,10 @@ export function dropView(id: string): void {
 }
 
 /**
- * 当前会话在不在跑。**派生量**——真源是 `busyConversations`。
+ * 当前会话是否在运行。这是派生值，真源是 `busyConversations`。
  *
- * 不要为它加一个 store 字段：一个乐观置上去的布尔和一张服务端维持的表，
- * 谁盖过谁只能靠每个写点自觉，那就是第二本账。
+ * 不要为它添加 store 字段：乐观设置的布尔值与服务端维护的表之间以哪个为准，
+ * 只能依赖每个写入点自行保证，这构成第二本账。
  */
 export function isRunning(): boolean {
   return isConversationRunning(state.activeConversation)
@@ -440,10 +440,10 @@ export function activeDesktopTarget(): DesktopTargetEvent['target'] {
 }
 
 /**
- * 整轮状态条这一轮挂不挂：有没做完的待办、这一轮改过文件，或者正在操作某个桌面应用。
+ * 本轮是否显示整轮状态条：存在未完成的待办、本轮修改过文件，或正在操作某个桌面应用。
  *
- * 判据放在这里而不是组件里：`RunStatus` 按它决定挂不挂，`Transcript` 按它决定
- * 底部留多少白，两处是同一个判据。
+ * 判据放在此处而不是组件中：`RunStatus` 据此决定是否挂载，`Transcript` 据此决定
+ * 底部留白高度，两处使用同一判据。
  */
 export function hasRunStatus(): boolean {
   return (
@@ -456,15 +456,15 @@ export function hasRunStatus(): boolean {
 }
 
 /**
- * 某条会话的运行中读数是否已经交接给流里的终态条目。
+ * 指定会话的运行中读数是否已交接给会话流中的终态条目。
  *
- * `conversation.busy=false` 比 `run.finished` 晚一帧到达；这期间如果只按忙态挂
- * `LiveRunBar`，流尾会同时出现完成条与运行条。反过来，不能再要求
- * `runStartedAt !== null`：晚打开的子会话可能没收到瞬时的 run.started，但服务端
- * 的 RunManager 已经明确告诉它正在忙，隐藏状态条就是把权威事实丢了。
+ * `conversation.busy=false` 比 `run.finished` 晚一帧到达；在此期间若只按忙态挂载
+ * `LiveRunBar`，流尾会同时出现完成条与运行条。另一方面，不能再要求
+ * `runStartedAt !== null`：较晚打开的子会话可能未收到瞬时的 run.started，而服务端
+ * 的 RunManager 已明确报告其为忙，此时隐藏状态条会丢弃权威状态。
  *
  * 实时收尾与历史重建均由本会话的开始时间和末条终态判断。
- * 新起轮会设置开始时间，用户发送消息会追加用户条目，均不应沿用上一轮终态。
+ * 新一轮开始时会设置开始时间，用户发送消息会追加用户条目，两者均不应沿用上一轮的终态。
  */
 export function conversationRunClosed(id: string | null): boolean {
   const items = viewOf(id).transcript
@@ -472,11 +472,11 @@ export function conversationRunClosed(id: string | null): boolean {
 }
 
 /**
- * 输入框上方除了输入框自己还挂着块：整轮状态条 / 目标条 / 排着的跟进消息。
+ * 输入框上方是否存在附加块：整轮状态条 / 目标条 / 排队中的跟进消息。
  *
- * 会话流底部那段留白按它给。下面紧挨着一个块时贴住它——那一段是输入框上方
- * 这一列的缝，与块之间的缝同宽；下面直接是输入框时要留出正文的呼吸，
- * 两者差着一个量级，用同一个数会一头挤一头空。
+ * 会话流底部的留白据此确定。下方紧邻附加块时贴近该块，间距与输入框上方
+ * 各块之间的间距相同；下方直接是输入框时需为正文留出较大间距。
+ * 两者相差一个量级，使用同一个值会使一种情况过窄、另一种情况过宽。
  */
 export function composerStackAbove(): boolean {
   return (
@@ -492,27 +492,27 @@ export function runClosed(): boolean {
 }
 
 /**
- * 当前会话有没有一轮在跑。
+ * 当前会话是否有一轮在运行。
  *
- * **发消息排不排队只由它答**，不由忙闲答：忙态含在跑的子 agent，而服务端的闸是
- * 有没有 run（`runs.hasRun`）。乐观队列卡与卡上那枚档位词必须读同一个判据，
- * 各写一份必然漂成「界面排着队、服务端已经起了一轮」。
+ * 发送消息是否排队只由它判定，不由忙闲状态判定：忙态包含运行中的子 agent，而服务端的判据是
+ * 是否存在 run（`runs.hasRun`）。乐观队列卡与卡上的档位标签必须读取同一判据，
+ * 各写一份必然出现界面显示排队、而服务端已开始新一轮的不一致。
  */
 export function hasRun(): boolean {
   return isRunning() && !runClosed()
 }
 
 /**
- * 这条会话的账本走到哪儿了。**只当「该重取了」的信号用，不是要显示的数。**
+ * 该会话账本的当前进度。只用作需要重新获取的信号，不用于显示。
  *
- * 运行面板画的是账本此刻的样子，而账本在一轮之内一直在变：每落一步
- * `runs.step_count` 加一，每次 provider 回报 usage 就改一次金额、多一行逐请求记录。
- * 重取判据只报会话与忙闲的话，那一轮跑完之前面板停在开跑那一刻的快照上。
+ * 运行面板显示账本的当前状态，而账本在一轮之内持续变化：每落库一步
+ * `runs.step_count` 加一，provider 每次回报 usage 都会更新金额并新增一行逐请求记录。
+ * 重新获取的判据只包含会话与忙闲时，该轮执行完毕之前面板停留在开始执行时的快照。
  *
  * 四个分量各对应一类落库：`lastRunId` 与忙闲对 `runs` 行的起止，
  * `transcript.length` 对 `steps` 行（一条 step 一个条目），
  * `usage.turns.length` 对 provider 的每次 usage 回报。
- * 不要换成当前请求投影的内容时刻：它每来一帧就动一次，等于把重取拉到 token 频率。
+ * 不要改用当前请求投影的内容时刻：它每到达一帧就变化一次，会使重新获取的频率升至 token 级别。
  */
 export function ledgerRevision(): string {
   const marks = [
@@ -524,7 +524,7 @@ export function ledgerRevision(): string {
   return marks.join(':')
 }
 
-/** 记下 / 抹掉「这条会话在跑」。幂等，重复到达的忙闲事件不会写出两行。 */
+/** 记录或清除会话的运行状态。幂等，重复到达的忙闲事件不会写入两行。 */
 function markBusy(id: string, busy: boolean): void {
   setState('busyConversations', (list) =>
     busy ? (list.includes(id) ? list : [...list, id]) : list.filter((x) => x !== id),
@@ -532,43 +532,43 @@ function markBusy(id: string, busy: boolean): void {
 }
 
 /**
- * 按回车那一刻预支出去的忙：会话 id → 预支它的那条 `message.send` 的 `clientRequestId`。
+ * 按回车时乐观设置的忙态：会话 id → 设置该忙态的 `message.send` 的 `clientRequestId`。
  *
- * **不是第二本忙闲账**：忙闲仍只有 `busyConversations` 一张表，这里只记「那一格是
- * 谁预支的」。指令被拒时服务端从未置忙，不会有任何 `conversation.busy` 来冲销它，
- * 所以冲销要认得出是哪一笔——看到任何拒绝就置闲会把这条会话真正在跑的那一轮抹掉。
+ * 这不是第二份忙闲记录：忙闲状态仍只有 `busyConversations` 一张表，此处只记录
+ * 各乐观忙态由哪条指令设置。指令被拒时服务端从未置忙，不会有 `conversation.busy` 来冲销它，
+ * 因此冲销时必须识别对应的指令：收到任何拒绝即置闲，会清除该会话实际正在运行的一轮的忙态。
  *
- * 预支只活到服务端写这一格为止（`settleBusy` / `syncBusy`），之后这一格由服务端作数。
+ * 乐观忙态只保留到服务端写入该会话的忙闲状态为止（`settleBusy` / `syncBusy`），此后以服务端为准。
  */
 const prepaidBusy = new Map<string, string>()
 
 /**
  * 乐观置忙：用户按下回车，界面立刻进入执行态，不等服务端回执。
  *
- * 会话本来就在跑时不记这一笔——那一格是服务端写的，这条指令被拒也不该动它。
+ * 会话已在运行时不记录：该忙态由服务端写入，即使本条指令被拒也不应修改它。
  */
 export function prepayBusy(id: string, requestId: string): void {
   if (!isConversationRunning(id)) prepaidBusy.set(id, requestId)
   markBusy(id, true)
 }
 
-/** 服务端裁决了这一格。预支到此为止，之后到的拒绝回执不再冲销它。 */
+/** 服务端已裁决该会话的忙闲状态。乐观忙态到此结束，此后到达的拒绝回执不再冲销它。 */
 export function settleBusy(id: string, busy: boolean): void {
   prepaidBusy.delete(id)
   markBusy(id, busy)
 }
 
-/** 握手快照：服务端此刻的全部，整表替换，全部预支随之作废。 */
+/** 握手快照：服务端当前的全部忙态，整表替换，全部乐观忙态随之作废。 */
 export function syncBusy(ids: readonly string[]): void {
   prepaidBusy.clear()
   setState('busyConversations', [...ids])
 }
 
 /**
- * 这条指令被拒，冲销它预支的那一笔忙。
+ * 指令被拒时，冲销它设置的乐观忙态。
  *
- * 按 `clientRequestId` 认，认不出的不动：没带这个键的指令（`followup.steer`、
- * `conversation.interrupt`）被拒时，会话跑的是别的轮次。
+ * 按 `clientRequestId` 匹配，无法匹配时不做修改：未携带该键的指令（`followup.steer`、
+ * `conversation.interrupt`）被拒时，会话中运行的是其他轮次。
  */
 export function refundBusy(requestId: string | undefined): void {
   if (!requestId) return

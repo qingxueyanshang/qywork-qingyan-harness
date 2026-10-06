@@ -10,19 +10,19 @@ import { newMemoryPrompt } from './ScopePrompts.ts'
 /**
  * 记忆。
  *
- * **按层分列。** 「这条是跟着这个仓库走的，还是全局都生效的」是用户在这一页要回答的第一个问题，
- * 合并去重之后这个事实就没了。所以标签页选层，列表只列那一层的。
+ * 按层分列。条目属于当前仓库还是全局生效，是用户在本页首先要确认的问题，
+ * 合并去重后该信息即丢失。因此由标签页选择层级，列表只列出该层的条目。
  *
- * 被高优先级层盖住的那些**照样列在自己那一层里**，贴一个 `ShadowTag`——
- * 不列的话「在全局改了却没生效」查不出来；不贴标记的话界面等于宣称
- * 一条不生效的内容在生效。
+ * 被高优先级层覆盖的条目仍列在各自所属的层中，并附加 `ShadowTag`：
+ * 不列出时，无法查明全局修改未生效的原因；不附加标记时，界面等于声明
+ * 一条未生效的内容正在生效。
  *
- * **能建、能删，不能在这里改正文。** 记忆是目录里的文件：要改就改那个文件，或在会话里让模型改。
- * 页头给出这一层的目录，卡片给出键名，两者拼起来就是那个文件。
+ * 可以新建、删除，但不能在本页修改正文。记忆是目录中的文件：修改时直接编辑该文件，或在会话中由模型修改。
+ * 页头显示该层的目录，卡片显示键名，两者拼接即为文件路径。
  */
 export default function MemorySettings() {
   const [mem, { refetch }] = createResource(loadMemory)
-  /** 看的是哪一层。新建也落在这一层——用户正看着它。 */
+  /** 当前查看的层级。新建的条目也写入该层，因为用户正在查看它。 */
   const [scope, setScope] = createSignal<Scope>('project')
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
@@ -42,8 +42,8 @@ export default function MemorySettings() {
   }
 
   /**
-   * 这一页的动作。**路径那一行和空态框共用同一份**——两处各写一遍的话迟早只改
-   * 一处，而空的时候用户看到的是空态框里那一份。
+   * 本页的操作按钮。路径行与空状态框共用同一份定义：两处分别编写时容易只修改
+   * 一处，而列表为空时用户看到的是空状态框中的那一份。
    */
   const Actions = () => (
     <button class="btn-ghost sm" type="button" onClick={() => askInChat(newMemoryPrompt(scope()))}>
@@ -51,68 +51,64 @@ export default function MemorySettings() {
     </button>
   )
 
-  // `loaded()` 而不是 `mem()`：删一条之后要重取，重取期间留住上一份，列表不闪空；
-  // 出错时给 undefined 让下面那条 `LoadState` 接住。
+  // 使用 `loaded()` 而不是 `mem()`：删除条目后需要重新获取，重新获取期间保留上一份数据，列表不会短暂清空；
+  // 出错时返回 undefined，由下方的 `LoadState` 处理。
   return (
-    <>
-      {/* 页头在 `Show` 外面：读取中和读取失败时这一页也该有名字。
-          它不依赖任何取回来的数据，摆进去只会让失败态变成一块无名的空白。 */}
-      <Show
-        when={loaded(mem)}
-        fallback={<LoadState error={mem.error} onRetry={() => void refetch()} />}
-      >
-        {(m) => (
-          <>
-            <ScopeTabs
-              value={scope()}
-              onChange={(s) => {
-                setScope(s)
-                setError(null)
-              }}
-              dirs={m().dirs}
-              actions={<Actions />}
-            />
+    <Show
+      when={loaded(mem)}
+      fallback={<LoadState error={mem.error} onRetry={() => void refetch()} />}
+    >
+      {(m) => (
+        <>
+          <ScopeTabs
+            value={scope()}
+            onChange={(s) => {
+              setScope(s)
+              setError(null)
+            }}
+            dirs={m().dirs}
+            actions={<Actions />}
+          />
 
-            <Section>
-              <Show
-                when={rows().length > 0}
-                fallback={<EmptyBox label="这一层还没有记忆" actions={<Actions />} />}
-              >
-                <div class="entry-list">
-                  <For each={rows()}>
-                    {(e) => (
-                      <EntryCard
-                        name={e.key}
-                        desc={e.preview}
-                        badge={<Show when={e.shadowedBy}>{(by) => <ShadowTag by={by()} />}</Show>}
-                        actions={
-                          <button
-                            class="icon-btn"
-                            type="button"
-                            aria-label={`删除记忆 ${e.key}`}
-                            data-tip="删除"
-                            disabled={busy()}
-                            onClick={() =>
-                              void run(async () => {
-                                await deleteMemory(e.key, e.scope)
-                                await refetch()
-                              })
-                            }
-                          >
-                            <IconTrash size={13} />
-                          </button>
-                        }
-                      />
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </Section>
+          <Section>
+            <Show
+              when={rows().length > 0}
+              fallback={<EmptyBox label="该层没有记忆" actions={<Actions />} />}
+            >
+              <div class="entry-list">
+                <For each={rows()}>
+                  {(e) => (
+                    <EntryCard
+                      name={e.key}
+                      desc={e.preview}
+                      badge={<Show when={e.shadowedBy}>{(by) => <ShadowTag by={by()} />}</Show>}
+                      actions={
+                        <button
+                          class="icon-btn"
+                          type="button"
+                          aria-label={`删除记忆 ${e.key}`}
+                          data-tip="删除"
+                          disabled={busy()}
+                          onClick={() =>
+                            void run(async () => {
+                              await deleteMemory(e.key, e.scope)
+                              await refetch()
+                            })
+                          }
+                        >
+                          <IconTrash size={13} />
+                        </button>
+                      }
+                    />
+                  )}
+                </For>
+              </div>
+            </Show>
+          </Section>
 
-            <Show when={error()}>{(msg) => <p class="settings-notices bad">{msg()}</p>}</Show>
-          </>
-        )}
-      </Show>
-    </>
+          <Show when={error()}>{(msg) => <p class="settings-notices bad">{msg()}</p>}</Show>
+        </>
+      )}
+    </Show>
   )
 }

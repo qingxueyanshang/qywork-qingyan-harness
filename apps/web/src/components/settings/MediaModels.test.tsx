@@ -332,7 +332,7 @@ test('生成模型默认取目录协议，接入方式可独立保存，删除�
 
     fire(row()!.querySelector<HTMLButtonElement>('.icon-btn')!, 'click')
     expect(qwen()?.media).toEqual({})
-    // 那一类删空了：默认一并删掉，否则保存会被服务端以「默认指向已删模型」挡回。
+    // 该类别已清空：默认模型一并删除，否则服务端会以「默认指向已删模型」拒绝保存。
     expect(config()?.mediaDefaults).toBeUndefined()
 
     // 编辑依次保存，最后一次 PUT 已删除生成模型。

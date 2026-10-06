@@ -6,10 +6,10 @@ const CHOICES = [
 ]
 
 /**
- * 两格开关。设置页里每一处「开 / 关」都用它，各页各写一份的代价是改一处忘另一处。
+ * 两项开关。设置页中所有「开 / 关」控件都使用它；各页分别实现会导致修改时遗漏其中一处。
  *
  * 不要取名 `Switch`：与 Solid 的控制流组件同名，开发模式下渲染到它即抛错，
- * 外层设置弹窗的页面切换随之失效。`reserved-names.test.ts` 守着这一条。
+ * 外层设置弹窗的页面切换随之失效。由 `reserved-names.test.ts` 检查。
  */
 export function OnOff(props: { on: boolean; onPick: (on: boolean) => void }) {
   return (

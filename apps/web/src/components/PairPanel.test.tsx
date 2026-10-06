@@ -1,10 +1,10 @@
 /**
- * 覆盖 `PairPanel.tsx`：开关与换地址期间不得触发外层 Suspense。
+ * 覆盖 `PairPanel.tsx`：切换开关与更换地址期间不得触发外层 Suspense。
  *
- * 设置内容区只有一层 Suspense，它挂起时整页内容被摘出 DOM，滚动位置随之归零。
- * 判据是外层 fallback 的求值次数：Solid 只在边界挂起时才读 `fallback`。
+ * 设置内容区只有一层 Suspense，它挂起时整页内容被移出 DOM，滚动位置随之归零。
+ * 判据是外层 fallback 的求值次数：Solid 只在边界挂起时才读取 `fallback`。
  *
- * **DOM 在这里装，用完卸掉**，理由同 `LoadState.test.tsx`。
+ * 测试 DOM 在本文件内注册，结束后注销，理由同 `LoadState.test.tsx`。
  */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -95,7 +95,7 @@ async function mount() {
   return { host, suspended }
 }
 
-test('打开开关出码、再换地址，外层 Suspense 一次都不挂起', async () => {
+test('打开开关生成二维码、再更换地址，外层 Suspense 始终不挂起', async () => {
   const { host, suspended } = await mount()
 
   const box = host.querySelector<HTMLInputElement>('.pair-toggle input')

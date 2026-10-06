@@ -2,9 +2,9 @@
  * 时间线的界面：画布上的节点与全屏编辑是同一个组件的两种布局（`mode`）。
  *
  * 工具行（分割、删除、播放与时间、导出、全屏）、预览（有片段时）、刻度与一条视频轨。片段的增删、裁剪、换位、分割
- * 都提交成一次 `update clips`；播放头、播放状态与选中的片段在会话里（`timeline.ts`），两种布局共用。
+ * 均提交为一次 `update clips`；播放头、播放状态与选中的片段保存在会话中（`timeline.ts`），两种布局共用。
  *
- * 指针横坐标换算成时刻按内容层的实际外框与它的画布宽度之比，画布缩放与全屏的时间轴缩放都在这个比里。
+ * 指针横坐标按内容层的实际外框与其画布宽度之比换算为时刻，画布缩放与全屏的时间轴缩放均已包含在该比值中。
  */
 
 import { type CanvasClip, type CanvasTimelineNode, TIMELINE_W } from '@qywork/core'
@@ -48,14 +48,14 @@ import {
   withoutClip,
 } from './timeline.ts'
 
-/** 节点里轨道区的宽：节点宽减去左侧静音钮与两侧内边距。 */
+/** 节点中轨道区的宽度：节点宽度减去左侧静音按钮与两侧内边距。 */
 const LANE_W = TIMELINE_W - 48
-/** 轨道至少显示 30 秒；片段更长时按总长加一成，末尾留出「+」的位置。 */
+/** 轨道至少显示 30 秒；片段总长更长时按总长加 10%，末尾留出「+」的位置。 */
 const MIN_SPAN = 30
-/** 刻度的候选间隔（秒），取让相邻标签不少于 `LABEL_GAP` 的最小一档。 */
+/** 刻度的候选间隔（秒），取使相邻标签间距不小于 `LABEL_GAP` 的最小一档。 */
 const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800]
 const LABEL_GAP = 64
-/** 「+」格的宽（画布单位）。 */
+/** 「+」按钮的宽度（画布单位）。 */
 const ADD_W = 28
 
 /** `mm:ss.s`。 */
@@ -67,27 +67,27 @@ function clockTenths(seconds: number): string {
 export interface TimelineProps {
   node: CanvasTimelineNode
   mode: 'node' | 'full'
-  /** 预览挂在这一处：节点在全屏打开时让给全屏。 */
+  /** 预览挂载在此处：全屏打开时节点把预览让给全屏视图。 */
   showPreview: boolean
   urlOf: (path: string) => string
-  /** 导出进度 0–1；没在导出为 `null`。 */
+  /** 导出进度 0–1；未在导出时为 `null`。 */
   exporting: number | null
-  /** 提交新的一组片段，成功回真。 */
+  /** 提交新的一组片段，成功时返回 `true`。 */
   setClips: (clips: CanvasClip[]) => Promise<boolean>
   setMuted: (muted: boolean) => void
-  /** 点了轨道：节点在画布上被选中。 */
+  /** 点击轨道时调用：在画布上选中节点。 */
   onFocus: () => void
-  /** 「+」：打开选素材框，选中的视频按 `gap` 插入。 */
+  /** 「+」：打开素材选择框，选中的视频按 `gap` 插入。 */
   onAdd: (anchor: HTMLElement, gap: number) => void
-  /** 右键一段：第 `index` 段、指针处的成片时刻与屏幕坐标。 */
+  /** 右键点击片段：第 `index` 段、指针处的成片时刻与屏幕坐标。 */
   onClipMenu: (index: number, t: number, clientX: number, clientY: number) => void
   onExport: () => void
   onCancelExport: () => void
-  /** 节点里是「全屏编辑」，全屏里是「退出全屏」。 */
+  /** 节点中为「全屏编辑」，全屏中为「退出全屏」。 */
   onFullscreen: () => void
 }
 
-/** 拖动中的状态：裁剪改的是这一段的入点或出点；换位记下指针相对段左端的偏移。 */
+/** 拖动中的状态：裁剪修改该段的入点或出点；换位记录指针相对段左端的偏移。 */
 type Gesture =
   | { kind: 'scrub' }
   | {
@@ -102,17 +102,17 @@ type Gesture =
 
 export function Timeline(props: TimelineProps) {
   const session = useSession(props.node.id)
-  /** 拖动中的片段（裁剪时）；松手提交前一直用它。 */
+  /** 拖动中的片段（裁剪时）；松开指针提交前一直使用它。 */
   const [draft, setDraft] = createSignal<CanvasClip[] | null>(null)
-  /** 换位拖动中：被拖的段、它的横向偏移（画布单位）与插入的间隙。 */
+  /** 换位拖动中：被拖动的段、其横向偏移（画布单位）与插入的间隙。 */
   const [moving, setMoving] = createSignal<{ index: number; dx: number; gap: number } | null>(null)
-  /** 全屏里的时间轴缩放倍数；节点里恒为 1。 */
+  /** 全屏中的时间轴缩放倍数；节点中恒为 1。 */
   const [zoom, setZoom] = createSignal(1)
-  /** 全屏里轨道区的实际宽（画布单位）；节点里是 `LANE_W`。 */
+  /** 全屏中轨道区的实际宽度（画布单位）；节点中为 `LANE_W`。 */
   const [laneW, setLaneW] = createSignal(LANE_W)
   let inner!: HTMLDivElement
   let scroller!: HTMLDivElement
-  /** 预览的容器：有片段（或全屏）时才有，出现时把会话的预览挂进来。 */
+  /** 预览的容器：仅在有片段（或全屏）时存在，出现时把会话的预览挂载到其中。 */
   const [view, setView] = createSignal<HTMLDivElement>()
   let gesture: Gesture | null = null
 
@@ -154,7 +154,7 @@ export function Timeline(props: TimelineProps) {
     const r = inner.getBoundingClientRect()
     return Math.max(0, ((clientX - r.left) * (contentW() / r.width)) / pps())
   }
-  /** 屏幕上的横向位移换成画布单位。 */
+  /** 屏幕上的横向位移换算为画布单位。 */
   const unitsOf = (dx: number) => dx * (contentW() / inner.getBoundingClientRect().width)
 
   const ticks = () => {
@@ -164,7 +164,7 @@ export function Timeline(props: TimelineProps) {
     const end = contentW() / pps()
     for (let k = 0; k * minor <= end; k++) {
       const t = k * minor
-      // 末端放不下整个标签的那一格只画刻度。
+      // 末端无法容纳完整标签的位置只绘制刻度线。
       const major = k % 5 === 0 && t * pps() + 34 <= contentW()
       if (!major && minor * pps() < 8) continue
       out.push({ x: t * pps(), label: major ? clock(t * 1000) : null })
@@ -220,7 +220,7 @@ export function Timeline(props: TimelineProps) {
       const value = (g.edge === 'in' ? c.in : c.out) + dt
       const next = trimClip(g.base, g.index, g.edge, value, g.duration)
       setDraft(next)
-      // 预览跟着停在拖动的那一端。
+      // 预览随之定位到拖动的一端。
       const t = startsOf(next)[g.index]! + (g.edge === 'in' ? 0 : lengthOf(next[g.index]!) - 1 / 30)
       session.seek(t)
       return
@@ -435,7 +435,7 @@ export function Timeline(props: TimelineProps) {
                   </button>
                 }
               >
-                {/* 按位置建块：每次重读画布片段都是新对象，按对象建会把缩略图全部重画。 */}
+                {/* 按位置创建块：每次重新读取画布时片段都是新对象，按对象创建会使缩略图全部重绘。 */}
                 <Index each={clips()}>
                   {(clip, i) => (
                     <ClipBlock
@@ -494,7 +494,7 @@ export function Timeline(props: TimelineProps) {
   )
 }
 
-/** 轨道上的一段：按时长定宽，里面画这段的帧缩略图，两端可拖动裁剪。 */
+/** 轨道上的一段：宽度按时长确定，内部绘制该段的帧缩略图，两端可拖动裁剪。 */
 function ClipBlock(props: {
   clip: CanvasClip
   url: string
@@ -505,12 +505,12 @@ function ClipBlock(props: {
   onDown: (e: PointerEvent) => void
   onTrim: (e: PointerEvent, edge: 'in' | 'out') => void
   onMenu: (e: MouseEvent) => void
-  /** 键盘选中（Enter / Space）。指针按下时已在 `onDown` 里选中。 */
+  /** 键盘选中（Enter / Space）。指针按下时已在 `onDown` 中选中。 */
   onSelect: () => void
 }) {
   const [missing, setMissing] = createSignal(false)
   let canvas!: HTMLCanvasElement
-  // 缩略图只在地址、入点出点或宽度（取 8 的倍数）变了时重画；拖动裁剪时块被拉伸、松手提交后才重画。
+  // 缩略图只在地址、入点出点或宽度（取 8 的倍数）变化时重绘；拖动裁剪时块被拉伸，松开指针提交后才重绘。
   const key = createMemo(() =>
     JSON.stringify([
       props.url,
@@ -523,9 +523,9 @@ function ClipBlock(props: {
     on(key, (k) => {
       const [url, from, to] = JSON.parse(k) as [string, number, number, number]
       const ac = new AbortController()
-      // 先画在另一块画布上，画完再换上：直接改宽度会清空，取帧期间块是空的。
+      // 先绘制到另一块画布上，完成后再复制过来：直接修改宽度会清空画布，取帧期间块为空白。
       const timer = setTimeout(() => {
-        // 块高在节点里与全屏里不同，按块在页面上的实际宽高取。
+        // 块高在节点中与全屏中不同，按块在页面上的实际宽高计算。
         const size = thumbCanvas(canvas.clientWidth, canvas.clientHeight)
         const next = document.createElement('canvas')
         next.width = size.width
@@ -555,7 +555,7 @@ function ClipBlock(props: {
       classList={{ selected: props.selected, lifted: props.lifted, missing: missing() }}
       style={{ left: `${props.left}px`, width: `${props.width}px` }}
       onPointerDown={(e) => {
-        // 右键归片段菜单，不交给画布去平移。
+        // 右键交给片段菜单处理，不交给画布平移。
         if (e.button === 2) e.stopPropagation()
         else props.onDown(e)
       }}
@@ -565,7 +565,7 @@ function ClipBlock(props: {
         props.onMenu(e)
       }}
       onClick={(e) => {
-        // 只接键盘触发的点击：指针的按下与拖动由 `onDown` 处理，换位后再选会选到原位置上的另一段。
+        // 只处理键盘触发的点击：指针的按下与拖动由 `onDown` 处理，换位后再处理点击会选中原位置上的另一段。
         if (e.detail === 0) props.onSelect()
       }}
     >

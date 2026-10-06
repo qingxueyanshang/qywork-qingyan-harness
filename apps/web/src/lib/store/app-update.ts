@@ -46,7 +46,7 @@ export async function actOnUpdate(action: UpdateAction): Promise<void> {
   }
 }
 
-/** 下载状态属于启动所有者，界面卸载不取消下载。 */
+/** 下载状态由发起下载的一方持有，界面卸载时不取消下载。 */
 export function observeAppUpdate(): () => void {
   if (!sourceEndpoint() && !isDesktopShell()) return () => {}
   let stopped = false

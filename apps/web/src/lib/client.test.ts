@@ -1,13 +1,12 @@
 /**
  * 连接层的重连语义。覆盖 `lib/client.ts` 的 `QyClient`。
  *
- * 这个文件存在本身就是一条记录：这块逻辑之前**一直没有测试**，理由是
- * 「要真 WebSocket 才能跑」。那是把「这块难测」当成了「不用测」——
- * 而它出过一个 bug：协议版本对不上时无限重连，界面显示成「N 秒后重试」，
- * 一个永远不会好的稍后重试。
+ * 不要以「需要真实 WebSocket 才能运行」为由删除本测试：难以测试不等于无需测试。
+ * 该逻辑的已知失败形状是协议版本不一致时无限重连，界面显示「N 秒后重试」，
+ * 而该重试永远不会成功。
  *
- * 现在 `QyClient` 的第二个参数是接缝（接入点 + socket 工厂），
- * 生产路径走默认实现，这里传一个假 socket。
+ * `QyClient` 的第二个参数是测试接缝（接入点与 socket 工厂），
+ * 生产路径使用默认实现，此处传入替身 socket。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -70,7 +69,7 @@ function client(token = 'tk') {
 }
 
 describe('握手', () => {
-  test('连上就发 hello，带当前协议版本', () => {
+  test('连接建立后发送 hello，携带当前协议版本', () => {
     const { c, sockets } = client()
     c.connect()
     sockets[0]!.fire('open')
@@ -79,7 +78,7 @@ describe('握手', () => {
     expect(hello.token).toBe('tk')
   })
 
-  test('没有令牌就不连，直接报未配对', () => {
+  test('没有令牌时不连接，直接报告未配对', () => {
     const { c, sockets, states } = client('')
     c.connect()
     expect(sockets).toHaveLength(0)
@@ -87,13 +86,13 @@ describe('握手', () => {
   })
 })
 
-describe('握手报的忙闲要交出去', () => {
+describe('握手携带的忙闲状态交给调用方', () => {
   /**
-   * 原始失败形状：sidecar 被杀之后重连，客户端手里那份忙闲还是断线前的——
-   * 那几轮早跑完了，左栏对应的行会一直转下去。**每次握手都整表交出**，
-   * 缺口补不上（resync）的那次也不例外。
+   * 原始失败形状：sidecar 被终止后重连，客户端持有的忙闲状态仍是断线前的，
+   * 而那几轮早已执行完毕，左栏对应的行持续显示运行中。每次握手都交出完整的表，
+   * 无法补齐缺口（resync）的握手也不例外。
    */
-  test('每次 hello.ok 都交出一份完整的在跑清单', () => {
+  test('每次 hello.ok 都交出一份完整的运行中清单', () => {
     const { c, sockets, busy } = client()
     c.connect()
     sockets[0]!.fire('open')
@@ -119,12 +118,12 @@ describe('握手报的忙闲要交出去', () => {
 
 describe('握手被拒是终态', () => {
   /**
-   * 复现原始失败形状：只把 `bad_token` 当终态的话，别的原因每次 close 都会再排
-   * 一次重连、每次都被同样地拒掉，而界面显示「N 秒后重试」——一个永远不会好的
-   * 稍后重试。
+   * 复现原始失败形状：只把 `bad_token` 视为终态时，其他原因的拒绝在每次 close 后都会
+   * 安排一次重连，且每次都以同样原因被拒绝，而界面显示「N 秒后重试」，
+   * 该重试永远不会成功。
    *
-   * 服务端目前只发 `bad_token` 一种，但**这里不按 reason 分支**：
-   * 认的是「hello.err 一律终态」这条规则本身。
+   * 服务端目前只发送 `bad_token` 一种原因，但此处不按 reason 分支：
+   * 测试的是「hello.err 一律为终态」这一规则本身。
    */
   test('hello.err 之后不再重连', () => {
     const { c, sockets, states } = client()
@@ -133,33 +132,33 @@ describe('握手被拒是终态', () => {
     sockets[0]!.deliver({ type: 'hello.err', reason: 'bad_token', message: '令牌无效' })
     expect(c.terminated).toBe(true)
 
-    // close 到来时不能再排重连——排了就是那个永远好不了的「N 秒后重试」。
+    // close 到达时不能再安排重连，否则界面显示永远不会成功的「N 秒后重试」。
     sockets[0]!.fire('close')
     expect(sockets).toHaveLength(1)
 
-    // **而且不能把原因盖掉。** 服务端发完 hello.err 立刻 close，两个事件前后脚到；
-    // close 处理器无条件再报一次泛化的 'closed' 的话，用户最终看到的是
-    // 「连接已断开」而不是「令牌无效」——后者才说得出下一步该干什么。
+    // 也不能覆盖拒绝原因。服务端发送 hello.err 后立即 close，两个事件相继到达；
+    // close 处理器无条件再报告一次泛化的 'closed' 时，用户最终看到的是
+    // 「连接已断开」而不是「令牌无效」，而只有后者能指明下一步操作。
     expect(states.at(-1)?.state).toBe('unauthorized')
     expect(states.at(-1)?.detail).toBe('令牌无效')
   })
 
-  /** 拒绝的原因要原样带给用户——只说「连接失败」等于让他自己猜。 */
+  /** 拒绝原因须原样显示给用户：只显示「连接失败」时，用户只能自行推测原因。 */
   test('拒绝原因显示给用户', () => {
     const { c, sockets, states } = client()
     c.connect()
     sockets[0]!.fire('open')
     sockets[0]!.deliver({ type: 'hello.err', reason: 'bad_token', message: '令牌无效' })
-    // 看**最后**一条，不是 some()：被后面的状态盖掉时 some() 照样为真，
-    // 而用户看到的只有最后那条。
+    // 检查最后一条，不用 some()：状态被后续状态覆盖时 some() 仍为真，
+    // 而用户看到的只有最后一条。
     expect(states.at(-1)?.detail).toBe('令牌无效')
   })
 })
 
 describe('正常断线仍然重连', () => {
   /**
-   * 反过来的那一半：**没有被拒的断线必须继续重试**。
-   * 只测「排了重连」而不等它真的连上——退避有随机抖动，等它等于让测试变慢又变脆。
+   * 另一面：未被拒绝的断线必须继续重试。
+   * 只测试已安排重连，不等待实际连接成功：退避带有随机抖动，等待会使测试变慢且不稳定。
    */
   test('握手成功之后断线，不是终态', () => {
     const { c, sockets, states } = client()
@@ -180,15 +179,15 @@ describe('正常断线仍然重连', () => {
   })
 })
 
-describe('指令发不出去要有回执', () => {
+describe('指令无法发送时返回回执', () => {
   /**
-   * **原始失败形状**：切模型点了没反应。
+   * 原始失败形状：切换模型后界面没有任何反应。
    *
-   * `send` 写成 `if (readyState === OPEN) send()` 的话，不在 OPEN 就静默什么也不做。
-   * 而 `setModel` 刻意不做乐观更新（等服务端广播回来才改显示），两件事叠起来
-   * 就是「点了，界面一动不动」，和「服务端还没回」完全无法区分。
+   * `send` 写成 `if (readyState === OPEN) send()` 时，连接不处于 OPEN 状态就静默不执行。
+   * 而 `setModel` 有意不做乐观更新（等待服务端广播后才更新显示），两者叠加后
+   * 点击没有任何反应，且与「服务端尚未响应」无法区分。
    */
-  test('连接还没建立时发指令，回 not_ready 而不是静默吞掉', () => {
+  test('连接尚未建立时发送指令，返回 not_ready 而不是静默丢弃', () => {
     const { c, rejected } = client()
     c.send({
       type: 'conversation.setModel',
@@ -202,12 +201,12 @@ describe('指令发不出去要有回执', () => {
   })
 
   /**
-   * **原始失败形状**：断线时按回车，界面停在生成中。
+   * 原始失败形状：断线时按回车，界面停留在生成中。
    *
-   * 乐观置忙那一笔由 `clientRequestId` 定位着冲销（`store/connection.ts` 的
-   * `applyRejected`），这条回执不带它就没有第二种办法认出是哪一次发送。
+   * 乐观置忙按 `clientRequestId` 定位并冲销（`store/connection.ts` 的
+   * `applyRejected`），回执不携带它时无法识别对应的是哪一次发送。
    */
-  test('自己合成的回执带上幂等键，与服务端那条同一口径', () => {
+  test('客户端合成的回执携带幂等键，与服务端回执口径一致', () => {
     const { c, rejected } = client()
     c.send({
       type: 'message.send',
@@ -218,14 +217,14 @@ describe('指令发不出去要有回执', () => {
     expect(rejected[0]?.clientRequestId).toBe('req-7')
   })
 
-  test('连接已放弃时说的是「断开」，不是「稍后重试」——后者永远不会好', () => {
+  test('连接已放弃时提示「断开」而不是「稍后重试」：后者永远不会成功', () => {
     const { c, rejected } = client()
     c.close()
     c.send({ type: 'conversation.interrupt', conversationId: 'cv_1' as never })
     expect(rejected[0]?.message).toContain('断开')
   })
 
-  test('连上之后照常发出，不再有回执', () => {
+  test('连接建立后正常发送，不再返回回执', () => {
     const { c, sockets, rejected } = client()
     c.connect()
     sockets[0]!.fire('open')
@@ -235,11 +234,11 @@ describe('指令发不出去要有回执', () => {
   })
 })
 
-describe('事件交出的是整个信封', () => {
+describe('事件以完整信封交给消费方', () => {
   /**
-   * 归属会话在信封上，不在事件体里（`text.delta` 这些串台主力都不带）。
-   * 拆成 `event` + `seq` 交出去的话，消费方拿不到归属，只能假定收到的都属于
-   * 已订阅的会话——而 `subscribe` 指令的往返窗口让这个前提不成立。
+   * 所属会话记录在信封上，不在事件体中（`text.delta` 等最常错投到其他会话的事件都不携带它）。
+   * 拆成 `event` 与 `seq` 交出时，消费方无法取得归属，只能假定收到的事件都属于
+   * 已订阅的会话，而 `subscribe` 指令的往返窗口使该前提不成立。
    */
   test('conversationId 随帧交给消费方', () => {
     const { c, sockets, frames } = client()
@@ -261,11 +260,11 @@ describe('事件交出的是整个信封', () => {
 /**
  * 投递必须幂等。
  *
- * 原始失败形状：一整轮的正文每个 token 显示两遍（「语法检查检查通过、通过」），
- * 同一轮出现两条读数条，第二条 0.0s——因为第一条已经把 `runStartedAt` 清掉了。
- * 两条来源都会造成它：断线补发与实时流交叠，以及同一个 client 建了两条连接。
+ * 原始失败形状：一整轮正文的每个 token 显示两遍（「语法检查检查通过、通过」），
+ * 同一轮出现两条读数条，第二条为 0.0s，因为第一条已清除 `runStartedAt`。
+ * 两种来源都会导致该问题：断线补发与实时流交叠，以及同一个 client 建立了两条连接。
  */
-describe('同一个位置只交出去一次', () => {
+describe('同一位置的事件只交出一次', () => {
   const deliverAt = (s: (typeof FakeSocket)['prototype'], seq: number, delta: string) =>
     s.deliver({
       seq,
@@ -274,20 +273,20 @@ describe('同一个位置只交出去一次', () => {
       event: { type: 'text.delta', runId: 'run_1', stepId: 'st_1', delta },
     })
 
-  test('见过的 seq 直接丢掉', () => {
+  test('已处理的 seq 直接丢弃', () => {
     const { c, sockets, frames } = client()
     c.connect()
     sockets[0]!.fire('open')
     deliverAt(sockets[0]!, 1, '甲')
     deliverAt(sockets[0]!, 2, '乙')
-    // 补发窗口与实时流交叠，这两条是重合的那一段。
+    // 补发窗口与实时流交叠，以下两条是重合部分。
     deliverAt(sockets[0]!, 1, '甲')
     deliverAt(sockets[0]!, 2, '乙')
     expect(frames.map((f) => (f.event as { delta: string }).delta)).toEqual(['甲', '乙'])
     c.close()
   })
 
-  test('已经连上了就不再建第二条连接', () => {
+  test('已建立连接时不再建立第二条连接', () => {
     const { c, sockets } = client()
     c.connect()
     c.connect()
@@ -296,17 +295,17 @@ describe('同一个位置只交出去一次', () => {
   })
 })
 
-describe('订阅在重连时原样带回去', () => {
+describe('重连时原样携带订阅', () => {
   const helloOf = (s: FakeSocket) => JSON.parse(s.sent.find((x) => x.includes('"hello"')) as string)
 
-  test('订了具体会话，重连的 hello 帧带着它', () => {
+  test('订阅了具体会话时，重连的 hello 帧携带该订阅', () => {
     const { c, sockets } = client()
     c.connect()
     sockets[0]!.fire('open')
     c.subscribe(['cv_a'])
     sockets[0]!.fire('close')
 
-    // 退避有随机抖动，不等它自己重连——直接再连一次，验的是 hello 的内容。
+    // 退避带有随机抖动，不等待自动重连，直接再连接一次，验证 hello 的内容。
     c.connect()
     sockets[1]!.fire('open')
     expect(helloOf(sockets[1]!).subscribe).toEqual(['cv_a'])
@@ -314,12 +313,12 @@ describe('订阅在重连时原样带回去', () => {
   })
 
   /**
-   * **原始失败形状**：切完项目再断一次网，串台全回来了。
+   * 原始失败形状：切换项目后再断网一次，跨会话错投的事件全部重新出现。
    *
-   * 空集被 `this.subscribed.length` 判掉、不写进 hello 帧的话，服务端会当成
-   * 「没声明过」给全订阅——而切项目时前端发的正是 `subscribe([])`。
+   * 空集被 `this.subscribed.length` 判定为假而不写入 hello 帧时，服务端会视为
+   * 「未声明」并订阅全部会话，而切换项目时前端发送的正是 `subscribe([])`。
    */
-  test('明确退订（空集）也要带上，不能被压成「没说过」', () => {
+  test('明确退订（空集）同样须携带，不能被视为「未声明」', () => {
     const { c, sockets } = client()
     c.connect()
     sockets[0]!.fire('open')
@@ -332,7 +331,7 @@ describe('订阅在重连时原样带回去', () => {
     c.close()
   })
 
-  test('从没声明过就不带这个字段 —— 首连时界面还没选会话', () => {
+  test('从未声明时不携带该字段：首次连接时界面尚未选择会话', () => {
     const { c, sockets } = client()
     c.connect()
     sockets[0]!.fire('open')
@@ -342,13 +341,13 @@ describe('订阅在重连时原样带回去', () => {
 })
 
 /**
- * 重连时报的「客户端停在哪一条」。
+ * 重连时报告的客户端已接收位置。
  *
- * 位置离开流身份没有意义：sidecar 一重启 seq 就从 0 重新数，只报一个数字会被
- * 服务端判成「已是最新」。那条判断在服务端（`bus.replayFrom`），这里守的是
- * 客户端这一半——**报上去的必须是当前这条流上的坐标**。
+ * 位置脱离流身份没有意义：sidecar 重启后 seq 从 0 重新计数，只报告一个数字会被
+ * 服务端判定为「已是最新」。该判定位于服务端（`bus.replayFrom`），此处验证的是
+ * 客户端一侧：报告的必须是当前流上的位置。
  */
-describe('断线重连报的位置', () => {
+describe('断线重连时报告的位置', () => {
   const helloOf = (s: FakeSocket) => JSON.parse(s.sent.find((x) => x.includes('"hello"')) as string)
   const helloOk = (streamId: string, currentSeq: number, resync = false) => ({
     type: 'hello.ok',
@@ -358,7 +357,7 @@ describe('断线重连报的位置', () => {
     resync,
   })
 
-  test('首连不带 resume —— 还没握过手，手上没有任何流的坐标', () => {
+  test('首次连接不携带 resume：尚未握手，没有任何流的位置', () => {
     const { c, sockets } = client()
     c.connect()
     sockets[0]!.fire('open')
@@ -366,7 +365,7 @@ describe('断线重连报的位置', () => {
     c.close()
   })
 
-  test('收过帧之后重连，带上流身份 + 最后一条 seq', () => {
+  test('收到帧之后重连，携带流身份与最后一条 seq', () => {
     const { c, sockets } = client()
     c.connect()
     sockets[0]!.fire('open')
@@ -385,11 +384,11 @@ describe('断线重连报的位置', () => {
   })
 
   /**
-   * **原始失败形状的客户端一半**：sidecar 重启后 hello.ok 换了流身份，
-   * 而客户端手上还揣着上一代的 `lastSeq=12`。再断一次线时若把这个数报上去，
-   * 服务端就得替一个不属于自己的坐标做判断。
+   * 原始失败形状的客户端一侧：sidecar 重启后 hello.ok 更换了流身份，
+   * 而客户端仍持有上一代的 `lastSeq=12`。再次断线时若报告该数值，
+   * 服务端须对一个不属于当前流的位置做判断。
    */
-  test('服务端换了流，位置跟着对齐到新流 —— 不把上一代的数字报过去', () => {
+  test('服务端更换流后，位置对齐到新流，不报告上一代的数值', () => {
     const { c, sockets } = client()
     c.connect()
     sockets[0]!.fire('open')
@@ -401,7 +400,7 @@ describe('断线重连报的位置', () => {
     })
     sockets[0]!.fire('close')
 
-    // 重启后的 sidecar：新流、seq 从头数起，并要求整段重拉。
+    // 重启后的 sidecar：新流，seq 从头计数，并要求整段重新拉取。
     c.connect()
     sockets[1]!.fire('open')
     sockets[1]!.deliver(helloOk('stream-b', 3, true))
@@ -413,7 +412,7 @@ describe('断线重连报的位置', () => {
     c.close()
   })
 
-  test('服务端说 resync，就要通知调用方整段重拉', () => {
+  test('服务端要求 resync 时通知调用方整段重新拉取', () => {
     const { c, sockets, resyncs } = client()
     c.connect()
     sockets[0]!.fire('open')
@@ -422,14 +421,14 @@ describe('断线重连报的位置', () => {
     c.close()
   })
 
-  test('首连不算换代；重连到另一条服务端事件流才通知换代', () => {
+  test('首次连接不算换代；重连到另一条服务端事件流时才通知换代', () => {
     const { c, sockets, streamChanges } = client()
     c.connect()
     sockets[0]!.fire('open')
     sockets[0]!.deliver(helloOk('stream-a', 0))
     expect(streamChanges).toHaveLength(0)
 
-    // 普通断线仍连回同一个 sidecar，不该刷新整页。
+    // 普通断线后仍连回同一个 sidecar，不应刷新整页。
     sockets[0]!.fire('close')
     c.connect()
     sockets[1]!.fire('open')

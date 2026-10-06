@@ -75,28 +75,28 @@ import {
 } from './Icons.tsx'
 import { TodoPanel } from './TodoPanel.tsx'
 
-// 懒加载：xterm 及其样式只有真的开终端才下载。手机端和浏览器根本开不出这一页，
-// 静态引入会让它们多下载一份永远不执行的代码。
+// 懒加载：xterm 及其样式只在打开终端时下载。手机端和浏览器无法打开终端页，
+// 静态引入会使它们多下载一份永远不执行的代码。
 const TerminalPanel = lazy(() => import('./TerminalPanel.tsx'))
 
-// 同样懒加载：不开浏览器页的人不必为它付首屏成本。
+// 同样懒加载：不打开浏览器页的用户无需承担它的首屏加载成本。
 const BrowserPanel = lazy(() => import('./BrowserPanel.tsx'))
 
-// 网页预览页：没有内置浏览器的那几端用它。
+// 网页预览页：供没有内置浏览器的端使用。
 const PreviewPanel = lazy(() => import('./PreviewPanel.tsx'))
 
-// 子会话页：只有从工具卡上点开子 agent 才会加载。
+// 子会话页：只在从工具卡打开子 agent 时加载。
 const ConversationPanel = lazy(() => import('./ConversationPanel.tsx'))
 
-// 外部 CLI 页：只有从图卡上点开 CLI 节点才会加载。
+// 外部 CLI 页：只在从图卡打开 CLI 节点时加载。
 const CliPanel = lazy(() => import('./CliPanel.tsx'))
 
-// 同样懒加载：它带着 CodeMirror 核心（约 300 kB），而只看待办 / 变更的人碰不到它。
+// 同样懒加载：它包含 CodeMirror 核心（约 300 kB），只查看待办与变更的用户不会用到它。
 const FileView = lazy(() => import('./FileView.tsx'))
-// 画布页：只有真的开画布才下载。
+// 画布页：只在打开画布时下载。
 const CanvasPanel = lazy(() => import('./canvas/CanvasPanel.tsx'))
 
-// 同样懒加载：运行那一页一挂上就去拉两个接口，不翻到它的人不该为它付首屏成本。
+// 同样懒加载：运行页挂载后即请求两个接口，不打开它的用户不应为它承担首屏成本。
 const RunDetails = lazy(() => import('./RunDetails.tsx'))
 
 interface FileNode {
@@ -109,23 +109,23 @@ interface FileNode {
 }
 
 /**
- * 固定的那几页。顺序即优先级。**它们关不掉，永远在页签条最前面。**
+ * 固定页签。顺序即优先级。**它们不可关闭，始终位于页签栏最前面。**
  *
- * 写成一份清单而不是几段 JSX：标签页的外观改一次要改每一处，改漏一处的表现是
- * 「有一格长得不一样」，而 CSS 不会为此报错。
+ * 写成清单而不是多段 JSX：分别书写时，修改页签外观需改动每一处，遗漏一处会使
+ * 某个页签的外观不一致，而 CSS 不会为此报错。
  *
- * **它们回答「这一轮在干什么」**：待办、文件、改动、账。配置类的页（角色编排、
- * 逐条能力开关）不进来——它们和「现在跑到哪了」不是同一个问题。
+ * **它们回答「本轮正在执行什么」**：待办、文件、变更、费用。配置类页面（角色编排、
+ * 逐项能力开关）不放入此处：它们与当前执行进度无关。
  *
- * 终端和浏览器不在这里：那两种是**可多开、可关掉**的页，由 `+` 新开、页签上带 ×，
+ * 终端与浏览器不在此处：它们是**可多开、可关闭**的页，由 `+` 新开、页签上带 ×，
  * 清单在 `panelTabs`。
  */
 const VIEWS: { view: PanelView; label: string }[] = [
-  // 待办排在最前：它回答的是「这一轮在干什么」，比「有哪些文件」更靠前。
+  // 待办排在最前：它回答「本轮正在执行什么」，优先于「有哪些文件」。
   { view: 'todos', label: '待办' },
   { view: 'files', label: '文件' },
   { view: 'changes', label: '变更' },
-  // 运行排在末位：查账是事后动作，不与「现在在做什么」争第一眼。
+  // 运行排在末位：查看费用是事后操作，优先级低于当前执行状态。
   { view: 'runs', label: '运行' },
 ]
 
@@ -135,34 +135,34 @@ async function openNewCanvas(): Promise<void> {
   openCanvasTab(path, canvasTitle(path))
 }
 
-/** 文件树里点一个文件：画布文件在鼠标端开画布页，其余在主区看。 */
+/** 在文件树中点击文件：画布文件在鼠标端打开画布页，其余文件在主区预览。 */
 function openPath(path: string): void {
   if (path.endsWith(CANVAS_SUFFIX) && canvasAvailable()) openCanvasTab(path, canvasTitle(path))
   else openFileInPanel(path)
 }
 
 /**
- * 「新开预览」看板上有哪几行。**每一行都是新开一页**，所以固定的那几格不在这里
- * ——它们一直在页签条上，列进来点了也不会新开一页。
+ * 「新开预览」看板的各行。**每一行都会新开一页**，因此固定页签不在此处：
+ * 它们始终位于页签栏上，列出后点击也不会新开一页。
  *
- * **没有 `open` 的那几行是后端还没接上的**，看板上置灰、点不动、行尾标「未接入」。
- * 这是用户点名要的形状：清单同时充当路线图。接上哪一项就给它补一个 `open`，
- * 看板那段 JSX 一行不用改。
+ * **没有 `open` 的行尚未接入后端**，在看板上置灰、不可点击、行尾标注「未接入」。
+ * 这是用户明确要求的形式：清单同时充当路线图。接入某一项时为它补充 `open`，
+ * 看板的 JSX 无需修改。
  *
- * 现状（核过码，别照着标签猜）：终端在 Rust 侧有 PTY，只在桌面端有；内置浏览器由
- * 桌面外壳的宿主承载（Windows 嵌在面板里，macOS 与 Linux 在浏览器自己的窗口里），
- * 要宿主连上才有，别的端换成 HTTP 网页预览（一个 iframe，只能看）。无限画布只在鼠标端给入口（`canvasAvailable`）；
- * Word / PPT 不在 `packages/server/src/files.ts` 的分类表里；Excel 虽然分到 `tabular`，但 xlsx 是
- * 二进制、走到 `looksBinary` 就退成「无法以文本预览」——真能开的只有 csv / tsv，
- * 那条路文件那一页本来就有。
+ * 现状（已核对代码，不要按标签推测）：终端依赖 Rust 侧的 PTY，只在桌面端可用；内置浏览器由
+ * 桌面外壳的宿主承载（Windows 嵌入面板，macOS 与 Linux 显示在浏览器的独立窗口中），
+ * 宿主连接后才可用，其他端改用 HTTP 网页预览（iframe，只读）。无限画布只在鼠标端提供入口（`canvasAvailable`）；
+ * Word / PPT 不在 `packages/server/src/files.ts` 的分类表中；Excel 虽归入 `tabular`，但 xlsx 是
+ * 二进制格式，经 `looksBinary` 判定后显示「无法以文本预览」，实际可预览的只有 csv / tsv，
+ * 而文件页已支持这两种格式。
  */
 const PREVIEW_SOURCES: {
   key: string
   label: string
   icon: (p: { size?: number }) => JSX.Element
-  /** 缺席 = 这一项还没有后端。 */
+  /** 缺省表示该项尚未接入后端。 */
   open?: () => void
-  /** 这一端没有，整行不渲染——和「以后会接上」的置灰是两回事。 */
+  /** 当前端不具备该能力时整行不渲染，与「尚未接入」的置灰不同。 */
   show?: () => boolean
 }[] = [
   {
@@ -181,9 +181,9 @@ const PREVIEW_SOURCES: {
   },
   {
     /*
-     * 网页预览**只在没有桌面外壳的那几端有**，不按「宿主连没连上」判。
-     * 按可用性判的话，外壳上宿主起不来就退成了 iframe——用户拿到的是一个
-     * 看起来一样、却没有登录状态也不受 AI 控制的页面，而他分辨不出来。
+     * 网页预览**只在没有桌面外壳的端提供**，不按宿主是否连接判定。
+     * 按可用性判定时，外壳上的宿主启动失败会退化为 iframe：用户得到的是
+     * 外观相同、但没有登录状态且不受 AI 控制的页面，且无法区分。
      */
     key: 'preview',
     label: '网页预览',
@@ -203,28 +203,28 @@ const PREVIEW_SOURCES: {
   },
 ]
 
-/** 每次渲染现算：内置浏览器要等宿主连上，那是应用启动之后才发生的事。 */
+/** 每次渲染时重新计算：内置浏览器要等宿主连接，而宿主在应用启动之后才连接。 */
 const boardRows = () => PREVIEW_SOURCES.filter((s) => s.show?.() ?? true)
 
 /**
- * 右侧面板容器。固定的那几格（`VIEWS`）和可多开的那些页（`panelTabs`）共用同一块区域，
+ * 右侧面板容器。固定页签（`VIEWS`）与可多开的页（`panelTabs`）共用同一区域，
  * 互斥显示。
  *
- * 默认导出是为了给 `lazy()` 用：这个模块静态引入了 CodeMirror 核心（约 300 kB），
- * 放进首屏等于让「只想聊天的用户」为文件预览付费。
+ * 默认导出供 `lazy()` 使用：本模块静态引入了 CodeMirror 核心（约 300 kB），
+ * 放入首屏会使只使用对话的用户承担文件预览的加载成本。
  */
 export default function SidePanel() {
   /**
-   * 看板是否盖在正文上。**局部信号，不进 `sidePanel`**：它不是第四个视图，
-   * 收起面板再展开该回到用户上次看的那个视图，而不是回到新开预览看板。
+   * 看板是否覆盖在正文上。**局部信号，不放入 `sidePanel`**：看板不是独立视图，
+   * 收起面板再展开时应回到用户上次查看的视图，而不是新开预览看板。
    */
   const [board, setBoard] = createSignal(false)
 
   /*
-   * 普通鼠标一格滚轮在 Windows 上通常只来一个较大的离散 delta。直接写 `scrollLeft`
-   * 会整段跳过去；这里让一个 rAF 循环追同一个目标，连续滚轮只累加目标，不排队创建
-   * 多段 smooth 动画。40ms 是追赶的时间常数，约 120ms 已走完 95%，既看得到过渡，
-   * 又不在手停之后拖很久。
+   * 普通鼠标滚动一格时，Windows 通常只产生一个较大的离散 delta。直接写入 `scrollLeft`
+   * 会使位置瞬间跳变；此处由一个 rAF 循环逐步接近同一个目标，连续滚轮只累加目标，不排队创建
+   * 多段 smooth 动画。40ms 是接近目标的时间常数，约 120ms 完成 95%，过渡可见，
+   * 且停止滚动后不会持续过久。
    */
   const wheelSmoothingMs = 40
   let wheelTarget: number | null = null
@@ -266,13 +266,13 @@ export default function SidePanel() {
   }
 
   /**
-   * 窄面板里的页签仍是一条横带：普通鼠标只有纵向滚轮，这里把它换成横向位移。
-   * 触控板已经会发 `deltaX`，交给浏览器原生滚动；边界与无溢出时也不拦截。滚动只
-   * 响应用户输入，选中页签不自动改位置。
+   * 窄面板中的页签仍排成一行：普通鼠标只有纵向滚轮，此处将其转换为横向位移。
+   * 触控板本身产生 `deltaX`，交给浏览器原生滚动；到达边界或没有溢出时也不拦截。滚动只
+   * 响应用户输入，选中页签时不自动调整位置。
    */
   const scrollTabsWithWheel = (e: WheelEvent & { currentTarget: HTMLDivElement }) => {
     if (Math.abs(e.deltaX) >= Math.abs(e.deltaY) || e.deltaY === 0) {
-      // 一旦触控板开始原生横向滚，上一段鼠标滚轮动画必须让路，不能争写 scrollLeft。
+      // 触控板开始原生横向滚动时，必须停止尚未完成的鼠标滚轮动画，避免两者同时写入 scrollLeft。
       stopWheelScroll()
       return
     }
@@ -289,7 +289,7 @@ export default function SidePanel() {
           : 1
     const delta = e.deltaY * scale
     const direction = Math.sign(delta)
-    // 反向滚动要从眼前的位置起算；继续同向才累加尚未走完的目标。
+    // 反向滚动从当前位置起算；同向滚动才在尚未到达的目标上累加。
     const base =
       wheelTarget !== null && direction === wheelDirection ? wheelTarget : tabs.scrollLeft
     const target = Math.min(max, Math.max(0, base + delta))
@@ -308,7 +308,7 @@ export default function SidePanel() {
 
   onCleanup(stopWheelScroll)
 
-  /** 页签亮不亮。看板盖着时哪一格都不亮——那时正文不是它们任何一个。 */
+  /** 页签是否高亮。看板覆盖正文时所有页签均不高亮：此时正文不属于任何页签。 */
   const onView = (view: PanelView) => sidePanel() === view && !board()
   const onTab = (id: string) => activePanelTab() === id && !board()
 
@@ -316,16 +316,16 @@ export default function SidePanel() {
     <Show when={sidePanel()}>
       <aside class="side-panel">
         {/*
-         * 拖左边沿改整块面板的宽度。
+         * 拖动左边沿调整面板宽度。
          *
-         * `setPointerCapture` 是必须的：不捕获的话指针一滑到 iframe / CodeMirror
-         * 上面，`pointermove` 就断给了那一层，拖动会在半路停住。
+         * 必须调用 `setPointerCapture`：不捕获时指针移到 iframe / CodeMirror
+         * 上后，`pointermove` 会派发给该层，拖动中途停止。
          *
-         * 用 `<button>` 而不是 `role="separator"` 的 div：焦点、键盘语义、
-         * 屏幕阅读器播报都由元素自带，而那个 role 还要求自己补 `tabindex` 与
-         * `aria-valuenow`，补齐了 lint 也照样要抑制两条规则。
-         * 左右方向键一档 24px——拿得到焦点就得能用键盘改。
-         * 窄屏不显示（那里的面板盖满全屏，见 utility.css）。
+         * 使用 `<button>` 而不是 `role="separator"` 的 div：焦点、键盘语义、
+         * 屏幕阅读器播报都由元素自带，而该 role 还要求手动补充 `tabindex` 与
+         * `aria-valuenow`，补齐后 lint 仍需抑制两条规则。
+         * 左右方向键每次调整 24px：可获得焦点的控件必须支持键盘调整。
+         * 窄屏不显示（窄屏下面板覆盖全屏，见 utility.css）。
          */}
         <button
           class="panel-grip"
@@ -358,8 +358,8 @@ export default function SidePanel() {
                   role="tab"
                   aria-selected={onView(t.view)}
                   onClick={() => {
-                    // 点页签即离开看板：不收的话页签亮了、正文还是看板，
-                    // 看起来像这一下没生效。
+                    // 点击页签即关闭看板：不关闭时页签已高亮而正文仍是看板，
+                    // 点击看起来没有生效。
                     setBoard(false)
                     setSidePanel(t.view)
                   }}
@@ -369,11 +369,11 @@ export default function SidePanel() {
               )}
             </For>
             {/*
-             * 可多开的那些页接在固定的那几格后面，各自带一颗 ×。
+             * 可多开的页排在固定页签之后，各带一个 × 按钮。
              *
-             * 外面套一个 div 而不是把 × 塞进页签那颗按钮里：**button 套 button 是
-             * 非法 HTML**，浏览器会把内层那颗提到外面去，因此点页签名字变成点关闭。
-             * 外层只是个盒子（`role="presentation"`），`role="tab"` 落在名字那颗上。
+             * 外层使用 div，不把 × 放入页签按钮内：**button 嵌套 button 是
+             * 非法 HTML**，浏览器会把内层按钮移到外面，导致点击页签名称变为点击关闭。
+             * 外层只是容器（`role="presentation"`），`role="tab"` 设在名称按钮上。
              */}
             <For each={panelTabs()}>
               {(t) => (
@@ -419,8 +419,8 @@ export default function SidePanel() {
             >
               <IconPlus size={15} />
             </button>
-            {/* 放大：正文让位，输入框收成底部悬浮触发条。窄屏不显示——那里的面板
-                本来就盖满全屏，没有「放大」可言（样式见 utility.css）。 */}
+            {/* 放大：面板占据正文区域，输入框收起为底部悬浮触发条。窄屏不显示：
+                窄屏下面板已覆盖全屏，无需放大（样式见 utility.css）。 */}
             <button
               class="icon-btn panel-max-btn"
               type="button"
@@ -431,9 +431,9 @@ export default function SidePanel() {
             >
               <IconExpand size={15} collapse={panelMaximized()} />
             </button>
-            {/* 关闭只在窄屏出现（样式见 utility.css）。宽屏由顶栏那个开关管，
-                这里再放一颗就是同一件事的第二个入口；窄屏的面板盖满全屏、把顶栏
-                一起盖住了，不留这颗就没有出路。 */}
+            {/* 关闭按钮只在窄屏显示（样式见 utility.css）。宽屏由顶栏的开关控制，
+                此处再放一个会形成同一操作的第二个入口；窄屏下面板覆盖全屏并遮住顶栏，
+                没有该按钮将无法关闭面板。 */}
             <button
               class="icon-btn panel-close-btn"
               type="button"
@@ -447,26 +447,26 @@ export default function SidePanel() {
 
         <div class="side-body">
           {/*
-           * **换项目就把这一整块重挂一遍**（`keyed` 的 Show 按项目 id）。
+           * **切换项目时重新挂载整个区域**（`keyed` 的 Show 按项目 id）。
            *
-           * 面板里到处是「按路径记的状态」：树展开了哪些目录、子层缓存、选中的那一行、
-           * 正在看哪个 diff。它们都是局部状态，换项目后每一条都指着上一个项目：
-           * 树是新的、旁边那半还是旧的，点击不产生任何响应。
+           * 面板中有多处按路径记录的状态：文件树展开的目录、子层缓存、选中的行、
+           * 正在查看的 diff。它们都是局部状态，切换项目后每一项仍指向上一个项目：
+           * 文件树已更新而另一半仍是旧内容，点击不产生任何响应。
            *
-           * 逐个清一遍是行不通的：那是一份「所有局部状态」的清单，加一个 signal 就漏一条。
-           * 重挂是唯一不会漏的做法。`openFile` 不在这里，由 `activateWorkspace` 清。
+           * 逐项清除不可行：那需要维护一份全部局部状态的清单，每新增一个 signal 都可能遗漏。
+           * 重新挂载是唯一不会遗漏的做法。`openFile` 不在此处，由 `activateWorkspace` 清除。
            *
-           * **重挂不收可多开的那些页**：它们按项目分账（`store/ui.ts` 的 `panels`），
-           * 只有当前项目那几条被派生出来。终端的 xterm 实例挂在模块级的 `panes` 上、
-           * PTY 在 Rust 侧，重挂只是把宿主搬进搬出，切回来命令还在跑。
+           * **重新挂载不关闭可多开的页**：它们按项目分别记录（`store/ui.ts` 的 `panels`），
+           * 只派生当前项目的页。终端的 xterm 实例保存在模块级的 `panes` 中、
+           * PTY 在 Rust 侧，重新挂载只是移入移出宿主元素，切回后命令仍在运行。
            */}
           <Show when={workspace()?.id} keyed>
             {/*
-             * 看板打开时这一叠只是**藏起来，不卸载**。
+             * 看板打开时该层只**隐藏，不卸载**。
              *
-             * 卸载的代价是真的：终端页卸载会把 xterm 实例摘出面板（见那边的模块级
-             * `panes`），浏览器页的 iframe 一从 DOM 里出去就要重新加载。而看板只是
-             * 「想开点什么」的一张清单，不该连带重建已经开着的页。
+             * 卸载有实际代价：终端页卸载会把 xterm 实例移出面板（见 `TerminalPanel.tsx` 的模块级
+             * `panes`），浏览器页的 iframe 一旦移出 DOM 就会重新加载。看板只是
+             * 选择新页面的清单，不应导致已打开的页被重建。
              */}
             <div class="side-stack" classList={{ hidden: board() }}>
               <Switch>
@@ -480,7 +480,7 @@ export default function SidePanel() {
                   <ChangeRecord />
                 </Match>
                 <Match when={sidePanel() === 'runs'}>
-                  {/* 自带 Suspense，理由同下面那几页：没有边界的话它挂起时整棵树跟着空一下。 */}
+                  {/* 自带 Suspense，理由同下方各页：没有边界时，组件挂起会使整棵树短暂变空。 */}
                   <Suspense fallback={<div class="pane-loading" />}>
                     <RunDetails />
                   </Suspense>
@@ -488,13 +488,13 @@ export default function SidePanel() {
               </Switch>
 
               {/*
-               * 可多开的那些页**全都挂着，只有当前那一页显示**（`.tab-pane.active`）。
+               * 可多开的页**全部保持挂载，只显示当前页**（`.tab-pane.active`）。
                *
-               * 不做成「只挂当前那一页」：终端里的命令要接着跑、滚动历史要留着，
-               * iframe 里的页面不该因为切了一下页签就重新加载。
+               * 不采用只挂载当前页的做法：终端中的命令需继续运行、滚动历史需保留，
+               * iframe 中的页面不应因切换页签而重新加载。
                *
-               * 每一页自带 `Suspense`：xterm 那一包三百多 K，没有边界的话它挂起时
-               * 整棵树跟着空一下（同 `App.tsx` 里那段）。
+               * 每一页自带 `Suspense`：xterm 的包体积超过 300 kB，没有边界时组件挂起会使
+               * 整棵树短暂变空（同 `App.tsx` 中的处理）。
                */}
               <For each={panelTabs()}>
                 {(t) => (
@@ -535,15 +535,15 @@ export default function SidePanel() {
 }
 
 /**
- * 新开预览看板。行由 `PREVIEW_SOURCES` 说了算。
+ * 新开预览看板。各行由 `PREVIEW_SOURCES` 决定。
  *
- * **长在面板正文里，不是浮层。** 浮层菜单只塞得下三四行、还盖住下面的内容；
- * 这块清单是「这块面板能开出什么」的全景，值得占满整块地方。
+ * **位于面板正文中，不是浮层。** 浮层菜单只能容纳三四行，且会遮挡下方内容；
+ * 该清单列出面板可打开的全部页面，因此占满整个区域。
  *
- * 没有后端的那几行照样画出来，但 `disabled` 且标「未接入」——这是用户点名要的
- * 路线图式清单。注意它是本仓 B5「不做空壳」的一个例外，例外的边界就是
- * **必须点不动、必须标出来**：那条规则要挡的正是「看起来能点、点下去没反应」
- * 的行。
+ * 没有后端的行仍然显示，但设为 `disabled` 并标注「未接入」：这是用户明确要求的
+ * 路线图式清单。它是本仓库 B5「不造空壳」的例外，例外的边界是
+ * **必须不可点击、必须标注**：B5 针对的正是看起来可点击、点击后没有响应
+ * 的入口。
  */
 function PreviewBoard(props: { onPick: () => void }) {
   return (
@@ -555,9 +555,9 @@ function PreviewBoard(props: { onPick: () => void }) {
             type="button"
             disabled={!s.open}
             onClick={() => {
-              // **先收看板，再开那一页。** 反过来的话新那一页会在 `display: none`
-              // 的容器里挂载，而 xterm 一挂上就去量字符宽高——量到 0 要等下一次
-              // 尺寸变化才会重新量。
+              // **先关闭看板，再打开新页。** 顺序相反时新页会在 `display: none`
+              // 的容器中挂载，而 xterm 挂载后立即测量字符宽高，测得 0 时要等下一次
+              // 尺寸变化才会重新测量。
               props.onPick()
               s.open?.()
             }}
@@ -577,26 +577,26 @@ function PreviewBoard(props: { onPick: () => void }) {
 // ───────────────────────── 文件浏览 ─────────────────────────
 
 /**
- * 树的共享操作。**展开态、子层缓存、正在编辑的那一行都不在节点里**——
- * 「全部折叠」「刷新」要一次管到所有节点，而新建那一行要能出现在任意目录下面；
- * 散在每个 `TreeNode` 的局部信号里的话，这几件事没有一处操作得了全部节点。
+ * 文件树的共享操作。**展开状态、子层缓存与正在编辑的行都不保存在节点中**：
+ * 「全部折叠」「刷新」需一次作用于所有节点，新建行需能出现在任意目录下；
+ * 分散在各 `TreeNode` 的局部信号中时，没有一处能操作全部节点。
  */
 interface TreeCtx {
   expanded(): ReadonlySet<string>
   toggle(node: FileNode): void
-  /** `null` = 这一层还没取回来（刷新会把它清成 `null`，展开着的目录自己重取）。 */
+  /** `null` 表示该层尚未取回（刷新会将其清为 `null`，已展开的目录自行重取）。 */
   childrenOf(path: string): FileNode[] | null
   load(path: string): void
   selected(): string | null
   pick(node: FileNode): void
   menu(node: FileNode, x: number, y: number): void
-  /** 正在这个目录下面新建。`dir` 是工作区相对路径，根是空串。 */
+  /** 正在该目录下新建。`dir` 是工作区相对路径，根目录为空串。 */
   creating(): { kind: 'file' | 'dir'; dir: string } | null
-  /** 正在给这个路径改名。 */
+  /** 正在重命名的路径。 */
   renaming(): string | null
   submitName(name: string): void
   cancelName(): void
-  /** 上一次提交名字撞上的回话（重名等）。 */
+  /** 上一次提交名称时返回的错误（重名等）。 */
   nameError(): string | null
 }
 
@@ -608,23 +608,23 @@ function FileBrowser() {
     return state.connection === 'ready' && id ? `${id}:${state.fileVersion}` : (false as const)
   }
   const [tree, { refetch }] = createResource(
-    // 连接没好时不发一条注定失败的请求；恢复成 ready 后同一份资源自动重取。
+    // 连接未就绪时不发送必然失败的请求；恢复为 ready 后同一资源自动重取。
     // fileVersion 同时覆盖精确文件工具与只能粗粒度失效的命令/子流程。
     treeSource,
     () => client.api<{ nodes: FileNode[] }>('/api/files/tree?depth=2'),
   )
 
   /**
-   * 树取不回来时的那句话。
+   * 文件树获取失败时显示的错误信息。
    *
-   * **不要换回 `tree()` 或 `tree.latest`**：两者在出错时都是 `throw`，而这个应用
-   * 没有 `ErrorBoundary`，抛出去没人接。`loaded()` 只给值，错误从 `tree.error` 单独读。
+   * **不要改为 `tree()` 或 `tree.latest`**：两者在出错时都会 `throw`，而本应用
+   * 没有 `ErrorBoundary`，抛出的错误无人处理。`loaded()` 只返回值，错误从 `tree.error` 单独读取。
    */
   const treeError = () => (tree.error ? explainApiError(tree.error, '读取失败') : null)
 
   const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
   const [kids, setKids] = createSignal<ReadonlyMap<string, FileNode[]>>(new Map())
-  /** 选中的那一行。它同时是「新建到哪里」的落点，所以文件和目录都记。 */
+  /** 选中的行。它同时决定新建的位置，因此文件与目录都会记录。 */
   const [selected, setSelected] = createSignal<FileNode | null>(null)
   const [creating, setCreating] = createSignal<{ kind: 'file' | 'dir'; dir: string } | null>(null)
   const [renaming, setRenaming] = createSignal<FileNode | null>(null)
@@ -635,16 +635,16 @@ function FileBrowser() {
   const [query, setQuery] = createSignal('')
   const [rootOpen, setRootOpen] = createSignal(true)
   /**
-   * 手动刷新的是整个文件页，不只是左边那棵树。
+   * 手动刷新作用于整个文件页，不只是左侧文件树。
    *
-   * 当前文件预览有自己的 resource；只调树的 `refetch()`，右边正文会继续停在旧内容上，
-   * 用户看到的就是「刷新点不动」。这个递增值只表达一次命令，不另存任何文件状态。
+   * 当前文件预览有独立的 resource；只调用文件树的 `refetch()` 时，右侧正文仍显示旧内容，
+   * 刷新看起来没有响应。该递增值只表示一次刷新命令，不另存任何文件状态。
    */
   const [manualRefresh, setManualRefresh] = createSignal(0)
 
   /*
-   * 根树重取时，展开目录的懒加载缓存也必须一起失效。只重取根节点会让展开着的目录
-   * 继续优先显示 `kids` 里的旧内容，表现为根目录更新了、里面那层仍然不动。
+   * 根树重取时，展开目录的懒加载缓存必须同时失效。只重取根节点时，已展开的目录
+   * 仍优先显示 `kids` 中的旧内容，根目录已更新而子层不变。
    */
   createEffect<string | false>((previous) => {
     const current = treeSource()
@@ -652,8 +652,8 @@ function FileBrowser() {
     return current
   }, false)
 
-  // 子目录懒加载：一次性拉整棵树在大仓库上会拖几秒（树不过滤，`node_modules`
-  // 也在里面），而用户通常只展开一两层。
+  // 子目录懒加载：大仓库中一次性获取整棵树需要数秒（文件树不过滤，`node_modules`
+  // 也包含在内），而用户通常只展开一两层。
   const loadDir = (path: string) => {
     void client
       .api<{ nodes: FileNode[] }>(`/api/files/tree?path=${encodeURIComponent(path)}&depth=1`)
@@ -661,11 +661,11 @@ function FileBrowser() {
   }
 
   /**
-   * 新建 / 改名 / 删除之后，那一层要**当场重取并覆盖缓存**。
+   * 新建 / 重命名 / 删除之后，所在层必须**立即重取并覆盖缓存**。
    *
-   * 不是「从缓存里删掉、等它自己重取」：`TreeNode` 取不到缓存时会回落到根那次
-   * `depth=2` 带回来的 `node.children`，那份是旧的——删掉缓存的结果是树纹丝不动，
-   * 看起来像新建没生效。根那一层没有上一级可取，走 `refetch()`。
+   * 不能只从缓存中删除再等待自动重取：`TreeNode` 未找到缓存时会回退到根请求
+   * `depth=2` 返回的 `node.children`，那份数据已过期；删除缓存后文件树不变，
+   * 新建看起来没有生效。根层没有上一级可获取，使用 `refetch()`。
    */
   const invalidate = (dir: string) => {
     if (!dir) {
@@ -680,12 +680,12 @@ function FileBrowser() {
     expanded,
     childrenOf: (path) => kids().get(path) ?? null,
     /*
-     * 高亮哪一行**只由 `selected` 说了算**。
+     * 高亮的行**只由 `selected` 决定**。
      *
-     * 别把「主区开着哪个文件」（`openFile`）也算进来：那是两个权威争同一处高亮，
-     * 结果是点文件夹不亮（高亮留在打开的文件上），而点文件看着像「选中没留住」。
-     * 现在的口径和资源管理器一致：**最后点的那一行是选中的行**，一直亮着，
-     * 直到点别的行。
+     * 不要把主区打开的文件（`openFile`）也纳入判定：两个权威争夺同一处高亮时，
+     * 点击文件夹不会高亮（高亮停留在已打开的文件上），点击文件后选中状态看起来没有保留。
+     * 行为与资源管理器一致：**最后点击的行即选中行**，保持高亮，
+     * 直到点击其他行。
      */
     selected: () => renaming()?.path ?? selected()?.path ?? null,
     load: loadDir,
@@ -730,7 +730,7 @@ function FileBrowser() {
             setNameError(null)
             invalidate(parentDir(node.path))
             setSelected(node)
-            // 改的正是主区开着的那个文件：路径变了，跟着换过去，不然它指向一个没了的路径。
+            // 重命名的是主区已打开的文件时，同步切换到新路径，否则主区指向一个已不存在的路径。
             if (openFile() === job.path && node.kind === 'file') openFileInPanel(node.path)
           } else if (make) {
             const path = make.dir ? `${make.dir}/${name}` : name
@@ -745,21 +745,21 @@ function FileBrowser() {
             if (node.kind === 'file') openFileInPanel(node.path)
           }
         } catch (err) {
-          // `detail` 是服务端那一句话（「x 已存在」），不是带状态码和路径的整行。
+          // `detail` 是服务端返回的错误描述（「x 已存在」），不含状态码与路径。
           setNameError(err instanceof ApiError ? err.detail : String(err))
         }
       })()
     },
   }
 
-  /** 新建落在选中的目录里；选中的是文件就落在它旁边；什么都没选就落在根。 */
+  /** 新建位置：选中目录时在该目录中；选中文件时在其所在目录；未选中时在根目录。 */
   const newIn = (kind: 'file' | 'dir') => {
     const s = selected()
     const dir = !s ? '' : s.kind === 'dir' ? s.path : parentDir(s.path)
     setRenaming(null)
     setNameError(null)
     setCreating({ kind, dir })
-    // 要新建的那一行在这个目录下面，先把它展开，不然输入框在收起的层里。
+    // 新建行位于该目录下，须先展开目录，否则输入框处于折叠的层中。
     if (dir) setExpanded((s2) => new Set(s2).add(dir))
     setRootOpen(true)
   }
@@ -777,15 +777,15 @@ function FileBrowser() {
 
   return (
     /*
-     * **树在左、文件内容在右**，同一块面板里。
+     * **文件树在左、文件内容在右**，位于同一面板中。
      *
-     * 树不占满整块：它是索引，宽度固定；正文才是要读的部分，占剩下的全部。
-     * 整块面板的宽度由用户拖左边沿改（`.panel-grip`）——两块并排必然要求这个，
-     * 不给拖的话内容那半永远只有一百多像素。
+     * 文件树不占满面板：它是索引，宽度固定；正文是阅读区域，占据其余全部宽度。
+     * 面板宽度由用户拖动左边沿调整（`.panel-grip`）：两栏并排时必须支持调整，
+     * 否则内容栏只有一百多像素。
      */
     <div class="file-browser">
       <div class="file-tree-col">
-        {/* 搜索在最上面一行：它是这块树的入口，不该排在树的操作后面。 */}
+        {/* 搜索位于第一行：它是文件树的入口，不应排在文件树操作之后。 */}
         <input
           class="tree-search"
           type="search"
@@ -794,14 +794,14 @@ function FileBrowser() {
           onInput={(e) => setQuery(e.currentTarget.value)}
         />
 
-        {/* 根目录行：只负责展开与四颗操作，不参与文件选中；hover 由整行承接，
-            标题按钮自身不再叠一层灰底。理由在 `panel.css` 的 `.tree-root` 上。 */}
+        {/* 根目录行：只负责展开与四个操作按钮，不参与文件选中；hover 样式由整行承担，
+            标题按钮自身不另加灰色背景。理由见 `panel.css` 的 `.tree-root`。 */}
         <div class="tree-root">
           <button
             class="tree-item tree-root-name"
             type="button"
             onClick={() => {
-              // 根是结构标题，不是第二个可选节点。清空选择仍让后续新建落在根目录。
+              // 根目录行是结构标题，不是可选节点。清空选择后，后续新建仍位于根目录。
               setSelected(null)
               setRootOpen((v) => !v)
             }}
@@ -837,16 +837,16 @@ function FileBrowser() {
               data-tip="刷新"
               aria-busy={tree.loading}
               onClick={() => {
-                // 清子层缓存但**留着展开态**：清了展开态的话，点一次刷新整棵树全收起。
+                // 清空子层缓存但**保留展开状态**：清空展开状态时，每次刷新都会使整棵树全部折叠。
                 setKids(new Map())
                 setManualRefresh((n) => n + 1)
                 void refetch()
               }}
             >
               {/*
-               * 每次点击固定转一圈，不跟 `tree.loading` 的时长绑在一起：本机请求经常在
-               * 浏览器第一次绘制前就结束，只按 loading 加动画等于用户一帧都看不到。
-               * transform 的终点持续递增，连续点击也会从上一圈接着转，不需要计时器。
+               * 每次点击固定旋转一圈，不与 `tree.loading` 的时长绑定：本机请求常在
+               * 浏览器首次绘制前就已结束，只按 loading 显示动画时用户看不到任何一帧。
+               * transform 的终点持续递增，连续点击时从上一圈继续旋转，无需计时器。
                */}
               <IconRefresh
                 size={14}
@@ -868,8 +868,8 @@ function FileBrowser() {
           </div>
         </div>
 
-        {/* 取不回来要说出来，并且给一条再来一次的路。
-            静默留一棵空树的话，「这个项目怎么一个文件都没有」查不出原因。 */}
+        {/* 获取失败时显示原因并提供重试按钮。
+            静默显示空树时，用户无法判断项目为何没有任何文件。 */}
         <Show when={treeError()}>
           {(msg) => (
             <div class="tree-hint">
@@ -910,9 +910,9 @@ function FileBrowser() {
       </div>
 
       {/*
-       * **按路径重挂**（`keyed`）：点另一个文件，正文立即换成那个文件的加载态。
+       * **按路径重新挂载**（`keyed`）：点击另一个文件时，正文立即切换为该文件的加载态。
        * 不要去掉 `keyed`：资源重取期间 `loaded()` 返回上一个文件的结果，上一个文件的错误
-       * 也保留到新结果返回，正文会停在旧文件上。同一个文件的刷新不重挂，阅读位置保留。
+       * 也保留到新结果返回，正文会停留在旧文件上。刷新同一个文件时不重新挂载，阅读位置保留。
        */}
       <Show when={openFile()} keyed>
         {(path) => (
@@ -946,7 +946,7 @@ function FileBrowser() {
         message={
           doomed()?.kind === 'dir'
             ? `${doomed()?.path} 及其中的全部内容将一并删除，且删除后无法恢复。`
-            : `${doomed()?.path} 删了拿不回来。`
+            : `${doomed()?.path} 删除后无法恢复。`
         }
         confirmLabel="删除"
         danger
@@ -961,14 +961,14 @@ function FileBrowser() {
 }
 
 /**
- * 右键菜单。**自己的一层浮层，不复用项目行那个菜单的选择器**（B8）：
- * 那条规则被两个浮层共用过一次，删掉其中一个把另一个的定位、边框、投影一起带走。
+ * 右键菜单。**独立的浮层，不复用项目行菜单的选择器**（B8）：
+ * 两个浮层共用同一条样式规则时，删除其中一个会使另一个的定位、边框与投影一并丢失。
  *
- * 位置钉在指针上（`position: fixed`），并往回收一点，免得贴着窗口右下沿被裁掉。
+ * 位置固定在指针处（`position: fixed`），并向内收缩，避免靠近窗口右下边缘时被裁切。
  *
- * 只列**真的能用**的项。Qoder 那份菜单里的剪切 / 复制 / 粘贴不进来：文件级剪贴板
- * 需要一套「待粘贴条目」的状态，没有它的话那三项点了什么也不会发生（B5）。
- * 「在资源管理器中显示」只有桌面外壳有，别的端整项不渲染。
+ * 只列出**实际可用**的项，不提供剪切 / 复制 / 粘贴：文件级剪贴板
+ * 需要一套待粘贴条目的状态，没有该状态时这三项点击后没有任何效果（B5）。
+ * 「在资源管理器中显示」只在桌面外壳中提供，其他端不渲染该项。
  */
 function TreeMenu(props: {
   node: FileNode
@@ -981,10 +981,10 @@ function TreeMenu(props: {
 }) {
   createEffect(() => {
     /*
-     * 点在菜单**外面**才关。
+     * 只在点击菜单**外部**时关闭。
      *
-     * 不能无条件关：`pointerdown` 排在 `click` 前面，菜单项自己的 click 还没跑，
-     * 这一层就把它从 DOM 里摘了——因此每一项都点不动。
+     * 不能无条件关闭：`pointerdown` 先于 `click` 触发，菜单项的 click 尚未执行时，
+     * 菜单就已从 DOM 中移除，导致所有菜单项都无法点击。
      */
     const onDown = (e: Event) => {
       if (!(e.target as HTMLElement | null)?.closest?.('.tree-menu')) props.onClose()
@@ -1007,11 +1007,11 @@ function TreeMenu(props: {
   }
 
   /*
-   * 贴着窗口右下沿右键时把菜单收回来。
+   * 在靠近窗口右下边缘处右键时，将菜单移回窗口内。
    *
-   * **量出来再摆，不用估的数**：菜单高度随项数变（桌面端多一项），写死一个
-   * 常量迟早和实际项数对不上。`onMount` 在插入 DOM 之后、这一帧绘制之前跑，
-   * 所以摆位不会闪一下。
+   * **先测量再定位，不使用估算值**：菜单高度随项数变化（桌面端多一项），固定的
+   * 常量会与实际项数不一致。`onMount` 在插入 DOM 之后、当前帧绘制之前执行，
+   * 因此定位时不会闪烁。
    */
   let el!: HTMLDivElement
   onMount(() => {
@@ -1087,17 +1087,17 @@ function TreeMenu(props: {
 }
 
 /**
- * 第 depth 层行的左内距。每层递进 10px：子行的层级线画在父行箭头线条的中心
- * （父内距 + 7），子行的图标位从这条线右侧 3px 起，图标线条离线 8px。
- * 不要缩到 6px：徽标会贴着层级线。
+ * 第 depth 层行的左内边距。每层递进 10px：子行的层级线位于父行箭头线条的中心
+ * （父内边距 + 7），子行的图标位从该线右侧 3px 起，图标线条距该线 8px。
+ * 不要缩小到 6px：徽标会紧贴层级线。
  */
 const treeIndent = (depth: number): number => depth * 10 + 2
 
 /**
- * 按名字搜出来的命中，扁平一列，替代树显示。
+ * 按名称搜索的结果，扁平列出，替代文件树显示。
  *
- * **搜索跳依赖树与构建产物**（服务端 `findByName`），而树不跳。这条边界必须
- * 说出来，否则搜不到 `node_modules` 里的文件读起来就是它不存在。
+ * **搜索跳过依赖目录与构建产物**（服务端 `findByName`），而文件树不跳过。该边界必须
+ * 显示出来，否则搜索不到 `node_modules` 中的文件会被理解为文件不存在。
  */
 function SearchHits(props: { ctx: TreeCtx; query: string }) {
   const [debounced, setDebounced] = createSignal(props.query)
@@ -1113,9 +1113,9 @@ function SearchHits(props: { ctx: TreeCtx; query: string }) {
     ),
   )
 
-  // 用 `loaded()`：改一次搜索词就换一次 source，`hits()` 会在每一批之间进 Suspense
-  // ——那会把这块面板连同上面的搜索框一起摘出 DOM，打第二个字时框已经不在了。
-  // 重取期间留住上一批命中，新的到位再换。
+  // 使用 `loaded()`：每次修改搜索词都会更换 source，`hits()` 会在两批结果之间进入 Suspense，
+  // 使面板连同上方的搜索框一起移出 DOM，输入第二个字符时搜索框已不存在。
+  // 重取期间保留上一批结果，新结果返回后再替换。
   const matches = () => loaded(hits)
 
   return (
@@ -1144,10 +1144,10 @@ function SearchHits(props: { ctx: TreeCtx; query: string }) {
         )}
       </For>
       <Show when={matches() && matches()!.matches.length === 0}>
-        <div class="tree-hint">没有匹配的名称。不搜依赖树与构建产物。</div>
+        <div class="tree-hint">没有匹配的名称。不搜索依赖目录与构建产物。</div>
       </Show>
       <Show when={matches()?.truncated}>
-        <div class="tree-hint">命中过多，只显示前一部分。</div>
+        <div class="tree-hint">匹配项过多，只显示前一部分。</div>
       </Show>
     </div>
   )
@@ -1168,8 +1168,8 @@ function Tree(props: { ctx: TreeCtx; dir: string; nodes: FileNode[]; depth: numb
       }}
       style={{ '--tree-guide-left': `${treeIndent(props.depth) - 3}px` } as JSX.CSSProperties}
     >
-      {/* 新建那一行**就在这个目录的第一个孩子的位置**，和 Qoder 一样：
-          它建在哪里，输入框就出现在哪里。 */}
+      {/* 新建行**位于该目录第一个子项的位置**：
+          输入框出现在新条目将要创建的位置。 */}
       <Show when={making()}>
         {(m) => (
           <li>
@@ -1191,8 +1191,8 @@ function Tree(props: { ctx: TreeCtx; dir: string; nodes: FileNode[]; depth: numb
 }
 
 /**
- * 就地输入名字的那一行——新建和改名共用**同一个形状**：同样的缩进、同样的图标位、
- * 输入框接在图标后面。两份写法会长成两个样子，而它们在用户眼里是同一件事。
+ * 就地输入名称的行。新建与重命名共用**同一结构**：相同的缩进、相同的图标位，
+ * 输入框位于图标之后。分别实现会导致两者外观不一致，而对用户而言它们是同一操作。
  */
 function NameRow(props: {
   ctx: TreeCtx
@@ -1205,13 +1205,13 @@ function NameRow(props: {
   const [name, setName] = createSignal(props.value)
 
   /*
-   * **自己抢焦点，不靠 `autofocus`。**
+   * **主动获取焦点，不依赖 `autofocus`。**
    *
-   * `autofocus` 只在文档解析那一刻管用；这一行是点了按钮之后动态插进来的，属性
-   * 挂上了也没人给它焦点。后果不止「不能直接打字」——**下面那条失焦即取消
-   * 也跟着失效**（从没得到焦点，就不会失焦），因此点别处这一行赖在树里不走。
+   * `autofocus` 只在文档解析时生效；该行在点击按钮后动态插入，即使带有该属性
+   * 也不会获得焦点。其后果不只是无法直接输入：**下方的失焦即取消逻辑
+   * 也随之失效**（从未获得焦点就不会失焦），点击别处时该行仍留在文件树中。
    *
-   * 改名时连着全选：进来就是原名，用户要的通常是整个换掉。
+   * 重命名时同时全选：输入框初始值为原名，用户通常需要整体替换。
    */
   let input!: HTMLInputElement
   onMount(() => {
@@ -1247,7 +1247,7 @@ function NameRow(props: {
           if (e.key === 'Escape') props.ctx.cancelName()
         }}
         onBlur={() => {
-          // 失焦即取消，但**报错时不取消**：那一句话得留在屏幕上让人看完。
+          // 失焦即取消，但**存在错误时不取消**：错误信息必须保留在界面上供用户阅读。
           if (!props.ctx.nameError()) props.ctx.cancelName()
         }}
       />
@@ -1263,8 +1263,8 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
   const children = () => props.ctx.childrenOf(props.node.path) ?? props.node.children ?? null
   const editing = () => props.ctx.renaming() === props.node.path
 
-  // 展开着而这一层还没取回来就去取。**取数的触发条件是「展开且缺数据」**，
-  // 不是点击那一下——刷新把缓存清空之后，展开着的目录靠这条自己重取。
+  // 已展开且该层尚未取回时发起获取。**获取的触发条件是「已展开且缺少数据」**，
+  // 不是点击动作：刷新清空缓存后，已展开的目录依靠该条件自行重取。
   createEffect(() => {
     if (open() && children() === null) props.ctx.load(props.node.path)
   })
@@ -1325,29 +1325,29 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
 // ───────────────────────── 会话变更记录 ─────────────────────────
 
 /**
- * 对一个文件的**一次**改动。
+ * 对单个文件的**一次**改动。
  *
- * `body` 是那一次的正文，整个来自这一步落库的入参——和会话流里展开那一步看到的
- * 是同一份数据（`Transcript.tsx` 的 `StepBody`）：编辑给的是 old/new 两段，
- * 整份写出给的是写进去的那份内容。
+ * `body` 是该次改动的正文，完全取自该步骤落库的入参，与会话流中展开该步骤时显示的
+ * 是同一份数据（`Transcript.tsx` 的 `StepBody`）：编辑提供 old/new 两段，
+ * 完整写入提供写入的全部内容。
  */
 interface ChangeEdit {
   tool: string
-  /** 谁做的：子 agent 或外部 CLI 节点的名字；本会话自己做的是 null。 */
+  /** 执行者：子 agent 或外部 CLI 节点的名称；本会话自身执行时为 null。 */
   via: string | null
   changeType: FileChange['changeType']
-  /** 缺席 = 行数不可知：shell 与外部 CLI 的写入由观察器判出，拿不到改动前的内容。 */
+  /** 缺省表示行数未知：shell 与外部 CLI 的写入由观察器判定，无法取得改动前的内容。 */
   additions?: number
   deletions?: number
   body: { removed: string; added: string } | { written: string } | null
 }
 
 /**
- * 这一步的正文。**按入参形状认，不按工具名认**（同 `step-view.ts` 的 `diffFrom`）。
+ * 该步骤的正文。**按入参结构识别，不按工具名识别**（同 `step-view.ts` 的 `diffFrom`）。
  *
- * 三档不会互相抢：整份写出的入参里没有 old/new，编辑的入参里没有 content，
- * shell 的入参只有 command——那一次的正文就是跑的那条命令。
- * 不要给整份写出编一份红绿——旧内容只在工具执行的那一瞬间存在，没落过库。
+ * 三种结构互不冲突：完整写入的入参中没有 old/new，编辑的入参中没有 content，
+ * shell 的入参只有 command，其正文即执行的命令。
+ * 不要为完整写入构造增删对比：旧内容只在工具执行时存在，从未写入数据库。
  */
 function bodyOf(args: Record<string, unknown> | undefined): ChangeEdit['body'] {
   if (!args) return null
@@ -1357,18 +1357,18 @@ function bodyOf(args: Record<string, unknown> | undefined): ChangeEdit['body'] {
   return written ? { written: clamp(written) } : null
 }
 
-/** 一轮里对一个文件的改动汇总。净效果那几格由 `foldFileChanges` 给，这里只补每一次的明细。 */
+/** 一轮中对单个文件的改动汇总。净效果字段由 `foldFileChanges` 提供，此处只补充每次改动的明细。 */
 interface ChangedFile extends FoldedFileChange {
-  /** 每一次改动，按先后。**同一个文件改十次就是十条**，这才是「记录」。 */
+  /** 每次改动，按时间顺序排列。**同一个文件修改十次即记录十条。** */
   edits: ChangeEdit[]
 }
 
 /**
- * 一轮的写入按路径折成文件行。
+ * 将一轮的写入按路径折叠为文件行。
  *
- * **折叠规则不在这里，在 `foldFileChanges`（`@qywork/core`）**：表头那个合计由服务端
- * 对每一轮调同一个函数算出来，两处各折一次必然对不上——被丢掉的行会从行里消失、
- * 却还留在表头的数里。这里只按同一个顺序把每一次改动挂回折出来的那一行上。
+ * **折叠规则位于 `foldFileChanges`（`@qywork/core`），不在此处**：表头的合计由服务端
+ * 对每一轮调用同一函数算出，两处分别实现折叠必然不一致：被丢弃的行会从行列表中消失，
+ * 却仍计入表头。此处只按相同顺序把每次改动关联到折叠后的行。
  */
 function foldTurn(turn: ChangeTurn): ChangedFile[] {
   const flat: FileChange[] = []
@@ -1376,7 +1376,7 @@ function foldTurn(turn: ChangeTurn): ChangedFile[] {
   for (const step of turn.steps) {
     for (const c of step.fileChanges) {
       flat.push(c)
-      // 这一步的入参就在账本里，正文从它来——不另存一份。
+      // 该步骤的入参已在账本中，正文取自入参，不另行保存。
       const edit: ChangeEdit = {
         tool: step.toolName,
         via: step.via?.name ?? null,
@@ -1394,25 +1394,25 @@ function foldTurn(turn: ChangeTurn): ChangedFile[] {
 }
 
 /**
- * 这条会话改过哪些文件，按轮。**不接 git。**
+ * 当前会话修改过的文件，按轮次分组。**不使用 git。**
  *
- * 真源是 step 账本：每个写类工具的回执自带 `fileChanges`（改了谁、增删多少行）。
- * 服务端按「写过文件的轮」投影分页（`/changes`），实时期的回执直接追加进同一份
- * （`store/connection.ts`）。**不从会话流折**：会话流只加载最后几轮，从它折出来的
- * 记录在长会话里不全，表头的数也跟着错。
+ * 真源是 step 账本：写类工具的回执带有 `fileChanges`（修改的路径，以及可取得时的增删行数）。
+ * 服务端按「写入过文件的轮次」投影并分页（`/changes`），运行期间的回执直接追加到同一份数据
+ * （`store/connection.ts`）。**不从会话流折叠**：会话流只加载最后几轮，在长会话中由它折叠出的
+ * 记录不完整，表头数值也会随之出错。
  *
- * 不接 git 不是因为拿不到，是因为 git 回答的是另一个问题：「工作区相对 HEAD
- * 有什么差别」里混着用户自己在编辑器里改的、上一条会话改的、以及全部未跟踪的
- * 文件。这一页只回答「这条会话干了什么」。两个问题摆进同一块面板就是两本账。
+ * 不使用 git 不是因为无法取得，而是因为 git 回答的是另一个问题：工作区相对 HEAD
+ * 的差异中混有用户在编辑器中的修改、其他会话的修改以及全部未跟踪的
+ * 文件。本页只回答当前会话做了哪些修改。两个问题放在同一面板中会形成两本账。
  *
  * 口径：
- * - **一轮一节**，最新在上、默认展开，更早的收起只露节头。节头是用户那句话。
- * - 节内一个文件一行，行上的数是这一轮在它上面写了多少；展开是它的每一次改动。
- * - 表头的数是整条会话的合计，由服务端算，不是已加载几页的和；它与行折的是同一个
- *   函数（`foldFileChanges`），所以建了又删的那几百个文件两边一起丢掉。
- * - 失败的调用不进来（写失败的工具不给 `fileChanges`），读也不进来。
- * - **只有文件类工具进账**：`run_command` 改的文件不在里面（shell 那侧没有
- *   `fileChanges` 这一层），所以 sed、代码生成、格式化脚本改的文件这里看不到。
+ * - **每轮一节**，最新在上且默认展开，更早的轮次收起，只显示节标题。节标题是用户的消息。
+ * - 节内每个文件一行，行上的数值是该轮对该文件的改动量；展开后显示每次改动。
+ * - 表头数值是整个会话的合计，由服务端计算，不是已加载分页之和；它与行使用同一个折叠
+ *   函数（`foldFileChanges`），因此新建后又删除的文件在两处同时剔除。
+ * - 没有 `fileChanges` 的调用不计入：读取操作，以及写入失败的文件工具。
+ * - 文件类工具给出精确行数；`run_command` 与外部 CLI 的写入由观察器判定，只有变更类型，
+ *   没有行数。
  */
 function ChangeRecord() {
   const conversationId = () => state.activeConversation
@@ -1439,7 +1439,7 @@ function ChangeRecord() {
           </div>
         )}
       </Match>
-      {/* 一条都没有就整页留白：空态不写引导语。 */}
+      {/* 没有任何记录时整页留空：空状态不写引导文案。 */}
       <Match when={changes()?.turns.length ? changes() : null}>
         {(loaded) => (
           <div class="change-panel">
@@ -1459,21 +1459,21 @@ function ChangeRecord() {
 }
 
 /**
- * 轮的清单。单独成组件是为了让哨兵观察器跟着这棵子树的生命周期走：
- * 面板留白时它不存在，也就没有观察器。
+ * 轮次清单。独立为组件，使哨兵观察器与该子树的生命周期一致：
+ * 面板留空时组件不存在，观察器也不存在。
  */
 function ChangeList(props: { changes: ChangesView; conversationId: string | null }) {
   /**
-   * 明确开合过的轮。没记录的按默认：最新一轮开、其余关。
-   * 记「明确值」而不是「翻转过」：新一轮到达后原先最上面那轮退到第二位，
-   * 它若没被点过就按默认收起，被点过就保持用户定的状态。
+   * 用户明确展开或收起过的轮次。没有记录的按默认状态：最新一轮展开，其余收起。
+   * 记录明确的状态值而不是切换标记：新一轮到达后，原先的第一轮移到第二位，
+   * 未点击过时按默认收起，点击过时保持用户设定的状态。
    */
   const [explicit, setExplicit] = createSignal<ReadonlyMap<string, boolean>>(new Map())
   const turnOpen = (turnId: string, index: number) => explicit().get(turnId) ?? index === 0
   const toggleTurn = (turnId: string, index: number) =>
     setExplicit((cur) => new Map(cur).set(turnId, !turnOpen(turnId, index)))
 
-  /** 展开了哪几个文件，键是「轮 + 路径」：同一个文件在两轮里各自开合。 */
+  /** 已展开的文件，键为「轮次 + 路径」：同一文件在不同轮次中分别展开或收起。 */
   const [openFiles, setOpenFiles] = createSignal<ReadonlySet<string>>(new Set())
   const fileKey = (turnId: string, path: string) => `${turnId}\n${path}`
   const toggleFile = (key: string) =>
@@ -1494,7 +1494,7 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
       async (entries) => {
         if (!entries.some((e) => e.isIntersecting)) return
         if (!(await loadOlder())) return
-        // 一页落地后哨兵可能仍在视口里，观察器不会为此再报一次：重挂一次拿初始通知。
+        // 一页加载完成后哨兵可能仍在视口中，观察器不会再次通知：重新观察一次以取得初始通知。
         io.unobserve(sentinel)
         io.observe(sentinel)
       },
@@ -1506,7 +1506,7 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
 
   return (
     <ul class="tree tree-top" ref={list}>
-      {/* 整轮净效果为空的那几轮不出节头：`foldTurn` 把它们的行全丢掉了，节展开也是空的。 */}
+      {/* 净效果为空的轮次不显示节标题：`foldTurn` 已丢弃这些轮次的全部行，展开后也没有内容。 */}
       <For each={props.changes.turns.filter((t) => foldTurn(t).length > 0)}>
         {(turn, index) => {
           const files = createMemo(() => foldTurn(turn))
@@ -1515,8 +1515,8 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
           const open = () => turnOpen(turn.userMessageId, index())
           return (
             <li>
-              {/* 行与文件树同一套类和缩进（`treeIndent`）：轮是第 0 层，文件是第 1 层。
-                  不另写一套「对齐」的数值——两份数值迟早漂开。 */}
+              {/* 行与文件树使用同一套类名与缩进（`treeIndent`）：轮次是第 0 层，文件是第 1 层。
+                  不另行定义对齐数值：两份数值会逐渐不一致。 */}
               <button
                 class="tree-item change-turn"
                 type="button"
@@ -1544,9 +1544,9 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
                       const fileOpen = () => openFiles().has(key)
                       return (
                         <li>
-                          {/* 点一行 = 展开它的每一次改动，展开着的行亮着（同树里选中那一档）。
-                              **不做成「打开文件」**：文件正文在「文件」那一页，这一页要回答的是
-                              「这一轮对它做了什么」。 */}
+                          {/* 点击一行即展开该文件的每次改动，已展开的行高亮（与文件树的选中样式相同）。
+                              **不实现为「打开文件」**：文件正文在「文件」页，本页回答的是
+                              该轮对文件做了哪些修改。 */}
                           <button
                             class="tree-item change-row"
                             classList={{ selected: fileOpen() }}
@@ -1556,18 +1556,18 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
                             data-tip={nativePath(r.path)}
                             onClick={() => toggleFile(key)}
                           >
-                            {/* 这一行是可展开的节点，图标位放折叠符号，同树里的目录行。 */}
+                            {/* 该行是可展开的节点，图标位显示折叠符号，与文件树的目录行相同。 */}
                             <span class="tree-chevron-slot" aria-hidden="true">
                               <IconChevron size={11} dir={fileOpen() ? 'down' : 'right'} />
                             </span>
-                            {/* 行上印工作区相对路径，末尾截断才留得住文件名；绝对路径在悬停提示里。 */}
+                            {/* 行上显示工作区相对路径，路径较短，末尾截断时仍能保留文件名；绝对路径在悬停提示中。 */}
                             <span class="truncate">{r.path}</span>
-                            {/* 改了几次只在重复改过时说：写一次的文件标「1 次」是废话。 */}
+                            {/* 改动次数只在多次修改时显示：只修改一次的文件标注「1 次」没有信息量。 */}
                             <Show when={r.edits.length > 1}>
                               <span class="change-times">{r.edits.length} 次</span>
                             </Show>
-                            {/* 没有行数的只印变更类型：删除给的是 0/0，观察器判出来的写入
-                                没有行数，画成 +0 −0 会被读成「什么都没改」。 */}
+                            {/* 没有行数时只显示变更类型：删除的行数为 0/0，观察器判定的写入
+                                没有行数，显示为 +0 −0 会被理解为没有任何修改。 */}
                             <Show
                               when={r.counted && r.changeType !== 'deleted'}
                               fallback={<span class="change-kind">{kindLabel(r.changeType)}</span>}
@@ -1635,7 +1635,7 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
           )
         }}
       </For>
-      {/* 清单末尾是翻页的落点：加载中、失败各占一行；到头时空着，只给观察器当哨兵。 */}
+      {/* 清单末尾用于加载下一页：加载中与失败各占一行；没有更多记录时留空，仅作为观察器的哨兵。 */}
       <li class="change-more" ref={sentinel}>
         <Switch>
           <Match when={props.changes.loading === 'older'}>
@@ -1659,14 +1659,14 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
 }
 
 /**
- * 这一次改动是怎么做的。
+ * 该次改动使用的操作。
  *
- * 认不出的工具名原样显示——写类工具是可以增加的（插件也能给），
- * 回落成「编辑」会把一次整份覆盖说成一次小改。
+ * 无法识别的工具名原样显示：写类工具可以增加（插件也可提供），
+ * 回退为「编辑」会把整份覆盖显示为局部修改。
  */
 function editLabel(tool: string): string {
   if (tool === 'edit_file') return '编辑'
-  if (tool === 'write_file') return '整份写出'
+  if (tool === 'write_file') return '完整写入'
   if (tool === 'write_memory') return '记忆'
   if (tool === 'delete_memory') return '删除记忆'
   if (tool === 'move_memory') return '移动记忆'
@@ -1683,10 +1683,10 @@ function kindLabel(kind: FileChange['changeType']): string {
 }
 
 /**
- * 账本里的路径 → 本机绝对路径。
+ * 将账本中的路径转换为本机绝对路径。
  *
- * **账本里也留有本来就是绝对路径的条目**：写到工作区外面时（`full` 模式、
- * 额外目录）`displayPath` 回的就是绝对路径。不认这一档会拼出
+ * **账本中也有本身就是绝对路径的条目**：写入工作区之外时（`full` 模式、
+ * 额外目录），`displayPath` 返回绝对路径。不识别这种情况会拼接出
  * `C:\项目\C:\别处\x.ts`。
  */
 function nativePath(p: string): string {

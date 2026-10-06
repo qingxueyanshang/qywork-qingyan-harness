@@ -1,20 +1,20 @@
 /**
- * 覆盖 `Transcript.tsx` 里正文块的重渲染判据。
+ * 覆盖 `Transcript.tsx` 中正文块的重渲染判据。
  *
- * 锁的是一条真实失败形状：会话流每 push 一条（工具启动、用户消息、收尾读数），
- * **已经定稿的每一段正文**都重跑一遍 markdown 并整段替换 innerHTML。成因是
- * `streaming` 读的是全局量（忙闲 + 末项 id），而 effect 按依赖有没有通知重跑、
- * 不按取值有没有变化重跑。逐帧实测（真服务真前端，两轮四步）：一段 80 个节点的
- * 正文在定稿之后又被整段重建 9 次，其中 5 次挤在收尾那一毫秒里。
+ * 锁定的原始失败形状：会话流每追加一条（工具启动、用户消息、收尾读数），
+ * 已定稿的每段正文都重新执行一次 markdown 并整段替换 innerHTML。成因是
+ * `streaming` 读取全局状态（忙闲 + 末项 id），而 effect 按依赖是否通知决定是否重新执行，
+ * 不按取值是否变化。逐帧实测（真实服务端与前端，两轮四步）：一段 80 个节点的
+ * 正文在定稿后被整段重建 9 次，其中 5 次集中在收尾的同一毫秒内。
  *
- * 判据用节点身份：innerHTML 被重新赋值的话，原来那个子节点对象就不在了。
- * 流式转定稿那一次重渲染是应该的，所以基准取在它之后。
+ * 判据为节点身份：innerHTML 被重新赋值时，原有的子节点对象不再存在。
+ * 流式转为定稿时的一次重渲染属于预期，因此基准取在其后。
  *
- * 同文件另锁三块要 DOM 才成立的口径：工具图片的回放、编排画布与展开态的归属、
- * 回执不画、只有子 agent 在跑时收尾条之外没有第二条读数条。
- * 运行条另覆盖起轮交接：耗时列保留位置，开始时刻到达后不能显示负耗时。
+ * 本文件另外锁定三项依赖 DOM 的行为：工具图片的回放、编排画布与展开态的归属、
+ * 回执不渲染；只有子 agent 运行时，收尾条之外没有第二条读数条。
+ * 运行条另覆盖轮次开始时的交接：耗时列保留位置，开始时刻到达后不显示负耗时。
  *
- * DOM 在这里装、用完卸掉，动态 import 的理由同 `settings/LoadState.test.tsx`。
+ * DOM 在本文件中注册、用后注销，使用动态 import 的原因同 `settings/LoadState.test.tsx`。
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -23,10 +23,10 @@ const resizeCallbacks = new Map<Element, ResizeObserverCallback>()
 
 beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
-  // 右侧那几页按项目分账，图卡点开子会话与 CLI 页要有一个当前项目才落得下。
+  // 右侧面板的标签页按项目分别记录，从图卡打开子会话与 CLI 页需要存在当前项目。
   const store = await import('../lib/store/index.ts')
   store.setWorkspace({ id: 'ws_transcript', root: 'C:/ws', name: 'ws' })
-  // happy-dom 没有 ResizeObserver，而会话流的贴底跟随挂在它上面。
+  // happy-dom 不提供 ResizeObserver，而会话流的贴底跟随依赖它。
   ;(globalThis as Record<string, unknown>).ResizeObserver = class {
     private readonly targets: Element[] = []
 
@@ -47,8 +47,8 @@ afterAll(async () => {
   await GlobalRegistrator.unregister()
 })
 /**
- * store 是模块级单例，`bun test` 一个进程跑全部文件——**这里改过的字段要还回去**，
- * 否则别的文件里「这一格应该是空的」那类断言会按文件顺序随机变红。
+ * store 是模块级单例，`bun test` 在一个进程中运行全部文件，因此本文件修改过的字段必须恢复原值，
+ * 否则其他文件中断言字段为空的测试会随文件顺序随机失败。
  */
 async function resetStore() {
   const store = await import('../lib/store/index.ts')
@@ -68,8 +68,8 @@ function resize(target: Element) {
   resizeCallbacks.get(target)?.([], {} as ResizeObserver)
 }
 
-// 覆盖历史重建、主/子会话状态判断与流尾呈现，不依赖实时 run.started 的残留。
-test('主会话派活结束后刷新或切回，显示子任务进度且发送消息不排队', async () => {
+// 覆盖历史重建、主/子会话状态判断与会话流末尾的呈现，不依赖实时 run.started 的残留。
+test('主会话派发任务结束后刷新或切回，显示子任务进度且发送消息不排队', async () => {
   const store = await import('../lib/store/index.ts')
   const { render } = await import('solid-js/web')
   const { Transcript, ConversationStream } = await import('./Transcript.tsx')
@@ -221,7 +221,7 @@ test('主会话派活结束后刷新或切回，显示子任务进度且发送�
     expect(host.querySelector('.delegation-status')).toBeNull()
     expect(host.querySelector('.run-live')?.textContent).toBe('正在请求…')
 
-    // 自动审批起轮没有乐观用户消息，末条仍是上一轮的收尾条。
+    // 自动审批开始的轮次没有乐观用户消息，末条仍是上一轮的收尾条。
     store.setState('views', id, 'transcript', store.transcript().slice(0, -1))
     await store.reloadActiveConversation()
     store.applyEvent({
@@ -250,7 +250,7 @@ test('主会话派活结束后刷新或切回，显示子任务进度且发送�
   }
 })
 
-test('发送到起轮之间保留耗时列，开始时刻到达时同步计时且不重建星河', async () => {
+test('从发送到轮次开始之间保留耗时列，开始时刻到达时同步计时且不重建运行条动画', async () => {
   const store = await import('../lib/store/index.ts')
   const { render } = await import('solid-js/web')
   const { Transcript } = await import('./Transcript.tsx')
@@ -316,12 +316,12 @@ test('发送到起轮之间保留耗时列，开始时刻到达时同步计时�
 })
 
 /**
- * 持续输出之后的间隔按**最后一段内容**算，刷新前后是同一个数。
+ * 持续输出后的静默间隔按最后一段内容的时刻计算，刷新前后取值相同。
  *
- * 原始失败形状：按首内容、步骤创建或页面加载时刻算——t=0 收首段、t=60 s 收末段，
- * 那三种取法在 t=65 s 分别报 65 秒、65 秒和 0 秒，而真相是 5 秒。
+ * 原始失败形状：按首段内容、步骤创建或页面加载时刻计算。t=0 收到首段、t=60 s 收到末段时，
+ * 三种算法在 t=65 s 分别显示 65 秒、65 秒和 0 秒，正确值为 5 秒。
  */
-test('间隔按最后内容时刻算，刷新前后是同一个数', async () => {
+test('间隔按最后内容时刻计算，刷新前后取值相同', async () => {
   const store = await import('../lib/store/index.ts')
   const workspaceBefore = store.workspace()
   const connectionBefore = store.state.connection
@@ -345,7 +345,7 @@ test('间隔按最后内容时刻算，刷新前后是同一个数', async () =>
   const dispose = render(() => <LiveRunBar conversationId={id} />, host as unknown as HTMLElement)
   const note = () => host.querySelector('.run-live')?.textContent
   try {
-    // t=0 首段、t=60 s 末段，两段都走实时事件。
+    // t=0 首段、t=60 s 末段，两段均经由实时事件到达。
     store.applyEvent({
       seq: 1,
       at: t0,
@@ -379,20 +379,20 @@ test('间隔按最后内容时刻算，刷新前后是同一个数', async () =>
       },
     } as never)
 
-    // t=65 s：距末段 5 秒，没到改口的阈值，这一格照旧说在回复。
+    // t=65 s：距末段 5 秒，未达到切换提示的阈值，状态文字仍为「正在回复…」。
     now = t0 + 65_000
     await new Promise((resolve) => setTimeout(resolve, 120))
     expect(now - store.viewOf(id).request!.lastContentAt!).toBe(5_000)
     expect(note()).toBe('正在回复…')
 
-    // 再过 30 秒越过阈值：报的是距末段的 35 秒。按首段算会报 95 秒。
+    // 再过 30 秒超过阈值：显示距末段的 35 秒。按首段计算会显示 95 秒。
     now = t0 + 95_000
     await new Promise((resolve) => setTimeout(resolve, 120))
     expect(note()).toBe('已 35 秒无新增内容')
 
     /*
-     * 刷新：投影改由历史接口的快照写，最后内容时刻是账本里的同一个值，
-     * 因此这一格一个字都不变。按重拉时刻算会归零，那一格会退回「正在回复…」。
+     * 刷新：投影改由历史接口的快照写入，最后内容时刻取账本中的同一个值，
+     * 因此状态文字保持不变。若按重新获取的时刻计算，间隔会归零，状态文字退回「正在回复…」。
      */
     store.setState('views', id, 'request', {
       requestId: 'pr_silence',
@@ -432,7 +432,7 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
   store.openConversationTab(ids[1]!, '子会话')
   store.syncViews()
   let seq = 0
-  // 静默那一档按当前请求的最后内容时刻算，所以直接把投影摆成「出过内容、已经 31 秒没动」。
+  // 静默提示按当前请求的最后内容时刻计算，因此直接把投影设为已有内容输出且 31 秒无新增内容。
   const silent = (conversationId: string) =>
     store.setState('views', conversationId, 'request', {
       requestId: 'pr_progress',
@@ -636,7 +636,7 @@ test.each(['running', 'success', 'failure'] as const)(
 )
 
 describe('工具图片回放', () => {
-  test('read_file 图片只给模型，不自动渲染成会话图片', async () => {
+  test('read_file 图片只交给模型，不自动渲染为会话图片', async () => {
     const store = await import('../lib/store/index.ts')
     store.setState({
       activeConversation: CV,
@@ -688,7 +688,7 @@ describe('工具图片回放', () => {
     }
   })
 
-  test('只有 outcome 明确声明 inline 才恢复图片', async () => {
+  test('仅当 outcome 明确声明 inline 时恢复图片', async () => {
     const store = await import('../lib/store/index.ts')
     store.setState({
       activeConversation: CV,
@@ -744,7 +744,7 @@ describe('工具图片回放', () => {
 })
 
 describe('编排画布', () => {
-  test('并行节点的列有最小宽度，排不下时由卡内的滚动层承担', async () => {
+  test('并行节点的列有最小宽度，宽度不足时由卡片内的滚动层横向滚动', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
     const host = document.createElement('div')
@@ -782,7 +782,7 @@ describe('编排画布', () => {
       expect(layers).toHaveLength(3)
       expect(layers[1]?.style.gridTemplateColumns).toBe('repeat(4, minmax(128px, 1fr))')
       expect(layers[1]?.style.maxWidth).toBe('676px')
-      // 滚动层在卡里、图在滚动层里：卡宽不随节点数变，滚的只有图那一层。
+      // 滚动层位于卡片内、图位于滚动层内：卡片宽度不随节点数变化，只有图所在的一层滚动。
       expect(host.querySelector('.wf-card > .wf-scroll > .wf-graph')).not.toBeNull()
       expect(layers[1]?.querySelector('.wf-node-name')?.classList.contains('truncate')).toBe(false)
     } finally {
@@ -806,7 +806,7 @@ describe('编排画布', () => {
     ])
   })
 
-  test('活动依赖与静态依赖共线时切成不重叠区间', async () => {
+  test('活动依赖与静态依赖共线时拆分为不重叠的区间', async () => {
     const { mergeWorkflowEdgeSegments } = await import('./Transcript.tsx')
     const paths = mergeWorkflowEdgeSegments([
       { axis: 'horizontal', fixed: 40.5, from: 20.5, to: 100.5, live: false },
@@ -819,8 +819,8 @@ describe('编排画布', () => {
     ])
   })
 
-  /** 失败只有红边与底部那一行原因：卡顶没有动作、状态与耗时，同一件事不印两遍。 */
-  test('失败的卡没有卡头，原因只印在底部那一行', async () => {
+  /** 失败只显示红色边框与底部一行原因：卡片顶部不显示动作、状态与耗时，同一信息不重复显示。 */
+  test('失败的卡片没有标题行，原因只显示在底部一行', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
     const host = document.createElement('div')
@@ -855,7 +855,7 @@ describe('编排画布', () => {
                 action: { kind: 'run', objectLabel: '子 agent', target: 'qwen-racer' },
                 args: { kind: 'role', role: 'qwen-racer', task: '继续优化' },
                 status: 'failure',
-                outcome: { status: 'failure', executed: true, message: 'qwen-racer 没做成：超时' },
+                outcome: { status: 'failure', executed: true, message: 'qwen-racer 失败：超时' },
               },
             ] as never
           }
@@ -868,7 +868,7 @@ describe('编排画布', () => {
       expect(host.querySelectorAll('.wf-head')).toHaveLength(0)
       expect([...host.querySelectorAll('.wf-error')].map((e) => e.textContent)).toEqual([
         'Workflow 执行失败，本次返回 0 个回执',
-        'qwen-racer 没做成：超时',
+        'qwen-racer 失败：超时',
       ])
       expect(host.querySelectorAll('.wf-card.failed')).toHaveLength(2)
     } finally {
@@ -876,7 +876,7 @@ describe('编排画布', () => {
     }
   })
 
-  test('排队的格子只靠样式压暗，次行仍是它的指令', async () => {
+  test('排队的节点只通过样式调暗，次行仍显示其指令', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
     const host = document.createElement('div')
@@ -914,10 +914,10 @@ describe('编排画布', () => {
   })
 
   /**
-   * 种类是状态里的一个字段，主行右边印 `SUBAGENT_KIND_LABEL` 里的说法；
-   * 没有状态的那一格什么都不印。不要改成印字段原值，那是内部枚举名。
+   * 种类是状态中的一个字段，主行右侧显示 `SUBAGENT_KIND_LABEL` 中对应的名称；
+   * 没有状态的节点不显示标签。不要改为显示字段原值，因为它是内部枚举名。
    */
-  test('每一格按状态里的种类印标签', async () => {
+  test('每个节点按状态中的种类显示标签', async () => {
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
     const host = document.createElement('div')
@@ -966,15 +966,15 @@ describe('编排画布', () => {
   })
 
   /**
-   * 原始失败形状：续派的参数里只有一个子 agent id，按参数猜种类会把外部 CLI 认成
-   * 内置子 agent，点开是一条没有正文的子会话。种类只从状态取。
+   * 原始失败形状：继续派发的参数中只有子 agent id，按参数推测种类会把外部 CLI 识别为
+   * 内置子 agent，打开后是一条没有正文的子会话。种类只从状态中读取。
    */
-  test('续派的外部 CLI 那一格点开的是 CLI 页', async () => {
+  test('继续派发的外部 CLI 节点打开 CLI 页', async () => {
     const { delegateEvents, render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
     const { closePanelTab, panelTabs } = await import('../lib/store/index.ts')
-    // 点击走 solid 的事件委托：处理器挂在 document 上，所以这一块要在文档里，
-    // 而委托只在模块首次加载时挂过一次，那时的 document 是别的文件注册的那一份。
+    // 点击经由 solid 的事件委托：处理器注册在 document 上，因此宿主元素必须位于文档中，
+    // 而委托只在模块首次加载时注册一次，所用的 document 由其他测试文件注册。
     const host = document.createElement('div')
     document.body.append(host)
     delegateEvents(['click'])
@@ -1075,7 +1075,7 @@ describe('子会话与主会话共用流式外壳', () => {
     }
   })
 
-  test('不重复挂待办，并显示自己的运行条与贴底跟随', async () => {
+  test('不重复挂载待办，并显示自身的运行条与贴底跟随', async () => {
     const store = await import('../lib/store/index.ts')
     const apiBefore = store.client.api
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
@@ -1179,7 +1179,7 @@ describe('子会话与主会话共用流式外壳', () => {
       resize(inner)
       expect(scroller.scrollTop).toBe(300)
 
-      // 鼠标或键盘展开 details 后，浏览器会为焦点自行滚动；这不是用户上翻。
+      // 鼠标或键盘展开 details 后，浏览器会为焦点自行滚动；这不属于用户向上滚动。
       details
         .querySelector('summary')
         ?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
@@ -1189,7 +1189,7 @@ describe('子会话与主会话共用流式外壳', () => {
       resize(inner)
       expect(scroller.scrollTop).toBe(480)
 
-      // 用户主动上翻后尊重阅读位置，后续增长不再强拽到底。
+      // 用户主动向上滚动后保留阅读位置，后续内容增长时不再滚动到底部。
       scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
       scroller.scrollTop = 40
       scroller.dispatchEvent(new Event('scroll'))
@@ -1289,8 +1289,8 @@ describe('子会话与主会话共用流式外壳', () => {
 
 const CV = 'cv_prose'
 
-describe('定稿的正文不跟着会话流的增长重建', () => {
-  test('用户长消息按真实高度收敛，并可在右下角展开和收起', async () => {
+describe('定稿的正文不随会话流的增长重建', () => {
+  test('用户长消息按实际高度判断折叠，并可在右下角展开和收起', async () => {
     const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
     Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
       configurable: true,
@@ -1408,7 +1408,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
     dispose()
   })
 
-  test('运行中的思考首次展开即滚到内层最新内容', async () => {
+  test('运行中的思考首次展开时滚动到内层最新内容', async () => {
     const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
     Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
       configurable: true,
@@ -1446,7 +1446,7 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
     }
   })
 
-  test('下一批工具一条条起来，那段正文的节点还是原来那个', async () => {
+  test('下一批工具逐条启动时，该段正文的节点保持不变', async () => {
     const store = await import('../lib/store/index.ts')
     store.setState({
       activeConversation: CV,
@@ -1490,14 +1490,14 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
         },
       } as never)
 
-    // 第一条把这段正文从流式转成定稿（末项不再是它）——那一次重渲染是应该的。
+    // 第一条使该段正文从流式转为定稿（末项不再是它），这次重渲染属于预期。
     push('s0')
     const prose = host.querySelector('.prose')
     const settled = prose?.firstElementChild
     expect(prose?.textContent).toContain('另一段正文')
     expect(settled).toBeTruthy()
 
-    // 这一轮接着跑，会话流一条条长；这段正文一个字都没变。
+    // 本轮继续执行，会话流逐条增长；该段正文没有任何变化。
     push('s1')
     push('s2')
     push('s3')
@@ -1684,13 +1684,13 @@ describe('定稿的正文不跟着会话流的增长重建', () => {
   })
 })
 
-describe('检查点那一格', () => {
+describe('检查点节点', () => {
   const wireNodes = [
     { id: 'a', kind: 'temp', name: 'A', task: '做 A' },
     { id: 'b', kind: 'temp', name: 'B', task: '做 B' },
     { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['a', 'b'] },
   ]
-  /** 一张按格状态折叠的卡：回执就是终态那条格状态，还在跑的格没有回执。 */
+  /** 按节点状态（`NodeState`）折叠出的卡片：回执是终态的那条节点状态，仍在运行的节点没有回执。 */
   const item = (
     states: Record<string, { phase: string; label: string; error?: string; durationMs?: number }>,
   ) => ({
@@ -1722,8 +1722,8 @@ describe('检查点那一格', () => {
     return { host, dispose }
   }
 
-  /** 一格失败先交回后其余格还在跑，检查点在等它们，不是在等父会话审查。 */
-  test('上游还有格在跑时不算待审查', async () => {
+  /** 一个节点失败并先返回后，其余节点仍在运行，检查点在等待它们，而不是等待父会话审查。 */
+  test('上游仍有节点在运行时不算待审查', async () => {
     const { host, dispose } = await mount({
       a: { phase: 'failed', label: 'A', error: '连不上' },
       b: { phase: 'working', label: 'B' },
@@ -1736,7 +1736,7 @@ describe('检查点那一格', () => {
     }
   })
 
-  test('上游都落了终态才待审查', async () => {
+  test('上游全部到达终态后才待审查', async () => {
     const { host, dispose } = await mount({
       a: { phase: 'failed', label: 'A', error: '连不上' },
       b: { phase: 'done', label: 'B', durationMs: 5 },
@@ -1750,9 +1750,9 @@ describe('检查点那一格', () => {
 })
 
 /**
- * 行的 DOM 挂在按 id 固定的壳上，不挂在每轮全新的投影包装上。锁两条真实失败形状：
- * 运行中点开的组卡在下一个工具启动的瞬间合上；workflow 卡每个进度事件整张重建，
- * 连线的 `<path>` 全部换新，虚线动画从头起跳。
+ * 行的 DOM 挂载在按 id 固定的外壳上，不挂载在每轮新建的投影包装上。锁定两种原始失败形状：
+ * 运行中展开的组卡片在下一个工具启动时收起；workflow 卡每收到一个进度事件即整张重建，
+ * 连线的 `<path>` 全部替换，虚线动画从头开始。
  */
 describe('行的 DOM 不随投影重建', () => {
   const rect = (el: Element, left: number, top: number, width: number, height: number) => {
@@ -1762,7 +1762,7 @@ describe('行的 DOM 不随投影重建', () => {
     })
   }
 
-  test('组卡展开着，下一个工具启动后还是同一个 details 且仍展开', async () => {
+  test('组卡片展开时，下一个工具启动后仍是同一个 details 且保持展开', async () => {
     const { createSignal } = await import('solid-js')
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
@@ -1799,11 +1799,11 @@ describe('行的 DOM 不随投影重建', () => {
     }
   })
 
-  test('进度事件到了，workflow 卡与连线的 path 还是原来那些节点', async () => {
+  test('收到进度事件后，workflow 卡与连线的 path 仍是原有节点', async () => {
     const { createSignal } = await import('solid-js')
     const { render } = await import('solid-js/web')
     const { TranscriptRows } = await import('./Transcript.tsx')
-    // 形状来自 args，一次派活里是同一个对象；进度事件整份替换 nodes。
+    // 形状来自 args，一次派发任务中是同一个对象；进度事件整体替换 nodes。
     const args = {
       goal: '并行',
       nodes: [
@@ -1858,10 +1858,10 @@ describe('行的 DOM 不随投影重建', () => {
 })
 
 /**
- * 展开态归 step id，不归 `<details>` 节点。锁的失败形状：单条工具展开着看，
- * 下一个工具启动把它并进组卡，组卡合着出生、那条也合上了，正在看的内容消失。
+ * 展开态归属于 step id，不归属于 `<details>` 节点。锁定的原始失败形状：单条工具处于展开状态时，
+ * 下一个工具启动使它并入组卡片，组卡片以收起状态创建，该条随之收起，正在阅读的内容消失。
  */
-describe('展开态跟着 step id 走', () => {
+describe('展开态归属于 step id', () => {
   const tool = (id: string) => ({
     id,
     kind: 'tool',
@@ -1884,7 +1884,7 @@ describe('展开态跟着 step id 走', () => {
     return { host, dispose, setItems }
   }
 
-  test('单条展开着，并进组卡后组卡开着出生，那条仍展开', async () => {
+  test('单条处于展开状态时，并入组卡片后组卡片以展开状态创建，该条仍展开', async () => {
     const a = tool('fold-open-a')
     const { host, dispose, setItems } = await mount(a)
     try {
@@ -1906,12 +1906,12 @@ describe('展开态跟着 step id 走', () => {
     }
   })
 
-  test('单条合着，并进组卡后组卡合着出生', async () => {
+  test('单条处于收起状态时，并入组卡片后组卡片以收起状态创建', async () => {
     const a = tool('fold-shut-a')
     const { host, dispose, setItems } = await mount(a)
     try {
       setItems([a, tool('fold-shut-b')])
-      // 组卡合着，成员正文没挂载，只有组卡这一个 details。
+      // 组卡片收起时成员正文未挂载，只有组卡片自身的 details。
       const folds = host.querySelectorAll<HTMLDetailsElement>('details.fold')
       expect(folds).toHaveLength(1)
       expect(folds[0]!.open).toBe(false)
@@ -1922,8 +1922,8 @@ describe('展开态跟着 step id 走', () => {
   })
 })
 
-/** 收尾读数条与「运行」面板同一个口径（`runCosts`）：模型调用加生成，不同币种并列。 */
-test('收尾读数条的金额含这一轮的生成花费', async () => {
+/** 收尾读数条与「运行」面板使用同一计算方式（`runCosts`）：模型调用费用加生成费用，不同币种并列显示。 */
+test('收尾读数条的金额包含本轮的生成费用', async () => {
   const { render } = await import('solid-js/web')
   const { TranscriptRows } = await import('./Transcript.tsx')
   const items = [

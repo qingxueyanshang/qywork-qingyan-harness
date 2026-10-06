@@ -1,5 +1,5 @@
 /**
- * 思考选择器的产品边界：不支持时没有入口；支持时只能选择真实强度档位。
+ * 推理等级选择器的产品边界：不支持时没有入口；支持时只能选择真实的强度档位。
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -130,19 +130,19 @@ test('不支持时隐藏；支持时只显示并保存真实强度档位', async
   }
 })
 
-test('没配任何模型时 chip 显示「选择模型」，模型面给出去设置的引导', async () => {
+test('未配置任何模型时 chip 显示「选择模型」，模型面板给出前往设置的引导', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../lib/store/index.ts')
   const { ModelPicker } = await import('./ModelPicker.tsx')
   const originalApi = store.client.api
 
-  // 出厂状态：没有 active、一个接口都没有。
+  // 出厂状态：没有 active，也没有任何接口。
   const catalog = { library: [], providers: [] as unknown[] }
   store.client.api = async <T,>(path: string) => {
     if (path === '/api/models') return catalog as T
     throw new Error(`unexpected ${path}`)
   }
-  // 会话的 provider/model 是空串——服务端在没配模型时就是这么建的。
+  // 会话的 provider/model 为空串：服务端在未配置模型时以此创建会话。
   store.setState({
     activeConversation: 'cv',
     conversations: [{ id: 'cv', provider: '', model: '' } as never],
@@ -157,7 +157,7 @@ test('没配任何模型时 chip 显示「选择模型」，模型面给出去�
   try {
     const chip = host.querySelector('.mode-chip') as HTMLButtonElement
     expect(chip.textContent).toContain('选择模型')
-    // 没在跑、有会话 → 入口可点，不是一个死按钮。
+    // 未在运行且有会话 → 入口可点击，不是无效按钮。
     expect(chip.disabled).toBe(false)
 
     click(chip)
@@ -166,7 +166,7 @@ test('没配任何模型时 chip 显示「选择模型」，模型面给出去�
     )!
     click(modelEntry)
     expect(host.textContent).toContain('尚未配置模型')
-    // 一档都没有的模型不冒出「推理等级」入口。
+    // 没有任何档位的模型不显示「推理等级」入口。
     expect(host.textContent).not.toContain('推理等级')
   } finally {
     dispose()

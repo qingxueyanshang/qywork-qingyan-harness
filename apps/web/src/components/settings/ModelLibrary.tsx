@@ -17,7 +17,7 @@ const CATEGORY_LABEL: Record<Category, string> = {
   audio: '音频',
 }
 
-/** 生成协议的显示名：用户认得的接口形状，不是内部枚举名。 */
+/** 生成协议的显示名称：用户熟悉的接口名称，而不是内部枚举名。 */
 export const MEDIA_KIND_LABEL: Record<MediaKind, string> = {
   openai_images: 'OpenAI 兼容',
   dashscope_images: '百炼',
@@ -46,41 +46,41 @@ const OPERATION_LABEL: Record<MediaOperationName, string> = {
 }
 
 /**
- * 模型库 —— **一张模型参数表**。
+ * 模型库：模型参数表。
  *
- * **它和接口没有关系。** 库回答「这个模型本身是什么样」：窗口多大、最大能输出多少、多少钱、吃哪几档
- * 思考。接口回答「用谁的端点、哪把 key」。两者唯一的接点是接口下那一行模型 id——参数照着 id 从这
- * 张表里查。所以这里没有「添加到接口」「新建接口」这类动作。
+ * 模型库与接口无关。模型库描述模型本身的规格：上下文窗口、最大输出、价格、支持的思考
+ * 档位。接口描述使用哪个端点与哪个 key。两者唯一的关联是接口下的模型 id：参数按 id 从本
+ * 表中查询。因此本页没有「添加到接口」「新建接口」等操作。
  *
- * **一个厂商一张卡，卡里一张自己的表。** 参数排成一行小标签时，两条模型的同一项不在同一个横坐标上，
- * 眼睛得逐条读，比不出来。所以每家的模型排成表：每项钉在一列上，扫一眼就是一列数字。各列统一
+ * 每个厂商一张卡片，卡片内是该厂商的表格。参数排成一行小标签时，两个模型的同一项不在同一横坐标上，
+ * 只能逐条阅读，无法比较。因此每家的模型排成表格：每项固定在一列，浏览时即可对比一列数字。各列统一
  * 左对齐，数字使用等宽字形（`tabular-nums`），标题和正文共享同一条起始线。
  *
- * **各家不合成一张大表。** 合起来之后厂商名只能做成一个跨列的行，那一行右边是
- * 一大片空白；而顶部那份表头离下面几家隔着几十行，滚下去就对不上列了。
- * 表头跟着各自的模块走，滚到哪一家，哪一家的列名就在眼前。
+ * 各厂商不合并为一张大表。合并后厂商名只能做成一个跨列的行，该行右侧是
+ * 大片空白；而顶部的表头与下方各厂商相隔数十行，向下滚动后无法对照列名。
+ * 表头随各自的卡片排列，滚动到任一厂商时，其列名都在视野内。
  *
- * **高度交给外层。** 这一节**不设自己的 max-height**。给列表加 `max-height: 60vh` 再配
- * flex 竖排，因此每个厂商块被 flex 压缩、内容被裁掉——界面上是「每家只剩一行，
- * 后面几家整个是空的」。设置面板本来就有一条滚动轴，这里再加一条就是两条。
+ * 高度由外层决定，本节不设置自身的 max-height。给列表加 `max-height: 60vh` 并配合
+ * flex 纵向排列时，每个厂商块被 flex 压缩、内容被裁剪，界面上每个厂商只剩一行，
+ * 后续厂商完全空白。设置面板已有一条滚动轴，此处再加一条会形成两条滚动轴。
  *
- * **只读。** 这些参数由源码里的目录维护，界面只显示。**不给编辑入口**：一条参数填错的
- * 后果是账单对不上或请求发不出去，而用户手里没有判据——窗口和上限要查厂商文档，
- * 价格要对当期价目表。目录里没有的模型同样不在这里加：加一条只影响它自己的
- * 计价显示，真正决定能不能用的是接口下挂的那个 id。
+ * 只读。这些参数由源码中的目录维护，界面只负责显示，不提供编辑入口：参数填错的
+ * 后果是账单不一致或请求无法发出，而用户没有判据——窗口和上限需查厂商文档，
+ * 价格需核对当期价目表。目录中没有的模型同样不在本页添加：添加一条只影响该模型自身的
+ * 计价显示，决定能否使用的是接口下配置的模型 id。
  *
- * 需要临时纠正某一条时，改 `config.json` 的 `catalog`；端点探测只校验当前接口
- * 是否透传控制字段，不会改这张官方规格表。
+ * 需要临时纠正某一条时，修改 `config.json` 的 `catalog`；端点探测只校验当前接口
+ * 是否透传控制字段，不修改官方规格表。
  *
- * **按类别分页签，不按厂商分。** 「对话」页签就是上面这张按厂商分卡的表；生成类每类只收各家最新一代，
- * 一类就几行，所以每类一张表、厂商作为一列，再按厂商拆卡，每张卡只有一两行。
- * 没有条目的类别不出页签。
+ * 按类别划分页签，不按厂商划分。「对话」页签即上述按厂商分卡片的表格；生成类每类只收录各厂商最新一代模型，
+ * 每类只有几行，因此每类一张表、厂商作为一列；若再按厂商拆分卡片，每张卡片只有一两行。
+ * 没有条目的类别不显示页签。
  */
 export function ModelLibrary(props: {
   vendors: LibraryVendor[]
   media: MediaLibraryModel[]
   loading: boolean
-  /** 取不回来时的原因。不写的话这一节只是空着，看起来像「内置库里什么都没有」。 */
+  /** 获取失败时的原因。不显示原因时本节为空白，看起来像内置库中没有任何模型。 */
   error: unknown
 }) {
   const [category, setCategory] = createSignal<Category>('chat')
@@ -93,7 +93,7 @@ export function ModelLibrary(props: {
       when={!props.loading && !props.error}
       fallback={
         <div class="lib-state">
-          {props.error ? explainApiError(props.error, '读不到内置模型库') : '读取中…'}
+          {props.error ? explainApiError(props.error, '无法读取内置模型库') : '读取中…'}
         </div>
       }
     >
@@ -116,19 +116,19 @@ export function ModelLibrary(props: {
           when={category() === 'chat'}
           fallback={<MediaTable models={props.media.filter((m) => m.output === category())} />}
         >
-          {/* 一个厂商一张卡，各自带表头。
-          不合成一张大表：合起来之后厂商名只能做成一个跨列的行，那一行右边是
-          一大片空白，而顶部那份表头离下面几家隔着几十行，滚下去就对不上列了。 */}
+          {/* 每个厂商一张卡片，各自带表头。
+          不合并为一张大表：合并后厂商名只能做成一个跨列的行，该行右侧是
+          大片空白，而顶部的表头与下方各厂商相隔数十行，向下滚动后无法对照列名。 */}
           <div class="lib">
             <For each={props.vendors}>
               {(v) => (
                 <section class="lib-card">
-                  {/* 窄窗口下表格自己横向滚，不把整页撑宽。 */}
+                  {/* 窄窗口下表格在自身容器内横向滚动，不撑宽整个页面。 */}
                   <div class="lib-scroll">
                     <table class="lib-table">
-                      {/* **只有一行标题。** 厂商名就坐在「模型」那一列的表头位置——
-                      它标的正是这一列的内容，再单开一条灰色的厂商栏就是同一件事
-                      写两遍，上下各占一行。 */}
+                      {/* 只有一行标题。厂商名位于模型列的表头位置：
+                      它标注的正是该列的内容，再单独增加一条灰色的厂商栏属于重复显示，
+                      且上下各占一行。 */}
                       <thead>
                         <tr>
                           <th class="vendor">{v.displayName}</th>
@@ -147,18 +147,18 @@ export function ModelLibrary(props: {
                           {(m) => (
                             <>
                               <tr>
-                                {/* 只给 id：显示名与它是同一件事写两遍（`DeepSeek V4 Flash`
-                                对 `deepseek-v4-flash`），而 id 才是配置里真正要填的那个词。 */}
+                                {/* 只显示 id：显示名与 id 内容重复（`DeepSeek V4 Flash`
+                                与 `deepseek-v4-flash`），而 id 是配置中实际需要填写的值。 */}
                                 <td>
                                   <code class="lib-id">{m.id}</code>
                                 </td>
                                 <td class="num">{compact(m.contextWindow)}</td>
-                                {/* 没测过就空着：编一个数填进去，用户会照它去判断能不能写长文。 */}
+                                {/* 未经测量时留空：填入编造的数值，用户会据此判断能否生成长文本。 */}
                                 <td class="num">
                                   {m.maxOutputTokens === null ? '—' : compact(m.maxOutputTokens)}
                                 </td>
-                                {/* 三态照实显示。`null` 是「厂商没写」，写成「不支持」就是
-                                替厂商作保，而界面上分不出这两者的用户会照它做决定。 */}
+                                {/* 三态按实际显示。`null` 表示厂商未注明，显示为「不支持」等于
+                                替厂商作出保证，而无法在界面上区分两者的用户会据此做决定。 */}
                                 <td class="lv">
                                   {m.vision === null ? '—' : m.vision ? '支持' : '不支持'}
                                 </td>
@@ -166,8 +166,8 @@ export function ModelLibrary(props: {
                                 <td class="num">{price(m.output, m.currency)}</td>
                                 <td class="num">{price(m.cacheRead, m.currency)}</td>
                                 <td class="num">{price(m.cacheWrite, m.currency)}</td>
-                                {/* 这个模型支持哪几档。空的写「不支持」而不是留白——
-                                留白读起来像「这一格没加载出来」。 */}
+                                {/* 该模型支持的档位。为空时显示「不支持」而不是留白：
+                                留白看起来像该单元格未加载完成。 */}
                                 <td class="lv">
                                   {m.effortLevels.length > 0
                                     ? m.effortLevels.join(' / ')
@@ -177,8 +177,8 @@ export function ModelLibrary(props: {
                                 </td>
                               </tr>
 
-                              {/* 分时段折扣、长上下文换档：上面那个价是标准价，这句必须显示。
-                              只画一个数字的话，用户对着账单会发现对不上，而差价是两倍。 */}
+                              {/* 分时段折扣、长上下文分档计价：上方的价格是标准价，此说明必须显示。
+                              只显示一个数字时，用户核对账单会发现金额不一致，差价可达两倍。 */}
                               <Show when={m.priceNotes?.length}>
                                 <tr class="lib-note">
                                   <td colSpan={9}>{m.priceNotes?.join('；')}</td>
@@ -201,8 +201,8 @@ export function ModelLibrary(props: {
 }
 
 /**
- * 一类生成模型一张表。参数表由行末的按钮展开到下一整行：每个模型的参数各不相同、条数也多，
- * 摊成列装不下，收在最后一列里又只剩一窄条；展开的文字与交给大模型的是同一份。
+ * 每类生成模型一张表。参数表由行末的按钮展开到下一整行：每个模型的参数各不相同且条数较多，
+ * 展开为列无法容纳，放在最后一列中又只有很窄的宽度；展开的文字与交给模型的内容相同。
  */
 function MediaTable(props: { models: MediaLibraryModel[] }) {
   return (
@@ -266,7 +266,7 @@ function MediaTable(props: { models: MediaLibraryModel[] }) {
 }
 
 /**
- * 收参考素材的操作后面跟数量上限，如「参考图 ≤30」。上限写在它约束的操作旁边，不单列：
+ * 接受参考素材的操作后附加数量上限，如「参考图 ≤30」。上限写在其约束的操作旁边，不单独成列：
  * 单列时视频页的表宽超出设置页，且语音页整列都是空值。首尾帧不计入。
  */
 function inputLimit(m: MediaLibraryModel, op: MediaOperationName): string {
@@ -279,14 +279,14 @@ function inputLimit(m: MediaLibraryModel, op: MediaOperationName): string {
   return n ? ` ≤${n}` : ''
 }
 
-/** 100 万 → 1M。窗口和上限都是量级信息，完整数字反而要人数零。 */
+/** 100 万 → 1M。窗口和上限都是量级信息，显示完整数字时需要逐位数零。 */
 function compact(n: number): string {
   if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`
   if (n >= 1000) return `${Math.round(n / 1000)}K`
   return String(n)
 }
 
-/** 每百万 token 的单价。币种是数据的一部分——¥6 当成 $6 差七倍。 */
+/** 每百万 token 的单价。币种是数据的一部分：把 ¥6 误作 $6 会相差约七倍。 */
 function price(n: number | null, currency: 'USD' | 'CNY'): string {
   if (n === null) return '—'
   return `${currency === 'CNY' ? '¥' : '$'}${n}`

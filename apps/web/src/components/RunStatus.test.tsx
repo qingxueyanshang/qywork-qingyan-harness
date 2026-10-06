@@ -1,11 +1,11 @@
 /**
- * 覆盖 `RunStatus.tsx`：整轮状态条什么时候挂、什么时候撤。
+ * 覆盖 `RunStatus.tsx`：整轮状态条的显示与隐藏时机。
  *
- * 锁的是一条真实失败形状——上一轮改过文件，用户按下回车，忙闲被乐观置上而这一轮的
- * 文件读数要等服务端的 `run.started` 才清空。那一段窗口里 chip 会带着上一轮的读数
- * 出现再自己缩掉。
+ * 锁定的失败形状：上一轮修改过文件，用户按下回车后忙碌状态被乐观设置，而本轮的
+ * 文件读数要等服务端的 `run.started` 才清空。在此期间 chip 会带着上一轮的读数
+ * 出现，随后缩小。
  *
- * DOM 在这里装、用完卸掉，动态 import 的理由同 `settings/LoadState.test.tsx`。
+ * DOM 在本文件内注册、用后注销，使用动态 import 的理由同 `settings/LoadState.test.tsx`。
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -19,8 +19,8 @@ afterAll(async () => {
   await GlobalRegistrator.unregister()
 })
 /**
- * store 是模块级单例，`bun test` 一个进程跑全部文件——**这里改过的字段要还回去**，
- * 否则别的文件里「这一格应该是空的」那类断言会按文件顺序随机变红。
+ * store 是模块级单例，`bun test` 在一个进程中运行全部文件：**本文件修改过的字段必须恢复原值**，
+ * 否则其他文件中断言字段为空的测试会随文件顺序随机失败。
  */
 async function resetStore() {
   const store = await import('../lib/store/index.ts')
@@ -39,7 +39,7 @@ async function resetStore() {
   })
 }
 
-/** 换掉的那个 `client.send`，收尾时还回去。见 `afterPreviousRun`。 */
+/** 被替换前的 `client.send`，收尾时恢复。见 `afterPreviousRun`。 */
 let sendBefore: ((cmd: never) => void) | null = null
 
 const CV = 'cv_chip'
@@ -59,11 +59,11 @@ async function mount() {
 }
 
 /**
- * 一轮跑完之后的静止态：待办还剩两条没做，上一轮改过一个文件。
+ * 一轮执行完毕后的静止状态：待办剩两条未完成，上一轮修改过一个文件。
  *
- * 一并把 `client.send` 换成空实现：这个文件看的是按下回车之后界面怎么画，
- * 而这里没有连接——不换的话 `sendMessage` 当场收到一条 `not_ready` 回执，
- * 乐观置上的那一格被冲销回闲态（`store/connection.ts` 的 `applyRejected`）。
+ * 同时把 `client.send` 替换为空实现：本文件验证按下回车后的界面渲染，
+ * 而测试环境没有连接；不替换时 `sendMessage` 会立即收到 `not_ready` 回执，
+ * 乐观设置的忙碌状态被撤销为空闲（`store/connection.ts` 的 `applyRejected`）。
  */
 async function afterPreviousRun() {
   const store = await import('../lib/store/index.ts')
@@ -126,7 +126,7 @@ const finishedFrame = (runId: string) =>
     },
   }) as never
 
-describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
+describe('整轮状态条随轮次显示，不随忙碌状态显示', () => {
   test('后台会话操作 QQ 时，当前会话的运行条不显示它的目标', async () => {
     const store = await afterPreviousRun()
     store.sendMessage('接着干')
@@ -144,7 +144,7 @@ describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
     }
   })
 
-  test('切到操作所属会话立即显示，切走不串台，后台释放后切回不残留', async () => {
+  test('切换到操作所属会话时立即显示，切换离开后不显示其他会话的目标，后台释放后切回不残留', async () => {
     const store = await afterPreviousRun()
     store.applyEvent(startedFrame('run_now'))
     store.setState('busyConversations', [CV, OTHER])
@@ -152,7 +152,7 @@ describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
     store.applyEvent(targetFrame({ conversationId: OTHER, app: 'QQ.exe', foreground: true }))
     const selectRunning = (id: string) => {
       store.setState('activeConversation', id)
-      // 切会话会重建 view；这里补入历史加载返回的运行时刻。
+      // 切换会话会重建 view；此处补入历史加载返回的运行开始时间。
       store.setState('views', id, 'runStartedAt', 1)
     }
     const { host, dispose } = await mount()
@@ -166,7 +166,7 @@ describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
       selectRunning(OTHER)
       expect(host.textContent).toBe('')
 
-      // 同一应用换了执行会话，归属也必须一起更新。
+      // 同一应用的执行会话改变时，归属必须同步更新。
       store.applyEvent(targetFrame({ conversationId: CV, app: 'QQ.exe', foreground: false }))
       expect(host.textContent).toBe('')
       selectRunning(CV)
@@ -179,12 +179,12 @@ describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
     }
   })
 
-  test('按下回车到 run.started 之间不出现——上一轮的文件读数不许挂在这一轮名下', async () => {
+  test('按下回车到 run.started 之间不显示，上一轮的文件读数不计入本轮', async () => {
     const store = await afterPreviousRun()
     const { host, dispose } = await mount()
     expect(host.textContent).toBe('')
 
-    // 乐观置忙就是 `sendMessage` 按下回车那一刻做的事。
+    // `sendMessage` 在按下回车时乐观设置忙碌状态。
     store.sendMessage('接着干')
     expect(store.isRunning()).toBe(true)
     expect(host.textContent).toBe('')
@@ -192,7 +192,7 @@ describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
     dispose()
   })
 
-  test('run.started 到了才挂，挂出来的文件读数是这一轮的（空）', async () => {
+  test('收到 run.started 后才显示，显示的文件读数属于本轮（为空）', async () => {
     const store = await afterPreviousRun()
     const { host, dispose } = await mount()
     store.sendMessage('接着干')
@@ -204,7 +204,7 @@ describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
     dispose()
   })
 
-  test('同一文件先由文件工具写、再由观察器判出一次无行数写入，读数只加已知的', async () => {
+  test('同一文件先由文件工具写入、再由观察器判定一次无行数写入，读数只累加已知行数', async () => {
     const store = await afterPreviousRun()
     const { host, dispose } = await mount()
     store.sendMessage('接着干')
@@ -226,7 +226,7 @@ describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
     dispose()
   })
 
-  test('收尾条一落下就撤，不等 conversation.busy 那一帧', async () => {
+  test('run.finished 到达后立即隐藏，不等待 conversation.busy 帧', async () => {
     const store = await afterPreviousRun()
     const { host, dispose } = await mount()
     store.sendMessage('接着干')
@@ -234,7 +234,7 @@ describe('整轮状态条跟着这一轮走，不跟着忙闲走', () => {
     expect(host.textContent).not.toBe('')
 
     store.applyEvent(finishedFrame('run_now'))
-    // 忙闲还挂着（服务端的 conversation.busy 排在下一帧）。
+    // 忙碌状态仍未清除（服务端的 conversation.busy 在下一帧发送）。
     expect(store.isRunning()).toBe(true)
     expect(host.textContent).toBe('')
 

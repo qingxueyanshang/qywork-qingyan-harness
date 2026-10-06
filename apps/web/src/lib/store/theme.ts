@@ -1,18 +1,18 @@
 /**
  * 外观：跟随系统 / 浅色 / 深色。
  *
- * **为什么不进服务端配置。** 服务端配置回答「这台机器上 agent 怎么跑」；主题回答「这块屏幕怎么
- * 画」。桌面端和手机端连的是**同一个** `qy serve`——主题写进服务端，手机上调成深色桌面跟着变。而
- * 且首屏就要用它：走服务端意味着第一帧只能先画一个猜的主题，等 HTTP 回来再翻，那是肉眼可见的闪白。
+ * 主题不写入服务端配置。服务端配置决定本机 agent 如何运行，主题决定当前屏幕如何显示。
+ * 桌面端与手机端连接同一个 `qy serve`：主题写入服务端时，手机上切换为深色会使桌面端随之切换。
+ * 此外首屏即需要主题：经由服务端时，第一帧只能按推测的主题渲染，HTTP 返回后再切换，产生明显的闪白。
  *
- * 代价是换台机器要重设一次。接受——它不是配置，是这块屏幕的偏好。
+ * 代价是更换设备后需要重新设置。该代价可以接受：主题不是配置，而是当前屏幕的偏好。
  *
- * **三态，不是布尔。** `system` 必须是独立的一态，不能用「深色开关 = 关」代替：那样系统切到深色时
- * 应用不会跟，而「亮色」与「跟随」这两档在界面上分不出来。
+ * 主题是三态而不是布尔值。`system` 必须是独立的一态，不能用「深色开关 = 关」代替：否则系统切换为深色时
+ * 应用不随之切换，且「亮色」与「跟随」两档在界面上无法区分。
  *
- * 对应到 CSS：`system` 时**不写** `data-theme`，交给 `tokens.css` 里的
- * `@media (prefers-color-scheme: dark)` 分支；另外两态写死属性，压过媒体查询。
- * `data-theme` 只由本文件设置，改这里之前先确认那两块 CSS 的判据仍然对得上。
+ * 对应的 CSS：`system` 时不写 `data-theme`，交给 `tokens.css` 中的
+ * `@media (prefers-color-scheme: dark)` 分支；另外两态写入固定属性，优先于媒体查询。
+ * `data-theme` 只由本文件设置，修改此处前先确认两处 CSS 的判据仍与之一致。
  */
 
 import { createSignal } from 'solid-js'
@@ -26,7 +26,7 @@ function read(): ThemePref {
     const v = localStorage.getItem(KEY)
     return v === 'light' || v === 'dark' ? v : 'system'
   } catch {
-    // 隐私模式下 localStorage 会直接抛。主题读不出来不该让应用起不来。
+    // 隐私模式下 localStorage 会直接抛错。主题无法读取时不应导致应用无法启动。
     return 'system'
   }
 }
@@ -42,14 +42,14 @@ const [theme, setThemeSignal] = createSignal<ThemePref>(read())
 export { theme }
 
 /**
- * 把存下来的偏好写到 DOM 上。**由入口在 `render()` 之前同步调一次。**
+ * 将已保存的偏好写入 DOM。由入口在 `render()` 之前同步调用一次。
  *
- * 不在模块顶层直接跑：`import` 的副作用会跟着 `store/index.ts` 传染到每一个
- * 引用 store 的模块，包括跑在没有 DOM 的环境里的单测——那边一 import 就
- * `document is not defined`，而报错点在一个和主题毫无关系的测试文件里。
+ * 不在模块顶层直接执行：`import` 的副作用会经由 `store/index.ts` 传递到每一个
+ * 引用 store 的模块，包括在没有 DOM 的环境中运行的单测，这些单测在 import 时即报
+ * `document is not defined`，且报错位于与主题无关的测试文件中。
  *
- * 也不放 `onMount`：那时第一帧已经画完了，系统是亮色而用户选了深色时会先闪一下白。
- * 入口里 render 之前调，两个问题都没有。
+ * 也不放在 `onMount` 中：此时第一帧已渲染完成，系统为亮色而用户选择深色时会先出现闪白。
+ * 在入口的 render 之前调用可同时避免这两个问题。
  */
 export function initTheme(): void {
   apply(theme())
@@ -61,6 +61,6 @@ export function setTheme(pref: ThemePref): void {
   try {
     localStorage.setItem(KEY, pref)
   } catch {
-    // 存不下只影响下次启动记不住，这一次的切换已经生效了，不用打扰用户。
+    // 保存失败只影响下次启动时恢复主题，本次切换已生效，无需提示用户。
   }
 }

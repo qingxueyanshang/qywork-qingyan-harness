@@ -1,19 +1,19 @@
 /**
- * 时间线导出：按片段顺序读源视频，接成一个 mp4（H.264 + AAC）。在浏览器里做：编解码用 WebCodecs，
- * mp4 的读写用 mediabunny，按需加载，不进首屏。
+ * 时间线导出：按片段顺序读取源视频，拼接为一个 mp4（H.264 + AAC）。在浏览器中执行：编解码使用 WebCodecs，
+ * mp4 的读写使用 mediabunny，按需加载，不进入首屏资源。
  *
- * - 画面：输出尺寸取第一段的显示宽高（按旋转转正，超过 4K 等比缩小），其余段等比缩放、留黑边。按每秒 30 帧逐个时刻取
- *   「这一刻正在显示的那一帧」，帧率不固定的源也得到均匀的输出。
- * - 声音：按成片时间每 `WINDOW` 秒一段做离线混音（48 kHz 双声道），没有音轨的段是静音；`muted` 时不带音轨。
- *   混好一段就送编码器、随即释放，与画面按时间交替写入：内存只占一段，不随成片时长增长。
- * - 输出：编码出的字节按块交给 `write`（写到成片文件的指定位置），成片不整段留在内存里。
- *   索引（moov）预留在文件开头、结尾回填，与整段在内存里生成的文件同样是「快速启动」布局。
+ * - 画面：输出尺寸取第一段的显示宽高（按旋转转正，超过 4K 等比缩小），其余段等比缩放并留黑边。按每秒 30 帧逐个时刻取
+ *   该时刻正在显示的帧，帧率不固定的源也能得到均匀的输出。
+ * - 声音：按成片时间每 `WINDOW` 秒一段进行离线混音（48 kHz 双声道），没有音轨的段为静音；`muted` 时不含音轨。
+ *   每混完一段即送入编码器并随即释放，与画面按时间交替写入：内存只占用一段，不随成片时长增长。
+ * - 输出：编码后的字节按块交给 `write`（写入成片文件的指定位置），成片不整段保留在内存中。
+ *   索引（moov）预留在文件开头、结束时回填，与整段在内存中生成的文件同为 faststart 布局。
  */
 
 /** 一段：源视频的地址与入点出点（秒）。 */
 export interface RenderClip {
   url: string
-  /** 报错时指明是哪一段。 */
+  /** 报错时用于指明出错的片段。 */
   name: string
   in: number
   out: number
@@ -21,19 +21,19 @@ export interface RenderClip {
 
 const FPS = 30
 const RATE = 48000
-/** 交给 `write` 的每块的上限：一块就是一次上传请求。 */
+/** 交给 `write` 的每块大小上限：每块对应一次上传请求。 */
 const CHUNK = 4 * 1024 * 1024
-/** AAC 每个包 1024 个采样。预留索引按包数算；多估的包数只在索引后面留一段空白（`free`），不影响播放。 */
+/** AAC 每个包 1024 个采样。预留索引按包数计算；多估计的包数只在索引后留出一段空白（`free`），不影响播放。 */
 const AAC_FRAME = 1024
 /** 混音一段的长度（秒）：一段 48 kHz 双声道约 3.8 MB。 */
 const WINDOW = 10
 /**
- * 取源文件失败时重试两次、各隔半秒，之后报错。不要用缺省：它按指数退避一直重试，
- * 文件被删或服务端停了时导出停在 0% 不结束。
+ * 获取源文件失败时重试两次、间隔各半秒，之后报错。不要使用缺省策略：它按指数退避无限重试，
+ * 文件被删除或服务端停止时导出停滞在 0%，不会结束。
  */
 const RETRY = (attempts: number) => (attempts < 2 ? 0.5 : null)
 
-/** H.264 编码器能接的最大画面（长边、短边）。8K 源按比例缩到这个范围内，超出时编码器直接拒绝。 */
+/** H.264 编码器支持的最大画面（长边、短边）。8K 源按比例缩小到此范围内，超出时编码器直接拒绝。 */
 const MAX_SIDES = [3840, 2160] as const
 
 /** 输出宽高：不超过 `MAX_SIDES`、保持比例、取偶数（H.264 的 4:2:0 采样要求宽高为偶数）。 */
@@ -44,9 +44,9 @@ function outputSize(w: number, h: number): { width: number; height: number } {
 }
 
 /**
- * 导出成片。`onProgress` 收 0–1 的进度（按已编码的帧数）；`signal` 中止时停下并抛出 `AbortError`。
- * `write(bytes, at)` 把一块写到成片文件的 `at` 处，结束前会回写开头，所以不是追加；它返回的 promise
- * 完成之前不出下一块。中途失败时已写的部分由调用方丢弃。
+ * 导出成片。`onProgress` 接收 0–1 的进度（按已编码的帧数）；`signal` 中止时停止并抛出 `AbortError`。
+ * `write(bytes, at)` 把一块写入成片文件的 `at` 处，结束前会回写文件开头，因此不是追加写入；它返回的 promise
+ * 完成之前不输出下一块。中途失败时已写入的部分由调用方丢弃。
  */
 export async function renderTimeline(
   clips: RenderClip[],
@@ -68,13 +68,11 @@ export async function renderTimeline(
     const tracks = await Promise.all(inputs.map((i) => i.getPrimaryVideoTrack()))
     for (const [i, track] of tracks.entries()) {
       if (track && !(await track.canDecode())) {
-        throw new Error(
-          `「${clips[i]!.name}」的视频编码（${track.codec ?? '未知'}）在这台电脑上解不了`,
-        )
+        throw new Error(`「${clips[i]!.name}」的视频编码（${track.codec ?? '未知'}）无法在本机解码`)
       }
     }
     const first = tracks.find(Boolean)
-    if (!first) throw new Error('片段里没有画面')
+    if (!first) throw new Error('片段中没有画面')
     const { width, height } = outputSize(first.displayWidth, first.displayHeight)
 
     const canvas = new OffscreenCanvas(width, height)
@@ -94,7 +92,7 @@ export async function renderTimeline(
     const audio = muted
       ? null
       : new mb.AudioBufferSource({ codec: 'aac', bitrate: mb.QUALITY_HIGH })
-    // 编码器开头有预热包、结尾补齐最后一包：按时长算的包数再加一成与固定余量。
+    // 编码器在开头输出预热包、在结尾补齐最后一包：按时长计算的包数再加 10% 与固定余量。
     const packets = Math.ceil(((length * RATE) / AAC_FRAME) * 1.1) + 64
     if (audio) output.addAudioTrack(audio, { maximumPacketCount: packets })
 
@@ -107,7 +105,7 @@ export async function renderTimeline(
             }),
           )
         : []
-      /** 声音已写到成片的哪一秒。 */
+      /** 声音已写入到成片的第几秒。 */
       let mixedTo = 0
       const mixUntil = async (t: number) => {
         while (audio && mixedTo < Math.min(t, length)) {
@@ -129,7 +127,7 @@ export async function renderTimeline(
         const pictures = sink ? sink.canvasesAtTimestamps(times) : null
         for (let k = 0; k < frames; k++) {
           if (signal.aborted) throw aborted()
-          // 声音领先画面一段：写到这一帧之前，先把它所在那一段的声音写好。
+          // 声音领先画面一段：写入该帧之前，先写入其所在段的声音。
           if (done / FPS >= mixedTo) await mixUntil(mixedTo + WINDOW)
           const picture = pictures ? (await pictures.next()).value : null
           ctx.fillStyle = '#000'
@@ -153,8 +151,8 @@ export async function renderTimeline(
 }
 
 /**
- * 成片 `[from, to)` 这一段的离线混音：每段视频在成片里的位置与这一段相交的部分，取对应的源音频排进去。
- * `voices[i]` 为 `null` 的段（没有音轨或解不了）是静音。
+ * 成片 `[from, to)` 区间的离线混音：每段视频在成片中的位置与该区间相交的部分，取对应的源音频排入。
+ * `voices[i]` 为 `null` 的段（没有音轨或无法解码）为静音。
  */
 async function mixWindow(
   mb: typeof import('mediabunny'),
@@ -172,7 +170,7 @@ async function mixWindow(
     const a = Math.max(from, start)
     const b = Math.min(to, end)
     if (track && a < b) {
-      // 这一段在源文件里对应的时间。
+      // 该区间在源文件中对应的时间。
       const srcFrom = c.in + (a - start)
       const srcTo = c.in + (b - start)
       for await (const { buffer, timestamp, duration } of new mb.AudioBufferSink(track).buffers(

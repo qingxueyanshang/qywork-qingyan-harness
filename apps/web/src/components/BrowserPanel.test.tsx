@@ -1,11 +1,11 @@
 /**
- * 内置浏览器页按宿主报的显示位置决定网页那块区域放什么。
+ * 内置浏览器页按宿主报告的显示位置决定网页区域的内容。
  *
- * 覆盖范围：`BrowserPanel.tsx`，连同 `store/browser.ts` 的 `browserPresentation`。
+ * 覆盖范围：`BrowserPanel.tsx`，以及 `store/browser.ts` 的 `browserPresentation`。
  *
- * 原始失败形状：界面按 UA 判「有内置浏览器」，macOS 与 Linux 的外壳里没有入口；判据换成
- * 宿主之后，页在独立窗口里的宿主上面板若照旧摆放子视图，每次翻页签都发一条必然失败的
- * `browser_layout`，而用户没有办法看到那一页。
+ * 原始失败形状：界面按 UA 判定「有内置浏览器」时，macOS 与 Linux 的外壳中没有入口；按宿主判定
+ * 而不区分显示位置时，网页位于独立窗口的宿主上面板仍摆放子视图，每次切换页签都发送一条必然失败的
+ * `browser_layout`，用户无法看到该网页。
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -39,7 +39,7 @@ afterEach(async () => {
   store.setWorkspace(null)
 })
 
-/** 装成桌面外壳，记下每一条原生调用。 */
+/** 模拟桌面外壳，记录每一次原生调用。 */
 function asShell(invokes: Invoke[]): void {
   const before = g.__TAURI_INTERNALS__
   g.__TAURI_INTERNALS__ = {
@@ -74,8 +74,8 @@ async function mount(tabId: string, browser: BrowserCapability) {
   return { host, store }
 }
 
-describe('网页那块区域跟着宿主报的显示位置走', () => {
-  test('页嵌在面板里：占位容器的矩形报给宿主，宿主断开期间不收起', async () => {
+describe('网页区域按宿主报告的显示位置呈现', () => {
+  test('网页嵌入面板：占位容器的矩形报告给宿主，宿主断开期间不收起', async () => {
     const invokes: Invoke[] = []
     asShell(invokes)
     const rect = HTMLElement.prototype.getBoundingClientRect
@@ -92,7 +92,7 @@ describe('网页那块区域跟着宿主报的显示位置走', () => {
       const placed = invokes.filter((i) => i.cmd === 'browser_layout' && i.args?.tabId)
       expect(placed.at(-1)?.args).toMatchObject({ tabId: 'bt_embed', width: 300, height: 200 })
 
-      // 宿主与服务端断开：能力里没有显示位置了，子视图仍摆在原处。
+      // 宿主与服务端断开：能力中不再有显示位置，子视图保持在原位置。
       const before = invokes.length
       store.applyEvent({
         seq: 1,
@@ -109,7 +109,7 @@ describe('网页那块区域跟着宿主报的显示位置走', () => {
     }
   })
 
-  test('页在浏览器自己的窗口里：只给一个按钮，点它把窗口提到前面，不摆放子视图', async () => {
+  test('网页位于浏览器自身窗口：只显示一个按钮，点击后将窗口置于前台，不摆放子视图', async () => {
     const invokes: Invoke[] = []
     asShell(invokes)
     const { host, store } = await mount('bt_win', {

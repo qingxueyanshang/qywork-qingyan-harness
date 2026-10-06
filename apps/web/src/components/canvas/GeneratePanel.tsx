@@ -1,10 +1,10 @@
 /**
- * 生成面板：选中一张生成卡时贴在它下方，按屏幕尺寸画、不随缩放。外观与结构同会话输入框：
- * 顶部素材格、正文（`@` 引用是内嵌标签）、底栏（模型 · 模式 · 参数 · @ · 本次花费 · 发送键）。
+ * 生成面板：选中生成卡时显示在其下方，按屏幕尺寸渲染，不随缩放变化。外观与结构同会话输入框：
+ * 顶部素材栏、正文（`@` 引用是内嵌标签）、底栏（模型 · 模式 · 参数 · @ · 本次花费 · 发送键）。
  *
- * 尺寸只有两档固定值（B9）；提示词在失焦与发送时提交，发送是「先提交再运行」同一次请求。
- * 面板里的菜单都在按钮上方弹出、左缘对齐按钮，同会话输入框。
- * 编辑中的提示词不被重读覆盖：编辑框有焦点时不按画布回体重建。
+ * 尺寸只有两档固定值（B9）；提示词在失焦与发送时提交，发送在同一次请求中先提交提示词再运行。
+ * 面板中的菜单均在按钮上方弹出、左缘与按钮对齐，同会话输入框。
+ * 编辑中的提示词不被重新读取覆盖：编辑框有焦点时不按服务端返回的画布重建。
  */
 
 import {
@@ -90,14 +90,14 @@ const UNIT: Record<string, string> = {
   seconds: '秒',
   n: '张',
 }
-/** 整数参数的取值个数不超过这么多时逐项列出，否则用加减按钮。 */
+/** 整数参数的取值个数不超过此值时逐项列出，否则使用加减按钮。 */
 const MAX_LISTED = 12
-/** 分段按钮不超过这么多项时排成一行，否则每行 4 个。 */
+/** 分段按钮不超过此数量时排成一行，否则每行 4 个。 */
 const ONE_ROW = 10
 
 type SizeShape = NonNullable<MediaParamOption['shapes']>[number]
 
-/** 参数取值的界面用词：布尔值写开关，接口表示自动选择的取值写「自动」，其余原样。 */
+/** 参数取值的界面文字：布尔值显示为开、关，接口中表示自动选择的取值显示为「自动」，其余原样显示。 */
 export function valueText(v: unknown): string {
   if (v === true || v === 'true') return '开'
   if (v === false || v === 'false') return '关'
@@ -106,14 +106,14 @@ export function valueText(v: unknown): string {
   return String(v)
 }
 
-/** 一个参数取值的读法：没有取值或由模型定写「自动」，有单位的带单位。 */
+/** 参数取值的显示文字：没有取值或由模型决定时显示「自动」，有单位的参数附带单位。 */
 export function paramText(p: MediaParamOption, v: unknown): string {
   if (v === undefined || v === p.auto) return '自动'
   const unit = UNIT[p.name]
   return unit ? `${v} ${unit}` : cellText(p, v)
 }
 
-/** 格子上的字：只写取值，单位由节名交代。 */
+/** 选项上的文字：只显示取值，单位由所在节的标题说明。 */
 export function cellText(p: MediaParamOption, v: unknown): string {
   if (v === undefined || v === p.auto) return '自动'
   return p.valueLabels?.[String(v)] ?? valueText(v)
@@ -124,14 +124,14 @@ function defaultText(p: MediaParamOption): string {
   return p.default === undefined ? '默认' : `默认（${cellText(p, p.default)}）`
 }
 
-/** 尺寸取值落在对照表的哪一格；不在表里（大模型填的其他尺寸）回 `undefined`。 */
+/** 尺寸取值在对照表中对应的项；不在表中（模型填写的其他尺寸）时返回 `undefined`。 */
 export function shapeAt(p: MediaParamOption, v: unknown): SizeShape | undefined {
   return p.shapes?.find((s) => s.value === v)
 }
 
 /**
- * 底栏按钮上的字：只写取值，取值本身看不出是哪个参数时（自动、开关）补上参数名。
- * 带对照表的尺寸写宽高比与档位；取值不在表里时原样写。
+ * 底栏按钮上的文字：只显示取值，取值本身无法表明是哪个参数时（自动、开关）附加参数名。
+ * 带对照表的尺寸显示宽高比与档位；取值不在表中时原样显示。
  */
 export function chipText(p: MediaParamOption, v: unknown): string {
   if (p.shapes) {
@@ -145,7 +145,7 @@ export function chipText(p: MediaParamOption, v: unknown): string {
   return text
 }
 
-/** 参数按钮上的字：各参数取值用「 · 」连起，开关只在打开时写进去。 */
+/** 参数按钮上的文字：各参数取值用「 · 」连接，开关只在打开时列入。 */
 export function paramsText(
   params: readonly MediaParamOption[],
   current: (p: MediaParamOption) => unknown,
@@ -160,8 +160,8 @@ export function paramsText(
 const RATIO_RE = /^\d+:\d+$/
 
 /**
- * 这个取值定下的宽高比：带对照表的尺寸取表里那一格的宽高比，取值列里有比例的参数（视频的宽高比）取取值本身；
- * 由模型定时回 `auto`，参数与宽高比无关（分辨率、张数）或取值不在表里时回 `null`。
+ * 取值决定的宽高比：带对照表的尺寸取表中对应项的宽高比，取值列表中含比例的参数（视频的宽高比）取取值本身；
+ * 由模型决定时返回 `auto`，参数与宽高比无关（分辨率、张数）或取值不在表中时返回 `null`。
  */
 export function ratioOf(p: MediaParamOption, v: unknown): string | null {
   if (p.shapes) {
@@ -172,7 +172,7 @@ export function ratioOf(p: MediaParamOption, v: unknown): string | null {
   return typeof v === 'string' && RATIO_RE.test(v) ? v : 'auto'
 }
 
-/** 比例（`16:9`）或像素尺寸（`1536x1024`）画成的框：长边 14px，短边按比例、不小于 5px。其余取值回 `null`。 */
+/** 比例（`16:9`）或像素尺寸（`1536x1024`）绘制成的框：长边 14px，短边按比例计算且不小于 5px。其余取值返回 `null`。 */
 export function shapeOf(v: unknown): { w: number; h: number } | null {
   const m = typeof v === 'string' ? /^(\d+)\s*[:x*×]\s*(\d+)$/.exec(v) : null
   const a = Number(m?.[1])
@@ -182,7 +182,7 @@ export function shapeOf(v: unknown): { w: number; h: number } | null {
   return { w: Math.max(5, Math.round(a * scale)), h: Math.max(5, Math.round(b * scale)) }
 }
 
-/** 宽高比格子上方的图形：比例画同比例的框，自动画带角标的方框。 */
+/** 宽高比选项上方的图形：比例取值绘制同比例的框，自动绘制带角标的方框。 */
 function RatioIcon(props: { of: unknown }) {
   return (
     <Show
@@ -201,13 +201,13 @@ function RatioIcon(props: { of: unknown }) {
   )
 }
 
-/** 参数面板的一节：一个参数，或尺寸对照表拆出的宽高比、分辨率之一。 */
+/** 参数面板的一节：一个参数，或由尺寸对照表拆分出的宽高比、分辨率之一。 */
 interface Section {
   kind: 'param' | 'ratio' | 'tier'
   p: MediaParamOption
 }
 
-/** 分段按钮的一格。`checked` 是取值：面板开着时参数会变。 */
+/** 分段按钮的一项。`checked` 是读取函数：面板打开期间参数会变化。 */
 interface Cell {
   text: string
   of: unknown
@@ -215,12 +215,12 @@ interface Cell {
   pick: () => void
 }
 
-/** 对照表里出现过的宽高比（`undefined` 即自动）与档位，按表内次序。 */
+/** 对照表中出现的宽高比（`undefined` 表示自动）与档位，按表内顺序排列。 */
 const ratiosOf = (p: MediaParamOption) => [...new Set((p.shapes ?? []).map((s) => s.ratio))]
 const tiersOf = (p: MediaParamOption) =>
   [...new Set((p.shapes ?? []).map((s) => s.tier))].filter((t): t is string => t !== undefined)
 
-/** 带对照表的参数拆成宽高比、分辨率两节；只有一项可选的那一节不列。 */
+/** 带对照表的参数拆分为宽高比、分辨率两节；只有一个可选项的节不列出。 */
 function sectionsOf(params: readonly MediaParamOption[]): Section[] {
   return params.flatMap((p): Section[] => {
     if (!p.shapes) return [{ kind: 'param', p }]
@@ -231,7 +231,7 @@ function sectionsOf(params: readonly MediaParamOption[]): Section[] {
   })
 }
 
-/** 一个节点现在指着的媒体：文件节点是它的路径，生成节点是当前那一版（还在远端时没有）。 */
+/** 节点当前指向的媒体：文件节点为其路径，生成节点为当前版本（仍在远端时为空）。 */
 export function mediaOf(
   view: CanvasView,
   nodeId: string,
@@ -285,16 +285,16 @@ export function GeneratePanel(props: {
   onTall: (tall: boolean) => void
   apply: (ops: CanvasOp[]) => Promise<boolean>
   run: (ops: CanvasOp[]) => void
-  /** 停止这张卡的生成。兑现时请求已经回来。 */
+  /** 停止该卡片的生成。Promise 兑现时停止请求已返回。 */
   cancel: () => Promise<void>
-  /** 把工作区文件或本机文件放上画布（在这张卡附近），回新节点的 id；没放成回 `null`。 */
+  /** 把工作区文件或本机文件添加到画布（位于该卡片附近），返回新节点的 id；添加失败时返回 `null`。 */
   place: (source: { path: string } | { file: File }) => Promise<string | null>
 }) {
   void ensureModelCatalog()
   let editor!: HTMLDivElement
   /*
-   * 一个面板实例只属于一张卡（外层按卡的 id 重建）。提示词在失焦时提交，而取消选中会先卸载面板、
-   * 失焦发生在卸载之后，那时 `props.node` 已不可读；所以卡的 id、已提交的提示词与提交函数在挂载时取下。
+   * 每个面板实例只属于一张卡片（外层按卡片 id 重建）。提示词在失焦时提交，而取消选中时先卸载面板，
+   * 失焦发生在卸载之后，此时 `props.node` 已不可读；因此卡片 id、已提交的提示词与提交函数在挂载时保存。
    */
   const nodeId = props.node.id
   const apply = props.apply
@@ -304,7 +304,7 @@ export function GeneratePanel(props: {
   const [emptyMode, setEmptyMode] = createSignal<Mode>('reference')
   const [price, setPrice] = createSignal<CanvasQuote | null>(null)
   dismissOnOutside(menu, () => setMenu(null))
-  /** `@` 弹出选择时光标所在的位置；选中后在这里插入标签。 */
+  /** `@` 打开选择框时光标所在的位置；选中后在此处插入标签。 */
   let caret: Range | null = null
 
   const edges = () => inputsOf(props.view.doc, props.node.id)
@@ -315,7 +315,7 @@ export function GeneratePanel(props: {
         ? modeOf(props.view.doc, props.node.id)
         : emptyMode()
   const running = () => props.state?.state === 'running'
-  /** 停止请求还没回来：停止键禁用，免得重复撤销。 */
+  /** 停止请求尚未返回：停止键禁用，避免重复撤销。 */
   const [stopping, setStopping] = createSignal(false)
 
   const models = (): MediaModelOption[] =>
@@ -352,7 +352,7 @@ export function GeneratePanel(props: {
     )
   })
   const params = createMemo(() => resolvedParams().filter((p) => p.available !== false))
-  // 节的身份只随模型目录变化；保存参数与重读画布时保留控件、焦点和滚动锚点。
+  // 节的标识只随模型目录变化；保存参数与重新读取画布时保留控件、焦点和滚动锚点。
   const sectionDefinitions = createMemo(() => sectionsOf(modelParams()))
   const sections = createMemo(() =>
     sectionDefinitions().filter((s) => {
@@ -370,7 +370,7 @@ export function GeneratePanel(props: {
     return duration && audio ? [duration, audio] : []
   })
   const paramValue = (p: MediaParamOption) => activeParams()[p.name] ?? p.default
-  /** 再点一次同一个按钮收起。 */
+  /** 再次点击同一按钮时收起。 */
   const toggle = (kind: 'model' | 'mode' | 'params', anchor: HTMLElement) =>
     setMenu(menu()?.kind === kind ? null : { kind, anchor })
   const chevron = (kind: Menu['kind']) => (menu()?.kind === kind ? 'up' : 'down')
@@ -386,7 +386,7 @@ export function GeneratePanel(props: {
     return out
   }
 
-  // 画布回体换了提示词、而编辑框没有焦点时，按回体重建；有焦点时编辑框是真源。
+  // 服务端返回的画布中提示词变化且编辑框没有焦点时，按返回的提示词重建；有焦点时以编辑框内容为准。
   createEffect(
     on(
       () => props.node.prompt,
@@ -443,10 +443,10 @@ export function GeneratePanel(props: {
     props.run(d === props.node.prompt ? [] : [{ op: 'update', id: props.node.id, prompt: d }])
   }
 
-  /** 选素材时要连成的用途；`@` 打开的没有。 */
+  /** 选择素材后建立连接所用的用途；由 `@` 打开时没有用途。 */
   const roleOf = (m: Menu | null) => (m?.kind === 'pick' ? m.role : undefined)
 
-  /** 选素材的清单：首尾帧模式只列已连上的两帧（首尾帧不能与参考素材同时给）。 */
+  /** 可选素材列表：首尾帧模式只列出已连接的两帧（首尾帧不能与参考素材同时提供）。 */
   const pickable = () => {
     const role = roleOf(menu())
     const connected = new Set(edges().map((e) => e.from))
@@ -457,14 +457,14 @@ export function GeneratePanel(props: {
       if (role === 'first_frame' || role === 'last_frame')
         return kind === 'image' && !connected.has(n.id)
       if (role) return !connected.has(n.id) && accepts(kind)
-      // `@`：首尾帧模式下只列那两帧，其余模式列能作为输入的素材。
+      // `@`：首尾帧模式下只列出这两帧，其余模式列出可作为输入的素材。
       if (mode() === 'first_last') return connected.has(n.id)
       return accepts(kind)
     })
   }
   const accepts = (kind: MediaOutput) =>
     props.node.output === 'image' ? kind === 'image' : props.node.output === 'video'
-  /** 首尾帧只收图片；出图卡只收图片；视频卡收图片、视频、音频。 */
+  /** 首尾帧只接受图片；图像生成卡只接受图片；视频生成卡接受图片、视频、音频。 */
   const imagesOnly = () => {
     const role = roleOf(menu())
     return role === 'first_frame' || role === 'last_frame' || props.node.output === 'image'
@@ -486,7 +486,7 @@ export function GeneratePanel(props: {
       void props.apply([{ op: 'connect', from: sourceId, to: props.node.id, role }])
       return
     }
-    // `@`：在光标处插入标签，立刻提交提示词——未连线的素材由服务端在同一批里补线。
+    // `@`：在光标处插入标签并立即提交提示词；未连线的素材由服务端在同一批操作中补充连线。
     const el = chip(sourceId)
     const range = caret
     if (range && editor.contains(range.startContainer)) {
@@ -508,7 +508,7 @@ export function GeneratePanel(props: {
     setMenu({ kind: 'pick', anchor, ...(role ? { role } : {}) })
   }
 
-  /** 编辑框的监听挂在元素上：可编辑元素本身就收焦点与按键，不另加角色。 */
+  /** 编辑框的监听器注册在元素上：可编辑元素本身接收焦点与按键，不另设 ARIA 角色。 */
   function listen(el: HTMLDivElement) {
     el.addEventListener('input', () => setDraft(promptOfEditor(el)))
     el.addEventListener('blur', () => {
@@ -530,7 +530,7 @@ export function GeneratePanel(props: {
     })
   }
 
-  /** 放上画布再选中：工作区文件与上传的文件都先成为画布节点；已在画布上的工作区文件直接用那个节点。 */
+  /** 先添加到画布再选中：工作区文件与上传的文件均先成为画布节点；已在画布上的工作区文件直接使用该节点。 */
   const place = async (sources: ({ path: string } | { file: File })[]) => {
     const m = menu()
     setMenu(null)
@@ -544,7 +544,7 @@ export function GeneratePanel(props: {
     }
   }
 
-  /** 设一个参数；`undefined` 表示去掉，交给接口的缺省值。 */
+  /** 设置一个参数；`undefined` 表示删除该参数，使用接口的缺省值。 */
   const setParam = (p: MediaParamOption, value: string | number | boolean | undefined) => {
     const next = { ...props.node.params }
     if (value === undefined || value === '' || value === p.default) delete next[p.name]
@@ -555,8 +555,8 @@ export function GeneratePanel(props: {
   }
 
   /**
-   * 还没有结果的卡：选宽高比时框先按所选比例变形（短边不变），选回「自动」还原成缺省比例；
-   * 有结果之后框跟结果的实际尺寸走（服务端落盘时定），这里不动。不是宽高比的参数回空。
+   * 尚无结果的卡片：选择宽高比时框按所选比例改变形状（短边不变），重新选择「自动」时恢复缺省比例；
+   * 有结果后框按结果的实际尺寸确定（由服务端写入磁盘时决定），此处不修改。非宽高比参数返回空对象。
    */
   const previewBox = (ratio: string | null): { w?: number; h?: number } => {
     if (ratio === null || props.node.versions.length > 0) return {}
@@ -566,9 +566,9 @@ export function GeneratePanel(props: {
     return box.w === props.node.w && box.h === props.node.h ? {} : box
   }
 
-  /** 一个参数菜单里的逐项取值；整数范围太大时回 `null`，改用加减按钮。 */
+  /** 参数菜单中的逐项取值；整数范围过大时返回 `null`，改用加减按钮。 */
   const choicesOf = (p: MediaParamOption): (string | number | boolean | undefined)[] | null => {
-    // 没有缺省值的参数多一项「自动」：去掉取值，交给接口。
+    // 没有缺省值的参数增加一项「自动」：删除取值，由接口决定。
     const unset = p.default === undefined ? [undefined] : []
     if (p.values) return [...unset, ...p.values]
     if (p.type === 'enum') return [...unset, ...(p.values ?? [])]
@@ -585,7 +585,7 @@ export function GeneratePanel(props: {
     return null
   }
 
-  /** 一节的格子；大范围整数回 `null`，改用加减按钮。 */
+  /** 一节中的选项；大范围整数返回 `null`，改用加减按钮。 */
   const cellsOf = (s: Section): Cell[] | null => {
     const p = s.p
     const at = () => shapeAt(p, paramValue(p))
@@ -614,11 +614,11 @@ export function GeneratePanel(props: {
       })) ?? null
     )
   }
-  /** 宽高比那一节，以及取值是比例的参数（视频的宽高比），格子上画图形。 */
+  /** 宽高比节，以及取值为比例的参数（视频的宽高比），在选项上绘制图形。 */
   const drawn = (s: Section) =>
     s.kind === 'ratio' || (s.kind === 'param' && (choicesOf(s.p) ?? []).some((v) => shapeOf(v)))
 
-  /** 换宽高比：保留当前档位，这一档没有这个宽高比时取表里第一个。 */
+  /** 切换宽高比：保留当前档位；当前档位没有该宽高比时取表中第一个匹配项。 */
   const pickRatio = (p: MediaParamOption, ratio: string | undefined) => {
     const table = p.shapes ?? []
     const tier = shapeAt(p, paramValue(p))?.tier
@@ -627,7 +627,7 @@ export function GeneratePanel(props: {
       table.find((s) => s.ratio === ratio)
     if (hit) setParam(p, hit.value)
   }
-  /** 换档位：保留当前宽高比；当前是「自动」而接口不认档位简写时取 1:1。 */
+  /** 切换档位：保留当前宽高比；当前为「自动」且接口不接受档位简写时取 1:1。 */
   const pickTier = (p: MediaParamOption, tier: string) => {
     const table = p.shapes ?? []
     const ratio = shapeAt(p, paramValue(p))?.ratio
@@ -638,7 +638,7 @@ export function GeneratePanel(props: {
     if (hit) setParam(p, hit.value)
   }
 
-  /** 加减：到下限再减一次是「自动」（有 `auto` 时），从「自动」加一次回到下限。 */
+  /** 加减：到达下限后再减一次为「自动」（有 `auto` 时），从「自动」增加一次回到下限。 */
   const step = (p: MediaParamOption, delta: number) => {
     const v = paramValue(p)
     const min = p.min ?? 0
@@ -810,7 +810,7 @@ export function GeneratePanel(props: {
     if (ops.length) void props.apply(ops)
   }
 
-  // 本次花费：模型、参数、输入数量变了就重问一次；推不出时不显示。
+  // 本次花费：模型、参数或输入数量变化时重新查询；无法推算时不显示。
   let quoteSeq = 0
   createEffect(
     on(
@@ -984,7 +984,7 @@ export function GeneratePanel(props: {
         <Show when={price()}>
           {(q) => <span class="canvas-price">{formatMoney(q().cost, q().currency as never)}</span>}
         </Show>
-        {/* 生成中发送键换成停止键，同会话输入框。 */}
+        {/* 生成中发送键替换为停止键，同会话输入框。 */}
         <Show
           when={running()}
           fallback={

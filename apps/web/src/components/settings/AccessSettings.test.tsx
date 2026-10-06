@@ -1,10 +1,10 @@
 /**
- * 「权限」页电脑控制那一张卡：状态行的判定顺序，与缺项行及其「打开系统设置」按钮。
+ * 「权限」页的电脑控制卡片：状态行的判定顺序，以及缺项行与其「打开系统设置」按钮。
  *
  * 覆盖范围：`AccessSettings.tsx` 的状态行、前台操作默认值与开关保存。
  *
- * 原始失败形状：授权事实由 worker 报之前，Mac/Linux 上 worker 没起来也显示「系统未授权」，
- * 而那时系统设置里没有任何一项可授。
+ * 原始失败形状：授权事实不由 worker 报告时，Mac/Linux 上 worker 未启动也显示「系统未授权」，
+ * 而此时系统设置中没有任何可授权的项。
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -42,13 +42,13 @@ const desktop = (over: Partial<DesktopCapability>): DesktopCapability => ({
   ...over,
 })
 
-test('状态依次报：宿主未连接 → 组件未就绪 → 系统未授权 → 已就绪', async () => {
+test('状态依次显示：宿主未连接 → 组件未就绪 → 系统未授权 → 已就绪', async () => {
   const { desktopStatus } = await import('./AccessSettings.tsx')
   expect(desktopStatus(undefined)).toBe('读取中…')
   expect(desktopStatus(desktop({ connected: false, workerReady: false, authorized: false }))).toBe(
     '宿主未连接',
   )
-  // worker 没起来时没有授权事实：报组件未就绪，不报系统未授权。
+  // worker 未启动时没有授权事实：显示组件未就绪，不显示系统未授权。
   expect(desktopStatus(desktop({ workerReady: false, authorized: false }))).toBe('组件未就绪')
   expect(desktopStatus(desktop({ authorized: false, missing: ['accessibility'] }))).toBe(
     '系统未授权',
@@ -57,7 +57,7 @@ test('状态依次报：宿主未连接 → 组件未就绪 → 系统未授权 
   expect(desktopStatus(desktop({ missing: ['screen_recording'] }))).toBe('已就绪')
 })
 
-/** 挂一份「权限」页，返回页面容器、原生调用记录与收尾函数。 */
+/** 挂载「权限」页，返回页面容器、原生调用记录与清理函数。 */
 async function mount(
   capability: DesktopCapability,
   shell: ((cmd: string) => Promise<unknown>) | null,
@@ -160,7 +160,7 @@ test('前台操作默认启用，显式关闭与重新开启均按实际选择�
   }
 })
 
-test('macOS 缺辅助功能与屏幕录制：各一行、各一个按钮，按钮按名字打开系统设置', async () => {
+test('macOS 缺少辅助功能与屏幕录制：各占一行、各有一个按钮，按钮按名称打开系统设置', async () => {
   const page = await mount(
     desktop({ authorized: false, missing: ['accessibility', 'screen_recording'] }),
     () => Promise.resolve(null),
@@ -168,7 +168,7 @@ test('macOS 缺辅助功能与屏幕录制：各一行、各一个按钮，按�
   try {
     const rows = page.rows()
     expect(rows.map((r) => [r.label, r.hint])).toEqual([
-      ['前台操作', '用真实鼠标键盘，执行时会打断你'],
+      ['前台操作', '使用真实鼠标键盘，执行时会中断当前操作'],
       ['状态', '系统未授权'],
       ['辅助功能', '未授权'],
       ['屏幕录制', '未授权'],
@@ -186,7 +186,7 @@ test('macOS 缺辅助功能与屏幕录制：各一行、各一个按钮，按�
   }
 })
 
-test('外壳打不开系统设置时那一行如实报失败', async () => {
+test('外壳无法打开系统设置时该行显示失败', async () => {
   const page = await mount(desktop({ authorized: false, missing: ['accessibility'] }), () =>
     Promise.reject(new Error('open failed')),
   )
@@ -198,7 +198,7 @@ test('外壳打不开系统设置时那一行如实报失败', async () => {
   }
 })
 
-test('Linux 找不到无障碍总线：一行说明缺什么，没有按钮', async () => {
+test('Linux 未找到无障碍总线：用一行说明缺少的项，不显示按钮', async () => {
   const page = await mount(desktop({ authorized: false, missing: ['accessibility_bus'] }), () =>
     Promise.resolve(null),
   )
@@ -210,7 +210,7 @@ test('Linux 找不到无障碍总线：一行说明缺什么，没有按钮', as
   }
 })
 
-test('不在桌面外壳里时缺项照常列出，但不给打开系统设置的按钮', async () => {
+test('不在桌面外壳中时缺项照常列出，但不提供打开系统设置的按钮', async () => {
   const page = await mount(desktop({ authorized: false, missing: ['accessibility'] }), null)
   try {
     const row = page.rows()[2]

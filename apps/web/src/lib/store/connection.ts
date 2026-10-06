@@ -1,10 +1,10 @@
 /**
- * 连接层：那一个 `QyClient`，以及把服务端事件折进 `state` 的 `applyEvent`。
+ * 连接层：唯一的 `QyClient` 实例，以及把服务端事件折叠进 `state` 的 `applyEvent`。
  *
- * 会话投影（`reloadActiveConversation` 及其两个折叠助手）也在这里，
- * 而不是在 `actions.ts`：**断线重连后补不上缺口时要整段重拉**，
- * 那是连接层自己的收尾动作。放到别处就得让连接层反向依赖动作层，
- * 两个模块互相 import 是一定要避免的。
+ * 会话投影（`reloadActiveConversation` 及其两个折叠辅助函数）也位于此处，
+ * 而不在 `actions.ts`：断线重连后无法补齐缺口时须整段重新拉取，
+ * 这是连接层自身的收尾动作。放到其他模块会使连接层反向依赖动作层，
+ * 必须避免两个模块互相 import。
  */
 
 import type {
@@ -53,20 +53,20 @@ export function invalidateExtensions(): void {
 export const client = new QyClient({
   onState: (s, detail) => setState({ connection: s, connectionDetail: detail ?? '' }),
   onCapabilities: (caps) => setState('capabilities', caps),
-  // 握手带的忙闲快照直接整表替换：它是服务端此刻的全部，不是一条增量。
+  // 握手携带的忙闲快照直接整表替换：它是服务端当前的完整状态，不是增量。
   onBusy: (ids) => syncBusy(ids),
   onResync: () => {
-    // 缺口补不上：清空本地投影重新拉，而不是带着一个不完整的 transcript 继续。
+    // 无法补齐缺口：清空本地投影并重新拉取，不在不完整的 transcript 上继续。
     void reloadActiveConversation()
   },
   onStreamChanged: () => {
     /*
-     * 桌面源码开发走「前后端原子换代」：Vite 不先热替换页面，所有源码改动都先
-     * 等当前 run 跑完，再由 dev.ts 重启 sidecar。streamId 变更就是后端换代完成的
-     * 可靠信号，此时刷新整页，才会加载与它同一棵源码的 UI。
+     * 桌面源码开发采用「前后端原子换代」：Vite 不先热替换页面，所有源码改动都先
+     * 等待当前 run 执行完毕，再由 dev.ts 重启 sidecar。streamId 变更是后端换代完成的
+     * 可靠信号，此时刷新整页，才会加载与后端同一版本源码的 UI。
      *
-     * 不能把这件事挂到普通 reconnect 或 resync 上：网络闪断也会走那两条路，
-     * 手机端和打包版不该因此整页刷新。
+     * 不能把刷新挂到普通 reconnect 或 resync 上：网络闪断也会触发这两条路径，
+     * 手机端与打包版不应因此整页刷新。
      */
     if (import.meta.env.DEV && import.meta.env.VITE_QYWORK_COORDINATED_RELOAD === '1') {
       location.reload()
@@ -77,14 +77,14 @@ export const client = new QyClient({
 })
 
 /**
- * 把一条拒绝回执折进 `state`。
+ * 把一条拒绝回执折叠进 `state`。
  *
- * 两件事：说出来（`notice`），以及**冲销这条指令预支的那一笔忙**。被拒的指令服务端
- * 从未置忙，也就不会发 `conversation.busy: false` 来放下按回车时乐观置上的那一格，
- * 界面会一直停在生成中，直到重连由握手快照重置。
+ * 执行两项操作：显示提示（`notice`），以及冲销该指令预先设置的忙状态。被拒绝的指令
+ * 服务端从未置忙，因此不会发送 `conversation.busy: false` 来清除按回车时乐观设置的忙状态，
+ * 界面会一直停留在生成中，直到重连时由握手快照重置。
  *
- * 冲销按 `clientRequestId` 定位那一笔，不按「收到拒绝」定位会话：这条会话可能
- * 真的正在跑别的轮次（被拒的是 `followup.steer` 之类）。
+ * 冲销按 `clientRequestId` 定位对应的忙状态，不按收到拒绝的会话定位：该会话可能
+ * 确实正在运行其他轮次（例如被拒绝的是 `followup.steer`）。
  */
 export function applyRejected(frame: CommandRejectedFrame): void {
   setState('notice', { message: frame.message, reason: frame.reason })
@@ -92,23 +92,23 @@ export function applyRejected(frame: CommandRejectedFrame): void {
 }
 
 /*
- * 热更新换掉这个模块之前，把旧连接关干净。
+ * 热更新替换本模块之前，关闭旧连接。
  *
- * vite 会重新执行整个模块，因此有了第二个 `QyClient`，而上一份那条 WebSocket 还连着。
- * 服务端按连接注册订阅者（`handshake.ts` 拿 `ws.data.id` 做 key），两条连接就是两份
- * 同样的事件流，回调的却是同一个 store——正文每个 token 显示两遍，末尾出现两条读数条。
- * 改一次代码多一条连接，越用越多。
+ * vite 会重新执行整个模块并创建第二个 `QyClient`，而上一个实例的 WebSocket 仍处于连接状态。
+ * 服务端按连接注册订阅者（`handshake.ts` 以 `ws.data.id` 为 key），两条连接即两份
+ * 相同的事件流，回调的却是同一个 store：正文每个 token 显示两遍，末尾出现两条读数条。
+ * 每修改一次代码就多一条连接，连接数持续累积。
  *
- * 一键脚本起的就是 dev（`scripts/start.ps1` 两种模式都挂 vite dev server），
- * 所以这条不是只影响改代码的人。**这段没有单元测试能覆盖**：`import.meta.hot`
- * 只在 vite 下存在，验证得靠真的热更新一次。
+ * 一键脚本启动的就是 dev（`scripts/start.ps1` 两种模式都使用 vite dev server），
+ * 因此该问题不只影响修改代码的人。此段无法由单元测试覆盖：`import.meta.hot`
+ * 只在 vite 下存在，须通过实际热更新一次来验证。
  */
 if (import.meta.hot) import.meta.hot.dispose(() => client.close())
 
 /**
- * 正文的匀速呈现。缓冲区里永远只有当前尾部那一段 text step——
- * **除 `text.delta` 外的任何事件都先冲一次**，所以不需要按 step 记账。
- * 编排逻辑在 `stream-pace.ts` 里（那边能测），这里只做接线。
+ * 正文的匀速呈现。缓冲区中始终只有当前末尾的 text step：
+ * 任何写入 transcript 的事件都先 flush 一次，因此无需按 step 区分缓冲。
+ * 编排逻辑位于 `stream-pace.ts`（可单独测试），此处只负责接线。
  */
 function writeTail(key: string, chunk: string): void {
   if (!chunk) return
@@ -118,7 +118,7 @@ function writeTail(key: string, chunk: string): void {
       const items = s.views[cid]?.transcript
       if (!items) return
       const last = items[items.length - 1]
-      // 同一条 text step 持续追加：只改这一个字段，只更新一个文本节点。
+      // 同一个 text step 持续追加：只修改该字段，只更新一个文本节点。
       if (last?.kind === 'text' && last.id === stepId) last.text += chunk
       else items.push({ id: stepId, kind: 'text', text: chunk })
     }),
@@ -126,10 +126,10 @@ function writeTail(key: string, chunk: string): void {
 }
 
 /**
- * 节拍器与合帧器的缓冲键：**会话 id 打头**。
+ * 节拍器与合帧器的缓冲键：以会话 id 开头。
  *
- * 当前会话和右侧那一页子会话同时在收增量，只按 stepId 记账的话两条会话的
- * step id 撞上就会把字写进另一条会话的正文里。
+ * 当前会话与右侧的子会话页同时接收增量，只按 stepId 区分时，两条会话的
+ * step id 冲突会把文字写入另一条会话的正文。
  */
 const SEP = String.fromCharCode(0)
 const bufKey = (cid: string, ...rest: string[]): string => [cid, ...rest].join(SEP)
@@ -142,10 +142,10 @@ const schedule = (fn: () => void, ms: number) => {
 const pacer = createPacer({ write: writeTail, schedule, now: () => Date.now() })
 
 /**
- * 工具中途输出落进那张卡片。
+ * 将工具执行过程中的输出写入对应卡片。
  *
- * **只留尾部**：一次构建可能输出几万行，全存会让内存占用与渲染开销都不可接受。
- * 截断发生在合帧之后——按到达逐段截等于把同一份文本反复重排一遍。
+ * 只保留末尾：一次构建可能输出数万行，全部保存会使内存占用与渲染开销不可接受。
+ * 截断在合帧之后执行：按到达逐段截断会使同一份文本反复重排。
  */
 function appendStdout(key: string, chunk: string): void {
   const [cid, stepId] = key.split(SEP) as [string, string]
@@ -162,10 +162,10 @@ function appendStdout(key: string, chunk: string): void {
 const toolFrames = createFramer({ write: appendStdout, schedule })
 
 /**
- * 外部 CLI 节点的中途输出，攒在它自己那个节点上。
+ * 外部 CLI 节点执行过程中的输出，累积在该节点自身上。
  *
- * 键是「哪条会话 + 哪张卡 + 哪个节点」三段：一张图里可以有好几个 CLI 节点同时在跑，
- * 只按卡认的话它们的输出会混成一段，再也分不出谁是谁。
+ * 键由会话、卡片、节点三段组成：一张图中可以有多个 CLI 节点同时运行，
+ * 只按卡片区分时它们的输出会混为一段，无法区分来源。
  */
 function appendNodeOutput(key: string, chunk: string): void {
   const [cid, stepId, nodeId] = key.split(SEP)
@@ -174,7 +174,7 @@ function appendNodeOutput(key: string, chunk: string): void {
       const card = s.views[cid ?? '']?.transcript.find((t) => t.id === stepId)
       if (!card || !nodeId) return
       const next = (card.cliOutput?.[nodeId] ?? '') + chunk
-      // 与工具卡的 stdout 同一个上限：再多也读不完，只会推高内存与渲染开销。
+      // 与工具卡的 stdout 使用同一上限：更多内容无法阅读，只会增加内存与渲染开销。
       card.cliOutput = {
         ...(card.cliOutput ?? {}),
         [nodeId]: next.length > 8000 ? next.slice(-8000) : next,
@@ -185,11 +185,11 @@ function appendNodeOutput(key: string, chunk: string): void {
 const nodeFrames = createFramer({ write: appendNodeOutput, schedule })
 
 /**
- * 思考正文，按 step 认自己那一条，不按「末项是不是思考」认：同一次调用里出现第二段思考时，
- * 后者会把它并进第一段，而那两段是分开到达的。
+ * 思考正文按 step 识别所属条目，不按「末项是否为思考」识别：同一次调用中出现第二段思考时，
+ * 后者会把它合并进第一段，而两段是分别到达的。
  *
- * 走合帧器而不是逐条写：思考 token 一秒几十到上百条，四条子会话流同时开着时每条都同步写
- * store，标签预览、`<pre>` 重设、滚到末尾各跑一遍，主线程被占满，别的页面点起来就有延迟。
+ * 使用合帧器而不逐条写入：思考 token 每秒数十到上百条，四条子会话流同时打开时每条都同步写入
+ * store，标签预览、`<pre>` 重设、滚动到末尾各执行一遍，主线程被占满，其他页面的点击响应出现延迟。
  */
 function appendThinking(key: string, chunk: string): void {
   const [cid, stepId] = key.split(SEP) as [string, string]
@@ -206,18 +206,18 @@ function appendThinking(key: string, chunk: string): void {
 const thinkFrames = createFramer({ write: appendThinking, schedule })
 
 /**
- * 不落 transcript 的事件——它们不该冲正文缓冲。
+ * 不写入 transcript 的事件：它们不应 flush 正文缓冲。
  *
- * `git.state` 由服务端在握手时、切项目时、以及 `.git/HEAD` 变了的时候广播——
- * 新连上的客户端只能从这条广播拿到分支名，没有别的取法。让它冲缓冲的话，
- * 正文攒着的几十个字会在切分支那一下一次性排空，界面上是匀速输出一阵、再突进一次。
+ * `git.state` 由服务端在握手时、切换项目时以及 `.git/HEAD` 变化时广播，
+ * 新连接的客户端只能从该广播取得分支名。若它触发 flush，
+ * 正文缓冲中的数十个字会在切换分支时一次性输出，打断匀速呈现。
  *
- * **这份名单宁可短。** 漏一条只是多冲一次（顿一下）；多写一条会让真正要落
- * transcript 的事件看到一段放了一半的正文，那是顺序错乱，比顿挫严重得多。
+ * 该名单宁短勿长。遗漏一项只会多 flush 一次（短暂停顿）；多写一项会使需要写入
+ * transcript 的事件读到只输出了一部分的正文，造成顺序错乱，比停顿严重得多。
  */
 const OFF_TRANSCRIPT: ReadonlySet<AgentEvent['type']> = new Set(['git.state', 'tool.generating'])
 
-/** 丢掉积压。换会话、整段重拉时用——那段字的归属已经不存在了。 */
+/** 丢弃积压内容。切换会话、整段重新拉取时使用：积压文字的归属已不存在。 */
 export function discardPace(): void {
   pacer.discard()
   toolFrames.discard()
@@ -226,37 +226,37 @@ export function discardPace(): void {
 }
 
 /**
- * 把一帧折进 `state`。
+ * 把一帧折叠进 `state`。
  *
- * **归属只判一次，就在这里。** 事件体自己不带 `conversationId`——归属在信封上。
- * 它决定这一帧折进哪一条会话那一份（`state.views` 的一个键）；表里没有这一条的
- * （既不是当前会话，也不是右侧开着的子会话页）**整帧丢弃**。不能假定「服务端只推
- * 已订阅的会话」：`subscribe` 指令发出到服务端处理之间有一段消不掉的窗口，
- * 那一段里旧会话还在推。
+ * 归属只在此处判定一次。事件体不带 `conversationId`，归属记录在信封上。
+ * 它决定该帧折叠进哪条会话（`state.views` 的一个键）；表中不存在的会话
+ * （既不是当前会话，也不是右侧打开的子会话页）的帧整帧丢弃。不能假定「服务端只推送
+ * 已订阅的会话」：`subscribe` 指令发出到服务端处理之间存在无法消除的时间窗口，
+ * 该窗口内旧会话的事件仍会推送。
  *
- * **三条折法，按会话分工：**
+ * 三种折叠函数按会话分工：
  *
- * - `foldContent`——这条会话**是什么**：正文、思考、工具卡、图卡、收尾条。
- *   每条收着事件的会话各折各的，当前会话和它派出去的子会话同时在跑是常态。
- * - `foldConversationRunState`——每条会话运行中的用量、静默时刻与重试次数，按 cid
- *   落进各自 view；父子页据此共用同一根运行条。
- * - `foldRunState`——只有当前会话才消费的上下文、待办面板、目标、跟进队列与文件变化。
+ * - `foldContent`：会话的内容，包括正文、思考、工具卡、图卡、收尾条。
+ *   每条接收事件的会话分别折叠，当前会话与它派发的子会话同时运行是常态。
+ * - `foldConversationRunState`：每条会话运行中的用量、静默时刻与重试次数，按 cid
+ *   写入各自的 view；父子页据此共用同一个运行条组件。
+ * - `foldRunState`：只有当前会话使用的上下文、待办面板、目标、跟进队列与文件变化。
  *
- * **不给每个 case 补判断**——三十个分支就是三十次忘记的机会（B4）。分工只在这里判。
+ * 不要在每个 case 中补充归属判断：三十个分支意味着三十处可能遗漏（B4）。分工只在此处判定。
  *
- * **`conversation.updated` 与 `conversation.busy` 在归属之前处理。** 它们改的是左栏那份
- * **列表**，不是某一条会话的内容，对后台会话同样有意义（标题、模型、忙闲）。一刀切按
- * 当前会话丢，会让后台会话的标题永远停在「新对话」。它们自己带着 `conversationId`，
- * 本来就该按 id 精确路由。
+ * `conversation.updated` 与 `conversation.busy` 在归属判定之前处理。它们修改的是左栏的
+ * 会话列表，不是某条会话的内容，对后台会话同样有意义（标题、模型、忙闲）。统一按
+ * 当前会话丢弃会使后台会话的标题始终停留在「新对话」。它们自身携带 `conversationId`，
+ * 应按 id 精确路由。
  */
 export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   const ev = frame.event
 
   /*
-   * 服务端自己建的会话先处理：列表里还没有这一条，按信封归属路由必然被整帧丢掉，
-   * 而它要解决的正是「左栏看不见这条会话」。
+   * 先处理服务端创建的会话：列表中尚无该会话，按信封归属路由必然整帧丢弃，
+   * 而该事件的作用正是让左栏显示这条会话。
    *
-   * 别的项目那份丢掉：它看起来完全合理，插进去没人会怀疑它属于另一个项目。
+   * 丢弃其他项目的会话：插入后它在列表中外观正常，无法看出它属于另一个项目。
    */
   if (ev.type === 'conversation.created') {
     if (ev.conversation.workspaceId !== workspace()?.id) return
@@ -269,7 +269,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
     return
   }
 
-  // 会话属性变更先处理：它按自己的 id 找列表项，和「当前是哪条」无关。
+  // 先处理会话属性变更：它按自身的 id 查找列表项，与当前会话无关。
   if (ev.type === 'conversation.updated') {
     pacer.flush()
     setState(
@@ -287,7 +287,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   }
 
   /*
-   * 忙闲同样在归属之前处理，理由和上面那条一样：它改的是左栏那份**列表**。
+   * 忙闲同样在归属判定之前处理，理由同上：它修改的是左栏的会话列表。
    */
   if (ev.type === 'conversation.busy') {
     settleBusy(ev.conversationId, ev.busy)
@@ -295,10 +295,10 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   }
 
   /*
-   * 内置浏览器能力：**进程级事件**，与握手里的 `capabilities.browser` 是同一份投影。
+   * 内置浏览器能力：进程级事件，与握手中的 `capabilities.browser` 是同一份投影。
    *
-   * 原生宿主是应用启动之后才连上来的，只有握手那一份时界面要等下一次重连
-   * 才看得见浏览器入口。同样在归属判定之前处理：它不属于任何一条会话。
+   * 原生宿主在应用启动之后才连接，只依赖握手中的那一份时，界面要等到下一次重连
+   * 才能显示浏览器入口。同样在归属判定之前处理：它不属于任何会话。
    */
   if (ev.type === 'browser.state') {
     setState('capabilities', (caps) => (caps ? { ...caps, browser: ev.browser } : caps))
@@ -307,10 +307,10 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
 
   /*
    * 电脑控制能力与桌面占用快照：全局接收，目标快照自带所属会话。切换到后台会话时
-   * 可以立即读到它的目标，运行条只消费当前会话那一份。
+   * 可以立即读取它的目标，运行条只使用当前会话的那一份。
    *
-   * 目标应用跟着服务端推的值走，前端不自己推断它什么时候该清空——执行者释放、
-   * 宿主断开、能力下线三条路径服务端都会推 `null`，各存一份判定必然在某一条上分叉。
+   * 目标应用以服务端推送的值为准，前端不自行推断何时清空：执行者释放、
+   * 宿主断开、能力下线三条路径服务端都会推送 `null`，前后端各自判定必然在某条路径上不一致。
    */
   if (ev.type === 'desktop.state') {
     setState('capabilities', (caps) => (caps ? { ...caps, desktop: ev.desktop } : caps))
@@ -322,8 +322,8 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   }
 
   /*
-   * 画布卡片的运行状态：工作区级事件，同 `git.state` 按项目丢掉别处的。
-   * 在归属判定之前处理：它不属于任何一条会话，也不该冲正文缓冲。
+   * 画布卡片的运行状态：工作区级事件，与 `git.state` 相同，丢弃其他项目的事件。
+   * 在归属判定之前处理：它不属于任何会话，也不应 flush 正文缓冲。
    */
   if (ev.type === 'canvas.run') {
     if (ev.workspaceId === workspace()?.id) setState('canvasVersion', (n) => n + 1)
@@ -331,17 +331,17 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
   }
 
   const from = frame.conversationId
-  // 没有归属的是工作区级事件（git 状态那类），按当前会话算。
+  // 没有归属的是工作区级事件（如 git 状态），按当前会话处理。
   const mine = !from || from === state.activeConversation
   if (from && !state.views[from]) return
 
   /*
-   * 要落 transcript 的事件都意味着「这一刻的界面要是完整的」——读数条、错误卡、
-   * 工具卡读的是同一份 transcript，不能让它们看到一段放了一半的正文。
+   * 写入 transcript 的事件都要求此刻的界面内容完整：读数条、错误卡与
+   * 工具卡读取同一份 transcript，不能读到只输出了一部分的正文。
    *
-   * **两种增量事件自己不冲**：正文由节拍器放，工具输出由合帧器放，它们冲自己等于
-   * 把那一层直接关掉。`tool.delta` 尤其不能冲正文——它按 stepId 改的是已经存在的
-   * 那张卡片，不动 transcript 末项，没有顺序风险，而它一秒有几百条。
+   * 增量事件不触发 flush：正文由节拍器输出，工具输出与思考由合帧器输出，它们触发 flush 等于
+   * 关闭对应的缓冲层。`tool.delta` 尤其不能 flush 正文：它按 stepId 修改已存在的
+   * 卡片，不改动 transcript 末项，没有顺序风险，且每秒可达数百条。
    */
   const streaming =
     ev.type === 'text.delta' || ev.type === 'tool.delta' || ev.type === 'thinking.delta'
@@ -361,11 +361,11 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
 }
 
 /**
- * 这条会话**是什么**。见 `applyEvent` 里那段分工。
+ * 折叠会话的内容。分工见 `applyEvent` 的说明。
  *
- * 每个写点都先取 `s.views[cid]`，取不到就整条不落：表在 `openView` 建，
- * 而切走一条会话、关掉一页子会话都会当场撤表（`dropView`），撤表之后到达的那几帧
- * 已经没有归属可言。
+ * 每个写入点都先读取 `s.views[cid]`，读取不到时整条不写入：表由 `openView` 建立，
+ * 而切换会话、关闭子会话页都会立即撤销表（`dropView`），撤销之后到达的帧
+ * 已没有归属。
  */
 function foldContent(cid: string, ev: AgentEvent): void {
   switch (ev.type) {
@@ -374,7 +374,7 @@ function foldContent(cid: string, ev: AgentEvent): void {
         produce((s) => {
           const card = s.views[cid]?.transcript.find((t) => t.id === ev.stepId)
           if (!card) return
-          // 整份替换而不是改字段：卡片按 `nodes` 的引用重画，连线跟着状态一起变。
+          // 整体替换而不修改字段：卡片按 `nodes` 的引用重新渲染，连线随状态一同更新。
           card.nodes = { ...(card.nodes ?? {}), [ev.nodeId]: ev.state }
         }),
       )
@@ -384,9 +384,9 @@ function foldContent(cid: string, ev: AgentEvent): void {
     case 'message.injected':
       setState(
         produce((s) => {
-          // id 用 stepId——与刷新后 `stepToItems` 重建出来的那条同源，不会闪重。
-          // 形态也按 `origin` 分，与那侧同一条规则：只分一处的话，实时画成气泡、
-          // 刷新之后同一条变成回执行。
+          // id 使用 stepId：与刷新后 `stepToItems` 重建的条目同源，不会短暂出现重复。
+          // 形态也按 `origin` 区分，与 `stepToItems` 规则相同：只在一处区分时，实时渲染为气泡、
+          // 刷新后同一条变为回执行。
           s.views[cid]?.transcript.push(
             ev.origin
               ? { id: ev.stepId, kind: 'receipt', text: ev.content, origin: ev.origin }
@@ -410,19 +410,19 @@ function foldContent(cid: string, ev: AgentEvent): void {
           v.runStartedAt = Date.now()
           v.runUserMessageId = ev.userMessageId
           /*
-           * 对齐这一轮回答的那条用户气泡。
+           * 对齐本轮回答所对应的用户气泡。
            *
-           * 界面上按回车那一条是客户端乐观插进去的，带的是 `local_` 前缀的本地 id；
-           * 而目标续起、定时触发、跟进消息火发这三条路没有客户端动作，气泡只能从这条
-           * 事件来。两种情况用同一条规则收：**末条气泡带着本地 id 且正文对得上**才把 id
-           * 换成账本里的真值，否则补一条——补完之后活的这份与刷新后从账本投影出来的
-           * 那份同 id。
+           * 界面上按回车发送的气泡由客户端乐观插入，带有 `local_` 前缀的本地 id；
+           * 而目标自动继续、定时触发、跟进消息自动发送三条路径没有客户端动作，气泡只能来自该
+           * 事件。两种情况按同一规则处理：末条气泡带有本地 id 且正文一致时才把 id
+           * 替换为账本中的真值，否则补充一条；补充后实时状态与刷新后从账本投影的状态
+           * id 相同。
            *
-           * **本地 id 这一条不能省。** 只比正文的话，同一条会话里重复发同一段正文
-           * （定时任务每次发的就是同一句 prompt）时，第二轮会认领上一轮那条已落库的
-           * 气泡，界面上这一轮的用户消息不存在。
+           * 本地 id 条件不能省略。只比较正文时，若同一会话中重复发送同一段正文
+           * （定时任务每次发送同一句 prompt），第二轮会认领上一轮已落库的
+           * 气泡，界面上缺少本轮的用户消息。
            *
-           * 回执起的那一轮不走对齐：它没有乐观插入可对，形态也不是气泡。
+           * 由回执发起的轮次不做对齐：它没有乐观插入的气泡可对齐，形态也不是气泡。
            */
           if (ev.userMessage && ev.userMessageId && ev.userMessage.origin) {
             v.transcript.push({
@@ -452,8 +452,8 @@ function foldContent(cid: string, ev: AgentEvent): void {
       )
       return
 
-    // 思考与正文各自合帧，先来的先落地：正文到了先把攒着的思考写下去，反之亦然，
-    // 否则同一次回复里「思考 → 正文 → 第二段思考」会落成乱序。
+    // 思考与正文分别合帧，先到达的先写入：正文到达时先写入缓冲中的思考，反之亦然，
+    // 否则同一次回复中的「思考 → 正文 → 第二段思考」会以错误顺序写入。
     case 'text.delta':
       thinkFrames.flush()
       pacer.push(bufKey(cid, ev.stepId), ev.delta)
@@ -471,8 +471,8 @@ function foldContent(cid: string, ev: AgentEvent): void {
         produce((s) => {
           const v = s.views[cid]
           if (!v) return
-          // 重发事件带 AgentLoop 本次尝试真正开过的 step id。不能删「末尾思考」：
-          // 同一 run 的前几个工具轮也有已经完成的思考，按位置删会把真内容一起抹掉。
+          // 重发事件携带 AgentLoop 本次尝试实际创建的 step id。不能按「末尾的思考」删除：
+          // 同一 run 的前几个工具轮也有已完成的思考，按位置删除会把有效内容一并删除。
           v.transcript = v.transcript.filter(
             (item) => item.kind !== 'thinking' || !failed.has(item.id),
           )
@@ -528,8 +528,8 @@ function foldContent(cid: string, ev: AgentEvent): void {
           item.status = ev.status === 'success' ? 'success' : 'failure'
           item.outcome = ev.outcome
           item.durationMs = ev.durationMs
-          // 变更面板取过才追加；没取过的在打开时整页从账本来。没有用户消息的轮
-          // 服务端也不计（`listConversationChangesPage` 只选有 user_message_id 的 run）。
+          // 变更面板已读取过时才追加；未读取过的在打开时从账本整页读取。没有用户消息的轮次
+          // 服务端也不计入（`listConversationChangesPage` 只选择有 user_message_id 的 run）。
           if (v.changes && v.runUserMessageId && ev.outcome.fileChanges?.length) {
             const message = v.transcript.find((t) => t.id === v.runUserMessageId)
             appendChange(
@@ -557,8 +557,8 @@ function foldContent(cid: string, ev: AgentEvent): void {
         produce((s) => {
           const items = s.views[cid]?.transcript
           if (!items) return
-          // 压缩是会话管理的可见事件，不能静默发生——用户需要知道
-          // 「为什么模型突然不记得前面说过的话了」。
+          // 压缩是会话管理的可见事件，不能静默发生：用户需要据此了解
+          // 模型为何不再记得之前的对话内容。
           const existing = items.find(
             (t) => t.kind === 'compaction' && t.compaction?.phase === 'started',
           )
@@ -596,11 +596,11 @@ function foldContent(cid: string, ev: AgentEvent): void {
           if (!v) return
           v.error = { code: ev.code, message: ev.message }
           /*
-           * **不要在这里把「在跑」放下来。** 终态由服务端的 `conversation.busy`
-           * 给：loop 之外抛出的错误（没配 API key、档案解析失败）没有
-           * `run.finished`，但 `run-control.ts` 的 finally 一定会走 unregister /
-           * release，那两处就是忙闲的唯一裁决点。在这里补一个客户端判断，
-           * 「谁在跑」就有了第二本账。
+           * 不要在此处清除「运行中」。终态由服务端的 `conversation.busy`
+           * 给出：loop 之外抛出的错误（未配置 API key、档案解析失败）没有
+           * `run.finished`，但 `run-control.ts` 的 finally 必定执行 unregister /
+           * release，这两处是忙闲的唯一裁决点。在此处补充客户端判断，
+           * 会使「哪条会话在运行」形成第二份记录。
            */
         }),
       )
@@ -611,7 +611,7 @@ function foldContent(cid: string, ev: AgentEvent): void {
         produce((s) => {
           const v = s.views[cid]
           if (!v) return
-          // 收尾读数**落成一条条目**，不再写回全局字段：一轮一条，
+          // 收尾读数写入为一个条目，不写入全局字段：每轮一条，
           // 刷新后由 `reloadActiveConversation` 从 run 行原样重建。
           v.transcript.push({
             id: `run_${ev.runId}`,
@@ -623,23 +623,23 @@ function foldContent(cid: string, ev: AgentEvent): void {
               usage: ev.usage,
               startedAt: v.runStartedAt ?? Date.now(),
               endedAt: Date.now(),
-              // 刚刚那条 `run.error` 的正文（恒在 finished 之前到）。服务端同时
-              // 把它写进了 `runs.error_message`，刷新后由投影层原样折回来。
+              // 前一条 `run.error` 的正文（总是在 finished 之前到达）。服务端同时
+              // 将它写入 `runs.error_message`，刷新后由投影层原样恢复。
               errorMessage: v.error?.message ?? null,
             },
           })
           /*
-           * **正文交接给了这一轮的条目，会话上那份就得放下。**
+           * 错误正文已交给本轮的条目，须清除会话上的错误。
            *
-           * 不放的话同一句话同时挂在读数条和错误卡上——用户看到的是两遍。
-           * 剩下的错误卡只服务「没有 run 收尾条可挂」的那一半（没配 key、
-           * 档案解析失败），那些不会走到这里。
+           * 不清除时同一句话同时显示在读数条与错误卡上，用户会看到两遍。
+           * 错误卡只用于没有 run 收尾条可附加的情况（未配置 key、
+           * 档案解析失败），这些情况不会执行到此处。
            */
           v.error = null
           v.runStartedAt = null
         }),
       )
-      // 这一轮跑完了，把它那一节重取回来：实时回执是一条条加进去的，折不出整轮净效果。
+      // 本轮执行完毕，重新读取该轮的变更：实时回执逐条追加，无法折叠出整轮的净效果。
       void refreshLatestChangeTurn(cid)
       return
 
@@ -649,8 +649,8 @@ function foldContent(cid: string, ev: AgentEvent): void {
 }
 
 /**
- * 把一条事件折进当前请求投影。**序号不大于投影上那个的一律丢弃**：
- * 快照与实时事件走同一条路进来，先后只由序号裁决（见 `RequestProjection.seq`）。
+ * 把一条事件折叠进当前请求投影。序号不大于投影当前序号的事件一律丢弃：
+ * 快照与实时事件经由同一路径进入，先后只由序号裁决（见 `RequestProjection.seq`）。
  */
 function writeRequest(
   cid: string,
@@ -671,11 +671,11 @@ function writeRequest(
 }
 
 /**
- * 每条已订阅会话自己的运行中读数。它与正文同样按 cid 归属，主会话与子会话
- * 因而能复用同一个状态条，而不会拿父会话的 token、请求阶段或重试次数冒充子会话。
+ * 每条已订阅会话各自的运行中读数。它与正文同样按 cid 归属，主会话与子会话
+ * 因此能复用同一个状态条，而不会把父会话的 token、请求阶段或重试次数显示为子会话的读数。
  *
- * `generatingToolCall` 跟着同一批事件走：它回答的是「最后那段内容是不是工具参数」，
- * 与阶段不是同一个问题，所以留在自己的字段上，但只由这里一处写。
+ * `generatingToolCall` 随同一批事件更新：它表示最后一段内容是否为工具参数，
+ * 与阶段不是同一个问题，因此保留为独立字段，但只由此处写入。
  */
 function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): void {
   switch (ev.type) {
@@ -700,7 +700,7 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
           attempt: ev.attempt,
           max: ev.max,
           phase: ev.phase,
-          // 发出即结束等待：截止点清掉，次数留着。
+          // 发出即结束等待：清除截止点，保留次数。
           backoffUntil: null,
           sentAt:
             ev.phase === 'sent'
@@ -749,9 +749,9 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
             ? 'text'
             : 'tool_arguments'
       /*
-       * 内容事件不带 requestId，所以只推进已有投影的阶段与最后内容时刻。
-       * 没有投影时不造请求阶段——那说明 `run.request` 还没到（首屏加载期），
-       * 凭空补 requestId 与次数是编造；内容类型仍可供当前思考折叠显示。
+       * 内容事件不带 requestId，因此只更新已有投影的阶段与最后内容时刻。
+       * 没有投影时不生成请求阶段：这表示 `run.request` 尚未到达（首屏加载期间），
+       * 补充 requestId 与次数属于编造；内容类型仍可供当前思考折叠显示。
        */
       writeRequest(
         cid,
@@ -802,32 +802,32 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
 }
 
 /**
- * 当前会话独有的外围状态：待办、目标、跟进队列、上下文与这一轮改了哪些文件。
+ * 当前会话独有的外围状态：待办、目标、跟进队列、上下文与本轮修改的文件。
  *
- * 只有当前会话那一条走到这里，理由见 `applyEvent`。
+ * 只有当前会话的事件会执行到此处，原因见 `applyEvent`。
  */
 function foldRunState(ev: AgentEvent): void {
   switch (ev.type) {
     case 'queue.changed':
-      // 整体替换：服务端发的就是它此刻的全部，本地那几张乐观卡按同一个 id 被覆盖。
+      // 整体替换：服务端发送的是队列的当前完整状态，本地的乐观卡片按相同 id 被覆盖。
       setState('followUps', ev.queue)
       return
 
     case 'message.injected':
-      // 摘掉那张卡：队列的权威仍是 `queue.changed`，这里先手一步是为了
-      // 卡片与气泡不同时出现（服务端两条事件之间隔着一次落库）。
+      // 移除对应卡片：队列的权威仍是 `queue.changed`，此处提前移除是为了
+      // 避免卡片与气泡同时出现（服务端两条事件之间间隔一次落库）。
       setState('followUps', (list) => list.filter((f) => f.id !== ev.followUpId))
       return
 
     case 'todos':
-      // 整表替换而不是合并：工具那边就是整表提交的，
-      // 在这里做增量合并会让两端对「待办清单是什么」产生两种理解。
+      // 整表替换而不合并：工具一侧按整表提交，
+      // 在此处做增量合并会使两端对待办清单的内容产生两种理解。
       setState('todos', ev.todos)
       return
 
     case 'goal':
-      // 整体替换：事件带的是账本刚变成的那个完整快照（revision 单调递增），
-      // 挑字段合并会在这里造出第二种「目标现在是什么」的说法。
+      // 整体替换：事件携带账本更新后的完整快照（revision 单调递增），
+      // 按字段合并会在此处形成第二种目标状态。
       setState('goal', ev.goal)
       return
 
@@ -836,11 +836,11 @@ function foldRunState(ev: AgentEvent): void {
         produce((s) => {
           s.notice = null
           s.fileChanges = []
-          // **待办不清。** 它是这条会话的进度，不是这一轮的临时读数——
-          // 一轮做三条、下一轮接着做第四条是常态。清了的表现是：中断再继续，
-          // 清单整个消失，等模型下次整表提交才回来（`write_todos` 是整表语义，
-          // 它不一定每轮都调）。清空的那几项都是「跑完就没意义」的读数
-          // （用量、错误、这一轮改了哪些文件），待办不属于那一类。
+          // 不清除待办：它是会话的进度，不是本轮的临时读数，
+          // 一轮完成三项、下一轮继续第四项是常态。清除后，中断再继续时
+          // 清单会整体消失，直到模型下次整表提交才恢复（`write_todos` 是整表语义，
+          // 不一定每轮都调用）。此处清空的都是「执行完毕即失效」的读数
+          // （用量、错误、本轮修改的文件），待办不属于此类。
           s.lastRunId = ev.runId
         }),
       )
@@ -849,8 +849,8 @@ function foldRunState(ev: AgentEvent): void {
     case 'file.changed':
       setState(
         produce((s) => {
-          // 即使 `changes` 为空也要推进：空数组表示执行类工具使文件快照失效，
-          // 但没有可靠的逐路径增删明细，不能为刷新 UI 去伪造一条变更。
+          // 即使 `changes` 为空也要递增版本：空数组表示执行类工具使文件快照失效，
+          // 但没有可靠的逐路径增删明细，不能为刷新 UI 伪造一条变更。
           s.fileVersion += 1
           s.fileChanges.push(...ev.changes)
         }),
@@ -871,9 +871,9 @@ function foldRunState(ev: AgentEvent): void {
       return
 
     case 'git.state':
-      // 这是**工作区级**事件，走全局广播（没有会话可归属，总线对它一律放行）。
-      // 同时开着多个项目时，别的项目那份分支名到了这里必须丢掉——
-      // 它看起来完全合理，盖上去没人会怀疑它是别人的。
+      // 这是工作区级事件，经由全局广播（没有会话可归属，总线对它一律放行）。
+      // 同时打开多个项目时，必须丢弃其他项目的分支名：
+      // 它的外观完全正常，覆盖后无法看出它属于其他项目。
       if (ev.workspaceId !== workspace()?.id) return
       setState('git', { workspaceId: ev.workspaceId, branch: ev.branch })
       return
@@ -883,7 +883,7 @@ function foldRunState(ev: AgentEvent): void {
   }
 }
 
-/** `GET /api/conversations/:id/context` 的回体，形状同 runtime 的 `ContextPanel`。 */
+/** `GET /api/conversations/:id/context` 的响应体，结构与 runtime 的 `ContextPanel` 相同。 */
 interface StoredContextPanel {
   source: 'actual' | 'projected' | 'estimated'
   total: number
@@ -894,7 +894,7 @@ interface StoredContextPanel {
   omitted: ContextOmitted
 }
 
-/** 一条会话的三样落库事实：消息、run、每个 run 的 steps。 */
+/** 一条会话的三类落库事实：消息、run、每个 run 的 steps。 */
 interface Folded {
   messages: Message[]
   runs: Run[]
@@ -903,19 +903,19 @@ interface Folded {
 
 interface HistoryPage extends Folded {
   todos: ConversationHistoryPageResponse['todos']
-  /** 这一页引用却不在页里的 workflow 首派，见 `ConversationHistoryPageResponse`。 */
+  /** 本页引用但不在本页中的 workflow 首次派发，见 `ConversationHistoryPageResponse`。 */
   workflowStarts: Step[]
   nextCursor: string | null
-  /** 运行中这一轮与当前请求的只读快照；没有 run 在跑时为 null。 */
+  /** 运行中的轮次与当前请求的只读快照；没有 run 运行时为 null。 */
   live: ConversationLiveSnapshot | null
 }
 
 /**
- * 把刷新快照折成投影。阶段由时刻派生，四条判据与实时事件一一对应：
- * 有退避截止点是在等，有内容时刻是在出内容，有响应头是在等内容，其余是刚发出。
+ * 把刷新快照折叠为投影。阶段由时刻派生，四条判据与实时事件一一对应：
+ * 有退避截止点表示等待重试，有内容时刻表示正在输出内容，有响应头表示等待内容，其余表示刚发出。
  *
- * **已经失败又没在等待的那一行不生成投影。** 它是这一轮最后一次请求，
- * 重发预算已耗尽，说「正在请求」是假话；收尾条马上会带着停止原因落进流里。
+ * 已失败且不在等待重试的请求不生成投影。它是本轮最后一次请求，
+ * 重发预算已耗尽，显示「正在请求」与事实不符；收尾条随后会带着停止原因写入会话流。
  */
 function projectLive(live: ConversationLiveSnapshot): RequestProjection | null {
   const r = live.request
@@ -945,10 +945,10 @@ function projectLive(live: ConversationLiveSnapshot): RequestProjection | null {
 }
 
 /**
- * 把快照写进一条会话的投影。
+ * 把快照写入一条会话的投影。
  *
- * 序号不大于现有投影的快照整份丢弃——加载期间先到的实时事件比它新。
- * `live` 为 null 表示服务端此刻没有这条会话的 run，投影随之清空。
+ * 序号小于现有投影的快照整体丢弃：加载期间先到达的实时事件比它新。
+ * `live` 为 null 表示服务端当前没有该会话的 run，投影随之清空。
  */
 function restoreRequest(v: ConversationView, live: ConversationLiveSnapshot | null): void {
   if (!live) {
@@ -961,14 +961,14 @@ function restoreRequest(v: ConversationView, live: ConversationLiveSnapshot | nu
   v.generatingToolCall = v.request?.lastContentKind === 'tool_arguments'
 }
 
-/** 一页折成会话流：首派先进流，它自己那一行由 workflow 折叠藏起来，只为把那张卡画全。 */
+/** 将一页折叠为会话流：首次派发先进入会话流，其自身的行由 workflow 折叠隐藏，只用于完整渲染 workflow 卡片。 */
 function foldPage(page: HistoryPage): TranscriptItem[] {
   return [...page.workflowStarts.flatMap(stepToItems), ...foldTranscript(page)]
 }
 
-// 600 轮 / 16.9 MiB 级会话实测：30 轮首屏虽能在 400ms 内出现第一行，
-// 但后续 Markdown 挂载仍会占主线程约 2.8s，快速点下一条会话要等。10 轮把单页
-// 控制在约 300 KiB；历史一字不少，只把“继续往前读”的粒度收细。
+// 600 轮、16.9 MiB 量级会话的实测：每页 30 轮时首屏虽能在 400ms 内显示第一行，
+// 但后续 Markdown 挂载仍占用主线程约 2.8s，快速切换到下一条会话时需要等待。每页 10 轮可将单页
+// 控制在约 300 KiB；历史记录完整保留，只缩小向前加载的粒度。
 const HISTORY_PAGE_SIZE = 10
 const HISTORY_TIMEOUT_MS = 15_000
 
@@ -978,7 +978,7 @@ interface HistoryLease {
   timedOut: boolean
 }
 
-/** 同一会话同一时刻只允许一页在飞；新请求会撤掉旧请求。 */
+/** 同一会话同一时刻只允许一个分页请求进行中；新请求会取消旧请求。 */
 const historyLoads = new Map<string, HistoryLease>()
 let activeHistoryLease: HistoryLease | null = null
 
@@ -1012,8 +1012,8 @@ function historyErrorMessage(error: unknown, lease: HistoryLease): string {
 }
 
 /**
- * 一页只走一个接口：服务端按完整 user turn 一次带回 messages/runs/steps。
- * 这条替掉旧的 `2 + runs.length` 个请求，页面大小不再决定请求个数。
+ * 每页只请求一个接口：服务端按完整的 user turn 一次返回 messages/runs/steps，
+ * 请求数不随页面大小变化。
  */
 async function fetchConversationPage(
   id: string,
@@ -1045,8 +1045,8 @@ async function fetchConversationPage(
 }
 
 /**
- * 折成会话流。**当前会话与右侧面板里那条只读子会话共用这一份**——
- * 两处各折一遍的话，工具卡的折叠口径迟早在两边漂开。
+ * 折叠为会话流。当前会话与右侧面板中的只读子会话共用此函数：
+ * 两处分别实现时，工具卡的折叠规则会逐渐不一致。
  */
 function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[] {
   const runsByUserMessage = new Map<string, Run[]>()
@@ -1059,8 +1059,8 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
 
   const items: TranscriptItem[] = []
   for (const m of messages) {
-    // 回执与人打的字都是 user 角色，且都能起轮：条目形态按 origin 分，名下的
-    // run 与 steps 两种一样折。
+    // 回执与用户输入都是 user 角色，且都能发起轮次：条目形态按 origin 区分，其下的
+    // run 与 steps 按相同方式折叠。
     items.push(
       m.origin
         ? { id: m.id, kind: 'receipt', text: m.content, origin: m.origin }
@@ -1077,12 +1077,12 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
           items.push(item)
         }
       }
-      // 这一轮的收尾读数。**跟着 steps 一起折回来**——它和工具卡是同一类条目：
-      // 真实发生过、落了库、刷新后必须还在。少了它，「这一轮花了多少、跑了多久、
-      // 为什么停」在刷新后就只剩最后一轮（而且是活的那一份，重连即丢）。
+      // 本轮的收尾读数，随 steps 一同折叠：它与工具卡属于同一类条目，
+      // 实际发生过且已落库，刷新后必须保留。缺少它时，每轮的花费、运行时长与
+      // 停止原因在刷新后只剩最后一轮（且是实时状态中的那一份，重连即丢失）。
       //
-      // 还没收尾的 run（进程被杀、正在跑）不折：它没有终态，
-      // 造一条 `endedAt: null` 的条目会让读数条一直按运行中计时。
+      // 尚未结束的 run（进程被终止、正在运行）不折叠：它没有终态，
+      // 生成一条 `endedAt: null` 的条目会使读数条持续按运行中计时。
       if (r.finishedAt !== null) {
         items.push({
           id: `run_${r.id}`,
@@ -1104,10 +1104,11 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
 }
 
 /**
- * 只读投影另一条会话，给右侧面板里的子会话页用。
+ * 只读投影另一条会话，供右侧面板中的子会话页使用。
  *
- * 子 agent 的会话不在会话列表里（`source` 记着它的种类），点开它的入口只有工具卡上
- * 带回来的那个 id；而它一旦跑完就不再有事件，投影一次即可，不需要订阅。
+ * 子 agent 的会话不在会话列表中（`source` 记录其种类），打开它的唯一入口是工具卡上
+ * 返回的 id。本函数只读取最新一页历史；事件订阅由 `syncViews` 按右侧面板中打开的
+ * 子会话页维护。
  */
 export async function loadConversationView(id: string): Promise<void> {
   openView(id)
@@ -1128,8 +1129,8 @@ export async function loadConversationView(id: string): Promise<void> {
       produce((s) => {
         const v = s.views[id]
         if (!v) return
-        // 建表到这一拉返回之间到达的那几条接在后面，按 id 去重。同一条 step
-        // 两边都有时以账本那份为准：事件那份可能只放了一半（正文还在流）。
+        // 建表到本次拉取返回之间到达的条目接在后面，按 id 去重。同一个 step
+        // 两边都有时以账本为准：事件中的版本可能只输出了一部分（正文仍在流式输出）。
         const known = new Set(items.map((i) => i.id))
         v.transcript = [...items, ...v.transcript.filter((i) => !known.has(i.id))]
         v.history = { loading: null, nextCursor: page.nextCursor, error: null }
@@ -1159,8 +1160,8 @@ export async function loadConversationView(id: string): Promise<void> {
 }
 
 /**
- * 在流顶端补一页更早记录。只做前插且按 id 去重，加载期间到达的实时事件仍留在尾部。
- * 滚动锚点由拥有滚动容器的组件补偿，这里只负责账本投影。
+ * 在会话流顶部补充一页更早的记录。只做前插并按 id 去重，加载期间到达的实时事件仍保留在末尾。
+ * 滚动锚点由拥有滚动容器的组件补偿，此处只负责账本投影。
  */
 export async function loadOlderConversation(id: string): Promise<boolean> {
   const current = state.views[id]
@@ -1203,10 +1204,9 @@ export async function loadOlderConversation(id: string): Promise<boolean> {
 // ───────────────────────── 变更面板 ─────────────────────────
 
 const CHANGES_PAGE_SIZE = 10
-/** 派活的一格到了这些状态就不会再写文件。 */
+/** 派发任务的节点进入这些状态后不再写入文件。 */
 const NODE_SETTLED: ReadonlySet<string> = new Set(['done', 'failed', 'skipped', 'interrupted'])
 
-/** 行数相加，任一方不可知则结果不可知：不把「不知道」算成 0。 */
 async function fetchChangesPage(
   id: string,
   before: string | null,
@@ -1222,16 +1222,16 @@ async function fetchChangesPage(
 }
 
 /**
- * 重取最新那一轮，连同整条会话的合计。两处调：
+ * 重新读取最新一轮及整条会话的合计。两处调用：
  *
- * - **派活的一格落了终态**：子 agent 的写入在它自己的子会话里，父会话收不到那边的回执；
- *   外部 CLI 的写入挂在这一格上。两种都由服务端投影归到父轮。
- * - **这一轮跑完了**：实时回执是一条条追加的，加的是那一次报了什么；而面板上一行
- *   是整轮的净效果（`foldFileChanges`），一轮里建了又删的路径行上当场没了、
- *   合计却还算着它。服务端那份两边都折过，重取一次就都回到折叠后的口径。
+ * - 派发任务的节点进入终态：子 agent 的写入位于其自身的子会话中，父会话收不到对应回执；
+ *   外部 CLI 的写入记录在该节点上。两者都由服务端投影归入父轮次。
+ * - 本轮执行完毕：实时回执逐条追加，记录的是每次报告的内容；而面板上的一行
+ *   是整轮的净效果（`foldFileChanges`），一轮中先创建后删除的路径会立即从行上消失，
+ *   合计却仍计入它。服务端的数据两处都已折叠，重新读取一次即可统一为折叠后的口径。
  *
- * `limit=1` 取到的是最新一个有写入的轮：这一轮有写入就是它；没有则拿到更早那轮，替换等于没变。
- * 没打开过变更面板的会话没有这张表，当场返回，不发请求。
+ * `limit=1` 取得最新一个有写入的轮次：本轮有写入时即为本轮；否则取得更早的轮次，替换后不产生变化。
+ * 未打开过变更面板的会话没有该表，立即返回，不发送请求。
  */
 async function refreshLatestChangeTurn(id: string): Promise<void> {
   const changes = state.views[id]?.changes
@@ -1266,8 +1266,8 @@ function changesErrorMessage(error: unknown): string {
 }
 
 /**
- * 把一条写入并进变更面板。同 id 不重复进：首页在飞时到达的事件会与响应重合。
- * 这一轮还没有节就新建一节放最前——实时到达的一定属于最新的轮。
+ * 把一条写入合并进变更面板。相同 id 不重复加入：首页请求进行中到达的事件会与响应重叠。
+ * 本轮尚无分节时新建一节放在最前：实时到达的写入必定属于最新的轮次。
  */
 function appendChange(
   changes: ChangesView,
@@ -1289,11 +1289,11 @@ function appendChange(
 }
 
 /**
- * 变更面板首页。面板打开时调；已取过或正在取就不再取，之后由实时追加保持新鲜。
- * 失败后再调一次即重试：从首页重来，已翻出的更早几页由哨兵再取。
+ * 变更面板首页。面板打开时调用；已读取或正在读取时不再读取，之后由实时追加保持更新。
+ * 失败后再次调用即重试：从首页重新开始，已加载的更早分页由哨兵重新读取。
  *
- * 落地时以账本页为准：请求期间实时追加的写入按 step id 去重后并回去，
- * 合计取账本值再加上没并进去的那几条——与 `loadOlderConversation` 的去重口径相同。
+ * 写入时以账本页为准：请求期间实时追加的写入按 step id 去重后合并回去，
+ * 合计取账本值再加上未合并的条目，与 `loadOlderConversation` 的去重口径相同。
  */
 export async function loadConversationChanges(id: string): Promise<void> {
   const current = state.views[id]
@@ -1343,7 +1343,7 @@ export async function loadConversationChanges(id: string): Promise<void> {
   }
 }
 
-/** 往前再取一页写过文件的轮。没有更早的、或正在取时直接返回 false。 */
+/** 再向前读取一页写入过文件的轮次。没有更早的轮次或正在读取时直接返回 false。 */
 export async function loadOlderConversationChanges(id: string): Promise<boolean> {
   const changes = state.views[id]?.changes
   if (!changes || changes.loading !== null || !changes.nextCursor) return false
@@ -1374,7 +1374,7 @@ export async function loadOlderConversationChanges(id: string): Promise<boolean>
   }
 }
 
-/** 初次加载失败与“更早记录”失败共用一个重试入口。 */
+/** 初次加载失败与「更早记录」加载失败共用一个重试入口。 */
 export async function retryConversationHistory(id: string): Promise<void> {
   const error = state.views[id]?.history.error
   if (error?.phase === 'older') {
@@ -1386,14 +1386,14 @@ export async function retryConversationHistory(id: string): Promise<void> {
 }
 
 /**
- * 哪几条会话正在收事件：当前会话，加上右侧开着的那几页子会话。
+ * 正在接收事件的会话：当前会话，以及右侧打开的子会话页。
  *
- * **表的键与报给服务端的订阅集是同一份派生量**，不是两处各记一遍：报了却没建表的
- * 那条，事件到了会被整帧丢弃（`applyEvent` 的归属判定）；建了表却没报的那条，
- * 一个字都收不到。两边都从这里出。
+ * 表的键与报告给服务端的订阅集是同一份派生值，不在两处分别记录：已报告但未建表的
+ * 会话，事件到达时会被整帧丢弃（`applyEvent` 的归属判定）；已建表但未报告的会话，
+ * 收不到任何内容。两者都由此处生成。
  *
- * 建表在撤表之前：中间那一步里两条都在表上，比先撤后建那一瞬间一条都不在要好——
- * 后者那一瞬间到达的帧会被丢掉。
+ * 先建表后撤表：中间状态下两条会话都在表中，优于先撤后建时两条都不在表中的状态，
+ * 后者在该时刻到达的帧会被丢弃。
  */
 let reported = ''
 
@@ -1409,8 +1409,8 @@ export function syncViews(): void {
     historyLoads.get(id)?.controller.abort()
     dropView(id)
   }
-  // 没变就不报：这个函数既由下面那个 effect 触发，也在切会话那条路上被显式调一次，
-  // 同一组会话上报两次，只是两条无效指令。
+  // 未变化时不报告：本函数既由下方的 effect 触发，也在切换会话的路径上被显式调用一次，
+  // 同一组会话报告两次只会产生两条无效指令。
   const line = [...want].sort().join(',')
   if (line === reported) return
   reported = line
@@ -1418,25 +1418,25 @@ export function syncViews(): void {
 }
 
 /*
- * 开着哪几页是 `ui.ts` 那边的信号，所以订阅集跟着它自己走一遍——
- * 不能反过来让 `ui.ts` 调这里：连接层已经引了它（`workspace`），两个模块互相 import
- * 是一定要避免的。切会话那条路另有一次显式调用，理由见 `selectConversation`。
+ * 打开的页面由 `ui.ts` 中的信号描述，因此订阅集在此处跟随该信号更新。
+ * 不能反过来由 `ui.ts` 调用此处：连接层已经引用了它（`workspace`），必须避免两个模块
+ * 互相 import。切换会话的路径另有一次显式调用，原因见 `selectConversation`。
  */
 createRoot(() => createEffect(syncViews))
 
 /**
  * 重建会话的最新一页投影。
  *
- * 必须把 **run 的 steps 也折回来**，而不是只拉 messages——工具调用只存在于 steps 里，
- * 单拉 messages 意味着刷新一次页面就丢掉全部工具卡，界面上等于 agent 什么都没做。
+ * 必须同时折叠 run 的 steps，不能只拉取 messages：工具调用只存在于 steps 中，
+ * 只拉取 messages 时刷新一次页面就会丢失全部工具卡，界面显示为 agent 未执行任何操作。
  *
- * 折叠顺序沿用后端的口径：每条 user 消息之后，插入归属于它的那个 run 的 steps。
+ * 折叠顺序沿用后端的口径：每条 user 消息之后插入归属于它的 run 的 steps。
  */
 export async function reloadActiveConversation(): Promise<void> {
   const id = state.activeConversation
   if (!id) return
-  // 整段重拉之前把积压**丢掉而不是冲出去**：那段字属于重拉之前的那份
-  // transcript，冲进来只会在新投影的末尾多出一截无主的正文。
+  // 整段重新拉取之前丢弃积压内容而不是 flush：积压文字属于重新拉取之前的
+  // transcript，flush 只会在新投影的末尾多出一段没有归属的正文。
   discardPace()
   activeHistoryLease?.controller.abort()
   const lease = beginHistoryLoad(id)
@@ -1450,26 +1450,26 @@ export async function reloadActiveConversation(): Promise<void> {
   try {
     const [folded, ctx, goal, queue] = await Promise.all([
       fetchConversationPage(id, null, lease.controller.signal),
-      // 上下文面板从账本现算，**不要直接 `s.context = null`**：那样刷新一次、
-      // 切一次会话面板就空了，而用户是回头看的时候才想知道被谁占的。
-      // 拉失败不影响会话本身能不能打开，退化成没有面板。
+      // 上下文面板由账本即时计算，不要直接设置 `s.context = null`：否则刷新或
+      // 切换会话后面板为空，而用户回看时才需要查询上下文的占用构成。
+      // 拉取失败不影响会话本身能否打开，降级为不显示面板。
       client
         .api<{ context: StoredContextPanel }>(`/api/conversations/${id}/context`, {
           signal: lease.controller.signal,
         })
         .then((r) => r.context)
         .catch(() => null),
-      // 目标同理，而且更要紧：续起标记不落盘，进程重启之后账本里那个 active
-      // 的目标不会自己再跑，只能等用户点继续。这里不读回来的话，界面上连
-      // 「有一个目标停在这」都看不见——用户只会觉得它坏了。
+      // 目标同理且更为重要：自动继续标记不落盘，进程重启后账本中处于 active
+      // 的目标不会自动继续执行，只能等待用户点击继续。此处不读取时，界面上
+      // 无法显示存在一个已暂停的目标，用户会认为出现了故障。
       client
         .api<{ goal: Goal | null }>(`/api/conversations/${id}/goal`, {
           signal: lease.controller.signal,
         })
         .then((r) => r.goal)
         .catch(() => null),
-      // 排着的跟进消息。它只活在服务端进程里，刷新与重连之后卡片全靠这一拉重建；
-      // 与 `queue.changed` 同源（都读 `RunManager`），不存在快照与增量各说各话。
+      // 排队中的跟进消息。它只存在于服务端进程中，刷新与重连后卡片完全依靠本次拉取重建；
+      // 与 `queue.changed` 同源（都读取 `RunManager`），快照与增量不会不一致。
       client
         .api<{ queue: FollowUp[] }>(`/api/conversations/${id}/queue`, {
           signal: lease.controller.signal,
@@ -1481,27 +1481,27 @@ export async function reloadActiveConversation(): Promise<void> {
     const { runs } = folded
     const items = foldPage(folded)
 
-    // 慢的那次请求不许写。快速连点 A→B 时，两次重新拉取并发在途，后返回者覆盖先返回者——
-    // 因此标题和订阅都在 B、正文却是 A 的。这正是信封带 conversationId 想根治的
-    // 「切了会话、内容是上一条的」，在 REST 投影这条路上原样复活。
+    // 较慢的请求不得写入。快速连续点击 A→B 时，两次重新拉取并发进行，后返回者覆盖先返回者，
+    // 导致标题与订阅属于 B、正文却属于 A。这与信封携带 conversationId 所解决的
+    // 「切换会话后内容仍属于上一条会话」是同一问题，出现在 REST 投影路径上。
     if (state.activeConversation !== id || canceledByNewerRequest(lease)) return
 
     /*
-     * **run 作用域的状态一律从这里派生，不靠事件残留。**
+     * run 作用域的状态一律从此处派生，不依赖事件残留。
      *
-     * 这些字段（lastRunId / todos / context）只有当前会话那一份，
-     * 没有「属于哪条会话」这一维。切会话时若只重置正文流，它们会连同上一条会话的
-     * run 一起留在界面上；而上一条会话的表在切走那一刻就撤了（`dropView`），
-     * 它那条 run 的 `run.finished` **结构性地永远到不了**，
-     * 因此它们再也不会被放下来。
+     * 这些字段（lastRunId / todos / context）只有当前会话的一份，
+     * 没有所属会话这一维度。切换会话时若只重置正文流，它们会连同上一条会话的
+     * run 一起留在界面上；而上一条会话的表在切换时即被撤销（`dropView`），
+     * 其 run 的 `run.finished` 在结构上不可能再到达，
+     * 因此这些字段永远不会被清除。
      *
-     * 所以不在 `selectConversation` 里补一张「还要重置哪些字段」的清单——
-     * 那张清单每加一个字段就会漏一次。真源是 runs 表，而这里本来就在拉它。
+     * 所以不在 `selectConversation` 中维护一份「需要重置的字段」清单：
+     * 每新增一个字段，该清单就可能遗漏一次。真源是 runs 表，而此处本身就在拉取它。
      *
-     * **「在不在跑」不在这张单子上**：`busyConversations` 本来就带着会话这一维，
-     * 换一条会话读的就是另一格，没有什么需要重置。这里也不许照 runs 表补写一份
-     * ——账本那行在服务进程崩过之后可能还挂着 `running`，照它写就会把界面永久
-     * 钉在执行中，而 `RunManager` 早就没有这条 run 了。
+     * 「是否在运行」不在此列：`busyConversations` 本身带有会话维度，
+     * 切换会话即读取另一项，无需重置。此处也不得按 runs 表补写一份：
+     * 服务进程崩溃后账本中的行可能仍处于 `running`，按它写入会使界面永久
+     * 停留在执行中，而 `RunManager` 中早已没有该 run。
      */
     const live = state.busyConversations.includes(id)
       ? (runs.find((r) => r.status === 'running') ?? null)
@@ -1511,32 +1511,32 @@ export async function reloadActiveConversation(): Promise<void> {
       produce((s) => {
         const v = s.views[id]
         if (v) {
-          // 请求期间到达的实时事件接在账本页后面；同 id 以账本为准。
+          // 请求期间到达的实时事件接在账本页之后；相同 id 以账本为准。
           const known = new Set(items.map((item) => item.id))
           v.transcript = [...items, ...v.transcript.filter((item) => !known.has(item.id))]
           v.history = { loading: null, nextCursor: folded.nextCursor, error: null }
           v.runStartedAt = live ? live.createdAt : null
           v.runUserMessageId = live?.userMessageId ?? null
           v.usage = live?.usage ?? null
-          // 当前请求的阶段、次数与内容时刻由同一份请求账现取，不按重拉时刻造一个。
+          // 当前请求的阶段、次数与内容时刻从同一份请求记录读取，不按重新拉取的时刻生成。
           restoreRequest(v, folded.live)
-          // 报错正文跟着收尾条走，重投之后那一条已经带上了它（`stepToItems` 那侧）。
+          // 报错正文随收尾条显示，重新投影后收尾条已携带它（见 `foldTranscript`）。
           v.error = null
         }
         s.followUps = queue
         s.lastRunId = live?.id ?? null
-        // **待办从同一份 steps 账本投影回来，不新增持久化路径。**
-        // 只活在 WS 事件里的话，刷新一次、切走再切回就没了。`write_todos` step
-        // 提交整表，之后明确绑定的成功 `subagent` step 推进单条；历史接口已按这个
-        // 顺序折成当前快照，这里只接住，不在前端再猜一遍。
+        // 待办从同一份 steps 账本投影得到，不新增持久化路径。
+        // 若只存在于 WS 事件中，刷新或切换会话后再切回就会丢失。`write_todos` step
+        // 提交整表，之后明确绑定的成功 `subagent` step 更新单项；历史接口已按此
+        // 顺序折叠为当前快照，此处只接收，不在前端重新推算。
         s.todos = folded.todos
-        // 目标有自己的账本（`goal_events`），所以是读回来的，不像待办那样从
-        // steps 里反推——反推等于给「目标现在是什么」造第二个真源。
+        // 目标有独立的账本（`goal_events`），因此直接读取，不像待办那样从
+        // steps 反推：反推会为目标状态形成第二个真源。
         s.goal = goal
-        // 上下文不在这一批里——它有账本可依（`provider_requests`），
-        // 不是「run 内的易失投影」。
-        // 新会话是 0%，不是没有面板——后端一条请求都没发也知道窗口有多大。
-        // 只有这次拉取失败（上面 catch 成 null）才降级成不显示。
+        // 上下文不从 steps 推算：它有独立的账本（`provider_requests`），
+        // 不是 run 内的易失投影。
+        // 新会话显示 0%，而不是不显示面板：后端未发送任何请求时也知道窗口大小。
+        // 只有本次拉取失败（上方 catch 返回 null）时才降级为不显示。
         s.context = ctx
           ? {
               tokens: ctx.total,
@@ -1546,7 +1546,7 @@ export async function reloadActiveConversation(): Promise<void> {
               compactAt: ctx.compactAt,
               breakdown: ctx.breakdown,
               omitted: ctx.omitted,
-              // 读回的是账本里的读数，不描述一条正在发的请求，没有未计的视频。
+              // 读取的是账本中的读数，不对应正在发送的请求，因此没有未计入的视频。
               unmeasuredVideos: 0,
             }
           : null
@@ -1571,24 +1571,24 @@ export async function reloadActiveConversation(): Promise<void> {
 }
 
 /**
- * 一条 step 折成界面上的若干条。
+ * 将一个 step 折叠为界面上的若干条目。
  *
- * **一条 step 不等于一条界面条目**：不同 kind 投影成不同的会话条目。
- * 思考只来自独立的 `kind='thinking'`；迁移 37 已把旧工具行正文转成这种结构。
+ * 一个 step 不等于一个界面条目：不同 kind 投影为不同的会话条目。
+ * 思考只来自独立的 `kind='thinking'`；迁移 37 已将旧工具行中的正文转换为该结构。
  */
 function stepToItems(s: Step): TranscriptItem[] {
   if (s.kind === 'text') {
     return s.content ? [{ id: s.id, kind: 'text', text: s.content }] : []
   }
   if (s.kind === 'thinking') {
-    // 失败尝试的半截思考保留在账本供诊断，但已被随后的重发取代。普通会话流只展示
-    // 最终采用的生成；否则刷新后两段残句又会回来，实时态与回放态也不一致。
+    // 失败尝试中不完整的思考保留在账本中供诊断，但已被随后的重发取代。普通会话流只显示
+    // 最终采用的生成；否则刷新后两段不完整的句子会重新出现，实时状态与回放状态也不一致。
     return s.status !== 'failure' && s.content
       ? [{ id: s.id, kind: 'thinking', text: s.content }]
       : []
   }
-  // run 内注入的那句用户消息。刷新后要原位重建，`id` 用 stepId——
-  // 与 `message.injected` 事件里那个是同一个值，因此不会闪出两条。
+  // run 内注入的用户消息。刷新后须在原位置重建，`id` 使用 stepId：
+  // 与 `message.injected` 事件中的 id 相同，因此不会短暂出现两条。
   if (s.kind === 'user') {
     const payload = s.payload?.kind === 'user' ? s.payload : undefined
     // 执行事实是交给模型的输入，不是会话内容。
@@ -1605,8 +1605,8 @@ function stepToItems(s: Step): TranscriptItem[] {
       },
     ]
   }
-  // 压缩条必须在这里投影出来：压缩事件只活在连接期，不投影的话刷新一次
-  // 「这里压缩过」就没了，而它是解释「上下文为什么降了」的唯一线索。
+  // 压缩条必须在此处投影：压缩事件只存在于连接期间，不投影时刷新一次
+  // 压缩记录就会消失，而它是说明上下文占用下降原因的唯一依据。
   if (s.kind === 'compaction') {
     const p = s.payload
     if (p?.kind !== 'compaction' || !p.phase) return []
@@ -1628,10 +1628,10 @@ function stepToItems(s: Step): TranscriptItem[] {
     const p =
       s.payload?.kind === 'tool_call' || s.payload?.kind === 'tool_result' ? s.payload : null
     const outcome = p?.kind === 'tool_result' ? p.outcome : undefined
-    // action 来自后端落库的解析结果，是这张卡的全部标题（动词 + 对象 + 目标）。
-    // **`ToolSpec` 上 `actionKind` / `objectLabel` 都是必填，所以它一定在**——
-    // 别为「万一没有」加回落：回落成 `execute` 的话，刷新一次页面一整轮的读文件
-    // 全变成「执行」；回落成工具名则是给同一件事再造一套显示。
+    // action 来自后端落库的解析结果，是卡片的完整标题（动词 + 对象 + 目标）。
+    // `ToolSpec` 的 `actionKind` / `objectLabel` 均为必填，因此 action 必定存在。
+    // 不要为缺失情况添加回退：回退为 `execute` 会使刷新后整轮的读取文件操作
+    // 全部显示为「执行」；回退为工具名则会为同一件事另造一套显示。
     return [
       {
         id: s.id,
@@ -1643,7 +1643,7 @@ function stepToItems(s: Step): TranscriptItem[] {
         ...(p?.nodes ? { nodes: p.nodes } : {}),
         status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
         ...(outcome ? { outcome } : {}),
-        // 存量行没有这个数，那时不显示耗时——不为它编一个。
+        // 存量行没有该数值，此时不显示耗时，不编造数值。
         ...(s.durationMs === null ? {} : { durationMs: s.durationMs }),
       },
     ]

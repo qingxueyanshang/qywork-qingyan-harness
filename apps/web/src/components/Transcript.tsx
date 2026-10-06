@@ -73,7 +73,7 @@ import { AttachmentThumb } from './AttachmentThumb.tsx'
 import { IconChevron, IconSpinner } from './Icons.tsx'
 import { TodoList } from './TodoList.tsx'
 
-/** 历史请求的可见落点：首屏反馈、失败重试，以及按需加载更早轮次。 */
+/** 会话历史的加载状态：首次加载提示、失败重试，以及按需加载更早的轮次。 */
 export function ConversationHistoryBoundary(props: {
   conversationId: string
   onLoadOlder?: () => void | Promise<void>
@@ -132,8 +132,8 @@ export function ConversationHistoryBoundary(props: {
 }
 
 /**
- * 一条会话流的贴底跟随。父会话与右侧子会话共用：正文新增、思考展开、工具卡
- * 补输出都会改变真实 DOM 高度，不能各自列一张“哪些字段会长高”的清单。
+ * 会话流的底部跟随。父会话与右侧子会话共用：正文追加、思考展开、工具卡片补充输出
+ * 都会改变实际 DOM 高度，因此按高度变化判断，不按字段逐项列举可能增高的内容。
  */
 export function createConversationScroll(conversationId: () => string | null) {
   let scroller!: HTMLDivElement
@@ -142,10 +142,10 @@ export function createConversationScroll(conversationId: () => string | null) {
   let scrollIntent = false
   let scrollbarDrag = false
   /**
-   * 本组件写下去的那个 scrollTop（写完读回来的值）。`-1` = 还没写过。
+   * 本组件最近一次写入的 scrollTop，取写入后重新读取的值；`-1` 表示尚未写入。
    *
-   * **必须读回来**：写下去的目标会被浏览器夹到 `scrollHeight - clientHeight`，
-   * 记着没夹过的那个数，下面那句「这次滚动由本组件写入」永远判不成立。
+   * 必须在写入后重新读取：浏览器把写入值限制在 `scrollHeight - clientHeight` 以内，
+   * 记录未经限制的值时，`onScroll` 中「本次滚动由本组件写入」的判定永远不成立。
    */
   let followTop = -1
 
@@ -154,7 +154,7 @@ export function createConversationScroll(conversationId: () => string | null) {
     followTop = scroller.scrollTop
   }
 
-  /** 前插一页后补偿新增高度，让点击前视口里的第一行仍停在原处。 */
+  /** 在顶部插入一页历史后补偿新增高度，使点击前视口中的第一行保持在原位置。 */
   const loadOlderAnchored = async () => {
     const id = conversationId()
     if (!id) return
@@ -163,30 +163,30 @@ export function createConversationScroll(conversationId: () => string | null) {
     setPinned(false)
     const loaded = await loadOlderConversation(id)
     if (!loaded || conversationId() !== id) return
-    // Markdown 的 effect 与布局要到下一帧才全部落定。只等一个 microtask 时，
-    // ResizeObserver 可能在补偿之后又收到后续高度变化，把视口带走。
+    // Markdown 的 effect 与布局在下一帧才全部完成。只等待一个 microtask 时，
+    // ResizeObserver 可能在补偿之后收到后续的高度变化并移动视口。
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     scroller.scrollTop = beforeTop + (scroller.scrollHeight - beforeHeight)
     followTop = scroller.scrollTop
   }
 
   /*
-   * 跟不跟随，**只由用户的滚动手势改，不由某一次 scroll 事件里的几何决定**。
+   * 是否跟随底部只由用户的滚动手势决定，不由单次 scroll 事件中的几何位置决定。
    *
-   * `scroll` 并不等于「用户滚了」：展开 `<details>` 后，浏览器会为了保住焦点和滚动
-   * 锚点自行调整 scrollTop；ResizeObserver 的贴底写入也会再派发一次 scroll。把这些事件
-   * 当成用户上翻，思考一展开就会把跟随关掉，后面的新内容全长在视口下面。
+   * `scroll` 事件不一定来自用户滚动：展开 `<details>` 后，浏览器为保持焦点与滚动锚点会
+   * 自行调整 scrollTop；ResizeObserver 回调中的底部跟随写入也会派发 scroll。把这些事件
+   * 视为用户向上滚动时，展开思考即关闭跟随，此后的新内容全部位于视口下方。
    *
-   * 因此 wheel / touch / 滚动键 / 拖滚动条先明确武装一次意图，随后那次 scroll 才能改
-   * `pinned`。没有手势来源的 scroll 保持原状态，由内容增长继续贴底。
+   * 因此 wheel、touch、滚动键与拖动滚动条先记录一次滚动意图，其后的 scroll 事件才能修改
+   * `pinned`。没有手势来源的 scroll 保持原状态，内容增长时继续跟随底部。
    *
-   * 实测（真服务真前端，假 provider 驱动一轮四步：`.probe-ws`）：跟随在第 5 秒关掉，
-   * 之后 379 个安静帧稳定停在离底 253px——新来的内容全在视口下面，读数条被顶出屏幕。
-   * 不要用 `position: sticky` 粘住读数条：粘住的只是那一条，滚动位置仍停在离底
-   * 两百多像素，正文仍不可见，而「跳」变成「每次内容变矮时对回一次」。
+   * 实测（真实服务端与前端，测试 provider 驱动一轮四步）：跟随在第 5 秒被关闭，
+   * 此后 379 个无变化的帧稳定停在距底部 253px 处，新内容全部位于视口下方，读数条移出屏幕。
+   * 不要用 `position: sticky` 固定读数条：被固定的只有读数条，滚动位置仍距底部
+   * 两百多像素，正文仍不可见，跳动变为每次内容变矮时回弹一次。
    *
-   * `followTop` 仍用来认出本组件自己的写入；用户恰好滚回这个位置时，手势优先，不能
-   * 因为数值相等而漏掉重新贴底。容差 2px 只留给分数像素。
+   * `followTop` 仍用于识别本组件自身的写入；用户恰好滚动回该位置时以手势为准，不能
+   * 因数值相等而漏掉重新跟随底部。2px 容差仅用于吸收小数像素。
    */
   const onScroll = () => {
     const mine = Math.abs(scroller.scrollTop - followTop) < 1
@@ -203,7 +203,7 @@ export function createConversationScroll(conversationId: () => string | null) {
     scrollIntent = true
   }
   const onPointerDown = (event: PointerEvent) => {
-    // 点正文（尤其是 details 的 summary）不是滚动意图；滚动条的事件目标才是盒子自己。
+    // 点击正文（包括 details 的 summary）不是滚动意图；只有拖动滚动条时事件目标是滚动容器本身。
     if (event.target === scroller) scrollbarDrag = true
   }
   const onKeyDown = (event: KeyboardEvent) => {
@@ -212,7 +212,7 @@ export function createConversationScroll(conversationId: () => string | null) {
       event.target instanceof Element &&
       event.target.closest('summary, button, input, textarea, select, a')
     ) {
-      // Space 在这些控件上是点击/开合，不是翻页；尤其不能让键盘展开思考关闭贴底。
+      // Space 在这些控件上表示点击或展开，不表示翻页；用键盘展开思考不得关闭底部跟随。
       return
     }
     if (
@@ -229,20 +229,20 @@ export function createConversationScroll(conversationId: () => string | null) {
   }
 
   /*
-   * 贴着底时让新内容跟着走。触发条件是**内容的真实高度变了**，不是「store 里某几个
-   * 字段变了」：工具卡跑完才填进参数表和输出、图片解码完才占位、代码块要等高亮
-   * 落地——盯字段的话这些全都追不上，新来的字停在视口下面看不见。
+   * 跟随底部时，滚动位置随新内容移动。触发条件是内容的实际高度变化，而不是 store 中
+   * 某些字段变化：工具卡片执行完毕后才填入参数表和输出，图片解码完成后才占据高度，
+   * 代码块需等待高亮完成。只监听字段时无法覆盖这些情况，新到达的文字停留在视口下方。
    *
-   * ResizeObserver 的回调在布局之后、绘制之前跑，所以补偿这一帧就完成，
-   * 中间那一帧不会画出去。
+   * ResizeObserver 的回调在布局之后、绘制之前执行，因此补偿在同一帧内完成，
+   * 中间状态不会被绘制。
    *
-   * **两个盒子都要盯。** 内容长高是一件事，而滚动区自己变矮（窗口缩了、输入框长高）
-   * 同样把末尾内容推到视口下面，那时 `inner` 的高度一个像素都没动，只盯它就漏了。
+   * 两个容器都需要监听：除内容变高外，滚动区自身变矮（窗口缩小、输入框变高）同样会把
+   * 末尾内容推到视口下方，此时 `inner` 的高度不变，只监听 `inner` 会遗漏这种情况。
    *
-   * **必须按 border box 盯 `inner`。** 默认的 content box 不含内边距，而它的
-   * 下内边距会随整轮状态条挂不挂而变（`transcript.css` 的三档留白）：状态条一挂上，
-   * 留白多出它那一截，content box 一个像素没动，回调不触发，滚动位置停在原处
-   * ——状态条压住读数条，手动滚一下才对回来。
+   * 必须按 border box 监听 `inner`。默认的 content box 不含内边距，而 `inner` 的
+   * 下内边距随整轮状态条是否显示而变化（`transcript.css` 的三档留白）：状态条出现时
+   * 留白增加而 content box 不变，回调不触发，滚动位置停在原处，状态条遮住读数条，
+   * 需手动滚动才能恢复。
    */
   onMount(() => {
     const ro = new ResizeObserver(() => {
@@ -283,8 +283,8 @@ export function createConversationScroll(conversationId: () => string | null) {
 }
 
 /**
- * 一条会话的完整视口。主会话和右侧子会话只在宽度、留白与附加提示上有差别；历史、
- * 正文、流式判定、滚动状态机和运行条都从这里落 DOM，避免修好一边、另一边继续缺件。
+ * 一条会话的完整视口。主会话与右侧子会话只在宽度、留白与附加提示上不同；历史、
+ * 正文、流式判定、滚动状态机与运行条都在此渲染，避免两处实现不一致。
  */
 export function ConversationStream(props: {
   conversationId: string | null
@@ -337,7 +337,7 @@ export function ConversationStream(props: {
           }
         />
         {props.trailing}
-        {/* 本轮用量留在收尾条，后台任务只显示节点进度。 */}
+        {/* 本轮用量显示在收尾条中，后台任务只显示节点进度。 */}
         <Show when={background()}>
           {(status) => <output class="delegation-status">{status()}</output>}
         </Show>
@@ -352,9 +352,9 @@ export function ConversationStream(props: {
 /**
  * 会话流。
  *
- * 读数条（`LiveRunBar`）就是流里的**最后一条内容**，跟着流一起滚，往上翻它就翻走
- * ——不钉在底边。它离输入框那段固定距离由 `.transcript-inner` 的下内边距给。
- * 「内容长了不再把它往下顶出视口」不靠 CSS 钉，靠共享的贴底跟随。
+ * 读数条（`LiveRunBar`）是会话流的最后一项内容，随会话流一起滚动，向上滚动时移出视口，
+ * 不固定在底边。它与输入框之间的固定间距由 `.transcript-inner` 的下内边距提供。
+ * 内容增长时读数条保持可见，依靠共享的底部跟随实现，而不是 CSS 固定定位。
  */
 export function Transcript() {
   return (
@@ -369,16 +369,16 @@ export function Transcript() {
       trailing={
         <>
           {/*
-           * 没有 run 收尾条可挂的那些错误。
+           * 没有对应 run 收尾条的错误。
            *
-           * **报错正文的正常落点是读数条**（`run.finished` 时并进那一轮的条目里），
-           * 一句话一个地方。这里只收另一半：`run.error` 之后没有 `run.finished`
-           * 的那些——没配 key、档案解析失败、会话已有任务在跑、找不到项目目录。
-           * 它们连 run 行都没有，不在这儿说就一个字都看不到。
+           * 错误正文通常显示在读数条中（`run.finished` 时合并进该轮的条目），每条信息只显示一处。
+           * 此处只显示其余情况：`run.error` 之后没有 `run.finished` 的错误，即未配置 key、
+           * 档案解析失败、会话已有任务在运行、未找到项目目录。
+           * 这些错误没有 run 行，不在此处显示就完全不可见。
            *
-           * 不给引导文案、不给重试按钮：正文本身已经说了该干什么
-           * （`ai/src/errors.ts` 的分类文案就是按「用户的下一步动作」写的），
-           * 再挂一句是同一件事说两遍；要重发，输入框一直在。
+           * 不提供引导文案与重试按钮：正文已说明下一步操作
+           * （`ai/src/errors.ts` 的分类文案按用户的下一步操作编写），
+           * 再加一句即为重复；需要重新发送时使用输入框。
            */}
           <Show when={view().error}>
             {(e) => (
@@ -388,14 +388,14 @@ export function Transcript() {
             )}
           </Show>
 
-          {/* 指令被拒绝的回执。fail-closed 的 UI 落点：拒绝必须被看见。
-            用 <output> 而不是 div+role="status"：隐含语义一样，少一个属性。 */}
+          {/* 指令被拒绝的回执。按 fail-closed 原则，拒绝必须在界面上显示。
+            使用 <output> 而不是 div + role="status"：两者隐含语义相同，前者少一个属性。 */}
           <Show when={state.notice}>
             {(n) => (
               <output class="notice-card">
                 <span>{n().message}</span>
                 <button class="ghost-btn" type="button" onClick={() => setState('notice', null)}>
-                  知道了
+                  关闭
                 </button>
               </output>
             )}
@@ -407,34 +407,34 @@ export function Transcript() {
 }
 
 /**
- * 静默多久就改口说实话。
+ * 无新增内容超过该时长后，状态文字由「正在回复…」改为显示无新增内容的时长。
  *
- * **这个数是保守选择，不是测量结果。** 账本里有整轮往返的分布（p90 约 32 秒），
- * 但那是**整轮**的数，不是**两个事件之间**的数，拿它当间隔阈值是偷换。
+ * 该值是保守取值，不是测量结果。账本中有整轮往返耗时的分布（p90 约 32 秒），
+ * 但它衡量的是整轮，不是两个事件之间的间隔，不能用作间隔阈值。
  *
- * 取宽只影响这句话出现的早晚；它替掉的那句在任何时长下都是假的，
- * 所以宁可晚说，也不要继续说假的。
+ * 取值偏大只推迟该提示出现的时间；静默期间「正在回复…」始终不属实，
+ * 因此即使提示出现较晚，也必须替换该文字。
  */
 const SILENT_MS = 30_000
 
 /**
- * 这一轮此刻在**哪个阶段**。
+ * 本轮当前所处的阶段。
  *
- * 阶段只有一个来源：这条会话的当前请求投影（`store/state.ts` 的 `RequestProjection`）。
- * 实时事件与刷新快照按同一条规则写它，所以刷新前后这一格说的是同一句话。
+ * 阶段只有一个来源：会话的当前请求投影（`store/state.ts` 的 `RequestProjection`）。
+ * 实时事件与刷新快照按同一规则写入它，因此刷新前后该字段显示相同的文字。
  *
- * 这一格说的是阶段，不是动作。工具组头那句说的才是这一批工具在做什么
- * （查询 / 读取 / 创建 / 修改 / 删除 / 运行 / 调用），两者粒度不同、不重复——
- * 动作轴里也没有「执行」这个词，不会撞。
+ * 该字段描述阶段，不描述动作。工具分组标题描述这一批工具的动作
+ * （查询 / 读取 / 创建 / 修改 / 删除 / 运行 / 调用），两者粒度不同、内容不重复；
+ * 动作词表中没有「执行」，两者不会冲突。
  *
- * **为什么「正在执行」要看 `status`。** 只看 `kind === 'tool'` 的话，工具跑完之后到模型回包之间这一
- * 整段都在说「正在执行…」——而那段是最容易出事的一段（实测一次断流就断在这之后的 262 秒里）。工
- * 具卡有终态，用它判：**在跑才叫在执行，跑完了是在等回包**。工具在跑时也不报静默：
- * 一次构建十分钟很正常，而它自己会出 stdout。
+ * 「正在执行」必须检查 `status`。只检查 `kind === 'tool'` 时，从工具执行完毕到模型返回响应的
+ * 整段时间都显示「正在执行…」，而该时段最容易出错（实测一次连接中断发生在其后 262 秒内）。
+ * 工具卡片有终态，据此判定：运行中表示正在执行，执行完毕表示正在等待响应。工具运行期间
+ * 不显示静默时长：一次构建持续十分钟属于正常情况，且构建本身会输出 stdout。
  *
- * **等待时长按阶段各取各的时刻。** 已经出过内容的取 `lastContentAt`，还没出内容的取
- * 该阶段的 `sentAt` / `headersAt`——把阶段等待说成「无新增内容」会在一次从未产出的请求上
- * 报出一个凭空的内容间隔。缺时刻就不报秒数，不拿页面加载时刻或首内容时刻顶替。
+ * 等待时长按阶段取各自的起始时刻：已产出内容时取 `lastContentAt`，尚未产出内容时取
+ * 该阶段的 `sentAt` / `headersAt`。把阶段等待显示为「无新增内容」，会对一次从未产出内容的
+ * 请求报告一个不存在的内容间隔。缺少时刻时不显示秒数，不以页面加载时刻或首个内容时刻代替。
  */
 function liveStatus(now: number, conversationId: string): string {
   const current = viewOf(conversationId)
@@ -442,12 +442,12 @@ function liveStatus(now: number, conversationId: string): string {
   const last = items[items.length - 1]
 
   /*
-   * 连接不在 ready 上时**这一格什么都不说**。
+   * 连接状态不是 ready 时，该字段不显示内容。
    *
-   * 下面那句「已 N 秒…」在字面上仍然为真，但它把「对端没了」说成了
-   * 「数据慢」——用户会继续等，而实际上服务端已经不在，停止按钮也没人接。
-   * 真正的答案由顶部那条连接横幅给（它还带重试倒计时），这里再说一遍就是两处
-   * 各写一份、迟早漂成两句话。
+   * 下方「已 N 秒…」的文字在字面上仍然成立，但会把服务端断开表述为响应缓慢：
+   * 用户会继续等待，而此时服务端已不可用，停止按钮也无法生效。
+   * 连接状态由顶部的连接横幅显示（含重试倒计时）；此处再显示一次即形成两份文案，
+   * 日后会出现不一致。
    */
   if (state.connection !== 'ready') return ''
   if (last?.kind === 'tool' && last.status === 'running') return '正在执行…'
@@ -457,7 +457,7 @@ function liveStatus(now: number, conversationId: string): string {
   switch (req.phase) {
     case 'backoff': {
       if (req.backoffUntil === null) return '等待重试…'
-      // 倒计时只是展示：重发由服务端按同一个截止点发起，前端不因为数到 0 就做任何事。
+      // 倒计时仅用于显示：重发由服务端按同一截止时刻发起，前端在倒计时归零时不执行任何操作。
       return `等待重试，${Math.max(0, Math.ceil((req.backoffUntil - now) / 1000))} 秒后…`
     }
     case 'sent':
@@ -473,13 +473,13 @@ function liveStatus(now: number, conversationId: string): string {
       if (req.lastContentAt !== null && now - req.lastContentAt >= SILENT_MS) {
         return `已 ${Math.round((now - req.lastContentAt) / 1000)} 秒无新增内容`
       }
-      // 上游仍在送工具参数也不能掩盖用户长时间看不到新内容。
-      // 存量请求没有这个字段，避免从首内容时刻猜测可见进展。
+      // 上游仍在发送工具参数时，用户长时间看不到新内容的情况同样需要显示。
+      // 旧快照中的请求没有 `lastVisibleAt`，不以首个内容时刻推测可见进展。
       const visibleSince = req.lastVisibleAt ?? req.headersAt ?? req.sentAt
       if (req.lastContentKind != null && visibleSince !== null && now - visibleSince >= SILENT_MS) {
         return `等待响应，已 ${Math.round((now - visibleSince) / 1000)} 秒无可见进展`
       }
-      // 内容类别来自请求投影；旧快照没有类别时才按末条 transcript 兜底。
+      // 内容类别取自请求投影；旧快照没有类别时，回退为按最后一条 transcript 判定。
       if (req.lastContentKind === 'tool_arguments' || req.lastContentKind === 'other')
         return '等待响应…'
       if (req.lastContentKind === 'thinking') return '正在思考…'
@@ -495,38 +495,38 @@ function liveStatus(now: number, conversationId: string): string {
 /**
  * assistant 正文。
  *
- * 只有「运行中且是最后一条」才按流式渲染（`createStreamRenderer`，关闭语言自动检测）；
- * 定稿后整段重渲染一次并开启检测，那一次同时纠正增量渲染的已知偏差。
+ * 只有运行中的最后一条按流式渲染（`createStreamRenderer`，关闭语言自动检测）；
+ * 定稿后整段重新渲染一次并开启检测，同时纠正增量渲染的已知偏差。
  *
- * **这里不许再加一层限速。** 正文进 store 的节奏**已经由 `stream-pace.ts` 定死**：50ms 一档，每档按
- * 上游流速放几个字。在这之上再套一个自己的定时器，两级串起来是这样的——第一次变化排一个 60ms 的
- * timer，期间的变化被合并，落地后 timer 清空，下一次变化再排 60ms：**稳态变成每 100ms 落地一次、
- * 每次落两档的量**。20Hz 的匀速被压成 10Hz 的跳变，正文成批出现而不是连续流出。
+ * 不要在此处再加一层限速。正文写入 store 的节奏已由 `stream-pace.ts` 确定：每 50ms 一档，
+ * 每档按上游流速释放若干字符。在此之上再加一个定时器时，两级叠加的结果是：首次变化设置
+ * 60ms 的 timer，期间的变化被合并，执行后 timer 清空，下一次变化再设置 60ms，稳态变为
+ * 每 100ms 更新一次、每次包含两档的内容。20Hz 的匀速更新降为 10Hz 的跳变，正文成批出现，
+ * 而不是连续输出。
  *
- * **DOM 只动活动区。** 已定稿的块贴进容器就不再碰，每档只删掉它们之后那几个节点再贴一次活动区。
- * **不要把两个区各包一个 `<div>`**：`transcript.css` 的 `.markdown > :first-child` /
- * `:last-child` / `p:last-child` 是按容器的直接子元素写的，包一层这三条全部失效
- * （首尾的外边距塌不掉，两个区之间多出一截）。
+ * DOM 只更新活动区。已定稿的块插入容器后不再修改，每档只删除其后的节点并重新插入活动区。
+ * 不要把两个区各包一层 `<div>`：`transcript.css` 的 `.markdown > :first-child` /
+ * `:last-child` / `p:last-child` 按容器的直接子元素编写，多包一层后这三条规则全部失效
+ * （首尾外边距无法折叠，两个区之间出现多余间距）。
  *
- * 整段替换 `innerHTML` 的代价不只是重建节点：33KB 的 HTML 实测 7.8ms、66KB 15.5ms
- * （2026-08-20，真实 Chromium），且流式期用户选中的文字每档被销毁一次，复制不了。
+ * 整段替换 `innerHTML` 的代价不止重建节点：33KB 的 HTML 实测 7.8ms、66KB 为 15.5ms
+ * （2026-08-20，真实 Chromium），且流式输出期间用户选中的文字每档被清除一次，无法复制。
  */
 function Prose(props: { item: TranscriptItem }) {
   const row = useContext(RowStream)
   /*
-   * **必须是 memo，不能是普通取值函数。**
+   * 必须使用 memo，不能使用普通取值函数。
    *
-   * 它读的两样都随本列增长：这条流在不在跑，与它的末项 id。每 push 一条
-   * （每个工具启动、每条用户消息、每条收尾读数）这两样就变一次，而 effect 只按
-   * 依赖是否通知重跑，不按取值是否变化——普通取值函数下，会话里**每一段已经定稿的
-   * 正文**都会在每次 push 时重跑一遍 `renderMarkdown` 并整段替换 innerHTML。
-   * 逐帧实测（真服务真前端，两轮四步）：一段 80 个节点的正文在定稿之后又被整段
-   * 重建 9 次，其中 5 次挤在收尾那一毫秒里。memo 按值去重，只在真的从流式转定稿
-   * 那一下通知。
+   * 它读取的两个值都随本列增长而变化：该流是否在运行，以及末项 id。每追加一条
+   * （每次工具启动、每条用户消息、每条收尾读数）两者都会通知一次，而 effect 依据
+   * 依赖是否通知决定是否重新执行，不比较取值是否变化。使用普通取值函数时，会话中每一段
+   * 已定稿的正文都会在每次追加时重新执行 `renderMarkdown` 并整段替换 innerHTML。
+   * 逐帧实测（真实服务端与前端，两轮四步）：一段 80 个节点的正文定稿后又被整段
+   * 重建 9 次，其中 5 次集中在收尾的同一毫秒内。memo 按值去重，只在从流式转为定稿时通知。
    */
   const streaming = createMemo(() => row.live() && row.items().at(-1)?.id === props.item.id)
 
-  // 解析闸门：`reparseSkip` 说了算，判据与理由都在它那里。
+  // 重新解析的频率由 `reparseSkip` 决定，判据与理由见该函数。
   const [gate, setGate] = createSignal(0)
   let sinceParse = 0
   let lastCost = 0
@@ -534,7 +534,7 @@ function Prose(props: { item: TranscriptItem }) {
   createEffect(() => {
     const text = props.item.text
     if (!streaming()) {
-      // 定稿：立刻对齐到全文，否则最后几档会永远停在上一帧。
+      // 定稿时立即更新到全文，否则最后几档内容会一直停留在上一帧。
       sinceParse = 0
       setGate(text.length)
       return
@@ -548,21 +548,21 @@ function Prose(props: { item: TranscriptItem }) {
 
   let host: HTMLDivElement | undefined
   const stream = createStreamRenderer()
-  /** 已定稿区占了容器前面多少个子节点。活动区永远是它之后的那些。 */
+  /** 已定稿区占用的容器开头子节点数。活动区始终是其后的节点。 */
   let settledNodes = 0
 
   createEffect(() => {
     gate()
     /*
-     * `streaming()` 必须**订阅**，不能塞进下面的 `untrack`。
+     * `streaming()` 必须被订阅，不能放入下方的 `untrack`。
      *
-     * 定稿那一下常常不改变文本长度——末档的字在 `run.finished` 之前就冲进 store 了，
-     * 因此闸门写回同一个值、信号不通知。只认闸门的话整段重渲染永远不会发生，
-     * 而语言自动检测和增量渲染的已知偏差都指着它纠正。
-     * 它自己不会每档变：读的是末项的 id，往末项追加文本不动 id。
+     * 定稿时文本长度通常不变：末档的文字在 `run.finished` 之前已写入 store，
+     * 因此 `gate` 写入相同的值，信号不通知。只依赖 `gate` 时整段重新渲染不会发生，
+     * 而语言自动检测与增量渲染已知偏差的纠正都依赖这次重新渲染。
+     * `streaming()` 不会每档变化：它读取末项 id，向末项追加文本不改变 id。
      */
     const live = streaming()
-    // 只认闸门：直接读 text 会让这个 effect 依赖它，降频就失效了。
+    // 只依赖 `gate`：直接读取 text 会使该 effect 依赖 text，降频随之失效。
     const text = untrack(() => props.item.text)
     if (!host) return
 
@@ -576,7 +576,7 @@ function Prose(props: { item: TranscriptItem }) {
       for (let extra = host.childNodes.length; extra > settledNodes; extra--) {
         host.lastChild?.remove()
       }
-      // 内容经 markdown.ts 净化后才进 DOM —— 模型输出不可信
+      // 内容经 markdown.ts 净化后才写入 DOM：模型输出不可信。
       if (chunk.settled) {
         host.insertAdjacentHTML('beforeend', chunk.settled)
         settledNodes = host.childNodes.length
@@ -597,16 +597,16 @@ function Prose(props: { item: TranscriptItem }) {
 }
 
 /**
- * 折叠：思考、工具、工具组共用的**同一个**形状。
+ * 折叠条目：思考、工具与工具组共用同一种样式。
  *
- * 不要让它们长成三样（思考一个左边框、工具一张卡片、工具组另一张更大的卡片）：
- * 三种形状在同一列里交替出现，而它们在语义上是同一类条目——**这一轮里发生了
- * 一件可以展开看的事**。
+ * 不要分成三种样式（思考使用左边框、工具使用卡片、工具组使用更大的卡片）：
+ * 三种样式会在同一列中交替出现，而它们在语义上属于同一类条目，即本轮中发生的、
+ * 可以展开查看的事件。
  *
- * 用原生 `<details>` 而不是自己管 open 状态：键盘语义、`Enter`/`Space` 展开、
- * 屏幕阅读器的展开态播报都由元素自带，自写 button + signal 每一样都要补。
+ * 使用原生 `<details>` 而不是自行管理 open 状态：键盘语义、`Enter` / `Space` 展开、
+ * 屏幕阅读器的展开状态播报都由元素提供，自行实现 button + signal 时每一项都需补齐。
  */
-/** 折叠条目在 `foldOpen` 里的 key：组卡与它的首个成员 id 相同，靠 kind 分开。 */
+/** 折叠条目在 `foldOpen` 中的 key：分组卡片与其首个成员的 id 相同，以 kind 区分。 */
 function foldKey(kind: 'tool' | 'thinking' | 'group', id: string): string {
   return `${kind}:${id}`
 }
@@ -614,43 +614,43 @@ function foldKey(kind: 'tool' | 'thinking' | 'group', id: string): string {
 function Fold(props: {
   id: string
   label: JSX.Element
-  /** 终态字样。**成功不写字**——一屏几十行全是「成功」等于没有信息。 */
+  /** 终态文字。成功时不显示：一屏几十行都显示「成功」不提供任何信息。 */
   statusWord?: string
   target?: string
   /**
-   * 改了多少行。**钉在行尾，不进文本槽**——文本槽负责单行省略，
-   * 目标一长这两个数就会跟着被截掉，而它们是定宽的事实。
+   * 增删的行数。不放入文本槽：文本槽负责单行省略，
+   * 目标较长时这两个数会被一并截断，而它们是定宽信息。
    */
   changes?: { additions: number; deletions: number }
-  /** 思考那类「背景信息」压暗一档，hover 时恢复。 */
+  /** 思考等背景信息降低一级亮度，hover 时恢复。 */
   dim?: boolean
   failed?: boolean
-  /** 首次或再次展开后的 DOM 已挂载通知；用于把仍在增长的内层内容对到最新位置。 */
+  /** 首次或再次展开且 DOM 挂载完成后调用；用于把仍在增长的内层内容滚动到最新位置。 */
   onOpen?: () => void
   children: JSX.Element
 }) {
   /*
-   * **开合只由用户点，谁都不许替他开、替他合。**
+   * 展开与收起只由用户操作，代码不得自动展开或收起。
    *
-   * **不要加 `autoOpen`**（思考跑起来自动展开、跑完自动收起，工具组同理）：那是会话流
-   * 「一直上下跳动」的根——`.fold-pre` 一次开合就是 200px，而一轮里有好几段思考、
-   * 好几组命令，因此内容高度在跑的过程中反复变矮又变高。实测一轮四步：会话流高度
-   * 变矮 5 次，幅度 58 / 82 / 122 / 146 / 191px（`.probe-ws` 那份探针）。
-   * 贴着底看的用户因此被动经历几百像素的来回位移，而他没有做任何操作。
+   * 不要加 `autoOpen`（思考开始时自动展开、结束时自动收起，工具组同理）：它会使会话流
+   * 持续上下跳动。`.fold-pre` 一次展开或收起改变 200px 高度，而一轮中有多段思考与
+   * 多组命令，内容高度在执行过程中反复增减。实测一轮四步：会话流高度
+   * 降低 5 次，幅度为 58 / 82 / 122 / 146 / 191px。
+   * 停留在底部阅读的用户因此经历数百像素的往返位移，而用户没有进行任何操作。
    *
-   * 收起态并不少信息：思考那条的标签里带着**实时更新的正文摘要**，工具组的标题写着
-   * 干了什么。要看全的自己点开——点开之后也不会被自动合上。
+   * 收起状态并不缺少信息：思考条目的标签中含实时更新的正文摘要，工具组的标题列出
+   * 执行了哪些操作。需要查看全文时由用户展开，展开后不会被自动收起。
    *
-   * 开合的权威是 `foldOpen(id)`：`open` 绑定它，`toggle` 写回它。不要改回不绑定、
-   * 让 `<details>` 自己记：节点的寿命由渲染投影决定——单条工具并进组卡时节点换新，
-   * 记在节点上的展开态跟着丢。`mounted` 只记录正文是否展开过，首次展开后保持为 true，
-   * 合上再点开不重建正文。
+   * 展开状态的权威是 `foldOpen(id)`：`open` 绑定它，`toggle` 写回它。不要改为不绑定、
+   * 由 `<details>` 自行记录：节点的生命周期由渲染投影决定，单条工具合并进分组卡片时
+   * 节点被替换，记录在节点上的展开状态随之丢失。`mounted` 只记录正文是否展开过，
+   * 首次展开后保持为 true，收起后再次展开不重建正文。
    */
   const open = () => foldOpen(props.id)
   const mounted = createMemo<boolean>((was) => was || open(), false)
   createEffect(() => {
     if (!open()) return
-    // 正文由 mounted 在本轮挂载；等 Solid 落完 DOM 再交给调用方定位。
+    // 正文由 mounted 在本次更新中挂载；等待 Solid 完成 DOM 更新后再交给调用方定位。
     queueMicrotask(() => props.onOpen?.())
   })
   return (
@@ -660,7 +660,7 @@ function Fold(props: {
       open={open()}
       onToggle={(e) => setFoldOpen(props.id, e.currentTarget.open)}
     >
-      {/* 一整行不换行：文本槽负责省略，右侧的角标不收缩。 */}
+      {/* 整行不换行：文本槽负责省略，右侧的标记不收缩。 */}
       <summary class="fold-head">
         <span class="fold-summary">
           <span class="fold-label">{props.label}</span>
@@ -672,9 +672,9 @@ function Fold(props: {
               · {sanitizeTarget(props.target!)}
             </span>
           </Show>
-          {/* 改了多少行**紧跟在文件名后面**，不钉行尾：它说的是这个文件的事，
-              隔着半行空白放到最右边，眼睛要横扫过去才能把两者对上。
-              路径长时截的是路径（`.fold-target` 自己收缩），这两个数不收缩。 */}
+          {/* 增删行数紧跟在文件名之后，不固定在行尾：它描述的是该文件，
+              隔着半行空白放在最右侧时，需要横向扫视才能把两者对应起来。
+              路径较长时截断的是路径（`.fold-target` 自身收缩），这两个数不收缩。 */}
           <Show when={props.changes}>
             {(c) => (
               <span class="fold-delta">
@@ -694,24 +694,24 @@ function Fold(props: {
 
 function ThinkingFold(props: { item: TranscriptItem }) {
   const row = useContext(RowStream)
-  // memo 而不是取值函数，理由同 `Prose`：读的两样每 push 一条就通知一次。
+  // 使用 memo 而不是取值函数，理由同 `Prose`：读取的两个值每追加一条就通知一次。
   const streaming = createMemo(
     () => row.live() && !row.generatingToolCall() && row.items().at(-1)?.id === props.item.id,
   )
-  // 流仍在增长时说「思考中」，停了说「已思考」——避免出现
-  // 「标签写着已思考、旁边转圈说正在思考」的自相矛盾。
+  // 流仍在增长时显示「思考中」，停止后显示「已思考」，
+  // 避免标签显示「已思考」而旁边的加载动画仍表示正在思考。
   const verb = () => (streaming() ? '思考中' : '已思考')
-  // 只看开头一段再压空白：整段思考能有几万字，每来一帧都扫一遍就是随长度变慢。
+  // 只取开头一段再合并空白：整段思考可达数万字，每帧扫描全文会使耗时随长度增长。
   const preview = () => props.item.text.slice(0, 240).replace(/\s+/g, ' ').trim().slice(0, 80)
 
   /*
-   * 思考块自己滚到底。
+   * 思考块自行滚动到底部。
    *
-   * `.fold-pre` 是**内层滚动容器**（max-height 200px），会话流那个「贴着底就跟随」
-   * 只作用在外层。用户在思考还在流的时候点开它，不跟随的话它停在第一屏——
-   * 新来的字一直往下堆在看不见的地方，看起来像卡住了。
+   * `.fold-pre` 是内层滚动容器（max-height 200px），会话流的底部跟随只作用于外层。
+   * 用户在思考仍在流式输出时展开它，若不跟随，它停留在第一屏，
+   * 新到达的文字持续追加在视口之外，看起来像已停滞。
    *
-   * 只在流式期跟随：停下来之后用户往回翻，不该被强制滚回底部（那正是外层刻意避免的）。
+   * 只在流式输出期间跟随：输出停止后用户向上滚动时，不应被强制滚回底部，外层同样避免这种行为。
    */
   let pre: HTMLPreElement | undefined
   const stickPreToBottom = () => {
@@ -739,10 +739,10 @@ function ThinkingFold(props: { item: TranscriptItem }) {
 /**
  * 运行中的中途输出。
  *
- * 只在工具还在跑的时候出现；跑完由展开体那几个终态分支接手，不会两块并存。
+ * 只在工具运行时出现；执行完毕后由展开内容的终态分支接替，两者不会同时存在。
  *
- * 自己滚到底的理由与思考块相同：`.fold-live` 是**内层滚动容器**，
- * 会话流那个「贴着底就跟随」只作用在外层，不跟随的话新来的行一直堆在看不见的地方。
+ * 自行滚动到底部的理由与思考块相同：`.fold-live` 是内层滚动容器，
+ * 会话流的底部跟随只作用于外层，不跟随时新到达的行持续追加在视口之外。
  */
 function LiveOutput(props: { item: TranscriptItem }) {
   let pre: HTMLPreElement | undefined
@@ -758,48 +758,47 @@ function LiveOutput(props: { item: TranscriptItem }) {
 }
 
 /**
- * Run 收尾条：停止原因 + 真实用量 + 耗时。**一轮一条。**
+ * Run 收尾条：停止原因、实际用量与耗时，每轮一条。
  *
- * **为什么收数据靠 props 而不是读运行中那份 view。** 读 `ConversationView.usage` /
- * `runStartedAt` 那几个会话级字段的话，整个会话只会有一条：第二轮跑完把第一轮的读数冲掉，刷新
- * 更是一条不剩。而这些数字逐轮落在 `runs` 表里——一轮一个条目、由投影层从 run 行重建，才是它本来
- * 的形状。
+ * 数据由 props 传入，而不是读取运行中的 view：读取 `ConversationView.usage` /
+ * `runStartedAt` 等会话级字段时，整个会话只有一条，第二轮执行完毕会覆盖第一轮的读数，
+ * 刷新后一条也不保留。这些数字逐轮保存在 `runs` 表中，每轮一个条目、由投影层从 run 行重建。
  *
- * 跑完的那一轮走 `props.run`；还在跑的那一轮没有 run 行可读，
- * 由 `<LiveRunBar />` 拿实时状态渲染同一个外壳。
+ * 执行完毕的轮次使用 `props.run`；运行中的轮次没有 run 行可读，
+ * 由 `<LiveRunBar />` 读取实时状态渲染同一外壳。
  *
- * 三条口径必须守住：
- * - 正常完成不另报「已完成」；异常停止与错误正文才占用这一格。
- * - **缓存命中未知或未回报都显示 `N/A`**；provider 明确回报 0 才显示 0。
- *   只看最后一次调用，不拿上一轮的数填当前空缺。
- * - 计价为 0 时不显示金额，而不是显示 $0.0000——未知计价冒充免费更误导。
+ * 必须遵守三条口径：
+ * - 正常完成不另外显示「已完成」；只有异常停止与错误正文占用该字段。
+ * - 缓存命中未知或未报告时都显示 `N/A`；provider 明确报告 0 时才显示 0。
+ *   只取最后一次调用，不以上一轮的数值填补当前缺失。
+ * - 计价为 0 时不显示金额，不显示 $0.0000：把未知计价显示为免费更具误导性。
  */
 function RunStatusBar(props: {
   usage: RunUsage | null
   stopReason: StopReason | null
-  /** 秒。null = 没有可信的起止时刻，不显示这一格。 */
+  /** 单位为秒。null 表示没有可信的起止时刻，不显示该字段。 */
   elapsed: number | null
   running: boolean
   /**
-   * 跑着的时候这一格说什么。
+   * 运行时该字段显示的内容。
    *
-   * 由调用方给而不是这里现算：它要按**当下**判静默，而只有 `LiveRunBar` 那层
-   * 挂着走秒的定时器——在这里读 `Date.now()` 的话，画面不会自己更新。
+   * 由调用方传入而不在此处计算：静默判定需要按当前时刻计算，而只有 `LiveRunBar`
+   * 持有逐秒更新的定时器；在此处读取 `Date.now()` 时，界面不会自动更新。
    */
   liveNote?: string
-  /** 报错正文，没有就是 null。有它时它**取代**停止原因那句话，不是并列多说一句。 */
+  /** 错误正文，没有时为 null。存在时它替代停止原因，而不是与停止原因并列显示。 */
   errorMessage?: string | null
 }) {
   const normal = () => !props.stopReason || props.stopReason === 'completed'
   /**
-   * 停下来的说法。
+   * 停止原因的文字。
    *
-   * **有正文就说正文**：「模型服务出错」只说了是谁的错，而「网络不可达：检查接口
-   * 地址与代理」才说得出该干什么——两句一起显示是同一件事说两遍，而这一格
-   * 排在读数条末位，本来就是留给「为什么停」的。
+   * 有错误正文时显示正文：「模型服务出错」只说明了出错方，而「网络不可达：检查接口
+   * 地址与代理」说明了下一步操作；两句同时显示即为重复，且该字段位于读数条末位，
+   * 用途就是说明停止原因。
    *
-   * 只取第一行：个别正文会带上配置文件路径那种第二行，而读数条只有一行，
-   * 整段贴进来会把这一行撑开、把前面几格挤走。
+   * 只取第一行：部分正文的第二行是配置文件路径，而读数条只有一行，
+   * 整段放入会撑高该行并挤占前面的字段。
    */
   const reason = () => {
     const detail = props.errorMessage?.split(NEWLINE)[0]?.trim()
@@ -812,9 +811,9 @@ function RunStatusBar(props: {
 
   return (
     <div class="run-strip" classList={{ done: !props.running, abnormal: !normal() }}>
-      {/* 星河条：运行时星点流动、五格逐个提亮扫过去，跑完暂停动画并压暗——「还在跑」
-          和「跑完了」必须在余光里就能分清，光靠文字变化做不到。
-          五格分开写：每格自己一条错开延时的动画，也各带各的星点数。 */}
+      {/* 运行指示条：运行时星点流动、五段依次提亮，执行完毕后暂停动画并降低亮度。
+          「运行中」与「已执行完毕」必须在视野边缘即可区分，仅靠文字变化无法做到。
+          五段分别编写：每段各有一条错开延时的动画与各自的星点数。 */}
       <span class="run-galaxy" aria-hidden="true">
         <span />
         <span />
@@ -824,7 +823,7 @@ function RunStatusBar(props: {
       </span>
 
       <span class="run-readout">
-        {/* 起轮确认前保留耗时列，避免确认到达时推移后续读数。 */}
+        {/* 本轮开始的确认到达前保留耗时列，避免确认到达时后续读数发生位移。 */}
         <Show when={props.running || props.elapsed !== null}>
           <span
             class="run-metric run-elapsed"
@@ -840,30 +839,30 @@ function RunStatusBar(props: {
               <span class="run-metric" data-tip="输入 / 输出 token">
                 ↓{compact(usage().inputTokens)} ↑{compact(usage().outputTokens)}
               </span>
-              {/* 模型调用与生成的花费合在一起，不同币种并列。计价为 0 时不显示金额：未知计价冒充免费更误导。 */}
+              {/* 模型调用与生成的花费合并显示，不同币种并列。计价为 0 时不显示金额：把未知计价显示为免费更具误导性。 */}
               <Show when={Object.keys(runCosts(usage())).length > 0}>
                 <span class="run-metric run-cost">{formatCosts(runCosts(usage()))}</span>
               </Show>
             </>
           )}
         </Show>
-        {/* 即使模型在 usage 生成前报错，也必须把未知明确显示出来。
-            口径（最后一次调用、null 与 0 的区别）只由 `hitRate` 维护。 */}
+        {/* 模型在 usage 生成前报错时，同样必须明确显示为未知。
+            口径（取最后一次调用、区分 null 与 0）只由 `hitRate` 维护。 */}
         <span class="run-metric" data-tip="最后一次模型调用的缓存命中占输入总量的比例">
           命中 {props.usage ? hitRate(props.usage) : 'N/A'}
         </span>
         {/*
-         * 「正在思考…」跟在钱后面，和停止原因同一格。
+         * 「正在思考…」等运行状态位于金额之后，与停止原因占用同一字段。
          *
-         * 别把它浮在输入区上方：那里没有它的位置，出现和消失会把输入框整体推动，
-         * 也就是 B9 说的「尺寸随内容变」。而这一格本来就是给「这一轮怎么样了」用的：
-         * 跑着的时候说在干什么，跑完了说为什么停，同一个位置、同一种语义。
+         * 不要把它悬浮在输入区上方：那里没有预留位置，它出现与消失会推动整个输入框，
+         * 即尺寸随内容变化。该字段的用途是显示本轮状态：运行时说明正在进行的操作，
+         * 执行完毕后说明停止原因，位置与语义一致。
          */}
         <Show when={props.running && props.liveNote}>
           <span class="run-live">{props.liveNote}</span>
         </Show>
-        {/* 停止原因排在**末位**：它长度不定，排在最前会把后面几格读数整体右推，
-            因此出错的那一轮和正常的那些轮列对不齐。放最后，前面几格的列位恒定。 */}
+        {/* 停止原因排在末位：它长度不定，排在最前会把后续读数整体右移，
+            出错的轮次与正常轮次的列无法对齐。排在末位时，前面各字段的位置固定。 */}
         <Show when={showReason()}>
           <span class="run-reason">{reason()}</span>
         </Show>
@@ -873,17 +872,17 @@ function RunStatusBar(props: {
 }
 
 /**
- * 还在跑的那一轮。
+ * 运行中的轮次。
  *
- * 只有它需要一个每 100ms 走一格的计时器，所以单独一层：**跑完的那些条目不该
- * 各挂一个定时器**，一个几十轮的会话会挂出几十个永远滴答的 interval，
- * 每次触发都让整棵会话流重算。
+ * 只有它需要每 100ms 更新一次的计时器，因此单独成一层：执行完毕的条目不应
+ * 各自持有定时器，几十轮的会话会产生几十个持续触发的 interval，
+ * 每次触发都使整个会话流重新计算。
  *
- * 停止原因恒为 null——还没停，没有原因可说。
+ * 停止原因恒为 null：本轮尚未停止。
  */
 export function LiveRunBar(props: { conversationId: string }) {
   const [now, setNow] = createSignal(Date.now())
-  // 开始时刻到达时同步时钟，避免上一帧的 now 早于新起点。
+  // 开始时刻到达时同步时钟，避免上一帧的 now 早于新的开始时刻。
   createEffect(
     on(
       [
@@ -914,7 +913,7 @@ export function LiveRunBar(props: { conversationId: string }) {
   )
 }
 
-/** 跑完那一轮的条目。耗时用落库的起止时刻算，和实时那条是同一个含义。 */
+/** 执行完毕的轮次条目。耗时按落库的起止时刻计算，与实时条目的含义相同。 */
 function RunCard(props: { item: TranscriptItem }) {
   const run = () => props.item.run
   const elapsed = () => {
@@ -940,8 +939,8 @@ function RunCard(props: { item: TranscriptItem }) {
 /**
  * 上下文压缩事件。
  *
- * 压缩不能静默发生：用户需要能回答「为什么模型突然不记得前面说过的话了」。
- * 失败尤其要显眼——压缩失败意味着上下文还是满的，下一轮很可能直接报错。
+ * 压缩不能静默发生：用户需要能据此判断模型为何不再记得之前的内容。
+ * 失败必须醒目：压缩失败意味着上下文仍然已满，下一轮很可能直接报错。
  */
 function CompactionCard(props: { item: TranscriptItem }) {
   const c = () => props.item.compaction
@@ -950,8 +949,8 @@ function CompactionCard(props: { item: TranscriptItem }) {
     if (phase === 'started') return '正在压缩上下文'
     if (phase === 'skipped') return compactionSkipLabel(c()?.reasonCode)
     if (phase === 'failed') return compactionFailureLabel(c()?.reasonCode)
-    // 三种形态要能分辨：只收纳（没调模型）/ 压缩完成 / 收纳了但摘要没做成。
-    // 都说成「已压缩」的话，一次没调模型的收纳和一次完整压缩在用户那边一模一样。
+    // 必须区分三种结果：只收纳（未调用模型）、压缩完成、已收纳但摘要未完成。
+    // 都显示为「已压缩」时，未调用模型的收纳与完整压缩在界面上无法区分。
     if (c()?.summarized === false) {
       return c()?.reasonCode ? '上下文已收纳，摘要未完成' : '上下文已收纳，未调用模型'
     }
@@ -968,39 +967,39 @@ function CompactionCard(props: { item: TranscriptItem }) {
   )
 }
 
-/** 没什么可压。**不是失败**，所以不走红字通道，措辞也不带「失败」。 */
+/** 没有可压缩的内容。这不是失败，因此不以红色显示，措辞也不含「失败」。 */
 function compactionSkipLabel(code: string | undefined): string {
   const map: Record<string, string> = { nothing_to_fold: '无可压缩内容' }
   return (code && map[code]) || '无可压缩内容'
 }
 
 /**
- * 压缩失败的说法。**未知的码不往外露**——`reasonCode` 是给日志看的英文标识，
- * 括号里挂一个 `empty_summary` 对用户不构成信息，只构成困惑。
+ * 压缩失败的文字。未知的原因码不显示：`reasonCode` 是供日志使用的英文标识，
+ * 在括号中显示 `empty_summary` 不向用户提供有效信息。
  */
 function compactionFailureLabel(code: string | undefined): string {
   const map: Record<string, string> = {
     summary_empty: '压缩失败：摘要为空',
     summary_error: '压缩失败：摘要调用出错',
     no_headroom: '压缩失败：没有可用空间',
-    not_smaller: '压缩失败：摘要没有更小',
+    not_smaller: '压缩失败：摘要未比原内容更短',
     over_budget: '压缩失败：摘要过长',
   }
   return (code && map[code]) || '压缩失败'
 }
 
 /**
- * 会话流的正文行。父会话与右侧面板里那条只读子会话**共用这一份**——
- * 各画一遍的话，将来加一种条目必然漏掉其中一处。
+ * 会话流的正文行。父会话与右侧面板中的只读子会话共用同一实现：
+ * 分别渲染时，新增一种条目必然遗漏其中一处。
  *
- * 滚动跟随不在行组件里：父页与子页各自的滚动盒都调用 `createConversationScroll`。
+ * 滚动跟随不在行组件中：父页与子页各自的滚动容器都调用 `createConversationScroll`。
  */
 /**
- * 这一列正文属于哪条流，以及那条流还在不在长。
+ * 本列正文所属的流，以及该流是否仍在增长。
  *
- * `Prose` 与 `ThinkingFold` 判「这一条还在流」要拿**本列**的末项比。默认是当前会话
- * 那一列；右侧的子会话页给它自己那条——拿当前会话的末项去比的话，子会话的每一段
- * 正文都会被判成已定稿，每来一批字就整段重排一次。
+ * `Prose` 与 `ThinkingFold` 判定某一条是否仍在流式输出时，必须与本列的末项比较。默认是
+ * 当前会话的列；右侧子会话页传入子会话自身的列。与当前会话的末项比较时，子会话的每一段
+ * 正文都会被判定为已定稿，每到达一批文字就整段重新排版一次。
  */
 const RowStream = createContext<{
   items: () => TranscriptItem[]
@@ -1012,12 +1011,12 @@ const RowStream = createContext<{
   generatingToolCall: () => false,
 })
 
-/** 六行用户正文的实际高度：`--fs-prose` 13.5px × 1.55 行高 × 6，取整为 126px。改 `.bubble` 的字号或行高时这里要跟着改。 */
+/** 六行用户正文的实际高度：`--fs-prose` 13.5px × 1.55 行高 × 6，取整为 126px。修改 `.bubble` 的字号或行高时必须同步修改此值。 */
 const USER_MESSAGE_PREVIEW_HEIGHT = 126
 
 /**
- * 用户消息只在真实渲染高度超过六行时收敛。正文仍是 transcript 的原投影；这里的
- * `expanded` 只决定这一只气泡画多高，不改消息、不截字，也不参与同步或持久化。
+ * 用户消息只在实际渲染高度超过六行时折叠。正文仍是 transcript 的原投影；此处的
+ * `expanded` 只决定该气泡的显示高度，不修改消息、不截断文字，也不参与同步或持久化。
  */
 function UserBubble(props: { text: string }) {
   let copy!: HTMLDivElement
@@ -1066,17 +1065,17 @@ function UserBubble(props: { text: string }) {
   )
 }
 
-/** 一行的固定壳：`<For>` 按它配对，内容从 `node` 读；同一个 id 只有一个壳。 */
+/** 一行的固定行对象：`<For>` 按它匹配，内容从 `node` 读取；同一 id 只对应一个行对象。 */
 interface RenderRow {
   id: string
   node: Accessor<RenderItem>
 }
 
 /**
- * 把每轮全新的投影折成按 id 固定的壳。壳里的信号以 `sameRenderItem` 为相等判据，
- * 内容没变就不通知。不要把 `buildRenderItems` 的结果直接交给 `<For>`：它按引用配对，
- * 组卡每来一个成员、workflow 折叠项每个进度事件都是新包装，整行 DOM 会销毁重建——
- * 展开着的折叠合上，连线的虚线动画从头起跳。
+ * 把每轮新生成的投影转换为按 id 固定的行对象。行对象中的信号以 `sameRenderItem` 为相等判据，
+ * 内容未变时不通知。不要把 `buildRenderItems` 的结果直接交给 `<For>`：`<For>` 按引用匹配，
+ * 分组卡片每增加一个成员、workflow 折叠项每收到一个进度事件都会生成新对象，整行 DOM 被销毁
+ * 重建，已展开的折叠条目被收起，连线的虚线动画从头开始。
  */
 function keyedRows(source: () => RenderItem[]): Accessor<RenderRow[]> {
   let cells = new Map<string, { row: RenderRow; set: Setter<RenderItem> }>()
@@ -1117,7 +1116,7 @@ export function TranscriptRows(props: {
             <Match when={node().kind === 'user'}>
               <div class="row user">
                 <div class="user-col">
-                  {/* 附件在气泡**上方**：它是这句话的语境，读的顺序也该是先看图再看话。 */}
+                  {/* 附件位于气泡上方：附件是该消息的上下文，阅读顺序应为先看附件再看文字。 */}
                   <Show when={(node() as { item: TranscriptItem }).item.attachments?.length}>
                     <div class="attach-row sent">
                       <For each={(node() as { item: TranscriptItem }).item.attachments}>
@@ -1168,9 +1167,9 @@ function ToolGroup(props: { id: string; members: TranscriptItem[] }) {
   const failed = () =>
     props.members.filter((m) => m.kind === 'tool' && m.status === 'failure').length
   /*
-   * 组卡出生时的开合等于它包住的内容在出生那一刻是否可见。单条工具展开着看，下一个工具
-   * 启动把它并进组卡——组卡合着出生就把正在看的内容盖掉了。只写一次，之后组卡
-   * 与成员各自归用户。
+   * 分组卡片创建时的展开状态取决于其成员在创建时是否已展开。用户正在查看一个展开的单条
+   * 工具时，下一个工具启动会把它合并进分组卡片；分组卡片以收起状态创建会隐藏正在查看的
+   * 内容。该值只写入一次，此后分组卡片与成员的展开状态均由用户控制。
    */
   seedFoldOpen(
     foldKey('group', props.id),
@@ -1208,16 +1207,16 @@ function ToolGroup(props: { id: string; members: TranscriptItem[] }) {
 const WF_NODE_MAX = 160
 const WF_LAYER_GAP = 12
 /**
- * 一格的最小宽度：左右内边距与边框 26px + 名字四个汉字 48px + 8px 间隙 +
- * 种类里最长的那个说法「外部 CLI」44px。
+ * 节点的最小宽度：左右内边距与边框 26px + 四个汉字的名称 48px + 8px 间距 +
+ * 最长的种类名称「外部 CLI」44px。
  */
 const WF_NODE_MIN = 128
 
 /**
- * 同一语义层保持等宽列。宽度充足时节点不超过 `WF_NODE_MAX`；宽度不足时列宽停在
- * `WF_NODE_MIN`，整张图在 `.wf-scroll` 里横向滚动。
- * **列的下限不能改回 0**：节点数一多，每格分到的宽度会小于名字的一个字，
- * 图上只剩种类与耗时。
+ * 同一语义层使用等宽列。宽度充足时节点宽度不超过 `WF_NODE_MAX`；宽度不足时列宽保持
+ * `WF_NODE_MIN`，整张图在 `.wf-scroll` 中横向滚动。
+ * 列宽下限不能改为 0：节点较多时，每个节点分到的宽度小于名称的一个字，
+ * 图中只剩种类与耗时。
  */
 function workflowLayerStyle(size: number): JSX.CSSProperties {
   return {
@@ -1235,8 +1234,8 @@ interface WorkflowEdgeSegment {
 }
 
 /**
- * 多条依赖共享入口或出口时会产生共线区间。先按坐标切成最小区间，再合并相邻且状态
- * 相同的区间，可保证每一段像素只绘制一次；共享区间只要有一条活动依赖就显示活动态。
+ * 多条依赖共享入口或出口时会产生共线区间。先按坐标切分为最小区间，再合并相邻且状态
+ * 相同的区间，保证每一段像素只绘制一次；共享区间中只要有一条活动依赖就显示活动状态。
  */
 export function mergeWorkflowEdgeSegments(
   segments: readonly WorkflowEdgeSegment[],
@@ -1294,21 +1293,21 @@ export function mergeWorkflowEdgeSegments(
 }
 
 /**
- * 派活的图卡。**派一件与派一张图共用这一张**——一次派活就是一张只有一格的图，
- * 两种画法并存的代价是同一件事在会话流里长两个样。
+ * 任务派发的图卡片。派发单个任务与派发工作流图共用该卡片：单个任务即只有一个节点的图，
+ * 两种渲染方式并存会使同一类操作在会话流中呈现两种样式。
  *
- * **形状来自参数，状态只有一个来源。** 参数随 `tool.started` 就到，所以第一帧就能
- * 把整张图画全，等着跑的格子也在图上；状态是 `item.nodes`（一张图折成 `workflow.states`），
- * 流式期由 `team.member` 逐格替换，刷新之后从 step payload 整份带回。
+ * 结构取自参数，状态只有一个来源。参数随 `tool.started` 到达，因此第一帧即可渲染
+ * 完整的图，等待执行的节点也显示在图中；状态是 `item.nodes`（工作流图折叠为 `workflow.states`），
+ * 流式输出期间由 `team.member` 逐个节点替换，刷新后从 step payload 整体恢复。
  *
- * 按依赖分层排：同一层的并排（它们真的在并行跑），层与层之间一条竖线。
- * 这就是「谁等谁」的全部信息，不画箭头——节点一多，箭头会把图糊成一团线。
+ * 按依赖分层排列：同一层的节点并排（它们并行执行），层与层之间用竖线连接。
+ * 这已表达全部依赖关系，不绘制箭头：节点较多时，箭头会使连线难以分辨。
  */
 function DelegateCard(props: { item: TranscriptItem }) {
   /**
-   * 图的形状只由 `toolName` 与 `args` 决定，一次派活里两者不变。不要写成
-   * `() => delegateGraph(props.item)`：折叠后的 workflow 条目随每个进度事件重造，
-   * `props.item` 每次都是新对象，图跟着重算，每一格按钮的 DOM 换新、连线重量。
+   * 图的结构只由 `toolName` 与 `args` 决定，一次派发中两者不变。不要写成
+   * `() => delegateGraph(props.item)`：折叠后的 workflow 条目随每个进度事件重新生成，
+   * `props.item` 每次都是新对象，图随之重新计算，每个节点按钮的 DOM 被替换，连线重新测量。
    */
   const shape = createMemo(
     () => ({ toolName: props.item.toolName, args: props.item.args }),
@@ -1318,8 +1317,8 @@ function DelegateCard(props: { item: TranscriptItem }) {
   const graph = createMemo(() => delegateGraph(shape()))
 
   /**
-   * 一格现在什么状态。会话端点没有状态——它是这条会话本身；检查点那一格由审查记录决定。
-   * agent 格只读 `nodes`：一张图读折叠后的 `workflow.states`，派一件读这条 step 自己的。
+   * 节点的当前状态。会话端点没有状态，它代表当前会话本身；检查点节点的状态由审查记录决定。
+   * agent 节点只读取 `nodes`：工作流图读取折叠后的 `workflow.states`，单个任务读取该 step 自身的状态。
    */
   const stateOf = (n: GraphNode): NodeView | null => {
     if (n.kind === 'session') {
@@ -1328,7 +1327,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
       )
       if (!checkpoint || checkpoint.kind !== 'checkpoint') return null
       const approved = props.item.workflow?.approvals[n.key]
-      // `checkpointId` 只在上游全部终态且没批准时有值，它就是「等父会话审查」那一格。
+      // `checkpointId` 只在上游全部到达终态且未批准时有值，它标识等待父会话审查的节点。
       const current = props.item.workflow?.checkpointId === n.key
       const states = props.item.workflow?.states ?? {}
       const upstreamRunning = checkpoint.needs.some((id) => {
@@ -1359,16 +1358,16 @@ function DelegateCard(props: { item: TranscriptItem }) {
   }
 
   /**
-   * 连线按 `needs` 逐条画，**不是按层画**：跨层的依赖（第 1 层直接连到第 3 层）
-   * 也是真实存在的边，只连相邻层会把它画丢。
+   * 连线按 `needs` 逐条绘制，不按层绘制：跨层依赖（第 1 层直接连到第 3 层）
+   * 也是实际存在的边，只连接相邻层会遗漏它。
    *
-   * 位置只能量出来——节点宽度随名字与耗时变，算不出来。量的时机交给
-   * `ResizeObserver`：它在布局之后、绘制之前回调，所以线和方块同一帧落地，
-   * 不会先画出一张错位的图再纠正。线是绝对定位的 SVG，不参与布局，
-   * 所以量→画这一步不会再触发一次布局（不构成观察循环）。
+   * 位置只能通过测量取得：节点宽度随名称与耗时变化，无法计算。测量时机由
+   * `ResizeObserver` 决定：它在布局之后、绘制之前回调，因此连线与节点在同一帧完成渲染，
+   * 不会先显示错位的图再修正。连线是绝对定位的 SVG，不参与布局，
+   * 因此测量后绘制不会再次触发布局（不构成观察循环）。
    *
-   * 画的时候用 `<Index>` 按位置复用 `<path>`：每次量完都是一份新数组，`<For>` 会把
-   * 全部节点换新，虚线动画随之从头起跳；进度事件一多，线就在抖。
+   * 绘制时用 `<Index>` 按位置复用 `<path>`：每次测量都生成新数组，`<For>` 会替换
+   * 全部节点，虚线动画随之从头开始；进度事件较多时连线持续闪动。
    */
   const [edges, setEdges] = createSignal<{ d: string; live: boolean }[]>([])
   let box!: HTMLDivElement
@@ -1377,7 +1376,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
   const measure = () => {
     if (!box) return
     const b = box.getBoundingClientRect()
-    // 半像素：1px 的描边画在整数坐标上会跨两个物理像素，出来是两条半灰的线。
+    // 偏移半像素：1px 的描边绘制在整数坐标上会跨越两个物理像素，显示为两条颜色减半的线。
     const at = (v: number) => Math.round(v) + 0.5
     const segments: WorkflowEdgeSegment[] = []
     const g = graph()
@@ -1386,12 +1385,12 @@ function DelegateCard(props: { item: TranscriptItem }) {
       if (!to) continue
       const sources = n.needs.map((d) => refs.get(d)).filter((el): el is HTMLElement => !!el)
       if (sources.length === 0) continue
-      // 这一组边流不流动，看它汇进去的那个节点在不在跑。
+      // 这一组边是否显示流动动画，取决于其汇入的节点是否在运行。
       const phase = stateOf(n)?.phase
       const live = phase === 'working'
       const t = to.getBoundingClientRect()
       if (g.horizontal) {
-        // 三格横排时每条边只连一对格子：左格右缘中点画到右格左缘中点，一条直线。
+        // 三个节点横向排列时，每条边只连接一对节点：从左侧节点右边缘中点到右侧节点左边缘中点的直线。
         const r = sources[0]!.getBoundingClientRect()
         const y = at(t.top + t.height / 2 - b.top)
         segments.push({
@@ -1410,10 +1409,10 @@ function DelegateCard(props: { item: TranscriptItem }) {
       const bus = at((foot + (t.top - b.top)) / 2)
       const xs = rects.map((r) => at(r.left + r.width / 2 - b.left))
       /*
-       * 汇进同一个节点的几条边**共用一条横线加一根竖线**，不是各画各的折线。
+       * 汇入同一节点的多条边共用一条横线与一条竖线，而不是各自绘制折线。
        *
-       * 各画各的时候，三条折线的横段与拐角叠在一起，而上游与下游中线差一两个像素
-       * 就会在拐角处留下一小截阶梯——看起来像线走歪了。共用之后下游那根始终是直的。
+       * 各自绘制时，三条折线的横段与拐角重叠，上游与下游的中线相差一两个像素
+       * 就会在拐角处形成台阶，连线显得偏斜。共用之后，通向下游的竖线始终是直线。
        */
       for (const [i, r] of rects.entries()) {
         segments.push({
@@ -1436,7 +1435,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
 
   const ro = new ResizeObserver(() => measure())
   onCleanup(() => ro.disconnect())
-  // 节点的状态变了（跑完了多出一格耗时）宽度会变，重量一次。
+  // 节点状态变化（执行完毕后增加耗时字段）会改变宽度，需要重新测量。
   createEffect(() => {
     props.item.nodes
     props.item.outcome
@@ -1445,8 +1444,8 @@ function DelegateCard(props: { item: TranscriptItem }) {
   })
 
   /**
-   * 容器自己也要观察。拖动面板时节点会随等宽列共同缩放，容器与节点的观察结果
-   * 一起触发重算，使线始终使用本帧的实际坐标。
+   * 容器本身也需要观察。拖动面板时节点随等宽列一同缩放，容器与节点的观察结果
+   * 共同触发重新计算，使连线始终使用当前帧的实际坐标。
    */
   const holdBox = (el: HTMLDivElement) => {
     box = el
@@ -1467,14 +1466,14 @@ function DelegateCard(props: { item: TranscriptItem }) {
           : props.item.status === 'failure',
       }}
     >
-      {/* 目标只有一张图才有；派一件的指令就在那一格的次行上。 */}
+      {/* 只有工作流图有整体目标；单个任务的指令显示在其节点的第二行。 */}
       <Show when={props.item.toolName === 'workflow'}>
         <div class="wf-goal truncate">{cardTitle(props.item)}</div>
       </Show>
       {/*
-        横向滚动挂在这一层，不挂在 `.wf-graph` 上：`.wf-edges` 是以 `.wf-graph` 为
-        包含块的绝对定位层，`.wf-graph` 自己一旦滚动，线的坐标就与量出来的节点位置
-        差一个 `scrollLeft`。
+        横向滚动设在这一层，而不是 `.wf-graph`：`.wf-edges` 是以 `.wf-graph` 为
+        包含块的绝对定位层，`.wf-graph` 自身滚动时，连线坐标与测得的节点位置
+        相差一个 `scrollLeft`。
       */}
       <div class="wf-scroll">
         <div class="wf-graph" classList={{ across: graph().horizontal }} ref={holdBox}>
@@ -1491,16 +1490,16 @@ function DelegateCard(props: { item: TranscriptItem }) {
                   {(n) => {
                     const st = () => stateOf(n)
                     /*
-                     * 点一格 = 翻开它。两种格子翻开的内容不同：内置子 agent 有一条
-                     * 点得开的子会话；外部 CLI 是本机另一个进程，翻开的是它写出来的那段流。
-                     * 两者都没有时（还没跑到）点不开。
+                     * 点击节点即打开其内容。两种节点打开的内容不同：内置子 agent 打开对应的
+                     * 子会话；外部 CLI 是本机的另一个进程，打开的是它的输出流。
+                     * 两者都不存在时（尚未执行）无法打开。
                      *
-                     * 种类只认状态。调用参数在续派时只有一个子 agent id，按它猜种类会把
-                     * 外部 CLI 认成内置子 agent，点开是一条没有正文的子会话。
+                     * 种类只依据状态判定。继续派发时调用参数只有一个子 agent id，据此推测种类会把
+                     * 外部 CLI 误判为内置子 agent，打开的是一条没有正文的子会话。
                      */
                     const cli = () => st()?.kind === 'cli'
-                    // 主行：图里那一格的名字。派一件没有节点 id，那一格的名字就是执行者，
-                    // 所以运行期拿到更全的那个（厂商 + CLI 名）时用它。
+                    // 第一行显示节点名称。单个任务没有节点 id，节点名称即执行者，
+                    // 因此运行期间取得更完整的名称（厂商 + CLI 名称）时使用该名称。
                     const name = () => st()?.label || n.title
                     const open = () => {
                       const cid = st()?.conversationId
@@ -1511,7 +1510,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
                       <Show
                         when={n.kind === 'agent'}
                         fallback={
-                          // 两端是这条会话自己：交出去、收回来。不可点——它就是用户正在看的这一页。
+                          // 两端节点代表当前会话本身，分别表示派发与收回。不可点击：它就是用户正在查看的页面。
                           <div
                             class="wf-node session"
                             classList={{ [st()?.phase ?? 'waiting']: true }}
@@ -1529,7 +1528,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
                           onClick={open}
                           ref={hold(n.key)}
                         >
-                          {/* 主行是那一格的名字与种类，次行是它的指令与耗时；两种卡同一条规则。 */}
+                          {/* 第一行显示节点名称与种类，第二行显示指令与耗时；两种卡片使用同一规则。 */}
                           <span class="wf-node-head">
                             <span class="wf-node-name">{name()}</span>
                             <Show when={st()?.kind}>
@@ -1558,7 +1557,7 @@ function DelegateCard(props: { item: TranscriptItem }) {
           </For>
         </div>
       </div>
-      {/* 失败原因。**只印这一处**：边框已经说了「失败了」，这一行说的是为什么。 */}
+      {/* 失败原因只显示在此处：边框已表示失败，这一行说明原因。 */}
       <Show
         when={
           (props.item.workflow
@@ -1572,26 +1571,26 @@ function DelegateCard(props: { item: TranscriptItem }) {
   )
 }
 
-/** 一格的显示状态：agent 格来自 `NodeState`，检查点格来自审查记录。 */
+/** 节点的显示状态：agent 节点取自 `NodeState`，检查点节点取自审查记录。 */
 interface NodeView {
   phase: string
   label: string
-  /** 派给的是哪一种子 agent；检查点格与还没有状态的格没有。 */
+  /** 派发给哪一种子 agent；检查点节点与尚无状态的节点没有该字段。 */
   kind?: SubagentKind
   durationMs?: number
   conversationId?: string
 }
 
-/** 卡顶那一行：这次派活整体要达成什么。图是 `goal`，派一件是任务的第一行。 */
+/** 卡片顶部一行：本次派发的整体目标，取 `args.goal` 的第一行。 */
 function cardTitle(item: TranscriptItem): string {
   const raw = item.args?.goal
   return firstLine(typeof raw === 'string' ? raw.trim() : '')
 }
 
 /**
- * 动作行行尾的目标。浏览器工具的 `action.target` 是宿主的 tabId（开页时是占位串），
- * 只供权限与冲突判定；显示成那一页的页签名，页不在时显示参数里的地址，两者都没有就不显示。
- * 电脑控制工具同理：`action.target` 是不透明的窗口编号，显示的是结果里带回的窗口标题。
+ * 动作行末尾显示的目标。浏览器工具的 `action.target` 是宿主的 tabId（打开新页面时是占位字符串），
+ * 仅用于权限与冲突判定；界面显示该页面的标签页标题，页面已关闭时显示参数中的地址，两者都没有时不显示。
+ * 电脑控制工具同理：`action.target` 是不透明的窗口编号，界面显示结果中返回的窗口标题。
  */
 function shownTarget(item: TranscriptItem): string | undefined {
   if (item.toolName === 'write_file' && item.status === 'success') {
@@ -1612,8 +1611,8 @@ function ToolCard(props: { item: TranscriptItem }) {
     props.item.outcome?.presentation?.images === 'inline'
       ? resultImages(props.item.outcome.data)
       : []
-  // 派活的那两个画成图，不套折叠：它们各自是一整条子会话的入口，
-  // 而产出正文在那条子会话（或那个 CLI 进程的输出流）里本来就有。
+  // 派发任务的两个工具渲染为图，不使用折叠条目：它们各自是一条子会话的入口，
+  // 产出的正文已在该子会话（或该 CLI 进程的输出流）中。
   if (props.item.toolName === 'workflow' || props.item.toolName === 'subagent') {
     return <DelegateCard item={props.item} />
   }
@@ -1629,8 +1628,8 @@ function ToolCard(props: { item: TranscriptItem }) {
       >
         <StepBody item={props.item} />
       </Fold>
-      {/* 模型视觉输入默认不公开展示。只有工具结果明确声明 inline，才把同一份账本图片
-          画进会话流；这样 read_file 的内部观察不会冒充用户附件。 */}
+      {/* 模型的视觉输入默认不在会话流中显示。只有工具结果明确声明 inline 时，才把账本中的
+          同一份图片渲染到会话流；read_file 读取的图片因此不会显示为用户附件。 */}
       <Show when={images().length > 0}>
         <div class="tool-images">
           <For each={images()}>
@@ -1649,28 +1648,28 @@ function ToolCard(props: { item: TranscriptItem }) {
 }
 
 /**
- * 展开体。**必须给出标题行没有的信息**，而且**一种动作一种主体**，
- * 不是把所有可能的块堆在一起。
+ * 展开内容。必须提供标题行之外的信息，且每种动作对应一种主体内容，
+ * 而不是罗列所有可能的块。
  *
  * 只渲染 `outcome.message` 等于复述标题行：「读取 packages/server/src/git.ts」
- * 展开后看到「读取 packages/server/src/git.ts（278 行）」，用户点了一下什么也没多
- * 知道。真正有信息的是参数——改的 diff、跑的命令、读的范围，全在 `args` 里。
+ * 展开后显示「读取 packages/server/src/git.ts（278 行）」，用户展开后没有获得新信息。
+ * 有信息量的是参数：修改的 diff、执行的命令、读取的范围都在 `args` 中。
  *
- * 分法：
- *   失败错误正文 →（分隔线）→ 参数表
- *   待办清单逐行（勾 / 转圈 / 空心点）
- *   编辑  diff →（分隔线）→ 结果
- *   运行命令原文 →（分隔线）→「输出」标签 + 输出
- *   创建新内容全文 → 结果
- *   其余参数表 →（分隔线）→ 结果
+ * 划分方式：
+ *   失败：错误正文 →（分隔线）→ 参数表
+ *   待办：清单逐行（勾选 / 加载动画 / 空心圆点）
+ *   编辑：diff →（分隔线）→ 结果
+ *   运行：命令原文 →（分隔线）→「输出」标签 + 输出
+ *   创建：新内容全文 → 结果
+ *   其余：参数表 →（分隔线）→ 结果
  *
- * 「结果」这一格取 `outcome.data`（`content` / `stdout` / `entries` / `matches`），
- * 取不到才回落到 `message`——message 只是一句摘要，不是正文。
+ * 「结果」字段取 `outcome.data`（`content` / `stdout` / `entries` / `matches`），
+ * 无法取得时才回退到 `message`：message 只是一句摘要，不是正文。
  *
- * **自带主体块的那几支一律 `noMessage`。** 编辑和创建的 message 是
- * 「编辑 x（1 处）」「创建 x」，与标题行的「修改文件 · x」逐字重合，
- * 回落出来就是正文底下再挂一个复述标题的灰块。没有主体块的「其余」那一支
- * 要留着回落：搜索零命中时，那句「匹配 0 个文件」是展开体里唯一的结论。
+ * 自带主体块的分支一律使用 `noMessage`。编辑与创建的 message 是
+ * 「编辑 x（1 处）」「创建 x」，与标题行的「修改文件 · x」内容重复，
+ * 回退时会在正文下方再显示一个复述标题的灰色块。没有主体块的「其余」分支
+ * 保留回退：搜索无匹配时，「匹配 0 个文件」是展开内容中唯一的结论。
  */
 function StepBody(props: { item: TranscriptItem }) {
   const args = () => props.item.args ?? {}
@@ -1680,23 +1679,23 @@ function StepBody(props: { item: TranscriptItem }) {
   return (
     <Switch fallback={<Generic item={props.item} />}>
       {/*
-       * 中途输出排在最前。跑着的时候 `outcome` 还不存在，落到下面任何一支
-       * 都是一张空卡片；而这一支只在 `status === 'running'` 时成立，
-       * 终态一到自动让位，不需要谁去清它。
+       * 中途输出排在最前。运行时 `outcome` 尚不存在，进入下方任何分支
+       * 都只显示空卡片；该分支只在 `status === 'running'` 时成立，
+       * 到达终态后自动让位，无需额外清理。
        */}
       <Match when={props.item.status === 'running' && props.item.stdout}>
         <LiveOutput item={props.item} />
       </Match>
 
       <Match when={props.item.status === 'failure'}>
-        <pre class="fold-out err">{props.item.outcome?.message || '（没有错误正文）'}</pre>
+        <pre class="fold-out err">{props.item.outcome?.message || '（无错误正文）'}</pre>
         {/*
-         * **失败也要把输出带出来。** 只给一句 message 加一张参数表是不够的：
-         * message 只是摘要，命令失败时它就是「命令退出码 1」这七个字。用户展开一张
-         * 失败的命令卡看到「跑了什么」和「失败了」，唯独没有它输出了什么，
-         * 也就无从判断是命令不对还是被测的代码不对。
+         * 失败时同样必须显示输出。只显示 message 与参数表不够：
+         * message 只是摘要，命令失败时它只是「命令退出码 1」。用户展开失败的
+         * 命令卡片，能看到执行的命令与失败状态，却看不到输出，
+         * 无法判断是命令有误还是被测代码有误。
          *
-         * `noMessage` 是因为上面那行已经把 message 显示过了，回落会原样重复一遍。
+         * 使用 `noMessage` 是因为上方一行已显示 message，回退会重复显示。
          */}
         <Result item={props.item} label="输出" withDivider noMessage />
         <Show when={rows().length > 0}>
@@ -1706,12 +1705,12 @@ function StepBody(props: { item: TranscriptItem }) {
       </Match>
 
       {/*
-       * 待办清单。**不能落到通用参数表那一支**：整表 JSON 挤在一格里，
-       * 状态埋在 `"status":"in_progress"` 的引号中间，问「哪几条做完了」
-       * 得自己数引号。这一支给的是标题行没有的信息——每条的状态。
+       * 待办清单。不能交给通用参数表分支处理：整个清单的 JSON 位于一个单元格中，
+       * 状态位于 `"status":"in_progress"` 的引号之间，判断哪些条目已完成
+       * 需要逐个辨认。该分支提供标题行没有的信息，即每一条的状态。
        *
-       * `noMessage`：回执是「第 3/4 步：编写 main.js」，而清单里那一条正带着
-       * 转圈的记号，同一件事说两遍。
+       * 使用 `noMessage`：回执是「第 3/4 步：编写 main.js」，而清单中该条目已带有
+       * 加载动画标记，再显示回执即为重复。
        */}
       <Match when={todosOf(args()) !== null}>
         <div class="fold-todos">
@@ -1764,26 +1763,26 @@ function Generic(props: { item: TranscriptItem }) {
 }
 
 /**
- * 结果那一格。
+ * 「结果」字段。
  *
  * 取值顺序：`data.content` → `data.stdout` → `data.stderr` → `data.output` → 列表型 →
- * `outcome.message`。`output` 这一键留给 MCP 与插件的工具——它们的 data 形状由第三方
- * 决定，这是其中的常见键；内置工具里没有生产者（派活那两个画成图卡，不走这里）。
+ * `outcome.message`。`output` 键供 MCP 与插件工具使用：它们的 data 结构由第三方
+ * 决定，`output` 是其中的常见键；内置工具不产生该键（派发任务的两个工具渲染为图卡片，不经过此处）。
  *
- * **失败时把 `stderr` 提到最前**：报错基本只写在错误流里，而 stdout 常常另有内容
- * （测试的进度输出、服务器的启动日志），按成功时的顺序取就会拿到它、把真正的
- * 报错挡在后面。空的时候整格不渲染——一个空 `<pre>` 只会在展开体里留一道
- * 没有内容的边框。
+ * 失败时把 `stderr` 提到最前：错误信息通常只写入错误流，而 stdout 往往另有内容
+ * （测试的进度输出、服务器的启动日志），按成功时的顺序取值会取得 stdout，实际的
+ * 错误信息被排在后面。内容为空时整个字段不渲染：空 `<pre>` 只会在展开内容中留下
+ * 一个没有内容的边框。
  */
 function Result(props: {
   item: TranscriptItem
   label?: string
   withDivider?: boolean
   /**
-   * 取不到正文时不要回落到 `outcome.message`。
+   * 无法取得正文时不回退到 `outcome.message`。
    *
-   * 两种情况要给：调用方自己已经把 message 显示过了（失败那一支），
-   * 或者 message 只是标题行的复述（编辑、创建）。
+   * 以下两种情况需要传入：调用方已显示 message（失败分支），
+   * 或 message 只是标题行的复述（编辑、创建）。
    */
   noMessage?: boolean
 }) {

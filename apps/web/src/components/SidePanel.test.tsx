@@ -1,9 +1,9 @@
 /**
- * 文件页根目录行那颗刷新键。
+ * 文件页根目录行的刷新按钮。
  *
- * 它在「树 + 已打开文件」共用的文件页里，用户点的是整页刷新，不是只重读左边索引。
- * 原始失败形状是：树请求发出去了，右边已经打开的文件仍停在旧正文上，看起来像按钮没反应。
- * 另覆盖右键菜单与预览切换时的树宽规则；真实尺寸由浏览器复测验证。
+ * 该按钮位于文件树与已打开文件共用的文件页中，点击后刷新整页，不只重新读取左侧文件树。
+ * 原始失败形状：文件树请求已发出，右侧已打开的文件仍显示旧正文，按钮看起来没有响应。
+ * 另覆盖右键菜单与预览切换时的树宽规则；实际尺寸由浏览器复测验证。
  * 覆盖资源管理器菜单的本机目录参数与失败提示。
  */
 
@@ -228,7 +228,7 @@ describe('在资源管理器中显示', () => {
   test('桌面命令失败后显示原因，再次操作清除旧错误', async () => {
     let fail = true
     const page = await mount('C:\\项目 工作', async () => {
-      if (fail) throw '不是一个目录：C:\\项目 工作'
+      if (fail) throw '不是目录：C:\\项目 工作'
     })
     page.clickReveal('根目录.txt')
     await waitFor(
@@ -236,7 +236,7 @@ describe('在资源管理器中显示', () => {
       () => page.host.innerHTML,
     )
     expect(page.host.querySelector('[role="alert"]')?.textContent).toContain(
-      '不是一个目录：C:\\项目 工作',
+      '不是目录：C:\\项目 工作',
     )
     expect(page.host.querySelector('.tree-menu')).toBeNull()
     fail = false
@@ -246,7 +246,7 @@ describe('在资源管理器中显示', () => {
 })
 
 describe('文件页刷新', () => {
-  test('点一次同时重取文件树与当前预览', async () => {
+  test('点击一次同时重取文件树与当前预览', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     let treeCalls = 0
@@ -298,8 +298,8 @@ describe('文件页刷新', () => {
     expect(refresh).not.toBeNull()
     refresh?.click()
 
-    // 即使磁盘内容没变，这一下也不能继续表现成一颗静止、无回执的图标。动画不依赖
-    // 请求时长——本机请求可能在浏览器第一次绘制之前就已经结束。
+    // 即使磁盘内容没有变化，点击后图标也必须有动画反馈。动画不依赖
+    // 请求时长：本机请求可能在浏览器首次绘制之前就已结束。
     expect(refresh?.getAttribute('aria-busy')).toBe('true')
     expect(refresh?.querySelector<SVGElement>('svg')?.style.transform).toBe('rotate(360deg)')
 
@@ -309,7 +309,7 @@ describe('文件页刷新', () => {
     )
   })
 
-  test('开始新一轮不重取未变文件，真实更新保留阅读位置', async () => {
+  test('开始新一轮时不重取未变化的文件，文件实际更新时保留阅读位置', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     let previewCalls = 0
@@ -368,15 +368,15 @@ describe('文件页刷新', () => {
     const scroller = host.querySelector<HTMLElement>('.cm-scroller')!
     scroller.scrollTop = 160
 
-    // run.started 清的是「本轮改动摘要」，磁盘没有因此变化，不能把它当成文件刷新。
+    // run.started 清空的是本轮改动摘要，磁盘内容没有变化，不应视为文件刷新。
     store.setState('fileChanges', [])
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(previewCalls).toBe(1)
     expect(host.querySelector('.cm-scroller')).toBe(scroller)
     expect(scroller.scrollTop).toBe(160)
 
-    // 下一轮真的又改了同一个文件，即使 +x/-y 与上一轮相同也必须重取；正文原位更新，
-    // 阅读位置与编辑器 DOM 都保留。
+    // 下一轮再次修改同一个文件时，即使 +x/-y 与上一轮相同也必须重取；正文原位更新，
+    // 阅读位置与编辑器 DOM 均保留。
     store.applyEvent({
       seq: 1,
       at: Date.now(),
@@ -451,7 +451,7 @@ describe('文件页刷新', () => {
 })
 
 describe('文件树层级', () => {
-  test('目录与文件共用单主图标位，每层只递进 6px', async () => {
+  test('目录与文件共用单个主图标位，每层递进 10px', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     ;(
@@ -561,7 +561,7 @@ describe('文件树层级', () => {
 describe('页签栏横向滚轮', () => {
   async function renderTabs() {
     const store = await import('../lib/store/index.ts')
-    // 面板翻开在哪一页按项目记，先站到一个项目上再翻页。
+    // 面板当前页签按项目记录，因此先设置当前项目再切换页签。
     store.setWorkspace({ id: 'ws_tabs_wheel', root: 'C:work', name: 'work' })
     store.setSidePanel('todos')
 
@@ -594,7 +594,7 @@ describe('页签栏横向滚轮', () => {
     const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 60 })
     tabs.dispatchEvent(wheel)
 
-    // 滚轮事件本身不再让标签瞬移；唯一的 rAF 循环随后追到目标。
+    // 滚轮事件本身不直接改变滚动位置；随后由唯一的 rAF 循环逐步移动到目标。
     expect(tabs.scrollLeft).toBe(40)
     expect(wheel.defaultPrevented).toBe(true)
     await waitFor(
@@ -603,7 +603,7 @@ describe('页签栏横向滚轮', () => {
     )
   })
 
-  test('连续同向滚轮累加到同一个目标，不排成多段动画', async () => {
+  test('连续同向滚轮累加到同一个目标，不生成多段动画', async () => {
     const tabs = await renderTabs()
     setScrollBox(tabs, { width: 200, content: 500, left: 40 })
 
@@ -617,7 +617,7 @@ describe('页签栏横向滚轮', () => {
     )
   })
 
-  test('没有溢出或已经抵达边界时，不吞掉页面滚轮', async () => {
+  test('没有溢出或已经抵达边界时，不拦截页面滚轮', async () => {
     const tabs = await renderTabs()
     setScrollBox(tabs, { width: 200, content: 200, left: 0 })
 
@@ -637,7 +637,7 @@ describe('页签栏横向滚轮', () => {
     expect(atEnd.defaultPrevented).toBe(false)
   })
 
-  test('触控板原生横向手势不再手动叠加一次', async () => {
+  test('触控板原生横向手势不重复叠加位移', async () => {
     const tabs = await renderTabs()
     setScrollBox(tabs, { width: 200, content: 500, left: 40 })
 
@@ -649,12 +649,12 @@ describe('页签栏横向滚轮', () => {
     })
     tabs.dispatchEvent(wheel)
 
-    // happy-dom 不执行浏览器的原生滚动；这里锁的是处理器没有再加一遍。
+    // happy-dom 不执行浏览器的原生滚动；此处验证处理器没有重复叠加位移。
     expect(tabs.scrollLeft).toBe(40)
     expect(wheel.defaultPrevented).toBe(false)
   })
 
-  test('触控板接管时停止尚未走完的鼠标滚轮动画', async () => {
+  test('触控板接管时停止尚未完成的鼠标滚轮动画', async () => {
     const tabs = await renderTabs()
     setScrollBox(tabs, { width: 200, content: 500, left: 40 })
 
@@ -664,17 +664,17 @@ describe('页签栏横向滚轮', () => {
     )
 
     await new Promise((resolve) => setTimeout(resolve, 50))
-    // happy-dom 不执行原生横向滚动；旧动画若没被取消，这里已经向 100 移动了。
+    // happy-dom 不执行原生横向滚动；若旧动画未取消，此时 scrollLeft 已向 100 移动。
     expect(tabs.scrollLeft).toBe(40)
   })
 })
 
 /**
- * 变更页按轮：最新一轮默认展开、更早的收起；表头是整会话合计；清单末尾的哨兵进视口就翻页。
- * happy-dom 没有 IntersectionObserver，这里用一个只记回调的替身，由测试自己触发相交。
+ * 变更页按轮次分组：最新一轮默认展开、更早的轮次收起；表头是整个会话的合计；清单末尾的哨兵进入视口时加载下一页。
+ * happy-dom 没有 IntersectionObserver，此处使用只记录回调的替身，由测试自行触发相交。
  */
-describe('变更页按轮', () => {
-  // 面板翻开在哪一页按项目记，所以项目要在每条用例翻页之前就位。
+describe('变更页按轮次分组', () => {
+  // 面板当前页签按项目记录，因此每条用例切换页签之前须先设置项目。
   beforeEach(async () => {
     const store = await import('../lib/store/index.ts')
     store.setWorkspace({ id: 'ws_changes', root: 'C:work', name: 'work' })
@@ -706,7 +706,7 @@ describe('变更页按轮', () => {
     fileChanges: [{ path, changeType: 'modified' as const, additions, deletions }],
     via: null,
   })
-  /** 账本页里的写入与 store 里的 `ChangeStep` 同一形状。 */
+  /** 账本分页中的写入与 store 中的 `ChangeStep` 结构相同。 */
   const wireStep = step
   const turn = (userMessageId: string, text: string, steps: unknown[]) => ({
     userMessageId,
@@ -738,7 +738,7 @@ describe('变更页按轮', () => {
     return host
   }
 
-  test('最新一轮展开、更早的收起；表头是整会话合计，不是已加载几页的和', async () => {
+  test('最新一轮展开、更早的轮次收起；表头是整个会话的合计，不是已加载分页之和', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (p) => {
@@ -755,7 +755,7 @@ describe('变更页按轮', () => {
             turn('ms_2', '再改一次', [
               step('st_2', 'a.ts', 2, 0),
               step('st_3', 'a.ts', 1, 1),
-              // 子 agent 的写入带来源；外部 CLI 的写入由观察器判出，没有行数
+              // 子 agent 的写入带来源；外部 CLI 的写入由观察器判定，没有行数
               { ...step('st_5', 'b.ts', 1, 0), via: { name: '写手' } },
               {
                 id: 'st_4',
@@ -763,7 +763,7 @@ describe('变更页按轮', () => {
                 fileChanges: [{ path: 'notes.md', changeType: 'modified' as const }],
                 via: { name: 'codex' },
               },
-              // 同一轮里先建后改：行上是净效果「新建」
+              // 同一轮中先新建后修改：行上显示净效果「新建」
               {
                 id: 'st_6',
                 toolName: 'run_command',
@@ -802,7 +802,7 @@ describe('变更页按轮', () => {
       '先改 a 和 b',
     ])
     expect(turns.map((t) => t.getAttribute('aria-expanded'))).toEqual(['true', 'false'])
-    // 最新一轮里同一个文件改了两次：一行、「2 次」；这一轮的合计只加已知的行数
+    // 最新一轮中同一个文件修改了两次：显示为一行、「2 次」；该轮合计只累加已知的行数
     const rows = [...host.querySelectorAll<HTMLButtonElement>('.change-files .change-row')]
     expect(rows.map((r) => r.querySelector('.truncate')?.textContent)).toEqual([
       'a.ts',
@@ -812,7 +812,7 @@ describe('变更页按轮', () => {
     ])
     expect(rows[0]?.querySelector('.change-times')?.textContent).toBe('2 次')
     expect(turns[0]?.querySelector('.change-delta')?.textContent).toBe('+4−1')
-    // 没有行数的行印变更类型，不画 +0 −0
+    // 没有行数的行显示变更类型，不显示 +0 −0
     expect(rows[2]?.querySelector('.change-delta')).toBeNull()
     expect(rows[2]?.querySelector('.change-kind')?.textContent).toBe('已修改')
     expect(rows[3]?.querySelector('.change-times')?.textContent).toBe('2 次')
@@ -835,7 +835,7 @@ describe('变更页按轮', () => {
     )
   })
 
-  test('这一轮里建了又删的不出现，改过再删的显示已删除', async () => {
+  test('同一轮中新建后又删除的文件不显示，修改后再删除的显示已删除', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (p) => {
@@ -866,7 +866,7 @@ describe('变更页按轮', () => {
                 { path: 'notes.md', changeType: 'deleted' as const },
               ]),
             ]),
-            // 这一轮的写入全被折叠丢掉：节头都不出。
+            // 该轮的写入在折叠后全部丢弃：不显示节标题。
             turn('ms_1', '建了又删', [
               ran('st_0', 'python warm.py', [
                 { path: 'cache/profile/b.bin', changeType: 'created' as const },
@@ -876,7 +876,7 @@ describe('变更页按轮', () => {
               ]),
             ]),
           ],
-          // 服务端按同一个 `foldFileChanges` 折过再给的：建了又删的两个路径不在里面。
+          // 服务端以同一个 `foldFileChanges` 折叠后返回：新建后又删除的路径不在其中。
           totals: { paths: ['notes.md'], additions: 2, deletions: 1 },
           nextCursor: null,
           loading: null,
@@ -895,12 +895,12 @@ describe('变更页按轮', () => {
     const row = host.querySelector<HTMLButtonElement>('.change-files .change-row')
     expect(row?.querySelector('.truncate')?.textContent).toBe('notes.md')
     expect(row?.querySelector('.change-kind')?.textContent).toBe('已删除')
-    // 表头与行同一份账：建了又删的那两个文件既不在行上，也不在表头的数里。
+    // 表头与行使用同一份数据：新建后又删除的文件既不在行中，也不计入表头。
     expect(host.querySelector('.change-head')?.textContent).toBe('变更 1 个文件+2−1')
     expect(host.innerHTML).not.toContain('cache/profile')
   })
 
-  test('清单末尾的哨兵进视口就取更早的轮，接在末尾', async () => {
+  test('清单末尾的哨兵进入视口时获取更早的轮次，追加到末尾', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     const requested: string[] = []
@@ -952,7 +952,7 @@ describe('变更页按轮', () => {
     expect(turns[1]?.querySelector('.change-count')?.textContent).toBe('1 个文件')
   })
 
-  test('首页失败有终态：报错加重试', async () => {
+  test('首页加载失败有终态：显示错误与重试按钮', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     let calls = 0
@@ -991,16 +991,16 @@ describe('变更页按轮', () => {
 })
 
 /**
- * 新开预览看板上那一行是哪一种页。
+ * 新开预览看板上各行对应的页面类型。
  *
- * 内置浏览器是 Windows 桌面外壳里的原生子视图，别的端摆不下它——服务端报宿主连着
- * 也不能给这一端一个内置浏览器的入口，那是一个点了必然摆不出网页的按钮（B5）。
+ * 内置浏览器由桌面外壳的宿主承载，其他端无法承载：即使服务端报告宿主已连接，
+ * 也不在这些端提供内置浏览器入口，否则点击后必然无法显示网页（B5）。
  *
- * 反过来，「网页预览」那一行**按端给，不按宿主连没连上给**：它是别的端真实的能力，
+ * 「网页预览」一行**按端提供，不按宿主是否连接提供**：它是其他端实际具备的能力，
  * 不是内置浏览器的备用路线。
  */
-describe('看板按这一端真有的能力列行', () => {
-  test('不是桌面外壳时给网页预览，服务端报宿主连着也不给内置浏览器', async () => {
+describe('看板按当前端实际具备的能力列出各行', () => {
+  test('非桌面外壳时提供网页预览，服务端报告宿主已连接也不提供内置浏览器', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async () => ({
@@ -1042,10 +1042,10 @@ describe('看板按这一端真有的能力列行', () => {
 
 describe('文件预览的切换与 PDF', () => {
   /**
-   * 原始失败形状：点另一个文件后正文停在上一个文件上，直到新文件的预览取回来——
-   * 取得慢的文件看起来像点了没反应。
+   * 原始失败形状：点击另一个文件后正文仍显示上一个文件，直到新文件的预览取回；
+   * 加载较慢的文件看起来像点击没有响应。
    */
-  test('切换文件立即换成新文件的加载态，不留上一个文件的正文', async () => {
+  test('切换文件后立即显示新文件的加载态，不保留上一个文件的正文', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     let releaseB: (() => void) | undefined
@@ -1106,10 +1106,10 @@ describe('文件预览的切换与 PDF', () => {
   })
 
   /**
-   * PDF 的字节另取，交给 iframe。会话里写别的文件会让预览重取一次，
-   * 源文件没变（修改时间相同）时字节不重取、阅读器不重新加载。
+   * PDF 的字节单独获取后交给 iframe。会话中写入其他文件会使预览重取一次，
+   * 源文件未变化（修改时间相同）时不重取字节，阅读器不重新加载。
    */
-  test('PDF 按修改时间取字节，写别的文件不重载', async () => {
+  test('PDF 按修改时间获取字节，写入其他文件时不重新加载', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     const originalRaw = store.client.raw
@@ -1134,7 +1134,7 @@ describe('文件预览的切换与 PDF', () => {
       rawCalls.push(path)
       return new Response('%PDF-1.4', { headers: { 'content-type': 'application/pdf' } })
     }
-    // happy-dom 的 iframe 取不了 `blob:` 地址，会在后台报错；换成它能加载的空白页。
+    // happy-dom 的 iframe 无法加载 `blob:` 地址，会在后台报错；因此替换为它能加载的空白页。
     const { createObjectURL, revokeObjectURL } = URL
     URL.createObjectURL = () => 'about:blank'
     URL.revokeObjectURL = () => {}
@@ -1173,10 +1173,10 @@ describe('文件预览的切换与 PDF', () => {
   })
 
   /**
-   * 图片与音视频用直链：元素自己按 Range 取，视频边播边取、能拖进度，内存不随文件大小涨。
-   * 令牌在查询串里（元素带不了请求头），修改时间进地址，文件改了地址就变。
+   * 图片与音视频使用直链：元素自行按 Range 请求，视频边播放边加载、支持拖动进度，内存占用不随文件大小增长。
+   * 令牌放在查询串中（元素无法携带请求头），修改时间写入地址，文件修改后地址随之变化。
    */
-  test('图片与视频的 src 是带令牌的直链，修改时间进地址，不整份取字节', async () => {
+  test('图片与视频的 src 是带令牌的直链，地址包含修改时间，不整份获取字节', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     const originalRaw = store.client.raw

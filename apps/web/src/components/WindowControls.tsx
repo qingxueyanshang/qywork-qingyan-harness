@@ -11,14 +11,13 @@ import { IconWinClose, IconWinMax, IconWinMin } from './Icons.tsx'
 /**
  * 窗口按钮。
  *
- * **只在桌面端渲染。** 浏览器和手机没有窗口可最小化。按 B5：能力不存在的那一端**不显示入口**，
- * 而不是显示一个点了报错的按钮。判据用 `isDesktopShell()`——它检测的是
- * Tauri 注入的全局对象，不是猜 UA。
+ * 只在桌面端渲染。浏览器与手机没有可最小化的窗口；按 B5，能力不存在的一端不显示入口，
+ * 而不是显示一个点击即报错的按钮。判据使用 `isDesktopShell()`：它检测
+ * Tauri 注入的全局对象，不按 UA 推测。
  *
- * **为什么按钮长得和别处不一样。** 这三个是系统控件的替身，Windows 的观感就是 1px 细线；
- * 用界面其他地方的 2.0 描边画出来会明显偏粗，像三个应用图标而不是窗口按钮。
- * 关闭按钮的 hover 是红底白字，也是照系统的既有约定——用户对这套配色的
- * 肌肉记忆比任何自创样式都强。
+ * 按钮样式与界面其他部分不同：这三个按钮代替系统窗口控件，Windows 的窗口控件使用 1px 细线；
+ * 使用界面其他部分的 2.0 描边会明显偏粗，看起来像应用图标而不是窗口按钮。
+ * 关闭按钮 hover 时为红底白字，遵循系统的既有约定，用户已熟悉这套配色。
  */
 export function WindowControls() {
   const desktop = isDesktopShell()
@@ -26,7 +25,7 @@ export function WindowControls() {
 
   onMount(() => {
     if (!desktop) return
-    // 启动时可能已经是最大化（系统记住了上次的状态），先问一次真值。
+    // 启动时窗口可能已是最大化状态（系统保留了上次的状态），先查询一次实际状态。
     void windowIsMaximized()
       .then(setMaximized)
       .catch(() => {})

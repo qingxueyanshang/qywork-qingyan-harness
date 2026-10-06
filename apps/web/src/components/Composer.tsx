@@ -67,12 +67,12 @@ import { VoiceButton } from './VoiceButton.tsx'
 /**
  * 权限模式。
  *
- * 位置在输入区而不是设置里：它决定的是**下一轮**放行到哪一档，
- * 和「用哪个模型」是同一层的决定，随时要改。塞进设置意味着改一次要点四下，
- * 而且和模型选择器分处两地——同一个决定被拆成两个地方做。
+ * 位于输入区而不是设置中：它决定下一轮的放行级别，
+ * 与「使用哪个模型」属于同一层级的决定，需要随时修改。放入设置意味着每次修改需要点击四次，
+ * 且与模型选择器分处两处，同一个决定被拆分到两个位置。
  *
- * 只有两种模式，所以是一个开关而不是下拉。文案用「自动审批 / 完全访问」，
- * 不用配置里的 `auto` / `full`——后者是文件里的字面量，不是给人读的。
+ * 只有两种模式，因此使用开关而不是下拉框。文案使用「自动审批 / 完全访问」，
+ * 不使用配置中的 `auto` / `full`：后者是配置文件中的字面量，不面向用户。
  */
 function ModeChip() {
   const [busy, setBusy] = createSignal(false)
@@ -85,7 +85,7 @@ function ModeChip() {
     const next = full() ? 'auto' : 'full'
     try {
       await setPermissionMode(next)
-      // 握手只在连接时报一次模式，这里就地跟上；否则点完按钮不变，像是没生效。
+      // 握手只在连接时报告一次模式，此处就地同步；否则点击后按钮不变，看起来未生效。
       setState('capabilities', (c) => (c ? { ...c, mode: next } : c))
     } catch (e) {
       setState('notice', {
@@ -105,7 +105,7 @@ function ModeChip() {
       disabled={busy()}
       aria-pressed={full()}
       data-tip={
-        full() ? '不裁决，路径边界一并放开；凭证剥离仍在' : '只放行确定安全的命令，其余直接拒绝'
+        full() ? '不做权限检查，也不限制路径；仍剥离凭证' : '只放行确定安全的命令，其余直接拒绝'
       }
       onClick={() => void toggle()}
     >
@@ -116,46 +116,46 @@ function ModeChip() {
 }
 
 /**
- * 停在这里的说法。**每一种状态都要有话说**，尤其两种：
+ * 目标状态的说明文字。每一种状态都必须有说明，尤其以下两种：
  *
- * - `blocked` 必须把理由原样端出来。后端强制每一次 blocked 都带理由
- *   （`run-control.ts` 的 `STOP_NOTE`、撞上轮数上限那条），界面不显示的话，
- *   循环已经停下，而用户只看见「受阻」两个字。
- * - `active` 却没有一轮在跑，说的是「续行没开着」。**续起标记不落盘**
- *   （`server/runs.ts` 的 `GoalArm`：落盘的话一个失控后崩溃的循环会在下次
- *   启动时自己复活），所以进程重启、会话恢复之后目标还在账本里留有，但不会
- *   自己再起一轮。这句话不说清楚，界面上就是「目标还在、什么都没发生」。
+ * - `blocked` 必须原样显示理由。后端强制每一次 blocked 都附带理由
+ *   （`run-control.ts` 的 `STOP_NOTE`、触发轮数上限的说明），界面不显示时，
+ *   循环已经停止，而用户只看到「受阻」两个字。
+ * - `active` 但没有运行中的一轮，含义是「自动继续未开启」。**自动继续标记不落盘**
+ *   （`server/runs.ts` 的 `GoalArm`：若落盘，失控后崩溃的循环会在下次
+ *   启动时自动恢复运行），因此进程重启、会话恢复之后目标仍保留在账本中，但不会
+ *   自动启动新一轮。不说明这一点，界面上呈现的就是「目标仍在、但没有任何动作」。
  */
 function goalNote(goal: Goal, running: boolean): string {
-  if (goal.status === 'blocked') return `受阻：${goal.blockedReason ?? '没给理由'}`
+  if (goal.status === 'blocked') return `受阻：${goal.blockedReason ?? '未提供理由'}`
   if (goal.status === 'paused') return '已暂停'
-  return running ? '自动续行中' : '自动续行未开启，点击「继续」接续上一轮'
+  return running ? '自动继续中' : '自动继续未开启，点击「继续」恢复执行'
 }
 
 /**
- * 当前目标：做的是什么、在不在跑、能不能停。
+ * 当前目标：内容、是否在运行、能否停止。
  *
- * **自动循环必须可见**：它一轮接一轮自己跑下去，而界面上只有正文在长。
- * 所以它常驻在输入框顶部，和等待队列共用同一组状态栏：目标回答「一轮接一轮
- * 要做到什么」，待办回答「这一轮进行到哪了」，用户抬眼就该同时看到这两句。
+ * **自动循环必须可见**：它逐轮自动执行，而界面上只有正文在增长。
+ * 因此它常驻在输入框顶部，与等待队列共用同一组状态栏：目标回答「多轮执行
+ * 要达成什么」，待办回答「本轮进行到哪一步」，用户应能同时看到这两项。
  *
- * **两个按钮各走哪条路**：
- * - **停止 = 中断这一轮**（`interrupt`）。run 收尾时服务端把目标置回 `paused`
- *   并解除续起标记，所以停这一轮就是停这个循环。**不另开一条「暂停目标」指令**：
- *   同一件事的第二个入口，两条路迟早对「当前有没有停」给出两种答案。
- * - **继续 = `goal.resume`**（`resumeGoal`）。它不只是把状态改回 `active`，
- *   是重新启用续行本身，并当场发起一轮。
+ * **两个按钮的执行路径**：
+ * - **停止 = 中断本轮**（`interrupt`）。run 收尾时服务端把目标置回 `paused`
+ *   并解除自动继续标记，因此停止本轮即停止该循环。**不另设「暂停目标」指令**：
+ *   同一操作有第二个入口时，两条路径终将对「当前是否已停止」给出不同答案。
+ * - **继续 = `goal.resume`**（`resumeGoal`）。它不只把状态改回 `active`，
+ *   而是重新启用自动继续，并立即发起一轮。
  *
- * **做完就不显示了。** 它回答的是「还在跑吗」，`completed` 之后没有「还在」。而 `completed` 是终
- * 态，一条出边都没有——留一颗点了必然被服务端回绝的「继续」按钮，比不留更坏。
+ * **完成后不显示。** 它回答的是「是否仍在运行」，`completed` 之后不存在该问题。`completed` 是终
+ * 态，没有任何出边：保留一个点击后必然被服务端拒绝的「继续」按钮，比不保留更差。
  *
- * **不显示轮数。** 这个循环没有轮数上限（见 `core` 里 `Goal` 的注释），所以没有「第几 / 共几」
- * 可显示。**也不显示已经跑了几轮**：那个数不影响用户的任何决定，摆出来只会把
- * 「做到没有」换成「跑了多久」——而循环该不该停，答案在目标本身，不在计数器。
- * 用户要的两件事这一行都有：它在不在跑，以及怎么让它停。
+ * **不显示轮数。** 该循环没有轮数上限（见 `core` 中 `Goal` 的注释），因此没有「第几轮 / 共几轮」
+ * 可显示。也不显示已执行的轮数：该数值不影响用户的任何决定，显示后只会把
+ * 「是否完成」转换为「运行了多久」，而循环是否应停止取决于目标本身，不取决于计数。
+ * 用户需要的两项信息都在这一行中：是否在运行，以及如何停止。
  *
- * **一行，且比输入框窄。** 挤不下的先截目标正文，再截状态，两处都有 title。高度是定死的（B9）——
- * 状态文字长短不一，让它撑高的话「停止」会跑位。
+ * **单行，且窄于输入框。** 空间不足时先截断目标正文，再截断状态，两处都有悬停提示。高度固定（B9）：
+ * 状态文字长短不一，若由内容撑高，「停止」按钮的位置会移动。
  */
 function GoalChip() {
   const goal = () => state.goal
@@ -170,12 +170,12 @@ function GoalChip() {
         <div class="goal-chip">
           <div class="goal-line">
             <span class="goal-label">目标</span>
-            {/* 正文长就截断 + title，不做悬停卡片：那张卡片承载的信息这一行本来
-                就有，唯一的效果是鼠标划过时遮住下面那一行。 */}
+            {/* 正文过长时截断并提供悬停提示，不做悬停卡片：卡片承载的信息这一行
+                已经显示，唯一的效果是鼠标经过时遮挡下一行。 */}
             <span class="goal-text truncate" data-tip={g().objective}>
               {g().objective}
             </span>
-            {/* 状态紧挨着「停止」：用户读到「在跑」的下一眼就该是让它停的那颗按钮。 */}
+            {/* 状态紧邻「停止」：用户读到运行状态后，紧接着应看到停止按钮。 */}
             <span
               class="goal-note truncate"
               classList={{ blocked: g().status === 'blocked' }}
@@ -203,21 +203,21 @@ function GoalChip() {
 }
 
 /**
- * 排着的跟进消息，作为输入框顶部的队列栏；它和正文、附件共用同一个输入框外壳。
+ * 排队中的后续消息，显示为输入框顶部的队列栏；它与正文、附件共用同一个输入框外壳。
  *
- * 卡上三个可点物：
+ * 卡片上有三个可点击对象：
  *
- * - **档位词** —— 按钮上写的是**点它会做什么**，不是这一条此刻的档位。
- *   排着队的显示「调整方向」，点了就注入当前这一轮，字随之换成「加入队列」，
- *   再点退回队列。会话空闲时队列里没有可注入的那一轮，字是「发送」，点了当场
- *   起一轮——三态同一种读法。不要改成显示当前档位：那样这一枚按钮上「发送」是
- *   动作、另两个词是状态，同一个位置两种读法。
- *   档位由服务端在同一个同步块里裁决，这里只负责显示。
- * - **修改** —— 从队列删除原条目，把正文和附件交回输入框；修改后走原发送入口。
- * - **删除** —— 删了就既不注入也不火发。
+ * - **档位按钮**：按钮文字表示点击后执行的动作，而不是该条消息当前的档位。
+ *   排队中的消息显示「调整方向」，点击后注入当前一轮，文字随之变为「加入队列」，
+ *   再次点击退回队列。会话空闲时没有可注入的运行轮次，文字为「发送」，点击后立即
+ *   启动一轮。三种状态采用同一种读法。不要改为显示当前档位：那样同一个按钮上「发送」是
+ *   动作、另两个词是状态，同一位置出现两种读法。
+ *   档位由服务端在同一个同步块中裁决，此处只负责显示。
+ * - **修改**：从队列删除原条目，把正文和附件交回输入框；修改后使用原发送入口。
+ * - **删除**：删除后既不注入也不发送。
  *
- * **一行，定高（B9）**：正文长短不一，让它撑高的话删除按钮会跟着跑位。
- * 不做悬停卡片：那张卡承载的信息这一行本来就有。
+ * **单行，固定高度（B9）**：正文长短不一，若由内容撑高，删除按钮的位置会随之移动。
+ * 不做悬停卡片：卡片承载的信息这一行已经显示。
  */
 function FollowUpCards(props: {
   onEdit: (followUp: FollowUp) => void
@@ -351,12 +351,12 @@ function toolOption(tool: ToolMeta): MentionOption {
 /**
  * 输入区。
  *
- * 三条交互决定：
+ * 三条交互约定：
  * - Enter 发送、Shift+Enter 换行。中文输入法组合期间（isComposing）必须放行，
- *   否则用拼音选词时按回车会把半截拼音发出去。
- * - 会话在跑时照样发得出去：这一条排进队列，去向由默认档决定，
- *   `Ctrl+Enter` 对单条走相反那一档。默认档在设置页，不常驻这里。
- * - 自适应高度，封顶后转内部滚动，不把会话区挤没。
+ *   否则用拼音选词时按回车会把未完成的拼音发送出去。
+ * - 会话运行中仍可发送：该条消息进入队列，去向由默认档位决定，
+ *   `Ctrl+Enter` 使单条消息使用相反的档位。默认档位在设置页设置，不在此处常驻显示。
+ * - 高度自适应，达到上限后改为内部滚动，不挤占会话区。
  */
 export function Composer(props: { empty: boolean }) {
   const [text, setText] = createSignal('')
@@ -374,22 +374,22 @@ export function Composer(props: { empty: boolean }) {
   const [skillLoadNote, setSkillLoadNote] = createSignal<string | null>(null)
   const [targetLoadNote, setTargetLoadNote] = createSignal<string | null>(null)
   /**
-   * 粘贴进来的那一份的本地预览地址，按落盘路径存。
+   * 粘贴附件的本地预览地址，按落盘路径存储。
    *
-   * 只增不减：一次会话里粘几张图是有限的，而按 chip 的生命周期撤销会与
-   * 「发送后 Transcript 仍要显示」冲突。
+   * 只增不减：一次会话中粘贴的图片数量有限，而按 chip 的生命周期撤销会与
+   * 「发送后 Transcript 仍需显示」冲突。
    */
   const localThumbs = new Map<string, string>()
-  /** 输入框里有没有可发的内容。主按钮的四态与 `submit()` 共用这一条判据。 */
+  /** 输入框中是否有可发送的内容。主按钮的四种状态与 `submit()` 共用此判据。 */
   const hasInput = () => text().trim().length > 0 || pending().length > 0
   /**
-   * 面板放大时输入区默认收起，但不能把正在编辑的草稿从用户眼前拿走。
-   * 上传中的附件也算草稿：它还没变成 `pending`，此时收起会像是上传被吞了。
+   * 面板放大时输入区默认收起，但不能收起正在编辑的草稿。
+   * 上传中的附件也算作草稿：它尚未进入 `pending`，此时收起会使上传看起来已丢失。
    */
   const panelDockPinned = () => hasInput() || uploading() > 0 || dragOver()
   const panelDockVisible = () =>
     panelMaximized() && (panelDockOpen() || panelDockFocused() || panelDockPinned())
-  /** 有本地预览就带上，没有就整个键不出现——`exactOptionalPropertyTypes` 不收 undefined。 */
+  /** 有本地预览时附带该字段，没有时省略整个键：`exactOptionalPropertyTypes` 不接受 undefined。 */
   const thumbProps = (path: string): { localUrl?: string } => {
     const u = localThumbs.get(path)
     return u ? { localUrl: u } : {}
@@ -402,8 +402,8 @@ export function Composer(props: { empty: boolean }) {
   let panelDockReadyTimer: ReturnType<typeof setTimeout> | undefined
 
   /**
-   * 悬浮展开要即时，收起要留出从底部触发条移到输入框的时间。
-   * 160ms 足够跨过两者间的小缝，同时避免鼠标已经离开后浮层仍明显滞留。
+   * 悬浮展开需要即时，收起需要留出从底部触发条移动到输入框的时间。
+   * 160ms 足以跨过两者之间的间隙，同时避免鼠标离开后浮层明显滞留。
    */
   const clearPanelDockClose = () => {
     if (panelDockCloseTimer) clearTimeout(panelDockCloseTimer)
@@ -450,9 +450,9 @@ export function Composer(props: { empty: boolean }) {
   })
 
   /*
-   * 候选按项目失效。Composer 本身切项目时不会重挂，如果把第一次加载的结果一直
-   * 留着，`#` / `@` 会显示上一个项目的技能、角色与 MCP。异步请求也绑定发起时的
-   * workspace id；切换途中回来的旧结果直接丢弃。
+   * 候选按项目失效。Composer 在切换项目时不会重新挂载，若一直保留首次加载的
+   * 结果，`#` / `@` 会显示上一个项目的技能、角色与 MCP。异步请求也绑定发起时的
+   * workspace id；切换过程中返回的旧结果直接丢弃。
    */
   let suggestionWorkspace: string | null | undefined
   let suggestionEpoch = 0
@@ -480,7 +480,7 @@ export function Composer(props: { empty: boolean }) {
       if (epoch !== suggestionEpoch || (workspace()?.id ?? null) !== owner) return
       setSkillOptions(
         loaded.skills
-          // 与运行时 `scanSkills` 的生效集合一致；被高优先级同名技能盖住的不冒充可选。
+          // 与运行时 `scanSkills` 的生效集合一致；被更高优先级同名技能覆盖的技能不作为可选项。
           .filter((skill) => skill.shadowedBy === null)
           .map((skill) => ({
             id: `skill:${skill.scope}:${skill.name}`,
@@ -506,8 +506,8 @@ export function Composer(props: { empty: boolean }) {
     setTargetLoadNote(null)
 
     /*
-     * 三个来源互不拖累：本机外部 CLI 探测失败，不应让已经连好的 MCP 与项目角色
-     * 一起消失。失败项就近报在面板末尾，成功项仍可选。
+     * 三个来源互不影响：本机外部 CLI 探测失败，不应使已连接的 MCP 与项目角色
+     * 一并消失。失败项在面板末尾报告，成功项仍可选择。
      */
     const [toolsResult, teamResult, cliResult] = await Promise.allSettled([
       loadTools(),
@@ -556,13 +556,13 @@ export function Composer(props: { empty: boolean }) {
   })
 
   /*
-   * 收下设置页递过来的起手指令。
+   * 接收设置页传入的初始指令。
    *
-   * **收下就把信号清空**：它是一次性投递，留着的话下一次投同一句话时信号没变化，
-   * effect 不会再跑，按钮看起来就是点了没反应。
+   * **接收后立即清空信号**：它是一次性投递，若保留，下一次投递相同内容时信号没有变化，
+   * effect 不会再次执行，按钮点击后没有响应。
    *
-   * **不覆盖已经敲了一半的内容**：接在后面，中间空一行。用户正打字时被清空，
-   * 丢掉的是他自己写的那段草稿。
+   * **不覆盖已输入的内容**：追加在末尾，中间空一行。用户正在输入时若被清空，
+   * 丢失的是用户自己写的草稿。
    */
   createEffect(() => {
     const seed = composerSeed()
@@ -570,17 +570,17 @@ export function Composer(props: { empty: boolean }) {
     setComposerSeed(null)
     setText((cur) => (cur.trim() ? `${cur.trimEnd()}\n\n${seed}` : seed))
     ta.focus()
-    // 光标落到末尾：用户要接着往下写，不是从头改。
+    // 光标移到末尾：用户需要继续往下写，而不是从头修改。
     queueMicrotask(() => ta.setSelectionRange(ta.value.length, ta.value.length))
   })
 
   /**
-   * 拿得到源路径的那条入口：桌面端拖入、原生选择器。
+   * 可取得源路径的入口：桌面端拖入、原生选择器。
    *
-   * **纯前端，一个请求都不打。** 文件已经在磁盘上了，没有任何字节需要搬——
+   * **纯前端处理，不发送任何请求。** 文件已在磁盘上，没有字节需要传输，
    * 这就是「不二次存储」的全部实现。
    *
-   * `size` 填 0：这里拿不到字节数，而这一格没有消费者（约定写在 `Attachment` 上）。
+   * `size` 填 0：此处无法取得字节数，而该字段没有消费者（约定写在 `Attachment` 上）。
    */
   const takePaths = (paths: string[]) => {
     const next = paths.filter(Boolean).map((raw) => {
@@ -592,24 +592,24 @@ export function Composer(props: { empty: boolean }) {
   }
 
   /**
-   * 拿不到源路径的那条：剪贴板里只有位图，或者浏览器不给绝对路径。
+   * 无法取得源路径的入口：剪贴板中只有位图，或浏览器不提供绝对路径。
    *
-   * 这一份字节除了内存里没有第二处，所以落盘是**第一次**存储不是第二次。
-   * 落点是 `~/.qywork/attachments/<会话id>/`，删会话时整个目录一起走。
+   * 这些字节除内存外没有第二份，因此落盘是第一次存储，而不是第二次。
+   * 存储位置是 `~/.qywork/attachments/<会话id>/`，删除会话时整个目录一并删除。
    *
-   * 失败**逐个报**并继续处理其余的：一张图太大不该让另外三张也白选。
+   * 失败逐个报告并继续处理其余文件：一张图片过大不应导致另外三张也添加失败。
    */
   const takeFiles = async (files: FileList | File[]) => {
     const list = Array.from(files)
     if (!list.length) return
     const conversationId = state.activeConversation
-    // 没有会话就没有归属，和「发送」同一个判据（`sendMessage` 也在这里早退）。
+    // 没有会话就没有归属，与「发送」使用同一判据（`sendMessage` 也在此情况下提前返回）。
     if (!conversationId) return
     setUploading((n) => n + list.length)
     for (const f of list) {
       try {
         const a = await uploadAttachment(f, conversationId)
-        // 粘贴的那一份手里就有字节，缩略图直接用它，省掉一次回读。
+        // 粘贴的文件已持有字节，缩略图直接使用它，省去一次读取。
         if (isInlineImage(a.path)) localThumbs.set(a.path, URL.createObjectURL(f))
         setPending((prev) => [...prev, a])
       } catch (e) {
@@ -624,8 +624,8 @@ export function Composer(props: { empty: boolean }) {
   }
 
   /**
-   * 把输入区登记成外壳拖放的接收方：命中测试按输入区的矩形，路径交给 `takePaths`。
-   * 机制与为什么不用 HTML5 `ondrop`，见 `registerDropSink` 的注释。
+   * 把输入区登记为外壳拖放的接收方：命中测试使用输入区的矩形，路径交给 `takePaths`。
+   * 机制以及不使用 HTML5 `ondrop` 的原因，见 `registerDropSink` 的注释。
    */
   onMount(() => {
     if (!isDesktopShell()) return
@@ -643,12 +643,12 @@ export function Composer(props: { empty: boolean }) {
   /**
    * 斜杠命令。
    *
-   * 只在**整段草稿就是一个 `/xxx`** 时才弹（见 `matchSlash`）——正文里的路径
-   * `src/lib` 或代码里的除号不该把面板弹出来。
+   * 只在整段草稿恰好是一个 `/xxx` 时弹出（见 `matchSlash`）：正文中的路径
+   * `src/lib` 或代码中的除号不应弹出面板。
    */
   const slashHits = () => matchSlash(text())
   const executeSlash = (cmd: Command, arg?: string) => {
-    // 先清草稿再执行：命令可能会开浮层或换会话，那之后 setText 未必还落在这个组件上。
+    // 先清空草稿再执行：命令可能打开浮层或切换会话，之后 setText 不一定仍作用于本组件。
     setText('')
     queueMicrotask(() => {
       ta.style.height = 'auto'
@@ -656,8 +656,8 @@ export function Composer(props: { empty: boolean }) {
     })
   }
   const runSlash = (cmd: Command) => {
-    // 要跟一段话的命令（`/goal`）在面板里选中**不执行**，只把命令名填进草稿——
-    // 这时候用户还没说要做什么，跑起来只能跑一个空目标。
+    // 需要附带参数的命令（`/goal`）在面板中选中时不执行，只把命令名填入草稿：
+    // 此时用户尚未说明要做什么，执行只会得到一个空目标。
     if (cmd.arg) {
       setText(`/${cmd.slash} `)
       queueMicrotask(() => {
@@ -674,7 +674,7 @@ export function Composer(props: { empty: boolean }) {
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
   }
 
-  /** `/`、`#`、`@` 共用一张弹层与一套键盘游标，任何时刻只有当前词对应的一类。 */
+  /** `/`、`#`、`@` 共用一个弹层与一套键盘游标，任何时刻只显示当前词对应的一类。 */
   const pickerOptions = (): PickerOption[] => {
     const commands = slashHits()
     if (commands.length) return commands.map((command) => ({ kind: 'command', command }))
@@ -720,7 +720,7 @@ export function Composer(props: { empty: boolean }) {
   }
 
   /**
-   * 把一条等待消息取回输入框。队列仍通过服务端原有的删除指令收敛，输入正文与附件
+   * 把一条等待中的消息取回输入框。队列仍通过服务端原有的删除指令更新，正文与附件
    * 直接回到本组件的草稿；已有草稿不覆盖，待编辑内容追加在末尾。
    */
   const editFollowUp = (followUp: FollowUp) => {
@@ -738,19 +738,19 @@ export function Composer(props: { empty: boolean }) {
   }
 
   /**
-   * 发出去。`flip` = 这一条走与默认档相反的那一档（`Ctrl+Enter`）。
+   * 发送消息。`flip` 表示该条消息使用与默认档位相反的档位（`Ctrl+Enter`）。
    *
-   * **不再因为「正在跑」早退**：跑着的时候发消息是排队，不是被拒。
+   * **不因「正在运行」提前返回**：运行期间发送的消息进入队列，不被拒绝。
    */
   const submit = (flip = false) => {
     const v = text().trim()
     const files = pending()
-    // 只有附件没有文字也能发——「看这张图」这种意图不该逼用户再打几个字。
+    // 只有附件没有文字时也可发送：「看这张图」这类意图不应要求用户再输入文字。
     if (!v && files.length === 0) return
 
     /*
-     * 所有提交方式都在这里认命令。此前只截带参数的 `/goal`，因此点击发送按钮提交
-     * `/compact`、`/new` 会被当成普通消息；键盘补全面板却能执行，因此同一行字有两种语义。
+     * 所有提交方式都必须在此处识别命令。只识别带参数的 `/goal` 时，点击发送按钮提交的
+     * `/compact`、`/new` 会被当作普通消息，而键盘补全面板能执行它们，同一行文字出现两种语义。
      */
     const dispatch = slashDispatch(v, buildCommands())
     if (dispatch.kind === 'run') {
@@ -764,9 +764,9 @@ export function Composer(props: { empty: boolean }) {
     }
 
     /*
-     * 未配置模型时拦截：当前会话无模型且无默认可回退时，提交只会在启动 run 时被
+     * 未配置模型时拦截：当前会话无模型且没有可回退的默认模型时，提交只会在启动 run 时被
      * no_model 拒绝，此处直接显示「未配置模型」并保留草稿与附件。目录尚未加载
-     * （cat 为 null）时不拦截，由服务端的 no_model 兜底，避免误拦。
+     * （cat 为 null）时不拦截，由服务端的 no_model 作为后备处理，避免误拦截。
      */
     const cat = modelCatalog()
     if (!activeModel()?.model && cat !== null && !cat.active) {
@@ -775,8 +775,8 @@ export function Composer(props: { empty: boolean }) {
     }
 
     /*
-     * 图片能力未知时沿用现有试发语义；视频只有模型与协议均明确支持时才允许发送。
-     * 能力不符时保留草稿与附件，由用户换模型或移除媒体。
+     * 图片能力未知时沿用现有的试发送语义；视频只有模型与协议均明确支持时才允许发送。
+     * 能力不符时保留草稿与附件，由用户更换模型或移除媒体。
      */
     if (activeModelRow()?.vision === false && files.some((f) => f.type === 'image')) {
       setState('notice', {
@@ -833,8 +833,8 @@ export function Composer(props: { empty: boolean }) {
       }}
     >
       {/*
-       * 只在右侧面板放大时出现。视觉是一根底部把手，但命中区是一颗完整按钮：
-       * 鼠标悬浮直接展开，键盘 Tab 能到，点击后焦点落进正文输入，不制造第二套输入入口。
+       * 只在右侧面板放大时出现。外观是一根底部把手，但命中区是一个完整按钮：
+       * 鼠标悬浮时直接展开，可通过键盘 Tab 聚焦，点击后焦点进入正文输入框，不另建第二套输入入口。
        */}
       <button
         class="composer-reveal"
@@ -853,9 +853,9 @@ export function Composer(props: { empty: boolean }) {
       <Show when={props.empty}>
         <div class="run-context">
           <span class="run-context-label">运行于</span>
-          {/* 只显示，不可点：换项目在左栏点一下就是了，这里再放一个入口
-              就是同一个动作的第二条路。做成 button 还会承诺一个可点开的浮层，
-              而那个浮层已经删了。 */}
+          {/* 只显示，不可点击：切换项目在左栏点击即可，在此再放一个入口
+              会形成同一操作的第二条路径。做成 button 还意味着存在可点开的浮层，
+              而该浮层已删除。 */}
           <Show when={workspace()}>
             {(w) => (
               <span class="mode-chip static" data-tip={w().root}>
@@ -864,8 +864,8 @@ export function Composer(props: { empty: boolean }) {
               </span>
             )}
           </Show>
-          {/* 分支只在真是 git 仓库时出现——不是仓库的时候显示一个空分支
-              等于告诉用户「这里本该有一个分支名」。 */}
+          {/* 分支只在确为 git 仓库时显示：非仓库时显示一个空分支，
+              等于提示用户「此处应有分支名」。 */}
           <Show when={state.git?.branch}>
             <BranchPicker />
           </Show>
@@ -925,16 +925,16 @@ export function Composer(props: { empty: boolean }) {
           </div>
         </Show>
 
-        {/* Goal 与等待队列共用输入框顶部的状态栏栈：目标固定在上，队列按顺序在下。
-            两者同时出现也只有一个外框、一套纵向次序，不互相覆盖。 */}
+        {/* Goal 与等待队列共用输入框顶部的状态栏堆叠区：目标固定在上方，队列按顺序排在下方。
+            两者同时出现时也只有一个外框和一套纵向次序，不互相覆盖。 */}
         <div class="composer-rails">
           <GoalChip />
           <FollowUpCards onEdit={editFollowUp} thumbProps={thumbProps} />
         </div>
 
         <div class="composer-body">
-          {/* 待发附件属于这次输入，挂在输入框内部而不是另起一张外部卡片。
-            图片显示可辨认的缩略图；普通文件保留文件名卡。区域最多两行，超出后内部滚动。 */}
+          {/* 待发送附件属于本次输入，放在输入框内部，而不是另起一张外部卡片。
+            图片显示可辨认的缩略图；普通文件保留文件名卡片。区域最多两行，超出后在内部滚动。 */}
           <Show when={pending().length > 0 || uploading() > 0}>
             <div class="attach-row pending">
               <For each={pending()}>
@@ -994,7 +994,7 @@ export function Composer(props: { empty: boolean }) {
             onPaste={(e) => {
               const files = Array.from(e.clipboardData?.files ?? [])
               if (files.length) {
-                // 有文件才拦：拦掉纯文本粘贴会让人没法正常贴代码。
+                // 仅在包含文件时拦截：拦截纯文本粘贴会导致无法正常粘贴代码。
                 e.preventDefault()
                 void takeFiles(files)
               }
@@ -1042,7 +1042,7 @@ export function Composer(props: { empty: boolean }) {
                   return
                 }
               }
-              // 放大面板里的空输入区可用 Escape 当场收回；有草稿时绝不替用户藏。
+              // 放大面板中的空输入区可用 Escape 立即收起；有草稿时不得替用户隐藏。
               if (e.key === 'Escape' && panelMaximized() && !hasInput()) {
                 e.preventDefault()
                 clearPanelDockClose()
@@ -1050,8 +1050,8 @@ export function Composer(props: { empty: boolean }) {
                 ta.blur()
                 return
               }
-              // isComposing：中文/日文输入法组合期的回车属于选词，不能当发送。
-              // Ctrl/Cmd+Enter 走与默认档相反的那一档；会话空闲时两者等价。
+              // isComposing：中文/日文输入法组合期间的回车用于选词，不能作为发送。
+              // Ctrl/Cmd+Enter 使用与默认档位相反的档位；会话空闲时两者等价。
               if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
                 e.preventDefault()
                 submit(e.ctrlKey || e.metaKey)
@@ -1060,11 +1060,11 @@ export function Composer(props: { empty: boolean }) {
           />
 
           <div class="composer-bar">
-            {/* 一个 `+` 收所有附件，不做图片/文件两个入口——对用户来说
-              「把这个文件给它看」是同一件事。
+            {/* 一个 `+` 按钮接收所有附件，不分图片与文件两个入口：对用户而言
+              「把这个文件交给模型查看」是同一件事。
 
-              桌面端走系统对话框：它给的是**绝对路径**，因此这条入口和拖入一样
-              不搬字节。`<input type="file">` 拿不到路径，那是浏览器端唯一的路。 */}
+              桌面端使用系统对话框：它返回绝对路径，因此该入口与拖入一样
+              不传输字节。`<input type="file">` 无法取得路径，它是浏览器端唯一的入口。 */}
             <input
               ref={filePicker}
               type="file"
@@ -1073,7 +1073,7 @@ export function Composer(props: { empty: boolean }) {
               onChange={(e) => {
                 const fs = e.currentTarget.files
                 if (fs) void takeFiles(fs)
-                // 清空 value：同一个文件连选两次也要能触发 change。
+                // 清空 value：同一个文件连续选择两次也必须能触发 change。
                 e.currentTarget.value = ''
               }}
             />
@@ -1095,15 +1095,15 @@ export function Composer(props: { empty: boolean }) {
 
             <ModeChip />
 
-            {/* 上下文占用排在模型前面：它是「这一轮还装得下多少」，
-              而模型是「拿什么去装」——先看容量再挑模型。 */}
+            {/* 上下文占用排在模型之前：它表示本轮剩余的上下文容量，
+              用户先查看容量，再选择模型。 */}
             <ContextMeter />
 
             <ModelPicker />
 
             <span class="spacer" />
 
-            {/* 语音输入。特性检测不通过时它自己不渲染，见 VoiceButton。 */}
+            {/* 语音输入。特性检测不通过时组件自身不渲染，见 VoiceButton。 */}
             <VoiceButton
               draft={text()}
               bindSubmitStop={(stop) => {
@@ -1115,22 +1115,22 @@ export function Composer(props: { empty: boolean }) {
               }}
             />
 
-            {/* 这里不放金额：会话流末尾那条运行读数（Transcript 的 `.run-strip`）
-              已经在显示同一笔钱。同源同值显示两遍，读起来是两笔账。
-              留在那边是因为它和「这一轮跑成什么样」在一起，
-              而输入区的工具栏是给下一轮用的。 */}
+            {/* 此处不显示金额：会话流末尾的运行读数条（Transcript 的 `.run-strip`）
+              已显示同一金额。同源同值显示两次，会被读成两笔费用。
+              金额保留在读数条中，是因为它与「本轮的执行情况」放在一起，
+              而输入区工具栏服务于下一轮。 */}
 
-            {/* 主按钮**只有一枚**，位置与尺寸不变，只换图标与语义：
-                空闲 → 发送（没内容时 disabled）
+            {/* 主按钮只有一个，位置与尺寸不变，只切换图标与语义：
+                空闲 → 发送（无内容时 disabled）
                 运行中 + 有内容 → 发送（按档位入队或注入）
-                运行中 + 没内容 → 停止
+                运行中 + 无内容 → 停止
 
-              想停止就把输入框清空。这不是代价：正在打字的人要的是发出去，
-              不是停下这一轮，两个意图不在同一时刻成立，所以不该有两枚按钮在这里
-              争同一个位置。
+              要停止时清空输入框即可。这不构成额外负担：正在输入的用户意图是发送，
+              而不是停止本轮，两种意图不会同时成立，因此不应有两个按钮
+              争用同一位置。
 
-              「有内容」的判据必须和 submit() 一致：只有附件没有文字也能发。
-              只看文字的话，粘一张图不打字的用户点发送没反应。 */}
+              「有内容」的判据必须与 submit() 一致：只有附件没有文字时也可发送。
+              只检查文字时，粘贴一张图片而未输入文字的用户点击发送不会有响应。 */}
             <Show
               when={isRunning() && !hasInput()}
               fallback={
@@ -1150,7 +1150,7 @@ export function Composer(props: { empty: boolean }) {
   )
 }
 
-/** 分组行的中文名。键与 `CONTEXT_GROUPS` 一一对应，顺序由后者决定。 */
+/** 分组行的中文名称。键与 `CONTEXT_GROUPS` 一一对应，顺序由后者决定。 */
 const GROUP_LABEL: Record<ContextGroup, string> = {
   historyMessages: '历史消息',
   executionRecords: '执行记录',
@@ -1165,8 +1165,8 @@ const GROUP_LABEL: Record<ContextGroup, string> = {
 }
 
 /**
- * 段色。**按行序取，不按值取**——颜色要和标签绑定，
- * 这样用户第二次打开时「那条紫的」还是同一个类目。
+ * 分段颜色。按行序取色，不按值取色：颜色需要与标签绑定，
+ * 用户再次打开时同一颜色仍对应同一类目。
  */
 const SEG_COLOR = [
   '#6366f1',
@@ -1182,7 +1182,7 @@ const SEG_COLOR = [
   '#cbd5e1',
 ]
 
-/** 紧凑记法：823 / 19.7k / 916.3k / 1M。数字要能一眼比大小，不是要精确到个位。 */
+/** 紧凑记法：823 / 19.7k / 916.3k / 1M。数字用于快速比较大小，无需精确到个位。 */
 function fmtTok(n: number): string {
   if (n < 1000) return String(n)
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`
@@ -1198,13 +1198,13 @@ function fmtLimit(n: number): string {
 /**
  * 占用环。
  *
- * 数字要读，环不用读——扫一眼就知道满没满，这是它和「5.2%」的分工。
+ * 数字用于读取数值，环用于快速判断占用程度，这是它与「5.2%」的分工。
  *
- * 两处细节是被具体形状逼出来的：
- * - **端点用平头（默认 butt），不用 round。** 圆头端点在 0% 时会自己画出一个小圆点，
- *   而新会话恒为 0%——那个点看起来像已经占了一小段。
- * - **-90° 起画**，从十二点走顺时针。不转的话 SVG 从三点开始，
- *   低占用时那一小段挂在右侧腰上，看不出是「刚开始」。
+ * 两处细节由具体图形决定：
+ * - **端点使用平头（默认 butt），不使用 round。** 圆头端点在 0% 时会绘制出一个小圆点，
+ *   而新会话恒为 0%，该圆点看起来像已经占用了一小段。
+ * - **从 -90° 开始绘制**，自十二点方向顺时针。不旋转时 SVG 从三点方向开始，
+ *   低占用时那一小段位于右侧中部，无法看出是「刚开始」。
  */
 function ContextRing(props: { percent: number }) {
   const CIRC = 2 * Math.PI * 6
@@ -1230,22 +1230,22 @@ function ContextRing(props: { percent: number }) {
 /**
  * 上下文占用。
  *
- * 点开看**被谁占的**——一个孤零零的「87%」不可操作：用户既不知道该压缩、
- * 该删记忆、还是该换个窗口更大的模型。
+ * 点开后查看占用的构成：单独的「87%」无法据以操作，用户无法判断应压缩、
+ * 删除记忆，还是更换上下文窗口更大的模型。
  *
- * **行集与行序是固定的，零值也显示：不许 `filter(n > 0)`，也不许按值排序。**行会随值出现、消失、换
- * 位置，用户每次打开都得重新扫一遍才能找到关心的那一行；而行数一变，浮层高度跟着跳（B9 明令禁
- * 止）。按 `CONTEXT_GROUPS` 定序，十行恒在，末尾固定是剩余空间。
+ * **行集与行序固定，零值也显示：不得 `filter(n > 0)`，也不得按值排序。** 若行随值出现、消失或换
+ * 位置，用户每次打开都需要重新查找关注的行；行数一变，浮层高度也随之变化（违反 B9）。
+ * 按 `CONTEXT_GROUPS` 定序，十行始终存在，末尾固定为剩余空间。
  *
- * **「省略上下文」只在真的省略了才出现。** 它回答「什么被拿掉了」。压缩之前恒为 0，此时整段不渲染
- * —— 一个恒零的区块是噪声，而不是信息。
+ * **「省略上下文」只在确实有省略时出现。** 它回答「哪些内容被移除」。压缩之前恒为 0，此时整段不渲染：
+ * 恒为零的区块是噪声，而不是信息。
  */
 function ContextMeter() {
   const [open, setOpen] = createSignal(false)
 
   /*
-   * 点在外面就关。判据取 `.ctx-wrap`（含按钮）而不是 `.ctx-pop`：`pointerdown` 排在
-   * `click` 前面，只圈浮层的话点按钮会先关一次、它自己的 click 又切回开，永远关不掉。
+   * 点击外部时关闭。判据使用 `.ctx-wrap`（含按钮）而不是 `.ctx-pop`：`pointerdown` 先于
+   * `click` 触发，若只判断浮层，点击按钮会先关闭一次，按钮自身的 click 又将其打开，浮层无法关闭。
    */
   createEffect(() => {
     if (!open()) return

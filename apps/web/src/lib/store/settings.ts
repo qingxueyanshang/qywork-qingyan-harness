@@ -1,8 +1,8 @@
 /**
- * 设置面：模型配置、工作区、插件、定时任务、team.json。
+ * 设置相关的请求：模型配置、工作区、插件、定时任务、team.json。
  *
- * 全是「打开某个面板才会用到」的请求，与主链路无关，所以单独一块——
- * 它们加起来比会话链路还长，混在一起会让读 store 的人把这些当成热路径。
+ * 这些请求只在打开对应面板时使用，与会话主链路无关，因此单独成为一个模块：
+ * 它们的总代码量超过会话链路，混放会使阅读 store 的人误认为它们位于热路径上。
  */
 
 import type {
@@ -26,25 +26,25 @@ import type { WorkspaceInfo } from './ui.ts'
 
 // ───────────────────────── 配置 ─────────────────────────
 
-/** 指向一个具体模型的二元指针。模型 id 本身含斜杠，所以不能拼成一个串。 */
+/** 指向一个具体模型的二元组。模型 id 本身可能含斜杠，因此不能拼接为一个字符串。 */
 export interface ModelRef {
   provider: string
   model: string
 }
 
-/** 一个模型在这个接口下的那一格。 */
+/** 单个模型在接口下的配置项。 */
 export interface RedactedModel {
   maxOutputTokens?: number
-  /** 保存时原样回传，避免把探测的实测结果洗掉。 */
+  /** 保存时原样回传，避免覆盖探测得到的实测结果。 */
   capabilities?: unknown
   /**
-   * 用户为这个模型选定的思考档。
+   * 用户为该模型选定的思考档位。
    *
-   * 和 `capabilities` 一样住在这一格：档位集合逐模型不同，全局一个值在
-   * Claude 上选的 `xhigh` 换到 DeepSeek 就是个它没有的档。
+   * 与 `capabilities` 一样存放在模型配置项中：各模型的档位集合不同，若使用全局值，
+   * 在 Claude 上选定的 `xhigh` 切换到 DeepSeek 后是该模型不支持的档位。
    */
   effort?: EffortLevel
-  /** 当前接口路线的控制面透传结论；不写入全局模型目录。 */
+  /** 当前接口端点对控制参数的传输校准结论；不写入全局模型目录。 */
   transport?: {
     effort?: boolean
     effortLevels?: EffortLevel[]
@@ -53,76 +53,76 @@ export interface RedactedModel {
   }
 }
 
-/** 接口的对外形状：明文 key 不出服务进程，只回「有没有」。 */
+/** 接口的对外结构：明文 key 不离开服务进程，只返回是否已设置。 */
 export interface RedactedProvider {
   kind: string
   baseUrl?: string
   headers?: Record<string, string>
   models: Record<string, RedactedModel>
-  /** 这个接口下的生成模型，键是模型 id。与 `models` 分表：输入框的模型选择只列 `models`。 */
+  /** 该接口下的生成模型，键为模型 id。与 `models` 分开存放：输入框的模型选择只列出 `models`。 */
   media?: Record<string, { kind: MediaKind }>
   hasApiKey: boolean
   /**
-   * **只写。** 读接口永远不回它（回的是上面那个 `hasApiKey`），
-   * 只有用户在设置里真的敲了新 key 时才带上；不带 = 沿用服务端已有的那份。
+   * 只写字段。读接口从不返回它（返回的是上方的 `hasApiKey`），
+   * 仅在用户于设置中输入新 key 时携带；不携带表示沿用服务端已有的 key。
    *
-   * 写进类型是为了让编译器管住这一格：靠 `as Partial<...>` 硬转的话键名拼错
-   * 不报错，后果是保存成功、key 没变，直到下一次调模型才失败。
+   * 写入类型定义是为了由编译器检查该字段：使用 `as Partial<...>` 强制转换时，键名拼错
+   * 不会报错，保存成功而 key 未改变，直到下一次调用模型才失败。
    */
   apiKey?: string
 }
 /**
- * 服务端配置的对外形状。**这是一份手抄，而且是故意抄不全的。**
+ * 服务端配置的对外结构。该类型是手工复制的副本，且有意不完整。
  *
- * 抄是因为够不着：真源 `QyConfig` 在 `@qywork/runtime`(L5)，界面只依赖
- * `@qywork/core`(L0)。抄不全是因为 `sandboxNetwork` 只有内核沙箱的平台上才生效，
- * Windows 上画个开关等于画个假的（见 CLAUDE.md B5）。
+ * 需要复制是因为无法引用：真源 `QyConfig` 位于 `@qywork/runtime`(L5)，界面只依赖
+ * `@qywork/core`(L0)。不完整是因为 `sandboxNetwork` 只在具备内核沙箱的平台上生效，
+ * 在 Windows 上显示该开关没有实际作用（见 CLAUDE.md B5）。
  *
- * 所以这里少一个字段是有意的，**但它不能因此在保存时被抹掉**：保存走的是
- * 整份 PUT，服务端 `mergeConfig` 靠 `{ ...current, ...incoming }` 保住客户端
- * 不认识的键。那条语义由 `server/src/api/config.test.ts`「客户端不认识的顶层
- * 字段不会被抹掉」钉住——改这里之前先看那条。
+ * 因此缺少该字段是有意的，但保存时不得因此清除它：保存使用
+ * 整份 PUT，服务端 `mergeConfig` 通过 `{ ...current, ...incoming }` 保留客户端
+ * 未知的键。该语义由 `server/src/api/config.test.ts` 中保留未知顶层字段的测试锁定，
+ * 修改此处前先阅读该测试。
  */
 export interface RedactedConfig {
   updates?: { autoCheck: boolean; autoDownload: boolean }
-  /** 当前默认「接口 × 模型」。**可缺省**：出厂不预设模型，删光最后一个模型后也没有。 */
+  /** 当前默认「接口 × 模型」。可省略：出厂不预设模型，删除最后一个模型后同样不存在。 */
   active?: ModelRef
   /**
-   * 各类别的默认生成模型。与 `active` 同规则：保存时这一份是权威，没带就是没有默认，
-   * 所以删光某一类的模型时要把那一类的键删掉，删空了整个字段不带。
+   * 各类别的默认生成模型。规则与 `active` 相同：保存时以该字段为准，未携带即表示没有默认值，
+   * 因此删除某一类别的全部模型时须删除该类别的键，所有类别均被删除时省略整个字段。
    */
   mediaDefaults?: Partial<Record<MediaOutput, ModelRef>>
   providers: Record<string, RedactedProvider>
   /**
-   * 模型参数的覆盖，键是「模型 id | 协议」。
+   * 模型参数的覆盖项，键为「模型 id | 协议」。
    *
-   * **模型库那张表只读**。字段形状的真源在服务端（`StoredCatalogEntry`），
-   * 这里不复述，只保证整份 PUT 时原样带回去，否则会被抹掉。端点校准写在
-   * `providers[].models[].transport`，不会污染这份全局规格。
+   * 界面上的模型库表格只读。字段结构的真源在服务端（`StoredCatalogEntry`），
+   * 此处不重复定义，只保证整份 PUT 时原样回传，否则会被清除。端点校准写入
+   * `providers[].models[].transport`，不影响这份全局规格。
    */
   catalog?: Record<string, Record<string, unknown>>
-  // 思考档位**不在顶层**：它是「接口 × 模型」那一格的属性，见 `RedactedModel.effort`。
+  // 思考档位不在顶层：它是「接口 × 模型」配置项的属性，见 `RedactedModel.effort`。
   mode?: PermissionMode
   additionalDirectories?: string[]
   envAllowList?: string[]
-  /** 允不允许 agent 控制内置浏览器。缺席按启用，只有显式 `false` 才关。 */
+  /** 是否允许 agent 控制内置浏览器。字段缺失视为启用，仅显式 `false` 表示关闭。 */
   browserEnabled?: boolean
-  /** 允不允许 agent 操作本机上别的应用。缺省即关。 */
+  /** 是否允许 agent 操作本机上的其他应用。缺省为关闭。 */
   desktopEnabled?: boolean
   desktopForeground?: boolean
-  /** 允不允许 agent 用 `office` 工具。缺席按启用，只有显式 `false` 才关。 */
+  /** 是否允许 agent 使用 `office` 工具。字段缺失视为启用，仅显式 `false` 表示关闭。 */
   officeEnabled?: boolean
-  /** 允不允许 agent 用画布与生成工具。缺席按启用，只有显式 `false` 才关。 */
+  /** 是否允许 agent 使用画布与生成工具。字段缺失视为启用，仅显式 `false` 表示关闭。 */
   mediaEnabled?: boolean
 }
 export interface ConfigPayload {
   path: string
   config: RedactedConfig
-  /** 这份配置的版本指纹，保存时原样回传给服务端做乐观并发校验（见 `saveServerConfig`）。 */
+  /** 该配置的版本指纹，保存时原样回传给服务端，用于乐观并发校验（见 `saveServerConfig`）。 */
   version: string
   notices: string[]
   problems: string[]
-  /** `envAllowList` 留空时真正生效的那一份，由服务端下发（真源在 `tools/shell.ts`）。 */
+  /** `envAllowList` 留空时实际生效的列表，由服务端下发（真源在 `tools/shell.ts`）。 */
   defaultEnvAllowList: string[]
 }
 
@@ -131,12 +131,12 @@ export function loadServerConfig(): Promise<ConfigPayload> {
 }
 
 /**
- * 把 `client.api` 抛出来的错误还原成人能读的一句话。
+ * 将 `client.api` 抛出的错误转换为一句可读的说明。
  *
- * `client.api` 的消息是 `<状态码> <路径>: <响应体前 200 字>`——响应体是 JSON。
- * 原样显示等于把接口细节甩给用户。这里只取其中真正说明原因的字段
- * （`problems` 数组或 `message`），取不到才回落到原文——**回落到原文而不是
- * 一句「操作失败」**：原文再难看也带着信息，泛化的失败提示一点都不带。
+ * `client.api` 的消息格式为 `<状态码> <路径>: <响应体前 200 字>`，其中响应体是 JSON，
+ * 原样显示会把接口细节暴露给用户。此处只取说明原因的字段
+ * （`problems` 数组、`message` 或 `error`），无法取得时回退到原文，而不是
+ * 「操作失败」：原文包含诊断信息，泛化的失败提示不包含任何信息。
  */
 export function explainApiError(e: unknown, fallback: string): string {
   const raw = e instanceof Error ? e.message : String(e)
@@ -150,11 +150,11 @@ export function explainApiError(e: unknown, fallback: string): string {
       }
       if (body.problems?.length) return body.problems.join('；')
       if (body.message) return body.message
-      // 服务端多数错误只带 `error` 一个键（`api/types.ts` 的 `json`）。不认它的话
-      // 界面上显示的是「422 /api/xxx: {"error":「标题不能为空」}」这种原样回显。
+      // 服务端多数错误只带 `error` 一个键（`api/types.ts` 的 `json`）。不识别该键时，
+      // 界面显示原始文本，如「422 /api/xxx: {"error":「标题不能为空」}」。
       if (body.error) return body.error
     } catch {
-      // 响应体被 client.api 截断到 200 字时会解析失败，走回落。
+      // 响应体被 client.api 截断到 200 字时解析失败，回退到原文。
     }
   }
   return raw || fallback
@@ -163,16 +163,16 @@ export function explainApiError(e: unknown, fallback: string): string {
 /**
  * 保存配置。
  *
- * 服务端会先 `diagnoseConfig` 再落盘，有致命问题回 422 且**不写**。
+ * 服务端先执行 `diagnoseConfig` 再落盘，存在致命问题时返回 422 且不写入。
  *
- * 422 由 `client.api` 抛成 `Error`，消息形如
- * `422 /api/config: {"error":"invalid","problems":[...]}`——直接显示给用户
- * 是一串原始 JSON。这里把 `problems` 挖出来还原成人话：保存失败必须说清
- * **哪一条**不合格，「保存失败」和一整段 JSON 是同一个层次的不可用。
+ * 422 由 `client.api` 抛出为 `Error`，消息形如
+ * `422 /api/config: {"error":"invalid","problems":[...]}`，直接显示给用户
+ * 是一段原始 JSON。此处提取 `problems` 并转换为可读文字：保存失败时必须指明
+ * 哪一项不合格，只显示「保存失败」与显示整段 JSON 同样无法使用。
  *
- * `baseVersion` 是这次编辑所基于的那一版指纹；服务端发现配置被别处改过会回 409，
- * 由 `configStore` 重读重放。**409 原样抛出（`ApiError`）**，不在这里包成字符串——
- * 调用方要按状态码判断是否重试。
+ * `baseVersion` 是本次编辑所基于的版本指纹；服务端发现配置已被其他位置修改时返回 409，
+ * 由 `configStore` 重新读取并重放。409 原样抛出（`ApiError`），不在此处包装为字符串：
+ * 调用方需要按状态码判断是否重试。
  */
 export async function saveServerConfig(
   config: RedactedConfig,
@@ -187,8 +187,8 @@ export async function saveServerConfig(
     if (e instanceof ApiError && e.status === 409) throw e
     throw new Error(explainApiError(e, '保存失败'))
   }
-  // 配置是模型目录的唯一权威，落盘之后就地重算。**这是目录唯一的失效点**——
-  // 让每个消费者自己判断要不要刷新，就是让「什么时候算过期」有几本账。
+  // 配置是模型目录的唯一权威，落盘后立即重算。这是目录唯一的失效点：
+  // 由各消费者自行判断是否刷新，会使过期判据分散为多份。
   await reloadModelCatalog()
   return loadServerConfig()
 }
@@ -196,12 +196,12 @@ export async function saveServerConfig(
 /**
  * 切换权限模式。
  *
- * 走 `/api/config` 这条**已有的**写入路径，不新开接口：配置的真源是那一个
- * `config.json`，多一条写入路径就多一本账。代价是要先读一次全量再写回去——
- * 一次多余的往返，换掉「两个地方都能写同一个文件」这种必然漂移的结构。
+ * 使用已有的 `/api/config` 写入路径，不新增接口：配置的真源是唯一的
+ * `config.json`，每增加一条写入路径就多一份记录。代价是先读取全量配置再写回，
+ * 多一次往返，但避免了两处写入同一文件必然导致的不一致。
  *
- * 写成功后就地更新握手带来的 `capabilities.mode`：服务端只在握手时报一次，
- * 不这么做的话按钮点完不变，看起来像没生效。
+ * 写入成功后调用方须立即更新握手时取得的 `capabilities.mode`：服务端只在握手时报告一次，
+ * 不更新时按钮点击后状态不变。
  */
 export async function setPermissionMode(mode: PermissionMode): Promise<void> {
   const payload = await loadServerConfig()
@@ -210,67 +210,67 @@ export async function setPermissionMode(mode: PermissionMode): Promise<void> {
 
 // ───────────────────────── 模型目录 ─────────────────────────
 
-/** 一个接口下挂着的一个模型。 */
+/** 接口下的一个模型。 */
 export interface ModelOption {
   chatToolSchema: ToolSchemaMode
   id: string
   /** Base URL 留空时使用的官方地址；未登记时省略。 */
   defaultBaseUrl?: string
-  /** 内置目录里的显示名；目录里没有就是 id 本身。 */
+  /** 内置目录中的显示名；目录中没有时为 id 本身。 */
   label: string
-  /** 这个模型吃哪几档思考强度。空数组 = 这条链路上调不了，界面据此不显示那个开关。 */
+  /** 该模型支持的思考强度档位。空数组表示当前链路无法调节，界面据此不显示档位开关。 */
   effortLevels: EffortLevel[]
-  /** 用户为这个模型选定的档。null = 没选过，不发思考字段。与上一行同源。 */
+  /** 用户为该模型选定的档位。null 表示未选择，不发送思考字段。与上一字段同源。 */
   effort: EffortLevel | null
-  /** 计价币种。阿里 / 月之暗面 / 智谱三家官网按人民币标价，符号不能一律画 $。 */
+  /** 计价币种。阿里 / 月之暗面 / 智谱三家官网按人民币标价，符号不能一律显示为 $。 */
   currency: 'USD' | 'CNY'
   /**
-   * 接不接受图片输入。`null` = 没有出处，照常放行；只有 `false` 才收起
-   * 图片附件入口。与上面几行同源，逐模型不同，所以不走握手。
+   * 是否接受图片输入。`null` 表示没有依据，照常允许；仅 `false` 时隐藏
+   * 图片附件入口。与上方字段同源，各模型不同，因此不经由握手下发。
    */
   vision: boolean | null
   /** 是否支持通过当前协议直接输入视频。 */
   video: boolean
-  /** false = 内置目录里没有，来自用户自己配的模型 id（自建端点 / 中转）。 */
+  /** false 表示内置目录中没有该模型，来自用户自行配置的模型 id（自建端点 / 中转）。 */
   known: boolean
 }
 
-/** 一个接口。名字是用户在设置里起的，选择器就按它分组。 */
+/** 一个接口。名称由用户在设置中指定，选择器按名称分组。 */
 export interface ProviderModels {
   name: string
   models: ModelOption[]
 }
 
 /**
- * 模型库里的一条 = **一个模型的参数**。
+ * 模型库中的一条记录，即一个模型的参数。
  *
- * 库和接口是两件事：库回答「这个模型多大、多贵、吃哪几档思考」，接口回答
- * 「用谁的端点和哪把 key」。所以这个类型里一个接口字段都没有。
+ * 模型库与接口相互独立：模型库描述模型的窗口、价格与支持的思考档位，接口描述
+ * 使用的端点与 key。因此该类型不含任何接口字段。
  *
  */
 export interface LibraryModel {
   id: string
   label: string
   contextWindow: number
-  /** `null` = 这个模型没测过输出上限，请求里整个不发这一项。 */
+  /** `null` 表示该模型的输出上限未经测定，请求中不发送该字段。 */
   maxOutputTokens: number | null
-  /** 接不接受图片输入。`null` = 厂商规格页没写，**不是「不支持」**。 */
+  /** 是否接受图片输入。`null` 表示厂商规格页未注明，不表示不支持。 */
   vision: boolean | null
   /** null = 厂商尚未公布单价。 */
   input: number | null
   output: number | null
   /** 缓存命中价。 */
   cacheRead: number | null
-  /** 缓存写入价（5 分钟档）。计价只按这一档算。 */
+  /** 缓存写入价（5 分钟档）。计价只按该档计算。 */
   cacheWrite: number | null
   currency: 'USD' | 'CNY'
   effortLevels: EffortLevel[]
-  /** 不选强度时会不会思考。 */
+  /** 未选择强度时是否思考。 */
   thinksByDefault: boolean
   /**
-   * 价目的偏离说明：分时段折扣、长上下文换档。上面那几个价是厂商公布的**标准价**。
-   * 它是能力边界，必须显示——只画一个数字的话，用户对着账单会发现对不上，
-   * 而差价是两倍。
+   * 价格的例外说明：分时段折扣、长上下文分档计价。上方各项价格是厂商公布的标准价。
+   * 它是能力边界，必须显示：只显示一个数字时，用户对照账单会发现不一致，
+   * 差价可达两倍。
    */
   priceNotes?: string[]
 }
@@ -292,7 +292,7 @@ export type MediaOperationName =
   | 'video_to_video'
   | 'speech'
 
-/** 接口下挂着的一个生成模型。 */
+/** 接口下的一个生成模型。 */
 export interface MediaModelOption {
   provider: string
   id: string
@@ -301,16 +301,16 @@ export interface MediaModelOption {
   label: string
   operations: MediaOperationName[]
   isDefault: boolean
-  /** false = 生成目录里没有，参数表是协议默认。 */
+  /** false 表示生成目录中没有该模型，参数表使用协议默认值。 */
   known: boolean
-  /** 画布生成面板上的参数控件：目录里标了界面名的那几项。 */
+  /** 画布生成面板上的参数控件：目录中标注了界面名称的参数。 */
   params: MediaParamOption[]
 }
 
-/** 生成面板上的一个参数控件。取值约束与服务端的参数校验同一份目录。 */
+/** 生成面板上的一个参数控件。取值约束与服务端的参数校验使用同一份目录。 */
 export type MediaParamOption = MediaParamDefinition & { label: string }
 
-/** 生成目录里的一条。`params` 每行一个参数，与交给大模型的是同一份文字。 */
+/** 生成目录中的一条记录。`params` 每行一个参数，与发给模型的文字相同。 */
 export interface MediaLibraryModel {
   id: string
   label: string
@@ -326,50 +326,50 @@ export interface MediaLibraryModel {
 }
 
 export interface ModelCatalog {
-  /** 可选的：配置里真有的接口 × 模型。 */
+  /** 可选项：配置中实际存在的接口 × 模型。 */
   providers: ProviderModels[]
-  /** 已配置的生成模型。不能对话，输入框的模型选择不读它。 */
+  /** 已配置的生成模型。不能用于对话，输入框的模型选择不读取它。 */
   media: MediaModelOption[]
-  /** 内置生成目录。添加模型时据此认出生成模型，模型库的生成类页签显示它。 */
+  /** 内置生成目录。添加模型时据此识别生成模型，模型库的生成类页签显示该目录。 */
   mediaLibrary: MediaLibraryModel[]
-  /** 当前默认「接口 × 模型」。**可缺省**：出厂不预设模型时它不存在。 */
+  /** 当前默认「接口 × 模型」。可省略：出厂不预设模型时该字段不存在。 */
   active?: { provider: string; model: string }
-  /** 模型参数表。**不是可选列表**——接口下挂了哪个 id，就按它从这里查参数。 */
+  /** 模型参数表，不是可选列表：按接口下已添加的模型 id 从此处查询参数。 */
   library: LibraryVendor[]
 }
 
-/** 模型列表按需拉取：不是每个会话都会点开选择器，没必要开屏就请求。 */
+/** 模型列表按需获取：并非每个会话都会打开选择器，无需在启动时请求。 */
 export async function loadModels(): Promise<ModelCatalog> {
   return client.api<ModelCatalog>('/api/models')
 }
 
 /**
- * 模型目录：**配置的派生态，全应用只有这一份**。
+ * 模型目录：配置的派生状态，全应用只有一份。
  *
- * 它由服务端按「配置里的接口 × 模型」现算——窗口、档位、思考参数的判定都在
- * `@qywork/ai` 里，界面够不着，所以只能来自服务端。
+ * 它由服务端按配置中的「接口 × 模型」实时计算：窗口、档位、思考参数的判定都在
+ * `@qywork/ai` 中，界面无法引用，因此只能来自服务端。
  *
- * **失效点挂在唯一那条写入路径上**（`saveServerConfig`），不由各个消费者自己刷。
- * 组件各持一份永不失效的缓存，实测后果：设置页校准完思考写回了配置，
- * 输入区那份目录还是开屏时拉的，档位要整页重载才出现。
+ * 失效点位于唯一的写入路径上（`saveServerConfig`），不由各消费者自行刷新。
+ * 各组件分别持有永不失效的缓存时，实测结果：设置页校准思考参数并写回配置后，
+ * 输入区的目录仍是启动时获取的版本，档位需要重新加载整个页面才出现。
  */
 const [modelCatalog, setModelCatalog] = createSignal<ModelCatalog | null>(null)
-/** 取不回来的原因。留一个空列表，界面上等同于「没有别的模型可选」。 */
+/** 获取失败的原因。此时模型列表为空，界面上等同于没有其他模型可选。 */
 const [modelCatalogError, setModelCatalogError] = createSignal<string | null>(null)
 const [modelCatalogLoading, setModelCatalogLoading] = createSignal(false)
 let catalogSeq = 0
 
 export { modelCatalog, modelCatalogError, modelCatalogLoading }
 
-/** 第一次有组件要用它时拉一次。已经有了或正在拉都不重复发。 */
+/** 首次有组件使用时获取一次。已取得或正在获取时不重复请求。 */
 export function ensureModelCatalog(): Promise<void> {
   if (modelCatalog() || modelCatalogLoading()) return Promise.resolve()
   return reloadModelCatalog()
 }
 
 export async function reloadModelCatalog(): Promise<void> {
-  // 后发的那一次说了算。写盘之后发出的请求拿到的才是新目录，而更早发出的那一发
-  // 可能晚一点才回来——不比对就是用落盘前的目录盖掉落盘后的。
+  // 以最后发出的请求为准。写盘后发出的请求才能取得新目录，而更早发出的请求
+  // 可能更晚返回，不比对序号会用落盘前的目录覆盖落盘后的目录。
   const seq = ++catalogSeq
   setModelCatalogLoading(true)
   try {
@@ -386,22 +386,22 @@ export async function reloadModelCatalog(): Promise<void> {
   }
 }
 
-// ───────────────────────── 测连接 ─────────────────────────
+// ───────────────────────── 连接测试 ─────────────────────────
 
 /**
  * 一次探测的结果。
  *
- * `probes` 是**每一步的原始结论**，不只是最后那个总结。结论错了要能查——
- * 只给「支持思考：是」的话，错了没有任何线索。
+ * `probes` 是每一步的原始结论，而不只是最终汇总，以便核查结论：
+ * 只给出「支持思考：是」时，结论有误也无从排查。
  *
- * `detail` 由服务端脱敏后才下发：它是 provider 的原始错误消息，可能回显
- * 请求 URL 甚至凭证。
+ * `detail` 由服务端脱敏后下发：它是 provider 的原始错误消息，可能包含
+ * 请求 URL 乃至凭证。
  */
 export interface ProbeStep {
   name: string
   ok: boolean
   detail: string
-  /** true = 这一步没有真的验证任何能力（本协议下客户端不发这个字段）。 */
+  /** true 表示该步骤未实际验证任何能力（本协议下客户端不发送该字段）。 */
   skipped?: boolean
   /** 已发请求，但只得到超时、限速或上游暂不可用。 */
   inconclusive?: boolean
@@ -410,9 +410,9 @@ export interface ProbeOutcome {
   toolCalls?: ToolCallCheck
   effortSource: 'catalog' | 'probe'
   reachable: boolean
-  /** 这条链路上无从探测的轴。**与「探了、被拒了」不是一回事**，不能合并显示。 */
+  /** 当前链路上无法探测的能力项。与「已探测但被拒绝」含义不同，不能合并显示。 */
   untested: 'effort'[]
-  /** 已尝试但没有形成能力结论；不得写成“不支持”。 */
+  /** 已尝试但未形成能力结论；不得显示为「不支持」。 */
   inconclusive: 'effort'[]
   effortLevels: EffortLevel[]
   thinking?: ThinkingMode
@@ -421,17 +421,17 @@ export interface ProbeOutcome {
 }
 export interface ProbeResult {
   outcome: ProbeOutcome
-  /** 当前接口路线的传输校准；没探过的轴一条都不含。 */
+  /** 当前接口端点的传输校准；不包含未探测的能力项。 */
   transport: NonNullable<RedactedModel['transport']>
 }
 
 /**
- * 实测这个接口下的这个模型。
+ * 实测指定接口下的指定模型。
  *
- * **探的是落盘配置**，不是界面上的草稿：请求体只带名字，key 由服务端自己取。
- * 允许探草稿就得让端点接收临时明文 key，等于多开一条 key 上行路径。
+ * 探测的是已落盘的配置，不是界面上的草稿：请求体只携带名称，key 由服务端读取。
+ * 允许探测草稿就需要端点接收临时的明文 key，即新增一条 key 的上行路径。
  *
- * 会发送连接、档位和两轮工具契约请求，所以只由用户点按钮触发。
+ * 该操作会发送连接、档位与两轮工具契约请求，因此只由用户点击按钮触发。
  */
 export function probeModel(provider: string, model: string): Promise<ProbeResult> {
   return scheduleWrite('/api/probe', {
@@ -446,18 +446,18 @@ export function loadWorkspace(): Promise<WorkspaceInfo> {
 }
 
 /**
- * 本机已知的工作区列表（账本里出现过的）。
+ * 本机已知的工作区列表（账本中出现过的工作区）。
  *
- * 用来做「最近打开」——不必每次都开目录选择器翻一遍。
+ * 用于「最近打开」，无需每次通过目录选择器查找。
  */
 export interface KnownWorkspace {
   id: string
   rootPath: string
   name: string
   lastOpenedAt: number
-  /** 它下面挂着几条会话。口径与会话列表一致：不含机器会话，不含已归档。 */
+  /** 该工作区下的会话数。统计口径与会话列表一致：不含机器会话与已归档会话。 */
   conversations: number
-  /** 置顶时间。没有这个键 = 没置顶。置顶的排在列表最前。 */
+  /** 置顶时间。缺少该键表示未置顶。置顶项排在列表最前。 */
   pinnedAt?: number
 }
 export function loadKnownWorkspaces(): Promise<{ workspaces: KnownWorkspace[] }> {
@@ -465,14 +465,14 @@ export function loadKnownWorkspaces(): Promise<{ workspaces: KnownWorkspace[] }>
 }
 
 /**
- * 把一个项目从列表里移除。
+ * 从列表中移除一个项目。
  *
- * **这是隐藏，不是删除。** 服务端只打 `removed_at` 标记：文件、会话、消息、run
- * 一条不动，重新添加同一个路径就整个回来。目录本身也不动——账本管的是
- * 「打开过哪些项目」，不是那些文件。
+ * 该操作是隐藏而非删除。服务端只设置 `removed_at` 标记：文件、会话、消息、run
+ * 均保持不变，重新添加同一路径即全部恢复。目录本身也不改动：账本记录的是
+ * 打开过哪些项目，不管理项目中的文件。
  *
- * **当前项目也能移除**，只要还剩别的可切；服务端会在 `next` 里回「接下来切哪个」。
- * 只有最后一个才移不掉（回 409）——移完没有任何项目可服务，那不是一个有终态的状态。
+ * 当前项目也可以移除，前提是还有其他项目可切换；服务端在 `next` 中返回下一个切换目标。
+ * 只有最后一个项目无法移除（返回 409）：移除后服务端没有任何可服务的项目，该状态无效。
  */
 export function removeKnownWorkspace(
   id: string,
@@ -484,7 +484,7 @@ export function removeKnownWorkspace(
 }
 
 /**
- * 置顶 / 取消置顶。目标状态由调用方给，不是「翻转」——翻转在并发下会翻错方向。
+ * 置顶 / 取消置顶。目标状态由调用方指定，而不是切换：并发时切换可能得到相反的结果。
  */
 export function pinKnownWorkspace(id: string, pinned: boolean): Promise<{ ok: boolean }> {
   return client.api<{ ok: boolean }>(`/api/workspaces/${encodeURIComponent(id)}`, {
@@ -494,10 +494,10 @@ export function pinKnownWorkspace(id: string, pinned: boolean): Promise<{ ok: bo
 }
 
 /**
- * 归档这个项目当前的全部会话：**从会话列表里去掉，数据不动**，
- * 此后新建的照常显示。
+ * 归档该项目当前的全部会话：从会话列表中移除，数据保持不变，
+ * 此后新建的会话照常显示。
  *
- * 回的是归档条数而不是一个布尔——「0 条」和「成功」在界面上必须能分开。
+ * 返回归档条数而不是布尔值：界面上必须能区分「0 条」与「成功」。
  */
 export function archiveWorkspaceChats(id: string): Promise<{ archived: number }> {
   return client.api<{ archived: number }>(`/api/workspaces/${encodeURIComponent(id)}/archive`, {
@@ -506,10 +506,10 @@ export function archiveWorkspaceChats(id: string): Promise<{ archived: number }>
 }
 
 /**
- * 在系统文件管理器里定位这个项目的目录。
+ * 在系统文件管理器中定位该项目的目录。
  *
- * 只有桌面外壳有这个能力（走 Rust 侧的 `reveal_workspace`）。浏览器 / 手机端
- * 拿不到，所以那边**不显示这个入口**，而不是显示一个点了报错的按钮（B5）。
+ * 只有桌面外壳具备该能力（经由 Rust 侧的 `reveal_workspace`）。浏览器 / 手机端
+ * 无法使用，因此不显示该入口，而不是显示一个点击即报错的按钮（B5）。
  */
 export function revealWorkspace(path: string): Promise<void> {
   return tauriInvoke<void>('reveal_workspace', { path })
@@ -521,15 +521,15 @@ export function revealFile(path: string): Promise<void> {
 }
 
 /**
- * 把一个本机目录加成项目，并把它顶成「最近打开」。
+ * 将一个本机目录添加为项目，并将其置于「最近打开」的首位。
  *
- * **加和切是同一条路**：服务端 upsert，已有就更新 `last_opened_at`，没有就插一行。
- * 分成两个端点等于两条路写同一个字段，而那个字段正是分支监听和缺省 `?ws=` 的判据。
+ * 添加与切换使用同一条路径：服务端执行 upsert，已存在时更新 `last_opened_at`，不存在时插入一行。
+ * 拆分为两个端点会形成两条写入同一字段的路径，而该字段正是分支监听与缺省 `?ws=` 的判据。
  */
 export interface WorkspaceInput {
-  /** 本机已存在的目录。不给就在 `~/.qywork/workspaces/<name>/` 建一个。 */
+  /** 本机已存在的目录。省略时在 `~/.qywork/workspaces/<name>/` 新建目录。 */
   path?: string
-  /** 显示名。不给且给了 `path` 时取目录名。两个都不给回 422。 */
+  /** 显示名。省略且提供了 `path` 时取目录名。两者均省略时返回 422。 */
   name?: string
 }
 
@@ -548,13 +548,13 @@ export function addWorkspace(
 // ───────────────────────── 插件安装 ─────────────────────────
 
 /**
- * 装一个插件 = 把一个**本机已存在的目录**复制进那一层的 `plugins/`。
+ * 安装插件即把一个本机已存在的目录复制到全局的 `plugins/` 目录。
  *
- * 没有 registry，所以没有「从市场安装」；也刻意不做 `git clone <任意 URL>`——
- * 那等于「从网上取一段代码，下次加载就跑它」。用户先自己 clone、看过内容，
- * 再把目录指给这里，中间那一步「装的是什么，用户看得到」值这条命令的成本。
+ * 没有 registry，因此不提供从市场安装；也有意不支持 `git clone <任意 URL>`：
+ * 那等于从网络获取一段代码并在下次加载时运行。用户先自行 clone 并检查内容，
+ * 再指定该目录；多出的这一步使用户能看到所安装的内容。
  */
-/** 插件只有全局一个目录，所以装 / 卸都不带层。 */
+/** 插件只有一个全局目录，因此安装与卸载都不指定层。 */
 export function installPlugin(path: string): Promise<{ ok: boolean; id: string }> {
   return scheduleWrite('/api/plugins/install', {
     method: 'POST',
@@ -565,12 +565,12 @@ export function uninstallPlugin(id: string): Promise<{ ok: boolean }> {
   return scheduleWrite(`/api/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
-/** 打开系统目录选择器。用户取消时返回 null——取消不是错误。 */
+/** 打开系统目录选择器。用户取消时返回 null：取消不是错误。 */
 export function pickWorkspace(): Promise<string | null> {
   return tauriInvoke<string | null>('pick_workspace')
 }
 
-/** 打开系统文件选择器，可多选。取消返回空数组——取消不是错误。 */
+/** 打开系统文件选择器，可多选。取消时返回空数组：取消不是错误。 */
 export function pickFiles(): Promise<string[]> {
   return tauriInvoke<string[]>('pick_files')
 }
@@ -584,7 +584,7 @@ export function rememberWorkspace(path: string): Promise<void> {
 
 export interface SchedulesPayload {
   schedules: ScheduleView[]
-  /** 由服务端下发而不是每个客户端各写一遍：这是功能前提，不是补充说明。 */
+  /** 由服务端下发，不由各客户端分别定义：它是功能前提，不是补充说明。 */
   runtimeOnly: string
 }
 
@@ -611,7 +611,7 @@ export function updateSchedule(
 export function deleteSchedule(id: string): Promise<{ ok: boolean }> {
   return scheduleWrite(`/api/schedules/${id}`, { method: 'DELETE' })
 }
-/** 立刻跑一次。**不推进** lastRunAt——试跑不该顶掉当天的自动触发。 */
+/** 立即运行一次。不更新 lastRunAt：试运行不应取消当天的自动触发。 */
 export function runScheduleNow(id: string): Promise<{ ok: boolean; conversationId: string }> {
   return scheduleWrite(`/api/schedules/${id}/run`, { method: 'POST' })
 }
@@ -638,25 +638,25 @@ export async function saveTeamRaw(raw: string): Promise<{ ok: boolean }> {
 // ───────────────────────── 记忆与技能 ─────────────────────────
 
 // 记忆是 `<作用域>/memory/*.md`，技能是 `<作用域>/skills/<name>/`，都是普通文件。
-// agent 通过工具随时能写，所以人在界面上也要看得到、删得掉——这一组补的是那条不对称。
+// agent 可以随时通过工具写入，因此用户在界面上也必须能查看与删除；以下接口用于消除这一不对称。
 
 /**
- * 一条记忆 / 技能 / MCP / 插件来自哪一层。
+ * 记忆 / 技能 / MCP / 插件所属的层。
  *
- * - `builtin` 随程序发布，只读，**用户看不到**（服务端现在也还没有内容）。
- * - `project` 是工作区 `.agents/`，跟着这个仓库走，别的 CLI 也读得到。
+ * - `builtin` 随程序发布，只读，不在界面上显示（服务端目前没有内容）。
+ * - `project` 是工作区的 `.agents/`，随仓库保存，其他 CLI 也能读取。
  * - `global` 是 `~/.qywork/`，跨工作区。
  *
- * 优先级 `builtin > project > global`，同名先认领的赢。**解析在服务端做**——
- * 界面上列出来的那条必须就是模型真的加载的那条，前端不许自己再算一遍。
+ * 优先级为 `builtin > project > global`，同名时优先级高的层生效。解析在服务端完成：
+ * 界面上列出的条目必须与模型实际加载的条目一致，前端不得另行计算。
  */
 export type Scope = 'builtin' | 'project' | 'global'
 
 /**
- * 可写的两层，顺序即界面上标签页的顺序。内置随程序发布，写进去下次升级就没了。
+ * 可写的两层，顺序即界面上标签页的顺序。内置层随程序发布，写入的内容会在下次升级时丢失。
  *
- * **标签只有这一份**：写死在各页里的话，同一个层在记忆页叫一个名字、
- * 在 MCP 页叫另一个名字，而用户没法知道它们是同一层。
+ * 标签只在此处定义：各页分别硬编码时，同一层在记忆页与 MCP 页的名称可能不同，
+ * 用户无法得知它们是同一层。
  */
 export const WRITABLE_SCOPES: { id: Scope; label: string }[] = [
   { id: 'global', label: '全局' },
@@ -673,10 +673,10 @@ export interface MemoryEntry {
   preview: string
   scope: Scope
   /**
-   * 盖住它的那一层，没被盖住时是 null。
+   * 覆盖该条目的层，未被覆盖时为 null。
    *
-   * 列表回的是**全部层的全部条目**，不是去重后的那一份——设置页按层分列，
-   * 去重会让被项目层盖住的那条全局记忆从界面上消失。哪条真正生效看这个字段。
+   * 列表返回全部层的全部条目，而不是去重后的结果：设置页按层分列，
+   * 去重会使被项目层覆盖的全局记忆从界面上消失。实际生效的条目由该字段判断。
    */
   shadowedBy: Scope | null
 }
@@ -692,16 +692,16 @@ export function deleteMemory(key: string, scope: Scope): Promise<{ ok: boolean }
 export interface SkillMeta {
   name: string
   description: string
-  /** 技能目录的绝对路径。技能只读，用户得知道去哪儿改。 */
+  /** 技能目录的绝对路径。技能在界面上只读，用户据此找到修改位置。 */
   dir: string
   scope: Scope
-  /** 盖住它的那一层。同名技能只有优先级最高的那个会被加载。 */
+  /** 覆盖该技能的层。同名技能只加载优先级最高的一个。 */
   shadowedBy: Scope | null
 }
 export function loadSkills(): Promise<{ dirs: ScopeDir[]; skills: SkillMeta[] }> {
   return client.api<{ dirs: ScopeDir[]; skills: SkillMeta[] }>('/api/skills')
 }
-/** 把本机上一个已经存在的技能目录整个拷进某一层。 */
+/** 将本机已存在的技能目录整体复制到指定层。 */
 export function importSkill(
   scope: Scope,
   path: string,
@@ -714,7 +714,7 @@ export function importSkill(
     body: JSON.stringify({ scope, path }),
   })
 }
-/** 删的是**目录名**不是前置元信息里的 name：那两个可以不一样，而盘上只有目录。 */
+/** 按目录名删除，而不是前置元信息中的 name：两者可以不同，而磁盘上只有目录。 */
 export function deleteSkill(dirName: string, scope: Scope): Promise<{ ok: boolean }> {
   return scheduleWrite(`/api/skills/${encodeURIComponent(dirName)}?scope=${scope}`, {
     method: 'DELETE',
@@ -724,11 +724,11 @@ export function deleteSkill(dirName: string, scope: Scope): Promise<{ ok: boolea
 // ───────────────────────── MCP ─────────────────────────
 
 /**
- * 已连上的 server 与它们给出的工具。
+ * 已连接的 server 及其提供的工具。
  *
- * `failures` 和 `unsupported` 与成功项一起回：一个只提供 prompts 的 server 会
- * 连上、握手成功、注册 0 个工具、不报任何错——「配了但什么都没发生」是这一页
- * 最需要显示出来的状态。
+ * `failures` 与 `unsupported` 与成功项一起返回：只提供 prompts 的 server 会
+ * 连接并握手成功、注册 0 个工具且不报任何错误；已配置但未产生任何工具的状态
+ * 是本页最需要显示的状态。
  */
 export interface McpServerRow {
   name: string
@@ -743,7 +743,7 @@ export interface McpPayload {
   files: { scope: Scope; path: string }[]
   servers: McpServerRow[]
   failures: { server: string; reason: string }[]
-  /** 配置里有、但这一轮没连上的。不列的话它们凭空消失。 */
+  /** 已配置但本次未连接成功的 server。不列出时它们会从界面上消失。 */
   configured: { name: string; scope: Scope }[]
   error: string | null
 }
@@ -752,8 +752,8 @@ export function loadMcp(): Promise<McpPayload> {
 }
 
 /**
- * 当前真正能调用的工具清单。输入区 `@` 与设置页都应以 `/api/tools` 为真源：
- * 它只列注册成功的 MCP / 插件工具，不把「清单里声明了但进程没起来」冒充成可调用。
+ * 当前实际可调用的工具清单。输入区 `@` 与设置页都应以 `/api/tools` 为真源：
+ * 它只列出注册成功的 MCP / 插件工具，不把清单中已声明但进程未启动的工具列为可调用。
  */
 export interface ToolMeta {
   name: string
@@ -765,7 +765,7 @@ export function loadTools(): Promise<{ tools: ToolMeta[] }> {
   return client.api<{ tools: ToolMeta[] }>('/api/tools')
 }
 
-/** 把本机上一份现成配置里的 server 并进某一层。同名不覆盖，服务端回 409。 */
+/** 将本机一份已有配置中的 server 合并到指定层。同名时不覆盖，服务端返回 409。 */
 export function importMcp(
   scope: Scope,
   path: string,
@@ -784,16 +784,16 @@ export function importMcp(
 // ───────────────────────── 附件 ─────────────────────────
 
 /**
- * 把字节传上去，拿到可直接随消息发出去的 `Attachment`。
+ * 上传字节，取得可直接随消息发送的 `Attachment`。
  *
- * **只有拿不到源路径时才走这里**——剪贴板里只有位图，或浏览器不给绝对路径。
- * 桌面端拖入和原生选择器给的是源文件路径，那条路在 `Composer` 里就地组装，
- * 一个字节都不搬。
+ * 仅在无法取得源路径时使用：剪贴板中只有位图，或浏览器不提供绝对路径。
+ * 桌面端拖入与原生选择器提供的是源文件路径，该路径在 `Composer` 中直接组装，
+ * 不传输任何字节。
  *
- * 直接用 File 作请求体，不先转 ArrayBuffer。浏览器和服务端都按流处理，附件大小
- * 不会变成同等大小的临时内存副本。
+ * 直接用 File 作请求体，不先转换为 ArrayBuffer。浏览器与服务端都按流处理，
+ * 不会产生与附件同等大小的临时内存副本。
  *
- * 带上会话 id：附件落在 `~/.qywork/attachments/<会话id>/`，删会话时整个目录一起删。
+ * 携带会话 id：附件保存在 `~/.qywork/attachments/<会话id>/`，删除会话时整个目录一并删除。
  */
 export async function uploadAttachment(file: File, conversationId: string): Promise<Attachment> {
   const res = await client.api<{ attachment: Attachment }>(
@@ -802,7 +802,7 @@ export async function uploadAttachment(file: File, conversationId: string): Prom
       method: 'POST',
       headers: {
         'content-type': file.type || 'application/octet-stream',
-        // 文件名可能带中文与空格，必须编码后再进 header。
+        // 文件名可能含中文与空格，必须编码后再写入 header。
         'x-attachment-name': encodeURIComponent(file.name),
       },
       body: file,
@@ -812,16 +812,16 @@ export async function uploadAttachment(file: File, conversationId: string): Prom
 }
 
 /**
- * 按路径取附件的原始字节，交给界面显示。
+ * 按路径获取附件的原始字节，供界面显示。
  *
- * 回的是 blob URL，**用完必须 `URL.revokeObjectURL`**，否则这一份解码后的位图
- * 会一直占着内存直到整页刷新。
+ * 返回 blob URL，使用完毕必须调用 `URL.revokeObjectURL`，否则解码后的位图
+ * 会一直占用内存，直到整页刷新。
  *
- * 为什么绕一圈而不是把地址直接给 `<img src>`：`<img>` 带不了 Authorization 头，
- * 而把令牌塞进 URL 会跟着日志一起留下来。
+ * 不直接把地址交给 `<img src>`：`<img>` 无法携带 Authorization 头，
+ * 而把令牌放入 URL 会使其随日志留存。
  *
- * 文件不存在、超过预览上限都回 null——两者对界面是同一件事（显示不出来，
- * 退回文件名），不值得分成两种。
+ * 文件不存在与超过预览上限均返回 null：两者在界面上的处理相同（无法显示，
+ * 改为显示文件名），无需区分。
  */
 export async function attachmentBlobUrl(path: string): Promise<string | null> {
   try {
@@ -838,13 +838,13 @@ export async function attachmentBlobUrl(path: string): Promise<string | null> {
 /**
  * 最小化 / 最大化 / 关闭。
  *
- * 系统装饰关掉之后这三个动作没有别的入口了。**只有桌面端有窗口**——
- * `isDesktopShell()` 为假时界面不渲染这组按钮，而不是渲染出来点了报错。
+ * 关闭系统装饰后，这三个操作没有其他入口。只有桌面端有窗口：
+ * `isDesktopShell()` 为假时界面不渲染这组按钮，而不是渲染点击即报错的按钮。
  */
 export function windowMinimize(): Promise<void> {
   return tauriInvoke<void>('window_minimize')
 }
-/** 返回切换之后的状态：true = 现在是最大化。 */
+/** 返回切换后的状态：true 表示当前为最大化。 */
 export function windowToggleMaximize(): Promise<boolean> {
   return tauriInvoke<boolean>('window_toggle_maximize')
 }
@@ -860,12 +860,12 @@ export function windowIsMaximized(): Promise<boolean> {
 /**
  * 浏览器内置的语音识别构造器。
  *
- * **这条和大模型没有任何关系，也不经过服务端**——`SpeechRecognition` 是浏览器
- * 自带的能力，识别结果直接是文字，拼进草稿就完了。**后端没有 STT 通路**，
- * 别去那边找。
+ * 语音输入与模型无关，也不经过服务端：`SpeechRecognition` 是浏览器
+ * 自带的能力，识别结果直接是文字，追加到草稿即可。后端没有 STT 通路，
+ * 不要在后端查找。
  *
- * 特性检测拿不到就返回 null，界面据此**不渲染那个按钮**——Tauri 的 WebView2
- * 未必带这套 API，而一个点了没反应的麦克风比没有麦克风更糟。
+ * 特性检测不通过时返回 null，界面据此不渲染麦克风按钮：Tauri 的 WebView2
+ * 不一定提供该 API，而点击后无响应的按钮会被理解为功能故障。
  */
 export interface SpeechRecognitionLike {
   lang: string

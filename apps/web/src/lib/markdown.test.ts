@@ -1,42 +1,42 @@
 /**
- * Markdown 渲染的回归锁。
+ * Markdown 渲染的回归测试。
  *
- * 这里测的重点不是「渲染得好不好看」，是**净化没被绕过**——渲染结果原样进
- * `innerHTML`，而输入是模型输出（它可能在复述别人仓库里的 README）。
- * 一次白名单改动就能让 `<img onerror>` 活过来，而界面上看不出任何异常。
+ * 测试重点不是渲染效果，而是净化未被绕过：渲染结果原样写入
+ * `innerHTML`，而输入是模型输出（可能复述其他仓库的 README）。
+ * 一次白名单改动即可使 `<img onerror>` 重新生效，而界面上没有任何异常。
  *
- * 高亮相关的分支这里不测：`highlight.js` 是异步按需加载的，硬测会变成测桩。
+ * 此处不测试高亮相关的分支：`highlight.js` 异步按需加载，强行测试只能测到测试桩。
  *
- * **但不许假设它没加载完。** 它什么时候到取决于这个进程里别的模块加载花了多久，
- * 断言里写死未高亮那一支的形状，加一个测试预载就会红。关心转义的那两条用
- * `unspan()` 把高亮切出来的标记去掉再断言，两支都成立。
+ * 但不得假设它尚未加载完成。加载完成的时刻取决于同一进程中其他模块的加载耗时，
+ * 断言中写死未高亮分支的形状，增加一个测试预载就会失败。涉及转义的两条测试先用
+ * `unspan()` 去除高亮生成的标记再断言，两个分支下都成立。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { createStreamRenderer, renderMarkdown } from './markdown.ts'
 
-/** 去掉高亮切出来的 `<span>`。转义测的是实体本身，不是正文被切成几段。 */
+/** 去除高亮生成的 `<span>`。转义测试针对实体本身，不针对正文被拆分成几段。 */
 const unspan = (html: string) => html.replace(/<\/?span[^>]*>/g, '')
 
 describe('净化', () => {
-  test('script 标签不出现在结果里', () => {
+  test('script 标签不出现在结果中', () => {
     const html = renderMarkdown('正常文字\n\n<script>alert(1)</script>')
     expect(html).not.toContain('<script')
   })
 
-  test('img 的 onerror 事件属性被摘掉', () => {
+  test('img 的 onerror 事件属性被移除', () => {
     const html = renderMarkdown('<img src=x onerror="alert(1)">')
     expect(html).not.toContain('onerror')
   })
 
-  test('内联事件属性一律不留 —— 挑几种常见写法', () => {
+  test('常见写法的内联事件属性全部移除', () => {
     for (const attr of ['onclick', 'onload', 'onmouseover', 'onfocus']) {
       const html = renderMarkdown(`<div ${attr}="alert(1)">x</div>`)
       expect(html).not.toContain(attr)
     }
   })
 
-  test('javascript: 伪协议不能留在 href 里', () => {
+  test('href 中不保留 javascript: 伪协议', () => {
     const html = renderMarkdown('[点我](javascript:alert(1))')
     expect(html.toLowerCase()).not.toContain('javascript:')
   })
@@ -47,8 +47,8 @@ describe('净化', () => {
   })
 })
 
-describe('白名单里必须留下的标签', () => {
-  test('代码块的 class 要留 —— 不放行 class 等于高亮全废', () => {
+describe('白名单中必须保留的标签', () => {
+  test('保留代码块的 class，否则高亮完全失效', () => {
     const html = renderMarkdown('```js\nconst a = 1\n```')
     expect(html).toContain('class="code-block"')
     expect(html).toContain('class="hljs"')
@@ -60,13 +60,13 @@ describe('白名单里必须留下的标签', () => {
     )
   })
 
-  test('纯文本类的语言不显角标 —— 那是自动检测的噪音', () => {
+  test('纯文本类语言是自动检测的噪声，不显示角标', () => {
     const fence = (lang: string) => `\`\`\`${lang}\nhello\n\`\`\``
     for (const lang of ['text', 'plaintext', 'txt', 'plain', '']) {
       expect(renderMarkdown(fence(lang))).not.toContain('code-lang')
     }
   })
-  test('复制按钮不被净化剥掉 —— 白名单不放行 button 就只剩空壳', () => {
+  test('复制按钮不被净化移除：白名单须放行 button', () => {
     const html = renderMarkdown('```js\nconst a = 1\n```')
     expect(html).toContain('<button class="code-copy" type="button"')
     expect(html).toContain('aria-label="复制代码"')
@@ -78,7 +78,7 @@ describe('白名单里必须留下的标签', () => {
     expect(html).toContain('code-copy')
   })
 
-  test('横向滚动归 pre，那一排工具排在它外面 —— 在里面会跟着代码滚走', () => {
+  test('横向滚动由 pre 承担，工具栏位于 pre 之外，不随代码滚动', () => {
     const html = renderMarkdown('```js\nconst a = 1\n```')
     expect(html).toContain('<pre class="code-body">')
     expect(html.indexOf('code-tools')).toBeGreaterThan(html.indexOf('</pre>'))
@@ -86,18 +86,18 @@ describe('白名单里必须留下的标签', () => {
 })
 
 describe('代码块正文按字面转义', () => {
-  test('代码里的标签不会变成真标签', () => {
+  test('代码中的标签不会成为实际的 HTML 标签', () => {
     const html = unspan(renderMarkdown('```html\n<script>alert(1)</script>\n```'))
     expect(html).toContain('&lt;script&gt;')
     expect(html).not.toContain('<script>')
   })
 
-  test('& 先转义，不会产生二次实体', () => {
+  test('& 优先转义，不产生重复转义的实体', () => {
     expect(unspan(renderMarkdown('```\na && b\n```'))).toContain('a &amp;&amp; b')
   })
 })
 
-describe('外链', () => {
+describe('外部链接', () => {
   test('本地 HTML 链接的相对路径、Windows 路径和 file URL 在净化后保留', () => {
     for (const href of ['flying-bird.html', 'C:/ws/flying-bird.html', 'file:///C:/ws/a%20b.html']) {
       const md = `[预览](${href})`
@@ -124,8 +124,8 @@ describe('外链', () => {
     }
   })
 
-  /** 原始失败形状：生成图片后模型回复里贴的 `![…](generated/x.png)` 渲染成一张损坏的图、`[查看原图](…)` 的地址被净化清空。 */
-  test('本机文件的图片显示成路径链接，本机文件链接的地址保留；网上的图片照旧内嵌', () => {
+  /** 原始失败形状：生成图片后模型回复中的 `![…](generated/x.png)` 渲染为损坏的图片，`[查看原图](…)` 的地址被净化清空。 */
+  test('本机文件的图片显示为路径链接，本机文件链接的地址保留；网络图片仍内嵌显示', () => {
     const md = '![设计图](generated/a.png)\n\n[查看原图](generated/a.png)'
     for (const html of [
       renderMarkdown(md),
@@ -147,25 +147,25 @@ describe('外链', () => {
     )
   })
 
-  test('一律新窗口打开并断开 opener —— 模型给的链接不可信', () => {
+  test('模型提供的链接不可信，一律在新窗口打开并断开 opener', () => {
     const html = renderMarkdown('[example](https://example.com)')
     expect(html).toContain('target="_blank"')
     expect(html).toContain('rel="noreferrer noopener"')
   })
 
-  test('裸地址在全角标点处断开，后面的正文不进 href', () => {
+  test('自动链接在全角标点处截止，其后的正文不进入 href', () => {
     const html = renderMarkdown('刷新 http://localhost:8000，选「循环」开一局。')
     expect(html).toContain('href="http://localhost:8000"')
     expect(html).toContain('</a>，选「循环」开一局。</p>')
   })
 
-  test('路径里的汉字仍属于地址', () => {
+  test('路径中的汉字仍属于地址', () => {
     const html = renderMarkdown('见 https://zh.wikipedia.org/wiki/中文，然后回来')
     expect(html).toContain('href="https://zh.wikipedia.org/wiki/中文"')
     expect(html).toContain('</a>，然后回来</p>')
   })
 
-  test('流式期的增量渲染走同一条边界', () => {
+  test('流式期的增量渲染使用相同的边界', () => {
     const stream = createStreamRenderer()
     const blocks = ['刷新 http://localhost:8000，选「循环」。', '第二段', '第三段', '第四段']
     const { settled, live } = stream.push(blocks.join('\n\n'))
@@ -174,7 +174,7 @@ describe('外链', () => {
 })
 
 describe('表格', () => {
-  test('包一层 table-wrap，让宽表自己横向滚', () => {
+  test('外层包裹 table-wrap，宽表格独立横向滚动', () => {
     const html = renderMarkdown('| a | b |\n|---|---|\n| 1 | 2 |')
     expect(html).toContain('<div class="table-wrap">')
     expect(html).toContain('</table></div>')
@@ -182,7 +182,7 @@ describe('表格', () => {
 })
 
 describe('边界输入', () => {
-  test('空串直接回空串，不产生任何标签', () => {
+  test('空字符串返回空字符串，不产生任何标签', () => {
     expect(renderMarkdown('')).toBe('')
   })
 
@@ -199,11 +199,11 @@ describe('边界输入', () => {
 /**
  * 流式增量渲染与整段渲染必须逐字相等。
  *
- * 这套渲染唯一不可接受的失败是**流式期渲染出与定稿不同的结构**——用户会看到列表编号
- * 从头数、代码块被切成两段，而没有任何报错。所以这里不抽样：**每个用例逐字符喂**，
- * 每一步都和 `renderMarkdown` 的整段结果比。
+ * 该渲染唯一不可接受的失败是流式期渲染出与定稿不同的结构：列表编号重新从头计数、
+ * 代码块被拆成两段，且没有任何报错。因此不抽样：每个用例逐字符输入，
+ * 每一步都与 `renderMarkdown` 的整段结果比较。
  *
- * 用例挑的是「跨空行的块」——它们正是「按空行切」那种写法会切错的地方。
+ * 用例选取跨空行的块：按空行切分的实现恰好会在这些位置切错。
  */
 describe('增量渲染与整段渲染一致', () => {
   const CASES: [string, string][] = [
@@ -221,7 +221,7 @@ describe('增量渲染与整段渲染一致', () => {
   ]
 
   for (const [name, doc] of CASES) {
-    test(`逐字符喂：${name}`, () => {
+    test(`逐字符输入：${name}`, () => {
       const stream = createStreamRenderer()
       let settledHtml = ''
       for (let i = 1; i <= doc.length; i++) {
@@ -234,10 +234,10 @@ describe('增量渲染与整段渲染一致', () => {
   }
 
   /**
-   * 已知偏差：use 已定稿、def 隔两个块以上才到。流式期保持字面文本，
-   * 定稿时的整段渲染纠正它。这条锁的是「偏差只在流式期」，不是「没有偏差」。
+   * 已知偏差：引用（use）已定稿，而定义（def）在两个块以上之后才到达。流式期保持字面文本，
+   * 定稿时由整段渲染纠正。本测试锁定的是「偏差只存在于流式期」，而不是「没有偏差」。
    */
-  test('远隔的前向引用：流式期是字面文本，定稿后是链接', () => {
+  test('相隔较远的前向引用：流式期为字面文本，定稿后为链接', () => {
     const doc = '见[规范][spec]。\n\n甲段\n\n乙段\n\n丙段\n\n[spec]: https://example.com\n\n尾\n'
     const stream = createStreamRenderer()
     let settledHtml = ''
@@ -250,8 +250,8 @@ describe('增量渲染与整段渲染一致', () => {
     expect(renderMarkdown(doc)).toContain('href="https://example.com"')
   })
 
-  /** 文本变短说明换了一份，整份重来——否则前缀会永远停在上一份的内容上。 */
-  test('文本变短时整份重来', () => {
+  /** 文本变短表示内容已替换，须整份重新渲染；否则前缀会一直停留在上一份内容上。 */
+  test('文本变短时整份重新渲染', () => {
     const stream = createStreamRenderer()
     stream.push('第一段\n\n第二段\n\n第三段\n')
     const chunk = stream.push('另一份\n')
@@ -259,8 +259,8 @@ describe('增量渲染与整段渲染一致', () => {
     expect(chunk.settled + chunk.live).toBe(renderMarkdown('另一份\n', { streaming: true }))
   })
 
-  /** 半截的 def 不许占住引用表：marked 那张表先到先得，占住了补全的那条就再也进不来。 */
-  test('半截的 def 补全之后仍然解析成链接', () => {
+  /** 不完整的 def 不得占用引用表：marked 的引用表以先写入者为准，被占用后补全的 def 无法写入。 */
+  test('不完整的 def 补全之后仍解析为链接', () => {
     const doc = '[spec]: https://example.com\n\n见[规范][spec]。\n\n尾\n'
     const stream = createStreamRenderer()
     let settledHtml = ''
