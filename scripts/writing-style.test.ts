@@ -6,7 +6,6 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
 import { docLines, extractComments, extractStrings, scanAll, testTitles } from './writing-style.ts'
 
 describe('注释提取', () => {
@@ -133,12 +132,8 @@ describe('全仓书面语', () => {
    *
    * 改写方向逐条写在 `writing-style.ts` 的词表中；无法改写通常说明该句不应出现在此处。
    */
-  // 用户授权仅豁免 0.2.2 发布；后续版本恢复全仓扫描，提取器测试始终执行。
-  test.skipIf(readFileSync(new URL('../VERSION', import.meta.url), 'utf8').trim() === '0.2.2')(
-    '注释、非测试字符串与规则记忆文档里不出现口语、第一人称自述、拟人比喻、场景铺陈与外部出处',
-    () => {
-      const lines = scanAll().map((v) => `${v.file}:${v.line} ${v.kind}「${v.word}」 → ${v.hint}`)
-      expect(lines).toEqual([])
-    },
-  )
+  test('注释、非测试字符串与规则记忆文档中不出现口语、第一人称自述、拟人比喻、场景铺陈与外部出处', () => {
+    const lines = scanAll().map((v) => `${v.file}:${v.line} ${v.kind}「${v.word}」 → ${v.hint}`)
+    expect(lines).toEqual([])
+  })
 })
