@@ -754,7 +754,7 @@ Expected a string that matches the pattern '^[a-zA-Z0-9_-]+$'
 
 - `ToolRegistry.register()` **在注册期**校验 `^[a-zA-Z0-9_-]{1,64}$`。装配的人当场
   就能看见是谁的问题，而不是等到发请求时收一条不指名的 400。
-- 插件与 MCP 这类名字来自第三方的产出方用 `sanitizeToolName()` 消毒。消毒**会**
+- 插件与 MCP 这类名字来自第三方的产出方用 `sanitizeToolName()` 规范化。规范化**会**
   制造碰撞（`a.b` 与 `a_b` 同名），所以产出方必须自己查重并记 failure——
   静默覆盖会无声吞掉一整个插件的工具。
 
