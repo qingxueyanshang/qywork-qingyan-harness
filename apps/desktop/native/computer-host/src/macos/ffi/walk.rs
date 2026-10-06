@@ -1,8 +1,9 @@
-//! 经 AX 读控件树：一个元素的事实、深度优先遍历、按 `ref` 重新定位、窗口发现、窗口几何与读文本，
+//! 经由 AX 读取控件树：元素的事实、深度优先遍历、按 `ref` 重新定位、窗口发现、窗口几何与文本读取，
 //! 以及进程内的身份表。
 //!
-//! 子节点顺序只有一处来源：`AXChildren`。遍历从批量读取里取它，重新定位单独读它，两处读的是
-//! 同一个属性，`ref` 里的下标才对得上；不要在一处改用 `AXVisibleChildren` 或按位置取子元素的接口。
+//! 子节点顺序只有一处来源：`AXChildren`。遍历从批量读取中取得该属性，重新定位单独读取该属性，
+//! 两处读取的是同一个属性，`ref` 中的下标才能一致；不要在其中一处改用 `AXVisibleChildren` 或按
+//! 位置取子元素的接口。
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -22,8 +23,8 @@ use crate::protocol::{
 };
 use crate::tree::{decode_ref, first_sighting, flatten, Collected};
 
-/// 进程内唯一的一张身份表。执行线程与每条等待线程各自构造后端实例，编号必须出自同一张表：
-/// 等待线程拿到的 `ref` 是执行线程那一次读取编出来的。
+/// 进程内唯一的身份表。执行线程与每条等待线程各自构造后端实例，编号必须出自同一张表：
+/// 等待线程取得的 `ref` 由执行线程在读取时编号。
 fn table() -> &'static Mutex<Identities<Element>> {
     static TABLE: OnceLock<Mutex<Identities<Element>>> = OnceLock::new();
     TABLE.get_or_init(|| Mutex::new(Identities::new(MAX_IDENTITIES)))
@@ -40,14 +41,14 @@ fn lookup(id: u64) -> Option<(Element, String)> {
     table().lock().expect("身份表锁").get(id)
 }
 
-/// 把 AX 错误码包成 `Failure`。进程在不在只在出错时查一次。
+/// 把 AX 错误码封装为 `Failure`。进程是否存在只在出错时查询一次。
 fn fail(step: &'static str, pid: i32) -> impl Fn(i32) -> Failure {
     move |code| Failure::from_ax(step, code, ax::alive(pid))
 }
 
-/// 一项可选读取：应用不应答或元素已经消失照常交出去，其余失败按读不到算。
+/// 一项可选读取：应用不应答或元素已经消失时照常向上返回失败，其余失败视为无法读取。
 ///
-/// 不要改成一律交出去：应用声明了属性而读不出来是常态，交出去会让整窗读取为一个节点失败。
+/// 不要改为一律向上返回：应用声明了属性而无法读取是常见情况，向上返回会使整个窗口的读取因一个节点而失败。
 fn optional<T>(read: Result<T, Failure>) -> Result<Option<T>, Failure> {
     match read {
         Ok(v) => Ok(Some(v)),
@@ -56,13 +57,13 @@ fn optional<T>(read: Result<T, Failure>) -> Result<Option<T>, Failure> {
     }
 }
 
-/// 只读批量那一次：角色、名称、状态、矩形与子节点，没有值、动作表与可写性。
+/// 只执行一次批量读取：角色、名称、状态、矩形与子节点，不含值、动作表与可写性。
 ///
-/// 窗口清单、窗口根与窗口状态只用得到这几项；读全部事实每个窗口要多付几次跨进程调用。
+/// 窗口清单、窗口根与窗口状态只需要这几项；读取全部事实时每个窗口需要多次额外的跨进程调用。
 fn batch_facts(element: &Element, pid: i32) -> Result<(Facts, Vec<Element>), Failure> {
     let (values, children) = element
         .batch(&BATCH, attr::CHILDREN)
-        .map_err(fail("读属性", pid))?;
+        .map_err(fail("读取属性", pid))?;
     Ok((Facts::decode(&values), children))
 }
 
@@ -71,19 +72,19 @@ pub fn window_facts(element: &Element, pid: i32) -> Result<Facts, Failure> {
     batch_facts(element, pid).map(|(facts, _)| facts)
 }
 
-/// 父元素里与子节点可用动作有关的事实：批量读取加选中集合的可写性。
+/// 父元素中与子节点可用动作相关的事实：批量读取结果加选中集合的可写性。
 fn context_of(parent: &Element, pid: i32) -> Result<Context, Failure> {
     let (mut facts, _) = batch_facts(parent, pid)?;
     for attribute in node::container_queries(&facts) {
-        let settable = optional(parent.settable(attribute).map_err(fail("读可写性", pid)))?;
+        let settable = optional(parent.settable(attribute).map_err(fail("读取可写性", pid)))?;
         facts.settable.record(attribute, settable.unwrap_or(false));
     }
     Ok(Context::of(&facts))
 }
 
-/// 读一个元素的事实与子节点。`whole` 为真时不论多长都读值，见 `facts::wants_value`。
+/// 读取元素的事实与子节点。`whole` 为真时无论长度都读取值，见 `facts::wants_value`。
 ///
-/// 批量读取必须成功，读不到即这个节点失败；值、动作表与可写性各是一次可选读取。
+/// 批量读取必须成功，无法读取即该节点失败；值、动作表与可写性各是一次可选读取。
 pub fn facts(
     element: &Element,
     pid: i32,
@@ -92,34 +93,34 @@ pub fn facts(
 ) -> Result<(Facts, Vec<Element>), Failure> {
     let (mut facts, children) = batch_facts(element, pid)?;
     if wants_value(facts.characters, whole) {
-        if let Some(raw) = optional(element.raw(attr::VALUE).map_err(fail("读值", pid)))? {
+        if let Some(raw) = optional(element.raw(attr::VALUE).map_err(fail("读取值", pid)))? {
             facts.value = Value::of(&raw);
         }
     }
     facts.actions =
-        optional(element.action_names().map_err(fail("读动作表", pid)))?.unwrap_or_default();
+        optional(element.action_names().map_err(fail("读取动作表", pid)))?.unwrap_or_default();
     for attribute in node::settable_queries(&facts, context) {
-        let settable = optional(element.settable(attribute).map_err(fail("读可写性", pid)))?;
+        let settable = optional(element.settable(attribute).map_err(fail("读取可写性", pid)))?;
         facts.settable.record(attribute, settable.unwrap_or(false));
     }
     Ok((facts, children))
 }
 
-/// 读控件树用的根：窗口元素、所在应用的进程号、对应上的 CG 窗口与窗口矩形。
+/// 读取控件树使用的根：窗口元素、所在应用的进程号、对应的 CG 窗口与窗口矩形。
 pub struct Root {
     pub element: Element,
     pub pid: i32,
     pub cg: Option<u32>,
     /// AX 的窗口矩形，单位是点。
     pub frame: Option<Frame>,
-    /// 对应上的 CG 窗口此刻的几何。没对应上、或读不出 CG 矩形时缺席。
+    /// 对应的 CG 窗口当前的几何。未对应或无法读取 CG 矩形时缺失。
     pub placed: Option<Placed>,
 }
 
-/// 一个 CG 窗口此刻的几何，见 `screen::place`。窗口已经不在或读不出矩形时缺席。
+/// CG 窗口当前的几何，见 `screen::place`。窗口已不存在或无法读取矩形时缺失。
 ///
-/// 矩形取 CGWindowList 而不取 AX：取图、按图定位与控件包围盒要用同一份矩形算代际与换算，
-/// 而窗口服务器在应用卡住时照常应答。
+/// 矩形取自 CGWindowList 而不取自 AX：采图、按图定位与控件包围盒必须使用同一份矩形计算代际与换算，
+/// 而窗口服务器在应用无响应时照常应答。
 pub fn placed(number: u32) -> Option<Placed> {
     placed_in(&ax::cg_windows(), number)
 }
@@ -136,9 +137,9 @@ pub struct Located {
     pub path: Vec<usize>,
     pub facts: Facts,
     pub children: Vec<Element>,
-    /// 父元素的事实。目标就是窗口根时取默认值：根没有可经父元素改的选中。
+    /// 父元素的事实。目标即窗口根时取默认值：根节点没有可经由父元素更改的选中项。
     pub context: Context,
-    /// 父元素。目标就是窗口根时缺席。
+    /// 父元素。目标即窗口根时缺失。
     pub parent: Option<Element>,
 }
 
@@ -165,7 +166,7 @@ pub fn locate(root: &Root, reference: &str, whole: bool) -> Result<Located, Fail
     for (depth, index) in expected.path.iter().enumerate() {
         let kids = element
             .elements(attr::CHILDREN)
-            .map_err(fail("读子节点", root.pid))?;
+            .map_err(fail("读取子节点", root.pid))?;
         let Some(child) = kids.get(*index).cloned() else {
             return Err(Failure::Refused(format!(
                 "{REF_STALE}: 第 {depth} 层没有下标 {index} 的子节点"
@@ -198,7 +199,7 @@ pub struct Walked {
     pub completeness: Completeness,
 }
 
-/// 从 `start` 开始深度优先读，三个上限限的是遍历过的节点数。
+/// 从 `start` 开始深度优先读取，三个上限针对的是已遍历的节点数。
 pub fn walk(
     start: &Located,
     root: &Root,
@@ -219,7 +220,7 @@ pub fn walk(
         seen: HashSet::new(),
     };
     let mut path = start.path.clone();
-    // 根节点读不到就整体失败：没有根就没有这次观察。
+    // 根节点无法读取即整体失败：没有根节点，本次观察不成立。
     walk.visit(
         &start.element,
         Some((start.facts.clone(), start.children.clone())),
@@ -249,7 +250,7 @@ struct Walk {
     visited: u32,
     truncated_by: Vec<&'static str>,
     collected: Vec<Collected>,
-    /// 本次遍历已输出的身份表编号。应用交回的子节点里可能含祖先，照常展开会逐层复制同一棵子树。
+    /// 本次遍历已输出的身份表编号。应用返回的子节点中可能包含祖先，照常展开会逐层复制同一棵子树。
     seen: HashSet<String>,
 }
 
@@ -260,8 +261,8 @@ impl Walk {
         }
     }
 
-    /// 子节点级失败的处置：超时即整体失败，后面每个节点会各等一次；元素在遍历途中消失是
-    /// 常态，记一条截断原因后接着走。
+    /// 子节点级失败的处理：超时即整体失败，否则后续每个节点都会各等待一次超时；元素在遍历过程中
+    /// 消失属于常见情况，记录一条截断原因后继续遍历。
     fn tolerate(&mut self, failure: Failure) -> Result<(), Failure> {
         if failure.is_timeout() {
             return Err(failure);
@@ -310,7 +311,7 @@ impl Walk {
             return Ok(());
         }
         let own = Context::of(&facts);
-        // 下标照常递增：跳过一个子节点不能让它后面的兄弟换 ref。
+        // 下标照常递增：跳过一个子节点不得改变其后兄弟节点的 ref。
         for (offset, child) in children.iter().enumerate() {
             if self.visited >= self.bounds.max_nodes {
                 self.mark("max_nodes");
@@ -331,19 +332,19 @@ impl Walk {
     }
 }
 
-/// 窗口清单里的一个 AX 窗口。
+/// 窗口清单中的一个 AX 窗口。
 pub struct Listed {
-    /// 协议里的窗口编号：对应上的是 CGWindowID，对不上的是身份表编号的相反数。
+    /// 协议中的窗口编号：已对应的是 CGWindowID，未对应的是身份表编号的相反数。
     pub window: i64,
     pub pid: i32,
     pub title: String,
     pub subrole: String,
 }
 
-/// 此刻的全部窗口：先按层叠序列对应上的，再列对不上的。
+/// 当前的全部窗口：先按层叠序列出已对应的窗口，再列出未对应的窗口。
 ///
-/// 候选应用取 CGWindowList 里有 0 层窗口的进程；每个应用只问一次 `AXWindows`，第一次调用就
-/// 失败的应用跳过：后面每一次都会再等一个消息上界。
+/// 候选应用取 CGWindowList 中有 0 层窗口的进程；每个应用只查询一次 `AXWindows`，首次调用即
+/// 失败的应用直接跳过：否则后续每次调用都会再等待一个消息上界。
 pub fn discover() -> Vec<Listed> {
     let cgs = ax::cg_windows();
     let mut pids: Vec<i32> = Vec::new();
@@ -359,7 +360,7 @@ pub fn discover() -> Vec<Listed> {
             Err(code) => {
                 eprintln!(
                     "跳过进程 {pid}：{}",
-                    fail("读窗口表", pid)(code).into_reason()
+                    fail("读取窗口表", pid)(code).into_reason()
                 );
                 continue;
             }
@@ -397,19 +398,19 @@ pub fn discover() -> Vec<Listed> {
             },
         )
         .collect();
-    // 稳定排序：对不上的窗口保持发现顺序排在最后。
+    // 稳定排序：未对应的窗口保持发现顺序排在最后。
     ordered.sort_by_key(|(at, _)| *at);
     ordered.into_iter().map(|(_, listed)| listed).collect()
 }
 
 /// 窗口编号对应的根。
 ///
-/// 负数编号直接查身份表，并核对那一项仍是窗口、核对串没变：身份表里也有控件元素，编号
-/// 取错时不能把一个按钮当窗口根。正数编号是 CGWindowID，现读 CG 清单与那个进程的 AX 窗口表，
-/// 按 `associate` 的规则找唯一对应的 AX 窗口。
+/// 负数编号直接查询身份表，并核对该项仍是窗口且核对串未变：身份表中也有控件元素，编号
+/// 有误时不得把按钮当作窗口根。正数编号是 CGWindowID，实时读取 CG 清单与该进程的 AX 窗口表，
+/// 按 `associate` 的规则查找唯一对应的 AX 窗口。
 pub fn root(window: i64) -> Result<Root, Failure> {
     if let Some(id) = associate::identity_of_window(window) {
-        let lost = || Failure::Refused(format!("{TARGET_LOST}: 编号 {window} 的窗口已经不在"));
+        let lost = || Failure::Refused(format!("{TARGET_LOST}: 编号 {window} 的窗口已不存在"));
         let (element, check) = lookup(id).ok_or_else(lost)?;
         let pid = element.pid().map_err(|_| lost())?;
         let facts = match window_facts(&element, pid) {
@@ -433,13 +434,13 @@ pub fn root(window: i64) -> Result<Root, Failure> {
     let cgs = ax::cg_windows();
     let Some(at) = cgs.iter().position(|w| w.number == number) else {
         return Err(Failure::Refused(format!(
-            "{TARGET_LOST}: 窗口 {window} 已经不在"
+            "{TARGET_LOST}: 窗口 {window} 已不存在"
         )));
     };
     let pid = cgs[at].pid;
     let windows = Element::application(pid)
         .elements(attr::WINDOWS)
-        .map_err(fail("读窗口表", pid))?;
+        .map_err(fail("读取窗口表", pid))?;
     let mut read = Vec::new();
     for element in windows {
         if let Some(facts) = optional(window_facts(&element, pid))? {
@@ -465,17 +466,17 @@ pub fn root(window: i64) -> Result<Root, Failure> {
             })
         }
         Err(Unmatched::None) => Err(Failure::Refused(
-            "window_unassociated: 这个窗口没有位置尺寸一致的 AX 窗口".to_owned(),
+            "window_unassociated: 该窗口没有位置与尺寸一致的 AX 窗口".to_owned(),
         )),
         Err(Unmatched::Ambiguous(n)) => Err(Failure::Refused(format!(
-            "window_unassociated: 这个窗口的位置尺寸对应 {n} 个 AX 窗口，判不出是哪一个；\
-             窗口清单另列了这些窗口，按它们的编号读控件树"
+            "window_unassociated: 该窗口的位置与尺寸对应 {n} 个 AX 窗口，无法确定是哪一个；\
+             窗口清单另外列出了这些窗口，请按其编号读取控件树"
         ))),
     }
 }
 
-/// 窗口此刻是否一点都看不见：最小化，或对应上的 CG 窗口不在屏幕上、被前面的窗口完全盖住。
-/// 对不上 CG 窗口的只认最小化。
+/// 窗口当前是否完全不可见：最小化，或已对应的 CG 窗口不在屏幕上、被前方的窗口完全遮挡。
+/// 未对应 CG 窗口的窗口只按最小化判定。
 pub fn covered(root: &Root, window: &Facts) -> bool {
     if window.minimized == Some(true) {
         return true;
@@ -489,16 +490,16 @@ pub fn covered(root: &Root, window: &Facts) -> bool {
         .is_some_and(|at| associate::covered(at, &cgs))
 }
 
-/// 这个应用第一次被读控件树之前，请它向 AX 交出完整的树。
+/// 在首次读取该应用的控件树之前，请求应用向 AX 提供完整的控件树。
 ///
-/// 只对 Electron 应用有效，别的应用回属性不支持，结果不看。不要改写 `AXEnhancedUserInterface`：
-/// 应用把它当作读屏软件在场的信号并改变自身行为。
+/// 只对 Electron 应用有效，其他应用返回属性不支持，结果不检查。不要改写 `AXEnhancedUserInterface`：
+/// 应用把该属性视为读屏软件在运行的信号并改变自身行为。
 pub fn expose(pid: i32) {
     let _ = Element::application(pid).set(attr::MANUAL_ACCESSIBILITY, &Setting::Bool(true));
 }
 
-/// 读一个控件的全文与选区。选区只有一段：`AXSelectedTextRange` 是单个区间，长度为 0 是插入点，
-/// 不算选区。
+/// 读取控件的全文与选区。选区只有一段：`AXSelectedTextRange` 是单个区间，长度为 0 表示插入点，
+/// 不计为选区。
 pub fn read_text(
     root: &Root,
     window: i64,
@@ -508,12 +509,12 @@ pub fn read_text(
     let located = locate(root, reference, true)?;
     if located.facts.characters.is_none() {
         return Err(Failure::Refused(
-            "pattern_missing: 这个控件没有文本模型（AXNumberOfCharacters）".to_owned(),
+            "pattern_missing: 该控件没有文本模型（AXNumberOfCharacters）".to_owned(),
         ));
     }
     let Value::Text(text) = &located.facts.value else {
         return Err(Failure::Refused(
-            "pattern_missing: 这个控件的 AXValue 不是文本".to_owned(),
+            "pattern_missing: 该控件的 AXValue 不是文本".to_owned(),
         ));
     };
     let (body, clipped) = clip_utf16(text, max_chars);

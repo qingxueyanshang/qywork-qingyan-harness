@@ -2,13 +2,13 @@
 //!
 //! 三条边界：
 //!
-//! 1. **请求的回答是信号，不是方法返回值。** `CreateSession`、`SelectDevices`、`SelectSources`、
-//!    `Start` 只交回一个请求对象，结果以它的 `Response` 信号送达。收信号的是本连接上唯一一条
-//!    常驻线程（`pump`），它按对象路径把回答交给在等的那一方；登记在发请求之前做，
-//!    否则回答可能先于登记到达。
-//! 2. **会话结束也是信号。** `Session::Closed` 由同一条线程记下，调用方在下一次读状态时取走。
-//! 3. **每次方法调用以握手给的调用上界为限**，由连接的 `method_timeout` 承担；等回答的上界由
-//!    调用方给，用户在授权框里考虑的时间不算方法调用。
+//! 1. **请求的响应是信号，不是方法返回值。** `CreateSession`、`SelectDevices`、`SelectSources`、
+//!    `Start` 只返回一个请求对象，结果以该对象的 `Response` 信号送达。接收信号的是本连接上唯一
+//!    一条常驻线程（`pump`），它按对象路径把响应交给等待方；登记必须在发送请求之前完成，
+//!    否则响应可能先于登记到达。
+//! 2. **会话结束同样是信号。** `Session::Closed` 由同一条线程记录，调用方在下一次读取状态时取走。
+//! 3. **每次方法调用以握手提供的调用上界为限**，由连接的 `method_timeout` 执行；等待响应的
+//!    上界由调用方给出，用户在授权框中考虑的时间不计入方法调用。
 
 use std::collections::HashMap;
 use std::os::fd::OwnedFd;
@@ -35,18 +35,18 @@ const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 
 /// ScreenCast 的来源类型位：按窗口共享。
 const SOURCE_WINDOW: u32 = 2;
-/// ScreenCast 的光标模式位：图里不画光标。
+/// ScreenCast 的光标模式位：图像中不绘制光标。
 const CURSOR_HIDDEN: u32 = 1;
 /// RemoteDesktop 的持久化方式：直到用户撤销。
 const PERSIST_UNTIL_REVOKED: u32 = 2;
 
-/// 请求的回答码：0 同意，1 用户取消，2 其他。
+/// 请求的响应码：0 同意，1 用户取消，2 其他。
 pub const RESPONSE_SUCCESS: u32 = 0;
 pub const RESPONSE_CANCELLED: u32 = 1;
 
 pub type Reply = (u32, HashMap<String, OwnedValue>);
 
-/// portal 此刻提供的能力。
+/// portal 当前提供的能力。
 #[derive(Debug, Clone, Copy)]
 pub struct Caps {
     remote_desktop_version: u32,
@@ -54,10 +54,10 @@ pub struct Caps {
     cursors: u32,
 }
 
-/// 一次已经发出 `Start` 的请求。
+/// 一次已发出 `Start` 的请求。
 pub struct Started {
     pub session: String,
-    /// `Start` 那个请求对象，到点没回答时经它关掉授权框。
+    /// `Start` 的请求对象，到达时限仍未响应时经由该对象关闭授权框。
     pub request: String,
     pub reply: Receiver<Reply>,
 }
@@ -77,7 +77,7 @@ fn fail(step: &str) -> impl Fn(zbus::Error) -> String + '_ {
 }
 
 impl Bus {
-    /// 连上会话总线并起收信号的线程。每次方法调用以 `call` 为上界。
+    /// 连接会话总线并启动接收信号的线程。每次方法调用以 `call` 为上界。
     pub fn open(call: Duration) -> Result<Arc<Self>, String> {
         let conn = zbus::blocking::connection::Builder::session()
             .map(|b| b.method_timeout(call))
@@ -86,11 +86,11 @@ impl Bus {
         let unique = conn
             .unique_name()
             .map(|n| n.as_str().trim_start_matches(':').replace('.', "_"))
-            .ok_or("portal_unavailable: 会话总线没有给本连接唯一名")?;
+            .ok_or("portal_unavailable: 会话总线未给本连接分配唯一名")?;
         let rule = MatchRule::builder()
             .msg_type(Type::Signal)
             .path_namespace(PATH)
-            .map_err(fail("建信号匹配规则"))?
+            .map_err(fail("创建信号匹配规则"))?
             .build();
         let signals = MessageIterator::for_match_rule(rule, &conn, None)
             .map_err(|e| format!("portal_unavailable: 订阅 portal 信号失败：{e}"))?;
@@ -107,7 +107,7 @@ impl Bus {
         Ok(bus)
     }
 
-    /// 读 portal 的能力。没有 RemoteDesktop，或 ScreenCast 不能按窗口共享时交回原因：
+    /// 读取 portal 的能力。没有 RemoteDesktop，或 ScreenCast 不支持按窗口共享时返回原因：
     /// wlroots 系与 Hyprland 的 portal 没有 RemoteDesktop。
     pub fn caps(&self) -> Result<Caps, String> {
         let get = |iface: &str, name: &str| -> Result<u32, String> {
@@ -116,14 +116,14 @@ impl Bus {
                 .call_method(Some(DESTINATION), PATH, Some(PROPERTIES), "Get", &(iface, name))
                 .map_err(|e| {
                     format!(
-                        "portal_unavailable: 这个会话的 xdg-desktop-portal 不提供 {iface}，原生 Wayland \
-                         窗口的取图与键鼠不可用（读 {name} 失败：{e}）"
+                        "portal_unavailable: 该会话的 xdg-desktop-portal 不提供 {iface}，原生 Wayland \
+                         窗口的采图与键盘、指针输入不可用（读取 {name} 失败：{e}）"
                     )
                 })?;
             let value: OwnedValue = reply
                 .body()
                 .deserialize()
-                .map_err(|e| format!("portal_unavailable: {iface}.{name} 读不出来：{e}"))?;
+                .map_err(|e| format!("portal_unavailable: 无法读取 {iface}.{name}：{e}"))?;
             u32::try_from(value)
                 .map_err(|e| format!("portal_unavailable: {iface}.{name} 不是整数：{e}"))
         };
@@ -131,11 +131,11 @@ impl Bus {
         let remote_desktop_version = get(REMOTE_DESKTOP, "version")?;
         let sources = get(SCREEN_CAST, "AvailableSourceTypes")?;
         if sources & SOURCE_WINDOW == 0 {
-            return Err("portal_unavailable: 这个合成器的 ScreenCast 不能按窗口共享".to_owned());
+            return Err("portal_unavailable: 该合成器的 ScreenCast 不支持按窗口共享".to_owned());
         }
         if devices & (KEYBOARD | POINTER) == 0 {
             return Err(
-                "portal_unavailable: 这个合成器的 RemoteDesktop 不提供键盘与指针".to_owned(),
+                "portal_unavailable: 该合成器的 RemoteDesktop 不提供键盘与指针".to_owned(),
             );
         }
         let cursors = get(SCREEN_CAST, "AvailableCursorModes").unwrap_or(0);
@@ -150,7 +150,7 @@ impl Bus {
         format!("qywork{}", self.tokens.fetch_add(1, Ordering::SeqCst))
     }
 
-    /// 发一个请求，交回等它回答的接收端。登记在发出之前，见本模块第 1 条。
+    /// 发送一个请求，返回等待其响应的接收端。登记在发送之前完成，见本模块第 1 条。
     fn request(
         &self,
         iface: &str,
@@ -171,7 +171,7 @@ impl Bus {
             Ok(handle) => {
                 self.lock_waiting().remove(&path);
                 Err(format!(
-                    "portal_failed: {iface}.{method} 交回的请求对象是 {handle}，不是 {path}；这个 portal 太旧"
+                    "portal_failed: {iface}.{method} 返回的请求对象是 {handle}，不是 {path}；该 portal 版本过旧"
                 ))
             }
             Err(e) => {
@@ -187,7 +187,7 @@ impl Bus {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// 等一个不需要用户参与的请求回答。
+    /// 等待一个无需用户参与的请求的响应。
     fn answered(
         rx: &Receiver<Reply>,
         step: &str,
@@ -195,19 +195,19 @@ impl Bus {
     ) -> Result<HashMap<String, OwnedValue>, String> {
         match rx.recv_timeout(limit) {
             Ok((RESPONSE_SUCCESS, results)) => Ok(results),
-            Ok((code, _)) => Err(format!("portal_failed: {step}被拒绝（回答码 {code}）")),
+            Ok((code, _)) => Err(format!("portal_failed: {step}被拒绝（响应码 {code}）")),
             Err(_) => Err(format!(
-                "portal_failed: {step}在 {} ms 内没有回答",
+                "portal_failed: {step}在 {} ms 内没有响应",
                 limit.as_millis()
             )),
         }
     }
 
-    /// 建会话、选设备与来源，再发 `Start`。前三步不经用户、按 `limit` 等回答；`Start` 的回答
-    /// 由调用方等，那一步要用户在授权框里点。
+    /// 创建会话、选择设备与来源，再发送 `Start`。前三步无需用户参与，按 `limit` 等待响应；`Start`
+    /// 的响应由调用方等待，该步骤需要用户在授权框中确认。
     ///
-    /// `restore` 是上一次同意时存下的 restore token。它只能用一次：portal 收到即作废，
-    /// 同意之后在 `Start` 的回答里交回新的。
+    /// `restore` 是上一次同意时保存的 restore token。它只能使用一次：portal 收到即作废，
+    /// 用户同意之后在 `Start` 的响应中返回新的 token。
     pub fn negotiate(
         &self,
         caps: Caps,
@@ -228,11 +228,11 @@ impl Bus {
                 &(options,),
             )
         })?;
-        let created = Self::answered(&rx, "建会话", limit)?;
+        let created = Self::answered(&rx, "创建会话", limit)?;
         let session = created
             .get("session_handle")
             .and_then(|v| String::try_from(v.clone()).ok())
-            .ok_or("portal_failed: 建会话的回答里没有 session_handle")?;
+            .ok_or("portal_failed: 创建会话的响应中没有 session_handle")?;
         let staged = self.select(caps, &session, restore, limit).and_then(|()| {
             let (request, reply) = self.request(REMOTE_DESKTOP, "Start", |token| {
                 let options: HashMap<&str, Value<'_>> =
@@ -272,8 +272,8 @@ impl Bus {
                 ("handle_token", Value::from(token)),
                 ("types", Value::from(caps.devices & (KEYBOARD | POINTER))),
             ]);
-            // 持久化与 restore token 只能经 RemoteDesktop 给：远程桌面会话的 SelectSources
-            // 带上它们会被拒绝。
+            // 持久化方式与 restore token 只能经由 RemoteDesktop 提供：远程桌面会话的 SelectSources
+            // 携带这两项会被拒绝。
             if caps.remote_desktop_version >= 2 {
                 options.insert("persist_mode", Value::from(PERSIST_UNTIL_REVOKED));
                 if let Some(token) = restore {
@@ -288,7 +288,7 @@ impl Bus {
                 &(&path, options),
             )
         })?;
-        Self::answered(&rx, "选输入设备", limit)?;
+        Self::answered(&rx, "选择输入设备", limit)?;
         let (_, rx) = self.request(SCREEN_CAST, "SelectSources", |token| {
             let mut options: HashMap<&str, Value<'_>> = HashMap::from([
                 ("handle_token", Value::from(token)),
@@ -306,10 +306,10 @@ impl Bus {
                 &(&path, options),
             )
         })?;
-        Self::answered(&rx, "选共享来源", limit).map(|_| ())
+        Self::answered(&rx, "选择共享来源", limit).map(|_| ())
     }
 
-    /// 关掉一个还没回答的请求：授权框随之关闭。
+    /// 关闭一个尚未响应的请求：授权框随之关闭。
     pub fn close_request(&self, request: &str) {
         self.lock_waiting().remove(request);
         let _ = self
@@ -317,14 +317,14 @@ impl Bus {
             .call_method(Some(DESTINATION), request, Some(REQUEST), "Close", &());
     }
 
-    /// 结束一个会话。会话已经不在时 portal 回错误，不理会。
+    /// 结束一个会话。会话已不存在时 portal 返回错误，忽略该错误。
     pub fn close_session(&self, session: &str) {
         let _ = self
             .conn
             .call_method(Some(DESTINATION), session, Some(SESSION), "Close", &());
     }
 
-    /// 取走收到的「会话已结束」。
+    /// 取走已收到的「会话已结束」信号。
     pub fn take_closed(&self) -> Vec<String> {
         std::mem::take(
             &mut *self
@@ -334,7 +334,7 @@ impl Bus {
         )
     }
 
-    /// 这个会话的 PipeWire 连接。每次调用给一个新的描述符。
+    /// 该会话的 PipeWire 连接。每次调用返回一个新的描述符。
     pub fn pipewire_remote(&self, session: &str) -> Result<OwnedFd, String> {
         let path = ObjectPath::try_from(session)
             .map_err(|e| format!("portal_failed: 会话路径不合法：{e}"))?;
@@ -348,11 +348,11 @@ impl Bus {
                 "OpenPipeWireRemote",
                 &(path, options),
             )
-            .map_err(fail("取 PipeWire 连接"))?;
+            .map_err(fail("获取 PipeWire 连接"))?;
         let fd: zbus::zvariant::OwnedFd = reply
             .body()
             .deserialize()
-            .map_err(fail("读 PipeWire 连接"))?;
+            .map_err(fail("读取 PipeWire 连接"))?;
         Ok(fd.into())
     }
 
@@ -366,7 +366,7 @@ impl Bus {
             .map_err(|e| format!("portal_failed: {method} 失败：{e}"))
     }
 
-    /// 指针移到流 `node` 的逻辑坐标 `(x, y)`。
+    /// 将指针移到流 `node` 的逻辑坐标 `(x, y)`。
     pub fn pointer_to(&self, session: &str, node: u32, x: f64, y: f64) -> Result<(), String> {
         let path = session_path(session)?;
         self.notify(
@@ -403,7 +403,7 @@ impl Bus {
         )
     }
 
-    /// 这个会话是不是本连接建的。别的连接的会话结束信号不算数。
+    /// 该会话是否由本连接创建。其他连接的会话结束信号不予处理。
     fn owns(&self, session: &str) -> bool {
         session.starts_with(&self.sessions)
     }
@@ -418,7 +418,7 @@ fn no_options() -> HashMap<&'static str, Value<'static>> {
     HashMap::new()
 }
 
-/// 收信号的线程：请求的回答交给在等的那一方，会话结束记进 `closed`。连接关闭即退出。
+/// 接收信号的线程：将请求的响应交给等待方，将会话结束记入 `closed`。连接关闭即退出。
 fn pump(signals: MessageIterator, bus: &std::sync::Weak<Bus>) {
     for message in signals {
         let Ok(message) = message else { continue };
@@ -449,7 +449,7 @@ fn pump(signals: MessageIterator, bus: &std::sync::Weak<Bus>) {
     }
 }
 
-/// 从 `Start` 的回答里读出会话：用户允许的设备、共享的流，以及新的 restore token。
+/// 从 `Start` 的响应中读取会话：用户允许的设备、共享的流，以及新的 restore token。
 pub fn started(
     session: String,
     results: &HashMap<String, OwnedValue>,
@@ -465,11 +465,11 @@ pub fn started(
         .get("streams")
         .map(|v| streams(v))
         .unwrap_or_default();
-    // 凭 restore token 恢复时，记住的窗口已经不在（应用重启后窗口标题或应用 id 变了），
-    // GNOME 的 portal 照样回答同意，只是不带流。
+    // 凭 restore token 恢复时，若记住的窗口已不存在（应用重启后窗口标题或应用 id 已改变），
+    // GNOME 的 portal 仍返回同意，但不携带流。
     if streams.is_empty() {
         return Err(
-            "consent_incomplete: portal 的回答里没有共享的窗口，记住的共享窗口可能已经不在"
+            "consent_incomplete: portal 的响应中没有共享的窗口，记住的共享窗口可能已不存在"
                 .to_owned(),
         );
     }
@@ -484,7 +484,7 @@ pub fn started(
     ))
 }
 
-/// `a(ua{sv})`：每条流的节点号与属性，属性里取 `size`。
+/// `a(ua{sv})`：每条流的节点号与属性，从属性中读取 `size`。
 fn streams(value: &Value<'_>) -> Vec<Stream> {
     let Value::Array(array) = value else {
         return Vec::new();
@@ -549,7 +549,7 @@ mod tests {
         )
     }
 
-    /// `Start` 的回答：节点号与逻辑范围读出来，restore token 与设备位原样交回。
+    /// `Start` 的响应：读取节点号与逻辑范围，原样返回 restore token 与设备位。
     #[test]
     fn a_start_reply_gives_streams_devices_and_the_new_token() {
         let signature = Signature::try_from("(ua{sv})").unwrap();
@@ -567,7 +567,7 @@ mod tests {
                 OwnedValue::try_from(Value::Array(array)).unwrap(),
             ),
         ]);
-        let (session, token) = started("/s/1".to_owned(), &results).expect("回答完整");
+        let (session, token) = started("/s/1".to_owned(), &results).expect("响应必须完整");
         assert_eq!(session.devices, 3);
         assert_eq!(
             token.as_deref(),
@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(nodes, vec![(44, Some((1280, 800))), (45, None)]);
     }
 
-    /// 没有流的「同意」不算会话。
+    /// 没有流的「同意」不视为会话。
     #[test]
     fn a_start_reply_without_streams_is_refused() {
         let results: HashMap<String, OwnedValue> =

@@ -1,14 +1,14 @@
-//! 存下的 restore token：用户在授权框里勾了「记住」之后，下一次建会话不再弹框。
+//! 已保存的 restore token：用户在授权框中勾选「记住」之后，下一次创建会话时不再弹出授权框。
 //!
 //! 三条边界：
 //!
-//! 1. **只存一个，只用一次。** portal 收到 token 即作废，同意之后在回答里交回新的；取出来用的
-//!    那一刻就从磁盘上删掉，新的到了再写。中途失败时磁盘上没有 token，下一次照常弹框。
-//! 2. **放在应用数据目录里，与其余本机状态同一处、同一种保护。** 目录是 `QYWORK_HOME`，没有时是
-//!    家目录下的 `.qywork`，与外壳的日志目录同一条规则；文件只给本用户读写。它是这台机器上
-//!    本用户的授权，换一台机器没有对应的授权记录，拷过去不起作用。
-//! 3. **会话被结束时作废。** 用户在系统里停止共享之后，下一次要重新经用户同意；留着它的话，
-//!    下一次建会话不弹框就恢复了共享。
+//! 1. **只保存一个，只使用一次。** portal 收到 token 即作废，用户同意之后在响应中返回新的 token；
+//!    取出使用时即从磁盘删除，收到新的 token 后再写入。中途失败时磁盘上没有 token，下一次照常弹出授权框。
+//! 2. **存放在应用数据目录中，与其余本机状态位置相同、保护方式相同。** 目录是 `QYWORK_HOME`，
+//!    未设置时是家目录下的 `.qywork`，与外壳的日志目录规则相同；文件只允许本用户读写。它是本机
+//!    本用户的授权，其他机器上没有对应的授权记录，复制过去不起作用。
+//! 3. **会话被结束时作废。** 用户在系统中停止共享之后，下一次需要重新经用户同意；保留该 token
+//!    会使下一次创建会话时不弹出授权框即恢复共享。
 
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -24,7 +24,7 @@ fn path() -> Option<PathBuf> {
     Some(root.join("desktop").join(FILE))
 }
 
-/// portal 只收 UUID 形状的 token，别的形状会让整次请求失败。
+/// portal 只接受 UUID 格式的 token，其他格式会使整次请求失败。
 fn plausible(token: &str) -> bool {
     token.len() == 36
         && token.bytes().enumerate().all(|(i, b)| {
@@ -36,7 +36,7 @@ fn plausible(token: &str) -> bool {
         })
 }
 
-/// 取出存下的 token 并删掉文件。没有、读不出或形状不对时交回 `None`。
+/// 取出已保存的 token 并删除文件。文件不存在、无法读取或格式不符时返回 `None`。
 pub fn take() -> Option<String> {
     let path = path()?;
     let text = std::fs::read_to_string(&path).ok();
@@ -44,7 +44,7 @@ pub fn take() -> Option<String> {
     text.map(|t| t.trim().to_owned()).filter(|t| plausible(t))
 }
 
-/// 存下新的 token。写不进去只记一行 stderr：少了它下一次多弹一次授权框，不影响这一次。
+/// 保存新的 token。写入失败时只在 stderr 记录一行：缺少 token 时下一次多弹出一次授权框，不影响本次。
 pub fn store(token: &str) {
     let Some(path) = path() else { return };
     let written = (|| -> std::io::Result<()> {
@@ -65,11 +65,11 @@ pub fn store(token: &str) {
         std::fs::rename(&staged, &path)
     })();
     if let Err(e) = written {
-        eprintln!("存 Wayland 共享授权的 restore token 失败：{e}");
+        eprintln!("保存 Wayland 共享授权的 restore token 失败：{e}");
     }
 }
 
-/// 作废存下的 token，见本模块第 3 条。
+/// 作废已保存的 token，见本模块第 3 条。
 pub fn discard() {
     if let Some(path) = path() {
         let _ = std::fs::remove_file(path);

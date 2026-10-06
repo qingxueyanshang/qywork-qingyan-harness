@@ -1,15 +1,15 @@
-//! 经 PipeWire 从一条 ScreenCast 流里取一帧。
+//! 经由 PipeWire 从一条 ScreenCast 流中取一帧。
 //!
 //! 四条边界：
 //!
-//! 1. **libpipewire-0.3 在运行时 dlopen。** 构建不要它的头文件与链接库，没装它的系统上 worker
-//!    照常启动，只有这条取图路径报不可用。
-//! 2. **每次取图单独建一次连接。** portal 交来的连接描述符、一条流、一个线程循环，取到一帧即全部
-//!    拆掉。不要改成常驻的流：流被消费期间合成器按窗口的每次重绘出帧，没人取图时也一直在出。
-//! 3. **等帧有上界。** 到点没有帧即失败，不交半张图；裁剪区、帧头标了损坏或数据为空的缓冲区
-//!    不算一帧。
+//! 1. **libpipewire-0.3 在运行时经 dlopen 加载。** 构建不需要它的头文件与链接库，未安装它的系统上
+//!    worker 照常启动，只有这条采图路径报告不可用。
+//! 2. **每次采图单独建立一次连接。** portal 提供的连接描述符、一条流、一个线程循环，取到一帧即
+//!    全部销毁。不要改为常驻的流：流被消费期间合成器在窗口每次重绘时生成帧，无人采图时也持续生成。
+//! 3. **等待帧有上界。** 到达上界仍没有帧即失败，不返回不完整的图像；裁剪区或帧头标记为损坏、
+//!    或数据为空的缓冲区不计为一帧。
 //! 4. **回调在线程循环的线程上执行，并持有循环锁。** 调用线程只在持锁期间读写 `Pull`，
-//!    唯一放开锁的地方是 `pw_thread_loop_timed_wait_full`。
+//!    唯一释放锁的位置是 `pw_thread_loop_timed_wait_full`。
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::os::fd::{IntoRawFd, OwnedFd};
@@ -70,8 +70,8 @@ struct PwBuffer {
     buffer: *const SpaBuffer,
 }
 
-/// `struct spa_hook`：链表两指针、回调两指针、`removed` 与 `priv`。由 PipeWire 填写，
-/// 本模块只提供存放它的内存，必须在流销毁之后才释放。
+/// `struct spa_hook`：两个链表指针、两个回调指针、`removed` 与 `priv`。由 PipeWire 填写，
+/// 本模块只提供存放该结构的内存，必须在流销毁之后才释放。
 #[repr(C)]
 #[derive(Default)]
 struct SpaHook {
@@ -80,7 +80,7 @@ struct SpaHook {
 
 type Unused = Option<unsafe extern "C" fn()>;
 
-/// `struct pw_stream_events`，版本 2。只接状态、参数与出帧三个回调。
+/// `struct pw_stream_events`，版本 2。只注册状态、参数与出帧三个回调。
 #[repr(C)]
 struct StreamEvents {
     version: u32,
@@ -99,7 +99,7 @@ struct StreamEvents {
 
 type Raw = *mut c_void;
 
-/// 从 libpipewire 里取出的函数。
+/// 从 libpipewire 中取得的函数。
 struct Api {
     thread_loop_new: unsafe extern "C" fn(*const c_char, *const c_void) -> Raw,
     thread_loop_get_loop: unsafe extern "C" fn(Raw) -> Raw,
@@ -129,23 +129,23 @@ struct Api {
 static API: OnceLock<Result<Api, String>> = OnceLock::new();
 
 fn dl_error() -> String {
-    // SAFETY: dlerror 交回的串归动态链接器所有，这里立即复制。
+    // SAFETY: dlerror 返回的字符串归动态链接器所有，此处立即复制。
     let text = unsafe { libc::dlerror() };
     if text.is_null() {
         return String::new();
     }
-    // SAFETY: 非空时是 NUL 结尾的 C 串。
+    // SAFETY: 非空时是以 NUL 结尾的 C 字符串。
     unsafe { CStr::from_ptr(text) }
         .to_string_lossy()
         .into_owned()
 }
 
-/// 进程内加载一次 libpipewire。失败的原因一并缓存：库在进程运行期间不会凭空出现。
+/// 在进程内加载一次 libpipewire。失败原因一并缓存：进程运行期间该库不会变为可用。
 fn api() -> Result<&'static Api, String> {
     API.get_or_init(load).as_ref().map_err(Clone::clone)
 }
 
-/// 这台机器上有没有可用的 libpipewire。
+/// 本机是否有可用的 libpipewire。
 pub fn available() -> Result<(), String> {
     api().map(|_| ())
 }
@@ -155,17 +155,17 @@ fn load() -> Result<Api, String> {
     let lib = unsafe { libc::dlopen(LIBRARY.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
     if lib.is_null() {
         return Err(format!(
-            "capture_unavailable: 找不到 libpipewire-0.3.so.0，Wayland 下取图与认出共享的是哪个窗口都要经 PipeWire（{}）",
+            "capture_unavailable: 未找到 libpipewire-0.3.so.0，Wayland 下采图与识别共享的窗口都需要经由 PipeWire（{}）",
             dl_error()
         ));
     }
     macro_rules! sym {
         ($name:literal) => {{
-            // SAFETY: 名字是 NUL 结尾的字面量。
+            // SAFETY: 名称是以 NUL 结尾的字面量。
             let found = unsafe { libc::dlsym(lib, concat!($name, "\0").as_ptr().cast()) };
             if found.is_null() {
                 return Err(format!(
-                    "capture_unavailable: libpipewire-0.3 里没有 {}（{}）",
+                    "capture_unavailable: libpipewire-0.3 中没有 {}（{}）",
                     $name,
                     dl_error()
                 ));
@@ -200,16 +200,16 @@ fn load() -> Result<Api, String> {
         stream_disconnect: sym!("pw_stream_disconnect"),
         stream_destroy: sym!("pw_stream_destroy"),
     };
-    // SAFETY: 不传命令行参数；pw_init 可以重复调用。
+    // SAFETY: 不传入命令行参数；pw_init 可以重复调用。
     unsafe { init(null_mut(), null_mut()) };
     Ok(api)
 }
 
-/// 从流里取到的一帧，已换成 RGB。
+/// 从流中取得的一帧，已转换为 RGB。
 pub struct Frame {
-    /// 裁剪区的像素尺寸，即共享窗口在帧里占的那一块。
+    /// 裁剪区的像素尺寸，即共享窗口在帧中占据的区域。
     pub crop: (u32, u32),
-    /// 整帧的像素尺寸，协商好的视频尺寸。
+    /// 整帧的像素尺寸，即协商得到的视频尺寸。
     pub video: (u32, u32),
     pub rgb: Vec<u8>,
 }
@@ -224,7 +224,7 @@ struct Pull {
     failed: Option<String>,
 }
 
-/// POD 按 8 字节对齐存放：PipeWire 按字读它。
+/// POD 按 8 字节对齐存放：PipeWire 按字读取。
 fn aligned(bytes: &[u8]) -> Vec<u64> {
     bytes
         .chunks(8)
@@ -237,7 +237,7 @@ fn aligned(bytes: &[u8]) -> Vec<u64> {
 }
 
 unsafe extern "C" fn on_state(data: *mut c_void, _old: c_int, state: c_int, error: *const c_char) {
-    // SAFETY: data 是 `pull` 里登记的 `Pull`，回调期间调用线程不持有它，见本模块第 4 条。
+    // SAFETY: data 是 `pull` 中登记的 `Pull`，回调期间调用线程不持有它，见本模块第 4 条。
     let pull = unsafe { &mut *data.cast::<Pull>() };
     if state != STREAM_STATE_ERROR {
         return;
@@ -245,7 +245,7 @@ unsafe extern "C" fn on_state(data: *mut c_void, _old: c_int, state: c_int, erro
     let detail = if error.is_null() {
         String::new()
     } else {
-        // SAFETY: PipeWire 交来的错误串是 NUL 结尾的 C 串。
+        // SAFETY: PipeWire 提供的错误字符串是以 NUL 结尾的 C 字符串。
         unsafe { CStr::from_ptr(error) }
             .to_string_lossy()
             .into_owned()
@@ -261,7 +261,7 @@ unsafe extern "C" fn on_param(data: *mut c_void, id: u32, param: *const c_void) 
     if id != PARAM_FORMAT || param.is_null() {
         return;
     }
-    // SAFETY: param 指向一个完整的 POD，头 8 字节给出它的总长。
+    // SAFETY: param 指向一个完整的 POD，前 8 字节给出其总长。
     let format = unsafe {
         let head = std::slice::from_raw_parts(param.cast::<u8>(), 8);
         pod::total_len(head)
@@ -269,7 +269,7 @@ unsafe extern "C" fn on_param(data: *mut c_void, id: u32, param: *const c_void) 
             .and_then(pod::video_format)
     };
     pull.format = format;
-    // 要求缓冲区带上裁剪区与帧头：没有裁剪区时整帧是显示器那么大，窗口只在左上角。
+    // 要求缓冲区携带裁剪区与帧头元数据：没有裁剪区时整帧与显示器尺寸相同，窗口只位于左上角。
     let crop = aligned(&pod::meta(META_VIDEO_CROP));
     let header = aligned(&pod::meta(META_HEADER));
     let params = [
@@ -284,7 +284,7 @@ unsafe extern "C" fn on_process(data: *mut c_void) {
     // SAFETY: 同 `on_state`。
     let pull = unsafe { &mut *data.cast::<Pull>() };
     let api = pull.api;
-    // 只看最新的一块，更早的直接还回去。
+    // 只处理最新的缓冲区，更早的直接归还。
     let mut newest: *mut PwBuffer = null_mut();
     loop {
         // SAFETY: 在循环线程上、持锁调用。
@@ -293,7 +293,7 @@ unsafe extern "C" fn on_process(data: *mut c_void) {
             break;
         }
         if !newest.is_null() {
-            // SAFETY: 同上；这块缓冲区刚从同一条流取出。
+            // SAFETY: 同上；该缓冲区刚从同一条流取出。
             unsafe { (api.stream_queue_buffer)(pull.stream, newest) };
         }
         newest = next;
@@ -302,7 +302,7 @@ unsafe extern "C" fn on_process(data: *mut c_void) {
         return;
     }
     if pull.frame.is_none() {
-        // SAFETY: 缓冲区在还回去之前有效。
+        // SAFETY: 缓冲区在归还之前有效。
         if let Some(read) = unsafe { read_buffer(newest, pull.format) } {
             pull.frame = Some(read);
             // SAFETY: 在循环线程上、持锁调用。
@@ -313,17 +313,17 @@ unsafe extern "C" fn on_process(data: *mut c_void) {
     unsafe { (api.stream_queue_buffer)(pull.stream, newest) };
 }
 
-/// 一块缓冲区里的一帧。不算一帧（空、损坏、格式还没协商好）时交回 `None`，继续等下一块。
+/// 一块缓冲区中的一帧。不计为一帧（空、损坏、格式尚未协商完成）时返回 `None`，继续等待下一块。
 ///
 /// # Safety
 ///
-/// `buffer` 必须是刚从流里取出、还没还回去的缓冲区。
+/// `buffer` 必须是刚从流中取出、尚未归还的缓冲区。
 unsafe fn read_buffer(
     buffer: *const PwBuffer,
     format: Option<VideoFormat>,
 ) -> Option<Result<Frame, String>> {
     let format = format?;
-    // SAFETY: 调用方保证缓冲区有效；各指针由 PipeWire 填写，空指针逐个判过再解引用。
+    // SAFETY: 调用方保证缓冲区有效；各指针由 PipeWire 填写，逐个判空之后再解引用。
     unsafe {
         let spa = (*buffer).buffer.as_ref()?;
         if spa.n_datas == 0 || spa.datas.is_null() {
@@ -347,7 +347,7 @@ unsafe fn read_buffer(
         }
         if data.data.is_null() {
             return Some(Err(
-                "capture_failed: 缓冲区没有映射进内存（合成器给的是 DMA-BUF）".to_owned(),
+                "capture_failed: 缓冲区未映射到内存（合成器提供的是 DMA-BUF）".to_owned(),
             ));
         }
         let crop = metas
@@ -359,7 +359,7 @@ unsafe fn read_buffer(
             });
         let Some(order) = channels(format.format) else {
             return Some(Err(format!(
-                "capture_failed: 协商出的像素格式 {} 不是 8 位四通道",
+                "capture_failed: 协商得到的像素格式 {} 不是 8 位四通道",
                 format.format
             )));
         };
@@ -386,7 +386,7 @@ unsafe fn read_buffer(
     }
 }
 
-/// 红、绿、蓝三个通道在 4 字节像素里的下标，按内存里的字节顺序。
+/// 红、绿、蓝三个通道在 4 字节像素中的下标，按内存中的字节顺序。
 const fn channels(format: u32) -> Option<[usize; 3]> {
     match format {
         VIDEO_BGRX | VIDEO_BGRA => Some([2, 1, 0]),
@@ -397,7 +397,7 @@ const fn channels(format: u32) -> Option<[usize; 3]> {
     }
 }
 
-/// 裁剪区夹到帧里。没有裁剪区或它为空时取整帧。交回（x, y, 宽, 高）。
+/// 将裁剪区限制在帧内。没有裁剪区或裁剪区为空时取整帧。返回（x, y, 宽, 高）。
 fn crop_region(crop: Option<(i32, i32, i32, i32)>, video: (u32, u32)) -> (u32, u32, u32, u32) {
     let full = (0, 0, video.0, video.1);
     let Some((x, y, w, h)) = crop else {
@@ -417,7 +417,7 @@ fn crop_region(crop: Option<(i32, i32, i32, i32)>, video: (u32, u32)) -> (u32, u
     (x, y, w.min(video.0 - x), h.min(video.1 - y))
 }
 
-/// 从一帧的字节里取出裁剪区，换成 RGB。数据不够裁剪区用时失败，不交半张图。
+/// 从一帧的字节中取出裁剪区并转换为 RGB。数据不足以覆盖裁剪区时失败，不返回不完整的图像。
 fn to_rgb(
     bytes: &[u8],
     stride: usize,
@@ -447,20 +447,20 @@ fn to_rgb(
     Ok(out)
 }
 
-/// 连上 portal 交来的 PipeWire 连接，从节点 `node` 取一帧。`budget` 是等第一帧的上限。
+/// 连接 portal 提供的 PipeWire 连接，从节点 `node` 取一帧。`budget` 是等待第一帧的上限。
 pub fn pull(remote: OwnedFd, node: u32, budget: Duration) -> Result<Frame, String> {
     let api = api()?;
-    // SAFETY: 以下是 libpipewire 公开接口的标准用法；每个对象在同一函数里按创建的逆序销毁，
+    // SAFETY: 以下是 libpipewire 公开接口的标准用法；每个对象在同一函数中按创建的逆序销毁，
     // 对流与连接的调用都在持有循环锁时进行。
     unsafe {
         let thread_loop = (api.thread_loop_new)(c"qywork-capture".as_ptr(), null());
         if thread_loop.is_null() {
-            return Err("capture_failed: 建 PipeWire 线程循环失败".to_owned());
+            return Err("capture_failed: 创建 PipeWire 线程循环失败".to_owned());
         }
         let context = (api.context_new)((api.thread_loop_get_loop)(thread_loop), null_mut(), 0);
         if context.is_null() {
             (api.thread_loop_destroy)(thread_loop);
-            return Err("capture_failed: 建 PipeWire 上下文失败".to_owned());
+            return Err("capture_failed: 创建 PipeWire 上下文失败".to_owned());
         }
         if (api.thread_loop_start)(thread_loop) < 0 {
             (api.context_destroy)(context);
@@ -488,11 +488,11 @@ unsafe fn pull_locked(
     node: u32,
     budget: Duration,
 ) -> Result<Frame, String> {
-    // SAFETY: 见函数说明；描述符的所有权交给 PipeWire，出错与断开时由它关闭。
+    // SAFETY: 见函数说明；描述符的所有权交给 PipeWire，出错与断开时由 PipeWire 关闭。
     unsafe {
         let core = (api.context_connect_fd)(context, remote.into_raw_fd(), null_mut(), 0);
         if core.is_null() {
-            return Err("capture_failed: 连不上 portal 交来的 PipeWire 连接".to_owned());
+            return Err("capture_failed: 无法连接 portal 提供的 PipeWire 连接".to_owned());
         }
         let props = (api.properties_new_string)(
             c"media.type=Video media.category=Capture media.role=Screen".as_ptr(),
@@ -500,7 +500,7 @@ unsafe fn pull_locked(
         let stream = (api.stream_new)(core, c"qywork-capture".as_ptr(), props);
         if stream.is_null() {
             (api.core_disconnect)(core);
-            return Err("capture_failed: 建 PipeWire 流失败".to_owned());
+            return Err("capture_failed: 创建 PipeWire 流失败".to_owned());
         }
         let mut pull = Box::new(Pull {
             api,
@@ -538,7 +538,7 @@ unsafe fn pull_locked(
             1,
         );
         let outcome = if connected < 0 {
-            Err(format!("capture_failed: 连不上流 {node}（{connected}）"))
+            Err(format!("capture_failed: 无法连接流 {node}（{connected}）"))
         } else {
             let mut deadline = libc::timespec {
                 tv_sec: 0,
@@ -558,7 +558,7 @@ unsafe fn pull_locked(
                     let pull = &mut *data;
                     break pull.frame.take().unwrap_or_else(|| {
                         Err(format!(
-                            "capture_failed: {} ms 内流 {node} 没有交出一帧",
+                            "capture_failed: {} ms 内流 {node} 未产生任何帧",
                             budget.as_millis()
                         ))
                     });
@@ -579,7 +579,7 @@ unsafe fn pull_locked(
 mod tests {
     use super::*;
 
-    /// 内存里 B G R X 的顺序读出来是 R G B；另外三种排法同样落到 R G B。
+    /// 内存中按 B G R X 排列的像素读出为 R G B；另外三种排列同样读出为 R G B。
     #[test]
     fn each_byte_order_reads_out_as_rgb() {
         let px = [0x10, 0x20, 0x30, 0x40];
@@ -591,21 +591,21 @@ mod tests {
         assert!(channels(3).is_none());
     }
 
-    /// 裁剪区从帧的左上角取窗口那一块，行宽按 stride 走。
+    /// 裁剪区从帧的左上角取出窗口区域，行宽按 stride 计算。
     #[test]
     fn the_crop_region_is_cut_out_row_by_row() {
-        // 3×2 的帧，stride 16（每行 4 个像素位），像素值就是它的序号。
+        // 3×2 的帧，stride 16（每行 4 个像素位），像素值即该像素的序号。
         let mut bytes = vec![0u8; 32];
         for (i, px) in bytes.chunks_exact_mut(4).enumerate() {
             px.copy_from_slice(&[i as u8, 0, 0, 0]);
         }
-        let rgb = to_rgb(&bytes, 16, (1, 0, 2, 2), [0, 1, 2]).expect("数据够用");
+        let rgb = to_rgb(&bytes, 16, (1, 0, 2, 2), [0, 1, 2]).expect("数据必须足够");
         assert_eq!(rgb, vec![1, 0, 0, 2, 0, 0, 5, 0, 0, 6, 0, 0]);
-        // 裁剪区超出数据：失败，不交半张图。
+        // 裁剪区超出数据：失败，不返回不完整的图像。
         assert!(to_rgb(&bytes, 16, (0, 0, 4, 3), [0, 1, 2]).is_err());
     }
 
-    /// 裁剪区夹到帧里；缺席、为空或在帧外时取整帧。
+    /// 裁剪区限制在帧内；缺失、为空或位于帧外时取整帧。
     #[test]
     fn the_crop_region_is_clamped_to_the_frame() {
         assert_eq!(

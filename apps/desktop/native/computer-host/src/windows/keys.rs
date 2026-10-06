@@ -1,14 +1,14 @@
 //! 协议键名 → Windows 虚拟键码与扩展键标志。
 //!
-//! worker 派发按键与外壳在 worker 退出后补发抬起共用这一个文件，外壳经 `#[path]` 引入它。
-//! 不要在外壳里另写一张表：两张表一旦不一致，补发抬起的就不是 worker 按下的那个键。
+//! worker 派发按键与外壳在 worker 退出后补发抬起事件必须使用同一张表，外壳经由 `#[path]` 引入
+//! 本文件。不要在外壳中另写一张表：两张表一旦不一致，补发抬起的就不是 worker 按下的键。
 //! 因此本文件只依赖标准库，不引用任何 crate 内的路径。
 
 /// 键名 → 虚拟键码与扩展键标志。键名是协议写法（全小写的主键名，或修饰键名
-/// `ctrl` / `alt` / `shift` / `meta`）；认不出的名字返回 `None`，不猜。
+/// `ctrl` / `alt` / `shift` / `meta`）；无法识别的名称返回 `None`，不推测。
 ///
-/// 扩展键标志漏给的代价是真实的：方向键与小键盘的同名键共用虚拟键码，少了 `E0`
-/// 前缀，目标应用收到的是小键盘那一个。
+/// 扩展键标志不可遗漏：方向键与小键盘的同名键共用虚拟键码，缺少 `E0`
+/// 前缀时，目标应用收到的是小键盘上的键。
 pub fn virtual_key(name: &str) -> Option<(u16, bool)> {
     match name.as_bytes() {
         [letter @ b'a'..=b'z'] => return Some((u16::from(letter.to_ascii_uppercase()), false)),
@@ -50,7 +50,7 @@ pub fn virtual_key(name: &str) -> Option<(u16, bool)> {
         "shift" => (0x10, false),
         "ctrl" => (0x11, false),
         "alt" => (0x12, false),
-        // 左 Windows 徽标键的扫描码带 E0 前缀，少了它目标应用收不到这个键。
+        // 左 Windows 徽标键的扫描码带 E0 前缀，缺少该前缀时目标应用收不到该键。
         "meta" => (0x5B, true),
         _ => return None,
     };
@@ -72,13 +72,13 @@ mod tests {
         assert_eq!(virtual_key("f24"), Some((0x87, false)));
         assert_eq!(virtual_key("enter"), Some((0x0D, false)));
         assert_eq!(virtual_key("escape"), Some((0x1B, false)));
-        // 认不出的名字不猜：没有这个键就没有这次按键。键名是规范写法，大写不认。
+        // 无法识别的名称不推测：不存在该键即不执行此次按键。键名使用规范写法，不接受大写。
         for unknown in ["f25", "f0", "f01", "f+1", "any", "", "A", "win"] {
             assert_eq!(virtual_key(unknown), None, "{unknown}");
         }
     }
 
-    /// 方向键与编辑键要带扩展键标志：少了它目标应用收到的是小键盘上的同码键。
+    /// 方向键与编辑键必须带扩展键标志：缺少该标志时目标应用收到的是小键盘上的同码键。
     #[test]
     fn navigation_keys_carry_the_extended_flag() {
         for name in [
@@ -88,7 +88,7 @@ mod tests {
             assert_eq!(virtual_key(name).map(|k| k.1), Some(true), "{name} 应当是扩展键");
         }
         for name in ["a", "enter", "tab", "space", "f5", "comma", "ctrl", "alt", "shift"] {
-            assert_eq!(virtual_key(name).map(|k| k.1), Some(false), "{name} 不该是扩展键");
+            assert_eq!(virtual_key(name).map(|k| k.1), Some(false), "{name} 不应是扩展键");
         }
         assert_eq!(virtual_key("ctrl"), Some((0x11, false)));
         assert_eq!(virtual_key("alt"), Some((0x12, false)));

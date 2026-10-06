@@ -1,21 +1,21 @@
-//! 经 RemoteDesktop 向共享的窗口投递指针与键盘。
+//! 经由 RemoteDesktop 向共享的窗口投递指针与键盘输入。
 //!
 //! 六条边界：
 //!
-//! 1. **只在目标窗口是活动窗口时投递。** Wayland 下客户端既不能把别的窗口激活到前台，也读不到
-//!    窗口的层叠序：键盘去的是活动窗口，指针落点在不在目标窗口上核对不了。目标窗口是活动窗口
-//!    时它在普通窗口之上；置顶窗口、弹出菜单与系统通知盖住的位置仍核对不了，这是这条路径的
+//! 1. **只在目标窗口是活动窗口时投递。** Wayland 下客户端既不能把其他窗口激活到前台，也无法读取
+//!    窗口的层叠序：键盘事件发往活动窗口，无法核对指针落点是否在目标窗口上。目标窗口是活动窗口
+//!    时位于普通窗口之上；置顶窗口、弹出菜单与系统通知遮挡的位置仍无法核对，这是该路径的
 //!    边界。
-//! 2. **指针只接受按图定位的落点。** 落点是流的逻辑坐标，合成器按这条流把它换到窗口上；
-//!    AT-SPI 在这类窗口上给的包围盒不是这套坐标，按控件定位的指针动作不提供。
-//! 3. **字符按 keysym 投递，由合成器按当前键盘布局换成按键。** 布局里没有的字符合成器丢弃且
-//!    不报错，因此含字符的输入一律记结果未知，以动作后的重读为准；Latin-1 以外的字符没有
-//!    布局能按出来，派发前即拒绝。
-//! 4. **按住的键随按随记**，任何中止路径都经 `input::Hold` 释放。worker 被强杀时会话随总线
-//!    连接一起结束，合成器释放这个会话按住的键；宿主按账补发的 X11 抬起对原生 Wayland 窗口
-//!    不起作用。
-//! 5. **中途目标窗口不再是活动窗口即停止**，已发出多少如实带回。
-//! 6. **一个会话的第一次指针动作先只移动、等一段再派发**：见 `Ledger::first_pointer`。
+//! 2. **指针只接受按图定位的落点。** 落点是流的逻辑坐标，合成器按该流将其换算到窗口上；
+//!    AT-SPI 在这类窗口上提供的包围盒不是这套坐标，因此不提供按控件定位的指针动作。
+//! 3. **字符按 keysym 投递，由合成器按当前键盘布局换算为按键。** 布局中没有的字符被合成器丢弃
+//!    且不报错，因此含字符的输入一律记为结果未知，以动作后的重读为准；Latin-1 以外的字符没有
+//!    布局能够输入，派发前即拒绝。
+//! 4. **按下的键在按下时登记**，任何中止路径都经 `input::Hold` 释放。worker 被强制终止时会话随
+//!    总线连接一起结束，合成器释放该会话按下的键；宿主按登记补发的 X11 抬起事件对原生 Wayland
+//!    窗口不起作用。
+//! 5. **中途目标窗口不再是活动窗口即停止**，如实返回已发出的数量。
+//! 6. **一个会话的第一次指针动作先只移动指针，等待一段时间后再派发**：见 `Ledger::first_pointer`。
 
 use std::time::Duration;
 
@@ -26,16 +26,16 @@ use crate::geometry::ScreenPoint;
 use crate::input::{drag_path, key_stroke, wheel_of, Event, Hold, Sink};
 use crate::protocol::{key_name, ActionSpec, Dispatch, DragTarget, MouseButton};
 
-/// 一次拖拽分几段移动、两段之间隔多久。与 X11 路径相同。
+/// 一次拖拽分段移动的段数与相邻两段之间的间隔。与 X11 路径相同。
 const DRAG_STEPS: u32 = 12;
 const DRAG_STEP_MS: u64 = 16;
-/// 文字每投多少个字符重核一次活动窗口。
+/// 输入文字时每批的字符数，每批之前重新核对一次活动窗口。
 const TEXT_BATCH: usize = 16;
-/// 一个会话第一次投指针事件之前，先移动指针再等多久，见 `Ledger::first_pointer`。
-/// 无头 GNOME Shell 50 上从建设备到应用收到第一个指针事件实测 100–200 ms。
+/// 一个会话第一次投递指针事件之前，先移动指针后等待的时长，见 `Ledger::first_pointer`。
+/// 在无头 GNOME Shell 50 上，从创建设备到应用收到第一个指针事件实测为 100–200 ms。
 const POINTER_ANNOUNCE: Duration = Duration::from_millis(400);
 
-/// 按 Linux 输入事件码（`BTN_LEFT` 起）。
+/// 按钮对应的 Linux 输入事件码（自 `BTN_LEFT` 起）。
 const fn button_code(button: MouseButton) -> i32 {
     match button {
         MouseButton::Left => 0x110,
@@ -47,17 +47,17 @@ const fn button_code(button: MouseButton) -> i32 {
 /// 字符 keysym 与功能键 keysym 的分界：功能键、修饰键都在 `0xff00` 以上。
 const FUNCTION_KEYSYMS: u32 = 0xff00;
 
-const LAYOUT_NOTE: &str = "字符经合成器按当前键盘布局换成按键，布局里没有的字符不会送达；\
+const LAYOUT_NOTE: &str = "字符经合成器按当前键盘布局换算为按键，布局中没有的字符不会送达；\
      以动作后的重读为准";
 
-/// 投递目标：共享授权，以及动作前后要读的那两项实时状态。
+/// 投递目标：共享授权，以及动作前后需要读取的两项实时状态。
 pub struct Target<'a> {
     pub grant: &'a Grant,
-    /// 目标窗口的逻辑尺寸（AT-SPI）。落点与拖拽终点都要在它里面。
+    /// 目标窗口的逻辑尺寸（AT-SPI）。落点与拖拽终点都必须位于该范围内。
     pub size: (i32, i32),
-    /// 目标窗口此刻是不是活动窗口。
+    /// 目标窗口当前是否为活动窗口。
     pub active: &'a dyn Fn() -> Result<bool, String>,
-    /// 点名了控件时：它此刻有没有键盘焦点。
+    /// 指定了控件时：该控件当前是否持有键盘焦点。
     pub focus: Option<&'a dyn Fn() -> Result<bool, String>>,
 }
 
@@ -124,20 +124,20 @@ impl Sink for PortalSink<'_> {
     }
 }
 
-/// 一批事件发完之后的执行事实。`note` 是全部发出时仍要附上的说明，见本模块第 3 条。
+/// 一批事件发送完毕后的执行事实。`note` 是全部发出时仍需附加的说明，见本模块第 3 条。
 fn settle(sent: u32, requested: u32, note: Option<&str>) -> Attempt {
     let (dispatch, reason) = if requested == 0 || sent == 0 {
         (
             Dispatch::NotDispatched,
             Some(format!(
-                "input_blocked: {requested} 个输入事件一个都没有交给合成器"
+                "input_blocked: {requested} 个输入事件均未交给合成器"
             )),
         )
     } else if sent < requested {
         (
             Dispatch::Unknown,
             Some(format!(
-                "input_partial: {requested} 个输入事件只交给合成器 {sent} 个，已发出的部分可能已经生效"
+                "input_partial: {requested} 个输入事件中只有 {sent} 个交给合成器，已发出的部分可能已生效"
             )),
         )
     } else if let Some(note) = note {
@@ -157,7 +157,7 @@ fn must_be_active(target: &Target<'_>) -> Result<(), String> {
         return Ok(());
     }
     Err(
-        "not_foreground: 目标窗口不是活动窗口；Wayland 下不能替用户切换窗口，请用户先切到这个窗口"
+        "not_foreground: 目标窗口不是活动窗口；Wayland 下无法替用户切换窗口，请用户先切换到该窗口"
             .to_owned(),
     )
 }
@@ -166,13 +166,13 @@ fn inside(target: &Target<'_>, point: ScreenPoint) -> bool {
     point.x >= 0 && point.y >= 0 && point.x < target.size.0 && point.y < target.size.1
 }
 
-/// 不看共享状态就判得出的拒绝：窗口动作、按控件定位的指针动作、按不出来的文字、认不出的键。
+/// 无需查看共享状态即可判定的拒绝：窗口动作、按控件定位的指针动作、无法输入的文字、无法识别的键。
 ///
-/// 调用方在要共享授权之前先过这一关：这些请求无论授权与否都执行不了，为它们弹出授权框没有意义。
+/// 调用方在申请共享授权之前先执行此项检查：这些请求无论是否授权都无法执行，为它们弹出授权框没有意义。
 pub fn screen(action: &ActionSpec, point: Option<ScreenPoint>) -> Result<(), String> {
     if !action.takes_input() {
         return Err(
-            "window_action_unsupported: Wayland 下合成器不允许客户端激活、摆放或关闭别的窗口"
+            "window_action_unsupported: Wayland 下合成器不允许客户端激活、摆放或关闭其他窗口"
                 .to_owned(),
         );
     }
@@ -188,7 +188,7 @@ pub fn screen(action: &ActionSpec, point: Option<ScreenPoint>) -> Result<(), Str
         ActionSpec::TypeText { text } if text.is_empty() => Err("empty_text: 文字为空".to_owned()),
         ActionSpec::TypeText { text } => match text.chars().find(|c| char_keysym(*c).is_none()) {
             Some(c) => Err(format!(
-                "text_unsupported: 「{c}」不在 Latin-1 里，Wayland 下没有键盘布局按得出它；可改用 set_value"
+                "text_unsupported: 「{c}」不在 Latin-1 范围内，Wayland 下没有能输入该字符的键盘布局；可改用 set_value"
             )),
             None => Ok(()),
         },
@@ -200,7 +200,7 @@ pub fn screen(action: &ActionSpec, point: Option<ScreenPoint>) -> Result<(), Str
     }
 }
 
-/// 执行一个前台输入动作。先过 `screen`。
+/// 执行一个前台输入动作。先经过 `screen` 检查。
 pub fn perform(
     target: &Target<'_>,
     action: &ActionSpec,
@@ -213,12 +213,12 @@ pub fn perform(
     let coverage = &target.grant.coverage;
     if action.takes_point() && !coverage.pointer {
         return Attempt::Refused(
-            "input_not_allowed: 用户在系统授权框里没有允许指针控制".to_owned(),
+            "input_not_allowed: 用户未在系统授权框中允许指针控制".to_owned(),
         );
     }
     if action.targets_window() && !coverage.keyboard {
         return Attempt::Refused(
-            "input_not_allowed: 用户在系统授权框里没有允许键盘控制".to_owned(),
+            "input_not_allowed: 用户未在系统授权框中允许键盘控制".to_owned(),
         );
     }
     if let Err(reason) = must_be_active(target) {
@@ -233,7 +233,7 @@ pub fn perform(
             return Attempt::Refused(format!("point_outside_window: {},{}", at.x, at.y));
         }
         if target.grant.first_pointer() {
-            // 只移动、不按键：这次移动应用可能收不到，之后的那一组才算数。
+            // 只移动、不按键：应用可能收不到本次移动，以之后的一组事件为准。
             let _ = sink.send(&[Event::Move { to: at }]);
             std::thread::sleep(POINTER_ANNOUNCE);
         }
@@ -284,16 +284,16 @@ pub fn perform(
                     .collect::<Vec<_>>(),
             ),
         },
-        // 窗口动作与没有落点的指针动作 `screen` 已经拒掉。
-        _ => Attempt::Refused("not_foreground: 这个动作不走前台输入".to_owned()),
+        // 窗口动作与没有落点的指针动作已由 `screen` 拒绝。
+        _ => Attempt::Refused("not_foreground: 该动作不经由前台输入".to_owned()),
     }
 }
 
-/// 点名控件的键盘输入再核对它持有焦点；不点名即以窗口为目标。
+/// 指定控件的键盘输入还需核对该控件持有焦点；未指定控件时以窗口为目标。
 fn keyboard(target: &Target<'_>) -> Result<(), String> {
     match target.focus {
         Some(focused) if !focused()? => {
-            Err("not_focused: 这个控件没有键盘焦点 · 先 click 它".to_owned())
+            Err("not_focused: 该控件没有键盘焦点 · 请先对该控件执行 click".to_owned())
         }
         _ => Ok(()),
     }
@@ -306,7 +306,7 @@ fn drag(
     to: &DragTarget,
     stop: &dyn Fn() -> bool,
 ) -> Attempt {
-    // 按控件给的终点 `screen` 已经拒掉。
+    // 按控件指定的终点已由 `screen` 拒绝。
     let DragTarget::Offset { dx, dy } = to else {
         return Attempt::Refused("pointer_by_image_only: 拖拽终点只接受偏移".to_owned());
     };
@@ -323,7 +323,7 @@ fn drag(
     if sink.send(&[Event::Move { to: anchor }]) == 0 {
         return settle(0, 1, None);
     }
-    // 记账在按下之前：按下与记账之间 worker 被强杀的话，那个键就没有人知道它按住了。
+    // 在按下之前登记：worker 若在按下与登记之间被强制终止，任何一方都无法得知该键处于按下状态。
     let mut hold = Hold::record(sink, vec![MouseButton::Left], Vec::new());
     if sink.send(&[Event::Button {
         button: MouseButton::Left,
@@ -333,7 +333,7 @@ fn drag(
         hold.release();
         return Attempt::Called(Outcome::returned(
             Dispatch::NotDispatched,
-            Some("input_blocked: 按下没有交给合成器，指针已在起点".to_owned()),
+            Some("input_blocked: 按下事件未交给合成器，指针已位于起点".to_owned()),
         ));
     }
     let path = drag_path(anchor, destination, DRAG_STEPS);
@@ -354,7 +354,7 @@ fn drag(
     settle(moved + released, requested, None)
 }
 
-/// 一个字符的 keysym：换行与制表符是功能键，Latin-1 可打印字符的 keysym 就是它的码位。
+/// 一个字符的 keysym：换行与制表符是功能键，Latin-1 可打印字符的 keysym 即其码位。
 fn char_keysym(c: char) -> Option<u32> {
     match c {
         '\n' => Some(0xff0d),
@@ -364,7 +364,7 @@ fn char_keysym(c: char) -> Option<u32> {
     }
 }
 
-/// 投进文字。空文字与按不出来的字符 `screen` 已经拒掉。
+/// 输入文字。空文字与无法输入的字符已由 `screen` 拒绝。
 fn type_text(target: &Target<'_>, sink: &PortalSink<'_>, text: &str) -> Attempt {
     let syms: Vec<u32> = text.chars().filter_map(char_keysym).collect();
     let requested = u32::try_from(syms.len()).unwrap_or(u32::MAX);
@@ -374,7 +374,7 @@ fn type_text(target: &Target<'_>, sink: &PortalSink<'_>, text: &str) -> Attempt 
             return Attempt::Called(Outcome::returned(
                 Dispatch::Unknown,
                 Some(format!(
-                    "not_foreground: 目标窗口中途不再是活动窗口 · 已投出 {sent} / {requested} 个字符"
+                    "not_foreground: 目标窗口中途不再是活动窗口 · 已发送 {sent} / {requested} 个字符"
                 )),
             ));
         }
@@ -391,14 +391,14 @@ fn type_text(target: &Target<'_>, sink: &PortalSink<'_>, text: &str) -> Attempt 
     settle(sent, requested, note)
 }
 
-/// 一次组合键。修饰键按给出的顺序按下，逆序释放。认不出的键 `screen` 已经拒掉。
+/// 一次组合键。修饰键按给出的顺序按下，逆序释放。无法识别的键已由 `screen` 拒绝。
 fn press_key(sink: &PortalSink<'_>, key: &str, held: &[String]) -> Attempt {
     let Some((main, main_sym)) = key_name(key).and_then(|k| keysym(&k).map(|s| (k, s))) else {
         return Attempt::Refused(format!("unknown_key: {key}"));
     };
     let events = key_stroke(&main, held);
     let requested = count(&events);
-    // 记账在派发之前：整条序列自带抬起，但只发出去一半时修饰键会停在按下状态。
+    // 在派发之前登记：整条序列自带抬起事件，但只发出一部分时修饰键会停留在按下状态。
     let mut hold = Hold::record(sink, Vec::new(), {
         let mut keys = held.to_vec();
         keys.push(main);
@@ -431,7 +431,7 @@ mod tests {
         }
     }
 
-    /// 全部发出而含字符：结果未知；全部发出且只有功能键：已派发；一个没发出：未派发。
+    /// 全部发出且含字符：结果未知；全部发出且只有功能键：已派发；全部未发出：未派发。
     #[test]
     fn character_input_is_never_reported_as_delivered() {
         let dispatch = |attempt: Attempt| match attempt {
@@ -444,7 +444,7 @@ mod tests {
         assert_eq!(dispatch(settle(0, 4, None)), Dispatch::NotDispatched);
     }
 
-    /// 无论共享与否都执行不了的请求在要授权之前就拒掉：不为它们弹授权框。
+    /// 无论是否共享都无法执行的请求在申请授权之前即被拒绝：不为它们弹出授权框。
     #[test]
     fn requests_that_can_never_run_are_refused_before_asking() {
         let point = Some(ScreenPoint { x: 10, y: 10 });

@@ -1,17 +1,17 @@
 [package]
 name = "qywork"
-# 这一行与 Cargo.lock 里本 crate 的 version 由 `scripts/sync-version.ts` 按仓库根
-# `VERSION` 一起灌入，不要手改：只改其中一处，带 `--locked` 的门禁检查就以 101 失败。
+# 本行与 Cargo.lock 中本 crate 的 version 由 `scripts/sync-version.ts` 按仓库根
+# `VERSION` 同时写入，不要手工修改：只修改其中一处时，带 `--locked` 的门禁检查以退出码 101 失败。
 version = "0.2.2"
 description = "qywork —— 开源本地编程 agent"
 authors = ["qywork"]
 edition = "2021"
 rust-version = "1.80"
 
-# main.rs 只是一个薄壳，实现都在 lib.rs——这样逻辑能被 cargo test 覆盖，
+# main.rs 只是入口，实现均在 lib.rs，使逻辑能被 cargo test 覆盖，
 # 也能被 mobile 入口复用。
-# 注意：这一段必须放在全部 [package] 字段之后，否则后续键会被算作 lib 的键
-# （cargo 只会给一句 "unused manifest key: lib.authors" 的警告，很容易漏看）。
+# 本段必须位于全部 [package] 字段之后，否则后续键会被视为 lib 的键
+# （cargo 只输出一条 "unused manifest key: lib.authors" 警告，容易遗漏）。
 [lib]
 name = "qywork_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -20,10 +20,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# `tray-icon`：关闭按钮只把主窗口收进托盘，进程从托盘菜单退出，见 lib.rs 的 `build_tray`。
-# `unstable`：`Window::add_child` 只在这个开关下存在，浏览器宿主的子 WebView 靠它建出。
-# 它同时让主 WebView 按子视图创建，Windows 上无装饰窗口的缩放边框因此要在 lib.rs 的
-# `build_main_window` 里补挂。
+# `tray-icon`：关闭按钮只把主窗口隐藏到托盘，进程从托盘菜单退出，见 lib.rs 的 `build_tray`。
+# `unstable`：`Window::add_child` 只在该特性下存在，浏览器宿主的子 WebView 由它创建。
+# 该特性同时使主 WebView 按子视图创建，因此 Windows 上无装饰窗口的缩放边框需要在 lib.rs 的
+# `build_main_window` 中另行添加。
 tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
@@ -31,67 +31,67 @@ tauri-plugin-opener = "2"
 tauri-plugin-updater = "2.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
-# 用于 sidecar 输出通道与握手/恢复计时。tokio 本来就在依赖树里（tauri 的运行时就是它），
-# 写成直接依赖只是让这些类型和函数可以被命名，不新增任何 crate。
+# 用于 sidecar 输出通道与握手/恢复计时。tokio 已在依赖树中（tauri 的运行时即 tokio），
+# 声明为直接依赖只为能引用这些类型和函数，不新增任何 crate。
 tokio = { version = "1", features = ["sync", "time", "macros"] }
 serde_json = "1"
 parking_lot = "0.12"
 anyhow = "1"
 portable-pty = "0.9"
-# tauri 运行时把窗口创建失败只写进 `log::error!` 就当成功返回；没有 logger 那句话就消失。
-# 见 lib.rs 的 `ShellLog`。log 本来就在依赖树里。
+# tauri 运行时创建窗口失败时只写入 `log::error!` 并按成功返回；未注册 logger 时该错误不会输出。
+# 见 lib.rs 的 `ShellLog`。log 已在依赖树中。
 log = "0.4"
 
-# 只有 Windows 需要：无装饰窗口的投影要自己向 DWM 要，见 lib.rs 的
-# `extend_frame_for_shadow`。版本跟 tauri 传递依赖的那份对齐（0.61），
-# 否则同一套 Win32 类型会编出两份，`hwnd()` 的返回值就对不上了。
+# 只有 Windows 需要：无装饰窗口的投影需自行向 DWM 申请，见 lib.rs 的
+# `extend_frame_for_shadow`。版本与 tauri 传递依赖中的版本一致（0.61），
+# 否则同一套 Win32 类型会编译出两份，`hwnd()` 的返回值类型不一致。
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
   "Win32_Graphics_Dwm",
   "Win32_UI_Controls",
-  # 启动失败时弹 MessageBoxW。它不依赖 WebView，正好覆盖「窗口还没建出来」那段。
+  # 启动失败时弹出 MessageBoxW。它不依赖 WebView，能覆盖窗口创建之前的失败。
   "Win32_UI_WindowsAndMessaging",
   # 浏览器 profile 的本机占用锁（CreateMutexW）与宿主凭据的随机数（BCryptGenRandom）。
   "Win32_Security",
   "Win32_Security_Cryptography",
   "Win32_System_Threading",
-  # worker 放进一个「作业关闭即杀」的作业对象：宿主被强杀时它随之结束。
+  # worker 加入设置了「关闭作业时终止进程」的作业对象：宿主被强制终止时 worker 随之结束。
   "Win32_System_JobObjects",
-  # 强杀 worker 之后补发它按住的键与鼠标键的抬起，见 desktop/input.rs。
+  # 强制终止 worker 之后，为其按下未释放的键盘键与鼠标键补发释放事件，见 desktop/input.rs。
   "Win32_UI_Input_KeyboardAndMouse",
 ] }
-# 逐下载钩子绑的是 `DownloadStarting` 交出的 `ICoreWebView2DownloadOperation` 本身，
-# 见 browser/webview2.rs。版本跟 tauri 传递依赖的那份对齐（0.38），否则 `PlatformWebview::controller()`
-# 交出来的接口与这里的类型不是同一个。
+# 逐下载钩子绑定的是 `DownloadStarting` 提供的 `ICoreWebView2DownloadOperation` 本身，
+# 见 browser/webview2.rs。版本与 tauri 传递依赖中的版本一致（0.38），否则 `PlatformWebview::controller()`
+# 返回的接口与此处的类型不是同一类型。
 webview2-com = "0.38"
 
 # Linux 的 `PR_SET_PDEATHSIG` 与 macOS 的 `proc_pidinfo`，见 desktop/worker.rs 与 desktop/identity.rs。
-# 版本跟依赖树里的那份对齐（0.2）。
+# 版本与依赖树中的版本一致（0.2）。
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# worker 被强杀之后经 XTest 补发它按住的键与鼠标键的抬起，见 desktop/input.rs。
-# 与 worker 用同一个版本（0.14）；纯 Rust 实现，不链接 libX11。
+# worker 被强制终止之后，经 XTest 为其按下未释放的键盘键与鼠标键补发释放事件，见 desktop/input.rs。
+# 版本与 worker 相同（0.14）；纯 Rust 实现，不链接 libX11。
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.14", default-features = false, features = ["xtest"] }
 
 [features]
-# 由 tauri-build 生成的自定义协议开关，勿手改。
+# 由 tauri-build 生成的自定义协议开关，不要手工修改。
 custom-protocol = ["tauri/custom-protocol"]
 
-# `.tmp/cargo-target/debug` 曾长到 12 GB。实测构成：incremental 4.7 G · deps 4.6 G · build 1.3 G，
-# 其中 .pdb 1.48 G、.o 4.2 G——大头是调试信息。cargo 不回收旧产物，dev 每跑一次就往上堆，
-# 所以在生成端掐掉，而不是定期 clean。
+# `.tmp/cargo-target/debug` 实测达到 12 GB，构成：incremental 4.7 G · deps 4.6 G · build 1.3 G，
+# 其中 .pdb 1.48 G、.o 4.2 G，主要是调试信息。cargo 不回收旧产物，dev 每次构建都会继续累积，
+# 因此在生成端削减，而不是定期 clean。
 [profile.dev]
-# 增量缓存只对本 crate 生效（依赖一律非增量编译），而本 crate 只有 lib/sidecar/watcher 几个
-# 文件，全量重编它的代价远小于 4.7 G 的缓存。
+# 增量缓存只对本 crate 生效（依赖一律非增量编译），而本 crate 只有 lib/sidecar/watcher 等少量
+# 文件，全量重新编译的代价远小于 4.7 G 的缓存。
 incremental = false
-# 保留行号表：panic 仍能定位到 .rs:行。去掉变量级调试信息——Rust 侧下断点本来就不是
-# 这个项目的调试方式，UI 在 WebView 里。
+# 保留行号表：panic 仍能定位到源码行。去掉变量级调试信息：本项目不在 Rust 侧设置断点调试，
+# UI 在 WebView 中。
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
-# 依赖树全部不生成调试信息。本 crate 不受影响（这条只作用于非工作区成员）。
+# 依赖树全部不生成调试信息。本 crate 不受影响（该设置只作用于非工作区成员）。
 debug = false
 
 [profile.dev.build-override]
@@ -99,7 +99,7 @@ debug = false
 debug = false
 
 [profile.release]
-# 单文件体积优先：这是选 Tauri 的理由之一，不该在编译配置上让回去。
+# 单文件体积优先：这是选用 Tauri 的理由之一，编译配置不应抵消这一优势。
 opt-level = "s"
 lto = true
 codegen-units = 1

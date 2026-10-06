@@ -1,25 +1,25 @@
-//! Linux 后端（`Atspi`）：AT-SPI 负责控件树、后台语义动作、读文本与有界等待，X11 负责窗口
-//! 清单、层叠序、几何、取图、前台键鼠与窗口动作（`x11`、`foreground`）；Wayland 会话里原生
-//! Wayland 窗口的取图与前台键鼠经 xdg-desktop-portal（`portal`）。
+//! Linux 后端（`Atspi`）：AT-SPI 负责控件树、后台语义动作、文本读取与有界等待，X11 负责窗口
+//! 清单、层叠序、几何、采图、前台键盘与指针输入及窗口动作（`x11`、`foreground`）；Wayland
+//! 会话中原生 Wayland 窗口的采图与前台输入经由 xdg-desktop-portal（`portal`）。
 //!
 //! 六条边界：
 //!
-//! 1. 结构化路径不采集任何图像，也不调用置前台、设焦点或指针接口。前台动作只在前台模式开着
+//! 1. 结构化路径不采集任何图像，也不调用置前台、设焦点或指针接口。前台动作只在前台模式开启
 //!    时列出与执行。
-//! 2. 窗口清单以 X11 的 EWMH 清单为准，AT-SPI frame 按 `associate` 的规则对上 X 窗口；
-//!    对不上的 frame 以负数编号单独列出。X11 会话里它们只给控件树与后台动作；Wayland 会话里
-//!    它们（原生 Wayland 窗口，以及没对上的 XWayland 窗口）在用户经系统授权框共享之后另给
-//!    取图与键鼠，见 `portal`。X11 一侧不可用（连不上 X 服务器，或根窗口上没有 EWMH 清单）时
-//!    清单里只有这种 frame。
-//! 3. 能力与坐标可信度按窗口定，不按平台定，规则见 `Reach`。
-//! 4. `ref` 是不透明串：从窗口根 frame 出发的子节点下标路径、`@` 后的核对串（角色与稳定标识的
+//! 2. 窗口清单以 X11 的 EWMH 清单为准，AT-SPI frame 按 `associate` 的规则对应 X 窗口；
+//!    无法对应的 frame 以负数编号单独列出。X11 会话中这些 frame 只提供控件树与后台动作；
+//!    Wayland 会话中这些 frame（原生 Wayland 窗口，以及未能对应的 XWayland 窗口）在用户经系统
+//!    授权框共享之后另外提供采图与键盘、指针输入，见 `portal`。X11 一侧不可用（无法连接
+//!    X 服务器，或根窗口上没有 EWMH 清单）时，清单中只有这类 frame。
+//! 3. 能力与坐标可信度按窗口确定，不按平台确定，规则见 `Reach`。
+//! 4. `ref` 是不透明字符串：从窗口根 frame 出发的子节点下标路径、`@` 后的核对串（角色与稳定标识的
 //!    指纹），`#` 后的身份段（总线唯一名 + 对象路径）。动作前按路径重新定位并核对两者，
-//!    不允许拿旧编号操作换过位置、或对象路径已经给了别的控件的那个位置。
-//! 5. 每次总线调用以宿主握手时给的上界为限，由 zbus 连接的 `method_timeout` 承担；
-//!    本模块不另起线程等待读取。
-//! 6. 每个后端实例自己连一条无障碍总线：等待线程各建一个实例，与执行线程互不排队，
-//!    一次卡住的调用只占住它自己那条连接。连接在握手之后的第一次调用时建立，会话里找不到
-//!    无障碍总线时下一次调用再找：总线装上或启动之后不必换 worker。
+//!    不允许用旧编号操作位置已变化、或对象路径已分配给其他控件的位置。
+//! 5. 每次总线调用以宿主握手时提供的上界为限，由 zbus 连接的 `method_timeout` 执行；
+//!    本模块不另建线程等待读取。
+//! 6. 每个后端实例各自建立一条无障碍总线连接：每个等待线程各建一个实例，与执行线程互不排队，
+//!    一次阻塞的调用只占用所在的连接。连接在握手之后的第一次调用时建立，会话中未找到
+//!    无障碍总线时由下一次调用重新查找：总线安装或启动之后无需更换 worker。
 
 mod actions;
 mod associate;
@@ -56,38 +56,38 @@ use bus::{Failure, Obj, TARGET_LOST};
 use node::Fields;
 use walk::{Frame, Located, Popup};
 
-/// 第一次读一个窗口时两次读取之间隔多久。Chromium 系应用在第一次收到无障碍请求后才建树。
+/// 首次读取一个窗口时两次读取之间的间隔。Chromium 系应用在首次收到无障碍请求后才构建控件树。
 const FIRST_READ_INTERVAL: Duration = Duration::from_millis(350);
-/// 第一次读一个窗口最多读多久。页面上有持续变化的元素时控件数一直在变，到点即交回最后一份。
+/// 首次读取一个窗口的时长上限。页面上有持续变化的元素时控件数持续变化，到达上限即返回最后一次读取的结果。
 const FIRST_READ_LIMIT: Duration = Duration::from_secs(2);
-/// 调用没返回时随回执带回几个顶层窗口。
+/// 调用未返回时随回执返回的顶层窗口数上限。
 const MAX_BLOCKING_WINDOWS: usize = 16;
 
-/// 没有唯一对应 X 窗口的 frame 被要求取图或前台动作时的拒绝原因。后面接 X11 一侧的状况，
+/// 对没有唯一对应 X 窗口的 frame 请求采图或前台动作时的拒绝原因。其后附加 X11 一侧的状况，
 /// 见 `Atspi::frame_only`。
 const FRAME_ONLY: &str =
-    "window_unassociated: 这个 frame 没有唯一对应的 X11 窗口，不能取图，也不能做前台动作";
-/// Wayland 会话里的 X 窗口被要求做指针动作时的拒绝原因，理由见 `Reach`。
-const POINTER_UNVERIFIABLE: &str = "pointer_unverifiable: 这是 Wayland 会话里的 X11 窗口，\
-     XTest 指针事件落到哪个窗口由合成器决定，X11 一侧核对不了；键盘输入与窗口动作不受这一条限制";
-/// 原生 Wayland 窗口量流时等一帧的上限。动作请求没有自己的采集预算，取与取图相同的量级。
+    "window_unassociated: 该 frame 没有唯一对应的 X11 窗口，无法采图，也无法执行前台动作";
+/// 对 Wayland 会话中的 X 窗口请求指针动作时的拒绝原因，理由见 `Reach`。
+const POINTER_UNVERIFIABLE: &str = "pointer_unverifiable: 该窗口是 Wayland 会话中的 X11 窗口，\
+     XTest 指针事件发往哪个窗口由合成器决定，X11 一侧无法核对；键盘输入与窗口动作不受此限制";
+/// 测量原生 Wayland 窗口的流尺寸时等待一帧的上限。动作请求没有自身的采集预算，取与采图相同的量级。
 const MEASURE_BUDGET: Duration = Duration::from_secs(2);
 
-/// 一个窗口此刻能给出什么。按窗口定，由窗口有没有对上 X 窗口、会话类型与 portal 共享决定。
+/// 一个窗口当前可提供的能力。按窗口确定，由窗口是否对应 X 窗口、会话类型与 portal 共享状态决定。
 ///
-/// - `rect`：AT-SPI 包围盒是 X 根窗口坐标，可以作为节点的 `rect` 发布、作为指针落点。对上
-///   X 窗口的窗口是；没对上的只在 X11 会话里是。Wayland 会话里原生 Wayland 窗口报的是以
-///   自己 surface 左上角为原点的坐标（含客户端画的阴影），弹出菜单也按这个原点报，与屏幕、
-///   与图像几何都不是同一套坐标；经 portal 共享之后也不发布，按图定位用流自己的坐标。
-/// - `keyboard`：键盘输入。对上 X 窗口即可：前置条件核对的是窗口管理器维护的活动窗口与
-///   X 输入焦点，Wayland 会话里由合成器自己的 X 窗口管理器维护。原生 Wayland 窗口要经
-///   portal 共享、且用户允许了键盘控制。
-/// - `window`：窗口动作。只有对上 X 窗口的窗口有：Wayland 合成器不允许客户端摆放别的窗口。
-/// - `pointer`：指针动作。对上 X 窗口且不在 Wayland 会话里；或原生 Wayland 窗口经 portal
-///   共享、且用户允许了指针控制，那时只接受按图定位的落点。XWayland 投递 XTest 指针事件时
-///   还要看合成器的指针此刻在不在它的某个 surface 上，X11 一侧读不到这一项，也看不见原生
-///   Wayland 窗口，`lands_on_target` 的判据在这里不成立。不要按合成器名或环境放开它：
-///   XWayland 是否把 XTest 事件转交合成器取决于合成器启动它的方式，X 协议里没有可核对的标志。
+/// - `rect`：AT-SPI 包围盒是 X 根窗口坐标，可以作为节点的 `rect` 发布、作为指针落点。对应
+///   X 窗口的窗口满足此条件；未对应的窗口只在 X11 会话中满足。Wayland 会话中原生 Wayland 窗口
+///   报告的是以自身 surface 左上角为原点的坐标（含客户端绘制的阴影），弹出菜单也按该原点报告，
+///   与屏幕坐标、图像几何均不是同一套坐标；经 portal 共享之后同样不发布，按图定位使用流自身的坐标。
+/// - `keyboard`：键盘输入。对应 X 窗口即可：前置条件核对的是窗口管理器维护的活动窗口与
+///   X 输入焦点，Wayland 会话中由合成器自身的 X 窗口管理器维护。原生 Wayland 窗口需要经
+///   portal 共享，且用户允许键盘控制。
+/// - `window`：窗口动作。只有对应 X 窗口的窗口具备：Wayland 合成器不允许客户端摆放其他窗口。
+/// - `pointer`：指针动作。对应 X 窗口且不在 Wayland 会话中；或原生 Wayland 窗口经 portal
+///   共享且用户允许指针控制，此时只接受按图定位的落点。XWayland 投递 XTest 指针事件的结果
+///   还取决于合成器的指针当前是否位于其某个 surface 上，X11 一侧无法读取这一项，也无法看到原生
+///   Wayland 窗口，`lands_on_target` 的判据在此不成立。不要按合成器名或环境放开此项：
+///   XWayland 是否把 XTest 事件转交合成器取决于合成器启动它的方式，X 协议中没有可核对的标志。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Reach {
     rect: bool,
@@ -97,8 +97,8 @@ struct Reach {
 }
 
 impl Reach {
-    /// `associated`：窗口对上了 X 窗口。`x_server`：连得上 X 服务器。`shared`：没对上 X 窗口的
-    /// frame 在 Wayland 会话里经 portal 共享的方式。
+    /// `associated`：窗口已对应 X 窗口。`x_server`：可以连接 X 服务器。`shared`：未对应 X 窗口的
+    /// frame 在 Wayland 会话中经 portal 共享的方式。
     fn of(
         associated: bool,
         x_server: bool,
@@ -114,9 +114,9 @@ impl Reach {
     }
 }
 
-/// Wayland 会话：环境里有合成器的套接字名、登录会话类型是 `wayland`，或 X 服务器是 XWayland。
+/// Wayland 会话：环境中有合成器的套接字名、登录会话类型是 `wayland`，或 X 服务器是 XWayland。
 ///
-/// 三项都要看：`WAYLAND_DISPLAY` 可能被调用方的环境去掉，连上的仍是 XWayland；WSLg 不设
+/// 三项都要检查：`WAYLAND_DISPLAY` 可能被调用方从环境中移除，而连接的仍是 XWayland；WSLg 不设置
 /// `XDG_SESSION_TYPE`。
 fn wayland_session(
     wayland_display: Option<&OsStr>,
@@ -129,21 +129,21 @@ fn wayland_session(
 }
 
 pub struct Atspi {
-    /// X 服务器连接。连不上时是原因，窗口清单只有 AT-SPI frame。
+    /// X 服务器连接。无法连接时为原因，窗口清单只有 AT-SPI frame。
     display: Result<x11::Display, String>,
-    /// 见 `wayland_session`。构造时定一次。
+    /// 见 `wayland_session`。构造时确定一次。
     wayland: bool,
-    /// 握手时宿主给的建连上界与调用上界。握手之前没有：那时准入判定不放行任何读取。
+    /// 握手时宿主提供的建连上界与调用上界。握手之前为空：此时准入判定不放行任何读取。
     bounds: Cell<Option<(Duration, Duration)>>,
-    /// 按上界建的无障碍总线连接，与建连时读到的 `org.a11y.Status.IsEnabled`（只读不写，见
-    /// `bus::locate`）。还没建或会话里找不到总线时为空。
+    /// 按上界建立的无障碍总线连接，以及建连时读取的 `org.a11y.Status.IsEnabled`（只读不写，见
+    /// `bus::locate`）。尚未建立或会话中未找到总线时为空。
     bus: RefCell<Option<(Connection, Result<bool, String>)>>,
-    /// 这个实例读过控件表的窗口，按窗口编号与进程号记。
+    /// 本实例读取过控件表的窗口，按窗口编号与进程号记录。
     read_before: RefCell<HashSet<(i64, u32)>>,
 }
 
-/// 读控件树用的根：窗口对应的 frame，所在应用的进程号，对应上的 X 窗口，以及接在 frame 子节点
-/// 后面的、这个窗口拥有的弹出窗口（见 `Atspi::popups`）。
+/// 读取控件树使用的根：窗口对应的 frame、所在应用的进程号、对应的 X 窗口，以及接在 frame 子节点
+/// 之后的、该窗口拥有的弹出窗口（见 `Atspi::popups`）。
 struct Root {
     obj: Obj,
     pid: u32,
@@ -154,7 +154,7 @@ struct Root {
 impl Backend for Atspi {
     const NAME: &'static str = "linux-atspi";
 
-    /// 构造不要求无障碍总线（见 `access`），X 服务器连不上也不算失败，见 `Atspi::display`。
+    /// 构造不要求无障碍总线（见 `access`），无法连接 X 服务器也不视为失败，见 `Atspi::display`。
     fn new() -> Result<Self, String> {
         let display = x11::Display::connect();
         let wayland = wayland_session(
@@ -162,8 +162,8 @@ impl Backend for Atspi {
             std::env::var_os("XDG_SESSION_TYPE").as_deref(),
             display.as_ref().is_ok_and(x11::Display::xwayland),
         );
-        // 宿主把 worker 的 stderr 转进应用日志。每个进程只记一次：等待线程每条请求各建一个实例。
-        // 总线地址与 IsEnabled 在第一次建连时记，见 `conn`。
+        // 宿主将 worker 的 stderr 转入应用日志。每个进程只记录一次：等待线程为每条请求各建一个实例。
+        // 总线地址与 IsEnabled 在第一次建连时记录，见 `conn`。
         static REPORTED: Once = Once::new();
         REPORTED.call_once(|| {
             eprintln!(
@@ -182,8 +182,8 @@ impl Backend for Atspi {
         })
     }
 
-    /// 会话总线上查得到无障碍总线的地址即授权。查不到时读取与动作一律不可用，原因原文随通报
-    /// 写进 stderr。
+    /// 能在会话总线上查到无障碍总线的地址即视为已授权。查不到时读取与动作一律不可用，原因原文随通报
+    /// 写入 stderr。
     fn access() -> Access {
         match bus::locate() {
             Ok(_) => Access::of(Vec::new(), None),
@@ -191,7 +191,7 @@ impl Backend for Atspi {
         }
     }
 
-    /// 记下宿主给的上界，丢掉旧连接。之后的每条连接都按这两个值建：建连上界由 `bus::connect`
+    /// 记录宿主提供的上界，丢弃旧连接。之后的每条连接都按这两个值建立：建连上界由 `bus::connect`
     /// 在等待建连时执行，调用上界是连接的 `method_timeout`。
     fn set_timeouts(&self, connection_ms: u32, transaction_ms: u32) -> Result<(u32, u32), String> {
         self.bounds.set(Some((
@@ -210,7 +210,7 @@ impl Backend for Atspi {
         })
     }
 
-    /// 读一个窗口的控件表。这个实例第一次读一个窗口时读到控件数不再变化为止，
+    /// 读取一个窗口的控件表。本实例首次读取一个窗口时持续读取，直到控件数不再变化，
     /// 理由见 `FIRST_READ_INTERVAL`。
     fn read_tree(
         &self,
@@ -236,7 +236,7 @@ impl Backend for Atspi {
         tree.map(Observation::Tree).map_err(Failure::into_reason)
     }
 
-    /// 执行一个动作并按调用方当前观察的范围整份重读。没有派发就不重读。
+    /// 执行动作，并按调用方当前观察的范围完整重读。未派发时不重读。
     fn act(
         &self,
         req: &ActRequest<'_>,
@@ -250,7 +250,7 @@ impl Backend for Atspi {
             };
         }
         let Some(reference) = req.reference else {
-            return refused("missing_target: 这个动作只能按控件执行".to_owned());
+            return refused("missing_target: 该动作只能按控件执行".to_owned());
         };
         let conn = match self.conn() {
             Ok(c) => c,
@@ -267,7 +267,7 @@ impl Backend for Atspi {
         let watch = CallWatch::before(self.display.as_ref().ok(), root.xid, root.pid);
         match actions::perform(&conn, &watch, &located, located.parent.as_ref(), req.action) {
             Attempt::Refused(reason) => refused(reason),
-            // 调用还没返回：应用可能卡在这次调用里，重读会等满上界再超时。
+            // 调用尚未返回：应用可能阻塞于本次调用，重读会一直等待到上界后超时。
             Attempt::Called(outcome) if !outcome.returned => {
                 (Attempt::Called(outcome), Err(TARGET_BLOCKED.to_owned()))
             }
@@ -330,7 +330,7 @@ impl Backend for Atspi {
     }
 }
 
-/// 动作前重新定位与等待判定读的字段：值与状态都要，前台属性不要。
+/// 动作前重新定位与等待判定读取的字段：读取值与状态，不读取前台属性。
 const ALL_FIELDS: Fields = Fields {
     value: true,
     state: true,
@@ -364,11 +364,11 @@ fn frame_sides(frames: &[Frame]) -> Vec<FrameSide<'_>> {
 }
 
 impl Atspi {
-    /// 这个实例的无障碍总线连接。第一次调用时按握手给的上界建立；总线那一端关掉之后重建；
-    /// 建不成时以 `ACCESSIBILITY_BUS_UNAVAILABLE` 拒绝，下一次调用再找。
+    /// 本实例的无障碍总线连接。第一次调用时按握手提供的上界建立；总线一端关闭之后重建；
+    /// 无法建立时以 `ACCESSIBILITY_BUS_UNAVAILABLE` 拒绝，由下一次调用重新查找。
     ///
-    /// 不要去掉 `is_closed` 的判定：总线守护进程退出后这条连接上的每次调用都失败，而原因
-    /// 原文里没有原因码，服务循环也就不会现查授权事实。
+    /// 不要删除 `is_closed` 的判定：总线守护进程退出后该连接上的每次调用都失败，而原因
+    /// 原文中没有原因码，服务循环因此不会重新查询授权事实。
     fn conn(&self) -> Result<Connection, String> {
         if let Some((conn, _)) = self.bus.borrow().as_ref() {
             if !conn.is_closed() {
@@ -383,7 +383,7 @@ impl Atspi {
         let unavailable = |e: String| format!("{ACCESSIBILITY_BUS_UNAVAILABLE}: {e}");
         let located = bus::locate().map_err(unavailable)?;
         let conn = bus::connect(&located.address, connect, call).map_err(unavailable)?;
-        // 宿主把 worker 的 stderr 转进应用日志。每个进程只记一次：等待线程每条请求各建一个实例。
+        // 宿主将 worker 的 stderr 转入应用日志。每个进程只记录一次：等待线程为每条请求各建一个实例。
         static REPORTED: Once = Once::new();
         REPORTED.call_once(|| {
             eprintln!(
@@ -401,13 +401,13 @@ impl Atspi {
             .map_err(|e| format!("x11_unavailable: {e}"))
     }
 
-    /// X11 一侧的顶层窗口，从下到上。连不上 X 服务器或根窗口上没有 EWMH 清单时交回原因。
+    /// X11 一侧的顶层窗口，从下到上。无法连接 X 服务器或根窗口上没有 EWMH 清单时返回原因。
     fn x_clients(&self) -> Result<Vec<x11::Client>, String> {
         self.display()?.clients()
     }
 
-    /// 读控件树的那个窗口此刻能给出什么。没对上 X 窗口的 frame 在 Wayland 会话里按 portal
-    /// 的共享状态算，只读已有的状态，不触发授权框。
+    /// 读取控件树的窗口当前可提供的能力。未对应 X 窗口的 frame 在 Wayland 会话中按 portal
+    /// 的共享状态计算，只读取已有的状态，不触发授权框。
     fn reach(&self, root: &Root) -> Reach {
         let shared = (root.xid.is_none() && self.wayland)
             .then(|| portal::covers(&root.obj.key()))
@@ -428,8 +428,8 @@ impl Atspi {
         u32::try_from(window).map_err(|_| format!("bad_window: {window} 不是 X11 窗口号"))
     }
 
-    /// X11 会话里对没有对应 X 窗口的 frame 取图或做前台动作时的拒绝原因，带上 X11 一侧此刻的
-    /// 状况。Wayland 会话里这种 frame 走 `portal`，不到这里。
+    /// X11 会话中对没有对应 X 窗口的 frame 采图或执行前台动作时的拒绝原因，附带 X11 一侧当前的
+    /// 状况。Wayland 会话中这类 frame 经由 `portal`，不会执行到此处。
     fn frame_only(&self) -> String {
         let mut reason = FRAME_ONLY.to_owned();
         if let Err(x_side) = self.x_clients() {
@@ -439,9 +439,9 @@ impl Atspi {
         reason
     }
 
-    /// 窗口清单：X11 一侧有标题的顶层窗口（从上到下），加上没对上任何 X 窗口、有标题的 frame。
+    /// 窗口清单：X11 一侧有标题的顶层窗口（从上到下），以及未对应任何 X 窗口、有标题的 frame。
     ///
-    /// X11 一侧不可用时只有后者；原因在对这些窗口取图或做前台动作时随拒绝交回，见 `frame_only`。
+    /// X11 一侧不可用时只有后者；原因在对这些窗口采图或执行前台动作时随拒绝返回，见 `frame_only`。
     fn windows(&self, conn: &Connection) -> Result<Vec<WindowInfo>, String> {
         let clients = self.x_clients().unwrap_or_default();
         let apps = walk::apps(conn).map_err(Failure::into_reason)?;
@@ -476,9 +476,9 @@ impl Atspi {
 
     /// 窗口编号对应的 frame。
     ///
-    /// X 窗口先只问进程号一致的应用：对应规则在有进程号一致的候选时只留它们，结论与问遍
-    /// 全部应用相同，而不用等每个应用应答。那些应用里一个同名同位置的 frame 都没有时
-    /// （flatpak 的沙箱进程号）再问全部应用。
+    /// X 窗口先只查询进程号一致的应用：存在进程号一致的候选时，对应规则只保留这些候选，结论与
+    /// 查询全部应用相同，而无需等待每个应用应答。这些应用中没有任何同名同位置的 frame 时
+    /// （flatpak 的沙箱进程号）再查询全部应用。
     fn root(&self, conn: &Connection, window: i64) -> Result<Root, Failure> {
         let apps = walk::apps(conn)?;
         if window < 0 {
@@ -492,7 +492,7 @@ impl Atspi {
                     popups: Vec::new(),
                 })
                 .ok_or_else(|| {
-                    Failure::Refused(format!("{TARGET_LOST}: 编号 {window} 的 frame 已经不在"))
+                    Failure::Refused(format!("{TARGET_LOST}: 编号 {window} 的 frame 已不存在"))
                 });
         }
         let xid = u32::try_from(window)
@@ -500,7 +500,7 @@ impl Atspi {
         let clients = self.x_clients().map_err(Failure::Refused)?;
         let Some(at) = clients.iter().position(|c| c.window == xid) else {
             return Err(Failure::Refused(format!(
-                "{TARGET_LOST}: 窗口 {window} 已经不在"
+                "{TARGET_LOST}: 窗口 {window} 已不存在"
             )));
         };
         let sides = x_sides(&clients);
@@ -527,25 +527,25 @@ impl Atspi {
                 })
             }
             Err(Unmatched::None) => Err(Failure::Refused(format!(
-                "window_unassociated: 这个窗口没有对应的无障碍 frame{}",
+                "window_unassociated: 该窗口没有对应的无障碍 frame{}",
                 self.enabled_hint()
             ))),
             Err(Unmatched::Ambiguous(n)) => Err(Failure::Refused(format!(
-                "window_unassociated: 这个窗口的标题与位置对应 {n} 个无障碍 frame，判不出是哪一个；\
-                 窗口清单另列了这些 frame，按它们的编号读控件树"
+                "window_unassociated: 该窗口的标题与位置对应 {n} 个无障碍 frame，无法判定是哪一个；\
+                 窗口清单另外列出了这些 frame，请按它们的编号读取控件树"
             ))),
         }
     }
 
-    /// X 窗口 `xid` 拥有的弹出窗口里，内容挂在应用顶层对象下的那些：顶层对象与 frame 同一进程、
-    /// 屏幕矩形等于一个归 `xid` 所有的 override-redirect 窗口，且是自己子节点的父对象。`tops` 是
-    /// 同一次查到的其余顶层对象。
+    /// X 窗口 `xid` 拥有的弹出窗口中，内容位于应用顶层对象下的那些：顶层对象与 frame 属于同一进程、
+    /// 屏幕矩形等于一个属于 `xid` 的 override-redirect 窗口，且是其子节点的父对象。`tops` 是
+    /// 同一次查询得到的其余顶层对象。
     ///
-    /// 右键菜单不在 frame 的子树里，GTK 把它列成应用的另一个顶层对象；接在 frame 后面，观察
-    /// 目标窗口就看得到它、按 `ref` 操作它。组合框下拉菜单所在的弹出窗口 GTK 同样列成顶层，而
-    /// 菜单把组合框报成父对象，已经在组合框底下，由 `owns_children` 排除。
+    /// 右键菜单不在 frame 的子树中，GTK 将其列为应用的另一个顶层对象；将它接在 frame 之后，观察
+    /// 目标窗口时即可看到它，并可按 `ref` 操作它。GTK 同样将组合框下拉菜单所在的弹出窗口列为
+    /// 顶层，而该菜单把组合框报告为父对象，已位于组合框之下，由 `owns_children` 排除。
     ///
-    /// 边界：Qt 的弹出菜单与 GTK 挂在普通按钮上的菜单不是应用的子节点，这里找不到它们。
+    /// 边界：Qt 的弹出菜单与 GTK 附着在普通按钮上的菜单不是应用的子节点，此处无法找到它们。
     fn popups(
         &self,
         conn: &Connection,
@@ -572,8 +572,8 @@ impl Atspi {
         Ok(out)
     }
 
-    /// 按控件定位时控件所在的顶层窗口：控件画在目标窗口拥有的弹出窗口里时是那个弹出窗口
-    /// （`Located::popup` 的内容整个装得下的最上面一个），否则是目标窗口。
+    /// 按控件定位时控件所在的顶层窗口：控件绘制在目标窗口拥有的弹出窗口中时为该弹出窗口
+    /// （能完整容纳 `Located::popup` 内容的最上层弹出窗口），否则为目标窗口。
     fn host(&self, window: u32, popup: Option<ScreenRect>) -> i64 {
         let held = popup.and_then(|content| {
             let display = self.display().ok()?;
@@ -591,9 +591,9 @@ impl Atspi {
         self.read_tree(req.window, &scope, req.bounds, req.foreground)
     }
 
-    /// 前台动作：核对几何代际、重新定位控件、求落点，再交给 `foreground::perform`。
+    /// 前台动作：核对几何代际、重新定位控件、计算落点，再交给 `foreground::perform`。
     ///
-    /// 按图像坐标的指针动作与不点名控件的键盘输入不经 AT-SPI：没有无障碍树的自绘窗口也做得了。
+    /// 按图像坐标的指针动作与未指定控件的键盘输入不经由 AT-SPI：没有无障碍树的自绘窗口同样可以执行。
     fn act_foreground(&self, req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
         if req.window < 0 && self.wayland {
             return self.act_shared(req, stop);
@@ -606,12 +606,12 @@ impl Atspi {
             Ok(d) => d,
             Err(reason) => return Attempt::Refused(reason),
         };
-        // 在向 X 服务器发任何请求之前拒：指针动作的第一步就是激活目标窗口。
+        // 在向 X 服务器发送任何请求之前拒绝：指针动作的第一步是激活目标窗口。
         if req.action.takes_point() && !Reach::of(true, true, self.wayland, None).pointer {
             return Attempt::Refused(POINTER_UNVERIFIABLE.to_owned());
         }
-        // 按图定位的落点先核对窗口几何代际：窗口在采图与派发之间移动过的话，那个坐标指的
-        // 已经不是同一块界面。
+        // 按图定位的落点先核对窗口几何代际：窗口若在采图与派发之间移动过，该坐标指向的
+        // 已不是同一块界面。
         if let Some(expected) = req.expect_generation {
             if let Err(reason) = foreground::check_generation(display, window, expected) {
                 return Attempt::Refused(reason);
@@ -645,7 +645,7 @@ impl Atspi {
             }
             _ => None,
         };
-        // 窗口动作作用于整个窗口，只接受窗口根节点，与它们只列在根节点上一致。
+        // 窗口动作作用于整个窗口，只接受窗口根节点，与这些动作只列在根节点上一致。
         let whole_window = matches!(
             req.action,
             ActionSpec::SetWindowState { .. }
@@ -665,7 +665,7 @@ impl Atspi {
                 obj.proxy(conn).map_err(Failure::into_reason)?;
             let states = accessible
                 .get_state()
-                .map_err(bus::dbus("读焦点状态"))
+                .map_err(bus::dbus("读取焦点状态"))
                 .map_err(Failure::into_reason)?;
             Ok(states.contains(State::Focused))
         };
@@ -681,11 +681,11 @@ impl Atspi {
         foreground::perform(display, window, focus, req.action, aim, stop)
     }
 
-    /// 指针动作的落点、拖拽终点与控件所在的顶层窗口。非指针动作三项都缺席。
+    /// 指针动作的落点、拖拽终点与控件所在的顶层窗口。非指针动作三项均缺失。
     ///
-    /// 落点两种来源：调用方给的屏幕坐标，或控件此刻的包围盒中心。**包围盒读的是这一次重新
-    /// 定位拿到的那一份**，不是观察时记下的。控件所在的顶层窗口见 `host`：不要取目标窗口本身，
-    /// `ref` 从目标窗口的 frame 出发，而下拉列表与右键菜单里的控件画在目标窗口拥有的弹出窗口里。
+    /// 落点有两种来源：调用方提供的屏幕坐标，或控件当前的包围盒中心。**包围盒取自本次重新
+    /// 定位的结果**，不是观察时记录的值。控件所在的顶层窗口见 `host`：不要取目标窗口本身，
+    /// `ref` 从目标窗口的 frame 出发，而下拉列表与右键菜单中的控件绘制在目标窗口拥有的弹出窗口中。
     fn aim(
         &self,
         window: u32,
@@ -700,7 +700,7 @@ impl Atspi {
             l.facts
                 .extents
                 .map(|r| r.center())
-                .ok_or_else(|| "no_bounds: 这个控件没有可视位置".to_owned())
+                .ok_or_else(|| "no_bounds: 该控件没有可视位置".to_owned())
         };
         let anchor = match req.point {
             Some(point) => point,
@@ -731,8 +731,8 @@ impl Atspi {
         })
     }
 
-    /// 此刻全部没对上 X 窗口的 frame（Wayland 会话里即原生 Wayland 窗口），以及编号 `window`
-    /// 的那一个在其中的下标。
+    /// 当前全部未对应 X 窗口的 frame（Wayland 会话中即原生 Wayland 窗口），以及编号为 `window`
+    /// 的 frame 在其中的下标。
     fn native_frames(&self, conn: &Connection, window: i64) -> Result<(Vec<Frame>, usize), String> {
         let clients = self.x_clients().unwrap_or_default();
         let apps = walk::apps(conn).map_err(Failure::into_reason)?;
@@ -747,12 +747,12 @@ impl Atspi {
         let at = frames
             .iter()
             .position(|f| frame_window(&f.obj.key()) == window)
-            .ok_or_else(|| format!("{TARGET_LOST}: 编号 {window} 的 frame 已经不在"))?;
+            .ok_or_else(|| format!("{TARGET_LOST}: 编号 {window} 的 frame 已不存在"))?;
         Ok((frames, at))
     }
 
-    /// 原生 Wayland 窗口的共享授权，没有时按 `portal::grant` 去量流、对应或问用户。交回授权与
-    /// 窗口此刻的 AT-SPI 尺寸。
+    /// 原生 Wayland 窗口的共享授权，没有授权时按 `portal::grant` 测量流尺寸、对应窗口或询问用户。
+    /// 返回授权与窗口当前的 AT-SPI 尺寸。
     fn shared(
         &self,
         frames: &[Frame],
@@ -762,7 +762,7 @@ impl Atspi {
         let size = target
             .rect
             .map(|r| (r.width, r.height))
-            .ok_or("no_bounds: 读不出这个窗口的尺寸")?;
+            .ok_or("no_bounds: 无法读取该窗口的尺寸")?;
         let sizes: Vec<(String, (i32, i32))> = frames
             .iter()
             .filter_map(|f| f.rect.map(|r| (f.obj.key(), (r.width, r.height))))
@@ -781,7 +781,7 @@ impl Atspi {
         portal::grant(&want, call, budget).map(|grant| (grant, size))
     }
 
-    /// 取一张原生 Wayland 窗口的图，经 portal 共享的流。
+    /// 采集一张原生 Wayland 窗口的图像，经由 portal 共享的流。
     fn capture_shared(&self, req: &CaptureRequest<'_>) -> Result<Image, String> {
         let conn = self.conn()?;
         let (frames, at) = self.native_frames(&conn, req.window)?;
@@ -790,17 +790,17 @@ impl Atspi {
             target.obj.proxy(&conn).map_err(Failure::into_reason)?;
         let states = accessible
             .get_state()
-            .map_err(bus::dbus("读 frame 状态"))
+            .map_err(bus::dbus("读取 frame 状态"))
             .map_err(Failure::into_reason)?;
         if states.contains(State::Iconified) {
-            return Err("window_minimized: 窗口已最小化，采不到内容".to_owned());
+            return Err("window_minimized: 窗口已最小化，无法采集内容".to_owned());
         }
         let (grant, size) = self.shared(&frames, target, req.budget)?;
         portal::capture(&grant, portal::generation(size, grant.coverage.node), req)
     }
 
-    /// 原生 Wayland 窗口的前台输入，经 portal。窗口动作合成器不允许，按控件定位的指针动作
-    /// 没有可用的坐标：这类请求在要共享授权之前就拒绝，见 `portal::screen`。
+    /// 原生 Wayland 窗口的前台输入，经由 portal。合成器不允许窗口动作，按控件定位的指针动作
+    /// 没有可用的坐标：这类请求在申请共享授权之前即被拒绝，见 `portal::screen`。
     fn act_shared(&self, req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
         if let Err(reason) = portal::screen(req.action, req.point) {
             return Attempt::Refused(reason);
@@ -836,7 +836,7 @@ impl Atspi {
                 obj.proxy(&conn).map_err(Failure::into_reason)?;
             let states = accessible
                 .get_state()
-                .map_err(bus::dbus("读状态"))
+                .map_err(bus::dbus("读取状态"))
                 .map_err(Failure::into_reason)?;
             Ok(states.contains(state))
         };
@@ -860,14 +860,14 @@ impl Atspi {
         )
     }
 
-    /// `IsEnabled` 为假时附在「没有对应 frame」后面的说明。
+    /// `IsEnabled` 为假时附加在「没有对应 frame」之后的说明。
     ///
-    /// 只说「可能」：Qt 在根窗口上有 `AT_SPI_BUS` 属性时不看 `IsEnabled` 照样连上总线，
-    /// 而那一项由总线启动器写，有没有取决于启动先后。
+    /// 只写「可能」：根窗口上有 `AT_SPI_BUS` 属性时，Qt 不检查 `IsEnabled` 也会连接总线，
+    /// 而该属性由总线启动器写入，是否存在取决于启动顺序。
     fn enabled_hint(&self) -> &'static str {
         match self.bus.borrow().as_ref().map(|(_, enabled)| enabled) {
             Some(Ok(false)) => {
-                "；org.a11y.Status.IsEnabled 为假，Qt、Chromium 与 Electron 应用在这种会话里可能不交出控件树"
+                "；org.a11y.Status.IsEnabled 为假，Qt、Chromium 与 Electron 应用在此类会话中可能不提供控件树"
             }
             _ => "",
         }
@@ -887,7 +887,7 @@ impl Atspi {
             value: select.include_value,
             state: select.include_state,
             foreground: foreground && reach.keyboard,
-            // 按控件定位的指针动作要有屏幕坐标的包围盒；经 portal 共享的窗口只按图定位。
+            // 按控件定位的指针动作需要屏幕坐标的包围盒；经 portal 共享的窗口只按图定位。
             pointer: foreground && reach.pointer && reach.rect,
             window: foreground && reach.window,
             rect: reach.rect,
@@ -905,18 +905,18 @@ impl Atspi {
             Some(reference) => walk::locate(conn, &root.obj, &root.popups, reference, fields)?,
         };
         let walked = walk::walk(conn, &start, &root.popups, select, bounds, fields)?;
-        // 窗口可用状态只认 frame 自己的那一格。
+        // 窗口可用状态只取 frame 自身的状态。
         let window_enabled = if start.path.is_empty() {
             node::enabled(start.facts.states)
         } else {
             let accessible: AccessibleProxyBlocking = root.obj.proxy(conn)?;
-            node::enabled(accessible.get_state().map_err(bus::dbus("读 frame 状态"))?)
+            node::enabled(accessible.get_state().map_err(bus::dbus("读取 frame 状态"))?)
         };
         let window_covered = match root.xid {
             Some(xid) => self
                 .display()
                 .is_ok_and(|d| d.clients().is_ok_and(|stack| d.covered(xid, &stack))),
-            // 没有对应 X 窗口时读不出几何，只认最小化。
+            // 没有对应 X 窗口时无法读取几何，只判定最小化。
             None => start.path.is_empty() && start.facts.states.contains(State::Iconified),
         };
         let nodes = walked.nodes;
@@ -934,7 +934,7 @@ impl Atspi {
         })
     }
 
-    /// 读一轮判定所需的事实。目标控件或它所在的窗口已经不在都算 `Missing`。
+    /// 读取一轮判定所需的事实。目标控件或其所在的窗口已不存在时均记为 `Missing`。
     fn probe(&self, conn: &Connection, req: &WaitRequest<'_>) -> Result<Probe, Failure> {
         match req.until {
             WaitUntil::Window => Ok(Probe::NewWindow(self.window_appeared(conn, req))),
@@ -981,11 +981,11 @@ impl Atspi {
         }
     }
 
-    /// 有没有出现标题包含给定文字的顶层窗口，且不是目标窗口自己。
+    /// 是否出现了标题包含给定文字、且不是目标窗口本身的顶层窗口。
     ///
-    /// X11 会话里只读 X11、不经应用：应用卡死时 X 服务器照常应答，而会话里的顶层窗口都在
-    /// EWMH 清单里。Wayland 会话或 X11 一侧不可用时原生 Wayland 窗口只在 AT-SPI 里，
-    /// 按窗口清单同一份判；不要在这里只读 X11，那样等不到任何原生 Wayland 窗口。
+    /// X11 会话中只读取 X11、不经由应用：应用无响应时 X 服务器照常应答，而会话中的顶层窗口都在
+    /// EWMH 清单中。Wayland 会话或 X11 一侧不可用时，原生 Wayland 窗口只存在于 AT-SPI 中，
+    /// 按与窗口清单相同的来源判定；不要在此处只读取 X11，否则无法等到任何原生 Wayland 窗口。
     fn window_appeared(&self, conn: &Connection, req: &WaitRequest<'_>) -> bool {
         let Some(needle) = req.name.map(str::to_lowercase) else {
             return false;
@@ -1002,8 +1002,8 @@ impl Atspi {
             .is_ok_and(|windows| windows.iter().any(|w| hit(w.window, &w.title)))
     }
 
-    /// 等待返回时的那一份状态：调用方当前观察的范围，整份重读。`appears` 每轮读的就是整窗，
-    /// 范围也是整窗时直接复用最后一轮那一份。
+    /// 等待返回时附带的状态：按调用方当前观察的范围整份重读。`appears` 每轮读取的是整个窗口，
+    /// 范围同为整个窗口时直接复用最后一轮的结果。
     fn wait_state(
         &self,
         conn: &Connection,
@@ -1022,10 +1022,10 @@ impl Atspi {
     }
 }
 
-/// 调用前后都读得到的窗口事实，全部来自 X11：应用卡在一次调用里时 X 服务器照常应答。
+/// 调用前后都可读取的窗口事实，全部来自 X11：应用阻塞于一次调用时 X 服务器照常应答。
 ///
-/// X11 一侧不可用时没有证据可读，调用没按时返回即记结果未知：原生 Wayland 窗口只能经应用
-/// 自己的 AT-SPI 读到，而应用此刻卡在这次调用里。
+/// X11 一侧不可用时没有可读取的证据，调用未按时返回即记为结果未知：原生 Wayland 窗口只能经由
+/// 应用自身的 AT-SPI 读取，而应用此时阻塞于本次调用。
 struct CallWatch<'a> {
     display: Option<&'a x11::Display>,
     window: Option<u32>,
@@ -1049,13 +1049,13 @@ impl<'a> CallWatch<'a> {
     }
 }
 
-/// X11 一侧此刻的顶层窗口。读不到时为空。
+/// X11 一侧当前的顶层窗口。无法读取时为空。
 fn clients_of(display: Option<&x11::Display>) -> Vec<x11::Client> {
     display.and_then(|d| d.clients().ok()).unwrap_or_default()
 }
 
 impl Watch for CallWatch<'_> {
-    /// 动作已经生效的证据：目标窗口已关闭，或同一进程多出一个此前没有的顶层窗口。
+    /// 动作已生效的证据：目标窗口已关闭，或同一进程新增一个此前不存在的顶层窗口。
     fn evidence(&self) -> Option<ActionEvidence> {
         let clients = self.display?.clients().ok()?;
         if let Some(window) = self.window {
@@ -1109,7 +1109,7 @@ mod tests {
         }
     }
 
-    /// X11 会话里对上 X 窗口的窗口什么都给；没对上的 frame 只给屏幕坐标的包围盒。
+    /// X11 会话中对应 X 窗口的窗口具备全部能力；未对应的 frame 只提供屏幕坐标的包围盒。
     #[test]
     fn an_x11_session_gives_associated_windows_everything() {
         let all = Reach {
@@ -1125,8 +1125,8 @@ mod tests {
         );
     }
 
-    /// Wayland 会话里原生 Wayland 窗口的包围盒以它自己的 surface 为原点，不能作为屏幕坐标
-    /// 发布；XWayland 窗口的指针落点核对不了，只留键盘与窗口动作。
+    /// Wayland 会话中原生 Wayland 窗口的包围盒以其自身 surface 为原点，不能作为屏幕坐标
+    /// 发布；XWayland 窗口的指针落点无法核对，只保留键盘与窗口动作。
     #[test]
     fn a_wayland_session_withholds_native_rects_and_xwayland_pointers() {
         assert_eq!(Reach::of(false, true, true, None), NONE);
@@ -1141,8 +1141,8 @@ mod tests {
         );
     }
 
-    /// 原始失败形状：原生 Wayland 窗口没有取图与键鼠。经 portal 共享之后给键盘与按图定位的
-    /// 指针，按用户允许的设备分别给；包围盒与窗口动作仍不给。
+    /// 原始失败形状：原生 Wayland 窗口没有采图与键盘、指针输入。经 portal 共享之后提供键盘与
+    /// 按图定位的指针，按用户允许的设备分别提供；包围盒与窗口动作仍不提供。
     #[test]
     fn a_shared_wayland_window_gains_input_but_no_rect_or_window_actions() {
         assert_eq!(
@@ -1166,7 +1166,7 @@ mod tests {
         );
     }
 
-    /// 连不上 X 服务器时没有屏幕坐标系，包围盒一律不发布。
+    /// 无法连接 X 服务器时没有屏幕坐标系，包围盒一律不发布。
     #[test]
     fn without_an_x_server_no_rect_is_published() {
         assert!(!Reach::of(false, false, false, None).rect);
@@ -1178,7 +1178,7 @@ mod tests {
         let some = |s: &'static str| Some(OsStr::new(s));
         assert!(wayland_session(some("wayland-0"), None, false));
         assert!(wayland_session(None, some("wayland"), false));
-        // WSLg 的形状：不设会话类型；worker 的环境里去掉了 WAYLAND_DISPLAY，连上的仍是 XWayland。
+        // WSLg 的情形：不设置会话类型；worker 的环境中已移除 WAYLAND_DISPLAY，连接的仍是 XWayland。
         assert!(wayland_session(None, None, true));
         assert!(!wayland_session(some(""), some("x11"), false));
         assert!(!wayland_session(None, None, false));

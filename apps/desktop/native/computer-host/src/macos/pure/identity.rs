@@ -1,30 +1,30 @@
 //! worker 进程内的控件身份表。AX 没有「控件存在期间不变」的标识，元素引用只能按 `CFEqual`
-//! 比较，身份因此由这张表发：一个元素第一次被看到时分配一个递增编号，之后同一个元素且核对串
-//! 不变时交回同一个编号。编号写进 `ref` 的身份段，协调器按它给稳定短编号。
+//! 比较，身份因此由本表分配：元素首次出现时分配一个递增编号，此后同一元素且核对串
+//! 不变时返回同一编号。编号写入 `ref` 的身份段，协调器据此分配稳定短编号。
 //!
 //! 三条边界：
 //!
-//! 1. **编号只增不减，不复用。** 淘汰掉的元素再出现时拿新号，旧 `ref` 按 `ref_stale` 拒绝，
-//!    不会指到别的控件上。
-//! 2. **同一个元素换了核对串即另一个控件。** 列表行视图会被复用，同一个元素引用可能换了
-//!    角色或稳定标识：旧编号作废、发新号，旧 `ref` 随之失效。
-//! 3. **表只属于这个进程。** worker 进程与宿主代际一一对应，换代际即换进程，表随之清空。
+//! 1. **编号只增不减，不复用。** 已淘汰的元素再次出现时分配新编号，旧 `ref` 按 `ref_stale` 拒绝，
+//!    不会指向其他控件。
+//! 2. **同一元素的核对串改变即视为另一个控件。** 列表行视图会被复用，同一元素引用的
+//!    角色或稳定标识可能改变：旧编号作废、分配新编号，旧 `ref` 随之失效。
+//! 3. **表只属于当前进程。** worker 进程与宿主代际一一对应，代际变更即更换进程，表随之清空。
 //!
-//! 本模块不调用 AX：比较与散列由 `Handle` 给出，单测用假句柄。
+//! 本模块不调用 AX：比较与散列由 `Handle` 提供，单测使用假句柄。
 
 use std::collections::{BTreeMap, HashMap};
 
 /// 表项上限，与协调器每个窗口编号表的上限相同。
 ///
-/// 单次读取的节点数上限远低于它，同一次读取里的元素不会互相挤掉。超过即淘汰最久没被看到的
-/// 那一项；那个元素再出现时拿新号，旧 `ref` 按边界 1 失效。
+/// 单次读取的节点数上限远低于该值，同一次读取中的元素不会相互淘汰。超过上限即淘汰最久未出现的
+/// 一项；该元素再次出现时分配新编号，旧 `ref` 按边界 1 失效。
 pub const MAX_IDENTITIES: usize = 8192;
 
-/// 表里认的元素句柄。
+/// 身份表使用的元素句柄。
 pub trait Handle {
-    /// 散列值。`same` 为真的两个句柄必须给出同一个值；反过来不要求。
+    /// 散列值。`same` 为真的两个句柄必须返回相同的值；反之不要求。
     fn hash(&self) -> u64;
-    /// 两个句柄指的是不是同一个元素。
+    /// 两个句柄是否指向同一元素。
     fn same(&self, other: &Self) -> bool;
 }
 
@@ -37,9 +37,9 @@ struct Entry<H> {
 
 pub struct Identities<H> {
     entries: HashMap<u64, Entry<H>>,
-    /// 散列值 → 这个散列下的编号。散列相同不等于同一个元素，桶里逐个用 `same` 比。
+    /// 散列值 → 该散列下的编号。散列相同不等于同一元素，桶内逐个用 `same` 比较。
     buckets: HashMap<u64, Vec<u64>>,
-    /// 最近一次被看到的时刻 → 编号。最小的一项就是该淘汰的那一项。
+    /// 最近一次出现的时刻 → 编号。最小的一项即下一个淘汰对象。
     order: BTreeMap<u64, u64>,
     next_id: u64,
     tick: u64,
@@ -58,9 +58,9 @@ impl<H: Handle + Clone> Identities<H> {
         }
     }
 
-    /// 这个元素、这个核对串的编号，并把它记为最近被看到。
+    /// 返回该元素在该核对串下的编号，并将其记为最近出现。
     ///
-    /// 同一个元素换了核对串时旧编号作废，发一个新号，见文件头边界 2。
+    /// 同一元素的核对串改变时旧编号作废并分配新编号，见文件头边界 2。
     pub fn intern(&mut self, handle: H, check: &str) -> u64 {
         let hash = handle.hash();
         let found = self.buckets.get(&hash).and_then(|ids| {
@@ -98,7 +98,7 @@ impl<H: Handle + Clone> Identities<H> {
         id
     }
 
-    /// 编号对应的元素与发号时的核对串，并把它记为最近被看到。编号已作废或已淘汰时缺席。
+    /// 返回编号对应的元素与分配编号时的核对串，并将其记为最近出现。编号已作废或已淘汰时缺席。
     pub fn get(&mut self, id: u64) -> Option<(H, String)> {
         let entry = self.entries.get(&id)?;
         let found = (entry.handle.clone(), entry.check.clone());
@@ -128,7 +128,7 @@ impl<H: Handle + Clone> Identities<H> {
         self.forget(id);
     }
 
-    /// 从表与散列桶里去掉一项。调用方负责它在 `order` 里的那一项。
+    /// 从表与散列桶中移除一项。该项在 `order` 中的记录由调用方移除。
     fn forget(&mut self, id: u64) {
         let Some(entry) = self.entries.remove(&id) else {
             return;
@@ -146,7 +146,7 @@ impl<H: Handle + Clone> Identities<H> {
 mod tests {
     use super::*;
 
-    /// 假句柄：`key` 相同即同一个元素，散列取 `bucket`，可以让不同元素撞同一个散列。
+    /// 假句柄：`key` 相同即同一元素，散列取 `bucket`，可使不同元素产生相同的散列。
     #[derive(Debug, Clone)]
     struct Fake {
         key: u32,
@@ -169,7 +169,7 @@ mod tests {
         }
     }
 
-    /// 同一个元素连续两次观察拿同一个编号；另一个元素拿另一个编号。
+    /// 同一元素连续两次观察得到同一编号；另一元素得到不同编号。
     #[test]
     fn the_same_element_keeps_its_number() {
         let mut table = Identities::new(16);
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(table.len(), 2);
     }
 
-    /// 散列相同的两个元素不合并：桶里按 `same` 逐个比。
+    /// 散列相同的两个元素不合并：桶内按 `same` 逐个比较。
     #[test]
     fn a_hash_collision_does_not_merge_two_elements() {
         let mut table = Identities::new(16);
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(table.intern(Fake { key: 2, bucket: 7 }, "c"), b);
     }
 
-    /// 原始失败形状：列表行视图被复用，同一个元素换了角色。旧编号作废，发新号，旧编号查不到。
+    /// 原始失败形状：列表行视图被复用，同一元素的角色改变。旧编号作废并分配新编号，旧编号无法查到。
     #[test]
     fn a_reused_element_with_a_new_check_gets_a_new_number() {
         let mut table = Identities::new(16);
@@ -206,13 +206,13 @@ mod tests {
         assert_eq!(table.len(), 1);
     }
 
-    /// 编号只增不减：淘汰掉的元素再出现时拿更大的新号，旧号不再指向任何元素。
+    /// 编号只增不减：已淘汰的元素再次出现时分配更大的新编号，旧编号不再指向任何元素。
     #[test]
     fn evicted_numbers_are_never_reissued() {
         let mut table = Identities::new(2);
         let a = table.intern(fake(1), "c");
         let b = table.intern(fake(2), "c");
-        // 看一眼 a，淘汰的就是 b。
+        // 读取一次 a 之后，被淘汰的是 b。
         assert!(table.get(a).is_some());
         let c = table.intern(fake(3), "c");
         assert_eq!(table.len(), 2);
@@ -222,7 +222,7 @@ mod tests {
         assert!(b_again > c && b_again != b);
     }
 
-    /// 上限与协调器对齐，一次读取的节点全部留在表里。
+    /// 上限与协调器一致，一次读取的节点全部保留在表中。
     #[test]
     fn one_full_read_fits_in_the_table() {
         let mut table = Identities::new(MAX_IDENTITIES);

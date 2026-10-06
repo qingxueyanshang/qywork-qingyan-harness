@@ -1,17 +1,17 @@
-//! 平台无关的输入事件换成 CGEvent 的形状：事件类型、鼠标键、位置（点）、点击次数、键码、
+//! 将平台无关的输入事件转换为 CGEvent 的形状：事件类型、鼠标键、位置（点）、点击次数、键码、
 //! 修饰键标志位与滚轮格数。
 //!
 //! 四条规则：
 //!
-//! 1. **按住鼠标键时的移动是拖动事件**（`LeftMouseDragged` 等），不是 `MouseMoved`：应用按拖动
-//!    事件认拖拽。
-//! 2. **每个键盘事件自带修饰键标志位**，按此刻已按下、尚未抬起的修饰键算：修饰键自己的按下事件
-//!    含它自己，抬起事件不含。
-//! 3. **同一处同一个键接连按下，点击次数递增**（1、2），双击由这一格表达，不靠两次按下的时间间隔；
-//!    移到别处或换一个键即从 1 重新数。按下与抬起带同一个次数。
-//! 4. **CG 的第二滚轮轴正值向左**，协议的水平格数正值向右，换算时取反。垂直轴两边都是正值向上。
+//! 1. **按下鼠标键时的移动是拖动事件**（`LeftMouseDragged` 等），不是 `MouseMoved`：应用按拖动
+//!    事件识别拖拽。
+//! 2. **每个键盘事件自带修饰键标志位**，按当前已按下、尚未抬起的修饰键计算：修饰键自身的按下事件
+//!    包含该修饰键，抬起事件不包含。
+//! 3. **同一位置同一个键连续按下时，点击次数递增**（1、2），双击由该字段表达，不依赖两次按下的
+//!    时间间隔；移到其他位置或更换按键即从 1 重新计数。按下与抬起携带相同的次数。
+//! 4. **CG 的第二滚轮轴正值向左**，协议的水平格数正值向右，换算时取反。垂直轴两侧都是正值向上。
 //!
-//! 状态跨批保留：一次动作分几批派发（拖拽逐段移动）时，按住的键与指针位置接着上一批算。
+//! 状态跨批保留：一次动作分多批派发（拖拽逐段移动）时，按下的键与指针位置延续上一批的状态。
 //! 本模块不调用任何接口。
 
 use crate::geometry::ScreenPoint;
@@ -33,13 +33,13 @@ pub mod kind {
     pub const OTHER_DRAGGED: u32 = 27;
 }
 
-/// 四个修饰键在 `CGEventFlags` 里的位。键盘事件建出来时已有的其余位（小键盘、Fn）不动。
+/// 四个修饰键在 `CGEventFlags` 中的位。键盘事件创建时已有的其余位（小键盘、Fn）保持不变。
 pub const MODIFIER_MASK: u64 = 0x001E_0000;
 
-/// 修饰键名 → `CGEventFlags` 里对应的那一位。不是修饰键的名字返回 `None`。
+/// 修饰键名 → `CGEventFlags` 中对应的位。不是修饰键的名称返回 `None`。
 ///
-/// 每个键盘事件按此刻按住的修饰键设这几位，见文件头第 2 条。外壳补发抬起只发键码，用不到它，
-/// 所以它不在共用的 `keys.rs` 里。
+/// 每个键盘事件按当前按下的修饰键设置这几位，见文件头第 2 条。外壳补发抬起只发送键码，不使用
+/// 该函数，因此它不在共用的 `keys.rs` 中。
 fn modifier_flag(name: &str) -> Option<u64> {
     Some(match name {
         "shift" => 0x0002_0000,
@@ -50,7 +50,7 @@ fn modifier_flag(name: &str) -> Option<u64> {
     })
 }
 
-/// 一个待建的 CGEvent。
+/// 一个待创建的 CGEvent。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Cg {
     Mouse {
@@ -58,7 +58,7 @@ pub enum Cg {
         /// `CGMouseButton`：0 左、1 右、2 中。移动事件填 0。
         button: u32,
         at: (f64, f64),
-        /// `kCGMouseEventClickState`。移动事件为 0，不设这一格。
+        /// `kCGMouseEventClickState`。移动事件为 0，不设置该字段。
         clicks: i64,
     },
     Scroll {
@@ -69,19 +69,19 @@ pub enum Cg {
     Key {
         code: u16,
         down: bool,
-        /// 此刻按住的修饰键，只含 `MODIFIER_MASK` 里的位。
+        /// 当前按下的修饰键，只含 `MODIFIER_MASK` 中的位。
         flags: u64,
     },
 }
 
-/// 一次动作里的输入状态。
+/// 一次动作中的输入状态。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tracker {
     at: (f64, f64),
-    /// 左、右、中三个键此刻按没按住。
+    /// 左、右、中三个键当前是否按下。
     pressed: [bool; 3],
     flags: u64,
-    /// 最近一次按下：哪个键、在哪、第几下。
+    /// 最近一次按下：按键、位置与点击次数。
     last: Option<(MouseButton, (f64, f64), i64)>,
 }
 
@@ -96,7 +96,7 @@ const fn slot(button: MouseButton) -> usize {
 const BUTTONS: [MouseButton; 3] = [MouseButton::Left, MouseButton::Right, MouseButton::Middle];
 
 impl Tracker {
-    /// `at` 是派发开始那一刻的指针位置，单位是点。
+    /// `at` 是派发开始时的指针位置，单位是点。
     pub fn new(at: (f64, f64)) -> Self {
         Self {
             at,
@@ -106,9 +106,9 @@ impl Tracker {
         }
     }
 
-    /// 把一批事件换成 CGEvent 的形状。`to_points` 把屏幕物理像素点换成点。
+    /// 将一批事件转换为 CGEvent 的形状。`to_points` 将屏幕物理像素点换算为点。
     ///
-    /// 批里有换算不了的键名时交回 `None`，状态不变：发一半会让组合键停在半按下的状态。
+    /// 批中有无法换算的键名时返回 `None`，状态不变：只发送一部分会使组合键停留在部分按下的状态。
     pub fn plan(
         &mut self,
         events: &[Event],
@@ -209,7 +209,7 @@ impl Tracker {
     }
 }
 
-/// 键盘事件最终的标志位：建事件时系统给的其余位保留，四个修饰键按 `held` 重设。
+/// 键盘事件最终的标志位：保留创建事件时系统设置的其余位，四个修饰键按 `held` 重新设置。
 pub const fn flags_with(created: u64, held: u64) -> u64 {
     (created & !MODIFIER_MASK) | (held & MODIFIER_MASK)
 }
@@ -220,7 +220,7 @@ mod tests {
     use crate::input::key_stroke;
     use crate::protocol::{key_names, Modifier};
 
-    /// 单测里像素与点一比一，只看事件形状。
+    /// 单元测试中像素与点按一比一换算，只检查事件形状。
     fn same(p: ScreenPoint) -> (f64, f64) {
         (f64::from(p.x), f64::from(p.y))
     }
@@ -244,7 +244,7 @@ mod tests {
         }
     }
 
-    /// 单击：移过去、按下、抬起，按下与抬起都是第 1 下，位置是移过去的那一点。
+    /// 单击：移动、按下、抬起，按下与抬起的点击次数都是 1，位置是移动到的点。
     #[test]
     fn a_click_moves_then_presses_once() {
         let mut t = Tracker::new((0.0, 0.0));
@@ -257,7 +257,7 @@ mod tests {
                 ],
                 same,
             )
-            .expect("换算得出");
+            .expect("换算成功");
         assert_eq!(
             planned,
             vec![
@@ -268,7 +268,7 @@ mod tests {
         );
     }
 
-    /// 双击的第二下带点击次数 2；移到别处再按从 1 重新数。
+    /// 双击的第二次点击携带点击次数 2；移到其他位置再按时从 1 重新计数。
     #[test]
     fn a_double_click_counts_its_second_press() {
         let mut t = Tracker::new((0.0, 0.0));
@@ -280,58 +280,58 @@ mod tests {
                 ],
                 same,
             )
-            .expect("换算得出")
+            .expect("换算成功")
         };
-        t.plan(&[at(5, 5)], same).expect("换算得出");
+        t.plan(&[at(5, 5)], same).expect("换算成功");
         let first = press(&mut t);
         let second = press(&mut t);
         assert_eq!(first[0], mouse(kind::LEFT_DOWN, 0, 5.0, 5.0, 1));
         assert_eq!(second[0], mouse(kind::LEFT_DOWN, 0, 5.0, 5.0, 2));
         assert_eq!(second[1], mouse(kind::LEFT_UP, 0, 5.0, 5.0, 2));
-        t.plan(&[at(6, 5)], same).expect("换算得出");
+        t.plan(&[at(6, 5)], same).expect("换算成功");
         assert_eq!(press(&mut t)[0], mouse(kind::LEFT_DOWN, 0, 6.0, 5.0, 1));
-        // 换一个键也从 1 数起。
+        // 更换按键同样从 1 开始计数。
         let right = t
             .plan(&[button(MouseButton::Right, true)], same)
-            .expect("换算得出");
+            .expect("换算成功");
         assert_eq!(right[0], mouse(kind::RIGHT_DOWN, 1, 6.0, 5.0, 1));
     }
 
-    /// 拖拽分几批派发：按住左键之后的移动是拖动事件，抬起之后恢复成普通移动。
+    /// 拖拽分多批派发：按下左键之后的移动是拖动事件，抬起之后恢复为普通移动。
     #[test]
     fn moves_while_a_button_is_held_are_drags_across_batches() {
         let mut t = Tracker::new((0.0, 0.0));
         t.plan(&[at(1, 1), button(MouseButton::Left, true)], same)
-            .expect("换算得出");
+            .expect("换算成功");
         assert_eq!(
-            t.plan(&[at(2, 2)], same).expect("换算得出"),
+            t.plan(&[at(2, 2)], same).expect("换算成功"),
             vec![mouse(kind::LEFT_DRAGGED, 0, 2.0, 2.0, 0)]
         );
         assert_eq!(
             t.plan(&[button(MouseButton::Left, false)], same)
-                .expect("换算得出"),
+                .expect("换算成功"),
             vec![mouse(kind::LEFT_UP, 0, 2.0, 2.0, 1)]
         );
         assert_eq!(
-            t.plan(&[at(3, 3)], same).expect("换算得出"),
+            t.plan(&[at(3, 3)], same).expect("换算成功"),
             vec![mouse(kind::MOVED, 0, 3.0, 3.0, 0)]
         );
         t.plan(&[button(MouseButton::Middle, true)], same)
-            .expect("换算得出");
+            .expect("换算成功");
         assert_eq!(
-            t.plan(&[at(4, 4)], same).expect("换算得出"),
+            t.plan(&[at(4, 4)], same).expect("换算成功"),
             vec![mouse(kind::OTHER_DRAGGED, 2, 4.0, 4.0, 0)]
         );
     }
 
-    /// 组合键：每个键盘事件带此刻按住的修饰键，逆序抬起时逐个去掉。
+    /// 组合键：每个键盘事件携带当前按下的修饰键，逆序抬起时逐个移除。
     #[test]
     fn key_events_carry_the_modifiers_held_at_that_moment() {
         let mut t = Tracker::new((0.0, 0.0));
         let events = key_stroke("a", &["meta".to_owned(), "shift".to_owned()]);
         let flags: Vec<(u16, bool, u64)> = t
             .plan(&events, same)
-            .expect("换算得出")
+            .expect("换算成功")
             .into_iter()
             .map(|e| match e {
                 Cg::Key { code, down, flags } => (code, down, flags),
@@ -352,7 +352,7 @@ mod tests {
         );
     }
 
-    /// 批里有换算不了的键名时整批不换，按住的修饰键也不记。
+    /// 批中有无法换算的键名时整批不转换，按下的修饰键也不记录。
     #[test]
     fn an_unknown_key_rejects_the_whole_batch_and_leaves_the_state() {
         let mut t = Tracker::new((0.0, 0.0));
@@ -362,7 +362,7 @@ mod tests {
         assert_eq!(t, before);
     }
 
-    /// 垂直格数原样给第一轴；水平格数取反给第二轴。
+    /// 垂直格数原样写入第一轴；水平格数取反后写入第二轴。
     #[test]
     fn wheel_notches_map_onto_the_cg_axes() {
         let mut t = Tracker::new((7.0, 8.0));
@@ -380,7 +380,7 @@ mod tests {
                 ],
                 same,
             )
-            .expect("换算得出");
+            .expect("换算成功");
         assert_eq!(
             planned,
             vec![
@@ -408,18 +408,18 @@ mod tests {
         );
     }
 
-    /// 移动按调用方给的换算落到点上。
+    /// 移动按调用方提供的换算关系换算为点。
     #[test]
     fn moves_are_converted_to_points() {
         let mut t = Tracker::new((0.0, 0.0));
         let half = |p: ScreenPoint| (f64::from(p.x) / 2.0, f64::from(p.y) / 2.0);
         assert_eq!(
-            t.plan(&[at(301, 40)], half).expect("换算得出"),
+            t.plan(&[at(301, 40)], half).expect("换算成功"),
             vec![mouse(kind::MOVED, 0, 150.5, 20.0, 0)]
         );
     }
 
-    /// 四个修饰键各有一个不同的标志位，都落在 `MODIFIER_MASK` 里；主键没有标志位。键码的覆盖
+    /// 四个修饰键各有一个不同的标志位，均位于 `MODIFIER_MASK` 中；主键没有标志位。键码的覆盖范围
     /// 由 `macos::tests` 对整张词表核对。
     #[test]
     fn every_modifier_has_its_own_flag_inside_the_mask() {
@@ -432,7 +432,7 @@ mod tests {
         ] {
             let flag = modifier_flag(m.key_name()).expect("修饰键有标志位");
             assert_eq!(flag & MODIFIER_MASK, flag, "{}", m.key_name());
-            assert_eq!(all & flag, 0, "{} 与别的修饰键共用标志位", m.key_name());
+            assert_eq!(all & flag, 0, "{} 与其他修饰键共用标志位", m.key_name());
             all |= flag;
         }
         assert_eq!(all, MODIFIER_MASK);
@@ -441,7 +441,7 @@ mod tests {
         }
     }
 
-    /// 重设修饰键只动四个修饰键位，建事件时系统给的小键盘与 Fn 位保留。
+    /// 重新设置修饰键只改变四个修饰键位，保留创建事件时系统设置的小键盘与 Fn 位。
     #[test]
     fn flags_keep_the_bits_the_event_was_created_with() {
         let numeric_pad_and_fn = 0x0020_0000 | 0x0080_0000;

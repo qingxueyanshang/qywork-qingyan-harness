@@ -1,19 +1,19 @@
 //! macOS 与 Linux 的浏览器引擎：本机已安装的 Chrome / Edge / Chromium，独立窗口。
 //!
-//! 外壳按专用 profile 拉起浏览器，并对它保持一条自己的 CDP 连接，只做宿主职责；
-//! 页内观察与动作由服务端按 `host.ready` 里的调试端口另连一条 CDP 执行。
+//! 外壳以专用 profile 启动浏览器，并与其保持一条自身的 CDP 连接，只承担宿主职责；
+//! 页内观察与动作由服务端按 `host.ready` 中的调试端口另建一条 CDP 连接执行。
 //!
 //! 四条不变量：
 //!
-//! 1. **每个新页与它的每个跨站子帧都在启动时挂起**（`waitForDebuggerOnStart`），开完 Page 域
-//!    才放行。帧表与下载归属靠 Page 域的帧事件，先放行就会漏掉最早出现的帧。
-//! 2. **标记在目标文档之前注入。** 宿主建的页先停在 `about:blank`，注入后再导航；页面自己
-//!    开出的新页在挂起期间注入。直接带目标地址建页，第一份文档在注入之前就开始加载。
-//! 3. **下载归属按帧查页。** `Browser.downloadWillBegin` 只带 frameId，查不到存活页的帧按用户
-//!    下载处理。落点：平时按浏览器默认行为，有授权期间整个浏览器切到按 guid 写进暂存目录，
-//!    完成后由宿主搬到授权路径；同一期间用户页的下载搬回用户的下载目录。
-//! 4. **浏览器进程退出即整份状态作废。** 页、会话、帧表、在途下载随进程丢弃，宿主按退避重启它，
-//!    服务端经同一条连接上重发的首帧得知。
+//! 1. **每个新页面及其每个跨站子帧都在启动时挂起**（`waitForDebuggerOnStart`），启用 Page 域
+//!    后才放行。帧表与下载归属依赖 Page 域的帧事件，提前放行会遗漏最早出现的帧。
+//! 2. **标记在目标文档之前注入。** 宿主新建的页面先停在 `about:blank`，注入后再导航；页面自行
+//!    打开的新页面在挂起期间注入。直接以目标地址新建页面时，第一份文档在注入之前就开始加载。
+//! 3. **下载归属按帧查找页面。** `Browser.downloadWillBegin` 只带 frameId，无法对应到存活页面的帧按用户
+//!    下载处理。保存位置：平时按浏览器默认行为；存在授权期间整个浏览器切换为按 guid 写入暂存目录，
+//!    完成后由宿主移动到授权路径；同一期间用户页面的下载移回用户的下载目录。
+//! 4. **浏览器进程退出即全部状态作废。** 页面、会话、帧表、在途下载随进程丢弃，宿主按退避策略重启浏览器，
+//!    服务端通过同一连接上重发的首帧得知。
 
 mod cdp;
 mod launch;
@@ -43,18 +43,18 @@ use table::{Popup, Table};
 const NOT_FOUND: &str = "not_found";
 const EXITED: &str = "exited";
 
-/// `host.ready` 报的显示位置：页在浏览器自己的窗口里，面板只列页签。
+/// `host.ready` 报告的显示位置：页面位于浏览器自身的窗口中，面板只列出页签。
 pub const PRESENTATION: &str = "window";
 
-/// 宿主建页后等页面附上来并放行的上限。附上与放行都是本机毫秒级的事。
+/// 宿主新建页面后等待页面附加并放行的上限。附加与放行都在本机毫秒级完成。
 const ATTACH_WAIT: Duration = Duration::from_secs(10);
-/// 建页之后等目标文档导航完成的上限，与 Windows 等首个文档取同一个数。
+/// 新建页面后等待目标文档导航完成的上限，与 Windows 等待首个文档的上限取同一值。
 const FIRST_LOAD_WAIT: Duration = Duration::from_secs(20);
-/// 调试连接断开或要求关闭之后，等浏览器进程自己退出的上限。到点强杀：
-/// 不等就强杀会打断它写 profile。
+/// 调试连接断开或请求关闭之后，等待浏览器进程自行退出的上限。超时后强制终止：
+/// 不等待即强制终止会中断其写入 profile。
 const EXIT_WAIT: Duration = Duration::from_secs(5);
 
-/// 页会话与子帧会话上的自动附加：只附跨站子帧，挂起到开完 Page 域。
+/// 页面会话与子帧会话上的自动附加：只附加跨站子帧，挂起至启用 Page 域。
 fn child_attach() -> Value {
     json!({
         "autoAttach": true,
@@ -64,7 +64,7 @@ fn child_attach() -> Value {
     })
 }
 
-/// 浏览器级会话上的自动附加：只附顶层页。
+/// 浏览器级会话上的自动附加：只附加顶层页面。
 fn page_attach() -> Value {
     json!({
         "autoAttach": true,
@@ -78,7 +78,7 @@ pub struct Engine {
     inner: Arc<Inner>,
 }
 
-/// 一页在这个引擎里的句柄：浏览器的 targetId。会话随进程变，按需从页表里取。
+/// 页面在本引擎中的句柄：浏览器的 targetId。会话随进程变化，按需从页表中获取。
 #[derive(Clone)]
 pub struct Page {
     target: String,
@@ -95,12 +95,12 @@ struct Life {
     status: Status,
     instance: Option<Arc<Instance>>,
     stopping: bool,
-    /// 监督线程还在。退出路径等它把浏览器进程收完。
+    /// 监督线程仍在运行。退出路径等待它回收浏览器进程。
     supervising: bool,
 }
 
 enum Status {
-    /// 第一次拉起还没有结果。宿主连接的首帧要等它。
+    /// 首次启动尚无结果。宿主连接的首帧需要等待该结果。
     Starting,
     Running { debug_port: u16, version: String },
     Unavailable(&'static str),
@@ -119,13 +119,13 @@ impl Status {
 }
 
 impl Engine {
-    /// 找浏览器、占 profile、起监督线程。找不到浏览器不是错误：宿主照常连上服务端，
-    /// 首帧如实报 `not_found`，设置页据此显示原因。
+    /// 查找浏览器、占用 profile、启动监督线程。未找到浏览器不是错误：宿主照常连接服务端，
+    /// 首帧如实报告 `not_found`，设置页据此显示原因。
     pub fn start(_app: &AppHandle) -> Result<Engine, String> {
         let found = launch::discover();
         let (profile, status) = match &found {
             Some(found) => {
-                let dir = launch::profile_dir(found).ok_or("取不到配置根目录")?;
+                let dir = launch::profile_dir(found).ok_or("无法取得配置根目录")?;
                 let lock = profile::lock(&dir)?;
                 log::info!("浏览器宿主使用 {} profile={}", found.exe.display(), dir.display());
                 (Some(lock), Status::Starting)
@@ -149,7 +149,7 @@ impl Engine {
         Ok(Engine { inner })
     }
 
-    /// 此刻的调试端点。第一次拉起还没有结果时等它。
+    /// 当前的调试端点。首次启动尚无结果时等待。
     pub fn settled(&self) -> Result<Runtime, &'static str> {
         let mut life = self.inner.lock();
         while matches!(life.status, Status::Starting) && !life.stopping {
@@ -173,15 +173,15 @@ impl Engine {
         self.instance()?.navigate(&page.target, action, url)
     }
 
-    /// 把这一页切成它所在窗口的当前页签，并把窗口提到前面；窗口最小化时一并还原。
-    /// 能不能真的拿到前台由窗口管理器决定。
+    /// 把该页面切换为所在窗口的当前页签，并把窗口置于前台；窗口最小化时一并还原。
+    /// 能否实际取得前台由窗口管理器决定。
     pub fn activate(&self, page: &Page) -> Result<(), String> {
         self.instance()?
             .call("Target.activateTarget", json!({ "targetId": page.target }), None)
             .map(|_| ())
     }
 
-    /// 按授权表切换下载行为。浏览器不在时没有要切的对象。
+    /// 按授权表切换下载行为。浏览器未运行时无需切换。
     pub fn sync_downloads(&self) -> Result<(), String> {
         match self.instance() {
             Ok(instance) => instance.sync_downloads(),
@@ -189,10 +189,10 @@ impl Engine {
         }
     }
 
-    /// 停止重启并关掉浏览器。先请它自己关，到点仍在才强杀。
+    /// 停止重启并关闭浏览器。先请求其自行关闭，超时仍在运行才强制终止。
     ///
-    /// 等的是监督线程收完进程，期限取回收期限的两倍：监督线程自己到点会先强杀并回收，
-    /// 这里的强杀只在它卡在别处时才发生，不对一个可能已被回收的 pid 发信号。
+    /// 等待监督线程回收进程，期限取回收期限的两倍：监督线程自身到期会先强制终止并回收，
+    /// 此处的强制终止只在它阻塞于别处时发生，不向可能已被回收的 pid 发送信号。
     pub fn shutdown(&self) {
         let instance = {
             let mut life = self.inner.lock();
@@ -202,7 +202,7 @@ impl Engine {
         };
         if let Some(instance) = &instance {
             if let Err(e) = instance.cdp.call("Browser.close", json!({}), None) {
-                log::warn!("浏览器没有按请求关闭：{e}");
+                log::warn!("浏览器未按请求关闭：{e}");
             }
         }
         let deadline = Instant::now() + EXIT_WAIT * 2;
@@ -216,14 +216,14 @@ impl Engine {
         }
         if life.supervising {
             if let Some(instance) = instance {
-                log::warn!("浏览器进程 pid={} 在期限内没有退出，强制结束", instance.pid);
+                log::warn!("浏览器进程 pid={} 在期限内未退出，强制结束", instance.pid);
                 force_kill(instance.pid);
             }
         }
     }
 
     fn instance(&self) -> Result<Arc<Instance>, String> {
-        self.inner.lock().instance.clone().ok_or_else(|| "浏览器没有在运行".to_owned())
+        self.inner.lock().instance.clone().ok_or_else(|| "浏览器未运行".to_owned())
     }
 }
 
@@ -232,7 +232,7 @@ impl Inner {
         self.life.lock().expect("浏览器引擎状态锁被污染")
     }
 
-    /// 换一个状态并通知等它的线程。返回此刻是否在退出。
+    /// 切换状态并通知等待的线程。返回此刻是否正在退出。
     fn set(&self, status: Status, instance: Option<Arc<Instance>>) -> bool {
         let mut life = self.lock();
         life.status = status;
@@ -241,7 +241,7 @@ impl Inner {
         life.stopping
     }
 
-    /// 睡到退避结束，或者退出开始。返回是否在退出。
+    /// 休眠至退避结束或退出开始。返回是否正在退出。
     fn backoff(&self, delay: Duration) -> bool {
         let deadline = Instant::now() + delay;
         let mut life = self.lock();
@@ -256,10 +256,10 @@ impl Inner {
     }
 }
 
-/// 监督线程：拉起浏览器、消费它的事件直到进程退出、按退避重启。
+/// 监督线程：启动浏览器，消费其事件直至进程退出，按退避策略重启。
 ///
-/// 浏览器进程必须由这个线程拉起：Linux 的父进程退出信号按拉起它的线程计算，
-/// 这个线程活到外壳退出为止。
+/// 浏览器进程必须由该线程启动：Linux 的父进程退出信号按启动它的线程判定，
+/// 而该线程运行至外壳退出。
 fn supervise(inner: &Arc<Inner>) {
     let (Some(found), Some(profile)) = (&inner.found, &inner.profile) else { return };
     let profile = profile.dir().to_path_buf();
@@ -314,7 +314,7 @@ fn supervise(inner: &Arc<Inner>) {
     inner.changed.notify_all();
 }
 
-/// 等浏览器进程自己退出，到点强杀，最后回收。
+/// 等待浏览器进程自行退出，超时后强制终止，最后回收。
 fn reap(child: &mut Child) {
     let deadline = Instant::now() + EXIT_WAIT;
     while Instant::now() < deadline {
@@ -323,24 +323,24 @@ fn reap(child: &mut Child) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    log::warn!("浏览器进程在调试连接断开后没有退出，强制结束");
+    log::warn!("浏览器进程在调试连接断开后未退出，强制结束");
     let _ = child.kill();
     let _ = child.wait();
 }
 
-/// 强杀一个浏览器进程。只在关闭请求等过期限之后调用，且 `pid` 只能是本引擎拉起的那一个。
+/// 强制终止浏览器进程。只在关闭请求等待超过期限后调用，且 `pid` 只能是本引擎启动的进程。
 fn force_kill(pid: u32) {
     const SIGKILL: i32 = 9;
     extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
-    // SAFETY: 只传一个进程号与一个信号号，两者都是本函数构造的合法值。
+    // SAFETY: 只传入一个进程号与一个信号编号，两者都是本函数构造的合法值。
     if unsafe { kill(pid as i32, SIGKILL) } != 0 {
-        log::warn!("强杀浏览器进程 pid={pid} 失败");
+        log::warn!("强制终止浏览器进程 pid={pid} 失败");
     }
 }
 
-/// 一个在跑的浏览器进程与宿主对它的那条 CDP 连接。进程退出即整份丢弃。
+/// 运行中的浏览器进程及宿主与它的 CDP 连接。进程退出即全部丢弃。
 struct Instance {
     cdp: Arc<Cdp>,
     pid: u32,
@@ -348,37 +348,37 @@ struct Instance {
     version: String,
     staging: PathBuf,
     table: Mutex<Table>,
-    /// 页表变化的通知。宿主建页等附上与导航完成都等它。
+    /// 页表变化的通知。宿主新建页面时，等待附加与导航完成都依赖该通知。
     table_changed: Condvar,
     downloads: Mutex<Downloads>,
 }
 
 #[derive(Default)]
 struct Downloads {
-    /// 浏览器此刻是不是按 guid 写进暂存目录。
+    /// 浏览器此刻是否按 guid 写入暂存目录。
     staging: bool,
-    /// 按 guid 记的在途下载。
+    /// 按 guid 记录的在途下载。
     pending: HashMap<String, Pending>,
 }
 
 enum Pending {
-    /// 消费了一份授权：完成后搬到授权路径，终态按这份身份回报。
+    /// 已消费一份授权：完成后移动到授权路径，终态按该授权的身份回报。
     Authorized { tab: String, path: PathBuf, download_id: String },
-    /// 用户下载：若落在暂存目录里，完成后按建议名搬回用户的下载目录。
+    /// 用户下载：若保存在暂存目录中，完成后按建议名移回用户的下载目录。
     Manual { name: String },
 }
 
 impl Instance {
-    /// 拉起浏览器、连上它、开好宿主要的三样：目标发现、下载事件、顶层页的自动附加。
+    /// 启动浏览器并建立连接，启用宿主所需的三项：目标发现、下载事件、顶层页面的自动附加。
     fn launch(found: &Found, profile: &std::path::Path) -> Result<(Arc<Instance>, Receiver<Event>, Child), String> {
         let staging = profile.join(staging::DIR);
         let _ = std::fs::remove_dir_all(&staging);
-        std::fs::create_dir_all(&staging).map_err(|e| format!("建不出下载暂存目录：{e}"))?;
+        std::fs::create_dir_all(&staging).map_err(|e| format!("无法创建下载暂存目录：{e}"))?;
         let launch::Launched { mut child, port, path } = launch::launch(found, profile)?;
         let pid = child.id();
         let connected = (|| {
             let (cdp, events) =
-                Cdp::connect(port, &path).map_err(|e| format!("连不上浏览器调试端点：{e}"))?;
+                Cdp::connect(port, &path).map_err(|e| format!("无法连接浏览器调试端点：{e}"))?;
             let version = cdp.call("Browser.getVersion", json!({}), None)?;
             let product = version.get("product").and_then(Value::as_str).unwrap_or_default();
             cdp.call("Target.setDiscoverTargets", json!({ "discover": true }), None)?;
@@ -421,8 +421,8 @@ impl Instance {
         self.cdp.call(method, params, session)
     }
 
-    /// 消费事件直到连接断开。所有事件都在这一个线程上按到达顺序处理：处理当中发的命令由
-    /// CDP 的读线程取回包，不会卡住这里。**处理事件时不握页表锁发命令或回调宿主。**
+    /// 消费事件直至连接断开。所有事件都在本线程上按到达顺序处理：处理期间发送的命令由
+    /// CDP 的读线程接收响应，不会阻塞本线程。**处理事件时不持有页表锁发送命令或回调宿主。**
     fn pump(&self, events: Receiver<Event>) {
         for event in events.iter() {
             let session = event.session.as_deref();
@@ -473,7 +473,7 @@ impl Instance {
         }
     }
 
-    /// 一个目标附上来。顶层页与它的跨站子帧开 Page 域、挂子帧自动附加，页面自开的新页注入标记，
+    /// 处理目标附加。顶层页面及其跨站子帧启用 Page 域并设置子帧自动附加，页面自行打开的新页面注入标记，
     /// 最后放行。
     fn attached(&self, parent: Option<&str>, p: &Value) {
         let Some(session) = p.get("sessionId").and_then(Value::as_str) else { return };
@@ -501,7 +501,7 @@ impl Instance {
                     match self.call("Page.addScriptToEvaluateOnNewDocument", source, Some(session)) {
                         Ok(_) => Some(Popup { opener_tab, marker }),
                         Err(e) => {
-                            log::warn!("新开的页注入标记失败，不进存活集合：{e}");
+                            log::warn!("新页面注入标记失败，不加入存活集合：{e}");
                             None
                         }
                     }
@@ -523,10 +523,10 @@ impl Instance {
         }
     }
 
-    /// 开 Page 域并挂上跨站子帧的自动附加。失败只记日志：这一页照常可用，只是帧表缺了它的帧。
+    /// 启用 Page 域并设置跨站子帧的自动附加。失败只记录日志：该页面照常可用，只是帧表缺少其帧。
     fn enable(&self, session: &str) {
         if let Err(e) = self.call("Page.enable", json!({}), Some(session)) {
-            log::warn!("开 Page 域失败：{e}");
+            log::warn!("启用 Page 域失败：{e}");
         }
         if let Err(e) = self.call("Target.setAutoAttach", child_attach(), Some(session)) {
             log::warn!("子帧自动附加失败：{e}");
@@ -550,8 +550,8 @@ impl Instance {
         }
     }
 
-    /// 地址与标题的投影。`Target.targetInfoChanged` 与重读的 `Target.getTargetInfo` 都走这里，
-    /// 只报变了的那一项。
+    /// 地址与标题的投影。`Target.targetInfoChanged` 与重新读取的 `Target.getTargetInfo` 都经由此处，
+    /// 只报告变化的项。
     fn info_changed(&self, info: &Value) {
         if info.get("type").and_then(Value::as_str) != Some("page") {
             return;
@@ -569,20 +569,20 @@ impl Instance {
         }
     }
 
-    /// 顶层页的主帧 DOMContentLoaded、load 或同文档导航之后重读一次地址与标题。
+    /// 顶层页面的主帧 DOMContentLoaded、load 或同文档导航之后重新读取一次地址与标题。
     ///
-    /// 不要只靠 `Target.targetInfoChanged`：Chrome 只在导航提交时发它，那时标题还是地址，
-    /// 文档标题出来之后不再发（154 实测）；DOMContentLoaded 时重读已是文档标题。
-    /// 加载完成之后脚本再改的标题，要到下一次这三种事件才投影。
+    /// 不要只依赖 `Target.targetInfoChanged`：Chrome 只在导航提交时发送该事件，此时标题仍是地址，
+    /// 文档标题出现后不再发送（154 版实测）；DOMContentLoaded 时重新读取到的已是文档标题。
+    /// 加载完成后脚本修改的标题，要到下一次发生这三种事件时才投影。
     fn reread_info(&self, session: &str) {
         let Some(target) = self.table().page_of_session(session).map(str::to_owned) else { return };
         match self.call("Target.getTargetInfo", json!({ "targetId": target }), None) {
             Ok(result) => self.info_changed(&result["targetInfo"]),
-            Err(e) => log::warn!("重读页的地址与标题失败：{e}"),
+            Err(e) => log::warn!("重新读取页面的地址与标题失败：{e}"),
         }
     }
 
-    /// 帧提交。主帧第一次提交时，页面自开的新页以提交的地址进存活集合。
+    /// 帧提交。主帧首次提交时，页面自行打开的新页面以提交的地址加入存活集合。
     fn frame_navigated(&self, session: &str, frame: &Value) {
         let Some(id) = frame.get("id").and_then(Value::as_str) else { return };
         let url = frame.get("url").and_then(Value::as_str).unwrap_or_default();
@@ -619,7 +619,7 @@ impl Instance {
         self.table_changed.notify_all();
     }
 
-    /// 宿主建页：`about:blank` → 等附上并放行 → 认领 tabId → 注入标记 → 导航 → 等导航完成。
+    /// 宿主新建页面：`about:blank` → 等待附加并放行 → 认领 tabId → 注入标记 → 导航 → 等待导航完成。
     fn open(&self, spec: &OpenSpec, url: Option<&str>) -> Result<Opened, String> {
         let created = self.call(
             "Target.createTarget",
@@ -629,7 +629,7 @@ impl Instance {
         let target = created
             .get("targetId")
             .and_then(Value::as_str)
-            .ok_or("浏览器没有给出新页的 targetId")?
+            .ok_or("浏览器未返回新页面的 targetId")?
             .to_owned();
         match self.prepare(&target, spec, url) {
             Ok(opened) => Ok(opened),
@@ -648,10 +648,10 @@ impl Instance {
                 .wait_timeout_while(table, ATTACH_WAIT, |t| !t.page(target).is_some_and(|e| e.ready))
                 .expect("浏览器页表锁被污染");
             if timeout.timed_out() {
-                return Err("新页没有在期限内附上".to_owned());
+                return Err("新页面未在期限内附加".to_owned());
             }
-            let entry = table.page_mut(target).ok_or("新页已经关闭")?;
-            // 认领在导航之前：这一页开出的新页与发起的下载从第一份文档起就归它。
+            let entry = table.page_mut(target).ok_or("新页面已关闭")?;
+            // 认领在导航之前：该页面打开的新页面与发起的下载从第一份文档起即归属该页面。
             entry.tab = Some(spec.tab_id.to_owned());
             entry.session.clone()
         };
@@ -662,11 +662,11 @@ impl Instance {
             let settled = nav.get("errorText").is_some()
                 || nav.get("isDownload").and_then(Value::as_bool) == Some(true);
             if !settled && !self.wait_loaded(target) {
-                log::warn!("新页 {} 在期限内没有完成首个导航", spec.tab_id);
+                log::warn!("新页面 {} 在期限内未完成首个导航", spec.tab_id);
             }
         }
         let table = self.table();
-        let entry = table.page(target).ok_or("新页已经关闭")?;
+        let entry = table.page(target).ok_or("新页面已关闭")?;
         let url = match (entry.url.as_str(), url) {
             ("" | BLANK, Some(requested)) => requested.to_owned(),
             (current, _) => current.to_owned(),
@@ -687,17 +687,17 @@ impl Instance {
 
     fn close(&self, target: &str) {
         if let Err(e) = self.call("Target.closeTarget", json!({ "targetId": target }), None) {
-            log::warn!("关页失败：{e}");
+            log::warn!("关闭页面失败：{e}");
         }
     }
 
-    /// 人工导航。地址走 `Page.navigate`，前进后退走页面历史，地址由 `targetInfoChanged` 回投。
+    /// 人工导航。地址使用 `Page.navigate`，前进后退使用页面历史，地址由 `targetInfoChanged` 回传。
     fn navigate(&self, target: &str, action: &str, url: Option<&str>) -> Result<(), String> {
         let session = self
             .table()
             .page(target)
             .map(|e| e.session.clone())
-            .ok_or("这一页已经不在浏览器里")?;
+            .ok_or("该页面已不在浏览器中")?;
         let (method, params) = match action {
             "goto" => {
                 let parsed = navigation_url(url.ok_or("goto 缺少 url")?)?;
@@ -706,16 +706,16 @@ impl Instance {
             "reload" => ("Page.reload", json!({})),
             "back" => ("Runtime.evaluate", json!({ "expression": "history.back()" })),
             "forward" => ("Runtime.evaluate", json!({ "expression": "history.forward()" })),
-            other => return Err(format!("认不出的导航动作 {other}")),
+            other => return Err(format!("无法识别的导航动作 {other}")),
         };
         self.call(method, params, Some(&session)).map(|_| ())
     }
 
-    /// 一次下载开始。裁决在宿主的授权表里做完；宿主不在时取消，理由与 Windows 相同：
-    /// 没有授权表就判不了这次下载该不该放行。
+    /// 下载开始。裁决在宿主的授权表中完成；宿主未连接时取消，理由与 Windows 相同：
+    /// 没有授权表就无法判定该下载是否应放行。
     ///
-    /// 裁决与登记在途握着同一把下载锁：授权被消费到在途登记之间若有别的线程切回默认行为，
-    /// 这次授权下载会落进默认目录。
+    /// 裁决与在途登记持有同一把下载锁：若在授权被消费到在途登记之间有其他线程切回默认行为，
+    /// 该授权下载会保存到默认目录。
     fn download_began(&self, p: &Value) {
         let Some(guid) = p.get("guid").and_then(Value::as_str) else { return };
         let frame = p.get("frameId").and_then(Value::as_str).unwrap_or_default();
@@ -743,8 +743,8 @@ impl Instance {
         downloads.pending.insert(guid.to_owned(), pending);
     }
 
-    /// 一次下载到了终态。授权下载从暂存目录搬到授权路径并回报；用户下载若落在暂存目录，
-    /// 搬回用户的下载目录。
+    /// 下载到达终态。授权下载从暂存目录移动到授权路径并回报；用户下载若保存在暂存目录，
+    /// 移回用户的下载目录。
     fn download_progressed(&self, p: &Value) {
         let Some(guid) = p.get("guid").and_then(Value::as_str) else { return };
         let state = p.get("state").and_then(Value::as_str).unwrap_or_default();
@@ -761,7 +761,7 @@ impl Instance {
                     Err("下载被取消".to_owned())
                 };
                 if let Err(e) = &moved {
-                    log::warn!("授权下载没有落到 {}：{e}", path.display());
+                    log::warn!("授权下载未能移动到 {}：{e}", path.display());
                     let _ = std::fs::remove_file(&staged);
                 }
                 if let Some(host) = super::host() {
@@ -775,11 +775,11 @@ impl Instance {
                         Some(dir) => {
                             let to = staging::free_name(&dir, &name, guid);
                             match staging::move_to(&staged, &to) {
-                                Ok(()) => log::info!("用户下载已从暂存目录搬到 {}", to.display()),
-                                Err(e) => log::warn!("用户下载没能搬回 {}：{e}", to.display()),
+                                Ok(()) => log::info!("用户下载已从暂存目录移动到 {}", to.display()),
+                                Err(e) => log::warn!("用户下载未能移回 {}：{e}", to.display()),
                             }
                         }
-                        None => log::warn!("取不到用户的下载目录，下载留在 {}", staged.display()),
+                        None => log::warn!("无法取得用户的下载目录，下载保留在 {}", staged.display()),
                     }
                 }
             }
@@ -793,10 +793,10 @@ impl Instance {
         self.downloads.lock().expect("下载状态锁被污染")
     }
 
-    /// 有授权、或还有授权下载在途时，整个浏览器按 guid 写进暂存目录；都没有时回到默认行为。
+    /// 存在授权或仍有授权下载在途时，整个浏览器按 guid 写入暂存目录；两者都不存在时恢复默认行为。
     ///
-    /// 在途的授权下载结束前不切回：浏览器在下载开始之后才定落点，提前切回会让它落进默认目录。
-    /// 握着下载锁发命令，两个线程的切换因此按先后生效，不会交错。
+    /// 在途的授权下载结束前不切回：浏览器在下载开始之后才确定保存位置，提前切回会使其保存到默认目录。
+    /// 持有下载锁发送命令，因此两个线程的切换按先后顺序生效，不会交错。
     fn sync_downloads(&self) -> Result<(), String> {
         let mut downloads = self.downloads();
         let armed = super::host().is_some_and(|h| h.downloads_armed());

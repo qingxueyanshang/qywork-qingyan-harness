@@ -1,12 +1,13 @@
-//! 经窗口管理器的前台请求（EWMH 与 ICCCM 的客户端消息）与它们的读回、落点命中，以及等目标
-//! 应用处理完已送达事件的同步点。
+//! 经由窗口管理器的前台请求（EWMH 与 ICCCM 的客户端消息）及其结果读取、落点命中，以及等待
+//! 目标应用处理完已送达事件的同步点。
 //!
 //! 两条边界：
 //!
-//! 1. **请求一律发给根窗口，来源标 2**（代表用户操作的工具）：窗口管理器对来源 1（应用自己）
-//!    的激活请求按防抢焦点规则裁决，可能不理。窗口管理器异步处理请求，生效与否只看读回。
-//! 2. **关闭发的是 `_NET_CLOSE_WINDOW`**：窗口管理器转成 `WM_DELETE_WINDOW` 交给应用自己
-//!    处理，不是 `XKillClient`。
+//! 1. **请求一律发给根窗口，来源标记为 2**（代表用户操作的工具）：窗口管理器对来源 1（应用
+//!    自身）的激活请求按防抢焦点规则裁决，可能忽略。窗口管理器异步处理请求，是否生效只以读取
+//!    结果为准。
+//! 2. **关闭发送的是 `_NET_CLOSE_WINDOW`**：窗口管理器将其转换为 `WM_DELETE_WINDOW` 交给应用
+//!    自行处理，不是 `XKillClient`。
 
 use std::time::{Duration, Instant};
 
@@ -21,21 +22,21 @@ use super::{words, Display};
 use crate::geometry::{ScreenPoint, ScreenRect};
 use crate::protocol::WindowState;
 
-/// 客户端消息里的来源标识：代表用户操作的工具。
+/// 客户端消息中的来源标识：代表用户操作的工具。
 const SOURCE_TOOL: u32 = 2;
 /// ICCCM 的 `IconicState`，`WM_CHANGE_STATE` 用它请求最小化。
 const ICONIC_STATE: u32 = 3;
-/// `_NET_WM_STATE` 的动作：去掉与加上。
+/// `_NET_WM_STATE` 的动作：移除与添加。
 const STATE_REMOVE: u32 = 0;
 const STATE_ADD: u32 = 1;
 /// `_NET_MOVERESIZE_WINDOW` 的重力取 NorthWest：x、y 指外框左上角。
 const GRAVITY_NORTH_WEST: u32 = 1;
-/// 应用不支持 `_NET_WM_PING` 时，同步点退回等这么久。
+/// 应用不支持 `_NET_WM_PING` 时，同步点改为等待的固定时长。
 const PING_FALLBACK: Duration = Duration::from_millis(60);
 
-/// `popups`（`Display::popups` 的结果，从下到上）里整个装得下 `content` 的最上面一个。
+/// `popups`（`Display::popups` 的结果，从下到上）中能完整容纳 `content` 的最上层弹出窗口。
 ///
-/// 弹出窗口里的内容可以比窗口小一圈：Qt 组合框的下拉列表在它的弹出窗口里四周各缩进 1 像素。
+/// 弹出窗口中的内容可以比窗口略小：Qt 组合框的下拉列表在其弹出窗口中四周各缩进 1 像素。
 pub fn holding(popups: &[(Window, ScreenRect)], content: ScreenRect) -> Option<Window> {
     popups
         .iter()
@@ -44,7 +45,7 @@ pub fn holding(popups: &[(Window, ScreenRect)], content: ScreenRect) -> Option<W
         .map(|(window, _)| *window)
 }
 
-/// 窗口管理器可以拒绝的窗口动作，对应 `_NET_WM_ALLOWED_ACTIONS` 里的项。
+/// 窗口管理器可以拒绝的窗口动作，对应 `_NET_WM_ALLOWED_ACTIONS` 中的项。
 #[derive(Debug, Clone, Copy)]
 pub enum WmAction {
     Minimize,
@@ -66,17 +67,17 @@ impl Display {
         .unwrap_or(0)
     }
 
-    /// 键盘焦点在这个窗口或它的子窗口上。
+    /// 核对键盘焦点位于该窗口或其子窗口上。
     pub fn focus_within(&self, window: Window) -> Result<(), String> {
         let focus = self
             .conn
             .get_input_focus()
             .map_err(|e| e.to_string())
             .and_then(|c| c.reply().map_err(|e| e.to_string()))
-            .map_err(|e| format!("读键盘焦点失败 {e}"))?
+            .map_err(|e| format!("读取键盘焦点失败 {e}"))?
             .focus;
         let mut current = focus;
-        // 0 是没有焦点，1 是焦点跟着指针走：两者都说不出输入去哪个窗口。
+        // 0 表示没有焦点，1 表示焦点跟随指针：两者都无法确定输入发往哪个窗口。
         for _ in 0..16 {
             if current == window {
                 return Ok(());
@@ -92,7 +93,7 @@ impl Display {
         Err(format!("not_focused: 键盘焦点在窗口 {focus} 上"))
     }
 
-    /// 窗口还在窗口管理器的清单里。
+    /// 窗口仍在窗口管理器的清单中。
     pub fn managed(&self, window: Window) -> bool {
         self.property(
             self.root,
@@ -102,7 +103,7 @@ impl Display {
         .is_some_and(|b| words(&b).any(|w| w == window))
     }
 
-    /// 窗口此刻的显示状态。窗口已经不在时缺席。
+    /// 窗口当前的显示状态。窗口已不存在时缺失。
     pub fn window_state(&self, window: Window) -> Option<WindowState> {
         let attributes = self.conn.get_window_attributes(window).ok()?.reply().ok()?;
         if attributes.map_state != MapState::VIEWABLE
@@ -121,8 +122,8 @@ impl Display {
             && self.has_state(window, self.atoms.net_wm_state_maximized_horz)
     }
 
-    /// 窗口管理器允不允许这个动作。窗口上没有 `_NET_WM_ALLOWED_ACTIONS` 时按允许算：
-    /// 这一项由窗口管理器选择性地设置，缺席不是禁止。
+    /// 窗口管理器是否允许该动作。窗口上没有 `_NET_WM_ALLOWED_ACTIONS` 时视为允许：
+    /// 该属性由窗口管理器选择性地设置，缺失不表示禁止。
     pub fn allows(&self, window: Window, action: WmAction) -> bool {
         let Some(list) = self.property(
             window,
@@ -142,7 +143,7 @@ impl Display {
         need.iter().all(|n| words(&list).any(|w| w == *n))
     }
 
-    /// 发一条给窗口管理器的客户端消息。
+    /// 向窗口管理器发送一条客户端消息。
     fn message(&self, window: Window, kind: u32, data: [u32; 5]) -> Result<(), String> {
         let event = ClientMessageEvent::new(32, window, kind, data);
         self.conn
@@ -167,7 +168,7 @@ impl Display {
     /// 请求一个显示状态。
     ///
     /// 从最小化恢复按 ICCCM 映射客户窗口：窗口管理器收到映射请求即取消最小化。
-    /// 最大化标记在最小化期间保留，要回到普通状态得同时去掉它。
+    /// 最大化标记在最小化期间保留，恢复为普通状态时必须同时移除该标记。
     pub fn request_state(&self, window: Window, target: WindowState) -> Result<(), String> {
         let a = &self.atoms;
         let axes = |action: u32| {
@@ -232,26 +233,26 @@ impl Display {
         )
     }
 
-    /// 落点处最上面的顶层窗口与它的所有者，给 `lands_on_target` 判。
+    /// 落点处最上层的顶层窗口及其所有者，供 `lands_on_target` 判定。
     ///
-    /// 命中由 X 服务器按真实层叠序与输入形状算（`TranslateCoordinates` 交回根窗口下含这个点的
-    /// 最上层子窗口），弹出菜单这类不归窗口管理器管理的窗口也算在内。命中的是窗口管理器的外框时
-    /// 换成框里的客户窗口；所有者沿 `WM_TRANSIENT_FOR` 上溯，没有时是它自己。
+    /// 命中由 X 服务器按实际层叠序与输入形状计算（`TranslateCoordinates` 返回根窗口下包含该点的
+    /// 最上层子窗口），弹出菜单等不由窗口管理器管理的窗口也计算在内。命中窗口管理器的外框时
+    /// 换为框内的客户窗口；所有者沿 `WM_TRANSIENT_FOR` 上溯，没有时即窗口自身。
     ///
-    /// 屏幕外的点没有命中：XTest 把指针夹在屏幕边上，按下去落在另一个位置。
+    /// 屏幕外的点没有命中：XTest 把指针限制在屏幕边缘，按下时落在另一个位置。
     pub fn hit(&self, point: ScreenPoint) -> Result<(i64, i64), String> {
         let (Ok(x), Ok(y)) = (i16::try_from(point.x), i16::try_from(point.y)) else {
             return Err(format!("point_unowned: {},{}", point.x, point.y));
         };
         if !self.screen.contains(point) {
-            return Err(format!("point_unowned: {},{} 在屏幕外", point.x, point.y));
+            return Err(format!("point_unowned: {},{} 位于屏幕外", point.x, point.y));
         }
         let child = self
             .conn
             .translate_coordinates(self.root, self.root, x, y)
             .map_err(|e| e.to_string())
             .and_then(|c| c.reply().map_err(|e| e.to_string()))
-            .map_err(|e| format!("读落点所在窗口失败 {e}"))?
+            .map_err(|e| format!("读取落点所在窗口失败 {e}"))?
             .child;
         if child == x11rb::NONE {
             return Err(format!("point_unowned: {},{}", point.x, point.y));
@@ -260,7 +261,7 @@ impl Display {
         Ok((i64::from(hit), i64::from(self.owner(hit))))
     }
 
-    /// 窗口沿 `WM_TRANSIENT_FOR` 上溯到的顶端，没有时是它自己。
+    /// 窗口沿 `WM_TRANSIENT_FOR` 上溯到的顶端，没有时即窗口自身。
     fn owner(&self, window: Window) -> Window {
         let mut owner = window;
         for _ in 0..8 {
@@ -280,8 +281,8 @@ impl Display {
         owner
     }
 
-    /// 归 `owner` 所有、此刻映射着的 override-redirect 顶层窗口（弹出菜单、组合框的下拉列表）
-    /// 与它们含边框的屏幕矩形，按层叠序从下到上。
+    /// 归 `owner` 所有、当前已映射的 override-redirect 顶层窗口（弹出菜单、组合框的下拉列表）
+    /// 及其含边框的屏幕矩形，按层叠序从下到上。
     pub fn popups(&self, owner: Window) -> Vec<(Window, ScreenRect)> {
         let Ok(Ok(tree)) = self.conn.query_tree(self.root).map(|c| c.reply()) else {
             return Vec::new();
@@ -312,7 +313,7 @@ impl Display {
             .collect()
     }
 
-    /// 外框里的客户窗口：沿子窗口向下找第一个在窗口管理器清单里的窗口。不是外框时交回 `None`。
+    /// 外框中的客户窗口：沿子窗口向下查找第一个位于窗口管理器清单中的窗口。不是外框时返回 `None`。
     fn client_in(&self, top: Window) -> Option<Window> {
         let list = self.property(
             self.root,
@@ -337,11 +338,11 @@ impl Display {
         None
     }
 
-    /// 等目标应用把此前送达的全部事件处理完：给它的窗口发一次 `_NET_WM_PING`，等它把这条消息
+    /// 等待目标应用处理完此前送达的全部事件：向其窗口发送一次 `_NET_WM_PING`，等待应用把该消息
     /// 送回根窗口。
     ///
-    /// 应用按到达顺序处理事件，回应到达即说明排在这条消息之前的按键与键盘映射变化都已被它读过
-    /// 并换算成字符。窗口的 `WM_PROTOCOLS` 里没有 `_NET_WM_PING` 时退回等 `PING_FALLBACK`。
+    /// 应用按到达顺序处理事件，回应到达即说明排在该消息之前的按键与键盘映射变化都已被应用读取
+    /// 并换算为字符。窗口的 `WM_PROTOCOLS` 中没有 `_NET_WM_PING` 时改为等待 `PING_FALLBACK`。
     pub fn ping(&self, window: Window, limit: Duration) -> Result<(), String> {
         let supported = self
             .property(window, self.atoms.wm_protocols, AtomEnum::ATOM.into())
@@ -353,8 +354,9 @@ impl Display {
         let token = self.ping_token.get();
         self.ping_token.set(token.wrapping_add(1).max(1));
         // 回应发往根窗口，掩码是 SubstructureRedirect 加 SubstructureNotify（GTK）或加
-        // StructureNotify（Qt）。前者归窗口管理器独占，所以两种 Notify 都订阅，缺一样就收不到
-        // 那一类应用的回应。只在等它的这段时间订阅，免得本连接平时攒下根窗口上的全部结构事件。
+        // StructureNotify（Qt）。SubstructureRedirect 由窗口管理器独占，因此两种 Notify 都订阅，缺少
+        // 任一种即收不到对应类型应用的回应。只在等待期间订阅，避免本连接平时积累根窗口上的全部
+        // 结构事件。
         let listen = |mask: EventMask| {
             self.conn
                 .change_window_attributes(
@@ -388,7 +390,7 @@ impl Display {
             Ok(())
         } else {
             Err(format!(
-                "not_responding: 目标应用在 {} ms 内没有处理完已送达的输入",
+                "not_responding: 目标应用在 {} ms 内未处理完已送达的输入",
                 limit.as_millis()
             ))
         }
@@ -408,7 +410,7 @@ mod tests {
         }
     }
 
-    /// GTK 组合框的下拉菜单与它的弹出窗口一样大；Qt 的下拉列表四周缩进 1 像素。两者都认得出。
+    /// GTK 组合框的下拉菜单与其弹出窗口大小相同；Qt 的下拉列表四周缩进 1 像素。两者都能识别。
     #[test]
     fn a_dropdown_is_held_by_its_popup() {
         let gtk = [(0x40_005f, rect(173, 173, 396, 124))];
@@ -417,7 +419,7 @@ mod tests {
         assert_eq!(holding(&qt, rect(713, 172, 396, 88)), Some(0x40_0011));
     }
 
-    /// 内容伸出弹出窗口、或弹出窗口只盖住它的一部分：不是这个弹出窗口里的内容。
+    /// 内容超出弹出窗口，或弹出窗口只覆盖内容的一部分：该内容不属于这个弹出窗口。
     #[test]
     fn content_outside_a_popup_is_not_held() {
         let popups = [(0x40_005f, rect(173, 173, 396, 124))];
@@ -426,7 +428,7 @@ mod tests {
         assert_eq!(holding(&[], rect(173, 173, 10, 10)), None);
     }
 
-    /// 两个弹出窗口都装得下时取层叠序最上面的那个。
+    /// 两个弹出窗口都能容纳内容时取层叠序最上层的一个。
     #[test]
     fn the_topmost_popup_that_holds_the_content_wins() {
         let popups = [

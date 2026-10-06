@@ -17,16 +17,16 @@ pub fn now_ms() -> i64 {
 
 /// 执行实例身份，由宿主在握手时交给 worker。
 ///
-/// worker 不自行生成也不沿用旧值：换一个 worker 进程，旧的观察、ref 与排队请求全部作废。
+/// worker 不自行生成，也不沿用旧值：更换 worker 进程后，旧的观察、ref 与排队请求全部作废。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostIdentity {
     pub host_id: String,
     pub host_epoch: u64,
 }
 
-/// 握手之后 worker 认的那一份绑定：执行实例身份 + 当前连接代际。
+/// 握手之后 worker 采用的绑定：执行实例身份 + 当前连接代际。
 ///
-/// 两者生命周期不同，不能合成一个结构：身份在 worker 进程内固定不变，连接代际随宿主 WS
+/// 两者生命周期不同，不能合并为一个结构：身份在 worker 进程内固定不变，连接代际随宿主 WS
 /// 重连增大。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
@@ -37,34 +37,34 @@ pub struct Binding {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
-    /// requestId。解析失败的请求也要带着它回执，否则调用方的 pending 没有终态。
+    /// requestId。解析失败的请求同样必须带着它回执，否则调用方的 pending 没有终态。
     pub id: String,
     /// Unix 纪元毫秒的绝对时刻；缺省表示不设截止。
     ///
-    /// 必须是绝对时刻而不是相对毫秒：请求在队列里等待的时间要计入预算，否则排在一次长
-    /// 调用后面的请求会拿着已经用完的预算被派发。
+    /// 必须是绝对时刻而不是相对毫秒：请求在队列中等待的时间必须计入预算，否则排在一次长
+    /// 调用之后的请求会在预算已耗尽时被派发。
     #[serde(default)]
     pub deadline: Option<i64>,
-    /// 执行实例身份，每条请求都要带。缺字段的请求解析失败，按 `bad_request` 回执。
+    /// 执行实例身份，每条请求都必须携带。缺少字段的请求解析失败，按 `bad_request` 回执。
     pub host_id: String,
     pub host_epoch: u64,
-    /// 宿主 WS 的连接代际，每条请求都要带。
+    /// 宿主 WS 的连接代际，每条请求都必须携带。
     ///
-    /// 服务端在重连时丢弃旧 pending，但 worker 的执行队列里还压着旧连接的动作请求；没有
-    /// 这个字段，那些动作会照常派发而没有任何人能收回执。
+    /// 服务端在重连时丢弃旧 pending，但 worker 的执行队列中仍有旧连接的动作请求；缺少
+    /// 该字段时，这些动作会照常派发，而回执没有任何接收方。
     pub connection_epoch: u64,
-    /// 用户有没有启用前台接管。
+    /// 用户是否启用了前台接管。
     ///
-    /// 前台原始输入与窗口操作只在它为真时派发，worker 不自行升级；缺席按假算，
-    /// 少一个字段的请求因此只拿得到后台语义动作。
+    /// 前台原始输入与窗口操作只在它为真时派发，worker 不自行升级；缺席按假处理，
+    /// 缺少该字段的请求因此只能使用后台语义动作。
     #[serde(default)]
     pub foreground: bool,
     #[serde(flatten)]
     pub op: Op,
 }
 
-/// 一次读取的三个上限。语义固定：`max_nodes` 与 `max_depth` 限遍历，`time_budget_ms`
-/// 限这次遍历自身的用时，三者任一触顶都记进 `truncated_by`。
+/// 一次读取的三个上限。语义固定：`max_nodes` 与 `max_depth` 限制遍历，`time_budget_ms`
+/// 限制本次遍历自身的用时，三者任一达到上限都记入 `truncated_by`。
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bounds {
@@ -75,22 +75,22 @@ pub struct Bounds {
 
 /// 观察的范围与字段选择。全部缺省时读整窗、取全部字段。
 ///
-/// 没有按角色或文字筛选的字段：读树交回本次范围内的全部节点，筛选只作用于交给模型的
-/// 视图。在这里筛会让筛出来的几个节点成为当前观察，其余控件的引用随之失效。
+/// 没有按角色或文字筛选的字段：读树返回本次范围内的全部节点，筛选只作用于提供给模型的
+/// 视图。在此处筛选会使筛选出的节点成为当前观察，其余控件的引用随之失效。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Select {
-    /// 子树根的 `ref`。缺席表示从窗口元素开始读。
+    /// 子树根的 `ref`。缺席表示从窗口元素开始读取。
     #[serde(default)]
     pub root: Option<String>,
-    /// 取不取控件当前值。为假时 `value` 一律缺席，可用动作仍照常判定。
+    /// 是否读取控件当前值。为假时 `value` 一律缺席，可用动作仍照常判定。
     #[serde(default = "yes")]
     pub include_value: bool,
-    /// 取不取控件模式的状态细节：数值区间、复选现态、展开现态、选中状态、容器约束、
+    /// 是否读取控件模式的状态细节：数值区间、复选现态、展开现态、选中状态、容器约束、
     /// 滚动位置。
     ///
-    /// 为假时这几格一律缺席，**可用动作表不受影响**——动作按模式有没有判，那几个布尔
-    /// 属性一直取。读大窗口时省下这十五个属性的取数成本。
+    /// 为假时这些字段一律缺席，**可用动作表不受影响**：动作按模式是否存在判定，相关布尔
+    /// 属性始终读取。读取大窗口时可节省这十五个属性的读取成本。
     #[serde(default = "yes")]
     pub include_state: bool,
 }
@@ -99,8 +99,8 @@ const fn yes() -> bool {
     true
 }
 
-/// 不要换成 `#[derive(Default)]`：`bool` 的派生默认值是 `false`，`include_value` 会跟着
-/// 变成假，动作后的重读与等待就再也读不到控件值。
+/// 不要改为 `#[derive(Default)]`：`bool` 的派生默认值是 `false`，`include_value` 会随之
+/// 变为假，动作后的重读与等待将无法再读取控件值。
 impl Default for Select {
     fn default() -> Self {
         Self {
@@ -112,9 +112,9 @@ impl Default for Select {
 }
 
 impl Select {
-    /// 范围与字段选择，逐条写进 `completeness.filtered_by`。
+    /// 范围与字段选择，逐条写入 `completeness.filtered_by`。
     ///
-    /// 调用方据此区分「这个控件不存在」与「这个控件不在本次读取范围里」，两者不能混。
+    /// 调用方据此区分「该控件不存在」与「该控件不在本次读取范围内」，两者不能混淆。
     pub fn describe(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(root) = &self.root {
@@ -130,17 +130,17 @@ impl Select {
     }
 }
 
-/// 两轮判定之间至少空出上一轮读取耗时的几倍。
+/// 两轮判定之间的最小间隔，以上一轮读取耗时的倍数计。
 ///
-/// 判定要读一次控件树，大窗口一次就是几百毫秒；按固定间隔轮询等于让目标应用的 UI 线程
-/// 在整个等待期间一直被 UIA 占着。空出 4 倍之后，等待自身在目标进程上的占空比上界是
+/// 判定需要读取一次控件树，大窗口每次需要数百毫秒；按固定间隔轮询会使目标应用的 UI 线程
+/// 在整个等待期间持续被 UIA 占用。间隔取 4 倍后，等待自身在目标进程上的占空比上界是
 /// `1 / (1 + 4) = 20%`。
 const POLL_DUTY_FACTOR: u32 = 4;
 
-/// 下一轮判定之前睡多久。
+/// 下一轮判定之前的休眠时长。
 ///
-/// 三条一起夹：不低于调用方给的下限、不低于上一轮读取耗时的 `POLL_DUTY_FACTOR` 倍、
-/// 不超过截止时刻还剩的时间。最后一条最优先——睡过头就错过了自己的期限。
+/// 同时满足三个约束：不低于调用方给出的下限、不低于上一轮读取耗时的 `POLL_DUTY_FACTOR` 倍、
+/// 不超过距截止时刻的剩余时间。最后一条优先级最高：休眠超过剩余时间会错过截止时刻。
 pub fn next_poll(floor: Duration, last_probe: Duration, left: Duration) -> Duration {
     let paced = last_probe.saturating_mul(POLL_DUTY_FACTOR);
     floor.max(paced).min(left)
@@ -150,19 +150,19 @@ pub fn next_poll(floor: Duration, last_probe: Duration, left: Duration) -> Durat
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitUntil {
-    /// 目标控件变成可用。
+    /// 目标控件变为可用。
     Enabled,
-    /// 目标控件的值变成给定的那一个。
+    /// 目标控件的值变为给定值。
     Value,
     /// 目标控件从树上消失。
     Gone,
-    /// 窗口里出现一个满足筛选条件的控件。
+    /// 窗口中出现满足筛选条件的控件。
     Appears,
-    /// 出现一个标题包含给定文字的顶层窗口，且不是目标窗口自己。
+    /// 出现标题包含给定文字的顶层窗口，且不是目标窗口本身。
     Window,
 }
 
-/// 复选状态。三态控件的中间态是一个可以主动写入的目标态，不是「切一次」的副产物。
+/// 复选状态。三态控件的中间态是可以主动写入的目标态，不是单次切换的副产物。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToggleState {
@@ -181,11 +181,11 @@ impl ToggleState {
     }
 }
 
-/// TogglePattern 只有 `Toggle()`，它按固定环转一格。要到达一个目标态只能按现态算要转几格。
+/// TogglePattern 只有 `Toggle()`，每次调用按固定环前进一步。要到达目标态，只能按现态计算所需步数。
 ///
-/// 环的长度由控件自己决定：二态控件在 Off 与 On 之间转，三态控件多一个 Indeterminate。
-/// **环长判错就会停在别的状态上**，所以它由调用方按控件实际支持的状态数给出。
-/// 环上没有的状态返回 `None`：二态控件到不了中间态，调用方据此拒绝而不是转到别处去。
+/// 环的长度由控件决定：二态控件在 Off 与 On 之间切换，三态控件多一个 Indeterminate。
+/// **环长判定错误会停在其他状态上**，因此环长由调用方按控件实际支持的状态数给出。
+/// 环上没有的状态返回 `None`：二态控件无法到达中间态，调用方据此拒绝，而不是切换到其他状态。
 pub fn toggle_steps(current: ToggleState, target: ToggleState, tri_state: bool) -> Option<u32> {
     let ring: &[ToggleState] = if tri_state {
         &[ToggleState::Off, ToggleState::On, ToggleState::Indeterminate]
@@ -207,7 +207,7 @@ pub enum ScrollDirection {
     Right,
 }
 
-/// 一次滚动的步长。ScrollPattern 只认「一行」与「一页」，没有像素量。
+/// 一次滚动的步长。ScrollPattern 只支持「一行」与「一页」，不支持像素量。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScrollStep {
@@ -224,7 +224,7 @@ pub enum MouseButton {
     Middle,
 }
 
-/// 组合键里的修饰键。按下顺序即这里给的顺序，释放按逆序。
+/// 组合键中的修饰键。按下顺序即此处给出的顺序，释放按逆序。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Modifier {
@@ -236,7 +236,7 @@ pub enum Modifier {
 }
 
 impl Modifier {
-    /// 这个修饰键的键名。按下状态账按键名记，平台键码由派发端换算。
+    /// 该修饰键的键名。按下状态账按键名记录，平台键码由派发端换算。
     pub const fn key_name(self) -> &'static str {
         match self {
             Self::Ctrl => "ctrl",
@@ -277,9 +277,9 @@ const NAMED_KEYS: [&str; 26] = [
     "quote",
 ];
 
-/// 主键名词表，全小写。修饰键不在其中：它们只经 `Modifier` 给出，不能当主键按。
+/// 主键名词表，全小写。修饰键不在其中：它们只经由 `Modifier` 给出，不能作为主键按下。
 ///
-/// 各平台后端与宿主补发都把这些名字换算成本平台的键码，换算表必须覆盖整张词表。
+/// 各平台后端与宿主补发都把这些名称换算为本平台的键码，换算表必须覆盖整张词表。
 pub fn key_names() -> impl Iterator<Item = String> {
     let letters = (b'a'..=b'z').map(|c| char::from(c).to_string());
     let digits = (b'0'..=b'9').map(|c| char::from(c).to_string());
@@ -290,19 +290,19 @@ pub fn key_names() -> impl Iterator<Item = String> {
         .chain(NAMED_KEYS.iter().map(|name| (*name).to_owned()))
 }
 
-/// 把调用方给的主键名规范成词表里的写法。不分大小写；词表外的名字返回 `None`，不猜。
+/// 把调用方给出的主键名规范为词表中的写法。不区分大小写；词表外的名称返回 `None`，不推测。
 pub fn key_name(raw: &str) -> Option<String> {
     let name = raw.to_ascii_lowercase();
     key_names().any(|known| known == name).then_some(name)
 }
 
-/// 一组控件角色：变体、协议里的名字。只在这里列一次，变体与名字不会分叉。
+/// 控件角色表：变体与协议中的名称。只在此处列出一次，变体与名称不会出现分歧。
 macro_rules! roles {
     ($($role:ident => $name:literal,)+) => {
-        /// 控件角色词表。节点的 `role` 与等待 `appears` 的角色条件都用这里的名字。
+        /// 控件角色词表。节点的 `role` 与等待 `appears` 的角色条件都使用此处的名称。
         ///
-        /// 各平台后端把自己的控件类型换算进这张表；平台类型在表里没有对应时，后端交回
-        /// 它自己的原始类型名（Windows 是 `control_<ControlType>`），它不在词表里。
+        /// 各平台后端把自身的控件类型换算为本表中的角色；平台类型在表中没有对应项时，后端返回
+        /// 平台的原始类型名（Windows 是 `control_<ControlType>`），该名称不在词表中。
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum Role {
             $($role,)+
@@ -387,59 +387,59 @@ impl WindowState {
 
 /// 一次拖拽的终点。
 ///
-/// 两种给法都不带图像坐标：图像坐标在服务端换算成屏幕坐标，worker 只认屏幕像素与
+/// 两种写法都不带图像坐标：图像坐标在服务端换算为屏幕坐标，worker 只接受屏幕像素与
 /// 控件引用。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DragTarget {
-    /// 落在另一个控件的包围盒中心。派发前重新定位它，读那一刻的包围盒。
+    /// 落在另一个控件的包围盒中心。派发前重新定位该控件，读取派发时的包围盒。
     Ref {
         #[serde(rename = "ref")]
         reference: String,
     },
-    /// 相对起点的屏幕像素偏移。滑块与拖动排序用它。
+    /// 相对起点的屏幕像素偏移。用于滑块与拖动排序。
     Offset { dx: i32, dy: i32 },
 }
 
-/// 一次动作要执行什么。
+/// 一次动作的内容。
 ///
-/// 每一种都带齐自己的参数：动作与参数分两处给的话，`set_value` 少了值也能翻译成一条
-/// 合法请求，缺的那一项要到 provider 调用那一刻才暴露。
+/// 每种动作都携带完整的参数：若动作与参数分两处给出，缺少值的 `set_value` 也能转换为一条
+/// 合法请求，缺少的参数要到调用 provider 时才暴露。
 ///
-/// **后台语义动作与前台原始输入在同一个枚举里**，按 `foreground_only` 分开准入：
-/// 分成两个枚举的话，定位、准入、可放弃等待与动作后重读会各有一份拷贝。
+/// **后台语义动作与前台原始输入在同一个枚举中**，按 `foreground_only` 分别准入：
+/// 若分成两个枚举，定位、准入、可放弃等待与动作后重读都会出现重复实现。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActionSpec {
     /// InvokePattern。按钮与菜单项的默认动作。
     Invoke,
-    /// ValuePattern。空串是清空，与缺席不是一回事。
+    /// ValuePattern。空串表示清空，与缺席含义不同。
     SetValue { value: String },
-    /// RangeValuePattern。越界与只读一律拒绝，不夹到边界上。
+    /// RangeValuePattern。越界与只读一律拒绝，不截断到边界。
     SetRangeValue { value: f64 },
-    /// SelectionItemPattern。单选：把选择换成这一项。
+    /// SelectionItemPattern。单选：把选择替换为该项。
     Select,
     /// SelectionItemPattern。增选：容器不支持多选时拒绝。
     AddToSelection,
-    /// SelectionItemPattern。取消选中这一项。
+    /// SelectionItemPattern。取消选中该项。
     RemoveFromSelection,
-    /// TogglePattern。按目标态表达，不是「切一次」。
+    /// TogglePattern。按目标态表达，不表达单次切换。
     SetToggle { state: ToggleState },
     /// ExpandCollapsePattern。
     Expand,
     /// ExpandCollapsePattern。
     Collapse,
-    /// ScrollPattern。一次一步，步长由 `step` 给。
+    /// ScrollPattern。每次滚动一步，步长由 `step` 指定。
     Scroll {
         direction: ScrollDirection,
         step: ScrollStep,
     },
-    /// ScrollItemPattern。把这个控件滚进可见区。
+    /// ScrollItemPattern。把该控件滚动到可见区域。
     ScrollIntoView,
     /// ItemContainerPattern + VirtualizedItemPattern。
     ///
-    /// 目标是**容器**：按名称在容器里找一项（未实例化的项也找得到），找到就实例化它。
-    /// 虚拟化列表里没实例化的项不在控件树上，拿不到 `ref`，只能这样进得去。
+    /// 目标是**容器**：按名称在容器中查找一项（未实例化的项同样可以找到），找到后实例化该项。
+    /// 虚拟化列表中未实例化的项不在控件树上，无法取得 `ref`，只能经此方式访问。
     RealizeItem { name: String },
     /// TextPattern。按 UTF-16 码元的偏移设选区。
     SelectText { start: u32, length: u32 },
@@ -454,7 +454,7 @@ pub enum ActionSpec {
         direction: ScrollDirection,
         amount: u32,
     },
-    /// 文字按 UTF-16 码元投给焦点，投法由各平台按收件窗口定。代理对的两个码元相邻投出。
+    /// 文字按 UTF-16 码元投递给焦点，投递方式由各平台按接收窗口确定。代理对的两个码元相邻投递。
     TypeText { text: String },
     /// SendInput 的物理按键。修饰键按给出的顺序按下，逆序释放。
     PressKey {
@@ -464,22 +464,22 @@ pub enum ActionSpec {
     },
     /// Win32 的前台窗口接口。受系统前台锁限制，拒绝即如实回执。
     Activate,
-    /// WindowPattern 的可视状态。按目标态表达，不是「切一次」。
+    /// WindowPattern 的可视状态。按目标态表达，不表达单次切换。
     SetWindowState { state: WindowState },
     /// TransformPattern 的移动。屏幕物理像素。
     MoveWindow { x: i32, y: i32 },
     /// TransformPattern 的缩放。屏幕物理像素。
     ResizeWindow { width: i32, height: i32 },
-    /// WindowPattern 的关闭。发的是关闭请求，不是强杀进程。
+    /// WindowPattern 的关闭。发送的是关闭请求，不是强制终止进程。
     CloseWindow,
 }
 
 impl ActionSpec {
-    /// 这个动作只能由前台原始输入或前台窗口接口交付。
+    /// 该动作只能由前台原始输入或前台窗口接口交付。
     ///
-    /// 判据是它会不会改变系统前台窗口、真实指针或键盘焦点：会的一律归前台，
-    /// 由用户显式开启的前台模式裁决。**不按「用的是不是 SendInput」分**——
-    /// 窗口状态与激活走的是 Win32 与 UIA 接口，一样会把前台从用户手上拿走。
+    /// 判据是该动作是否改变系统前台窗口、真实指针或键盘焦点：会改变的一律归为前台，
+    /// 由用户显式开启的前台模式裁决。**不按是否使用 SendInput 划分**：
+    /// 窗口状态与激活经由 Win32 与 UIA 接口，同样会改变用户正在使用的前台窗口。
     pub const fn foreground_only(&self) -> bool {
         matches!(
             self,
@@ -497,10 +497,10 @@ impl ActionSpec {
         )
     }
 
-    /// 这个动作用真实指针或键盘投递，因此要求目标窗口此刻在系统前台。
+    /// 该动作使用真实指针或键盘投递，因此要求目标窗口当前位于系统前台。
     ///
-    /// 窗口动作（激活、状态、移动、缩放、关闭）不在内：它们经 Win32 与 UIA 接口发出，
-    /// 目标窗口在不在前台都执行得了。
+    /// 窗口动作（激活、状态、移动、缩放、关闭）不在其中：它们经由 Win32 与 UIA 接口发出，
+    /// 无论目标窗口是否位于前台都可以执行。
     pub const fn takes_input(&self) -> bool {
         matches!(
             self,
@@ -513,7 +513,7 @@ impl ActionSpec {
         )
     }
 
-    /// 这个动作的落点可以由调用方直接给屏幕坐标。只有指针动作可以。
+    /// 该动作的落点可以由调用方直接以屏幕坐标给出。只有指针动作支持。
     pub const fn takes_point(&self) -> bool {
         matches!(
             self,
@@ -521,46 +521,46 @@ impl ActionSpec {
         )
     }
 
-    /// 这个动作可以不给目标，直接投给窗口。只有键盘输入可以。
+    /// 该动作可以不指定目标，直接投递给窗口。只有键盘输入支持。
     ///
-    /// 键盘输入去的是系统焦点所在，而不是某个被点名的控件；前台窗口就是目标窗口时，
-    /// 焦点必然落在这个窗口里。自绘界面不暴露业务控件，给不出一个持有焦点的控件，
-    /// 少了这一条它们整条键盘路径不可用。
+    /// 键盘输入发往系统焦点所在位置，而不是某个指定的控件；前台窗口即目标窗口时，
+    /// 焦点必然位于该窗口内。自绘界面不暴露业务控件，无法提供持有焦点的控件，
+    /// 缺少本条规则时其整条键盘路径不可用。
     pub const fn targets_window(&self) -> bool {
         matches!(self, Self::TypeText { .. } | Self::PressKey { .. })
     }
 }
 
-/// 前台模式没开时的拒绝原因。工具层与 worker 用同一个码。
+/// 前台模式未开启时的拒绝原因。工具层与 worker 使用同一个原因码。
 pub const FOREGROUND_DISABLED: &str =
     "foreground_disabled: 前台操作未启用";
 
-/// 目标已经不在树上时的拒绝原因前缀。等待的「控件消失」条件按它判定。
+/// 目标已不在树上时的拒绝原因前缀。等待的「控件消失」条件按它判定。
 pub const REF_STALE: &str = "ref_stale";
 
-/// 动作调用尚未返回，没有重读目标窗口。调用方按它决定下一步观察哪个窗口。
+/// 动作调用尚未返回，未重读目标窗口。调用方据此决定下一步观察哪个窗口。
 pub const TARGET_BLOCKED: &str = "target_blocked";
 
-/// 没有派发就不重读：那一份观察会被调用方读成动作已经发生。
+/// 未派发时不重读：重读得到的观察会被调用方理解为动作已经发生。
 pub const NOT_DISPATCHED: &str = "动作没有派发，没有重读";
 
-/// 请求动作。`params` 一律显式给出，空参数写 `{}`。
+/// 请求的操作。`params` 一律显式给出，空参数写为 `{}`。
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", content = "params", rename_all = "snake_case")]
 pub enum Op {
     /// 建立执行实例绑定并设定 UIA 调用上界。
     ///
-    /// 同一身份的重复握手会重设超时并清空取消登记；换了 `hostId`/`hostEpoch` 一律拒绝，
-    /// 一个 worker 进程只对应一个执行实例，换代际靠换进程。
+    /// 同一身份的重复握手会重设超时并清空取消登记；`hostId`/`hostEpoch` 改变一律拒绝，
+    /// 一个 worker 进程只对应一个执行实例，代际变更通过更换进程实现。
     #[serde(rename_all = "camelCase")]
     Handshake {
         connection_timeout_ms: u32,
         transaction_timeout_ms: u32,
     },
-    /// 把当前连接代际改成本请求信封里的 `connectionEpoch`，只许增大。
+    /// 把当前连接代际改为本请求信封中的 `connectionEpoch`，只允许增大。
     ///
-    /// 必须在接收线程上就地处理：排进执行队列就会跟在旧连接的请求后面，那些请求正是它要
-    /// 拦下的。
+    /// 必须在接收线程上就地处理：进入执行队列会排在旧连接的请求之后，而这些请求正是它要
+    /// 拦截的。
     BindConnection {},
     /// 登记一个尚未派发的 requestId。已经进入 OS 调用的请求不会被它中止。
     Cancel {
@@ -574,14 +574,14 @@ pub enum Op {
         #[serde(flatten)]
         bounds: Bounds,
     },
-    /// 在控件上执行一个动作，之后按 `root` 给的范围整份重读。
+    /// 在控件上执行一个动作，之后按 `root` 指定的范围整体重读。
     ///
-    /// 所有改变状态的动作走这一条：定位、准入、可放弃等待与重读只有一处实现，
-    /// 按动作分成多个 op 会让这四件事各有一份拷贝。
+    /// 所有改变状态的动作都经由此 op：定位、准入、可放弃等待与重读只有一处实现，
+    /// 按动作拆分为多个 op 会使这四项逻辑重复实现。
     ///
-    /// 目标两种给法，互斥：`ref` 指一个控件，派发前重新定位并读那一刻的包围盒；
-    /// `point` 直接给屏幕物理像素落点，那时必须同时给 `expectGeneration`，
-    /// 窗口在采图与派发之间移动过即拒绝。
+    /// 目标有两种互斥的写法：`ref` 指定一个控件，派发前重新定位并读取派发时的包围盒；
+    /// `point` 直接给出屏幕物理像素落点，此时必须同时给出 `expectGeneration`，
+    /// 窗口在截图与派发之间移动过即拒绝。
     #[serde(rename_all = "camelCase")]
     Act {
         window: i64,
@@ -598,69 +598,69 @@ pub enum Op {
         #[serde(flatten)]
         bounds: Bounds,
     },
-    /// 读一个控件的文档文本与选区。只读，不改变状态。
+    /// 读取一个控件的文档文本与选区。只读，不改变状态。
     #[serde(rename_all = "camelCase")]
     ReadText {
         window: i64,
         #[serde(rename = "ref")]
         reference: String,
-        /// 交回多少个 UTF-16 码元。超出即截断并标记。
+        /// 返回的 UTF-16 码元数上限。超出即截断并标记。
         max_chars: u32,
     },
-    /// 采一张目标窗口的图。
+    /// 截取目标窗口的图像。
     ///
-    /// 这是唯一会采集图像的 op：读树、动作与等待都走不到采集代码。
+    /// 这是唯一采集图像的 op：读树、动作与等待都不会执行采集代码。
     #[serde(rename_all = "camelCase")]
     CaptureImage {
         window: i64,
-        /// 要采的屏幕物理像素矩形。缺席表示整窗。
+        /// 要采集的屏幕物理像素矩形。缺席表示整窗。
         #[serde(default)]
         region: Option<ScreenRect>,
-        /// 要求窗口几何代际仍是这一个。对不上即拒绝派发，不采一张对不上号的图。
+        /// 要求窗口几何代际仍为该值。不一致即拒绝派发，不采集与几何不符的图像。
         #[serde(default)]
         expect_generation: Option<String>,
-        /// 交给模型的图像长边上限。worker 不自带默认值，上限由调用方给。
+        /// 提供给模型的图像长边上限。worker 没有默认值，上限由调用方给出。
         max_edge: u32,
-        /// 编码之后的字节上限。超过即拒绝，不把一帧塞进宿主连接。
+        /// 编码之后的字节上限。超过即拒绝，不把超限的帧写入宿主连接。
         max_bytes: u32,
-        /// 采集时等待的上限：等一帧到达，或等窗口被盖住的部分重绘完。
+        /// 采集时的等待上限：等待一帧到达，或等待窗口被遮挡的部分重绘完成。
         time_budget_ms: u64,
     },
-    /// 等一个后置条件成立。判定在 worker 这一侧做，到期如实回未满足与返回那一刻的状态。
+    /// 等待一个后置条件成立。判定在 worker 一侧进行，到期时如实返回未满足及返回时的状态。
     #[serde(rename_all = "camelCase")]
     Wait {
         window: i64,
         until: WaitUntil,
         #[serde(default, rename = "ref")]
         reference: Option<String>,
-        /// `until=value` 要等到的值。
+        /// `until=value` 等待的值。
         #[serde(default)]
         value: Option<String>,
-        /// `until=appears` 要出现的控件角色。
+        /// `until=appears` 等待出现的控件角色。
         #[serde(default)]
         role: Option<String>,
-        /// `until=appears` 要出现的控件文字：名称、稳定标识或值包含它，不分大小写。
+        /// `until=appears` 等待出现的控件文字：名称、稳定标识或值包含该文字，不区分大小写。
         #[serde(default)]
         name_contains: Option<String>,
         /// 等待结束时重读的范围，取调用方当前观察的范围根。缺席表示整窗。
         #[serde(default)]
         root: Option<String>,
-        /// `until=window` 要等的标题子串。
+        /// `until=window` 等待的标题子串。
         #[serde(default)]
         name: Option<String>,
-        /// 两次判定之间至少隔多久。
+        /// 两次判定之间的最小间隔。
         poll_ms: u64,
-        /// 从收到这条请求算起最多等多久。信封的 deadline 是硬上界，两者取先到的那个。
+        /// 从收到该请求起的最长等待时间。信封的 deadline 是硬上界，两者取先到者。
         timeout_ms: u64,
         #[serde(flatten)]
         bounds: Bounds,
     },
 }
 
-/// 执行事实。只描述「这次请求要求的状态改变动作」有没有交到 OS 手里。
+/// 执行事实。只描述本次请求要求的状态改变动作是否已交给 OS。
 ///
-/// 只读请求与握手不改变状态，一律记 `not_dispatched`：成功时带 `observation`，失败时带
-/// `reason`。这样 `submitted` 只有一个含义，不会被读取成功的回执稀释。
+/// 只读请求与握手不改变状态，一律记为 `not_dispatched`：成功时带 `observation`，失败时带
+/// `reason`。`submitted` 因此只有一个含义，不会与读取成功的回执混淆。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Dispatch {
@@ -678,29 +678,29 @@ pub struct Response {
     pub id: String,
     pub dispatch: Dispatch,
     /// 拒绝原因码，或动作调用返回的失败原文。有 `reason` 且 `dispatch` 是 `unknown` 时，
-    /// 表示调用已经发出而失败，不是没有执行。
+    /// 表示调用已发出但失败，不是未执行。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observation: Option<Observation>,
-    /// 动作或窗口准备后的重读失败时填这里，`dispatch` 保持原值。
+    /// 动作或窗口准备后的重读失败时填入此字段，`dispatch` 保持原值。
     /// 即使请求动作未派发，窗口准备也可能改变状态；有此错误时旧观察不能继续使用。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observation_error: Option<String>,
-    /// 动作调用尚未返回时目标进程此刻的顶层窗口，纯 Win32 读出。
+    /// 动作调用尚未返回时目标进程当前的顶层窗口，只经由 Win32 读取。
     ///
-    /// 只在 `observation_error` 是 `target_blocked` 那一支出现：那时重读目标窗口必然
-    /// 等到超时，这一格替它说清「下一步该看哪个窗口」。
+    /// 只在 `observation_error` 为 `target_blocked` 时出现：此时重读目标窗口必然
+    /// 等待至超时，该字段代替重读结果说明下一步应观察哪个窗口。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocking: Option<Vec<BlockingWindow>>,
-    /// 回执发出之后还要清一次这个窗口所属 provider 的连接。**不上线**，只把这件事
-    /// 从动作路径带回执行循环。见 `Backend::drain_provider`。
+    /// 回执发出之后还需清理一次该窗口所属 provider 的连接。**不写入协议**，只把该任务
+    /// 从动作路径传回执行循环。见 `Backend::drain_provider`。
     #[serde(skip)]
     pub after_reply: Option<i64>,
 }
 
 impl Response {
-    /// 没有派发动作的终态：拒绝、参数无效、目标失效、只读请求失败。
+    /// 未派发动作的终态：拒绝、参数无效、目标失效、只读请求失败。
     pub fn rejected(id: String, reason: String) -> Self {
         Self {
             id,
@@ -744,13 +744,13 @@ impl Response {
     }
 }
 
-/// 动作调用尚未返回时交回的一个顶层窗口。
+/// 动作调用尚未返回时回执中列出的顶层窗口。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockingWindow {
     #[serde(flatten)]
     pub info: WindowInfo,
-    /// 动作调用之前这个窗口不存在。模态对话框就是这样冒出来的。
+    /// 动作调用之前该窗口不存在。模态对话框属于此类情况。
     pub appeared: bool,
 }
 
@@ -762,13 +762,13 @@ pub enum Observation {
         backend: &'static str,
         host_id: String,
         host_epoch: u64,
-        /// 后端实际采用的上界：UIA 从接口读回，AX 与 AT-SPI 没有读回接口，交回设定的值。
+        /// 后端实际采用的上界：UIA 从接口读取，AX 与 AT-SPI 没有读取接口，返回设定的值。
         connection_timeout_ms: u32,
         transaction_timeout_ms: u32,
-        /// 握手这一刻操作系统给了哪些前提。之后的变化由 `AccessNotice` 通报。
+        /// 握手时操作系统已满足哪些前提。之后的变化由 `AccessNotice` 通报。
         access: Access,
     },
-    /// 取消已登记。它不说明目标请求有没有执行过——接收线程查不到那件事，目标请求自己那条
+    /// 取消已登记。它不说明目标请求是否已执行：接收线程无法查询该信息，目标请求自身
     /// `reason: cancelled` 的回执才是取消生效的证据。
     #[serde(rename_all = "camelCase")]
     CancelRegistered { target: String },
@@ -791,8 +791,8 @@ pub enum Observation {
 pub struct Image {
     pub window: i64,
     pub captured_at: i64,
-    /// 这一帧是怎么采到的。退路与主路径要分得开：`print_window` 依赖目标应用自己
-    /// 响应 `WM_PRINT`，画不全的部分在图上是黑的。
+    /// 该帧的采集方式。后备路径与主路径必须可区分：`print_window` 依赖目标应用自身
+    /// 响应 `WM_PRINT`，未绘制完整的部分在图像中为黑色。
     pub source: &'static str,
     pub geometry: Geometry,
     /// 图像的媒体类型。
@@ -801,7 +801,7 @@ pub struct Image {
     pub bytes: String,
 }
 
-/// 标准 base64。图像字节要经行分隔 JSON 交给宿主，不能按原始字节走。
+/// 标准 base64。图像字节须经行分隔 JSON 传给宿主，不能按原始字节传输。
 pub fn base64(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
@@ -826,7 +826,7 @@ pub fn base64(input: &[u8]) -> String {
     out
 }
 
-/// 一次控件读取的全部内容。`Tree` 与 `Wait` 两种观察共用它。
+/// 一次控件读取的全部内容。`Tree` 与 `Wait` 两种观察共用该结构。
 ///
 /// 控件表是展平的前序序列，层级由 `parent_ref` 与 `depth` 表达。
 #[derive(Debug, Serialize)]
@@ -836,28 +836,28 @@ pub struct Tree {
     pub captured_at: i64,
     /// 本次读取覆盖的范围：子树根的 `ref`。缺席表示整窗。
     ///
-    /// **调用方按它决定作废哪一段引用。** 缺席时整份旧观察作废，给出 ref 时只有那一段
-    /// 子树作废，无关区域的旧引用仍然成立。
+    /// **调用方据此决定作废哪一部分引用。** 缺席时整份旧观察作废，给出 ref 时只有该
+    /// 子树作废，无关区域的旧引用仍然有效。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    /// 目标窗口此刻可不可用。模态窗口挡住它时为假。
+    /// 目标窗口当前是否可用。被模态窗口阻挡时为假。
     pub window_enabled: bool,
-    /// 目标窗口此刻在屏幕上一点都看不见：最小化，或被 z 序在它上面的窗口完全盖住。
+    /// 目标窗口当前在屏幕上完全不可见：已最小化，或被 z 序在其上方的窗口完全遮挡。
     ///
-    /// 浏览器对载入之后还没在屏幕上显示过的页面不向 UIA 交出网页内容，控件表这时只有外框、
-    /// 也没有撞上限，这一格是调用方能看到的唯一迹象。
+    /// 浏览器对载入后尚未在屏幕上显示过的页面不向 UIA 提供网页内容，此时控件表只有外框、
+    /// 也未达到上限，该字段是调用方能看到的唯一迹象。
     pub window_covered: bool,
     pub completeness: Completeness,
     pub node_count: u32,
     pub nodes: Vec<Node>,
 }
 
-/// 一次等待的结果：有没有等到，加上返回那一刻读到的状态。
+/// 一次等待的结果：条件是否成立，以及返回时读取到的状态。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Wait {
     pub found: bool,
-    /// 没等到时的原因：`timeout` 或 `cancelled`。等到时缺席。
+    /// 条件未成立时的原因：`timeout` 或 `cancelled`。条件成立时缺席。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(flatten)]
@@ -875,29 +875,29 @@ pub struct WindowInfo {
 
 /// 观察的完整性。
 ///
-/// 截断与范围是两件事，分两格记：`truncated_by` 说的是上限截断了遍历，`filtered_by`
-/// 说的是读取范围与字段选择。调用方不能把「没采到」读成「没有」，也不能把「不在读取
-/// 范围里」读成「不存在」。
+/// 截断与范围是两回事，分两个字段记录：`truncated_by` 表示上限截断了遍历，`filtered_by`
+/// 表示读取范围与字段选择。调用方不能把「未采集到」理解为「没有」，也不能把「不在读取
+/// 范围内」理解为「不存在」。
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Completeness {
     pub complete: bool,
     pub truncated_by: Vec<&'static str>,
     pub filtered_by: Vec<String>,
-    /// 遍历过的节点数。三个上限限的是它，不是返回的条数。
+    /// 已遍历的节点数。三个上限限制的是该数值，不是返回的条数。
     pub visited: u32,
 }
 
-/// 经控件模式发出，不置前台、不动指针、不设焦点。
+/// 经由控件模式发出，不切换前台、不移动指针、不设置焦点。
 pub const DELIVERY_BACKGROUND: &str = "background";
-/// 经原始输入或前台窗口接口发出，会把前台从用户手上拿走。只在用户启用前台模式时出现。
+/// 经由原始输入或前台窗口接口发出，会改变用户正在使用的前台窗口。只在用户启用前台模式时出现。
 pub const DELIVERY_FOREGROUND: &str = "foreground";
 
-/// 控件上的一个动作，连同它此刻能不能执行。
+/// 控件上的一个动作，以及该动作当前是否可执行。
 ///
-/// `delivery` 为空表示此刻执行不了，原因在 `unavailable`。模式缺失的动作不列：
-/// 每个控件列出全部二十几个动作会把「这里能做什么」盖住。前台模式关着时，
-/// 前台动作同样一条都不列。
+/// `delivery` 为空表示当前无法执行，原因见 `unavailable`。模式缺失的动作不列出：
+/// 每个控件列出全部二十余个动作会掩盖真正可执行的动作。前台模式关闭时，
+/// 前台动作同样不列出。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeAction {
@@ -908,7 +908,7 @@ pub struct NodeAction {
 }
 
 impl NodeAction {
-    /// 这个动作此刻能后台执行。
+    /// 该动作当前可在后台执行。
     pub fn ready(action: &'static str) -> Self {
         Self {
             action,
@@ -917,7 +917,7 @@ impl NodeAction {
         }
     }
 
-    /// 这个动作此刻能前台执行。
+    /// 该动作当前可在前台执行。
     pub fn foreground(action: &'static str) -> Self {
         Self {
             action,
@@ -926,7 +926,7 @@ impl NodeAction {
         }
     }
 
-    /// 控件暴露了这个模式，但此刻用不了。原因是控件自己的属性，不是猜的。
+    /// 控件暴露了该模式，但当前不可用。原因取自控件自身的属性，不是推测所得。
     pub fn blocked(action: &'static str, reason: &'static str) -> Self {
         Self {
             action,
@@ -936,10 +936,10 @@ impl NodeAction {
     }
 }
 
-/// RangeValuePattern 读到的数值区间。动作前的越界判定按它做。
+/// RangeValuePattern 读取到的数值区间。动作前的越界判定以它为依据。
 ///
-/// **非有限数一律不发**：provider 对没有步长的控件交回 NaN，照发会在 JSON 里变成
-/// `null`，而字段声明的是数字。三项主值任一非有限时整个区间缺席，见 `range_state`。
+/// **非有限数一律不输出**：provider 对没有步长的控件返回 NaN，照常输出会在 JSON 中变为
+/// `null`，而字段声明的类型是数字。三项主值任一非有限时整个区间缺席，见 `range_state`。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RangeState {
@@ -952,7 +952,7 @@ pub struct RangeState {
     pub large_change: Option<f64>,
 }
 
-/// 把读到的五个数收成一份区间。值、下界、上界任一非有限即整份缺席。
+/// 把读取到的五个数值合成一份区间。值、下界、上界任一非有限即整份缺席。
 pub fn range_state(
     value: f64,
     min: f64,
@@ -969,7 +969,7 @@ pub fn range_state(
     })
 }
 
-/// SelectionPattern 读到的容器约束与当前选中项。
+/// SelectionPattern 读取到的容器约束与当前选中项。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectionState {
@@ -977,19 +977,19 @@ pub struct SelectionState {
     pub multiple: bool,
     /// 容器要求始终有一项被选中。
     pub required: bool,
-    /// 当前选中项的名称。一项都没选中时为空。
+    /// 当前选中项的名称。未选中任何项时为空。
     ///
-    /// 收起的组合框在控件表里没有子节点，它的选中项只在这里读得到。
+    /// 收起的组合框在控件表中没有子节点，其选中项只能从此处读取。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub selected: Vec<String>,
-    /// `selected` 不是全部。
+    /// `selected` 未列全。
     #[serde(skip_serializing_if = "not_set")]
     pub truncated: bool,
 }
 
-/// ScrollPattern 读到的滚动位置，百分比。
+/// ScrollPattern 读取到的滚动位置，单位为百分比。
 ///
-/// 某个轴不能滚动时那一格缺席。**缺席不等于 0**：0 是「在顶端」。
+/// 某个轴不能滚动时该字段缺席。**缺席不等于 0**：0 表示位于顶端。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScrollState {
@@ -1005,17 +1005,17 @@ pub struct ScrollState {
 pub struct Text {
     pub window: i64,
     pub captured_at: i64,
-    /// 读的是哪个控件。
+    /// 读取的控件。
     pub scope: String,
     pub text: String,
-    /// `text` 被 `maxChars` 截断了。后面还有内容，不是文档到此为止。
+    /// `text` 已被 `maxChars` 截断。其后仍有内容，文档未到结尾。
     pub truncated: bool,
-    /// 这个控件支持哪种选区：`none` / `single` / `multiple`。
+    /// 该控件支持的选区类型：`none` / `single` / `multiple`。
     pub selection_support: &'static str,
     pub selection: Vec<TextSelection>,
 }
 
-/// 一段选区。`start` 是它在文档里的起点，按 UTF-16 码元计。
+/// 一段选区。`start` 是其在文档中的起点，按 UTF-16 码元计。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextSelection {
@@ -1039,50 +1039,50 @@ pub struct Node {
     pub name: String,
     pub automation_id: String,
     /// ValuePattern 的值；没有 ValuePattern 而有 TextPattern 的控件（终端、控制台正文）
-    /// 是此刻可见的文字。字段选择不取值时缺席。
+    /// 为当前可见的文字。字段选择不取值时缺席。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     pub enabled: bool,
     pub offscreen: bool,
-    /// 这个控件此刻持有键盘焦点。前台模式关着时一律为假——那时这一项不在缓存请求里。
+    /// 该控件当前持有键盘焦点。前台模式关闭时一律为假：此时该属性不在缓存请求中。
     ///
-    /// 文字与按键去的是焦点所在的地方，所以键盘动作只列在这个控件上。
+    /// 文字与按键发往焦点所在位置，因此键盘动作只列在该控件上。
     #[serde(skip_serializing_if = "not_set")]
     pub focused: bool,
-    /// 控件的包围盒，屏幕物理像素，与图像几何同一套坐标。
+    /// 控件的包围盒，屏幕物理像素，与图像几何使用同一套坐标。
     ///
-    /// provider 不给包围盒的控件缺席（零尺寸同样按缺席算）。**缺席不等于控件不存在**，
-    /// 也不等于它在屏幕外——那一件事由 `offscreen` 说。
+    /// provider 不提供包围盒的控件缺席（零尺寸同样按缺席处理）。**缺席不等于控件不存在**，
+    /// 也不等于控件在屏幕外：后者由 `offscreen` 表示。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rect: Option<ScreenRect>,
-    /// 只列 worker 已实现的动作。控件暴露了模式但 worker 没有对应实现时不列，
-    /// 否则调用方会按这张表发出永远拿不到实现的请求。
+    /// 只列出 worker 已实现的动作。控件暴露了模式但 worker 没有对应实现时不列出，
+    /// 否则调用方会按本表发出没有对应实现的请求。
     pub actions: Vec<NodeAction>,
-    /// RangeValuePattern 的数值区间。没有这个模式时缺席。
+    /// RangeValuePattern 的数值区间。没有该模式时缺席。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range: Option<RangeState>,
-    /// TogglePattern 的现态。没有这个模式时缺席。
+    /// TogglePattern 的现态。没有该模式时缺席。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toggle: Option<&'static str>,
     /// ExpandCollapsePattern 的现态：`collapsed` / `expanded` / `partial` / `leaf`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expand: Option<&'static str>,
-    /// SelectionItemPattern 的现态。没有这个模式时缺席。
+    /// SelectionItemPattern 的现态。没有该模式时缺席。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<bool>,
-    /// SelectionPattern 读到的容器约束与当前选中项。只有选择容器有。
+    /// SelectionPattern 读取到的容器约束与当前选中项。只有选择容器具有该字段。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selection: Option<SelectionState>,
-    /// ScrollPattern 的滚动位置。滚动后重读按它核对。
+    /// ScrollPattern 的滚动位置。滚动后的重读据此核对。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scroll: Option<ScrollState>,
-    /// 这个控件有 TextPattern，可以读文档文本与选区。
+    /// 该控件具有 TextPattern，可以读取文档文本与选区。
     #[serde(skip_serializing_if = "not_set")]
     pub text: bool,
-    /// 这个控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对。
+    /// 该控件没有 RuntimeId，身份只能按角色、名称与稳定标识核对。
     ///
-    /// 三项都不变而控件被换掉时核不出来，界面重排之后这个引用不可靠。为真时调用方应当
-    /// 重新观察而不是复用旧引用。
+    /// 三项均不变而控件已被替换时无法核出，界面重排之后该引用不可靠。为真时调用方应当
+    /// 重新观察，而不是复用旧引用。
     #[serde(skip_serializing_if = "not_set")]
     pub weak_identity: bool,
 }
@@ -1091,22 +1091,22 @@ fn not_set(flag: &bool) -> bool {
     !*flag
 }
 
-/// 动作已经生效的可核实证据。每一项都由 Win32 读出，读它们不进 UIA，
-/// 因此不会被目标进程的嵌套消息循环挡住。
+/// 动作已经生效的可核实证据。每一项都经由 Win32 读取，不经过 UIA，
+/// 因此不会被目标进程的嵌套消息循环阻塞。
 ///
-/// **每种动作只认属于它的那几项。** 前三项是后台模式调用的证据；激活会主动改前台，
-/// 那时「同进程出现新顶层窗口」证明不了这次激活做过什么，窗口动作因此各用各的读回值。
+/// **每种动作只采用属于它的证据项。** 前三项是后台模式调用的证据；激活会主动改变前台窗口，
+/// 此时「同进程出现新顶层窗口」无法证明本次激活的效果，窗口动作因此各自使用对应属性的读取值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionEvidence {
-    /// 目标窗口被禁用。Win32 的模态对话框正是这样挡住属主窗口的。
+    /// 目标窗口被禁用。Win32 的模态对话框正是以此方式阻挡属主窗口。
     WindowDisabled,
-    /// 目标窗口已经销毁。
+    /// 目标窗口已销毁。
     WindowGone,
-    /// 目标进程里多出一个此前没有的顶层窗口。
+    /// 目标进程中出现了此前不存在的顶层窗口。
     NewWindow,
-    /// 目标窗口已经处于请求的显示状态。
+    /// 目标窗口已处于请求的显示状态。
     WindowState,
-    /// 目标窗口矩形已经是请求的位置或尺寸。
+    /// 目标窗口矩形已等于请求的位置或尺寸。
     WindowRect,
 }
 
@@ -1116,19 +1116,19 @@ impl ActionEvidence {
             Self::WindowDisabled => "目标窗口已被禁用",
             Self::WindowGone => "目标窗口已关闭",
             Self::NewWindow => "目标进程出现了新的顶层窗口",
-            Self::WindowState => "目标窗口已经是请求的显示状态",
-            Self::WindowRect => "目标窗口矩形已经是请求的值",
+            Self::WindowState => "目标窗口已处于请求的显示状态",
+            Self::WindowRect => "目标窗口矩形已等于请求的值",
         }
     }
 }
 
-/// 一次动作调用的终态。`None` = 还判不出来，接着等。
+/// 一次动作调用的终态。`None` 表示尚无法判定，继续等待。
 ///
-/// `InvokePattern.Invoke()` 点开模态对话框时，provider 那一侧要等对话框关掉才返回，
-/// 客户端这次调用因此挂到 UIA 连接超时。**不能据此记未执行**：动作已经生效了。
-/// 所以调用放到一条可以放弃等待的线程上，主路径改判可核实的事实——
-/// 目标窗口被禁用、已关闭，或者同进程多出一个顶层窗口——三者任一成立即 `submitted`。
-/// 没有证据而调用仍未返回才是 `unknown`。
+/// `InvokePattern.Invoke()` 打开模态对话框时，provider 一侧要等对话框关闭才返回，
+/// 客户端的本次调用因此阻塞至 UIA 连接超时。**不能据此记为未执行**：动作已经生效。
+/// 因此调用放在可以放弃等待的线程上，主路径改为判定可核实的事实：
+/// 目标窗口被禁用、已关闭，或同进程出现新的顶层窗口，三者任一成立即为 `submitted`。
+/// 没有证据且调用仍未返回时才是 `unknown`。
 pub fn classify_action(
     returned: Option<&Result<(), String>>,
     evidence: Option<ActionEvidence>,
@@ -1154,23 +1154,23 @@ pub fn classify_action(
     })
 }
 
-/// worker 此刻按住不放的鼠标键与键。
+/// worker 当前按住的鼠标键与键盘按键。
 ///
-/// **它只描述输入状态，不是任务状态。** 随按随记、释放即清，宿主按它在确认 worker
-/// 退出之后补发释放。空账表示这个 worker 手上没有按住任何键。
+/// **它只描述输入状态，不是任务状态。** 按下即记录、释放即清除，宿主在确认 worker
+/// 退出之后据此补发释放。空账表示该 worker 没有按住任何键。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeldInput {
     /// 按住的鼠标键名。
     pub buttons: Vec<&'static str>,
-    /// 按住的键，按下顺序。主键是 `key_names` 里的名字，修饰键是 `Modifier::key_name`。
+    /// 按住的键，按按下顺序排列。主键是 `key_names` 中的名称，修饰键是 `Modifier::key_name`。
     ///
-    /// 记键名不记平台键码：worker 派发与宿主补发各自按本平台的换算表把它换成键码。
+    /// 记录键名而不记录平台键码：worker 派发与宿主补发各自按本平台的换算表将其转换为键码。
     pub keys: Vec<String>,
 }
 
-/// 输入状态通报。与回执共用 stdout，靠 `input` 这一格与回执区分——回执一定带
-/// `id` 与 `dispatch`，通报一定不带。
+/// 输入状态通报。与回执共用 stdout，以 `input` 字段与回执区分：回执必定带
+/// `id` 与 `dispatch`，通报必定不带。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InputNotice {
@@ -1183,37 +1183,37 @@ impl InputNotice {
     }
 }
 
-/// 桌面控制要操作系统给、而此刻可能没给的一项前提。每一项只有一个平台的后端会报。
+/// 桌面控制需要操作系统提供、而当前可能未提供的一项前提。每一项只由一个平台的后端报告。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Grant {
-    /// macOS 的辅助功能授权。读树、动作与键鼠投递都归它。
+    /// macOS 的辅助功能授权。读树、动作与键盘及指针输入的投递均依赖该授权。
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Accessibility,
-    /// macOS 的屏幕录制授权。只管取图。
+    /// macOS 的屏幕录制授权。只影响截图。
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     ScreenRecording,
-    /// Linux 的会话总线上找得到无障碍总线（`org.a11y.Bus`）。
+    /// Linux 的会话总线上可以找到无障碍总线（`org.a11y.Bus`）。
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     AccessibilityBus,
 }
 
 impl Grant {
-    /// 缺了这一项，读取与动作是否一律不可用。
+    /// 缺少该项时，读取与动作是否一律不可用。
     const fn gates(self) -> bool {
         !matches!(self, Self::ScreenRecording)
     }
 }
 
-/// 操作系统此刻给了哪些前提。握手回执与之后的变化通报都是这个形状。
+/// 操作系统当前已满足哪些前提。握手回执与之后的变化通报都使用该结构。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Access {
-    /// 读取与动作可用：`missing` 里没有缺了就一律不可用的那种前提。
+    /// 读取与动作可用：`missing` 中没有缺失即导致一律不可用的前提。
     pub authorized: bool,
-    /// 没给的前提，顺序由后端固定。界面据此指明去哪里开。`authorized` 为真时也可能不空。
+    /// 未满足的前提，顺序由后端固定。界面据此指明在何处开启。`authorized` 为真时也可能非空。
     pub missing: Vec<Grant>,
-    /// 没给的原因原文。只写进 stderr：它是 OS 的错误文本，协议只带 `missing`。
+    /// 未满足的原因原文。只写入 stderr：它是 OS 的错误文本，协议只携带 `missing`。
     #[serde(skip)]
     pub detail: Option<String>,
 }
@@ -1227,13 +1227,13 @@ impl Access {
         }
     }
 
-    /// 两份事实相同。原因原文不算：同一件事的错误文本可能每次都不一样。
+    /// 两份事实相同。原因原文不参与比较：同一问题的错误文本每次可能不同。
     pub fn same(&self, other: &Self) -> bool {
         self.missing == other.missing
     }
 }
 
-/// 授权变化通报。与回执、输入通报共用 stdout，靠 `access` 这一格区分。
+/// 授权变化通报。与回执、输入通报共用 stdout，以 `access` 字段区分。
 #[derive(Debug, Serialize)]
 pub struct AccessNotice<'a> {
     pub access: &'a Access,
@@ -1241,14 +1241,14 @@ pub struct AccessNotice<'a> {
 
 /// macOS：本进程不是受信任的辅助功能客户端。
 pub const ACCESSIBILITY_NOT_TRUSTED: &str = "accessibility_not_trusted";
-/// Linux：会话里找不到或连不上无障碍总线。
+/// Linux：会话里未找到或无法连接无障碍总线。
 pub const ACCESSIBILITY_BUS_UNAVAILABLE: &str = "accessibility_bus_unavailable";
-/// macOS：本进程没有屏幕录制授权，取图被拒。它不挡读取与动作（`Grant::ScreenRecording`），
-/// 但撤销同样要靠被拒的那一次报出来。
+/// macOS：本进程没有屏幕录制授权，截图被拒绝。它不阻止读取与动作（`Grant::ScreenRecording`），
+/// 但授权撤销同样需要由被拒绝的那次调用报告。
 pub const SCREEN_RECORDING_NOT_GRANTED: &str = "screen_recording_not_granted";
 
-/// 这条拒绝原因是不是「操作系统没给前提」。是的话服务循环现查一次授权事实：运行中撤销的
-/// 授权要靠它在下一次调用时报出来。原因码在原文开头，后面可以接 `: 说明`。
+/// 该拒绝原因是否属于操作系统未满足前提。是则服务循环即时查询一次授权事实：运行中撤销的
+/// 授权依靠它在下一次调用时报告。原因码位于原文开头，其后可以接 `: 说明`。
 pub fn refused_for_grant(reason: &str) -> bool {
     [
         ACCESSIBILITY_NOT_TRUSTED,
@@ -1261,16 +1261,16 @@ pub fn refused_for_grant(reason: &str) -> bool {
 
 /// 一批原始输入发出之后的执行事实。
 ///
-/// `SendInput` 的返回值是真的插进输入队列的事件数，**它可能小于请求数**：
-/// 目标进程完整性比本进程高时 UIPI 会把这一批挡掉。三种终态：
-/// 一个事件都没进去是可证明的未派发；全部进去是已派发；进去一部分只能是未知——
-/// 已经进 OS 的那一部分可能已经生效，记成未执行会让调用方重发一次。
+/// `SendInput` 的返回值是实际插入输入队列的事件数，**它可能小于请求数**：
+/// 目标进程完整性高于本进程时 UIPI 会拦截该批事件。三种终态：
+/// 没有任何事件进入队列是可证明的未派发；全部进入是已派发；部分进入只能记为未知：
+/// 已进入 OS 的部分可能已经生效，记为未执行会使调用方重发。
 pub fn classify_input(sent: u32, requested: u32) -> (Dispatch, Option<String>) {
     if requested == 0 || sent == 0 {
         return (
             Dispatch::NotDispatched,
             Some(format!(
-                "input_blocked: {requested} 个输入事件一个都没有进入系统输入队列，\
+                "input_blocked: {requested} 个输入事件均未进入系统输入队列，\
                  目标窗口的进程完整性可能高于 qywork"
             )),
         );
@@ -1281,7 +1281,7 @@ pub fn classify_input(sent: u32, requested: u32) -> (Dispatch, Option<String>) {
     (
         Dispatch::Unknown,
         Some(format!(
-            "input_partial: {requested} 个输入事件只发出了 {sent} 个，已发出的部分可能已经生效"
+            "input_partial: {requested} 个输入事件中只发出了 {sent} 个，已发出的部分可能已生效"
         )),
     )
 }
@@ -1296,10 +1296,10 @@ fn check_host(req: &Request, binding: &Binding) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// 派发前的唯一准入判定。返回 `Err(reason)` 时调用方一律记 `not_dispatched`。
+/// 派发前的唯一准入判定。返回 `Err(reason)` 时调用方一律记为 `not_dispatched`。
 ///
 /// 顺序固定：执行实例身份 → 连接代际 → 取消登记 → 截止时刻。身份或代际不符的
-/// 请求不进入取消与超时判断，旧绑定的请求因此影响不到当前绑定的登记。
+/// 请求不进入取消与超时判断，旧绑定的请求因此不会影响当前绑定的登记。
 pub fn admit(
     req: &Request,
     binding: Option<&Binding>,
@@ -1313,7 +1313,7 @@ pub fn admit(
                 {
                     return Err("already_bound");
                 }
-                // 重复握手可以重设超时与取消登记，但不能借它把连接代际调回旧值。
+                // 重复握手可以重设超时与取消登记，但不能借此把连接代际改回旧值。
                 if req.connection_epoch < binding.connection_epoch {
                     return Err("connection_epoch_rollback");
                 }
@@ -1365,12 +1365,12 @@ pub fn admit(
 
 /// 一次动作请求的目标与模式判定。
 ///
-/// **前台模式关着时前台动作在这里就被拒**：这是派发前的唯一准入判定，
-/// 放到执行路径里判就会多出第二处裁决。后台失败不会自动升级成前台，
-/// 这个函数不看动作有没有后台替代品。
+/// **前台模式关闭时前台动作在此处即被拒绝**：这是派发前的唯一准入判定，
+/// 移到执行路径中判定会多出第二处裁决。后台失败不会自动升级为前台，
+/// 本函数不考虑动作是否有后台替代方式。
 ///
-/// 目标三种写法：控件、屏幕落点、两者都不给。第三种只有 `targets_window` 的动作
-/// 能用，它的目标是窗口本身。
+/// 目标有三种写法：控件、屏幕落点、两者都不给出。第三种只有 `targets_window` 的动作
+/// 可以使用，其目标是窗口本身。
 pub fn check_act(
     action: &ActionSpec,
     has_ref: bool,
@@ -1382,41 +1382,41 @@ pub fn check_act(
         return Err(FOREGROUND_DISABLED);
     }
     match (has_ref, has_point) {
-        (true, true) => return Err("target_conflict: ref 与 point 只能给一个"),
+        (true, true) => return Err("target_conflict: ref 与 point 只能提供其中一个"),
         (false, false) if !action.targets_window() => {
-            return Err("missing_target: 要给 ref 或 point")
+            return Err("missing_target: 必须提供 ref 或 point")
         }
         (false, true) if !action.takes_point() => {
-            return Err("point_unsupported: 这个动作只能按控件执行")
+            return Err("point_unsupported: 该动作只能按控件执行")
         }
         _ => {}
     }
-    // 按图定位必须带窗口几何代际：少了它，窗口在采图与派发之间移动过也照点。
+    // 按图像定位必须带窗口几何代际：缺少代际时，窗口在截图与派发之间移动后仍会按原坐标点击。
     if has_point && !has_generation {
-        return Err("missing_generation: 按屏幕坐标操作要带窗口几何代际");
+        return Err("missing_generation: 按屏幕坐标操作必须携带窗口几何代际");
     }
     Ok(())
 }
 
-/// 等待判定的输入：调用方给的条件，加上这一轮读到的事实。
+/// 等待判定的输入：调用方给出的条件，以及本轮读取到的事实。
 ///
-/// 单列成纯函数，是为了让五种条件的判定在没有图形会话的环境里也能测。
+/// 单独写成纯函数，使五种条件的判定在没有图形会话的环境中也能测试。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Seen<'a> {
-    /// 目标控件还在，带着它此刻的可用状态与值。
+    /// 目标控件仍存在，附带其当前的可用状态与值。
     Element { enabled: bool, value: Option<&'a str> },
-    /// 目标控件已经不在树上。
+    /// 目标控件已不在树上。
     Missing,
-    /// 满足筛选条件的控件有多少个。
+    /// 满足筛选条件的控件数量。
     Matches(u32),
-    /// 有没有出现符合条件的顶层窗口。
+    /// 是否出现符合条件的顶层窗口。
     Window(bool),
 }
 
-/// 等待条件还能不能成立。
+/// 等待条件是否仍可能成立。
 ///
-/// 等值或等可用时目标控件已经不在：控件身份按 RuntimeId 核，重建出来的是另一个控件，
-/// 这个条件不会再成立，继续轮询只会等到超时。其余组合照常轮询。
+/// 等待值或等待可用时目标控件已不存在：控件身份按 RuntimeId 核对，重建的是另一个控件，
+/// 该条件不会再成立，继续轮询只会等待至超时。其余组合照常轮询。
 pub fn attainable(until: WaitUntil, seen: Seen<'_>) -> bool {
     !matches!(
         (until, seen),
@@ -1424,11 +1424,11 @@ pub fn attainable(until: WaitUntil, seen: Seen<'_>) -> bool {
     )
 }
 
-/// 这一轮读到的事实满不满足等待条件。
+/// 本轮读取到的事实是否满足等待条件。
 pub fn satisfied(until: WaitUntil, want: Option<&str>, seen: Seen<'_>) -> bool {
     match (until, seen) {
         (WaitUntil::Enabled, Seen::Element { enabled, .. }) => enabled,
-        // 值缺席表示这个控件没有 ValuePattern，它等不到任何值，不能当成空串命中。
+        // 值缺席表示该控件没有 ValuePattern，任何值都不会出现，不能作为空串命中。
         (WaitUntil::Value, Seen::Element { value, .. }) => value.is_some() && value == want,
         (WaitUntil::Gone, Seen::Missing) => true,
         (WaitUntil::Appears, Seen::Matches(count)) => count > 0,
@@ -1492,7 +1492,7 @@ mod tests {
     fn action_of(req: Request) -> ActionSpec {
         match req.op {
             Op::Act { action, .. } => action,
-            other => panic!("解析成了别的 op：{other:?}"),
+            other => panic!("解析为其他 op：{other:?}"),
         }
     }
 
@@ -1517,11 +1517,11 @@ mod tests {
                     (66, 500, 12, 1500)
                 );
             }
-            other => panic!("解析成了别的 op：{other:?}"),
+            other => panic!("解析为其他 op：{other:?}"),
         }
     }
 
-    /// 筛选与字段选择都缺省时读整窗、取全部字段。
+    /// 筛选与字段选择均缺省时读取整窗与全部字段。
     #[test]
     fn read_tree_defaults_to_the_whole_window_with_values() {
         let req = parse(
@@ -1536,11 +1536,11 @@ mod tests {
                 assert!(select.include_state);
                 assert!(select.describe().is_empty());
             }
-            other => panic!("解析成了别的 op：{other:?}"),
+            other => panic!("解析为其他 op：{other:?}"),
         }
     }
 
-    /// 范围与字段选择逐条写进 completeness，调用方据此分得出「没有」与「不在读取范围里」。
+    /// 范围与字段选择逐条写入 completeness，调用方据此区分「没有」与「不在读取范围内」。
     #[test]
     fn selection_is_described_field_by_field() {
         let req = parse(
@@ -1560,11 +1560,11 @@ mod tests {
                     ]
                 );
             }
-            other => panic!("解析成了别的 op：{other:?}"),
+            other => panic!("解析为其他 op：{other:?}"),
         }
     }
 
-    /// 动作与等待都带当前观察的范围根，结束时按它整份重读。
+    /// 动作与等待都携带当前观察的范围根，结束时按该范围整体重读。
     #[test]
     fn act_and_wait_carry_the_observation_scope() {
         let act = parse(
@@ -1574,7 +1574,7 @@ mod tests {
         );
         match act.op {
             Op::Act { root, .. } => assert_eq!(root.as_deref(), Some("w.0#7")),
-            other => panic!("解析成了别的 op：{other:?}"),
+            other => panic!("解析为其他 op：{other:?}"),
         }
         let wait = parse(
             r#"{"id":"r2","hostId":"h1","hostEpoch":2,"connectionEpoch":5,
@@ -1593,7 +1593,7 @@ mod tests {
                 assert_eq!(name_contains.as_deref(), Some("保存"));
                 assert_eq!(root, None);
             }
-            other => panic!("解析成了别的 op：{other:?}"),
+            other => panic!("解析为其他 op：{other:?}"),
         }
     }
 
@@ -1619,7 +1619,7 @@ mod tests {
                 assert_eq!(value.as_deref(), Some("张三"));
                 assert_eq!((poll_ms, timeout_ms), (250, 9000));
             }
-            other => panic!("解析成了别的 op：{other:?}"),
+            other => panic!("解析为其他 op：{other:?}"),
         }
     }
 
@@ -1644,7 +1644,7 @@ mod tests {
         .is_err());
     }
 
-    /// 单读一个控件的 op 不存在：动作与等待都自带按范围的重读，没有第二条只读路径。
+    /// 不存在单独读取一个控件的 op：动作与等待都自带按范围的重读，没有第二条只读路径。
     #[test]
     fn a_single_element_read_op_does_not_exist() {
         assert!(serde_json::from_str::<Request>(
@@ -1709,7 +1709,7 @@ mod tests {
         }
     }
 
-    /// 层级留在展平表上：父 ref 与深度各一格，没有嵌套的子节点数组。
+    /// 层级保留在展平表中：父 ref 与深度各占一个字段，没有嵌套的子节点数组。
     #[test]
     fn the_tree_observation_is_a_flat_table_with_parent_links() {
         let value = serde_json::to_value(Observation::Tree(tree(Some("w.0#7")))).unwrap();
@@ -1721,7 +1721,7 @@ mod tests {
         assert!(value["nodes"][0].get("parentRef").is_none());
     }
 
-    /// 整窗读没有 scope：调用方据此作废整份旧观察。
+    /// 整窗读取没有 scope：调用方据此作废整份旧观察。
     #[test]
     fn a_whole_window_read_carries_no_scope() {
         let value = serde_json::to_value(Observation::Tree(tree(None))).unwrap();
@@ -1743,7 +1743,7 @@ mod tests {
         assert_eq!(value["nodeCount"], 1);
     }
 
-    /// 截断与读取范围分两格：只读了一棵子树不是截断。
+    /// 截断与读取范围分为两个字段：只读取一棵子树不是截断。
     #[test]
     fn truncation_and_scope_are_reported_separately() {
         let mut body = tree(Some("w.0#7"));
@@ -1759,8 +1759,8 @@ mod tests {
         assert_eq!(value["completeness"]["visited"], 500);
     }
 
-    /// 调用没返回时不重读目标窗口，换成一份纯 Win32 的顶层窗口清单：
-    /// 那一刻目标应用的 UI 线程卡在调用里，任何 UIA 读取都会等到超时。
+    /// 调用未返回时不重读目标窗口，改为返回一份只经由 Win32 读取的顶层窗口清单：
+    /// 此时目标应用的 UI 线程阻塞于该调用，任何 UIA 读取都会等待至超时。
     #[test]
     fn a_blocked_action_carries_the_windows_instead_of_a_reread() {
         let mut resp = Response::acted(
@@ -1794,19 +1794,19 @@ mod tests {
             .as_str()
             .is_some_and(|t| t.starts_with("target_blocked")));
         assert!(value.get("observation").is_none());
-        // 回执发出之后要清一次 provider，这件事只在 worker 内部传，不上线。
+        // 回执发出之后需清理一次 provider，该任务只在 worker 内部传递，不写入协议。
         resp.after_reply = Some(66);
         let value = serde_json::to_value(&resp).expect("回执应当序列化成功");
         assert!(value.get("afterReply").is_none());
         assert!(value.get("after_reply").is_none());
-        // 身份字段与窗口清单同形：宿主按同一条路径补进程启动时刻与应用名。
+        // 身份字段与窗口清单结构相同：宿主按同一路径补充进程启动时刻与应用名。
         assert_eq!(value["blocking"][0]["window"], 66);
         assert_eq!(value["blocking"][0]["appeared"], false);
         assert_eq!(value["blocking"][1]["title"], "qywork modal dialog");
         assert_eq!(value["blocking"][1]["appeared"], true);
     }
 
-    /// 调用返回了就照常重读，不带这一格。
+    /// 调用已返回时照常重读，不带该字段。
     #[test]
     fn a_returned_action_carries_no_window_list() {
         let resp = Response::acted("r1".to_owned(), Dispatch::Submitted, Err("窗口已关闭".to_owned()));
@@ -1838,7 +1838,7 @@ mod tests {
         );
     }
 
-    /// 调用没返回而目标窗口被模态对话框挡住：动作已经生效，必须记 submitted。
+    /// 调用未返回而目标窗口被模态对话框阻挡：动作已经生效，必须记为 submitted。
     #[test]
     fn verifiable_evidence_settles_a_call_that_has_not_returned() {
         for evidence in [
@@ -1853,7 +1853,7 @@ mod tests {
         }
     }
 
-    /// 没有证据、调用也没返回：期限之前接着等，到期才记 unknown。
+    /// 没有证据且调用未返回：期限之前继续等待，到期才记为 unknown。
     #[test]
     fn a_pending_call_without_evidence_waits_then_becomes_unknown() {
         assert_eq!(classify_action(None, None, false), None);
@@ -1862,7 +1862,7 @@ mod tests {
         assert!(reason.is_some_and(|r| r.starts_with("call_pending")));
     }
 
-    /// 调用自己带回来的结果优先于证据：它说得更准。
+    /// 调用自身返回的结果优先于证据：它更准确。
     #[test]
     fn a_returned_call_outranks_the_evidence() {
         assert_eq!(
@@ -1881,24 +1881,24 @@ mod tests {
         assert_eq!(base64(&[0x00, 0xff, 0x80]), "AP+A");
     }
 
-    /// 二态控件按一下就到，三态控件按目标态算要按几下；环上没有的状态返回 None。
+    /// 二态控件按一次即到达，三态控件按目标态计算所需次数；环上没有的状态返回 None。
     #[test]
     fn toggle_steps_count_the_presses_a_target_state_needs() {
         use ToggleState::{Indeterminate, Off, On};
         assert_eq!(toggle_steps(Off, On, false), Some(1));
         assert_eq!(toggle_steps(On, Off, false), Some(1));
         assert_eq!(toggle_steps(Off, Off, false), Some(0));
-        // 三态环按 Off → On → Indeterminate → Off 转。
+        // 三态环按 Off → On → Indeterminate → Off 循环。
         assert_eq!(toggle_steps(Off, On, true), Some(1));
         assert_eq!(toggle_steps(Off, Indeterminate, true), Some(2));
         assert_eq!(toggle_steps(Indeterminate, Off, true), Some(1));
         assert_eq!(toggle_steps(On, Indeterminate, true), Some(1));
-        // 二态控件到不了中间态：报不支持，不是按两下凑过去。
+        // 二态控件无法到达中间态：报告不支持，而不是按两次切换到其他状态。
         assert_eq!(toggle_steps(Off, Indeterminate, false), None);
         assert_eq!(toggle_steps(Indeterminate, Off, false), None);
     }
 
-    /// 每种动作的参数跟着自己的名字走，少一项就解析失败，不会翻译成一条合法请求。
+    /// 每种动作的参数随动作名称给出，缺少一项即解析失败，不会转换为一条合法请求。
     #[test]
     fn each_action_carries_its_own_parameters() {
         assert!(matches!(
@@ -1948,7 +1948,7 @@ mod tests {
         }
     }
 
-    /// 可用动作表要说得出「这个动作此刻能不能用」，只读与叶节点各有自己的原因码。
+    /// 可用动作表必须能表达动作当前是否可用，只读与叶节点各有对应的原因码。
     #[test]
     fn an_action_offer_carries_its_delivery_and_reason() {
         let ready = serde_json::to_value(NodeAction::ready("invoke")).unwrap();
@@ -1961,10 +1961,10 @@ mod tests {
     }
 
     fn json_of(text: &str) -> serde_json::Value {
-        serde_json::from_str(text).expect("用例里的 JSON 应当合法")
+        serde_json::from_str(text).expect("用例中的 JSON 应当合法")
     }
 
-    /// 文本观察自带读的是哪个控件、截断标记与选区起点。
+    /// 文本观察自带所读取的控件、截断标记与选区起点。
     #[test]
     fn a_text_observation_reports_truncation_and_selection_offsets() {
         let value = serde_json::to_value(Observation::Text(Text {
@@ -1989,7 +1989,7 @@ mod tests {
         assert_eq!(value["selection"][0]["text"], "内容");
     }
 
-    /// 读文本是只读 op：它不带上限三件套，也不进动作那条路径。
+    /// 读取文本是只读 op：它不带三个上限字段，也不经由动作路径。
     #[test]
     fn read_text_is_its_own_read_only_op() {
         let req = parse(
@@ -2002,20 +2002,20 @@ mod tests {
         ));
     }
 
-    /// 控件状态只在对应模式存在时上线，缺席的不发空格子。
+    /// 控件状态只在对应模式存在时输出，缺席的状态不输出空字段。
     #[test]
     fn pattern_state_fields_are_absent_without_the_pattern() {
         let value = serde_json::to_value(Observation::Tree(tree(None))).unwrap();
         let node = &value["nodes"][0];
         for key in ["range", "toggle", "expand", "selected", "selection", "scroll", "text"] {
-            assert!(node.get(key).is_none(), "{key} 不该出现");
+            assert!(node.get(key).is_none(), "{key} 不应出现");
         }
     }
 
-    /// 步长读不出有限数时那两格缺席；值或边界非有限时整份区间缺席。
+    /// 步长不是有限数时这两个字段缺席；值或边界非有限时整份区间缺席。
     #[test]
     fn a_range_drops_the_values_the_provider_cannot_give() {
-        let full = range_state(20.0, 0.0, 100.0, 1.0, 10.0).expect("有限数应当成一份区间");
+        let full = range_state(20.0, 0.0, 100.0, 1.0, 10.0).expect("有限数应当构成一份区间");
         assert_eq!(full.small_change, Some(1.0));
         let stepless = range_state(35.0, 0.0, 100.0, f64::NAN, f64::NAN)
             .expect("只有步长非有限时区间仍然成立");
@@ -2028,7 +2028,7 @@ mod tests {
         assert_eq!(range_state(1.0, 0.0, f64::INFINITY, 1.0, 10.0), None);
     }
 
-    /// 选中项名称进 `selected`，一项都没选中时这一格与截断标记都不出现。
+    /// 选中项名称写入 `selected`，未选中任何项时该字段与截断标记都不出现。
     #[test]
     fn a_container_carries_the_names_of_what_is_selected() {
         let mut body = tree(None);
@@ -2053,12 +2053,12 @@ mod tests {
         });
         let value = serde_json::to_value(Observation::Tree(empty)).unwrap();
         let selection = &value["nodes"][0]["selection"];
-        assert!(selection.get("selected").is_none(), "没有选中项时不该出现这一格");
+        assert!(selection.get("selected").is_none(), "没有选中项时不应出现该字段");
         assert!(selection.get("truncated").is_none());
         assert_eq!(selection["multiple"], true);
     }
 
-    /// 滚不动的那个轴缺席。**缺席不是 0**：0 是「在顶端」。
+    /// 不能滚动的轴缺席。**缺席不是 0**：0 表示位于顶端。
     #[test]
     fn a_non_scrollable_axis_is_absent_rather_than_zero() {
         let mut body = tree(None);
@@ -2093,7 +2093,7 @@ mod tests {
     #[test]
     fn a_second_identity_cannot_rebind_the_same_worker() {
         let binding = bound();
-        // 同身份重复握手仍然放行：它用来重设超时与清空取消登记。
+        // 同一身份的重复握手仍然放行：它用于重设超时与清空取消登记。
         assert_eq!(
             admit(&handshake_request("h1", 2, 5), Some(&binding), false, 0),
             Ok(())
@@ -2130,7 +2130,7 @@ mod tests {
         let queued = invoke_request(None);
         let mut binding = bound();
         assert_eq!(admit(&queued, Some(&binding), false, 0), Ok(()));
-        // 宿主重连：连接代际推进到 6，队列里那条属于代际 5 的动作请求不得再派发。
+        // 宿主重连：连接代际增大到 6，队列中属于代际 5 的动作请求不得再派发。
         let rebind = bind_request(6);
         assert_eq!(admit(&rebind, Some(&binding), false, 0), Ok(()));
         binding.connection_epoch = 6;
@@ -2200,7 +2200,7 @@ mod tests {
         );
     }
 
-    /// 五种等待条件各自只认自己那一种事实，读错一种不会误判成满足。
+    /// 五种等待条件各自只采用对应的事实，不会因读取其他事实而误判为满足。
     #[test]
     fn each_wait_condition_reads_only_its_own_fact() {
         let on = Seen::Element {
@@ -2222,17 +2222,17 @@ mod tests {
         assert!(!satisfied(WaitUntil::Appears, None, Seen::Matches(0)));
         assert!(satisfied(WaitUntil::Window, None, Seen::Window(true)));
         assert!(!satisfied(WaitUntil::Window, None, Seen::Window(false)));
-        // 控件还在就不算消失，控件没了也不算值等到了。
+        // 控件仍存在时不算消失，控件不存在时也不算值已满足。
         assert!(!satisfied(WaitUntil::Value, Some(""), Seen::Missing));
         assert!(!satisfied(WaitUntil::Enabled, None, Seen::Missing));
     }
 
-    /// 原始失败形状：等刚点过的链接的值，页面一跳转链接就不在了，此前要轮询到超时。
+    /// 原始失败形状：等待刚点击的链接的值，页面跳转后链接即不存在，此前会一直轮询至超时。
     #[test]
     fn a_value_or_enabled_wait_on_a_missing_control_cannot_succeed() {
         assert!(!attainable(WaitUntil::Value, Seen::Missing));
         assert!(!attainable(WaitUntil::Enabled, Seen::Missing));
-        // 等消失的恰好要它不在；等出现与等窗口不看单个控件。
+        // 等待消失的条件正需要控件不存在；等待出现与等待窗口不检查单个控件。
         assert!(attainable(WaitUntil::Gone, Seen::Missing));
         assert!(attainable(WaitUntil::Appears, Seen::Matches(0)));
         assert!(attainable(WaitUntil::Window, Seen::Window(false)));
@@ -2244,22 +2244,22 @@ mod tests {
         assert!(attainable(WaitUntil::Enabled, off));
     }
 
-    /// 大窗口上的判定本身要花几百毫秒，间隔得跟着放大，否则等待会把目标应用占满。
+    /// 大窗口上的判定本身需要数百毫秒，间隔必须随之增大，否则等待会完全占用目标应用。
     #[test]
     fn the_poll_interval_paces_itself_by_the_cost_of_the_last_probe() {
         let floor = Duration::from_millis(250);
         let plenty = Duration::from_secs(60);
-        // 判定很便宜时按调用方给的下限走。
+        // 判定耗时很短时按调用方给出的下限。
         assert_eq!(next_poll(floor, Duration::from_millis(5), plenty), floor);
         assert_eq!(next_poll(floor, Duration::ZERO, plenty), floor);
-        // 判定贵到超过下限时按它放大：230 ms 的一轮之后空出 920 ms，占空比 20%。
+        // 判定耗时超过下限时按耗时放大：230 ms 的一轮之后间隔 920 ms，占空比 20%。
         assert_eq!(
             next_poll(floor, Duration::from_millis(230), plenty),
             Duration::from_millis(920)
         );
     }
 
-    /// 截止时刻最优先：睡过头就错过了自己的期限。
+    /// 截止时刻优先级最高：休眠超过剩余时间会错过截止时刻。
     #[test]
     fn the_poll_interval_never_sleeps_past_the_deadline() {
         let floor = Duration::from_millis(250);
@@ -2273,7 +2273,7 @@ mod tests {
         );
     }
 
-    /// 弱身份只在为真时上线：绝大多数控件有 RuntimeId，多发一格没有意义。
+    /// 弱身份只在为真时输出：绝大多数控件有 RuntimeId，多输出一个字段没有意义。
     #[test]
     fn a_weak_identity_is_only_reported_when_it_is_weak() {
         let mut body = tree(None);
@@ -2286,7 +2286,7 @@ mod tests {
         assert_eq!(value["nodes"][0]["weakIdentity"], true);
     }
 
-    /// 前台动作与后台动作在同一个枚举里，按 `foreground_only` 分开准入。
+    /// 前台动作与后台动作在同一个枚举中，按 `foreground_only` 分别准入。
     #[test]
     fn foreground_actions_are_marked_and_background_ones_are_not() {
         for spec in [
@@ -2320,7 +2320,7 @@ mod tests {
         }
     }
 
-    /// 只有指针动作接受屏幕落点。别的动作给了坐标也没有落点可言。
+    /// 只有指针动作接受屏幕落点。其他动作即使给出坐标也没有落点的含义。
     #[test]
     fn only_pointer_actions_take_a_screen_point() {
         for spec in [
@@ -2338,14 +2338,14 @@ mod tests {
         ] {
             assert!(
                 !action_of(act_params(spec)).takes_point(),
-                "{spec} 不该接受落点"
+                "{spec} 不应接受落点"
             );
         }
     }
 
-    /// 只有键盘输入可以不给目标：目标是窗口本身。
+    /// 只有键盘输入可以不指定目标：目标是窗口本身。
     ///
-    /// 别的动作不给目标即拒——指针动作没有落点可言，窗口动作没有可调用的模式对象。
+    /// 其他动作不指定目标即拒绝：指针动作没有落点，窗口动作没有可调用的模式对象。
     #[test]
     fn only_keyboard_actions_may_omit_the_target() {
         for spec in [
@@ -2353,16 +2353,16 @@ mod tests {
             r#"{"kind":"press_key","key":"a","modifiers":["ctrl"]}"#,
         ] {
             let action = action_of(act_params(spec));
-            assert!(action.targets_window(), "{spec} 应当可以投给窗口");
+            assert!(action.targets_window(), "{spec} 应当可以投递给窗口");
             assert_eq!(check_act(&action, false, false, false, true), Ok(()));
-            // 点名控件时仍然照常放行，判定留给执行路径上的焦点核对。
+            // 指定控件时照常放行，判定交给执行路径上的焦点核对。
             assert_eq!(check_act(&action, true, false, false, true), Ok(()));
-            // 屏幕落点仍然不接受：键盘输入没有落点可言。
+            // 仍不接受屏幕落点：键盘输入没有落点。
             assert_eq!(
                 check_act(&action, false, true, true, true),
-                Err("point_unsupported: 这个动作只能按控件执行")
+                Err("point_unsupported: 该动作只能按控件执行")
             );
-            // 前台模式关着时这两种一样拒，缺目标不构成例外。
+            // 前台模式关闭时这两种动作同样被拒绝，缺少目标不构成例外。
             assert_eq!(
                 check_act(&action, false, false, false, false),
                 Err(FOREGROUND_DISABLED)
@@ -2376,16 +2376,16 @@ mod tests {
             r#"{"kind":"invoke"}"#,
         ] {
             let action = action_of(act_params(spec));
-            assert!(!action.targets_window(), "{spec} 不该可以投给窗口");
+            assert!(!action.targets_window(), "{spec} 不应可以投递给窗口");
             assert_eq!(
                 check_act(&action, false, false, false, true),
-                Err("missing_target: 要给 ref 或 point"),
-                "{spec} 不给目标应当被拒"
+                Err("missing_target: 必须提供 ref 或 point"),
+                "{spec} 不指定目标时应当被拒绝"
             );
         }
     }
 
-    /// 前台动作的参数同样跟着自己的名字走，少一项或写错枚举都解析失败。
+    /// 前台动作的参数同样随动作名称给出，缺少一项或枚举值错误都会解析失败。
     #[test]
     fn foreground_action_parameters_are_checked_at_parse_time() {
         assert!(matches!(
@@ -2436,7 +2436,7 @@ mod tests {
         ))
     }
 
-    /// 前台模式关着时前台动作在准入判定就被拒，一条系统调用都不发。
+    /// 前台模式关闭时前台动作在准入判定即被拒绝，不发出任何系统调用。
     #[test]
     fn foreground_actions_are_refused_while_the_mode_is_off() {
         let click = r#"{"kind":"click","button":"left","count":1}"#;
@@ -2444,12 +2444,12 @@ mod tests {
         assert_eq!(admit(&off, Some(&bound()), false, 0), Err(FOREGROUND_DISABLED));
         let on = act_request(click, r#""ref":"w.0#7","#, true);
         assert_eq!(admit(&on, Some(&bound()), false, 0), Ok(()));
-        // 后台动作不受这个开关影响。
+        // 后台动作不受该开关影响。
         let background = act_request(r#"{"kind":"invoke"}"#, r#""ref":"w.0#7","#, false);
         assert_eq!(admit(&background, Some(&bound()), false, 0), Ok(()));
     }
 
-    /// 身份与代际先判：旧代际的前台请求拿到的是代际不符，不是前台未启用。
+    /// 先判定身份与代际：旧代际的前台请求得到的是代际不符，不是前台未启用。
     #[test]
     fn identity_is_checked_before_the_foreground_mode() {
         let mut req = act_request(r#"{"kind":"click","button":"left","count":1}"#, r#""ref":"w.0#7","#, false);
@@ -2460,7 +2460,7 @@ mod tests {
         );
     }
 
-    /// 两种目标给法互斥，且按图定位必须带窗口几何代际。
+    /// 两种目标写法互斥，且按图像定位必须带窗口几何代际。
     #[test]
     fn a_target_is_either_a_control_or_a_screen_point() {
         let click = r#"{"kind":"click","button":"left","count":1}"#;
@@ -2473,11 +2473,11 @@ mod tests {
                 false,
                 0
             ),
-            Err("target_conflict: ref 与 point 只能给一个")
+            Err("target_conflict: ref 与 point 只能提供其中一个")
         );
         assert_eq!(
             admit(&act_request(click, "", true), Some(&bound()), false, 0),
-            Err("missing_target: 要给 ref 或 point")
+            Err("missing_target: 必须提供 ref 或 point")
         );
         assert_eq!(
             admit(
@@ -2486,9 +2486,9 @@ mod tests {
                 false,
                 0
             ),
-            Err("missing_generation: 按屏幕坐标操作要带窗口几何代际")
+            Err("missing_generation: 按屏幕坐标操作必须携带窗口几何代际")
         );
-        // 键盘与窗口动作没有落点可言。
+        // 键盘与窗口动作没有落点。
         assert_eq!(
             admit(
                 &act_request(r#"{"kind":"activate"}"#, point, true),
@@ -2496,11 +2496,11 @@ mod tests {
                 false,
                 0
             ),
-            Err("point_unsupported: 这个动作只能按控件执行")
+            Err("point_unsupported: 该动作只能按控件执行")
         );
     }
 
-    /// 前台开关缺席按关算：少一个字段的请求只拿得到后台动作。
+    /// 前台开关缺席时按关闭处理：缺少该字段的请求只能使用后台动作。
     #[test]
     fn the_foreground_flag_defaults_to_off() {
         assert!(!invoke_request(None).foreground);
@@ -2512,7 +2512,7 @@ mod tests {
         assert!(on.foreground);
     }
 
-    /// 按图定位的动作不给 ref，给屏幕落点与窗口几何代际。
+    /// 按图像定位的动作不给出 ref，而给出屏幕落点与窗口几何代际。
     #[test]
     fn an_action_can_target_a_screen_point_instead_of_a_control() {
         let req = parse(
@@ -2533,18 +2533,18 @@ mod tests {
                 assert_eq!(point, Some(ScreenPoint { x: -1800, y: 240 }));
                 assert_eq!(expect_generation.as_deref(), Some("100,100,800,600@96#7"));
             }
-            other => panic!("解析成了别的 op：{other:?}"),
+            other => panic!("解析为其他 op：{other:?}"),
         }
     }
 
-    /// 前台动作的可用项与后台动作在同一张表里，靠 delivery 分。
+    /// 前台动作的可用项与后台动作在同一张表中，以 delivery 区分。
     #[test]
     fn a_foreground_offer_declares_its_own_delivery() {
         let offer = serde_json::to_value(NodeAction::foreground("click")).unwrap();
         assert_eq!(offer, json_of(r#"{"action":"click","delivery":["foreground"]}"#));
     }
 
-    /// 一批输入全进队列才是已派发；发出去一部分只能是未知，一个都没进才是未派发。
+    /// 一批输入全部进入队列才是已派发；部分发出只能记为未知，全部未进入才是未派发。
     #[test]
     fn a_partly_sent_input_batch_is_unknown_not_undispatched() {
         assert_eq!(classify_input(6, 6), (Dispatch::Submitted, None));
@@ -2557,7 +2557,7 @@ mod tests {
         assert_eq!(classify_input(0, 0).0, Dispatch::NotDispatched);
     }
 
-    /// 窗口动作各认各的证据，与后台那三条不混。
+    /// 窗口动作各自采用对应的证据，与后台的三项证据不混用。
     #[test]
     fn window_action_evidence_names_what_was_read_back() {
         for evidence in [
@@ -2571,7 +2571,7 @@ mod tests {
         }
     }
 
-    /// 输入状态通报不带 id 与 dispatch，回执一定带：宿主据此分得开这两种行。
+    /// 输入状态通报不带 id 与 dispatch，回执必定带：宿主据此区分这两种行。
     #[test]
     fn an_input_notice_is_told_apart_from_a_receipt_by_its_shape() {
         let notice = serde_json::to_value(InputNotice::of(HeldInput {
@@ -2592,7 +2592,7 @@ mod tests {
         );
     }
 
-    /// 缺辅助功能或无障碍总线即不可用；只缺屏幕录制时读取与动作照常可用。
+    /// 缺少辅助功能授权或无障碍总线即不可用；只缺少屏幕录制授权时读取与动作照常可用。
     #[test]
     fn only_the_gating_grants_withhold_authorization() {
         assert!(Access::of(Vec::new(), None).authorized);
@@ -2602,7 +2602,7 @@ mod tests {
         assert!(!Access::of(vec![Grant::Accessibility, Grant::ScreenRecording], None).authorized);
     }
 
-    /// 原因原文不进协议，也不算事实变化：同一件事的错误文本每次可能不同。
+    /// 原因原文不写入协议，也不算事实变化：同一问题的错误文本每次可能不同。
     #[test]
     fn the_access_notice_carries_the_facts_but_not_the_os_text() {
         let denied = Access::of(vec![Grant::AccessibilityBus], Some("连接会话总线失败".to_owned()));
@@ -2622,7 +2622,7 @@ mod tests {
         );
     }
 
-    /// 只认原因码本身或「码: 说明」；码只出现在别处、或被接在别的词后面都不算。
+    /// 只接受原因码本身或「码: 说明」；原因码出现在其他位置或接在其他词之后都不算。
     #[test]
     fn a_grant_refusal_is_recognised_by_its_leading_code() {
         assert!(refused_for_grant("accessibility_not_trusted"));
@@ -2639,7 +2639,7 @@ mod tests {
         }
     }
 
-    /// 握手回执带着那一刻的授权事实：宿主据此发布 `authorized`，不自己判平台。
+    /// 握手回执携带握手时的授权事实：宿主据此发布 `authorized`，不自行判定平台。
     #[test]
     fn the_ready_observation_carries_the_access_facts() {
         let ready = serde_json::to_value(Observation::Ready {
@@ -2655,7 +2655,7 @@ mod tests {
         assert_eq!(ready["access"], json_of(r#"{"authorized":true,"missing":[]}"#));
     }
 
-    /// 修饰键只有四个名字：`win` 不是别名，写它的请求解析失败。
+    /// 修饰键只有四个名称：`win` 不是别名，使用它的请求解析失败。
     #[test]
     fn the_meta_modifier_has_no_platform_alias() {
         let meta = action_of(act_params(
@@ -2678,7 +2678,7 @@ mod tests {
         );
     }
 
-    /// 主键名不分大小写，规范成小写；修饰键与词表外的名字不是主键。
+    /// 主键名不区分大小写，规范为小写；修饰键与词表外的名称不是主键。
     #[test]
     fn a_key_name_is_normalised_or_refused() {
         assert_eq!(key_name("A").as_deref(), Some("a"));
@@ -2693,7 +2693,7 @@ mod tests {
         assert!(all.iter().all(|k| *k == k.to_ascii_lowercase()));
     }
 
-    /// 角色名互不相同，且都是小写加下划线：宿主与服务端按名字逐字比较。
+    /// 角色名互不相同，且都由小写字母与下划线组成：宿主与服务端按名称逐字比较。
     #[test]
     fn role_names_are_unique_snake_case_words() {
         let names: Vec<&str> = Role::ALL.iter().map(|r| r.as_str()).collect();
@@ -2704,7 +2704,7 @@ mod tests {
             .all(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '_')));
     }
 
-    /// 没有 ValuePattern 的控件等不到任何值，不能把「没有值」当成空串命中。
+    /// 没有 ValuePattern 的控件不会出现任何值，不能把「没有值」作为空串命中。
     #[test]
     fn a_control_without_a_value_never_satisfies_the_value_condition() {
         let novalue = Seen::Element {
@@ -2717,13 +2717,13 @@ mod tests {
 
     // ── 与服务端、宿主共用的样例 ──
 
-    /// 三端共用的一份样例。三端各写一份夹具就不再是契约：宿主漏接 worker 的一个字段，
-    /// 三端各自的测试照样全绿。
+    /// 三端共用的样例。三端各写一份夹具即不再构成契约：宿主遗漏 worker 的一个字段时，
+    /// 三端各自的测试仍全部通过。
     const SAMPLES: &str =
         include_str!("../../../../../packages/core/src/protocol/native-desktop.samples.json");
 
     fn samples() -> serde_json::Value {
-        serde_json::from_str(SAMPLES).expect("样例文件要能解析")
+        serde_json::from_str(SAMPLES).expect("样例文件必须能解析")
     }
 
     fn sample_request(key: &str) -> Request {
@@ -2731,8 +2731,8 @@ mod tests {
             .unwrap_or_else(|e| panic!("样例请求 {key} 应当解析成功：{e}"))
     }
 
-    /// 宿主翻出来的每一种请求都要被 worker 读成同样的值：字段名拼错时 serde 按缺席处理，
-    /// 解析照样成功，只有逐项比对才看得出来。
+    /// 宿主转换出的每一种请求都必须被 worker 解析为相同的值：字段名拼写错误时 serde 按缺席处理，
+    /// 解析仍然成功，只有逐项比对才能发现。
     #[test]
     fn host_requests_from_the_shared_samples_carry_every_field() {
         for key in samples()["workerRequests"].as_object().expect("样例").keys() {
@@ -2839,8 +2839,8 @@ mod tests {
         }
     }
 
-    /// 每个可选字段都填上的控件。结构体字面量要求列全字段：`Node` 多一个字段，这里先编译
-    /// 不过，样例随之要补，宿主与服务端两侧的样例测试再各自核对它有没有接住。
+    /// 填写了全部可选字段的控件。结构体字面量要求列全字段：`Node` 新增字段时此处先编译
+    /// 失败，样例随之补充，宿主与服务端两侧的样例测试再各自核对是否已处理该字段。
     fn full_node() -> Node {
         Node {
             reference: "w.0.1#42.7".to_owned(),
@@ -2914,8 +2914,8 @@ mod tests {
         }
     }
 
-    /// worker 发出的每一种回执逐字等于样例。顶层字段与观察字段都在这里锁住：
-    /// worker 加了字段而样例没有，宿主那侧就验不到它有没有被转发。
+    /// worker 发出的每一种回执逐字等于样例。顶层字段与观察字段都在此处固定：
+    /// worker 新增字段而样例没有时，宿主一侧无法验证该字段是否被转发。
     #[test]
     fn responses_serialize_to_the_shared_samples() {
         let all = samples();
@@ -3028,8 +3028,8 @@ mod tests {
         }
     }
 
-    /// 样例里出现的每一个 `role`（请求的角色条件与控件表的角色）都是词表里的名字。
-    /// 写法不同的角色在 worker 这一侧逐字比较，永远不命中任何控件。
+    /// 样例中出现的每一个 `role`（请求的角色条件与控件表的角色）都是词表中的名称。
+    /// 写法不同的角色在 worker 一侧逐字比较，不会命中任何控件。
     #[test]
     fn every_role_in_the_shared_samples_is_in_the_vocabulary() {
         fn roles(value: &serde_json::Value, out: &mut Vec<String>) {
@@ -3048,20 +3048,20 @@ mod tests {
         }
         let mut found = Vec::new();
         roles(&samples(), &mut found);
-        assert!(found.len() >= 4, "样例里应当有请求与控件表两处角色：{found:?}");
+        assert!(found.len() >= 4, "样例中应当有请求与控件表两处角色：{found:?}");
         for role in found {
             assert!(
                 Role::ALL.iter().any(|known| known.as_str() == role),
-                "{role} 不在角色词表里"
+                "{role} 不在角色词表中"
             );
         }
     }
 
-    /// 样例里等待 `appears` 的角色与文字命中样例控件表里的控件：两处用的是同一套词。
+    /// 样例中等待 `appears` 的角色与文字命中样例控件表中的控件：两处使用同一套词。
     #[test]
     fn the_sample_appears_condition_matches_a_sample_node() {
         let Op::Wait { role, name_contains, .. } = sample_request("wait").op else {
-            panic!("wait 样例应当解析成等待");
+            panic!("wait 样例应当解析为等待");
         };
         let nodes = [bare_node(), full_node()];
         let hits = nodes

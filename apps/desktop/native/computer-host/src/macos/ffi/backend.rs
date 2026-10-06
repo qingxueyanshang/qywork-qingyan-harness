@@ -1,4 +1,4 @@
-//! `Backend` 在 macOS 上的实现：服务循环的每一次调用经这里接到 AX、CGWindowList、CGEvent 与
+//! `Backend` 在 macOS 上的实现：服务循环的每一次调用经由此处转到 AX、CGWindowList、CGEvent 与
 //! ScreenCaptureKit。边界见 `macos` 模块头。
 
 use std::cell::RefCell;
@@ -27,21 +27,21 @@ use crate::protocol::{
 };
 use crate::tree::{matches_target, settle};
 
-/// 第一次读一个窗口时两次读取之间隔多久。Chromium 系应用在第一次收到无障碍请求后才建树。
+/// 首次读取一个窗口时两次读取之间的间隔。Chromium 系应用在首次收到无障碍请求后才构建控件树。
 const FIRST_READ_INTERVAL: Duration = Duration::from_millis(350);
-/// 第一次读一个窗口最多读多久。页面上有持续变化的元素时控件数一直在变，到点即交回最后一份。
+/// 首次读取一个窗口的时长上限。页面上有持续变化的元素时控件数持续变化，到达上限即返回最后一次读取的结果。
 const FIRST_READ_LIMIT: Duration = Duration::from_secs(2);
-/// 调用没返回时随回执带回几个顶层窗口。
+/// 调用未返回时随回执返回的顶层窗口数上限。
 const MAX_BLOCKING_WINDOWS: usize = 16;
 
-/// 没有唯一对应 CG 窗口的 AX 窗口被要求取图或前台动作时的拒绝原因。
+/// 对没有唯一对应 CG 窗口的 AX 窗口请求采图或前台动作时的拒绝原因。
 const WINDOW_ONLY: &str =
-    "window_unassociated: 这个窗口没有唯一对应的 CG 窗口，不能取图，也不能做前台动作";
-/// 系统没有按窗口取图的接口。
+    "window_unassociated: 该窗口没有唯一对应的 CG 窗口，无法采图，也无法执行前台动作";
+/// 系统没有按窗口采图的接口。
 const CAPTURE_UNAVAILABLE: &str =
-    "capture_unavailable: 按窗口取图要 macOS 14 或更高版本（ScreenCaptureKit 的 SCScreenshotManager）";
+    "capture_unavailable: 按窗口采图需要 macOS 14 或更高版本（ScreenCaptureKit 的 SCScreenshotManager）";
 
-/// 动作前重新定位与等待判定读的字段：值与状态都要，前台属性不要。
+/// 动作前重新定位与等待判定读取的字段：读取值与状态，不读取前台属性。
 const ALL_FIELDS: Fields = Fields {
     value: true,
     state: true,
@@ -49,7 +49,7 @@ const ALL_FIELDS: Fields = Fields {
 };
 
 pub struct Ax {
-    /// 这个实例读过控件表的窗口，按窗口编号与进程号记。
+    /// 本实例读取过控件表的窗口，按窗口编号与进程号记录。
     read_before: RefCell<HashSet<(i64, i32)>>,
 }
 
@@ -78,8 +78,8 @@ impl Backend for Ax {
         })
     }
 
-    /// 辅助功能与屏幕录制两项分开报：前者管读取、动作与键鼠投递，后者只管取图。两项的读数与
-    /// 调用被拒时判的是同一个（`ax::trusted`、`ax::screen_capture_allowed`）。
+    /// 辅助功能与屏幕录制两项分别报告：前者负责读取、动作与键盘、指针输入的投递，后者只负责采图。
+    /// 两项的读数与调用被拒时的判定使用同一个来源（`ax::trusted`、`ax::screen_capture_allowed`）。
     fn access() -> Access {
         let mut missing = Vec::new();
         if !ax::trusted() {
@@ -91,10 +91,10 @@ impl Backend for Ax {
         Access::of(missing, None)
     }
 
-    /// AX 没有建连这一步，建连上界原样交回。调用上界设在系统范围元素上；AX 没有读回接口，
-    /// 交回的是设置成功的那个值。
+    /// AX 没有建连步骤，建连上界原样返回。调用上界设置在系统范围元素上；AX 没有读取该值的接口，
+    /// 返回的是设置成功的值。
     fn set_timeouts(&self, connection_ms: u32, transaction_ms: u32) -> Result<(u32, u32), String> {
-        // 对系统范围元素设 0 是恢复系统缺省值，那时调用上界不再由宿主决定。
+        // 对系统范围元素设置 0 即恢复系统默认值，此时调用上界不再由宿主决定。
         if transaction_ms == 0 {
             return Err("调用上界必须大于 0".to_owned());
         }
@@ -123,7 +123,7 @@ impl Backend for Ax {
         })
     }
 
-    /// 读一个窗口的控件表。这个实例第一次读一个窗口时读到控件数不再变化为止，
+    /// 读取一个窗口的控件表。本实例首次读取一个窗口时持续读取，直到控件数不再变化，
     /// 理由见 `FIRST_READ_INTERVAL`。
     fn read_tree(
         &self,
@@ -150,7 +150,7 @@ impl Backend for Ax {
         tree.map(Observation::Tree).map_err(Failure::into_reason)
     }
 
-    /// 执行一个动作并按调用方当前观察的范围整份重读。没有派发就不重读。
+    /// 执行动作，并按调用方当前观察的范围完整重读。未派发时不重读。
     fn act(
         &self,
         req: &ActRequest<'_>,
@@ -163,7 +163,7 @@ impl Backend for Ax {
         if req.action.foreground_only() {
             return match act_foreground(req, stop) {
                 Attempt::Refused(reason) => refused(reason),
-                // 调用还没返回：应用可能卡在这次调用里，重读会等满上界再超时。
+                // 调用尚未返回：应用可能阻塞于本次调用，重读会一直等待到上界后超时。
                 Attempt::Called(outcome) if !outcome.returned => {
                     (Attempt::Called(outcome), Err(TARGET_BLOCKED.to_owned()))
                 }
@@ -171,7 +171,7 @@ impl Backend for Ax {
             };
         }
         let Some(reference) = req.reference else {
-            return refused("missing_target: 这个动作只能按控件执行".to_owned());
+            return refused("missing_target: 该动作只能按控件执行".to_owned());
         };
         let root = match walk::root(req.window) {
             Ok(r) => r,
@@ -193,7 +193,7 @@ impl Backend for Ax {
         };
         match attempt {
             Attempt::Refused(reason) => refused(reason),
-            // 调用还没返回：应用可能卡在这次调用里，重读会等满上界再超时。
+            // 调用尚未返回：应用可能阻塞于本次调用，重读会一直等待到上界后超时。
             Attempt::Called(outcome) if !outcome.returned => {
                 (Attempt::Called(outcome), Err(TARGET_BLOCKED.to_owned()))
             }
@@ -212,7 +212,7 @@ impl Backend for Ax {
         walk::read_text(&root, window, reference, max_chars).map_err(Failure::into_reason)
     }
 
-    /// 系统接口与屏幕录制授权先判，窗口最小化与几何再判，都满足才调 ScreenCaptureKit，
+    /// 先判定系统接口与屏幕录制授权，再判定窗口最小化与几何，均满足时才调用 ScreenCaptureKit，
     /// 理由见 `capture` 第 1、2 条。
     fn capture_image(&self, req: &CaptureRequest<'_>) -> Result<Image, String> {
         let number = cg_number(req.window)?;
@@ -226,11 +226,11 @@ impl Backend for Ax {
         let root = walk::root(req.window).map_err(Failure::into_reason)?;
         let facts = walk::window_facts(&root.element, root.pid).map_err(Failure::into_reason)?;
         if facts.minimized == Some(true) {
-            return Err("window_minimized: 窗口已最小化，采不到内容".to_owned());
+            return Err("window_minimized: 窗口已最小化，无法采集内容".to_owned());
         }
         let placed = root
             .placed
-            .ok_or_else(|| "target_lost: 读不出窗口几何".to_owned())?;
+            .ok_or_else(|| "target_lost: 无法读取窗口几何".to_owned())?;
         capture::capture(number, &placed, req)
     }
 
@@ -258,9 +258,9 @@ impl Ax {
     }
 }
 
-/// 前台动作：核对几何代际、重新定位控件、求落点，再交给 `foreground::perform`。
+/// 前台动作：核对几何代际、重新定位控件、计算落点，再交给 `foreground::perform`。
 ///
-/// 按图像坐标的指针动作与不点名控件的键盘输入不读控件树：没有无障碍树的自绘窗口也做得了。
+/// 按图像坐标的指针动作与未指定控件的键盘输入不读取控件树：没有无障碍树的自绘窗口同样可以执行。
 fn act_foreground(req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
     let number = match cg_number(req.window) {
         Ok(n) => n,
@@ -271,10 +271,10 @@ fn act_foreground(req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
         Err(f) => return Attempt::Refused(f.into_reason()),
     };
     let Some(placed) = root.placed else {
-        return Attempt::Refused("target_lost: 读不出窗口几何".to_owned());
+        return Attempt::Refused("target_lost: 无法读取窗口几何".to_owned());
     };
-    // 按图定位的落点先核对窗口几何代际：窗口在采图与派发之间移动过的话，那个坐标指的
-    // 已经不是同一块界面。
+    // 按图定位的落点先核对窗口几何代际：窗口若在采图与派发之间移动过，该坐标指向的
+    // 已不是同一块界面。
     if let Some(expected) = req.expect_generation {
         let actual = placed.frame.generation();
         if actual != expected {
@@ -286,7 +286,7 @@ fn act_foreground(req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
         Some(Ok(l)) => Some(l),
         Some(Err(f)) => return Attempt::Refused(f.into_reason()),
     };
-    // 窗口动作作用于整个窗口，只接受窗口根节点，与它们只列在根节点上一致。
+    // 窗口动作作用于整个窗口，只接受窗口根节点，与这些动作只列在根节点上一致。
     let whole_window = matches!(
         req.action,
         ActionSpec::SetWindowState { .. }
@@ -310,7 +310,7 @@ fn act_foreground(req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
         l.element
             .raw(attr::FOCUSED)
             .map(|raw| raw.flag() == Some(true))
-            .map_err(|code| Failure::from_ax("读焦点状态", code, ax::alive(root.pid)).into_reason())
+            .map_err(|code| Failure::from_ax("读取焦点状态", code, ax::alive(root.pid)).into_reason())
     };
     let check = located
         .as_ref()
@@ -322,10 +322,10 @@ fn act_foreground(req: &ActRequest<'_>, stop: &dyn Fn() -> bool) -> Attempt {
     foreground::perform(&target, focus, req.action, aim, stop)
 }
 
-/// 指针动作的落点与拖拽终点，屏幕物理像素。非指针动作两项都缺席。
+/// 指针动作的落点与拖拽终点，屏幕物理像素。非指针动作两项均缺失。
 ///
-/// 落点两种来源：调用方给的屏幕坐标，或控件此刻矩形的中心。**矩形读的是这一次重新定位拿到的
-/// 那一份**，不是观察时记下的。按控件定位时控件所在的顶层窗口取目标窗口本身：`ref` 从目标
+/// 落点有两种来源：调用方提供的屏幕坐标，或控件当前矩形的中心。**矩形取自本次重新定位的
+/// 结果**，不是观察时记录的值。按控件定位时，控件所在的顶层窗口取目标窗口本身：`ref` 从目标
 /// 窗口元素出发。
 fn aim(
     target: &Target<'_>,
@@ -340,7 +340,7 @@ fn aim(
         l.facts
             .frame
             .map(|f| mapping.rect(f).center())
-            .ok_or_else(|| "no_bounds: 这个控件没有可视位置".to_owned())
+            .ok_or_else(|| "no_bounds: 该控件没有可视位置".to_owned())
     };
     let anchor = match req.point {
         Some(point) => point,
@@ -377,7 +377,7 @@ fn read_tree_inner(
     let fields = Fields {
         value: select.include_value,
         state: select.include_state,
-        // 没有对应 CG 窗口的窗口给不出坐标，也做不了前台动作，前台动作不列。
+        // 没有对应 CG 窗口的窗口无法给出坐标，也无法执行前台动作，因此不列前台动作。
         foreground: foreground && root.cg.is_some(),
     };
     let captured_at = now_ms();
@@ -386,7 +386,7 @@ fn read_tree_inner(
         Some(reference) => walk::locate(root, reference, false)?,
     };
     let walked = walk::walk(&start, root, select, bounds, fields)?;
-    // 窗口可用状态与遮挡只认窗口元素自己的那几格。
+    // 窗口可用状态与遮挡只取窗口元素自身的字段。
     let window_facts = if start.path.is_empty() {
         start.facts.clone()
     } else {
@@ -407,7 +407,7 @@ fn read_tree_inner(
     })
 }
 
-/// 把一次调用包成交给调用线程的任务。任务里只有元素引用与值，不借用调用方的状态。
+/// 把一次调用封装为交给调用线程的任务。任务中只有元素引用与值，不借用调用方的状态。
 fn job(call: Call, target: &Located) -> Result<Job, String> {
     let element = target.element.clone();
     Ok(match call {
@@ -423,7 +423,7 @@ fn job(call: Call, target: &Located) -> Result<Job, String> {
         }),
         Call::SelectInParent(attribute) => {
             let parent = target.parent.clone().ok_or_else(|| {
-                "missing_target: 窗口根没有父元素，不能经选中集合改选中".to_owned()
+                "missing_target: 窗口根没有父元素，无法经由选中集合更改选中项".to_owned()
             })?;
             Box::new(move || {
                 parent
@@ -434,7 +434,7 @@ fn job(call: Call, target: &Located) -> Result<Job, String> {
     })
 }
 
-/// 把复选控件按到目标态。每按一下都重读一次状态，到了即停。
+/// 把复选控件切换到目标状态。每切换一次都重读一次状态，到达即停止。
 fn set_toggle(watch: &dyn Watch, target: &Located, pid: i32, want: ToggleState) -> Attempt {
     let current = match plan::toggle_precheck(&target.facts, want) {
         Ok(current) => current,
@@ -444,7 +444,7 @@ fn set_toggle(watch: &dyn Watch, target: &Located, pid: i32, want: ToggleState) 
         let raw = target
             .element
             .raw(attr::VALUE)
-            .map_err(|code| Failure::from_ax("读复选状态", code, ax::alive(pid)).into_reason())?;
+            .map_err(|code| Failure::from_ax("读取复选状态", code, ax::alive(pid)).into_reason())?;
         let mut facts = target.facts.clone();
         facts.value = Value::of(&raw);
         Ok(node::toggle_state(&facts))
@@ -467,11 +467,11 @@ fn set_toggle(watch: &dyn Watch, target: &Located, pid: i32, want: ToggleState) 
                     return Attempt::Called(Outcome::returned(Dispatch::Submitted, None));
                 }
             }
-            // 状态读不回来时不再按：按下去就不知道停在哪里了。
+            // 无法读取状态时不再切换：继续切换将无法确定最终状态。
             Err(reason) => {
                 return Attempt::Called(Outcome::returned(
                     Dispatch::Unknown,
-                    Some(format!("按过之后读不回状态：{reason}")),
+                    Some(format!("按下后无法读取状态：{reason}")),
                 ))
             }
         }
@@ -479,14 +479,14 @@ fn set_toggle(watch: &dyn Watch, target: &Located, pid: i32, want: ToggleState) 
     Attempt::Called(Outcome::returned(
         Dispatch::Unknown,
         Some(format!(
-            "toggle_target_unreached: 按了 {MAX_TOGGLE_STEPS} 下之后是 {}，要的是 {}",
+            "toggle_target_unreached: 切换 {MAX_TOGGLE_STEPS} 次后为 {}，目标为 {}",
             last.map_or("未知", ToggleState::as_str),
             want.as_str()
         )),
     ))
 }
 
-/// 读一轮判定所需的事实。目标控件或它所在的窗口已经不在都算 `Missing`。
+/// 读取一轮判定所需的事实。目标控件或其所在的窗口已不存在时均记为 `Missing`。
 fn probe(req: &WaitRequest<'_>) -> Result<Probe, Failure> {
     match req.until {
         WaitUntil::Window => Ok(Probe::NewWindow(window_appeared(req))),
@@ -540,7 +540,7 @@ fn probe(req: &WaitRequest<'_>) -> Result<Probe, Failure> {
     }
 }
 
-/// 有没有出现标题包含给定文字的窗口，且不是目标窗口自己。标题取 AX：CG 的窗口名要屏幕录制授权。
+/// 是否出现了标题包含给定文字、且不是目标窗口本身的窗口。标题取自 AX：读取 CG 的窗口名需要屏幕录制授权。
 fn window_appeared(req: &WaitRequest<'_>) -> bool {
     let Some(needle) = req.name.map(str::to_lowercase) else {
         return false;
@@ -550,8 +550,8 @@ fn window_appeared(req: &WaitRequest<'_>) -> bool {
         .any(|w| w.window != req.window && w.title.to_lowercase().contains(&needle))
 }
 
-/// 等待返回时的那一份状态：调用方当前观察的范围，整份重读。`appears` 每轮读的就是整窗，
-/// 范围也是整窗时直接复用最后一轮那一份。
+/// 等待返回时附带的状态：按调用方当前观察的范围整份重读。`appears` 每轮读取的是整个窗口，
+/// 范围同为整个窗口时直接复用最后一轮的结果。
 fn wait_state(req: &WaitRequest<'_>, probe: Probe) -> Result<Tree, Failure> {
     if let (Probe::Matched { tree, .. }, None) = (probe, req.root) {
         return Ok(tree);
@@ -564,7 +564,7 @@ fn wait_state(req: &WaitRequest<'_>, probe: Probe) -> Result<Tree, Failure> {
     read_tree_inner(&root, req.window, &scope, req.bounds, req.foreground)
 }
 
-/// 调用前后都读得到的窗口事实，全部来自 CGWindowList：应用卡在一次 AX 调用里时窗口服务器
+/// 调用前后都可读取的窗口事实，全部来自 CGWindowList：应用阻塞于一次 AX 调用时窗口服务器
 /// 照常应答。后台动作与关闭窗口共用。
 pub(super) struct CallWatch {
     pid: i32,
@@ -589,7 +589,7 @@ fn own_windows(pid: i32) -> impl Iterator<Item = CgWindow> {
 }
 
 impl Watch for CallWatch {
-    /// 动作已经生效的证据：目标窗口已关闭，或同一进程多出一个此前没有的窗口。
+    /// 动作已生效的证据：目标窗口已关闭，或同一进程新增一个此前不存在的窗口。
     fn evidence(&self) -> Option<ActionEvidence> {
         let windows: Vec<u32> = own_windows(self.pid).map(|w| w.number).collect();
         if let Some(window) = self.window {
@@ -603,7 +603,7 @@ impl Watch for CallWatch {
             .then_some(ActionEvidence::NewWindow)
     }
 
-    /// 标题取 CG 的窗口名，没有屏幕录制授权时为空：应用卡在调用里时 AX 读不出标题。
+    /// 标题取 CG 的窗口名，没有屏幕录制授权时为空：应用阻塞于调用时 AX 无法读取标题。
     fn blocking(&self) -> Vec<BlockingWindow> {
         own_windows(self.pid)
             .take(MAX_BLOCKING_WINDOWS)

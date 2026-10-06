@@ -1,11 +1,11 @@
-//! 一个 AX 元素读到的属性怎么换成 `Facts`、AX 错误码怎么归类，以及 UTF-16 文本的截断与切片。
+//! AX 元素属性到 `Facts` 的换算、AX 错误码的归类，以及 UTF-16 文本的截断与切片。
 //!
-//! 本模块不调用 AX。FFI 层把 CF 值换成 `Raw` 交进来，换算规则因此在任何目标上都能测。
+//! 本模块不调用 AX。FFI 层把 CF 值转换为 `Raw` 后传入，换算规则因此可在任何目标上测试。
 
 use crate::geometry::ScreenRect;
 use crate::protocol::{ACCESSIBILITY_NOT_TRUSTED, REF_STALE, SCREEN_RECORDING_NOT_GRANTED};
 
-/// AX 属性名。系统头文件把它们定义成 `CFSTR` 宏，绑定库里没有对应的常量。
+/// AX 属性名。系统头文件将它们定义为 `CFSTR` 宏，绑定库中没有对应的常量。
 pub mod attr {
     pub const ROLE: &str = "AXRole";
     pub const SUBROLE: &str = "AXSubrole";
@@ -30,17 +30,17 @@ pub mod attr {
     pub const SELECTED_CHILDREN: &str = "AXSelectedChildren";
     pub const CHILDREN: &str = "AXChildren";
     pub const WINDOWS: &str = "AXWindows";
-    /// Electron 应用只在这一项为真时向 AX 交出网页内容。只写应用元素，不写窗口。
+    /// Electron 应用只在该属性为真时向 AX 提供网页内容。只写入应用元素，不写入窗口。
     pub const MANUAL_ACCESSIBILITY: &str = "AXManualAccessibility";
-    /// 窗口是否全屏。协议的「最大化」对应它，见 `plan::window_steps`。
+    /// 窗口是否全屏。协议的「最大化」对应该属性，见 `plan::window_steps`。
     pub const FULL_SCREEN: &str = "AXFullScreen";
     /// 窗口的关闭按钮元素。
     pub const CLOSE_BUTTON: &str = "AXCloseButton";
-    /// 应用元素上：这个应用是不是前台应用。写真即把它提到前台。
+    /// 应用元素上：该应用是否为前台应用。写入真值即将其切换到前台。
     pub const FRONTMOST: &str = "AXFrontmost";
     /// 系统范围元素上：前台应用的应用元素。
     pub const FOCUSED_APPLICATION: &str = "AXFocusedApplication";
-    /// 应用元素上：接收键盘输入的那个窗口。
+    /// 应用元素上：接收键盘输入的窗口。
     pub const FOCUSED_WINDOW: &str = "AXFocusedWindow";
 }
 
@@ -50,14 +50,14 @@ pub mod action {
     pub const INCREMENT: &str = "AXIncrement";
     pub const DECREMENT: &str = "AXDecrement";
     pub const SCROLL_TO_VISIBLE: &str = "AXScrollToVisible";
-    /// 把窗口提到它所在应用的窗口最上面。不改前台应用。
+    /// 将窗口置于所在应用全部窗口的最上层。不改变前台应用。
     pub const RAISE: &str = "AXRaise";
 }
 
-/// 一次批量读取的属性，顺序即 `Facts::decode` 认的下标。FFI 层在末尾追加 `AXChildren`，
-/// 子节点与属性同一次跨进程调用取回。
+/// 一次批量读取的属性，顺序即 `Facts::decode` 使用的下标。FFI 层在末尾追加 `AXChildren`，
+/// 子节点与属性在同一次跨进程调用中取回。
 ///
-/// 不含 `AXValue`：文本区的值是整篇文档，按 `AXNumberOfCharacters` 判过长度才单独读，
+/// 不含 `AXValue`：文本区的值是整篇文档，按 `AXNumberOfCharacters` 判定长度后才单独读取，
 /// 见 `wants_value`。
 pub const BATCH: [&str; 20] = [
     attr::ROLE,
@@ -82,17 +82,17 @@ pub const BATCH: [&str; 20] = [
     attr::SELECTED_CHILDREN,
 ];
 
-/// 节点值里最多带多少个 UTF-16 码元的文本。超过即不带，调用方经 `read_text` 读全文。
+/// 节点值中文本的 UTF-16 码元数上限。超过即不携带文本，调用方经 `read_text` 读取全文。
 ///
-/// 不要改成截一段前缀交出：终端与长文档的前缀是最早的内容，不是正在显示的内容，而节点值
+/// 不要改为截取前缀后返回：终端与长文档的前缀是最早的内容，不是正在显示的内容，而节点值
 /// 没有「已截断」标记。
 pub const VALUE_TEXT_LIMIT: u32 = 4096;
 
-/// 一个属性读到的值，已经从 CF 类型换成与平台无关的形状。
+/// 单个属性读取到的值，已从 CF 类型转换为与平台无关的形式。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Raw {
-    /// 元素不支持这一项、这一项没有值，或读取出错。批量读取把单项错误放在对应位置上，
-    /// 不让整次读取失败。
+    /// 元素不支持该属性、该属性没有值，或读取出错。批量读取把单项错误放在对应位置上，
+    /// 不使整次读取失败。
     Missing,
     Text(String),
     Number(f64),
@@ -109,7 +109,7 @@ pub enum Raw {
         location: i64,
         length: i64,
     },
-    /// 元素、数组等换算里用不到的类型。
+    /// 元素、数组等换算中不使用的类型。
     Other,
 }
 
@@ -128,7 +128,7 @@ impl Raw {
         }
     }
 
-    /// 布尔属性。应用给 `CFBoolean` 或 0 / 1 的 `CFNumber` 都有。
+    /// 布尔属性。应用可能提供 `CFBoolean`，也可能提供取值 0 / 1 的 `CFNumber`。
     pub fn flag(&self) -> Option<bool> {
         match self {
             Self::Bool(b) => Some(*b),
@@ -154,7 +154,7 @@ impl Raw {
     }
 }
 
-/// `AXValue` 的三种有用形状。复选框与单选按钮的状态、滑块的数值都是 `Number`。
+/// `AXValue` 的三种取值形式。复选框与单选按钮的状态、滑块的数值均为 `Number`。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Value {
     #[default]
@@ -181,7 +181,7 @@ impl Value {
     }
 }
 
-/// 屏幕矩形，单位是点，原点是主显示器左上角。AX 的位置尺寸与 CGWindowList 的窗口矩形都用它。
+/// 屏幕矩形，单位是点，原点是主显示器左上角。AX 的位置与尺寸、CGWindowList 的窗口矩形均使用该类型。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Frame {
     pub x: f64,
@@ -210,7 +210,7 @@ impl Frame {
             .then_some(frame)
     }
 
-    /// 取整到点。两边都是浮点数，比较与求交都按整点做。
+    /// 取整到点。两种来源的矩形均为浮点数，比较与求交均按整点进行。
     pub fn rounded(&self) -> ScreenRect {
         let at = |v: f64| v.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
         ScreenRect {
@@ -222,7 +222,7 @@ impl Frame {
     }
 }
 
-/// 属性表里哪几项可写。只问与可用动作有关的那几项，见 `node::settable_queries`。
+/// 属性表中哪些属性可写。只查询与可用动作有关的属性，见 `node::settable_queries`。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Settable {
     pub value: bool,
@@ -235,7 +235,7 @@ pub struct Settable {
 }
 
 impl Settable {
-    /// 记下一项的查询结果。不在上面几项里的属性名忽略。
+    /// 记录一项查询结果。不在上述字段中的属性名被忽略。
     pub fn record(&mut self, attribute: &str, settable: bool) {
         let slot = match attribute {
             attr::VALUE => &mut self.value,
@@ -251,7 +251,7 @@ impl Settable {
     }
 }
 
-/// 一个元素读到的全部事实。
+/// 单个元素读取到的全部事实。
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
     pub role: String,
@@ -271,13 +271,13 @@ pub struct Facts {
     pub minimized: Option<bool>,
     pub orientation: String,
     pub frame: Option<Frame>,
-    /// `AXNumberOfCharacters`，UTF-16 码元数。有这一项的元素有文本模型。
+    /// `AXNumberOfCharacters`，UTF-16 码元数。具有该属性的元素有文本模型。
     pub characters: Option<u32>,
     /// `AXSelectedTextRange`：起点与长度，UTF-16 码元。
     pub text_range: Option<(u32, u32)>,
-    /// 元素有 `AXSelectedRows`：表格与大纲的选中行经它改。
+    /// 元素具有 `AXSelectedRows`：表格与大纲的选中行经由该属性修改。
     pub selects_rows: bool,
-    /// 元素有 `AXSelectedChildren`：列表类容器的选中项经它改。
+    /// 元素具有 `AXSelectedChildren`：列表类容器的选中项经由该属性修改。
     pub selects_children: bool,
     /// `AXUIElementCopyActionNames` 的结果。
     pub actions: Vec<String>,
@@ -285,9 +285,9 @@ pub struct Facts {
 }
 
 impl Facts {
-    /// 按 `BATCH` 的顺序解开一次批量读取。`values` 短于 `BATCH` 时缺的几项按缺席算。
+    /// 按 `BATCH` 的顺序解析一次批量读取。`values` 短于 `BATCH` 时，缺少的项按缺席处理。
     ///
-    /// `AXValue`、动作表与可写性不在批量读取里，由调用方随后填入。
+    /// `AXValue`、动作表与可写性不在批量读取中，由调用方随后填入。
     pub fn decode(values: &[Raw]) -> Self {
         let at = |i: usize| values.get(i).unwrap_or(&Raw::Missing);
         let present = |i: usize| !matches!(at(i), Raw::Missing);
@@ -322,15 +322,15 @@ impl Facts {
     }
 }
 
-/// 该不该单独读一次 `AXValue`。
+/// 是否单独读取一次 `AXValue`。
 ///
-/// 有文本模型的元素先看长度，超过 `VALUE_TEXT_LIMIT` 不读：终端与文档的值是全文，每次观察都
-/// 跨进程搬一遍。`whole` 为真时不看长度：动作与读文本只对一个元素，要的就是全文。
+/// 有文本模型的元素先检查长度，超过 `VALUE_TEXT_LIMIT` 不读取：终端与文档的值是全文，每次观察都会
+/// 跨进程传输一遍。`whole` 为真时不检查长度：动作与文本读取只针对单个元素，需要的就是全文。
 pub fn wants_value(characters: Option<u32>, whole: bool) -> bool {
     whole || characters.map_or(true, |n| n <= VALUE_TEXT_LIMIT)
 }
 
-/// AXError 的取值。`AXError` 类型只在 macOS 绑定里有，判定写成整数才能在别的目标上测。
+/// AXError 的取值。`AXError` 类型只存在于 macOS 绑定中，判定写成整数才能在其他目标上测试。
 pub mod code {
     pub const SUCCESS: i32 = 0;
     pub const FAILURE: i32 = -25200;
@@ -344,7 +344,7 @@ pub mod code {
     pub const NO_VALUE: i32 = -25212;
 }
 
-/// 错误码的名字，进回执原文。
+/// 错误码的名称，写入回执原文。
 pub fn error_name(value: i32) -> String {
     match value {
         code::SUCCESS => "kAXErrorSuccess".to_owned(),
@@ -361,45 +361,45 @@ pub fn error_name(value: i32) -> String {
     }
 }
 
-/// 辅助功能授权缺失时一切读取与动作的拒绝原因。原因码取 `ACCESSIBILITY_NOT_TRUSTED`：
-/// 服务循环按这个码现查授权事实，码写错了运行中撤销的授权就报不出来。
+/// 辅助功能授权缺失时全部读取与动作的拒绝原因。原因码取 `ACCESSIBILITY_NOT_TRUSTED`：
+/// 服务循环按该原因码即时查询授权事实，原因码写错会使运行中撤销的授权无法报告。
 pub fn not_trusted() -> String {
     format!(
-        "{ACCESSIBILITY_NOT_TRUSTED}: 系统设置的「隐私与安全性 › 辅助功能」里没有允许 qywork，读不了控件树，也执行不了控件动作"
+        "{ACCESSIBILITY_NOT_TRUSTED}: 系统设置的「隐私与安全性 › 辅助功能」中未允许 qywork，无法读取控件树，也无法执行控件动作"
     )
 }
 
-/// 屏幕录制授权缺失时取图的拒绝原因。原因码取 `SCREEN_RECORDING_NOT_GRANTED`，理由同上。
+/// 屏幕录制授权缺失时截图的拒绝原因。原因码取 `SCREEN_RECORDING_NOT_GRANTED`，理由同上。
 pub fn no_screen_recording() -> String {
     format!(
-        "{SCREEN_RECORDING_NOT_GRANTED}: 系统设置的「隐私与安全性」里没有给 qywork 屏幕录制权限，取不了图"
+        "{SCREEN_RECORDING_NOT_GRANTED}: 系统设置的「隐私与安全性」中未授予 qywork 屏幕录制权限，无法截图"
     )
 }
 
-/// 目标窗口或它所在的应用已经不在时的原因码。
+/// 目标窗口或其所在的应用已不存在时的原因码。
 pub const TARGET_LOST: &str = "target_lost";
 
-/// 一次 AX 调用失败的形状。
+/// 一次 AX 调用失败的分类。
 ///
-/// 超时与对象消失必须分开：应用不应答时对象还在，调用方该重试或放弃这一步；报成对象
-/// 消失会让它转去重新发现目标。
+/// 超时与对象消失必须区分：应用不应答时对象仍存在，调用方应重试或放弃该步骤；报告为对象
+/// 消失会使调用方转而重新发现目标。
 #[derive(Debug)]
 pub enum Failure {
-    /// 调用在消息上界内没有应答。
+    /// 调用在消息上界内未应答。
     Timeout(String),
-    /// 元素已经不在，或它所在的应用已经退出（`app` 为真）。
+    /// 元素已不存在，或其所在的应用已退出（`app` 为真）。
     Gone { app: bool, text: String },
     /// 其余 AX 错误，保留原文。
     Ax(String),
-    /// worker 自己判定的拒绝，已带原因码。
+    /// worker 自行判定的拒绝，已附带原因码。
     Refused(String),
 }
 
 impl Failure {
-    /// 按错误码归类。`alive` 是元素所在进程此刻还在不在。
+    /// 按错误码归类。`alive` 表示元素所在进程当前是否仍存在。
     ///
-    /// 进程退出之后 AX 对它的调用回 `kAXErrorCannotComplete`，与应用不应答同一个码，所以
-    /// 这一个码要看进程在不在才分得开；不要只按码判超时，已经退出的应用会被报成「不应答」。
+    /// 进程退出之后 AX 对它的调用返回 `kAXErrorCannotComplete`，与应用不应答是同一个错误码，因此
+    /// 该错误码须结合进程是否存在才能区分；不要只按错误码判定超时，否则已退出的应用会被报告为「不应答」。
     pub fn from_ax(step: &str, value: i32, alive: bool) -> Self {
         let text = format!("{step}失败：{}", error_name(value));
         match value {
@@ -417,7 +417,7 @@ impl Failure {
         matches!(self, Self::Timeout(_))
     }
 
-    /// 目标控件已经不在：元素消失、应用退出，或按 `ref` 定位时那个位置已经换了控件。
+    /// 目标控件已不存在：元素消失、应用退出，或按 `ref` 定位时该位置已换成其他控件。
     pub fn is_gone(&self) -> bool {
         match self {
             Self::Gone { .. } => true,
@@ -426,7 +426,7 @@ impl Failure {
         }
     }
 
-    /// 转成回执原文。
+    /// 转换为回执原文。
     pub fn into_reason(self) -> String {
         match self {
             Self::Timeout(text) => format!("provider_timeout: {text}"),
@@ -437,26 +437,26 @@ impl Failure {
     }
 }
 
-/// 一次已经发出的动作调用失败时的原因原文。调用已经到了应用手里，调用方一律记结果未知。
+/// 已发出的动作调用失败时的原因原文。调用已送达应用，调用方一律记为结果未知。
 ///
-/// `kAXErrorCannotComplete` 不等于动作失败：应用在动作回调里做模态处理时，调用会在消息上界内
-/// 等不到回复，动作本身可能已经生效。
+/// `kAXErrorCannotComplete` 不等于动作失败：应用在动作回调中进行模态处理时，调用在消息上界内
+/// 无法得到回复，动作本身可能已经生效。
 pub fn action_error(step: &str, value: i32) -> String {
     if value == code::CANNOT_COMPLETE {
         format!(
-            "call_unconfirmed: {step} 在消息上界内没有得到应用确认（kAXErrorCannotComplete），动作可能已经生效"
+            "call_unconfirmed: {step} 在消息上界内未得到应用确认（kAXErrorCannotComplete），动作可能已生效"
         )
     } else {
         format!("{step}失败：{}", error_name(value))
     }
 }
 
-/// 这段文本有多少个 UTF-16 码元。
+/// 文本的 UTF-16 码元数。
 pub fn utf16_len(text: &str) -> u32 {
     u32::try_from(text.encode_utf16().count()).unwrap_or(u32::MAX)
 }
 
-/// 按 UTF-16 码元截断。截断点落在代理对中间时那一个字符换成替换字符。
+/// 按 UTF-16 码元截断。截断点落在代理对中间时，该字符以替换字符代替。
 pub fn clip_utf16(text: &str, max_units: u32) -> (String, bool) {
     let units: Vec<u16> = text.encode_utf16().collect();
     let limit = max_units as usize;
@@ -466,7 +466,7 @@ pub fn clip_utf16(text: &str, max_units: u32) -> (String, bool) {
     (String::from_utf16_lossy(&units[..limit]), true)
 }
 
-/// 从 UTF-16 偏移 `start` 起取 `length` 个码元。超出末尾的部分不取。
+/// 从 UTF-16 偏移 `start` 起截取 `length` 个码元。超出末尾的部分忽略。
 pub fn utf16_slice(text: &str, start: u32, length: u32) -> String {
     let units: Vec<u16> = text.encode_utf16().collect();
     let from = (start as usize).min(units.len());
@@ -474,7 +474,7 @@ pub fn utf16_slice(text: &str, start: u32, length: u32) -> String {
     String::from_utf16_lossy(&units[from..to])
 }
 
-/// 这个 UTF-16 偏移是不是字符边界：不超出末尾，也不落在代理对中间。
+/// 该 UTF-16 偏移是否为字符边界：不超出末尾，也不落在代理对中间。
 pub fn on_boundary(text: &str, offset: u32) -> bool {
     let mut at = 0u32;
     for c in text.chars() {
@@ -505,7 +505,7 @@ mod tests {
             .collect()
     }
 
-    /// 批量读取按属性表的下标解开；缺的项按缺席算，不让别的项错位。
+    /// 批量读取按属性表的下标解析；缺少的项按缺席处理，不使其他项错位。
     #[test]
     fn a_batch_decodes_by_position() {
         let facts = Facts::decode(&batch(&[
@@ -542,13 +542,13 @@ mod tests {
                 height: 12
             })
         );
-        // 短了也照解，缺的几项按缺席。
+        // 长度不足时照常解析，缺少的项按缺席处理。
         let short = Facts::decode(&[Raw::Text("AXGroup".to_owned())]);
         assert_eq!(short.role, "AXGroup");
         assert_eq!(short.characters, None);
     }
 
-    /// 复选框的值有给 `CFBoolean` 的，也有给 0 / 1 / 2 的 `CFNumber` 的。
+    /// 复选框的值可能是 `CFBoolean`，也可能是取值 0 / 1 / 2 的 `CFNumber`。
     #[test]
     fn values_keep_numbers_and_text_apart() {
         assert_eq!(Value::of(&Raw::Bool(true)), Value::Number(1.0));
@@ -574,7 +574,7 @@ mod tests {
         assert!(Frame::of(&Raw::Missing, &size(10.0, 10.0)).is_none());
     }
 
-    /// 文本元素先看长度：长文档不读值，除非调用方要全文。没有文本模型的元素照读。
+    /// 文本元素先检查长度：长文档不读取值，除非调用方需要全文。没有文本模型的元素照常读取。
     #[test]
     fn long_text_is_not_fetched_during_a_walk() {
         assert!(wants_value(None, false));
@@ -583,32 +583,32 @@ mod tests {
         assert!(wants_value(Some(1_000_000), true));
     }
 
-    /// 应用不应答与应用已退出是两件事：同一个码，按进程在不在分开。
+    /// 应用不应答与应用已退出是两种情况：错误码相同，按进程是否存在区分。
     #[test]
     fn cannot_complete_is_a_timeout_only_while_the_process_lives() {
-        let silent = Failure::from_ax("读子节点", code::CANNOT_COMPLETE, true);
+        let silent = Failure::from_ax("读取子节点", code::CANNOT_COMPLETE, true);
         assert!(silent.is_timeout() && !silent.is_gone());
         assert!(silent.into_reason().starts_with("provider_timeout: "));
-        let exited = Failure::from_ax("读子节点", code::CANNOT_COMPLETE, false);
+        let exited = Failure::from_ax("读取子节点", code::CANNOT_COMPLETE, false);
         assert!(exited.is_gone());
         assert!(exited.into_reason().starts_with("target_lost: "));
     }
 
-    /// 元素失效记 `ref_stale`；授权被关记授权原因；其余保留错误码原文。
+    /// 元素失效记为 `ref_stale`；授权被关闭记为授权原因；其余保留错误码原文。
     #[test]
     fn other_codes_keep_their_meaning() {
-        let gone = Failure::from_ax("读角色", code::INVALID_UI_ELEMENT, true);
+        let gone = Failure::from_ax("读取角色", code::INVALID_UI_ELEMENT, true);
         assert!(gone.is_gone());
         assert!(gone.into_reason().starts_with("ref_stale: "));
-        let off = Failure::from_ax("读角色", code::API_DISABLED, true);
+        let off = Failure::from_ax("读取角色", code::API_DISABLED, true);
         assert_eq!(off.into_reason(), not_trusted());
-        let other = Failure::from_ax("读角色", code::FAILURE, true);
+        let other = Failure::from_ax("读取角色", code::FAILURE, true);
         assert!(!other.is_gone() && !other.is_timeout());
-        assert_eq!(other.into_reason(), "读角色失败：kAXErrorFailure");
+        assert_eq!(other.into_reason(), "读取角色失败：kAXErrorFailure");
         assert_eq!(error_name(-1), "AXError -1");
     }
 
-    /// 动作调用回 `kAXErrorCannotComplete` 时不写成失败：动作可能已经生效。
+    /// 动作调用返回 `kAXErrorCannotComplete` 时不记为失败：动作可能已经生效。
     #[test]
     fn an_unconfirmed_action_is_not_reported_as_failed() {
         assert!(action_error("AXPress", code::CANNOT_COMPLETE).starts_with("call_unconfirmed: "));
@@ -639,7 +639,7 @@ mod tests {
         }
     }
 
-    /// 只记与可用动作有关的那几项。
+    /// 只记录与可用动作有关的属性。
     #[test]
     fn settable_records_only_known_attributes() {
         let mut s = Settable::default();

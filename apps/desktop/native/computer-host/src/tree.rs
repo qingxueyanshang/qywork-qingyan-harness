@@ -1,7 +1,7 @@
-//! 控件树里不分平台的那一部分：控件身份与 `ref` 编解码、遍历结果展平、首次读取的稳定判定、
+//! 控件树中与平台无关的部分：控件身份与 `ref` 编解码、遍历结果展平、首次读取的稳定判定、
 //! 等待 `appears` 的匹配。
 //!
-//! 本模块不调用任何 OS 接口。各后端读出平台的控件树，按这里的规则编出 `ref`、组出控件表。
+//! 本模块不调用任何 OS 接口。各后端读取平台的控件树，按本模块的规则生成 `ref` 并组成控件表。
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -10,9 +10,9 @@ use crate::protocol::Node;
 
 /// 一个控件的身份。
 ///
-/// `Stable` 是平台给的、控件存在期间不变的标识（Windows 是 RuntimeId）；平台给不出时
-/// 退到角色、名称与稳定标识的指纹，并在观察里把这个控件标成弱身份。**两种身份不相等**，
-/// 哪怕字面量凑巧一样。
+/// `Stable` 是平台提供的、控件存在期间不变的标识（Windows 为 RuntimeId）；平台无法提供时
+/// 回退到角色、名称与稳定标识的指纹，并在观察中把该控件标记为弱身份。**两种身份不相等**，
+/// 即使字面量恰好相同。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Identity {
     Stable(String),
@@ -24,7 +24,7 @@ impl Identity {
         matches!(self, Self::Attributes(_))
     }
 
-    /// 写进 `ref` 的那一段。弱身份带 `~` 前缀，解码时据此分得开。
+    /// 写入 `ref` 的身份段。弱身份带 `~` 前缀，解码时据此区分。
     fn encode(&self) -> String {
         match self {
             Self::Stable(id) => id.clone(),
@@ -40,10 +40,10 @@ impl Identity {
     }
 }
 
-/// 角色、名称与稳定标识的指纹。FNV-1a，够短且与输入一一对应到碰撞概率可忽略。
+/// 角色、名称与稳定标识的指纹。使用 FNV-1a：长度足够短，且碰撞概率可忽略。
 ///
-/// 三项用不会出现在取值里的分隔符拼起来再算：直接连接的话，`("ab","c")` 与 `("a","bc")`
-/// 会算出同一个指纹。
+/// 三项用不会出现在取值中的分隔符拼接后再计算：直接连接时，`("ab","c")` 与 `("a","bc")`
+/// 会得到同一个指纹。
 pub fn fingerprint(role: &str, name: &str, automation_id: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in role
@@ -60,19 +60,19 @@ pub fn fingerprint(role: &str, name: &str, automation_id: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// 解开的 `ref`：下标路径、可选的核对串与身份段。
+/// 解码后的 `ref`：下标路径、可选的核对串与身份段。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefParts {
     pub path: Vec<usize>,
-    /// 重新定位时与身份段一起核对的串。只有身份段本身认不出对象复用的后端才带。
+    /// 重新定位时与身份段一起核对的字符串。只有身份段本身无法识别对象复用的后端才携带此项。
     pub check: Option<String>,
     pub identity: Identity,
 }
 
 /// `ref` 的编码：`w` 加逐层子节点下标，可选的 `@核对串`，`#` 后是身份段。
 ///
-/// 核对串放在 `#` 之前：协调器按 `#` 之后的身份段给短编号，放进身份段的内容一变就换号。
-/// 不带核对串的 `ref` 与这一格加入之前逐字节相同。
+/// 核对串放在 `#` 之前：协调器按 `#` 之后的身份段分配短编号，放入身份段的内容一旦变化，
+/// 编号随之改变。不带核对串的 `ref` 只含下标路径与身份段。
 pub fn encode_ref(path: &[usize], check: Option<&str>, identity: &Identity) -> String {
     let mut out = String::from("w");
     for index in path {
@@ -113,13 +113,13 @@ pub fn decode_ref(reference: &str) -> Result<RefParts, String> {
     })
 }
 
-/// 一个节点连同它在前序表里的父节点下标。
+/// 一个节点及其父节点在前序表中的下标。
 pub struct Collected {
     pub node: Node,
     pub parent: Option<usize>,
 }
 
-/// 展平收集到的节点：把父节点下标换成父节点的 `ref`，顺序不变。
+/// 展平收集到的节点：把父节点下标替换为父节点的 `ref`，顺序不变。
 pub fn flatten(collected: Vec<Collected>) -> Vec<Node> {
     let refs: Vec<String> = collected.iter().map(|c| c.node.reference.clone()).collect();
     collected
@@ -132,17 +132,17 @@ pub fn flatten(collected: Vec<Collected>) -> Vec<Node> {
         .collect()
 }
 
-/// 这个稳定身份在本次遍历里是不是第一次出现，并登记它。
+/// 判断该稳定身份在本次遍历中是否首次出现，并登记该身份。
 ///
-/// 空串是没有稳定身份的弱身份，一律算第一次：弱身份按属性指纹认，两个不同的控件可能
-/// 指纹相同，按它去重会丢掉真实控件。集合只在一次遍历内有效：稳定身份跨时刻可复用。
+/// 空串表示没有稳定身份的弱身份，一律视为首次出现：弱身份按属性指纹识别，两个不同的控件
+/// 可能指纹相同，按指纹去重会丢失真实控件。集合只在一次遍历内有效：稳定身份在不同时刻可能被复用。
 pub fn first_sighting(seen: &mut HashSet<String>, stable: &str) -> bool {
     stable.is_empty() || seen.insert(stable.to_owned())
 }
 
-/// 一个节点满不满足等待 `appears` 的条件。两项都没给时任何节点都满足。
+/// 判断一个节点是否满足等待 `appears` 的条件。两项均未给出时任何节点都满足。
 ///
-/// 角色逐字比较：调用方给的角色要是协议词表（`protocol::Role`）里的名字，
+/// 角色逐字比较：调用方给出的角色必须是协议词表（`protocol::Role`）中的名称，
 /// 写法不同的角色（`Button`）不会命中任何节点。
 pub fn matches_target(role: Option<&str>, name_contains: Option<&str>, node: &Node) -> bool {
     if let Some(role) = role {
@@ -165,10 +165,10 @@ pub fn matches_target(role: Option<&str>, name_contains: Option<&str>, node: &No
     true
 }
 
-/// 隔 `interval` 重读，直到相邻两次的计数相同或到 `limit`，交回最后一份。
+/// 每隔 `interval` 重读一次，直到相邻两次的计数相同或达到 `limit`，返回最后一次的结果。
 ///
-/// 后端第一次读一个窗口时用它：Chromium 系应用在第一次收到无障碍请求时才建树，
-/// 第一次读到的只有外框，且不算截断。
+/// 后端首次读取一个窗口时使用：Chromium 系应用在首次收到无障碍请求时才构建控件树，
+/// 首次读取到的只有外框，且不计为截断。
 pub fn settle<T, E>(
     read: impl Fn() -> Result<T, E>,
     count: impl Fn(&T) -> u32,
@@ -193,7 +193,7 @@ pub fn settle<T, E>(
 pub(crate) mod tests {
     use super::*;
 
-    /// 单测用的控件，除给出的四项外全部取缺席或假。
+    /// 单元测试使用的控件，除给出的四项外全部取缺失或假。
     pub fn node(role: &str, name: &str, automation_id: &str, value: Option<&str>) -> Node {
         Node {
             reference: "w.0#7".to_owned(),
@@ -225,7 +225,7 @@ pub(crate) mod tests {
         Collected { node: n, parent }
     }
 
-    /// 遍历读到的节点全部交回，顺序不变；根在第一项，范围与窗口可用状态都按它取。
+    /// 遍历读取到的节点全部返回，顺序不变；根节点在第一项，范围与窗口可用状态都按根节点取值。
     #[test]
     fn every_visited_node_is_returned_in_order_with_parent_refs() {
         let nodes = flatten(vec![
@@ -240,7 +240,7 @@ pub(crate) mod tests {
         assert_eq!(parents, [None, Some("w#1"), Some("w.0#3"), Some("w#1")]);
     }
 
-    /// Edge 第一次读只有 47 个外框节点，0.3 s 后 52 个：读到相邻两次计数相同才交回。
+    /// Edge 首次读取只有 47 个外框节点，0.3 s 后为 52 个：读取到相邻两次计数相同时才返回。
     #[test]
     fn first_read_settles_once_the_count_stops_changing() {
         let counts = [47u32, 52, 52, 60];
@@ -294,7 +294,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// 不带核对串的 `ref` 与加入核对串之前逐字节相同：Windows 后端交出的就是这一种。
+    /// 不带核对串的 `ref` 只含下标路径与身份段：Windows 后端生成的就是这一种。
     #[test]
     fn ref_round_trips_through_encode_and_decode() {
         let strong = Identity::Stable("42.1180674.4.1".to_owned());
@@ -307,7 +307,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// 核对串在 `#` 之前，身份段因此不随它变；解码把三部分分开交回。
+    /// 核对串位于 `#` 之前，因此身份段不随核对串变化；解码分别返回三部分。
     #[test]
     fn a_check_sits_before_the_identity_segment() {
         let object = Identity::Stable(":1.2/org/a11y/atspi/accessible/7".to_owned());
@@ -321,7 +321,7 @@ pub(crate) mod tests {
             encode_ref(&[], Some("ab"), &object),
             "w@ab#:1.2/org/a11y/atspi/accessible/7"
         );
-        // 身份段里可以有 `@`：只有 `#` 之前的那一个是核对串的分隔符。
+        // 身份段中可以含有 `@`：只有 `#` 之前的 `@` 是核对串的分隔符。
         assert_eq!(
             decode_ref("w.1#:1.2/a@b"),
             Ok(parts(vec![1], None, Identity::Stable(":1.2/a@b".to_owned())))
@@ -331,20 +331,20 @@ pub(crate) mod tests {
         }
     }
 
-    /// 弱身份在 `ref` 里带 `~` 前缀，解码时与稳定身份分得开。
+    /// 弱身份在 `ref` 中带 `~` 前缀，解码时可与稳定身份区分。
     #[test]
     fn a_weak_identity_survives_the_round_trip_and_stays_distinct() {
         let weak = Identity::Attributes("0123456789abcdef".to_owned());
         let encoded = encode_ref(&[2], None, &weak);
         assert_eq!(encoded, "w.2#~0123456789abcdef");
         assert_eq!(decode_ref(&encoded), Ok(parts(vec![2], None, weak.clone())));
-        // 字面量一样也不算同一种身份：那个位置从没有稳定身份变成有了，就不是同一个控件。
+        // 字面量相同也不视为同一种身份：同一位置从没有稳定身份变为有稳定身份时，已不是同一个控件。
         assert_ne!(weak, Identity::Stable("0123456789abcdef".to_owned()));
         assert!(weak.is_weak());
         assert!(!Identity::Stable("7.1".to_owned()).is_weak());
     }
 
-    /// 三项任一变化都换指纹；拼接不能直接相连，否则挪一个字符就撞上同一个指纹。
+    /// 三项中任一项变化都会改变指纹；拼接时不能直接相连，否则在两项之间移动一个字符会得到相同的指纹。
     #[test]
     fn the_attribute_fingerprint_separates_the_three_fields() {
         let base = fingerprint("list_item", "item-alpha", "");
@@ -363,7 +363,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// `appears` 两项条件都没给时任何节点都满足。
+    /// `appears` 的两项条件均未给出时任何节点都满足。
     #[test]
     fn an_empty_appears_condition_matches_every_node() {
         assert!(matches_target(None, None, &node("button", "保存", "save", None)));
@@ -378,7 +378,7 @@ pub(crate) mod tests {
         assert!(!matches_target(role, text, &node("button", "取消", "cancel", None)));
     }
 
-    /// 文字条件看名称、稳定标识与值三处，且不分大小写。
+    /// 文字条件匹配名称、稳定标识与值三处，且不区分大小写。
     #[test]
     fn the_appears_text_looks_at_name_id_and_value_case_insensitively() {
         let text = Some("Save");
@@ -386,13 +386,13 @@ pub(crate) mod tests {
         assert!(matches_target(None, text, &node("button", "别的", "saveBtn", None)));
         assert!(matches_target(None, text, &node("edit", "别的", "x", Some("autosave"))));
         assert!(!matches_target(None, text, &node("edit", "别的", "x", Some("无"))));
-        // 没取值的节点不会因为值缺席就命中。
+        // 未读取值的节点不会因为值缺失而命中。
         assert!(!matches_target(None, text, &node("edit", "别的", "x", None)));
     }
 
     #[test]
     fn a_stable_identity_is_emitted_once_per_walk_and_weak_identities_are_never_merged() {
-        // Edge 内容面板的子节点列表：自己的子节点之后接着父窗口的全部子节点，含它自己。
+        // Edge 内容面板的子节点列表：自身的子节点之后紧接父窗口的全部子节点，其中包括面板自身。
         let mut seen = HashSet::new();
         for id in ["42.263932", "42.460938", "42.198318", "42.263932.4.0.0.179"] {
             assert!(first_sighting(&mut seen, id));
@@ -403,7 +403,7 @@ pub(crate) mod tests {
         for id in ["42.460938", "42.198318", "42.263932.4.0.0.179"] {
             assert!(!first_sighting(&mut seen, id), "{id} 已输出过，不再展开");
         }
-        // 弱身份每次都算第一次。
+        // 弱身份每次都视为首次出现。
         assert!(first_sighting(&mut seen, ""));
         assert!(first_sighting(&mut seen, ""));
         // 集合只属于一次遍历：新的遍历从空集合开始。

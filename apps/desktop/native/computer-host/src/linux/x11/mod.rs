@@ -1,7 +1,7 @@
-//! X11 一侧：EWMH 窗口清单与层叠序、标题、进程号、类名、客户区与外框矩形，以及取图
+//! X11 部分：EWMH 窗口清单与层叠序、标题、进程号、类名、客户区与外框矩形，以及图像采集
 //! （`capture`）、前台输入（`sink`）与窗口管理器请求（`wm`）。
 //!
-//! 全是本机 X 服务器的往返调用，不经过任何应用，目标应用卡死时照常应答。坐标一律是根窗口
+//! 均为本机 X 服务器的往返调用，不经过任何应用，目标应用无响应时照常应答。坐标一律是根窗口
 //! 坐标，即屏幕物理像素。
 
 mod capture;
@@ -23,7 +23,7 @@ use x11rb::rust_connection::RustConnection;
 
 use crate::geometry::{fully_covered, ScreenRect, WindowFrame};
 
-/// 按名字取的 atom。只在建连时取一次。
+/// 按名称取得的 atom。只在建连时取得一次。
 struct Atoms {
     client_list_stacking: u32,
     net_wm_name: u32,
@@ -48,8 +48,8 @@ struct Atoms {
     net_wm_ping: u32,
 }
 
-/// 一个窗口在根窗口下的那一层祖先：有重设父窗口的窗口管理器时是它的外框窗口，
-/// 没有时是窗口自己。
+/// 窗口在根窗口下一层的祖先：存在重设父窗口的窗口管理器时是其外框窗口，
+/// 否则是窗口自身。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Top {
     pub window: Window,
@@ -58,19 +58,19 @@ pub struct Top {
     pub border: i32,
 }
 
-/// 一个被窗口管理器管理的顶层窗口。
+/// 由窗口管理器管理的顶层窗口。
 #[derive(Debug, Clone)]
 pub struct Client {
     pub window: Window,
     pub title: String,
-    /// `_NET_WM_PID`；没设置时取 X-Resource 查到的客户端进程号，都取不到时为 0。
+    /// `_NET_WM_PID`；未设置时取 X-Resource 查询到的客户端进程号，均无法取得时为 0。
     /// flatpak 应用的 `_NET_WM_PID` 是沙箱内的进程号。
     pub pid: u32,
     /// `WM_CLASS` 的类名部分。
     pub class_name: String,
-    /// 客户区的屏幕矩形。窗口已销毁或未映射时读不到。
+    /// 客户区的屏幕矩形。窗口已销毁或未映射时无法读取。
     pub client: Option<ScreenRect>,
-    /// 根窗口下的那一层祖先。
+    /// 根窗口下一层的祖先。
     pub top: Option<Top>,
     /// 最小化，或未映射。
     pub hidden: bool,
@@ -86,13 +86,13 @@ impl Client {
 pub struct Display {
     conn: RustConnection,
     root: Window,
-    /// `DISPLAY` 里的屏幕号。
+    /// `DISPLAY` 中的屏幕号。
     screen_number: usize,
     screen: ScreenRect,
     atoms: Atoms,
-    /// 取图要用的扩展协商结果。第一次取图时协商。
+    /// 图像采集所需的扩展协商结果。首次采集时协商。
     extensions: OnceCell<Result<(), String>>,
-    /// 下一次 `_NET_WM_PING` 带的标记，见 `Display::ping`。
+    /// 下一次 `_NET_WM_PING` 携带的标记，见 `Display::ping`。
     ping_token: Cell<u32>,
 }
 
@@ -172,10 +172,10 @@ impl Display {
         })
     }
 
-    /// X 服务器是 XWayland：它登记了 `XWAYLAND` 扩展。
+    /// 判断 X 服务器是否为 XWayland：XWayland 注册了 `XWAYLAND` 扩展。
     ///
-    /// XWayland 是 Wayland 合成器的一个客户端：原生 Wayland 窗口不在它的窗口树里，
-    /// XTest 指针事件的投递还要看合成器的指针此刻在不在它的某个 surface 上。
+    /// XWayland 是 Wayland 合成器的一个客户端：原生 Wayland 窗口不在其窗口树中，
+    /// XTest 指针事件能否投递还取决于合成器的指针当前是否位于 XWayland 的某个 surface 上。
     pub fn xwayland(&self) -> bool {
         self.conn
             .query_extension(b"XWAYLAND")
@@ -186,9 +186,9 @@ impl Display {
 
     /// 窗口管理器管理的顶层窗口，按层叠序从下到上。
     ///
-    /// 清单取 `_NET_CLIENT_LIST_STACKING`。根窗口上没有这一项说明没有遵循 EWMH 的窗口管理器
-    /// （WSLg 的 Weston 也不设），如实失败：不要改成枚举根窗口的子窗口，那一层在有窗口管理器
-    /// 时全是边框窗口。
+    /// 清单取自 `_NET_CLIENT_LIST_STACKING`。根窗口上没有该属性说明没有遵循 EWMH 的窗口管理器
+    /// （WSLg 的 Weston 也不设置该属性），此时如实失败：不要改为枚举根窗口的子窗口，存在窗口
+    /// 管理器时该层全部是边框窗口。
     pub fn clients(&self) -> Result<Vec<Client>, String> {
         let list = self
             .property(
@@ -200,7 +200,7 @@ impl Display {
         Ok(words(&list).filter_map(|w| self.client(w)).collect())
     }
 
-    /// 一个顶层窗口此刻的事实。窗口已销毁时交回 `None`。
+    /// 顶层窗口当前的事实。窗口已销毁时返回 `None`。
     pub fn client(&self, window: Window) -> Option<Client> {
         let attributes = self.conn.get_window_attributes(window).ok()?.reply().ok()?;
         let title = self
@@ -234,11 +234,11 @@ impl Display {
         })
     }
 
-    /// 创建这个窗口的本机客户端的进程号，经 X-Resource 扩展向 X 服务器查。
+    /// 创建该窗口的本机客户端的进程号，经由 X-Resource 扩展向 X 服务器查询。
     ///
-    /// Xt / Xaw 程序（xcalc、xterm）不设 `_NET_WM_PID`。不要删掉这一步：宿主补窗口身份时
-    /// 取不到进程就丢掉整个窗口，这类程序在清单里看不见，也就操作不了。远程客户端与没有
-    /// 这个扩展的服务器交回 `None`。
+    /// Xt / Xaw 程序（xcalc、xterm）不设置 `_NET_WM_PID`。不要删除这一步：宿主补全窗口身份时
+    /// 无法取得进程即丢弃整个窗口，这类程序不会出现在清单中，也就无法操作。远程客户端与不支持
+    /// 该扩展的服务器返回 `None`。
     fn client_pid(&self, window: Window) -> Option<u32> {
         let spec = ClientIdSpec {
             client: window,
@@ -253,7 +253,7 @@ impl Display {
             .filter(|pid| *pid != 0)
     }
 
-    /// 客户区的屏幕矩形：窗口原点换算到根窗口坐标，尺寸取窗口自己的几何。
+    /// 客户区的屏幕矩形：窗口原点换算到根窗口坐标，尺寸取窗口自身的几何。
     fn client_rect(&self, window: Window) -> Option<ScreenRect> {
         let origin = self
             .conn
@@ -270,11 +270,11 @@ impl Display {
         })
     }
 
-    /// 根窗口下的那一层祖先与它的外框矩形：沿父窗口上溯到根窗口下的那一层，取它的几何
+    /// 根窗口下一层的祖先及其外框矩形：沿父窗口上溯到根窗口下一层，取该窗口的几何
     /// （含边框宽度）。
     ///
-    /// 不要改成客户区加 `_NET_FRAME_EXTENTS`：不是每个窗口管理器都设它，而父窗口链在任何
-    /// 重设父窗口的窗口管理器下都成立。没有窗口管理器重设父窗口时外框就是客户区自己。
+    /// 不要改为客户区加 `_NET_FRAME_EXTENTS`：并非每个窗口管理器都设置该属性，而父窗口链在任何
+    /// 重设父窗口的窗口管理器下都成立。没有窗口管理器重设父窗口时，外框即客户区本身。
     fn top(&self, window: Window) -> Option<Top> {
         let mut current = window;
         for _ in 0..16 {
@@ -298,12 +298,12 @@ impl Display {
         None
     }
 
-    /// 窗口此刻的几何事实，采图与按图定位的动作共用这一份。
+    /// 窗口当前的几何事实，图像采集与按图定位的动作共用同一份。
     ///
-    /// X11 的坐标就是物理像素、没有按显示器的缩放，DPI 一律按 96 记；显示器标识取屏幕号。
+    /// X11 的坐标即物理像素，没有按显示器的缩放，DPI 一律记为 96；显示器标识取屏幕号。
     pub fn frame(&self, client: &Client) -> Result<WindowFrame, String> {
         let (Some(top), Some(area)) = (client.top, client.client) else {
-            return Err("target_lost: 读不出窗口几何".to_owned());
+            return Err("target_lost: 无法读取窗口几何".to_owned());
         };
         Ok(WindowFrame {
             window: top.outer,
@@ -313,7 +313,7 @@ impl Display {
         })
     }
 
-    /// 读一个窗口属性的全部字节。属性缺席、类型不符或窗口已销毁时交回 `None`。
+    /// 读取窗口属性的全部字节。属性缺失、类型不符或窗口已销毁时返回 `None`。
     fn property(&self, window: Window, property: u32, kind: u32) -> Option<Vec<u8>> {
         let reply = self
             .conn
@@ -324,16 +324,16 @@ impl Display {
         (reply.type_ == kind && !reply.value.is_empty()).then_some(reply.value)
     }
 
-    /// `_NET_WM_STATE` 里有没有这一项。
+    /// `_NET_WM_STATE` 中是否包含该项。
     fn has_state(&self, window: Window, state: u32) -> bool {
         self.property(window, self.atoms.net_wm_state, AtomEnum::ATOM.into())
             .is_some_and(|b| words(&b).any(|a| a == state))
     }
 
-    /// 窗口此刻在屏幕上是否一点都看不见：最小化或未映射，或外框与屏幕的交集被层叠序在它
-    /// 上面、未隐藏的窗口的外框完全盖住。`stack` 是 `clients` 的结果，从下到上。
+    /// 窗口当前在屏幕上是否完全不可见：最小化或未映射，或外框与屏幕的交集被层叠序在其之上、
+    /// 未隐藏的窗口的外框完全遮挡。`stack` 是 `clients` 的结果，从下到上。
     ///
-    /// 读不出几何时按没盖住报：盖住是需要证据的结论。
+    /// 无法读取几何时报告为未遮挡：遮挡是需要证据的结论。
     pub fn covered(&self, window: Window, stack: &[Client]) -> bool {
         let Some(at) = stack.iter().position(|c| c.window == window) else {
             return false;
@@ -357,7 +357,7 @@ impl Display {
     }
 }
 
-/// 一次往返取回全部 atom：请求先全部发出，再逐个收回执。
+/// 一次往返取回全部 atom：先发出全部请求，再逐个接收回执。
 fn intern<const N: usize>(conn: &RustConnection, names: [&[u8]; N]) -> Result<[u32; N], String> {
     let cookies = names.map(|name| conn.intern_atom(false, name));
     let mut out = [0u32; N];
@@ -371,14 +371,14 @@ fn intern<const N: usize>(conn: &RustConnection, names: [&[u8]; N]) -> Result<[u
     Ok(out)
 }
 
-/// 32 位格式的属性值按本机字节序切成字。
+/// 32 位格式的属性值按本机字节序切分为字。
 fn words(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
     bytes
         .chunks_exact(4)
         .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
 }
 
-/// `WM_CLASS` 是「实例名\0类名\0」，取类名。只有一段时取那一段。
+/// `WM_CLASS` 是「实例名\0类名\0」，取类名。只有一段时取该段。
 fn class_part(bytes: &[u8]) -> String {
     let mut parts = bytes.split(|b| *b == 0).filter(|p| !p.is_empty());
     let instance = parts.next().unwrap_or_default();

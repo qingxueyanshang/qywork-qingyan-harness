@@ -1,9 +1,9 @@
-//! SPA POD：PipeWire 参数的二进制格式。只实现拉一帧要用的三件：声明接受的视频格式、
-//! 要求 VideoCrop 与 Header 元数据、从协商结果里读出像素格式与尺寸。
+//! SPA POD：PipeWire 参数的二进制格式。只实现取一帧所需的三项：声明接受的视频格式、
+//! 要求 VideoCrop 与 Header 元数据、从协商结果中读取像素格式与尺寸。
 //!
-//! 每个 POD 是 8 字节头（正文字节数、类型）加正文，正文按 8 字节补齐，头里的字节数不含补齐。
+//! 每个 POD 是 8 字节头（正文字节数、类型）加正文，正文按 8 字节补齐，头中的字节数不含补齐。
 //! 对象的正文是（对象类型、参数号）加一串属性；属性是（键、标志）加一个 POD。
-//! 选择（Choice）的正文是（选择类型、标志）、元素的 POD 头，再接元素值。本模块不调任何接口。
+//! 选择（Choice）的正文是（选择类型、标志）、元素的 POD 头，之后是元素值。本模块不调用任何接口。
 
 const TYPE_ID: u32 = 3;
 const TYPE_INT: u32 = 4;
@@ -15,7 +15,7 @@ const OBJECT_FORMAT: u32 = 0x4_0003;
 const OBJECT_PARAM_META: u32 = 0x4_0005;
 
 const PARAM_ENUM_FORMAT: u32 = 3;
-/// `param_changed` 里协商好的格式的参数号。
+/// `param_changed` 中已协商格式的参数号。
 pub const PARAM_FORMAT: u32 = 4;
 const PARAM_META: u32 = 6;
 
@@ -38,7 +38,7 @@ pub const META_VIDEO_CROP: u32 = 2;
 const META_HEADER_SIZE: u32 = 32;
 const META_REGION_SIZE: u32 = 16;
 
-/// 每像素 4 字节、每通道 8 位的几种排法，值是 `spa_video_format`。
+/// 每像素 4 字节、每通道 8 位的各种排列方式，值为 `spa_video_format`。
 pub const VIDEO_RGBX: u32 = 7;
 pub const VIDEO_BGRX: u32 = 8;
 pub const VIDEO_XRGB: u32 = 9;
@@ -48,13 +48,13 @@ pub const VIDEO_BGRA: u32 = 12;
 pub const VIDEO_ARGB: u32 = 13;
 pub const VIDEO_ABGR: u32 = 14;
 
-/// 声明接受的格式，按偏好排。只要不带 alpha 的与带 alpha 的 8 位四通道：不声明 modifier，
-/// 合成器因此只给共享内存缓冲区，不给要经 GPU 才读得到的 DMA-BUF。
+/// 声明接受的格式，按偏好排列。只接受不带 alpha 与带 alpha 的 8 位四通道格式：不声明 modifier，
+/// 合成器因此只提供共享内存缓冲区，不提供需要经 GPU 才能读取的 DMA-BUF。
 const ACCEPTED: [u32; 8] = [
     VIDEO_BGRX, VIDEO_BGRA, VIDEO_RGBX, VIDEO_RGBA, VIDEO_XRGB, VIDEO_XBGR, VIDEO_ARGB, VIDEO_ABGR,
 ];
 
-/// 协商好的视频格式：像素排法与帧的像素尺寸。
+/// 协商得到的视频格式：像素排列方式与帧的像素尺寸。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoFormat {
     pub format: u32,
@@ -81,7 +81,7 @@ impl Builder {
         }
     }
 
-    /// 写一个 POD 头，交回字节数那一格的位置，由 `end` 回填。
+    /// 写入一个 POD 头，返回字节数字段的位置，由 `end` 回填。
     fn begin(&mut self, kind: u32) -> usize {
         let at = self.bytes.len();
         self.word(0);
@@ -107,7 +107,7 @@ impl Builder {
     }
 }
 
-/// 拉流时声明接受的格式（`EnumFormat`）。尺寸不限，由合成器按流定。
+/// 连接流时声明接受的格式（`EnumFormat`）。尺寸不限，由合成器按流确定。
 pub fn enum_format() -> Vec<u8> {
     let mut b = Builder::new();
     let object = b.begin(TYPE_OBJECT);
@@ -123,7 +123,7 @@ pub fn enum_format() -> Vec<u8> {
     b.word(0);
     b.word(4);
     b.word(TYPE_ID);
-    // 枚举的第一个值是默认值，后面才是可选项。
+    // 枚举的第一个值是默认值，其后为可选项。
     b.word(ACCEPTED[0]);
     for format in ACCEPTED {
         b.word(format);
@@ -144,7 +144,7 @@ pub fn enum_format() -> Vec<u8> {
     b.bytes
 }
 
-/// 要求缓冲区带上的一种元数据（`Meta`）。
+/// 要求缓冲区携带的一种元数据（`Meta`）。
 pub fn meta(kind: u32) -> Vec<u8> {
     let size = if kind == META_HEADER {
         META_HEADER_SIZE
@@ -168,14 +168,14 @@ fn word_at(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
 }
 
-/// 一个 POD 的整段字节数（头加正文）。`head` 至少要有 8 字节。
+/// 一个 POD 的整段字节数（头加正文）。`head` 至少需要 8 字节。
 pub fn total_len(head: &[u8]) -> Option<usize> {
     word_at(head, 0)
         .and_then(|size| usize::try_from(size).ok())
         .map(|size| size + 8)
 }
 
-/// 属性值里的第一个值：直接给的值，或选择里的默认值。交回（值的类型，值的字节起点）。
+/// 属性值中的第一个值：直接给出的值，或选择中的默认值。返回（值的类型，值的字节起点）。
 fn first_value(pod: &[u8], at: usize) -> Option<(u32, usize)> {
     let kind = word_at(pod, at + 4)?;
     if kind != TYPE_CHOICE {
@@ -188,7 +188,7 @@ fn first_value(pod: &[u8], at: usize) -> Option<(u32, usize)> {
     Some((word_at(pod, at + 20)?, at + 24))
 }
 
-/// 从协商好的 `Format` 对象里读出像素排法与尺寸。缺任何一项交回 `None`。
+/// 从协商得到的 `Format` 对象中读取像素排列方式与尺寸。缺少任何一项时返回 `None`。
 pub fn video_format(pod: &[u8]) -> Option<VideoFormat> {
     if word_at(pod, 4)? != TYPE_OBJECT {
         return None;
@@ -221,7 +221,7 @@ pub fn video_format(pod: &[u8]) -> Option<VideoFormat> {
 mod tests {
     use super::*;
 
-    /// 声明的格式经同一个解析读回来是默认值：偏好的第一种格式与默认尺寸。
+    /// 声明的格式经同一解析函数读取后为默认值：偏好的第一种格式与默认尺寸。
     #[test]
     fn the_enum_format_reads_back_its_defaults() {
         let pod = enum_format();
@@ -237,7 +237,7 @@ mod tests {
         );
     }
 
-    /// 协商结果的形状：属性直接给值，不带选择。
+    /// 协商结果的结构：属性直接给出值，不带选择。
     #[test]
     fn a_fixed_format_gives_its_format_and_size() {
         let mut b = Builder::new();

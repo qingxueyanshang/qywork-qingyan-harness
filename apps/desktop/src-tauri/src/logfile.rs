@@ -1,9 +1,9 @@
-//! 壳自己的日志文件：`<数据目录>/logs/qywork.log`，超过上限改名成 `.1` 后重开。
+//! 外壳自身的日志文件：`<数据目录>/logs/qywork.log`，超过上限时重命名为 `.1` 后重新打开。
 //!
-//! 数据目录的解析也在这里：日志文件与 `last-workspace` 都挂在同一个根下，
-//! 两处各算一遍的话，某次改 `QYWORK_HOME` 会让它们落在两个地方。
+//! 数据目录的解析也在本文件：日志文件与 `last-workspace` 位于同一根目录下，
+//! 两处分别解析时，对 `QYWORK_HOME` 处理的修改可能使二者位于不同目录。
 //!
-//! sidecar 的日志由它自己写（`qy.log`），壳不替它写：两个进程不共写一个文件。
+//! sidecar 的日志由 sidecar 自行写入（`qy.log`），外壳不代写：两个进程不共同写入同一个文件。
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ const MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 static WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-/// `QYWORK_HOME`，没有就是家目录下的 `.qywork`。两者都拿不到时返回 `None`，
+/// `QYWORK_HOME`，未设置时为家目录下的 `.qywork`。两者都无法取得时返回 `None`，
 /// 调用方按「没有可落盘的位置」处理，不报错。
 pub fn data_dir() -> Option<PathBuf> {
     if let Ok(v) = std::env::var("QYWORK_HOME") {
@@ -26,7 +26,7 @@ pub fn data_dir() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".qywork"))
 }
 
-/// 追加一行。写失败静默：日志本身不能成为壳报错的原因，而 stderr 那份已经写过了。
+/// 追加一行。写入失败时静默忽略：日志本身不得成为外壳报错的原因，且 stderr 已写入同一内容。
 pub fn append(line: &str) {
     let Some(dir) = data_dir().map(|d| d.join("logs")) else {
         return;
@@ -38,7 +38,7 @@ pub fn append(line: &str) {
     }
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() + line.len() as u64 > MAX_BYTES {
-            // 只留上一份，与 sidecar 的轮转口径一致。
+            // 只保留上一份，与 sidecar 的轮转规则一致。
             let _ = std::fs::rename(&path, dir.join(format!("{FILE}.1")));
         }
     }
@@ -49,7 +49,7 @@ pub fn append(line: &str) {
 }
 
 /// 当前 UTC 时间，`2026-09-12T01:02:03.004Z`，与 sidecar 的行格式一致。
-/// 不引时间库：只需要把 1970-01-01 起的秒数换算成公历日期。
+/// 不引入时间库：只需把自 1970-01-01 起的秒数换算为公历日期。
 pub fn utc_now() -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = now.as_secs() as i64;

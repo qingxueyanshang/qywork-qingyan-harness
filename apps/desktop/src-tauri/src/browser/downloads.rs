@@ -1,14 +1,14 @@
-//! 一次性下载授权表与逐下载裁决。
+//! 一次性下载授权表与每次下载的裁决。
 //!
-//! 授权只在内存里，随消费、撤销、超时、断连消亡；它不是持久任务账。
+//! 授权只保存在内存中，在被消费、撤销、超时或连接断开时失效；它不是持久化的任务记录。
 //! 同一个标签页同时只允许一份授权，同一个目标路径同时只允许一份授权。
 //!
-//! 每份授权带一个服务端生成的不复用 `download_id`。裁决消费授权时把它交出来，
-//! 由引擎绑到这一次下载上并随终态回报：少了它，同一页上一次调用的迟到终态会被
+//! 每份授权携带一个由服务端生成、不复用的 `download_id`。裁决消费授权时返回该值，
+//! 由引擎绑定到本次下载并随终态上报：缺少该值时，同一页上前一次调用迟到的终态会被
 //! 下一次调用认领。
 //!
-//! 裁决是同步的，没有「先延后再接续」：认不出授权的下载一律取消并回报，
-//! 一次性生成的下载（POST 结果）会因此丢失一次，这是边界。
+//! 裁决是同步的，不支持延后裁决后再继续下载：没有匹配授权的下载一律取消并上报，
+//! 一次性生成的下载（POST 结果）因此会丢失一次，这是已知边界。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,12 +21,12 @@ pub struct Arm {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
-    /// 人工标签页：沿用浏览器提议的默认路径放行。
+    /// 用户页：使用浏览器建议的默认路径放行。
     AllowDefault,
-    /// 命中授权：写这个绝对路径，终态按这个 `download_id` 回报。
+    /// 命中授权：写入该绝对路径，终态按该 `download_id` 上报。
     Allow(PathBuf, String),
-    /// 取消，并按这个原因回报 `download.blocked`。
-    /// 带 `download_id` 表示消费掉了一份授权，等着它的调用按这条结算。
+    /// 取消下载，并以该原因上报 `download.blocked`。
+    /// 带 `download_id` 表示消费了一份授权，等待该授权的调用按此结果结算。
     Block(&'static str, Option<String>),
 }
 
@@ -38,9 +38,9 @@ pub struct ArmTable {
 impl ArmTable {
     /// 登记一次性授权。
     ///
-    /// 同一 tab 的旧授权被顶掉——保留两份就分不出该消费哪一份。
-    /// 目标路径已被另一个 tab 的授权占着时拒绝：两份授权写同一个文件，
-    /// 先落地的那一份会让另一份撞上「目标已存在」，而调用方分不出是谁写的。
+    /// 同一 tab 的旧授权被新授权替换：同时保留两份时无法确定应消费哪一份。
+    /// 目标路径已被另一个 tab 的授权占用时拒绝：两份授权写入同一个文件时，
+    /// 先写入的一份会使另一份遇到「目标已存在」，而调用方无法区分文件由哪一份写入。
     pub fn arm(&mut self, tab_id: String, arm: Arm) -> Result<(), String> {
         if let Some((holder, _)) = self
             .arms
@@ -53,7 +53,7 @@ impl ArmTable {
         Ok(())
     }
 
-    /// 撤销授权。给了 `download_id` 就只撤这一份——迟到的撤销不能删掉同一页上新登记的授权。
+    /// 撤销授权。给定 `download_id` 时只撤销该份授权：迟到的撤销不得删除同一页上新登记的授权。
     pub fn disarm(&mut self, tab_id: &str, download_id: Option<&str>) -> bool {
         match download_id {
             Some(wanted) => {
@@ -75,10 +75,10 @@ impl ArmTable {
         self.arms.is_empty()
     }
 
-    /// 裁决一次下载。命中即消费授权，失败也把该授权删掉——留着它下一次下载会误命中。
+    /// 裁决一次下载。命中即消费授权，裁决失败时同样删除该授权：保留它会使下一次下载误命中。
     ///
-    /// `manual` = 这一页是用户页（不归任何 AI 会话）：走默认目录放行，不碰授权。
-    /// 归 AI 的页必须有一份未过期、目标不存在的授权，否则取消。
+    /// `manual` 表示该页是用户页（不属于任何 AI 会话）：使用默认目录放行，不访问授权。
+    /// 属于 AI 会话的页必须有一份未过期且目标文件不存在的授权，否则取消。
     pub fn decide(&mut self, tab_id: &str, manual: bool, now_ms: u64) -> Decision {
         if manual {
             return Decision::AllowDefault;
@@ -120,7 +120,7 @@ mod tests {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../.tmp/cargo-tests")
             .join(format!("downloads-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("临时目录要建得出来");
+        std::fs::create_dir_all(&dir).expect("必须能创建临时目录");
         dir.join(name)
     }
 
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn existing_target_is_refused_instead_of_overwritten() {
         let target = scratch("c.bin");
-        std::fs::write(&target, b"old").expect("夹具文件要写得出来");
+        std::fs::write(&target, b"old").expect("必须能写入夹具文件");
         let mut t = table_with(target.clone(), 10_000);
         assert_eq!(
             t.decide("bt_1", false, 1),
@@ -183,7 +183,7 @@ mod tests {
         assert!(t
             .arm("bt_2".into(), arm_of(target.clone(), 10_000, "dl_2"))
             .is_err());
-        // 另一个路径照常登记；重登记本 tab 的授权也不算与自己冲突。
+        // 其他路径正常登记；重新登记本 tab 的授权不视为与自身冲突。
         assert!(t
             .arm("bt_2".into(), arm_of(scratch("f.bin"), 10_000, "dl_3"))
             .is_ok());
@@ -194,8 +194,8 @@ mod tests {
     fn a_stale_disarm_cannot_remove_the_arm_registered_after_it() {
         let mut t = table_with(scratch("g.bin"), 10_000);
         t.arm("bt_1".into(), arm_of(scratch("h.bin"), 10_000, "dl_9"))
-            .expect("重登记覆盖旧授权");
-        assert!(!t.disarm("bt_1", Some("dl_1")), "旧身份撤不掉新授权");
+            .expect("重新登记覆盖旧授权");
+        assert!(!t.disarm("bt_1", Some("dl_1")), "旧身份无法撤销新授权");
         assert!(t.disarm("bt_1", Some("dl_9")));
     }
 }

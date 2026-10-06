@@ -1,8 +1,8 @@
 //! 宿主连接的帧。字段名与 `packages/core/src/protocol/native-browser.ts` 逐字对应，
-//! 契约由两侧共用的 JSON 样例锁住。
+//! 契约由两侧共用的 JSON 样例锁定。
 //!
-//! 缺省值一律用 `Option` + `skip_serializing_if`：多发一个 `null` 字段会让
-//! 服务端那侧的可选字段判定从「没有」变成「有且为空」。
+//! 缺省值一律使用 `Option` + `skip_serializing_if`：多发送一个 `null` 字段会使
+//! 服务端的可选字段判定从「不存在」变为「存在且为空」。
 
 use serde::{Deserialize, Serialize};
 
@@ -25,14 +25,14 @@ pub struct HostReady {
     pub host_instance_id: String,
     pub connection_epoch: u64,
     pub platform: &'static str,
-    /// 页显示在哪里：`embedded` 嵌在面板里，`window` 在浏览器自己的窗口里。由引擎决定。
+    /// 页面的显示位置：`embedded` 嵌入面板，`window` 位于浏览器自身的窗口。由引擎决定。
     pub presentation: &'static str,
     pub runtime_version: String,
     pub debug_port: u16,
     pub tabs: Vec<TabSnapshot>,
 }
 
-/// 宿主连着，但此刻没有可用的浏览器：找不到，或浏览器进程已退出。
+/// 宿主已连接，但当前没有可用的浏览器：未找到浏览器，或浏览器进程已退出。
 #[derive(Debug, Serialize)]
 pub struct HostUnavailable {
     #[serde(rename = "type")]
@@ -40,7 +40,7 @@ pub struct HostUnavailable {
     pub reason: &'static str,
 }
 
-/// 连接的首帧，以及浏览器进程换代后在同一条连接上重发的那一帧。
+/// 连接的首帧，以及浏览器进程重启后在同一条连接上重发的首帧。
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum Hello {
@@ -59,7 +59,7 @@ pub struct RequestFrame {
     pub op: String,
     #[serde(default)]
     pub tab_id: Option<String>,
-    /// `create` / `bind` 必带且非空，其余 op 不看它。按 op 校验，缺席不回落到任何默认工作区。
+    /// `create` / `bind` 必须携带且非空，其余 op 忽略该字段。按 op 校验，缺失时不回退到任何默认工作区。
     #[serde(default)]
     pub workspace_id: Option<String>,
     #[serde(default)]
@@ -68,7 +68,7 @@ pub struct RequestFrame {
     pub url: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
-    /// `download.arm` / `download.disarm` 认的本次下载身份。服务端每次生成一个不复用的值。
+    /// `download.arm` / `download.disarm` 使用的本次下载身份。服务端每次生成一个不复用的值。
     #[serde(default)]
     pub download_id: Option<String>,
 }
@@ -118,7 +118,7 @@ pub struct EventFrame {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub marker: Option<String>,
-    /// `opened` 必带：新页只经这条事件进入服务端存活表，缺了它那一页没有工作区归属。
+    /// `opened` 必须携带：新页只经由该事件进入服务端的存活表，缺少该字段时该页没有工作区归属。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,7 +131,7 @@ pub struct EventFrame {
     pub reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggested_name: Option<String>,
-    /// 消费掉的那份授权的身份。缺席即这次下载没有命中授权，不得结算任何工具调用。
+    /// 被消费授权的身份。缺失表示本次下载未命中授权，不得结算任何工具调用。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub download_id: Option<String>,
 }
@@ -158,10 +158,10 @@ impl EventFrame {
     }
 }
 
-/// 请求准入。返回 `Some(原因)` 即拒绝，调用方原样回成 `ok:false`。
+/// 请求准入检查。返回 `Some(原因)` 即拒绝，调用方将原因原样放入 `ok:false` 结果返回。
 ///
-/// 两条判据都必须在执行之前：过期的请求发出时对端已经放弃了它，
-/// 跨重连的旧纪元请求属于上一条连接，执行它等于让作废的控制权继续生效。
+/// 两条判据都必须在执行之前检查：过期请求的发起方已放弃等待；
+/// 跨重连的旧纪元请求属于上一条连接，执行它等于使已作废的控制权继续生效。
 pub fn reject_reason(
     current_epoch: u64,
     frame: &RequestFrame,
@@ -187,14 +187,14 @@ mod tests {
     };
     use serde_json::{json, Value};
 
-    /// 与 server 侧同一份样例。两侧各写一份样例就不再是契约，
-    /// 改一处漏一处的表现是运行期字段读成 `undefined`。
+    /// 与 server 侧使用同一份样例。两侧各写一份样例就不再构成契约，
+    /// 只修改一侧时，运行期字段会读取为 `undefined`。
     const SAMPLES: &str =
         include_str!("../../../../../packages/core/src/protocol/native-browser.samples.json");
 
     fn sample(key: &str) -> Value {
-        let all: Value = serde_json::from_str(SAMPLES).expect("样例文件要能解析");
-        all.get(key).cloned().unwrap_or_else(|| panic!("样例里没有 {key}"))
+        let all: Value = serde_json::from_str(SAMPLES).expect("样例文件必须能解析");
+        all.get(key).cloned().unwrap_or_else(|| panic!("样例中没有 {key}"))
     }
 
     fn frame(epoch: u64, deadline: u64) -> RequestFrame {
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn request_sample_decodes_into_the_dispatch_shape() {
         let parsed: RequestFrame =
-            serde_json::from_value(sample("request")).expect("样例必须能解出来");
+            serde_json::from_value(sample("request")).expect("样例必须能反序列化");
         assert_eq!(parsed.op, "download.arm");
         assert_eq!(parsed.connection_epoch, 3);
         assert_eq!(parsed.conversation_id.as_deref(), Some("cv_a1"));
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn create_request_sample_carries_the_workspace() {
         let parsed: RequestFrame =
-            serde_json::from_value(sample("createRequest")).expect("样例必须能解出来");
+            serde_json::from_value(sample("createRequest")).expect("样例必须能反序列化");
         assert_eq!(parsed.op, "create");
         assert_eq!(parsed.workspace_id.as_deref(), Some("ws_a"));
         assert_eq!(parsed.conversation_id.as_deref(), Some("cv_a1"));
@@ -306,7 +306,7 @@ mod tests {
         event.suggested_name = Some("file.bin".into());
         assert_eq!(serde_json::to_value(&event).unwrap(), sample("event"));
 
-        // 新页只经 `opened` 进入服务端存活表，工作区归属随这一帧过去。
+        // 新页只经由 `opened` 进入服务端存活表，工作区归属随该帧发送。
         let mut opened = EventFrame::new(3, 10, "opened", "bt_1".into());
         opened.url = Some("http://127.0.0.1:9000/page".into());
         opened.title = Some("夹具页".into());
@@ -315,7 +315,7 @@ mod tests {
         opened.conversation_id = Some(Some("cv_a1".into()));
         assert_eq!(serde_json::to_value(&opened).unwrap(), sample("opened"));
 
-        // 终态带回消费掉的那份授权身份；服务端按它认领，不按 tabId。
+        // 终态携带被消费授权的身份；服务端按该身份认领，不按 tabId。
         let mut finished = EventFrame::new(3, 12, "download.finished", "bt_1".into());
         finished.path = Some(r"D:\work\out.bin".into());
         finished.success = Some(true);
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&finished).unwrap(), sample("downloadFinished"));
     }
 
-    /// 缺省字段不能发成 `null`：接收端的可选字段判定会从「没有」变成「有且为空」。
+    /// 缺省字段不得发送为 `null`：接收端的可选字段判定会从「不存在」变为「存在且为空」。
     #[test]
     fn absent_optional_fields_are_omitted_not_nulled() {
         let event = EventFrame::new(1, 1, "closed", "bt_9".into());

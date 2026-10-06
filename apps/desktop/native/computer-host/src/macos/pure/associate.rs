@@ -1,21 +1,21 @@
-//! AX 窗口与 CGWindowList 窗口的对应关系、对不上的窗口怎么编号，以及按层叠序判遮挡与落点命中。
+//! AX 窗口与 CGWindowList 窗口的对应关系、未对应窗口的编号方式，以及按层叠序判定遮挡与落点命中。
 //!
 //! 四条规则：
 //!
-//! 1. **窗口清单以 AX 为准。** 标题取 AX 的 `AXTitle`：CG 的窗口名要屏幕录制授权才给。
-//!    CGWindowList 只提供层叠序、遮挡判定与取图要用的 CGWindowID。
-//! 2. **进程号相同、且 AX 的位置尺寸与 CG 矩形按整点相等，两个方向都唯一才算对应上。**
-//!    对应上的窗口以 CGWindowID 编号；对不上的以身份表编号的相反数编号，只给控件树与后台
-//!    语义动作，不给图像与坐标动作。不要改用私有的 `_AXUIElementGetWindow`。
-//! 3. **遮挡要证据。** 读不出矩形时按没盖住报。
-//! 4. **落点命中分两步**：落点归哪个应用由 AX 的系统范围命中测试给出，它按窗口服务器真实的命中
-//!    规则认，穿透鼠标的覆盖窗口不算；同一个应用的几个窗口谁接住这一下由层叠序定。
+//! 1. **窗口清单以 AX 为准。** 标题取 AX 的 `AXTitle`：CG 的窗口名需要屏幕录制授权才提供。
+//!    CGWindowList 只提供层叠序、遮挡判定与采图所需的 CGWindowID。
+//! 2. **进程号相同、AX 的位置尺寸与 CG 矩形按整点相等，且两个方向都唯一时才视为对应。**
+//!    已对应的窗口以 CGWindowID 编号；未对应的以身份表编号的相反数编号，只提供控件树与后台
+//!    语义动作，不提供图像与坐标动作。不要改用私有的 `_AXUIElementGetWindow`。
+//! 3. **遮挡需要证据。** 无法读取矩形时报告为未遮挡。
+//! 4. **落点命中分两步**：落点属于哪个应用由 AX 的系统范围命中测试给出，该测试按窗口服务器实际的
+//!    命中规则判定，鼠标可穿透的覆盖窗口不计入；同一个应用的多个窗口中由哪一个接收本次点击由层叠序决定。
 //!
-//! 本模块不调用任何接口，事实由调用方读好交进来。
+//! 本模块不调用任何接口，事实由调用方读取后传入。
 
 use crate::geometry::{fully_covered, ScreenPoint, ScreenRect};
 
-/// CGWindowList 里的一个窗口。清单按从前到后的层叠序排列。
+/// CGWindowList 中的一个窗口。清单按从前到后的层叠序排列。
 #[derive(Debug, Clone)]
 pub struct CgWindow {
     pub number: u32,
@@ -26,13 +26,13 @@ pub struct CgWindow {
     pub bounds: Option<ScreenRect>,
     pub on_screen: bool,
     pub alpha: f64,
-    /// 所属应用的名称。不要屏幕录制授权。
+    /// 所属应用的名称。无需屏幕录制授权。
     pub owner: String,
     /// 窗口名。没有屏幕录制授权时为空。
     pub name: String,
 }
 
-/// 一个 AX 窗口里参与对应的事实。
+/// AX 窗口中参与对应的事实。
 #[derive(Debug, Clone, Copy)]
 pub struct AxSide {
     pub pid: i32,
@@ -40,11 +40,11 @@ pub struct AxSide {
     pub frame: Option<ScreenRect>,
 }
 
-/// 一个 CG 窗口没有对应上 AX 窗口的原因。
+/// CG 窗口未能对应 AX 窗口的原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unmatched {
     None,
-    /// 同一进程里同位置同尺寸的窗口不止一个，给出的是这一侧的候选数。
+    /// 同一进程中位置与尺寸相同的窗口不止一个，值为这一侧的候选数。
     Ambiguous(usize),
 }
 
@@ -52,7 +52,7 @@ fn compatible(ax: &AxSide, cg: &CgWindow) -> bool {
     cg.layer == 0 && ax.pid == cg.pid && ax.frame.is_some() && ax.frame == cg.bounds
 }
 
-/// `cgs[target]` 唯一对应的 AX 窗口在 `axs` 里的下标。
+/// `cgs[target]` 唯一对应的 AX 窗口在 `axs` 中的下标。
 pub fn ax_of(target: usize, axs: &[AxSide], cgs: &[CgWindow]) -> Result<usize, Unmatched> {
     let cg = &cgs[target];
     let candidates: Vec<usize> = (0..axs.len())
@@ -71,7 +71,7 @@ pub fn ax_of(target: usize, axs: &[AxSide], cgs: &[CgWindow]) -> Result<usize, U
     }
 }
 
-/// `axs[target]` 唯一对应的 CG 窗口在 `cgs` 里的下标。
+/// `axs[target]` 唯一对应的 CG 窗口在 `cgs` 中的下标。
 pub fn cg_of(target: usize, axs: &[AxSide], cgs: &[CgWindow]) -> Option<usize> {
     let mut candidates = (0..cgs.len()).filter(|i| compatible(&axs[target], &cgs[*i]));
     let cg = candidates.next()?;
@@ -81,20 +81,20 @@ pub fn cg_of(target: usize, axs: &[AxSide], cgs: &[CgWindow]) -> Option<usize> {
     (ax_of(cg, axs, cgs) == Ok(target)).then_some(cg)
 }
 
-/// 没有对应 CG 窗口的 AX 窗口在窗口清单里的编号：身份表编号的相反数。
+/// 没有对应 CG 窗口的 AX 窗口在窗口清单中的编号：身份表编号的相反数。
 ///
-/// 负数不会与 CGWindowID 撞上；身份表编号从 1 起递增，经 JSON 交给 JavaScript 仍是精确整数。
+/// 负数不会与 CGWindowID 冲突；身份表编号从 1 起递增，经 JSON 交给 JavaScript 仍是精确整数。
 pub fn unassociated_window(identity: u64) -> i64 {
     -i64::try_from(identity).unwrap_or(i64::MAX)
 }
 
-/// 负数窗口编号对应的身份表编号。非负编号是 CGWindowID，交回 `None`。
+/// 负数窗口编号对应的身份表编号。非负编号是 CGWindowID，返回 `None`。
 pub fn identity_of_window(window: i64) -> Option<u64> {
     (window < 0).then(|| window.unsigned_abs())
 }
 
-/// `windows[at]` 此刻在屏幕上是否一点都看不见：不在屏幕上（最小化、隐藏、在别的桌面空间），
-/// 或矩形被层叠序在它前面、在屏幕上且不全透明的窗口完全盖住。`windows` 从前到后排列。
+/// `windows[at]` 当前在屏幕上是否完全不可见：不在屏幕上（最小化、隐藏、位于其他桌面空间），
+/// 或矩形被层叠序在其之前、位于屏幕上且非完全透明的窗口完全遮挡。`windows` 从前到后排列。
 pub fn covered(at: usize, windows: &[CgWindow]) -> bool {
     let target = &windows[at];
     if !target.on_screen {
@@ -111,8 +111,8 @@ pub fn covered(at: usize, windows: &[CgWindow]) -> bool {
     fully_covered(bounds, &covers)
 }
 
-/// 落点 `at`（点）处接住指针的窗口编号：`windows` 从前到后第一个属于进程 `pid`、在屏幕上、
-/// 不全透明、矩形含这个点的窗口。`pid` 是 AX 命中测试认出的应用，见文件头第 4 条。
+/// 落点 `at`（点）处接收指针的窗口编号：`windows` 中从前到后第一个属于进程 `pid`、位于屏幕上、
+/// 非完全透明、矩形包含该点的窗口。`pid` 是 AX 命中测试确定的应用，见文件头第 4 条。
 pub fn hit(at: (f64, f64), windows: &[CgWindow], pid: i32) -> Option<u32> {
     let point = ScreenPoint {
         x: at.0.floor() as i32,
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(cg_of(0, &[ax(11, moved)], &cgs), None);
     }
 
-    /// 同一进程两个同位置同尺寸的窗口（原生标签页）：哪个对哪个判不出来，两个都不对应。
+    /// 同一进程中两个位置与尺寸相同的窗口（原生标签页）：无法判定对应关系，两个都不对应。
     #[test]
     fn two_identical_windows_of_one_process_stay_unassociated() {
         let cgs = [cg(41, 10, FRAME), cg(42, 10, FRAME)];
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(ax_of(0, &axs, &cgs), Err(Unmatched::Ambiguous(2)));
     }
 
-    /// 一个 AX 窗口对上两个 CG 窗口同样不算，哪怕从 CG 一侧看每个都只有一个候选。
+    /// 一个 AX 窗口匹配两个 CG 窗口时同样不视为对应，即使从 CG 一侧看每个都只有一个候选。
     #[test]
     fn one_ax_window_against_two_cg_windows_is_ambiguous() {
         let cgs = [cg(41, 10, FRAME), cg(42, 10, FRAME)];
@@ -186,7 +186,7 @@ mod tests {
         assert_eq!(cg_of(0, &axs, &cgs), None);
     }
 
-    /// 菜单栏、程序坞这类非 0 层窗口不参与对应；读不出位置尺寸的 AX 窗口也不参与。
+    /// 菜单栏、程序坞等非 0 层窗口不参与对应；无法读取位置尺寸的 AX 窗口也不参与。
     #[test]
     fn only_layer_zero_windows_with_a_frame_take_part() {
         let mut bar = cg(41, 10, FRAME);
@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(identity_of_window(0), None);
     }
 
-    /// 被前面的窗口完全盖住、或不在屏幕上都算看不见；露出一条边就不算。
+    /// 被前方的窗口完全遮挡或不在屏幕上均视为不可见；露出一条边即不视为不可见。
     #[test]
     fn covered_needs_the_windows_in_front() {
         let target = cg(42, 10, FRAME);
@@ -222,7 +222,7 @@ mod tests {
             },
         );
         assert!(covered(1, &[cover.clone(), target.clone()]));
-        // 同一个窗口排在后面就不遮挡它。
+        // 同一个覆盖窗口排在目标之后时不遮挡目标。
         assert!(!covered(0, &[target.clone(), cover.clone()]));
         let partial = cg(
             41,
@@ -235,7 +235,7 @@ mod tests {
             },
         );
         assert!(!covered(1, &[partial, target.clone()]));
-        // 全透明的窗口不算遮挡。
+        // 完全透明的窗口不视为遮挡。
         let glass = CgWindow {
             alpha: 0.0,
             ..cover
@@ -248,8 +248,8 @@ mod tests {
         assert!(covered(0, &[hidden]));
     }
 
-    /// 落点接住的是那个应用在层叠序里最上面、矩形含落点的窗口；别的应用的窗口不算，
-    /// 哪怕它排在更前面：AX 已经认定落点归这个应用。
+    /// 接收落点的是该应用在层叠序中最上层、矩形包含落点的窗口；其他应用的窗口不计入，
+    /// 即使其排在更前方：AX 已判定落点属于该应用。
     #[test]
     fn a_hit_takes_the_frontmost_window_of_the_hit_application() {
         let overlay = CgWindow {
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(hit((350.5, 120.0), &stack, 10), Some(41));
         assert_eq!(hit((120.0, 90.0), &stack, 10), Some(42));
         assert_eq!(hit((120.0, 90.0), &stack, 99), Some(40));
-        // 矩形外、别的进程、看不见的窗口都不接。
+        // 矩形外、其他进程、不可见的窗口均不接收落点。
         assert_eq!(hit((10.0, 10.0), &stack, 10), None);
         assert_eq!(hit((120.0, 90.0), &stack, 11), None);
         let gone = CgWindow {
