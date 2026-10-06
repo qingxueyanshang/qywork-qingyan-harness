@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * 把 `qy` 编译成单文件二进制，并按 Tauri 要求的命名放进 sidecar 目录
+ * 将 `qy` 编译为单文件二进制，并按 Tauri 要求的命名放入 sidecar 目录
  * （`externalBin` 的命名规则见 `external-bin.ts`）。
  *
  *   bun run scripts/build-sidecar.ts
@@ -15,18 +15,18 @@ const ENTRY = join(ROOT, 'packages/cli/src/index.ts')
 const ICON = join(ROOT, 'apps/desktop/src-tauri/icons/icon.ico')
 
 /**
- * Windows PE 版本信息。仅在编译目标为 Windows 时传。
+ * Windows PE 版本信息。仅在编译目标为 Windows 时传入。
  *
- * 一个字段都不传的产物会原样带着 Bun 运行时自己的资源段：ProductName=Bun、
+ * 不传入任何字段时，产物保留 Bun 运行时自身的资源段：ProductName=Bun、
  * CompanyName=Oven、OriginalFilename=bun.exe。文件属性、任务管理器和杀毒软件
- * 因此把 sidecar 标成 Bun。补齐这些字段只修正文件归属，它不是代码签名，
+ * 因此把 sidecar 标识为 Bun。补齐这些字段只修正文件归属，不是代码签名，
  * 不建立任何系统信任。
  *
- * 六个字段必须一起给：bun build 只覆盖显式传入的字段，漏掉的保留 Bun 的值。
+ * 六个字段必须同时传入：bun build 只覆盖显式传入的字段，遗漏的字段保留 Bun 的值。
  * 实测只传 `--windows-title` 时，CompanyName 仍是 Oven、LegalCopyright 仍指向 bun.com。
  *
- * `--windows-version` 只收四段数字，而 VERSION 是 semver 且允许预发布后缀
- * （`scripts/sync-version.ts` 的 SEMVER）。必须先截掉后缀再补第四段，
+ * `--windows-version` 只接受四段数字，而 VERSION 是 semver 且允许预发布后缀
+ * （`scripts/sync-version.ts` 的 SEMVER）。必须先去除后缀再补第四段，
  * 否则 bun build 直接拒绝该参数。
  */
 function windowsMetadata(version: string): string[] {
@@ -42,8 +42,8 @@ function windowsMetadata(version: string): string[] {
 }
 
 /**
- * `--outdir <目录>`（相对仓库根）：产物落到那里而不是 `bin/`，文件名不变。
- * 门禁用它：门禁只读，而开发实例运行期间 `bin/` 里的产物被占用、删不掉。
+ * `--outdir <目录>`（相对仓库根）：产物写入该目录而不是 `bin/`，文件名不变。
+ * 门禁使用该参数：门禁只读，而开发实例运行期间 `bin/` 中的产物被占用、无法删除。
  */
 function outdirArg(): string | null {
   const i = process.argv.indexOf('--outdir')
@@ -60,20 +60,20 @@ async function main(): Promise<number> {
 
   process.stdout.write(`编译 sidecar → ${outfile}\n`)
 
-  // 版本号在编译期内联。运行时读 VERSION 文件在单文件二进制里必然失败——
-  // 相对路径解析不到打包外的文件，实测输出会变成兜底的 0.0.0。
+  // 版本号在编译期内联。运行时在单文件二进制中读取 VERSION 文件必然失败：
+  // 相对路径无法解析到打包之外的文件，实测输出会变为后备值 0.0.0。
   const version = (await Bun.file(join(ROOT, 'VERSION')).text()).trim()
 
-  // 用当前进程的 Bun 可执行文件，不按 PATH 解析 `bun`：npm 安装的 Bun 在 PATH 上先命中 `bun.cmd`
-  // 包装，Bun 1.4.2 拒绝把含引号的参数（下面的 `--define`）传给 .cmd，编译直接失败。
+  // 使用当前进程的 Bun 可执行文件，不按 PATH 解析 `bun`：npm 安装的 Bun 在 PATH 上首先匹配 `bun.cmd`
+  // 包装，Bun 1.4.2 拒绝把含引号的参数（下方的 `--define`）传给 .cmd，编译直接失败。
   const proc = Bun.spawn(
     [
       process.execPath,
       'build',
       ENTRY,
       '--compile',
-      // minify 对启动速度没有帮助（单文件二进制里已是字节码），
-      // 但能减小体积，而体积正是选 Tauri 的理由之一。
+      // minify 对启动速度没有帮助（单文件二进制中已是字节码），
+      // 但能减小体积，而体积正是选择 Tauri 的理由之一。
       '--minify',
       '--sourcemap',
       '--define',
@@ -90,7 +90,7 @@ async function main(): Promise<number> {
   const size = (await Bun.file(outfile).stat()).size
   process.stdout.write(`完成：${(size / 1024 / 1024).toFixed(1)} MB\n`)
 
-  // 立刻自检一次：编译产物跑不起来的话，等到打包完再发现代价太大。
+  // 编译后立即自检：编译产物无法运行时，到打包完成后才发现代价太大。
   const check = Bun.spawn([outfile, '--version'], { stdout: 'pipe', stderr: 'pipe' })
   const reported = (await new Response(check.stdout).text()).trim()
   if ((await check.exited) !== 0) {
@@ -98,8 +98,8 @@ async function main(): Promise<number> {
     return 1
   }
   if (reported !== version) {
-    // 版本号对不上说明 --define 没生效，产物会在用户那里报一个假版本，
-    // 排查线上问题时这是最误导人的一类信息。
+    // 版本号不一致说明 --define 未生效，产物会在用户端报告错误的版本号，
+    // 这是排查线上问题时误导性最强的一类信息。
     process.stderr.write(`版本号未内联：期望 ${version}，实得 ${reported}\n`)
     return 1
   }

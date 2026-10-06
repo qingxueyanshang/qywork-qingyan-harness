@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * 附件链路的界面检查：粘贴 / 拖入 → chip 与缩略图 → 落盘位置 → 删会话清目录。
+ * 附件链路的界面检查：粘贴 / 拖入 → chip 与缩略图 → 落盘位置 → 删除会话后清理目录。
  *
- * **为什么要有这个脚本。** 这条链路里**有四件事 `bun test` 一件都碰不到**：浏览器的粘贴与拖放事件、
- * 跨源预检、CSS 定尺、以及「附件目录随会话一起删」这个跨进程的副作用。
- * 它们各自坏掉的表现都不报错——粘贴之后什么都不发生、缩略图把行撑高、
- * 目录留在盘上，全都要人盯着才看得见。
+ * **本脚本的用途。** 该链路中**有四项行为 `bun test` 无法覆盖**：浏览器的粘贴与拖放事件、
+ * 跨源预检、CSS 固定尺寸，以及「附件目录随会话一起删除」这一跨进程副作用。
+ * 这四项出错时都不报错：粘贴之后无任何反应、缩略图撑高所在行、
+ * 目录残留在磁盘上，只能通过人工检查发现。
  *
- * 装配照 `shoot-ui.mjs`：**Node 驱 Playwright、Bun 起服务**。Bun 在 Windows 上
- * 对 `--remote-debugging-pipe` 的 fd 3/4 支持不全，`chromium.launch()` 会挂到超时。
+ * 装配方式与 `shoot-ui.mjs` 相同：**Node 驱动 Playwright、Bun 启动服务**。Bun 在 Windows 上
+ * 对 `--remote-debugging-pipe` 的 fd 3/4 支持不完整，`chromium.launch()` 会阻塞直至超时。
  *
- * **两条驱不动的。** 桌面外壳的拖放（`tauri://drag-drop`）与原生多选（`pick_files`）**只在 Tauri
- * 里存在**，Playwright 驱的是浏览器，那两个事件不会发。要验得起桌面 app
- * 手动做一次。这里覆盖的是浏览器那条路——它也是手机端唯一的路。
+ * **无法驱动的两项。** 桌面外壳的拖放（`tauri://drag-drop`）与原生多选（`pick_files`）**只在 Tauri
+ * 中存在**，Playwright 驱动的是浏览器，不会触发这两个事件。验证这两项需要启动桌面应用
+ * 手动操作一次。本脚本覆盖浏览器路径，它也是手机端唯一的路径。
  *
  *   node scripts/check-attachments.mjs
  */
@@ -27,7 +27,7 @@ import { chromium } from 'playwright'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WS = join(ROOT, '.tmp', 'attach-ws')
 
-/** 1×1 的 PNG。够小又是真图——`isInlineImage` 按扩展名判，内容只要能解码就行。 */
+/** 1×1 的 PNG，体积小且是有效图片：`isInlineImage` 按扩展名判定，内容只需能够解码。 */
 const PNG =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
@@ -57,7 +57,7 @@ async function startServer() {
       '--static',
       join(ROOT, 'apps/web/dist'),
       '--print-token',
-      // Windows 上 shell:true 时 proc 是 cmd.exe，kill 杀的是壳不是 bun。
+      // Windows 上 shell:true 时 proc 是 cmd.exe，kill 终止的是 shell 进程而不是 bun。
       '--parent-pid',
       String(process.pid),
     ],
@@ -65,7 +65,7 @@ async function startServer() {
       cwd: ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
-      // 配置与账本一起指到临时目录：附件落点就在它下面，检查才有的可看。
+      // 配置与账本一并指向临时目录：附件保存在该目录下，检查才有可核对的内容。
       env: { ...process.env, QYWORK_HOME: WS },
     },
   )
@@ -98,7 +98,7 @@ async function startServer() {
   })
 }
 
-/** 把一张 PNG 造成 `File`，按 `how` 走粘贴或拖放。两条都要走浏览器的真事件。 */
+/** 将一张 PNG 构造为 `File`，按 `how` 执行粘贴或拖放。两种方式都必须使用浏览器的真实事件。 */
 function feed(page, how, name) {
   return page.evaluate(
     ([b64, kind, fileName]) => {
@@ -130,8 +130,8 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
   page.on('pageerror', (e) => bad(`页面抛异常：${e.message.slice(0, 120)}`))
 
-  // 令牌走 fragment，与手机扫码进来的路径一致。
-  // **不用 `networkidle`**：WebSocket 是常驻连接，那个条件永远不会 settle，
+  // 令牌经由 fragment 传递，与手机扫码进入的路径一致。
+  // **不使用 `networkidle`**：WebSocket 是常驻连接，该条件永远不会满足，
   // 脚本会静默阻塞直至超时。
   await page.goto(`http://127.0.0.1:${port}/#t=${token}`, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector('.composer-input', { timeout: 20_000 })
@@ -141,13 +141,13 @@ try {
   } else ok('页面起来了，WebSocket 已连上')
 
   // ── 粘贴 ──
-  // 这一步同时在验 CORS 预检：`x-attachment-name` 不在放行名单里的话，
-  // 上传请求不会发出，chip 永远不出现（表现是一句裸的 Failed to fetch）。
+  // 该步骤同时验证 CORS 预检：`x-attachment-name` 不在允许列表中时，
+  // 上传请求不会发出，chip 不会出现（仅报 Failed to fetch）。
   await feed(page, 'paste', 'image.png')
   await page.waitForSelector('.attach-chip', { timeout: 15_000 })
   ok('粘贴：chip 出现（同时验证预检放行 x-attachment-name）')
 
-  // ── 拖入（浏览器那条路；桌面外壳走 tauri://drag-drop，这里驱不动）──
+  // ── 拖入（浏览器路径；桌面外壳经由 tauri://drag-drop，此处无法驱动）──
   await feed(page, 'drop', 'dropped.png')
   await page.waitForFunction(() => document.querySelectorAll('.attach-chip').length >= 2, {
     timeout: 15_000,
@@ -159,7 +159,7 @@ try {
   if (shown.length === 2) ok(`两个 chip 各有名字：${shown.join(' / ')}`)
   else bad(`chip 名字只渲染出 ${shown.length} 个：${JSON.stringify(names)}`)
 
-  // ── 定尺（B9：尺寸不许随内容变）──
+  // ── 固定尺寸（B9：尺寸不随内容变化）──
   const thumbs = await page.locator('.attach-chip .attach-thumb').all()
   if (thumbs.length < 2) bad(`缩略图格子只有 ${thumbs.length} 个`)
   const boxes = await Promise.all(thumbs.map((t) => t.boundingBox()))
@@ -172,8 +172,8 @@ try {
   else bad(`只有 ${imgs} 个格子渲染出了图`)
 
   // ── 发送 ──
-  // 乐观插入会先把带附件的用户消息推进会话流，不等服务端回执。
-  // 所以即使这个工作区没配可用的模型、这一轮跑不起来，这段渲染照样验得到。
+  // 乐观插入先把带附件的用户消息加入会话流，不等待服务端回执。
+  // 因此即使该工作区未配置可用的模型、本轮无法运行，这部分渲染仍可验证。
   await page.locator('.composer-input').fill('看这两张图')
   await page.locator('.composer-input').press('Enter')
   await page.waitForSelector('.attach-row.sent .attach-chip', { timeout: 15_000 })
@@ -195,7 +195,7 @@ try {
     if (existsSync(join(WS, '.qy', 'attachments'))) bad('工作区里仍然被创建了 .qy/attachments')
     else ok('工作区里没有 .qy/attachments（旧落点已废弃）')
 
-    // ── 删会话 → 目录跟着走 ──
+    // ── 删除会话 → 目录随之删除 ──
     const status = await page.evaluate(
       async ([p, t, id]) => {
         const r = await fetch(`http://127.0.0.1:${p}/api/conversations/${id}`, {

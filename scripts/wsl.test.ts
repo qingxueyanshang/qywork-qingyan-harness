@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import { checkoutDir, parseArgs } from './wsl.ts'
 
 describe('WSL 检出目录', () => {
-  test('缺省为 qywork-wsl，QYWORK_WSL_DIR 给了就用它', () => {
+  test('缺省为 qywork-wsl，设置 QYWORK_WSL_DIR 时使用该值', () => {
     expect(checkoutDir({})).toBe('qywork-wsl')
     expect(checkoutDir({ QYWORK_WSL_DIR: '' })).toBe('qywork-wsl')
     expect(checkoutDir({ QYWORK_WSL_DIR: 'qywork-b1' })).toBe('qywork-b1')
@@ -30,7 +30,7 @@ describe('WSL 入口的参数解析', () => {
     })
   })
 
-  test('缺分隔符、缺命令、多余参数与未知子命令都拒绝', () => {
+  test('缺少分隔符、缺少命令、多余参数与未知子命令均被拒绝', () => {
     for (const args of [
       [],
       ['build'],

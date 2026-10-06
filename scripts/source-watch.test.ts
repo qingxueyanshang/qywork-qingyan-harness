@@ -21,7 +21,7 @@ async function until(check: () => boolean): Promise<void> {
   expect(check()).toBe(true)
 }
 
-test('频繁读取设置源码和修改访问时间不重启，真实编辑仍等运行结束后重启', async () => {
+test('频繁读取源码文件与修改访问时间不触发重启，内容修改仍等到运行结束后重启', async () => {
   const root = mkdtempSync(join(tmpdir(), 'source-watch-'))
   const file = join(root, 'Settings.tsx')
   writeFileSync(file, 'export const value = 1\n')
@@ -46,7 +46,7 @@ test('频繁读取设置源码和修改访问时间不重启，真实编辑仍�
       utimesSync(file, new Date(1_600_000_000_000 + i * 1000), mtime)
       await Bun.sleep(5)
     }
-    // 相同内容重写也不改变正在运行的源码。
+    // 以相同内容重写不改变正在运行的源码。
     writeFileSync(file, 'export const value = 1\n')
     await Bun.sleep(100)
     expect(restarts).toBe(0)

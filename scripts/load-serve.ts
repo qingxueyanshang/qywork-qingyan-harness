@@ -4,12 +4,12 @@
  * 固定负载驱动：模拟 Provider + 真实 `qy serve` 子进程，长时间反复触发定时任务与消息轮次，
  * 期间删除会话、重启服务，并按固定间隔采样进程读数与两库的空间读数。
  *
- * 观测一律只读：进程读数走 PowerShell 的 `Win32_Process`，两库读数走只读 SQLite 连接，
- * 业务改动全部经 HTTP / WebSocket。唯一的例外是服务停止期间制造孤儿正文那一步，
- * 它直接用 `Store` 删会话行——启动回收这条路径没有别的入口能构造出前置状态。
+ * 观测一律只读：进程读数经由 PowerShell 的 `Win32_Process`，两库读数经由只读 SQLite 连接，
+ * 业务改动全部经由 HTTP / WebSocket。唯一的例外是服务停止期间制造孤儿正文的步骤，
+ * 它直接用 `Store` 删除会话行：启动回收路径没有其他入口能构造出前置状态。
  *
- * 产物落 `.tmp/load/`：`samples.csv` 是采样序列，`events.jsonl` 是每次触发/删除/重启的记录，
- * `summary.json` 是收尾汇总。
+ * 产物写入 `.tmp/load/`：`samples.csv` 是采样序列，`events.jsonl` 是每次触发/删除/重启的记录，
+ * `summary.json` 是最终汇总。
  *
  *   bun run scripts/load-serve.ts --minutes 125 --payload-kb 2048
  *   bun run scripts/load-serve.ts seed <db> <工作区> <会话数>
@@ -39,10 +39,10 @@ const BASE = join(ROOT, '.tmp', 'load')
 // ───────────────────────── 数据夹具 ─────────────────────────
 
 /**
- * 给前端量测种一份会话历史。
+ * 为前端测量生成一份会话历史。
  *
- * 形状与真实运行一致：全部经 `repos` 写入，`fileChanges` 挂在 `tool_result` 的 outcome 上，
- * 子任务是带 `parentConversationId` 的子会话——变更页与运行面板读的正是这两处。
+ * 结构与真实运行一致：全部经由 `repos` 写入，`fileChanges` 位于 `tool_result` 的 outcome 上，
+ * 子任务是带 `parentConversationId` 的子会话：变更页与运行面板读取的正是这两处。
  */
 function seed(dbPath: string, workspaceRoot: string, count: number): void {
   const store = new Store({ path: dbPath })
@@ -70,7 +70,7 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
       contextSnapshot: [],
     })
     markRunRunning(store, run.id)
-    // 变更页按轮次分页，一轮里挂 24 条写入才够翻两页以上。
+    // 变更页按轮次分页，一轮包含 24 条写入时才能翻到两页以上。
     appendStep(store, {
       runId: run.id,
       seq: 1,
@@ -104,7 +104,7 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
     finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
   }
 
-  // 变更页按「写过文件的轮」分页，默认一页 10 轮：30 轮才翻得到第三页。
+  // 变更页按「写入过文件的轮次」分页，默认一页 10 轮：30 轮才能翻到第三页。
   {
     const conv = createConversation(store, {
       workspaceId: ws.id,
@@ -161,7 +161,7 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
     }
   }
 
-  // 1 / 4 / 12 并行子任务各一条：运行面板的 childRuns 读的是子会话上的 run。
+  // 1 / 4 / 12 并行子任务各一条：运行面板的 childRuns 读取的是子会话上的 run。
   for (const fanout of [1, 4, 12]) {
     const parent = createConversation(store, {
       workspaceId: ws.id,
@@ -183,15 +183,15 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
       contextSnapshot: [],
     })
     markRunRunning(store, run.id)
-    // 先建子会话再写派活 step：`nodes` 的每一格要带 `subagentId`，
-    // 派活卡的图按它画格子，没有这一份就退成一个泛节点，量不到扇出。
+    // 先创建子会话再写入派发任务 step：`nodes` 的每一项必须带 `subagentId`，
+    // 派发任务卡的图按它绘制节点，缺少它时退化为一个通用节点，无法测量扇出。
     const children: { id: ConversationId; label: string }[] = []
     for (let k = 0; k < fanout; k++) {
       const child = createConversation(store, {
         workspaceId: ws.id,
         ...ref,
         title: `子任务 ${k + 1}`,
-        // 机器会话带 source，`listConversations` 才把它挡在侧栏之外，与真实派活同形。
+        // 机器会话带 source，`listConversations` 才会将其排除在侧栏之外，与真实派发任务结构相同。
         source: 'temp',
         parentConversationId: parent.id,
       })
@@ -212,8 +212,8 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
       runId: run.id,
       seq: 1,
       kind: 'tool_action',
-      // 扇出图只有 `workflow` 画得出来：`subagent` 的图恒为一格，
-      // 格子由 `args.nodes` 决定，进度由 payload 的 `nodes` 按同一批 id 认领。
+      // 扇出图只有 `workflow` 能够绘制：`subagent` 的图恒为一个节点，
+      // 节点由 `args.nodes` 决定，进度由 payload 的 `nodes` 按同一批 id 认领。
       toolName: 'workflow',
       toolCallId: `d${fanout}`,
       status: 'success',
@@ -305,7 +305,7 @@ const USAGE = {
   input_tokens_details: { cached_tokens: 0 },
 }
 
-/** 第一轮：调 run_command 产出一份带唯一前缀的大输出。前缀保证正文库不会按内容去重。 */
+/** 第一轮：调用 run_command 产出一份带唯一前缀的大输出。前缀保证正文库不会按内容去重。 */
 function toolTurn(n: number, command: string): string {
   return sse([
     { type: 'response.created', response: { id: `resp_${n}` } },
@@ -327,7 +327,7 @@ function toolTurn(n: number, command: string): string {
   ])
 }
 
-/** 第二轮：纯文本收尾。 */
+/** 第二轮：以纯文本结束。 */
 function textTurn(n: number): string {
   return sse([
     { type: 'response.created', response: { id: `resp_${n}` } },
@@ -349,7 +349,7 @@ interface ProcSample {
 }
 
 /**
- * 一次 PowerShell 取全 serve 进程的读数。
+ * 一次 PowerShell 调用取得全部 serve 进程的读数。
  *
  * `Get-NetTCPConnection` 在部分环境不可用，失败时该项记 null 而不是让整次采样失败。
  */
@@ -403,7 +403,7 @@ interface DbSample {
   scheduleConvClusters: number
 }
 
-/** 两库读数。只读连接，每次重开——服务重启期间文件可能刚被换过句柄。 */
+/** 两库读数。使用只读连接，每次重新打开：服务重启期间文件句柄可能刚被更换。 */
 async function sampleDb(mainPath: string, contentPath: string): Promise<DbSample | null> {
   const mainBytes = (await Bun.file(mainPath).exists()) ? Bun.file(mainPath).size : 0
   const contentBytes = (await Bun.file(contentPath).exists()) ? Bun.file(contentPath).size : 0
@@ -434,7 +434,7 @@ async function sampleDb(mainPath: string, contentPath: string): Promise<DbSample
         WHERE b.chunk_count <> (SELECT COUNT(*) FROM c.content_chunks h WHERE h.content_hash = b.content_hash)`),
       orphanBlobs: num(`SELECT COUNT(*) AS n FROM c.content_blobs b
         WHERE NOT EXISTS (SELECT 1 FROM intermediate_resources r WHERE r.content_hash = b.content_hash)`),
-      // 同一到期时机重复触发的形状是「两条同名会话建在同一秒内」。取最大簇大小，1 = 没有重复。
+      // 同一到期时机重复触发的表现是「两条同名会话在同一秒内创建」。取最大簇大小，1 表示没有重复。
       scheduleConvClusters: num(`SELECT coalesce(MAX(n), 1) AS m FROM (
         SELECT COUNT(*) AS n FROM conversations
         WHERE title IN (SELECT title FROM schedules)
@@ -521,7 +521,7 @@ async function startServe(home: string, cwd: string): Promise<Serve> {
   }
   reader.releaseLock()
   if (!token || !port) throw new Error('serve 启动超时或未打印令牌')
-  // 剩余 stdout 持续排空，管道写满会让服务阻塞在写日志上。
+  // 持续排空剩余 stdout，管道写满会使服务阻塞于日志写入。
   void (async () => {
     for await (const _ of proc.stdout) void _
   })().catch(() => {})
@@ -584,7 +584,7 @@ async function main(): Promise<number> {
       turn++
       if (mode.current === 'abort' && !second) {
         stats.abort++
-        // 只发开头就断流：适配器按流意外结束处理，run 落错误终态。
+        // 只发送开头即断开流：适配器按流意外结束处理，run 进入错误终态。
         return new Response(sse([{ type: 'response.created', response: { id: `resp_${turn}` } }]), {
           headers: { 'content-type': 'text/event-stream' },
         })
@@ -609,7 +609,7 @@ async function main(): Promise<number> {
           models: { 'deepseek-v4-flash': {} },
         },
       },
-      // full 是为了让 run_command 不等权限回执：负载验的是状态与空间，不是裁决。
+      // 使用 full 是为了让 run_command 不等待权限回执：负载验证的是状态与空间，不是裁决。
       mode: 'full',
     }),
     'utf8',
@@ -623,8 +623,8 @@ async function main(): Promise<number> {
   /*
    * 夹具：两个工作区与两条一分钟间隔的任务。
    *
-   * HTTP 没有建任务的入口——任务由模型工具 `create_schedule` 建，界面只列出、删除与试跑。
-   * 负载要的是确定的触发节奏，所以这里直接经仓储建，`created_at` 回拨到两分钟前让首轮立即到期。
+   * HTTP 没有创建任务的入口：任务由模型工具 `create_schedule` 创建，界面只列出、删除与试运行。
+   * 负载需要确定的触发节奏，因此此处直接经由仓储创建，`created_at` 回拨到两分钟前使首轮立即到期。
    */
   const fixture = new Store({ path: mainDb })
   const workspaces = {
@@ -637,7 +637,7 @@ async function main(): Promise<number> {
     ['A', wsA],
     ['B', wsB],
   ] as const) {
-    // 任务绑定建它的那条会话，触发时消息发进去。负载里没有模型工具那一步，这里补一条。
+    // 任务绑定创建它的会话，触发时消息发送到该会话。负载中没有模型工具调用的步骤，此处补建该会话。
     const home = createConversation(fixture, {
       workspaceId: workspaces[name].id,
       provider: 'fake',
@@ -716,8 +716,8 @@ async function main(): Promise<number> {
     return d
   }
 
-  /** 停掉两条任务、等在跑的收尾，取三次静止读数，再恢复。 */
-  /** 启停一条任务。只发 `enabled`，与面板的开关走同一条部分更新路径。 */
+  /** 停用两条任务，等待运行中的任务结束，取得三次静止读数后再恢复。 */
+  /** 启用或停用一条任务。只发送 `enabled`，与面板的开关使用同一条部分更新路径。 */
   const setEnabled = async (name: 'A' | 'B', enabled: boolean): Promise<void> => {
     const res = await api(`/api/schedules/${scheduleIds[name]}?ws=${wsIds[name]}`, {
       method: 'PUT',
@@ -742,7 +742,7 @@ async function main(): Promise<number> {
     for (const name of ['A', 'B'] as const) await setEnabled(name, true)
   }
 
-  /** 一次消息轮次。`interrupt` 为真时在收到首个工具事件后打断。 */
+  /** 一次消息轮次。`interrupt` 为真时在收到首个工具事件后中断。 */
   const driveRun = async (interrupt: boolean): Promise<string> => {
     const made = await jsonOf<{ conversation: { id: string } }>(
       await api(`/api/conversations?ws=${wsIds.A}`, {
@@ -790,16 +790,16 @@ async function main(): Promise<number> {
   const stopServe = async (): Promise<void> => {
     serve.proc.kill()
     await serve.proc.exited
-    // Windows 上 SQLite 句柄释放有延迟，重开之前留一格。
+    // Windows 上 SQLite 句柄释放有延迟，重新打开之前留出间隔。
     await Bun.sleep(1500)
   }
 
   /*
    * 每次触发的核对。
    *
-   * `lastRunAt` 每推进一次就是一次认领；同一次推进必须只对应一条新会话，
-   * 而那条会话上的 Run 必须在超时之前落到终态。两条都由这一份记录裁决，
-   * 不从会话总数反推——删除会把计数改回去。
+   * `lastRunAt` 每推进一次即为一次认领；同一次推进必须只对应一条新会话，
+   * 且该会话上的 Run 必须在超时之前进入终态。两项都由这份记录判定，
+   * 不从会话总数反推：删除会使计数减少。
    */
   interface TriggerRecord {
     lastRunAt: number
@@ -835,7 +835,7 @@ async function main(): Promise<number> {
         rec.conversationIds.add(row.lastRun.conversationId)
         rec.pending.push({ conversationId: row.lastRun.conversationId, at: Date.now() })
       }
-      // 已落终态的从待核对里摘掉；超时仍不是终态的记一条失败。
+      // 已进入终态的从待核对列表中移除；超时后仍未进入终态的记录一条失败。
       const settled = new Set(['done', 'failed', 'interrupted'])
       const still: { conversationId: string; at: number }[] = []
       for (const p of rec.pending) {
@@ -867,8 +867,8 @@ async function main(): Promise<number> {
       note('run', { cycle, mode: mode.current, outcome })
       await pollSchedules()
 
-      // 删掉最老的几条已收尾会话并留下四条：净增量压到零附近，回收与页复用才进得了稳态。
-      // 列表按 updated_at DESC，末尾即最老。两个工作区轮着删，跨工作区那条路径同样走到。
+      // 删除最早的几条已结束会话并保留四条：净增量接近零，回收与页复用才能进入稳态。
+      // 列表按 updated_at DESC 排序，末尾即最早。两个工作区轮流删除，跨工作区路径同样得到执行。
       {
         const target = cycle % 4 === 0 ? 'B' : 'A'
         const list = await jsonOf<{ conversations: { id: string; title: string }[] }>(
@@ -897,8 +897,8 @@ async function main(): Promise<number> {
         nextRestart = Date.now() + args.restartMin * 60_000
         const before = await sample('重启前')
         await stopServe()
-        // 服务停止期间删掉一条会话：级联清掉引用行，正文成为孤儿，
-        // 下次启动的回收是唯一能清掉它的路径。
+        // 服务停止期间删除一条会话：级联删除引用行，正文成为孤儿，
+        // 下次启动时的回收是唯一能清理它的路径。
         const store = new Store({ path: mainDb })
         const victim = store.db
           .query<{ id: string }, []>(
@@ -945,8 +945,8 @@ async function main(): Promise<number> {
   } finally {
     await stopServe().catch(() => {})
     provider.stop(true)
-    // 服务停掉之后再读正文：把每条仍被引用的资源真读一段回来，
-    // 只查引用行只能证明账本自洽，证明不了字节还在。
+    // 服务停止之后再读取正文：对每条仍被引用的资源实际读取一段，
+    // 只查询引用行只能证明账本自洽，无法证明字节仍然存在。
     const readback = { checked: 0, missing: 0, sizeMismatch: 0 }
     try {
       const store = new Store({ path: mainDb })

@@ -11,8 +11,8 @@ const script = join(import.meta.dir, 'start.ps1')
 const quote = (value: string) => `'${value.replaceAll("'", "''")}'`
 const encoded = (source: string) => Buffer.from(source, 'utf16le').toString('base64')
 /**
- * 等 Windows PowerShell 5.1 起来并输出的上限。新建的 CI 虚拟机上它首次启动超过 5 秒
- * （2026-09-23 CI 上两条用例都停在 5 秒的上限），本机热启动约 0.1 秒。
+ * 等待 Windows PowerShell 5.1 启动并输出的时间上限。新建的 CI 虚拟机上其首次启动超过 5 秒
+ * （2026-09-23 CI 上两条用例均在 5 秒上限处超时），本机热启动约 0.1 秒。
  */
 const POWERSHELL_START_MS = 30_000
 
@@ -30,7 +30,7 @@ async function until(check: () => boolean): Promise<void> {
 }
 
 test.skipIf(!windows)(
-  'PATH 只有 npm 的 bun.cmd 时，解析到真正的 bun.exe',
+  'PATH 只有 npm 的 bun.cmd 时，解析到实际的 bun.exe',
   async () => {
     const dir = mkdtempSync(join(tmpdir(), 'start npm shim '))
     writeFileSync(join(dir, 'bun.cmd'), `@echo off\r\n"${process.execPath}" %*\r\n`)
@@ -69,7 +69,7 @@ Resolve-Bun
 )
 
 test.skipIf(!windows)(
-  '真正缺少 Bun 时保留错误，回车后以失败码退出',
+  '确实缺少 Bun 时保留错误，按回车后以失败码退出',
   async () => {
     const dir = mkdtempSync(join(tmpdir(), 'start missing bun '))
     const proc = Bun.spawn(

@@ -1,22 +1,22 @@
 /**
- * 什么时候可以换代码。
+ * 判定何时可以替换代码。
  *
- * 从 `dev.ts` 里抽出来是因为**它在脚本顶层就测不到**：防抖合并、有活时不换、
- * 换的过程中又来改动这三件事全是时序，而时序错了的表现是「偶尔打断一轮」——
- * 那种 bug 复现不出来。这里只留策略，起进程/杀进程/等就绪由调用方注入。
+ * 从 `dev.ts` 中独立出来，因为放在脚本顶层无法测试：防抖合并、有进行中的 run 时不替换、
+ * 替换过程中出现新改动，这三项均依赖时序，时序错误表现为偶发中断一轮，
+ * 难以复现。本文件只保留策略，启动进程、结束进程、等待就绪由调用方注入。
  *
- * 判据是两条，缺一不可：**文件变了**，**且这个 sidecar 手上没有没跑完的 run**。
- * 只看第一条就是 `bun --watch` 的行为，代价是把跑到一半的那轮从中间掐断。
+ * 判据有两条，缺一不可：文件已变化，且该 sidecar 没有未执行完毕的 run。
+ * 只看第一条即为 `bun --watch` 的行为，代价是中断执行到一半的那一轮。
  */
 
 export interface ReloadDeps {
-  /** 这个 sidecar 手上还有没有没跑完的 run。 */
+  /** 该 sidecar 是否还有未执行完毕的 run。 */
   busy(): boolean | Promise<boolean>
-  /** 真去换代码：杀掉旧的、起新的、等就绪。抛错不致命，下一次改动还会再来。 */
+  /** 执行代码替换：结束旧进程、启动新进程、等待就绪。抛错不致命，下一次改动会再次触发。 */
   restart(): Promise<void>
-  /** 一次保存常常连着来好几个事件（编辑器先写临时文件再改名），攒一下再动。 */
+  /** 一次保存通常连续产生多个事件（编辑器先写临时文件再改名），合并后再处理。 */
   debounceMs: number
-  /** 手上有活时多久回来看一眼。 */
+  /** 有任务进行时的复查间隔。 */
   idlePollMs: number
   setTimer(fn: () => void, ms: number): unknown
   clearTimer(handle: unknown): void
@@ -24,22 +24,22 @@ export interface ReloadDeps {
 }
 
 export interface ReloadSupervisor {
-  /** 有源码变了。反复调用只会合并成一次。 */
+  /** 源码已变化。多次调用合并为一次处理。 */
   onChange(): void
   /**
-   * sidecar 自己没了（崩溃、被别的进程杀掉、内部走到 `process.exit`）。
+   * sidecar 自行退出（崩溃、被其他进程结束、内部执行到 `process.exit`）。
    *
-   * **不拉起来的代价是一个连不上后端的空壳界面**：WebSocket 断了，前端只会数
-   * 「已 N 秒没有新数据」，停止按钮点下去没有对端接，用户唯一的出路是重启应用
-   * ——而他并不知道该重启，因为窗口看起来一切正常。
+   * 不重新启动时界面无法连接后端：WebSocket 断开后，前端只显示
+   * 「已 N 秒没有新数据」，停止按钮没有接收端，只能重启应用恢复，
+   * 而窗口外观正常，用户无从得知需要重启。
    *
-   * 连着起不来就不再试：起不来通常是端口还被占着或者代码本身编译不过，
-   * 无限重试只会把终端刷满，而真正的原因在第一条报错里。
+   * 连续启动失败后不再重试：启动失败通常是端口仍被占用或代码本身无法编译，
+   * 无限重试只会填满终端，而真正的原因在第一条报错中。
    */
   onExit(code: number | null): void
 }
 
-/** Windows 控制台中断可能保留 NTSTATUS，也可能被 Bun 截成低 8 位退出码。 */
+/** Windows 控制台中断可能保留 NTSTATUS，也可能被 Bun 截断为低 8 位退出码。 */
 export function isConsoleInterrupt(code: number | null, platform = process.platform): boolean {
   return platform === 'win32' && code !== null && (code === 58 || code >>> 0 === 0xc000013a)
 }
@@ -58,7 +58,7 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
 
   const tick = async (): Promise<void> => {
     timer = null
-    // 正在换的时候又有改动：排到后面去，不要并发两个换代码。
+    // 替换过程中出现新改动：排到之后处理，不并发执行两次替换。
     if (reloading || checking) return schedule(deps.debounceMs)
     const checkedGeneration = generation
     checking = true
@@ -70,26 +70,26 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
     } finally {
       checking = false
     }
-    // 查询期间旧进程可能自己退出，不能拿它的回执再重启刚补起来的新进程。
+    // 查询期间旧进程可能自行退出，不能依据该查询结果再重启刚重新启动的新进程。
     if (checkedGeneration !== generation) return schedule(deps.debounceMs)
     reloading = true
     generation++
     try {
       deps.log('源码已变更且当前无运行中的任务，重启 sidecar')
       await deps.restart()
-      // 换成功了说明这棵源码树是能跑起来的，之前那几次崩溃不再计入。
+      // 替换成功说明当前源码树可以正常运行，此前的崩溃次数不再计入。
       crashes = 0
     } catch (err) {
       deps.log(`重启 sidecar 失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
-      // **必须在 finally 里放**：restart 抛出去而这个标志还立着的话，
-      // 此后每一次改动都只会被排到队尾，不再切换代码，且没有任何提示。
+      // 必须在 finally 中复位：restart 抛错而该标志未复位时，
+      // 此后每次改动都只会排到队尾，不再替换代码，且没有任何提示。
       reloading = false
     }
   }
 
   const onExit = (code: number | null): void => {
-    // 换代码时的退出由 supervisor 自己发起，不是崩溃。
+    // 替换代码时的退出由 supervisor 自身发起，不是崩溃。
     if (reloading) return
     generation++
     crashes++
@@ -115,23 +115,23 @@ export function createReloadSupervisor(deps: ReloadDeps): ReloadSupervisor {
 }
 
 /**
- * 连着起不来几次就放弃。
+ * 连续启动失败达到该次数后放弃。
  *
- * 起不来的原因通常是端口还被占着或者代码本身跑不起来——无限重试只会把终端刷满，
- * 而真正的原因在第一条报错里。数字重置在**成功换过一次代码之后**，不是按时间：
- * 按时间的话一个每 30 秒崩一次的 sidecar 会永远重试下去。
+ * 启动失败的原因通常是端口仍被占用或代码本身无法运行，无限重试只会填满终端，
+ * 而真正的原因在第一条报错中。计数在成功替换一次代码之后重置，不按时间重置：
+ * 按时间重置时，每 30 秒崩溃一次的 sidecar 会无限重试。
  */
 const MAX_CRASH_RESTARTS = 3
 
 /**
- * 这个文件变了算不算「源码变了」。
+ * 判定该文件的变化是否属于源码变化。
  *
- * `dist/` 与 `node_modules/` 也在 `packages` 底下，构建产物落盘不该换代码；
- * `.test.ts` 不在 sidecar 的 import 图里，换了也白换。
+ * `dist/` 与 `node_modules/` 也在 `packages` 下，构建产物落盘不应触发替换代码；
+ * `.test.ts` 不在 sidecar 的 import 图中，替换后不产生效果。
  *
- * 递归 watch 给的是**带子目录的相对路径**（`tools\src\files.ts` 这种形状），
- * 所以这里判得了 `/src/`；要是哪天只拿到文件名，这个过滤会一条都不命中——
- * 表现是「改了源码它就是不换」，而不是报错。
+ * 递归 watch 传入的是带子目录的相对路径（形如 `tools\src\files.ts`），
+ * 因此可以判断 `/src/`；若只取得文件名，该过滤不会命中任何条目，
+ * 结果是修改源码后不替换代码，且不报错。
  */
 export function isSourceChange(file: unknown): boolean {
   if (typeof file !== 'string') return false
@@ -140,11 +140,11 @@ export function isSourceChange(file: unknown): boolean {
 }
 
 /**
- * `apps/web/src` 下面的文件是否会改变正在运行的页面。
+ * `apps/web/src` 下的文件变化是否会改变正在运行的页面。
  *
- * watch 的根已经限定在 web/src，所以这里不用再猜目录；只排除测试。扩展名不设白名单：
- * TSX、CSS、字体和图片都可能进入 Vite 的模块图，漏掉任意一种都会重新制造
- * 「后端已换代、前端还停在上一代」的窗口。
+ * watch 的根已限定在 web/src，因此无需再判断目录，只排除测试。扩展名不设白名单：
+ * TSX、CSS、字体和图片都可能进入 Vite 的模块图，遗漏任意一种都会再次出现
+ * 「后端已替换、前端仍为旧代码」的时间窗口。
  */
 export function isWebSourceChange(file: unknown): boolean {
   if (typeof file !== 'string') return false

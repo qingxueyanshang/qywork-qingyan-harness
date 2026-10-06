@@ -1,14 +1,13 @@
 /**
  * 包依赖方向的结构守卫。
  *
- * 依赖图今天是干净的无环 DAG——但**这件事没有任何检查在守着**。加一条
- * `core → server` 的回边不会有任何报错，等到发现时通常已经绕不回去了。
- * 这个测试就是那个守卫。
+ * 依赖图必须保持为无环 DAG，**本测试是对此的唯一检查**：没有本测试时，添加一条
+ * `core → server` 的回边不会产生任何报错，发现时通常已难以撤回。
  *
- * 判据是**层号**而不是逐包白名单：白名单每加一个依赖就要改一次，改多了就成了
- * 橡皮图章；层号只在「这个包在架构里的位置变了」时才需要动，那本来就该被讨论一次。
+ * 判据是**层号**而不是逐包白名单：白名单每增加一个依赖就要修改一次，修改频繁后即失去审查作用；
+ * 层号只在「该包在架构中的位置改变」时才需要修改，这种改变本应经过讨论。
  *
- * 覆盖范围：`packages/*` 与 `apps/*` 的 package.json 里所有 `@qywork/*` 依赖。
+ * 覆盖范围：`packages/*` 与 `apps/*` 的 package.json 中所有 `@qywork/*` 依赖。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -18,10 +17,10 @@ import { join } from 'node:path'
 const ROOT = join(import.meta.dir, '..')
 
 /**
- * 层号越小越底层。**依赖只能朝小的方向走**，同层之间也不许互相依赖
- * （同层互依 = 它们是一个包，或者层分错了）。
+ * 层号越小越底层。**依赖只能指向层号更小的包**，同层之间也不得互相依赖
+ * （同层互相依赖说明它们应合并为一个包，或层号划分有误）。
  *
- * 新增包必须在这里登记，否则测试直接失败——漏登记不能表现为静默放行。
+ * 新增包必须在此处登记，否则测试直接失败：漏登记不得表现为静默放行。
  */
 const LAYER: Record<string, number> = {
   '@qywork/core': 0,
@@ -35,7 +34,7 @@ const LAYER: Record<string, number> = {
   '@qywork/runtime': 5,
   '@qywork/server': 6,
   '@qywork/cli': 7,
-  // 前端与桌面壳是叶子：谁都不许依赖它们。
+  // 前端与桌面外壳是叶节点：任何包都不得依赖它们。
   '@qywork/web': 90,
   '@qywork/desktop': 90,
 }
@@ -72,12 +71,12 @@ function loadPackages(): Pkg[] {
 describe('包依赖方向', () => {
   const pkgs = loadPackages()
 
-  test('每个工作区包都登记了层号 —— 漏登记不能表现为静默放行', () => {
+  test('每个工作区包都登记了层号，漏登记不得表现为静默放行', () => {
     const missing = pkgs.filter((p) => LAYER[p.name] === undefined).map((p) => p.name)
     expect(missing).toEqual([])
   })
 
-  test('依赖只能朝更底层走，同层之间也不许互依', () => {
+  test('依赖只能指向更底层，同层之间也不得互相依赖', () => {
     const violations: string[] = []
     for (const p of pkgs) {
       const mine = LAYER[p.name]
@@ -113,12 +112,12 @@ describe('包依赖方向', () => {
     expect(cycles).toEqual([])
   })
 
-  test('core 谁都不依赖 —— 它是协议与领域类型，一旦有依赖就不再是底座', () => {
+  test('core 不依赖任何包：它是协议与领域类型，一旦有依赖就不再是最底层', () => {
     const core = pkgs.find((p) => p.name === '@qywork/core')
     expect(core?.deps ?? []).toEqual([])
   })
 
-  test('没有人依赖前端和桌面壳', () => {
+  test('没有包依赖前端和桌面外壳', () => {
     const leaves = ['@qywork/web', '@qywork/desktop']
     const bad = pkgs.filter((p) => p.deps.some((d) => leaves.includes(d))).map((p) => p.name)
     expect(bad).toEqual([])

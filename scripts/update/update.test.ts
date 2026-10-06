@@ -47,7 +47,7 @@ async function fixture() {
   await git(dir, ['clone', remote, root])
   await git(root, ['config', 'user.email', 'update@example.test'])
   await git(root, ['config', 'user.name', 'Update Test'])
-  // 只改当前测试仓库的 URL 重写，下载仍走生产 fetchRelease。
+  // 只修改当前测试仓库的 URL 重写，下载仍使用生产环境的 fetchRelease。
   await git(root, ['config', `url.${pathToFileURL(remote).href}.insteadOf`, SOURCE_URL])
   const head = await git(root, ['rev-parse', 'HEAD'])
   await writeFile(join(remote, 'VERSION'), '1.1.0\n')
@@ -66,7 +66,7 @@ test('只接受正式版本并按数值比较版本', () => {
     expect(() => stableVersion(value)).toThrow()
 })
 
-test('下载只取对象，应用才快进并安装锁定依赖', async () => {
+test('下载只取得对象，应用时才快进并安装锁定依赖', async () => {
   const { root, head, target } = await fixture()
   expect(await fetchRelease(root, '1.1.0')).toBe(target)
   expect(await git(root, ['rev-parse', 'HEAD'])).toBe(head)
@@ -77,7 +77,7 @@ test('下载只取对象，应用才快进并安装锁定依赖', async () => {
   expect(await git(root, ['status', '--porcelain'])).toBe('')
 }, 20_000)
 
-test('未提交文件、其它分支、领先或分叉都保留原源码', async () => {
+test('未提交文件、其他分支、领先或分叉时均保留原源码', async () => {
   const { root, target, head } = await fixture()
   await fetchRelease(root, '1.1.0')
   await writeFile(join(root, 'local.txt'), 'keep me')

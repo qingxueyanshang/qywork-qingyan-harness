@@ -1,27 +1,27 @@
 #!/usr/bin/env bun
 /**
- * 派活事件化的真机复刻：真实模型、真实外部 CLI，服务与账本另起一份，不碰 `~/.qywork`。
+ * 派发任务事件化的真实环境复现：使用真实模型与真实外部 CLI，服务与账本独立启动一份，不访问 `~/.qywork`。
  *
- * 五条路径各占一条会话，共用一个工作区与一份账本：
+ * 每条路径各占一条会话，共用一个工作区与一份账本（`assign` 见 `pathAssign`）：
  *
- * - `6.1` 单派：`subagent` 派出即返回、这一轮当场收尾、子 agent 还在跑；回执作为一条
- *   `origin='subagent'` 的消息起新一轮，超预算时正文里的定位符在新一轮里 `read_resource` 读得回。
- * - `6.2` 注入：父会话在跑时子 agent 完成，回执落成 run 内 `kind:'user'` 的 step，不起新轮。
- * - `6.3` 停止全停：只有子 agent 在跑时按停止，格落中断、忙态回 false、没有回执起轮。
- * - `6.4` 工作流：首派秒回、格逐个落终态、上游齐全发检查点回执、批准后下一批起跑、完成。
- * - `6.5` 重启：子 agent 在跑时杀掉服务进程再起，格被扫成中断、不自动起轮，
- *   下一轮的运行快照里那个子 agent 是「上一轮没跑完」。
+ * - `6.1` 单项派发：`subagent` 派发后立即返回、该轮随即结束、子 agent 仍在运行；回执作为一条
+ *   `origin='subagent'` 的消息发起新一轮，超出预算时正文中的定位符在新一轮中可由 `read_resource` 读取。
+ * - `6.2` 注入：父会话运行中子 agent 完成，回执写入为 run 内 `kind:'user'` 的 step，不发起新一轮。
+ * - `6.3` 全部停止：仅子 agent 运行中时执行停止，节点进入中断、忙态恢复为 false、不由回执发起新一轮。
+ * - `6.4` 工作流：首次派发立即返回、节点逐个进入终态、上游全部完成后发送检查点回执、批准后下一批开始执行、完成。
+ * - `6.5` 重启：子 agent 运行中时结束服务进程再重启，节点被标记为中断、不自动发起新一轮，
+ *   下一轮的运行快照中该子 agent 标为「上一轮未完成」。
  *
- *   bun run scripts/replay-delegation.ts                     # 五条按序跑
- *   bun run scripts/replay-delegation.ts --only=6.1,6.3      # 只跑点名的
+ *   bun run scripts/replay-delegation.ts                     # 全部路径按序运行
+ *   bun run scripts/replay-delegation.ts --only=6.1,6.3      # 只运行指定的路径
  *   bun run scripts/replay-delegation.ts --parent=gemini/gemini-3.8-flash
- *   bun run scripts/replay-delegation.ts --round-min=45      # 一轮最多等多少分钟
+ *   bun run scripts/replay-delegation.ts --round-min=45      # 每轮最长等待分钟数
  *
- * 服务跑在子进程里（`replay-server.ts`），配置（含密钥）由那个进程读 `~/.qywork/config.json`；
- * 令牌走环境变量，两者都不进日志。
+ * 服务运行在子进程中（`replay-server.ts`），配置（含密钥）由该进程读取 `~/.qywork/config.json`；
+ * 令牌经环境变量传递，两者都不进日志。
  *
- * 工作区与账本落 `.tmp/replay-ws/<时间戳>/`，跑完不删；每一行进度同时追加到该目录的
- * `replay.log`：一条路径要跑几分钟到几十分钟，分段查看只能看它。
+ * 工作区与账本位于 `.tmp/replay-ws/<时间戳>/`，执行完毕后不删除；每一行进度同时追加到该目录的
+ * `replay.log`：一条路径需要运行几分钟到几十分钟，分段查看只能依靠该文件。
  */
 
 import { appendFileSync } from 'node:fs'
@@ -50,7 +50,7 @@ import {
 } from '@qywork/store'
 import { observationBudget } from '@qywork/tools'
 
-// ─────────────────────────── 参数与落点 ───────────────────────────
+// ─────────────────────────── 参数与目录 ───────────────────────────
 
 const arg = (name: string): string | undefined =>
   process.argv.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1)
@@ -63,33 +63,33 @@ const SELECTED: PathId[] = (() => {
   if (!raw) return [...ALL_PATHS]
   const picked = raw.split(',').map((s) => s.trim())
   const unknown = picked.filter((p) => !ALL_PATHS.includes(p as PathId))
-  if (unknown.length) throw new Error(`--only 里认不出：${unknown.join('、')}`)
+  if (unknown.length) throw new Error(`--only 中无法识别：${unknown.join('、')}`)
   return ALL_PATHS.filter((p) => picked.includes(p))
 })()
 
 /**
- * 单派那几条路径派哪一种子 agent。事件模型与种类无关；外部 CLI 用的是本机账号，
- * 撞到它自家的用量上限时用 `--subagent=temp` 换成临时子 agent 照样验。
+ * 单项派发路径使用的子 agent 种类。事件模型与种类无关；外部 CLI 使用本机账号，
+ * 触发其自身的用量上限时用 `--subagent=temp` 换用临时子 agent 继续验证。
  */
 const SUBAGENT_KIND: 'cli' | 'temp' = (() => {
   const raw = arg('--subagent') ?? 'cli'
-  if (raw !== 'cli' && raw !== 'temp') throw new Error('--subagent 只认 cli 或 temp')
+  if (raw !== 'cli' && raw !== 'temp') throw new Error('--subagent 只接受 cli 或 temp')
   return raw
 })()
 
-/** 用户原话里点名的那一个：外部 CLI 按 `@cli:id` 点名，临时子 agent 写清 kind 与名字。 */
+/** 用户原话中指定的子 agent：外部 CLI 按 `@cli:id` 指定，临时子 agent 写明 kind 与名字。 */
 const WHO =
   SUBAGENT_KIND === 'cli' ? '@cli:claude' : '一个临时子 agent（kind 填 temp，名字叫「审查员」）'
 
-/** 父会话用哪一对接口 × 模型。某家接口在带回执的往返上静默超时时换一家再跑。 */
+/** 父会话使用的接口 × 模型。某个接口在带回执的往返上静默超时时，换用其他接口重新运行。 */
 const PARENT: ModelRef = (() => {
   const raw = arg('--parent') ?? 'deepseek/deepseek-v4-flash'
   const at = raw.indexOf('/')
-  if (at <= 0) throw new Error('--parent 要写成 provider/model')
+  if (at <= 0) throw new Error('--parent 必须写成 provider/model')
   return { provider: raw.slice(0, at), model: raw.slice(at + 1) }
 })()
 
-/** 每次跑一个带时间戳的目录，旧的一律留着：账本是事后排查子 agent 为什么停的唯一证据。 */
+/** 每次运行使用一个带时间戳的目录，旧目录一律保留：账本是事后排查子 agent 停止原因的唯一证据。 */
 const ROOT = join(
   import.meta.dir,
   '..',
@@ -101,21 +101,21 @@ const WS_DIR = join(ROOT, 'checkout')
 const DB = join(ROOT, 'replay.sqlite3')
 const LOG = join(ROOT, 'replay.log')
 
-/** 服务令牌。只进环境变量与本机 URL，不进日志。 */
+/** 服务令牌。只写入环境变量与本机 URL，不写入日志。 */
 const TOKEN = crypto.randomUUID()
 
-/** 一轮最多等多久。外部 CLI 一次审查跑几分钟是常态。 */
+/** 一轮的最长等待时间。外部 CLI 一次审查通常运行几分钟。 */
 const ROUND_TIMEOUT_MS = Number(arg('--round-min') ?? 45) * 60_000
-/** 派出即返回的上界：这次调用只建记录、起进程。 */
+/** 派发即返回的时间上限：该调用只创建记录、启动进程。 */
 const DISPATCH_MS = 15_000
-/** 一张图从首派到完成的上界。 */
+/** 一个工作流从首次派发到完成的时间上限。 */
 const GRAPH_TIMEOUT_MS = 90 * 60_000
-/** 停止与重启之后再观察这么久，确认没有回执起轮。 */
+/** 停止与重启之后的观察时长，用于确认没有回执发起新一轮。 */
 const QUIET_MS = 60_000
 
 // ─────────────────────────── 记录 ───────────────────────────
 
-/** 终端与 `replay.log` 同时收一份。跑一条路径要几十分钟，中途只能靠这个文件看进度。 */
+/** 同时输出到终端与 `replay.log`。一条路径需要运行几十分钟，中途只能通过该文件查看进度。 */
 function out(line: string): void {
   process.stdout.write(`${line}\n`)
   appendFileSync(LOG, `${line}\n`)
@@ -145,8 +145,8 @@ const oneLine = (text: string, limit = 200): string =>
 // ─────────────────────────── 工作区 ───────────────────────────
 
 /**
- * 一个小 JS 项目，每个文件都短到能被一次读完，且各留着可指认的缺陷，
- * 审查任务因此有确定的产出。跑之前现生成，不进仓库。
+ * 一个小型 JS 项目，每个文件都足够短、可一次读完，且各含可明确指出的缺陷，
+ * 审查任务因此有确定的产出。运行前实时生成，不纳入仓库。
  */
 const FIXTURE: Record<string, string> = {
   'package.json': `{
@@ -251,10 +251,10 @@ console.log('合计', money(stack(subtotal(cart), ['SAVE10'])))
 }
 
 /**
- * 撑过投递闸用的填充文件：内容机械可复述，长度按父模型的单份视图尺寸算。
+ * 用于超出投递限制的填充文件：内容可机械复述，长度按父模型的单份视图尺寸计算。
  *
- * 摘录上限是 `observationBudget` token 折成的字节数，折算比按最坏密度取到 2.5 字节每 token
- * （`@qywork/agent` 的 `tokensToBytes`）。给到 1.3 倍才落得进正文库并在回执里留下定位符。
+ * 摘录上限是 `observationBudget` token 折算的字节数，折算比按最坏密度取 2.5 字节每 token
+ * （`@qywork/agent` 的 `tokensToBytes`）。取 1.3 倍才能写入正文库并在回执中留下定位符。
  */
 function bulkText(viewTokens: number): string {
   const target = Math.ceil(viewTokens * 2.5 * 1.3)
@@ -279,8 +279,8 @@ async function writeFixture(viewTokens: number): Promise<number> {
 // ─────────────────────────── 用户原话 ───────────────────────────
 
 /**
- * 每段都点名派给谁（`WHO`）：系统提示规定外部 CLI 只在用户点名或明确要求时派，
- * 不点名的话模型会建一个临时子 agent。
+ * 每段都指定派发对象（`WHO`）：系统提示规定只在用户点名或明确要求时派发给外部 CLI，
+ * 未指定时模型会创建临时子 agent。
  */
 const MESSAGES = {
   single:
@@ -329,7 +329,7 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
   return Promise.race([
     p,
     Bun.sleep(ms).then<never>(() => {
-      throw new Error(`等 ${label} 超时（${Math.round(ms / 1000)}s）`)
+      throw new Error(`等待 ${label} 超时（${Math.round(ms / 1000)}s）`)
     }),
   ])
 }
@@ -345,11 +345,11 @@ async function drain(stream: ReadableStream<Uint8Array>, onText?: (text: string)
 }
 
 /**
- * 起一份服务。
+ * 启动服务进程。
  *
- * argv 第一位用 `process.execPath` 直接跑那个文件，**不要写成 `bun run <文件>`**：
- * 后者先起一个转发进程再起真正的服务，`kill` 只停得掉转发的那个，
- * 服务进程留着继续写同一份账本——「停掉服务再起」那条路径因此复刻不出来。
+ * argv 第一位用 `process.execPath` 直接运行该文件，不要写成 `bun run <文件>`：
+ * 后者先启动一个转发进程再启动真正的服务，`kill` 只能结束转发进程，
+ * 服务进程继续写入同一份账本，「停止服务再重启」路径因此无法复现。
  */
 async function startService(): Promise<void> {
   const proc = Bun.spawn(
@@ -367,11 +367,11 @@ async function startService(): Promise<void> {
     buffered += text
     const hit = /port=(\d+)/.exec(buffered)
     if (hit) ready.resolve(Number(hit[1]))
-  }).then(() => ready.reject(new Error('服务进程没有报出端口就退出了')))
+  }).then(() => ready.reject(new Error('服务进程未输出端口即退出')))
   void drain(proc.stderr)
-  const port = await withTimeout(ready.promise, 90_000, '服务进程报出端口')
+  const port = await withTimeout(ready.promise, 90_000, '服务进程输出端口')
   service = { proc, port }
-  log(`服务进程已起：pid ${proc.pid}，端口 ${port}`)
+  log(`服务进程已启动：pid ${proc.pid}，端口 ${port}`)
 }
 
 async function stopService(): Promise<void> {
@@ -380,7 +380,7 @@ async function stopService(): Promise<void> {
   service = null
   proc.kill()
   await proc.exited
-  log(`服务进程已停：pid ${proc.pid}`)
+  log(`服务进程已停止：pid ${proc.pid}`)
 }
 
 async function createConversation(title: string): Promise<ConversationId> {
@@ -391,7 +391,7 @@ async function createConversation(title: string): Promise<ConversationId> {
   })
   const body = (await res.json().catch(() => ({}))) as { conversation?: { id?: string } }
   const id = body.conversation?.id
-  if (!id) throw new Error(`建会话失败：HTTP ${res.status}`)
+  if (!id) throw new Error(`创建会话失败：HTTP ${res.status}`)
   return id as ConversationId
 }
 
@@ -407,11 +407,11 @@ type TextDelta = Extract<AgentEvent, { type: 'text.delta' }>
 interface Feed {
   conversationId: ConversationId
   events: AgentEvent[]
-  /** 与 `events` 同下标：收到那条事件的本机时刻。算派出到返回的间隔用。 */
+  /** 与 `events` 同下标：收到对应事件的本机时刻，用于计算派发到返回的间隔。 */
   stamps: number[]
   send(content: string): void
   interrupt(): void
-  /** 服务换了一份之后重新连上并重新订阅。 */
+  /** 服务进程重启后重新连接并重新订阅。 */
   reconnect(): Promise<void>
   close(): void
 }
@@ -546,14 +546,14 @@ function lastIndex(feed: Feed, from: number, hit: (ev: AgentEvent) => boolean): 
   return -1
 }
 
-/** 等一个条件成立。判据落不到某一条事件上时用它。 */
+/** 等待条件成立。判据无法对应到某一条事件时使用。 */
 async function waitUntil(label: string, hit: () => boolean, ms: number): Promise<void> {
   const deadline = Date.now() + ms
   while (Date.now() < deadline) {
     if (hit()) return
     await Bun.sleep(400)
   }
-  throw new Error(`等 ${label} 超时（${Math.round(ms / 1000)}s）`)
+  throw new Error(`等待 ${label} 超时（${Math.round(ms / 1000)}s）`)
 }
 
 async function waitIndex(
@@ -569,7 +569,7 @@ async function waitIndex(
     if (at >= 0) return at
     await Bun.sleep(400)
   }
-  throw new Error(`等 ${label} 超时（${Math.round(ms / 1000)}s）`)
+  throw new Error(`等待 ${label} 超时（${Math.round(ms / 1000)}s）`)
 }
 
 interface Round {
@@ -580,18 +580,18 @@ interface Round {
 }
 
 /**
- * 等从 `from` 起的一整轮。
+ * 等待从 `from` 起的完整一轮。
  *
- * **收尾要按 runId 认。** 一轮报错时 `run.error` 与 `run.finished` 会先后发两条，
- * 只等「下一条终态事件」的话，后到的那条会当场把下一轮判成已收尾。
+ * 收尾必须按 runId 识别。一轮报错时 `run.error` 与 `run.finished` 先后发送，
+ * 只等待下一条终态事件时，后到的一条会使下一轮被立即判定为已收尾。
  */
 async function awaitRound(feed: Feed, label: string, from: number, ms: number): Promise<Round> {
   const deadline = Date.now() + ms
-  const start = await waitIndex(feed, `${label} 起轮`, from, (ev) => ev.type === 'run.started', ms)
+  const start = await waitIndex(feed, `${label} 开始`, from, (ev) => ev.type === 'run.started', ms)
   const runId = (feed.events[start] as RunStarted).runId
   const end = await waitIndex(
     feed,
-    `${label} 收尾`,
+    `${label} 结束`,
     start,
     (ev) => (ev.type === 'run.finished' || ev.type === 'run.error') && ev.runId === runId,
     Math.max(1000, deadline - Date.now()),
@@ -599,7 +599,7 @@ async function awaitRound(feed: Feed, label: string, from: number, ms: number): 
   return { start, end, runId, ended: feed.events[end]! }
 }
 
-/** 同 `awaitRound`，到点返回 null 而不是抛。回执驱动的轮次不保证还有下一轮。 */
+/** 同 `awaitRound`，超时返回 null 而不是抛错。回执驱动的轮次不保证存在下一轮。 */
 async function tryRound(
   feed: Feed,
   label: string,
@@ -613,7 +613,7 @@ async function tryRound(
   }
 }
 
-/** 这一轮的模型正文。 */
+/** 该轮的模型正文。 */
 function textOf(feed: Feed, round: Round): string {
   return feed.events
     .slice(round.start, round.end + 1)
@@ -623,11 +623,11 @@ function textOf(feed: Feed, round: Round): string {
 }
 
 /**
- * 一次工具调用在事件流里的起止下标。
+ * 一次工具调用在事件流中的起止下标。
  *
- * `pick` 默认取最后一次：模型把参数写漏时会被工具挡回并重派，前几次不算数。
- * 要「这条会话对这个工具的第一次调用」（首派）时传 `'first'`——同一张图后面还有
- * approve 与 revise 也走这个工具名。
+ * `pick` 默认取最后一次：模型遗漏参数时调用被工具拒绝并重新派发，之前的调用不计入。
+ * 需要该会话对该工具的第一次调用（首次派发）时传 `'first'`：同一个工作流之后的
+ * approve 与 revise 也使用该工具名。
  */
 function callOf(
   feed: Feed,
@@ -657,7 +657,7 @@ function callOf(
   }
 }
 
-/** 某个工具在这一段里的全部终态，按到达顺序。 */
+/** 某个工具在该区间内的全部终态，按到达顺序排列。 */
 function finishedOf(feed: Feed, from: number, toolName: string): Finished[] {
   const ids = new Set(
     feed.events
@@ -670,8 +670,8 @@ function finishedOf(feed: Feed, from: number, toolName: string): Finished[] {
 }
 
 /**
- * 回执正文在事件流里的两种落点：起了新一轮（`run.started` 带 `userMessage`），
- * 或者注入了当前这一轮（`message.injected`）。
+ * 回执正文在事件流中的两种位置：发起新一轮（`run.started` 带 `userMessage`），
+ * 或注入当前轮（`message.injected`）。
  */
 interface Receipt {
   index: number
@@ -693,7 +693,7 @@ function receipts(feed: Feed, from: number): Receipt[] {
   return out.filter((r) => /^\[(子 agent|workflow) 回执\]/.test(r.content))
 }
 
-/** 这条会话此刻的忙态：事件流里最后一条 `conversation.busy`。 */
+/** 该会话当前的忙态：事件流中最后一条 `conversation.busy`。 */
 function busyNow(feed: Feed): boolean | null {
   const at = lastIndex(
     feed,
@@ -727,12 +727,12 @@ function nodeOf(
   return nodesOn(stepById(conversationId, stepId))?.[nodeId]
 }
 
-/** 账本里带来源的消息行。回执起了新一轮才有；注入的那种落在 step 上，这里为空。 */
+/** 账本中带来源的消息行。只有回执发起新一轮时才存在；注入的回执写在 step 上，此处为空。 */
 function originMessages(conversationId: ConversationId) {
   return listMessages(store, conversationId).filter((m) => m.origin !== null)
 }
 
-/** 这条会话的 run 里，注入进来的那些用户 step。 */
+/** 该会话各 run 中注入的用户 step。 */
 function injectedSteps(conversationId: ConversationId) {
   return listRuns(store, conversationId)
     .flatMap((r) => listSteps(store, r.id))
@@ -740,10 +740,10 @@ function injectedSteps(conversationId: ConversationId) {
 }
 
 /**
- * 账本里带来源标记的落点，两处合起来。
+ * 账本中带来源标记的两处记录，合并返回。
  *
- * 回执落哪一处取决于投进来的那一刻父会话在不在跑：闲着起新一轮，落 `messages.origin`；
- * 在跑就注入这一轮，落 step 的 `payload.origin`。判据要认两处，认一处会把另一种形状判成没有标记。
+ * 回执写入哪一处取决于投递时父会话是否在运行：空闲时发起新一轮，写入 `messages.origin`；
+ * 运行中则注入当前轮，写入 step 的 `payload.origin`。判据必须识别两处，只识别一处会把另一种形状判定为没有标记。
  */
 function originLanded(conversationId: ConversationId): ('subagent' | 'workflow')[] {
   const fromMessages = originMessages(conversationId).map(
@@ -755,7 +755,7 @@ function originLanded(conversationId: ConversationId): ('subagent' | 'workflow')
   return [...fromMessages, ...fromSteps]
 }
 
-/** 等一格落到点名的相位，返回它。 */
+/** 等待节点进入指定的相位，返回该节点状态。 */
 async function waitNode(
   conversationId: ConversationId,
   stepId: string,
@@ -771,54 +771,54 @@ async function waitNode(
   }
   const state = nodeOf(conversationId, stepId, nodeId)
   throw new Error(
-    `等 ${nodeId} 落到 ${phases.join('/')} 超时，现在是 ${state?.phase ?? '（没有这一格）'}`,
+    `等待 ${nodeId} 进入 ${phases.join('/')} 超时，当前为 ${state?.phase ?? '（无此节点）'}`,
   )
 }
 
-// ─────────────────────────── 6.1 单派 ───────────────────────────
+// ─────────────────────────── 6.1 单项派发 ───────────────────────────
 
-/** 审查结论里认得出来的词：模型转述过就至少命中一个。 */
+/** 审查结论中可识别的词：模型转述结论时至少命中一个。 */
 const REVIEW_MARKS = ['cart', 'subtotal', '越界', 'splice', 'removeItem', 'addItem']
 
 async function pathSingle(): Promise<void> {
-  out('\n══ 6.1 单派：点名 @cli:claude 审查一个文件 ══')
-  const conversationId = await createConversation('6.1 单派')
+  out('\n══ 6.1 单项派发：指定 @cli:claude 审查一个文件 ══')
+  const conversationId = await createConversation('6.1 单项派发')
   const feed = await openFeed(conversationId)
   try {
     const from = feed.events.length
     feed.send(MESSAGES.single)
     const first = await awaitRound(feed, '6.1 首轮', from, ROUND_TIMEOUT_MS)
     const hit = callOf(feed, from, 'subagent')
-    if (!hit) throw new Error('6.1：这一轮没有派出 subagent')
+    if (!hit) throw new Error('6.1：该轮未派发 subagent')
     const data = (hit.done.outcome.data ?? {}) as { subagentId?: string }
     const subagentId = data.subagentId ?? ''
     const latency = (feed.stamps[hit.finished] ?? 0) - (feed.stamps[hit.started] ?? 0)
 
     check(
-      `6.1 subagent 派出即返回（${(latency / 1000).toFixed(1)}s ≤ ${DISPATCH_MS / 1000}s）`,
+      `6.1 subagent 派发即返回（${(latency / 1000).toFixed(1)}s ≤ ${DISPATCH_MS / 1000}s）`,
       latency <= DISPATCH_MS,
       latency,
     )
-    check('6.1 这次调用是成功终态', hit.done.status === 'success', [
+    check('6.1 该调用的终态为成功', hit.done.status === 'success', [
       hit.done.status,
       hit.done.outcome.message,
     ])
-    check('6.1 回执带回了 subagentId', !!subagentId, hit.done.outcome)
+    check('6.1 回执带有 subagentId', !!subagentId, hit.done.outcome)
     check(
-      '6.1 这一轮当场收尾（run.finished）',
+      '6.1 该轮随即结束（run.finished）',
       first.ended.type === 'run.finished',
       oneLine(JSON.stringify(first.ended), 300),
     )
-    check('6.1 收尾之后忙态仍是 true', busyNow(feed) === true, busyNow(feed))
+    check('6.1 结束后忙态仍为 true', busyNow(feed) === true, busyNow(feed))
     const working = nodeOf(conversationId, hit.call.stepId, SUBAGENT_NODE_ID)
-    check('6.1 卡上那格还在跑（working）', working?.phase === 'working', working)
-    check(`6.1 卡上那格的种类是 ${SUBAGENT_KIND}`, working?.kind === SUBAGENT_KIND, working)
+    check('6.1 卡片上的节点仍在运行（working）', working?.phase === 'working', working)
+    check(`6.1 卡片上节点的种类为 ${SUBAGENT_KIND}`, working?.kind === SUBAGENT_KIND, working)
     note(
-      `6.1 派出 ${(latency / 1000).toFixed(1)}s 返回；首轮 ${((feed.stamps[first.end]! - feed.stamps[first.start]!) / 1000).toFixed(1)}s；` +
+      `6.1 派发后 ${(latency / 1000).toFixed(1)}s 返回；首轮 ${((feed.stamps[first.end]! - feed.stamps[first.start]!) / 1000).toFixed(1)}s；` +
         `subagentId=${subagentId}`,
     )
 
-    // ── 回执起新一轮 ──
+    // ── 回执发起新一轮 ──
     const receiptAt = await waitIndex(
       feed,
       '6.1 子 agent 回执',
@@ -828,19 +828,19 @@ async function pathSingle(): Promise<void> {
     )
     const receipt = (feed.events[receiptAt] as RunStarted).userMessage?.content ?? ''
     check(
-      '6.1 回执起了新一轮，没有注入进哪一轮',
+      '6.1 回执发起了新一轮，未注入任何一轮',
       receipts(feed, first.end).every((r) => !r.injected),
       receipts(feed, first.end).map((r) => [r.injected, oneLine(r.content, 120)]),
     )
     check(
-      '6.1 回执第一行是 [子 agent 回执] 且带 subagentId',
+      '6.1 回执首行为 [子 agent 回执] 且带有 subagentId',
       receipt.split('\n')[0]?.startsWith('[子 agent 回执]') === true &&
         receipt.includes(subagentId),
       oneLine(receipt, 300),
     )
     const rows = originMessages(conversationId)
     check(
-      '6.1 账本里这条消息带 origin=subagent',
+      '6.1 账本中该消息带有 origin=subagent',
       rows.length === 1 && rows[0]?.origin === 'subagent' && rows[0]?.content === receipt,
       rows.map((m) => [m.origin, oneLine(m.content, 120)]),
     )
@@ -851,26 +851,26 @@ async function pathSingle(): Promise<void> {
       ['done', 'failed'],
       5000,
     )
-    check('6.1 卡上那格落成 done', done.phase === 'done', done)
+    check('6.1 卡片上的节点变为 done', done.phase === 'done', done)
     note(`6.1 回执 ${receipt.length} 字符，首行：${oneLine(receipt.split('\n')[0] ?? '', 160)}`)
 
     const second = await awaitRound(feed, '6.1 回执轮', receiptAt, ROUND_TIMEOUT_MS)
     const said = textOf(feed, second)
     check(
-      '6.1 新一轮里模型引用了审查结论',
+      '6.1 新一轮中模型引用了审查结论',
       REVIEW_MARKS.some((m) => said.toLowerCase().includes(m.toLowerCase())),
       oneLine(said, 400),
     )
     note(`6.1 回执轮正文 ${said.length} 字符：${oneLine(said, 240)}`)
 
-    // ── 超长产出：定位符读得回 ──
+    // ── 超长产出：定位符可读取 ──
     const locator = /完整输出已保存：(rs_[0-9a-zA-Z]+)/.exec(receipt)
     if (!locator) {
-      note('6.1 回执没有超预算，没有定位符可读——read_resource 那一条这次没验到')
+      note('6.1 回执未超出预算，没有可读取的定位符；本次未验证 read_resource')
     } else {
       const reads = finishedOf(feed, receiptAt, 'read_resource')
       check(
-        `6.1 回执里的定位符 ${locator[1]} 在新一轮里读得回`,
+        `6.1 回执中的定位符 ${locator[1]} 在新一轮中可读取`,
         reads.some((r) => r.status === 'success'),
         reads.map((r) => [r.status, oneLine(r.outcome.message, 160)]),
       )
@@ -884,31 +884,28 @@ async function pathSingle(): Promise<void> {
 // ─────────────────────────── 6.2 注入 ───────────────────────────
 
 async function pathInject(): Promise<void> {
-  out('\n══ 6.2 注入：父会话在跑时子 agent 完成 ══')
+  out('\n══ 6.2 注入：父会话运行中子 agent 完成 ══')
   const conversationId = await createConversation('6.2 注入')
   const feed = await openFeed(conversationId)
   try {
     const from = feed.events.length
     feed.send(MESSAGES.inject)
-    const round = await awaitRound(feed, '6.2 这一轮', from, ROUND_TIMEOUT_MS)
+    const round = await awaitRound(feed, '6.2 本轮', from, ROUND_TIMEOUT_MS)
     const injected = feed.events
       .slice(round.start, round.end + 1)
       .filter((ev): ev is Injected => ev.type === 'message.injected')
       .filter((ev) => ev.content.startsWith('[子 agent 回执]'))
 
-    check('6.2 回执注入了这一轮，不是起新轮', injected.length === 1, injected.length)
+    check('6.2 回执注入本轮，未发起新一轮', injected.length === 1, injected.length)
     const steps = injectedSteps(conversationId).filter(
       (s) => s.payload?.kind === 'user' && s.payload.origin === 'subagent',
     )
     check(
-      '6.2 回执落成 run 内的 step（kind:user，payload.origin=subagent）',
+      '6.2 回执写入为 run 内的 step（kind:user，payload.origin=subagent）',
       steps.length === 1,
       injectedSteps(conversationId).map((s) => [s.kind, s.payload]),
     )
-    check('6.2 这条 step 属于这一轮', steps[0]?.runId === round.runId, [
-      steps[0]?.runId,
-      round.runId,
-    ])
+    check('6.2 该 step 属于本轮', steps[0]?.runId === round.runId, [steps[0]?.runId, round.runId])
     const runs = listRuns(store, conversationId)
     check(
       `6.2 只有一轮（runs=${runs.length}）`,
@@ -916,34 +913,34 @@ async function pathInject(): Promise<void> {
       runs.map((r) => r.id),
     )
     check(
-      '6.2 账本里没有多出带 origin 的消息行',
+      '6.2 账本中未新增带 origin 的消息行',
       originMessages(conversationId).length === 0,
       originMessages(conversationId).map((m) => m.origin),
     )
     const said = textOf(feed, round)
     const after = said.slice(Math.max(0, said.length - 1500))
     check(
-      '6.2 模型在同一轮里接着引用了回执',
+      '6.2 模型在同一轮中随后引用了回执',
       /format\.js|回执|money|line/i.test(after),
       oneLine(said, 400),
     )
     const cmd = callOf(feed, from, 'run_command')
     note(
-      `6.2 这一轮 ${((feed.stamps[round.end]! - feed.stamps[round.start]!) / 1000).toFixed(1)}s；` +
+      `6.2 本轮 ${((feed.stamps[round.end]! - feed.stamps[round.start]!) / 1000).toFixed(1)}s；` +
         `注入正文首行：${oneLine(injected[0]?.content.split('\n')[0] ?? '（没有）', 160)}`,
     )
     note(
-      `6.2 长命令 ${cmd ? oneLine(String((cmd.call.args as { command?: string }).command ?? ''), 80) : '（没有调用 run_command）'}`,
+      `6.2 长命令 ${cmd ? oneLine(String((cmd.call.args as { command?: string }).command ?? ''), 80) : '（未调用 run_command）'}`,
     )
   } finally {
     feed.close()
   }
 }
 
-// ─────────────────────────── 6.3 停止全停 ───────────────────────────
+// ─────────────────────────── 6.3 全部停止 ───────────────────────────
 
 async function pathStop(): Promise<void> {
-  out('\n══ 6.3 停止全停：只有子 agent 在跑时按停止 ══')
+  out('\n══ 6.3 全部停止：仅子 agent 运行时执行停止 ══')
   const conversationId = await createConversation('6.3 停止')
   const feed = await openFeed(conversationId)
   try {
@@ -951,17 +948,17 @@ async function pathStop(): Promise<void> {
     feed.send(MESSAGES.long)
     const round = await awaitRound(feed, '6.3 首轮', from, ROUND_TIMEOUT_MS)
     const hit = callOf(feed, from, 'subagent')
-    if (!hit) throw new Error('6.3：这一轮没有派出 subagent')
+    if (!hit) throw new Error('6.3：该轮未派发 subagent')
     const working = nodeOf(conversationId, hit.call.stepId, SUBAGENT_NODE_ID)
     check(
-      '6.3 按停止之前只有子 agent 在跑',
+      '6.3 执行停止之前只有子 agent 在运行',
       working?.phase === 'working' && busyNow(feed) === true,
       [working?.phase, busyNow(feed)],
     )
-    check('6.3 这一轮已经收尾', round.ended.type === 'run.finished', round.ended.type)
+    check('6.3 该轮已结束', round.ended.type === 'run.finished', round.ended.type)
 
     const quietFrom = feed.events.length
-    log('发 conversation.interrupt')
+    log('发送 conversation.interrupt')
     feed.interrupt()
     const stopped = await waitNode(
       conversationId,
@@ -970,37 +967,37 @@ async function pathStop(): Promise<void> {
       ['interrupted', 'failed', 'done'],
       120_000,
     )
-    check('6.3 格落成中断', stopped.phase === 'interrupted', stopped)
+    check('6.3 节点进入中断', stopped.phase === 'interrupted', stopped)
     check(
-      '6.3 格上的错因是停止',
+      '6.3 节点的错误原因为停止',
       ['已停止', '调用中断'].includes(stopped.error ?? ''),
       stopped.error,
     )
     await waitIndex(
       feed,
-      '6.3 忙态回 false',
+      '6.3 忙态恢复为 false',
       quietFrom,
       (ev) => ev.type === 'conversation.busy' && ev.conversationId === conversationId && !ev.busy,
       120_000,
     )
-    check('6.3 忙态回 false', busyNow(feed) === false, busyNow(feed))
+    check('6.3 忙态恢复为 false', busyNow(feed) === false, busyNow(feed))
 
-    log(`静观 ${QUIET_MS / 1000}s，确认没有回执起轮`)
+    log(`观察 ${QUIET_MS / 1000}s，确认没有回执发起新一轮`)
     await Bun.sleep(QUIET_MS)
     const started = feed.events.slice(quietFrom).filter((ev) => ev.type === 'run.started')
-    check(`6.3 停止之后没有新起的轮次（${started.length}）`, started.length === 0, started)
+    check(`6.3 停止之后没有新发起的轮次（${started.length}）`, started.length === 0, started)
     check(
-      '6.3 账本里没有任何带 origin 的落点',
+      '6.3 账本中没有任何带 origin 的记录',
       originLanded(conversationId).length === 0,
       originLanded(conversationId),
     )
     check(
-      '6.3 也没有注入进任何一轮',
+      '6.3 未注入任何一轮',
       receipts(feed, quietFrom).length === 0,
       receipts(feed, quietFrom).map((r) => oneLine(r.content, 120)),
     )
     note(
-      `6.3 停止后格的相位 ${stopped.phase}，错因「${stopped.error ?? ''}」，忙态 ${busyNow(feed)}`,
+      `6.3 停止后节点的相位 ${stopped.phase}，错误原因「${stopped.error ?? ''}」，忙态 ${busyNow(feed)}`,
     )
   } finally {
     feed.close()
@@ -1010,38 +1007,38 @@ async function pathStop(): Promise<void> {
 // ─────────────────────────── 6.4 工作流 ───────────────────────────
 
 async function pathGraph(): Promise<void> {
-  out('\n══ 6.4 工作流：首派秒回、格逐个落、检查点回执、批准后下一批 ══')
+  out('\n══ 6.4 工作流：首次派发立即返回、节点逐个结束、检查点回执、批准后执行下一批 ══')
   const conversationId = await createConversation('6.4 工作流')
   const feed = await openFeed(conversationId)
   try {
     const from = feed.events.length
     feed.send(MESSAGES.graph)
     /*
-     * 首派取的是这条会话对 workflow 的**第一次**调用，而且要在等这一轮收尾之前取。
+     * 首次派发取该会话对 workflow 的第一次调用，且必须在等待该轮收尾之前取得。
      *
-     * 父会话仍在跑时回执注入的是同一轮，那一轮会一直开到整张图跑完；
-     * 等它收尾之后再取，拿到的是末尾那次 approve。
+     * 父会话仍在运行时回执注入的是同一轮，该轮会持续到整个工作流执行完毕；
+     * 在其收尾之后再取，取得的是末尾的 approve 调用。
      */
     await waitUntil(
-      '6.4 首派 workflow 返回',
+      '6.4 首次派发 workflow 返回',
       () => callOf(feed, from, 'workflow', 'first') !== null,
       ROUND_TIMEOUT_MS,
     )
     const hit = callOf(feed, from, 'workflow', 'first')
-    if (!hit) throw new Error('6.4：这一轮没有派出 workflow')
+    if (!hit) throw new Error('6.4：该轮未派发 workflow')
     const first = await awaitRound(feed, '6.4 首轮', from, ROUND_TIMEOUT_MS)
     const data = (hit.done.outcome.data ?? {}) as { workflowId?: string; dispatched?: string[] }
     const latency = (feed.stamps[hit.finished] ?? 0) - (feed.stamps[hit.started] ?? 0)
     const workflowId = data.workflowId ?? hit.call.stepId
 
     check(
-      `6.4 首派秒回（${(latency / 1000).toFixed(1)}s ≤ ${DISPATCH_MS / 1000}s）`,
+      `6.4 首次派发立即返回（${(latency / 1000).toFixed(1)}s ≤ ${DISPATCH_MS / 1000}s）`,
       latency <= DISPATCH_MS,
       latency,
     )
-    check('6.4 首派返回了在跑的格', (data.dispatched ?? []).length > 0, data)
-    // 首派返回时四格都还没到终态，这才是「派出即返回」；等这一轮收尾判不出来，
-    // 回执注入同一轮时那一轮本来就要开到整张图跑完。
+    check('6.4 首次派发返回了运行中的节点', (data.dispatched ?? []).length > 0, data)
+    // 首次派发返回时四个节点均未进入终态，才符合「派发即返回」；等待该轮收尾后无法判定，
+    // 因为回执注入同一轮时，该轮会持续到整个工作流执行完毕。
     const settledAt = firstIndex(
       feed,
       hit.started,
@@ -1049,15 +1046,15 @@ async function pathGraph(): Promise<void> {
         ev.type === 'team.member' &&
         ['done', 'failed', 'interrupted', 'skipped'].includes(ev.state.phase),
     )
-    check('6.4 首派返回那一刻还没有一格落终态', settledAt < 0 || settledAt > hit.finished, [
+    check('6.4 首次派发返回时尚无节点进入终态', settledAt < 0 || settledAt > hit.finished, [
       settledAt,
       hit.finished,
     ])
     note(
-      `6.4 首派 ${(latency / 1000).toFixed(1)}s 返回，起跑 ${(data.dispatched ?? []).join('、')}`,
+      `6.4 首次派发 ${(latency / 1000).toFixed(1)}s 返回，已启动 ${(data.dispatched ?? []).join('、')}`,
     )
 
-    // 图跑到完成：其间的每一轮都由回执驱动。
+    // 工作流执行至完成：其间的每一轮都由回执驱动。
     const deadline = Date.now() + GRAPH_TIMEOUT_MS
     const completed = () =>
       finishedOf(feed, from, 'workflow').some((f) =>
@@ -1076,7 +1073,7 @@ async function pathGraph(): Promise<void> {
     }
 
     const all = receipts(feed, from)
-    const failure = all.find((r) => r.content.includes('没做成'))
+    const failure = all.find((r) => r.content.includes('）失败：'))
     const checkpoint = all.find((r) => r.content.includes('检查点'))
     check(
       '6.4 出现了检查点回执',
@@ -1084,7 +1081,7 @@ async function pathGraph(): Promise<void> {
       all.map((r) => oneLine(r.content, 120)),
     )
     check(
-      '6.4 检查点回执正文带 checkpointId',
+      '6.4 检查点回执正文带有 checkpointId',
       (checkpoint?.content ?? '').includes('checkpointId='),
       oneLine(checkpoint?.content ?? '', 300),
     )
@@ -1095,17 +1092,17 @@ async function pathGraph(): Promise<void> {
       ])
       note(`6.4 失败回执：${oneLine(failure.content, 200)}`)
     } else {
-      note('6.4 这一趟没有一格失败，失败回执那一条这次没验到')
+      note('6.4 本次没有节点失败，未验证失败回执')
     }
 
     const origins = originLanded(conversationId)
     check(
-      '6.4 回执在账本里带 origin=workflow',
+      '6.4 回执在账本中带有 origin=workflow',
       origins.length > 0 && origins.every((o) => o === 'workflow'),
       origins,
     )
     note(
-      `6.4 回执落点：起新一轮 ${originMessages(conversationId).length} 条，注入这一轮 ${
+      `6.4 回执位置：发起新一轮 ${originMessages(conversationId).length} 条，注入当前轮 ${
         injectedSteps(conversationId).length
       } 条`,
     )
@@ -1116,7 +1113,7 @@ async function pathGraph(): Promise<void> {
         ev.toolName === 'workflow' &&
         (ev.args as { decision?: string }).decision === 'approve',
     )
-    check(`6.4 父会话批准过检查点（${approvals.length} 次）`, approvals.length > 0)
+    check(`6.4 父会话批准了检查点（${approvals.length} 次）`, approvals.length > 0)
     const afterApprove = approvals[0]
       ? callOf(feed, feed.events.indexOf(approvals[0]) - 1, 'workflow')
       : null
@@ -1132,12 +1129,12 @@ async function pathGraph(): Promise<void> {
       .filter((f): f is Finished => !!f)
       .map((f) => (f.outcome.data ?? {}) as { dispatched?: string[] })
     check(
-      '6.4 批准之后下一批起跑',
+      '6.4 批准之后下一批开始执行',
       nextBatch.some((d) => (d.dispatched ?? []).length > 0),
       nextBatch,
     )
     check(
-      '6.4 最后一次调用报出 Workflow 已完成',
+      '6.4 最后一次调用报告 Workflow 已完成',
       completed(),
       finishedOf(feed, from, 'workflow').map((f) => oneLine(String(f.outcome.message ?? ''), 120)),
     )
@@ -1148,13 +1145,13 @@ async function pathGraph(): Promise<void> {
       return r.ok ? [r.projection] : []
     })
     check(
-      '6.4 账本里这张图折出来是已完成',
+      '6.4 账本中该工作流的折叠结果为已完成',
       folded.length === 1 && folded[0]?.phase === 'completed',
       folded.map((w) => [w.workflowId, w.phase, w.checkpointId]),
     )
     const phases = Object.entries(folded[0]?.states ?? {}).map(([id, n]) => `${id}=${n.phase}`)
     check(
-      `6.4 每一格都到了终态（${phases.join('，')}）`,
+      `6.4 每个节点都进入了终态（${phases.join('，')}）`,
       Object.values(folded[0]?.states ?? {}).every((n) =>
         ['done', 'failed', 'skipped', 'interrupted'].includes(n.phase),
       ),
@@ -1177,7 +1174,7 @@ async function pathGraph(): Promise<void> {
 // ─────────────────────────── 6.5 重启 ───────────────────────────
 
 async function pathRestart(): Promise<void> {
-  out('\n══ 6.5 重启：子 agent 在跑时停掉服务进程再起 ══')
+  out('\n══ 6.5 重启：子 agent 运行中时停止服务进程再重新启动 ══')
   const conversationId = await createConversation('6.5 重启')
   const feed = await openFeed(conversationId)
   try {
@@ -1185,10 +1182,10 @@ async function pathRestart(): Promise<void> {
     feed.send(MESSAGES.long)
     const round = await awaitRound(feed, '6.5 首轮', from, ROUND_TIMEOUT_MS)
     const hit = callOf(feed, from, 'subagent')
-    if (!hit) throw new Error('6.5：这一轮没有派出 subagent')
+    if (!hit) throw new Error('6.5：该轮未派发 subagent')
     const working = nodeOf(conversationId, hit.call.stepId, SUBAGENT_NODE_ID)
-    check('6.5 重启之前那一格还在跑', working?.phase === 'working', working)
-    check('6.5 首轮已经收尾', round.ended.type === 'run.finished', round.ended.type)
+    check('6.5 重启之前该节点仍在运行', working?.phase === 'working', working)
+    check('6.5 首轮已结束', round.ended.type === 'run.finished', round.ended.type)
 
     const quietFrom = feed.events.length
     await stopService()
@@ -1196,19 +1193,19 @@ async function pathRestart(): Promise<void> {
     await feed.reconnect()
 
     const swept = nodeOf(conversationId, hit.call.stepId, SUBAGENT_NODE_ID)
-    check('6.5 重启后那一格被扫成中断', swept?.phase === 'interrupted', swept)
+    check('6.5 重启后该节点被标记为中断', swept?.phase === 'interrupted', swept)
     check(
-      '6.5 账本里没有新增任何带 origin 的落点',
+      '6.5 账本中没有新增任何带 origin 的记录',
       originLanded(conversationId).length === 0,
       originLanded(conversationId),
     )
-    log(`静观 ${QUIET_MS / 1000}s，确认没有自动起轮`)
+    log(`观察 ${QUIET_MS / 1000}s，确认没有自动发起新一轮`)
     await Bun.sleep(QUIET_MS)
     const started = feed.events.slice(quietFrom).filter((ev) => ev.type === 'run.started')
-    check(`6.5 重启后没有自动起轮（${started.length}）`, started.length === 0, started)
-    note(`6.5 重启后格的相位 ${swept?.phase}，错因「${swept?.error ?? ''}」`)
+    check(`6.5 重启后没有自动发起新一轮（${started.length}）`, started.length === 0, started)
+    note(`6.5 重启后节点的相位 ${swept?.phase}，错误原因「${swept?.error ?? ''}」`)
 
-    // 下一条用户消息起轮，看运行快照里那个子 agent 的状态。
+    // 由下一条用户消息发起新一轮，检查运行快照中该子 agent 的状态。
     const askFrom = feed.events.length
     feed.send(MESSAGES.recall)
     const asked = await awaitRound(feed, '6.5 下一轮', askFrom, ROUND_TIMEOUT_MS)
@@ -1216,9 +1213,9 @@ async function pathRestart(): Promise<void> {
       (s) => s.runId === asked.runId,
     )
     const segments = (snapshot?.segments ?? []).map((s) => s.content).join('\n')
-    const line = segments.split('\n').find((l) => l.includes('上一轮没跑完')) ?? ''
-    check('6.5 下一轮的运行快照里那个子 agent 是「上一轮没跑完」', !!line, oneLine(segments, 600))
-    note(`6.5 快照那一行：${oneLine(line, 240)}`)
+    const line = segments.split('\n').find((l) => l.includes('上一轮未完成')) ?? ''
+    check('6.5 下一轮的运行快照中该子 agent 标为「上一轮未完成」', !!line, oneLine(segments, 600))
+    note(`6.5 快照中的对应行：${oneLine(line, 240)}`)
   } finally {
     feed.close()
   }
@@ -1236,11 +1233,11 @@ const RUNNERS: Record<PathId, () => Promise<void>> = {
 }
 
 /**
- * 模型绑定实验：用户原话点名四个模型，看父会话把不把它们填进节点的 provider / model。
- * 只看派活调用的参数（被拒的那几次也算，参数已经写出来了），随后全停，不让子 agent 真跑。
+ * 模型绑定实验：用户原话指定四个模型，检查父会话是否把它们填入节点的 provider / model。
+ * 只检查派发调用的参数（被拒绝的调用也计入，参数已经写出），随后全部停止，不让子 agent 实际运行。
  */
 async function pathAssign(): Promise<void> {
-  out('\n══ assign 模型绑定：用户点名四个模型，父会话填不填参数 ══')
+  out('\n══ assign 模型绑定：用户指定四个模型，检查父会话是否填写参数 ══')
   const conversationId = await createConversation('assign 模型绑定')
   const feed = await openFeed(conversationId)
   try {
@@ -1248,7 +1245,7 @@ async function pathAssign(): Promise<void> {
     feed.send(MESSAGES.assign)
     const isDispatch = (ev: AgentEvent): boolean =>
       ev.type === 'tool.started' && (ev.toolName === 'workflow' || ev.toolName === 'subagent')
-    await waitIndex(feed, 'assign 首次派活调用', from, isDispatch, ROUND_TIMEOUT_MS)
+    await waitIndex(feed, 'assign 首次派发调用', from, isDispatch, ROUND_TIMEOUT_MS)
     await tryRound(feed, 'assign 首轮', from, 90_000)
     feed.interrupt()
     const calls = feed.events.slice(from).filter((ev): ev is Started => isDispatch(ev))
@@ -1274,7 +1271,7 @@ async function pathAssign(): Promise<void> {
     const nodes = last ? agentNodes(last) : []
     const bound = nodes.filter((n) => typeof n.model === 'string' && n.model)
     check(
-      'assign 最后一次派活调用里每个 agent 节点都填了 model',
+      'assign 最后一次派发调用中每个 agent 节点都填写了 model',
       nodes.length > 0 && bound.length === nodes.length,
       nodes.map((n) => [n.name ?? n.id, n.provider ?? null, n.model ?? null]),
     )
@@ -1287,8 +1284,8 @@ async function main(): Promise<number> {
   await mkdir(ROOT, { recursive: true })
   const config = await loadConfig()
   const stored = resolveModel(config, PARENT)
-  if (!stored) throw new Error(`配置里没有 ${PARENT.provider} / ${PARENT.model}`)
-  // 摘录预算与执行时那一处同源（`delegate.ts` 的 deliveryContext）：写死一个数的话，换模型就对不上。
+  if (!stored) throw new Error(`配置中没有 ${PARENT.provider} / ${PARENT.model}`)
+  // 摘录预算与执行时的计算同源（`delegate.ts` 的 deliveryContext）：写死数值时，更换模型后两者不一致。
   const spec = applySpecOverride(lookupModel(stored.model, stored.kind), stored.spec)
   const viewTokens = observationBudget(spec.contextWindow)
   const bulkBytes = await writeFixture(viewTokens)
@@ -1298,7 +1295,7 @@ async function main(): Promise<number> {
   log(
     `父会话 ${PARENT.provider} / ${PARENT.model}，窗口 ${spec.contextWindow}，单份视图尺寸 ${viewTokens} token`,
   )
-  log(`工作区 ${WS_DIR}；bulk.txt ${bulkBytes} 字节；要跑 ${SELECTED.join('、')}`)
+  log(`工作区 ${WS_DIR}；bulk.txt ${bulkBytes} 字节；待运行 ${SELECTED.join('、')}`)
 
   try {
     for (const id of SELECTED) {
@@ -1306,7 +1303,7 @@ async function main(): Promise<number> {
       try {
         await RUNNERS[id]()
       } catch (err) {
-        check(`${id} 跑完`, false, err instanceof Error ? err.message : String(err))
+        check(`${id} 执行完毕`, false, err instanceof Error ? err.message : String(err))
       }
       log(`${id} 用时 ${((Date.now() - at) / 1000).toFixed(0)}s`)
     }
@@ -1317,7 +1314,7 @@ async function main(): Promise<number> {
 
   out('\n汇总')
   for (const line of readings) out(`  ${line}`)
-  out(`  复刻目录 ${ROOT}`)
+  out(`  复现目录 ${ROOT}`)
   return failures
 }
 

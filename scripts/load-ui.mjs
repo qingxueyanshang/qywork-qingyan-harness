@@ -2,11 +2,11 @@
 /**
  * 前端定长负载量测：100 / 1000 条历史会话下的首屏、切换、变更翻页与运行面板读数。
  *
- * 用 Node 而不是 Bun 驱动 Playwright：Bun 在 Windows 上对 `--remote-debugging-pipe`
- * 用到的 fd 3/4 管道支持不全，`chromium.launch()` 会挂到超时。
+ * 使用 Node 而不是 Bun 驱动 Playwright：Bun 在 Windows 上对 `--remote-debugging-pipe`
+ * 使用的 fd 3/4 管道支持不完整，`chromium.launch()` 会阻塞直至超时。
  *
- * 走的是发布路径：`qy serve --static apps/web/dist` 托管生产构建，不经 Vite 代理。
- * 同一份数据连量两轮，第一轮是基线，第二轮判趋势——阈值先固定，不事后放宽。
+ * 使用发布路径：`qy serve --static apps/web/dist` 托管生产构建，不经由 Vite 代理。
+ * 同一份数据连续测量两轮，第一轮为基线，第二轮判断趋势：阈值预先固定，不事后放宽。
  *
  *   bun run build:web && node scripts/load-ui.mjs
  */
@@ -23,7 +23,7 @@ const SHOTS = join(BASE, 'shots')
 
 const SIZES = [100, 1000]
 const ROUNDS = 2
-/** 每一档量几条会话的切换延迟。取分散的序号，避开列表顶部那几条的缓存优势。 */
+/** 每一档测量切换延迟的会话数。取分散的序号，避开列表顶部几条会话的缓存优势。 */
 const SWITCH_PICKS = [3, 25, 60, 88, 97]
 
 function run(cmd, args, env) {
@@ -55,8 +55,8 @@ async function startServer(home, wsDir) {
       '--static',
       join(ROOT, 'apps/web/dist'),
       '--print-token',
-      // Windows 上 shell:true 时 proc 是 cmd.exe，proc.kill() 杀的是壳不是 bun。
-      // 让服务自己盯父进程，留下的服务会占着 SQLite 的 WAL 锁。
+      // Windows 上 shell:true 时 proc 是 cmd.exe，proc.kill() 终止的是 shell 进程而不是 bun。
+      // 由服务自身监视父进程，否则残留的服务会持有 SQLite 的 WAL 锁。
       '--parent-pid',
       String(process.pid),
     ],
@@ -96,7 +96,7 @@ async function startServer(home, wsDir) {
   })
 }
 
-/** 打开右侧面板并翻到某一页。页签是 `role="tab"` 带文字，面板默认收着。 */
+/** 打开右侧面板并切换到指定页签。页签是带文字的 `role="tab"`，面板默认收起。 */
 async function openPanelTab(page, label) {
   const expand = page.locator('[aria-label="展开侧面板"]')
   if (await expand.count()) await expand.click()
@@ -107,7 +107,7 @@ async function measureRound(page, size, errors, tag, url) {
   const out = {}
 
   // 首屏：从导航开始到侧栏第一行会话可见。
-  // 先离开当前文档：`waitUntil: 'commit'` 之后旧 DOM 可能还在，直接量会量到上一页的行。
+  // 先离开当前文档：`waitUntil: 'commit'` 之后旧 DOM 可能仍存在，直接测量会测到上一页的行。
   await page.goto('about:blank')
   const t0 = Date.now()
   await page.goto(url, { waitUntil: 'commit' })
@@ -117,7 +117,7 @@ async function measureRound(page, size, errors, tag, url) {
   out.settledMs = Date.now() - t0
   out.rows = await page.locator('.conv-row').count()
 
-  // 切换：点一条会话到它那句用户消息出现在会话流里。
+  // 切换：从点击一条会话到其用户消息出现在会话流中。
   const switches = []
   for (const n of SWITCH_PICKS) {
     const index = Math.min(n, size)
@@ -146,7 +146,7 @@ async function measureRound(page, size, errors, tag, url) {
     : null
   out.switchMax = switches.length ? Math.max(...switches) : null
 
-  // 变更页：切到有 30 轮写入的那条会话，先量首页，再滚到列表末尾逐页翻。
+  // 变更页：切换到有 30 轮写入的会话，先测量首页，再滚动到列表末尾逐页翻页。
   {
     const row = page.locator('.conv-open', { hasText: '变更分页' }).first()
     if ((await row.count()) === 0) errors.push(`[${tag}] 侧栏里找不到「变更分页」`)
@@ -182,7 +182,7 @@ async function measureRound(page, size, errors, tag, url) {
   }
   out.changesTurns = turns
 
-  // 输入延迟：往输入框敲 200 个字符，量整段耗时与最慢的那一次按键。
+  // 输入延迟：向输入框输入 200 个字符，测量总耗时与最慢的一次按键。
   {
     const box = page.locator('textarea[placeholder="随心输入，可粘贴图片"]').first()
     if ((await box.count()) === 0) errors.push(`[${tag}] 找不到输入框`)
@@ -191,7 +191,7 @@ async function measureRound(page, size, errors, tag, url) {
       const keys = []
       const text = '负载输入延迟量测'.repeat(25)
       const start = Date.now()
-      // 逐字 `keyboard.type`：`press` 只认按键名，中日韩字符会直接抛。
+      // 逐字调用 `keyboard.type`：`press` 只接受按键名，中日韩字符会直接抛出异常。
       for (const ch of text) {
         const k0 = Date.now()
         await page.keyboard.type(ch)
@@ -207,7 +207,7 @@ async function measureRound(page, size, errors, tag, url) {
     }
   }
 
-  // 运行面板：1 / 4 / 12 并行子任务各开一次。
+  // 运行面板：1 / 4 / 12 并行子任务各打开一次。
   out.runPanelMs = {}
   for (const fanout of [1, 4, 12]) {
     const row = page.locator('.conv-open', { hasText: `并行子任务 ${fanout}` }).first()
@@ -237,7 +237,7 @@ async function measureRound(page, size, errors, tag, url) {
 async function measureNarrow(page, errors, tag) {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.waitForTimeout(600)
-  // 侧面板在 390px 下铺满整个视口，留着量到的是面板不是会话视图。
+  // 侧面板在 390px 宽度下占满整个视口，不关闭时测量到的是面板而不是会话视图。
   const close = page.locator('[aria-label="关闭面板"]')
   if (await close.count()) await close.click()
   await page.waitForTimeout(500)
@@ -283,8 +283,8 @@ async function main() {
     await mkdir(home, { recursive: true })
     await mkdir(join(wsDir, 'src'), { recursive: true })
     await writeFile(join(wsDir, 'README.md'), '# 负载夹具\n', 'utf8')
-    // 种下的会话绑的是 fake/deepseek-v4-flash。配置里没有这一对时
-    // `/api/conversations/:id/context` 回 409，每切一条会话就往控制台记一条错误。
+    // 生成的会话绑定 fake/deepseek-v4-flash。配置中没有该组合时
+    // `/api/conversations/:id/context` 返回 409，每切换一条会话即向控制台写入一条错误。
     await writeFile(
       join(home, 'config.json'),
       JSON.stringify({

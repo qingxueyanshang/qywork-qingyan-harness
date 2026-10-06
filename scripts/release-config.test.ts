@@ -1,5 +1,5 @@
 /**
- * 发布链路的回归。**覆盖范围**：`apps/desktop/src-tauri/tauri.conf.json`、`.github/` 下的
+ * 发布链路的回归测试。覆盖范围：`apps/desktop/src-tauri/tauri.conf.json`、`.github/` 下的
  * 工作流与两个共用 composite action、`package.json` 的门禁与资产入口，以及
  * `scripts/collect-installer.ts` 的收集与清理。
  */
@@ -14,7 +14,7 @@ import { collect } from './collect-installer.ts'
 
 const ROOT = join(import.meta.dir, '..')
 
-/** 三条发行工作流。每加一个出包平台就加一行，下面的结构断言随即覆盖它。 */
+/** 三条发行工作流。每新增一个打包平台即增加一行，下方的结构断言随即覆盖该平台。 */
 const RELEASE_WORKFLOWS = ['release-windows.yml', 'release-macos.yml', 'release-linux.yml']
 
 function workflowText(name: string): string {
@@ -94,8 +94,8 @@ describe('桌面发布清单', () => {
   })
 
   /**
-   * 文件预览的 PDF 以 blob URL 进 iframe（`FileView` 的 `PdfFrame`）。CSP 只在打包版生效，
-   * `tauri dev` 的页面由 vite 提供、不带这份 CSP，漏了这一项只在打包版里显示为空白。
+   * 文件预览的 PDF 以 blob URL 载入 iframe（`FileView` 的 `PdfFrame`）。CSP 只在打包版生效，
+   * `tauri dev` 的页面由 vite 提供、不带该 CSP，遗漏该项时只有打包版显示为空白。
    */
   test('打包版 CSP 放行 blob 地址的 iframe', () => {
     const config = JSON.parse(
@@ -109,7 +109,7 @@ describe('桌面发布清单', () => {
     const config = JSON.parse(
       readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
     )
-    // 平时的构建不出更新产物，只有发行工作流临时覆盖这一项。
+    // 常规构建不生成更新产物，只有发行工作流临时覆盖该项。
     expect(config.bundle.createUpdaterArtifacts).toBe(false)
     expect(prepare).toContain('"createUpdaterArtifacts":true')
 
@@ -119,7 +119,7 @@ describe('桌面发布清单', () => {
       expect(workflow).toContain('secrets.TAURI_SIGNING_PRIVATE_KEY')
       expect(workflow).toContain('vars.QYWORK_UPDATER_PUBLIC_KEY')
       expect(workflow).toContain('--config ../../.tmp/updater-config.json')
-      // 缺签名密钥要在门禁与编译之前停，不是跑完一小时再停。
+      // 缺少签名密钥时必须在门禁与编译之前停止，而不是执行一小时后再停止。
       expect(workflow.indexOf('uses: ./.github/actions/release-prepare')).toBeGreaterThan(-1)
       expect(workflow.indexOf('uses: ./.github/actions/release-prepare')).toBeLessThan(
         workflow.indexOf('run: bun run gate'),
@@ -128,8 +128,8 @@ describe('桌面发布清单', () => {
   })
 
   /**
-   * 三条发行工作流往同一个 tag 的草稿 Release 上传。校验和文件同名的话，后一条的
-   * `gh release upload --clobber` 会把前一条的那份覆盖掉，而两条都是绿的。
+   * 三条发行工作流向同一个 tag 的草稿 Release 上传。校验和文件同名时，后一条的
+   * `gh release upload --clobber` 会覆盖前一条上传的文件，而两条工作流均显示成功。
    */
   test('每个平台的校验和文件名互不相同', () => {
     const prefixes = {
@@ -141,7 +141,7 @@ describe('桌面发布清单', () => {
     for (const [name, prefix] of Object.entries(prefixes)) {
       const workflow = workflowText(name)
       expect(workflow).toContain(prefix)
-      // 不带平台的那个名字三条都会写，最后一条 upload 会盖掉前两条。
+      // 不含平台的文件名三条工作流都会写入，最后一次 upload 会覆盖前两次。
       expect(workflow).not.toContain('SHA256SUMS.txt')
       for (const other of Object.values(prefixes)) {
         if (other !== prefix) expect(workflow).not.toContain(other)
@@ -150,10 +150,10 @@ describe('桌面发布清单', () => {
   })
 
   /**
-   * macOS 的 Apple 签名与公证要账号，缺了仍然出包——但产物得自己说清楚它没签过，
-   * 否则拿到的人按「能装」的预期去装，撞的是 Gatekeeper。
+   * macOS 的 Apple 签名与公证需要账号，缺少时仍然生成安装包，但产物必须标明未签名，
+   * 否则用户按可直接安装的预期安装时，会被 Gatekeeper 拦截。
    */
-  test('缺 Apple 证书时产出未签名包并在校验和文件名上标明', () => {
+  test('缺少 Apple 证书时生成未签名包并在校验和文件名中标明', () => {
     const workflow = workflowText('release-macos.yml')
 
     expect(workflow).toContain('secrets.APPLE_CERTIFICATE')
@@ -250,7 +250,7 @@ describe('桌面发布清单', () => {
       '../../../LICENSE': 'licenses/LICENSE',
       '../../../NOTICE': 'licenses/NOTICE',
       '../../../THIRD_PARTY_NOTICES.md': 'licenses/THIRD_PARTY_NOTICES.md',
-      // Office 执行程序：worker、依赖清单与三份做法说明；单测目录不进安装包。
+      // Office 执行程序：worker、依赖清单与三份操作指南；单元测试目录不进入安装包。
       '../../../packages/runtime/office/*.py': 'office/',
       '../../../packages/runtime/office/requirements.txt': 'office/requirements.txt',
       '../../../packages/runtime/office/guides/*.md': 'office/guides/',
@@ -258,14 +258,14 @@ describe('桌面发布清单', () => {
   })
 
   /**
-   * 干净 runner 上没有这些外部二进制，而 `bun run gate` 里的 `cargo check` 会跑 tauri 的
-   * 构建脚本：`tauri.conf.json` 的 `externalBin` 声明过的文件不在就以 101 退出。
+   * 全新的 runner 上没有这些外部二进制，而 `bun run gate` 中的 `cargo check` 会运行 tauri 的
+   * 构建脚本：`tauri.conf.json` 的 `externalBin` 声明的文件不存在时以 101 退出。
    *
-   * 两个条目的来源不同：`bin/qy` 由共用 action 在门禁前编，顺序在那一份里判；
-   * `bin/qy-computer-host` 由外壳自己的构建脚本在同一次编译里出，工作流里再编一遍
-   * 就是第二个入口，外壳旁边放的 worker 因此可能来自另一次编译。
+   * 两个条目的来源不同：`bin/qy` 由共用 action 在门禁前编译，顺序在该 action 中判定；
+   * `bin/qy-computer-host` 由外壳自身的构建脚本在同一次编译中产出，工作流中再编译一次
+   * 即构成第二个入口，外壳旁的 worker 因此可能来自另一次编译。
    */
-  test('externalBin 的每个条目都只有一处准备它', () => {
+  test('externalBin 的每个条目只由一处准备', () => {
     const setup = actionText('setup-build')
     const buildScript = readFileSync(join(ROOT, 'apps/desktop/src-tauri/build.rs'), 'utf8')
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
@@ -292,10 +292,10 @@ describe('桌面发布清单', () => {
   })
 
   /**
-   * Linux 上 tauri 链接的是系统 WebKitGTK，runner 镜像不预装。缺哪一个都不是链接错误，
-   * 而是对应 `*-sys` 的 build script 以 101 退出，报 pkg-config 找不到该库。
+   * Linux 上 tauri 链接系统的 WebKitGTK，runner 镜像不预装。缺少任何一个依赖时都不表现为链接错误，
+   * 而是对应 `*-sys` 的 build script 以 101 退出，报 pkg-config 未找到该库。
    */
-  test('setup-build 在 Linux runner 上装齐 tauri 的系统依赖', () => {
+  test('setup-build 在 Linux runner 上安装 tauri 的全部系统依赖', () => {
     const setup = actionText('setup-build')
 
     expect(setup).toContain("runner.os == 'Linux'")
@@ -313,8 +313,8 @@ describe('桌面发布清单', () => {
 
   /**
    * Linux 上电脑控制经会话总线激活 `org.a11y.Bus`，提供它的是 at-spi2-core（总线启动器与
-   * `org.a11y.Bus.service`）。WebKitGTK 的依赖链只带到 `libatspi2.0-0t64`，后者对 at-spi2-core
-   * 只是 Recommends：不装推荐包时 worker 报 `accessibility_bus` 缺失，电脑控制不可用。
+   * `org.a11y.Bus.service`）。WebKitGTK 的依赖链只包含 `libatspi2.0-0t64`，后者对 at-spi2-core
+   * 只是 Recommends：不安装推荐包时 worker 报告 `accessibility_bus` 缺失，电脑控制不可用。
    * worker 与外壳的 X11、D-Bus 客户端是纯 Rust，只链接 libc 与 libgcc_s，不另需系统库。
    */
   test('deb 声明 at-spi2-core 为运行依赖', () => {
@@ -326,17 +326,17 @@ describe('桌面发布清单', () => {
   })
 
   /**
-   * Wayland 下原生窗口的取图与前台键鼠经 `org.freedesktop.portal.Desktop`，由 xdg-desktop-portal
-   * 提供；worker 在运行时 dlopen `libpipewire-0.3.so.0`，dpkg-shlibdeps 看不到这条依赖。
-   * 缺了只有 Wayland 下的这两项不可用，X11 与语义路径不受影响，因此是 Recommends 不是 Depends。
+   * Wayland 下原生窗口的采图与前台键盘与指针输入经由 `org.freedesktop.portal.Desktop`，由 xdg-desktop-portal
+   * 提供；worker 在运行时 dlopen `libpipewire-0.3.so.0`，dpkg-shlibdeps 无法检测到该依赖。
+   * 缺少时只有 Wayland 下的这两项不可用，X11 与语义路径不受影响，因此声明为 Recommends 而不是 Depends。
    * resolute 的库包是 `libpipewire-0.3-0t64`，Provides `libpipewire-0.3-0`；写成二选一，包名
    * 不带 t64 的发行版按后一项解析。
    *
    * 不推荐 portal 后端（`xdg-desktop-portal-gnome | xdg-desktop-portal-kde`）：GNOME 与 KDE 桌面
-   * 自带各自的后端；其他桌面上 apt 按缺省装推荐包时会装第一项，连同 gnome-shell、nautilus 共
+   * 自带各自的后端；其他桌面上 apt 按缺省设置安装推荐包时会安装第一项，连同 gnome-shell、nautilus 共
    * 579 个包（2026-09-26，resolute，以空 dpkg 状态模拟）。
    */
-  test('deb 推荐 Wayland 取图与输入要的 portal 与 libpipewire', () => {
+  test('deb 推荐 Wayland 采图与输入所需的 portal 与 libpipewire', () => {
     const config = JSON.parse(
       readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
     ) as { bundle: { linux?: { deb?: { recommends?: string[] } } } }
@@ -348,11 +348,11 @@ describe('桌面发布清单', () => {
   })
 
   /**
-   * linuxdeploy 给 AppDir 里每个 ELF 加 RUNPATH。它自带的 patchelf 改过的 bun 单文件程序 `qy`
-   * 启动即段错误，打包也在 gtk 插件对它调用 ldd 时中止；系统的 patchelf 改过的正常运行。
-   * `PATCHELF` 指向 setup-build 用 apt 装的那一份。
+   * linuxdeploy 为 AppDir 中的每个 ELF 添加 RUNPATH。经其自带的 patchelf 修改后，bun 单文件程序 `qy`
+   * 启动即段错误，打包也在 gtk 插件对其调用 ldd 时中止；经系统的 patchelf 修改后可正常运行。
+   * `PATCHELF` 指向 setup-build 用 apt 安装的版本。
    */
-  test('Linux 出包时 linuxdeploy 使用 apt 装的 patchelf', () => {
+  test('Linux 打包时 linuxdeploy 使用 apt 安装的 patchelf', () => {
     const workflow = Bun.YAML.parse(workflowText('release-linux.yml')) as {
       jobs: { release: { steps: { id?: string; env?: Record<string, string> }[] } }
     }
@@ -367,10 +367,10 @@ describe('桌面发布清单', () => {
   })
 
   /**
-   * CI 不许持有写权限，也不许放过一部分门禁：它是提交与 PR 的唯一自动证据，
-   * 降一格就等于没有。
+   * CI 不得持有写权限，也不得跳过部分门禁：它是提交与 PR 的唯一自动证据，
+   * 降低任何一项即失去证据作用。
    */
-  test('CI 只读、只接分支 push、跑全量门禁、按分支取消旧的那次', () => {
+  test('CI 只读、只响应分支 push、运行全量门禁、按分支取消较早的运行', () => {
     const workflow = workflowText('ci.yml')
 
     expect(workflow).toContain('contents: read')
@@ -380,17 +380,17 @@ describe('桌面发布清单', () => {
     expect(workflow).toContain('run: bun run build:web')
     expect(workflow).not.toContain('continue-on-error')
     expect(workflow).toContain('cancel-in-progress: true')
-    // 与发布工作流的 group 重名会让一次 push 取消正在出安装包的那次发布。
+    // 与发布工作流的 group 重名时，一次 push 会取消正在生成安装包的发布。
     for (const group of ['windows-release', 'macos-release', 'linux-release']) {
       expect(workflow).not.toContain(`group: ${group}`)
     }
   })
 
   /**
-   * 桌面包要出三种，而 gate 里的 cargo check 按运行平台选分支、两个 externalBin 按运行
-   * 平台的三元组编译。少一端，那一端的编译错误要到发布当天才暴露。
+   * 桌面安装包覆盖三个平台，而 gate 中的 cargo check 按运行平台选择分支、两个 externalBin 按运行
+   * 平台的三元组编译。缺少任一平台时，该平台的编译错误要到发布当天才暴露。
    */
-  test('CI 三端都跑门禁', () => {
+  test('CI 三端都运行门禁', () => {
     const workflow = workflowText('ci.yml')
 
     for (const runner of ['windows-latest', 'macos-latest', 'ubuntu-latest']) {
@@ -401,12 +401,12 @@ describe('桌面发布清单', () => {
 
   /**
    * worker 是独立 crate：src-tauri 的 `cargo check` 不覆盖它，Bun 测试也不执行它的 Rust
-   * 单测。不在 gate 里显式列出，它的编译错误和失败测试不会让任何一条流水线变红。
+   * 单元测试。不在 gate 中显式列出时，它的编译错误和失败测试不会使任何一条流水线失败。
    *
-   * 两个 Cargo.lock 都受跟踪，所以每条 cargo 命令都要 `--locked`：不带它的那条会在
-   * 清单版本已改、lock 待写回时改写这个受跟踪文件，而门禁只读。
+   * 两个 Cargo.lock 都受版本跟踪，因此每条 cargo 命令都必须带 `--locked`：不带该参数的命令会在
+   * 清单版本已修改、lock 尚未写回时改写该受跟踪文件，而门禁只读。
    */
-  test('门禁的每条 cargo 命令都点名 manifest 并带 --locked', () => {
+  test('门禁的每条 cargo 命令都指定 manifest 并带 --locked', () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
       scripts: Record<string, string>
     }
@@ -426,7 +426,7 @@ describe('桌面发布清单', () => {
 
   /**
    * 外壳的构建脚本会删除并重新复制 `<target-dir>/debug/qy-computer-host.exe`。开发实例正从
-   * `.cargo/config.toml` 那个目录运行这个文件，Windows 上文件被占用，删除报拒绝访问、
+   * `.cargo/config.toml` 指定的目录运行该文件，Windows 上文件被占用，删除时报拒绝访问、
    * 门禁以 101 退出。门禁的外壳两步因此用独立的产物目录。
    */
   test('门禁的外壳 cargo 步骤不与开发实例共用产物目录', () => {
@@ -452,7 +452,7 @@ describe('桌面发布清单', () => {
     }
   })
 
-  /** 发布只从 master 出，判定写在共用 action 里，三条工作流不各判一遍。 */
+  /** 发布只从 master 进行，判定写在共用 action 中，三条工作流不各自重复判定。 */
   test('发布来源与更新说明只有共用 action 一处判定', () => {
     const prepare = actionText('release-prepare')
 
@@ -466,7 +466,7 @@ describe('桌面发布清单', () => {
 })
 
 describe('本地安装包收集', () => {
-  test('只删收过的安装包，release 下的编译产物留在原处', async () => {
+  test('只删除已收集的安装包，release 下的编译产物保留在原处', async () => {
     const base = mkdtempSync(join(tmpdir(), 'collect-'))
     const target = join(base, 'cargo-target')
     const bundle = join(target, 'release', 'bundle', 'nsis')
@@ -487,7 +487,7 @@ describe('本地安装包收集', () => {
         'qywork_9.9.9_x64-setup.exe',
       )
       expect(existsSync(join(bundle, 'qywork_9.9.9_x64-setup.exe'))).toBe(false)
-      // 冷编译三分钟就是从这里来的：往上溯到 release/ 会把它一起删掉。
+      // 清理范围向上扩展到 release/ 时会一并删除编译产物，下次构建需要约三分钟的冷编译。
       expect(existsSync(join(deps, 'qywork.rlib'))).toBe(true)
       expect(existsSync(join(target, 'release'))).toBe(true)
     } finally {
@@ -495,7 +495,7 @@ describe('本地安装包收集', () => {
     }
   })
 
-  test('没有安装包时以 1 退出，不建输出目录', async () => {
+  test('没有安装包时以 1 退出，不创建输出目录', async () => {
     const base = mkdtempSync(join(tmpdir(), 'collect-empty-'))
     const out = join(base, 'installer')
     try {

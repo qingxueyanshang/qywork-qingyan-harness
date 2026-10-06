@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /**
- * 往指定账本里种一份有代表性的会话，供界面截图与人工评估用。
+ * 向指定账本写入一组有代表性的会话，供界面截图与人工评估使用。
  *
- * 不跑真实模型：截图要能复现、要快、要不花钱。但**数据形状必须与真实运行完全一致**
- * ——同样经 repos 写入、同样的 step 种类和状态，否则截出来的图和真实界面不是一回事。
+ * 不运行真实模型：截图需要可复现、速度快、不产生费用。但数据形状必须与真实运行完全一致：
+ * 同样经 repos 写入、使用同样的 step 种类和状态，否则截图与真实界面不一致。
  *
  *   bun run scripts/seed-demo.ts <db路径> <工作区路径>
  */
@@ -26,16 +26,16 @@ if (!dbPath || !workspaceRoot) {
 }
 
 /**
- * 会话记的是**接口 + 模型**一对，不是单一个模型名。接口名取 `qy init` 的预置键，
- * 种出来的数据形状才和真实运行一致（模型选择的第一层就是接口）。
+ * 会话记录的是接口与模型的组合，而不是单个模型名。接口名取 `qy init` 的预置键，
+ * 生成的数据形状才与真实运行一致（模型选择的第一层是接口）。
  */
 const REF = { provider: 'deepseek', model: 'deepseek-flash' } as const
 
 const store = new Store({ path: dbPath })
 const ws = upsertWorkspace(store, workspaceRoot, 'qywork')
 
-// 历史会话先建：列表按 updated_at 倒序，后建的排前面，
-// 有内容的那条要排第一才会被默认选中。
+// 先创建历史会话：列表按 updated_at 倒序排列，后创建的排在前面，
+// 含内容的会话必须排在第一位才会被默认选中。
 for (const title of [
   '审查桌面端 harness agent',
   '分析文件夹内容',
@@ -75,7 +75,7 @@ let seq = 0
 const step = (input: Parameters<typeof appendStep>[1]) =>
   appendStep(store, { ...input, runId: run.id, seq: ++seq })
 
-/** 动作语义与真实运行一致：由后端解析后随 step 落库，前端不回猜。 */
+/** 动作语义与真实运行一致：由后端解析后随 step 落库，前端不反向推测。 */
 const ACTIONS = {
   grep: { kind: 'query' as const, objectLabel: '内容', target: 'author_id' },
   read_file: {
@@ -221,8 +221,8 @@ step({
 })
 
 /*
- * 派活的三种形状：派一件成了、派一件没派出去、派一张图。
- * 三者画的是同一张卡（`DelegateCard`），截图要能一眼看出它们同形。
+ * 派发的三种形状：单项派发成功、单项派发失败、派发一张图。
+ * 三者渲染为同一种卡片（`DelegateCard`），截图需能直观看出三者形状相同。
  */
 step({
   runId: run.id,
@@ -238,7 +238,7 @@ step({
     outcome: {
       status: 'success',
       executed: true,
-      message: '临时子 agent 做完了',
+      message: '已派出临时 清理夹具（subagentId cv_demo_child），回执会作为一条消息送到本会话',
       data: {
         output: '夹具里三条空作者记录已清理，market 与 admin 两组用例都不依赖它们。',
         conversationId: 'cv_demo_child',
@@ -261,7 +261,7 @@ step({
     outcome: {
       status: 'failure',
       executed: true,
-      message: '没有 perf。现在能派的是：reviewer、cli:claude',
+      message: '子 agent 无法派发：本项目中没有角色 perf',
       errorKind: 'not_found',
     },
   },
@@ -281,7 +281,8 @@ step({
     outcome: {
       status: 'success',
       executed: true,
-      message: 'Anthropic claude 做完了',
+      message:
+        '已派出外部 CLI Anthropic claude（subagentId cv_demo_cli），回执会作为一条消息送到本会话',
       data: {
         output:
           '已更新 README 的安装一节。\n\n### 回执\n- 变更文件：README.md\n- 实现方式：按新的 packages/ 与 apps/ 两级结构重写路径示例，删掉了指向旧 src/ 的三处引用。\n- 未完成项：无',
@@ -312,7 +313,7 @@ step({
     outcome: {
       status: 'success',
       executed: true,
-      message: '3 个节点全部做完',
+      message: 'Workflow 已完成。',
       data: {
         nodes: [
           {

@@ -2,13 +2,13 @@
 /**
  * 上下文读数口径的真机验证。
  *
- * **为什么单测不够。** 单测里的比值是脚本自己设的常数，锚点是脚本自己造的行。
- * 这里要回答三件单测答不了的事：这台机器上真实模型的估算/真值比是多少、
- * 装一个 MCP 之后真实会话的读数会不会跳、跑着的时候与回头看是不是同一个数。
+ * **单元测试的局限。** 单元测试中的比值是脚本设定的常数，锚点是脚本构造的行。
+ * 本脚本回答单元测试无法回答的三个问题：本机真实模型的估算值与真值之比、
+ * 安装一个 MCP 之后真实会话的读数是否跳变、运行中与事后查看的读数是否一致。
  *
  *   bun run scripts/context-scale-live.ts
  *
- * 跑一轮要发真实请求（每条会话两三轮短对话），按配置里的模型逐个来。
+ * 运行一次需要发送真实请求（每条会话两三轮短对话），按配置中的模型逐个执行。
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -41,12 +41,12 @@ import {
 
 const WS_DIR = join(import.meta.dir, '..', '.tmp', 'smoke-ws', 'context-scale')
 const DB = join(WS_DIR, 'context-scale.sqlite3')
-/** 换行。写进模板串里，避免转义在工具链上被折半。 */
+/** 换行符。写入模板字符串中，避免反斜杠转义在工具链中被减半。 */
 const NL = String.fromCharCode(10)
 const RUN_TIMEOUT_MS = 240_000
-/** 第四段要模型逐个读的文件数。多几个才凑得出可折单元。 */
+/** 第四段要求模型逐个读取的文件数。文件数足够多时才能形成可折叠单元。 */
 const NOTES = 8
-/** 只写在第一份被折叠的工具结果里，重启后不能从召回问题本身抄答案。 */
+/** 只写在第一份被折叠的工具结果中，确保重启后无法从召回问题本身取得答案。 */
 const RECALL_MARKER = 'QYWORK-RESTART-7429'
 
 let failures = 0
@@ -61,7 +61,7 @@ function note(line: string): void {
   process.stdout.write(`  · ${line}\n`)
 }
 
-/** 一个只有 echo 的 stdio MCP server。装上它工具表就多一条，信封跟着换一份。 */
+/** 只提供 echo 的 stdio MCP server。安装后工具表增加一项，信封随之更换。 */
 const MCP_SOURCE = `
 let buf = ''
 let ready = false
@@ -102,10 +102,10 @@ process.stdin.on('data', (c) => {
 `
 
 /**
- * 斜率法用的料：中英各半，两千余字。
+ * 斜率法使用的文本：中英文各半，两千余字。
  *
- * 中英混排是刻意的——`TokenDensity` 的三个系数里中文与非中文分开计，
- * 只发一种就只量到半把尺。
+ * 中英文混排是有意设计：`TokenDensity` 的三个系数中，中文与非中文分开计算，
+ * 只发送一种只能测量其中一部分系数。
  */
 const BULK = [
   '压缩把一段历史换成摘要、把工具结果换成定位符之后，原文仍在账本里留有。',
@@ -142,7 +142,7 @@ interface TurnResult {
   runId: RunId
 }
 
-/** 起一轮对话并等它跑完，一并把这一轮的 `context` 事件按到达顺序收下来。 */
+/** 发起一轮对话并等待其执行完毕，同时按到达顺序收集该轮的 `context` 事件。 */
 async function turn(live: Live, conversationId: string, content: string): Promise<TurnResult> {
   const ws = new WebSocket(
     `ws://127.0.0.1:${new URL(live.base).port}/stream?token=${live.token}&origin=desktop`,
@@ -221,10 +221,10 @@ async function newConversation(live: Live, title: string): Promise<string> {
 }
 
 /**
- * 把会话切到指定模型。
+ * 将会话切换到指定模型。
  *
- * **接口与模型要成对给**：只给模型名会被回执拒掉，而拒了以后这一轮照样跑默认模型，
- * 看起来像切过去了。
+ * **接口与模型必须成对传入**：只传入模型名会被回执拒绝，而被拒绝后本轮仍运行默认模型，
+ * 表面上与切换成功无异。
  */
 async function setModel(live: Live, conversationId: string, ref: ModelRef): Promise<void> {
   const ws = new WebSocket(
@@ -248,7 +248,7 @@ async function setModel(live: Live, conversationId: string, ref: ModelRef): Prom
   ws.close()
 }
 
-/** 一条会话里所有拿到回执的请求，按发送顺序。 */
+/** 一条会话中所有已取得回执的请求，按发送顺序排列。 */
 function settled(store: Store, conversationId: string) {
   return listRuns(store, conversationId as ConversationId)
     .flatMap((r) => listProviderRequests(store, r.id))
@@ -264,7 +264,7 @@ function runText(store: Store, runId: RunId): string {
     .join(NL)
 }
 
-/** 被重复拿来当开头的编号；正文允许汇报进度，但同一个编号不该反复复述。 */
+/** 被重复用作开头的编号；正文允许汇报进度，但同一个编号不应反复复述。 */
 function repeatedOpeners(text: string): [string, number][] {
   const count = new Map<string, number>()
   for (const match of text.matchAll(
@@ -277,7 +277,7 @@ function repeatedOpeners(text: string): [string, number][] {
 }
 
 async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<void> {
-  // 每个模型都从「没装 MCP」起步，否则第二个模型的第一阶段就已经带着它了。
+  // 每个模型都从「未安装 MCP」的状态开始，否则第二个模型的第一阶段已包含该 MCP。
   await rm(join(WS_DIR, '.agents', 'mcp.json'), { force: true })
   const mcpEntry = join(WS_DIR, 'mcp-fixture.mjs')
   for (let i = 1; i <= NOTES; i++) {
@@ -300,7 +300,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   })
   const spec = adapter.spec
 
-  // ── 一、真实模型在新尺下的估算/真值比 ──────────────────────────────
+  // ── 一、真实模型在新计量口径下的估算/真值比 ──────────────────────────────
   process.stdout.write(
     `\n【一】新尺下的实测比值（模型 ${spec.id}，窗口 ${spec.contextWindow.toLocaleString()}）\n`,
   )
@@ -313,7 +313,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     { 实际: getConversation(store, conv as ConversationId)?.model },
   )
   await turn(live, conv, '只回两个字：收到。不要调用任何工具。')
-  // 第二轮加入一大段内容：斜率法要求两次请求的体量差足够大，差几十 token 量不出斜率。
+  // 第二轮加入一大段内容：斜率法要求两次请求的体量差足够大，相差几十 token 时无法测出斜率。
   await turn(
     live,
     conv,
@@ -341,7 +341,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     note('斜率只作诊断证据，不写入模型库，也不作为后续消息的持久化倍率。')
   }
 
-  // ── 二、装一个 MCP：信封变了，读数不许跳 ────────────────────────────
+  // ── 二、安装 MCP：信封改变，读数不得跳变 ────────────────────────────
   process.stdout.write('\n【二】装一个 MCP 之后的第一次发送\n')
   const anchorRow = rows[rows.length - 1]
   live.close()
@@ -390,7 +390,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
       `锚点真值 ${trueTokens(anchorRow)}　旧头部 ${envelopeHeadTokens(anchorRow.sentCategories)}　新头部 ${envelopeHeadTokens(firstNew.sentCategories)}`,
     )
     note(`读数 ${first.tokens}　修正式算出 ${expected}　裸估算（修前会显示这个）${bare}`)
-    // 差额是本轮那条新用户消息：锚点覆盖到上一轮为止，它之后的历史另估。
+    // 差额是本轮的新用户消息：锚点覆盖到上一轮为止，其后的历史另行估算。
     const uncovered = first.tokens - expected
     note(`差额 ${uncovered} = 本轮新用户消息（锚点覆盖到上一轮为止，它之后的另估）`)
     check('读数等于「真值 − 旧头部 + 新头部 + 本轮新消息」', uncovered >= 0 && uncovered <= 300, {
@@ -405,7 +405,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     )
   }
 
-  // ── 三、跑着的时候与回头看是同一个数 ────────────────────────────────
+  // ── 三、运行中与事后查看的读数一致 ────────────────────────────────
   process.stdout.write('\n【三】运行中与回头看\n')
   const panel = contextPanel(store, conv as ConversationId, {
     ...spec,
@@ -422,16 +422,16 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     { 面板: panel.total, 事件: events[events.length - 1]?.tokens },
   )
 
-  // ── 四、真模型写一次摘要：压完之后真值要落到软阈值之下 ──────────────
+  // ── 四、真实模型生成一次摘要：压缩之后真值必须低于软阈值 ──────────────
   process.stdout.write(`${NL}【四】真机压一次${NL}`)
   /*
-   * 先让模型真的调几次工具。
+   * 先让模型实际调用几次工具。
    *
-   * 压缩的可折单元就是执行记录，纯对话选不出单元、`run` 直接回 `nothing_to_fold`，
-   * `projectionBudget` 那一段一行都走不到。
+   * 压缩的可折叠单元即执行记录，纯对话无法选出单元，`run` 直接返回 `nothing_to_fold`，
+   * `projectionBudget` 相关代码不会执行。
    */
-  // 一轮里连调八次工具仍然只有一个可折单元；必须拆成真实的独立 run，才能验证
-  // 「保留最近批次、折叠更早批次」的产品语义，而不是在测试里伪造 step。
+  // 一轮中连续调用八次工具仍只有一个可折叠单元；必须拆分为真实的独立 run，才能验证
+  // 「保留最近批次、折叠更早批次」的产品语义，而不是在测试中伪造 step。
   await turn(
     live,
     conv,
@@ -467,7 +467,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     store,
     conversationId: conv as ConversationId,
     messageIdUpperBound: null,
-    // 走真实装配，思考档、预算与诊断记录必须和线上一致。
+    // 使用真实装配，思考档位、预算与诊断记录必须与线上一致。
     summarize: async (prompt, budgetTokens, trace) => {
       budgetSeen = budgetTokens
       return summarizer(prompt, budgetTokens, trace)
@@ -476,9 +476,9 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
 
   const beforeMsgs = await buildHistory(store, conv as ConversationId, null, async (c) => c)
   /*
-   * 两把尺都取**同一次请求**的：`measuredInputTokens` 就是那一次的 `estimateRequest`，
-   * 与它的 provider 回执逐字配对。拿 `estimateMessages(history)` 顶替是错的——
-   * 那份少了冻结前缀与工具表，比出来的不是这两把尺的比。
+   * 两种计量都取自**同一次请求**：`measuredInputTokens` 即该次请求的 `estimateRequest`，
+   * 与其 provider 回执逐字配对。不能用 `estimateMessages(history)` 替代：
+   * 它缺少冻结前缀与工具表，得出的不是这两种计量之比。
    */
   const lastRow = settled(store, conv).at(-1)
   if (!lastRow) {
@@ -489,11 +489,11 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   const estBefore = lastRow.measuredInputTokens
   const trueBefore = trueTokens(lastRow)
   /*
-   * 造一个必须走摘要、但摘要仍放得下的窗口。
+   * 构造一个必须生成摘要、但仍能容纳摘要的窗口。
    *
-   * 1.2 倍窗口只会触发工具正文收纳，模型摘要不会运行；0.8 倍让收纳后的占用仍高于
-   * 软阈值，同时保留足够投影预算，因此这次验收会真实调用当前模型生成摘要。它是人工缩窗触发，不冒充模型
-   * 原生 1M 窗口已经自然填满。
+   * 1.2 倍窗口只会触发工具正文收纳，模型摘要不会运行；0.8 倍使收纳后的占用仍高于
+   * 软阈值，同时保留足够的投影预算，因此本次验收会实际调用当前模型生成摘要。该摘要由人工缩小窗口触发，不代表模型
+   * 原生 1M 窗口已自然填满。
    */
   const window = Math.max(4096, Math.round(trueBefore * 0.8))
   const softAt = Math.floor(window * 0.8)
@@ -541,7 +541,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   )
   if (outcome.status === 'compacted') {
     const estAfter = estimateMessages(compaction.project(beforeMsgs), spec.density)
-    // 按同一份实测比折回真值尺——这一步与 `afterCondense` 用的是同一个比值。
+    // 按同一实测比值换算回真值口径：该步骤与 `afterCondense` 使用同一个比值。
     const trueAfter = Math.round(estAfter / (estBefore / trueBefore))
     note(`压完估算 ${estAfter}　折回真值 ${trueAfter}`)
     check('压完之后真值落到软阈值之下', trueAfter <= softAt, {
@@ -551,7 +551,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     check('这次压缩真实调用了模型生成摘要', outcome.summarized, outcome)
     check('摘要预算是正数（不是被算成负的）', budgetSeen > 0, { 预算: budgetSeen })
 
-    // ── 五、停掉并重启服务：压缩投影、Todo 与缓存都必须能继续 ──────────
+    // ── 五、停止并重启服务：压缩投影、Todo 与缓存都必须能继续使用 ──────────
     process.stdout.write(`${NL}【五】压缩后重启并再次召回${NL}`)
     const beforeRestartTodos = latestTodos(store, conv as ConversationId)
     check(
@@ -634,7 +634,7 @@ async function main(): Promise<number> {
   const store = new Store({ path: DB })
   const config = await loadConfig()
 
-  // 不给参数就只跑配置里当前生效的那一条；给了就逐条跑，形如 `deepseek/deepseek-flash`。
+  // 不传参数时只运行配置中当前生效的模型；传入参数时逐条运行，格式如 `deepseek/deepseek-flash`。
   const args = process.argv.slice(2)
   const refs: ModelRef[] = args.length
     ? args.map((a) => {
