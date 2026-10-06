@@ -1,15 +1,15 @@
 /**
- * `qy probe` —— 经模型所属接口实测该模型支持什么。
+ * `qy probe`：经由模型所属接口实测该模型支持的能力。
  *
- * 内置目录只认得出自己认识的模型；接中转站、自建网关、刚发布的模型时，
- * 它回落到一组保守的猜测。保守是对的，但**没有任何办法验证那个猜测**——
- * 结果是：支持思考的端点从不开思考，不支持的又每次都 400，只能靠人试。
+ * 内置目录只能识别已收录的模型；接入中转站、自建网关或新发布的模型时，
+ * 它回退到一组保守的推测值。保守是正确的，但**没有任何办法验证这些推测**：
+ * 支持思考的端点从不开启思考，不支持的端点每次都返回 400，只能人工尝试。
  *
- *   qy probe                  探当前生效的那个模型
- *   qy probe <模型名>         探指定模型（走它所属的接口）
- *   qy probe --save           把结果写回配置（不加这个只打印，不改配置）
+ *   qy probe                  探测当前生效的模型
+ *   qy probe <模型名>         探测指定模型（经由其所属接口）
+ *   qy probe --save           把结果写回配置（不加该参数时只打印，不修改配置）
  *
- * 探测会发送连接、档位和两轮工具契约请求，所以它只由用户显式触发。
+ * 探测会发送连接、档位和两轮工具契约请求，因此只由用户显式触发。
  */
 
 import { describeProbe, probeModel, toTransportCapabilities } from '@qywork/ai'
@@ -53,8 +53,8 @@ export async function runProbe(args: string[]): Promise<number> {
     ...(stored.baseUrl ? { baseUrl: stored.baseUrl } : {}),
     ...(stored.headers ? { headers: stored.headers } : {}),
     ...(stored.spec ? { spec: stored.spec } : {}),
-    // 不带上次的 transport 结论：否则被判定为不透传后，下一次探测自己也不再发
-    // effort，探出来的只会是「上次那个结论有没有自洽」。
+    // 不带入上次的 transport 结论：否则某项被判定为不透传后，下一次探测本身也不再发送
+    // effort，得到的只是上次结论的自洽性。
   })
 
   if (json) {
@@ -64,7 +64,7 @@ export async function runProbe(args: string[]): Promise<number> {
   }
 
   if (!outcome.reachable) {
-    process.stderr.write(`\n${DIM}端点不通。先确认 key、模型名和接口地址。${RESET}\n`)
+    process.stderr.write(`\n${DIM}端点无法连接。请先确认 key、模型名和接口地址。${RESET}\n`)
     return 1
   }
 
@@ -73,32 +73,32 @@ export async function runProbe(args: string[]): Promise<number> {
   // 参数校验未确认时保留配置；思考观察独立报告。
   if (outcome.untested.length) {
     process.stderr.write(
-      `\n${DIM}未探测的轴：${outcome.untested.join(' / ')}（这条链路不发该字段），` +
-        `目录里的保守默认值保持不变。${RESET}\n`,
+      `\n${DIM}未探测的项：${outcome.untested.join(' / ')}（该链路不发送这些字段），` +
+        `目录中的保守默认值保持不变。${RESET}\n`,
     )
   }
   if (outcome.inconclusive.length) {
     process.stderr.write(
-      `\n${DIM}未得出结论的轴：${outcome.inconclusive.join(' / ')}（请求失败或接口未通过非法值对照），` +
+      `\n${DIM}未得出结论的项：${outcome.inconclusive.join(' / ')}（请求失败或接口未通过非法值对照），` +
         `配置保持不变。${RESET}\n`,
     )
   }
 
   if (!save) {
-    // 默认不改配置。探测会改变后续每一次请求的形状，那种事不该在用户只想
-    // 「看一眼」的时候发生。
-    process.stderr.write(`\n${DIM}加 --save 把这份结论写回配置${RESET}\n`)
+    // 默认不修改配置。探测结论会改变后续每一次请求的形状，不应在用户只需
+    // 查看结论时生效。
+    process.stderr.write(`\n${DIM}加 --save 将该结论写回配置${RESET}\n`)
     return 0
   }
 
   if (Object.keys(transport).length === 0) {
-    process.stderr.write(`\n没有可写的传输结论，配置保持不变。\n`)
+    process.stderr.write(`\n没有可写回的传输结论，配置保持不变。\n`)
     return 0
   }
 
-  // 写回前重读配置，只改这一个模型格子的 `transport`，不改全局模型目录。
-  // 不要把开头读到的那份整份写回：探测要几十秒到几分钟，期间在设置页或别的进程里
-  // 保存的改动会被整份覆盖。
+  // 写回前重新读取配置，只修改该模型条目的 `transport`，不修改全局模型目录。
+  // 不要把开始时读取的配置整份写回：探测耗时数十秒到数分钟，期间在设置页或其他进程中
+  // 保存的修改会被整份覆盖。
   const latest = await loadConfig()
   const owner = latest.providers[stored.provider]
   const model = owner?.models[stored.model]

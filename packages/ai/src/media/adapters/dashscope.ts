@@ -1,5 +1,5 @@
 /**
- * 百炼原生的生成接口：`dashscope_images` 同步出图（千问图像、万相图像），
+ * 百炼原生的生成接口：`dashscope_images` 同步生成图片（千问图像、万相图像），
  * `dashscope_videos` 异步视频任务（万相视频），`dashscope_speech` 同步语音合成（千问语音合成）。
  *
  * 原生路径为 `/api/v1/services/…`，与上传共用地址规范化：去除兼容接口后缀，保留部署前缀。
@@ -25,9 +25,9 @@ import {
   type MediaUsage,
 } from '../types.ts'
 
-/** 同步出图。修改与生成同一个端点，参考图放进消息内容。 */
+/** 同步生成图片。修改与生成使用同一端点，参考图放入消息内容。 */
 const SYNC_PATH = '/api/v1/services/aigc/multimodal-generation/generation'
-/** 视频任务。只能异步：不带 `X-DashScope-Async: enable` 接口直接报错。 */
+/** 视频任务。只支持异步：不带 `X-DashScope-Async: enable` 时接口直接报错。 */
 const VIDEO_PATH = '/api/v1/services/aigc/video-generation/video-synthesis'
 
 export class DashScopeImagesAdapter implements MediaAdapter {
@@ -69,8 +69,8 @@ export class DashScopeImagesAdapter implements MediaAdapter {
 }
 
 /**
- * 出图的计量。千问图像回 `output_image_count`、`input_image_count` 与档位 `output_image_type`；
- * 万相图像回 `image_count`（它的 token 字段标明不计费，不读）。
+ * 图片生成的计量。千问图像返回 `output_image_count`、`input_image_count` 与档位 `output_image_type`；
+ * 万相图像返回 `image_count`（其 token 字段标明不计费，不读取）。
  */
 function imageUsage(body: Record<string, unknown>, received: number): MediaUsage {
   const u = (body.usage ?? {}) as Record<string, unknown>
@@ -83,7 +83,7 @@ function imageUsage(body: Record<string, unknown>, received: number): MediaUsage
 
 /**
  * 视频任务的计量（查询结果顶层的 `usage`）。`duration` 是计费秒数：万相有参考视频时含输入视频时长。
- * `SR` 万相回数字、百炼上的可灵回字符串（`720` / `1080` / `4k`）；可灵另回 `audio`。
+ * `SR` 万相返回数字，百炼上的可灵返回字符串（`720` / `1080` / `4k`）；可灵另返回 `audio`。
  */
 function videoUsage(raw: unknown): MediaUsage {
   const u = (raw ?? {}) as Record<string, unknown>
@@ -95,7 +95,7 @@ function videoUsage(raw: unknown): MediaUsage {
   })
 }
 
-/** `output.choices[].message.content[].image` 里的地址。 */
+/** `output.choices[].message.content[].image` 中的地址。 */
 function imageUrls(body: Record<string, unknown>): string[] {
   const output = body.output as { choices?: { message?: { content?: unknown[] } }[] } | undefined
   const urls: string[] = []
@@ -109,8 +109,8 @@ function imageUrls(body: Record<string, unknown>): string[] {
 }
 
 /**
- * 语音合成与出图同一个同步端点，但参数（音色、语种、朗读要求）全在 `input` 里，与 `text` 并列，
- * 不在 `parameters` 里；放错位置接口按默认音色合成、不报错。结果是地址（24 小时有效）或 base64。
+ * 语音合成与图片生成使用同一同步端点，但参数（音色、语种、朗读要求）全部位于 `input` 中，与 `text` 并列，
+ * 不在 `parameters` 中；放错位置时接口按默认音色合成且不报错。结果是地址（24 小时有效）或 base64。
  */
 export class DashScopeSpeechAdapter implements MediaAdapter {
   readonly kind = 'dashscope_speech' as const
@@ -136,7 +136,7 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
       signal,
     )
     const audio = (body.output as { audio?: { url?: unknown; data?: unknown } } | undefined)?.audio
-    // 千问语音合成 3 按输入字符计费，接口回 `characters`（一个汉字计 2 个字符）。
+    // 千问语音合成 3 按输入字符计费，接口返回 `characters`（一个汉字计 2 个字符）。
     const usage = defined<MediaUsage>({
       characters: count((body.usage as Record<string, unknown> | undefined)?.characters),
     })
@@ -156,7 +156,7 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
 
 /**
  * 输入用途到 `input.media[].type` 的对应（万相的取值）。目录的 `inputs.types` 按型号覆盖：
- * 同一端点上的可灵用另一套类型名，视频的类型还可以由参数 `video_type` 指定。
+ * 同一端点上的可灵使用另一套类型名，视频的类型还可以由参数 `video_type` 指定。
  */
 const MEDIA_TYPE: Record<MediaInput['role'], string> = {
   first_frame: 'first_frame',
@@ -206,7 +206,7 @@ export class DashScopeVideosAdapter implements MediaAdapter {
         {
           ...auth,
           'x-dashscope-async': 'enable',
-          // 输入里有 `oss://` 临时地址时必须带这个头，否则接口不解析它。
+          // 输入中含 `oss://` 临时地址时必须带此请求头，否则接口不解析该地址。
           ...(payload.input.media?.some((m) => m.url.startsWith('oss://'))
             ? { 'x-dashscope-ossresourceresolve': 'enable' }
             : {}),
@@ -229,8 +229,8 @@ export class DashScopeVideosAdapter implements MediaAdapter {
   }
 
   /**
-   * 撤销任务：`POST /api/v1/tasks/{task_id}/cancel`。百炼只撤得动排队中（`PENDING`）的任务，其余状态回 400；
-   * 被拒时再查一次状态，已不在排队就回 `started`，仍在排队说明是别的原因，原样抛。
+   * 撤销任务：`POST /api/v1/tasks/{task_id}/cancel`。百炼只能撤销排队中（`PENDING`）的任务，其余状态返回 400；
+   * 被拒绝时再查询一次状态，已不在排队则返回 `started`，仍在排队说明是其他原因，原样抛出。
    */
   async cancel(taskId: string, signal: AbortSignal): Promise<MediaCancel> {
     const origin = dashScopeBaseUrl(this.profile.baseUrl)
@@ -275,8 +275,8 @@ export class DashScopeVideosAdapter implements MediaAdapter {
   }
 
   /**
-   * 小图像使用 data URI；视频、音频与超过内联上限的图像经临时上传换成 `oss://` 地址，
-   * 与对话里的大附件同一套上传。
+   * 小图像使用 data URI；视频、音频与超过内联上限的图像经临时上传转换为 `oss://` 地址，
+   * 与对话中的大附件使用同一套上传流程。
    */
   private async source(input: MediaInput, signal: AbortSignal): Promise<string> {
     if (

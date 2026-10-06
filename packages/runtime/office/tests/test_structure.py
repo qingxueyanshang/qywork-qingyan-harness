@@ -87,7 +87,7 @@ class PptxTest(unittest.TestCase):
             a.text_frame.text = "互相遮挡的文本框甲"
             b = s.shapes.add_textbox(Inches(2), Inches(1.1), Inches(4), Inches(2))
             b.text_frame.text = "互相遮挡的文本框乙"
-            # 外框大面积重叠，文字各在自己的角落：不算遮挡。
+            # 外框大面积重叠，文字位于各自外框的不同角落：不算遮挡。
             e = s.shapes.add_textbox(Inches(1), Inches(4), Inches(5), Inches(2))
             e.text_frame.text = "左上"
             f = s.shapes.add_textbox(Inches(2), Inches(4.5), Inches(5), Inches(2))

@@ -31,7 +31,7 @@ describe('原生容量码', () => {
     expect(r!.providerCode).toBe('context_length_exceeded')
   })
 
-  test('带连字符的码归一化后仍能匹配', () => {
+  test('带连字符的错误码归一化后仍能匹配', () => {
     const r = classifyCapacityRejection(
       apiError({ status: 422, message: 'nope', body: { code: 'Input-Too-Long' } }),
     )
@@ -40,7 +40,7 @@ describe('原生容量码', () => {
 })
 
 describe('消息强匹配', () => {
-  test('Anthropic prompt is too long，并抠出两个数字', () => {
+  test('Anthropic prompt is too long，并提取两个数值', () => {
     const r = classifyCapacityRejection(
       apiError({
         status: 400,
@@ -53,11 +53,11 @@ describe('消息强匹配', () => {
     expect(r!.reportedInputTokens).toBe(213000)
     expect(r!.reportedLimitTokens).toBe(200000)
     expect(r!.scope).toBe('input')
-    // 泛化码只作记录，不作判据。
+    // 泛化错误码只作记录，不作判据。
     expect(r!.providerCode).toBe('invalid_request_error')
   })
 
-  test('OpenAI 措辞里上限在前、请求量在后 —— 顺序不能取反', () => {
+  test('OpenAI 措辞中上限在前、请求量在后，顺序不能颠倒', () => {
     const r = classifyCapacityRejection(
       apiError({
         status: 400,
@@ -93,9 +93,9 @@ describe('消息强匹配', () => {
   })
 })
 
-describe('必须判否的情况（窄分类的全部价值所在）', () => {
+describe('必须判定为否的情况', () => {
   test('输出 max_tokens 参数校验不是输入容量问题', () => {
-    // 这正是现有 errors.ts 的 `m.includes('max_tokens')` 会误判的那一条。
+    // 按「消息含 max_tokens」判定上下文超限会误判此条。
     const r = classifyCapacityRejection(
       apiError({
         status: 400,
@@ -117,34 +117,34 @@ describe('必须判否的情况（窄分类的全部价值所在）', () => {
     expect(r).toBeNull()
   })
 
-  test('429 限速即使消息里带 context 也不算 —— 状态码白名单先否掉', () => {
+  test('429 限速即使消息含 context 也不认定，由状态码白名单先行排除', () => {
     const r = classifyCapacityRejection(
       apiError({ status: 429, message: 'rate limited: context length is large' }),
     )
     expect(r).toBeNull()
   })
 
-  test('5xx 不算 —— 服务端故障压缩了也没用', () => {
+  test('5xx 不认定：服务端故障无法通过压缩解决', () => {
     const r = classifyCapacityRejection(
       apiError({ status: 500, message: 'prompt is too long', body: { code: 'prompt_too_long' } }),
     )
     expect(r).toBeNull()
   })
 
-  test('没有输入轴词汇时，即使有 exceed/limit 也判否', () => {
+  test('没有输入轴词汇时，即使含 exceed/limit 也判定为否', () => {
     const r = classifyCapacityRejection(
       apiError({ status: 400, message: 'temperature exceeds the allowed limit of 2.0' }),
     )
     expect(r).toBeNull()
   })
 
-  test('非对象错误不炸', () => {
+  test('非对象错误不抛出异常', () => {
     expect(classifyCapacityRejection('boom')).toBeNull()
     expect(classifyCapacityRejection(null)).toBeNull()
     expect(classifyCapacityRejection(undefined)).toBeNull()
   })
 
-  test('循环引用的 body 不炸', () => {
+  test('循环引用的 body 不抛出异常', () => {
     const body: Record<string, unknown> = { message: 'prompt is too long: 9 tokens > 8 maximum' }
     body.self = body
     const r = classifyCapacityRejection(apiError({ status: 400, message: 'err', body }))
@@ -152,8 +152,8 @@ describe('必须判否的情况（窄分类的全部价值所在）', () => {
   })
 })
 
-describe('数字抠不出来时', () => {
-  test('仍然认定为容量拒绝，只是数字为 null —— 不许拿本地估算填', () => {
+describe('无法提取数值时', () => {
+  test('仍认定为容量拒绝，数值为 null，不以本地估算填充', () => {
     const r = classifyCapacityRejection(
       apiError({
         status: 413,

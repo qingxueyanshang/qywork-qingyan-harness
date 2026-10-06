@@ -2,11 +2,11 @@
  * 视频生成：四个视频适配器与任务等待。
  *
  * 覆盖范围：`media/adapters/dashscope.ts` 的 `DashScopeVideosAdapter`、`media/adapters/ark-videos.ts`、
- * `media/adapters/openai-videos.ts`、`media/adapters/kling.ts` 实际发出的提交与查询、`media/task.ts` 的终态与可接续的区分，
- * `media/catalog.ts` 视频模型按 id 兜底时的操作交集与按型号的参数表，以及 `@qywork/core` 的 `defaultMediaKind` 对视频的选择；
- * 百炼与方舟的撤销任务（`cancel`），各家进行中状态词归成排队中 / 生成中（`taskPhase`）。
+ * `media/adapters/openai-videos.ts`、`media/adapters/kling.ts` 实际发出的提交与查询、`media/task.ts` 对终态与可接续失败的区分，
+ * `media/catalog.ts` 视频模型按 id 回退时的操作交集与按型号区分的参数表，以及 `@qywork/core` 的 `defaultMediaKind` 对视频的选择；
+ * 百炼与方舟的任务撤销（`cancel`），以及各厂商进行中状态词归并为排队中 / 生成中（`taskPhase`）。
  *
- * 起一个本机端点当远端：记下每个请求，查询按预设的状态序列回答。
+ * 启动本机端点作为远端：记录每个请求，查询按预设的状态序列应答。
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test'
@@ -34,11 +34,11 @@ interface Seen {
 
 let server: ReturnType<typeof Bun.serve>
 let seen: Seen[] = []
-/** 提交的回复。 */
+/** 提交请求的应答。 */
 let submit: () => Response = () => Response.json({})
-/** 每次查询依次取一个回复，取到最后一个后一直用它。 */
+/** 每次查询依次取一个应答，取到最后一个后持续使用该应答。 */
 let polls: (() => Response)[] = []
-/** DELETE 的回复（方舟撤销）。 */
+/** DELETE 请求的应答（方舟撤销）。 */
 let remove: () => Response = () => Response.json({})
 let downloadStatus = 200
 let inputDir: string
@@ -104,7 +104,7 @@ beforeEach(() => {
   downloadStatus = 200
 })
 
-/** 取出这次调用的失败；成功了就让测试失败。 */
+/** 取出本次调用的失败；调用成功时使测试失败。 */
 function rejection(run: Promise<unknown>): Promise<MediaError> {
   return run.then(
     () => {
@@ -189,7 +189,7 @@ describe('dashscope_videos', () => {
     }
   })
 
-  test('提交带异步头、输入按用途放进 media，任务号交出后查询到成功就下载', async () => {
+  test('提交时携带异步请求头，输入按用途放入 media，返回任务号后查询到成功即下载', async () => {
     submit = () => Response.json({ output: { task_id: 'task-1', task_status: 'PENDING' } })
     polls = [
       () =>
@@ -247,7 +247,7 @@ describe('dashscope_videos', () => {
     expect(seen[0]?.path).toBe('/api/v1/tasks/task-9')
   })
 
-  /** 远端明确失败是终态：没有任务号可接续，调用方据此删掉任务记录。 */
+  /** 远端明确失败是终态：没有可接续的任务号，调用方据此删除任务记录。 */
   test('远端失败不带任务号；下载失败带任务号可接续', async () => {
     submit = () => Response.json({ output: { task_id: 'task-2' } })
     polls = [
@@ -293,8 +293,8 @@ describe('dashscope_videos', () => {
     expect(statuses).toEqual(['RUNNING'])
   }, 15_000)
 
-  /** 同一端点上的可灵用另一套素材类型名；视频的用途由 `video_type` 指定，它不作为参数发出。 */
-  test('可灵按目录的类型名放素材，video_type 写进视频那一项', async () => {
+  /** 同一端点上的可灵使用另一套素材类型名；视频的用途由 `video_type` 指定，`video_type` 不作为请求参数发送。 */
+  test('可灵按目录中的类型名放置素材，video_type 写入视频项', async () => {
     captureUpload(MP4, PNG)
     submit = () => Response.json({ output: { task_id: 'task-k' } })
     polls = [
@@ -336,14 +336,14 @@ describe('dashscope_videos', () => {
     expect(post.json?.parameters).toEqual({ mode: 'std' })
     expect(post.headers['x-dashscope-ossresourceresolve']).toBe('enable')
     expect(seen.filter((s) => s.path === '/oss-upload')).toHaveLength(2)
-    // 可灵的 `SR` 是字符串，另回 `audio`；输入含视频由请求决定。
+    // 可灵的 `SR` 是字符串，另外回报 `audio`；输入是否含视频由请求决定。
     expect(out.usage).toEqual({ seconds: 5, resolution: '720p', audio: false, videoInput: true })
   })
 })
 
 /**
- * 参考音频的请求形状照两家「创建视频生成任务」原文：方舟 `content[]` 一项 `type: audio_url`、`role: reference_audio`，
- * data URI 写格式名 `data:audio/mp3`；万相 `media[]` 一项 `type: reference_audio`。
+ * 参考音频的请求形状依据方舟与万相的「创建视频生成任务」文档原文：方舟为 `content[]` 中一项 `type: audio_url`、`role: reference_audio`，
+ * data URI 写格式名 `data:audio/mp3`；万相为 `media[]` 中一项 `type: reference_audio`。
  */
 describe('参考音频', () => {
   test('百炼可灵仅允许已声明的素材组合，有视频时最多四张参考图', () => {
@@ -358,7 +358,7 @@ describe('参考音频', () => {
   const WAV = new Uint8Array([0x52, 0x49, 0x46, 0x46])
   const MP3 = new Uint8Array([0x49, 0x44, 0x33])
 
-  test('方舟：audio_url + reference_audio，mp3 写成 data:audio/mp3', async () => {
+  test('方舟：audio_url + reference_audio，mp3 写为 data:audio/mp3', async () => {
     submit = () => Response.json({ id: 'cgt-a' })
     polls = [
       () =>
@@ -390,7 +390,7 @@ describe('参考音频', () => {
     })
   })
 
-  test('万相：media 里一项 reference_audio', async () => {
+  test('万相：media 中一项 reference_audio', async () => {
     captureUpload(WAV)
     submit = () => Response.json({ output: { task_id: 'task-a', task_status: 'PENDING' } })
     polls = [
@@ -426,20 +426,20 @@ describe('参考音频', () => {
     expect(seen.filter((s) => s.path === '/oss-upload')).toHaveLength(1)
   })
 
-  test('段数按目录退回；目录没写上限的不收', () => {
+  test('段数超出目录上限时拒绝；目录未声明上限的模型不接受参考音频', () => {
     const seedance = lookupMediaModel('doubao-seedance-2-0-260128', 'ark_videos')
     expect(
       validateMediaCall(seedance, 'reference_to_video', {}, { images: 1, videos: 0, audios: 4 }),
-    ).toEqual([`${seedance.id} 最多收 3 段参考音频，这次给了 4 段`])
+    ).toEqual([`${seedance.id} 最多接受 3 段参考音频，本次提供了 4 段`])
     const kling = lookupMediaModel('kling/kling-v3-omni-video-generation', 'dashscope_videos')
     expect(
       validateMediaCall(kling, 'reference_to_video', {}, { images: 1, videos: 0, audios: 1 }),
-    ).toContain(`${kling.id} 不收参考音频`)
+    ).toContain(`${kling.id} 不接受参考音频`)
   })
 })
 
 describe('ark_videos', () => {
-  test('输入进 content 并带 role，参数在顶层，状态词按方舟的读', async () => {
+  test('输入放入 content 并带 role，参数位于顶层，状态词按方舟的定义读取', async () => {
     submit = () => Response.json({ id: 'cgt-1' })
     polls = [
       () =>
@@ -493,7 +493,7 @@ describe('ark_videos', () => {
     })
   })
 
-  test('要了尾帧：查询结果带尾帧地址时下载为第二个产物，是图片', async () => {
+  test('请求尾帧时：查询结果带尾帧地址则下载为第二个产物，类型为图片', async () => {
     submit = () => Response.json({ id: 'cgt-2' })
     polls = [
       () =>
@@ -576,7 +576,7 @@ describe('kling_videos', () => {
     ).toEqual([])
   })
 
-  test('文生只发 prompt 与 settings，按任务号查询，取 outputs 里的视频', async () => {
+  test('文生视频只发送 prompt 与 settings，按任务号查询，取 outputs 中的视频', async () => {
     submit = () => Response.json({ code: 0, data: { id: 'kt-1', status: 'submitted' } })
     polls = [succeeded('kt-1')]
     const out = await adapter('kling-3.0').run(
@@ -596,8 +596,8 @@ describe('kling_videos', () => {
     expect(out.files[0]?.bytes).toEqual(MP4)
   })
 
-  /** 金额取从余额扣的那几项；从资源包扣的只有单位数，没有金额。 */
-  test('计量取视频时长与 billing 里的实扣金额', async () => {
+  /** 金额取自余额扣费的条目；资源包扣费的条目只有单位数，没有金额。 */
+  test('计量取视频时长与 billing 中的实际扣费金额', async () => {
     const task = (billing: unknown[]) => () =>
       Response.json({
         code: 0,
@@ -621,7 +621,7 @@ describe('kling_videos', () => {
     expect((await run()).usage).toEqual({ seconds: 5 })
   })
 
-  test('首尾帧走 image-to-video，文字与图片进 contents，图片是不带前缀的 base64', async () => {
+  test('首尾帧使用 image-to-video，文字与图片放入 contents，图片为不带前缀的 base64', async () => {
     submit = () => Response.json({ code: 0, data: { id: 'kt-2' } })
     polls = [succeeded('kt-2')]
     await adapter('kling-3.0').run(
@@ -648,7 +648,7 @@ describe('kling_videos', () => {
     })
   })
 
-  test('参考图走 omni-video；远端失败是终态；提交被拒带接口原文', async () => {
+  test('参考图使用 omni-video；远端失败是终态；提交被拒时带接口原文', async () => {
     submit = () => Response.json({ code: 0, data: { id: 'kt-3' } })
     polls = [
       () =>
@@ -686,7 +686,7 @@ describe('kling_videos', () => {
 })
 
 describe('目录与默认协议', () => {
-  test('Seedance 2.0 Fast 的清晰度与时长按它自己的表校验', () => {
+  test('Seedance 2.0 Fast 的清晰度与时长按其自身的参数表校验', () => {
     const spec = lookupMediaModel('doubao-seedance-2-0-fast-260128', 'ark_videos')
     const none = { images: 0, videos: 0 }
     expect(validateMediaCall(spec, 'text_to_video', { resolution: '1080p' }, none)).toHaveLength(1)
@@ -696,7 +696,7 @@ describe('目录与默认协议', () => {
     ).toEqual([])
   })
 
-  test('添加视频模型时按接口地址定协议', () => {
+  test('添加视频模型时按接口地址确定协议', () => {
     expect(defaultMediaKind('video', 'https://api-beijing.klingai.com')).toBe('kling_videos')
     expect(defaultMediaKind('video', 'https://api-singapore.klingai.com/')).toBe('kling_videos')
     expect(defaultMediaKind('video', 'https://ark.cn-beijing.volces.com/api/v3')).toBe('ark_videos')
@@ -743,7 +743,7 @@ describe('openai_videos', () => {
     expect(out.files[0]?.bytes).toEqual(MP4)
   })
 
-  test('Seedance 中转保留已核实的素材能力，未知型号仍只提供通用参数', () => {
+  test('经中转站调用 Seedance 时保留已核实的素材能力，未知型号只提供通用参数', () => {
     const spec = lookupMediaModel('doubao-seedance-2-5-260628', 'openai_videos')
     expect(spec.operations).toContain('reference_to_video')
     expect(spec.inputs).toMatchObject({ maxImages: 30, maxVideos: 10, maxAudios: 10 })
@@ -780,7 +780,7 @@ describe('撤销任务', () => {
       { status: 400 },
     )
 
-  test('百炼：排队中撤得动；已开始时撤销被拒，查到不在排队回 started；仍在排队说明是别的原因，原样抛', async () => {
+  test('百炼：排队中可撤销；已开始时撤销被拒，查询确认已不在排队中则返回 started；仍在排队中说明拒绝另有原因，原样抛出', async () => {
     submit = () => Response.json({ request_id: 'r1' })
     expect(await dashscope().cancel!('t-1', signal)).toBe('cancelled')
     const post = seen.find((x) => x.method === 'POST')!
@@ -794,7 +794,7 @@ describe('撤销任务', () => {
     expect((await rejection(dashscope().cancel!('t-3', signal))).status).toBe(400)
   })
 
-  test('方舟：先查状态，排队中才删；运行中或已结束不发删除（删除对已结束的任务是删掉记录）', async () => {
+  test('方舟：先查询状态，仅在排队中时删除；运行中或已结束时不发送删除请求（对已结束的任务，删除操作会删除其记录）', async () => {
     polls = [() => Response.json({ status: 'queued' })]
     expect(await ark().cancel!('cgt-1', signal)).toBe('cancelled')
     const del = seen.find((x) => x.method === 'DELETE')!
@@ -810,14 +810,14 @@ describe('撤销任务', () => {
     }
   })
 
-  test('方舟：查询与删除之间开始了，删除被拒后再查不在排队，回 started', async () => {
+  test('方舟：任务在查询与删除之间开始，删除被拒后再次查询确认不在排队，返回 started', async () => {
     polls = [() => Response.json({ status: 'queued' }), () => Response.json({ status: 'running' })]
     remove = () => Response.json({ error: { code: 'InvalidParameter' } }, { status: 400 })
     expect(await ark().cancel!('cgt-3', signal)).toBe('started')
     remove = () => Response.json({})
   })
 
-  test('其余视频接口没有撤销：可灵、Veo、Sora、Grok 的适配器不带 cancel', () => {
+  test('其余视频接口不支持撤销：可灵、Veo、Sora、Grok 的适配器没有 cancel', () => {
     for (const [kind, model] of [
       ['kling_videos', 'kling-v3'],
       ['openai_videos', 'sora-2'],
@@ -828,7 +828,7 @@ describe('撤销任务', () => {
 })
 
 describe('排队中与生成中', () => {
-  test('各家的进行中状态词归成两步，认不出的回 null', () => {
+  test('各厂商的进行中状态词归并为两个阶段，无法识别的返回 null', () => {
     for (const s of ['PENDING', 'queued', 'pending', 'submitted'])
       expect(taskPhase(s)).toBe('queued')
     for (const s of ['RUNNING', 'running', 'in_progress', 'processing'])

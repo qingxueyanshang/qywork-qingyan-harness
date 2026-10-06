@@ -3,8 +3,8 @@
  *
  * 覆盖范围：`tokens.ts` 全部，以及 `catalog.ts` 里每条 `ModelSpec.density` 的标定区间。
  *
- * 断言的是**失败形状与标定区间**，不是具体数字——具体数字随口径微调会变，
- * 而下面这几种低估/暴涨/换尺都是实测形状，改动只要复发它们就必须红。
+ * 断言的是失败形状与标定区间，不是具体数字：具体数字随口径微调而变化，
+ * 而下列低估、暴涨与口径混用都是实测出现过的形状，改动使其复现时测试必须失败。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -24,7 +24,7 @@ import {
 import { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 
 const D = DEFAULT_DENSITY
-/** 已标定那一档，取自目录本身——这一并锁住那条模型确实带着 density。 */
+/** 已标定的档位，取自目录本身；同时锁定该模型条目带有 density。 */
 const DEEPSEEK = lookupModel(
   'deepseek-v4-pro',
   'openai_chat_completions',
@@ -32,7 +32,7 @@ const DEEPSEEK = lookupModel(
 ).density
 
 describe('文本口径', () => {
-  test('空值一律 0', () => {
+  test('空值一律为 0', () => {
     expect(estimateText('', D)).toBe(0)
     expect(estimateJson(undefined, D)).toBe(0)
     expect(estimateJson(null, D)).toBe(0)
@@ -40,25 +40,25 @@ describe('文本口径', () => {
   })
 
   /**
-   * 旧口径是 `length / 3.5`，等于按 0.29/字——**低估五倍**。
-   * 这个数是压缩判断的输入，低估到一定程度真正超限的请求会被判成「不可能超」。
+   * 按 `length / 3.5` 计算等于每字 0.29 token，低估五倍。
+   * 该估算是压缩判断的输入，低估过多时实际超限的请求会被判定为不会超限。
    */
   test('中文不按 1/3.5 个 token 计', () => {
     const cn = '这是一段纯中文的正文'
     expect(estimateText(cn, D)).toBeGreaterThan(Math.ceil(cn.length / 3.5) * 3)
   })
 
-  test('拉丁文本按 textCharsPerToken 走', () => {
+  test('拉丁文本按 textCharsPerToken 计', () => {
     expect(estimateText('a'.repeat(40), { ...D, textCharsPerToken: 4 })).toBe(10)
   })
 
-  /** 稠密 JSON 里大量单字符 token，按散文档会低估。 */
+  /** 稠密 JSON 中有大量单字符 token，按散文档计会低估。 */
   test('JSON 比自然语言更密', () => {
     const obj = { a: 1, b: 2, c: [3, 4, 5] }
     expect(estimateJson(obj, D)).toBeGreaterThan(estimateText(JSON.stringify(obj), D))
   })
 
-  test('循环引用不抛，返回 0', () => {
+  test('循环引用不抛出异常，返回 0', () => {
     const cyclic: Record<string, unknown> = {}
     cyclic.self = cyclic
     expect(estimateJson(cyclic, D)).toBe(0)
@@ -68,12 +68,12 @@ describe('文本口径', () => {
 /**
  * 密度的标定区间。
  *
- * 真值是斜率法实测（2026-08-26，同一段文本发两种长度、两次 `prompt_tokens` 相减）。
- * 两侧都要锁：
+ * 真值由斜率法实测（2026-08-26，同一段文本按两种长度发送，两次 `prompt_tokens` 相减）。
+ * 上下两侧都须锁定：
  *
- * - **下界 1.0**：低于真值就是低估，而超限的请求会因此被判成装得下，撞窗无声。
- * - **上界 1.5**：这正是这次要治的病。旧口径对冻结前缀高 1.87 倍，
- *   第一次回执一到读数就从估算尺跌到真值尺，界面上是「发一句话，占用先变大又变小」。
+ * - **下界 1.0**：低于真值即为低估，超限的请求会因此被判为可容纳，超出窗口时没有任何提示。
+ * - **上界 1.5**：防止高估。对冻结前缀高估 1.87 倍时，
+ *   第一次回执到达后读数即从估算值降至真值，界面上显示为「发一句话，占用先变大又变小」。
  */
 describe('密度标定', () => {
   /** deepseek 实测 0.569 token/字。 */
@@ -94,7 +94,7 @@ describe('密度标定', () => {
     }
   })
 
-  test('目录里每一条都带 density，四项都是正数', () => {
+  test('目录中每一条都带有 density，四项均为正数', () => {
     for (const spec of builtinCatalog()) {
       expect(spec.density.cjkTokensPerChar).toBeGreaterThan(0)
       expect(spec.density.rareCjkTokensPerChar).toBeGreaterThan(0)
@@ -106,7 +106,7 @@ describe('密度标定', () => {
 
 /**
  * 常用字与其余汉字分两档：DeepSeek V4.1 Flash 实测随机一级字 1.04 token / 字、随机非一级字 1.91。
- * 合成一档时生僻字被低估，一次读进一份生僻字文件就可能让下一次请求超出窗口。
+ * 合为一档时生僻字被低估，读取一份含大量生僻字的文件后，下一次请求可能超出窗口。
  */
 describe('汉字分两档', () => {
   const d: TokenDensity = {
@@ -131,10 +131,10 @@ describe('汉字分两档', () => {
 
 describe('内容块', () => {
   /**
-   * **实测的暴涨形状**：1 MB 图片 ≈ 137 万 base64 字符，按字符估是约 39 万 token，
-   * provider 实际按约 2000 计。贴一张图，面板从 2% 跳到 39%。
+   * 实测的暴涨形状：1 MB 图片约为 137 万个 base64 字符，按字符估算约 39 万 token，
+   * provider 实际按约 2000 计。附加一张图片后，面板读数从 2% 升至 39%。
    */
-  test('图片按固定值，不数 base64', () => {
+  test('图片按固定值计，不按 base64 长度计', () => {
     const huge = 'A'.repeat(1_370_000)
     const n = estimateContent(
       [{ type: 'image', mimeType: 'image/png', source: { kind: 'base64', data: huge } }],
@@ -142,11 +142,11 @@ describe('内容块', () => {
       D.textCharsPerToken,
     )
     expect(n).toBe(MEDIA_TOKENS)
-    // 关键是量级：绝不能和 base64 长度同阶。
+    // 断言的是量级：不得与 base64 长度同阶。
     expect(n).toBeLessThan(huge.length / 100)
   })
 
-  test('图文混排各算各的', () => {
+  test('图文混排时分别计算', () => {
     const n = estimateContent(
       [
         { type: 'text', text: 'x'.repeat(40) },
@@ -161,8 +161,8 @@ describe('内容块', () => {
 
 describe('消息', () => {
   /**
-   * **实测的漏数形状**：`write_file` 的整份文件正文在 tool call 的 arguments 里，
-   * 而旧口径只数 `m.content`——面板上它是 0。
+   * 实测的漏计形状：`write_file` 的整份文件正文位于 tool call 的 arguments 中，
+   * 只计算 `m.content` 时，面板上该部分为 0。
    */
   test('tool call 参数必须计入', () => {
     const body = 'x'.repeat(4000)
@@ -178,7 +178,7 @@ describe('消息', () => {
     expect(withCall - withoutCall).toBeGreaterThan(1000)
   })
 
-  /** 思考正文会随 tool_calls 一起发给兼容端点，不数它就是系统性少一块。 */
+  /** 思考正文随 tool_calls 一起发送给兼容端点，不计入时估算系统性偏低。 */
   test('reasoningContent 计入', () => {
     const a = estimateMessage(
       { role: 'assistant', content: '', reasoningContent: 'y'.repeat(400) },
@@ -189,8 +189,8 @@ describe('消息', () => {
   })
 
   /**
-   * 原生推理条目按回报的 token 数计。签名里是加密的完整推理，按字节估会高出数倍；
-   * 有它时思考正文不上线，两份只数一份。
+   * 原生推理条目按回报的 token 数计。签名中是加密的完整推理，按字节估算会高出数倍；
+   * 存在该条目时思考正文不发送，两者只计一份。
    */
   test('原生推理按回报 token 计，不按签名字节，也不与正文重复计', () => {
     const d = { ...D, textCharsPerToken: 4 }
@@ -210,17 +210,17 @@ describe('消息', () => {
     expect(native - bare).toBe(700)
   })
 
-  test('每条有固定协议开销——几十条短消息不会被系统性低估', () => {
+  test('每条消息计入固定协议开销：几十条短消息不会被系统性低估', () => {
     const many = Array.from({ length: 50 }, () => ({ role: 'user' as const, content: '' }))
     expect(estimateMessages(many, D)).toBe(50 * 4)
   })
 
   /**
    * 工具结果是 `{call_id, tool, status, executed, summary, result}` 的稠密 JSON，
-   * 实测 2.4–2.5 字符/token。按散文档计会把编码 agent 里长得最快的那个桶低估三分之一，
-   * 而它恰好在会话最满的时候占比最大。
+   * 实测 2.4–2.5 字符/token。按散文档计算会将编码 agent 中增长最快的部分低估三分之一，
+   * 而该部分在会话接近上限时占比最大。
    */
-  test('tool 角色走 JSON 档，不走散文档', () => {
+  test('tool 角色按 JSON 档计，不按散文档计', () => {
     const payload = JSON.stringify({ call_id: 'c1', tool: 'read_file', result: 'x'.repeat(2000) })
     const d: TokenDensity = {
       cjkTokensPerChar: 1,
@@ -236,7 +236,7 @@ describe('消息', () => {
 })
 
 describe('整个请求', () => {
-  test('system + tools + messages 三段都算', () => {
+  test('system + tools + messages 三部分均计入', () => {
     const req = {
       model: 'm',
       system: [{ text: 'a'.repeat(40) }],

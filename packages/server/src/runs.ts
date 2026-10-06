@@ -1,17 +1,17 @@
 /**
  * Run 管理器。
  *
- * 三件事：并发控制、中断，以及**进程内的会话意志**——待续起标记（`GoalArm`）
- * 与跟进消息队列（`FollowUp`）。后两者共用同一条学说：它们是「接下来该干什么」
- * 的意图，不是账本事实，因此一律不落盘，进程重启即空表。
+ * 三项职责：并发控制、中断，以及**进程内的会话意图**：自动继续标记（`GoalArm`）
+ * 与跟进消息队列（`FollowUp`）。后两者遵循同一原则：它们是关于下一步操作
+ * 的意图，不是账本事实，因此一律不写入磁盘，进程重启即清空。
  *
- * 并发控制只管**本进程**：占位表是本进程在跑哪些会话的缓存，用来在同步块里挡住
- * 本进程的第二次起轮、把消息排进队列、广播忙态。同一会话是否被另一个进程（终端里的 qy）
- * 占着，由账本的 `createRun` 在建轮的写事务里判定，占着时抛 `ConversationBusyError`。
+ * 并发控制只负责**本进程**：占位表缓存本进程正在运行的会话，用于在同步块中拦截
+ * 本进程的第二次启动、将消息排入队列、广播忙态。同一会话是否被另一个进程（终端的 qy）
+ * 占用，由账本的 `createRun` 在创建轮次的写事务中判定，被占用时抛出 `ConversationBusyError`。
  *
- * **这里不问用户任何事。** 工具授权由 `Session.decide()` 就地裁决（规则 + 分类器），
+ * **此处不向用户询问。** 工具授权由 `Session.decide()` 就地裁决（规则 + 分类器），
  * 被拒的调用以 `tool.finished{status:'failure', errorKind:'permission_denied'}` 呈现。
- * 这个产品只有 `auto` / `full` 两档，没有「逐次询问」那一档。
+ * 本产品只有 `auto` / `full` 两种模式，没有逐次询问模式。
  */
 
 import type { ConversationId, FollowUp, RunId } from '@qywork/core'
@@ -19,7 +19,7 @@ import type { Store } from '@qywork/store'
 import { listConversations } from '@qywork/store'
 import type { EventBus } from './bus.ts'
 
-/** 忙态要问在跑表的那两句。整张表在 `subagents.ts`，这里只要这两个查询。 */
+/** 忙态需要向运行表查询的两项。完整的运行表位于 `subagents.ts`，此处只需要这两项查询。 */
 export interface SubagentInflight {
   has(conversationId: ConversationId): boolean
   conversations(): ConversationId[]
@@ -33,18 +33,18 @@ export interface ActiveRun {
 }
 
 /**
- * 待续起标记：这条会话正在自动循环里，下一轮该按这个目标的这个版本发起。
+ * 自动继续标记：该会话处于自动循环中，下一轮应按该目标的此版本发起。
  *
- * **为什么挂在这里，而且**绝不落盘**。** 「循环开着」是**进程内**的事实，不是账本里的事实。落盘的
- * 话，一个失控之后崩掉的循环会在下次启动时自己复活——而没有人再点过「继续」。挂在 `RunManager`
- * 上恰好等价于「不持久化」：进程重启即空表，账本里那个 `active` 的目标就静静留有，等用户明确点继续
+ * **保存在此处，且不写入磁盘。** 循环是否开启是**进程内**的事实，不是账本中的事实。写入磁盘
+ * 时，一个失控后崩溃的循环会在下次启动时自动恢复，而用户并未再次点击「继续」。保存在 `RunManager`
+ * 中即等价于不持久化：进程重启即清空，账本中 `active` 的目标保持不变，等待用户明确点击继续
  * （`goal.resume`）。
  *
- * **不挂 Session**：服务端每条消息新建一个 Session，它活不过这一条消息，
- * 挂上去的话循环最多跑一轮。
+ * **不关联 Session**：服务端每条消息新建一个 Session，其生命期不超过该条消息，
+ * 关联到 Session 时循环最多执行一轮。
  *
- * `revision` 是这次续起的**预留**：真正发起之前要重读目标，对不上就丢弃这次
- * 排队且不增加轮数——中途被改过的目标不该按旧版本继续跑。
+ * `revision` 是本次自动继续的**预留版本**：实际发起之前重新读取目标，不一致时丢弃本次
+ * 排队且不增加轮数：中途被修改的目标不应按旧版本继续执行。
  */
 export interface GoalArm {
   goalId: string
@@ -53,13 +53,13 @@ export interface GoalArm {
 
 export class RunManager {
   private readonly active = new Map<string, ActiveRun>()
-  /** 同一会话同时只允许一个 run —— 两个 run 并发改同一批文件必然相互冲突。 */
+  /** 同一会话同时只允许一个 run：两个 run 并发修改同一批文件必然相互冲突。 */
   private readonly byConversation = new Map<string, RunId>()
-  /** 已占位但还没拿到 runId 的会话。见 `reserve()`。 */
+  /** 已占位但尚未取得 runId 的会话。见 `reserve()`。 */
   private readonly reserved = new Set<string>()
   private updateClaimed = false
 
-  /** 在现有忙态集合上原子占住退出时机；没有单独的任务计数。 */
+  /** 基于现有忙态集合原子地占用退出时机；不设单独的任务计数。 */
   claimUpdate(): boolean {
     if (
       this.armed.size ||
@@ -78,15 +78,15 @@ export class RunManager {
   get updating(): boolean {
     return this.updateClaimed
   }
-  /** 每个会话最多一条待续起标记。见 `GoalArm`。 */
+  /** 每个会话最多一条自动继续标记。见 `GoalArm`。 */
   private readonly armed = new Map<string, GoalArm>()
   /**
-   * 排着的跟进消息，按会话分。**进程内，不落盘**，理由同 `GoalArm`。
+   * 排队中的跟进消息，按会话划分。**仅存在于进程内，不写入磁盘**，理由同 `GoalArm`。
    *
-   * 代价明确：进程崩溃时，队列中尚未执行的正文将丢失，卡片随之消失。这与本仓
-   * 「输入框里没发出去的草稿刷新即丢」同级，而且丢得见得到。
-   * 换成落盘要多两条路径——删卡片变成删一行账、崩溃残留行的终态定义——
-   * 而它们服务的仍是一个进程内的意图。
+   * 代价明确：进程崩溃时，队列中尚未执行的正文将丢失，卡片随之消失。这与本仓库中
+   * 输入框未发送的草稿在刷新后丢失属于同一级别，且丢失对用户可见。
+   * 改为写入磁盘需要增加两条路径（删除卡片变为删除一行记录、定义崩溃残留行的终态），
+   * 而它们服务的仍是进程内的意图。
    */
   private readonly queues = new Map<string, FollowUp[]>()
 
@@ -94,44 +94,44 @@ export class RunManager {
     private readonly store: Store,
     private readonly bus: EventBus,
     /**
-     * 在跑的子 agent（`subagents.ts`）。忙态含它，**起轮的闸不含**：
-     * 子 agent 在跑不该挡住这条会话开新一轮。
+     * 运行中的子 agent（`subagents.ts`）。忙态包含它，**启动轮次的检查不包含**：
+     * 子 agent 运行时不应阻止该会话启动新一轮。
      */
     private readonly subagents: SubagentInflight,
   ) {}
 
   /**
-   * 该会话是否有一轮正在运行（含只占了位还没拿到 runId 的）。
+   * 该会话是否有一轮正在运行（含已占位但尚未取得 runId 的）。
    *
-   * **起轮的闸只认它。** 子 agent 在跑时照样能发消息、能起下一轮——那正是
-   * 回执要走的路：闲着就当场起一轮。用 `isBusy` 当闸的话，回执与用户的消息
-   * 都会排进一个没有人会去消费的队列。
+   * **启动轮次的检查只依据它。** 子 agent 运行时仍可发送消息、启动下一轮，这正是
+   * 回执的路径：空闲时立即启动一轮。若以 `isBusy` 作为检查条件，回执与用户的消息
+   * 都会排入一个无人消费的队列。
    */
   hasRun(conversationId: ConversationId): boolean {
     return this.byConversation.has(conversationId) || this.reserved.has(conversationId)
   }
 
   /**
-   * 这条会话此刻在跑的那一轮 id。只占了位还没拿到 runId 时为 null。
+   * 该会话当前运行中轮次的 id。已占位但尚未取得 runId 时为 null。
    *
-   * **只有它能回答「现在这一轮是哪一条」。** 账本里的 `runs.status` 在服务进程崩过
-   * 之后可能还挂着 `running`，照它取会把一条早已结束的 run 当成运行中。
+   * **只有它能确定当前运行的轮次。** 账本中的 `runs.status` 在服务进程崩溃
+   * 之后可能仍为 `running`，据此取值会将早已结束的 run 当作运行中。
    */
   currentRunId(conversationId: ConversationId): RunId | null {
     return this.byConversation.get(conversationId) ?? null
   }
 
   /**
-   * 这条会话此刻在不在执行：有 run，或者有派出去还没回来的子 agent。
+   * 该会话当前是否在执行：有 run，或有已派发但未返回的子 agent。
    *
-   * **界面与停止按钮认它。** 只认 run 的话，一条只有子 agent 在跑的会话在界面上
-   * 是闲的，而停止按钮不显示——用户没有入口停掉它们。
+   * **界面与停止按钮依据它。** 只依据 run 时，只有子 agent 在运行的会话在界面上
+   * 显示为空闲，停止按钮不显示，用户无法停止这些子 agent。
    */
   isBusy(conversationId: ConversationId): boolean {
     return this.hasRun(conversationId) || this.subagents.has(conversationId)
   }
 
-  /** 此刻在忙的全部会话。握手快照读它，见 `HelloOkFrame.busyConversations`。 */
+  /** 当前忙碌的全部会话。握手快照读取它，见 `HelloOkFrame.busyConversations`。 */
   busyConversations(): ConversationId[] {
     return [
       ...new Set([
@@ -143,18 +143,18 @@ export class RunManager {
   }
 
   /**
-   * 把「这条会话在不在忙」播出去。**忙态的每一个改点各调一次，别处不许发这条事件。**
-   * 改点是这个类里的四处（占位、释放、登记、注销）加上派活通道的两处
-   * （子 agent 派出、子 agent 结束）。
+   * 广播该会话的忙闲状态。**忙态的每个变更点各调用一次，其他位置不得发布该事件。**
+   * 变更点为本类中的四处（占位、释放、登记、注销）以及任务派发通道的两处
+   * （子 agent 派发、子 agent 结束）。
    *
    * 两个约束：
    *
-   * - **不带 `conversationId` 发**（第二个参数留空）：它是工作区级事件，
-   *   所有客户端都要收到。带上就成了按订阅过滤，只有开着这条会话的那个客户端
-   *   收得到——而要这条事件的正是没开着它的那些。
-   * - **现算 `isBusy()`，不接受调用方传进来的值**：占位与登记是两个集合，
-   *   `release()` 在 run 已经 register 之后也会被调到，传字面量必然报出
-   *   一个此刻不成立的 false。
+   * - **发布时不带 `conversationId`**（第二个参数留空）：它是工作区级事件，
+   *   所有客户端都必须收到。带上即按订阅过滤，只有打开该会话的客户端
+   *   能收到，而需要该事件的正是未打开该会话的客户端。
+   * - **实时计算 `isBusy()`，不接受调用方传入的值**：占位与登记是两个集合，
+   *   `release()` 在 run 已经 register 之后也会被调用，传入字面量必然报告
+   *   一个当前不成立的 false。
    */
   announce(conversationId: ConversationId): void {
     this.bus.publish({
@@ -165,15 +165,15 @@ export class RunManager {
   }
 
   /**
-   * 占住一个会话，**同步**完成检查与登记。
+   * 占用一个会话，**同步**完成检查与登记。
    *
-   * **检查与登记必须在同一个同步块里**。拆成 `isBusy()` 检查加后面某处的
-   * `register()`，中间隔着建 Session、读历史附件、等首个带 runId 的事件那几个
-   * await——桌面端和手机端几乎同时发一条消息时，两次检查都读到 false，
-   * 因此两个 AgentLoop 对着同一个工作区一起写文件。
-   * JS 是单线程的，同步块里就是原子的。
+   * **检查与登记必须位于同一个同步块中**。拆分为 `isBusy()` 检查与之后某处的
+   * `register()` 时，二者之间隔着创建 Session、读取历史附件、等待首个带 runId 的事件等多个
+   * await：桌面端与手机端几乎同时发送消息时，两次检查都读到 false，
+   * 两个 AgentLoop 因此同时写入同一个工作区。
+   * JS 是单线程的，同步块内的操作是原子的。
    *
-   * 返回 false = 已经有人在跑，调用方必须直接回绝。
+   * 返回 false 表示已有任务在运行，调用方必须直接拒绝。
    */
   reserve(conversationId: ConversationId): boolean {
     if (this.updateClaimed || this.hasRun(conversationId)) return false
@@ -182,7 +182,7 @@ export class RunManager {
     return true
   }
 
-  /** 释放占位。run 已经 register 过就交给 unregister 收，这里只管没跑起来的那些。 */
+  /** 释放占位。已 register 的 run 交由 unregister 处理，此处只处理未启动的占位。 */
   release(conversationId: ConversationId): void {
     this.reserved.delete(conversationId)
     this.announce(conversationId)
@@ -202,16 +202,16 @@ export class RunManager {
     if (run) this.announce(run.conversationId)
   }
 
-  /** 记下（或刷新）待续起标记。目标每变一次版本都要重记，见 `GoalArm`。 */
+  /** 记录（或刷新）自动继续标记。目标每次变更版本都要重新记录，见 `GoalArm`。 */
   arm(conversationId: ConversationId, arm: GoalArm): void {
     this.armed.set(conversationId, arm)
   }
 
   /**
-   * 解除待续起标记。
+   * 解除自动继续标记。
    *
-   * 用户发消息、目标进终态、这一轮被中断——三种情况都走这里。
-   * **人类消息优先**就是这条：他一说话，排着的那次自动续起就作废。
+   * 用户发送消息、目标进入终态、本轮被中断，三种情况均调用此处。
+   * **用户消息优先**由此实现：用户发送消息后，排队中的自动继续即作废。
    */
   disarm(conversationId: ConversationId): void {
     this.armed.delete(conversationId)
@@ -224,26 +224,26 @@ export class RunManager {
   // ─────────────────────────── 跟进消息队列 ───────────────────────────
 
   /**
-   * 把这条会话的队列播出去。**下面每一个改点各调一次，别处不许发这条事件。**
+   * 广播该会话的队列。**下方每个变更点各调用一次，其他位置不得发布该事件。**
    *
-   * 发的是整份快照而不是增量：客户端那边还有一份乐观加上去的本地卡，
-   * 两份增量账在「服务端按 id 去重掉一条」这种时刻必然分叉。
+   * 发布完整快照而不是增量：客户端另有一份乐观添加的本地卡片，
+   * 服务端按 id 去重一条时，两份增量记录必然不一致。
    *
-   * 带 `conversationId` 发（与 `conversation.busy` 相反）：卡片只出现在打开着的
-   * 那条会话里，别的客户端收到没有用处。
+   * 发布时带 `conversationId`（与 `conversation.busy` 相反）：卡片只出现在已打开的
+   * 该会话中，其他客户端收到后没有用途。
    */
   private announceQueue(conversationId: ConversationId): void {
     this.bus.publish({ type: 'queue.changed', conversationId, queue: this.queueOf(conversationId) })
   }
 
-  /** 这条会话排着的跟进消息。返回副本——调用方拿去发事件，不该能改到内部那份。 */
+  /** 该会话排队中的跟进消息。返回副本：调用方用它发送事件，不应修改内部数据。 */
   queueOf(conversationId: ConversationId): FollowUp[] {
     return [...(this.queues.get(conversationId) ?? [])]
   }
 
   /**
-   * 排进一条跟进消息。**按 id 幂等**——`id` 就是指令的 `clientRequestId`，
-   * 重连补发同一条指令时不该排出两条。
+   * 排入一条跟进消息。**按 id 幂等**：`id` 即指令的 `clientRequestId`，
+   * 重连后补发同一条指令时不应排入两条。
    */
   enqueue(conversationId: ConversationId, item: FollowUp): void {
     const list = this.queues.get(conversationId) ?? []
@@ -254,11 +254,11 @@ export class RunManager {
   }
 
   /**
-   * 把一条已经取走的消息塞回队首。
+   * 将一条已取出的消息放回队首。
    *
-   * **只给「取走之后没能发出去」用**（收尾火发到点时会话又忙了）。取走与
-   * 「跳不跳目标续起」是同一个同步决定，所以取不能延后；发不出去就得放得回来，
-   * 否则那条消息既没跑也不在队列里，卡片消失而什么都没发生。
+   * **仅用于取出后未能发送的情况**（结束阶段发起时会话再次变为忙碌）。取出与
+   * 是否跳过目标自动继续是同一个同步决定，因此取出不能延后；无法发送时必须放回，
+   * 否则该消息既未执行也不在队列中，卡片消失而没有任何执行。
    */
   enqueueFront(conversationId: ConversationId, item: FollowUp): void {
     const list = this.queues.get(conversationId) ?? []
@@ -266,7 +266,7 @@ export class RunManager {
     this.setQueue(conversationId, [item, ...list])
   }
 
-  /** 删掉一条。返回 false = 这条不在队列里（客户端点的时候它已经被消费了）。 */
+  /** 删除一条。返回 false 表示该条不在队列中（客户端点击时它已被消费）。 */
   removeFollowUp(conversationId: ConversationId, id: string): boolean {
     const list = this.queues.get(conversationId)
     const next = (list ?? []).filter((f) => f.id !== id)
@@ -275,7 +275,7 @@ export class RunManager {
     return true
   }
 
-  /** 翻转某一条的去向。返回 false = 这条不在队列里。 */
+  /** 切换某一条的去向。返回 false 表示该条不在队列中。 */
   setSteer(conversationId: ConversationId, id: string, steer: boolean): boolean {
     const list = this.queues.get(conversationId)
     if (!list?.some((f) => f.id === id)) return false
@@ -286,7 +286,7 @@ export class RunManager {
     return true
   }
 
-  /** 取走全部标了「调整方向」的条目，按入队序。run 内的 step 边界调它。 */
+  /** 取出全部标记为「调整方向」的条目，按入队顺序。由 run 内的 step 边界调用。 */
   takeSteered(conversationId: ConversationId): FollowUp[] {
     const list = this.queues.get(conversationId) ?? []
     const taken = list.filter((f) => f.steer)
@@ -298,7 +298,7 @@ export class RunManager {
     return taken
   }
 
-  /** 取走队首。run 收尾时调它，火发为下一轮。 */
+  /** 取出队首。run 结束时调用，取出的条目用于发起下一轮。 */
   takeNext(conversationId: ConversationId): FollowUp | null {
     const list = this.queues.get(conversationId) ?? []
     const head = list[0]
@@ -308,15 +308,15 @@ export class RunManager {
   }
 
   /**
-   * 把余下**用户**条目的去向复位成「加入队列」。
+   * 将剩余**用户**条目的去向重置为「加入队列」。
    *
-   * **「调整方向」只对发出它时的那一轮成立。** 这一轮已经收尾了，没赶上边界的
-   * 那些条目再没有可注入的地方；留着 `steer=true` 的话，下一轮一起跑就会把它们
-   * 注入到一轮用户没有指向过的执行里。
+   * **「调整方向」只对发出时的轮次有效。** 该轮已结束，未赶上 step 边界的
+   * 条目已无处注入；保留 `steer=true` 时，下一轮开始执行时会将它们
+   * 注入到用户并未指定的轮次中。
    *
-   * **带 `origin` 的回执不复位**：它的语义是「下一次有机会就交给模型」，
-   * 不指向某一轮。复位掉的话，父轮非正常收尾之后它要等下一轮跑完才单独起一轮，
-   * 比用户那条继续的话晚整整一轮到达模型。
+   * **带 `origin` 的回执不重置**：其语义是在下一次机会交给模型，
+   * 不指向特定轮次。重置后，父轮非正常结束时它要等下一轮执行完毕才单独启动一轮，
+   * 比用户的后续消息晚一整轮到达模型。
    */
   resetSteer(conversationId: ConversationId): void {
     const list = this.queues.get(conversationId)
@@ -327,7 +327,7 @@ export class RunManager {
     )
   }
 
-  /** 空队列不留空数组：`queueOf` 与「是否存在排队项」两处判据因此只有一种写法。 */
+  /** 空队列不保留空数组：`queueOf` 与「是否存在排队项」两处判据因此只有一种写法。 */
   private setQueue(conversationId: ConversationId, next: FollowUp[]): void {
     if (next.length) this.queues.set(conversationId, next)
     else this.queues.delete(conversationId)
@@ -342,9 +342,9 @@ export class RunManager {
   }
 
   /**
-   * 中断这条会话在跑的那一轮。返回 false = 此刻没有 run 在跑。
+   * 中断该会话当前运行的轮次。返回 false 表示当前没有运行中的 run。
    *
-   * 走 `interrupt(runId)`，不自己 abort：中断语义（`source:'user'`）只有一处。
+   * 经由 `interrupt(runId)`，不直接 abort：中断语义（`source:'user'`）只在一处定义。
    */
   interruptConversation(conversationId: ConversationId): boolean {
     const runId = this.byConversation.get(conversationId)

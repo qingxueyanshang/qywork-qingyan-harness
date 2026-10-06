@@ -265,7 +265,7 @@ describe('GLM 5.3 与 Grok 4.7 官方协议映射', () => {
     }
   })
 
-  test('Grok 4.7 价格在 200K 整条翻倍，不捏造输出上限或 Fast API id', () => {
+  test('Grok 4.7 输入达到 200K 时整次请求价格翻倍，不虚构输出上限或 Fast API id', () => {
     for (const kind of ['openai_chat_completions', 'openai_responses'] as const) {
       const spec = lookupModel('grok-4.7', kind)
       expect(spec).toMatchObject({
@@ -369,7 +369,7 @@ describe('GLM 5.3 与 Grok 4.7 官方协议映射', () => {
     })
   })
 
-  test('Grok 完整快照替换早先密文，原样回传且不混入可见思考', async () => {
+  test('Grok 完整快照替换此前密文，原样回传且不混入可见思考', async () => {
     const { body, events } = await exchange(
       'grok-4.7',
       'openai_responses',
@@ -425,7 +425,7 @@ describe('GLM 5.3 与 Grok 4.7 官方协议映射', () => {
     }
   })
 
-  test('密文按协议声明原样回放；换模型的剥离在装配点', () => {
+  test('密文按协议声明原样回放；更换模型时的剥离在装配点执行', () => {
     const messages = [{ role: 'assistant' as const, content: '已读', responseReasoning: reasoning }]
     expect(buildInput(messages, 'encrypted_content').filter((i) => i.type === 'reasoning')).toEqual(
       reasoning.items,

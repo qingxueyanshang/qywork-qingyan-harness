@@ -2,7 +2,7 @@
  * `openai_videos`：中转站的 `/v1/videos`（New API 等按 OpenAI 视频接口的形状转发各家视频模型）。
  *
  * 提交 `POST {base}/videos`，查询 `GET {base}/videos/{id}`，取内容 `GET {base}/videos/{id}/content`
- * （要带同一把 key）。厂商扩展结构由目录声明，素材与参数按对应结构发送。
+ * （须携带同一个 key）。厂商扩展结构由目录声明，素材与参数按对应结构发送。
  */
 
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
@@ -93,7 +93,7 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     const path = `${base}/videos/${encodeURIComponent(taskId)}`
     const body = await getJson(path, auth, signal)
     const status = String(body.status ?? '')
-    // 视频对象只带时长 `seconds`（字符串），没有用量与金额字段。
+    // 视频对象只包含时长 `seconds`（字符串），没有用量与金额字段。
     if (status === 'completed') {
       return {
         state: 'done',

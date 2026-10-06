@@ -1,11 +1,11 @@
 /**
- * `openai_images`：OpenAI 形状的出图接口 `/images/generations` 与 `/images/edits`。
+ * `openai_images`：OpenAI 形状的图片生成接口 `/images/generations` 与 `/images/edits`。
  *
- * OpenAI、中转站、火山方舟 Seedream、百炼兼容出图共用这一个形状，差别只有两处，都由目录声明：
- * 参考图走 multipart `/edits`（OpenAI、New API）还是走 JSON 的 `image` 字段（火山、百炼兼容）；
- * 结果在 `b64_json`（GPT Image 只回这个）还是 `url`（百炼兼容只回这个），两个都读。
+ * OpenAI、中转站、火山方舟 Seedream、百炼兼容接口共用此形状，差别只有两处，均由目录声明：
+ * 参考图使用 multipart `/edits`（OpenAI、New API）还是 JSON 的 `image` 字段（火山、百炼兼容）；
+ * 结果位于 `b64_json`（GPT Image 只返回该字段）还是 `url`（百炼兼容只返回该字段），两者都读取。
  *
- * **不发 `response_format`**：GPT Image 不收这个字段，发了整个请求被拒；其余两家默认回 url，照读即可。
+ * **不发送 `response_format`**：GPT Image 不接受该字段，发送后整个请求被拒绝；其余两家默认返回 url，直接读取即可。
  */
 
 import { basename } from 'node:path'
@@ -71,8 +71,8 @@ export class OpenAIImagesAdapter implements MediaAdapter {
 }
 
 /**
- * 响应里的 `usage`。OpenAI 回 token（`input_tokens_details` 分文字与图片）；火山回成功张数 `generated_images`、
- * 输入张数 `input_images` 与 `output_tokens`（像素总数 / 256）。张数以接口为准，没有回报时取实际收到的张数。
+ * 响应中的 `usage`。OpenAI 返回 token（`input_tokens_details` 区分文字与图片）；火山返回成功张数 `generated_images`、
+ * 输入张数 `input_images` 与 `output_tokens`（像素总数 / 256）。张数以接口返回为准，未返回时取实际收到的张数。
  */
 function readUsage(body: Record<string, unknown>, received: number): MediaUsage {
   const u = (body.usage ?? {}) as Record<string, unknown>
@@ -86,7 +86,7 @@ function readUsage(body: Record<string, unknown>, received: number): MediaUsage 
   })
 }
 
-/** 响应里的 `data[]`：每项是 `b64_json` 或 `url`。单项失败（火山会逐张报错）并进消息，不静默丢。 */
+/** 响应中的 `data[]`：每项是 `b64_json` 或 `url`。单项失败（火山逐张报错）合并到消息中，不静默丢弃。 */
 export async function readImages(
   body: Record<string, unknown>,
   signal: AbortSignal,

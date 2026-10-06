@@ -26,7 +26,7 @@ async function servers(file: string): Promise<Record<string, unknown>> {
 }
 
 describe('MCP 配置写入与迁移', () => {
-  test('明确指定 global 时只写全局 mcp.json', async () => {
+  test('明确指定 global 时只写入全局 mcp.json', async () => {
     await withTempHome(async (home) => {
       const root = await workspace('qywork-mcp-config-ws-')
       const port = makeMcpConfigPort(root)
@@ -41,7 +41,7 @@ describe('MCP 配置写入与迁移', () => {
     })
   })
 
-  test('迁移成功后来源层删除，只保留目标层', async () => {
+  test('迁移成功后删除来源层的配置，只保留目标层', async () => {
     await withTempHome(async (home) => {
       const root = await workspace('qywork-mcp-config-ws-')
       const port = makeMcpConfigPort(root)
@@ -61,7 +61,7 @@ describe('MCP 配置写入与迁移', () => {
     })
   })
 
-  test('目标层同名时拒绝迁移，两边原配置都不改', async () => {
+  test('目标层存在同名服务时拒绝迁移，两层原配置均不修改', async () => {
     await withTempHome(async (home) => {
       const root = await workspace('qywork-mcp-config-ws-')
       const port = makeMcpConfigPort(root)

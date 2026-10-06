@@ -1,15 +1,15 @@
 /**
- * 文件树、按名搜索、预览与原始字节、新建 / 改名 / 删除。
- * 右侧面板的几个标签页都从这里取数。
+ * 文件树、按名称搜索、预览与原始字节、新建 / 重命名 / 删除。
+ * 右侧面板的各标签页均从此处取数。
  *
- * 会写盘的是 create / rename / delete 三条，**它们共用同一套口径**：
- * 入参不合法回 422 且不落盘、目标已存在回 409 不覆盖、路径越界翻成 422
- * （那是入参问题，不该以 500 的面貌出现在界面上）。每条的特殊之处写在它自己头上。
+ * 写入磁盘的是 create / rename / delete 三个接口，它们使用同一套口径：
+ * 入参不合法返回 422 且不落盘，目标已存在返回 409 且不覆盖，路径越界转换为 422
+ * （这是入参问题，不应以 500 的形式出现在界面上）。各接口的特殊之处写在各自的注释中。
  *
  * 路径一律按 `literal` 解析，并把解析结果交给 `files.ts` 读写：查询参数已由
- * `URLSearchParams` 解码过一次，请求体里的路径是字面值，再解码一次会把文件名里的
- * `%20` 之类当成转义。create / rename / delete 操作的是目录项本身，用
- * `followFinalSymlink: false`：跟随末段软链时，删除和改名会作用到软链指向的目标。
+ * `URLSearchParams` 解码一次，请求体中的路径是字面值，再解码一次会把文件名中的
+ * `%20` 等内容当作转义。create / rename / delete 操作的是目录项本身，使用
+ * `followFinalSymlink: false`：跟随末段符号链接时，删除与重命名会作用于链接指向的目标。
  */
 
 import { CANVAS_FILE_KINDS, canvasFileKind } from '@qywork/core'
@@ -32,15 +32,15 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
 
   if (p === '/api/files/tree') {
     const rel = q.get('path') ?? '.'
-    // 走同一套路径约束：HTTP 入口和工具入口不能有两套安全策略。
+    // 使用同一套路径约束：HTTP 入口与工具入口不能有两套安全策略。
     const dir = await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true, literal: true })
     const depth = Math.min(6, Math.max(1, Number(q.get('depth') ?? 2)))
     return json({ nodes: await listTree(dir, rel === '.' ? '' : rel, depth) })
   }
 
   if (p === '/api/files/find') {
-    // 空查询由 `findByName` 判（它回空结果，不回整棵树）——这里不重复一遍。
-    // 带 `kinds`（逗号分隔的画布文件类别）时只回这几类文件，查询允许为空：画布上选素材的框打开即列出。
+    // 空查询由 `findByName` 判定（返回空结果，不返回整棵树），此处不重复判定。
+    // 带 `kinds`（逗号分隔的画布文件类别）时只返回这些类别的文件，查询允许为空：画布上选择素材的对话框打开时即列出文件。
     const kinds = q.get('kinds')
     if (kinds === null) return json(await findByName(d.workspaceRoot, q.get('q') ?? ''))
     const wanted = new Set(kinds.split(','))
@@ -55,11 +55,11 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   }
 
   /*
-   * 新建文件 / 目录。**面板这一侧唯一的写入口**。
+   * 新建文件或目录，是面板一侧唯一的写入口。
    *
-   * 三条硬口径：不合法不落盘（422）、已存在不覆盖（409）、路径越界由
-   * `resolveInWorkspace` 挡。越界翻成 422 而不是让它抛成 500——这是入参问题，
-   * 用户要看到的是「这个路径不在项目里」，不是「服务器错误」。
+   * 三条硬性口径：不合法不落盘（422）、已存在不覆盖（409）、路径越界由
+   * `resolveInWorkspace` 拦截。越界转换为 422 而不是抛出为 500：这是入参问题，
+   * 用户需要看到的是路径不在项目中，而不是服务器错误。
    */
   if (p === '/api/files/create' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { path?: string; kind?: string } | null
@@ -75,7 +75,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
         followFinalSymlink: false,
       })
     } catch {
-      return json({ error: 'invalid', message: `${rel} 不在这个项目里` }, 422)
+      return json({ error: 'invalid', message: `${rel} 不在当前项目中` }, 422)
     }
     try {
       return json({ node: await createEntry(abs, rel, kind) })
@@ -87,8 +87,8 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   }
 
   /*
-   * 改名。名字只能是**一个名字**：带分隔符就是搬家，而这颗菜单项写的是「重命名」，
-   * 两件事混在一个接口里，用户在输入框里打个 `../x` 就把文件挪出了当前目录。
+   * 重命名。新名称只能是单个名称：带分隔符即为移动，而菜单项写的是「重命名」；
+   * 两种操作混在一个接口中时，用户在输入框中输入 `../x` 即可把文件移出当前目录。
    */
   if (p === '/api/files/rename' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { path?: string; name?: string } | null
@@ -96,7 +96,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     const name = body?.name?.trim()
     if (!rel || !name) return json({ error: 'invalid', message: '缺少路径或新名称' }, 422)
     if (/[/\\]/.test(name) || name === '.' || name === '..') {
-      return json({ error: 'invalid', message: '名字里不能带路径分隔符' }, 422)
+      return json({ error: 'invalid', message: '名称中不能包含路径分隔符' }, 422)
     }
     let abs: string
     try {
@@ -106,7 +106,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
         followFinalSymlink: false,
       })
     } catch {
-      return json({ error: 'invalid', message: `${rel} 不在这个项目里` }, 422)
+      return json({ error: 'invalid', message: `${rel} 不在当前项目中` }, 422)
     }
     try {
       return json({ node: await renameEntry(abs, rel, name) })
@@ -118,8 +118,8 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   }
 
   /*
-   * 删除。目录连着里面一起删——**确认在界面那一侧**（`ConfirmDialog`），
-   * 这里不再问一遍。空路径直接拒：那指的是工作区根本身。
+   * 删除。目录连同其内容一并删除；确认在界面一侧完成（`ConfirmDialog`），
+   * 此处不再确认。空路径直接拒绝：空路径指向工作区根目录本身。
    */
   if (p === '/api/files/delete' && req.method === 'POST') {
     const body = (await req.json().catch(() => null)) as { path?: string } | null
@@ -133,7 +133,7 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
         followFinalSymlink: false,
       })
     } catch {
-      return json({ error: 'invalid', message: `${rel} 不在这个项目里` }, 422)
+      return json({ error: 'invalid', message: `${rel} 不在当前项目中` }, 422)
     }
     await deleteEntry(abs)
     return json({ ok: true })
@@ -147,8 +147,8 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   }
 
   /*
-   * 原始字节。PDF 预览用它：界面取回后 `createObjectURL` 交给 iframe。
-   * 同一个地址在文件改写后是另一份内容，所以不许浏览器缓存。
+   * 原始字节。PDF 预览使用该接口：界面取回后经 `createObjectURL` 交给 iframe。
+   * 文件改写后同一地址对应另一份内容，因此禁止浏览器缓存。
    */
   if (p === '/api/files/raw') {
     const rel = q.get('path')

@@ -37,7 +37,7 @@ function cfg(over: Partial<QyConfig> = {}): QyConfig {
   }
 }
 
-test('落盘旧参数模式不能覆盖模型库的协议策略', async () => {
+test('已落盘的旧参数模式不能覆盖模型库的协议策略', async () => {
   const model = 'mimo-v2.6-pro'
   const config = cfg({
     active: { provider: 'mimo', model },
@@ -70,10 +70,10 @@ test('落盘旧参数模式不能覆盖模型库的协议策略', async () => {
 })
 
 /**
- * 「接口 → 模型」两层之后的解析。
+ * 「接口 → 模型」两层结构下的解析。
  *
- * 这一组测的是**旧结构做不到的三件事**，不是把老断言换个写法：
- * 能力按模型分格、同名模型时当前接口优先、凭证只写一份。
+ * 本组测试覆盖单层结构无法实现的三项行为：
+ * 能力按模型分别存储、同名模型时当前接口优先、凭证只保存一份。
  */
 describe('模型解析', () => {
   const two = cfg({
@@ -96,7 +96,7 @@ describe('模型解析', () => {
     },
   })
 
-  test('同接口下换模型，凭证与端点跟着接口走', () => {
+  test('同接口下切换模型，凭证与端点随接口确定', () => {
     const r = resolveModel(two, 'deepseek-v4-pro')
     expect(r?.provider).toBe('ds')
     expect(r?.apiKey).toBe('sk-ds')
@@ -104,33 +104,33 @@ describe('模型解析', () => {
   })
 
   /*
-   * 思考档是**偏好**，逐「接口 × 模型」存。没在这一格选过的模型不会套上
-   * 同接口另一个模型选的那一档——那是拿 A 的选择去描述 B，而且完全静默。
+   * 思考档位是偏好，按「接口 × 模型」分别存储。未在该项选择过的模型不会沿用
+   * 同接口另一个模型选择的档位：沿用会把模型 A 的选择应用到模型 B，且不产生任何提示。
    */
-  test('没在这一格选过的思考档不会被套到别的模型上', () => {
+  test('未在该项选择过的思考档位不会应用到其他模型', () => {
     expect(resolveModel(two, 'deepseek-v4-flash')?.effort).toBe('high')
     expect(resolveModel(two, 'deepseek-v4-pro')?.effort).toBeUndefined()
     expect(resolveModel(two, '完全没配过的模型')?.effort).toBeUndefined()
   })
 
   /*
-   * 同一个模型 id 挂在两个接口下（官方 + 中转）是常见配置。旧实现取的是
-   * `Object.values().find()`——对象键的枚举顺序，用户选了 A 可能发去 B，
-   * 而且重新保存一次顺序变了结果就变。
+   * 同一个模型 id 配置在两个接口下（官方接口与中转站）是常见配置。使用
+   * `Object.values().find()` 时结果取决于对象键的枚举顺序：用户选择 A 时请求可能发往 B，
+   * 且重新保存一次后顺序改变，结果随之改变。
    */
-  test('两个接口都有这个模型时，当前接口优先', () => {
+  test('两个接口都有该模型时，当前接口优先', () => {
     expect(resolveModel(two, 'deepseek-v4-flash')?.provider).toBe('ds')
     const onMirror = { ...two, active: { provider: 'mirror', model: 'deepseek-v4-flash' } }
     expect(resolveModel(onMirror, 'deepseek-v4-flash')?.provider).toBe('mirror')
   })
 
-  test('当前接口没有这个模型时挂到声明了它的那个接口上', () => {
+  test('当前接口没有该模型时归入声明了该模型的接口', () => {
     const elsewhere = { ...two, active: { provider: 'mirror', model: 'deepseek-v4-flash' } }
     expect(resolveModel(elsewhere, 'deepseek-v4-pro')?.provider).toBe('ds')
   })
 
-  test('裸模型名挂在多个接口、又都不是当前接口时返回 undefined，不按枚举顺序挑', () => {
-    // flash 同时在 ds 和 mirror 下，active 指向第三个接口（都不含 flash）。
+  test('裸模型名属于多个接口且均不是当前接口时返回 undefined，不按枚举顺序选择', () => {
+    // flash 同时属于 ds 与 mirror，active 指向不含 flash 的第三个接口。
     const third = cfg({
       providers: {
         ds: two.providers.ds!,
@@ -140,25 +140,25 @@ describe('模型解析', () => {
       active: { provider: 'other', model: 'x' },
     })
     expect(resolveModel(third, 'deepseek-v4-flash')).toBeUndefined()
-    // 但指定死接口的 ModelRef 不受影响，照常解析。
+    // 已明确指定接口的 ModelRef 不受影响，正常解析。
     expect(resolveModel(third, { provider: 'mirror', model: 'deepseek-v4-flash' })?.provider).toBe(
       'mirror',
     )
   })
 
-  /** 传 ref 是「用户写死了哪个接口」，不能再去猜——classifier 就是这么配的。 */
-  test('传 ModelRef 时接口是指定死的，不参与猜测', () => {
+  /** 传入 ref 表示用户已指定接口，不再推测：classifier 即按此方式配置。 */
+  test('传入 ModelRef 时接口已明确指定，不参与推测', () => {
     const r = resolveModel(two, { provider: 'mirror', model: 'deepseek-v4-pro' })
     expect(r?.provider).toBe('mirror')
     expect(r?.apiKey).toBe('sk-mirror')
   })
 
-  test('接口不存在时返回 undefined，而不是回落到别的接口', () => {
+  test('接口不存在时返回 undefined，而不是回退到其他接口', () => {
     expect(resolveModel(two, { provider: '不存在', model: 'x' })).toBeUndefined()
   })
 })
 
-describe('配置体检', () => {
+describe('配置诊断', () => {
   const noKey = () =>
     cfg({
       providers: {
@@ -170,31 +170,31 @@ describe('配置体检', () => {
       },
     })
 
-  test('没配 key 是运行前置，不拦保存', () => {
-    // 拦运行的是 diagnoseRunnable，带上配置文件路径与最小示例。
+  test('未配置 key 是运行前置条件，不阻止保存', () => {
+    // 阻止运行的是 diagnoseRunnable，并附带配置文件路径与最小示例。
     const [p] = diagnoseRunnable(noKey())
     expect(p).toBeDefined()
     expect(p).toContain('config.json')
     expect(p).toContain('qy init')
-    // 光说「没配」不够——用户得知道往里写什么形状的配置。
+    // 只说明未配置不够：用户需要知道应写入何种形状的配置。
     expect(p).toContain('"apiKey"')
-    // 但 diagnoseConfig 放行：没 key 是配置中间态，阻止保存将使「新增接口 → 新增模型 → 再填写 key」这一流程无法完成。
+    // diagnoseConfig 放行：缺少 key 是配置中间态，阻止保存将使「新增接口 → 新增模型 → 再填写 key」这一流程无法完成。
     expect(diagnoseConfig(noKey())).toEqual([])
   })
 
-  test('配了 key 就没问题', () => {
+  test('已配置 key 时没有问题', () => {
     expect(diagnoseConfig(cfg())).toEqual([])
     expect(diagnoseRunnable(cfg())).toEqual([])
   })
 
-  test('active 指向不存在的接口时列出实际有哪些', () => {
+  test('active 指向不存在的接口时列出现有接口', () => {
     const [p] = diagnoseConfig(cfg({ active: { provider: '打错了', model: 'm' } }))
     expect(p).toContain('打错了')
     expect(p).toContain('ds')
   })
 
-  /** 非布尔值落盘之后按真值判定，「关着」会被读成「开着」。 */
-  test('两个电脑控制开关只接受布尔值，缺席放行', () => {
+  /** 非布尔值落盘后按真值判定，关闭状态会被读取为开启。 */
+  test('两个电脑控制开关只接受布尔值，缺省时放行', () => {
     expect(diagnoseConfig(cfg({ desktopEnabled: true, desktopForeground: false }))).toEqual([])
     expect(diagnoseConfig(cfg())).toEqual([])
     expect(diagnoseConfig(cfg({ desktopForeground: 'yes' as unknown as boolean }))).toEqual([
@@ -205,7 +205,7 @@ describe('配置体检', () => {
     ])
   })
 
-  test('浏览器控制开关只接受布尔值，缺席放行', () => {
+  test('浏览器控制开关只接受布尔值，缺省时放行', () => {
     expect(diagnoseConfig(cfg({ browserEnabled: false }))).toEqual([])
     expect(diagnoseConfig(cfg({ browserEnabled: 'off' as unknown as boolean }))).toEqual([
       'browserEnabled 必须是 true 或 false',
@@ -227,7 +227,7 @@ describe('配置体检', () => {
     ])
   })
 
-  test('一个接口都没有时也不崩', () => {
+  test('没有任何接口时不崩溃', () => {
     expect(diagnoseConfig({ active: { provider: 'x', model: 'm' }, providers: {} })).toHaveLength(1)
   })
 
@@ -245,7 +245,7 @@ describe('配置体检', () => {
     expect(diagnoseRunnable(local)).toEqual([])
   })
 
-  test('不验证 key 是否有效 —— 那只有 provider 能回答', () => {
+  test('不验证 key 是否有效：只有 provider 能判定', () => {
     expect(
       diagnoseConfig(
         cfg({
@@ -266,15 +266,15 @@ describe('配置体检', () => {
 /**
  * 收集凭证。
  *
- * 这是「凭证不进子进程」那条防线的**输入端**——收漏了一把 key，
- * 脱敏层再对也拦不住它。因此这一组测试全部针对「是否完整接收」。
+ * 这是「凭证不进子进程」这项防护的输入端：遗漏任何一个 key，
+ * 脱敏层即使正确也无法拦截它。因此本组测试全部针对收集是否完整。
  */
 describe('收集凭证', () => {
   /**
-   * 只收 active 那个档案是不够的：用户配了三家就有三把 key 躺在环境里，
-   * 而模型能读到哪一把跟当前用哪个模型毫无关系。
+   * 只收集 active 接口的 key 不够：用户配置了三个服务商就有三个 key 存在于环境中，
+   * 模型能读取哪一个与当前使用的模型无关。
    */
-  test('收全部接口的 key，不只是 active 那个', () => {
+  test('收集全部接口的 key，不只是 active 接口', () => {
     const s = collectSecrets(
       cfg({
         providers: {
@@ -291,14 +291,14 @@ describe('收集凭证', () => {
     expect(s.values).toContain('sk-anthropic-plaintext')
   })
 
-  test('没配 key 的接口不收一个空串 —— 空串会让按值匹配命中一切', () => {
+  test('未配置 key 的接口不收集空串：空串会使按值匹配命中所有内容', () => {
     const s = collectSecrets(
       cfg({ providers: { ds: { kind: 'anthropic_messages', models: { m: {} } } } }),
     )
     expect(s.values).not.toContain('')
   })
 
-  test('同一把 key 配在多个接口下只出现一次', () => {
+  test('同一个 key 配置在多个接口下只出现一次', () => {
     const s = collectSecrets(
       cfg({
         providers: {
@@ -312,35 +312,35 @@ describe('收集凭证', () => {
 })
 
 describe('配置提醒', () => {
-  test('额外根目录：相对路径被拒且说得出为什么', () => {
+  test('额外根目录：相对路径被拒绝并说明原因', () => {
     const n = configNotices(cfg({ additionalDirectories: ['notes'] }))
     expect(n.join('\n')).toContain('绝对路径')
   })
 
-  test('额外根目录：合法时每次都提醒它放开了工作区之外', () => {
-    // 「模型可以读写工作区之外的这几个目录」是一件必须反复说清的事实，
-    // 而不是配一次就忘的开关。
-    // 正斜杠：`isAbsolute` 两种写法都认，而反斜杠在 TS 字符串里是转义序列
-    // （`\d` → `d`、`\n` → 换行），源码上完全看不出来。
+  test('额外根目录：合法时每次都提醒已开放工作区之外的目录', () => {
+    // 模型可以读写工作区之外的这些目录，这一事实必须每次说明，
+    // 而不是配置一次后即被遗忘的开关。
+    // 使用正斜杠：`isAbsolute` 接受两种写法，而反斜杠在 TS 字符串中是转义序列
+    // （`\d` → `d`、`\n` → 换行），在源码中无法察觉。
     const abs = process.platform === 'win32' ? 'C:/data/notes' : '/data/notes'
     const n = configNotices(cfg({ additionalDirectories: [abs] })).join('\n')
     expect(n).toContain('工作区之外')
-    // `resolve()` 会把分隔符归一成本平台的形式，所以比对时也归一。
+    // `resolve()` 会把分隔符规范化为本平台的形式，因此比对时同样规范化。
     expect(n.replace(/\\/g, '/')).toContain(abs)
   })
 
-  test('不配额外根目录时不产生噪声', () => {
-    // 提醒一多就没人看了。没配就一个字都不该说。
+  test('未配置额外根目录时不产生提醒', () => {
+    // 提醒过多会被忽略。未配置时不输出任何内容。
     expect(configNotices(cfg()).some((s) => s.includes('工作区之外'))).toBe(false)
   })
 
-  test('模型不在内置目录时要说清两条后果', () => {
+  test('模型不在内置目录时说明两项后果', () => {
     /*
-     * 这条是跑双端点冒烟照出来的：`lookupModel` 对未收录的模型回落到
-     * `unknownModel()`，其 `thinking: 'none'` 让适配器**从不请求推理**，
-     * 而计价全零让 `qy usage` 报 $0。两件事都完全静默。
+     * `lookupModel` 对未收录的模型回退到
+     * `unknownModel()`，其 `thinking: 'none'` 使适配器从不请求推理，
+     * 计价全零使 `qy usage` 报告 $0。两项后果都没有任何提示。
      *
-     * 保守默认是对的，错的是不说——ARCHITECTURE §27「不能把『没测』写成『不支持』」。
+     * 保守默认值正确，错误在于不提示，见 ARCHITECTURE §27（不能把「未测试」写成「不支持」）。
      */
     const n = configNotices(
       cfg({
@@ -354,10 +354,10 @@ describe('配置提醒', () => {
     expect(n).toContain('思考')
     expect(n).toContain('计价')
     expect(n).toContain('端点探测')
-    expect(n).toContain('不能补出')
+    expect(n).toContain('无法取得窗口与价格')
   })
 
-  test('内置目录里的模型不提醒', () => {
+  test('内置目录中的模型不提醒', () => {
     const n = configNotices(
       cfg({
         active: { provider: 'x', model: 'claude-opus-5' },
@@ -369,7 +369,7 @@ describe('配置提醒', () => {
     expect(n).not.toContain('不在内置目录')
   })
 
-  test('模型库里已经明确补录这一条时不提醒', () => {
+  test('模型库中已明确补录该条目时不提醒', () => {
     const n = configNotices(
       cfg({
         active: { provider: 'x', model: '某个没收录的模型' },
@@ -388,7 +388,7 @@ describe('配置提醒', () => {
   })
 
   /** 键的第二维是协议：补录 responses 的规格，不等于补录兼容协议的规格。 */
-  test('另一条协议下的那一条不算数', () => {
+  test('另一协议下的条目不计入', () => {
     const n = configNotices(
       cfg({
         active: { provider: 'x', model: '某个没收录的模型' },
@@ -404,11 +404,11 @@ describe('配置提醒', () => {
   })
 
   /*
-   * 旧格式**不迁移**（B3：开发期不留兼容层），但静默丢弃是另一回事：
-   * 界面上是「配好的接口和 key 全没了」，而配置文件里还原样存着。
-   * 先例是 autoApprove——一律忽略，但必须说出来。
+   * 旧格式不迁移（CLAUDE.md B3：开发期不保留兼容层），但不能静默丢弃：
+   * 否则界面上已配置的接口与 key 全部消失，而配置文件中仍原样保存。
+   * autoApprove 采用相同处理：一律忽略，但必须提示。
    */
-  test('检出旧的扁平 profiles 时点名说清楚，并指出 key 要重填', () => {
+  test('检测到旧的扁平 profiles 时明确提示，并指出 key 需要重新填写', () => {
     const legacy = {
       ...cfg(),
       profiles: { ds: { kind: 'anthropic_messages', model: 'm' } },
@@ -418,18 +418,18 @@ describe('配置提醒', () => {
     expect(n).toContain('API Key')
   })
 
-  test('没有旧字段时一个字都不说', () => {
+  test('没有旧字段时不输出提示', () => {
     expect(configNotices(cfg()).some((s) => s.includes('profiles'))).toBe(false)
   })
 })
 
 /**
- * 档位挂在「接口 × 模型」那一格。
+ * 档位存储在「接口 × 模型」项上。
  *
- * **不能用一个全局值**：只调一家模型时档位面一致，一个全局字段够用；这里同时
- * 接多家（Claude 五档、DeepSeek 三档、也有模型一档没有，同一个模型换条协议档位面
- * 还会变），而且 Agent Team 的每个角色各带一个模型（`team-run.ts` 的
- * `backend.model`）——一个全局值套上去必然错配。
+ * 不能使用全局值：只接入一家厂商的模型时档位集合一致，一个全局字段即可满足；本产品同时
+ * 接入多家厂商（Claude 五档、DeepSeek 三档，也有模型没有档位，同一个模型换用另一种协议时
+ * 档位集合也会变化），且 Agent Team 的每个角色各使用一个模型（`team-run.ts` 的
+ * `backend.model`），应用全局值必然错配。
  */
 describe('按「接口 × 模型」取档位', () => {
   const two = cfg({
@@ -448,32 +448,32 @@ describe('按「接口 × 模型」取档位', () => {
     },
   })
 
-  test('各取各的那一格', () => {
+  test('各模型分别取自己的档位', () => {
     expect(resolveModel(two, 'deepseek-v4-flash')?.effort).toBe('max')
-    // xhigh 在 DeepSeek 上不存在，而它是 Claude 那一格的合法值——
-    // 这正是全局一个值装不下的差异。
+    // xhigh 在 DeepSeek 上不存在，却是 Claude 的合法值：
+    // 全局单一取值无法容纳这一差异。
     expect(resolveModel(two, 'claude-opus-5')?.effort).toBe('xhigh')
   })
 
-  /** 同接口的另一个模型不跟着变：挂在接口上就是拿 A 的选择去描述 B。 */
+  /** 同接口的另一个模型不随之改变：按接口存储会把模型 A 的选择应用到模型 B。 */
   test('同接口的另一个模型不受影响', () => {
     expect(resolveModel(two, 'deepseek-v4-pro')?.effort).toBeUndefined()
   })
 
-  /** 没选过就是 undefined，**不替它挑一档**——挑「第一档」在两个模型上是两个意思。 */
-  test('没选过是 undefined，不编一个默认档', () => {
+  /** 未选择时为 undefined，不代为选择档位：「第一档」在两个模型上含义不同。 */
+  test('未选择时为 undefined，不构造默认档位', () => {
     expect(resolveModel(cfg(), 'deepseek-v4-flash')?.effort).toBeUndefined()
   })
 })
 
 /**
- * 词表校验必须落在**配置这道闸门**上。
+ * 词表校验必须位于配置写入的校验环节。
  *
- * 不拦的话，任何客户端 PUT 一个词表外的值就直接落盘，下一轮原样发给 provider，
- * 换来一个 400，而错误信息里只有 provider 的原话。
+ * 不拦截时，任何客户端 PUT 一个词表外的值都会直接落盘，下一轮原样发给 provider，
+ * 返回 400，而错误信息中只有 provider 的原文。
  */
 describe('思考档位校验', () => {
-  // 只看档位这一条：夹具没有 key，别的问题与这里无关。
+  // 只检查档位：夹具没有 key，其他问题与本组无关。
   const effortProblems = (c: QyConfig) => diagnoseConfig(c).filter((p) => p.includes('思考强度'))
 
   const withEffort = (effort: unknown): QyConfig =>
@@ -488,14 +488,14 @@ describe('思考档位校验', () => {
     })
 
   /**
-   * 校验必须落在配置这道闸门上——否则任何客户端 PUT 一个词表外的值就直接落盘，
-   * 下一轮原样发给 provider 换一个 400。
+   * 校验必须位于配置写入的校验环节，否则任何客户端 PUT 一个词表外的值都会直接落盘，
+   * 下一轮原样发给 provider 并返回 400。
    */
-  test('词表外的值算致命问题（422 且不落盘）', () => {
+  test('词表外的值属于致命问题（422 且不落盘）', () => {
     expect(effortProblems(withEffort('ultra'))).toHaveLength(1)
   })
 
-  test('词表里的值放行', () => {
+  test('词表中的值放行', () => {
     expect(effortProblems(withEffort('max'))).toEqual([])
   })
 
@@ -503,24 +503,24 @@ describe('思考档位校验', () => {
     expect(effortProblems(withEffort('none'))).toHaveLength(1)
   })
 
-  /** 没选过 = 不发思考字段，让模型走自己的默认，不是问题。 */
-  test('没选过不算问题', () => {
+  /** 未选择表示不发送思考字段，使用模型自身的默认值，不属于问题。 */
+  test('未选择不属于问题', () => {
     expect(effortProblems(cfg())).toEqual([])
   })
 
-  /** 报错要点名是哪个接口下的哪个模型——多家模型并存时，不点名等于没说。 */
-  test('报错点名接口与模型', () => {
+  /** 报错必须指明是哪个接口下的哪个模型：多家模型并存时，不指明则无法定位。 */
+  test('报错指明接口与模型', () => {
     expect(effortProblems(withEffort('ultra'))[0]).toContain('ds / deepseek-v4-flash')
   })
 })
 
 /**
- * 模型库那几个枚举的校验。
+ * 模型库枚举字段的校验。
  *
- * 与思考档位同一道闸门、同一个理由，但**后果更隐蔽**：档位打错下一轮换来一个
- * provider 的 400，而这三个打错通常什么都不发生——`thinking` 打错会让
- * `effortIsTransmittable` 恒 false（这个模型的 effort 从此不再发送），
- * `cacheRouting` 打错会让亲和键不再发送，两条都不报错。
+ * 与思考档位使用同一校验环节、同一理由，但后果更隐蔽：档位写错时下一轮返回
+ * provider 的 400，而这三个字段写错时通常没有任何可见现象：`thinking` 写错会使
+ * `effortIsTransmittable` 恒为 false（该模型的 effort 从此不再发送），
+ * `cacheRouting` 写错会使缓存路由字段不再发送，两者都不报错。
  */
 describe('模型库枚举校验', () => {
   const withEntry = (entry: Record<string, unknown>, key = 'deepseek-v4-flash|openai_responses') =>
@@ -535,14 +535,14 @@ describe('模型库枚举校验', () => {
       catalog: { [key]: entry as never },
     })
 
-  test('三个枚举各自的词表外值都算致命问题', () => {
+  test('三个枚举各自的词表外值都属于致命问题', () => {
     expect(diagnoseConfig(withEntry({ thinking: 'anthropic_effort' }))).toHaveLength(1)
     expect(diagnoseConfig(withEntry({ reasoningEcho: '要' }))).toHaveLength(1)
     expect(diagnoseConfig(withEntry({ cacheRouting: '发' }))).toHaveLength(1)
     expect(diagnoseConfig(withEntry({ chatReasoningProtocol: 'unknown' }))).toHaveLength(1)
   })
 
-  test('词表里的值放行', () => {
+  test('词表中的值放行', () => {
     expect(
       diagnoseConfig(
         withEntry({
@@ -559,22 +559,22 @@ describe('模型库枚举校验', () => {
     expect(diagnoseConfig(withEntry({ reasoningEcho: 'encrypted_content' }))).toEqual([])
   })
 
-  /** 没填 = 照内置值，不是问题。 */
-  test('没填的字段不算问题', () => {
+  /** 未填写表示沿用内置值，不属于问题。 */
+  test('未填写的字段不属于问题', () => {
     expect(diagnoseConfig(withEntry({ contextWindow: 1024 }))).toEqual([])
   })
 
   /**
-   * 键的第二维写错时，这条覆盖**永远匹配不上任何请求**（`resolveModel` 按
-   * `catalogKey(model, provider.kind)` 取），是另一种静默失效。
+   * 键的第二维写错时，该覆盖永远不会匹配任何请求（`resolveModel` 按
+   * `catalogKey(model, provider.kind)` 取值），是另一种静默失效。
    */
-  test('键里的协议不在词表里也算问题', () => {
+  test('键中的协议不在词表中同样属于问题', () => {
     const [p] = diagnoseConfig(withEntry({ contextWindow: 1024 }, 'deepseek-v4-flash|openai_v2'))
     expect(p).toContain('openai_v2')
   })
 
-  /** 挡下来还得说清去哪改——这道闸门会让 `qy exec` 直接退出。 */
-  test('报错带着改哪', () => {
+  /** 拦截时必须说明修改位置：该校验会使 `qy exec` 直接退出。 */
+  test('报错包含修改位置', () => {
     const [p] = diagnoseConfig(withEntry({ thinking: 'anthropic_effort' }))
     expect(p).toContain('模型库')
     expect(p).toContain('config.json')
@@ -582,10 +582,10 @@ describe('模型库枚举校验', () => {
 })
 
 /**
- * 模型库的覆盖要**取得到**。
+ * 模型库的覆盖值必须能被 `resolveModel` 取得。
  *
- * 只有一个能编辑的界面、改完到不了 `resolveModel`，那就是一条有产出没有消费者的
- * 链路——改完的价格永远不会出现在任何一次请求或账本里。
+ * 若只有可编辑的界面而修改无法到达 `resolveModel`，该链路有生产者而无消费者：
+ * 修改后的价格不会出现在任何请求或账本中。
  */
 describe('模型库覆盖', () => {
   const withCatalog = () =>
@@ -595,27 +595,27 @@ describe('模型库覆盖', () => {
       },
     })
 
-  test('按「模型 id × 接口的协议」取', () => {
+  test('按「模型 id × 接口的协议」取值', () => {
     expect(resolveModel(withCatalog())?.spec).toEqual({ input: 9, output: 19 })
   })
 
-  /** 模型没在这个接口下声明过也要取得到：参数是模型在这条协议上的属性。 */
-  test('接口下没声明过这个模型也取得到', () => {
+  /** 模型未在该接口下声明时同样可以取得：参数是模型在该协议上的属性。 */
+  test('接口下未声明该模型时同样可以取得', () => {
     const r = resolveModel(withCatalog(), 'deepseek-v4-flash')
     expect(r?.spec?.input).toBe(9)
   })
 
-  test('库里没这一条就不带 spec，不塞一个空对象', () => {
+  test('模型库中没有该条目时不带 spec，不放入空对象', () => {
     expect(resolveModel(cfg())?.spec).toBeUndefined()
   })
 
   /**
-   * 同一个模型 id 在两种协议下各取自己那份。
+   * 同一个模型 id 在两种协议下分别取各自的条目。
    *
-   * 一维键会把一份参数套到两条 seed 上——而目录里 deepseek 同 id 就是两条，
-   * 走 chat/completions 时思考无从控制，走 Responses 时 `effort:'none'` 关得掉。
+   * 一维键会把一份参数应用到两条 seed 上，而目录中 deepseek 的同一 id 恰有两条：
+   * 使用 chat/completions 时无法控制思考，使用 Responses 时 `effort:'none'` 可以关闭思考。
    */
-  test('同一个模型 id 在两种协议下各取自己那份', () => {
+  test('同一个模型 id 在两种协议下分别取各自的条目', () => {
     const both = cfg({
       active: { provider: 'compat', model: 'deepseek-v4-flash' },
       providers: {
@@ -643,12 +643,12 @@ describe('模型库覆盖', () => {
 })
 
 /**
- * 一次性迁移：模型库的旧形状 → `catalogKey(id, kind)` 两维键。
+ * 一次性迁移：模型库的旧结构 → `catalogKey(id, kind)` 两维键。
  *
- * 判据不是「迁移函数返回了什么」，而是**迁移前后 `buildAdapter` 解析出的
- * `ModelSpec` 逐字段相等**：旧配置不许因为换了形状就静默变哑。
- * 本机的 `config.json` 三种旧键一个都没有，迁移对它是空操作——正因如此，
- * 这条路径除了这里没有任何人走过。
+ * 判据不是迁移函数的返回值，而是迁移前后 `buildAdapter` 解析出的
+ * `ModelSpec` 逐字段相等：旧配置不得因形状改变而静默失效。
+ * 迁移只在配置含三种旧键之一时执行；除本组测试外，
+ * 没有其他验证覆盖这条路径。
  */
 describe('模型库一次性迁移', () => {
   interface LegacyModel {
@@ -666,8 +666,8 @@ describe('模型库一次性迁移', () => {
   }
 
   /**
-   * 迁移前那条四层解析，逐字复刻：
-   * 目录 seed → 模型库（一维键） → 探测出来的 capabilities → 接口下写死的上限取小。
+   * 迁移前的四层解析，逐字重现：
+   * 目录 seed → 模型库（一维键） → 探测得到的 capabilities → 与接口下固定的上限取较小值。
    */
   function legacySpec(raw: LegacyConfig, providerName: string, model: string): ModelSpec {
     const p = raw.providers[providerName]!
@@ -695,7 +695,7 @@ describe('模型库一次性迁移', () => {
       : probed
   }
 
-  /** 迁移后那条两层解析：`resolveModel` 取到库里那一条，`buildAdapter` 叠上去。 */
+  /** 迁移后的两层解析：`resolveModel` 取得模型库中的条目，`buildAdapter` 将其叠加。 */
   function currentSpec(cfg: QyConfig, providerName: string, model: string): ModelSpec {
     const r = resolveModel(cfg, { provider: providerName, model })!
     return buildAdapter({
@@ -726,7 +726,7 @@ describe('模型库一次性迁移', () => {
     return loadConfig()
   }
 
-  test('无 catalog 段：空操作，也不凭空造一个 catalog', async () => {
+  test('无 catalog 段：空操作，也不新建 catalog', async () => {
     const raw: LegacyConfig = {
       active: { provider: 'ds', model: 'deepseek-v4-flash' },
       providers: {
@@ -745,7 +745,7 @@ describe('模型库一次性迁移', () => {
     )
   })
 
-  test('切换到正式 Flash 后旧探测记录不再变成自定义模型，且清理幂等', async () => {
+  test('切换到正式 Flash 后旧探测记录不再成为自定义模型，且清理幂等', async () => {
     const raw: LegacyConfig = {
       active: { provider: 'ds', model: 'deepseek-flash' },
       providers: { ds: { kind: 'openai_chat_completions', models: { 'deepseek-flash': {} } } },
@@ -780,7 +780,7 @@ describe('模型库一次性迁移', () => {
     expect(migrated.catalog).toEqual(catalog)
   })
 
-  test('旧配置里的 none 迁成未选择，不再向 provider 发送关闭命令', async () => {
+  test('旧配置中的 none 迁移为未选择，不再向 provider 发送关闭命令', async () => {
     const raw: LegacyConfig = {
       active: { provider: 'ds', model: 'deepseek-v4-flash' },
       providers: {
@@ -796,7 +796,7 @@ describe('模型库一次性迁移', () => {
     expect(resolveModel(migrated, 'deepseek-v4-flash')?.effort).toBeUndefined()
   })
 
-  test('一维键 + 单 kind：改写成两维键，解析结果逐字段不变', async () => {
+  test('一维键 + 单 kind：改写为两维键，解析结果逐字段不变', async () => {
     const raw: LegacyConfig = {
       active: { provider: 'ds', model: 'deepseek-v4-flash' },
       providers: {
@@ -817,7 +817,7 @@ describe('模型库一次性迁移', () => {
     )
   })
 
-  /** 一维键的旧语义就是「一份套到所有协议」，所以每个 kind 各写一份。 */
+  /** 一维键的旧语义是一份参数应用到所有协议，因此每个 kind 各写一份。 */
   test('一维键 + 多 kind：每个协议各写一份，两侧解析结果都不变', async () => {
     const raw: LegacyConfig = {
       active: { provider: 'compat', model: 'deepseek-v4-flash' },
@@ -846,7 +846,7 @@ describe('模型库一次性迁移', () => {
     )
   })
 
-  test('接口下的旧字段并进同一个键，且原地删干净', async () => {
+  test('接口下的旧字段合并到同一个键，并在原处完全删除', async () => {
     const raw: LegacyConfig = {
       active: { provider: 'gw', model: '中转站上的某个模型' },
       providers: {
@@ -874,7 +874,7 @@ describe('模型库一次性迁移', () => {
       effortLevels: ['low', 'high'],
       thinksByDefault: true,
     })
-    // 旧字段就地删掉，不留第二条读取路径。
+    // 旧字段就地删除，不保留第二条读取路径。
     expect(migrated.providers.gw?.models.中转站上的某个模型).toEqual({})
     expect(currentSpec(migrated, 'gw', '中转站上的某个模型')).toEqual(
       legacySpec(raw, 'gw', '中转站上的某个模型'),
@@ -882,10 +882,10 @@ describe('模型库一次性迁移', () => {
   })
 
   /**
-   * 同协议的两个接口撞同一个键：不猜，留接口名字典序靠前的那份。
-   * 「留后一个」会让结果跟着对象键的枚举顺序走，重新保存一次就变。
+   * 同协议的两个接口写入同一个键：不推测，保留接口名字典序靠前的一份。
+   * 保留后一个会使结果随对象键的枚举顺序变化，重新保存一次即改变。
    */
-  test('两接口冲突：保留字典序靠前的那份', async () => {
+  test('两接口冲突：保留字典序靠前的一份', async () => {
     const raw: LegacyConfig = {
       active: { provider: 'aaa', model: 'deepseek-v4-flash' },
       providers: {
@@ -909,8 +909,8 @@ describe('模型库一次性迁移', () => {
     )
   })
 
-  /** 接口下那两个字段排在模型库之后，优先级不变。 */
-  test('一维键与接口下的字段撞键时，接口下的赢', async () => {
+  /** 接口下的两个字段排在模型库之后，优先级不变。 */
+  test('一维键与接口下的字段键名冲突时，以接口下的字段为准', async () => {
     const raw: LegacyConfig = {
       active: { provider: 'ds', model: 'deepseek-v4-flash' },
       providers: {
@@ -931,8 +931,8 @@ describe('模型库一次性迁移', () => {
     )
   })
 
-  /** 幂等判据是键的形状：跑完一次旧形状就不存在，再跑一次原样返回。 */
-  test('跑两次同果', async () => {
+  /** 幂等判据是键的形状：执行一次后旧形状即不存在，再执行一次原样返回。 */
+  test('执行两次结果相同', async () => {
     const raw: LegacyConfig = {
       active: { provider: 'ds', model: 'deepseek-v4-flash' },
       providers: {
@@ -949,8 +949,8 @@ describe('模型库一次性迁移', () => {
     expect(await loadConfig()).toEqual(once)
   })
 
-  /** 一维键指向一个哪个接口都没挂的模型：判不出协议，不猜——丢弃并点名。 */
-  test('一维键指向没挂在任何接口下的模型时丢弃', async () => {
+  /** 一维键指向不属于任何接口的模型：无法判断协议，不推测，丢弃并指明。 */
+  test('一维键指向不属于任何接口的模型时丢弃', async () => {
     const raw: LegacyConfig = {
       active: { provider: 'ds', model: 'deepseek-v4-flash' },
       providers: {
@@ -968,8 +968,8 @@ describe('模型库一次性迁移', () => {
 })
 
 /**
- * 出厂默认：**不预设任何模型**。首次启动没有配置文件时，回的是空接口表、没有 active，
- * 由界面引导用户去配、发送在起 run 前被拒——而不是回落到一个用户没配过的模型。
+ * 出厂默认：不预设任何模型。首次启动没有配置文件时，返回空接口表且没有 active，
+ * 由界面引导用户配置，发送在启动 run 之前被拒绝，而不是回退到一个用户未配置过的模型。
  */
 describe('出厂默认不预设模型', () => {
   let home: string
@@ -985,7 +985,7 @@ describe('出厂默认不预设模型', () => {
     await rm(home, { recursive: true, force: true }).catch(() => {})
   })
 
-  test('没有配置文件时不带 active、接口表为空', async () => {
+  test('没有配置文件时没有 active，接口表为空', async () => {
     const fresh = await loadConfig()
     expect(fresh.active).toBeUndefined()
     expect(fresh.providers).toEqual({})
@@ -994,12 +994,12 @@ describe('出厂默认不预设模型', () => {
 
   test('没有 active 不是致命问题：诊断不报 problem，也不阻断保存', async () => {
     const fresh = await loadConfig()
-    // 空 active 是合法的中间态（删光最后一个模型也会到这里）。报成 problem 会让
-    // `/api/config` PUT 回 422，用户就再也删不掉最后一个模型。
+    // 空 active 是合法的中间态（删除最后一个模型后也会进入此状态）。报成 problem 会使
+    // `/api/config` PUT 返回 422，用户将无法删除最后一个模型。
     expect(diagnoseConfig(fresh)).toEqual([])
   })
 
-  test('没有 active 时 resolveModel 返回 undefined，不去猜一个接口', async () => {
+  test('没有 active 时 resolveModel 返回 undefined，不推测接口', async () => {
     const fresh = await loadConfig()
     expect(resolveModel(fresh)).toBeUndefined()
   })
@@ -1025,7 +1025,7 @@ describe('生成模型', () => {
     }
   }
 
-  test('不点名取该类别的默认，带上接口的凭证与地址', () => {
+  test('未指定模型时取该类别的默认模型，并带上接口的凭证与地址', () => {
     const r = resolveMediaModel(withMedia(), 'image')
     expect(r).toMatchObject({
       provider: 'qwen',
@@ -1036,21 +1036,21 @@ describe('生成模型', () => {
     })
   })
 
-  /** 点了名就不换：生成按次计费，换一个等于替调用方改了选择。 */
-  test('点名的模型不存在时解析失败，不回落到默认', () => {
+  /** 已指定模型时不替换：生成按次计费，替换等于代替调用方修改选择。 */
+  test('指定的模型不存在时解析失败，不回退到默认模型', () => {
     expect(resolveMediaModel(withMedia(), 'image', { provider: 'qwen', model: '没有' })).toBe(
       undefined,
     )
     expect(resolveMediaModel(withMedia({ mediaDefaults: {} }), 'image')).toBeUndefined()
   })
 
-  /** 对话解析只看 `models`：生成表里的 id 不会让它解析到那个接口。 */
-  test('对话模型不在生成清单里，对话解析也不看生成表', () => {
+  /** 对话解析只读取 `models`：生成表中的 id 不会使其解析到该接口。 */
+  test('对话模型不在生成清单中，对话解析也不读取生成表', () => {
     expect(listMediaModels(withMedia()).map((m) => m.model)).toEqual(['qwen-image-3.0'])
     expect(resolveModel(withMedia(), 'qwen-image-3.0')?.provider).toBe('ds')
   })
 
-  test('协议不在词表里、默认指向不存在的模型都拦', () => {
+  test('协议不在词表中、默认模型指向不存在的模型均被拦截', () => {
     const bad = withMedia()
     bad.providers.qwen!.media = { x: { kind: 'dalle' as never } }
     const problems = diagnoseConfig(bad)

@@ -1,15 +1,15 @@
 /**
  * OpenAI 兼容协议适配器（/v1/chat/completions）。
  *
- * 覆盖 DeepSeek、Grok(xAI)、Kimi、通义、各类中转站、以及 ollama / vLLM 等本地推理服务。
- * 需求 11 要求「自定义绑定 AI 接口」，这条路径是主力——大部分第三方端点都只实现这个协议。
+ * 覆盖 DeepSeek、Grok(xAI)、Kimi、通义、各类中转站，以及 ollama / vLLM 等本地推理服务。
+ * 用户自定义的 AI 接口主要使用本路径：多数第三方端点只实现该协议。
  *
- * 两个必须照顾的兼容点，都是实测踩出来的，不是防御性猜测：
+ * 两个必须处理的兼容点均来自实测，不是防御性推测：
  *
- * 1. **reasoning_content 必须原样回传**。DeepSeek 思考模式下，带 tool_calls 的 assistant
- *    消息如果不把 reasoning_content 一起送回去，下一轮直接 400。这不是可选优化。
- * 2. **缓存靠前缀自动命中，没有显式断点**。这些端点普遍没有 cache_control，命中完全
- *    依赖前缀逐字节稳定，所以工具排序和消息装配的确定性在这里比在 Anthropic 更关键。
+ * 1. reasoning_content 必须原样回传。DeepSeek 思考模式下，带 tool_calls 的 assistant
+ *    消息若不同时回传 reasoning_content，下一轮返回 400。这不是可选优化。
+ * 2. 缓存依靠前缀自动命中，没有显式断点。这些端点普遍不支持 cache_control，命中完全
+ *    依赖前缀逐字节稳定，因此工具排序与消息装配的确定性在此处比在 Anthropic 更关键。
  */
 
 import { stat } from 'node:fs/promises'
@@ -38,18 +38,18 @@ import { collectToolCalls } from './tool-calls.ts'
 export class OpenAICompatAdapter implements LlmAdapter {
   readonly kind = 'openai_chat_completions' as const
   /**
-   * effort 发不发，**由目录里那条模型的 `effortLevels` 决定**，不是由协议决定。
+   * 是否发送 effort 由目录中该模型的 `effortLevels` 决定，而不是由协议决定。
    *
-   * **不要因为「兼容协议下字段名各家不一」就写成 `effort: false`。** 字段名确实
-   * 不一，可它是**每个模型自己的属性**，目录里正好有（`thinking` 说用哪套字段、
-   * `effortLevels` 说有哪几档）。一律不发的代价是 GPT-5.6 / Gemini / Grok / Kimi /
-   * GLM 这些真有思考档位的模型全都调不了，而界面上还画着一个选了没反应的控件。
+   * 不要因「兼容协议下字段名因厂商而异」而写成 `effort: false`。字段名虽然不统一，
+   * 但它是每个模型自身的属性，目录中已有记录（`thinking` 指明使用哪套字段，
+   * `effortLevels` 指明有哪些档位）。一律不发送会使 GPT-5.6 / Gemini / Grok / Kimi /
+   * GLM 等具有思考档位的模型均无法调节，而界面上仍显示一个选择后无效的控件。
    *
-   * `thinking` 仍然是 false：正文里的思考内容是从流里**读**出来的
-   * （`reasoning_content`），客户端从不主动声明它。
+   * `thinking` 仍为 false：正文中的思考内容是从流中读取的
+   * （`reasoning_content`），客户端从不主动声明。
    *
-   * 未收录的模型 `effortLevels` 是 `[]`，一个字节都不会多发——所以自建端点
-   * 不会因为这个改动开始收到它不认识的字段。
+   * 未收录模型的 `effortLevels` 为 `[]`，不会多发送任何字节，因此自建端点
+   * 不会因此开始收到未知字段。
    */
   get transmits(): {
     effort: boolean
@@ -57,8 +57,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
     mediaPaths?: boolean
     mediaUploadAbove?: number
   } {
-    // 判据只有 `effortIsTransmittable` 一份，与 `buildReasoning` 实际发的字段同源。
-    // 恒 true 会让 `qy probe` 的 effort 探针在发不出该字段的模型上全部假通过。
+    // 判据只有 `effortIsTransmittable` 一处，与 `buildReasoning` 实际发送的字段同源。
+    // 恒为 true 会使 `qy probe` 的 effort 探针在无法发送该字段的模型上全部误判为通过。
     return {
       effort: effortIsTransmittable(this.spec),
       video: true,
@@ -74,9 +74,9 @@ export class OpenAICompatAdapter implements LlmAdapter {
   private readonly dashScopeMedia: boolean
   private readonly uploadedMedia = new Map<string, Promise<string>>()
   /**
-   * OpenCode 端点拒绝不带 `x-opencode-session` 的请求（400），且 prompt cache 按这个值隔离：
-   * 同一会话必须发同一个值，值变了前缀缓存不命中。有 `cacheKey` 时发会话 id；
-   * 检测与压缩摘要这类不带 `cacheKey` 的请求用这个按适配器实例生成的值。其他端点为 null。
+   * OpenCode 端点拒绝不带 `x-opencode-session` 的请求（400），且 prompt cache 按该值隔离：
+   * 同一会话必须发送同一个值，值变化后前缀缓存不命中。有 `cacheKey` 时发送会话 id；
+   * 检测与压缩摘要等不带 `cacheKey` 的请求使用按适配器实例生成的值。其他端点为 null。
    */
   private readonly openCodeSession: string | null
 
@@ -103,8 +103,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
       body = this.buildBody(prepared)
       mediaHeaders = dashScopeMediaHeaders(this.dashScopeMedia, prepared)
     } catch (err) {
-      // 本地读取和临时上传都发生在主模型请求之前；失败时不能先报 request_prepared，
-      // 否则上层会把一条尚未发出的模型请求标成 sent。
+      // 本地读取与临时上传均发生在主模型请求之前；失败时不得先报告 request_prepared，
+      // 否则上层会将尚未发出的模型请求标记为 sent。
       throw classifyProviderError('openai_chat_completions', err)
     }
 
@@ -128,7 +128,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
         : {}),
     }
     let stopReason: ProviderStopReason = 'end_turn'
-    // provider 的原话，只进账本不参与判断。收尾时还是空串 = 流被截断，见下面那条守卫。
+    // provider 返回的原值，只记入账本，不参与判断。结束时仍为空串表示流被截断，见下方的检查。
     let rawFinish = ''
     const partial = new Map<number, { id: string; name: string; json: string }>()
     const splitter = createThinkingSplitter()
@@ -136,14 +136,14 @@ export class OpenAICompatAdapter implements LlmAdapter {
 
     try {
       /*
-       * 用 SDK 构造请求、鉴权与重试策略，但**响应体自己读**。
+       * 使用 SDK 构造请求、鉴权与重试策略，响应体由本地读取。
        *
-       * `asResponse()` 交出原始 `Response`，SSE 由共用读取器解析。不要改回 SDK 的流迭代：
-       * 它把 `[DONE]` 只当一条标记、继续等 HTTP EOF，因此工具调用与用量要等对端关连接
-       * 才交付，对端不关就一直等。
+       * `asResponse()` 返回原始 `Response`，SSE 由共用读取器解析。不要改回 SDK 的流迭代：
+       * SDK 将 `[DONE]` 仅视为一个标记并继续等待 HTTP EOF，工具调用与用量须待对端关闭连接
+       * 才交付，对端不关闭则持续等待。
        *
-       * 兼容端点的字段集参差不齐（reasoning_content、prompt_cache_hit_tokens 等都不在
-       * 官方类型里），所以请求体和响应都在这个边界上断言，内部按 Record 处理。
+       * 兼容端点的字段集不统一（reasoning_content、prompt_cache_hit_tokens 等均不在
+       * 官方类型中），因此请求体与响应在此边界处做类型断言，内部按 Record 处理。
        */
       const res = await this.client
         .withOptions({ fetch: traceFetch(trace, 'openai_chat_completions', req.idleTimeoutMs) })
@@ -165,19 +165,19 @@ export class OpenAICompatAdapter implements LlmAdapter {
         })
       }
 
-      // `asResponse()` 返回即响应头已到，正文 SSE 尚未开始。
-      // 时刻取传输层观察到的响应头，不取此刻。
+      // `asResponse()` 返回时响应头已到达，正文 SSE 尚未开始。
+      // 时刻取传输层观察到响应头的时刻，而非当前时刻。
       yield { type: 'response_started', headersAt: trace.headersAt! }
 
       let chunks = 0
       for await (const frame of readSse(res.body)) {
-        // 终止标记到手就结束读取：读取器随即取消 body，不等对端 FIN。
+        // 收到终止标记即结束读取：读取器随即取消 body，不等待对端 FIN。
         if (frame.data === SSE_DONE) break
         const parsed = sseJson(frame.data)
         if (!parsed) continue
-        // 这一帧解析出来的时刻。带内容的事件都用它，不让下游各取一次当前时刻。
+        // 本帧解析完成的时刻。带内容的事件统一使用该时刻，不由下游各自读取当前时刻。
         const at = Date.now()
-        // 流内错误。SSE 已经 200 了，错误只能从 chunk 里出。
+        // 流内错误。SSE 已返回 200，错误只能出现在 chunk 中。
         const inlineError = parsed.error
         if (inlineError && typeof inlineError === 'object') {
           throw classifyStreamError(
@@ -194,7 +194,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
 
         const delta = choice.delta ?? {}
 
-        // DeepSeek / Kimi 用 reasoning_content，部分中转站用 reasoning。都收。
+        // DeepSeek / Kimi 使用 reasoning_content，部分中转站使用 reasoning，两者均接收。
         const reasoning = delta.reasoning_content ?? delta.reasoning
         if (typeof reasoning === 'string' && reasoning) {
           yield { type: 'thinking_delta', delta: reasoning, at }
@@ -213,7 +213,7 @@ export class OpenAICompatAdapter implements LlmAdapter {
             slot = { id: tc.id ?? `call_${idx}`, name: tc.function?.name ?? '', json: '' }
             partial.set(idx, slot)
           }
-          // 名字有时分片到达，补齐它；id 同理。
+          // 名字有时分片到达，须补齐；id 同理。
           if (tc.id) slot.id = tc.id
           if (tc.function?.name) slot.name = tc.function.name
           const argsDelta: string = tc.function?.arguments ?? ''
@@ -229,32 +229,32 @@ export class OpenAICompatAdapter implements LlmAdapter {
         }
       }
 
-      // 已累积但未等到闭合标签的部分，原样作为正文输出。放在工具调用之前：
-      // 它是正文的一部分，顺序不能倒。
+      // 已累积但未遇到闭合标签的部分，原样作为正文输出。须在工具调用之前输出：
+      // 该部分属于正文，顺序不能颠倒。
       const tail = splitter.flush()
       if (tail) yield { type: 'text_delta', delta: tail, at: Date.now() }
 
       const calls = collectToolCalls(partial, 'openai_chat_completions', req.model)
       if (calls.length) {
-        // **`max_tokens` 不能被覆盖掉。** 输出正好在拼工具参数的中途撞上上限时，
-        // 这里既有 calls 又有 'length'；无条件改成 tool_use 会把「被截断了」这件事
-        // 抹掉，上层因此拿着半截 JSON 解析失败的参数照常执行工具，事后还看不出
-        // 发生过截断。截断优先——它决定的是这一轮该不该继续，比「是否存在工具调用」更靠前。
+        // `max_tokens` 不得被覆盖。输出恰好在拼接工具参数的中途达到上限时，
+        // 此处同时有 calls 与 'length'；无条件改为 tool_use 会丢失截断信号，
+        // 上层因此以 JSON 解析失败的残缺参数照常执行工具，事后也无法看出
+        // 发生过截断。截断优先：它决定该轮是否应继续，优先级高于「是否存在工具调用」。
         if (stopReason !== 'max_tokens') stopReason = 'tool_use'
         yield { type: 'tool_calls', calls, at: Date.now() }
       }
 
       /*
-       * **一个 chunk 都没有 = 这不是一次模型答复，必须报错。**
+       * 没有任何 chunk 表示这不是一次模型答复，必须报错。
        *
-       * 判据放在这里而不是上层：只有这里知道「SSE 流是空的」这个事实。
-       * 出了这个函数，`usage` 和 `done` 是无条件 yield 的，上层数事件永远数不出 0。
+       * 判据放在此处而不是上层：只有此处能确认「SSE 流为空」。
+       * 离开本函数后，`usage` 与 `done` 会无条件 yield，上层统计事件数永远不为 0。
        *
-       * 实测形状：Base URL 少了 `/v1` 时中转站对错误路径回 **200 + 一个 HTML 首页**，
-       * 解析器读不出任何 chunk 也不抛错，因此那一轮 0 token、0 步骤、`completed`
-       * ——界面上是「消息发出去了，什么也没发生」，账本里也查不到原因。
-       * `normalizeBaseUrl` 已经把这个成因消掉了，但别的成因（反代吞流、
-       * 网关返回空 200）还在，而**静默是比任何一个具体成因都严重的问题**。
+       * 实测形状：Base URL 缺少 `/v1` 时，中转站对错误路径返回 200 与一个 HTML 首页，
+       * 解析器读不出任何 chunk 且不抛错，该轮记为 0 token、0 步骤、`completed`，
+       * 消息已发送而没有任何输出，账本中也无法查到原因。
+       * `normalizeBaseUrl` 已消除该成因，但其他成因（反向代理丢弃流、
+       * 网关返回空的 200）仍然存在，而静默失败比任何具体成因都严重。
        */
       if (chunks === 0) {
         throw new ProviderError({
@@ -266,25 +266,25 @@ export class OpenAICompatAdapter implements LlmAdapter {
       }
 
       /*
-       * **流结束了却一次都没给过 `finish_reason` = 传输被截断，不是「说完了」。**
+       * 流已结束但从未收到 `finish_reason`，表示传输被截断，而非模型输出完毕。
        *
-       * 判据是 `finish_reason`，**不是 `[DONE]`**：部分中转不发终止标记，拿它当判据
-       * 会把一次正常收尾报成断流。
+       * 判据是 `finish_reason` 而非 `[DONE]`：部分中转站不发送终止标记，以 `[DONE]` 为判据
+       * 会将正常结束报告为断流。
        *
-       * 协议要求最后一个 chunk 带 `finish_reason`，用量也在同一个 chunk 里。
-       * 两者一起缺席只有一个成因：连接在模型说完之前断了。默认值 `end_turn`
-       * 会把它记成正常完成——界面上是「思考写到一半就停、run 显示成功」，
-       * 账本上那一轮是 0 token、无从对账，与 `chunks === 0` 是同一类静默。
+       * 协议要求最后一个 chunk 带 `finish_reason`，用量也在同一 chunk 中。
+       * 两者同时缺失只有一个成因：连接在模型输出完毕之前中断。默认值 `end_turn`
+       * 会将其记为正常完成，使思考中断的一轮被记为成功，
+       * 账本上该轮为 0 token、无法对账，与 `chunks === 0` 属于同一类静默失败。
        *
        * 实测形状（2026-08-21，某中转端点）：带 tools 的长思考请求
-       * 约一半的次数在 reasoning 中途直接结束响应体，既没有 `finish_reason`
-       * 也没有 `[DONE]`；同样的请求另一半次数能正常收尾。
+       * 约一半次数在 reasoning 中途结束响应体，既没有 `finish_reason`
+       * 也没有 `[DONE]`；同一请求的另一半次数正常结束。
        *
-       * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，是否计费无从判断——
-       * 所以已经攒到的 usage 随错误一起带上去（见 `usage` 字段），账本行落 `uncertain`
-       * 但数是实的。这一轮由 `agent/loop/attempt.ts` 自动重发（上限见 `MAX_RESENDS`）：正文未显示的
-       * 原样重发，已显示的把正文作为上一条推进 transcript 后带当前上下文续发；额度用尽后
-       * 用户拿到的是一条说得出「收了多少、断在哪」的错误，而不是一次假的成功。
+       * 记为传输失败而非 provider 拒绝：没有 HTTP 状态码，无法判断是否计费，
+       * 因此已累积的 usage 随错误一并上报（见 `usage` 字段），账本行记为 `uncertain`
+       * 但数值真实。该轮由 `agent/loop/attempt.ts` 自动重发（上限见 `MAX_RESENDS`）：正文未显示的
+       * 原样重发，已显示的将正文作为上一条消息写入 transcript 后带当前上下文继续发送；额度用尽后
+       * 用户得到一条说明「已收到多少、在何处断开」的错误，而不是一次虚假的成功。
        */
       if (!rawFinish) {
         throw new ProviderError({
@@ -292,8 +292,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
           message: '流在 finish_reason 之前结束',
           provider: 'openai_chat_completions',
           detail: { model: req.model },
-          // 用量那一格先到、收尾没到时把实数带上去。`source` 仍是 `estimated` 说明
-          // 它一个字节都没回报过，那种时候不带——带了就是把零当成真值记进账本。
+          // 用量 chunk 已到达而结束 chunk 未到达时附带真实值。`source` 仍为 `estimated`
+          // 表示 provider 未回报任何用量，此时不附带，否则会将零作为真实值记入账本。
           ...(usage.source === 'provider' ? { usage } : {}),
         })
       }
@@ -319,35 +319,35 @@ export class OpenAICompatAdapter implements LlmAdapter {
     return {
       model: req.model,
       messages,
-      // 未收录的模型不申报上限，让端点用自己的默认——编一个数出去的代价是静默截断。
+      // 未收录的模型不申报上限，由端点使用自身的默认值；发送虚构的数值会导致静默截断。
       ...(cap === null ? {} : { max_tokens: cap }),
       ...(req.tools.length ? { tools: buildTools(req.tools, this.spec) } : {}),
       ...buildReasoning(this.spec, req.effort),
       /*
-       * 缓存路由亲和键：这一格只负责请求体 `prompt_cache_key`。
+       * 缓存路由字段：此处只负责请求体中的 `prompt_cache_key`。
        *
-       * 这个字段本仓早就有（`ChatRequest.cacheKey`，会话 id），`openai-responses`
-       * 一直在发——只有这条路径漏了，而 deepseek / 各家中转全走这条。
+       * 本仓库已有该字段（`ChatRequest.cacheKey`，即会话 id），`openai-responses`
+       * 一直发送；deepseek 与各中转站均使用本路径。
        *
-       * **不要把它当成缓存不命中的解药。** 2026-08-19 在某中转端点上做过配对交替
-       * 实测（同一时间窗里逐轮交替发有键/无键，
-       * 各 12 轮）：无键 5/12 真命中，有键 0/12；换个时间窗再测又反过来。
-       * 同一个请求形状在相邻两分钟里能给出 3008 / 192 / 字段缺失三种结果——
-       * **那条路线的缓存本身不确定**，发不发这个键都盖不住。
-       * 发它的理由只是「这是协议规定的做法，且在行为正常的端点上有意义」，
-       * 不是「发了就命中」。
+       * 不要将其视为解决缓存不命中的手段。2026-08-19 在某中转端点上做过配对交替
+       * 实测（同一时间窗内逐轮交替发送有键与无键请求，
+       * 各 12 轮）：无键 5/12 实际命中，有键 0/12；更换时间窗后结果相反。
+       * 同一请求形状在相邻两分钟内给出 3008 / 192 / 字段缺失三种结果，
+       * 该线路的缓存本身不确定，是否发送该键都无法改变。
+       * 发送该键的理由只是「这是协议规定的做法，且在行为正常的端点上有效」，
+       * 而不是「发送即命中」。
        *
-       * **发不发由目录里那条模型说了算**（`spec.cacheRouting`），不是协议说了算，
-       * 也不是这里写死。xAI 的 Chat Completions 明确使用 `x-grok-conv-id` 请求头，
-       * 已在上面的请求选项分支发送；不能同时再塞一份 Responses 才用的 body 字段。
+       * 是否发送由目录中该模型的条目决定（`spec.cacheRouting`），而不是由协议决定，
+       * 也不在此处固定。xAI 的 Chat Completions 明确使用 `x-grok-conv-id` 请求头，
+       * 已在上方的请求选项分支发送；不得同时写入仅 Responses 使用的 body 字段。
        *
-       * **`qy probe` 不探这一项，这是有意的。** 探针只能发几次请求看命中——
-       * 而上面那段实测正说明：不确定的路线上，几次请求给出的是随机结果。
-       * 探出「可用」再写回目录，等于把一次偶然结果固化成结论：两次相同的小请求
-       * 判出 rolling，真实会话仍然不命中。
+       * `qy probe` 有意不探测此项。探针只能发送少量请求观察命中情况，
+       * 而上述实测说明：在不确定的线路上，少量请求给出的是随机结果。
+       * 将探测到的「可用」写回目录，等于将一次偶然结果固化为结论：两次相同的小请求
+       * 判定为 rolling，真实会话仍不命中。
        *
-       * 未收录的模型是 `'none'`，一个字节都不多发：自建端点（ollama / vLLM）
-       * 对未知字段的容忍度没验过，而它们全都落在未收录那一档。
+       * 未收录的模型取 `'none'`，不多发送任何字节：自建端点（ollama / vLLM）
+       * 对未知字段的容忍度未经验证，而这些端点均属于未收录模型。
        */
       ...(req.cacheKey && this.spec.cacheRouting === 'prompt_cache_key'
         ? { prompt_cache_key: req.cacheKey }
@@ -377,20 +377,20 @@ export class OpenAICompatAdapter implements LlmAdapter {
 }
 
 /**
- * 把用户填的 Base URL 归一成带版本段的 OpenAI 兼容根。
+ * 将用户填写的 Base URL 归一为带版本段的 OpenAI 兼容根地址。
  *
- * **这不是「兼容代码」，是消灭一个静默故障。** 实测形状：用户填
- * `https://中转站/`（少了 `/v1`），SDK 因此请求 `https://中转站/chat/completions`，
- * 而中转站对这种错误路径返回 **200 + 一个 HTML 首页**。SSE 解析器从 HTML 里
- * 解析不出任何事件、也不报错，因此那一轮 0 token、0 步骤、`completed`——
- * 界面上是「消息发出去了，什么也没发生」，账本里也查不到原因。
+ * 此处不是兼容代码，而是消除一个静默故障。实测形状：用户填写
+ * `https://中转站/`（缺少 `/v1`），SDK 因此请求 `https://中转站/chat/completions`，
+ * 而中转站对该错误路径返回 200 与 HTML 首页。SSE 解析器无法从 HTML 中
+ * 解析出任何事件且不报错，该轮记为 0 token、0 步骤、`completed`，
+ * 消息已发送而没有任何输出，账本中也无法查到原因。
  *
- * 补 `/v1` 有一个反例：有些兼容端点用的是 `/v4` 等别的版本。版本段是用户明确
- * 提供的路由信息，不能覆盖，也不能再拼成 `/v4/v1`；只有路径没有版本段
- * 时才补默认 `/v1`。中转站把 API 挂在无版本路径（`/api` 之类）时仍会补默认版本，
- * 失败是响亮的（404 / 401），不是这次这种静默——两种错的代价不对等。
+ * 补充 `/v1` 存在反例：部分兼容端点使用 `/v4` 等其他版本。版本段是用户明确
+ * 提供的路由信息，不得覆盖，也不得拼接为 `/v4/v1`；仅在路径不含版本段
+ * 时补充默认的 `/v1`。中转站将 API 部署在无版本路径（如 `/api`）时仍会补充默认版本，
+ * 此时失败会明确报错（404 / 401），而非静默失败；两种错误的代价不对等。
  *
- * 空值走官方根：`openai_responses` 那侧也是同一个常量。
+ * 空值使用官方根地址：`openai_responses` 一侧使用同一常量。
  */
 export function normalizeBaseUrl(raw: string | undefined): string {
   const url = (raw ?? '').trim().replace(/\/+$/, '')
@@ -398,17 +398,17 @@ export function normalizeBaseUrl(raw: string | undefined): string {
   return /\/v\d+(?:beta\d*)?(?:\/[^?#]*)?$/i.test(url) ? url : `${url}/v1`
 }
 
-/** Base64 会增加约三分之一，7 MB 原文件可稳定落在百炼的 10 MB Data URL 上限内。 */
+/** Base64 编码使体积增加约三分之一，7 MB 的原文件编码后稳定低于百炼 10 MB 的 Data URL 上限。 */
 export const DASHSCOPE_INLINE_SOURCE_BYTES = 7 * 1024 * 1024
 /**
- * 对话里的本地视频超过它就上传成 `oss://` 地址。
+ * 对话中的本地视频超过该值时上传为 `oss://` 地址。
  *
- * 不要改用上面那个 7 MB：那是端点能收的内联上限，不是合适的阈值。内联的视频每次请求都整份重发，
- * 并按字节计入请求里常驻的媒体（`agent` 的 `MEDIA_RETAIN_HIGH_BYTES`），几段就会把其余图片挤出请求；
- * 上传成地址后请求里只剩一个地址，不占这份预算，视频一直留在请求里。
+ * 不要改用上方的 7 MB：那是端点可接受的内联上限，不是合适的阈值。内联的视频每次请求都完整重发，
+ * 并按字节计入请求中的常驻媒体（`agent` 的 `MEDIA_RETAIN_HIGH_BYTES`），几段视频即会将其余图片挤出请求；
+ * 上传为地址后请求中只保留一个地址，不占用该预算，视频得以一直保留在请求中。
  */
 export const DASHSCOPE_CHAT_INLINE_BYTES = 2 * 1024 * 1024
-/** 百炼临时文件服务的官方硬上限；模型/凭证仍可返回更小的动态上限。 */
+/** 百炼临时文件服务的官方硬上限；模型或凭证仍可返回更小的动态上限。 */
 const DASHSCOPE_TEMP_FILE_MAX_BYTES = 1024 * 1024 * 1024
 
 export async function prepareDashScopeMedia(
@@ -569,15 +569,15 @@ async function providerHttpError(response: Response): Promise<Error> {
 /**
  * 兼容协议下的思考控制字段。
  *
- * **「发不发」由 `effortIsTransmittable` 一处裁决**，这里只决定「用哪套字段」。
- * 两件事各判一遍的实测后果：`transmits` 说发得出去而这里按参数格式省掉，
- * 因此探针恒通过，将一个无依据的结论写回目录。
+ * 是否发送由 `effortIsTransmittable` 一处裁决，此处只决定使用哪套字段。
+ * 两处各自判定的实测后果：`transmits` 声明可以发送而此处按参数格式省略，
+ * 探针因此恒为通过，将无依据的结论写回目录。
  *
- * 不认识的模型 `thinking` 是 `'none'`，被门禁挡在外面，一个字节都不会多发；
- * 自建端点和中转站不会因为这个函数收到没见过的键。
+ * 未知模型的 `thinking` 为 `'none'`，由上述检查排除，不会多发送任何字节；
+ * 自建端点与中转站不会因本函数收到未知的键。
  *
- * DeepSeek 那支要**两个字段一起发**：只发 `reasoning_effort` 而不开 `thinking`，
- * 思考没打开，档位当然没有效果。
+ * DeepSeek 分支须同时发送两个字段：只发送 `reasoning_effort` 而不开启 `thinking` 时，
+ * 思考未启动，档位不生效。
  */
 function buildReasoning(spec: ModelSpec, effort: string | undefined) {
   const protocol =
@@ -588,19 +588,19 @@ function buildReasoning(spec: ModelSpec, effort: string | undefined) {
         : {}
   if (!effort || !effortIsTransmittable(spec)) return protocol
   /*
-   * **不在这个模型档位面里的档，一个字节都不发。**
+   * 不在该模型可用档位中的档位，不发送任何字节。
    *
-   * 另两条协议各有各的写法：`openai-responses` 是
-   * `effortLevels.includes(req.effort) ? … : undefined`，`anthropic` 会降到最高可用档。
-   * 这条别只判「有没有给」就把 `effort` 原样发出去。
+   * 另两种协议的写法：`openai-responses` 为
+   * `effortLevels.includes(req.effort) ? … : undefined`，`anthropic` 同样省略越界档位。
+   * 本协议不要只判断「是否指定」就将 `effort` 原样发送。
    *
-   * 档位选定值挂在「接口 × 模型」那一格，同一个模型换条协议档位面就变
+   * 档位选定值记录在「接口 × 模型」对应的配置中，同一模型更换协议后可用档位即变化
    * （不同协议的目录条目各自声明可用档位），
-   * Agent Team 的角色还各带各的模型。越界值到这里必须被拦下，
-   * 否则就是发给 provider 的一个 400，而错误信息里只有它的原话。
+   * Agent Team 的各角色还各自使用不同的模型。越界值必须在此处拦截，
+   * 否则 provider 会返回 400，而错误信息中只有 provider 的原文。
    *
-   * 拦下而不是降档：本仓的目录没有「默认档」这个概念，替它挑一档是猜。
-   * 不发 = 模型走自己的默认，这与「没选过」是同一个行为，可预期。
+   * 拦截而不降档：本仓库的目录没有「默认档位」的概念，代为选择档位属于推测。
+   * 不发送时模型使用自身的默认值，与「未选择」的行为相同，结果可预期。
    */
   if (!spec.effortLevels.includes(effort as never)) return protocol
   return spec.thinking === 'deepseek_thinking'
@@ -609,7 +609,7 @@ function buildReasoning(spec: ModelSpec, effort: string | undefined) {
 }
 
 function buildTools(tools: ToolSchema[], spec: ModelSpec) {
-  // 与 Anthropic 路径同样按名排序：兼容端点的隐式前缀缓存同样怕顺序抖动。
+  // 与 Anthropic 路径相同，按名称排序：兼容端点的隐式前缀缓存同样受顺序变化影响。
   return [...tools]
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .map((t) => {
@@ -627,17 +627,17 @@ function buildTools(tools: ToolSchema[], spec: ModelSpec) {
 }
 
 /**
- * 把本仓写的工具 schema 重排成 strict 形状。
+ * 将本仓库编写的工具 schema 重排为 strict 形状。
  *
- * strict 让端点按 schema 约束采样，模型**生成不出**不合形状的参数。OpenAI 协议对它
- * 有两条硬要求：每个 object 都要 `additionalProperties: false`，且 `properties` 里
- * 每个键都要进 `required`；可选参数靠 `type` 里加 `null` 表达。
+ * strict 使端点按 schema 约束采样，模型无法生成不符合形状的参数。OpenAI 协议对 strict
+ * 有两条硬性要求：每个 object 都须设置 `additionalProperties: false`，且 `properties` 中
+ * 每个键都须列入 `required`；可选参数通过在 `type` 中加入 `null` 表达。
  *
- * **两条要少一条就等于没开。** 实测（2026-08-20，grok-4.6）：只加 `strict: true`
- * 而留着可选属性，端点不报错、静默降级成尽力而为，`offset` 照样回字符串 `"1.0"`；
- * 两条都做之后三次采样全是整数。所以这里不能只发标志位。
+ * 缺少其中任一条即等于未开启。实测（2026-08-20，grok-4.6）：只添加 `strict: true`
+ * 而保留可选属性时，端点不报错，静默降级为尽力而为，`offset` 仍返回字符串 `"1.0"`；
+ * 两条均满足后三次采样均为整数。因此此处不能只发送标志位。
  *
- * 只对 `ToolSchema.strict` 为真的（本仓自己写的）用。第三方 schema 不转，理由在那个字段上。
+ * 只用于 `ToolSchema.strict` 为真的工具（本仓库自行编写的工具）。第三方 schema 不转换，理由见该字段的注释。
  */
 export function strictify(schema: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...schema }
@@ -658,7 +658,7 @@ export function strictify(schema: Record<string, unknown>): Record<string, unkno
   return out
 }
 
-/** 可选参数保持必填；类型与枚举都要允许 null，否则无关参数仍被迫取实值。 */
+/** 可选参数改为必填；类型与枚举均须允许 null，否则无关参数仍被迫取实际值。 */
 function nullable(node: Record<string, unknown>): Record<string, unknown> {
   const type = node.type
   if (typeof type !== 'string' || type === 'null') return node
@@ -672,18 +672,18 @@ function nullable(node: Record<string, unknown>): Record<string, unknown> {
 }
 
 /*
- * ───────────────────────── 这个协议的 wire 形状 ─────────────────────────
+ * ───────────────────────── 本协议的 wire 形状 ─────────────────────────
  *
- * **只声明本文件真的读或真的写的字段。** 兼容端点的字段集参差不齐
- * （`reasoning_content`、`prompt_cache_hit_tokens` 等都不在官方类型里），
- * 所以这几个接口就是「本文件认得哪些字段名」的清单——接一家新中转站时改这里。
+ * 只声明本文件实际读取或写入的字段。兼容端点的字段集不统一
+ * （`reasoning_content`、`prompt_cache_hit_tokens` 等均不在官方类型中），
+ * 因此这些接口即「本文件识别的字段名」清单，接入新的中转站时在此修改。
  *
- * 放在这个文件里而不是抽一个跨协议的 wire 模块：协议这条轴已经有归属
- * （`ProviderKind` 三个值、一个适配器一个协议、模型库每条 spec 带着它）。
+ * 定义放在本文件中，而不是提取为跨协议的 wire 模块：协议维度已有归属
+ * （`ProviderKind` 的三个取值、一个适配器对应一个协议、模型库每条 spec 都带协议）。
  */
 
 /**
- * usage。**各家字段名不统一，能给的都收**，收不到就保持未回报（见 `applyUsage`）。
+ * usage。各厂商字段名不统一，提供的字段均接收，未提供时保持未回报状态（见 `applyUsage`）。
  */
 interface CompatUsage {
   prompt_tokens?: number
@@ -693,18 +693,18 @@ interface CompatUsage {
   prompt_cache_miss_tokens?: number
   /** OpenAI 的写法。 */
   prompt_tokens_details?: { cached_tokens?: number }
-  /** Step 的缓存命中量在 usage 顶层。 */
+  /** Step 的缓存命中量位于 usage 顶层。 */
   cached_tokens?: number
   completion_tokens_details?: { reasoning_tokens?: number }
 }
 
-/** 流里的一个 chunk。字段全可选：一个 chunk 只会带其中一部分。 */
+/** 流中的一个 chunk。字段均为可选：每个 chunk 只携带其中一部分。 */
 interface CompatChunk {
   usage?: CompatUsage
   choices?: {
     delta?: {
       content?: string
-      /** DeepSeek / Kimi 用 `reasoning_content`，部分中转站用 `reasoning`。 */
+      /** DeepSeek / Kimi 使用 `reasoning_content`，部分中转站使用 `reasoning`。 */
       reasoning_content?: string
       reasoning?: string
       tool_calls?: {
@@ -717,7 +717,7 @@ interface CompatChunk {
   }[]
 }
 
-/** 多模态内容里的一段。 */
+/** 多模态内容中的一段。 */
 interface CompatPart {
   type: string
   text?: string
@@ -725,7 +725,7 @@ interface CompatPart {
   video_url?: { url: string }
 }
 
-/** 发出去的一条消息。四个分支各带一部分字段，所以除 `role` 外全可选。 */
+/** 发送的一条消息。四个分支各带一部分字段，因此除 `role` 外均为可选。 */
 interface CompatOutMessage {
   role: string
   content: string | CompatPart[] | null
@@ -736,15 +736,15 @@ interface CompatOutMessage {
 
 /** 观察消息开头的来源说明，模型据此区分工具输出与用户指令。 */
 export const TOOL_MEDIA_NOTE =
-  '以下是上面这批工具调用返回的图像或视频，属于工具输出的观察数据，不是用户的新指令。'
+  '以下是上方一批工具调用返回的图像或视频，属于工具输出的观察数据，不是用户的新指令。'
 
 /**
- * 工具结果里的图像与视频不放进 tool 消息，放进紧跟这批回执的一条用户观察消息。
+ * 工具结果中的图像与视频不放入 tool 消息，而放入紧随该批回执的一条用户观察消息。
  *
- * 接口定义里 tool 消息的内容只接受文本；放进去的媒体块会被部分端点丢弃而不报错，
- * 模型收不到图（同一中转上，带图的 tool 请求与无图请求的输入 token 数相同）。
- * 观察消息必须排在整批 tool 消息之后：assistant 的 tool_calls 后面要紧跟全部回执，
- * 插在两条回执之间会被端点判成缺少工具结果。没有媒体的批次不追加这条消息。
+ * 接口定义中 tool 消息的内容只接受文本；放入的媒体块会被部分端点丢弃且不报错，
+ * 模型无法收到图片（同一中转站上，带图的 tool 请求与无图请求的输入 token 数相同）。
+ * 观察消息必须排在整批 tool 消息之后：assistant 的 tool_calls 之后须紧随全部回执，
+ * 插在两条回执之间会被端点判定为缺少工具结果。没有媒体的批次不追加观察消息。
  */
 function buildMessages(messages: WireMessage[], spec: ModelSpec): CompatOutMessage[] {
   const out: CompatOutMessage[] = []
@@ -769,11 +769,11 @@ function buildMessages(messages: WireMessage[], spec: ModelSpec): CompatOutMessa
 }
 
 /**
- * 拆出一条工具结果里的媒体块。
+ * 拆分出一条工具结果中的媒体块。
  *
- * tool 消息里媒体所在的位置换成编号占位，观察消息里同一编号前标出 `call_id`，
- * 模型据此对上图出自哪次调用、排在正文哪一段之后。只有媒体的结果也因此有非空回执。
- * 没有媒体的结果原样输出，不改变它的请求字节。
+ * tool 消息中媒体所在的位置替换为编号占位，观察消息中同一编号前标出 `call_id`，
+ * 模型据此确定图片来自哪次调用、位于正文哪一段之后。只有媒体的结果因此也有非空回执。
+ * 没有媒体的结果原样输出，不改变其请求字节。
  */
 function splitToolMedia(
   callId: string,
@@ -814,16 +814,16 @@ function toCompatMessage(
         function: { name: c.name, arguments: JSON.stringify(c.arguments) },
       })),
       /*
-       * 见文件头注释第 1 条：不回传这个字段，DeepSeek 思考模式下一轮直接 400。
+       * 见文件头注释第 1 条：不回传该字段时，DeepSeek 思考模式的下一轮返回 400。
        *
-       * **这里无条件发，不查目录的 `reasoningEcho`——那一格只管 Responses 那条协议。**
-       * 两侧的不对称有依据：那边多发的是一个**条目**，端点按 schema 直接拒
-       * （`array too long. Expected an array with maximum length 0`）；这边多发的是
-       * 一个**字段**，实测被忽略。改成查目录反而会制造回归：中转站把 DeepSeek 挂在
-       * 自定义模型名下时目录认不出它，因此从「零配置能用」变成确定性 400。
+       * 此处无条件发送，不查询目录的 `reasoningEcho`：该字段只用于 Responses 协议。
+       * 两侧的不对称有依据：Responses 多发送的是一个条目，端点按 schema 直接拒绝
+       * （`array too long. Expected an array with maximum length 0`）；本协议多发送的是
+       * 一个字段，实测被忽略。改为查询目录反而会造成回归：中转站以自定义模型名提供
+       * DeepSeek 时目录无法识别，结果从「无需配置即可使用」变为必然返回 400。
        *
-       * 边界：`reasoningContent` 是**会话历史**的属性，不是端点的。中途换过接口的话，
-       * 这里发出去的可能是另一个端点录下的思考内容。
+       * 边界：`reasoningContent` 是会话历史的属性，而不是端点的属性。会话中途更换过接口时，
+       * 此处发送的可能是另一个端点记录的思考内容。
        */
       ...(m.reasoningContent ? { reasoning_content: m.reasoningContent } : {}),
     }
@@ -878,30 +878,30 @@ function normalizeFinishReason(raw: string): ProviderStopReason {
   }
 }
 
-// ───────────────────────── 正文里的思考标签 ─────────────────────────
+// ───────────────────────── 正文中的思考标签 ─────────────────────────
 
 const THINKING_OPEN = '<thinking>'
 const THINKING_CLOSE = '</thinking>'
 
 /**
- * 正文通道开头那个 `<thinking>…</thinking>` 块改判给思考通道。
+ * 将正文通道开头的 `<thinking>…</thinking>` 块改判到思考通道。
  *
- * 这是中转站发推理内容的第三种形式。前两种是字段名（`reasoning_content` / `reasoning`），
- * 这一种把推理摘要塞进 `content` 再自己加上标签——实测 gpt-5.6-terra 经 OpenAI
- * 协议中转，一个 run 的 12 次调用里 3 次这样发，其余走 `reasoning_content`。
- * 通道归属的权威是适配器，所以在这里认；让它混进回答再由下游擦，擦的是症状。
+ * 这是中转站发送推理内容的第三种形式。前两种是字段名（`reasoning_content` / `reasoning`），
+ * 此形式将推理摘要放入 `content` 并自行添加标签：实测 gpt-5.6-terra 经 OpenAI
+ * 协议中转，一个 run 的 12 次调用中有 3 次如此发送，其余使用 `reasoning_content`。
+ * 通道归属的权威是适配器，因此在此处识别；混入回答后再由下游清除，只是处理症状。
  *
- * **只认这一种形状：本次调用正文的第 0 个字符起、成对闭合、只认一次。**
- * 不要放宽。放宽就会吞掉模型正当输出的这个字面量（例如它在讨论这段代码），
- * 而那是静默的内容丢失。
+ * 只识别一种形状：从本次调用正文的第 0 个字符开始、成对闭合、只识别一次。
+ * 不要放宽。放宽会将模型正当输出的该字面量（例如模型在讨论这段代码）从正文中移除，
+ * 造成静默的内容丢失。
  *
- * **一个字节都不删也不丢。** 认出来的整块送思考通道；形状对不上的原样送正文；
+ * 不删除也不丢弃任何字节。识别出的整块送往思考通道；形状不匹配的原样送往正文；
  * 流在闭合之前结束时，已累积的部分连同起始标签一起原样作为正文输出。
- * 所以判错的最坏结果是显示在错的区，不会是内容消失。
+ * 因此误判的最坏结果是显示在错误的区域，而不是内容丢失。
  *
- * 代价：块内内容攒到闭合标签才输出，那一段不是逐字出现的。这种块实测是一行摘要，
- * 而流空闲上限的基准是 180 秒（`transport.ts` 的 `STREAM_IDLE_TIMEOUT_MS`），够不着。
- * 何况空闲计时在传输层按字节算，正文攒在本地不影响它。
+ * 代价：块内内容累积到闭合标签后才输出，该段不是逐字显示。实测此类块为一行摘要，
+ * 而流空闲上限的基准是 180 秒（`transport.ts` 的 `STREAM_IDLE_TIMEOUT_MS`），不会触及。
+ * 此外空闲计时在传输层按字节计算，正文在本地累积不影响计时。
  */
 export function createThinkingSplitter(): {
   push(delta: string): { thinking: string; text: string }
@@ -944,17 +944,17 @@ export function createThinkingSplitter(): {
 /**
  * usage 归一。
  *
- * **口径陷阱**：OpenAI 兼容协议的 `prompt_tokens` 是**含**缓存命中的总量
+ * 口径差异：OpenAI 兼容协议的 `prompt_tokens` 是包含缓存命中的总量
  * （DeepSeek 实测 `prompt_tokens = cache_hit + cache_miss`），而 Anthropic 的
- * `input_tokens` 是**不含**缓存的余量。两边都直接累加的话，兼容侧会把命中的
- * token 按全价再算一遍——缓存命中率越高，账单偏差越大。
+ * `input_tokens` 是不含缓存的剩余量。两者都直接累加时，兼容协议一侧会将命中的
+ * token 按全价重复计算，缓存命中率越高，账单偏差越大。
  *
- * 这里统一收敛到 Anthropic 的「排他」口径：inputTokens 只装未命中部分。
+ * 此处统一采用 Anthropic 的「排他」口径：inputTokens 只包含未命中部分。
  */
 function applyUsage(acc: ProviderUsage, u: CompatUsage) {
   if (typeof u.completion_tokens === 'number') acc.outputTokens = u.completion_tokens
 
-  // 各家字段名不统一：DeepSeek 是 prompt_cache_hit_tokens，OpenAI 是
+  // 各厂商字段名不统一：DeepSeek 是 prompt_cache_hit_tokens，OpenAI 是
   // prompt_tokens_details.cached_tokens，Step 是根级 cached_tokens；未回报保持 null。
   const details = u.prompt_tokens_details
   let cached: number | null = null
@@ -968,10 +968,10 @@ function applyUsage(acc: ProviderUsage, u: CompatUsage) {
   if (cached !== null) acc.cachedTokens = cached
 
   if (typeof u.prompt_cache_miss_tokens === 'number') {
-    // 供应商直接给了未命中量，最可靠。
+    // 供应商直接提供了未命中量，最为可靠。
     acc.inputTokens = u.prompt_cache_miss_tokens
   } else if (typeof u.prompt_tokens === 'number') {
-    // 只有总量时自己减。没回报缓存量就按全部未命中处理。
+    // 只有总量时自行相减。未回报缓存量时按全部未命中处理。
     acc.inputTokens = Math.max(0, u.prompt_tokens - (cached ?? 0))
   }
   const outDetails = u.completion_tokens_details

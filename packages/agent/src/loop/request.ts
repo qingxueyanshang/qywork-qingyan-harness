@@ -28,7 +28,7 @@ import { emptyBreakdown } from '@qywork/core'
 import { IMAGES_OMITTED } from '../compaction.ts'
 import type { ToolOutcome } from '../registry.ts'
 
-/** 与装配的请求一起落账；后续改模型设置不会改写这次申报。 */
+/** 与装配的请求一同写入请求账；之后修改模型设置不会改写本次申报。 */
 export function requestConfiguration(
   req: ChatRequest,
   adapter: LlmAdapter,
@@ -49,13 +49,13 @@ export function requestConfiguration(
 }
 
 /**
- * 按思考档位放宽流空闲上限，结果填进 `ChatRequest.idleTimeoutMs` 交给传输层执行。
+ * 按思考档位放宽流空闲上限，结果写入 `ChatRequest.idleTimeoutMs`，由传输层执行。
  *
- * 基准 180 秒是给常规档留的。高档位下首 token 之前模型要先想很久——`xhigh`/`max`
- * 在长 prompt 上实测能超过三分钟，而那时掐掉的是一次**完全正常**的请求。
- * 判错的代价（把慢请求掐死）比判漏（多挂一会儿）大得多，所以往宽了给。
+ * 基准 180 秒针对常规档位。高档位下模型在首个 token 之前的思考时间较长：`xhigh`/`max`
+ * 在长 prompt 上实测超过三分钟，此时中断的是一次正常请求。
+ * 误判的代价（中断慢请求）远大于漏判（多等待一段时间），因此取较宽的值。
  *
- * 这条与「不按模型名猜行为」不冲突：档位是**用户显式选的配置**，不是从名字推的。
+ * 本规则不违反「不按模型名推测行为」：档位是用户显式选择的配置，不是从模型名推测的。
  */
 export function idleTimeoutFor(effort: ChatRequest['effort']): number {
   if (effort === 'max') return STREAM_IDLE_TIMEOUT_MS * 3
@@ -64,50 +64,50 @@ export function idleTimeoutFor(effort: ChatRequest['effort']): number {
 }
 
 /**
- * 触发线在窗口里的位置。**压缩链路唯一的阈值常数。**
+ * 压缩触发阈值占窗口的比例，是压缩链路唯一的阈值常数。
  *
- * 留两成给「这一轮还要发生的事」：模型这一轮的输出、下一波工具结果、
- * 估算与真值之间的残差。取 0.8 是通用做法，与模型无关——每一档都是 80%。
+ * 预留 20% 给本轮尚未发生的占用：模型本轮的输出、下一批工具结果、
+ * 估算与真值之间的残差。0.8 是通用取值，与模型无关，所有档位均为 80%。
  *
- * **不要把输出上限或投递预算再减一遍。** 那样阈值会随模型的 `maxOutputTokens`
- * 漂移（同为 1M 窗口的两个模型会得到 36.6% 与 62.2% 两条线），而请求合法性
+ * 不要再从中减去输出上限或投递预算：阈值会随模型的 `maxOutputTokens` 变化
+ * （同为 1M 窗口的两个模型会得到 36.6% 与 62.2% 两个阈值），而请求合法性
  * 由申报钳位（`declaredMaxOutput`）保证，不由阈值保证。
  */
 const TRIGGER_RATIO = 0.8
 
 /**
- * 压缩的软阈值：占用超过它就在**发出之前**压一次。
+ * 压缩的软阈值：占用超过该值时，在发出请求之前执行一次压缩。
  *
- * 具名导出是因为上下文面板要画同一条线——两处算出不同的数，用户看到的刻度
- * 就不是真正会触发的那个点。
+ * 具名导出供上下文面板绘制同一条阈值线：两处计算结果不同时，界面上的刻度
+ * 与实际触发点不一致。
  */
 export function softLimit(spec: { contextWindow: number }): number {
   return Math.floor(spec.contextWindow * TRIGGER_RATIO)
 }
 
 /**
- * 申报余量。**这一处必须自己留，`softLimit` 罩不到它**——软阈值不在下面那个式子里。
+ * 申报余量。必须在此单独预留：软阈值 `softLimit` 不参与下方的申报算式。
  *
- * 占用是估算出来的，估算低估多少，申报就超出窗口多少。取占用的 5%：估算器标定在
- * 1.03–1.18 倍（`ai/tokens.ts` 的 `TokenDensity`），已标定的模型上这个余量用不到；
- * 它挡的是未标定模型走上界档仍然偏低的那一档。
+ * 占用是估算值，估算低估多少，申报就超出窗口多少。取占用的 5%：估算器标定在
+ * 1.03–1.18 倍（`ai/tokens.ts` 的 `TokenDensity`），已标定的模型上不会用到该余量；
+ * 它针对的是未标定模型采用上界密度后仍然偏低的情况。
  */
 const OUTPUT_DECLARATION_MARGIN_RATIO = 0.05
 
 /**
- * 这一轮申报多少输出上限。`null` = 不申报。
+ * 本轮申报的输出上限。`null` 表示不申报。
  *
- * 兼容协议按 `输入 + max_tokens ≤ 窗口` 校验，所以申报回答的是「这一轮还装得下
- * 多少输出」，不是「这个模型最多能输出多少」。**静态按规格上限申报**会让
- * 高占用请求被 provider 直接拒——1M 档上那是每次都挂着 384K 的申报。
+ * 兼容协议按 `输入 + max_tokens ≤ 窗口` 校验，因此申报值表示本轮窗口还能容纳
+ * 多少输出，而不是模型最多能输出多少。按规格上限静态申报会使高占用请求被
+ * provider 直接拒绝：1M 档位上每次请求都会申报 384K。
  *
- * 规格上限是 `null`（未收录 = 没测过）时**整轮不申报**，不拿窗口余量顶上去：
- * 那个数在没测过的端点上一样是编的，发出去换来的是一个 400，而不申报换来的
- * 是端点自己的默认。
+ * 规格上限为 `null`（未收录，即未经实测）时整轮不申报，不用窗口余量代替：
+ * 该数值在未实测的端点上同样没有依据，发出后得到 400；不申报则采用端点自身的
+ * 默认值。
  *
- * **余量不能省。** `occupancy` 是估算值，它低估时这个式子申报的就是一个装不下的
- * 上限，换回来一个 400；而那个 400 若被容量分类认成撞窗，还会多一次无效的有损压缩去
- * 救一个申报错误。
+ * 余量不能省略。`occupancy` 是估算值，低估时算式申报的上限超出窗口容量，
+ * 请求返回 400；该 400 若被容量分类判定为超出窗口，还会触发一次无效的有损压缩
+ * 来处理一个申报错误。
  *
  * `max(1, …)` 是除零保护，不是可调的余量。
  */
@@ -158,43 +158,43 @@ export function mergeUsage(
 }
 
 /**
- * 请求体指纹。用来在账本上认出「同一份内容发了两遍」。
+ * 请求体指纹，用于在账本上识别同一份内容的重复发送。
  *
- * 非加密哈希是够的：它回答的是「这两行是不是同一次请求的重复」，
- * 不承担任何安全语义。用加密哈希只会让每次装配多花几毫秒。
+ * 非加密哈希已足够：它只判定两行是否为同一请求的重复，不承担安全语义。
+ * 加密哈希会使每次装配多耗费数毫秒。
  */
 export function payloadSnapshotOf(req: ChatRequest): { hash: string; bytes: number } {
-  // 这次序列化原本就用于指纹；在同一份字符串上读字节数，避免为测量再遍历一遍长历史。
+  // 该序列化结果用于计算指纹；在同一字符串上读取字节数，避免为测量再次遍历长历史。
   const serialized = JSON.stringify([req.system, req.messages, req.tools])
   return { hash: Bun.hash(serialized).toString(36), bytes: Buffer.byteLength(serialized) }
 }
 
 /**
- * 请求信封的指纹：模型 + 冻结前缀 + 工具表，**不含消息**。
+ * 请求信封的指纹：模型 + 冻结前缀 + 工具表，不含消息。
  *
- * 锚点的语义是「上一次真值描述的那个上下文」。两次请求之间用户可以装卸 MCP、
- * 装技能、`load_tool` 装工具、换模型——信封换了，那个真值描述的就不是这一次
- * 的上下文了，而它仍然是三处共用的那把尺（显示、压缩触发、`max_tokens` 钳位）。
+ * 锚点表示上一次 provider 真值所描述的上下文。两次请求之间用户可以安装或卸载 MCP、
+ * 安装技能、经 `load_tool` 加载工具、更换模型；信封变化后，该真值描述的已不是本次请求的
+ * 上下文，而它仍是显示、压缩触发、`max_tokens` 钳位三处共用的计量基准。
  *
- * **`req.model` 必须在里面。** 系统提示词不随模型变、工具表也不随模型变，所以
- * 只哈希这两项时换模型得到的是同一个指纹，锚点存活——而那个真值是另一个
- * tokenizer 量出来的。中文密度各家差 1.8 倍（`ai/tokens.ts` 的 `TokenDensity`），
- * 拿它去判新模型的窗口就是量错了尺，而且不会有任何报错。
+ * `req.model` 必须包含在内。系统提示词与工具表都不随模型变化，因此
+ * 只哈希这两项时，换模型得到的是同一个指纹，锚点仍然有效，而该真值是由另一个
+ * tokenizer 计量的。各厂商的中文密度相差 1.8 倍（`ai/tokens.ts` 的 `TokenDensity`），
+ * 用它判断新模型的窗口即采用了错误的计量口径，且不会有任何报错。
  *
- * **不要复用 `payloadSnapshotOf`**：它含 messages，每轮必变，当不了信封。
+ * 不要复用 `payloadSnapshotOf`：它包含 messages，每轮必然变化，不能作为信封指纹。
  * 也不要复用 `prefix-audit` 的 `hashFrozen`：它只覆盖到最后一个缓存断点，
- * 不含工具表，而工具表正是最常变的那一半。
+ * 不含工具表，而工具表是信封中最常变化的部分。
  */
 export function envelopeHashOf(req: Pick<ChatRequest, 'model' | 'system' | 'tools'>): string {
   return Bun.hash(JSON.stringify([req.model, req.system, req.tools])).toString(36)
 }
 
 /**
- * 前缀指纹链的一步：前一位的指纹接上这条消息会上线的字段。
+ * 前缀指纹链的一步：将前一条消息的指纹与本条消息实际发送的字段拼接后计算。
  *
- * 字段按固定顺序取：活的 transcript 与跨 run 投影出来的同一条消息键序不同，
- * 直接序列化整个对象会得到两个指纹。缓存断点与下划线开头的内部标记不进指纹，
- * 它们逐次请求会变，provider 不把它们算作前缀改写。原生推理只取条目本身。
+ * 字段按固定顺序读取：运行中的 transcript 与跨 run 投影得到的同一条消息键序不同，
+ * 直接序列化整个对象会得到两个指纹。缓存断点与下划线开头的内部标记不计入指纹：
+ * 它们在每次请求间会变化，provider 不将其视为前缀改写。原生推理只取条目本身。
  */
 function nextPrefix(prev: string, m: WireMessage): string {
   const wire = [
@@ -208,20 +208,20 @@ function nextPrefix(prev: string, m: WireMessage): string {
   return Bun.hash(`${prev}\u0000${JSON.stringify(wire)}`).toString(36)
 }
 
-/** 整份请求的前缀指纹：由它产生的原生推理条目记下这个值。 */
+/** 整份请求的前缀指纹：该请求产生的原生推理条目记录此值。 */
 export function reasoningPrefix(req: ChatRequest): string {
   return req.messages.reduce(nextPrefix, envelopeHashOf(req))
 }
 
 /**
- * 装配点的推理裁剪：请求里只留这条协议会发、且产生时前缀未变的推理。
+ * 装配阶段的推理裁剪：请求中只保留当前协议会发送、且产生时前缀未变的推理。
  *
- * 原生条目记下的前缀与本次请求在这条消息之前的前缀不同或缺席即剥离——换模型、换工具表、
- * 压缩与收纳、图片省略、提示增删都会改前缀，provider 对这样的条目不按原样使用。
- * 某一位变了，其后每一位的指纹都随之不同，所以剥离的总是那一位之后的全部条目。
+ * 原生条目记录的前缀与本次请求在该消息之前的前缀不同或缺失时即剥离：换模型、换工具表、
+ * 压缩与收纳、图片省略、提示增删都会改变前缀，provider 不会按原样使用这类条目。
+ * 某一条消息变化后，其后每一条的指纹都随之不同，因此剥离的总是该消息之后的全部条目。
  *
- * 必须在这里裁而不是只在适配器里裁：本地估算按请求里挂着的推理计数，
- * 两处不一致时估算会多出一整段不上线的思考。
+ * 必须在此处裁剪，不能只在适配器中裁剪：本地估算按请求中携带的推理计数，
+ * 两处不一致时估算会多出一整段不会发送的思考。
  */
 export function replayReasoning(
   messages: readonly WireMessage[],
@@ -248,21 +248,21 @@ export function replayReasoning(
 }
 
 /**
- * 工具结果消息的**执行记录 / 工具结果**二分。
+ * 将工具结果消息拆分为执行记录与工具结果两部分。
  *
- * 一条 tool 消息里装的是 `{call_id, tool, status, executed, summary, result}`：
- * 前四个是这次调用的**事实信封**，后两个是它**带回来的正文**。两者的处置完全
- * 不同——正文可以落 sink、可以在压缩时换成定位符，信封不能动。合成一个桶，
- * 面板就答不了「上下文是被工具输出占用的，还是被模型正文占用的」。
+ * 一条 tool 消息包含 `{call_id, tool, status, executed, summary, result}`：
+ * 前四个字段是本次调用的事实信封，后两个是它返回的正文。两者的处理方式完全
+ * 不同：正文可以写入 sink、可以在压缩时替换为定位符，信封不能修改。合并为一个分组时，
+ * 面板无法区分上下文是被工具输出占用还是被模型正文占用。
  *
- * 量法：把同一份记录**去掉正文再量一次**，两次之差就是正文。
- * tokenization 不可加，所以不能分别量两段再相加。
+ * 计算方法：将同一份记录去掉正文后再估算一次，两次之差即为正文。
+ * tokenization 不可加，因此不能分别估算两段再相加。
  *
- * **两次必须同尺，而且是 `estimateMessage` 量整条时用的那一把。** tool 角色整条走
- * JSON 档（`ai/tokens.ts` 的 `estimateMessage`），所以信封也只能走 `estimateJson`。
- * 尺不同的代价实测过：信封虚高一倍、差额从正文里扣，一条 327 次调用的会话里
- * 167 条被下面的 `Math.min` 夹成 `body = 0`，面板上读作「这次调用没带回任何正文」，
- * 而它带回了一句 summary。
+ * 两次估算必须使用同一种方式，即 `estimateMessage` 估算整条消息时的方式：tool 角色整条
+ * 按 JSON 档估算（`ai/tokens.ts` 的 `estimateMessage`），因此信封也只能使用 `estimateJson`。
+ * 方式不一致时信封估值偏高一倍、差额从正文中扣除：实测一个 327 次调用的会话中
+ * 有 167 次被下方的 `Math.min` 截为 `body = 0`，面板显示该调用没有返回正文，
+ * 而实际返回了一句 summary。
  */
 function splitToolResult(
   content: string,
@@ -276,40 +276,40 @@ function splitToolResult(
     const envelopeTokens = Math.min(total, estimateJson(JSON.stringify(envelope), density))
     return { envelope: envelopeTokens, body: total - envelopeTokens }
   } catch {
-    // 不是约定的那份形状（插件自定义结果等）——整条算执行记录，不硬拆。
+    // 不符合约定形状（插件自定义结果等）时整条计为执行记录，不强行拆分。
     return { envelope: total, body: 0 }
   }
 }
 
 /**
- * 上下文占用按组分解。桶的口径只有一份：`core` 的 `ContextGroup`。
+ * 按分组分解上下文占用。分组定义只有一份：`core` 的 `ContextGroup`。
  *
- * 这里只负责量，不负责对账——各组之和与总数的恒等由 `core` 的 `reconcileBreakdown`
- * 保证（固定类目保实测值，差额归到消息类目）。不要在这个函数里追求「加起来正好」。
+ * 本函数只负责估算，不负责对账：各组之和等于总数由 `core` 的 `reconcileBreakdown`
+ * 保证（固定类目保留实测值，差额归入消息类目）。不要在本函数中使各组之和凑齐总数。
  */
 export function breakdownOf(req: ChatRequest, density: TokenDensity): ContextBreakdown {
   const out = emptyBreakdown()
   out.systemPrompt = req.system.reduce((n, b) => n + estimateText(b.text, density), 0)
 
-  // 工具 schema 分两桶。判据是 `mcp__` 前缀——`mcp/register.ts` 保证 MCP 工具
-  // 一律带它，插件工具走 `<插件id>__` 归内置一侧。这两类的处置完全不同：
-  // MCP 涨了是用户装的服务器在涨，内置涨了是内置工具表在涨。
+  // 工具 schema 分为两组，判据是 `mcp__` 前缀：`mcp/register.ts` 保证 MCP 工具
+  // 一律带该前缀，插件工具使用 `<插件id>__`，归入内置一侧。两组的含义不同：
+  // MCP 分组增长来自用户安装的服务器，内置分组增长来自内置工具表。
   const mcp = req.tools.filter((t) => t.name.startsWith('mcp__'))
   const builtin = req.tools.filter((t) => !t.name.startsWith('mcp__'))
   if (mcp.length) out.mcpTools = estimateSchemas(mcp, density)
   if (builtin.length) out.systemTools = estimateSchemas(builtin, density)
 
   for (const m of req.messages) {
-    // 整条量：正文 + tool call 参数 + 思考正文 + 协议开销。
-    // 只量 `m.content` 会把 `write_file` 的整份文件正文漏掉——它在参数里。
+    // 按整条消息估算：正文 + tool call 参数 + 思考正文 + 协议开销。
+    // 只估算 `m.content` 会遗漏 `write_file` 的整份文件正文，该正文位于参数中。
     const n = estimateMessage(m, density)
-    // 没有 `_group` 的一律归 historyMessages，不单开「其他」桶——
-    // 一个永远对不上账的「其他」比归错桶更难解释。
+    // 没有 `_group` 的消息一律计入 historyMessages，不另设「其他」分组：
+    // 无法对账的「其他」分组比归入错误分组更难解释。
     const group = m._group ?? 'historyMessages'
     if (m.role === 'tool') {
-      // 带图的工具结果是块数组：信封那一块照旧拆成「执行记录 / 工具结果原文」，
-      // 图片按固定值计进工具结果一侧。不取出文本块的话整条会落进 `_group`，
-      // 面板上那两格从此对不上。
+      // 带图片的工具结果是块数组：信封所在的文本块同样拆分为执行记录与工具结果原文，
+      // 图片按固定值计入工具结果一侧。不取出文本块时整条会计入 `_group`，
+      // 面板上执行记录与工具结果两项的数值随之不一致。
       const envelopeText =
         typeof m.content === 'string'
           ? m.content
@@ -325,7 +325,7 @@ export function breakdownOf(req: ChatRequest, density: TokenDensity): ContextBre
   return out
 }
 
-/** 活跃 run 中工具执行结果到模型可见信封的构造点。 */
+/** 在活跃 run 中将工具执行结果构造为模型可见的信封。 */
 export function toolOutcomeContent(
   call: WireToolCall,
   outcome: ToolOutcome,
@@ -339,9 +339,9 @@ export function toolOutcomeContent(
       status: outcome.status,
       executed: outcome.executed,
       summary: outcome.message,
-      // 定位符单独成键，收纳正文后仍能调用 `read_resource`。
+      // 定位符作为独立的键，正文被收纳后仍可调用 `read_resource`。
       ...(resources.length ? { resources } : {}),
-      // 图像字节只进图像块，其他结果留在信封。
+      // 图像字节只放入图像块，其他结果保留在信封中。
       ...(result ? { result } : {}),
     }),
     outcome.data,
@@ -351,15 +351,15 @@ export function toolOutcomeContent(
 /**
  * 工具结果的模型可见内容。
  *
- * **信封那段 JSON 一个字不改**——量账（`breakdownOf`）与收纳（`condenseMessage`）
- * 都靠解析它认路。图片作为**并列的一块**挂在它旁边，不塞进信封里。
+ * 信封 JSON 不得改动：估算（`breakdownOf`）与收纳（`condenseMessage`）都依赖解析它。
+ * 图片作为并列的内容块放在信封之后，不写入信封。
  *
- * 图像块给的是**路径不是字节**，所以这个函数是同步的，投影那侧
- * （`runtime/transcript.ts` 的 `toolContent`）才能用同一份形状重建历史——
- * 那边有一个同步调用方（压缩的单元装配），读盘会把整条链拖成 async。
+ * 图像块使用已有的 base64，视频块只带路径，均不读取磁盘，因此本函数是同步的，
+ * 投影侧（`runtime/transcript.ts` 的 `toolContent`）才能用同一形状重建历史：
+ * 投影侧有一个同步调用方（压缩的单元装配），读取磁盘会使整条调用链变为 async。
  *
- * **两侧必须逐字同形。** 不同形的话，同一次调用在本轮和下一轮长得不一样，
- * 模型会当成两件事，而这种不一致不会有任何报错。
+ * 两侧必须逐字同形。形状不同时，同一次调用在本轮与下一轮的内容不一致，
+ * 模型会视为两次调用，且这种不一致不会产生任何报错。
  */
 export function toolResultContent(
   envelope: string,
@@ -388,10 +388,10 @@ export function toolResultContent(
 }
 
 /**
- * `outcome.data.videos` 里那几段：工作区里的绝对路径与类型。
+ * `outcome.data.videos` 中的视频：工作区内的绝对路径与 MIME 类型。
  *
- * 视频给路径不给字节：动辄几十上百 MB，定格进执行记录代价过大；发出前由 `materialize` 按模型能力
- * 读字节或换成说明。视频文件由生成落盘时不覆盖，路径指向的就是读取那一刻的内容。
+ * 视频只记录路径、不记录字节：视频通常有数十至上百 MB，写入执行记录的代价过大；发出前由 `materialize`
+ * 按模型能力读取字节或替换为文本说明。生成的视频写入磁盘时不覆盖已有文件，因此路径指向的始终是读取时的内容。
  */
 export function videosOf(
   data: Record<string, unknown> | undefined,
@@ -409,26 +409,27 @@ export function videosOf(
   return out
 }
 /**
- * 请求里挂着的媒体（工具结果与用户消息里的图像、视频块）的字节上限，以及超限后换出到的目标。
+ * 请求中携带的媒体（工具结果与用户消息中的图像、视频块）的字节上限，以及超限后换出的目标值。
  *
- * 媒体留在请求里前缀才不变：摘一次图，`replayReasoning` 就剥掉其后全部原生推理，模型看不到图，
- * 看图时得出的判断也随之丢失，只能反复取回。全部常驻又会让长任务的请求体涨过端点上限（实测 98 张图、50 MB
- * 被 413 拒绝），中转的响应头时间也随请求体增长（实测小于 1 MB 约 3–5 秒，3–6 MB 约 11–15 秒）。
- * 超限时整批换出到下限，不要改成每次只换最早的一张：换出改前缀，逐张换会让前缀每一步都变。
- * 上限在 2–8 MB 之间实测识别质量无差别：越小换出越频繁，换出那一步缓存重算一次；越大长任务后段请求越慢。
+ * 媒体保留在请求中前缀才不变：移出一次图片，`replayReasoning` 就会剥离其后的全部原生推理，
+ * 模型既看不到图片，也失去看图时得出的判断，只能反复重新读取。全部常驻又会使长任务的请求体超过端点上限
+ * （实测 98 张图、50 MB 被 413 拒绝），中转服务的响应头时间也随请求体增长（实测小于 1 MB 约 3–5 秒，
+ * 3–6 MB 约 11–15 秒）。
+ * 超限时整批换出至下限，不要改为每次只换出最早的一张：换出会改变前缀，逐张换出会使前缀每一步都变化。
+ * 上限在 2–8 MB 之间实测识别质量无差别：越小换出越频繁，每次换出都使缓存重新计算一次；越大则长任务后段请求越慢。
  */
 export const MEDIA_RETAIN_HIGH_BYTES = 5 * 1024 * 1024
 export const MEDIA_RETAIN_LOW_BYTES = 2 * 1024 * 1024
 
-/** 一段路径视频这一轮怎么发：内联字节、上传成地址，或不直接发、换成指向 `read_file` 抽帧的说明。 */
+/** 路径视频在本轮的发送方式：内联字节、上传后发送地址，或不直接发送、替换为指向 `read_file` 抽帧的说明。 */
 export type VideoDelivery = 'inline' | 'upload' | 'frames'
 
 /**
- * 一段路径视频的发法。换出预算（`mediaBytes`）、发送前物化（`materialize`）与 `read_file` 读视频
- * 共用这一条，三处判定因此一致。
+ * 路径视频的发送方式。换出预算（`mediaBytes`）、发送前物化（`materialize`）与 `read_file` 读取视频
+ * 共用本函数，三处判定因此一致。
  *
- * 不收原生视频时走抽帧；适配器能上传的大文件上传，请求里只带地址；不能上传、又超过常驻上限的也走抽帧：
- * 内联的视频按字节计入常驻预算，超过上限的在下一步就被整批换出，模型只看到一眼，与图片只发一次是同一形状。
+ * 模型不接受原生视频时使用抽帧；适配器支持上传时大文件上传，请求中只带地址；不能上传且超过常驻上限的也使用
+ * 抽帧：内联视频按字节计入常驻预算，超过上限的在下一步即被整批换出，模型只能看到一次，与图片只发送一次的情形相同。
  */
 export function videoDelivery(
   size: number,
@@ -440,10 +441,10 @@ export function videoDelivery(
 }
 
 /**
- * 一条消息里媒体块实际放进请求体的字节数。base64 按解码后的长度；路径视频按 `videoDelivery`：
- * 内联的按文件大小，上传成地址的与不直接发的记 0。不发的图片（模型不收图）记 0，读不到的文件记 0。
+ * 一条消息中媒体块实际写入请求体的字节数。base64 按解码后的长度计；路径视频按 `videoDelivery`：
+ * 内联的按文件大小计，上传后发送地址的与不直接发送的记 0。不发送的图片（模型不接受图片）记 0，无法读取的文件记 0。
  *
- * 不要改回按文件大小一律计：上传成地址的大视频会被算成几十 MB，下一步就被换出，模型只看到一眼。
+ * 不要改为一律按文件大小计：上传后发送地址的大视频会被计为数十 MB，在下一步即被换出，模型只能看到一次。
  */
 export function mediaBytes(m: WireMessage, caps: InputMediaCapabilities): number {
   if (typeof m.content === 'string' || !m.content) return 0
@@ -458,7 +459,7 @@ export function mediaBytes(m: WireMessage, caps: InputMediaCapabilities): number
       try {
         size = statSync(b.source.path).size
       } catch {
-        // 文件已不在：`materialize` 会把它换成一行说明，不占媒体字节。
+        // 文件已不存在：`materialize` 会将其替换为一行说明，不计媒体字节。
         continue
       }
       if (b.type === 'image' || videoDelivery(size, caps) === 'inline') total += size
@@ -468,14 +469,14 @@ export function mediaBytes(m: WireMessage, caps: InputMediaCapabilities): number
 }
 
 /**
- * 这次请求里哪些消息的媒体换成说明，返回下标集合，交给 `omitImages`。
+ * 计算本次请求中哪些消息的媒体替换为说明，返回下标集合，交给 `omitImages`。
  *
- * 按消息顺序累计媒体字节；累计超过上限时，从最早仍挂着的那条起整条换出，直到降到下限以下。
- * 最后一条 assistant 消息之后的媒体不换出：它们还没随任何一次得到回应的请求发出去过。
- * 工具成功后那次请求被拒、换一个 run 续跑时，那批图仍在这一段里，所以不需要另记送达凭证。
+ * 按消息顺序累计媒体字节；累计超过上限时，从最早仍携带媒体的消息起整条换出，直到降至下限以下。
+ * 最后一条 assistant 消息之后的媒体不换出：它们尚未随任何一次得到响应的请求发出。
+ * 工具成功后的请求被拒绝、在新的 run 中继续执行时，这批图片仍在该区段内，因此无需另行记录送达凭证。
  *
- * 只依赖消息序列与这一轮的媒体发法：同一历史、同一模型每次得到同一结果，追加消息只会多换出、
- * 不会让已换出的回来。换模型会改发法，换出集合随之重算，前缀在那一次改写。
+ * 结果只依赖消息序列与本轮的媒体发送方式：同一历史、同一模型每次得到相同结果，追加消息只会增加换出、
+ * 不会恢复已换出的媒体。换模型会改变发送方式，换出集合随之重新计算，前缀在该次请求中改变。
  */
 export function evictedMedia(
   messages: readonly WireMessage[],
@@ -506,20 +507,20 @@ export function evictedMedia(
   return evicted
 }
 
-/** 用户消息的附件媒体被换出后留下的一行。路径在同一条消息的附件说明里。 */
+/** 用户消息的附件媒体被换出后替换成的说明。路径位于同一条消息的附件说明中。 */
 export const ATTACHMENT_MEDIA_OMITTED =
-  '（这条消息附带的图片或视频此前已随请求发送给你，现已从请求中移出；需要时按本条消息附件说明里的路径读取。）'
+  '（本条消息附带的图片或视频此前已随请求发送给你，现已从请求中移出；需要时按本条消息附件说明中的路径读取。）'
 
 /**
- * 把一条消息的媒体换成说明，交给 `evictedMedia` 选中的消息用。
+ * 将一条消息的媒体替换为说明，用于 `evictedMedia` 选中的消息。
  *
- * - 工具结果：换成只有信封的形态，信封里的 `images_omitted` 写明已发送过（`IMAGES_OMITTED`），
- *   与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）。模型据这一位知道图不在场，
- *   缺了它会把图当成仍然可见。`result` 保留，只有媒体块被摘掉。
- * - 用户消息：媒体块换成 `ATTACHMENT_MEDIA_OMITTED` 一行，正文不动。
+ * - 工具结果：替换为只有信封的形态，信封中的 `images_omitted` 注明图片已发送过（`IMAGES_OMITTED`），
+ *   与收纳产物同形（`compaction.ts` 的 `condenseToolResult`）。模型据此字段得知图片已不在请求中，
+ *   缺少该字段时会认为图片仍然可见。`result` 保留，只移除媒体块。
+ * - 用户消息：媒体块替换为一行 `ATTACHMENT_MEDIA_OMITTED`，正文不变。
  *
- * **必须逐字稳定且无媒体时返回原引用**：投影每次构造请求都跑一遍，产物抖动会让缓存
- * 断点之前的字节每次都变。
+ * 输出必须逐字稳定，且无媒体时返回原引用：投影在每次构造请求时都会执行，输出不稳定会使缓存
+ * 断点之前的字节每次都变化。
  */
 export function omitImages(m: WireMessage): WireMessage {
   if (typeof m.content === 'string' || !m.content) return m
@@ -541,10 +542,10 @@ export function omitImages(m: WireMessage): WireMessage {
 }
 
 /**
- * `outcome.data.images` 里那几张。
+ * `outcome.data.images` 中的图片。
  *
- * **是数组不是单张**：MCP 工具一次调用能带回好几张图，取第一张就是把其余的静默丢掉。
- * `read_file` 读一个文件，给一个一元数组。
+ * 类型是数组而不是单张：MCP 工具一次调用可返回多张图片，只取第一张会丢弃其余图片且没有提示。
+ * `read_file` 读取一个文件时返回单元素数组。
  */
 export function imagesOf(
   data: Record<string, unknown> | undefined,
@@ -563,11 +564,11 @@ export function imagesOf(
 }
 
 /**
- * 进信封的那一份 `result`。
+ * 写入信封的 `result`。
  *
- * **必须把图像字节摘掉**：信封是一段 JSON 文本，`images` 留在里面会让同一份
- * base64 在请求体里出现两次——一次在图像块里、一次在信封的文本里，而后者对模型
- * 毫无用处（它读不懂一串 base64），只是照价计费。
+ * 必须移除图像字节：信封是一段 JSON 文本，保留 `images` 会使同一份
+ * base64 在请求体中出现两次，一次在图像块中，一次在信封文本中；后者对模型
+ * 没有用处（模型无法解读 base64 文本），只会按 token 计费。
  */
 export function envelopeResult(
   data: Record<string, unknown> | undefined,
@@ -578,36 +579,36 @@ export function envelopeResult(
 }
 
 /**
- * 这一轮请求的媒体发法：模型收不收图片与原生视频，适配器收不收本地路径、能不能把大文件上传成地址。
- * 由 `AgentLoop` 按当前适配器算一次，换出预算与发送前物化用同一份。
+ * 本轮请求的媒体发送能力：模型是否接受图片与原生视频，适配器是否接受本地路径、能否将大文件上传后
+ * 以地址发送。由 `AgentLoop` 按当前适配器计算一次，换出预算与发送前物化使用同一份结果。
  */
 export interface InputMediaCapabilities {
   image: boolean | null
   video: boolean
   mediaPaths?: boolean
-  /** 本地路径媒体超过这个字节数时适配器上传成地址，请求里只带地址；缺席表示一律内联。 */
+  /** 本地路径媒体超过该字节数时由适配器上传，请求中只带地址；缺失表示一律内联。 */
   mediaUploadAbove?: number
 }
 
 /**
- * 把 path 形态的图片和视频块换成临时 base64，交给适配器。
+ * 将 path 形态的图片和视频块转换为临时 base64，交给适配器。
  *
- * **产副本，绝不回写。** 原地改会同时坏两件事：
+ * 只生成副本，不得修改原对象。原地修改会同时造成两个错误：
  *
- * - 重试循环里 `req = { ...req, signal }` 是浅拷贝、**复用同一个 `messages` 数组**，
- *   而 `payloadHash` 在每次尝试发出**之前**就落了账。原地改之后第二次尝试会对同一份
- *   内容算出不同的哈希，而那个字段的职责是「认出同一份内容发了两遍」。
- * - `req.messages` 的元素与 `transcript` 是同一批对象，原地改等于把 base64 留在
- *   内存里常驻整个 run。
+ * - 重试循环中 `req = { ...req, signal }` 是浅拷贝，复用同一个 `messages` 数组，
+ *   而 `payloadHash` 在每次尝试发出之前已写入账本。原地修改后，第二次尝试会对同一份
+ *   内容算出不同的哈希，而该字段的用途是识别同一份内容的重复发送。
+ * - `req.messages` 的元素与 `transcript` 是同一批对象，原地修改会使 base64 在
+ *   整个 run 期间常驻内存。
  *
- * path 形态只剩视频（用户附件与工具读到的视频）。图片进入消息时已经是字节：工具图定格在执行记录里，
- * 附件图由 `runtime` 的 `withAttachments` 编码。
+ * path 形态只剩视频（用户附件与工具读取的视频）。图片进入消息时已经是字节：工具图片保存在执行记录中，
+ * 附件图片由 `runtime` 的 `withAttachments` 编码。
  *
- * 图片按模型能力裁决；视频还要求当前适配器实现原生视频传输，发法按 `videoDelivery`。
+ * 图片按模型能力裁决；视频还要求当前适配器实现原生视频传输，发送方式按 `videoDelivery`。
  *
- * 文件不存在或能力不支持时换成文本说明，不让整轮静默丢失媒体。视频只在一种情况下按大小拦：
- * 适配器不能上传、视频又超过请求里常驻媒体的上限，内联进去下一步就被换出，换成指向 `read_file`
- * 抽帧的说明。其余的大小上限仍由实际 Provider 协议裁决。
+ * 文件不存在或能力不支持时替换为文本说明，不使整轮静默丢失媒体。视频只在一种情况下按大小拦截：
+ * 适配器不能上传、视频又超过请求中常驻媒体的上限时，内联后下一步即被换出，因此替换为指向
+ * `read_file` 抽帧的说明。其余大小上限由实际 Provider 协议裁决。
  */
 export async function materialize(
   req: ChatRequest,
@@ -634,25 +635,25 @@ async function loadBlock(
   const note = (why: string): ContentBlock => ({ type: 'text', text: `［${where}：${why}］` })
 
   /*
-   * 模型不收图片：换成文本注记，不发图像块。
+   * 模型不接受图片：替换为文本说明，不发送图像块。
    *
-   * 判据只认 `false`——`null` 是「厂商规格页没写」，照常发（约定写在
-   * `ModelSpec.vision` 上）。少了这一支，带图的会话切到纯文本模型之后每一轮都被
-   * 端点以 400 拒绝，而手动删图救不回历史里已有的那些。
+   * 判据只认 `false`：`null` 表示厂商规格页未注明，照常发送（约定见
+   * `ModelSpec.vision`）。缺少该分支时，带图片的会话切换到纯文本模型后每一轮都被
+   * 端点以 400 拒绝，且手动删除图片无法修复历史中已有的图片。
    */
   if (b.type === 'image' && capabilities.image === false) {
-    return note('当前模型不接受图片输入，这一张没有发出去')
+    return note('当前模型不接受图片输入，此图片未发送')
   }
   /*
-   * 不收原生视频：收图片、又有路径时指向 `read_file`，它按时间抽帧返回图片。
-   * 用户附件的视频走这一条，不另做一套抽帧：附件与工具读到的视频由同一个入口转成帧。
+   * 模型不接受原生视频：接受图片且有路径时，说明中指向 `read_file`，它按时间抽帧并返回图片。
+   * 用户附件的视频同样经由此分支，不另建抽帧实现：附件与工具读取的视频由同一个入口转换为帧。
    */
   if (b.type === 'video' && !capabilities.video) {
     const next =
       b.source.kind === 'path' && capabilities.image !== false
-        ? '；需要画面时用 read_file 读这个路径，会按时间抽取若干帧'
+        ? '；需要画面时用 read_file 读取此路径，将按时间抽取若干帧'
         : ''
-    return note(`当前模型或接口不接受原生视频输入，这一段没有发出去${next}`)
+    return note(`当前模型或接口不接受原生视频输入，此视频未发送${next}`)
   }
 
   if (b.source.kind !== 'path') return b
@@ -663,9 +664,9 @@ async function loadBlock(
   if (b.type === 'video' && videoDelivery(info.size, capabilities) === 'frames') {
     const mb = (info.size / 1024 / 1024).toFixed(1)
     const next =
-      capabilities.image !== false ? '；需要画面时用 read_file 读这个路径，会按时间抽取若干帧' : ''
+      capabilities.image !== false ? '；需要画面时用 read_file 读取此路径，将按时间抽取若干帧' : ''
     return note(
-      `这段视频 ${mb} MB，超出请求里常驻媒体的上限，当前接口又不能上传，没有直接发送${next}`,
+      `此视频 ${mb} MB，超出请求中常驻媒体的上限，且当前接口不支持上传，未直接发送${next}`,
     )
   }
   if (capabilities.mediaPaths) return b

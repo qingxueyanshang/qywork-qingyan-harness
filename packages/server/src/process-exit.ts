@@ -1,4 +1,4 @@
-/** 桌面外壳把上一份 qy serve 的终态交给恢复进程时使用的窄环境协议。 */
+/** 桌面外壳把上一个 qy serve 进程的终态交给恢复进程时使用的环境变量协议，只含必要字段。 */
 
 import type { ProcessExitObservation } from '@qywork/store'
 import { redactSecrets } from '@qywork/tools'
@@ -29,7 +29,7 @@ export function processExitObservationFromEnv(
   }
 }
 
-/** 原生层看不到 provider 配置；到 server 持久化边界才有完整凭证集可安全脱敏。 */
+/** 原生层无法读取 provider 配置；到 server 持久化边界才有完整的凭证集，可据此安全脱敏。 */
 export function sanitizeProcessExitObservation(
   observation: ProcessExitObservation,
   secrets: { values: string[] },

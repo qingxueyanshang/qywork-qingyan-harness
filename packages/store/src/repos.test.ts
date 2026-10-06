@@ -50,7 +50,7 @@ function fresh() {
 }
 
 describe('逐请求传输证据', () => {
-  test('路线、体积、响应头、首事件、首内容与终态逐项落库', () => {
+  test('路由、体积、响应头、首事件、首内容与终态逐项写入账本', () => {
     const { store, ws } = fresh()
     const cv = createConversation(store, { workspaceId: ws.id, provider: 'relay', model: 'm' })
     const run = createRun(store, {
@@ -77,10 +77,10 @@ describe('逐请求传输证据', () => {
     })
     markProviderRequestSent(store, request.id)
     markProviderRequestHeaders(store, request.id, 1_700_000_000_000)
-    // 观察时刻由调用方给，重复写入保持第一次：后到的那个不是响应头到达时刻。
+    // 观察时刻由调用方提供，重复写入时保留第一次：后写入的值不是响应头的到达时刻。
     markProviderRequestHeaders(store, request.id, 1_700_000_009_000)
     markProviderRequestFirstEvent(store, request.id)
-    // 每一段内容都写一次：首值留在 first_content_at，末值覆盖 last_content_at。
+    // 每一段内容都写入一次：首值保留在 first_content_at，末值覆盖 last_content_at。
     markProviderRequestContent(store, request.id, 1_700_000_010_000)
     markProviderRequestContent(store, request.id, 1_700_000_012_000)
     settleProviderRequest(store, request.id, 'received', null, null, 'completed')
@@ -103,9 +103,9 @@ describe('逐请求传输证据', () => {
   })
 
   /**
-   * 回归用例：同一毫秒创建的多个会话，updated_at 全相等。
-   * 只按 updated_at DESC 排序时 SQLite 退回插入顺序，列表看起来完全是反的
-   * ——在种子数据上实测过。
+   * 回归用例：同一毫秒创建的多个会话，updated_at 全部相等。
+   * 只按 updated_at DESC 排序时 SQLite 回退为插入顺序，列表顺序完全相反；
+   * 已在种子数据上实测。
    */
   test('updated_at 并列时仍按创建倒序', () => {
     const { store, ws } = fresh()
@@ -118,7 +118,7 @@ describe('逐请求传输证据', () => {
     store.close()
   })
 
-  test('机器会话不进列表', () => {
+  test('机器会话不进入列表', () => {
     const { store, ws } = fresh()
     createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm', title: '用户的' })
     createConversation(store, {
@@ -148,7 +148,7 @@ describe('run 幂等', () => {
       contextSnapshot: [],
     })
     expect(findRunByClientRequest(store, conv.id, key)?.id).toBe(run.id)
-    // 重复创建必须被唯一索引挡下，而不是静默起第二个 run。
+    // 重复创建必须被唯一索引拒绝，而不是静默创建第二个 run。
     expect(() =>
       createRun(store, {
         conversationId: conv.id,
@@ -165,7 +165,7 @@ describe('run 幂等', () => {
 })
 
 describe('run 上下文快照', () => {
-  test('内部快照原样落库，公开 Run 不长出第二份可编辑状态', () => {
+  test('内部快照原样写入账本，公开的 Run 不出现第二份可编辑状态', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const user = appendMessage(store, { conversationId: conv.id, role: 'user', content: '继续' })
@@ -193,10 +193,10 @@ describe('run 上下文快照', () => {
 
 describe('消息来源', () => {
   /**
-   * 回执与用户本人的话都以 user 角色落库，分辨只剩这一列。读回来丢掉它的话，
-   * 界面把回执渲染成用户气泡，账本把回执算进用户说过的话。
+   * 回执与用户本人的消息都以 user 角色写入账本，只能依靠该列区分。读取时丢失该列，
+   * 界面会把回执渲染为用户气泡，账本会把回执计为用户的发言。
    */
-  test('带来源的写读回原值，不带的读回 null', () => {
+  test('带来源写入时读取到原值，不带来源时读取到 null', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const mine = appendMessage(store, { conversationId: conv.id, role: 'user', content: '开工' })
@@ -225,7 +225,7 @@ describe('消息来源', () => {
     store.close()
   })
 
-  test('列上有约束：来源只认这两个值', () => {
+  test('列上有约束：来源只接受这两个值', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     expect(() =>
@@ -241,10 +241,10 @@ describe('消息来源', () => {
 
 describe('消息高水位', () => {
   /**
-   * run 创建后、拿到执行锁前，用户可能又发了消息。那些消息不属于本 run 的历史，
-   * 放进去等于让模型看到「未来」。
+   * run 创建后、取得执行锁前，用户可能又发送了消息。这些消息不属于本 run 的历史，
+   * 放入历史会使模型看到在本 run 之后发送的消息。
    */
-  test('upperBound 之后的消息不进历史', () => {
+  test('upperBound 之后的消息不进入历史', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const m1 = appendMessage(store, { conversationId: conv.id, role: 'user', content: '第一条' })
@@ -259,7 +259,7 @@ describe('消息高水位', () => {
 })
 
 describe('会话历史分页', () => {
-  test('按完整用户轮次分页并批量带回 run/step，页间不重不漏', () => {
+  test('按完整用户轮次分页并批量返回 run/step，页间不重复不遗漏', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const users: MessageId[] = []
@@ -323,8 +323,8 @@ describe('会话历史分页', () => {
   })
 })
 
-describe('历史页带回被引用的 workflow 首派', () => {
-  test('续接调用在页里而首派不在时，首派随页带回；都在页里时不重复带', () => {
+describe('历史页返回被引用的 workflow 首次派发', () => {
+  test('续接调用在页内而首次派发不在时，首次派发随页返回；都在页内时不重复返回', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const round = (content: string) => {
@@ -415,7 +415,7 @@ describe('工具 step 原地更新', () => {
     store.close()
   })
 
-  test('子会话入口随原行进入终态，不再依赖 outcome 回读', () => {
+  test('子会话入口随原行进入终态，不依赖从 outcome 读取', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
@@ -457,10 +457,10 @@ describe('工具 step 原地更新', () => {
   })
 
   /**
-   * 原始失败形状：跑完那一刻界面上有耗时（`tool.finished` 事件带着它），
-   * 刷新之后没了——这个数从来没落过库，只活在连接期。
+   * 原始失败形状：执行完毕时界面上显示耗时（`tool.finished` 事件携带该值），
+   * 刷新之后消失：该值从未写入账本，只存在于连接期间。
    */
-  test('耗时随终态落库，读得回来', () => {
+  test('耗时随终态写入账本，可以读取', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
@@ -481,7 +481,7 @@ describe('工具 step 原地更新', () => {
       status: 'running',
       payload: { kind: 'tool_call', args: {} },
     })
-    // 建行的时候还没跑，这一格必须是空的。
+    // 创建行时尚未执行，该字段必须为空。
     expect(listSteps(store, run.id)[0]?.durationMs).toBeNull()
 
     settleToolStep(
@@ -500,8 +500,8 @@ describe('工具 step 原地更新', () => {
     store.close()
   })
 
-  /** 不给耗时的调用方仍然合法：落 null，界面按「没有就不显示」处理。 */
-  test('没给耗时时落 null，不编一个数', () => {
+  /** 不提供耗时的调用方仍然合法：写入 null，界面按「无值则不显示」处理。 */
+  test('未提供耗时时写入 null，不编造数值', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
@@ -532,8 +532,8 @@ describe('工具 step 原地更新', () => {
   })
 })
 
-describe('run 收尾', () => {
-  test('stopReason 必须落库，不存在静默完成', () => {
+describe('run 结束', () => {
+  test('stopReason 必须写入账本，不存在静默完成', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
@@ -553,7 +553,7 @@ describe('run 收尾', () => {
     store.close()
   })
 
-  test('cachedTokens 为 null 表示未回报，不被压成 0', () => {
+  test('cachedTokens 为 null 表示未回报，不被改写为 0', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
@@ -573,13 +573,13 @@ describe('run 收尾', () => {
 })
 
 /*
- * 「这条会话跑在哪个目录下」的权威。
+ * 会话运行目录的权威。
  *
- * 所有解析都走这里（服务进程不许自己拿一个 `workspaceRoot` 常量），所以它必须在
- * **同时存在多个项目**时也答对，而不只是在只有一个项目时碰巧对。
+ * 所有解析都经由此处（服务进程不得自行持有一个 `workspaceRoot` 常量），因此它必须在
+ * 同时存在多个项目时也返回正确结果，而不只是在只有一个项目时恰好正确。
  */
 describe('会话所属项目', () => {
-  test('两个项目并存时，各自的会话解析到各自的根', () => {
+  test('两个项目并存时，各自的会话解析到各自的根目录', () => {
     const store = new Store({ path: ':memory:' })
     const a = upsertWorkspace(store, '/tmp/a', 'a')
     const b = upsertWorkspace(store, '/tmp/b', 'b')
@@ -592,9 +592,9 @@ describe('会话所属项目', () => {
     store.close()
   })
 
-  /* 查不到必须是 null，让调用方停下来。回落到「某个默认根」等于拿着 A 项目的
-     会话去 B 项目的目录里跑命令，而工具的路径约束正是以这个根为界的。 */
-  test('会话不存在时返回 null，不回落到任何项目', () => {
+  /* 未查到时必须返回 null，使调用方停止。回退到某个默认根目录等于用 A 项目的
+     会话在 B 项目的目录中运行命令，而工具的路径约束正是以该根目录为边界。 */
+  test('会话不存在时返回 null，不回退到任何项目', () => {
     const store = new Store({ path: ':memory:' })
     upsertWorkspace(store, '/tmp/a', 'a')
     expect(workspaceOf(store, 'cv_nope' as never)).toBeNull()
@@ -603,14 +603,14 @@ describe('会话所属项目', () => {
 })
 
 /*
- * `root_path` 是 UNIQUE，但比较按字符串做：同一目录的两种写法各建一行的话，
- * 同一个目录下的会话会分裂在两个项目里，侧栏出现两个同名项目。
+ * `root_path` 是 UNIQUE，但按字符串比较：同一目录的两种写法各自创建一行时，
+ * 同一目录下的会话会分散在两个项目中，侧栏出现两个同名项目。
  */
 describe('工作区根路径归一', () => {
-  test('同一目录的两种写法只得一行，第二次是更新不是新建', () => {
+  test('同一目录的两种写法只产生一行，第二次是更新而非新建', () => {
     const store = new Store({ path: ':memory:' })
     const root = resolve('/ws/demo')
-    // 分隔符换成 `/` 再加末尾分隔符：Windows 上两处都要归一，POSIX 上是末尾那个。
+    // 分隔符改为 `/` 并追加末尾分隔符：Windows 上两处都需归一，POSIX 上只需归一末尾分隔符。
     const unnormalized = `${root.replaceAll(sep, '/')}/`
     const first = upsertWorkspace(store, unnormalized, '未归一')
     const second = upsertWorkspace(store, root, '已归一')
@@ -625,16 +625,16 @@ describe('工作区根路径归一', () => {
 })
 
 /*
- * 「最近修改」这一列的口径。
+ * 「最近修改」列的计算口径。
  *
- * 它是侧栏那一行显示的时间，也是 `listConversations` 的排序键——写错了不会报错，
- * 只会安静地显示一个假数（这正是它此前的状态：发消息不推进，显示出来的是建会话时间）。
+ * 它是侧栏中会话行显示的时间，也是 `listConversations` 的排序键：写错时不会报错，
+ * 只会静默显示一个错误的时间（例如发送消息不更新该列时，显示的是会话创建时间）。
  */
 describe('会话的最近修改时间', () => {
-  test('发一条消息就推进 updated_at', async () => {
+  test('发送一条消息即更新 updated_at', async () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
-    // Date.now() 的分辨率是毫秒，同一毫秒内写两次就分不出先后。
+    // Date.now() 的分辨率是毫秒，同一毫秒内写入两次时无法区分先后。
     await Bun.sleep(2)
     appendMessage(store, { conversationId: conv.id, role: 'user', content: '在吗' })
     const after = getConversation(store, conv.id)
@@ -642,9 +642,9 @@ describe('会话的最近修改时间', () => {
     store.close()
   })
 
-  /* 改个名字不是「这条会话有了新内容」。推进它会让列表重排，
-     而那一行显示的时间会与实际内容更新时间不符。 */
-  test('重命名不推进 updated_at', async () => {
+  /* 重命名不代表会话有新内容。更新该列会使列表重新排序，
+     且该行显示的时间会与实际内容的更新时间不符。 */
+  test('重命名不更新 updated_at', async () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     await Bun.sleep(2)
@@ -662,11 +662,11 @@ describe('会话的最近修改时间', () => {
 })
 
 /**
- * 派活建出来的子会话属于父会话。删父会话时它们跟着走，否则库里留下点不开的孤儿会话；
- * 账目不跟着走——`usage_ledger` 没有外键，那些行按设计比业务数据活得久。
+ * 派发任务创建的子会话属于父会话。删除父会话时子会话一并删除，否则库中留下无法打开的孤儿会话；
+ * 账目不随之删除：`usage_ledger` 没有外键，按设计这些行的生命周期长于业务数据。
  */
 describe('子会话归属', () => {
-  test('删父会话时子会话跟着删，账本行留着', () => {
+  test('删除父会话时子会话随之删除，账本行保留', () => {
     const { store, ws } = fresh()
     const parent = createConversation(store, {
       workspaceId: ws.id,
@@ -702,9 +702,9 @@ describe('子会话归属', () => {
   })
 })
 
-describe('归档与硬删', () => {
-  /* 归档只改「显不显示」：列表里没有了，按 id 仍然读得回。 */
-  test('归档之后不进列表，但数据还在', () => {
+describe('归档与硬删除', () => {
+  /* 归档只改变是否显示：列表中不再出现，按 id 仍能读取。 */
+  test('归档之后不进入列表，但数据仍保留', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, {
       workspaceId: ws.id,
@@ -715,17 +715,17 @@ describe('归档与硬删', () => {
     expect(archiveConversation(store, conv.id)).toBe(true)
     expect(listConversations(store, ws.id).map((c) => c.id)).not.toContain(conv.id)
     expect(getConversation(store, conv.id)?.title).toBe('要归档的')
-    // 已经归档过的回 false——「0 条」和「成功」在界面上必须能分开。
+    // 重复归档返回 false：调用方必须能区分「未修改任何行」与「成功」。
     expect(archiveConversation(store, conv.id)).toBe(false)
     store.close()
   })
 
   /*
-   * 硬删是**真删**。这条锁的是级联：消息与 run 跟着一起没。
-   * 只断言 conversations 表少了一行的话，一条断掉的 FK 会让残骸永远留在库里，
-   * 而界面上完全看不出来。
+   * 硬删除是真实删除。本用例锁定级联行为：消息与 run 随之一并删除。
+   * 只断言 conversations 表少了一行时，一条失效的外键会使残留数据永久留在库中，
+   * 而界面上完全无法察觉。
    */
-  test('删掉会话，消息与 run 一并没了', () => {
+  test('删除会话后，消息与 run 一并删除', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const msg = appendMessage(store, { conversationId: conv.id, role: 'user', content: '喂' })
@@ -746,19 +746,19 @@ describe('归档与硬删', () => {
     store.close()
   })
 
-  test('删一条不存在的会话回 false，不抛', () => {
+  test('删除不存在的会话返回 false，不抛出异常', () => {
     const { store } = fresh()
     expect(deleteConversation(store, 'cv_nope' as never)).toBe(false)
     store.close()
   })
 })
 
-describe('思考 step 落失败终态', () => {
+describe('思考 step 写入失败终态', () => {
   /**
-   * 轮内自动重发用。锁两件事：**只碰思考**（同一批 id 里的工具行不得被一并改掉），
-   * 以及**不删内容**（那几条已经渲染给用户看过，删掉会让它们从界面上消失）。
+   * 用于轮内自动重发。锁定两点：只修改思考（同一批 id 中的工具行不得被一并修改），
+   * 以及不删除内容（这些 step 已渲染给用户，删除会使它们从界面上消失）。
    */
-  test('只把 thinking 标失败，内容留着', () => {
+  test('只把 thinking 标为失败，内容保留', () => {
     const { store, ws } = fresh()
     const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
@@ -778,24 +778,24 @@ describe('思考 step 落失败终态', () => {
     const rows = listSteps(store, run.id)
     expect(rows[0]?.status).toBe('failure')
     expect(rows[0]?.content).toBe('半截')
-    // 工具行的终态归 settleToolStep 管，这个函数不许碰。
+    // 工具行的终态由 settleToolStep 负责，本函数不得修改。
     expect(rows[1]?.status).toBe('done')
     store.close()
   })
 
-  test('空列表不发语句', () => {
+  test('空列表不执行语句', () => {
     const { store } = fresh()
     expect(() => failThinkingSteps(store, [])).not.toThrow()
     store.close()
   })
 })
 
-describe('按模型的请求收尾率', () => {
+describe('按模型统计的请求完成率', () => {
   /**
-   * 回答的是「这条端点在本机稳不稳」。分母是这段时间里开过的全部账本行，
-   * 分子只有 `received`——`uncertain` 是连接没收尾，正是要数出来的那一类。
+   * 用于判断该端点在本机是否稳定。分母是该时段内创建的全部账本行，
+   * 分子只有 `received`：`uncertain` 表示连接未正常结束，正是需要统计的一类。
    */
-  test('分状态计数，并报出现最多的错误码', () => {
+  test('按状态计数，并报告出现最多的错误码', () => {
     const { store, ws } = fresh()
     const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
@@ -861,8 +861,8 @@ describe('按模型的请求收尾率', () => {
   })
 })
 
-describe('卡返回后格仍可落终态', () => {
-  /** 一张已经收成终态的派活卡。一格失败先交回后，其余格的终态还写在它上面。 */
+describe('卡片返回后节点仍可写入终态', () => {
+  /** 一张已写入终态的派发任务卡。一个节点失败并先行返回后，其余节点的终态仍写在该卡片上。 */
   function returnedCard() {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -901,7 +901,7 @@ describe('卡返回后格仍可落终态', () => {
     return { store, run, step, nodes }
   }
 
-  test('已返回的卡上仍能写格', () => {
+  test('已返回的卡片上仍能写入节点', () => {
     const { store, run, step, nodes } = returnedCard()
     setStepNodeState(store, step.id, 'slow', { phase: 'done', label: '慢', durationMs: 9 })
     expect(nodes()?.slow?.phase).toBe('done')
@@ -910,18 +910,18 @@ describe('卡返回后格仍可落终态', () => {
   })
 
   /**
-   * run 收尾**不动格**：子 agent 的生命期跟着会话，这一轮结束时它还在跑，
-   * 回执几分钟后才到。扫成中断的话那份回执回来时格上写的是「中断」。
+   * run 结束时不修改节点：子 agent 的生命周期跟随会话，本轮结束时它仍在运行，
+   * 回执几分钟后才到达。标为中断时，回执到达后节点上显示的是「中断」。
    */
-  test('这一轮收尾不碰格', () => {
+  test('本轮结束不修改节点', () => {
     const { store, run, nodes } = returnedCard()
     settleRunningSteps(store, run.id)
     expect(nodes()?.slow).toMatchObject({ phase: 'working' })
     store.close()
   })
 
-  /** 重启回收才扫：进程里没有任何人在收那份回执了，格留在「进行中」那张图就没有出口。 */
-  test('重启回收把没到终态的格标中断，到了的不动', () => {
+  /** 只在重启回收时扫描：进程中已无接收方处理回执，节点停留在「进行中」时该图无法继续。 */
+  test('重启回收把未到达终态的节点标为中断，已到达的不变', () => {
     const { store, run, nodes } = returnedCard()
     const changed = interruptRunningNodes(store, run.id)
     expect(changed.map((row) => row.nodeId)).toEqual(['slow'])
@@ -932,9 +932,9 @@ describe('卡返回后格仍可落终态', () => {
   })
 })
 
-/** 摘要请求发的是摘要提示词，它的输入量与会话占用无关，锚点与「最近发出」都不认它。 */
-describe('摘要请求与主请求分开看', () => {
-  test('锚点与最近发出只看主请求', () => {
+/** 摘要请求发送的是摘要提示词，其输入量与会话占用无关，锚点与「最近发出」都不采用它。 */
+describe('摘要请求与主请求分开统计', () => {
+  test('锚点与最近发出只采用主请求', () => {
     const { store, ws } = fresh()
     const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const run = createRun(store, {
@@ -983,7 +983,7 @@ describe('摘要请求与主请求分开看', () => {
 })
 
 describe('变更页按写过文件的轮分页', () => {
-  test('跳过没写文件的轮；合计覆盖整条会话；游标与历史页同一种', () => {
+  test('跳过未写入文件的轮；合计覆盖整个会话；游标与历史页相同', () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const other = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -1053,7 +1053,7 @@ describe('变更页按写过文件的轮分页', () => {
     const t3 = round(conv.id, '再改', (runId) => {
       write(runId, 1, 'a.ts', 2, 0)
       write(runId, 2, 'b.ts', 0, 0, 'deleted')
-      // 写失败的调用没有 fileChanges，不进账。
+      // 写入失败的调用没有 fileChanges，不计入。
       appendStep(store, {
         runId: runId as never,
         seq: 3,
@@ -1096,8 +1096,8 @@ describe('变更页按写过文件的轮分页', () => {
   })
 })
 
-describe('变更页并进子 agent 与外部 CLI 的写入', () => {
-  test('子会话的写入按 run 上的派活来源归父轮；CLI 节点的写入来自它的格', async () => {
+describe('变更页合并子 agent 与外部 CLI 的写入', () => {
+  test('子会话的写入按 run 上的派发来源归入父轮；CLI 节点的写入来自其节点', async () => {
     const { store, ws } = fresh()
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     const child = createConversation(store, {
@@ -1175,7 +1175,7 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
       return step
     }
 
-    // 没有派活来源的轮不归任何父轮：不按时间猜。
+    // 没有派发来源的轮不归入任何父轮：不按时间推测。
     childRound('自己跑的', 'early.ts')
 
     const step = parentRound('派活', 'parent-1', {
@@ -1199,14 +1199,14 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
         s.fileChanges.map((c) => c.path),
       ]),
     ).toEqual([
-      // CLI 那条排在派活 step 收尾那一刻；子会话的写入在那之后。
+      // CLI 的记录排在派发 step 结束的时刻；子会话的写入在其之后。
       ['cli', 'codex', ['cli.txt']],
       ['edit_file', '写手', ['c.ts']],
     ])
-    // 行数只加已知的：CLI 那条没有
+    // 行数只累加已知值：CLI 的记录没有行数。
     expect(page.totals).toEqual({ paths: ['cli.txt', 'c.ts'], additions: 4, deletions: 4 })
 
-    // 续派：带后一次来源的轮归后一轮，前一轮不再变。
+    // 继续派发：带有后一次来源的轮归入后一轮，前一轮不再变化。
     const step2 = parentRound('再派', 'parent-2', {
       child: { phase: 'done', label: '写手', subagentId: child.id },
     })

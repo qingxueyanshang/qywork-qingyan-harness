@@ -1,9 +1,9 @@
 /**
  * 已加载外部工具的存储。
  *
- * 覆盖范围：`loaded-tools.ts` 全部。测的是**语义**不是调用次数——它要回答的是
- * 「这条会话上一轮装过哪几个」，答错的表现是模型每轮重装一遍（多一次无效的往返），
- * 或者装到别的会话头上。
+ * 覆盖范围：`loaded-tools.ts` 全部。测试的是语义而不是调用次数：它回答的是
+ * 「该会话之前加载过哪些工具」，回答错误时模型每轮重复加载（多一次无效往返），
+ * 或加载记录归属到其他会话。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -23,20 +23,20 @@ function conv() {
 }
 
 describe('已加载的外部工具', () => {
-  test('默认一条都没有 —— 新会话从头判断要不要装', () => {
+  test('默认没有任何记录，新会话重新判断是否加载', () => {
     const { store, id } = conv()
     expect(listLoadedTools(store, id).size).toBe(0)
     store.close()
   })
 
-  test('记下来之后读得回来', () => {
+  test('记录后能够读取', () => {
     const { store, id } = conv()
     recordLoadedTools(store, id, ['mcp__github__search', 'demo__count'])
     expect([...listLoadedTools(store, id)].sort()).toEqual(['demo__count', 'mcp__github__search'])
     store.close()
   })
 
-  test('同一个工具记两次不报错也不重复', () => {
+  test('同一个工具记录两次时不报错也不重复', () => {
     const { store, id } = conv()
     recordLoadedTools(store, id, ['mcp__github__search'])
     recordLoadedTools(store, id, ['mcp__github__search'])
@@ -44,8 +44,8 @@ describe('已加载的外部工具', () => {
     store.close()
   })
 
-  /** 它**只属于这一条会话**：另一条会话该自己重新判断装不装。 */
-  test('只影响这一条会话', () => {
+  /** 加载记录只属于当前会话：其他会话应自行重新判断是否加载。 */
+  test('只影响当前会话', () => {
     const store = new Store({ path: ':memory:' })
     const ws = upsertWorkspace(store, 'C:/ws', 'ws')
     const a = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -57,7 +57,7 @@ describe('已加载的外部工具', () => {
     store.close()
   })
 
-  test('会话被删时级联清掉', () => {
+  test('会话被删除时级联清除', () => {
     const { store, id } = conv()
     recordLoadedTools(store, id, ['mcp__github__search'])
     store.db.query('DELETE FROM conversations WHERE id = ?').run(id)

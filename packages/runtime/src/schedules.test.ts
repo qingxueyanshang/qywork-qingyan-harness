@@ -1,5 +1,5 @@
 /**
- * 全机任务文件的一次性导入。**覆盖范围**：`schedules.ts`。
+ * 全机任务文件的一次性导入。覆盖范围：`schedules.ts`。
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -35,7 +35,7 @@ function writeLegacy(list: unknown): void {
   writeFileSync(legacy(), JSON.stringify(list, null, 2), 'utf8')
 }
 
-/** 旧文件里那条记录的原样形状。键名是历史事实，不跟着 `Schedule` 改。 */
+/** 旧文件中记录的原始形状。键名是历史事实，不随 `Schedule` 修改。 */
 const one = {
   id: 'sch_kept',
   workspaceRoot: ROOT,
@@ -51,12 +51,12 @@ const one = {
 }
 
 describe('导入', () => {
-  test('没有文件就不导入', () => {
+  test('文件不存在时不导入', () => {
     expect(importLegacySchedules(store)).toBe(null)
     expect(listSchedules(store, ROOT, Date.now())).toEqual([])
   })
 
-  test('逐字段搬过来，文件随即改名', () => {
+  test('逐字段导入，随后重命名文件', () => {
     writeLegacy([one])
     expect(importLegacySchedules(store)).toBe(1)
 
@@ -70,24 +70,24 @@ describe('导入', () => {
     expect(s.enabled).toBe(false)
     expect(s.createdAt).toBe(one.createdAt)
     expect(s.lastRunAt).toBe(one.lastRunAt)
-    // 文件里的 lastError 不带过来：执行结果的唯一权威是关联的 Run。
+    // 文件中的 lastError 不导入：执行结果的唯一权威是关联的 Run。
     expect('lastError' in s).toBe(false)
     expect(s.lastRun).toBe(null)
-    // 旧文件没有这一项，导入后照旧发进绑定会话。
+    // 旧文件没有这一项，导入后仍发送到绑定会话。
     expect(s.newConversation).toBe(false)
 
     expect(existsSync(legacy())).toBe(false)
     expect(JSON.parse(readFileSync(imported(), 'utf8'))).toEqual([one])
   })
 
-  test('改名之后再启动不二次导入', () => {
+  test('重命名之后再次启动不重复导入', () => {
     writeLegacy([one])
     expect(importLegacySchedules(store)).toBe(1)
     expect(importLegacySchedules(store)).toBe(null)
     expect(listSchedules(store, ROOT, Date.now()).length).toBe(1)
   })
 
-  test('旧文件里的 lastRunConversationId 落成绑定会话，会话不在就丢掉这个 id', () => {
+  test('旧文件中的 lastRunConversationId 导入为绑定会话，会话不存在时丢弃该 id', () => {
     const conv = createConversation(store, {
       workspaceId: upsertWorkspace(store, ROOT, 'A').id,
       provider: 'p',
@@ -105,14 +105,14 @@ describe('导入', () => {
     expect(rows.find((s) => s.id === 'sch_gone')?.conversationId).toBe(undefined)
   })
 
-  test('坏 JSON 抛错并保留原字节，不当成空表继续跑', () => {
+  test('损坏的 JSON 抛错并保留原字节，不当作空表继续执行', () => {
     writeFileSync(legacy(), '{ 不是数组', 'utf8')
     expect(() => importLegacySchedules(store)).toThrow('不是合法 JSON')
     expect(readFileSync(legacy(), 'utf8')).toBe('{ 不是数组')
     expect(existsSync(imported())).toBe(false)
   })
 
-  test('重复 id 抛错，一条都不落，文件原样留着', () => {
+  test('重复 id 抛错，不写入任何记录，文件保持原样', () => {
     writeLegacy([one, { ...one, title: '另一条' }])
     expect(() => importLegacySchedules(store)).toThrow('id 重复')
     expect(listSchedules(store, ROOT, Date.now())).toEqual([])
@@ -120,7 +120,7 @@ describe('导入', () => {
     expect(existsSync(imported())).toBe(false)
   })
 
-  test('非法值抛错并指出缺哪个字段', () => {
+  test('非法值抛错并指出出错的字段', () => {
     writeLegacy([{ ...one, atHour: 44 }])
     expect(() => importLegacySchedules(store)).toThrow('小时必须在 0–23')
     expect(listSchedules(store, ROOT, Date.now())).toEqual([])

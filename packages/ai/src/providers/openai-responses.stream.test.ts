@@ -1,21 +1,21 @@
 /**
- * Responses 适配器的**真实 HTTP 路径**：fetch → SSE → 事件 → 用量。
+ * Responses 适配器的真实 HTTP 路径：fetch → SSE → 事件 → 用量。
  *
- * **为什么单独一个文件，而且要起一个真的 HTTP server。** 隔壁 `openai-responses.test.ts` 测的是纯函
- * 数（`buildInput` / `applyUsage`），它锁得住形状，锁不住**这条链路真的能跑通**。这两
- * 件事之间出过一次错：SSE 分帧（`../sse.ts`）一直是对的，而 `stream()` 只认
- * `response.reasoning_summary_text.delta`，因此 DeepSeek 发的 `response.reasoning_text.delta` 全程
- * 不被识别、一个 `thinking_delta` 都没有——纯函数测试全绿，思考内容全丢。
+ * 单独成文件并启动真实 HTTP server 的原因：同目录的 `openai-responses.test.ts` 测试纯函数
+ * （`buildInput` / `applyUsage`），能锁定形状，但无法锁定该链路可以执行成功。两者之间
+ * 的环节须单独验证：SSE 分帧（`../sse.ts`）正确而 `stream()` 只识别
+ * `response.reasoning_summary_text.delta` 时，DeepSeek 发送的 `response.reasoning_text.delta`
+ * 不被识别，不产生任何 `thinking_delta`；纯函数测试全部通过，而思考内容全部丢失。
  *
- * 所以这里起 `Bun.serve`，让适配器真的发一次请求、真的收一次 SSE。
+ * 因此此处启动 `Bun.serve`，使适配器实际发送一次请求并接收一次 SSE。
  *
- * **报文取自实测，不得自拟。** 下面的事件字节逐字取自 2026-08 对
- * `api.deepseek.com/v1/responses` 的一次实测（id 换成了固定值，便于断言）。
- * 自拟一份报文只能锁住预期形状，锁不住供应商实际发什么——上面那个 bug 正是
- * 两者不一致造成的。
+ * 报文取自实测，不得自行编写。以下事件字节逐字取自 2026-08 对
+ * `api.deepseek.com/v1/responses` 的一次实测（id 替换为固定值，便于断言）。
+ * 自行编写的报文只能锁定预期形状，无法锁定供应商实际发送的内容；上述失败正是
+ * 两者不一致所致。
  *
- * 它验的是**本仓的客户端**，不是 DeepSeek 的服务端。对着真实端点的那一次
- * 在 `scripts/smoke-responses.ts`，需要 key，不进单测。
+ * 本文件验证的是本仓库的客户端，不是 DeepSeek 的服务端。针对真实端点的测试
+ * 位于 `scripts/smoke-responses.ts`，需要 key，不纳入单元测试。
  */
 
 import { afterAll, describe, expect, test } from 'bun:test'
@@ -41,7 +41,7 @@ function sse(events: Record<string, unknown>[]): string {
   return events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')
 }
 
-/** 纯文本一轮：reasoning 条目 + 正文 + usage。 */
+/** 纯文本的一轮：reasoning 条目、正文与 usage。 */
 const TEXT_RUN = sse([
   { type: 'response.created', response: { id: 'r1', status: 'in_progress' }, sequence_number: 0 },
   { type: 'response.in_progress', response: { id: 'r1', status: 'in_progress' } },
@@ -96,7 +96,7 @@ const TEXT_RUN = sse([
   },
 ])
 
-/** 工具调用一轮。注意 reasoning 占 output_index 0，工具调用是 1。 */
+/** 工具调用的一轮。reasoning 占用 output_index 0，工具调用为 1。 */
 const TOOL_RUN = sse([
   { type: 'response.created', response: { id: 'r2', status: 'in_progress' } },
   {
@@ -178,7 +178,7 @@ const TOOL_RUN = sse([
   },
 ])
 
-/** 分片全丢，只有收尾事件。中转站漏发增量时的样子。 */
+/** 分片全部丢失，只有结束事件。对应中转站漏发增量事件的情形。 */
 const DONE_ONLY = sse([
   { type: 'response.created', response: { id: 'r3', status: 'in_progress' } },
   {
@@ -223,7 +223,7 @@ let script: {
   headers: {},
   delayMs: 0,
 }
-/** 上一次发出去的请求体。用来断言**发出去**的内容，不只是收回来的；只声明这份测试真的读的那几格。 */
+/** 上一次发送的请求体。用于断言发送的内容，而不仅是接收的内容；只声明本测试实际读取的字段。 */
 interface SentBody {
   input?: { type: string }[]
   tools?: { strict?: boolean }[]
@@ -289,7 +289,7 @@ async function run(
 
 // ───────────────────────── 断言 ─────────────────────────
 
-/** 官方契约的合成夹具，仅验证客户端，不作为 MiMo 现场原始响应。 */
+/** 官方契约的合成夹具，仅验证客户端，不作为 MiMo 实测原始响应。 */
 describe('完整工具参数快照', () => {
   const item = {
     type: 'function_call',
@@ -316,7 +316,7 @@ describe('完整工具参数快照', () => {
     })
   })
 
-  test('最终 output 替换增量参数和索引，不会丢参或重复执行', async () => {
+  test('最终 output 替换增量参数和索引，不会丢失参数或重复执行', async () => {
     const events = await run(
       sse([
         { type: 'response.output_item.added', output_index: 1, item: { ...item, arguments: '' } },
@@ -339,7 +339,7 @@ describe('完整工具参数快照', () => {
     ])
   })
 
-  test('完整快照未包含调用时不执行早先的增量调用', async () => {
+  test('完整快照未包含调用时不执行此前的增量调用', async () => {
     const events = await run(
       sse([
         { type: 'response.output_item.added', output_index: 0, item },
@@ -349,7 +349,7 @@ describe('完整工具参数快照', () => {
     expect(events.some((e) => e.type === 'tool_calls')).toBe(false)
   })
 
-  test('正文 XML 保持正文，实际空参数不从文本猜造', async () => {
+  test('正文 XML 保持正文，实际空参数不从文本推测生成', async () => {
     const xml =
       '<tool_call><function=read_file><parameter=path>pelican-bike/index.html</parameter></function></tool_call>'
     const events = await run(
@@ -582,20 +582,20 @@ test('GPT-6.1 Sol 的工具调用续轮保留 call_id，使用 strict schema 且
   expect(second.at(-1)).toMatchObject({ type: 'done', stopReason: 'end_turn' })
 })
 
-describe('推理增量：两种事件名都要认', () => {
+describe('推理增量：两种事件名均须识别', () => {
   /**
-   * 这条是这个文件存在的理由。DeepSeek 发 `response.reasoning_text.delta`，
-   * 只认 OpenAI 的 `reasoning_summary_text` 时**一个错都不报**，只是思考内容
-   * 因缺少对应事件而消失；断言存在 thinking_delta 才能捕获「无任何内容」的情形。
+   * 本组用例是单独设立本文件的原因。DeepSeek 发送 `response.reasoning_text.delta`，
+   * 只识别 OpenAI 的 `reasoning_summary_text` 时不报任何错误，思考内容
+   * 因缺少对应事件而丢失；断言存在 thinking_delta 才能捕获「无任何内容」的情形。
    */
-  test('DeepSeek 的 reasoning_text.delta 变成 thinking_delta', async () => {
+  test('DeepSeek 的 reasoning_text.delta 转换为 thinking_delta', async () => {
     const events = await run(TEXT_RUN)
     const thinking = events.filter((e) => e.type === 'thinking_delta')
     expect(thinking).toHaveLength(2)
     expect(thinking.map((e) => (e as { delta: string }).delta).join('')).toBe('3812*80 -3812')
   })
 
-  test('OpenAI 的 reasoning_summary_text.delta 同样认', async () => {
+  test('OpenAI 的 reasoning_summary_text.delta 同样识别', async () => {
     const events = await run(
       sse([
         { type: 'response.reasoning_summary_text.delta', delta: '摘要', output_index: 0 },
@@ -605,7 +605,7 @@ describe('推理增量：两种事件名都要认', () => {
     expect(events.filter((e) => e.type === 'thinking_delta')).toHaveLength(1)
   })
 
-  test('思考内容不混进正文', async () => {
+  test('思考内容不混入正文', async () => {
     const events = await run(TEXT_RUN)
     const text = events
       .filter((e) => e.type === 'text_delta')
@@ -616,7 +616,7 @@ describe('推理增量：两种事件名都要认', () => {
 })
 
 describe('工具调用', () => {
-  test('从 added → delta → done 收出一条完整调用', async () => {
+  test('从 added → delta → done 汇总为一条完整调用', async () => {
     const events = await run(TOOL_RUN)
     const calls = events.find((e) => e.type === 'tool_calls') as
       | { calls: { id: string; name: string; arguments: Record<string, unknown> }[] }
@@ -632,25 +632,25 @@ describe('工具调用', () => {
   })
 
   /**
-   * reasoning 占了 output_index 0，工具调用在 1。按 output_index 建槽位是对的，
-   * 但**不能**假设工具调用从 0 开始——那样会把参数分片写进一个不存在的槽位，
+   * reasoning 占用 output_index 0，工具调用为 1。按 output_index 建立槽位是正确的，
+   * 但不能假设工具调用从 0 开始，否则参数分片会写入不存在的槽位，
    * 结果是一条参数为空的调用。
    */
-  test('reasoning 占了 index 0 时工具调用仍然收得到', async () => {
+  test('reasoning 占用 index 0 时仍能收到工具调用', async () => {
     const events = await run(TOOL_RUN)
     const calls = events.find((e) => e.type === 'tool_calls') as
       | { calls: { name: string; arguments: Record<string, unknown> }[] }
       | undefined
-    // 槽位对错的可观察形状是**参数对不对**：写进不存在的槽位会得到一条空参数的调用。
+    // 槽位是否正确体现为参数是否正确：写入不存在的槽位会得到一条空参数的调用。
     expect(calls?.calls[0]?.name).toBe('get_weather')
     expect(calls?.calls[0]?.arguments).toEqual({ city: '北京' })
   })
 
   /**
-   * 只有收尾事件也要收得下。丢掉它等于「模型调了工具而本地当作没调」，
-   * 下一轮模型会重复调用——用户看到的是它卡在同一步反复打转。
+   * 只有结束事件时同样须接收调用。丢弃该事件等于「模型调用了工具而本地视为未调用」，
+   * 下一轮模型会重复调用，停滞在同一步反复执行。
    */
-  test('分片全丢、只有 output_item.done 时照样收得到', async () => {
+  test('分片全部丢失、只有 output_item.done 时同样能接收调用', async () => {
     const events = await run(DONE_ONLY)
     const calls = events.find((e) => e.type === 'tool_calls') as
       | { calls: { arguments: Record<string, unknown> }[] }
@@ -660,7 +660,7 @@ describe('工具调用', () => {
 })
 
 describe('用量与终态', () => {
-  test('缓存命中从 input_tokens 里减掉', async () => {
+  test('缓存命中量从 input_tokens 中扣除', async () => {
     const events = await run(TEXT_RUN)
     const usage = (events.find((e) => e.type === 'usage') as { usage: ProviderUsage }).usage
     expect(usage.cachedTokens).toBe(1280)
@@ -669,7 +669,7 @@ describe('用量与终态', () => {
     expect(usage.source).toBe('provider')
   })
 
-  test('输出截断报 max_tokens，不报 end_turn', async () => {
+  test('输出截断时报告 max_tokens，而非 end_turn', async () => {
     const events = await run(TRUNCATED)
     expect(events.at(-1)).toEqual({
       type: 'done',
@@ -678,14 +678,14 @@ describe('用量与终态', () => {
     })
   })
 
-  test('请求前先报一次估算量，并标明它是估算', async () => {
+  test('请求前先报告一次估算量，并标明为估算值', async () => {
     const events = await run(TEXT_RUN)
     expect(events[0]).toMatchObject({ type: 'request_prepared' })
   })
 })
 
 describe('错误路径', () => {
-  test('400 的正文被读出来带进错误，不只剩一个状态码', async () => {
+  test('读取 400 的正文并写入错误，不只保留状态码', async () => {
     const body = JSON.stringify({
       error: {
         message: 'The `reasoning_text` in the thinking mode must be passed back to the API.',
@@ -730,8 +730,8 @@ describe('错误路径', () => {
     })
   })
 
-  /** SSE 已经 200 了，流内错误只能从事件里出。不认它的表现是「流正常结束但什么都没有」。 */
-  test('流内 response.failed 抛出来，并进入可重试的服务失败分类', async () => {
+  /** SSE 已返回 200，流内错误只能出现在事件中。不识别该事件时，流正常结束但没有任何内容。 */
+  test('流内 response.failed 被抛出，并归入可重试的服务失败分类', async () => {
     const body = sse([{ type: 'response.failed', response: { error: { message: '模型过载' } } }])
     let caught: unknown
     try {
@@ -742,7 +742,7 @@ describe('错误路径', () => {
     expect(caught).toMatchObject({ code: 'provider_unavailable', message: '模型过载' })
   })
 
-  test('流内限速保留结构化错误码，不能因 HTTP 已是 200 而落成内部错误', async () => {
+  test('流内限速保留结构化错误码，不因 HTTP 已为 200 而记为内部错误', async () => {
     const body = sse([
       {
         type: 'response.failed',
@@ -762,24 +762,24 @@ describe('错误路径', () => {
   })
 
   /**
-   * 终态事件没到就断流。默认值 `end_turn` 会把它落成正常完成——
-   * 界面上是「写到一半就停、run 显示成功」，账本上那一轮无从对账。
+   * 终态事件未到达即断流。默认值 `end_turn` 会将其记为正常完成，
+   * 使输出中断的一轮被记为成功，账本上该轮无法对账。
    */
-  test('没等到终态事件就断流的，报传输失败而不是完成', async () => {
+  test('未收到终态事件即断流时，报告传输失败而非完成', async () => {
     const body = sse([
       { type: 'response.output_text.delta', delta: '写到一半', item_id: 'm1', output_index: 0 },
     ])
     await expect(run(body)).rejects.toThrow(/流在终态事件之前结束/)
   })
 
-  /** 判据是「终态事件到过没有」，不是 `rawStatusOf` 回没回空串。 */
-  test('终态事件里没有 status 字段的不算断流', async () => {
+  /** 判据是「是否收到过终态事件」，而不是 `rawStatusOf` 是否返回空串。 */
+  test('终态事件中没有 status 字段时不算断流', async () => {
     const events = await run(sse([{ type: 'response.completed', response: {} }]))
     expect(events.find((e) => e.type === 'done')).toMatchObject({ stopReason: 'end_turn' })
   })
 })
 
-describe('发出去的请求', () => {
+describe('发送的请求', () => {
   test('带工具调用的历史会回传 reasoning 条目，且排在 function_call 之前', async () => {
     await run(TEXT_RUN, {
       messages: [
@@ -797,7 +797,7 @@ describe('发出去的请求', () => {
     expect(types).toEqual(['message', 'reasoning', 'function_call', 'function_call_output'])
   })
 
-  test('store 恒为 false —— 不把用户的对话留在供应商那边', async () => {
+  test('store 恒为 false，不将用户的对话保存在供应商一侧', async () => {
     await run(TEXT_RUN)
     expect(lastBody.store).toBe(false)
   })
@@ -815,7 +815,7 @@ describe('思考字段', () => {
     expect(events.some((e) => e.type === 'thinking_delta')).toBe(true)
   })
 
-  test('DeepSeek 三档分别发送，映射别名不当成额外档位', async () => {
+  test('DeepSeek 三档分别发送，映射别名不视为额外档位', async () => {
     for (const effort of ['low', 'high', 'max'] as const) {
       await run(TEXT_RUN, { effort })
       expect(lastBody.reasoning?.effort).toBe(effort)
@@ -826,14 +826,14 @@ describe('思考字段', () => {
 })
 
 /**
- * 连接超时与「用户按了停止」是两个信号，**认错了就把连不上报成已取消**。
+ * 连接超时与「用户点击停止」是两个信号，混淆时会将连接失败报告为已取消。
  *
- * 这条适配器手写 fetch（没有 SDK 的超时层），所以自己起了一个定时器 controller。
- * 它和 `req.signal` 合成同一个信号交给 fetch——合成之后再区分，
- * 靠的是「谁真的 abort 了」，不是 fetch 抛出来的错误长什么样（两边都是 AbortError）。
+ * 本适配器自行调用 fetch（没有 SDK 的超时层），因此自行创建定时器 controller。
+ * 它与 `req.signal` 合并为同一个信号交给 fetch；合并之后的区分
+ * 依据是哪个信号实际触发了 abort，而不是 fetch 抛出的错误形状（两者均为 AbortError）。
  */
-describe('停止与超时分开认', () => {
-  test('连接超时只上报分类，不在适配器里重复拼静默时长', async () => {
+describe('分别识别停止与超时', () => {
+  test('连接超时只上报分类，不在适配器中重复拼接静默时长', async () => {
     const http = PROVIDER_HTTP as unknown as { timeout: number }
     const timeout = http.timeout
     http.timeout = 1
@@ -855,7 +855,7 @@ describe('停止与超时分开认', () => {
     }
   })
 
-  test('用户按停止报「已取消」，不报连接超时', async () => {
+  test('用户点击停止时报告「已取消」，而非连接超时', async () => {
     const ctl = new AbortController()
     ctl.abort()
     try {
@@ -872,7 +872,7 @@ describe('停止与超时分开认', () => {
 describe('连接', () => {
   test('每次请求都声明不复用连接', async () => {
     await run(TEXT_RUN)
-    // 中转站会掐掉空闲的 keep-alive 连接，复用旧连接的下一次请求当场断开或一直静默。
+    // 中转站会关闭空闲的 keep-alive 连接，复用旧连接的下一次请求会立即断开或持续无响应。
     expect(lastHeaders?.get('connection')).toBe('close')
   })
 })

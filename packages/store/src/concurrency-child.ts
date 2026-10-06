@@ -1,12 +1,12 @@
 /**
- * `concurrency.test.ts` 的子进程入口：几个操作系统进程同时对同一个库文件做同一件事。
+ * `concurrency.test.ts` 的子进程入口：多个操作系统进程同时对同一个库文件执行同一操作。
  *
- * 单进程内造不出这些竞争：bun:sqlite 是同步的，同一线程里的两个连接只能排队。
- * 起跑时刻用 HTTP 屏障对齐，参数走环境变量（Windows 的命令行转义会改写含反斜杠的路径）。
- * 每个进程在 stdout 上打一行 JSON：`{ ok, value?, error? }`。
+ * 单进程内无法构造这些竞争：bun:sqlite 是同步的，同一线程中的两个连接只能依次执行。
+ * 开始执行的时刻用 HTTP 屏障对齐，参数经由环境变量传递（Windows 的命令行转义会改写含反斜杠的路径）。
+ * 每个进程在 stdout 上输出一行 JSON：`{ ok, value?, error? }`。
  *
- * 建轮的两种模式：`create-run` 抢同一会话，成功的一方在 `QY_CC_HOLD_MS` 内不退出，
- * 让另几个进程查到的占用方仍然存活；`hold` 建一轮后一直不退出，由测试结束它。
+ * 创建轮次的两种模式：`create-run` 争用同一会话，成功的一方在 `QY_CC_HOLD_MS` 内不退出，
+ * 使其他进程查到的占用方仍然存活；`hold` 创建一轮后持续不退出，由测试结束该进程。
  */
 
 import type { ConversationId, WorkspaceId } from '@qywork/core'
@@ -40,7 +40,7 @@ async function waitAtBarrier(): Promise<void> {
 
 try {
   if (mode === 'open') {
-    // 打开本身就是被测行为：切 WAL 与迁移都在构造函数里。
+    // 打开本身就是被测行为：切换 WAL 与迁移都在构造函数中执行。
     await waitAtBarrier()
     new Store({ path: dbPath }).close()
     console.log(JSON.stringify({ ok: true }))

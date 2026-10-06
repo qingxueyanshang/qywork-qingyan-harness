@@ -143,19 +143,19 @@ function grab(fn: () => unknown): ProviderError {
   throw new Error('应当抛出 ProviderError')
 }
 
-describe('空 key 在本地就判定，不发请求', () => {
-  test('空 key 抛 no_api_key 而不是等 401 回来猜', () => {
+describe('空 key 在本地判定，不发送请求', () => {
+  test('空 key 抛出 no_api_key，而不是等待 401 返回后推测', () => {
     const e = grab(() => buildAdapter({ ...base, apiKey: '' }))
     expect(e.code).toBe('no_api_key')
-    // auth_failed 会把新用户引向「检查 key 抄错没抄错」，而它根本还不存在。
+    // auth_failed 会引导新用户检查 key 是否填写有误，而此时 key 尚未配置。
     expect(e.code).not.toBe('auth_failed')
   })
 
-  test('只有空白也算没配', () => {
+  test('只含空白字符同样视为未配置', () => {
     expect(grab(() => buildAdapter({ ...base, apiKey: '   \n' })).code).toBe('no_api_key')
   })
 
-  test('报错里带上该做什么', () => {
+  test('报错中包含处理方法', () => {
     expect(grab(() => buildAdapter({ ...base, apiKey: '' })).message).toContain('qy init')
   })
 
@@ -166,12 +166,12 @@ describe('空 key 在本地就判定，不发请求', () => {
     ).toBe('no_api_key')
   })
 
-  test('有 key 时正常建出适配器', () => {
+  test('有 key 时正常创建适配器', () => {
     expect(buildAdapter({ ...base, apiKey: 'sk-x' }).spec.id).toBe('deepseek-flash')
   })
 })
 
-describe('本机模型服务豁免 —— 那里空 key 是合法配置', () => {
+describe('本机模型服务豁免：空 key 是合法配置', () => {
   for (const url of [
     'http://127.0.0.1:11434/v1',
     'http://localhost:1234/v1',
@@ -183,21 +183,21 @@ describe('本机模型服务豁免 —— 那里空 key 是合法配置', () => 
     })
   }
 
-  test('局域网里的另一台机器不豁免 —— 它可能挂在需要鉴权的反代后面', () => {
+  test('局域网中的其他机器不豁免：它可能位于需要鉴权的反向代理之后', () => {
     expect(
       grab(() => buildAdapter({ ...base, apiKey: '', baseUrl: 'http://192.168.1.9:11434/v1' }))
         .code,
     ).toBe('no_api_key')
   })
 
-  test('域名里含 localhost 但主机不是它 —— 不豁免', () => {
+  test('域名含 localhost 但主机不是 localhost 时不豁免', () => {
     expect(
       grab(() => buildAdapter({ ...base, apiKey: '', baseUrl: 'https://localhost.evil.com/v1' }))
         .code,
     ).toBe('no_api_key')
   })
 
-  test('baseUrl 不是合法 URL 时不豁免（宁可多要一个 key）', () => {
+  test('baseUrl 不是合法 URL 时不豁免', () => {
     expect(grab(() => buildAdapter({ ...base, apiKey: '', baseUrl: '不是地址' })).code).toBe(
       'no_api_key',
     )
@@ -205,25 +205,25 @@ describe('本机模型服务豁免 —— 那里空 key 是合法配置', () => 
 })
 
 /**
- * 传输参数：**两个 SDK 的出厂值必须被覆盖掉。**
+ * 传输参数：**必须覆盖两个 SDK 的默认值。**
  *
  * `@anthropic-ai/sdk` 与 `openai` 都是 `timeout: 600_000` + `maxRetries: 2`。
- * 网络断掉时那组值的表现是：界面挂着「正在执行」好几分钟，然后才报网络不可达
- * （实测一条 381.9s 的 run，最后一次模型回包之后空等了 301s，三次连接尝试）。
+ * 使用这组默认值时，网络中断后界面持续显示「正在执行」数分钟，之后才报告网络不可达
+ * （实测一次 381.9s 的 run，最后一次收到模型响应后空等 301s，共三次连接尝试）。
  *
- * 读的是客户端实例上的字段，不是「传进去的那个对象」——中间少写一层展开、
- * 或者被后面的 `...profile` 覆盖掉，都是这条断言抓得住而参数快照抓不住的。
+ * 读取的是客户端实例上的字段，不是传入的参数对象：中间遗漏一层展开、
+ * 或被后面的 `...profile` 覆盖，该断言都能发现，而参数快照无法发现。
  */
-describe('连接超时与重试次数由这边定，不用 SDK 的出厂值', () => {
+describe('连接超时与重试次数由本项目设定，不使用 SDK 的默认值', () => {
   const clientOf = (a: unknown) => (a as { client: { timeout: number; maxRetries: number } }).client
 
-  test('openai 兼容协议：兜底 600 秒、不自动重试', () => {
+  test('openai 兼容协议：超时上限 600 秒，不自动重试', () => {
     const c = clientOf(buildAdapter({ ...base, apiKey: 'sk-x' }))
     expect(c.timeout).toBe(600_000)
     expect(c.maxRetries).toBe(0)
   })
 
-  test('anthropic 原生同一套值', () => {
+  test('anthropic 原生协议使用相同取值', () => {
     const c = clientOf(
       buildAdapter({ kind: 'anthropic_messages', model: 'claude-opus-5', apiKey: 'sk-x' }),
     )
@@ -231,8 +231,8 @@ describe('连接超时与重试次数由这边定，不用 SDK 的出厂值', ()
     expect(c.maxRetries).toBe(0)
   })
 
-  /** baseUrl / headers 排在展开之后，不能把这两个值挤掉。 */
-  test('自定义端点与请求头不会覆盖掉它', () => {
+  /** baseUrl / headers 位于展开之后，不能覆盖这两个值。 */
+  test('自定义端点与请求头不会覆盖传输参数', () => {
     const c = clientOf(
       buildAdapter({
         ...base,
@@ -252,15 +252,15 @@ describe('连接超时与重试次数由这边定，不用 SDK 的出厂值', ()
 describe('两层解析：目录 seed → 模型库', () => {
   const seed = () => lookupModel('deepseek-flash', 'openai_chat_completions')
 
-  test('库里写的上限直接生效，不与目录取小', () => {
+  test('模型库中填写的上限直接生效，不与目录取较小值', () => {
     expect(
       buildAdapter({ ...base, apiKey: 'sk-x', spec: { maxOutputTokens: 512 } }).spec
         .maxOutputTokens,
     ).toBe(512)
   })
 
-  /** 比目录大也照写：目录是抄来的 seed，厂商放宽之后只有用户改得动它。 */
-  test('库里的值比目录大也照写', () => {
+  /** 大于目录值时同样生效：目录只是录入的 seed，厂商放宽上限后只有用户能修改。 */
+  test('模型库中的值大于目录值时同样生效', () => {
     const bigger = (seed().maxOutputTokens ?? 0) + 1000
     expect(
       buildAdapter({ ...base, apiKey: 'sk-x', spec: { maxOutputTokens: bigger } }).spec
@@ -268,7 +268,7 @@ describe('两层解析：目录 seed → 模型库', () => {
     ).toBe(bigger)
   })
 
-  test('库里没写的字段照 seed', () => {
+  test('模型库未填写的字段沿用 seed', () => {
     const a = buildAdapter({ ...base, apiKey: 'sk-x', spec: { maxOutputTokens: 512 } })
     expect(a.spec.contextWindow).toBe(seed().contextWindow)
     expect(a.spec.thinking).toBe(seed().thinking)

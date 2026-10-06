@@ -1,6 +1,6 @@
 /**
- * 覆盖 `workflow.ts`：从父会话的 step 账本取回 workflow 调用记录，以及从记录里
- * 认出哪几条是首派。**这是 workflow 唯一的恢复权威**，没有第二份运行表。
+ * 覆盖 `workflow.ts`：从父会话的 step 账本取回 workflow 调用记录，以及从记录中
+ * 识别首次派发。这些 step 是 workflow 唯一的恢复权威，没有第二份运行表。
  */
 import { describe, expect, test } from 'bun:test'
 import type { ConversationId } from '@qywork/core'
@@ -42,7 +42,7 @@ const START_ARGS = {
   ],
 }
 
-describe('子 agent 最后一次的格子状态', () => {
+describe('子 agent 最后一次的节点状态', () => {
   test('按 step 顺序后者覆盖前者，键是子 agent 的会话 id', () => {
     const { store, conversation, run } = fresh()
     const step = (seq: number, toolName: 'workflow' | 'subagent', nodes: Record<string, unknown>) =>
@@ -72,7 +72,7 @@ describe('子 agent 最后一次的格子状态', () => {
 })
 
 describe('workflow 调用记录', () => {
-  test('只取 workflow 工具的 step，并按传入的 stepId 排除当前那一步', () => {
+  test('只取 workflow 工具的 step，并按传入的 stepId 排除当前 step', () => {
     const { store, conversation, run } = fresh()
     const first = appendStep(store, {
       runId: run.id,
@@ -114,7 +114,7 @@ describe('workflow 调用记录', () => {
       first.id,
       current.id,
     ])
-    // 正在执行的那一步还没有结果，取进来等于把请求当成事实。
+    // 正在执行的 step 尚无结果，读取它等于将请求当作事实。
     expect(listWorkflowRecords(store, conversation.id, current.id).map((r) => r.stepId)).toEqual([
       first.id,
     ])
@@ -122,7 +122,7 @@ describe('workflow 调用记录', () => {
     store.close()
   })
 
-  test('被打断的调用把节点子会话 id 一并带出', () => {
+  test('被中断的调用一并返回节点的子会话 id', () => {
     const { store, conversation, run } = fresh()
     const step = appendStep(store, {
       runId: run.id,
@@ -146,7 +146,7 @@ describe('workflow 调用记录', () => {
     store.close()
   })
 
-  test('首派认的是「参数能解析成首派」，不是「有没有 workflowId 这个键」', () => {
+  test('首次派发按参数能否解析为首次派发判定，而不是按是否存在 workflowId 键', () => {
     const { store, conversation, run } = fresh()
     const first = appendStep(store, {
       runId: run.id,
@@ -155,7 +155,7 @@ describe('workflow 调用记录', () => {
       toolName: 'workflow',
       toolCallId: 'call_1',
       status: 'running',
-      // strict wire 会给非本分支的字段补 null；补了仍是首派。
+      // strict wire 会为非本分支的字段补 null；补 null 后仍是首次派发。
       payload: {
         kind: 'tool_call',
         args: { ...START_ARGS, workflowId: null, checkpointId: null, decision: null },

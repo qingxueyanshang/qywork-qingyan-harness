@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
 /**
- * qy —— qywork 内核 CLI。发布产物本体。
+ * qy：qywork 内核 CLI，即发布产物本身。
  *
- * 桌面端不是「一个内置了 agent 的应用」，而是这个 CLI 的一个前端：Tauri 只负责
- * spawn `qy serve` 并显示 WebView，业务状态一个字节都不存在 Rust 侧。手机端连的
- * 也是同一个 `qy serve`。这样只有一本账。
+ * 桌面端不是内置 agent 的独立应用，而是该 CLI 的一个前端：Tauri 只负责
+ * spawn `qy serve` 并显示 WebView，Rust 侧不保存任何业务状态。手机端连接的
+ * 也是同一个 `qy serve`。因此只有一本账。
  *
- *   qy exec "<任务>"    单次执行，人读格式；--json 出 JSONL 供 CI 消费
- *   qy serve           本地 HTTP + WebSocket（桌面端与手机端都连它）
+ *   qy exec "<任务>"    单次执行，输出供人阅读的格式；--json 输出 JSONL 供 CI 使用
+ *   qy serve           本地 HTTP + WebSocket（桌面端与手机端均连接此服务）
  *   qy config          打印当前配置与配置文件路径
  *
- * 无参数时进交互式（非 TTY 下打印用法）。`qy team run` 尚未实现——编排目前从图形界面发起。
+ * 无参数时进入交互模式（非 TTY 下打印用法）。`qy team run` 尚未实现，编排目前从图形界面发起。
  */
 
 import { mkdir } from 'node:fs/promises'
@@ -52,47 +52,47 @@ import { runUsage } from './usage.ts'
 
 const USAGE = `qy —— qywork 编码 agent
 
-  qy                      交互式（多轮，同一个会话）
+  qy                      交互模式（多轮，同一会话）
 
-  qy init                 生成配置（第一次用先跑这个）
+  qy init                 生成配置（首次使用时先执行此命令）
     --force               覆盖已有配置
 
   qy exec "<任务>"        在当前目录执行一次任务
     --cwd <路径>          指定工作区（默认当前目录）
-    --json                输出 JSONL 事件流（CI 用）
+    --json                输出 JSONL 事件流（供 CI 使用）
 
-  qy serve                启动本地服务（桌面端与手机端都连它）
+  qy serve                启动本地服务（桌面端与手机端均连接此服务）
     --port <端口>         默认 7717，0 = 随机可用端口
-    --host <地址>         默认 0.0.0.0（手机可连）；仅本机用 127.0.0.1
+    --host <地址>         默认 0.0.0.0（允许手机连接）；仅限本机时使用 127.0.0.1
     --cwd <路径>          指定工作区
     --static <目录>       前端构建产物目录
-    --print-token         把令牌打到 stdout（供 Tauri 读取）
+    --print-token         将令牌输出到 stdout（供 Tauri 读取）
     --parent-pid <pid>    父进程退出时一并退出，避免留下孤儿服务
 
   qy doctor               一屏体检：配置、shell 沙箱、账本、MCP、插件
     --cwd <路径>          指定工作区
-    --json                给脚本用（只有阻断项才退非零）
+    --json                供脚本使用（仅有阻断项时返回非零退出码）
 
-  qy mcp                  检查 ${MCP_CONFIG} 里的 server 连没连上
-    --tools               连带列出每个 server 提供的工具
+  qy mcp                  检查 ${MCP_CONFIG} 中各 server 的连接状态
+    --tools               同时列出每个 server 提供的工具
     --cwd <路径>          指定工作区
 
-  qy plugins              检查装了哪些插件、隔离到什么程度
-    --tools               连带列出每个插件提供的工具与启动日志
+  qy plugins              检查已安装的插件及其隔离程度
+    --tools               同时列出每个插件提供的工具与启动日志
     --cwd <路径>          指定工作区
 
   qy usage                本机用量账本（账目不随会话删除而消失）
     --days <n>            统计区间，默认 30
     --by <维度>           model（默认）/ day / workspace / kind
-    --json                给脚本用
+    --json                供脚本使用
 
-  qy export [<会话 id>]    导出会话（不给 id 时列出可选的）
-    --json                完整 json（不裁剪）；默认 markdown（给人读）
-    --thinking            带上思考内容
-    -o <文件>             写文件，默认打到 stdout
+  qy export [<会话 id>]    导出会话（未指定 id 时列出可选会话）
+    --json                完整 json（不裁剪）；默认 markdown（供阅读）
+    --thinking            包含思考内容
+    -o <文件>             写入文件，默认输出到 stdout
 
   qy probe [<模型名>]      检测指定模型；省略时检测当前默认模型
-    --save                把结论写回配置；不加则只打印
+    --save                将结论写回配置；省略时只打印
 
   qy config               显示当前配置
   qy --version
@@ -101,14 +101,14 @@ const USAGE = `qy —— qywork 编码 agent
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv
 
-  // 子命令后面的 --help 同样只打用法：落进 exec 会被当成任务描述，开库并发出一次真实请求。
+  // 子命令后的 --help 同样只输出用法：若交给 exec，会被当作任务描述，打开数据库并发出一次真实请求。
   if (cmd === '--help' || cmd === '-h' || rest.includes('--help') || rest.includes('-h')) {
     process.stdout.write(USAGE)
     return 0
   }
   if (!cmd) {
-    // 无参数：交互式。但**非 TTY 下仍然打用法**：`qy | cat` 或 CI 里进入等输入的
-    // 循环，表现为进程不返回。
+    // 无参数时进入交互模式，但**非 TTY 下仍只输出用法**：在 `qy | cat` 或 CI 中进入
+    // 等待输入的循环会使进程不返回。
     if (!process.stdin.isTTY) {
       process.stdout.write(USAGE)
       return 0
@@ -125,22 +125,22 @@ async function main(argv: string[]): Promise<number> {
     const cfg = await loadConfig()
     process.stdout.write(`配置文件：${configPath()}\n账本：${dataPath()}\n\n`)
     process.stdout.write(`${JSON.stringify(cfg, null, 2)}\n`)
-    // 体检结果走 stderr：stdout 那份 JSON 要能直接管道给 jq，掺了中文提示就不是 JSON 了。
+    // 体检结果写入 stderr：stdout 中的 JSON 需要能直接通过管道交给 jq，混入提示文字后不再是合法 JSON。
     for (const p of [...diagnoseConfig(cfg), ...diagnoseRunnable(cfg), ...configNotices(cfg)]) {
       process.stderr.write(`\n${YELLOW}⚠${RESET} ${p}\n`)
     }
     /*
-     * 沙箱状态**每次都报**，有没有都报。
+     * 沙箱状态**每次都报告**，无论是否具备沙箱。
      *
-     * 这是「如实上报」那条要求的落点：没有内核边界的平台上，把「shell 命令被拦得住」
-     * 当成默认前提是错的——剩下两层（静态规则、分类器）都是文本判断，挡不住未列举的
-     * 写法。不报出来，默认前提就不会被质疑。
+     * 这是「如实上报」这一要求的落实：在没有内核边界的平台上，把「shell 命令能被拦截」
+     * 当作默认前提是错误的，其余两层（静态规则、分类器）都是文本判断，无法拦截未列举的
+     * 写法。不报告出来，这一默认前提就不会被质疑。
      */
     const sb = detectSandbox()
     const mark = sb.active ? `${GREEN}✓${RESET}` : `${YELLOW}⚠${RESET}`
-    // 报出 WSL 版本：给 Windows 用户的建议就是「在 WSL2 里跑 qy」，
-    // 而「当前是不是 WSL、是第几版」是那条建议唯一需要确认的事。
-    // 不说的话，WSL1 里看到「没有沙箱」会显得那条建议不成立。
+    // 报告 WSL 版本：对 Windows 用户的建议是「在 WSL2 中运行 qy」，
+    // 而「当前是否为 WSL、是哪个版本」是该建议唯一需要确认的条件。
+    // 若不报告版本，WSL1 中显示「没有沙箱」会使该建议显得不成立。
     const where = sb.wsl === null ? sb.platform : `${sb.platform} · WSL${sb.wsl}`
     process.stderr.write(`\n${mark} shell 沙箱：${sb.backend}（${where}）\n  ${sb.reason}\n`)
     return 0
@@ -153,13 +153,13 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === 'probe') return runProbe(rest)
   if (cmd === 'exec') return runExec(rest)
   /*
-   * 命令 runner 那一侧。**不写进 USAGE**：它不是给人用的子命令，是
-   * `qy serve` 自己再执行一次这个二进制、把它当作「跑命令的那个父进程」。
-   * 理由见 `tools/runner.ts` 的模块注释。
+   * 命令 runner 一侧。**不写入 USAGE**：它不是供用户使用的子命令，而是
+   * `qy serve` 再次执行本二进制，作为「执行命令的父进程」。
+   * 原因见 `tools/runner.ts` 的模块注释。
    */
   if (cmd === 'runner') {
     runCommandRunner()
-    // 依靠 IPC 通道保持事件循环存活；父进程一退，这一侧的 stdin 关闭，随之退出。
+    // 依靠 IPC 通道维持事件循环；父进程退出后本进程的 stdin 关闭，随之退出。
     return new Promise<number>(() => {})
   }
   if (cmd === 'serve') return runServe(rest)
@@ -168,10 +168,10 @@ async function main(argv: string[]): Promise<number> {
   return 2
 }
 
-/** 有不认识的参数就报错并返回退出码 2；没有返回 null。 */
+/** 存在未知参数时报错并返回退出码 2；否则返回 null。 */
 function rejectUnknown(flags: Flags): number | null {
   if (!flags.unknown.length) return null
-  process.stderr.write(`不认识的参数：${flags.unknown.join(' ')}
+  process.stderr.write(`未知参数：${flags.unknown.join(' ')}
 
 ${USAGE}`)
   return 2
@@ -183,7 +183,7 @@ async function runExec(args: string[]): Promise<number> {
   if (bad !== null) return bad
   const prompt = flags.positional.join(' ').trim()
   if (!prompt) {
-    process.stderr.write('需要一个任务描述。例：qy exec "把 README 里的安装步骤补上"\n')
+    process.stderr.write('缺少任务描述。示例：qy exec "把 README 里的安装步骤补上"\n')
     return 2
   }
 
@@ -193,32 +193,32 @@ async function runExec(args: string[]): Promise<number> {
   await mkdir(configDir(), { recursive: true })
   const config = await loadConfig()
 
-  // 配置不可用就在这里停，不建库、不发请求。
+  // 配置不可用时在此停止，不建库、不发请求。
   //
-  // 让它跑下去的话，用户拿到的是 provider 返回的 401，该消息不含配置文件路径，
-  // 也不含缺失的字段名——这两项本地都有。没配 key 属于运行前置（`diagnoseRunnable`），
-  // 在这条真要发请求的路径上和不成形的问题一样拦下。
+  // 若继续执行，用户得到的是 provider 返回的 401，该消息既不含配置文件路径，
+  // 也不含缺失的字段名，而这两项本地都已掌握。未配置 key 属于运行前置条件（`diagnoseRunnable`），
+  // 在这条确实要发送请求的路径上，与配置格式问题一样在此拦截。
   const problems = [...diagnoseConfig(config), ...diagnoseRunnable(config)]
   if (problems.length) {
     for (const p of problems) process.stderr.write(`\n${RED}✗${RESET} ${p}\n`)
     return 2
   }
-  // 提醒**不阻断**。`mode: "full"` 是用户自己的决定，说一句就够——
-  // 把它并进上面的 problems 会让「开了完全访问」变成「一条命令都跑不了」。
+  // 提醒**不阻断**执行。`mode: "full"` 是用户自己的决定，提示一次即可；
+  // 并入上方的 problems 会使「开启完全访问」导致「任何命令都无法执行」。
   for (const n of configNotices(config)) process.stderr.write(`\n${YELLOW}⚠${RESET} ${n}\n`)
 
   const store = new Store({ path: dataPath(), owner: 'cli' })
-  // 定时任务的旧文件在这里也要导：本次会话注入了定时任务端口，不导的话在 `qy serve`
-  // 跑过之前 `list_schedules` 读不到已经排好的任务。不合法就抛，与 serve 同一条语义。
+  // 此处同样需要导入定时任务的旧文件：本次会话注入了定时任务端口，若不导入，在 `qy serve`
+  // 运行之前 `list_schedules` 无法读取已排定的任务。文件不合法时抛出，与 serve 的行为相同。
   importLegacySchedules(store)
-  // 一次性执行同样需要正文库：超预算的命令输出如果只截断不落盘，
-  // 模型在**同一轮里**就没法用 read_resource 把中间那段读回来。
+  // 单次执行同样需要正文库：超出预算的命令输出若只截断而不落盘，
+  // 模型在**同一轮中**无法通过 read_resource 读取被截去的中间部分。
   const content = new ContentStore(contentPathFor(dataPath()))
   /*
-   * 正文回收。两库都开好之后、跑这一轮之前收一次：要清掉的是上次进程在登记引用之前
-   * 退出留下的孤儿，与 `qy serve` 走同一个协调器。
+   * 正文回收。两个库都打开之后、执行本轮之前回收一次：清理上一个进程在登记引用之前
+   * 退出所遗留的孤儿正文，与 `qy serve` 使用同一个协调器。
    *
-   * 失败只写一行 stderr，不拦这一轮：回收的是磁盘空间，不是正确性。
+   * 失败时只向 stderr 写一行，不阻止本轮执行：回收影响的是磁盘空间，不影响正确性。
    */
   try {
     collectResourceGarbage(store, content)
@@ -231,7 +231,7 @@ async function runExec(args: string[]): Promise<number> {
   process.on('SIGINT', onSignal)
   process.on('SIGTERM', onSignal)
 
-  // 一次性执行也有 `office`：探测完再起这一轮，与 `qy serve` 同一个宿主实现。
+  // 单次执行同样提供 `office`：探测完成后再开始本轮，与 `qy serve` 使用同一个宿主实现。
   const office = createOfficeHost(() => config)
   await office.refresh()
   const officePort = office.port()
@@ -260,8 +260,8 @@ async function runExec(args: string[]): Promise<number> {
   } finally {
     process.off('SIGINT', onSignal)
     process.off('SIGTERM', onSignal)
-    // 插件与 MCP server 都是子进程。不收掉的话 `qy exec` 退出后它们可能仍在运行，
-    // 而 CI 里那表现为「命令跑完了但脚本挂住不返回」。
+    // 插件与 MCP server 都是子进程。若不回收，`qy exec` 退出后它们可能仍在运行，
+    // 导致 CI 中命令已执行完毕而脚本阻塞不返回。
     await session.dispose()
     content.close()
     store.close()
@@ -274,25 +274,25 @@ async function runExec(args: string[]): Promise<number> {
 async function runServe(args: string[]): Promise<number> {
   const flags = parseFlags(args)
   /*
-   * **给没给 `--cwd` 是两种语义，不能合并成一个默认值。**
+   * **是否给出 `--cwd` 对应两种语义，不能合并为一个默认值。**
    *
-   * 给了 = 「就用这个目录当项目」，CLI 的正常用法（`qy serve --cwd D:\项目`），
-   * 必须照用。没给 = 未指定——这时把进程的 cwd 登记成项目是错的：
-   * 桌面外壳的 cwd 是它自己的安装目录或 `src-tauri`，登记进去会产生一个用户从未
+   * 给出时表示「以该目录作为项目」，这是 CLI 的正常用法（`qy serve --cwd D:\项目`），
+   * 必须照此使用。未给出表示未指定，此时把进程的 cwd 登记为项目是错误的：
+   * 桌面外壳的 cwd 是其安装目录或 `src-tauri`，登记后会产生一个用户从未
    * 打开过的项目。
    *
-   * 没给的时候交给 `serve()` 自己决定：账本里有项目就用最近打开的那个，
-   * 一个都没有才建默认工作区。
+   * 未给出时由 `serve()` 决定：账本中有项目时使用最近打开的项目，
+   * 没有任何项目时才创建默认工作区。
    */
   const workspaceRoot = flags.cwd ? resolve(flags.cwd) : null
 
   await mkdir(configDir(), { recursive: true })
   /*
-   * 日志落盘要在读配置之前装上：配置解析失败与迁移提示都走 `log.*`。
+   * 日志落盘必须在读取配置之前安装：配置解析失败与迁移提示都经由 `log.*` 输出。
    *
-   * 进程级兜底只记一行然后照样退出，不吞。Bun 对未捕获异常与未处理拒绝的默认行为
-   * 就是退出码 1；这里保住那个终态，只补上「为什么」——发布版没有控制台，
-   * 这一行是 sidecar 退出后唯一说得出原因的记录。
+   * 进程级异常处理只记录一行日志，随后仍然退出，不屏蔽异常。Bun 对未捕获异常与未处理拒绝的默认行为
+   * 即以退出码 1 退出；这里保留该终态，只补充退出原因：发布版没有控制台，
+   * 这一行是 sidecar 退出后唯一记录原因的日志。
    */
   setLogSink(fileLogSink(join(configDir(), 'logs')))
   const die = (kind: string, reason: unknown): void => {
@@ -302,15 +302,15 @@ async function runServe(args: string[]): Promise<number> {
     process.exit(1)
   }
   process.on('uncaughtException', (err) => die('未捕获异常', err))
-  process.on('unhandledRejection', (reason) => die('未处理的拒绝', reason))
+  process.on('unhandledRejection', (reason) => die('未处理的 Promise 拒绝', reason))
   const config = await loadConfig()
 
-  // serve 与 exec 相反：配置有问题**照样启动**。
+  // serve 与 exec 相反：配置有问题时**仍然启动**。
   //
-  // 桌面外壳是无条件 spawn 这条命令的，这里退出等于应用打不开，而用户唯一能修配置的
-  // 界面在应用里。翻旧会话、改配置都不需要 key，只有真的发起一轮才需要——
-  // 那时 buildAdapter 会抛 no_api_key，前端据此引导。
-  // serve 本来就不因配置问题退出，所以两者都只是打印，合并即可。
+  // 桌面外壳无条件 spawn 该命令，此处退出即导致应用无法打开，而用户唯一能修改配置的
+  // 界面就在应用中。查看旧会话、修改配置都不需要 key，只有实际发起一轮才需要，
+  // 届时 buildAdapter 会抛出 no_api_key，前端据此引导用户。
+  // serve 不因配置问题退出，因此两类问题都只打印，可以合并。
   const problems = [
     ...diagnoseConfig(config),
     ...diagnoseRunnable(config),
@@ -319,7 +319,7 @@ async function runServe(args: string[]): Promise<number> {
 
   const store = new Store({ path: dataPath(), owner: 'serve' })
   const previousProcessExit = processExitObservationFromEnv(process.env)
-  // 退出现场只消费一次。runner 与之后的命令都不需要继承这段 stderr。
+  // 上次退出的现场信息只使用一次。runner 与之后的命令都不需要继承这段 stderr。
   for (const name of [
     'QYWORK_PREVIOUS_EXIT_KIND',
     'QYWORK_PREVIOUS_EXIT_AT_MS',
@@ -331,15 +331,15 @@ async function runServe(args: string[]): Promise<number> {
   }
 
   /*
-   * **必须在 `serve()` 之前**。
+   * **必须在 `serve()` 之前执行**。
    *
-   * Windows 上句柄是继承的：端口绑好之后再 spawn 出去的进程都会拿到那个监听
-   * socket，而命令派生的后台服务存活时间长于 sidecar——因此 sidecar 退出之后
-   * 端口仍然被占用（实测与推理都在 `tools/runner.ts` 的模块注释里）。
-   * runner 出生在绑端口之前，它和它的子孙手里都没有那份句柄。
+   * Windows 上句柄会被继承：端口绑定之后再 spawn 的进程都会继承该监听
+   * socket，而命令派生的后台服务存活时间长于 sidecar，因此 sidecar 退出之后
+   * 端口仍被占用（实测记录与分析见 `tools/runner.ts` 的模块注释）。
+   * runner 在绑定端口之前创建，它及其后代进程都不持有该句柄。
    *
-   * 源码直跑时要把入口脚本带上（`bun <入口>.ts runner`），打包之后只有二进制
-   * 自己（`qy runner`）——判据是「这个进程是不是 bun 在跑一个脚本」。
+   * 直接从源码运行时需要带上入口脚本（`bun <入口>.ts runner`），打包之后只有二进制
+   * 本身（`qy runner`）：判据是「当前进程是否为 bun 在运行一个脚本」。
    */
   const runnerArgv = Bun.main.endsWith('.ts')
     ? [process.execPath, Bun.main, 'runner']
@@ -353,25 +353,25 @@ async function runServe(args: string[]): Promise<number> {
     port: flags.port ?? 7717,
     host: flags.host ?? '0.0.0.0',
     ...(flags.static ? { staticDir: resolve(flags.static) } : {}),
-    // Tauri spawn 时用环境变量把令牌传进来，桌面端就不必再走扫码。
+    // Tauri spawn 时通过环境变量传入令牌，桌面端因此无需扫码配对。
     ...(process.env.QYWORK_TOKEN ? { token: process.env.QYWORK_TOKEN } : {}),
     /*
-     * 原生宿主连接的凭据，同样只从环境变量来。**一份凭据管两条宿主路径**
-     * （`/native/browser` 与 `/native/desktop`），是哪一种由服务端按 URL 路径判定。
+     * 原生宿主连接的凭据，同样只从环境变量读取。**同一份凭据用于两条宿主路径**
+     * （`/native/browser` 与 `/native/desktop`），具体类型由服务端按 URL 路径判定。
      *
-     * 没有它两条路径都不存在：命令行直接起的 serve 没有桌面外壳，也就没有原生资源。
-     * **不要落进配置文件**——那等于把一个可以注册宿主的凭据入盘。
+     * 没有该凭据时两条路径都不存在：从命令行直接启动的 serve 没有桌面外壳，也就没有原生资源。
+     * **不要写入配置文件**：否则一个可以注册宿主的凭据会被写入磁盘。
      */
     ...(process.env.QYWORK_HOST_KEY ? { hostKey: process.env.QYWORK_HOST_KEY } : {}),
     ...(process.env.QYWORK_UPDATE_KEY ? { updateHostKey: process.env.QYWORK_UPDATE_KEY } : {}),
     ...(previousProcessExit ? { previousProcessExit } : {}),
   })
 
-  // 父进程守望。
+  // 父进程监视。
   //
-  // 桌面外壳只在正常退出路径上杀 sidecar；它崩溃或被强杀时（实测 Stop-Process 就会）
-  // 那条路径不会走到，留下的 qy 会占着端口和 SQLite 的 WAL 锁，
-  // 下次启动直接起不来。所以由 sidecar 自己盯着父进程，谁死都不会留孤儿。
+  // 桌面外壳只在正常退出路径上终止 sidecar；外壳崩溃或被强制终止时（实测 Stop-Process 即如此）
+  // 不会执行该路径，残留的 qy 会占用端口和 SQLite 的 WAL 锁，
+  // 导致下次启动直接失败。因此由 sidecar 自行监视父进程，任何一方退出都不会遗留孤儿进程。
   if (flags.parentPid) {
     watchParent(flags.parentPid, async () => {
       log.info('serve', '父进程已退出，停止服务', { parentPid: flags.parentPid })
@@ -402,8 +402,8 @@ async function runServe(args: string[]): Promise<number> {
   if (flags.host !== '127.0.0.1') {
     const candidates = lanCandidates()
     process.stderr.write(`  局域网  ${handle.lanUrl()}\n`)
-    // 装了 VPN / Hyper-V / Docker 的机器上自动判断不一定准，
-    // 把备选也列出来，扫不通可以直接手输另一个。
+    // 安装了 VPN / Hyper-V / Docker 的机器上自动选择的地址不一定正确，
+    // 因此同时列出备选地址，扫码无法连接时可手动输入其他地址。
     for (const c of candidates.slice(1)) {
       process.stderr.write(
         `${DIM}          备选 http://${c.address}:${handle.port}  (${c.name})${RESET}\n`,
@@ -428,7 +428,7 @@ async function runServe(args: string[]): Promise<number> {
   return 0
 }
 
-// ───────────────────────── 人读渲染 ─────────────────────────
+// ───────────────────────── 可读输出 ─────────────────────────
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -461,7 +461,7 @@ function renderHuman(ev: AgentEvent): void {
       const u = ev.usage
       const cached = u.cachedTokens === null ? '未回报' : String(u.cachedTokens)
       process.stdout.write(
-        `\n${DIM}—— ${ev.stopReason} · 入 ${u.inputTokens} 出 ${u.outputTokens} 缓存命中 ${cached} · ${formatMoney(u.cost, u.currency)}${RESET}\n`,
+        `\n${DIM}—— ${ev.stopReason} · 输入 ${u.inputTokens} 输出 ${u.outputTokens} 缓存命中 ${cached} · ${formatMoney(u.cost, u.currency)}${RESET}\n`,
       )
       if (ev.fileChanges.length) {
         const adds = ev.fileChanges.reduce((s, c) => s + (c.additions ?? 0), 0)
@@ -477,11 +477,11 @@ function renderHuman(ev: AgentEvent): void {
   }
 }
 
-// ───────────────────────── 小工具 ─────────────────────────
+// ───────────────────────── 辅助函数 ─────────────────────────
 
 interface Flags {
   positional: string[]
-  /** 形如参数、但不在本表里的词。exec 遇到就报错退出，不当成任务描述发出请求。 */
+  /** 形如参数但不在本表中的词。exec 遇到时报错退出，不作为任务描述发出请求。 */
   unknown: string[]
   cwd?: string
   json?: boolean
@@ -531,11 +531,11 @@ function parseFlags(args: string[]): Flags {
 /**
  * 轮询父进程是否仍在运行。
  *
- * 用 `kill(pid, 0)`——它不发信号，只做存在性与权限检查，是跨平台判断进程存活
- * 最轻的方式。3 秒一次：足够快到不会让残留卡住下次启动，又不会有可感知的开销。
+ * 使用 `kill(pid, 0)`：它不发送信号，只做存在性与权限检查，是跨平台判断进程存活
+ * 开销最小的方式。每 3 秒检查一次：足够及时，残留进程不会阻塞下次启动，且开销可以忽略。
  *
- * 已知限度：PID 会被系统复用，理论上可能误判成「父进程还在」。桌面场景下父进程
- * 存活期通常以小时计、PID 回绕以万计，这个窗口小到不值得为它引入平台专用的
+ * 已知局限：PID 会被系统复用，理论上可能误判为「父进程仍在运行」。桌面场景下父进程
+ * 存活期通常以小时计、PID 回绕以万计，该窗口很小，不值得为此引入平台专用的
  * Job Object / prctl。
  */
 function watchParent(pid: number, onGone: () => void): void {
@@ -547,15 +547,15 @@ function watchParent(pid: number, onGone: () => void): void {
       onGone()
     }
   }, 3000)
-  // 不让该定时器阻止进程退出：它只是守望，不该阻止正常退出。
+  // 该定时器只用于监视，不得阻止进程正常退出。
   timer.unref?.()
 }
 
 /**
  * 版本号。
  *
- * 编译期由 `--define QYWORK_VERSION` 内联；单文件二进制里读不到打包外的 VERSION
- * 文件（相对路径解析不出来，实测会静默输出 0.0.0）。源码直跑时回落读文件。
+ * 编译期由 `--define QYWORK_VERSION` 内联；单文件二进制无法读取打包范围外的 VERSION
+ * 文件（相对路径无法解析，实测会静默输出 0.0.0）。直接从源码运行时改为读取文件。
  */
 declare const QYWORK_VERSION: string | undefined
 

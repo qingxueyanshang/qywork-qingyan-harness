@@ -1,7 +1,7 @@
 /**
  * 覆盖 `loop/request.ts` 的 `replayReasoning` / `reasoningPrefix`，以及 `loop/index.ts` 装配点
- * 与 `loop/attempt.ts` 盖前缀这两处接线：原生推理只在产生它的前缀未变时回放，
- * 思考正文只在协议会发时留在请求里。
+ * 与 `loop/attempt.ts` 标记前缀这两处调用：原生推理只在产生它的前缀未变时回放，
+ * 思考正文只在协议要求发送时保留在请求中。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -17,7 +17,7 @@ const OPAQUE = { opaque: true, text: 'none' } as const
 const envelope = envelopeHashOf({ model: 'm', system: [{ text: 'sys' }], tools: [] })
 const items = [{ type: 'thinking', thinking: '想', signature: 's' }]
 
-/** 按装配点同一套算法，给「这几条消息之后产生的响应」盖前缀。 */
+/** 按装配点的同一算法，为在给定消息之后产生的响应标记前缀。 */
 function stampAfter(messages: WireMessage[], env = envelope): ResponseReasoning {
   const req = {
     model: 'm',
@@ -31,7 +31,7 @@ function stampAfter(messages: WireMessage[], env = envelope): ResponseReasoning 
 describe('装配点裁剪', () => {
   const user: WireMessage = { role: 'user', content: '读 a.ts' }
 
-  test('前缀未变时原样保留，思考正文不随行', () => {
+  test('前缀未变时原样保留，不携带思考正文', () => {
     const turn: WireMessage = {
       role: 'assistant',
       content: '',
@@ -44,7 +44,7 @@ describe('装配点裁剪', () => {
     expect(kept!.reasoningContent).toBeUndefined()
   })
 
-  test('换模型或工具表（信封变了）即剥离', () => {
+  test('更换模型或工具表（信封变化）时剥离', () => {
     const turn: WireMessage = {
       role: 'assistant',
       content: '好',
@@ -96,7 +96,7 @@ describe('装配点裁剪', () => {
     expect(chat[1]!.responseReasoning).toBeUndefined()
   })
 
-  test('思考正文按协议留：工具轮恒带、纯文本轮只在全量回放时带', () => {
+  test('思考正文按协议保留：工具轮始终携带，纯文本轮只在全量回放时携带', () => {
     const tool: WireMessage = {
       role: 'assistant',
       content: '',
@@ -112,8 +112,8 @@ describe('装配点裁剪', () => {
   })
 })
 
-describe('循环接线', () => {
-  test('Claude 的原生思考盖上前缀落账，此后每一轮原样回放、不带正文', async () => {
+describe('循环集成', () => {
+  test('Claude 的原生思考标记前缀后写入账本，此后每一轮原样回放，不带正文', async () => {
     const seen: WireMessage[][] = []
     const persisted: unknown[] = []
     const inner = fakeAdapter([])
@@ -154,9 +154,9 @@ describe('循环接线', () => {
       history: [{ role: 'user', content: '读两个文件' }],
       signal: new AbortController().signal,
     })) {
-      // 只看请求与落账。
+      // 只检查请求与写入账本的内容。
     }
-    // 思考正文另开的步骤不带载荷，这里只看原生条目那两条。
+    // 思考正文单独记录的步骤不带载荷，此处只检查两条原生条目。
     expect(persisted.filter(Boolean)).toEqual([
       { ...reasoning, prefix: expect.any(String) },
       { ...reasoning, prefix: expect.any(String) },

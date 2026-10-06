@@ -1,19 +1,18 @@
 /**
  * 派发器的契约。
  *
- * 拆成一域一文件之后，「哪条路径归谁管」从一个 439 行函数里的顺序，变成了
- * 八个模块各自的 `return null`。这里锁住那条契约本身：
- * **`null` 只表示「不归本模块管」**，任何真实结果都必须是 `Response`。
+ * 路由按域拆分到各自的文件后，路径归属由各模块的 `return null` 决定。
+ * 此处锁定该契约本身：`null` 只表示不由本模块处理，任何实际结果都必须是 `Response`。
  *
- * 一个域返回了 `null` 但已经做过副作用，是这套结构唯一会出的新错——
- * 那会让请求继续往下走，被后面的域或 404 接管，而副作用已经发生了。
+ * 某个域返回 `null` 但已产生副作用，是该结构特有的错误：
+ * 请求会继续向下匹配，由后续的域或 404 处理，而副作用已经发生。
  *
- * 夹具用 `as unknown as ApiDeps`：这里挑的三条路由只碰 `ApiDeps` 里的几个字段，
- * 为它们造一个真的 RunManager 只会把测试变成集成测试，
- * 而集成部分 `e2e.test.ts` 已经覆盖了。
+ * 夹具使用 `as unknown as ApiDeps`：此处选取的路由只访问 `ApiDeps` 中的少数字段，
+ * 为它们构造真实的 RunManager 会使测试变成集成测试，
+ * 而集成部分已由 `e2e.test.ts` 覆盖。
  *
- * **Store 必须是真的**：派发器要按 `?ws=` 查 `workspaces` 表决定这一次请求
- * 问的是哪个项目——那张表就是「哪个根」的权威，假不了。
+ * Store 必须是真实实例：派发器按 `?ws=` 查询 `workspaces` 表，确定本次请求
+ * 所指的项目；该表是项目根目录的权威，不能用替身代替。
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -54,8 +53,8 @@ import type { ModelsResponse } from './conversations.ts'
 import { type ApiDeps, handleApi } from './index.ts'
 
 /**
- * RunManager 的替身。`runId` 是一个可写字段：历史接口的运行中快照只问
- * 「此刻在跑的是哪一轮」，测试按需摆上一个真实 run 的 id。
+ * RunManager 的替身。`runId` 是可写字段：历史接口的运行中快照只查询
+ * 当前运行中的轮次，测试按需设置一个真实 run 的 id。
  */
 interface RunsStub {
   isBusy(): boolean
@@ -82,12 +81,12 @@ function deps(root = '/ws/demo'): ApiDeps & { wsId: string } {
       },
       mode: 'auto',
     },
-    // 会话那几条动作要用到这两个：删除前问一句「在跑吗」，重命名后广播一条。
-    // 只给这两个方法，不造一个真的 RunManager / EventBus——那会把这里变成集成测试，
-    // 而集成部分 `e2e.test.ts` 已经覆盖了。
+    // 会话的删除与重命名操作需要这两个对象：删除前查询是否运行中，重命名后广播一条事件。
+    // 只提供这两个方法，不构造真实的 RunManager / EventBus：构造真实实例会使此处变成集成测试，
+    // 而集成部分已由 `e2e.test.ts` 覆盖。
     runs: runsStub,
     bus: { publish: () => {}, currentSeq: 77 },
-    // 删除会话时关它名下的内置浏览器页。没有宿主时是一次空操作。
+    // 删除会话时关闭该会话名下的内置浏览器页面。没有宿主时为空操作。
     closeBrowserPages: async () => {},
     enableLan: () => {
       lan = true
@@ -98,8 +97,8 @@ function deps(root = '/ws/demo'): ApiDeps & { wsId: string } {
     },
     lanEnabled: () => lan,
     lanPort: () => 7788,
-    // upsert 项目那条路会调它把分支监听指过去。真的监听在 `server.ts` 装配，
-    // 这里只要不是 undefined。
+    // upsert 项目时调用它，将分支监听指向该项目。真实的监听在 `server.ts` 中装配，
+    // 此处只需不为 undefined。
     watchGit: () => {},
   } as unknown as ApiDeps & { wsId: string }
 }
@@ -108,49 +107,49 @@ const call = (path: string, init?: RequestInit, d: ApiDeps = deps()) =>
   handleApi(new URL(`http://127.0.0.1${path}`), new Request(`http://127.0.0.1${path}`, init), d)
 
 describe('派发', () => {
-  test('没人认领的路径回 null，不是 404 —— 404 由调用方决定', async () => {
+  test('无模块处理的路径返回 null 而不是 404：404 由调用方决定', async () => {
     expect(await call('/api/nope')).toBe(null)
     expect(await call('/api/plugins/x/y/z')).toBe(null)
   })
 
-  test('认领了就回 Response', async () => {
+  test('有模块处理时返回 Response', async () => {
     const res = await call('/api/workspace')
     expect(res).toBeInstanceOf(Response)
     expect(res?.status).toBe(200)
   })
 
-  test('工作区那条回的是「这次问的是哪个项目」，名字取目录名', async () => {
+  test('工作区接口返回本次请求所指的项目，名称取目录名', async () => {
     const d = deps()
     const res = await call('/api/workspace', undefined, d)
     expect(await res?.json()).toEqual({
       id: (d as unknown as { wsId: string }).wsId,
-      // 账本里的根是归一后的形式（`upsertWorkspace`），派发照抄它。
+      // 账本中的根目录是规范化后的形式（`upsertWorkspace`），派发器原样使用。
       root: resolve('/ws/demo'),
       name: 'demo',
     })
   })
 
-  test('根目录这种取不出目录名时回落到整条路径，不回空串', async () => {
+  test('根目录等无法取得目录名时回退到完整路径，不返回空字符串', async () => {
     const res = await call('/api/workspace', undefined, deps('/'))
     expect(((await res?.json()) as { name: string }).name).toBe(resolve('/'))
   })
 
-  /* 指了一个不存在的项目要 404，**不能静默回落到最近打开的那个**——
-     回落等于在用户选定 A 的位置上读写 B。 */
-  test('?ws= 指到不存在的项目回 404', async () => {
+  /* 指定不存在的项目必须返回 404，不能静默回退到最近打开的项目：
+     回退会在用户选定项目 A 时读写项目 B。 */
+  test('?ws= 指向不存在的项目时返回 404', async () => {
     const res = await call('/api/workspace?ws=ws_nope')
     expect(res?.status).toBe(404)
   })
 })
 
-describe('方法参与匹配，不是只看路径', () => {
-  test('POST 才切局域网开关；GET 同一路径不归它管', async () => {
+describe('方法参与匹配，不只匹配路径', () => {
+  test('只有 POST 切换局域网开关；同一路径的 GET 不由它处理', async () => {
     const d = deps()
     expect(await call('/api/pairing/lan', undefined, d)).toBe(null)
     expect(d.lanEnabled()).toBe(false)
   })
 
-  test('开关真的翻转，且回的是翻转后的状态', async () => {
+  test('开关实际切换，且返回切换后的状态', async () => {
     const d = deps()
     const on = await call(
       '/api/pairing/lan',
@@ -169,7 +168,7 @@ describe('方法参与匹配，不是只看路径', () => {
     expect(d.lanEnabled()).toBe(false)
   })
 
-  test('body 不是合法 JSON 时按「关」处理，不抛 —— 开关默认落在更安全的一侧', async () => {
+  test('body 不是合法 JSON 时按关闭处理且不抛出异常：默认取更安全的状态', async () => {
     const d = deps()
     const res = await call('/api/pairing/lan', { method: 'POST', body: 'not json' }, d)
     expect(res?.status).toBe(200)
@@ -179,12 +178,12 @@ describe('方法参与匹配，不是只看路径', () => {
 /**
  * 移除项目。
  *
- * 这一组盯的是三件会被写错的事：**会话真的跟着没了**（不是只删了项目行，
- * 留一批读不回来的孤儿）、**当前这个删不掉**（删了之后界面手里的 `?ws=`
- * 指向不存在的记录，随后每条请求都 404）、**不存在的 id 回 404 而不是静默成功**。
+ * 本组锁定以下行为：移除只从列表中移除项目，会话数据保留，重新添加同一路径时一并恢复；
+ * 当前项目可以移除，响应携带下一个项目；最后一个项目无法移除；
+ * 不存在的 id 返回 404，而不是静默成功。
  */
 describe('移除项目', () => {
-  /** 两个项目：后 upsert 的那个是「当前」（不带 `?ws=` 落到最近打开的）。 */
+  /** 两个项目：后 upsert 的项目为当前项目（不带 `?ws=` 时取最近打开的项目）。 */
   const twoWorkspaces = () => {
     const d = deps('/ws/old')
     const oldId = (d as unknown as { wsId: string }).wsId
@@ -192,7 +191,7 @@ describe('移除项目', () => {
     return { d, oldId, currentId: current.id }
   }
 
-  test('移除项目只是从列表里拿掉，会话一条不少', async () => {
+  test('移除项目只从列表中移除，会话全部保留', async () => {
     const { d, oldId } = twoWorkspaces()
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     expect(listConversations(d.store, oldId as never)).toHaveLength(1)
@@ -200,23 +199,23 @@ describe('移除项目', () => {
     const res = await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d)
     expect(res?.status).toBe(200)
     expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(oldId)
-    // 数据没动：行还在（`getWorkspace` 不过滤），会话照样读得回来
+    // 数据未改动：项目行仍存在（`getWorkspace` 不过滤），会话仍可读取
     expect(getWorkspace(d.store, oldId as never)).not.toBeNull()
     expect(listConversations(d.store, oldId as never)).toHaveLength(1)
   })
 
-  test('重新添加同一路径 —— 项目和它的会话一起回来', async () => {
+  test('重新添加同一路径时项目与其会话一并恢复', async () => {
     const { d, oldId } = twoWorkspaces()
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     expect((await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d))?.status).toBe(200)
 
     const again = upsertWorkspace(d.store, '/ws/old', 'old')
-    expect(String(again.id)).toBe(oldId) // root_path UNIQUE，命中的是同一行
+    expect(String(again.id)).toBe(oldId) // root_path 有 UNIQUE 约束，命中同一行
     expect(listWorkspaces(d.store).map((w) => String(w.id))).toContain(oldId)
     expect(listConversations(d.store, oldId as never)).toHaveLength(1)
   })
 
-  test('移除两次 —— 第二次回 404，不静默当成功', async () => {
+  test('重复移除时第二次返回 404，不静默视为成功', async () => {
     const { d, oldId } = twoWorkspaces()
     expect((await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d))?.status).toBe(200)
     expect((await call(`/api/workspaces/${oldId}`, { method: 'DELETE' }, d))?.status).toBe(404)
@@ -225,11 +224,11 @@ describe('移除项目', () => {
   const patchPin = (id: string, pinned: boolean, d: ApiDeps) =>
     call(`/api/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify({ pinned }) }, d)
 
-  /* 侧栏顺序是「置顶 > 添加先后」，**不跟着切换重排**——按最近打开排的话
-     切一次项目它就跳到最前，列表在用户眼皮底下来回跳，而置顶已经是显式按钮。 */
-  test('置顶把项目提到最前，取消置顶回到添加时的位置', async () => {
+  /* 侧栏按「置顶 > 添加顺序」排序，切换项目不改变顺序：按最近打开排序时，
+     每次切换都会把该项目移到最前，列表位置随之变化；置顶已有显式按钮。 */
+  test('置顶将项目移到最前，取消置顶后恢复添加顺序中的位置', async () => {
     const { d, oldId, currentId } = twoWorkspaces()
-    // old 先添加，所以默认排在前面；后添加的 current 在后
+    // old 先添加，默认排在 current 之前
     expect(listWorkspaces(d.store).map((w) => String(w.id))).toEqual([oldId, currentId])
 
     expect((await patchPin(currentId, true, d))?.status).toBe(200)
@@ -239,16 +238,16 @@ describe('移除项目', () => {
     expect(listWorkspaces(d.store).map((w) => String(w.id))).toEqual([oldId, currentId])
   })
 
-  test('切项目不改变侧栏顺序 —— 顺序稳定，跳动才是 bug', async () => {
+  test('切换项目不改变侧栏顺序', async () => {
     const { d, oldId, currentId } = twoWorkspaces()
     const before = listWorkspaces(d.store).map((w) => String(w.id))
-    // 「切过去」走的是同一条 upsert，它会更新 last_opened_at
+    // 切换项目使用同一个 upsert，它会更新 last_opened_at
     upsertWorkspace(d.store, '/ws/current', 'current')
     expect(listWorkspaces(d.store).map((w) => String(w.id))).toEqual(before)
     expect(before).toEqual([oldId, currentId])
   })
 
-  test('置顶两次回 404，body 不是布尔回 422 —— 都不静默当成功', async () => {
+  test('重复置顶返回 404，body 不是布尔值时返回 422，均不静默视为成功', async () => {
     const { d, oldId } = twoWorkspaces()
     expect((await patchPin(oldId, true, d))?.status).toBe(200)
     expect((await patchPin(oldId, true, d))?.status).toBe(404)
@@ -256,7 +255,7 @@ describe('移除项目', () => {
     expect(bad?.status).toBe(422)
   })
 
-  test('归档把现有会话从列表里拿掉，新建的照常显示', async () => {
+  test('归档将现有会话移出列表，之后新建的会话照常显示', async () => {
     const { d, oldId } = twoWorkspaces()
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
@@ -267,12 +266,12 @@ describe('移除项目', () => {
     expect(await res?.json()).toEqual({ archived: 2 })
     expect(listConversations(d.store, oldId as never)).toHaveLength(0)
 
-    // 归档之后新建的一条照常出现——归档的是执行那一刻的那些，不是这个项目本身
+    // 归档后新建的会话照常显示：归档作用于执行时已有的会话，而非项目本身
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     expect(listConversations(d.store, oldId as never)).toHaveLength(1)
   })
 
-  test('归档不删数据：按 id 仍然读得回来', async () => {
+  test('归档不删除数据：按 id 仍可读取', async () => {
     const { d, oldId } = twoWorkspaces()
     const c = createConversation(d.store, {
       workspaceId: oldId as never,
@@ -283,7 +282,7 @@ describe('移除项目', () => {
     expect(getConversation(d.store, c.id)).not.toBeNull()
   })
 
-  test('重复归档回 0 条 —— 「0 条」和「成功」在界面上要能分开', async () => {
+  test('重复归档返回 0 条，界面据此区分「0 条」与「成功」', async () => {
     const { d, oldId } = twoWorkspaces()
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     await call(`/api/workspaces/${oldId}/archive`, { method: 'POST' }, d)
@@ -292,11 +291,11 @@ describe('移除项目', () => {
   })
 
   /**
-   * 新建项目的两条入参。
+   * 新建项目的两种入参：名称与路径。
    *
-   * **`QYWORK_HOME` 必须指到临时目录**：只给 name 那条会真的 mkdir，
-   * 不改的话测试会往开发者真实的 `~/.qywork/workspaces/` 里堆文件夹——
-   * 「测试残留污染真实账本」在这个仓库里发生过。
+   * `QYWORK_HOME` 必须指向临时目录：只提供 name 时会实际创建目录，
+   * 不重定向时测试会在开发者真实的 `~/.qywork/workspaces/` 中创建文件夹，
+   * 测试残留会污染真实账本。
    */
   describe('新建项目', () => {
     let home = ''
@@ -314,7 +313,7 @@ describe('移除项目', () => {
     const post = (body: unknown, d: ApiDeps) =>
       call('/api/workspaces', { method: 'POST', body: JSON.stringify(body) }, d)
 
-    test('只给名字 —— 在默认根下建一个同名文件夹', async () => {
+    test('只提供名称时在默认根目录下创建同名文件夹', async () => {
       const d = deps()
       const res = await post({ name: '青学研上' }, d)
       expect(res?.status).toBe(200)
@@ -331,7 +330,7 @@ describe('移除项目', () => {
       expect(listConversations(d.store, workspace.id as never)).toHaveLength(1)
     })
 
-    test('首会话写入失败时项目账本也回滚 —— 两次写入必须是同一个事务', async () => {
+    test('首个会话写入失败时项目记录一并回滚：两次写入必须在同一个事务中', async () => {
       const d = deps()
       d.store.db.exec(/* sql */ `
         CREATE TRIGGER reject_first_conversation
@@ -345,7 +344,7 @@ describe('移除项目', () => {
       expect(getWorkspaceByPath(d.store, join(home, 'workspaces', 'rollback'))).toBeNull()
     })
 
-    test('重名不复用已有目录，加后缀 —— 那里可能是上一个同名项目的内容', async () => {
+    test('重名时不复用已有目录而是添加后缀：该目录可能存有之前同名项目的内容', async () => {
       const d = deps()
       const a = (await (await post({ name: 'demo' }, d))?.json()) as {
         workspace: { rootPath: string }
@@ -357,31 +356,31 @@ describe('移除项目', () => {
       expect(b.workspace.rootPath).toBe(join(home, 'workspaces', 'demo-2'))
     })
 
-    test('名字含分隔符或 .. 回 422 —— 拒绝而不是洗成别的名字', async () => {
+    test('名称含分隔符或 .. 时返回 422，拒绝而不是改写为其他名称', async () => {
       const d = deps()
       for (const name of ['../../etc', 'a/b', 'a\\b', '..', 'a:b', 'a?']) {
         expect((await post({ name }, d))?.status).toBe(422)
       }
-      // 建了一半再失败最难查，所以默认根下不该留下任何文件
+      // 部分创建后失败最难排查，因此默认根目录下不应留下任何文件
       expect(await stat(join(home, 'workspaces')).catch(() => null)).toBe(null)
     })
 
-    test('两个都不给回 422', async () => {
+    test('名称与路径均未提供时返回 422', async () => {
       expect((await post({}, deps()))?.status).toBe(422)
     })
 
-    test('给的路径已在账本里 —— 复用那一行，移除过的会话跟着回来', async () => {
+    test('提供的路径已在账本中时复用该行，已移除项目的会话一并恢复', async () => {
       const d = deps('/ws/demo')
       const id = (d as unknown as { wsId: string }).wsId
       createConversation(d.store, { workspaceId: id as never, provider: 'p', model: 'm' })
-      upsertWorkspace(d.store, '/ws/other', 'other') // 留一个，不然移除会被 409 挡住
+      upsertWorkspace(d.store, '/ws/other', 'other') // 保留另一个项目，否则移除会被 409 拒绝
       expect((await call(`/api/workspaces/${id}`, { method: 'DELETE' }, d))?.status).toBe(200)
       expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(id)
 
-      // 用真实存在的目录重新添加：路径唯一，命中的还是同一行
+      // 项目按路径唯一匹配：新路径对应新项目，原路径命中同一行
       const dir = await mkdtemp(join(tmpdir(), 'qywork-readd-'))
       const again = upsertWorkspace(d.store, dir, 'x')
-      expect(String(again.id)).not.toBe(id) // 换了路径就是另一个项目
+      expect(String(again.id)).not.toBe(id) // 不同路径对应不同项目
       await rm(dir, { recursive: true, force: true }).catch(() => {})
 
       const back = upsertWorkspace(d.store, '/ws/demo', 'demo')
@@ -390,7 +389,7 @@ describe('移除项目', () => {
     })
   })
 
-  test('列表里的会话数与列表口径一致 —— 归档后一起归零', async () => {
+  test('列表中的会话数与会话列表口径一致，归档后同步归零', async () => {
     const { d, oldId } = twoWorkspaces()
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     const list = async () =>
@@ -404,11 +403,11 @@ describe('移除项目', () => {
     expect(await list()).toBe(0)
   })
 
-  test('当前项目也能移除，并回「接下来切哪个」', async () => {
+  test('当前项目可以移除，响应返回下一个项目', async () => {
     const { d, oldId, currentId } = twoWorkspaces()
     const res = await call(`/api/workspaces/${currentId}`, { method: 'DELETE' }, d)
     expect(res?.status).toBe(200)
-    // 不回 next 的话，客户端手里的 ?ws= 指着刚被移除的那个，随后每条请求都 404
+    // 不返回 next 时，客户端持有的 ?ws= 指向已移除的项目，后续请求均返回 404
     expect(await res?.json()).toEqual({
       ok: true,
       next: { id: oldId, rootPath: resolve('/ws/old') },
@@ -416,7 +415,7 @@ describe('移除项目', () => {
     expect(listWorkspaces(d.store).map((w) => String(w.id))).not.toContain(currentId)
   })
 
-  test('最后一个项目移不掉，回 409 且账本不动 —— 移完没有项目可服务', async () => {
+  test('最后一个项目无法移除：返回 409 且账本不变，否则没有可服务的项目', async () => {
     const d = deps('/ws/only')
     const onlyId = (d as unknown as { wsId: string }).wsId
     const res = await call(`/api/workspaces/${onlyId}`, { method: 'DELETE' }, d)
@@ -424,19 +423,19 @@ describe('移除项目', () => {
     expect(listWorkspaces(d.store).map((w) => String(w.id))).toContain(onlyId)
   })
 
-  test('id 不存在回 404 —— 静默成功时界面显示已删除，刷新又回来', async () => {
+  test('id 不存在时返回 404：静默成功会使界面显示已删除，刷新后又出现', async () => {
     const { d } = twoWorkspaces()
     const res = await call('/api/workspaces/ws_nope', { method: 'DELETE' }, d)
     expect(res?.status).toBe(404)
   })
 
-  test('GET 同一路径不归它管 —— 方法参与匹配', async () => {
+  test('同一路径的 GET 不由该路由处理：方法参与匹配', async () => {
     const { d, oldId } = twoWorkspaces()
     expect(await call(`/api/workspaces/${oldId}`, undefined, d)).toBe(null)
     expect(listWorkspaces(d.store).map((w) => String(w.id))).toContain(oldId)
   })
 
-  test('列表带上会话数 —— 界面要能在删之前说出代价', async () => {
+  test('列表附带会话数，界面在删除前据此提示影响范围', async () => {
     const { d, oldId } = twoWorkspaces()
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
     createConversation(d.store, { workspaceId: oldId as never, provider: 'p', model: 'm' })
@@ -448,8 +447,8 @@ describe('移除项目', () => {
   })
 })
 
-describe('出参形状', () => {
-  test('一律 application/json 且带 charset —— 少了 charset 中文会被按 ASCII 读', async () => {
+describe('响应格式', () => {
+  test('一律为 application/json 并带 charset：缺少 charset 时中文会按 ASCII 解析', async () => {
     const res = await call('/api/workspace')
     expect(res?.headers.get('content-type')).toBe('application/json; charset=utf-8')
   })
@@ -458,15 +457,15 @@ describe('出参形状', () => {
 /**
  * 模型目录端点（`api/conversations.ts` 的 `/api/models` 分支）。
  *
- * 它同时供两处界面使用，而两处要的字段不一样：
- * - 输入区的选择器要 `providers` —— **配置里真有的接口 × 模型**，第一层是接口。
- * - 设置页要 `library` —— 内置库，用来决定「加哪个模型」。
+ * 它同时供两处界面使用，两处所需的字段不同：
+ * - 输入区的选择器使用 `providers`：配置中实际存在的接口 × 模型，第一层为接口。
+ * - 设置页使用 `library`：内置库，用于选择要添加的模型。
  *
- * 两者不能合成一个扁平表：合了就等于把「有哪些模型」当成「当前能选哪些」，
- * 而选中一个没挂在任何接口下的模型，请求会按当前接口发出去。
+ * 两者不能合并为一张扁平表：合并会把「有哪些模型」当作「当前可选哪些」，
+ * 而选中未配置在任何接口下的模型时，请求会按当前接口发出。
  */
 describe('模型目录', () => {
-  /** 一个接口一个模型就够了：这一组测的是「协议怎么算」，不是接口表怎么组。 */
+  /** 一个接口、一个模型即可：本组测试档位按协议的计算，不测试接口表的组织。 */
   const withConfig = (kind: string, model: string): ApiDeps => {
     const d = deps()
     ;(d as { config: unknown }).config = {
@@ -476,10 +475,10 @@ describe('模型目录', () => {
     return d
   }
 
-  // 接服务端那一份契约类型，不在这里另编一个形状——编出来的形状不会因为接口改字段而红。
+  // 使用服务端的契约类型，不在此处另行定义：另行定义的类型不会因接口字段变更而报错。
   const body = async (d: ApiDeps) =>
     (await (await call('/api/models', undefined, d))!.json()) as ModelsResponse
-  /** 摊平成一张表只是为了断言好写；界面拿到的是分好组的。 */
+  /** 展平为一张表仅为便于断言；界面取得的是分组后的结构。 */
   const models = async (d: ApiDeps) => (await body(d)).providers.flatMap((p) => p.models)
 
   test('生成接入方式由目录下发，不因自定义地址改变原生协议或添加其他厂商协议', async () => {
@@ -497,7 +496,7 @@ describe('模型目录', () => {
     ])
   })
 
-  test('新编码模型只出一行，订阅限制和未知单价不被丢失', async () => {
+  test('新编码模型只列出一行，保留订阅限制与未知单价', async () => {
     const response = await body(withConfig('openai_chat_completions', 'step-5-preview'))
     expect(response.providers[0]?.models[0]).toMatchObject({
       known: true,
@@ -546,18 +545,18 @@ describe('模型目录', () => {
   })
 
   /**
-   * **只列配置里有的**。
+   * 只列出配置中存在的模型。
    *
-   * 并入内置目录那版列的是「世上有哪些模型」：用户选一个没挂在任何接口下的，
-   * 请求按当前接口发出去，端点、key、价目表全是另一家的，而且不报错。
+   * 并入内置目录时列出的是全部已知模型：用户选中未配置在任何接口下的模型后，
+   * 请求按当前接口发出，端点、key 与价目表均属于另一家厂商，且不报错。
    */
-  test('只列接口下挂着的模型，不并入内置目录', async () => {
+  test('只列出接口下配置的模型，不并入内置目录', async () => {
     const list = await models(withConfig('openai_chat_completions', 'deepseek-flash'))
     expect(list.map((m) => m.id)).toEqual(['deepseek-flash'])
   })
 
-  /** 第一层是接口。名字是用户起的，界面按它分组——没有它就没法切接口。 */
-  test('按接口分组，接口名原样带出', async () => {
+  /** 第一层为接口。接口名由用户命名，界面按它分组，缺少接口名时无法切换接口。 */
+  test('按接口分组，接口名原样返回', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
       active: { provider: '官方', model: 'deepseek-flash' },
@@ -568,12 +567,12 @@ describe('模型目录', () => {
     }
     const b = await body(d)
     expect(b.providers.map((p) => p.name)).toEqual(['官方', '中转站'])
-    // 同一个模型 id 挂在两个接口下是常态，两条都要在，各归各的组。
+    // 同一模型 id 配置在两个接口下是常见情况，两条都须保留，分别归入各自的分组。
     expect(b.providers.every((p) => p.models[0]?.id === 'deepseek-flash')).toBe(true)
     expect(b.active).toEqual({ provider: '官方', model: 'deepseek-flash' })
   })
 
-  test('内置目录里有的用显示名，没有的用 id 本身', async () => {
+  test('内置目录中收录的模型使用显示名，未收录的使用 id', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
       active: { provider: 'p', model: 'claude-opus-5' },
@@ -588,10 +587,10 @@ describe('模型目录', () => {
   })
 
   /**
-   * `effortLevels` 决定界面显不显示思考强度那个 chip。照实报——Haiku 4.5 走的是
-   * budget_tokens，没有 effort 档；报成五档就是一个选了没反应的控件。
+   * `effortLevels` 决定界面是否显示思考强度 chip，必须如实返回：Haiku 4.5 使用
+   * budget_tokens，没有 effort 档位；返回五档会产生一个选择后不生效的控件。
    */
-  test('effortLevels 照实报，没有档位的就是空数组', async () => {
+  test('effortLevels 如实返回，没有档位时为空数组', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
       active: { provider: 'p', model: 'claude-opus-5' },
@@ -605,13 +604,13 @@ describe('模型目录', () => {
   })
 
   /**
-   * **档位按这个接口的协议算。**
+   * 档位按该接口的协议计算。
    *
-   * 复现的是一个只在某些配置下才犯的形状：接口是「以 OpenAI 兼容协议经中转站调
-   * Claude」，目录里 claude-opus-5 的原生条目声明五档 effort，但兼容协议不发
-   * Anthropic 那套思考字段。按原生条目报出去，界面就会画一个选了没反应的控件。
+   * 该错误只在特定配置下出现：接口以 OpenAI 兼容协议经中转站调用
+   * Claude，目录中 claude-opus-5 的原生条目声明五档 effort，但兼容协议不发送
+   * Anthropic 的思考字段。按原生条目返回时，界面会渲染一个选择后不生效的控件。
    */
-  test('中转站以兼容协议调 Claude 时不报 Anthropic 的档位', async () => {
+  test('中转站以兼容协议调用 Claude 时不返回 Anthropic 的档位', async () => {
     const native = await models(withConfig('anthropic_messages', 'claude-opus-5'))
     expect(native.find((m) => m.id === 'claude-opus-5')?.effortLevels.length).toBe(5)
 
@@ -620,7 +619,7 @@ describe('模型目录', () => {
   })
 
   /** 各协议都按自身目录声明可用档位。 */
-  test('DeepSeek 按接口协议报档位', async () => {
+  test('DeepSeek 按接口协议返回档位', async () => {
     const compat = await models(withConfig('openai_chat_completions', 'deepseek-flash'))
     expect(compat.find((m) => m.id === 'deepseek-flash')?.effortLevels).toEqual([
       'low',
@@ -636,7 +635,7 @@ describe('模型目录', () => {
     ])
   })
 
-  test('已保存的 DeepSeek 五档探测不能覆盖内置三档，旧的无效选择不回显', async () => {
+  test('已保存的 DeepSeek 五档探测结果不覆盖内置三档，已失效的选择不回显', async () => {
     const d = withConfig('openai_chat_completions', 'deepseek-flash')
     const provider = Object.values(d.config.providers)[0]!
     provider.models['deepseek-flash'] = {
@@ -673,14 +672,14 @@ describe('模型目录', () => {
       },
     }
     const row = (await models(d)).find((m) => m.id === 'deepseek-flash')!
-    // 内置目录写的是 high/max，人工规格覆盖成 low/medium。
+    // 内置目录为 high/max，人工规格覆盖为 low/medium。
     expect(row.effortLevels).toEqual(['low', 'medium'])
   })
 
   /**
-   * 未收录模型可以由用户在模型库明确补录能力；端点探测本身不能发明官方档位。
+   * 未收录模型可由用户在模型库中补录能力；端点探测不能生成官方档位。
    */
-  test('未收录的模型人工补录后也报档位', async () => {
+  test('未收录的模型经人工补录后返回档位', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
       active: { provider: 'p', model: '中转站上的某个模型' },
@@ -703,10 +702,10 @@ describe('模型目录', () => {
   })
 
   /**
-   * 端点校准必须按接口隔离。同一个官方模型挂在两个中转站上，其中一个拒绝
-   * effort 不能把另一个也判死；反过来，某个端点接受该字段，也不能无依据地增加官方档位。
+   * 端点校准必须按接口隔离。同一官方模型配置在两个中转站上时，其中一个拒绝
+   * effort 不应使另一个也判定为不支持；反之，某个端点接受该字段，也不能据此增加官方档位。
    */
-  test('同模型的端点传输校准互不污染', async () => {
+  test('同一模型的端点传输校准互不影响', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
       active: { provider: 'blocked', model: 'deepseek-flash' },
@@ -734,13 +733,13 @@ describe('模型目录', () => {
   })
 
   /**
-   * 选定档随模型目录一起下发，**与该模型的 `effortLevels` 同源**。
+   * 选定档位随模型目录一起下发，与该模型的 `effortLevels` 来源相同。
    *
-   * 不走握手：握手是连接级、只报一次，而档位是「接口 × 模型」的属性——报上来的
-   * 那个值在用户切一次模型之后就不再成立。分两处取则必然出现「档位面是 A 模型的、
-   * 选定值是 B 模型的」。
+   * 不经由握手下发：握手是连接级的，只发送一次，而档位是「接口 × 模型」的属性，
+   * 用户切换模型后握手中的值即失效。分两处获取时，必然出现可选档位属于模型 A、
+   * 选定值属于模型 B 的情况。
    */
-  test('选定档随模型目录下发，各取各的', async () => {
+  test('选定档位随模型目录下发，各模型独立取值', async () => {
     const d = deps()
     ;(d as { config: unknown }).config = {
       active: { provider: 'ds', model: 'deepseek-flash' },
@@ -755,7 +754,7 @@ describe('模型目录', () => {
     const flash = list.find((m) => m.id === 'deepseek-flash')!
     expect(flash.effort).toBe('max')
     expect(flash.effortLevels).toEqual(['low', 'high', 'max'])
-    // 同接口的另一个模型没选过就是 null，不跟着变。
+    // 同一接口的另一个模型未选择过时为 null，不随之改变。
     expect(list.find((m) => m.id === 'deepseek-v4-pro')?.effort).toBeNull()
   })
 
@@ -889,7 +888,7 @@ describe('模型目录', () => {
     }
   })
 
-  /** 内置库不能被改小：缺少一家厂商，设置页上那整组模型将随之消失。 */
+  /** 内置库不得缩减：缺少一家厂商时，设置页上该厂商的整组模型随之消失。 */
   test('内置库覆盖已收录厂商', async () => {
     const b = await body(withConfig('anthropic_messages', 'claude-opus-5'))
     expect(b.library.map((v) => v.id).sort()).toEqual([
@@ -920,8 +919,8 @@ describe('模型目录', () => {
   })
 
   /**
-   * 人民币标价的三家要带出币种。少了它，¥6 会被当成 $6 显示，差七倍——
-   * 而这个错误在界面上完全看不出来，它只是一个数字。
+   * 以人民币标价的三家厂商必须返回币种。缺少币种时 ¥6 会显示为 $6，相差约七倍，
+   * 且该错误在界面上无法察觉。
    */
   test('内置库带单价与币种', async () => {
     const all = (await body(withConfig('anthropic_messages', 'claude-opus-5'))).library.flatMap(
@@ -937,13 +936,13 @@ describe('模型目录', () => {
   })
 
   /**
-   * 缓存两档也要下发。
+   * 缓存命中与写入两档单价同样须下发。
    *
-   * 少了它们，界面上只有输入/输出两个数，而缓存价决定的是长会话的实际账单
-   * ——Anthropic 写入是 input 的 1.25 倍，DeepSeek 写入不收费，
-   * 这个差别在只看输入/输出时完全看不见。
+   * 缺少时界面只显示输入与输出两项单价，而缓存价格决定长会话的实际费用：
+   * Anthropic 写入为 input 的 1.25 倍，DeepSeek 写入不收费，
+   * 只看输入与输出单价时无法看出该差别。
    */
-  test('库里带缓存命中与写入两档', async () => {
+  test('内置库带缓存命中与写入两档单价', async () => {
     const all = (await body(withConfig('anthropic_messages', 'claude-opus-5'))).library.flatMap(
       (v) => v.models,
     )
@@ -953,25 +952,25 @@ describe('模型目录', () => {
     const fable = all.find((m) => m.id === 'claude-fable-5-1')!
     expect(fable.cacheRead).toBe(0.25)
     expect(fable.cacheWrite).toBe(12.5)
-    // DeepSeek 的自动前缀缓存写入不收费，那是个真值不是缺值。
+    // DeepSeek 的自动前缀缓存写入不收费，0 是实际值而非缺失值。
     expect(all.find((m) => m.id === 'deepseek-flash')?.cacheWrite).toBe(0)
   })
 
   /**
-   * **同一个模型在库里只出现一次。**
+   * 同一模型在内置库中只出现一次。
    *
-   * 目录里同 id 多条是给 `lookupModel` 按协议查能力用的（DeepSeek 有兼容和
-   * Responses 两条）。协议是接口的属性，摆进模型列表就是让用户在两条看起来
-   * 一样的模型之间选，而他手里没有判据。
+   * 目录中同一 id 的多条记录供 `lookupModel` 按协议查询能力（DeepSeek 有兼容协议与
+   * Responses 两条）。协议是接口的属性，放入模型列表会让用户在两条外观相同的
+   * 模型之间选择，而用户没有判断依据。
    */
-  test('内置库里同一个 id 只出一条', async () => {
+  test('内置库中同一 id 只出现一次', async () => {
     const ds = (await body(withConfig('anthropic_messages', 'claude-opus-5'))).library.find(
       (v) => v.id === 'deepseek',
     )!
     expect(ds.models.map((m) => m.id)).toEqual(['deepseek-flash', 'deepseek-v4-pro'])
   })
 
-  test('未收录的模型不假装支持 effort', async () => {
+  test('未收录的模型不声明支持 effort', async () => {
     const list = await models(withConfig('openai_chat_completions', '自建的'))
     expect(list.find((m) => m.id === '自建的')?.effortLevels).toEqual([])
   })
@@ -1005,21 +1004,21 @@ describe('模型目录', () => {
   })
 
   /**
-   * **库里不带任何接口字段。**
+   * 内置库不含任何接口字段。
    *
-   * 端点和协议是接口的属性。摆进模型库，「改一条模型参数」就会连带改掉端点，
-   * 而那是另一件事：加一个模型会让别的模型连不上。
+   * 端点与协议是接口的属性。放入模型库后，修改一条模型参数会连带修改端点，
+   * 添加一个模型可能导致其他模型无法连接。
    */
-  test('库里没有端点、协议这类接口字段', async () => {
+  test('内置库中没有端点、协议等接口字段', async () => {
     const b = await body(withConfig('anthropic_messages', 'claude-opus-5'))
     const ds = b.library.find((v) => v.id === 'deepseek')!
-    // 比的是**整份键集**，不是逐个点名某几个字段不存在：点名只挡得住想得到的那几个，
-    // 键集连没想到的一起挡。（`LibraryVendor` 现在也从类型上禁掉了多余字段。）
+    // 比较整份键集，而不是逐个断言某些字段不存在：逐个断言只能拦截预先想到的字段，
+    // 比较键集可一并拦截未想到的字段。`LibraryVendor` 在类型上同样禁止多余字段。
     expect(Object.keys(ds).sort()).toEqual(['displayName', 'id', 'models'])
   })
 
-  /** 模型库人工覆盖要生效；端点探测单独落在 provider.models[].transport。 */
-  test('config.catalog 里的覆盖盖在内置值上', async () => {
+  /** 模型库的人工覆盖必须生效；端点探测结果单独保存在 provider.models[].transport。 */
+  test('config.catalog 中的覆盖值优先于内置值', async () => {
     const d = withConfig('anthropic_messages', 'claude-opus-5')
     ;(d.config as { catalog?: unknown }).catalog = {
       'claude-opus-5|anthropic_messages': { input: 99, output: 199 },
@@ -1029,12 +1028,12 @@ describe('模型目录', () => {
   })
 
   /**
-   * 目录里没有的模型，用户自己加一条参数之后要出现在库里。
+   * 目录中未收录的模型，用户添加参数后必须出现在模型库中。
    *
-   * 不出现的话，「未收录模型计价按 0 算、用量报 $0」就仍然没有出口——
-   * 而那正是加这一层的理由。
+   * 否则未收录模型按 0 计价、用量显示 $0 的问题仍无法解决，
+   * 而这正是增加这一层的原因。
    */
-  test('用户自己加的模型进库，按 vendor 归组', async () => {
+  test('用户添加的模型进入模型库，按 vendor 分组', async () => {
     const d = withConfig('anthropic_messages', 'claude-opus-5')
     ;(d.config as { catalog?: unknown }).catalog = {
       '中转站上的某个模型|openai_chat_completions': {
@@ -1049,8 +1048,8 @@ describe('模型目录', () => {
     expect(row.contextWindow).toBe(65_536)
   })
 
-  /** 没写 vendor 的归到「自定义」，不静默丢掉。 */
-  test('没挂厂商的落到自定义那一组', async () => {
+  /** 未填写 vendor 的模型归入「自定义」，不静默丢弃。 */
+  test('未指定厂商的模型归入自定义分组', async () => {
     const d = withConfig('anthropic_messages', 'claude-opus-5')
     ;(d.config as { catalog?: unknown }).catalog = { 自建的: { input: 1, output: 2 } }
     const custom = (await body(d)).library.find((v) => v.displayName === '自定义')!
@@ -1064,10 +1063,10 @@ describe('模型目录', () => {
 })
 
 /*
- * 多项目：这一次请求问的是哪个项目。
+ * 多项目：确定本次请求所指的项目。
  *
- * 回归的是「换项目要重启整个 sidecar」那条——根因是服务端把「哪个根」存成了
- * 进程级常量。删掉之后由 `?ws=` 逐请求解析，所以下面这三条就是新权威的契约。
+ * 项目根目录由 `?ws=` 逐请求解析，不存为进程级常量：存为常量时切换项目
+ * 需要重启 sidecar。以下三个用例锁定该契约。
  */
 describe('按 ?ws= 解析项目', () => {
   function twoProjects() {
@@ -1077,16 +1076,16 @@ describe('按 ?ws= 解析项目', () => {
     return { d: { store } as unknown as ApiDeps, a, b }
   }
 
-  test('带 ?ws= 时问的就是那一个，不是最近打开的那个', async () => {
+  test('带 ?ws= 时使用指定的项目，而非最近打开的项目', async () => {
     const { d, a, b } = twoProjects()
-    // b 是后 upsert 的，缺省会落到它身上——所以这条能证明参数真的起作用。
+    // b 后 upsert，缺省时会选中它，因此本用例能证明参数生效。
     const res = await call(`/api/workspace?ws=${a.id}`, undefined, d)
     expect(await res?.json()).toEqual({ id: a.id, root: resolve('/ws/a'), name: 'a' })
     const fallback = await call('/api/workspace', undefined, d)
     expect(((await fallback?.json()) as { id: string }).id).toBe(b.id)
   })
 
-  test('加项目：不是本机已存在的目录就 422，并且不落盘', async () => {
+  test('添加项目：不是本机已存在的目录时返回 422，且不落盘', async () => {
     const { d } = twoProjects()
     const res = await call(
       '/api/workspaces',
@@ -1103,7 +1102,7 @@ describe('按 ?ws= 解析项目', () => {
     expect(list.workspaces.length).toBe(2)
   })
 
-  test('加项目：已经有了就只更新「最近打开」，不插第二行', async () => {
+  test('添加项目：已存在时只更新最近打开时间，不插入第二行', async () => {
     const store = new Store({ path: ':memory:' })
     const here = process.cwd()
     const d = {
@@ -1143,13 +1142,13 @@ describe('按 ?ws= 解析项目', () => {
 })
 
 /*
- * 工具清单下发什么。
+ * 工具清单的下发内容。
  *
- * 锁的是「设置页拿不拿得到底层工具名与参数」——`ToolSpec` 上的字段被丢在服务端时，
- * 前端写了也显示不出来，而那种缺失在界面上只表现为「少了一栏」，不报任何错。
+ * 锁定设置页能否取得底层工具名与参数：`ToolSpec` 的字段在服务端被丢弃时，
+ * 前端即使已实现也无法显示，界面上只表现为缺少一列，不报任何错误。
  *
- * `QYWORK_HOME` 指到临时目录：插件与 MCP 是三层作用域的，不隔离的话这条测试
- * 会去连开发者本机全局装的那些 server。
+ * `QYWORK_HOME` 指向临时目录：插件与 MCP 有三层作用域，不隔离时本测试
+ * 会连接开发者本机全局安装的 server。
  */
 describe('工具清单', () => {
   interface Row {
@@ -1181,7 +1180,7 @@ describe('工具清单', () => {
     return ((await res?.json()) as { tools: Row[] }).tools
   }
 
-  test('每行带底层名、动作、权限与来源，不是只有中文用途', async () => {
+  test('每行包含底层名、动作、权限与来源，而不只有中文用途', async () => {
     const row = (await tools()).find((t) => t.name === 'read_file')
     expect(row).toBeDefined()
     expect(row?.actionKind).toBe('read')
@@ -1190,7 +1189,7 @@ describe('工具清单', () => {
     expect(row?.source).toBe('builtin')
   })
 
-  test('参数只报名字与必填，整份 schema 不下发', async () => {
+  test('参数只返回名称与是否必填，不下发整份 schema', async () => {
     const row = (await tools()).find((t) => t.name === 'read_file')
     expect(row?.params).toEqual([
       { name: 'path', required: true },
@@ -1199,29 +1198,29 @@ describe('工具清单', () => {
       { name: 'start', required: false },
       { name: 'end', required: false },
     ])
-    // 整份 schema 的体积由第三方 server 决定，不受控——一个键都不该漏出去
+    // 整份 schema 的体积由第三方 server 决定，不受控制，因此不下发其中任何键
     expect(row).not.toHaveProperty('parameters')
     expect(row).not.toHaveProperty('description')
   })
 
-  test('没有参数的工具报空数组，不是缺这个键', async () => {
+  test('没有参数的工具返回空数组，而不是缺少该键', async () => {
     const row = (await tools()).find((t) => t.name === 'list_schedules')
     expect(row?.params).toEqual([])
   })
 
-  test('load_tool 列得出来 —— 它不在 registerBuiltinTools 里，漏了这一页就少一行', async () => {
+  test('load_tool 出现在清单中：它不在 registerBuiltinTools 中，遗漏时页面缺少一行', async () => {
     const row = (await tools()).find((t) => t.name === 'load_tool')
     expect(row?.source).toBe('builtin')
     expect(row?.params).toEqual([{ name: 'names', required: true }])
-    // 它不是常驻工具，用途里必须带上这条边界，否则这一页与实际不符
+    // 它不是常驻工具，用途中必须写明这一边界，否则页面描述与实际不符
     expect(row?.summary).toContain('超过阈值')
   })
 
   /**
-   * 按通道注册的两组工具都要列进来。少一个通道的结果不是报错，是「模块」页那一组
-   * 只剩说明行，读起来像这组能力没有工具。
+   * 按通道注册的两组工具都必须列出。缺少一个通道时不会报错，而是「模块」页中该组
+   * 只剩说明行，看起来像该能力没有工具。
    */
-  test('浏览器与电脑控制的工具都列得出来', async () => {
+  test('浏览器与电脑控制的工具均列出', async () => {
     const rows = await tools()
     const names = rows.map((t) => t.name)
     for (const name of [
@@ -1241,8 +1240,8 @@ describe('工具清单', () => {
   })
 
   /**
-   * 「模块」页按类目分组。内置工具中只有管理 MCP 配置的归 `mcp`、安装插件的归 `plugins`；
-   * 画布与生成工具标成这两类时，会与 MCP server 提供的工具列在同一组。
+   * 「模块」页按类目分组。内置工具中只有管理 MCP 配置的工具归入 `mcp`、安装插件的工具归入 `plugins`；
+   * 画布与生成工具标为这两类时，会与 MCP server 提供的工具列在同一组。
    */
   test('内置工具按领域分组：画布与生成自成一类，MCP 与插件各自一类', async () => {
     const rows = await tools()
@@ -1267,7 +1266,7 @@ describe('工具清单', () => {
     expect(builtinIn('plugins')).toEqual(['install_plugin'])
   })
 
-  test('只回 tools 一个键 —— mcpServers 没有任何消费者', async () => {
+  test('只返回 tools 一个键：mcpServers 没有任何消费者', async () => {
     const res = await call('/api/tools')
     expect(Object.keys((await res?.json()) as object)).toEqual(['tools'])
   })
@@ -1292,10 +1291,10 @@ describe('工具清单', () => {
   })
 
   /**
-   * `write_todos` 首建报「创建」、之后报「修改」；write_file 按 mode 区分新建与覆盖修改；
-   * `browser_tabs` 的 list 是读一份清单、create / bind / close 改变本会话手里的页，
-   * 这些动作按参数分档，工具清单上如实报「不固定」。
-   * 权限效果一个都不许是函数：那一栏是安全边界，不固定就是没说。
+   * `write_todos` 首次创建时为「创建」、之后为「修改」；write_file 按 mode 区分新建与覆盖修改；
+   * `browser_tabs` 的 list 读取清单，create / bind / close 改变本会话持有的页，
+   * 这些动作随参数变化，工具清单如实显示「不固定」。
+   * 权限效果不得为函数：该列是安全边界，不固定等于未声明。
    */
   test('待办、文件写入与浏览器标签按参数区分动作，权限效果固定', async () => {
     for (const row of await tools()) {
@@ -1307,12 +1306,6 @@ describe('工具清单', () => {
   })
 })
 
-/*
- * 会话行上的三个动作：重命名 / 归档 / 硬删。
- *
- * 三条都会改账本，所以每一条的**拒绝路径**也要锁住——静默成功的写接口，
- * 在界面上和「成功了但什么都没变」完全一样。
- */
 describe('会话历史分页接口', () => {
   test('一条请求返回完整轮次并给出下一页游标', async () => {
     const d = deps()
@@ -1350,15 +1343,15 @@ describe('会话历史分页接口', () => {
     expect(page.runs).toHaveLength(1)
     expect(page.steps.map((s) => s.content)).toEqual(['答案 2'])
     expect(page.nextCursor).toBe(ids[1]!)
-    // 没有 run 在跑：不给运行中快照，界面因此不会把一条已结束的轮次画成执行中。
+    // 没有运行中的 run 时不返回运行中快照，界面因此不会把已结束的轮次渲染为执行中。
     expect(page.live).toBeNull()
   })
 
   /**
-   * 运行中那一轮的只读快照。事件环有界，断线久了补不回来，刷新只能从这里恢复
-   * 「当前请求走到哪一阶段」。每个字段都必须能在 `provider_requests` 那一行里找到来源。
+   * 运行中轮次的只读快照。事件环有界，断线时间较长时无法补齐，刷新后只能从此处恢复
+   * 当前请求所处的阶段。每个字段都必须能在 `provider_requests` 的对应行中找到来源。
    */
-  test('运行中返回 live 快照：阶段时刻与次数都来自请求账', async () => {
+  test('运行中返回 live 快照：阶段时刻与次数均来自请求账', async () => {
     const d = deps()
     const workspaceId = (d as unknown as { wsId: string }).wsId
     const conv = createConversation(d.store, {
@@ -1397,7 +1390,7 @@ describe('会话历史分页接口', () => {
         payloadHash: 'h',
       })
 
-    // 第一次被回绝并排了一次重发；第二次已经发出、响应头已到、出过内容。
+    // 第一次被拒绝并安排重发；第二次已发出、已收到响应头并返回过内容。
     const failed = open(0)
     markProviderRequestSent(d.store, failed.id)
     settleProviderRequest(d.store, failed.id, 'rejected', null, 'provider_unavailable')
@@ -1419,11 +1412,11 @@ describe('会话历史分页接口', () => {
     const res = await call(`/api/conversations/${conv.id}/history`, undefined, d)
     const page = (await res?.json()) as ConversationHistoryPageResponse
     expect(page.live?.runId).toBe(run.id)
-    // 事件序号边界由总线现取：客户端按它裁决快照与实时事件谁更新。
+    // 事件序号边界在请求时从总线读取：客户端据此判定快照与实时事件哪一方更新。
     expect(page.live?.seq).toBe(77)
     expect(page.live?.request).toMatchObject({
       requestId: live.id,
-      // 次数取自上一行的重发裁决，不是 `retry_index`——后者每个 turn 从 0 重来。
+      // 次数取自上一行的重发裁决，而非 `retry_index`：后者在每个 turn 中从 0 开始。
       attempt: 1,
       max: 5,
       status: 'in_flight',
@@ -1432,13 +1425,13 @@ describe('会话历史分页接口', () => {
       lastContentAt: 1_700_000_065_000,
       lastContentKind: 'tool_arguments',
       lastVisibleAt: 1_700_000_062_000,
-      // 下一次已经发出，退避结束，倒计时不再有截止点。
+      // 下一次请求已发出，退避结束，倒计时不再有截止点。
       backoffUntil: null,
     })
     expect(page.live?.request?.sentAt).toBeNumber()
   })
 
-  /** 还在退避里：最近一行已经落终态且裁决是重发，截止点由等待起点加退避时长还原。 */
+  /** 退避期间：最近一行已进入终态且裁决为重发，截止点由等待起点加退避时长计算。 */
   test('退避期间的 live 快照给出倒计时截止点', async () => {
     const d = deps()
     const workspaceId = (d as unknown as { wsId: string }).wsId
@@ -1493,7 +1486,7 @@ describe('会话历史分页接口', () => {
     })
   })
 
-  test('非法页大小回 422，不静默改成别的数', async () => {
+  test('非法页大小返回 422，不静默改为其他值', async () => {
     const d = deps()
     const workspaceId = (d as unknown as { wsId: string }).wsId
     const conv = createConversation(d.store, {
@@ -1507,7 +1500,7 @@ describe('会话历史分页接口', () => {
 })
 
 describe('会话诊断导出接口', () => {
-  test('只导出路径里的那条会话，并以附件 JSON 返回', async () => {
+  test('只导出路径中指定的会话，并以 JSON 附件返回', async () => {
     const d = deps()
     const workspaceId = (d as unknown as { wsId: string }).wsId
     const conv = createConversation(d.store, {
@@ -1621,8 +1614,8 @@ describe('会话诊断导出接口', () => {
   })
 
   /**
-   * 运行页问的是「这条会话花了多少」，而子 agent 的钱记在它自己那条会话上。
-   * 不按父子树取的话，四条子会话跑掉的钱在这一页上一分都看不到。
+   * 运行页统计整条会话的费用，而子 agent 的费用记在其自身的会话上。
+   * 不按父子树读取时，子会话产生的费用不会在该页显示。
    */
   test('会话用量与轮次含子会话，币种分桶', async () => {
     const d = deps()
@@ -1686,17 +1679,23 @@ describe('会话诊断导出接口', () => {
     expect(runs.childRuns.every((row) => row.run.id !== runs.runs[0]?.id)).toBe(true)
   })
 
-  test('不存在的会话回 404，不生成空诊断包', async () => {
+  test('不存在的会话返回 404，不生成空诊断包', async () => {
     const res = await call('/api/conversations/cv_nope/export')
     expect(res?.status).toBe(404)
   })
 })
 
+/*
+ * 会话行上的三个操作：重命名、归档、硬删除。
+ *
+ * 三个操作都会修改账本，因此每个操作的拒绝路径也须锁定：静默成功的写接口
+ * 在界面上与「成功但未产生任何变化」无法区分。
+ */
 describe('会话的重命名 / 归档 / 删除', () => {
   const conv = (d: ApiDeps & { wsId: string }) =>
     createConversation(d.store, { workspaceId: d.wsId as never, provider: 'p', model: 'm' })
 
-  test('PATCH 改标题，回的是改完那一行', async () => {
+  test('PATCH 修改标题，返回修改后的记录', async () => {
     const d = deps()
     const c = conv(d)
     const res = await call(
@@ -1708,9 +1707,9 @@ describe('会话的重命名 / 归档 / 删除', () => {
     expect(getConversation(d.store, c.id)?.title).toBe('改过的名字')
   })
 
-  /* 空名字在侧栏里会被兜底成「新对话」，界面上等同于改名没生效。
-     所以回 422 且**不落盘**（校验先于落盘）。 */
-  test('空标题回 422 且不落盘', async () => {
+  /* 空名称在侧栏中回退显示为「新对话」，界面上等同于重命名未生效，
+     因此返回 422 且不落盘（校验先于落盘）。 */
+  test('空标题返回 422 且不落盘', async () => {
     const d = deps()
     const c = conv(d)
     setConversationTitle(d.store, c.id, '原来的名字')
@@ -1723,7 +1722,7 @@ describe('会话的重命名 / 归档 / 删除', () => {
     expect(getConversation(d.store, c.id)?.title).toBe('原来的名字')
   })
 
-  test('改一条不存在的会话回 404', async () => {
+  test('修改不存在的会话返回 404', async () => {
     const res = await call('/api/conversations/cv_nope', {
       method: 'PATCH',
       body: JSON.stringify({ title: 'x' }),
@@ -1731,8 +1730,8 @@ describe('会话的重命名 / 归档 / 删除', () => {
     expect(res?.status).toBe(404)
   })
 
-  /* 归档只写标记：列表里没有了，按 id 仍然读得回。 */
-  test('归档之后不进列表，数据还在', async () => {
+  /* 归档只写入标记：会话从列表中移除，按 id 仍可读取。 */
+  test('归档后不出现在列表中，数据保留', async () => {
     const d = deps()
     const c = conv(d)
     const res = await call(`/api/conversations/${c.id}/archive`, { method: 'POST' }, d)
@@ -1742,10 +1741,10 @@ describe('会话的重命名 / 归档 / 删除', () => {
   })
 
   /*
-   * 归档留页、删除关页。两条都要测：只测其中一条的话，把关页调用挪到另一条上
-   * 仍然全绿，而用户看到的是归档之后页签自己没了。
+   * 归档保留页面，删除关闭页面。两种情况都须测试：只测其中一种时，关页调用移到另一个操作上
+   * 测试仍会通过，而归档后页签会被关闭。
    */
-  test('归档不关内置浏览器页，删除才关', async () => {
+  test('归档不关闭内置浏览器页，删除时关闭', async () => {
     const d = deps()
     const closed: string[] = []
     d.closeBrowserPages = (id) => {
@@ -1763,8 +1762,8 @@ describe('会话的重命名 / 归档 / 删除', () => {
     expect(closed).toEqual([deleted.id])
   })
 
-  /* 硬删是真删——这条锁的就是「删了就不在了」，不是「从列表里消失」。 */
-  test('DELETE 是硬删，账本里那一行没了', async () => {
+  /* 硬删除即实际删除：本用例锁定删除后记录不存在，而不只是从列表中消失。 */
+  test('DELETE 为硬删除，账本中的记录被删除', async () => {
     const d = deps()
     const c = conv(d)
     const res = await call(`/api/conversations/${c.id}`, { method: 'DELETE' }, d)
@@ -1773,10 +1772,10 @@ describe('会话的重命名 / 归档 / 删除', () => {
   })
 
   /*
-   * 正在跑的会话删不得：级联会把 run / step 删掉，而那一轮还在往里写。
-   * 这是唯一一种会留下悬空引用的形状，所以必须是拒绝，不是「尽力而为」。
+   * 运行中的会话不可删除：级联会删除 run / step，而该轮仍在写入。
+   * 这是唯一会留下悬空引用的情况，因此必须拒绝，而不是尽力执行。
    */
-  test('正在执行的会话回 409，且那一行还在', async () => {
+  test('正在执行的会话返回 409，且记录保留', async () => {
     const d = deps()
     const c = conv(d)
     ;(d as { runs: unknown }).runs = { isBusy: () => true }
@@ -1785,13 +1784,13 @@ describe('会话的重命名 / 归档 / 删除', () => {
     expect(getConversation(d.store, c.id)).not.toBeNull()
   })
 
-  test('删一条不存在的会话回 404，不静默成功', async () => {
+  test('删除不存在的会话返回 404，不静默成功', async () => {
     const res = await call('/api/conversations/cv_nope', { method: 'DELETE' })
     expect(res?.status).toBe(404)
   })
 
-  /* GET 同一条路径不归这几条管：方法参与匹配，否则「读」会命中「写」的分支。 */
-  test('GET /api/conversations/:id 没人认领', async () => {
+  /* 同一路径的 GET 不由这些路由处理：方法参与匹配，否则读请求会命中写操作的分支。 */
+  test('GET /api/conversations/:id 不由任何模块处理', async () => {
     const d = deps()
     const c = conv(d)
     expect(await call(`/api/conversations/${c.id}`, undefined, d)).toBe(null)
@@ -1799,7 +1798,7 @@ describe('会话的重命名 / 归档 / 删除', () => {
 })
 
 describe('会话变更分页接口', () => {
-  test('按写过文件的轮分页，带整会话合计与游标', async () => {
+  test('按写入过文件的轮次分页，附带整个会话的合计与游标', async () => {
     const d = deps()
     const workspaceId = (d as unknown as { wsId: string }).wsId
     const conv = createConversation(d.store, {
@@ -1853,7 +1852,7 @@ describe('会话变更分页接口', () => {
     expect(page.nextCursor).toBe(ids[1]!)
   })
 
-  test('非法页大小回 422', async () => {
+  test('非法页大小返回 422', async () => {
     const d = deps()
     const workspaceId = (d as unknown as { wsId: string }).wsId
     const conv = createConversation(d.store, {

@@ -1,21 +1,21 @@
 /**
  * Token 估算。**只用于面板与预算判断**，精确值一律以 provider 回报的 usage 为准。
  *
- * 三个系数（`TokenDensity`）**按模型走，由调用方传进来**，不在这里取默认值：
- * 各家 tokenizer 对中文的密度差 1.8 倍（实测 deepseek 0.57、claude 1.03 token/字），
- * 一组全局常数对两档不可能同时成立。参数必填也是为此——给默认值就等于允许某个
- * 调用点用回另一把尺，而这种漂移不会产生任何报错。
+ * 四个系数（`TokenDensity`）按模型确定，由调用方传入，此处不取默认值：
+ * 各厂商 tokenizer 对中文的密度相差 1.8 倍（实测 deepseek 0.57、claude 1.03 token/字），
+ * 一组全局常数无法同时适用于两者。参数必填也出于此原因：提供默认值等于允许某个
+ * 调用点改用另一套口径，而这种不一致不会产生任何报错。
  *
- * 四个坑：
+ * 四个易错点：
  *
- * - **除法基底，不按词计数。** 按词在压缩 JSON、长标识符、base64 残片上会空白坍缩：
- *   一段 10 KB 的压缩 JSON 真值约 5000 token，按词只有几十，低两个数量级。
- * - **稠密结构比自然语言费 token**，所以 JSON 与散文两档分开：工具 schema、
- *   tool call 参数、**工具结果**都走 JSON 那一档。
- * - **图片与文档按固定值，绝不看 base64 长度**：一张 1 MB 的图片是约 137 万个
- *   base64 字符，按字符估就是 39 万 token，而 provider 实际按约 2000 计。
- * - **tool call 的参数要单独数**：`write_file` 的整份文件正文在 arguments 里，
- *   只数 `m.content` 的话它是 0。
+ * - **按字符数相除，不按词计数。** 按词计数在压缩 JSON、长标识符、base64 片段上严重偏低：
+ *   一段 10 KB 的压缩 JSON 真值约 5000 token，按词计数只有几十，低两个数量级。
+ * - **稠密结构比自然语言消耗更多 token**，因此 JSON 与散文分为两档：工具 schema、
+ *   tool call 参数、工具结果均按 JSON 档计算。
+ * - **图片与文档按固定值计算，不按 base64 长度**：一张 1 MB 的图片约为 137 万个
+ *   base64 字符，按字符估算为 39 万 token，而 provider 实际按约 2000 计。
+ * - **tool call 的参数须单独计算**：`write_file` 的整份文件正文位于 arguments 中，
+ *   只计算 `m.content` 时该部分为 0。
  */
 
 import { COMMON_HANZI } from './common-hanzi.ts'
@@ -24,8 +24,8 @@ import type { ChatRequest, ContentBlock, ToolSchema, WireMessage } from './types
 /**
  * 常用汉字的码元集合（GB2312 一级汉字，`common-hanzi.ts`）。
  *
- * 常用字与其余汉字要分两档：DeepSeek V4.1 Flash 实测随机一级字 1.04 token / 字，随机非一级字 1.91，
- * 差近一倍；合成一档时，要么生僻字被低估（按常用字取值），要么常用中文被高估近三倍。
+ * 常用字与其余汉字须分为两档：DeepSeek V4.1 Flash 实测随机一级字 1.04 token / 字，随机非一级字 1.91，
+ * 相差近一倍；合为一档时，按常用字取值会低估生僻字，按生僻字取值会高估常用中文近三倍。
  */
 const COMMON_HANZI_CODES: ReadonlySet<number> = new Set(
   [...COMMON_HANZI].map((c) => c.charCodeAt(0)),
@@ -34,31 +34,31 @@ const COMMON_HANZI_CODES: ReadonlySet<number> = new Set(
 /**
  * 一个 tokenizer 对四类内容的密度。真源是 `ModelSpec.density`（`catalog.ts`）。
  *
- * 标定方法固定：同一段文本发两种长度，两次 `prompt_tokens` 相减取斜率——
- * 相减消掉端点的固定开销，中转站上也成立。加一档新模型前先按这个方法量一次，
+ * 标定方法固定：同一段文本按两种长度发送，两次 `prompt_tokens` 相减取斜率；
+ * 相减可消去端点的固定开销，经中转站调用时同样成立。新增模型档位前先按此方法测量，
  * 不要按 tokenizer 的词表大小推断。
  *
- * **每一档都必须是上界。** 低估的代价是真正超限的请求被判成不可能超，
- * 而那一次撞窗是无声的。
+ * **每一档都必须是上界。** 低估时实际超限的请求会被判定为不会超限，
+ * 超出窗口时没有任何提示。
  */
 export interface TokenDensity {
-  /** 常用汉字（`COMMON_HANZI`）与中文标点、全角符号，一个字算几个 token。 */
+  /** 常用汉字（`COMMON_HANZI`）与中文标点、全角符号：每字计为多少 token。 */
   cjkTokensPerChar: number
-  /** 其余中日韩表意文字（生僻字、扩展 A 区、兼容区），一个字算几个 token。 */
+  /** 其余中日韩表意文字（生僻字、扩展 A 区、兼容区）：每字计为多少 token。 */
   rareCjkTokensPerChar: number
-  /** 自然语言正文与代码，几个字符算一个 token。 */
+  /** 自然语言正文与代码：每个 token 对应的字符数。 */
   textCharsPerToken: number
-  /** 稠密结构（工具 schema、tool call 参数、工具结果），几个字符算一个 token。 */
+  /** 稠密结构（工具 schema、tool call 参数、工具结果）：每个 token 对应的字符数。 */
   jsonCharsPerToken: number
 }
 
 /**
- * 没有标定过的模型用这一档。
+ * 未标定的模型使用此档。
  *
- * 常用字、文本与 JSON 取实测里最费 token 的那一端（中文按 claude 的 1.03 再留一点、
- * 文本与 JSON 按稠密代码的 2.4 再留一点）；其余汉字取字节级上界：基本平面的汉字在 UTF-8 里
- * 3 字节，按字节回退的 tokenizer 每字节至多一个 token。因此对任何已知 tokenizer 都是上界。
- * 代价是读数偏高——**未收录的模型宁可偏高，不能偏低**。
+ * 常用字、文本与 JSON 取实测中 token 消耗最高的一端并留有余量（中文以 claude 的 1.03 为基础，
+ * 文本与 JSON 以稠密代码的 2.4 为基础）；其余汉字取字节级上界：基本平面的汉字在 UTF-8 中占
+ * 3 字节，按字节回退的 tokenizer 每字节至多一个 token，因此对任何已知 tokenizer 都是上界。
+ * 代价是读数偏高：未收录的模型只能偏高，不能偏低。
  */
 export const DEFAULT_DENSITY: TokenDensity = {
   cjkTokensPerChar: 1.1,
@@ -68,21 +68,21 @@ export const DEFAULT_DENSITY: TokenDensity = {
 }
 
 /**
- * 一张图片 / 一份文档按多少算。
+ * 一张图片或一份文档计为多少 token。
  *
- * 按 PDF 取值（一份 1 MB 的 PDF 实际约 2000），只按图片估会偏小一半。
- * 宁可高估——这个数进的是压缩判断，低估的代价是该压不压然后撞墙。
+ * 按 PDF 取值（一份 1 MB 的 PDF 实际约 2000），只按图片估算会偏小一半。
+ * 取值偏高：该值用于压缩判断，低估会导致应压缩时未压缩，随后超出窗口。
  */
 export const MEDIA_TOKENS = 2000
 
 /**
  * 每条消息的固定协议开销：role、分隔符、消息骨架。
  *
- * 不算它的话，一段几十条短消息的历史会被系统性低估。
+ * 不计入该开销时，几十条短消息组成的历史会被系统性低估。
  *
- * 边界：Responses 协议把一条带 N 个 tool call 的 assistant 消息拆成
- * `reasoning` + `message` + N 个 `function_call` 条目，各自带骨架，
- * 而这里只收一次。多调用轮次因此仍偏低，量级是每轮几十 token。
+ * 边界：Responses 协议将一条带 N 个 tool call 的 assistant 消息拆分为
+ * `reasoning` + `message` + N 个 `function_call` 条目，各自带有骨架，
+ * 而此处只计一次。多调用轮次因此仍然偏低，量级为每轮几十 token。
  */
 const PER_MESSAGE_OVERHEAD = 4
 
@@ -121,7 +121,7 @@ export function estimateJson(value: unknown, d: TokenDensity): number {
     const text = typeof value === 'string' ? value : JSON.stringify(value)
     return count(text, d, d.jsonCharsPerToken)
   } catch {
-    // 循环引用等。返回 0 而不是抛——估算失败不该让整轮请求起不来。
+    // 循环引用等。返回 0 而不是抛错：估算失败不应导致整轮请求无法发起。
     return 0
   }
 }
@@ -129,12 +129,12 @@ export function estimateJson(value: unknown, d: TokenDensity): number {
 /**
  * 一条消息的内容块。
  *
- * `charsPerToken` 由调用方按消息角色选（tool 走 JSON 档，其余走文本档），
- * 不在这里判——`estimateContent` 拿不到角色。
+ * `charsPerToken` 由调用方按消息角色选择（tool 使用 JSON 档，其余使用文本档），
+ * 此处不判定：`estimateContent` 无法取得角色。
  *
- * 图片/文档走固定值，**绝不落到 JSON 序列化那条路**——那正是 base64 暴涨的来源。
- * 视频计 0：它的占用随时长与抽帧规则变化，本地没有可用的算法，只有接口回报的真值可信，
- * 读数那侧据 `videoBlocksOf` 标「未计」（`agent` 的 `contextEvent`）。
+ * 图片与文档按固定值计算，不得经由 JSON 序列化估算：按 base64 长度估算正是暴涨的来源。
+ * 视频计为 0：其占用随时长与抽帧规则变化，本地没有可用的算法，只有接口回报的真值可信，
+ * 读数一侧据 `videoBlocksOf` 标注「未计」（`agent` 的 `contextEvent`）。
  */
 export function estimateContent(
   content: string | ContentBlock[] | undefined,
@@ -163,17 +163,17 @@ export function videoBlocksOf(messages: readonly WireMessage[]): number {
 /**
  * 一条 wire 消息的全部占用。
  *
- * 三部分缺一不可：正文、**工具调用参数**、**思考正文**。
+ * 三部分缺一不可：正文、工具调用参数、思考正文。
  *
- * **tool 角色的正文走 JSON 档。** 它是一段 `{call_id, tool, status, executed,
- * summary, result}` 的稠密 JSON，实测密度 2.4–2.5 字符/token，与散文差近一倍；
- * 按散文档计会把编码 agent 里长得最快的那个桶系统性低估三分之一。
+ * **tool 角色的正文按 JSON 档计算。** 它是 `{call_id, tool, status, executed,
+ * summary, result}` 形式的稠密 JSON，实测密度 2.4–2.5 字符/token，与散文相差近一倍；
+ * 按散文档计算会将编码 agent 中增长最快的部分系统性低估三分之一。
  */
 export function estimateMessage(m: WireMessage, d: TokenDensity): number {
   const charsPerToken = m.role === 'tool' ? d.jsonCharsPerToken : d.textCharsPerToken
   let total = PER_MESSAGE_OVERHEAD + estimateContent(m.content, d, charsPerToken)
-  // 原生推理条目按 provider 回报的 token 数计：签名与密文按字节估会高出数倍。
-  // 有它时思考正文不上线（`reasoningReplay`），两份只数一份。
+  // 原生推理条目按 provider 回报的 token 数计：签名与密文按字节估算会高出数倍。
+  // 存在该条目时思考正文不发送（`reasoningReplay`），两者只计一份。
   if (m.responseReasoning) total += m.responseReasoning.tokens
   else if (m.reasoningContent) total += estimateText(m.reasoningContent, d)
   for (const call of m.toolCalls ?? []) {
@@ -188,7 +188,7 @@ export function estimateMessages(messages: readonly WireMessage[], d: TokenDensi
   return total
 }
 
-/** 工具 schema。按 JSON 口径——它就是一段稠密 JSON。 */
+/** 工具 schema。按 JSON 口径计算：它本身是稠密 JSON。 */
 export function estimateSchemas(tools: readonly ToolSchema[], d: TokenDensity): number {
   return tools.length ? estimateJson(tools, d) : 0
 }

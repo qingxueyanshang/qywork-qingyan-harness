@@ -1,10 +1,10 @@
 /**
  * 两个操作系统进程对同一条到期任务的竞争。**覆盖范围**：`store/schedules.ts` 的认领事务在
- * 跨进程下的排他性，经由 `schedule-race-child.ts` 起的两份真实 `serve()`。
+ * 跨进程下的排他性，经由 `schedule-race-child.ts` 启动的两份真实 `serve()`。
  *
- * 单进程内的两个实例不足以证明这件事：认领事务是同步的，两次 tick 天然排队。这里用两个
- * `bun` 子进程共享同一个主库文件，并用一个 HTTP 屏障把它们的启动时刻对齐——两个进程都开完库、
- * 装配完之后才同时放行，竞争窗口因此落在 SQLite 的写事务上。
+ * 单进程内的两个实例不足以证明排他性：认领事务是同步的，两次 tick 自然排队。此处用两个
+ * `bun` 子进程共享同一个主库文件，并用一个 HTTP 屏障对齐启动时刻：两个进程都打开数据库、
+ * 完成装配之后才同时放行，竞争窗口因此位于 SQLite 的写事务上。
  *
  * 断言的是结果而不是时序：同一条任务只留下一条会话、一条 Run、一次模型请求。
  */
@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import type { QyConfig } from '@qywork/runtime'
 import { createConversation, createSchedule, Store, upsertWorkspace } from '@qywork/store'
 
-/** 401 假 provider：只计数、只回鉴权失败，一次就落终态。 */
+/** 401 假 provider：只计数，只返回鉴权失败，一次即进入终态。 */
 let providerCalls = 0
 const provider = Bun.serve({
   port: 0,
@@ -47,7 +47,7 @@ beforeAll(async () => {
     },
     mode: 'auto',
   }
-  // 子进程按 QYWORK_HOME 读这份配置，与 `qy serve` 同一条路径。
+  // 子进程按 QYWORK_HOME 读取该配置，与 `qy serve` 使用同一路径。
   await writeFile(join(home, 'config.json'), JSON.stringify(config), 'utf8')
 })
 
@@ -77,7 +77,7 @@ test('两个操作系统进程对同一条到期任务只认领一次', async ()
   seed.db.query('UPDATE schedules SET created_at = ? WHERE id = ?').run(Date.now() - 120_000, s.id)
   seed.close()
 
-  // 屏障：两个子进程都到齐才放行，两边的 serve() 因此在同一刻起跳。
+  // 屏障：两个子进程均到达后才放行，两侧的 serve() 因此同时启动。
   let release = (): void => {}
   const gate = new Promise<void>((resolve) => {
     release = resolve

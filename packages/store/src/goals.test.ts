@@ -1,9 +1,9 @@
 /**
- * 目标账本的行为回归。**覆盖范围**：`goals.ts`（生命周期、乐观锁、回放校验），
- * 以及迁移 22 建的 `goal_events` 表。
+ * 目标账本的行为回归。覆盖范围：`goals.ts`（生命周期、乐观锁、回放校验），
+ * 以及迁移 22 创建的 `goal_events` 表。
  *
- * 这里锁的是**行为**：谁能改、改完是什么、破损时会不会响。
- * 续起循环那一侧（谁在什么时候调这些函数）在 `server/goal-loop.test.ts`。
+ * 此处锁定的是行为：谁能修改、修改后的状态、数据损坏时是否报错。
+ * 自动继续循环一侧（何时由谁调用这些函数）的测试位于 `server/goal-loop.test.ts`。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -23,15 +23,15 @@ function fresh() {
   return { store, conversationId: conv.id }
 }
 
-/** 立一个目标并断言成功，省掉每个用例里的三行解包。 */
+/** 创建一个目标并断言成功，省去每个用例中的三行解包。 */
 function seed(store: Store, conversationId: ReturnType<typeof fresh>['conversationId']) {
   const r = createGoal(store, { conversationId, objective: '把测试跑绿' })
   if (!r.ok) throw new Error(r.message)
   return r.goal
 }
 
-describe('立目标', () => {
-  test('立完就能读回来，revision 从 1 起', () => {
+describe('创建目标', () => {
+  test('创建后即可读取，revision 从 1 开始', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
     expect(goal.revision).toBe(1)
@@ -40,17 +40,17 @@ describe('立目标', () => {
     store.close()
   })
 
-  test('没有目标时读回 null，不是抛也不是空对象', () => {
+  test('没有目标时读取到 null，既不抛出异常也不返回空对象', () => {
     const { store, conversationId } = fresh()
     expect(currentGoal(store, conversationId)).toBeNull()
     store.close()
   })
 
   /**
-   * 原始失败形状：两个目标并存时，「续起哪一个」没有答案——
-   * 而续起是自动发生的，没人会在那一刻被问。
+   * 原始失败形状：两个目标并存时，无法确定自动继续哪一个；
+   * 而自动继续不经过用户，此时没有人可以询问。
    */
-  test('上一个没做完就不许立新的，做完了才放行', () => {
+  test('上一个目标未完成时不允许创建新目标，完成后才允许', () => {
     const { store, conversationId } = fresh()
     const first = seed(store, conversationId)
 
@@ -73,12 +73,12 @@ describe('立目标', () => {
   })
 })
 
-describe('改目标', () => {
+describe('修改目标', () => {
   /**
-   * 原始失败形状：模型手里的 revision 是几轮之前读到的，照它提交会把中间
-   * 那次暂停静默覆盖掉——用户按了停，循环却接着跑。
+   * 原始失败形状：模型持有的 revision 是几轮之前读取的，按它提交会静默覆盖
+   * 中间的暂停：用户点击了停止，循环却继续运行。
    */
-  test('拿旧 revision 提交直接拒，账本一个字节不动', () => {
+  test('以旧 revision 提交时直接拒绝，账本不发生任何改动', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
     const paused = updateGoal(store, {
@@ -101,7 +101,7 @@ describe('改目标', () => {
     store.close()
   })
 
-  test('goal_id 对不上也拒', () => {
+  test('goal_id 不一致时同样拒绝', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
     const r = updateGoal(store, {
@@ -115,7 +115,7 @@ describe('改目标', () => {
     store.close()
   })
 
-  test('completed 是终态：改不回来', () => {
+  test('completed 是终态：无法改回', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
     const done = updateGoal(store, {
@@ -138,8 +138,8 @@ describe('改目标', () => {
     store.close()
   })
 
-  /** 说明必须带理由——否则循环停了而没人知道为什么。 */
-  test('blocked 不给理由就拒，给了才落盘', () => {
+  /** blocked 必须附带理由：否则循环停止后无人知道原因。 */
+  test('blocked 未提供理由时拒绝，提供理由后才写入', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
 
@@ -167,7 +167,7 @@ describe('改目标', () => {
     store.close()
   })
 
-  test('edit 必须带 objective；离开 blocked 时旧理由一并清掉', () => {
+  test('edit 必须提供 objective；离开 blocked 时一并清除旧理由', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
 
@@ -207,10 +207,10 @@ describe('改目标', () => {
 
 describe('回放校验', () => {
   /**
-   * 破损的两种形状都直接绕过本模块写表才造得出来。
-   * 应当抛错：带着来历不明的状态继续自动运行，比停下报错糟糕得多。
+   * 两种损坏形状都只能通过绕过本模块直接写表来构造。
+   * 应当抛出异常：以来源不明的状态继续自动运行，比停止并报错糟糕得多。
    */
-  test('revision 断号：抛，不返回一个「大概是这样」的值', () => {
+  test('revision 断号：抛出异常，不返回推测的值', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
     store.db
@@ -223,7 +223,7 @@ describe('回放校验', () => {
     store.close()
   })
 
-  test('非法转移：抛', () => {
+  test('非法转移：抛出异常', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
     const done = updateGoal(store, {
@@ -243,7 +243,7 @@ describe('回放校验', () => {
     store.close()
   })
 
-  test('同一个 revision 写两次被主键挡住 —— 不静默追加第二条', () => {
+  test('同一个 revision 写入两次时被主键拒绝，不静默追加第二条', () => {
     const { store, conversationId } = fresh()
     const goal = seed(store, conversationId)
     expect(() =>

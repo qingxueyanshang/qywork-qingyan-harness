@@ -1,8 +1,8 @@
 /**
  * 适配器工厂。
  *
- * 按 profile.kind 分派——**不按模型名猜厂商**。用户填什么模型 id 就用什么；
- * 经中转站以 OpenAI 协议调 Claude 是常见配置，按名字猜会把它路由到错误的协议上。
+ * 按 profile.kind 分派，**不按模型名推测厂商**。用户填写什么模型 id 就使用什么；
+ * 经中转站以 OpenAI 协议调用 Claude 是常见配置，按名称推测会把它路由到错误的协议上。
  */
 
 import { applyTransportCapabilities, lookupModel, officialBaseUrl } from './catalog.ts'
@@ -16,9 +16,9 @@ import type { LlmAdapter, ProviderProfile } from './types.ts'
  * 本机模型服务（ollama / llama.cpp / LM Studio / vLLM）不需要 API Key，
  * 空 key 在那里是**合法配置**而不是漏配。
  *
- * 判据是主机名而不是端口或路径：只有指向本机回环的端点才豁免。局域网里另一台机器上的
- * ollama 也不豁免——它可能挂在需要鉴权的反代后面，这时候静默发一个空 key
- * 换回来的是 401，又绕回 12-1 要修的那个问题。
+ * 判据是主机名而不是端口或路径：只有指向本机回环地址的端点才豁免。局域网中其他机器上的
+ * ollama 同样不豁免：它可能位于需要鉴权的反向代理之后，此时静默发送空 key
+ * 只会得到 401，「未配置 key」又会被报告为「key 无效」。
  */
 function isLocalEndpoint(baseUrl: string | undefined): boolean {
   if (!baseUrl) return false
@@ -38,12 +38,12 @@ function isLocalEndpoint(baseUrl: string | undefined): boolean {
 }
 
 /**
- * 没配 key 时**在本地就判定**，不发请求去等 401。
+ * 未配置 key 时**在本地判定**，不发送请求等待 401。
  *
- * 不要发出去等 401 再由 `classifyProviderError` 判「是没配还是配错了」——
- * 那要靠 provider 的错误文案推断，各家写法不同，判错的方向恰好是最坏的那个：
- * 报 `auth_failed / API Key 无效` 会把新用户引向「检查 key 是不是抄错了」，
- * 而正确的动作是「去配一个」。本地知道 key 是空串，没有任何理由去问 provider。
+ * 不要发送请求后再由 `classifyProviderError` 判定是未配置还是配置错误：
+ * 该判定依赖 provider 的错误文案，各厂商写法不同，误判的方向恰好最糟：
+ * 报告 `auth_failed / API Key 无效` 会引导新用户检查 key 是否填写有误，
+ * 而正确的操作是配置 key。本地已知 key 为空串，无需询问 provider。
  */
 export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAdapter {
   if (!profile.apiKey.trim() && !isLocalEndpoint(profile.baseUrl)) {

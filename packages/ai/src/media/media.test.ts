@@ -1,11 +1,11 @@
 /**
- * 生成模型的目录、参数校验与两个出图适配器。
+ * 生成模型的目录、参数校验与两个图像生成适配器。
  *
- * 覆盖范围：`media/catalog.ts` 的查法与计价（`mediaCost`、`quoteMedia` 与各模型的单价）、`media/params.ts` 的校验、
- * `media/adapters/openai-images.ts` 与 `media/adapters/dashscope.ts` 出图时实际发出的请求与对响应（含计量）的读法、
+ * 覆盖范围：`media/catalog.ts` 的查找方式与计价（`mediaCost`、`quoteMedia` 与各模型的单价）、`media/params.ts` 的校验、
+ * `media/adapters/openai-images.ts` 与 `media/adapters/dashscope.ts` 生成图像时实际发出的请求与响应（含计量）的解析方式、
  * `media/http.ts` 的错误原文与格式识别。视频适配器与任务等待见 `media-videos.test.ts`。
  *
- * 适配器必须看真实请求：起一个本机端点，把收到的方法、路径、头与正文原样存下来。
+ * 适配器测试必须检查真实请求：启动本机端点，原样保存收到的方法、路径、请求头与正文。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
@@ -29,7 +29,7 @@ interface Seen {
 
 let server: ReturnType<typeof Bun.serve>
 let seen: Seen[] = []
-/** 下一次非下载请求的回复。 */
+/** 下一次非下载请求的应答。 */
 let reply: () => Response = () => Response.json({})
 const origin = () => `http://127.0.0.1:${server.port}`
 
@@ -64,8 +64,8 @@ beforeEach(() => {
 
 const signal = () => new AbortController().signal
 
-describe('目录查法', () => {
-  test('精确匹配带回该模型自己的参数表', () => {
+describe('目录查找', () => {
+  test('精确匹配返回该模型自身的参数表', () => {
     const spec = lookupMediaModel('qwen-image-3.0', 'dashscope_images')
     expect(spec.catalogued).toBe(true)
     expect(spec.params.map((p) => p.name)).toContain('prompt_extend')
@@ -79,7 +79,7 @@ describe('目录查法', () => {
     expect(spec.params.map((p) => p.name)).toContain('prompt_extend')
   })
 
-  test('目录里没有的 id 回协议默认，标为未收录', () => {
+  test('目录中没有的 id 返回协议默认值，标为未收录', () => {
     const spec = lookupMediaModel('some-relay-image', 'openai_images')
     expect(spec.catalogued).toBe(false)
     expect(spec.params.map((p) => p.name)).toEqual(['size', 'n'])
@@ -90,7 +90,7 @@ describe('目录查法', () => {
 describe('参数校验', () => {
   const qwen = lookupMediaModel('qwen-image-3.0', 'dashscope_images')
 
-  test('合法调用没有问题', () => {
+  test('合法调用不报告问题', () => {
     expect(
       validateMediaCall(
         qwen,
@@ -101,7 +101,7 @@ describe('参数校验', () => {
     ).toEqual([])
   })
 
-  test('不认识的字段、越界的值、错的格式各报一条，并给出合法取值', () => {
+  test('未知字段、越界取值、错误格式各报告一条，并给出合法取值', () => {
     const problems = validateMediaCall(
       qwen,
       'generate',
@@ -109,22 +109,22 @@ describe('参数校验', () => {
       { images: 0, videos: 0 },
     )
     expect(problems).toHaveLength(3)
-    expect(problems[0]).toContain('可用：size')
+    expect(problems[0]).toContain('可用参数：size')
     expect(problems[1]).toContain('1–6')
     expect(problems[2]).toContain('星号')
   })
 
-  test('参考图超数与只对某个操作有效的参数', () => {
+  test('参考图超出数量与仅对特定操作有效的参数', () => {
     const wan = lookupMediaModel('wan2.7-image', 'dashscope_images')
     expect(validateMediaCall(qwen, 'edit', {}, { images: 4, videos: 0 })[0]).toContain(
-      '最多收 3 张',
+      '最多接受 3 张',
     )
     expect(
       validateMediaCall(wan, 'edit', { thinking_mode: false }, { images: 1, videos: 0 })[0],
-    ).toContain('只在生成时有效')
+    ).toContain('仅在生成时有效')
   })
 
-  test('时长的「由模型定」不在范围内也合法，下限以下的其他值报错', () => {
+  test('时长取「由模型决定」时不在范围内也合法，低于下限的其他值报错', () => {
     const wan = lookupMediaModel('wan3.0-video', 'dashscope_videos')
     const call = (duration: number) =>
       validateMediaCall(wan, 'text_to_video', { duration }, { images: 0, videos: 0 })
@@ -135,7 +135,7 @@ describe('参数校验', () => {
 })
 
 describe('界面参数', () => {
-  /** 各家文档的总像素范围与宽高比范围（2026-09-30 核）。 */
+  /** 各厂商文档的总像素范围与宽高比范围（2026-09-30 核对）。 */
   const LIMITS: Record<
     string,
     { area: [number, number]; ratio: number; tiers: string[]; side?: number }
@@ -183,7 +183,7 @@ describe('界面参数', () => {
     }
   })
 
-  test('尺寸对照表每一格都合格式、落在文档的像素与宽高比范围内，档位与文档一致', () => {
+  test('尺寸对照表的每一项格式合法，且在文档的像素与宽高比范围内，档位与文档一致', () => {
     for (const [id, limit] of Object.entries(LIMITS)) {
       const size = findMediaModel(id)!.params.find((p) => p.name === 'size')!
       const pattern = new RegExp(size.pattern!)
@@ -218,7 +218,7 @@ describe('openai_images', () => {
       baseUrl: `${origin()}/v1`,
     })
 
-  test('生成走 JSON，参数原样发出、不带 response_format，读 b64_json', async () => {
+  test('生成使用 JSON，参数原样发送，不带 response_format，读取 b64_json', async () => {
     reply = () => Response.json({ data: [{ b64_json: Buffer.from(PNG).toString('base64') }] })
     const out = await adapter('gpt-image-2.5-flare').run(
       {
@@ -240,7 +240,7 @@ describe('openai_images', () => {
     expect(out.files).toEqual([{ bytes: PNG, mime: 'image/png' }])
   })
 
-  test('目录声明 multipart 的模型改图走 /edits，图按文件上传', async () => {
+  test('目录声明 multipart 的模型修改图像时使用 /edits，图片按文件上传', async () => {
     reply = () => Response.json({ data: [{ b64_json: Buffer.from(PNG).toString('base64') }] })
     await adapter('gpt-image-2.5-flare').run(
       {
@@ -262,8 +262,8 @@ describe('openai_images', () => {
     expect(new Uint8Array(await file.arrayBuffer())).toEqual(PNG)
   })
 
-  /** 火山 Seedream 与百炼兼容出图：参考图是 JSON 里的 data URI，结果是临时地址，拿到就下载。 */
-  test('目录声明 JSON 的模型改图仍走 /generations，结果按地址下载', async () => {
+  /** 火山 Seedream 与百炼兼容模式生成图像：参考图是 JSON 中的 data URI，结果是临时地址，取得后立即下载。 */
+  test('目录声明 JSON 的模型修改图像时仍使用 /generations，结果按地址下载', async () => {
     reply = () => Response.json({ data: [{ url: `${origin()}/files/out.jpg` }] })
     const out = await adapter('doubao-seedream-5-0-pro-260628').run(
       {
@@ -292,7 +292,7 @@ describe('openai_images', () => {
     expect(seen).toHaveLength(1)
   })
 
-  test('逐张失败时把每张的原因并进消息', async () => {
+  test('逐张失败时将每张的原因合并到消息中', async () => {
     reply = () => Response.json({ data: [{ error: { message: '内容审核未通过' } }] })
     const err = await adapter('doubao-seedream-5-0-pro-260628')
       .run({ operation: 'generate', prompt: 'x', inputs: [], params: {} }, { signal: signal() })
@@ -300,7 +300,7 @@ describe('openai_images', () => {
     expect((err as Error).message).toContain('内容审核未通过')
   })
 
-  test('计量照接口字段读：OpenAI 回分文字与图片的输入 token，火山回张数与 output_tokens', async () => {
+  test('计量按接口字段读取：OpenAI 回报分文字与图片的输入 token，火山回报张数与 output_tokens', async () => {
     const run = (model: string) =>
       adapter(model).run(
         { operation: 'generate', prompt: 'x', inputs: [], params: {} },
@@ -343,8 +343,8 @@ describe('dashscope_images', () => {
       baseUrl,
     })
 
-  /** 接口里填的是对话用的兼容地址，原生路径挂在 origin 上。 */
-  test('原生同步端点：图在前、文字在后，参数进 parameters，结果按地址下载', async () => {
+  /** 接口中填写的是对话用的兼容地址，原生路径位于 origin 下。 */
+  test('原生同步端点：图片在前、文字在后，参数放入 parameters，结果按地址下载', async () => {
     reply = () =>
       Response.json({
         output: { choices: [{ message: { content: [{ image: `${origin()}/files/out.jpg` }] } }] },
@@ -380,7 +380,7 @@ describe('dashscope_images', () => {
     expect(out.usage).toEqual({ images: 1 })
   })
 
-  test('没有图时报接口给的码与原文', async () => {
+  test('没有图片时报告接口返回的错误码与原文', async () => {
     reply = () => Response.json({ code: 'DataInspectionFailed', message: '输入内容不合规' })
     const err = await adapter(`${origin()}/compatible-mode/v1`)
       .run({ operation: 'generate', prompt: 'x', inputs: [], params: {} }, { signal: signal() })
@@ -390,8 +390,8 @@ describe('dashscope_images', () => {
 })
 
 /**
- * 发送前显示的金额必须等于成功后账本记的金额：同一组参数下，`quoteMedia` 与按接口回报的计量
- * （`adapters/dashscope.ts` 的 `videoUsage` 规整后的形状）走 `mediaCost` 算出来的相等。
+ * 发送前显示的金额必须等于成功后账本记录的金额：同一组参数下，`quoteMedia` 的结果与按接口回报的计量
+ * （`adapters/dashscope.ts` 的 `videoUsage` 规整后的形状）经 `mediaCost` 计算的结果相等。
  */
 describe('发送前的花费', () => {
   const quote = (
@@ -403,7 +403,7 @@ describe('发送前的花费', () => {
   const ledger = (id: string, kind: MediaKind, usage: MediaUsage) =>
     mediaCost(lookupMediaModel(id, kind), usage)
 
-  test('万相 3.0 720P 5 秒 ¥3.00，与账本同一个数；没填的参数按接口默认值', () => {
+  test('万相 3.0 720P 5 秒 ¥3.00，与账本金额一致；未填写的参数取接口默认值', () => {
     const q = quote('wan3.0-video', 'dashscope_videos', { resolution: '720P', duration: 5 })
     expect(q).toEqual({ cost: expect.closeTo(3, 10), currency: 'CNY' })
     expect(ledger('wan3.0-video', 'dashscope_videos', { seconds: 5, resolution: '720p' })).toEqual(
@@ -413,7 +413,7 @@ describe('发送前的花费', () => {
     expect(quote('wan3.0-video', 'dashscope_videos', {})?.cost).toBeCloseTo(6, 10)
   })
 
-  test('可灵（百炼）按清晰度档位与声音估算，与账本同一个数', () => {
+  test('可灵（百炼）按清晰度档位与声音估算，与账本金额一致', () => {
     const id = 'kling/kling-v3-video-generation'
     const q = quote(id, 'dashscope_videos', { mode: 'std', audio: true, duration: 5 })
     expect(q?.cost).toBeCloseTo(4.5, 10)
@@ -428,7 +428,7 @@ describe('发送前的花费', () => {
     ).toEqual({ cost: 0.12, currency: 'CNY' })
   })
 
-  test('计量要等接口回报的不估：Seedance、千问图像、万相带参考视频、时长由模型定、可灵官方', () => {
+  test('计量须由接口回报的情形不估算：Seedance、千问图像、万相带参考视频、时长由模型决定、可灵官方', () => {
     expect(quote('doubao-seedance-2-0-260128', 'ark_videos', { resolution: '720p' })).toBeNull()
     expect(quote('qwen-image-3.0-pro', 'dashscope_images', {})).toBeNull()
     expect(quote('wan3.0-video', 'dashscope_videos', {}, { images: 0, videos: 1 })).toBeNull()
@@ -535,15 +535,15 @@ describe('计价', () => {
     ).toBe(0)
   })
 
-  test('接口回报了扣费金额时以它为准；没有价目的模型金额不明', () => {
+  test('接口回报扣费金额时以回报为准；没有价目的模型金额不明', () => {
     expect(
       cost('kling-3.0', 'kling_videos', { seconds: 5, billed: { amount: 0.56, currency: 'CNY' } }),
     ).toEqual({ cost: 0.56, currency: 'CNY' })
     expect(cost('gpt-4o-mini-tts', 'openai_speech', {}).cost).toBe(0)
   })
 
-  /** 经中转站调用的价格以中转站为准，目录里的官方价不跟过去。 */
-  test('按 id 兜底到别的协议时不带单价', () => {
+  /** 经中转站调用的价格以中转站为准，回退时不保留目录中的官方价。 */
+  test('按 id 回退到其他协议时不带单价', () => {
     expect(lookupMediaModel('doubao-seedance-2-5-260628', 'openai_videos').price).toBeUndefined()
   })
 })

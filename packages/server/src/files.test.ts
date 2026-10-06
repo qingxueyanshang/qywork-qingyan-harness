@@ -3,10 +3,10 @@
  * `findByName` / `classify` / `preview` / `openRaw`；以及 `api/workspace-fs.ts` 的路径解析
  * 与原始字节接口。
  *
- * 锁这几件事：**树里一条都不少**（依赖树、构建产物、点开头的条目全列——藏一条
- * 在界面上就等于它不存在）、**新建与改名都不覆盖**、**删不存在的要抛**（不静默成功）、
- * **搜索跳噪音目录**（与树口径不同，是有意的）、分类的回落口径、预览只读上限以内的字节，
- * 以及接口按字面值解析路径、删除软链只删目录项本身。
+ * 锁定以下行为：文件树不遗漏任何条目（依赖树、构建产物、以点开头的条目全部列出，
+ * 界面隐藏某个条目即等同于该条目不存在）、新建与改名均不覆盖、删除不存在的条目必须抛出
+ * （不静默成功）、搜索跳过噪音目录（与文件树的规则不同，属于有意设计）、分类的回退规则、
+ * 预览只读取上限以内的字节，以及接口按字面值解析路径、删除软链接只删除目录项本身。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -42,20 +42,20 @@ async function workspace(): Promise<string> {
   return dir
 }
 
-/** 树的入口参数：工作区根的绝对路径与它的显示路径。 */
+/** 文件树的入口参数：工作区根的绝对路径与其显示路径。 */
 async function root(): Promise<[string, string]> {
   return [await workspace(), '']
 }
 
 describe('文件树', () => {
   /**
-   * 一条都不过滤：依赖树、构建产物、`.git`、点开头的配置全在。
+   * 不过滤任何条目：依赖树、构建产物、`.git`、以点开头的配置全部保留。
    *
-   * 模型侧的 `list_dir` / `glob` / `grep` 仍按 `IGNORED_DIRS` 跳噪音目录，那是
-   * token 预算；界面这棵树是用户核对磁盘内容的地方，藏一条在界面上就等于它
-   * 不存在。不一致的方向只允许是界面看得多。
+   * 模型侧的 `list_dir` / `glob` / `grep` 仍按 `IGNORED_DIRS` 跳过噪音目录，该规则出于
+   * token 预算；界面文件树是用户核对磁盘内容的位置，隐藏某个条目即等同于该条目不存在。
+   * 两侧不一致时，只允许界面显示得更多。
    */
-  test('磁盘上有的全进树', async () => {
+  test('磁盘上存在的条目全部进入文件树', async () => {
     const names = (await listTree(...(await root()), 2)).map((n) => n.name)
     for (const entry of [
       'src',
@@ -77,7 +77,7 @@ describe('文件树', () => {
     expect(nodes.find((n) => n.name === 'src')?.children?.map((c) => c.name)).toEqual(['main.ts'])
   })
 
-  /** depth 到底就不再展开——不是展开成空数组，那会让界面画一个假的空目录。 */
+  /** 达到 depth 后不再展开，也不展开为空数组：空数组会使界面渲染出一个虚假的空目录。 */
   test('depth=1 时目录没有 children 字段', async () => {
     const nodes = await listTree(...(await root()), 1)
     expect(nodes.find((n) => n.name === 'src')?.children).toBeUndefined()
@@ -85,38 +85,38 @@ describe('文件树', () => {
 })
 
 describe('新建', () => {
-  test('文件建出来是空的，中间目录一并建', async () => {
+  test('新建的文件为空，中间目录一并创建', async () => {
     const dir = await workspace()
     const node = await createEntry(join(dir, 'docs/notes/a.md'), 'docs/notes/a.md', 'file')
     expect(node).toMatchObject({ name: 'a.md', path: 'docs/notes/a.md', kind: 'file', size: 0 })
     expect(await readFile(join(dir, 'docs/notes/a.md'), 'utf8')).toBe('')
   })
 
-  test('目录建出来能再往里建', async () => {
+  test('新建的目录中可以继续新建条目', async () => {
     const dir = await workspace()
     expect((await createEntry(join(dir, 'pkg'), 'pkg', 'dir')).kind).toBe('dir')
     expect((await createEntry(join(dir, 'pkg/x.ts'), 'pkg/x.ts', 'file')).path).toBe('pkg/x.ts')
   })
 
-  /** 覆盖是不可撤销的，所以「已存在」必须是个错，不能静默成功。 */
+  /** 覆盖不可撤销，因此「已存在」必须报错，不能静默成功。 */
   test('重名一律报错，文件和目录都不覆盖', async () => {
     const dir = await workspace()
     expect(createEntry(join(dir, 'a.ts'), 'a.ts', 'file')).rejects.toThrow(EntryExistsError)
     expect(createEntry(join(dir, 'src'), 'src', 'dir')).rejects.toThrow(EntryExistsError)
-    // 原内容没被动过
+    // 原内容未被改动
     expect(await readFile(join(dir, 'a.ts'), 'utf8')).toBe('export const a = 1\n')
   })
 })
 
 describe('改名与删除', () => {
-  test('改名只换名字，路径留在原来那一层', async () => {
+  test('改名只更改名称，路径仍在原目录层级', async () => {
     const dir = await workspace()
     const node = await renameEntry(join(dir, 'src/main.ts'), 'src/main.ts', 'entry.ts')
     expect(node).toMatchObject({ name: 'entry.ts', path: 'src/entry.ts', kind: 'file' })
     expect(await readFile(join(dir, 'src/entry.ts'), 'utf8')).toBe('export const b = 2\n')
   })
 
-  test('改成一个已经存在的名字要报错，不覆盖', async () => {
+  test('改为已存在的名称时报错，不覆盖', async () => {
     const dir = await workspace()
     await createEntry(join(dir, 'src/entry.ts'), 'src/entry.ts', 'file')
     expect(renameEntry(join(dir, 'src/main.ts'), 'src/main.ts', 'entry.ts')).rejects.toThrow(
@@ -125,7 +125,7 @@ describe('改名与删除', () => {
     expect(await readFile(join(dir, 'src/main.ts'), 'utf8')).toBe('export const b = 2\n')
   })
 
-  test('删目录连里面一起删；删不存在的要抛，不静默', async () => {
+  test('删除目录时一并删除其内容；删除不存在的条目必须抛出，不静默成功', async () => {
     const dir = await workspace()
     await deleteEntry(join(dir, 'src'))
     expect((await listTree(dir, '', 1)).map((n) => n.name)).not.toContain('src')
@@ -133,8 +133,8 @@ describe('改名与删除', () => {
   })
 })
 
-describe('按名搜索', () => {
-  test('子串匹配、大小写不敏感，目录也算命中', async () => {
+describe('按名称搜索', () => {
+  test('子串匹配、不区分大小写，目录也计为命中', async () => {
     const dir = await workspace()
     const { matches } = await findByName(dir, 'MAIN')
     expect(matches.map((m) => m.path)).toContain('src/main.ts')
@@ -142,11 +142,11 @@ describe('按名搜索', () => {
   })
 
   /**
-   * 搜索跳噪音目录，文件树不跳——两处口径不同是有意的：树不过滤之后第一层就有
-   * `node_modules`，搜索要是也铺进去，遍历预算会在依赖树里烧光，用户一个命中都
-   * 拿不到。这条边界要在界面上说出来。
+   * 搜索跳过噪音目录，文件树不跳过，两处规则不同属于有意设计：文件树不过滤，第一层即有
+   * `node_modules`，搜索若也遍历其中，遍历预算会在依赖树中耗尽，用户无法取得任何命中。
+   * 该边界必须在界面上说明。
    */
-  test('不进噪音目录，但目录本身能被搜到', async () => {
+  test('不进入噪音目录，但目录本身可被搜索到', async () => {
     const dir = await workspace()
     await writeFile(join(dir, 'node_modules', 'main-helper.ts'), '// 依赖\n', 'utf8')
     const paths = (await findByName(dir, 'main')).matches.map((m) => m.path)
@@ -154,11 +154,11 @@ describe('按名搜索', () => {
     expect(paths).not.toContain('node_modules/main-helper.ts')
   })
 
-  test('空查询回空结果，不回整棵树', async () => {
+  test('空查询返回空结果，不返回整棵树', async () => {
     expect(await findByName(await workspace(), '')).toEqual({ matches: [], truncated: false })
   })
 
-  test('给了筛选：只回它接受的文件、不回目录；空查询列出它接受的全部，有查询时两者都要满足', async () => {
+  test('提供筛选时只返回其接受的文件、不返回目录；空查询列出其接受的全部文件，有查询时两个条件都须满足', async () => {
     const dir = await workspace()
     await writeFile(join(dir, 'src', 'cover.png'), 'png')
     const images = (p: string) => p.endsWith('.png') || p === 'src'
@@ -168,7 +168,7 @@ describe('按名搜索', () => {
     expect((await findByName(dir, 'main', undefined, images)).matches).toEqual([])
   })
 
-  test('接口带 kinds：按画布文件类别列出，查询允许为空；类别不合法回 422', async () => {
+  test('接口传入 kinds 时按画布文件类别列出，查询允许为空；类别不合法时返回 422', async () => {
     const dir = await workspace()
     await mkdir(join(dir, 'generated'), { recursive: true })
     await writeFile(join(dir, 'generated', 'a.mp4'), 'mp4')
@@ -197,19 +197,19 @@ describe('按名搜索', () => {
 })
 
 describe('预览分类', () => {
-  test('认识的扩展名给出种类与语言，不认识的回落到 text', () => {
+  test('已识别的扩展名给出种类与语言，未识别的回退为 text', () => {
     expect(classify('a/b.ts')).toEqual({ kind: 'text', mime: 'text/plain', language: 'typescript' })
     expect(classify('x.png').kind).toBe('image')
     expect(classify('x.pdf').kind).toBe('pdf')
-    // 回落是 text 而不是 binary：新扩展名永远追不完，把没见过的当文本读
-    // 最多是一屏乱码，当二进制则是「能读却不给看」。
+    // 回退为 text 而不是 binary：扩展名无法穷举，未知扩展名按文本读取时最多显示乱码，
+    // 按二进制处理则会使可读取的内容无法显示。
     expect(classify('x.qwerty')).toEqual({ kind: 'text', mime: 'text/plain' })
   })
 })
 
 describe('预览', () => {
-  /** 超过上限时只读上限以内的字节；截断标记按文件大小判。 */
-  test('大文本只回前 512 KiB，并标记截断', async () => {
+  /** 超过上限时只读取上限以内的字节；截断标记按文件大小判定。 */
+  test('大文本只返回前 512 KiB，并标记截断', async () => {
     const dir = await workspace()
     const line = `${'x'.repeat(1023)}\n`
     await writeFile(join(dir, 'big.log'), line.repeat(1024))
@@ -219,17 +219,18 @@ describe('预览', () => {
     expect(out.content).toBe(line.repeat(512))
   })
 
-  test('上限以内原样返回，不标截断', async () => {
+  test('上限以内原样返回，不标记截断', async () => {
     const dir = await workspace()
     const out = await preview(join(dir, 'a.ts'), 'a.ts')
     expect(out).toMatchObject({ content: 'export const a = 1\n', truncated: false })
   })
 
   /**
-   * 原始失败形状：PDF 以 data URI 内联，打包版 CSP 的 `frame-src` 不放行 `data:`，iframe 空白；
-   * 超过 4 MB 的 PDF、图片、视频都只给一句「超出内联上限」。现在都不内联、不设上限，字节由 `/api/files/raw` 给。
+   * 原始失败形状：PDF 以 data URI 内联，打包版 CSP 的 `frame-src` 不允许 `data:`，iframe 显示空白；
+   * 超过 4 MB 的 PDF、图片、视频都只显示「超出内联上限」。三类文件均不内联、不设上限，
+   * 字节由 `/api/files/raw` 提供。
    */
-  test('PDF、图片与视频不内联、不受内联上限约束，带修改时间', async () => {
+  test('PDF、图片与视频不内联、不受内联上限约束，并返回修改时间', async () => {
     const dir = await workspace()
     for (const [name, kind] of [
       ['big.pdf', 'pdf'],
@@ -259,8 +260,8 @@ describe('文件接口的路径解析', () => {
   }
 
   /**
-   * 文件名里的 `%20` / `%41` 是字面字符。查询参数已由 `URLSearchParams` 解码过一次，
-   * 再按转义解一次会去找另一个文件：前者找不到，后者校验一个文件、读取另一个。
+   * 文件名中的 `%20` / `%41` 是字面字符。查询参数已由 `URLSearchParams` 解码一次，
+   * 再按转义解码一次会指向另一个文件：前者导致未找到文件，后者导致校验一个文件、读取另一个文件。
    */
   test('文件名含百分号转义时按字面值预览、改名、删除', async () => {
     const dir = await workspace()
@@ -282,21 +283,21 @@ describe('文件接口的路径解析', () => {
     expect(await stat(join(dir, 'report%20v2.md')).catch(() => null)).toBeNull()
   })
 
-  /** 删除的是目录项本身：删软链不能删掉它指向的目录。 */
-  test('删除指向工作区内目录的软链，只删软链', async () => {
+  /** 删除的是目录项本身：删除软链接不能删除其指向的目录。 */
+  test('删除指向工作区内目录的软链接时，只删除软链接本身', async () => {
     const dir = await workspace()
     try {
       await symlink(join(dir, 'src'), join(dir, 'src-link'), 'junction')
     } catch {
-      return // 无权限建链接时跳过
+      return // 无权限创建链接时跳过
     }
     expect((await call(dir, '/api/files/delete', { path: 'src-link' })).status).toBe(200)
     expect(await lstat(join(dir, 'src-link')).catch(() => null)).toBeNull()
     expect(await readFile(join(dir, 'src', 'main.ts'), 'utf8')).toBe('export const b = 2\n')
   })
 
-  /** 同一个地址在文件改写后是另一份内容，浏览器缓存会让预览停在旧版本上。 */
-  test('原始字节按类型回、不许缓存；目录回 404', async () => {
+  /** 文件改写后同一地址对应另一份内容，浏览器缓存会使预览停留在旧版本。 */
+  test('原始字节按类型返回、禁止缓存；目录返回 404', async () => {
     const dir = await workspace()
     await writeFile(join(dir, 'x.pdf'), '%PDF-1.4 x')
     const get = async (path: string) => {

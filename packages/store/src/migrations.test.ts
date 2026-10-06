@@ -1,9 +1,9 @@
 /**
- * 迁移的行为回归。**覆盖范围**：`schema.ts` 的 `MIGRATIONS` 与 `ROW_COLUMNS`、
+ * 迁移行为的回归测试。覆盖范围：`schema.ts` 的 `MIGRATIONS` 与 `ROW_COLUMNS`、
  * `db.ts` 的迁移执行，以及 `repos.ts` 的启动恢复查询。
  *
- * 只测「转换数据」的那几条。纯建表的不测——建错了任何一条查询都会红，
- * 而数据转换错了是静默的：代码全绿、界面上出现一个 `undefined` 或一句旧文案。
+ * 只测试转换数据的迁移，不测试纯建表的迁移：建表出错时任何一条查询都会失败，
+ * 而数据转换出错不会报错，只会使界面显示 `undefined` 或旧文案。
  */
 
 import { Database } from 'bun:sqlite'
@@ -15,7 +15,7 @@ import { executeMigration, Store } from './db.ts'
 import { recoverStaleRuns } from './repos.ts'
 import { MIGRATIONS, ROW_COLUMNS } from './schema.ts'
 
-/** 跑到某一条迁移之前的库。外键默认关着，所以可以只插 steps 不建父行。 */
+/** 执行到指定迁移之前的库。外键默认关闭，因此可以只插入 steps 而不创建父行。 */
 function dbBefore(id: number): Database {
   const db = new Database(':memory:')
   for (const m of MIGRATIONS) {
@@ -36,13 +36,13 @@ function insertStep(db: Database, id: string, toolName: string, payload: unknown
   ).run(id, toolName, JSON.stringify(payload))
 }
 
-/** 整份 payload，用于断言「一个字节都没动」。 */
+/** 完整的 payload，用于断言内容未发生任何改动。 */
 function payloadJson(db: Database, id: string): unknown {
   const row = db.query('SELECT payload FROM steps WHERE id = ?').get(id) as { payload: string }
   return JSON.parse(row.payload)
 }
 
-/** `outcome.data`，迁移 27 只动这里。 */
+/** `outcome.data`，迁移 27 只修改此处。 */
 function dataOf(db: Database, id: string): Record<string, unknown> {
   return (payloadJson(db, id) as { outcome: { data: Record<string, unknown> } }).outcome.data
 }
@@ -61,21 +61,21 @@ function payloadOf(
 }
 
 /**
- * 动作轴从九个值收敛到六个。
+ * 动作轴从九个值收敛为六个。
  *
- * **不转数据就等于没改完**：代码里枚举改了，账本里的老 step 还带着 `execute`/`plan`，
- * 回放时前端查不到动词，卡片标题掉回原始工具名——界面上直接出现 `update_plan`。
+ * 不转换数据等于修改未完成：代码中的枚举已修改，账本中的旧 step 仍带有 `execute`/`plan`，
+ * 回放时前端没有对应动词，卡片标题回退为原始工具名，界面显示 `update_plan`。
  */
-describe('迁移 16：动作轴收敛到六枚举', () => {
+describe('迁移 16：动作轴收敛为六个枚举值', () => {
   const cases: [string, string, string, string][] = [
-    // id, 老 kind, 新 kind, 对象名
+    // id, 旧 kind, 新 kind, 对象名
     ['s_exec', 'execute', 'run', '命令'],
     ['s_deleg', 'delegate', 'run', '编排节点'],
     ['s_search', 'search', 'query', '内容'],
     ['s_fetch', 'fetch', 'read', '网页'],
   ]
 
-  test('四个退役值各自转到对应的动作', () => {
+  test('四个停用值分别转为对应的动作', () => {
     const db = dbBefore(16)
     for (const [id, oldKind, , label] of cases) {
       insertStep(db, id, 't', {
@@ -86,13 +86,13 @@ describe('迁移 16：动作轴收敛到六枚举', () => {
     applyOne(db, 16)
     for (const [id, , newKind, label] of cases) {
       expect(payloadOf(db, id).action.kind).toBe(newKind)
-      // 对象名不动：换的是动作，不是被操作的对象。
+      // 对象名不变：更换的是动作，不是被操作的对象。
       expect(payloadOf(db, id).action.objectLabel).toBe(label)
     }
   })
 
-  /** 待办不是方案。`plan` 那条要同时把对象名还回去，否则读出来还是「创建计划」。 */
-  test('plan 转成 write，且对象名从「计划」改成「待办」', () => {
+  /** 待办不是计划。`plan` 行必须同时修改对象名，否则读取后的标题仍是「创建计划」。 */
+  test('plan 转为 write，且对象名从「计划」改为「待办」', () => {
     const db = dbBefore(16)
     insertStep(db, 's_plan', 'update_plan', {
       kind: 'tool_result',
@@ -103,11 +103,11 @@ describe('迁移 16：动作轴收敛到六枚举', () => {
     const p = payloadOf(db, 's_plan')
     expect(p.action.kind).toBe('write')
     expect(p.action.objectLabel).toBe('待办')
-    // 回执文案也是落盘的，不转的话展开体里还写着「计划已更新」。
+    // 回执文案同样已写入磁盘，不转换时展开内容中仍显示「计划已更新」。
     expect(p.outcome?.message).toBe('待办已更新（1/3）：正在「甲」')
   })
 
-  test('六个合法值原样不动 —— 迁移只碰退役值', () => {
+  test('六个合法值保持不变，迁移只修改停用值', () => {
     const db = dbBefore(16)
     for (const kind of ['query', 'read', 'write', 'edit', 'delete', 'run']) {
       insertStep(db, `ok_${kind}`, 't', {
@@ -121,8 +121,8 @@ describe('迁移 16：动作轴收敛到六枚举', () => {
     }
   })
 
-  /** 没有 action 的行（纯文本 step、以及名字不在注册表里的调用）不许被 json_set 塞进一个键。 */
-  test('没有 action 的行不长出 action', () => {
+  /** 没有 action 的行（纯文本 step，以及名称不在注册表中的调用）不得被 json_set 写入该键。 */
+  test('没有 action 的行不会新增 action', () => {
     const db = dbBefore(16)
     insertStep(db, 's_none', 'weird', {
       kind: 'tool_result',
@@ -137,14 +137,14 @@ describe('迁移 16：动作轴收敛到六枚举', () => {
 })
 
 /**
- * 工具改名，落库的 `tool_name` 要跟着转。
+ * 工具改名后，账本中的 `tool_name` 必须随之转换。
  *
- * 不迁移的后果经实测出现过：待办面板整体变为空。面板是从账本投影的（找最后一条成功的
- * 待办提交，整表在它的 args 里），投影按新名字找，老行还叫旧名字，一条都匹配不上，
- * 用户看到的是「之前的数据没了」。
+ * 不迁移时待办面板为空（已实测）。面板由账本投影得出（查找最后一条成功的
+ * 待办提交，完整列表在其 args 中），投影按新名称查找，旧行仍是旧名称，因此没有任何匹配，
+ * 已有的待办不再显示。
  */
 describe('迁移 17：update_plan → write_todos', () => {
-  test('老名字转成新名字，别的工具不动', () => {
+  test('旧名称转为新名称，其他工具不变', () => {
     const db = dbBefore(17)
     insertStep(db, 'old', 'update_plan', {
       kind: 'tool_result',
@@ -159,8 +159,8 @@ describe('迁移 17：update_plan → write_todos', () => {
     expect(name('other')).toBe('read_file')
   })
 
-  /** 转完之后，整表 todos 还在原处——改的是名字，不是内容。 */
-  test('args 里的整表原样保留', () => {
+  /** 转换之后，完整的 todos 列表仍在原处：修改的是名称，不是内容。 */
+  test('args 中的完整列表原样保留', () => {
     const db = dbBefore(17)
     insertStep(db, 'old', 'update_plan', {
       kind: 'tool_result',
@@ -175,13 +175,13 @@ describe('迁移 17：update_plan → write_todos', () => {
 })
 
 /**
- * 迁移 16 已经转过这句话，这里再转一遍——针对的是**它执行之后**才写进来的行。
+ * 迁移 16 已转换过该文案，此处再次转换，针对迁移 16 执行之后写入的行。
  *
- * 那批行的来历：动作轴与回执文案分两批改，中间跑过真实轮次，因此落下
- * 「新动作 + 旧文案」的组合（标题读作「创建待办」，展开体写着「计划已更新」）。
+ * 这些行的成因：动作轴与回执文案分两次修改，期间执行过真实轮次，因此留下
+ * 「新动作 + 旧文案」的组合（标题为「创建待办」，展开内容为「计划已更新」）。
  */
-describe('迁移 18：再扫一遍待办回执的旧文案', () => {
-  test('新动作 + 旧文案的行，文案转掉，动作不动', () => {
+describe('迁移 18：再次扫描待办回执的旧文案', () => {
+  test('新动作与旧文案组合的行：转换文案，动作不变', () => {
     const db = dbBefore(18)
     insertStep(db, 'mixed', 'write_todos', {
       kind: 'tool_result',
@@ -196,8 +196,8 @@ describe('迁移 18：再扫一遍待办回执的旧文案', () => {
     expect(p.action.objectLabel).toBe('待办')
   })
 
-  /** 幂等：已经是新文案的行不该被再改一次，别的工具的回执一个字都不能动。 */
-  test('新文案与无关回执原样不动', () => {
+  /** 幂等：已是新文案的行不应再次修改，其他工具的回执不得有任何改动。 */
+  test('新文案与无关回执保持不变', () => {
     const db = dbBefore(18)
     insertStep(db, 'done', 'write_todos', {
       kind: 'tool_result',
@@ -217,16 +217,16 @@ describe('迁移 18：再扫一遍待办回执的旧文案', () => {
 })
 
 /**
- * 外置工具（MCP / 插件）的动作转成 `call`。
+ * 外部工具（MCP / 插件）的动作转为 `call`。
  *
- * 不转的表现是同一件事在时间线上有两种说法：老行写着「运行 mcp:github/create_issue」，
- * 今天调同一个工具记的是「调用」。判据是工具名里的 `__`——只有 `mcp__<server>__<tool>`
- * 与插件的 `<id>__<tool>` 会带它，内置工具名一个都不含。
+ * 不转换时同一操作在时间线上有两种表述：旧行显示「运行 mcp:github/create_issue」，
+ * 调用同一工具的新行记录为「调用」。判据是工具名中的 `__`：只有 `mcp__<server>__<tool>`
+ * 与插件的 `<id>__<tool>` 包含它，内置工具名均不包含。
  */
-describe('迁移 19：外置工具的动作转成 call', () => {
+describe('迁移 19：外部工具的动作转为 call', () => {
   const kindOf = (db: Database, id: string) => payloadOf(db, id).action.kind
 
-  test('MCP 与插件的行一律转成 call，不管旧值是什么', () => {
+  test('MCP 与插件的行一律转为 call，与旧值无关', () => {
     const db = dbBefore(19)
     const rows: [string, string, string][] = [
       // id, tool_name, 旧 kind
@@ -244,11 +244,11 @@ describe('迁移 19：外置工具的动作转成 call', () => {
     }
     applyOne(db, 19)
     for (const [id] of rows) expect(kindOf(db, id)).toBe('call')
-    // 对象名不动：换的是动作，不是被操作的对象。
+    // 对象名不变：更换的是动作，不是被操作的对象。
     expect(payloadOf(db, 'm_run').action.objectLabel).toBe('mcp:github/create_issue')
   })
 
-  test('内置工具的行原样不动 —— 判据是名字里的双下划线', () => {
+  test('内置工具的行保持不变，判据是名称中的双下划线', () => {
     const db = dbBefore(19)
     const builtin: [string, string, string][] = [
       ['b_run', 'run_command', 'run'],
@@ -267,8 +267,8 @@ describe('迁移 19：外置工具的动作转成 call', () => {
     for (const [id, , kind] of builtin) expect(kindOf(db, id)).toBe(kind)
   })
 
-  /** `json_set` 会给没有 action 的行凭空长出一个键，WHERE 必须把它们挡在外面。 */
-  test('没有 action 的行不长出 action', () => {
+  /** `json_set` 会为没有 action 的行新增该键，WHERE 必须排除这些行。 */
+  test('没有 action 的行不会新增 action', () => {
     const db = dbBefore(19)
     insertStep(db, 'noaction', 'mcp__demo__echo', { kind: 'tool_result', args: { text: 'x' } })
     applyOne(db, 19)
@@ -280,16 +280,16 @@ describe('迁移 19：外置工具的动作转成 call', () => {
 })
 
 /**
- * 外置工具的对象名收成「MCP」/「插件」两个类名。
+ * 外部工具的对象名收敛为「MCP」与「插件」两个类别名。
  *
- * 卡片是动词 + 对象 + 目标三层；老行把具体的 `mcp:<server>/<tool>` 填进对象名，
- * 标题和目标因此一字不差。不转的表现是回放时老卡片写「调用mcp:github/search」、
- * 新卡片写「调用MCP · mcp:github/search」。
+ * 卡片由动词、对象、目标三层组成；旧行把具体的 `mcp:<server>/<tool>` 填入对象名，
+ * 标题与目标因此完全相同。不转换时，回放的旧卡片显示「调用mcp:github/search」，
+ * 新卡片显示「调用MCP · mcp:github/search」。
  */
-describe('迁移 20：外置工具的对象名收成类名', () => {
+describe('迁移 20：外部工具的对象名收敛为类别名', () => {
   const labelOf = (db: Database, id: string) => payloadOf(db, id).action.objectLabel
 
-  test('MCP 转成「MCP」、插件转成「插件」，目标不动', () => {
+  test('MCP 转为「MCP」、插件转为「插件」，目标不变', () => {
     const db = dbBefore(20)
     const rows: [string, string, string, string][] = [
       // id, tool_name, 旧对象名, 期望的新对象名
@@ -306,11 +306,11 @@ describe('迁移 20：外置工具的对象名收成类名', () => {
     }
     applyOne(db, 20)
     for (const [id, , , want] of rows) expect(labelOf(db, id)).toBe(want)
-    // 目标那一层本来就该是具体的那个，这次一个字节都不碰。
+    // 目标层本应是具体名称，本次迁移不做任何改动。
     for (const [id] of rows) expect(payloadOf(db, id).action.target).toBe('tgt')
   })
 
-  test('内置工具的行原样不动 —— 判据是名字里的双下划线', () => {
+  test('内置工具的行保持不变，判据是名称中的双下划线', () => {
     const db = dbBefore(20)
     const builtin: [string, string, string][] = [
       ['b_read', 'read_file', '文件'],
@@ -328,8 +328,8 @@ describe('迁移 20：外置工具的对象名收成类名', () => {
     for (const [id, , label] of builtin) expect(labelOf(db, id)).toBe(label)
   })
 
-  /** `json_set` 会给没有 action 的行凭空长出一个键，WHERE 必须把它们挡在外面。 */
-  test('没有 action 的行不长出 action', () => {
+  /** `json_set` 会为没有 action 的行新增该键，WHERE 必须排除这些行。 */
+  test('没有 action 的行不会新增 action', () => {
     const db = dbBefore(20)
     insertStep(db, 'noaction', 'mcp__demo__echo', { kind: 'tool_result', args: { text: 'x' } })
     applyOne(db, 20)
@@ -341,12 +341,12 @@ describe('迁移 20：外置工具的对象名收成类名', () => {
 })
 
 /**
- * `memory` 门面拆成三个名字，老行按行内的 `args.action` 分流。
+ * `memory` 门面拆分为三个名称，旧行按行内的 `args.action` 分流。
  *
- * 不转的表现是回放历史时模型看到一个当前工具表里不存在的名字——账本里的
- * `tool_name` 与 `args` 会被原样重放成一次工具调用。
+ * 不转换时，回放历史时模型会看到当前工具表中不存在的名称：账本中的
+ * `tool_name` 与 `args` 会被原样重放为一次工具调用。
  */
-describe('迁移 21：memory 拆成 read/write/delete_memory', () => {
+describe('迁移 21：memory 拆分为 read/write/delete_memory', () => {
   const nameOf = (db: Database, id: string) =>
     db.query<{ n: string }, [string]>('SELECT tool_name AS n FROM steps WHERE id = ?').get(id)!.n
   const argsOf = (db: Database, id: string) =>
@@ -355,10 +355,10 @@ describe('迁移 21：memory 拆成 read/write/delete_memory', () => {
         .payload,
     ).args as Record<string, unknown>
 
-  test('四个动作各自分流，list 归读', () => {
+  test('四个动作分别分流，list 归入读取', () => {
     const db = dbBefore(21)
     const rows: [string, Record<string, unknown>, string][] = [
-      // id, 老 args, 期望的新名字
+      // id, 旧 args, 期望的新名称
       ['m_read', { action: 'read', key: '包管理器' }, 'read_memory'],
       ['m_write', { action: 'write', key: '包管理器', content: 'pnpm' }, 'write_memory'],
       ['m_del', { action: 'delete', key: '包管理器' }, 'delete_memory'],
@@ -369,8 +369,8 @@ describe('迁移 21：memory 拆成 read/write/delete_memory', () => {
     for (const [id, , want] of rows) expect(nameOf(db, id)).toBe(want)
   })
 
-  /** 名字改了之后这行已不是逐字记录，留着 `action` 只会给出一个今天不合法的调用形状。 */
-  test('args.action 被清掉，别的参数原样保留', () => {
+  /** 名称修改后该行已不是逐字记录，保留 `action` 只会产生一个当前不合法的调用形状。 */
+  test('args.action 被清除，其他参数原样保留', () => {
     const db = dbBefore(21)
     insertStep(db, 'm_write', 'memory', {
       kind: 'tool_result',
@@ -380,7 +380,7 @@ describe('迁移 21：memory 拆成 read/write/delete_memory', () => {
     expect(argsOf(db, 'm_write')).toEqual({ key: '包管理器', content: 'pnpm' })
   })
 
-  test('缺 action 与值非法的都归读 —— 分不出动作时落到最保守的那个', () => {
+  test('缺少 action 或值非法时都归入读取：无法区分动作时取最保守的一项', () => {
     const db = dbBefore(21)
     insertStep(db, 'm_bare', 'memory', { kind: 'tool_result', args: { key: 'k' } })
     insertStep(db, 'm_junk', 'memory', {
@@ -395,10 +395,10 @@ describe('迁移 21：memory 拆成 read/write/delete_memory', () => {
     expect(argsOf(db, 'm_junk')).toEqual({ key: 'k' })
   })
 
-  test('别的工具一个字节都不动', () => {
+  test('其他工具不发生任何改动', () => {
     const db = dbBefore(21)
     insertStep(db, 'other', 'read_file', { kind: 'tool_result', args: { path: 'a.ts' } })
-    // 同名前缀的行也不能被一并带走——判据是整个名字相等。
+    // 名称中包含 memory 的其他工具行也不能被一并修改：判据是完整名称相等。
     insertStep(db, 'mcp', 'mcp__demo__memory', {
       kind: 'tool_result',
       args: { action: 'write', key: 'k' },
@@ -411,13 +411,13 @@ describe('迁移 21：memory 拆成 read/write/delete_memory', () => {
   })
 })
 
-describe('迁移 26：steps 重建，思考有自己的 kind', () => {
+describe('迁移 26：重建 steps，思考使用独立的 kind', () => {
   /**
-   * 这条是**重建表**——SQLite 改不了 CHECK 约束，只能建新表搬数据。
-   * 搬漏一列、搬漏一批行都是静默的：库还在、查询还能跑，只是历史没了。
-   * 所以断言逐行逐列比对，不是只数一个总数。
+   * 本迁移重建表：SQLite 无法修改 CHECK 约束，只能新建表并迁移数据。
+   * 遗漏一列或一批行都不会报错：库仍存在、查询仍能执行，只是历史丢失。
+   * 因此断言逐行逐列比对，而不是只比较总数。
    */
-  test('每一行每一列原样搬过去，索引跟着重建', () => {
+  test('每一行每一列原样迁移，索引随之重建', () => {
     const db = dbBefore(26)
     const rows: [string, string, string | null, string | null, string | null][] = [
       ['s1', 'text', null, null, '正文'],
@@ -436,19 +436,19 @@ describe('迁移 26：steps 重建，思考有自己的 kind', () => {
     const after = db.query('SELECT * FROM steps ORDER BY id').all() as Record<string, unknown>[]
     expect(after.map((r) => r.id)).toEqual(['s1', 's2', 's3'])
     expect(after.map((r) => r.kind)).toEqual(['text', 'tool_action', 'compaction'])
-    // 存量行的思考仍在原处——投影侧那条只读回落靠它。
+    // 存量行的思考仍在原处：投影侧的只读回退路径依赖它。
     expect(after[1]!.content).toBe('旧的思考')
     expect(after[1]!.tool_call_id).toBe('c1')
     expect(after[2]!.created_at).toBe(7)
 
-    // 新 kind 收得下。
+    // 新的 kind 可以写入。
     db.query(
       `INSERT INTO steps (id, run_id, seq, kind, content, status, created_at)
        VALUES ('s4', 'rn', 0, 'thinking', '想了想', 'done', 8)`,
     ).run()
     expect(db.query("SELECT COUNT(*) n FROM steps WHERE kind = 'thinking'").get()).toEqual({ n: 1 })
 
-    // 退役的两个值不再收：留着只是给下一个人一个误用的机会。
+    // 两个停用值不再接受：保留只会留下误用的可能。
     expect(() =>
       db
         .query(
@@ -458,7 +458,7 @@ describe('迁移 26：steps 重建，思考有自己的 kind', () => {
         .run(),
     ).toThrow()
 
-    // 索引必须跟着重建，否则删一个长会话会退化成全表扫。
+    // 索引必须随之重建，否则删除长会话会退化为全表扫描。
     const idx = db
       .query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='steps'")
       .all() as { name: string }[]
@@ -466,8 +466,8 @@ describe('迁移 26：steps 重建，思考有自己的 kind', () => {
   })
 })
 
-describe('迁移 27：工具结果里的图像字节改成数组', () => {
-  /** 旧形状：`envelopeResult` / `imagesOf` 都只认 `images`，这两个键对谁都不成立。 */
+describe('迁移 27：工具结果中的图像字节改为数组', () => {
+  /** 旧形状：`envelopeResult` 与 `imagesOf` 都只识别 `images`，这两个键对两者都无效。 */
   const oldShape = {
     kind: 'tool_result',
     args: { path: 'shot.png' },
@@ -479,7 +479,7 @@ describe('迁移 27：工具结果里的图像字节改成数组', () => {
     },
   }
 
-  test('imageData + mime 收成 images 数组，两个旧键一并去掉', () => {
+  test('imageData 与 mime 合并为 images 数组，两个旧键一并删除', () => {
     const db = dbBefore(27)
     insertStep(db, 's1', 'read_file', oldShape)
     applyOne(db, 27)
@@ -490,13 +490,13 @@ describe('迁移 27：工具结果里的图像字节改成数组', () => {
   })
 
   /**
-   * `mime` 必须搬进数组元素，不能留在 `data` 上。
+   * `mime` 必须移入数组元素，不能留在 `data` 上。
    *
-   * 留着的话 `envelopeResult` 摘掉 `images` 之后 `data` 仍非空，信封里会多一个
-   * `{"result":{"mime":"image/png"}}`，与今天新落的行不同形——同一次调用在两轮里
-   * 长得不一样，前缀缓存从那里断掉，而这件事不会有任何报错。
+   * 保留时，`envelopeResult` 移除 `images` 之后 `data` 仍非空，信封中会多出
+   * `{"result":{"mime":"image/png"}}`，与新写入的行形状不同：同一次调用在两轮中的
+   * 序列化结果不一致，前缀缓存从该处失效，且不会有任何报错。
    */
-  test('转完 data 上只剩 images 一个键', () => {
+  test('转换后 data 上只剩 images 一个键', () => {
     const db = dbBefore(27)
     insertStep(db, 's1', 'read_file', oldShape)
     applyOne(db, 27)
@@ -506,10 +506,10 @@ describe('迁移 27：工具结果里的图像字节改成数组', () => {
   })
 
   /**
-   * 认的是 JSON 路径不是文本。实测库里有十条 `write_file` / `grep` 记录的正文
-   * 含 `imageData` 这个标识符——按文本挑会把用户的源码改坏。
+   * 按 JSON 路径识别，不按文本识别。实测库中有十条 `write_file` / `grep` 记录的正文
+   * 含有 `imageData` 标识符：按文本筛选会损坏用户的源码。
    */
-  test('正文里含 imageData 这个词的记录不受影响', () => {
+  test('正文中含有 imageData 一词的记录不受影响', () => {
     const db = dbBefore(27)
     const untouched = {
       kind: 'tool_result',
@@ -523,7 +523,7 @@ describe('迁移 27：工具结果里的图像字节改成数组', () => {
     db.close()
   })
 
-  test('已经是新形状的行原样不动，重复执行也不动', () => {
+  test('已是新形状的行保持不变，重复执行也不变', () => {
     const db = dbBefore(27)
     const newShape = {
       kind: 'tool_result',
@@ -547,8 +547,8 @@ describe('迁移 27：工具结果里的图像字节改成数组', () => {
     db.close()
   })
 
-  /** 多张图的形状（MCP 一次能带回好几张）不在旧行里出现，转换只造一元数组。 */
-  test('旧行只可能有一张图，转出来就是一元数组', () => {
+  /** 多图形状（MCP 一次可返回多张图）不会出现在旧行中，转换只生成单元素数组。 */
+  test('旧行最多只有一张图，转换结果为单元素数组', () => {
     const db = dbBefore(27)
     insertStep(db, 's1', 'read_file', oldShape)
     applyOne(db, 27)
@@ -558,18 +558,8 @@ describe('迁移 27：工具结果里的图像字节改成数组', () => {
   })
 })
 
-/**
- * 行类型是 DDL 的镜像，这条测试是**让它保持是镜像的那个约束**。
- *
- * `schema.ts` 里的 `WorkspaceRow` 那几个接口没有任何检查强制它们跟表对齐：迁移加一列
- * 而接口忘了加，两边不一致不会有人发现——直到某个映射函数读了一个不存在的列，
- * 拿到 `undefined` 装进领域对象。所以列名单独列一份（`ROW_COLUMNS`，与接口同处同改），
- * 在这里跟真库比对。
- *
- * 比的是**集合**不是顺序：`SELECT *` 取的是名字，列的物理顺序改了不影响任何调用方。
- */
-describe('迁移 40：派活卡的节点事实收成 nodes', () => {
-  test('派一件与一张图的旧键都折成每格的状态与名字', () => {
+describe('迁移 40：派发任务卡的节点事实合并为 nodes', () => {
+  test('单项派发与图派发的旧键都折叠为每个节点的状态与名称', () => {
     const db = dbBefore(40)
     db.exec(`
 INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
@@ -631,8 +621,8 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
-describe('迁移 41：派活参数与回执改按 kind 记', () => {
-  test('节点的 agent 改成 kind 字段，回执改名，续接调用从回执折出逐格状态，卡头对象名换新', () => {
+describe('迁移 41：派发任务参数与回执改为按 kind 记录', () => {
+  test('节点的 agent 改为 kind 字段，回执改名，续接调用从回执折叠出各节点状态，卡片标题的对象名更新', () => {
     const db = dbBefore(41)
     db.exec(`
 INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
@@ -822,7 +812,7 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
         durationMs: 0,
       },
     ])
-    // 首派那条由迁移 40 按 step 终态估的状态以回执为准：glm 实际是 done。
+    // 首次派发的状态由迁移 40 按 step 终态估算，此处以回执为准：glm 实际为 done。
     expect(start.nodes).toEqual({
       glm: { phase: 'done', label: 'GLM', subagentId: 'cv_glm', durationMs: 5 },
       tmp: { phase: 'failed', label: '临时', subagentId: 'cv_tmp', durationMs: 7, error: '超时' },
@@ -840,15 +830,15 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
       args: { kind: 'temp', name: '临时子 agent', task: '看一眼' },
       nodes: { child: { phase: 'done', label: '临时子 agent', subagentId: 'cv_solo' } },
     })
-    // 已经是新形状的行原样不动。
+    // 已是新形状的行保持不变。
     expect(payloadJson(db, 'st_new')).toMatchObject({
       args: { kind: 'temp', name: '已是新形状', task: '看' },
     })
   })
 })
 
-describe('迁移 42：拿任务正文当名字的临时子 agent 改回原名', () => {
-  test('名字是任务开头的改回临时子 agent，模型起的短名不动', () => {
+describe('迁移 42：以任务正文为名称的临时子 agent 改回原名', () => {
+  test('名称为任务开头的改回「临时子 agent」，模型命名的短名称不变', () => {
     const db = dbBefore(42)
     db.exec(`
 INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
@@ -905,8 +895,8 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
-describe('迁移 43：子 agent 的名字只有一份', () => {
-  test('抄来的标题与「临时子 agent」换成目标名或模型 id', () => {
+describe('迁移 43：子 agent 的名称只保留一份', () => {
+  test('复制而来的标题与「临时子 agent」替换为目标名或模型 id', () => {
     const db = dbBefore(43)
     const task = '你是资深网页游戏开发者。任务是从零开发…'
     db.exec(`
@@ -990,8 +980,8 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
-describe('迁移 44：临时子 agent 的格子名统一为模型名', () => {
-  test('临时的换成模型名，角色的不动', () => {
+describe('迁移 44：临时子 agent 的节点名统一为模型名', () => {
+  test('临时子 agent 改为模型名，角色不变', () => {
     const db = dbBefore(44)
     db.exec(`
 INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
@@ -1028,8 +1018,8 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
-describe('迁移 45：派一件那一格的耗时从 step 抄过来', () => {
-  test('格子没有耗时的抄 step 的，已有的不动', () => {
+describe('迁移 45：单项派发节点的耗时从 step 复制', () => {
+  test('节点没有耗时时复制 step 的耗时，已有的不变', () => {
     const db = dbBefore(45)
     db.exec(`
 INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
@@ -1072,8 +1062,8 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
-describe('迁移 46：临时子 agent 的格子名回到它的名字', () => {
-  test('临时的格子名与单派参数的 name 都改成子会话标题，角色的不动', () => {
+describe('迁移 46：临时子 agent 的节点名恢复为其名称', () => {
+  test('临时子 agent 的节点名与单项派发参数的 name 都改为子会话标题，角色不变', () => {
     const db = dbBefore(46)
     db.exec(`
 INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at) VALUES ('ws', 'w', 'C:/w', 0, 0);
@@ -1126,8 +1116,18 @@ INSERT INTO runs (id, conversation_id, workspace_id, model, client_request_id, c
   })
 })
 
+/**
+ * 行类型是 DDL 的镜像，本测试是使两者保持一致的约束。
+ *
+ * `schema.ts` 中 `WorkspaceRow` 等接口没有任何检查强制它们与表结构一致：迁移新增一列
+ * 而接口未同步时不会报错，映射函数读取不存在的列，
+ * 取得 `undefined` 并放入领域对象。因此列名单独列出一份（`ROW_COLUMNS`，与接口同处同步修改），
+ * 在此处与真实数据库比对。
+ *
+ * 比较的是集合而不是顺序：`SELECT *` 按名称取值，列的物理顺序变化不影响任何调用方。
+ */
 describe('行类型与 DDL 对齐', () => {
-  test('每张表声明的列名与迁移跑完之后的真实列名一致', () => {
+  test('每张表声明的列名与迁移执行完毕后的真实列名一致', () => {
     const db = new Database(':memory:')
     for (const m of MIGRATIONS) executeMigration(db, m)
 
@@ -1231,8 +1231,8 @@ describe('迁移 36：运行失败文案收敛', () => {
   })
 })
 
-describe('迁移 37：运行记录收口为唯一结构', () => {
-  test('旧 step 一次迁成 child、workflow、compaction、batch 与独立思考', () => {
+describe('迁移 37：运行记录收敛为唯一结构', () => {
+  test('旧 step 一次迁移为 child、workflow、compaction、batch 与独立思考', () => {
     const db = dbBefore(37)
     db.query(
       `INSERT INTO conversations
@@ -1415,7 +1415,7 @@ VALUES ('rn', 'cv', 'ws', 'm', 'req', 'done', 3, 0);
     db.close()
   })
 
-  test('接口证据冲突时不猜 provider', () => {
+  test('接口证据冲突时不推测 provider', () => {
     const db = dbBefore(37)
     db.exec(`
 INSERT INTO conversations
@@ -1443,8 +1443,8 @@ VALUES
   })
 })
 
-describe('迁移 51：子会话轮次的派活来源', () => {
-  test('回填归建在这一轮之前、最近一次派它的那格；此前没有派过的留空', () => {
+describe('迁移 51：子会话轮次的派发来源', () => {
+  test('回填为本轮之前最近一次派发该子会话的节点；此前没有派发记录的留空', () => {
     const db = dbBefore(51)
     db.exec(`
 INSERT INTO conversations
@@ -1483,8 +1483,8 @@ VALUES ('st1', 'rn', 1, 'tool_action', 'workflow',
   })
 })
 
-describe('迁移 52：清掉观察器记在隐藏目录下的路径', () => {
-  test('只清没有行数的隐藏目录条目；工具的精确明细与隐藏文件不动；派活格按路径清', () => {
+describe('迁移 52：清除观察器记录在隐藏目录下的路径', () => {
+  test('只清除没有行数的隐藏目录条目；工具的精确明细与隐藏文件不变；派发任务卡的节点按路径清除', () => {
     const db = dbBefore(52)
     db.exec(`
 INSERT INTO runs
@@ -1537,8 +1537,8 @@ VALUES ('sh', 'rn', 1, 'tool_action', 'run_command',
   })
 })
 
-describe('迁移 53：清掉观察器记在点开头路径下的条目', () => {
-  test('隐藏文件与被删掉的隐藏目录本身也清；工具的精确明细不动', () => {
+describe('迁移 53：清除观察器记录在以点开头的路径下的条目', () => {
+  test('隐藏文件与被删除的隐藏目录本身也清除；工具的精确明细不变', () => {
     const db = dbBefore(53)
     db.exec(`
 INSERT INTO runs
@@ -1577,7 +1577,7 @@ VALUES ('sh', 'rn', 1, 'tool_action', 'run_command',
 })
 
 describe('迁移 55：工作区根路径按分隔符归一', () => {
-  test('两种写法合并成最早那一行，会话与账目改指向它，任务的根跟着改', () => {
+  test('两种写法合并为最早的一行，会话与账目改为指向该行，任务的根路径随之修改', () => {
     const db = dbBefore(55)
     db.exec(`
 INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at)
@@ -1636,7 +1636,7 @@ VALUES ('sch_a', 'C:/ws/demo', '日报', 'p', 'interval', 30, 1, 1),
       db.query<{ workspace_id: string }, []>('SELECT workspace_id FROM usage_ledger').all(),
     ).toEqual([{ workspace_id: 'ws_old' }])
 
-    // 同 scope 两边都有，留最早那个工作区的那条；不同 scope 的跟着改归属。
+    // 两个工作区都有同一 scope 的记录时，保留最早工作区的记录；不同 scope 的记录随之修改归属。
     expect(
       db
         .query<{ id: string; workspace_id: string; effect: string }, []>(
@@ -1662,9 +1662,9 @@ VALUES ('sch_a', 'C:/ws/demo', '日报', 'p', 'interval', 30, 1, 1),
   })
 })
 
-/** 对象名改了，落盘的 step 不转的话同一条会话里会印出新旧两个名词。 */
+/** 对象名已修改，已写入磁盘的 step 不转换时，同一会话中会同时显示新旧两个名称。 */
 describe('迁移 56：控制类工具的对象名', () => {
-  test('两组工具自己的 step 跟着转，别的工具同名的对象名不动', () => {
+  test('两组工具自身的 step 随之转换，其他工具的同名对象名不变', () => {
     const db = dbBefore(56)
     insertStep(db, 's_desk', 'desktop_observe', {
       kind: 'tool_result',
@@ -1700,11 +1700,11 @@ describe('迁移 56：控制类工具的对象名', () => {
 })
 
 /**
- * 列改名之后原值就是绑定：已有行指向最近一次触发建的那条会话，此后的触发发进它。
- * 值被清空的话，每条存量任务的下一次触发都会再开一条会话。
+ * 列改名之后原值即为绑定：已有行指向最近一次触发创建的会话，此后的触发发送到该会话。
+ * 值被清空时，每条存量任务的下一次触发都会新建一条会话。
  */
 describe('迁移 57：定时任务绑定会话', () => {
-  test('原值保留、外键与索引跟着改名，新列默认 0', () => {
+  test('原值保留，外键与索引随之改名，新列默认为 0', () => {
     const db = dbBefore(57)
     db.exec(`
 INSERT INTO workspaces (id, name, root_path, last_opened_at, created_at)
@@ -1738,7 +1738,7 @@ VALUES ('sch_bound', 'C:\\ws', '日报', 'p', 'interval', 30, 1, 1, 222, 'cv_bou
       { id: 'sch_never', conversation_id: null, new_conversation: 0, last_run_at: null },
     ])
 
-    // 索引按新名字重建，旧名字不再存在。主键的自动索引没有 SQL，不在这份里。
+    // 索引按新名称重建，旧名称不再存在。主键的自动索引没有 SQL，不在此列表中。
     expect(
       db
         .query<{ name: string }, []>(
@@ -1749,7 +1749,7 @@ VALUES ('sch_bound', 'C:\\ws', '日报', 'p', 'interval', 30, 1, 1, 222, 'cv_bou
         .map((r) => r.name),
     ).toEqual(['idx_schedules_conversation', 'idx_schedules_workspace'])
 
-    // `ON DELETE SET NULL` 跟着列名走：删会话之后置空，触发游标保留。
+    // `ON DELETE SET NULL` 随列名迁移：删除会话之后置空，触发游标保留。
     db.exec('PRAGMA foreign_keys = ON')
     db.query('DELETE FROM conversations WHERE id = ?').run('cv_bound')
     expect(
@@ -1763,8 +1763,8 @@ VALUES ('sch_bound', 'C:\\ws', '日报', 'p', 'interval', 30, 1, 1, 222, 'cv_bou
   })
 })
 
-describe('迁移 59：请求账记录本次输入携带的图片批次', () => {
-  /** 旧行没有这条事实，只能是 NULL——按时间倒推等于替模型声明它看过一张没发出去的图。 */
+describe('迁移 59：请求记录本次输入携带的图片批次', () => {
+  /** 旧行没有该事实，只能为 NULL：按时间推算回填，等于声明模型看过一张未发送的图片。 */
   test('存量请求行加列后为 NULL，不按时间回填', () => {
     const db = dbBefore(59)
     db.exec(`
@@ -1787,7 +1787,7 @@ VALUES ('pr_legacy', 'rn_legacy', 0, 0, 'turn', 'm', 'received', 10, '{}', '{}',
   })
 })
 
-describe('迁移 62：删掉没有读写方的权限表', () => {
+describe('迁移 62：删除没有读写方的权限表', () => {
   test('存量库迁移后与新建库都没有 permission_rules / permission_audit', () => {
     const db = dbBefore(62)
     db.exec(`INSERT INTO permission_rules (id, workspace_id, scope, effect, created_at)
@@ -1808,7 +1808,7 @@ VALUES ('pr_x', 'ws', 'run_command:git', 'allow', 1);`)
   })
 })
 
-describe('迁移 65：消息表只存用户的话', () => {
+describe('迁移 65：消息表只存储用户消息', () => {
   test('存量用户消息逐列保留，runs 不再有 assistant_message_id', () => {
     const db = dbBefore(65)
     db.exec(`
@@ -1855,7 +1855,7 @@ VALUES ('ms_1', 'cv', 'user', '改一下登录页', '[]', 1, NULL),
     db.close()
   })
 
-  test('存量库里有助手行时迁移失败，不静默删除', () => {
+  test('存量库中有助手行时迁移失败，不静默删除', () => {
     const db = dbBefore(65)
     db.exec(
       "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('ms_a', 'cv', 'assistant', '旧回复', 1)",

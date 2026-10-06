@@ -1,8 +1,8 @@
 /**
  * 覆盖 `canvas.ts` 的运行、取回与取消（`run` / `retrieve` / `cancel`），以及 `canvas.run` 与 `file.changed` 的时序。
  *
- * 生成端口是假的：每次调用交出一个可以从外面推进的句柄（任务号回调、完成、失败），
- * 测试据此控制「生成到一半」的时刻。中止信号到达时调用以中止原因拒绝，同真实端口。
+ * 生成端口为模拟实现：每次调用返回一个可从外部推进的句柄（任务号回调、完成、失败），
+ * 测试据此控制「生成进行到一半」的时刻。中止信号到达时调用以中止原因拒绝，与真实端口一致。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -27,7 +27,7 @@ const PATH = 'board.canvas.json'
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
 const MP4 = new Uint8Array([0, 0, 0, 24])
 
-/** 带真实 IHDR 的 PNG 头：服务端从这 24 字节读宽高。 */
+/** 带真实 IHDR 的 PNG 头：服务端从这 24 字节读取宽高。 */
 function pngHead(w: number, h: number): Uint8Array {
   const b = Buffer.alloc(33)
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0)
@@ -38,7 +38,7 @@ function pngHead(w: number, h: number): Uint8Array {
   return new Uint8Array(b)
 }
 
-/** 一次端口调用：`submit` 触发任务号回调，`finish` 让调用返回。 */
+/** 一次端口调用：`submit` 触发任务号回调，`finish` 使调用返回。 */
 interface Pending {
   call: MediaCall
   submit(taskId?: string): Promise<void>
@@ -129,7 +129,7 @@ const VIDEO_CARD: CanvasOp[] = [
 ]
 
 describe('画布运行：图像', () => {
-  test('隐藏参数不进请求或历史记录，原选择保留并在恢复模式后重新发送', async () => {
+  test('隐藏参数不写入请求或历史记录，原选择保留并在恢复模式后重新发送', async () => {
     const model = findMediaModel('wan2.7-image-pro')!
     const prefs = { size: '4K', thinking_mode: true, seed: 42 }
     const { ws, ids } = await setup([
@@ -172,7 +172,7 @@ describe('画布运行：图像', () => {
     })
     expect(await again.done).toMatchObject({ ok: true })
   })
-  test('成功后追加版本；made 记编译后的提示词，之后改提示词不影响它', async () => {
+  test('成功后追加版本；made 记录编译后的提示词，之后修改提示词不影响它', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -199,7 +199,7 @@ describe('画布运行：图像', () => {
     expect(g.versions[0]!.path).toMatch(/^generated\/\d{8}-\d{6}\.png$/)
   })
 
-  test('落地的图带像素宽高，卡片的框换成图的比例、短边不变', async () => {
+  test('落盘的图片带像素宽高，卡片的框改为图片的比例、短边不变', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -235,7 +235,7 @@ describe('画布运行：图像', () => {
     expect(events[0]).toMatchObject({ workspaceId: 'ws1', path: PATH, nodeId: ids.$g })
   })
 
-  test('出图失败：failed 带原文，状态显示原文；画布只多一条生成记录', async () => {
+  test('生成图片失败：failed 带原文，状态显示原文；画布只增加一条生成记录', async () => {
     const { ws, svc, ids, events } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -250,7 +250,7 @@ describe('画布运行：图像', () => {
     })
   })
 
-  test('提示词为空、输入的生成节点还没有结果时不调端口', async () => {
+  test('提示词为空、输入的生成节点尚无结果时不调用端口', async () => {
     const { ws, svc, ids } = await setup([
       ...IMAGE_CARD,
       { op: 'add_generate', ref: '$e', output: 'image' },
@@ -261,12 +261,12 @@ describe('画布运行：图像', () => {
       '提示词为空',
     )
     expect((await failure(svc.run(ws, PATH, ids.$h!, { media: fake.port }))).message).toContain(
-      '还没有结果',
+      '尚无结果',
     )
     expect(fake.calls).toHaveLength(0)
   })
 
-  test('输入来自另一个生成节点时取它当前版本', async () => {
+  test('输入来自另一个生成节点时取其当前版本', async () => {
     const { ws, svc, ids } = await setup([
       ...IMAGE_CARD,
       { op: 'add_generate', ref: '$h', output: 'image', prompt: '以 @[$g] 为参考' },
@@ -291,7 +291,7 @@ describe('画布运行：图像', () => {
 })
 
 describe('画布运行：视频', () => {
-  test('任务号到手即追加一版指向任务记录，状态为生成中；成功后改指产物、删记录', async () => {
+  test('取得任务号即追加一版指向任务记录，状态为生成中；成功后改为指向产物并删除记录', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -302,7 +302,7 @@ describe('画布运行：视频', () => {
     expect(during.versions[0]!.path).toMatch(/\.task\.json$/)
     expect(during.versions[0]!.made).toMatchObject({ provider: 'ark', model: 'seedance' })
     expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
-    // 在跑时再跑、取回、删节点、删这一版都被拒。
+    // 运行中再次运行、取回、删除节点、删除该版本均被拒绝。
     expect((await failure(svc.run(ws, PATH, ids.$v!, { media: fake.port }))).status).toBe(409)
     expect(
       (await failure(svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port }))).status,
@@ -335,7 +335,7 @@ describe('画布运行：视频', () => {
     expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'normal' })
   })
 
-  test('模型返回尾帧：视频进版本，尾帧图多一个节点，名字 <卡片名>_尾帧，在卡片右侧', async () => {
+  test('模型返回尾帧：视频写入版本，尾帧图增加一个节点，名称为 <卡片名>_尾帧，位于卡片右侧', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -359,7 +359,7 @@ describe('画布运行：视频', () => {
     expect((await node(ws.root, ids.$v!)).versions[0]!.path).toMatch(/\.mp4$/)
   })
 
-  test('等待超时：这一版留着，状态为待取回；取回后改指产物', async () => {
+  test('等待超时：该版本保留，状态为待取回；取回后改为指向产物', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -390,7 +390,7 @@ describe('画布运行：视频', () => {
     expect((await node(ws.root, ids.$v!)).versions[0]!.path).toMatch(/\.mp4$/)
   })
 
-  test('远端明确失败：删这一版与任务记录，最近失败有原文', async () => {
+  test('远端明确失败：删除该版本与任务记录，最近失败带原文', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -406,7 +406,7 @@ describe('画布运行：视频', () => {
     })
   })
 
-  test('生成期间删掉同卡另一个旧版，成功后回写的仍是对的那一版', async () => {
+  test('生成期间删除同一卡片的另一个旧版本，成功后回写的仍是正确的版本', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const first = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -438,7 +438,7 @@ describe('画布运行：视频', () => {
     expect(after.current).toBe(after.versions[0]!.id)
   })
 
-  test('生成期间画布被外部改写、节点没了：产物照常落盘，failed 原文写明产物路径', async () => {
+  test('生成期间画布被外部改写、节点已删除：产物照常落盘，failed 原文写明产物路径', async () => {
     const { ws, svc, ids, events } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -459,7 +459,7 @@ describe('画布运行：视频', () => {
     expect(events.at(-1)).toMatchObject({ type: 'canvas.run', state: 'failed' })
   })
 
-  test('一张卡有两个待取回版本时按版本 id 各取各的', async () => {
+  test('一张卡有两个待取回版本时按版本 id 分别取回', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     for (const task of ['t-1', 't-2']) {
@@ -480,7 +480,7 @@ describe('画布运行：视频', () => {
       files: [{ bytes: MP4, mime: 'video/mp4' }],
     })
     await got.done
-    // 当前版指向 t-2；取回第一版后仍是待取回，指向 t-2。
+    // 当前版本指向 t-2；取回第一版后仍为待取回，指向 t-2。
     expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual({
       state: 'pending',
       version: v2!.id,
@@ -521,7 +521,7 @@ describe('画布运行：取消', () => {
     files: [{ bytes: MP4, mime: 'video/mp4' }],
   }
 
-  test('远端撤成了：停下本地等待，删掉这一版与任务记录，不记失败，卡回到生成之前', async () => {
+  test('远端撤销成功：停止本地等待，删除该版本与任务记录，不记录失败，卡片恢复到生成之前', async () => {
     const { ws, svc, events, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -549,7 +549,7 @@ describe('画布运行：取消', () => {
     expect(events.at(-1)).toMatchObject({ type: 'canvas.run', state: 'done' })
   })
 
-  test('远端已开始：撤不回，生成照常进行到成功', async () => {
+  test('远端已开始：无法撤销，生成照常进行到成功', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -562,7 +562,7 @@ describe('画布运行：取消', () => {
     expect((await node(ws.root, ids.$v!)).versions[0]!.path).toMatch(/\.mp4$/)
   })
 
-  test('任务号还没到手时先等它，到手后再撤；图像这类一次请求的生成不撤；没在生成回 409', async () => {
+  test('尚未取得任务号时先等待，取得后再撤销；图像等一次请求的生成不撤销；未在生成时返回 409', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -598,7 +598,7 @@ describe('画布运行：取消', () => {
     expect(await run.done).toMatchObject({ ok: true })
   })
 
-  test('取回中也能撤：任务号从任务记录里读', async () => {
+  test('取回期间也能撤销：任务号从任务记录中读取', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -621,7 +621,7 @@ describe('画布运行：取消', () => {
 })
 
 describe('画布运行：排队中与生成中', () => {
-  test('平台回报的状态记进卡片状态，变了才发 canvas.run；认不出的状态词不改', async () => {
+  test('平台报告的状态写入卡片状态，变化时才发送 canvas.run；无法识别的状态词不修改状态', async () => {
     const { ws, svc, events, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -664,7 +664,7 @@ describe('画布运行：生成记录', () => {
     at: Date.now(),
   })
 
-  test('成功：一条 done，记发出的提示词、参数、输入、接口、模型与花费', async () => {
+  test('成功：一条 done，记录发出的提示词、参数、输入、接口、模型与花费', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -697,7 +697,7 @@ describe('画布运行：生成记录', () => {
     expect(Date.parse(runs[0]!.end)).toBeGreaterThanOrEqual(Date.parse(runs[0]!.start))
   })
 
-  test('失败：一条 failed，带失败原文、没有花费；重启后原文仍在画布文件里', async () => {
+  test('失败：一条 failed，带失败原文、没有花费；重启后原文仍在画布文件中', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -710,7 +710,7 @@ describe('画布运行：生成记录', () => {
     expect(runs[0]).not.toHaveProperty('cost')
   })
 
-  test('视频超时留待取回、之后取回成功：两条记录，任务号相同，花费记在取回那条', async () => {
+  test('视频超时留待取回、之后取回成功：两条记录，任务号相同，花费记在取回的记录上', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -737,7 +737,7 @@ describe('画布运行：生成记录', () => {
     expect(runs[1]).not.toHaveProperty('prompt')
   })
 
-  test('排队中撤销：一条 cancelled，不记失败原文', async () => {
+  test('排队中撤销：一条 cancelled，不记录失败原文', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -750,7 +750,7 @@ describe('画布运行：生成记录', () => {
     expect(runs[0]).not.toHaveProperty('message')
   })
 
-  test('删掉生成卡之后记录仍在', async () => {
+  test('删除生成卡之后记录仍保留', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })

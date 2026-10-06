@@ -1,17 +1,17 @@
 /**
- * 跟进消息（排队 / 注入）的端到端回归。**用假 provider，不花钱、不联网。**
+ * 跟进消息（排队 / 注入）的端到端回归测试。使用假 provider，不产生费用、不访问网络。
  *
- * **覆盖范围**：`runs.ts` 的队列（入队幂等、翻转、删除、取走、复位）、
- * `commands.ts` 的 `message.send` 忙闲裁决、对子会话的回绝、两条 `followup.*` 分支与
- * `conversation.interrupt` 的三样一起停、`run-control.ts` 的 `submitMessage`
- * （用户消息与子 agent 回执同一条路）、收尾时的火发与它同目标续起的优先级、
- * `agent/loop/index.ts` 在 step 边界的注入，以及 `runtime/transcript.ts` 把那条
+ * 覆盖范围：`runs.ts` 的队列（入队幂等、翻转、删除、取出、复位）、
+ * `commands.ts` 的 `message.send` 忙闲裁决、对子会话的拒绝、两条 `followup.*` 分支与
+ * `conversation.interrupt` 同时停止三类任务、`run-control.ts` 的 `submitMessage`
+ * （用户消息与子 agent 回执经由同一条路径）、收尾时发起下一轮及其与目标自动继续的优先级、
+ * `agent/loop/index.ts` 在 step 边界的注入，以及 `runtime/transcript.ts` 把
  * `kind='user'` 的 step 投影回历史。
  *
- * **为什么必须走真链路。** 这个功能的形状是「一轮跑到一半，模型下一次请求里
- * 多了一句用户的话」。把 loop 换成桩来测，测到的只是「桩被调用了」——真正会坏的
- * 是装配：那句话有没有进请求、进在哪个位置、下一轮从账本投影回来还在不在原位。
- * 假 provider 把每次请求的原始 body 都留了下来，前缀断言直接量它。
+ * 必须使用真实链路：该功能的行为是一轮执行过程中，模型的下一次请求
+ * 多出一条用户消息。把 loop 替换为桩测试只能验证桩被调用；易出错的
+ * 是装配：该消息是否进入请求、位于哪个位置、下一轮从账本投影回来后是否仍在原位。
+ * 假 provider 保留每次请求的原始 body，前缀断言直接基于它比较。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -52,7 +52,7 @@ function usage() {
   return { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 0 } }
 }
 
-/** 一轮工具调用。用 `list_dir` —— 只读、不改工作区、参数简单。 */
+/** 一轮工具调用。使用 `list_dir`：只读、不修改工作区、参数简单。 */
 function toolTurn(callId: string): string {
   return sse([
     { type: 'response.created', response: { id: 'resp_tool' } },
@@ -74,7 +74,7 @@ function toolTurn(callId: string): string {
   ])
 }
 
-/** 一轮纯文本收尾。 */
+/** 一轮以纯文本结束的响应。 */
 function textTurn(text: string): string {
   return sse([
     { type: 'response.created', response: { id: 'resp_text' } },
@@ -97,8 +97,8 @@ const provider = Bun.serve({
     const body = await req.text()
     bodies.push(body)
     const next = script.shift()
-    // 脚本用完 = 401（`auth_failed`，当场终结且不重发）。理由与 goal-loop 那份相同：
-    // 一句正常收尾的文本会让服务端接着起下一轮，用例之间就串了。
+    // 脚本耗尽时返回 401（`auth_failed`，立即终止且不重发）。理由与 goal-loop 测试相同：
+    // 一条正常收尾的文本响应会使服务端继续发起下一轮，导致用例之间互相干扰。
     if (!next) return new Response('脚本已用完', { status: 401 })
     return next(body)
   },
@@ -109,7 +109,7 @@ const ok =
   () =>
     new Response(payload, { headers: SSE_HEADERS })
 
-/** 挂住这一轮，直到用例主动放行。用来制造「会话正在跑」。 */
+/** 挂起当前一轮，直到用例主动放行，用于构造会话运行中的状态。 */
 function gate(payload: string): { turn: Turn; release: () => void } {
   let release!: () => void
   const ready = new Promise<void>((resolve) => {
@@ -197,7 +197,7 @@ function deps() {
   return { store, content, config, bus, runs, subagents }
 }
 
-/** 收到指令的假连接：只记回执，不真的开 socket。 */
+/** 接收指令的假连接：只记录回执，不打开真实的 socket。 */
 function socket() {
   const sent: Record<string, unknown>[] = []
   return {
@@ -230,7 +230,7 @@ async function waitFor(what: (e: AgentEvent) => boolean, ms = 10_000): Promise<A
   return null
 }
 
-/** 等到这条会话真的闲下来（收尾 + 火发那一拍 setTimeout(0) 都过去）。 */
+/** 等待该会话完全空闲（收尾与发起下一轮的 setTimeout(0) 均已执行）。 */
 async function idle(cv: ConversationId, ms = 10_000): Promise<void> {
   const deadline = Date.now() + ms
   while (Date.now() < deadline) {
@@ -242,12 +242,12 @@ async function idle(cv: ConversationId, ms = 10_000): Promise<void> {
   }
 }
 
-/** 排队与火发都是 setTimeout(0)，多等几拍确认**没有**下一轮起来。 */
+/** 排队与发起均经由 setTimeout(0)，多等待几个周期以确认未启动下一轮。 */
 async function settle(): Promise<void> {
   await Bun.sleep(160)
 }
 
-/** 请求 body 里发给模型的消息串。前缀断言按它逐条比。 */
+/** 请求 body 中发给模型的消息序列。前缀断言据此逐条比较。 */
 function sentMessages(body: string): { role: string; content: unknown }[] {
   const parsed = JSON.parse(body) as { input?: { role?: string; content?: unknown }[] }
   return (parsed.input ?? []).map((m) => ({ role: m.role ?? '', content: m.content }))
@@ -255,8 +255,8 @@ function sentMessages(body: string): { role: string; content: unknown }[] {
 
 // ───────────────────────── 用例 ─────────────────────────
 
-describe('会话在跑时发消息', () => {
-  test('不回绝，排进队列，且一个字都不落盘', async () => {
+describe('会话运行中发送消息', () => {
+  test('不拒绝，排入队列，且不写入磁盘', async () => {
     const cv = conversation()
     const held = gate(textTurn('第一轮做完了。'))
     script = [held.turn]
@@ -275,13 +275,13 @@ describe('会话在跑时发消息', () => {
         { ...deps(), ws: sock.ws },
       )
 
-      // 没有回绝：既没有 run.error，也没有指令回执。
+      // 未拒绝：既没有 run.error，也没有指令回执。
       expect(sock.sent).toEqual([])
       expect(events.some((f) => f.event.type === 'run.error')).toBe(false)
       expect(runs.queueOf(cv).map((f) => f.content)).toEqual(['排着的那一句'])
-      // 队列不落盘：账本里只有发起这一轮的那条消息。
+      // 队列不落盘：账本中只有发起本轮的消息。
       expect(listMessages(store, cv).map((m) => m.content)).toEqual(['第一句'])
-      // 卡片的唯一实时来源。
+      // 队列卡片唯一的实时来源。
       expect(events.some((f) => f.event.type === 'queue.changed')).toBe(true)
     } finally {
       held.release()
@@ -289,7 +289,7 @@ describe('会话在跑时发消息', () => {
     }
   }, 20_000)
 
-  test('同一个 clientRequestId 重发不会排出两条', async () => {
+  test('同一个 clientRequestId 重发不会产生两条排队条目', async () => {
     const cv = conversation()
     const held = gate(textTurn('好了。'))
     script = [held.turn]
@@ -314,7 +314,7 @@ describe('会话在跑时发消息', () => {
 })
 
 describe('子会话不接受直接消息', () => {
-  test('向 workflow 建的子会话发消息被回绝，不入队也不起轮', async () => {
+  test('向 workflow 创建的子会话发送消息被拒绝，不入队也不发起新一轮', async () => {
     const parent = conversation()
     const child = createConversation(store, {
       workspaceId: workspaceId as never,
@@ -346,8 +346,8 @@ describe('子会话不接受直接消息', () => {
   })
 })
 
-describe('收尾之后的火发', () => {
-  test('正常收尾自动起下一轮，正文就是排着的那一句', async () => {
+describe('收尾之后发起下一轮', () => {
+  test('正常收尾后自动发起下一轮，正文即排队中的消息', async () => {
     const cv = conversation()
     const held = gate(textTurn('第一轮做完了。'))
     script = [held.turn, ok(textTurn('第二轮也做完了。'))]
@@ -366,13 +366,13 @@ describe('收尾之后的火发', () => {
     held.release()
 
     await idle(cv)
-    // 两条消息、两轮，顺序就是用户发的顺序。
+    // 两条消息、两轮，顺序与用户发送顺序一致。
     expect(listMessages(store, cv).map((m) => m.content)).toEqual(['第一句', '跑完再说这句'])
     expect(listRuns(store, cv)).toHaveLength(2)
     expect(runs.queueOf(cv)).toEqual([])
   }, 30_000)
 
-  test('中断收尾不火发，条目留在队列且去向复位', async () => {
+  test('中断收尾时不发起下一轮，条目留在队列且去向复位', async () => {
     const cv = conversation()
     const held = gate(textTurn('不会用到。'))
     script = [held.turn]
@@ -396,14 +396,14 @@ describe('收尾之后的火发', () => {
     await idle(cv)
     await settle()
 
-    // 不自动起下一轮。
+    // 不自动发起下一轮。
     expect(listRuns(store, cv)).toHaveLength(1)
-    // 条目还在，但「调整方向」只对发出它的那一轮成立，收尾即复位。
+    // 条目仍在队列中，但「调整方向」只对标记时的那一轮有效，收尾时复位。
     expect(runs.queueOf(cv)).toHaveLength(1)
     expect(runs.queueOf(cv)[0]?.steer).toBe(false)
   }, 30_000)
 
-  test('队列压过目标续起，但目标的收尾照走', async () => {
+  test('队列优先于目标自动继续，但目标的收尾处理照常执行', async () => {
     const cv = conversation()
     const seeded = createGoal(store, { conversationId: cv, objective: '把活干完' })
     if (!seeded.ok) throw new Error(seeded.message)
@@ -430,22 +430,22 @@ describe('收尾之后的火发', () => {
     held.release()
     await idle(cv)
 
-    // 起的是队列那一轮（人类消息优先），不是目标续起那一轮。
+    // 发起的是队列中消息对应的一轮（用户消息优先），而不是目标自动继续的一轮。
     const messages = listMessages(store, cv).map((m) => m.content)
     expect(messages).toEqual(['第一句', '人插的这一句'])
-    // 目标本身不受这次跳过影响：标记由那次 startRun 清掉（人类消息优先）。
+    // 目标本身不受此次跳过影响：标记由该次 startRun 清除（用户消息优先）。
     expect(runs.armedOf(cv)).toBeNull()
     expect(currentGoal(store, cv)?.status).toBe('active')
   }, 30_000)
 })
 
-describe('注入当前这一轮', () => {
+describe('注入当前一轮', () => {
   /**
-   * 这条是整个功能最要紧的一条：注入之后那一次请求，必须是上一次请求的
-   * **逐条前缀 + 新增的那几条**。不成立就说明注入插错了位置，
-   * 缓存前缀在那里断掉，而这件事不会有任何报错。
+   * 该功能最关键的断言：注入之后的请求必须由上一次请求的
+   * 逐条前缀加新增条目构成。不成立说明注入位置错误，
+   * 缓存前缀在该处中断，且不会产生任何报错。
    */
-  test('在下一个 step 边界进请求，且不破坏前缀', async () => {
+  test('在下一个 step 边界进入请求，且不破坏前缀', async () => {
     const cv = conversation()
     const held = gate(toolTurn('call_1'))
     script = [held.turn, ok(textTurn('按你说的改了。'))]
@@ -470,20 +470,20 @@ describe('注入当前这一轮', () => {
     const first = sentMessages(bodies[0] ?? '')
     const second = sentMessages(bodies[1] ?? '')
 
-    // 注入的那句话进了第二次请求。
+    // 注入的消息进入了第二次请求。
     expect(JSON.stringify(second)).toContain('改主意了，只列文件名')
     expect(JSON.stringify(first)).not.toContain('改主意了')
 
-    // run 上下文已经跟真实用户消息绑定；跟进只向 transcript 追加，已有线上消息不动。
+    // run 上下文已与真实用户消息绑定；跟进消息只向 transcript 追加，已发送的消息不变。
     expect(second.slice(0, first.length)).toEqual(first)
 
-    // 注入消息落成一条 kind='user' 的 step，开即终态。
+    // 注入消息写入为一条 kind='user' 的 step，创建时即为终态。
     const run = listRuns(store, cv)[0]
     const injected = listSteps(store, run?.id ?? ('' as never)).filter((s) => s.kind === 'user')
     expect(injected).toHaveLength(1)
     expect(injected[0]?.content).toBe('改主意了，只列文件名')
     expect(injected[0]?.status).toBe('done')
-    // 队列里不再有它，事件带着 stepId 与卡片 id。
+    // 队列中不再有该条目，事件带有 stepId 与卡片 id。
     expect(runs.queueOf(cv)).toEqual([])
     const ev = events.find((f) => f.event.type === 'message.injected')?.event
     expect(ev && 'stepId' in ev && ev.stepId).toBe(injected[0]?.id)
@@ -491,14 +491,14 @@ describe('注入当前这一轮', () => {
   }, 30_000)
 
   /**
-   * 跨 run 同形：注入那条在回放里必须仍然夹在两波工具之间，
-   * 而不是被排到整个 run 的全部步骤之后。
+   * 跨 run 结构一致：注入的消息在回放中必须仍位于两批工具之间，
+   * 而不是排在整个 run 的全部步骤之后。
    *
-   * 用例特意让注入之后**再跑一波工具**：只有这样两种设计才区分得开——
-   * 落 `messages` 表的话回放会把它挪到最后（`buildHistory` 的骨架按 message id
-   * 排、每条后面挂整轮 steps），落 steps 表才留在原位。
+   * 用例特意在注入之后再执行一批工具：只有这样才能区分两种设计。
+   * 写入 `messages` 表时回放会把它移到最后（`buildHistory` 的骨架按 message id
+   * 排序、每条消息之后附加整轮 steps），写入 steps 表才保持原位。
    */
-  test('下一轮从账本投影回来，仍夹在两波工具中间', async () => {
+  test('下一轮从账本投影回来后，仍位于两批工具之间', async () => {
     const cv = conversation()
     const held = gate(toolTurn('call_a'))
     script = [held.turn, ok(toolTurn('call_b')), ok(textTurn('好。'))]
@@ -527,11 +527,11 @@ describe('注入当前这一轮', () => {
 
     expect(injected).toBeGreaterThan(firstTool)
     expect(firstTool).toBeGreaterThanOrEqual(0)
-    // 关键的一条：它在第二波工具**之前**。排到最后就说明落错了表。
+    // 关键断言：注入消息位于第二批工具之前。若排在最后，说明写入了错误的表。
     expect(secondTool).toBeGreaterThan(injected)
   }, 30_000)
 
-  test('标了调整方向却没赶上边界，收尾后降级为火发下一轮', async () => {
+  test('标记了调整方向但未赶上边界时，收尾后降级为发起下一轮', async () => {
     const cv = conversation()
     const held = gate(textTurn('这一轮直接收尾。'))
     script = [held.turn, ok(textTurn('降级那一轮。'))]
@@ -552,13 +552,13 @@ describe('注入当前这一轮', () => {
     held.release()
     await idle(cv)
 
-    // 没有被静默丢掉：它成了下一轮。
+    // 未被静默丢弃：它成为下一轮。
     expect(listMessages(store, cv).map((m) => m.content)).toEqual(['第一句', '来不及注入的一句'])
   }, 30_000)
 })
 
-describe('卡片上的两个可点物', () => {
-  test('翻转去向；会话空闲时同一条指令当场起一轮', async () => {
+describe('队列卡片上的两个操作', () => {
+  test('翻转去向；会话空闲时同一条指令立即发起一轮', async () => {
     const cv = conversation()
     const held = gate(textTurn('第一轮完。'))
     script = [held.turn, ok(textTurn('被点发送那一轮。'))]
@@ -575,20 +575,20 @@ describe('卡片上的两个可点物', () => {
       } as never,
       { ...deps(), ws: sock.ws },
     )
-    // 在跑：翻转，仍留在队列里。
+    // 运行中：翻转去向，条目仍留在队列中。
     await handleCommand(
       { type: 'followup.steer', conversationId: cv, id: 'req-t', steer: true } as never,
       { ...deps(), ws: sock.ws },
     )
     expect(runs.queueOf(cv)[0]?.steer).toBe(true)
 
-    // 中断掉这一轮，让会话闲下来且不火发。
+    // 中断当前一轮，使会话空闲且不发起下一轮。
     runs.interrupt((started as { runId: string }).runId as never)
     held.release()
     await idle(cv)
     expect(runs.queueOf(cv)).toHaveLength(1)
 
-    // 空闲：同一条指令的语义换成「现在就发」。
+    // 空闲时：同一条指令的语义变为「立即发送」。
     await handleCommand(
       { type: 'followup.steer', conversationId: cv, id: 'req-t', steer: true } as never,
       { ...deps(), ws: sock.ws },
@@ -598,7 +598,7 @@ describe('卡片上的两个可点物', () => {
     expect(runs.queueOf(cv)).toEqual([])
   }, 30_000)
 
-  test('删掉的条目既不注入也不火发；删不掉时如实回绝', async () => {
+  test('已删除的条目既不注入也不发起下一轮；无法删除时如实拒绝', async () => {
     const cv = conversation()
     const held = gate(textTurn('第一轮完。'))
     script = [held.turn]
@@ -621,8 +621,8 @@ describe('卡片上的两个可点物', () => {
     })
     expect(runs.queueOf(cv)).toEqual([])
 
-    // 再删一次：明确回绝，不静默成功——「点了删除、卡片还在」和
-    // 「服务端没收到」在界面上分不出来。
+    // 再次删除：明确拒绝，不静默成功，否则「点击删除后卡片仍在」与
+    // 「服务端未收到」在界面上无法区分。
     await handleCommand({ type: 'followup.drop', conversationId: cv, id: 'req-d' } as never, {
       ...deps(),
       ws: sock.ws,
@@ -632,17 +632,17 @@ describe('卡片上的两个可点物', () => {
     held.release()
     await idle(cv)
     await settle()
-    // 删掉之后不该有第二轮。
+    // 删除之后不应有第二轮。
     expect(listMessages(store, cv).map((m) => m.content)).toEqual(['第一句'])
   }, 30_000)
 })
 
 /**
- * 子 agent 的回执与用户发的消息走同一个函数（`submitMessage`）：忙就排进队列在下一个
- * step 边界注入，闲就当场起一轮。两处各写一遍的话，「判忙与起轮在同一个同步块里」
- * 这条要守两次，而漏掉的那一次不会报错。
+ * 子 agent 的回执与用户发送的消息经由同一个函数（`submitMessage`）：忙时排入队列，在下一个
+ * step 边界注入；空闲时立即发起一轮。两处各自实现时，「判定忙闲与发起新一轮在同一个同步块中」
+ * 这一约束需要维护两次，而遗漏的一处不会报错。
  */
-describe('回执进的是同一条队列', () => {
+describe('回执进入同一条队列', () => {
   const receipt = (id: string, content: string) => ({
     id,
     content,
@@ -650,7 +650,7 @@ describe('回执进的是同一条队列', () => {
     origin: 'subagent' as const,
   })
 
-  test('有 run 在跑：排进队列，在下一个 step 边界注入，来源随 step 落盘', async () => {
+  test('有 run 运行时：排入队列，在下一个 step 边界注入，来源随 step 落盘', async () => {
     const cv = conversation()
     const held = gate(toolTurn('call_receipt'))
     script = [held.turn, ok(textTurn('看到回执了。'))]
@@ -663,8 +663,8 @@ describe('回执进的是同一条队列', () => {
 
     const injected = await waitFor((e) => e.type === 'message.injected')
     expect(injected?.type === 'message.injected' && injected.content).toContain('子 agent 回执')
-    // 事件与落库同值：界面按它决定这一帧画回执行还是气泡，两侧不同口径的话，
-    // 实时画成气泡、刷新之后同一条变回执行。
+    // 事件与落库的值一致：界面据此决定渲染为回执行还是气泡。两侧不一致时，
+    // 同一条消息实时渲染为气泡，刷新后变为回执行。
     expect(injected?.type === 'message.injected' && injected.origin).toBe('subagent')
     await idle(cv)
 
@@ -672,11 +672,11 @@ describe('回执进的是同一条队列', () => {
       .flatMap((r) => listSteps(store, r.id))
       .find((s) => s.kind === 'user')
     expect(step?.payload).toMatchObject({ kind: 'user', origin: 'subagent' })
-    // 回执不是人说的话：它不该在 messages 表里多出一行。
+    // 回执不是用户发言：它不应在 messages 表中新增一行。
     expect(listMessages(store, cv).map((m) => m.content)).toEqual(['先派个活'])
   }, 30_000)
 
-  test('会话闲着：当场起一轮，消息行记下来源', async () => {
+  test('会话空闲：立即发起一轮，消息行记录来源', async () => {
     const cv = conversation()
     script = [ok(textTurn('收到回执，接着做。'))]
 
@@ -688,18 +688,18 @@ describe('回执进的是同一条队列', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]?.origin).toBe('subagent')
     expect(runs.queueOf(cv)).toEqual([])
-    // 起轮事件也带来源：这一轮的正文只从这条事件到界面，缺了它实时画成用户气泡。
+    // 发起事件同样带来源：本轮正文只经由该事件到达界面，缺少来源时会实时渲染为用户气泡。
     const started = await waitFor((e) => e.type === 'run.started')
     expect(started?.type === 'run.started' && started.userMessage?.origin).toBe('subagent')
   }, 30_000)
 
   /**
-   * 回执不是人的动作：它起的那一轮不能把目标的待续起标记清掉，
-   * 清了循环最多再跑一轮就停在半路。
+   * 回执不是用户的操作：它发起的一轮不能清除目标的自动继续标记，
+   * 否则循环最多再执行一轮就会中途停止。
    */
-  test('回执起的那一轮不清目标续起标记', async () => {
+  test('回执发起的一轮不清除目标的自动继续标记', async () => {
     const cv = conversation()
-    // 用 gate 扣住这一轮：标记要在**这一轮还在跑的时候**看，收尾之后它由目标自己的收尾裁决。
+    // 用 gate 阻塞当前一轮：标记必须在本轮仍在运行时检查，收尾之后由目标自身的收尾逻辑裁决。
     const held = gate(textTurn('收到回执。'))
     script = [held.turn]
     const seeded = createGoal(store, { conversationId: cv, objective: '把这件事做完' })
@@ -710,7 +710,7 @@ describe('回执进的是同一条队列', () => {
     await waitFor((e) => e.type === 'run.started')
     expect(runs.armedOf(cv)).not.toBeNull()
 
-    // 换成人发的那一句：他一说话，排着的那次自动续起就作废。
+    // 改为用户发送消息：用户发言后，已排队的自动继续即作废。
     await handleCommand(
       {
         type: 'message.send',
@@ -728,11 +728,11 @@ describe('回执进的是同一条队列', () => {
 })
 
 /**
- * 停止按会话全停：这一轮、派出去的子 agent，以及图上还没派的格。
- * 少停一样的形状都一样——界面上那条会话还在转，而用户已经按过停止。
+ * 停止按会话全部停止：本轮、已派发的子 agent，以及图上尚未派发的节点。
+ * 遗漏任何一类的结果相同：界面上该会话仍显示运行中，而用户已经点击过停止。
  */
 describe('按会话停止', () => {
-  test('run 与子 agent 一起停，图上没落终态的格扫成中断', async () => {
+  test('run 与子 agent 一并停止，图上未进入终态的节点标记为中断', async () => {
     const cv = conversation()
     const held = gate(textTurn('不会用到。'))
     script = [held.turn]
@@ -758,7 +758,7 @@ describe('按会话停止', () => {
       ws: sock.ws,
     })
 
-    // 一样都不许漏：回绝也不能发，那条指令确实做了事。
+    // 任何一类都不得遗漏；也不得发送拒绝回执，因为该指令确实执行了停止。
     expect(sock.sent).toEqual([])
     expect(controller.signal.aborted).toBe(true)
     const nodes = (
@@ -773,7 +773,7 @@ describe('按会话停止', () => {
     await idle(cv)
   }, 30_000)
 
-  test('只有子 agent 在跑时也停得到，不回绝', async () => {
+  test('只有子 agent 运行时同样能停止，不拒绝', async () => {
     const cv = conversation()
     const sock = socket()
     const controller = new AbortController()
@@ -788,7 +788,7 @@ describe('按会话停止', () => {
     subagents.remove(cv, 'cv_only')
   })
 
-  test('什么都没在跑时如实回绝', async () => {
+  test('没有任何任务运行时如实拒绝', async () => {
     const cv = conversation()
     const sock = socket()
     await handleCommand({ type: 'conversation.interrupt', conversationId: cv } as never, {

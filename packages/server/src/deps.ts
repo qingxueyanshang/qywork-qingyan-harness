@@ -1,8 +1,8 @@
 /**
- * 指令处理共享的依赖包。
+ * 指令处理共用的依赖集合。
  *
- * 单独一个文件是为了打断环：`commands.ts` 要调 `run-control.ts` 与 `team-run.ts`，
- * 而它们都要这个类型。放在任何一边都会让两个模块互相 import。
+ * 独立成文件以避免循环依赖：`commands.ts` 调用 `run-control.ts` 与 `team-run.ts`，
+ * 而后两者都需要该类型。放在任一方都会使两个模块互相 import。
  */
 
 import type { OfficePort } from '@qywork/agent'
@@ -17,12 +17,12 @@ import type { RunManager } from './runs.ts'
 import type { SubagentRegistry } from './subagents.ts'
 
 /**
- * **这里没有 `workspaceRoot`。**
+ * **此处不含 `workspaceRoot`。**
  *
- * 「跑在哪个目录下」是会话的属性，不是连接的属性——由
- * `workspaceRootOf(store, conversationId)` 当场查（`@qywork/store`）。
- * 别在这里挂一个进程级常量：那样一个进程只服务得了一个项目，换项目只能重启；
- * 而同一条会话可以同时开在桌面端和手机上，「当前工作区」本来就不该由连接来回答。
+ * 运行目录是会话的属性，不是连接的属性，由
+ * `workspaceRootOf(store, conversationId)` 实时查询（`@qywork/store`）。
+ * 不要在此处设置进程级常量：那样一个进程只能服务一个项目，切换项目必须重启；
+ * 而同一条会话可以同时在桌面端和手机上打开，当前工作区不应由连接决定。
  */
 export interface CommandDeps {
   ws: ServerWebSocket<SocketData>
@@ -31,43 +31,43 @@ export interface CommandDeps {
   config: QyConfig
   bus: EventBus
   runs: RunManager
-  /** 在跑的子 agent。生命期跟会话，所以它与 `runs` 同级，不挂在派活通道上。 */
+  /** 运行中的子 agent。生命期跟随会话，因此它与 `runs` 同级，不归属于任务派发通道。 */
   subagents: SubagentRegistry
   /**
-   * 内置浏览器的控制协调器。**没有原生宿主时不传**——会话装配据此决定
-   * 要不要给这一轮浏览器能力，不给一个必然报错的端口。
+   * 内置浏览器的控制协调器。**没有原生宿主时不传入**：会话装配据此决定
+   * 本轮是否提供浏览器能力，不提供必然报错的端口。
    */
   browser?: BrowserCoordinator
   /**
-   * 电脑控制的协调器。**没有宿主凭据时不传**——会话装配据此决定要不要给这一轮
-   * 桌面能力；用户有没有启用由协调器自己按配置现判。
+   * 电脑控制的协调器。**没有宿主凭据时不传入**：会话装配据此决定本轮是否提供
+   * 桌面能力；用户是否启用由协调器按配置实时判定。
    */
   desktop?: DesktopCoordinator
-  /** 画布服务：会话里的 `canvas` 工具与界面共用这一个实例。没传时会话里没有 `canvas` 工具。 */
+  /** 画布服务：会话中的 `canvas` 工具与界面共用同一实例。未传入时会话中没有 `canvas` 工具。 */
   canvas?: CanvasService
-  /** Office 执行程序的宿主。会话按它此刻给不给端口决定注册不注册 `office`。 */
+  /** Office 执行程序的宿主。会话按其当前是否提供端口决定是否注册 `office`。 */
   office?: OfficeHost
 }
 
-/** 会话装配时的 Office 端口：宿主此刻给了就带上，否则不带（工具不注册）。 */
+/** 会话装配时的 Office 端口：宿主当前提供端口时附带，否则不附带（工具不注册）。 */
 export function officePortOf(deps: Pick<CommandDeps, 'office'>): { office?: OfficePort } {
   const port = deps.office?.port()
   return port ? { office: port } : {}
 }
 
-/** 每条 WebSocket 连接自带的状态。握手前 `authed` 为 false。 */
+/** 每条 WebSocket 连接各自的状态。握手前 `authed` 为 false。 */
 export interface SocketData {
   id: string
   authed: boolean
   origin: 'desktop' | 'mobile' | 'cli' | 'external'
   /**
-   * 这条连接是哪一种原生宿主。`null` = 普通配对客户端。
+   * 该连接对应的原生宿主类型。`null` 表示普通配对客户端。
    *
-   * **由服务端按 URL 路径在升级时判定并写死**，不看客户端自报的任何字段：三类帧
-   * （聊天指令、浏览器资源操作、桌面控件操作）走三条完全不同的处理路径，
-   * 靠自报字段区分等于让任何已配对客户端注册宿主。
+   * **由服务端在升级时按 URL 路径判定并固定**，不读取客户端自报的任何字段：三类帧
+   * （聊天指令、浏览器资源操作、桌面控件操作）经由三条完全不同的处理路径，
+   * 依据自报字段区分等于允许任何已配对客户端注册为宿主。
    */
   native: 'browser' | 'desktop' | null
-  /** 升级成功的时刻，关闭时算这条连接活了多久。 */
+  /** 升级成功的时刻，关闭时用于计算连接的持续时长。 */
   openedAt: number
 }

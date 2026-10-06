@@ -60,7 +60,7 @@ const veoParams = (lite = false): MediaParamSpec[] => [
     name: 'personGeneration',
     type: 'enum',
     values: ['allow_all', 'allow_adult'],
-    description: '文生使用 allow_all；有输入图片时使用 allow_adult；受地区限制',
+    description: '文生视频使用 allow_all；有输入图片时使用 allow_adult；受地区限制',
   },
 ]
 
@@ -86,7 +86,7 @@ const xaiImageParams: MediaParamSpec[] = [
       '21:9',
       '5:2',
     ],
-    '生成默认 auto；修改默认沿用首图',
+    '生成时默认 auto；修改时默认沿用第一张输入图片的宽高比',
   ),
   { ...choice('resolution', '分辨率', ['1k', '2k'], '输出分辨率'), default: '1k' },
   {
@@ -114,7 +114,7 @@ const xaiVideoParams: MediaParamSpec[] = [
     'aspect_ratio',
     '宽高比',
     ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'],
-    '文生默认 16:9；首帧默认沿用图片',
+    '文生视频默认 16:9；首帧生视频默认沿用图片的宽高比',
   ),
   {
     ...choice('resolution', '分辨率', ['480p', '720p', '1080p'], '参考图与首尾帧最高 720p'),

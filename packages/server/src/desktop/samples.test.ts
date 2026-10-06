@@ -5,12 +5,12 @@
  *
  * 同一份样例由宿主（`src-tauri/src/desktop/frames.rs`）与 worker
  * （`computer-host/src/protocol.rs`）的测试读取：worker 逐字序列化出 `workerResponses`，
- * 宿主把它转成 `results`、把 `requests` 转成 `workerRequests`。这里锁住最后一段：
- * 样例里的字段集合与 TS 类型的键集合相等，以及服务端发出的角色条件与 worker 交回的
- * 控件角色是同一套词（角色词表本身由 worker 的样例测试核对）。
+ * 宿主把它转换为 `results`、把 `requests` 转换为 `workerRequests`。本文件验证最后一段：
+ * 样例中的字段集合与 TS 类型的键集合相等，以及服务端发出的角色条件与 worker 返回的
+ * 控件角色使用同一套词表（角色词表本身由 worker 的样例测试核对）。
  *
  * 键集合用 `Record<keyof T, true>` 字面量写出：类型多一个键或少一个键，编译即报错，
- * 所以这张表不是手抄的第二份词表，它由 TS 类型本身校验。
+ * 因此该表不是手工维护的第二份词表，而是由 TS 类型本身校验。
  */
 
 import { expect, test } from 'bun:test'
@@ -67,7 +67,7 @@ function keysOf(record: Record<string, true>): string[] {
   return Object.keys(record).sort()
 }
 
-/** 一组样例对象的键的并集。可选字段分散在不同样例里，并集才是完整的字段集合。 */
+/** 一组样例对象的键的并集。可选字段分散在不同样例中，并集才是完整的字段集合。 */
 function union(...objects: unknown[]): string[] {
   const out = new Set<string>()
   for (const o of objects) for (const k of Object.keys(o as Json)) out.add(k)
@@ -272,8 +272,8 @@ test('样例的字段集合与协议类型的键集合一致', () => {
   expect(union(observation('image').geometry)).toEqual(keysOf(GEOMETRY))
 })
 
-/** worker 按角色逐字比较：请求里的角色写法与控件表不同，等待永远等不到。 */
-test('样例里等待出现的角色与文字命中样例控件表里的一个控件', () => {
+/** worker 按角色逐字比较：请求中的角色写法与控件表不一致时，等待条件永远无法满足。 */
+test('样例中等待出现的角色与文字恰好匹配样例控件表中的一个控件', () => {
   const wait = samples.requests.wait!
   const nodes = (samples.results.tree!.observation as Json).nodes as Json[]
   const hits = nodes.filter(
@@ -282,7 +282,7 @@ test('样例里等待出现的角色与文字命中样例控件表里的一个�
   expect(hits).toHaveLength(1)
 })
 
-/** 一个只记录发出帧的宿主连接。bridge 只用到 `send` 与 `close`。 */
+/** 只记录已发送帧的宿主连接。bridge 只使用 `send` 与 `close`。 */
 function fakeSocket(): { sent: string[]; ws: never } {
   const sent: string[] = []
   return { sent, ws: { send: (s: string) => sent.push(s), close: () => {} } as never }

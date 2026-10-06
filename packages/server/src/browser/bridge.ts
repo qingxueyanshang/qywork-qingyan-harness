@@ -1,17 +1,17 @@
 /**
  * 原生浏览器宿主连接的服务端一侧。
  *
- * 这条连接由 Rust 宿主主动连上来，只承载资源操作与生命周期事件；聊天指令不经这里。
- * 服务端不发起连接，也不知道宿主进程在哪。
+ * 该连接由 Rust 宿主主动建立，只承载资源操作与生命周期事件；聊天指令不经由此处。
+ * 服务端不发起连接，也不掌握宿主进程的位置。
  *
  * 三条边界：
  *
- * 1. **宿主身份由服务端判定**，不看客户端自报的 `origin`：只有本机回环连接、
- *    且带着本次启动的宿主凭据，才会被升级到这条路径。普通配对令牌注册不了宿主。
- * 2. **断线即所有待决调用失败**，重连后由宿主的 `host.ready` 给出完整存活页快照；
+ * 1. 宿主身份由服务端判定，不依据客户端自报的 `origin`：只有本机回环连接
+ *    且携带本次启动的宿主凭据时，才会升级到该路径。普通配对令牌无法注册宿主。
+ * 2. 断线时所有待决调用失败，重连后由宿主的 `host.ready` 给出完整的存活页快照；
  *    不重放任何已发出的操作。
- * 3. **跨重连的结果一律丢弃**：结果按 `requestId` 加 `connectionEpoch` 配对，
- *    对不上的迟到结果不得完成另一次调用。
+ * 3. 跨重连的结果一律丢弃：结果按 `requestId` 加 `connectionEpoch` 配对，
+ *    不一致的迟到结果不得完成另一次调用。
  */
 
 import type {
@@ -32,7 +32,7 @@ import { timingSafeEqual } from '../pairing.ts'
 /** 一次操作的默认期限。宿主按它拒绝过期请求，服务端按它拒绝本地待决调用。 */
 const DEFAULT_DEADLINE_MS = 20_000
 
-/** 已连上的宿主。没有宿主时整条浏览器控制能力不发布。 */
+/** 已连接的宿主。没有宿主时不发布浏览器控制能力。 */
 export interface NativeBrowserHost {
   hostInstanceId: string
   connectionEpoch: number
@@ -53,7 +53,7 @@ interface Pending {
 
 export interface BrowserRequestParams {
   tabId?: string
-  /** `create` 与 `bind` 必带。宿主对缺席直接拒绝，不回落到任何默认工作区。 */
+  /** `create` 与 `bind` 必须携带。缺少时宿主直接拒绝，不回退到任何默认工作区。 */
   workspaceId?: string
   conversationId?: string
   url?: string
@@ -65,7 +65,7 @@ export class BrowserBridge {
   #key: string
   #socket: ServerWebSocket<SocketData> | null = null
   #host: NativeBrowserHost | null = null
-  /** 宿主连着但报了没有可用浏览器。与 `#host` 互斥：一个非空另一个必为空。 */
+  /** 宿主已连接但报告没有可用浏览器。与 `#host` 互斥：一个非空时另一个必为空。 */
   #unavailable: BrowserCapability['unavailable'] | null = null
   #tabs = new Map<string, BrowserTabSnapshot>()
   #pending = new Map<string, Pending>()
@@ -78,10 +78,10 @@ export class BrowserBridge {
   }
 
   /**
-   * 这条请求能不能升级成宿主连接。
+   * 判定该请求能否升级为宿主连接。
    *
-   * 回环地址是硬条件：局域网监听器复用同一份 handler，少了这一条，手机侧也能
-   * 走到凭据比较那一步。
+   * 回环地址是必要条件：局域网监听器复用同一个 handler，缺少该条件时手机端
+   * 也能进入凭据比较。
    */
   accepts(req: Request, address: string | null): boolean {
     if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
@@ -90,12 +90,12 @@ export class BrowserBridge {
     return timingSafeEqual(presented, this.#key)
   }
 
-  /** 已连上的宿主。`null` = 现在没有原生浏览器资源。 */
+  /** 已连接的宿主。`null` 表示当前没有原生浏览器资源。 */
   host(): NativeBrowserHost | null {
     return this.#host
   }
 
-  /** 宿主连着但没有可用浏览器时的原因。宿主没连上或浏览器可用时为 `null`。 */
+  /** 宿主已连接但没有可用浏览器时的原因。宿主未连接或浏览器可用时为 `null`。 */
   unavailable(): BrowserCapability['unavailable'] | null {
     return this.#unavailable
   }
@@ -121,8 +121,8 @@ export class BrowserBridge {
   /**
    * 发起一次资源操作。
    *
-   * 没有宿主、宿主中途断开、超过期限，三种情况都在本地拒绝——不能等远端返回，
-   * 远端可能已经不在了。
+   * 没有宿主、宿主中途断开、超过期限三种情况均在本地拒绝，不等待远端返回：
+   * 远端可能已不存在。
    */
   request(
     op: BrowserOp,
@@ -159,10 +159,10 @@ export class BrowserBridge {
     })
   }
 
-  /** 宿主连接上来。握手在 `accepts` 里做完了，这里只登记 socket。 */
+  /** 宿主已连接。握手已在 `accepts` 中完成，此处只登记 socket。 */
   open(ws: ServerWebSocket<SocketData>): void {
-    // 同一份 profile 由原生侧的占用锁保证只有一个宿主；这里遇到第二条连接时
-    // 让新的接管并关掉旧的——应用重启时旧 socket 可能还没被对端关闭。
+    // 同一 profile 由原生侧的占用锁保证只有一个宿主；此处收到第二条连接时
+    // 由新连接接管并关闭旧连接：应用重启时旧 socket 可能尚未被对端关闭。
     if (this.#socket && this.#socket !== ws) {
       this.#socket.close(1000, 'replaced')
       this.#reset()
@@ -204,11 +204,11 @@ export class BrowserBridge {
   }
 
   #ready(frame: HostReadyFrame): void {
-    // 工作区缺席的快照按协议错误拒收整条连接：接下它就要给那些页编一个工作区，
-    // 而服务端没有「当前工作区」这个状态。不注册宿主即整条浏览器控制能力不发布。
+    // 快照中有页缺少工作区时按协议错误拒绝整条连接：接受它就需要为这些页虚构工作区，
+    // 而服务端没有「当前工作区」状态。不注册宿主即不发布浏览器控制能力。
     const orphan = frame.tabs.find((tab) => !tab.workspaceId)
     if (orphan) {
-      log.warn('browser', '宿主快照里有页没有工作区，这条连接不接受', { tabId: orphan.tabId })
+      log.warn('browser', '宿主快照中有页缺少工作区，拒绝该连接', { tabId: orphan.tabId })
       return
     }
     // 重连按新纪元重建：先让上一纪元的待决调用失败，再登记快照。
@@ -246,20 +246,20 @@ export class BrowserBridge {
 
   #event(frame: BrowserEventFrame): void {
     if (frame.connectionEpoch !== this.#host?.connectionEpoch) return
-    // 认不出的事件种类不改快照也不往下发：宿主与服务端版本不一致时，
-    // 按「大概是导航」处理会把一份错的 URL 写进存活页快照。
+    // 无法识别的事件种类既不修改快照也不向下转发：宿主与服务端版本不一致时，
+    // 按导航事件推测处理会把错误的 URL 写入存活页快照。
     if (!BROWSER_EVENT_KINDS.includes(frame.kind)) {
-      log.warn('browser', '认不出的宿主事件', { kind: frame.kind })
+      log.warn('browser', '无法识别的宿主事件', { kind: frame.kind })
       return
     }
     const tab = this.#tabs.get(frame.tabId)
-    // 新页进入存活集合的唯一途径。AI 建的和用户自己新开的走的是同一条——
-    // 少了后者，模型在 `browser_tabs` 里看不见用户的那一页。
+    // 新页进入存活集合的唯一途径。AI 创建的页与用户新开的页经由同一路径：
+    // 缺少后者时，模型在 `browser_tabs` 中看不到用户的页。
     if (frame.kind === 'opened') {
-      // 没有工作区的新页不进存活表：填空串顶上会让它在每个工作区里都不归属、
-      // 又处处可见。这一页因此对服务端不存在，界面那份投影仍由宿主推。
+      // 没有工作区的新页不进入存活表：填入空字符串会使它不属于任何工作区
+      // 却在所有工作区中可见。该页因此对服务端不存在，界面上的投影仍由宿主推送。
       if (!frame.workspaceId) {
-        log.warn('browser', '新页没有带工作区，不进存活表', { tabId: frame.tabId })
+        log.warn('browser', '新页缺少工作区，不进入存活表', { tabId: frame.tabId })
         return
       }
       this.#tabs.set(frame.tabId, {
@@ -274,7 +274,7 @@ export class BrowserBridge {
     else if (tab) {
       if (frame.url !== undefined) tab.url = frame.url
       if (frame.title !== undefined) tab.title = frame.title
-      // `control` 事件（bind 接管后）带新归属。
+      // `control` 事件（bind 接管后）携带新归属。
       if (frame.conversationId !== undefined) tab.conversationId = frame.conversationId
     }
     for (const listener of [...this.#events]) listener(frame)
@@ -289,8 +289,8 @@ export class BrowserBridge {
   }
 
   /**
-   * 宿主报没有可用浏览器：连接留着，上一份快照与待决调用作废，能力随之下线。
-   * 浏览器重新起来时宿主在同一条连接上再发 `host.ready`。
+   * 宿主报告没有可用浏览器：连接保留，上一份快照与待决调用作废，能力随之下线。
+   * 浏览器重新启动后宿主在同一连接上再次发送 `host.ready`。
    */
   #withdraw(reason: NonNullable<BrowserCapability['unavailable']>): void {
     this.#failPending(new BrowserBridgeError('浏览器宿主没有可用的浏览器'))

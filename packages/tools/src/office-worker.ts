@@ -1,7 +1,8 @@
 /**
- * Office worker 的调用约定：请求写进 `.tmp/office/<调用>/request.json`，worker 写回同目录的 `response.json`
- * 后以 0 退出。超时或取消时 worker 进程树被结束，办公软件进程不在其中，所以随后以 `cleanup`
- * 再起一次 worker，按调用目录里的实例登记处理残留。`office` 工具与 `read_file` 的视频抽帧共用这一条。
+ * Office worker 的调用约定：请求写入 `.tmp/office/<调用>/<动作>-request.json`，worker 在同目录写入
+ * `response.json` 后以 0 退出。超时或取消时 worker 进程树被结束，但办公软件进程不在该进程树中，
+ * 因此随后以 `cleanup` 动作再启动一次 worker，按调用目录中登记的实例处理残留进程。
+ * `office` 工具与 `read_file` 的视频抽帧共用此约定。
  */
 
 import { randomUUID } from 'node:crypto'
@@ -70,7 +71,7 @@ export interface WorkerRun {
   callDir: string
 }
 
-/** 起一次 worker 并收回 `response.json`；没收回时以 `cleanup` 处理残留的办公软件进程。 */
+/** 启动一次 worker 并读取 `response.json`；超时、取消或未取得结果时以 `cleanup` 处理残留的办公软件进程。 */
 export async function runWorker(
   ctx: ToolContext,
   port: OfficePort,
@@ -85,14 +86,14 @@ export async function runWorker(
     workspace: ctx.workspaceRoot,
     cache_dir: join(officeRoot, 'cache'),
   }
-  // 模型代码在 worker 里执行，沙箱与路径层用 `run_command` 的同一份根目录清单。
+  // 模型代码在 worker 中执行，沙箱与路径边界使用与 `run_command` 相同的根目录清单。
   const policy: SandboxPolicy = {
     workspaceRoot: ctx.workspaceRoot,
     ...(ctx.additionalDirectories?.length ? { writableRoots: ctx.additionalDirectories } : {}),
     readOnlySubdirs: PROTECTED_DIRS,
     ...(ctx.denyNetwork ? { denyNetwork: true } : {}),
   }
-  // 不写 `__pycache__`：安装目录可能不可写，源码运行时会在仓库里留下编译缓存。
+  // 不写入 `__pycache__`：安装目录可能不可写，从源码运行时会在仓库中留下编译缓存。
   const env = { ...(await commandEnv(ctx)), PYTHONDONTWRITEBYTECODE: '1' }
 
   const invoke = async (body: Record<string, unknown>, ms: number, signal?: AbortSignal) => {
@@ -119,7 +120,7 @@ export async function runWorker(
   const aborted = ctx.signal.aborted
   let cleanup: WorkerResponse | null = null
   if (main.got.timedOut || aborted || main.response === null) {
-    // 清理不随本次调用的取消信号走：用户点了停止，残留的办公软件进程仍要处理。
+    // 清理不受本次调用的取消信号控制：用户停止执行后，残留的办公软件进程仍需处理。
     cleanup = (await invoke({ action: 'cleanup' }, CLEANUP_TIMEOUT_MS)).response
   }
   const secrets = ctx.secrets ?? { values: [] }
@@ -133,13 +134,13 @@ export async function runWorker(
   }
 }
 
-/** worker 没有给出结果时的回执：说明超时、取消或崩溃，以及残留处理的结果。 */
+/** worker 未给出结果时的回执：说明超时、取消或崩溃，以及残留处理的结果。 */
 export function noResponse(run: WorkerRun): ToolOutcome {
   const why = run.timedOut
     ? '执行超时，已结束执行程序'
     : run.aborted
       ? '已取消'
-      : `执行程序没有写出结果${run.stderr ? `：${run.stderr}` : ''}`
+      : `执行程序未写出结果${run.stderr ? `：${run.stderr}` : ''}`
   const cleanup = run.cleanup ? `；残留处理：${run.cleanup.message}` : ''
   return {
     status: 'failure',
@@ -166,10 +167,10 @@ export function stageNote(res: WorkerResponse): string {
 }
 
 /**
- * 视频按时间抽帧：worker 的 `frames` 动作在区间里按画面变化取一组带时间戳的帧，作为图片返回。
+ * 视频按时间抽帧：worker 的 `frames` 动作在区间内按画面变化提取一组带时间戳的帧，作为图片返回。
  *
- * 给收图片、不收原生视频的模型用。说明由 worker 写：实际看到的时间点、最长的未看区间、
- * 怎么用 `read_file` 的 start/end 续读一段、声音没有处理。帧按时间顺序排在回执里。
+ * 用于接受图片、不接受原生视频的模型。说明文字由 worker 生成：实际覆盖的时间点、最长的未覆盖区间、
+ * 如何用 `read_file` 的 start/end 继续读取某一段，以及音频未处理。帧在回执中按时间顺序排列。
  */
 export async function readVideoFrames(
   ctx: ToolContext,
@@ -188,17 +189,17 @@ export async function readVideoFrames(
   if (!run.response) return noResponse(run)
   const res = run.response
   if (!res.ok || !res.images?.length) {
-    return { status: 'failure', message: `${shown}：${res.message}。不要换参数重读这个文件。` }
+    return { status: 'failure', message: `${shown}：${res.message}。不要更换参数重新读取该文件。` }
   }
   const images: { data: string; mime: string }[] = []
   for (const img of res.images) {
     const raw = new Uint8Array(await readFile(img.path))
     const fit = await shrinkImage(raw, 'image/jpeg')
-    // 余量放不下一张图时照样投递，超出的部分由下一次发送前的压缩收回（同 read_file 读图）。
+    // 余量不足以容纳一张图片时仍然投递，超出部分由下一次发送前的压缩回收（与 read_file 读取图片相同）。
     if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
     images.push({ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime })
   }
-  // 帧已定格进回执，磁盘上那份不再有人读；不删的话每读一次视频就在工作区里留一批图。
+  // 帧已写入回执，磁盘上的副本不再被读取；不删除时每次读取视频都会在工作区中留下一批图片。
   await rm(join(run.callDir, 'frames'), { recursive: true, force: true })
   return { status: 'success', message: res.text ?? '', data: { images } }
 }

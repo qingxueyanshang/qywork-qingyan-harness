@@ -1,11 +1,11 @@
 /**
  * 模型目录与计价。
  *
- * 这是**内置基线**，不是白名单：用户在设置里填任意 model id 都能跑（BYOK 自定义接口是
- * 需求 11 的硬要求）。目录提供模型能力、计价、请求参数约束和官方端点。
+ * 本目录是**内置基线**，不是白名单：用户在设置中填写的任意 model id 均可运行（BYOK 自定义
+ * 接口为必备能力）。目录提供模型能力、计价、请求参数约束与官方端点。
  * 未知模型使用保守参数，需要用户指定端点。
  *
- * 口径来源：Anthropic 官方文档（2026-09-02 快照）。改动这里前先核对，别凭记忆写。
+ * 口径来源：Anthropic 官方文档（2026-09-02 快照）。改动前先核对，不要凭记忆填写。
  */
 
 import type {
@@ -22,15 +22,15 @@ import type { TransportCapabilities } from './types.ts'
 /**
  * 每百万 token 的单价。
  *
- * **币种是这条数据的一部分。** 阿里 / 月之暗面 / 智谱三家官网就是按人民币标价的，
- * 把 ¥6 当成 $6 会让账面差七倍。所以带上 `currency`，由消费方决定怎么显示、
- * 要不要合计——而不是在这里换算成一个没有出处的美元数字。
+ * **币种是价目的一部分。** 阿里、月之暗面、智谱等厂商的官网按人民币标价，
+ * 把 ¥6 当作 $6 会使账面相差约七倍。因此价目携带 `currency`，由消费方决定如何显示、
+ * 是否合计，不在此处换算为没有出处的美元金额。
  */
 export interface Pricing {
   /** null = 未公布按 token 单价，不代表免费。 */
   input: number | null
   output: number | null
-  /** 省略即 `'USD'`。缺省不写是为了不用给已有的每一条都加一遍。 */
+  /** 省略即 `'USD'`，美元价目无需逐条填写。 */
   currency?: 'USD' | 'CNY'
   /** 缓存读取，通常是 input 的 0.1 倍。 */
   cacheRead: number | null
@@ -58,43 +58,43 @@ export interface ModelSpec {
   /** **协议**，不是厂商。见 `Vendor` 上的注释。 */
   provider: ProviderKind
   /**
-   * 厂商 id（`VENDORS` 里的一条）。`null` = 未收录，来自用户自建端点。
+   * 厂商 id（`VENDORS` 中的条目）。`null` 表示未收录，来自用户自建端点。
    *
-   * 显式写在每条上，不按 id 前缀推断——L 那条规矩：任何「从名字推断行为」
-   * 的便利都要先问反例是什么，而中转站的模型名可以是任意字符串。
+   * 逐条显式填写，不按 id 前缀推断（CLAUDE.md B1）：任何从名称推断行为
+   * 的做法都须先考虑反例，而中转站的模型名可以是任意字符串。
    */
   vendor: string | null
   contextWindow: number
   /**
-   * 这个 tokenizer 的 token 密度。三档标定方法与边界见 `tokens.ts` 的 `TokenDensity`。
+   * 该模型 tokenizer 的 token 密度。三档的标定方法与边界见 `tokens.ts` 的 `TokenDensity`。
    *
-   * **必填，不给默认值。** 加一条模型时如果没量过，显式写 `DEFAULT_DENSITY`
-   * ——那一档是上界，读数偏高但不会低估。写成可选就会有人漏掉，
-   * 而漏掉的表现是那个模型的读数换了一把尺，不报错。
+   * **必填，不设默认值。** 新增模型时若未实测，显式填写 `DEFAULT_DENSITY`：
+   * 该档为上界，读数偏高但不会低估。改为可选字段会导致遗漏，
+   * 遗漏时该模型的读数改按其他密度估算，且不报错。
    */
   density: TokenDensity
   /**
-   * 这个模型单次最多能输出多少 token。**`null` = 没测过，不申报。**
+   * 模型单次输出的 token 上限。**`null` 表示未实测，不申报。**
    *
-   * `null` 与「上限是某个小数字」是两件事，不许合并（同 `catalogued` 那条）：
-   * 编一个数写在这里，模型的长输出会被静默截在那个数上，用户只看到
-   * `stop_reason: max_tokens`。OpenAI 系协议下 `null` 表现为整个不发这个字段，
-   * 由端点用自己的默认；Anthropic 协议要求这个字段，见 `anthropic.ts` 的兜底。
+   * `null` 与「上限为某个较小数值」含义不同，不得合并（与 `catalogued` 同理）：
+   * 在此填写臆测的数值，模型的长输出会被静默截断在该数值处，用户只看到
+   * `stop_reason: max_tokens`。OpenAI 系协议下 `null` 表示不发送该字段，
+   * 由端点使用自身默认值；Anthropic 协议要求该字段，见 `anthropic.ts` 的后备取值。
    */
   maxOutputTokens: number | null
   /**
-   * 接不接受图片输入。**三态**，与 `maxOutputTokens` 同一个惯例：
-   * `null` = 厂商规格页没写、也没实测过，**不是「不支持」**。
+   * 是否接受图片输入。**三态**，与 `maxOutputTokens` 惯例相同：
+   * `null` 表示厂商规格页未注明且未实测，**不表示「不支持」**。
    *
-   * **门控只认 `false`。** `null` 一律放行——中转站的模型名是任意字符串，
-   * 目录认不出它们，按不确定的数据挡请求比不挡更糟：那种失败看起来像
-   * 「图片发不出去」，查不到这里。判错了在模型库那一格覆盖（`SpecOverride`）。
+   * **门控只拦截 `false`。** `null` 一律放行：中转站的模型名是任意字符串，
+   * 目录无法识别，依据不确定的数据拦截请求比放行更糟：这种失败表现为
+   * 「图片无法发送」，无法追溯到此处。判定有误时在模型库的对应字段覆盖（`SpecOverride`）。
    *
-   * 逐条照厂商规格页填，**不按 id 前缀推断**（同 `vendor` 那条）：
-   * `qwen3.7-max` 基础版只收文本而它的快照版收图片，名字上分不出来。
+   * 逐条按厂商规格页填写，**不按 id 前缀推断**（与 `vendor` 同理）：
+   * `qwen3.7-max` 基础版只接受文本，而其快照版接受图片，无法从名称区分。
    *
-   * 消费者三处：模型库那一列、组合器的图片附件入口、`agent` 装配请求时的兜底
-   * （`false` 时图像块换成文本注记，历史里的旧图与工具返回的图一并覆盖）。
+   * 消费方有三处：模型库的对应列、输入框的图片附件入口、`agent` 装配请求时的后备处理
+   * （为 `false` 时图像块替换为文本注记，历史中的图片与工具返回的图片同样替换）。
    */
   vision: boolean | null
   /** 只有官方协议与当前适配器都核实支持时才为 true。未知模型按 false 处理。 */
@@ -102,24 +102,24 @@ export interface ModelSpec {
   pricing: Pricing
   thinking: ThinkingMode
   /**
-   * 带 tool_calls 的历史要不要回传推理原文。与 `thinking` 正交：DeepSeek 的
-   * Responses 条目与 OpenAI 同为 `reasoning_effort`，那条轴说的是 effort 旋钮。
+   * 带 tool_calls 的历史是否回传推理原文。与 `thinking` 相互独立：DeepSeek 的
+   * Responses 条目与 OpenAI 同为 `reasoning_effort`，`thinking` 描述的是 effort 的控制方式。
    */
   reasoningEcho: ReasoningEcho
   /**
    * Chat Completions 的历史思考协议。
    *
-   * `standard` 保持原有行为：只给带 tool_calls 的 assistant 回放 `reasoning_content`。
-   * `preserved` 回放所有历史思考且不增加请求开关；Qwen / GLM 还需要请求开关，
-   * 避免「请求体开了保留、历史投影却仍丢思考」这种半套实现。
+   * `standard`：只为带 tool_calls 的 assistant 消息回放 `reasoning_content`。
+   * `preserved`：回放全部历史思考，不增加请求开关；Qwen / GLM 另需请求开关，
+   * 否则请求体启用了保留思考，而历史投影仍会丢弃思考内容。
    */
   chatReasoningProtocol: ChatReasoningProtocol
   /**
    * OpenAI 兼容协议的工具参数 schema 规则（字段名沿用已有配置）。
    *
-   * `openai_strict` 会把可选属性改成「必填但可为 null」并发送 `strict:true`；
-   * `native` 保留模型库注册时的原生 required/optional 形状。两者不能按
-   * OpenAI-compatible 这个接口名一刀切：兼容基础字段不等于兼容 strict 采样规则。
+   * `openai_strict` 将可选属性改为「必填但可为 null」并发送 `strict:true`；
+   * `native` 保留模型库注册时的原生 required/optional 结构。不能按
+   * OpenAI-compatible 接口名统一选择：兼容基础字段不等于兼容 strict 采样规则。
    */
   chatToolSchema: ToolSchemaMode
   /**
@@ -128,63 +128,62 @@ export interface ModelSpec {
   effortLevels: EffortLevel[]
   /**
    * 省略 thinking 字段时是否仍然会思考。
-   * Opus 5 / Sonnet 5 = true，这直接影响 maxOutputTokens 的预留——思考和正文
-   * 共用同一个上限，按「不思考」的口径调小 max_tokens 会把回答从中间截断。
+   * Opus 5 / Sonnet 5 为 true。该值决定 maxOutputTokens 的预留：思考与正文
+   * 共用同一个上限，按「不思考」调小 max_tokens 会使回答在中途被截断。
    */
   thinksByDefault: boolean
   /**
    * 系统提示词末尾是否附 Anthropic 官方的输出上限说明（`runtime/prompt.ts` 的 `outputLimitNote`）。
-   * Claude 会先在思考里写完整份交付物、再在回复里重写一遍，单次输出因此逼近 `maxOutputTokens`
-   * 被截断；这段官方文本让它把思考用于决策。文本以 Claude 自称，只给 Claude 条目开。
+   * Claude 会先在思考中写出完整交付物，再在回复中重写一遍，单次输出因此接近 `maxOutputTokens`
+   * 而被截断；该官方文本引导模型将思考用于决策。文本以 Claude 自称，只对 Claude 条目启用。
    */
   outputLimitNote?: true
-  /** 采样参数是否被拒绝。Claude 5 系全部拒绝 temperature/top_p/top_k。 */
-  /** 最小可缓存前缀（token）。低于此值加了 cache_control 也静默不缓存。 */
   /**
-   * 这条模型在这条协议上，靠什么把请求钉到同一个缓存分片。
+   * 该模型在当前协议上将请求路由到同一缓存分片的方式。
    *
-   * **它是「接口 × 模型」那一格的属性，不是模型的属性。** 同一个模型在两个
-   * 中转站上表现完全不同，所以内置值只是 seed，端点侧由配置里那一格覆盖
-   * （`SpecOverride`），出口是模型库界面那一格。
+   * **它是「接口 × 模型」组合的属性，不是模型的属性。** 同一个模型在两个
+   * 中转站上表现可能完全不同，因此内置值只是 seed，端点侧由配置中的对应字段覆盖
+   * （`SpecOverride`），用户在模型库界面的对应字段中修改。
    *
-   * **`qy probe` 不探这一项。** 探针只能发几次请求看命中，而不确定的路线上
-   * 那是随机结果——探出「可用」再写回目录，是把一次运气固化成结论。
+   * **`qy probe` 不探测该项。** 探针只能发送几次请求观察是否命中，而在缓存路由不确定的链路上
+   * 结果是随机的；将一次「可用」的探测结果写回目录，会把偶然结果固化为结论。
    *
-   * **发了不等于会命中。** 2026-08-19 在一个中转端点上配对实测：
-   * 同一时间窗逐轮交替发有键/无键各 12 轮，无键 5/12 真命中、有键 0/12，
-   * 换个时间窗又反过来。缓存路线本身不确定时，这个字段盖不住——
-   * 它只是协议规定的做法，不是不命中的解药。
+   * **发送不等于命中。** 2026-08-19 在一个中转端点上配对实测：
+   * 同一时间窗内逐轮交替发送有键与无键请求各 12 轮，无键命中 5/12、有键 0/12，
+   * 换一个时间窗结果相反。缓存路由本身不确定时，该字段无法保证命中：
+   * 它只是协议规定的做法，不能解决未命中问题。
    *
-   * `'none'` 是**未测**不是不支持：未收录的模型一律落在这一档，
-   * 一个字节都不多发——自建端点不会因为这条开始收到它不认识的字段。
+   * `'none'` 表示**未测**，不表示不支持：未收录的模型一律取该值，
+   * 不发送任何额外字段，自建端点因此不会收到无法识别的字段。
    */
   cacheRouting: CacheRouting
+  /** 最小可缓存前缀（token）。低于此值时即使设置 cache_control 也不会缓存，且不报错。 */
   minCacheablePrefix: number
   /**
-   * 分时段折扣。没有就是「一天一个价」，绝大多数模型都是这样。
+   * 分时段折扣。省略表示全天单一价格，绝大多数模型如此。
    *
-   * **`pricing` 是基准价（高峰价），这一条只描述什么时候打折。**
-   * 存两套完整价目会立刻长出「改了高峰忘了改空闲」这种漂移，
-   * 而两套数字看起来都像是对的。
+   * **`pricing` 是基准价（高峰价），本字段只描述折扣时段。**
+   * 存储两套完整价目会产生「修改了高峰价而未修改空闲价」的不一致，
+   * 且两套数字看起来都正确。
    */
   offPeak?: OffPeakDiscount
   /**
-   * 用量阶梯价，**按 `thresholdTokens` 升序排**。没有就是「多大的请求都一个价」。
-   * 与 `offPeak` 一样，`pricing` 是标准价，这一条只描述什么时候换档。
+   * 用量阶梯价，**按 `thresholdTokens` 升序排列**。省略表示不论请求大小均为同一价格。
+   * 与 `offPeak` 相同，`pricing` 是标准价，本字段只描述换档条件。
    *
-   * 是数组而不是单档：阿里的 flash 两款是三档（≤32K / 32K–256K / 256K–1M），
-   * 只留一档就得在「中间那段记高」和「最长那段记低」之间挑一个，
-   * 而两个方向都是静默记错钱。
+   * 使用数组而不是单档：阿里的两款 flash 模型分三档（≤32K / 32K–256K / 256K–1M），
+   * 只保留一档就必须在「中间档记高」与「最长档记低」之间选择，
+   * 两种选择都会静默记错金额。
    */
   longContext?: readonly LongContextTier[]
   /**
-   * 这条 spec 是不是来自内置目录。
+   * 该 spec 是否来自内置目录。
    *
-   * 只有 `unknownModel()` 会把它设成 `false`——**默认缺省即视为已收录**，
-   * 这样往目录里加模型不必每条都写一遍 `catalogued: true`
-   * （漏写一条的表现会是「这个正常模型也在报未收录」，噪声一旦出现就没人看提示了）。
+   * 只有 `unknownModel()` 将其设为 `false`。**省略即视为已收录**，
+   * 向目录添加模型时无需逐条填写 `catalogued: true`
+   * （否则漏写的条目会被误报为未收录，误报会使用户忽略该提示）。
    *
-   * 它区分的是「没测」和「不支持」，见 `unknownModel()` 上的注释与 ARCHITECTURE §27。
+   * 它区分「未测」与「不支持」，见 `unknownModel()` 上的注释与 ARCHITECTURE §27。
    */
   catalogued?: boolean
 }
@@ -200,7 +199,7 @@ export interface Vendor {
 /**
  * DeepSeek 的 tokenizer 密度。斜率法实测（2026-08-26，`deepseek-v4-flash-vision-exp`）：
  * 中文 0.569 token/字、真实源码 2.71–3.00 字符/token、工具结果整条 2.53 字符/token。
- * 三档各留一点上界，在四份真实样本上落在 1.03–1.12x。生僻字未实测，取 `DEFAULT_DENSITY` 的字节级上界。
+ * 三档均取略高于实测值的上界，在四份真实样本上估算值为实际值的 1.03–1.12 倍。生僻字未实测，取 `DEFAULT_DENSITY` 的字节级上界。
  */
 const DEEPSEEK_DENSITY: TokenDensity = {
   cjkTokensPerChar: 0.6,
@@ -212,7 +211,7 @@ const DEEPSEEK_DENSITY: TokenDensity = {
 /**
  * Google 的 tokenizer 密度。同法实测（2026-08-26，`gemini-3.7-flash`）：
  * 中文 0.647 token/字、真实源码 2.42 字符/token、工具结果 2.43 字符/token。
- * 文本档比 DeepSeek 那一档更紧，因为它的代码密度实测更高。生僻字未实测，取 `DEFAULT_DENSITY` 的字节级上界。
+ * 文本档的字符/token 值低于 DeepSeek，因为其源码 token 密度实测更高。生僻字未实测，取 `DEFAULT_DENSITY` 的字节级上界。
  */
 const GOOGLE_DENSITY: TokenDensity = {
   cjkTokensPerChar: 0.7,
@@ -308,7 +307,7 @@ export const VENDORS: readonly Vendor[] = [
   },
 ]
 
-/** 以模型库声明的厂商和所选协议解析官方端点，不根据模型名称猜测厂商。 */
+/** 以模型库声明的厂商和所选协议解析官方端点，不根据模型名称推测厂商。 */
 export function officialBaseUrl(spec: Pick<ModelSpec, 'vendor' | 'provider'>): string | undefined {
   return VENDORS.find((vendor) => vendor.id === spec.vendor)?.baseUrls[spec.provider]
 }
@@ -316,27 +315,27 @@ export function officialBaseUrl(spec: Pick<ModelSpec, 'vendor' | 'provider'>): s
 /**
  * 长上下文阶梯价。
  *
- * **达到阈值之后整条请求都按高档算，不是只算超出的那部分。**
- * xAI 的原话：一条 21 万 token 的请求不是「20 万按标准价 + 1 万按高价」，
- * 而是整条按高价。按超出部分算会把账记少一半，而少记的方向不会有任何报错。
+ * **达到阈值后整条请求按高档计价，而不是只有超出部分按高档计价。**
+ * 按 xAI 价目说明，一条 21 万 token 的请求不是「20 万按标准价 + 1 万按高价」，
+ * 而是整条按高价。按超出部分计价会少记近一半费用，且少记不会产生任何报错。
  *
- * **高档单价逐字抄厂商的第二行，不按倍率推算。** 各家的倍率不统一：
- * OpenAI 与 Google 的输入是 2 倍而输出只有 1.5 倍，xAI 才是整齐的 2 倍。
- * 存一个倍率就得自己算比值，算错了不会有任何提示。
+ * **高档单价按厂商价目表的第二行逐项录入，不按倍率推算。** 各厂商的倍率不统一：
+ * OpenAI 与 Google 的输入为 2 倍、输出为 1.5 倍，xAI 的输入与输出均为 2 倍。
+ * 存储倍率需要自行计算比值，计算错误不会有任何提示。
  *
- * 阈值比的是**提示词**大小（未命中输入 + 命中输入），不含输出——
- * 计价发生在请求发出之后，那时输出还没产生，厂商也是按提示词分档的。
+ * 阈值比较的是**提示词**大小（未命中输入 + 命中输入），不含输出：
+ * 档位按请求发出时的提示词确定，此时输出尚未产生；厂商同样按提示词大小分档。
  */
 export interface LongContextTier {
   /**
    * **第一个进入高档的提示词 token 数**（含）。
    *
-   * 各家的边界写法不一样：xAI 写「≥200k」，Google 写「>200k」。
-   * 统一成「第一个进高档的数」而不是另加一个比较符——多一个字段就多一处
-   * 写反的机会，而写反的表现是整整一档的钱记错。
+   * 各厂商的边界写法不同：xAI 写「≥200k」，Google 写「>200k」。
+   * 统一为「第一个进入高档的数」，不另设比较符字段：多一个字段就多一处
+   * 写反的可能，写反会使整整一档的费用记错。
    */
   thresholdTokens: number
-  /** 输出达到这个数才进档；省略表示不看输出。用于厂商明确按输入和输出双轴计价的模型。 */
+  /** 输出达到该值才进入此档；省略表示不考虑输出。用于厂商明确按输入与输出双轴计价的模型。 */
   minOutputTokens?: number
   input: number
   output: number
@@ -345,47 +344,47 @@ export interface LongContextTier {
   cacheWrite5m?: number
   /** 长上下文档的 1 小时缓存写入价；省略时沿用基础档。 */
   cacheWrite1h?: number
-  /** 一句话，界面直接显示。 */
+  /** 单句说明，界面直接显示。 */
   note: string
 }
 
 /**
- * 分时段折扣。**窗口按 UTC 的星期与小时给，不按本机时区。**
+ * 分时段折扣。**时段按 UTC 的星期与小时表示，不按本机时区。**
  *
- * 厂商公布的是当地时间（DeepSeek 写的是北京时间），但这台机器可能在任何时区，
- * 用 `getHours()` 算等于把用户的时区当成了厂商的时区——在美国跑就整天算错档，
- * 而错的表现只是账本上一个偏低或偏高的数字，没有任何地方会报错。
- * 所以录进来的时候就换算成 UTC，`priceAt` 只认 `getUTCHours()`。
+ * 厂商公布的是当地时间（DeepSeek 使用北京时间），而本机可能处于任何时区，
+ * 使用 `getHours()` 等于把用户时区当作厂商时区：在美国运行时全天档位判定错误，
+ * 错误只表现为账本上偏低或偏高的金额，不会产生任何报错。
+ * 因此录入时即换算为 UTC，`priceAt` 只使用 `getUTCHours()`。
  *
- * **记「高峰窗口」而不是「折扣窗口」。** 照抄厂商的说法。DeepSeek 的原话是「高峰时段为北京时间
- * 9:00-12:00、14:00-18:00 （其余为空闲时段）」——记高峰是逐字转录，记折扣就得自己把补集算一遍，而
- * 那一步算错了不会有任何提示。
+ * **记录「高峰时段」而不是「折扣时段」**，与厂商的表述一致。DeepSeek 的表述是「高峰时段为北京时间
+ * 9:00-12:00、14:00-18:00 （其余为空闲时段）」：记录高峰时段可直接转录，记录折扣时段则需自行计算补集，
+ * 计算错误不会有任何提示。
  */
 export interface OffPeakDiscount {
-  /** 折扣系数，乘在每一档单价上。DeepSeek 空闲时段恰好是高峰的一半，即 0.5。 */
+  /** 折扣系数，与每一档单价相乘。DeepSeek 空闲时段价格为高峰价的一半，即 0.5。 */
   rate: number
   /**
    * 高峰时段（不打折），`[起, 止)` 半开区间，UTC 小时，可带小数（`9.5` = 09:30）。
-   * 跨零点的窗口拆成两段写，不做环形判断——环形判断只有这一个用户，
-   * 而写错的方向是「整段时间收错价」。
+   * 跨零点的时段拆为两段填写，不做环形判断：环形判断只有此处使用，
+   * 写错会使整个时段计价错误。
    */
   peakWindowsUtc: readonly (readonly [number, number])[]
   /**
-   * 高峰只在这几个星期几成立，`getUTCDay()` 口径（0 = 周日）。不在表里的日子
-   * 整天按空闲价。星期与小时必须同为 UTC：混用两个时区会在窗口跨零点时错开一天。
+   * 高峰时段仅在所列星期生效，按 `getUTCDay()` 取值（0 = 周日）。未列出的日期
+   * 全天按空闲价。星期与小时必须同为 UTC：混用两个时区会在时段跨零点时错开一天。
    */
   peakWeekdaysUtc: readonly number[]
-  /** 一句话，界面直接显示，不再自己拼。 */
+  /** 单句说明，界面直接显示，不另行拼接。 */
   note: string
 }
 
 /**
  * DeepSeek 的高峰时段：北京时间**周一至周五** 9:00-12:00、14:00-18:00（UTC+8），
- * 周六周日整天按空闲价。
+ * 周六、周日全天按空闲价。
  *
- * 换算成 UTC 就是 01:00-04:00 与 06:00-10:00，星期不用挪：两段窗口都落在同一个
- * UTC 日内。窗口若改到跨零点，星期表要跟着挪一天。
- * 口径来源：官方文档「模型 & 价格」页（2026-08-17 生效的新价目）。
+ * 换算为 UTC 为 01:00-04:00 与 06:00-10:00，星期无需调整：两段时段均位于同一个
+ * UTC 日内。时段若改为跨零点，星期表需相应顺移一天。
+ * 数据来源：官方文档「模型 & 价格」页（2026-08-17 生效的价目）。
  */
 const DEEPSEEK_OFF_PEAK: OffPeakDiscount = {
   rate: 0.5,
@@ -398,8 +397,8 @@ const DEEPSEEK_OFF_PEAK: OffPeakDiscount = {
 }
 
 /**
- * Gemini 3.1 Pro 的长上下文档：官方写「>200k」，所以第一个进高档的是 200001。
- * 注意输入是 2 倍而输出只有 1.5 倍——倍率不统一，逐字抄。
+ * Gemini 3.1 Pro 的长上下文档：官方标注「>200k」，因此第一个进入高档的值是 200001。
+ * 输入为 2 倍、输出为 1.5 倍，倍率不统一，按价目表逐项录入。
  */
 const GEMINI_31_PRO_LONG: LongContextTier = {
   thresholdTokens: 200_001,
@@ -479,7 +478,7 @@ const GPT_56_LUNA_LONG: LongContextTier = {
   note: '提示词超过 272K token 后整条请求按 $0.4 / $1.8（缓存 $0.04）计价',
 }
 
-/** xAI 官方价目表：提示词满 20 万，整条请求按 $4 / $12 / 缓存 $1 算。 */
+/** xAI 官方价目表：提示词达到 20 万后，整条请求按 $4 / $12 / 缓存 $1 计价。 */
 const GROK_46_47_LONG: LongContextTier = {
   thresholdTokens: 200_000,
   input: 4,
@@ -488,7 +487,7 @@ const GROK_46_47_LONG: LongContextTier = {
   note: '提示词满 20 万 token 后整条请求按 $4 / $12（缓存 $1）计价',
 }
 
-/** 同上，4.5 的缓存档是 $0.60 而不是 $1。 */
+/** 同上，4.5 的缓存价为 $0.60 而不是 $1。 */
 const GROK_45_LONG: LongContextTier = {
   thresholdTokens: 200_000,
   input: 4,
@@ -505,7 +504,7 @@ const MINIMAX_M3_LONG: LongContextTier = {
   note: '输入超过 512K token 后整条请求按 $0.6 / $2.4（缓存 $0.12）计价',
 }
 
-/* 智谱国内站按千 token 分界，所以这里的 32K 是 32,000，不是 32,768。 */
+/* 智谱国内站按千 token 分界，因此此处的 32K 为 32,000，不是 32,768。 */
 const GLM_47_TIERS: readonly LongContextTier[] = [
   {
     thresholdTokens: 0,
@@ -541,11 +540,11 @@ const GLM_46V_LONG: LongContextTier = {
 }
 
 /*
- * 阿里的阶梯按输入长度分档，价目页明确 **K = 1,000、M = 1,000,000**。
- * 区间是左开右闭（「32K-256K」不含 32,000），所以第一个进高档的数是边界 + 1。
+ * 阿里的阶梯价按输入长度分档，价目页注明 **K = 1,000、M = 1,000,000**。
+ * 区间为左开右闭（「32K-256K」不含 32,000），因此第一个进入高档的值为边界 + 1。
  */
 
-/** qwen3.7-plus：256K 以上整条按 ¥6 / ¥24 / 命中 ¥1.2。 */
+/** qwen3.7-plus：超过 256K 后整条请求按 ¥6 / ¥24 / 命中 ¥1.2 计价。 */
 const QWEN_37_PLUS_LONG: LongContextTier = {
   thresholdTokens: 256_001,
   input: 6,
@@ -554,7 +553,7 @@ const QWEN_37_PLUS_LONG: LongContextTier = {
   note: '输入超过 256K token 后整条请求按 ¥6 / ¥24（缓存 ¥1.2）计价',
 }
 
-/** qwen3.7-flash：三档，官方页面把命中价也逐档给了。 */
+/** qwen3.7-flash：三档，官方页面逐档给出了命中价。 */
 const QWEN_37_FLASH_LONG: readonly LongContextTier[] = [
   {
     thresholdTokens: 32_001,
@@ -573,10 +572,10 @@ const QWEN_37_FLASH_LONG: readonly LongContextTier[] = [
 ]
 
 /**
- * qwen3-vl-flash：三档。
+ * qwen3-vl-plus 与 qwen3-vl-flash：各三档。
  *
- * **命中价只有第一档是官方给的**（¥0.03，即输入价的 20%），后两档按同一个比例推。
- * 不推的话这两档只能留成第一档的 ¥0.03，那是把长请求按最短那一档记账。
+ * **命中价只有第一档有官方数据**（均为输入价的 20%，如 flash 的 ¥0.03），后两档按同一比例推算。
+ * 不推算时后两档只能沿用第一档的命中价，相当于把长请求按最短档记账。
  */
 const QWEN_VL_PLUS_LONG: readonly LongContextTier[] = [
   {
@@ -613,14 +612,14 @@ const QWEN_VL_FLASH_LONG: readonly LongContextTier[] = [
 ]
 
 /**
- * 这一刻、这么大的一条请求，实际单价是多少。
+ * 计算给定时刻、给定大小的请求的实际单价。
  *
- * **目录里那组数字是厂商公布的标准价**，这个函数把偏离标准价的两种情况叠上去：
- * 分时段折扣（按星期与钟点）和长上下文档（按提示词大小）。两者互相独立，
- * 直接连乘——没有哪家同时有这两种，但代码不必为此多一个分支。
+ * **目录中的价格是厂商公布的标准价**，本函数在其上叠加两种偏离标准价的情况：
+ * 分时段折扣（按星期与小时）与长上下文档（按提示词大小）。两者相互独立，
+ * 直接连乘：目前没有厂商同时采用两者，但代码无需为此增加分支。
  *
- * 两种都没有就返回 `spec.pricing` 本身、**同一个对象引用**：
- * 绝大多数模型走这条路，不为它们每次都新建一个对象。
+ * 两者均不适用时返回 `spec.pricing` 本身，**即同一个对象引用**：
+ * 绝大多数模型属于此情形，无需每次新建对象。
  */
 export function priceAt(
   spec: ModelSpec,
@@ -635,7 +634,7 @@ export function priceAt(
       spec.offPeak.peakWindowsUtc.some(([from, to]) => hour >= from && hour < to)
     if (!peak) rate *= spec.offPeak.rate
   }
-  // 取提示词达到的**最高**一档。依赖 `longContext` 是升序的，约定写在字段上。
+  // 取提示词达到的**最高**一档。依赖 `longContext` 升序排列，该约定写在字段注释上。
   let long: LongContextTier | undefined
   for (const tier of spec.longContext ?? []) {
     if (
@@ -681,9 +680,9 @@ function anthropicPricing(input: number, output: number): Pricing {
 const round = (n: number) => Math.round(n * 1e6) / 1e6
 
 /**
- * Gemini 3.6 / 3.7 / 3.8 Flash 的促销价，2026-12-31 之后回到 $1.50 / $7.50 / $0.15。
+ * Gemini 3.6 / 3.7 / 3.8 Flash 的促销价，2026-12-31 之后恢复为 $1.50 / $7.50 / $0.15。
  *
- * **按当前时间取值，不写死**，否则账单会从一月一号起静默算错。
+ * **按当前时间取值，不硬编码**，否则自 1 月 1 日起账单会静默算错。
  */
 const GEMINI_FLASH_PROMO_ENDS = Date.UTC(2026, 11, 31, 23, 59, 59)
 
@@ -696,8 +695,8 @@ function geminiFlashPromo(now: number): Pricing {
 /**
  * GLM-5.3-Flash 国内站限时半价，有效期至 2026-08-31；北京时间九月一日零点恢复原价。
  *
- * 与 `geminiFlashPromo` 同一个形状、同一条理由：**按当前时间取值，不写死**，
- * 否则账单会从九月一日起静默算错。
+ * 与 `geminiFlashPromo` 结构与理由相同：**按当前时间取值，不硬编码**，
+ * 否则自九月一日起账单会静默算错。
  */
 const GLM_53_FLASH_PROMO_EXPIRES = Date.UTC(2026, 7, 31, 16, 0, 0)
 
@@ -726,22 +725,22 @@ const CLAUDE_BASE = {
   vendor: 'anthropic',
   contextWindow: 1_000_000,
   /*
-   * **没有直连实测过。** 斜率法只在中转站上测到中文约 1.03 token/字，同一段文本
-   * 换长度重测的斜率在 1.03 与 1.31 之间跳，不作数。上界档对它偏保守，
-   * 表现是读数偏高。直连量过之后在这里填自己那一档。
+   * **未经直连实测。** 斜率法仅在中转站上测得中文约 1.03 token/字，同一段文本
+   * 改变长度重测时斜率在 1.03 与 1.31 之间波动，结果不可采信。上界档对其偏保守，
+   * 读数偏高。直连实测后在此填写对应的密度。
    */
   density: DEFAULT_DENSITY,
   maxOutputTokens: 128_000,
-  // Claude 5 与 4 系全部收图片（官方模型页的输入模态一栏）。
+  // Claude 5 与 4 系均接受图片输入（见官方模型页的输入模态一栏）。
   vision: true,
   video: false,
-  // Anthropic 走显式 `cache_control` 断点，没有亲和键这回事。
+  // Anthropic 使用显式 `cache_control` 断点，没有缓存路由字段。
   cacheRouting: 'none' as const,
   thinking: 'adaptive_only' as const,
   reasoningEcho: 'none' as const,
   chatReasoningProtocol: 'standard' as const,
   chatToolSchema: 'native' as const,
-  // 照实测填，不引用 EFFORT_ORDER：那等于替以后新加的档位替 Anthropic 作保。
+  // 按实测填写，不引用 EFFORT_ORDER：引用它等于假定 Anthropic 支持今后新增的所有档位。
   effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[],
   outputLimitNote: true as const,
 }
@@ -788,7 +787,7 @@ export function claudeCatalog(): ModelSpec[] {
       id: 'claude-fable-5',
       displayName: 'Claude Fable 5',
       pricing: anthropicPricing(10, 50),
-      // 思考恒开：连 {type:'disabled'} 都 400，只能整个省略 thinking 字段。
+      // 思考始终开启：发送 {type:'disabled'} 也返回 400，只能完全省略 thinking 字段。
       thinking: 'always_on',
       thinksByDefault: true,
       minCacheablePrefix: 512,
@@ -798,7 +797,7 @@ export function claudeCatalog(): ModelSpec[] {
       id: 'claude-opus-4-8',
       displayName: 'Claude Opus 4.8',
       pricing: anthropicPricing(5, 25),
-      // 4.8 省略 thinking = 不思考，与 Opus 5 相反。
+      // 4.8 省略 thinking 时不思考，与 Opus 5 相反。
       thinksByDefault: false,
       minCacheablePrefix: 1024,
     },
@@ -818,7 +817,6 @@ export function claudeCatalog(): ModelSpec[] {
       thinking: 'adaptive_only',
       effortLevels: ['low', 'medium', 'high', 'max'],
       thinksByDefault: false,
-      // 4.6 的采样参数仍然可用。
       minCacheablePrefix: 1024,
     },
     {
@@ -866,7 +864,7 @@ function deepseekCatalog(): ModelSpec[] {
       cacheWrite1h: 0,
     },
   }
-  // 官方撤回 Pro 下线安排，继续按 Pro 单价提供服务；不能再按日期切换到 Flash。
+  // 官方已撤回 Pro 的下线安排，Pro 按自身单价继续提供服务；不要按日期将其切换为 Flash。
   const pro: ModelSpec = {
     ...flash,
     id: 'deepseek-v4-pro',
@@ -924,7 +922,7 @@ function mimoCatalog(): ModelSpec[] {
       effortLevels: [],
       reasoningEcho: 'none',
       chatReasoningProtocol: 'preserved',
-      // MiMo Chat / Responses 的 strict nullable 定义实测会产生残缺 arguments。
+      // MiMo Chat / Responses 使用 strict nullable 定义时，实测会产生不完整的 arguments。
       // 三个型号共用官方原生工具定义，保留 required/optional，不转换成 nullable。
       chatToolSchema: 'native',
       cacheRouting: 'none',
@@ -941,67 +939,67 @@ function mimoCatalog(): ModelSpec[] {
 /**
  * 未知模型的保守默认值。
  *
- * BYOK 场景下用户可能填任意模型名（中转站的自定义名、本地 ollama 模型、明天才发布的
- * 模型）。这里给一组不会让请求失败的默认值：不声明 thinking、不声明 effort、
- * 不声明采样参数限制、计价为 0（前端显示「未知计价」而不是显示一个错的数字）。
+ * BYOK 场景下用户可能填写任意模型名（中转站的自定义名、本地 ollama 模型、尚未发布的
+ * 模型）。此处提供一组不会导致请求失败的默认值：不声明 thinking、不声明 effort、
+ * 不声明采样参数限制、计价为 0（前端显示「未知计价」，而不是错误的金额）。
  */
 export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
   return {
     id,
     displayName: id,
     provider,
-    // 未收录 = 没有厂商。别按 id 猜——中转站的模型名可以是任意字符串。
+    // 未收录即没有厂商。不要按 id 推测：中转站的模型名可以是任意字符串。
     vendor: null,
     /*
-     * **这一条必须被消费。** 下面那些值是「没测」，不是「不支持」——
-     * 而 ARCHITECTURE §27 记的正是这两者不能合并。
+     * **该字段必须有消费方。** 以下取值表示「未测」，不表示「不支持」，
+     * ARCHITECTURE §27 记录了两者不能合并的原因。
      *
-     * 具体后果有两条，都完全静默：
+     * 缺少消费方时有两项后果，均不产生任何报错：
      *
-     * 1. `thinking: 'none'` → `buildReasoning` 整个省略 reasoning 字段，
-     *    因此**这个模型永远不会思考**。用户配了 `gpt-5.6` 期待思考，
-     *    拿到的是 `reasoning_tokens: 0`，没有任何报错。
-     * 2. `pricing` 全零 → `qy usage` 报 $0。**账本与实际不符**，
-     *    而账本正是用来发现「怎么突然变贵了」的那份记录。
+     * 1. `thinking: 'none'` → `buildReasoning` 完全省略 reasoning 字段，
+     *    因此**该模型始终不会思考**。用户配置 `gpt-5.6` 并期望思考，
+     *    得到的是 `reasoning_tokens: 0`，没有任何报错。
+     * 2. `pricing` 全零 → `qy usage` 显示 $0。**账本与实际不符**，
+     *    而账本正是用于发现费用异常增长的记录。
      *
-     * 保守默认本身是对的（乱发 reasoning 字段会让不支持的端点每次 400），
-     * 错的是不说。`configNotices` 据这个字段提醒，出口是明确补录模型规格；
-     * 端点探测只能校验传输，不能发明官方能力。
+     * 保守默认值本身正确（随意发送 reasoning 字段会使不支持的端点每次返回 400），
+     * 错误在于不提示。`configNotices` 据此字段提醒用户，解决方式是明确补录模型规格；
+     * 端点探测只能校验传输，不能推断官方能力。
      */
     catalogued: false,
     /*
-     * 未收录 = **没测过**，不是不支持。所以不发亲和键：自建端点（ollama / vLLM）
-     * 对未知字段的容忍度没验过，而它们全都落在这一档。
-     * 想开就在配置里那一格明确填 `cacheRouting`；当前探针不推断缓存能力。
+     * 未收录表示**未测**，不表示不支持。因此不发送缓存路由字段：自建端点（ollama / vLLM）
+     * 对未知字段的容忍度未经验证，而它们均属于此类。
+     * 需要启用时在配置中明确填写 `cacheRouting`；当前探针不推断缓存能力。
      */
     cacheRouting: 'none',
     /*
-     * **判错的两个方向代价不对等，所以往大的一侧给。** 给小了每轮提前压缩，
-     * 白花钱又丢上下文，而且完全静默；给大了撞窗拿到的是带 `capacity` 的
-     * `context_overflow`，`agent/loop/compact.ts` 据它压一次再重发，有终态。
+     * **两个方向的误判代价不对等，因此取偏大的值。** 取值偏小时每轮都会提前压缩，
+     * 既增加费用又丢失上下文，且不产生任何提示；取值偏大时，触发窗口上限会得到带 `capacity` 的
+     * `context_overflow`，`agent/loop/compact.ts` 据此压缩一次后重发，有终态。
      *
-     * 取 500K 不取 1M：1M 是当前发布里最常见的标称档，但中转站按自己的策略截、
-     * 本地 ollama 按 `num_ctx` 给，实际可用窗口小于标称是常态。
-     * 知道确切窗口就在模型库那一格填 `contextWindow`。
+     * 取 500K 而不取 1M：1M 是当前发布模型中最常见的标称窗口，但中转站按自身策略截断、
+     * 本地 ollama 按 `num_ctx` 分配，实际可用窗口通常小于标称值。
+     * 已知确切窗口时在模型库中填写 `contextWindow`。
      */
-    // 未收录 = 没标定过，走上界档。读数偏高，但不会把超限的请求判成装得下。
+    // 未收录即未标定，使用上界档。读数偏高，但不会把超限的请求误判为未超限。
     density: DEFAULT_DENSITY,
     contextWindow: 500_000,
     /*
-     * **不申报输出上限。** 未收录 = 没测过，而这一格编一个数的代价是静默截断：
-     * 8192 之上的正常回答会在那里断掉，界面上只有一个 `max_tokens` 停止原因。
-     * 想钉死就在模型库那一格填 `maxOutputTokens`。
+     * **不申报输出上限。** 未收录即未实测，在此臆测一个数值会导致静默截断：
+     * 超过 8192 的正常回答会在该处中断，界面上只显示 `max_tokens` 停止原因。
+     * 需要固定上限时在模型库中填写 `maxOutputTokens`。
      */
     maxOutputTokens: null,
-    // 没有出处就不裁决：挡住一个实际收图片的中转站模型，比不挡更糟。
+    // 没有出处则不裁决：拦截一个实际接受图片的中转站模型，比放行更糟。
     vision: null,
     video: false,
     pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
     thinking: 'none',
     /*
-     * 未收录 = 没测过。不回传是保守的那一侧：多发一个条目会让不要求回传的端点
-     * 每一轮工具调用之后都 400，而少发只在要求回传的端点上 400，且那个 400
-     * 带着对方的明文原话。想开就在模型库那一格填 `reasoningEcho`。
+     * 未收录即未实测。不回传是保守的选择：多发送一个条目会使不要求回传的端点
+     * 在每轮工具调用之后都返回 400，而少发送只会使要求回传的端点返回 400，且该 400
+     * 带有端点的原始错误信息。需要启用时在模型库中填写 `reasoningEcho`。
      */
     reasoningEcho: 'none',
     chatReasoningProtocol: 'standard',
@@ -1013,28 +1011,28 @@ export function unknownModel(id: string, provider: ProviderKind): ModelSpec {
 }
 
 /**
- * 其余七家。
+ * 其余厂商。
  *
- * 窗口、默认最大输出、四档价、思考档位是 2026-07-30 的一份 seed，**没有在本仓
- * 逐条实测过**。改价要拿厂商现行价目表核，别凭印象改。
+ * 窗口、默认最大输出、四档价格与思考档位来自 2026-07-30 的 seed，**未在本仓库
+ * 逐条实测**。修改价格时须对照厂商现行价目表，不要凭印象修改。
  *
- * `thinksByDefault`：有思考档位的填 `true`。它影响的是给思考预留多少输出上限，
- * 多留一点只是保守，少留会把回答从中间截断——两个方向的代价不对等。
+ * `thinksByDefault`：有思考档位的模型填 `true`。它决定为思考预留的输出上限，
+ * 多留只是偏保守，少留会使回答在中途被截断，两个方向的代价不对等。
  *
- * `minCacheablePrefix`：兼容协议的前缀缓存由服务端自动做、不需要显式断点，
- * 这个数在那条路上没有消费者，1024 只是占位。
- * **真正消费它的是 Anthropic 路径**（`providers/anthropic.ts`）——低于这个长度
- * 打断点不会报错，只是不生效，白付一次缓存写入的记账。
+ * `minCacheablePrefix`：兼容协议的前缀缓存由服务端自动完成，无需显式断点，
+ * 该值在兼容协议上没有消费方，1024 只是占位值。
+ * **实际使用它的是 Anthropic 路径**（`providers/anthropic.ts`）：低于该长度时
+ * 设置断点不会报错，只是不生效。
  *
- * **两个不要加回来的能力位。**
+ * **以下两个能力字段不要重新添加。**
  *
- * `rejectsSamplingParams` / `maxCacheBreakpoints`：两个都会是零消费者。
+ * `rejectsSamplingParams` / `maxCacheBreakpoints`：两者均没有消费方。
  *
- * `maxCacheBreakpoints` 只有两个取值：Anthropic 恒 4、兼容协议恒 0。
- * 那是**协议常量**不是模型能力，而本仓只用 2 个断点——一个逐模型不变的字段，
- * 放在逐模型的目录里就是误导。断点数写在用它的那个适配器里。
+ * `maxCacheBreakpoints` 只有两个取值：Anthropic 恒为 4，兼容协议恒为 0。
+ * 它是**协议常量**而不是模型能力，且本仓库只使用 2 个断点；不随模型变化的字段
+ * 放在逐模型的目录中会造成误导。断点数写在使用它的适配器中。
  *
- * `vision` 不在这份名单里：它有三个消费者，取值是三态而不是布尔，
+ * `vision` 不在此列：它有三个消费方，取值为三态而不是布尔值，
  * 约定写在 `ModelSpec.vision` 上。
  */
 function openAiCompatCatalog(now: number): ModelSpec[] {
@@ -1045,13 +1043,13 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     reasoningEcho: 'none' as const,
     chatReasoningProtocol: 'standard' as const,
     chatToolSchema: 'openai_strict' as const,
-    // 没标定过的一律上界档。标定过的在自己那条上覆盖。
+    // 未标定的模型一律使用上界档，已标定的模型在各自条目中覆盖。
     density: DEFAULT_DENSITY,
-    // 逐条按厂商规格页覆盖。这一档是「没有出处」，不裁决。
+    // 逐条按厂商规格页覆盖。`null` 表示没有出处，不裁决。
     vision: null as boolean | null,
     video: false,
   }
-  /** OpenAI 兼容的命名档位，走 chat/completions 的 `reasoning_effort`。 */
+  /** OpenAI 兼容的命名档位，使用 chat/completions 的 `reasoning_effort`。 */
   const effort = (levels: EffortLevel[]) => ({
     thinking: 'reasoning_effort' as const,
     effortLevels: levels,
@@ -1063,9 +1061,9 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     thinksByDefault: false,
   }
   /**
-   * 会思考，但用哪个字段控制、有哪几档没有出处。档位照保守留空——多声明一档的
-   * 代价是一个选了没反应的控件；默认思考照保守填 `true`——思考与正文共用输出上限，
-   * 少留会把回答从中间截断。
+   * 会思考，但控制字段与档位没有出处。档位按保守原则留空：多声明一档的
+   * 代价是一个选择后无效果的控件；默认思考按保守原则填 `true`：思考与正文共用输出上限，
+   * 预留不足会使回答在中途被截断。
    */
   const thinksNoDial = {
     thinking: 'none' as const,
@@ -1226,8 +1224,8 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * | gemini-3.6-flash | 0.75 | 3.75 | 0.075 | 同上 |
      * | gemini-3.5-flash | 1.50 | 9.00 | 0.15 | |
      *
-     * **这三条容易记错**：Flash 不是 0.3/2.5，Pro 有长上下文档，
-     * 而且 Pro 的 id 是 `gemini-3.1-pro-preview`。
+     * **以下三点容易记错**：Flash 不是 0.3/2.5；Pro 有长上下文档；
+     * Pro 的 id 是 `gemini-3.1-pro-preview`。
      *
      * 3.6 / 3.5 Flash 另有 `minimal`；3.8 / 3.7 Flash 与 3.1 Pro 从 `low` 起。
      * 五条模型页均给出 1,048,576 输入与 65,536 输出上限。
@@ -1295,7 +1293,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     },
 
     // ── xAI ──
-    // 2026-09-21 官方 4.7：两协议的缓存与历史回传不同；Fast 未开放公共 API。
+    // 2026-09-21 核对官方 4.7 文档：两种协议的缓存与历史回传方式不同；Fast 未开放公共 API。
     ...(['openai_chat_completions', 'openai_responses'] as const).map(
       (provider): ModelSpec => ({
         ...base,
@@ -1315,16 +1313,16 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       }),
     ),
     /*
-     * xAI 官方价目表（2026-08）。两条都是 500K 窗口、**提示词满 20 万整条翻倍**：
+     * xAI 官方价目表（2026-08）。两款均为 500K 窗口，**提示词达到 20 万后整条请求价格翻倍**：
      *
      * | 模型 | <200K | ≥200K |
      * |---|---|---|
      * | grok-4.6 | $2 / 缓存 $0.50 / 出 $6 | $4 / $1.00 / $12 |
      * | grok-4.5 | $2 / 缓存 $0.30 / 出 $6 | $4 / $0.60 / $12 |
      *
-     * 目录里填 <200K 那一档（厂商公布的标准价），高档由 `GROK_LONG_CONTEXT` 描述。
+     * 目录填写 <200K 档（厂商公布的标准价），高档由 `GROK_46_47_LONG` 与 `GROK_45_LONG` 描述。
      *
-     * 4.6 明确不设文本输出上限；4.5 页面也未声明独立输出上限，均不猜数。
+     * 4.6 明确不设文本输出上限；4.5 页面也未声明独立输出上限，均不推测数值。
      */
     {
       ...base,
@@ -1332,10 +1330,10 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
       id: 'grok-4.6',
       displayName: 'Grok 4.6',
       vendor: 'xai',
-      // xAI 的工具 schema 天然按 required/optional 严格采样；不要套 OpenAI 的
-      // “全部 required + nullable”，否则模型会被迫给 probe_url 等可选项编值。
+      // xAI 的工具 schema 原生按 required/optional 严格采样；不要套用 OpenAI 的
+      // 「全部 required + nullable」，否则模型会被迫为 probe_url 等可选参数臆造取值。
       chatToolSchema: 'native',
-      // xAI Chat Completions 的缓存亲和键是请求头，不是请求体 prompt_cache_key。
+      // xAI Chat Completions 的缓存路由字段是请求头，不是请求体 prompt_cache_key。
       cacheRouting: 'x_grok_conv_id',
       vision: true,
       contextWindow: 500_000,
@@ -1375,22 +1373,22 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      *
      * Omni Flash 的新加坡地域另有 ¥1.094 / ¥3.427 / 缓存 ¥0.117；此目录记北京价。
      *
-     * **最大输出那一列容易记错**：plus 与 flash 都是 131,072。
+     * **最大输出一列容易记错**：plus 与 flash 均为 131,072。
      *
-     * `qwen3.7-max` 是这一批里唯一只收文本的：它的日期快照版收图片，基础版不收，
-     * 名字上分不出来——逐条按规格页填，不按 id 前缀推断。
+     * `qwen3.7-max` 是本组中唯一只接受文本的模型：其日期快照版接受图片，基础版不接受，
+     * 无法从名称区分，因此逐条按规格页填写，不按 id 前缀推断。
      *
      * Qwen3.8 的 Chat API 正向强度是 `low / medium / xhigh`，默认 xhigh；
-     * 协议另有 `none` 关闭命令，但产品不把关闭命令当成强度档位。
-     * 同时默认保留思考并要求历史 `reasoning_content` 完整、原序回放。
+     * 协议另有用于关闭思考的 `none`，产品不将其作为强度档位。
+     * 同时默认保留思考，并要求按原顺序完整回放历史 `reasoning_content`。
      * 3.7 系是混合思考且默认开启，但没有同一组命名 effort 档；VL 两款默认关闭。
      *
-     * `qwen3.8-max-prime` 不进目录：价目页上有它（¥24 / ¥72），模型页取不到，
-     * 窗口与最大输出没有出处，而这两项没法留空。
+     * `qwen3.8-max-prime` 不收录：价目页列有该模型（¥24 / ¥72），但无法获取其模型页，
+     * 窗口与最大输出没有出处，而这两项不能留空。
      *
-     * **`Qwen3.8-Flash-Next` 不是这里的 `qwen3.8-flash`，别填错。** 前者是开放权重
+     * **`Qwen3.8-Flash-Next` 不是此处的 `qwen3.8-flash`，不要混淆。** 前者是开放权重
      * 版本（自部署，原生 256K，没有官方 API 定价），后者是托管服务的模型 id，
-     * 1M 窗口与上面那一行价目都出自它的模型页。目录收的是 API 上调得到的那个 id。
+     * 1M 窗口与上表中对应行的价格均出自其模型页。目录收录的是可通过 API 调用的 id。
      */
     {
       ...base,
@@ -1532,21 +1530,21 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * | glm-4.6v | 1 | 0.2 | 3 |
      *
      * 4.7 还按输入 32K、输出 200 双轴分档；两款视觉模型按输入 32K 分档。
-     * 这些档位必须进入计价函数，不能只把首页第一行抄进目录。
+     * 这些档位必须纳入计价，不能只将价目首行录入目录。
      *
-     * **图片输入按价目页的分节填**：文本模型一节里的三条（5.3 / 5.2 / 4.7）
-     * 只收文本，视觉模型一节里的（5v-turbo / 4.6v）收图片。glm-5.3 的模型页
-     * 另有一句明写「当前不支持图片输入」。
+     * **图片输入按价目页的分节填写**：文本模型一节中的三款（5.3 / 5.2 / 4.7）
+     * 只接受文本，视觉模型一节中的（5v-turbo / 4.6v）接受图片。glm-5.3 的模型页
+     * 另明确注明「当前不支持图片输入」。
      *
      * glm-5.3 的窗口 1M / 最大输出 131,072 与三档 `reasoning_effort`（默认 max、
-     * 思考关不掉）来自它的模型规格页。5.2 同样支持 low / high / max。
+     * 思考无法关闭）来自其模型规格页。5.2 同样支持 low / high / max。
      *
      * glm-5.3-flash 的模型页：1M 窗口、131,072 最大输出、原生多模态；
-     * 与 5.3 同样支持 low / high / max。两条都要求思考恒开，完整回放历史
+     * 与 5.3 同样支持 low / high / max。两款均要求思考始终开启、完整回放历史
      * `reasoning_content`，并用 `clear_thinking:false` 保留连续思考。
      *
-     * glm-5v-turbo 的模型页：200K 窗口、128K 最大输出、收图片视频文本文件，
-     * 思考是一个开关而不是档位。glm-4.6v：128K 窗口、32K 最大输出。
+     * glm-5v-turbo 的模型页：200K 窗口、128K 最大输出，接受图片、视频、文本与文件输入，
+     * 思考为开关而非档位。glm-4.6v：128K 窗口、32K 最大输出。
      */
     ...[
       { id: 'glm-5.3', displayName: 'GLM-5.3', vision: false, pricing: cny(8, 28, 2) },
@@ -1707,11 +1705,11 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
 }
 
 /**
- * 用户对某个模型参数的覆盖。字段全部可选，只写改过的那几个。
+ * 用户对模型参数的覆盖。字段均为可选，只写入修改过的字段。
  *
- * 落盘形状见 `runtime` 的 `StoredCatalogEntry`；这里之所以再声明一次，是因为
- * 合并要发生在 `@qywork/ai`（适配器和计价都在这一层），而它引不到 runtime。
- * 两处字段必须一致，改一处务必看另一处。
+ * 落盘结构见 `runtime` 的 `StoredCatalogEntry`；此处再次声明，是因为
+ * 合并必须发生在 `@qywork/ai`（适配器与计价都在该层），而该包无法引用 runtime。
+ * 两处字段必须一致，修改一处时须同步检查另一处。
  */
 export interface SpecOverride {
   displayName?: string
@@ -1719,11 +1717,11 @@ export interface SpecOverride {
   contextWindow?: number
   maxOutputTokens?: number
   /**
-   * 接不接受图片输入。**只能手填**——探针不探这一轴：探出「这次发过去没报错」
-   * 不等于这条链路稳定收图片，而探出报错也分不清是模型不收还是这一次参数写错了。
+   * 是否接受图片输入。**只能手动填写**，探针不探测该项：一次发送未报错
+   * 不等于该链路稳定接受图片，而报错也无法区分是模型不接受图片还是本次参数有误。
    *
-   * 这一格是中转站模型的唯一出口：内置目录认不出它们的自定义名，
-   * 目录里落在 `null`（不裁决）。填了 `false` 才会挡图片。
+   * 该字段是中转站模型的唯一配置入口：内置目录无法识别其自定义名称，
+   * 目录中的取值为 `null`（不裁决）。填写 `false` 后才会拦截图片。
    */
   vision?: boolean
   input?: number
@@ -1731,15 +1729,15 @@ export interface SpecOverride {
   /** 缓存命中价。 */
   cacheRead?: number
   /**
-   * 缓存写入价。**只覆盖 5 分钟那一档**——`computeCost` 只按它算，
-   * 全项目从不请求 1 小时缓存。`cacheWrite1h` 留在价目表里是参考数据，
-   * 没有可达的代码分支，所以也没有让人改它的理由。
+   * 缓存写入价。**只覆盖 5 分钟档**：`computeCost` 只按该档计算，
+   * 全项目从不请求 1 小时缓存。`cacheWrite1h` 保留在价目表中作为参考数据，
+   * 没有可达的代码分支，因此不提供修改入口。
    */
   cacheWrite?: number
   currency?: 'USD' | 'CNY'
   /**
-   * 思考三项是用户明确维护的模型规格。端点探测只回答某条路线是否透传控制面，
-   * 不会覆盖官方档位或默认思考行为。
+   * 思考相关的三项是用户明确维护的模型规格。端点探测只判定某条链路是否透传思考控制参数，
+   * 不覆盖官方档位或默认思考行为。
    */
   thinking?: ThinkingMode
   effortLevels?: EffortLevel[]
@@ -1747,29 +1745,29 @@ export interface SpecOverride {
   /** 需要完整回传历史思考的自定义模型，必须显式声明回放协议。 */
   chatReasoningProtocol?: ChatReasoningProtocol
   /**
-   * 回传推理原文。探针不覆盖这一轴（探不出来的不猜），只能手填——
-   * 中转站把 DeepSeek 挂在自定义模型名下时，内置目录认不出它，这一格是唯一出口。
+   * 回传推理原文。探针不覆盖该项（无法探测的内容不推测），只能手动填写：
+   * 中转站以自定义模型名提供 DeepSeek 时，内置目录无法识别，该字段是唯一入口。
    */
   reasoningEcho?: ReasoningEcho
   /**
-   * 缓存路由。当前探针不探这一项，只能由目录 seed 或用户明确填写。
+   * 缓存路由。当前探针不探测该项，只能由目录 seed 或用户明确填写。
    *
-   * 它比思考更需要按端点覆盖：缓存能力是「端点 × 模型」那一格的属性，
-   * 换个中转站同一个模型就是另一条结论，内置表只能给 seed。
+   * 它比思考参数更需要按端点覆盖：缓存能力是「端点 × 模型」组合的属性，
+   * 同一个模型在不同中转站上结论不同，内置表只能提供 seed。
    */
   cacheRouting?: CacheRouting
 }
 
 /**
- * 把用户改过的参数叠到目录条目上。**seed → 用户覆盖**，只有这一个顺序。
+ * 将用户修改的参数叠加到目录条目上。**seed → 用户覆盖**，顺序唯一。
  *
  * 两条边界：
  *
- * - **只覆盖写了的字段。** 缓存两档要改就单独填，**不按 input 等比例推算**——
- *   推算出来的是个看起来精确的假数字，而各家缓存定价的比例本来就不一样
- *   （Anthropic 写入是 1.25x，DeepSeek 写入不要钱）。
- * - **`catalogued` 只有在覆盖里带了单价时才翻成 true。** 只改个显示名就宣布
- *   「已收录」的话，计价仍然是 0 而提醒没了——账本继续报 $0，且再没有人说它。
+ * - **只覆盖已填写的字段。** 缓存两档需要修改时单独填写，**不按 input 等比例推算**：
+ *   推算结果是看似精确的错误数值，而各厂商的缓存定价比例并不相同
+ *   （Anthropic 写入为 1.25x，DeepSeek 写入免费）。
+ * - **`catalogued` 只在覆盖中包含单价时才设为 true。** 若只修改显示名就标记为
+ *   「已收录」，计价仍为 0 而提醒消失：账本继续显示 $0，且不再有任何提示。
  */
 export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined): ModelSpec {
   if (!o) return spec
@@ -1780,14 +1778,14 @@ export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined):
     ...(o.vendor ? { vendor: o.vendor } : {}),
     ...(o.contextWindow ? { contextWindow: o.contextWindow } : {}),
     ...(o.maxOutputTokens ? { maxOutputTokens: o.maxOutputTokens } : {}),
-    // 布尔，`false` 是有效覆盖（正是「挡住图片」那一档），只能按 `undefined` 判缺省。
+    // 布尔值，`false` 是有效覆盖（即拦截图片），只能按 `undefined` 判定缺省。
     ...(o.vision !== undefined ? { vision: o.vision } : {}),
     ...(o.thinking ? { thinking: o.thinking } : {}),
     ...(o.chatReasoningProtocol ? { chatReasoningProtocol: o.chatReasoningProtocol } : {}),
     ...(o.reasoningEcho ? { reasoningEcho: o.reasoningEcho } : {}),
     ...(o.effortLevels ? { effortLevels: o.effortLevels } : {}),
     ...(o.cacheRouting ? { cacheRouting: o.cacheRouting } : {}),
-    // `thinksByDefault` 是布尔，`false` 是有效覆盖，只能按 `undefined` 判缺省。
+    // `thinksByDefault` 是布尔值，`false` 是有效覆盖，只能按 `undefined` 判定缺省。
     ...(o.thinksByDefault !== undefined ? { thinksByDefault: o.thinksByDefault } : {}),
     pricing: {
       ...spec.pricing,
@@ -1848,14 +1846,14 @@ export function builtinCatalog(now = Date.now()): ModelSpec[] {
 }
 
 /**
- * 查目录。
+ * 查询目录。
  *
- * **先按 `(id, provider)` 精确匹配：同一个模型在不同协议下请求字段不一样。**
+ * **先按 `(id, provider)` 精确匹配：同一个模型在不同协议下的请求字段不同。**
  * DeepSeek 的三条协议分别使用 thinking + reasoning_effort、reasoning.effort、
  * output_config.effort，因此目录允许同 id 按 provider 分开声明。
  *
- * 只按 id 找（`.find(m => m.id === id)`）的话，两条里永远只命中先声明的那条，
- * 而「先声明的那条」是个跟正确性毫无关系的顺序。
+ * 若只按 id 查找（`.find(m => m.id === id)`），同 id 的多个条目中始终只命中先声明的一条，
+ * 而声明顺序与正确性无关。
  */
 export function lookupModel(id: string, provider: ProviderKind, now = Date.now()): ModelSpec {
   const all = builtinCatalog(now)
@@ -1863,32 +1861,32 @@ export function lookupModel(id: string, provider: ProviderKind, now = Date.now()
   if (exact) return exact
 
   const found = all.find((m) => m.id === id)
-  // provider 与内置目录不符时（例如经中转站以 openai 兼容协议调 claude），
-  // 保留能力约束但改写 provider——协议由用户配置决定，不由模型名决定。
+  // provider 与内置目录不符时（例如经中转站以 openai 兼容协议调用 claude），
+  // 保留能力约束但改写 provider：协议由用户配置决定，不由模型名决定。
   //
-  // 注意这条**只保留能力约束，不保证能力属实**：被改写 provider 的条目描述的是
-  // 另一种协议下的行为。所以它是兜底，不是「支持」——真要准，就在目录里
-  // 为那个协议单独建一条。
+  // 该分支**只保留能力约束，不保证能力属实**：改写了 provider 的条目描述的是
+  // 另一种协议下的行为。因此它是后备处理，不代表支持；需要准确规格时，在目录中
+  // 为该协议单独添加条目。
   if (found) return { ...found, provider }
   return unknownModel(id, provider)
 }
 
 /**
- * 这条 spec 在**它当前那条协议**上，思考强度是不是真的发得出去。
+ * 该 spec 在**当前协议**上能否实际发送思考强度。
  *
- * 存在的理由是 `lookupModel` 的那条兜底：目录里没有「Claude + 兼容协议」的条目时，
- * 它保留 Claude 的能力约束、只改写 `provider`——而注释里已经写明**这只保留约束、
- * 不保证能力属实**。因此 `effortLevels` 还是那五档，但兼容协议不发 Anthropic
- * 的 `output_config.effort`。界面照着那五档画一个 chip，选了没有任何反应。
+ * 用于 `lookupModel` 的后备分支：目录中没有「Claude + 兼容协议」的条目时，
+ * 该分支保留 Claude 的能力约束、只改写 `provider`，**只保留约束、
+ * 不保证能力属实**。因此 `effortLevels` 仍为五档，但兼容协议不发送 Anthropic
+ * 的 `output_config.effort`；界面若按五档渲染 chip，选择后不会有任何效果。
  *
- * 判据按协议分：
- * - `anthropic`：适配器只看 `effortLevels` 非空就发 `output_config.effort`。
- * - `openai_responses`：只有 `reasoning.effort` 一条路。
- * - `openai_chat_completions`：`reasoning_effort`（OpenAI 那套）或 `deepseek_thinking`
- *   （DeepSeek 要两个字段一起发），其余一律发不出去。
+ * 判据按协议区分：
+ * - `anthropic`：适配器只要 `effortLevels` 非空即发送 `output_config.effort`。
+ * - `openai_responses`：只能通过 `reasoning.effort` 发送。
+ * - `openai_chat_completions`：`reasoning_effort`（OpenAI 的字段）或 `deepseek_thinking`
+ *   （DeepSeek 需要同时发送两个字段），其余均无法发送。
  *
- * 与 `openai-compat.ts` 的 `buildReasoning` 是同一份判断的两个用途：
- * 这里答「能不能」，那里答「用哪几个字段」。改一处务必看另一处。
+ * 与 `openai-compat.ts` 的 `buildReasoning` 是同一判断的两种用途：
+ * 本函数判定能否发送，`buildReasoning` 决定使用哪些字段。修改一处时须同步检查另一处。
  */
 export function effortIsTransmittable(spec: ModelSpec): boolean {
   if (spec.effortLevels.length === 0) return false
@@ -1897,23 +1895,23 @@ export function effortIsTransmittable(spec: ModelSpec): boolean {
   return spec.thinking === 'reasoning_effort' || spec.thinking === 'deepseek_thinking'
 }
 
-/** 历史里的推理在这条 spec 的协议上发不发、发哪种。 */
+/** 历史中的推理在该 spec 的协议上是否发送、发送哪种。 */
 export interface ReasoningReplay {
-  /** 思考正文回放到哪些 assistant 消息上。有原生条目的消息不再带正文。 */
+  /** 思考正文回放到哪些 assistant 消息上。有原生条目的消息不再附带正文。 */
   text: 'none' | 'tool_turns' | 'all'
   /** 原生推理条目（带签名的思考块、加密推理）是否回放。 */
   opaque: boolean
 }
 
 /**
- * 历史推理的上线规则。**装配点裁剪与三个适配器的翻译共用这一份**：两处各判一遍时，
- * 估算数的是挂载的推理、线上发的是另一份，本地估算因此系统性多出一整段思考。
+ * 历史推理的发送规则。**装配点的裁剪与三个适配器的转换共用此规则**：两处分别判定时，
+ * 估算计入的推理与实际发送的推理不一致，本地估算因此系统性地多出整段思考。
  *
- * - `anthropic`：带签名的思考块原样回放；签名缺失的思考文字 Claude 不认（静默丢弃），
- *   只有 `preserved` 系端点收文字。
+ * - `anthropic`：带签名的思考块原样回放；Claude 不接受缺少签名的思考文字（静默丢弃），
+ *   只有 `preserved` 系端点接受文字。
  * - `openai_responses`：由 `reasoningEcho` 声明，加密条目与文字条目二选一。
- * - `openai_chat_completions`：`reasoning_content` 字段，工具轮恒带（DeepSeek 思考模式
- *   缺了即 400，其余端点忽略该字段），`standard` 以外全部轮次都带。
+ * - `openai_chat_completions`：`reasoning_content` 字段，工具调用轮次始终携带（DeepSeek 思考模式
+ *   缺少即返回 400，其余端点忽略该字段），`standard` 以外的协议在全部轮次携带。
  */
 export function reasoningReplay(spec: ModelSpec): ReasoningReplay {
   if (spec.provider === 'anthropic_messages') {
@@ -1931,10 +1929,10 @@ export function reasoningReplay(spec: ModelSpec): ReasoningReplay {
 }
 
 /**
- * 按 usage 算这一轮的花费。
+ * 按 usage 计算本次请求的费用。
  *
- * **币种是 `spec.pricing.currency`，不恒是美元**——阿里 / 月之暗面 / 智谱 /
- * DeepSeek 都按人民币标价。这个函数只返回数字，币种由调用方一起记进账本。
+ * **币种为 `spec.pricing.currency`，不一定是美元**：阿里、月之暗面、智谱、
+ * DeepSeek 等按人民币标价。本函数只返回数值，币种由调用方一并记入账本。
  */
 export function computeCost(
   spec: ModelSpec,
@@ -1946,27 +1944,27 @@ export function computeCost(
   },
   now = Date.now(),
 ): number {
-  // 单价**按算钱这一刻、按这一条请求的大小取**，不是按建 adapter 那一刻。
+  // 单价**按计费时刻与本次请求的大小取值**，不按创建 adapter 的时刻取值。
   //
-  // adapter 是一个 run 建一次，而 run 可以跑很久：DeepSeek 的高峰窗口一天有两段，
-  // 一个 08:55 开始、跑过 09:00 的 run，按建 adapter 那一刻取价会把整轮都按空闲价记。
-  // 算钱是逐波次调的（`agent/loop/attempt.ts` 每收完一次 usage 就算一次），
-  // 在这里取时间正好落在那一次请求刚结束的时候。
+  // adapter 每个 run 创建一次，而 run 可能持续很长时间：DeepSeek 的高峰时段每天有两段，
+  // 08:55 开始、运行超过 09:00 的 run，若按创建 adapter 的时刻取价，整轮都会按空闲价计费。
+  // 计费按请求逐次调用（`agent/loop/attempt.ts` 每收到一次 usage 计算一次），
+  // 在此处取时间即对应该次请求结束的时刻。
   //
-  // 提示词大小同理：它逐波次增长，长上下文档必须按**这一次**的大小判，
-  // 按整个 run 的最大值或第一次的值判都会算错一半的波次。
-  // 三项相加才是这一次的提示词大小：三个数是排他的，漏掉写入那项会让长上下文档
-  // 在一次冷启动上判不到——而冷启动正是写入量最大的那一次。
+  // 提示词大小同理：它随请求逐次增长，长上下文档必须按**本次请求**的大小判定，
+  // 按整个 run 的最大值或首次请求的值判定都会算错部分请求。
+  // 三项之和才是本次请求的提示词大小：三个数互不重叠，遗漏缓存写入项会使长上下文档
+  // 在冷启动请求上判定失效，而冷启动正是写入量最大的请求。
   const p = priceAt(spec, {
     now,
     promptTokens: usage.inputTokens + (usage.cachedTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
     outputTokens: usage.outputTokens,
   })
-  // 只按 5 分钟档算：全项目从不请求 1 小时缓存。`cacheWrite1h` 留在价目表里是
-  // **参考数据**（它是真实价格），不是可达的代码分支。别为它加一个 cacheTtl 参数：
-  // 没有调用方会传，那条 1h 分支永远走不到。
+  // 只按 5 分钟档计算：全项目从不请求 1 小时缓存。`cacheWrite1h` 保留在价目表中作为
+  // **参考数据**（它是真实价格），不是可达的代码分支。不要为它添加 cacheTtl 参数：
+  // 没有调用方会传入，1h 分支永远不可达。
   const writeRate = p.cacheWrite5m
-  // 沿用运行用量的 0 = 金额不明口径；没有单价时不估填订阅费用。
+  // 沿用运行用量中「0 表示金额不明」的约定；没有单价时不估算订阅费用。
   if (p.input === null || p.output === null || p.cacheRead === null || writeRate === null) return 0
   const total =
     (usage.inputTokens * p.input +

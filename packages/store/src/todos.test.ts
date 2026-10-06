@@ -1,8 +1,8 @@
 /**
- * 待办读回的行为回归。**覆盖范围**：`todos.ts`。
+ * 待办读取的行为回归。**覆盖范围**：`todos.ts`。
  *
- * 锁的是「父会话整表提交是唯一完成权威」这一个账本投影——子任务回执可供验收，
- * 但不能替父会话打勾。工具、提示词与历史接口不能各自猜一次。
+ * 锁定「父会话整表提交是唯一完成权威」这一账本投影：子任务回执可供验收，
+ * 但不能代替父会话标记完成。工具、提示词与历史接口不得各自推测。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -41,7 +41,7 @@ function newRun(store: Store, conversationId: ConversationId, workspaceId: strin
   })
 }
 
-/** 记一条 `write_todos` 的 step，形状与 loop 落库的那条一致。 */
+/** 记录一条 `write_todos` 的 step，结构与 loop 写入数据库的 step 一致。 */
 function submit(
   store: Store,
   runId: string,
@@ -98,14 +98,14 @@ function delegate(
   })
 }
 
-describe('待办读回', () => {
-  test('没提交过就是 null', () => {
+describe('待办读取', () => {
+  test('从未提交时返回 null', () => {
     const { store, conversationId } = fresh()
     expect(latestTodos(store, conversationId)).toBeNull()
     store.close()
   })
 
-  test('取最后一次成功提交 —— 整表语义下它就是全部事实', () => {
+  test('取最后一次成功提交：整表语义下它即全部事实', () => {
     const { store, ws, conversationId } = fresh()
     const run = newRun(store, conversationId, ws.id, 'r1')
     submit(store, run.id, 1, ['旧的甲', '旧的乙'])
@@ -114,8 +114,8 @@ describe('待办读回', () => {
     store.close()
   })
 
-  /** 一轮做三条、下一轮接着做第四条是常态，所以必须跨 run 取。 */
-  test('跨 run 延续 —— 上一轮提交的这一轮也读得到', () => {
+  /** 一轮完成三项、下一轮继续第四项是常见情况，因此必须跨 run 读取。 */
+  test('跨 run 延续：本轮可读取上一轮的提交', () => {
     const { store, ws, conversationId } = fresh()
     const first = newRun(store, conversationId, ws.id, 'r1')
     submit(store, first.id, 1, ['上一轮列的'])
@@ -124,7 +124,7 @@ describe('待办读回', () => {
     store.close()
   })
 
-  test('续跑只读本轮成功提交，历史展示仍读跨轮清单', () => {
+  test('续接执行只读取本轮成功提交，历史展示仍读取跨轮清单', () => {
     const { store, ws, conversationId } = fresh()
     const first = newRun(store, conversationId, ws.id, 'r1')
     submit(store, first.id, 1, ['旧任务'])
@@ -139,7 +139,7 @@ describe('待办读回', () => {
     store.close()
   })
 
-  test('子任务与工作流回执仍接续父任务，用户追问不继承续跑权', () => {
+  test('子任务与工作流回执仍接续父任务，用户追问不继承续接执行权', () => {
     const { store, ws, conversationId } = fresh()
     const first = newRun(store, conversationId, ws.id, 'parent')
     submitItems(store, first.id, 1, [{ content: '父任务待验收', status: 'in_progress' }])
@@ -168,8 +168,8 @@ describe('待办读回', () => {
     store.close()
   })
 
-  /** 被拒的提交前端不显示，这里也不能算数——否则动作词按一份没被接受的清单判。 */
-  test('失败的提交不算 —— 读回的是上一份成功的', () => {
+  /** 被拒绝的提交前端不显示，此处也不计入：否则动作词会依据一份未被接受的清单判定。 */
+  test('失败的提交不计入：读取的是上一份成功提交', () => {
     const { store, ws, conversationId } = fresh()
     const run = newRun(store, conversationId, ws.id, 'r1')
     submit(store, run.id, 1, ['好清单'])
@@ -196,7 +196,7 @@ describe('待办读回', () => {
     store.close()
   })
 
-  test('并行部分成功与失败都不抢父会话的验收权', () => {
+  test('并行的部分成功与失败都不取代父会话的验收权', () => {
     const { store, ws, conversationId } = fresh()
     const run = newRun(store, conversationId, ws.id, 'r1')
     submit(store, run.id, 1, ['第一批', '第二批', '收尾'])
@@ -211,7 +211,7 @@ describe('待办读回', () => {
     store.close()
   })
 
-  test('失败、未绑定和匹配不到的子任务都不改父清单', () => {
+  test('失败、未绑定和无法匹配的子任务都不修改父清单', () => {
     const { store, ws, conversationId } = fresh()
     const run = newRun(store, conversationId, ws.id, 'r1')
     submit(store, run.id, 1, ['保留进行中'])
@@ -225,7 +225,7 @@ describe('待办读回', () => {
     store.close()
   })
 
-  test('子任务返回之后只有父会话的新整表能完成或重开条目', () => {
+  test('子任务返回之后只有父会话的新整表能完成或重新打开条目', () => {
     const { store, ws, conversationId } = fresh()
     const first = newRun(store, conversationId, ws.id, 'r1')
     submit(store, first.id, 1, ['旧任务'])
@@ -243,7 +243,7 @@ describe('待办读回', () => {
     store.close()
   })
 
-  /** 别的会话的清单不能串进来。 */
+  /** 其他会话的清单不得混入。 */
   test('按会话隔离', () => {
     const { store, ws, conversationId } = fresh()
     const other = createConversation(store, {
@@ -258,8 +258,8 @@ describe('待办读回', () => {
     store.close()
   })
 
-  /** 读不回来的旧 payload 只该让动作词退回「创建」，不该让工具调用抛错。 */
-  test('payload 坏了就当没有，不抛', () => {
+  /** 无法解析的旧 payload 只应使动作词回退为「创建」，不应使工具调用抛错。 */
+  test('payload 无法解析时按不存在处理，不抛错', () => {
     const { store, ws, conversationId } = fresh()
     const run = newRun(store, conversationId, ws.id, 'r1')
     appendStep(store, {

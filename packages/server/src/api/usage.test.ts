@@ -1,8 +1,8 @@
 /**
  * 账本端点。覆盖 `api/usage.ts`。
  *
- * 账本表被写入、聚合函数存在，都不等于界面能看到钱。所以第一条测的是
- * 「记进去的钱能从 HTTP 查出来」——这条链路断了的话，界面上就一个入口都没有。
+ * 账本表被写入、聚合函数存在，都不等于界面能看到费用。因此第一个用例验证
+ * 记入的费用能经由 HTTP 查询；这条链路中断时，界面上没有任何入口。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -51,7 +51,7 @@ const call = (query = '', d?: ApiRequestDeps) =>
   )
 
 describe('路由归属', () => {
-  test('别的路径回 null，交给下一个域', async () => {
+  test('其他路径返回 null，交给下一个域', async () => {
     const res = await handleUsageApi(
       new URL('http://127.0.0.1/api/models'),
       new Request('http://127.0.0.1/api/models'),
@@ -61,8 +61,8 @@ describe('路由归属', () => {
   })
 })
 
-describe('查账', () => {
-  test('记进去的能查出来，且分组求和', async () => {
+describe('查询账本', () => {
+  test('记入的条目可查询，且按分组求和', async () => {
     const store = new Store({ path: ':memory:' })
     seed(store)
     const body = (await call('', deps(store)))!
@@ -73,8 +73,8 @@ describe('查账', () => {
     store.close()
   })
 
-  /** 本机总量和本工作区是两个都会被问到的问题，不能让前端拿总量自己减。 */
-  test('本工作区的那份单独给', async () => {
+  /** 本机总量与本工作区用量是两个都会被查询的问题，不能让前端用总量自行计算。 */
+  test('单独返回本工作区的用量', async () => {
     const store = new Store({ path: ':memory:' })
     seed(store)
     const j = (await (await call('', deps(store, 'ws_a')))!.json()) as UsageResponse
@@ -83,7 +83,7 @@ describe('查账', () => {
     store.close()
   })
 
-  test('按天分组也能出，键是本地日期', async () => {
+  test('支持按天分组，键为本地日期', async () => {
     const store = new Store({ path: ':memory:' })
     seed(store)
     const j = (await (await call('?by=day', deps(store)))!.json()) as UsageResponse
@@ -94,10 +94,10 @@ describe('查账', () => {
   })
 
   /**
-   * 窗口之外的不算进来。写死 `occurredAt` 而不是靠系统时间——
-   * 靠时间的测试会在跨天的那一刻自己红一次。
+   * 时间窗之外的条目不计入。固定 `occurredAt` 而不依赖系统时间：
+   * 依赖系统时间的测试会在跨天的时刻失败一次。
    */
-  test('区间外的不计入', async () => {
+  test('区间外的条目不计入', async () => {
     const store = new Store({ path: ':memory:' })
     recordUsage(store, {
       kind: 'run',
@@ -120,8 +120,8 @@ describe('查账', () => {
     store.close()
   })
 
-  /** 多币种分开报，前端据此各列一行。合起来要汇率，而本仓不做换算。 */
-  test('两种币种分开报，不相加', async () => {
+  /** 多币种分开上报，前端据此各列一行。合并需要汇率，而本仓库不做换算。 */
+  test('两种币种分开上报，不相加', async () => {
     const store = new Store({ path: ':memory:' })
     seed(store)
     recordUsage(store, {
@@ -143,24 +143,24 @@ describe('查账', () => {
     store.close()
   })
 
-  test('空账本回 0 而不是报错', async () => {
+  test('空账本返回 0 而不是报错', async () => {
     const j = (await (await call())!.json()) as UsageResponse
     expect(j.totals.entries).toBe(0)
-    // `{}` 不是 `{USD: 0}`：没花钱不该凭空冒出一个币种。
+    // 结果为 `{}` 而不是 `{USD: 0}`：没有花费时不应出现任何币种。
     expect(j.totals.cost).toEqual({})
     expect(j.rows).toEqual([])
   })
 })
 
 describe('参数校验', () => {
-  /** 坏参数要 400 说清楚，不能静默回落到默认值——界面上那等同于筛选已生效。 */
-  test('days 非法回 400', async () => {
+  /** 非法参数必须返回 400 并说明原因，不能静默回退到默认值：静默回退在界面上等同于筛选已生效。 */
+  test('days 非法时返回 400', async () => {
     for (const q of ['?days=0', '?days=-1', '?days=abc', '?days=99999']) {
       expect((await call(q))!.status).toBe(400)
     }
   })
 
-  test('by 不在词表里回 400', async () => {
+  test('by 不在词表中时返回 400', async () => {
     expect((await call('?by=provider'))!.status).toBe(400)
   })
 })

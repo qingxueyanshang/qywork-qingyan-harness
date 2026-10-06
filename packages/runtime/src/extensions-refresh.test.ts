@@ -127,7 +127,7 @@ test('连接失败后重新提交相同配置会重新握手，不永久复用�
   expect((await call(await acquire(), 'mcp__probe__ping')).status).toBe('success')
 })
 
-test('同一 Session 的大 schema 进入池，升级后旧已加载工具与缓存同时移除', async () => {
+test('同一 Session 的大 schema 进入池，升级后已加载的旧工具与缓存同时移除', async () => {
   const service = mcp()
   const store = new Store({ path: ':memory:' })
   const session = new Session({
@@ -200,7 +200,7 @@ test('后台持有空缓存，正式写入后新工具可调用；重复 acquire
   expect(service.initialized()).toBe(1)
 })
 
-test('更新只替换变更服务；旧句柄继续可调用，旧 release 不关闭新连接', async () => {
+test('更新只替换有变更的服务；旧句柄继续可调用，旧 release 不关闭新连接', async () => {
   const service = mcp()
   await acquire(root, true)
   const port = makeMcpConfigPort(root)

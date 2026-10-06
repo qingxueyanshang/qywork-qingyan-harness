@@ -1,17 +1,17 @@
 /**
  * 上下文容量拒绝的**窄**分类。
  *
- * **只认真实的 4xx + provider 原生容量码，或者一条强的、带 token 数的消息。**
- * 泛化的 `invalid_request_error` 和输出 token 的参数校验一律不算输入容量。
+ * **只认定真实的 4xx + provider 原生容量码，或带 token 数的强匹配消息。**
+ * 泛化的 `invalid_request_error` 与输出 token 的参数校验一律不认定为输入容量问题。
  *
- * 为什么必须这么窄：判宽了，一个普通的参数校验错误会被报成上下文超限，
- * 用户拿到的是「上下文满了」而真实原因在别处，查不下去。宁可漏判走通用失败路径。
+ * 必须窄的原因：判定过宽时，普通的参数校验错误会被报告为上下文超限，
+ * 用户得到「上下文已满」的提示，而真实原因在别处，无法据此排查。宁可漏判，交由通用失败路径处理。
  *
- * 特别注意 `max_tokens` 这个词：它出现在 4xx 里绝大多数时候指的是
+ * 注意 `max_tokens`：它在 4xx 中绝大多数情况下指
  * **输出**上限的参数校验（"max_tokens must be less than…"），不是输入超限。
  */
 
-/** 各家 provider 原生的容量错误码（归一化成 snake_case 后比对）。 */
+/** 各家 provider 原生的容量错误码（归一化为 snake_case 后比对）。 */
 const CAPACITY_CODES: ReadonlySet<string> = new Set([
   'context_length_exceeded',
   'context_window_exceeded',
@@ -21,10 +21,10 @@ const CAPACITY_CODES: ReadonlySet<string> = new Set([
 ])
 
 /**
- * 只认这三个状态码。
+ * 只认定以下三个状态码。
  *
- * 401/403/404/429 即使消息里带 "context" 也不是容量问题；5xx 更不是——
- * 那是服务端故障，压缩了也没用。
+ * 401/403/404/429 即使消息含 "context" 也不是容量问题；5xx 同样不是：
+ * 5xx 是服务端故障，压缩无法解决。
  */
 const CAPACITY_STATUS: ReadonlySet<number> = new Set([400, 413, 422])
 
@@ -37,15 +37,15 @@ export interface CapacityRejection {
   /** provider 原生错误码；只在消息匹配时可能为 null。 */
   providerCode: string | null
   status: number
-  /** provider 自报的输入 token 数。拿不到就是 null——**不要拿本地估算填这里**。 */
+  /** provider 自报的输入 token 数。无法取得时为 null，**不要用本地估算填充**。 */
   reportedInputTokens: number | null
   /** provider 自报的上限。 */
   reportedLimitTokens: number | null
-  /** 上面两个数指的是什么口径。 */
+  /** 上述两个数值的统计口径。 */
   scope: 'input' | 'context_total' | 'unknown'
   /**
-   * 判定来源。`provider_code` 比 `provider_message` 可信得多——
-   * 排查「为什么触发/没触发压缩」时第一个要看的就是它。
+   * 判定来源。`provider_code` 的可信度远高于 `provider_message`；
+   * 排查压缩是否触发时应首先检查此字段。
    */
   matchSource: 'provider_code' | 'provider_message'
   /** 供日志用的原始消息片段（截断）。 */
@@ -53,7 +53,7 @@ export interface CapacityRejection {
 }
 
 /**
- * 只在**证据充分**时返回容量事实，否则返回 null 让调用方走通用失败路径。
+ * 仅在**证据充分**时返回容量事实，否则返回 null，由调用方进入通用失败路径。
  *
  * 判定链：状态码在白名单 → 有原生容量码 **或** 消息强匹配 → 提取自报数字。
  */
@@ -68,7 +68,7 @@ export function classifyCapacityRejection(err: unknown): CapacityRejection | nul
   const text = messageTextOf(err, payloads)
   const strong = isStrongCapacityMessage(text)
 
-  // 两条证据一条都没有 —— 不是容量问题。
+  // 两项证据均不存在：不是容量问题。
   if (nativeCode === null && !strong) return null
 
   const { input, limit, scope } = reportedCounts(text)
@@ -77,8 +77,8 @@ export function classifyCapacityRejection(err: unknown): CapacityRejection | nul
     code: 'context_overflow',
     providerCode:
       nativeCode ??
-      // 没有原生容量码时，退一步记录泛化码。它**不作为判据**（判据是 strong message），
-      // 只是让日志能看出 provider 那一次回了什么。
+      // 没有原生容量码时，改为记录泛化错误码。它**不作为判据**（判据是 strong message），
+      // 只用于在日志中显示 provider 本次返回的错误码。
       codes.find((c) => c === 'invalid_argument' || c === 'invalid_request_error') ??
       null,
     status,
@@ -111,7 +111,7 @@ function payloadsOf(err: unknown): unknown[] {
   return [e.body, e.error, e.details].filter((v) => v !== undefined && v !== null)
 }
 
-/** 深度受限的对象遍历——错误体可能嵌套，但不该无限深挖。 */
+/** 深度受限的对象遍历：错误体可能嵌套，但遍历深度须有上限。 */
 function* walk(value: unknown, depth = 0): Generator<Record<string, unknown>> {
   if (depth > 5 || value === null || value === undefined) return
   if (Array.isArray(value)) {
@@ -168,7 +168,7 @@ function messageTextOf(err: unknown, payloads: unknown[]): string {
     try {
       parts.push(JSON.stringify(payload))
     } catch {
-      // 循环引用等——跳过这一份 payload，其余证据仍然有效。
+      // 循环引用等情况：跳过该 payload，其余证据仍然有效。
     }
   }
   return parts.join('\n').toLowerCase()
@@ -177,9 +177,9 @@ function messageTextOf(err: unknown, payloads: unknown[]): string {
 /**
  * 消息强匹配。
  *
- * **第一道闸是「输入轴」**：消息里必须出现 context / prompt / input token 这类词。
- * 没有输入轴就直接否——这一条挡住了绝大多数输出参数校验误判，因为
- * "max_tokens must be less than 8192" 里一个输入轴的词都没有。
+ * **第一项检查是「输入轴」**：消息中必须出现 context / prompt / input token 等词。
+ * 没有输入轴词汇时直接判定为否：此检查排除了绝大多数输出参数校验误判，因为
+ * "max_tokens must be less than 8192" 中没有任何输入轴词汇。
  */
 function isStrongCapacityMessage(text: string): boolean {
   const hasInputAxis = ['context', 'prompt', 'input token', 'messages resulted'].some((t) =>
@@ -213,9 +213,9 @@ function tokenInt(raw: string | undefined): number | null {
 /**
  * 从消息中提取 provider 自报的用量与上限。
  *
- * 各家的措辞和**数字顺序**都不一样，所以每条 pattern 要单独标注哪个数在前。
- * `reversed` 那条是 OpenAI 系：先说上限再说请求量。取反了会得到
- * 「用了 8192，上限 213000」这种荒谬的记录，比没有还糟。
+ * 各家的措辞与**数字顺序**均不相同，因此每条 pattern 须单独标注哪个数值在前。
+ * 带 `reversed` 的一条对应 OpenAI 系：先给出上限再给出请求量。顺序颠倒会得到
+ * 「用量 8192，上限 213000」这类错误记录，比没有记录更有害。
  */
 function reportedCounts(text: string): {
   input: number | null
@@ -245,7 +245,7 @@ function reportedCounts(text: string): {
       scope: 'input',
       reversed: false,
     },
-    // OpenAI/中转: maximum context length is LIMIT ... requested/resulted REQ —— 数字顺序相反
+    // OpenAI/中转站：maximum context length is LIMIT ... requested/resulted REQ，数字顺序相反
     {
       re: new RegExp(
         `(?:maximum|max)\\s+context\\s+(?:length|window)[^0-9]{0,50}${NUM}[\\s\\S]{0,180}?(?:requested|resulted\\s+in|input)[^0-9]{0,50}${NUM}`,
@@ -254,7 +254,7 @@ function reportedCounts(text: string): {
       scope: 'context_total',
       reversed: true,
     },
-    // 中转变体：请求量在前。
+    // 中转站变体：请求量在前。
     {
       re: new RegExp(
         `(?:requested|input|prompt)[^0-9]{0,40}${NUM}\\s*tokens?[\\s\\S]{0,120}?(?:maximum|max|limit)[^0-9]{0,40}${NUM}`,
@@ -277,7 +277,7 @@ function reportedCounts(text: string): {
   return { input: null, limit: null, scope: 'unknown' }
 }
 
-/** 日志用的消息片段。截断是必要的：中转服务的错误体能有几十 KB。 */
+/** 日志用的消息片段。须截断：中转站的错误体可达数十 KB。 */
 function hintOf(text: string): string | null {
   const trimmed = text.replace(/\s+/g, ' ').trim()
   if (!trimmed) return null

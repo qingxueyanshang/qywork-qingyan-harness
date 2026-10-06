@@ -1,13 +1,13 @@
 /**
- * 握手时的「客户端停在哪一条」。
+ * 握手时客户端的同步位置。
  *
  * 覆盖范围：`handshake.ts` 的补发分支与 `environment` 能力上报
- * （令牌校验由 `e2e.test.ts` 走真连接覆盖）；后者一并覆盖 `api/host.ts` 的
- * 依赖表——那张表同时喂握手和安装路由，分开算必然漂移。
+ * （令牌校验由 `e2e.test.ts` 经由真实连接覆盖）；后者一并覆盖 `api/host.ts` 的
+ * 依赖表：该表同时供握手与安装路由使用，分别计算必然产生偏差。
  *
- * 这份测试锁的是一条用户可见的链路：**sidecar 重启之后，重连的客户端必须被告知
- * 要重拉全量**。不告知的代价是界面永远停在断线那一刻——那一轮一直显示执行中，
- * 而账本里它在新进程启动时就被 `recoverStaleRuns` 判成中断了。
+ * 本测试锁定一条用户可见的链路：**sidecar 重启之后，必须告知重连的客户端
+ * 重新拉取全量**。不告知时界面会一直停留在断线时刻：该轮持续显示执行中，
+ * 而账本中它在新进程启动时已被 `recoverStaleRuns` 判定为中断。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -43,7 +43,7 @@ interface HelloOk {
   }
 }
 
-/** 最小假 socket：只需要 `data` / `send` / `close`。 */
+/** 最小的假 socket：只需要 `data` / `send` / `close`。 */
 function fakeSocket() {
   const sent: string[] = []
   const ws = {
@@ -92,28 +92,28 @@ function shake(
 }
 
 /**
- * 在跑的会话要**在握手里报出来**。
+ * 运行中的会话必须**在握手中报告**。
  *
- * 原始失败形状：sidecar 被杀之后重连，客户端手里那份忙闲还是断线前的——那几轮
- * 早跑完了，左栏对应的行会一直转下去。缺口补不上（resync）时事件那条路补不回来，
- * 这份快照是唯一的纠正机会。
+ * 原始失败形状：sidecar 被终止后重连，客户端持有的忙闲状态仍是断线前的状态：相应的轮次
+ * 早已执行完毕，左栏对应的行却一直显示运行中。缺口无法补发（resync）时事件路径无法恢复，
+ * 该快照是唯一的纠正机会。
  */
-describe('握手报此刻谁在跑', () => {
-  test('报的是 RunManager 手里那份，不是账本', () => {
+describe('握手报告当前运行中的会话', () => {
+  test('报告的是 RunManager 持有的状态，不是账本', () => {
     const bus = new EventBus()
     const runs = new RunManager(null as never, bus, new SubagentRegistry())
     runs.reserve(c1)
     expect(shake(bus, {}, runs).ok().busyConversations).toEqual([c1])
   })
 
-  test('一条都没在跑就是空表，不是缺这个字段', () => {
+  test('没有运行中的会话时为空表，而不是缺少该字段', () => {
     const bus = new EventBus()
     expect(shake(bus, {}).ok().busyConversations).toEqual([])
   })
 })
 
 describe('断线重连的位置', () => {
-  test('同一条流、缺口在窗口内 —— 逐条补，不 resync', () => {
+  test('同一条流、缺口在窗口内：逐条补发，不 resync', () => {
     const bus = new EventBus()
     bus.publish(delta('a'), c1)
     bus.publish(delta('b'), c1)
@@ -124,11 +124,11 @@ describe('断线重连的位置', () => {
   })
 
   /**
-   * **原始失败形状**：重启后 `seq` 从 0 重新数，拿 `lastSeq >= seq` 判就成了
-   * 「已是最新」，因此 resync 为假、补发零条，客户端不会去重拉——那一轮的终态
-   * 就此永远到不了界面。
+   * **原始失败形状**：重启后 `seq` 从 0 重新计数，按 `lastSeq >= seq` 判定即得到
+   * 「已是最新」，因此 resync 为假、补发零条，客户端不会重新拉取，该轮的终态
+   * 永远无法到达界面。
    */
-  test('服务端重启过（换了流）—— 必须 resync，而不是判成已是最新', () => {
+  test('服务端已重启（流已更换）：必须 resync，而不是判定为已是最新', () => {
     const before = new EventBus()
     for (let i = 0; i < 800; i++) before.publish(delta(String(i)), c1)
 
@@ -138,7 +138,7 @@ describe('断线重连的位置', () => {
     expect(sock.backlog()).toEqual([])
   })
 
-  test('首连不带位置 —— 不 resync，也不补发', () => {
+  test('首次连接不带位置：不 resync，也不补发', () => {
     const bus = new EventBus()
     bus.publish(delta('a'), c1)
     const sock = shake(bus, {})
@@ -146,7 +146,7 @@ describe('断线重连的位置', () => {
     expect(sock.backlog()).toEqual([])
   })
 
-  test('hello.ok 报的是本进程这条流的身份，客户端据此判断要不要重拉', () => {
+  test('hello.ok 报告本进程当前流的身份，客户端据此判断是否重新拉取', () => {
     const bus = new EventBus()
     expect(shake(bus, {}).ok().streamId).toBe(bus.streamId)
   })
@@ -154,15 +154,15 @@ describe('断线重连的位置', () => {
 
 describe('能力上报', () => {
   /**
-   * `environment` 必须**在握手里就有消费者可读的每一格**。
+   * `environment` 的每个字段必须**在握手中即可被消费方读取**。
    *
-   * 这条不是形式检查：握手里没有消费者的能力位一律该删（见 `transport.ts`），
-   * 所以这一格的验收是「设置页那一节能据此渲染」——
-   * 有路径就显示路径，没有就显示缺了会怎样，`canInstall` 决定按钮出不出现。
+   * 这不是形式检查：握手中没有消费方的能力位一律应删除（见 `transport.ts`），
+   * 因此该字段的验收标准是「设置页的对应部分能据此渲染」：
+   * 有路径时显示路径，没有时显示缺失的影响，`canInstall` 决定是否显示按钮。
    */
-  test('environment 逐条报路径、缺失影响与能不能一键装', () => {
+  test('environment 逐条报告路径、缺失影响与能否一键安装', () => {
     const env = shake(new EventBus(), {}).ok().capabilities.environment
-    // 表里每一条都对应代码里一处真实的 spawn。
+    // 表中每一条都对应代码中一处真实的 spawn。
     expect(env.map((d) => d.id)).toEqual([
       'bash',
       'git',
@@ -174,18 +174,18 @@ describe('能力上报', () => {
     ])
     for (const d of env) {
       expect(d.label.length).toBeGreaterThan(0)
-      // 「缺了会怎样」没装时必填：一行「未安装」不告诉用户要不要管它。
+      // 未安装时「缺失影响」必填：仅显示「未安装」无法告诉用户是否需要处理。
       if (d.path === null) expect(d.hint.length).toBeGreaterThan(0)
-      // 装上了就没什么可装的——按钮不该在已安装的那一行出现。
+      // 已安装时无需安装：按钮不应出现在已安装的行上。
       else expect(d.canInstall).toBe(false)
     }
-    // bash 不在这里：批 4 之后它缺了只是语法换成 PowerShell，只有一个 shell
-    // 都没有时才是硬伤，而本机有（下一条锁的就是这个前提）。
+    // bash 不在此列：缺少 bash 时命令语法改为 PowerShell，两种 shell 都缺失时
+    // 才影响功能，而本机已安装（下一条用例锁定该前提）。
     expect(env.filter((d) => d.required).map((d) => d.id)).toEqual(['git'])
   })
 
-  test('本机装了 Git，所以 bash 与 git 都报得出路径', () => {
-    // 这条锁的是探测真的在探，而不是恒返回 null 也能让上一条通过。
+  test('本机已安装 Git，因此 bash 与 git 都能报告路径', () => {
+    // 本用例锁定探测确实执行，而不是恒返回 null 也能使上一条用例通过。
     const env = shake(new EventBus(), {}).ok().capabilities.environment
     const bash = env.find((d) => d.id === 'bash')
     expect(bash?.path?.toLowerCase()).toContain('bash')
@@ -193,17 +193,17 @@ describe('能力上报', () => {
   })
 
   /**
-   * bash 那一行的三档。**注入着测**：本机装着 Git Bash，只可能命中第一档，
-   * 而这一批要修的失败形状（没 bash、有 PowerShell）在开发机上复现不出来。
+   * bash 行的三种情形。**通过注入测试**：本机已安装 Git Bash，只可能命中第一种，
+   * 而需要验证的失败形状（没有 bash、有 PowerShell）在开发机上无法复现。
    */
-  describe('bash 那一行随机器落在哪一档', () => {
+  describe('bash 行按机器环境归入哪一种情形', () => {
     const noBash = {
       path: null,
       reason: '没找到 Git for Windows 自带的 bash。装 Git for Windows。',
     }
     const shell = (path: string): CommandShell => ({ path, argv: [path], hint: '' })
 
-    test('有 bash —— 报它自己的路径，没有下一步要说', () => {
+    test('有 bash：报告其路径，无需后续操作', () => {
       const row = resolveBashRow({
         bash: () => ({ path: '/usr/bin/bash', reason: '' }),
         shell: () => shell('/usr/bin/bash'),
@@ -213,16 +213,16 @@ describe('能力上报', () => {
 
     /**
      * **原始失败形状**：只有 PowerShell 的机器上，模型有 `run_command`，
-     * 设置页却报一条必需依赖缺失——用户因此去装一个他并不需要的依赖。
+     * 设置页却报告必需依赖缺失，用户因此安装一个并不需要的依赖。
      */
-    test('没 bash 但有 PowerShell —— 不报必需，只说命令改由 PowerShell 执行', () => {
+    test('没有 bash 但有 PowerShell：不报告为必需，只说明命令改由 PowerShell 执行', () => {
       const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
       const row = resolveBashRow({ bash: () => noBash, shell: () => shell(ps) })
       expect(row.required).toBe(false)
       expect(row.hint).toBe('命令当前由 PowerShell 执行，安装后改用 bash。')
     })
 
-    test('三档全空 —— 这才是必需依赖缺失，下一步照 bash 那一档说', () => {
+    test('三种都不存在：属于必需依赖缺失，后续操作按 bash 情形说明', () => {
       const row = resolveBashRow({ bash: () => noBash, shell: () => null })
       expect(row.required).toBe(true)
       expect(row.hint).toContain('装 Git for Windows')

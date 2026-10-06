@@ -1,21 +1,21 @@
 /**
  * Provider 错误归类。
  *
- * 归类的目的只有一个：让前端知道**该让用户做什么**。所以分类轴是「用户的下一步动作」
- * （去配 key / 去充值 / 等一会重试 / 换模型 / 缩上下文），不是 HTTP 状态码的镜像。
+ * 归类的唯一目的是让前端知道**应引导用户执行什么操作**。因此分类依据是「用户的下一步动作」
+ * （配置 key / 充值 / 稍后重试 / 更换模型 / 缩减上下文），而不是与 HTTP 状态码一一对应。
  *
  * **判据的优先级**：
- * 1. **异常类与状态码**——最稳，优先用。
- * 2. **错误对象上的 `code`**（`ECONNRESET`、`UNKNOWN_CERTIFICATE_VERIFICATION_ERROR`…）
- *    ——次稳，跨版本基本不动。
- * 3. **文案匹配**——最后兜底，且**只在文案是唯一线索时**用。
+ * 1. **异常类与状态码**：最可靠，优先使用。
+ * 2. **错误对象上的 `code`**（`ECONNRESET`、`UNKNOWN_CERTIFICATE_VERIFICATION_ERROR`…）：
+ *    次可靠，跨版本基本不变。
+ * 3. **文案匹配**：最后的后备手段，**只在文案是唯一线索时**使用。
  *
- * **文案匹配是刻意的兜底，不是 bug，别删。** 429 优先读结构化错误码，
- * 没有错误码时仍要靠文案区分限速与欠费；传输层错误同样需要文案兜底。
+ * **文案匹配是有意保留的后备手段，不是缺陷，不要删除。** 429 优先读取结构化错误码，
+ * 没有错误码时仍需依据文案区分限速与欠费；传输层错误同样需要文案匹配作为后备。
  *
- * 两个入口：`classifyProviderError` 收异常对象（HTTP 失败、SDK 抛出、传输层断流），
- * `classifyStreamError` 收流内 `error` 事件里的结构化字段。流内错误没有 HTTP 状态码，
- * 不要为了走前一个入口而伪造一个。
+ * 两个入口：`classifyProviderError` 接收异常对象（HTTP 失败、SDK 抛出、传输层断流），
+ * `classifyStreamError` 接收流内 `error` 事件中的结构化字段。流内错误没有 HTTP 状态码，
+ * 不要为使用前一个入口而伪造状态码。
  */
 
 import type {
@@ -35,17 +35,17 @@ export class ProviderError extends Error {
   /**
    * 只有**被容量分类器证实**的上下文超限才带这个字段。
    *
-   * 要区分「provider 明确报了超限」和「从消息里推断出超限」时判
-   * `err.capacity !== undefined`——只看 `code === 'context_overflow'` 不够，
-   * 那个码也可能来自别的路径。
+   * 需要区分「provider 明确报告超限」与「从消息中推断超限」时判定
+   * `err.capacity !== undefined`。只判断 `code === 'context_overflow'` 不够，
+   * 该码也可能来自其他路径。
    */
   readonly capacity: CapacityRejection | undefined
   /**
-   * 失败前 provider 已经报过的用量。
+   * 失败前 provider 已报告的用量。
    *
-   * 只有传输被掐断这一类会带：流在 `finish_reason` 之前结束，但用量那一格已经到了。
-   * **不带这个字段不等于没计费**，只等于本地没收到数——落账时区分这两者，
-   * 不要把 `undefined` 当成 0。
+   * 只有传输中断类错误会携带：流在 `finish_reason` 之前结束，但用量字段已经到达。
+   * **缺少该字段不等于未计费**，只表示本地未收到用量；记账时区分两者，
+   * 不要把 `undefined` 当作 0。
    */
   readonly usage: ProviderUsage | undefined
   /** Provider 要求的重试等待时间。null 表示响应没有给出有效等待值。 */
@@ -53,13 +53,13 @@ export class ProviderError extends Error {
   /**
    * 这次失败是否由本地等待计时器判定为超时。
    *
-   * 不能拿“没有 HTTP 状态码”代替：断流、协议错误与本地超时都可能没有状态码，
-   * 只有这个事实为真时，上层才有资格补“静默了多久”。
+   * 不能用「没有 HTTP 状态码」代替：断流、协议错误与本地超时都可能没有状态码，
+   * 只有该值为真时，上层才能补充静默时长。
    */
   readonly timedOut: boolean
   /**
-   * 失败时刻的传输层读数。由 `classifyProviderError` 在适配器出口处填；
-   * 请求发出之前的失败（参数、路径、本地拒绝）没有这一份，为 null。
+   * 失败时刻的传输层读数。由 `classifyProviderError` 在适配器出口处填写；
+   * 请求发出之前的失败（参数、路径、本地拒绝）没有该读数，为 null。
    */
   transport: ProviderTransportReading | null = null
 
@@ -88,7 +88,7 @@ export class ProviderError extends Error {
   }
 }
 
-/** 从异常对象上尽力取 HTTP 状态码，兼容各家 SDK 的字段名差异。 */
+/** 尽可能从异常对象上取得 HTTP 状态码，兼容各 SDK 的字段名差异。 */
 function statusOf(err: unknown): number | undefined {
   if (typeof err !== 'object' || err === null) return undefined
   const e = err as Record<string, unknown>
@@ -170,7 +170,7 @@ function quotaExhausted(err: unknown, message: string): boolean {
   )
 }
 
-/** 判断是不是「没配 key」而不是「key 不对」——两者的引导文案完全不同。 */
+/** 判断是「未配置 key」还是「key 错误」：两者的引导文案完全不同。 */
 function looksUnconfigured(err: unknown): boolean {
   const m = messageOf(err).toLowerCase()
   return m.includes('unset') || m.includes('missing') || m.includes('no api key')
@@ -187,14 +187,14 @@ export function classifyProviderError(
 }
 
 /**
- * 流内 `error` 事件的归类。三条协议的错误事件字段名一致（`type` / `code` / `message`
- * / `param`），装进这一个入口。
+ * 流内 `error` 事件的归类。三种协议的错误事件字段名一致（`type` / `code` / `message`
+ * / `param`），由本入口统一处理。
  *
- * **输入是事件里的结构化字段，不是异常对象**：SSE 已经 200 了，此刻没有 HTTP 状态码可读，
- * 伪造一个会让「provider 拒绝了请求」和「连接建立后出错」在账本上无法区分。
+ * **输入是事件中的结构化字段，不是异常对象**：SSE 已返回 200，此时没有可读取的 HTTP 状态码，
+ * 伪造状态码会使「provider 拒绝请求」与「连接建立后出错」在账本上无法区分。
  *
- * `message` 保留事件原文：分类码说的是「哪一类」，说不出 provider 报的是哪一句。
- * 事件没带文案时退到 `code` / `type`，不编一句。
+ * `message` 保留事件原文：分类码只表示错误类别，不包含 provider 的报错原文。
+ * 事件不含文案时改用 `code` / `type`，不编造文案。
  */
 export function classifyStreamError(
   provider: ProviderKind,
@@ -229,17 +229,17 @@ export function classifyStreamError(
     return build('model_not_found', '模型不存在：检查模型 ID 与接口地址')
   }
   if (/invalid[\s_-]?request|bad[\s_-]?request/.test(reported)) return build('invalid_request')
-  // 一个明确的失败事件本身就是 provider 暂不可用的证据；没有结构化细码时保留原文，
-  // 同时让它进入 `agent/loop/attempt.ts` 的重发表。
+  // 明确的失败事件本身即表明 provider 暂不可用；没有结构化细分码时保留原文，
+  // 并使其进入 `agent/loop/attempt.ts` 的重发表。
   return build('provider_unavailable')
 }
 
 /**
- * 沿 cause 链取回已经归好类的错误。只走四层，既覆盖 SDK 包装又防损坏对象成环。
+ * 沿 cause 链取回已归类的错误。只遍历四层，既覆盖 SDK 包装，又防止损坏对象成环。
  *
- * 传输层判定的断流是一个 `ProviderError`，而 SDK 在响应体流出错时会把它再包一层
- * （Anthropic 的 `messages.stream` 实测如此）。只看最外层会把 `stream_idle_timeout`
- * 归成 `internal_error`，重发表因此再也看不到这个码。
+ * 传输层判定的断流是 `ProviderError`，而 SDK 在响应体流出错时会再包装一层
+ * （Anthropic 的 `messages.stream` 经实测如此）。只检查最外层会把 `stream_idle_timeout`
+ * 归为 `internal_error`，重发表因此无法识别该码。
  */
 function carriedProviderError(err: unknown): ProviderError | null {
   let current: unknown = err
@@ -281,14 +281,14 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
       cause: err,
     })
 
-  // 中断不是错误：用户点了停止，不该报红也不该重试。
+  // 中断不是错误：用户点击了停止，不应显示错误，也不应重试。
   if (err instanceof Error && (err.name === 'AbortError' || err.name === 'APIUserAbortError')) {
     return build('internal_error', '已取消')
   }
 
-  // 上下文超限先于状态码分支判定：它跨 400/413/422 三个码，而且判据比状态码强得多
-  // （provider 原生容量码 / 强消息匹配）。判定为真时**必须**带上 capacity——
-  // 上层靠它决定要不要压缩重发，缺了这个字段压缩永远不会触发。
+  // 上下文超限先于状态码分支判定：它涉及 400/413/422 三个状态码，且判据比状态码可靠得多
+  // （provider 原生容量码 / 强消息匹配）。判定为真时**必须**携带 capacity：
+  // 上层依据它决定是否压缩重发，缺少该字段时压缩永远不会触发。
   const capacity = classifyCapacityRejection(err)
   if (capacity) {
     return new ProviderError({
@@ -308,11 +308,11 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
         looksUnconfigured(err) ? 'no_api_key' : 'auth_failed',
         looksUnconfigured(err) ? '未配置 API Key' : 'API Key 无效',
       )
-    // 402 Payment Required 不看正文：余额不足时正文里的 `code` 可能是 `invalid_request_error`。
+    // 402 Payment Required 不依据正文判定：余额不足时正文中的 `code` 可能是 `invalid_request_error`。
     case 402:
       return build('insufficient_quota', '账户额度不足')
-    // 403 也有两种：无权访问（换 key 或换模型能好）和余额耗尽（中转站以 403 + `billing_error`
-    // 回报），后者报成无权访问会把用户引向检查 key 与模型权限。
+    // 403 也分两种：无权访问（更换 key 或模型可解决）与余额耗尽（中转站以 403 + `billing_error`
+    // 报告），后者报告为无权访问会引导用户检查 key 与模型权限。
     case 403:
       return quotaExhausted(err, message)
         ? build('insufficient_quota', '账户额度不足')
@@ -320,13 +320,13 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
     case 404:
       return build('model_not_found', `模型不存在：检查模型 ID 与接口地址`)
     case 413:
-      // 走到这里说明容量分类器已经否掉了它 —— 那就不是上下文超限，
-      // 而是网关的请求体大小限制（nginx client_max_body_size 之类）。
-      // 报成上下文超限会把用户引向「精简对话」，而真正该做的是缩小附件。
-      return build('invalid_request', '请求体超出网关限制：检查附件大小或反代配置')
+      // 到达此处说明容量分类器已排除上下文超限，
+      // 原因是网关的请求体大小限制（如 nginx 的 client_max_body_size）。
+      // 报告为上下文超限会引导用户精简对话，而实际应缩小附件。
+      return build('invalid_request', '请求体超出网关限制：检查附件大小或反向代理配置')
     case 429: {
-      // 429 有两种：限速（等一下能好）和额度耗尽（等多久都不会好）。
-      // 混为一谈会让用户对着一个永远不会成功的错误反复重发。
+      // 429 分两种：限速（等待后可恢复）与额度耗尽（无论等待多久都不会恢复）。
+      // 混为一谈会使用户对不会成功的请求反复重发。
       return quotaExhausted(err, message)
         ? build('insufficient_quota', '账户额度不足')
         : build('rate_limited', '触发限速')
@@ -334,15 +334,15 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
     case 400:
     case 422:
       /*
-       * 不要按「消息里含 context / too long / max_tokens」判上下文超限：
-       * `max_tokens must be ≤ 8192` 是**输出**参数校验，判成上下文超限等于把一个
-       * 参数错误报成「上下文满了」，用户照着这条查不下去。
-       * 容量判定全部交给上面的分类器，这里只剩「确实是参数错了」。
+       * 不要按「消息中含 context / too long / max_tokens」判定上下文超限：
+       * `max_tokens must be ≤ 8192` 是**输出**参数校验，判定为上下文超限会把
+       * 参数错误报告为上下文已满，用户无法据此定位问题。
+       * 容量判定全部交给上方的分类器，此处只处理确属参数错误的情况。
        *
-       * **默认归不可重发的那一档。** 4xx 说的是这一份请求被拒了，同一份字节再发
-       * 一次拿回同一个拒绝——不接受图片的模型收到图像块、`max_tokens` 越界，
-       * 每一次都命中。归成可重发的码时界面报的是「正在重连 N / M」，
-       * 那句话指不到真正的原因。
+       * **默认归入不可重发的类别。** 4xx 表示该请求被拒绝，相同字节再发送
+       * 一次仍会被同样拒绝：不接受图片的模型收到图像块、`max_tokens` 越界，
+       * 每次都会触发。归为可重发的码时界面显示「正在重连 N / M」，
+       * 该提示无法指出真正的原因。
        */
       return build(
         looksRetryableRejection(status, message) ? 'provider_unavailable' : 'invalid_request',
@@ -364,26 +364,26 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
 }
 
 /**
- * 400 / 422 里那一小撮「原样重发可能恢复」的拒绝。
+ * 400 / 422 中少数「原样重发可能恢复」的拒绝。
  *
- * 中转站把后端的 5xx 转述成 400 是常见做法，状态码这一层分不出来，文案是唯一线索
- * （判据优先级见文件头第 3 档）。命中的归可重发的码，其余按 4xx 的本义处理。
+ * 中转站将后端的 5xx 转为 400 是常见做法，仅凭状态码无法区分，文案是唯一线索
+ * （判据优先级见文件头第 3 项）。命中的归为可重发的码，其余按 4xx 的本义处理。
  *
  * `Request contains an invalid argument.` 是另一种中转站通用拒绝：没有参数名、字段位置
- * 或任何可供用户修正的细节。现场两段失败历史按完全相同的装配结果重放都被同一中转站
- * 接受，证明这句在这里不稳定地代表真正的参数错误。只精确匹配 400 的整句话，不把任何
- * 带具体参数信息的 4xx 放进重发表。
+ * 或任何可供用户修正的细节。两段实际失败的历史按完全相同的装配结果重放后均被同一中转站
+ * 接受，说明该文案在此并不稳定地代表真正的参数错误。只精确匹配 400 的整句文案，不把任何
+ * 带具体参数信息的 4xx 放入重发表。
  *
- * 词表照实际见过的措辞收，**宁可漏判**：漏判的代价是一次上游抖动要用户手动重发，
- * 误判的代价是对着一个永远不会成功的请求空等五轮退避、并付五次长 prompt 的钱。
+ * 词表只收录实际出现过的措辞，**宁可漏判**：漏判的代价是一次上游波动需要用户手动重发，
+ * 误判的代价是对不会成功的请求空等五轮退避，并支付五次长 prompt 的费用。
  */
 function looksRetryableRejection(status: number, message: string): boolean {
   const normalized = message.trim()
   if (status === 400 && /^request contains an invalid argument\.?$/i.test(normalized)) return true
   /*
-   * 聚合中转站会把自己选中的上游渠道所回的 403 再包成 400 / 422。它与配置端点
-   * 直接回 403 不是一件事：前者下一次请求可能换到可用渠道，后者才是当前 Key
-   * 对这个端点的稳定权限拒绝。只收现场出现过的整句话，不能把普通 403 整类放开。
+   * 聚合中转站会把所选上游渠道返回的 403 包装为 400 / 422。它与配置端点
+   * 直接返回 403 不同：前者在下一次请求时可能切换到可用渠道，后者才是当前 Key
+   * 对该端点的稳定权限拒绝。只收录实际出现过的整句文案，不能放行所有普通 403。
    */
   if (
     (status === 400 || status === 422) &&
@@ -397,29 +397,30 @@ function looksRetryableRejection(status: number, message: string): boolean {
 }
 
 /**
- * 传输层失败的四种形状。**顺序即优先级**：先认具体的，泛码（`CONNECTION`、
- * `UND_ERR_`）兜在最后一支。
+ * 传输层失败的四种形状。**顺序即优先级**：先匹配具体形状，泛化码（`CONNECTION`、
+ * `UND_ERR_`）放在最后一个分支。
  *
- * **为什么必须分开，而不是一句「网络中断或超时」。** 三种失败的下一步动作完全不同：**连不上**要去改
- * 接口地址或代理，**被断开**重发一次大概率就过去了，**超时**要先看是不是自己那 60 秒掐的。塞进同一
- * 句话等于三件事一起说，用户读完不知道该干什么——这正是「连接在完成前断开」看不懂的原因。
+ * **必须区分，不能合并为「网络中断或超时」。** 三种失败的下一步动作完全不同：**无法连接**需要修改
+ * 接口地址或代理，**连接被断开**重发一次大概率可恢复，**超时**需要先确认是否由本地 60 秒超时触发。合并为同一
+ * 句文案等于同时陈述三件事，用户无法判断应执行的操作。
  *
- * **判据按语义分，不按 errno 表分。** `ECONNREFUSED` 是没连上，`ECONNRESET`
- * 是连上了被重置；两个码长得像，含义相反，落进同一支就等于没分类。
+ * **判据按语义划分，不按 errno 表划分。** `ECONNREFUSED` 表示未建立连接，`ECONNRESET`
+ * 表示建立连接后被重置；两个码形式相近、含义相反，归入同一分支等于未分类。
  *
- * **为什么不能只匹配 Node/undici 那串。** 运行时是 Bun，它自己的 fetch 报的是另一套话。2026-08 在一
- * 台网络抖动的机器上对 DeepSeek 连打，三种真实失败一条都匹配不上 Node 那套：
+ * **不能只匹配 Node/undici 的文案。** 运行时是 Bun，其 fetch 的错误文案不同。2026-08 在一
+ * 台网络不稳定的机器上连续请求 DeepSeek，三种真实失败均无法匹配 Node 的文案：
  * `The operation timed out.` / `The socket connection was closed unexpectedly.` /
- * `unknown certificate verification error`。全部落进 `internal_error`——它不在 `agent/loop/attempt.ts` 的重发表
- * 里，后果不是文案难看，是**一次抖动直接终结整轮 run**。
+ * `unknown certificate verification error`。它们全部归入 `internal_error`，而该码不在 `agent/loop/attempt.ts` 的重发表
+ * 中，后果是**一次网络波动直接终止整轮 run**。
  *
- * 所以每一支都带两条正则：`code` 上是整串（锚定），文案里是夹在句子中间的一个词
- * （不锚定）。用同一条会漏掉 `getaddrinfo ENOTFOUND api.x.com` 这种把 errno 拼进
- * 文案、不设 `code` 的库。
+ * 因此每个分支都有两条正则：匹配 `code` 的是整串（锚定），匹配文案的是句中的一个词
+ * （不锚定）。共用同一条正则会遗漏 `getaddrinfo ENOTFOUND api.x.com` 这类把 errno 拼入
+ * 文案、不设置 `code` 的库。
  *
- * **证书错误也算可重试。** 它有两种成因：握手撞上抖动（重试就好），和代理/自签名证书配错了（重试没
- * 用）。判成可重试的代价是多打几次白工，判成不可重试的代价是一次抖动打断用户的任务。后者贵得多，
- * 所以选前者——但文案要**同时点出**这两种可能，别让一个配错代理的人对着「连不上」长时间排查网络。
+ * **证书错误同样判定为可重试。** 它有两种成因：握手时遇到网络波动（重试可恢复），以及代理或自签名证书配置错误
+ * （重试无效）。判定为可重试的代价是多发几次无效请求，判定为不可重试的代价是一次网络波动中断用户的任务。
+ * 后者代价高得多，因此选择前者；但文案必须**同时指出**这两种可能，以免代理配置错误的用户依据「无法连接」
+ * 长时间排查网络。
  */
 const TRANSPORT_SHAPES: {
   code: RegExp
@@ -430,7 +431,7 @@ const TRANSPORT_SHAPES: {
   {
     code: /CERT|SSL|TLS|SELF_SIGNED|LEAF_SIGNATURE/,
     message: /certificate|ssl|tls handshake/i,
-    text: 'TLS 握手失败：可能是网络抖动，也可能是代理或自签名证书未被信任',
+    text: 'TLS 握手失败：可能是网络不稳定，也可能是代理或自签名证书未被信任',
     timedOut: false,
   },
   {
@@ -450,14 +451,14 @@ const TRANSPORT_SHAPES: {
     code: /^(ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EAI_AGAIN|ERR_NETWORK|UND_ERR_|CONNECTION)/,
     message:
       /fetch failed|unable to connect|connection (refused|error)|network|\b(ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EAI_AGAIN)\b/i,
-    text: '连不上接口：检查接口地址与代理',
+    text: '无法连接接口：检查接口地址与代理',
     timedOut: false,
   },
 ]
 
 function classifyTransport(err: unknown): { text: string; timedOut: boolean } | null {
-  // SDK 的 Connection error. 会把具体 errno 放在 cause 里。复用有界、去环的原因链，
-  // 按既有的具体到泛化顺序查整条链，避免包装层先命中「连不上」而遮住证书或断流原因。
+  // SDK 的 Connection error. 把具体 errno 放在 cause 中。复用有界、去环的原因链，
+  // 按从具体到泛化的既有顺序检查整条链，避免包装层先命中「无法连接」而掩盖证书或断流原因。
   const causes = failureCauseChain(err)
   for (const shape of TRANSPORT_SHAPES) {
     if (
@@ -475,9 +476,9 @@ function classifyTransport(err: unknown): { text: string; timedOut: boolean } | 
 /**
  * 容量拒绝的用户文案。
  *
- * 有 provider 自报的数字就报数字——「用了 213000，上限 200000」比
- * 「上下文超出模型窗口」有用得多，用户能据此判断该删多少。
- * 没有数字时不编，也不以本地估算充当 provider 的口径。
+ * 有 provider 报告的数值时显示数值：「已用 213000，上限 200000」比
+ * 「上下文超出模型窗口」有用得多，用户可据此判断需要删减多少。
+ * 没有数值时不编造，也不以本地估算代替 provider 报告的数值。
  */
 function capacityMessage(c: CapacityRejection): string {
   const { reportedInputTokens: used, reportedLimitTokens: limit } = c
@@ -489,30 +490,30 @@ function capacityMessage(c: CapacityRejection): string {
 }
 
 /**
- * 工具调用少了名字。
+ * 工具调用缺少名称。
  *
- * **不许静默丢弃。** 流式返回里工具名与参数分片到达，名字那一片没来时
- * （中转站丢片、或它把非流式响应硬转成 SSE），丢掉这条调用的表现是
- * 「模型说要调工具、本地当作它什么都没说」——run 记成正常完成、账本无痕，
- * 而这正是「说做了却没做」最难查的那种形状。
+ * **不得静默丢弃。** 流式响应中工具名与参数分片到达，名称分片缺失时
+ * （中转站丢失分片，或将非流式响应强行转换为 SSE），丢弃该调用会使
+ * 模型请求的工具调用被本地忽略：run 记为正常完成，账本中没有任何记录，
+ * 这是「声称已执行而实际未执行」中最难排查的一种。
  *
- * 也不许留着空名往下走：那条调用会随 assistant 消息原样回传给端点，
- * 校验严格的端点对空名 400，因此一次可恢复的丢片变成整条会话余下轮次全部失败。
+ * 也不得保留空名继续执行：该调用会随 assistant 消息原样回传给端点，
+ * 校验严格的端点对空名返回 400，一次可恢复的分片丢失因此变成会话后续轮次全部失败。
  *
- * 三条协议共用这一个出口，措辞只有一份。
+ * 三种协议共用此出口，文案只有一份。
  */
 export function namelessToolCall(provider: ProviderKind, model: string): ProviderError {
   return new ProviderError({
     code: 'provider_unavailable',
-    message: '返回里有一条没有名字的工具调用，无法执行——通常是流式分片丢失',
+    message: '响应中有一个工具调用缺少名称，无法执行；通常由流式分片丢失导致',
     provider,
     detail: { model },
   })
 }
 
 /**
- * 保留归类错误到最底层 cause 的短链。只取四层，既覆盖 SDK 包装又防损坏对象成环。
- * 原文在 runtime 持久化边界按配置凭证与常见 key 形状脱敏。
+ * 保留从归类错误到最底层 cause 的短链。只取四层，既覆盖 SDK 包装，又防止损坏对象成环。
+ * 原文在 runtime 持久化边界按配置的凭证与常见 key 格式脱敏。
  */
 export function failureCauseChain(error: unknown): ProviderFailureCause[] {
   const out: ProviderFailureCause[] = []
@@ -532,7 +533,7 @@ export function failureCauseChain(error: unknown): ProviderFailureCause[] {
   return out
 }
 
-/** 两种请求共用的失败证据；传输统计与接口原生错误码各自保留，不互相猜测。 */
+/** 两种请求共用的失败证据；传输统计与接口原生错误码各自保留，不互相推测。 */
 export function failureDiagnostics(error: unknown) {
   const pe = error instanceof ProviderError ? error : null
   const field = (key: string) =>

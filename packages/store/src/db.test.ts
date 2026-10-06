@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Store } from './db.ts'
 import { SCHEMA_VERSION } from './schema.ts'
 
-test('写事务在回调前取写权 —— 不从读事务升级后直接 SQLITE_BUSY', () => {
+test('写事务在回调前取得写锁，不从读事务升级后直接返回 SQLITE_BUSY', () => {
   const dir = mkdtempSync(join(tmpdir(), 'qywork-store-tx-'))
   const path = join(dir, 'ledger.sqlite3')
   const store = new Store({ path })
@@ -31,7 +31,7 @@ test('写事务在回调前取写权 —— 不从读事务升级后直接 SQLIT
   }
 })
 
-test('库里有本程序不认识的迁移就拒绝打开，且不补跑任何迁移', () => {
+test('库中存在本程序无法识别的迁移时拒绝打开，且不补执行任何迁移', () => {
   const dir = mkdtempSync(join(tmpdir(), 'qywork-store-ahead-'))
   const path = join(dir, 'ledger.sqlite3')
   const raw = new Database(path, { create: true })

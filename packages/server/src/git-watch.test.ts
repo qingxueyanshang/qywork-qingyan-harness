@@ -1,9 +1,9 @@
 /**
- * 覆盖 `git-watch.ts` 与它用来定位 `HEAD` 的 `git.ts` `gitDir`：
- * 用户在终端里切分支，界面上那一格跟着换。
+ * 覆盖 `git-watch.ts` 与其用于定位 `HEAD` 的 `git.ts` `gitDir`：
+ * 用户在终端中切换分支，界面上的分支名随之更新。
  *
- * **这是原始失败形状**。应用里切分支那条路自己会广播，测它证明不了什么；
- * 而在终端里切分支在应用里没有任何入口，先前只能靠每 4 秒问一次 git 才发现。
+ * 该用例复现原始失败形状。应用内切换分支的路径会自行广播，测试该路径无法证明监听有效；
+ * 在终端中切换分支不经过应用，只能由文件系统监听发现。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -46,10 +46,10 @@ function fixture(root: string) {
 }
 
 /**
- * 等那个分支名出现。
+ * 等待指定的分支名出现。
  *
- * 不写死一个 sleep：这条路上串着文件系统回调、120ms 的合并窗口和一次 git 子进程，
- * 三样的耗时都由机器决定。硬编码的数值在其他机器上要么造成空等，要么不足。
+ * 不使用固定时长的 sleep：该路径依次经过文件系统回调、120ms 的合并窗口与一次 git 子进程，
+ * 三者的耗时都取决于机器。硬编码的数值在其他机器上要么造成无效等待，要么不足。
  */
 async function until(branches: string[], name: string, ms = 5000): Promise<boolean> {
   for (let waited = 0; waited < ms; waited += 50) {
@@ -59,8 +59,8 @@ async function until(branches: string[], name: string, ms = 5000): Promise<boole
   return false
 }
 
-describe('分支名跟着 HEAD 走', () => {
-  test('在终端里切分支，广播新分支名', async () => {
+describe('分支名跟随 HEAD', () => {
+  test('在终端中切换分支，广播新分支名', async () => {
     const dir = await repoWithCommit()
     const { branches, watch } = fixture(dir)
     try {
@@ -75,10 +75,10 @@ describe('分支名跟着 HEAD 走', () => {
   })
 
   /**
-   * 项目开在链接工作树里：`<root>/.git` 是一个文件，`HEAD` 在主仓库的
-   * `.git/worktrees/<名>/` 下。盯 `<root>/.git` 收不到任何事件。
+   * 项目位于链接工作树中：`<root>/.git` 是一个文件，`HEAD` 在主仓库的
+   * `.git/worktrees/<名>/` 下。监听 `<root>/.git` 收不到任何事件。
    */
-  test('链接工作树里切分支，广播新分支名', async () => {
+  test('在链接工作树中切换分支，广播新分支名', async () => {
     const dir = await repoWithCommit()
     const wt = join(await mkdtemp(join(tmpdir(), 'qy-gitwatch-wt-')), 'wt')
     repo(dir)('worktree', 'add', '-q', '-b', 'side', wt)
@@ -94,8 +94,8 @@ describe('分支名跟着 HEAD 走', () => {
     }
   })
 
-  /** 项目开在仓库的子目录里：`<root>/.git` 不存在。 */
-  test('仓库子目录里切分支，广播新分支名', async () => {
+  /** 项目位于仓库的子目录中：`<root>/.git` 不存在。 */
+  test('在仓库子目录中切换分支，广播新分支名', async () => {
     const dir = await repoWithCommit()
     const sub = join(dir, 'sub')
     await mkdir(sub)
@@ -112,10 +112,10 @@ describe('分支名跟着 HEAD 走', () => {
   })
 
   /**
-   * 不是 git 仓库时**盯不上就不盯**：这台机器上没装 git、目录还没 `git init`
-   * 都走这一档。抛出去的话整个服务起不来，而代价本来只是分支那一格空着。
+   * 不是 git 仓库时**无法监听就不监听**：本机未安装 git、目录尚未 `git init`
+   * 都属于这一情形。抛出异常会导致整个服务无法启动，而实际代价只是分支名为空。
    */
-  test('不是 git 仓库也不抛', async () => {
+  test('不是 git 仓库时不抛出', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-nogit-'))
     const { branches, watch } = fixture(dir)
     try {
@@ -127,8 +127,8 @@ describe('分支名跟着 HEAD 走', () => {
     }
   })
 
-  /** 停了就不再报：服务关掉之后还留着的监听会拖着整个进程不退出。 */
-  test('停掉之后切分支不再广播', async () => {
+  /** 停止后不再广播：服务关闭后残留的监听会阻止进程退出。 */
+  test('停止之后切换分支不再广播', async () => {
     const dir = await repoWithCommit()
     const { branches, watch } = fixture(dir)
     watch.retarget()

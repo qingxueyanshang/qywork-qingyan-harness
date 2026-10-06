@@ -1,50 +1,50 @@
 /**
  * 插件进程隔离。
  *
- * **为什么必须做，而不是留一句「只装可信的插件」。** 同进程加载下，插件的权限声明是**协作式**的：
- * 它约束的是通过宿主 API 的调用路径，挡不住插件直接 `import('node:fs')` 读走用户的 `~/.ssh`，也挡
- * 不住它 `import('node:child_process')` 起个反弹 shell。
+ * 进程隔离不能由「只安装可信插件」的说明代替。同进程加载时，插件的权限声明是协作式的：
+ * 它只约束经由宿主 API 的调用路径，无法阻止插件直接 `import('node:fs')` 读取用户的 `~/.ssh`，
+ * 也无法阻止插件通过 `import('node:child_process')` 启动反弹 shell。
  *
- * 文档里写「只装可信的插件」是**用免责声明代替安全边界**。
- * 插件生态的意义就是装别人写的插件；要求用户先审计源码等于取消了这个生态。
+ * 在文档中写「只安装可信插件」是以免责声明代替安全边界。
+ * 插件生态的意义在于安装他人编写的插件，要求用户先审计源码等于取消该生态。
  *
- * **隔离方式：子进程 + stdio JSON-RPC。** 不用 `worker_threads`：worker 与主线程共享同一个进程和同
- * 一份 `process.env`，宿主的 API Key 对它是直接可读的。子进程才能给一份洗过的环境。
+ * 隔离方式：子进程 + stdio JSON-RPC。不使用 `worker_threads`：worker 与主线程共享同一进程与
+ * 同一份 `process.env`，宿主的 API Key 对它直接可读。只有子进程能取得剥离凭证后的独立环境。
  *
- * **这道边界**实测**挡住了什么、没挡住什么。** 挡住的：
- * - 宿主的环境变量（API Key、令牌、代理配置）——只给 PATH 和几个必需项，有回归测试锁住。
- * - 宿主的进程内对象——sink 句柄、AbortSignal、权限回调、工具注册表都在另一个进程里。
- * - 崩溃与卡死——插件段错误不会带走宿主，超时只拒绝这一次调用。
- * - 宿主能力的越权使用——`host.*` 每一次都过 manifest 权限闸。
+ * 该边界经实测能拦截的内容：
+ * - 宿主的环境变量（API Key、令牌、代理配置）：只传入 PATH 与几个必需项，由回归测试锁定。
+ * - 宿主的进程内对象：sink 句柄、AbortSignal、权限回调与工具注册表位于宿主进程中。
+ * - 崩溃与无响应：插件段错误不会导致宿主退出，超时只拒绝当次调用。
+ * - 宿主能力的越权使用：`host.*` 的每次调用都经过 manifest 权限检查。
  *
- * **强制隔离的实际范围**（`resolvePluginRuntime` 会如实报告，两个维度分开）：
- * - `sandboxed`：Node 的 `--permission` 关住文件系统、子进程、worker、原生插件。
+ * 强制隔离的实际范围（`resolvePluginRuntime` 如实报告，两个维度分开）：
+ * - `sandboxed`：Node 的 `--permission` 限制文件系统、子进程、worker 与原生插件。
  *   需要 node 20+。
- * - `netGuarded`：出网闸（`netguard.ts`）拆掉进程内的直接出网通道，
- *   出网只剩 `host.net.fetch`。需要 node 22.15 / 23.5+。
+ * - `netGuarded`：网络访问限制（`netguard.ts`）移除进程内的直接网络通道，
+ *   网络访问只剩 `host.net.fetch`。需要 node 22.15 / 23.5+。
  *
- * **两者都不成立时**（bun、低版本 node、用户指定了运行时），插件进程就是一个
- * 普通的 Node/Bun 进程：它能 `import('node:fs')` 读主目录、`import('node:net')`
- * 开套接字。此时 **manifest 权限管的是「通过宿主做事」，不是「插件能做什么」**。
+ * 两者都不成立时（bun、低版本 node、用户指定了运行时），插件进程是普通的 Node/Bun
+ * 进程：它能通过 `import('node:fs')` 读取主目录，通过 `import('node:net')` 打开套接字。
+ * 此时 manifest 权限约束的是「经由宿主执行的操作」，不是「插件能执行的操作」。
  *
- * 就算两者都成立，也仍然有一条**定义上**的缺口：拿到 `process:exec` 的插件
- * 能起子进程，能起子进程就能跑 curl。所以那种情况下 `netGuarded` 如实报 false。
- * 而且出网闸是**进程内的拆除不是内核边界**——准确的说法是
- * 「联网从默认可用变成必须刻意绕」，不是「插件绝对上不了网」。
+ * 即使两者都成立，仍有一个定义上的缺口：取得 `process:exec` 的插件能启动子进程，
+ * 从而能运行 curl，因此这种情况下 `netGuarded` 如实报告 false。
+ * 此外，网络访问限制是进程内的移除而不是内核边界，准确的表述是
+ * 「网络访问从默认可用变为必须主动绕过」，不是「插件完全无法联网」。
  *
- * 这段话的措辞是**边界声明**。不要写成「插件拿不到 fs / net / child_process」，
- * 那是错的而且错得危险：它让权限清单看起来像一道沙箱，因此用户会据此判断
- * 「这个插件只声明了读，装了没风险」。改这里的人必须同时改
- * ARCHITECTURE §24 那张表——不能让文档又一次比实现乐观。
+ * 以上措辞是边界声明。不要写成「插件无法取得 fs / net / child_process」：
+ * 这种写法错误且危险，它使权限清单看似沙箱，用户会据此判断
+ * 「该插件只声明了读权限，安装没有风险」。修改此处必须同步修改
+ * ARCHITECTURE §24 的表格，文档对隔离范围的描述不得超出实现。
  *
- * 通信走 stdout/stdin 的行分隔 JSON：
- * - 每行一个 JSON 对象，`\n` 结束。插件的 `console.log` 会污染 stdout，
- *   所以**解析失败的行一律忽略**而不是当协议错误——否则插件里一句调试打印
- *   就会把整个通道破坏掉。
- * - 插件的诊断输出走 stderr，由宿主转发到日志。
+ * 通信使用 stdout/stdin 上的行分隔 JSON：
+ * - 每行一个 JSON 对象，以 `\n` 结束。插件的 `console.log` 会写入 stdout，
+ *   因此解析失败的行一律忽略，不作为协议错误处理，否则插件中的一句调试输出
+ *   就会破坏整个通道。
+ * - 插件的诊断输出写入 stderr，由宿主转发到日志。
  *
- * **权限在宿主侧强制，不在插件侧。** 插件请求宿主能力时，宿主按 manifest 声明的权限校验，插件运行时
- * 的声明不作数。校验表在本文件末尾的 `requiredPermissions()`，未登记的方法一律拒绝。
+ * 权限在宿主侧强制执行，不在插件侧。插件请求宿主能力时，宿主按 manifest 声明的权限校验，
+ * 插件运行时的声明无效。校验表是本文件末尾的 `requiredPermissions()`，未登记的方法一律拒绝。
  */
 
 import type { ChildProcess } from 'node:child_process'
@@ -60,11 +60,11 @@ const READY_TIMEOUT_MS = 10_000
 /**
  * 一次工具调用的可信身份，由宿主按 `ToolContext` 组装。
  *
- * **插件参数里的工作区、会话、Run 一律不作数。** 插件的反向 RPC 只带 `parentCallId`，
- * 宿主从待决调用表取回这份上下文；调用结束、超时、取消之后 parentCallId 立即失效，
- * 迟到的反向 RPC 因此没有身份可用。
+ * 插件参数中的工作区、会话与 Run 一律无效。插件的反向 RPC 只携带 `parentCallId`，
+ * 宿主从待决调用表取回上下文；调用结束、超时或取消后 parentCallId 立即失效，
+ * 迟到的反向 RPC 因此没有可用身份。
  *
- * `signal` 是宿主进程内的对象，**不跨 RPC 边界**——插件拿到的始终只有一个 callId。
+ * `signal` 是宿主进程内的对象，不跨越 RPC 边界：插件取得的始终只有 callId。
  */
 export interface HostCallContext {
   pluginId: string
@@ -73,7 +73,7 @@ export interface HostCallContext {
   runId: string
   stepId?: string
   signal: AbortSignal
-  /** 这次调用的绝对期限（毫秒时间戳）。宿主按它拒绝超期的反向 RPC。 */
+  /** 本次调用的绝对期限（毫秒时间戳）。宿主据此拒绝超期的反向 RPC。 */
   deadline: number
   /** 工作区之外额外可读写的绝对路径，来自会话配置。 */
   additionalDirectories?: string[]
@@ -94,7 +94,7 @@ export interface HostResponse {
   error?: { message: string; kind?: string }
 }
 
-/** 插件反过来请求宿主能力时走这个。宿主按权限放行或拒绝，身份由待决调用表给出。 */
+/** 处理插件对宿主能力的反向请求。宿主按权限放行或拒绝，身份由待决调用表给出。 */
 export type HostCapabilityHandler = (
   method: string,
   params: Record<string, unknown>,
@@ -107,14 +107,14 @@ export interface PluginHostOptions {
   /** 插件入口的绝对路径。 */
   entry: string
   /**
-   * 用哪个运行时跑插件。不填则自动解析（优先 node，因为只有它能提供强制隔离）。
+   * 运行插件所用的运行时。未填写时自动解析（优先 node，只有 node 能提供强制隔离）。
    *
-   * **不能默认取 `process.execPath`**：发布产物是单文件二进制，那个路径是 qy 自己。
+   * 不能默认使用 `process.execPath`：发布产物是单文件二进制，该路径指向 qy 本身。
    */
   runtime?: string
-  /** 工作区根。沙箱据此决定插件能读写哪一块。 */
+  /** 工作区根目录。沙箱据此决定插件可读写的范围。 */
   workspaceRoot?: string
-  /** 宿主能力实现。插件的 `host.*` 调用最终落到这里，权限已在外层校验过。 */
+  /** 宿主能力实现。插件的 `host.*` 调用最终由此实现处理，权限已在外层校验。 */
   onCapability: HostCapabilityHandler
   /** 诊断输出。 */
   onLog?: (line: string) => void
@@ -146,7 +146,7 @@ export class PluginHost {
     return this.permissions.includes(permission)
   }
 
-  /** 解析出来的运行时。启动后才有值，供上层如实报告隔离状态。 */
+  /** 解析得到的运行时。启动后才有值，供上层如实报告隔离状态。 */
   runtime: PluginRuntime | null = null
 
   async start(): Promise<void> {
@@ -159,19 +159,19 @@ export class PluginHost {
       permissions: this.permissions,
     })
     this.runtime = rt
-    // 两个维度分开说。合成一句「已沙箱」会把网络也说成已关闭。
+    // 两个维度分开报告。合并为「已沙箱」会把网络也报告为已限制。
     this.opts.onLog?.(
       `[${this.opts.manifest.id}] 运行时 ${rt.command}` +
-        `（沙箱 ${rt.sandboxed ? '有' : '无'} · 出网闸 ${rt.netGuarded ? '有' : '无'}）：${rt.note}`,
+        `（沙箱 ${rt.sandboxed ? '有' : '无'} · 网络访问限制 ${rt.netGuarded ? '有' : '无'}）：${rt.note}`,
     )
 
     const proc = spawn(rt.command, [...rt.args, this.opts.entry], {
       cwd: this.opts.dir,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
-        // **不透传宿主环境变量。** process.env 里有 API Key、令牌、代理配置——
-        // 一个插件进程本不需要它们，透传等同于将凭证泄露出去。
-        // 只给最必要的几个。
+        // 不透传宿主环境变量。process.env 中有 API Key、令牌与代理配置，
+        // 插件进程不需要它们，透传等同于泄露凭证。
+        // 只传入必需的几项。
         PATH: process.env.PATH ?? '',
         ...(process.platform === 'win32'
           ? { SYSTEMROOT: process.env.SYSTEMROOT ?? '', TEMP: process.env.TEMP ?? '' }
@@ -182,10 +182,10 @@ export class PluginHost {
     })
     this.proc = proc
 
-    // stdin 上必须挂 error 监听。插件进程崩溃的瞬间宿主可能正在往它的管道里写，
-    // 而**没有监听者的 stream error 事件会直接终止整个宿主进程**——
-    // 一个装错的插件不该有能力做到这件事，那正是本文件开头承诺过的边界。
-    // MCP 那条传输链上是同一件事，见 `mcp/src/transport.ts`。
+    // stdin 必须注册 error 监听。插件进程崩溃时宿主可能正在向其管道写入，
+    // 而没有监听者的 stream error 事件会直接终止宿主进程。
+    // 插件崩溃不得导致宿主退出，这是文件头列出的边界之一。
+    // MCP 的 stdio 传输有相同处理，见 `mcp/src/transport.ts`。
     proc.stdin?.on('error', (err: Error) => {
       this.opts.onLog?.(`[${this.opts.manifest.id}] 写入失败：${err.message}`)
     })
@@ -202,8 +202,8 @@ export class PluginHost {
     proc.on('exit', (code, signal) => {
       this.exited = { code, signal }
       this.proc = null
-      // 进程死了，所有在飞的调用都不会有答复了。**必须逐个拒绝**——
-      // 留着它们会让调用方永远等到超时，而超时对用户表现为「卡住」。
+      // 进程已退出，进行中的调用都不会再有答复，必须逐个拒绝：
+      // 保留它们会使调用方一直等待到超时，而超时在用户看来是「无响应」。
       for (const [id] of [...this.pending]) {
         this.settle(id)?.reject(new Error(`插件进程退出（code=${code} signal=${signal}）`))
       }
@@ -237,8 +237,8 @@ export class PluginHost {
       try {
         msg = JSON.parse(line)
       } catch {
-        // 插件里一句 console.log 就会走到这里。忽略而不是报协议错误——
-        // 否则一句调试打印就能把整个通道破坏掉。
+        // 插件的 console.log 输出会进入此分支。忽略而不报告协议错误，
+        // 否则一句调试输出就会破坏整个通道。
         this.opts.onLog?.(`[${this.opts.manifest.id}] ${line}`)
         continue
       }
@@ -252,7 +252,7 @@ export class PluginHost {
       return
     }
 
-    // 插件调宿主能力。身份只从待决调用表取，不看参数里插件自己写了什么。
+    // 插件调用宿主能力。身份只从待决调用表读取，不采用插件在参数中填写的内容。
     if (msg.type === 'host' && typeof msg.id === 'string') {
       const id = msg.id
       const parent = typeof msg.parentCallId === 'string' ? msg.parentCallId : ''
@@ -291,7 +291,7 @@ export class PluginHost {
 
     // 插件回复宿主的调用。
     if (typeof msg.id === 'string' && this.pending.has(msg.id)) {
-      // 插件自己答完了，不必再告诉它这次调用作废。
+      // 插件已自行回复，无需再通知插件本次调用作废。
       const p = this.settle(msg.id, false)!
       if (msg.ok === false) {
         const e = msg.error as { message?: string } | undefined
@@ -311,11 +311,11 @@ export class PluginHost {
   /**
    * 调用插件导出的方法。
    *
-   * 超时、取消、进程退出**都走 `settle`**：只删待决项而留着调用身份的话，
-   * 插件那一侧的执行照旧能反过来操作宿主——用户按下停止之后仍会有写入落盘。
-   * `settle` 同时告知插件这次调用作废，让它自己停下。
+   * 超时、取消与进程退出都经由 `settle` 处理：只删除待决项而保留调用身份时，
+   * 插件一侧的执行仍能反向操作宿主，用户停止后仍会有写入落盘。
+   * `settle` 同时通知插件本次调用作废，由插件自行停止。
    *
-   * 超时与取消都**不杀进程**：可能只是这一次调用慢，别的调用还在正常跑。
+   * 超时与取消都不终止进程：可能只是当次调用较慢，其他调用仍在正常运行。
    */
   async call(
     method: string,
@@ -329,8 +329,8 @@ export class PluginHost {
       const onAbort = () => {
         this.settle(id)?.reject(new Error(`调用已取消：${method}`))
       }
-      // 期限取上下文那一份，上限是本地常量。两处各记一个超时就是两本账，
-      // 而先到的那个会让另一处的期限永远不生效。
+      // 期限取自上下文，上限为本地常量。两处分别计时会形成两份记录，
+      // 先到期的一处会使另一处的期限永远不生效。
       const timeoutMs = Math.max(1, Math.min(CALL_TIMEOUT_MS, context.deadline - Date.now()))
       const timer = setTimeout(() => {
         this.settle(id)?.reject(new Error(`插件调用超时（${timeoutMs}ms）：${method}`))
@@ -352,12 +352,12 @@ export class PluginHost {
   }
 
   /**
-   * 结束一次调用：摘掉待决项、停表、撤销身份。
+   * 结束一次调用：移除待决项、清除定时器、撤销身份。
    *
-   * `notifyPlugin` 为真时再发一帧告诉插件这次调用作废——超时、取消、进程退出三条路要发，
-   * 插件自己答完的那条不发：它已经结束了，再发送一帧只会使其作废表无谓地增加一条。
+   * `notifyPlugin` 为真时再发送一帧，通知插件本次调用作废。超时、取消与进程退出时发送；
+   * 插件已自行回复时不发送：该调用已结束，再发送只会使插件的作废表多出一条无用记录。
    *
-   * 返回 `null` 表示这次调用已经结束过——重复结束是空操作，不是错误。
+   * 返回 `null` 表示该调用已结束；重复结束是空操作，不是错误。
    */
   private settle(
     id: string,
@@ -377,8 +377,8 @@ export class PluginHost {
     if (!proc) return
     this.proc = null
     proc.kill()
-    // 给一点时间优雅退出，之后强杀。插件可能在 SIGTERM 处理里做清理，
-    // 但不能无限期等它——那样宿主退出时会留下孤儿进程。
+    // 留出短暂时间供插件正常退出，之后强制终止。插件可能在 SIGTERM 处理中执行清理，
+    // 但不能无限期等待，否则宿主退出时会留下孤儿进程。
     const timer = setTimeout(() => proc.kill('SIGKILL'), 2000)
     timer.unref?.()
   }
@@ -387,9 +387,9 @@ export class PluginHost {
 /**
  * 权限校验。
  *
- * **在宿主侧执行**，而不是信任插件运行时的声明。方法名到权限的映射写死在这里，
- * 加新的宿主能力时必须同时在这张表里登记——漏登记的方法会走到 default 分支被拒，
- * 这是刻意的 fail-closed：忘了登记的后果是「新能力用不了」，
+ * 在宿主侧执行，不信任插件运行时的声明。方法名到权限的映射固定在此处，
+ * 新增宿主能力时必须同时在此登记。未登记的方法得到 null 并被拒绝，
+ * 这是有意的 fail-closed：遗漏登记的后果是「新能力不可用」，
  * 而不是「新能力对所有插件无条件开放」。
  */
 export function requiredPermissions(method: string): PluginPermission[] | null {

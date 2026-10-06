@@ -1,15 +1,15 @@
 /**
- * `resource-gc-race.test.ts` 的子进程入口：四种角色各起一个操作系统进程，共享同一对库文件。
+ * `resource-gc-race.test.ts` 的子进程入口：四种角色各启动一个操作系统进程，共享同一对数据库文件。
  *
- * 单进程内造不出这条竞争。锁顺序是同步代码，同一个线程里两个连接只能排队：
- * 持锁的一侧停在回调里，撞锁的一侧只能阻塞到 `busy_timeout` 上限。
- * 所以写入方、回收方、主库写入方各占一个进程，用 HTTP 屏障把起跳时刻对齐。
+ * 单进程内无法构造这一竞争。锁顺序是同步代码，同一个线程中两个连接只能排队：
+ * 持锁的一侧停在回调中，遇到锁冲突的一侧只能阻塞到 `busy_timeout` 上限。
+ * 因此写入方、回收方、主库写入方各占一个进程，用 HTTP 屏障对齐开始时刻。
  *
- * 角色由 `QY_RACE_MODE` 选，参数走环境变量而不是位置参数：Windows 的命令行转义
- * 会改写含反斜杠与引号的路径，环境变量原样传。
+ * 角色由 `QY_RACE_MODE` 选择，参数经由环境变量而不是位置参数传递：Windows 的命令行转义
+ * 会改写含反斜杠与引号的路径，环境变量则原样传递。
  *
- * 每个角色在 stdout 上打**一行** JSON，父进程按行解析。时间戳一律用 `Date.now()`：
- * 跨进程比较只有它是同一把尺。
+ * 每个角色在 stdout 上输出一行 JSON，父进程按行解析。时间戳一律使用 `Date.now()`：
+ * 跨进程比较时只有它采用同一基准。
  */
 
 import type { ConversationId, RunId } from '@qywork/core'
@@ -27,7 +27,7 @@ const convId = (process.env.QY_RACE_CONV ?? '') as ConversationId
 
 if (!dbPath) throw new Error('QY_RACE_DB 未设置')
 
-/** 每次都换一份字节，否则内容寻址会把 N 次写入去重成一个 blob，竞争窗口只剩一个。 */
+/** 每次使用不同的字节，否则内容寻址会将 N 次写入去重为一个 blob，竞争窗口只剩一个。 */
 function makeBody(seq: number): Uint8Array {
   const body = new Uint8Array(bytes)
   const seed = new Uint8Array(Math.min(bytes, 64 * 1024))
@@ -48,7 +48,7 @@ const content = new ContentStore(contentPathFor(dbPath))
 try {
   if (mode === 'land') {
     const sink = new RuntimeSink(store, content, runId)
-    // 正文在屏障之前造好：屏障放行之后的第一件事必须是 put，否则占锁窗口被生成时间稀释。
+    // 正文在屏障之前构造完成：屏障放行之后的第一个操作必须是 put，否则占锁窗口会被生成耗时稀释。
     const bodies = Array.from({ length: count }, (_, i) => makeBody(i))
     await waitAtBarrier()
     const startedAt = Date.now()
@@ -76,8 +76,8 @@ try {
       }
       maxMs = Math.max(maxMs, Math.round(performance.now() - t))
       iterations++
-      // 让出一小段。不让的话这个循环会一直霸着主库写锁重排队，写入方可能整段等不到写权，
-      // 5 秒的 `busy_timeout` 一过就变成 BUSY——那是测试自己造出来的饥饿，不是被测行为。
+      // 短暂让出执行权。不让出时该循环会持续占用主库写锁并重新排队，写入方可能始终无法取得写锁，
+      // 超过 5 秒的 `busy_timeout` 后即报 BUSY：这是测试自身造成的饥饿，不是被测行为。
       await Bun.sleep(2)
     }
     process.stdout.write(
@@ -98,7 +98,7 @@ try {
         errors.push(err instanceof Error ? err.message : String(err))
       }
       maxMs = Math.max(maxMs, Math.round(performance.now() - t))
-      // 与回收方同一条理由：让出一小段，写入方才拿得到写权。
+      // 理由与回收方相同：短暂让出执行权，写入方才能取得写锁。
       await Bun.sleep(1)
     }
     process.stdout.write(
@@ -106,8 +106,8 @@ try {
     )
   } else if (mode === 'die') {
     /*
-     * 正文定稿之后、主库提交之前把自己杀掉。这是 `land` 事务里唯一一个「正文已落、
-     * 引用未登记」的时刻，也是原始失败形状的那个窗口。
+     * 在正文定稿之后、主库提交之前终止自身进程。这是 `land` 事务中唯一处于「正文已写入、
+     * 引用未登记」状态的时刻，也是原始失败形状对应的窗口。
      */
     class DieAfterPut extends ContentStore {
       override put(raw: Uint8Array, resourceId?: string): ReturnType<ContentStore['put']> {
@@ -121,7 +121,7 @@ try {
       sourceType: 'shell',
       body: makeBody(0),
     })
-    throw new Error('land 应当在 put 之后就随进程退出')
+    throw new Error('land 应在 put 之后随进程退出')
   } else {
     throw new Error(`未知角色：${mode}`)
   }

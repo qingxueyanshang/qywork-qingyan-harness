@@ -1,63 +1,63 @@
 /**
- * 执行期间工作区里改了哪些文件。给没有精确明细的执行器用：shell、外部 CLI。
+ * 观察执行期间工作区中被改动的文件。供没有精确改动明细的执行器使用：shell、外部 CLI。
  *
- * 三条来源合起来才完整：
- * - `fs.watch`（递归）收路径。通知不保证覆盖每次文件操作，合并或丢失的事件由收尾扫描补充。
- *   删除只有事件或调用方已报路径可判定，文件不存在时扫描无法发现。
- * - 收尾时扫一遍工作区，`mtime` 落在窗口内的就是改过的。扫描要 stat 每个文件；
- *   超过 `MAX_WALK_ENTRIES` 就停，此时结果按 `incomplete` 交出去。
- * - 调用方给的 `reported`：本轮之前已经报过的路径，收尾时逐个 stat 对账。
- *   整个目录被删时前两条都给不出其中的文件——递归 watch 只给目录一条事件
+ * 三个来源合并后才完整：
+ * - `fs.watch`（递归）收集路径。通知不保证覆盖每次文件操作，被合并或丢失的事件由收尾扫描补充。
+ *   删除只能由事件或调用方的已报告路径判定，文件不存在时扫描无法发现。
+ * - 收尾时扫描一遍工作区，`mtime` 位于窗口内的文件即为已改动。扫描需要 stat 每个文件；
+ *   超过 `MAX_WALK_ENTRIES` 即停止，此时结果标记为 `incomplete`。
+ * - 调用方传入的 `reported`：本轮之前已报告过的路径，收尾时逐个 stat 核对。
+ *   整个目录被删除时，前两个来源都无法给出其中的文件：递归 watch 只为目录产生一条事件
  *   （Windows 实测 `rm -rf d`：`d/a.txt` 与 `d` 有事件，`d/sub/b.txt` 没有），
- *   而扫描扫不到已经不存在的文件。不对账的话，这些文件停在最后一次看见的状态。
+ *   而扫描无法发现已不存在的文件。不核对时，这些文件停留在最后一次观察到的状态。
  *
- * 一个工作区根只开一个 `fs.watch`，窗口按打开先后排队；同一时刻有几个窗口开着时，
- * 事件与扫描结果都归最早打开的那个，后面的窗口从前一个收尾那一刻起才算自己的。
- * 并行执行时的归属因此是估算。
+ * 每个工作区根只打开一个 `fs.watch`，窗口按打开顺序排队；同一时刻有多个窗口打开时，
+ * 事件与扫描结果都归属最早打开的窗口，后续窗口从前一个窗口收尾时起才开始拥有事件与扫描结果。
+ * 因此并行执行时的归属是估算。
  *
- * **工作区根先取 realpath，watch、共享键、标记路径、扫描与 stat 都用它。** FSEvents 按真实路径
- * 报事件，watch 的路径经过符号链接时前缀对不上，一条事件都收不到，收尾的屏障只能等到上限。
- * 同一个目录的不同写法因此共用一个 watcher。结果里的路径相对工作区根，与调用方用哪种写法无关。
- * 必须用 `realpathSync.native`：Windows 上非 native 版保留调用方给的大小写，只差大小写的两种写法
- * 会各开一个 watcher。
+ * **工作区根先取 realpath，watch、共享键、标记路径、扫描与 stat 都使用该路径。** FSEvents 按真实路径
+ * 报告事件，watch 的路径经过符号链接时前缀不一致，收不到任何事件，收尾的屏障只能等待到上限。
+ * 因此同一目录的不同写法共用一个 watcher。结果中的路径相对工作区根，与调用方使用的写法无关。
+ * 必须使用 `realpathSync.native`：Windows 上非 native 版本保留调用方传入的大小写，仅大小写不同的两种写法
+ * 会各打开一个 watcher。
  *
- * **收尾先等在途事件交齐，再交出归属。** 事件从发生到进回调有延迟（macOS 的 FSEvents 按 50 ms
- * 合批交付），收尾时直接关 watcher 或把事件改归下一个窗口，此前发生、尚未交付的事件就丢失或记错窗口。
- * 排在最前的窗口收尾时在 `<root>/.tmp` 下写一个唯一命名的标记文件，收到它的事件才交出归属：
+ * **收尾时先等待在途事件全部交付，再移交归属。** 事件从发生到进入回调存在延迟（macOS 的 FSEvents 每 50 ms
+ * 合批交付一次），收尾时直接关闭 watcher 或把事件改归下一个窗口，此前发生、尚未交付的事件会丢失或归入错误的窗口。
+ * 排在最前的窗口收尾时在 `<root>/.tmp` 下写入一个唯一命名的标记文件，收到该文件的事件后才移交归属：
  * FSEvents、inotify、ReadDirectoryChangesW 对同一个 watcher 都按发生顺序交付，标记之前的事件
- * 此时都已进回调。标记写不进去或到 `BARRIER_TIMEOUT_MS` 仍未收到，结果按 `incomplete` 交出。
- * `.tmp` 必须在建 watcher 之前建好：Linux 的递归 watch 由读线程给之后才出现的目录补挂监视，
- * 补挂之前写进去的标记没有事件。
+ * 此时都已进入回调。标记无法写入，或到 `BARRIER_TIMEOUT_MS` 仍未收到时，结果标记为 `incomplete`。
+ * `.tmp` 必须在创建 watcher 之前创建：Linux 的递归 watch 由读线程为之后出现的目录追加监视，
+ * 追加之前写入的标记不产生事件。
  * 标记每次使用唯一名称，避免同一路径的重复事件被运行时合并。
  *
- * 拿不到改动前的内容，所以改过的与删掉的不带行数；新建的文本文件按落盘内容数行，
- * 口径与文件工具相同（`countDiff` 对空的旧内容：新内容按 `\n` 切开的段数）。
- * `changeType` 按收尾时的磁盘状态判：不存在 = deleted；创建时间不早于窗口起点 = created；其余 modified。
- * **窗口起点与文件时间戳取自同一个时钟。** 新建 watcher 时等文件时间戳越过当前刻度，以越过后的值为
- * 起点（`stampTick`）：打开前写下的文件时间戳都小于起点，打开后写下的都不小于起点。调用方必须在
- * 窗口打开之后才开始写；打开因此多阻塞至多一个刻度（Linux 按 HZ 为 1–10 ms）。排队的窗口以前一个
- * 窗口收尾时的 `Date.now()` 为起点，文件时间戳比它落后至多一个刻度，其后一个刻度内新建的文件判为 modified。
- * 临时文件（窗口内建、收尾前删）不进结果，前提是观察器在它消失之前 stat 到过它：存在时间短于
- * 事件交付延迟的临时文件判为 deleted。原子保存（写临时文件再改名）会被判成 created。
- * 结果里只有文件：仍在磁盘上的按 `stat` 判，已经不在的按同一批里有没有路径以它为父段判。
+ * 无法取得改动前的内容，因此修改与删除的文件不带行数；新建的文本文件按写入磁盘的内容计算行数，
+ * 计算方式与文件工具相同（`countDiff` 对空的旧内容：新内容按 `\n` 分割的段数）。
+ * `changeType` 按收尾时的磁盘状态判定：不存在 = deleted；创建时间不早于窗口起点 = created；其余为 modified。
+ * **窗口起点与文件时间戳取自同一个时钟。** 新建 watcher 时等待文件时间戳越过当前刻度，以越过后的值为
+ * 起点（`stampTick`）：打开前写入的文件时间戳都小于起点，打开后写入的都不小于起点。调用方必须在
+ * 窗口打开之后才开始写入；因此打开操作最多多阻塞一个刻度（Linux 按 HZ 为 1–10 ms）。排队的窗口以前一个
+ * 窗口收尾时的 `Date.now()` 为起点，文件时间戳比它落后至多一个刻度，此后一个刻度内新建的文件判定为 modified。
+ * 临时文件（窗口内创建、收尾前删除）不进入结果，前提是观察器在它消失之前 stat 过它：存在时间短于
+ * 事件交付延迟的临时文件判定为 deleted。原子保存（写入临时文件再改名）判定为 created。
+ * 结果中只有文件：仍在磁盘上的按 `stat` 判定，已不存在的按同一批中是否有路径以它为父段判定。
  *
- * **哪些路径不报告由 Git 裁决，事件收集与收尾扫描共用这一条策略。**
- * 任何路径段是 `.git`（版本库元数据）或 `.tmp`（本项目的临时产物目录）的一律不报；
- * 其余候选在窗口收尾时一次性交给 `git check-ignore --stdin -z`（按仓库根执行），
- * 命中忽略规则的丢掉。**不要另写一层「这个文件跟踪了没有」的判断**：`check-ignore`
- * 默认查索引，已跟踪的路径即使命中忽略模式也不报告，加 `--no-index` 才会。
- * 非 Git 目录没有忽略规则可依，`IGNORED_DIRS` 这份运行产物目录清单就是全部依据，
- * 其余路径包括点路径照报。
+ * **不报告哪些路径由 Git 裁决，事件收集与收尾扫描共用同一策略。**
+ * 任一路径段为 `.git`（版本库元数据）或 `.tmp`（本项目的临时产物目录）的路径一律不报告；
+ * 其余候选在窗口收尾时一次性交给 `git check-ignore --stdin -z`（在仓库根执行），
+ * 命中忽略规则的丢弃。**不要另写一层「该文件是否已跟踪」的判断**：`check-ignore`
+ * 默认查询索引，已跟踪的路径即使命中忽略模式也不会被它输出，加 `--no-index` 才会输出。
+ * 非 Git 目录没有忽略规则可依据，运行产物目录清单 `IGNORED_DIRS` 是唯一依据，
+ * 其余路径（包括点路径）照常报告。
  *
- * **`IGNORED_DIRS` 目录在 Git 仓库里只经索引观察，其中未跟踪的文件不报告。**
- * 剪枝是性能手段——收尾扫描进 `node_modules` 要 stat 全仓，本仓实测约 470 ms 对约 15 ms；
- * 覆盖由索引补齐：收尾时对被剪掉的目录起一次 `git ls-files -z`，取回其中已跟踪的文件，
- * `mtime` 落在窗口内的进候选。**被剪目录里的删除不报告**：那里没有事件可依，
- * 索引里的残留项（文件已删、没跑过 `git rm`）归不到任何一个窗口，报出来就是每个窗口一条假删除。
+ * **Git 仓库中的 `IGNORED_DIRS` 目录只经索引观察，其中未跟踪的文件不报告。**
+ * 剪枝是性能手段：收尾扫描进入 `node_modules` 需要 stat 其中全部文件，本仓库实测约 470 ms，剪枝后约 15 ms；
+ * 覆盖范围由索引补齐：收尾时对被剪枝的目录执行一次 `git ls-files -z`，取回其中已跟踪的文件，
+ * `mtime` 位于窗口内的列为候选。**被剪枝目录中的删除不报告**：该处没有事件可依据，
+ * 索引中的残留项（文件已删除、未执行 `git rm`）无法归属任何窗口，报告后每个窗口都会出现一条虚假删除。
  *
- * **不要按文件名前缀推断用途。** 点开头的既有浏览器 profile 与缓存，也有
- * `.github/workflows`、`.gitignore`、`.editorconfig` 和用户自己的点目录，
- * 按前缀排除会把项目文件一并丢掉。
+ * **不要按文件名前缀推断用途。** 以点开头的路径既有浏览器 profile 与缓存，也有
+ * `.github/workflows`、`.gitignore`、`.editorconfig` 和用户自建的点目录，
+ * 按前缀排除会一并丢弃项目文件。
  */
 
 import {
@@ -77,61 +77,61 @@ import type { FileChange } from '@qywork/core'
 import { IGNORED_DIRS } from './paths.ts'
 import { collectProcess } from './sandbox.ts'
 
-/** 一个执行窗口看到的工作区变更。 */
+/** 一个执行窗口观察到的工作区变更。 */
 export interface ObservedChanges {
   changes: FileChange[]
   /**
-   * 观察范围不完整：收尾时没等到在途事件交齐，Git 判定没跑成，或收尾扫描到界停止。
+   * 观察范围不完整：收尾时未等到在途事件全部交付、Git 判定未执行成功，或收尾扫描达到上限后停止。
    *
-   * 调用方**必须**把它说给上游——不说的话，一次没跑完的过滤与一次真的没有改动
-   * 在结果里长得一模一样。
+   * 调用方必须把它告知上游：不告知时，一次未执行完的过滤与一次确无改动
+   * 在结果中完全相同。
    */
   incomplete: boolean
 }
 
 export interface ChangeWindow {
-  /** 收尾：停止归集，按此刻磁盘状态判每个路径的变更类型。 */
+  /** 收尾：停止归集，按此刻的磁盘状态判定每个路径的变更类型。 */
   close(): Promise<ObservedChanges>
 }
 
 export interface ChangeWindowOptions {
   /**
-   * 本轮之前各窗口报过 created / modified 的工作区相对路径。
+   * 本轮之前各窗口报告为 created / modified 的工作区相对路径。
    *
-   * 调用方自己维护这份累计集合：报过的加进去、报成 deleted 的移出来。
-   * 只放文件路径——目录从来不进结果，也就不会从这条来源报出删除。
+   * 调用方自行维护该累计集合：报告过的路径加入，报告为 deleted 的路径移除。
+   * 只放入文件路径：目录从不进入结果，因此该来源不会报告目录的删除。
    */
   reported?: ReadonlySet<string>
 }
 
 /**
- * 按种类计的 git 子进程数。只增不减。
+ * 按种类计数的 git 子进程数，只增不减。
  *
- * 供测试断言一个窗口收尾最多起两个进程，且多少次 fs 事件都不增加；生产代码不读它。
+ * 供测试断言一个窗口收尾时最多启动两个进程，且该数不随 fs 事件次数增加；生产代码不读取它。
  */
 export const gitProcessCount = { checkIgnore: 0, lsFiles: 0 }
 
 const MAX_WALK_ENTRIES = 50_000
-/** 数行只读这么大以内的文件：更大的通常是产物或数据，行数对它没有意义。 */
+/** 只对不超过此大小的文件计算行数：更大的文件通常是产物或数据，行数对其没有意义。 */
 const MAX_COUNT_BYTES = 4 * 1024 * 1024
-/** 文件时间戳允许比本机时钟快这么多；再往后的是时钟不对的文件，不能每次都算成改过。 */
+/** 文件时间戳允许超前本机时钟的量；超出此量的文件时钟有误，不能每次都判定为已修改。 */
 const CLOCK_SLACK_MS = 1_000
-/** 单次 git 查询的时长上限。到点树杀，结果按判定没跑成处理。 */
+/** 单次 git 查询的时长上限。超时后终止进程树，结果按判定未执行成功处理。 */
 const GIT_TIMEOUT_MS = 15_000
 /**
- * 等标记事件的上限。正常交付在毫秒级，macOS 上多出至多一个 50 ms 合批周期；
- * 到点仍未收到按没等到处理。
+ * 等待标记事件的上限。正常交付在毫秒级，macOS 上最多增加一个 50 ms 的合批周期；
+ * 超时仍未收到时按未等到处理。
  */
 const BARRIER_TIMEOUT_MS = 5_000
 /**
- * 等文件时间戳前进一个刻度的上限。刻度在 Linux 上按 HZ 为 1–10 ms，Windows 的时钟中断缺省
- * 15.6 ms；到点仍未前进的是秒级精度的文件系统（FAT、HFS+ 等）。
+ * 等待文件时间戳前进一个刻度的上限。刻度在 Linux 上按 HZ 为 1–10 ms，Windows 的时钟中断默认为
+ * 15.6 ms；超时仍未前进的是秒级精度的文件系统（FAT、HFS+ 等）。
  */
 const STAMP_TICK_LIMIT_MS = 20
 const NO_STDIN = new Uint8Array(0)
 let markerSeq = 0
 
-/** 一个路径第一次被报上来时的磁盘状态。null = 那一刻已不存在。 */
+/** 路径首次被报告时的磁盘状态。null = 首次报告时已不存在。 */
 interface FirstSeen {
   bornInWindow: boolean
 }
@@ -139,33 +139,33 @@ interface FirstSeen {
 interface Window {
   /**
    * 本窗口开始拥有事件与扫描结果的时刻。新建 watcher 的窗口取 `stampTick` 的返回值，
-   * 与文件时间戳同一个时钟；排队的窗口取前一个窗口收尾时的 `Date.now()`。
+   * 与文件时间戳取自同一个时钟；排队的窗口取前一个窗口收尾时的 `Date.now()`。
    */
   startedAt: number
   paths: Map<string, Promise<FirstSeen | null>>
-  /** 事件命中运行产物目录而被剪掉时记下的目录，收尾时交给索引补齐。 */
+  /** 事件命中运行产物目录而被剪枝时记录的目录，收尾时交由索引补齐。 */
   prunedDirs: Set<string>
 }
 
 interface Shared {
   watcher: FSWatcher
   windows: Window[]
-  /** 含工作区根的 Git 仓库根；null = 不在仓库里。 */
+  /** 包含工作区根的 Git 仓库根；null = 不在仓库中。 */
   repoRoot: string | null
-  /** 工作区根相对仓库根的位置，posix 分隔符；工作区就是仓库根时为空串。 */
+  /** 工作区根相对仓库根的路径，使用 posix 分隔符；工作区即仓库根时为空串。 */
   prefix: string
-  /** 在等的事件屏障：标记文件的工作区相对路径 → 收到它的事件（true）或 watcher 报错（false）。 */
+  /** 等待中的事件屏障：标记文件的工作区相对路径 → 收到其事件（true）或 watcher 报错（false）。 */
   barriers: Map<string, (arrived: boolean) => void>
 }
 
 const shared = new Map<string, Shared>()
 
 /**
- * 含 `root` 的 Git 仓库根；不在仓库里回 null。
+ * 包含 `root` 的 Git 仓库根；不在仓库中时返回 null。
  *
- * 向上找 `.git` 而不是起 `git rev-parse`：判仓库不该起进程，进程只在收尾时起。
- * 上界与 git 自己的发现规则取同一个来源 `GIT_CEILING_DIRECTORIES`，
- * 列在里面的目录不再往上走。`root` 是 realpath，条目也取 realpath 再比较；
+ * 向上查找 `.git`，而不是启动 `git rev-parse`：判定仓库不应启动进程，进程只在收尾时启动。
+ * 上界与 git 自身的发现规则取自同一来源 `GIT_CEILING_DIRECTORIES`，
+ * 到达其中列出的目录即停止向上查找。`root` 是 realpath，条目也先取 realpath 再比较；
  * 不存在的条目不起作用，与 git 相同。
  */
 function repoRootOf(root: string): string | null {
@@ -186,18 +186,18 @@ function repoRootOf(root: string): string | null {
 }
 
 /**
- * 这一段路径怎么处理。
+ * 路径段的处理方式。
  *
- * `hard` = 一律不报也不补：版本库元数据与本项目的临时产物目录。
- * `pruned` = 不走事件也不进扫描，但目录名记下来，Git 仓库里由索引补齐其中已跟踪的文件。
- * `.git` 同在 `IGNORED_DIRS` 里，必须先判 `hard`——把它交给索引补齐等于把整个版本库报成改动。
+ * `hard` = 一律不报告也不补齐：版本库元数据与本项目的临时产物目录。
+ * `pruned` = 不处理事件也不进入扫描，但记录目录名，在 Git 仓库中由索引补齐其中已跟踪的文件。
+ * `.git` 同样在 `IGNORED_DIRS` 中，必须先判定 `hard`：交给索引补齐会把整个版本库报告为改动。
  */
 function classifySegment(segment: string): 'hard' | 'pruned' | 'none' {
   if (segment === '.git' || segment === '.tmp') return 'hard'
   return IGNORED_DIRS.has(segment) ? 'pruned' : 'none'
 }
 
-/** 起一个 git 子进程并收回它写的字节。返回 null = 它没跑起来。 */
+/** 启动一个 git 子进程并收集其输出。返回 null = 进程未能启动。 */
 async function runGit(
   repoRoot: string,
   args: string[],
@@ -214,12 +214,12 @@ async function runGit(
     const got = await collectProcess(proc, { timeoutMs: GIT_TIMEOUT_MS })
     return { exitCode: got.exitCode, stdout: got.stdout }
   } catch {
-    // 这台机器上没装 git：`Bun.spawn` 找不到可执行文件是同步抛。
+    // 本机未安装 git：`Bun.spawn` 未找到可执行文件时同步抛出异常。
     return null
   }
 }
 
-/** NUL 分隔的仓库根相对路径，转回工作区相对。 */
+/** 把 NUL 分隔的仓库根相对路径转换为工作区相对路径。 */
 function stripPrefix(stdout: string, prefix: string): string[] {
   const out: string[] = []
   for (const path of stdout.split('\0')) {
@@ -229,10 +229,10 @@ function stripPrefix(stdout: string, prefix: string): string[] {
 }
 
 /**
- * 候选里被 Git 忽略的那些，工作区相对路径。返回 null = 判定没跑成。
+ * 候选中被 Git 忽略的路径（工作区相对）。返回 null = 判定未执行成功。
  *
- * `--no-optional-locks`：这条查询会一并刷新索引，不加就会去抢 `index.lock`，
- * 用户同时在终端里 `git commit` 会随机失败。
+ * `--no-optional-locks`：该查询会一并刷新索引，不加此参数时会争用 `index.lock`，
+ * 用户同时在终端中执行的 `git commit` 会随机失败。
  */
 async function gitIgnored(
   repoRoot: string,
@@ -241,23 +241,23 @@ async function gitIgnored(
 ): Promise<Set<string> | null> {
   gitProcessCount.checkIgnore++
   const payload = rels.map((rel) => (prefix ? `${prefix}/${rel}` : rel)).join('\0')
-  // `-z` 让输入输出都按 NUL 分隔，路径原样进出：带空格、中文、换行的文件名
-  // 在默认的行分隔加引号格式下解析不回来。
+  // `-z` 使输入输出都按 NUL 分隔，路径原样传递：含空格、中文、换行的文件名
+  // 在默认的按行分隔加引号格式下无法还原。
   const got = await runGit(
     repoRoot,
     ['check-ignore', '--stdin', '-z'],
     new TextEncoder().encode(`${payload}\0`),
   )
-  // 0 = 有候选命中忽略规则，1 = 一条都没命中。其余是它自己没跑成。
+  // 0 = 有候选命中忽略规则，1 = 没有候选命中。其余退出码表示命令自身执行失败。
   if (got === null || (got.exitCode !== 0 && got.exitCode !== 1)) return null
   return new Set(stripPrefix(got.stdout, prefix))
 }
 
 /**
- * 被剪掉的目录里已跟踪、且 `mtime` 落在窗口内的文件。返回 null = 查询没跑成。
+ * 被剪枝目录中已跟踪且 `mtime` 位于窗口内的文件。返回 null = 查询未执行成功。
  *
- * **磁盘上已经不在的一律丢掉，不要改成报 deleted。** 索引里的残留项在此后每一次收尾
- * 都会被取回来，而它归不到任何一个窗口，报出来就是每条命令往账本灌一条假删除。
+ * **磁盘上已不存在的一律丢弃，不要改为报告 deleted。** 索引中的残留项在此后每次收尾时
+ * 都会被取回，且无法归属任何窗口，报告后每条命令都会向账本写入一条虚假删除。
  */
 async function trackedInPruned(
   repoRoot: string,
@@ -282,7 +282,7 @@ async function trackedInPruned(
 }
 
 /**
- * 新建的文本文件按内容数行；二进制（前 8 KiB 里有 NUL）或过大的不数。
+ * 新建的文本文件按内容计算行数；二进制文件（前 8 KiB 中含 NUL）或过大的文件不计算。
  * 返回 null = 不带行数。
  */
 async function countCreated(abs: string, size: number): Promise<number | null> {
@@ -293,12 +293,12 @@ async function countCreated(abs: string, size: number): Promise<number | null> {
   return bytes.length === 0 ? 0 : bytes.toString('utf8').split('\n').length
 }
 
-/** 收尾时这个路径的变更事实；目录不算。 */
+/** 收尾时该路径的变更；目录不计入。 */
 async function describe(root: string, rel: string, since: number): Promise<FileChange | null> {
   const abs = join(root, rel)
   const s = await stat(abs)
   if (s.isDirectory()) return null
-  // FSEvents 可迟到投递开窗前的事件；ctime 保留修改后恢复 mtime 的真实变更。
+  // FSEvents 可能延迟投递窗口打开前的事件；ctime 用于保留修改后又恢复 mtime 的实际变更。
   if (Math.max(s.mtimeMs, s.ctimeMs) < since) return null
   if (s.birthtimeMs < since) return { path: rel, changeType: 'modified' }
   const lines = await countCreated(abs, s.size)
@@ -318,13 +318,13 @@ async function firstSeen(root: string, rel: string, since: number): Promise<Firs
 
 interface Walked {
   paths: string[]
-  /** 命中运行产物目录清单、没有走进去的目录。 */
+  /** 命中运行产物目录清单、未进入遍历的目录。 */
   pruned: Set<string>
-  /** 到界停止，剩下的目录没扫。 */
+  /** 达到上限后停止，其余目录未扫描。 */
   truncated: boolean
 }
 
-/** 工作区里 mtime 落在 [since, until] 内的文件，工作区相对、posix 分隔符。 */
+/** 工作区中 mtime 位于 [since, until] 内的文件，路径为工作区相对、使用 posix 分隔符。 */
 async function touchedSince(root: string, since: number, until: number): Promise<Walked> {
   const out: string[] = []
   const pruned = new Set<string>()
@@ -364,11 +364,11 @@ async function touchedSince(root: string, since: number, until: number): Promise
 }
 
 /**
- * 这批变更里出现过的父段。
+ * 该批变更中出现过的父段。
  *
- * 判目录用的：路径不存在时 stat 问不出它是文件还是目录，而删掉整个目录时递归 watch
- * 会给出目录本身那一条事件，报出去就是一行「已删除」的假文件。
- * 文件不可能是另一个路径的父段，所以同一批里被当成父段的那些是目录。
+ * 用于判定目录：路径不存在时 stat 无法区分文件与目录，而删除整个目录时递归 watch
+ * 会产生目录本身的事件，报告后结果中会多出一个已删除的虚假文件。
+ * 文件不可能是另一路径的父段，因此同一批中作为父段出现的路径都是目录。
  */
 function parentsOf(changes: FileChange[]): Set<string> {
   const out = new Set<string>()
@@ -380,7 +380,7 @@ function parentsOf(changes: FileChange[]): Set<string> {
   return out
 }
 
-/** `reported` 里此刻已经不在磁盘上、而本窗口又没见到的那些：这次被删的。 */
+/** `reported` 中此刻已不在磁盘上、且本窗口未观察到的路径，即本次被删除的文件。 */
 async function goneFrom(
   root: string,
   reported: ReadonlySet<string>,
@@ -398,16 +398,16 @@ async function goneFrom(
 }
 
 /**
- * 文件时间戳越过当前刻度之后的第一个值，作新建 watcher 的窗口起点。
+ * 文件时间戳越过当前刻度之后的第一个值，作为新建 watcher 的窗口起点。
  *
- * 在 `.tmp` 下反复改写同一个探针文件，直到它的 mtime 大于第一次写入时的值：此前写下的文件
- * 时间戳都不大于第一次的值，此后写下的都不小于返回值，窗口两侧的写入不会落在同一个刻度里。
+ * 在 `.tmp` 下反复改写同一个探针文件，直到其 mtime 大于首次写入时的值：此前写入的文件
+ * 时间戳都不大于首次的值，此后写入的都不小于返回值，窗口两侧的写入不会处于同一个刻度。
  * 不要换成 `Date.now()`：文件时间戳按刻度取值，比它落后至多一个刻度，打开后同一刻度内新建的文件
- * 判为 modified；它又按毫秒取整，打开前同一毫秒内写下的文件判为窗口内新建。
+ * 会判定为 modified；它又按毫秒取整，打开前同一毫秒内写入的文件会判定为窗口内新建。
  *
- * 在建 watcher 之前调用，避免探针写入进入观察周期。探针写不进去时返回
- * `Date.now()`，收尾的屏障同样写不进标记，结果按 `incomplete` 交出；`STAMP_TICK_LIMIT_MS`
- * 内时间戳没有前进时同样返回 `Date.now()`。
+ * 在创建 watcher 之前调用，避免探针写入进入观察范围。探针无法写入时返回
+ * `Date.now()`，收尾的屏障同样无法写入标记，结果标记为 `incomplete`；`STAMP_TICK_LIMIT_MS`
+ * 内时间戳未前进时同样返回 `Date.now()`。
  */
 function stampTick(root: string): number {
   const probe = join(root, '.tmp', `qywork-watch-${process.pid}-${++markerSeq}`)
@@ -423,16 +423,16 @@ function stampTick(root: string): number {
     }
     rmSync(probe, { force: true })
   } catch {
-    // 写不进时落到 `Date.now()`；删不掉的探针留在 `.tmp` 里，这一段一律不报。
+    // 无法写入时回退到 `Date.now()`；无法删除的探针留在 `.tmp` 中，该目录一律不报告。
   }
   return stamp ?? Date.now()
 }
 
 /**
- * 写一个标记文件，等 watcher 交出它的事件。返回 false = 没等到：标记写不进去、watcher 已报错，
- * 或到了上限。`onSettled` 在等到或放弃的那一刻同步调用，排在标记之后交付的事件已不归调用方。
+ * 写入一个标记文件，等待 watcher 交付其事件。返回 false = 未等到：标记无法写入、watcher 已报错，
+ * 或达到上限。`onSettled` 在等到或放弃时同步调用，排在标记之后交付的事件不再归属调用方。
  *
- * 标记放在 `.tmp` 下：这一段一律不报，标记自己的事件不进任何窗口。
+ * 标记放在 `.tmp` 下：该目录一律不报告，标记自身的事件不进入任何窗口。
  */
 function barrier(root: string, owner: Shared, onSettled: () => void = () => {}): Promise<boolean> {
   if (shared.get(root) !== owner) {
@@ -459,10 +459,10 @@ function barrier(root: string, owner: Shared, onSettled: () => void = () => {}):
 }
 
 /**
- * 等 `workspaceRoot` 上的 watcher 交齐此刻之前发生的事件，并等这些路径第一次被报上来时的 stat 做完。
- * 返回 false = 没有开着的窗口，或没等到。
+ * 等待 `workspaceRoot` 上的 watcher 交付此刻之前发生的全部事件，并等待这些路径首次报告时的 stat 完成。
+ * 返回 false = 没有打开的窗口，或未等到。
  *
- * 供测试在窗口中途建立「观察器已见过某个路径」这一前提；生产代码只经 `close()` 用这道屏障。
+ * 供测试在窗口打开期间建立「观察器已观察到某路径」这一前提；生产代码只经由 `close()` 使用该屏障。
  */
 export async function settleEvents(workspaceRoot: string): Promise<boolean> {
   const root = realpathSync.native(workspaceRoot)
@@ -492,9 +492,9 @@ export function openChangeWindow(
     try {
       mkdirSync(join(root, '.tmp'), { recursive: true })
     } catch {
-      // 建不成时屏障写不进标记，收尾按 incomplete 交出。
+      // 创建失败时屏障无法写入标记，收尾结果标记为 incomplete。
     }
-    // 排队的窗口不取：它从前一个窗口收尾时才拥有事件，起点在交接时改写。
+    // 排队的窗口不调用：它从前一个窗口收尾时才开始拥有事件，起点在移交时改写。
     window.startedAt = stampTick(root)
     created.watcher = watch(root, { recursive: true }, (_event, filename) => {
       if (typeof filename !== 'string' || !filename) return
@@ -539,7 +539,7 @@ export function openChangeWindow(
           if (shared.get(root) === owner) shared.delete(root)
         }
       }
-      // 事件只进排在最前的窗口，只有它要等在途事件。
+      // 事件只进入排在最前的窗口，只有该窗口需要等待在途事件。
       let settled = true
       if (owner.windows[0] === window) settled = await barrier(root, owner, handOff)
       else handOff()
@@ -580,7 +580,7 @@ export function openChangeWindow(
           const change = await describe(root, rel, window.startedAt)
           if (change) changes.push(change)
         } catch {
-          // 窗口内才出现、收尾前又没了：临时文件，不是用户的文件被删。
+          // 窗口内出现、收尾前消失：属于临时文件，而不是用户文件被删除。
           if (first?.bornInWindow) continue
           changes.push({ path: rel, changeType: 'deleted' })
         }
@@ -591,14 +591,14 @@ export function openChangeWindow(
         if (change) changes.push(change)
       }
       if (opts.reported) {
-        // 本轮报过、本窗口两条来源都没见到的路径按磁盘对账。这些路径上一次报出时
-        // 已经过了忽略判定，不再判一次。
+        // 本轮报告过、本窗口两个来源都未观察到的路径按磁盘状态核对。这些路径上次报告时
+        // 已经过忽略判定，不再重复判定。
         const seen = new Set([...window.paths.keys(), ...walkOnly, ...tracked])
         for (const rel of await goneFrom(root, opts.reported, seen)) {
           changes.push({ path: rel, changeType: 'deleted' })
         }
       }
-      // 只对删除判一次：还在磁盘上的那些，`describe` 已经按 `stat` 把目录挡掉了。
+      // 只对删除判定：仍在磁盘上的路径已由 `describe` 按 `stat` 排除了目录。
       const dirs = parentsOf(changes)
       return {
         changes: changes.filter((c) => c.changeType !== 'deleted' || !dirs.has(c.path)),

@@ -1,9 +1,9 @@
 /**
  * 扩展装配：插件与 Agent Team 后端的加载入口。
  *
- * **库存在不等于功能存在**：`loadPlugins()` 只有定义处一个引用、`teamBackends`
- * 在握手里硬编码成 `[]` 的话，两样都等于没有。而握手里报假的能力清单比不报更糟
- * ——客户端会据此做出「隐藏入口」的正确行为，接线之后反而找不到 bug。
+ * 库存在不等于功能可用：`loadPlugins()` 若只有定义处一处引用、`teamBackends`
+ * 若在握手中硬编码为 `[]`，两项功能均不存在。握手报告错误的能力清单比不报告危害更大：
+ * 客户端会据此正常隐藏入口，缺陷因此无法被发现。
  */
 
 import { readFile } from 'node:fs/promises'
@@ -29,33 +29,33 @@ import {
 } from '@qywork/tools'
 import { makeCapabilityHandler } from './capabilities.ts'
 
-/** 全局根下装插件的子目录名。 */
+/** 全局根目录下存放插件的子目录名。 */
 export const PLUGINS_SUBDIR = 'plugins'
-/** 各层根目录下的 MCP 配置文件名。三层都按这个名字找。 */
+/** 各层根目录下的 MCP 配置文件名。三层均按该文件名查找。 */
 export const MCP_FILE = 'mcp.json'
 
-/** 项目层（工作区 `.agents/`）里 MCP 配置的位置。写回、报路径用它。 */
+/** 项目层（工作区 `.agents/`）中 MCP 配置的位置。写回与报告路径时使用。 */
 export const MCP_CONFIG = `${AGENTS_DIR}/${MCP_FILE}`
 
 /**
  * 插件的唯一目录：`~/.qywork/plugins/`。
  *
- * **插件不分层。** 它贡献的是工具、预览器、供应商——那些是这个 agent 的能力，
- * 不是某个仓库的内容。分层的代价是同一个插件在两个仓库里各存一份、各自升级，
- * 而「在全局装了却没生效」只能靠一条 failure 文案解释。
+ * 插件不分层。插件提供的是工具、预览器、供应商，这些是 agent 的能力，
+ * 不是某个仓库的内容。分层会使同一个插件在两个仓库中各存一份、各自升级，
+ * 且「已在全局安装却未生效」只能依靠一条 failure 文案解释。
  *
- * 「这个项目要不要加载某个插件」是**开关**，将来由工作区面板控制，
- * 不是把插件复制两份。
+ * 项目是否加载某个插件应由开关决定，计划由工作区面板控制，
+ * 而不是把插件复制两份。
  */
 export function globalPluginsDir(): string {
   return join(globalScopeRoot(), PLUGINS_SUBDIR)
 }
 
 /**
- * team 配置**只有工作区一份，不分层**。
+ * team 配置只在工作区中保存一份，不分层。
  *
- * 它描述的是「这个项目怎么分工」——角色、后端、编排图全是项目属性，
- * 跟到别的仓库去只会派错人。所以它留在 `.qy/`，不进 `.agents/`。
+ * 它描述项目的分工：角色、后端、编排图都是项目属性，
+ * 带到其他仓库会使任务派发给错误的角色。因此它保存在 `.qy/`，不进入 `.agents/`。
  */
 export const TEAM_CONFIG = '.qy/team.json'
 
@@ -66,22 +66,22 @@ export interface Extensions {
   mcpConfig: ScopedMcpConfig
   /** 插件与 MCP 一起贡献的工具规格，已按名去重。由会话注册进自己的表。 */
   toolSpecs: ToolSpec[]
-  /** 关掉本份扩展持有的全部子进程。 */
+  /** 关闭本份扩展持有的全部子进程。 */
   stop(): Promise<void>
 }
 
 export interface WorkspaceTeamConfig {
   roles: Role[]
   rules: TeamRules
-  /** 配置文件解析失败的原因。UI 要显示，不能静默当作「没配」。 */
+  /** 配置文件解析失败的原因。UI 须显示该原因，不能静默视为未配置。 */
   error: string | null
 }
 
 /**
  * 加载工作区扩展。
  *
- * **永不抛异常**：一个坏掉的插件或写错的 team.json 不该让整个会话起不来。
- * 失败信息收在返回值里交给 UI。
+ * 不抛出异常：损坏的插件或错误的 team.json 不应导致整个会话无法启动。
+ * 失败信息写入返回值，交给 UI。
  */
 export async function loadExtensions(
   workspaceRoot: string,
@@ -291,11 +291,11 @@ export async function refreshExtensions(
 }
 
 /**
- * 装在 `~/.qywork/plugins/` 里的插件。
+ * 安装在 `~/.qywork/plugins/` 中的插件。
  *
- * 只有这一个目录，所以没有跨层去重——同一个 id 在同一个目录下不可能出现两次。
- * 工具名仍然要去重：两个不同的插件可以声明同一个工具名，撞车的表现是
- * 「有一个插件的工具凭空消失」，所以撞了要记 failure 而不是安静丢掉。
+ * 只有这一个目录，因此不需要跨层去重：同一个 id 在同一目录下不会出现两次。
+ * 工具名仍须去重：两个不同的插件可能声明同一个工具名，静默丢弃会使
+ * 其中一个插件的工具无故缺失，因此冲突时记入 failure。
  */
 async function loadInstalledPlugins(
   workspaceRoot: string,
@@ -317,8 +317,8 @@ async function loadInstalledPlugins(
     }),
   )
 
-  // 工具按**名字**去重，不按插件 id 前缀：注册名是消毒过的
-  //（`test.probe` → `test_probe__probe`），按 id 拼前缀会一个都匹配不上。
+  // 工具按名称去重，不按插件 id 前缀：注册名经过规范化
+  //（`test.probe` → `test_probe__probe`），按 id 拼接的前缀无法匹配任何工具。
   const taken = new Set<string>()
   const toolSpecs: ToolSpec[] = []
   for (const spec of reg.toolSpecs) {
@@ -333,15 +333,15 @@ async function loadInstalledPlugins(
 }
 
 /**
- * 读三层的 `mcp.json` 并把里面的 server 全部连上。
+ * 读取三层的 `mcp.json` 并连接其中的全部 server。
  *
- * 一个 server 都没有 = 没配 MCP，返回空注册表，不是错误。
+ * 没有任何 server 表示未配置 MCP，返回空注册表，不是错误。
  *
- * 同名 server **先认领的赢**：全局配了一个 `github`，工作区又配了一个同名的，
- * 用的是工作区那份——这正是「这个项目要连另一个实例」的表达方式。
+ * 同名 server 以先读取的一层为准：全局配置了 `github`、工作区又配置了同名 server 时，
+ * 使用工作区的配置，以此表示该项目需要连接另一个实例。
  *
- * `cwd` 仍然锁在工作区内。全局那份写了工作区外的 cwd 会失败，而不是被放行：
- * 一个跨工作区的配置能把 server 的工作目录指到任意位置，那条路不该开。
+ * `cwd` 仍限定在工作区内。全局配置中写了工作区外的 cwd 时加载失败，而不是放行：
+ * 跨工作区的配置可以把 server 的工作目录指向任意位置，不应允许。
  */
 export async function loadWorkspaceMcp(
   workspaceRoot: string,
@@ -362,8 +362,8 @@ export async function loadWorkspaceMcp(
 
   return loadMcpServers(config, workspaceRoot, {
     ...(onLog ? { onLog } : {}),
-    // cwd 必须锁在工作区内：mcp.json 是工作区里的文件，一个被克隆下来的仓库
-    // 不该能把 server 的工作目录指到别处。
+    // cwd 必须限定在工作区内：mcp.json 是工作区中的文件，克隆的仓库
+    // 不应能把 server 的工作目录指向其他位置。
     resolveCwd: (rel) => resolveInWorkspace(workspaceRoot, rel, { mustExist: true }),
   }).catch(
     (err): McpRegistry => ({
@@ -373,17 +373,17 @@ export async function loadWorkspaceMcp(
   )
 }
 
-/** 一个 server 在配置里来自哪一层。设置页据此决定开关归谁、能不能改。 */
+/** server 在配置中所属的层。设置页据此决定开关的归属层与是否可修改。 */
 export interface ScopedMcpConfig extends McpConfig {
   scopeOf: Record<string, Scope>
-  /** 每一层的文件路径，存在与否都列出来——「该去哪儿加」比「这里没有」有用。 */
+  /** 每一层的文件路径，无论文件是否存在都列出：用户需要知道在何处添加配置。 */
   files: { scope: Scope; path: string }[]
 }
 
 /**
- * 三层的 `mcp.json` 合成一份。
+ * 将三层的 `mcp.json` 合并为一份。
  *
- * **加载器和设置页共用它**：页面上列出来的 server，必须就是模型真的连上的那批。
+ * 加载器与设置页共用该函数：页面上列出的 server 必须与模型实际连接的 server 一致。
  */
 export async function loadScopedMcpConfig(workspaceRoot: string): Promise<ScopedMcpConfig> {
   const servers: ScopedMcpConfig['servers'] = {}
@@ -412,9 +412,9 @@ export async function loadScopedMcpConfig(workspaceRoot: string): Promise<Scoped
 }
 
 /**
- * 读工作区的 team 配置。
+ * 读取工作区的 team 配置。
  *
- * 这里只有**角色（子 agent）与编排图**。外部 CLI 不进这个文件：它由本机探测得到
+ * 此处只有角色（子 agent）与编排图。外部 CLI 不写入该文件：它由本机探测得到
  * （`@qywork/team` 的 `detectClis`），图上的节点用 kind cli 与它的 id 指向它。
  */
 export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTeamConfig> {
@@ -426,7 +426,7 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
   try {
     parsed = JSON.parse(raw)
   } catch (err) {
-    // 配置坏了要**说出来**。静默当作「没配 team」，界面上等同于这个功能不存在。
+    // 配置损坏时必须报告。静默视为未配置 team 时，界面上等同于该功能不存在。
     return { ...empty, error: `${TEAM_CONFIG} 解析失败：${String(err)}` }
   }
 
@@ -436,7 +436,7 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
   for (const value of (obj.roles as unknown[]) ?? []) {
     const r = value as Record<string, unknown>
     const id = String(r.id ?? '').trim()
-    // 只要有 id 就收：角色不再引用别的条目，也就没有「引用不到」这回事。
+    // 有 id 即接受：角色不引用其他条目，因此不存在引用缺失的情形。
     if (!id) continue
     roles.push({
       id,
@@ -446,31 +446,31 @@ export async function loadTeamConfig(workspaceRoot: string): Promise<WorkspaceTe
       ...(r.provider ? { provider: String(r.provider) } : {}),
       ...(r.model ? { model: String(r.model) } : {}),
       ...(r.effort ? { effort: r.effort as NonNullable<Role['effort']> } : {}),
-      // allowedTools 的空数组与不填**语义不同**（前者=不给任何工具，后者=继承全部），
-      // 所以只在字段真的存在时才写入。
+      // allowedTools 的空数组与不填语义不同（前者表示不提供任何工具，后者表示继承全部），
+      // 因此只在字段存在时写入。
       ...(Array.isArray(r.allowedTools) ? { allowedTools: r.allowedTools.map(String) } : {}),
     })
   }
 
-  // 编排图不在这个文件里：它由模型每次现画（`workflow` 工具），跑完随那次工具调用
-  // 的结果落库。留一个手写的 `plan` 字段就是两个来源同一个执行器。
+  // 编排图不在该文件中：它由模型每次即时生成（`workflow` 工具），执行完毕后随该次工具调用
+  // 的结果落库。保留手写的 `plan` 字段会使同一个执行器有两个来源。
   const dropped = ((obj.roles as unknown[]) ?? []).length - roles.length
 
-  // rules 只认 `shared`：并发上限由 workflow 每次调用给，这个文件里写不了它。
+  // rules 只识别 `shared`：并发上限由每次 workflow 调用给出，无法在此文件中配置。
   const shared = (obj.rules as TeamRules | undefined)?.shared
   return {
     roles,
     rules: shared ? { shared } : {},
-    error: dropped > 0 ? `${dropped} 条角色少了 id，已忽略` : null,
+    error: dropped > 0 ? `${dropped} 个角色缺少 id，已忽略` : null,
   }
 }
 
 /**
- * 工具名前缀，转出给 CLI 用。
+ * 工具名前缀，导出供 CLI 使用。
  *
- * CLI 不直接依赖 `@qywork/mcp` / `@qywork/plugins`（依赖图里它只挂 runtime），
- * 但 `qy mcp` / `qy doctor` / `qy plugins` 都要按前缀数「这个 server / 插件贡献了
- * 几个工具」。三处原本各自拼 `mcp__${name}__` / `${id}__`，**都没消毒**，
- * 带点的名字一条都匹配不上，体检结果直接骗人。转出来是为了只有一份实现。
+ * CLI 不直接依赖 `@qywork/mcp` / `@qywork/plugins`（依赖图中它经由 runtime 间接依赖这两个包），
+ * 但 `qy mcp` / `qy doctor` / `qy plugins` 都需要按前缀统计每个 server / 插件提供的
+ * 工具数。各处自行拼接 `mcp__${name}__` / `${id}__` 时未经规范化，
+ * 带点的名称无法匹配任何工具，检查结果错误。因此导出，只保留一份实现。
  */
 export { pluginToolPrefix, toolNamePrefix }

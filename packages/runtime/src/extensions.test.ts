@@ -1,8 +1,8 @@
 /**
- * 插件端到端：真的起一个子进程，让它走 RPC 调宿主能力。
+ * 插件端到端测试：启动真实子进程，由其经 RPC 调用宿主能力。
  *
- * 用 mock 验不出这条链路——要验的是「插件进程里没有 fs，只有 RPC」，
- * 而 mock 掉进程就把被验的那一层替换掉了。
+ * mock 无法验证该链路：被验证的是插件进程中没有 fs、只有 RPC，
+ * 而 mock 进程会替换被验证的那一层。
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -20,10 +20,10 @@ import {
 } from './extensions.ts'
 
 /**
- * 插件装在全局目录里，所以要给这一轮一个临时的 `QYWORK_HOME`。
+ * 插件安装在全局目录中，因此本组测试使用临时的 `QYWORK_HOME`。
  *
- * **加载完就还回去**：`globalScopeRoot()` 每次调用都现读环境变量，留着不还会把
- * 同一个进程里后面那些测试的配置目录也指到这个临时目录上。
+ * 加载完成后立即恢复：`globalScopeRoot()` 每次调用都读取环境变量，不恢复会使
+ * 同一进程中后续测试的配置目录也指向该临时目录。
  */
 async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
   const home = await mkdtemp(join(tmpdir(), 'qywork-home-'))
@@ -40,9 +40,9 @@ async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
 /**
  * 插件本体。
  *
- * 它导出一个 `probe` 工具，工具体里通过 `host.*` 调宿主能力，把结果原样返回。
- * 这样一次 `registry.get('...__probe').fn()` 就走完了
- * 工具注册 → 跨进程调用 → 宿主能力 → 结果回传四段。
+ * 它导出 `probe` 工具，工具函数中通过 `host.*` 调用宿主能力，并原样返回结果。
+ * 一次 `registry.get('...__probe').fn()` 即经过
+ * 工具注册 → 跨进程调用 → 宿主能力 → 结果回传四个环节。
  */
 const PLUGIN_SOURCE = `
 let buf = ''
@@ -92,11 +92,11 @@ send({ type: 'ready' })
 `
 
 /**
- * `permissions` 是**除 workspace:read 之外**要额外声明的。
+ * `permissions` 是除 workspace:read 之外需要额外声明的权限。
  *
- * probe 工具的 permissionEffect 是 read，清单解析期会强制要求
- * workspace:read——这是设计如此：工具声明的动作和插件声明的权限必须自洽，
- * 否则用户在安装提示里看到的权限清单和插件实际能做的事对不上。
+ * probe 工具的 permissionEffect 是 read，清单解析阶段会强制要求
+ * workspace:read：工具声明的动作与插件声明的权限必须一致，
+ * 否则用户在安装提示中看到的权限清单与插件的实际能力不一致。
  */
 async function workspaceWith(extra: string[]) {
   const permissions = ['workspace:read', ...extra.filter((p) => p !== 'workspace:read')]
@@ -131,12 +131,12 @@ async function workspaceWith(extra: string[]) {
     await writeFile(join(root, 'hello.txt'), '你好', 'utf8')
 
     const ext = await loadExtensions(root)
-    // 注册名是消毒过的：插件 id 是 `test.probe`（反向域名风格），
-    // 而 provider 只接受 `^[a-zA-Z0-9_-]+$`——点会被换成下划线。
+    // 注册名经过规范化：插件 id 是 `test.probe`（反向域名风格），
+    // 而 provider 只接受 `^[a-zA-Z0-9_-]+$`，点被替换为下划线。
     const tool = ext.toolSpecs.find((t) => t.name === 'test_probe__run')
-    // 工具上下文里只有插件这条路用得到的那几项。身份由宿主按 callId 保管，
-    // 插件那侧只拿得到一个 parentCallId。
-    // 投递额度由 AgentLoop 按决策开账，这里直接开一份不设限的。
+    // 工具上下文中只包含插件路径用到的字段。身份由宿主按 callId 保管，
+    // 插件侧只能取得一个 parentCallId。
+    // 投递额度由 AgentLoop 按决策建立，此处直接建立不设上限的额度。
     const ctx = {
       workspaceRoot: root,
       conversationId: 'cv_test',
@@ -161,7 +161,7 @@ describe('插件端到端', () => {
     stop()
   })
 
-  /** 动作是宿主判定的：清单里没有、也不该有这个字段，插件工具一律记「调用」。 */
+  /** 动作由宿主判定：清单中没有也不应有该字段，插件工具一律记为「调用」。 */
   test('插件工具的动作恒为 call', async () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
     expect(ext.toolSpecs.find((t) => t.name === 'test_probe__run')?.actionKind).toBe('call')
@@ -169,11 +169,11 @@ describe('插件端到端', () => {
   })
 
   /**
-   * 卡片是动词 + 对象 + 目标三层。对象名填类名、目标填具体的那个，两处不能同串——
-   * 同串的表现是标题和目标一字不差，目标那一格白占。
-   * 目标同时是权限 scope 的载体，所以带 `plugin:` 前缀且用未消毒的 id。
+   * 卡片由动词、对象、目标三层组成。对象名填类名、目标填具体名称，两者不能相同：
+   * 相同时标题与目标完全一致，目标字段不提供任何信息。
+   * 目标同时承载权限 scope，因此带 `plugin:` 前缀且使用未规范化的 id。
    */
-  test('对象名恒为「插件」，具体是哪个工具归 target', async () => {
+  test('对象名恒为「插件」，具体工具记入 target', async () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
     const spec = ext.toolSpecs.find((t) => t.name === 'test_probe__run')
     expect(spec?.objectLabel).toBe('插件')
@@ -181,7 +181,7 @@ describe('插件端到端', () => {
     stop()
   })
 
-  test('声明了 workspace:read 就能读工作区文件', async () => {
+  test('声明 workspace:read 后可以读取工作区文件', async () => {
     const { probe, stop } = await workspaceWith(['workspace:read'])
     const r = await probe('fs.read', { path: 'hello.txt' })
     expect(r.status).toBe('success')
@@ -189,8 +189,8 @@ describe('插件端到端', () => {
     stop()
   })
 
-  /** 插件结果没有上界：超出本轮剩余额度时 data 整份存进正文库，回执合法且有界。 */
-  test('超出剩余额度的插件结果整份存进正文库，回执留地址', async () => {
+  /** 插件结果没有上限：超出本轮剩余额度时 data 整份存入正文库，回执合法且有界。 */
+  test('超出剩余额度的插件结果整份存入正文库，回执保留地址', async () => {
     const { root, ctx, probe, stop } = await workspaceWith(['workspace:read'])
     await writeFile(join(root, 'big.txt'), `${'插件正文。'.repeat(40_000)}尾部标记`, 'utf8')
     const landed: Uint8Array[] = []
@@ -213,7 +213,7 @@ describe('插件端到端', () => {
     stop()
   })
 
-  test('没声明 workspace:write 就写不了 —— 权限在宿主侧强制', async () => {
+  test('未声明 workspace:write 时无法写入：权限在宿主侧强制执行', async () => {
     const { root, probe, stop } = await workspaceWith(['workspace:read'])
     const r = await probe('fs.write', { path: 'x.txt', content: '偷偷写' })
     expect(r.status).toBe('failure')
@@ -222,14 +222,14 @@ describe('插件端到端', () => {
     stop()
   })
 
-  test('声明了就能写', async () => {
+  test('声明 workspace:write 后可以写入', async () => {
     const { root, probe, stop } = await workspaceWith(['workspace:read', 'workspace:write'])
     expect((await probe('fs.write', { path: 'x.txt', content: '写了' })).status).toBe('success')
     expect(await readFile(join(root, 'x.txt'), 'utf8')).toBe('写了')
     stop()
   })
 
-  test('工作区边界在权限之内再守一层', async () => {
+  test('声明 workspace:read 后仍受工作区边界限制', async () => {
     const { probe, stop } = await workspaceWith(['workspace:read'])
     expect((await probe('fs.read', { path: '../../../etc/passwd' })).status).toBe('failure')
     stop()
@@ -240,12 +240,12 @@ describe('插件端到端', () => {
     expect((await probe('storage.set', { key: 'k', value: 42 })).status).toBe('success')
     const got = await probe('storage.get', { key: 'k' })
     expect((got.data as { r: { value: number } }).r.value).toBe(42)
-    // 落成用户看得见的普通文件，插件行为异常时能直接翻。
+    // 保存为用户可见的普通文件，插件行为异常时可直接查看。
     expect(await Bun.file(join(root, '.qy/plugin-data/test.probe.json')).exists()).toBe(true)
     stop()
   })
 
-  test('没声明 network 就出不了网', async () => {
+  test('未声明 network 时无法访问网络', async () => {
     const { probe, stop } = await workspaceWith(['workspace:read'])
     const r = await probe('net.fetch', { url: 'https://example.com' })
     expect(r.status).toBe('failure')
@@ -253,13 +253,13 @@ describe('插件端到端', () => {
     stop()
   })
 
-  test('没声明 process:exec 就跑不了命令', async () => {
+  test('未声明 process:exec 时无法执行命令', async () => {
     const { probe, stop } = await workspaceWith(['workspace:read'])
     expect((await probe('exec.run', { command: 'echo x' })).message).toContain('process:exec')
     stop()
   })
 
-  test('声明了 process:exec 能跑，且拿不到宿主的密钥', async () => {
+  test('声明 process:exec 后可以执行，且无法取得宿主的密钥', async () => {
     process.env.QYWORK_EXT_SECRET = 'leaked-secret'
     try {
       const { probe, stop } = await workspaceWith(['process:exec'])
@@ -278,7 +278,7 @@ describe('插件端到端', () => {
     stop()
   })
 
-  test('坏插件不影响整体加载 —— 记进 failures 而不是抛', async () => {
+  test('损坏的插件不影响整体加载：记入 failures 而不是抛出异常', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-ext-bad-'))
     const ext = await withTempHome(async () => {
       const dir = join(globalPluginsDir(), 'broken')
@@ -291,13 +291,13 @@ describe('插件端到端', () => {
   })
 
   /*
-   * 插件**只从全局目录加载**，工作区里那个位置不再是插件目录。
+   * 插件只从全局目录加载，工作区中的 `.agents/plugins` 不是插件目录。
    *
-   * 这条不能只靠「全局那份装上了」反证：两个目录都扫时全局那份照样装得上，
-   * 表现完全一样。所以只往工作区里放一个，断言它一个都没装上、也不报 failure
-   * ——它不在扫描范围里，报 failure 反而是错的。
+   * 不能只用「全局目录中的插件已安装」反证：两个目录都扫描时，全局目录中的插件同样能安装，
+   * 结果完全相同。因此只在工作区中放置一个插件，断言没有任何插件被安装，也不报告 failure：
+   * 它不在扫描范围内，报告 failure 是错误的。
    */
-  test('工作区 .agents/plugins 里的插件不再被加载', async () => {
+  test('工作区 .agents/plugins 中的插件不被加载', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-ext-ws-plugin-'))
     const dir = join(root, '.agents', 'plugins', 'probe')
     await mkdir(dir, { recursive: true })
@@ -334,11 +334,11 @@ describe('插件端到端', () => {
   })
 })
 
-describe('MCP 接线', () => {
+describe('MCP 接入', () => {
   const SERVER = [
     "let buf = ''",
-    // 换行用 fromCharCode 而不是字面转义：这段字符串要穿过 TS 源码、
-    // 写进 .mjs、再被 JS 解析，数反斜杠数错一层的表现是「server 启动即退出」。
+    // 换行使用 fromCharCode 而不是字面转义：该字符串经过 TS 源码、
+    // 写入 .mjs、再被 JS 解析，反斜杠层数错误时 server 启动即退出。
     'const NL = String.fromCharCode(10)',
     'const send = (o) => process.stdout.write(JSON.stringify(o) + NL)',
     "process.stdin.setEncoding('utf8')",
@@ -359,8 +359,8 @@ describe('MCP 接线', () => {
   ].join('\n')
 
   /*
-   * 加载时会合入全局层的 `mcp.json`，所以整组都在临时 `QYWORK_HOME` 下跑。
-   * 不隔离的话会连上本机真配置里的 server。
+   * 加载时会合并全局层的 `mcp.json`，因此本组测试都在临时 `QYWORK_HOME` 下运行。
+   * 不隔离时会连接本机真实配置中的 server。
    */
   const prevHome = process.env.QYWORK_HOME
   beforeEach(async () => {
@@ -388,7 +388,7 @@ describe('MCP 接线', () => {
     return { root, ext: await loadExtensions(root) }
   }
 
-  test('mcp.json 里的 server 被连上，工具进 toolSpecs', async () => {
+  test('mcp.json 中的 server 被连接，工具进入 toolSpecs', async () => {
     const { ext } = await withMcp()
     expect(ext.mcp.failures).toEqual([])
     expect(ext.mcp.servers.map((s) => s.name)).toEqual(['demo'])
@@ -396,7 +396,7 @@ describe('MCP 接线', () => {
     await ext.stop()
   })
 
-  test('注册进 registry 后能真的调通', async () => {
+  test('注册到 registry 后可以成功调用', async () => {
     const { ext } = await withMcp()
     const registry = new ToolRegistry()
     for (const s of ext.toolSpecs) registry.register(s)
@@ -412,7 +412,7 @@ describe('MCP 接线', () => {
     await ext.stop()
   })
 
-  test('连不上的 server 只记 failure，不影响能连上的', async () => {
+  test('无法连接的 server 只记入 failure，不影响可连接的 server', async () => {
     const { ext } = await withMcp({ broken: { command: 'qywork-绝对不存在', args: [] } })
     expect(ext.mcp.servers.map((s) => s.name)).toEqual(['demo'])
     expect(ext.mcp.failures.map((f) => f.server)).toEqual(['broken'])
@@ -429,19 +429,19 @@ describe('MCP 接线', () => {
 })
 
 describe('扩展按工作区共享', () => {
-  test('两次 acquire 只加载一份，release 到零才停', async () => {
+  test('两次 acquire 只加载一份，release 计数归零时才停止', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-share-'))
     const a = await acquireExtensions(root)
     const b = await acquireExtensions(root)
-    // 同一个对象说明只加载了一次——server 每条消息新建一个 Session，
-    // 每次都重新加载的话插件和 MCP 子进程会一直往上堆。
+    // 同一对象说明只加载了一次：server 每条消息新建一个 Session，
+    // 每次都重新加载时插件与 MCP 子进程会持续累积。
     expect(a.mcp).toBe(b.mcp)
     await releaseExtensions(a)
     const c = await acquireExtensions(root)
     expect(c.mcp).toBe(a.mcp)
     await releaseExtensions(b)
     await releaseExtensions(c)
-    // 归零之后再取是一份新的。
+    // 归零后再次取得的是新实例。
     const d = await acquireExtensions(root)
     expect(d.mcp).not.toBe(a.mcp)
     await releaseExtensions(d)

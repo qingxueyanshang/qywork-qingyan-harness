@@ -1,5 +1,5 @@
 /**
- * 覆盖 `rename.ts`：只有 Windows 上的短暂占用错误重试，其余立即抛出，重试有上限。
+ * 覆盖 `rename.ts`：只对 Windows 上的短暂占用错误重试，其余错误立即抛出，重试次数有上限。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -24,7 +24,7 @@ describe('rename 重试', () => {
     expect(f.calls()).toBe(3)
   })
 
-  test('不是占用错误立即抛出', async () => {
+  test('非占用错误立即抛出', async () => {
     const f = failing(['ENOENT'])
     await expect(retryWhileBusy(f.op, 'win32')).rejects.toMatchObject({ code: 'ENOENT' })
     expect(f.calls()).toBe(1)
@@ -36,7 +36,7 @@ describe('rename 重试', () => {
     expect(f.calls()).toBe(1)
   })
 
-  test('一直被占用：重试 6 次后抛出最后一次的错误', async () => {
+  test('持续被占用：重试 6 次后抛出最后一次的错误', async () => {
     const f = failing(Array(10).fill('EPERM'))
     await expect(retryWhileBusy(f.op, 'win32')).rejects.toMatchObject({ code: 'EPERM' })
     expect(f.calls()).toBe(7)

@@ -1,6 +1,6 @@
 /**
- * 覆盖 `loop/run-state.ts` 的 `RunState`：信封换了时锚点只换头部、换模型时作废，
- * 空转判据在第二次重复时交出提示、第三次重复时停，以及执行事实的落账与追加。
+ * 覆盖 `loop/run-state.ts` 的 `RunState`：信封变化时锚点只替换头部、更换模型时作废，
+ * 无进展判据在第二次重复时向模型发出提示、第三次重复时停止，以及执行事实的记录与追加。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -36,14 +36,14 @@ function request(model: string, system: string): ChatRequest {
 describe('锚点的信封修正', () => {
   const breakdown = { ...emptyBreakdown(), systemPrompt: 300, systemTools: 200 }
 
-  test('信封没变时锚点原样保留', () => {
+  test('信封未变化时锚点保持原值', () => {
     const req = request('m', 'a')
     const run = state({ model: 'm', headTokens: 400, envelopeFingerprint: envelopeHashOf(req) })
     run.rebaseAnchor(req, breakdown)
     expect(run.anchor).toMatchObject({ tokens: 10_000, headTokens: 400 })
   })
 
-  test('同一模型下信封换了，只按头部差额修正', () => {
+  test('同一模型下信封变化时，只按头部差额修正', () => {
     const run = state({ model: 'm', headTokens: 400, envelopeFingerprint: 'old' })
     const req = request('m', 'b')
     run.rebaseAnchor(req, breakdown)
@@ -54,15 +54,15 @@ describe('锚点的信封修正', () => {
     })
   })
 
-  test('换了模型时锚点作废', () => {
+  test('更换模型时锚点作废', () => {
     const run = state({ model: 'other', headTokens: 400, envelopeFingerprint: 'old' })
     run.rebaseAnchor(request('m', 'b'), breakdown)
     expect(run.anchor).toBeNull()
   })
 })
 
-describe('空转判据', () => {
-  test('第二次重复交出提示，第三次重复才停', () => {
+describe('无进展判据', () => {
+  test('第二次重复时发出提示，第三次重复时停止', () => {
     const run = state()
     const same = { cycle: 'c', noProgress: true }
     run.progress.push(same)
@@ -78,10 +78,10 @@ describe('空转判据', () => {
 
 describe('执行事实', () => {
   /**
-   * 提示必须落账并留在 transcript：只附在下一次请求末尾的话，再下一次请求的前缀
-   * 就与产生那轮响应时不同，那轮之后的思考块被 provider 作废。
+   * 提示必须写入账本并保留在 transcript 中：若只附在下一次请求末尾，再下一次请求的前缀
+   * 与产生该轮响应时不同，该轮之后的思考块会被 provider 作废。
    */
-  test('落一条带 notice 标记的用户 step，并以运行上下文分组追加到 transcript', () => {
+  test('写入一条带 notice 标记的用户 step，并以运行上下文分组追加到 transcript', () => {
     const landed: unknown[] = []
     const persist = {
       ...noopPersistence(),

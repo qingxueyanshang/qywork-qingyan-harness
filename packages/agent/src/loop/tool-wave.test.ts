@@ -1,7 +1,7 @@
 /**
  * 覆盖 `loop/tool-wave.ts`：波次规划（`planWaves`）与副作用判定（`provablyNoEffect`），
  * 以及经 `AgentLoop.run` 的工具中途输出、ToolContext 生命周期、文件失效事件、权限拒绝、
- * 注册表对调用的裁决、原地打转判定、停止对卡住工具的回收、投递额度按决策开账，
+ * 注册表对调用的裁决、重复无进展判定、停止对停滞工具的中止、投递额度按决策计算，
  * 与 `loop/compact.ts` 的执行工具之前压缩检查点。
  */
 
@@ -21,14 +21,13 @@ import { planWaves, provablyNoEffect } from './tool-wave.ts'
 
 describe('工具中途输出', () => {
   /**
-   * 回归：工具还在跑的时候，它的输出就要交出去。
+   * 回归：工具仍在运行时，其输出必须立即发出。
    *
-   * 这条测的是**活性**不是顺序：光断言「delta 排在 tool.finished 之前」在
-   * 攒到整波结束再排空的写法下同样成立。所以让工具输出完就卡住，
-   * 由测试看到那条 delta 之后才放行——攒批的写法在这里会直接停住，
-   * 表现为超时失败。
+   * 本用例验证的是及时性而不是顺序：仅断言 delta 排在 tool.finished 之前，在
+   * 累积到整批结束再统一发出的实现下同样成立。因此让工具输出后即停滞，
+   * 测试收到该 delta 后才放行；累积成批的实现会在此阻塞，以超时失败。
    */
-  test('工具执行期间产出的事件立刻交出去，不等这一波结束', async () => {
+  test('工具执行期间产出的事件立即发出，不等待本批结束', async () => {
     let release: () => void = () => {}
     const gate = new Promise<void>((r) => {
       release = r
@@ -72,7 +71,7 @@ describe('工具中途输出', () => {
       const n = await it.next()
       if (n.done) break
       types.push(n.value.type)
-      // 看到中途输出才放行。收不到就永远走不到这里。
+      // 收到中途输出后才放行；未收到时不会执行到此处。
       if (n.value.type === 'tool.delta') release()
     }
 
@@ -83,13 +82,13 @@ describe('工具中途输出', () => {
   })
 
   /**
-   * 回归：中途输出要认得出是哪张卡片的。
+   * 回归：中途输出必须能识别所属的工具卡片。
    *
-   * 前端拿 stepId 在 transcript 里找那一条工具卡（`connection.ts` 的
-   * `find(t => t.id === ev.stepId)`），空串谁也匹配不上——整条通道因此静默丢弃，
-   * 而事件照发、界面照旧空白，看起来像命令没有输出。
+   * 前端按 stepId 在 transcript 中查找工具卡片（`connection.ts` 的
+   * `find(t => t.id === ev.stepId)`），空串无法匹配任何卡片，整条输出因此被静默丢弃：
+   * 事件正常发出而界面保持空白，与命令没有输出无法区分。
    */
-  test('中途输出带的 stepId 就是这次调用那一条', async () => {
+  test('中途输出携带的 stepId 与本次调用的 step 一致', async () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'noisy',
@@ -130,8 +129,8 @@ describe('工具中途输出', () => {
     expect(delta?.stepId).toBe(started!.stepId)
   })
 
-  /** 中止仍然要抛出去，且抛之前先把已经产出的排空——那些是真发生过的输出。 */
-  test('中止不吞掉已经产出的中途输出', async () => {
+  /** 中止仍须抛出，抛出之前先发出已产出的输出：这些输出确实已经发生。 */
+  test('中止时不丢弃已经产出的中途输出', async () => {
     const abort = new AbortController()
     const registry = new ToolRegistry()
     registry.register({
@@ -177,11 +176,11 @@ describe('工具中途输出', () => {
 
 describe('ToolContext 生命周期', () => {
   /**
-   * 回归测试：ctx.state 必须跨轮、跨波次保持同一个对象。
+   * 回归测试：ctx.state 必须跨轮、跨波次保持为同一个对象。
    *
-   * 每个执行波次重建一次 ToolContext 的话，files 工具记录的「本轮读过哪些文件」
-   * 立刻丢失，写入守卫把刚读过的文件判成没读过。实测后果：模型绕开写入工具改用
-   * shell 手写文件，写出了 BOM + CR 换行的坏文件。
+   * 每个执行波次重建 ToolContext 时，files 工具记录的本轮已读文件随即丢失，
+   * 写入守卫把刚读过的文件判定为未读。实测后果：模型绕开写入工具改用
+   * shell 直接写入文件，生成了带 BOM 与 CR 换行的错误文件。
    */
   test('state 跨轮与跨波次共享同一对象', async () => {
     const registry = new ToolRegistry()
@@ -240,7 +239,7 @@ describe('ToolContext 生命周期', () => {
       events.push(ev)
     }
 
-    // 三次调用横跨两轮模型响应、多个波次。
+    // 三次调用跨越两轮模型响应与多个波次。
     expect(seenStates).toHaveLength(3)
     // 关键断言：全部是同一个 Map 实例。
     expect(seenStates[1]).toBe(seenStates[0]!)
@@ -305,7 +304,7 @@ describe('ToolContext 生命周期', () => {
 })
 
 describe('工作区文件失效', () => {
-  test('执行类工具没有逐路径明细也广播一次空变更', async () => {
+  test('执行类工具没有逐路径明细时也广播一次空变更', async () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'generator',
@@ -318,7 +317,7 @@ describe('工作区文件失效', () => {
       summary: '测试夹具',
       permissionEffect: 'execute',
       async fn() {
-        // 非零退出前也可能已经写过文件；只要确实执行过，磁盘快照就不能继续复用。
+        // 非零退出前也可能已写入文件；只要已执行，磁盘快照即不得复用。
         return { status: 'failure', message: 'exit 1' }
       },
     })
@@ -346,7 +345,7 @@ describe('工作区文件失效', () => {
 })
 
 describe('权限拒绝', () => {
-  test('被拒的调用不执行，理由回到模型手里，循环继续', async () => {
+  test('被拒的调用不执行，拒绝理由返回给模型，循环继续', async () => {
     const registry = new ToolRegistry()
     let executed = 0
     registry.register({
@@ -405,12 +404,12 @@ describe('权限拒绝', () => {
       events.push(ev)
     }
 
-    // 被拒的调用绝不能真的执行。
+    // 被拒的调用不得执行。
     expect(executed).toBe(0)
     expect(events.some((e) => e.type === 'file.changed')).toBe(false)
 
-    // 拒绝是一条工具失败结果，不是 run 的终点。裁决方给的理由必须随下一轮请求
-    // 发出去——`auto` 模式下那是模型唯一能拿到的信号，收不到它就只能原样重试。
+    // 拒绝是一条工具失败结果，不是 run 的终点。裁决方给出的理由必须随下一轮请求
+    // 发出：`auto` 模式下这是模型唯一能取得的信号，缺少该信号时模型只能原样重试。
     expect(requests.length).toBe(2)
     expect(JSON.stringify(requests[1]?.messages)).toContain('权限规则拦下：夹具')
 
@@ -422,14 +421,14 @@ describe('权限拒绝', () => {
 /**
  * 流空闲超时。
  *
- * `stream_idle_timeout` 必须真的有人发。没有生产者的话，provider 侧抖一下 run
- * 就那么挂着，既不出错也不结束，界面持续转圈。
+ * `stream_idle_timeout` 必须有实际的生产者。没有生产者时，provider 侧短暂异常后 run
+ * 持续停滞，既不出错也不结束，界面持续显示加载状态。
  *
- * 判定在传输层按字节走，所以这一组必须过真实 HTTP：假适配器不经过 `traceFetch`，
- * 断言留在它上面一条也验不到。
+ * 判定在传输层按字节进行，因此相关用例必须经过真实 HTTP：假适配器不经过 `traceFetch`，
+ * 基于假适配器的断言无法验证该路径。
  */
 
-describe('原地打转', () => {
+describe('重复无进展', () => {
   test.each([
     {
       label: '只改无关字段，缺参错误未变，第三轮停止',
@@ -511,11 +510,11 @@ describe('原地打转', () => {
   })
 
   /**
-   * 复现要挡的形状：模型用一模一样的参数反复调同一个只读工具，拿到一模一样的
-   * 结果。不挡的话它会无限请求 provider。这里必须按实际行为判空转；固定轮数只会
-   * 把长任务误杀，而且无法说明模型卡在了哪里。
+   * 复现需要拦截的形状：模型用完全相同的参数反复调用同一个只读工具，取得完全相同的
+   * 结果。不拦截时会无限请求 provider。此处必须按实际行为判定无进展；固定轮数会
+   * 错误终止长任务，且无法说明模型阻塞于何处。
    */
-  test('同样的调用同样的结果三轮之后停下，stopReason=no_progress', async () => {
+  test('相同调用与相同结果连续三轮后停止，stopReason=no_progress', async () => {
     const registry = new ToolRegistry()
     let executed = 0
     registry.register({
@@ -527,7 +526,7 @@ describe('原地打转', () => {
       category: 'session',
       facet: '测试',
       summary: '测试夹具',
-      // 必须声明为纯 read：副作用未知的调用不参与空转判定。
+      // 必须声明为纯 read：副作用未知的调用不参与无进展判定。
       permissionEffect: 'read',
       fn: async () => {
         executed++
@@ -535,7 +534,7 @@ describe('原地打转', () => {
       },
     })
 
-    // 脚本给足十轮，如果判定没生效它会全部跑完。
+    // 脚本提供十轮，判定未生效时会全部执行完毕。
     const turns = Array.from({ length: 10 }, () => [call('stuck')])
     const loop = new AgentLoop({
       adapter: fakeAdapter(turns),
@@ -569,15 +568,15 @@ describe('原地打转', () => {
     }
 
     expect(stopReason).toBe('no_progress')
-    // 停在第三轮，不是第十轮——这条数字就是这个改动的全部价值。
+    // 在第三轮停止，而不是第十轮。
     expect(executed).toBe(3)
   })
 
   /**
-   * 停之前先让模型知道：第二次相同的轮次之后，下一次请求末尾附一条事实；第三次才停，
-   * 停机依据带上重复的工具名。
+   * 停止之前先告知模型：第二次出现相同轮次后，下一次请求末尾附加一条事实；第三次才停止，
+   * 停机依据中包含重复的工具名。
    */
-  test('第二次相同先把事实交给下一次请求，第三次停并说清重复的是什么', async () => {
+  test('第二次相同时将事实附加到下一次请求，第三次停止并注明重复的工具', async () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'stuck',
@@ -616,7 +615,7 @@ describe('原地打转', () => {
       if (ev.type === 'run.finished') finished = ev
     }
     expect(tails).toHaveLength(3)
-    // 第一、二次请求末尾是工具结果；第三次请求末尾是那条事实。
+    // 第一、二次请求末尾是工具结果；第三次请求末尾是该事实。
     expect(tails[1]?.role).toBe('tool')
     expect(tails[2]?.role).toBe('user')
     expect(String(tails[2]?.content)).toBe(
@@ -626,7 +625,7 @@ describe('原地打转', () => {
     expect(finished?.stopDetail).toBe('连续三轮工具调用没有进展：stuck')
   })
 
-  test('连续三轮收到相同 pause_turn 时按真实空转停下', async () => {
+  test('连续三轮收到相同 pause_turn 时按无进展停止', async () => {
     let requests = 0
     const base = fakeAdapter([])
     const adapter: LlmAdapter = {
@@ -675,11 +674,11 @@ describe('原地打转', () => {
   })
 
   /**
-   * 一次响应内的三次相同调用只算一次决策周期：模型尚未看到任何结果，
+   * 一次响应内的三次相同调用只计为一次决策周期：模型尚未看到任何结果，
    * 不构成「看过结果仍重复」。证据按 provider 决策计数，不按工具调用计数，
    * 否则单次响应即可满足三次阈值并提前暂停。
    */
-  test('同一响应内三次相同调用不判打转，下一次请求照发', async () => {
+  test('同一响应内三次相同调用不判定为无进展，下一次请求照常发送', async () => {
     const registry = new ToolRegistry()
     let executed = 0
     registry.register({
@@ -730,11 +729,11 @@ describe('原地打转', () => {
   })
 
   /**
-   * 已执行命令的失败不能证明无副作用——外部状态可能已被修改。
-   * 判定只取确凿事实：非 read 声明且 executed:true 的调用视为副作用未知，
-   * 不参与空转计数。
+   * 已执行命令的失败不能证明没有副作用：外部状态可能已被修改。
+   * 判定只采用确定的事实：非 read 声明且 executed:true 的调用视为副作用未知，
+   * 不参与无进展计数。
    */
-  test('已执行命令的相同失败不判打转，跑满脚本', async () => {
+  test('已执行命令的相同失败不判定为无进展，执行完全部脚本', async () => {
     const registry = new ToolRegistry()
     let executed = 0
     registry.register({
@@ -781,11 +780,11 @@ describe('原地打转', () => {
   })
 
   /**
-   * 混合批的证据必须按 provider 原调用顺序聚合：未知调用记原始下标、
-   * 注册调用记过滤后下标的话，两个只是换了顺序的决策会得到同一个批指纹，
-   * 被并成同一周期。
+   * 混合批次的证据必须按 provider 原调用顺序聚合：若未注册调用记原始下标、
+   * 已注册调用记过滤后下标，两个仅顺序不同的决策会得到同一个批次指纹，
+   * 被合并为同一周期。
    */
-  test('混合批换序算不同决策，逐字重复仍判打转', async () => {
+  test('混合批次调换顺序计为不同决策，逐字重复仍判定为无进展', async () => {
     const registry = new ToolRegistry()
     let executed = 0
     registry.register({
@@ -825,18 +824,18 @@ describe('原地打转', () => {
     const d1 = () => [call('ghost_a'), call('ghost_b'), call('peek')]
     const d2 = () => [call('ghost_a'), call('peek'), call('ghost_b')]
 
-    // 换序：三轮里第二轮顺序不同，不构成重复，跑满脚本。
+    // 调换顺序：三轮中第二轮顺序不同，不构成重复，执行完整个脚本。
     expect(await run([d1(), d2(), d1(), null])).toBe('completed')
     expect(executed).toBe(3)
 
-    // 逐字重复的混合批仍在第三轮停下。
+    // 逐字重复的混合批次仍在第三轮停止。
     executed = 0
     expect(await run([d1(), d1(), d1(), null])).toBe('no_progress')
     expect(executed).toBe(3)
   })
 
-  /** 内部控制工具执行后状态可能已变（如待办账本），字段缺席不算确凿无副作用。 */
-  test('内部控制工具的相同结果不判打转', async () => {
+  /** 内部控制工具执行后状态可能已变化（如待办账本），字段缺失不能证明没有副作用。 */
+  test('内部控制工具的相同结果不判定为无进展', async () => {
     const registry = new ToolRegistry()
     let executed = 0
     registry.register({
@@ -941,8 +940,8 @@ describe('原地打转', () => {
     }
   })
 
-  /** 结果每轮都在变（轮询等待）就不该被判成打转，得让它跑完。 */
-  test('结果在变的不判，跑满脚本', async () => {
+  /** 结果每轮都在变化（轮询等待）时不应判定为无进展，应执行完毕。 */
+  test('结果持续变化时不判定为无进展，执行完全部脚本', async () => {
     const registry = new ToolRegistry()
     let n = 0
     registry.register({
@@ -1077,20 +1076,20 @@ describe('注册表是工具的唯一权威', () => {
     const started = events.filter((e) => e.type === 'tool.started')
     expect(started).toHaveLength(1)
     expect(started[0]?.type === 'tool.started' && started[0].toolName).toBe('read_thing')
-    // 真工具那条必然有动作——挡掉之后下游不再需要任何兜底。
+    // 已注册工具的调用必然有动作：未注册调用被拦截后，下游无需任何后备处理。
     expect(started[0]?.type === 'tool.started' && started[0].action.kind).toBe('read')
 
-    // 这一轮照常收尾，不因为一次编造的名字就报错中断。
+    // 本轮照常结束，不因一次不存在的工具名而报错中断。
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 
   /**
-   * 端点把参数交成合法 JSON 但不是对象时（`null`、数组、标量），调用在执行链之前被拒，
-   * 结果回给模型，run 照常结束。经三协议真实适配器走 HTTP：工具的动作解析读取参数字段，
-   * `null` 交下去会在单次执行的错误处理之外抛出，整轮以 `provider_error` 失败。
+   * 端点返回的参数是合法 JSON 但不是对象时（`null`、数组、标量），调用在进入执行链之前被拒绝，
+   * 结果返回给模型，run 照常结束。经三协议真实适配器发送 HTTP 请求：工具的动作解析读取参数字段，
+   * `null` 传入后会在单次执行的错误处理之外抛出，整轮以 `provider_error` 失败。
    */
-  test('参数不是 JSON 对象的调用被拒，结果回给模型，run 照常结束', async () => {
+  test('参数不是 JSON 对象的调用被拒绝，结果返回给模型，run 照常结束', async () => {
     for (const literal of ['null', '[]', '"x"', '42']) {
       for (const { kind, model } of FAULT_PROTOCOLS) {
         const fault = startFaultServer('tool_then_complete')
@@ -1224,7 +1223,7 @@ describe('注册表是工具的唯一权威', () => {
   })
 })
 
-describe('停止能拽回卡住的工具', () => {
+describe('停止能中止停滞的工具', () => {
   function hangingRegistry(): { registry: ToolRegistry; entered: Promise<void> } {
     const registry = new ToolRegistry()
     let announce: () => void = () => {}
@@ -1244,14 +1243,14 @@ describe('停止能拽回卡住的工具', () => {
       permissionEffect: 'internal_control',
       async fn() {
         announce()
-        // 故意不看 ctx.signal：这条测试要验的正是「等的人不看信号时也停得掉」。
+        // 有意不检查 ctx.signal：本用例验证的正是等待方不检查信号时停止仍然生效。
         return new Promise(() => {}) as never
       },
     })
     return { registry, entered }
   }
 
-  test('工具永不返回时，点停止仍在毫秒级落 user_interrupt', async () => {
+  test('工具永不返回时，点击停止仍在毫秒级以 user_interrupt 结束', async () => {
     const { registry, entered } = hangingRegistry()
     const controller = new AbortController()
     const loop = new AgentLoop({
@@ -1275,7 +1274,7 @@ describe('停止能拽回卡住的工具', () => {
       }),
     })
 
-    // 工具一进去就按停止。
+    // 工具开始执行后立即停止。
     void entered.then(() => controller.abort())
 
     const t0 = Date.now()
@@ -1293,9 +1292,9 @@ describe('停止能拽回卡住的工具', () => {
 
     expect(finished?.status).toBe('interrupted')
     expect(finished?.stopReason).toBe('user_interrupt')
-    // 「毫秒级」——不是等那个工具（它永远不返回）。给 5 秒余量足够宽。
+    // 毫秒级结束，不等待该工具（它永不返回）。5 秒上限留有充足余量。
     expect(ms).toBeLessThan(5_000)
-    // 中断不是错误：不该报红。
+    // 中断不是错误，不应发出 run.error。
     expect(events).not.toContain('run.error')
   }, 10_000)
 })
@@ -1325,7 +1324,7 @@ describe('波次规划', () => {
   const shape = (calls: WireToolCall[]) =>
     planWaves(calls, registry).map((w) => w.map((c) => c.callIndex))
 
-  test('连续的并行安全调用合并成一波，不安全的调用单独成波并切断前后', () => {
+  test('连续的并行安全调用合并为一批，不安全的调用单独成批并分隔前后', () => {
     const calls = [
       call('peek', { path: 'a' }),
       call('peek', { path: 'b' }),
@@ -1335,11 +1334,11 @@ describe('波次规划', () => {
     expect(shape(calls)).toEqual([[0, 1], [2], [3]])
   })
 
-  test('同一资源键不进同一波', () => {
+  test('同一资源键不进入同一批', () => {
     expect(shape([call('peek', { path: 'a' }), call('peek', { path: 'a' })])).toEqual([[0], [1]])
   })
 
-  test('副作用判定只认明确事实', () => {
+  test('副作用判定只采用明确事实', () => {
     expect(provablyNoEffect('read', { status: 'success', message: 'ok' })).toBe(true)
     expect(provablyNoEffect('execute', { status: 'failure', message: 'x' })).toBe(false)
     expect(provablyNoEffect('write', { status: 'failure', executed: false, message: 'x' })).toBe(
@@ -1356,13 +1355,13 @@ describe('波次规划', () => {
 })
 
 /**
- * 投递额度按 provider 决策开账。
+ * 投递额度按 provider 决策计算一次。
  *
- * 余量 = 软阈值 − 决策开始时的占用读数，全部波次共用一份；响应输出把占用推过软阈值时，
- * 在打开第一条工具记录之前先压缩再开账。
+ * 余量 = 软阈值 − 决策开始时的占用读数，全部波次共用一份；响应输出使占用超过软阈值时，
+ * 在开启第一条工具记录之前先压缩，再计算额度。
  */
-describe('投递额度按决策开账', () => {
-  /** 每次调用按固定量申请额度，记下每次是否放行。串行执行，三个调用各占一波。 */
+describe('投递额度按决策计算', () => {
+  /** 每次调用按固定量申请额度，记录每次是否放行。串行执行，三个调用各占一个波次。 */
   function grabRegistry(tokens: number, admitted: boolean[], seen: number[] = []): ToolRegistry {
     const registry = new ToolRegistry()
     registry.register({
@@ -1386,8 +1385,8 @@ describe('投递额度按决策开账', () => {
   }
 
   /**
-   * 第一轮报告的输入量由 `input(本地估算)` 给出的假 adapter：第一轮发起调用，第二轮收尾。
-   * 报告值与估算的比值就是两把尺的比值，额度按它折算。
+   * 假 adapter，第一轮报告的输入量由 `input(本地估算)` 给出：第一轮发起调用，第二轮结束。
+   * 报告值与估算值之比即 provider 真值与本地估算之比，额度按该比值折算。
    */
   function adapterWithUsage(
     calls: WireToolCall[],
@@ -1415,21 +1414,21 @@ describe('投递额度按决策开账', () => {
       history,
       signal: new AbortController().signal,
     })) {
-      // 只看工具那侧记下的额度
+      // 只检查工具一侧记录的额度
     }
   }
 
-  /** 约 30 万 token 的历史，用来让「占用」与「本地估算」都是真实量级。 */
+  /** 约 30 万 token 的历史，使占用与本地估算都达到真实量级。 */
   const bulky: WireMessage[] = [{ role: 'user', content: '甲'.repeat(270_000) }]
 
   /**
-   * F09 的形状：同一决策三个调用分三波执行。逐波重开账的话三次都放行，
-   * 总量越过决策开始时的余量。
+   * 同一决策的三个调用分三个波次执行。若每个波次重新计算额度，三次都会放行，
+   * 总量超过决策开始时的余量。
    */
-  test('三波共用一份额度，不逐波清零', async () => {
+  test('三个波次共用一份额度，不逐波次清零', async () => {
     const admitted: boolean[] = []
-    // 窗口 1M，软阈值 800K；占用几十 token，余量在 80 万–94 万之间（本次响应那条消息让两把尺的比值略大于 1）。
-    // 每次 35 万：两次之和装得下，三次装不下，与余量落在这个区间的哪一点无关。
+    // 窗口 1M，软阈值 800K；占用为数十 token，余量在 80 万–94 万之间（本次响应的消息使真值与估算之比略大于 1）。
+    // 每次 35 万：两次之和在余量内，三次超出余量，与余量在该区间内的具体取值无关。
     const loop = new AgentLoop({
       adapter: adapterWithUsage([call('grab'), call('grab'), call('grab')], (e) => e),
       registry: grabRegistry(350_000, admitted),
@@ -1456,16 +1455,16 @@ describe('投递额度按决策开账', () => {
     })
     await drain(loop, bulky)
     expect(estimated).toBeGreaterThan(250_000)
-    // 两把尺一致时额度就是软阈值减占用；余下的差是本次 assistant 消息的估算。
+    // 真值与估算一致时，额度等于软阈值减占用；剩余差值是本次 assistant 消息的估算。
     expect(seen[0]!).toBeGreaterThan(800_000 - estimated - 100)
     expect(seen[0]!).toBeLessThanOrEqual(800_000 - estimated + 100)
   })
 
   /**
-   * 余量按两把尺在整份请求上的比值折成估算尺，只缩不放：整份请求的比值是平均值，
-   * 一段结果的比值可能低得多（生僻字正文 0.65），按平均值放大会让一次投递的真值超出窗口。
+   * 余量按整份请求上真值与估算之比折算为估算值，只缩小不放大：整份请求的比值是平均值，
+   * 单段结果的比值可能低得多（生僻字正文为 0.65），按平均值放大会使一次投递的真值超出窗口。
    */
-  test('估算比 provider 真值高时额度不放大，就是真实余量', async () => {
+  test('估算高于 provider 真值时额度不放大，等于真实余量', async () => {
     const seen: number[] = []
     let estimated = 0
     const loop = new AgentLoop({
@@ -1484,7 +1483,7 @@ describe('投递额度按决策开账', () => {
     expect(seen[0]!).toBeLessThanOrEqual(real + 100)
   })
 
-  test('估算比 provider 真值低时额度按比值缩小', async () => {
+  test('估算低于 provider 真值时额度按比值缩小', async () => {
     const seen: number[] = []
     let estimated = 0
     const loop = new AgentLoop({
@@ -1504,10 +1503,10 @@ describe('投递额度按决策开账', () => {
   })
 
   /**
-   * 响应的输出把占用推过软阈值：不压缩的话这次决策的额度为 0，读取全部失败。
-   * 压缩记录必须落在第一条工具记录之前，否则同一决策会被拆成两个单元。
+   * 响应的输出使占用超过软阈值：不压缩时本次决策的额度为 0，读取全部失败。
+   * 压缩记录必须位于第一条工具记录之前，否则同一决策会被拆分为两个单元。
    */
-  test('决策开始占用越过软阈值：先压缩，压缩记录在工具记录之前，再按压缩后的占用开账', async () => {
+  test('决策开始时占用超过软阈值：先压缩，压缩记录在工具记录之前，再按压缩后的占用计算额度', async () => {
     const order: string[] = []
     const persist = noopPersistence()
     const admitted: boolean[] = []
@@ -1556,10 +1555,10 @@ describe('投递额度按决策开账', () => {
   })
 
   /**
-   * 软阈值以下端口只收纳或跳过、不调模型：跳过时什么都没改，不播报开始、不落记录。
-   * 越过软阈值时跳过照旧播报并落记录——上下文仍在软阈值以上。
+   * 软阈值以下时压缩端口只收纳或跳过，不调用模型：跳过时没有任何改动，不发出开始事件，也不写入记录。
+   * 超过软阈值时，跳过仍发出事件并写入记录：上下文仍在软阈值以上。
    */
-  test('软阈值以下的跳过不播报、不落记录；越过软阈值时照旧', async () => {
+  test('软阈值以下的跳过不发出事件、不写入记录；超过软阈值时照常发出并记录', async () => {
     const cases: [number, { events: string[]; recorded: boolean }][] = [
       [790_000, { events: [], recorded: false }],
       [850_000, { events: ['started', 'skipped'], recorded: true }],

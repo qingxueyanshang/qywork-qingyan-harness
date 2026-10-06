@@ -3,12 +3,10 @@
  *
  * 覆盖范围：`api/memory.ts` 全部路由——`/api/memory`、`/api/memory/<key>`、
  * `/api/skills`（GET）、`/api/skills/import`、`/api/skills/<目录名>`（DELETE）。
- * 扫描逻辑本身由 `tools/src/scopes.test.ts` 钉住，这里不重复。
+ * 扫描逻辑本身由 `tools/src/scopes.test.ts` 锁定，此处不重复。
  *
- * 钉的是**按层分列引入的那条新风险**：列表现在把被盖住的条目也列出来，用户
- * 因此点得开一条不生效的全局记忆。读单条如果还按优先级找，编辑框里装的就是
- * 项目层那份正文，而保存写回的是全局那份——一次不改任何字的保存就把两层
- * 洗成同一份，静默且不可恢复。
+ * 锁定按层分列的列表：被同名条目覆盖的条目同样列出，并标明由哪一层覆盖；
+ * 删除路径只接受单个目录名。
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -28,7 +26,7 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true })
 })
 
-/** 一个工作区 + 一个临时的全局根。两层各自能写记忆。 */
+/** 一个工作区与一个临时的全局根。两层均可写入记忆。 */
 async function workspace(): Promise<{ root: string; home: string }> {
   const root = await mkdtemp(join(tmpdir(), 'qywork-memapi-ws-'))
   const home = await mkdtemp(join(tmpdir(), 'qywork-memapi-home-'))
@@ -42,7 +40,7 @@ async function write(root: string, key: string, body: string): Promise<void> {
   await writeFile(join(root, 'memory', `${key}.md`), body, 'utf8')
 }
 
-/** 只用得到 `workspaceRoot` 一个字段，其余不造——造了就成了集成测试。 */
+/** 只需要 `workspaceRoot` 一个字段，其余字段不构造：构造后即成为集成测试。 */
 function call(root: string, path: string, init?: RequestInit): Promise<Response | null> {
   const url = new URL(`http://x${path}`)
   return handleMemoryApi(url, new Request(url.href, init), {
@@ -51,7 +49,7 @@ function call(root: string, path: string, init?: RequestInit): Promise<Response 
 }
 
 describe('记忆列表按层分列', () => {
-  test('两层的条目都回，被盖住的那条标出是谁盖的', async () => {
+  test('返回两层的全部条目，被覆盖的条目标明覆盖它的层', async () => {
     const { root, home } = await workspace()
     await write(join(root, '.agents'), 'style', '项目的')
     await write(home, 'style', '全局的')
@@ -71,8 +69,8 @@ describe('记忆列表按层分列', () => {
   })
 })
 
-describe('删一个技能', () => {
-  test('删的是目录名，删完就扫不到了；删一个不存在的回 404', async () => {
+describe('删除技能', () => {
+  test('按目录名删除，删除后扫描不到；删除不存在的技能返回 404', async () => {
     const { root } = await workspace()
     const dir = join(root, '.agents', 'skills', 'release')
     await mkdir(dir, { recursive: true })
@@ -88,11 +86,11 @@ describe('删一个技能', () => {
   })
 
   /*
-   * 单独一段 `..` 到不了这里：`new URL()` 在解析阶段就把它连同上一段一起折掉
-   * （`/api/skills/..` → `/api/`），那条路由不匹配。编码成 `%2E%2E` 也一样，
-   * WHATWG 先解码再折。**留下来能到达处理器的是这几种**，所以挡的就是它们。
+   * 单独一段 `..` 无法到达处理器：`new URL()` 在解析阶段将它与上一段一并消去
+   * （`/api/skills/..` → `/api/`），路由不匹配。编码为 `%2E%2E` 同样如此，
+   * WHATWG 先解码再消去。能够到达处理器的只有下列几种形式，因此拦截的正是它们。
    */
-  test('目录名里带分隔符或 .. 的删除请求被拒——那是一条任意目录删除', async () => {
+  test('目录名含分隔符或 .. 的删除请求被拒绝，否则构成任意目录删除', async () => {
     const { root } = await workspace()
     for (const name of ['a%2Fb', 'a%5Cb', '%2e%2e%2f', '%2e%2e%5cx']) {
       const res = await call(root, `/api/skills/${name}?scope=project`, { method: 'DELETE' })
@@ -101,8 +99,8 @@ describe('删一个技能', () => {
   })
 })
 
-describe('导入一个技能目录', () => {
-  test('目录里没有 SKILL.md 就拒绝——否则导进来的技能一条都扫不到', async () => {
+describe('导入技能目录', () => {
+  test('目录中没有 SKILL.md 时拒绝，否则导入的技能无法被扫描到', async () => {
     const { root } = await workspace()
     const src = await mkdtemp(join(tmpdir(), 'qywork-skillsrc-'))
     dirs.push(src)
@@ -113,7 +111,7 @@ describe('导入一个技能目录', () => {
     expect(res!.status).toBe(422)
   })
 
-  test('整个目录拷进来，附带的文件一起过去', async () => {
+  test('复制整个目录，附带的文件一并复制', async () => {
     const { root } = await workspace()
     const src = await mkdtemp(join(tmpdir(), 'qywork-skillsrc-'))
     dirs.push(src)
@@ -132,7 +130,7 @@ describe('导入一个技能目录', () => {
 
     const found = await scanSkills(scopeRoots(root))
     expect(found.map((s) => s.name)).toEqual(['deploy'])
-    // 附带脚本必须一起过去：技能不是单个 markdown，那正是它不能在网页上编辑的原因。
+    // 附带脚本必须一并复制：技能不是单个 markdown 文件，这也是它不在网页上编辑的原因。
     expect(await readFile(join(found[0]!.dir, 'run.sh'), 'utf8')).toBe('echo hi')
   })
 })

@@ -1,11 +1,11 @@
 /**
- * 画布工具：大模型经画布端口（`ctx.canvas`）读、改、运行工作区里的 `*.canvas.json`。
+ * 画布工具：大模型经画布端口（`ctx.canvas`）读取、修改、运行工作区中的 `*.canvas.json`。
  *
  * 读取、编辑、运行与取回分别声明工具及参数；取回只查询已有任务，不重新提交生成。
  *
- * 读写与运行全部由服务端画布服务执行，与界面同一个实例：写入次序、在跑状态与失败原文只有那一份，
- * 大模型写进的节点在写入当下就推给界面，不等本次工具调用结束。
- * 运行用本轮的生成端口（`ctx.media`），花费进本轮。
+ * 读写与运行全部由服务端画布服务执行，与界面共用同一个实例：写入次序、运行中状态与失败原文只有一份，
+ * 大模型写入的节点在写入时即推送给界面，不等待本次工具调用结束。
+ * 运行使用本轮的生成端口（`ctx.media`），费用计入本轮。
  */
 
 import type { CanvasPort, ToolOutcome, ToolSpec } from '@qywork/agent'
@@ -19,7 +19,7 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-/** 画布写成给大模型读的几行：节点（id、类型、名字、状态、路径或提示词）与连线。 */
+/** 把画布转写为供大模型读取的文本行：节点（id、类型、名称、状态、路径或提示词）与连线。 */
 function describe(view: CanvasView): string {
   const byId = new Map(view.doc.nodes.map((n) => [n.id, n]))
   const lines = [
@@ -72,19 +72,19 @@ function describe(view: CanvasView): string {
 const CANVAS_NOTE =
   '画布是工作区里的 *.canvas.json，只引用工作区文件：file 节点是一个文件路径，' +
   'generate 节点是一张生成卡（输出类别、提示词、模型、参数与历次结果），timeline 节点是一条视频时间线' +
-  '（clips 按顺序首尾相接，每段 {"path":"视频路径","in":起始秒,"out":结束秒}，只引用源文件、不改它；成片要用户在界面上点导出，工具做不了）。连线把素材接到生成卡上，用途 role 为 ' +
-  'reference（参考图）、first_frame / last_frame（首尾帧，不能与参考素材同时给）、video（参考视频）、audio（参考音频）。'
+  '（clips 按顺序首尾相接，每段 {"path":"视频路径","in":起始秒,"out":结束秒}，只引用、不修改源文件；成片须由用户在界面上点击导出，本工具无法完成）。连线将素材连接到生成卡，用途 role 为 ' +
+  'reference（参考图）、first_frame / last_frame（首尾帧，不能与参考素材同时提供）、video（参考视频）、audio（参考音频）。'
 
 export const readCanvasTool: ToolSpec = {
   name: 'read_canvas',
   description:
-    '读画布。' +
+    '读取画布。' +
     CANVAS_NOTE +
-    '给 path 返回节点、连线与各节点状态（正常、文件缺失、未生成、生成中、待取回、失败）；不给 path 列出工作区里的画布。',
+    '提供 path 时返回节点、连线与各节点状态（正常、文件缺失、未生成、生成中、待取回、失败）；省略 path 时列出工作区里的画布。',
   parameters: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: '画布文件的工作区路径；不给时列出工作区里的画布' },
+      path: { type: 'string', description: '画布文件的工作区路径；省略时列出工作区里的画布' },
     },
     required: [],
     additionalProperties: false,
@@ -93,7 +93,7 @@ export const readCanvasTool: ToolSpec = {
   objectLabel: '画布',
   category: 'media',
   facet: '生成',
-  summary: '读画布或列出工作区里的画布',
+  summary: '读取画布或列出工作区里的画布',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'read',
   parallelSafe: true,
@@ -106,7 +106,7 @@ export const readCanvasTool: ToolSpec = {
         const list = await canvas.list()
         return {
           status: 'success',
-          message: list.length ? `工作区里的画布：\n${list.join('\n')}` : '工作区里还没有画布',
+          message: list.length ? `工作区里的画布：\n${list.join('\n')}` : '工作区里尚无画布',
           data: { canvases: list },
         }
       }
@@ -123,14 +123,14 @@ export const editCanvasTool: ToolSpec = {
   description:
     '修改画布的节点、提示词、参数与连线，不发起生成。' +
     CANVAS_NOTE +
-    '先用 read_canvas 看节点与 id。' +
+    '先用 read_canvas 查看节点与 id。' +
     'ops_json 是一批操作的 JSON 数组，整批生效或整批不生效。操作：' +
     '{"op":"add_file","path":"工作区路径"}、{"op":"add_generate","output":"image|video|audio","prompt":"…"}、' +
     '{"op":"update","id":"节点或连线 id",…要改的字段}、{"op":"connect","from":"id","to":"生成卡 id","role":"…"}、' +
-    '{"op":"remove","id":"节点或连线 id"}（删某一版再加 "version"）、{"op":"set_mode","id":"视频卡 id","mode":"reference|first_last"}、' +
-    '{"op":"add_timeline","clips":[…]}（改片段用 update 的 clips 整组替换，muted 切换整条静音）；' +
+    '{"op":"remove","id":"节点或连线 id"}（删除某一版时另加 "version"）、{"op":"set_mode","id":"视频卡 id","mode":"reference|first_last"}、' +
+    '{"op":"add_timeline","clips":[…]}（修改片段时用 update 的 clips 整组替换，muted 切换整条静音）；' +
     'add_file、add_generate、add_timeline 可选 name、x、y，或用 "beside":"节点 id" 放在该节点右侧的空位、"near":{"x":…,"y":…} 放在该点附近的空位；add_generate 可选 provider、model、params（取值见本轮「可用的生成模型」）。' +
-    'add_* 与 connect 可带 "ref":"$名字"，同一批后面的操作与提示词里用它代替新节点的 id。' +
+    'add_* 与 connect 可带 "ref":"$名字"，同一批中后续的操作与提示词用它代替新节点的 id。' +
     '提示词中用 @[节点 id] 指代素材，引用未连线的素材时自动连线。运行生成卡使用 run_canvas。',
   parameters: {
     type: 'object',

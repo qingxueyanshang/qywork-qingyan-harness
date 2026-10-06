@@ -1,24 +1,24 @@
 /**
- * 画布文档：工作区里的一个 `*.canvas.json`。
+ * 画布文档：工作区中的一个 `*.canvas.json`。
  *
- * 只存布局、节点名、生成节点的提示词与历次版本、时间线的片段、连线，以及每次生成的记录。图片、视频、音频、文本一律是
- * 工作区路径的引用，画布不存字节。修改只经 `applyCanvasOps`（界面与大模型可提交的操作）与 `addVersions` /
- * `settleVersion` / `recordRun`（只由服务端画布服务调用），都是纯函数。
+ * 只保存布局、节点名称、生成节点的提示词与历次版本、时间线的片段、连线，以及每次生成的记录。图片、视频、音频、文本一律是
+ * 工作区路径的引用，画布不保存字节。修改只经由 `applyCanvasOps`（界面与大模型可提交的操作）与 `addVersions` /
+ * `settleVersion` / `recordRun`（只由服务端画布服务调用），均为纯函数。
  *
  * 不变式：
- * - 节点、连线、版本的 id 全文唯一，由本模块分配，不复用；
- * - 连线只连到生成节点，用途与两端类别相符，首尾帧与参考素材不同时出现；
- * - 生成节点提示词里的每个 `@[id]` 都有一条从该节点连过来的输入线。断线的操作把对应的 `@[id]`
- *   换成节点名纯文本，改提示词新引用了未连的节点时补一条线。
+ * - 节点、连线、版本的 id 在全文中唯一，由本模块分配，不复用；
+ * - 连线只连接到生成节点，用途与两端类别相符，首尾帧与参考素材不同时出现；
+ * - 生成节点提示词中的每个 `@[id]` 都有一条从该节点连入的输入线。断开连线的操作把对应的 `@[id]`
+ *   替换为节点名称纯文本；修改提示词后新引用了未连接的节点时补充一条连线。
  */
 
 import { MEDIA_INPUT_ROLES, MEDIA_OUTPUTS, type MediaInputRole, type MediaOutput } from './media.ts'
 import { baseNameOf, isInlineImage, isInlineVideo } from './model.ts'
 
-/** 写进文件的 `version`。格式变了就加一，读不认识的版本直接拒绝。 */
+/** 写入文件的 `version`。格式变化时加一，读取时遇到未知版本直接拒绝。 */
 export const CANVAS_SCHEMA_VERSION = 1
 
-/** 一次生成实际发出的请求内容。`prompt` 是编译后的那一份（`@[id]` 已换成模型的写法）。 */
+/** 一次生成实际发出的请求内容。`prompt` 是编译后的文本（`@[id]` 已替换为模型的写法）。 */
 export interface CanvasMade {
   prompt: string
   provider: string
@@ -36,10 +36,10 @@ export interface CanvasPixels {
 
 export interface CanvasVersion {
   id: string
-  /** 产物的工作区路径；视频还在远端时是任务记录（`.task.json`）的路径。 */
+  /** 产物的工作区路径；视频仍在远端时为任务记录（`.task.json`）的路径。 */
   path: string
   made: CanvasMade
-  /** 产物的像素宽高，服务端落盘时从文件头读出；读不出（音频、任务记录、不认识的格式）时没有。 */
+  /** 产物的像素宽高，由服务端落盘时从文件头读取；无法读取（音频、任务记录、未知格式）时缺省。 */
   size?: CanvasPixels
   /** 本次生成有可用产物但未完整返回；跟随结果保存，切换版本或重启后仍可查看。 */
   warning?: string
@@ -48,7 +48,7 @@ export interface CanvasVersion {
 export interface CanvasFileNode {
   id: string
   type: 'file'
-  /** 缺省显示文件名去扩展名。 */
+  /** 缺省时显示去掉扩展名的文件名。 */
   name?: string
   path: string
   x: number
@@ -57,7 +57,7 @@ export interface CanvasFileNode {
   h: number
 }
 
-/** 生成节点就是结果位：`versions` 是历次结果，`current` 是当前显示那一版的 id。 */
+/** 生成节点即结果位置：`versions` 是历次结果，`current` 是当前显示版本的 id。 */
 export interface CanvasGenerateNode {
   id: string
   type: 'generate'
@@ -68,18 +68,18 @@ export interface CanvasGenerateNode {
   w: number
   h: number
   prompt: string
-  /** 与 `model` 同给同不给；都不给用该类别的默认模型。 */
+  /** 与 `model` 同时给出或同时省略；都省略时使用该类别的默认模型。 */
   provider?: string
   model?: string
   params: Record<string, unknown>
   /** 各模型的参数选择；当前模型以 params 为准，键是 [provider, model] 的 JSON。 */
   paramsByModel?: Record<string, Record<string, unknown>>
   versions: CanvasVersion[]
-  /** 有版本时必有。 */
+  /** 有版本时必须存在。 */
   current?: string
 }
 
-/** 时间线上的一段：源视频 `path` 里从 `in` 到 `out` 秒（`0 ≤ in < out`）。 */
+/** 时间线上的一个片段：源视频 `path` 中从 `in` 到 `out` 秒（`0 ≤ in < out`）。 */
 export interface CanvasClip {
   path: string
   in: number
@@ -87,8 +87,8 @@ export interface CanvasClip {
 }
 
 /**
- * 时间线：一条视频轨，片段按数组顺序首尾相接。剪辑只改片段的入点出点与顺序，不改源文件；
- * 成片由界面导出成新文件。`muted` 为真时整条轨道静音，导出不带音轨。
+ * 时间线：一条视频轨道，片段按数组顺序首尾相接。剪辑只修改片段的入点、出点与顺序，不修改源文件；
+ * 成片由界面导出为新文件。`muted` 为真时整条轨道静音，导出时不带音轨。
  */
 export interface CanvasTimelineNode {
   id: string
@@ -104,7 +104,7 @@ export interface CanvasTimelineNode {
 
 export type CanvasNode = CanvasFileNode | CanvasGenerateNode | CanvasTimelineNode
 
-/** 输入线：`from` 的内容作为 `to` 的输入，用途见 `MediaInputRole`。线在数组里的顺序即输入顺序。 */
+/** 输入线：`from` 的内容作为 `to` 的输入，用途见 `MediaInputRole`。连线在数组中的顺序即输入顺序。 */
 export interface CanvasEdge {
   id: string
   from: string
@@ -116,13 +116,13 @@ export interface CanvasDoc {
   version: typeof CANVAS_SCHEMA_VERSION
   nodes: CanvasNode[]
   edges: CanvasEdge[]
-  /** 生成记录，按结束先后排。没有记录时文件里不写这个键。 */
+  /** 生成记录，按结束时间排序。没有记录时文件中不写入该键。 */
   runs?: CanvasRunRecord[]
 }
 
 /**
- * 一次生成（提交或取回）的记录，界面与 Agent 发起的都记，结束时追加一条。删节点、删版本都不删记录。
- * 失败原文只在这里落盘；`cost` 与账本记的是同一笔，账本是全局合计，这里只管本画布。
+ * 一次生成（提交或取回）的记录，界面与 Agent 发起的生成都记录，结束时追加一条。删除节点或版本时不删除记录。
+ * 失败原文只在此处落盘；`cost` 与账本记录的是同一笔花费，账本是全局合计，此处只统计本画布。
  */
 export interface CanvasRunRecord {
   /** 生成卡的节点 id。 */
@@ -132,39 +132,39 @@ export interface CanvasRunRecord {
   /** 开始与结束时刻，ISO 8601。 */
   start: string
   end: string
-  /** `pending`：远端任务还在，可以取回。`cancelled`：排队中撤销，不计费。 */
+  /** `pending`：远端任务仍存在，可以取回。`cancelled`：排队期间撤销，不计费。 */
   result: 'done' | 'failed' | 'pending' | 'cancelled'
-  /** 没有发出请求就失败（没有可用模型）时没有。 */
+  /** 未发出请求即失败（没有可用模型）时缺省。 */
   provider?: string
   model?: string
-  /** 远端任务号。只有视频有。 */
+  /** 远端任务号。仅视频生成具有。 */
   task?: string
-  /** 发出的提示词（编译后）、参数与输入。取回不提交，没有这三项。 */
+  /** 发出的提示词（编译后）、参数与输入。取回不重新提交，因此没有这三项。 */
   prompt?: string
   params?: Record<string, unknown>
   inputs?: { role: MediaInputRole; path: string }[]
-  /** 失败、未能取回时的原文。 */
+  /** 失败或未能取回时的原文。 */
   message?: string
-  /** 接口回报用量折算的花费。拿到结果才计费，其余结果没有。 */
+  /** 按接口回报的用量折算的花费。取得结果时才计费，其他结果没有该字段。 */
   cost?: number
   currency?: string
 }
 
 /**
- * 节点在界面上的状态。由服务端按磁盘与在跑集合推出，不存盘。
- * 先后次序：在跑 > 待取回 > 失败 > 空 > 缺失 > 正常；生成中与待取回看全部版本，不只看 `current`。
+ * 节点在界面上的状态。由服务端根据磁盘与运行中集合推导，不落盘。
+ * 优先级：运行中 > 待取回 > 失败 > 空 > 缺失 > 正常；生成中与待取回检查全部版本，而不只检查 `current`。
  */
 export type CanvasNodeState =
   | { state: 'normal' }
   | { state: 'missing' }
   | { state: 'empty' }
-  /** `phase`：远端任务排队中还是生成中，平台回报过才有；图像与音频这类一次请求的生成没有。 */
+  /** `phase`：远端任务处于排队中还是生成中，仅在平台回报后存在；图像与音频等单次请求的生成没有该字段。 */
   | { state: 'running'; startedAt: number; phase?: 'queued' | 'running' }
-  /** `version`：点「取回」时取哪一版。 */
+  /** `version`：点击「取回」时取回的版本。 */
   | { state: 'pending'; version: string }
   | { state: 'failed'; message: string }
 
-/** 读画布接口的出参：文档加各节点状态。 */
+/** 读取画布接口的返回值：文档与各节点状态。 */
 export interface CanvasView {
   /** 工作区相对路径。 */
   path: string
@@ -172,19 +172,19 @@ export interface CanvasView {
   states: Record<string, CanvasNodeState>
 }
 
-/** 一次运行或取回的结果。`pending`：远端任务还在，这一版留着等取回。 */
+/** 一次运行或取回的结果。`pending`：远端任务仍存在，该版本保留以待取回。 */
 export type CanvasRunResult =
   | { ok: true; paths: string[]; warning?: string }
   | { ok: false; message: string; pending: boolean }
 
-/** 视频生成节点的输入模式。不存盘，由输入线的用途推出（`modeOf`）。 */
+/** 视频生成节点的输入模式。不落盘，由输入线的用途推导（`modeOf`）。 */
 export type CanvasMode = 'reference' | 'first_last'
 
 /**
- * 界面与大模型能提交的操作。
+ * 界面与大模型可提交的操作。
  *
- * `ref`：以 `$` 开头的批内名字。同一批后面的操作可以用它代替还没分配的 id（`id` / `from` / `to` 与
- * 提示词里的 `@[$名字]`），应用结果回报名字到 id 的对照。`null` 表示清掉该字段。
+ * `ref`：以 `$` 开头的批内名称。同一批中后续的操作可以用它代替尚未分配的 id（`id` / `from` / `to` 与
+ * 提示词中的 `@[$名称]`），应用结果返回名称到 id 的对照。`null` 表示清除该字段。
  */
 export type CanvasOp =
   | {
@@ -192,15 +192,15 @@ export type CanvasOp =
       ref?: string
       path: string
       name?: string
-      /** 放在这个节点（id 或批内名字）右侧的第一个空位。给了 `x` / `y` 时以它们为准。 */
+      /** 放在该节点（id 或批内名称）右侧的第一个空位。给出 `x` / `y` 时以其为准。 */
       beside?: string
-      /** 以这一点为中心放，与已有节点相交就下移到空位。优先级低于 `x` / `y` 与 `beside`。 */
+      /** 以该点为中心放置，与已有节点相交时下移到空位。优先级低于 `x` / `y` 与 `beside`。 */
       near?: { x: number; y: number }
       x?: number
       y?: number
       w?: number
       h?: number
-      /** 文件的像素宽高，没给 `w` / `h` 时框按它的比例定。只由服务端核验路径时填，提交的操作里不认。 */
+      /** 文件的像素宽高，未给出 `w` / `h` 时按其比例确定框。只由服务端核验路径时填写，提交的操作中不接受该字段。 */
       size?: CanvasPixels
     }
   | {
@@ -246,7 +246,7 @@ export type CanvasOp =
       params?: Record<string, unknown>
       current?: string
       path?: string
-      /** 同 `add_file` 的 `size`，随 `path` 一起。 */
+      /** 同 `add_file` 的 `size`，与 `path` 一起提供。 */
       size?: CanvasPixels
       role?: MediaInputRole
       /** 时间线的全部片段，整组替换。 */
@@ -261,14 +261,14 @@ export type CanvasResult =
   | { ok: true; doc: CanvasDoc; refs: Record<string, string> }
   | { ok: false; error: string }
 
-/** 没有节点的画布。新建画布文件写的就是它。 */
+/** 没有节点的画布。新建画布文件时写入该内容。 */
 export function emptyCanvas(): CanvasDoc {
   return { version: CANVAS_SCHEMA_VERSION, nodes: [], edges: [] }
 }
 
 const ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
 
-/** 随机 8 位。节点、连线、版本共用一个 id 空间。 */
+/** 随机 8 位字符。节点、连线、版本共用一个 id 空间。 */
 export function newCanvasId(): string {
   const bytes = new Uint8Array(8)
   crypto.getRandomValues(bytes)
@@ -282,14 +282,14 @@ const REF_RE = /^\$[A-Za-z0-9_-]{1,64}$/
 const MENTION_RE = /@\[(\$?[A-Za-z0-9_-]{1,64})\]/g
 const AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|flac|opus)$/i
 
-/** 提示词里 `@[id]` 引用的 id，按首次出现的顺序去重。 */
+/** 提示词中 `@[id]` 引用的 id，按首次出现顺序去重。 */
 export function mentionsOf(prompt: string): string[] {
   return [...new Set([...prompt.matchAll(MENTION_RE)].map((m) => m[1]!))]
 }
 
 const TEXT_RE = /\.(md|txt)$/i
 
-/** 工作区文件放上画布按哪一类显示：图片、视频、音频按媒体，`.md` / `.txt` 显示正文，其余回 null（只显示文件名）。 */
+/** 工作区文件放到画布上时的显示类别：图片、视频、音频按媒体显示，`.md` / `.txt` 显示正文，其余返回 null（只显示文件名）。 */
 export type CanvasFileKind = MediaOutput | 'text'
 export const CANVAS_FILE_KINDS: readonly CanvasFileKind[] = [...MEDIA_OUTPUTS, 'text']
 
@@ -301,7 +301,7 @@ export function canvasFileKind(path: string): CanvasFileKind | null {
   return null
 }
 
-/** 节点能作为哪一类输入。文件按扩展名判；判不出的（文本、压缩包等）不能作为生成的输入。 */
+/** 节点可作为哪一类输入。文件按扩展名判定；无法判定的（文本、压缩包等）不能作为生成的输入。 */
 export function canvasMediaOf(node: CanvasNode): MediaOutput | null {
   if (node.type === 'generate') return node.output
   if (node.type === 'timeline') return null
@@ -309,7 +309,7 @@ export function canvasMediaOf(node: CanvasNode): MediaOutput | null {
   return kind === 'text' ? null : kind
 }
 
-/** 节点在界面与提示词纯文本里的名字。 */
+/** 节点在界面与提示词纯文本中的名称。 */
 export function displayNameOf(node: CanvasNode): string {
   if (node.type !== 'file' || node.name) return node.name ?? ''
   const base = baseNameOf(node.path)
@@ -318,16 +318,16 @@ export function displayNameOf(node: CanvasNode): string {
 }
 
 /**
- * 提示词里指代第 n 个素材的写法，按类别登记，`{n}` 从 1 起、按类别分别计数（如 `图片{n}`）。
- * 由生成目录按模型给出，见 `MediaModelSpec.mention`。
+ * 提示词中指代第 n 个素材的写法，按类别登记，`{n}` 从 1 开始、按类别分别计数（如 `图片{n}`）。
+ * 由生成目录按模型提供，见 `MediaModelSpec.mention`。
  */
 export type MentionStyle = Partial<Record<MediaOutput, string>>
 
 /**
- * 把提示词里的 `@[id]` 编译成发给模型的文字。
+ * 把提示词中的 `@[id]` 编译为发给模型的文字。
  *
- * 参考素材（参考图、参考视频、参考音频）按它在本次输入里同类别的序号套 `style`；首帧、尾帧、没登记写法的类别、
- * 不在输入里的节点换成节点名：各家文档没有说首尾帧是否计入编号，不猜。
+ * 参考素材（参考图、参考视频、参考音频）按其在本次输入中同类别的序号套用 `style`；首帧、尾帧、未登记写法的类别、
+ * 不在输入中的节点替换为节点名称：各模型的文档均未说明首尾帧是否计入编号，因此不做推测。
  */
 export function compilePrompt(doc: CanvasDoc, nodeId: string, style: MentionStyle = {}): string {
   const node = doc.nodes.find((n) => n.id === nodeId)
@@ -357,14 +357,14 @@ export function inputsOf(doc: CanvasDoc, nodeId: string): CanvasEdge[] {
   return doc.edges.filter((e) => e.to === nodeId)
 }
 
-/** 视频生成节点当前的输入模式：有首帧或尾帧线就是首尾帧，否则是参考。 */
+/** 视频生成节点当前的输入模式：存在首帧或尾帧连线时为首尾帧，否则为参考。 */
 export function modeOf(doc: CanvasDoc, nodeId: string): CanvasMode {
   return inputsOf(doc, nodeId).some((e) => e.role === 'first_frame' || e.role === 'last_frame')
     ? 'first_last'
     : 'reference'
 }
 
-/** 工作区相对路径，正斜杠分隔，不含 `.` / `..` 段。工作区边界由服务端再按真实路径核一次。 */
+/** 工作区相对路径，以正斜杠分隔，不含 `.` / `..` 段。工作区边界由服务端按真实路径再核对一次。 */
 function isRelativePath(path: string): boolean {
   if (!path || path.includes('\\') || path.startsWith('/') || /^[A-Za-z]:/.test(path)) return false
   return path.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..')
@@ -383,23 +383,23 @@ const FILE_SIZE: Record<MediaOutput | 'other', [number, number]> = {
   other: [220, 138],
 }
 /**
- * 时间线的框：宽度固定；空时只有工具行、刻度与轨道（`TIMELINE_BARE`），有片段后上方多出预览区。
- * 预览区按 16:9 铺满框宽：框宽减去预览区左右各 8 的外边距（`canvas.css` 的 `.canvas-tl-view`），再按 16:9 折成高。
- * 改这两个常量或那几处样式时两边一起改，否则 16:9 的画面两侧会留边。
+ * 时间线的框：宽度固定；为空时只有工具行、刻度与轨道（`TIMELINE_BARE`），有片段后上方增加预览区。
+ * 预览区按 16:9 占满框宽：框宽减去预览区左右各 8 的外边距（`canvas.css` 的 `.canvas-tl-view`），再按 16:9 换算为高度。
+ * 修改这两个常量或相关样式时须同步修改另一侧，否则 16:9 的画面两侧会留出空白。
  */
 export const TIMELINE_W = 480
 const TIMELINE_BARE = 120
 const TIMELINE_FULL = TIMELINE_BARE + Math.round(((TIMELINE_W - 16) * 9) / 16)
 
-/** 时间线的框高：有片段时带预览区。 */
+/** 时间线的框高：有片段时包含预览区。 */
 function timelineHeight(clips: readonly CanvasClip[]): number {
   return clips.length ? TIMELINE_FULL : TIMELINE_BARE
 }
 
-/** 片段不成立的原因，成立回 null。源文件的时长由服务端核对。 */
+/** 片段不合法的原因，合法时返回 null。源文件的时长由服务端核对。 */
 function clipProblem(clip: CanvasClip): string | null {
-  if (!isRelativePath(clip.path)) return `不是工作区里的相对路径：${clip.path}`
-  if (!isInlineVideo(clip.path)) return `只有视频能放进时间线：${clip.path}`
+  if (!isRelativePath(clip.path)) return `不是工作区中的相对路径：${clip.path}`
+  if (!isInlineVideo(clip.path)) return `只有视频可以加入时间线：${clip.path}`
   if (
     !Number.isFinite(clip.in) ||
     !Number.isFinite(clip.out) ||
@@ -411,15 +411,15 @@ function clipProblem(clip: CanvasClip): string | null {
   return null
 }
 
-/** 没给位置时新节点放在最右边那个节点再往右这么远；`beside` 放在那个节点右侧同样远处。 */
+/** 未给出位置时，新节点放在最右侧节点右边相隔该距离处；`beside` 放在指定节点右侧相同距离处。 */
 const NEW_NODE_GAP = 100
-/** `beside` 找空位时与其他节点留的间距，含节点上方的标题行。 */
+/** `beside` 查找空位时与其他节点保留的间距，包含节点上方的标题行。 */
 const CLEARANCE = 40
 
 /**
- * 把框换成媒体的宽高比：短边长度不变，长边按比例。横图的高、竖图的宽都是原框的短边。
- * 不要改成固定高度：竖图沿用横图的高度时宽度只剩横图的几分之一（9:16 只有 16:9 的约三分之一）。
- * 界面给空卡按所选宽高比预览时用同一个函数。
+ * 把框调整为媒体的宽高比：短边长度不变，长边按比例计算。横图的高度、竖图的宽度都等于原框的短边。
+ * 不要改为固定高度：竖图沿用横图的高度时，宽度只有横图的几分之一（9:16 约为 16:9 的三分之一）。
+ * 界面按所选宽高比预览空卡时使用同一个函数。
  */
 export function fitBox(
   box: { w: number; h: number },
@@ -431,13 +431,13 @@ export function fitBox(
     : { w: side, h: Math.round((side * size.h) / size.w) }
 }
 
-/** 新建生成卡的缺省框。界面给空卡选回「自动」宽高比时按它的比例还原。 */
+/** 新建生成卡的缺省框。界面为空卡重新选择「自动」宽高比时按其比例还原。 */
 export function blankBox(output: MediaOutput): { w: number; h: number } {
   const [w, h] = GENERATE_SIZE[output]
   return { w, h }
 }
 
-/** 生成卡的框跟当前那一版的媒体比例走；当前版没有尺寸（音频、还在远端的视频）时不动。 */
+/** 生成卡的框随当前版本的媒体比例调整；当前版本没有尺寸（音频、仍在远端的视频）时保持不变。 */
 function fitCurrent(node: CanvasGenerateNode): void {
   const size = node.versions.find((v) => v.id === node.current)?.size
   if (size) Object.assign(node, fitBox(node, size))
@@ -450,9 +450,9 @@ function fail(message: string): never {
 }
 
 /**
- * 按顺序应用一批操作。整批成功才返回新文档；任何一条不成立都回 `ok: false`，原文档不动。
+ * 按顺序应用一批操作。整批成功时才返回新文档；任何一条不成立都返回 `ok: false`，原文档不变。
  *
- * `newId` 只在测试里注入。分配的 id 不会与本批开始时文档里已有的任何 id 相同。
+ * `newId` 只在测试中注入。分配的 id 不会与本批开始时文档中已有的任何 id 相同。
  */
 export function applyCanvasOps(
   doc: CanvasDoc,
@@ -475,7 +475,7 @@ export function applyCanvasOps(
         return id
       }
     }
-    return fail('分配不到新的 id')
+    return fail('无法分配新的 id')
   }
 
   try {
@@ -498,18 +498,18 @@ function applyOne(
 ): void {
   const resolve = (id: string): string => {
     if (!id.startsWith('$')) return id
-    return refs[id] ?? fail(`${id} 没有在这一批前面的操作里定义`)
+    return refs[id] ?? fail(`${id} 未在本批之前的操作中定义`)
   }
   const claim = (ref: string | undefined, id: string) => {
     if (ref === undefined) return
-    if (!REF_RE.test(ref)) fail(`批内名字要以 $ 开头：${ref}`)
-    if (refs[ref]) fail(`批内名字重复：${ref}`)
+    if (!REF_RE.test(ref)) fail(`批内名称必须以 $ 开头：${ref}`)
+    if (refs[ref]) fail(`批内名称重复：${ref}`)
     refs[ref] = id
   }
 
   switch (op.op) {
     case 'add_file': {
-      if (!isRelativePath(op.path)) fail(`不是工作区里的相对路径：${op.path}`)
+      if (!isRelativePath(op.path)) fail(`不是工作区中的相对路径：${op.path}`)
       const id = mint()
       claim(op.ref, id)
       const kind = canvasMediaOf({ id, type: 'file', path: op.path, x: 0, y: 0, w: 0, h: 0 })
@@ -581,12 +581,12 @@ function applyOne(
       const edge = doc.edges.find((e) => e.id === id)
       if (edge) {
         const { op: _op, id: _id, role, ...rest } = op
-        if (Object.keys(rest).length > 0) fail(`连线只能改用途：${Object.keys(rest).join('、')}`)
+        if (Object.keys(rest).length > 0) fail(`连线只能修改用途：${Object.keys(rest).join('、')}`)
         if (role !== undefined) edge.role = role
         return
       }
       const node = doc.nodes.find((n) => n.id === id) ?? fail(`目标已不存在：${op.id}`)
-      if (op.role !== undefined) fail('节点没有用途，用途在连线上')
+      if (op.role !== undefined) fail('节点没有用途，用途属于连线')
       if (op.x !== undefined) node.x = op.x
       if (op.y !== undefined) node.y = op.y
       if (op.w !== undefined) node.w = op.w
@@ -595,13 +595,13 @@ function applyOne(
         for (const key of ['prompt', 'provider', 'model', 'params', 'current', 'path'] as const) {
           if (op[key] !== undefined) fail(`时间线没有 ${key}`)
         }
-        if (op.name === null || op.name === '') fail('时间线必须有名字')
+        if (op.name === null || op.name === '') fail('时间线必须有名称')
         if (op.name !== undefined) node.name = op.name
         if (op.muted === true) node.muted = true
         else if (op.muted === false) delete node.muted
         if (op.clips !== undefined) {
           node.clips = structuredClone(op.clips)
-          // 有无片段决定有没有预览区；同一次操作给了 h 时以它为准。
+          // 是否有片段决定是否显示预览区；同一次操作给出 h 时以其为准。
           if (op.h === undefined) node.h = timelineHeight(node.clips)
         }
         return
@@ -614,17 +614,17 @@ function applyOne(
         if (op.name === null || op.name === '') delete node.name
         else if (op.name !== undefined) node.name = op.name
         if (op.path !== undefined) {
-          if (!isRelativePath(op.path)) fail(`不是工作区里的相对路径：${op.path}`)
+          if (!isRelativePath(op.path)) fail(`不是工作区中的相对路径：${op.path}`)
           node.path = op.path
-          // 换了文件就换比例；同一次操作给了 w / h 时以它们为准。
+          // 更换文件时随之更换比例；同一次操作给出 w / h 时以其为准。
           if (op.size && op.w === undefined && op.h === undefined) {
             Object.assign(node, fitBox(node, op.size))
           }
         }
         return
       }
-      if (op.path !== undefined) fail('生成节点的路径由生成结果决定，不能直接改')
-      if (op.name === null || op.name === '') fail('生成节点必须有名字')
+      if (op.path !== undefined) fail('生成节点的路径由生成结果决定，不能直接修改')
+      if (op.name === null || op.name === '') fail('生成节点必须有名称')
       if (op.name !== undefined) node.name = op.name
       if (op.prompt !== undefined) node.prompt = op.prompt
       const beforeModel = JSON.stringify([node.provider ?? null, node.model ?? null])
@@ -692,7 +692,7 @@ function applyOne(
         for (const e of inputsOf(doc, id)) e.role = 'reference'
         return
       }
-      // 参考 → 首尾帧：前两张图依次变首帧、尾帧，其余断开（提示词里对它们的 @ 由收尾换成纯文本）。
+      // 参考 → 首尾帧：前两张图依次改为首帧、尾帧，其余连线断开（提示词中对它们的 @ 由 `keepMentionsConnected` 替换为纯文本）。
       const frames = inputsOf(doc, id).filter((e) => e.role === 'reference')
       const keep = new Map<string, MediaInputRole>()
       if (frames[0]) keep.set(frames[0].id, 'first_frame')
@@ -707,12 +707,12 @@ function applyOne(
   }
 }
 
-/** 最右边那个节点再往右 `NEW_NODE_GAP`；空画布从 0 开始。 */
+/** 最右侧节点再向右 `NEW_NODE_GAP`；空画布从 0 开始。 */
 function rightEdge(doc: CanvasDoc): number {
   return doc.nodes.length ? Math.max(...doc.nodes.map((n) => n.x + n.w)) + NEW_NODE_GAP : 0
 }
 
-/** `beside` 或 `near` 算出的位置；两者都没给回 `null`，由调用方用 `x` / `y` 或默认位置。 */
+/** 由 `beside` 或 `near` 计算的位置；两者都未给出时返回 `null`，由调用方使用 `x` / `y` 或默认位置。 */
 function placeOf(
   doc: CanvasDoc,
   op: { beside?: string; near?: { x: number; y: number } },
@@ -722,7 +722,7 @@ function placeOf(
 ): { x: number; y: number } | null {
   if (op.beside !== undefined) {
     const id = resolve(op.beside)
-    const source = doc.nodes.find((n) => n.id === id) ?? fail(`没有这个节点：${id}`)
+    const source = doc.nodes.find((n) => n.id === id) ?? fail(`节点不存在：${id}`)
     return freeSpot(doc, source.x + source.w + NEW_NODE_GAP, source.y, w, h)
   }
   if (op.near)
@@ -731,8 +731,8 @@ function placeOf(
 }
 
 /**
- * 从 (x, y) 起找空位：与已有节点（含同一批先加的）相交就挪到相交那个节点下沿之后，直到不相交。
- * 每次下移都越过一个节点，最多移动节点数次。
+ * 从 (x, y) 开始查找空位：与已有节点（含同一批中先添加的节点）相交时移到该节点下沿之后，直到不再相交。
+ * 每次下移至少越过一个节点，最多移动节点数次。
  */
 function freeSpot(
   doc: CanvasDoc,
@@ -757,7 +757,7 @@ function freeSpot(
 
 const TIMELINE_NAME = '时间线'
 
-/** 「视频3」「时间线2」这类默认名：同前缀里已有的最大序号加一。 */
+/** 「视频3」「时间线2」这类默认名称：取同前缀中已有的最大序号加一。 */
 function defaultName(doc: CanvasDoc, prefix: string): string {
   let max = 0
   for (const n of doc.nodes) {
@@ -767,21 +767,21 @@ function defaultName(doc: CanvasDoc, prefix: string): string {
   return `${prefix}${max + 1}`
 }
 
-/** 提示词里的 `@[$名字]` 换成分配到的 id。 */
+/** 把提示词中的 `@[$名称]` 替换为分配的 id。 */
 function resolvePromptRefs(doc: CanvasDoc, refs: Record<string, string>): void {
   for (const n of doc.nodes) {
     if (n.type !== 'generate' || !n.prompt.includes('@[$')) continue
     n.prompt = n.prompt.replace(MENTION_RE, (whole, id: string) => {
       if (!id.startsWith('$')) return whole
-      return `@[${refs[id] ?? fail(`${id} 没有在这一批里定义`)}]`
+      return `@[${refs[id] ?? fail(`${id} 未在本批中定义`)}]`
     })
   }
 }
 
 /**
- * 维持「提示词里的 @ 都有输入线」。对每个没有线的 `@[m]`：
- * - 这一批新写进提示词的：补一条线（用途见 `MENTION_ROLE`）；补不了就整批拒绝；
- * - 原来就在提示词里的（线或节点在这一批被删了）：换成节点名纯文本。
+ * 维持「提示词中的每个 @ 都有输入线」。对每个没有连线的 `@[m]`：
+ * - 本批新写入提示词的：补充一条连线（用途见 `MENTION_ROLE`）；无法补充时整批拒绝；
+ * - 本批之前已在提示词中的（连线或节点在本批被删除）：替换为节点名称纯文本。
  */
 function keepMentionsConnected(before: CanvasDoc, doc: CanvasDoc, mint: () => string): void {
   const beforeById = new Map(before.nodes.map((n) => [n.id, n]))
@@ -809,10 +809,10 @@ function keepMentionsConnected(before: CanvasDoc, doc: CanvasDoc, mint: () => st
 }
 
 /**
- * 复制一组节点：返回在 `target` 上加出副本的一批操作。副本与原节点同设置、整体平移 `offset`；生成卡不带版本。
+ * 复制一组节点：返回在 `target` 上添加副本的一批操作。副本与原节点设置相同、整体平移 `offset`；生成卡不带版本。
  *
- * 选区内部的连线照连，提示词里对选区内节点的 `@` 指向副本。选区外连进来的线：`withInputs` 为真且 `target` 里有那个节点时
- * 一并连到副本上、`@` 保留；否则不连，`@` 改成名字纯文本（与删线同一规则）。从选区连出去的线不复制。
+ * 选区内部的连线照常复制，提示词中对选区内节点的 `@` 指向副本。从选区外连入的连线：`withInputs` 为真且 `target` 中有对应节点时
+ * 一并连接到副本、保留 `@`；否则不连接，`@` 改为名称纯文本（与删除连线同一规则）。从选区连出的连线不复制。
  */
 export function copyOps(
   source: CanvasDoc,
@@ -874,7 +874,7 @@ export function copyOps(
   return ops
 }
 
-/** 提示词里新 @ 了一个未连的节点时补的那条线的用途。 */
+/** 提示词中新 @ 未连接的节点时，补充连线所用的用途。 */
 const MENTION_ROLE: Record<MediaOutput, MediaInputRole> = {
   image: 'reference',
   video: 'video',
@@ -890,9 +890,9 @@ function roleProblem(
   const from = `「${displayNameOf(source)}」`
   const to = `「${target.name}」`
   const kind = canvasMediaOf(source)
-  if (target.output === 'audio') return `${to} 是语音合成，不收输入`
+  if (target.output === 'audio') return `${to} 是语音合成，不接受输入`
   if (target.output === 'image') {
-    return kind === 'image' && role === 'reference' ? null : `${to} 只收参考图，${from} 连不上`
+    return kind === 'image' && role === 'reference' ? null : `${to} 只接受参考图，${from} 无法连接`
   }
   if (kind === 'image') {
     return role === 'video' || role === 'audio' ? `${from} 是图片，只能作为参考图或首尾帧` : null
@@ -920,23 +920,23 @@ export function validateCanvas(doc: CanvasDoc): string | null {
       return `「${displayNameOf(n)}」的位置或尺寸不合法`
     }
     if (n.type === 'file') {
-      if (!isRelativePath(n.path)) return `不是工作区里的相对路径：${n.path}`
+      if (!isRelativePath(n.path)) return `不是工作区中的相对路径：${n.path}`
       continue
     }
     if (n.type === 'timeline') {
-      if (!n.name) return '时间线必须有名字'
+      if (!n.name) return '时间线必须有名称'
       const bad = n.clips.map(clipProblem).find(Boolean)
       if (bad) return `「${n.name}」${bad}`
       continue
     }
-    if (!n.name) return '生成节点必须有名字'
+    if (!n.name) return '生成节点必须有名称'
     if ((n.provider === undefined) !== (n.model === undefined)) {
-      return `「${n.name}」的接口与模型要同给同不给`
+      return `「${n.name}」的接口与模型必须同时给出或同时省略`
     }
     for (const v of n.versions) {
       const bad = claim(v.id)
       if (bad) return bad
-      if (!isRelativePath(v.path)) return `不是工作区里的相对路径：${v.path}`
+      if (!isRelativePath(v.path)) return `不是工作区中的相对路径：${v.path}`
     }
     if (
       n.versions.length === 0
@@ -953,10 +953,10 @@ export function validateCanvas(doc: CanvasDoc): string | null {
     const source = byId.get(e.from)
     const target = byId.get(e.to)
     if (!source || !target) return `连线的端点已不存在：${e.id}`
-    if (target.type !== 'generate') return `连线只能连到生成节点：「${displayNameOf(target)}」`
-    if (source.id === target.id) return `「${target.name}」不能连到自己`
+    if (target.type !== 'generate') return `连线只能连接到生成节点：「${displayNameOf(target)}」`
+    if (source.id === target.id) return `「${target.name}」不能连接到自己`
     if (pairs.has(`${e.from}>${e.to}`)) {
-      return `「${displayNameOf(source)}」已经连着「${target.name}」`
+      return `「${displayNameOf(source)}」已连接到「${target.name}」`
     }
     pairs.add(`${e.from}>${e.to}`)
     const problem = roleProblem(source, target, e.role)
@@ -971,19 +971,18 @@ export function validateCanvas(doc: CanvasDoc): string | null {
       return `「${n.name}」的首帧、尾帧各只能有一张`
     }
     if (frames > 0 && count('reference') + count('video') + count('audio') > 0) {
-      return `「${n.name}」的首尾帧不能与参考图、参考视频、参考音频同时给`
+      return `「${n.name}」的首尾帧不能与参考图、参考视频、参考音频同时提供`
     }
     for (const m of mentionsOf(n.prompt)) {
-      if (!inputs.some((e) => e.from === m))
-        return `「${n.name}」的提示词引用了没有连线的节点：${m}`
+      if (!inputs.some((e) => e.from === m)) return `「${n.name}」的提示词引用了未连接的节点：${m}`
     }
   }
   return null
 }
 
 /**
- * 追加一次生成的结果，多张就是多版，`current` 指向第一张，框按它的比例改。只由服务端画布服务调用：
- * 版本里的 `made` 记的是真正发出去的请求，界面与大模型的操作不能写版本。
+ * 追加一次生成的结果，多张结果对应多个版本，`current` 指向第一张，框按其比例调整。只由服务端画布服务调用：
+ * 版本中的 `made` 记录的是实际发出的请求，界面与大模型的操作不能写入版本。
  */
 export function addVersions(
   doc: CanvasDoc,
@@ -1002,8 +1001,8 @@ export function addVersions(
 }
 
 /**
- * 把一版改指到新路径（远端视频取回后由任务记录改成产物），带上产物的像素宽高。
- * 这一版是当前版时框按它的比例改。只由服务端画布服务调用。
+ * 把一个版本改指到新路径（远端视频取回后由任务记录改为产物），并带上产物的像素宽高。
+ * 该版本为当前版本时，框按其比例调整。只由服务端画布服务调用。
  */
 export function settleVersion(
   doc: CanvasDoc,
@@ -1025,7 +1024,7 @@ export function settleVersion(
   return problem ? { ok: false, error: problem } : { ok: true, doc: next, refs: {} }
 }
 
-/** 追加一条生成记录。节点已删掉也照记：记录的是发生过的事。只由服务端画布服务调用。 */
+/** 追加一条生成记录。节点已删除时同样记录：记录的是已发生的事实。只由服务端画布服务调用。 */
 export function recordRun(doc: CanvasDoc, record: CanvasRunRecord): CanvasResult {
   const problem = checkFields('生成记录', record, RUN_FIELDS)
   if (problem) return { ok: false, error: problem }
@@ -1107,12 +1106,12 @@ function matches(v: unknown, shape: Shape): boolean {
   }
 }
 
-/** 按字段表核一个对象：多出来的键、缺了必填的键、类型不对，都算不成立。必填键以 `!` 结尾。 */
+/** 按字段表核对一个对象：存在多余的键、缺少必填键或类型错误时均不合法。必填键以 `!` 结尾。 */
 function checkFields(where: string, raw: unknown, fields: Record<string, Shape>): string | null {
   if (!isObject(raw)) return `${where} 不是对象`
   const shapes = new Map(Object.entries(fields).map(([k, s]) => [k.replace(/!$/, ''), s]))
   for (const key of Object.keys(raw)) {
-    if (!shapes.has(key)) return `${where} 有不认识的字段：${key}`
+    if (!shapes.has(key)) return `${where} 含有未知字段：${key}`
   }
   for (const [key, shape] of Object.entries(fields)) {
     const name = key.replace(/!$/, '')
@@ -1181,15 +1180,15 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
   set_mode: { 'op!': 'string', 'id!': 'string', 'mode!': 'mode' },
 }
 
-/** 核对界面或大模型提交的一批操作。版本不在可提交的字段里：带 `versions` 的操作一律不认。 */
+/** 核对界面或大模型提交的一批操作。版本不在可提交的字段中：带 `versions` 的操作一律拒绝。 */
 export function parseCanvasOps(
   raw: unknown,
 ): { ok: true; ops: CanvasOp[] } | { ok: false; error: string } {
-  if (!Array.isArray(raw) || raw.length === 0) return { ok: false, error: '操作要是非空数组' }
+  if (!Array.isArray(raw) || raw.length === 0) return { ok: false, error: '操作必须是非空数组' }
   for (const [i, op] of raw.entries()) {
     const where = `第 ${i + 1} 条操作`
     if (!isObject(op) || typeof op.op !== 'string' || !Object.hasOwn(OP_FIELDS, op.op)) {
-      return { ok: false, error: `${where} 的 op 不认识` }
+      return { ok: false, error: `${where} 的 op 无法识别` }
     }
     const bad = checkFields(where, op, OP_FIELDS[op.op as CanvasOp['op']])
     if (bad) return { ok: false, error: bad }
@@ -1270,7 +1269,7 @@ function boxRequired(): Record<string, Shape> {
   return { 'x!': 'number', 'y!': 'number', 'w!': 'number', 'h!': 'number' }
 }
 
-/** 读画布文件。结构或不变式不成立就拒绝，不做修补：手改坏的文件由人来改回。 */
+/** 读取画布文件。结构或不变式不成立时拒绝，不做修补：手动修改出错的文件由用户自行修正。 */
 export function parseCanvas(
   text: string,
 ): { ok: true; doc: CanvasDoc } | { ok: false; error: string } {
@@ -1283,7 +1282,7 @@ export function parseCanvas(
   const problem = structureProblem(raw) ?? validateCanvas(raw as CanvasDoc)
   if (problem) return { ok: false, error: problem }
   const doc = raw as CanvasDoc
-  // 旧版音频使用 169×169 的默认框；读取时统一升级布局，自定义尺寸和其他媒体保持原样。
+  // 音频节点使用 169×169 默认框时，读取时统一改为当前布局；自定义尺寸和其他媒体保持原样。
   for (const node of doc.nodes) {
     if (canvasMediaOf(node) === 'audio' && node.w === 169 && node.h === 169) {
       Object.assign(node, blankBox('audio'))
@@ -1301,12 +1300,12 @@ function structureProblem(raw: unknown): string | null {
   })
   if (top) return top
   const doc = raw as { version: number; nodes: unknown[]; edges: unknown[]; runs?: unknown[] }
-  if (doc.version !== CANVAS_SCHEMA_VERSION) return `不认识的画布版本：${doc.version}`
+  if (doc.version !== CANVAS_SCHEMA_VERSION) return `未知的画布版本：${doc.version}`
   for (const [i, n] of doc.nodes.entries()) {
     const where = `第 ${i + 1} 个节点`
     const type = isObject(n) ? n.type : undefined
     if (type !== 'file' && type !== 'generate' && type !== 'timeline')
-      return `${where} 的 type 不认识`
+      return `${where} 的 type 无法识别`
     const fields = { file: FILE_FIELDS, generate: GENERATE_FIELDS, timeline: TIMELINE_FIELDS }[type]
     const bad = checkFields(where, n, fields)
     if (bad) return bad
@@ -1341,7 +1340,7 @@ function structureProblem(raw: unknown): string | null {
   return null
 }
 
-/** 写盘的文本。键按固定顺序排，同一份文档无论经哪条路径写出，字节都相同。 */
+/** 写入磁盘的文本。键按固定顺序排列，同一份文档无论经由哪条路径写出，字节都相同。 */
 export function serializeCanvas(doc: CanvasDoc): string {
   const nodes = doc.nodes.map((n) =>
     n.type === 'file'

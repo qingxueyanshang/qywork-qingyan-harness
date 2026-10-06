@@ -1,4 +1,4 @@
-/** 主请求与摘要请求共用的账本边界，错误文字在这里脱敏。 */
+/** 主请求与摘要请求共用的账本边界，错误文本在此处脱敏。 */
 import type { LoopPersistence } from '@qywork/agent'
 import {
   markProviderRequestContent,

@@ -1,8 +1,8 @@
 /**
- * 覆盖 `canvas.ts` 的 读取、编辑、运行与取回工具，以及 `index.ts` 里按通道注册的那一条。
+ * 覆盖 `canvas.ts` 的读取、编辑、运行与取回工具，以及 `index.ts` 中按通道注册的逻辑。
  *
- * 端口是假的：这里验的是工具这一侧的事——按有无通道注册、按动作声明权限、参数解析、
- * 运行用本轮的生成端口与中止信号、结果写成回执。端口背后的画布服务在 server 包测。
+ * 端口使用假实现：此处验证工具一侧的行为，包括按通道是否存在决定注册、按动作声明权限、参数解析、
+ * 运行时使用本轮的生成端口与中止信号、结果写为回执。端口背后的画布服务由 server 包的测试覆盖。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -119,7 +119,7 @@ describe('canvas 工具', () => {
     }
   })
 
-  test('read 不给路径列出画布；给路径写出节点、状态与连线', async () => {
+  test('read 不提供路径时列出画布；提供路径时输出节点、状态与连线', async () => {
     const { port } = fakePort({ ok: true, paths: [] })
     const list = await readCanvasTool.fn({}, ctx(port))
     expect(list.message).toContain('分镜/第二集.canvas.json')
@@ -132,7 +132,7 @@ describe('canvas 工具', () => {
     expect(one.message).toContain('小满 → 视频1（reference）')
   })
 
-  test('edit 解析 ops_json 交给端口；不是 JSON 数组或操作不合法时不调端口', async () => {
+  test('edit 解析 ops_json 后交给端口；不是 JSON 数组或操作不合法时不调用端口', async () => {
     const { port, seen } = fakePort({ ok: true, paths: [] })
     const ok = await editCanvasTool.fn(
       {
@@ -157,7 +157,7 @@ describe('canvas 工具', () => {
     expect(seen.edits).toHaveLength(1)
   })
 
-  test('run 用本轮的生成端口与中止信号，产物进改动清单', async () => {
+  test('run 使用本轮的生成端口与中止信号，产物写入改动清单', async () => {
     const { port, seen } = fakePort({ ok: true, paths: ['generated/a.mp4'] })
     const c = ctx(port, media)
     const out = await runCanvasTool.fn({ path: 'board.canvas.json', node: 'id2' }, c)
@@ -166,7 +166,7 @@ describe('canvas 工具', () => {
     expect(out.fileChanges).toEqual([{ path: 'generated/a.mp4', changeType: 'created' }])
   })
 
-  test('远端还在时回执说明怎么取回；没有生成通道时不调端口', async () => {
+  test('远端任务未结束时回执说明取回方式；没有生成通道时不调用端口', async () => {
     const { port, seen } = fakePort({ ok: false, message: '等待超时', pending: true })
     const pending = await runCanvasTool.fn(
       { path: 'board.canvas.json', node: 'id2' },
@@ -178,15 +178,15 @@ describe('canvas 工具', () => {
     expect(seen.runs).toHaveLength(1)
   })
 
-  test('端口抛出的原文交给大模型', async () => {
+  test('端口抛出的错误原文交给模型', async () => {
     const { port } = fakePort({ ok: true, paths: [] })
     port.read = async () => {
-      throw new Error('board.canvas.json 不存在或不在这个项目里')
+      throw new Error('board.canvas.json 不存在或不在当前项目中')
     }
     const out = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
     expect(out).toMatchObject({
       status: 'failure',
-      message: 'board.canvas.json 不存在或不在这个项目里',
+      message: 'board.canvas.json 不存在或不在当前项目中',
     })
   })
 

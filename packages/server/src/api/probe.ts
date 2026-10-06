@@ -1,24 +1,24 @@
 /**
- * 测连接 —— 把 `qy probe` 那套实测搬到界面上。
+ * 测试连接：在界面上提供与 `qy probe` 相同的实测。
  *
- * **为什么必须有这一层。** 内置目录不认得中转站、自建网关和刚发布的模型，`lookupModel` 只能回落到保
- * 守猜测：不请求思考、计价按 0。两条后果都完全静默——界面仍把它显示成会思考的模型，而账本报 $0。
- * 命令行早有 `qy probe`，但桌面端用户手边不一定有终端。
+ * **必要性。** 内置目录不识别中转站、自建网关与新发布的模型，`lookupModel` 只能回退到保守推测：
+ * 不请求思考、计价按 0。两个后果都完全静默：界面仍把它显示为会思考的模型，而账本记为 $0。
+ * 命令行已有 `qy probe`，但桌面端用户不一定有终端。
  *
- * **与 CLI 共用同一个 `probeModel`。** 不另写一套「给界面用的探测」。两套探测的结论迟早不一致，而不
- * 一致的表现是「命令行说支持、界面说不支持」，谁也说不清哪个对。
+ * **与 CLI 共用同一个 `probeModel`。** 不另写一套供界面使用的探测。两套探测的结论终将不一致，
+ * 表现为命令行报告支持而界面报告不支持，且无法判断哪一个正确。
  *
  * **三条边界**：
- * 1. **前端永远拿不到 key。** 请求体只带接口名和模型名，key 由服务端自己
- *    `resolveApiKey` 取。
+ * 1. **前端始终无法取得 key。** 请求体只带接口名与模型名，key 由服务端通过
+ *    `resolveApiKey` 自行获取。
  * 2. **`ProbeStep.detail` 是 provider 的原始错误消息**（`ai/src/probe.ts`），
- *    里面可能回显请求 URL 甚至凭证。返回前按 `collectSecrets` 的值表扫一遍——
- *    E 条「明文 key 不出服务端」不能被一条错误文案绕过去。
- * 3. **只探落盘配置，不收草稿。** 允许探草稿就得让这个端点接收临时明文 key，
- *    等于多开一条 key 上行路径。界面上按钮置灰、提示先保存，比多一条路径便宜。
+ *    其中可能回显请求 URL 甚至凭证。返回前按 `collectSecrets` 的值表扫描一遍：
+ *    E 节「明文 key 不出服务端」不能被一条错误信息绕过。
+ * 3. **只探测已保存的配置，不接收草稿。** 允许探测草稿就必须让该端点接收临时明文 key，
+ *    等于多开一条 key 上行路径。界面上将按钮置灰并提示先保存，代价低于多一条路径。
  *
- * 探测结果**不落盘**：前端确认后把端点传输结论写进当前接口的模型格子，
- * 走既有的 `PUT /api/config`，不在这里开第二个写入点。
+ * 探测结果不落盘：前端确认后把端点传输结论写入当前接口的模型条目，
+ * 经由既有的 `PUT /api/config`，不在此处另开写入点。
  */
 
 import { type ProbeOutcome, probeModel, toTransportCapabilities } from '@qywork/ai'
@@ -26,11 +26,11 @@ import { collectSecrets, resolveModel } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
 
 /**
- * 把已知凭证从探测明细里抹掉。
+ * 从探测明细中抹去已知凭证。
  *
- * 按**值**扫而不是按字段名：错误消息是一整段自由文本，key 可能出现在
- * URL 的 query、`Authorization` 回显、或者 provider 自己拼的一句话里。
- * 短值不扫（`< 8` 字符的「凭证」通常是占位符，按值替换会把正常文字打散）。
+ * 按值扫描而不是按字段名：错误消息是自由文本，key 可能出现在
+ * URL 的 query、`Authorization` 回显或 provider 自行拼接的语句中。
+ * 短值不扫描（少于 8 个字符的「凭证」通常是占位符，按值替换会破坏正常文字）。
  */
 function scrub(text: string, secrets: string[]): string {
   let out = text
@@ -58,7 +58,7 @@ export const handleProbeApi: ApiHandler = async (url, req, d) => {
 
   const target = resolveModel(d.config, { provider: body.provider, model: body.model })
   if (!target) {
-    return json({ error: 'not found', message: `配置里没有名为 "${body.provider}" 的接口` }, 404)
+    return json({ error: 'not found', message: `配置中没有名为 "${body.provider}" 的接口` }, 404)
   }
 
   const outcome = await probeModel(
@@ -77,7 +77,7 @@ export const handleProbeApi: ApiHandler = async (url, req, d) => {
   const { values } = collectSecrets(d.config)
   return json({
     outcome: scrubOutcome(outcome, values),
-    // 只返回当前接口的传输结论。**没探过的轴一条都不含**；官方档位仍来自目录。
+    // 只返回当前接口的传输结论，不含未探测的维度；官方档位仍来自目录。
     transport: toTransportCapabilities(outcome),
   })
 }

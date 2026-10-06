@@ -1,8 +1,8 @@
 /**
- * 加载工作区里配置的 MCP server 并注册它们的工具。
+ * 加载工作区中配置的 MCP server 并注册其工具。
  *
- * **永不抛异常**：一个连不上的 server 不该让会话起不来。失败收进返回值交给 UI——
- * 静默跳过会让「配了 MCP 但工具不出现」变成无法排查的现象。
+ * 不抛出异常：一个无法连接的 server 不应导致会话无法启动。失败写入返回值交给界面：
+ * 静默跳过会使「已配置 MCP 但工具不出现」无法排查。
  */
 
 import type { ToolSpec } from '@qywork/agent'
@@ -28,25 +28,25 @@ export interface LoadedServer {
   tools: McpToolDef[]
   serverInfo: { name?: string; version?: string }
   protocolVersion: string
-  /** server 握手时声明的能力。`qy mcp` 要显示它。 */
+  /** server 握手时声明的能力，供 `qy mcp` 显示。 */
   capabilities: McpServerCapabilities
   /**
-   * server 声明了、而 qywork 没有实现的能力名。
+   * server 已声明而 qywork 未实现的能力名。
    *
-   * **这个字段的存在就是为了消灭一种静默失败**：一个只提供 `prompts` 的 server
-   * 会连上、握手成功、`tools/list` 返回空、注册 0 个工具，**不报任何错**。
-   * 用户看到「已配置却毫无反应」，而日志中没有任何记录。
+   * 该字段用于消除一种静默失败：只提供 `prompts` 的 server
+   * 会连接成功、握手成功、`tools/list` 返回空、注册 0 个工具，且不报告任何错误。
+   * 用户只看到已配置却没有任何效果，日志中也没有任何记录。
    */
   unsupported: string[]
 }
 
 export interface McpRegistry {
   servers: LoadedServer[]
-  /** 连不上或握手失败的 server。UI 要能显示出来。 */
+  /** 无法连接或握手失败的 server，界面需要显示。 */
   failures: { server: string; reason: string }[]
   /**
-   * 产出的工具规格（名字含 `mcp__` 前缀）。与插件一样**只产出不注册**——
-   * 注册由会话自己做，这样扩展能按工作区缓存，不必每条消息重连一遍 server。
+   * 产出的工具规格（名称含 `mcp__` 前缀）。与插件相同，只产出、不注册：
+   * 注册由会话自行完成，扩展因此可以按工作区缓存，无需每条消息重新连接 server。
    */
   toolSpecs: ToolSpec[]
   stopAll(): Promise<void>
@@ -61,8 +61,8 @@ export function parseMcpConfig(raw: string): McpConfig {
   }
 
   const obj = (parsed ?? {}) as Record<string, unknown>
-  // 同时认 `servers` 和 `mcpServers`：后者是别的 MCP 客户端普遍用的键名，
-  // 用户通常是从那边整段复制过来的。为一个键名让人重打一遍配置不值得。
+  // 同时接受 `servers` 与 `mcpServers`：后者是其他 MCP 客户端普遍使用的键名，
+  // 用户通常从那些客户端整段复制配置。不应为一个键名要求用户重新填写配置。
   const rawServers = (obj.servers ?? obj.mcpServers ?? {}) as Record<string, unknown>
 
   const servers: McpConfig['servers'] = {}
@@ -73,11 +73,11 @@ export function parseMcpConfig(raw: string): McpConfig {
     const url = String(s.url ?? '').trim()
 
     if (url) {
-      // `command` 和 `url` 同时给 = 配置有歧义。**报出来而不是挑一个**：
-      // 静默挑一个的话，用户改了没被采用的那个字段，然后对着一个没有任何变化的
+      // 同时提供 `command` 与 `url` 表示配置有歧义。报告该错误而不是任选其一：
+      // 静默选择时，用户修改了未被采用的字段，会面对一个没有任何变化的
       // 现象长时间排查。
       if (command) {
-        bad.push(`${name}（同时配了 command 与 url，无法判断走哪种传输）`)
+        bad.push(`${name}（同时配置了 command 与 url，无法判断使用哪种传输）`)
         continue
       }
       let parsed: URL
@@ -119,7 +119,7 @@ export function parseMcpConfig(raw: string): McpConfig {
 }
 
 export interface LoadMcpOptions {
-  /** 解析工作区相对路径。由调用方注入，避免本包依赖 tools。 */
+  /** 解析工作区相对路径。由调用方注入，以免本包依赖 tools。 */
   resolveCwd?: (relative: string) => Promise<string>
   onLog?: (line: string) => void
 }
@@ -142,14 +142,14 @@ export async function loadMcpServers(
 
   const entries = Object.entries(config.servers)
     .filter(([, s]) => s.enabled !== false)
-    // 字典序：先到先得的资源（工具名）必须在不同机器上得到相同结果。
+    // 按字典序排序：先到先得的资源（工具名）必须在不同机器上得到相同结果。
     .sort(([a], [b]) => (a < b ? -1 : 1))
 
-  // 并行启动。串行的话五个 server 各花两秒握手就是十秒首屏——
+  // 并行启动。串行启动时，五个 server 各需两秒握手，首屏即需十秒，
   // 而它们之间没有任何依赖。
   const loaded = await Promise.all(
     entries.map(async ([name, spec]) => {
-      // HTTP server 没有工作目录这回事。给它解析一个只会在配置里
+      // HTTP server 没有工作目录。为其解析工作目录只会在配置中
       // 写了 cwd 时报错。
       let client: McpClient | undefined
       try {
@@ -166,20 +166,19 @@ export async function loadMcpServers(
         })
         await client.start()
         /*
-         * `tools/list` **一律去调**，失败与否再看声明。
+         * `tools/list` 一律调用，失败时再依据声明处理。
          *
-         * 两个方向的非规范行为都真实存在，而它们要求相反的处置：
+         * 两个方向的非规范行为都实际存在，且要求相反的处理：
          *
-         * - **声明了 tools 却列不出来** → 这是真故障，照常抛，进 failures。
-         * - **没声明 capabilities 却正常提供 tools** → 本仓库自己的两个测试夹具
-         *   就是这样（`extensions.test.ts` / `session.test.ts` 的 fixture 只回
-         *   `protocolVersion` 和 `serverInfo`）。按声明去卡的话，
-         *   它们的工具会被**静默丢光**——那正是这次要修的那类失败，
-         *   只是换了个方向，而且更难查：注册 0 个工具不是因为 server 真的没有，
-         *   而是因为客户端没问。
+         * - 声明了 tools 却无法列出：这是真实故障，照常抛出，计入 failures。
+         * - 未声明 capabilities 却正常提供 tools：本仓库的两个测试夹具
+         *   即是如此（`extensions.test.ts` / `session.test.ts` 的 fixture 只返回
+         *   `protocolVersion` 与 `serverInfo`）。若按声明拦截，
+         *   它们的工具会被静默全部丢弃，且更难排查：注册 0 个工具不是因为 server 确实没有，
+         *   而是因为客户端没有查询。
          *
-         * 所以：调用失败时，只有在 server **没有**声明 tools 的情况下才忽略
-         * （那说明它本来就不提供工具，比如一个 resource-only 的 server）。
+         * 因此：调用失败时，只有在 server 未声明 tools 时才忽略
+         * （说明它本身不提供工具，例如只提供 resource 的 server）。
          */
         let tools: McpToolDef[] = []
         try {
@@ -212,8 +211,8 @@ export async function loadMcpServers(
     const seen = new Set(out.toolSpecs.map((s) => s.name))
     for (const def of item.tools) {
       const full = toolName(item.name, def.name)
-      // 重名不能静默覆盖——覆盖会静默丢弃某个 server 的一个工具。
-      // （同名只可能来自同一个 server 重复声明，server 名已经在前缀里了。）
+      // 重名不能静默覆盖：覆盖会静默丢弃某个 server 的一个工具。
+      // （同名只可能来自同一个 server 的重复声明，server 名已包含在前缀中。）
       if (seen.has(full)) {
         out.failures.push({ server: item.name, reason: `工具名重复：${full}` })
         continue
@@ -222,7 +221,7 @@ export async function loadMcpServers(
       out.toolSpecs.push(specFor(item.client, def))
     }
 
-    // resource 工具：只在 server 声明了 capabilities.resources 时才有。
+    // resource 工具：仅在 server 声明了 capabilities.resources 时存在。
     for (const spec of resourceToolsFor(item.client)) {
       if (seen.has(spec.name)) {
         out.failures.push({ server: item.name, reason: `工具名重复：${spec.name}` })
@@ -235,19 +234,19 @@ export async function loadMcpServers(
     const unsupported = unsupportedCapabilities(item.client.capabilities)
     if (unsupported.length > 0) {
       options.onLog?.(
-        `[mcp:${item.name}] server 声明了 qywork 尚未接的能力：${unsupported.join('、')}。` +
-          `这些能力提供的东西不会出现在工具列表里。`,
+        `[mcp:${item.name}] server 声明了 qywork 尚未接入的能力：${unsupported.join('、')}。` +
+          `这些能力提供的内容不会出现在工具列表中。`,
       )
     }
     /*
-     * 连上了、握手成功了、一个工具都没注册出来——**这件事必须说出来**。
+     * 连接成功、握手成功，却没有注册任何工具：必须报告这一情况。
      *
-     * 这就是要修的那个静默失败：用户看到的是「配了 MCP 但什么都没发生」，
+     * 否则用户只看到已配置 MCP 却没有任何效果，
      * 而 failures 为空、日志无记录，无从排查。
      *
-     * 判据是「产出为零」而不是「没声明能力」：后者只覆盖其中一种成因，
-     * 而用户关心的是结果。理由里带上 server 声明了什么，
-     * 这样「它只提供 prompts」和「它什么都不提供」一眼能分开。
+     * 判据是产出为零，而不是未声明能力：后者只覆盖其中一种成因，
+     * 而用户关心的是结果。原因中附带 server 声明的能力，
+     * 以便直接区分「只提供 prompts」与「不提供任何能力」。
      */
     const produced = out.toolSpecs.filter((s) =>
       s.name.startsWith(toolNamePrefix(item.name)),
@@ -281,11 +280,11 @@ export async function loadMcpServers(
 }
 
 /**
- * server 声明了、本仓未接入的能力。
+ * server 已声明而本仓库未接入的能力。
  *
- * 判据是 `SUPPORTED_CAPABILITIES` 这份清单，而不是在这里另写一遍 if——
- * 另写一遍的话，将来接了 `prompts` 却忘了改这里，用户会一直看到
- * 一句「尚未接 prompts」的假警告。
+ * 判据是 `SUPPORTED_CAPABILITIES` 清单，而不是在此处另写一组 if：
+ * 另写时，接入 `prompts` 后若忘记修改此处，用户会持续看到
+ * 「尚未接入 prompts」的错误警告。
  */
 export function unsupportedCapabilities(caps: McpServerCapabilities): string[] {
   const supported = new Set<string>(SUPPORTED_CAPABILITIES)

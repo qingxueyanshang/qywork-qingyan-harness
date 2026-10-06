@@ -1,12 +1,12 @@
 /**
  * Provider 错误归类。
  *
- * 这个文件一直没有——而分类结果决定了三件事：**要不要重试**、
- * **要不要压缩重发**、**给用户看哪一句引导**。判错的代价不是文案难看，
- * 是一次网络抖动终结整轮任务，或者一次参数错误引发烧钱的压缩死循环。
+ * 分类结果决定三件事：**是否重试**、
+ * **是否压缩后重发**、**向用户显示哪条引导**。误判的代价不在于文案，
+ * 而在于一次网络波动终止整轮任务，或一次参数错误引发持续计费的压缩循环。
  *
- * 下面「Bun 实测」标记的几条文案是 2026-08 在一台网络抖动的机器上
- * 对 `api.deepseek.com` 连打时**真的收到过**的，不是照着文档编的。
+ * 标记为「Bun 实测」的文案是 2026-08 在一台网络不稳定的机器上
+ * 连续请求 `api.deepseek.com` 时**实际收到**的，不是依据文档编写的。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -26,12 +26,12 @@ function transport(code: string, message: string): Error & { code: string } {
 
 describe('传输层失败必须可重试', () => {
   /**
-   * 这一组是这个文件存在的直接原因。
+   * 本组覆盖传输层失败的重试判定。
    *
-   * 判据必须按 **Bun** 的文案写。照 Node/undici 写的那套
-   * （`/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network/i`）在下面三条真实
-   * 失败上一条都匹配不上，全部落到 `internal_error` + 不可重试——
-   * 一次抖动就把整轮 run 判死。
+   * 判据必须按 **Bun** 的文案编写。按 Node/undici 编写的正则
+   * （`/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network/i`）无法匹配下面三条真实
+   * 失败中的任何一条，它们会全部归入 `internal_error` 且不可重试，
+   * 一次网络波动就会终止整轮 run。
    */
   test('Bun 实测：The operation timed out.', () => {
     const e = classifyProviderError(P, transport('ETIMEDOUT', 'The operation timed out.'))
@@ -52,9 +52,9 @@ describe('传输层失败必须可重试', () => {
   })
 
   /**
-   * 证书错误判成可重试是**权衡后的选择**：它既可能是握手撞上抖动（重试就好），
-   * 也可能是代理或自签名证书没被信任（重试没用）。判错成不可重试的代价更大，
-   * 所以选可重试——但文案必须同时点出两种可能，否则配错代理的人会去查网络。
+   * 证书错误判定为可重试是**权衡后的选择**：它既可能是握手时遇到网络波动（重试可恢复），
+   * 也可能是代理或自签名证书未被信任（重试无效）。误判为不可重试的代价更大，
+   * 因此判定为可重试；但文案必须同时指出两种可能，否则代理配置错误的用户会转而排查网络。
    */
   test('Bun 实测：unknown certificate verification error', () => {
     const e = classifyProviderError(
@@ -65,12 +65,12 @@ describe('传输层失败必须可重试', () => {
     expect(e.message).toMatch(/证书|代理/)
   })
 
-  test('code 优先于文案：文案没线索也能靠 code 认出来', () => {
+  test('code 优先于文案：文案无线索时也能依据 code 识别', () => {
     const e = classifyProviderError(P, transport('ECONNRESET', 'read'))
     expect(e.code).toBe('network_error')
   })
 
-  test('Node 那套文案继续认，别修一头坏一头', () => {
+  test('仍能识别 Node 的错误文案', () => {
     for (const m of [
       'fetch failed',
       'connect ECONNREFUSED 127.0.0.1:443',
@@ -81,27 +81,27 @@ describe('传输层失败必须可重试', () => {
     }
   })
 
-  /** 不能把什么都当网络错误——真正的内部错误要留在 internal_error 里。 */
-  test('无关的错误不被误判成网络问题', () => {
+  /** 不能把所有错误都归为网络错误：真正的内部错误应保留为 internal_error。 */
+  test('无关错误不被误判为网络问题', () => {
     const e = classifyProviderError(P, new Error('Cannot read properties of undefined'))
     expect(e.code).toBe('internal_error')
   })
 })
 
 /**
- * 三支的分界。
+ * 三个分支的分界。
  *
- * 这一组锁的是**每个码落哪一支**，不是文案好不好看。分错的代价很具体：
- * 「连不上」会把用户支去改接口地址（而问题是链路抖动），「被断开」会让他坐等重发
- * （而 key 没配对端口）。
+ * 本组锁定的是**每个错误码归入哪个分支**，而不是文案。分错的代价：
+ * 「无法连接」会引导用户修改接口地址（而问题在于链路波动），「连接被断开」会让用户等待重发
+ * （而实际原因是 key 与端点不匹配）。
  *
- * 尤其看住 `ECONNREFUSED`（没连上）与 `ECONNRESET`（连上了被重置）——
- * 它们长得像、含义相反，原来在同一条正则里，是这次拆分最容易修一头坏一头的地方。
+ * 重点是 `ECONNREFUSED`（未建立连接）与 `ECONNRESET`（建立连接后被重置）：
+ * 两者形式相近、含义相反，最容易被归入同一分支。
  */
-describe('传输失败分三支：连不上 / 被断开 / 超时', () => {
+describe('传输失败分为三个分支：无法连接 / 连接被断开 / 超时', () => {
   const shapeOf = (err: unknown) => classifyProviderError(P, err).message
 
-  test('没连上 → 连不上接口', () => {
+  test('未建立连接 → 无法连接接口', () => {
     for (const err of [
       transport('ECONNREFUSED', 'connect'),
       transport('ENOTFOUND', 'dns'),
@@ -111,16 +111,16 @@ describe('传输失败分三支：连不上 / 被断开 / 超时', () => {
       new Error('fetch failed'),
       new Error('Connection error.'),
     ]) {
-      expect(shapeOf(err)).toMatch(/连不上/)
+      expect(shapeOf(err)).toMatch(/无法连接/)
     }
   })
 
-  test('连上了又断 → 连接被断开', () => {
+  test('建立连接后断开 → 连接被断开', () => {
     for (const err of [
       transport('ECONNRESET', 'read'),
       transport('EPIPE', ''),
       transport('ERR_SOCKET_CLOSED', ''),
-      // Bun 实测的那句，`code` 是空的，只能靠文案认。
+      // Bun 实测的文案，`code` 为空，只能依据文案识别。
       new Error('The socket connection was closed unexpectedly.'),
       new Error('socket hang up'),
     ]) {
@@ -132,14 +132,14 @@ describe('传输失败分三支：连不上 / 被断开 / 超时', () => {
     for (const err of [
       transport('ETIMEDOUT', 'The operation timed out.'),
       transport('UND_ERR_HEADERS_TIMEOUT', ''),
-      // SDK 自己那 60 秒掐的就是这一句，没有 code。
+      // SDK 自身的 60 秒超时产生的就是这条文案，没有 code。
       new Error('Request timed out.'),
     ]) {
       expect(shapeOf(err)).toMatch(/超时/)
     }
   })
 
-  test('三支都可重试，也都归到 network_error', () => {
+  test('三个分支均可重试，均归入 network_error', () => {
     for (const err of [
       transport('ECONNREFUSED', ''),
       transport('ECONNRESET', ''),
@@ -163,10 +163,10 @@ describe('SDK 包装保留具体的传输失败原因', () => {
     [
       'ConnectionRefused',
       'Unable to connect. Is the computer able to access the url?',
-      '连不上接口',
+      '无法连接接口',
       false,
     ],
-    ['ENOTFOUND', 'getaddrinfo ENOTFOUND zhende.ai', '连不上接口', false],
+    ['ENOTFOUND', 'getaddrinfo ENOTFOUND zhende.ai', '无法连接接口', false],
     ['ETIMEDOUT', 'The operation timed out.', '请求超时', true],
     ['', 'unknown certificate verification error', 'TLS 握手失败', false],
     ['', 'The socket connection was closed unexpectedly.', '连接被断开', false],
@@ -183,7 +183,7 @@ describe('SDK 包装保留具体的传输失败原因', () => {
     expect(e.detail?.providerMessage).toBe('Connection error.')
   })
 
-  test('多层包装的泛化连接码不能遮住底层证书原因', () => {
+  test('多层包装中的泛化连接码不能掩盖底层证书原因', () => {
     for (const raw of [
       transport('UNKNOWN_CERTIFICATE_VERIFICATION_ERROR', 'read'),
       new Error('unknown certificate verification error'),
@@ -232,18 +232,18 @@ describe('SDK 包装保留具体的传输失败原因', () => {
 })
 
 describe('用户中断不是错误', () => {
-  test('AbortError 不报网络问题也不重发', () => {
+  test('AbortError 不报告为网络问题，也不重发', () => {
     const err = new Error('aborted')
     err.name = 'AbortError'
     const e = classifyProviderError(P, err)
-    // internal_error 不在 agent/loop/attempt.ts 的重发表里——用户按的停止不该被自动重发。
+    // internal_error 不在 agent/loop/attempt.ts 的重发表中：用户主动停止的请求不应被自动重发。
     expect(e.code).toBe('internal_error')
     expect(e.message).toBe('已取消')
   })
 })
 
 describe('按用户的下一步动作分类', () => {
-  test('流内 error 事件按事件里的 type / code 分类，不看状态码', () => {
+  test('流内 error 事件按事件中的 type / code 分类，不依据状态码', () => {
     const byType = (type: string) => classifyStreamError(P, { type, message: 'provider 原话' }).code
     const byCode = (code: string) => classifyStreamError(P, { code, message: 'provider 原话' }).code
 
@@ -264,7 +264,7 @@ describe('按用户的下一步动作分类', () => {
     expect(byType('这家中转自己编的码')).toBe('provider_unavailable')
   })
 
-  /** 分类码说的是「哪一类」，说不出 provider 报了什么。原文丢了就没有第二处能取回。 */
+  /** 分类码只表示错误类别，不包含 provider 的报错内容。原文丢失后无法从其他位置取回。 */
   test('流内 error 保留事件原文与结构化字段', () => {
     const e = classifyStreamError(P, {
       type: 'overloaded_error',
@@ -278,11 +278,11 @@ describe('按用户的下一步动作分类', () => {
       providerType: 'overloaded_error',
       providerCode: 'x_overloaded',
     })
-    // 没有 HTTP 状态码：流内错误不伪造一个，账本据此区分「被回绝」与「建连后出错」。
+    // 没有 HTTP 状态码：流内错误不伪造状态码，账本据此区分请求被拒绝与建立连接后出错。
     expect(e.status).toBeUndefined()
   })
 
-  test('事件没带文案时退到 code / type，不编一句', () => {
+  test('事件不含文案时改用 code / type，不编造文案', () => {
     expect(classifyStreamError(P, { code: 'server_error' }).message).toBe('server_error')
     expect(classifyStreamError(P, {}).message).toBe('模型服务返回错误事件')
   })
@@ -292,7 +292,7 @@ describe('按用户的下一步动作分类', () => {
     expect(classifyProviderError(P, http(401, 'Incorrect API key')).code).toBe('auth_failed')
   })
 
-  /** 限速等一下能好，欠费等多久都不会好。混一起会让用户对着永不成功的重试狂点。 */
+  /** 限速在等待后可恢复，欠费无论等待多久都不会恢复。两者混为一谈会使用户反复点击不会成功的重试。 */
   test('429 分限速与额度耗尽', () => {
     const raw = Object.assign(new Error('Rate limit reached'), {
       status: 429,
@@ -324,7 +324,7 @@ describe('按用户的下一步动作分类', () => {
     )
   })
 
-  /** 中转站余额耗尽回 403；原文按 Anthropic 与 OpenAI 两种正文各取一份。 */
+  /** 中转站余额耗尽时返回 403；按 Anthropic 与 OpenAI 两种正文格式各取一份原文。 */
   test('403 带余额不足正文归账户额度不足，其余 403 仍是无权访问', () => {
     const anthropic = Object.assign(new Error('403 insufficient balance'), {
       status: 403,
@@ -340,8 +340,8 @@ describe('按用户的下一步动作分类', () => {
   })
 
   /**
-   * 402 是 Payment Required，不看正文：DeepSeek 的正文里 `code` 是 `invalid_request_error`，
-   * 按字段判会落到参数错误。经三协议真实适配器走 HTTP，断言的是界面最终拿到的码。
+   * 402 是 Payment Required，不依据正文判定：DeepSeek 的正文中 `code` 为 `invalid_request_error`，
+   * 按字段判定会归为参数错误。测试经三种协议的真实适配器发送 HTTP 请求，断言界面最终收到的错误码。
    */
   test('402 归账户额度不足', async () => {
     expect(classifyProviderError(P, http(402, 'Insufficient Balance')).code).toBe(
@@ -369,15 +369,15 @@ describe('按用户的下一步动作分类', () => {
     expect(classifyProviderError(P, http(404)).code).toBe('model_not_found')
   })
 
-  test('5xx 归 provider_unavailable —— 这个码在 agent/loop/attempt.ts 的重发表里', () => {
+  test('5xx 归入 provider_unavailable，该码在 agent/loop/attempt.ts 的重发表中', () => {
     for (const s of [500, 502, 503, 529]) {
       expect(classifyProviderError(P, http(s)).code).toBe('provider_unavailable')
     }
   })
 
   /**
-   * `max_tokens must be ≤ 8192` 是**输出**参数校验。判成上下文超限会触发一次
-   * 毫无用处的压缩重发，而重发的参数错误一模一样——烧钱的死循环。
+   * `max_tokens must be ≤ 8192` 是**输出**参数校验。判定为上下文超限会触发
+   * 无效的压缩重发，而重发请求的参数错误完全相同，形成持续计费的循环。
    */
   test('400 的参数错误不带 capacity，压缩不会被触发', () => {
     const e = classifyProviderError(P, http(400, 'max_tokens must be less than or equal to 8192'))
@@ -386,8 +386,8 @@ describe('按用户的下一步动作分类', () => {
   })
 
   /**
-   * 原始失败形状：给不接受图片的模型发图像块。这个码**不在** `agent/loop/attempt.ts` 的重发表里，
-   * 所以界面不会报「正在重连 N / M」。
+   * 原始失败形状：向不接受图片的模型发送图像块。该码**不在** `agent/loop/attempt.ts` 的重发表中，
+   * 因此界面不会显示「正在重连 N / M」。
    */
   test('模型不接受图片的 400 归 invalid_request', () => {
     for (const m of [
@@ -397,14 +397,14 @@ describe('按用户的下一步动作分类', () => {
       const e = classifyProviderError(P, http(400, m))
       expect(e.code).toBe('invalid_request')
       expect(e.capacity).toBeUndefined()
-      // provider 原话原样带出去：分类短语说得出「哪一类」，说不出「哪一格参数」。
+      // provider 原文原样保留：分类短语只能说明错误类别，无法指出具体参数。
       expect(e.message).toBe(m)
     }
   })
 
   /**
-   * 中转站会把「后端暂时不可用」发成 400 而不是 5xx。归 `provider_unavailable`
-   * 才进得了 `agent/loop/attempt.ts` 的重发表；判成别的码，一次上游抖动就终结整轮。
+   * 中转站会以 400 而不是 5xx 报告「后端暂时不可用」。归入 `provider_unavailable`
+   * 才能进入 `agent/loop/attempt.ts` 的重发表；判定为其他码时，一次上游波动就会终止整轮。
    */
   test('中转站用 400 报「暂时不可用」，仍归 provider_unavailable', () => {
     const e = classifyProviderError(
@@ -412,7 +412,7 @@ describe('按用户的下一步动作分类', () => {
       http(400, '{"error":{"type":"<nil>","message":"暂不可用 请稍后再试"}}'),
     )
     expect(e.code).toBe('provider_unavailable')
-    // 带上 capacity 会触发一次压缩重发，而这跟上下文长短无关。
+    // 携带 capacity 会触发压缩重发，而该错误与上下文长度无关。
     expect(e.capacity).toBeUndefined()
   })
 
@@ -434,17 +434,17 @@ describe('按用户的下一步动作分类', () => {
   })
 
   /**
-   * 413 走到这里说明容量分类器已经否掉它了 —— 那是网关体积限制，不是上下文超限。
-   * 同一份字节重发必然同样被拒，所以归不可重发的那一档。
+   * 413 到达此处说明容量分类器已排除上下文超限，它是网关的请求体大小限制。
+   * 相同字节重发必然同样被拒，因此归入不可重发的类别。
    */
-  test('413 指向附件大小与反代配置', () => {
+  test('413 指向附件大小与反向代理配置', () => {
     const e = classifyProviderError(P, http(413))
     expect(e.code).toBe('invalid_request')
-    expect(e.message).toMatch(/附件|反代|网关/)
+    expect(e.message).toMatch(/附件|反向代理|网关/)
   })
 })
 
-describe('已经分好类的不再动它', () => {
+describe('已分类的错误不再重新归类', () => {
   test('ProviderError 原样返回，不会被二次归类', () => {
     const original = new ProviderError({
       code: 'context_overflow',

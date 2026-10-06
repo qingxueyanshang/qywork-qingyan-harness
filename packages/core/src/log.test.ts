@@ -1,4 +1,4 @@
-/** 覆盖 `log.ts`：行格式、字段、续行、sink 注入与 sink 失败时的退路。 */
+/** 覆盖 `log.ts`：行格式、字段、多行缩进、sink 注入与 sink 失败时的后备输出。 */
 
 import { afterEach, describe, expect, spyOn, test } from 'bun:test'
 import { formatLogLine, type LogRecord, log, setLogSink } from './log.ts'
@@ -14,7 +14,7 @@ describe('formatLogLine', () => {
     )
   })
 
-  test('字段跟在正文之后，含空白或等号的字符串加引号', () => {
+  test('字段位于正文之后，含空白或等号的字符串加引号', () => {
     const line = formatLogLine({
       at,
       level: 'info',
@@ -27,7 +27,7 @@ describe('formatLogLine', () => {
     )
   })
 
-  test('多行正文缩进成续行，字段留在首行', () => {
+  test('多行正文从第二行起缩进，字段保留在首行', () => {
     const line = formatLogLine({
       at,
       level: 'error',
@@ -44,7 +44,7 @@ describe('formatLogLine', () => {
 })
 
 describe('sink', () => {
-  test('注入后 log.* 走注入的 sink', () => {
+  test('注入后 log.* 使用注入的 sink', () => {
     const seen: LogRecord[] = []
     setLogSink((r) => seen.push(r))
     log.info('a', 'one')
@@ -55,7 +55,7 @@ describe('sink', () => {
     ])
   })
 
-  test('sink 抛错时退回 stderr，不向调用方抛', () => {
+  test('sink 抛错时改用 stderr，不向调用方抛出异常', () => {
     const write = spyOn(process.stderr, 'write').mockImplementation(() => true)
     try {
       setLogSink(() => {

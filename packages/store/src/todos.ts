@@ -1,27 +1,27 @@
 /**
- * 待办的读回。**没有写入函数，这里也不该有。**
+ * 待办的读取。**本模块不提供写入函数，也不应提供。**
  *
- * 待办的真源是 `write_todos` 那条 tool step 自己的 `args`——整表语义下，
- * 最后一次成功提交就是全部事实。子 agent 返回只代表产出已交回，不代表父会话
- * 已经验收；把它折成 completed 会绕过 workflow 的 approve/revise 回流关口。
- * 落盘由 loop 记 step 时一并完成，另开一张 `todos` 表就是第二本账。
+ * 待办的真源是 `write_todos` tool step 自身的 `args`：在整表语义下，
+ * 最后一次成功提交即全部事实。子 agent 返回只表示产出已交回，不表示父会话
+ * 已经验收；将其折叠为 completed 会绕过 workflow 的 approve/revise 回流环节。
+ * 写入由 loop 在记录 step 时一并完成，另建 `todos` 表即形成第二本账。
  *
- * 历史接口直接返回这个函数的结果，前端只消费快照，不另写一份折叠算法。
- * 工具与提示词也从这里读，避免三条路径对同一批 steps 各猜一次。
+ * 历史接口直接返回本函数的结果，前端只消费快照，不另写折叠算法。
+ * 工具与提示词同样从此处读取，避免三条路径对同一批 steps 各自推测。
  *
- * SQL 里那个 `'write_todos'` 是**落盘的列值**，不是对 tools 包的依赖——
- * 账本记的就是这个字符串，改工具名要连同迁移一起改，与这里同步。
+ * SQL 中的 `'write_todos'` 是**已写入磁盘的列值**，不是对 tools 包的依赖：
+ * 账本记录的就是该字符串，修改工具名时必须连同迁移一起修改，并与此处同步。
  */
 
 import type { ConversationId, RunId, TodoItem } from '@qywork/core'
 import type { Store } from './db.ts'
 
 /**
- * 这条会话此刻的待办清单；没提交过就是 `null`。
+ * 会话当前的待办清单；从未提交时为 `null`。
  *
- * 按「run 的先后 + run 内的 seq」倒着取第一条。跨 run 是必须的：一轮做三条、
- * 下一轮接着做第四条是常态。传 runId 时，用户新消息只读本轮提交；子任务或工作流
- * 回执沿用会话清单，因为它们是在接续父任务，而不是用户发起了新指令。
+ * 按 run 的先后与 run 内的 seq 倒序取第一条。必须跨 run 读取：一轮完成三项、
+ * 下一轮继续第四项是常见情况。传入 runId 时，用户新消息只读取本轮提交；子任务或工作流
+ * 回执沿用会话清单，因为它们是在接续父任务，而不是用户发起的新指令。
  */
 export function latestTodos(
   store: Store,
@@ -50,7 +50,7 @@ export function latestTodos(
     const todos = (JSON.parse(row.payload) as { args?: { todos?: unknown } }).args?.todos
     return Array.isArray(todos) && todos.length > 0 ? (todos as TodoItem[]) : null
   } catch {
-    // 历史 payload 可能来自旧版本。坏清单只退化为没有，不应让历史接口整体失败。
+    // 历史 payload 可能来自旧版本。无法解析的清单按不存在处理，不应使历史接口整体失败。
     return null
   }
 }

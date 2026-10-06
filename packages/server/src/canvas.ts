@@ -1,14 +1,14 @@
 /**
- * 画布服务：对 `*.canvas.json` 的写入与画布上的生成只经这里执行。界面走 `api/canvas.ts`，
- * Agent 走 `CanvasPort`，两处调同一个实例。
+ * 画布服务：对 `*.canvas.json` 的写入与画布上的生成只经由此处执行。界面经由 `api/canvas.ts`，
+ * Agent 经由 `CanvasPort`，两处调用同一个实例。
  *
- * 独占的事实：
+ * 本服务独占的状态：
  * - 写入次序：同一个画布文件的修改串行执行（读 → 应用 → 写 `.part` → 改名前复读 → 改名）；
- * - 哪张卡在跑、卡片上显示的最近一次失败：只在进程内，重启即无。每次生成的结果（含失败原文）
- *   在收尾时追加进画布文件的生成记录（`runs`），那份随文件保留。
+ * - 正在运行的卡片、卡片上显示的最近一次失败：只保存在进程内，重启后清空。每次生成的结果（含失败原文）
+ *   在收尾时追加到画布文件的生成记录（`runs`）中，随文件保留。
  *
- * 画布文件之外还有写入者（Agent 的 `write_file`、CLI 会话、外部编辑器），所以改名前再读一次：
- * 字节变了就在新内容上重新应用，不覆盖别人的改动。
+ * 本服务之外还有其他写入者（Agent 的 `write_file`、CLI 会话、外部编辑器），因此改名前再读取一次：
+ * 字节已变化时在新内容上重新应用，不覆盖其他写入者的改动。
  */
 
 import { createHash, randomUUID } from 'node:crypto'
@@ -76,7 +76,7 @@ import { mediaDurationOf, mediaSizeOf } from './media-size.ts'
 /** 画布文件的后缀。文件树按它把文件交给画布页签打开。 */
 export const CANVAS_SUFFIX = '.canvas.json'
 
-/** 画布服务的失败。`status` 是 HTTP 状态码；`message` 界面直接显示、工具原样交给模型。 */
+/** 画布服务的失败。`status` 是 HTTP 状态码；`message` 由界面直接显示，由工具原样交给模型。 */
 export class CanvasFailure extends Error {
   constructor(
     message: string,
@@ -86,7 +86,7 @@ export class CanvasFailure extends Error {
   }
 }
 
-/** 读写文件的函数。只在测试里替换，用来在写入中途插入外部改动或故障。 */
+/** 读写文件的函数。只在测试中替换，用于在写入中途插入外部改动或故障。 */
 export interface CanvasIo {
   readFile(path: string): Promise<string>
   writeFile(path: string, text: string): Promise<void>
@@ -99,43 +99,43 @@ const NODE_IO: CanvasIo = {
   rename: renameWithRetry,
 }
 
-/** 撤销能换回的整份文档：每个画布文件记最近这么多份。 */
+/** 每个画布文件为撤销与重做保留的整份文档数，超出时丢弃最早的一份。 */
 const SNAPSHOTS = 100
 
-/** 文档内容的指纹。撤销请求用它确认「当前文件仍是那次编辑写下的那一份」。 */
+/** 文档内容的指纹。撤销请求据此确认当前文件仍是该次编辑写入的内容。 */
 function fingerprint(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16)
 }
 
-/** 一次写盘前后两份文档的指纹；没有改动时两者相同。 */
+/** 一次写入前后两份文档的指纹；没有改动时两者相同。 */
 export interface CanvasStep {
   before: string
   after: string
 }
 
-/** PNG 文件头。取帧只收 PNG：浏览器导出的就是它，别的格式说明请求不是来自取帧。 */
+/** PNG 文件头。取帧只接受 PNG：浏览器导出的格式即为 PNG，其他格式表明请求并非来自取帧。 */
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
-/** 改名前复读发现文件变了时重新应用的次数上限。 */
+/** 改名前复读发现文件已变化时，重新应用的次数上限。 */
 const MAX_REAPPLY = 5
 
 /**
- * 写入队列、在跑集合与失败记录的键：画布按字面拼出的绝对路径。
- * 不用相对路径：多个工作区并存时，两个工作区根下同名的画布会撞在一起。
- * 不等 `realpath`：键要在调用当下同步得出，才能按调用顺序排队。
+ * 写入队列、运行中集合与失败记录的键：按字面拼接得到的画布绝对路径。
+ * 不使用相对路径：多个工作区并存时，两个工作区根下同名的画布会冲突。
+ * 不等待 `realpath`：键必须在调用时同步得出，才能按调用顺序排队。
  */
 function keyOf(workspaceRoot: string, path: string): string {
   return resolve(workspaceRoot, path)
 }
 
-/** 一次视频生成的产物里那段视频（随它返回的还可能有尾帧图）。 */
+/** 一次视频生成产物中的视频文件（同时返回的还可能有尾帧图）。 */
 function videoOf(files: GeneratedFile[]): GeneratedFile {
   return files.find((f) => f.mime.startsWith('video/')) ?? files[0]!
 }
 
 /**
- * 视频那一版改指到产物；随视频返回的尾帧图各加一个节点，名字 `<卡片名>_尾帧`，放在卡片右侧，
- * 下一段直接从它接出首帧。`sizes` 是各产物的像素宽高（`sizesOf`），框按它定比例。
+ * 视频对应的版本改为指向产物；随视频返回的尾帧图各添加一个节点，名称为 `<卡片名>_尾帧`，位于卡片右侧，
+ * 下一段可直接以它作为首帧。`sizes` 是各产物的像素宽高（`sizesOf`），节点框按它确定比例。
  */
 function settleVideo(
   doc: CanvasDoc,
@@ -161,7 +161,7 @@ function settleVideo(
   )
 }
 
-/** 可选的 `size` 字段：读不出尺寸时不写这个键。 */
+/** 可选的 `size` 字段：无法读取尺寸时不写入该键。 */
 function sizeField(size: CanvasPixels | null | undefined): { size?: CanvasPixels } {
   return size ? { size } : {}
 }
@@ -172,62 +172,62 @@ export interface CanvasServiceDeps {
     output: MediaOutput,
     pick: { provider: string; model: string } | undefined,
   ): readonly MediaParamDefinition[] | undefined
-  /** 发一条全局事件（不带会话 id）。 */
+  /** 发送一条全局事件（不带会话 id）。 */
   publish(event: AgentEvent): void
   /** 与对话共用更新占位；文件校验结束后、开始生成前再检查一次。 */
   updating?(): boolean
-  /** 这一次生成要用的模型在提示词里怎么指代素材；不给就按节点名写进提示词。 */
+  /** 本次生成所用模型在提示词中指代素材的方式；未提供时按节点名写入提示词。 */
   mentionStyleOf?(
     output: MediaOutput,
     pick: { provider: string; model: string } | undefined,
   ): MentionStyle | undefined
-  /** 只替换给出的那几个函数，其余用默认实现。 */
+  /** 只替换给出的函数，其余使用默认实现。 */
   io?: Partial<CanvasIo>
-  /** 新节点、新连线的 id。只在测试里注入，让两条路径写出的文件可以逐字节比较。 */
+  /** 新节点、新连线的 id。只在测试中注入，使两条路径写出的文件可以逐字节比较。 */
   newId?: () => string
-  /** 导出会话多久没有写入就作废（毫秒）。只在测试里缩短。 */
+  /** 导出会话无写入时的作废时限（毫秒）。只在测试中缩短。 */
   exportIdleMs?: number
 }
 
-/** 时间线导出的上传会话。`part` 是正在写的临时文件的绝对路径，`target` 是想落成的工作区路径（完成时再按撞名规则挑）。 */
+/** 时间线导出的上传会话。`part` 是正在写入的临时文件的绝对路径，`target` 是预期的工作区路径（完成时再按重名规则选定）。 */
 interface ExportSession {
   root: string
   canvas: string
   source: string
   target: string
   part: string
-  /** 先登记会话、再建文件：启动清理按会话号判断临时文件是否在用，登记在后会删到正在建的那一个。 */
+  /** 先登记会话、再创建文件：启动清理按会话号判断临时文件是否在用，后登记会误删正在创建的文件。 */
   file: Promise<FileHandle>
   timer: ReturnType<typeof setTimeout>
 }
 
 /** 成片与导出临时文件所在的工作区目录。 */
 const EXPORT_DIR = 'generated'
-/** 导出临时文件名 `.<会话号>.part`。启动清理只删这个形状的文件，不碰生成落盘的 `.part` 与用户文件。 */
+/** 导出临时文件名 `.<会话号>.part`。启动清理只删除此格式的文件，不涉及生成写入的 `.part` 与用户文件。 */
 const EXPORT_PART = /^\.([0-9a-f-]{36})\.part$/
 
-/** 导出会话的空闲上限：编码一块不会超过它，超过说明浏览器那头已经不在了。 */
+/** 导出会话的空闲上限：编码一块数据不会超过此时长，超过即表明浏览器端已断开。 */
 const EXPORT_IDLE_MS = 10 * 60_000
 
-/** 画布所在的项目：根目录定位文件，id 写进 `canvas.run` 事件。 */
+/** 画布所在的项目：根目录用于定位文件，id 写入 `canvas.run` 事件。 */
 export interface CanvasWorkspace {
   id: string
   root: string
 }
 
 /**
- * 运行或取回由谁付费、何时中止，由调用方给：界面发起的用服务端造的端口（花费记成无轮次的账），
- * Agent 发起的用它本轮的 `ctx.media`（花费进本轮）与本轮的中止信号。
+ * 运行或取回的计费归属与中止时机由调用方提供：界面发起时使用服务端创建的端口（花费记为不属于任何轮次），
+ * Agent 发起时使用其本轮的 `ctx.media`（花费计入本轮）与本轮的中止信号。
  */
 export interface CanvasRunOptions {
   media: MediaPort
   signal?: AbortSignal
 }
 
-/** 一条生成记录里开始时定下、生成过程中补上的字段；结果、结束时刻与失败原文在收尾时补。 */
+/** 生成记录中在开始时确定、在生成过程中补充的字段；结果、结束时刻与失败原文在收尾时补充。 */
 type RunFacts = Omit<CanvasRunRecord, 'node' | 'end' | 'result' | 'message'>
 
-/** 生成卡的一次远端视频任务，以及指向它的那一版（任务号到手时没能写进画布则为 null）。 */
+/** 生成卡的一次远端视频任务，以及指向该任务的版本（取得任务号时未能写入画布则为 null）。 */
 interface CanvasTask {
   taskId: string
   provider: string
@@ -237,7 +237,7 @@ interface CanvasTask {
   versionId: string | null
 }
 
-/** 撤销远端任务的结果：`unsupported` 是接口没有撤销。由调用方按配置实现，见 `cancel`。 */
+/** 撤销远端任务的结果：`unsupported` 表示接口不支持撤销。由调用方按配置实现，见 `cancel`。 */
 export type CanvasCancelTask = (task: {
   taskId: string
   provider: string
@@ -248,28 +248,28 @@ export type CanvasCancelTask = (task: {
 interface RunEntry {
   startedAt: number
   done?: Promise<CanvasRunResult>
-  /** 只停这一次生成的本地等待：远端撤销成功后用。 */
+  /** 只停止本次生成的本地等待：远端撤销成功后使用。 */
   stop: AbortController
-  /** 这次生成会不会有远端任务：视频会，图像与音频是一次请求、没有任务号。 */
+  /** 本次生成是否有远端任务：视频有；图像与音频为单次请求，没有任务号。 */
   expectsTask: boolean
   task?: CanvasTask
-  /** 平台回报的排队中 / 生成中；回报之前没有。 */
+  /** 平台报告的排队中 / 生成中；报告之前不存在。 */
   phase?: TaskPhase
-  /** 任务号到手时兑现：取消在任务号到手之前到达时等它。 */
+  /** 取得任务号时兑现：取消请求在取得任务号之前到达时等待它。 */
   taskArrived: Promise<void>
   arrive: () => void
-  /** 远端已撤销：收尾时删掉这一版与任务记录，不记失败。 */
+  /** 远端已撤销：收尾时删除该版本与任务记录，不记录失败。 */
   cancelled?: true
 }
 
 export class CanvasService {
   private readonly queues = new Map<string, Promise<unknown>>()
-  /** 键：`画布绝对路径#节点 id`。多个工作区并存时相对路径会撞。 */
+  /** 键：`画布绝对路径#节点 id`。多个工作区并存时相对路径会冲突。 */
   private readonly running = new Map<string, RunEntry>()
   private readonly shutdown = new AbortController()
   private recovering = false
   private recovery: Promise<void> | undefined
-  /** 按画布文件的绝对路径记下本服务读过、写过的文档（规范化后的文本），键是指纹。只增不改，超出上限丢最早的。 */
+  /** 按画布文件的绝对路径记录本服务读取或写入过的文档（规范化后的文本），键为指纹。只增不改，超出上限时丢弃最早的一份。 */
   private readonly snapshots = new Map<string, Map<string, string>>()
   private readonly failures = new Map<string, string>()
   private readonly io: CanvasIo
@@ -282,12 +282,12 @@ export class CanvasService {
     this.exportIdleMs = deps.exportIdleMs ?? EXPORT_IDLE_MS
   }
 
-  /** 扫描中的恢复也算忙，防止尚未找到待接续卡片时就取得更新占位。 */
+  /** 扫描中的恢复同样视为忙碌，防止在找到待接续的卡片之前取得更新占位。 */
   get busyCount(): number {
     return Math.max(this.running.size, Number(this.recovering))
   }
 
-  /** 启动时接续各工作区已有的视频任务，沿用原任务号与取回路径，绝不重新生成。 */
+  /** 启动时接续各工作区已有的视频任务，沿用原任务号与取回路径，不重新生成。 */
   recover(
     workspaces: CanvasWorkspace[],
     media: (ws: CanvasWorkspace, version: CanvasVersion) => MediaPort | undefined,
@@ -298,7 +298,7 @@ export class CanvasService {
       const pending: Promise<void>[] = []
       try {
         for (const ws of workspaces) {
-          // 删不掉的留到下次启动再删，不影响接续任务。
+          // 删除失败的临时文件留待下次启动时再删除，不影响接续任务。
           await this.sweepExports(ws.root).catch(() => {})
           for (const path of await this.list(ws.root)) {
             if (this.shutdown.signal.aborted) return
@@ -320,7 +320,7 @@ export class CanvasService {
                       })
                       await done
                     } catch (err) {
-                      // 用户先取回了同一卡片时沿用那次调用；其余错误保留任务记录供手动重试。
+                      // 用户已先行取回同一卡片时由该次调用继续处理；其余错误保留任务记录供手动重试。
                       if (!(err instanceof CanvasFailure && err.status === 409)) {
                         this.failures.set(`${keyOf(ws.root, path)}#${node.id}`, String(err))
                       }
@@ -340,7 +340,7 @@ export class CanvasService {
     return this.recovery
   }
 
-  /** 停止本地等待，保留远端任务记录；结束在办导出并删掉临时文件；等待收尾后再关闭账本。 */
+  /** 停止本地等待，保留远端任务记录；结束进行中的导出并删除临时文件；等待收尾完成后再关闭账本。 */
   async stop(): Promise<void> {
     this.shutdown.abort()
     await Promise.all([...this.exports.keys()].map((id) => this.dropExport(id)))
@@ -348,13 +348,13 @@ export class CanvasService {
     await Promise.all([...this.running.values()].map((run) => run.done))
   }
 
-  /** 画布文件的绝对路径。不在工作区里、不存在、不是画布文件，都按入参问题回 422 / 404。 */
+  /** 画布文件的绝对路径。不在工作区中、不存在或不是画布文件时，均按参数错误返回 422 / 404。 */
   async locate(workspaceRoot: string, path: string): Promise<string> {
     if (!path.endsWith(CANVAS_SUFFIX)) throw new CanvasFailure(`${path} 不是画布文件`, 422)
     try {
       return await resolveInWorkspace(workspaceRoot, path, { mustExist: true, literal: true })
     } catch {
-      throw new CanvasFailure(`${path} 不存在或不在这个项目里`, 404)
+      throw new CanvasFailure(`${path} 不存在或不在当前项目中`, 404)
     }
   }
 
@@ -378,11 +378,11 @@ export class CanvasService {
   }
 
   /**
-   * 运行一张生成卡。在跑、输入还没有结果、提示词为空都在返回之前以 `CanvasFailure` 抛出；
-   * 返回的 `done` 在生成结束、画布回写之后兑现，从不拒绝。
+   * 运行一张生成卡。运行中、输入尚无结果、提示词为空均在返回之前以 `CanvasFailure` 抛出；
+   * 返回的 `done` 在生成结束且画布回写之后兑现，不会拒绝。
    *
-   * 视频的任务号一到手就追加一版指向任务记录，之后停止、超时、进程退出都能取回；成功后按版本 id
-   * 把这一版改指到产物。图像与音频成功后才追加版本，多张就是多版。
+   * 视频取得任务号后立即追加一个指向任务记录的版本，此后停止、超时或进程退出均可取回；成功后按版本 id
+   * 将该版本改为指向产物。图像与音频在成功后才追加版本，多张图像对应多个版本。
    */
   async run(
     ws: CanvasWorkspace,
@@ -395,7 +395,7 @@ export class CanvasService {
     const inputs: CanvasMade['inputs'] = []
     for (const edge of inputsOf(doc, nodeId)) {
       const source = doc.nodes.find((n) => n.id === edge.from)!
-      // 时间线不能作为输入（`validateCanvas` 拒绝），不会走到这里。
+      // 时间线不能作为输入（`validateCanvas` 拒绝），不会执行到此处。
       const file =
         source.type === 'file'
           ? source.path
@@ -403,7 +403,7 @@ export class CanvasService {
             ? source.versions.find((v) => v.id === source.current)?.path
             : undefined
       if (!file || file.endsWith(TASK_SUFFIX)) {
-        throw new CanvasFailure(`「${displayNameOf(source)}」还没有结果`, 422)
+        throw new CanvasFailure(`「${displayNameOf(source)}」尚无结果`, 422)
       }
       if (!(await this.isFile(ws.root, file))) {
         throw new CanvasFailure(`「${displayNameOf(source)}」的文件不存在：${file}`, 422)
@@ -505,7 +505,7 @@ export class CanvasService {
               files.map((f) => version(f.path)),
             )
           if (id) return settleVideo(d, nodeId, id, files, sizes)
-          // 任务号到手时没能写进画布（被外部改写），成功后补一版。
+          // 取得任务号时未能写入画布（文件被外部改写），成功后补充一个版本。
           const late = version(videoOf(files).path)
           const added = addVersions(d, nodeId, [late])
           return added.ok ? settleVideo(added.doc, nodeId, late.id, files, sizes) : added
@@ -518,8 +518,8 @@ export class CanvasService {
   }
 
   /**
-   * 取回一版还在远端的视频：只查询与下载，不再提交。`versionId` 缺省取当前版，当前版不是任务记录时取最新那个。
-   * 远端已失败或结果已过期时删掉这一版与记录。
+   * 取回仍在远端的一个视频版本：只查询与下载，不再提交。`versionId` 缺省时取当前版本，当前版本不是任务记录时取最新的任务记录版本。
+   * 远端已失败或结果已过期时删除该版本与任务记录。
    */
   async retrieve(
     ws: CanvasWorkspace,
@@ -572,7 +572,7 @@ export class CanvasService {
     return { done }
   }
 
-  /** 运行与取回共用的前置：画布、节点、不在跑。 */
+  /** 运行与取回共用的前置检查：画布、节点、未在运行。 */
   private async target(
     ws: CanvasWorkspace,
     path: string,
@@ -581,7 +581,7 @@ export class CanvasService {
     const abs = await this.locate(ws.root, path)
     const rel = await this.relativeTo(ws.root, abs)
     const key = `${keyOf(ws.root, path)}#${nodeId}`
-    if (this.running.has(key)) throw new CanvasFailure('这张卡正在生成', 409)
+    if (this.running.has(key)) throw new CanvasFailure('该卡片正在生成', 409)
     const doc = await this.load(abs)
     const node = doc.nodes.find((n) => n.id === nodeId)
     if (!node) throw new CanvasFailure(`目标已不存在：${nodeId}`, 404)
@@ -598,7 +598,7 @@ export class CanvasService {
   ): RunEntry {
     if (this.shutdown.signal.aborted || this.deps.updating?.())
       throw new CanvasFailure('应用正在更新或关闭，请稍后重试', 409)
-    if (this.running.has(key)) throw new CanvasFailure('这张卡正在生成', 409)
+    if (this.running.has(key)) throw new CanvasFailure('该卡片正在生成', 409)
     let arrive = () => {}
     const taskArrived = new Promise<void>((resolve) => {
       arrive = resolve
@@ -622,7 +622,7 @@ export class CanvasService {
     return entry
   }
 
-  /** 平台回报的状态变了：记下排队中 / 生成中，发一条 `canvas.run` 让界面重读。认不出的状态词不改。 */
+  /** 平台报告的状态变化：记录排队中 / 生成中，发送一条 `canvas.run` 使界面重新读取。无法识别的状态值不修改。 */
   private advance(
     entry: RunEntry,
     ws: CanvasWorkspace,
@@ -646,7 +646,7 @@ export class CanvasService {
     return AbortSignal.any([entry.stop.signal, this.shutdown.signal, ...(signal ? [signal] : [])])
   }
 
-  /** 任务记录里的任务号、接口与模型；读不出回 null（取消时当作撤不回）。 */
+  /** 任务记录中的任务号、接口与模型；无法读取时返回 null（取消时视为无法撤销）。 */
   private async readTask(
     root: string,
     record: string,
@@ -663,10 +663,10 @@ export class CanvasService {
   }
 
   /**
-   * 取消一张卡正在进行的生成。视频提交之后才有远端任务，任务号还没到手时先等它（与这次生成的结束赛跑）。
-   * 撤销由 `cancelTask` 按接口能力做：撤成了停掉本地等待，收尾时删掉这一版与任务记录、不记失败，回 `cancelled`。
-   * 撤不回时这次生成照常进行：远端已开始或已结束回 `started`，接口没有撤销、图像与音频这类一次请求回 `unsupported`；
-   * 生成在任务号到手之前就结束了回 `ended`。撤销请求本身失败（网络、鉴权）原样抛，生成照常进行。
+   * 取消一张卡片正在进行的生成。视频提交之后才有远端任务，尚未取得任务号时先等待（与本次生成的结束竞争）。
+   * 撤销由 `cancelTask` 按接口能力执行：撤销成功时停止本地等待，收尾时删除该版本与任务记录、不记录失败，返回 `cancelled`。
+   * 无法撤销时本次生成照常进行：远端已开始或已结束时返回 `started`，接口不支持撤销或为图像、音频等单次请求时返回 `unsupported`；
+   * 生成在取得任务号之前结束时返回 `ended`。撤销请求本身失败（网络、鉴权）时原样抛出，生成照常进行。
    */
   async cancel(
     workspaceRoot: string,
@@ -675,7 +675,7 @@ export class CanvasService {
     cancelTask: CanvasCancelTask,
   ): Promise<'cancelled' | 'started' | 'unsupported' | 'ended'> {
     const entry = this.running.get(`${keyOf(workspaceRoot, path)}#${nodeId}`)
-    if (!entry) throw new CanvasFailure('这张卡没有在生成', 409)
+    if (!entry) throw new CanvasFailure('该卡片未在生成', 409)
     if (entry.cancelled) return 'cancelled'
     if (!entry.expectsTask) return 'unsupported'
     if (!entry.task) await Promise.race([entry.taskArrived, entry.done])
@@ -689,7 +689,7 @@ export class CanvasService {
     return 'cancelled'
   }
 
-  /** 收尾：清在跑、记失败、发结束事件。`work` 抛出也收成失败，`done` 不会拒绝。 */
+  /** 收尾：清除运行标记、记录失败、发送结束事件。`work` 抛出异常时同样记为失败，`done` 不会拒绝。 */
   private async settleRun(
     key: string,
     ws: CanvasWorkspace,
@@ -705,7 +705,7 @@ export class CanvasService {
       result = { ok: false, message: (err as Error).message, pending: false }
     }
     const entry = this.running.get(key)
-    // 远端已撤销：这一版与任务记录一起删掉，卡回到这次生成之前的样子，不记失败。
+    // 远端已撤销：删除该版本与任务记录，卡片恢复到本次生成之前的状态，不记录失败。
     if (entry?.cancelled && entry.task) {
       if (entry.task.versionId) await this.dropVersion(ws.root, rel, nodeId, entry.task.versionId)
       await rm(join(ws.root, entry.task.record), { force: true })
@@ -730,7 +730,7 @@ export class CanvasService {
       ...(task ? { task: task.taskId } : {}),
       ...(!result.ok && !entry?.cancelled ? { message: result.message } : {}),
     }
-    // 画布文件已被删除或改坏时记不进去；生成本身的结果不因此改判。
+    // 画布文件已被删除或损坏时无法写入记录；生成本身的结果不因此改变。
     await this.mutate(ws.root, rel, (d) => recordRun(d, record)).catch(() => {})
     this.running.delete(key)
     if (!result.ok && !entry?.cancelled) this.failures.set(key, result.message)
@@ -746,7 +746,7 @@ export class CanvasService {
     return result
   }
 
-  /** 各产物的像素宽高，按工作区相对路径取；读不出的不在表里。 */
+  /** 各产物的像素宽高，按工作区相对路径索引；无法读取的产物不在表中。 */
   private async sizesOf(root: string, files: GeneratedFile[]): Promise<Map<string, CanvasPixels>> {
     const sizes = new Map<string, CanvasPixels>()
     for (const f of files) {
@@ -756,7 +756,7 @@ export class CanvasService {
     return sizes
   }
 
-  /** 产物已落盘，回写画布。回写不成（节点或这一版被外部改掉了）时，失败原文写明产物在哪。 */
+  /** 产物已落盘，回写画布。回写失败（节点或该版本已被外部修改）时，失败原文写明产物位置。 */
   private async writeBack(
     root: string,
     rel: string,
@@ -771,7 +771,7 @@ export class CanvasService {
     } catch (err) {
       return {
         ok: false,
-        message: `已生成，但回写画布失败（${(err as Error).message}），产物在 ${paths.join('、')}`,
+        message: `已生成，但回写画布失败（${(err as Error).message}），产物位于 ${paths.join('、')}`,
         pending: false,
       }
     }
@@ -791,8 +791,8 @@ export class CanvasService {
   }
 
   /**
-   * 收下浏览器从一个视频节点截的一帧（PNG），按生成的落盘规则写成 `generated/<视频名>_<label>.png`
-   * （不覆盖，撞名加 `-2`），在视频右边加一个引用它的节点。返回新节点的 id 与文件路径。
+   * 接收浏览器从视频节点截取的一帧（PNG），按生成产物的落盘规则写入 `generated/<视频名>_<label>.png`
+   * （不覆盖，重名时加 `-2`），并在视频右侧添加一个引用它的节点。返回新节点的 id 与文件路径。
    */
   async captureFrame(
     workspaceRoot: string,
@@ -809,7 +809,7 @@ export class CanvasService {
     if (!video) throw new CanvasFailure(`目标已不存在：${videoNodeId}`, 404)
     if (canvasMediaOf(video) !== 'video') throw new CanvasFailure('只能从视频节点取帧', 422)
     const name = `${displayNameOf(video)}_${label}`.replace(/[\\/:*?"<>|]/g, '_')
-    // 扩展名写全：`12.4s` 这种名字不带的话，`.4s` 会被当成扩展名，文件落成不认识的类型。
+    // 必须写出完整扩展名：名称为 `12.4s` 时若不带扩展名，`.4s` 会被视为扩展名，文件保存为无法识别的类型。
     const [landed] = await landFiles(
       workspaceRoot,
       [{ bytes, mime: 'image/png' }],
@@ -822,11 +822,11 @@ export class CanvasService {
   }
 
   /**
-   * 时间线导出成片：浏览器边编码边把字节按位置写进 `generated/.<会话号>.part`（`exportWrite`），
-   * 完成时（`exportFinish`）核 mp4 文件头、落成 `generated/<时间线名>.mp4`（撞名加 `-2`）、在时间线右边加节点。回会话号。
+   * 时间线导出成片：浏览器一边编码一边将字节按位置写入 `generated/.<会话号>.part`（`exportWrite`），
+   * 完成时（`exportFinish`）核对 mp4 文件头、保存为 `generated/<时间线名>.mp4`（重名时加 `-2`），并在时间线右侧添加节点。返回会话号。
    *
-   * 临时文件的终态：完成时改名；失败、放弃、停服、`EXPORT_IDLE_MS` 没有写入时删掉（标签页关掉、网络断开时没有人会来调
-   * `exportAbort`）；进程被结束时留下的由下次启动的 `recover` 删掉。
+   * 临时文件的终态：完成时改名；失败、放弃、停止服务或 `EXPORT_IDLE_MS` 内无写入时删除（标签页关闭、网络断开时不会有调用方
+   * 调用 `exportAbort`）；进程被结束时遗留的临时文件由下次启动的 `recover` 删除。
    */
   async exportStart(workspaceRoot: string, path: string, nodeId: string): Promise<string> {
     const canvas = await this.locate(workspaceRoot, path)
@@ -859,7 +859,7 @@ export class CanvasService {
     return id
   }
 
-  /** 把一块字节写到 `.part` 的 `at` 处。编码器结尾会回写文件开头的索引，所以按位置写、不是追加。 */
+  /** 将一块字节写入 `.part` 的 `at` 处。编码器在结尾会回写文件开头的索引，因此按位置写入，而不是追加。 */
   async exportWrite(
     workspaceRoot: string,
     id: string,
@@ -908,8 +908,8 @@ export class CanvasService {
   }
 
   /**
-   * 占一个成片名字：按撞名规则挑，独占创建空文件占住，被同时完成的另一次导出抢先就再挑。回绝对路径。
-   * 不要改成挑完直接改名：改名会覆盖已存在的文件，两次导出同时挑中同一个名字时后一个覆盖前一个。
+   * 占用一个成片文件名：按重名规则选定，以独占方式创建空文件占用；同时完成的另一次导出先行占用时重新选定。返回绝对路径。
+   * 不要改成选定后直接改名：改名会覆盖已存在的文件，两次导出同时选中同一个名称时后者会覆盖前者。
    */
   private async claimExportName(workspaceRoot: string, target: string): Promise<string> {
     for (;;) {
@@ -923,7 +923,7 @@ export class CanvasService {
     }
   }
 
-  /** 放弃导出：删掉 `.part`。会话已结束或不属于这个项目时什么也不做。 */
+  /** 放弃导出：删除 `.part`。会话已结束或不属于当前项目时不执行任何操作。 */
   async exportAbort(workspaceRoot: string, id: string): Promise<void> {
     if (this.exports.get(id)?.root !== workspaceRoot) return
     await this.dropExport(id)
@@ -932,7 +932,7 @@ export class CanvasService {
   private exportOf(workspaceRoot: string, id: string): ExportSession {
     const session = this.exports.get(id)
     if (!session || session.root !== workspaceRoot) {
-      throw new CanvasFailure('这次导出已经结束或超时，重新导出', 404)
+      throw new CanvasFailure('本次导出已结束或超时，请重新导出', 404)
     }
     return session
   }
@@ -946,7 +946,7 @@ export class CanvasService {
     await rm(session.part, { force: true })
   }
 
-  /** 删掉这个项目 `generated/` 里不属于在办会话的导出临时文件，即进程被结束时没来得及删的那些。 */
+  /** 删除当前项目 `generated/` 中不属于进行中会话的导出临时文件，即进程被结束时未能删除的文件。 */
   private async sweepExports(root: string): Promise<void> {
     const dir = join(root, EXPORT_DIR)
     for (const name of await readdir(dir)) {
@@ -956,8 +956,8 @@ export class CanvasService {
   }
 
   /**
-   * 收下从本机选的文件，原名写进工作区 `uploads/`（不覆盖，撞名加 `-2`），加一个引用它的节点：
-   * 给了 `beside` 放在那个节点右侧的空位，否则以 `near` 为中心找空位。画布只引用，删节点不删文件。
+   * 接收从本机选择的文件，按原名写入工作区 `uploads/`（不覆盖，重名时加 `-2`），并添加一个引用它的节点：
+   * 给出 `beside` 时放在该节点右侧的空位，否则以 `near` 为中心查找空位。画布只引用文件，删除节点不删除文件。
    */
   async upload(
     workspaceRoot: string,
@@ -988,8 +988,8 @@ export class CanvasService {
   }
 
   /**
-   * 从系统拖入的本机文件（绝对路径）：在工作区里的直接引用，工作区外的按原名复制进 `uploads/`。
-   * 第一个以 `near` 为中心找空位，之后的排在上一个右侧。回新节点的 id；有一个不存在或不是文件就停下报错。
+   * 从系统拖入的本机文件（绝对路径）：位于工作区中的直接引用，位于工作区外的按原名复制到 `uploads/`。
+   * 第一个文件以 `near` 为中心查找空位，之后的依次排在前一个右侧。返回新节点的 id；任一路径不存在或不是文件时停止并报错。
    */
   async importPaths(
     workspaceRoot: string,
@@ -1023,7 +1023,7 @@ export class CanvasService {
     return ids
   }
 
-  /** 工作区里的画布文件（工作区相对路径），按名搜索，跳过依赖与构建产物目录（同文件树的搜索）。 */
+  /** 工作区中的画布文件（工作区相对路径），按名称搜索，跳过依赖与构建产物目录（与文件树的搜索一致）。 */
   async list(workspaceRoot: string): Promise<string[]> {
     const { matches } = await findByName(workspaceRoot, CANVAS_SUFFIX, {
       hits: Number.POSITIVE_INFINITY,
@@ -1034,7 +1034,7 @@ export class CanvasService {
       .map((m) => m.path)
   }
 
-  /** 读画布与各节点状态。文件格式错误回 422，原文件不动。 */
+  /** 读取画布与各节点状态。文件格式错误时返回 422，原文件不变。 */
   async read(workspaceRoot: string, path: string): Promise<CanvasView> {
     const abs = await this.locate(workspaceRoot, path)
     const doc = await this.load(abs)
@@ -1046,8 +1046,8 @@ export class CanvasService {
   }
 
   /**
-   * 应用一批操作并写盘，返回应用后的文档与批内名字对照。
-   * 文件节点的路径先按工作区核实并规范成正斜杠相对路径；在跑的卡不能删（409）。
+   * 应用一批操作并写入，返回应用后的文档与批内名称对照。
+   * 文件节点的路径先按工作区核实，并规范化为正斜杠相对路径；运行中的卡片不能删除（409）。
    */
   apply(
     workspaceRoot: string,
@@ -1066,19 +1066,19 @@ export class CanvasService {
   }
 
   /**
-   * 撤销与重做：当前文件仍是指纹 `from` 的那一份时，换回本服务记下的指纹 `to` 那一份。
-   * 中间被别处改过（Agent、生成回写、手改）回 409、不覆盖；`to` 已不在记录里回 404。
-   * 换回的文档是本服务自己读过或写过的，版本记录是真实的。
+   * 撤销与重做：当前文件的指纹仍为 `from` 时，恢复为本服务记录的、指纹为 `to` 的文档。
+   * 期间文件被其他写入者修改（Agent、生成回写、手动编辑）时返回 409，不覆盖；`to` 已不在记录中时返回 404。
+   * 恢复的文档均由本服务读取或写入过，版本记录与实际内容一致。
    */
   restore(workspaceRoot: string, path: string, from: string, to: string): Promise<CanvasStep> {
     return this.enqueue(keyOf(workspaceRoot, path), async () => {
       const abs = await this.locate(workspaceRoot, path)
       const text = this.snapshots.get(abs)?.get(to)
-      if (text === undefined) throw new CanvasFailure('这一步已经撤销不了', 404)
+      if (text === undefined) throw new CanvasFailure('该步骤已无法撤销', 404)
       const target = this.parse(text)
       const r = await this.commit(abs, (doc) => {
         if (fingerprint(serializeCanvas(doc)) !== from) {
-          throw new CanvasFailure('画布在这之后被改过，撤销不了', 409)
+          throw new CanvasFailure('画布在此之后已被修改，无法撤销', 409)
         }
         return { ok: true, doc: target, refs: {} }
       })
@@ -1087,10 +1087,10 @@ export class CanvasService {
   }
 
   /**
-   * 串行修改一个画布文件。`change` 抛 `CanvasFailure` 或回 `ok: false` 都不写盘。
+   * 串行修改一个画布文件。`change` 抛出 `CanvasFailure` 或返回 `ok: false` 时均不写入。
    *
-   * 调用当下就排进队列，路径解析在队列里做：先解析再排队的话，同一客户端连发的两次修改
-   * 可能按解析完成的先后落盘，后发的先写。
+   * 调用时立即进入队列，路径解析在队列中执行：若先解析再排队，同一客户端连续发送的两次修改
+   * 可能按解析完成的先后落盘，导致后发送的先写入。
    */
   mutate(
     workspaceRoot: string,
@@ -1102,7 +1102,7 @@ export class CanvasService {
     )
   }
 
-  /** 记下一份文档，回它的指纹。 */
+  /** 记录一份文档，返回其指纹。 */
   private remember(abs: string, text: string): string {
     const fp = fingerprint(text)
     let kept = this.snapshots.get(abs)
@@ -1120,8 +1120,8 @@ export class CanvasService {
   }
 
   /**
-   * 读 → 应用 → 写 `.part` → 改名前复读 → 改名。应用前后字节相同就不写、不发通知。
-   * 前后两份都按规范化文本记下，供撤销换回。
+   * 读取 → 应用 → 写 `.part` → 改名前复读 → 改名。应用前后字节相同时不写入、不发送通知。
+   * 前后两份均按规范化文本记录，供撤销恢复。
    */
   private async commit(
     abs: string,
@@ -1146,7 +1146,7 @@ export class CanvasService {
       this.changed()
       return { ...r, step: { before: was, after: this.remember(abs, text) } }
     }
-    throw new CanvasFailure('画布文件正被别处连续改写，稍后再试', 409)
+    throw new CanvasFailure('画布文件正在被连续修改，请稍后重试', 409)
   }
 
   /** 一个节点的状态，次序见 `CanvasNodeState`。`canvasKey` 见 `keyOf`。 */
@@ -1186,7 +1186,7 @@ export class CanvasService {
     return (await exists(current.path)) ? { state: 'normal' } : { state: 'missing' }
   }
 
-  /** 删节点、删正在生成的那一版：目标在跑时拒绝，否则成功后找不到要回写的地方。 */
+  /** 删除节点或正在生成的版本：目标运行中时拒绝，否则生成成功后无法找到回写位置。 */
   private refuseRemovingRunning(
     workspaceRoot: string,
     path: string,
@@ -1201,13 +1201,13 @@ export class CanvasService {
         op.version === undefined ||
         (node?.type === 'generate' &&
           node.versions.some((v) => v.id === op.version && v.path.endsWith(TASK_SUFFIX)))
-      if (inFlight) throw new CanvasFailure('这张卡正在生成，生成结束后再删', 409)
+      if (inFlight) throw new CanvasFailure('该卡片正在生成，请在生成结束后删除', 409)
     }
   }
 
   /**
-   * `add_file` / `update` 里的文件路径：必须是工作区里已有的文件，写成正斜杠相对路径；
-   * 同时从文件头读出像素宽高填进 `size`，框按文件的比例定。操作自己给了 `w` / `h` 时不读。
+   * `add_file` / `update` 中的文件路径：必须是工作区中已有的文件，写为正斜杠相对路径；
+   * 同时从文件头读取像素宽高填入 `size`，节点框按文件的比例确定。操作已给出 `w` / `h` 时不读取。
    */
   private async normalizePath(workspaceRoot: string, op: CanvasOp): Promise<CanvasOp> {
     if ((op.op === 'add_timeline' || op.op === 'update') && op.clips !== undefined) {
@@ -1221,15 +1221,15 @@ export class CanvasService {
     return { ...op, path, ...sizeField(await mediaSizeOf(abs)) }
   }
 
-  /** 时间线片段：文件同 `normalizePath` 核实；出点超过视频时长（读得出时）回 422。 */
+  /** 时间线片段：文件按 `normalizePath` 的规则核实；出点超过视频时长（可读取时长时）返回 422。 */
   private async normalizeClip(workspaceRoot: string, clip: CanvasClip): Promise<CanvasClip> {
     const abs = await this.existingFile(workspaceRoot, clip.path)
     const path = await this.relativeTo(workspaceRoot, abs)
     const duration = await mediaDurationOf(abs)
-    // 容差一帧：界面按播放器读到的时长裁剪，与 `mvhd` 的取整可能差几毫秒。
+    // 容差为一帧：界面按播放器读取的时长裁剪，与 `mvhd` 的取整值可能相差几毫秒。
     if (duration !== null && clip.out > duration + 1 / 30) {
       throw new CanvasFailure(
-        `片段超出视频时长：${path} 只有 ${Math.round(duration * 100) / 100} 秒，出点是 ${clip.out} 秒`,
+        `片段超出视频时长：${path} 时长为 ${Math.round(duration * 100) / 100} 秒，出点为 ${clip.out} 秒`,
         422,
       )
     }
@@ -1241,7 +1241,7 @@ export class CanvasService {
     try {
       abs = await resolveInWorkspace(workspaceRoot, path, { mustExist: true, literal: true })
     } catch {
-      throw new CanvasFailure(`${path} 不存在或不在这个项目里`, 422)
+      throw new CanvasFailure(`${path} 不存在或不在当前项目中`, 422)
     }
     if (!(await stat(abs)).isFile()) throw new CanvasFailure(`${path} 不是文件`, 422)
     return abs
@@ -1250,7 +1250,7 @@ export class CanvasService {
   private async relativeTo(workspaceRoot: string, abs: string): Promise<string> {
     const rel = relative(await realpath(workspaceRoot), abs)
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
-      throw new CanvasFailure(`${abs} 不在工作区里，画布只引用工作区里的文件`, 422)
+      throw new CanvasFailure(`${abs} 不在工作区中，画布只引用工作区中的文件`, 422)
     }
     return toPosixPath(rel)
   }
@@ -1276,7 +1276,7 @@ export class CanvasService {
     }
   }
 
-  /** 磁盘变了：推进各客户端的文件快照，不进「本轮改动」。 */
+  /** 磁盘内容已变化：更新各客户端的文件快照，不计入「本轮改动」。 */
   private changed(): void {
     this.deps.publish({ type: 'file.changed', runId: null, changes: [] })
   }
@@ -1297,8 +1297,8 @@ export class CanvasService {
 }
 
 /**
- * 交给会话的画布端口：同一个画布服务，绑定这条会话所在的项目。
- * 运行与取回在工具里等到结束；中止信号来自本轮，停止本轮即停止等待，视频那一版留着待取回。
+ * 提供给会话的画布端口：使用同一个画布服务，绑定该会话所在的项目。
+ * 运行与取回在工具中等待至结束；中止信号来自本轮，停止本轮即停止等待，视频版本保留以待取回。
  */
 export function canvasPort(service: CanvasService, ws: CanvasWorkspace): CanvasPort {
   return {

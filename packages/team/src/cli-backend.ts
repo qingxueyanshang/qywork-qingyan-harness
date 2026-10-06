@@ -1,19 +1,19 @@
 /**
- * 外部 CLI 的执行器：替换参数、起进程、解析输出。
+ * 外部 CLI 的执行器：替换参数、启动进程、解析输出。
  *
- * 调什么、怎么调由 `cli-detect.ts` 的厂商表给（那里也写着表会过期的代价），
- * 这里只负责执行。
+ * 调用哪个 CLI、以何种参数调用由 `cli-detect.ts` 的厂商表决定（该文件也说明了厂商表会过期的代价），
+ * 本模块只负责执行。
  *
- * **凭证：透传但要剥掉**本仓自己的**。** 这里与 `run_command` 不同：被调度的 CLI **需要它自己的 key
- * 才能执行** （codex 要 OPENAI_API_KEY，claude 要 ANTHROPIC_API_KEY），所以不能像 `run_command` 那
- * 样按名字一律剥掉。
+ * **凭证：透传环境变量，但剥离本仓库自身的凭证。** 此处与 `run_command` 不同：被调度的 CLI **需要其自身的 key
+ * 才能执行**（codex 需要 OPENAI_API_KEY，claude 需要 ANTHROPIC_API_KEY），因此不能像 `run_command`
+ * 那样按名称一律剥离。
  *
- * 但 qywork 自身配置中的那些 key，该后端完全用不上——按**值**剥掉即可：
- * 用户在 `~/.qywork/config.json` 里配的 DeepSeek key 没有任何理由出现在
- * codex 的进程里。这条剥的是「多余的凭证」，不影响后端正常工作。
+ * qywork 自身配置中的 key 对该后端没有用处，按**值**剥离即可：
+ * 用户在 `~/.qywork/config.json` 中配置的 DeepSeek key 没有理由出现在
+ * codex 的进程中。剥离的是多余的凭证，不影响后端正常工作。
  *
- * 另外，能被调起的只有厂商表里那几家、且用户在设置页允许的那几家，属于知情同意——
- * 与 MCP server 同一档。所以这里不加裁决，只做凭证收敛。
+ * 此外，可被调用的只有厂商表中列出、且用户在设置页允许的 CLI，属于知情同意，
+ * 与 MCP server 同一级别。因此此处不做权限裁决，只限制凭证范围。
  */
 
 import { readFile, stat } from 'node:fs/promises'
@@ -41,19 +41,19 @@ async function commandFor(command: string, args: string[]): Promise<string[]> {
 }
 
 /**
- * 追加在任务后面的输出格式约定。
+ * 追加在任务之后的输出格式约定。
  *
- * **交付物正文必须在前、回执作尾节**：`extract` 取的是最后一个非空目标字段，
- * 回执写在前面时，查询型任务的产出会变成一句状态汇报，而不是它的答案。
+ * **交付物正文必须在前，回执作为最后一节**：`extract` 取的是最后一个非空目标字段，
+ * 回执写在前面时，查询型任务的产出会变成一句状态汇报，而不是答案。
  *
- * 不照格式输出只是降级，不是失败：成败以退出码为准；回执信息不足时续接会话追问
+ * 不按格式输出只是降级，不是失败：成败以退出码为准；回执信息不足时续接会话追问
  * （`runCli` 的 `resume`），该会话保留上一轮上下文。
  */
 const REPORT_CONTRACT = `
 
 ## 输出格式
 
-先输出交付物正文（任务要求的答案、结论或改动说明），再以下列小节收尾。
+先输出交付物正文（任务要求的答案、结论或改动说明），再以下列小节结束。
 
 ### 回执
 - 变更文件：逐条列出路径及该文件的改动要点；无变更时写「无」
@@ -65,13 +65,13 @@ export interface CliRunResult {
   ok: boolean
   output: string
   exitCode: number
-  /** 静默到点被终止。额度是 `MAX_TIMEOUT_MS`，与总时长无关。 */
+  /** 因静默超时被终止。时限为 `MAX_TIMEOUT_MS`，与总时长无关。 */
   timedOut: boolean
   stderr: string
   /**
-   * 该 CLI 这条会话的 id，用于续接（`runCli` 的 `resume`）。
+   * 该 CLI 本次会话的 id，用于续接（`runCli` 的 `resume`）。
    *
-   * 只有厂商表里写了 `sessionField` 的那几家有；其余的这个键缺席，
+   * 只有厂商表中声明了 `sessionField` 的 CLI 提供；其余 CLI 没有该键，
    * 调用方只能新建会话。
    */
   session?: string
@@ -85,22 +85,22 @@ export async function runCli(
     signal: AbortSignal
     /**
      * 续接该 CLI 的既有会话。会话保留上一轮上下文，可直接就其产出追问；
-     * 新建会话则会把任务重新执行一遍。
+     * 新建会话则会重新执行整个任务。
      *
-     * **只有厂商表里给了 `resumeArgs` 的那几家支持，调用方先判再传。**
+     * **只有厂商表中提供了 `resumeArgs` 的 CLI 支持续接，调用方须先判断再传入。**
      */
     resume?: string
     /**
-     * qywork 自己的凭证。按值剥掉——后端用不上，也就没有理由拿到。
-     * 不传等于「没有已知凭证」，不等于「不用剥」。
+     * qywork 自身的凭证，按值剥离：后端用不到这些凭证，也就没有理由取得。
+     * 不传入表示没有已知凭证，不表示无需剥离。
      */
     secrets?: { values: string[] }
     /**
-     * 边跑边给一块。**不给这个回调就等于跑完才有输出**——外部 CLI 是本机另一个进程，
-     * 它写了什么在结束之前一个字都看不到。
+     * 运行期间逐块交出输出。**不提供该回调时，执行完毕才有输出**：外部 CLI 是本机的另一个进程，
+     * 其输出在结束之前无法获取。
      *
-     * 给的是解析出来的正文与工具名，不是原始流：厂商表声明了 `narrate` 的那几家按路径取，
-     * `text` 那一档原样过，`json` 那一档流里出不了正文、一片都不给。
+     * 交出的是解析后的正文与工具名，不是原始流：厂商表声明了 `narrate` 的 CLI 按路径提取，
+     * `text` 格式原样交出，`json` 格式在流中无法解析出正文，不交出任何内容。
      */
     onChunk?: (text: string) => void
   },
@@ -112,24 +112,24 @@ export async function runCli(
       .replaceAll('{session}', input.resume ?? ''),
   )
 
-  // 一律跑在工作区根下：派活给外部 CLI 是「在这个项目里干一件事」，
-  // 它自己的工作目录不该由这里的配置面再开一个旋钮。
+  // 一律在工作区根目录下运行：向外部 CLI 派发任务即在当前项目中完成一项工作，
+  // 其工作目录不应在配置中另设选项。
   const proc = Bun.spawn(await commandFor(agent.command, args), {
     cwd: input.workspaceRoot,
-    // 关掉 stdin：被调度的 CLI 若想交互提问，这里没有人能回答，
-    // 开着只会让它静默等到被终止。
+    // 关闭 stdin：被调度的 CLI 若发起交互提问，此处无人应答，
+    // 保持打开只会使其一直等待直到被终止。
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
     env: {
-      // 只按**值**剥。名字模式那条会把后端自己要用的
-      // ANTHROPIC_API_KEY / OPENAI_API_KEY 一起剥掉，后端直接无法执行，
-      // 所以下面把整份环境放进 allow。
+      // 只按**值**剥离。按名称模式剥离会将后端自身需要的
+      // ANTHROPIC_API_KEY / OPENAI_API_KEY 一并剥离，使后端无法执行，
+      // 因此下方将整个环境放入 allow。
       ...scrubEnv(
         process.env,
         { values: input.secrets?.values ?? [] },
         {
-          // 名字模式匹配同样会误伤后端需要的 key，这里靠值匹配就够。
+          // 名称模式匹配同样会剥离后端需要的 key，此处只需按值匹配。
           allow: Object.keys(process.env),
         },
       ),
@@ -138,32 +138,32 @@ export async function runCli(
       TERM: 'dumb',
     },
     /*
-     * 非 Windows 上自成进程组，`collectProcess` 的树杀才够得着它派生的子孙：不 detached 的话
-     * 按它的 pid 找不到进程组，树杀只杀得到 CLI 本身。Windows 不加：那边靠 `taskkill /T`
-     * 走进程树，detached 在 Windows 上是「脱离控制台」。
+     * 非 Windows 平台上使其成为独立进程组，`collectProcess` 的进程树终止才能覆盖其派生的后代进程：不设 detached 时
+     * 按其 pid 无法找到进程组，只能终止 CLI 本身。Windows 不设置：Windows 由 `taskkill /T`
+     * 遍历进程树，detached 在 Windows 上表示脱离控制台。
      */
     ...(process.platform === 'win32' ? {} : { detached: true }),
   })
 
   const narrator = createNarrator(agent)
 
-  // 等待与收尾走同一个收口：完成判据是进程退出而不是管道 EOF，到点与中断都走**树杀**。
-  // 被调度的 CLI 自己也在跑一个 agent，必然派生子进程；只杀它一个的话那些仍在运行，
-  // 因此用户点了停止、这里却还在等一个永远不会到的 EOF。
+  // 等待与收尾使用同一个出口：完成判据是进程退出而不是管道 EOF，超时与中断都执行**进程树终止**。
+  // 被调度的 CLI 自身也在运行 agent，必然派生子进程；只终止 CLI 本身时子进程仍在运行，
+  // 用户点击停止后，此处仍会等待一个永远不会到达的 EOF。
   //
-  // **判据是静默，不是总时长。** 总时长分不出「仍在执行」与「已经停止响应」，而外部 CLI
-  // 在自己跑构建与测试时流本来就是停的，一次审查跑几分钟是常态。
-  // 额度取本机一次工具执行的上限（`MAX_TIMEOUT_MS`）：CLI 内部一次工具执行同额。
-  // 只要它还在输出就一直等，上界由用户按停止或父会话这一轮结束给。
+  // **判据是静默时长，不是总时长。** 总时长无法区分仍在执行与已停止响应，而外部 CLI
+  // 执行构建与测试时流中没有输出，一次审查运行几分钟是常见情况。
+  // 时限取本机单次工具执行的上限（`MAX_TIMEOUT_MS`），与 CLI 内部单次工具执行的时限相同。
+  // 只要仍有输出就持续等待，上限由用户点击停止或父会话本轮结束决定。
   const got = await collectProcess(proc, {
     idleMs: MAX_TIMEOUT_MS,
     signal: input.signal,
-    // `onText` 的返回值是「真正记进结果的那一段」，所以必须原样回传：
-    // 它是脱敏器的挂点，不是给旁观者用的。
+    // `onText` 的返回值是实际写入结果的文本，因此必须原样返回：
+    // 它是脱敏器的接入点，不是供观察者使用的。
     //
-    // 解析只在这里做一次，同一段正文给两个消费者：实时页（`onChunk`）与回执
-    // （`narrator.narration()`）。**不要在 `extract` 里再解析一遍流**——那会让
-    // 实时页看到的和回执里的是两次解析的结果，格式漂移时只有一侧变。
+    // 解析只在此处执行一次，同一段正文交给两个消费者：实时页（`onChunk`）与回执
+    // （`narrator.narration()`）。**不要在 `extract` 中再解析一次流**：否则
+    // 实时页与回执是两次解析的结果，格式变化时只有一侧随之改变。
     onText: (channel: 'stdout' | 'stderr', text: string) => {
       if (channel === 'stdout') {
         const narrated = narrator.feed(text)
@@ -172,7 +172,7 @@ export async function runCli(
       return text
     },
   })
-  // 末行没有换行符时留在缓冲里，不冲掉就丢了。
+  // 末行没有换行符时会留在缓冲区中，不清空缓冲区即丢失。
   const tail = narrator.flush()
   if (tail) input.onChunk?.(tail)
 
@@ -190,15 +190,15 @@ export async function runCli(
 }
 
 /**
- * 按点分路径从 stdout 里取一个字符串。三种输出各有各的取法：
+ * 按点分路径从 stdout 中提取一个字符串。三种输出格式的提取方式不同：
  *
- * - `text`：没有结构可取，回空串（调用方自己回退到整段）。
- * - `jsonl`：逐行 JSON，取**最后一个**非空值——agent 类 CLI 的流里最终答案总在末尾，
- *   取第一个会拿到开跑那条状态行。
- * - `json`：整段 stdout 是**一个**对象（grok 那种，而且是缩进过的多行），
- *   只能整段解析；逐行解析对它一行都取不到。
+ * - `text`：没有结构可提取，返回空串（由调用方回退到整段输出）。
+ * - `jsonl`：逐行 JSON，取**最后一个**非空值：agent 类 CLI 的流中最终答案总在末尾，
+ *   取第一个会得到开始执行时的状态行。
+ * - `json`：整段 stdout 是**一个**对象（如 grok，且缩进为多行），
+ *   只能整段解析；逐行解析无法取得任何一行。
  *
- * 取路径而不是键名，是因为各家埋的深浅不同：claude 的答案与会话 id 都在顶层，
+ * 使用路径而不是键名，因为各厂商的字段嵌套深度不同：claude 的答案与会话 id 都在顶层，
  * codex 的答案在 `item.text`。
  */
 function field(stdout: string, agent: Pick<CliAgent, 'output'>, path: string): string {
@@ -219,17 +219,17 @@ function field(stdout: string, agent: Pick<CliAgent, 'output'>, path: string): s
       const got = walk(JSON.parse(trimmed))
       if (got) last = got
     } catch {
-      // 不是 JSON 的行直接跳过：很多 CLI 会往 stdout 混入非结构化的横幅。
+      // 非 JSON 行直接跳过：许多 CLI 会向 stdout 输出非结构化的横幅。
     }
   }
   return last
 }
 
 /**
- * 按点分路径取值，段尾 `[]` 表示遍历该数组。返回按出现顺序的非空字符串。
+ * 按点分路径取值，段尾 `[]` 表示遍历该数组。按出现顺序返回非空字符串。
  *
- * 各家埋的深浅不同：claude 的答案与会话 id 在顶层、正文在 `message.content[].text`
- * 那个数组里，codex 的答案在 `item.text`。
+ * 各厂商的字段嵌套深度不同：claude 的答案与会话 id 在顶层、正文在 `message.content[].text`
+ * 数组中，codex 的答案在 `item.text`。
  */
 function pick(root: unknown, path: string): string[] {
   const keys = path.split('.')
@@ -256,13 +256,13 @@ function pick(root: unknown, path: string): string[] {
 }
 
 /**
- * jsonl 流的解析点。实时页与回执共用它，正文只解析一次。
+ * jsonl 流的解析入口。实时页与回执共用它，正文只解析一次。
  *
- * **必须按行缓冲。** `onText` 交来的是管道切片，一行 JSON 会被切成两片，
- * 逐片解析对被切开的那一行永远失败，而失败的是最长的那几行——正文所在的行。
+ * **必须按行缓冲。** `onText` 传入的是管道分片，一行 JSON 可能被切成两个分片，
+ * 逐片解析时被切开的行总是失败，而失败的恰是最长的行，即正文所在的行。
  *
- * 三种输出各自的形态：`jsonl` 且厂商表声明了 `narrate` 的按路径取；`text` 没有结构，
- * 原样过；`json` 要整段结束才解析得出，流里出不了正文，回空串。
+ * 三种输出格式的处理：`jsonl` 且厂商表声明了 `narrate` 时按路径提取；`text` 没有结构，
+ * 原样交出；`json` 要整段结束才能解析，流中无法取得正文，返回空串。
  */
 function createNarrator(agent: Pick<CliAgent, 'output' | 'narrate'>) {
   const narrate = agent.output === 'jsonl' ? agent.narrate : undefined
@@ -275,7 +275,7 @@ function createNarrator(agent: Pick<CliAgent, 'output' | 'narrate'>) {
     try {
       parsed = JSON.parse(line.trim())
     } catch {
-      // 不是 JSON 的行直接跳过：很多 CLI 会往 stdout 混入非结构化的横幅。
+      // 非 JSON 行直接跳过：许多 CLI 会向 stdout 输出非结构化的横幅。
       return ''
     }
     const pieces = pick(parsed, narrate.text)
@@ -287,7 +287,7 @@ function createNarrator(agent: Pick<CliAgent, 'output' | 'narrate'>) {
   }
 
   return {
-    /** 喂一片 stdout，返回这一片里解析出来的正文。 */
+    /** 传入一个 stdout 分片，返回从该分片解析出的正文。 */
     feed(chunk: string): string {
       if (agent.output === 'text') return chunk
       if (!narrate) return ''
@@ -296,13 +296,13 @@ function createNarrator(agent: Pick<CliAgent, 'output' | 'narrate'>) {
       buffer = lines.pop() ?? ''
       return lines.map(take).join('')
     },
-    /** 流结束时冲掉缓冲里最后一行。 */
+    /** 流结束时处理缓冲区中的最后一行。 */
     flush(): string {
       const rest = buffer
       buffer = ''
       return take(rest)
     },
-    /** 到此为止解析出的全部正文。`text` 与 `json` 两档恒为空串。 */
+    /** 截至当前解析出的全部正文。`text` 与 `json` 格式恒为空串。 */
     narration: (): string => parts.join(''),
   }
 }
@@ -310,12 +310,12 @@ function createNarrator(agent: Pick<CliAgent, 'output' | 'narrate'>) {
 /**
  * 从 stdout 提取交付物正文。
  *
- * jsonl 取不到 `resultField` 时用流里解析出的正文，**不回退整段 stdout**：
- * 一份 stream-json 里绝大多数行是计数与状态事件，整段交给模型既不是它的产出，
- * 又会一次性占满上下文窗口（实测一次被杀的派活留下 261,929 字符、507 行，
- * 其中 480 行是 `thinking_tokens`）。被杀在半路时正文正是它已经说出口的那些话。
+ * jsonl 取不到 `resultField` 时使用流中解析出的正文，**不回退到整段 stdout**：
+ * stream-json 中绝大多数行是计数与状态事件，整段交给模型既不是 CLI 的产出，
+ * 又会一次性占满上下文窗口（实测一次被终止的派发任务留下 261,929 字符、507 行，
+ * 其中 480 行是 `thinking_tokens`）。中途被终止时，正文即其已输出的内容。
  *
- * `json` 解析不出时回空串：那说明退出码非零或格式漂移，由调用方按失败处理。
+ * `json` 无法解析时返回空串：说明退出码非零或输出格式已变化，由调用方按失败处理。
  */
 export function extract(
   stdout: string,

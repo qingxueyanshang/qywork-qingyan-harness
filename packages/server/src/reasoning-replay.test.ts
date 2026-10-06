@@ -1,13 +1,13 @@
 /**
- * Claude 原生思考块跨轮、跨 run 回放的端到端回归。**用假 provider，不花钱、不联网。**
+ * Claude 原生思考块跨轮、跨 run 回放的端到端回归测试。**使用假 provider，不产生费用、不访问网络。**
  *
- * **覆盖范围**：`ai/providers/anthropic.ts` 采集签名与块位置、`agent/loop/attempt.ts` 盖前缀、
- * 思考 step 载荷落账、`runtime/transcript.ts` 从账本投影回历史、`agent/loop/request.ts`
+ * **覆盖范围**：`ai/providers/anthropic.ts` 采集签名与块位置、`agent/loop/attempt.ts` 记录前缀指纹、
+ * 思考 step 载荷写入账本、`runtime/transcript.ts` 从账本投影回历史、`agent/loop/request.ts`
  * 的前缀比对，以及 Anthropic 适配器原位回放。
  *
- * **为什么必须走真链路。** 前缀指纹要在「活的 transcript」与「下一个 run 从账本投影出来的
- * 历史」上逐字相同，块才会被回放；两侧任何一个字段不同形，块就被静默剥离，
- * 而模型照样能答——只有请求体能证明它还在。
+ * **必须使用真实链路的原因。** 前缀指纹必须在「内存中的 transcript」与「下一个 run 从账本投影出的
+ * 历史」上逐字相同，块才会被回放；两侧任何一个字段形状不同，块就会被静默剥离，
+ * 而模型仍能作答；只有请求体能证明块仍然存在。
  */
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
@@ -71,7 +71,7 @@ function finish(stop: string) {
   ]
 }
 
-/** 思考 → 调 `list_dir`。 */
+/** 思考 → 调用 `list_dir`。 */
 const TOOL_TURN = sse([
   START,
   ...thinking(0, '先看目录', 'sig-tool'),
@@ -89,7 +89,7 @@ const TOOL_TURN = sse([
   ...finish('tool_use'),
 ])
 
-/** 思考 → 正文收尾。 */
+/** 思考 → 以正文结束。 */
 function textTurn(signature: string, text: string): string {
   return sse([
     START,
@@ -109,7 +109,7 @@ const provider = Bun.serve({
   async fetch(req) {
     bodies.push((await req.json()) as Record<string, unknown>)
     const next = script.shift()
-    // 脚本用完 = 401，当场终结且不重发，用例之间不串。
+    // 脚本耗尽时返回 401，立即终止且不重发，用例之间互不干扰。
     if (!next) return new Response('脚本已用完', { status: 401 })
     return new Response(next, { headers: { 'content-type': 'text/event-stream' } })
   },
@@ -196,9 +196,9 @@ test('签名思考块在同一 run 的下一轮与下一个 run 里都按原位�
   await finished(2)
 
   expect(bodies).toHaveLength(3)
-  // 同一 run 的第二次请求：工具轮带着它的签名块，排在 tool_use 之前。
+  // 同一 run 的第二次请求：工具轮带有其签名块，位于 tool_use 之前。
   expect(assistantContents(bodies[1]!)).toEqual([['thinking:sig-tool', 'tool_use']])
-  // 下一个 run 的首个请求：历史从账本投影回来，两个块都还在原位。
+  // 下一个 run 的首个请求：历史从账本投影回来，两个块仍在原位。
   expect(assistantContents(bodies[2]!)).toEqual([
     ['thinking:sig-tool', 'tool_use'],
     ['thinking:sig-text', 'text'],
@@ -232,7 +232,7 @@ const signatures = (body: Record<string, unknown>) =>
     .flat()
     .filter((b) => b.startsWith('thinking:'))
 
-/** user 消息里的正文；挂了缓存断点的那条是文本块数组。 */
+/** user 消息中的正文；带缓存断点的消息是文本块数组。 */
 const userTexts = (body: Record<string, unknown>) =>
   (body.messages as { role: string; content: string | Block[] }[])
     .filter((m) => m.role === 'user')
@@ -242,7 +242,7 @@ const userTexts = (body: Record<string, unknown>) =>
         : m.content.filter((b) => b.type === 'text').map((b) => String(b.text)),
     )
 
-test('待办续起的提示留在历史里，其前后的签名块都不被剥离', async () => {
+test('待办自动继续的提示保留在历史中，其前后的签名块都不被剥离', async () => {
   bodies.length = 0
   const before = events.filter((f) => f.event.type === 'run.finished').length
   const cv: ConversationId = createConversation(store, {
@@ -252,7 +252,7 @@ test('待办续起的提示留在历史里，其前后的签名块都不被剥�
   }).id
   script = [
     todoTurn('sig-a', 'in_progress'),
-    // 清单没做完就收尾：守卫续起，下一次请求带着提示。
+    // 清单未完成即收尾：守卫触发自动继续，下一次请求带有提示。
     textTurn('sig-b', '先到这里'),
     todoTurn('sig-c', 'completed'),
     textTurn('sig-d', '都做完了'),
@@ -267,7 +267,7 @@ test('待办续起的提示留在历史里，其前后的签名块都不被剥�
   expect(bodies).toHaveLength(5)
   const notice = (b: Record<string, unknown>) =>
     userTexts(b).some((t) => t.includes('本轮待办仍在进行中'))
-  // 提示从续起那次起一直在，签名块一个不少。
+  // 提示自自动继续的那次请求起一直保留，签名块全部保留。
   expect(notice(bodies[2]!)).toBe(true)
   expect(signatures(bodies[2]!)).toEqual(['thinking:sig-a', 'thinking:sig-b'])
   expect(notice(bodies[3]!)).toBe(true)

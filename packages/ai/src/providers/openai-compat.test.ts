@@ -1,14 +1,14 @@
 /**
- * 覆盖 `openai-compat.ts` 的 `buildReasoning`（实际发出去的思考控制字段）
- * 与 `createThinkingSplitter`（正文里的思考标签改判通道）、strict 参数约束、
+ * 覆盖 `openai-compat.ts` 的 `buildReasoning`（实际发送的思考控制字段）
+ * 与 `createThinkingSplitter`（将正文中带思考标签的内容移到思考通道）、strict 参数约束、
  * `buildMessages` 对工具结果媒体的编码（观察消息），
- * 以及它用来判断百炼官方端点的 `@qywork/core` 的 `isDashScopeEndpoint`。
+ * 以及判定百炼官方端点所用的 `@qywork/core` 的 `isDashScopeEndpoint`。
  *
- * **必须看真实请求体**，不能只测那个纯函数：这条链路上一次出问题正是
- * 「目录里声明了档位、界面也画了控件、请求里一个字段都没有」——
- * 两头都对，中间那节把值丢了，而任何一端的单测都看不见。
+ * 必须检查真实请求体，不能只测试纯函数：目录声明了档位、界面渲染了控件
+ * 而请求中没有对应字段时，两端均正确而取值在中间环节丢失，
+ * 任何一端的单元测试都无法发现。
  *
- * 所以这里起一个本机 server 当端点，把收到的 body 原样存下来。
+ * 因此此处启动本机 server 作为端点，原样保存收到的 body。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -41,7 +41,7 @@ beforeAll(() => {
     async fetch(req) {
       requestHeaders.push(new Headers(req.headers))
       bodies.push((await req.json()) as Record<string, unknown>)
-      // 最小可解析的 SSE：一个 delta + 一个终止。适配器只要能读完就行。
+      // 最小可解析的 SSE：一个 delta 与一个终止标记。适配器只需能够读完。
       const body =
         'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n' +
         'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
@@ -79,12 +79,12 @@ async function send(
     ...(effort ? { effort: effort as never } : {}),
     signal: new AbortController().signal,
   })) {
-    // 读完即可，产出不关心。
+    // 只需读完，不检查输出。
   }
   return bodies[0]!
 }
 
-/** 申报值和规格上限都能单独给的发送口。上面那个 `send` 固定 64，测不到不申报那一档。 */
+/** 输出上限的请求值与规格上限均可单独指定的发送函数。上方的 `send` 固定为 64，无法测试不发送该字段的情形。 */
 async function sendWithCap(
   model: string,
   requested: number | null,
@@ -104,33 +104,33 @@ async function sendWithCap(
     idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
     signal: new AbortController().signal,
   })) {
-    // 读完即可。
+    // 只需读完。
   }
   return bodies[0]!
 }
 
 /*
- * ── 输出上限：没测过就不申报 ──
+ * ── 输出上限：未经测定则不发送 ──
  *
- * 原始失败形状：未收录模型被灌一个编出来的 8192，长回答在那里静默截断，
- * 用户只看到一个 `max_tokens` 停止原因，而没有任何地方说过这个数由客户端填入。
+ * 原始失败形状：未收录模型被填入无依据的 8192，长回答在该处被静默截断，
+ * 停止原因为 `max_tokens`，而任何位置都未说明该值由客户端填入。
  */
-describe('输出上限：没测过就整个字段不发', () => {
-  test('未收录模型不申报，body 里没有 max_tokens', async () => {
+describe('输出上限：未经测定则不发送该字段', () => {
+  test('未收录模型不发送该字段，body 中没有 max_tokens', async () => {
     const spec = unknownModel('中转站上的某个模型', 'openai_chat_completions')
     const body = await sendWithCap('中转站上的某个模型', null, spec)
     expect('max_tokens' in body).toBe(false)
   })
 
-  test('收录的模型照常申报，且按规格上限钳住', async () => {
+  test('已收录的模型照常发送，并按规格上限截取', async () => {
     const body = await sendWithCap('deepseek-flash', 999_999_999)
     expect(body.max_tokens).toBe(
       lookupModel('deepseek-flash', 'openai_chat_completions').maxOutputTokens,
     )
   })
 
-  /** 探针那一档：规格没测过，但调用方明确给了数——照发，否则每次探测都变成一整篇回答。 */
-  test('规格没测过而调用方给了数：照发那个数', async () => {
+  /** 探针场景：规格未经测定，但调用方明确指定了数值，此时照常发送，否则每次探测都会生成完整回答。 */
+  test('规格未经测定而调用方指定了数值：照常发送该数值', async () => {
     const spec = unknownModel('中转站上的某个模型', 'openai_chat_completions')
     const body = await sendWithCap('中转站上的某个模型', 16, spec)
     expect(body.max_tokens).toBe(16)
@@ -140,8 +140,8 @@ describe('输出上限：没测过就整个字段不发', () => {
 /*
  * ── 工具结果图片的 wire 形状 ──
  *
- * tool 消息只发文本，媒体块移到紧跟整批回执的一条用户观察消息里（依据见
- * `openai-compat.ts` 的 `buildMessages` 注释）。这里锁请求体：媒体不在 tool 消息里、
+ * tool 消息只发送文本，媒体块移到紧随整批回执的一条用户观察消息中（依据见
+ * `openai-compat.ts` 的 `buildMessages` 注释）。此处锁定请求体：媒体不在 tool 消息中、
  * 观察消息排在整批回执之后、每个媒体块前标出 call_id 与序号、没有媒体时形状不变。
  */
 describe('工具结果带图片', () => {
@@ -154,7 +154,7 @@ describe('工具结果带图片', () => {
   })
   const note = { type: 'text', text: TOOL_MEDIA_NOTE }
 
-  test('图像不进 tool 消息，放进紧跟回执的用户观察消息', async () => {
+  test('图像不进入 tool 消息，放入紧随回执的用户观察消息', async () => {
     const body = await send(
       'deepseek-flash',
       undefined,
@@ -235,7 +235,7 @@ describe('工具结果带图片', () => {
     expect(JSON.stringify([messages[2], messages[3]])).not.toContain('image_url')
   })
 
-  test('真实用户消息紧跟其后时原样保留，观察消息排在它前面', async () => {
+  test('真实用户消息紧随其后时原样保留，观察消息排在其前面', async () => {
     const body = await send(
       'deepseek-flash',
       undefined,
@@ -310,7 +310,7 @@ describe('工具结果带图片', () => {
     ])
   })
 
-  test('纯文本工具结果仍是字符串，不改发数组', async () => {
+  test('纯文本工具结果仍是字符串，不改为发送数组', async () => {
     const omitted = '{"call_id":"c_t","status":"success","images_omitted":true}'
     const body = await send(
       'deepseek-flash',
@@ -377,15 +377,15 @@ describe('用户消息带视频', () => {
       },
       { type: 'text', text: '描述视频内容' },
     ])
-    // 这台假服务不是百炼官方域名，不能向任意兼容端点泄漏供应商专用头。
+    // 该模拟服务不是百炼官方域名，不得向任意兼容端点泄露供应商专用请求头。
     expect(requestHeaders[0]?.get('x-dashscope-ossresourceresolve')).toBeNull()
   })
 })
 
 describe('OpenCode 会话请求头', () => {
   /**
-   * 端点按主机名判定，所以把发往 opencode.ai 的请求转到本机 server；
-   * 断言的仍是真实 HTTP 请求头。SDK 在构造时取 `globalThis.fetch`，替换必须先于建适配器。
+   * 端点按主机名判定，因此将发往 opencode.ai 的请求转发到本机 server；
+   * 断言的仍是真实 HTTP 请求头。SDK 在构造时读取 `globalThis.fetch`，替换必须先于创建适配器。
    */
   async function sendToOpenCode(cacheKeys: (string | undefined)[]): Promise<(string | null)[]> {
     requestHeaders.length = 0
@@ -415,7 +415,7 @@ describe('OpenCode 会话请求头', () => {
           ...(cacheKey ? { cacheKey } : {}),
           signal: new AbortController().signal,
         })) {
-          // 只看请求头
+          // 只检查请求头
         }
       }
     } finally {
@@ -424,18 +424,18 @@ describe('OpenCode 会话请求头', () => {
     return requestHeaders.map((h) => h.get('x-opencode-session'))
   }
 
-  test('有 cacheKey 时发会话 id', async () => {
+  test('有 cacheKey 时发送会话 id', async () => {
     expect(await sendToOpenCode(['cv_a', 'cv_a'])).toEqual(['cv_a', 'cv_a'])
   })
 
-  /** 检测与压缩摘要不带 cacheKey；端点缺这个头就回 400，所以仍要发，且同一适配器内不变。 */
-  test('没有 cacheKey 时发同一个按适配器生成的值', async () => {
+  /** 检测与压缩摘要不带 cacheKey；端点缺少该请求头时返回 400，因此仍须发送，且同一适配器内保持不变。 */
+  test('没有 cacheKey 时发送按适配器生成的同一个值', async () => {
     const [first, second] = await sendToOpenCode([undefined, undefined])
     expect(first).toBeTruthy()
     expect(second).toBe(first!)
   })
 
-  test('其他端点不发', async () => {
+  test('其他端点不发送', async () => {
     await send('deepseek-flash')
     expect(requestHeaders[0]?.get('x-opencode-session')).toBeNull()
   })
@@ -461,7 +461,7 @@ describe('百炼媒体上传', () => {
     expect(official.transmits.mediaPaths).toBe(true)
   })
 
-  test('只有百炼端点且请求含 oss URI 时才加解析头', () => {
+  test('仅在百炼端点且请求含 oss URI 时添加解析头', () => {
     const request: ChatRequest = {
       model: 'qwen3.8-flash',
       system: [],
@@ -487,8 +487,8 @@ describe('百炼媒体上传', () => {
     })
   })
 
-  /** 3 MB 在端点 7 MB 的内联上限以内，也要上传：内联的视频按字节计入常驻媒体，下一步就被换出。 */
-  test('小文件内联，超过 2 MB 交给临时 URL 上传', async () => {
+  /** 3 MB 在端点 7 MB 的内联上限以内，仍须上传：内联的视频按字节计入常驻媒体，下一步即被换出。 */
+  test('小文件内联，超过 2 MB 的文件经临时 URL 上传', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-dashscope-media-'))
     const small = join(dir, 'small.mp4')
     const large = join(dir, 'large.mp4')
@@ -581,7 +581,7 @@ describe('百炼媒体上传', () => {
     expect(uri).toMatch(/^oss:\/\/dashscope-instant\/account\/session\/[a-f0-9]{8}-clip\.mp4$/)
   })
 
-  test('凭证里的字符串大小上限在上传前生效', async () => {
+  test('凭证中的字符串大小上限在上传前生效', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-dashscope-limit-'))
     const path = join(dir, 'clip.mp4')
     await writeFile(path, 'video-bytes')
@@ -615,7 +615,7 @@ describe('百炼媒体上传', () => {
     expect(calls).toBe(1)
   })
 
-  test('临时文件协议的 1 GB 硬上限在取凭证前生效', async () => {
+  test('临时文件协议的 1 GB 硬上限在获取凭证前生效', async () => {
     let called = false
     await expect(
       uploadDashScopeMedia({
@@ -634,33 +634,33 @@ describe('百炼媒体上传', () => {
   })
 })
 
-describe('DeepSeek 要两个字段一起发', () => {
+describe('DeepSeek 须同时发送两个字段', () => {
   /**
-   * 复现原始失败形状：只发 `reasoning_effort` 时实测「每一档 reasoning_tokens
-   * 都一样」，据此会把 DeepSeek 记成「不支持 effort」。现象没错，归因错了——
-   * `thinking` 开关没开，思考没启动。
+   * 复现原始失败形状：只发送 `reasoning_effort` 时实测「每一档 reasoning_tokens
+   * 都相同」，据此会将 DeepSeek 记为「不支持 effort」。现象属实，但归因错误：
+   * `thinking` 开关未开启，思考未启动。
    */
-  test('thinking 开关和档位同时出现在请求体里', async () => {
+  test('thinking 开关与档位同时出现在请求体中', async () => {
     const body = await send('deepseek-flash', 'max')
     expect(body.thinking).toEqual({ type: 'enabled' })
     expect(body.reasoning_effort).toBe('max')
   })
 
-  test('没指定档位就一个字段都不发', async () => {
+  test('未指定档位时不发送任何字段', async () => {
     const body = await send('deepseek-flash')
     expect('thinking' in body).toBe(false)
     expect('reasoning_effort' in body).toBe(false)
   })
 })
 
-describe('OpenAI 那套只发 reasoning_effort', () => {
+describe('OpenAI 参数格式只发送 reasoning_effort', () => {
   test('不带 DeepSeek 的 thinking 开关', async () => {
     const body = await send('gpt-5.6-sol', 'high')
     expect(body.reasoning_effort).toBe('high')
     expect('thinking' in body).toBe(false)
   })
 
-  test('Gemini 同样走这条', async () => {
+  test('Gemini 同样使用该参数格式', async () => {
     expect((await send('gemini-3.8-flash', 'high')).reasoning_effort).toBe('high')
     expect((await send('gemini-3.1-pro-preview', 'low')).reasoning_effort).toBe('low')
   })
@@ -750,7 +750,7 @@ describe('逐模型的历史思考协议', () => {
     }
   })
 
-  test('Qwen3.8 始终声明保留思考，并发官方档位', async () => {
+  test('Qwen3.8 始终声明保留思考，并发送官方档位', async () => {
     const bare = await send('qwen3.8-flash')
     expect(bare.preserve_thinking).toBe(true)
     expect('reasoning_effort' in bare).toBe(false)
@@ -803,7 +803,7 @@ describe('逐模型的历史思考协议', () => {
     expect((low.messages as Record<string, unknown>[])[1]?.reasoning_content).toBe('完整思考')
   })
 
-  test('未特调模型的请求形状不变', async () => {
+  test('未单独适配的模型的请求形状不变', async () => {
     const body = await send('gpt-5.6-sol', 'high', [], history)
     expect('preserve_thinking' in body).toBe(false)
     expect(body.thinking).toBeUndefined()
@@ -812,61 +812,61 @@ describe('逐模型的历史思考协议', () => {
 })
 
 /**
- * 档位不在这个模型的档位面里，一个字节都不发。
+ * 档位不在该模型的可用档位中时，不发送任何字节。
  *
- * 另两条协议各有各的写法：`openai-responses` 是
- * `effortLevels.includes(req.effort) ? … : undefined`，`anthropic` 会降到最高可用档。
- * 这条别只判「有没有给」就把 `effort` 原样发出去。
+ * 另两种协议的写法：`openai-responses` 为
+ * `effortLevels.includes(req.effort) ? … : undefined`，`anthropic` 同样省略越界档位。
+ * 本协议不要只判断「是否指定」就将 `effort` 原样发送。
  *
- * 只调一家模型时档位面一致，用不上这道闸；本仓不是：档位选定值挂在
- * 「接口 × 模型」那一格，同一个模型换条协议档位面就变，Agent Team 的角色还
- * 各带各的模型。越界值到这里不拦，就是发给 provider 的一个 400。
+ * 只使用单一模型时可用档位固定，无需此项检查；本仓库并非如此：档位选定值记录在
+ * 「接口 × 模型」对应的配置中，同一模型更换协议后可用档位即变化，Agent Team 的各角色
+ * 也各自使用不同的模型。此处不拦截越界值时，provider 返回 400。
  */
-describe('越界的档位不发', () => {
+describe('越界的档位不发送', () => {
   /** DeepSeek 声明 low/high/max；`xhigh` 是 high 的映射值，不作为独立档位发送。 */
-  test('DeepSeek 收不到 xhigh', async () => {
+  test('DeepSeek 不会收到 xhigh', async () => {
     const body = await send('deepseek-flash', 'xhigh')
     expect('thinking' in body).toBe(false)
     expect('reasoning_effort' in body).toBe(false)
   })
 
   /** Gemini 只有 low/medium/high，`max` 同样越界。 */
-  test('Gemini 收不到 max', async () => {
+  test('Gemini 不会收到 max', async () => {
     expect('reasoning_effort' in (await send('gemini-3.1-pro', 'max'))).toBe(false)
   })
 
-  /** 档位面里的照常发——这道闸只拦越界的，不是把 effort 整个关掉。 */
-  test('档位面里的照常发', async () => {
+  /** 可用档位照常发送：此项检查只拦截越界档位，不关闭整个 effort。 */
+  test('可用档位照常发送', async () => {
     const body = await send('deepseek-flash', 'high')
     expect(body.thinking).toEqual({ type: 'enabled' })
     expect(body.reasoning_effort).toBe('high')
   })
 })
 
-describe('不该发的时候一个字节都不多发', () => {
+describe('不应发送时不发送任何多余字节', () => {
   /**
-   * 自建端点 / 中转站的模型目录里没有，`unknownModel()` 的 `thinking` 是 `'none'`。
-   * 这条锁住的是：把兼容协议从「一律不发」改成「按模型发」之后，
-   * **那些端点不会突然开始收到它没见过的键**——那会表现成「昨天正常，今天 400」。
+   * 自建端点与中转站的模型不在目录中，`unknownModel()` 的 `thinking` 为 `'none'`。
+   * 本用例锁定：兼容协议按模型发送思考字段时，
+   * 这些端点不收到未知的键，否则原本正常的请求会返回 400。
    */
-  test('未收录的模型不发思考字段', async () => {
+  test('未收录的模型不发送思考字段', async () => {
     const body = await send('某个中转站上的模型', 'max')
     expect('reasoning_effort' in body).toBe(false)
     expect('thinking' in body).toBe(false)
   })
 
-  /** 有默认思考但没有命名 effort 档的模型，不可把别家的档位原样发过去。 */
-  test('没有命名档位的模型不发 reasoning_effort', async () => {
+  /** 默认思考但没有命名 effort 档位的模型，不得原样发送其他厂商的档位。 */
+  test('没有命名档位的模型不发送 reasoning_effort', async () => {
     const body = await send('qwen3.7-max', 'high')
     expect('reasoning_effort' in body).toBe(false)
   })
 
   /**
-   * 经中转站以兼容协议调 Claude：`lookupModel` 的兜底会保留 Claude 的能力约束、
-   * 只改写 provider，因此 `effortLevels` 还是那五档。但 Anthropic 的
-   * `output_config.effort` 在这条协议上发不出去，所以**什么都不该发**。
+   * 经中转站以兼容协议调用 Claude：`lookupModel` 的回退会保留 Claude 的能力约束，
+   * 只改写 provider，因此 `effortLevels` 仍为五档。但 Anthropic 的
+   * `output_config.effort` 无法经由本协议发送，因此不应发送任何思考字段。
    */
-  test('中转的 Claude 不发 Anthropic 的思考字段', async () => {
+  test('经中转站调用的 Claude 不发送 Anthropic 的思考字段', async () => {
     const body = await send('claude-opus-5', 'high')
     expect('reasoning_effort' in body).toBe(false)
     expect('thinking' in body).toBe(false)
@@ -877,18 +877,18 @@ describe('不该发的时候一个字节都不多发', () => {
 /**
  * Base URL 归一。
  *
- * 复现过的故障：用户填 `https://中转站/`（少了 `/v1`），SDK 因此请求
- * `https://中转站/chat/completions`，中转站对这种错误路径回 **200 + 一个 HTML 首页**。
- * 解析器读不出任何 chunk 也不报错，那一轮 0 token、0 步骤、`completed`
- * ——界面上是「消息发出去了，什么也没发生」。
+ * 已复现的故障：用户填写 `https://中转站/`（缺少 `/v1`），SDK 因此请求
+ * `https://中转站/chat/completions`，中转站对该错误路径返回 200 与 HTML 首页。
+ * 解析器无法读取任何 chunk 且不报错，该轮记为 0 token、0 步骤、`completed`，
+ * 消息已发送而没有任何输出。
  */
 describe('Base URL 归一', () => {
-  test('少了 /v1 就补上', () => {
+  test('缺少 /v1 时补充', () => {
     expect(normalizeBaseUrl('https://direct.example.xyz/')).toBe('https://direct.example.xyz/v1')
     expect(normalizeBaseUrl('https://direct.example.xyz')).toBe('https://direct.example.xyz/v1')
   })
 
-  test('已经带了版本段就原样，不重复追加 /v1', () => {
+  test('已带版本段时保持原样，不重复追加 /v1', () => {
     expect(normalizeBaseUrl('https://api.deepseek.com/v1')).toBe('https://api.deepseek.com/v1')
     expect(normalizeBaseUrl('https://api.deepseek.com/v1/')).toBe('https://api.deepseek.com/v1')
     expect(normalizeBaseUrl('https://open.bigmodel.cn/api/paas/v4')).toBe(
@@ -897,7 +897,7 @@ describe('Base URL 归一', () => {
     expect(normalizeBaseUrl('https://relay.example/v27/')).toBe('https://relay.example/v27')
   })
 
-  test('空值走官方根', () => {
+  test('空值使用官方根地址', () => {
     expect(normalizeBaseUrl(undefined)).toBe('https://api.openai.com/v1')
     expect(normalizeBaseUrl('   ')).toBe('https://api.openai.com/v1')
   })
@@ -905,17 +905,17 @@ describe('Base URL 归一', () => {
 
 describe('无名工具调用', () => {
   /**
-   * 复现的是原始失败形状：中转站把工具名那一片丢了，旧代码 `continue` 掉整条调用，
-   * 因此 provider 报 `tool_calls` 而解析结果为零——run 记成正常完成、账本无痕。
+   * 复现原始失败形状：中转站丢失了工具名所在的分片，若以 `continue` 跳过整条调用，
+   * provider 报告 `tool_calls` 而解析结果为零，run 记为正常完成，账本中没有记录。
    *
-   * 这里断言的是**显式失败**：不允许出现「静默少一条调用」这种中间状态。
+   * 此处断言显式失败：不允许出现「静默缺少一条调用」的中间状态。
    */
-  test('名字分片没到齐就报错，不静默丢弃', async () => {
+  test('工具名分片不完整时报错，不静默丢弃', async () => {
     const drop = Bun.serve({
       port: 0,
       fetch: () =>
         new Response(
-          // 只有 id 与参数，从头到尾没有 function.name。
+          // 只有 id 与参数，始终没有 function.name。
           [
             'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1",' +
               '"function":{"arguments":"{}"}}]},"finish_reason":null}]}',
@@ -945,28 +945,28 @@ describe('无名工具调用', () => {
           maxOutputTokens: 64,
           idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
         })) {
-          // 只关心它抛不抛，事件本身不看。
+          // 只检查是否抛出，不检查事件本身。
         }
       }
-      expect(run()).rejects.toThrow(/没有名字的工具调用/)
+      expect(run()).rejects.toThrow(/工具调用缺少名称/)
     } finally {
       drop.stop(true)
     }
   })
 })
 
-describe('缓存路由亲和键', () => {
+describe('缓存路由字段', () => {
   /**
-   * 复现的是一次真账：同一个中转站的 grok，前缀逐字节稳定（字节级测试证过），
-   * 命中却在 192 与 16576 之间跳，随后整段会话连 `cached_tokens` 字段都不回。
+   * 复现一次实测记录：同一中转站的 grok，前缀逐字节稳定（已由字节级测试证明），
+   * 命中量却在 192 与 16576 之间波动，随后整段会话不再返回 `cached_tokens` 字段。
    *
-   * 成因是中转站在多个上游节点之间轮询，而隐式前缀缓存是按分片存的——
-   * 不带 `prompt_cache_key` 就是每次随机落一个分片。这个字段本仓早就有、
-   * `openai-responses` 也一直在发，只有这条路径漏了，而各家中转全走这条。
+   * 成因是中转站在多个上游节点之间轮询，而隐式前缀缓存按分片存储；
+   * 不带 `prompt_cache_key` 时每次随机分配到一个分片。`openai-responses` 同样发送该字段；
+   * 各中转站均使用本路径，因此本路径不得遗漏。
    *
-   * 断言的是**上线字节**：装配层填了值不算数，要它真的出现在请求体里。
+   * 断言的是实际发送的字节：装配层填入取值不足以证明，须确认其出现在请求体中。
    */
-  test('cacheKey 落成请求体里的 prompt_cache_key', async () => {
+  test('cacheKey 写入请求体中的 prompt_cache_key', async () => {
     bodies.length = 0
     requestHeaders.length = 0
     const adapter = new OpenAICompatAdapter(
@@ -988,14 +988,14 @@ describe('缓存路由亲和键', () => {
       cacheKey: 'cv_0mt0x92q10000mx0dff',
       signal: new AbortController().signal,
     })) {
-      // 只看请求体
+      // 只检查请求体
     }
     expect(bodies[0]!.prompt_cache_key).toBe('cv_0mt0x92q10000mx0dff')
     expect(requestHeaders[0]?.get('x-grok-conv-id')).toBeNull()
   })
 
-  /** xAI 把同一个亲和键放在 Chat Completions 请求头；body 字段只属于 Responses。 */
-  test('Grok cacheKey 只落成 x-grok-conv-id 请求头', async () => {
+  /** xAI 将同一缓存路由字段放在 Chat Completions 的请求头中；body 字段仅属于 Responses。 */
+  test('Grok cacheKey 只写入 x-grok-conv-id 请求头', async () => {
     bodies.length = 0
     requestHeaders.length = 0
     const adapter = new OpenAICompatAdapter(
@@ -1017,32 +1017,32 @@ describe('缓存路由亲和键', () => {
       cacheKey: 'cv_grok_1',
       signal: new AbortController().signal,
     })) {
-      // 只看真实 HTTP 请求
+      // 只检查真实 HTTP 请求
     }
     expect(requestHeaders[0]?.get('x-grok-conv-id')).toBe('cv_grok_1')
     expect('prompt_cache_key' in bodies[0]!).toBe(false)
   })
 
-  /** 没有键就一个字节都不发——自建端点不该因为这个开始收到它不认识的字段。 */
-  test('没有 cacheKey 时不出现这个字段', async () => {
+  /** 没有 cacheKey 时不发送任何字节：自建端点不得收到未知字段。 */
+  test('没有 cacheKey 时不出现该字段', async () => {
     const body = await send('deepseek-flash')
     expect('prompt_cache_key' in body).toBe(false)
   })
 
-  test('Grok 没有 cacheKey 时也不编请求头', async () => {
+  test('Grok 没有 cacheKey 时不虚构请求头', async () => {
     const body = await send('grok-4.6')
     expect('prompt_cache_key' in body).toBe(false)
     expect(requestHeaders[0]?.get('x-grok-conv-id')).toBeNull()
   })
 
   /**
-   * **发不发由目录里那条模型说了算，不是协议说了算。**
+   * 是否发送由目录中该模型的条目决定，而不是由协议决定。
    *
-   * 未收录的模型（自建端点、中转站上那些没补录的名字）落在 `cacheRouting: 'none'`
-   * ——那是「没测过」不是「不支持」。往那些端点乱发未知字段，失败形状是
-   * 「昨天正常，今天每条请求都 400」。要开就在模型库那一格明确填写。
+   * 未收录的模型（自建端点、中转站上未补录的模型名）取 `cacheRouting: 'none'`，
+   * 含义是「未经测定」而非「不支持」。向这些端点发送未知字段，会使此前正常的请求
+   * 全部返回 400。需要开启时在模型库的对应字段明确填写。
    */
-  test('未收录的模型不发亲和键', async () => {
+  test('未收录的模型不发送缓存路由字段', async () => {
     bodies.length = 0
     const model = '某个中转站上的模型'
     const spec = lookupModel(model, 'openai_chat_completions')
@@ -1061,12 +1061,12 @@ describe('缓存路由亲和键', () => {
       cacheKey: 'cv_x',
       signal: new AbortController().signal,
     })) {
-      // 只看请求体
+      // 只检查请求体
     }
     expect('prompt_cache_key' in bodies[0]!).toBe(false)
   })
 
-  test('Qwen3.8 与 GLM-5.3 走各自的隐式缓存协议，不混入 OpenAI 路由键', async () => {
+  test('Qwen3.8 与 GLM-5.3 使用各自的隐式缓存协议，不混入 OpenAI 路由键', async () => {
     for (const model of ['qwen3.8-flash', 'glm-5.3-flash']) {
       bodies.length = 0
       const spec = lookupModel(model, 'openai_chat_completions')
@@ -1085,18 +1085,18 @@ describe('缓存路由亲和键', () => {
         cacheKey: 'cv_should_not_cross_protocols',
         signal: new AbortController().signal,
       })) {
-        // 只看请求体。
+        // 只检查请求体。
       }
       expect('prompt_cache_key' in bodies[0]!).toBe(false)
     }
   })
 })
 
-describe('正文里的思考标签', () => {
-  /** SSE 的事件分隔符是两个换行。写成常量而不是字面量：源码里两个空行看不出是它。 */
+describe('正文中的思考标签', () => {
+  /** SSE 的事件分隔符是两个换行。写为常量而不是字面量：源码中的两个空行难以辨认。 */
   const SEP = String.fromCharCode(10, 10)
 
-  /** 把一串分片喂进去，收敛成两个通道各自的全文。 */
+  /** 输入一组分片，汇总为两个通道各自的全文。 */
   function feed(chunks: string[]): { thinking: string; text: string } {
     const sp = createThinkingSplitter()
     let thinking = ''
@@ -1112,9 +1112,9 @@ describe('正文里的思考标签', () => {
 
   /**
    * 复现原始形状：会话 `cv_0mt10yhy20000vace5y` 的 step 32、43、57。
-   * 中转站把一部分推理摘要放进了 `content` 并自己加了标签。
+   * 中转站将一部分推理摘要放入 `content` 并自行添加了标签。
    */
-  test('开头的成对标签整块判给思考，后面的正文照常是正文', () => {
+  test('开头的成对标签整块判定为思考，其后的正文仍为正文', () => {
     expect(feed(['<thinking>**Updating inspection checklist**</thinking>'])).toEqual({
       thinking: '**Updating inspection checklist**',
       text: '',
@@ -1125,8 +1125,8 @@ describe('正文里的思考标签', () => {
     })
   })
 
-  /** 标签被切在任意位置都要认得——SSE 分片边界与内容无关。 */
-  test('标签跨分片切开仍然认得', () => {
+  /** 标签在任意位置被切分都须识别：SSE 分片边界与内容无关。 */
+  test('标签跨分片切分时仍能识别', () => {
     expect(feed(['<thin', 'king>', '想', '一', '</think', 'ing>说'])).toEqual({
       thinking: '想一',
       text: '说',
@@ -1134,23 +1134,23 @@ describe('正文里的思考标签', () => {
   })
 
   /**
-   * 这条是这个函数最要紧的边界：**收宽一点就会吞掉模型正当输出的字面量**。
-   * 只认第 0 字符起的那一个，之后出现多少次都是正文。
+   * 这是本函数最重要的边界：放宽识别范围会将模型正当输出的字面量从正文中移除。
+   * 只识别从第 0 个字符开始的一处，之后无论出现多少次都属于正文。
    */
-  test('不在开头的同样字符串留在正文里', () => {
+  test('不在开头的相同字符串保留在正文中', () => {
     expect(feed(['这段代码会输出 <thinking>x</thinking> 标签'])).toEqual({
       thinking: '',
       text: '这段代码会输出 <thinking>x</thinking> 标签',
     })
-    // 认过一次之后就不再认，第二个块是正文。
+    // 识别一次之后不再识别，第二个块属于正文。
     expect(feed(['<thinking>一</thinking>正文 <thinking>二</thinking>'])).toEqual({
       thinking: '一',
       text: '正文 <thinking>二</thinking>',
     })
   })
 
-  /** 判错的最坏结果只能是「显示在错的区」，不能是内容消失。 */
-  test('流在闭合之前结束，攒着的连同开标签原样退回正文', () => {
+  /** 误判的最坏结果只能是「显示在错误的区域」，不能是内容丢失。 */
+  test('流在闭合之前结束时，已累积的内容连同起始标签原样退回正文', () => {
     expect(feed(['<thinking>没等到闭合就断了'])).toEqual({
       thinking: '',
       text: '<thinking>没等到闭合就断了',
@@ -1158,8 +1158,8 @@ describe('正文里的思考标签', () => {
     expect(feed(['<thin'])).toEqual({ thinking: '', text: '<thin' })
   })
 
-  /** 接线也要测：纯函数对了但没挂上去，表现和没修一样。 */
-  test('适配器真的按两个通道分发', async () => {
+  /** 接入同样须测试：纯函数正确但未接入适配器时，结果与未修复相同。 */
+  test('适配器实际按两个通道分发', async () => {
     const sse = (payload: string) => `data: ${payload}${SEP}`
     const server = Bun.serve({
       port: 0,
@@ -1223,14 +1223,14 @@ describe('strict 工具定义', () => {
   }
 
   /**
-   * 复现原始失败形状：非 strict 下模型把 `offset` 回成字符串
-   * （实测 grok-4.6 三次采样三次都是 `"1.0"`，其中一次还把工具模板漏进了值里），
-   * `read_file` 因此读到 0 行还报 success。
+   * 复现原始失败形状：非 strict 模式下模型将 `offset` 返回为字符串
+   * （实测 grok-4.6 三次采样均为 `"1.0"`，其中一次还将工具模板混入取值），
+   * `read_file` 因此读取 0 行却报告 success。
    *
-   * strict 的两条硬要求少一条就等于没开——**只加标志位而留着可选属性时端点静默降级**，
-   * 所以这里两条都断言：可选属性进 `required`，类型里补 `null`。
+   * strict 的两条硬性要求缺少任一条即等于未开启：只添加标志位而保留可选属性时，端点静默降级。
+   * 因此此处两条均断言：可选属性列入 `required`，类型中补充 `null`。
    */
-  test('可选属性进 required，类型里补 null', () => {
+  test('可选属性列入 required，类型中补充 null', () => {
     const out = strictify(readFile.parameters)
     expect(out.required).toEqual(['path', 'offset', 'limit'])
     expect(out.additionalProperties).toBe(false)
@@ -1238,7 +1238,7 @@ describe('strict 工具定义', () => {
     expect(props.path?.type).toBe('string')
     expect(props.offset?.type).toEqual(['integer', 'null'])
     expect(props.limit?.type).toEqual(['integer', 'null'])
-    // 描述原样留着——模型靠它知道这个参数是干什么的。
+    // 描述原样保留：模型依据描述了解参数的用途。
     expect(props.offset?.description).toBe('起始行号（1 起），默认 1')
   })
 
@@ -1262,7 +1262,7 @@ describe('strict 工具定义', () => {
     expect(strictify(converted)).toEqual(converted)
   })
 
-  test('数组的 items 也要转，嵌套对象同样补齐 required', () => {
+  test('数组的 items 同样转换，嵌套对象同样补齐 required', () => {
     const out = strictify({
       type: 'object',
       properties: {
@@ -1290,13 +1290,13 @@ describe('strict 工具定义', () => {
     expect(inner.state?.enum).toEqual(['off', 'on', null])
   })
 
-  test('同一份输入给出同一份输出——前缀缓存的前提', () => {
+  test('相同输入产生相同输出，这是前缀缓存的前提', () => {
     expect(JSON.stringify(strictify(readFile.parameters))).toBe(
       JSON.stringify(strictify(readFile.parameters)),
     )
   })
 
-  test('请求体里带 strict，且发的是重排后的 schema', async () => {
+  test('请求体中带 strict，且发送重排后的 schema', async () => {
     const body = await send('deepseek-flash', undefined, [readFile])
     const tool = (body.tools as { function: Record<string, unknown> }[])[0]!.function
     expect(tool.strict).toBe(true)
@@ -1308,11 +1308,11 @@ describe('strict 工具定义', () => {
   })
 
   /**
-   * GLM-5.3 Flash 与 Grok 4.6 的真实失败形状相同：适配器把可选 `probe_url` 改成
-   * required + nullable 后，模型被迫给它编值。两家官方都公开标准 JSON Schema 的
-   * required/optional 形状，所以只给映射声明 native 的模型保留注册表原样。
+   * GLM-5.3 Flash 与 Grok 4.6 的真实失败形状相同：适配器将可选的 `probe_url` 改为
+   * required + nullable 后，模型被迫为其虚构取值。两家厂商的官方文档均采用标准 JSON Schema 的
+   * required/optional 形状，因此只对映射声明为 native 的模型保留注册表原样。
    */
-  test('GLM 与 Grok 不套 OpenAI strict，可选属性仍可省略', async () => {
+  test('GLM 与 Grok 不使用 OpenAI strict，可选属性仍可省略', async () => {
     for (const model of ['glm-5.3', 'glm-5.3-flash', 'grok-4.5', 'grok-4.6']) {
       const body = await send(model, undefined, [readFile])
       const tool = (body.tools as { function: Record<string, unknown> }[])[0]!.function
@@ -1326,12 +1326,12 @@ describe('strict 工具定义', () => {
   })
 
   /**
-   * 第三方 schema 原样发，一个字节都不改。
+   * 第三方 schema 原样发送，不修改任何字节。
    *
-   * 改动一个第三方 schema，模型按改过的形状传参、server 按原形状校验，
-   * 两边对不上；而它是不是恰好合格并不构成改它的理由——判据是谁写的。
+   * 修改第三方 schema 后，模型按修改后的形状传参，server 按原形状校验，
+   * 两者不一致；schema 是否恰好合格不构成修改理由，判据是由谁编写。
    */
-  test('strict 为假的工具原样发，不带标志位也不重排', async () => {
+  test('strict 为假的工具原样发送，不带标志位也不重排', async () => {
     const third: ToolSchema = {
       name: 'mcp_thing',
       description: '第三方',
@@ -1345,8 +1345,8 @@ describe('strict 工具定义', () => {
   })
 })
 
-describe('运行上下文的上线形状', () => {
-  test('上下文并入所属真实用户，不增加 system 或 user 轮次', async () => {
+describe('运行上下文的发送形状', () => {
+  test('上下文并入所属的真实用户消息，不增加 system 或 user 轮次', async () => {
     bodies.length = 0
     const model = 'deepseek-flash'
     const adapter = new OpenAICompatAdapter(
@@ -1365,7 +1365,7 @@ describe('运行上下文的上线形状', () => {
       idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
       signal: new AbortController().signal,
     })) {
-      // 只看请求体
+      // 只检查请求体
     }
     const messages = bodies[0]!.messages as { role: string; content: string }[]
     expect(messages.filter((m) => m.role === 'system')).toHaveLength(1)
@@ -1381,7 +1381,7 @@ describe('运行上下文的上线形状', () => {
 describe('连接', () => {
   test('每次请求都声明不复用连接', async () => {
     await send('deepseek-flash')
-    // 中转站会掐掉空闲的 keep-alive 连接，复用旧连接的下一次请求当场断开或一直静默。
+    // 中转站会关闭空闲的 keep-alive 连接，复用旧连接的下一次请求会立即断开或持续无响应。
     expect(requestHeaders[0]?.get('connection')).toBe('close')
   })
 })

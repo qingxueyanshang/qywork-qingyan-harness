@@ -15,15 +15,15 @@ export const handlePairingApi: ApiHandler = async (url, req, d) => {
   }
 
   if (p === '/api/pairing') {
-    // 二维码必须指向**局域网监听的那个端口**，不是主端口——主端口只绑 127.0.0.1，
-    // 手机连不上。没开局域网时先给主端口，UI 会提示要先开开关。
+    // 二维码必须指向局域网监听的端口，而不是主端口：主端口只绑定 127.0.0.1，
+    // 手机无法连接。未开启局域网时先给出主端口，界面会提示先打开开关。
     const reachablePort = d.lanEnabled() ? d.lanPort() : d.port
     return json({
       ...d.pairing.payload(reachablePort),
       qr: d.pairing.qrUrl(reachablePort),
       lanEnabled: d.lanEnabled(),
-      // 一并回全部候选：自动判断在 VPN / 虚拟网卡环境下不可靠，
-      // UI 必须能让用户换一个地址重新出码。
+      // 同时返回全部候选地址：自动判断在 VPN 或虚拟网卡环境下不可靠，
+      // 界面必须允许用户换一个地址重新生成二维码。
       candidates: lanCandidates().map((c) => ({
         name: c.name,
         address: c.address,

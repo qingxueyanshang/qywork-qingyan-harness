@@ -3,15 +3,15 @@
  *
  * 四条不变量：
  *
- * 1. **ref 只属于一次观察。** 编号绑定 tab、帧、文档令牌与节点身份指纹；导航换文档、
- *    重新观察换编号，旧编号一律拒绝。动作前重新解析节点并核对身份，不把一个失效编号
- *    重新定位成另一个同名按钮。
- * 2. **语义来自 AX 树与节点属性，不是整页 HTML。** 每一步把整页 HTML 塞进模型既装不下
- *    也读不准；元素表给角色、名称、类型、状态与正文摘要，超出上限时如实报截断。
- * 3. **指向元素的鼠标输入与键盘落在元素自己的会话上。** 鼠标使用该会话本地根的坐标，
+ * 1. **ref 只属于一次观察。** 编号绑定 tab、帧、文档令牌与节点身份指纹；导航会更换文档，
+ *    重新观察会更换编号，旧编号一律拒绝。动作前重新解析节点并核对身份，不将失效编号
+ *    重新定位到另一个同名按钮。
+ * 2. **语义来自 AX 树与节点属性，不是整页 HTML。** 每一步将整页 HTML 传入模型既无法容纳
+ *    也无法准确读取；元素表提供角色、名称、类型、状态与正文摘要，超出上限时如实报告截断。
+ * 3. **指向元素的鼠标与键盘输入发送到元素所在的会话。** 鼠标使用该会话本地根的坐标，
  *    避免滚动后依赖顶层合成器尚未更新的跨进程命中信息；回执仍用顶层坐标。帧偏移在
- *    动作准备里现取，并逐层核对父文档遮挡。滚轮按页面落点分发，不绕过覆盖落点的元素。
- * 4. **动作只发 CDP 的 Input 事件。** 不调系统鼠标键盘，不置前窗口。
+ *    动作准备阶段实时获取，并逐层核对父文档遮挡。滚轮按页面落点分发，不绕过覆盖落点的元素。
+ * 4. **动作只发送 CDP 的 Input 事件。** 不调用系统鼠标键盘，不将窗口置于前台。
  */
 
 import {
@@ -50,46 +50,46 @@ import {
 /** 一次观察最多返回多少个元素。超出时按 offset 翻页，不静默截断。 */
 const MAX_ELEMENTS = 120
 /**
- * 选项样例与填写回执里值的字符上限。
+ * 选项样例与填写回执中的值的字符上限。
  *
- * 元素表的名称与值不用它：查询要按原值匹配，完整原值随观察存盘，长度由投递层控制。
+ * 元素表的名称与值不使用该上限：查询须按原值匹配，完整原值随观察落盘，长度由投递层控制。
  */
 const MAX_TEXT = 200
 /** 动作回执的目标标签、遮挡元素与选项样例的名称上限。 */
 const MAX_LABEL = 60
 /** 单个 select 一次返回的选项上限。 */
 const MAX_SELECT_OPTIONS = 30
-/** 一份普通观察里所有 select 的选项摘要合计上限。 */
+/** 一份普通观察中所有 select 的选项摘要合计上限。 */
 const MAX_OBSERVATION_OPTIONS = 100
-/** 选不中时错误里带几个选项样例。 */
+/** 无法选中时错误信息中附带的选项样例数。 */
 const SELECT_SAMPLE = 5
-/** 截图的字节上限。超过就降质量重拍一次，仍超过则不给图。 */
+/** 截图的字节上限。超过时降低质量重新截取一次，仍超过则不返回图像。 */
 const MAX_SHOT_BYTES = 1_500_000
-/** 单个跨站子帧的观察上限。它不答的时候主文档照样要能观察出来。 */
+/** 单个跨站子帧的观察上限。子帧无响应时，主文档仍须能完成观察。 */
 const FRAME_TIMEOUT_MS = 5_000
 
 /**
- * 主文档 AX 树重取的间隔与总上限。
+ * 主文档 AX 树重新获取的间隔与总上限。
  *
- * Chromium 的无障碍树是懒计算的：页面刚 `on_page_load` 完成时它可能仍为空，
- * 而建页只等首个文档加载、不等 AX 树就绪。不重取的话，一个静态表单在 create 之后
- * 立刻 observe 会返回 0 个元素，模型只能退化成自己写脚本。跨站子帧不套这个重试——
- * 它已有 `FRAME_TIMEOUT_MS` 与跳过。
+ * Chromium 的无障碍树是延迟计算的：页面刚 `on_page_load` 完成时它可能仍为空，
+ * 而新建页面时只等待首个文档加载、不等待 AX 树就绪。若不重新获取，静态表单在 create 之后
+ * 立即 observe 会返回 0 个元素，模型只能改为自行编写脚本。跨站子帧不使用该重试：
+ * 它已有 `FRAME_TIMEOUT_MS` 与跳过机制。
  */
 const AX_RETRY_INTERVAL_MS = 150
 const AX_RETRY_TOTAL_MS = 1_500
 
 /**
- * 跨站帧附上子会话之前的等待上限与重查间隔。
+ * 跨站帧附加子会话之前的等待上限与重新查询间隔。
  *
- * 建页只等主文档 load 完成，跨站 iframe 的导航在那之后才提交；实测这一段在空闲机器上
- * 也只有几十毫秒的余量，观察撞进去就得到一张没有帧内元素的表。等满仍未就位的帧按
- * `framesPending` 报出，不静默少算。
+ * 新建页面时只等待主文档 load 完成，跨站 iframe 的导航在此之后才提交；实测这段时间在空闲机器上
+ * 也只有几十毫秒的余量，观察发生在此期间会得到一张没有帧内元素的表。等待超时仍未就位的帧按
+ * `framesPending` 报告，不静默少计。
  *
  * 2 秒的依据（2026-09-16 实测，回环三层跨站页与公网含跨站 iframe 的页各十轮）：不限速时
- * 跨站帧在首次观察的头几轮重查里就绪；给帧加 1.5 秒时延后，首次观察报 `framesPending`，
- * 第二次观察（约 1 秒后）拿到帧内元素。**不要往上调**：这段上限是每一次撞上未就位帧的
- * 观察都要等的固定开销，而等不到的帧多等一秒仍然等不到，`framesPending` 已经把它说清楚。
+ * 跨站帧在首次观察的前几轮重新查询中就绪；为帧增加 1.5 秒延迟后，首次观察报告 `framesPending`，
+ * 第二次观察（约 1 秒后）取得帧内元素。**不要调高**：该上限是每次遇到未就位帧的
+ * 观察都须等待的固定开销，超时未就位的帧多等待一秒仍无法就位，`framesPending` 已经说明该情况。
  */
 const FRAME_ATTACH_INTERVAL_MS = 100
 const FRAME_ATTACH_TOTAL_MS = 2_000
@@ -97,45 +97,45 @@ const FRAME_ATTACH_TOTAL_MS = 2_000
 /** 尚未提交导航的帧承载的地址。 */
 const BLANK_URL = 'about:blank'
 
-/** 调用方没有给截止时间时，一次观察的总预算。 */
+/** 调用方未指定截止时间时，一次观察的总预算。 */
 const OBSERVE_BUDGET_MS = 30_000
-/** 单条采集命令的上限。剩余预算更少时按剩余预算发，不再给满额度。 */
+/** 单条采集命令的上限。剩余预算更少时按剩余预算发送，不再分配完整额度。 */
 const COLLECT_TIMEOUT_MS = 15_000
 /** 单次截图的上限。 */
 const SHOT_TIMEOUT_MS = 20_000
 
 /**
- * 一次坐标动作的准备预算：身份核对、滚入可视区、重新量取与命中复核合用。
+ * 一次坐标动作的准备预算：身份核对、滚入可视区、重新测量与命中复核共用。
  *
- * 布局持续变化时按它退出，不在同一个动作里反复滚动重量。
+ * 布局持续变化时按该预算退出，不在同一个动作中反复滚动并重新测量。
  */
 const PREPARE_BUDGET_MS = 10_000
-/** 准备阶段单条命令的上限。剩余预算更少时按剩余预算发。 */
+/** 准备阶段单条命令的上限。剩余预算更少时按剩余预算发送。 */
 const PREPARE_TIMEOUT_MS = 5_000
-/** 帧链最多走几层。超过即判定失败，不继续向上找。 */
+/** 帧链最多遍历的层数。超过即判定失败，不继续向上查找。 */
 const MAX_FRAME_DEPTH = 8
 
-/** `type` 一次最多输入多少个 Unicode 码点。整段预检通过才发第一个事件。 */
+/** `type` 一次最多输入的 Unicode 码点数。整段预检通过后才发送第一个事件。 */
 const MAX_TYPE_UNITS = 2_000
-/** 拖动按下之后最多为每一段终点推进几次滚动。 */
+/** 拖动按下之后每一段终点最多推进的滚动次数。 */
 const MAX_DRAG_SCROLLS = 2
-/** 有时长的拖动段里相邻两次移动的间隔，约一帧。 */
+/** 有时长的拖动段中相邻两次移动的间隔，约一帧。 */
 const DRAG_STEP_MS = 16
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-/** 元素引用已经指不到原来那个节点。调用方必须重新观察，不能改写编号重试。 */
+/** 元素引用已不再指向原节点。调用方必须重新观察，不能改写编号重试。 */
 export class BrowserStaleRefError extends CdpError {}
-/** 命中点落在别的元素上。页面结构变了或被浮层盖住，同样要求重新观察。 */
+/** 命中点位于其他元素上。页面结构已改变或被浮层遮挡，同样要求重新观察。 */
 export class BrowserAmbiguousRefError extends CdpError {}
-/** 预算内没能采到一份前后一致的快照。调用方保留已经发出的动作回执，不重做动作。 */
+/** 预算内未能采集到前后一致的快照。调用方保留已经发出的动作回执，不重新执行动作。 */
 export class BrowserObserveTimeoutError extends CdpError {}
 
 /**
- * 一个元素编号背后的定位信息。
+ * 元素编号对应的定位信息。
  *
- * **不存帧偏移**：偏移随父页滚动变化，观察时量到的那一份在动作时可能已经不成立。
- * 坐标一律在动作准备里现取，见 `prepareAction`。
+ * **不存储帧偏移**：偏移随父页滚动变化，观察时测得的值在动作时可能已不成立。
+ * 坐标一律在动作准备阶段实时获取，见 `prepareAction`。
  */
 interface RefRecord {
   backendNodeId: number
@@ -143,9 +143,9 @@ interface RefRecord {
   sessionId: string
   frame?: string
   /**
-   * 同进程帧链：从元素所在文档向外，每一跳是承载它的 iframe 元素在父文档里的节点号。
+   * 同进程帧链：从元素所在文档向外，每一层是承载它的 iframe 元素在父文档中的节点号。
    *
-   * 缺席即元素直接在会话的根文档里。这一层记的是结构不是几何——盒子在动作准备里现取。
+   * 缺省表示元素直接位于会话的根文档中。该字段记录结构而不是几何：盒模型在动作准备阶段实时获取。
    */
   owners?: number[]
   /** 是否为控件。文字也可承载指针动作，但不能因此成为输入框或选择框。 */
@@ -157,12 +157,12 @@ interface RefRecord {
 export interface ObservationRecord {
   observationId: string
   tabId: string
-  /** 文档令牌。导航换文档即换值，据此判断整份观察是否已经失效。 */
+  /** 文档令牌。导航更换文档时该值随之改变，据此判断整份观察是否已经失效。 */
   docToken: string
   refs: Map<string, RefRecord>
 }
 
-/** 页内建立文档令牌。不可写不可配置，同源脚本改不掉；新文档没有它，因此导航即换值。 */
+/** 在页内建立文档令牌。不可写且不可配置，同源脚本无法修改；新文档没有该值，因此导航即更换令牌。 */
 const DOC_TOKEN = `(() => {
   if (!window.__qyworkDoc) {
     Object.defineProperty(window, '__qyworkDoc', {
@@ -175,16 +175,16 @@ const DOC_TOKEN = `(() => {
 })()`
 
 /**
- * 页内复核：节点还连着吗、身份还是那一个吗、矩形在哪、命中点打在谁身上。
+ * 页内复核：节点是否仍连接、身份是否一致、矩形位置，以及命中点落在哪个元素上。
  *
- * 一次往返答完全部问题。分成几次的代价是它们之间页面可能又变了，
- * 那样「复核通过」说的就不是最终发事件时的状态。
+ * 一次往返回答全部问题。分成多次时，两次之间页面可能已经变化，
+ * 「复核通过」描述的就不是最终发送事件时的状态。
  *
- * `label` 与 `hitLabel` 都按 `MAX_LABEL` 截。页面自报的 `aria-label` 长度无界，
- * 不在这里截的话它会经由动作回执进 message。
+ * `label` 与 `hitLabel` 均按 `MAX_LABEL` 截断。页面自报的 `aria-label` 长度无界，
+ * 若不在此处截断，它会经由动作回执进入 message。
  *
- * 给了 `px` / `py` 时量的是元素矩形左上角起的那一点，否则是中心；`inBox` 说这一点在不在
- * 此刻的矩形里——元素尺寸在观察之后可能变过。
+ * 指定 `px` / `py` 时测量的是自元素矩形左上角偏移的点，否则测量中心；`inBox` 表示该点是否位于
+ * 当前矩形内：元素尺寸在观察之后可能已经改变。
  */
 export const INSPECT_FN = `function qyInspect(px, py) {
   const el = this
@@ -197,18 +197,18 @@ export const INSPECT_FN = `function qyInspect(px, py) {
   const r = (range || el).getBoundingClientRect()
   const rects = range ? Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0) : [r]
   const view = el.ownerDocument.defaultView
-  // 文本可跨行。选一个实际文字片段，不用父容器或多行外接矩形的中心。
+  // 文本可跨行。选取一个实际文字片段，不使用父容器或多行外接矩形的中心。
   const fragment = rects.find(r => r.right > 0 && r.bottom > 0 && r.left < view.innerWidth && r.top < view.innerHeight) || rects[0] || r
   const offset = typeof px === 'number' && typeof py === 'number'
   const x = offset ? r.x + px : fragment.x + fragment.width / 2
   const y = offset ? r.y + py : fragment.y + fragment.height / 2
   const inBox = text ? rects.some(r => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) : !offset || (px >= 0 && py >= 0 && px <= r.width && py <= r.height)
-  // 可视区判定用元素自己文档的视口。这一层通过只说明它在本文档内可见，
-  // 跨站 iframe 还要逐层核对父文档，见 framePoint。
+  // 可视区判定使用元素所在文档的视口。该判定通过只说明它在本文档内可见，
+  // 跨站 iframe 还须逐层核对父文档，见 framePoint。
   const inView = x >= 0 && y >= 0 && x <= view.innerWidth && y <= view.innerHeight
-  // 命中测试要在元素自己的根里做：文档级的 elementFromPoint 对 shadow 内容返回的是
-  // 宿主元素，而 contains 不穿透 shadow 边界，按文档级结果判会把每一次影子内点击
-  // 都判成被覆盖。
+  // 命中测试须在元素自身的根节点中执行：文档级的 elementFromPoint 对 shadow 内容返回的是
+  // 宿主元素，而 contains 不穿透 shadow 边界，按文档级结果判定会将每一次 shadow 内的点击
+  // 都判定为被覆盖。
   const root = el.getRootNode()
   const scope = typeof root.elementFromPoint === 'function' ? root : el.ownerDocument
   const hit = inView ? scope.elementFromPoint(x, y) : null
@@ -232,10 +232,10 @@ export const INSPECT_FN = `function qyInspect(px, py) {
 }`
 
 /**
- * 把子帧里的一个点换算到父文档，并在父文档里复核这个点打在本帧上。
+ * 将子帧中的一个点换算到父文档，并在父文档中复核该点命中本帧。
  *
- * 加的是内容盒左上角，不是边框盒：iframe 的内容从内边距内侧开始，按边框盒算会整体
- * 偏掉一个边框宽度。父层遮罩盖住 iframe 时 `sameTree` 为假，那一层就是遮挡点。
+ * 加上的是内容盒左上角，不是边框盒：iframe 的内容从内边距内侧开始，按边框盒计算会整体
+ * 偏移一个边框宽度。父层遮罩覆盖 iframe 时 `sameTree` 为假，该层即为遮挡点。
  */
 const FRAME_POINT_FN = `function qyFramePoint(x, y) {
   const el = this
@@ -261,10 +261,10 @@ const FRAME_POINT_FN = `function qyFramePoint(x, y) {
 }`
 
 /**
- * 读一段选项。`total` 是此刻的总数，调用方据此判断还有没有后续。
+ * 读取一段选项。`total` 是当前的总数，调用方据此判断是否还有后续。
  *
- * 取 `el.options` 而不是子元素：它把 optgroup 里的选项一并铺平，顺序与用户看到的
- * 一致。禁用状态并入 optgroup——optgroup 禁用时它下面的选项一律不可选。
+ * 取 `el.options` 而不是子元素：它将 optgroup 中的选项一并展开，顺序与用户看到的
+ * 一致。禁用状态合并 optgroup 的状态：optgroup 禁用时其下的选项一律不可选。
  */
 const OPTIONS_FN = `function qyOptions(start, limit) {
   const el = this
@@ -284,10 +284,10 @@ const OPTIONS_FN = `function qyOptions(start, limit) {
 }`
 
 /**
- * 选择框设值并派发事件。直接改 value 不派发的话，网站的监听器收不到这次变化。
+ * 为选择框设值并派发事件。只修改 value 而不派发事件时，网站的监听器无法收到本次变化。
  *
- * 选不中时只回原因、总数与有界样例。**不要改成回完整选项表**：一个上千项的
- * `select` 会把整份工具输出撑掉，继续读取走 `optionsFor`。
+ * 无法选中时只返回原因、总数与有界样例。**不要改成返回完整选项表**：上千项的
+ * `select` 会占满整份工具输出，继续读取使用 `optionsFor`。
  */
 const SELECT_FN = `function qySelect(value) {
   const el = this
@@ -323,13 +323,13 @@ const SELECT_FN = `function qySelect(value) {
 /**
  * 覆盖输入一个控件的值。
  *
- * 三段：写前拒绝（禁用、只读、类型不能清空）→ 在同类型的临时控件上预检格式与约束 →
- * 对目标用原生 setter 写入、派发 input/change、回读实际值。
+ * 三个阶段：写前拒绝（禁用、只读、类型不能清空）→ 在同类型的临时控件上预检格式与约束 →
+ * 对目标使用原生 setter 写入、派发 input/change、回读实际值。
  *
- * **预检必须在临时控件上做。** 直接往目标上试一次再看结果的话，非法值已经把原值冲掉了。
- * 写入用 `HTMLInputElement.prototype` 上的原生 setter：受控组件把 `value` 换成了自己的
- * 访问器，直接赋值它收不到这次变化，框架状态与页面显示会从此不一致。
- * `range` 对越界值是静默钳到边界，不报错，所以它的「规范化后不等于原值」按约束不满足处理。
+ * **预检必须在临时控件上执行。** 直接在目标上试写再检查结果时，非法值已经覆盖了原值。
+ * 写入使用 `HTMLInputElement.prototype` 上的原生 setter：受控组件将 `value` 替换为自己的
+ * 访问器，直接赋值时它无法收到本次变化，框架状态与页面显示此后不一致。
+ * `range` 将越界值静默钳制到边界且不报错，因此它的「规范化后不等于原值」按约束不满足处理。
  */
 const FILL_FN = `function qyFill(value) {
   const el = this
@@ -362,8 +362,8 @@ const FILL_FN = `function qyFill(value) {
     for (const attr of ['min', 'max', 'step']) {
       if (el.hasAttribute(attr)) probe.setAttribute(attr, el.getAttribute(attr))
     }
-    // color 只接受 #rrggbb。认不出的写法它换成一个具体颜色而不是空串，
-    // 按「规范化结果非空」判会把 red 当成合法输入，写进去的是另一个值。
+    // color 只接受 #rrggbb。无法识别的写法会被替换为一个具体颜色而不是空串，
+    // 按「规范化结果非空」判定会将 red 当作合法输入，写入的是另一个值。
     if (type === 'color' && !/^#[0-9a-fA-F]{6}$/.test(value)) {
       return { ok: false, reason: 'bad_format', type: type }
     }
@@ -395,10 +395,10 @@ const FILL_FN = `function qyFill(value) {
 }`
 
 /**
- * 逐字输入前的复核：节点还在、还是同一个、焦点还在它身上。
+ * 逐字输入前的复核：节点仍存在、身份未变、焦点仍在该节点上。
  *
- * 每个码点发一次。少了这一层，节点被替换或焦点转移之后，后面的字符会进另一个控件，
- * 而那一段输入的去向在回执里看不出来。
+ * 每个码点发送前执行一次。缺少该复核时，节点被替换或焦点转移之后，后续字符会输入到另一个控件，
+ * 而这段输入的去向在回执中无法体现。
  */
 const TYPING_GUARD_FN = `function qyTypingTarget() {
   const el = this
@@ -419,13 +419,13 @@ interface DomNode {
   shadowRoots?: DomNode[]
   contentDocument?: DomNode
   pseudoElements?: DomNode[]
-  /** iframe 元素上是它承载的那一帧的编号；文档节点上是这份文档所属的帧。 */
+  /** iframe 元素上是其承载的帧的编号；文档节点上是该文档所属的帧。 */
   frameId?: string
-  /** 文档节点此刻的地址。导航尚未提交时为 `about:blank`。 */
+  /** 文档节点当前的地址。导航尚未提交时为 `about:blank`。 */
   documentURL?: string
 }
 
-/** 一个元素节点在 DOM 快照里的标签与属性。 */
+/** 元素节点在 DOM 快照中的标签与属性。 */
 type DomInfo = { tag: string; attrs: Record<string, string>; text?: string }
 
 interface AxNode {
@@ -437,7 +437,7 @@ interface AxNode {
   backendDOMNodeId?: number
 }
 
-/** 会被当成可操作元素的 AX 角色。 */
+/** 被视为可操作元素的 AX 角色。 */
 const ACTIONABLE_ROLES = new Set([
   'button',
   'link',
@@ -458,11 +458,11 @@ const ACTIONABLE_ROLES = new Set([
 ])
 
 /**
- * 同样按可操作处理的标签。AX 角色缺失的自定义控件靠它兜住。
+ * 同样按可操作处理的标签。缺少 AX 角色的自定义控件由该集合识别。
  *
- * **不含 `label`**：点它等于点它关联的控件，而那个控件已经单列了一行；
- * 它自己的可访问名通常是空的，进表只是一行没有用途的空条目。`canvas` 的交互全在它自己的
- * 像素里，AX 树给它 `Canvas` 角色，只有按标签收进来，指针动作才有落点可指。
+ * **不含 `label`**：点击它等于点击其关联的控件，而该控件已经单独列为一行；
+ * 它自身的可访问名通常为空，列入表中只会多出一条无用的空条目。`canvas` 的交互全部位于自身的
+ * 像素中，AX 树赋予它 `Canvas` 角色，只有按标签收录，指针动作才有可指定的落点。
  */
 const ACTIONABLE_TAGS = new Set([
   'a',
@@ -475,21 +475,21 @@ const ACTIONABLE_TAGS = new Set([
   'canvas',
 ])
 
-/** 只提供正文的角色。它们让模型读得到页面结果，不必回传整页 HTML。 */
+/** 只提供正文的角色。模型据此读取页面结果，无需回传整页 HTML。 */
 const TEXT_ROLES = new Set(['StaticText', 'heading', 'paragraph', 'cell', 'columnheader'])
 
 export interface PageHandle {
   client: CdpClient
-  /** 顶层页会话。截图发到这里；输入发到目标所在的会话。 */
+  /** 顶层页会话。截图请求发送到该会话；输入发送到目标所在的会话。 */
   sessionId: string
   tabId: string
 }
 
 /**
- * 现读主文档的令牌、地址与标题。
+ * 实时读取主文档的令牌、地址与标题。
  *
- * 跨文档判定与采集一致性判定都按它现取，不用观察表里记的那一份：那份记的是上一次
- * 采集的页面，与此刻的文档不一定是同一个。
+ * 跨文档判定与采集一致性判定均使用实时读取的值，不使用观察表中记录的值：后者对应上一次
+ * 采集的页面，与当前文档不一定相同。
  */
 export async function readDocument(
   page: PageHandle,
@@ -506,17 +506,17 @@ export async function readDocument(
 }
 
 /**
- * 观察一页。
+ * 观察一个页面。
  *
- * 主文档与它的跨站子帧各取一次 DOM 快照和 AX 树；子帧元素的矩形叠加该帧在顶层文档
- * 中的偏移之后才是可发事件的坐标。
+ * 主文档与其跨站子帧各获取一次 DOM 快照和 AX 树；子帧元素的矩形叠加该帧在顶层文档
+ * 中的偏移之后，才是可用于发送事件的坐标。
  *
- * **采集前后各核一次主文档令牌与地址**：期间换了文档或地址，这份结果里混着两个页面的
- * 元素，整份丢掉在剩余预算内重采，不登记「旧令牌配新元素」的观察。预算耗尽抛
- * `BrowserObserveTimeoutError`。采集一致不等于 DOM 与业务状态从此不再变化。
+ * **采集前后各核对一次主文档令牌与地址**：期间文档或地址发生变化时，结果中混有两个页面的
+ * 元素，整份丢弃并在剩余预算内重新采集，不登记「旧令牌配新元素」的观察。预算耗尽时抛出
+ * `BrowserObserveTimeoutError`。采集一致不代表 DOM 与业务状态此后不再变化。
  *
- * **观察只读，不滚动页面**：要滚动的是动作，见 `prepareAction`。返回的 select 另带一份
- * 当前选项摘要，合计有上限，未列全的用 `readSelectOptions` 继续读。
+ * **观察只读，不滚动页面**：滚动由动作执行，见 `prepareAction`。返回的 select 另带一份
+ * 当前选项摘要，合计有上限，未列全的使用 `readSelectOptions` 继续读取。
  */
 export async function observePage(
   page: PageHandle,
@@ -532,7 +532,7 @@ export async function observePage(
   const deadline = opts.deadline ?? Date.now() + OBSERVE_BUDGET_MS
   for (;;) {
     if (leftMs(deadline) <= 0) {
-      throw new BrowserObserveTimeoutError('没有在预算内采到一份前后一致的观察，请重新观察')
+      throw new BrowserObserveTimeoutError('未能在预算内采集到前后一致的观察，请重新观察')
     }
     const before = await readDocument(page, within(deadline, COLLECT_TIMEOUT_MS).timeoutMs)
     const collected = await collectAll(client, sessionId, opts, deadline)
@@ -574,28 +574,28 @@ export async function observePage(
 }
 
 /**
- * 一份文档快照里还没法采的帧。主文档与每个跨站子会话的文档各过一遍，见 `scanFrames`。
+ * 一份文档快照中尚无法采集的帧。主文档与每个跨站子会话的文档各检查一次，见 `scanFrames`。
  *
- * 三个条件同时成立才算：`src` 指着一个地址、这一帧没有已就绪的子会话、承载的文档
- * 还是 `about:blank`，且它还在往就位走（`settling`，见 `CdpClient.settlingFrames`）。
- * 跨站 iframe 在导航提交前由主进程承载一个空白占位帧，提交之后才换成独立目标并附上
- * 子会话——这段窗口里它在 DOM 里看得见、采集却什么都拿不到。
+ * 以下条件同时成立才计入：`src` 指向一个地址、该帧没有已就绪的子会话、承载的文档
+ * 仍是 `about:blank`，且它仍在就位过程中（`settling`，见 `CdpClient.settlingFrames`）。
+ * 跨站 iframe 在导航提交前由主进程承载一个空白占位帧，提交之后才切换为独立目标并附加
+ * 子会话：在此期间它在 DOM 中可见，采集却无法取得任何内容。
  *
- * **`settling` 这一条不能省。** 页面自己推迟的帧（`loading="lazy"` 尚未触发）在快照里
- * 与正在导航的帧完全同形：都是一个 `about:blank` 空文档，按形状判分不开。少了这一条，
- * 一页上每个延迟加载的帧每次观察都被算成未就位，观察白等满 `FRAME_ATTACH_TOTAL_MS`，
- * 而它们等到天亮也不会提交。实测：css-tricks 的 flexbox 指南里 18 个 `loading="lazy"`
- * 的 codepen 嵌入帧就是这样，每次观察固定多花 2 秒，`framesPending` 每次都报同一批。
+ * **`settling` 条件不能省略。** 页面推迟加载的帧（`loading="lazy"` 尚未触发）在快照中
+ * 与正在导航的帧形式完全相同：都是 `about:blank` 空文档，按结构无法区分。缺少该条件时，
+ * 页面上每个延迟加载的帧在每次观察中都被计为未就位，观察无效等待满 `FRAME_ATTACH_TOTAL_MS`，
+ * 而这些帧始终不会提交。实测：css-tricks 的 flexbox 指南中 18 个 `loading="lazy"`
+ * 的 codepen 嵌入帧即属此类，每次观察固定多耗时 2 秒，`framesPending` 每次都报告同一批帧。
  *
- * **不要改用 `Page.getFrameTree` 核对帧在不在**：页会话的帧树里只有本进程的帧，
- * 已经提交的跨站帧不在其中，按它核会把正常的帧判成缺失。
+ * **不要改用 `Page.getFrameTree` 核对帧是否存在**：页会话的帧树中只有本进程的帧，
+ * 已经提交的跨站帧不在其中，据此核对会将正常的帧判定为缺失。
  */
 function pendingFrames(root: DomNode, ready: Set<string>, settling: ReadonlySet<string>): string[] {
   const out: string[] = []
   const walk = (node: DomNode): void => {
     if (node.nodeName.toLowerCase() === 'iframe') {
       const frame = node.frameId
-      // 取不到帧编号的帧本来就不进元素表，见 splitDocs。
+      // 无法取得帧编号的帧不列入元素表，见 splitDocs。
       if (frame !== undefined && !ready.has(frame) && settling.has(frame)) {
         const flat = node.attributes ?? []
         let src = ''
@@ -615,7 +615,7 @@ function pendingFrames(root: DomNode, ready: Set<string>, settling: ReadonlySet<
   return out
 }
 
-/** 一个会话的一次 DOM 快照。`pierce` 穿透影子根与同进程 iframe。 */
+/** 一个会话的一次 DOM 快照。`pierce` 穿透 shadow root 与同进程 iframe。 */
 async function snapshot(
   client: CdpClient,
   sessionId: string,
@@ -631,13 +631,13 @@ async function snapshot(
 }
 
 /**
- * 扫一遍还没法采的帧：主文档与每个已就位的跨站子会话各取一次快照，各自判自己文档里的 iframe。
+ * 扫描尚无法采集的帧：主文档与每个已就位的跨站子会话各获取一次快照，各自判定所在文档中的 iframe。
  *
- * **只看主文档快照判不到嵌套的那一层。** `pierce` 穿不过渲染进程边界，跨站子帧的文档
- * 不在主文档快照里；嵌套在它里面那个尚未提交的帧因此既不会被等，也不会进 `framesPending`，
- * 观察静默少掉整层元素。子会话答不出快照时跳过它这一轮——一个不答的帧不该拖住整页观察。
+ * **只检查主文档快照无法发现嵌套的帧。** `pierce` 无法穿越渲染进程边界，跨站子帧的文档
+ * 不在主文档快照中；嵌套在其中的尚未提交的帧因此既不会被等待，也不会列入 `framesPending`，
+ * 观察会静默缺少整层元素。子会话无法返回快照时本轮跳过该会话：一个无响应的帧不应阻塞整页观察。
  *
- * 快照一并回给调用方复用：采集与这次判定用同一份，不为同一个会话取两遍。
+ * 快照一并返回给调用方复用：采集与本次判定使用同一份快照，不为同一个会话获取两次。
  */
 async function scanFrames(
   client: CdpClient,
@@ -666,9 +666,9 @@ async function scanFrames(
 }
 
 /**
- * 主文档与在范围内的子帧各采一次，合成一张元素表。
+ * 主文档与范围内的子帧各采集一次，合成一张元素表。
  *
- * 未就位的跨站帧先等，等不到就连同编号一起报出来（`pending`），不当作这一页没有这一帧。
+ * 未就位的跨站帧先等待，等待超时则连同编号一起报告（`pending`），不视为该页面没有该帧。
  */
 async function collectAll(
   client: CdpClient,
@@ -676,17 +676,17 @@ async function collectAll(
   opts: { frame?: string },
   deadline: number,
 ): Promise<{ items: { element: BrowserElement; ref: RefRecord }[]; pending: string[] }> {
-  // 指定了帧就只等那一帧：别的帧没就位不该拖住「只看这个 iframe」。
+  // 指定帧时只等待该帧：其他帧未就位不应阻塞「只看这个 iframe」的观察。
   const inScope = (frames: string[]) =>
     opts.frame ? frames.filter((f) => f === opts.frame) : frames
-  // 点名的跨站帧已经就位时这一次不扫：那几份快照这次用不上，取它们只消耗预算。
+  // 指定的跨站帧已经就位时本次不扫描：这些快照本次不会使用，获取它们只消耗预算。
   const onReadyFrame =
     opts.frame !== undefined &&
     client.childSessionsOf(sessionId).some((c) => c.targetId === opts.frame)
   let scan = { shots: new Map<string, DomNode>(), pending: [] as string[] }
   if (!onReadyFrame) {
     scan = await scanFrames(client, sessionId, deadline)
-    // 重查共用这一份预算，不为每一层帧各给满额度。
+    // 重新查询共用同一份预算，不为每一层帧各分配完整额度。
     const until = Math.min(deadline, Date.now() + FRAME_ATTACH_TOTAL_MS)
     while (inScope(scan.pending).length > 0 && leftMs(until) > 0) {
       await sleep(Math.min(FRAME_ATTACH_INTERVAL_MS, leftMs(until)))
@@ -699,7 +699,7 @@ async function collectAll(
   for (const child of client.childSessionsOf(sessionId)) {
     sessions.push({ sessionId: child.sessionId, frame: child.targetId })
   }
-  // 指定的是某个跨站帧时只问它那一个会话；同进程帧的编号看不出属于哪个会话，全问一遍。
+  // 指定跨站帧时只查询其所在会话；同进程帧的编号无法表明所属会话，因此查询全部会话。
   const named = opts.frame ? sessions.find((s) => s.frame === opts.frame) : undefined
   const scope = named ? [named] : sessions
 
@@ -710,15 +710,15 @@ async function collectAll(
       all.push(...(await collectSession(client, s, deadline, COLLECT_TIMEOUT_MS, shot)))
       continue
     }
-    // 跨站子帧由它自己的渲染进程应答，正在加载或已经消失时会一直不回。
-    // 一个帧不答不该让整页观察不出来——跳过它，主文档照常给出元素表。
+    // 跨站子帧由其自身的渲染进程应答，正在加载或已经消失时不会应答。
+    // 单个帧无响应不应导致整页观察失败：跳过该帧，主文档照常返回元素表。
     try {
       all.push(...(await collectSession(client, s, deadline, FRAME_TIMEOUT_MS, shot)))
     } catch (err) {
       log.warn('browser', `子帧观察跳过：${err instanceof Error ? err.message : String(err)}`)
     }
   }
-  // 指定了帧就只留那一帧的元素——否则「只看这个 iframe」返回的仍是整页。
+  // 指定帧时只保留该帧的元素，否则「只看这个 iframe」返回的仍是整页。
   const items = opts.frame ? all.filter((i) => i.element.frame === opts.frame) : all
   return { items, pending }
 }
@@ -726,12 +726,12 @@ async function collectAll(
 /**
  * 一份文档的采集范围。
  *
- * `frame` 是帧编号：跨站帧取它子会话的 targetId，同进程帧取 CDP 的 frameId，
- * 主文档缺席。`owners` 见 `RefRecord.owners`。
+ * `frame` 是帧编号：跨站帧取其子会话的 targetId，同进程帧取 CDP 的 frameId，
+ * 主文档缺省。`owners` 见 `RefRecord.owners`。
  */
 type FrameScope = { sessionId: string; frame?: string; owners?: number[] }
 
-/** 编号在筛完之后才发，所以候选里只有除 `ref` 之外的那些字段。 */
+/** 编号在筛选完成之后才发放，因此候选中只有 `ref` 之外的字段。 */
 interface Candidate {
   actionable: boolean
   element: Omit<BrowserElement, 'ref'>
@@ -739,13 +739,13 @@ interface Candidate {
 }
 
 /**
- * 把一次 `pierce` 快照按文档拆开。
+ * 将一次 `pierce` 快照按文档拆分。
  *
- * **同进程 iframe 必须单独成一份。** `pierce` 把它的 `contentDocument` 一并带回来，
- * 而 `Accessibility.getFullAXTree` 不带 `frameId` 时只覆盖会话的根帧：混在一起的话，
- * 帧内节点对不上任何 AX 行，整个同源 iframe 的内容都产不出候选。
- * 影子根里的内容属于宿主所在的文档，跟着宿主走。跨站 iframe 没有 `contentDocument`，
- * 它由自己的子会话采集。
+ * **同进程 iframe 必须单独拆分为一份。** `pierce` 将它的 `contentDocument` 一并取回，
+ * 而 `Accessibility.getFullAXTree` 不带 `frameId` 时只覆盖会话的根帧：两者合并时，
+ * 帧内节点无法匹配任何 AX 行，整个同源 iframe 的内容都无法生成候选。
+ * shadow root 中的内容属于宿主所在的文档，随宿主归类。跨站 iframe 没有 `contentDocument`，
+ * 由其自身的子会话采集。
  */
 function splitDocs(
   root: DomNode,
@@ -767,8 +767,8 @@ function splitDocs(
     const inner = node.contentDocument
     if (!inner) return
     const frame = node.frameId ?? inner.frameId
-    // 取不到帧编号就取不到这一帧的 AX 树；层数超过上限时坐标也换算不到顶层。
-    // 两种情况下这一帧不进元素表，主文档照常给出它自己的。
+    // 无法取得帧编号时就无法取得该帧的 AX 树；层数超过上限时坐标也无法换算到顶层。
+    // 两种情况下该帧均不列入元素表，主文档照常返回自身的元素。
     if (frame === undefined) return
     if ((scope.owners?.length ?? 0) >= MAX_FRAME_DEPTH) return
     const subScope: FrameScope = {
@@ -791,13 +791,13 @@ function splitDocs(
 }
 
 /**
- * 一个会话里的全部文档。DOM 快照一次取回，AX 树按帧各取一次，按 backendNodeId 对上。
+ * 一个会话中的全部文档。DOM 快照一次取回，AX 树按帧各获取一次，按 backendNodeId 匹配。
  *
- * `root` 是调用方已经取过的这一会话的快照，给了就不再重取。
+ * `root` 是调用方已经获取的该会话快照，提供时不再重新获取。
  *
- * 同进程帧不套 AX 重取：它与根文档共用这一次 DOM 快照与本阶段预算，重取一遍等于
- * 把每个 iframe 的等待叠加到同一份预算上。这一帧的 AX 还没建起来时它不进元素表，
- * 重新观察即取得。
+ * 同进程帧不使用 AX 重新获取：它与根文档共用本次 DOM 快照与本阶段预算，重新获取等于
+ * 将每个 iframe 的等待叠加到同一份预算上。该帧的 AX 尚未建立时它不列入元素表，
+ * 重新观察即可取得。
  */
 async function collectSession(
   client: CdpClient,
@@ -808,7 +808,7 @@ async function collectSession(
 ): Promise<{ element: BrowserElement; ref: RefRecord }[]> {
   const { sessionId } = session
   const limit = () => within(deadline, capMs)
-  // pierce 穿透 shadow root 与同进程 iframe；跨站 iframe 另走它自己的会话。
+  // pierce 穿透 shadow root 与同进程 iframe；跨站 iframe 经由其自身的会话采集。
   const doc =
     root ??
     (
@@ -842,10 +842,10 @@ async function collectSession(
     }
     let candidates = axCandidates(await fetchAx(), doc.nodes, doc.scope)
     /*
-     * AX 树懒计算：主文档刚加载完可能仍为空，静态表单因此也返回 0 候选。
-     * DOM 里有可交互元素却 0 候选时，短间隔重取 AX 树，非空即用；到上限仍空就从
-     * DOM 快照直接产元素表（语义降级但不为 0）。子帧不套——它自带超时与跳过。
-     * 重取也吃总预算：本阶段上限与剩余预算取小，到期就用手上的结果。
+     * AX 树是延迟计算的：主文档刚加载完成时可能仍为空，静态表单因此也会返回 0 个候选。
+     * DOM 中有可交互元素而候选为 0 时，按短间隔重新获取 AX 树，非空即使用；到达上限仍为空时从
+     * DOM 快照直接生成元素表（语义降级但不为 0）。子帧不使用该重试：它自带超时与跳过机制。
+     * 重新获取同样消耗总预算：取本阶段上限与剩余预算中的较小值，到期即使用已有结果。
      */
     if (session.frame === undefined && candidates.length === 0 && domHasActionable(doc.nodes)) {
       const until = Math.min(deadline, Date.now() + AX_RETRY_TOTAL_MS)
@@ -860,7 +860,7 @@ async function collectSession(
   return out
 }
 
-/** 从 AX 树建候选：AX 给角色 / 名称 / 状态，DOM 给标签与属性。 */
+/** 从 AX 树生成候选：AX 提供角色 / 名称 / 状态，DOM 提供标签与属性。 */
 function axCandidates(
   nodes: AxNode[],
   byBackend: Map<number, DomInfo>,
@@ -891,8 +891,8 @@ function axCandidates(
         ...(attrs.type ? { inputType: attrs.type } : {}),
         ...(value !== undefined ? { value: String(value) } : {}),
         ...(props.get('checked') !== undefined ? { checked: props.get('checked') === 'true' } : {}),
-        // expanded / selected 缺席即这个角色没有这一项，补 false 会把「没有这一项」
-        // 说成「收起」「未选中」。
+        // expanded / selected 缺省表示该角色没有此项，补 false 会将「没有此项」
+        // 表述为「收起」「未选中」。
         ...boolProp(props, 'expanded'),
         ...boolProp(props, 'selected'),
         ...(props.get('disabled') === true ? { disabled: true } : {}),
@@ -915,10 +915,10 @@ function axCandidates(
 }
 
 /**
- * 按 AX 的实际布尔取一项状态。
+ * 按 AX 的实际布尔值取一项状态。
  *
- * 缺席、或值不是布尔时不写这一项：`expanded` 只在可展开的角色上存在，
- * 补一个 false 等于说它是收起的。
+ * 缺省或值不是布尔值时不写该项：`expanded` 只在可展开的角色上存在，
+ * 补 false 等于声明它处于收起状态。
  */
 function boolProp(
   props: Map<string, unknown>,
@@ -930,7 +930,7 @@ function boolProp(
   return {}
 }
 
-/** DOM 快照中是否存在可交互元素。AX 树没建起来时靠它判断该不该重取。 */
+/** DOM 快照中是否存在可交互元素。AX 树尚未建立时据此判断是否重新获取。 */
 function domHasActionable(byBackend: Map<number, DomInfo>): boolean {
   for (const { tag, attrs } of byBackend.values()) {
     if (tag === 'input' && attrs.type === 'hidden') continue
@@ -941,10 +941,10 @@ function domHasActionable(byBackend: Map<number, DomInfo>): boolean {
 }
 
 /**
- * AX 树迟迟不建时的兜底：直接从 DOM 快照产可交互元素。
+ * AX 树长时间未建立时的回退：直接从 DOM 快照生成可交互元素。
  *
- * 语义降级——名称只能取 `aria-label` / `placeholder` / `name` 这类属性，拿不到
- * AX 计算出的可访问名。**不造假元素**：只收真实的可交互标签，隐藏 input 不收。
+ * 语义降级：名称只能取 `aria-label` / `placeholder` / `name` 等属性，无法取得
+ * AX 计算出的可访问名。**不生成虚假元素**：只收录真实的可交互标签，不收录隐藏 input。
  */
 function domCandidates(byBackend: Map<number, DomInfo>, frame: FrameScope): Candidate[] {
   const out: Candidate[] = []
@@ -982,17 +982,17 @@ function domCandidates(byBackend: Map<number, DomInfo>, frame: FrameScope): Cand
   return out
 }
 
-/** 候选去重、发编号。 */
+/** 候选去重并发放编号。 */
 function dedupeAndNumber(
   candidates: Candidate[],
   frame: FrameScope,
 ): { element: BrowserElement; ref: RefRecord }[] {
   /*
-   * 正文节点里与某个可操作元素同名的那些不进表。
+   * 与某个可操作元素同名的正文节点不列入表中。
    *
-   * 按钮的可访问名来自它内部的文本节点，两者在 AX 树里各占一行；都留下来的话，
-   * 一个五控件的表单会给出十几个编号，其中一半点了等于点另一半。
-   * 两趟判定而不是一趟：同名的可操作元素可能排在正文节点后面。
+   * 按钮的可访问名来自其内部的文本节点，两者在 AX 树中各占一行；全部保留时，
+   * 五个控件的表单会产生十几个编号，其中一半与另一半指向相同的操作。
+   * 判定分两遍执行：同名的可操作元素可能排在正文节点之后。
    */
   const actionableNames = new Set(
     candidates.filter((c) => c.actionable && c.element.name).map((c) => c.element.name),
@@ -1010,11 +1010,11 @@ function dedupeAndNumber(
 }
 
 /**
- * 给这一页要返回的 select 补一份当前选项摘要。
+ * 为本页要返回的 select 补充一份当前选项摘要。
  *
- * 只给实际返回的那些 select 采：没进这一页元素表的 select 采了也传不出去。
- * 合计上限用尽之后仍读一次总数（limit 取 0），让调用方知道要用 `optionsFor` 继续读
- * ——摘要缺席与「这个 select 没有选项」必须能分开。单个 select 读失败时整项不写，
+ * 只为实际返回的 select 采集：未列入本页元素表的 select 即使采集也无法返回。
+ * 合计上限用尽之后仍读取一次总数（limit 取 0），使调用方知道需要使用 `optionsFor` 继续读取；
+ * 摘要缺省与「该 select 没有选项」必须能够区分。单个 select 读取失败时不写该项，
  * 不写成空选项表。
  */
 async function attachOptions(
@@ -1044,10 +1044,10 @@ async function attachOptions(
 }
 
 /**
- * 给这一页要返回的 canvas 补上此刻的 CSS 像素尺寸，即指针动作 `point` 的取值范围。
+ * 为本页要返回的 canvas 补充当前的 CSS 像素尺寸，即指针动作 `point` 的取值范围。
  *
- * 只给 canvas：它的落点只能靠坐标区分，别的元素点中心就够。量不出（`display: none`）时
- * 整项不写，不写成 0。
+ * 只处理 canvas：它的落点只能按坐标区分，其他元素点击中心即可。无法测量（`display: none`）时
+ * 不写该项，不写成 0。
  */
 async function attachSizes(
   client: CdpClient,
@@ -1072,7 +1072,7 @@ async function attachSizes(
   }
 }
 
-/** 按引用记录解析出节点再读一段选项。`limit` 为 0 时只取总数。 */
+/** 按引用记录解析出节点后读取一段选项。`limit` 为 0 时只获取总数。 */
 async function readOptionsOf(
   client: CdpClient,
   entry: RefRecord,
@@ -1105,10 +1105,10 @@ async function readOptionsOf(
 }
 
 /**
- * 读一个 select 的一页选项。
+ * 读取一个 select 的一页选项。
  *
- * 按旧观察定位、实时读取：不采新观察、不发新编号、不滚动页面。选项在两次读取之间
- * 增删时页与页拼不成一份快照，调用方按 `total` 重读。
+ * 按旧观察定位、实时读取：不采集新观察、不发放新编号、不滚动页面。选项在两次读取之间
+ * 增删时各页无法拼合为一份快照，调用方按 `total` 重新读取。
  */
 export async function readSelectOptions(
   page: PageHandle,
@@ -1117,7 +1117,7 @@ export async function readSelectOptions(
   offset: number,
 ): Promise<BrowserOptionsPage> {
   await assertDoc(page, record)
-  // 深度读取与一次观察共用同一份预算，不让每个 select 各拿一份满额度。
+  // 深度读取与一次观察共用同一份预算，不为每个 select 各分配完整额度。
   const deadline = Date.now() + OBSERVE_BUDGET_MS
   const { entry } = await resolveRef(page, record, ref, deadline)
   const read = await readOptionsOf(
@@ -1166,20 +1166,20 @@ interface Inspection {
   y?: number
   width?: number
   height?: number
-  /** 指定的落点在元素此刻的矩形内。没指定落点时恒为真。 */
+  /** 指定的落点位于元素当前的矩形内。未指定落点时恒为真。 */
   inBox?: boolean
-  /** 落点在本文档视口内。跨站 iframe 还要逐层核父文档。 */
+  /** 落点位于本文档视口内。跨站 iframe 还须逐层核对父文档。 */
   inView?: boolean
   sameTree?: boolean
   hit?: string | null
-  /** 命中到的那个元素的名称摘要，取 `aria-label` 或可取得文本，有界。 */
+  /** 命中元素的名称摘要，取 `aria-label` 或可取得文本，有界。 */
   hitLabel?: string
   disabled?: boolean
-  /** 目标自己的名称摘要，取 `aria-label`、可取得文本或标签名，有界。动作回执的 `element` 取它。 */
+  /** 目标自身的名称摘要，取 `aria-label`、可取得文本或标签名，有界。动作回执的 `element` 取该值。 */
   label?: string
 }
 
-/** 一层帧的换算结果：点已经在父文档坐标系里，命中字段说的是这一层。 */
+/** 一层帧的换算结果：点已位于父文档坐标系中，命中字段描述的是该层。 */
 interface FramePoint {
   x: number
   y: number
@@ -1191,7 +1191,7 @@ interface FramePoint {
   hitLabel?: string
 }
 
-/** 名称、正文摘要、当前值任一包含查询串即命中，不分大小写。角色与标签不参与：它们不是页面上的字。 */
+/** 名称、正文摘要、当前值任一包含查询串即命中，不分大小写。角色与标签不参与匹配：它们不是页面上显示的文字。 */
 function matchesQuery(element: BrowserElement, query: string): boolean {
   const needle = query.trim().toLowerCase()
   if (!needle) return true
@@ -1201,24 +1201,24 @@ function matchesQuery(element: BrowserElement, query: string): boolean {
 }
 
 /**
- * 核对这次观察仍是当前文档。
+ * 核对本次观察对应的仍是当前文档。
  *
- * 每条动作路径的第一步都是它，**不放在 `resolveRef` 里**：不带 ref 的 press 与 scroll
- * 不解析节点，放在那里它们就带着一份跨文档的旧观察打到新页面上。
+ * 每条动作路径的第一步都调用它，**不放在 `resolveRef` 中**：不带 ref 的 press 与 scroll
+ * 不解析节点，放在该处时它们会按一份跨文档的旧观察作用于新页面。
  */
 async function assertDoc(page: PageHandle, record: ObservationRecord): Promise<void> {
   const doc = await readDocument(page)
   if (doc.token !== record.docToken) {
-    throw new BrowserStaleRefError('页面已经换过文档，这次观察的元素编号全部失效，请重新观察')
+    throw new BrowserStaleRefError('页面已更换文档，本次观察的元素编号全部失效，请重新观察')
   }
 }
 
 /**
- * 把一个 ref 解析成可操作的节点。
+ * 将一个 ref 解析为可操作的节点。
  *
- * 节点连接状态与身份指纹都过才算命中；任一不符按失效返回，要求重新观察。
- * **不做「按名字再找一个」的重定位**——那会把点击落在另一个同名按钮上。
- * 文档令牌由调用方先过 `assertDoc`。
+ * 节点连接状态与身份指纹均通过才算命中；任一不符按失效返回，要求重新观察。
+ * **不做「按名称再查找一个」的重新定位**：那会使点击作用于另一个同名按钮。
+ * 文档令牌由调用方先经 `assertDoc` 核对。
  */
 async function resolveRef(
   page: PageHandle,
@@ -1230,7 +1230,7 @@ async function resolveRef(
 ): Promise<{ entry: RefRecord; objectId: string; inspect: Inspection }> {
   const { client } = page
   const entry = record.refs.get(ref)
-  if (!entry) throw new BrowserStaleRefError(`这次观察里没有元素 ${ref}，请重新观察`)
+  if (!entry) throw new BrowserStaleRefError(`本次观察中没有元素 ${ref}，请重新观察`)
   if (!entry.actionable && !pointer) {
     throw new CdpError(`元素 ${ref} 是正文，不支持控件操作；可使用指针动作点击文字`)
   }
@@ -1251,11 +1251,11 @@ async function resolveRef(
 }
 
 /**
- * 页内复核一次：矩形、可视区、命中点与身份指纹都取此刻的值。给了 `point` 时量那一点，
- * 否则量中心。
+ * 页内复核一次：矩形、可视区、命中点与身份指纹均取当前值。指定 `point` 时测量该点，
+ * 否则测量中心。
  *
- * 页内抛异常时 `returnByValue` 下的 `result.value` 是 `undefined`，**必须在这里结掉**：
- * 直接返回的话，下一步解引用它会以一句内部异常原文结束，而那句话对调用方没有下一步。
+ * 页内抛出异常时 `returnByValue` 下的 `result.value` 是 `undefined`，**必须在此处处理**：
+ * 直接返回时，下一步解引用它会以一句内部异常原文结束，而该原文不能指导调用方的下一步操作。
  */
 async function inspectNode(
   client: CdpClient,
@@ -1285,27 +1285,27 @@ async function inspectNode(
   return view
 }
 
-/** 节点还是不是原来那一个。`when` 说明这次复核发生在哪一步。 */
+/** 核对节点是否仍是原节点。`when` 说明本次复核发生在哪一步。 */
 function assertSameNode(ref: string, entry: RefRecord, inspect: Inspection, when: string): void {
   if (!inspect.connected) {
     throw new BrowserStaleRefError(`元素 ${ref} ${when}已从文档中移除，请重新观察`)
   }
   if (inspect.identity !== entry.identity) {
-    throw new BrowserStaleRefError(`元素 ${ref} ${when}指向的已经是另一个节点，请重新观察`)
+    throw new BrowserStaleRefError(`元素 ${ref} ${when}已指向另一个节点，请重新观察`)
   }
 }
 
 /**
- * 坐标动作的准备：核身份 → 按需滚入可视区 → 重新量取矩形与整条帧链 → 在实际输入
- * 坐标系里复核命中 → 交给调用方发事件。
+ * 坐标动作的准备：核对身份 → 按需滚入可视区 → 重新测量矩形与整条帧链 → 在实际输入
+ * 坐标系中复核命中 → 交给调用方发送事件。
  *
- * **坐标一律现取**，不用观察时记下的帧偏移：父页滚过之后那份偏移指的是另一个位置。
- * 查不到父帧的 owner 或盒子就判定位失败，不补零——补零会把事件发到页面左上角。
- * 滚动只发一次并重量一次，布局持续变化时按准备预算退出。
+ * **坐标一律实时获取**，不使用观察时记录的帧偏移：父页滚动之后该偏移指向另一个位置。
+ * 未找到父帧的 owner 或盒模型时判定定位失败，不补零：补零会将事件发送到页面左上角。
+ * 滚动只发送一次并重新测量一次，布局持续变化时按准备预算退出。
  *
- * `scroll` 为假只重新量取，不动页面（观察与读选项按它调用）；`hit` 为假不做
- * 可命中裁决，只要坐标（滚动到元素上这类动作按落点发事件即可）。`deadline` 缺省时
- * 自带一份准备预算，多事件动作传自己的绝对期限进来，不另起一份时钟。`point` 是元素内的
+ * `scroll` 为假时只重新测量，不改变页面（观察与读取选项以此方式调用）；`hit` 为假时不做
+ * 可命中裁决，只返回坐标（滚动到元素上等动作按落点发送事件即可）。`deadline` 缺省时
+ * 使用一份独立的准备预算，多事件动作传入自身的绝对期限，不另设计时。`point` 是元素内的
  * 落点，缺省取中心。
  */
 async function prepareAction(
@@ -1342,19 +1342,19 @@ async function prepareAction(
   return { entry, objectId, inspect: view, ...points }
 }
 
-/** 落点不在元素此刻的矩形里。给出此刻的尺寸，调用方据此换一个点。 */
+/** 落点不在元素当前的矩形内。返回当前尺寸，调用方据此改用其他落点。 */
 function outsideBox(ref: string, point: BrowserPoint, view: Inspection): CdpError {
   const w = Math.round(view.width ?? 0)
   const h = Math.round(view.height ?? 0)
   return new CdpError(
-    `元素 ${ref} 上的点 (${point.x}, ${point.y}) 超出元素范围，它此刻宽 ${w}、高 ${h}`,
+    `元素 ${ref} 上的点 (${point.x}, ${point.y}) 超出元素范围，元素当前宽 ${w}、高 ${h}`,
   )
 }
 
 /**
- * 需要时把元素滚进可视区，返回是否真的发了滚动命令。
+ * 需要时将元素滚入可视区，返回是否实际发送了滚动命令。
  *
- * 跨站 iframe 里的元素一律滚一次：帧内可见不代表这个帧在父页的可视区内。
+ * 跨站 iframe 中的元素一律滚动一次：帧内可见不代表该帧位于父页的可视区内。
  * 通过 CDP 滚动原节点及父页，文本节点和元素共用这一条路径。
  */
 async function scrollIntoView(
@@ -1374,11 +1374,11 @@ async function scrollIntoView(
 }
 
 /**
- * 同一次定位产出目标会话的输入坐标与顶层页面的回执坐标。
+ * 同一次定位同时生成目标会话的输入坐标与顶层页面的回执坐标。
  *
- * 主文档的点不用换算。有帧的逐层向上：同进程帧的一跳按登记的 iframe 节点在同一个会话里
- * 现取盒子，跨站帧的一跳跨会话找承载它的文档。每换算一层就在那一层复核命中，
- * 父层遮罩因此拦得住。任一层查不到就抛失效，不继续用一个半成品坐标。
+ * 主文档的点无需换算。位于帧中的点逐层向上换算：同进程帧的一层按登记的 iframe 节点在同一个会话中
+ * 实时获取盒模型，跨站帧的一层跨会话查找承载它的文档。每换算一层即在该层复核命中，
+ * 因此能够拦截父层遮罩。任一层未找到即抛出失效，不继续使用未换算完成的坐标。
  */
 async function pointerPoints(
   page: PageHandle,
@@ -1391,7 +1391,7 @@ async function pointerPoints(
   let point: Point = { x: view.x ?? 0, y: view.y ?? 0 }
   for (const owner of entry.owners ?? []) {
     if (leftMs(deadline) <= 0) {
-      throw new BrowserAmbiguousRefError(`元素 ${ref} 的坐标没能在动作期限内量定，请重新观察`)
+      throw new BrowserAmbiguousRefError(`元素 ${ref} 的坐标未能在动作期限内确定，请重新观察`)
     }
     const mapped = await ownerHop(page.client, entry.sessionId, owner, point, ref, deadline)
     if (requireHit) assertHittable(`元素 ${ref} 所在的 iframe`, mapped)
@@ -1422,7 +1422,7 @@ async function toPagePoint(
       throw new BrowserStaleRefError(`元素 ${ref} 的帧层数超过上限，无法定位，请重新观察`)
     }
     if (leftMs(deadline) <= 0) {
-      throw new BrowserAmbiguousRefError(`元素 ${ref} 的坐标没能在动作期限内量定，请重新观察`)
+      throw new BrowserAmbiguousRefError(`元素 ${ref} 的坐标未能在动作期限内确定，请重新观察`)
     }
     const hop = await frameHop(page, frame, point, ref, deadline)
     if (requireHit) assertHittable(`元素 ${ref} 所在的 iframe`, hop.mapped)
@@ -1433,9 +1433,9 @@ async function toPagePoint(
 }
 
 /**
- * 走一层同进程帧：承载它的 iframe 元素与它在同一个会话里，按登记的节点号取回来换算。
+ * 换算一层同进程帧：承载它的 iframe 元素与它位于同一个会话中，按登记的节点号取回后换算。
  *
- * 节点已经不在时判定位失败，不补零——补零会把事件发到文档左上角。
+ * 节点已不存在时判定定位失败，不补零：补零会将事件发送到文档左上角。
  */
 async function ownerHop(
   client: CdpClient,
@@ -1470,10 +1470,10 @@ async function ownerHop(
 }
 
 /**
- * 走一层跨站帧：找到承载这一帧的文档，把点换算过去。
+ * 换算一层跨站帧：找到承载该帧的文档，将点换算到该文档。
  *
- * 父文档按试探定位：`DOM.getFrameOwner` 只在这一帧的父会话里答得出来，页会话先试，
- * 不中再试其余子会话——嵌套的跨站 iframe 的父文档也是一个子会话。
+ * 父文档按试探定位：`DOM.getFrameOwner` 只在该帧的父会话中能够应答，先尝试页会话，
+ * 未命中再尝试其余子会话：嵌套的跨站 iframe 的父文档也是一个子会话。
  */
 async function frameHop(
   page: PageHandle,
@@ -1524,31 +1524,31 @@ async function frameHop(
 }
 
 /**
- * 命中裁决。视口外、零尺寸、被遮各自成句，不一律叫被遮——三者的下一步不一样。
+ * 命中裁决。视口外、零尺寸、被遮挡分别说明，不一律报告为被遮挡：三者的后续操作不同。
  *
- * 在动作准备的最后一步调用：滚动已经做过，这时仍命中别的元素才是遮挡。
+ * 在动作准备的最后一步调用：滚动已经完成，此时仍命中其他元素才属于遮挡。
  */
 function assertHittable(subject: string, view: Inspection | FramePoint): void {
   if (view.width === 0 || view.height === 0) {
-    throw new BrowserAmbiguousRefError(`${subject} 当前尺寸为 0，无法在它上面发事件，请重新观察`)
+    throw new BrowserAmbiguousRefError(`${subject} 当前尺寸为 0，无法在其上发送事件，请重新观察`)
   }
   if (view.inView !== true) {
     throw new BrowserAmbiguousRefError(`${subject} 滚动后仍在可视区外，请重新观察`)
   }
   if (view.sameTree !== true) {
     const hit = view.hit ? `${view.hit}${view.hitLabel ? `（${view.hitLabel}）` : ''}` : '空白'
-    throw new BrowserAmbiguousRefError(`${subject} 的命中点落在 ${hit} 上，请重新观察`)
+    throw new BrowserAmbiguousRefError(`${subject} 的命中点位于 ${hit} 上，请重新观察`)
   }
 }
 
 /**
- * 在已观察的元素上做一次有限动作，返回动作回执。
+ * 在已观察的元素上执行一次有限动作，返回动作回执。
  *
- * 动作之后的观察由协调器补，这里不采。
+ * 动作之后的观察由协调器补充，此处不采集。
  *
- * **发出第一个事件之前的失败一律抛错**：参数不合、引用失效、命中不成立都属于没有动过
- * 页面。已经发出事件之后不再抛错，改为在回执的 `execution` 里如实给出已确认的单元数
- * ——那时页面可能已经变了，抛异常会让调用方按「没执行」重放。
+ * **发出第一个事件之前的失败一律抛出错误**：参数不合法、引用失效、命中不成立均属于尚未改变
+ * 页面。已经发出事件之后不再抛出错误，改为在回执的 `execution` 中如实给出已确认的单元数：
+ * 此时页面可能已经变化，抛出异常会使调用方按「未执行」重放。
  */
 export async function actOnPage(
   page: PageHandle,
@@ -1573,7 +1573,7 @@ export async function actOnPage(
         hit: true,
         ...(input.point ? { point: input.point } : {}),
       })
-      // 只移动，不按下。悬停层什么时候出现由页面决定，动作之后的观察采到什么就是什么。
+      // 只移动，不按下。悬停层的出现时机由页面决定，动作之后的观察如实反映采集到的内容。
       await aimAt(client, entry.sessionId, inputPoint, 0)
       return { element: inspect.label ?? ref, point }
     }
@@ -1615,9 +1615,9 @@ export async function actOnPage(
 }
 
 /**
- * 滚轮。给了 ref 时在元素的落点上滚，否则在页面左上角附近滚；两个方向都没给时向下 400。
+ * 滚轮。指定 ref 时在元素的落点上滚动，否则在页面左上角附近滚动；两个方向都未指定时向下 400。
  *
- * 落点不做可命中裁决：滚轮事件打在被遮住的位置上一样滚得动。
+ * 落点不做可命中裁决：滚轮事件作用于被遮挡的位置时同样能够滚动。
  */
 async function scrollOnPage(
   page: PageHandle,
@@ -1645,10 +1645,10 @@ async function scrollOnPage(
 }
 
 /**
- * 选不中时的失败说明。
+ * 无法选中时的失败说明。
  *
- * 带总数与有界样例，并给出继续读取的出口；**不回完整选项表**，长列表会把整份工具
- * 输出撑掉。
+ * 带总数与有界样例，并给出继续读取的方式；**不返回完整选项表**，长列表会占满整份工具
+ * 输出。
  */
 function selectFailure(
   ref: string,
@@ -1658,9 +1658,9 @@ function selectFailure(
   if (value.reason === 'no_option') {
     const sample = (value.sample ?? []).join('、')
     return new CdpError(
-      `没有这个选项：${wanted}（共 ${value.total ?? 0} 项` +
+      `不存在该选项：${wanted}（共 ${value.total ?? 0} 项` +
         (sample ? `，前几项：${sample}` : '') +
-        `；用 optionsFor 按 ${ref} 读取全部选项）`,
+        `；使用 optionsFor 按 ${ref} 读取全部选项）`,
     )
   }
   if (value.reason === 'option_disabled') {
@@ -1670,11 +1670,11 @@ function selectFailure(
 }
 
 /**
- * 按一段按键计划。给了 ref 时先把焦点放到它上面，按键发到它所在的会话；否则发到页会话，
- * 落在文档此刻的焦点上，不涉及系统前台窗口。
+ * 执行一段按键计划。指定 ref 时先将焦点移到该元素，按键发送到其所在的会话；否则发送到页会话，
+ * 作用于文档当前的焦点，不涉及系统前台窗口。
  *
- * 阶段之间核一次文档令牌：换了文档就停，计划的其余部分不落到新页面上。焦点不核——
- * Tab 这类按键本来就会移动焦点。成功、失败、取消都走同一条收尾。
+ * 阶段之间核对一次文档令牌：文档更换即停止，计划的其余部分不作用于新页面。不核对焦点：
+ * Tab 等按键本身会移动焦点。成功、失败、取消都经由同一条收尾路径。
  */
 async function pressOnPage(
   page: PageHandle,
@@ -1706,7 +1706,7 @@ async function pressOnPage(
   return { ...(element === undefined ? {} : { element }), execution: run.receipt() }
 }
 
-/** 这份观察的文档还是不是当前文档。换了、或读不到时返回停止原因。 */
+/** 核对本次观察的文档是否仍是当前文档。已更换或无法读取时返回停止原因。 */
 async function documentMoved(
   page: PageHandle,
   record: ObservationRecord,
@@ -1715,11 +1715,11 @@ async function documentMoved(
   const doc = await readDocument(page, within(deadline, PREPARE_TIMEOUT_MS).timeoutMs).catch(
     () => null,
   )
-  if (!doc) return '读不到当前文档'
-  return doc.token === record.docToken ? null : '页面已经换过文档'
+  if (!doc) return '无法读取当前文档'
+  return doc.token === record.docToken ? null : '页面已更换文档'
 }
 
-/** 指针动作期间按着的键。与预检同一张表，发第一个事件之前判。 */
+/** 指针动作期间按住的键。与预检使用同一张表，在发送第一个事件之前判定。 */
 function heldKeysOf(keys: string[] | undefined): string[] {
   const held = keys ?? []
   const problem = checkHeldKeys(held, 'keys')
@@ -1731,8 +1731,8 @@ function heldKeysOf(keys: string[] | undefined): string[] {
 type PointerOptions = { point?: BrowserPoint; keys?: string[]; holdMs?: number }
 
 /**
- * 单次点击，可按住一段时间、可同时按着键。右键只换 `button`，定位、滚动与命中说明与左键
- * 同一套。按下与抬起各是一个单元；按住期间被停下时由收尾补 `mouseReleased`。
+ * 单次点击，可按住一段时间，可同时按住键。右键只更换 `button`，定位、滚动与命中说明与左键
+ * 相同。按下与抬起各为一个单元；按住期间被停止时由收尾补发 `mouseReleased`。
  */
 async function clickOnPage(
   page: PageHandle,
@@ -1783,9 +1783,9 @@ async function clickOnPage(
 }
 
 /**
- * 双击：两轮按下抬起，`clickCount` 依次 1 与 2。
+ * 双击：两轮按下与抬起，`clickCount` 依次为 1 与 2。
  *
- * 第二轮的 `clickCount: 2` 是浏览器判定 `dblclick` 的依据，两轮都发 `clickCount: 1`
+ * 第二轮的 `clickCount: 2` 是浏览器判定 `dblclick` 的依据，两轮都发送 `clickCount: 1`
  * 得到的是两次单击。
  */
 async function doubleClickOnPage(
@@ -1841,15 +1841,15 @@ async function doubleClickOnPage(
   return { element: inspect.label ?? ref, point, execution: run.receipt() }
 }
 
-/** `type` 的一个单元：产生一个字符要按下的键，或一个走文本插入的码点。 */
+/** `type` 的一个单元：产生一个字符需要按下的键，或一个经由文本插入的码点。 */
 type TypeUnit = { keys: string[] } | { text: string }
 
 /**
- * 归一并切成可发的单元。
+ * 归一化并切分为可发送的单元。
  *
- * 整段检完才发第一个事件：发到一半再发现超长的话，前半段已经进了页面，而输入事件
- * 撤不回来。CRLF 与单独的 CR 归一为换行，换行按 Enter 发——单行控件可能因此提交。
- * 布局表里的字符走按键，其余码点走 `Input.insertText`：不给中文造虚拟键码，
+ * 整段检查完成后才发送第一个事件：发送到一半时才发现超长，前半段已经输入页面，而输入事件
+ * 无法撤回。CRLF 与单独的 CR 归一化为换行，换行按 Enter 发送，单行控件可能因此提交。
+ * 布局表中的字符使用按键，其余码点使用 `Input.insertText`：不为中文生成虚拟键码，
  * 也不承诺 IME composition 与完整的 keydown/keyup 链。
  */
 function planType(text: string): TypeUnit[] {
@@ -1872,12 +1872,12 @@ function planType(text: string): TypeUnit[] {
     units.push(keys ? { keys } : { text: ch })
   }
   if (units.length > MAX_TYPE_UNITS) {
-    throw new CdpError(`一次最多输入 ${MAX_TYPE_UNITS} 个字符，这次给了 ${units.length} 个`)
+    throw new CdpError(`一次最多输入 ${MAX_TYPE_UNITS} 个字符，本次为 ${units.length} 个`)
   }
   return units
 }
 
-/** 目标还在、还是同一个、焦点还在它身上。任一项不成立即停止输入。 */
+/** 目标仍存在、身份未变、焦点仍在该目标上。任一项不成立即停止输入。 */
 async function onTypingTarget(
   client: CdpClient,
   entry: RefRecord,
@@ -1897,11 +1897,11 @@ async function onTypingTarget(
 }
 
 /**
- * 逐字输入：聚焦目标后在当前选区输入，**不全选也不清空**，覆盖输入是 `fill` 的事。
+ * 逐字输入：聚焦目标后在当前选区输入，**不全选也不清空**，覆盖输入由 `fill` 负责。
  *
- * 每个码点发送前复核目标，节点被替换、移除或焦点转移时立刻停止，不继续发往另一个控件。
- * 默认不加人为延时：需要等异步候选层的应用分段 type 之后自己 wait。按键与 `press` 走
- * 同一个 `Keyboard`：一个码点是一次按下集合再全部抬起。
+ * 每个码点发送前复核目标，节点被替换、移除或焦点转移时立即停止，不继续发往另一个控件。
+ * 默认不加人为延时：需要等待异步候选层的应用应分段 type，并在每段之后自行 wait。按键与 `press` 使用
+ * 同一个 `Keyboard`：一个码点对应一次按下集合，随后全部抬起。
  */
 async function typeOnPage(
   page: PageHandle,
@@ -1928,7 +1928,7 @@ async function typeOnPage(
       }
       const sent = await run.run(client, async () => {
         if ('text' in unit) {
-          // 文本插入发到元素自己的会话：焦点由该帧的渲染进程持有，发到顶层会落在别处。
+          // 文本插入发送到元素所在的会话：焦点由该帧的渲染进程持有，发送到顶层会作用于其他位置。
           await client.send(
             'Input.insertText',
             { text: unit.text },
@@ -1949,25 +1949,25 @@ async function typeOnPage(
   return { element: inspect.label ?? ref, execution: run.receipt() }
 }
 
-/** `FILL_FN` 的回包。`ok` 为假时 `reason` 决定给调用方哪一句说明。 */
+/** `FILL_FN` 的返回值。`ok` 为假时 `reason` 决定返回给调用方的说明。 */
 interface FillOutcome {
   ok: boolean
   reason?: string
   type?: string
-  /** 实际读回的值，或预检规范化之后的值。 */
+  /** 实际回读的值，或预检规范化之后的值。 */
   value?: string
-  /** 预检认可的值。回读与它不一致即页面把这次写入改掉了。 */
+  /** 预检认可的值。回读值与它不一致表示页面修改了本次写入。 */
   wanted?: string
   normalized?: boolean
-  /** 控件上写着的 `min` / `max` / `step`，只在约束不满足时给。 */
+  /** 控件上设置的 `min` / `max` / `step`，只在约束不满足时提供。 */
   limits?: { min?: string; max?: string; step?: string }
 }
 
 /**
- * 覆盖输入。预检不通过时原值一个字都没动，回读不一致时如实说页面已经改过。
+ * 覆盖输入。预检不通过时原值保持不变，回读不一致时如实说明页面已修改该值。
  *
- * 不发键盘事件：受控组件要的是 `input` / `change`，而日期、颜色这类控件没有可逐字
- * 输入的键序列。逐字交互走 `type`。
+ * 不发送键盘事件：受控组件需要的是 `input` / `change`，而日期、颜色等控件没有可逐字
+ * 输入的键序列。逐字交互使用 `type`。
  */
 async function fillOnPage(
   page: PageHandle,
@@ -1989,8 +1989,8 @@ async function fillOnPage(
   )
   const outcome = r.result.value
   if (!outcome.ok) throw fillFailure(ref, text, outcome)
-  // 回执带写入后的实际值与它是否经过规范化：日期截秒、时间补零这类改写在页面上看得见，
-  // 不给出来的话，调用方只能再观察一次才知道控件里现在是什么。
+  // 回执带写入后的实际值及其是否经过规范化：日期截秒、时间补零等改写在页面上可见，
+  // 若不返回，调用方只能再观察一次才能得知控件的当前值。
   return {
     element: inspect.label ?? ref,
     ...(outcome.value === undefined ? {} : { value: outcome.value }),
@@ -1998,52 +1998,52 @@ async function fillOnPage(
   }
 }
 
-/** 写入失败的说明。格式不合、超出取值范围、约束不满足、页面不接受各自成句，下一步不一样。 */
+/** 写入失败的说明。格式不合法、超出取值范围、约束不满足、页面不接受分别说明，后续操作各不相同。 */
 function fillFailure(ref: string, wanted: string, outcome: FillOutcome): CdpError {
   const type = outcome.type ?? ''
   switch (outcome.reason) {
     case 'disabled':
-      return new CdpError(`元素 ${ref} 当前不可用，没有写入`)
+      return new CdpError(`元素 ${ref} 当前不可用，未写入`)
     case 'readonly':
-      return new CdpError(`元素 ${ref} 是只读的，没有写入`)
+      return new CdpError(`元素 ${ref} 为只读，未写入`)
     case 'not_fillable':
       return new CdpError(`元素 ${ref} 不是可输入的控件`)
     case 'no_empty':
-      return new CdpError(`${type} 类型没有空值，清不掉；给一个合法值`)
+      return new CdpError(`${type} 类型没有空值，无法清空；请提供合法值`)
     case 'bad_type':
-      return new CdpError(`认不出的输入类型 ${type}`)
+      return new CdpError(`无法识别的输入类型 ${type}`)
     case 'bad_format':
-      return new CdpError(`${wanted} 不是 ${type} 类型接受的格式，原值没有改动`)
+      return new CdpError(`${wanted} 不是 ${type} 类型接受的格式，原值未改动`)
     case 'clamped':
       return new CdpError(
-        `${wanted} 超出 ${type} 的取值范围，能写入的是 ${outcome.value ?? ''}，原值没有改动`,
+        `${wanted} 超出 ${type} 的取值范围，可写入的值为 ${outcome.value ?? ''}，原值未改动`,
       )
     case 'constraint':
-      // 报控件上写着的限制，不报「能接受的是」：number 不钳制，那一栏会与被拒的值同数。
+      // 报告控件上设置的限制，不报告「可写入的值」：number 不钳制，该值会与被拒绝的值相同。
       return new CdpError(
-        `${wanted} 不满足 ${type} 的约束${limitsText(outcome.limits)}，原值没有改动`,
+        `${wanted} 不满足 ${type} 的约束${limitsText(outcome.limits)}，原值未改动`,
       )
     case 'rejected':
       return new CdpError(
-        `写入已经发到页面上，但值随即变成了 ${outcome.value ?? ''}（写的是 ${outcome.wanted ?? wanted}），这次输入没有被接受`,
+        `写入已发送到页面，但值随即变为 ${outcome.value ?? ''}（写入的是 ${outcome.wanted ?? wanted}），本次输入未被接受`,
       )
     default:
       return new CdpError(`元素 ${ref} 写入失败`)
   }
 }
 
-/** 控件上写着的限制。一项都没有时给空串，不写一对空括号。 */
+/** 控件上设置的限制。没有任何一项时返回空串，不写空括号。 */
 function limitsText(limits: FillOutcome['limits']): string {
   const parts = Object.entries(limits ?? {}).map(([name, value]) => `${name}=${value}`)
   return parts.length === 0 ? '' : `（${parts.join('、')}）`
 }
 
 /**
- * 按下状态里量取一段的终点。
+ * 在按下状态中测量一段的终点。
  *
- * 终点仍在可视区外时在按下状态内有界推进滚动并重新量取；跨文档、节点丢失、落点超出
- * 元素或坐标量不定就返回 `null`，由调用方收尾。**不反复回头滚起点**：它已经按下，
- * 再滚它只会把按下的位置甩开。
+ * 终点仍在可视区外时在按下状态内有界推进滚动并重新测量；跨文档、节点丢失、落点超出
+ * 元素或坐标无法确定时返回 `null`，由调用方收尾。**不反复滚动起点**：起点已经按下，
+ * 再滚动它只会使按下的位置偏离。
  */
 async function dragTarget(
   page: PageHandle,
@@ -2086,10 +2086,10 @@ async function dragTarget(
  * 拖动：在起点按下，沿路径逐段移动，在最后一段的终点抬起。起点与各段终点都取自同一份
  * 观察，同一个元素上的两个不同点可以互为起终点。
  *
- * 先只读核全部端点，再完成必要滚动，最后在同一个坐标系里重新量取并复核起点可命中——
- * **不得用第一次滚动前的起点坐标**，后一次滚动会让它指向另一个位置。按下之后每条移动
- * 带 `buttons: 1`，最后 `mouseReleased` 清为 0。一段是一个单元：段内按时长约每帧移动一次，
- * 时长为 0 时只发中点与终点。
+ * 先以只读方式核对全部端点，再完成必要滚动，最后在同一个坐标系中重新测量并复核起点可命中：
+ * **不得使用第一次滚动前的起点坐标**，后一次滚动会使它指向另一个位置。按下之后每条移动
+ * 带 `buttons: 1`，最后 `mouseReleased` 清为 0。每段为一个单元：段内按时长约每帧移动一次，
+ * 时长为 0 时只发送中点与终点。
  *
  * 只承诺指针事件驱动的拖动，不承诺 HTML5 DataTransfer 原生拖放链。
  */
@@ -2106,12 +2106,12 @@ async function dragOnPage(
   const { client } = page
   const run = new Execution()
   const deadline = run.deadline
-  // 先只读核全部端点：任一端已经不在了就不必滚动页面，更不该按下鼠标。
+  // 先以只读方式核对全部端点：任一端点已不存在时无需滚动页面，更不应按下鼠标。
   await resolveRef(page, record, ref, deadline, opts.point, true)
   const ends: { entry: RefRecord; objectId: string; inspect: Inspection }[] = []
   for (const step of path)
     ends.push(await resolveRef(page, record, step.ref, deadline, step.point, true))
-  // 先滚第一段的终点、后量起点：滚终点会把起点带到别的位置，先量到的那一份从此不成立。
+  // 先滚动第一段的终点，再测量起点：滚动终点会使起点移到其他位置，先测得的起点坐标随之失效。
   const first = ends[0]
   if (first) await scrollIntoView(client, first.entry, first.objectId, first.inspect, deadline)
   const start = await prepareAction(page, record, ref, {
@@ -2120,7 +2120,7 @@ async function dragOnPage(
     deadline,
     ...(opts.point ? { point: opts.point } : {}),
   })
-  // 一段按下到抬起属于同一输入会话，取消时也由该会话释放。
+  // 从按下到抬起属于同一输入会话，取消时也由该会话释放。
   const { sessionId } = start.entry
   let origin = { x: start.point.x - start.inputPoint.x, y: start.point.y - start.inputPoint.y }
   const localPoint = (point: Point): Point => ({ x: point.x - origin.x, y: point.y - origin.y })
@@ -2156,7 +2156,7 @@ async function dragOnPage(
       const end = ends[i]
       const to = end ? await dragTarget(page, end, step.ref, run, step.point) : null
       if (!to) {
-        run.stop(`第 ${i + 1} 段的终点 ${step.ref} 已经量不到`)
+        run.stop(`第 ${i + 1} 段的终点 ${step.ref} 已无法测量`)
         return false
       }
       // 终点的滚动可能移动起点所在 iframe；每段都重算输入会话原点，不缓存观察时的偏移。
@@ -2169,7 +2169,7 @@ async function dragOnPage(
         false,
       ).catch(() => null)
       if (!currentOrigin) {
-        run.stop('拖动所在的 iframe 已经量不到')
+        run.stop('拖动所在的 iframe 已无法测量')
         return false
       }
       origin = currentOrigin
@@ -2194,7 +2194,7 @@ async function dragOnPage(
   return { element: start.inspect.label ?? ref, point: start.point, execution: run.receipt() }
 }
 
-/** 等主文档里一个选择器达到指定状态。页内等待器只观察并返回，不点击、不提交。 */
+/** 等待主文档中的一个选择器达到指定状态。页内等待器只观察并返回，不点击、不提交。 */
 export async function waitOnPage(
   page: PageHandle,
   spec: { selector: string; state: BrowserWaitState; expected?: string },
@@ -2216,7 +2216,7 @@ export async function waitOnPage(
   }
 }
 
-/** 把本机文件交给一个文件输入元素。路径必须已经过工作区裁决。 */
+/** 将本机文件交给一个文件输入元素。路径必须已经过工作区裁决。 */
 export async function uploadToPage(
   page: PageHandle,
   record: ObservationRecord,
@@ -2234,10 +2234,10 @@ export async function uploadToPage(
 }
 
 /**
- * 点一个元素触发下载。
+ * 点击一个元素触发下载。
  *
- * **只用 Input 事件触发**：无用户手势的第 2 次下载会撞上 WebView2 的「下载多个文件」
- * 权限提示，提示先于下载钩子、钩子收不到事件，而 Tauri 与 wry 都不暴露这个事件。
+ * **只使用 Input 事件触发**：无用户手势的第 2 次下载会触发 WebView2 的「下载多个文件」
+ * 权限提示，该提示先于下载钩子出现，钩子无法收到事件，而 Tauri 与 wry 都不暴露该事件。
  * 不要改成 `location.href` 跳转或 `a.click()`。
  */
 export async function clickForDownload(
@@ -2246,11 +2246,11 @@ export async function clickForDownload(
   ref: string,
 ): Promise<BrowserActReceipt> {
   await assertDoc(page, record)
-  // 与普通点击同一条路径：定位、滚动、命中说明与收尾都一致，两处不给两套解释。
+  // 与普通点击使用同一条路径：定位、滚动、命中说明与收尾均一致，两处不产生两套说明。
   const receipt = await clickOnPage(page, record, ref, {}, 'left')
   const execution = receipt.execution
   if (execution && execution.state !== 'completed') {
-    throw new CdpError(`触发下载的点击没有做完：${execution.reason ?? execution.state}`)
+    throw new CdpError(`触发下载的点击未完成：${execution.reason ?? execution.state}`)
   }
   return receipt
 }

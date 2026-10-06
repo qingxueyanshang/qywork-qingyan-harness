@@ -1,22 +1,22 @@
 /**
- * 宿主能力实现 —— 插件通过 RPC 能做的全部事情。
+ * 宿主能力实现：插件通过 RPC 可执行的全部操作。
  *
- * 插件进程本身没有 `fs`、没有 `net`、没有 `child_process`（见 `plugins/host.ts`），
- * 它想干任何事都得从这里过。所以这个文件同时是**功能面**和**攻击面**：
- * 每加一个方法，就是给不受信任的第三方代码开一扇窗。
+ * 插件进程本身没有 `fs`、`net` 与 `child_process`（见 `plugins/host.ts`），
+ * 任何操作都必须经由此处。因此本文件同时是功能面与攻击面：
+ * 每增加一个方法，就为不受信任的第三方代码增加一个入口。
  *
- * 三层闸门，缺一不可：
+ * 三层检查，缺一不可：
  *
- * 1. **权限**（`plugins/loader.ts` → `checkPermission`）——manifest 没声明就进不来。
- * 2. **边界**（这里）——声明了 `workspace:read` 不等于能读 `../../.ssh/id_rsa`；
- *    声明了 `network` 不等于能打 `http://169.254.169.254/`。
- * 3. **配额**（这里）——不限量的读文件和不限量的命令输出都能把宿主撑爆，
- *    而插件不需要写恶意代码就能做到，一个 bug 就够了。
+ * 1. 权限（`plugins/loader.ts` → `checkPermission`）：manifest 未声明即拒绝。
+ * 2. 边界（本文件）：声明 `workspace:read` 不等于能读取 `../../.ssh/id_rsa`；
+ *    声明 `network` 不等于能访问 `http://169.254.169.254/`。
+ * 3. 配额（本文件）：不限量的文件读取与命令输出都能耗尽宿主资源，
+ *    插件无需恶意代码，一个缺陷即可触发。
  *
- * **一条容易漏的：exec 的环境变量。** `run_command` 内置工具是把 `process.env` 整个透传给子进程的
- * ——那是用户自己的命令，本来就该看到自己的环境。**插件的 exec 绝不能这样**：宿主费劲把插件进程的
- * env 洗干净（不给 API Key、不给令牌），如果它转手能 `exec.run` 一句 `echo $ANTHROPIC_API_KEY`，那
- * 道清洗就等于没做。
+ * 容易遗漏的一项是 exec 的环境变量。`run_command` 内置工具把 `process.env` 完整透传给子进程：
+ * 那是用户自己的命令，应当看到自身的环境。插件的 exec 不能这样做：宿主专门清理了插件进程的
+ * env（不提供 API Key 与令牌），若插件能经由 `exec.run` 执行 `echo $ANTHROPIC_API_KEY`，
+ * 这层清理即失效。
  */
 
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -33,15 +33,15 @@ import {
   spawnGuarded,
 } from '@qywork/tools'
 
-/** 单次 fs.read 的上限。插件不该用它读大文件——那是 read_resource 的事。 */
+/** 单次 fs.read 的上限。插件不应用它读取大文件，大文件由 read_resource 处理。 */
 const MAX_READ_BYTES = 4 * 1024 * 1024
 /** 单次 fs.write 的上限。 */
 const MAX_WRITE_BYTES = 8 * 1024 * 1024
-/** exec 的输出上限，stdout / stderr 各算各的。 */
+/** exec 的输出上限，stdout 与 stderr 分别计算。 */
 const MAX_EXEC_OUTPUT = 512 * 1024
 const DEFAULT_EXEC_TIMEOUT_MS = 30_000
 const MAX_EXEC_TIMEOUT_MS = 300_000
-/** 单个插件的私有存储上限。KV 不是数据库，超了说明用错了。 */
+/** 单个插件的私有存储上限。KV 不是数据库，超出上限说明用法有误。 */
 const MAX_STORAGE_BYTES = 2 * 1024 * 1024
 /** fs.list 单次返回的条目上限。 */
 const MAX_LIST_ENTRIES = 2000
@@ -52,7 +52,7 @@ export interface CapabilityOptions {
   workspaceRoot: string
   /** 插件私有存储根。默认 `<workspaceRoot>/.qy/plugin-data`。 */
   storageRoot?: string
-  /** 出网策略，与 web_fetch 共用同一套 SSRF 闸。 */
+  /** 网络访问策略，与 web_fetch 共用同一套 SSRF 防护。 */
   netPolicy?: SafetyOptions
 }
 
@@ -65,12 +65,12 @@ export type CapabilityHandler = (
 /**
  * 已登记的方法清单。
  *
- * 唯一的消费者是回归测试：它逐条调过去，断言没有一条落到 default 分支的
- * 「尚未实现」。这样清单和 switch 不可能各走各的——加了方法忘了登记会红，
- * 登记了没实现也会红。`docs/plugins.md` 那张表照着它写。
+ * 唯一的消费者是回归测试：测试逐条调用，断言没有任何方法进入 default 分支的
+ * 「尚未实现」。清单与 switch 因此保持一致：新增方法未登记会使测试失败，
+ * 已登记但未实现同样失败。`docs/plugins.md` 中的表格依据本清单编写。
  *
- * 刻意**不**放进握手的能力声明里：那个字段目前没有任何客户端会读，
- * 加一个没人消费的协议成员正是第 11 节反复在修的那一类。
+ * 有意不放入握手的能力声明：该字段目前没有客户端读取，
+ * 增加无消费者的协议成员会形成一条未接通的链路。
  */
 export const HOST_CAPABILITIES = [
   'fs.read',
@@ -105,8 +105,8 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
             `文件超出插件读取上限（${info.size} > ${MAX_READ_BYTES} 字节）：${displayPath(workspaceRoot, path)}`,
           )
         }
-        // base64 是给二进制用的。默认 utf8——绝大多数插件读的是文本，
-        // 让它们每次都自己解码是白付一次转换。
+        // base64 用于二进制内容。默认 utf8：绝大多数插件读取的是文本，
+        // 由插件每次自行解码会多出一次无用的转换。
         if (params.encoding === 'base64') {
           return {
             content: Buffer.from(await readFile(path)).toString('base64'),
@@ -119,8 +119,8 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
       case 'fs.list': {
         const path = await inWorkspace(params.path ?? '.', true)
         const entries = await readdir(path, { withFileTypes: true })
-        // 截断要**说出来**。静默截断会让插件把这一页当成整个目录，
-        // 它「处理完了所有文件」的结论因此是错的。
+        // 截断必须明确告知。静默截断会使插件把当前一页当作整个目录，
+        // 其「已处理全部文件」的结论因此错误。
         const truncated = entries.length > MAX_LIST_ENTRIES
         return {
           entries: entries.slice(0, MAX_LIST_ENTRIES).map((e) => ({
@@ -156,11 +156,11 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
 
       case 'fs.delete': {
         const path = await inWorkspace(params.path, true)
-        // 不给 recursive：一个插件误删整棵目录树和误删一个文件，
-        // 后果差着数量级，而它几乎没有正当理由需要前者。
+        // 不提供 recursive：误删整棵目录树与误删一个文件的后果相差数个量级，
+        // 而插件几乎没有正当理由需要前者。
         const info = await stat(path)
         if (info.isDirectory()) {
-          throw new Error(`拒绝删除目录（只允许删文件）：${displayPath(workspaceRoot, path)}`)
+          throw new Error(`拒绝删除目录（只允许删除文件）：${displayPath(workspaceRoot, path)}`)
         }
         await rm(path)
         return { deleted: displayPath(workspaceRoot, path) }
@@ -169,8 +169,8 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
       case 'net.fetch': {
         const url = String(params.url ?? '')
         if (!url) throw new Error('缺少 url')
-        // 与 web_fetch 走同一个闸：每跳重定向重新校验、按解析后的 IP 分类。
-        // 插件这条路更需要它——URL 完全由第三方代码构造。
+        // 与 web_fetch 使用同一套 SSRF 防护：每次重定向重新校验，按解析后的 IP 分类。
+        // 插件路径更需要这层防护：URL 完全由第三方代码构造。
         const res = await safeFetch(url, {
           ...(opts.netPolicy ?? {}),
           ...(typeof params.method === 'string' ? { method: params.method } : {}),
@@ -236,24 +236,24 @@ export function makeCapabilityHandler(opts: CapabilityOptions): CapabilityHandle
         return { keys: Object.keys(await readStore(storageRoot, pluginId)) }
 
       default:
-        // 走到这里说明 requiredPermission() 认了这个前缀但没人实现。
-        // **明确抛出**而不是返回 null——返回 null 在插件侧是一次成功但空结果的调用。
+        // 执行到此处说明 requiredPermission() 接受了该前缀，但没有对应实现。
+        // 明确抛错而不是返回 null：返回 null 在插件侧表现为一次成功但结果为空的调用。
         throw new Error(`宿主能力尚未实现：${method}`)
     }
   }
 }
 
 /**
- * 跑一条命令，**不透传宿主环境变量**。
+ * 运行一条命令，不透传宿主环境变量。
  *
- * 与 `run_command` 内置工具的关键差别就是这一点。那个工具跑的是用户自己批准的命令，
- * 看得到自己的环境天经地义；这里跑的是插件给的命令，而插件进程的 env 是被特意
- * 洗过的。透传等于把刚锁上的门从里面打开。
+ * 与 `run_command` 内置工具的关键差别在于此。该工具运行的是用户自己批准的命令，
+ * 看到自身的环境是合理的；这里运行的是插件提供的命令，而插件进程的 env 经过专门
+ * 清理。透传会使这层清理失效。
  *
- * 走 `spawnGuarded` 而不是自己 `Bun.spawn`：起子进程的地方**必须只有一处**。
- * 两处的代价不是重复代码，是加沙箱时漏掉一处不会报错——那一处只是安静地没有边界。
- * 插件这条路比 `run_command` 更需要沙箱：命令是第三方代码构造的，
- * 连「用户看过一眼」这个前提都没有。
+ * 使用 `spawnGuarded` 而不是直接调用 `Bun.spawn`：启动子进程的位置必须只有一处。
+ * 存在两处时，问题不在于重复代码，而在于增加沙箱时遗漏一处不会报错，该处只是无提示地缺少边界。
+ * 插件路径比 `run_command` 更需要沙箱：命令由第三方代码构造，
+ * 用户没有查看过。
  */
 async function runScrubbed(
   command: string,
@@ -279,8 +279,8 @@ async function runScrubbed(
     },
   })
 
-  // 等待与收尾走同一个收口：完成判据是进程退出而不是管道 EOF，超时走**树杀**。
-  // 这里 spawn 出来的是一个 shell，只 kill 它自己的话，真正执行的那个仍在运行。
+  // 等待与收尾均由 `collectProcess` 处理：完成判据是进程退出而不是管道 EOF，超时时终止整个进程树。
+  // 此处启动的是一个 shell，只终止 shell 本身时，实际执行命令的进程仍在运行。
   const got = await collectProcess(proc, { timeoutMs, maxChars: MAX_EXEC_OUTPUT })
   return {
     exitCode: got.exitCode,
@@ -291,11 +291,11 @@ async function runScrubbed(
 }
 
 /**
- * 到界了就说一声。
+ * 达到上限时告知插件。
  *
- * 真正的「读到上限就停」在 `collectProcess` 里——**上限是读取行为的上限，不是
- * 返回值的上限**：读完再截的话，一条 `yes` 能在截断生效之前把内存吃光。
- * 这里只负责把「这一页不是全部」告诉插件。
+ * 读取到上限即停止的逻辑在 `collectProcess` 中：上限约束的是读取行为，不是
+ * 返回值；全部读取后再截断时，一条 `yes` 命令会在截断生效之前耗尽内存。
+ * 本函数只负责告知插件当前内容不完整。
  */
 function capped(text: string): string {
   if (text.length < MAX_EXEC_OUTPUT) return text
@@ -305,14 +305,14 @@ function capped(text: string): string {
 // ───────────────────────── 插件私有存储 ─────────────────────────
 
 /**
- * 一个插件一个 JSON 文件。
+ * 每个插件一个 JSON 文件。
  *
- * 不放 SQLite：插件存的是配置和小状态，为它开一张表要处理迁移、并发、连接生命周期，
- * 而 JSON 文件用户能直接看、直接删——插件行为异常时这一点比性能重要得多。
+ * 不使用 SQLite：插件存储的是配置与少量状态，为其建表需要处理迁移、并发与连接生命周期，
+ * 而 JSON 文件可由用户直接查看和删除；插件行为异常时，这一点比性能重要得多。
  */
 function storePath(storageRoot: string, pluginId: string): string {
-  // id 在 manifest 解析期已经限死为 `[a-z0-9][a-z0-9._-]{2,63}`，
-  // 这里再滤一遍：存储路径是文件系统写入点，不能依赖上游校验没被绕过。
+  // id 在 manifest 解析阶段已限定为 `[a-z0-9][a-z0-9._-]{2,63}`，
+  // 此处再过滤一次：存储路径是文件系统写入点，不能假定上游校验未被绕过。
   const safe = pluginId.replace(/[^a-z0-9._-]/gi, '_')
   if (!safe || safe.startsWith('.')) throw new Error(`非法插件 id：${pluginId}`)
   return join(storageRoot, `${safe}.json`)
@@ -325,7 +325,7 @@ async function readStore(storageRoot: string, pluginId: string): Promise<Record<
     const parsed = JSON.parse(raw)
     return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {}
   } catch {
-    // 存储坏了不该让插件起不来。当作空的继续——插件会重新写它需要的键。
+    // 存储损坏时不应导致插件无法启动。按空存储继续：插件会重新写入它需要的键。
     return {}
   }
 }

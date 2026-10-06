@@ -1,16 +1,16 @@
 /**
- * 三条协议共用的 SSE 帧解析。
+ * 三种协议共用的 SSE 帧解析。
  *
- * 只做分帧：按空行切帧、多条 `data:` 行合并、`event:` 与 `data:` 配对、`:` 注释行跳过。
- * 哪个事件是终态、用量挂在哪一帧，由适配器解释——两处解释终态必然漂移，所以这里不认协议。
+ * 只负责分帧：按空行分帧、合并多条 `data:` 行、配对 `event:` 与 `data:`、跳过 `:` 注释行。
+ * 哪个事件是终态、用量位于哪一帧，由适配器解释：两处分别解释终态必然产生不一致，因此此处不解析协议语义。
  *
- * 边界三条，调用方必须知道：
+ * 调用方必须了解以下三条边界：
  *
- * - **协议终态到达就 `break`**：生成器的 `finally` 取消上游 body，连接随即释放，
- *   不必等 HTTP EOF。工具调用与用量因此在终态处交付。
- * - **`[DONE]` 原样交出**（`data` 等于 `SSE_DONE`），由调用方决定终止还是忽略：
- *   它是 chat/completions 的终止标记，另两条协议不发它。
- * - **正文出错原样抛出**，包括传输层判定的 `stream_idle_timeout`。不要在这里改写成
+ * - **协议终态到达即 `break`**：生成器的 `finally` 取消上游 body，连接随即释放，
+ *   无需等待 HTTP EOF。工具调用与用量因此在终态处交付。
+ * - **`[DONE]` 原样返回**（`data` 等于 `SSE_DONE`），由调用方决定终止还是忽略：
+ *   它是 chat/completions 的终止标记，另两种协议不发送。
+ * - **正文出错时原样抛出**，包括传输层判定的 `stream_idle_timeout`。不要在此处改写为
  *   协议错误：断流与流内错误事件的重试语义不同。
  */
 
@@ -18,7 +18,7 @@
 export const SSE_DONE = '[DONE]'
 
 export interface SseFrame {
-  /** `event:` 行的值；这一帧没有该行时缺席。 */
+  /** `event:` 行的值；该帧没有此行时省略。 */
   event?: string
   /** 多条 `data:` 行以换行合并后的原文。 */
   data: string
@@ -28,7 +28,7 @@ export async function* readSse(
   body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<SseFrame, void, unknown> {
   const reader = body.getReader()
-  // stream 模式：一个多字节字符可能被切在两个分片之间，逐片独立解码会得到替换字符。
+  // stream 模式：一个多字节字符可能被分割在两个分片中，逐片独立解码会得到替换字符。
   const decoder = new TextDecoder()
   let buffer = ''
   let event: string | undefined
@@ -49,7 +49,7 @@ export async function* readSse(
       if (result.done) {
         eof = true
         buffer += decoder.decode()
-        // 末帧后面没有空行时照样交付：中转在最后一个事件之后直接 FIN 是常见形状。
+        // 末帧后没有空行时同样交付：中转站在最后一个事件之后直接发送 FIN 是常见情形。
         if (buffer && !buffer.endsWith('\n')) buffer += '\n'
       } else {
         buffer += decoder.decode(result.value, { stream: true })
@@ -80,15 +80,15 @@ export async function* readSse(
       }
     }
   } finally {
-    // 调用方提前结束时这一步取消上游 body；流已出错时取消本身会拒绝，不能盖掉原错误。
+    // 调用方提前结束时，此步骤取消上游 body；流已出错时取消操作本身会被拒绝，不得覆盖原错误。
     await reader.cancel().catch(() => {})
   }
 }
 
 /**
- * 把一帧的 `data` 读成对象。非 JSON 与非对象一律返回 null。
+ * 将一帧的 `data` 解析为对象。非 JSON 与非对象一律返回 null。
  *
- * 心跳与半行不构成协议错误：一条心跳把整轮 run 打断，代价完全不成比例。
+ * 心跳与半行不构成协议错误：因一条心跳中断整轮 run，代价不成比例。
  */
 export function sseJson(data: string): Record<string, unknown> | null {
   try {

@@ -58,7 +58,7 @@ export async function validateSkillDirectory(
   dir: string,
 ): Promise<{ name: string; description: string }> {
   const text = await readFile(join(dir, 'SKILL.md'), 'utf8').catch(() => null)
-  if (text === null) throw new SkillInstallError(`目录里没有可读取的 SKILL.md：${dir}`)
+  if (text === null) throw new SkillInstallError(`目录中没有可读取的 SKILL.md：${dir}`)
   const meta = parseFrontmatter(text)
   if (!meta.description || /^[|>][+-]?\d?$/.test(meta.description)) {
     throw new SkillInstallError(`SKILL.md 的 description 必须是非空的单行文本：${dir}`)
@@ -79,8 +79,7 @@ export async function commitSkillDirectory(
   const target = join(root, skillDirectoryName(directoryName))
   return withFileLocks([root, ...(removeSource ? [dirname(removeSource)] : [])], async () => {
     const existed = (await lstat(target).catch(() => null)) !== null
-    if (existed && !replace)
-      throw new SkillInstallError(`这一层已有技能目录：${target}`, 'conflict')
+    if (existed && !replace) throw new SkillInstallError(`该层已有技能目录：${target}`, 'conflict')
     await mkdir(dirname(root), { recursive: true })
     const transaction = await mkdtemp(join(dirname(root), '.skill-install-'))
     const stage = join(transaction, basename(target))

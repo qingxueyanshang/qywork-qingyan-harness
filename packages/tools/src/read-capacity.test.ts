@@ -1,11 +1,11 @@
 /**
  * `read_file` 按本次决策的投递额度交付文本。
  *
- * 覆盖范围：`files.ts` 的 `read_file` 文本分支（整份优先、部分投递与续读位置、单行装不下时
- * 经 `sink.ts` 的 `deliverReadable` 存进正文库按字节续读）与读记录的登记时机（失败的读取
- * 不能成为 `edit_file` 的前置证据）。
+ * 覆盖范围：`files.ts` 的 `read_file` 文本分支（整份优先、部分投递与续读位置、单行超出额度时
+ * 经 `sink.ts` 的 `deliverReadable` 存入正文库并按字节续读）与读取记录的登记时机（失败的读取
+ * 不能作为 `edit_file` 的前置条件）。
  *
- * 窗口与密度取 DeepSeek V4.1 Flash（`deepseek-flash`）的目录规格：原始失败发生在 1M 窗口。
+ * 窗口与密度采用 DeepSeek V4.1 Flash（`deepseek-flash`）的模型目录规格：原始失败发生在 1M 窗口。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -64,7 +64,7 @@ function registry(): ToolRegistry {
   return r
 }
 
-/** 超过 2000 行、三万多 token 的源码文件，末行是标记。 */
+/** 超过 2000 行、三万余 token 的源码文件，末行为标记。 */
 async function workspace(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'qy-read-capacity-'))
   const lines = Array.from({ length: 2400 }, (_, i) => `const v${i} = f(${i})`)
@@ -75,8 +75,8 @@ async function workspace(): Promise<string> {
 const contentOf = (r: { data?: Record<string, unknown> }) => (r.data as { content: string }).content
 
 describe('整份优先', () => {
-  /** 原始失败的形状：三万多 token 的整份读取被 30,000 的单次闸拒绝。 */
-  test('1M 窗口下超过 2000 行、三万多 token 的文件一次整读', async () => {
+  /** 原始失败形状：三万余 token 的整份读取被 30,000 token 的单次上限拒绝。 */
+  test('1M 窗口下超过 2000 行、三万余 token 的文件一次完整读取', async () => {
     const root = await workspace()
     const c = ctx(root, softLimit(flash) - 20_000)
     const r = await registry().execute('read_file', { path: 'big.ts' }, c)
@@ -99,9 +99,9 @@ describe('整份优先', () => {
   })
 })
 
-describe('装不下时部分投递并给出续读位置', () => {
-  /** 占用接近软阈值（790K / 800K）时余量只有 10K：给装得下的部分，不拒绝。 */
-  test('投递装得下的最长行前缀，沿 nextOffset 续读能逐行拼回整份', async () => {
+describe('无法容纳时部分投递并给出续读位置', () => {
+  /** 占用接近软阈值（790K / 800K）时余量只有 10K：投递可容纳的部分，不拒绝。 */
+  test('投递可容纳的最长行前缀，沿 nextOffset 续读可逐行拼回整份', async () => {
     const root = await workspace()
     const r = registry()
     const first = await r.execute('read_file', { path: 'big.ts' }, ctx(root, 10_000))
@@ -111,7 +111,7 @@ describe('装不下时部分投递并给出续读位置', () => {
     expect(next).toBeGreaterThan(1)
     expect(first.message).toContain(`offset=${next}`)
 
-    // 下一次决策重新开账。
+    // 下一次决策重新计算额度。
     const rest = await r.execute(
       'read_file',
       { path: 'big.ts', offset: next },
@@ -121,7 +121,7 @@ describe('装不下时部分投递并给出续读位置', () => {
     expect(`${contentOf(first)}\n${contentOf(rest)}`).toBe(contentOf(whole))
   })
 
-  test('单行装不下：该行存一次，投递开头并给出按字节续读的位置与下一行', async () => {
+  test('单行无法容纳：该行存储一次，投递开头部分并给出按字节续读的位置与下一行', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-read-line-'))
     const line = `${'中文正文🙂'.repeat(20_000)}${MARKER}`
     await writeFile(join(root, 'one.txt'), `${line}\nsecond`)
@@ -139,9 +139,9 @@ describe('装不下时部分投递并给出续读位置', () => {
   })
 })
 
-describe('失败的读取不算已读', () => {
-  /** 报失败的回合不产出正文；余量为 0 时仍从开头给最小的一份整行，并给出续读位置。 */
-  test('余量为 0 时仍投递开头的整行，不报失败', async () => {
+describe('失败的读取不计为已读', () => {
+  /** 报告失败的回合不产出正文；余量为 0 时仍从开头投递最小的整行内容，并给出续读位置。 */
+  test('余量为 0 时仍投递开头的整行，不报告失败', async () => {
     const root = await workspace()
     const r = registry()
     const c = ctx(root, 0)

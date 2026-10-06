@@ -60,7 +60,7 @@ function sse(rows: unknown[]) {
 }
 
 for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
-  test(`摘要请求的 ${mode} 经真实传输、落库、导出保留终态`, async () => {
+  test(`摘要请求的 ${mode} 经真实传输、写入数据库与导出后保留终态`, async () => {
     const controller = new AbortController()
     let abortTimer: ReturnType<typeof setTimeout> | undefined
     const provider = Bun.serve({
@@ -158,7 +158,7 @@ for (const mode of ['success', 'stream_error', 'eof', 'abort'] as const) {
   })
 }
 
-test('结束轮次立即收回未完成请求，保留未发送与已发送的区别', () => {
+test('结束轮次时立即将未完成的请求置为终态，保留未发送与已发送的区别', () => {
   const h = fixture('http://127.0.0.1:1/v1')
   try {
     for (let i = 0; i < 2; i++) {

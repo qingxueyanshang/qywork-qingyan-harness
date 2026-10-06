@@ -1,9 +1,9 @@
 /**
  * HTTP 杂项：CORS、静态托管、主机名、git 状态广播。
  *
- * 这些都不属于任何一条业务链路，凑在主文件里会被读成业务代码。
+ * 这些内容不属于任何一条业务链路，放在主文件中会被误读为业务代码。
  *
- * **令牌校验不在这里**——它归 `pairing.ts` 的 `Pairing.verify()`，那里是唯一入口。
+ * **令牌校验不在这里**：它属于 `pairing.ts` 的 `Pairing.verify()`，那是唯一入口。
  */
 
 import { join } from 'node:path'
@@ -22,31 +22,30 @@ export async function publishGitState(
 /**
  * 跨源响应头。
  *
- * 桌面端的页面和这个服务**从来就不同源**：`tauri dev` 时页面来自 vite 的
- * `localhost:5180`，装机版来自 `tauri.localhost` 的 asset 协议，而 API 始终在
- * `127.0.0.1:<外壳分配的端口>`。鉴权走 Authorization 头，属于「非简单请求」，
- * 浏览器要先发一个**不带任何自定义头**的 OPTIONS 预检。
+ * 桌面端的页面与本服务**始终不同源**：`tauri dev` 时页面来自 vite 的
+ * `localhost:5180`，安装版来自 `tauri.localhost` 的 asset 协议，而 API 始终位于
+ * `127.0.0.1:<外壳分配的端口>`。鉴权使用 Authorization 头，属于「非简单请求」，
+ * 浏览器要先发送一个**不带任何自定义头**的 OPTIONS 预检。
  *
- * 这条缺失的表现极具误导性：WebSocket 不受同源策略约束，照常握手成功，
- * 界面上显示「已连接」；而每一条 REST 都被预检挡在发出之前，因此工作区名是
- * 「未连接」、会话列表空、设置面板永远停在「读取配置…」——看起来像四个各自
- * 独立的功能坏了，实际是同一个原因。
+ * 缺少这些响应头时，WebSocket 不受同源策略约束，仍能握手成功并显示「已连接」；
+ * 而所有 REST 请求都在发出前被预检拦截，工作区名、会话列表与设置面板同时无法加载，
+ * 原因相同。
  *
- * `*` 而不是回显 Origin：这里从不用 cookie，凭证是 Authorization 里的令牌。
- * 拿不到令牌的页面即使被允许发请求也只收得到 401，回显 Origin 需要多维护一份
- * 允许名单，而那份名单不带来任何额外保护。
+ * 使用 `*` 而不是回显 Origin：这里从不使用 cookie，凭证是 Authorization 中的令牌。
+ * 无法取得令牌的页面即使被允许发送请求也只会收到 401，回显 Origin 需要另外维护一份
+ * 允许列表，而该列表不带来任何额外保护。
  */
 export const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
   /*
-   * 附件上传带 `x-attachment-name`（文件名可能含中文与空格，只能编码进头里）。
-   * **它不在 CORS 安全表内，漏掉这一个名字整条上传链路就是 100% 失败**——
-   * 预检不通过，真正那条 POST 不会发出，前端拿到的是裸的
-   * `TypeError: Failed to fetch`，不带任何状态码，看不出是被浏览器挡的。
+   * 附件上传带 `x-attachment-name`（文件名可能含中文与空格，只能编码后放入请求头）。
+   * **它不在 CORS 安全列表内，遗漏该头名会使整条上传链路全部失败**：
+   * 预检不通过，实际的 POST 不会发出，前端收到的只是
+   * `TypeError: Failed to fetch`，不带任何状态码，无法判断是否由浏览器拦截。
    *
-   * 不要改成 `*`：它在带凭证的请求里不生效，而且会把「这个接口收哪些头」
-   * 这件事从代码里抹掉。
+   * 不要改为 `*`：它在带凭证的请求中不生效，且会使「该接口接受哪些请求头」
+   * 无法从代码中看出。
    */
   'access-control-allow-headers': 'authorization, content-type, x-attachment-name',
   'access-control-max-age': '86400',
@@ -59,7 +58,7 @@ export function withCors(res: Response): Response {
 
 export async function serveStatic(dir: string, pathname: string): Promise<Response | null> {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '')
-  // 静态目录同样要挡穿越：`GET /../../etc/passwd` 不能生效。
+  // 静态目录同样要拦截路径穿越：`GET /../../etc/passwd` 不能生效。
   if (rel.includes('..')) return null
   const file = Bun.file(join(dir, rel))
   if (await file.exists()) return new Response(file)

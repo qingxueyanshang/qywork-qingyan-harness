@@ -20,7 +20,7 @@ import {
 import pkg from '../package.json' with { type: 'json' }
 import { collect, exportConversation, exportConversationDiagnostics } from './archive.ts'
 
-// 已归一的绝对路径：仓储层按 `normalizeWorkspaceRoot` 落盘，回读的是这一份。
+// 已规范化的绝对路径：仓储层按 `normalizeWorkspaceRoot` 落盘，读取时返回该值。
 const ROOT = resolve('/tmp/ws')
 
 function fixture(): { store: Store; conversationId: ConversationId } {
@@ -139,7 +139,7 @@ function fixture(): { store: Store; conversationId: ConversationId } {
 }
 
 describe('采集', () => {
-  test('工作区、会话状态、运行上下文、消息、step、资源与逐请求账本都取到了', () => {
+  test('工作区、会话状态、运行上下文、消息、step、资源与逐请求账本均已取得', () => {
     const { store, conversationId } = fixture()
     const b = collect(store, conversationId)
     expect(b.workspace?.rootPath).toBe(ROOT)
@@ -165,16 +165,16 @@ describe('采集', () => {
     store.close()
   })
 
-  test('会话不存在时抛，不返回一个空壳', () => {
+  test('会话不存在时抛错，不返回空结果', () => {
     const store = new Store({ path: ':memory:' })
-    // 返回空壳的话，导出会静默产出一份空文档，而它与「这个会话本来就是空的」
-    // 无从区分。
+    // 返回空结果时，导出会静默生成一份空文档，
+    // 与会话本身为空的情况无法区分。
     expect(() => collect(store, 'cv_不存在' as ConversationId)).toThrow('不存在')
     store.close()
   })
 })
 
-describe('markdown：给人读', () => {
+describe('markdown：供人阅读', () => {
   const md = () => {
     const { store, conversationId } = fixture()
     const text = exportConversation(store, conversationId, 'markdown')
@@ -182,41 +182,41 @@ describe('markdown：给人读', () => {
     return text
   }
 
-  test('标题、模型、用量都在头部', () => {
+  test('标题、模型、用量位于头部', () => {
     const t = md()
     expect(t).toContain('# 导出用会话')
     expect(t).toContain('deepseek-v4-flash')
     expect(t).toContain('$0.0012')
   })
 
-  test('用户消息与助手正文都在', () => {
+  test('包含用户消息与助手正文', () => {
     const t = md()
     expect(t).toContain('把 calc.js 改一下')
     expect(t).toContain('改好了，测试还挂着。')
   })
 
-  test('成功的工具折叠成一行', () => {
+  test('成功的工具调用折叠为一行', () => {
     expect(md()).toContain('- ✓ `read_file` calc.js')
   })
 
   /**
-   * 失败的展开。成功的调用读者基本不看，失败的是最需要细节的地方——
-   * 一视同仁地折叠会让这份文档在最有用的地方最没用。
+   * 失败的调用展开。读者通常不查看成功的调用，失败的调用最需要细节：
+   * 全部折叠会使文档在最需要信息的位置缺少信息。
    */
-  test('失败的工具展开，带上失败正文', () => {
+  test('失败的工具调用展开，并附带失败正文', () => {
     const t = md()
     expect(t).toContain('- ✗ `run_command` npm test')
     expect(t).toContain('Expected 3 to be 4')
   })
 
-  test('超长失败正文截断，并指路 json', () => {
+  test('超长失败正文被截断，并指向 json 导出', () => {
     const { store, conversationId } = fixture()
     const text = exportConversation(store, conversationId, 'markdown', { maxToolChars: 10 })
     expect(text).toContain('json')
     store.close()
   })
 
-  test('默认不含思考 —— 它最长且对读者价值最低', () => {
+  test('默认不含思考：思考内容最长且对读者价值最低', () => {
     const { store, conversationId } = fixture()
     const run = collect(store, conversationId).runs[0]!
     appendStep(store, {
@@ -231,7 +231,7 @@ describe('markdown：给人读', () => {
   })
 })
 
-describe('json：给脚本读', () => {
+describe('json：供脚本读取', () => {
   test('是合法 JSON 且结构完整', () => {
     const { store, conversationId } = fixture()
     const parsed = JSON.parse(exportConversation(store, conversationId, 'json'))
@@ -241,8 +241,8 @@ describe('json：给脚本读', () => {
   })
 
   /**
-   * json **不裁剪**。裁剪等于把「导出的内容不全」藏起来，
-   * 而脚本没法像人一样看出「这里少了点什么」。
+   * json 不裁剪。裁剪会隐藏导出内容不完整这一事实，
+   * 而脚本无法像人一样察觉内容缺失。
    */
   test('不受 maxToolChars 影响，原样导出', () => {
     const { store, conversationId } = fixture()
@@ -254,7 +254,7 @@ describe('json：给脚本读', () => {
     store.close()
   })
 
-  test('带上导出时间 —— 归档要能回答「这是什么时候的快照」', () => {
+  test('包含导出时间，归档须能说明快照的时间', () => {
     const { store, conversationId } = fixture()
     const parsed = JSON.parse(exportConversation(store, conversationId, 'json'))
     expect(typeof parsed.exportedAt).toBe('number')
@@ -290,7 +290,7 @@ describe('诊断导出', () => {
       store.close()
     }
   })
-  test('带请求形状所需的接口信息，但不泄露凭证值', () => {
+  test('包含判断请求形状所需的接口信息，但不泄露凭证值', () => {
     const { store, conversationId } = fixture()
     const text = exportConversationDiagnostics(store, conversationId, {
       active: { provider: 'p', model: 'deepseek-v4-flash' },
@@ -335,7 +335,7 @@ describe('诊断导出', () => {
     store.close()
   })
 
-  test('工具专用且无正文/思考的异常形状能被原样识别', () => {
+  test('只有工具调用、没有正文与思考的异常形状可被原样识别', () => {
     const { store, conversationId } = fixture()
     store.db.query("DELETE FROM steps WHERE kind = 'text'").run()
 
@@ -382,7 +382,7 @@ describe('诊断导出', () => {
     store.close()
   })
 
-  test('工具图片在诊断包中只留元数据，完整 JSON 存档仍保留原始结果', () => {
+  test('工具图片在诊断包中只保留元数据，完整 JSON 存档仍保留原始结果', () => {
     const { store, conversationId } = fixture()
     const run = collect(store, conversationId).runs[0]!
     appendStep(store, {
@@ -429,7 +429,7 @@ describe('诊断导出', () => {
     store.close()
   })
 
-  test('父会话按规范入口递归带出子 Agent 与孙会话，循环引用不重复正文', () => {
+  test('父会话按规范入口递归导出子 Agent 与孙会话，循环引用不重复导出正文', () => {
     const { store, conversationId } = fixture()
     const parent = collect(store, conversationId)
     const parentRun = parent.runs[0]!
@@ -508,7 +508,7 @@ describe('诊断导出', () => {
     })
     finishRun(store, grandchildRun.id, { status: 'done', stopReason: 'completed' })
 
-    // 子会话入口在父 step 的 nodes 里。
+    // 子会话入口位于父 step 的 nodes 中。
     appendStep(store, {
       runId: parentRun.id,
       seq: 10,
@@ -527,7 +527,7 @@ describe('诊断导出', () => {
         nodes: { child: { phase: 'done', label: '子', subagentId: child.id } },
       },
     })
-    // 子会话入口始终在 step 顶层；outcome 里的同名业务结果不是归档关系来源。
+    // 子会话入口始终位于 step 顶层；outcome 中的同名业务结果不是归档关系的来源。
     appendStep(store, {
       runId: childRun.id,
       seq: 2,
@@ -546,7 +546,7 @@ describe('诊断导出', () => {
         nodes: { child: { phase: 'done', label: '孙', subagentId: grandchild.id } },
       },
     })
-    // 损坏账本可能形成环；应保留这条关系，但不能再次导出根正文或无限递归。
+    // 损坏的账本可能形成环；应保留该关系，但不能再次导出根会话正文或无限递归。
     appendStep(store, {
       runId: grandchildRun.id,
       seq: 2,
@@ -642,7 +642,7 @@ describe('诊断导出', () => {
     store.close()
   })
 
-  test('子会话引用损坏时仍导出父会话，并把缺失项明确列出', () => {
+  test('子会话引用损坏时仍导出父会话，并明确列出缺失项', () => {
     const { store, conversationId } = fixture()
     const run = collect(store, conversationId).runs[0]!
     appendStep(store, {
@@ -683,7 +683,7 @@ describe('诊断导出', () => {
   })
 })
 
-describe('压缩过的会话要在最上面说清楚', () => {
+describe('压缩过的会话在开头注明', () => {
   test('有 manifest 时给出警告', () => {
     const { store, conversationId } = fixture()
     store.db.query('UPDATE conversations SET compaction_manifest = ? WHERE id = ?').run(
@@ -697,7 +697,7 @@ describe('压缩过的会话要在最上面说清楚', () => {
       conversationId,
     )
     const t = exportConversation(store, conversationId, 'markdown')
-    // 不说的话，「模型为什么忘了前面」会变成一个查不出原因的问题。
+    // 不注明时，模型遗忘前文的原因将无从查明。
     expect(t).toContain('压缩')
     expect(t).toContain('修订 2')
     store.close()
@@ -705,10 +705,10 @@ describe('压缩过的会话要在最上面说清楚', () => {
 })
 
 /*
- * run 内注入的那句用户消息。
+ * run 内注入的用户消息。
  *
- * `renderRun` 末尾是一个**隐式兜底**——三个 kind 判完，剩下的一切都按思考渲染。
- * 少了 user 那一支，导出思考时用户的话会被印成模型的思考，不导出时整句消失。
+ * `renderRun` 末尾有一个隐式默认分支：三种 kind 判定之后，其余全部按思考渲染。
+ * 缺少 user 分支时，导出思考会把用户消息渲染为模型的思考，不导出思考时整句消失。
  */
 describe('执行中插入的用户消息', () => {
   function withInjected(): { store: Store; conversationId: ConversationId } {
@@ -726,7 +726,7 @@ describe('执行中插入的用户消息', () => {
     return { store, conversationId }
   }
 
-  test('以用户身份出现一次，不管导不导出思考', () => {
+  test('以用户身份出现一次，与是否导出思考无关', () => {
     const { store, conversationId } = withInjected()
     const plain = exportConversation(store, conversationId, 'markdown')
     const withThinking = exportConversation(store, conversationId, 'markdown', {
@@ -736,7 +736,7 @@ describe('执行中插入的用户消息', () => {
     for (const t of [plain, withThinking]) {
       expect(t.split('别动 legacy/')).toHaveLength(2)
       expect(t).toContain('## 用户（执行中插入）')
-      // 不许掉进那个兜底：它不是模型的思考。
+      // 不得进入默认分支：该消息不是模型的思考。
       const before = t.slice(0, t.indexOf('别动 legacy/'))
       expect(before.endsWith('<details><summary>思考</summary>\n\n')).toBe(false)
     }

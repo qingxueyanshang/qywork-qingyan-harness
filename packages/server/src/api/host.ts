@@ -1,36 +1,36 @@
 /**
- * 宿主机的外部程序依赖：**探测它们在不在，以及在 Windows 上一键装上**。
+ * 宿主机的外部程序依赖：探测是否已安装，并在 Windows 上提供一键安装。
  *
- * **表里为什么只有这几条。** 入表门槛是**代码里真的有一处 `Bun.spawn` 调它**，逐个核过：
+ * 入表条件：代码中存在一处通过 `Bun.spawn` 调用该程序的位置。逐项核对如下：
  *
- * | | 调用点 | 缺了会怎样 |
+ * | | 调用点 | 缺失的影响 |
  * |---|---|---|
- * | bash | `tools/sandbox.ts` 的 `commandShell()` | **只是换语法**，落到 PowerShell；三档全空才是 `run_command` 不注册 |
- * | git | `server/git.ts` 的 `git()` | 版本面板读不到状态与差异 |
- * | rg | `tools/search.ts` 的 `runRipgrep()` | **只是慢**，内置遍历顶上（那条路已经写好了） |
- * | node | `plugins/runtime.ts` 的 `probeNode()` | 插件跑不了 |
- * | Python | `tools/office.ts` 起 worker、`runtime/office.ts` 探测 | Office 工具不注册 |
- * | Office 文档库 | worker 导入 | `office` 工具不注册；按清单用 pip 装，不经 winget |
- * | 视频解码库 | worker 的 `frames` 动作 | 不支持原生视频的模型读不了视频；同一份清单、同一条 pip 路线 |
+ * | bash | `tools/sandbox.ts` 的 `commandShell()` | 只改变命令语法，回退到 PowerShell；三档均缺失时 `run_command` 不注册 |
+ * | git | `server/git.ts` 的 `git()` | 版本面板无法读取状态与差异 |
+ * | rg | `tools/search.ts` 的 `runRipgrep()` | 只影响速度，由内置遍历替代 |
+ * | node | `plugins/runtime.ts` 的 `probeNode()` | 插件无法运行 |
+ * | Python | `tools/office.ts` 启动 worker、`runtime/office.ts` 探测 | Office 工具不注册 |
+ * | Office 文档库 | worker 导入 | `office` 工具不注册；按清单用 pip 安装，不经 winget |
+ * | 视频解码库 | worker 的 `frames` 动作 | 不支持原生视频的模型无法读取视频；使用同一份清单与同一条 pip 安装路径 |
  *
- * 「装了更好」「同类工具都列一下」不进表。那种清单的后果是用户第一次点开设置页
- * 看到一片红，而真正坏掉的那条淹在里面。同理 `required` 必须分档：
- * rg 和 node 缺了不影响主线，标成「需要安装」就是假警报——bash 自批 4 起也归这一档，
- * 但它的档位随机器变，见 `resolveBashRow`。
+ * 仅属于「安装后更好」或「同类工具一并列出」的程序不入表：这类清单使用户首次打开设置页时
+ * 看到大量红色条目，真正缺失的一项被淹没其中。同理 `required` 必须分档：
+ * rg 与 node 缺失不影响主要功能，标为「需要安装」属于误报；bash 在本机存在其他 shell 时
+ * 同属这一档，其档位随机器变化，见 `resolveBashRow`。
  *
- * 沙箱（bwrap / seatbelt）**不在这里**：它已经在权限页报了，报两处就是两本账。
+ * 沙箱（bwrap / seatbelt）不在此处：权限页已报告该项，两处报告即形成两本账。
  *
- * **安装那条路的三条边界**：
- * 1. **参数只用来查表，从不进命令。** 请求体只有一个 `id`，拿它在下面这张常量表里
- *    查 argv；查不到回 400。命令串里没有任何一个字节来自请求——这与
- *    「跑一条用户给的命令」是两件事，后者是 `run_command`，它受裁决层管。
- * 2. **不自己下载安装包。** 程序交给 winget：签名校验、来源、回滚都是系统包管理器的事。
- *    自己下 exe 再执行 = 从网上取一个可执行文件然后跑它，CLAUDE.md E 明令不做。
- *    文档库交给 pip，按产品附带的固定版本清单装，同样不经本进程下载。
- * 3. **起一个可见的终端窗口，不后台静默。** UAC 抬权、下载进度、失败原因都得让
- *    用户自己看见；本项目没有 PTY，闷在管道里的安装过程就是一个转不完的圈。
+ * 安装路径的三条边界：
+ * 1. **参数只用于查表，不进入命令。** 请求体只有一个 `id`，用于在下方常量表中
+ *    查询 argv；查不到时返回 400。命令串中没有任何字节来自请求；执行用户给出的命令
+ *    是另一件事，由 `run_command` 负责并受裁决层约束。
+ * 2. **不自行下载安装包。** 程序交给 winget：签名校验、来源、回滚由系统包管理器负责。
+ *    自行下载 exe 再执行等于从网络获取可执行文件并运行，CLAUDE.md E 明确禁止。
+ *    文档库交给 pip，按产品附带的固定版本清单安装，同样不经本进程下载。
+ * 3. **打开可见的终端窗口，不在后台静默执行。** UAC 提权、下载进度、失败原因都必须让
+ *    用户看到；本项目没有 PTY，在管道中执行的安装过程在界面上只是一个不会结束的加载状态。
  *
- * 「应用内装依赖」本身是一条额外的执行入口，由用户明确要求才有——不要往这里追加别的软件。
+ * 应用内安装依赖本身是一条额外的执行入口，因用户明确要求而存在；不要在此追加其他软件。
  */
 
 import { existsSync } from 'node:fs'
@@ -42,8 +42,8 @@ import { commandShell, probeBash } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
 /**
- * 一次探测要读的外部状态：Python 按配置找（`officePython` 或 PATH），
- * 文档库缺项取 Office 宿主最近一次探测的结果。
+ * 一次探测读取的外部状态：Python 按配置查找（`officePython` 或 PATH），
+ * 文档库缺项取自 Office 宿主最近一次探测的结果。
  */
 export interface EnvProbeContext {
   config: QyConfig
@@ -51,44 +51,44 @@ export interface EnvProbeContext {
 }
 
 /**
- * 一条依赖随这台机器变的那三格。
+ * 一条依赖随机器变化的三个字段。
  *
- * `required` 也在里面而不是写死在 `DepSpec` 上：bash 缺了算不算硬伤，
- * 取决于本机是否还存在其他 shell（`resolveBashRow`）。其余三条是常量，
- * 照样从这里出——两种写法并存的话，读表的人得先分辨哪条是哪种。
+ * `required` 同样在此给出，而不是固定在 `DepSpec` 上：bash 缺失是否属于必需项，
+ * 取决于本机是否存在其他 shell（`resolveBashRow`）。其余条目的 `required` 是常量，
+ * 也由此处给出：两种写法并存时，读表的人必须先分辨每个条目属于哪一种。
  */
 interface DepState {
-  /** 找到的可执行文件；`null` = 没装。 */
+  /** 找到的可执行文件；`null` 表示未安装。 */
   path: string | null
-  /** 缺了就有功能不能用。前端只在 `path` 为 `null` 时消费它（标红 + 「需要安装」）。 */
+  /** 缺失时有功能不可用。前端只在 `path` 为 `null` 时读取该字段（标红并显示「需要安装」）。 */
   required: boolean
-  /** 没装时缺了会怎样，一句话。装了是空串。 */
+  /** 未安装时的影响，一句话；已安装时为空串。 */
   hint: string
 }
 
 /**
- * 一条依赖的定义。`probe` 返回它在这台机器上的当前状态。
+ * 一条依赖的定义。`probe` 返回它在本机上的当前状态。
  *
- * `winget` 为 `null` = 本仓没有收录它的包 id，界面上就没有按钮（B5：
- * 能力不存在就不显示入口）。
+ * `winget` 为 `null` 表示本仓库未收录其包 id，界面上不显示安装按钮（B5：
+ * 能力不存在时不显示入口）。
  */
 interface DepSpec {
   id: string
   label: string
-  /** winget 包 id。null = 不经 winget 装。 */
+  /** winget 包 id。null 表示不经 winget 安装。 */
   winget: string | null
-  /** 用选定的 Python 按产品附带的依赖清单装（`office/requirements.txt`）。 */
+  /** 用选定的 Python 按产品附带的依赖清单安装（`office/requirements.txt`）。 */
   pip?: true
   probe: (ctx: EnvProbeContext) => DepState
 }
 
 /**
- * PATH 上的可执行文件。`Bun.which` 在编译出的单文件二进制里同样可用
+ * PATH 上的可执行文件。`Bun.which` 在编译出的单文件二进制中同样可用
  * （`plugins/runtime.ts` 已实测）。
  *
- * **探测方式必须和调用方式一致。** 上面三条（git / rg / node）的调用方都是
- * `Bun.spawn(['git', …])` 这种交给 Bun 解析 PATH 的写法，所以用 `Bun.which` 探
- * 恰好一致：Bun 找不到的，那些调用点同样启动不了，报「未安装」是对的。
+ * 探测方式必须与调用方式一致。git / rg / node 的调用方均使用
+ * `Bun.spawn(['git', …])`，由 Bun 解析 PATH，因此用 `Bun.which` 探测的结果与调用一致：
+ * Bun 未找到的程序，这些调用点同样无法启动，报告「未安装」是正确的。
  * winget 使用执行别名探测，见 `resolveWinget()`。
  */
 function onPath(cmd: string): string | null {
@@ -127,39 +127,36 @@ export function resolveWinget(
 }
 
 /**
- * bash 那一行的当前状态。**「装没装」与「缺了算不算硬伤」在这一行是两个问题。**
+ * bash 一行的当前状态。是否已安装与缺失时是否属于必需项，在这一行是两个独立的问题。
  *
- * 批 4 之前它们是同一个：没有 bash 就没有 `run_command`，所以 `required` 恒为真。
- * 批 4 之后 `commandShell()` 按 bash → pwsh 7 → PowerShell 5.1 三档落，
- * **三档任一命中模型就跑得了命令**——再恒标必需的话，只有 PowerShell 的机器上
- * 设置页会报一条必需依赖缺失，而模型手里有 `run_command`，
- * 用户因此去装一个他并不需要的依赖。
+ * `commandShell()` 按 bash → pwsh 7 → PowerShell 5.1 三档回退，任一档命中，模型即可执行命令。
+ * 若 bash 缺失时恒标为必需，只有 PowerShell 的机器上设置页会报告一条必需依赖缺失，
+ * 而模型实际可以使用 `run_command`，用户会因此安装一个并不需要的依赖。
  *
- * 三格各自的判据：
+ * 三个字段各自的判据：
  *
- * - `path` 仍然是 **bash 自己**的路径。这一行的标签写着 bash，把 powershell.exe
- *   填进去只是把一句谎换成另一句；而「装了 bash」与「只有 PowerShell」是两种状态，
- *   不能显示成同一种（前者 POSIX，后者不是）。
- * - `required` 只在**一个 shell 都没有**时为真——那时 `run_command` 真的不注册
- *   （Alpine 这类不带 bash 的镜像会走到），标红是对的。
- * - `hint` 只说命令改由 PowerShell 执行，这是用户需要知道的能力边界。语法差异由
- *   `run_command` 的工具描述交给模型（`tools/shell.ts` 拼入的 `shell.hint`），不在设置页重复。
+ * - `path` 只填 bash 本身的路径。该行的标签是 bash，填入 powershell.exe 同样是错误信息；
+ *   已安装 bash 与只有 PowerShell 是两种状态，不能显示为同一种（前者兼容 POSIX，后者不兼容）。
+ * - `required` 只在没有任何 shell 时为真：此时 `run_command` 不注册
+ *   （Alpine 等不带 bash 的镜像会出现该情形），标红是正确的。
+ * - `hint` 只说明命令改由 PowerShell 执行，这是用户需要知道的能力边界。语法差异由
+ *   `run_command` 的工具描述告知模型（`tools/shell.ts` 拼入的 `shell.hint`），不在设置页重复。
  *
- * 注入是为了能测另外两档：本机只可能命中其中一档，而这一批要修的失败形状
- * （没 bash、有 PowerShell）不在开发机上。判据同 `sandbox.ts` 的 `resolveCommandShell`。
+ * 依赖以参数注入，以便测试另外两档：本机只可能命中其中一档，而需要覆盖的失败形状
+ * （没有 bash、有 PowerShell）不出现在开发机上。判据同 `sandbox.ts` 的 `resolveCommandShell`。
  */
 export function resolveBashRow(deps: {
   bash: () => { path: string | null; reason: string }
   shell: () => CommandShell | null
 }): DepState {
   const bash = deps.bash()
-  // 装了就没有「缺了会怎样」这个问题：它自己就是第一档，`commandShell()` 必然命中它。
+  // 已安装时不存在缺失影响：bash 是第一档，`commandShell()` 必然命中它。
   if (bash.path !== null) return { path: bash.path, required: false, hint: '' }
 
   const shell = deps.shell()
   if (shell === null) {
-    // 下一步照 bash 那一档说：三档里只有它给得出可操作的下一步（另外两档是
-    // 「这台机器上就是没有」）。判据与 `spawnGuarded` 抛的那句一致。
+    // 下一步按 bash 一档给出：三档中只有 bash 能给出可操作的下一步（另外两档在本机上
+    // 不存在）。判据与 `spawnGuarded` 抛出的错误信息一致。
     return {
       path: null,
       required: true,
@@ -174,8 +171,8 @@ const DEPS: DepSpec[] = [
     id: 'bash',
     label: 'bash',
     winget: 'Git.Git',
-    // bash **不查 PATH**，理由见 `tools/sandbox.ts` 的 `findGitBash`：
-    // 这台机器上 PATH 第一条是 WSL 启动器，命令会跑进另一个文件系统。
+    // bash 不查 PATH，理由见 `tools/sandbox.ts` 的 `findGitBash`：
+    // 本机 PATH 的第一项是 WSL 启动器，命令会在另一个文件系统中执行。
     probe: () => resolveBashRow({ bash: probeBash, shell: commandShell }),
   },
   {
@@ -202,7 +199,7 @@ const DEPS: DepSpec[] = [
     id: 'node',
     label: 'Node.js',
     winget: 'OpenJS.NodeJS.LTS',
-    // 出网限制的版本要求不写在这里：插件页按实际版本报「出网闸 有 / 无」与原因。
+    // 网络访问限制的版本要求不写在此处：插件页按实际版本报告网络访问限制的有无及原因。
     probe: () => ({
       path: onPath('node'),
       required: false,
@@ -213,7 +210,7 @@ const DEPS: DepSpec[] = [
     id: 'python',
     label: 'Python',
     winget: 'Python.Python.3.12',
-    // 与 `office` 起 worker 用的是同一个解释器（`findPython`）。
+    // 与 `office` 启动 worker 时使用同一个解释器（`findPython`）。
     probe: ({ config }) => ({
       path: findPython(config),
       required: false,
@@ -239,13 +236,13 @@ const DEPS: DepSpec[] = [
     id: 'video-decoder',
     label: '视频解码库',
     winget: null,
-    // 与 Office 文档库同一份依赖清单、同一个解释器，一键装走同一条 pip 路线。
+    // 与 Office 文档库使用同一份依赖清单与同一个解释器，一键安装经由同一条 pip 安装路径。
     pip: true,
     probe: ({ config, office }) => {
       const python = findPython(config)
       if (!python) return { path: null, required: false, hint: '需要先安装 Python。' }
       if (!office?.status().videoDecoder) {
-        return { path: null, required: false, hint: '不支持原生视频的模型读不了视频。' }
+        return { path: null, required: false, hint: '不支持原生视频的模型无法读取视频。' }
       }
       return { path: python, required: false, hint: '' }
     },
@@ -253,11 +250,11 @@ const DEPS: DepSpec[] = [
 ]
 
 /**
- * 这台机器上「一键装」是否可行。**握手与安装路由用同一个判据。**
+ * 本机能否一键安装。握手与安装路由使用同一个判据。
  *
- * 分开算的表现是界面上有个按钮、点下去回 409——而 B5 的原话就是
- * 「能力在某端不存在时，握手里声明 false、界面不显示入口，
- * 而不是显示一个点了报错的按钮」。
+ * 分开计算时，界面会显示一个点击后返回 409 的按钮；B5 规定：
+ * 「能力在某端不存在时，握手中声明 false、界面不显示入口，
+ * 而不是显示一个点击即报错的按钮」。
  */
 function canInstall(dep: DepSpec, ctx: EnvProbeContext): boolean {
   if (process.platform !== 'win32') return false
@@ -265,7 +262,7 @@ function canInstall(dep: DepSpec, ctx: EnvProbeContext): boolean {
   return dep.winget !== null && resolveWinget() !== null
 }
 
-/** 装文档库所需的解释器与清单所在目录；缺任一项就不给按钮。 */
+/** 安装文档库所需的解释器与清单所在目录；缺少任一项时不提供安装按钮。 */
 function pipTarget(ctx: EnvProbeContext): { python: string; dir: string } | null {
   const python = findPython(ctx.config)
   const dir = officeDir()
@@ -273,9 +270,9 @@ function pipTarget(ctx: EnvProbeContext): { python: string; dir: string } | null
 }
 
 /**
- * 全部依赖的当前状态。**每次调用重新探测，不缓存**——装完之后重连一下就该变，
- * 而不是让用户重启整个服务（他不会知道要重启）。四条探测是 `which` 与 `existsSync`；
- * winget 那次 `cmd /c winget --version` 只在**有依赖缺失**时才会跑到（实测命中 82ms）。
+ * 全部依赖的当前状态。每次调用重新探测，不缓存：安装完成后重新连接即应更新，
+ * 不要求用户重启整个服务（用户无从得知需要重启）。四项探测是 `which` 与 `existsSync`；
+ * winget 的 `cmd /c winget --version` 只在有依赖缺失时执行（实测找到 winget 时耗时 82ms）。
  */
 export function probeEnvironment(ctx: EnvProbeContext): EnvDependency[] {
   return DEPS.map((d) => {
@@ -292,11 +289,11 @@ export function probeEnvironment(ctx: EnvProbeContext): EnvDependency[] {
 }
 
 /**
- * 装文档库的 argv：用选定的解释器按清单安装。系统解释器装到用户目录（`--user`，不需要管理员权限）；
- * 虚拟环境（解释器旁或上一级有 `pyvenv.cfg`）装进环境本身，那里 pip 拒绝 `--user`。
- * 与 winget 那条同样开一个留着的控制台窗口，失败时输出留给用户看。
+ * 安装文档库的 argv：用选定的解释器按清单安装。系统解释器安装到用户目录（`--user`，无需管理员权限）；
+ * 虚拟环境（解释器所在目录或上一级目录有 `pyvenv.cfg`）安装到环境本身，虚拟环境中 pip 拒绝 `--user`。
+ * 与 winget 安装相同，打开一个保留的控制台窗口，失败时输出留给用户查看。
  *
- * 清单用相对路径，调用方把工作目录设为清单所在目录。不要改成绝对路径：
+ * 清单使用相对路径，调用方把工作目录设为清单所在目录。不要改成绝对路径：
  * 解释器与清单路径都含空格时命令行有四个引号，`cmd /k` 会去掉首尾两个，命令被拆开。
  */
 export function pipInstallArgv(python: string): string[] {
@@ -322,12 +319,12 @@ export function pipInstallArgv(python: string): string[] {
 }
 
 /**
- * 装一个依赖的 argv。**逐段拆开，不拼字符串**：拼字符串就得自己处理引号，
- * 而 `start` 后面那个带空格的标题需要引号——交给 spawn 去引更可靠。
+ * 安装一个依赖的 argv。逐段拆分，不拼接字符串：拼接字符串需要自行处理引号，
+ * 而 `start` 之后带空格的标题需要引号，交给 spawn 处理引号更可靠。
  *
- * 标题只用 ASCII：本机控制台代码页是 GBK，中文标题会以乱码显示。
- * `start` 开一个新控制台窗口，`cmd /k` 让它在 winget 跑完后**留着**——
- * 装失败时那几行输出是用户唯一的线索。
+ * 标题只用 ASCII：本机控制台代码页是 GBK，中文标题会显示为乱码。
+ * `start` 打开新的控制台窗口，`cmd /k` 使窗口在 winget 执行完毕后保留：
+ * 安装失败时窗口中的输出是用户唯一的线索。
  */
 export function installArgv(executable: string, wingetId: string): string[] {
   return [
@@ -352,7 +349,7 @@ export function installArgv(executable: string, wingetId: string): string[] {
 export const handleHostApi: ApiHandler = async (url, req, d) => {
   const ctx: EnvProbeContext = { config: d.config, ...(d.office ? { office: d.office } : {}) }
   if (url.pathname === '/api/host/environment' && req.method === 'GET') {
-    // 文档库那一行读 Office 宿主的探测结果，装完再查时先重新探测一次。
+    // 文档库一行读取 Office 宿主的探测结果，安装后再次查询时先重新探测。
     await d.office?.refresh()
     return json({ environment: probeEnvironment(ctx) })
   }
@@ -361,7 +358,7 @@ export const handleHostApi: ApiHandler = async (url, req, d) => {
 
   const body = (await req.json().catch(() => null)) as { id?: string } | null
   const dep = DEPS.find((x) => x.id === body?.id)
-  // 查不到就是查不到——不猜、不模糊匹配。id 由服务端下发，对不上说明前后端不同版本。
+  // 查不到即返回错误，不推测、不模糊匹配。id 由服务端下发，不一致说明前后端版本不同。
   if (!dep) return json({ error: 'bad request', message: `没有名为 "${body?.id}" 的依赖` }, 400)
 
   if (dep.pip) return installPip(dep, ctx)
@@ -382,7 +379,7 @@ export const handleHostApi: ApiHandler = async (url, req, d) => {
     return json({ error: 'no winget', message: `无法调用 winget，请手动安装 ${dep.label}。` }, 409)
   }
 
-  // 起进程本身失败（连 cmd.exe 都没有）也要如实回报，不能让按钮看起来点成功了。
+  // 启动进程失败（例如没有 cmd.exe）同样必须如实返回，不能让按钮显示为操作成功。
   try {
     Bun.spawn(installArgv(winget, dep.winget), {
       stdin: 'ignore',
@@ -396,7 +393,7 @@ export const handleHostApi: ApiHandler = async (url, req, d) => {
   return json({
     started: true,
     command: `"${winget}" install --id ${dep.winget} -e --source winget`,
-    // 必须提示重启：本进程的 PATH 取自启动时，不重启则新装的程序探测不到。
+    // 必须提示重启：本进程的 PATH 取自启动时，不重启则无法探测到新安装的程序。
     note: '安装窗口已打开，完成后重启 qywork 生效。',
   })
 }
@@ -404,7 +401,7 @@ export const handleHostApi: ApiHandler = async (url, req, d) => {
 function installPip(dep: DepSpec, ctx: EnvProbeContext): Response {
   if (process.platform !== 'win32') {
     return json(
-      { error: 'unsupported', message: `一键安装仅支持 Windows，请用 pip 安装 ${dep.label}。` },
+      { error: 'unsupported', message: `一键安装仅支持 Windows，请使用 pip 安装 ${dep.label}。` },
       409,
     )
   }
@@ -426,7 +423,7 @@ function installPip(dep: DepSpec, ctx: EnvProbeContext): Response {
   return json({
     started: true,
     command: `"${target.python}" ${argv.slice(argv.indexOf('-m')).join(' ')}`,
-    // 文档库装进解释器自己的目录，不改 PATH；重新检测即可生效。
+    // 文档库安装到解释器自身的目录，不修改 PATH；重新检测即可生效。
     note: '安装窗口已打开，完成后重新检测即可。',
   })
 }

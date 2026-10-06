@@ -1,15 +1,15 @@
 /**
- * 模型库里改过的单价，**真的会出现在账本里**。用假 provider，不花钱、不联网。
+ * 模型库中修改过的单价确实写入账本。使用模拟 provider，不产生费用，不访问网络。
  *
- * **覆盖范围**：`runtime/config.ts` 的 `resolveModel` 带出 `spec` →
- * `runtime/session.ts` 的 `resolveProfile` 塞进 `ProviderProfile.spec` →
- * `ai/factory.ts` 的 `applySpecOverride` 叠进 adapter 的 spec →
- * `agent/loop/request.ts` 用它算钱 → `store/usage.ts` 的 `recordUsage` 落账。
- * 合并顺序本身的单测在 `ai/src/catalog.test.ts`「模型库覆盖」。
+ * 覆盖范围：`runtime/config.ts` 的 `resolveModel` 带出 `spec` →
+ * `runtime/session.ts` 的 `resolveProfile` 写入 `ProviderProfile.spec` →
+ * `ai/factory.ts` 的 `applySpecOverride` 合并到 adapter 的 spec →
+ * `agent/loop/request.ts` 据此计算费用 → `store/usage.ts` 的 `recordUsage` 记账。
+ * 合并顺序本身的单测位于 `ai/src/catalog.test.ts`「模型库覆盖」。
  *
- * **为什么这条必须走真链路。** 那五处任何一处漏接，界面上都照样能改、改完也照样显示成改过的样子，
- * 而账本里仍然是内置价——**一条有产出没有消费者的链路，且完全静默**。
- * 只测 `applySpecOverride` 等于只测「这个函数被调用了」。
+ * 本测试必须经由完整链路：五处中任何一处未接通时，界面上仍可修改且显示为已修改，
+ * 而账本中仍是内置价格，即一条有生产者而无消费者的链路，且不报任何错误。
+ * 只测 `applySpecOverride` 等于只验证该函数被调用。
  */
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
@@ -32,7 +32,7 @@ import { startRun } from './run-control.ts'
 import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
 
-/** 一轮纯文本收尾，usage 写死——账本上的数只由「单价 × 这几个 token」决定。 */
+/** 一轮纯文本回复，usage 为固定值：账本中的金额只由「单价 × token 数」决定。 */
 const IN_TOKENS = 10
 const OUT_TOKENS = 5
 
@@ -91,11 +91,11 @@ beforeAll(async () => {
       },
     },
     /*
-     * 覆盖挂在一个**目录里没有**的模型上，不挂 deepseek-flash。
+     * 覆盖设置在目录中未收录的模型上，不设置在 deepseek-flash 上。
      *
-     * DeepSeek 现在有分时段折扣，空闲时段单价减半——挂在它上面的话，
-     * 这条断言的期望值会随这台机器跑测试的钟点变，是一条会随机红的测试。
-     * 未收录模型没有 offPeak，价钱只由覆盖决定。
+     * DeepSeek 有分时段折扣，空闲时段单价减半：设置在它上面时，
+     * 断言的期望值会随本机运行测试的时段变化，测试结果因此不稳定。
+     * 未收录模型没有 offPeak，价格只由覆盖决定。
      */
     catalog: {
       '中转站上的某个模型|openai_responses': { input: 1000, output: 2000 },
@@ -128,7 +128,7 @@ async function waitFor(what: (e: AgentEvent) => boolean, ms = 10_000): Promise<A
   return null
 }
 
-test('模型库里改过的单价直接进账本', async () => {
+test('模型库中修改过的单价直接写入账本', async () => {
   events = []
   const cv = createConversation(store, {
     workspaceId: workspaceId as never,
@@ -140,25 +140,25 @@ test('模型库里改过的单价直接进账本', async () => {
   const finished = await waitFor((e) => e.type === 'run.finished')
   expect(finished).not.toBeNull()
 
-  // (10 × 1000 + 5 × 2000) / 1e6 = 0.02。未收录模型的内置价是 0 —— 账本会报 $0，
-  // 漏接任何一环都不可能凑出 0.02。
+  // (10 × 1000 + 5 × 2000) / 1e6 = 0.02。未收录模型的内置价格是 0，账本会记为 $0，
+  // 任何一环未接通都不可能得到 0.02。
   const expected = (IN_TOKENS * 1000 + OUT_TOKENS * 2000) / 1e6
   const totals = usageTotals(store, {})
   expect(totals.cost.USD).toBeCloseTo(expected, 9)
 })
 
 /**
- * 分时段定价那一档也要**真的**进账本。
+ * 分时段定价的价格同样写入账本。
  *
- * 币种那半条是确定的：DeepSeek 现在按人民币标价，落账必须落在 CNY 那一栏。
- * 记成美元的话账面差七倍，而界面上看不出来。
+ * 币种部分是确定的：DeepSeek 按人民币标价，必须记入 CNY 一栏。
+ * 记为美元时金额相差约七倍，且界面上无法察觉。
  *
- * **没验到的写出来**：金额这半条拿 `computeCost` 现算的值比对，所以在**高峰时段**
- * 跑这个用例时，即使折扣那条路断了两边也会一样——那七个小时里它证明不了折扣。
- * 折扣本身的判档由 `ai/src/catalog.test.ts`「分时段定价」按固定时间戳钉死，
- * 这里只负责证明「loop 用的是同一条计价路径，且币种没丢」。
+ * 未验证的部分：金额与 `computeCost` 当场计算的值比对，因此在高峰时段
+ * 运行本用例时，即使折扣路径失效两边也相同，该七小时内本用例无法证明折扣生效。
+ * 折扣本身的档位判定由 `ai/src/catalog.test.ts`「分时段定价」以固定时间戳锁定，
+ * 此处只证明 loop 使用同一条计价路径，且币种未丢失。
  */
-test('人民币模型落账落在 CNY，金额与计价函数同源', async () => {
+test('人民币计价的模型记入 CNY，金额与计价函数同源', async () => {
   events = []
   const cv = createConversation(store, {
     workspaceId: workspaceId as never,
@@ -174,6 +174,6 @@ test('人民币模型落账落在 CNY，金额与计价函数同源', async () =
   const expected = computeCost(spec, { inputTokens: IN_TOKENS, outputTokens: OUT_TOKENS })
   const totals = usageTotals(store, {})
   expect(totals.cost.CNY).toBeCloseTo(before + expected, 9)
-  // 美元那一栏只有前一个用例那笔，人民币这笔不许混进去。
+  // 美元一栏只有前一个用例的金额，人民币金额不得计入其中。
   expect(totals.cost.USD).toBeCloseTo((IN_TOKENS * 1000 + OUT_TOKENS * 2000) / 1e6, 9)
 })

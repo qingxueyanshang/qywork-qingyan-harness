@@ -1,53 +1,53 @@
 /**
  * OpenAI Responses 协议适配器（/v1/responses）。
  *
- * 与 chat/completions 的差别不在「换个路径」，而在三处**形状**：
+ * 与 chat/completions 的差别不在路径，而在三处形状：
  *
- * 1. **`input` 不是 `messages`**。它是一串条目（item），每条有自己的 `type`：
- *    `message` / `function_call` / `function_call_output`。工具调用和工具结果
- *    是**顶层条目**，不是挂在 message 上的字段——这是最容易按 chat 协议写错的地方。
- * 2. **工具定义扁平**。`{type:'function', name, description, parameters}`，
- *    没有 chat 协议那层 `function: {...}` 包装。
- * 3. **流式事件是有类型的 SSE**，不是 delta 拼接：`response.output_text.delta`、
- *    `response.function_call_arguments.delta` 等等。
+ * 1. `input` 不是 `messages`。它是一组条目（item），每个条目有自己的 `type`：
+ *    `message` / `function_call` / `function_call_output`。工具调用与工具结果
+ *    是顶层条目，而不是 message 上的字段；按 chat 协议编写时最容易在此出错。
+ * 2. 工具定义是扁平的。`{type:'function', name, description, parameters}`，
+ *    没有 chat 协议的 `function: {...}` 包装层。
+ * 3. 流式事件是带类型的 SSE，而不是 delta 拼接：`response.output_text.delta`、
+ *    `response.function_call_arguments.delta` 等。
  *
- * 还有一处不在形状上但同样致命：**`max_output_tokens` 同时封顶思考与正文**。
- * 按「不思考」的口径调小它，回答会从中间被截断。
+ * 另有一处与形状无关但同样关键：`max_output_tokens` 同时限制思考与正文。
+ * 按「不思考」的口径调小该值，回答会在中途被截断。
  *
- * 实现取舍：**直接打 HTTP，不用 SDK**。SDK 的 Responses 类型随版本变动频繁，
- * 而这里要处理的字段集本来就得按 Record 断言（推理条目、各家中转站的扩展字段）。
- * 引一层类型再全部 as never，等于既付了依赖又没拿到类型收益。
+ * 实现取舍：直接发送 HTTP 请求，不使用 SDK。SDK 的 Responses 类型随版本频繁变动，
+ * 而此处处理的字段集本身须按 Record 断言（推理条目、各中转站的扩展字段）。
+ * 引入一层类型后再全部断言为 never，等于承担了依赖却未获得类型收益。
  *
- * **推理内容：同一条协议下的两种实现（2026-08 对 DeepSeek v4 flash 实测）。** 说 Responses 协议的**
- * 不止 OpenAI**，而它们在推理这一块**行为不同**：
+ * 推理内容：同一协议下的两种实现（2026-08 对 DeepSeek v4 flash 实测）。实现 Responses 协议的
+ * 不只有 OpenAI，而各实现在推理部分的行为不同：
  *
  * | | OpenAI | DeepSeek |
  * |---|---|---|
  * | 流式事件 | `response.reasoning_summary_text.delta` | `response.reasoning_text.delta` |
  * | 输出条目 | `reasoning.summary[]` | `reasoning.content[].reasoning_text` |
- * | 要不要回传 | 不要求，多发就 400 | **要求，不传就 400** |
+ * | 是否须回传 | 不要求，多发送返回 400 | 要求，不回传返回 400 |
  *
- * 这两条各有各的坑，**错法不一样**：
+ * 两处各有易错点，出错方式不同：
  *
- * - 只认 `reasoning_summary_text` 的后果是**静默的**——流跑完、正文正常、
- *   一个 `thinking_delta` 都没有。没有报错，思考流因缺少对应事件而中断。
- *   所以两个事件名都收进 `thinking_delta`：显示这一侧两家都要。
- * - 回传方向两边都会 400，**方向相反**：不要求回传的那侧多发一个条目，
+ * - 只识别 `reasoning_summary_text` 的后果是静默的：流执行完毕、正文正常，
+ *   但没有任何 `thinking_delta`。不报错，思考流因缺少对应事件而中断。
+ *   因此两个事件名都转换为 `thinking_delta`：两种实现的思考内容都需要显示。
+ * - 回传在两个方向上都会返回 400，方向相反：不要求回传的一侧多发送一个条目，
  *   得到 `Invalid 'input[N].content': array too long. Expected an array with
- *   maximum length 0`；要求回传的那侧少发，得到 `The reasoning_text in the
+ *   maximum length 0`；要求回传的一侧少发送，得到 `The reasoning_text in the
  *   thinking mode must be passed back to the API`。
- *   两者都只在**第二轮**才发作：第一轮没有历史可回传，全程正常；模型一旦调了工具、
- *   把结果回传就 400。**任何单轮测试都测不出它**，而 agent 的主循环全是多轮。
+ *   两者都只在第二轮出现：第一轮没有可回传的历史，请求正常；模型调用工具并
+ *   回传结果后即返回 400。任何单轮测试都无法发现，而 agent 的主循环均为多轮。
  *
- * 所以「要不要回传」不能从流里反推——摘要型端点同样给得出推理文本，反推必然假阳性。
- * 它是**接收端的要求**，由目录那一格 `spec.reasoningEcho` 声明，`buildInput` 只查不猜。
+ * 因此「是否须回传」不能从流中反推：摘要型端点同样会返回推理文本，反推必然产生假阳性。
+ * 这是接收端的要求，由目录字段 `spec.reasoningEcho` 声明，`buildInput` 只查询不推测。
  *
- * 实测出来的回传规则（见 `buildInput`）：
- * - `reasoning` 条目必须排在它对应的 `function_call` **之前**；插在
- *   `function_call` 和 `function_call_output` 中间会得到「找不到工具输出」。
- * - `id` 和 `summary` 可以省。
- * - **文本为空串等于没传**，照样 400。所以占位文本不能是空的。
- * - 只有**最后**一轮工具调用被检查；但每一轮都带上，不去赌它的实现细节。
+ * 实测得到的回传规则（见 `buildInput`）：
+ * - `reasoning` 条目必须排在其对应的 `function_call` 之前；插在
+ *   `function_call` 与 `function_call_output` 之间会得到「未找到工具输出」。
+ * - `id` 与 `summary` 可以省略。
+ * - 文本为空串等同于未发送，同样返回 400，因此占位文本不能为空。
+ * - 只有最后一轮工具调用会被检查；但每一轮都附带，不依赖该实现细节。
  */
 
 import type { ReasoningEcho } from '@qywork/core'
@@ -73,10 +73,10 @@ import { collectToolCalls } from './tool-calls.ts'
 
 export class OpenAIResponsesAdapter implements LlmAdapter {
   readonly kind = 'openai_responses' as const
-  // Responses 协议有原生的 reasoning 字段（含 effort），但**发不发按这条模型的参数格式算**：
-  // 判据只有 `effortIsTransmittable` 一份，与 `buildReasoning` 实际发的字段同源。
-  // 各写一份的实测后果：这里说「发得出去」而那边按参数格式省掉，
-  // 因此探针恒通过，将无依据的结论写回目录。
+  // Responses 协议有原生的 reasoning 字段（含 effort），但是否发送按该模型的参数格式判定：
+  // 判据只有 `effortIsTransmittable` 一处，与 `buildReasoning` 实际发送的字段同源。
+  // 两处各自判定时，此处声明可以发送而另一处按参数格式省略，
+  // 探针因此恒为通过，并将无依据的结论写回目录。
   get transmits(): { effort: boolean } {
     return { effort: effortIsTransmittable(this.spec) }
   }
@@ -86,8 +86,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
 
   constructor(profile: ProviderProfile, spec: ModelSpec) {
     this.spec = spec
-    // 与兼容协议同一条归一：少了 `/v1` 的地址在多数中转站上会回一个 200 的网页，
-    // 而那种失败是静默的（0 事件、0 token、当成正常完成）。
+    // 与兼容协议使用同一归一规则：缺少 `/v1` 的地址在多数中转站上会返回 200 的网页，
+    // 而该失败是静默的（0 事件、0 token、记为正常完成）。
     this.baseUrl = normalizeBaseUrl(profile.baseUrl)
     this.headers = {
       ...PROVIDER_HEADERS,
@@ -111,15 +111,15 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       source: 'estimated',
     }
     let stopReason: ProviderStopReason = 'end_turn'
-    // provider 的原话，只进账本不参与判断。
+    // provider 返回的原值，只记入账本，不参与判断。
     let rawFinish = ''
     /**
-     * 终态事件到过没有。**不能用 `rawFinish` 是不是空串代替**：
-     * `rawStatusOf` 在 `response` 缺 `status` 字段时就回空串，
-     * 那时终态到了，拿空串当判据会把一次正常收尾报成截断。
+     * 是否已收到终态事件。不能以 `rawFinish` 是否为空串代替：
+     * `rawStatusOf` 在 `response` 缺少 `status` 字段时返回空串，
+     * 此时终态已到达，以空串为判据会将正常结束报告为截断。
      */
     let settled = false
-    /** 按 output_index 累积的工具调用。参数是分片到达的。 */
+    /** 按 output_index 累积的工具调用。参数分片到达。 */
     const partial = new Map<number, { id: string; name: string; json: string }>()
     const encryptedReasoning = new Map<number, Record<string, unknown>>()
     const keepReasoning = (idx: number, item: Record<string, unknown>) => {
@@ -133,14 +133,13 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     }
 
     /*
-     * 连接超时：**只管到响应头到达为止**，之后必须撤掉。
+     * 连接超时：只作用到响应头到达为止，之后必须撤销。
      *
-     * 直接 `AbortSignal.timeout()` 会把正文流一起掐了——一次长生成跑过这个数
-     * 就断在半路。所以自己起一个定时器，`fetch` 一 resolve 就清掉，
-     * 与两个官方 SDK 的做法一致（它们在 fetch 的 finally 里 clearTimeout）。
+     * 直接使用 `AbortSignal.timeout()` 会将正文流一并中断：长时间生成超过该时长
+     * 即会中途断开。因此单独设置定时器，`fetch` resolve 后立即清除。
      *
-     * 用户按停止走的是 `req.signal`，与这条超时是两回事，所以下面要分开认：
-     * 混起来会把「连不上」报成「已取消」。
+     * 用户点击停止经由 `req.signal` 传递，与该超时是两个独立信号，因此下方须分别识别：
+     * 混淆时会将「连接失败」报告为「已取消」。
      */
     const connect = new AbortController()
     const timer = setTimeout(() => connect.abort(), PROVIDER_HTTP.timeout)
@@ -158,7 +157,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         headers: this.headers,
         body: JSON.stringify({ ...body, stream: true }),
         signal,
-        // 关掉运行时的 socket 空闲超时，理由见 PROVIDER_HTTP。SDK 适配器由 SDK 合进去，这里手写 fetch 要自己展开。
+        // 关闭运行时的 socket 空闲超时，理由见 PROVIDER_HTTP。SDK 适配器由 SDK 合并该选项，此处自行调用 fetch，须手动展开。
         ...PROVIDER_HTTP.fetchOptions,
       })
     } catch (err) {
@@ -167,7 +166,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           'openai_responses',
           new ProviderError({
             code: 'network_error',
-            // 只报失败分类；实际静默时长与重发次数由 AgentLoop 统一拼装。
+            // 只给出失败分类；实际静默时长与重发次数由 AgentLoop 统一补充。
             message: '连接超时',
             provider: 'openai_responses',
             timedOut: true,
@@ -181,8 +180,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     }
 
     if (!res.ok) {
-      // 错误体要读出来再分类：容量拒绝的判据全在响应正文里，
-      // 只拿状态码分类会把「上下文超了」和「参数写错了」混成同一个 400。
+      // 须读取错误体后再分类：容量拒绝的判据均在响应正文中，
+      // 只按状态码分类会将「上下文超限」与「参数错误」混为同一种 400。
       const text = await res.text().catch(() => '')
       throw classifyProviderError(
         'openai_responses',
@@ -199,17 +198,17 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       })
     }
 
-    // fetch 在响应头到达时 resolve；正文 SSE 尚未开始。把这条边界交给账本，
-    // 才能区分「请求上传/中转排队」和「provider 已接单后的预填充/思考」。
+    // fetch 在响应头到达时 resolve，此时正文 SSE 尚未开始。将该时刻记入账本，
+    // 才能区分「请求上传或中转排队」与「provider 接收请求后的预填充或思考」。
     yield { type: 'response_started', headersAt: trace.headersAt! }
 
     try {
       for await (const frame of readSse(res.body)) {
-        // Responses 协议不发 `[DONE]`；中转补一条也不作终态，终态只认 response.completed。
+        // Responses 协议不发送 `[DONE]`；中转站补发时也不视为终态，终态以 response.completed 与 response.incomplete 为准。
         if (frame.data === SSE_DONE) continue
         const event = sseJson(frame.data)
         if (!event) continue
-        // 这一帧解析出来的时刻。带内容的事件都用它，不让下游各取一次当前时刻。
+        // 本帧解析完成的时刻。带内容的事件统一使用该时刻，不由下游各自读取当前时刻。
         const at = Date.now()
         const type = String(event.type ?? '')
 
@@ -219,11 +218,11 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           continue
         }
 
-        // 推理内容。**不是** output_text——把它当正文会让思考内容混进回答里。
+        // 推理内容，而非 output_text：将其视为正文会使思考内容混入回答。
         //
-        // 两个事件名都要认：OpenAI 发 `reasoning_summary_text`（摘要），
-        // DeepSeek 发 `reasoning_text`（原文）。只认前者的后果是静默丢失——
-        // 流跑完、正文正常、思考过程一个字都没有，不报任何错。
+        // 两个事件名均须识别：OpenAI 发送 `reasoning_summary_text`（摘要），
+        // DeepSeek 发送 `reasoning_text`（原文）。只识别前者会导致静默丢失：
+        // 流执行完毕、正文正常，但思考过程完全缺失，且不报任何错误。
         if (
           type === 'response.reasoning_text.delta' ||
           type === 'response.reasoning_summary_text.delta'
@@ -258,9 +257,9 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           continue
         }
 
-        // 收尾事件带**完整**参数。以它为准而不是只靠拼分片：
-        // 掉一片分片的表现是「参数少一个字段」——那比整条调用失败更难查，
-        // 因为工具会拿着一份看起来合法的参数跑出一个错结果。
+        // 结束事件携带完整参数，以其为准，而不只依赖分片拼接：
+        // 丢失一个分片会导致参数缺少字段，比整条调用失败更难排查，
+        // 因为工具会以看似合法的参数执行并产生错误结果。
         if (type === 'response.function_call_arguments.done') {
           const idx = Number(event.output_index ?? 0)
           const slot = partial.get(idx)
@@ -281,10 +280,10 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
             if (!slot.name && name) slot.name = name
             continue
           }
-          // 没见过 added 事件也要能收下这条调用——中转站漏发增量事件时，
-          // 丢掉它等于模型调了工具而本地当作没调，模型下一轮会重复调用。
-          // 名字没来也照样建槽：能不能执行由 `collectToolCalls` 统一裁决，
-          // 在这里 `continue` 掉的话它就从账本上彻底消失了。
+          // 未收到 added 事件时同样接收该调用：中转站漏发增量事件时，
+          // 丢弃该调用等于模型调用了工具而本地视为未调用，模型下一轮会重复调用。
+          // 名称未到达时同样建立槽位：能否执行由 `collectToolCalls` 统一裁决，
+          // 在此处 `continue` 会使该调用从账本中完全消失。
           partial.set(idx, {
             id,
             name,
@@ -295,7 +294,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
 
         if (type === 'response.completed' || type === 'response.incomplete') {
           const response = (event.response ?? {}) as Record<string, unknown>
-          // 完整 output 是本轮最终快照，替换增量记录，避免漏参或重复调用。
+          // 完整 output 是本轮最终快照，替换增量记录，避免参数缺失或重复调用。
           if (Array.isArray(response.output)) {
             partial.clear()
             encryptedReasoning.clear()
@@ -314,15 +313,15 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           rawFinish = rawStatusOf(response)
           stopReason = normalizeStatus(response)
           settled = true
-          // 终态到手就结束读取：读取器随即取消 body，工具调用与用量不等 HTTP EOF 才交付。
+          // 收到终态即结束读取：读取器随即取消 body，工具调用与用量无需等待 HTTP EOF 即可交付。
           break
         }
 
-        // 流内错误。SSE 已经 200 了，错误只能从事件里出——不认它的话
-        // 表现是「流正常结束但什么都没有」。
+        // 流内错误。SSE 已返回 200，错误只能出现在事件中；不识别该事件时，
+        // 流正常结束但没有任何内容。
         if (type === 'response.failed' || type === 'error') {
-          // 顶层 `error` 事件自己就是那个错误对象，退到 `event` 而不是空对象：
-          // 空对象会把 provider 原文换成 `{}`。
+          // 顶层 `error` 事件本身即为错误对象，因此回退到 `event` 而不是空对象：
+          // 空对象会将 provider 原文替换为 `{}`。
           const detail =
             ((event.response as Record<string, unknown>)?.error as Record<string, unknown>) ??
             (event.error as Record<string, unknown>) ??
@@ -332,23 +331,23 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       }
 
       /*
-       * **流结束了却没到过终态事件 = 传输被截断，不是「说完了」。**
+       * 流已结束但未收到终态事件，表示传输被截断，而非模型输出完毕。
        *
-       * 与 `openai-compat` 那条守卫同一件事：默认值 `end_turn` 会把连接中途
-       * 断掉记成正常完成——界面上是「写到一半就停、run 显示成功」，
-       * 用量也停在估算值上，那一轮读数无从对账。
+       * 与 `openai-compat` 中的检查相同：默认值 `end_turn` 会将连接中断
+       * 记为正常完成，使输出中断的一轮被记为成功，
+       * 用量也停留在估算值，该轮读数无法对账。
        *
-       * 记成传输失败而不是 provider 拒绝：没有 HTTP 状态码，是否计费无从判断，
-       * 账本行因此落 `uncertain`。「收到了多少」由 `agent/loop/attempt.ts` 的
-       * 现场读数补，所以这里不再分「一个事件都没有」和「断在半路」两种说法。
+       * 记为传输失败而非 provider 拒绝：没有 HTTP 状态码，无法判断是否计费，
+       * 账本行因此记为 `uncertain`。已接收量由 `agent/loop/attempt.ts` 的
+       * 现场读数补充，因此此处不再区分「没有任何事件」与「中途断开」两种描述。
        */
       if (!settled) {
         throw new ProviderError({
           code: 'network_error',
           message: '流在终态事件之前结束',
           provider: 'openai_responses',
-          // 用量那一格先到、终态没到时把实数带上去。`source` 仍是 `estimated` 说明
-          // 它一个字节都没回报过，那种时候不带——带了就是把零当成真值记进账本。
+          // 用量已到达而终态未到达时附带真实值。`source` 仍为 `estimated`
+          // 表示 provider 未回报任何用量，此时不附带，否则会将零作为真实值记入账本。
           ...(usage.source === 'provider' ? { usage } : {}),
         })
       }
@@ -368,8 +367,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       }
     }
     if (calls.length) {
-      // 截断优先，别把 max_tokens 覆盖成 tool_use——理由同 openai-compat：
-      // 参数拼到一半被截断时，抹掉截断信号 = 上层拿着残缺参数照常执行工具。
+      // 截断优先，不要将 max_tokens 覆盖为 tool_use，理由与 openai-compat 相同：
+      // 参数拼接中途被截断时，丢失截断信号会使上层以残缺参数照常执行工具。
       if (stopReason !== 'max_tokens') stopReason = 'tool_use'
       yield { type: 'tool_calls', calls, at: Date.now() }
     }
@@ -389,13 +388,13 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
       model: req.model,
       ...(instructions ? { instructions } : {}),
       input: buildInput(req.messages, this.spec.reasoningEcho),
-      // 同时封顶思考与正文。按「不思考」的口径调小它，回答会从中间截断。
-      // 未收录的模型不申报，让端点用自己的默认。
+      // 同时限制思考与正文。按「不思考」的口径调小该值，回答会在中途截断。
+      // 未收录的模型不申报，由端点使用自身的默认值。
       ...(cap === null ? {} : { max_output_tokens: cap }),
       ...(req.tools.length ? { tools: buildTools(req.tools, this.spec.chatToolSchema) } : {}),
       ...this.buildReasoning(req),
-      // 亲和键发不发由目录里那条模型说了算，判据与 chat/completions 那支同一个
-      // 字段——两条协议各写一套判定，就会出现「同一个模型换条协议就不发了」。
+      // 是否发送 `prompt_cache_key` 由目录中该模型的条目决定，判据与 chat/completions 分支为同一
+      // 字段；两条协议各自判定会导致同一模型更换协议后不再发送。
       ...(req.cacheKey && this.spec.cacheRouting === 'prompt_cache_key'
         ? { prompt_cache_key: req.cacheKey }
         : {}),
@@ -406,17 +405,17 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
   /**
    * 推理配置。
    *
-   * 与 Anthropic 一样，**关不掉的模型上必须整个省略这个字段**——
-   * 传 `{effort:'none'}` 给一个恒开推理的模型会 400，而那种 400 的文案
-   * 跟容量拒绝长得很像，之后就是一次毫无用处的压缩重发。
+   * 与 Anthropic 相同，无法关闭推理的模型必须省略整个字段：
+   * 向推理恒开的模型发送 `{effort:'none'}` 会返回 400，而该 400 的文案
+   * 与容量拒绝相似，随后会触发一次无效的压缩重发。
    *
-   * **协议层的 `none` 与 `minimal` 不是一回事。** 本产品不提供“关闭思考”档：
-   * 用户未选择时省略整个 `effort`，由模型使用默认值；绝不能为了提速在后台发送
-   * `none`，也不能把关闭意图伪装成 `minimal`。
+   * 协议层的 `none` 与 `minimal` 含义不同。本产品不提供「关闭思考」档位：
+   * 用户未选择时省略整个 `effort`，由模型使用默认值；不得为提速在后台发送
+   * `none`，也不得以 `minimal` 代替关闭意图。
    */
   private buildReasoning(req: ChatRequest): Record<string, unknown> {
     if (this.spec.thinking === 'none') return {}
-    // 带不带 effort 只由 `effortIsTransmittable` 裁决，不在这里另判一遍。
+    // 是否携带 effort 只由 `effortIsTransmittable` 裁决，此处不重复判定。
     const effort =
       req.effort && effortIsTransmittable(this.spec) && this.spec.effortLevels.includes(req.effort)
         ? req.effort
@@ -424,8 +423,8 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
     return {
       reasoning: {
         ...(effort ? { effort } : {}),
-        // 原文型协议直接返回 reasoning_text；摘要型协议才需要显式请求摘要。
-        // MiniMax 的 reasoning 只声明 effort，不能把 OpenAI 的摘要字段一并塞过去。
+        // 原文型协议直接返回 reasoning_text；只有摘要型协议需要显式请求摘要。
+        // MiniMax 的 reasoning 只声明 effort，不得同时发送 OpenAI 的摘要字段。
         ...(this.spec.reasoningEcho === 'reasoning_text' ||
         this.spec.reasoningEcho === 'reasoning_text_object'
           ? {}
@@ -440,9 +439,9 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
 /**
  * 思考内容丢失时的占位。
  *
- * **不能是空串**：DeepSeek 对空 `reasoning_text` 的处理与「没传」完全一样，
- * 照样 400。同时它必须读起来就是一句交代，不能编一段像模像样的思考——
- * 那等于往模型的历史里塞它没生成过的内容。
+ * 不能是空串：DeepSeek 对空 `reasoning_text` 的处理与「未传」完全相同，
+ * 同样返回 400。同时占位文本必须是一句说明，不得虚构看似真实的思考：
+ * 那等于向模型的历史中写入其未生成过的内容。
  */
 const LOST_REASONING = '(上一轮的思考内容未能保留)'
 
@@ -454,12 +453,12 @@ function reasoningItem(text: string, echo: ReasoningEcho): Record<string, unknow
 /**
  * `input` 是条目序列，不是消息序列。
  *
- * 工具调用与工具结果是**顶层条目**（`function_call` / `function_call_output`），
- * 不是挂在 assistant message 上的字段。按 chat 协议的写法会得到一个
- * 结构合法但语义错误的请求：模型看不到自己调过什么。
+ * 工具调用与工具结果是顶层条目（`function_call` / `function_call_output`），
+ * 不是 assistant message 上的字段。按 chat 协议的写法会得到
+ * 结构合法但语义错误的请求：模型无法看到自己调用过的工具。
  *
- * 带工具调用的 assistant 轮**要不要回传思考内容由 `echo` 说了算**，见文件头。
- * 密文条目只看消息上有没有：前缀变过的（含换模型）已由装配点剥离，这里不再判。
+ * 带工具调用的 assistant 轮是否回传思考内容由 `echo` 决定，见文件头。
+ * 密文条目只按消息上是否存在判定：前缀已变化的消息（含更换模型）已由装配点剥离，此处不再判定。
  */
 export function buildInput(
   messages: WireMessage[],
@@ -474,10 +473,10 @@ export function buildInput(
     }
     if (m.role === 'tool') {
       /*
-       * **工具结果里能放图。** 文档原话：`function_call_output` 的结果「可以是纯
-       * 字符串或 `input_text` / `input_image` 内容块列表」，用视觉模型时按真实图片
-       * 处理、其他模型替换成占位文本——**降级由服务端做，客户端无条件发**。
-       * 2026-08 实测确认（`deepseek-v4-flash-vision-exp` 答得出图里的数字与颜色）。
+       * 工具结果可以包含图片。按文档，`function_call_output` 的结果「可以是纯
+       * 字符串或 `input_text` / `input_image` 内容块列表」，视觉模型按真实图片
+       * 处理，其他模型替换为占位文本；降级由服务端完成，客户端无条件发送。
+       * 2026-08 实测确认：`deepseek-v4-flash-vision-exp` 能正确回答图中的数字与颜色。
        */
       items.push({
         type: 'function_call_output',
@@ -489,8 +488,8 @@ export function buildInput(
 
     if (m.role === 'assistant' && m.toolCalls?.length) {
       const text = typeof m.content === 'string' ? m.content : ''
-      // reasoning 必须排在 function_call **之前**。放到 call 与 output 中间，
-      // 会被判成「找不到工具输出」——错误信息指向的地方跟真正的原因无关。
+      // reasoning 必须排在 function_call 之前。插在 function_call 与 function_call_output 之间时，
+      // 端点报告「未找到工具输出」，错误信息指向的位置与实际原因无关。
       const reasoning = m.reasoningContent?.trim()
       if (echoesReasoning) items.push(reasoningItem(reasoning || LOST_REASONING, echo))
       if (text) {
@@ -511,8 +510,8 @@ export function buildInput(
       continue
     }
 
-    // 输入侧文本用 input_text，输出侧用 output_text。写反了会被拒，
-    // 而错误信息只说「content 无效」，不说是哪一条。
+    // 输入侧文本使用 input_text，输出侧使用 output_text。两者写反时请求被拒绝，
+    // 而错误信息只报告「content 无效」，不指明是哪一个条目。
     const role = m.role
     const isAssistant = role === 'assistant'
     if (isAssistant && echoesReasoning && m.reasoningContent) {
@@ -542,7 +541,7 @@ function toResponsesContent(content: Exclude<WireMessage['content'], string>) {
   })
 }
 
-/** 工具定义是**扁平**的，没有 chat 协议那层 `function: {...}` 包装。 */
+/** 工具定义是扁平结构，没有 chat 协议的 `function: {...}` 包装层。 */
 export function buildTools(
   tools: ToolSchema[],
   schema: ModelSpec['chatToolSchema'] = 'openai_strict',
@@ -569,10 +568,10 @@ export function applyUsage(acc: ProviderUsage, raw: Record<string, unknown> | un
   const outDetails = raw.output_tokens_details as Record<string, unknown> | undefined
 
   /*
-   * Responses 的 `input_tokens` 是**合计**：命中 + 新写入 + 两者都不是的那部分，
-   * 与 Anthropic 的排他口径相反。两项都要减掉才收敛到排他口径——只减命中的话，
-   * 写入那部分会同时留在 inputTokens 里并进 cacheWriteTokens，按 1.0x 和 1.25x
-   * 各计一遍费。
+   * Responses 的 `input_tokens` 是合计值：缓存命中、缓存写入与其余输入之和，
+   * 与 Anthropic 的排他口径相反。必须同时减去命中与写入两项才得到排他口径；只减去命中时，
+   * 写入部分同时计入 inputTokens 与 cacheWriteTokens，按 1.0x 与 1.25x
+   * 重复计费。
    */
   acc.cachedTokens = typeof cached === 'number' ? cached : null
   acc.cacheWriteTokens = typeof written === 'number' ? written : null
@@ -583,10 +582,10 @@ export function applyUsage(acc: ProviderUsage, raw: Record<string, unknown> | un
 }
 
 /**
- * provider 的原话：`status` 加上不完整时的具体原因。
+ * provider 返回的原始状态：`status`，以及不完整时的具体原因。
  *
- * Responses 协议的终态分两层——`status` 说完没完，`incomplete_details.reason`
- * 说为什么没完。只记一层的话，`incomplete` 一词无法区分是达到输出上限还是被过滤。
+ * Responses 协议的终态分两层：`status` 表示是否完成，`incomplete_details.reason`
+ * 表示未完成的原因。只记录 `status` 时，`incomplete` 无法区分达到输出上限与内容被过滤。
  */
 function rawStatusOf(response: Record<string, unknown>): string {
   const status = typeof response.status === 'string' ? response.status : ''
@@ -616,7 +615,7 @@ function asError(
       typeof nested === 'object' && nested !== null ? (nested as Record<string, unknown>) : parsed
     message = String(detail.message ?? body)
   } catch {
-    // 非 JSON 错误体（网关的 HTML 页面之类）原样带上。
+    // 非 JSON 错误体（如网关返回的 HTML 页面）原样作为错误信息。
   }
   return Object.assign(new Error(message || `HTTP ${status}`), {
     status,

@@ -1,10 +1,10 @@
-"""office 工具的 worker：按 request.json 执行一个动作，把结果写进同一调用目录的 response.json。
+"""office 工具的 worker：按 request.json 执行一个动作，把结果写入同一调用目录的 response.json。
 
 用法：python worker.py <call_dir>/request.json
-写完 response.json 后以 0 退出，动作失败也一样；只有 worker 自身崩溃才以非 0 退出。
+写入 response.json 后以 0 退出，动作失败时同样如此；只有 worker 自身崩溃时才以非 0 退出。
 动作：probe、guide、read、write、view、frames、cleanup。
 
-顶层只导入标准库与 util、com：缺第三方包时 probe 仍要能跑出缺项清单。
+顶层只导入标准库与 util、com：缺第三方包时 probe 仍须能够输出缺项清单。
 """
 
 import contextlib
@@ -24,7 +24,7 @@ sys.path.insert(0, str(HERE))
 import com  # noqa: E402
 import util  # noqa: E402
 
-# (发行包名, 导入名)。matplotlib 只在脚本用 office.figure 时需要，av 只在视频抽帧时需要，缺了都不算缺项。
+# (发行包名, 导入名)。matplotlib 仅在脚本使用 office.figure 时需要，av 仅在视频抽帧时需要，缺少时均不计为缺项。
 PACKAGES = [("python-docx", "docx"), ("openpyxl", "openpyxl"), ("python-pptx", "pptx"),
             ("lxml", "lxml"), ("Pillow", "PIL"), ("pypdfium2", "pypdfium2"),
             ("psutil", "psutil"), ("matplotlib", "matplotlib"), ("av", "av")]
@@ -82,11 +82,11 @@ def do_guide(req, resp):
     fmt = req.get("format")
     path = HERE / "guides" / f"{fmt}.md"
     if not path.is_file():
-        resp["message"] = f"没有 {fmt} 的说明；format 取 docx / pptx / xlsx"
+        resp["message"] = f"没有 {fmt} 的说明；format 可选 docx / pptx / xlsx"
         return
     resp["text"] = path.read_text("utf-8")
     resp["ok"] = True
-    resp["message"] = f"{fmt} 的做法要点"
+    resp["message"] = f"{fmt} 的制作要点"
 
 
 def _check_readable(path, resp):
@@ -99,17 +99,17 @@ def _check_readable(path, resp):
         resp["message"] = f"{p.name} 不是 docx / pptx / xlsx"
         return None
     if util.is_ole(p):
-        resp["message"] = (f"{p.name} 已加密，或是改了扩展名的旧版二进制文件，打不开；"
-                           f"需要先在办公软件里去掉密码或另存为 .{fmt}")
+        resp["message"] = (f"{p.name} 已加密，或是修改了扩展名的早期二进制格式文件，无法打开；"
+                           f"需要先在办公软件中移除密码或另存为 .{fmt}")
         return None
     if util.has_macros(p):
-        resp["message"] = f"{p.name} 含宏，不打开"
+        resp["message"] = f"{p.name} 含宏，拒绝打开"
         return None
     return fmt
 
 
 def _check_viewable(path, resp):
-    """view 另收 PDF 原件，按页直接栅格化；read、write 的格式集不变，不要把 PDF 加进 util.FORMATS。"""
+    """view 另外接受 PDF 原件，按页直接栅格化；read、write 的格式集不变，不要把 PDF 加入 util.FORMATS。"""
     p = Path(path)
     if not util.is_pdf(p):
         return _check_readable(path, resp)
@@ -141,7 +141,7 @@ def do_cleanup(req, resp):
     ended = sum(1 for r in report if r["action"] == "ended")
     left = [r for r in report if r["action"] in ("reported", "end_failed")]
     resp["ok"] = not left
-    resp["message"] = (f"结束了 {ended} 个本次调用新起的办公软件进程"
+    resp["message"] = (f"已结束 {ended} 个本次调用新启动的办公软件进程"
                        + (f"；{len(left)} 个未结束：" + "、".join(
                            f"{r['pid']}（{r.get('status')}）" for r in left) if left else ""))
 
@@ -158,7 +158,7 @@ def do_view(req, resp):
     cur = util.sha256(path)
     expected = req.get("expected_sha256")
     if expected and cur != expected:
-        resp["message"] = f"{Path(path).name} 在查看期间被改动；重新 view"
+        resp["message"] = f"{Path(path).name} 在查看期间被修改；需重新 view"
         return
     pages = [str(p) for p in (req.get("pages") or [])]
     if not pages:
@@ -180,15 +180,15 @@ def do_view(req, resp):
                           "sheets": manifest.get("sheets"), "checks": []})
     keys = "、".join(p["key"] for p in manifest["pages"][:60])
     if missing:
-        resp["errors"].append(f"没有这些页：{'、'.join(missing)}；可用：{keys}")
+        resp["errors"].append(f"以下页不存在：{'、'.join(missing)}；可用：{keys}")
     resp["ok"] = bool(images) and not missing
-    resp["message"] = f"返回 {len(images)} 张图" + (f"，{len(missing)} 个页码不存在" if missing else "")
+    resp["message"] = f"返回 {len(images)} 张图片" +(f"，{len(missing)} 个页码不存在" if missing else "")
 
 
 # ───────────────────────── write ─────────────────────────
 
 class OfficeContext:
-    """注入脚本全局变量 office 的对象；同时以 `from qyoffice import office` 可取到。"""
+    """注入为脚本全局变量 office 的对象；也可通过 `from qyoffice import office` 取得。"""
 
     def __init__(self, workspace, call_dir, inputs, works):
         self.workspace = str(workspace)
@@ -198,28 +198,28 @@ class OfficeContext:
         self._apps = None
 
     def output(self, path):
-        """声明过的输出对应的工作副本路径。脚本写这个路径，worker 检查、渲染后再提交到正式路径。"""
+        """已声明输出对应的工作副本路径。脚本写入该路径，worker 检查并渲染后再提交到正式路径。"""
         target = path if os.path.isabs(path) else os.path.join(self.workspace, path)
         for o, _, work in self._works:
             if util.same_path(o["path"], target):
                 return str(work)
         declared = "、".join(o["path"] for o, _, _ in self._works)
-        raise KeyError(f"{path} 不是声明过的输出；已声明：{declared}")
+        raise KeyError(f"{path} 不是已声明的输出；已声明：{declared}")
 
     def app(self, kind):
-        """每次调用新起一个办公软件实例并登记，返回它的原生对象；脚本结束时统一回收。
+        """每次调用启动一个新的办公软件实例并登记，返回其原生对象；脚本结束时统一回收。
 
-        不要用它另存文件，一个实例也只打开一个文件：WPS 另存、以及 WPS 文字在同一实例里再次打开文件，
+        不要用它另存文件，每个实例只打开一个文件：WPS 另存，以及 WPS 文字在同一实例中再次打开文件，
         都会写入用户的最近文档与账号打开记录。
         """
         if kind not in ("docx", "xlsx", "pptx"):
-            raise ValueError("kind 取 docx / xlsx / pptx")
+            raise ValueError("kind 可选 docx / xlsx / pptx")
         if self._apps is None:
             self._apps = com.Apps(self.call_dir, "script", reuse=False)
         return self._apps.get(kind).app
 
     def figure(self, width_cm, height_cm, **kwargs):
-        """按最终插入尺寸建 matplotlib 画布：插入文档时用同一宽度，图里的字号就是最终磅值。"""
+        """按最终插入尺寸创建 matplotlib 画布：插入文档时使用同一宽度，图中的字号即为最终磅值。"""
         import matplotlib
 
         matplotlib.use("Agg")
@@ -289,7 +289,7 @@ def validate_write(req):
             problems.append(f"输入 {i} 不存在")
     for p in req.get("pdf") or []:
         if not any(util.same_path(p.get("source", ""), s) for s in seen):
-            problems.append(f"PDF 的来源 {p.get('source')} 不在 outputs 里")
+            problems.append(f"PDF 的来源 {p.get('source')} 不在 outputs 中")
         if Path(p.get("path", "")).suffix.lower() != ".pdf":
             problems.append(f"{p.get('path')} 不是 .pdf")
     return problems
@@ -303,16 +303,16 @@ def check_targets(outputs):
         if cur == exp:
             continue
         if exp is None:
-            conflicts.append(f"{o['path']} 已存在；修改已有文件先用 read_office 读取，再写")
+            conflicts.append(f"{o['path']} 已存在；修改已有文件时先用 read_office 读取，再写入")
         elif cur is None:
-            conflicts.append(f"{o['path']} 在读取之后被删除；重新 read 后再写")
+            conflicts.append(f"{o['path']} 在读取之后被删除；需重新 read 后再写入")
         else:
-            conflicts.append(f"{o['path']} 在读取之后被改动过；重新 read 后再写")
+            conflicts.append(f"{o['path']} 在读取之后被改动过；需重新 read 后再写入")
     return conflicts
 
 
 def open_check(path, fmt):
-    """包能被对应的库打开；打不开返回原因。"""
+    """检查包能否被对应的库打开；无法打开时返回原因。"""
     try:
         if fmt == "docx":
             from docx import Document
@@ -327,7 +327,7 @@ def open_check(path, fmt):
 
             Presentation(str(path))
     except Exception as e:
-        return f"文件打不开：{type(e).__name__}: {e}"
+        return f"文件无法打开：{type(e).__name__}: {e}"
     return None
 
 
@@ -358,7 +358,7 @@ def postprocess(fmt, work, req, apps, call_dir, resp, file):
                 render.seed_docx(work, rep["pdf"], req["cache_dir"],
                                  {k: info.get(k) for k in ("progid", "product", "version")})
         else:
-            resp.stage("postprocess", "not_run", "pptx 不做后处理", file)
+            resp.stage("postprocess", "not_run", "pptx 无后处理", file)
     except (com.Unavailable, com.Busy) as e:
         tail = "；交付件没有计算结果缓存，打开时由软件重算" if fmt == "xlsx" else ""
         resp.stage("postprocess", "unavailable", f"{e}{tail}", file)
@@ -401,14 +401,14 @@ def do_write(req, resp, apps_factory=com.Apps):
     script_residue = ctx.close()
     resp["script_output"] = util.truncate(output, SCRIPT_OUTPUT_LIMIT)
     if util.sha256(script) != script_sha:
-        resp["errors"].append("脚本在执行期间被改动，调用目录里的 script.py 是执行前的版本")
+        resp["errors"].append("脚本在执行期间被修改，调用目录中的 script.py 是执行前的版本")
     if not ok:
         resp.stage("execute", "failed", "脚本出错，输出见 script_output")
         for o, _, work in works:
             resp["files"].append({"path": o["path"], "committed": False, "sha256": None,
                                   "candidate": str(work) if work.exists() else None, "pages": None,
                                   "sheets": None, "checks": []})
-        resp["message"] = "脚本出错，没有提交任何文件"
+        resp["message"] = "脚本出错，未提交任何文件"
         resp["residue"] = script_residue
         resp["instances"] = com._load_instances(call)
         return
@@ -423,7 +423,7 @@ def do_write(req, resp, apps_factory=com.Apps):
             resp["files"].append(entry)
             if not work.exists():
                 entry["candidate"] = None
-                resp.stage("commit", "not_run", "脚本没有写出这个文件（写 office.output(路径) 返回的位置）",
+                resp.stage("commit", "not_run", "脚本未写出该文件（应写入 office.output(路径) 返回的位置）",
                            final)
                 continue
             err = open_check(work, fmt) or ("文件含宏" if util.has_macros(work) else None)
@@ -445,7 +445,7 @@ def do_write(req, resp, apps_factory=com.Apps):
                 resp.stage("render", "failed", f"{type(e).__name__}: {e}", final)
             cur = util.sha256_or_none(final)
             if cur != o.get("expected_sha256"):
-                resp.stage("commit", "failed", "目标在执行期间被改动，没有覆盖；重新 read 后再写", final)
+                resp.stage("commit", "failed", "目标在执行期间被修改，未覆盖；需重新 read 后再写入", final)
                 continue
             util.atomic_copy(work, final)
             entry["committed"] = True
@@ -454,7 +454,7 @@ def do_write(req, resp, apps_factory=com.Apps):
         for p in req.get("pdf") or []:
             src = next((e for e in resp["files"] if util.same_path(e["path"], p["source"])), None)
             if not src or not src["committed"]:
-                resp.stage("commit", "not_run", "来源文件没有提交，不导出 PDF", p["path"])
+                resp.stage("commit", "not_run", "来源文件未提交，不导出 PDF", p["path"])
                 continue
             try:
                 render.export_pdf(src["path"], util.fmt_of(src["path"]), p["path"], req["cache_dir"],
@@ -478,7 +478,7 @@ def do_write(req, resp, apps_factory=com.Apps):
 # ───────────────────────── frames ─────────────────────────
 
 def do_frames(req, resp):
-    """视频抽帧：带时间戳的 JPEG 与一段说明。缺 av 时如实报缺解码库，不影响其余动作。"""
+    """视频抽帧：带时间戳的 JPEG 与一段说明。缺少 av 时如实报告缺少解码库，不影响其余动作。"""
     path = Path(req["path"])
     if not path.is_file():
         resp["message"] = f"{req['path']} 不存在"

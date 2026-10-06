@@ -18,7 +18,7 @@ import { baseCtx, call, fakeAdapter, noopPersistence } from './fixtures.test-hel
 
 describe('输出被截断时不执行工具', () => {
   for (const protocol of FAULT_PROTOCOLS) {
-    test(`${protocol.kind} 参数截断加 max_tokens：一次都不执行，连续三次截断后终态是 output_truncated`, async () => {
+    test(`${protocol.kind} 参数截断且 max_tokens：不执行任何调用，连续三次截断后终态为 output_truncated`, async () => {
       const fault = startFaultServer('truncated_tool_call')
       let executed = 0
       const toolSteps: string[] = []
@@ -77,21 +77,21 @@ describe('输出被截断时不执行工具', () => {
         fault.stop()
       }
 
-      // 注册表里有 `echo`，参数校验也放得过（没有必填项）。挡住它的只有终态本身。
+      // 注册表中有 `echo`，参数校验也能通过（没有必填项）。阻止执行的只有终止原因本身。
       expect(executed).toBe(0)
       expect(toolSteps).toEqual([])
       expect(types).not.toContain('tool.started')
       expect(stopReason).toBe('output_truncated')
       expect(types).not.toContain('run.error')
-      // 每次截断续写一次，夹具每次都截断，第三次由空转判据停下。
+      // 每次截断后续写一次，夹具每次都截断，第三次由无进展判据停止。
       expect(fault.receipts.length).toBe(3)
     }, 20_000)
   }
 })
 
 describe('输出截断后续写', () => {
-  /** 实测形状：Opus 5.5 xhigh 单次请求思考写满 128K，一个动作都没发出。 */
-  test('只有签名思考就被截断：下一次请求原样带上思考与续写提示，随后正常完成', async () => {
+  /** 实测形状：Opus 5.5 xhigh 单次请求的思考达到 128K 上限，未发出任何调用。 */
+  test('只有签名思考时被截断：下一次请求原样携带思考与续写提示，随后正常完成', async () => {
     const seen: ChatRequest['messages'][] = []
     const reasoning = { items: [{ type: 'thinking', thinking: '想', signature: 's' }], tokens: 9 }
     const inner = fakeAdapter([])
@@ -137,7 +137,7 @@ describe('输出截断后续写', () => {
   })
 })
 
-describe('正常响应结束不冒充任务完成', () => {
+describe('正常响应结束不等于任务完成', () => {
   const unfinished: TodoItem[] = [
     { id: 'todo_1', content: '完成第 7 步', status: 'in_progress' },
     { id: 'todo_2', content: '完成第 8 步', status: 'pending' },
@@ -160,10 +160,10 @@ describe('正常响应结束不冒充任务完成', () => {
   }
 
   /**
-   * 原始失败的正向回归：第一轮正文说完但清单仍未完成，不得落 completed。
-   * 第二轮通过工具把同一账本改完，第三轮正常 end_turn 才能结束。
+   * 原始失败的正向回归：第一轮正文结束但清单仍未完成，不得记为 completed。
+   * 第二轮通过工具完成同一账本，第三轮正常 end_turn 后才能结束。
    */
-  test('未完成待办让同一循环续跑，清单完成后才结束', async () => {
+  test('未完成待办使同一循环继续执行，清单完成后才结束', async () => {
     let todos = structuredClone(unfinished)
     const registry = new ToolRegistry()
     registry.register({
@@ -206,7 +206,7 @@ describe('正常响应结束不冒充任务完成', () => {
 
     expect(finished.type === 'run.finished' && finished.stopReason).toBe('completed')
     expect(requests).toHaveLength(3)
-    // 第一轮正文已经进同一份 transcript，续跑不是另起一条隐藏路径。
+    // 第一轮正文已经进入同一份 transcript，继续执行不是另起一条隐藏路径。
     expect(
       requests[1]!.messages.some(
         (message) => message.role === 'assistant' && message.content === '完成',
@@ -281,8 +281,8 @@ describe('正常响应结束不冒充任务完成', () => {
     expect(events.some((event) => event.type === 'todos')).toBe(false)
   })
 
-  /** 续起那一次请求的末尾要带着「清单还有几项未完成」这条事实，而不是静默续起。 */
-  test('待办未完成时续起，下一次请求带着未完成的清单', async () => {
+  /** 自动继续的那次请求末尾必须带有清单未完成项的事实，而不是不加说明地继续。 */
+  test('待办未完成时自动继续，下一次请求带有未完成的清单', async () => {
     const inner = fakeAdapter([null, null, null])
     const tails: { role: string; content: unknown }[] = []
     const adapter: LlmAdapter = {
@@ -304,14 +304,14 @@ describe('正常响应结束不冒充任务完成', () => {
     })
     const finished = await runToEnd(loop, { runId: 'rn_todos_notice' })
     expect(finished.type === 'run.finished' && finished.stopDetail).toBe(
-      '待办未完成时连续三次只回话不动手',
+      '待办未完成时连续三次仅回复而未执行操作',
     )
     expect(tails[1]?.role).toBe('user')
     expect(String(tails[1]?.content)).toContain('本轮待办仍在进行中：完成第 7 步；完成第 8 步')
     expect(String(tails[1]?.content)).toContain('确实受阻时将进行中的项改回 pending')
   })
 
-  test('相同未完成清单下连续三次只结束响应，停为 no_progress', async () => {
+  test('相同未完成清单下连续三次只结束响应，停止原因为 no_progress', async () => {
     const inner = fakeAdapter(Array.from({ length: 10 }, () => null))
     let requests = 0
     const adapter: LlmAdapter = {
@@ -397,10 +397,10 @@ describe('正常响应结束不冒充任务完成', () => {
   })
 
   /**
-   * 派出即返回：子 agent 的生命期跟着会话，不跟着这一轮。循环因此不认识「还有几个在跑」，
-   * 模型说完就是说完——扣住这一轮等它们，正是 10 分钟一次往返那条路的起点。
+   * 派发后立即返回：子 agent 的生命周期跟随会话，不跟随本轮。循环因此不跟踪运行中的子 agent 数量，
+   * 模型回答完毕即结束：保持本轮等待子 agent 是每次往返耗时 10 分钟的原因。
    */
-  test('派出过子 agent 之后 end_turn 照常结束', async () => {
+  test('派发子 agent 之后 end_turn 照常结束', async () => {
     const delegate: DelegatePort = {
       resolveModel: (name) => ({ provider: 'p', model: name }),
       targets: async () => ({ roles: [], clis: [] }),
@@ -420,11 +420,11 @@ describe('正常响应结束不冒充任务完成', () => {
     expect(finished.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
   /**
-   * 清单没完成而活在子 agent 手里时，这一轮结束是对的：回执到了会再起一轮。
-   * 扣住不放的后果实测过：模型没事找事（读磁盘、读会话历史），连续两条回复中间
-   * 没有 user 消息，deepseek 思考模式当场 400。
+   * 清单未完成而剩余工作由子 agent 执行时，本轮结束是正确的：回执到达后会开始新的一轮。
+   * 保持本轮的后果已实测：模型执行无关操作（读取磁盘、读取会话历史），连续两条回复之间
+   * 没有 user 消息，deepseek 思考模式随即返回 400。
    */
-  test('清单未完成但有子 agent 在跑：end_turn 照常结束，不塞续起提示', async () => {
+  test('清单未完成但有子 agent 运行中：end_turn 照常结束，不插入自动继续提示', async () => {
     const inner = fakeAdapter(Array.from({ length: 5 }, () => null))
     let requests = 0
     const adapter: LlmAdapter = {
@@ -459,11 +459,11 @@ describe('正常响应结束不冒充任务完成', () => {
   })
 
   /**
-   * 续起提示落进 transcript，此后每次请求都原位带着它：只附一次的话，再下一次请求的
-   * 前缀与产生那轮响应时不同，那轮之后的思考块被 provider 作废。
-   * DeepSeek 的推理正文照常随每条 assistant 回传。
+   * 自动继续提示写入 transcript，此后每次请求都在原位置携带它：若只附加一次，再下一次请求的
+   * 前缀与产生该轮响应时不同，该轮之后的思考块会被 provider 作废。
+   * DeepSeek 的推理正文照常随每条 assistant 消息回传。
    */
-  test('守卫续起的提示留在历史原位，推理正文照常回传', async () => {
+  test('待办检查的自动继续提示保留在历史原位，推理正文照常回传', async () => {
     const inner = fakeAdapter([null, null, null], 'deepseek-flash')
     const seen: (string | undefined)[][] = []
     const shapes: string[][] = []
@@ -492,8 +492,8 @@ describe('正常响应结束不冒充任务完成', () => {
     await runToEnd(loop, { runId: 'rn_todos_reasoning' })
     expect(seen[1]).toEqual(['想一想'])
     expect(seen[2]).toEqual(['想一想', '想一想'])
-    // 第一次续起的提示在第三次请求里仍在原位；第二次续起时空转判据先交出重复告警，
-    // 待办提示接在其后，各占一条。
+    // 第一次自动继续的提示在第三次请求中仍在原位；第二次自动继续时无进展判据先发出重复告警，
+    // 待办提示位于其后，各占一条。
     expect(shapes[1]).toEqual(['assistant', 'user'])
     expect(shapes[2]).toEqual(['assistant', 'user', 'assistant', 'user', 'user'])
   })
@@ -534,7 +534,7 @@ describe('正常响应结束不冒充任务完成', () => {
     }
   })
 
-  test('超过旧默认 120 轮仍继续执行，直到任务自然完成', async () => {
+  test('执行超过 120 轮仍不终止，直到任务完成', async () => {
     const registry = new ToolRegistry()
     let executed = 0
     registry.register({
@@ -576,21 +576,21 @@ describe('正常响应结束不冒充任务完成', () => {
 })
 
 /**
- * 思考强度从 `RunInput` 走到 `ChatRequest`。
+ * 思考强度从 `RunInput` 传递到 `ChatRequest`。
  *
- * 这是那条链路的最后一跳，也是最容易断的一跳——它两头都有类型，
- * 中间少传一个字段不会报任何错，表现只是「选了 max 和选了 low 一模一样」。
+ * 这是该链路的最后一步，也最容易遗漏：两端都有类型，
+ * 中间遗漏一个字段不会产生任何报错，只会使选择 max 与选择 low 的效果相同。
  */
 
-describe('provider 说要调工具但一条都没解析出来', () => {
+describe('provider 声明调用工具但未解析出任何调用', () => {
   /**
    * 复现的是原始失败形状（会话 `cv_0mszld8o60000yi2u5m`）：一轮零工具调用、
-   * `run` 记成正常完成、账本里查不出原因，界面上只剩模型自称做完了。
+   * `run` 记为正常完成、账本中无法查到原因，界面上只有模型声称已完成。
    *
-   * 反向断言比正向断言重要：**旧结局必须不可再现**。只断言新分支命中的话，
-   * 哪天有人把 `completed` 加回去当兜底，这个测试照样绿。
+   * 反向断言比正向断言更重要：原有的错误结果必须无法再现。只断言新分支被命中时，
+   * 若 `completed` 被重新加回作为后备结果，本测试仍然通过。
    */
-  test('记成故障而不是完成，且 provider 的原话进账本', async () => {
+  test('记为故障而不是完成，且 provider 的原始终止原因写入账本', async () => {
     const settled: { status: string; finishReason: string | undefined }[] = []
     const persist = noopPersistence()
     persist.settleRequest = (_id, status, _usage, _code, finishReason) => {
@@ -602,8 +602,8 @@ describe('provider 说要调工具但一条都没解析出来', () => {
         kind: 'openai_chat_completions',
         transmits: { effort: false },
         spec: lookupModel('deepseek-v4-flash', 'openai_chat_completions'),
-        // provider 说 tool_calls，但整轮没有一个 tool_calls 事件——
-        // 中转站把非流式响应硬转成 SSE、或名字分片丢了都是这个形状。
+        // provider 返回 tool_calls，但整轮没有任何 tool_calls 事件：
+        // 中转站将非流式响应强制转为 SSE、或名称分片丢失时都是这种形状。
         async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
           yield { type: 'request_prepared', measuredInputTokens: 10 }
           yield { type: 'text_delta', delta: '我这就去执行', at: Date.now() }
@@ -626,12 +626,12 @@ describe('provider 说要调工具但一条都没解析出来', () => {
     }
 
     const finished = events.find((e) => e.type === 'run.finished')
-    // 旧结局：completed。它必须不可再现。
+    // 原有的错误结果是 completed，必须无法再现。
     expect(finished && 'stopReason' in finished && finished.stopReason).not.toBe('completed')
     expect(finished && 'stopReason' in finished && finished.stopReason).toBe('provider_error')
-    // 故障对用户可见，不是只有账本知道。
+    // 故障对用户可见，不只记录在账本中。
     expect(events.some((e) => e.type === 'run.error')).toBe(true)
-    // provider 的原话进账本：没有它就分不出「说完了」和「要调工具」。
+    // provider 的原始终止原因写入账本：缺少它时无法区分回答完毕与要求调用工具。
     expect(settled.at(-1)?.finishReason).toBe('tool_calls')
   })
 })

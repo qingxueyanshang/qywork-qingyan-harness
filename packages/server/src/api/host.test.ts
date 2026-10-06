@@ -22,7 +22,7 @@ describe('winget 执行位置', () => {
     )
   })
 
-  test('PATH 中可用的位置优先，别名不能运行时不报告可安装', () => {
+  test('PATH 中可用的位置优先，别名无法运行时不报告可安装', () => {
     expect(resolveWinget({ platform: 'win32', localAppData, probe: () => true })).toBe('winget')
     expect(resolveWinget({ platform: 'win32', localAppData, probe: () => false })).toBeNull()
     expect(
@@ -104,7 +104,7 @@ describe('Office 依赖三行', () => {
   }
   const row = (rows: EnvDependency[], id: string) => rows.find((r) => r.id === id)
 
-  test('指定的解释器不存在：两行都缺，文档库提示先装 Python', () => {
+  test('指定的解释器不存在：两行均报告缺失，文档库提示先安装 Python', () => {
     const rows = probeEnvironment({ config: missingPython as QyConfig })
     expect(row(rows, 'python')).toMatchObject({ path: null, hint: 'Office 文档工具不可用。' })
     expect(row(rows, 'office-libs')).toMatchObject({ path: null, hint: '需要先安装 Python。' })
@@ -122,14 +122,14 @@ describe('Office 依赖三行', () => {
     expect(row(ok, 'office-libs')).toMatchObject({ path: process.execPath, hint: '' })
   })
 
-  /** 视频解码库可选：缺它时文档库那一行照样齐全，它自己那一行报缺并给出影响。 */
-  test('视频解码库单独一行，缺它不影响文档库', () => {
+  /** 视频解码库可选：缺失时文档库一行仍然完整，视频解码库一行报告缺失并给出影响。 */
+  test('视频解码库单独一行，缺失时不影响文档库', () => {
     const config = { providers: {}, officePython: process.execPath } as QyConfig
     const rows = probeEnvironment({ config, office: host([], false) })
     expect(row(rows, 'office-libs')).toMatchObject({ path: process.execPath, hint: '' })
     expect(row(rows, 'video-decoder')).toMatchObject({
       path: null,
-      hint: '不支持原生视频的模型读不了视频。',
+      hint: '不支持原生视频的模型无法读取视频。',
     })
     const ok = probeEnvironment({ config, office: host([], true) })
     expect(row(ok, 'video-decoder')).toMatchObject({ path: process.execPath, hint: '' })
@@ -140,7 +140,7 @@ describe('Office 依赖三行', () => {
     })
   })
 
-  test('没有解释器时安装文档库回 409，不起进程', async () => {
+  test('没有解释器时安装文档库返回 409，不启动进程', async () => {
     if (process.platform !== 'win32') return
     const url = new URL('http://localhost/api/host/install')
     const res = await handleHostApi(
@@ -151,7 +151,7 @@ describe('Office 依赖三行', () => {
     expect(res?.status).toBe(409)
   })
 
-  test('虚拟环境里的解释器不带 --user，系统解释器带', async () => {
+  test('虚拟环境中的解释器不带 --user，系统解释器带 --user', async () => {
     const venv = await mkdtemp(join(tmpdir(), 'qywork-venv-'))
     await mkdir(join(venv, 'Scripts'))
     await writeFile(join(venv, 'pyvenv.cfg'), 'include-system-site-packages = false\n')

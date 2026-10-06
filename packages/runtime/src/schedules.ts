@@ -1,18 +1,18 @@
 /**
  * 全机任务文件 `~/.qywork/schedules.json` 的一次性导入。
  *
- * 定时任务过去存在 `~/.qywork/schedules.json`，现在的唯一权威是主账本里的 `schedules` 表。
- * 这一步把旧文件读进表里，然后把它改名为 `schedules.json.imported`。
+ * 定时任务的唯一权威是主账本中的 `schedules` 表；`~/.qywork/schedules.json` 是迁移前的存储位置。
+ * 此步骤将旧文件读入该表，然后将其重命名为 `schedules.json.imported`。
  *
- * **重入规则只有一条：文件不在就不导入。** 改名成功即代表这台机器已经导过。
+ * 重入规则只有一条：文件不存在时不导入。重命名成功即表示本机已完成导入。
  *
- * **读文件与改名都在导入事务里做。** 两个实例同时启动时，SQLite 的 IMMEDIATE 写事务把它们
- * 串起来：先拿到写权的那个读文件、插表、改名、提交；另一个进事务时文件已经不在，直接空转。
- * 在事务外读文件的话两个实例会各读到一份完整旧表，第二个插入撞主键。
- * 残留窗口：改名成功而提交失败时，旧数据留在改名后的文件里，不会被再次导入。
+ * 读取文件与重命名都在导入事务中执行。两个实例同时启动时，SQLite 的 IMMEDIATE 写事务将它们
+ * 串行化：先取得写锁的实例读取文件、插入表、重命名、提交；另一个实例进入事务时文件已不存在，直接返回。
+ * 在事务外读取文件时，两个实例会各自读取一份完整的旧数据，第二次插入触发主键冲突。
+ * 残留风险：重命名成功而提交失败时，旧数据保留在重命名后的文件中，不会被再次导入。
  *
- * **不合法就停，不当成空表继续跑。** 静默按空处理等于界面上定时任务全部消失，用户会再建一遍，
- * 而原文件仍在盘上。
+ * 内容不合法时停止，不视为空表继续执行：静默按空表处理会使界面上的定时任务全部消失，
+ * 而原文件仍在磁盘上。
  */
 
 import { existsSync, readFileSync, renameSync } from 'node:fs'
@@ -31,21 +31,21 @@ function legacyPath(): string {
 }
 
 /**
- * 旧文件里的记录。**键名是历史事实，一律不改**（CLAUDE.md D2）——`lastRunConversationId`
- * 读进来落到 `Schedule.conversationId`。
+ * 旧文件中的记录。键名是历史事实，一律不改（CLAUDE.md D2）：`lastRunConversationId`
+ * 读入后写入 `Schedule.conversationId`。
  */
 interface LegacyRecord extends Partial<Omit<Schedule, 'conversationId'>> {
   lastRunConversationId?: string
 }
 
 /**
- * 逐条校验旧记录。任何一条不合法就整份中止——半份导入比不导入坏得多。
+ * 逐条校验旧记录。任何一条不合法即中止整份导入：部分导入比不导入危害更大。
  *
- * 旧文件里的 `lastError` 不带过来：执行结果的唯一权威是关联的 Run，
- * 而文件里的记录通常没有可核验的 Run，把它复制成一份新的运行状态就是伪造历史。
+ * 旧文件中的 `lastError` 不导入：执行结果的唯一权威是关联的 Run，
+ * 而文件中的记录通常没有可核验的 Run，将其复制为新的运行状态等于伪造历史。
  *
- * 旧文件没有「每次触发另建会话」这一项，一律按 false 导入：绑定会话原样带过来，
- * 导入后接着发进同一条会话。
+ * 旧文件没有「每次触发另建会话」这一项，一律按 false 导入：绑定会话原样导入，
+ * 导入后继续发送到同一会话。
  */
 function parseLegacy(store: Store, raw: string, path: string): Schedule[] {
   let parsed: unknown
@@ -74,7 +74,7 @@ function parseLegacy(store: Store, raw: string, path: string): Schedule[] {
     }
     const id = item.id as string
     seen.add(id)
-    // 关联会话已经被删掉时不带这个 id：外键会拒绝插入，而那条会话本来就没有执行记录可读。
+    // 关联会话已被删除时不导入该 id：外键会拒绝插入，且该会话已没有可读取的执行记录。
     const conversationId =
       item.lastRunConversationId !== undefined &&
       getConversation(store, item.lastRunConversationId as ConversationId) !== null
@@ -100,9 +100,9 @@ function parseLegacy(store: Store, raw: string, path: string): Schedule[] {
 }
 
 /**
- * 把旧任务文件导进主账本。返回导入的条数；文件不在时返回 null。
+ * 将旧任务文件导入主账本。返回导入的条数；文件不存在时返回 null。
  *
- * 文件不合法时抛错并保留原字节，由调用方沿既有启动失败路径退出。
+ * 文件不合法时抛出错误并保留原字节，由调用方经既有的启动失败路径退出。
  */
 export function importLegacySchedules(store: Store): number | null {
   const path = legacyPath()

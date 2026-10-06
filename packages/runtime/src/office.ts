@@ -1,10 +1,10 @@
 /**
- * Office 执行程序的宿主侧：找 Python 解释器与 worker、探测本机能力、给会话发端口。
+ * Office 执行程序的宿主侧：查找 Python 解释器与 worker、探测本机能力、向会话提供端口。
  *
- * 服务端与 CLI 在进程启动时各建一个，探测一次后缓存；会话按 `port()` 是否有值决定注册不注册
- * `office`。开关（`officeEnabled`）在取端口时与每次调用前各判一次：关掉后本轮之后的调用被拒，
+ * 服务端与 CLI 在进程启动时各创建一个，探测一次后缓存；会话按 `port()` 是否有值决定是否注册
+ * `office`。开关（`officeEnabled`）在取得端口时与每次调用前各判定一次：关闭后本轮之后的调用被拒绝，
  * 下一轮起不再注册。
- * 探测结果同时供设置页的「Office 文档」一组与「运行环境」两行显示，三处读同一份。
+ * 探测结果同时供设置页的「Office 文档」分组与「运行环境」中的两行显示，三处读取同一份结果。
  */
 
 import { existsSync } from 'node:fs'
@@ -27,24 +27,24 @@ export interface OfficeStatus {
   version: string | null
   /** 必需而缺失的 Python 包。 */
   missing: string[]
-  /** 视频解码库 av 装没装。可选：缺它只有视频抽帧不可用，不计入 `missing`。 */
+  /** 视频解码库 av 是否已安装。该库为可选依赖：缺少时仅视频抽帧不可用，不计入 `missing`。 */
   videoDecoder: boolean
   apps: OfficePort['apps'] | null
 }
 
 export interface OfficeHost {
-  /** 重新探测。设置页装完依赖后调用；探测进行中再调用会复用同一次。 */
+  /** 重新探测。设置页安装依赖后调用；探测进行中再次调用时复用同一次探测。 */
   refresh(): Promise<OfficeStatus>
   status(): OfficeStatus
-  /** 本轮能用就给端口，否则 `undefined`（工具不注册）。 */
+  /** 本轮可用时返回端口，否则返回 `undefined`（不注册工具）。 */
   port(): OfficePort | undefined
 }
 
 /**
  * worker 所在目录（资源根下的 `office/`）。
  *
- * 启动方显式给了就用（桌面外壳与开发脚本都设 `QYWORK_OFFICE_DIR`）；否则按本程序的位置找：
- * 安装目录里的 `qy` 旁边，或源码运行时的 `packages/runtime/office/`。
+ * 启动方显式指定时使用指定值（桌面外壳与开发脚本都设置 `QYWORK_OFFICE_DIR`）；否则按本程序的位置查找：
+ * 安装目录中 `qy` 所在的目录，或源码运行时的 `packages/runtime/office/`。
  */
 export function officeDir(): string | null {
   const candidates = [
@@ -59,10 +59,10 @@ export function officeDir(): string | null {
 }
 
 /**
- * Python 解释器：配置里指定了就用指定的，否则在 PATH 里找。
+ * Python 解释器：配置中指定时使用指定值，否则在 PATH 中查找。
  *
- * Windows 上排除 `WindowsApps` 目录：那里的 `python.exe` 是商店别名，没装 Python 时
- * 运行它会弹出商店页面而不是报错。
+ * Windows 上排除 `WindowsApps` 目录：该目录中的 `python.exe` 是商店别名，未安装 Python 时
+ * 运行它会打开商店页面而不是报错。
  */
 export function findPython(config: QyConfig): string | null {
   if (config.officePython) return existsSync(config.officePython) ? config.officePython : null
@@ -109,7 +109,7 @@ async function probe(python: string, dir: string, cfg: QyConfig): Promise<ProbeR
     stdout: 'pipe',
     stderr: 'pipe',
     stdin: 'ignore',
-    // 探测只导入依赖、读注册表，不执行模型代码；环境照样剥掉凭证，与执行模型代码时同一条规则。
+    // 探测只导入依赖、读取注册表，不执行模型代码；环境同样剥离凭证，与执行模型代码时的规则相同。
     env: {
       ...scrubEnv(process.env, collectSecrets(cfg)),
       PYTHONIOENCODING: 'utf-8',
@@ -121,7 +121,7 @@ async function probe(python: string, dir: string, cfg: QyConfig): Promise<ProbeR
   const res = JSON.parse(await readFile(join(callDir, 'response.json'), 'utf8')) as {
     probe?: ProbeResult
   }
-  if (!res.probe) throw new Error(`探测没有返回结果：${got.stderr.slice(-400)}`)
+  if (!res.probe) throw new Error(`探测未返回结果：${got.stderr.slice(-400)}`)
   return res.probe
 }
 
@@ -144,8 +144,8 @@ export function createOfficeHost(config: () => QyConfig): OfficeHost {
     const dir = officeDir()
     const python = findPython(config())
     const base = { ...UNPROBED, enabled: enabled(), python }
-    if (!dir) return { ...base, reason: '找不到 Office 执行程序（office/worker.py）' }
-    if (!python) return { ...base, reason: '没有找到 Python' }
+    if (!dir) return { ...base, reason: '未找到 Office 执行程序（office/worker.py）' }
+    if (!python) return { ...base, reason: '未找到 Python' }
     try {
       const p = await probe(python, dir, config())
       worker = join(dir, 'worker.py')

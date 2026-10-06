@@ -123,11 +123,11 @@ test.each([true, false])(
 )
 
 /**
- * 原始失败形状：`qy probe --save` 开头读一次配置，探测期间别处保存的改动在写回时被整份覆盖。
- * 这里在端点收到第一个探测请求时改写配置文件（加一个接口、改权限模式），探测结束后两处改动都在，
- * 校准结果也写进了被探测的那个模型。
+ * 原始失败形状：`qy probe --save` 在开始时读取一次配置，探测期间其他位置保存的修改在写回时被整份覆盖。
+ * 测试在端点收到第一个探测请求时改写配置文件（新增一个接口、修改权限模式），探测结束后两处修改均保留，
+ * 校准结果也写入了被探测的模型。
  */
-test('qy probe --save 只写回校准字段，探测期间别处保存的改动保留', async () => {
+test('qy probe --save 只写回校准字段，保留探测期间其他位置保存的修改', async () => {
   const home = await mkdtemp(join(tmpdir(), 'qy-probe-'))
   const file = join(home, 'config.json')
   let touched = false

@@ -1,16 +1,16 @@
 /**
- * V25：桌面端口在**真实创建路径**上装配到位。
+ * 桌面端口在**真实创建路径**上正确装配。
  *
  * 覆盖范围：`run-control.ts` 与 `team-run.ts` 两处 `new Session` 的桌面端口注入、
  * `runtime/session.ts` 的注册选项与 `ToolContext` 转发、`tools/index.ts` 的按通道注册、
  * `tools/desktop.ts` 与 `desktop/coordinator.ts` 之间的端到端往返（含有限动作序列的
  * 逐帧派发、截断与不产生额外模型请求），以及父级停止时的执行者撤销。
  *
- * **为什么必须走真链路。** 手造一个带端口的 `Session` 只能证明「端口传进去就能用」，
- * 而真正会坏的是装配：主任务与子任务两条入口各自决定给不给端口，漏掉任一条的表现是
- * 界面显示能力可用、模型手里却没有这组工具。
+ * **必须经由真实链路。** 手动构造带端口的 `Session` 只能证明端口传入后可用，
+ * 而易出错的是装配：主任务与子任务两个入口各自决定是否提供端口，遗漏任一入口会导致
+ * 界面显示能力可用、模型却没有这组工具。
  *
- * 用假 provider 与假宿主，不花钱、不联网、不操作真实桌面。
+ * 使用假 provider 与假宿主，不产生费用、不访问网络、不操作真实桌面。
  */
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
@@ -78,7 +78,7 @@ function usage() {
 }
 
 /**
- * 一轮的应答。函数形式按这一条请求体现算——观察编号由协调器分配，脚本里写不死它。
+ * 一轮的应答。函数形式按当前请求体实时生成：观察编号由协调器分配，无法在脚本中写成固定值。
  */
 type Turn = string | ((body: string) => string)
 
@@ -91,19 +91,19 @@ const provider = Bun.serve({
     const body = await req.text()
     bodies.push(body)
     const next = script.shift()
-    // 脚本用完回 401：它归 `auth_failed`，当场终结这一轮，不会让循环接着转下去。
+    // 脚本用完后返回 401：它归入 `auth_failed`，立即终止该轮，循环不再继续。
     if (!next) return new Response('脚本已用完', { status: 401 })
     return new Response(typeof next === 'function' ? next(body) : next, { headers: SSE_HEADERS })
   },
 })
 
-/** 这一次请求下发的工具名。注册到没到位只能从这里看。 */
+/** 本次请求下发的工具名。只能据此判断工具是否已注册。 */
 function toolNames(body: string): string[] {
   const parsed = JSON.parse(body) as { tools?: { name?: string }[] }
   return (parsed.tools ?? []).map((t) => t.name ?? '')
 }
 
-/** 这一条请求体里最近一份观察的编号。编号由协调器分配，脚本只能从模型看到的正文里读。 */
+/** 请求体中最近一份观察的编号。编号由协调器分配，脚本只能从模型可见的正文中读取。 */
 function observationIn(body: string): string {
   return /do_\d+/.exec(body)?.[0] ?? ''
 }
@@ -184,10 +184,10 @@ function conversation(parentConversationId?: ConversationId): ConversationId {
 }
 
 /**
- * 答掉这一轮收尾时的撤销帧。
+ * 回复本轮结束时的撤销帧。
  *
- * **不答的代价是后面的用例拿不到桌面**：协调器要宿主确认这个执行者名下已无在执行的
- * 请求，确认不了就把桌面挡到宿主换代际为止。
+ * **不回复会使后续用例无法取得桌面**：协调器需要宿主确认该执行者名下已无执行中的
+ * 请求，无法确认时桌面一直处于占用状态，直到宿主更换代际。
  */
 async function settleCancel(from: number): Promise<void> {
   for (let i = 0; i < 100; i += 1) {
@@ -202,7 +202,7 @@ async function settleCancel(from: number): Promise<void> {
   throw new Error('没有收到撤销帧')
 }
 
-/** 按 op 等一条请求帧，并回一份合适的观察。 */
+/** 按 op 等待一条请求帧，并回复对应的观察。 */
 async function serveOnce(op: DesktopOp): Promise<DesktopRequestFrame> {
   const frame = await host.next()
   expect(frame.op).toBe(op)
@@ -232,11 +232,11 @@ async function serveOnce(op: DesktopOp): Promise<DesktopRequestFrame> {
 }
 
 /**
- * 主任务那条入口：`startRun` → `new Session` → `registerBuiltinTools` → `ToolContext`。
+ * 主任务入口：`startRun` → `new Session` → `registerBuiltinTools` → `ToolContext`。
  *
- * 一次跑完窗口发现、结构化观察与一次动作，一并验三态回执如实走到工具结果。
+ * 依次执行窗口发现、结构化观察与一次动作，同时验证三态回执如实传递到工具结果。
  */
-test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回执透传', async () => {
+test('主任务从 startRun 取得桌面工具，身份字段齐全，三态回执透传', async () => {
   script = [
     toolTurn('desktop_windows', {}),
     toolTurn('desktop_observe', { windowId: 'dw_1' }),
@@ -257,11 +257,11 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
   const list = await serveOnce('list_windows')
   const tree = await serveOnce('read_tree')
   const act = await serveOnce('act')
-  // 脚本跑完最后一轮文本才算这一轮结束。
+  // 脚本执行完最后一轮文本后该轮才结束。
   await Bun.sleep(400)
   await settleCancel(seen)
 
-  // 工具真的进了下发给模型的那张表。
+  // 工具确实进入了下发给模型的工具表。
   expect(toolNames(bodies[0] ?? '{}')).toEqual(
     expect.arrayContaining([
       'desktop_windows',
@@ -272,7 +272,7 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
     ]),
   )
 
-  // 身份四项逐条落在帧上，动作另有 actionId。
+  // 四项身份字段均写在帧上，动作另有 actionId。
   for (const frame of [list, tree, act]) {
     expect(frame.hostId).toBe(READY.hostId)
     expect(frame.hostEpoch).toBe(READY.hostEpoch)
@@ -282,7 +282,7 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
   }
   expect(list.executorId).toBe(act.executorId)
   expect(act.actionId).toMatch(/^da_/)
-  // 目标身份三项一起给，OS 句柄只走这条连接。
+  // 目标身份的三项同时提供，OS 句柄只经由宿主连接传递。
   expect(act.target).toEqual({
     window: WINDOW.handle,
     pid: WINDOW.pid,
@@ -290,7 +290,7 @@ test('主任务从 startRun 拿到桌面工具，身份字段齐全，三态回�
   })
   expect(act.action).toEqual({ kind: 'set_value', value: '张三' })
 
-  // 结果未确认如实走到模型手里：这一条不能被读成「没执行」，也不能被读成成功。
+  // 「结果未确认」如实传递给模型：该结果不能被解读为未执行，也不能被解读为成功。
   const body = bodies.at(-1) ?? '{}'
   expect(body).toContain('结果未确认')
 })
@@ -306,7 +306,7 @@ const FORM_ROOT: DesktopNode = {
   offscreen: false,
   actions: [],
 }
-/** 序列用的控件表：窗口下三个各自可动的后台控件，够走三步。 */
+/** 序列使用的控件表：窗口下三个可分别操作的后台控件，足够执行三步。 */
 const NAME_BOX: DesktopNode = {
   ref: 'w.0#7',
   parentRef: 'w#1',
@@ -344,12 +344,12 @@ const SAVE_BUTTON: DesktopNode = {
 }
 
 /**
- * 有限动作序列走完真链路：一次工具调用，逐动作一帧，停下之后不再发帧。
+ * 有限动作序列经由真实链路执行：一次工具调用，每个动作一帧，停止后不再发帧。
  *
- * 断言的是帧而不是工具内部状态：序列要证明的就是「模型发一次、宿主收到几次」。
- * 第一份观察是整窗，动作帧不带范围，宿主回一份整窗重读；第二、三步给的编号在重读里
- * 仍然存在，所以照常可用。姓名框的 RuntimeId 与上一条用例里那一个相同，编号表是窗口级的，
- * 它因此还是 `e2`；帧上是宿主的完整 ref。
+ * 断言的是帧而不是工具内部状态：序列要证明的是模型调用一次时宿主收到的帧数。
+ * 第一份观察是整窗，动作帧不带范围，宿主返回一份整窗重读；第二、三步给出的编号在重读中
+ * 仍然存在，因此照常可用。姓名框的 RuntimeId 与上一条用例中的相同，编号表是窗口级的，
+ * 因此它仍是 `e2`；帧上是宿主的完整 ref。
  */
 test('一次序列调用逐动作发帧，actionId 各不相同，截断后不再发帧', async () => {
   script = [
@@ -369,7 +369,7 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
   bodies = []
   const seen = host.received.length
   const conv = conversation()
-  // 窗口不必再发现一次：`dw_1` 由上面那条用例登记过，窗口表是协调器级的。
+  // 无需再次发现窗口：`dw_1` 已由上一条用例登记，窗口表是协调器级的。
   await startRun(conv, '把表单填好', undefined, deps())
 
   const tree = await host.next()
@@ -412,18 +412,18 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
 
   const second = await host.next()
   expect(second.op).toBe('act')
-  // 第二步给的编号在第一步之后的整窗重读里仍然存在。
+  // 第二步给出的编号在第一步之后的整窗重读中仍然存在。
   expect(second.ref).toBe('w.1#8')
   host.reply(second, { dispatch: 'unknown', reason: 'provider 无响应' })
 
   await Bun.sleep(400)
 
-  // 第三步一帧都没发：`unknown` 之后后缀不执行。
+  // 第三步未发出任何帧：出现 `unknown` 后，其后的动作不再执行。
   const acts = host.received.slice(seen).filter((f) => f.op === 'act')
   expect(acts.map((f) => f.ref)).toEqual(['w.0#7', 'w.1#8'])
   expect(acts[0]?.actionId).not.toBe(acts[1]?.actionId)
 
-  // 序列本身不产生模型请求：观察一轮、序列一轮、收尾一轮，一共三条。
+  // 序列本身不产生模型请求：观察、序列、结束各一轮，共三条。
   expect(bodies).toHaveLength(3)
   const body = bodies.at(-1) ?? '{}'
   expect(body).toContain('结果未确认')
@@ -432,12 +432,12 @@ test('一次序列调用逐动作发帧，actionId 各不相同，截断后不�
 })
 
 /**
- * 子任务那条入口：`runBuiltinMember` → `new Session`。
+ * 子任务入口：`runBuiltinMember` → `new Session`。
  *
- * 同时验三件事：allowedTools 过滤对新工具照样生效、成员领的是另一个执行者身份、
- * 父级停止只撤销它自己名下的排队请求。
+ * 同时验证三项：allowedTools 过滤对新工具同样生效、成员领取独立的执行者身份、
+ * 父级停止只撤销其名下的排队请求。
  */
-test('子任务领独立执行者，allowedTools 挡得住，父级停止撤销它名下的请求', async () => {
+test('子任务领取独立执行者，allowedTools 过滤生效，父级停止撤销其名下的请求', async () => {
   script = [toolTurn('desktop_windows', {})]
   bodies = []
   const parent = conversation()
@@ -458,7 +458,7 @@ test('子任务领独立执行者，allowedTools 挡得住，父级停止撤销�
   const frame = await host.next()
   expect(frame.op).toBe('list_windows')
 
-  // 只放行的那一个进了工具表，别的桌面工具一个都没有。
+  // 只有被放行的工具进入工具表，其他桌面工具均不存在。
   const names = toolNames(bodies[0] ?? '{}')
   expect(names).toContain('desktop_windows')
   expect(names).not.toContain('desktop_act')
@@ -466,12 +466,12 @@ test('子任务领独立执行者，allowedTools 挡得住，父级停止撤销�
   expect(names).not.toContain('desktop_observe')
   expect(names).not.toContain('desktop_wait')
 
-  // 上一条用例里主任务那个执行者不是这一个。
+  // 成员的执行者与上一条用例中主任务的执行者不同。
   const mainExecutor = host.received.find((f) => f.op === 'act')?.executorId
   expect(mainExecutor).toBeTruthy()
   expect(frame.executorId).not.toBe(mainExecutor)
 
-  // 父级停止：撤销帧点名的是成员自己的执行者，排队中的那一条不再有回执可等。
+  // 父级停止：撤销帧指定的是成员自身的执行者，排队中的请求不再等待回执。
   const cancelling = host.next()
   controller.abort()
   const cancel = await cancelling
@@ -483,7 +483,7 @@ test('子任务领独立执行者，allowedTools 挡得住，父级停止撤销�
   expect(out.ok).toBe(false)
 })
 
-test('用户关掉电脑控制之后，下一轮连工具都不注册', async () => {
+test('用户关闭电脑控制后，下一轮不注册桌面工具', async () => {
   config.desktopEnabled = false
   script = [textTurn('好的')]
   bodies = []
@@ -498,10 +498,10 @@ test('用户关掉电脑控制之后，下一轮连工具都不注册', async ()
 })
 
 /**
- * 缺席按启用。用户的配置文件里从来没有过这一格，按「等于 true 才算开」判的话，
- * 模型手里一个桌面工具都没有，只能绕去 run_command 自己写截图脚本。
+ * 缺省视为启用。现有配置文件中没有该字段，若按「等于 true 才启用」判定，
+ * 模型将没有任何桌面工具，只能改用 run_command 自行编写截图脚本。
  */
-test('配置里没有这一格时这组工具照常注册', async () => {
+test('配置中没有该字段时桌面工具照常注册', async () => {
   delete config.desktopEnabled
   script = [textTurn('好的')]
   bodies = []

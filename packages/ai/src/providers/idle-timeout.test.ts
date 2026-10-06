@@ -1,14 +1,14 @@
 /**
  * 覆盖范围：`../types.ts` 的 `PROVIDER_HTTP.fetchOptions` 在三个适配器
- * （`anthropic.ts`、`openai-compat.ts`、`openai-responses.ts`）里都到达了 fetch。
+ * （`anthropic.ts`、`openai-compat.ts`、`openai-responses.ts`）中均传递到 fetch。
  *
- * 验的是行为不是参数：Bun 的 fetch 自带 socket 空闲超时（默认 300 秒），正文静默到点
- * 就掐断流。这个值只能在进程启动时由 `BUN_CONFIG_HTTP_IDLE_TIMEOUT` 改，所以另起一个
- * 子进程把它压到 1 秒，让一条静默 9 秒的流跑三种协议：都读完才算通过。
- * 子进程里同时跑一条不带 `timeout: false` 的裸 fetch 作对照，它必须被掐，
- * 否则这次实验没有验到掐断。
+ * 验证的是行为而非参数：Bun 的 fetch 自带 socket 空闲超时（默认 300 秒），正文静默达到时限
+ * 即中止流。该值只能在进程启动时由 `BUN_CONFIG_HTTP_IDLE_TIMEOUT` 修改，因此另启动一个
+ * 子进程将其设为 1 秒，在三种协议上各读取一条静默 9 秒的流：全部读取完毕即视为通过。
+ * 子进程中同时执行一条不带 `timeout: false` 的裸 fetch 作对照，该请求必须被中止，
+ * 否则本次实验未能验证中止行为。
  *
- * 耗时约 9 秒：Bun 1.4 为防止提前超时补一个 4 秒刻度，实验必须跨过补齐后的期限。
+ * 耗时约 9 秒：Bun 1.4 为防止提前超时追加一个 4 秒刻度，实验必须超过追加后的期限。
  */
 import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
@@ -16,7 +16,7 @@ import { join } from 'node:path'
 const CHILD = join(import.meta.dir, 'idle-timeout.child.ts')
 
 describe('正文静默超过运行时的 socket 空闲超时', () => {
-  test('三种协议的流都读得完，对照组裸 fetch 被掐', async () => {
+  test('三种协议的流均可读完，对照组裸 fetch 被中止', async () => {
     const proc = Bun.spawn([process.execPath, CHILD], {
       env: { ...process.env, BUN_CONFIG_HTTP_IDLE_TIMEOUT: '1' },
       stdout: 'pipe',

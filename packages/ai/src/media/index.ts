@@ -1,6 +1,6 @@
 /**
- * 生成适配器的唯一构造入口：按 `profile.kind` 分派一次，之后调用方只见 `MediaAdapter`。
- * 具体类不导出，理由同对话适配器（`../factory.ts`）。
+ * 生成适配器的唯一构造入口：按 `profile.kind` 分派一次，之后调用方只使用 `MediaAdapter`。
+ * 具体类不导出，理由与对话适配器（`../factory.ts`）相同。
  */
 
 import { ArkVideosAdapter } from './adapters/ark-videos.ts'

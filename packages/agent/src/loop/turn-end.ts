@@ -1,6 +1,6 @@
 /**
- * 一轮响应收完之后：请求账落终态、本轮输出推进 transcript、锚点前移，以及没有工具可执行时的
- * 停机判定。
+ * 一轮响应接收完毕之后的处理：请求账写入终态、本轮输出追加到 transcript、锚点前移，以及没有工具
+ * 可执行时的停机判定。
  */
 
 import type { AgentEvent } from '@qywork/core'
@@ -13,7 +13,7 @@ const TRUNCATED_NOTICE =
   '上一次响应的输出达到单次上限，在中途被截断，本轮未结束。从中断处继续，不重述已完成的部分，剩余工作拆成较小的步骤。'
 
 /**
- * 请求账落终态，本轮输出写回 transcript，锚点按本轮真值前移。
+ * 请求账写入终态，本轮输出写回 transcript，锚点按本轮真值前移。
  *
  * 返回 false 表示用户已中止，`run.stopReason` 已置为 `user_interrupt`。
  */
@@ -21,8 +21,8 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
   const { adapter, input, persist, transcript } = run
   run.turnIndex++
 
-  // 流跑完了就给这一行落终态。中途被用户打断算 `uncertain`——
-  // provider 是否收全无从判断，这正是 `uncertain` 的语义。
+  // 流结束后为该行写入终态。中途被用户中断时记为 `uncertain`：
+  // 无法判断 provider 是否完整接收，这正是 `uncertain` 的语义。
   persist.settleRequest(
     turn.requestId,
     input.signal.aborted ? 'uncertain' : 'received',
@@ -37,17 +37,17 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
   }
 
   /*
-   * **`max_tokens` 之下这一批工具调用不作数。**
+   * `max_tokens` 终止时，本批工具调用一律无效。
    *
-   * 输出被截断意味着最后一条调用的参数可能停在半个 JSON 上，而截断处恰好是
-   * 合法 JSON 时连 `argumentsError` 都没有。按它执行就是拿残缺参数动手，
-   * 且模型没有机会补完。整批在这里丢掉，正文与思考照常落账，
+   * 输出被截断意味着最后一条调用的参数可能只有半个 JSON，而截断处恰好是
+   * 合法 JSON 时不会产生 `argumentsError`。按其执行即使用不完整的参数操作，
+   * 且模型没有机会补全。整批在此丢弃，正文与思考照常记录，
    * 随后由 `concludeWithoutTools` 续写。
    */
   if (turn.providerStop === 'max_tokens') turn.calls.length = 0
 
-  // 把本轮 assistant 输出写回 transcript：模型下一轮必须看到自己刚说过什么、
-  // 调了哪些工具，否则会重复调用。
+  // 将本轮 assistant 输出写回 transcript：模型下一轮必须看到自己刚输出的内容与
+  // 调用过的工具，否则会重复调用。
   turn.unitStart = transcript.length
   const preserveAssistantReasoning = adapter.spec.chatReasoningProtocol !== 'standard'
   const { calls } = turn
@@ -67,19 +67,19 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
         ? { reasoningContent: turn.thinkingText }
         : {}),
       _group: 'executionRecords',
-      // 带工具调用的那一条才是图片批次的锚；投影侧（`runtime/transcript.ts`）同值。
+      // 只有带工具调用的消息作为图片批次的锚；投影侧（`runtime/transcript.ts`）取相同的值。
       ...(calls.length ? { _batch: turn.requestId } : {}),
     })
     run.stampUnit(turn.unitStart)
   }
 
   /*
-   * 锚点前移。**只有真的拿到 usage 才动**——0 或缺失不是可用回执，
-   * 那种时候锚点原地不动、增量继续长，显示值不会因为一次漏报而跳水。
+   * 锚点前移。只有实际取得 usage 时才移动：0 或缺失不是可用的用量回执，
+   * 此时锚点保持不变、增量继续累加，显示值不会因一次漏报而骤降。
    *
-   * `transcriptIndex` 取**推完 assistant 消息之后**的长度：这一轮的输出
-   * 已经算在 `outputTokens` 里，再估一遍就是重复计数。其后推进来的
-   * 工具结果才是锚点没覆盖到的增量。
+   * `transcriptIndex` 取追加 assistant 消息之后的长度：本轮的输出
+   * 已计入 `outputTokens`，再估算一次即重复计数。此后追加的
+   * 工具结果才是锚点未覆盖的增量。
    */
   const turnUsage = turn.turnUsage
   if (turnUsage) {
@@ -89,8 +89,8 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
       (turnUsage.cacheWriteTokens ?? 0) +
       turnUsage.outputTokens
     /*
-     * 不要排除带视频的请求：本地估算对视频记 0，视频的占用只在真值里。留在请求里的视频
-     * 之后每次都随请求发出，排除后读数与压缩触发一直看不到它。
+     * 不要排除带视频的请求：本地估算对视频记 0，视频的占用只体现在真值中。保留在请求中的视频
+     * 此后每次都随请求发出，排除后读数与压缩触发始终无法计入它。
      */
     if (total > 0)
       run.anchor = {
@@ -103,28 +103,28 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
         envelope: envelopeHashOf(turn.req),
       }
     /*
-     * ── 静默溢出 ──
+     * 静默溢出。
      *
-     * 有的 provider 撞窗**不报错**，静默丢弃超出部分并照常返回
-     * （实测 deepseek-v4-flash：发出约 200 万 token，自报收到 1,000,086，
-     * 而窗口正好 1,000,000，全程没有任何错误）。这种 provider 上靠错误分类
-     * 拿不到恢复凭证，而会话已经在无声地丢历史——比撞窗报错更坏，
-     * 那至少还有个终态。
+     * 部分 provider 超出窗口时不报错，而是静默丢弃超出部分并照常返回
+     * （实测 deepseek-v4-flash：发出约 200 万 token，回报收到 1,000,086，
+     * 而窗口正好为 1,000,000，全程没有任何错误）。这类 provider 无法通过错误分类
+     * 触发恢复，而会话已在无提示地丢失历史，比超出窗口时报错更严重：
+     * 后者至少有终态。
      *
-     * 判据从**两个真值**反推：provider 自报的输入量顶到了模型自带的窗口。
-     * 没有阈值可调，也不需要——顶到窗口就是顶到了。
+     * 判据由两个真值推出：provider 回报的输入量达到模型的窗口上限。
+     * 无需可调阈值，达到窗口即可确定。
      *
-     * 处理是**放开压缩闸**而不是作废这一轮：回答已经拿到了，作废没有意义；
-     * 把进展判据清零，下一次发送前检查就会重新折一次。
+     * 处理方式是重新允许压缩，而不是作废本轮：回答已经取得，作废没有意义；
+     * 将进展判据清零后，下一次发送前的检查会重新折叠一次。
      */
     if (total >= adapter.spec.contextWindow) {
-      log.warn('agent', 'provider 静默截断：自报输入顶到窗口', {
+      log.warn('agent', 'provider 静默截断：回报的输入量达到窗口上限', {
         input: total,
         contextWindow: adapter.spec.contextWindow,
       })
       run.compactedAt = -1
     } else {
-      // 装得下了。此后再撞窗是新情况，恢复通道重新可用。
+      // 请求已能容纳。此后再次超出窗口属于新情况，溢出恢复重新可用。
       run.overflowRecovered = false
     }
   }
@@ -132,9 +132,9 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
 }
 
 /**
- * 拒答，或这一轮没有可执行的工具调用：决定停机还是再起一轮。
+ * 模型拒答，或本轮没有可执行的工具调用时：决定停机还是开始新的一轮。
  *
- * 返回 `stop` 时 `run.stopReason`（及 `stopDetail`）已经定好。
+ * 返回 `stop` 时 `run.stopReason`（及 `stopDetail`）已经设置。
  */
 export async function* concludeWithoutTools(
   run: RunState,
@@ -153,11 +153,11 @@ export async function* concludeWithoutTools(
     return 'stop'
   }
 
-  // `pause_turn` 不是「说完了」，是「服务端把这一轮切开了，原样再发一次继续」。
-  // 当成结束的表现是：用户拿到一个**半截**回答，而 run 显示成功完成、
-  // 既不报错也不续写。本轮 assistant 输出已经在收尾时进了 transcript，
-  // 直接进下一轮就是官方要的那个「原样重发」。执行循环没有总回合上限，
-  // 因此反复返回同一段暂停内容必须走现有的空转判据，不能再靠固定步数兜底。
+  // `pause_turn` 不表示回答完毕，而表示服务端中断了本轮，需要原样重发以继续。
+  // 视为结束时，用户得到不完整的回答，而 run 显示成功完成，
+  // 既不报错也不续写。本轮 assistant 输出已在收尾时写入 transcript，
+  // 直接进入下一轮即满足官方要求的原样重发。执行循环没有总轮数上限，
+  // 因此反复返回同一段暂停内容必须经由现有的无进展判据停止，不能依赖固定步数。
   if (turn.providerStop === 'pause_turn') {
     run.progress.push({
       cycle: cycleFingerprint(
@@ -172,23 +172,23 @@ export async function* concludeWithoutTools(
     })
     if (run.stalled()) {
       run.stopReason = 'no_progress'
-      run.stopDetail = 'provider 连续三次暂停在同一段内容'
+      run.stopDetail = 'provider 连续三次在同一段内容处暂停'
       return 'stop'
     }
     return 'continue'
   }
 
   /*
-   * **provider 声明要调工具，而一条都没解析出来 = 故障，不是完成。**
+   * provider 声明要调用工具，但未解析出任何调用：这是故障，不是完成。
    *
-   * 这两种情况长得一样但性质相反：`end_turn` 是模型说完了，
-   * `tool_use` 是它要调工具而调用在解析链上丢了（流里少了名字分片、
-   * 中转站把非流式响应硬转成 SSE）。记成 `completed` 是编出来的确定性——
-   * 界面上是「跑完了、零步骤」，账本里查不出原因，而这正是
-   * 「说做了却没做」最难查的那种形状。
+   * 两种情况外观相同但性质相反：`end_turn` 表示模型回答完毕，
+   * `tool_use` 表示模型要调用工具而调用在解析过程中丢失（流中缺少名称分片、
+   * 中转站将非流式响应强制转为 SSE）。记为 `completed` 会给出错误的确定结论：
+   * 界面显示已完成、零步骤，账本中无法查明原因，这是「声称已执行却未执行」
+   * 中最难排查的情形。
    *
-   * 判据用 provider 的归一化终态，不用它的原话：原话每家一套词，
-   * 拿它做判断等于每多一个端点就多一条分支。
+   * 判据使用 provider 的归一化终止原因，不使用原文：各厂商原文用词不同，
+   * 按原文判断会使每增加一个端点就增加一条分支。
    */
   if (turn.providerStop === 'tool_use') {
     run.stopReason = 'provider_error'
@@ -196,15 +196,15 @@ export async function* concludeWithoutTools(
       type: 'run.error',
       runId: input.runId,
       code: 'provider_unavailable',
-      message: '模型声明要调用工具，但返回里没有可解析的调用',
+      message: '模型声明要调用工具，但返回中没有可解析的调用',
     }
     return 'stop'
   }
 
   /*
-   * `max_tokens` 是这一次响应写满了单次输出上限，不是任务结束，因此续写，且优先于待办判据。
-   * 截断的正文与签名思考已在收尾时进了 transcript，下一次请求原样带上，模型从中断处接着做。
-   * 连续三次截断由空转判据停下。指纹不要带响应内容：每次截断的内容都不同，带了就判不出重复。
+   * `max_tokens` 表示本次响应达到单次输出上限，不表示任务结束，因此续写，且优先于待办判据。
+   * 截断的正文与签名思考已在收尾时写入 transcript，下一次请求原样带上，模型从中断处继续。
+   * 连续三次截断由无进展判据停止。指纹不要包含响应内容：每次截断的内容都不同，包含后无法判定重复。
    */
   if (turn.providerStop === 'max_tokens') {
     run.progress.push({
@@ -223,8 +223,8 @@ export async function* concludeWithoutTools(
   // 按本轮接续关系读清单：用户新指令需重新提交，父任务回执沿用已有清单。
   const unfinished =
     ctx.todos?.read(input.runId)?.filter((todo) => todo.status !== 'completed') ?? []
-  // 派出去的子 agent 还在跑时，清单没完成是它们在做：这一轮结束是对的，
-  // 回执到了会再起一轮。逼模型继续只会得到一段没事找事的话。
+  // 已派发的子 agent 仍在运行时，清单未完成是因为它们在执行：本轮结束是正确的，
+  // 回执到达后会开始新的一轮。强制模型继续只会得到一段无实际内容的回答。
   const delegated = (ctx.delegate?.inflight().length ?? 0) > 0
   if (unfinished.length && !delegated) {
     if (!unfinished.some((todo) => todo.status === 'in_progress')) {
@@ -239,7 +239,7 @@ export async function* concludeWithoutTools(
     })
     if (run.stalled()) {
       run.stopReason = 'no_progress'
-      run.stopDetail = '待办未完成时连续三次只回话不动手'
+      run.stopDetail = '待办未完成时连续三次仅回复而未执行操作'
       return 'stop'
     }
     run.notify(

@@ -1,8 +1,8 @@
 /**
- * MCP 端到端：起一个**真的** MCP server 子进程，走完整的 JSON-RPC 握手。
+ * MCP 端到端测试：启动一个真实的 MCP server 子进程，执行完整的 JSON-RPC 握手。
  *
- * 不 mock 传输层。要验的是「帧格式对不对、握手顺序对不对、游标跟没跟完」，
- * 把传输换成内存对象就把被验的那一层替换掉了。
+ * 不模拟传输层。要验证的是帧格式与握手顺序是否正确、游标是否遍历完毕；
+ * 把传输替换为内存对象即替换了被验证的那一层。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -18,7 +18,7 @@ import { permissionLabel, renderContent, specFor, toolName } from './register.ts
 /**
  * 一个最小但真实的 MCP server。
  *
- * `opts` 控制它的行为，用来构造各种边界：分页、慢响应、坏帧、拒绝握手。
+ * `opts` 控制其行为，用于构造各种边界情况：分页、慢响应、错误帧、拒绝握手。
  */
 function serverSource(
   opts: {
@@ -117,7 +117,7 @@ function client(entry: string, dir: string, logs: string[] = []) {
 }
 
 describe('握手', () => {
-  test('initialize 之后拿到 serverInfo 与协议版本', async () => {
+  test('initialize 之后取得 serverInfo 与协议版本', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -127,10 +127,10 @@ describe('握手', () => {
   })
 
   /**
-   * `notifications/initialized` 不能省。这个 fixture 在收到它之前拒绝一切请求——
-   * 真实 server 里这种行为很常见，省掉那一步的表现是 tools/list 一直报错。
+   * `notifications/initialized` 不能省略。该 fixture 在收到它之前拒绝所有请求；
+   * 真实 server 中这种行为很常见，省略该步骤时 tools/list 会持续报错。
    */
-  test('发了 initialized 通知，后续请求才被接受', async () => {
+  test('发送 initialized 通知后，后续请求才被接受', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -138,7 +138,7 @@ describe('握手', () => {
     await c.stop()
   })
 
-  test('命令不存在时立刻失败，不阻塞到超时', async () => {
+  test('命令不存在时立即失败，不阻塞至超时', async () => {
     const c = new McpClient({
       name: 'nope',
       spec: { command: 'qywork-绝对不存在的命令', args: [] },
@@ -146,7 +146,7 @@ describe('握手', () => {
     })
     const started = Date.now()
     await expect(c.start()).rejects.toThrow()
-    // 超时是 30 秒；能在几秒内返回就说明走的是 error 事件而不是超时。
+    // 超时为 30 秒；几秒内返回说明经由 error 事件而不是超时。
     expect(Date.now() - started).toBeLessThan(10_000)
     await c.stop()
   }, 20_000)
@@ -157,25 +157,25 @@ describe('握手', () => {
     const c = client(entry, dir, logs)
     await c.start()
     expect(c.serverInfo.name).toBe('fixture')
-    // 非协议行转成日志，不静默丢掉——丢掉的话 server 打的错误信息就没了。
+    // 非协议行转为日志，不静默丢弃：丢弃会使 server 输出的错误信息丢失。
     expect(logs.some((l) => l.includes('starting up'))).toBe(true)
     await c.stop()
   })
 })
 
 describe('tools/list 分页', () => {
-  test('跟完游标，两页的工具都在', async () => {
+  test('遍历完游标后，两页的工具都存在', async () => {
     const { dir, entry } = await fixture({ paginate: true })
     const c = client(entry, dir)
     await c.start()
-    // 只取第一页的话 second_page 会凭空消失，而且没有任何报错。
+    // 只取第一页时 second_page 会丢失，且没有任何报错。
     expect((await c.listTools()).map((t) => t.name)).toEqual(['echo', 'second_page'])
     await c.stop()
   })
 })
 
 describe('tools/call', () => {
-  test('参数原样送达，结果原样回来', async () => {
+  test('参数原样送达，结果原样返回', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -185,7 +185,7 @@ describe('tools/call', () => {
     await c.stop()
   })
 
-  test('isError 是工具失败，不是协议错误 —— 不能抛', async () => {
+  test('isError 表示工具失败而不是协议错误，不抛出异常', async () => {
     const { dir, entry } = await fixture({ toolError: true })
     const c = client(entry, dir)
     await c.start()
@@ -195,11 +195,11 @@ describe('tools/call', () => {
     await c.stop()
   })
 
-  test('JSON-RPC error 转成异常，且带上 server 给的原因', async () => {
+  test('JSON-RPC error 转为异常，并附带 server 给出的原因', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
-    // 只说「调用失败」的话模型会原地重试同样的参数；带上原因它才可能改。
+    // 只说明「调用失败」时，模型会以相同参数重试；附带原因后模型才可能修改参数。
     const err = await c.callTool('no_such_tool', {}).then(
       () => null,
       (e: Error) => e.message,
@@ -209,7 +209,7 @@ describe('tools/call', () => {
     await c.stop()
   })
 
-  test('进程退出时在飞的请求被逐个拒绝，不挂到超时', async () => {
+  test('进程退出时在途请求被逐个拒绝，不阻塞至超时', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -224,7 +224,7 @@ describe('tools/call', () => {
 })
 
 describe('权限：server 的 hint 只能收紧，不能放宽', () => {
-  test('默认 execute —— 每次调用都过闸', async () => {
+  test('默认为 execute，每次调用都经过权限检查', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -234,12 +234,12 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
   })
 
   /**
-   * 这条是整个 MCP 权限模型的核心。
+   * 本测试锁定整个 MCP 权限模型的核心约束。
    *
-   * `readOnlyHint` 是 server 自己填的，而 server 是第三方代码。拿它决定
-   * 「要不要弹授权」，等于让被审查者自己签发通行证。
+   * `readOnlyHint` 由 server 自行填写，而 server 是第三方代码。用它决定
+   * 是否弹出授权，等于由被审查方自行决定审查结果。
    */
-  test('readOnlyHint: true 也不降级 —— 被审查者不能自己签通行证', async () => {
+  test('readOnlyHint: true 也不降级，被审查方不能自行决定审查结果', async () => {
     const { dir, entry } = await fixture({ annotations: { readOnlyHint: true } })
     const c = client(entry, dir)
     await c.start()
@@ -248,13 +248,13 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     await c.stop()
   })
 
-  test('destructiveHint: true 会收紧到 delete', async () => {
+  test('destructiveHint: true 收紧为 delete', async () => {
     const { dir, entry } = await fixture({ annotations: { destructiveHint: true } })
     const c = client(entry, dir)
     await c.start()
     const spec = specFor(c, (await c.listTools())[0]!)
     expect(spec.permissionEffect).toBe('delete')
-    // 收紧的是权限轴。动作轴与它正交，恒为 call——外部 server 的能力不是本机执行。
+    // 收紧的是权限维度。动作维度与它正交，恒为 call：外部 server 的能力不属于本机执行。
     expect(spec.actionKind).toBe('call')
     await c.stop()
   })
@@ -265,10 +265,10 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
   })
 
   /**
-   * 卡片是动词 + 对象 + 目标三层。对象名填类名、目标填具体的那个，两处不能同串——
-   * 同串的表现是标题和目标一字不差，目标那一格白占。
+   * 卡片由动词、对象、目标三层组成。对象名填类别名，目标填具体工具，两处不能是同一字符串：
+   * 相同时标题与目标完全一致，目标字段不提供任何信息。
    */
-  test('对象名恒为「MCP」，具体是哪个工具归 target', async () => {
+  test('对象名恒为「MCP」，具体工具由 target 表示', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -280,7 +280,7 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     await c.stop()
   })
 
-  test('不并行 —— 外部进程的并发行为无从预知', async () => {
+  test('不并行执行：外部进程的并发行为无法预知', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -289,7 +289,7 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
   })
 })
 
-/** 工具调用的最小上下文：投递额度由 AgentLoop 按决策开账，这里直接开一份。 */
+/** 工具调用的最小上下文：投递额度由 AgentLoop 按决策创建，此处直接创建一份。 */
 function callCtx(
   signal = new AbortController().signal,
   room = Number.POSITIVE_INFINITY,
@@ -305,12 +305,12 @@ function callCtx(
 }
 
 describe('工具装配', () => {
-  test('注册名带 server 前缀，两个 server 的同名工具不打架', () => {
+  test('注册名带 server 前缀，两个 server 的同名工具不冲突', () => {
     expect(toolName('a', 'search')).toBe('mcp__a__search')
     expect(toolName('b', 'search')).toBe('mcp__b__search')
   })
 
-  test('调用成功时结果进 message', async () => {
+  test('调用成功时结果写入 message', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -321,7 +321,7 @@ describe('工具装配', () => {
     await c.stop()
   })
 
-  test('isError 转成 failure 且保留正文 —— 模型要看得见为什么失败', async () => {
+  test('isError 转为 failure 并保留正文，使模型能看到失败原因', async () => {
     const { dir, entry } = await fixture({ toolError: true })
     const c = client(entry, dir)
     await c.start()
@@ -333,7 +333,7 @@ describe('工具装配', () => {
     await c.stop()
   })
 
-  test('中断能立刻打断等待', async () => {
+  test('中断可立即结束等待', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -346,8 +346,8 @@ describe('工具装配', () => {
     await c.stop()
   })
 
-  /** 结果装不下本轮剩余额度：正文整份存进正文库、只投递头部，尾部不丢。 */
-  test('超出剩余额度的结果存进正文库，回执带地址与续读位置', async () => {
+  /** 结果超出本轮剩余额度：正文完整存入正文库，只投递头部，尾部不丢失。 */
+  test('超出剩余额度的结果存入正文库，回执附带地址与续读位置', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -371,7 +371,7 @@ describe('工具装配', () => {
     await c.stop()
   })
 
-  test('传输失败时 executed 取 true —— 副作用是否发生无法判定，只能保守', async () => {
+  test('传输失败时 executed 取 true：无法判定副作用是否发生，按保守处理', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
@@ -396,13 +396,13 @@ describe('内容块渲染', () => {
     ).toBe('甲\n乙')
   })
 
-  test('图片只留占位 —— base64 进上下文能占掉几万 token', () => {
+  test('图片只保留占位符：base64 进入上下文会占用数万 token', () => {
     const out = render([{ type: 'image', data: 'A'.repeat(40_000), mimeType: 'image/png' }])
     expect(out).toContain('image/png')
     expect(out.length).toBeLessThan(100)
   })
 
-  test('未知块类型留占位而不是丢掉', () => {
+  test('未知块类型保留占位符而不是丢弃', () => {
     expect(render([{ type: '将来才有的类型' }])).toBe('[将来才有的类型]')
   })
 
@@ -412,20 +412,20 @@ describe('内容块渲染', () => {
 })
 
 describe('配置解析', () => {
-  test('认 servers 也认 mcpServers —— 用户通常是从别处复制过来的', () => {
+  test('同时接受 servers 与 mcpServers：用户通常从其他客户端复制配置', () => {
     const a = parseMcpConfig('{"servers":{"x":{"command":"echo"}}}')
     const b = parseMcpConfig('{"mcpServers":{"x":{"command":"echo"}}}')
     expect(Object.keys(a.servers)).toEqual(['x'])
     expect(Object.keys(b.servers)).toEqual(['x'])
   })
 
-  test('url 走 http 传输', () => {
+  test('url 使用 http 传输', () => {
     const c = parseMcpConfig('{"servers":{"remote":{"url":"https://x/mcp"}}}')
     expect(c.servers.remote).toEqual({ transport: 'http', url: 'https://x/mcp' })
     expect(c.error).toBeNull()
   })
 
-  test('http server 的 headers 带过去 —— 远端基本都要鉴权', () => {
+  test('http server 的 headers 原样传递：远端通常需要鉴权', () => {
     const c = parseMcpConfig(
       '{"servers":{"r":{"url":"https://x/mcp","headers":{"authorization":"Bearer t"}}}}',
     )
@@ -433,21 +433,21 @@ describe('配置解析', () => {
   })
 
   /**
-   * 同时配 command 与 url 是**歧义**，不是「二选一」。
-   * 静默挑一个的话，用户改了没被采用的那个字段，然后对着一个毫无变化的现象长时间排查。
+   * 同时配置 command 与 url 属于歧义，而不是二选一。
+   * 静默选择时，用户修改了未被采用的字段，会面对一个没有任何变化的现象长时间排查。
    */
-  test('command 与 url 同时给 → 报歧义，不替用户挑', () => {
+  test('command 与 url 同时提供时报告歧义，不代替用户选择', () => {
     const c = parseMcpConfig('{"servers":{"r":{"command":"echo","url":"https://x/mcp"}}}')
     expect(c.servers.r).toBeUndefined()
-    expect(c.error).toContain('同时配了')
+    expect(c.error).toContain('同时配置了')
   })
 
-  test('非法 url 与非 http 协议都被挡下并说明原因', () => {
+  test('非法 url 与非 http 协议均被拒绝并说明原因', () => {
     expect(parseMcpConfig('{"servers":{"r":{"url":"不是地址"}}}').error).toContain('合法地址')
     expect(parseMcpConfig('{"servers":{"r":{"url":"ws://x/mcp"}}}').error).toContain('http/https')
   })
 
-  test('坏 JSON 报错而不是当作没配', () => {
+  test('无效 JSON 报错，而不是视为未配置', () => {
     expect(parseMcpConfig('{ 坏的').error).toContain('解析失败')
   })
 
@@ -469,7 +469,7 @@ describe('配置解析', () => {
 })
 
 describe('批量加载', () => {
-  test('连不上的 server 记进 failures，不影响其他的', async () => {
+  test('无法连接的 server 记入 failures，不影响其他 server', async () => {
     const { dir, entry } = await fixture()
     const reg = await loadMcpServers(
       {
@@ -487,7 +487,7 @@ describe('批量加载', () => {
     await reg.stopAll()
   }, 20_000)
 
-  test('产出的是规格不是注册 —— 同一份扩展能给多个会话各注册一遍', async () => {
+  test('产出的是规格而不是注册结果：同一份扩展可为多个会话分别注册', async () => {
     const { dir, entry } = await fixture()
     const reg = await loadMcpServers(
       { servers: { fx: { command: process.execPath, args: [entry] } }, error: null },

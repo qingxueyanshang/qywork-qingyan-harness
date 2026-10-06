@@ -108,7 +108,7 @@ const profile = (model = 'custom'): ProviderProfile => ({
 })
 
 describe('五档逐一检测', () => {
-  test('MiMo 即使旧检测接受多档，也只做连接检测且不增加虚假强度', async () => {
+  test('MiMo 即使旧检测结果接受多档，也只做连接检测，不增加虚假的强度档位', async () => {
     const r = await probeModel(
       { ...profile('mimo-v2.6-pro'), transport: { effort: true, effortLevels: levels } },
       { gapMs: 0 },
@@ -118,7 +118,7 @@ describe('五档逐一检测', () => {
     expect(r.effortLevels).toEqual([])
     expect(toTransportCapabilities(r).effort).toBe(false)
   })
-  test('未收录模型也真正发送五档和非法对照，并能在后续请求使用', async () => {
+  test('未收录模型同样实际发送五档与非法值对照，结果可在后续请求中使用', async () => {
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(seen.slice(0, 6)).toEqual([undefined, ...levels])
     expect(seen[6]).not.toBeUndefined()
@@ -148,7 +148,7 @@ describe('五档逐一检测', () => {
       buildAdapter({ ...base, transport: toTransportCapabilities(r) }).spec.effortLevels,
     ).toEqual(['low', 'high', 'max'])
   })
-  test('内置明确没有档位时仅检测连接，不凭请求成功添加档位', async () => {
+  test('内置目录明确没有档位时仅检测连接，不因请求成功而添加档位', async () => {
     const r = await probeModel(
       { ...profile('claude-haiku-4-5'), spec: { effortLevels: [] }, transport: { effort: false } },
       { gapMs: 0 },
@@ -175,7 +175,7 @@ describe('五档逐一检测', () => {
         .effortLevels,
     ).toEqual(['low', 'max'])
   })
-  test('五档都被拒时保存空列表', async () => {
+  test('五档均被拒绝时保存空列表', async () => {
     accepted.clear()
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.effortLevels).toEqual([])
@@ -187,7 +187,7 @@ describe('五档逐一检测', () => {
     expect(r.untested).toEqual(['effort'])
     expect(toTransportCapabilities(r).effort).toBeUndefined()
   })
-  test('端点连非法值也接受时报告不确定，不把五档写成已验证', async () => {
+  test('端点连非法值也接受时报告无法确定，不将五档记为已验证', async () => {
     ignoreAll = true
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.effortLevels).toEqual(levels)
@@ -195,7 +195,7 @@ describe('五档逐一检测', () => {
     expect(r.probes.find((p) => p.name.endsWith('非法值对照'))?.detail).toContain('非法档位')
     expect(toTransportCapabilities(r).effort).toBeUndefined()
   })
-  test('某一档临时失败也继续其余档，但不覆盖已保存的结果', async () => {
+  test('某一档临时失败时继续检测其余档，但不覆盖已保存的结果', async () => {
     transient = 'medium'
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(seen.slice(1, 6)).toEqual(levels)
@@ -203,13 +203,13 @@ describe('五档逐一检测', () => {
     expect(r.inconclusive).toEqual(['effort'])
     expect(toTransportCapabilities(r).effort).toBeUndefined()
   })
-  test('非法值对照临时失败也不能形成结论', async () => {
+  test('非法值对照临时失败时不形成结论', async () => {
     transient = '__qy_probe_invalid_effort__'
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.inconclusive).toEqual(['effort'])
     expect(toTransportCapabilities(r).effort).toBeUndefined()
   })
-  test('HTML 响应不是连接成功', async () => {
+  test('HTML 响应不视为连接成功', async () => {
     html = true
     const r = await probeModel(profile(), { gapMs: 0 })
     expect(r.reachable).toBe(false)
@@ -299,7 +299,7 @@ describe('五档逐一检测', () => {
     })
   })
 
-  test('一个格式拒绝而另一格式未确认，不把未知模型写成无档位', async () => {
+  test('一种格式被拒绝而另一种格式未确认时，不将未知模型记为无档位', async () => {
     rejectStandard = true
     ignoreAll = true
     const r = await probeModel(profile(), { gapMs: 0 })

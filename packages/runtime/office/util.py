@@ -10,7 +10,7 @@ from pathlib import Path
 
 FORMATS = {".docx": "docx", ".xlsx": "xlsx", ".pptx": "pptx"}
 
-# 带宏的格式在打开前一律拒绝：本机 WPS 取不到 VBProject，禁宏效果没有验证过。
+# 带宏的格式在打开前一律拒绝：本机 WPS 无法取得 VBProject，禁用宏的效果未经验证。
 MACRO_EXTS = {".docm", ".dotm", ".xlsm", ".xltm", ".xlsb", ".pptm", ".potm", ".ppsm"}
 
 
@@ -39,7 +39,7 @@ def write_json(path, data) -> None:
 
 
 def atomic_copy(src, dst) -> None:
-    """同目录临时文件加 os.replace：目标要么是旧字节，要么是新字节，不会停在写了一半的状态。"""
+    """同目录临时文件加 os.replace：目标文件只会是旧内容或新内容，不会停留在写入一半的状态。"""
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(f".{dst.name}.qy-{uuid.uuid4().hex}.tmp")
@@ -64,7 +64,7 @@ def same_path(a, b) -> bool:
 
 
 def has_macros(path) -> bool:
-    """扩展名是带宏格式，或包里有 vbaProject.bin。"""
+    """扩展名是带宏格式，或包中含有 vbaProject.bin。"""
     if Path(path).suffix.lower() in MACRO_EXTS:
         return True
     try:
@@ -75,7 +75,7 @@ def has_macros(path) -> bool:
 
 
 def is_ole(path) -> bool:
-    """OLE 复合文件：加密的 docx / xlsx / pptx，或改了扩展名的 doc / xls / ppt。两者都不是 zip 包。"""
+    """OLE 复合文件：加密的 docx / xlsx / pptx，或修改了扩展名的 doc / xls / ppt。两者都不是 zip 包。"""
     try:
         with open(path, "rb") as f:
             return f.read(8) == bytes.fromhex("d0cf11e0a1b11ae1")
@@ -84,7 +84,7 @@ def is_ole(path) -> bool:
 
 
 def replace_parts(path, parts: dict) -> None:
-    """只替换包里给定的部件，其余部件按原顺序、原压缩参数写回。"""
+    """只替换包中给定的部件，其余部件按原顺序、原压缩参数写回。"""
     path = Path(path)
     tmp = path.with_name(f".{path.name}.qy-parts-{uuid.uuid4().hex}.tmp")
     try:
@@ -104,7 +104,7 @@ def truncate(text: str, limit: int) -> str:
 
 
 def col_letter(n: int) -> str:
-    """列号（从 1 起）转成 A、B … AA。"""
+    """列号（从 1 起）转换为 A、B … AA。"""
     s = ""
     while n > 0:
         n, r = divmod(n - 1, 26)

@@ -1,9 +1,9 @@
 /**
  * 覆盖范围：`history.ts` 的 `read_history`。
  *
- * 它是压缩的另一半：折掉的原文一直在账本里，这个工具负责把它接回给模型。
- * 所以这里锁三件事——**取回的是逐字原文**、**端口没接时如实报而不是谎称找不到**、
- * **读回来的量受本次决策的投递额度约束**，装不下的部分存进正文库、由 `read_resource` 续读。
+ * 本工具与压缩配合：被折叠的原文始终保存在账本中，本工具负责把它交还给模型。
+ * 因此本文件锁定三项行为：取回的是逐字原文；端口未接入时如实报告，而不是报告未找到；
+ * 读取量受本次决策的投递额度约束，超出额度的部分存入正文库，由 `read_resource` 续读。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -41,7 +41,7 @@ function memHistory(): HistoryPort {
       images: [{ data: 'QUJD', mime: 'image/png' }],
     },
   }
-  // 收纳过的工具结果只剩信封，信封里的 call_id 是它唯一的地址。
+  // 已收纳的工具结果只剩信封，信封中的 call_id 是它唯一的定位标识。
   const byCall: Record<string, string> = { call_9: 'rn_1:7' }
   const child: HistoryPort = {
     message: (id) => (id === 'ms_c' ? { role: 'assistant', content: '子 agent 的产出' } : null),
@@ -94,8 +94,8 @@ function ctx(history: HistoryPort | undefined): ToolContext {
 
 const run = (args: Record<string, unknown>) => readHistoryTool.fn(args, ctx(memHistory()))
 
-describe('读子 agent 的历史', () => {
-  test('填 subagent 时读的是那个子 agent 的会话', async () => {
+describe('读取子 agent 的历史', () => {
+  test('提供 subagent 时读取该子 agent 的会话', async () => {
     const r = await run({ subagent: 'cv_child', message_id: 'ms_c' })
     expect(r.status).toBe('success')
     expect((r.data as { content: string }).content).toBe('子 agent 的产出')
@@ -103,7 +103,7 @@ describe('读子 agent 的历史', () => {
     expect((hits.data as { hits: string[] }).hits[0]).toContain('ms_c')
   })
 
-  test('不属于本会话的子 agent id 如实回绝', async () => {
+  test('不属于本会话的子 agent id 被拒绝', async () => {
     const r = await run({ subagent: 'cv_other', message_id: 'ms_c' })
     expect(r.status).toBe('failure')
     expect(r.message).toContain('没有子 agent cv_other')
@@ -111,14 +111,14 @@ describe('读子 agent 的历史', () => {
 })
 
 describe('前置校验', () => {
-  test('端口没接时如实说，不谎称找不到', async () => {
-    // 显式构造一个没接端口的 ctx——默认参数遇到 undefined 会回落，测不到这条。
+  test('端口未接入时如实报告，不误报为未找到', async () => {
+    // 显式构造未接入端口的 ctx：默认参数遇到 undefined 时会取默认值，无法覆盖该路径。
     const r = await readHistoryTool.fn({ message_id: 'ms_1' }, ctx(undefined))
     expect(r.status).toBe('failure')
     expect(r.errorKind).toBe('history_unavailable')
   })
 
-  test('三个参数一个都不给要报错', async () => {
+  test('未提供任何检索参数时报错', async () => {
     const r = await run({})
     expect(r.status).toBe('failure')
   })
@@ -128,7 +128,7 @@ describe('前置校验', () => {
     expect((await run({ step_id: 'rn_1:999' })).errorKind).toBe('not_found')
   })
 
-  test('step id 不是复合形式时不去猜', async () => {
+  test('step id 不是复合形式时不做推测', async () => {
     expect((await run({ step_id: '7' })).errorKind).toBe('not_found')
   })
 })
@@ -150,8 +150,8 @@ describe('取回原文', () => {
     expect((await run({ call_id: 'call_nope' })).errorKind).toBe('not_found')
   })
 
-  /** 被 `images_omitted` 信封替换掉的那张图，凭记录 id 取回的是定格的同一份字节。 */
-  test('带图的执行记录把图作为图像块带回，outcome 文本里没有字节', async () => {
+  /** 被 `images_omitted` 信封替换的图片，按记录 id 取回的是读取时保存的同一份字节。 */
+  test('带图片的执行记录把图片作为图像块返回，outcome 文本中不含字节', async () => {
     const r = await run({ step_id: 'rn_1:9' })
     expect(r.status).toBe('success')
     const d = r.data as { outcome: string; images: { data: string; mime: string }[] }
@@ -160,7 +160,7 @@ describe('取回原文', () => {
     expect(r.message).toContain('含图片')
   })
 
-  test('执行记录带回参数与结果', async () => {
+  test('执行记录返回参数与结果', async () => {
     const r = await run({ step_id: 'rn_1:7' })
     expect(r.status).toBe('success')
     const d = r.data as { tool: string; args: string; outcome: string }
@@ -171,7 +171,7 @@ describe('取回原文', () => {
 })
 
 describe('搜索', () => {
-  test('命中行带定位符，模型据它再取全文', async () => {
+  test('命中行带有定位符，模型据此取回全文', async () => {
     const r = await run({ query: 'RS256' })
     expect(r.status).toBe('success')
     const hits = (r.data as { hits: string[] }).hits
@@ -179,7 +179,7 @@ describe('搜索', () => {
     expect(hits[0]).toContain('[message:ms_1]')
   })
 
-  test('没命中不是失败', async () => {
+  test('未命中不视为失败', async () => {
     const r = await run({ query: '这段话不存在' })
     expect(r.status).toBe('success')
     expect((r.data as { hits: string[] }).hits).toHaveLength(0)
@@ -209,10 +209,10 @@ describe('投递额度', () => {
     (r.data as { content: string }).content
 
   /**
-   * 历史条目没有范围参数：装不下时只给提示的话，原文永远读不全。
-   * 投递头部，完整原文存一次，说明里给出 `read_resource` 的续读位置。
+   * 历史条目没有范围参数：超出额度时只返回提示，原文将无法完整读取。
+   * 因此投递头部，完整原文保存一次，说明中给出 `read_resource` 的续读位置。
    */
-  test('装不下时投递头部，完整原文存进正文库，给出续读位置', async () => {
+  test('无法容纳时投递头部，完整原文存入正文库，给出续读位置', async () => {
     const { c, sink } = budgeted(5000)
     const r = await readHistoryTool.fn({ message_id: 'ms_big' }, c)
     expect(r.status).toBe('success')
@@ -225,7 +225,7 @@ describe('投递额度', () => {
     expect(batchRemaining(c)).toBeLessThan(500)
   })
 
-  test('额度按决策累计：同一决策里先读过的量从余额里扣掉', async () => {
+  test('额度按决策累计：同一决策中已读取的量从余额中扣除', async () => {
     const fresh = budgeted(5000)
     const alone = contentOf(await readHistoryTool.fn({ message_id: 'ms_big' }, fresh.c))
 
@@ -235,8 +235,8 @@ describe('投递额度', () => {
     expect(after.length).toBeLessThan(alone.length)
   })
 
-  /** 报失败的回合不产出正文，模型原样重试；余量为 0 时仍给最小的一份，完整原文照样可续读。 */
-  test('余额为 0 时仍投递最小的一份头部，完整原文存进正文库', async () => {
+  /** 报告失败的回合不产出正文，模型会原样重试；余量为 0 时仍投递最小的一份，完整原文同样可续读。 */
+  test('余额为 0 时仍投递最小的一份头部，完整原文存入正文库', async () => {
     const { c, sink } = budgeted(0)
     const r = await readHistoryTool.fn({ message_id: 'ms_big' }, c)
     expect(r.status).toBe('success')

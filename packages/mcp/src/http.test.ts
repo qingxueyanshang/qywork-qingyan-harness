@@ -1,17 +1,16 @@
 /**
- * streamable HTTP 传输，端到端。
+ * streamable HTTP 传输的端到端测试。
  *
- * **为什么起一个真的 HTTP server 而不是 mock fetch。** 这条传输里真正会出错的点全在**协议表面**上：
- * 响应可能是 `application/json` 也可能是 `text/event-stream`，
- * 会话 id 藏在响应头里而且只出现一次，通知回 202 且没有 body，
- * 失败有五六种含义完全不同的状态码。mock 掉 fetch 等于把这些全部替换成
- * 一份自拟的形状——Responses 适配器上出过同一个问题：fixture 与实际不符，
- * 实现和测试一起错，全绿。
+ * 使用真实的 HTTP server 而不是模拟 fetch：该传输的出错点都在协议层面。
+ * 响应可能是 `application/json`，也可能是 `text/event-stream`；
+ * 会话 id 位于响应头中且只出现一次；通知返回 202 且没有 body；
+ * 失败有五六种含义完全不同的状态码。模拟 fetch 等于把这些全部替换为
+ * 自行拟定的结构：夹具与实际不符时，实现与测试同时出错，测试却全部通过。
  *
- * 所以这里 `Bun.serve` 一个按规范应答的 server，让客户端真的发 HTTP。
+ * 因此此处用 `Bun.serve` 启动一个按规范应答的 server，使客户端实际发送 HTTP 请求。
  *
- * **它验的是客户端。** 不验任何第三方 MCP server 的实现是否合规。真实 server 的兼容性
- * 只能靠实际接一个来验，那件事还没做。
+ * 本测试验证的是客户端，不验证任何第三方 MCP server 的实现是否合规。真实 server 的兼容性
+ * 只能通过实际接入来验证，该验证尚未进行。
  */
 
 import { afterAll, describe, expect, test } from 'bun:test'
@@ -30,16 +29,16 @@ type Mode = 'json' | 'sse'
 
 interface ServerState {
   mode: Mode
-  /** 强制下一次响应返回这个状态码。 */
+  /** 强制下一次响应返回该状态码。 */
   forceStatus: number | null
-  /** 收到的会话 id，按请求记下来，用于断言客户端确实回传了。 */
+  /** 收到的会话 id，按请求记录，用于断言客户端确实回传。 */
   seenSessionIds: (string | null)[]
   seenProtocolVersions: (string | null)[]
   /** 是否收到过 DELETE。 */
   deleted: boolean
   /** initialize 时是否下发会话 id。 */
   issueSession: boolean
-  /** SSE 流写到一半就断。 */
+  /** SSE 流写到一半即断开。 */
   truncateSse: boolean
   notifications: string[]
 }
@@ -69,7 +68,7 @@ function reset(over: Partial<ServerState> = {}): void {
   })
 }
 
-/** 夹具收到的 JSON-RPC 报文。只声明夹具真的看的那几格。 */
+/** 夹具收到的 JSON-RPC 报文。只声明夹具实际读取的字段。 */
 interface RpcMessage {
   id?: number | string | null
   method?: string
@@ -108,7 +107,7 @@ const server = Bun.serve({
 
     const msg = (await req.json()) as RpcMessage
 
-    // 通知没有 id，规范里回 202 且无 body。
+    // 通知没有 id，按规范返回 202 且无 body。
     if (msg.id === undefined || msg.id === null) {
       state.notifications.push(String(msg.method))
       return new Response(null, { status: 202 })
@@ -116,7 +115,7 @@ const server = Bun.serve({
 
     const payload = { jsonrpc: '2.0', id: msg.id, result: resultFor(msg) }
     const headers: Record<string, string> = {}
-    // 会话 id **只在 initialize 的响应头里出现一次**。
+    // 会话 id 只在 initialize 的响应头中出现一次。
     if (msg.method === 'initialize' && state.issueSession) {
       headers['mcp-session-id'] = 'sess-fixture-1'
     }
@@ -128,10 +127,10 @@ const server = Bun.serve({
       })
     }
 
-    // 截断的流：吐半条事件然后**正常关闭**。
-    // 这比 `controller.error()` 更贴近真实——反代掐连接、server 崩掉，
-    // 客户端那边看到的往往就是「流结束了」，`for await` 一个异常都不抛。
-    // 那正是「静默结束」与「成功结束」在传输层分不出来的那种情况。
+    // 截断的流：输出半条事件后正常关闭。
+    // 这比 `controller.error()` 更接近实际情况：反向代理中断连接、server 崩溃时，
+    // 客户端看到的往往只是流结束，`for await` 不抛出任何异常。
+    // 这正是传输层无法区分静默结束与成功结束的情形。
     const body = state.truncateSse
       ? new ReadableStream<Uint8Array>({
           start(controller) {
@@ -159,11 +158,11 @@ function client(over: Record<string, unknown> = {}) {
   })
 }
 
-describe('两种响应形态都要收得下', () => {
+describe('两种响应格式都能正确接收', () => {
   /**
-   * 规范允许 server 对同一个 POST 回单条 JSON **或**一条 SSE 流。
-   * 只实现一种的后果是「换个 server 就全线超时」，而且错误信息
-   * 会是「请求超时」——完全指不到真正的原因。
+   * 规范允许 server 对同一个 POST 返回单条 JSON 或一条 SSE 流。
+   * 只实现一种时，更换 server 后所有请求都会超时，且错误信息
+   * 是「请求超时」，完全无法指向真正的原因。
    */
   test('application/json：单条响应', async () => {
     reset({ mode: 'json' })
@@ -174,7 +173,7 @@ describe('两种响应形态都要收得下', () => {
     await c.stop()
   })
 
-  test('text/event-stream：SSE 里的消息同样配对得上', async () => {
+  test('text/event-stream：SSE 中的消息同样能正确配对', async () => {
     reset({ mode: 'sse' })
     const c = client()
     await c.start()
@@ -187,23 +186,23 @@ describe('两种响应形态都要收得下', () => {
 
 describe('会话 id', () => {
   /**
-   * 会话 id 只在 initialize 的响应头里出现一次。丢了它之后每一条请求
-   * 都会被当成新会话——有的 server 直接 400，有的静默返回一个空会话，
-   * 后者更糟：看起来在工作，实际每次都从头开始。
+   * 会话 id 只在 initialize 的响应头中出现一次。丢失后每一条请求
+   * 都会被视为新会话：部分 server 直接返回 400，部分静默返回一个空会话，
+   * 后者更难发现：看似正常工作，实际每次都从头开始。
    */
-  test('initialize 拿到的 session id，之后每条请求都带上', async () => {
+  test('initialize 取得的 session id 随之后的每条请求发送', async () => {
     reset({ mode: 'json' })
     const c = client()
     await c.start()
     await c.listTools()
     await c.stop()
-    // 第一条（initialize）不该带，之后每一条都要带。
+    // 第一条（initialize）不应携带，之后每一条都要携带。
     expect(state.seenSessionIds[0]).toBeNull()
     expect(state.seenSessionIds.slice(1).every((s) => s === 'sess-fixture-1')).toBe(true)
     expect(state.seenSessionIds.length).toBeGreaterThan(2)
   })
 
-  test('server 不下发 session id 时照样能用 —— 那是可选的', async () => {
+  test('server 不下发 session id 时仍可使用：该字段是可选的', async () => {
     reset({ mode: 'json', issueSession: false })
     const c = client()
     await c.start()
@@ -212,7 +211,7 @@ describe('会话 id', () => {
     expect(state.seenSessionIds.every((s) => s === null)).toBe(true)
   })
 
-  test('握手之后带上协议版本头', async () => {
+  test('握手之后携带协议版本头', async () => {
     reset({ mode: 'json' })
     const c = client()
     await c.start()
@@ -221,8 +220,8 @@ describe('会话 id', () => {
     expect(state.seenProtocolVersions.at(-1)).toBe('2025-06-18')
   })
 
-  /** 关闭时显式结束会话，别在对端留下无人认领的会话。 */
-  test('stop 发 DELETE 结束会话', async () => {
+  /** 关闭时显式结束会话，不在对端遗留无人认领的会话。 */
+  test('stop 发送 DELETE 结束会话', async () => {
     reset({ mode: 'json' })
     const c = client()
     await c.start()
@@ -233,8 +232,8 @@ describe('会话 id', () => {
 })
 
 describe('通知', () => {
-  /** `notifications/initialized` 不能省：有的 server 在它之前拒绝一切请求。 */
-  test('initialized 真的发出去了，且 202 无 body 不当成错误', async () => {
+  /** `notifications/initialized` 不能省略：部分 server 在收到它之前拒绝所有请求。 */
+  test('initialized 确实已发出，且 202 无 body 不视为错误', async () => {
     reset({ mode: 'json' })
     const c = client()
     await c.start()
@@ -243,26 +242,26 @@ describe('通知', () => {
   })
 })
 
-describe('失败要能区分「配错了」和「对面挂了」', () => {
+describe('失败须区分「配置错误」与「服务端不可用」', () => {
   /**
-   * 远端 server 不在本机掌控内，所以这一组是这条传输最重要的部分。
-   * 一句笼统的「连接失败」会让用户先去查网络，而真正的原因可能是 token 过期。
+   * 远端 server 不受本机控制，因此这一组是该传输最重要的测试。
+   * 笼统的「连接失败」会让用户先排查网络，而真正的原因可能是 token 过期。
    */
   test('401 指向 headers 配置，不指向网络', async () => {
     reset({ forceStatus: 401 })
     await expect(client().start()).rejects.toThrow(/鉴权|headers/)
   })
 
-  test('没有会话时的 404 = 地址配错了', async () => {
+  test('没有会话时的 404 表示地址配置错误', async () => {
     reset({ forceStatus: 404 })
     await expect(client().start()).rejects.toThrow(/url/)
   })
 
   /**
-   * 带着会话 id 收到 404 = 服务端把会话丢了（重启 / 过期 / 换实例），
-   * **不是**地址错。两者的下一步动作完全相反：一个重连，一个改配置。
+   * 携带会话 id 时收到 404 表示服务端丢失了会话（重启 / 过期 / 更换实例），
+   * 而不是地址错误。两者的后续操作完全不同：前者重连，后者修改配置。
    */
-  test('有会话时的 404 = 会话失效，提示重连而不是改配置', async () => {
+  test('有会话时的 404 表示会话失效，提示重连而不是修改配置', async () => {
     reset({ mode: 'json' })
     const c = client()
     await c.start()
@@ -271,12 +270,12 @@ describe('失败要能区分「配错了」和「对面挂了」', () => {
     await c.stop()
   })
 
-  test('5xx 明说是对面的问题', async () => {
+  test('5xx 明确指出是服务端的问题', async () => {
     reset({ forceStatus: 503 })
-    await expect(client().start()).rejects.toThrow(/对面的问题|内部错误/)
+    await expect(client().start()).rejects.toThrow(/内部错误/)
   })
 
-  test('地址根本连不上时说清是连不上，不是超时', async () => {
+  test('地址无法连接时明确报告连接失败，而不是超时', async () => {
     const c = new McpClient({
       name: 'dead',
       spec: { transport: 'http', url: 'http://127.0.0.1:1/mcp' } as never,
@@ -285,11 +284,11 @@ describe('失败要能区分「配错了」和「对面挂了」', () => {
   })
 
   /**
-   * SSE 流中途断掉，在飞的请求**必须立刻被拒**。
-   * 不拒的话调用方会一直等到 60 秒超时，而用户看到的是「卡住」——
-   * 那是最难排查的一种失败，因为它看起来像仍在执行。
+   * SSE 流中途断开时，在途请求必须立即被拒绝。
+   * 否则调用方会一直等待至 60 秒超时，用户看到的是无响应：
+   * 这是最难排查的一种失败，因为它看起来仍在执行。
    */
-  test('SSE 流中途断开时立刻拒绝在飞的请求，不等超时', async () => {
+  test('SSE 流中途断开时立即拒绝在途请求，不等待超时', async () => {
     reset({ mode: 'sse', truncateSse: true })
     const c = client()
     const t0 = Date.now()
@@ -299,8 +298,8 @@ describe('失败要能区分「配错了」和「对面挂了」', () => {
   })
 })
 
-describe('批量加载里的 http server', () => {
-  test('http 与 stdio 混配时，http 的工具照常出现', async () => {
+describe('批量加载中的 http server', () => {
+  test('http 与 stdio 混合配置时，http 的工具正常出现', async () => {
     reset({ mode: 'json' })
     const reg = await loadMcpServers(
       {

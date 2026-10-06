@@ -18,11 +18,11 @@ function iface(address: string, netmask: string, mac: string): NonNullable<Iface
 
 describe('局域网地址选择', () => {
   /**
-   * 回归用例：取自实测机器。
+   * 回归用例：数据取自实测机器。
    *
-   * 这台机器同时存在真实网卡、Hyper-V 虚拟交换机和 singbox 的 TUN 隧道。
-   * 早期两版实现都选错了——一版按网卡名黑名单（打成平手后靠枚举顺序决定），
-   * 一版问默认路由（VPN 下默认路由指向 TUN）。
+   * 该机器同时存在真实网卡、Hyper-V 虚拟交换机与 singbox 的 TUN 隧道。
+   * 按网卡名黑名单选择（同分时由枚举顺序决定）与按默认路由选择（VPN 下默认路由指向 TUN）
+   * 在该环境下都会选错。
    */
   test('在 VPN + Hyper-V 环境下选中真实网卡', () => {
     const ifaces: Ifaces = {
@@ -32,7 +32,7 @@ describe('局域网地址选择', () => {
     }
     const ranked = lanCandidates(ifaces)
     expect(ranked[0]?.address).toBe('192.168.1.26')
-    // 虚拟网卡仍然出现在候选里——自动判断不可靠时用户要能手选。
+    // 虚拟网卡仍出现在候选中：自动判断不可靠时用户必须能手动选择。
     expect(ranked).toHaveLength(3)
   })
 
@@ -51,12 +51,12 @@ describe('局域网地址选择', () => {
       a: [iface('192.168.1.3', '255.255.255.0', '10:ff:e0:00:00:01')],
     }
     expect(lanCandidates(ifaces).map((c) => c.address)).toEqual(['192.168.1.3', '192.168.1.9'])
-    // 换个枚举顺序，结果必须一样。
+    // 改变枚举顺序后，结果必须相同。
     const reversed: Ifaces = { a: ifaces.a, b: ifaces.b }
     expect(lanCandidates(reversed).map((c) => c.address)).toEqual(['192.168.1.3', '192.168.1.9'])
   })
 
-  test('Docker 网桥被压到真实网卡之后', () => {
+  test('Docker 网桥排在真实网卡之后', () => {
     const ifaces: Ifaces = {
       docker0: [iface('172.17.0.1', '255.255.0.0', '02:42:ac:11:00:01')],
       eth0: [iface('10.0.0.7', '255.255.255.0', '3c:22:fb:00:00:01')],
@@ -67,8 +67,8 @@ describe('局域网地址选择', () => {
 
 describe('网卡名乱码修复', () => {
   /**
-   * Windows 上「以太网」经 os.networkInterfaces() 取出来会变成 Latin-1 误解码的
-   * `ä»¥å¤ªç½`。用户要靠这个名字辨认选哪块网卡，乱码等于功能作废。
+   * Windows 上「以太网」经 os.networkInterfaces() 读取后会变为按 Latin-1 误解码的
+   * `ä»¥å¤ªç½`。用户依靠该名称辨认应选择的网卡，名称为乱码时该功能失效。
    */
   test('还原被 Latin-1 误解码的中文网卡名', () => {
     const broken = Buffer.from('以太网', 'utf8').toString('latin1')
@@ -80,18 +80,18 @@ describe('网卡名乱码修复', () => {
     expect(repairMojibake('singbox_tun')).toBe('singbox_tun')
   })
 
-  test('本来就正确的中文名不被改坏', () => {
+  test('原本正确的中文名不被误改', () => {
     expect(repairMojibake('以太网')).toBe('以太网')
   })
 
-  test('解不出 UTF-8 时原样返回，不吞掉内容', () => {
+  test('无法按 UTF-8 解码时原样返回，不丢弃内容', () => {
     // 单个 Latin-1 重音字符不是合法 UTF-8 序列，必须原样保留。
     expect(repairMojibake('Café')).toBe('Café')
   })
 })
 
 describe('配对令牌', () => {
-  test('令牌可自验，错误令牌被拒', () => {
+  test('令牌可自行校验，错误令牌被拒绝', () => {
     const p = new Pairing()
     expect(p.verify(p.token)).toBe(true)
     expect(p.verify('0'.repeat(p.token.length))).toBe(false)
@@ -99,14 +99,14 @@ describe('配对令牌', () => {
     expect(p.verify(null)).toBe(false)
   })
 
-  test('外部注入的令牌被原样采用——鉴权只认这一个持有者', () => {
+  test('外部注入的令牌被原样采用：鉴权只接受这一个持有者', () => {
     const p = new Pairing({ token: 'injected-by-desktop' })
     expect(p.token).toBe('injected-by-desktop')
     expect(p.verify('injected-by-desktop')).toBe(true)
     expect(p.verify('injected-by-deskto')).toBe(false)
   })
 
-  test('令牌走 fragment，不进 query（不会被日志与 Referer 捕获）', () => {
+  test('令牌放在 fragment 中，不放入 query（不会被日志与 Referer 捕获）', () => {
     const p = new Pairing({ deviceName: 'testbox' })
     const url = p.qrUrl(7717)
     const [beforeHash] = url.split('#')

@@ -1,9 +1,9 @@
 /**
- * `@qywork/tools` 的对外面。**这里列的就是承诺，没列的就是内部实现。**
- * 具名导出，不用 `export *`（B6）：后者会把 `buildBwrapArgv`、`parseFrontmatter`、
- * `clampBody` 这类纯内部符号一并推出包边界。加一行之前先确认它真有包外调用点（B3）。
+ * `@qywork/tools` 的对外接口。**此处列出的即对外承诺，未列出的均为内部实现。**
+ * 使用具名导出，不用 `export *`（B6）：后者会把 `buildBwrapArgv`、`parseFrontmatter`、
+ * `clampBody` 等内部符号一并导出到包边界之外。新增导出前先确认它确有包外调用方（B3）。
  *
- * 包内互相引用与测试走相对路径，不受这份清单约束。
+ * 包内互相引用与测试使用相对路径，不受本清单约束。
  */
 
 import type { ToolRegistry } from '@qywork/agent'
@@ -22,8 +22,8 @@ import { importSkillTool, moveSkillTool, readSkillTool, writeSkillTool } from '.
 import { writeTodosTool } from './todos.ts'
 import { webFetchTool, webSearchTool } from './web.ts'
 
-// 生成工具按类别查：runtime 据此判断本轮快照要不要列那一类模型。
-// 生成的执行路径与任务记录后缀：server 的画布服务与生成工具走同一个 `generateMedia`
+// 生成工具按类别查询：runtime 据此判断本轮快照是否列出该类别的模型。
+// 生成的执行路径与任务记录后缀：server 的画布服务与生成工具使用同一个 `generateMedia`
 export {
   freeLandingPath,
   type GeneratedFile,
@@ -34,9 +34,9 @@ export {
   resumeMedia,
   TASK_SUFFIX,
 } from './generate.ts'
-// 画布按图片文件头的宽高给节点定框。
+// 画布按图片文件头的宽高确定节点尺寸。
 export { type ImageSize, imageSizeOf, shrinkImage } from './image.ts'
-// 记忆：runtime/session.ts 装配提示词时要读索引，server/api/memory.ts 要读写单条
+// 记忆：runtime/session.ts 装配提示词时读取索引，server/api/memory.ts 读写单条记忆
 export {
   listAllScopedEntries,
   listScopedEntries,
@@ -46,9 +46,9 @@ export {
   MEMORY_SUBDIR,
   type MemoryEntry,
 } from './memory.ts'
-// 联网：runtime/capabilities.ts 给插件的 host.net.fetch 用
+// 网络访问：供 runtime/capabilities.ts 实现插件的 host.net.fetch
 export { type SafetyOptions, safeFetch } from './net-safety.ts'
-// 路径：工作区边界的唯一判据，runtime 与 server 都要
+// 路径：工作区边界的唯一判据，runtime 与 server 均使用
 export {
   displayPath,
   IGNORED_DIRS,
@@ -58,19 +58,19 @@ export {
   rootsOf,
 } from './paths.ts'
 export { renameWithRetry } from './rename.ts'
-// 命令跑在一个「先于监听端口出生」的子进程里。`qy serve` 绑端口前起它，
-// 隐藏的 `runner` 子命令是它那一侧的入口。
+// 命令运行在先于监听端口启动的子进程中。`qy serve` 在绑定端口前启动该子进程，
+// 隐藏的 `runner` 子命令是该子进程的入口。
 export {
   type CommandRunner,
   type ProcessLike,
   runCommandRunner,
   startCommandRunner,
 } from './runner.ts'
-// 沙箱：cli 的 doctor/config、server 的握手都要报它
-// `commandShell` / `probeBash` 一并出去：命令跑哪个 shell 由它说了算，判 platform 就是第二本账；
-// 握手要报「这台机器有没有 bash」，没有时还要把原因说给用户听
-// `collectProcess` 与 `spawnGuarded` 是一对：起子进程一个出口，等子进程一个出口。
-// 各处自己写等待就是各写一遍完成判据，而写错的那处不报错，只会安静地永远挂着。
+// 沙箱：cli 的 doctor/config 与 server 的握手均报告沙箱状态
+// `commandShell` / `probeBash` 一并导出：命令在哪个 shell 中运行由它决定，调用方另行判断 platform 即形成第二本账；
+// 握手需报告本机是否有 bash，没有时向用户说明原因
+// `collectProcess` 与 `spawnGuarded` 配对使用：启动子进程与等待子进程各有唯一入口。
+// 各处自行编写等待逻辑即各自实现一遍完成判据，写错的一处不会报错，只会无限期阻塞。
 export {
   BASH_PATH_ENV,
   type BashResolution,
@@ -84,7 +84,7 @@ export {
   setCommandRunner,
   spawnGuarded,
 } from './sandbox.ts'
-// 作用域：runtime 与 server 都要按同一份规则算三层的根
+// 作用域：runtime 与 server 按同一规则计算三层的根目录
 export {
   AGENTS_DIR,
   globalScopeRoot,
@@ -97,18 +97,18 @@ export {
   scopePaths,
   scopeRoots,
 } from './scopes.ts'
-// 脱敏：team/cli-backend.ts 起外部 CLI 前要剥凭证；runtime 落诊断前要剥异常原文。
+// 脱敏：team/cli-backend.ts 启动外部 CLI 前剥离凭证；runtime 写入诊断前对异常原文脱敏。
 export { redactSecrets, scrubEnv } from './secrets.ts'
-// 环境变量的默认豁免名单：server/api 下发给设置页当留空时的实际值。
-// `MAX_TIMEOUT_MS` 是本机一次工具执行的额度：team 拿它当外部 CLI 的静默上限，
-// server 拿它拼那条终止说明，三处共用一个数。
+// 环境变量的默认豁免名单：server/api 下发给设置页，作为留空时的实际值。
+// `MAX_TIMEOUT_MS` 是本机单次工具执行的时限：team 用作外部 CLI 的静默上限，
+// server 用于组装终止说明，三处共用同一数值。
 export { DEFAULT_ENV_ALLOW, MAX_TIMEOUT_MS, resolveCommandTimeout } from './shell.ts'
-// 子 agent 产出的投递闸：server 的派活通道组装回执时过同一道，不另量一把尺。
+// 子 agent 产出的投递限制：server 的派发通道组装回执时经过同一投递限制，不另设标准。
 export { deliverAgentOutput, observationBudget } from './sink.ts'
-// 技能：runtime/session.ts 扫索引，server/api 列给设置页
+// 技能：runtime/session.ts 扫描索引，server/api 为设置页列出技能
 export { SKILLS_SUBDIR, type SkillMeta, scanAllSkills, scanSkills } from './skills.ts'
-// 外部工具按需加载：runtime/session.ts 量一次决定全量常驻还是进池子；
-// server/api 只取静态规格，它不建池
+// 外部工具按需加载：runtime/session.ts 计量一次，决定全部常驻还是放入工具池；
+// server/api 只取静态规格，不建立工具池
 export {
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
   externalSchemaTokens,
@@ -131,10 +131,10 @@ import { workflowTool } from './workflow.ts'
 /**
  * 内置工具集的唯一注册入口。插件工具在此之后追加，不得覆盖同名。
  *
- * **`run_command` 按能力注册**：这台机器上 bash / pwsh / powershell 一个都没有，
- * 就不给模型这个工具，而不是给一个必然失败的工具（B5）。探测每次重新跑，
- * 而这个函数每条消息都会被调一次（`runtime/session.ts`），所以装完 git
- * **下一条消息就有了**，不用重启。
+ * `run_command` 按能力注册：本机没有 bash / pwsh / powershell 中的任何一个时，
+ * 不向模型提供该工具，而不是提供一个必然失败的工具（B5）。探测每次重新执行，
+ * 而本函数每条消息调用一次（`runtime/session.ts`），因此安装 git 后
+ * 下一条消息即可使用，无需重启。
  */
 export function registerBuiltinTools(
   registry: ToolRegistry,
@@ -148,7 +148,7 @@ export function registerBuiltinTools(
     canvas?: boolean
     /** 有 Office 执行程序（宿主注入了 `OfficePort`）。 */
     office?: boolean
-    /** 配了模型的生成类别。每一类的生成工具只在这一类有模型时注册。 */
+    /** 已配置模型的生成类别。各类别的生成工具只在该类别有模型时注册。 */
     media?: readonly MediaOutput[]
   } = {},
 ): void {
@@ -168,13 +168,13 @@ export function registerBuiltinTools(
     updateGoalTool,
     webFetchTool,
     webSearchTool,
-    // 浏览器同样按通道注册：宿主没连上、版本不达标、成员会话三种情况都拿不到端口，
-    // 此时注册进来的是七个必然报错的名字。
+    // 浏览器同样按通道注册：宿主未连接、版本不满足要求、成员会话三种情况均无法取得端口，
+    // 此时注册的将是七个必然报错的工具。
     ...(opts.browser ? browserTools : []),
-    // 电脑控制同样按通道注册：没启用、宿主没连上、worker 没就绪、系统没授权，
-    // 四种情况都拿不到端口，此时注册进来的是四个必然报错的名字。
+    // 电脑控制同样按通道注册：未启用、宿主未连接、worker 未就绪、系统未授权，
+    // 四种情况均无法取得端口，此时注册的将是四个必然报错的工具。
     ...(opts.desktop ? desktopTools : []),
-    // Office 同样按通道注册：没有 Python 与文档库时调一次必失败。
+    // Office 同样按通道注册：没有 Python 与文档库时调用必然失败。
     ...(opts.office ? officeTools : []),
     readMemoryTool,
     writeMemoryTool,
@@ -185,18 +185,18 @@ export function registerBuiltinTools(
     writeSkillTool,
     moveSkillTool,
     ...(opts.mcpConfig ? [writeMcpServerTool, moveMcpServerTool] : []),
-    // 生成按类别注册：没有图像模型的出图工具调一次必失败（B5）。
+    // 生成工具按类别注册：没有图像模型时，图像生成工具的调用必然失败（B5）。
     ...(opts.media ?? []).map((output) => MEDIA_TOOLS[output]),
     ...(opts.media?.includes('video') ? [retrieveVideoTool] : []),
-    // 画布按通道注册：没有服务端（CLI 会话）就没有画布服务，工具调一次必失败。
+    // 画布按通道注册：没有服务端（CLI 会话）时没有画布服务，工具调用必然失败。
     ...(opts.canvas ? [readCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool] : []),
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,
-    // 派活与编排**按通道注册**：没有派活通道就没有这两个工具，
-    // 而不是给必然回「派不出去」的（B5，同 run_command 那条）。
+    // 派发任务与编排按通道注册：没有派发通道时不注册这些工具，
+    // 而不是注册必然返回「无法派发」的工具（B5，与 run_command 相同）。
     ...(opts.delegate ? [defineRoleTool, subagentTool, workflowTool] : []),
-    // 装插件同样按通道注册：装不了插件的装插件工具没有降级形态。
+    // 安装插件的工具同样按通道注册：无法安装插件时该工具没有降级形态。
     ...(opts.plugins ? [installPluginTool] : []),
   ]) {
     registry.register(spec)

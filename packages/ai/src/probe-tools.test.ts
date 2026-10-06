@@ -92,30 +92,33 @@ async function withEndpoint<T>(
 
 const mimoModels = ['mimo-v2.6-flash', 'mimo-v2.6-pro', 'mimo-v2.6-pro-ultraspeed']
 
-describe('工具契约检测走实际协议适配器', () => {
-  test.each(mimoModels)('%s 原生参数不造 nullable，第二轮携带思考并读回随机凭据', async (model) => {
-    await withEndpoint(
-      (body) => {
-        const tool = body.messages.find((m) => m.role === 'tool')
-        return chat(
-          JSON.stringify(args(tool ? JSON.parse(tool.content as string).receipt : 'probe')),
-        )
-      },
-      async (profile, bodies) => {
-        const result = await probeToolCalls({ ...profile, model })
-        expect(result.check.status).toBe('passed')
-        expect(result.thinkingObserved).toBe(true)
-        expect(bodies).toHaveLength(2)
-        const tool = bodies[0]!.tools[0]!.function
-        expect(tool.strict).toBeUndefined()
-        expect(tool.parameters.properties.url!.type).toBe('string')
-        expect(tool.parameters.required).not.toContain('tabId')
-        expect(bodies[1]!.messages[1]!.reasoning_content).toBe('检查参数')
-        expect(bodies[1]!.messages[2]!.tool_call_id).toBe('call_probe')
-        expect(result.steps.every((s) => s.ok)).toBe(true)
-      },
-    )
-  })
+describe('工具契约检测使用实际的协议适配器', () => {
+  test.each(mimoModels)(
+    '%s 原生参数不生成 nullable，第二轮携带思考并读取随机凭据',
+    async (model) => {
+      await withEndpoint(
+        (body) => {
+          const tool = body.messages.find((m) => m.role === 'tool')
+          return chat(
+            JSON.stringify(args(tool ? JSON.parse(tool.content as string).receipt : 'probe')),
+          )
+        },
+        async (profile, bodies) => {
+          const result = await probeToolCalls({ ...profile, model })
+          expect(result.check.status).toBe('passed')
+          expect(result.thinkingObserved).toBe(true)
+          expect(bodies).toHaveLength(2)
+          const tool = bodies[0]!.tools[0]!.function
+          expect(tool.strict).toBeUndefined()
+          expect(tool.parameters.properties.url!.type).toBe('string')
+          expect(tool.parameters.required).not.toContain('tabId')
+          expect(bodies[1]!.messages[1]!.reasoning_content).toBe('检查参数')
+          expect(bodies[1]!.messages[2]!.tool_call_id).toBe('call_probe')
+          expect(result.steps.every((s) => s.ok)).toBe(true)
+        },
+      )
+    },
+  )
 
   test('模型库声明 strict 的模型会转换参数，下一轮仍使用相同约定', async () => {
     await withEndpoint(
@@ -143,7 +146,7 @@ describe('工具契约检测走实际协议适配器', () => {
   })
 
   test.each(['flash', 'pro'])(
-    '%s 官方残缺 arguments + 正文 XML 判失败，不修补执行',
+    '%s 官方残缺 arguments 加正文 XML 判定为失败，不修补后执行',
     async (variant) => {
       const raw = await Bun.file(
         new URL(`./fixtures/mimo-${variant}-tool-union.sse`, import.meta.url),
@@ -175,7 +178,7 @@ describe('工具契约检测走实际协议适配器', () => {
       )
     })
   }
-  test('第二轮未读工具结果不能通过', async () => {
+  test('第二轮未读取工具结果时不通过', async () => {
     await withEndpoint(
       () => chat(JSON.stringify(args())),
       async (profile, bodies) => {

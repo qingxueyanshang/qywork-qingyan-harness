@@ -2,16 +2,16 @@
  * AgentLoop —— ReAct 主循环。
  *
  * 职责：按轮推进「跟进注入 → 装配请求 → 发送前压缩 → 发送与重发 → 收尾 → 工具波次」，
- * 并在循环结束时给出 run 的终态。各阶段的实现分在同目录的文件里：
+ * 并在循环结束时给出 run 的终态。各阶段的实现位于同目录的文件中：
  * `compact.ts`（两个压缩调用点）、`attempt.ts`（发送、事件消费、重发策略）、
  * `turn-end.ts`（收尾与无工具时的停机判定）、`tool-wave.ts`（工具执行）。
- * 它**不**负责：决定用哪个 provider（adapter 的事）、怎么存（store 的事）、
- * 怎么传给客户端（server 的事）。
+ * 不负责：选择 provider（由 adapter 负责）、持久化（由 store 负责）、
+ * 向客户端传输（由 server 负责）。
  *
- * 上下文装配的硬约束（靠代码保证，不靠提示词）：
+ * 上下文装配的硬约束（由代码保证，不依赖提示词）：
  * - 冻结前缀 = system.md + environment.md + rules.md，跨 run 逐字节稳定。
- * - 日期、技能清单、记忆**永不进冻结前缀**；runtime 按 run 冻结并跟用户消息绑定。
- * - 工具 schema 按名排序（registry 保证），排在最前，顺序抖动即全量失效。
+ * - 日期、技能清单、记忆不进入冻结前缀；runtime 按 run 冻结它们并与用户消息绑定。
+ * - 工具 schema 按名称排序（由 registry 保证）并排在最前，顺序变化即导致缓存全部失效。
  */
 
 import type { ChatRequest, ProviderEvent, WireMessage } from '@qywork/ai'
@@ -44,21 +44,21 @@ export class AgentLoop {
   /**
    * 前缀审计。
    *
-   * 挂在 loop 实例上而不是全局：loop 每轮新建（adapter 绑具体模型），
-   * 所以它天然覆盖「同一 run 内多次请求」——那正是前缀**必须**稳定的范围。
-   * 跨 run 的稳定性由 `PrefixAudit` 的 cacheKey 维度承担，
-   * 装配方（runtime）传的是 conversationId。
+   * 存放在 loop 实例上而不是全局：每轮新建一个 loop（adapter 绑定具体模型），
+   * 因此它覆盖同一 run 内的多次请求，即前缀必须稳定的范围。
+   * 跨 run 的稳定性由 `PrefixAudit` 按 cacheKey 区分，
+   * 装配方（runtime）传入的是 conversationId。
    */
   private readonly audit = new PrefixAudit()
 
-  /** 上一次装配丢掉了多少原文。由 `buildRequest` 写，`context` 事件与账本读。 */
+  /** 上一次装配省略的原文量。由 `buildRequest` 写入，`context` 事件与账本读取。 */
   private lastOmitted: ContextOmitted = emptyOmitted()
 
   /**
-   * 压缩端口。**恒非空**——缺省时是下面那个透传实现。
+   * 压缩端口，恒非空：未提供时使用构造函数中的透传实现。
    *
-   * 透传的语义与「没有压缩」逐字相同：投影原样返回、压缩报「没什么可折」，
-   * 因此容量拒绝照旧上报为 run 错误。差别只在调用点少了三处判空。
+   * 透传的语义与不压缩完全相同：投影原样返回，压缩返回 `nothing_to_fold`，
+   * 因此容量拒绝仍上报为 run 错误。区别只在于调用点无需三处判空。
    */
   private readonly compaction: CompactionPort
 
@@ -71,9 +71,9 @@ export class AgentLoop {
       run: async () => ({ status: 'skipped', reasonCode: 'nothing_to_fold' }),
     }
     /*
-     * 退避等待。缺省是可中断的真实计时。
+     * 退避等待。缺省为可中断的真实计时。
      *
-     * 等待必须随信号结束：退避的这几十秒内用户点停止，不中断等待就是按钮无响应。
+     * 等待必须随信号结束：用户在退避的数十秒内点击停止时，不中断等待会使停止按钮无响应。
      */
     const backoff = deps.sleep ?? ((ms, signal) => untilAborted(signal, sleep(ms)))
     this.host = {
@@ -88,9 +88,9 @@ export class AgentLoop {
   }
 
   /**
-   * 一轮之内压缩时摘要请求的记账。摘要请求按这一轮的普通请求处理：发出前落
-   * `provider_requests`（purpose = summary，占 turnIndex 这个编号），回报的 usage 并进这一轮。
-   * `opened` / `merged` 告诉调用方编号占没占、usage 变没变。
+   * 轮内压缩时摘要请求的记账。摘要请求按本轮的普通请求处理：发出前写入
+   * `provider_requests`（purpose = summary，占用 turnIndex 编号），回报的 usage 并入本轮。
+   * `opened` / `merged` 告知调用方是否占用了编号、usage 是否变化。
    */
   private summaryTrace(run: RunState, turnIndex: number): ReturnType<typeof createSummaryTrace> {
     return createSummaryTrace(
@@ -103,7 +103,7 @@ export class AgentLoop {
     )
   }
 
-  /** 这一轮的媒体发法。换出预算与发送前物化必须用同一份，否则两处对同一段视频算出不同的字节。 */
+  /** 本轮的媒体发送方式。换出预算与发送前物化必须使用同一份，否则两处对同一段视频算出不同的字节数。 */
   private mediaCapabilities(): InputMediaCapabilities {
     const { adapter } = this.deps
     const upload = adapter.transmits.mediaUploadAbove
@@ -115,7 +115,7 @@ export class AgentLoop {
     }
   }
 
-  /** 装配完的请求按模型能力物化媒体后交给适配器。 */
+  /** 装配完成的请求按模型能力物化媒体后交给适配器。 */
   private async openStream(req: ChatRequest): Promise<AsyncIterable<ProviderEvent>> {
     const materialized = await materialize(req, this.mediaCapabilities())
     return this.deps.adapter.stream(materialized)
@@ -135,16 +135,16 @@ export class AgentLoop {
         yield* injectFollowUps(this.deps, run)
         await this.deps.beforeRequest?.()
 
-        // `signal` 不在这里合成：每次尝试自带一个中止器，所以装配只出请求体，
-        // 信号在尝试循环里逐次接上。
+        // `signal` 不在此处合成：每次尝试各有一个中止器，因此装配只生成请求体，
+        // 信号在尝试循环中逐次接入。
         const req = this.buildRequest(run)
         const turn = new TurnState(run, req, breakdownOf(req, run.density))
         run.rebaseAnchor(turn.req, turn.breakdown)
 
         if ((yield* compactBeforeSend(host, run, turn)) === 'interrupted') break
 
-        // 前缀漂移只报不拦：拦了等于让一个计费问题变成一个功能故障。
-        // 但必须**说出来**——缓存失效本身是完全静默的，不报就永远没人知道。
+        // 前缀漂移只记录日志，不拦截请求：拦截会把计费问题变成功能故障。
+        // 但必须记录：缓存失效本身不产生任何报错，不记录则无法发现。
         const drift = this.audit.observe(input.cacheKey ?? input.runId, turn.req.system)
         if (drift) log.warn('agent', describeDrift(drift))
 
@@ -159,13 +159,13 @@ export class AgentLoop {
         if (next === 'stop') break
       }
     } catch (err) {
-      // **先看是不是用户按了停止。**
+      // 先判断是否为用户停止。
       //
-      // run 的绝大部分时间挂在等 provider 事件的 await 上，中止在那里表现为底层请求
-      // 被拒绝并抛出，而不是「两个事件之间」——循环里的 `signal.aborted` 检查一个都
-      // 赶不上。不在这里认出来的话，一次主动停止会落成 status:'failed' + 一条红色的
-      // internal_error（`ai/src/errors.ts` 把 AbortError 归到那里），
-      // 而那个文件自己写着「中断不是错误：不该报红也不该重试」。
+      // run 的绝大部分时间阻塞于等待 provider 事件的 await，在此处中止表现为底层请求
+      // 被拒绝并抛出异常，而不是发生在两个事件之间，循环中的 `signal.aborted` 检查均无法捕获。
+      // 不在此处识别时，一次主动停止会记为 status:'failed' 并显示一条
+      // internal_error（`ai/src/errors.ts` 把 AbortError 归入该错误码），
+      // 而该文件规定中断不按错误报告，也不重试。
       if (input.signal.aborted) {
         yield {
           type: 'run.finished',
@@ -214,28 +214,28 @@ export class AgentLoop {
   }
 
   /**
-   * 装配一次请求，并**同时算出这次没发出去多少原文**。
+   * 装配一次请求，并同时计算本次未发送的原文量。
    *
-   * 省略量不是事后统计出来的，是装配时**同尺两测相减**——原文一直在
-   * Message/Step 里留有（压缩是投影、不销毁数据），所以量得到。
-   * 前提就是这个：一旦哪天把旧结果正文改写成占位串，原文不在任何可测处，
-   * 这个数就失去依据，届时该删掉它而不是估一个。
+   * 省略量不是事后统计，而是装配时用同一估算方法分别计量投影前后再相减：原文始终
+   * 保留在 Message/Step 中（压缩是投影，不销毁数据），因此可以计量。
+   * 这是该数值的前提：若旧结果正文被改写为占位串，原文将不存在于任何可计量之处，
+   * 该数值随即失去依据，届时应删除它，而不是改为估算。
    */
   private buildRequest(run: RunState): ChatRequest {
     const { adapter, registry, systemPrompt } = this.deps
     const { input, transcript } = run
 
-    // 冻结前缀。缓存断点打在这里的末尾——它之后的所有内容都是易变的。
+    // 冻结前缀。缓存断点设在其末尾，之后的所有内容都可能变化。
     const system: ChatRequest['system'] = [{ text: systemPrompt, cacheBreakpoint: true }]
 
-    // 历史已经带着每个 run 的不可变上下文快照；run 内 transcript 只追加。
-    // 整串一起走压缩投影，工具结果才不会留在投影之外。
+    // 历史已包含每个 run 的不可变上下文快照；run 内 transcript 只追加。
+    // 整个序列一起经过压缩投影，工具结果因此不会遗留在投影之外。
     /*
-     * 缓存断点之二：**history 的最后一条**（跨 run 稳定点）。
+     * 缓存断点之二：history 的最后一条（跨 run 稳定点）。
      *
-     * 标在装配之前，随投影一起流下来——投影之后 history 与 transcript 之间
-     * 没有任何分界标记，事后再找不出来。投影若把这条折掉，断点跟着没，
-     * 退化成少一个断点，正确性无损。
+     * 在装配之前标记，随投影一起传递：投影之后 history 与 transcript 之间
+     * 没有分界标记，事后无法再定位。投影若折叠该条消息，断点随之消失，
+     * 只是少一个断点，不影响正确性。
      */
     const history = input.history.length
       ? [
@@ -255,19 +255,19 @@ export class AgentLoop {
     /*
      * 缓存断点之三：最后一批工具结果所属的 assistant 消息。
      *
-     * Anthropic 只在断点处写入缓存条目，读取时从断点往前回查约 20 个块。一批并行调用的
-     * assistant 与工具结果块数可以超过 20，只靠末尾断点时，下一步回查不到上一次末尾写下的条目，
-     * 其后的内容整段重写；这里的断点紧挨上一次的末尾，下一步仍能命中。
-     * 一次请求最多 4 个断点：系统提示词、history 末条、这里、末尾，不要再加第五个，
+     * Anthropic 只在断点处写入缓存条目，读取时从断点向前回查约 20 个块。一批并行调用的
+     * assistant 与工具结果块数可以超过 20，只依赖末尾断点时，下一步无法回查到上一次在末尾写入的条目，
+     * 其后的内容整段重写；此处的断点紧邻上一次的末尾，下一步仍能命中。
+     * 一次请求最多 4 个断点：系统提示词、history 末条、此处、末尾，不要添加第五个，
      * 超出会被 400 拒绝。
      */
     if (lastCall >= 0)
       assembledRaw[lastCall] = { ...assembledRaw[lastCall]!, cacheBreakpoint: true }
     /*
-     * 媒体去留：工具结果与附件里的图像、视频留在之后的请求里，挂着的总字节超过上限时，
-     * 从最早的整批换成说明（`evictedMedia`）。不要改回「每一步只留最后一批」：每摘一次图
-     * 请求前缀就变，`replayReasoning` 随之剥掉其后全部原生推理，模型看不到图，看图时得出的
-     * 判断也随之丢失，只能反复取回，实测因连续无进展被循环保护判失败。
+     * 媒体去留：工具结果与附件中的图像、视频保留在之后的请求中，保留的总字节超过上限时，
+     * 从最早的一批起整批替换为说明（`evictedMedia`）。不要改为「每一步只保留最后一批」：每移除一次图片，
+     * 请求前缀就会变化，`replayReasoning` 随之剥离其后全部原生推理，模型既看不到图片，也失去查看图片时得出的
+     * 判断，只能反复取回，实测因连续无进展被循环保护判定失败。
      */
     const evicted = evictedMedia(assembledRaw, this.mediaCapabilities())
     const scoped = evicted.size
@@ -282,17 +282,17 @@ export class AgentLoop {
     )
 
     /*
-     * 被投影丢掉的那部分原文，按分组分开记：历史消息一份、工具结果一份。
+     * 被投影省略的原文，按分组分别记录：历史消息一项、工具结果一项。
      *
-     * 同尺两测相减——原文一直在 Message/Step 里留有（压缩是投影、不销毁数据），
-     * 所以量得到。整条被折掉和只被换成信封在这里是同一件事：差额都算省略。
-     * 面板的「省略上下文」两行就是它；只回答「被谁占的」是半张账，
-     * 用户看到占用下降却不知道降在哪里。
+     * 用同一估算方法分别计量投影前后再相减：原文始终保留在 Message/Step 中（压缩是投影，不销毁数据），
+     * 因此可以计量。整条被折叠与只被替换为信封在此处同样处理：差额都计为省略。
+     * 面板中「省略上下文」的两行即来自此处；只说明占用的构成而不说明省略量时，
+     * 用户看到占用下降却无法得知下降的来源。
      */
     const omitted = emptyOmitted()
     const account = (list: readonly WireMessage[], sign: 1 | -1): void => {
       for (const m of list) {
-        // 无戳的投影摘要不参与——它不是被折的原文。
+        // 没有戳记的投影摘要不参与计算：它不是被折叠的原文。
         if (!m._messageId) continue
         const n = sign * estimateMessage(m, adapter.spec.density)
         if (m.role === 'tool' || m._group === 'intermediateContent')
@@ -307,8 +307,8 @@ export class AgentLoop {
     this.lastOmitted = omitted
 
     /*
-     * 缓存断点之四：本次已接受消息的末尾。下一步没有改动这一批结果时，从这里整段复用；
-     * 兼容协议忽略此标记，Anthropic 把它落成显式断点。
+     * 缓存断点之四：本次已接受消息的末尾。下一步未改动这一批结果时，从此处整段复用；
+     * 兼容协议忽略此标记，Anthropic 将其写为显式断点。
      */
     const latest = messages.length - 1
     if (latest >= 0 && !messages[latest]!.cacheBreakpoint) {
@@ -326,7 +326,7 @@ export class AgentLoop {
       ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
       signal: input.signal,
     }
-    // 申报值要量过装配结果才算得出来，所以先装配、再钳位覆盖同一个字段。
+    // 申报值需要计量装配结果后才能算出，因此先装配，再钳位并覆盖同一字段。
     return {
       ...assembled,
       maxOutputTokens: declaredMaxOutput(adapter.spec, run.occupancyOf(assembled)),
@@ -337,15 +337,15 @@ export class AgentLoop {
 /*
  * ── 跟进消息注入 ──
  *
- * 位置是**装配请求之前、这一步的其余动作之前**，所以这一步发出去的请求
- * 就带着它，模型下一次开口即已看到。
+ * 执行位置在装配请求之前、本步的其余动作之前，因此本步发出的请求
+ * 即包含跟进消息，模型在下一次响应时即可看到。
  *
- * 追加在 transcript 尾部（上一波工具结果之后）。运行上下文已经固定在 history
- * 的所属用户消息上，所以此前的 `[history][transcript…]` 逐字节不变。
+ * 追加在 transcript 末尾（上一工具波次的结果之后）。运行上下文已固定在 history
+ * 中所属的用户消息上，因此此前的 `[history][transcript…]` 逐字节不变。
  *
- * 戳要自己盖：`stampUnit` 只盖它自己那一段（起点在推 assistant 消息时才取），
- * 波及不到这里。`_group` 用 `historyMessages` 而不是执行记录——这是用户
- * 打的字；投影侧（`runtime/transcript.ts`）必须同值，两侧不同口径比都记错更坏。
+ * 戳记须在此处自行写入：`stampUnit` 只为其负责的区段写入戳记（起点在推入 assistant 消息时取得），
+ * 不覆盖此处。`_group` 取 `historyMessages` 而不是执行记录：这是用户
+ * 输入的内容；投影侧（`runtime/transcript.ts`）必须取相同的值，两侧口径不一致的后果比两侧同时出错更严重。
  */
 async function* injectFollowUps(
   deps: LoopDeps,
@@ -374,7 +374,7 @@ async function* injectFollowUps(
       followUpId: f.id,
       content: f.text,
       ...(f.attachments?.length ? { attachments: f.attachments } : {}),
-      // 与上面落库的那一格同值：两侧不同口径的话，这一帧画气泡、刷新后画回执行。
+      // 与上方写入数据库的字段取值相同：两侧口径不一致时，实时事件渲染为消息气泡，刷新后渲染为执行记录。
       ...(f.origin ? { origin: f.origin } : {}),
     }
   }

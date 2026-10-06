@@ -1,14 +1,14 @@
 /**
  * 可编程的三协议故障端点：Responses、Chat Completions 与 Anthropic Messages 共用一个
- * `Bun.serve`，按请求路径分派，故障形态由 `mode` 决定且运行中可改。
+ * `Bun.serve`，按请求路径分派，故障形态由 `mode` 决定，且可在运行中修改。
  *
- * **只供测试导入，不进生产代码。**
+ * 仅供测试导入，不进入生产代码。
  *
- * `receipts` 是服务端侧的独立事实——收到过几次请求、各在什么时刻。客户端账本要与它
- * 对账才能判出重发次数是否真实；只数客户端自己的记录证明不了对端收没收到。
+ * `receipts` 是服务端记录的独立事实：收到的请求次数及各自的时刻。客户端账本须与其
+ * 对账才能判定重发次数是否属实；仅统计客户端自身的记录无法证明对端是否收到。
  *
- * 文件末尾一并提供三协议参数化的适配器驱动（`FAULT_PROTOCOLS` / `drainAdapter` /
- * `withFault`）：夹具与驱动各写一份就会漂移。
+ * 文件末尾同时提供三协议参数化的适配器驱动（`FAULT_PROTOCOLS` / `drainAdapter` /
+ * `withFault`）：夹具与驱动分开维护会导致两者不一致。
  */
 
 import { buildAdapter } from '../factory.ts'
@@ -17,35 +17,35 @@ import type { ProviderEvent, ProviderProfile } from '../types.ts'
 const enc = new TextEncoder()
 
 export type FaultMode =
-  /** 首次 503 + Retry-After，其后正常完成。 */
+  /** 首次返回 503 与 Retry-After，其后正常完成。 */
   | 'retry_after_then_ok'
-  /** 503 响应头已到，错误正文永不结束。 */
+  /** 503 响应头已到达，错误正文永不结束。 */
   | 'hung_error_body'
   /** 完整工具调用与协议终态都已发出，HTTP 永不 EOF。 */
   | 'tool_then_no_eof'
-  /** 200 之后在流内发错误事件。 */
+  /** 返回 200 之后在流内发送错误事件。 */
   | 'inline_error'
   /** 用量已回报，流在协议终态之前 FIN。 */
   | 'eof_before_terminal'
-  /** 首次在协议终态之前 FIN，第二次交完整工具调用，其后正常完成。 */
+  /** 首次在协议终态之前 FIN，第二次交付完整工具调用，其后正常完成。 */
   | 'eof_before_terminal_then_tool'
-  /** 首次交完整工具调用，其后一律 503：工具跑成功了，带着结果的下一次请求被回绝。 */
+  /** 首次交付完整工具调用，其后一律返回 503：工具执行成功，携带结果的下一次请求被拒绝。 */
   | 'tool_then_unavailable'
-  /** 200 响应头已到，之后一个字节都不再发。 */
+  /** 200 响应头已到达，之后不再发送任何字节。 */
   | 'headers_then_silence'
-  /** 先发若干 SSE 注释行保活，间隔短于空闲上限，再正常完成。 */
+  /** 先发送若干 SSE 注释行保活，间隔短于空闲上限，再正常完成。 */
   | 'keepalive_then_ok'
-  /** 一次完整的正常响应：协议终态与用量都发全，随后 EOF。 */
+  /** 一次完整的正常响应：协议终态与用量全部发送，随后 EOF。 */
   | 'complete'
-  /** 工具参数只发了半截 JSON，协议终态是输出上限。 */
+  /** 工具参数只发送了不完整的 JSON，协议终态是输出上限。 */
   | 'truncated_tool_call'
-  /** 一律 402，正文取 DeepSeek 余额不足时的原样响应体（111 字节）。 */
+  /** 一律返回 402，正文取 DeepSeek 余额不足时的原始响应体（111 字节）。 */
   | 'payment_required'
-  /** 首次交完整工具调用（参数原文取 `toolArguments`），其后正常完成。 */
+  /** 首次交付完整工具调用（参数原文取 `toolArguments`），其后正常完成。 */
   | 'tool_then_complete'
 
 export interface FaultServer {
-  /** Anthropic Messages 的 baseUrl；SDK 自己接 `/v1/messages`。 */
+  /** Anthropic Messages 的 baseUrl；SDK 自行拼接 `/v1/messages`。 */
   anthropicBaseUrl: string
   /** 两条 OpenAI 协议的 baseUrl。 */
   openaiBaseUrl: string
@@ -54,24 +54,24 @@ export interface FaultServer {
   /**
    * 每次收到的请求正文原文，与 `receipts` 同下标。
    *
-   * 留原文不留解析结果：三条协议的请求体结构各不相同，解析成统一形状就是在夹具里
-   * 再写一份协议知识，而断言要问的正是「线上那份字节里有没有它」。
+   * 保留原文而不保留解析结果：三条协议的请求体结构各不相同，解析为统一形状等于在夹具中
+   * 重复实现协议知识，而断言要检查的正是「实际发送的字节中是否包含该内容」。
    */
   bodies: string[]
   mode: FaultMode
   /**
-   * `retry_after_then_ok` 与 `hung_error_body` 的 503 响应头里带的 Retry-After 秒数。
-   * `null` 表示不带这个响应头——客户端此时只能按自己的退避策略决定等多久。
+   * `retry_after_then_ok` 与 `hung_error_body` 的 503 响应头中携带的 Retry-After 秒数。
+   * `null` 表示不带该响应头，此时客户端只能按自身的退避策略决定等待时长。
    */
   retryAfterSeconds: number | null
-  /** `inline_error` 事件里的分类词与原文，三协议共用同一份。 */
+  /** `inline_error` 事件中的分类词与原文，三协议共用。 */
   inlineError: { type: string; message: string }
-  /** `tool_then_complete` 那次工具调用的参数原文，三协议共用。默认 `{"a":1}`。 */
+  /** `tool_then_complete` 中工具调用的参数原文，三协议共用。默认 `{"a":1}`。 */
   toolArguments: string
   /**
    * 客户端主动断开连接的次数，由永不结束的响应体的 `cancel` 回调计数。
    *
-   * 这是服务端侧的独立事实：客户端说自己取消了 body 证明不了连接真的释放了。
+   * 这是服务端记录的独立事实：客户端声称已取消 body 不能证明连接已实际释放。
    */
   closedByClient: number
   stop(): void
@@ -83,11 +83,11 @@ type Shape = 'text' | 'tool' | 'inline_error' | 'truncated' | 'truncated_tool'
 const SSE_HEADERS = { 'content-type': 'text/event-stream' } as const
 
 /**
- * 正文发出开头一段之后永不结束的响应。
+ * 发送正文开头一段后永不结束的响应。
  *
- * 构造的流不 `close`，调用方必须靠 `stop()` 强制断开，否则测试进程不会退出。
- * `prefix` 不能为空：`Bun.serve` 要等正文的第一个分片才发响应头，一个字节都不写的话
- * 客户端连响应头都收不到，「响应头已到、正文不来」这个形状就构造不出来。
+ * 构造的流不调用 `close`，调用方必须通过 `stop()` 强制断开，否则测试进程不会退出。
+ * `prefix` 不能为空：`Bun.serve` 在正文的第一个分片到达后才发送响应头，不写入任何字节时
+ * 客户端无法收到响应头，无法构造「响应头已到达、正文未到达」的形状。
  */
 function endless(
   prefix: string,
@@ -104,11 +104,11 @@ function endless(
   return new Response(body, { status, headers })
 }
 
-/** 保活行的条数与间隔。间隔要短于被测客户端的空闲上限，总时长要长于它。 */
+/** 保活行的条数与间隔。间隔须短于被测客户端的空闲上限，总时长须长于该上限。 */
 const KEEP_ALIVE_LINES = 5
 const KEEP_ALIVE_GAP_MS = 80
 
-/** 先发若干 SSE 注释行，再发完整的一次正常响应。 */
+/** 先发送若干 SSE 注释行，再发送一次完整的正常响应。 */
 function keepAliveThen(protocol: Protocol): Response {
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -123,7 +123,7 @@ function keepAliveThen(protocol: Protocol): Response {
   return new Response(body, { headers: SSE_HEADERS })
 }
 
-/** 带 `event:` 行的 SSE；Responses 与 Anthropic 两条协议都按事件名分派。 */
+/** 带 `event:` 行的 SSE；Responses 与 Anthropic 两条协议均按事件名分派。 */
 function sse(events: Record<string, unknown>[]): string {
   return events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join('')
 }
@@ -278,7 +278,7 @@ function chatBody(shape: Shape, inline: InlineError, args: string): string {
             ],
           }),
           chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }),
-          // 工具轮的输出用量与另两条协议取同一个数，三协议参数化才能断言同一句。
+          // 工具轮的输出用量与另两条协议取相同的值，三协议参数化测试才能使用同一断言。
           chunk({
             choices: [],
             usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
@@ -288,7 +288,7 @@ function chatBody(shape: Shape, inline: InlineError, args: string): string {
       )
     case 'inline_error':
       return data([{ error: { message: inline.message, type: inline.type } }], false)
-    // 用量那一格先到、finish_reason 还没到就 FIN：适配器据此报断流并带上真实用量。
+    // 用量 chunk 已到达、finish_reason 未到达时 FIN：适配器据此报告断流并附带真实用量。
     case 'truncated':
       return data(
         [
@@ -412,8 +412,8 @@ export interface InlineError {
 }
 
 /**
- * 三协议默认的流内错误。分类词取各家都用的过载码，原文三协议一致，
- * 参数化测试因此可以对同一句断言。
+ * 三协议默认的流内错误。分类词取各厂商通用的过载码，原文三协议一致，
+ * 因此参数化测试可以使用同一断言。
  */
 const DEFAULT_TOOL_ARGUMENTS = '{"a":1}'
 
@@ -478,7 +478,7 @@ function respond(protocol: Protocol, fault: FaultServer): Response {
       return new Response(bodyOf(protocol, shape), { headers: SSE_HEADERS })
     }
     case 'headers_then_silence':
-      // 单个换行只为把响应头冲出去：它不构成任何 SSE 事件，之后一个字节都不再来。
+      // 单个换行仅用于促使响应头发出：它不构成任何 SSE 事件，之后不再发送任何字节。
       return endless('\n', 200, SSE_HEADERS, closed)
     case 'keepalive_then_ok':
       return keepAliveThen(protocol)
@@ -522,7 +522,7 @@ export function startFaultServer(mode: FaultMode): FaultServer {
     async fetch(req) {
       fault.receipts.push(Date.now())
       const protocol = protocolOf(new URL(req.url).pathname)
-      // 请求体必须读完，否则未消费的正文会拖住这一条连接的关闭。
+      // 请求体必须读完，否则未消费的正文会延迟该连接的关闭。
       fault.bodies.push(await req.text())
       return respond(protocol, fault)
     },
@@ -536,9 +536,9 @@ export function startFaultServer(mode: FaultMode): FaultServer {
 }
 
 /**
- * 无人监听的回环地址，用来注入连接拒绝。
+ * 无人监听的回环地址，用于注入连接拒绝。
  *
- * 先占一个端口再立刻释放：直接写一个固定端口号无法保证本机此刻没有别的进程在听。
+ * 先占用一个端口再立即释放：固定端口号无法保证本机此时没有其他进程在监听。
  */
 export function closedPortBaseUrl(): string {
   const probe = Bun.serve({ port: 0, fetch: () => new Response('') })
@@ -549,7 +549,7 @@ export function closedPortBaseUrl(): string {
 
 // ───────────────────────── 三协议参数化驱动 ─────────────────────────
 
-/** 三条协议各取一条目录里有的模型。协议按配置判定，不按模型名。 */
+/** 三条协议各取一个目录中已收录的模型。协议按配置判定，不按模型名。 */
 export const FAULT_PROTOCOLS = [
   { kind: 'openai_responses', model: 'deepseek-flash' },
   { kind: 'openai_chat_completions', model: 'deepseek-chat' },
@@ -566,7 +566,7 @@ export interface DrainResult {
   elapsedMs: number
 }
 
-/** 跑完一条流，把事件和终态一起交出来——「断之前收到了什么」和错误本身要一起看。 */
+/** 读完一条流，将事件与终态一并返回：「断开之前收到的内容」须与错误本身一同检查。 */
 export async function drainAdapter(opts: {
   fault: FaultServer
   kind: ProviderProfile['kind']

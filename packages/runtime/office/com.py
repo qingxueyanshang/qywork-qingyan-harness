@@ -1,14 +1,14 @@
 """办公软件实例管理。
 
-只使用本调用新起的进程：创建后核对 COM 对象对应的进程，确认是新进程才使用，并先把登记写进
+只使用本调用新启动的进程：创建后核对 COM 对象对应的进程，确认是新进程才使用，并先把登记写入
 调用目录的 instances.json，再把对象交给调用方。
 
 文件一律只读打开，从不另存：WPS 的可写打开与另存会写入最近文档（RecentFiles 的 files、
-files_bak、Sequence）和账号的 openfilelist，且不认 AddToRecentFiles / AddToMru 参数；
-同一进程里再次打开同一路径也会写入。每个路径只打开一次（见 Instance.open）时，只读打开、导出 PDF、
-逐页导出图片都不写。
+files_bak、Sequence）和账号的 openfilelist，且不识别 AddToRecentFiles / AddToMru 参数；
+同一进程中再次打开同一路径也会写入。每个路径只打开一次（见 Instance.open）时，只读打开、导出 PDF、
+逐页导出图片均不写入这些记录。
 
-pywin32 与 psutil 只在函数里导入：非 Windows 上本模块照样能导入，能力探测如实报告不可用。
+pywin32 与 psutil 只在函数内导入：非 Windows 上本模块仍可导入，能力探测如实报告不可用。
 """
 
 import gc
@@ -31,20 +31,20 @@ ASSOC = {
 }
 WPS_PROGIDS = {"KWPS.Application", "KET.Application", "KWPP.Application"}
 
-# 同一实例里第二次及以后的打开会写入最近文档与账号打开记录（只读打开也一样）的组件；
-# 这些组件每个实例只打开一个文件，再打开就换一个新实例。
+# 同一实例中第二次及以后的打开会写入最近文档与账号打开记录（只读打开同样如此）的组件；
+# 这些组件每个实例只打开一个文件，再次打开时改用新实例。
 ONE_OPEN_PER_INSTANCE = {"KWPS.Application"}
 
 # 组件规则表：异常结束（worker 已被结束、无法再调用 COM）时能否按 PID 结束。
-# end：实测用户以资源管理器打开的文件不会并入产品新起的实例，按 PID 结束不影响用户文档。
+# end：实测用户经资源管理器打开的文件不会并入产品新启动的实例，按 PID 结束不影响用户文档。
 # report：未验证的组件（含 Microsoft Office），只报告残留，不结束。
 RULES = {("wps", "12"): {"KWPS.Application": "end", "KET.Application": "end",
                          "KWPP.Application": "end"}}
 
 AUTOMATION_NAMES = {"wps.exe", "et.exe", "wpp.exe", "winword.exe", "excel.exe", "powerpnt.exe"}
 
-# Value2 里的错误值是 0x800A0000 加 Excel 错误号（CVErr）。表里是全部错误号，不要只列常见几种：
-# 缺一个，含该错误的工作簿整份写回失败，交付件没有任何计算结果。
+# Value2 中的错误值是 0x800A0000 加 Excel 错误号（CVErr）。表中列出全部错误号，不要只列常见几种：
+# 缺少任一项，含该错误的工作簿整份写回失败，交付件没有任何计算结果。
 XL_ERROR_NAMES = {2000: "#NULL!", 2007: "#DIV/0!", 2015: "#VALUE!", 2023: "#REF!", 2029: "#NAME?",
                   2036: "#NUM!", 2042: "#N/A", 2043: "#GETTING_DATA", 2045: "#SPILL!", 2046: "#CONNECT!",
                   2047: "#BLOCKED!", 2048: "#UNKNOWN!", 2049: "#FIELD!", 2050: "#CALC!"}
@@ -52,11 +52,11 @@ XL_ERRORS = {-2146828288 + n: name for n, name in XL_ERROR_NAMES.items()}
 
 
 class Busy(Exception):
-    """实例或锁被占用、或者拿到的不是新进程。"""
+    """实例或锁被占用，或取得的不是新进程。"""
 
 
 class Unavailable(Exception):
-    """这台机器上没有可用的办公软件。"""
+    """本机没有可用的办公软件。"""
 
 
 def product_of(progid: str) -> str:
@@ -117,7 +117,7 @@ def _file_version(path):
 
 
 def default_app(fmt: str) -> dict:
-    """按扩展名的默认关联选组件，并核验它的自动化接口已注册。"""
+    """按扩展名的默认关联选择组件，并核验其自动化接口已注册。"""
     base = {"progid": None, "product": None, "version": None, "rule": "report",
             "available": False, "reason": ""}
     if sys.platform != "win32":
@@ -134,9 +134,9 @@ def default_app(fmt: str) -> dict:
         return {**base, "reason": f"{ext} 没有默认打开程序"}
     progid = next((p for prefix, p in ASSOC[fmt] if choice.startswith(prefix)), None)
     if not progid:
-        return {**base, "reason": f"{ext} 默认用 {choice} 打开，不是 WPS 或 Microsoft Office"}
+        return {**base, "reason": f"{ext} 的默认打开程序是 {choice}，不是 WPS 或 Microsoft Office"}
     if _reg_value(winreg.HKEY_CLASSES_ROOT, rf"{progid}\CLSID") is None:
-        return {**base, "progid": progid, "reason": f"{progid} 的自动化接口没有注册"}
+        return {**base, "progid": progid, "reason": f"{progid} 的自动化接口未注册"}
     exe = _server_exe(progid)
     version = _file_version(exe) if exe else None
     return {**base, "progid": progid, "product": product_of(progid), "version": version,
@@ -157,7 +157,7 @@ def automation_residue() -> list:
 
 
 def foreign_residue(call_dir) -> list:
-    """取得锁时现存、且不是本调用登记过的自动化进程：别的调用都在等锁，列出的只可能是残留或其他程序。"""
+    """取得锁时已存在、且不是本调用登记的自动化进程：其他调用都在等待锁，因此列出的只能是残留进程或其他程序。"""
     own = {e.get("pid") for e in _load_instances(call_dir)}
     return [r for r in automation_residue() if r["pid"] not in own]
 
@@ -182,10 +182,10 @@ def _pid_of_hwnd(h) -> int:
 class Lock:
     """所有组件共用一把系统具名锁，覆盖取得实例到清理结束；协调产品内多个调用与 server / CLI。
 
-    不要改成按组件分锁：残留扫描（foreign_residue）看的是全部组件的自动化进程，分锁后另一个组件
-    正在用的实例会被报成残留。同一线程再次等待自己已持有的互斥体立即返回，同一调用里同时持有
-    几个实例不会自锁。锁对象在最后一个句柄关闭时被系统回收，下一个持有者拿到的是新锁，
-    不能靠锁的状态判断上一调用是否异常结束。
+    不要改为按组件分锁：残留扫描（foreign_residue）检查的是全部组件的自动化进程，分锁后另一个组件
+    正在使用的实例会被报告为残留。同一线程再次等待自身已持有的互斥体时立即返回，同一调用中同时持有
+    多个实例不会自锁。锁对象在最后一个句柄关闭时由系统回收，下一个持有者取得的是新锁，
+    不能依据锁的状态判断上一调用是否异常结束。
     """
 
     NAME = "Local\\qywork-office"
@@ -219,7 +219,7 @@ class Lock:
 
 
 class Instance:
-    """一个本调用新起的办公软件实例。"""
+    """本调用新启动的办公软件实例。"""
 
     def __init__(self, fmt: str, app_info: dict, call_dir, label: str):
         self.fmt = fmt
@@ -248,10 +248,10 @@ class Instance:
             new = [p for p in after if p not in before]
             pid, method = self._identify(app, new, after)
             if pid is None or pid not in new:
-                # 绑到了已有进程（单实例组件被别的自动化调用方占着）：不退出它，只放掉引用。
+                # 绑定到已有进程（单实例组件正被其他自动化调用方占用）：不退出该进程，只释放引用。
                 del app
                 gc.collect()
-                raise Busy(f"{self.progid} 没有新起进程，现有自动化实例正被占用")
+                raise Busy(f"{self.progid} 未启动新进程，现有自动化实例正被占用")
             self.app = app
             self._register(pid, after, method)
             self._configure()
@@ -261,7 +261,7 @@ class Instance:
         return self
 
     def _identify(self, app, new, after):
-        """用窗口句柄对上组件进程；WPS 演示没有 HWND 成员，按宿主与组件进程配对。"""
+        """用窗口句柄确定组件进程；WPS 演示没有 HWND 成员，按宿主进程与组件进程配对。"""
         pid = None
         method = None
         try:
@@ -310,7 +310,7 @@ class Instance:
                      ("ScreenUpdating", False)],
             "pptx": [("DisplayAlerts", 1)],
         }[self.fmt]
-        # 3 为强制禁用宏；带宏文件在打开前已被拒绝，这一项只是第二道设置。
+        # 3 为强制禁用宏；带宏文件在打开前已被拒绝，此项是第二重保护。
         settings.append(("AutomationSecurity", 3))
         for name, value in settings:
             try:
@@ -322,13 +322,13 @@ class Instance:
     def open(self, path):
         """只读打开 path 的一份文件名唯一的副本，副本在 close_doc 时删除。
 
-        打开副本而不是 path 本身：正式文件与工作副本的路径就不会出现在办公软件的任何记录里。
-        ONE_OPEN_PER_INSTANCE 里的组件每个实例只允许打开一次，第二次打开会写入最近文档，这里直接拒绝。
+        打开副本而不是 path 本身：正式文件与工作副本的路径因此不会出现在办公软件的任何记录中。
+        ONE_OPEN_PER_INSTANCE 中的组件每个实例只允许打开一次，第二次打开会写入最近文档，此处直接拒绝。
         """
         if util.has_macros(path):
             raise ValueError(f"{Path(path).name} 含宏，拒绝打开")
         if self.progid in ONE_OPEN_PER_INSTANCE and self.opens > 0:
-            raise RuntimeError(f"{self.progid} 的一个实例只打开一个文件；再打开要换新实例")
+            raise RuntimeError(f"{self.progid} 的每个实例只能打开一个文件；再次打开需使用新实例")
         self.opens += 1
         stage = self.call_dir / "opened"
         stage.mkdir(parents=True, exist_ok=True)
@@ -369,7 +369,7 @@ class Instance:
 
     # ── 正常结束 ──
     def close(self):
-        """关掉本调用打开的文档；实例里没有别的文档才退出，有就留着并报告。"""
+        """关闭本调用打开的文档；实例中没有其他文档时才退出，否则保留实例并报告。"""
         import psutil
 
         status = "closed"
@@ -403,8 +403,8 @@ class Instance:
 
 
 class Apps:
-    """按格式取实例：reuse 为真时同一调用里复用，ONE_OPEN_PER_INSTANCE 的组件打开过一次就换新实例；
-    reuse 为假时每次都新起。结束时统一关闭。"""
+    """按格式取得实例：reuse 为真时在同一调用中复用，ONE_OPEN_PER_INSTANCE 的组件打开过一次后改用新实例；
+    reuse 为假时每次都启动新实例。结束时统一关闭。"""
 
     def __init__(self, call_dir, label: str, reuse: bool = True):
         self.call_dir = call_dir
@@ -471,7 +471,7 @@ def _update_instances(call_dir, pids, status):
 
 
 def cleanup(call_dir) -> list:
-    """worker 被结束后按登记处理残留：规则为 end 且 PID 与创建时间一致才结束，其余只报告。"""
+    """worker 被结束后按登记处理残留：规则为 end 且 PID 与创建时间均一致时才结束进程，其余只报告。"""
     import psutil
 
     items = _load_instances(call_dir)

@@ -1,12 +1,12 @@
 /**
- * `qy init` —— 把「全新用户第一次运行」这条路径变成可走的。
+ * `qy init`：为全新用户的首次运行生成配置。
  *
- * 没有这条命令时，缺配置的首次运行只会拿到 provider 返回的 `auth_failed`，
- * 该消息不指向「配置文件尚未创建」这个真实原因。
+ * 没有该命令时，缺少配置的首次运行只会得到 provider 返回的 `auth_failed`，
+ * 该消息不指向「配置文件尚未创建」这一真实原因。
  *
- * 这里刻意不做「探测到环境变量里有 key 就直接用上」：配置是用户能看见、
- * 能改、能删的一个 JSON 文件，猜出来的配置反而更难排查。init 只做一件事——
- * 把用户的回答落成那个文件，然后把路径打出来。
+ * 此处有意不实现「检测到环境变量中有 key 即直接使用」：配置是用户可查看、
+ * 可修改、可删除的 JSON 文件，推测生成的配置更难排查。init 只做一件事：
+ * 把用户的回答写入该文件，然后输出路径。
  */
 
 import { existsSync } from 'node:fs'
@@ -17,9 +17,9 @@ interface Preset {
   key: string
   label: string
   provider: StoredProvider
-  /** 预置里那一个模型。接口下可以挂很多个，init 只负责让第一个跑起来。 */
+  /** 预置的模型。一个接口下可以配置多个模型，init 只负责使第一个模型可以运行。 */
   model: string
-  /** 领 key 的页面地址。写死链接省一次搜索。 */
+  /** 获取 key 的页面地址。直接写入链接，用户无需另行搜索。 */
   keyUrl: string
 }
 
@@ -77,27 +77,27 @@ export async function runInit(args: string[]): Promise<number> {
     process.stderr.write(
       `配置文件已存在：${configPath()}\n` +
         `  qy config       查看当前配置\n` +
-        `  qy init --force 覆盖重建\n`,
+        `  qy init --force 覆盖已有配置\n`,
     )
     return 1
   }
 
-  // 非交互环境（CI、管道、Docker build）里没人能回答。不阻塞、不猜，
-  // 把一份能直接改的模板打到 stdout，让脚本可以重定向进配置文件。
+  // 非交互环境（CI、管道、Docker build）中无人应答。不阻塞、不推测，
+  // 把可直接修改的模板输出到 stdout，供脚本重定向到配置文件。
   if (!process.stdin.isTTY) {
     process.stderr.write(`[qy] 非交互环境，输出配置模板（写入 ${configPath()} 后填入 key）：\n`)
     process.stdout.write(`${JSON.stringify(templateConfig(), null, 2)}\n`)
     return 0
   }
 
-  process.stderr.write(`\n${BOLD}qywork 初始化${RESET}\n配置会写到 ${configPath()}\n\n`)
+  process.stderr.write(`\n${BOLD}qywork 初始化${RESET}\n配置将写入 ${configPath()}\n\n`)
   for (const [i, p] of PRESETS.entries()) process.stderr.write(`  ${i + 1}. ${p.label}\n`)
-  process.stderr.write(`\n选哪个？[1-${PRESETS.length}，默认 1] `)
+  process.stderr.write(`\n请选择 [1-${PRESETS.length}，默认 1] `)
 
   const pick = Number((await readLine()).trim() || '1')
   const preset = PRESETS[pick - 1]
   if (!preset) {
-    process.stderr.write(`不是有效的序号：${pick}\n`)
+    process.stderr.write(`无效的序号：${pick}\n`)
     return 2
   }
 
@@ -108,17 +108,17 @@ export async function runInit(args: string[]): Promise<number> {
   const typed = (await readLine()).trim()
   if (typed) modelId = typed
   /*
-   * 这一格**留空**。
+   * 该模型的规格**留空**。
    *
-   * **不要灌一个预置值**（比如 `maxOutputTokens: 8192`）：DeepSeek 的真实上限是
-   * 384000（见 `catalog.ts`），差 47 倍。
+   * **不要填入预置值**（例如 `maxOutputTokens: 8192`）：DeepSeek 的实际上限是
+   * 384000（见 `catalog.ts`），相差 47 倍。
    *
-   * 它是硬上限：装配时与目录值取 min（`agent/loop/request.ts` 的输出上限计算），每次请求都用它。
-   * 实测形状：DeepSeek 开 max 思考档，一轮思考占 8493 token，预算在正文开始前耗尽，
-   * run 以 `output_truncated` 收尾。
+   * 该值是硬上限：装配时与目录值取较小者（`agent/loop/request.ts` 的输出上限计算），每次请求都使用它。
+   * 实测形状：DeepSeek 开启 max 思考档时，一轮思考占用 8493 token，预算在正文开始前耗尽，
+   * run 以 `output_truncated` 结束。
    *
-   * 目录值是本仓自己实测维护的，init 没有任何理由去覆盖它。真需要压上限的
-   * 用户自己在配置里写。
+   * 目录值由本仓库实测维护，init 没有理由覆盖它。确需压低上限的
+   * 用户可自行在配置中填写。
    */
   provider.models[modelId] = {}
 
@@ -128,10 +128,10 @@ export async function runInit(args: string[]): Promise<number> {
     if (url) provider.baseUrl = url
   }
 
-  // 本机服务不需要 key，不要显示一个不需要填的输入框。
+  // 本机服务无需 key，不显示无需填写的输入框。
   if (preset.key !== 'local') {
-    if (preset.keyUrl) process.stderr.write(`\n${DIM}领 key：${preset.keyUrl}${RESET}\n`)
-    process.stderr.write('API Key（直接回车跳过，稍后可在设置页补填）：')
+    if (preset.keyUrl) process.stderr.write(`\n${DIM}获取 key：${preset.keyUrl}${RESET}\n`)
+    process.stderr.write('API Key（按回车跳过，之后可在设置页填写）：')
     const key = (await readLine()).trim()
     if (key) provider.apiKey = key
   }
@@ -139,20 +139,22 @@ export async function runInit(args: string[]): Promise<number> {
   const existing = existsSync(configPath()) ? await loadConfig() : null
   const cfg: QyConfig = {
     active: { provider: preset.key, model: modelId },
-    // --force 重建时保留用户已有的其它接口：他们要换的是当前用哪个，
-    // 不是把之前配好的几家全删掉。
+    // --force 重新生成时保留用户已有的其他接口：用户要更换的是当前使用的接口，
+    // 而不是删除之前配置的全部接口。
     providers: { ...(existing?.providers ?? {}), [preset.key]: provider },
-    // 默认 auto：不弹窗，由硬边界 + 静态规则 + 分类器裁决。
-    // 想完全放开要用户自己去写 "mode": "full"——那个决定不该由 init 替他做。
+    // 默认 auto：不弹出确认框，由硬边界与静态规则裁决。
+    // 需要完全放开时由用户自行写入 "mode": "full"，该决定不应由 init 代替用户作出。
     mode: existing?.mode ?? 'auto',
   }
   await saveConfig(cfg)
 
   process.stderr.write(`\n${BOLD}已写入${RESET} ${configPath()}\n`)
   if (!provider.apiKey && preset.key !== 'local') {
-    process.stderr.write(`${DIM}尚缺 key：在配置文件中添加 "apiKey"，或在设置页填写。${RESET}\n`)
+    process.stderr.write(
+      `${DIM}尚未填写 key：在配置文件中添加 "apiKey"，或在设置页填写。${RESET}\n`,
+    )
   } else {
-    process.stderr.write(`${DIM}试一下：qy exec "介绍一下这个目录里的代码"${RESET}\n`)
+    process.stderr.write(`${DIM}示例：qy exec "介绍这个目录里的代码"${RESET}\n`)
   }
   return 0
 }

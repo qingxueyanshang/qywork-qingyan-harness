@@ -1,8 +1,8 @@
 /**
- * 生成参数的本地校验，以及交给大模型的参数表文字。
+ * 生成参数的本地校验，以及提供给大模型的参数表文字。
  *
- * 校验必须在发请求之前：生成按次计费，字段名写错或值越界的一次请求要么被拒、要么按接口默认生成出
- * 一张不是想要的图，两种都已计费。退回的消息里带合法取值，大模型下一步就能自己改对。
+ * 校验必须在发送请求之前：生成按次计费，字段名错误或取值越界的请求或被拒绝，或按接口默认值生成
+ * 不符合预期的结果，两种情形均已计费。返回的消息中包含合法取值，供大模型在下一步自行修正。
  */
 
 import { mediaParamProblem, mediaParamValues, resolveMediaParam } from '@qywork/core'
@@ -19,7 +19,7 @@ const OPERATION_LABEL: Record<MediaOperation, string> = {
   speech: '语音合成',
 }
 
-/** 一个参数的取值说明，如「low | medium | high；默认 auto」。 */
+/** 参数的取值说明，如「low | medium | high；默认 auto」。 */
 export function describeParam(p: MediaParamSpec): string {
   const parts: string[] = []
   if (p.type === 'enum' && p.values) parts.push(p.values.join(' | '))
@@ -34,15 +34,15 @@ export function describeParam(p: MediaParamSpec): string {
   return `${p.name}：${parts.join('；')}`
 }
 
-/** 操作的中文名，给快照与错误消息用。 */
+/** 操作的中文名称，用于快照与错误消息。 */
 export function operationLabel(op: MediaOperation): string {
   return OPERATION_LABEL[op]
 }
 
 /**
- * 按目录校验一次调用。返回问题清单，空数组 = 可以发。
+ * 按目录校验一次调用。返回问题清单，空数组表示可以发送。
  *
- * 不补默认值、不改写取值：参数原样发给接口，接口的默认由接口决定。
+ * 不补充默认值，不改写取值：参数原样发给接口，默认值由接口决定。
  */
 export function validateMediaCall(
   spec: MediaModelSpec,
@@ -95,24 +95,24 @@ export function validateMediaCall(
   }
   if (!spec.operations.includes(operation)) {
     problems.push(
-      `${spec.id} 不支持${OPERATION_LABEL[operation]}；它支持：${spec.operations.map((o) => OPERATION_LABEL[o]).join('、')}`,
+      `${spec.id} 不支持${OPERATION_LABEL[operation]}；支持的操作：${spec.operations.map((o) => OPERATION_LABEL[o]).join('、')}`,
     )
   }
   if (counts.images > spec.inputs.maxImages) {
     problems.push(
-      `${spec.id} 最多收 ${spec.inputs.maxImages} 张参考图，这次给了 ${counts.images} 张`,
+      `${spec.id} 最多接受 ${spec.inputs.maxImages} 张参考图，本次提供了 ${counts.images} 张`,
     )
   }
   if (counts.videos > spec.inputs.maxVideos) {
     problems.push(
-      `${spec.id} 最多收 ${spec.inputs.maxVideos} 个参考视频，这次给了 ${counts.videos} 个`,
+      `${spec.id} 最多接受 ${spec.inputs.maxVideos} 个参考视频，本次提供了 ${counts.videos} 个`,
     )
   }
   if ((counts.audios ?? 0) > (spec.inputs.maxAudios ?? 0)) {
     problems.push(
       spec.inputs.maxAudios
-        ? `${spec.id} 最多收 ${spec.inputs.maxAudios} 段参考音频，这次给了 ${counts.audios} 段`
-        : `${spec.id} 不收参考音频`,
+        ? `${spec.id} 最多接受 ${spec.inputs.maxAudios} 段参考音频，本次提供了 ${counts.audios} 段`
+        : `${spec.id} 不接受参考音频`,
     )
   }
   const known = new Map(spec.params.map((p) => [p.name, p]))
@@ -120,13 +120,13 @@ export function validateMediaCall(
     const p = known.get(name)
     if (!p) {
       problems.push(
-        `${spec.id} 没有参数 ${name}；可用：${spec.params.map((q) => q.name).join('、') || '（无）'}`,
+        `${spec.id} 没有参数 ${name}；可用参数：${spec.params.map((q) => q.name).join('、') || '（无）'}`,
       )
       continue
     }
     if (p.operations && !p.operations.includes(operation)) {
       problems.push(
-        `参数 ${name} 只在${p.operations.map((o) => OPERATION_LABEL[o]).join('、')}时有效`,
+        `参数 ${name} 仅在${p.operations.map((o) => OPERATION_LABEL[o]).join('、')}时有效`,
       )
       continue
     }

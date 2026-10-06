@@ -1,12 +1,12 @@
 /**
- * 工具图片与附件图片在之后的请求里留多久。
+ * 工具图片与附件图片在后续请求中的保留范围。
  *
  * 覆盖范围：`loop/index.ts` 的 `buildRequest` 媒体去留（`loop/request.ts` 的 `evictedMedia`），
  * 以及它与 `materialize` 能力过滤、`compaction.ts` 收纳的先后关系。
  *
- * 断言落在**适配器实际收到的那份请求**上：去留、投影、能力过滤三道都在它之前，
- * 只看装配中间结果会把「模型不收图、图被换成文字注记」这一支放过去。
- * 三协议序列化不丢图由 `runtime/input-image-recovery.test.ts` 用真实 HTTP 锁。
+ * 断言针对适配器实际收到的请求：去留、投影、能力过滤三个步骤都在它之前，
+ * 只检查装配中间结果会遗漏「模型不接受图片、图片被替换为文字注记」这一分支。
+ * 三种协议的序列化不丢失图片由 `runtime/input-image-recovery.test.ts` 通过真实 HTTP 锁定。
  */
 
 import { expect, test } from 'bun:test'
@@ -39,7 +39,7 @@ function persistence(): LoopPersistence {
   }
 }
 
-/** 一轮就结束的假适配器，把它收到的那份请求原样留下。 */
+/** 一轮即结束的假适配器，原样保存它收到的请求。 */
 function capturingAdapter(opts: { vision: boolean | null } = { vision: true }): LlmAdapter & {
   seen: ChatRequest[]
 } {
@@ -86,7 +86,7 @@ function envelopeOf(callId: string): string {
   })
 }
 
-/** 一条带图的工具结果，形状与活侧 `toolResultContent` 的产物相同。 */
+/** 一条带图片的工具结果，结构与生产代码中 `toolResultContent` 的产物相同。 */
 function shot(callId: string, batchId: string | null, bytes: string): WireMessage {
   const content: ContentBlock[] = [
     { type: 'text', text: envelopeOf(callId) },
@@ -111,7 +111,7 @@ function callsMessage(batchId: string | null, callIds: string[]): WireMessage {
   }
 }
 
-/** 一批双图的工具波次。 */
+/** 包含两张图片的工具波次。 */
 function wave(batchId: string, prefix: string): WireMessage[] {
   return [
     callsMessage(batchId, [`${prefix}_1`, `${prefix}_2`]),
@@ -147,7 +147,7 @@ async function askOnce(
     history,
     signal: new AbortController().signal,
   })) {
-    // 断言落在适配器收到的请求上。
+    // 断言针对适配器收到的请求。
   }
 }
 
@@ -164,17 +164,17 @@ function imagesIn(req: ChatRequest | undefined): string[] {
 
 const USER: WireMessage = { role: 'user', content: '看一下', _group: 'historyMessages' }
 
-/** 解码后约 `mb` MB 的 base64，前缀区分是哪一张。 */
+/** 解码后约 `mb` MB 的 base64，以前缀区分图片。 */
 const big = (tag: string, mb: number): string =>
   tag + 'A'.repeat(Math.ceil((mb * 1024 * 1024 * 4) / 3))
 const tagOf = (data: string): string => data.replace(/A+$/, '')
 
-/** 一批单图的工具波次。 */
+/** 包含一张图片的工具波次。 */
 function bigWave(batchId: string, tag: string, mb: number): WireMessage[] {
   return [callsMessage(batchId, [tag]), shot(tag, batchId, big(tag, mb))]
 }
 
-test('总量在上限内时更早批次的图都留在请求里', async () => {
+test('总量在上限内时更早批次的图片均保留在请求中', async () => {
   const adapter = capturingAdapter()
   await askOnce(
     adapter,
@@ -185,8 +185,8 @@ test('总量在上限内时更早批次的图都留在请求里', async () => {
   expect(imagesIn(adapter.seen[0])).toEqual(['FIRSTA', 'FIRSTB', 'SECONDA', 'SECONDB'])
 })
 
-/** 超上限时从最早的整批换成信封，最后一批（还没得到过回应）一定在。 */
-test('超过上限时最早的换成 images_omitted 信封，最后一批保留', async () => {
+/** 超过上限时从最早的一批起整批替换为信封，最后一批（尚未得到响应）始终保留。 */
+test('超过上限时最早的批次替换为 images_omitted 信封，最后一批保留', async () => {
   const adapter = capturingAdapter()
   await askOnce(
     adapter,
@@ -200,7 +200,7 @@ test('超过上限时最早的换成 images_omitted 信封，最后一批保留'
     ],
     'rn_evict',
   )
-  // 第 3 张让总量到约 5.7 MB，换出前两张降到 1.9 MB；第 4 张之后 3.8 MB，未再超限。
+  // 第 3 张使总量达到约 5.7 MB，换出前两张后降至 1.9 MB；第 4 张之后为 3.8 MB，未再超过上限。
   expect(imagesIn(adapter.seen[0]).map(tagOf)).toEqual(['three', 'four'])
   const tools = (adapter.seen[0]?.messages ?? []).filter((m) => m.role === 'tool')
   for (const t of tools.slice(0, 2)) {
@@ -208,8 +208,8 @@ test('超过上限时最早的换成 images_omitted 信封，最后一批保留'
   }
 })
 
-/** 附件图片与工具图同一预算：在上限内时历史轮次的附件仍在请求里。 */
-test('历史用户消息的附件图片在上限内时留在请求里', async () => {
+/** 附件图片与工具图片共用同一预算：在上限内时历史轮次的附件仍保留在请求中。 */
+test('历史用户消息的附件图片在上限内时保留在请求中', async () => {
   const adapter = capturingAdapter()
   const attached: WireMessage = {
     role: 'user',
@@ -224,9 +224,9 @@ test('历史用户消息的附件图片在上限内时留在请求里', async ()
 })
 
 /**
- * 能力过滤把图换成文字注记只发生在请求副本上：历史不变，换回可接图的模型时原图仍在。
+ * 能力过滤只在请求副本上把图片替换为文字注记：历史不变，切换回支持图片的模型时原图仍在。
  */
-test('模型不收图时换成文字注记，换回可接图模型仍带原图', async () => {
+test('模型不接受图片时替换为文字注记，切换回支持图片的模型时仍带原图', async () => {
   const history = [USER, ...wave('pr_gen', 'shot')]
   const blind = capturingAdapter({ vision: false })
   await askOnce(blind, persistence(), history, 'rn_blind')
@@ -237,8 +237,8 @@ test('模型不收图时换成文字注记，换回可接图模型仍带原图',
   expect(imagesIn(seeing.seen[0])).toEqual(['SHOTA', 'SHOTB'])
 })
 
-/** 收纳去图留文字，信封标 images_omitted。 */
-test('压缩把带图的结果收纳掉时请求里没有图，信封带标记', async () => {
+/** 收纳移除图片、保留文字，信封标记 images_omitted。 */
+test('压缩收纳带图片的结果后请求中没有图片，信封带标记', async () => {
   const adapter = capturingAdapter()
   await askOnce(adapter, persistence(), [USER, ...wave('pr_gen', 'shot')], 'rn_condensed', {
     project: (messages) => messages.map(condenseMessage),

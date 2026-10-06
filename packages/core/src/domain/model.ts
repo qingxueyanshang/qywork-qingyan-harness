@@ -1,14 +1,13 @@
 /**
  * 核心领域模型。
  *
- * 口径：
+ * 术语约定：
  * - run  = 一次用户回合（一次 agent loop）
  * - step = loop 内可回放的 text / tool_action / compaction
- * - 一次工具调用 = 一行 tool_action，原地从 running 更新到终态；没有 tool_call / tool_result 两行。
- * - thinking **不回放给用户**，但要落库——两件事。给用户看的回放不含它；
- *   而 DeepSeek 类兼容端点要求带 tool_calls 的 assistant 消息原样回传
- *   `reasoning_content`，否则后续轮次 400。历史从 steps 投影回去时缺这一段
- *   就是必然的 400，所以它借 tool_action 首条的 `content` 落库。
+ * - 一次工具调用 = 一行 tool_action，原地从 running 更新到终态；不拆分为 tool_call / tool_result 两行。
+ * - thinking 不回放给用户，但必须落库。DeepSeek 类兼容端点要求带 tool_calls 的
+ *   assistant 消息原样回传 `reasoning_content`，否则后续轮次返回 400；从 steps
+ *   投影历史时缺少这一段必然返回 400，因此它借用 tool_action 首条的 `content` 落库。
  */
 
 import type { ActionDescriptor } from '../protocol/events.ts'
@@ -27,38 +26,38 @@ import type { SubagentKind } from './workflow.ts'
 
 // ──────────────────────────── 共享词表 ────────────────────────────
 //
-// 配置、协议、界面三方都要说的那几个词。放在 core 是因为**只有它三方都够得着**：
-// `ai` 在 L1、`runtime` 在 L5，而界面只依赖 core，写在任何一个更高层都会逼出
-// 第二份拷贝，而拷贝之间会漂。
+// 配置、协议、界面三方共用的词表。放在 core 是因为只有 core 能被三方引用：
+// `ai` 在 L1、`runtime` 在 L5，而界面只依赖 core，写在任何更高层都需要
+// 第二份副本，副本之间会逐渐不一致。
 
 /**
- * 思考强度档位，**弱到强有序**。
+ * 思考强度档位，按从弱到强排序。
  *
- * 派生方向是「数组 → 类型」而不是反过来：类型只能在编译期存在，
- * 而 `qy probe` 要逐档试、适配器要按序比大小（`indexOf`），两处都需要
- * 一个能在运行期枚举的数组。反过来写就必然再抄一份出来。
+ * 派生方向是「数组 → 类型」，不能反过来：类型只存在于编译期，
+ * 而 `qy probe` 需要逐档试探、适配器需要按顺序比较大小（`indexOf`），两处都需要
+ * 一个可在运行期枚举的数组。反向派生必然需要另写一份数组。
  *
- * 注意：**「档位全集」和「某个模型支持哪些档」是两件事。**
- * `catalog.ts` 里各家 spec 的 `effortLevels` 是照实测填的事实声明，
- * 不能改成引用这个数组——那等于替新加的档位替所有厂商作保。
+ * 「档位全集」与「某个模型支持的档位」是不同的概念。
+ * `catalog.ts` 中各厂商 spec 的 `effortLevels` 是按实测填写的事实声明，
+ * 不能改为引用本数组：那样会把新增档位声明为所有厂商都支持。
  */
 export const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type EffortLevel = (typeof EFFORT_ORDER)[number]
 
 /**
- * 权限模式。**只有两种**：`auto` 由硬边界 + 静态规则 + 分类器裁决，
- * `full` 全放行（`full` 仍保留三条硬边界）。
+ * 权限模式，只有两种：`auto` 由路径边界与 `run_command` 的拒绝规则裁决，
+ * `full` 全部放行，路径边界一并放开，只保留凭证剥离（`scrubEnv`）。
  *
- * 真源是服务端的 config.json，握手把它带给客户端；客户端只显示与请求修改，
- * 不自己存一份。
+ * 真源是服务端的 config.json，经握手传给客户端；客户端只负责显示与请求修改，
+ * 不另存副本。
  */
 export type PermissionMode = 'auto' | 'full'
 
 /**
- * 接口说哪套协议。**是协议，不是厂商**——DeepSeek、OpenAI、任何中转站都可以是
+ * 接口使用的协议。它表示协议而不是厂商：DeepSeek、OpenAI 与任何中转站都可以使用
  * `openai_chat_completions`。
  *
- * 顺序即界面顺序（接口协议下拉、模型库保存扇出的默认清单），改序会改界面。
+ * 顺序即界面顺序（接口协议下拉框、模型库保存时扇出的默认清单），调整顺序会改变界面。
  */
 export const PROVIDER_KINDS = [
   'anthropic_messages',
@@ -94,30 +93,30 @@ export function matchesToolCallCheck(
 }
 
 /**
- * 思考强度怎么发到线上。**每条模型在每条协议上各有一个值**，由模型库那一格裁决。
+ * 思考强度的发送方式。每个模型在每种协议上各有一个取值，由模型库中的对应字段裁决。
  *
- * 派生方向同 `EFFORT_ORDER`：数组在前，因为落盘校验要在运行期逐个比对。
+ * 派生方向同 `EFFORT_ORDER`：先定义数组，因为落盘校验需要在运行期逐项比对。
  */
 export const THINKING_MODES = [
-  /** 只接受 `{type:'adaptive'}`；`budget_tokens` 会 400。 */
+  /** 只接受 `{type:'adaptive'}`；发送 `budget_tokens` 返回 400。 */
   'adaptive_only',
-  /** 思考恒开，连 `{type:'disabled'}` 都会 400——只能省略 thinking 字段。 */
+  /** 思考始终开启，发送 `{type:'disabled'}` 也返回 400，只能省略 thinking 字段。 */
   'always_on',
-  /** 老模型：`{type:'enabled', budget_tokens:N}`。 */
+  /** 较早的模型：`{type:'enabled', budget_tokens:N}`。 */
   'budget_tokens',
   /**
-   * OpenAI Responses 形态：思考默认开着，靠 `reasoning.effort` 控制，
-   * 产品只发送正向强度，用户不选择时省略整个字段、交给模型默认值。
+   * OpenAI Responses 形式：思考默认开启，由 `reasoning.effort` 控制；
+   * 产品只发送正向强度，用户未选择时省略整个字段，使用模型默认值。
    *
    * 厂商协议可能另外接受 `none` 作为“关闭思考”命令，但它不是强度档位，
    * 不进入 `EffortLevel`、模型选择器或后台摘要请求。
    */
   'reasoning_effort',
   /**
-   * DeepSeek 自己的那套：**`thinking` 开关和 `reasoning_effort` 档位要一起发**。
+   * DeepSeek 专有方式：`thinking` 开关与 `reasoning_effort` 档位必须同时发送。
    *
-   * 只发 `reasoning_effort` 不发 `thinking` 时思考没开，档位自然没有效果。
-   * 那个现象容易被归因成「模型不支持 effort」，实际是少发了一半。
+   * 只发送 `reasoning_effort` 而不发送 `thinking` 时思考未开启，档位不生效；
+   * 该现象容易被误判为「模型不支持 effort」，实际原因是缺少 `thinking` 开关。
    */
   'deepseek_thinking',
   'none',
@@ -125,22 +124,22 @@ export const THINKING_MODES = [
 export type ThinkingMode = (typeof THINKING_MODES)[number]
 
 /**
- * 缓存路由亲和键的发法。
+ * 缓存路由字段的发送方式。
  *
  * `prompt_cache_key` 是 OpenAI Responses / 部分兼容端点的请求体字段；
  * `x_grok_conv_id` 是 xAI Chat Completions 的同义请求头。两者都用于把同一会话
- * 路由到同一缓存分片，但上线位置不同，不能因为都叫“亲和键”就混发。
+ * 路由到同一缓存分片，但在请求中的位置不同，不能因为同属缓存路由字段而混用。
  */
 export const CACHE_ROUTINGS = ['prompt_cache_key', 'x_grok_conv_id', 'none'] as const
 export type CacheRouting = (typeof CACHE_ROUTINGS)[number]
 
 /**
- * 带 tool_calls 的历史消息，要不要把上一轮的推理原文回传给端点。
+ * 带 tool_calls 的历史消息是否把上一轮的推理原文回传给端点。
  *
- * 这是**接收请求的那个端点**的要求，不是历史的属性——所以它归模型库那一格。
- * 不要改回「依据历史中是否存在推理文本进行反推」：摘要型端点（`reasoning.summary`）
- * 同样会给出推理文本，反推必然假阳性，而假阳性的代价是每一轮工具调用之后
- * 都发不出去。
+ * 这是接收请求的端点的要求，不是历史的属性，因此由模型库中的对应字段决定。
+ * 不要改为「依据历史中是否存在推理文本进行反推」：摘要型端点（`reasoning.summary`）
+ * 同样会返回推理文本，反推必然产生假阳性，其后果是每一轮工具调用之后
+ * 请求都无法发送。
  *
  * 只有 Responses 适配器消费它。
  */
@@ -158,19 +157,19 @@ export type ReasoningEcho = (typeof REASONING_ECHOES)[number]
 
 /**
  * provider 返回的原生推理条目（Anthropic 带签名的思考块、Responses 的加密推理），
- * 不展示为思考正文，只在产生它的那段前缀未变时原样回放。
+ * 不展示为思考正文，只在产生它的请求前缀未变时原样回放。
  */
 export interface ResponseReasoning {
   items: Record<string, unknown>[]
   /**
-   * 回放时计入输入的 token 数，取 provider 回报的推理用量。估算按它计：
-   * 条目里的签名与密文按字节估会高出数倍。
+   * 回放时计入输入的 token 数，取 provider 回报的推理用量。估算以该值为准：
+   * 按字节估算条目中的签名与密文会高出数倍。
    */
   tokens: number
   /**
-   * 产生它的那次请求的前缀指纹（模型、系统提示、工具表与全部消息），由装配方盖上，
-   * 适配器不知道。回放时与本次请求在这条消息之前的前缀比对，不同或缺席即不回放：
-   * 前缀变过的条目 provider 不按原样使用。
+   * 产生该条目的请求的前缀指纹（模型、系统提示、工具表与全部消息），由装配方写入，
+   * 适配器不感知。回放时与本次请求在该消息之前的前缀比对，不同或缺失即不回放：
+   * 前缀变化后 provider 不会原样使用这些条目。
    */
   prefix?: string
 }
@@ -183,58 +182,58 @@ export interface Conversation {
   workspaceId: WorkspaceId
   title: string
   /**
-   * 这条会话发给哪个接口（`config.providers` 的键）。
+   * 该会话使用的接口（`config.providers` 的键）。
    *
-   * **和 `model` 是一对，不能只存一半。** 两个接口挂同一个模型 id 是常态
-   * （两家中转站都转 `claude-opus-5`），只存模型的话「这条会话归谁」在落盘那一刻
-   * 就不存在了，后面每一层都只能按 id 反查，查出哪个取决于对象键的枚举顺序。
+   * 与 `model` 成对保存，不能只保存其一。两个接口提供同一个模型 id 是常见情况
+   * （两家中转站都提供 `claude-opus-5`），只保存模型时，会话的归属在落盘时
+   * 即已丢失，此后各层只能按 id 反查，结果取决于对象键的枚举顺序。
    *
-   * 新建会话一律写实名。迁移 37 只会按历史请求的唯一证据补旧会话；仍为空串说明
-   * 归属无法证明，必须由用户重新选择，运行时不会按模型名猜接口。
+   * 新建会话一律写入实际接口名。迁移 37 只按历史请求中的唯一证据补全旧会话；仍为空串说明
+   * 归属无法证明，必须由用户重新选择，运行时不会按模型名推测接口。
    */
   provider: string
   model: string
-  /** 上下文压缩的唯一投影权威。有界 JSON，正文仍只存在 messages/steps 里。 */
+  /** 上下文压缩的唯一投影权威。有界 JSON，正文仍只保存在 messages/steps 中。 */
   compactionManifest: CompactionManifest | null
-  /** 用户显式重置缓存时递增；稳定路由键含该值，旧 provider 缓存自然隔离。 */
+  /** 用户显式重置缓存时递增；稳定路由键含该值，旧 provider 缓存因此被隔离。 */
   cacheGeneration: number
   /**
-   * null = 用户会话，出现在会话列表里；其余三个值 = 子 agent 的种类，不出现。
-   * 子 agent 的 id 就是这条会话的 id，三种种类一个 id 空间。
+   * null 表示用户会话，显示在会话列表中；其余三个值表示子 agent 的种类，不显示在列表中。
+   * 子 agent 的 id 即该会话的 id，三种种类共用一个 id 空间。
    *
-   * `sourceRef`：`role` 存角色 id，`cli` 存 CLI id，`temp` 为 null。名字在 `title`。
+   * `sourceRef`：`role` 存角色 id，`cli` 存 CLI id，`temp` 为 null。名称保存在 `title`。
    */
   source: 'role' | 'temp' | 'cli' | null
   sourceRef: string | null
-  /** 外部 CLI 子 agent 的会话句柄，续接时交回给它；内置子 agent 为 null。 */
+  /** 外部 CLI 子 agent 的会话句柄，续接时传回给该 CLI；内置子 agent 为 null。 */
   externalSession: string | null
   /**
-   * 派活建出来的子会话属于哪条父会话；顶层会话是 `null`。
+   * 派发任务创建的子会话所属的父会话；顶层会话为 `null`。
    *
-   * 账本汇总、级联删除、运行页三件事都从这一个字段推出来。它在建会话时写死，
-   * 之后不改——一条子会话换爹这件事不存在。
+   * 账本汇总、级联删除与运行页都由该字段推导。它在创建会话时写入，
+   * 之后不再修改：子会话不会更换父会话。
    */
   parentConversationId: ConversationId | null
   createdAt: number
   updatedAt: number
 }
 
-/** 侧栏那一行放得下的字数。 */
+/** 侧栏一行可容纳的字数。 */
 const TITLE_MAX = 30
 
 /**
- * 从第一条用户消息派生标题：取首行、压空白、截断。
+ * 从第一条用户消息派生标题：取首行、合并空白、截断。
  *
- * 空正文回空串，**不要造假标题**（「图片」之类）——空串由界面兜底成「新对话」。
+ * 空正文返回空串，不要生成占位标题（如「图片」）；空串由界面显示为「新对话」。
  */
 export function deriveConversationTitle(prompt: string): string {
   const line = (prompt.split('\n', 1)[0] ?? '').replace(/\s+/g, ' ').trim()
-  // 按字符截：slice 会把代理对（emoji）劈成半个字符。
+  // 按字符截断：slice 会把代理对（emoji）拆成半个字符。
   const chars = [...line]
   return chars.length > TITLE_MAX ? `${chars.slice(0, TITLE_MAX).join('')}…` : line
 }
 
-/** 用户发的一句话。助手回复与工具记录在 run 的 steps 里，不在这里。 */
+/** 用户发送的一条消息。助手回复与工具记录保存在 run 的 steps 中，不在此处。 */
 export interface Message {
   id: MessageId
   conversationId: ConversationId
@@ -242,14 +241,14 @@ export interface Message {
   content: string
   attachments: Attachment[]
   /**
-   * 这条消息是谁投进来的：子 agent 的回执、workflow 的回执，`null` = 用户本人。
+   * 该消息的来源：子 agent 的回执、workflow 的回执；`null` 表示用户本人。
    *
-   * wire 上三者都是 user 角色（provider 不接受脱离调用的 tool 角色），
-   * 分辨只能靠这一格：界面按它决定渲染成回执行还是用户气泡，
-   * 账本按它把人说的话与回执分开。
+   * 在 wire 上三者都是 user 角色（provider 不接受脱离调用的 tool 角色），
+   * 只能依据该字段区分：界面据此决定渲染为回执行还是用户气泡，
+   * 账本据此区分用户输入与回执。
    *
-   * **必填且允许 `null`**，不要写成可选：落盘列可空，读回来的必须是显式的 `null`，
-   * 缺键会让消费方把「没有来源」与「这条记录没带来源」判成同一件事。
+   * 必填且允许 `null`，不要写成可选：落盘列可空，读取结果必须是显式的 `null`；
+   * 缺少该键时，消费方会把「没有来源」与「记录未携带来源」判定为同一种情况。
    */
   origin: 'subagent' | 'workflow' | null
   createdAt: number
@@ -261,55 +260,55 @@ export interface Attachment {
   name: string
   mime: string
   /**
-   * 对**路径型**附件不是真值——组装它的是前端，那时候拿不到字节数，填 0。
-   * 要用真实大小就去 `stat`，不要信这一格。
+   * 对路径型附件不是真值：该对象由前端组装，此时无法取得字节数，填 0。
+   * 需要真实大小时调用 `stat`，不要依赖该字段。
    */
   size: number
   /**
-   * 这个文件在本机的位置：绝对路径，或工作区相对路径。
+   * 该文件在本机的位置：绝对路径或工作区相对路径。
    *
-   * **字节不进消息。** 拿得到源路径时（桌面端拖入、原生选择器）这里就是源文件的
-   * 位置，一个字节都不落盘；只有连源文件都不存在（剪贴板里只有位图、浏览器不给
-   * 路径）才先落盘再引用那一份。
+   * 字节不写入消息。能取得源路径时（桌面端拖入、原生选择器），该值即源文件的
+   * 位置，不落盘任何字节；只有源文件不存在时（剪贴板中只有位图、浏览器不提供
+   * 路径）才先落盘，再引用落盘的副本。
    *
-   * 两种取值由同一条解析规则吃下——相对路径按工作区解，绝对路径直接用
-   * （`tools` 的 `resolveInWorkspace`）。不要为此加第二个字段。
+   * 两种取值由同一条解析规则处理：相对路径按工作区解析，绝对路径直接使用
+   * （`tools` 的 `resolveInWorkspace`）。不要为此新增第二个字段。
    *
-   * 一律正斜杠：这个值要跨端传（手机也发得到），反斜杠在别处会被当转义。
-   * Windows 的 `D:/x/y.png` 各 API 都认。
+   * 一律使用正斜杠：该值需要跨端传输（手机端也能发送），反斜杠在其他环境中会被当作转义符。
+   * Windows 的各 API 均接受 `D:/x/y.png`。
    */
   path: string
 }
 
 /**
- * 会被内联成图像块的扩展名。
+ * 会被内联为图像块的扩展名。
  *
- * **刻意判得窄，且必须与「发出去时内联哪些」严格同源。** 放宽到 `image/*`
- * 会把 svg、bmp 之类也推成 `type: 'image'`，而多数 provider 拒收它们——
- * 表现是界面上显示成图片、发出去整条请求 400。
+ * 判定范围有意收窄，且必须与「发送时内联的类型」严格同源。放宽到 `image/*`
+ * 会把 svg、bmp 等也判定为 `type: 'image'`，而多数 provider 拒绝这些格式，
+ * 导致界面显示为图片、发送时整条请求返回 400。
  *
- * 按扩展名而不是 mime：路径型附件没有 mime，它只有一个路径。
+ * 按扩展名而不是 mime 判定：路径型附件没有 mime，只有路径。
  */
 const INLINE_IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i
 const INLINE_VIDEO_RE = /\.(mp4|mov|webm|mkv)$/i
 const INLINE_AUDIO_RE = /\.(wav|mp3)$/i
 
-/** 这个路径或文件名算不算可内联的图片。 */
+/** 判定路径或文件名是否为可内联的图片。 */
 export function isInlineImage(pathOrName: string): boolean {
   return INLINE_IMAGE_RE.test(pathOrName)
 }
 
-/** 这个路径或文件名算不算可直接提交给视频模型的视频。 */
+/** 判定路径或文件名是否为可直接提交给视频模型的视频。 */
 export function isInlineVideo(pathOrName: string): boolean {
   return INLINE_VIDEO_RE.test(pathOrName)
 }
 
-/** 这个路径或文件名算不算可直接提交给视频模型的参考音频。各家都只收 wav 与 mp3。 */
+/** 判定路径或文件名是否为可直接提交给视频模型的参考音频。各厂商都只接受 wav 与 mp3。 */
 export function isInlineAudio(pathOrName: string): boolean {
   return INLINE_AUDIO_RE.test(pathOrName)
 }
 
-/** 扩展名 → mime。只覆盖可内联的那几种，其余交给通用二进制类型。 */
+/** 扩展名 → mime。只覆盖可内联的类型，其余返回通用二进制类型。 */
 export function mimeOf(pathOrName: string): string {
   const ext = pathOrName.slice(pathOrName.lastIndexOf('.') + 1).toLowerCase()
   if (ext === 'png') return 'image/png'
@@ -325,20 +324,20 @@ export function mimeOf(pathOrName: string): string {
   return 'application/octet-stream'
 }
 
-/** 附件分类。判据与 `isInlineImage` 同一处，不要在别处再判一次。 */
+/** 附件分类。判据与 `isInlineImage` 同源，不要在别处另行判定。 */
 export function attachmentTypeOf(pathOrName: string): Attachment['type'] {
   if (isInlineImage(pathOrName)) return 'image'
   if (isInlineVideo(pathOrName)) return 'video'
   return 'file'
 }
 
-/** 路径里的文件名。两种分隔符都要吃——拖放给的是平台原生分隔符。 */
+/** 路径中的文件名。两种分隔符都必须支持：拖放提供的是平台原生分隔符。 */
 export function baseNameOf(filePath: string): string {
   const trimmed = filePath.replace(/[\\/]+$/, '')
   return trimmed.split(/[\\/]/).filter(Boolean).pop() ?? filePath
 }
 
-/** 反斜杠统一成正斜杠。见 `Attachment.path` 的约定。 */
+/** 反斜杠统一替换为正斜杠。约定见 `Attachment.path`。 */
 export function toPosixPath(filePath: string): string {
   return filePath.replace(/\\/g, '/')
 }
@@ -359,46 +358,46 @@ export interface RunContextSegment {
 }
 
 /**
- * 为什么停。废除「静默 done」——前端据此展示停止原因，用户不必追问「怎么暂停了」。
+ * 停止原因。每次停止都必须带有原因，前端据此向用户展示。
  */
 export type StopReason =
   | 'completed'
   /**
-   * 原地打转：同样的执行周期、同样的结果或待办快照、没有任何副作用，连续三次。
+   * 无进展循环：连续三次出现相同的执行周期、相同的结果或待办快照，且没有任何副作用。
    * 判据见 `@qywork/agent` 的 `repeatsNoProgress`。执行循环没有回合总上限；
-   * 真正的空转必须由这条进展判据识别，不能靠固定步数掐断正常长任务。
+   * 无进展的循环必须由该进展判据识别，不能以固定步数中止正常的长任务。
    */
   | 'no_progress'
   | 'user_interrupt'
   /**
-   * 进程退出，本轮到此为止，但**没有工具停在执行中**，已完成的步骤结果可信
+   * 进程退出，本轮终止，但没有工具停留在执行中，已完成的步骤结果可信
    * （`store` 的 `recoverStaleRuns`）。
    *
-   * **不要并进 `user_interrupt`。** 那是「用户按了停止」，这是「进程没了」——
-   * 事后分不出这两件事，界面上就只剩一句「已中断」，而用户没点过停止。
-   * 与 `internal_guard` 的区别是结果可不可信：那条有工具停在执行中。
+   * 不要合并到 `user_interrupt`：后者表示用户点击了停止，本值表示进程已退出；
+   * 合并后事后无法区分两者，界面只能显示「已中断」，而用户并未点击停止。
+   * 与 `internal_guard` 的区别在于结果是否可信：后者有工具停留在执行中。
    */
   | 'process_exit'
   /**
-   * **输出**被 max_tokens 截断。答案不完整但已发生的部分是有效的。
+   * 输出被 max_tokens 截断。答案不完整，但已生成的部分有效。
    *
-   * **不要在这条轴上再并列一个「输入超窗」。** 两者混成一个值的后果是输出截断时
-   * 提示用户去清理历史，而清了也没用。输入超窗由 `run.error.code = 'context_overflow'`
-   * 表达，停止原因是 `provider_error`——一件事一本账。
+   * 不要在这一维度上并列「输入超出窗口」。两者合并为一个值时，输出截断也会
+   * 提示用户清理历史，而清理历史无效。输入超出窗口由 `run.error.code = 'context_overflow'`
+   * 表达，停止原因为 `provider_error`，同一事实只记录在一处。
    */
   | 'output_truncated'
   | 'provider_error'
   /**
-   * 上次进程在工具执行期间退出，这一轮跑到哪判不明（`store` 的 `recoverStaleRuns`）。
-   * 与 `user_interrupt` 分开：那是用户按了停止、已完成的步骤结果可信，这条不可信。
+   * 上次进程在工具执行期间退出，本轮的执行进度无法判定（`store` 的 `recoverStaleRuns`）。
+   * 与 `user_interrupt` 区分：后者表示用户点击了停止，已完成的步骤结果可信；本值不可信。
    */
   | 'internal_guard'
 
 /**
  * 一轮被中断时，本机实际观察到的终止来源。
  *
- * `stopReason` 回答「这一轮还能不能信」；这里回答「是谁/什么让它停下」。两条轴不能
- * 合并：桌面 sidecar 被系统杀掉和用户点停止，都可能发生在没有工具执行中的时刻，
+ * `stopReason` 表示本轮结果是否可信；本类型表示终止由谁或什么触发。两者不能
+ * 合并：桌面 sidecar 被系统终止与用户点击停止，都可能发生在没有工具执行的时刻，
  * 但排查方向完全不同。
  */
 export interface RunInterruption {
@@ -407,10 +406,10 @@ export interface RunInterruption {
   observedAt: number
   /** 恢复进程把事实写回账本的时间；正常进程内收尾时与 observedAt 相同。 */
   recordedAt: number
-  /** 上一进程的归属与最后心跳。只有启动恢复能拿到。 */
+  /** 上一进程的归属与最后心跳。只有启动恢复能取得。 */
   ownerPid?: number | null
   lastHeartbeatAt?: number | null
-  /** 桌面外壳观察到的系统退出码/信号。拿不到就不编。 */
+  /** 桌面外壳观察到的系统退出码/信号。无法取得时不编造。 */
   exitCode?: number | null
   signal?: number | null
   exitKind?: 'terminated' | 'output_channel_closed' | null
@@ -427,7 +426,7 @@ export interface Run {
   userMessageId: MessageId | null
   /**
    * Run 创建时会话消息的高水位。执行锁在创建之后才获取；排队期间新增的消息
-   * 不得穿越进本 run 的历史。
+   * 不得进入本 run 的历史。
    */
   messageIdUpperBound: MessageId | null
   model: string
@@ -444,15 +443,15 @@ export interface Run {
   /** 中断来源的结构化事实。NULL = 正常完成、普通失败或迁移前旧记录。 */
   interruption: RunInterruption | null
   /**
-   * 这一轮是哪次派活派出来的：父会话里那张派活卡的 step 与卡上那一格。建 run 时写死，
-   * 变更投影按它把子会话的写入归到父轮。`null` = 不是派出来的（用户自己的会话）。
-   * 必填且允许 null，同 `Message.origin` 的理由。
+   * 产生本轮的任务派发：父会话中派发任务卡的 step 与卡上对应的节点。创建 run 时写入，
+   * 变更投影据此把子会话的写入归入父会话的对应轮次。`null` 表示并非派发产生（用户自己的会话）。
+   * 必填且允许 null，理由同 `Message.origin`。
    */
   dispatchStepId: StepId | null
   dispatchNodeId: string | null
 
-  // 上下文读数不在这里。真源是 `ProviderRequest`——一个 run 有 N 次请求，
-  // 账就该有 N 行；挂在 run 上的标量每 step 覆盖一次，只剩最后一次的读数。
+  // 上下文读数不在此处。真源是 `ProviderRequest`：一个 run 有 N 次请求，
+  // 账本就应有 N 行；挂在 run 上的标量每个 step 覆盖一次，只保留最后一次的读数。
 
   createdAt: number
   finishedAt: number | null
@@ -461,24 +460,24 @@ export interface Run {
 /**
  * 计价币种。
  *
- * **放在 core 而不是 ai 包里**，因为账本（store）、界面（web）和目录（ai）
- * 三边都要认它。各自定义一遍的下场是三份拷贝各自漂移（`IGNORED_DIRS` 抄成三份时
- * 已经漂成 13/12/11 条）。
+ * 放在 core 而不是 ai 包中，因为账本（store）、界面（web）和目录（ai）
+ * 三方都使用它。各自定义时三份副本会逐渐不一致（`IGNORED_DIRS` 的三份副本
+ * 出现过 13/12/11 条的差异）。
  *
- * 只有实际出现在目录里的两种。加第三种时**同时**要看 `usage_ledger` 里
- * 已有的行——那些行的币种是历史事实，不能追认成别的。
+ * 只包含目录中实际出现的两种。新增第三种时必须同时检查 `usage_ledger` 中
+ * 已有的行：这些行的币种是历史事实，不能改记为其他币种。
  */
 export type Currency = 'USD' | 'CNY'
 
 export const CURRENCY_SYMBOL: Record<Currency, string> = { USD: '$', CNY: '¥' }
 
 /**
- * 金额显示。**命令行和界面共用这一份**——两边各写一个必然漂移成
- * 「`qy usage` 说 $0.0001、面板说 $0.00」，而那种不一致没人会当成 bug 报出来。
+ * 金额显示。命令行与界面共用本函数：两侧各写一份必然出现
+ * 「`qy usage` 显示 $0.0001、面板显示 $0.00」的差异，且这种不一致很难被当作缺陷报告。
  *
- * 小额必须看得见：真花了钱却显示 `$0.0000`，读起来就是「免费」。
- * 所以低于四位小数能表示的下限时显示 `<$0.0001` 而不是一串零——
- * 「小到显示不出来」和「没有」是两回事。
+ * 小额必须可见：实际产生费用却显示 `$0.0000`，会被理解为免费。
+ * 因此金额低于四位小数能表示的下限时显示 `<$0.0001`，而不是全零：
+ * 「金额过小无法显示」与「没有费用」是不同的情况。
  */
 export function formatMoney(amount: number, currency: Currency = 'USD'): string {
   const s = CURRENCY_SYMBOL[currency] ?? '$'
@@ -489,9 +488,9 @@ export function formatMoney(amount: number, currency: Currency = 'USD'): string 
 }
 
 /**
- * 多币种金额。**分开列，不合计**——把 ¥100 和 $20 加起来的那个数字没有意义。
+ * 多币种金额。各币种分开列出，不合计：¥100 与 $20 相加得到的数字没有意义。
  *
- * 空对象显示成零：那表示这段区间确实没花钱，不是「不知道」。
+ * 空对象显示为零：它表示该区间确实没有费用，而不是金额未知。
  */
 export function formatCosts(cost: Record<string, number>): string {
   const parts = Object.entries(cost)
@@ -504,30 +503,30 @@ export function formatCosts(cost: Record<string, number>): string {
 export interface RunUsage {
   inputTokens: number
   outputTokens: number
-  /** 缓存读取命中。null 表示 provider 未回报，与真实 0 命中不是一回事。 */
+  /** 缓存读取命中。null 表示 provider 未回报，与真实的 0 命中含义不同。 */
   cachedTokens: number | null
   /** 缓存写入，与读取分离，便于与中转账单对账。 */
   cacheWriteTokens: number | null
   reasoningTokens: number
   /**
-   * 累计花费，**单位是下面那个 `currency`，不是恒定美元**。
+   * 累计花费，单位是下方的 `currency`，不固定为美元。
    *
-   * **不要叫它 `costUsd`。** 阿里 / 月之暗面 / 智谱三家官网按人民币标价，
-   * 把 ¥6 装进一个叫 usd 的字段差的是七倍，而界面上完全看不出来——它只是一个数字。
-   * 落盘的列名同名（迁移 7）。
+   * 该字段不得命名为 `costUsd`。阿里 / 月之暗面 / 智谱三家官网按人民币标价，
+   * 把 ¥6 存入名为 usd 的字段会产生约七倍的偏差，而界面上只显示一个数字，无法察觉。
+   * 落盘的列名与此相同（迁移 7）。
    */
   cost: number
-  /** 上面那个数字的币种。**不做汇率换算**：换算出来的数字没有出处。 */
+  /** `cost` 的币种。不做汇率换算：换算得到的数字没有依据。 */
   currency: Currency
   /** 每轮一条，供命中率分桶与成本审计；不参与计费。 */
   turns: UsageTurn[]
-  /** 这一轮里的生成花费（出图、视频、语音）。没有生成时不带这个键。上面的 `cost` 只是模型调用的花费。 */
+  /** 本轮的生成花费（图片、视频、语音）。没有生成时不带该键。`cost` 只包含模型调用的花费。 */
   media?: MediaSpend[]
 }
 
 /**
- * 一轮的全部花费：模型调用加生成，按币种分开。读数条与「运行」面板共用这一份口径，
- * 各算各的话同一轮在两处显示不同的金额。金额为 0 的项不计入（0 是金额不明，不是免费）。
+ * 一轮的全部花费：模型调用与生成之和，按币种分开。读数条与「运行」面板共用本函数，
+ * 分别计算会使同一轮在两处显示不同的金额。金额为 0 的项不计入（0 表示金额不明，不表示免费）。
  */
 export function runCosts(usage: RunUsage): Record<string, number> {
   const costs: Record<string, number> = {}
@@ -546,7 +545,7 @@ export interface UsageTurn {
   cached: number | null
   cacheWrite: number | null
   reasoning: number
-  /** provider = 模型真回报；estimated = 本地估算兜底，二者不可混同。 */
+  /** provider 表示模型实际回报；estimated 表示本地估算的后备值，二者不可混同。 */
   source: 'provider' | 'estimated'
   usageStatus: 'ok' | 'missing' | 'partial'
   costUsd: number
@@ -555,16 +554,16 @@ export interface UsageTurn {
 
 // ─────────────────────────────── 用量账本 ───────────────────────────────
 //
-// **形状放在 core，不放在 store。** 写它的是 store、发它的是 server、画它的是 web，
-// 三边都要认这几个形状；放在 store 里的话，web 够不着（依赖只能朝底层走），
-// 因此只能各抄一份，而改一个字段名时另外两份不会红。
+// 类型定义放在 core，不放在 store。写入方是 store、发送方是 server、渲染方是 web，
+// 三方都依赖这些类型；放在 store 中时 web 无法引用（依赖只能指向底层），
+// 只能各自复制一份，修改字段名时另外两份不会产生类型错误。
 
 /**
- * 花钱的种类。
+ * 费用的种类。
  *
- * 每一条都是**独立于 run 的一笔开销**，不加进来就意味着那笔钱在界面上不存在。
- * `summary`（压缩时的摘要调用）是典型：不进账本它就完全看不见，
- * 压缩越频繁账单和界面差得越多。`media` 是轮次里的一次生成，带所属轮次的 run_id。
+ * 每一种都是独立于 run 的开销，未列入时该笔费用在界面上不存在。
+ * `summary`（压缩时的摘要调用）是典型：不记入账本就完全不可见，
+ * 压缩越频繁，账单与界面的差额越大。`media` 是轮次中的一次生成，带所属轮次的 run_id。
  */
 export type UsageKind = 'run' | 'summary' | 'media'
 
@@ -572,17 +571,17 @@ export interface UsageTotals {
   entries: number
   inputTokens: number
   outputTokens: number
-  /** null = 这段区间里没有任何一笔回报过缓存。不要显示成 0。 */
+  /** null 表示该区间内没有任何一笔记录回报过缓存。不要显示为 0。 */
   cachedTokens: number | null
-  /** 同上。缓存写入与命中分开记，两者计价不同。 */
+  /** 同上。缓存写入与命中分开记录，两者计价不同。 */
   cacheWriteTokens: number | null
   reasoningTokens: number
   /**
-   * **按币种分开，不合计也不换算。**
+   * 按币种分开，不合计也不换算。
    *
-   * 只放这段区间里真的出现过的币种——空对象就是「这段区间没花钱」。
-   * 合成一个数字要一个汇率，而汇率天天变，落盘之后那个数字就不再成立，
-   * 而它看起来仍然是个确切的金额。
+   * 只包含该区间内实际出现过的币种，空对象表示该区间没有费用。
+   * 合并为一个数字需要汇率，而汇率每天变化，落盘之后该数字即不再成立，
+   * 却仍显示为确切的金额。
    */
   cost: Record<string, number>
 }
@@ -592,7 +591,7 @@ export interface UsageBucket extends UsageTotals {
   key: string
 }
 
-/** 账本里的一行。`runId` 为空即这笔不属于任何一轮（压缩摘要就是这种）。 */
+/** 账本中的一行。`runId` 为空表示该笔费用不属于任何一轮（如压缩摘要）。 */
 export interface UsageLedgerRow {
   id: string
   kind: UsageKind
@@ -614,29 +613,29 @@ export interface TodoItem {
 }
 
 /**
- * 待办进度。**唯一的算法**，工具回执与输入框上那条状态条共用它。
+ * 待办进度的唯一算法，工具回执与输入框上方的状态条共用。
  *
- * 各算各的后果是同一屏上两个数打架：工具卡写「（0/5）」（数已完成），
- * 状态条写「第 1 / 5 步」（数正在做的那条），而它们说的是同一份清单的同一时刻。
- * 口径靠共享这一个函数统一，不靠两边约定。
+ * 分别计算会使同一屏上的两个数字矛盾：工具卡显示「（0/5）」（计已完成数），
+ * 状态条显示「第 1 / 5 步」（计进行中的条目），而两者描述的是同一份清单的同一时刻。
+ * 计数规则由共享本函数统一，不依赖两侧约定。
  *
- * **两个数值各有用途，不得互相充当。**
+ * 两个数值各有用途，不得互相替代。
  *
- * - `step` 取**正在做的那一条**（1-based）。它是**位置**，不是完成量——
- *   报「第 3 步」时第 3 步一个字都还没写。所以**只能和条目名一起说**
- *   （「第 3/4 步：编写 main.js」）。光秃秃一句「第 3 / 4 步」会被读成
- *   「4 步做完了 3 步」，而这话是假的。
- * - `done` 是真的做完了几条。**没有条目名可带的地方一律用它**
- *   （输入区那条状态条），它和待办面板上勾的数目恒等。
+ * - `step` 取进行中的条目（1-based）。它表示位置，不表示完成量：
+ *   显示「第 3 步」时第 3 步尚未开始产出。因此只能与条目名一起显示
+ *   （「第 3/4 步：编写 main.js」）。单独显示「第 3 / 4 步」会被理解为
+ *   「4 步完成了 3 步」，而这一理解不成立。
+ * - `done` 是实际完成的条数。无法附带条目名的位置一律使用它
+ *   （输入区的状态条），它与待办面板上已勾选的数目恒等。
  *
- * `step` 在没有进行中那条时（刚打完勾、还没认领下一条）回落到 `done`。
+ * 没有进行中的条目时（刚勾选完成、尚未认领下一条），`step` 回落到 `done`。
  */
 export function todoProgress(todos: readonly TodoItem[]): {
-  /** 1-based；没有进行中的那条时等于已完成数。 */
+  /** 1-based；没有进行中的条目时等于已完成数。 */
   step: number
   total: number
   done: number
-  /** 正在做的那一条；没有就是 null（全做完，或者打完勾还没认领下一条）。 */
+  /** 进行中的条目；没有则为 null（全部完成，或刚勾选完成、尚未认领下一条）。 */
   current: TodoItem | null
 } {
   const done = todos.filter((t) => t.status === 'completed').length
@@ -652,27 +651,27 @@ export function todoProgress(todos: readonly TodoItem[]): {
 // ─────────────────────────────── 目标 ───────────────────────────────
 
 /**
- * 目标的生命周期。**四个，不再多。**
+ * 目标的生命周期，只有四个状态，不再增加。
  *
- * 「provider 报错」「要人工输入」「原地打转」不各占一个状态——全部走
- * `blocked`，靠 `blockedCode` + `blockedReason` 区分。状态越多转移矩阵越大，
- * 而它们对用户的意义是同一件事：停了，等用户输入。
+ * 「provider 报错」「需要人工输入」「连续无进展」不各占一个状态，全部使用
+ * `blocked`，由 `blockedCode` 与 `blockedReason` 区分。状态越多，转移矩阵越大，
+ * 而它们对用户的含义相同：已停止，等待用户输入。
  */
 export type GoalStatus = 'active' | 'paused' | 'completed' | 'blocked'
 
 /**
- * 一条会话的当前目标。**同时只有一个**，不做并行目标。
+ * 会话的当前目标。同一时间只有一个，不支持并行目标。
  *
- * 待办（`TodoItem`）回答「这一轮进行到哪了」，目标回答「一轮接一轮要做到什么」：
- * 目标 `active` 时，每轮 run 收尾会自动再起一轮（`server/run-control.ts`）。
+ * 待办（`TodoItem`）表示本轮的进度，目标表示跨越多轮要达成的结果：
+ * 目标为 `active` 时，每轮 run 结束后自动开始下一轮（`server/run-control.ts`）。
  *
- * **没有轮数上限。** 循环的出口只有三个：**模型自检达成 → `complete`**、模型做不下去 →
- * `blocked`、用户点停止 → `paused`。此外服务端还会在这一轮没正常收尾时
- * （provider 报错、权限被拒、原地打转）转 `blocked`——那是异常出口，不是配额。
+ * 没有轮数上限。循环只有三个出口：模型自检达成 → `complete`、模型无法继续 →
+ * `blocked`、用户点击停止 → `paused`。此外，本轮未正常结束时
+ * （provider 报错、权限被拒、连续无进展），服务端也会转为 `blocked`：这是异常出口，不是配额。
  *
- * 不设「最多跑 N 轮」：那个数用户没有依据去定，而它一旦露在界面上就变成了
- * 循环的主要说法，把「做到没有」换成了「还剩几轮」。达没达成由目标本身判，
- * 不由计数器判。
+ * 不设「最多运行 N 轮」：用户没有确定该数值的依据，而它一旦显示在界面上就会成为
+ * 循环的主要指标，把「是否达成」替换为「剩余轮数」。是否达成由目标本身判定，
+ * 不由计数器判定。
  */
 export interface Goal {
   id: GoalId
@@ -682,30 +681,30 @@ export interface Goal {
   /**
    * 从 1 开始单调递增，每次变更 +1。
    *
-   * 写入方必须带上自己读到的那个 revision，对不上直接拒——模型手里的目标可能
-   * 是几轮之前读的，静默覆盖会把中间那次暂停或改写抹掉。
+   * 写入方必须携带自己读取到的 revision，不一致时直接拒绝：模型持有的目标可能
+   * 是几轮之前读取的，静默覆盖会抹去其间发生的暂停或修改。
    */
   revision: number
   /** `blocked` 专有：机器可读的短代码，供界面分类。其余状态为 null。 */
   blockedCode: string | null
-  /** `blocked` 专有：一句人话说明卡在哪。**必填**，否则没人知道它为什么停。 */
+  /** `blocked` 专有：一句自然语言说明阻塞在何处。必填，否则无从得知停止原因。 */
   blockedReason: string | null
   createdAt: number
   updatedAt: number
 }
 
 /**
- * 目标上的五个动作。**`update_goal` 一个工具全包**（见 §4.1 的第二档门面判据）：
- * 五个动作共享必填的 `goal_id` + `revision`，差异只在两条条件必填。
+ * 目标上的五个动作，全部由 `update_goal` 一个工具承担：
+ * 五个动作共享必填的 `goal_id` 与 `revision`，差异只在两个条件必填字段。
  */
 export type GoalAction = 'edit' | 'pause' | 'resume' | 'complete' | 'blocked'
 
 /**
  * 一次目标变更的结果。
  *
- * **失败是返回值不是异常**：绝大多数调用方是工具，而工具要把「为什么被拒」
- * 原样交给模型（revision 过期、状态不允许、缺理由），异常在那条路上会被
- * 注册表压成一句「工具执行出错」。
+ * 失败以返回值表达，不抛异常：绝大多数调用方是工具，而工具需要把拒绝原因
+ * 原样交给模型（revision 过期、状态不允许、缺少理由）；异常在该路径上会被
+ * 注册表统一替换为「工具执行出错」。
  */
 export type GoalWriteResult =
   | { ok: true; goal: Goal }
@@ -716,12 +715,12 @@ export type GoalWriteResult =
 /**
  * step 的种类。
  *
- * `user` 是唯一不由模型产生的一种：run 跑到一半时用户插进来的那句话
- * （「调整方向」）。**它必须落在 steps 而不是 `messages`**——历史投影的骨架是
- * 「messages 按 id 升序，每条后面挂 `userMessageId` 指向它的那些 run 的全部 steps」
- * （`runtime/transcript.ts` 的 `buildHistory`），写进 `messages` 的行下一轮会被重排到
- * 整个 run 的全部步骤之后，注入点在回放里的时序因此与活的 transcript 不一致。
- * 落 steps 则位置由 seq 决定，两侧逐条同位。
+ * `user` 是唯一不由模型产生的种类：run 执行过程中用户插入的消息
+ * （「调整方向」）。它必须写入 steps 而不是 `messages`：历史投影的结构是
+ * 「messages 按 id 升序，每条之后接 `userMessageId` 指向它的各 run 的全部 steps」
+ * （`runtime/transcript.ts` 的 `buildHistory`），写入 `messages` 的行在下一轮会被重排到
+ * 整个 run 的全部步骤之后，注入点在回放中的时序因此与实时 transcript 不一致。
+ * 写入 steps 时位置由 seq 决定，两侧逐条对应。
  */
 export type StepKind = 'text' | 'tool_action' | 'compaction' | 'thinking' | 'user'
 
@@ -735,17 +734,17 @@ export interface Step {
 
   toolName: string | null
   toolCallId: string | null
-  /** 同一 provider 响应的所有调用共享；保留「一个 assistant 轮 N 个调用」的原貌。 */
+  /** 同一 provider 响应中的所有调用共享该值，用于保留「一个 assistant 轮包含 N 个调用」的原始结构。 */
   providerBatchId: string | null
   callIndex: number | null
   /**
-   * 一个 provider batch 内的后端执行边界。同 index 属于一次水平波次；
-   * 不同 index 有先后；没进入波次规划的保持 null。
+   * 一个 provider batch 内的后端执行边界。相同 index 属于同一批并行执行的调用；
+   * 不同 index 依次执行；未进入批次规划的保持 null。
    */
   executionWaveIndex: number | null
   /**
-   * 副作用工具的持久歧义边界：进入执行器前立即提交。
-   * 崩溃恢复必须把「有时间戳的 running 行」当作「可能已执行」。
+   * 有副作用工具的执行歧义边界：进入执行器前立即提交并持久化。
+   * 崩溃恢复必须把「有时间戳的 running 行」视为「可能已执行」。
    */
   executionStartedAt: number | null
 
@@ -754,18 +753,18 @@ export interface Step {
   status: ToolActionStatus | 'done'
   createdAt: number
   /**
-   * 这次工具调用跑了多久（毫秒）。**只有 `tool_action` 有，且只有落过终态的才有。**
+   * 本次工具调用的执行时长（毫秒）。只有已落终态的 `tool_action` 带有该值。
    *
-   * 与 `executionStartedAt` 分工：那个是进执行器之前写下的时间戳（崩溃恢复的歧义
-   * 边界），这个是执行完的时长。**不要拿两者相减代替它**——前者在提交事务时写，
-   * 与执行器实际起跑差着一次落盘。
+   * 与 `executionStartedAt` 的分工：后者是进入执行器之前写入的时间戳（崩溃恢复的歧义
+   * 边界），本字段是执行完成后的时长。不要用两者相减代替本字段：前者在提交事务时写入，
+   * 与执行器实际开始执行相差一次落盘。
    *
-   * 迁移 28 之前的行是 null：那些调用真实发生过，时长没有落库。
+   * 迁移 28 之前的行为 null：这些调用确实发生过，但时长未落库。
    */
   durationMs: number | null
 }
 
-/** 派活卡上一格的进度。 */
+/** 派发任务卡上一个节点的进度。 */
 export type NodePhase =
   | 'waiting'
   | 'queued'
@@ -776,47 +775,47 @@ export type NodePhase =
   | 'interrupted'
 
 /**
- * 派活卡上一格的状态。派一件与图上的节点同一形状，落在 step payload 的 `nodes` 里，
- * 流式期的 `team.member` 事件带的也是它：界面只认这一个来源。
+ * 派发任务卡上一个节点的状态。单个派发与图上的节点使用同一结构，保存在 step payload 的 `nodes` 中，
+ * 流式阶段的 `team.member` 事件携带的也是该结构：界面只以它为来源。
  *
- * **它同时是这一格的回执**：终态那一条带着 `output` / `note`，`foldWorkflow` 按它
- * 折出 `WorkflowProjection.results`。工具返回值里没有第二份——派出即返回，
- * 那时还没有产出。
+ * 它同时是该节点的回执：终态记录带有 `output` / `note`，`foldWorkflow` 据此
+ * 折叠出 `WorkflowProjection.results`。工具返回值中没有第二份：派发后立即返回，
+ * 此时尚无产出。
  */
 export interface NodeState {
   phase: NodePhase
-  /** 那一格的名字：子 agent 的名字。 */
+  /** 节点名称，即子 agent 的名称。 */
   label: string
   /**
-   * 派给的是哪一种子 agent。界面按它印标签、决定点开哪一页。
-   * 目标不成立且只给了子 agent id 时缺席：那时没有记录可以判种类。
+   * 派发目标的子 agent 种类。界面据此显示标签并决定打开哪个页面。
+   * 目标无效且只提供了子 agent id 时缺失：此时没有可用于判定种类的记录。
    */
   kind?: SubagentKind
-  /** 子 agent 的会话 id。建好之后每条状态都带着。 */
+  /** 子 agent 的会话 id。创建后每条状态都带有该值。 */
   subagentId?: ConversationId
   durationMs?: number
   /** failed / skipped / interrupted 的原因。 */
   error?: string
   /**
-   * 终态那一条带上的产出摘录，已经过投递闸（超预算的落盘、正文里留定位符）。
-   * 下游格的输入与检查点的可传递输出都取它，所以**不要改成完整正文**：
+   * 终态记录带有的产出摘录，已经过投递限制（超出预算的部分落盘，正文中保留定位符）。
+   * 下游节点的输入与检查点的可传递输出都取该值，因此不要改为完整正文：
    * 它随 step payload 落库，也随 `team.member` 事件广播。
    */
   output?: string
-  /** 派发时模型该知道的事实：续接没接上、角色已不在。随终态一起交回。 */
+  /** 派发时模型应知道的事实：续接失败、角色已不存在。随终态一起返回。 */
   note?: string
   /**
-   * 外部 CLI 节点执行期间工作区观察器看到的写入。只有外部 CLI 有：内置子 agent 的写入
-   * 是它自己那条子会话里的 step，变更投影按 `subagentId` 去那边取。
+   * 外部 CLI 节点执行期间工作区观察器记录的写入。只有外部 CLI 节点带有该字段：内置子 agent 的写入
+   * 是其子会话中的 step，变更投影按 `subagentId` 从子会话读取。
    */
   fileChanges?: FileChange[]
 }
 
 /**
- * `action` 随 step 一起落库，而不是让前端按工具名回猜。
+ * `action` 随 step 一起落库，而不是让前端按工具名推测。
  *
- * 动作语义由后端的 ToolSpec 解析（多动作门面会按参数分派），前端猜不出来——
- * 早期版本没存，刷新后所有历史工具卡都显示成「读取」，包括写入和执行命令。
+ * 动作语义由后端的 ToolSpec 解析（多动作门面按参数分派），前端无法推测：
+ * 不落库时，刷新后所有历史工具卡都显示为「读取」，包括写入与执行命令。
  */
 export type StepPayload =
   | { kind: 'response_reasoning'; reasoning: ResponseReasoning }
@@ -825,45 +824,45 @@ export type StepPayload =
       args: Record<string, unknown>
       action?: ActionDescriptor
       /**
-       * 派活卡上每一格的进度，键是节点 id（派一件用 `SUBAGENT_NODE_ID`）。
-       * 每次状态变化都当场写入，不等工具跑完：切走再切回、刷新之后都从这里重画，
-       * 与流式期的 `team.member` 事件同一形状。
+       * 派发任务卡上每个节点的进度，键是节点 id（单个派发使用 `SUBAGENT_NODE_ID`）。
+       * 每次状态变化都立即写入，不等待工具执行完毕：切换会话后返回、刷新之后都从此处重新渲染，
+       * 与流式阶段的 `team.member` 事件结构相同。
        */
       nodes?: Record<string, NodeState>
     }
   | {
       kind: 'tool_result'
       /**
-       * **可缺**。正常终态一定有，但恢复/中断收尾（`settleRunningSteps`）
-       * 整体替换 payload 时 `args` 与 `action` 会被抹掉——那一刻可知的只有
-       * 「这次调用没有终态」，重建不出调用参数。
+       * 可缺失。正常终态一定带有，但恢复/中断收尾（`settleRunningSteps`）
+       * 整体替换 payload 时会清除 `args` 与 `action`：此时只能确定
+       * 「该调用没有终态」，无法重建调用参数。
        *
-       * **不能声明成必填**：写入侧确实在写不带它的行，声明必填就是类型说的和库里
-       * 躺的不是一回事，历史投影会在孤儿行上拿到 undefined 再展开。
-       * 消费方（`runtime/transcript.ts`）的口径是 `args ?? {}`，
-       * 且那种行的 status 必然是 failure——模型看到「调用失败、参数已不可考」，
-       * 而不是一次「参数为空却自称成功」的记录。
+       * 不能声明为必填：写入侧确实会写入不带该字段的行，声明必填会使类型声明与库中
+       * 存储的内容不一致，历史投影会在孤儿行上取得 undefined 后展开。
+       * 消费方（`runtime/transcript.ts`）按 `args ?? {}` 处理，
+       * 且这类行的 status 必然是 failure：模型看到的是「调用失败、参数已无法确定」，
+       * 而不是一条「参数为空却显示成功」的记录。
        */
       args?: Record<string, unknown>
       outcome: ToolOutcomeWire
       action?: ActionDescriptor
       /**
-       * 同 `tool_call` 的 `nodes`。`settleToolStep` 从运行中的行保留下来；
-       * 崩溃恢复把没跑完的格标成中断。
+       * 同 `tool_call` 的 `nodes`。`settleToolStep` 从运行中的行保留该值；
+       * 崩溃恢复把未执行完毕的节点标记为中断。
        */
       nodes?: Record<string, NodeState>
     }
   | {
       kind: 'compaction'
       /**
-       * 压缩终态，与 `CompactionEvent.phase` 同源；刷新之后压缩卡按它重建。
+       * 压缩终态，与 `CompactionEvent.phase` 同源；刷新之后压缩卡据此重建。
        *
-       * 迁移 37 已把旧行补齐；新写入也必须带。
+       * 迁移 37 已补全旧行；新写入也必须带有该字段。
        */
       phase: 'done' | 'skipped' | 'failed'
       manifestRevision: number
       compactedMessages: number
-      /** `phase='done'` 专有：摘要线跟着前移了（true），还是只收纳了工具正文（false）。 */
+      /** `phase='done'` 专有：摘要线随之前移（true），或只收纳了工具正文（false）。 */
       summarized?: boolean
       reasonCode?: string
       message?: string
@@ -874,21 +873,21 @@ export type StepPayload =
     }
   | {
       /**
-       * run 内注入的那句用户消息。正文在 `content` 列，与 `text` / `thinking` 同法；
-       * 这里只装附件引用。
+       * run 内注入的用户消息。正文保存在 `content` 列，与 `text` / `thinking` 相同；
+       * 此处只保存附件引用。
        */
       kind: 'user'
       attachments?: Attachment[]
-      /** 同 `Message.origin`：这一句是谁投进来的，缺席 = 用户本人。 */
+      /** 同 `Message.origin`：该消息的来源，缺失表示用户本人。 */
       origin?: 'subagent' | 'workflow'
       /**
-       * 装配层交给模型的执行事实（待办未完成、重复告警、断流续发），不是任何人说的话：
-       * 界面与导出不显示，投影进历史时归运行上下文。
+       * 装配层交给模型的执行事实（待办未完成、重复告警、断流后续发），不是任何参与者的发言：
+       * 界面与导出不显示，投影到历史时归入运行上下文。
        */
       notice?: true
     }
 
-/** 这条 step 是装配层交给模型的执行事实（见 `StepPayload` 的 `notice`），不是任何人说的话。 */
+/** 判定 step 是否为装配层交给模型的执行事实（见 `StepPayload` 的 `notice`），而不是任何参与者的发言。 */
 export function isNoticeStep(step: Pick<Step, 'kind' | 'payload'>): boolean {
   return step.kind === 'user' && step.payload?.kind === 'user' && step.payload.notice === true
 }
@@ -896,13 +895,13 @@ export function isNoticeStep(step: Pick<Step, 'kind' | 'payload'>): boolean {
 /** 工具执行的规范结果，必须原样抵达 step 账本、事件流和 provider transcript。 */
 export interface ToolOutcomeWire {
   status: 'success' | 'failure'
-  /** 是否真的执行了。权限拒绝 / 注册表未命中 = false，绝不伪装成功。 */
+  /** 是否实际执行。权限拒绝 / 注册表未命中时为 false，不得伪装为成功。 */
   executed: boolean
   message: string
   data?: Record<string, unknown>
   /**
    * 可选的用户界面展示意图。工具结果默认只供模型与账本消费；只有生产者明确声明，
-   * 前端才把其中的图片展开到会话正文。模型视觉输入与用户展示不是同一件事。
+   * 前端才把其中的图片展开到会话正文。模型视觉输入与用户展示相互独立。
    */
   presentation?: { images?: 'inline' }
   /** 文件类工具产出的变更摘要，供实时预览与 diff 面板消费。 */
@@ -913,29 +912,29 @@ export interface ToolOutcomeWire {
 }
 
 /**
- * 一条排着的跟进消息。
+ * 一条排队中的跟进消息。
  *
- * 会话正忙时用户发的消息进这份队列，去向由 `steer` 决定：注入当前这一轮，
- * 或者等这一轮跑完再作为下一轮发起。**进 run 之前它不落任何表**——
- * 队列是进程内的意志，不是账本事实，落盘的队列会在崩溃重启后自己跑起来。
+ * 会话忙碌时用户发送的消息进入该队列，去向由 `steer` 决定：注入当前轮，
+ * 或等待当前轮执行完毕后作为下一轮发起。进入 run 之前它不写入任何表：
+ * 队列是进程内的意图，不是账本事实，落盘的队列会在崩溃重启后自行开始执行。
  */
 export interface FollowUp {
   /**
-   * 幂等键，直接用 `message.send` 的 `clientRequestId`。
+   * 幂等键，直接使用 `message.send` 的 `clientRequestId`。
    *
-   * 一个键三用：服务端按它去重、客户端的乐观卡按它与服务端快照对账、
-   * 卡片上的翻转与删除按它寻址。
+   * 该键有三种用途：服务端据此去重，客户端的乐观卡片据此与服务端快照对账，
+   * 卡片上的切换与删除据此寻址。
    */
   id: string
   content: string
   attachments?: Attachment[]
-  /** true = 在当前 run 的下一个 step 边界注入；false = 等这一轮收尾后发起下一轮。 */
+  /** true = 在当前 run 的下一个 step 边界注入；false = 等待当前轮收尾后发起下一轮。 */
   steer: boolean
   /**
-   * 同 `Message.origin`：这一条是谁投进来的，缺席 = 用户本人。
+   * 同 `Message.origin`：该消息的来源，缺失表示用户本人。
    *
-   * 队列不落盘，这一格只负责把来源带到落库那一步——注入时进 step 的
-   * `payload.origin`，起轮时进 `messages.origin`。
+   * 队列不落盘，该字段只负责把来源传递到落库环节：注入时写入 step 的
+   * `payload.origin`，开始新一轮时写入 `messages.origin`。
    */
   origin?: 'subagent' | 'workflow'
 }
@@ -945,11 +944,11 @@ export interface FollowUp {
 export type ResourceStatus = 'complete' | 'partial' | 'failed'
 
 /**
- * 覆盖事实：投递给模型的那一段，相对于完整正文处于什么位置、占多少。
+ * 覆盖事实：投递给模型的片段在完整正文中的位置与占比。
  *
- * 这几个数字**必须随结果一起交给模型**。只给一段截断正文而不说
- * 「这是 2.3 MB 里的 8 KB」，模型会把它当成全部，然后基于不完整的信息下结论——
- * 比不给它更糟，因为它不知道自己不知道。
+ * 这些数值必须随结果一起交给模型。只提供截断后的正文而不说明
+ * 「这是 2.3 MB 中的 8 KB」，模型会把它当作全部内容，并基于不完整的信息得出结论；
+ * 这比不提供正文更糟，因为模型无从得知信息不完整。
  */
 export interface ResourceCoverage {
   deliveredBytes?: number
@@ -960,7 +959,7 @@ export interface ResourceCoverage {
   [k: string]: unknown
 }
 
-/** 执行记录里的落地正文引用；只含定位事实，正文在内容库里按哈希寻址。 */
+/** 执行记录中已落盘正文的引用；只含定位事实，正文在内容库中按哈希寻址。 */
 export interface IntermediateResourceRef {
   resourceId: ResourceId
   status: ResourceStatus
@@ -972,19 +971,19 @@ export interface IntermediateResourceRef {
 
 export interface FileChange {
   path: string
-  /** 观察器判出来的 created 是估算：原子保存（写临时文件再改名）也会得到窗口内的创建时间。 */
+  /** 观察器判定的 created 是估算值：原子保存（先写临时文件再重命名）同样会产生窗口内的创建时间。 */
   changeType: 'created' | 'modified' | 'deleted' | 'renamed'
   /**
-   * 增删行数。**文件类工具一定给**；工作区观察器判出来的写入（shell、外部 CLI）
-   * 拿不到改动前的内容，两个字段一起缺席。缺席不是 0：消费方只把已知的数相加，
-   * 界面上这类行不印增删数。
+   * 增删行数。文件类工具一定提供；工作区观察器判定的写入（shell、外部 CLI）
+   * 无法取得改动前的内容，两个字段同时缺失。缺失不等于 0：消费方只累加已知的数值，
+   * 界面上这类行不显示增删数。
    */
   additions?: number
   deletions?: number
   renamedFrom?: string
 }
 
-/** 一轮里一个文件的净效果。`counted` = 这一轮至少有一次带了行数，都没带的不印增删数。 */
+/** 一轮中单个文件的净效果。`counted` 表示本轮至少有一次记录带有行数；均未带行数时不显示增删数。 */
 export interface FoldedFileChange {
   path: string
   changeType: FileChange['changeType']
@@ -994,18 +993,18 @@ export interface FoldedFileChange {
 }
 
 /**
- * 一轮的写入按路径折成净效果，输入按发生先后，输出按路径第一次被改到的先后。
+ * 把一轮的写入按路径折叠为净效果：输入按发生顺序排列，输出按路径首次被修改的顺序排列。
  *
- * **这一轮里建起来又删掉的整行丢掉**：它对工作区没有净效果，与观察器在单个窗口内
- * 把「建了又删」判成临时文件是同一条规则，只是范围放到整轮。浏览器 profile、
- * 构建缓存这类几百上千个文件的目录正是这个形状。改过之后被删的留着——
- * 那是用户原有的文件没了。
+ * 本轮中先创建后删除的路径整行丢弃：它对工作区没有净效果，与观察器在单个窗口内
+ * 把「创建后删除」判定为临时文件是同一条规则，只是范围扩大到整轮。浏览器 profile、
+ * 构建缓存等包含成百上千个文件的目录正属于这种情况。修改后被删除的路径保留：
+ * 它表示用户原有的文件已被删除。
  *
- * 其余三条：建了再改仍是新建，删掉又重建仍是新建，其余按最后一次；
- * 行数只加已知的（缺席不是 0，见 `FileChange.additions`）。
+ * 其余规则：创建后修改仍记为新建，删除后重建仍记为新建，其余按最后一次变更；
+ * 行数只累加已知值（缺失不等于 0，见 `FileChange.additions`）。
  *
- * **变更页的行与表头合计都从这里来。** 界面折一次、服务端另算一份合计的话，
- * 被丢掉的那几百行会从行里消失、却还留在表头的数里。
+ * 变更页的行与表头合计都取自本函数。若界面折叠一次、服务端另行计算合计，
+ * 被丢弃的数百行会从列表中消失，却仍计入表头的合计。
  */
 export function foldFileChanges(changes: readonly FileChange[]): FoldedFileChange[] {
   const byPath = new Map<string, FoldedFileChange>()
@@ -1041,14 +1040,14 @@ export function foldFileChanges(changes: readonly FileChange[]): FoldedFileChang
 // ─────────────────────────────── 上下文分组 ───────────────────────────────
 
 /**
- * 上下文占用的分组口径。**这是唯一一份**，面板、装配层、账本都用它。
+ * 上下文占用的分组定义。这是唯一的定义，面板、装配层与账本都使用它。
  *
- * 十个键是固定的：改切法就等于换一把尺，历史会话的面板数字与新会话再也没法对照，
- * 排查时无法判定哪两者本应一致。要加类目就加，别把已有的合并或改名。
+ * 十个键是固定的：改变划分方式等于更换度量标准，历史会话的面板数字与新会话将无法对照，
+ * 排查时无法判定哪些数值本应一致。可以新增类目，不要合并或重命名已有类目。
  *
  * 定义在 `core` 而不是 `ai`：`ai` 的 `WireMessage._group` 与 `core` 的事件协议
- * 必须是同一个类型。放在 `ai` 里的话 `core` 引不到（依赖只能朝下层走），
- * 否则两处各写一份枚举：一份十个键、另一份七个不同名的桶，而面板只建在其中一份上。
+ * 必须使用同一个类型。放在 `ai` 中时 `core` 无法引用（依赖只能指向下层），
+ * 只能两处各写一份枚举：一份十个键，另一份七个名称不同的分组，而面板只基于其中一份。
  */
 export type ContextGroup =
   | 'systemPrompt'
@@ -1063,11 +1062,11 @@ export type ContextGroup =
   | 'workspaceState'
 
 /**
- * 分组顺序。**面板按这个顺序定序渲染，零值行也显示。**
+ * 分组顺序。面板按此顺序渲染，零值行也显示。
  *
- * 顺序本身是协议的一部分：按值排序会让行随数字大小上下跳，用户在上面找一行
- * 得每次重新扫一遍；而零值行不显示会让行数随会话变化——上一秒有九行，
- * 下一秒十行，浮层高度跟着跳（B9）。
+ * 顺序本身是协议的一部分：按值排序会使行随数值大小上下移动，用户查找某一行
+ * 时每次都需要重新浏览；零值行不显示会使行数随会话变化（九行变为十行），
+ * 浮层高度随之变化（B9）。
  */
 export const CONTEXT_GROUPS: readonly ContextGroup[] = [
   'historyMessages',
@@ -1086,20 +1085,20 @@ export const CONTEXT_GROUPS: readonly ContextGroup[] = [
 export type ContextBreakdown = Record<ContextGroup, number>
 
 /**
- * **没有发给模型**的那部分原文有多少。
+ * 未发送给模型的原文量。
  *
- * 压缩把一段历史换成摘要、把工具结果换成定位符之后，原文仍在账本里留有，
- * 只是没进这次请求。这两个数回答「什么被拿掉了」——面板只报「被谁占的」
- * 是半张账，用户看到占用下降却不知道降在哪里。
+ * 压缩把一段历史替换为摘要、把工具结果替换为定位符之后，原文仍保留在账本中，
+ * 只是未进入本次请求。这两个数值表示被移出请求的内容；面板只报告占用构成
+ * 是不完整的，用户看到占用下降却无法得知下降来自何处。
  *
- * 能报出这个数的前提是**压缩是投影、不销毁原文**：原文还在 Step / 正文库里，
- * 装配时用同一把尺量两次相减就得到它。一旦哪天改成直接改写正文，原文就不在
- * 任何可测处，这两个数就失去依据——届时该删掉它们，不是估一个填上。
+ * 能报告该数值的前提是压缩是投影、不销毁原文：原文仍在 Step / 正文库中，
+ * 装配时用同一度量方式测量两次后相减即得到该值。若改为直接改写正文，原文将不在
+ * 任何可测量的位置，这两个数值即失去依据：届时应删除它们，而不是填入估算值。
  */
 export interface ContextOmitted {
-  /** 被摘要替代掉的历史消息原文。 */
+  /** 被摘要替代的历史消息原文。 */
   historyOriginal: number
-  /** 被定位符存根替代掉的工具结果正文。 */
+  /** 被定位符存根替代的工具结果正文。 */
   intermediateOriginal: number
 }
 
@@ -1123,10 +1122,10 @@ export function emptyOmitted(): ContextOmitted {
 }
 
 /**
- * 会随对话增长的那三个桶。对账的差额优先往这里归。
+ * 随对话增长的三个分组。对账的差额优先归入这些分组。
  *
- * 其余桶（系统提示词、工具 schema、记忆、技能、工作区）在装配时是逐字可数的，
- * 估算误差极小；把差额摊到它们头上等于把最准的数改错。
+ * 其余分组（系统提示词、工具 schema、记忆、技能、工作区）在装配时可逐字计数，
+ * 估算误差极小；把差额分摊给它们会把最准确的数值改错。
  */
 const VARIABLE_GROUPS: readonly ContextGroup[] = [
   'historyMessages',
@@ -1134,16 +1133,16 @@ const VARIABLE_GROUPS: readonly ContextGroup[] = [
   'intermediateContent',
 ]
 
-/** 其余的。顺序沿用 `CONTEXT_GROUPS`，差额摊不进可变桶时才动它们。 */
+/** 其余分组。顺序沿用 `CONTEXT_GROUPS`，只有差额无法由可变分组吸收时才调整它们。 */
 const FIXED_GROUPS: readonly ContextGroup[] = CONTEXT_GROUPS.filter(
   (g) => !VARIABLE_GROUPS.includes(g),
 )
 
 /**
- * 把 `keys` 这几个桶按现有占比重新分配，使它们之和**精确等于** `want`。
+ * 把 `keys` 中的分组按现有占比重新分配，使其总和精确等于 `want`。
  *
- * 余数给其中最大的那个，不留一两个 token 的尾巴。
- * 全为零时没有占比可依据，整块给第一个键。
+ * 余数归入其中最大的分组，不留下一两个 token 的差额。
+ * 全部为零时没有占比可依据，全部分配给第一个键。
  */
 function allocate(out: ContextBreakdown, keys: readonly ContextGroup[], want: number): void {
   const base = keys.reduce((n, k) => n + out[k], 0)
@@ -1165,31 +1164,31 @@ function allocate(out: ContextBreakdown, keys: readonly ContextGroup[], want: nu
 }
 
 /**
- * 让分组之和恒等于总数。
+ * 使分组之和等于总数。
  *
- * **为什么必须对账。** 总数是 provider 真值，分组是本地估算，两者天然不等。差额里还结构性地含着
- * 上一轮的输出 token——它不属于任何一个桶，但它确实占着窗口，下一轮就是历史的
- * 一部分。不对账的话，面板上「各行加起来」和「标题上那个数」对不上，而差额会
- * 无声地落进「剩余空间」那一行。
+ * 必须对账：总数是 provider 真值，分组是本地估算，两者必然不等。差额中还固定包含
+ * 上一轮的输出 token：它不属于任何分组，但确实占用窗口，在下一轮成为历史的
+ * 一部分。不对账时，面板上各行之和与标题中的总数不一致，差额会
+ * 不加提示地计入「剩余空间」一行。
  *
- * 也不要用「各组之和略小于总数：总数含请求体本身的结构开销」这类话糊过去——
- * 那是错的，差额里有真实内容（tool call 参数、思考正文、被按自然语言口径低估的
- * base64）。实测过一次代价：两张按文本发出去的 PNG 让总数与分组差了 271k，
- * 面板上各行加起来只有 36.9%，剩下的全躺在「剩余空间」里，没有任何一行指向它们。
+ * 也不要用「各组之和略小于总数：总数包含请求体本身的结构开销」这类说法掩盖差额：
+ * 该说法不成立，差额中有真实内容（tool call 参数、思考正文、按自然语言标准被低估的
+ * base64）。实测实例：两张按文本发送的 PNG 使总数与分组之和相差 271k，
+ * 面板上各行之和只占 36.9%，其余全部计入「剩余空间」，没有任何一行对应它们。
  *
- * **吸收法，不是缩放法。** 固定类目保实测值，差额归到误差实际所在的桶——三个可变桶按各自占比分摊。
+ * 采用吸收法，不采用缩放法：固定类目保留实测值，差额归入误差实际所在的分组，由三个可变分组按各自占比分摊。
  *
- * **不要改成「一律按占比缩放全部类目」。** 那要求全部类目出自同一把尺、误差均匀，
- * 而这里是估算，误差集中在会变的那几个桶上。
+ * 不要改为「一律按占比缩放全部类目」：该方法要求全部类目使用同一度量方式且误差均匀，
+ * 而此处是估算，误差集中在可变分组上。
  *
- * **真值低于固定类目时。** 真值小到连固定类目本身都装不下（会话刚开始、工具表的估算比真值高）时，
- * 可变桶清零也补不平，这时**才**按占比缩固定类目。
- * 「各行加起来等于标题」优先于「固定类目保实测值」——前者用户一眼就能验，
- * 后者他无从验证；而钳到零之后放着不管，面板给出的又是一组对不上的数。
+ * 真值低于固定类目之和时（会话刚开始、工具表的估算高于真值），
+ * 可变分组清零后仍无法平衡，此时才按占比缩减固定类目。
+ * 「各行之和等于标题」优先于「固定类目保留实测值」：前者用户可以直接验证，
+ * 后者用户无法验证；若钳制到零后不再处理，面板显示的仍是一组不一致的数值。
  *
- * **边界。** 按占比分摊只保证**和**是对的，不保证差额落在真正出错的那个桶上——误差实际
- * 集中在某一个桶时，另外两个会跟着被抬高。所以这个函数回答的是「总共被占了多少、
- * 大致是谁」，不是「哪一个桶算错了」。定位单个桶的误差要看逐请求账。
+ * 边界：按占比分摊只保证总和正确，不保证差额归入实际出错的分组；误差实际
+ * 集中在某一个分组时，另外两个分组也会被抬高。因此本函数给出的是总占用量与
+ * 大致构成，不能指明哪一个分组计算有误。定位单个分组的误差需要查看逐请求记录。
  */
 export function reconcileBreakdown(breakdown: ContextBreakdown, total: number): ContextBreakdown {
   const out = { ...breakdown }
@@ -1212,40 +1211,24 @@ export function reconcileBreakdown(breakdown: ContextBreakdown, total: number): 
 }
 
 /**
- * 请求信封那部分的占用：系统提示词 + 两张工具表。
+ * 请求信封部分的占用：系统提示词与两张工具表。
  *
  * 三项与 `envelopeHashOf`（`agent/loop/request.ts`）哈希的 `[model, system, tools]` 逐项
- * 对应。信封换了一份时要重估的只有这三项，多算一项就把没变的内容也重估了一遍。
+ * 对应。信封变化时只需重新估算这三项，多计一项会把未变化的内容也重新估算。
  *
- * **具名导出，两处都调它，不许各写一遍相加。** 锚点修正在 loop 与
- * `runtime/context-panel.ts` 两处发生，两份定义一旦漂移，同一条会话在运行中和
- * 回头看会给出两个数，而这种漂移不产生任何报错。理由同 `softLimit`。
+ * 具名导出，两处都调用本函数，不要各自相加。锚点修正在 loop 与
+ * `runtime/context-panel.ts` 两处发生，两份定义一旦不一致，同一会话在运行中与
+ * 事后查看时会显示两个不同的数值，且不产生任何报错。理由同 `softLimit`。
  *
- * 边界：三项都是估算不是 provider 真值。拿它做加减法的一方承担的是系数误差，
- * 不是零误差。
+ * 边界：三项都是估算值，不是 provider 真值。基于它做加减运算的结果带有系数误差，
+ * 不是精确值。
  */
 export function envelopeHeadTokens(breakdown: ContextBreakdown): number {
   return breakdown.systemPrompt + breakdown.systemTools + breakdown.mcpTools
 }
 
-// ─────────────────────────── 逐请求账 ───────────────────────────
+// ─────────────────────────── 逐请求记录 ───────────────────────────
 
-/**
- * 一次真实模型请求的快照。**不存 payload 本身**，只存能对账的事实。
- *
- * **为什么账要落到「请求」这一层，而不是「run」这一层。** 挂在 `runs` 上
- * （`context_tokens/limit/percent` 那种三列）会被每个 step 覆盖一次，一个 run 只剩最后一次请求的读
- * 数，「这一轮上下文怎么长起来的」在账本里不存在。面板刷新后只能显示一个孤零零的数字，更查不出「为
- * 什么第三轮比第二轮还低」。一个 run 有 N 次请求，账就该有 N 行。
- *
- * **`status` 的五态是 provider 交互的真实形状。** `pending`（已装配未发出）→ `in_flight`（已发出未
- * 回）→ 终态三选一：`received` 正常收完 / `rejected` 被 4xx 拒 / `uncertain` 超时或断流。**
- * `uncertain` 不能并进 `rejected`**：被拒是 provider 明确说了话，超时是送达状态未知——按「拒了」
- * 处理会把一次可能已计费的请求记成没发生。
- *
- * **usage 四个字段允许为 null。** `null` = provider 没回报，与真实的 0 是两回事。中转站漏 usage 是
- * 常态，把没回报记成 0 会让上下文锚点误判成「这次请求什么都没占」。
- */
 export type ProviderRequestPurpose = 'turn' | 'summary'
 export type ProviderRequestContentKind = 'thinking' | 'text' | 'tool_arguments' | 'other'
 
@@ -1261,6 +1244,22 @@ export interface ProviderRequestConfiguration {
   endpoint?: string | null
 }
 
+/**
+ * 一次真实模型请求的快照。不保存 payload 本身，只保存可用于对账的事实。
+ *
+ * 记录粒度是请求而不是 run：记录在 `runs` 上
+ * （如 `context_tokens/limit/percent` 三列）会被每个 step 覆盖一次，一个 run 只保留最后一次请求的
+ * 读数，账本中不存在本轮上下文的增长过程。面板刷新后只能显示单个数字，也无法查明
+ * 第三轮为何比第二轮低。一个 run 有 N 次请求，账本就应有 N 行。
+ *
+ * `status` 的五个状态对应 provider 交互的实际过程：`pending`（已装配未发出）→ `in_flight`（已发出未
+ * 返回）→ 三个终态之一：`received` 正常接收完毕 / `rejected` 被 4xx 拒绝 / `uncertain` 超时或断流。
+ * `uncertain` 不能合并到 `rejected`：被拒绝是 provider 给出的明确答复，超时表示送达状态未知；按拒绝
+ * 处理会把一次可能已计费的请求记为未发生。
+ *
+ * usage 的四个字段允许为 null。`null` 表示 provider 未回报，与真实的 0 含义不同。中转站缺失 usage 是
+ * 常见情况，把未回报记为 0 会使上下文锚点误判为「本次请求没有任何占用」。
+ */
 export interface ProviderRequest {
   id: ProviderRequestId
   runId: RunId
@@ -1269,27 +1268,27 @@ export interface ProviderRequest {
   /** 同一 turn 的第几次重试，从 0 起。与 turnIndex 一起构成唯一键。 */
   retryIndex: number
   /**
-   * 这次往返是哪一种：主模型的一轮（turn），或一轮之内压缩时的摘要请求（summary）。
-   * 摘要请求同样占一个 turn 编号、计入这一轮的 usage；但它发的不是会话上下文，
-   * 上下文锚点与命中率只看 turn。
+   * 本次往返的类型：主模型的一轮（turn），或一轮之内压缩时的摘要请求（summary）。
+   * 摘要请求同样占用一个 turn 编号、计入本轮的 usage；但它发送的不是会话上下文，
+   * 上下文锚点与命中率只统计 turn。
    */
   purpose: ProviderRequestPurpose
   /** 请求发出时绑定的接口名。null = 迁移前旧行或测试夹具未提供。 */
   providerName: string | null
-  /** 请求实际走的协议。与接口名一起区分同模型的不同路线。 */
+  /** 请求实际使用的协议。与接口名一起区分同一模型的不同调用路径。 */
   providerKind: ProviderKind | null
   model: string
   status: ProviderRequestStatus
   /**
-   * 发送前本地测得的输入量。**一律是字符估算**——三条协议都没有在热路径上
-   * 实测 token 的通道。真值由 `providerInputTokens` 那几列给，读数以它们为准，
-   * 这一列在一条回报都还没有时兜底；拿到 usage 后还会与真值成对，校准锚点之后
-   * 的增量，并给压缩回收量做两把尺的折算（`context-panel.ts` / `compaction.ts`）。
+   * 发送前本地测得的输入量，一律为字符估算：三种协议都没有在热路径上
+   * 实测 token 的接口。真值由 `providerInputTokens` 等列提供，读数以真值为准，
+   * 本列在尚无任何回报时作为后备；取得 usage 后还与真值配对，用于校准锚点之后
+   * 的增量，并为压缩回收量做两种度量之间的换算（`context-panel.ts` / `compaction.ts`）。
    */
   measuredInputTokens: number
   /**
-   * 发出时运行中的上下文读数：上一次回执的输入与输出加其后的本地增量，界面读数条的那个数。
-   * 面板对尚无回执的请求读它，与运行中同一把尺。NULL = 摘要请求或迁移前旧行。
+   * 发出时运行中的上下文读数：上一次回执的输入与输出加上其后的本地增量，即界面读数条显示的数值。
+   * 面板对尚无回执的请求读取该值，与运行中使用同一度量方式。NULL 表示摘要请求或迁移前旧行。
    */
   occupancyTokens: number | null
   providerInputTokens: number | null
@@ -1297,24 +1296,24 @@ export interface ProviderRequest {
   providerCachedTokens: number | null
   providerCacheWriteTokens: number | null
   /**
-   * provider 的原话（`stop` / `tool_calls` / `completed:max_output_tokens` …）。
+   * provider 返回的原始值（`stop` / `tool_calls` / `completed:max_output_tokens` …）。
    *
-   * **不是 `runs.stop_reason`。** 那一列存的是归一化之后的本仓词表，
-   * 而归一化把「说完了」和「要调工具」压成了同一批词——两者在账本上因此
-   * 分不出来。空串 = 流断在拿到终态之前，或本次迁移之前的行。
+   * 不是 `runs.stop_reason`：该列保存归一化之后的本仓库词表，
+   * 而归一化把「输出完毕」与「需要调用工具」合并为同一组值，两者在账本中因此
+   * 无法区分。空串表示流在取得终态之前中断，或本次迁移之前的行。
    */
   finishReason: string
   /** 本次请求各分组的占用。 */
   sentCategories: ContextBreakdown
-  /** 本次请求**没有**发出去的那部分原文。 */
+  /** 本次请求中未发送的原文。 */
   omittedCategories: ContextOmitted
   errorCode: string | null
-  /** provider 返回的错误正文。NULL = 没给、连接层失败，或存量请求。 */
+  /** provider 返回的错误正文。NULL 表示未返回、连接层失败或存量请求。 */
   errorMessage: string | null
-  /** 失败现场与重试裁决；NULL = 成功、迁移前记录，或进程在裁决落账前消失。 */
+  /** 失败现场与重试裁决；NULL 表示成功、迁移前记录，或进程在裁决写入账本前退出。 */
   diagnostic: ProviderRequestDiagnostic | null
   configuration: ProviderRequestConfiguration | null
-  /** 请求体指纹。用来认出「同一份内容发了两遍」。 */
+  /** 请求体指纹，用于识别同一份内容被发送了两次。 */
   payloadHash: string
   /** 模型可见请求主体的 UTF-8 字节数；不含凭证和传输头。 */
   requestBytes: number | null
@@ -1323,8 +1322,8 @@ export interface ProviderRequest {
   /**
    * 响应头到达的时刻，由传输层在 `fetch` 返回时观察。
    *
-   * 它与 `firstEventAt` 之间那一段是「远端已接单、模型还没产出」；缺了它，
-   * 连接未通与接单后等待在账本上是同一种静默。
+   * 它与 `firstEventAt` 之间的时段表示远端已接收请求、模型尚未产出；缺少该值时，
+   * 连接未建立与接收后等待在账本中无法区分。
    */
   headersAt: number | null
   /** provider 返回的第一个流事件；不含本地 request_prepared 和响应头 response_started。 */
@@ -1334,14 +1333,14 @@ export interface ProviderRequest {
   /**
    * 最后一段非空思考、正文或新增工具参数到达的时刻。
    *
-   * 「此刻静默了多久」只能由它算。`firstContentAt` 答的是另一个问题——
-   * 持续输出时它离现在越来越远，拿它当静默起点会把一次正常输出报成长时间无响应。
-   * 心跳、空 delta、响应头与用量都不推进它。NULL = 存量行或本次尚无内容。
+   * 当前静默时长只能由该值计算。`firstContentAt` 表示的是另一件事：
+   * 持续输出时它距当前时刻越来越远，以它作为静默起点会把正常输出报告为长时间无响应。
+   * 心跳、空 delta、响应头与用量都不更新该值。NULL 表示存量行或本次尚无内容。
    */
   lastContentAt: number | null
   /** 最近一段内容的类型；NULL 表示尚无内容或旧行。用于刷新后恢复运行中状态。 */
   lastContentKind: ProviderRequestContentKind | null
-  /** 最后一次真正显示到会话里的思考或正文；工具参数增量不推进它。 */
+  /** 最后一次实际显示到会话中的思考或正文的时刻；工具参数增量不更新该值。 */
   lastVisibleAt: number | null
   /** 请求进入 received / uncertain / rejected 终态的时刻。 */
   completedAt: number | null
@@ -1368,33 +1367,33 @@ export interface ProviderFailureCause {
 }
 
 /**
- * 失败时刻的传输层读数。与事件层的 `providerEvents` / `silentMs` 对照能分出：
- * 响应头没到（`status` 为 null）、服务端排队中（有保活行、字节仍在到达）、
- * 连接已死（`sinceLastByteMs` 与 `silentMs` 一样长）。
+ * 失败时刻的传输层读数。与事件层的 `providerEvents` / `silentMs` 对照可以区分：
+ * 响应头未到达（`status` 为 null）、服务端排队中（有保活行、字节仍在到达）、
+ * 连接已失效（`sinceLastByteMs` 与 `silentMs` 相等）。
  */
 export interface ProviderTransportReading {
-  /** 响应状态码；响应头没到为 null。 */
+  /** 响应状态码；响应头未到达时为 null。 */
   status: number | null
-  /** 发出到响应头到达的毫秒数；没到为 null。 */
+  /** 发出到响应头到达的毫秒数；未到达时为 null。 */
   headersAfterMs: number | null
   /**
-   * 响应头到达的绝对时刻；没到为 null。
+   * 响应头到达的绝对时刻；未到达时为 null。
    *
-   * 与 `headersAfterMs` 各答各的问题：诊断只看时长，账本那一列要的是时刻。
-   * 非 2xx 的响应头只能从这里进 `ProviderRequest.headersAt`——那条路上适配器直接抛错，
+   * 与 `headersAfterMs` 用途不同：诊断只使用时长，账本中的对应列需要时刻。
+   * 非 2xx 的响应头只能经此写入 `ProviderRequest.headersAt`：该路径上适配器直接抛错，
    * 不经过 `response_started`。
    */
   headersAt: number | null
   /** 正文累计字节数。 */
   bytes: number
-  /** 最后一个正文字节到失败时刻的毫秒数；一个字节都没收到为 null。 */
+  /** 最后一个正文字节到失败时刻的毫秒数；未收到任何字节时为 null。 */
   sinceLastByteMs: number | null
-  /** SSE 注释行（`:` 开头）条数，服务端排队时的保活。 */
+  /** SSE 注释行（以 `:` 开头）的条数，即服务端排队时的保活行。 */
   keepAliveLines: number
 }
 
 /**
- * 一次失败请求的可导出诊断。它仍属于 `provider_requests` 这一行，不另造重试状态表。
+ * 一次失败请求的可导出诊断。它属于 `provider_requests` 中的对应行，不另建重试状态表。
  */
 export interface ProviderRequestDiagnostic {
   provider?: {
@@ -1406,7 +1405,7 @@ export interface ProviderRequestDiagnostic {
   causes: ProviderFailureCause[]
   providerEvents: number | null
   silentMs: number | null
-  /** 适配器没接传输读数的路径（本地拒绝、子进程）为 null。 */
+  /** 适配器未接入传输读数的路径（本地拒绝、子进程）为 null。 */
   transport: ProviderTransportReading | null
   assistantChars: number | null
   toolCallCount: number | null
@@ -1419,8 +1418,8 @@ export interface ProviderRequestDiagnostic {
     /**
      * 退避等待开始的时刻；不重发时为 null。
      *
-     * 刷新之后的倒计时只能由它加 `backoffMs` 还原——`completedAt` 是终态落账时刻，
-     * 与等待起点不是同一件事。
+     * 刷新之后的倒计时只能由该值加 `backoffMs` 还原：`completedAt` 是终态写入账本的时刻，
+     * 与等待起点不同。
      */
     at: number | null
   }
@@ -1431,7 +1430,7 @@ export interface ProviderRequestDiagnostic {
 /**
  * 一条折叠边界。
  *
- * 排序按「先消息 id、同一条消息内再按 step 戳」。`step` 缺省表示边界只到消息
+ * 排序规则：先按消息 id，同一消息内再按 step 戳。`step` 缺省表示边界只到消息
  * 本体，该消息的执行记录不在边界以内。
  */
 export interface CompactionCut {
@@ -1446,30 +1445,30 @@ export interface CompactionManifest {
   /** 摘要线在归属消息内推进到的 step 戳。 */
   compactedThroughStep?: string
   /**
-   * 收纳线：这一条及之前的工具结果只发信封，不发正文。
+   * 收纳线：该位置及之前的工具结果只发送信封，不发送正文。
    *
-   * 不变量 **收纳线 ≥ 摘要线**，由构造点保证。缺这个键 = 与摘要线重合。
+   * 不变量：收纳线 ≥ 摘要线，由构造点保证。缺少该键表示与摘要线重合。
    */
   condensedThrough?: CompactionCut
   /**
-   * 累计被摘要替代掉的消息条数。
+   * 累计被摘要替代的消息条数。
    *
-   * 记**消息条数**，不要记成按 run 分组的步数：投影只按 `compactedThroughMessageId`
-   * 过滤，按 run 分组的那份没有任何投影消费，而前端拿它的键个数当消息数显示，
-   * 数字本身就是错的。
+   * 记录消息条数，不要记录为按 run 分组的步数：投影只按 `compactedThroughMessageId`
+   * 过滤，按 run 分组的数据没有任何投影使用，而前端把其键数当作消息数显示，
+   * 显示的数字因此错误。
    */
   compactedMessageCount: number
   summary: string
   /** 摘要保留的精确事实包（文件路径、决定、未完成项），不是自由文本。 */
   facts: CompactionFacts
   /**
-   * 这份投影落库后，下一次请求预计会占多少上下文。
+   * 该投影落库后，下一次请求预计占用的上下文。
    *
-   * 它是 manifest 的派生快照，不是第二本上下文账：`basedOnProviderRequestId`
-   * 指明它从哪一条已发送请求扣除了本次投影回收量；一旦又发出新请求，面板立即
-   * 回到逐请求账。没有 provider 真值验证过压缩后的请求，所以界面必须标成估算。
+   * 它是 manifest 的派生快照，不是第二份上下文记录：`basedOnProviderRequestId`
+   * 指明它从哪一条已发送请求中扣除了本次投影回收量；发出新请求后，面板立即
+   * 改用逐请求记录。压缩后的请求尚未经 provider 真值验证，因此界面必须标为估算。
    *
-   * 可缺是为了读取升级前已经落库的 manifest；新写入一律带上。
+   * 允许缺失是为了读取升级前已落库的 manifest；新写入一律带有该字段。
    */
   contextAfter?: {
     basedOnProviderRequestId: ProviderRequestId | null
@@ -1485,22 +1484,22 @@ export interface CompactionFacts {
   openItems: string[]
   userConstraints: string[]
   /**
-   * 被压掉那段里**落过盘的中间产物**，形如
+   * 被压缩部分中已落盘的中间产物，形如
    * `run_command npm test → rs_abc123`。
    *
-   * 不带它的话，压缩会让 sink 里那份正文变成**不可达**：登记行还在正文库里，
-   * 但模型再也不知道 `rs_abc123` 这个 id 存在过，`read_resource` 无从调起。
-   * 因此「落盘只解决不丢，读回才解决要用」这句话在压缩之后就不成立了。
+   * 缺少该字段时，压缩会使 sink 中的正文不可达：登记行仍在正文库中，
+   * 但模型无从得知 `rs_abc123` 这个 id，无法调用 `read_resource`。
+   * 落盘只保证内容不丢失，模型还需要能够重新读取才能使用；缺少该记录时，压缩后无法重新读取。
    *
-   * 只存定位事实，不存正文——正文一直在内容库里按哈希寻址。
-   * 旧 manifest 没有这个键，读出来是 `undefined`，按空处理（已落盘的是历史事实）。
+   * 只保存定位事实，不保存正文：正文始终在内容库中按哈希寻址。
+   * 旧 manifest 没有该键，读取结果为 `undefined`，按空处理（已落盘的数据是历史事实）。
    */
   resources?: string[]
   /**
-   * 按行读过的文件与读过的行段（相邻、重叠的段已合并）。
+   * 按行读取过的文件与已读取的行段（相邻、重叠的行段已合并）。
    *
-   * 摘要线越过那些读取之后，模型只剩这份记录知道读到了哪里；没有它，续读一份大文件时
-   * 会从头重读。旧 manifest 没有这个键，按空处理。
+   * 摘要线越过这些读取之后，模型只能依据该记录得知读取进度；缺少该记录时，继续读取大文件
+   * 会从头重新读取。旧 manifest 没有该键，按空处理。
    */
   filesRead?: FileReadProgress[]
 }
@@ -1509,7 +1508,7 @@ export interface FileReadProgress {
   path: string
   /** 文件总行数，取最近一次读取时的值。 */
   totalLines: number
-  /** 读过的行段 `[起, 止]`（含两端，从 1 开始），升序、互不相邻。 */
+  /** 已读取的行段 `[起, 止]`（含两端，从 1 开始），升序、互不相邻。 */
   ranges: [number, number][]
 }
 
@@ -1523,9 +1522,9 @@ export interface Workspace {
   lastOpenedAt: number
   createdAt: number
   /**
-   * 置顶时间。不存在这个键 = 没置顶。
+   * 置顶时间。不存在该键表示未置顶。
    *
-   * 存时间戳不存布尔：多个置顶项目之间也要有确定顺序（后置顶的在前）。
+   * 保存时间戳而不是布尔值：多个置顶项目之间也需要确定的顺序（后置顶的在前）。
    */
   pinnedAt?: number
 }

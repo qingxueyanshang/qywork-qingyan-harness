@@ -80,7 +80,7 @@ beforeEach(() => {
 })
 
 describe('Google 与 xAI 目录', () => {
-  test('当前生成型号均可查到，类别与参数对应原生协议', () => {
+  test('当前生成型号均已收录，类别与参数对应原生协议', () => {
     const ids = [
       'gemini-3.1-flash-lite-image',
       'gemini-3.1-flash-image',
@@ -294,7 +294,7 @@ describe('Gemini Interactions', () => {
     ])
   })
 
-  test('远端失败与空产物是终态，查询断网保留任务号', async () => {
+  test('远端失败与空产物是终态，查询时网络中断则保留任务号', async () => {
     const a = adapter('gemini_videos', 'gemini-omni-1.1-flash')
     for (const body of [
       { id: 'task-1', status: 'failed', error: { message: 'blocked' } },
@@ -330,7 +330,7 @@ describe('Gemini Interactions', () => {
     )
   })
 
-  test('URI 产物从同源文件接口带 key 下载', async () => {
+  test('URI 产物从同源文件接口携带 key 下载', async () => {
     reply = (path) =>
       path === '/video.mp4'
         ? new Response(MP4)

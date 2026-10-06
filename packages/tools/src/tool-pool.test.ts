@@ -3,8 +3,8 @@
  *
  * 覆盖范围：`tool-pool.ts` 全部。
  *
- * 锁的是**池子里的工具真的没进请求**：这一条一旦反过来，表现是账单照旧
- * 而不是报错——按需加载做了等于没做，谁都不会发现。
+ * 锁定的行为是池中的工具确实不进入请求：该行为一旦失效，结果是费用不变而不是报错，
+ * 按需加载失去作用且无人察觉。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -65,29 +65,29 @@ function pooled(names: string[]) {
 }
 
 describe('待加载池', () => {
-  test('池子里的工具不进 schemas —— 这就是省下来的那部分', () => {
+  test('池中的工具不进入 schemas：节省的正是这部分', () => {
     const { registry } = pooled(['mcp__demo__a', 'mcp__demo__b'])
     expect(registry.schemas().map((s) => s.name)).toEqual(['load_tool'])
   })
 
-  test('装入之后它出现在 schemas 里，且从清单里消失', async () => {
+  test('加载后它出现在 schemas 中，且从清单中移除', async () => {
     const { registry, pool, spec } = pooled(['mcp__demo__a', 'mcp__demo__b'])
     const out = await spec.fn({ names: ['mcp__demo__a'] }, ctx())
 
     expect(out.status).toBe('success')
     expect(registry.schemas().map((s) => s.name)).toEqual(['load_tool', 'mcp__demo__a'])
-    // 装过的不再列进尾区清单——再列一遍等于提示模型再装一次。
+    // 已加载的工具不再列入上下文末尾的清单：再次列出等于提示模型再加载一次。
     expect(pool.index().map((t) => t.name)).toEqual(['mcp__demo__b'])
   })
 
-  test('一次可以装多个', async () => {
+  test('一次可以加载多个', async () => {
     const { registry, spec } = pooled(['mcp__demo__a', 'mcp__demo__b'])
     await spec.fn({ names: ['mcp__demo__a', 'mcp__demo__b'] }, ctx())
     expect(registry.schemas().length).toBe(3)
   })
 
-  /** 会话级的事实要落会话级的存储——Session 每条消息新建一个，进程内的集合活不过它。 */
-  test('装成功才落账本，装失败不落', async () => {
+  /** 会话级的事实必须写入会话级的存储：Session 每条消息新建一个，进程内集合的生命周期不超过它。 */
+  test('加载成功才写入账本，加载失败不写入', async () => {
     const { spec, recorded } = pooled(['mcp__demo__a'])
     await spec.fn({ names: ['mcp__demo__nope'] }, ctx())
     expect(recorded).toEqual([])
@@ -97,19 +97,19 @@ describe('待加载池', () => {
   })
 
   /**
-   * 同名注册会抛，那是装配错误的信号（`registry.ts` 的第三条不变量），
-   * 不该由模型多打一次名字触发。所以 `load_tool` 自己先查。
+   * 同名注册会抛错，那是装配错误的信号（`registry.ts` 的第三条不变量），
+   * 不应由模型重复输入名称触发。因此 `load_tool` 先自行检查。
    */
-  test('已经装过的再装一次不抛，如实说它本来就在', async () => {
+  test('已加载的工具再次加载时不抛错，如实说明它已存在', async () => {
     const { spec } = pooled(['mcp__demo__a'])
     await spec.fn({ names: ['mcp__demo__a'] }, ctx())
     const again = await spec.fn({ names: ['mcp__demo__a'] }, ctx())
     expect(again.status).toBe('success')
-    expect(again.message).toContain('本来就在工具表里')
+    expect(again.message).toContain('已在工具表中')
   })
 
-  /** 只说「找不到」的话模型只能猜；给候选它下一轮就能自己修正（同 `read_skill`）。 */
-  test('名字写错时列出可加载的名字', async () => {
+  /** 只返回「未找到」时模型只能推测；给出候选后，它在下一轮即可自行修正（与 `read_skill` 相同）。 */
+  test('名称写错时列出可加载的名称', async () => {
     const { spec } = pooled(['mcp__demo__search'])
     const out = await spec.fn({ names: ['mcp__demo__serach'] }, ctx())
     expect(out.status).toBe('failure')
@@ -118,7 +118,7 @@ describe('待加载池', () => {
     expect(out.data?.notFound).toEqual(['mcp__demo__serach'])
   })
 
-  test('一半对一半错时装对的那些，并把错的说出来', async () => {
+  test('部分名称正确时加载正确的部分，并指出错误的名称', async () => {
     const { registry, spec } = pooled(['mcp__demo__a'])
     const out = await spec.fn({ names: ['mcp__demo__a', 'mcp__demo__x'] }, ctx())
     expect(out.status).toBe('success')
@@ -126,7 +126,7 @@ describe('待加载池', () => {
     expect(registry.has('mcp__demo__a')).toBe(true)
   })
 
-  test('names 为空是参数错误，不是「装了零个」', async () => {
+  test('names 为空是参数错误，不是「加载了零个」', async () => {
     const { spec } = pooled(['mcp__demo__a'])
     const out = await spec.fn({ names: [] }, ctx())
     expect(out.status).toBe('failure')
@@ -136,22 +136,22 @@ describe('待加载池', () => {
 
 describe('按量决策', () => {
   /**
-   * 阈值判的是**总量**不是个数：实测里 sequential-thinking 一个工具就 2016 token，
-   * 按个数定档会把它判成小配置。
+   * 阈值判定的是总量而不是个数：实测中 sequential-thinking 一个工具即为 2016 token，
+   * 按个数定档会把它判为小配置。
    */
-  test('一个大工具就能超预算', () => {
+  test('一个大工具即可超出预算', () => {
     const fat = fakeExternal('mcp__x__fat', 'x'.repeat(EXTERNAL_SCHEMA_BUDGET_TOKENS * 2 + 100))
     expect(externalSchemaTokens([fat], DEFAULT_DENSITY)).toBeGreaterThan(
       EXTERNAL_SCHEMA_BUDGET_TOKENS,
     )
   })
 
-  test('几个小工具还在预算内', () => {
+  test('几个小工具仍在预算内', () => {
     const small = ['a', 'b', 'c'].map((n) => fakeExternal(`mcp__demo__${n}`))
     expect(externalSchemaTokens(small, DEFAULT_DENSITY)).toBeLessThan(EXTERNAL_SCHEMA_BUDGET_TOKENS)
   })
 
-  test('空集合是 0，不是「有一点」', () => {
+  test('空集合计为 0，不估算为非零值', () => {
     expect(externalSchemaTokens([], DEFAULT_DENSITY)).toBe(0)
   })
 })

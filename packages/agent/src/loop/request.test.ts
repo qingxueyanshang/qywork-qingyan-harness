@@ -14,14 +14,13 @@ import { baseCtx, fakeAdapter, noopPersistence } from './fixtures.test-helper.ts
 
 describe('上下文分组占用', () => {
   /**
-   * 回归测试：**压缩之后 breakdown 必须跟着变**。
+   * 回归测试：压缩之后 breakdown 必须随之变化。
    *
-   * `breakdownOf` 算的是 `req.messages`，而那是 `compaction.project()` 的产物。
-   * 如果哪天有人改成「直接读 input.history」，这条会红——
-   * 而界面上的表现是：压缩生效了（模型确实看不到远期历史了），
-   * 占用面板却一动不动，界面上等同于压缩没生效，用户会反复点压缩。
+   * `breakdownOf` 计算的是 `req.messages`，即 `compaction.project()` 的产物。
+   * 改为直接读取 `input.history` 时本测试失败：压缩已生效而占用面板不变，
+   * 用户无法从界面确认压缩结果。
    */
-  test('压缩投影之后，历史那一桶让位给摘要桶', async () => {
+  test('压缩投影之后，历史分组减少、摘要分组增加', async () => {
     const registry = new ToolRegistry()
     const long = '历史正文'.repeat(200)
 
@@ -32,7 +31,7 @@ describe('上下文分组占用', () => {
         registry,
         systemPrompt: 'sys',
         persist: noopPersistence(),
-        // project() 模拟压缩：把历史换成一条 summary。这正是 RuntimeCompaction 的形状。
+        // project() 模拟压缩：将历史替换为一条 summary，与 RuntimeCompaction 的输出形状相同。
         compaction: {
           project: (history) =>
             projected
@@ -72,24 +71,24 @@ describe('上下文分组占用', () => {
     }
 
     const [before, after] = captured
-    // 未压缩：历史那一桶很大、摘要为 0。
+    // 未压缩：历史分组占用较大，摘要为 0。
     expect(before!.historyMessages).toBeGreaterThan(100)
     expect(before!.summary).toBe(0)
-    // 压缩后：摘要有了，历史那一桶塌下去。
+    // 压缩后：摘要非零，历史分组占用下降。
     expect(after!.summary).toBeGreaterThan(0)
     expect(after!.historyMessages).toBeLessThan(before!.historyMessages)
   })
 
   /**
-   * 回归测试：`context` 事件的 `breakdown` 必须是**真值**。
+   * 回归测试：`context` 事件的 `breakdown` 必须是实际计算值。
    *
-   * 「字段在、值是假的」比没有这个字段更坏：界面照着它画出来的饼图会是空的，
-   * 而没人能从界面看出那是假数据。
+   * 字段存在而值无效比缺少字段更难发现：界面据此渲染的饼图为空，
+   * 且无法从界面判断数据无效。
    *
-   * 断言的是**口径**不是具体数字：系统提示词与工具 schema 各自非零、
-   * 带 `_group` 的消息落进对应的桶、不带 `_group` 的落进 historyMessages。
+   * 断言的是计算口径而不是具体数字：系统提示词与工具 schema 各自非零、
+   * 带 `_group` 的消息计入对应分组、不带 `_group` 的计入 historyMessages。
    */
-  test('breakdown 不是七个零，且按 _group 分桶', async () => {
+  test('breakdown 不全为零，且按 _group 分组', async () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'noop',
@@ -138,7 +137,7 @@ describe('上下文分组占用', () => {
         },
         { role: 'user', content: '历史消息一', _group: 'historyMessages' },
         { role: 'assistant', content: '这是上一轮的摘要', _group: 'summary' },
-        // 不带 _group：按口径落进 historyMessages，不单开「其他」桶。
+        // 不带 _group 的消息计入 historyMessages，不另设「其他」分组。
         { role: 'user', content: '没有分组标记的消息' },
       ],
       signal: new AbortController().signal,
@@ -152,30 +151,30 @@ describe('上下文分组占用', () => {
     expect(b).toBeDefined()
 
     expect(b!.systemPrompt).toBeGreaterThan(0)
-    // 内置工具进 systemTools，不进已删的 toolSchemas；本例没有 mcp__ 工具。
+    // 内置工具计入 systemTools；本例没有 mcp__ 工具。
     expect(b!.systemTools).toBeGreaterThan(0)
     expect(b!.mcpTools).toBe(0)
     expect(b!.summary).toBeGreaterThan(0)
     expect(b!.workspaceState).toBeGreaterThan(0)
-    // 两条历史（一条带标记、一条不带）都归到 historyMessages。
+    // 两条历史消息（一条带标记、一条不带）均计入 historyMessages。
     expect(b!.historyMessages).toBeGreaterThan(0)
-    // 全零就是这条测试要挡的那个回归。
+    // 全部为零即本测试要拦截的回归。
     expect(Object.values(b!).some((v) => v > 0)).toBe(true)
-    // 桶集必须与协议恒等：多一个少一个都说明有人又另立了一套。
+    // 分组集合必须与协议定义一致：数量不同说明出现了第二套分组定义。
     expect(Object.keys(b!).sort()).toEqual([...CONTEXT_GROUPS].sort())
   })
 
   /**
-   * 回归测试：**各行加起来必须等于标题上那个数**。
+   * 回归测试：各分组之和必须等于标题显示的总数。
    *
-   * 复现的是实测形状：`tokens` 走锚定尺（provider 真值 + 一轮尾巴），`breakdown`
-   * 是本地估算，两者天然不等。live 事件不对账时，差额无声地落进「剩余空间」——
-   * 界面上各行加起来只有 36.9%，标题写着 64.2%，而那 271k 的去向没有任何一行指向它。
+   * 复现的是实测形状：`tokens` 采用锚定计量（provider 真值 + 锚点后的增量），`breakdown`
+   * 是本地估算，两者必然不等。live 事件不对账时，差额被计入「剩余空间」且没有提示：
+   * 实测界面上各分组之和为 36.9%，标题为 64.2%，相差的 271k 未归入任何分组。
    *
-   * 会话面板那侧（`runtime/context-panel.ts`）一直是对过账的，所以不对账的表现
-   * 是同一个面板两条路显示两组数：打开会话看到一组，run 一跑起来换成另一组。
+   * 会话面板（`runtime/context-panel.ts`）始终对账，因此 live 事件不对账时同一个面板
+   * 经两条路径显示两组数值：打开会话时显示一组，run 开始执行后换成另一组。
    */
-  test('锚定尺下各分组之和恒等于读数', async () => {
+  test('锚定计量下各分组之和等于读数', async () => {
     const loop = new AgentLoop({
       adapter: fakeAdapter([null]),
       registry: new ToolRegistry(),
@@ -201,7 +200,7 @@ describe('上下文分组占用', () => {
     for await (const ev of loop.run({
       runId: 'rn_reconcile' as never,
       history: [{ role: 'user', content: '继续', _group: 'historyMessages', _messageId: 'ms_9' }],
-      // 真值远大于这点历史的本地估算，差额必须被摊回可变桶而不是消失。
+      // 真值远大于该历史的本地估算，差额必须分摊到可变分组，不得丢失。
       anchor: {
         tokens: 33_000,
         throughMessageId: 'ms_8',
@@ -219,24 +218,22 @@ describe('上下文分组占用', () => {
     if (ctx?.type !== 'context') return
     expect(ctx.source).toBe('projected')
     expect(Object.values(ctx.breakdown).reduce((n, v) => n + v, 0)).toBe(ctx.tokens)
-    // 摊法是吸收不是缩放：逐字可数的固定类目保实测值，不许被差额改写。
+    // 分摊方式是吸收而不是缩放：可逐字计数的固定类目保留实测值，不得被差额改写。
     expect(ctx.breakdown.systemPrompt).toBe(estimateText('sys', DEFAULT_DENSITY))
   })
 
   /**
-   * 回归测试：**执行记录 / 工具结果的二分要同尺量**。
+   * 回归测试：执行记录与工具结果的拆分必须使用同一种估算方式。
    *
-   * 复现的形状取自实测：`write_file` 回一句「创建 src/car.js」、没有 result。
-   * 信封按 `estimateJson`（2 字符/token）量而整条按 `estimateText`（4 字符/token）
-   * 量时，信封虚高一倍，差额从正文里扣到负数、被 `Math.min` 夹成零——面板因此
-   * 读作「这次调用没带回任何正文」。同一条会话 327 次调用里 167 条是这个形状，
-   * 上面这句 summary 就是其中一种。
+   * 复现的形状取自实测：`write_file` 返回 summary「创建 src/car.js」，没有 result。
+   * 信封按 `estimateJson`（2 字符/token）估算而整条按 `estimateText`（4 字符/token）
+   * 估算时，信封估值偏高一倍，正文差额为负数并被 `Math.min` 截为零，面板因此
+   * 显示该调用没有返回正文。同一会话的 327 次调用中有 167 次是这种形状。
    *
-   * **断言落在账本上不是事件上**：事件里的 `breakdown` 已经对过账
-   * （`reconcileBreakdown`），差额会盖住二分本身。`sentCategories` 是原始估算，
-   * 也正是会话面板回头投影时读的那一份。
+   * 断言针对账本而不是事件：事件中的 `breakdown` 已经对账（`reconcileBreakdown`），
+   * 差额会掩盖拆分结果。`sentCategories` 是原始估算，也是会话面板重新投影时读取的数据。
    */
-  test('带 summary 的工具结果不会被记成没有正文', async () => {
+  test('带 summary 的工具结果不会被记为没有正文', async () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'write_file',
@@ -274,20 +271,20 @@ describe('上下文分组占用', () => {
       history: [],
       signal: new AbortController().signal,
     })) {
-      // 只看账本。
+      // 只检查账本。
     }
 
-    // 第二次请求才带着工具结果：第一次装配时那条 tool 消息还不存在。
+    // 第二次请求才包含工具结果：第一次装配时 tool 消息尚不存在。
     const b = recorded.at(-1)
     expect(recorded).toHaveLength(2)
     expect(b).toBeDefined()
-    // 信封与正文各占一部分——两个桶都不许是零。
+    // 信封与正文各占一部分，两个分组均不得为零。
     expect(b!.executionRecords).toBeGreaterThan(0)
     expect(b!.intermediateContent).toBeGreaterThan(0)
   })
 })
 
-describe('effort 传到请求上', () => {
+describe('effort 传递到请求', () => {
   function capturing(): { adapter: LlmAdapter; seen: ChatRequest[] } {
     const seen: ChatRequest[] = []
     const inner = fakeAdapter([null])
@@ -333,24 +330,30 @@ describe('effort 传到请求上', () => {
       ...(effort ? { effort } : {}),
       signal: new AbortController().signal,
     })) {
-      // 跑完即可。
+      // 执行完毕即可。
     }
     return seen
   }
 
-  test('传了就带上，且原样传', async () => {
+  test('传入时原样带上', async () => {
     expect((await runWith('max'))[0]?.effort).toBe('max')
     expect((await runWith('low'))[0]?.effort).toBe('low')
   })
 
-  /** 不传是**不带这个键**，不是带一个 undefined——省略和显式空值在协议上不等价。 */
-  test('没传就不带这个键', async () => {
+  /** 未传入时不带该键，而不是带 undefined：省略与显式空值在协议上不等价。 */
+  test('未传入时不带该键', async () => {
     const req = (await runWith())[0]!
     expect('effort' in req).toBe(false)
   })
 })
 
-describe('花费带币种', () => {
+/**
+ * 每轮的费用携带其自身的币种。
+ *
+ * 币种固定为美元不会触发任何报错：`cost` 仍是数字，界面仍能渲染，
+ * 但 ¥ 会显示为 $，金额相差约七倍。这类错误只能由此类测试拦截。
+ */
+describe('花费记录币种', () => {
   async function usageOf(model: string) {
     const loop = new AgentLoop({
       adapter: fakeAdapter([null], model),
@@ -386,25 +389,25 @@ describe('花费带币种', () => {
     return finished?.type === 'run.finished' ? finished.usage : null
   }
 
-  test('美元标价的模型记 USD', async () => {
+  test('美元标价的模型记为 USD', async () => {
     expect((await usageOf('claude-opus-5'))?.currency).toBe('USD')
   })
 
-  /** 月之暗面官网按人民币标价。目录里记的是 ¥，这一轮的花费就得是 ¥。 */
-  test('人民币标价的模型记 CNY', async () => {
+  /** 月之暗面官网按人民币标价，目录中记为 ¥，本轮花费也必须是 ¥。 */
+  test('人民币标价的模型记为 CNY', async () => {
     expect((await usageOf('kimi-k3'))?.currency).toBe('CNY')
   })
 })
 
-describe('上下文读数：一把尺', () => {
+describe('上下文读数：统一计量', () => {
   /**
-   * **跨 run 不换尺。**
+   * 跨 run 不改变计量方式。
    *
-   * 没有锚点时，每个 run 的第一次请求只能报本地估算（系统性偏低），
-   * 第二次起才切到真值——用户看到的就是每轮开头掉一次、然后弹回去。
-   * 用户实测报的「一个轮会话里上下文跳了好几次」，跨轮的那一半就是它。
+   * 没有锚点时，每个 run 的第一次请求只能报告本地估算（系统性偏低），
+   * 第二次请求起才切换到真值，读数因此在每轮开头下降一次后恢复。
+   * 用户报告的「一个轮会话里上下文跳了好几次」中，跨轮的部分由此产生。
    */
-  test('带着上一轮真值开跑，首个读数只投影新增内容', async () => {
+  test('携带上一轮真值开始执行，首个读数只投影新增内容', async () => {
     const loop = new AgentLoop({
       adapter: fakeAdapter([null]),
       registry: new ToolRegistry(),
@@ -448,7 +451,7 @@ describe('上下文读数：一把尺', () => {
     expect(ctx?.type === 'context' && ctx.tokens).toBe(33_007)
   })
 
-  test('没有锚点时如实标 estimated，不假装是实测', async () => {
+  test('没有锚点时标为 estimated，不标为实测', async () => {
     const loop = new AgentLoop({
       adapter: fakeAdapter([null]),
       registry: new ToolRegistry(),
@@ -482,7 +485,7 @@ describe('上下文读数：一把尺', () => {
     expect(ctx?.type === 'context' && ctx.source).toBe('estimated')
   })
 
-  /** 请求账记下的发出时读数就是读数条那个数：面板读它，不另算。 */
+  /** 请求账记录的发出时读数与读数条显示的值相同：面板读取该值，不另行计算。 */
   test('请求账的 occupancyTokens 与同一次请求的读数事件同值', async () => {
     const recorded: (number | undefined)[] = []
     const persist = {
@@ -520,22 +523,22 @@ describe('上下文读数：一把尺', () => {
 })
 
 /**
- * 名字不在注册表里的调用**不进执行链**。
+ * 名称不在注册表中的调用不进入执行链。
  *
- * 放它进去就会开出一条 tool step、发一条 `tool.started`，界面上多出一条没有动作、
- * 也没有执行事实的记录。注册表是工具的唯一权威：名字不在表里就是未注册调用，
+ * 进入执行链会创建一条 tool step 并发出 `tool.started`，界面上出现一条没有动作、
+ * 也没有执行事实的记录。注册表是工具的唯一权威：名称不在表中即为未注册调用，
  * 不是一种工具。
  *
- * 但结果必须回给模型：provider 的契约是每个 tool_call 都要有一条对应 id 的
- * tool 结果，少一条下一轮直接 400。
+ * 结果仍必须返回给模型：provider 要求每个 tool_call 都有一条对应 id 的
+ * tool 结果，缺少时下一轮请求返回 400。
  */
 
 describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
   /**
-   * 每一波读一张图，第三次请求体里两张都在：总量在保留上限内时图不摘，前缀不变，
-   * 模型不必重新读取。每张图跟在自己那一批回执之后的观察消息里。
+   * 每个工具批次读取一张图片，第三次请求体中两张都在：总量在保留上限内时不移除图片，
+   * 前缀不变，模型无需重新读取。每张图片位于所属批次回执之后的观察消息中。
    */
-  test('上限内每个工具波次的图都留在之后的请求体里，各自跟在本批回执之后', async () => {
+  test('上限内每个工具波次的图片保留在后续请求体中，各自位于本批回执之后', async () => {
     const bodies: Record<string, unknown>[] = []
     let requestIndex = 0
     const call = (id: string) => ({
@@ -624,7 +627,7 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
         history: [],
         signal: new AbortController().signal,
       })) {
-        // 读完整轮即可，请求体由本机端点记录。
+        // 执行完整轮即可，请求体由本机端点记录。
       }
 
       expect(bodies).toHaveLength(3)
@@ -635,7 +638,7 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
         expect(t.content).toContain('[图像 1：见本批工具结果之后的观察消息]')
         expect(String(t.content)).not.toContain('images_omitted')
       }
-      // 两张图都在，各自放在紧跟本批回执的观察消息里，不在 tool 消息里。
+      // 两张图片均在请求中，各自位于紧随本批回执的观察消息内，不在 tool 消息中。
       const observations = messages.filter((m) => m.role === 'user' && Array.isArray(m.content))
       expect(observations.map((m) => m.content)).toEqual([
         [
@@ -742,7 +745,7 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
         history: [],
         signal: new AbortController().signal,
       })) {
-        // 读完整轮即可，请求体由本机端点记录。
+        // 执行完整轮即可，请求体由本机端点记录。
       }
 
       expect(bodies).toHaveLength(2)
@@ -778,25 +781,23 @@ describe('工具图片贯穿 AgentLoop 与真实 serializer', () => {
 })
 
 /**
- * 传输断了怎么收场。
+ * 传输中断后的处理。
  *
- * 起因是一次真实断流：
- * 第 4 次请求发出后 262 秒一个字节都没回来，run 就此终结，账本里那行到现在还是
- * `in_flight`，而系统没有替用户试第二次——他只能自己把那句话重打一遍。
+ * 实测案例：第 4 次请求发出后 262 秒未收到任何字节，run 随即结束，账本中该行停留在
+ * `in_flight`，且系统未自动重发，用户只能重新输入同一条消息。
  *
- * 这一组锁三件事：**账本必须落终态**、**零输出才重发**、**重发过要说出来**。
+ * 本组锁定三项行为：账本必须写入终态；仅在零输出时重发；发生过重发时必须告知用户。
  */
 
 describe('锚点的信封校验', () => {
   /**
-   * 复现的是用户报的那种偏差：装完一个 MCP 或升一次构建之后的第一次发送，
-   * 信封换了一份而消息侧一个字没变，读数却整条掉到估算尺上——实测一条真实
-   * 占用 54.5% 的会话读作 80.0%。
+   * 复现用户报告的偏差：安装一个 MCP 或升级构建后的第一次发送，信封已变化而消息部分
+   * 未变，读数却整体改用本地估算：实测真实占用 54.5% 的会话显示为 80.0%。
    *
-   * 判据是**只换头部、不整条作废**：读数留在真值尺上，数值等于真值减旧头部
-   * 加本轮头部。换模型是另一回事，另一把尺量出来的数修正不回来。
+   * 判据是只替换头部、不整体作废：读数保持 provider 真值口径，数值等于真值减旧头部
+   * 加本轮头部。换模型时不同：另一个 tokenizer 计量的数值无法修正。
    */
-  test('信封变了只换头部，换模型才退回估算尺', async () => {
+  test('信封变化时只替换头部，换模型时才改用本地估算', async () => {
     const runOnce = async (fingerprint: string | null, model: string) => {
       const seen: { tokens: number; source: string }[] = []
       const loop = new AgentLoop({
@@ -823,17 +824,17 @@ describe('锚点的信封校验', () => {
       return seen
     }
 
-    // 空工具表下本轮头部只有冻结前缀那一段。
+    // 工具表为空时，本轮头部只包含冻结前缀。
     const head = estimateText('sys', lookupModel('claude-opus-5', 'anthropic_messages').density)
 
-    // 指纹对不上但还是同一个 tokenizer：真值仍然成立，只把头部那一段换掉。
+    // 指纹不一致但 tokenizer 相同：真值仍然有效，只替换头部。
     expect(await runOnce('not-the-current-envelope', 'claude-opus-5')).toEqual([
       { tokens: 12_345 - 5_000 + head, source: 'actual' },
       { tokens: 15, source: 'actual' },
     ])
-    // 换了模型：退回估算尺，标签如实跟着走。
+    // 换模型后改用本地估算，source 标为 estimated。
     expect((await runOnce('not-the-current-envelope', 'other-model'))[0]?.source).toBe('estimated')
-    // 没记过指纹的存量行不作为「变了」的证据，锚点原样照用。
+    // 未记录指纹的存量行不作为信封变化的证据，锚点按原值使用。
     expect(await runOnce(null, 'claude-opus-5')).toEqual([
       { tokens: 12_345, source: 'actual' },
       { tokens: 15, source: 'actual' },

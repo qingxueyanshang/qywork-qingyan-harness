@@ -10,7 +10,7 @@ import { MIN_DELIVERY_BYTES } from './sink.ts'
 
 const enc = new TextEncoder()
 
-/** 内存假 sink：只需要 read/stat，不需要真落盘。 */
+/** 内存中的模拟 sink：只需要 read/stat，无需实际写入磁盘。 */
 function memSink(body: string | Uint8Array): SinkPort {
   const raw = typeof body === 'string' ? enc.encode(body) : body
   return {
@@ -21,7 +21,7 @@ function memSink(body: string | Uint8Array): SinkPort {
   }
 }
 
-/** 正文已登记但读不出来：分片丢失、解密失败都是这个形状。 */
+/** 正文已登记但无法读取：分片丢失、解密失败均属此类。 */
 function brokenSink(sizeBytes: number): SinkPort {
   return {
     land: () => ({ resourceId: 'rs_x', contentHash: 'sha256:x' }),
@@ -57,7 +57,7 @@ interface Page {
   content: string
 }
 
-/** 沿 nextOffset 一页一页读到末尾。页不前进就直接失败，避免测试自己转不出来。 */
+/** 沿 nextOffset 逐页读取到末尾。页位置不前进时直接失败，避免测试陷入死循环。 */
 async function pageThrough(sink: SinkPort, length: number): Promise<Page[]> {
   const pages: Page[] = []
   let offset: number | null = 0
@@ -89,7 +89,7 @@ interface SearchPage {
   nextOffset: number | null
 }
 
-/** 沿 nextOffset 把同一个 query 搜到正文末尾。 */
+/** 沿 nextOffset 用同一个 query 搜索到正文末尾。 */
 async function searchThrough(sink: SinkPort, query: string, from = 0): Promise<SearchPage[]> {
   const pages: SearchPage[] = []
   let offset: number | null = from
@@ -109,13 +109,13 @@ async function searchThrough(sink: SinkPort, query: string, from = 0): Promise<S
 const byteLen = (s: string) => enc.encode(s).byteLength
 
 describe('前置校验', () => {
-  test('没有正文库时如实说，不谎称资源不存在', async () => {
+  test('没有正文库时如实报告，不误报资源不存在', async () => {
     const r = await run({ resource_id: 'rs_1' }, null)
     expect(r.status).toBe('failure')
     expect(r.errorKind).toBe('sink_unavailable')
   })
 
-  test('未知资源报 not_found', async () => {
+  test('未知资源报告 not_found', async () => {
     const r = await run({ resource_id: 'rs_nope' }, memSink('x'))
     expect(r.errorKind).toBe('resource_not_found')
   })
@@ -125,19 +125,19 @@ describe('前置校验', () => {
     expect(r.errorKind).toBe('range_out_of_bounds')
   })
 
-  test('带 query 时 offset 同样先过越界校验', async () => {
+  test('带 query 时 offset 同样先经过越界校验', async () => {
     const r = await run({ resource_id: 'rs_1', offset: 999, query: 'x' }, memSink('short'))
     expect(r.errorKind).toBe('range_out_of_bounds')
   })
 
-  test('读不出整数的 offset 报 invalid_args', async () => {
+  test('无法解析为整数的 offset 报告 invalid_args', async () => {
     const r = await run({ resource_id: 'rs_1', offset: '1,4000' }, memSink('short'))
     expect(r.errorKind).toBe('invalid_args')
   })
 })
 
 describe('分段读取', () => {
-  test('返回 nextOffset 供继续读', async () => {
+  test('返回 nextOffset 供继续读取', async () => {
     const r = await run({ resource_id: 'rs_1', offset: 0, length: 5 }, memSink('0123456789'))
     expect(r.status).toBe('success')
     expect(r.data!.offset).toBe(0)
@@ -145,25 +145,25 @@ describe('分段读取', () => {
     expect(r.data!.content).toBe('01234')
   })
 
-  test('读到末尾时 nextOffset 为 null', async () => {
+  test('读取到末尾时 nextOffset 为 null', async () => {
     const r = await run({ resource_id: 'rs_1', offset: 5, length: 100 }, memSink('0123456789'))
     expect(r.data!.nextOffset).toBeNull()
     expect(r.data!.content).toBe('56789')
   })
 
-  test('位置信息出现在 message 里 —— 模型读的是 message', async () => {
+  test('位置信息出现在 message 中：模型读取的是 message', async () => {
     const r = await run({ resource_id: 'rs_1', offset: 0, length: 3 }, memSink('0123456789'))
     expect(r.message).toContain('offset=3')
   })
 
-  test('中文与 emoji 按 4 字节一页读完，拼回逐字相等', async () => {
+  test('中文与 emoji 按每页 4 字节读完，拼接后逐字相等', async () => {
     const body = '甲乙丙🙂丁'
     const pages = await pageThrough(memSink(body), 4)
     expect(pages.map((p) => p.content).join('')).toBe(body)
     for (const page of pages) expect(page.content).not.toContain('�')
   })
 
-  test('一页只给 1 字节也必须前进，且不切开码点', async () => {
+  test('每页只有 1 字节时也必须前进，且不切开码点', async () => {
     const body = '甲乙丙🙂丁'
     const pages = await pageThrough(memSink(body), 1)
     expect(pages.map((p) => p.content).join('')).toBe(body)
@@ -171,7 +171,7 @@ describe('分段读取', () => {
     for (const page of pages) expect(page.content).not.toContain('�')
   })
 
-  test('组合字符逐页读回也逐字相等', async () => {
+  test('组合字符逐页读取后同样逐字相等', async () => {
     const body = 'éà 中́🙂\u{1F469}‍\u{1F680}'
     for (const length of [1, 2, 3, 4, 5]) {
       const pages = await pageThrough(memSink(body), length)
@@ -180,14 +180,14 @@ describe('分段读取', () => {
     }
   })
 
-  test('起点落在码点中间：回报对齐后的实际起点，不产生替换符', async () => {
+  test('起点落在码点中间：返回对齐后的实际起点，不产生替换符', async () => {
     const r = await run({ resource_id: 'rs_1', offset: 1, length: 100 }, memSink('甲乙'))
     expect(r.data!.offset).toBe(3)
     expect(r.data!.content).toBe('乙')
     expect(r.data!.content).not.toContain('�')
   })
 
-  test('续读的实际起点就是上一页的 nextOffset', async () => {
+  test('续读的实际起点即上一页的 nextOffset', async () => {
     const body = '中文abc🙂尾'
     const sink = memSink(body)
     const first = await run({ resource_id: 'rs_1', offset: 0, length: 5 }, sink)
@@ -199,7 +199,7 @@ describe('分段读取', () => {
     expect(body.startsWith(`${first.data!.content}${second.data!.content}`)).toBe(true)
   })
 
-  test('二进制正文不死循环也不抛错', async () => {
+  test('二进制正文不陷入死循环，也不抛出错误', async () => {
     const bytes = new Uint8Array(300)
     for (let i = 0; i < bytes.length; i++) bytes[i] = 0x80 + (i % 0x80)
     const pages = await pageThrough(memSink(bytes), 3)
@@ -207,7 +207,7 @@ describe('分段读取', () => {
     expect(pages[pages.length - 1]!.nextOffset).toBeNull()
   })
 
-  test('正文读不出来时报读失败', async () => {
+  test('正文无法读取时报告读取失败', async () => {
     const r = await run({ resource_id: 'rs_1', offset: 0, length: 10 }, brokenSink(1000))
     expect(r.status).toBe('failure')
     expect(r.errorKind).toBe('resource_read_failed')
@@ -217,7 +217,7 @@ describe('分段读取', () => {
 describe('query 搜索', () => {
   const doc = Array.from({ length: 200 }, (_, i) => `line ${i + 1}: payload`).join('\n')
 
-  test('一次调用直接定位到目标行，不必猜偏移', async () => {
+  test('一次调用直接定位到目标行，无需推测偏移', async () => {
     const r = await run({ resource_id: 'rs_1', query: 'line 137:' }, memSink(doc))
     expect(r.status).toBe('success')
     const hits = r.data!.hits as Hit[]
@@ -227,7 +227,7 @@ describe('query 搜索', () => {
     expect(r.data!.nextOffset).toBeNull()
   })
 
-  test('命中的字节偏移指向命中处 —— 拿它当 offset 读到的就是命中', async () => {
+  test('命中的字节偏移指向命中处：以它作为 offset 读取的内容即为命中', async () => {
     const sink = memSink(doc)
     const r = await run({ resource_id: 'rs_1', query: 'line 88:' }, sink)
     const hit = (r.data!.hits as Hit[])[0]!
@@ -235,7 +235,7 @@ describe('query 搜索', () => {
     expect(back.data!.content).toBe('line 88: payload')
   })
 
-  test('中文正文的命中偏移按 UTF-8 算，且指向命中处而不是行首', async () => {
+  test('中文正文的命中偏移按 UTF-8 计算，且指向命中处而不是行首', async () => {
     const sink = memSink('第一行\n第二行目标\n第三行')
     const r = await run({ resource_id: 'rs_1', query: '目标' }, sink)
     const hit = (r.data!.hits as Hit[])[0]!
@@ -245,20 +245,20 @@ describe('query 搜索', () => {
     expect(back.data!.content).toBe('目标')
   })
 
-  test('没命中是成功不是失败 —— 「确实不在里面」是有效结论', async () => {
+  test('未命中是成功而不是失败：「确实不包含」是有效结论', async () => {
     const r = await run({ resource_id: 'rs_1', query: '不存在的关键字' }, memSink(doc))
     expect(r.status).toBe('success')
     expect(r.data!.hits).toHaveLength(0)
     expect(r.data!.nextOffset).toBeNull()
   })
 
-  test('预算够时一页给全，nextOffset 为 null', async () => {
+  test('预算充足时一页返回全部命中，nextOffset 为 null', async () => {
     const r = await run({ resource_id: 'rs_1', query: 'payload' }, memSink(doc))
     expect(r.data!.hits).toHaveLength(200)
     expect(r.data!.nextOffset).toBeNull()
   })
 
-  test('message 只报数量和位置，不重印命中正文', async () => {
+  test('message 只报告数量与位置，不重复列出命中正文', async () => {
     const r = await run({ resource_id: 'rs_1', query: 'line 137:' }, memSink(doc))
     expect(r.message).toContain('命中 1 行')
     expect(r.message).not.toContain('payload')
@@ -273,7 +273,7 @@ describe('query 搜索', () => {
   })
 
   test('控件表的命中返回整条记录，可直接解析，不从中间切开', async () => {
-    // 落盘控件表的形状：第一行元数据，之后一行一个控件；命中的“账号”在记录中段。
+    // 落盘控件表的格式：第一行为元数据，之后每行一个控件；命中的“账号”位于记录中段。
     const record = {
       ref: 'e244',
       parentRef: 'e230',
@@ -299,7 +299,7 @@ describe('query 搜索', () => {
     expect(JSON.parse(hits[0]!.text)).toEqual(record)
   })
 
-  test('单行超过整页预算：只给命中附近的片段并标明，从 lineOffset 读得回整行', async () => {
+  test('单行超过整页预算：只返回命中附近的片段并加以标明，从 lineOffset 可读取整行', async () => {
     const long = `{"pad":"${'p'.repeat(20_000)}","target":"针"}`
     const sink = memSink(`前一行\n${long}\n后一行`)
     const r = await run({ resource_id: 'rs_1', query: '"target"' }, sink)
@@ -314,7 +314,7 @@ describe('query 搜索', () => {
     expect(String(whole.data!.content).startsWith('{"pad"')).toBe(true)
   })
 
-  test('整行装不下本页剩余预算时留到下一页，不切成片段', async () => {
+  test('本页剩余预算无法容纳整行时留到下一页，不切成片段', async () => {
     const line = (i: number) => `${'x'.repeat(6000)}hit-${i}`
     const pages = await searchThrough(memSink([line(1), line(2), line(3)].join('\n')), 'hit-')
     const all = pages.flatMap((p) => p.hits)
@@ -323,8 +323,8 @@ describe('query 搜索', () => {
     expect(pages.length).toBeGreaterThan(1)
   })
 
-  test('跨扫描步长边界的中文与 emoji 照样命中，偏移不偏', async () => {
-    // 分片步长 256 KB：让 emoji 的四个字节压在 262144 上。
+  test('跨扫描步长边界的中文与 emoji 同样命中，偏移准确', async () => {
+    // 分片步长 256 KB：使 emoji 的四个字节跨越 262144 边界。
     const filler = `${'g'.repeat(262_140)}\n`
     expect(byteLen(filler)).toBe(262_141)
     const sink = memSink(`${filler}A🙂中NEEDLE\n尾行`)
@@ -338,16 +338,16 @@ describe('query 搜索', () => {
     expect(back.data!.content).toBe('NEEDLE')
   })
 
-  test('正文读不出来时报读失败，不报成没有找到', async () => {
+  test('正文无法读取时报告读取失败，不报告为未找到', async () => {
     const r = await run({ resource_id: 'rs_1', query: 'x' }, brokenSink(1000))
     expect(r.status).toBe('failure')
     expect(r.errorKind).toBe('resource_read_failed')
-    expect(r.message).not.toContain('没有找到')
+    expect(r.message).not.toContain('未找到')
   })
 })
 
 describe('query 跨页续查', () => {
-  // 240 行，偶数行命中；每条命中两侧都有内容，单页输出量装不下 120 条。
+  // 240 行，偶数行命中；每条命中两侧都有内容，单页输出量无法容纳 120 条。
   const lines = Array.from({ length: 240 }, (_, i) =>
     i % 2 === 1
       ? `${'a'.repeat(250)}hit-${i + 1}-mark${'b'.repeat(250)}`
@@ -366,7 +366,7 @@ describe('query 跨页续查', () => {
     expect(new Set(all.map((h) => h.offset)).size).toBe(120)
   })
 
-  test('每一页都从上一页的续查位置开始，命中正文里带着自己的行号', async () => {
+  test('每一页都从上一页的续查位置开始，命中正文中包含各自的行号', async () => {
     const pages = await searchThrough(memSink(doc), 'hit-')
     for (const [i, page] of pages.entries()) {
       if (i > 0) expect(page.offset).toBe(pages[i - 1]!.nextOffset as number)
@@ -374,7 +374,7 @@ describe('query 跨页续查', () => {
     }
   })
 
-  test('offset 真正生效：从中途开始只回它之后的命中，行号仍是全文口径', async () => {
+  test('offset 生效：从中途开始只返回其后的命中，行号仍按全文计算', async () => {
     const from = lineStart(200)
     const pages = await searchThrough(memSink(doc), 'hit-', from)
     const all = pages.flatMap((p) => p.hits)
@@ -383,13 +383,13 @@ describe('query 跨页续查', () => {
     expect(all.map((h) => h.line)).toEqual(expectedLines.filter((n) => n >= 200))
   })
 
-  test('单页装不下时 message 给出续查位置', async () => {
+  test('单页无法容纳时 message 给出续查位置', async () => {
     const r = await run({ resource_id: 'rs_1', query: 'hit-' }, memSink(doc))
     expect(r.data!.nextOffset).not.toBeNull()
     expect(r.message).toContain(`offset=${r.data!.nextOffset}`)
   })
 
-  test('单条命中超过整页预算也照样投递，不返回空页', async () => {
+  test('单条命中超过整页预算时仍然投递，不返回空页', async () => {
     const needle = 'n'.repeat(20_000)
     const pages = await searchThrough(memSink(`${needle}\n${needle}`), needle)
     expect(pages).toHaveLength(2)
@@ -405,14 +405,14 @@ describe('按本次决策的投递额度分页', () => {
   })
   const body = `${'甲'.repeat(20_000)}尾部标记`
 
-  test('不传 length 时读到末尾', async () => {
+  test('不传 length 时读取到末尾', async () => {
     const r = await readResourceTool.fn({ resource_id: 'rs_1' }, withRoom(memSink(body), 1_000_000))
     const page = r.data as unknown as Page
     expect(page.content).toBe(body)
     expect(page.nextOffset).toBeNull()
   })
 
-  test('余额不够时只返回装得下的一页，沿 nextOffset 续读不重不漏', async () => {
+  test('余额不足时只返回可容纳的一页，沿 nextOffset 续读不重不漏', async () => {
     const sink = memSink(body)
     const first = await readResourceTool.fn({ resource_id: 'rs_1' }, withRoom(sink, 5_000))
     const page = first.data as unknown as Page

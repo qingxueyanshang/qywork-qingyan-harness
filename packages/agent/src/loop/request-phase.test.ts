@@ -1,10 +1,10 @@
 /**
  * 覆盖范围：`loop/attempt.ts` 发出的 `run.request` / `run.retrying` 两条阶段事件的字段与顺序，
- * 以及 `provider_requests.last_content_at` 的推进判据（`markRequestContent` 那条路）。
+ * 以及 `provider_requests.last_content_at` 的推进判据（经由 `markRequestContent`）。
  * 故障端点来自 `@qywork/ai` 的 `providers/fault-server.test-helper.ts`。
  *
- * 走真实 `@qywork/store`：断言问的是「事件里那个 requestId 与账本那一行对不对得上」，
- * 用替身答不了。step 相关的钩子按空实现，它们不在本文件的范围内。
+ * 使用真实的 `@qywork/store`：断言检查事件中的 requestId 与账本记录行是否一致，
+ * 用替身无法验证。step 相关的钩子为空实现，不在本文件的范围内。
  */
 
 import { expect, test } from 'bun:test'
@@ -124,7 +124,7 @@ async function runAgainst(led: Ledger, baseUrl: string): Promise<AgentEvent[]> {
     makeToolContext: baseCtx,
     persist: led.persist,
     streamIdleTimeoutMs: 2_000,
-    // 退避按夹具给的 Retry-After 记进事件，但不真等：本文件问的是字段，不是时长。
+    // 退避时长按夹具给出的 Retry-After 写入事件，但不实际等待：本文件断言的是字段，不是时长。
     sleep: async () => {},
   })
   const events: AgentEvent[] = []
@@ -156,8 +156,8 @@ test('退避重发的阶段事件：退避 → 发出 → 响应头 → 内容�
             : 'content',
       )
     /*
-     * 被回绝那一次没有 `headers` 阶段：非 2xx 由适配器直接抛错，走不到
-     * `response_started`。界面因此在退避之前停在「正在请求…」。
+     * 被拒绝的请求没有 `headers` 阶段：非 2xx 响应由适配器直接抛错，不会产生
+     * `response_started`。界面因此在退避之前停留在「正在请求…」。
      */
     expect(phases).toEqual(['sent:0/5', 'backoff:1/5', 'sent:1/5', 'headers:1/5', 'content'])
 
@@ -170,7 +170,7 @@ test('退避重发的阶段事件：退避 → 发出 → 响应头 → 内容�
     const retrying = events.find((e) => e.type === 'run.retrying')
     expect(retrying?.type).toBe('run.retrying')
     if (retrying?.type !== 'run.retrying') throw new Error('缺少 run.retrying')
-    // 上游给了 Retry-After 60，事件与诊断里记的就是这个数，不是本地退避基准。
+    // 上游返回 Retry-After 60 时，事件与诊断中记录该值，不记录本地退避基准。
     expect(retrying.backoffMs).toBe(60_000)
     expect(retrying.requestId).toBe(rows[0]!.id)
     expect(retrying.at).toBeGreaterThanOrEqual(rows[0]!.sentAt!)
@@ -181,13 +181,13 @@ test('退避重发的阶段事件：退避 → 发出 → 响应头 → 内容�
       at: retrying.at,
     })
 
-    // 界面拿到的内容时刻与账本那一列是同一个值，刷新前后因此算得出同一个间隔。
+    // 界面取得的内容时刻与账本对应列的值相同，因此刷新前后计算出的间隔一致。
     const delta = events.find((e) => e.type === 'text.delta')
     if (delta?.type !== 'text.delta') throw new Error('缺少 text.delta')
     expect(delta.at).toBe(rows[1]!.lastContentAt!)
     expect(rows[1]!.lastContentKind).toBe('text')
     expect(rows[1]!.lastVisibleAt).toBe(delta.at)
-    // 被回绝的那一行一个字都没收到，内容时刻两列都空。
+    // 被拒绝的请求行未收到任何内容，两个内容时刻列均为空。
     expect(rows[0]!.firstContentAt).toBeNull()
     expect(rows[0]!.lastContentAt).toBeNull()
   } finally {
@@ -196,7 +196,7 @@ test('退避重发的阶段事件：退避 → 发出 → 响应头 → 内容�
   }
 }, 30_000)
 
-test('未完成工具参数只推进内容时刻，不冒充可见正文', async () => {
+test('未完成的工具参数只推进内容时刻，不计为可见正文', async () => {
   const fault: FaultServer = startFaultServer('truncated_tool_call')
   const led = ledger()
   try {
@@ -212,7 +212,7 @@ test('未完成工具参数只推进内容时刻，不冒充可见正文', async
   }
 }, 30_000)
 
-test('保活行不推进内容时刻，首值留在 first_content_at、末值落在 last_content_at', async () => {
+test('保活行不推进内容时刻，首值记入 first_content_at、末值记入 last_content_at', async () => {
   const fault: FaultServer = startFaultServer('keepalive_then_ok')
   const led = ledger()
   try {
@@ -223,8 +223,8 @@ test('保活行不推进内容时刻，首值留在 first_content_at、末值落
     expect(row.firstContentAt).toBe(led.contentMarks[0]!)
     expect(row.lastContentAt).toBe(led.contentMarks.at(-1)!)
     /*
-     * 夹具先发 5 行 `: ping`（每行间隔 80 ms）再发正文。保活行要是算内容，
-     * 首内容时刻会落在响应头后的头几十毫秒里，这条断言随即变红。
+     * 夹具先发送 5 行 `: ping`（每行间隔 80 ms），再发送正文。若保活行计为内容，
+     * 首内容时刻会位于响应头之后的数十毫秒内，本断言随即失败。
      */
     expect(row.firstContentAt! - row.headersAt!).toBeGreaterThanOrEqual(300)
   } finally {

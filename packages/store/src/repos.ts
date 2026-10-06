@@ -1,8 +1,8 @@
 /**
  * 账本读写。
  *
- * 每个函数都是「一次完整的事实变更」，不暴露裸 SQL 给上层——账本的一致性规则
- * （step 原地更新、usage 累加口径、run 终态唯一）必须集中在这里，散到调用方就守不住。
+ * 每个函数完成一次完整的事实变更，不向上层暴露 SQL：账本的一致性规则
+ * （step 原地更新、usage 累加口径、run 终态唯一）必须集中在此处，分散到调用方后无法保证。
  */
 
 import { resolve } from 'node:path'
@@ -80,24 +80,24 @@ const EMPTY_USAGE: RunUsage = {
 /**
  * 工作区根路径的落盘形式：绝对路径 + 本平台分隔符。
  *
- * `root_path` 是 UNIQUE，但比较按字符串做。Windows 上同一个目录写成 `C:/x/ws` 与
- * `C:\x\ws` 会各建一行，同一个目录下的会话因此分裂成两个项目。**写入与按根查找
- * 都必须先过这里**，`schedules.ts` 的 `workspace_root` 同用这一份。
+ * `root_path` 有 UNIQUE 约束，但按字符串比较。Windows 上同一目录写成 `C:/x/ws` 与
+ * `C:\x\ws` 会各建一行，该目录下的会话因此分属两个项目。写入与按根目录查找
+ * 都必须先经过本函数，`schedules.ts` 的 `workspace_root` 使用同一函数。
  *
- * 边界：不查文件系统。符号链接、盘符大小写、8.3 短名不在归一范围内。
+ * 边界：不访问文件系统。符号链接、盘符大小写、8.3 短名不在规范化范围内。
  */
 export function normalizeWorkspaceRoot(rootPath: string): string {
   return resolve(rootPath)
 }
 
 /**
- * 没有就插一行，有就更新 `last_opened_at` 与名字。
+ * 不存在时插入一行，已存在时更新 `last_opened_at` 与名称。
  *
- * 一条语句完成：不要拆成先 SELECT 再 INSERT。同一目录第一次被两个进程同时打开时，
- * 两边都查到「没有」，后插的那个撞 `root_path` 的 UNIQUE，启动当场失败。
+ * 用一条语句完成，不要拆成先 SELECT 再 INSERT：同一目录首次被两个进程同时打开时，
+ * 两个进程都查询到不存在，后插入的一方触发 `root_path` 的 UNIQUE 冲突，启动随即失败。
  *
- * `removed_at` 一并清掉：重新添加一个移除过的路径就是「把它加回来」，
- * 它的会话随之回到列表——那些数据从来没被删过（见 `removeWorkspace`）。
+ * `removed_at` 一并清空：重新添加已移除的路径即恢复该项目，
+ * 其会话随之回到列表，这些数据从未删除（见 `removeWorkspace`）。
  */
 export function upsertWorkspace(store: Store, rootPath: string, name: string): Workspace {
   const now = Date.now()
@@ -109,22 +109,21 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
        RETURNING *`,
     )
     .get(newWorkspaceId(), name, normalizeWorkspaceRoot(rootPath), now, now)
-  if (!row) throw new Error('[qywork] 写入工作区没有返回行')
+  if (!row) throw new Error('[qywork] 写入工作区未返回行')
   return rowToWorkspace(row)
 }
 
 /**
- * 侧栏里的顺序：**置顶的在前，其余按添加先后**。已移除的不在其中。
+ * 侧栏中的顺序：置顶的项目在前，其余按添加顺序排列。不含已移除的项目。
  *
- * **不按「最近打开」排。** 那样切一次项目它就跳到最前，而置顶已经是一个显式按钮——
- * 自动重排等于把那个按钮的语义抢掉，代价是列表在用户眼皮底下来回跳，
- * 上一秒点的位置下一秒是另一个项目。
+ * 不按最近打开时间排序：按该时间排序时，每次切换都会把项目移到最前，
+ * 与显式的置顶按钮作用重叠，且列表位置随切换变化，同一点击位置会对应不同项目。
  *
- * `pinned_at IS NULL` 作为第一排序键：SQLite 里 false(0) 排在 true(1) 前，
- * 所以这一条把「有置顶时间的」提到最上面，再按置顶时间倒序（后置顶的更靠前）。
+ * `pinned_at IS NULL` 作为第一排序键：SQLite 中 false(0) 排在 true(1) 之前，
+ * 因此有置顶时间的项目排在最前，其间按置顶时间倒序（后置顶的在前）。
  *
- * 「哪个是最近打开的」由 `mostRecentWorkspace` 单独回答——那是**启动挂哪儿**的
- * 判据，和**显示顺序**不是一件事，合用一条查询就是这次跳动的根因。
+ * 最近打开的项目由 `mostRecentWorkspace` 单独查询：它决定启动时打开哪个项目，
+ * 与显示顺序是两个问题，合用一条查询会使列表顺序随切换变化。
  */
 export function listWorkspaces(store: Store): Workspace[] {
   return store.db
@@ -137,11 +136,11 @@ export function listWorkspaces(store: Store): Workspace[] {
 }
 
 /**
- * 最近打开的那个项目。**启动挂哪儿**用它，不是显示顺序。
+ * 最近打开的项目。用于确定启动时打开哪个项目，不用于显示顺序。
  *
- * 与 `listWorkspaces` 分开：显示顺序要稳定（不能切一次就重排），
- * 而「上次在用哪个」必须跟着 `last_opened_at` 走。一条查询同时担两个职责，
- * 就会出现「为了让启动记得住，列表只好跟着跳」。
+ * 与 `listWorkspaces` 分开：显示顺序必须稳定，不随切换重排；
+ * 上次使用的项目必须按 `last_opened_at` 确定。一条查询同时承担两个职责时，
+ * 为记住启动项目，列表顺序也会随切换变化。
  */
 export function mostRecentWorkspace(store: Store): Workspace | null {
   const row = store.db
@@ -156,8 +155,8 @@ export function mostRecentWorkspace(store: Store): Workspace | null {
 /**
  * 置顶 / 取消置顶。
  *
- * 幂等：已经是目标状态时返回 false，由调用方回 404 之外的处理——
- * 和 `removeWorkspace` 同一条纪律，静默当成功则界面显示已生效，刷新后又回到原状。
+ * id 不存在或已处于目标状态时返回 false，由调用方返回 404。
+ * 与 `removeWorkspace` 的约定相同：静默视为成功时，界面显示已生效，刷新后恢复原状。
  */
 export function setWorkspacePinned(store: Store, id: WorkspaceId, pinned: boolean): boolean {
   const sql = pinned
@@ -168,10 +167,10 @@ export function setWorkspacePinned(store: Store, id: WorkspaceId, pinned: boolea
 }
 
 /**
- * 按路径找那一行。**不过滤 `removed_at`**——移除过的也要找得到。
+ * 按路径查找工作区行。不过滤 `removed_at`：已移除的项目也必须能查到。
  *
- * 存在的理由：`upsertWorkspace` 会覆盖名字，而「切到另一个项目」走的是同一条
- * upsert。不先查一次的话，每切一次就把用户自己起的项目名重置成目录名。
+ * 用途：`upsertWorkspace` 会覆盖名称，而切换项目使用同一个
+ * upsert。不先查询时，每次切换都会把用户设置的项目名重置为目录名。
  */
 export function getWorkspaceByPath(store: Store, rootPath: string): Workspace | null {
   const row = store.db
@@ -188,10 +187,10 @@ export function getWorkspace(store: Store, id: WorkspaceId): Workspace | null {
 }
 
 /**
- * 这个项目下有几条会话——**口径与 `listConversations` 完全一致**。
+ * 项目下的会话数，统计口径与 `listConversations` 完全一致。
  *
- * 同样只数用户会话、同样排除已归档的。两处口径必须一样：卡片上写「111 个任务」
- * 而列表里一条都没有，用户只会认为列表坏了。
+ * 只统计用户会话，并排除已归档的会话。两处口径必须一致：卡片显示「111 个任务」
+ * 而列表为空时，用户会认为列表出错。
  */
 export function countConversations(store: Store, id: WorkspaceId): number {
   const row = store.db
@@ -204,21 +203,21 @@ export function countConversations(store: Store, id: WorkspaceId): number {
 }
 
 /**
- * 把一个项目从列表里移除。**数据一条不动。**
+ * 将项目从列表中移除，不修改任何数据。
  *
- * 打 `removed_at` 标记，不 `DELETE`。行必须留下：`conversations.workspace_id` 是
- * `ON DELETE CASCADE`，而 `workspaceOf` 要 join 这一行才答得出「这条会话跑在哪个根」
- * ——删了行，它的会话就成了永远打不开的孤儿。
+ * 写入 `removed_at` 标记，不执行 `DELETE`。该行必须保留：`conversations.workspace_id` 是
+ * `ON DELETE CASCADE`，且 `workspaceOf` 需要 join 该行才能确定会话在哪个根目录下运行；
+ * 删除该行后，其会话将无法打开。
  *
- * 所以移除只改「列表里显不显示」（`listWorkspaces` 过滤它），不改「能不能读回来」
- * （`workspaceOf` / `getWorkspace` 不过滤）。重新添加同一个路径就整个回来：
- * `root_path` 是 UNIQUE，`upsertWorkspace` 命中同一行并清掉这个标记。
+ * 因此移除只影响列表中是否显示（`listWorkspaces` 过滤该行），不影响读取
+ * （`workspaceOf` / `getWorkspace` 不过滤）。重新添加同一路径即完整恢复：
+ * `root_path` 有 UNIQUE 约束，`upsertWorkspace` 命中同一行并清除该标记。
  *
- * `usage_ledger` 本来就不受影响：它刻意没有外键，「这个月花了多少」不该因为项目
- * 从列表里消失而少一笔（理由写在 `schema.ts` 第 3 条迁移里）。
+ * `usage_ledger` 不受影响：该表有意不设外键，本月花费不应因项目
+ * 从列表中移除而减少（理由见 `schema.ts` 第 3 条迁移）。
  *
- * 返回是否真的改动了一行。id 不存在、或它已经是移除状态时返回 false，
- * 由调用方回 404——静默当成功则界面显示已移除，刷新之后它又出现。
+ * 返回是否实际改动了一行。id 不存在或已处于移除状态时返回 false，
+ * 由调用方返回 404：静默视为成功时，界面显示已移除，刷新后该项目重新出现。
  */
 export function removeWorkspace(store: Store, id: WorkspaceId): boolean {
   return (
@@ -229,14 +228,14 @@ export function removeWorkspace(store: Store, id: WorkspaceId): boolean {
 }
 
 /**
- * 这条会话跑在哪个目录下。
+ * 会话运行所在的目录。
  *
- * **这是「哪个根」的唯一权威。** 服务进程不许自己拿一个 `workspaceRoot` 常量
- * （启动时的 `--cwd`）：那样一个进程只服务得了一个项目，换项目只能重启，
- * 而那个常量本身就是这两张表的一份缓存。
+ * 本函数是会话根目录的唯一权威。服务进程不得自行持有 `workspaceRoot` 常量
+ * （启动时的 `--cwd`）：否则一个进程只能服务一个项目，切换项目必须重启，
+ * 且该常量本身就是这两张表的一份缓存。
  *
- * 查不到返回 `null`，**调用方必须停下来**：回落到某个默认根等于拿着 A 项目的
- * 会话去 B 项目的目录里跑命令，而工具的路径约束正是以这个根为边界的。
+ * 未查到时返回 `null`，调用方必须停止：回退到默认根目录等于让 A 项目的
+ * 会话在 B 项目的目录中运行命令，而工具的路径约束正是以该根目录为边界。
  */
 export function workspaceOf(store: Store, id: ConversationId): Workspace | null {
   const row = store.db
@@ -255,13 +254,13 @@ export function createConversation(
   store: Store,
   input: {
     workspaceId: WorkspaceId
-    /** 接口名。与 `model` 一对，建会话时就定死，不留给下游去猜。 */
+    /** 接口名。与 `model` 成对，创建会话时即确定，不交给下游推测。 */
     provider: string
     model: string
     title?: string
     source?: Conversation['source']
     sourceRef?: string
-    /** 派活建子会话时必须给：归属只在建的时候写得对，事后从任何地方都推不回来。 */
+    /** 派发任务创建子会话时必须提供：归属只能在创建时正确写入，事后无法从任何来源推导。 */
     parentConversationId?: ConversationId
     externalSession?: string
   },
@@ -306,7 +305,7 @@ export function createConversation(
   return conv
 }
 
-/** 外部 CLI 子 agent 跑完一次回报的会话句柄，下一次续接交回给它。 */
+/** 外部 CLI 子 agent 每次执行后返回的会话句柄，下一次续接时传回给它。 */
 export function setConversationExternalSession(
   store: Store,
   id: ConversationId,
@@ -315,7 +314,7 @@ export function setConversationExternalSession(
   store.db.query('UPDATE conversations SET external_session = ? WHERE id = ?').run(session, id)
 }
 
-/** 这条会话派出去的那些子会话，按建立时间。顶层会话没有子会话时是空数组。 */
+/** 该会话派发的子会话，按创建时间排序。没有子会话时返回空数组。 */
 export function listChildConversations(store: Store, id: ConversationId): Conversation[] {
   return store.db
     .query<ConversationRow, [string]>(
@@ -335,16 +334,16 @@ export function getConversation(store: Store, id: ConversationId): Conversation 
 /**
  * 跨工作区的最近会话。
  *
- * `listConversations` 要工作区 id，那是界面用的——界面永远开在某个工作区里。
- * CLI 不是：`qy export` 可能在任何目录下跑，而账本是全局一份，
- * 用户想导的很可能是别的工作区里那个会话。要求它先切目录才能列出来，是把
- * 数据模型的形状强加给使用方式。
+ * `listConversations` 需要工作区 id，供界面使用：界面始终打开某个工作区。
+ * CLI 不同：`qy export` 可能在任意目录下运行，而账本全局只有一份，
+ * 用户要导出的会话可能属于其他工作区。要求先切换目录才能列出，
+ * 是让使用方式迁就数据模型。
  */
 export function listRecentConversations(store: Store, limit = 20): Conversation[] {
   return store.db
     .query<ConversationRow, [number]>(
-      // `source IS NULL` = 用户会话；编排产生的机器会话不列，
-      // 与 listConversations 用同一条判据（不是另发明一个 kind 列）。
+      // `source IS NULL` 表示用户会话；不列出编排产生的机器会话，
+      // 与 listConversations 使用同一判据，不另设 kind 列。
       `SELECT * FROM conversations WHERE source IS NULL
        ORDER BY updated_at DESC, id DESC LIMIT ?`,
     )
@@ -355,14 +354,14 @@ export function listRecentConversations(store: Store, limit = 20): Conversation[
 export function listConversations(store: Store, workspaceId: WorkspaceId): Conversation[] {
   return store.db
     .query<ConversationRow, [string]>(
-      // 只列用户会话：编排产生的机器会话不进会话列表，
-      // 它们由父会话的协作视图展示。
+      // 只列出用户会话：编排产生的机器会话不进入会话列表，
+      // 由父会话的协作视图展示。
       //
-      // 已归档的也不列（`archived_at IS NULL`）。归档只改「显不显示」，
-      // `getConversation` 不过滤——按 id 仍然读得回来。
+      // 已归档的会话同样不列出（`archived_at IS NULL`）。归档只影响是否显示，
+      // `getConversation` 不过滤，按 id 仍可读取。
       //
-      // 次级排序键 id DESC 不是装饰：同一毫秒创建的会话（批量导入、同秒连续操作）
-      // updated_at 会并列，只按它排序时 SQLite 退回插入顺序，结果看起来是反的。
+      // 次级排序键 id DESC 不可省略：同一毫秒创建的会话（批量导入、连续操作）
+      // updated_at 相同，只按它排序时 SQLite 按插入顺序返回，结果与预期顺序相反。
       // id 单调递增，保证并列时顺序仍然正确且可复现。
       `SELECT * FROM conversations
        WHERE workspace_id = ? AND source IS NULL AND archived_at IS NULL
@@ -375,16 +374,16 @@ export function listConversations(store: Store, workspaceId: WorkspaceId): Conve
 /**
  * 归档一个项目下当前的全部会话。
  *
- * **不是删除**：数据一条不动，只是从 `listConversations` 里消失；此后在这个项目里
- * 新建的会话照常显示（新行的 `archived_at` 是 NULL）。
+ * 不是删除：数据不变，只从 `listConversations` 中移除；此后在该项目中
+ * 新建的会话照常显示（新行的 `archived_at` 为 NULL）。
  *
- * 与 `runtime/src/archive.ts` 同名不同物——那个是导出成 markdown / json。
+ * 与 `runtime/src/archive.ts` 名称相同但用途不同：后者将会话导出为 markdown / json。
  *
- * 只归档用户会话（`source IS NULL`）：机器会话本来就不在列表里，
- * 给它们打标记等于给一个没有消费者的字段写值。
+ * 只归档用户会话（`source IS NULL`）：机器会话不在列表中，
+ * 为其写入标记等于向没有读取方的字段写值。
  *
- * 返回归档了几条。已经归档的不重复计数（`archived_at IS NULL` 卡住），
- * 界面据此说「归档了 N 条」而不是「操作成功」。
+ * 返回归档的条数。已归档的会话不重复计数（由 `archived_at IS NULL` 限定），
+ * 界面据此显示「归档了 N 条」而不是「操作成功」。
  */
 export function archiveWorkspaceConversations(store: Store, workspaceId: WorkspaceId): number {
   return store.db
@@ -396,8 +395,8 @@ export function archiveWorkspaceConversations(store: Store, workspaceId: Workspa
 }
 
 /**
- * 归档一条会话：只写标记，数据一条不动。`listConversations` 不再列它，
- * `getConversation` 按 id 仍读得回。返回 false = 不存在，或本来就已归档。
+ * 归档一条会话：只写入标记，数据不变。`listConversations` 不再列出该会话，
+ * `getConversation` 按 id 仍可读取。返回 false 表示会话不存在或已归档。
  */
 export function archiveConversation(store: Store, id: ConversationId): boolean {
   return (
@@ -408,25 +407,25 @@ export function archiveConversation(store: Store, id: ConversationId): boolean {
 }
 
 /**
- * 硬删一条会话。消息、run、步骤、provider 请求等随 FK 级联一起没
+ * 永久删除一条会话。消息、run、步骤、provider 请求等经外键级联一并删除
  * （`schema.ts` 各表的 `ON DELETE CASCADE`）。
  *
- * 附件目录不在这里删——它在磁盘上不在库里，由 `api/conversations.ts` 的 DELETE
- * 分支紧接着删掉。**那边只删本会话的目录，绝不按 `Attachment.path` 逐条删**：
- * 路径型附件指向的是用户自己的文件。
+ * 附件目录不在此处删除：它位于磁盘而不在数据库中，由 `api/conversations.ts` 的 DELETE
+ * 分支随后删除。该分支只删除本会话的目录，不按 `Attachment.path` 逐条删除：
+ * 路径型附件指向用户自己的文件。
  *
- * **调用方必须先确认没有在跑的 run**：级联删掉的行那一轮还在往里写。
+ * 调用方必须先确认没有运行中的 run：运行中的轮次仍在向级联删除的行写入。
  */
 export function deleteConversation(store: Store, id: ConversationId): boolean {
   return store.db.query('DELETE FROM conversations WHERE id = ?').run(id).changes > 0
 }
 
 /**
- * 重命名。**不动 `updated_at`**：改名不是「有了新内容」，推进它会让列表重排、
- * 侧栏那个时间与实际内容更新时间不符。返回 null = 会话不存在，或给了 `onlyIfEmpty` 而标题已有。
+ * 重命名。不修改 `updated_at`：改名不属于内容更新，推进该值会使列表重排，
+ * 侧栏显示的时间与实际内容更新时间不一致。返回 null 表示会话不存在，或指定了 `onlyIfEmpty` 而标题非空。
  *
- * `onlyIfEmpty` 给自动起标题用：「标题为空」在写入的同一条语句里判断。不要改成调用方先读再写，
- * 读与写之间用户改的名字会被自动标题覆盖。
+ * `onlyIfEmpty` 供自动生成标题使用：标题是否为空在写入的同一条语句中判断。不要改成调用方先读后写：
+ * 读写之间用户修改的名称会被自动标题覆盖。
  */
 export function setConversationTitle(
   store: Store,
@@ -446,15 +445,15 @@ export function setConversationTitle(
 /**
  * 切换会话的「接口 × 模型」。
  *
- * 模型是**会话级**属性，不是全局配置项——同一个工作区里一个会话用 Opus 深度改代码、
- * 另一个用 Haiku 快速问答是常态。**这条写入路径不能没有**：少了它
- * `conversation.setModel` 就是个静默返回的空分支——切换看起来成功了，实际每一轮
- * 还在用配置文件里的模型，而界面按新模型的价目表显示费用。
+ * 模型是会话级属性，不是全局配置项：同一工作区中一个会话用 Opus 修改代码、
+ * 另一个用 Haiku 快速问答是常见用法。本写入路径不可缺少：缺少时
+ * `conversation.setModel` 是一个静默返回的空分支，界面显示切换成功，而每一轮
+ * 仍使用配置文件中的模型，界面却按新模型的价目表显示费用。
  *
- * **两列一起写。** 只写 `model` 的话，同一个模型 id 挂在两个接口下时，
- * 这条会话归谁取决于枚举顺序，而错的表现是端点、key、价目表三样一起换掉且不报错。
+ * 两列同时写入。只写 `model` 时，若同一模型 id 属于两个接口，
+ * 会话归属取决于枚举顺序，出错时端点、key、价目表一并更换且不报错。
  *
- * 返回 null 表示会话不存在（客户端拿的是过期的 id）。
+ * 返回 null 表示会话不存在（客户端持有的 id 已过期）。
  */
 export function setConversationModel(
   store: Store,
@@ -471,9 +470,9 @@ export function setConversationModel(
 /**
  * 写入压缩投影。
  *
- * 只动 conversations.compaction_manifest 这一列——**Message / Step / 正文库一个字节不动**。
- * 压缩是投影不是销毁：历史面板永远显示完整会话，压缩可撤销、可重放。
- * 做成「删掉旧消息换成摘要」的话，用户翻阅历史时会发现前面的对话缺失。
+ * 只修改 conversations.compaction_manifest 一列，Message / Step / 正文库均不修改。
+ * 压缩是投影而不是销毁：历史面板始终显示完整会话，压缩可撤销、可重放。
+ * 若实现为删除旧消息并替换为摘要，用户翻阅历史时前面的对话将缺失。
  */
 export function setCompactionManifest(
   store: Store,
@@ -494,7 +493,7 @@ export function appendMessage(
     role: Message['role']
     content: string
     attachments?: Message['attachments']
-    /** 缺席 = 用户本人发的，落 NULL。见 `Message.origin`。 */
+    /** 缺失表示用户本人发送，写入 NULL。见 `Message.origin`。 */
     origin?: 'subagent' | 'workflow'
   },
 ): Message {
@@ -521,9 +520,9 @@ export function appendMessage(
       msg.createdAt,
     )
   /*
-   * 会话的「最近修改」跟着消息走，**这是它唯一一次因内容而推进**：这张表只有
-   * user 行（assistant 的回合由 steps 投影），所以「有人说话」就等于走到这里。
-   * 不推进的话，列表排序与侧栏时间都停在建会话那一刻。
+   * 会话的最近修改时间随消息推进，这是它唯一因内容而推进的位置：该表只有
+   * user 行（assistant 的回合由 steps 投影），因此每条新消息都经过此处。
+   * 不推进时，列表排序与侧栏时间都停留在会话创建时刻。
    */
   store.db
     .query('UPDATE conversations SET updated_at = ? WHERE id = ?')
@@ -532,10 +531,10 @@ export function appendMessage(
 }
 
 /**
- * 记下这个会话读到某个文件时的内容哈希。写前的新鲜度校验就靠它。
+ * 记录会话读取某个文件时的内容哈希，供写入前的新鲜度校验使用。
  *
- * 同一文件重复读只留最近那次：判据是「手上那份还是不是磁盘上这份」，
- * 旧哈希对这个问题没有任何贡献，保留只会使该表无谓增长。
+ * 同一文件重复读取时只保留最近一次：校验判断的是已读取的内容是否仍与磁盘一致，
+ * 旧哈希对此没有作用，保留只会使该表无谓增长。
  */
 export function recordFileRead(
   store: Store,
@@ -551,7 +550,7 @@ export function recordFileRead(
     .run(conversationId, path, hash, Date.now())
 }
 
-/** 这个会话读到那个文件时的内容哈希；没读过返回 null。 */
+/** 会话读取该文件时的内容哈希；未读取过时返回 null。 */
 export function fileReadHash(
   store: Store,
   conversationId: ConversationId,
@@ -568,9 +567,9 @@ export function fileReadHash(
 /**
  * 读取会话历史。
  *
- * `upperBound` 是 run 创建时定格的消息高水位：执行锁在 run 创建之后才拿到，
- * 排队期间用户可能又发了几条消息——那些消息**不属于**本 run 的历史，
- * 让它们穿越进来会让模型看到「未来」。
+ * `upperBound` 是 run 创建时固定的消息上界：执行锁在 run 创建之后才取得，
+ * 排队期间用户可能又发送了消息，这些消息不属于本 run 的历史，
+ * 纳入后模型会看到本轮之后才发送的消息。
  */
 export function listMessages(
   store: Store,
@@ -592,11 +591,11 @@ export function listMessages(
 }
 
 /**
- * 给界面读一页**完整用户轮次**。
+ * 为界面读取一页完整的用户轮次。
  *
- * 旧读法是 messages + runs + 每个 run 一次 steps：轮数越多，请求数线性增长，
- * 浏览器还要等所有请求、解析所有 JSON、一次挂完整棵 DOM。这里把边界与批量读取
- * 收回账本层：一页只选 `limit` 条用户消息，再一次取齐它们的 run 与 steps。模型重建历史仍走无分页的 `listMessages` / `buildHistory`，不受影响。
+ * 不要改为分别读取 messages、runs 并为每个 run 读取一次 steps：请求数随轮数线性增长，
+ * 浏览器需等待全部请求、解析全部 JSON 并一次挂载整棵 DOM。分页边界与批量读取
+ * 由账本层负责：一页只选 `limit` 条用户消息，再一次取齐它们的 run 与 steps。模型重建历史仍使用无分页的 `listMessages` / `buildHistory`，不受影响。
  */
 export function listConversationHistoryPage(
   store: Store,
@@ -661,7 +660,7 @@ export function listConversationHistoryPage(
         .map(rowToStep)
     : []
 
-  // 续接调用引用的首派不在这一页时补进来：图的形状只在首派参数里。只认本会话的 step。
+  // 续接调用引用的首次调用不在本页时一并读取：图结构只记录在首次调用的参数中。只读取本会话的 step。
   const inPage = new Set<string>(steps.map((step) => step.id))
   const wanted = new Set<string>()
   for (const step of steps) {
@@ -689,7 +688,7 @@ export function listConversationHistoryPage(
     messages,
     runs,
     steps,
-    // 与 tools/runtime 读待办复用同一条账本投影；不是分页结果的一部分。
+    // 与 tools/runtime 读取待办使用同一账本投影；不属于分页结果。
     todos: latestTodos(store, conversationId) ?? [],
     workflowStarts,
     nextCursor: hasMore ? (oldest as MessageId) : null,
@@ -697,20 +696,20 @@ export function listConversationHistoryPage(
 }
 
 /**
- * 变更面板的一页：这条会话里**写过文件的轮**，最新在前。
+ * 变更面板的一页：该会话中写入过文件的轮次，最新的在前。
  *
- * 与历史页分开：历史页按完整用户轮次切，一页里可能一个文件都没写，面板拿它翻页
- * 会把整段会话流一起拉进主区。这里只选名下有写入的用户消息；游标与历史页同为
- * 用户消息 id、排他上界。
+ * 与历史页分开：历史页按完整用户轮次切分，一页中可能没有任何文件写入，面板若用它翻页
+ * 会把整段会话流一并加载到主区。此处只选取有写入的用户消息；游标与历史页相同，
+ * 为用户消息 id，作为排他上界。
  *
- * 一轮的写入有三个来源，交出同一形状（`ConversationChangeStep`）：
+ * 一轮的写入有三个来源，返回同一形状（`ConversationChangeStep`）：
  * - 本会话 step 的 `outcome.fileChanges`；
- * - 内置子 agent 在子会话里的 step：子会话的 run 建行时记了 `dispatch_step_id`（父会话里
- *   那张派活卡的 step），按它归到父轮。这是建 run 时写下的事实，不是按时间推断的；
- * - 外部 CLI 节点：父 step 的 `nodes[*].fileChanges`，观察器给的，不带行数。
+ * - 内置子 agent 在子会话中的 step：子会话的 run 建行时记录了 `dispatch_step_id`（父会话中
+ *   派发任务卡的 step），据此归入父轮次。这是创建 run 时写入的事实，不是按时间推断的；
+ * - 外部 CLI 节点：父 step 的 `nodes[*].fileChanges`，由观察器提供，不含行数。
  *
- * `totals` 是整条会话的合计：三个来源一起算，**按轮各折一次再相加**——界面上那些行
- * 用的是同一个 `foldFileChanges`，两边各折一套的话表头对不上行。
+ * `totals` 是整条会话的合计：三个来源合并计算，按轮次分别折叠后再相加。界面中的各行
+ * 使用同一个 `foldFileChanges`，两处各自折叠时表头与行不一致。
  */
 export function listConversationChangesPage(
   store: Store,
@@ -724,8 +723,8 @@ export function listConversationChangesPage(
   const rows = <T>(sql: string, extra: Params = {}): T[] =>
     store.db.query<T, [Params]>(sql).all({ ...base, ...extra })
 
-  // 三个来源的写入清单，不含 args。`delegated` 按子会话 run 上的 `dispatch_step_id` 归父轮；
-  // 名字取子会话标题，与派活卡上那一格的 label 同源。
+  // 三个来源的写入清单，不含 args。`delegated` 按子会话 run 上的 `dispatch_step_id` 归入父轮次；
+  // 名称取子会话标题，与派发任务卡上对应节点的 label 同源。
   const cte = `
     WITH own AS (
       SELECT r.user_message_id AS turn_id, s.id AS step_id
@@ -770,12 +769,12 @@ export function listConversationChangesPage(
   )
 
   /*
-   * 整条会话的合计。**按轮折了再加**：一个路径在一轮里建了又删就不该计进来
-   * （`foldFileChanges`），而那件事只在同一轮的范围内成立。
+   * 整条会话的合计，按轮次折叠后再相加：同一路径在一轮中创建后又删除时不应计入
+   * （`foldFileChanges`），而这一判断只在同一轮次的范围内成立。
    *
-   * 三个来源与选轮同一套 CTE；排序取 `steps.rowid`——三条支路取的都是这张表，
-   * rowid 就是落库先后，而折叠只认先后。选轮与合计只读 fileChange 的四个字段，
-   * 不把 args（整份文件内容）读进内存。
+   * 三个来源与选取轮次使用同一套 CTE；排序取 `steps.rowid`：三条支路都取自该表，
+   * rowid 即写入顺序，而折叠只依赖先后顺序。选取轮次与合计只读取 fileChange 的四个字段，
+   * 不把 args（整份文件内容）读入内存。
    */
   const totalRows = rows<{
     turn_id: string
@@ -895,7 +894,7 @@ export function listConversationChangesPage(
     })
   }
   for (const row of cliRows) {
-    // 排在派活 step 收尾那一刻；同一毫秒内排在子会话的写入之后。
+    // 按派发 step 结束的时刻排序；同一毫秒内排在子会话的写入之后。
     push(row.turn_id, row.at + row.duration, Number.MAX_SAFE_INTEGER, {
       id: `${row.step_id}:${row.node_id}`,
       toolName: 'cli',
@@ -921,31 +920,31 @@ export function listConversationChangesPage(
 
 // ─────────────────────────────── Run ───────────────────────────────
 
-/** 同一会话的轮被另一个仍在运行的进程占着。 */
+/** 同一会话的轮次被另一个仍在运行的进程占用。 */
 export class ConversationBusyError extends Error {
   constructor(readonly holder: { runId: RunId; ownerPid: number; ownerKind: RunOwner | null }) {
     const where =
       holder.ownerKind === 'serve'
         ? '桌面端'
         : holder.ownerKind === 'cli'
-          ? '终端里的 qy 中'
+          ? '终端的 qy 中'
           : '另一个进程中'
-    super(`该会话已在${where}执行（pid ${holder.ownerPid}），请先在那里中断`)
+    super(`该会话已在${where}执行（pid ${holder.ownerPid}），请先在该处中断`)
     this.name = 'ConversationBusyError'
   }
 }
 
 /**
- * 建一轮。**「这条会话此刻能不能起轮」跨进程的唯一判定就在这里**：服务端与 CLI 的每一轮、
- * 压缩轮都经过它。
+ * 创建一轮。会话当前能否开始新一轮的跨进程判定只在此处进行：服务端与 CLI 的每一轮、
+ * 压缩轮都经过本函数。
  *
- * 在同一个 IMMEDIATE 事务里先查这条会话有没有别的进程占着的 running / queued 行，
- * 占着就抛 `ConversationBusyError`，不插入。「占着」= `isOrphan` 判为不可回收：
- * 那个进程还在、心跳没过期，与崩溃回收同一个判据。进程崩了（pid 不在）或挂住（心跳停了）
- * 都不算占着，所以不会永久锁死。本进程自己的行被 `isOrphan` 排除：本进程内的并发由
- * 服务端的 `RunManager` 在同步块里挡，CLI 一个进程同时只跑一轮。
+ * 在同一个 IMMEDIATE 事务中先查询该会话是否有其他进程占用的 running / queued 行，
+ * 有则抛出 `ConversationBusyError`，不插入。占用即 `isOrphan` 判定为不可回收：
+ * 该进程仍存在且心跳未过期，与崩溃回收使用同一判据。进程崩溃（pid 不存在）或停滞（心跳停止）
+ * 都不算占用，因此不会永久锁死。本进程自身的行由 `isOrphan` 排除：本进程内的并发由
+ * 服务端的 `RunManager` 在同步块中拦截，CLI 一个进程同时只运行一轮。
  *
- * 不要把查询挪到事务外：两个进程会同时查到「没人占」，各建一轮。
+ * 不要把查询移到事务外：两个进程会同时查询到无人占用，各自创建一轮。
  */
 export function createRun(
   store: Store,
@@ -957,7 +956,7 @@ export function createRun(
     userMessageId: MessageId | null
     messageIdUpperBound: MessageId | null
     contextSnapshot: RunContextSegment[]
-    /** 派活派出来的轮次带上来源；用户自己的会话不带。 */
+    /** 由派发任务产生的轮次携带来源；用户会话不携带。 */
     dispatch?: { stepId: StepId; nodeId: string }
   },
 ): Run {
@@ -968,7 +967,7 @@ export function createRun(
   })
 }
 
-/** 这条会话被别的进程占着的那一轮；没有返回 null。判据见 `createRun`。 */
+/** 该会话被其他进程占用的轮次；没有时返回 null。判据见 `createRun`。 */
 function liveHolder(
   store: Store,
   conversationId: ConversationId,
@@ -1040,9 +1039,9 @@ function insertRun(store: Store, input: Parameters<typeof createRun>[1]): Run {
       null,
       writeJson(input.contextSnapshot),
       now,
-      // 归属从建行那一刻就写上。晚一步写的话，「刚 createRun 就崩」留下的那条
-      // 无归属行会被下一个进程按老规矩回收——那正是本来就该发生的事，
-      // 但归属如果只在跑起来之后才补，同一条路径上会多出一段判据不同的窗口。
+      // 归属在建行时即写入。若延后到开始执行之后补写，createRun 后立即崩溃留下的
+      // 无归属行仍会被下一个进程按无归属规则回收，结果正确；
+      // 但同一条路径上会多出一段判据不同的时间窗口。
       process.pid,
       store.owner,
       now,
@@ -1053,10 +1052,10 @@ function insertRun(store: Store, input: Parameters<typeof createRun>[1]): Run {
 }
 
 /**
- * 心跳：告诉别的进程「这一轮还有人在跑」。
+ * 心跳：告知其他进程该轮仍有进程在运行。
  *
- * 只推 running 的行——已经落终态的 run 再推心跳没有意义，
- * 而且会让「心跳新 = 还在跑」这句话在事后读起来是假的。
+ * 只更新 running 的行：已进入终态的 run 更新心跳没有意义，
+ * 且会使「心跳未过期即仍在运行」这一判断在事后不成立。
  */
 export function touchRun(store: Store, id: RunId): void {
   store.db
@@ -1064,7 +1063,7 @@ export function touchRun(store: Store, id: RunId): void {
     .run(Date.now(), id)
 }
 
-/** 幂等：同一 (conversationId, clientRequestId) 已有 run 时直接返回它。 */
+/** 幂等：同一 (conversationId, clientRequestId) 已有 run 时直接返回该 run。 */
 export function findRunByClientRequest(
   store: Store,
   conversationId: ConversationId,
@@ -1106,20 +1105,20 @@ export function updateRunUsage(store: Store, id: RunId, usage: RunUsage): void {
     )
 }
 
-/** 本轮的生成花费整份写入。只由会话层在每次生成成功时调用，与模型用量分列，两者互不覆盖。 */
+/** 整份写入本轮的生成花费。只由会话层在每次生成成功时调用，与模型用量分列，两者互不覆盖。 */
 export function updateRunMedia(store: Store, id: RunId, media: MediaSpend[]): void {
   store.db.query('UPDATE runs SET media_usage = ? WHERE id = ?').run(JSON.stringify(media), id)
 }
 
-/** 没有生成时不带 `media` 键，与 `RunUsage.media` 的约定一致。 */
+/** 没有生成时不含 `media` 键，与 `RunUsage.media` 的约定一致。 */
 function mediaOf(raw: string): { media?: MediaSpend[] } {
   const media = readJson<MediaSpend[]>(raw, [])
   return media.length ? { media } : {}
 }
 
 /**
- * Run 收尾。stopReason 必填——废除「静默 done」，前端要能回答用户
- * 「它为什么停了」，不能只显示一个绿勾。
+ * Run 收尾。stopReason 必填：不允许没有原因的 done，前端必须能向用户说明
+ * 停止原因，不能只显示一个完成标记。
  */
 export function finishRun(
   store: Store,
@@ -1147,7 +1146,7 @@ export function finishRun(
         Date.now(),
         id,
       )
-    // 调用方关闭生成器也必须收请求账，不等到下次启动才把它误记成进程退出。
+    // 调用方关闭生成器时同样必须结算请求记录，不等到下次启动时误记为进程退出。
     const diagnostic: ProviderRequestDiagnostic = {
       causes: [
         {
@@ -1171,32 +1170,6 @@ export function finishRun(
   })
 }
 
-/**
- * 启动时回收上次进程留下的 running / queued run。
- *
- * 为什么不能靠进程内的 finally：`finally` 只在生成器正常关闭时执行，
- * SIGKILL、断电、Tauri 外壳崩溃时一行都不跑。留下的 running run 会让
- * 会话永远显示「执行中」，而且 `isBusy` 判定会拒绝用户发新消息——**会话被永久锁死**。
- *
- * 分流依据是 **step 的 `execution_started_at`**（ARCHITECTURE.md 第 6 节的歧义边界），
- * 不是 run 上的字段：
- *
- * - 存在「`execution_started_at` 非空但 status 仍是 running」的 step
- *   = 进了执行器却没落终态。那个工具**可能已经跑完并产生了副作用**，
- *   也可能刚进去就崩了——**无法区分**，所以整轮结果不可信。
- * - 没有这样的 step = 所有工具要么没开始、要么已有确定结果，本轮没有未知副作用。
- *
- * 两者都标终态，区别在 `stopReason`——**不要为了界面干净统一成 user_interrupt**，
- * 那会让「进程崩了」和「用户点了停止」在事后无法区分。
- *
- * 判据只有一个：**steps 表里那条带 `execution_started_at` 的 running 行**。
- * 别再给 `runs` 加一个 `execution_state` 之类的列——没有写入方的列拿来做判据，
- * 会让所有 run 都被判成「安全可重放」，正好是最危险的那个方向。
- *
- * **只回收没人在跑的那些，不能无差别扫全库**：账本是共享的，一台机器上同时有好几个写入者（两个工作
- * 区的 sidecar、开发态热重载、终端里的 `qy exec`），扫全库就是**后起的进程把别的进程正在跑的那一轮
- * 判死**。判据见 `isOrphan`，两个信号缺一不可。
- */
 export interface ProcessExitObservation {
   source: 'desktop_sidecar'
   observedAt: number
@@ -1206,17 +1179,43 @@ export interface ProcessExitObservation {
   stderrTail: string | null
 }
 
+/**
+ * 启动时回收上次进程留下的 running / queued run。
+ *
+ * 不能依赖进程内的 finally：`finally` 只在生成器正常关闭时执行，
+ * SIGKILL、断电、Tauri 外壳崩溃时不会执行。遗留的 running run 会使
+ * 会话始终显示「执行中」，且 `isBusy` 判定会拒绝用户发送新消息，会话被永久锁死。
+ *
+ * 分流依据是 step 的 `execution_started_at`（ARCHITECTURE.md 第 6 节的歧义边界），
+ * 不是 run 上的字段：
+ *
+ * - 存在 `execution_started_at` 非空而 status 仍为 running 的 step：
+ *   已进入执行器但未进入终态。该工具可能已执行完毕并产生副作用，
+ *   也可能刚进入就崩溃，两者无法区分，因此整轮结果不可信。
+ * - 不存在这样的 step：所有工具要么未开始，要么已有确定结果，本轮没有未知副作用。
+ *
+ * 两者都标记为终态，区别在 `stopReason`。不要为了界面简洁统一写成 user_interrupt：
+ * 否则事后无法区分进程崩溃与用户停止。
+ *
+ * 判据只有一个：steps 表中带 `execution_started_at` 的 running 行。
+ * 不要为 `runs` 另加 `execution_state` 等列：以没有写入方的列作为判据，
+ * 会使所有 run 都被判定为可安全重放，即最危险的方向。
+ *
+ * 只回收无进程运行的 run，不能扫描全库：账本是共享的，一台机器上同时有多个写入者（两个工作
+ * 区的 sidecar、开发态热重载、终端中的 `qy exec`），扫描全库会使后启动的进程把其他进程正在运行的轮次
+ * 判定为中断。判据见 `isOrphan`，两个信号缺一不可。
+ */
 export function recoverStaleRuns(
   store: Store,
   previousExit?: ProcessExitObservation,
 ): {
   recovered: number
   ambiguous: number
-  /** 有归属、且那个归属仍在运行，本次跳过的。启动日志要说出来，否则「回收了 0 个」有歧义。 */
+  /** 有归属且归属进程仍在运行、本次跳过的 run 数。启动日志必须输出该数，否则「回收了 0 个」有歧义。 */
   heldByOthers: number
 } {
-  // 这一趟取的是**投影**不是表行：列名改过，`ambiguous` 还是算出来的，
-  // 所以形状就地声明，不去借哪张表的行类型。
+  // 该查询取的是投影而不是表行：列名经过重命名，`ambiguous` 是计算列，
+  // 因此行类型就地声明，不复用表的行类型。
   const all = store.db
     .query<
       { id: RunId; ownerPid: number | null; heartbeatAt: number | null; ambiguous: number },
@@ -1237,9 +1236,9 @@ export function recoverStaleRuns(
   const rows = all.filter((r) => isOrphan(r.ownerPid, r.heartbeatAt))
   const heldByOthers = all.length - rows.length
 
-  // **不能在这里提前返回。** 下面还有一趟「终态 run 底下的孤儿 step」要扫，
-  // 而那趟与本次有没有 stale run 无关——相反，最常见的情形就是
-  // 「run 都是终态的、但底下留着 running step」。早退会让那趟永远不执行。
+  // 不能在此处提前返回。下方还有一次针对终态 run 下孤儿 step 的扫描，
+  // 该扫描与本次是否有遗留 run 无关，最常见的情形正是
+  // run 均已进入终态而其下仍有 running step。提前返回会使该扫描不执行。
   let ambiguous = 0
   const now = Date.now()
   const finishStmt = store.db.query(
@@ -1247,8 +1246,8 @@ export function recoverStaleRuns(
      interruption_detail = ?, finished_at = ? WHERE id = ?`,
   )
 
-  // 走 `store.tx()` 而不是裸 `db.transaction`：这一段先 SELECT 再 UPDATE，DEFERRED 事务
-  // 遇到其他进程持有写锁时是从读事务升级，SQLite 直接回 SQLITE_BUSY 且不走 busy_timeout。
+  // 使用 `store.tx()` 而不是 `db.transaction`：此段先 SELECT 再 UPDATE，DEFERRED 事务
+  // 在其他进程持有写锁时需从读事务升级，SQLite 直接返回 SQLITE_BUSY 且不经过 busy_timeout。
   // 两个实例同时启动是正常情形（两个工作区的 sidecar、开发态热重载）。
   store.tx(() => {
     for (const r of rows) {
@@ -1257,9 +1256,9 @@ export function recoverStaleRuns(
       settleRunningSteps(store, r.id)
       interruptRunningNodes(store, r.id)
       /*
-       * 已发出但进程退出的 provider 请求，送达与计费都无法确认。run 收尾时必须
-       * 同步落成 uncertain；继续挂在 in_flight 会让账本永远声称后台仍在执行。
-       * usage 保持原样（通常为 NULL），绝不能补 0 或借上一条回报填充。
+       * 进程退出时已发出的 provider 请求，送达与计费都无法确认。run 收尾时必须
+       * 同步写为 uncertain；保持 in_flight 会使账本始终显示后台仍在执行。
+       * usage 保持原样（通常为 NULL），不得补 0 或用上一条回报填充。
        */
       const interruption: RunInterruption = {
         source: previousExit?.source ?? 'orphan_recovery',
@@ -1284,7 +1283,7 @@ export function recoverStaleRuns(
         transport: null,
         assistantChars: null,
         toolCallCount: null,
-        // 进程已经退出，没有“还能重发几次”这一事实；0 明确表示恢复流程不发请求。
+        // 进程已退出，不存在剩余重发次数；0 表示恢复流程不发送请求。
         retry: { decision: 'process_exit', attempt: null, max: 0, backoffMs: null, at: null },
       }
       store.db
@@ -1296,13 +1295,13 @@ export function recoverStaleRuns(
         )
         .run(now, writeJson(requestDiagnostic), r.id)
       finishStmt.run(
-        // 干净那条是 `process_exit`，**不是 `user_interrupt`**——上面那段注释要求的
-        // 「事后分得出崩了和用户点了停止」，写成 user_interrupt 就当场作废：
-        // 界面上只剩一句「已中断」，而用户没点过停止。
+        // 无歧义的情形写 `process_exit`，不写 `user_interrupt`：写成 user_interrupt 后
+        // 事后无法区分进程崩溃与用户停止，
+        // 界面只显示「已中断」，而用户并未停止。
         isAmbiguous ? 'internal_guard' : 'process_exit',
         isAmbiguous ? 'internal_error' : null,
-        // 干净那条不能写「本轮未开始执行」——判据只说明「没有工具停在执行中」，
-        // 完全兼容一个已经跑了几十步、恰好停在等模型回复那一刻的 run。
+        // 无歧义的情形不能写「本轮未开始执行」：判据只说明没有工具停留在执行中，
+        // 已执行几十步、恰好在等待模型回复时中断的 run 同样满足该判据。
         isAmbiguous
           ? previousExit?.exitCode !== null && previousExit?.exitCode !== undefined
             ? `服务进程在工具执行期间退出（exit code ${previousExit.exitCode}），结果不可信`
@@ -1316,22 +1315,22 @@ export function recoverStaleRuns(
       )
     }
 
-    // **终态 run 底下也会留孤儿 step。** 上面那次扫描按 run 状态取，漏掉了它们。
+    // 终态 run 下同样可能遗留孤儿 step。上方的扫描按 run 状态选取，不包含这些 step。
     //
-    // 产生路径是真实的：`tool.started` 的 yield 处被生成器 `.return()` 终止
-    // （客户端断连、用户切走），step 已经 openToolStep 成 running 但没人收尾；
-    // 随后 session 的 finally 把 run 标成 interrupted 终态。因此这条 step
-    // **永远碰不到恢复流程**，在库里永久保持 running。
+    // 产生路径：生成器在 `tool.started` 的 yield 处被 `.return()` 终止
+    // （客户端断开、用户切换会话），step 已由 openToolStep 写为 running 但无人收尾；
+    // 随后 session 的 finally 把 run 标记为 interrupted 终态。因此该 step
+    // 不会进入恢复流程，在库中永久保持 running。
     //
-    // 后果不是「UI 上一张转圈的卡」那么轻——历史投影必须跳过含未终结调用的整个
-    // batch（provider 要求每个 tool call 有配对结果），一条孤儿会让**同一批次里
-    // 已经成功的写文件结果一起从历史里消失**。跨轮记忆修好了，中断过的那一轮
-    // 反而还是失忆的。
+    // 影响不限于界面上一张持续显示加载状态的卡片：历史投影必须跳过含未终结调用的整个
+    // batch（provider 要求每个 tool call 有配对结果），一条孤儿 step 会使同一批次中
+    // 已成功的写文件结果一并从历史中移除，中断过的轮次在跨轮记忆中
+    // 因此缺失这些结果。
     //
-    // 派活卡上没落终态的格同理，而且它连 running step 都不剩：派出即返回，
-    // 子 agent 的生命期跟着会话，它的终态写在一张早就返回的卡上。重启之后
-    // 进程里没有任何人在收那份回执，格留在「进行中」的话，那张图既 approve
-    // 不了也 revise 不了。
+    // 派发任务卡上未进入终态的节点同理，且没有对应的 running step：派发后立即返回，
+    // 子 agent 的生命周期与会话一致，其终态写在一张早已返回的卡上。重启之后
+    // 进程中已无接收方处理该回执，节点停留在「进行中」时，该图既无法 approve
+    // 也无法 revise。
     const orphanRuns = store.db
       .query<{ run_id: string }, []>(
         `SELECT DISTINCT s.run_id AS run_id FROM steps s
@@ -1351,8 +1350,8 @@ export function recoverStaleRuns(
       interruptRunningNodes(store, o.run_id as RunId)
     }
 
-    // 与上面的孤儿 step 同理：旧版本可能先把 run 收尾，却漏掉已发送请求的终态。
-    // 终态 run 不可能仍合法持有 in_flight；只能按“是否送达未知”收敛为 uncertain。
+    // 与上方的孤儿 step 同理：账本中可能存在 run 已收尾而已发送请求未写入终态的记录。
+    // 终态 run 不可能合法地持有 in_flight 请求，只能按送达未知写为 uncertain。
     const orphanRequestDiagnostic: ProviderRequestDiagnostic = {
       causes: [],
       providerEvents: null,
@@ -1375,24 +1374,24 @@ export function recoverStaleRuns(
   return { recovered: rows.length, ambiguous, heldByOthers }
 }
 
-/** 心跳超过这么久没推，就当那个进程已经不在跑它了。心跳是十秒一次，给六倍余量。 */
+/** 心跳超过该时长未更新时，视为对应进程已不再运行该 run。心跳间隔为十秒，此值留六倍余量。 */
 const HEARTBEAT_STALE_MS = 60_000
 
 /**
  * 该 run 是否仍有进程在运行。
  *
- * **四条判据的顺序是有意的**，每一条堵的都是前一条的漏：
+ * 四条判据的顺序不可调换，每一条覆盖前一条的遗漏：
  *
- * 1. **没有归属** —— 迁移之前的历史行。按老规矩回收，不能因为不认识就放过。
- * 2. **归属是本进程的 pid** —— 本进程刚启动，不可能拥有任何 run，所以这一定是
- *    上一个进程留下的、而 Windows 把同一个号复用给了本进程。**这条必须在心跳之前**：
- *    崩溃后立刻重启时心跳只过去两三秒，按超时判会认定它仍在运行，
- *    因此那条 run 永远没人回收，会话被永久锁死。
- * 3. **那个 pid 已经不在** —— 进程没了，回收。这是本函数原本的全部意义，不能弱化。
- *    `EPERM` 算存活：宁可晚一分钟由心跳兜底，也不误杀一条真在跑的。
- * 4. **pid 还在但心跳停了** —— pid 被复用，或者那个进程仍在但那一轮已废弃。
+ * 1. 没有归属：迁移之前的历史行。按原有规则回收，不能因无法识别而跳过。
+ * 2. 归属是本进程的 pid：本进程刚启动，不可能拥有任何 run，因此该行必然是
+ *    上一个进程留下的，且 Windows 把同一个 pid 复用给了本进程。本条必须在心跳判据之前：
+ *    崩溃后立即重启时心跳只过去两三秒，按超时判定会认为它仍在运行，
+ *    该 run 因此无人回收，会话被永久锁死。
+ * 3. 该 pid 已不存在：进程已退出，回收。这是本函数的基本用途，不能弱化。
+ *    `EPERM` 视为存活：宁可晚一分钟由心跳判据回收，也不误回收确实在运行的 run。
+ * 4. pid 仍存在但心跳停止：pid 被复用，或该进程仍在但该轮已废弃。
  *
- * 只有 pid 会被 pid 复用误判，只有心跳会被「崩溃后立刻重启」误判。两个都要。
+ * pid 判据只会因 pid 复用而误判，心跳判据只会因崩溃后立即重启而误判，因此两者都必须保留。
  */
 function isOrphan(ownerPid: unknown, heartbeatAt: unknown): boolean {
   const pid = Number(ownerPid)
@@ -1414,26 +1413,25 @@ function pidAlive(pid: number): boolean {
 }
 
 /**
- * 把一个 run 底下所有还挂着 running 的 step 落终态。
+ * 将一个 run 下所有仍为 running 的 step 写为终态。
  *
- * **分两种，不能统一成一种。** 判据是 `execution_started_at`——**这是那条歧义边界的全部意义**：
+ * 分两种情形处理，不能合并。判据是 `execution_started_at`，即崩溃恢复的歧义边界：
  *
- * - **非空**：已经进了执行器。工具可能已经跑完并产生了副作用，也可能刚进去就崩了，
- *   两者无法区分。所以 `executed: true`（保守假设它执行过）+ 「结果未知」。
- *   向模型断言「没执行」等于让它重做——如果那是 `write_file` 或 `run_command`，
- *   就是重复副作用。
- * - **为空**：还没进执行器。这是**确定**没有发生的事，如实标 `executed: false`。
- *   把它也说成「结果未知」会让模型对每一次中断都花一轮去核实所有工具，
- *   包括那些明显没跑成的。
+ * - 非空：已进入执行器。工具可能已执行完毕并产生副作用，也可能刚进入就崩溃，
+ *   两者无法区分。因此写 `executed: true`（保守假设已执行）与「结果未知」。
+ *   向模型断言未执行等于让它重做；若该工具是 `write_file` 或 `run_command`，
+ *   会产生重复副作用。
+ * - 为空：未进入执行器。这是确定未发生的事，如实标记 `executed: false`。
+ *   同样写成「结果未知」会使模型在每次中断后都用一轮核实所有工具，
+ *   包括明显未执行的工具。
  *
- * **两种必须分开 UPDATE**：用同一份 payload 一起盖掉的话，「确定没跑」会被记成
- * 「可能跑过」。
+ * 两种情形必须分别 UPDATE：用同一份 payload 一并覆盖时，「确定未执行」会被记为
+ * 「可能执行过」。
  *
- * **只落 outcome，不许整份换掉 payload。** 两条都走 `json_set`，动的只有 `$.kind` 和 `$.outcome`；
- * `$.action` 与 `$.args` 原封不动留着。**`action` 是前端唯一的标题来源**（落库时那句注释已经写明：
- * 它由 ToolSpec 按参数解析，前端回猜不出来），整份 payload 换成只有 outcome 的那份，这条 step 在会
- * 话流里就只剩一个红色的「失败」——没有动词、没有对象、没有目标，和旁边每一行都不一样，而用户根本
- * 看不出它是哪一步崩的。
+ * 只写入 outcome，不得整份替换 payload。两条语句都使用 `json_set`，只修改 `$.kind` 与 `$.outcome`；
+ * `$.action` 与 `$.args` 保持不变。`action` 是前端唯一的标题来源（它由 ToolSpec 按参数
+ * 解析，前端无法推测）；整份 payload 替换为只含 outcome 的对象后，该 step 在会话流中
+ * 只显示一个红色的「失败」，没有动词、对象与目标，用户无法判断中断发生在哪一步。
  */
 export function settleRunningSteps(store: Store, runId: RunId): void {
   const settle = (executionStarted: boolean, outcome: Record<string, unknown>) =>
@@ -1460,13 +1458,13 @@ export function settleRunningSteps(store: Store, runId: RunId): void {
 }
 
 /**
- * 把这一轮派活卡上没落终态的格标成中断，返回改动过的格。
+ * 将该轮派发任务卡上未进入终态的节点标记为中断，返回改动过的节点。
  *
- * **不在 run 收尾时调它。** 子 agent 的生命期跟着会话，不跟着派它的那一轮：
- * 收尾时扫一遍会把还在跑的格记成中断，而它的回执几分钟后才到。
- * 调用点只有两处——用户按会话停止，以及重启回收（进程里没有任何人在收这些回执了）。
+ * 不在 run 收尾时调用。子 agent 的生命周期与会话一致，不随派发它的轮次结束：
+ * 收尾时扫描会把仍在运行的节点记为中断，而其回执几分钟后才到达。
+ * 调用点只有两处：用户停止会话，以及重启回收（进程中已无接收方处理这些回执）。
  *
- * 卡不限于还在 running 的：派出即返回，格的终态写在一张已经返回的卡上。
+ * 不限于仍为 running 的卡：派发后立即返回，节点的终态写在一张已返回的卡上。
  */
 export function interruptRunningNodes(
   store: Store,
@@ -1507,8 +1505,8 @@ export function listRuns(store: Store, conversationId: ConversationId): Run[] {
 }
 
 /**
- * runtime 重建模型历史所需的内部快照。公开 `Run` 故意不带这份输入，避免 UI/API
- * 把内部上下文误当成可编辑的 run 属性。
+ * runtime 重建模型历史所需的内部快照。公开的 `Run` 有意不含该输入，避免 UI/API
+ * 把内部上下文误认为可编辑的 run 属性。
  */
 export function listRunContextSnapshots(
   store: Store,
@@ -1532,12 +1530,12 @@ export function listRunContextSnapshots(
 // ─────────────────────────── 逐请求账 ───────────────────────────
 
 /**
- * 记一次即将发出的模型请求。
+ * 记录一次即将发出的模型请求。
  *
- * 在**装配完成之后、真正发出之前**调用，所以状态是 `pending`：此刻要发什么
- * 已经确定（分组占用、指纹都算得出来），provider 是否接收仍未知。
- * 把这两件事分开记，是为了让「发出去了但没回」和「没发出去」在账本上
- * 可区分——它们对上下文占用的含义完全不同。
+ * 在装配完成之后、实际发出之前调用，因此状态为 `pending`：此时请求内容
+ * 已经确定（分组占用、指纹均可计算），provider 是否接收仍未知。
+ * 两者分开记录，使「已发出但无响应」与「未发出」在账本中
+ * 可以区分：二者对上下文占用的含义完全不同。
  */
 export function openProviderRequest(
   store: Store,
@@ -1545,13 +1543,13 @@ export function openProviderRequest(
     runId: RunId
     turnIndex: number
     retryIndex: number
-    /** 不给就是主请求；摘要请求由主循环标成 summary。 */
+    /** 缺省为主请求；摘要请求由主循环标记为 summary。 */
     purpose?: ProviderRequestPurpose
     providerName?: string
     providerKind?: ProviderKind
     model: string
     measuredInputTokens: number
-    /** 摘要请求不给。 */
+    /** 摘要请求不提供。 */
     occupancyTokens?: number
     configuration?: ProviderRequestConfiguration
     sentCategories: ContextBreakdown
@@ -1630,7 +1628,7 @@ export function openProviderRequest(
   return row
 }
 
-/** 请求真的发出去了。`sent_at` 只在这里置——面板据它选「最近一次已发送」。 */
+/** 请求已实际发出。`sent_at` 只在此处写入，面板据此选取最近一次已发送的请求。 */
 export function markProviderRequestSent(store: Store, id: ProviderRequestId): void {
   store.db
     .query("UPDATE provider_requests SET status = 'in_flight', sent_at = ? WHERE id = ?")
@@ -1638,9 +1636,9 @@ export function markProviderRequestSent(store: Store, id: ProviderRequestId): vo
 }
 
 /**
- * 响应头到达的时刻。**`at` 由传输层观察得到，不要在这里取当前时刻**：
- * 事件从适配器传到这里已经晚了若干毫秒，而这一列的用途正是与 `sent_at`
- * 相减得出首包等待。重复调用保持第一次。
+ * 响应头到达的时刻。`at` 由传输层观测，不要在此处取当前时刻：
+ * 事件从适配器传到此处已延迟若干毫秒，而该列的用途正是与 `sent_at`
+ * 相减得出首包等待时间。重复调用时保留首次的值。
  */
 export function markProviderRequestHeaders(store: Store, id: ProviderRequestId, at: number): void {
   store.db
@@ -1648,7 +1646,7 @@ export function markProviderRequestHeaders(store: Store, id: ProviderRequestId, 
     .run(at, id)
 }
 
-/** provider 的第一个真实流事件。重复调用保持第一次，不让后续事件覆盖。 */
+/** provider 的第一个实际流事件。重复调用时保留首次的值，不被后续事件覆盖。 */
 export function markProviderRequestFirstEvent(store: Store, id: ProviderRequestId): void {
   store.db
     .query('UPDATE provider_requests SET first_event_at = COALESCE(first_event_at, ?) WHERE id = ?')
@@ -1658,10 +1656,10 @@ export function markProviderRequestFirstEvent(store: Store, id: ProviderRequestI
 /**
  * 一段非空思考、正文或新增工具参数到达。
  *
- * **每一段都调，`at` 由适配器在解析该段时观察得到，不要在这里取当前时刻**：
- * 事件传到这里已经晚了若干毫秒，而 `last_content_at` 的用途正是算「此刻静默了多久」。
- * 首值由 `COALESCE` 保在 `first_content_at`，末值每次覆盖 `last_content_at`，
- * 两列一次更新写完——分成两条语句会让它们在中途失败时对不上。
+ * 每一段都调用，`at` 由适配器在解析该段时观测，不要在此处取当前时刻：
+ * 事件传到此处已延迟若干毫秒，而 `last_content_at` 的用途正是计算当前已静默多久。
+ * 首值由 `COALESCE` 保留在 `first_content_at`，末值每次覆盖 `last_content_at`，
+ * 两列在一次更新中写入：分成两条语句时，中途失败会使两列不一致。
  */
 export function markProviderRequestContent(
   store: Store,
@@ -1683,8 +1681,8 @@ export function markProviderRequestContent(
 /**
  * 请求终态。
  *
- * `usage` 为 null 表示 provider 没回报——**四个字段保持 null，不要填 0**。
- * 中转站漏 usage 是常态，记成 0 会让上下文锚点误判成「这次请求什么都没占」。
+ * `usage` 为 null 表示 provider 未回报，四个字段保持 null，不要填 0。
+ * 中转站缺失 usage 很常见，记为 0 会使上下文锚点误判为该请求未占用任何上下文。
  */
 export function settleProviderRequest(
   store: Store,
@@ -1722,7 +1720,7 @@ export function settleProviderRequest(
     )
 }
 
-/** 失败现场与重试裁决写回同一请求行；不另建一份重试状态。 */
+/** 失败诊断与重试裁决写回同一请求行；不另建重试状态。 */
 export function recordProviderRequestDiagnostic(
   store: Store,
   id: ProviderRequestId,
@@ -1733,10 +1731,11 @@ export function recordProviderRequestDiagnostic(
     .run(writeJson(diagnostic), id)
 }
 
-/** 本会话最近一次**已发送**的请求。面板的锚点从这里取。 */
 /**
- * 会话上下文最近一次发出 / 最近一次有回报的请求。**只看主请求**：摘要请求发的是摘要提示词，
- * 它的输入量与会话占用无关，当锚点会把面板读数换成摘要那一次的大小。
+ * 本会话最近一次已发送的主请求。面板的分组明细取自本函数。
+ *
+ * 只取主请求，`latestAnchoredProviderRequest` 相同：摘要请求发送的是摘要提示词，
+ * 其输入量与会话占用无关，用作依据会把面板读数变成摘要请求的大小。
  */
 export function latestSentProviderRequest(
   store: Store,
@@ -1757,8 +1756,8 @@ export function latestSentProviderRequest(
 /**
  * 本会话最近一次**带 usage 回报**的请求。
  *
- * 与上一个的区别是判据：这个要求 provider 真的报了数。锚点必须用这一个——
- * 一次超时或漏 usage 的请求也是「已发送」，拿它当锚等于把锚点归零。
+ * 与 `latestSentProviderRequest` 的区别在于判据：本函数要求 provider 实际回报了用量。锚点必须取本函数的结果：
+ * 超时或缺失 usage 的请求同样属于已发送，以它为锚点等于把锚点归零。
  */
 export function latestAnchoredProviderRequest(
   store: Store,
@@ -1888,8 +1887,8 @@ export function appendStep(
 /**
  * 标记工具即将执行。
  *
- * 必须在调用执行器**之前**单独提交：这条时间戳就是崩溃恢复的歧义边界。
- * 有它 = 可能已经执行过（不可重放）；没有 = 确定没执行（可安全重放）。
+ * 必须在调用执行器之前单独提交：该时间戳是崩溃恢复的歧义边界。
+ * 有该时间戳表示可能已执行（不可重放）；没有表示确定未执行（可安全重放）。
  */
 export function markStepExecuting(store: Store, id: StepId): void {
   store.db.query('UPDATE steps SET execution_started_at = ? WHERE id = ?').run(Date.now(), id)
@@ -1898,17 +1897,16 @@ export function markStepExecuting(store: Store, id: StepId): void {
 const SETTLED_PHASES: ReadonlySet<NodePhase> = new Set(['done', 'failed', 'skipped', 'interrupted'])
 
 /**
- * 派活卡上一格的状态写回正在执行的工具 step（`$.nodes.<nodeId>`）。
+ * 将派发任务卡上一个节点的状态写回工具 step（`$.nodes.<nodeId>`）。
  *
- * 每次变化当场写，不等 `settleToolStep`：用户可能在子 agent 运行期间切走父会话，
- * 切回来从账本重建卡片，那时运行期的 `team.member` 已经错过。
+ * 每次变化立即写入，不等待 `settleToolStep`：用户可能在子 agent 运行期间离开父会话，
+ * 返回时从账本重建卡片，此时运行期的 `team.member` 事件已经错过。
  *
- * 节点 id 由模型给，可能含点号或方括号，所以走 `json_object` 构键再 `json_patch` 合并，
- * 不要改成把 id 拼进 JSON 路径字符串——那样的 id 会被当成路径分隔符解释掉。
- */
-/**
- * 写一格的状态。不限卡的状态：一格失败先交回父会话后卡已返回，其余格照跑，
- * 它们的终态还是写在派出它们的这张卡上。
+ * 不限制卡的状态：一个节点失败后卡先返回父会话，其余节点照常运行，
+ * 它们的终态仍写在派发它们的卡上。
+ *
+ * 节点 id 由模型给出，可能含点号或方括号，因此用 `json_object` 构造键再以 `json_patch` 合并。
+ * 不要改成把 id 拼入 JSON 路径字符串：这类 id 会被解释为路径分隔符。
  */
 export function setStepNodeState(store: Store, id: StepId, nodeId: string, state: NodeState): void {
   store.db
@@ -1934,8 +1932,8 @@ export function settleToolStep(
   status: ToolActionStatus,
   payload: Step['payload'],
   /**
-   * 这次调用跑了多久。**由执行方给，不在这里算**——它量的是执行器的起止，
-   * 而这里能看到的只有落盘时刻。
+   * 本次调用的执行时长。由执行方提供，不在此处计算：它度量的是执行器的起止时刻，
+   * 而此处只能取得写入时刻。
    */
   durationMs?: number,
 ): void {
@@ -1952,15 +1950,15 @@ export function settleToolStep(
 }
 
 /**
- * 把一次尝试留下的思考 step 落成失败终态。
+ * 将一次尝试留下的思考 step 写为失败终态。
  *
- * 轮内自动重发时用。思考 step 出生即 `done`，`settleRunningSteps` 只认 `running`，
- * 两者都覆盖不到这一格。
+ * 供轮内自动重发使用。思考 step 创建时即为 `done`，而 `settleRunningSteps` 只处理 `running`，
+ * 因此无法覆盖这类 step。
  *
- * **不删除。** 那几条 step 真实发生过、也已经逐 delta 渲染给用户看过；
- * 删掉会让已渲染的思考从界面上消失。标 `failure` 的用处在投影侧：
- * `stepsToUnits` 据它把失败那次的思考排除在模型视图之外，
- * 否则它会和重发那次的思考拼成一条回传给 provider。
+ * 不删除：这些 step 确实发生过，且已逐 delta 渲染给用户；
+ * 删除会使已渲染的思考从界面上消失。标记 `failure` 供投影侧使用：
+ * `stepsToUnits` 据此把失败尝试的思考排除在模型视图之外，
+ * 否则它会与重发尝试的思考拼接成一条回传给 provider。
  */
 export function failThinkingSteps(store: Store, ids: StepId[]): void {
   if (ids.length === 0) return
@@ -1974,28 +1972,28 @@ export function appendTextToStep(store: Store, id: StepId, text: string): void {
   store.db.query("UPDATE steps SET content = COALESCE(content,'') || ? WHERE id = ?").run(text, id)
 }
 
-/** 一个模型在一段时间里的请求收尾情况。分母是这段时间里为它开过的全部账本行。 */
+/** 一个模型在一段时间内的请求结束情况。分母是该时段内为它创建的全部账本行。 */
 export interface ModelFinishRate {
   model: string
   total: number
-  /** 流按协议收完尾的次数。 */
+  /** 流按协议正常结束的次数。 */
   received: number
-  /** 连接层面没成，收没收到、计没计费都不确定。 */
+  /** 连接层失败，是否送达、是否计费均无法确定。 */
   uncertain: number
-  /** provider 带状态码明确回绝。 */
+  /** provider 返回状态码明确拒绝。 */
   rejected: number
-  /** 这段时间里出现最多的那个错误码；一次错都没有则为 null。 */
+  /** 该时段内出现次数最多的错误码；没有错误时为 null。 */
   topErrorCode: string | null
 }
 
 /**
- * 按模型统计请求收尾率。
+ * 按模型统计请求的结束情况。
  *
- * 用途：回答「这条端点在本机稳不稳」。这个问题今天只能靠反复试来回答，
- * 而账本里逐行记着答案。
+ * 用途：判断某个端点在本机是否稳定。账本已逐行记录每次请求的结果，
+ * 无需反复试验。
  *
- * **边界：样本随会话删除**（`provider_requests.run_id` 是 ON DELETE CASCADE），
- * 所以统计的是现存会话，不是历史全量。
+ * 边界：样本随会话一并删除（`provider_requests.run_id` 是 ON DELETE CASCADE），
+ * 因此统计范围是现存会话，不是全部历史。
  */
 export function providerFinishRates(store: Store, since: number): ModelFinishRate[] {
   return store.db
@@ -2050,8 +2048,8 @@ function rowToWorkspace(r: WorkspaceRow): Workspace {
     rootPath: r.root_path,
     lastOpenedAt: r.last_opened_at,
     createdAt: r.created_at,
-    // 键不存在与键为 undefined 在 exactOptionalPropertyTypes 下不是一回事，
-    // 所以按 null 判断后再决定加不加这个键。
+    // 在 exactOptionalPropertyTypes 下，键不存在与键值为 undefined 不同，
+    // 因此先判断 null，再决定是否添加该键。
     ...(r.pinned_at === null || r.pinned_at === undefined ? {} : { pinnedAt: r.pinned_at }),
   }
 }
@@ -2100,7 +2098,7 @@ function rowToRun(r: RunRow): Run {
     usage: {
       inputTokens: r.input_tokens,
       outputTokens: r.output_tokens,
-      // 直接透传 null，不要 ?? 0——见 schema 注释。
+      // 直接透传 null，不要写 ?? 0，理由见 schema 注释。
       cachedTokens: r.cached_tokens,
       cacheWriteTokens: r.cache_write_tokens,
       reasoningTokens: r.reasoning_tokens,

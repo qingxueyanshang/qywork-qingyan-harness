@@ -1,27 +1,27 @@
 /**
- * 溢出恢复的完整链路——**假 provider 只造响应，其余全是真的**。
+ * 溢出恢复的完整链路：**假 provider 只构造响应，其余全部使用真实实现**。
  *
- * **为什么单测不够。** `compaction-loop.test.ts` 那条恢复测试用的是假 adapter：它抛的是测试内
- * `new` 出来的 `ProviderError`，`capacity` 字段是手填的。它**绕过了
- * 错误分类**——而分类是恢复的第一道判据，认不出就一次都不会触发。
+ * **单元测试不足的原因。** `agent/loop/compact.test.ts` 中的恢复测试使用假 adapter：它抛出的是测试内
+ * 直接构造的 `ProviderError`，`capacity` 字段由手工填写。它**绕过了
+ * 错误分类**，而分类是恢复的第一道判据，无法识别时恢复一次都不会触发。
  *
- * 实测（`scripts/overflow-recovery.ts`）发现 deepseek 撞窗不报错、是静默截断，
- * 报错型那条路在真实 provider 上撞不出来。所以这里只把 provider 造成会报错的
- * 那一种，其余全用真的：真实 HTTP、真实适配器、真实 `classifyProviderError`、
+ * 实测（`scripts/overflow-recovery.ts`）发现 deepseek 超出窗口时不报错，而是静默截断，
+ * 报错型路径在真实 provider 上无法触发。因此这里只把 provider 模拟为会报错的
+ * 类型，其余全部使用真实实现：真实 HTTP、真实适配器、真实 `classifyProviderError`、
  * 真实 `RuntimeCompaction`、真实 loop。
  *
- * 不走 WebSocket：那一层要的是订阅与鉴权，与恢复链路无关，掺进来只会让失败
- * 分不清是哪一侧的。
+ * 不经由 WebSocket：该层负责订阅与鉴权，与恢复链路无关，加入后只会使失败
+ * 无法区分来自哪一侧。
  *
- * **这条测试验到哪为止。** 验的是**从真实 HTTP 响应到恢复被触发**这一段：provider 回一个真实形状的
- * 容量拒绝 → 适配器抛出 → `classifyProviderError` 认出 `context_overflow`
- * 并带上 `capacity` → loop 拿它当凭证发起一次压缩。
+ * **本测试的验证范围。** 验证**从真实 HTTP 响应到恢复被触发**这一段：provider 返回一个真实形状的
+ * 容量拒绝 → 适配器抛出 → `classifyProviderError` 识别出 `context_overflow`
+ * 并带上 `capacity` → loop 以其为凭证发起一次压缩。
  *
- * **不验「压缩之后重发成功」**——那一段要让压缩真的把请求折小，而折多少取决于
- * 夹具堆了多少历史、保留预算多大，调的是夹具不是被测代码。它由
- * `compaction-loop.test.ts` 的「容量拒绝：压一次让请求变小之后重发成功」覆盖，
- * 那里用假压缩精确控制「变小」这件事。两条测试各验一半，边界写在这里免得
- * 下一个人把这条当成端到端覆盖。
+ * **不验证「压缩之后重发成功」**：该段要求压缩确实缩小请求，而缩小多少取决于
+ * 夹具累积的历史量与保留预算大小，调整的是夹具而不是被测代码。它由
+ * `agent/loop/compact.test.ts` 的「容量拒绝：压缩一次使请求变小后重发成功」覆盖，
+ * 该用例用假压缩精确控制请求的缩小。两条测试各验证一半，此处写明边界，
+ * 避免把本测试当作端到端覆盖。
  */
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
@@ -49,10 +49,10 @@ function sse(events: { type: string; [k: string]: unknown }[]): string {
 /**
  * 容量拒绝的**真实形状**。
  *
- * 照 OpenAI 兼容端点的原样写：HTTP 400 + `code: context_length_exceeded`，
- * 消息里带两个数。这两处正是 `capacity.ts` 取证的地方——原生码定 `matchSource`，
- * 消息里的数给 `reportedInputTokens`（用来校正锚点）。造得不像的话，
- * 这条测试只能证明分类器认得测试自己构造的错误。
+ * 按 OpenAI 兼容端点的原始格式编写：HTTP 400 + `code: context_length_exceeded`，
+ * 消息中带两个数值。这两处正是 `capacity.ts` 取证的位置：原生错误码决定 `matchSource`，
+ * 消息中的数值提供 `reportedInputTokens`（用于校正锚点）。构造得与真实格式不一致时，
+ * 本测试只能证明分类器能识别测试自己构造的错误。
  */
 function capacityRejection(): Response {
   return new Response(
@@ -89,8 +89,8 @@ function textTurn(id: string, text: string): Response {
 
 let rejected = 0
 /**
- * 摘要请求靠**请求体里有没有摘要提示词**认出来，不靠调用序号：压缩那一步排第几
- * 取决于 loop 内部顺序，按序号写的话顺序一改测试就静默测了别的请求。
+ * 摘要请求按**请求体中是否含摘要提示词**识别，不按调用序号：压缩步骤的次序
+ * 取决于 loop 内部顺序，按序号编写时顺序一旦改变，测试会在无提示的情况下检查另一个请求。
  */
 const provider = Bun.serve({
   port: 0,
@@ -125,12 +125,12 @@ afterAll(() => {
 })
 
 /**
- * 撞窗之后压一次再重发，整轮正常收尾。
+ * 超出窗口后以容量拒绝为凭证触发一次压缩。
  *
- * 断言的是**原始失败形状不再产生**：撞窗那一次不再是终点。光断言「压缩跑过」
- * 不够——压了但没重发，会话照样死在那里。
+ * 断言的是**分类识别出容量拒绝并触发恢复**：仅断言以 `context_overflow` 结束不够，
+ * 分类无法识别时压缩一次都不会执行，而结束状态相同。
  */
-test('容量拒绝 → 认出凭证 → 压一次 → 重发成功', async () => {
+test('容量拒绝 → 识别凭证 → 压缩一次 → 无法缩小时以 context_overflow 结束', async () => {
   const ws = upsertWorkspace(store, dir, 'overflow')
   const conv = createConversation(store, {
     workspaceId: ws.id,
@@ -140,11 +140,11 @@ test('容量拒绝 → 认出凭证 → 压一次 → 重发成功', async () =>
   })
 
   /*
-   * 历史要**堆过保留预算**才折得动。
+   * 历史必须**超过保留预算**才能被压缩。
    *
-   * 保留预算是 `tailRetain`（`@qywork/agent`）：`min(窗口/4, 60_000)`，1M 窗口下是 60,000 token。
-   * 堆得不够的话整段历史都落在保留区里，压缩返回「没什么可折」——
-   * 测试会表现为「恢复没触发」，而真正的原因是夹具太小。
+   * 保留预算是 `tailRetain`（`@qywork/agent`）：`min(窗口/4, 60_000)`，1M 窗口下为 60,000 token。
+   * 历史不足时整段历史都位于保留区内，压缩返回「无可压缩内容」，
+   * 测试结果为「恢复未触发」，而真正的原因是夹具过小。
    */
   for (let i = 0; i < 40; i++) {
     appendMessage(store, {
@@ -170,8 +170,8 @@ test('容量拒绝 → 认出凭证 → 压一次 → 重发成功', async () =>
       profile: () => profile,
     }),
   })
-  // 数一次调用。断言「恢复被触发」只能看这个——看摘要请求数不行，
-  // 收纳段够用时压缩本来就不调模型。
+  // 记录调用次数。断言「恢复被触发」只能依据该计数，不能依据摘要请求数：
+  // 收纳段足够时压缩不调用模型。
   let compactionRuns = 0
   const compaction = {
     project: (m: Parameters<typeof inner.project>[0]) => inner.project(m),
@@ -220,10 +220,10 @@ test('容量拒绝 → 认出凭证 → 压一次 → 重发成功', async () =>
   })
 
   /*
-   * history 必须**带着消息 id** 从账本里来。
+   * history 必须**带有消息 id**，从账本中读取。
    *
-   * 投影按单元键对齐（`_messageId`），传一份没有 id 的历史时 `project()` 一条也
-   * 折不掉、原样返回——压缩「成功」了而请求一个字节没少，恢复因此不重发。
+   * 投影按单元键对齐（`_messageId`），传入没有 id 的历史时 `project()` 无法压缩任何
+   * 条目、原样返回：压缩「成功」而请求未减少任何字节，恢复因此不重发。
    */
   const history = listMessages(store, conv.id, null).map((m) => ({
     role: m.role,
@@ -240,13 +240,13 @@ test('容量拒绝 → 认出凭证 → 压一次 → 重发成功', async () =>
     events.push(ev)
   }
 
-  // provider 真的拒了一次，且用的是真实形状的错误体。
+  // provider 确实拒绝了一次，且使用的是真实形状的错误体。
   expect(rejected).toBe(1)
-  // 凭证成立 → 恢复被触发：压缩真的跑了一次。**这是这条测试的核心断言**——
-  // 分类认不出的话，`compaction.run()` 一次都不会被调到。
+  // 凭证成立 → 恢复被触发：压缩确实执行了一次。**这是本测试的核心断言**：
+  // 分类无法识别时，`compaction.run()` 一次都不会被调用。
   expect(compactionRuns).toBe(1)
-  // 撞窗仍以 `context_overflow` 收尾（本次夹具里压缩折不动，不重发是对的）：
-  // 恢复失败时**不许把错误吞掉**，用户要能看见撞窗这件事。
+  // 超出窗口仍以 `context_overflow` 收尾（本次夹具中压缩无法缩小请求，不重发是正确的）：
+  // 恢复失败时**不得丢弃错误**，用户必须能看到超出窗口这一事件。
   const err = events.find((e) => e.type === 'run.error')
   expect(err?.type === 'run.error' && err.code).toBe('context_overflow')
 }, 30_000)

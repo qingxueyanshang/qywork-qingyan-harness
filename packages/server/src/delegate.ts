@@ -1,18 +1,18 @@
 /**
- * 派活端口的服务端实现：把任务派给一个子 agent，或推进一整张图。
+ * 任务派发端口的服务端实现：将任务派发给子 agent，或推进整个工作流图。
  *
- * **为什么在 server。** 派活 = 起或续一条子会话，那要 `Session` 与账本；两样都在依赖图上高于
- * tools。所以工具那边只声明端口（`DelegatePort`），实现落在这里。
+ * **实现位于 server。** 派发任务即新建或续接一条子会话，需要 `Session` 与账本，两者在依赖图上均高于
+ * tools。因此工具侧只声明端口（`DelegatePort`），实现位于此处。
  *
- * **派出即返回，完成是事件。** `dispatch` 只负责把它跑起来；子 agent 做完之后，
- * 这里写格的终态、组装回执，再把回执作为一条消息投进父会话（忙就在下一个 step
- * 边界注入，闲就当场起一轮）。等待、汇合、「这一轮结束就停掉它们」都不存在了。
+ * **派发后立即返回，完成以事件通知。** `dispatch` 只负责启动子 agent；子 agent 完成之后，
+ * 此处写入节点终态、组装回执，再将回执作为一条消息投递到父会话（父会话忙碌时在下一个 step
+ * 边界注入，空闲时立即启动一轮）。不设等待与汇合，本轮结束时也不停止子 agent。
  *
- * **一个派发函数。** `subagent` 工具派一个、`workflow` 图上每个节点，都经它：
- * 解析目标 → 子 agent 记录（新建或已有）→ 按种类跑 → 完成回调。不区分内置与外部 CLI。
+ * **单一派发函数。** `subagent` 工具的单次派发与 `workflow` 图上的每个节点都经由它：
+ * 解析目标 → 子 agent 记录（新建或已有）→ 按种类执行 → 完成回调。不区分内置与外部 CLI。
  *
- * **子 agent 的 id 就是它的子会话 id。** 三种种类一个 id 空间：角色与临时的子会话有正文；
- * 外部 CLI 那一行只有元数据与外部会话句柄（`externalSession`），正文在 CLI 自己那边。
+ * **子 agent 的 id 即其子会话 id。** 三个种类共用一个 id 空间：角色与临时子 agent 的子会话有正文；
+ * 外部 CLI 的会话记录只有元数据与外部会话句柄（`externalSession`），正文保存在 CLI 一侧。
  */
 
 import type { DelegatePort, SubagentSummary } from '@qywork/agent'
@@ -71,10 +71,10 @@ import { deliverAgentOutput, MAX_TIMEOUT_MS, openChangeWindow } from '@qywork/to
 import type { CommandDeps } from './deps.ts'
 import { memberModel, resolveModel as resolveMemberModel, runBuiltinMember } from './team-run.ts'
 
-/** 派活只用到装配三件套（账本、正文库、配置）与两张服务级表，不碰那条 WebSocket。 */
+/** 任务派发只使用装配的三项基础依赖（账本、正文库、配置）与两张服务级表，不涉及 WebSocket。 */
 type DelegateDeps = Omit<CommandDeps, 'ws'>
 
-/** 临时子 agent 的运行约束：没有系统提示词、不限工具。名字来自派发参数。 */
+/** 临时子 agent 的运行约束：无系统提示词、不限制工具。名称取自派发参数。 */
 const tempRole = (name: string): Role => ({ id: 'temp', name, description: '', systemPrompt: '' })
 
 interface Resolved {
@@ -83,39 +83,39 @@ interface Resolved {
   role: Role | null
   cli: CliAgent | null
   created: boolean
-  /** 解析时发现的、模型该知道的事实：续接没接上、角色已不在。 */
+  /** 解析时发现的、需要告知模型的事实：会话未能续接、角色已不存在。 */
   note?: string
 }
 
-/** 这一格挂在哪张卡上，以及它属不属于一张图。 */
+/** 节点所在的卡片（run 与 step），以及它是否属于工作流图。 */
 interface DispatchAt {
   runId: string
   stepId?: string
   nodeId?: string
-  /** 图节点才有：这张图的 id，与这一格的产出摘录该占单份视图尺寸的几分之一。 */
+  /** 仅图节点具有：工作流图的 id，以及该节点产出摘录所占的份额（单份视图尺寸的 1/share）。 */
   workflow?: { workflowId: string; share: number }
 }
 
-/** 一个子 agent 跑完之后可知的全部事实。 */
+/** 子 agent 执行完毕后可知的全部事实。 */
 interface Outcome {
   ok: boolean
   output: string
   error?: string
   stop?: StopReason | null
   note?: string
-  /** 只有外部 CLI 有：它是本机另一个进程，改了什么只有工作区观察器看得见。 */
+  /** 仅外部 CLI 具有：它是本机的另一个进程，其文件改动只能由工作区观察器获知。 */
   fileChanges?: FileChange[]
 }
 
 /**
- * 一条会话的子 agent 清单：种类、模型、此刻的状态。运行快照与右栏那一页读的是同一份。
- * 状态按账本判：有一轮在跑是 running，最近一轮没跑完是 failed，其余 idle。
+ * 会话的子 agent 清单：种类、模型、当前状态。运行快照与右栏的子 agent 页读取同一份数据。
+ * 状态按账本中最近一次节点状态判定：working 为 running，failed 或 interrupted 为 failed，其余为 idle。
  */
 export async function listSubagents(
   deps: Pick<DelegateDeps, 'store'>,
   conversationId: ConversationId,
 ): Promise<(SubagentSummary & { createdAt: number })[]> {
-  // 状态取自它最后一次出现在卡上的那一格，三种同一条规则：外部 CLI 不建 run，按 runs 判永远是空闲。
+  // 状态取自该子 agent 最后一次出现在卡片上的节点，三个种类使用同一规则：外部 CLI 不创建 run，按 runs 判定将始终为空闲。
   const phases = latestSubagentPhases(deps.store, conversationId)
   const out: (SubagentSummary & { createdAt: number })[] = []
   for (const c of listChildConversations(deps.store, conversationId)) {
@@ -143,32 +143,32 @@ export async function listSubagents(
 export function makeDelegate(ctx: {
   deps: DelegateDeps
   workspaceRoot: string
-  /** 派活的那条会话。子 agent 都归它，进度事件也发给它。 */
+  /** 发起派发的会话。子 agent 均归属于该会话，进度事件也发送给它。 */
   conversationId: ConversationId
   /**
-   * 把一条回执投进这条会话：忙就排进队列在下一个 step 边界注入，闲就当场起一轮。
+   * 将一条回执投递到该会话：会话忙碌时排入队列，在下一个 step 边界注入；空闲时立即启动一轮。
    *
-   * **注入而不是 import**：那个函数与 `message.send` 是同一个（`run-control.ts`），
-   * 而它要调 `startRun`——直接 import 就是 `run-control` ↔ `delegate` 成环。
+   * **由调用方注入，不直接 import**：该函数与 `message.send` 是同一个实现（`run-control.ts`），
+   * 而它需要调用 `startRun`，直接 import 会使 `run-control` ↔ `delegate` 成环。
    */
   deliver: (followUp: FollowUp) => void
 }): DelegatePort {
   const { deps, workspaceRoot, conversationId, deliver } = ctx
 
   /**
-   * 本轮各次外部 CLI 已经报出去的工作区相对路径。一个 `makeDelegate` 对应一个
-   * `Session`，也就是一轮（`run-control.ts` 每条消息新建）。
+   * 本轮各次外部 CLI 已报告的工作区相对路径。一个 `makeDelegate` 对应一个
+   * `Session`，即一轮（`run-control.ts` 为每条消息新建）。
    *
-   * 观察器拿它对账：删掉整个目录时递归 watch 只给目录一条事件，其中的文件
-   * 两条来源都看不见，不对账就停在最后一次看见的状态。
+   * 观察器用它对账：删除整个目录时，递归 watch 只给出该目录的一条事件，目录中的文件
+   * 在两个来源中均不可见；不对账时这些文件停留在最后一次观察到的状态。
    */
   const reported = new Set<string>()
 
   /**
-   * 角色与团队规则**每次直接读文件**，不走 `acquireExtensions`。
+   * 角色与团队规则**每次直接读取文件**，不经由 `acquireExtensions`。
    *
-   * 那份扩展是引用计数缓存的，服务全程持有一份——因此模型这一轮用 `define_role`
-   * 刚建好的角色，在同一轮里派活时看不见。设置页那条接口（`api/team.ts`）出于同样的理由也是直接读。
+   * 扩展由引用计数缓存，服务运行期间始终持有一份；经由缓存读取时，模型在本轮用 `define_role`
+   * 新建的角色在同一轮派发任务时不可见。设置页的接口（`api/team.ts`）出于同样的原因也直接读取文件。
    */
   const team = async () => {
     const cfg = await loadTeamConfig(workspaceRoot)
@@ -176,15 +176,15 @@ export function makeDelegate(ctx: {
   }
 
   /**
-   * 父会话当前的「接口 × 模型」。子 agent 没点名模型时跟着它跑，而不是跟着 `config.active`。
-   * **每次现读**：模型是会话级属性，用户在界面上随时能切。
+   * 父会话当前的「接口 × 模型」。子 agent 未指定模型时沿用该组合，而不是 `config.active`。
+   * **每次实时读取**：模型是会话级属性，用户可随时在界面上切换。
    */
   const inherited = (): ModelRef | undefined => {
     const c = getConversation(deps.store, conversationId)
     return c?.provider && c.model ? { provider: c.provider, model: c.model } : undefined
   }
 
-  /** 这一次用哪一对：点名了就解析它，没点名就继承父会话。 */
+  /** 确定本次使用的接口与模型：指定了模型时解析该模型，未指定时继承父会话。 */
   const pick = (
     named?: string,
     provider?: string,
@@ -202,8 +202,8 @@ export function makeDelegate(ctx: {
   const children = () => listChildConversations(deps.store, conversationId)
 
   /**
-   * 解析派发目标。已有子 agent 按 id 取，并校验它属于本会话；新建的当场落一行，
-   * id 从此固定，进度事件与图卡在它跑起来之前就拿得到入口。
+   * 解析派发目标。已有子 agent 按 id 取得，并校验其属于本会话；新建时立即写入一条会话记录，
+   * id 随即固定，进度事件与图卡片在子 agent 开始运行之前即可取得入口。
    */
   const resolveTarget = async (
     target: SubagentTarget,
@@ -211,24 +211,24 @@ export function makeDelegate(ctx: {
     provider?: string,
   ): Promise<Resolved | { error: string }> => {
     const parent = getConversation(deps.store, conversationId)
-    if (!parent) return { error: '找不到当前会话' }
+    if (!parent) return { error: '未找到当前会话' }
 
     if ('subagent' in target) {
       if (model || provider) {
-        return { error: '续接已有子 agent 时不能再指定模型，它沿用自己的会话' }
+        return { error: '续接已有子 agent 时不能另行指定模型，子 agent 沿用其原有会话' }
       }
       const conversation = getConversation(deps.store, target.subagent as ConversationId)
       if (!conversation || conversation.parentConversationId !== conversationId) {
-        return { error: `本会话里没有子 agent ${target.subagent}` }
+        return { error: `本会话中没有子 agent ${target.subagent}` }
       }
       if (conversation.source === 'cli') {
         const cli = conversation.sourceRef ? await findCli(conversation.sourceRef) : null
-        if (!cli) return { error: `本机没有识别到 ${conversation.sourceRef}` }
-        // 接不上会话照跑，但把事实交回：模型知道它只收到了这次的指令。
+        if (!cli) return { error: `本机未识别到 ${conversation.sourceRef}` }
+        // 无法续接会话时照常执行，但将该事实返回给模型：子 agent 只收到了本次的指令。
         const note = !conversation.externalSession
-          ? '这家 CLI 上次没有给会话号，这次是新开的会话，它只收到了这次的指令'
+          ? '该 CLI 上次未提供会话号，本次为新会话，只收到了本次的指令'
           : !cli.resumeArgs
-            ? `${cli.id} 不支持续接会话，这次是新开的会话，它只收到了这次的指令`
+            ? `${cli.id} 不支持续接会话，本次为新会话，只收到了本次的指令`
             : undefined
         return { conversation, role: null, cli, created: false, ...(note ? { note } : {}) }
       }
@@ -240,21 +240,21 @@ export function makeDelegate(ctx: {
           role: tempRole(conversation.title),
           cli: null,
           created: false,
-          note: `角色 ${conversation.sourceRef} 已不在 team.json，这次按临时子 agent 跑（没有系统提示词与工具限制）`,
+          note: `角色 ${conversation.sourceRef} 已不在 team.json，本次按临时子 agent 运行（无系统提示词与工具限制）`,
         }
       }
       return { conversation, role: tempRole(conversation.title), cli: null, created: false }
     }
 
     if (target.kind === 'cli') {
-      // 外部 CLI 用它自己的模型。当场说出来，不要照跑一遍，那在界面上等同于换过了模型。
+      // 外部 CLI 使用自身的模型。此处直接返回错误，不要忽略模型参数照常执行：那样界面显示的模型与实际使用的模型不一致。
       if (model || provider) {
         return {
-          error: `${target.cli} 用它自己的模型，指定不了 ${provider ? `${provider}/` : ''}${model ?? ''}`,
+          error: `${target.cli} 使用自身的模型，无法指定 ${provider ? `${provider}/` : ''}${model ?? ''}`,
         }
       }
       const cli = await findCli(target.cli)
-      if (!cli) return { error: `本机没有识别到 ${target.cli}` }
+      if (!cli) return { error: `本机未识别到 ${target.cli}` }
       const conversation = createConversation(deps.store, {
         workspaceId: parent.workspaceId,
         provider: 'cli',
@@ -272,7 +272,7 @@ export function makeDelegate(ctx: {
     let role: Role
     if (target.kind === 'role') {
       const found = (await team()).roles.find((r) => r.id === target.role)
-      if (!found) return { error: `这个项目里没有角色 ${target.role}` }
+      if (!found) return { error: `本项目中没有角色 ${target.role}` }
       role = found
     } else {
       role = tempRole(target.name)
@@ -292,8 +292,8 @@ export function makeDelegate(ctx: {
   }
 
   /**
-   * 一格的名字与种类，给图上写状态用。同步：角色、CLI、已有子 agent 三份清单在图开跑前读一次。
-   * 续接已有子 agent 时种类只能从那条会话记录取——参数里只有一个 id。
+   * 节点的名称与种类，用于在图上写入状态。同步函数：角色、CLI、已有子 agent 三份清单在图开始运行前读取一次。
+   * 续接已有子 agent 时种类只能从其会话记录取得：参数中只有 id。
    */
   const describeWith =
     (roles: Role[], clis: CliAgent[], existing: Conversation[]) =>
@@ -312,9 +312,9 @@ export function makeDelegate(ctx: {
     }
 
   /**
-   * 一格的状态变了：先写进那张卡的 step，再广播。派一件与图上的节点同一条路——派一件就是
-   * 一张只有一格的图。**先落账再广播**：切走父会话会错过广播，切回来从 step 回放。
-   * 没有 `stepId` 的调用（没有卡）什么都不记。
+   * 节点状态变化：先写入所在卡片的 step，再广播。单次派发与图上的节点使用同一路径：单次派发即
+   * 只有一个节点的图。**先写入账本再广播**：切离父会话会错过广播，切回时从 step 回放。
+   * 没有 `stepId` 的调用（没有卡片）不记录任何内容。
    */
   const note =
     (at: { runId: string; stepId?: string }, nodeId: string) =>
@@ -328,8 +328,8 @@ export function makeDelegate(ctx: {
     }
 
   /**
-   * 产出过投递闸的上下文。**摘录长度按父会话当前模型的窗口算**——回执要进的是它的上下文。
-   * 模型不在配置里时按未收录模型的保守窗口，不为此拒发回执。
+   * 产出经过投递限制时使用的上下文。**摘录长度按父会话当前模型的窗口计算**：回执进入的是父会话的上下文。
+   * 模型不在配置中时按未收录模型的保守窗口计算，不因此拒绝发送回执。
    */
   const deliveryContext = (runId: string) => {
     const conv = getConversation(deps.store, conversationId)
@@ -349,9 +349,9 @@ export function makeDelegate(ctx: {
   }
 
   /**
-   * 子 agent 的产出过闸。**这一步不能省**：产出没有上界，一份被杀在半路的外部 CLI
-   * 回执实测二十六万字符，整段进上下文之后压缩层已经无从下手（单条消息超过压缩保留的
-   * 尾部），那一轮的读数会直接越过窗口。超出摘录尺寸的落盘，正文里留定位符。
+   * 子 agent 的产出经过投递限制。**不能省略此步骤**：产出没有上限，一次中途被终止的外部 CLI
+   * 回执实测为二十六万字符；整段进入上下文后压缩无法处理（单条消息超过压缩保留的
+   * 上下文末尾），该轮的读数会直接超出窗口。超出摘录尺寸的部分写入磁盘，正文中保留定位符。
    */
   const excerpt = (at: DispatchAt, nodeId: string, body: string): string => {
     if (!body) return ''
@@ -363,12 +363,12 @@ export function makeDelegate(ctx: {
     }).text
   }
 
-  /** 一条回执进队列。id 只要唯一：它服务的是队列去重与那张卡的寻址。 */
+  /** 将一条回执加入队列。id 只需唯一：它用于队列去重与卡片寻址。 */
   const send = (content: string, origin: 'subagent' | 'workflow'): void => {
     deliver({ id: `rc_${crypto.randomUUID()}`, content, steer: true, origin })
   }
 
-  // ─────────────────────────── 派出 ───────────────────────────
+  // ─────────────────────────── 派发 ───────────────────────────
 
   const dispatch: DelegatePort['dispatch'] = async (input) => {
     return start(input.target, input.task, {
@@ -381,10 +381,10 @@ export function makeDelegate(ctx: {
   }
 
   /**
-   * 派出去，当场返回。跑完之后由 `complete` 写终态、发回执。
+   * 派发后立即返回。执行完毕后由 `complete` 写入终态并发送回执。
    *
-   * controller **不链任何 run 的信号**：子 agent 的生命期跟着会话，
-   * 停它的只有三处——按会话停止、删会话、服务退出，全部经在跑表。
+   * controller **不关联任何 run 的信号**：子 agent 的生命期跟随会话，
+   * 只有三处能停止它：按会话停止、删除会话、服务退出，均经由运行表。
    */
   const start = async (
     target: SubagentTarget,
@@ -394,14 +394,14 @@ export function makeDelegate(ctx: {
     const nodeId = at.nodeId ?? SUBAGENT_NODE_ID
     const resolved = await resolveTarget(target, at.model, at.provider)
     if ('error' in resolved) {
-      // 目标不成立也是这一格的终态：不写的话卡上那格永远停在等待，而工具说派不出去。
+      // 目标无效同样是该节点的终态：不写入时卡片上该节点始终停留在等待，而工具已报告无法派发。
       note(
         at,
         nodeId,
       )({
         phase: 'failed',
         label: targetLabel(target),
-        // 只给了子 agent id 时判不出种类：那条会话没解析成，记录取不到。
+        // 只提供子 agent id 时无法判定种类：该会话未能解析，无法取得记录。
         ...('subagent' in target ? {} : { kind: target.kind }),
         error: resolved.error,
       })
@@ -424,8 +424,8 @@ export function makeDelegate(ctx: {
     void perform(resolved, task, at, controller.signal)
       .then((outcome) => complete(resolved, at, outcome, controller.signal, started))
       .catch((err) => {
-        // `perform` 自己 try/catch 不抛，走到这里的是完成回调里的意外：
-        // **必须落终态**，否则卡上那一格停在「进行中」，而没有人会再来收它。
+        // `perform` 内部捕获异常、不抛出，到达此处的是完成回调中的意外异常：
+        // **必须写入终态**，否则卡片上该节点停留在「进行中」，且之后没有任何路径会再处理它。
         complete(
           resolved,
           at,
@@ -445,7 +445,7 @@ export function makeDelegate(ctx: {
     }
   }
 
-  /** 真正把它跑起来。**不抛**：失败是返回值，终态由 `complete` 统一落。 */
+  /** 实际启动执行。**不抛出异常**：失败以返回值表示，终态由 `complete` 统一写入。 */
   const perform = async (
     resolved: Resolved,
     task: string,
@@ -457,17 +457,17 @@ export function makeDelegate(ctx: {
     const nodeId = at.nodeId ?? SUBAGENT_NODE_ID
     try {
       if (cli) {
-        // 它是本机另一个进程，跑完之前写了什么，不发出来一个字都看不到。
+        // 外部 CLI 是本机的另一个进程，执行完毕之前写入的内容只能经由观察器推送获知。
         const stepId = at.stepId
-        // 必须先开窗再起进程：窗口起点之前写下的文件判不出是这个 CLI 新建的。
-        // 起不来时收掉窗口：不收的话它一直排在最前，此后的窗口收不到任何事件。
+        // 必须先打开观察窗口再启动进程：窗口起点之前写入的文件无法判定为该 CLI 新建。
+        // 无法启动时关闭窗口：不关闭则该窗口始终排在最前，此后的窗口收不到任何事件。
         const changeWindow = openChangeWindow(workspaceRoot, { reported })
         const r = await runCli(cli, {
           prompt: task,
           workspaceRoot,
           signal,
           ...(conversation.externalSession ? { resume: conversation.externalSession } : {}),
-          // 外部 CLI 要它自己的 key 才能执行，但 qywork 配置里那几把它一把用不上。
+          // 外部 CLI 使用自身的 key 执行；qywork 配置中的 key 对它没有用途，按值剥离。
           secrets: collectSecrets(deps.config),
           ...(stepId
             ? {
@@ -487,17 +487,17 @@ export function makeDelegate(ctx: {
           if (c.changeType === 'deleted') reported.delete(c.path)
           else reported.add(c.path)
         }
-        // 观察范围不完整要说出来：不说的话，一次没跑完的过滤与一次真的没有改动分不开。
-        if (watched.incomplete) notes.push('工作区观察范围不完整，这次的文件改动清单可能有遗漏')
-        // 会话句柄无论成败都记下：执行失败时更需要续接会话问清楚断点。
+        // 观察范围不完整时必须告知模型：不说明时，观察遗漏与确实没有改动无法区分。
+        if (watched.incomplete) notes.push('工作区观察范围不完整，本次的文件改动清单可能有遗漏')
+        // 无论成败均记录会话句柄：执行失败时更需要续接会话以确认中断位置。
         if (r.session) setConversationExternalSession(deps.store, conversation.id, r.session)
         else if (!conversation.externalSession) {
-          notes.push('该 CLI 未提供会话号，续派时不会保留本次内容，任务需完整描述')
+          notes.push('该 CLI 未提供会话号，再次派发时不会保留本次内容，任务须完整描述')
         }
         const error = r.ok
           ? undefined
           : r.timedOut
-            ? `静默 ${MAX_TIMEOUT_MS / 1000} 秒，已终止`
+            ? `${MAX_TIMEOUT_MS / 1000} 秒无输出，已终止`
             : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`
         return {
           ok: r.ok,
@@ -521,7 +521,7 @@ export function makeDelegate(ctx: {
           deps,
           workspaceRoot,
           ...(rules.shared ? { shared: rules.shared } : {}),
-          // 子会话的事件按**它自己的会话 id** 发；图卡进度归父会话，是上面那条 `note`。
+          // 子会话的事件按**子会话自身的 id** 发布；图卡片的进度属于父会话，由上方的 `note` 发布。
           onEvent: (ev, cid) => deps.bus.publish(ev, cid),
         },
       )
@@ -533,17 +533,17 @@ export function makeDelegate(ctx: {
         ...(notes.length ? { note: notes.join('；') } : {}),
       }
     } catch (err) {
-      // 成员会话自己 try/catch 不抛（`team-run.ts`），走到这里的是装配期的意外。
+      // 成员会话内部捕获异常、不抛出（`team-run.ts`），到达此处的是装配阶段的意外异常。
       return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) }
     }
   }
 
   /**
-   * 一个子 agent 落终态：写格、发回执、图上接着往下派。
+   * 子 agent 进入终态：写入节点状态、发送回执、继续派发图上的后续节点。
    *
-   * **被中断的不发回执，也不推进图。** 中断只来自「停这条会话」与服务退出，两者都是
-   * 「这条会话的活全停」；投一条回执进去等于停完又起一轮，正好与用户按的那一下相反。
-   * 事实写在格上，模型下次被唤醒时从快照里看得到。
+   * **被中断的子 agent 不发送回执，也不推进图。** 中断只来自停止该会话与服务退出，两者的含义均为
+   * 停止该会话的全部执行；投递回执会在停止后再启动一轮，与用户的操作相反。
+   * 中断事实写入节点状态，模型下次被唤醒时可从快照中读取。
    */
   const complete = (
     resolved: Resolved,
@@ -585,17 +585,17 @@ export function makeDelegate(ctx: {
     send([head(resolved, outcome.ok, error), output].filter(Boolean).join('\n'), 'subagent')
   }
 
-  /** 回执第一行：谁、什么结果。种类词与界面、提示词同一张表。 */
+  /** 回执首行：执行者与结果。种类名称与界面、提示词使用同一张表。 */
   const head = (resolved: Resolved, ok: boolean, error?: string): string => {
     const kind = resolved.conversation.source ?? 'temp'
     const who = `${SUBAGENT_KIND_LABEL[kind]} ${resolved.conversation.title}`
-    const tail = ok ? '已返回' : `没做成：${error ?? '没有说明原因'}`
+    const tail = ok ? '已返回' : `失败：${error ?? '未说明原因'}`
     return `[子 agent 回执] ${who}（subagentId ${resolved.conversation.id}）${tail}`
   }
 
   // ─────────────────────────── 图 ───────────────────────────
 
-  /** 图上一格的产出摘录该占单份视图尺寸的几分之一：同一条检查点回执里几格平分。 */
+  /** 图节点产出摘录所占的份额（单份视图尺寸的 1/share）：同一条检查点回执中的各节点平分。 */
   const shareOf = (nodes: WorkflowNode[], nodeId: string): number => {
     const checkpoint = nodes.find(
       (node): node is WorkflowCheckpointNode =>
@@ -608,7 +608,7 @@ export function makeDelegate(ctx: {
     return Math.max(1, agents.length)
   }
 
-  /** 把推进器算出来的这一趟落下去：跳过的、排队的、要派的、到了的检查点。 */
+  /** 将推进器本次的计算结果写入账本并执行：跳过、排队、待派发的节点与已到达的检查点。 */
   const applyAdvance = (
     result: AdvanceResult,
     projection: WorkflowProjection,
@@ -626,10 +626,10 @@ export function makeDelegate(ctx: {
     at: { runId: string; stepId?: string },
   ): void => {
     /*
-     * 先同步占住这一格再去解析目标。
+     * 先同步占用该节点，再解析目标。
      *
-     * 解析要 await（读角色库、探测 CLI），那段窗口里另一格跑完就会重新推进一次，
-     * 而那时这一格在账本上还没有状态——推进器会把它再派一次，同一格因此有两个子 agent。
+     * 解析需要 await（读取角色库、探测 CLI），期间另一节点执行完毕会再次推进，
+     * 而此时该节点在账本中尚无状态，推进器会再次派发它，同一节点因此有两个子 agent。
      */
     const prior = projection.states[plan.nodeId]
     note(
@@ -654,10 +654,10 @@ export function makeDelegate(ctx: {
   }
 
   /**
-   * 一格跑完之后接着推进这张图：从账本重建投影，算出这一趟该派谁。
+   * 节点执行完毕后继续推进该图：从账本重建投影，计算本次应派发的节点。
    *
-   * **从账本重建，不留内存里的图。** 派活通道每一轮新建，而一格跑完可能已经是好几轮
-   * 之后的事；账本是唯一能跨轮回答「这张图跑到哪了」的地方。
+   * **从账本重建，不在内存中保留图。** 任务派发通道每一轮新建，而节点执行完毕可能发生在若干轮
+   * 之后；只有账本能跨轮记录图的执行进度。
    */
   const continueGraph = (
     workflowId: string,
@@ -666,7 +666,7 @@ export function makeDelegate(ctx: {
   ): void => {
     const folded = foldWorkflow(listWorkflowRecords(deps.store, conversationId), workflowId)
     if (!folded.ok) {
-      send(`[workflow 回执] ${workflowId} 的账本读不回来：${folded.error}`, 'workflow')
+      send(`[workflow 回执] ${workflowId} 的账本无法读取：${folded.error}`, 'workflow')
       return
     }
     const projection = folded.projection
@@ -681,20 +681,20 @@ export function makeDelegate(ctx: {
       })
     } catch (err) {
       send(
-        `[workflow 回执] ${workflowId} 推进不下去：${err instanceof Error ? err.message : String(err)}`,
+        `[workflow 回执] ${workflowId} 无法推进：${err instanceof Error ? err.message : String(err)}`,
         'workflow',
       )
       return
     }
     /*
-     * 失败先单发一条，其余格照跑——父会话不必等整批跑完才知道有一格早就失败了。
-     * 这一趟同时到了检查点就不发：检查点回执里逐格列着，同一件事印两处。
+     * 节点失败时先单独发送一条回执，其余节点照常执行：父会话无需等待整批执行完毕即可得知失败。
+     * 本次推进同时到达检查点时不单独发送：检查点回执已逐个列出节点，单独发送会使同一信息出现两次。
      */
     if (just.failed && !result.checkpoint) {
       const receipt = projection.results[just.nodeId]
       send(
         [
-          `[workflow 回执] ${just.nodeId}（${receipt?.label ?? just.nodeId}）没做成：${receipt?.error ?? '没有说明原因'}`,
+          `[workflow 回执] ${just.nodeId}（${receipt?.label ?? just.nodeId}）失败：${receipt?.error ?? '未说明原因'}`,
           `workflowId=${workflowId}`,
         ].join('\n'),
         'workflow',
@@ -703,7 +703,7 @@ export function makeDelegate(ctx: {
     applyAdvance(result, projection, at)
   }
 
-  /** 检查点到了：把它上游每一格的回执摘录列出来，交回父会话决定 approve 还是 revise。 */
+  /** 到达检查点：列出其每个上游节点的回执摘录，交由父会话决定 approve 或 revise。 */
   const sendCheckpointReceipt = (projection: WorkflowProjection, checkpointId: string): void => {
     const checkpoint = projection.nodes.find(
       (node): node is WorkflowCheckpointNode =>
@@ -716,7 +716,7 @@ export function makeDelegate(ctx: {
       .filter((receipt): receipt is NonNullable<typeof receipt> => !!receipt)
       .map((receipt) => {
         const state =
-          receipt.status === 'done' ? '已返回' : `没做成：${receipt.error ?? receipt.status}`
+          receipt.status === 'done' ? '已返回' : `失败：${receipt.error ?? receipt.status}`
         const body = [receipt.output, receipt.note].filter(Boolean).join('\n')
         return `### ${receipt.nodeId}（${receipt.label}）${state}\n${body || '无产出'}`
       })
@@ -760,8 +760,8 @@ export function makeDelegate(ctx: {
     },
 
     /**
-     * 推进一张图。首派校验并把就绪的格派出去，审查动作先落批准或修订再派下一批，
-     * 两条都当场返回：格跑完的回执与检查点回执由完成回调投递。
+     * 推进工作流图。首次派发时校验并派发就绪的节点；审查动作先写入批准或修订，再派发下一批。
+     * 两种调用均立即返回：节点执行完毕的回执与检查点回执由完成回调投递。
      */
     async runGraph(input) {
       const startedAt = Date.now()
@@ -785,7 +785,7 @@ export function makeDelegate(ctx: {
           approvals: {},
         }
       } else {
-        // 本次调用那条记录要排除：它的审查动作在下面当场应用，折进来就成了应用两次。
+        // 排除本次调用的记录：其审查动作在下方直接应用，纳入折叠会导致应用两次。
         const folded = foldWorkflow(
           listWorkflowRecords(deps.store, conversationId, input.stepId as StepId),
           workflowId,
@@ -793,8 +793,8 @@ export function makeDelegate(ctx: {
         if (!folded.ok) return { ok: false, error: folded.error }
         projection = folded.projection
         /*
-         * 这道闸只拦 approve。revise 对任意检查点都成立，包括已批准的与被打断的：
-         * 「批准 = 解散」正是返工只能另起一个子 agent 的根因，被打断的图也靠 revise 续跑原子 agent。
+         * 此检查只拦截 approve。revise 对任意检查点均有效，包括已批准的与被中断的：
+         * 若批准即解散子 agent，返工只能另起新的子 agent；被中断的图也依靠 revise 续接原有子 agent。
          */
         if (input.call.decision === 'approve') {
           if (projection.phase === 'failed') {
@@ -821,10 +821,10 @@ export function makeDelegate(ctx: {
         }
       }
 
-      // 真机上出现过工具已开始执行、几分钟后才写第一格的情形，来源未定；起跑前的耗时超过两秒就记一行。
+      // 实际运行中出现过工具开始执行数分钟后才写入第一个节点状态的情形，原因未明；开始执行前的耗时超过两秒时记录一条日志。
       const foldedAt = Date.now()
       if (foldedAt - startedAt > 2000) {
-        log.warn('workflow', '起跑前耗时过长', {
+        log.warn('workflow', '开始执行前耗时过长', {
           totalMs: foldedAt - startedAt,
           listMs: listedAt - startedAt,
           foldMs: foldedAt - listedAt,
@@ -833,8 +833,8 @@ export function makeDelegate(ctx: {
 
       let result: AdvanceResult
       try {
-        // 图本身不合法（成环、悬空依赖、引用不到目标）与审查不成立都在这里落地：
-        // 它是模型写错了参数，要原样告诉它，不能压成一句「工具执行出错」。
+        // 图本身不合法（成环、悬空依赖、引用的目标不存在）与审查无效均在此处返回：
+        // 这些是模型的参数错误，须原样告知模型，不能概括为「工具执行出错」。
         validatePlan(projection.nodes, {
           roles: new Set(roles.map((r) => r.id)),
           clis: new Set(clis.map((c) => c.id)),
@@ -852,7 +852,7 @@ export function makeDelegate(ctx: {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
 
-      // 图一开跑就把还没派的格标成等待：刷新之后也看得见全貌，不只看见跑起来的那几格。
+      // 图开始运行时即将尚未派发的节点标为等待：刷新后可看到全部节点，而不只是已运行的节点。
       if (input.call.kind === 'start') {
         const describe = describeWith(roles, clis, existing)
         for (const node of projection.nodes) {

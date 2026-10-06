@@ -1,8 +1,8 @@
 /**
- * 覆盖 `anthropic.ts` 的请求体装配与流解析：工具结果（含图片块）到 Messages 协议的
- * wire 形状，原生思考块（签名、密文、位置）的采集与原位回放。起本机 server 当端点，
- * 把收到的 body 原样存下来——公共层测试只能证明图片块存在，证明不了最后一个
- * serializer 没有改形或丢块。
+ * 覆盖 `anthropic.ts` 的请求体装配与流解析：工具结果（含图片块）转换为 Messages 协议的
+ * wire 形状，原生思考块（签名、密文、位置）的采集与原位回放。启动本机 server 作为端点，
+ * 原样保存收到的 body：公共层测试只能证明图片块存在，无法证明最后一个
+ * serializer 未改变形状或丢失块。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -17,10 +17,10 @@ const requestHeaders: Headers[] = []
 let lastEvents: ProviderEvent[] = []
 let server: ReturnType<typeof Bun.serve>
 let base = ''
-/** 端点这一次回的事件流；采集用例临时换掉，结束时还原。 */
+/** 端点本次返回的事件流；采集用例临时替换，结束时还原。 */
 let reply = ''
 
-/** SDK 能读完的最小事件流：一段正文 + end_turn 终态。 */
+/** SDK 可完整读取的最小事件流：一段正文与 end_turn 终态。 */
 const SSE = [
   'event: message_start',
   `data: ${JSON.stringify({
@@ -107,7 +107,7 @@ describe('思考档位严格遵守用户选择', () => {
     expect(body.output_config).toEqual({ effort: 'medium' })
   })
 
-  test('MiMo 按 Messages 形状回传文本轮与工具轮思考，不发送伪强度', async () => {
+  test('MiMo 按 Messages 形状回传文本轮与工具轮思考，不发送虚构的强度参数', async () => {
     const body = await send(
       [
         { role: 'user', content: '开始' },
@@ -173,7 +173,7 @@ describe('思考档位严格遵守用户选择', () => {
         )
         expect(body.thinking).toBeUndefined()
         expect(body.output_config).toEqual({ effort })
-        // send 只申请 64 token，恒开思考按适配器已有规则预留到 16K。
+        // send 只申请 64 token，思考恒开时按适配器既有规则预留至 16K。
         expect(body.max_tokens).toBe(16_000)
         const history = body.messages as { content: Record<string, unknown>[] }[]
         expect(history[1]?.content).toContainEqual({
@@ -232,14 +232,14 @@ describe('思考档位严格遵守用户选择', () => {
     expect(body.output_config).toEqual({ effort: 'max' })
   })
 
-  test('模型不支持的档位省略，不静默换成最高档', async () => {
+  test('模型不支持的档位省略，不静默替换为最高档', async () => {
     const body = await send([{ role: 'user', content: 'hi' }], 'minimal')
     expect(body).not.toHaveProperty('output_config')
   })
 })
 
 describe('工具结果带图片', () => {
-  test('tool_result 落在 user 轮里，text 与 image 块顺序保留', async () => {
+  test('tool_result 位于 user 轮中，text 与 image 块保持原顺序', async () => {
     const body = await send([
       { role: 'user', content: '看图' },
       {
@@ -264,7 +264,7 @@ describe('工具结果带图片', () => {
     )
     expect(toolTurn).toBeDefined()
     expect(toolTurn!.role).toBe('user')
-    // 合并用的内部标记不得进请求体。
+    // 合并用的内部标记不得进入请求体。
     expect('_toolBatch' in toolTurn!).toBe(false)
     const block = (toolTurn!.content as Record<string, unknown>[]).find(
       (b) => b.type === 'tool_result',
@@ -298,7 +298,7 @@ describe('工具结果带图片', () => {
     expect(result?.content).toBe(omitted)
   })
 
-  test('同一轮的多个工具结果合并进一条 user 消息', async () => {
+  test('同一轮的多个工具结果合并为一条 user 消息', async () => {
     const body = await send([
       { role: 'user', content: '看' },
       {
@@ -329,12 +329,12 @@ describe('连接', () => {
   test('每次请求都声明不复用连接', async () => {
     requestHeaders.length = 0
     await send([{ role: 'user', content: 'hi' }])
-    // 中转站会掐掉空闲的 keep-alive 连接，复用旧连接的下一次请求当场断开或一直静默。
+    // 中转站会关闭空闲的 keep-alive 连接，复用旧连接的下一次请求会立即断开或持续无响应。
     expect(requestHeaders[0]?.get('connection')).toBe('close')
   })
 })
 
-/** 按事件对象拼一段 SSE，末尾是否带 `message_stop` 由调用方决定。 */
+/** 按事件对象拼接一段 SSE，末尾是否带 `message_stop` 由调用方决定。 */
 function sse(events: Record<string, unknown>[]): string {
   return `${events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n`).join('\n')}\n`
 }
@@ -353,7 +353,7 @@ const START = {
   },
 }
 
-/** Opus 5.5 的进度块形态：思考 → 正文 → 思考 → 工具调用，签名分两段到达。 */
+/** Opus 5.5 的交错块形态：思考 → 正文 → 思考 → 工具调用，签名分两段到达。 */
 const THINKING_TURN = [
   START,
   {
@@ -412,7 +412,7 @@ async function capture(events: Record<string, unknown>[]): Promise<ProviderEvent
   try {
     await send([{ role: 'user', content: 'hi' }], undefined, 'claude-opus-5-5')
   } catch {
-    // 截断用例在这里抛出；事件已经记在 lastEvents 里。
+    // 截断用例在此处抛出；事件已记录在 lastEvents 中。
   } finally {
     reply = SSE
   }
@@ -420,7 +420,7 @@ async function capture(events: Record<string, unknown>[]): Promise<ProviderEvent
 }
 
 describe('原生思考块', () => {
-  test('采集签名、密文与位置锚，思考 token 取回执', async () => {
+  test('采集签名、密文与位置锚，思考 token 取自回执', async () => {
     const events = await capture([...THINKING_TURN, { type: 'message_stop' }])
     const reasoning = events.find((e) => e.type === 'response_reasoning')
     expect(reasoning?.type === 'response_reasoning' && reasoning.reasoning).toEqual({
@@ -449,7 +449,7 @@ describe('原生思考块', () => {
     prefix: 'p',
   }
 
-  test('按位置锚原样插回，正文不再另发，锚到已丢弃调用的块排在末尾回放', async () => {
+  test('按位置锚原样插回，正文不再另行发送，锚定已丢弃调用的块排在末尾回放', async () => {
     const body = await send(
       [
         { role: 'user', content: '读 a.ts' },
@@ -475,7 +475,7 @@ describe('原生思考块', () => {
     ])
   })
 
-  /** 实测形状：写大文件的参数写到一半被截断，整批调用丢弃，续写时仍要带上动手前的思考。 */
+  /** 实测形状：写入大文件的参数在中途被截断，整批调用被丢弃，续写时仍须携带调用前的思考。 */
   test('截断轮：第一个已丢弃调用之前的思考回放，其后的块不回放', async () => {
     const body = await send(
       [
@@ -501,10 +501,10 @@ describe('原生思考块', () => {
     expect(assistant.content).toEqual([{ type: 'thinking', thinking: '设计', signature: 'sig-1' }])
   })
 
-  test('纯文本轮同样回放；缓存断点不落在思考块上', async () => {
+  test('纯文本轮同样回放；缓存断点不位于思考块上', async () => {
     const body = await send(
       [
-        // 前缀要够这条模型的最短可缓存长度，断点才会落下。
+        // 前缀须达到该模型的最短可缓存长度，断点才会生效。
         { role: 'user', content: '问'.repeat(1000) },
         {
           role: 'assistant',
@@ -527,7 +527,7 @@ describe('原生思考块', () => {
     ])
   })
 
-  test('没有原生块时 Claude 不发思考正文', async () => {
+  test('没有原生块时 Claude 不发送思考正文', async () => {
     const body = await send(
       [
         { role: 'user', content: '问' },

@@ -15,7 +15,7 @@ import {
   spawnGuarded,
 } from './sandbox.ts'
 
-/** 把 argv 里 `flag src dst` 这种三元组抽出来，方便按语义断言而不是按下标。 */
+/** 从 argv 中提取 `flag src dst` 三元组，便于按语义而不是按下标断言。 */
 function binds(argv: readonly string[], flag: string): { src: string; dst: string }[] {
   const out: { src: string; dst: string }[] = []
   for (let i = 0; i < argv.length; i++) {
@@ -45,7 +45,7 @@ describe('bash 路径解析', () => {
       ok.includes(p)
   const noGitBash = () => null
 
-  test('环境变量优先于一切平台位置', () => {
+  test('环境变量优先于所有平台默认位置', () => {
     const got = resolveBashPath({
       env: { [BASH_PATH_ENV]: 'D:/msys64/usr/bin/bash.exe' },
       platform: 'win32',
@@ -55,8 +55,8 @@ describe('bash 路径解析', () => {
     expect(got.path).toBe('D:/msys64/usr/bin/bash.exe')
   })
 
-  test('环境变量指到不存在的位置就当没有，不回落到搜索', () => {
-    // 回落的后果是命令可执行，但执行的并非指定的 bash，需对比输出才能发现。
+  test('环境变量指向不存在的位置时视为未找到，不回退到自动查找', () => {
+    // 回退后命令可以执行，但执行的并非指定的 bash，只能通过对比输出发现。
     const got = resolveBashPath({
       env: { [BASH_PATH_ENV]: 'D:/nope/bash.exe' },
       platform: 'win32',
@@ -64,13 +64,13 @@ describe('bash 路径解析', () => {
       gitBash: () => 'C:/Program Files/Git/bin/bash.exe',
     })
     expect(got.path).toBeNull()
-    // 理由要说得出是哪个变量指错了，否则用户只知道「没有 bash」而机器上有一个。
+    // 原因必须指明哪个变量指向错误，否则用户只看到「没有 bash」，而机器上实际装有 bash。
     expect(got.reason).toContain(BASH_PATH_ENV)
     expect(got.reason).toContain('D:/nope/bash.exe')
   })
 
   test('macOS 上 Homebrew 的 bash 排在自带的 /bin/bash 前面', () => {
-    // 自带的是 bash 3.2，没有 declare -A / mapfile / ${x,,}。
+    // 系统自带的是 bash 3.2，不支持 declare -A / mapfile / ${x,,}。
     const got = resolveBashPath({
       env: {},
       platform: 'darwin',
@@ -80,7 +80,7 @@ describe('bash 路径解析', () => {
     expect(got.path).toBe('/opt/homebrew/bin/bash')
   })
 
-  test('只有 /bin/bash 时就用它', () => {
+  test('只有 /bin/bash 时使用它', () => {
     expect(
       resolveBashPath({
         env: {},
@@ -91,9 +91,9 @@ describe('bash 路径解析', () => {
     ).toBe('/bin/bash')
   })
 
-  test('找不到 bash 就报 null 加原因，这一层不落回 sh 也不落回 PowerShell', () => {
-    // 锁两件事：**这一层只回答「有没有 bash」**（落回哪个 shell 归 resolveCommandShell），
-    // 以及**「没有」是一种可上报的状态而不是崩溃**——服务得起得来才能把这句话说给用户听。
+  test('未找到 bash 时返回 null 与原因，这一层不回退到 sh 或 PowerShell', () => {
+    // 锁定两点：这一层只回答是否有 bash（回退到哪个 shell 由 resolveCommandShell 决定），
+    // 以及「没有」是可上报的状态而不是崩溃：服务必须能启动，才能把这一状态告知用户。
     const win = resolveBashPath({ env: {}, platform: 'win32', exists: never, gitBash: noGitBash })
     expect(win.path).toBeNull()
     expect(win.reason).toContain('Git for Windows')
@@ -104,25 +104,25 @@ describe('bash 路径解析', () => {
 })
 
 /**
- * 三档 shell 探测。
+ * 三级 shell 探测。
  *
- * **本机只可能命中其中一档**（这台开发机装着 Git Bash，第一步就返回），
- * 所以顺序、每档的 argv 与语法提示全部靠注入来测——真机上跑不到的那两档，
- * 漏了也不会有任何测试红。
+ * **本机只可能命中其中一级**（开发机装有 Git Bash，第一步即返回），
+ * 因此顺序、每一级的 argv 与语法提示全部依靠注入测试：真机上无法执行到的两级
+ * 出现遗漏时不会有任何测试失败。
  */
-describe('命令 shell 三档探测', () => {
+describe('命令 shell 三级探测', () => {
   const foundBash = (p: string) => () => ({ path: p, reason: '' })
   const noBash = () => ({ path: null, reason: '这台机器没装 Git for Windows' })
   const noWhich = () => null
   const env = { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\Windows' }
-  /** 5.1 是系统组件，按固定位置找；pwsh 7 的候选以 `pwsh.exe` 结尾，不会被它误命中。 */
+  /** 5.1 是系统组件，按固定位置查找；pwsh 7 的候选路径以 `pwsh.exe` 结尾，不会被误判为 5.1。 */
   const has51 = (p: string) => p.toLowerCase().endsWith('powershell.exe')
   const hasPwsh7 = (p: string) => p.toLowerCase().endsWith('pwsh.exe')
 
-  test('有 bash 就用 bash，另外两档一眼都不看', () => {
+  test('有 bash 时使用 bash，不检查另外两级', () => {
     const shell = resolveCommandShell({
       bash: foundBash('C:/Program Files/Git/bin/bash.exe'),
-      // 三个都装着也一样：POSIX 是模型的默认语法，换 shell 一处，纠正它每一条命令是无穷次。
+      // 三者都已安装时同样如此：POSIX 是模型的默认语法，改用其他 shell 后每一条命令都需要纠正。
       which: () => 'C:/Program Files/PowerShell/7/pwsh.exe',
       exists: () => true,
       env,
@@ -132,7 +132,7 @@ describe('命令 shell 三档探测', () => {
     expect(shell?.hint).toContain('bash -c')
   })
 
-  test('没有 bash 时落到 PATH 上的 pwsh 7', () => {
+  test('没有 bash 时回退到 PATH 上的 pwsh 7', () => {
     const shell = resolveCommandShell({
       bash: noBash,
       which: (n) => (n === 'pwsh.exe' ? 'D:/tools/pwsh.exe' : null),
@@ -142,24 +142,24 @@ describe('命令 shell 三档探测', () => {
     expect(shell?.path).toBe('D:/tools/pwsh.exe')
   })
 
-  test('pwsh 7 没进 PATH 也认默认安装位置', () => {
+  test('pwsh 7 不在 PATH 中时也识别默认安装位置', () => {
     const shell = resolveCommandShell({ bash: noBash, which: noWhich, exists: hasPwsh7, env })
     expect(shell?.path.toLowerCase()).toContain('pwsh.exe')
     expect(shell?.path).toContain('PowerShell')
   })
 
   /**
-   * **7 优先于 5.1 是硬差别，不是偏好。** 5.1 上 `&&` / `||` 是解析错误，
-   * 三元、`??`、`?.`、`ConvertFrom-Json -AsHashtable` 一个都没有——
-   * 两个都装着却挑了 5.1 的话，模型每写一条组合命令就废一条。
+   * **7 优先于 5.1 源于功能差异，不是偏好。** 5.1 上 `&&` / `||` 是解析错误，
+   * 三元运算、`??`、`?.`、`ConvertFrom-Json -AsHashtable` 均不支持：
+   * 两者都已安装却选择 5.1 时，模型写的每一条组合命令都会失败。
    */
-  test('两个都在时挑 7', () => {
+  test('两者都存在时选择 7', () => {
     const shell = resolveCommandShell({ bash: noBash, which: noWhich, exists: () => true, env })
     expect(shell?.path.toLowerCase()).toContain('pwsh.exe')
   })
 
-  test('只有 5.1 时用它，位置跟着 SystemRoot 走', () => {
-    // 系统盘不一定是 C:，写死 C:\Windows 的机器上会判成「一个 shell 都没有」。
+  test('只有 5.1 时使用它，位置由 SystemRoot 确定', () => {
+    // 系统盘不一定是 C:，写死 C:\Windows 时会在这类机器上误判为没有任何 shell。
     const shell = resolveCommandShell({
       bash: noBash,
       which: noWhich,
@@ -170,12 +170,12 @@ describe('命令 shell 三档探测', () => {
     expect(shell?.path.toLowerCase()).toContain('powershell.exe')
   })
 
-  test('三档全落空返回 null —— run_command 因此整个不注册', () => {
+  test('三级均未找到时返回 null，run_command 因此不注册', () => {
     expect(resolveCommandShell({ bash: noBash, which: noWhich, exists: never, env })).toBeNull()
   })
 
-  /** 用户 profile 会改别名、函数、`$ErrorActionPreference`，而它在别人机器上的内容无从预知。 */
-  test('两档 PowerShell 的 argv 都带 -NoProfile 与 -NonInteractive', () => {
+  /** 用户 profile 会修改别名、函数与 `$ErrorActionPreference`，而它在其他机器上的内容无法预知。 */
+  test('两级 PowerShell 的 argv 都包含 -NoProfile 与 -NonInteractive', () => {
     const seven = resolveCommandShell({ bash: noBash, which: noWhich, exists: hasPwsh7, env })
     const five = resolveCommandShell({ bash: noBash, which: noWhich, exists: has51, env })
     for (const shell of [seven, five]) {
@@ -187,12 +187,12 @@ describe('命令 shell 三档探测', () => {
   })
 
   /**
-   * **非 bash 时第一句就得说「不是 bash」。**
+   * **非 bash 时第一句必须说明「不是 bash」。**
    *
-   * `run_command` 这个名字不携带语法，模型的默认输出是 bash，所以语法信息只剩
-   * 描述这一个来源——而描述是从头读的。
+   * `run_command` 的名称不携带语法信息，模型默认输出 bash 语法，因此语法信息只有
+   * 工具描述这一个来源，而描述从开头读起。
    */
-  test('非 bash 的语法提示开头就否掉 bash', () => {
+  test('非 bash 的语法提示在开头即说明不是 bash', () => {
     for (const exists of [hasPwsh7, has51]) {
       const hint = resolveCommandShell({ bash: noBash, which: noWhich, exists, env })?.hint ?? ''
       expect(hint.slice(0, 40)).toContain('没有 bash')
@@ -201,26 +201,26 @@ describe('命令 shell 三档探测', () => {
   })
 
   /**
-   * 5.1 的限制要**逐条**写出来。
+   * 5.1 的限制必须**逐条**列出。
    *
-   * 不写清的表现不是「偶尔出错」，是模型按 PowerShell 7 的语法写，
-   * 每条组合命令都在解析阶段整条废掉。
+   * 不列出时，模型会按 PowerShell 7 的语法编写，
+   * 每条组合命令都在解析阶段整体失败。
    */
-  test('5.1 的语法提示逐条列出 7 上有而它没有的写法', () => {
+  test('5.1 的语法提示逐条列出 7 支持而 5.1 不支持的写法', () => {
     const hint = resolveCommandShell({ bash: noBash, which: noWhich, exists: has51, env })?.hint
     expect(hint).toContain('5.1')
     for (const missing of ['&&', '||', '? :', '??', '?.', 'ConvertFrom-Json -AsHashtable']) {
       expect(hint).toContain(missing)
     }
-    // 只说「不能用」不够，得给出替代写法，否则模型只能猜。
+    // 只说「不能用」不够，须给出替代写法，否则模型只能推测。
     expect(hint).toContain('if ($?)')
   })
 })
 
 describe('bwrap 参数生成', () => {
-  test('整机只读打底，工作区单独开写', () => {
+  test('整机默认只读，工作区单独开放写入', () => {
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })
-    // `--ro-bind / /` 是「写边界」的地基：先把整机盖成只读，再逐个开口子。
+    // `--ro-bind / /` 是写边界的基础：先把整机挂载为只读，再逐个开放可写目录。
     expect(binds(argv, '--ro-bind')).toContainEqual({ src: '/', dst: '/' })
     expect(binds(argv, '--bind')).toContainEqual({ src: '/ws', dst: '/ws' })
   })
@@ -236,16 +236,16 @@ describe('bwrap 参数生成', () => {
     expect(b).toContainEqual({ src: '/data/out', dst: '/data/out' })
   })
 
-  test('相对路径的额外根目录被丢掉，不会拼成一个意外的绝对路径', () => {
-    // 相对路径的基准是进程 cwd。放进去的话，同一份配置在不同目录启动
-    // 会 bind 到不同的地方——那比拒绝它糟得多。
+  test('相对路径的额外根目录被丢弃，不会拼接成意外的绝对路径', () => {
+    // 相对路径的基准是进程 cwd。若保留，同一份配置在不同目录启动
+    // 会 bind 到不同位置，后果比拒绝严重得多。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws', writableRoots: ['notes'] }, inner, {
       exists: never,
     })
     expect(argv.join(' ')).not.toContain('notes')
   })
 
-  test('重复的根目录只出现一次（bwrap 会因为重复 bind 报错）', () => {
+  test('重复的根目录只出现一次（bwrap 遇到重复 bind 会报错）', () => {
     const argv = buildBwrapArgv({ workspaceRoot: '/ws', writableRoots: ['/ws', '/ws/'] }, inner, {
       exists: never,
     })
@@ -262,9 +262,9 @@ describe('bwrap 参数生成', () => {
     expect(roAt).toBeGreaterThan(bindAt)
   })
 
-  test('额外根目录里的 .qy 也要盖成只读', () => {
-    // 不盖的话，把某个目录加进 additionalDirectories 就等于在那儿开了一条
-    // 「模型可以给自己加工具」的路——而用户配这条时要的只是让它读那个目录。
+  test('额外根目录中的 .qy 同样挂载为只读', () => {
+    // 否则把某个目录加入 additionalDirectories 就等于允许模型在该处为自身添加工具，
+    // 而用户配置该项只是为了让模型访问该目录。
     const argv = buildBwrapArgv(
       { workspaceRoot: '/ws', writableRoots: ['/data'], readOnlySubdirs: ['.qy'] },
       inner,
@@ -274,52 +274,52 @@ describe('bwrap 参数生成', () => {
     expect(ro.some((p) => p.includes('/data') && p.includes('.qy'))).toBe(true)
   })
 
-  test('凭证目录不存在时**不能**生成 --tmpfs', () => {
-    // 实测：`--tmpfs /root/.aws` 在该目录不存在、父目录只读时会让 bwrap 直接退出
-    // （Can't mkdir …: Read-only file system）。一台没有 ~/.aws 的机器上
-    // 盲目屏蔽它会让**每一条命令**都起不来。
+  test('凭证目录不存在时不能生成 --tmpfs', () => {
+    // 实测：该目录不存在且父目录只读时，`--tmpfs /root/.aws` 会使 bwrap 直接退出
+    // （Can't mkdir …: Read-only file system）。在没有 ~/.aws 的机器上
+    // 无条件屏蔽它会使每一条命令都无法启动。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws', maskPaths: ['/home/u/.aws'] }, inner, {
       exists: never,
     })
     expect(tmpfsTargets(argv)).not.toContain('/home/u/.aws')
   })
 
-  test('凭证目录存在时要屏蔽', () => {
+  test('凭证目录存在时必须屏蔽', () => {
     const argv = buildBwrapArgv({ workspaceRoot: '/ws', maskPaths: ['/home/u/.aws'] }, inner, {
       exists: always,
     })
     expect(tmpfsTargets(argv)).toContain('/home/u/.aws')
   })
 
-  test('/tmp 总是换成 tmpfs', () => {
-    // 宿主 /tmp 里可能留有别的进程写下的临时凭证文件。
+  test('/tmp 始终替换为 tmpfs', () => {
+    // 宿主 /tmp 中可能留有其他进程写入的临时凭证文件。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })
     expect(tmpfsTargets(argv)).toContain('/tmp')
   })
 
-  test('不 unshare 网络', () => {
-    // 刻意的：断网的 agent 装不了依赖、拉不了代码。按域名过滤要一整套代理，
-    // 记在 docs/permissions.md 的「已知边界」里，不能在这里静默改掉。
+  test('默认不隔离网络', () => {
+    // 有意为之：断网的 agent 无法安装依赖、拉取代码。按域名过滤需要整套代理，
+    // 已记录在 docs/permissions.md 的「已知边界」中，不能在此处静默修改。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })
     expect(argv).not.toContain('--unshare-net')
   })
 
-  test('隔离 PID 命名空间并挂新的 /proc', () => {
-    // 宿主的 /proc/<pid>/environ 里有别的进程的环境变量，
-    // 而凭证刚在本进程侧从子进程环境里剥干净——不挡这条等于白剥。
+  test('隔离 PID 命名空间并挂载新的 /proc', () => {
+    // 宿主的 /proc/<pid>/environ 中有其他进程的环境变量，
+    // 而凭证已在本进程侧从子进程环境中剥离；不拦截这一路径，剥离就失去意义。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })
     expect(argv).toContain('--unshare-pid')
     expect(binds(argv, '--proc').length + (argv.includes('--proc') ? 1 : 0)).toBeGreaterThan(0)
   })
 
   test('不把命名空间的生命周期绑在 bwrap 外层进程上', () => {
-    // `--die-with-parent` 让命名空间的 init 随外层进程退出而被结束：shell 一退出，
-    // 命令留下的后台进程全部被内核结束，结果里却没有任何说明。
+    // `--die-with-parent` 使命名空间的 init 随外层进程退出而结束：shell 退出后，
+    // 命令留下的后台进程全部被内核结束，结果中没有任何说明。
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })
     expect(argv).not.toContain('--die-with-parent')
   })
 
-  test('命令放在 -- 之后，且原样不变', () => {
+  test('命令位于 -- 之后，且保持原样', () => {
     const cmd = ['/bin/sh', '-c', 'echo "a; b" && ls']
     const argv = buildBwrapArgv({ workspaceRoot: '/ws' }, cmd, { exists: never })
     expect(argv.slice(argv.indexOf('--') + 1)).toEqual(cmd)
@@ -327,29 +327,28 @@ describe('bwrap 参数生成', () => {
 })
 
 describe('平台判定', () => {
-  test('结论与本机平台一致，且一定给得出理由', () => {
+  test('结论与本机平台一致，且必须给出原因', () => {
     const s = detectSandbox()
     expect(s.platform).toBe(process.platform)
-    // 「没有沙箱」也必须说清楚为什么、下一步怎么办——
-    // 一句「不支持」对用户没有任何可操作性。
+    // 「没有沙箱」也必须说明原因：只写「不支持」无法让用户判断状况。
     expect(s.reason.length).toBeGreaterThan(10)
-    // `active` 与 `backend` 不能互相矛盾——两个字段说不同的话，
-    // 读的人会各取一个，因此同一份状态得出两种结论。
+    // `active` 与 `backend` 不能互相矛盾：两个字段不一致时，
+    // 不同读取方会各取其一，同一份状态因此得出两种结论。
     if (s.backend === 'none') expect(s.active).toBe(false)
     if (s.active) expect(['bwrap', 'seatbelt']).toContain(s.backend)
   })
 
-  test('每个平台都说清约束状况，不只丢一句「不支持」', () => {
+  test('每个平台都说明约束状况，不只返回「不支持」', () => {
     /*
-     * **不要把某个平台今天的实现进度写进断言**（「原生 Windows 一律报没有内核
-     * 边界」那种）：实现一往前走它就红，而红的原因是好事；实现退回去又得再改一次。
+     * **不要把某个平台当前的实现进度写进断言**（例如「原生 Windows 一律报告没有内核
+     * 边界」）：实现推进后断言就会失败，而失败的原因是改进；实现回退时又需再次修改。
      *
-     * 真正该锁的是**如实上报**这条不变量，它跟哪个平台有没有沙箱无关：
-     * 有边界就说清验过哪几条，没有就说清缺的是哪一层约束。
+     * 应锁定的是**如实上报**这一不变量，它与平台是否有沙箱无关：
+     * 有边界时说明验证了哪几项，没有时说明缺少哪一层约束。
      *
-     * **不再要求带「下一步怎么办」。** 这段话原样出现在设置页里，而那里
-     * 不枚举操作路径（CLAUDE.md B7）——装 bubblewrap 的三条命令、
-     * `wsl --set-version`、`sysctl` 那行都不属于状态描述。
+     * **不要求包含下一步操作。** 这段文字原样显示在设置页中，而设置页
+     * 不枚举操作路径（CLAUDE.md B7）：安装 bubblewrap 的三条命令、
+     * `wsl --set-version`、`sysctl` 设置都不属于状态描述。
      */
     const s = detectSandbox()
     if (s.active) {
@@ -361,26 +360,26 @@ describe('平台判定', () => {
     }
   })
 
-  test('探测结果缓存，不会每条命令都去起一次进程', () => {
-    // 自检要真的执行一次子进程。不缓存的话，每条 run_command 前面
-    // 都多一次进程启动——那是一条谁都不会去量、但一直在付的成本。
+  test('探测结果被缓存，不会每条命令都启动一次进程', () => {
+    // 自检需要实际执行一次子进程。不缓存时，每条 run_command 之前
+    // 都多一次进程启动，这项开销不易被察觉，却持续存在。
     expect(detectSandbox()).toBe(detectSandbox())
   })
 })
 
 describe('默认屏蔽清单', () => {
-  test('覆盖常见凭证目录，并且包含 qywork 自己的配置目录', () => {
+  test('覆盖常见凭证目录，并包含 qywork 自身的配置目录', () => {
     const paths = defaultMaskPaths('/home/u')
     expect(paths).toContain('/home/u/.ssh')
     expect(paths).toContain('/home/u/.aws')
-    // ~/.qywork 里就是 provider 的 API Key 明文。漏掉它的话，
-    // 环境变量剥得再干净，一句 cat 就全拿走了。
+    // ~/.qywork 中保存着 provider 的 API Key 明文。遗漏它时，
+    // 即使环境变量已完全剥离，一条 cat 命令也能读取全部密钥。
     expect(paths).toContain('/home/u/.qywork')
   })
 
   test('不屏蔽整个家目录', () => {
-    // 整个盖掉的话 ~/.gitconfig、~/.npmrc、nvm/rustup 全消失，
-    // 因此 git commit 没有作者、node 可能根本找不到——那种沙箱用户开一次就关了。
+    // 整体屏蔽时 ~/.gitconfig、~/.npmrc、nvm/rustup 全部不可见，
+    // git commit 因此没有作者，node 也可能无法定位；这样的沙箱用户开启一次就会关闭。
     expect(defaultMaskPaths('/home/u')).not.toContain('/home/u')
   })
 })
@@ -388,42 +387,42 @@ describe('默认屏蔽清单', () => {
 /**
  * seatbelt（macOS）。
  *
- * 这些断言全是纯函数上的——**本机不是 macOS，跑不了 `sandbox-exec`**。
- * 所以真正保证「它在 Mac 上确实生效」的不是这一组，是 `detectSandbox()` 里的
- * 自检：它在用户的机器上真的执行一次，失败就降级报 `none`。
- * 这一组锁的是 profile 的形状，运行期那条锁的是它在目标机器上是否可用。
+ * 这些断言都针对纯函数：**本机不是 macOS，无法运行 `sandbox-exec`**。
+ * 因此保证它在 macOS 上确实生效的不是这一组测试，而是 `detectSandbox()` 中的
+ * 自检：它在用户机器上实际执行一次，失败即降级报告 `none`。
+ * 这一组锁定 profile 的结构，运行期自检确认它在目标机器上是否可用。
  */
 describe('seatbelt profile', () => {
   const P = (p: Parameters<typeof buildSeatbeltProfile>[0]) =>
     buildSeatbeltProfile(p, { exists: () => true })
 
-  test('先全放行再收紧写权限', () => {
-    // 反过来（deny default）要枚举出一个能跑起 node/git 的完整白名单，
-    // 而那份名单一定会漏——漏的表现是某个工具起不来，且报错里没有原因。
+  test('先全部放行，再收紧写权限', () => {
+    // 反过来（deny default）需要枚举能运行 node/git 的完整白名单，
+    // 而该名单必然有遗漏，遗漏时某个工具无法启动，且报错中没有原因。
     const s = P({ workspaceRoot: '/ws' })
     expect(s.indexOf('(allow default)')).toBeLessThan(s.indexOf('(deny file-write*)'))
   })
 
-  test('可写根目录开在写禁令之后', () => {
+  test('可写根目录的放行规则位于写入禁止规则之后', () => {
     const s = P({ workspaceRoot: '/ws', writableRoots: ['/data'] })
     expect(s.indexOf('(deny file-write*)')).toBeLessThan(s.indexOf('(subpath "/ws")'))
     expect(s).toContain('(allow file-write* (subpath "/data"))')
   })
 
-  test('.qy 的写禁令排在可写根之后——SBPL 是最后匹配的赢', () => {
-    // 与 bwrap 的挂载顺序是同一个道理，反了同样不报错。
+  test('.qy 的写入禁止规则位于可写根之后：SBPL 以最后匹配的规则为准', () => {
+    // 与 bwrap 的挂载顺序同理，顺序颠倒同样不会报错。
     const s = P({ workspaceRoot: '/ws', readOnlySubdirs: ['.qy'] })
     expect(s.indexOf('(allow file-write* (subpath "/ws"))')).toBeLessThan(
       s.indexOf('(deny file-write* (subpath "/ws/.qy"))'),
     )
   })
 
-  test('凭证目录连读都拒——seatbelt 没有「盖成空目录」这回事', () => {
+  test('凭证目录连读取也拒绝：seatbelt 无法把目录覆盖为空目录', () => {
     const s = P({ workspaceRoot: '/ws', maskPaths: ['/Users/u/.ssh'] })
     expect(s).toContain('(deny file-read* (subpath "/Users/u/.ssh"))')
   })
 
-  test('不存在的凭证目录不写进 profile', () => {
+  test('不存在的凭证目录不写入 profile', () => {
     const s = buildSeatbeltProfile(
       { workspaceRoot: '/ws', maskPaths: ['/Users/u/.aws'] },
       { exists: () => false },
@@ -432,7 +431,7 @@ describe('seatbelt profile', () => {
   })
 
   test('不限制网络', () => {
-    // 与 bwrap 那边同一个决定：断网的 agent 装不了依赖、拉不了代码。
+    // 与 bwrap 的决定相同：断网的 agent 无法安装依赖、拉取代码。
     expect(P({ workspaceRoot: '/ws' })).not.toContain('deny network')
   })
 
@@ -441,14 +440,14 @@ describe('seatbelt profile', () => {
     expect(s).toContain('/private/var/folders')
   })
 
-  test('路径里的引号必须转义——否则文件名能改写沙箱策略', () => {
-    // 这不是格式化是安全边界：一个 `"` 能让后面的规则整个跑出字符串外，
-    // 变成 profile 的一部分。macOS 的文件名允许引号和反斜杠。
+  test('路径中的引号必须转义，否则文件名可以改写沙箱策略', () => {
+    // 这是安全边界而不是格式问题：一个 `"` 能使后续内容整体落到字符串之外，
+    // 成为 profile 的一部分。macOS 的文件名允许包含引号与反斜杠。
     const s = P({ workspaceRoot: '/ws/a"b' })
     expect(s).toContain('"/ws/a\\"b"')
-    // 转义后整份 profile 的引号必须成对：逐字符扫，跳过被反斜杠转义的那些。
-    // 不要用负向后顾正则写这条：反斜杠在正则与字符串两层里各被消耗一次，
-    // 写出来的是一个语法不成立的正则。
+    // 转义后整份 profile 的引号必须成对：逐字符扫描，跳过被反斜杠转义的引号。
+    // 不要改用负向后顾正则：反斜杠在正则与字符串两层中各被消耗一次，
+    // 写出的正则语法不成立。
     let quotes = 0
     for (let i = 0; i < s.length; i++) {
       if (s[i] === '\\') {
@@ -460,9 +459,9 @@ describe('seatbelt profile', () => {
     expect(quotes % 2).toBe(0)
   })
 
-  test('反斜杠也要转义', () => {
-    // 反斜杠按码点构造：写成字面量时，源码里有几层转义看不出来，
-    // 而这条断言的全部内容就是「有几层转义」。
+  test('反斜杠同样必须转义', () => {
+    // 反斜杠按码点构造：写成字面量时无法从源码看出转义层数，
+    // 而该断言检查的正是转义层数。
     const BS = String.fromCharCode(92)
     const s = P({ workspaceRoot: `/ws/a${BS}b` })
     expect(s).toContain(`"/ws/a${BS}${BS}b"`)
@@ -479,11 +478,11 @@ describe('seatbelt profile', () => {
   })
 })
 
-describe('两个后端承诺同一件事', () => {
+describe('两个后端提供相同的承诺', () => {
   /*
-   * bwrap 与 seatbelt 形状完全不同（一个是挂载，一个是规则），但
-   * `docs/permissions.md` 只有一张表。两边的承诺一旦分叉，那份文档就得按平台
-   * 拆开写，而拆开的文档没人维护得住——所以这里把「同一句话」钉成断言。
+   * bwrap 与 seatbelt 的实现方式完全不同（一个基于挂载，一个基于规则），但
+   * `docs/permissions.md` 只有一张表。两者的承诺一旦出现分歧，该文档就必须按平台
+   * 分开编写，而分开的文档难以维护，因此这里用断言锁定两者的一致性。
    */
   const policy: Parameters<typeof buildBwrapArgv>[0] = {
     workspaceRoot: '/ws',
@@ -494,40 +493,40 @@ describe('两个后端承诺同一件事', () => {
   const bw = buildBwrapArgv(policy, ['/bin/true'], { exists: () => true }).join(' ')
   const sb = buildSeatbeltProfile(policy, { exists: () => true })
 
-  test('两边都放开工作区与额外根目录', () => {
+  test('两者都开放工作区与额外根目录的写入', () => {
     for (const p of ['/ws', '/data']) {
       expect(bw).toContain(p)
       expect(sb).toContain(`(allow file-write* (subpath "${p}"))`)
     }
   })
 
-  test('两边都把 .qy 变回只读', () => {
+  test('两者都把 .qy 恢复为只读', () => {
     expect(bw).toContain('/ws/.qy')
     expect(sb).toContain('(deny file-write* (subpath "/ws/.qy"))')
   })
 
-  test('两边都挡住凭证目录', () => {
+  test('两者都拦截凭证目录', () => {
     expect(bw).toContain('/home/u/.ssh')
     expect(sb).toContain('(deny file-read* (subpath "/home/u/.ssh"))')
   })
 
-  test('两边都不限制网络', () => {
+  test('两者都不限制网络', () => {
     expect(bw).not.toContain('--unshare-net')
     expect(sb).not.toContain('deny network')
   })
 })
 
-describe('出网开关', () => {
+describe('网络访问开关', () => {
   /*
-   * 只有两档，刻意不做域名白名单：中间态要在沙箱里起代理、沙箱外做转发、
-   * 还要让 TLS 认一张自签 CA，而那套组件坏起来的表现是「网络时好时坏」。
+   * 只有开、关两种状态，有意不做域名白名单：中间状态需要在沙箱内启动代理、在沙箱外转发，
+   * 还要让 TLS 信任一张自签 CA，而这套组件出现故障时表现为网络时通时断。
    *
-   * 下面这两组已经在 WSL2 里带对照跑过：默认 2 个网卡且网关可达，
-   * denyNetwork 之后只剩 lo 且网关不可达。
+   * 以下两组已在 WSL2 中做过对照运行：默认有 2 个网卡且网关可达，
+   * 开启 denyNetwork 后只剩 lo 且网关不可达。
    */
-  test('默认不断网', () => {
-    // 断网的 agent 装不了依赖、拉不了代码，而报错跟网络毫不相干
-    // （包管理器只会说拉取失败），用户会先把整个沙箱关掉。
+  test('默认不断开网络', () => {
+    // 断网的 agent 无法安装依赖、拉取代码，而报错与网络无关
+    // （包管理器只报告拉取失败），用户会先关闭整个沙箱。
     expect(buildBwrapArgv({ workspaceRoot: '/ws' }, inner, { exists: never })).not.toContain(
       '--unshare-net',
     )
@@ -536,7 +535,7 @@ describe('出网开关', () => {
     )
   })
 
-  test('denyNetwork 在两个后端上都要生效', () => {
+  test('denyNetwork 在两个后端上都必须生效', () => {
     expect(
       buildBwrapArgv({ workspaceRoot: '/ws', denyNetwork: true }, inner, { exists: never }),
     ).toContain('--unshare-net')
@@ -546,7 +545,7 @@ describe('出网开关', () => {
   })
 
   test('断网不影响文件边界', () => {
-    // 两个维度互不相干。混在一起的话，关掉一个会连带关掉另一个。
+    // 两个维度相互独立。混在一起时，关闭其中一个会连带关闭另一个。
     const argv = buildBwrapArgv(
       { workspaceRoot: '/ws', readOnlySubdirs: ['.qy'], denyNetwork: true },
       inner,
@@ -558,24 +557,24 @@ describe('出网开关', () => {
 })
 
 /**
- * 树杀。**复现的是原始失败形状，不是「新函数被调到了」。**
+ * 树杀。**复现的是原始失败形状，不是验证新函数被调用。**
  *
- * 原始形状（本机 Windows 实测，见 `killTree` 注释）：`proc.kill()` 只杀
- * spawn 出来的那个 shell，真正执行的孙进程照常监听端口，并持有 stdout ——
- * `shell.ts` 的 pump 永远等不到 EOF，那次 `registry.execute` 再也不返回，
- * 逐层传导到会话永久回绝「已有任务在执行」。
+ * 原始形状（本机 Windows 实测，见 `killTree` 注释）：`proc.kill()` 只终止
+ * spawn 出的 shell，实际执行的孙进程仍在监听端口并持有 stdout：
+ * `shell.ts` 的 pump 永远等不到 EOF，该次 `registry.execute` 不再返回，
+ * 最终导致会话永久拒绝新任务并提示「已有任务在执行」。
  *
- * 所以这条测试断言两件事，缺一不可：
+ * 因此本测试断言两点，缺一不可：
  *
- * 1. 树杀之后**端口不再监听**（孙进程真的死了）；
- * 2. 树杀之后**stdout 拿得到 EOF**（管道关闭，pump 能结束）。
+ * 1. 树杀之后**端口不再监听**（孙进程确已退出）；
+ * 2. 树杀之后**stdout 能收到 EOF**（管道关闭，pump 能结束）。
  *
- * 只断言第 1 条会漏掉那个真正致命的——会话卡死。
+ * 只断言第 1 点会遗漏真正致命的情况：会话无响应。
  *
- * 起真进程、占真端口，所以不并入纯函数那几组：它慢，而且要清理。
+ * 需要启动真实进程并占用真实端口，因此不并入纯函数各组：它较慢，且需要清理。
  */
 describe('killTree', () => {
-  /** 端口挑一个不太可能撞上的；撞上了这条测试会以「kill 前连不上」失败，不会误判成功。 */
+  /** 选用不易冲突的端口；冲突时本测试以「kill 前无法连接」失败，不会误判为成功。 */
   const PORT = 18947
   const SERVER = `require('http').createServer((_,r)=>r.end('alive')).listen(${PORT},'127.0.0.1');setInterval(()=>console.log('tick'),200)`
 
@@ -588,13 +587,13 @@ describe('killTree', () => {
     }
   }
 
-  test('杀掉整棵树，且 stdout 随之 EOF', async () => {
-    // 与 spawnGuarded 同一个形状：spawn 的是 shell，真正监听的是它的子进程。
-    // shell 取 `commandShell()`，不按 platform 现判——这里复刻的就是它。
-    // 脚本一律用双引号包：`SERVER` 里全是单引号，用单引号包会在第一个内层引号处断开
-    // （用单引号包的写法在没跑过的分支里能一直藏着不暴露）。
-    // `& wait` 让 shell 留作父进程：`-c` 只有一条简单命令时 bash 直接 exec 它，
-    // 被杀的就是监听端口的进程本身，树杀是否成立测不出来。
+  test('终止整个进程树，且 stdout 随之 EOF', async () => {
+    // 与 spawnGuarded 的结构相同：spawn 的是 shell，实际监听的是其子进程。
+    // shell 取自 `commandShell()`，不按 platform 判定，以复现 spawnGuarded 的选择。
+    // 脚本一律用双引号包裹：`SERVER` 中全是单引号，用单引号包裹会在第一个内层引号处断开
+    // （这种错误在未执行过的分支中不会暴露）。
+    // `& wait` 使 shell 保持为父进程：`-c` 只有一条简单命令时 bash 直接 exec 它，
+    // 被终止的就是监听端口的进程本身，无法验证树杀是否成立。
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器没有 bash，这条端到端跑不了')
     const inner = [...shell.argv, `node -e "${SERVER}" & wait`]
@@ -606,7 +605,7 @@ describe('killTree', () => {
     } as never)
 
     try {
-      // 等它把端口听起来。听不起来就不是在测树杀了，直接失败。
+      // 等待端口开始监听。端口未监听时测试的已不是树杀，直接失败。
       let up = false
       for (let i = 0; i < 30 && !up; i++) {
         await Bun.sleep(100)
@@ -617,8 +616,8 @@ describe('killTree', () => {
       killTree(proc)
       await proc.exited
 
-      // 孙进程死了才算杀干净。给一点回收时间，但不能无限等——
-      // 等太久会把「杀慢了」和「没杀掉」混为一谈。
+      // 孙进程退出才算完全终止。留出少量回收时间，但不能无限等待：
+      // 等待过久会混淆「终止较慢」与「未能终止」。
       let down = false
       for (let i = 0; i < 20 && !down; i++) {
         await Bun.sleep(100)
@@ -626,45 +625,45 @@ describe('killTree', () => {
       }
       expect(down).toBe(true)
 
-      // 管道必须关闭。挂住的话这条测试会超时——那正是线上表现出来的样子。
+      // 管道必须关闭。管道未关闭时本测试会超时，与实际故障的表现一致。
       const drained = (async () => {
         for await (const _ of proc.stdout as ReadableStream) {
-          // 丢弃，只要读到结束。
+          // 丢弃内容，只需读取到结束。
         }
         return 'eof'
       })()
       const verdict = await Promise.race([drained, Bun.sleep(5000).then(() => 'hung')])
       expect(verdict).toBe('eof')
     } finally {
-      // 测试失败也要清理，否则孤儿会占着端口让下一次运行误判。
+      // 测试失败时同样必须清理，否则孤儿进程会占用端口，导致下一次运行误判。
       killTree(proc)
     }
   }, 20_000)
 })
 describe('子进程输出解码', () => {
-  /** 「首页」两种编码的字节。GBK 那份是本机实测 `powershell` / mingw 的 `curl` 出的形状。 */
+  /** 「首页」两种编码的字节。GBK 字节取自本机实测的 `powershell` 与 mingw `curl` 输出。 */
   const GBK = new Uint8Array([0xca, 0xd7, 0xd2, 0xb3])
   const UTF8 = new Uint8Array([0xe9, 0xa6, 0x96, 0xe9, 0xa1, 0xb5])
 
-  test('UTF-8 流原样解出', () => {
+  test('UTF-8 流原样解码', () => {
     expect(makeOutputDecoder()(UTF8)).toBe('首页')
   })
 
-  test('跨片的半个字符不被切碎 —— 半片不能触发切换', () => {
+  test('跨片的不完整字符不被切断：不完整的分片不得触发编码切换', () => {
     const decode = makeOutputDecoder()
     expect(decode(UTF8.slice(0, 2))).toBe('')
     expect(decode(UTF8.slice(2))).toBe('首页')
   })
 
-  test('非法 UTF-8 不抛也不吞，切到本机代码页继续', () => {
+  test('非法 UTF-8 不抛出异常也不丢弃，切换到本机代码页继续解码', () => {
     const decode = makeOutputDecoder()
     const got = decode(GBK)
     expect(got.length).toBeGreaterThan(0)
-    // Windows 上代码页解得出真字符；别的平台落回改动前的行为（U+FFFD），不断言字形。
+    // Windows 上按代码页可解出实际字符；其他平台回退为 U+FFFD，不断言字形。
     if (process.platform === 'win32') expect(got).not.toContain('\uFFFD')
   })
 
-  test('判定之后不回头，后续片照常出字', () => {
+  test('判定后不再切换，后续分片正常解码', () => {
     const decode = makeOutputDecoder()
     decode(GBK)
     expect(decode(new Uint8Array([0x6f, 0x6b]))).toBe('ok')
@@ -673,12 +672,12 @@ describe('子进程输出解码', () => {
 /**
  * 命令正文必须逐字节到达 shell。
  *
- * Windows 上 argv 要经一次命令行字符串的往返，MSYS 那侧按自己的规则解回来，
- * 成对的反斜杠被折掉一半（实测发 1/2/3/4 个到达 1/1/2/2 个）。账本里的实证：
- * 模型写的 `if ch == '\\':` 到 python 手里成了 `'\'`，一条 unterminated string
- * literal，而没有任何人知道命令在路上被改过。
+ * Windows 上 argv 需经过一次命令行字符串的往返，MSYS 一侧按自身规则解析，
+ * 成对的反斜杠被折减一半（实测发送 1/2/3/4 个，到达 1/1/2/2 个）。账本中有实际记录：
+ * 模型写的 `if ch == '\\':` 到达 python 时变成 `'\'`，导致 unterminated string
+ * literal 错误，且无从得知命令在传递中被修改。
  *
- * 这条测试真的起进程——纯函数测不出这个洞，它发生在进程边界上。
+ * 本测试启动真实进程：该问题发生在进程边界上，纯函数无法测出。
  */
 describe('命令正文逐字节到达', () => {
   test('调用方没有选定 shell 时明确失败，不在执行阶段重新选择', async () => {
@@ -693,9 +692,9 @@ describe('命令正文逐字节到达', () => {
     ).rejects.toThrow('没有可用的 shell')
   })
 
-  test('成对的反斜杠不被折半', async () => {
+  test('成对的反斜杠不被折减一半', async () => {
     const bs = String.fromCharCode(92)
-    // 发 4 个反斜杠，数到达了几个。折半的话是 2。
+    // 发送 4 个反斜杠，统计到达的数量。折减一半时为 2。
     const { proc } = await spawnGuarded({
       shell: commandShell(),
       command: `printf '%s' '${bs.repeat(4)}' | wc -c`,
@@ -707,7 +706,7 @@ describe('命令正文逐字节到达', () => {
     expect(got.stdout.trim()).toBe('4')
   }, 30_000)
 
-  test('原始失败形状：python 源码里的一个反斜杠字符', async () => {
+  test('原始失败形状：python 源码中的一个反斜杠字符', async () => {
     const bs = String.fromCharCode(92)
     const { proc } = await spawnGuarded({
       shell: commandShell(),
@@ -717,24 +716,24 @@ describe('命令正文逐字节到达', () => {
       env: process.env as Record<string, string>,
     })
     const got = await collectProcess(proc, { timeoutMs: 20_000 })
-    // 折半时这里是一条 SyntaxError；到达完整时 python 数出 1 个字符。
+    // 折减一半时此处为 SyntaxError；完整到达时 python 统计出 1 个字符。
     expect(got.stderr).not.toContain('SyntaxError')
     expect(got.stdout.trim()).toBe('1')
   }, 30_000)
 })
 
 /**
- * 静默判据。**量的是两片输出之间的间隔，不是总时长。**
+ * 静默判据。**衡量的是两次输出之间的间隔，不是总时长。**
  *
- * 复现的失败形状：被调度的进程在自己跑构建与测试时流是停的，按总时长判到点就把
- * 一个仍在执行的进程杀掉，只剩半截输出。
+ * 复现的失败形状：被调度的进程在自行执行构建与测试期间没有输出，按总时长判定时到期即
+ * 终止仍在执行的进程，只留下部分输出。
  *
- * 起真进程，所以慢；纯函数测不出这条——判据成立与否发生在管道上。
+ * 启动真实进程，因此较慢；纯函数无法测出这一点：判据是否成立取决于管道。
  */
 describe('静默计时', () => {
-  /** 端口挑一个不太可能撞上的；撞上了这条测试会以「起不来」失败，不会误判成功。 */
+  /** 选用不易冲突的端口；冲突时本测试以「无法启动」失败，不会误判为成功。 */
   const PORT = 18948
-  /** 每 50ms 一行的产出源，`limit` 行之后停下让进程自己退出；不给就一直写。 */
+  /** 每 50ms 输出一行的程序，输出 `limit` 行后停止并让进程自行退出；未传 `limit` 时持续输出。 */
   const ticker = (limit?: number) =>
     `var n=0,t=setInterval(function(){process.stdout.write('tick'+String.fromCharCode(10));` +
     `${limit === undefined ? '' : `if(++n===${limit})clearInterval(t)`}},50)`
@@ -749,8 +748,8 @@ describe('静默计时', () => {
   }
 
   for (const startupMs of [0, 350]) {
-    test(`每片输出重置计时，一直在产出就不杀（启动延迟 ${startupMs}ms）`, async () => {
-      // 启动就绪后才开始计输出间隔；350ms 启动延迟锁住不把启动耗时计入断言的前提。
+    test(`每次输出重置计时，持续输出时不终止（启动延迟 ${startupMs}ms）`, async () => {
+      // 启动就绪后才开始计算输出间隔；350ms 启动延迟用于锁定「启动耗时不计入静默时间」这一前提。
       const source =
         `setTimeout(()=>{process.stdout.write('ready\\n');` +
         `process.stdin.once('data',()=>{${ticker(12)}})},${startupMs})`
@@ -775,7 +774,7 @@ describe('静默计时', () => {
           clearTimeout(startupTimer)
           reader.releaseLock()
         }
-        // 12 行 × 50ms = 600ms，静默额度仍为 200ms：按总时长判必然失败。
+        // 12 行 × 50ms = 600ms，静默上限为 200ms：按总时长判定必然失败。
         const collected = collectProcess(proc, { idleMs: 200 })
         proc.stdin.write('start\n')
         proc.stdin.end()
@@ -789,7 +788,7 @@ describe('静默计时', () => {
     }, 20_000)
   }
 
-  test('两个计时器各自成立：还在产出，总时长到点照样杀', async () => {
+  test('两个计时器各自成立：仍有输出时，总时长到期同样终止进程', async () => {
     const proc = Bun.spawn(['node', '-e', ticker()], {
       stdout: 'pipe',
       stderr: 'pipe',
@@ -799,20 +798,20 @@ describe('静默计时', () => {
     expect(got.timedOut).toBe(true)
   }, 20_000)
 
-  test('写完一行后静默，到点树杀，孙进程随之退出', async () => {
-    // 与 killTree 那组同一个形状：spawn 的是 shell，监听端口的是它的子进程。
+  test('写入一行后静默，到期执行树杀，孙进程随之退出', async () => {
+    // 与 killTree 一组的结构相同：spawn 的是 shell，监听端口的是其子进程。
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器没有 bash，这条端到端跑不了')
     const src =
       `require('http').createServer(function(_,r){r.end('alive')}).listen(${PORT},'127.0.0.1');` +
       `process.stdout.write('started'+String.fromCharCode(10))`
-    // 三个流的形态写在类型里：带 spread 的字面量会被推成 `'inherit'`，
-    // 那样 `proc.stderr` 是可能 undefined，`collectProcess` 收不下它。
+    // 三个流的类型显式写出：带 spread 的字面量会被推断为 `'inherit'`，
+    // 此时 `proc.stderr` 可能为 undefined，`collectProcess` 无法接受。
     const opts = {
       stdout: 'pipe',
       stderr: 'pipe',
       stdin: 'ignore',
-      // 非 Windows 上自成进程组，`killTree` 才有整组可杀。
+      // 非 Windows 上自成进程组，`killTree` 才能终止整个进程组。
       ...(process.platform === 'win32' ? {} : { detached: true }),
     } as Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>
     const proc = Bun.spawn([...shell.argv, `node -e "${src}"`], opts)
@@ -820,7 +819,7 @@ describe('静默计时', () => {
     try {
       const collecting = collectProcess(proc, { idleMs: 3000 })
 
-      // 端口起不来就不是在测静默了，直接失败。
+      // 端口未开始监听时，测试的已不是静默计时，直接失败。
       let up = false
       for (let i = 0; i < 20 && !up; i++) {
         await Bun.sleep(100)
@@ -830,10 +829,10 @@ describe('静默计时', () => {
 
       const got = await collecting
       expect(got.timedOut).toBe(true)
-      // 被杀之前写出来的那一行要留在结果里。
+      // 终止之前写出的那一行必须保留在结果中。
       expect(got.stdout).toContain('started')
 
-      // 树杀才算数：只杀 shell 的话，监听端口的那个仍在运行。
+      // 必须执行树杀：只终止 shell 时，监听端口的进程仍在运行。
       let down = false
       for (let i = 0; i < 20 && !down; i++) {
         await Bun.sleep(100)
@@ -841,7 +840,7 @@ describe('静默计时', () => {
       }
       expect(down).toBe(true)
     } finally {
-      // 测试失败也要清理，否则孤儿会占着端口让下一次运行误判。
+      // 测试失败时同样必须清理，否则孤儿进程会占用端口，导致下一次运行误判。
       killTree(proc)
     }
   }, 30_000)

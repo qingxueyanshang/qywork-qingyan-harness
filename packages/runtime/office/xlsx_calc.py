@@ -1,9 +1,9 @@
 """xlsx 计算结果写回。
 
-办公软件只读打开工作副本、全量重算，按区域批量读出每个公式单元格的 Value2；再由本模块直接改工作副本里
+办公软件只读打开工作副本、全量重算，按区域批量读取每个公式单元格的 Value2；再由本模块直接修改工作副本中
 这些单元格的缓存值 <v> 与值类型 t，并设置 calcPr fullCalcOnLoad="1"。公式文本、样式与其余部件原样保留。
 
-不要改成让办公软件另存：WPS 另存会写最近文档与账号打开记录，并重写整个文件包。
+不要改为由办公软件另存：WPS 另存会写入最近文档与账号打开记录，并重写整个文件包。
 """
 
 import posixpath
@@ -19,7 +19,7 @@ M = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 P = "http://schemas.openxmlformats.org/package/2006/relationships"
 
-# SpecialCells 的 xlCellTypeFormulas。工作表里一个公式都没有时它会抛错。
+# SpecialCells 的 xlCellTypeFormulas。工作表中没有任何公式时该调用抛错。
 XL_CELL_TYPE_FORMULAS = -4123
 
 
@@ -38,7 +38,7 @@ def convert(v):
 
 
 def read_values(inst, path):
-    """只读打开、全量重算，读出 {工作表: {单元格: (t, 文本)}}。"""
+    """只读打开、全量重算，读取 {工作表: {单元格: (t, 文本)}}。"""
     values = {}
     wb = inst.open(path)
     try:
@@ -92,7 +92,7 @@ def _cells_in(rng):
 
 
 def _cell(xml, ref):
-    """工作表里 ref 对应的 c 元素；行或单元格不存在时按行号、列号顺序插入。"""
+    """工作表中 ref 对应的 c 元素；行或单元格不存在时按行号、列号顺序插入。"""
     data = xml.find(f"{{{M}}}sheetData")
     col, row = _split_ref(ref)
     row_el = None
@@ -138,9 +138,9 @@ def _set_value(c, got, report, after=None):
 
 
 def write_back(path, values):
-    """把 values 写进 path 的缓存值。任何一个公式单元格对不上就整份不改，报告写回失败。
+    """把 values 写入 path 的缓存值。任一公式单元格不一致时不修改文件，报告写回失败。
 
-    数组公式只有左上角的单元格带公式，其余成员格只存结果：成员格按重算结果写值，缺的格补上。
+    数组公式只有左上角的单元格带公式，其余成员单元格只存结果：成员单元格按重算结果写值，缺少的单元格补建。
     """
     report = {"result": "ok", "written": 0, "types": {}, "mismatch": [], "unknown_errors": []}
     replaced = {}
@@ -154,7 +154,7 @@ def write_back(path, values):
 
             def lookup(ref):
                 if sheet_values is None or ref not in sheet_values:
-                    report["mismatch"].append(f"{name}!{ref}：重算结果里没有这个公式单元格")
+                    report["mismatch"].append(f"{name}!{ref}：重算结果中没有该公式单元格")
                     return False, None
                 got = sheet_values[ref]
                 if got is not None and got[0] == "?":

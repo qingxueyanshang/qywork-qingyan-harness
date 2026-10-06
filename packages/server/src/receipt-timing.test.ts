@@ -1,15 +1,15 @@
 /**
- * 回执到达时序 × 父轮终态的续起裁决。**用假 provider 跑真链路，不花钱、不联网。**
+ * 回执到达时序 × 父轮终态的自动继续裁决。**使用假 provider 运行真实链路，不产生费用、不访问网络。**
  *
- * **覆盖范围**：`run-control.ts` 的 `submitMessage` 空闲分支与 `startRun` 收尾那一段
+ * **覆盖范围**：`run-control.ts` 的 `submitMessage` 空闲分支与 `startRun` 收尾阶段
  * （`resetSteer` → `CONTINUABLE` → `fireFollowUpRound`）、`runs.ts` 的 `resetSteer`
- * 与队列取走，以及 `agent/loop/index.ts` 每轮开头 `takeSteered` 的注入位置。
- * 队列本身的入队幂等、翻转与删除在 `followup.test.ts`，一格失败其余照跑在
- * `delegate.test.ts`。
+ * 与队列取出，以及 `agent/loop/index.ts` 每轮开头 `takeSteered` 的注入位置。
+ * 队列本身的入队幂等、翻转与删除由 `followup.test.ts` 覆盖，单项失败时其余项照常执行由
+ * `delegate.test.ts` 覆盖。
  *
- * **为什么必须走真链路。** 这条规则的形状是「父轮怎么收的场，决定回执能不能自己
- * 起一轮」。父轮终态由 loop 产生、经 `runtime/session.ts` 落进 `runs` 行，裁决在
- * 服务端读那一行——把其中任何一段换成桩，测到的只是桩被调用了。
+ * 必须使用真实链路：该规则的内容是父轮的结束方式决定回执能否自行
+ * 发起一轮。父轮终态由 loop 产生、经 `runtime/session.ts` 写入 `runs` 行，裁决时
+ * 服务端读取该行：把其中任何一段替换为桩，只能验证桩被调用。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -59,11 +59,11 @@ function textTurn(text: string): string {
 
 type Turn = (body: string) => Response | Promise<Response>
 
-/** 按顺序答的脚本。`always` 为空时才轮到它。 */
+/** 按顺序应答的脚本。`always` 为空时才使用它。 */
 let script: Turn[] = []
-/** 非空时一切请求都用它答。用来把自动重发预算真的耗完。 */
+/** 非空时所有请求都由它应答。用于实际耗尽自动重发预算。 */
 let always: Turn | null = null
-/** 扣住本会话的第一次请求，直到用例放行。 */
+/** 阻塞本会话的第一次请求，直到用例放行。 */
 let firstHold: { wait: Promise<void>; release: () => void; arrived: boolean } | null = null
 let bodies: string[] = []
 
@@ -77,8 +77,8 @@ const provider = Bun.serve({
       await firstHold.wait
     }
     const next = always ?? script.shift()
-    // 脚本用完 = 401（`auth_failed`，当场终结且不重发）。用例靠「多出来的那几条 body」
-    // 认出「回执不该起轮却起了轮」，所以这里必须先记账再回绝。
+    // 脚本耗尽时返回 401（`auth_failed`，立即终止且不重发）。用例依据多出的请求 body
+    // 识别回执不应发起新一轮却发起了新一轮的情形，因此此处必须先记录再拒绝。
     if (!next) return new Response('脚本已用完', { status: 401 })
     return next(body)
   },
@@ -90,8 +90,8 @@ const ok =
     new Response(payload, { headers: SSE_HEADERS })
 
 /**
- * `Retry-After: 0` 的容量拒绝。退避读上游给的这个值，因此整条重发预算在毫秒内跑完，
- * 「耗尽预算」这个终态在用例里是秒级可达的。
+ * `Retry-After: 0` 的容量拒绝。退避读取上游给出的该值，因此全部重发预算在毫秒内耗尽，
+ * 「耗尽预算」这一终态在用例中数秒内即可到达。
  */
 const unavailable: Turn = () =>
   new Response(JSON.stringify({ error: { message: '没有可用名额' } }), {
@@ -121,7 +121,7 @@ let subagents: SubagentRegistry
 let config: QyConfig
 let workspaceId = ''
 let events: EventEnvelope[] = []
-/** 相邻时序用它：`run.finished` 广播的那一刻挂一拍，与收尾 `finally` 竞争。 */
+/** 用于相邻时序：在 `run.finished` 广播时延迟一个周期，与收尾 `finally` 竞争。 */
 let onEvent: ((event: AgentEvent) => void) | null = null
 
 beforeAll(async () => {
@@ -199,7 +199,7 @@ async function until(check: () => boolean, label: string): Promise<void> {
   throw new Error(`等不到：${label}`)
 }
 
-/** 等到这条会话真的闲下来（收尾与火发那一拍 setTimeout(0) 都过去）。 */
+/** 等待该会话完全空闲（收尾与发起下一轮的 setTimeout(0) 均已执行）。 */
 async function idle(cv: ConversationId, ms = 20_000): Promise<void> {
   const deadline = Date.now() + ms
   while (Date.now() < deadline) {
@@ -211,7 +211,7 @@ async function idle(cv: ConversationId, ms = 20_000): Promise<void> {
   }
 }
 
-/** 排队与火发都是 setTimeout(0)，多等几拍确认**没有**下一轮起来。 */
+/** 排队与发起均经由 setTimeout(0)，多等待几个周期以确认未启动下一轮。 */
 async function settle(): Promise<void> {
   await Bun.sleep(200)
 }
@@ -222,7 +222,7 @@ const RECEIPT = '[子 agent 回执] 临时 查资料 已返回'
 
 /** 回执相对父轮收尾到达的三个时刻。 */
 type Timing = 'early' | 'late' | 'adjacent'
-/** 父轮怎么收的场。 */
+/** 父轮的结束方式。 */
 type Terminal = 'completed' | 'provider_error' | 'auth_failed' | 'user_stop'
 
 const TIMINGS: Record<Timing, string> = {
@@ -242,7 +242,7 @@ function receiptItem(id: string): FollowUp {
   return { id, content: RECEIPT, steer: true, origin: 'subagent' }
 }
 
-/** 回执一共被交给模型几次：起轮算一次，注入算一次。 */
+/** 回执被交给模型的总次数：发起新一轮计一次，注入计一次。 */
 function deliveriesOf(cv: ConversationId, text: string): number {
   const asRound = listMessages(store, cv).filter((m) => m.content === text).length
   const asInjection = listRuns(store, cv)
@@ -252,28 +252,28 @@ function deliveriesOf(cv: ConversationId, text: string): number {
 }
 
 interface Reading {
-  /** 父轮自己发出去的请求数，取自它那些请求账行。 */
+  /** 父轮自身发出的请求数，取自其请求记录行。 */
   parentRequests: number
   /** 回执到达之后新增的请求数。 */
   afterReceipt: number
   queue: { id: string; steer: boolean; origin?: string }[]
-  /** 之后那条真实用户消息起的那一轮，首个请求里有没有回执。 */
+  /** 之后由真实用户消息发起的那一轮，其首个请求中是否包含回执。 */
   receiptInFirstBody: boolean
   deliveries: number
   stopReason: string | null
 }
 
 /**
- * 跑完一格：父轮 → 回执按 `timing` 到达 → 一条真实用户消息。
+ * 执行矩阵中的一项：父轮 → 回执按 `timing` 到达 → 一条真实用户消息。
  *
- * 用户消息那一步四种终态都要走：失败终态下它是唯一能把回执交出去的入口，
- * 正常完成下它用来确认回执没有被交第二次。
+ * 四种终态都要执行用户消息这一步：失败终态下它是唯一能交付回执的入口，
+ * 正常完成时它用于确认回执没有被交付第二次。
  */
 async function cell(terminal: Terminal, timing: Timing): Promise<Reading> {
   const cv = conversation()
   hold()
-  // 容量拒绝那一格由 `always` 接管全部请求，预算按真实重发次数耗尽；
-  // 其余三种终态第一条脚本就是父轮的答复。
+  // 容量拒绝一项由 `always` 应答全部请求，预算按实际重发次数耗尽；
+  // 其余三种终态的第一条脚本即为父轮的应答。
   if (terminal === 'provider_error') always = unavailable
   else script.push(terminal === 'auth_failed' ? unauthorized : ok(textTurn('父轮说完了。')))
   if (terminal === 'completed') script.push(ok(textTurn('回执那一轮说完了。')))
@@ -286,8 +286,8 @@ async function cell(terminal: Terminal, timing: Timing): Promise<Reading> {
     onEvent = (event) => {
       if (event.type !== 'run.finished' || scheduled) return
       scheduled = true
-      // 挂一拍：收尾 `finally` 与它排的那次火发都在这一拍之前跑完，
-      // 回执正落在两者之间的空档上。
+      // 延后一个周期：收尾 `finally` 与其安排的发起都在该周期之前执行完毕，
+      // 回执恰好在两者之间到达。
       setTimeout(() => {
         void submitMessage(cv, rc, deps()).then(() => {
           delivered = true
@@ -342,9 +342,9 @@ async function cell(terminal: Terminal, timing: Timing): Promise<Reading> {
   }
 }
 
-describe('父轮正常完成后的回执照常自动起轮', () => {
+describe('父轮正常完成后的回执照常自动发起新一轮', () => {
   for (const timing of ['early', 'late', 'adjacent'] as const) {
-    test(`${TIMINGS[timing]} —— 自动交给模型，且只交一次`, async () => {
+    test(`${TIMINGS[timing]}：自动交给模型，且只交付一次`, async () => {
       const r = await cell('completed', timing)
       expect(r.stopReason).toBe('completed')
       expect(r.parentRequests).toBe(1)
@@ -356,21 +356,21 @@ describe('父轮正常完成后的回执照常自动起轮', () => {
 })
 
 /**
- * 三种非正常终态共用一条规则：回执只保留在队列里，不因到达时机不同取得新一轮预算；
- * 下一条真实用户消息起的那一轮，首个请求把它一起交出去，且恰好一次。
+ * 三种非正常终态共用一条规则：回执只保留在队列中，不因到达时机不同而取得新一轮预算；
+ * 由下一条真实用户消息发起的那一轮，在首个请求中一并交付回执，且恰好一次。
  */
-describe('父轮失败或被停止后的回执只保留', () => {
+describe('父轮失败或被停止后的回执只保留在队列中', () => {
   for (const terminal of ['provider_error', 'auth_failed', 'user_stop'] as const) {
     for (const timing of ['early', 'late', 'adjacent'] as const) {
-      test(`${TERMINALS[terminal]} + ${TIMINGS[timing]} —— 不新增请求，随下一条用户消息一次交付`, async () => {
+      test(`${TERMINALS[terminal]} + ${TIMINGS[timing]}：不新增请求，随下一条用户消息一次交付`, async () => {
         const r = await cell(terminal, timing)
         expect(r.stopReason).toBe(terminal === 'user_stop' ? 'user_interrupt' : 'provider_error')
-        // 容量拒绝那一格真的把预算用掉了，不是一次就停。
+        // 容量拒绝一项确实耗尽了预算，而不是一次即停止。
         if (terminal === 'provider_error') expect(r.parentRequests).toBeGreaterThan(1)
         else expect(r.parentRequests).toBe(1)
-        // 回执自己一条请求都不许发。
+        // 回执自身不得发出任何请求。
         expect(r.afterReceipt).toBe(0)
-        // 注入资格留着：下一轮首个边界就取得到。
+        // 注入资格保留：下一轮的首个边界即可取得。
         expect(r.queue).toEqual([
           { id: `rc_${terminal}_${timing}`, steer: true, origin: 'subagent' },
         ])
@@ -383,8 +383,8 @@ describe('父轮失败或被停止后的回执只保留', () => {
 
 describe('并行回执与用户条目', () => {
   /**
-   * 两个独立子任务的回执都在父轮失败前到达：两条都留着，下一条用户消息的首个请求
-   * 同时带上它们，各一次。
+   * 两个独立子任务的回执都在父轮失败前到达：两条都保留，下一条用户消息的首个请求
+   * 同时包含这两条回执，各一次。
    */
   test('父轮失败前到达的两条回执一次全部交付', async () => {
     const cv = conversation()
@@ -417,10 +417,10 @@ describe('并行回执与用户条目', () => {
   }, 60_000)
 
   /**
-   * 用户自己标的「调整方向」仍然只对发出它的那一轮成立：父轮收尾即复位，
-   * 下一轮由队首火发而不是注入。两种去向同在一份队列里，不能互相带走。
+   * 用户标记的「调整方向」仍只对标记时的那一轮有效：父轮收尾时复位，
+   * 下一轮由队首条目发起而不是注入。两种去向同在一份队列中，处理一种时不得连带另一种。
    */
-  test('同一队列里用户条目复位、回执保留', async () => {
+  test('同一队列中用户条目复位、回执保留', async () => {
     const cv = conversation()
     hold()
     script = [unauthorized]

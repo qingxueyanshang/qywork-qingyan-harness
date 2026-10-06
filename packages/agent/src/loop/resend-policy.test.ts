@@ -1,13 +1,13 @@
 /**
  * 覆盖范围：`loop/attempt.ts` 的单一退避策略与重发预算（`resendBackoffMs`、`MAX_RESENDS`、
  * `LoopDeps.sleep`），对 `@qywork/ai` 的 `providers/fault-server.test-helper.ts`
- * 三协议故障端点跑真实 HTTP。
+ * 三协议故障端点执行真实 HTTP 请求。
  *
- * 退避经注入的 `sleep` 执行，断言它收到的毫秒序列：真等下去的话，
- * 一次耗满预算是一分钟量级。停止那两条例外，它们要的正是真实计时。
+ * 退避经注入的 `sleep` 执行，断言其收到的毫秒序列：实际等待时，
+ * 耗尽一次预算约需一分钟。停止相关的用例例外，它们需要真实计时。
  *
- * 退避档位（2 / 4 / 8 / 16 / 30 秒）在本文件独立写一遍，不从 `loop/attempt.ts` 导入：
- * 导进来的断言等于拿实现校验实现。
+ * 退避档位（2 / 4 / 8 / 16 / 30 秒）在本文件中独立列出，不从 `loop/attempt.ts` 导入：
+ * 导入后的断言等于用实现校验实现自身。
  */
 
 import { expect, test } from 'bun:test'
@@ -101,8 +101,8 @@ async function runAgainst(opts: RunOptions): Promise<AgentEvent[]> {
   return events
 }
 
-/** E1 / T09：上游给了等待时间就按它等，不按本地档位。 */
-test('503 带 Retry-After 60：等待取上游给的 60 秒，之后一次成功', async () => {
+/** 上游给出等待时间时按该时间等待，不按本地档位。 */
+test('503 带 Retry-After 60：按上游给出的 60 秒等待，随后一次成功', async () => {
   const fault: FaultServer = startFaultServer('retry_after_then_ok')
   fault.retryAfterSeconds = 60
   const backoffs: number[] = []
@@ -116,7 +116,7 @@ test('503 带 Retry-After 60：等待取上游给的 60 秒，之后一次成功
     })
 
     expect(backoffs).toEqual([60_000])
-    // 服务端侧的独立事实：退避期间没有第三次接收，重发确实只发生一次。
+    // 服务端的独立记录：退避期间没有第三次接收，重发只发生一次。
     expect(fault.receipts.length).toBe(2)
     expect(events.find((e) => e.type === 'run.error')).toBeUndefined()
     const finished = events.find((e) => e.type === 'run.finished')
@@ -126,7 +126,7 @@ test('503 带 Retry-After 60：等待取上游给的 60 秒，之后一次成功
   }
 }, 20_000)
 
-/** E5 / T09：连接被拒没有等待时间可用，六次尝试之间按指数退避。 */
+/** 连接被拒时没有可用的等待时间，六次尝试之间按指数退避。 */
 test('连接被拒：首发加五次重发，间隔按 2 / 4 / 8 / 16 / 30 秒递增', async () => {
   const backoffs: number[] = []
   const events = await runAgainst({
@@ -149,20 +149,20 @@ test('连接被拒：首发加五次重发，间隔按 2 / 4 / 8 / 16 / 30 秒�
 }, 20_000)
 
 /**
- * 可恢复错误交替：503 无 Retry-After → 终态前 EOF → 正常完成。
+ * 可恢复错误交替出现：503 无 Retry-After → 终态前 EOF → 正常完成。
  *
- * 换码不清账：一轮里真的发出去过几次就算几次，第二次退避走的是第二档。
+ * 错误码变化不重置计数：一轮中实际发出几次即计几次，第二次退避使用第二档。
  */
 test('可恢复错误交替出现：预算共用一份，尝试序号只增不重置', async () => {
   const fault: FaultServer = startFaultServer('retry_after_then_ok')
-  // 不带 Retry-After 的 503：等多久只能由本地退避策略决定。
+  // 不带 Retry-After 的 503：等待时长只能由本地退避策略决定。
   fault.retryAfterSeconds = null
   const backoffs: number[] = []
   try {
     const events = await runAgainst({
       baseUrl: fault.openaiBaseUrl,
       runId: 'rn_mixed',
-      // 每次退避把夹具切到下一种故障形态，三次尝试因此各撞一种。
+      // 每次退避把夹具切换到下一种故障形态，因此三次尝试各遇到一种。
       sleep: async (ms) => {
         backoffs.push(ms)
         fault.mode = backoffs.length === 1 ? 'eof_before_terminal' : 'complete'
@@ -189,10 +189,10 @@ test('可恢复错误交替出现：预算共用一份，尝试序号只增不�
   }
 }, 20_000)
 
-/** T10：退避走真实计时，等待期间的停止必须立刻结束整轮。 */
-test('退避等待期间停止：立即以 user_interrupt 收尾，不再发请求', async () => {
+/** 退避使用真实计时，等待期间的停止必须立即结束整轮。 */
+test('退避等待期间停止：立即以 user_interrupt 结束，不再发送请求', async () => {
   const fault: FaultServer = startFaultServer('retry_after_then_ok')
-  // 等待长到测试本身等不起：停止若不中断等待，这一条会超时而不是失败。
+  // 等待时长远超测试的超时上限：停止若不中断等待，本用例以超时结束，而不是断言失败。
   fault.retryAfterSeconds = 600
   const controller = new AbortController()
   try {
@@ -217,7 +217,7 @@ test('退避等待期间停止：立即以 user_interrupt 收尾，不再发请�
       signal: controller.signal,
     })) {
       types.push(ev.type)
-      // 这条事件在退避之前发出，停止因此正好落在等待里。
+      // 该事件在退避之前发出，因此停止恰好发生在等待期间。
       if (ev.type === 'run.retrying') controller.abort()
       if (ev.type === 'run.finished') stopReason = ev.stopReason
     }

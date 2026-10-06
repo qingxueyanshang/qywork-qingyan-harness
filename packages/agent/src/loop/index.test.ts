@@ -11,10 +11,10 @@ import { noopPersistence } from './fixtures.test-helper.ts'
 
 describe('用户中断不是错误', () => {
   /**
-   * 原始失败形状：run 挂在等 provider 事件的 await 上，此时 abort 让底层请求抛出，
-   * 被归类成 ProviderError('internal_error','已取消') 走异常路径——
-   * loop 里三处 `signal.aborted` 检查全在「两个事件之间」，一个都赶不上。
-   * 结果是用户主动点停止，DB 记 failed、界面弹一条红色 internal_error。
+   * 原始失败形状：run 阻塞于等待 provider 事件的 await，此时 abort 使底层请求抛出异常，
+   * 该异常被归类为 ProviderError('internal_error','已取消') 并进入异常路径。
+   * loop 中三处 `signal.aborted` 检查都位于两个事件之间，无法捕获这次中断。
+   * 用户主动停止后，数据库记为 failed，界面显示一条 internal_error 错误。
    */
   function abortingAdapter(controller: AbortController): LlmAdapter {
     return {
@@ -23,7 +23,7 @@ describe('用户中断不是错误', () => {
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
-        // 在「两个事件之间」之外的地方中断，并像真实 SDK 那样抛出。
+        // 在两个事件之间以外的位置中断，并按真实 SDK 的行为抛出异常。
         controller.abort()
         throw new ProviderError({
           code: 'internal_error',
@@ -34,7 +34,7 @@ describe('用户中断不是错误', () => {
     }
   }
 
-  test('流式等待中被中断 —— 终态是 interrupted，且不发 run.error', async () => {
+  test('流式等待中被中断：终态为 interrupted，且不发送 run.error', async () => {
     const controller = new AbortController()
     let settlement:
       | { status: string; errorCode: string | null; errorMessage: string | null }
@@ -65,9 +65,9 @@ describe('用户中断不是错误', () => {
 
     expect(finished?.status).toBe('interrupted')
     expect(finished?.stopReason).toBe('user_interrupt')
-    // 报红的那条不能出现——中断不该走错误通道。
+    // 不得出现 run.error：中断不经由错误通道。
     expect(types).not.toContain('run.error')
-    // provider 没有返回错误；账本不能把 SDK 的取消异常伪装成上游 internal_error。
+    // provider 未返回错误；账本不得把 SDK 的取消异常记为上游 internal_error。
     expect(settlement).toEqual({ status: 'uncertain', errorCode: null, errorMessage: null })
   })
 })

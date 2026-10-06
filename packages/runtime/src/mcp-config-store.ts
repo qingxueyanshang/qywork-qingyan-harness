@@ -1,8 +1,8 @@
 /**
  * MCP 配置的唯一写入实现。
  *
- * server 的导入接口和模型工具都走这里。解析使用 mcp 包的同一份解析器，作用域路径使用 tools 包的同一份
- * 根目录规则，避免界面能导入而模型写出的配置按另一套规则被忽略。
+ * server 的导入接口与模型工具都经由此处写入。解析使用 mcp 包的解析器，作用域路径使用 tools 包的
+ * 根目录规则，避免出现界面可以导入、而模型写入的配置因另一套规则被忽略的情况。
  */
 
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
@@ -26,7 +26,7 @@ type LayerResult = { ok: true; doc: LayerDocument } | { ok: false; error: string
 
 function configFile(workspaceRoot: string, scope: WritableMcpScope): string {
   const root = scopeDir(scopeRoots(workspaceRoot), scope, '')
-  if (root === null) throw new Error('这一层不可写')
+  if (root === null) throw new Error('该层不可写')
   return join(root, MCP_FILE)
 }
 
@@ -44,7 +44,7 @@ async function loadLayer(workspaceRoot: string, scope: WritableMcpScope): Promis
     return { ok: false, error: `${scope} 层的 mcp.json 解析失败，请先修复：${String(err)}` }
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return { ok: false, error: `${scope} 层的 mcp.json 最外层不是对象` }
+    return { ok: false, error: `${scope} 层的 mcp.json 顶层不是对象` }
   }
   const root = parsed as Record<string, unknown>
   const key = 'servers' in root ? 'servers' : 'mcpServers'
@@ -143,7 +143,7 @@ export async function mergeMcpServers(
       return {
         ok: false,
         kind: 'conflict',
-        error: `这一层已经有同名 server：${clash.join('、')}`,
+        error: `该层已有同名 server：${clash.join('、')}`,
         names: clash,
       }
     }
@@ -219,7 +219,7 @@ export function makeMcpConfigPort(workspaceRoot: string): McpConfigPort {
           try {
             await saveLayer(target.doc)
           } catch (err) {
-            return { ok: false, error: `写入目标层失败，原配置未改：${String(err)}` }
+            return { ok: false, error: `写入目标层失败，原配置未修改：${String(err)}` }
           }
 
           delete source.doc.servers[input.name]
@@ -232,10 +232,13 @@ export function makeMcpConfigPort(workspaceRoot: string): McpConfigPort {
             } catch (rollbackError) {
               return {
                 ok: false,
-                error: `删除来源失败，且目标回滚失败：${String(err)}；${String(rollbackError)}`,
+                error: `删除来源层配置失败，且目标层回滚失败：${String(err)}；${String(rollbackError)}`,
               }
             }
-            return { ok: false, error: `删除来源失败，目标已回滚，原配置仍在：${String(err)}` }
+            return {
+              ok: false,
+              error: `删除来源层配置失败，目标层已回滚，原配置保留：${String(err)}`,
+            }
           }
 
           return {

@@ -1,13 +1,11 @@
 /**
- * `qy serve` —— 本地 HTTP + WebSocket 服务。
+ * `qy serve`：本地 HTTP 与 WebSocket 服务。
  *
- * 桌面端和手机端连的是**同一个**服务、走**同一套**协议。桌面端并不通过 Tauri IPC
- * 拿数据，它就是这个服务的一个 Web 客户端——这样手机端不需要第二套后端，
- * 也不会出现「桌面能做但手机做不了」的能力漂移。
+ * 桌面端与手机端连接同一个服务、使用同一套协议。桌面端不经由 Tauri IPC 取得数据，
+ * 它是本服务的一个 Web 客户端：手机端因此无需第二套后端，两端的能力也不会出现差异。
  *
- * 绑定地址的取舍：默认绑 0.0.0.0 才能让手机连上，但那也意味着同一 Wi-Fi 下
- * 任何设备都能触达。所以令牌鉴权是强制的，不是可选项（见 pairing.ts）。
- * 只想本机用就传 --host 127.0.0.1。
+ * 绑定地址：默认绑定 0.0.0.0，手机因此能够连接，同一 Wi-Fi 下的任何设备也都能访问，
+ * 所以令牌鉴权是强制的（见 pairing.ts）。仅供本机使用时传 --host 127.0.0.1。
  */
 
 import { mkdirSync } from 'node:fs'
@@ -63,77 +61,76 @@ export interface ServeOptions {
   store: Store
   config: QyConfig
   /**
-   * 正文库。不传则自动挨着主账本开一个（`:memory:` 账本对应内存正文库）。
-   * 超预算的工具输出落在这里，模型用 read_resource 读回。
+   * 正文库。未传入时在主账本旁打开一个（`:memory:` 账本对应内存正文库）。
+   * 超出预算的工具输出写入此处，模型用 read_resource 读取。
    */
   content?: ContentStore
   /**
-   * 启动时用哪个目录当项目。
+   * 启动时作为项目的目录。
    *
-   * **不给是合法的，而且和「给了进程 cwd」不是一回事。** 不给 = 由服务端决定：
-   * 账本里有项目就用最近打开的那个，一个都没有才建默认工作区。
+   * 未传入是合法的，且与传入进程 cwd 含义不同。未传入时由服务端决定：
+   * 账本中有项目时使用最近打开的项目，没有任何项目时创建默认工作区。
    *
-   * 把进程 cwd 当默认值是错的：桌面外壳的 cwd 是安装目录或 `src-tauri`，
-   * 一经登记便会产生一个无人请求过的项目。
+   * 不要以进程 cwd 作为默认值：桌面外壳的 cwd 是安装目录或 `src-tauri`，
+   * 登记后会产生一个用户未请求的项目。
    */
   workspaceRoot?: string
   port: number
   host: string
   /** web 构建产物目录；不存在时只提供 API。 */
   staticDir?: string
-  /** 由外部注入的令牌（Tauri spawn 时用环境变量传），不传则自己生成。 */
+  /** 由外部注入的令牌（Tauri 启动子进程时经环境变量传入），未传入时自行生成。 */
   token?: string
   /**
-   * 原生宿主连接的凭据（桌面外壳 spawn 时用环境变量传）。
+   * 原生宿主连接的凭据（桌面外壳启动子进程时经环境变量传入）。
    *
-   * **一份凭据管两条宿主路径**：`/native/browser` 与 `/native/desktop` 由同一个桌面
-   * 外壳进程发起，同一次启动只有一个随机值；是哪一种宿主由服务端按 URL 路径判定，
-   * 不看客户端自报的字段。
+   * 一份凭据用于两条宿主路径：`/native/browser` 与 `/native/desktop` 由同一个桌面外壳进程发起，
+   * 同一次启动只有一个随机值；宿主类型由服务端按 URL 路径判定，不采用客户端自报的字段。
    *
-   * **不传两条路径都不存在**：宿主连接一律拒绝，浏览器控制与电脑控制两条能力都不发布。
-   * 不给它一个默认值——默认值等于人人都能注册宿主。
+   * 未传入时两条路径都不存在：宿主连接一律拒绝，浏览器控制与电脑控制两项能力都不发布。
+   * 不要为它设置默认值：有默认值即任何人都能注册宿主。
    */
   hostKey?: string
   updateHostKey?: string
-  /** 桌面外壳刚观察到的上一份 qy serve 终态。只用于本次启动的孤儿 run 回收。 */
+  /** 桌面外壳观察到的上一个 qy serve 进程的终态，仅用于本次启动时回收孤儿 run。 */
   previousProcessExit?: ProcessExitObservation
   /**
-   * 调度 tick 间隔，毫秒。缺省 `SCHEDULER_TICK_MS`。
+   * 调度 tick 间隔，毫秒。缺省为 `SCHEDULER_TICK_MS`。
    *
-   * 唯一的用途是让回归测试用真实计时器驱动生产的那条推进路径，而不是把等待时间拉到分钟级。
-   * 不要用它调节生产精度：到期判定是分钟级的，改这个数只会让 tick 空转。
+   * 仅用于让回归测试以真实计时器驱动生产环境的推进路径，避免等待时间达到分钟级。
+   * 不要用它调节生产精度：到期判定以分钟为单位，修改此值只会增加无效的 tick。
    */
   schedulerTickMs?: number
 }
 
-/** 首次运行时建的那个工作区叫什么。已落盘的目录名是历史事实，别改（D2）。 */
+/** 首次运行时创建的工作区名称。已写入磁盘的目录名是历史事实，不要修改（D2）。 */
 const DEFAULT_WORKSPACE_NAME = '默认工作区'
 
 /**
- * HTTP 入口的资源安全线，不是图片/视频的模型能力线。
+ * HTTP 入口的资源安全上限，不是图片或视频的模型能力上限。
  *
- * 浏览器拿不到绝对路径时才会把附件传给本机服务；桌面拖入始终只传路径。百炼官方
- * 临时文件协议的硬上限是 1 GB，因此允许这条兜底链覆盖到同一数量级，同时阻止一个
- * 已配对客户端用无界请求耗尽磁盘。具体模型更小的限制由 Provider 凭证/请求裁决。
+ * 仅当浏览器无法取得绝对路径时，附件才上传到本机服务；桌面拖入始终只传路径。百炼官方
+ * 临时文件协议的上限是 1 GB，因此该后备路径允许达到同一数量级，同时阻止已配对客户端
+ * 以无上限的请求耗尽磁盘。具体模型更小的限制由 Provider 凭证或请求判定。
  */
 const MAX_HTTP_REQUEST_BODY_BYTES = 1024 * 1024 * 1024
 
 /**
- * 决定启动时挂在哪个项目上。**这是「首次运行挂哪儿」的唯一权威。**
+ * 决定启动时使用的项目，是首次运行时项目选择的唯一权威。
  *
- * 三条路，优先级从高到低：
+ * 三种来源，优先级从高到低：
  *
- * 1. 显式给了根 —— 照用（`qy serve --cwd <目录>` 是 CLI 的正常用法）。
- * 2. 账本里已有项目 —— 用最近打开的那个（`mostRecentWorkspace`）。
- *    **首次之后每次启动都走这条**，所以用户在界面里切过的项目不会被启动目录顶掉。
- *    注意它和侧栏顺序是两回事：侧栏按「置顶 > 添加先后」稳定排列，不跟着切换重排。
- * 3. 一个都没有 —— 在 `~/.qywork/workspaces/默认工作区/` 建一个。
+ * 1. 显式传入根目录：直接使用（`qy serve --cwd <目录>` 是 CLI 的常规用法）。
+ * 2. 账本中已有项目：使用最近打开的项目（`mostRecentWorkspace`）。
+ *    首次之后的每次启动都经由此条，因此用户在界面中切换过的项目不会被启动目录替换。
+ *    它与侧栏顺序无关：侧栏按「置顶 > 添加先后」稳定排列，不随切换重排。
+ * 3. 没有任何项目：在 `~/.qywork/workspaces/默认工作区/` 创建一个。
  *
- * 第 3 条是关键：**不能无条件登记启动目录**，那样首次运行就「挂在启动目录上」——
- * 桌面端的启动目录是 qywork 的源码树，用户拿到的默认项目会是这个仓库本身。
+ * 第 3 条不能省略：无条件登记启动目录时，桌面端的启动目录是 qywork 的源码树，
+ * 首次运行得到的默认项目将是本仓库。
  *
- * 目录用 `mkdirSync`：账本这一行必须和目录同生共死，异步建目录会留下一段
- * 「行已经在了、目录还没有」的窗口，而那段时间里任何工具调用都会因为根不存在而炸。
+ * 使用 `mkdirSync` 创建目录：账本行与目录必须同时存在，异步创建会产生一段
+ * 「行已存在、目录尚未创建」的时间窗，期间任何工具调用都因根目录不存在而失败。
  */
 function bootstrapWorkspace(store: Store, explicitRoot?: string): string {
   if (explicitRoot) {
@@ -155,10 +152,10 @@ function bootstrapWorkspace(store: Store, explicitRoot?: string): string {
 
 export function serve(opts: ServeOptions) {
   const bus = new EventBus()
-  // 在跑的子 agent 与 run 同级：它们的生命期跟着会话，不跟着派它们的那一轮。
+  // 运行中的子 agent 与 run 同级：它们的生命周期跟随会话，而非派发它们的那一轮。
   const subagents = new SubagentRegistry()
   const runs = new RunManager(opts.store, bus, subagents)
-  // 画布的写入与画布上的生成只经这一个实例；事件不带会话 id，推给所有客户端。
+  // 画布的写入与画布上的生成仅经由此实例；事件不带会话 id，推送给所有客户端。
   const canvas = new CanvasService({
     paramSpecsOf: (output, pick) => {
       const target = resolveMediaModel(opts.config, output, pick)
@@ -172,32 +169,32 @@ export function serve(opts: ServeOptions) {
     },
   })
   /*
-   * 浏览器宿主连接与控制协调器。**没有凭据就没有这两样**：宿主路径不接受连接，
-   * 会话装配也拿不到端口，界面上不会出现一个点了报错的入口。
+   * 浏览器宿主连接与控制协调器。没有凭据时两者都不创建：宿主路径不接受连接，
+   * 会话装配也无法取得端口，界面不会出现点击即报错的入口。
    */
   const browserBridge = opts.hostKey ? new BrowserBridge(opts.hostKey) : null
   const browser = browserBridge
     ? new BrowserCoordinator(browserBridge, () => opts.config.browserEnabled !== false)
     : null
   /*
-   * 宿主连上 / 断开时把能力投影重播一份。
+   * 宿主连接或断开时重新广播能力投影。
    *
-   * 握手只报一次，而宿主是应用起来之后才连上来的：只有握手那一份的话，界面要等
-   * 下一次重连才看得见浏览器入口。判定与握手共用 `browserCapability`。
+   * 握手只报告一次，而宿主在应用启动之后才连接：若只依赖握手中的值，界面需等到
+   * 下一次重连才显示浏览器入口。判定与握手共用 `browserCapability`。
    */
   const offBrowserHost = browserBridge?.onHostChange(() => {
     bus.publish({ type: 'browser.state', browser: browserCapability(browserBridge) })
   })
   /*
-   * 桌面宿主连接与电脑控制协调器。**与浏览器共用同一份宿主凭据**：两条路径由同一个
-   * 桌面外壳进程发起，同一次启动只有一个随机值；哪一种宿主由 URL 路径判定，
-   * 不看客户端自报的字段。没有凭据就没有这两样。
+   * 桌面宿主连接与电脑控制协调器。与浏览器共用同一份宿主凭据：两条路径由同一个
+   * 桌面外壳进程发起，同一次启动只有一个随机值；宿主类型由 URL 路径判定，
+   * 不采用客户端自报的字段。没有凭据时两者都不创建。
    *
-   * 两个开关都现读 `opts.config`：那份对象由 `/api/config` 的 PUT 就地改写，
-   * 存一份快照的话用户在设置里改完之后要等重启才生效。前台接管那一个随每条请求下发到
-   * worker，运行中关掉在下一次派发就被拒。
+   * 两个开关都在使用时读取 `opts.config`：该对象由 `/api/config` 的 PUT 原地改写，
+   * 保存快照会使设置中的修改需重启才生效。前台接管开关随每条请求下发到 worker，
+   * 运行中关闭后，下一次派发即被拒绝。
    *
-   * 两个开关缺席均按启用（`!== false`），显式 `false` 关闭。前台操作配置与控件能力
+   * 两个开关缺省时均视为启用（`!== false`），显式 `false` 为关闭。前台操作配置与控件能力
    * 分别判断；模型可见状态与 worker 请求帧读取同一份配置。
    */
   const desktopBridge = opts.hostKey
@@ -213,13 +210,13 @@ export function serve(opts: ServeOptions) {
     bus.publish({ type: 'desktop.target', target })
   })
   /*
-   * Office 执行程序：启动时探测一次本机的 Python、文档库与办公软件，之后按缓存给会话发端口。
-   * 开关现读 `opts.config`，与电脑控制同一理由：设置里改完不用重启。
+   * Office 执行程序：启动时探测一次本机的 Python、文档库与办公软件，之后按缓存为会话提供端口。
+   * 开关在使用时读取 `opts.config`，理由与电脑控制相同：设置修改后无需重启。
    */
   const office = createOfficeHost(() => opts.config)
   void office.refresh()
   const gitWatch = createGitWatch(opts.store, bus)
-  // 令牌只有这一个持有者。外部注入的也交给它，鉴权才只有一条路径。
+  // 令牌只有这一个持有者。外部注入的令牌也交给它，使鉴权只有一条路径。
   const pairing = new Pairing({
     deviceName: hostLabel(),
     ...(opts.token ? { token: opts.token } : {}),
@@ -227,35 +224,34 @@ export function serve(opts: ServeOptions) {
   const token = pairing.token
 
   /*
-   * 启动时的项目。三条路，优先级从高到低：
+   * 启动时的项目。三种来源，优先级从高到低：
    *
-   * 1. **显式给了 `workspaceRoot`** —— 照用（`qy serve --cwd <目录>`）。
-   * 2. **账本里已有项目** —— 用最近打开的那个（`mostRecentWorkspace`）。
-   * 3. **一个都没有（首次运行）** —— 建一个默认工作区。
+   * 1. 显式传入 `workspaceRoot`：直接使用（`qy serve --cwd <目录>`）。
+   * 2. 账本中已有项目：使用最近打开的项目（`mostRecentWorkspace`）。
+   * 3. 没有任何项目（首次运行）：创建默认工作区。
    *
-   * 第 3 条不能省：无条件登记 `opts.workspaceRoot` 的话，首次运行就「挂在启动
-   * 目录上」——桌面端的启动目录是这个仓库自己，用户拿到的默认项目会是 qywork
-   * 的源码树。
+   * 第 3 条不能省略：无条件登记 `opts.workspaceRoot` 时，首次运行使用的是启动目录，
+   * 而桌面端的启动目录是本仓库，用户得到的默认项目将是 qywork 的源码树。
    */
   const workspaceRoot = bootstrapWorkspace(opts.store, opts.workspaceRoot)
 
-  // 正文库与主账本挨着放。开在这里而不是每个 run 现开：SQLite 连接有成本，
-  // 而且 GC 需要一个跨 run 存活的句柄。
+  // 正文库与主账本放在同一目录。在此处打开而不是每个 run 单独打开：SQLite 连接有开销，
+  // 且 GC 需要一个跨 run 存活的句柄。
   const content =
     opts.content ?? new ContentStore(contentPathFor(opts.store.db.filename || ':memory:'))
   const ownsContent = opts.content === undefined
 
   /**
-   * 预热启动那个项目的扩展，并全程持有一份引用。
+   * 预加载启动项目的扩展，并在服务运行期间持有一份引用。
    *
-   * **扩展清单不在这里存一份给握手用。** 扩展里的 MCP 与编排是按工作区的
-   * （`.agents/mcp.json`、`.qy/team.json` 在项目目录下），而一条 WebSocket 连接
-   * 横跨用户开着的所有项目——存一份就等于「A 项目的 MCP 显示在 B 项目上」，
-   * 而且只在重连时才更新。要看清单去各自的设置页，它们按项目现取。
+   * 扩展清单不在此处保存供握手使用。扩展中的 MCP 与编排按工作区区分
+   * （`.agents/mcp.json`、`.qy/team.json` 位于项目目录下），而一条 WebSocket 连接
+   * 跨越用户打开的所有项目：保存一份会使 A 项目的 MCP 显示在 B 项目上，
+   * 且只在重连时更新。清单由各项目的设置页按项目实时读取。
    *
-   * 这里仍然 acquire：各个 Session 再各自 acquire / release，引用计数保证
-   * 子进程只起一套；服务持有一份让启动项目的插件不会在两轮之间被反复拉起又杀掉。
-   * 异步、不阻塞服务启动——一个慢插件不该让整个服务起不来。
+   * 此处仍然 acquire：各个 Session 各自 acquire / release，引用计数保证
+   * 子进程只启动一套；服务持有一份引用，使启动项目的插件不会在两轮之间反复启动与终止。
+   * 异步执行、不阻塞服务启动：单个慢插件不应导致整个服务无法启动。
    */
   const extensionsReady = acquireExtensions(
     workspaceRoot,
@@ -277,12 +273,12 @@ export function serve(opts: ServeOptions) {
       return null
     })
 
-  // 回收上次进程留下的 running run。必须在开始服务**之前**做：
-  // 留着不管的话 hasRun 会一直判真，用户在那个会话里发不出任何消息——会话被永久锁死。
+  // 回收上次进程留下的 running run，必须在开始服务之前执行：
+  // 不回收时 hasRun 始终为真，用户在该会话中无法发送任何消息，会话被永久锁定。
   //
-  // 只回收**没人在跑**的那些（判据见 `store/repos.ts` 的 `isOrphan`）。无差别
-  // 回收的话，本进程一启动就把别的进程正在跑的那一轮判成中断——账本是共享的，
-  // 而一台机器上同时可以有好几个写入者。
+  // 只回收无进程运行的 run（判据见 `store/repos.ts` 的 `isOrphan`）。不加区分地回收
+  // 会使本进程启动时把其他进程正在运行的轮次判为中断：账本是共享的，
+  // 一台机器上可以同时存在多个写入者。
   const previousExit = opts.previousProcessExit
     ? sanitizeProcessExitObservation(opts.previousProcessExit, collectSecrets(opts.config))
     : undefined
@@ -290,25 +286,25 @@ export function serve(opts: ServeOptions) {
   if (stale.recovered > 0) {
     log.warn('runs', '已回收上次残留的执行记录', {
       recovered: stale.recovered,
-      // 在工具执行期间中断的那些结果不可信
+      // 在工具执行期间中断、结果不可信的轮次数
       ambiguous: stale.ambiguous,
       previousExit: previousExit?.exitKind ?? null,
     })
   }
-  // 跳过的也要说。不说的话「回收了 0 个」有两种含义（没有残留 / 有但都还在运行），
-  // 而这两种在排查「为什么那条会话还显示执行中」时是完全不同的方向。
+  // 跳过的数量同样记录。否则「回收了 0 个」有两种含义（没有残留，或残留均仍在运行），
+  // 两者在排查会话为何仍显示执行中时指向不同的方向。
   if (stale.heldByOthers > 0) {
-    log.info('runs', '另有执行记录由其它运行中的进程持有，未回收', {
+    log.info('runs', '另有执行记录由其他运行中的进程持有，未回收', {
       heldByOthers: stale.heldByOthers,
     })
   }
 
   /*
-   * `~/.qywork/schedules.json` 的一次性导入。**必须在开始服务之前**：导入之后任务表的
-   * 唯一权威是账本，调度、HTTP 面与模型工具都只读账本，运行期不再读那个文件。
+   * `~/.qywork/schedules.json` 的一次性导入，必须在开始服务之前执行：导入之后任务表的
+   * 唯一权威是账本，调度、HTTP 接口与模型工具都只读取账本，运行期间不再读取该文件。
    *
-   * 文件不合法时抛出，沿既有启动失败路径退出并保留原字节——静默当成空表等于界面上定时任务
-   * 全部消失，用户会再建一遍。
+   * 文件不合法时抛出异常，经现有的启动失败路径退出并保留原字节。静默视为空表会使界面上的
+   * 定时任务全部消失，用户会重新创建一遍。
    */
   const importedSchedules = importLegacySchedules(opts.store)
   if (importedSchedules !== null) {
@@ -316,16 +312,16 @@ export function serve(opts: ServeOptions) {
   }
 
   /*
-   * 正文回收。放在残留 run 回收与任务导入**之后**、开始接受执行之前：引用集合要等账本
-   * 稳定下来才算数，而这一次回收要清掉的正是上次进程在登记引用之前退出留下的孤儿。
+   * 正文回收。位于残留 run 回收与任务导入之后、开始接受执行之前：引用集合需在账本稳定后
+   * 才有效，而本次回收要清除的正是上次进程在登记引用之前退出所留下的孤儿正文。
    *
-   * 失败只写一行 stderr，不拦启动：回收的是磁盘空间，不是正确性；下一次启动或下一次
-   * 删除会话会再收一次。这里不加定时器，也不按时间删仍有引用的正文。
+   * 失败只写一行 stderr，不阻止启动：回收针对的是磁盘空间，不影响正确性；下一次启动或
+   * 下一次删除会话时会再次回收。此处不设定时器，也不按时间删除仍被引用的正文。
    */
   const collectGarbage = () => collectResourceGarbage(opts.store, content)
   try {
     const { removed } = collectGarbage()
-    if (removed > 0) log.info('content', '已回收无人引用的正文', { removed })
+    if (removed > 0) log.info('content', '已回收未被引用的正文', { removed })
   } catch (err) {
     log.error('content', `正文回收失败：${err instanceof Error ? err.message : String(err)}`)
   }
@@ -333,14 +329,14 @@ export function serve(opts: ServeOptions) {
   const unsubscribers = new Map<string, () => void>()
 
   /*
-   * 交付一次定时触发：认领新建的会话先广播，再把 prompt 作为一条用户消息发进去。
+   * 交付一次定时触发：认领时新建的会话先广播，再把 prompt 作为一条用户消息发送。
    *
-   * **两个入口（tick 与「立刻跑一次」）共用这一个函数**，两处各写一遍的话，其中一处
-   * 漏掉广播的表现是那条会话要刷新一次才出现在左栏。
+   * 两个入口（tick 与「立即运行」）共用此函数：分别实现时，其中一处若遗漏广播，
+   * 该会话需刷新一次才出现在左栏。
    *
-   * **走 `submitMessage` 而不是 `startRun`**：认领提交与进程内占位之间有一段窗口，
-   * 用户恰好在这段里发了消息时直接起轮会被回绝成一条 `run.error`，这次触发随之丢掉。
-   * 经 `submitMessage` 则排成跟进消息，与手动发消息完全同一条路径。
+   * 使用 `submitMessage` 而不是 `startRun`：认领提交与进程内占位之间存在时间窗，
+   * 用户恰好在此期间发送消息时，直接启动一轮会被拒绝为 `run.error`，本次触发随之丢失。
+   * 经由 `submitMessage` 则作为跟进消息排队，与手动发送消息使用同一路径。
    */
   const submitSchedule = (claim: ScheduleClaim): Promise<void> => {
     if (claim.created) bus.publish({ type: 'conversation.created', conversation: claim.created })
@@ -362,7 +358,7 @@ export function serve(opts: ServeOptions) {
     )
   }
 
-  /* 定时任务调度。推进函数在 `scheduler.ts`，这里只负责启停。 */
+  /* 定时任务调度。推进函数位于 `scheduler.ts`，此处只负责启动与停止。 */
   const scheduler = startScheduler(
     {
       store: opts.store,
@@ -376,13 +372,13 @@ export function serve(opts: ServeOptions) {
   /**
    * 局域网监听控制。
    *
-   * 默认只绑 127.0.0.1——一启动就把工作区暴露在整个 Wi-Fi 上不是合理默认。
-   * 用户点「允许手机接入」时**追加**一个 0.0.0.0 的监听器，而不是重启服务：
-   * 重启会断掉桌面端的 WebSocket、丢掉正在跑的 run，代价太大。
+   * 桌面端默认只绑定 127.0.0.1：启动即把工作区暴露给整个 Wi-Fi 不是合理的默认值。
+   * 用户点击「允许手机接入」时追加一个 0.0.0.0 的监听器，而不是重启服务：
+   * 重启会断开桌面端的 WebSocket 并丢弃正在运行的 run。
    *
-   * 两个监听器共用同一个 bus / runs / store，手机连上后看到的是同一份状态。
-   * 这里用后赋值的引用是因为它们要复用主 server 的 handler，而 handler 又要
-   * 能调到这几个函数——循环引用只能靠延迟解析打破。
+   * 两个监听器共用同一个 bus / runs / store，手机连接后看到的是同一份状态。
+   * 此处使用后赋值的引用，原因是监听器需复用主 server 的 handler，而 handler 又需
+   * 调用这几个函数；循环引用只能通过延迟解析打破。
    */
   let lanServer: ReturnType<typeof Bun.serve<SocketData>> | null = null
   let boundPort = opts.port
@@ -390,16 +386,16 @@ export function serve(opts: ServeOptions) {
   let lanPort = 0
 
   /**
-   * 局域网监听用**另一个端口**，不是主端口。
+   * 局域网监听使用另一个端口，不使用主端口。
    *
-   * `0.0.0.0:P` 与已绑的 `127.0.0.1:P` 在同一端口上冲突，直接报
+   * `0.0.0.0:P` 与已绑定的 `127.0.0.1:P` 在同一端口上冲突，直接报
    * 「Failed to start server. Is port P in use?」。
-   * 所以传 port 0 让内核挑一个空闲的，二维码指向这个新端口。
+   * 因此传入 port 0 由内核选择空闲端口，二维码指向该端口。
    */
   const enableLan = (): { port: number } => {
     if (!lanServer) {
       // 复用同一份 handler：两个监听器共用 bus / runs / store，
-      // 手机连上后看到的是同一份状态，不是另一个副本。
+      // 手机连接后看到的是同一份状态，而非副本。
       lanServer = Bun.serve<SocketData>({ ...handlers, port: 0, hostname: '0.0.0.0' })
       lanPort = lanServer.port ?? 0
     }
@@ -412,11 +408,11 @@ export function serve(opts: ServeOptions) {
   }
   const lanEnabled = (): boolean => lanServer !== null
 
-  // handler 抽出来给两个监听器共用。
+  // handler 单独定义，供两个监听器共用。
   // 只写第一个类型参数：Bun 的签名是 serve<WebSocketData, R extends string>，
-  // 第二个是路由表的路径键，这里走 fetch 手动分派，没有路由表。
+  // 第二个参数是路由表的路径键，此处经由 fetch 手动分派，没有路由表。
   const handlers = {
-    // agent 的一轮可能跑很久，默认超时会把 WebSocket 掐掉。
+    // agent 的一轮可能运行很久，默认超时会断开 WebSocket。
     idleTimeout: 255,
     maxRequestBodySize: MAX_HTTP_REQUEST_BODY_BYTES,
 
@@ -449,9 +445,9 @@ export function serve(opts: ServeOptions) {
       /*
        * ── 原生宿主连接 ──
        *
-       * 必须排在 `/stream` 之前单独判：它们不验配对令牌，验的是宿主凭据加回环地址，
-       * 而且升级后各走一条独立的帧处理路径。**是哪一种宿主由路径定**，写进
-       * `ws.data.native`，之后的三处分派都只读这一格。
+       * 必须排在 `/stream` 之前单独判断：这两条路径不校验配对令牌，校验的是宿主凭据与回环地址，
+       * 且升级后各自使用独立的帧处理路径。宿主类型由路径决定并写入 `ws.data.native`，
+       * 之后的三处分派都只读取该字段。
        */
       if (url.pathname === NATIVE_BROWSER_PATH || url.pathname === NATIVE_DESKTOP_PATH) {
         const kind = url.pathname === NATIVE_BROWSER_PATH ? 'browser' : 'desktop'
@@ -473,7 +469,7 @@ export function serve(opts: ServeOptions) {
 
       // ── WebSocket 升级 ──
       if (url.pathname === '/stream') {
-        // 握手期就验令牌：不让未授权连接进入 ws 生命周期。
+        // 握手阶段即校验令牌：未授权的连接不进入 ws 生命周期。
         if (!pairing.verify(extractToken(req))) {
           return new Response('unauthorized', { status: 401 })
         }
@@ -489,14 +485,14 @@ export function serve(opts: ServeOptions) {
         return ok ? undefined : new Response('upgrade failed', { status: 400 })
       }
 
-      // ── 跨源预检：必须答在验令牌之前 ──
-      // 预检按规范不带 Authorization，用同一把尺子量它只会得到 401，
-      // 而 401 的预检意味着**真正那条请求不会发出**。详见 CORS_HEADERS。
+      // ── 跨源预检：必须在校验令牌之前响应 ──
+      // 按规范预检请求不带 Authorization，按同一标准校验只会得到 401，
+      // 而预检返回 401 时实际请求不会发出。详见 CORS_HEADERS。
       if (req.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
         return new Response(null, { status: 204, headers: CORS_HEADERS })
       }
 
-      // ── 健康检查：唯一免鉴权的端点，只回协议版本 ──
+      // ── 健康检查：唯一免鉴权的端点，只返回 `{ ok: true }` ──
       if (url.pathname === '/api/health') {
         return withCors(json({ ok: true }))
       }
@@ -519,16 +515,16 @@ export function serve(opts: ServeOptions) {
             disableLan,
             lanEnabled,
             lanPort: () => lanPort,
-            // 定时任务的「立刻跑一次」走这条，与自动触发完全同一个函数。
-            // 注入而不是让 api 模块 import：那会成环（server → api → server）。
+            // 定时任务的「立即运行」经由此处，与自动触发使用同一个函数。
+            // 以注入方式提供而不由 api 模块 import：后者会形成循环依赖（server → api → server）。
             //
-            // 投递失败就地写一行。认领已经提交，HTTP 那侧已经回过 200——吞掉的话
-            // 留下的是一条有会话、无 Run 的记录，而成因哪里都查不到。
+            // 投递失败时当场写一行日志。认领已提交，HTTP 侧已返回 200；丢弃错误
+            // 会留下一条有会话、无 Run 的记录，且无从查明成因。
             submitSchedule: (claim) => {
               void submitSchedule(claim).catch((err: unknown) => {
                 log.error(
                   'scheduler',
-                  `定时任务「${claim.schedule.title}」起轮失败：${err instanceof Error ? err.message : String(err)}`,
+                  `定时任务「${claim.schedule.title}」启动失败：${err instanceof Error ? err.message : String(err)}`,
                   { scheduleId: claim.schedule.id },
                 )
               })
@@ -556,7 +552,7 @@ export function serve(opts: ServeOptions) {
 
     websocket: {
       async message(ws: ServerWebSocket<SocketData>, raw: string | Buffer) {
-        // 宿主连接只走各自的资源操作，聊天指令一概不在这两条路径上解析。
+        // 宿主连接只处理各自的资源操作，这两条路径上不解析聊天指令。
         if (ws.data.native === 'browser') {
           browserBridge?.message(ws, String(raw))
           return
@@ -593,11 +589,11 @@ export function serve(opts: ServeOptions) {
 
         const cmd = frame as ClientCommand
         /*
-         * 指令处理抛出时也要有回执。这条 await 之外没有接住的人，抛出即一条
-         * unhandled rejection：客户端一条帧都收不到，而「服务端正在处理」与
-         * 「服务端出错了」在界面上无法区分。
+         * 指令处理抛出异常时也必须回执。此处 await 之外没有捕获方，抛出即成为一条
+         * unhandled rejection：客户端收不到任何帧，界面上无法区分「服务端正在处理」与
+         * 「服务端出错」。
          *
-         * 只回执与记日志，不重试：重试会把一次故障放大成一串相同的失败。
+         * 只回执并记录日志，不重试：重试会把一次故障放大为一连串相同的失败。
          */
         try {
           await handleCommand(cmd, {
@@ -635,9 +631,9 @@ export function serve(opts: ServeOptions) {
         log.info('ws', 'open', { id: ws.data.id, origin: ws.data.origin })
       },
       /*
-       * 关闭码与原因是「谁先断的」唯一线索：1000/1001 是对端正常关，1006 是没收到关闭帧
-       * （对端进程没了、连接被掐），1008 是本端握手拒绝。时长用来区分「刚连上就断」
-       * 与「挂了几小时才断」。
+       * 关闭码与原因是判断哪一端先断开的唯一依据：1000/1001 是对端正常关闭，1006 是未收到
+       * 关闭帧（对端进程已退出或连接被中断），1008 是本端握手拒绝。时长用于区分
+       * 「连接后立即断开」与「连接数小时后断开」。
        */
       close(ws: ServerWebSocket<SocketData>, code: number, reason: string) {
         log.info('ws', 'close', {
@@ -671,14 +667,14 @@ export function serve(opts: ServeOptions) {
     streamId: bus.streamId,
   })
 
-  // 分支名跟着 `.git/HEAD` 走，理由与边界都在 `git-watch.ts`。
+  // 分支名跟随 `.git/HEAD`，理由与边界见 `git-watch.ts`。
   gitWatch.retarget()
 
   void canvas
     .recover(
       listWorkspaces(opts.store).map((ws) => ({ id: ws.id, root: ws.rootPath })),
       (ws, version) => {
-        // 配置暂不可用时保留任务号，不能把启动恢复当成远端任务失败。
+        // 配置暂不可用时保留任务号，不能把启动恢复视为远端任务失败。
         if (!resolveMediaModel(opts.config, 'video', version.made)?.apiKey) return undefined
         return uiMediaPort({ store: opts.store, config: opts.config, workspaceId: ws.id })
       },
@@ -694,8 +690,8 @@ export function serve(opts: ServeOptions) {
     browser,
     desktop,
     port: boundPort,
-    // 启动横幅要显示的是**真正生效的**工作区。调用方传进来的可能是 null
-    // （没给 --cwd），那时由 bootstrapWorkspace 决定用哪个，只有这里知道结果。
+    // 启动横幅应显示实际生效的工作区。调用方传入的值可能为空（未传 --cwd），
+    // 此时由 bootstrapWorkspace 决定，只有此处知道结果。
     workspaceRoot,
     enableLan,
     disableLan,
@@ -712,15 +708,15 @@ export function serve(opts: ServeOptions) {
       offDesktopTarget?.()
       desktop?.stop()
       runs.interruptAll()
-      // 子 agent 跟会话不跟 run，关服时要单独停：不停就是一批没人收回执的进程。
+      // 子 agent 跟随会话而非 run，关闭服务时需单独停止：否则会留下一批无人接收回执的进程。
       subagents.interruptAll()
       await canvas.stop()
       disableLan()
       server.stop(true)
-      // 插件是子进程，不显式关会留下孤儿——sidecar 与截图脚本上是同一条约束。
+      // 插件是子进程，不显式关闭会留下孤儿进程；sidecar 与截图脚本遵循同一约束。
       const ext = await extensionsReady
       if (ext) await releaseExtensions(ext)
-      // 只关自己开的：外部传进来的正文库归调用方管，替它关掉会让它下一次读抛错。
+      // 只关闭自己打开的正文库：外部传入的正文库由调用方管理，代为关闭会使其下一次读取抛出异常。
       if (ownsContent) content.close()
     },
   }

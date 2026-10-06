@@ -1,9 +1,9 @@
 /**
- * 运行日志的唯一出口。sidecar 各包只调 `log.*`，落到哪里由 sink 决定。
+ * 运行日志的唯一出口。sidecar 各包只调用 `log.*`，输出位置由 sink 决定。
  *
- * sink 可注入：默认写 stderr；`qy serve` 启动时换成文件 sink（实现在 `@qywork/runtime`，
- * 那一层才拿得到数据目录）。这个包不引 node 模块，也不在模块顶层碰 `process`：
- * 它同时被浏览器端打进包里。
+ * sink 可注入：默认写入 stderr；`qy serve` 启动时替换为文件 sink（实现位于 `@qywork/runtime`，
+ * 只有该层能取得数据目录）。本包不引用 node 模块，也不在模块顶层访问 `process`：
+ * 它同时被打包进浏览器端。
  */
 
 export type LogLevel = 'info' | 'warn' | 'error'
@@ -12,7 +12,7 @@ export interface LogRecord {
   /** 毫秒时间戳。 */
   at: number
   level: LogLevel
-  /** 来源模块，写进方括号里。 */
+  /** 来源模块，写在方括号中。 */
   scope: string
   message: string
   fields?: Record<string, unknown>
@@ -28,7 +28,7 @@ const stderrSink: LogSink = (record) => {
 
 let sink: LogSink = stderrSink
 
-/** 换 sink。传 `null` 回到 stderr。 */
+/** 替换 sink。传入 `null` 时恢复为 stderr。 */
 export function setLogSink(next: LogSink | null): void {
   sink = next ?? stderrSink
 }
@@ -36,8 +36,8 @@ export function setLogSink(next: LogSink | null): void {
 /**
  * 一条记录一行：`时间 级别 [scope] 正文 key=value …`。
  *
- * 正文里的换行缩进成续行，字段跟在正文首行之后——多行正文（stderr 尾部、堆栈）
- * 不会把字段推到看不见的地方。
+ * 正文换行后的各行缩进输出，字段位于正文首行之后：多行正文（stderr 尾部、堆栈）
+ * 不会把字段推到难以查看的位置。
  */
 export function formatLogLine(record: LogRecord): string {
   const [first = '', ...rest] = record.message.split(/\r?\n/)
@@ -65,7 +65,7 @@ function emit(
   fields?: Record<string, unknown>,
 ): void {
   const record: LogRecord = { at: Date.now(), level, scope, message, ...(fields ? { fields } : {}) }
-  // sink 写不动（磁盘满、句柄失效）时退回 stderr。日志本身不能成为让进程退出的原因。
+  // sink 无法写入（磁盘已满、句柄失效）时改用 stderr。日志本身不能导致进程退出。
   try {
     sink(record)
   } catch {

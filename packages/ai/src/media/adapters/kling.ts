@@ -1,12 +1,12 @@
 /**
- * `kling_videos`：可灵开放平台按路径带模型的视频接口。
+ * `kling_videos`：可灵开放平台在路径中指定模型的视频接口。
  *
- * 路径按操作选：文生 `/text-to-video/{model}`，首帧与首尾帧 `/image-to-video/{model}`，参考图 `/omni-video/{model}`。
- * 文生只发 `prompt`；其余把文字与图片一起放进 `contents[]`。参数原样放进 `settings`。
- * 查询 `GET /tasks?task_ids={id}`，状态 `submitted / processing / succeeded / failed`，视频在 `outputs[]` 里 `type: video` 那一项。
+ * 路径按操作选择：文生视频 `/text-to-video/{model}`，首帧与首尾帧 `/image-to-video/{model}`，参考图 `/omni-video/{model}`。
+ * 文生视频只发送 `prompt`；其余操作将文字与图片一起放入 `contents[]`。参数原样放入 `settings`。
+ * 查询 `GET /tasks?task_ids={id}`，状态 `submitted / processing / succeeded / failed`，视频位于 `outputs[]` 中 `type: video` 的条目。
  *
- * 鉴权只用 API Key（`Authorization: Bearer`）。AccessKey / SecretKey 签名只适用于按 `model_name` 字段选模型的那组接口，这里不走。
- * 图片按 base64 发，不带 `data:` 前缀；视频素材接口只收 URL，所以这条协议不收参考视频。
+ * 鉴权只使用 API Key（`Authorization: Bearer`）。AccessKey / SecretKey 签名只适用于按 `model_name` 字段选择模型的接口，此处不使用。
+ * 图片按 base64 发送，不带 `data:` 前缀；视频素材接口只接受 URL，因此该协议不接受参考视频。
  */
 
 import type { Currency } from '@qywork/core'
@@ -33,8 +33,8 @@ const CONTENT_TYPE: Partial<Record<MediaInput['role'], string>> = {
 }
 
 /**
- * 任务的计量。金额取 `billing[]` 里从余额扣的那几项（`charge_type: cash`，`amount` 是实扣金额，`currency` 为 CNY / USD）；
- * 从资源包扣的（`charge_type: unit`）只有单位数、没有金额，不记金额。秒数取视频那一项的 `duration`。
+ * 任务的计量。金额取 `billing[]` 中从余额扣除的条目（`charge_type: cash`，`amount` 为实扣金额，`currency` 为 CNY / USD）；
+ * 从资源包扣除的条目（`charge_type: unit`）只有单位数、没有金额，不记录金额。秒数取视频条目的 `duration`。
  */
 function taskUsage(video: Record<string, unknown>, billing: unknown): MediaUsage {
   const cash = (Array.isArray(billing) ? (billing as Record<string, unknown>[]) : []).filter(
@@ -81,7 +81,8 @@ export class KlingVideosAdapter implements MediaAdapter {
                 { type: 'prompt', text: req.prompt },
                 ...req.inputs.map((input) => {
                   const type = CONTENT_TYPE[input.role]
-                  if (!type) throw new MediaError('可灵官方接口的视频素材只收地址，不收本机文件')
+                  if (!type)
+                    throw new MediaError('可灵官方接口的视频素材只接受地址，不接受本机文件')
                   return { type, url: Buffer.from(input.bytes).toString('base64') }
                 }),
               ],

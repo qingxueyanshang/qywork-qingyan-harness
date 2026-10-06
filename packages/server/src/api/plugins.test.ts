@@ -1,16 +1,16 @@
 /**
- * 插件的两条**写**接口。
+ * 插件的两个写接口。
  *
  * 覆盖范围：`api/plugins.ts` 的 `/api/plugins/install`、`/api/plugins/<id>` DELETE，
- * 以及 GET 用的投影 `pluginRows`。GET 本身只是把共享扩展转出去，这里不起子进程。
+ * 以及 GET 使用的投影 `pluginRows`。GET 本身只转发共享扩展，此处不启动子进程。
  *
- * 钉的是两条**安全边界**，它们只存在于代码里，没有任何检查挡着后续重构：
+ * 锁定两条安全边界，它们只存在于代码中，没有其他检查防止后续重构破坏它们：
  *
- * - 装：目录里没有合法清单就必须拒绝。不拒绝的话，指错目录会「安装成功」，
- *   然后在下一次加载时变成一条 failure——那时候用户已经不记得自己指了哪里。
- *   同 id 再装一次必须回 409 而**不是覆盖**：覆盖会把用户改过的那一份直接抹掉。
- * - 删：id 来自 URL。这道闸一旦被绕过，这条路由就是一条任意目录删除。
- *   所以断言的不是状态码，是**插件目录外面的文件一个都没少**。
+ * - 安装：目录中没有合法清单时必须拒绝。不拒绝时，指定了错误的目录会报告安装成功，
+ *   随后在下一次加载时成为一条 failure，而此时用户已无法回忆所指定的路径。
+ *   同一 id 再次安装必须返回 409，不能覆盖：覆盖会直接抹掉用户修改过的文件。
+ * - 删除：id 来自 URL。该检查一旦被绕过，该路由即构成任意目录删除。
+ *   因此断言的不是状态码，而是插件目录以外的文件全部保留。
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -32,7 +32,7 @@ afterEach(async () => {
   }
 })
 
-/** 只用得到 `workspaceRoot` 一个字段，其余不造——造了就成了集成测试。 */
+/** 只需要 `workspaceRoot` 一个字段，其余字段不构造：构造后即成为集成测试。 */
 function call(path: string, init?: RequestInit): Promise<Response | null> {
   const url = new URL(`http://x${path}`)
   return handlePluginsApi(url, new Request(url.href, init), {
@@ -40,7 +40,7 @@ function call(path: string, init?: RequestInit): Promise<Response | null> {
   } as unknown as ApiRequestDeps)
 }
 
-/** 把 `QYWORK_HOME` 指到一个临时目录，返回 `~/.qywork/plugins` 那一层。 */
+/** 把 `QYWORK_HOME` 指向临时目录，返回 `~/.qywork/plugins` 一层的路径。 */
 async function home(): Promise<{ root: string; plugins: string }> {
   const root = await mkdtemp(join(tmpdir(), 'qywork-home-'))
   dirs.push(root)
@@ -58,7 +58,7 @@ const MANIFEST = {
   description: '一个用来测边界的插件',
 }
 
-/** 造一个可以被装的源目录。`manifest` 传 null 表示故意不放清单。 */
+/** 创建一个可安装的源目录。`manifest` 为 null 表示有意不放清单。 */
 async function source(manifest: unknown | null): Promise<string> {
   const src = await mkdtemp(join(tmpdir(), 'qywork-plugsrc-'))
   dirs.push(src)
@@ -75,14 +75,14 @@ const exists = (p: string) =>
     () => false,
   )
 
-describe('装一个插件', () => {
-  test('不给路径回 400', async () => {
+describe('安装插件', () => {
+  test('未提供路径时返回 400', async () => {
     await home()
     const res = await call('/api/plugins/install', { method: 'POST', body: JSON.stringify({}) })
     expect(res!.status).toBe(400)
   })
 
-  test('目录里没有 qywork.plugin.json 就拒绝——不然装完才在加载时变成一条 failure', async () => {
+  test('目录中没有 qywork.plugin.json 时拒绝，否则安装后在加载时才成为一条 failure', async () => {
     const { plugins } = await home()
     const res = await call('/api/plugins/install', {
       method: 'POST',
@@ -92,18 +92,18 @@ describe('装一个插件', () => {
     expect(await exists(join(plugins, 'demo-plugin'))).toBe(false)
   })
 
-  test('清单不合法回 422，且什么都不落盘', async () => {
+  test('清单不合法时返回 422，且不写入任何内容', async () => {
     const { plugins } = await home()
     const res = await call('/api/plugins/install', {
       method: 'POST',
-      // id 只允许小写字母数字点横线下划线，大写和空格都不行。
+      // id 只允许小写字母、数字、点、连字符与下划线，大写字母与空格均不允许。
       body: JSON.stringify({ path: await source({ ...MANIFEST, id: 'Bad Id' }) }),
     })
     expect(res!.status).toBe(422)
     expect(await exists(join(plugins, 'Bad Id'))).toBe(false)
   })
 
-  test('装好之后目录里是源目录的内容', async () => {
+  test('安装后目录内容与源目录一致', async () => {
     const { plugins } = await home()
     const res = await call('/api/plugins/install', {
       method: 'POST',
@@ -113,13 +113,13 @@ describe('装一个插件', () => {
     expect(await readFile(join(plugins, 'demo-plugin', 'index.mjs'), 'utf8')).toBe('// noop\n')
   })
 
-  test('同 id 再装一次回 409，**已经装好的那份原样不动**', async () => {
+  test('同一 id 再次安装返回 409，已安装的文件保持不变', async () => {
     const { plugins } = await home()
     await call('/api/plugins/install', {
       method: 'POST',
       body: JSON.stringify({ path: await source(MANIFEST) }),
     })
-    // 装完之后用户改了它——覆盖会把这一行抹掉，而且没有任何提示。
+    // 安装后用户修改了文件：覆盖会抹掉这次修改，且没有任何提示。
     const installed = join(plugins, 'demo-plugin', 'index.mjs')
     await writeFile(installed, '// 用户改过的\n', 'utf8')
 
@@ -132,8 +132,8 @@ describe('装一个插件', () => {
   })
 })
 
-describe('删一个插件', () => {
-  test('删得掉，删一个不存在的回 404', async () => {
+describe('删除插件', () => {
+  test('可以删除；删除不存在的插件返回 404', async () => {
     const { plugins } = await home()
     await mkdir(join(plugins, 'demo-plugin'), { recursive: true })
 
@@ -143,15 +143,15 @@ describe('删一个插件', () => {
   })
 
   /*
-   * 单独一段 `..` 到不了这里：`new URL()` 在解析阶段就把它连同上一段一起折掉
-   * （`/api/plugins/..` → `/api/`），那条路由不匹配。反斜杠同理——WHATWG 对
-   * 特殊 scheme 会把 `\` 归一成 `/`，因此变成两段、路由也不匹配。
+   * 单独一段 `..` 无法到达处理器：`new URL()` 在解析阶段将它与上一段一并消去
+   * （`/api/plugins/..` → `/api/`），路由不匹配。反斜杠同理：WHATWG 对
+   * 特殊 scheme 会把 `\` 规范化为 `/`，因此变成两段，路由同样不匹配。
    *
-   * **留下来能到达处理器的是这两类**：id 里夹着 `..`（`..x` / `a..b`），
-   * 以及百分号编码（`%2e%2e%2f`，pathname 不解码，它会原样进到 `join`）。
-   * 断言分两层：夹着 `..` 的必须 400；两类都必须**没碰到插件目录外面的文件**。
+   * 能够到达处理器的只有两类：id 中包含 `..`（`..x` / `a..b`），
+   * 以及百分号编码（`%2e%2e%2f`，pathname 不解码，会原样传入 `join`）。
+   * 断言分两层：包含 `..` 的必须返回 400；两类都不得访问插件目录以外的文件。
    */
-  test('id 里带 .. 的被拒，插件目录外面的文件一个都不会少', async () => {
+  test('id 含 .. 的请求被拒绝，插件目录以外的文件全部保留', async () => {
     const { root, plugins } = await home()
     const sentinel = join(root, 'sentinel')
     await mkdir(sentinel, { recursive: true })
@@ -162,14 +162,14 @@ describe('删一个插件', () => {
       if (id.includes('..') && !id.includes('%')) expect(res!.status).toBe(400)
       expect(await exists(join(sentinel, 'keep.txt'))).toBe(true)
     }
-    // 插件目录本身也还在。
+    // 插件目录本身同样保留。
     expect(await exists(plugins)).toBe(true)
   })
 })
 
 describe('插件页的投影', () => {
-  /** 注册名经过消毒，id 里的点变成下划线；按原 id 拼前缀会把工具数报成 0。 */
-  test('id 含点的插件也能数出自己的工具', () => {
+  /** 注册名经过规范化，id 中的点变为下划线；按原 id 拼接前缀会把工具数报告为 0。 */
+  test('id 含点的插件同样能统计出自身的工具', () => {
     const reg = {
       plugins: [
         {

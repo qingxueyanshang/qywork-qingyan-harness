@@ -1,11 +1,11 @@
 /**
  * 模型目录。
  *
- * 目录里写的每一个值都会**直接改变发出去的请求**：
- * `thinking` 决定发不发推理字段、`effortLevels` 决定发不发 effort、
- * `pricing` 决定账单上的数字。写错一个不会报错，只会安静地做错事。
+ * 目录中的每一个值都会**直接改变发出的请求**：
+ * `thinking` 决定是否发送推理字段、`effortLevels` 决定是否发送 effort、
+ * `pricing` 决定账单上的数值。任何一个值写错都不会报错，只会静默产生错误行为。
  *
- * 下面标「实测」的都是 2026-08 对着真实端点打出来的，不是照文档抄的。
+ * 下文标注「实测」的取值均为 2026-08 对真实端点实际请求所得，而非依据文档填写。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -20,7 +20,7 @@ import {
   reasoningReplay,
 } from './catalog.ts'
 
-test('MiniMax 与阶跃星辰只补当前新型号，能力按实际接通的协议声明', () => {
+test('MiniMax 与阶跃星辰只收录当前型号，能力按已接通的协议声明', () => {
   const catalog = builtinCatalog()
   expect([...new Set(catalog.filter((m) => m.vendor === 'minimax').map((m) => m.id))]).toEqual([
     'MiniMax-M3.1-Flash-Preview',
@@ -70,10 +70,10 @@ test('MiniMax 与阶跃星辰只补当前新型号，能力按实际接通的协
 })
 
 /**
- * 历史推理的上线规则逐协议锁住：装配点裁剪与三个适配器的翻译共用它，
- * 任何一格变了，本地估算与线上字节就会各数一份。
+ * 逐协议锁定历史推理的发送规则：装配点裁剪与三个适配器的转换共用该规则，
+ * 任何一项变化都会使本地估算与实际发送的字节不一致。
  */
-test('历史推理上线规则按协议与目录声明', () => {
+test('历史推理发送规则按协议与目录声明', () => {
   const rule = (id: string, kind: Parameters<typeof lookupModel>[1]) =>
     reasoningReplay(lookupModel(id, kind))
   expect(rule('claude-opus-5-5', 'anthropic_messages')).toEqual({ opaque: true, text: 'none' })
@@ -110,7 +110,7 @@ describe('模型库与端点校验的优先级', () => {
     thinking: 'reasoning_effort' as const,
   }
   const probed = () => ({ ...transport, effortLevels: [...transport.effortLevels] })
-  test('旧探测名单不能扩张内置档位或覆盖参数格式', () => {
+  test('旧探测名单不能扩大内置档位或覆盖参数格式', () => {
     const spec = applyTransportCapabilities(
       lookupModel('deepseek-flash', 'openai_chat_completions'),
       probed(),
@@ -122,7 +122,7 @@ describe('模型库与端点校验的优先级', () => {
         .effortLevels,
     ).toEqual([])
   })
-  test('人工声明档位（含空列表）和格式不被检测扩张', () => {
+  test('人工声明的档位（含空列表）与格式不被检测结果扩大', () => {
     const seed = lookupModel('custom', 'openai_chat_completions')
     expect(
       applyTransportCapabilities(seed, probed(), { effortLevels: ['high', 'max'] }).effortLevels,
@@ -134,7 +134,7 @@ describe('模型库与端点校验的优先级', () => {
     expect(spec.effortLevels).toEqual([])
     expect(spec.thinking).toBe('deepseek_thinking')
   })
-  test('未知模型只补录价格不影响探测候选值生效', () => {
+  test('未知模型仅补录价格时，探测候选值仍然生效', () => {
     const spec = applyTransportCapabilities(
       lookupModel('custom', 'openai_chat_completions'),
       probed(),
@@ -212,7 +212,7 @@ describe('MiMo 官方模型映射', () => {
     'openai_responses',
     'anthropic_messages',
   ] as const) {
-    test(`${kind} 按协议收录三款模型，思考开关不伪装成强度`, () => {
+    test(`${kind} 按协议收录三款模型，思考开关不作为强度档位`, () => {
       for (const id of ['mimo-v2.6-pro', 'mimo-v2.6-flash', 'mimo-v2.6-pro-ultraspeed']) {
         const m = lookupModel(id, kind)
         expect(builtinCatalog().filter((s) => s.id === id && s.provider === kind)).toHaveLength(1)
@@ -260,12 +260,12 @@ describe('MiMo 官方模型映射', () => {
   })
 })
 
-describe('provider 不符时的兜底', () => {
+describe('provider 不符时的回退处理', () => {
   /**
-   * 经中转站以兼容协议调 claude 是真实场景：保留能力约束、改写 provider。
-   * 但这**只是兜底**——它描述的是另一种协议下的行为，要准就得单独建条目。
+   * 经中转站以兼容协议调用 Claude 是实际存在的配置：保留能力约束，改写 provider。
+   * 但这**只是回退处理**：条目描述的是另一种协议下的行为，需要准确时须单独建立条目。
    */
-  test('目录里没有该协议的条目时，保留能力改写 provider', () => {
+  test('目录中没有该协议的条目时，保留能力并改写 provider', () => {
     const spec = lookupModel('claude-opus-5', 'openai_chat_completions')
     expect(spec.provider).toBe('openai_chat_completions')
     expect(spec.contextWindow).toBe(
@@ -273,7 +273,7 @@ describe('provider 不符时的兜底', () => {
     )
   })
 
-  /** 完全不认识的模型给保守默认，且计价为 0——前端显示「未知计价」而不是一个错数字。 */
+  /** 完全未收录的模型使用保守默认值，计价为 0：前端显示「未知计价」，而不是一个错误的数值。 */
   test('未知模型不编造计价', () => {
     const spec = lookupModel('明天才发布的模型', 'anthropic_messages')
     expect(spec.pricing.input).toBe(0)
@@ -284,23 +284,23 @@ describe('provider 不符时的兜底', () => {
 
 describe('计价', () => {
   /**
-   * DeepSeek 的 `input` 填的是**缓存未命中**单价，命中部分走 cacheRead。
-   * 两者不能重复计——适配器已把用量归一成排他口径。
+   * DeepSeek 的 `input` 为**缓存未命中**单价，命中部分按 cacheRead 计价。
+   * 两者不能重复计费：适配器已将用量归一为互斥口径。
    */
-  test('缓存命中按 cacheRead 计，不重复计进 input', () => {
+  test('缓存命中按 cacheRead 计价，不重复计入 input', () => {
     const spec = lookupModel('deepseek-flash', 'openai_responses')
     const withCache = computeCost(spec, { inputTokens: 100, outputTokens: 0, cachedTokens: 900 })
     const withoutCache = computeCost(spec, { inputTokens: 1000, outputTokens: 0, cachedTokens: 0 })
-    // 同样一千个输入 token，全靠缓存要便宜得多。等价说明缓存没被计入折扣。
+    // 同为一千个输入 token，大部分命中缓存时费用明显更低。两者相等则说明缓存未按折扣计价。
     expect(withCache).toBeLessThan(withoutCache)
   })
 })
 
 /**
- * 模型库里改过的参数。
+ * 模型库中修改过的参数。
  *
- * 这一组锁的是**它真的到得了请求和账本**——只做一个能编辑的界面，改完不影响
- * 任何一次调用，就又是一条「有产出没有消费者」的链路。
+ * 本组锁定**修改确实进入请求与账本**：若只提供可编辑的界面而修改不影响
+ * 任何调用，即构成一条有生产者而没有消费者的链路。
  */
 describe('模型库覆盖', () => {
   const opus = () => lookupModel('claude-opus-5', 'anthropic_messages')
@@ -315,7 +315,7 @@ describe('模型库覆盖', () => {
     expect(spec.effortLevels).toEqual(['low', 'high', 'max'])
   })
 
-  test('只覆盖写了的字段，没写的照 seed', () => {
+  test('只覆盖已填写的字段，未填写的沿用 seed', () => {
     const s = applySpecOverride(opus(), { contextWindow: 200_000 })
     expect(s.contextWindow).toBe(200_000)
     expect(s.maxOutputTokens).toBe(opus().maxOutputTokens)
@@ -323,30 +323,30 @@ describe('模型库覆盖', () => {
   })
 
   /**
-   * 缓存档跟着 seed 走，**不按 input 等比例推算**。
-   * 各家缓存定价的比例不一样（Anthropic 写入 1.25x，DeepSeek 写入不要钱），
-   * 推出来的是个看起来精确的假数字。
+   * 缓存价格沿用 seed，**不按 input 等比例推算**。
+   * 各家缓存定价的比例不同（Anthropic 写入为 1.25x，DeepSeek 写入免费），
+   * 推算结果是看似精确的错误数值。
    */
-  test('改单价不动缓存档', () => {
+  test('修改单价不改变缓存价格', () => {
     const s = applySpecOverride(opus(), { input: 99 })
     expect(s.pricing.input).toBe(99)
     expect(s.pricing.cacheRead).toBe(opus().pricing.cacheRead)
     expect(s.pricing.cacheWrite5m).toBe(opus().pricing.cacheWrite5m)
   })
 
-  test('改过的价直接进账本', () => {
+  test('修改后的价格直接计入账本', () => {
     const s = applySpecOverride(opus(), { input: 100, output: 200 })
     const cost = computeCost(s, { inputTokens: 1_000_000, outputTokens: 1_000_000 })
     expect(cost).toBe(300)
   })
 
   /**
-   * 未收录的模型自己填了单价才算收录。
+   * 未收录的模型须由用户填写单价才视为已收录。
    *
-   * 只改个显示名就翻成 true 的话，计价仍然是 0 而「未收录」的提醒没了——
-   * 账本继续报 $0，且再没有人说它。
+   * 仅修改显示名称就置为 true 时，计价仍为 0 而「未收录」提醒消失：
+   * 账本继续记录 $0，且不再有任何提示。
    */
-  test('填了单价才算收录，只改名字不算', () => {
+  test('填写单价才视为收录，仅修改名称不算', () => {
     const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
     expect(unknown.catalogued).toBe(false)
     expect(applySpecOverride(unknown, { displayName: '某个模型' }).catalogued).toBe(false)
@@ -356,10 +356,10 @@ describe('模型库覆盖', () => {
   /**
    * 未收录模型的窗口默认值。
    *
-   * 锁的是**方向**不是那个具体的数：给小了每轮提前压缩，白花钱又丢上下文，
-   * 而且完全静默——不会有任何一处报「压早了」。
+   * 锁定的是**取值方向**而不是具体数值：取值偏小会使每轮提前压缩，既增加费用又丢失上下文，
+   * 且完全静默，不会有任何位置报告压缩过早。
    */
-  test('未收录模型的窗口给 500K，且能被那一格改掉', () => {
+  test('未收录模型的窗口默认为 500K，且可由模型库字段覆盖', () => {
     const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
     expect(unknown.contextWindow).toBe(500_000)
     expect(applySpecOverride(unknown, { contextWindow: 1_000_000 }).contextWindow).toBe(1_000_000)
@@ -370,8 +370,8 @@ describe('模型库覆盖', () => {
   })
 
   /**
-   * 思考三项也在库里。只存在于接口下那一格时界面上看不见也改不动，
-   * 「库里显示的」和「真正发出去的」会是两个值。
+   * 思考三项同样存于模型库。若只存于接口配置中，界面上既不显示也无法修改，
+   * 模型库显示的值与实际发送的值会不一致。
    */
   test('思考三项覆盖 seed', () => {
     const s = applySpecOverride(lookupModel('中转站上的某个模型', 'openai_chat_completions'), {
@@ -384,18 +384,18 @@ describe('模型库覆盖', () => {
     expect(s.thinksByDefault).toBe(true)
   })
 
-  /** `false` 是有效覆盖：按 falsy 判缺省的话，「它自己不思考」这条实测写不进去。 */
-  test('thinksByDefault 写 false 也算覆盖', () => {
+  /** `false` 是有效覆盖：按 falsy 判定缺省时，「模型默认不思考」这一实测结果无法写入。 */
+  test('thinksByDefault 填写 false 同样视为覆盖', () => {
     expect(applySpecOverride(opus(), { thinksByDefault: false }).thinksByDefault).toBe(false)
     expect(applySpecOverride(opus(), {}).thinksByDefault).toBe(opus().thinksByDefault)
   })
 
   /**
-   * 中转站把一个收图片的模型挂在自定义名下时，这一格是唯一出口——
-   * 目录认不出那个名字，落在 `null`（不裁决）。反过来也一样：
-   * 中转站的某条链路不收图片时填 `false` 就挡住了。
+   * 中转站将接受图片的模型配置在自定义名称下时，该字段是唯一的设置入口：
+   * 目录无法识别该名称，取值为 `null`（不裁决）。反之，
+   * 中转站的某条链路不接受图片时，填写 `false` 即可拦截。
    */
-  test('vision 三态都能覆盖，false 不被当成缺省', () => {
+  test('vision 三态均可覆盖，false 不被视为缺省', () => {
     const unknown = lookupModel('中转站上的某个模型', 'openai_chat_completions')
     expect(unknown.vision).toBeNull()
     expect(applySpecOverride(unknown, { vision: true }).vision).toBe(true)
@@ -405,19 +405,19 @@ describe('模型库覆盖', () => {
 })
 
 /**
- * 图片输入这一轴。
+ * 图片输入能力。
  *
- * 三态的意义全在这里：`null` 是「厂商规格页没写」，被门控当成放行；
- * 只有 `false` 会让 `agent` 把图像块换成文本注记、让界面收起图片入口。
- * 把 `null` 折成 `false` 的话，一批实际收图片的中转站模型会被挡掉。
+ * 三态的含义：`null` 表示厂商规格页未写明，门控按放行处理；
+ * 只有 `false` 会使 `agent` 将图像块替换为文本注记，并使界面隐藏图片入口。
+ * 将 `null` 合并为 `false` 时，一批实际接受图片的中转站模型会被拦截。
  */
 describe('图片输入', () => {
   test('未收录模型不裁决', () => {
     expect(lookupModel('中转站上的某个模型', 'openai_chat_completions').vision).toBeNull()
   })
 
-  /** 照厂商规格页逐条填，不按 id 前缀推断：同一家的两条能一真一假。 */
-  test('照规格页填：同一家里两条取值相反', () => {
+  /** 按厂商规格页逐条填写，不按 id 前缀推断：同一厂商的两个型号可能取值相反。 */
+  test('按规格页填写：同一厂商的两个型号取值相反', () => {
     expect(lookupModel('glm-5.3', 'openai_chat_completions').vision).toBe(false)
     expect(lookupModel('glm-5.3-flash', 'openai_chat_completions').vision).toBe(true)
     expect(lookupModel('qwen3.7-max', 'openai_chat_completions').vision).toBe(false)
@@ -429,8 +429,8 @@ describe('图片输入', () => {
 })
 
 describe('输出上限说明', () => {
-  /** 官方文本以 Claude 自称，给别家模型发就是让它扮演另一个模型。 */
-  test('只有 Anthropic 的条目开，经兼容协议调 Claude 时照样带着', () => {
+  /** 官方文本以 Claude 自称，发给其他厂商的模型等于要求其扮演另一个模型。 */
+  test('只有 Anthropic 的条目开启，经兼容协议调用 Claude 时同样携带', () => {
     for (const spec of builtinCatalog()) {
       expect(spec.outputLimitNote === true).toBe(spec.vendor === 'anthropic')
     }
@@ -482,19 +482,19 @@ describe('视频输入', () => {
 /**
  * DeepSeek 的分时段定价。
  *
- * 口径来源：官方「模型 & 价格」页 2026-08-17 生效的那版——
+ * 口径来源：官方「模型 & 价格」页 2026-08-17 生效的版本：
  * 高峰＝北京时间周一至周五 9:00-12:00、14:00-18:00（UTC 01:00-04:00、06:00-10:00），
- * 空闲价恰好是高峰的一半。
+ * 空闲价恰为高峰价的一半。
  *
- * 这一组盯着两个容易错且**完全静默**的方向：按本机时区判档、以及基准价填反
- * （填空闲价时折扣没生效就少记一半钱，账本向偏低的方向出错）。
+ * 本组针对两类易错且**完全静默**的问题：按本机时区判定档位，以及基准价填反
+ * （基准价填为空闲价时，高峰时段少记一半费用，账本金额偏低）。
  */
 describe('分时段定价', () => {
   const flash = () => lookupModel('deepseek-flash', 'openai_chat_completions')
-  /** 2026-09-08（周二）的这一刻。星期也参与判档，所以日期不能随便换。 */
+  /** 2026-09-08（周二）的指定时刻。星期同样参与档位判定，因此日期不能随意更换。 */
   const at = (utcHour: number, utcMinute = 0) => Date.UTC(2026, 8, 8, utcHour, utcMinute)
 
-  test('目录里填的是高峰价，人民币', () => {
+  test('目录中填写高峰价，币种为人民币', () => {
     const p = flash().pricing
     expect(p.currency).toBe('CNY')
     expect(p.input).toBe(2)
@@ -505,50 +505,50 @@ describe('分时段定价', () => {
   })
 
   test('高峰时段按原价', () => {
-    // 北京时间 10:00 = UTC 02:00，落在第一段高峰里。
+    // 北京时间 10:00 = UTC 02:00，位于第一段高峰内。
     expect(priceAt(flash(), { now: at(2) }).output).toBe(8)
-    // 北京时间 15:00 = UTC 07:00，落在第二段。
+    // 北京时间 15:00 = UTC 07:00，位于第二段高峰内。
     expect(priceAt(flash(), { now: at(7) }).output).toBe(8)
   })
 
-  test('空闲时段五折，每一档都打', () => {
-    // 北京时间 13:00 = UTC 05:00，卡在两段高峰之间。
+  test('空闲时段五折，适用于每一项单价', () => {
+    // 北京时间 13:00 = UTC 05:00，位于两段高峰之间。
     const p = priceAt(flash(), { now: at(5) })
     expect(p.input).toBe(1)
     expect(p.output).toBe(4)
     expect(p.cacheRead).toBe(0.02)
   })
 
-  /** 半开区间：起点算高峰，终点不算。差一个小时就是差一倍的钱。 */
+  /** 半开区间：起点属于高峰，终点不属于。边界偏差一小时即导致费用相差一倍。 */
   test('窗口边界是左闭右开', () => {
     expect(priceAt(flash(), { now: at(1) }).output).toBe(8) // 北京 9:00 整，高峰第一分钟
-    expect(priceAt(flash(), { now: at(0, 59) }).output).toBe(4) // 北京 8:59，还没开始
-    expect(priceAt(flash(), { now: at(4) }).output).toBe(4) // 北京 12:00 整，已经结束
-    expect(priceAt(flash(), { now: at(3, 59) }).output).toBe(8) // 北京 11:59，还在里面
+    expect(priceAt(flash(), { now: at(0, 59) }).output).toBe(4) // 北京 8:59，高峰未开始
+    expect(priceAt(flash(), { now: at(4) }).output).toBe(4) // 北京 12:00 整，高峰已结束
+    expect(priceAt(flash(), { now: at(3, 59) }).output).toBe(8) // 北京 11:59，仍在高峰内
   })
 
   /**
-   * 星期这一维：周一至周五才有高峰，周六周日整天空闲。
+   * 星期维度：仅周一至周五有高峰，周六、周日全天为空闲时段。
    *
-   * 只按小时判的话，周末落在两段窗口里的请求会按原价记——账本向偏高的方向出错，
-   * 没有任何地方会报错。四条断言把星期集合的两端都钉住。
+   * 只按小时判定时，周末落在两段窗口内的请求会按原价记录，账本金额偏高，
+   * 且没有任何位置报错。四条断言锁定星期集合的两端。
    */
   test('高峰只在周一至周五', () => {
     const hour = (day: number, utcHour: number) => Date.UTC(2026, 7, day, utcHour)
     expect(priceAt(flash(), { now: hour(22, 2) }).output).toBe(4) // 周六，第一段窗口内
     expect(priceAt(flash(), { now: hour(23, 7) }).output).toBe(4) // 周日，第二段窗口内
-    expect(priceAt(flash(), { now: hour(17, 2) }).output).toBe(8) // 周一，在
-    expect(priceAt(flash(), { now: hour(21, 7) }).output).toBe(8) // 周五，在
+    expect(priceAt(flash(), { now: hour(17, 2) }).output).toBe(8) // 周一，在高峰内
+    expect(priceAt(flash(), { now: hour(21, 7) }).output).toBe(8) // 周五，在高峰内
   })
 
   /**
-   * **按 UTC 判，不按本机时区。**
+   * **按 UTC 判定，不按本机时区。**
    *
-   * 用 `getHours()` 的话，这台机器在哪个时区就按哪个时区算档——在美国跑就整天
-   * 收错价，而错的表现只是账本上一个数字，没有任何地方会报错。
-   * 这条断言只有在实现取 `getUTCHours()` 时才成立。
+   * 使用 `getHours()` 时按本机所在时区判定档位：在美国运行会全天
+   * 计价错误，错误只体现为账本上的数值，任何位置都不会报错。
+   * 本断言仅在实现使用 `getUTCHours()` 时成立。
    */
-  test('判档只认 UTC', () => {
+  test('档位判定只依据 UTC', () => {
     const utcNoon = Date.UTC(2026, 7, 18, 12, 0) // UTC 12:00 = 北京 20:00，空闲
     expect(priceAt(flash(), { now: utcNoon }).output).toBe(4)
   })
@@ -558,7 +558,7 @@ describe('分时段定价', () => {
     expect(priceAt(opus, { now: at(2) })).toBe(opus.pricing)
   })
 
-  test('算钱按算的那一刻取价', () => {
+  test('计费按计费时刻取价', () => {
     const usage = { inputTokens: 1_000_000, outputTokens: 1_000_000 }
     expect(computeCost(flash(), usage, at(2))).toBe(10) // 高峰 2 + 8
     expect(computeCost(flash(), usage, at(5))).toBe(5) // 空闲 1 + 4
@@ -576,17 +576,17 @@ describe('分时段定价', () => {
 /**
  * Grok 的长上下文阶梯价。
  *
- * 口径来源：xAI 官方价目表。grok-4.5 与 4.6 都是 500K 窗口，
- * 提示词满 20 万 token 之后**整条请求**翻倍。
+ * 口径来源：xAI 官方价目表。grok-4.5 与 4.6 均为 500K 窗口，
+ * 提示词达到 20 万 token 后**整条请求**价格翻倍。
  *
- * 这一组盯的是那个「整条翻倍」——按超出部分算会把账记少将近一半，
- * 而少记的方向不会有任何报错。
+ * 本组针对整条请求翻倍的规则：按超出部分计算会少记将近一半费用，
+ * 且少记不会触发任何报错。
  */
 describe('长上下文阶梯价', () => {
   const g46 = () => lookupModel('grok-4.6', 'openai_chat_completions')
   const g45 = () => lookupModel('grok-4.5', 'openai_chat_completions')
 
-  test('目录里填的是标准价（<200K 那一档）', () => {
+  test('目录中填写标准价（<200K 档）', () => {
     expect(g46().pricing.input).toBe(2)
     expect(g46().pricing.output).toBe(6)
     expect(g46().pricing.cacheRead).toBe(0.5)
@@ -594,11 +594,11 @@ describe('长上下文阶梯价', () => {
     expect(g45().pricing.cacheRead).toBe(0.3)
   })
 
-  test('没到阈值按标准价', () => {
+  test('未达阈值时按标准价', () => {
     expect(priceAt(g46(), { promptTokens: 199_999 }).output).toBe(6)
   })
 
-  test('到了阈值每一档都翻倍', () => {
+  test('达到阈值时每一项单价均翻倍', () => {
     const p = priceAt(g46(), { promptTokens: 200_000 })
     expect(p.input).toBe(4)
     expect(p.output).toBe(12)
@@ -608,21 +608,21 @@ describe('长上下文阶梯价', () => {
   })
 
   /**
-   * **整条请求翻倍，不是只算超出的那部分。**
+   * **整条请求翻倍，不是只对超出部分翻倍。**
    *
-   * 21 万 token 的提示不是「20 万按标准 + 1 万按高价」。按超出部分算的话
-   * 这条断言会得到约 0.42 而不是 0.84——差将近一半，且完全静默。
+   * 21 万 token 的提示词不按「20 万按标准价 + 1 万按高价」计算。按超出部分计算时
+   * 本断言得到约 0.42 而不是 0.84，相差将近一半，且完全静默。
    */
-  test('整条请求换档，不是只算超出部分', () => {
+  test('整条请求切换价格档，不只对超出部分切换', () => {
     const cost = computeCost(g46(), { inputTokens: 210_000, outputTokens: 0 })
     expect(cost).toBeCloseTo((210_000 * 4) / 1e6, 9)
   })
 
-  /** 阈值比的是**提示词**（未命中 + 命中），输出不参与——厂商也是按提示词分档的。 */
-  test('阈值只看提示词，命中的那部分也算进去', () => {
+  /** 阈值比较的是**提示词**（未命中 + 命中），输出不参与：厂商同样按提示词分档。 */
+  test('阈值只计提示词，缓存命中部分同样计入', () => {
     const under = computeCost(g46(), { inputTokens: 100_000, outputTokens: 500_000 })
     expect(under).toBeCloseTo((100_000 * 2 + 500_000 * 6) / 1e6, 9)
-    // 未命中 12 万 + 命中 8 万 = 20 万，够阈值了。
+    // 未命中 12 万 + 命中 8 万 = 20 万，达到阈值。
     const over = priceAt(g46(), { promptTokens: 120_000 + 80_000 })
     expect(over.input).toBe(4)
   })
@@ -633,10 +633,10 @@ describe('长上下文阶梯价', () => {
   })
 
   /**
-   * **各家的倍率不统一**：xAI 是整齐的 2 倍，Google 的输入 2 倍、输出只有 1.5 倍。
-   * 存一个倍率去乘就会把 Gemini 的输出算成 $24 而不是 $18。
+   * **各家的倍率不统一**：xAI 统一为 2 倍，Google 输入为 2 倍、输出仅为 1.5 倍。
+   * 存储单一倍率相乘会将 Gemini 的输出算成 $24 而不是 $18。
    */
-  test('高档单价逐字抄，不是按倍率乘出来的', () => {
+  test('高档单价按价目表逐项填写，不按倍率推算', () => {
     const pro = lookupModel('gemini-3.1-pro-preview', 'openai_chat_completions')
     expect(pro.pricing.output).toBe(12)
     const long = priceAt(pro, { promptTokens: 200_001 })
@@ -691,7 +691,7 @@ describe('长上下文阶梯价', () => {
     expect(computeCost(sol, { ...usage, cacheWriteTokens: 72_001 })).toBeCloseTo(0.930005, 10)
   })
 
-  test('GPT-5.6 长上下文连缓存写入价一起换档', () => {
+  test('GPT-5.6 长上下文档的缓存写入价同步切换', () => {
     const sol = lookupModel('gpt-5.6-sol', 'openai_chat_completions')
     expect(priceAt(sol, { promptTokens: 272_000 }).cacheWrite5m).toBe(5)
     const long = priceAt(sol, { promptTokens: 272_001 })
@@ -727,8 +727,8 @@ describe('长上下文阶梯价', () => {
     expect(computeCost(v46, { inputTokens: 32_000, outputTokens: 1_000 })).toBe(0.07)
   })
 
-  /** Google 写的是「>200k」，xAI 写的是「≥200k」，边界差一个 token。 */
-  test('两家的阈值边界各按各的', () => {
+  /** Google 标注为「>200k」，xAI 标注为「≥200k」，边界相差一个 token。 */
+  test('两家的阈值边界各自按官方写法判定', () => {
     const pro = lookupModel('gemini-3.1-pro-preview', 'openai_chat_completions')
     expect(priceAt(pro, { promptTokens: 200_000 }).output).toBe(12)
     expect(priceAt(pro, { promptTokens: 200_001 }).output).toBe(18)
@@ -736,11 +736,11 @@ describe('长上下文阶梯价', () => {
   })
 
   /**
-   * 三档的那几条：取**达到的最高一档**，不是第一条命中的。
+   * 三档阶梯的模型：取**达到的最高一档**，而不是第一条命中的档位。
    *
-   * 只留一档的话，中间那段与最长那段必有一段记错价，而两个方向都是静默的。
+   * 只保留一档时，中间区段与最长区段必有一段计价错误，且两种错误均不报错。
    */
-  test('三档阶梯逐档进档', () => {
+  test('三档阶梯逐档切换', () => {
     const flash = lookupModel('qwen3.7-flash', 'openai_chat_completions')
     expect(priceAt(flash, { promptTokens: 32_000 }).input).toBe(0.2)
     expect(priceAt(flash, { promptTokens: 32_001 }).input).toBe(0.6)
@@ -762,12 +762,12 @@ describe('长上下文阶梯价', () => {
 })
 
 /**
- * 逐条对着官方页面核过的那些数字。
+ * 已逐条与官方页面核对的数值。
  *
- * 这一组不测机制，只钉**值**：写错一个数不会报错，只会让账本静默出错，
- * 而账本正是用来回答「怎么突然变贵了」的那份记录。
+ * 本组不测试机制，只锁定**取值**：写错一个数值不会报错，只会使账本静默出错，
+ * 而账本正是用于查明费用变化原因的记录。
  */
-describe('目录里的价格与档位', () => {
+describe('目录中的价格与档位', () => {
   const spec = (
     id: string,
     kind: 'anthropic_messages' | 'openai_chat_completions' = 'openai_chat_completions',
@@ -782,12 +782,12 @@ describe('目录里的价格与档位', () => {
     expect(spec('gpt-5.6-luna').pricing.input).toBe(0.2)
     expect(spec('gpt-5.6-luna').pricing.output).toBe(1.2)
     expect(spec('gpt-5.6-cyber').pricing.output).toBe(75)
-    // 官方模型页写的是 1.05M，不是 1M。
+    // 官方模型页标注为 1.05M，不是 1M。
     expect(spec('gpt-5.6-sol').contextWindow).toBe(1_050_000)
     expect(spec('gpt-5.6-cyber').contextWindow).toBe(400_000)
   })
 
-  test('Gemini 3.8 Flash 的规格、档位与促销价逐项对官方模型页', () => {
+  test('Gemini 3.8 Flash 的规格、档位与促销价逐项与官方模型页一致', () => {
     const flash = spec('gemini-3.8-flash')
     expect(flash.displayName).toBe('Gemini 3.8 Flash')
     expect(flash.vendor).toBe('google')
@@ -801,8 +801,8 @@ describe('目录里的价格与档位', () => {
     expect(flash.pricing).toMatchObject({ input: 0.75, output: 3.75, cacheRead: 0.075 })
   })
 
-  test('Gemini Flash 三代同促销价，3.5 更贵', () => {
-    // 四条都不是 0.3/2.5。
+  test('Gemini Flash 三代促销价相同，3.5 价格更高', () => {
+    // 四个型号均不是 0.3/2.5。
     expect(spec('gemini-3.8-flash').pricing.output).toBe(3.75)
     expect(spec('gemini-3.7-flash').pricing.output).toBe(3.75)
     expect(spec('gemini-3.6-flash').pricing.output).toBe(3.75)
@@ -822,7 +822,7 @@ describe('目录里的价格与档位', () => {
     expect(pricing).toMatchObject({ input: 1.5, output: 7.5, cacheRead: 0.15 })
   })
 
-  test('Grok 的档位面：4.6 有 xhigh，4.5 没有，都没有 max', () => {
+  test('Grok 的档位：4.6 有 xhigh，4.5 没有，均没有 max', () => {
     expect(spec('grok-4.6').effortLevels).toEqual(['low', 'medium', 'high', 'xhigh'])
     expect(spec('grok-4.5').effortLevels).toEqual(['low', 'medium', 'high'])
   })
@@ -834,7 +834,7 @@ describe('目录里的价格与档位', () => {
     }
   })
 
-  test('Claude Fable 5.1 的规格与价格逐项对官方模型页', () => {
+  test('Claude Fable 5.1 的规格与价格逐项与官方模型页一致', () => {
     const fable = spec('claude-fable-5-1', 'anthropic_messages')
     expect(fable.displayName).toBe('Claude Fable 5.1')
     expect(fable.contextWindow).toBe(1_000_000)
@@ -851,7 +851,7 @@ describe('目录里的价格与档位', () => {
       cacheWrite5m: 12.5,
       cacheWrite1h: 20,
     })
-    // 5.1 才降到 0.025 倍；Fable 5 的缓存读取仍是 0.1 倍。
+    // 5.1 降至 0.025 倍；Fable 5 的缓存读取仍为 0.1 倍。
     expect(spec('claude-fable-5', 'anthropic_messages').pricing.cacheRead).toBe(1)
   })
 
@@ -864,8 +864,8 @@ describe('目录里的价格与档位', () => {
     expect(afterPlannedIncrease).toMatchObject({ input: 2, output: 10, cacheRead: 0.2 })
   })
 
-  /** effort 支持名单里没有 Haiku 4.5；Sonnet 4.6 有 max 但没有 xhigh。 */
-  test('Claude 的档位面逐条对官方名单', () => {
+  /** effort 支持名单中没有 Haiku 4.5；Sonnet 4.6 有 max 但没有 xhigh。 */
+  test('Claude 的档位逐条与官方名单一致', () => {
     for (const id of ['claude-fable-5-1', 'claude-opus-5']) {
       expect(spec(id, 'anthropic_messages').effortLevels).toEqual([
         'low',
@@ -884,7 +884,7 @@ describe('目录里的价格与档位', () => {
     expect(spec('claude-haiku-4-5', 'anthropic_messages').effortLevels).toEqual([])
   })
 
-  /** 国内端点按 BigModel 国内站价目记人民币。 */
+  /** 国内端点按 BigModel 国内站价目以人民币计价。 */
   test('GLM 国内站基础价与币种', () => {
     for (const id of ['glm-5.3', 'glm-5.2']) {
       expect(spec(id).pricing.input).toBe(8)
@@ -941,7 +941,7 @@ describe('目录里的价格与档位', () => {
     })
   })
 
-  test('GLM-5.3 系列 Chat 走保留思考协议，并保留厂商原生工具 schema', () => {
+  test('GLM-5.3 系列 Chat 使用保留思考协议，并保留厂商原生工具 schema', () => {
     for (const id of ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx']) {
       expect(spec(id).effortLevels).toEqual(['low', 'high', 'max'])
       expect(spec(id).maxOutputTokens).toBe(131_072)
@@ -950,7 +950,7 @@ describe('目录里的价格与档位', () => {
     }
   })
 
-  test('官方可确认的输出上限已收录；Grok 不猜独立上限', () => {
+  test('官方可确认的输出上限已收录；Grok 不推测独立上限', () => {
     expect(spec('MiniMax-M3').maxOutputTokens).toBe(524_288)
     expect(spec('glm-4.6v').maxOutputTokens).toBe(32_768)
     expect(spec('kimi-k3').maxOutputTokens).toBe(1_048_576)

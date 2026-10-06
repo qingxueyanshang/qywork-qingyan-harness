@@ -1,19 +1,18 @@
 /**
- * 目标账本 —— 「一轮接一轮做下去」的唯一权威。
+ * 目标账本：多轮连续执行的唯一权威。
  *
- * **为什么规则在这里，不在工具里。** 三个写入方：用户（`/goal` 立或改写、点继续）、服务端（中断转
- * paused、异常转 blocked）、模型（只有 `complete` / `blocked` 两个出口，经端口下来）。**生命周期转
- * 移和 revision 递增是账本的一致性规则**，散到三个调用方去守就是三份会漂移的判断——这一条与本包其
- * 余部分同一口径（见 `repos.ts` 顶部）。
+ * 规则放在此处而非工具中。写入方有三个：用户（`/goal` 创建或改写、点击继续）、服务端（中断时转为
+ * paused、异常时转为 blocked）、模型（只有 `complete` / `blocked` 两个出口，经由端口传入）。生命周期
+ * 转移与 revision 递增是账本的一致性规则，分散到三个调用方各自维护会形成三份逐渐不一致的判断；
+ * 这一点与本包其余部分的原则相同（见 `repos.ts` 顶部）。
  *
- * **事件溯源，回放时校验。** 每次变更追加一行完整快照，`revision` 从 1 开始逐一递增。读的时候不是直
- * 接取最后一行了事，而是**从头回放一遍**：revision 断号、状态非法转移一律抛。这两种破损都不会自己
- * 表现成错误——断号意味着有一次变更没落盘（而调用方收到的是成功），非法转移意味着有人绕过了这里写
- * 表。宁可抛错，也不让循环带着一个来历不明的状态继续运行。
+ * 事件溯源，回放时校验。每次变更追加一行完整快照，`revision` 从 1 开始逐一递增。读取时不是直接
+ * 取最后一行，而是从头回放：revision 断号、状态非法转移一律抛出异常。这两种损坏都不会自行表现为
+ * 错误：断号意味着有一次变更未写入磁盘（而调用方收到的是成功），非法转移意味着有写入绕过了本模块。
+ * 宁可抛出异常，也不让循环带着来源不明的状态继续运行。
  *
- * **同时只有一个目标。** 「当前目标」= 这条会话里 id 最大的那个目标（`gl_` 后面是单调 id）。
- * 上一个没走到 `completed` 之前不许立新的——两个目标并存时，「续起哪一个」
- * 就成了一个没有答案的问题。
+ * 同时只有一个目标。「当前目标」是该会话中 id 最大的目标（`gl_` 之后是单调递增的 id）。
+ * 上一个目标到达 `completed` 之前不允许创建新目标：两个目标并存时，无法确定应自动继续哪一个。
  */
 
 import type { ConversationId, Goal, GoalAction, GoalStatus, GoalWriteResult } from '@qywork/core'
@@ -21,8 +20,8 @@ import { newGoalId } from '@qywork/core'
 import type { Store } from './db.ts'
 
 /**
- * 合法的生命周期转移。**`completed` 是终态**，从它出发一条边都没有——
- * 做完的目标要接着做就立新的，改回来会让「完成」这件事变得没有意义。
+ * 合法的生命周期转移。`completed` 是终态，没有任何出边：
+ * 已完成的目标如需继续，应新建一个目标；允许改回会使「完成」失去意义。
  */
 const ALLOWED: Record<GoalStatus, GoalStatus[]> = {
   active: ['active', 'paused', 'completed', 'blocked'],
@@ -31,7 +30,7 @@ const ALLOWED: Record<GoalStatus, GoalStatus[]> = {
   completed: [],
 }
 
-/** 当前目标；这条会话还没立过就是 null。 */
+/** 当前目标；该会话从未创建目标时为 null。 */
 export function currentGoal(store: Store, conversationId: ConversationId): Goal | null {
   const head = store.db
     .query<{ goal_id: string }, [string]>(
@@ -43,10 +42,10 @@ export function currentGoal(store: Store, conversationId: ConversationId): Goal 
 }
 
 /**
- * 立一个目标。
+ * 创建一个目标。
  *
- * **没有轮数参数。** 循环的出口是模型自检（`complete` / `blocked`）与用户点停止，
- * 不是配额——理由见 `core` 里 `Goal` 的注释。
+ * 没有轮数参数。循环的出口是模型自检（`complete` / `blocked`）与用户点击停止，
+ * 不是配额；理由见 `core` 中 `Goal` 的注释。
  */
 export function createGoal(
   store: Store,
@@ -57,8 +56,8 @@ export function createGoal(
     return { ok: false, code: 'invalid_objective', message: 'objective 不能为空' }
   }
 
-  // 查「有没有未完成的目标」与追加必须在同一个写事务里：拆开的话，两个进程同时立目标，
-  // 两边都查到没有，会同时出现两个进行中的目标（不同 goal_id，主键挡不住）。
+  // 查询是否存在未完成的目标与追加必须在同一个写事务中：分开执行时，两个进程同时创建目标，
+  // 两边都查到没有，会同时出现两个进行中的目标（goal_id 不同，主键无法拦截）。
   return store.tx(() => {
     const existing = currentGoal(store, input.conversationId)
     if (existing && existing.status !== 'completed') {
@@ -66,8 +65,8 @@ export function createGoal(
         ok: false,
         code: 'goal_exists',
         message:
-          `这条会话已经有一个目标（${existing.id}，状态 ${existing.status}）：${existing.objective}。` +
-          '同时只能有一个目标——先用 update_goal 把它 complete 掉，或者 resume 接着做它。',
+          `该会话已有一个目标（${existing.id}，状态 ${existing.status}）：${existing.objective}。` +
+          '同时只能有一个目标：先用 update_goal 将其 complete，或用 resume 继续执行该目标。',
       }
     }
 
@@ -89,13 +88,13 @@ export function createGoal(
 }
 
 /**
- * 改一个目标。
+ * 修改一个目标。
  *
- * `revision` 是必填的乐观锁：拿旧版本号提交直接拒，不静默覆盖中间那次变更。
- * 模型手里的目标可能是若干轮之前读到的。
+ * `revision` 是必填的乐观锁：以旧版本号提交时直接拒绝，不静默覆盖中间的变更。
+ * 模型持有的目标可能是若干轮之前读取的。
  *
- * 校验 revision 与追加在同一个写事务里：拆开的话，两个进程拿同一个 revision 同时改，
- * 后到的撞主键抛异常，而不是收到 `stale_revision`。
+ * 校验 revision 与追加在同一个写事务中：分开执行时，两个进程持同一个 revision 同时修改，
+ * 后到者因主键冲突抛出异常，而不是收到 `stale_revision`。
  */
 export function updateGoal(
   store: Store,
@@ -133,27 +132,27 @@ export function updateGoal(
     if (input.action === 'edit') {
       const objective = (input.objective ?? '').trim()
       if (!objective) {
-        return { ok: false, code: 'invalid_objective', message: 'action="edit" 必须带 objective' }
+        return { ok: false, code: 'invalid_objective', message: 'action="edit" 必须提供 objective' }
       }
       patch.objective = objective
     }
 
     if (input.action === 'blocked') {
       const reason = (input.blockedReason ?? '').trim()
-      // 没有理由的 blocked 是最坏的一种停：循环停了，而没有人知道为什么，
-      // 界面上只剩一个「受阻」两个字。
+      // 没有理由的 blocked 是最差的停止方式：循环已停止，却无人知道原因，
+      // 界面上只显示「受阻」二字。
       if (!reason) {
         return {
           ok: false,
           code: 'missing_reason',
-          message: 'action="blocked" 必须带 blocked_reason，说清卡在哪、需要什么才能继续',
+          message: 'action="blocked" 必须提供 blocked_reason，说明阻塞位置以及继续执行所需的条件',
         }
       }
       patch.blockedCode = input.blockedCode ?? 'needs_human'
       patch.blockedReason = reason
     } else {
-      // 离开 blocked 时把理由一并清掉。留着的话，下一次因为别的原因停下时，
-      // 界面上会显示一条几轮之前的旧理由。
+      // 离开 blocked 时一并清除理由。保留时，下一次因其他原因停止，
+      // 界面上会显示几轮之前的旧理由。
       patch.blockedCode = null
       patch.blockedReason = null
     }
@@ -170,13 +169,13 @@ function checkTransition(
   action: GoalAction,
 ): { ok: false; code: string; message: string } | null {
   if (from === to && action !== 'edit') {
-    return { ok: false, code: 'no_op', message: `目标已经是 ${from} 了` }
+    return { ok: false, code: 'no_op', message: `目标已处于 ${from} 状态` }
   }
   if (!ALLOWED[from].includes(to)) {
     return {
       ok: false,
       code: 'illegal_transition',
-      message: `目标当前是 ${from}，不能转成 ${to}`,
+      message: `目标当前为 ${from}，不能转为 ${to}`,
     }
   }
   return null
@@ -190,13 +189,13 @@ function load(
 ): { ok: true; goal: Goal } | { ok: false; code: string; message: string } {
   const goal = currentGoal(store, conversationId)
   if (!goal) {
-    return { ok: false, code: 'no_goal', message: '这条会话还没有目标' }
+    return { ok: false, code: 'no_goal', message: '本会话尚无目标' }
   }
   if (goal.id !== goalId) {
     return {
       ok: false,
       code: 'stale_goal',
-      message: `goal_id 对不上：当前目标是 ${goal.id}，你给的是 ${goalId}。先调 read_goal 看一眼。`,
+      message: `goal_id 不一致：当前目标是 ${goal.id}，你传入的是 ${goalId}。先调用 read_goal 查看当前目标。`,
     }
   }
   if (goal.revision !== revision) {
@@ -204,8 +203,8 @@ function load(
       ok: false,
       code: 'stale_revision',
       message:
-        `revision 已经是 ${goal.revision}，你给的是 ${revision}——目标在你读到之后被改过了。` +
-        '先调 read_goal 重读，再决定要不要改。',
+        `revision 已经是 ${goal.revision}，你提供的是 ${revision}：目标在你读取之后已被修改。` +
+        '先调用 read_goal 重新读取，再决定是否修改。',
     }
   }
   return { ok: true, goal }
@@ -227,7 +226,7 @@ function append(store: Store, goal: Goal): void {
 }
 
 /**
- * 从头回放一个目标。断号与非法转移**抛**，不返回一个「大概是这样」的值。
+ * 从头回放一个目标。断号与非法转移时抛出异常，不返回推测的值。
  */
 function replay(store: Store, goalId: string): Goal {
   const rows = store.db
@@ -240,7 +239,7 @@ function replay(store: Store, goalId: string): Goal {
   for (const [i, row] of rows.entries()) {
     if (row.revision !== i + 1) {
       throw new Error(
-        `[qywork] 目标 ${goalId} 的 revision 断号：期望 ${i + 1}，读到 ${row.revision}`,
+        `[qywork] 目标 ${goalId} 的 revision 断号：期望 ${i + 1}，实际为 ${row.revision}`,
       )
     }
     const snapshot = JSON.parse(row.snapshot) as Goal

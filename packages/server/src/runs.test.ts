@@ -1,10 +1,10 @@
 /**
  * `runs.ts` 的并发边界。
  *
- * 覆盖范围：`RunManager` 的会话占位（reserve / release）、忙态的两问
+ * 覆盖范围：`RunManager` 的会话占位（reserve / release）、忙态的两项查询
  * （hasRun / isBusy）、忙闲广播（conversation.busy）与按会话中断
- * （interruptConversation）。指令入口那一层的回绝由 `goal-loop.test.ts` 覆盖，
- * 在跑表本身（`subagents.ts`）由 `delegate.test.ts` 覆盖，这里不重复。
+ * （interruptConversation）。指令入口层的拒绝由 `goal-loop.test.ts` 覆盖，
+ * 运行表本身（`subagents.ts`）由 `delegate.test.ts` 覆盖，这里不重复。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -47,13 +47,13 @@ describe('更新与新任务互斥', () => {
 
 describe('同会话只允许一个 run', () => {
   /**
-   * 原始失败形状：`isBusy()` 检查与 `runs.register()` 之间隔着建 Session、
-   * 读附件、等首个带 runId 的事件——好几个 await。桌面端与手机端几乎同时发消息时，
-   * 两次检查都读到 false，因此两个 AgentLoop 对着同一个工作区一起写文件。
+   * 原始失败形状：`isBusy()` 检查与 `runs.register()` 之间隔着创建 Session、
+   * 读取附件、等待首个带 runId 的事件等多个 await。桌面端与手机端几乎同时发送消息时，
+   * 两次检查都读到 false，两个 AgentLoop 因此同时写入同一个工作区。
    *
-   * 这里测的就是「检查与占位是不是同一个同步动作」，不测调用次数。
+   * 此处测试检查与占位是否为同一个同步操作，不测试调用次数。
    */
-  test('并发 reserve 只有第一个拿得到', () => {
+  test('并发 reserve 只有第一个能够取得', () => {
     const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     const cv = 'cv_1' as never
     expect(runs.reserve(cv)).toBe(true)
@@ -61,7 +61,7 @@ describe('同会话只允许一个 run', () => {
     expect(runs.isBusy(cv)).toBe(true)
   })
 
-  test('没跑起来时 release 要把会话放开 —— 否则它被永久锁死', () => {
+  test('未能启动运行时 release 必须释放会话，否则会话被永久锁定', () => {
     const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     const cv = 'cv_2' as never
     expect(runs.reserve(cv)).toBe(true)
@@ -78,26 +78,26 @@ describe('同会话只允许一个 run', () => {
 })
 
 /**
- * 左栏那一行的转圈。
+ * 左栏会话行的运行指示。
  *
- * 原始失败形状：只有**点开**的那条会话亮得起来——客户端只订阅当前会话，别的会话
- * 在跑，它一条事件都收不到。所以这几条测的是「忙闲广播不带会话归属」：带上就成了
- * 按订阅过滤，收得到的只剩已经知道自己在跑的那个客户端。
+ * 原始失败形状：只有**已打开**的会话能显示忙态：客户端只订阅当前会话，其他会话
+ * 运行时它收不到任何事件。因此这几条用例测试忙闲广播不带会话归属：带上归属即
+ * 按订阅过滤，只有已打开该会话的客户端能收到。
  */
-describe('忙闲要播给所有人', () => {
+describe('忙闲状态广播给所有客户端', () => {
   const frames = (bus: EventBus) => {
     const got: EventEnvelope<AgentEvent>[] = []
     bus.subscribe({
       id: 'sk',
       origin: 'desktop',
-      // 明确「一条会话事件都不要」，与前端切项目时发的 subscribe([]) 同形状。
+      // 明确声明不接收任何会话事件，与前端切换项目时发送的 subscribe([]) 形状相同。
       conversations: new Set<ConversationId>(),
       send: (f) => got.push(f as EventEnvelope<AgentEvent>),
     })
     return got
   }
 
-  test('占位到注销，两头各播一次，退订了会话的客户端照样收得到', () => {
+  test('从占位到注销，首尾各广播一次，已退订该会话的客户端同样能收到', () => {
     const bus = new EventBus()
     const got = frames(bus)
     const runs = new RunManager(null as never, bus, new SubagentRegistry())
@@ -114,14 +114,14 @@ describe('忙闲要播给所有人', () => {
 
     const busy = got.filter((f) => f.event.type === 'conversation.busy')
     expect(busy.map((f) => (f.event as { busy: boolean }).busy)).toEqual([true, true, false])
-    // 归属在事件体里，信封上不能有——信封上有就被订阅过滤挡掉了。
+    // 归属位于事件体中，信封上不能带归属：信封带归属时会被订阅过滤拦截。
     expect(busy.every((f) => f.conversationId === undefined)).toBe(true)
     expect(busy.every((f) => (f.event as { conversationId: string }).conversationId === cv)).toBe(
       true,
     )
   })
 
-  test('register 之后再 release 报的仍是「在跑」—— 现算，不认调用方给的值', () => {
+  test('register 之后再 release 报告的仍是「运行中」：实时计算，不采用调用方传入的值', () => {
     const bus = new EventBus()
     const got = frames(bus)
     const runs = new RunManager(null as never, bus, new SubagentRegistry())
@@ -143,7 +143,7 @@ describe('忙闲要播给所有人', () => {
 })
 
 /**
- * 停止按钮按会话寻址：客户端手里没有 runId，也不该去判定哪一个仍未收尾。
+ * 停止按钮按会话寻址：客户端没有 runId，也不应判定哪一轮尚未结束。
  */
 describe('按会话中断', () => {
   function running(runs: RunManager, cv: ConversationId, runId: string): AbortController {
@@ -153,7 +153,7 @@ describe('按会话中断', () => {
     return controller
   }
 
-  test('中断到的是这条会话的那一轮，别的会话不受影响', () => {
+  test('中断作用于该会话的当前轮次，其他会话不受影响', () => {
     const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     const mine = running(runs, 'cv_1' as ConversationId, 'rn_1')
     const other = running(runs, 'cv_2' as ConversationId, 'rn_2')
@@ -164,7 +164,7 @@ describe('按会话中断', () => {
     expect((mine.signal.reason as { source: string }).source).toBe('user')
   })
 
-  test('没有 run 在跑时返回 false —— 指令入口要据此回绝，不能静默', () => {
+  test('没有运行中的 run 时返回 false：指令入口须据此拒绝，不能静默', () => {
     const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     expect(runs.interruptConversation('cv_idle' as ConversationId)).toBe(false)
 
@@ -174,7 +174,7 @@ describe('按会话中断', () => {
     expect(runs.interruptConversation(cv)).toBe(false)
   })
 
-  test('只占了位还没起 run 的会话中断不到 —— 占位没有可中断的执行', () => {
+  test('只有占位、尚未启动 run 的会话无法中断：占位没有可中断的执行', () => {
     const runs = new RunManager(null as never, new EventBus(), new SubagentRegistry())
     const cv = 'cv_4' as ConversationId
     runs.reserve(cv)
@@ -184,13 +184,13 @@ describe('按会话中断', () => {
 })
 
 /**
- * 忙态与起轮的闸拆成两问。
+ * 忙态与启动轮次的检查拆分为两项查询。
  *
- * 原始失败形状：子 agent 的生命期跟着会话，它在跑时会话是「忙」的（界面要显示、
- * 停止按钮要在），但那不是一轮 run——回执与用户的消息此时必须能起新一轮，
- * 用同一个判据的话它们会排进一个没有人会去消费的队列。
+ * 原始失败形状：子 agent 的生命期跟随会话，它运行时会话处于忙碌状态（界面需要显示、
+ * 停止按钮需要存在），但它不是一轮 run：此时回执与用户的消息必须能启动新一轮，
+ * 使用同一判据时，它们会排入一个无人消费的队列。
  */
-describe('忙态含子 agent，起轮的闸不含', () => {
+describe('忙态包含子 agent，启动轮次的检查不包含', () => {
   const cv = 'cv_sub' as ConversationId
 
   function withSubagent(): { runs: RunManager; table: SubagentRegistry } {
@@ -204,19 +204,19 @@ describe('忙态含子 agent，起轮的闸不含', () => {
     return { runs, table }
   }
 
-  test('只有子 agent 在跑：isBusy 真、hasRun 假、reserve 放行', () => {
+  test('只有子 agent 运行中：isBusy 为真、hasRun 为假、reserve 放行', () => {
     const { runs } = withSubagent()
     expect(runs.isBusy(cv)).toBe(true)
     expect(runs.hasRun(cv)).toBe(false)
     expect(runs.reserve(cv)).toBe(true)
   })
 
-  test('握手快照把只有子 agent 在跑的会话也报出来', () => {
+  test('握手快照同样报告只有子 agent 运行中的会话', () => {
     const { runs } = withSubagent()
     expect(runs.busyConversations()).toEqual([cv])
   })
 
-  test('子 agent 结束后忙态跟着落', () => {
+  test('子 agent 结束后忙态随之解除', () => {
     const { runs, table } = withSubagent()
     table.remove(cv, 'cv_child')
     expect(runs.isBusy(cv)).toBe(false)

@@ -1,9 +1,9 @@
 /**
- * 待办进度口径。覆盖 `domain/model.ts` 里的 `todoProgress`。
+ * 待办进度的计数规则。覆盖 `domain/model.ts` 中的 `todoProgress`。
  *
- * 这个函数是**工具回执与输入框状态条共用的那一份**。放在 core 而不是各写各的，
- * 就是为了避免「工具卡说（0/5）、状态条说第 1 / 5 步」这种同一时刻两个数打架的
- * 形状。所以这里锁的是「第几步」怎么数。
+ * 该函数由工具回执与输入框状态条共用。放在 core 而不是各自实现，
+ * 是为了避免「工具卡显示（0/5）、状态条显示第 1 / 5 步」这种同一时刻两个数字矛盾的
+ * 情况。因此本文件锁定「第几步」的计数方式。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -13,34 +13,34 @@ const list = (...statuses: TodoItem['status'][]): TodoItem[] =>
   statuses.map((status, i) => ({ id: `todo_${i + 1}`, content: `第 ${i + 1} 条`, status }))
 
 describe('第几步', () => {
-  /** 进行中的第 3 步报成「第 2 步」，界面上读起来是卡在上一步。 */
-  test('取正在做的那一条，不是已完成数', () => {
+  /** 进行中的第 3 步若显示为「第 2 步」，界面会显示为停滞在上一步。 */
+  test('取进行中的条目，不取已完成数', () => {
     const p = todoProgress(list('completed', 'completed', 'in_progress', 'pending'))
     expect(p.step).toBe(3)
     expect(p.done).toBe(2)
     expect(p.current?.content).toBe('第 3 条')
   })
 
-  /** 刚列完清单、第一条就在做：这时候「做完了 0 条」是真的，但没人想读这句。 */
-  test('第一条在做就是第 1 步，不是第 0 步', () => {
+  /** 清单刚创建、第一条正在进行：此时「完成了 0 条」属实，但用户不需要这一信息。 */
+  test('第一条进行中时为第 1 步，不是第 0 步', () => {
     expect(todoProgress(list('in_progress', 'pending', 'pending')).step).toBe(1)
   })
 
-  /** 打完勾还没认领下一条，回落到已完成数——此时没有「正在做的那一条」。 */
-  test('没有进行中的那条时回落到已完成数', () => {
+  /** 刚勾选完成、尚未认领下一条时回落到已完成数：此时没有进行中的条目。 */
+  test('没有进行中的条目时回落到已完成数', () => {
     const p = todoProgress(list('completed', 'pending', 'pending'))
     expect(p.step).toBe(1)
     expect(p.current).toBeNull()
   })
 
-  test('全做完 —— 步数等于总数', () => {
+  test('全部完成时步数等于总数', () => {
     const p = todoProgress(list('completed', 'completed'))
     expect(p.step).toBe(2)
     expect(p.total).toBe(2)
     expect(p.current).toBeNull()
   })
 
-  test('空清单不炸', () => {
+  test('空清单不抛错', () => {
     expect(todoProgress([])).toEqual({ step: 0, total: 0, done: 0, current: null })
   })
 })

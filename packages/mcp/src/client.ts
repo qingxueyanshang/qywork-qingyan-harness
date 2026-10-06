@@ -1,20 +1,19 @@
 /**
- * MCP 客户端：JSON-RPC 2.0，传输可换（stdio / streamable HTTP）。
+ * MCP 客户端：JSON-RPC 2.0，传输可替换（stdio / streamable HTTP）。
  *
- * 与插件宿主（`@qywork/plugins`）看起来很像，但**刻意不共用一份实现**：
- * 插件协议由本仓定义、可以随时改；MCP 是外部规范，帧格式、握手、
- * 错误语义都得照它来。合并成一个「通用 RPC」的结果必然是
- * 某一次改动为了迁就自家协议而破坏了 MCP 的兼容性——那种 bug 只会在
- * 别人的 server 上出现，本地永远复现不了。
+ * 与插件宿主（`@qywork/plugins`）结构相似，但有意不共用实现：
+ * 插件协议由本仓库定义、可随时修改；MCP 是外部规范，帧格式、握手、
+ * 错误语义都必须遵循规范。合并为通用 RPC 后，为适配本仓库协议所做的修改
+ * 会破坏 MCP 的兼容性，且这类缺陷只在第三方 server 上出现，本地无法复现。
  *
- * **这个文件只管 JSON-RPC。** 消息怎么进出交给 `transport.ts`。两种传输在**握手、游标翻页、id 配
- * 对、错误语义**上一模一样，差别只在失败的种类（见那个文件的头注释）。
+ * 本文件只负责 JSON-RPC，消息的收发由 `transport.ts` 负责。两种传输在握手、游标翻页、
+ * id 配对、错误语义上完全相同，差别只在失败的种类（见该文件的头注释）。
  *
- * **握手。** `initialize` → 收到结果 → 发 `notifications/initialized`。**中间那一步不能省**：
- * 有的 server 在收到 initialized 之前拒绝一切请求，表现是 `tools/list` 一直超时。
+ * 握手：`initialize` → 收到结果 → 发送 `notifications/initialized`。发送 initialized 这一步不能省略：
+ * 部分 server 在收到 initialized 之前拒绝所有请求，表现为 `tools/list` 持续超时。
  *
- * HTTP 传输还要在这一步之间把**会话 id** 从响应头里取走（`Mcp-Session-Id`）。
- * 那个头只出现一次，错过了之后每条请求都会被当成新会话。
+ * HTTP 传输还需在握手期间从响应头中取得会话 id（`Mcp-Session-Id`）。
+ * 该响应头只出现一次，错过后每条请求都会被视为新会话。
  */
 
 import pkg from '../package.json' with { type: 'json' }
@@ -28,8 +27,8 @@ import {
 } from './transport.ts'
 
 /**
- * 本包版本。**真源是根 `VERSION`**，由 `bun run scripts/sync-version.ts` 灌进
- * 各包的 package.json；手写字面量不在那个脚本的覆盖范围里，升版本时会原地不动。
+ * 本包版本。真源是根目录的 `VERSION`，由 `bun run scripts/sync-version.ts` 写入
+ * 各包的 package.json；手写字面量不在该脚本的覆盖范围内，升级版本时不会被更新。
  */
 const PKG_VERSION: string = pkg.version
 
@@ -38,15 +37,15 @@ export type { HttpServerSpec, McpServerSpec, StdioServerSpec } from './transport
 /**
  * 客户端声明的协议版本。
  *
- * MCP 的版本是日期串。server 回一个不同的版本时**只警告不断开**：
- * 规范建议客户端断开，但实际生态里版本参差，为一个次要版本差异让用户的
- * server 完全用不了，比容忍一次潜在的字段差异代价更大。真的不兼容会在
- * 具体某个请求上报错，那时的错误信息比「协议版本不匹配」有用得多。
+ * MCP 的版本是日期串。server 返回不同的版本时只警告、不断开：
+ * 规范建议客户端断开，但实际生态中版本不一，因次要版本差异使用户的
+ * server 完全无法使用，代价大于容忍一次潜在的字段差异。确实不兼容时会在
+ * 具体请求上报错，此时的错误信息比「协议版本不匹配」更有用。
  */
 export const CLIENT_PROTOCOL_VERSION = '2026-07-28'
 
 /**
- * 已知的修订，**新到旧**。顺序有用：握手被拒时按这个顺序逐档回退。
+ * 已知的修订版本，按从新到旧排列。顺序有意义：握手被拒绝时按此顺序逐级回退。
  */
 export const KNOWN_VERSION_LIST = [
   '2026-07-28',
@@ -59,12 +58,12 @@ export const KNOWN_VERSION_LIST = [
 const KNOWN_VERSIONS = new Set<string>(KNOWN_VERSION_LIST)
 
 /**
- * 从这一版起，能力声明**不在 `initialize` 的结果里**，改由 `server/discover` 给。
+ * 从该版本起，能力声明不在 `initialize` 的结果中，改由 `server/discover` 提供。
  *
- * 这不是一条可以「以后再说」的版本差异：qywork 是否注册 resource 工具、
- * 是否报「声明了但未接入的能力」，全都读 `capabilities`。
- * 只读 initialize 的话，一个现代 server 上那个字段是空的，因此
- * **resource 工具一个都不注册、也不报任何错**——同一个静默失败换个版本复发。
+ * 该差异不能推迟处理：qywork 是否注册 resource 工具、
+ * 是否报告「已声明但未接入的能力」，都依据 `capabilities`。
+ * 只读取 initialize 时，现代 server 上该字段为空，因此
+ * 不会注册任何 resource 工具，也不报告任何错误，形成静默失败。
  */
 const DISCOVER_SINCE = '2026-07-28'
 
@@ -72,8 +71,8 @@ const REQUEST_TIMEOUT_MS = 60_000
 const INIT_TIMEOUT_MS = 30_000
 
 /**
- * server 声明的能力。**只列客户端会去读的那几个**——
- * 把整个对象照抄成类型只会让「客户端支持什么」变得看不出来。
+ * server 声明的能力。只列出客户端会读取的项：
+ * 把整个对象完整复制为类型，会使客户端支持哪些能力无法辨认。
  */
 export interface McpServerCapabilities {
   tools?: { listChanged?: boolean }
@@ -84,15 +83,15 @@ export interface McpServerCapabilities {
   [k: string]: unknown
 }
 
-/** qywork 目前真正消费的能力。其余的声明了也只会被报成「未接」。 */
+/** qywork 当前实际消费的能力。其余能力即使已声明，也只会被报告为未接入。 */
 export const SUPPORTED_CAPABILITIES = ['tools', 'resources'] as const
 
 /**
- * 这条握手错误是不是「版本不被接受」。
+ * 判断该握手错误是否属于「版本不被接受」。
  *
- * 判据故意窄：命中就会**降版本重试**，而对一个鉴权失败或命令不存在的错误
- * 重试四次，只会把真正的原因埋在四行日志底下。宁可漏判——
- * 漏判的后果是照常抛出那条错误，用户仍然看得见它。
+ * 判据有意从严：命中即降低版本重试，而对鉴权失败或命令不存在的错误
+ * 重试四次，只会把真正的原因掩盖在四行日志之下。宁可漏判：
+ * 漏判的后果是照常抛出该错误，用户仍能看到它。
  */
 function looksLikeVersionRejection(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
@@ -131,7 +130,7 @@ export interface McpCallResult {
 export interface McpClientOptions {
   name: string
   spec: McpServerSpec
-  /** 解析好的绝对工作目录。HTTP 传输用不到。 */
+  /** 已解析的绝对工作目录。HTTP 传输不使用。 */
   cwd?: string
   onLog?: (line: string) => void
   /** 仅供测试注入假传输。 */
@@ -149,21 +148,21 @@ export class McpClient {
   private nextId = 1
   private stopping: Promise<void> | null = null
   private transport: McpTransport | null = null
-  /** 传输层断开的原因。留着是为了让「server 未运行」这条错误说得出**为什么**。 */
+  /** 传输层断开的原因。保留该值，使「server 未运行」错误能够说明原因。 */
   private closedReason: string | null = null
 
   serverInfo: { name?: string; version?: string } = {}
   protocolVersion = ''
   /**
-   * server 在 `initialize` 里声明的能力。
+   * server 在 `initialize` 中声明的能力。
    *
-   * **必须留着：不能只取 `protocolVersion` 和 `serverInfo`、把 `capabilities` 丢掉。**
-   * 丢掉的后果是：一个只提供 `resources`（不提供 `tools`）的 server 表现为
-   * 连接成功、握手成功、`tools/list` 返回空数组、注册 0 个工具、**没有任何错误**。
-   * 用户看到的是「已配置却毫无反应」，而日志中没有任何记录。
+   * 必须保留：不能只取 `protocolVersion` 与 `serverInfo` 而丢弃 `capabilities`。
+   * 丢弃后，只提供 `resources`（不提供 `tools`）的 server 会表现为
+   * 连接成功、握手成功、`tools/list` 返回空数组、注册 0 个工具，且没有任何错误。
+   * 用户只看到已配置却没有任何效果，日志中也没有任何记录。
    *
-   * 客户端目前只消费 `tools`。声明了但未接入的能力（`resources` / `prompts`）
-   * 必须在加载时**说出来**——那句话是用户唯一能拿到的线索。
+   * 客户端目前消费 `tools` 与 `resources`。已声明但未接入的能力（如 `prompts`）
+   * 必须在加载时明确报告：该提示是用户唯一能取得的线索。
    */
   capabilities: McpServerCapabilities = {}
 
@@ -173,7 +172,7 @@ export class McpClient {
     return this.opts.name
   }
 
-  /** 这个 server 走哪种传输。给日志和 UI 用——两种传输的排查方向完全不同。 */
+  /** 该 server 使用的传输种类，供日志与界面使用：两种传输的排查方向完全不同。 */
   get transportKind(): 'stdio' | 'http' {
     return isHttpSpec(this.opts.spec) ? 'http' : 'stdio'
   }
@@ -192,8 +191,8 @@ export class McpClient {
       onMessage: (msg) => this.dispatch(msg),
       onClose: (reason) => {
         this.closedReason = reason
-        // 传输断了，在飞的请求**必须逐个拒掉**。留着它们会让调用方
-        // 一直等到超时，而超时对用户表现为「卡住」。
+        // 传输断开后，必须逐个拒绝在途请求。保留它们会使调用方
+        // 一直等待至超时，而超时在用户侧表现为无响应。
         this.failAll(new Error(reason))
       },
       ...(this.opts.onLog ? { onLog: this.opts.onLog } : {}),
@@ -206,28 +205,28 @@ export class McpClient {
     this.capabilities = result?.capabilities ?? {}
     if (this.protocolVersion && !KNOWN_VERSIONS.has(this.protocolVersion)) {
       this.opts.onLog?.(
-        `[mcp:${this.opts.name}] server 声明的协议版本 ${this.protocolVersion} 不在已知列表里，继续尝试`,
+        `[mcp:${this.opts.name}] server 声明的协议版本 ${this.protocolVersion} 不在已知列表中，继续连接`,
       )
     }
-    // HTTP 传输从这里开始要带协议版本头。放在 initialized 之前——
-    // 那条通知本身就已经属于「握手之后」了。
+    // HTTP 传输从此处开始需携带协议版本头。放在 initialized 之前：
+    // 该通知本身已属于握手之后的消息。
     transport.afterInitialize?.(this.protocolVersion || CLIENT_PROTOCOL_VERSION)
 
-    // 这一步不能省：有的 server 在收到它之前拒绝一切请求。
+    // 该步骤不能省略：部分 server 在收到该通知之前拒绝所有请求。
     await this.notify('notifications/initialized', {})
 
     await this.discoverCapabilities()
   }
 
   /**
-   * `initialize`，握手被版本拒绝时**逐档回退**。
+   * 发送 `initialize`，握手因版本被拒绝时逐级回退。
    *
-   * 规范说 server 收到不认识的版本时应当回自己支持的那一版，而不是报错——
-   * 但「应当」和「实际」是两回事，而一个因为客户端抬高了版本号就完全连不上的
-   * server，对用户表现为「昨天正常，今天连不上」。
+   * 规范要求 server 收到无法识别的版本时返回自身支持的版本，而不是报错；
+   * 但实际实现未必遵循，客户端提高版本号后完全无法连接的 server，
+   * 在用户看来表现为此前正常、升级后无法连接。
    *
-   * 回退只对**看起来像版本问题**的错误做，且只往旧了走。任何其他错误
-   * （命令不存在、鉴权失败）原样抛——对它们重试只会把真正的原因埋掉。
+   * 回退只针对看似版本问题的错误，且只向更旧的版本回退。其他错误
+   * （命令不存在、鉴权失败）原样抛出：对它们重试只会掩盖真正的原因。
    */
   private async handshake(): Promise<{
     protocolVersion?: string
@@ -241,8 +240,8 @@ export class McpClient {
           'initialize',
           {
             protocolVersion: version,
-            // 只声明已经实现的。声明了没实现的能力，server 会据此发来
-            // 处理不了的请求——那比不声明糟得多。
+            // 只声明已实现的能力。声明未实现的能力时，server 会据此发来
+            // 无法处理的请求，后果比不声明更严重。
             capabilities: {},
             clientInfo: { name: 'qywork', version: PKG_VERSION },
           },
@@ -252,7 +251,7 @@ export class McpClient {
         lastErr = err
         if (!looksLikeVersionRejection(err)) throw err
         this.opts.onLog?.(
-          `[mcp:${this.opts.name}] server 不接受协议版本 ${version}，回退到更旧的一档重试`,
+          `[mcp:${this.opts.name}] server 不接受协议版本 ${version}，回退到更旧的版本重试`,
         )
       }
     }
@@ -260,20 +259,20 @@ export class McpClient {
   }
 
   /**
-   * 2026-07-28 起：能力声明由 `server/discover` 给，不再在 `initialize` 结果里。
+   * 自 2026-07-28 起，能力声明由 `server/discover` 提供，不再包含在 `initialize` 结果中。
    *
-   * 三条都要照顾到，缺一条就会有一类 server 静默地少注册工具：
+   * 以下三条都必须满足，缺少任何一条都会使某类 server 静默地少注册工具：
    *
-   * 1. **只在协商结果 ≥ 2026-07-28 时才问。** 对旧 server 发这条只会拿到
+   * 1. 只在协商结果 ≥ 2026-07-28 时查询。向旧 server 发送该请求只会得到
    *    `Method not found`，多一次无效的往返。
-   * 2. **失败不算错。** 有的 server 声明了新版本却没实现这个方法。
-   *    这时 `initialize` 里那份（如果有）仍然算数。
-   * 3. **是合并不是替换。** 两处都给了就取并集——少的那一方是「没说」，
-   *    不是「没有」。直接覆盖会把一份真实的声明擦掉。
+   * 2. 失败不视为错误。部分 server 声明了新版本却未实现该方法，
+   *    此时 `initialize` 中的声明（若存在）仍然有效。
+   * 3. 合并而不是替换。两处都给出时取并集：缺少的一方表示未声明，
+   *    而不是不支持。直接覆盖会擦除一份真实的声明。
    */
   private async discoverCapabilities(): Promise<void> {
     const negotiated = this.protocolVersion || CLIENT_PROTOCOL_VERSION
-    // 日期串按字典序比较即是按时间比较，这是 MCP 用日期做版本号的直接好处。
+    // MCP 以日期串作为版本号，按字典序比较即按时间比较。
     if (negotiated < DISCOVER_SINCE) return
 
     try {
@@ -285,21 +284,21 @@ export class McpClient {
         this.capabilities = { ...this.capabilities, ...found }
       }
     } catch (err) {
-      // 声明了新版本却没实现 server/discover 是现实里一定会遇到的。
-      // 记一行就够——真正的后果（工具没注册出来）由 load.ts 那条
-      // 「握手成功但产出为零」的 failure 兜住。
+      // 声明了新版本却未实现 server/discover 的 server 必然存在。
+      // 记录一行日志即可：实际后果（工具未注册）由 load.ts 中
+      // 「握手成功但产出为零」的 failure 处理。
       this.opts.onLog?.(
         `[mcp:${this.opts.name}] server 声明协议 ${negotiated} 但 server/discover 不可用` +
-          `（${err instanceof Error ? err.message : String(err)}），沿用 initialize 里的能力声明`,
+          `（${err instanceof Error ? err.message : String(err)}），沿用 initialize 中的能力声明`,
       )
     }
   }
 
-  /** 拉全部工具。**必须跟完游标**——只取第一页会让后面的工具凭空消失。 */
+  /** 获取全部工具。必须遍历完所有游标：只取第一页会使后续页的工具丢失。 */
   async listTools(): Promise<McpToolDef[]> {
     const out: McpToolDef[] = []
     let cursor: string | undefined
-    // 上限只是防止 server 返回一个自指的游标让这个循环不结束。
+    // 上限只用于防止 server 返回指向自身的游标导致循环不结束。
     for (let page = 0; page < 100; page++) {
       const res = (await this.request('tools/list', cursor ? { cursor } : {})) as {
         tools?: McpToolDef[]
@@ -315,10 +314,10 @@ export class McpClient {
   }
 
   /**
-   * 拉全部 resource。与 `listTools` 一样**必须跟完游标**。
+   * 获取全部 resource。与 `listTools` 相同，必须遍历完所有游标。
    *
-   * 调用方要先看 `capabilities.resources`：没声明就调，拿到的是
-   * `Method not found`，而那条错误对用户没有任何信息量。
+   * 调用方须先检查 `capabilities.resources`：未声明时调用，得到的是
+   * `Method not found`，该错误对用户没有任何信息量。
    */
   async listResources(): Promise<McpResourceDef[]> {
     const out: McpResourceDef[] = []
@@ -352,8 +351,8 @@ export class McpClient {
     }
     return {
       content: Array.isArray(res?.content) ? res.content : [],
-      // MCP 把「工具执行失败」放在结果里而不是 JSON-RPC error 里，
-      // 就是为了让模型看得见失败详情并自己重试。原样传下去。
+      // MCP 把工具执行失败放在结果中而不是 JSON-RPC error 中，
+      // 目的是让模型看到失败详情并自行重试。此处原样传递。
       isError: res?.isError === true,
       ...(res?.structuredContent !== undefined ? { structuredContent: res.structuredContent } : {}),
     }
@@ -378,7 +377,7 @@ export class McpClient {
   ): Promise<unknown> {
     const dead = this.transport?.deadReason() ?? (this.transport ? null : '未启动')
     if (dead !== null) {
-      // 带上失败原因。只说「未运行」的话，用户看到的是一条无从下手的错误。
+      // 附带失败原因。只说明「未运行」时，用户无从排查。
       const why = this.closedReason ?? dead
       return Promise.reject(new Error(`MCP server 未运行：${this.opts.name}（${why}）`))
     }
@@ -391,9 +390,9 @@ export class McpClient {
       }, timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
 
-      // 发送失败要**立刻**拒掉这一条，不能等超时。
-      // HTTP 下「发不出去」是常态（401、404、对端不可用），而那些错误信息
-      // 是最有排查价值的——压在一个 60 秒超时里等于把它丢掉。
+      // 发送失败时必须立即拒绝该请求，不能等待超时。
+      // HTTP 下发送失败是常见情况（401、404、对端不可用），而这些错误信息
+      // 最有排查价值，被 60 秒超时掩盖即等于丢失。
       void Promise.resolve(this.transport?.send({ jsonrpc: '2.0', id, method, params })).catch(
         (err: unknown) => {
           const p = this.pending.get(id)
@@ -410,8 +409,8 @@ export class McpClient {
     try {
       await this.transport?.send({ jsonrpc: '2.0', method, params })
     } catch (err) {
-      // 通知发不出去不该让握手失败——它没有响应，失败了也无从确认。
-      // 但要说出来：`initialized` 没送到的表现是后续请求全部超时。
+      // 通知发送失败不应导致握手失败：通知没有响应，失败后也无法确认。
+      // 但需要记录：`initialized` 未送达时，后续请求会全部超时。
       this.opts.onLog?.(
         `[mcp:${this.opts.name}] 通知 ${method} 发送失败：${err instanceof Error ? err.message : String(err)}`,
       )
@@ -419,8 +418,8 @@ export class McpClient {
   }
 
   private dispatch(msg: Record<string, unknown>): void {
-    // server 发来的请求（sampling / roots / elicitation）——客户端没声明这些能力，
-    // 所以照规范回 method not found，而不是不吭声让对方等到超时。
+    // server 发来的请求（sampling / roots / elicitation）：客户端未声明这些能力，
+    // 因此按规范返回 method not found，而不是不响应、使对方等待至超时。
     if (typeof msg.method === 'string' && msg.id !== undefined && msg.id !== null) {
       void this.transport
         ?.send({
@@ -429,12 +428,12 @@ export class McpClient {
           error: { code: -32601, message: `qywork 未实现该方法：${msg.method}` },
         })
         .catch(() => {
-          // 回一条「不支持」都失败了，说明连接已经没了。那件事会由 onClose 处理，
-          // 这里再报一次只会重复输出。
+          // 连「不支持」的响应都发送失败，说明连接已断开。该情况由 onClose 处理，
+          // 此处再报告只会重复输出。
         })
       return
     }
-    // 通知（无 id）：目前只记日志。tools/list_changed 之类将来可以触发重扫。
+    // 通知（无 id）：目前不处理；tools/list_changed 等通知可用于触发重新扫描。
     if (typeof msg.method === 'string') return
 
     const id = typeof msg.id === 'number' ? msg.id : Number(msg.id)

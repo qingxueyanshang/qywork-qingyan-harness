@@ -1,16 +1,16 @@
 /**
  * 图片尺寸解析与缩放策略。
  *
- * 覆盖范围：`image.ts` 全部（`imageSizeOf` + `shrinkImage`，含上限内大 PNG 换 JPEG 的规则）。
+ * 覆盖范围：`image.ts` 全部（`imageSizeOf` + `shrinkImage`，含上限内大 PNG 改用 JPEG 的规则）。
  *
- * 盯的是一个**反直觉的方向**：无条件重编码会把常见的截图变大。所以「在上限内原样
- * 返回同一个引用」这条必须被锁住——它坏掉不报错，只是每张图静默大一倍。
+ * 重点是一个反直觉的结论：无条件重编码会使常见的截图变大。因此必须锁定「在上限内
+ * 原样返回同一个引用」：该行为失效时不会报错，每张图片的体积会静默增大一倍以上。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { imageSizeOf, shrinkImage } from './image.ts'
 
-/** 造一个只有头部合法的 PNG：`imageSizeOf` 本来就只读头。 */
+/** 构造只有头部合法的 PNG：`imageSizeOf` 只读取文件头。 */
 function png(width: number, height: number): Uint8Array {
   const b = new Uint8Array(24)
   b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
@@ -20,23 +20,23 @@ function png(width: number, height: number): Uint8Array {
   return b
 }
 
-describe('从文件头读宽高', () => {
+describe('从文件头读取宽高', () => {
   test('PNG', () => {
     expect(imageSizeOf(png(1440, 900))).toEqual({ width: 1440, height: 900 })
   })
 
-  test('GIF 是小端', () => {
+  test('GIF 使用小端序', () => {
     const b = new Uint8Array(10)
     b.set([0x47, 0x49, 0x46, 0x38, 0x39, 0x61], 0)
     b.set([0xa0, 0x05, 0x84, 0x03], 6)
     expect(imageSizeOf(b)).toEqual({ width: 1440, height: 900 })
   })
 
-  /** JPEG 要顺着 marker 走到 SOF，且**高在前宽在后**——反了会把判据整个取反。 */
-  test('JPEG 顺着 marker 找 SOF，高在前', () => {
+  /** JPEG 需要沿 marker 查找 SOF，且高在前、宽在后：顺序颠倒时判据完全相反。 */
+  test('JPEG 沿 marker 查找 SOF，高在前', () => {
     const b = new Uint8Array(24)
     b.set([0xff, 0xd8], 0)
-    // 一个带载荷的 APP0，长度 4（含自己），跳过它才到 SOF。
+    // 带载荷的 APP0，长度 4（含长度字段本身），跳过它之后是 SOF。
     b.set([0xff, 0xe0, 0x00, 0x04, 0x00, 0x00], 2)
     b.set([0xff, 0xc0, 0x00, 0x11, 0x08], 8)
     new DataView(b.buffer).setUint16(13, 900) // 高
@@ -44,8 +44,8 @@ describe('从文件头读宽高', () => {
     expect(imageSizeOf(b)).toEqual({ width: 1440, height: 900 })
   })
 
-  /** 认不出就是 null——那时按「不确定」原样通过，不为一个陌生的头去整幅解码。 */
-  test('认不出的头回 null', () => {
+  /** 无法识别时返回 null：此时按不确定处理并原样通过，不为未知格式的文件头执行整幅解码。 */
+  test('无法识别的文件头返回 null', () => {
     expect(imageSizeOf(new Uint8Array([1, 2, 3, 4]))).toBeNull()
   })
 })
@@ -54,31 +54,31 @@ describe('缩放策略', () => {
   /**
    * **在上限内必须原样返回同一个引用。**
    *
-   * 实测：一张 1440×900 的网页截图重编码成 PNG 之后大 2.4 倍。
-   * 这条断言比对的是引用而不是内容——内容相等挡不住「解了又编回来」。
+   * 实测：1440×900 的网页截图重编码为 PNG 之后体积增大到 2.4 倍。
+   * 该断言比较引用而不是内容：内容相等无法排除先解码再重新编码的情况。
    */
-  test('尺寸够小就一个字节不动', async () => {
+  test('尺寸在上限内时字节不变', async () => {
     const bytes = png(1440, 900)
     const out = await shrinkImage(bytes, 'image/png')
     expect(out.bytes).toBe(bytes)
     expect(out.mime).toBe('image/png')
   })
 
-  /** 读不出尺寸同样原样通过：宁可多发几个字节，也不冒险解一张认不出的图。 */
-  test('认不出尺寸也原样通过', async () => {
+  /** 无法读取尺寸时同样原样通过：宁可多发送一些字节，也不解码无法识别的图片。 */
+  test('无法识别尺寸时原样通过', async () => {
     const bytes = new Uint8Array([1, 2, 3, 4])
     expect((await shrinkImage(bytes, 'image/png')).bytes).toBe(bytes)
   })
 
   /** 超出上限但无法解码（此处文件头是伪造的）时不能抛错；单张图片无法压缩，不应导致整轮失败。 */
-  test('超标但解码失败时原样返回，不抛', async () => {
+  test('超出上限但解码失败时原样返回，不抛出异常', async () => {
     const bytes = png(4000, 3000)
     const out = await shrinkImage(bytes, 'image/png')
     expect(out.bytes).toBe(bytes)
   })
 })
 
-/** 一张带颗粒的渐变画面，接近渲染截图：PNG 压不小，JPEG 能小一个数量级。 */
+/** 带颗粒的渐变画面，接近渲染截图：PNG 无法有效压缩，JPEG 可减小一个数量级。 */
 async function scene(alpha: number): Promise<Uint8Array> {
   const photon = await import('@silvia-odwyer/photon-node')
   const w = 640
@@ -99,7 +99,7 @@ async function scene(alpha: number): Promise<Uint8Array> {
 }
 
 describe('上限内的大 PNG', () => {
-  test('不透明、超过 300 KB：换成小一半以上的 JPEG', async () => {
+  test('不透明且超过 300 KB：改用体积小一半以上的 JPEG', async () => {
     const bytes = await scene(255)
     expect(bytes.length).toBeGreaterThan(300 * 1024)
     const out = await shrinkImage(bytes, 'image/png')
@@ -108,7 +108,7 @@ describe('上限内的大 PNG', () => {
     expect(imageSizeOf(out.bytes)).toEqual({ width: 640, height: 360 })
   })
 
-  /** JPEG 没有透明通道：换了之后透明处变成实色，模型看到的画面与原图不符。 */
+  /** JPEG 没有透明通道：转换后透明处变为实色，模型看到的画面与原图不符。 */
   test('有透明像素：原样返回', async () => {
     const bytes = await scene(128)
     const out = await shrinkImage(bytes, 'image/png')
@@ -116,7 +116,7 @@ describe('上限内的大 PNG', () => {
     expect(out.mime).toBe('image/png')
   })
 
-  /** 只处理 PNG：JPEG 已经压过，GIF 换成 JPEG 会丢掉动画。 */
+  /** 只处理 PNG：JPEG 已经过压缩，GIF 转为 JPEG 会丢失动画。 */
   test('不是 PNG：原样返回', async () => {
     const bytes = await scene(255)
     const out = await shrinkImage(bytes, 'image/gif')

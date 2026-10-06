@@ -13,17 +13,17 @@ function fresh(): ContentStore {
 }
 
 describe('路径推导', () => {
-  test('正文库挨着主账本放', () => {
+  test('正文库与主账本位于同一目录', () => {
     expect(contentPathFor('/data/qywork.sqlite3')).toBe('/data/qywork_content.sqlite3')
     expect(contentPathFor('C:\\x\\qywork.db')).toBe('C:\\x\\qywork_content.db')
   })
-  test(':memory: 原样透传', () => {
+  test(':memory: 原样返回', () => {
     expect(contentPathFor(':memory:')).toBe(':memory:')
   })
 })
 
 describe('写入与读取', () => {
-  test('一步 put 后能原样读回', () => {
+  test('一次 put 后能原样读取', () => {
     const s = fresh()
     const body = enc.encode('hello 世界')
     const info = s.put(body)
@@ -32,7 +32,7 @@ describe('写入与读取', () => {
     s.close()
   })
 
-  test('流式追加后哈希与一步写入一致', () => {
+  test('流式追加后的哈希与一次写入一致', () => {
     const s = fresh()
     const whole = s.put(enc.encode('abcdef'))
 
@@ -55,7 +55,7 @@ describe('写入与读取', () => {
     s.close()
   })
 
-  test('内容相同只存一份（内容寻址去重）', () => {
+  test('内容相同时只存储一份（内容寻址去重）', () => {
     const s = fresh()
     const a = s.put(enc.encode('same body'))
     const b = s.put(enc.encode('same body'))
@@ -69,7 +69,7 @@ describe('写入与读取', () => {
 describe('区间读取', () => {
   test('跨分片边界的区间正确拼接', () => {
     const s = fresh()
-    // 每个分片填不同的字节，跨界读能验证顺序和偏移都对。
+    // 每个分片填充不同的字节，跨边界读取可验证顺序与偏移均正确。
     const body = new Uint8Array(CHUNK_BYTES * 2)
     body.fill(1, 0, CHUNK_BYTES)
     body.fill(2, CHUNK_BYTES)
@@ -80,12 +80,12 @@ describe('区间读取', () => {
     s.close()
   })
 
-  test('只载入覆盖到区间的分片', () => {
+  test('只载入覆盖该区间的分片', () => {
     const s = fresh()
     const body = new Uint8Array(CHUNK_BYTES * 4).fill(7)
     const info = s.put(body)
-    // 读最后 10 字节：正确实现不会把 1 MB 全拉出来。这里只能验结果，
-    // 但结果正确本身就要求偏移计算没有整块化。
+    // 读取最后 10 字节：正确的实现不会载入全部 1 MB。此处只能验证结果，
+    // 但结果正确本身要求偏移计算未按整块处理。
     const tail = s.readRange(info.contentHash, body.byteLength - 10, 10)
     expect(tail.byteLength).toBe(10)
     s.close()
@@ -98,7 +98,7 @@ describe('区间读取', () => {
     s.close()
   })
 
-  test('长度为 0 返回空', () => {
+  test('长度为 0 时返回空', () => {
     const s = fresh()
     const info = s.put(enc.encode('x'))
     expect(s.readRange(info.contentHash, 0, 0).byteLength).toBe(0)
@@ -106,19 +106,19 @@ describe('区间读取', () => {
   })
 })
 
-describe('崩溃安全：主账本只准引用已定稿的 blob', () => {
+describe('崩溃安全：主账本只能引用已定稿的 blob', () => {
   test('未定稿的写入不产生任何 blob', () => {
     const s = fresh()
     const w = `w_${crypto.randomUUID()}`
     s.beginWrite(w)
     s.appendChunk(w, enc.encode('半截内容'))
-    // 此处模拟崩溃：不调 finishWrite。
+    // 此处模拟崩溃：不调用 finishWrite。
     const n = s.db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM content_blobs').get()!.n
     expect(n).toBe(0)
     s.close()
   })
 
-  test('abort 清掉暂存分片', () => {
+  test('abort 清除暂存分片', () => {
     const s = fresh()
     const w = `w_${crypto.randomUUID()}`
     s.beginWrite(w)
@@ -136,13 +136,13 @@ describe('崩溃安全：主账本只准引用已定稿的 blob', () => {
     s.close()
   })
 
-  test('往未知写入追加会报错，不静默丢弃', () => {
+  test('向未知写入追加时报错，不静默丢弃', () => {
     const s = fresh()
     expect(() => s.appendChunk('nope', enc.encode('x'))).toThrow(ContentStoreError)
     s.close()
   })
 
-  test('读不存在的哈希返回 null，不抛', () => {
+  test('读取不存在的哈希返回 null，不抛出异常', () => {
     const s = fresh()
     expect(s.readAll('sha256:deadbeef')).toBeNull()
     expect(s.info('sha256:deadbeef')).toBeNull()
@@ -151,7 +151,7 @@ describe('崩溃安全：主账本只准引用已定稿的 blob', () => {
 })
 
 describe('回收', () => {
-  test('未被引用的 blob 被删，被引用的保留', () => {
+  test('未被引用的 blob 被删除，被引用的保留', () => {
     const s = fresh()
     const keep = s.put(enc.encode('还有人用'))
     const drop = s.put(enc.encode('没人用了'))
@@ -172,12 +172,12 @@ describe('回收', () => {
     s.close()
   })
 
-  test('清理超期的暂存写入（上次进程崩在写入途中）', () => {
+  test('清理超期的暂存写入（上次进程在写入途中崩溃）', () => {
     const s = fresh()
     const w = `w_${crypto.randomUUID()}`
     s.beginWrite(w)
     s.appendChunk(w, enc.encode('孤儿'))
-    // 把时间戳推回两天前。
+    // 把时间戳改为两天前。
     s.db
       .query('UPDATE pending_writes SET updated_at = ? WHERE write_id = ?')
       .run(Date.now() - 48 * 60 * 60 * 1000, w)
@@ -188,7 +188,7 @@ describe('回收', () => {
     s.close()
   })
 
-  test('新鲜的暂存写入不被误删', () => {
+  test('未超期的暂存写入不被误删', () => {
     const s = fresh()
     const w = `w_${crypto.randomUUID()}`
     s.beginWrite(w)
@@ -199,7 +199,7 @@ describe('回收', () => {
   })
 })
 
-describe('auto_vacuum 转档', () => {
+describe('auto_vacuum 模式转换', () => {
   const dirs: string[] = []
   afterEach(() => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
@@ -211,18 +211,18 @@ describe('auto_vacuum 转档', () => {
     return dir
   }
 
-  test('新建的正文库头部就是 INCREMENTAL', () => {
+  test('新建正文库的头部即为 INCREMENTAL', () => {
     const s = new ContentStore(join(tempDir(), 'c.sqlite3'))
     expect(s.db.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()?.auto_vacuum).toBe(2)
     s.close()
   })
 
   /**
-   * 旧库的头部写的是 NONE：`PRAGMA auto_vacuum` 排在 `journal_mode = WAL` 之后设时，
-   * 头已经落下，那句 pragma 不作数。
+   * 旧库的头部记录的是 NONE：`PRAGMA auto_vacuum` 在 `journal_mode = WAL` 之后设置时，
+   * 头部已经写入，该 pragma 不生效。
    *
-   * 造这样一份旧库不手抄一遍建表 SQL：把一个正常库按 `auto_vacuum = NONE` 整份
-   * `VACUUM INTO` 出来，得到的就是同一套表、同一批正文、头部为 NONE 的文件。
+   * 构造这样的旧库时不复制建表 SQL：把一个正常库按 `auto_vacuum = NONE` 整体
+   * `VACUUM INTO` 导出，得到表结构与正文相同、头部为 NONE 的文件。
    */
   function legacyNoneDb(dir: string, bodies: string[]): { path: string; hashes: string[] } {
     const seed = new ContentStore(join(dir, 'seed.sqlite3'))
@@ -234,7 +234,7 @@ describe('auto_vacuum 转档', () => {
     return { path, hashes }
   }
 
-  test('头部是 NONE 的旧库打开时转档，正文一份不少', () => {
+  test('头部为 NONE 的旧库在打开时转换，正文完整保留', () => {
     const dir = tempDir()
     const { path, hashes } = legacyNoneDb(dir, ['第一份', '第二份', '第三份'])
 
@@ -249,7 +249,7 @@ describe('auto_vacuum 转档', () => {
     expect(hashes.map((h) => dec.decode(s.readAll(h)!))).toEqual(['第一份', '第二份', '第三份'])
     s.close()
 
-    // 转档只做一次：头部已经是 INCREMENTAL，再开一次不会再 VACUUM。
+    // 转换只执行一次：头部已是 INCREMENTAL，再次打开不会再执行 VACUUM。
     const again = new ContentStore(path)
     expect(
       again.db.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()?.auto_vacuum,
@@ -258,7 +258,7 @@ describe('auto_vacuum 转档', () => {
     again.close()
   })
 
-  test('超过体积上限的旧库不转档：正文照读，成因写一行 stderr', () => {
+  test('超过体积上限的旧库不转换：正文照常读取，成因写入一行 stderr', () => {
     const dir = tempDir()
     const { path, hashes } = legacyNoneDb(dir, ['第一份', '第二份'])
 
@@ -268,7 +268,7 @@ describe('auto_vacuum 转档', () => {
       written.push(String(chunk))
       return true
     }) as typeof process.stderr.write
-    // 上限压到 1 字节：转档要跑的是全库 VACUUM，启动路径上必须有一条体积闸。
+    // 上限设为 1 字节：转换需执行全库 VACUUM，启动路径上必须有体积限制。
     const s = new ContentStore(path, { vacuumLimitBytes: 1 })
     process.stderr.write = original
 
@@ -280,7 +280,7 @@ describe('auto_vacuum 转档', () => {
     expect(written[0]).toContain('未转为增量回收：删除后页可复用但文件不缩小')
     expect(written[0]).toContain(path)
 
-    // 上限之内的同一份库照旧转档：不转档是体积裁决，不是把这条路关掉。
+    // 同一个库在上限之内时照常转换：不转换是体积判定的结果，并非关闭转换路径。
     const ok = new ContentStore(path)
     expect(ok.db.query<{ auto_vacuum: number }, []>('PRAGMA auto_vacuum').get()?.auto_vacuum).toBe(
       2,
@@ -289,13 +289,13 @@ describe('auto_vacuum 转档', () => {
     ok.close()
   })
 
-  test('回收之后页数与文件字节数都降下来', () => {
+  test('回收之后页数与文件字节数都减少', () => {
     const dir = tempDir()
     const path = join(dir, 'c.sqlite3')
     const s = new ContentStore(path)
     s.put(new Uint8Array(4 * 1024 * 1024))
-    // 正文先落进主文件，再关掉自动检查点：文件缩小只能来自回收自己的检查点，
-    // 不随回收写入的帧数是否碰到 `wal_autocheckpoint` 而变。
+    // 正文先写入主文件，再关闭自动检查点：文件缩小只能来自回收自身的检查点，
+    // 不随回收写入的帧数是否达到 `wal_autocheckpoint` 而变化。
     s.db.exec('PRAGMA wal_checkpoint(PASSIVE)')
     s.db.exec('PRAGMA wal_autocheckpoint = 0')
     const pages = () =>
