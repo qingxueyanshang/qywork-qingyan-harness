@@ -13,8 +13,8 @@
  *
  * `localStorage` 同理：面板宽度需要落盘，缺少它时整个写入路径进入 catch。
  *
- * 覆盖范围（B6：一个 test 覆盖多个源文件时须在此列明）：`store/ui.ts` 的面板宽度与
- * 页签、`store/browser.ts` 的内置浏览器归属、`store/connection.ts` 的 `applyEvent`
+ * 覆盖范围（B6：一个 test 覆盖多个源文件时须在此列明）：`store/ui.ts` 的面板宽度、
+ * 页签与刷新后的恢复、`store/browser.ts` 的内置浏览器归属、`store/connection.ts` 的 `applyEvent`
  * 归属过滤与能力投影替换、`store/settings.ts` 的 API 错误解释。
  *
  * 不要在此断言模块加载时读取的宽度：`bun test` 一次执行多个文件时共用一份
@@ -32,10 +32,16 @@ g.location = {
   pathname: '/',
   origin: 'http://127.0.0.1:5180',
 }
+// 右侧面板的页签与当前页保存在 sessionStorage 中，刷新恢复的用例读取这份记录。
+const session = new Map<string, string>()
 g.sessionStorage = {
-  getItem: () => null,
-  setItem: () => {},
-  removeItem: () => {},
+  getItem: (k: string) => session.get(k) ?? null,
+  setItem: (k: string, v: string) => {
+    session.set(k, v)
+  },
+  removeItem: (k: string) => {
+    session.delete(k)
+  },
 }
 g.matchMedia = () => ({ matches: false })
 // 面板宽度相关用例需要：localStorage 是其落盘位置。
@@ -52,6 +58,13 @@ g.localStorage = {
 
 const {
   activePanelTab,
+  loadConversations,
+  toggleSidebar,
+  setFoldOpen,
+  setOpenFile,
+  openFileInPanel,
+  closeSettings,
+  openSettings,
   activateWorkspace,
   applyEvent,
   applyRejected,
@@ -71,6 +84,7 @@ const {
   loadConversationView,
   loadOlderConversationChanges,
   openPreviewTab,
+  openCanvasTab,
   openConversationTab,
   openView,
   openPanel,
@@ -100,6 +114,7 @@ const {
   view,
   viewOf,
 } = await import('./store/index.ts')
+const { flushSession } = await import('./session.ts')
 
 describe('激活项目复用服务端返回的会话列表', () => {
   test('新项目不追加会话列表请求与第二次创建请求', async () => {
@@ -599,6 +614,142 @@ describe('外壳中仍在运行的终端按项目恢复页签', () => {
     syncBrowserTabs(browsers)
     restoreTerminalTabs(terminals)
     expect(panelTabs().map((t) => t.id)).toEqual(created)
+  })
+})
+
+/**
+ * 原始失败形状：整页刷新后右侧面板收起，打开的画布页消失。
+ *
+ * 刷新以「`flushSession`（即 `pagehide`）+ 以带查询串的路径重新导入 `store/ui.ts`」模拟：
+ * Bun 为不同的查询串建立新的模块实例，其中的信号按记录重新建立初值，与刷新后模块重新求值相同。
+ */
+let refreshes = 0
+async function refresh(): Promise<typeof import('./store/ui.ts')> {
+  flushSession()
+  refreshes += 1
+  return import(`./store/ui.ts?refresh=${refreshes}`)
+}
+
+describe('整页刷新后恢复页面状态', () => {
+  const reset = () => {
+    for (const ws of [WS_A, WS_B]) {
+      setWorkspace(ws)
+      for (const t of panelTabs()) closePanelTab(t.id)
+      setSidePanel(null)
+    }
+    setWorkspace(WS_A)
+  }
+
+  test('工作区、画布页、当前页与放大态按刷新前恢复', async () => {
+    reset()
+    openCanvasTab('分镜.canvas.json', '分镜')
+    togglePanelMax()
+    const ui = await refresh()
+    expect(ui.workspace()?.id).toBe(WS_A.id)
+    expect(ui.panelTabs().map((t) => t.path)).toEqual(['分镜.canvas.json'])
+    expect(ui.activePanelTab()).toBe('canvas-分镜.canvas.json')
+    expect(ui.panelMaximized()).toBe(true)
+    closePanel()
+  })
+
+  test('当前页是终端页时按原样恢复，终端仍存在时保留', async () => {
+    reset()
+    openCanvasTab('a.canvas.json', 'a')
+    openPanelTab('terminal')
+    const id = activePanelTab()!
+    const ui = await refresh()
+    ui.restoreTerminalTabs([{ id, workspaceId: WS_A.id, createdSeq: 1 }])
+    expect(ui.panelTabs().map((t) => t.kind)).toEqual(['canvas', 'terminal'])
+    expect(ui.activePanelTab()).toBe(id)
+  })
+
+  test('刷新期间结束的终端在对账时移除，当前页改为相邻页', async () => {
+    reset()
+    openCanvasTab('a.canvas.json', 'a')
+    openPanelTab('terminal')
+    const ui = await refresh()
+    ui.restoreTerminalTabs([])
+    expect(ui.panelTabs().map((t) => t.kind)).toEqual(['canvas'])
+    expect(ui.activePanelTab()).toBe('canvas-a.canvas.json')
+  })
+
+  test('刷新后新建的页 id 不与恢复的页重复，且排在末尾', async () => {
+    reset()
+    openPanelTab('preview')
+    openCanvasTab('b.canvas.json', 'b')
+    const ui = await refresh()
+    const before = ui.panelTabs().map((t) => t.id)
+    expect(before).toHaveLength(2)
+    ui.openPanelTab('preview')
+    const after = ui.panelTabs().map((t) => t.id)
+    expect(after.slice(0, -1)).toEqual(before)
+    expect(before).not.toContain(after.at(-1))
+  })
+
+  test('上次显示的页、左栏收起、设置类目、打开的文件与折叠状态', async () => {
+    reset()
+    openFileInPanel('src/a.ts')
+    openPanel('changes')
+    closePanel()
+    toggleSidebar()
+    openSettings('usage')
+    setFoldOpen('fold-1', true)
+    const ui = await refresh()
+    expect(ui.sidePanel()).toBe(null)
+    expect(ui.sidebarCollapsed()).toBe(true)
+    expect(ui.settingsPage()).toBe('usage')
+    expect(ui.openFile()).toBe('src/a.ts')
+    expect(ui.foldOpen('fold-1')).toBe(true)
+    ui.togglePanel()
+    expect(ui.sidePanel()).toBe('changes')
+    toggleSidebar()
+    closeSettings()
+    setOpenFile(null)
+  })
+})
+
+describe('整页刷新后回到刷新前的会话', () => {
+  const conv = (id: string) => ({
+    id,
+    workspaceId: WS_A.id,
+    title: '',
+    provider: 'p',
+    model: 'm',
+    compactionManifest: null,
+    cacheGeneration: 0,
+    source: null,
+    sourceRef: null,
+    createdAt: 1,
+    updatedAt: 1,
+  })
+
+  test('记录中的会话仍在列表中时选中它，否则选第一条', async () => {
+    let list = [conv('cv_r1'), conv('cv_r2')]
+    const before = client.api
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p) => {
+      if (p.startsWith('/api/conversations?') || p === '/api/conversations') {
+        return { conversations: list }
+      }
+      if (p.includes('/queue')) return { queue: [] }
+      return { messages: [], runs: [], steps: [], todos: [], workflowStarts: [], nextCursor: null }
+    }
+    try {
+      setWorkspace(WS_A)
+      await selectConversation('cv_r2')
+      flushSession()
+      // 刷新后内存中没有当前会话。
+      setState({ activeConversation: null })
+      await loadConversations()
+      expect(state.activeConversation).toBe('cv_r2')
+
+      list = [conv('cv_r1')]
+      setState({ activeConversation: null })
+      await loadConversations()
+      expect(state.activeConversation).toBe('cv_r1')
+    } finally {
+      ;(client as unknown as { api: typeof client.api }).api = before
+      setState({ activeConversation: null })
+    }
   })
 })
 

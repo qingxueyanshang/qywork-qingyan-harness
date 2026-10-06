@@ -12,6 +12,7 @@ import { Composer } from './components/Composer.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import { Transcript } from './components/Transcript.tsx'
+import { ApiError } from './lib/client.ts'
 import { localHtmlUrl, workspaceFile } from './lib/links.ts'
 import { observeAppUpdate } from './lib/store/app-update.ts'
 
@@ -37,6 +38,7 @@ import {
   PANEL_MIN,
   panelMaximized,
   panelWidth,
+  setOpenFile,
   setState,
   settingsPage,
   setWorkspace,
@@ -81,9 +83,19 @@ export function openLink(e: MouseEvent): void {
 /** 完成状态的停留时长。短于此值时图标切换难以察觉，过长则会延续到下一次点击。 */
 const COPY_DONE_MS = 1200
 
-/** 连接恢复后的完整恢复入口。顺序属于协议约定：先恢复项目，再按该项目获取会话。 */
+/**
+ * 连接恢复后的完整恢复入口。顺序属于协议约定：先恢复项目，再按该项目获取会话。
+ *
+ * 当前项目（刷新后取自记录）已被移除时，服务端对其 `ws=` 返回 404，此时改为服务端默认的项目；
+ * 打开的文件是该项目中的相对路径，一并清空。
+ */
 export async function restoreWorkspaceSession(): Promise<void> {
-  const ws = await loadWorkspace()
+  const ws = await loadWorkspace().catch((e: unknown) => {
+    if (!(e instanceof ApiError && e.status === 404 && workspace())) throw e
+    setWorkspace(null)
+    setOpenFile(null)
+    return loadWorkspace()
+  })
   setWorkspace(ws)
   await loadConversations()
 }

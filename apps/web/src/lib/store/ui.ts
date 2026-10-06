@@ -1,12 +1,14 @@
 /**
  * 纯界面状态：右侧面板、浮层与当前工作区。
  *
- * 这些状态与服务端无关，不放入 `state`：其生命周期是单次页面加载，
- * 放入业务 store 会使每次事件推送都需要跳过大量与服务端无关的字段。
+ * 这些状态与服务端无关，不放入 `state`：放入业务 store 会使每次事件推送都需要跳过大量与服务端无关的字段。
+ * 表示页面位置与可见内容的状态经 `sessionSignal` 记录，整页刷新后恢复；浮层计数等
+ * 一次操作过程中的状态不记录。
  */
 
 import { createEffect, createSignal, onCleanup } from 'solid-js'
-import { createStore } from 'solid-js/store'
+import { createStore, unwrap } from 'solid-js/store'
+import { readSession, sessionSignal, writeSession } from '../session.ts'
 import type { TerminalSession } from '../terminal.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
 
@@ -99,8 +101,14 @@ const EMPTY_PANEL: WorkspacePanel = { tabs: [], page: null }
  *
  * 键只能是 `WorkspaceInfo.id`。没有活动工作区时不创建条目：空字符串键的条目
  * 在任何工作区下都无法读取，其中登记的 PTY 与原生页此后没有任何界面可以访问。
+ *
+ * 刷新后全部页签与当前页按记录恢复。终端与内置浏览器页的权威在外壳，恢复的页签随后与宿主清单对账
+ * （`restoreTerminalTabs` / `syncBrowserTabs`），外壳中已不存在的页在对账时移除。
  */
-const [panels, setPanels] = createSignal<Readonly<Record<string, WorkspacePanel>>>({})
+const [panels, setPanels] = sessionSignal<Readonly<Record<string, WorkspacePanel>>>(
+  'qywork.panel.tabs',
+  {},
+)
 
 function panelOf(wsId: string | undefined): WorkspacePanel {
   return (wsId ? panels()[wsId] : undefined) ?? EMPTY_PANEL
@@ -193,9 +201,19 @@ const tabSeq: Record<NumberedKind, number> = { terminal: 0, preview: 0 }
  *
  * 该计数须随已见到的外壳序号提升。否则先打开三页网页预览再打开一页内置浏览器时，
  * 后者的外壳序号小于前三页，会被插入中间，而新打开的页应位于页签条末尾。
- * 这些页刷新后不再存在，因此序号无需与外壳一致，只需保持大小关系。
+ * 刷新后这些页连同序号一起恢复，外壳进程不随刷新重启，两者的大小关系不变。
  */
 let localSeq = 0
+
+// 两个计数都须提升到恢复的页签的最大值，否则刷新后新建的页与恢复的页 id 重复、排在其前面。
+for (const panel of Object.values(panels())) {
+  for (const t of panel.tabs) {
+    localSeq = Math.max(localSeq, t.createdSeq)
+    if (t.kind === 'terminal' || t.kind === 'preview') {
+      tabSeq[t.kind] = Math.max(tabSeq[t.kind], Number(t.id.slice(t.kind.length + 1)))
+    }
+  }
+}
 
 function nextLocalSeq(): number {
   localSeq += 1
@@ -327,7 +345,6 @@ function alignBrowserTabs(wsId: string, tabs: readonly HostTab[]): void {
   const titles = new Map(tabs.map((t) => [t.id, t.title]))
   const retitled = cur.tabs.some((t) => t.kind === 'browser' && titles.get(t.id) !== t.title)
   if (!gone.length && !added.length && !retitled) return
-  const orphaned = gone.find((t) => t.id === activeTabOf(cur))
   for (const t of gone) tabDisposers.delete(t.id)
   const list = insertBySeq(
     cur.tabs
@@ -335,14 +352,19 @@ function alignBrowserTabs(wsId: string, tabs: readonly HostTab[]): void {
       .map((t) => (t.kind === 'browser' ? { ...t, title: titles.get(t.id) ?? t.title } : t)),
     added,
   )
-  if (!orphaned) {
-    updatePanel(wsId, (c) => ({ ...c, tabs: list }))
-    return
-  }
+  updatePanel(wsId, () => ({ tabs: list, page: pageWithout(cur, gone) }))
+}
+
+/**
+ * 移除 `gone` 中的页之后应显示的页：当前页被移除时改为右侧相邻页，没有则为左侧相邻页，
+ * 都已移除时为文件页；当前页未被移除时不变。
+ */
+function pageWithout(cur: WorkspacePanel, gone: readonly PanelTab[]): PanelPage | null {
+  const orphaned = gone.find((t) => t.id === activeTabOf(cur))
+  if (!orphaned) return cur.page
   const i = cur.tabs.indexOf(orphaned)
   const next = cur.tabs[i + 1] ?? cur.tabs[i - 1]
-  const page: PanelPage = next && !gone.includes(next) ? { tab: next.id } : 'files'
-  updatePanel(wsId, () => ({ tabs: list, page }))
+  return next && !gone.includes(next) ? { tab: next.id } : 'files'
 }
 
 /**
@@ -413,15 +435,14 @@ export function tabCliNode(tabId: string): { stepId: string; nodeId: string } {
 }
 
 /**
- * 将外壳中仍存活的终端会话恢复为页签。
+ * 按外壳的终端会话清单对账终端页签：补充清单中有而页签中没有的，移除页签中有而清单中没有的。
  *
- * `panelTabs` 是 Rust 会话表的镜像，整页重载会清空该镜像；开发期修改
- * `store/` 或 `packages/` 下的文件时，vite 执行的即是整页刷新。清空后 shell 仍在运行，
- * 却没有任何界面可以访问：页签不是经 `closePanelTab` 移除的，`tabDisposers` 未被调用，
- * 该会话只能在应用退出时由 `shutdown` 回收。因此镜像建立时必须与权威核对一次，
- * 不能只依靠 `openPanelTab` 增加。
+ * `panelTabs` 是 Rust 会话表的镜像，必须在镜像建立时与权威核对一次：刷新后恢复的记录中，
+ * 终端可能已在刷新期间结束；记录无法读取时页签为空，而 shell 仍在运行，此时缺少的页签
+ * 不是经 `closePanelTab` 移除的，`tabDisposers` 未被调用，该会话只能在应用退出时回收。
  *
- * 只补充，不删除。无法识别的 id 一律不处理：浏览器页在终端清单中没有对应项。
+ * 只处理终端页签：浏览器页在终端清单中没有对应项。移除的页不调用 `tabDisposers`，
+ * 理由同 `syncBrowserTabs`：该会话已经结束。
  *
  * 每条按其自身报告的工作区恢复，不读取当前工作区：本次调用发生在模块初始化时，
  * 此时通常尚无活动工作区，按当前工作区写入会丢弃全部 PTY。
@@ -433,6 +454,7 @@ export function tabCliNode(tabId: string): { stepId: string; nodeId: string } {
  */
 export function restoreTerminalTabs(sessions: readonly TerminalSession[]): void {
   const found = new Map<string, PanelTab[]>()
+  const alive = new Set(sessions.map((s) => s.id))
   for (const s of sessions) {
     noteHostSeq(s.createdSeq)
     if (!s.id.startsWith('terminal-')) continue
@@ -450,8 +472,17 @@ export function restoreTerminalTabs(sessions: readonly TerminalSession[]): void 
     })
     found.set(s.workspaceId, list)
   }
-  for (const [wsId, list] of found) {
-    updatePanel(wsId, (cur) => ({ ...cur, tabs: insertBySeq(cur.tabs, list) }))
+  for (const wsId of new Set([...Object.keys(panels()), ...found.keys()])) {
+    const cur = panelOf(wsId)
+    const gone = cur.tabs.filter((t) => t.kind === 'terminal' && !alive.has(t.id))
+    const added = found.get(wsId) ?? []
+    if (!gone.length && !added.length) continue
+    for (const t of gone) tabDisposers.delete(t.id)
+    const tabs = insertBySeq(
+      cur.tabs.filter((t) => !gone.includes(t)),
+      added,
+    )
+    updatePanel(wsId, () => ({ tabs, page: pageWithout(cur, gone) }))
   }
 }
 
@@ -570,7 +601,7 @@ export function resizePanel(px: number): void {
  * 面板收起时一并复位：不复位时下次展开会直接进入放大态，而用户上次关闭面板
  * 可能正是因为不需要放大。因此该标志没有独立的关闭路径，只随面板变化。
  */
-export const [panelMaximized, setPanelMaximized] = createSignal(false)
+export const [panelMaximized, setPanelMaximized] = sessionSignal('qywork.panel.max', false)
 export function togglePanelMax(): void {
   setPanelMaximized((v) => !v)
 }
@@ -581,7 +612,7 @@ export function togglePanelMax(): void {
  * 顶栏只有一个按钮负责展开与收起，展开时应回到用户上次所在的页，而不是
  * 一律回到文件页：否则在变更视图中误触收起后，再展开需要重新选择页签。
  */
-const [lastPage, setLastPage] = createSignal<PanelPage>('files')
+const [lastPage, setLastPage] = sessionSignal<PanelPage>('qywork.panel.last', 'files')
 
 /**
  * 判断该页在当前工作区是否仍存在。记录的页随时可能失效：已被关闭，
@@ -627,7 +658,10 @@ export function openPanel(view: PanelView): void {
  *
  * 收起后重新展开的入口在顶栏：左栏已隐藏，开关不能只放在左栏上。
  */
-export const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false)
+export const [sidebarCollapsed, setSidebarCollapsed] = sessionSignal(
+  'qywork.sidebar.collapsed',
+  false,
+)
 export function toggleSidebar(): void {
   setSidebarCollapsed((v) => !v)
 }
@@ -658,7 +692,10 @@ export type SettingsPage =
   | 'mcp'
   | 'plugins'
   | 'schedules'
-export const [settingsPage, setSettingsPage] = createSignal<SettingsPage | null>(null)
+export const [settingsPage, setSettingsPage] = sessionSignal<SettingsPage | null>(
+  'qywork.settings.page',
+  null,
+)
 
 /** 打开设置。不带参数时打开「通用」：它是唯一不需要前置知识的类目。 */
 export function openSettings(page: SettingsPage = 'general'): void {
@@ -678,7 +715,7 @@ export function closeSettings(): void {
  * 它不负责高亮哪一行：高亮由 `FileBrowser` 中的 `selected`（最后点击的行）决定，
  * 两者混用会导致点击文件夹时不高亮。
  */
-export const [openFile, setOpenFile] = createSignal<string | null>(null)
+export const [openFile, setOpenFile] = sessionSignal<string | null>('qywork.file.open', null)
 
 /**
  * 打开文件。必须经由此函数：它同时保证面板已展开且显示文件页。
@@ -698,13 +735,19 @@ export function openFileInPanel(path: string): void {
  * 会话、文件树、git、扩展清单都按它获取；`client.api` 也按它为每个 REST 请求
  * 拼接 `?ws=`。它是前端「当前项目」的唯一权威：服务端没有对应的可变状态，
  * 只有 `workspaces` 表与每个请求自带的参数。
+ *
+ * 刷新后按记录恢复，首个请求即带上该项目的 `ws=`：不带时服务端返回最近打开的项目，
+ * 其他客户端在此期间打开过另一个项目时，刷新会切换到那个项目。
  */
 export interface WorkspaceInfo {
   id: string
   root: string
   name: string
 }
-export const [workspace, setWorkspace] = createSignal<WorkspaceInfo | null>(null)
+export const [workspace, setWorkspace] = sessionSignal<WorkspaceInfo | null>(
+  'qywork.workspace',
+  null,
+)
 
 /**
  * 将工作区相对路径转换为本机绝对路径。
@@ -797,7 +840,10 @@ export function setFollowUpMode(next: FollowUpMode): void {
  * 节点的生命周期由渲染投影决定，组卡增加成员或单条工具并入组卡时节点会重建，
  * 记录在节点上的展开状态随之丢失。只有用户切换展开状态时才写入；未记录的条目视为折叠。
  */
-const [folds, setFolds] = createStore<Record<string, boolean>>({})
+const FOLDS_KEY = 'qywork.folds'
+const [folds, setFolds] = createStore<Record<string, boolean>>(
+  readSession<Record<string, boolean>>(FOLDS_KEY) ?? {},
+)
 
 export function foldOpen(key: string): boolean {
   return folds[key] ?? false
@@ -805,9 +851,12 @@ export function foldOpen(key: string): boolean {
 
 export function setFoldOpen(key: string, open: boolean): void {
   setFolds(key, open)
+  writeSession(FOLDS_KEY, unwrap(folds))
 }
 
 /** 仅在该条目尚无记录时写入：用于为新建的组卡设置初始展开状态，此后由用户决定。 */
 export function seedFoldOpen(key: string, open: boolean): void {
-  if (folds[key] === undefined) setFolds(key, open)
+  if (folds[key] !== undefined) return
+  setFolds(key, open)
+  writeSession(FOLDS_KEY, unwrap(folds))
 }

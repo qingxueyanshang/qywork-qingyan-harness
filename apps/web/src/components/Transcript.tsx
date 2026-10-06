@@ -28,6 +28,7 @@ import {
   type RenderItem,
   sameRenderItem,
 } from '../lib/render-items.ts'
+import { readSession, writeSession } from '../lib/session.ts'
 import {
   argsRows,
   clamp,
@@ -132,6 +133,15 @@ export function ConversationHistoryBoundary(props: {
 }
 
 /**
+ * 本次页面加载中已恢复过滚动位置的会话。每个会话只恢复一次：面板放大后还原时正文重新挂载，
+ * 此时仍滚动到底部（见 `App.tsx` 中卸载正文的注释）。
+ */
+const scrollRestored = new Set<string>()
+
+/** 会话未跟随底部时距底部的距离（像素）的记录键；跟随底部时没有记录。 */
+const scrollKey = (id: string) => `qywork.scroll:${id}`
+
+/**
  * 会话流的底部跟随。父会话与右侧子会话共用：正文追加、思考展开、工具卡片补充输出
  * 都会改变实际 DOM 高度，因此按高度变化判断，不按字段逐项列举可能增高的内容。
  */
@@ -194,7 +204,36 @@ export function createConversationScroll(conversationId: () => string | null) {
     if (scrollIntent || scrollbarDrag) setPinned(gap <= 2)
     else if (!mine && gap <= 2) setPinned(true)
     scrollIntent = false
+    const id = conversationId()
+    if (id) writeSession(scrollKey(id), pinned() ? undefined : gap)
   }
+
+  /*
+   * 刷新前未跟随底部时，恢复到刷新前距底部的距离。在历史首页加载完成后执行；
+   * 已加载的内容不足该距离时继续加载更早的记录，全部加载后仍不足时停在顶部。
+   * 按距底部的距离而不是 scrollTop 恢复：刷新后只加载最近一页，顶部的内容与刷新前不同。
+   */
+  const restoreGap = async (id: string, gap: number) => {
+    setPinned(false)
+    for (;;) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      if (conversationId() !== id) return
+      const top = scroller.scrollHeight - scroller.clientHeight - gap
+      if (top >= 0 || viewOf(id).history.nextCursor === null) {
+        scroller.scrollTop = Math.max(0, top)
+        followTop = scroller.scrollTop
+        return
+      }
+      if (!(await loadOlderConversation(id))) return
+    }
+  }
+  createEffect(() => {
+    const id = conversationId()
+    if (!id || scrollRestored.has(id) || viewOf(id).history.loading !== null) return
+    scrollRestored.add(id)
+    const gap = readSession<number>(scrollKey(id))
+    if (gap) void restoreGap(id, gap)
+  })
 
   const onWheel = () => {
     scrollIntent = true

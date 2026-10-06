@@ -10,6 +10,7 @@ import {
 import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { matchesMention, mentionQuery, replaceMention } from '../lib/composer-suggestions.ts'
+import { sessionSignal } from '../lib/session.ts'
 import { slashDispatch } from '../lib/slash.ts'
 import {
   activeModel,
@@ -359,9 +360,10 @@ function toolOption(tool: ToolMeta): MentionOption {
  * - 高度自适应，达到上限后改为内部滚动，不挤占会话区。
  */
 export function Composer(props: { empty: boolean }) {
-  const [text, setText] = createSignal('')
+  // 草稿与待发送附件在刷新后恢复；附件只记录路径，文件已在磁盘上。
+  const [text, setText] = sessionSignal('qywork.draft.text', '')
   const [menuCursor, setMenuCursor] = createSignal(0)
-  const [pending, setPending] = createSignal<Attachment[]>([])
+  const [pending, setPending] = sessionSignal<Attachment[]>('qywork.draft.attachments', [])
   const [uploading, setUploading] = createSignal(0)
   const [dragOver, setDragOver] = createSignal(false)
   const [panelDockOpen, setPanelDockOpen] = createSignal(false)
@@ -673,6 +675,10 @@ export function Composer(props: { empty: boolean }) {
     ta.style.height = 'auto'
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
   }
+  // 高度只在输入时计算，刷新后恢复的草稿需在挂载时计算一次。
+  onMount(() => {
+    if (text()) autosize()
+  })
 
   /** `/`、`#`、`@` 共用一个弹层与一套键盘游标，任何时刻只显示当前词对应的一类。 */
   const pickerOptions = (): PickerOption[] => {
