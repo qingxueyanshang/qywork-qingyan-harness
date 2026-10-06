@@ -1556,6 +1556,11 @@ export function findMediaModel(id: string): MediaModelSpec | undefined {
   return SEEDS.find((m) => m.id === id)
 }
 
+/** 条目已核实的协议：目录协议加已登记的兼容映射。设置页的接入方式与加载配置时的协议校正共用。 */
+export function mediaKindsOf(spec: MediaModelSpec): MediaKind[] {
+  return [spec.kind, ...(Object.keys(spec.mappings ?? {}) as MediaKind[])]
+}
+
 /**
  * 模型在指定协议上的规格。
  *
