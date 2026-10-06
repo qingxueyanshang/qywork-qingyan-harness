@@ -1,5 +1,6 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
+import { sessionSignal } from '../lib/session.ts'
 import { client, explainApiError } from '../lib/store/index.ts'
 
 interface Candidate {
@@ -33,7 +34,7 @@ export default function PairPanel() {
   // 「通用」页打开即渲染，本次请求随之发出。不加「打开后才请求」的条件：
   // `/api/pairing` 只读取本机网卡与令牌，与同一页上的配置、能力两次请求开销相当。
   const [info, { refetch }] = createResource(() => client.api<PairingInfo>('/api/pairing'))
-  const [picked, setPicked] = createSignal(0)
+  const [picked, setPicked] = sessionSignal('qywork.settings.pair.picked', 0)
   const [busy, setBusy] = createSignal(false)
 
   const toggleLan = async (enabled: boolean) => {

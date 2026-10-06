@@ -9,6 +9,7 @@ import {
   type ToolCallCheck,
 } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
+import { sessionSignal } from '../../lib/session.ts'
 import {
   ensureModelCatalog,
   modelCatalog,
@@ -76,14 +77,14 @@ export function ModelSettings() {
   void ensureModelCatalog()
 
   /** 正在编辑的接口。null 表示跟随 active。 */
-  const [picked, setPicked] = createSignal<string | null>(null)
+  const [picked, setPicked] = sessionSignal<string | null>('qywork.settings.models.picked', null)
   /**
    * 模型库与接口共用下方的内容区，由上方的 tab 切换。
    *
    * 不要改成左右两栏：分栏后接口一侧的 Base URL、Key 与模型列表宽度过窄。
    * 两者也无需同时查看：配置接口时查看接口，查询参数时查看模型库。
    */
-  const [showLibrary, setShowLibrary] = createSignal(false)
+  const [showLibrary, setShowLibrary] = sessionSignal('qywork.settings.models.library', false)
   /** 最近一次探测结果按接口与模型区分，不落盘。 */
   const [probes, setProbes] = createSignal<Record<string, ProbeResult | { error: string }>>({})
   const [probing, setProbing] = createSignal<string | null>(null)

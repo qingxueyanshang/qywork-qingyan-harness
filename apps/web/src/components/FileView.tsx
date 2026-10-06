@@ -11,8 +11,9 @@ import {
   Switch,
 } from 'solid-js'
 import { ApiError } from '../lib/client.ts'
-import { createReadonlyEditor } from '../lib/editor.ts'
+import { createReadonlyEditor, scrollToLine, topLine } from '../lib/editor.ts'
 import { loaded } from '../lib/resource.ts'
+import { readSession, writeSession } from '../lib/session.ts'
 import { absPath, client, explainApiError, setOpenFile } from '../lib/store/index.ts'
 import FileImageView from './FileImageView.tsx'
 import { IconX } from './Icons.tsx'
@@ -179,6 +180,13 @@ function PdfView(props: { path: string; mtime: number }) {
   )
 }
 
+/** 当前文本文件视口顶部的行。只记录一个文件，按路径区分：刷新后同一文件按记录恢复。 */
+const SCROLL_KEY = 'qywork.file.scroll'
+interface ScrollRecord {
+  path: string
+  line: number
+}
+
 function CodeView(props: { content: string; path: string }) {
   let host!: HTMLDivElement
   let view: EditorView | null = null
@@ -215,6 +223,11 @@ function CodeView(props: { content: string; path: string }) {
       view?.destroy()
       view = next
       mountedPath = path
+      const saved = readSession<ScrollRecord>(SCROLL_KEY)
+      if (saved?.path === path) scrollToLine(next, saved.line)
+      next.scrollDOM.addEventListener('scroll', () =>
+        writeSession(SCROLL_KEY, { path, line: topLine(next) } satisfies ScrollRecord),
+      )
     })()
   })
 

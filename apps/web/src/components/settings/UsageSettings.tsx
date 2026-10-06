@@ -1,7 +1,8 @@
 import type { UsageResponse, UsageTotals } from '@qywork/core'
 import { formatCosts } from '@qywork/core'
-import { createResource, createSignal, For, Show } from 'solid-js'
+import { createResource, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
+import { sessionSignal } from '../../lib/session.ts'
 import { compact } from '../../lib/step-view.ts'
 import { client } from '../../lib/store/index.ts'
 import { LoadState } from './LoadState.tsx'
@@ -41,8 +42,8 @@ function input(t: UsageTotals): number {
 }
 
 export default function UsageSettings() {
-  const [days, setDays] = createSignal<number>(30)
-  const [by, setBy] = createSignal<string>('model')
+  const [days, setDays] = sessionSignal<number>('qywork.settings.usage.days', 30)
+  const [by, setBy] = sessionSignal<string>('qywork.settings.usage.by', 'model')
   const [data, { refetch }] = createResource(
     () => ({ days: days(), by: by() }),
     (q) => client.api<UsageResponse>(`/api/usage?days=${q.days}&by=${q.by}`),

@@ -93,3 +93,18 @@ export async function createReadonlyEditor(
     }),
   })
 }
+
+/** 视口顶部所在的行号（从 1 开始）。 */
+export function topLine(view: EditorView): number {
+  return view.state.doc.lineAt(view.lineBlockAtHeight(view.scrollDOM.scrollTop).from).number
+}
+
+/**
+ * 滚动到使第 `line` 行位于视口顶部，超过末行时为末行。
+ * 按行而不是按像素恢复位置：编辑器按估算行高创建，测量后实际高度不同，像素位置会落到其他行。
+ */
+export function scrollToLine(view: EditorView, line: number): void {
+  const doc = view.state.doc
+  const target = doc.line(Math.min(Math.max(1, line), doc.lines))
+  view.dispatch({ effects: EditorView.scrollIntoView(target.from, { y: 'start' }) })
+}
