@@ -1,5 +1,5 @@
 """覆盖 video.py 与 worker 的 frames 动作：按画面变化选帧、首尾必选、真实时间戳、区间读取、
-打不开的文件报名、说明里的未看区间与声音未处理。测试视频用 PyAV 现场生成：红、绿、蓝各 2 秒。
+无法打开的文件报告文件名、说明中的未查看区间与声音未处理。测试视频由 PyAV 在测试中生成：红、绿、蓝各 2 秒。
 """
 
 import json
@@ -32,7 +32,7 @@ def make_clip(path, seconds_each=2, fps=10, size=(160, 120)):
 
 
 def dominant(path):
-    """一张图的主色是红、绿、蓝里的哪一个。"""
+    """图片的主色是红、绿、蓝中的哪一种。"""
     r, g, b = Image.open(path).convert("RGB").resize((1, 1)).getpixel((0, 0))
     return ("r", "g", "b")[max(range(3), key=lambda i: (r, g, b)[i])]
 
@@ -42,12 +42,12 @@ class PickTest(unittest.TestCase):
         same, other = bytes(4), bytes([200] * 4)
         thumbs = [same, same, other, other, same, same]
         times = [0, 1, 2, 3, 4, 5]
-        # 画面在 2 与 4 处变化：首尾之外先选这两个。
+        # 画面在 2 与 4 处变化：首尾之外优先选择这两处。
         self.assertEqual(video.pick(times, thumbs, 4), [0, 2, 4, 5])
         self.assertEqual(video.pick(times, thumbs, 10), [0, 1, 2, 3, 4, 5])
 
     def test_static_scene_spreads_frames_evenly(self):
-        # 画面不变时不能按下标挤在开头：首尾之后先补正中，再补剩下最大的空档。
+        # 画面不变时帧不能按下标集中在开头：首尾之后先补正中，再补剩余最大的间隔。
         times = list(range(11))
         thumbs = [bytes(4)] * 11
         self.assertEqual(video.pick(times, thumbs, 4), [0, 2, 5, 10])
@@ -115,7 +115,7 @@ class SampleTest(unittest.TestCase):
             self.assertIn("中间的画面没有看到", text)
             self.assertIn("read_file 的 start 与 end", text)
             res["has_audio"] = True
-            self.assertIn("声音没有处理", video.describe("c.mp4", res))
+            self.assertIn("声音未处理", video.describe("c.mp4", res))
 
 
 class FramesActionTest(unittest.TestCase):

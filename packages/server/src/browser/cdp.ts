@@ -1,21 +1,21 @@
 /**
- * 自持的 CDP 客户端：一条 Bun 原生 `WebSocket` 直说协议，不经第三方驱动。
+ * 自有的 CDP 客户端：通过一条 Bun 原生 `WebSocket` 直接收发协议消息，不经由第三方驱动。
  *
  * 四条不变量：
  *
- * 1. **待决请求由本客户端拒绝。** 断开、超时、取消都在本地结束 pending，
- *    不假定远端返回或 detach 会代劳；按 id 查不到待决项的迟到回包直接丢弃，
+ * 1. 待决请求由本客户端拒绝。断开、超时、取消均在本地结束 pending，
+ *    不依赖远端返回或 detach 结束 pending；按 id 查不到待决项的迟到回包直接丢弃，
  *    不得完成另一请求。
- * 2. **取消之后发送口只放行 teardown。** 清理命令（detach、等待器 dispose、收尾 keyUp 与
- *    mouseReleased）必须能发出去，否则页面留着按下状态，人工接管后输入行为不对。
- * 3. **方法集是白名单。** 不对上层暴露任意方法调用，`Browser` 域只放行 `getVersion`。
- * 4. **等待只观察，不执行动作。** 页内等待器用 `MutationObserver` 加定时复核，
- *    不用 `requestAnimationFrame`：子视图移出可视区时不再出帧，靠出帧驱动的轮询会挂住。
+ * 2. 取消之后发送通道只放行 teardown。清理命令（detach、等待器 dispose、收尾 keyUp 与
+ *    mouseReleased）必须能够发出，否则页面保持按下状态，人工接管后输入行为异常。
+ * 3. 方法集为白名单。不对上层暴露任意方法调用，`Browser` 域只放行 `getVersion`。
+ * 4. 等待只观察，不执行动作。页内等待器使用 `MutationObserver` 加定时复核，
+ *    不使用 `requestAnimationFrame`：子视图移出可视区时不再产生帧，依赖帧驱动的轮询会停滞。
  */
 
 import { log } from '@qywork/core'
 
-/** 允许发出的域。加一个域等于扩大模型能触达的协议面，要单独讨论。 */
+/** 允许发出的域。增加一个域即扩大模型可访问的协议范围，须单独评估。 */
 const ALLOWED_DOMAINS = new Set([
   'Target',
   'Page',
@@ -26,14 +26,14 @@ const ALLOWED_DOMAINS = new Set([
   'Emulation',
 ])
 
-/** `Browser` 域只用来读版本，下载行为一律走宿主的原生钩子。 */
+/** `Browser` 域只用于读取版本，下载行为一律经由宿主的原生钩子。 */
 const ALLOWED_BROWSER_METHODS = new Set(['Browser.getVersion'])
 
 /**
  * 取消之后仍允许发出的命令。
  *
- * 只把这条规则写进文档而不落成白名单的代价是实测过的：取消关掉发送口之后，
- * 按业务路径补发的 keyUp 会被自己的取消挡掉，页面因此留着按下状态。鼠标同理。
+ * 该规则必须实现为白名单，不能只写在文档中：取消关闭发送通道后，
+ * 按业务路径补发的 keyUp 会被取消状态拦截，页面因此保持按下状态。鼠标同理。
  */
 const TEARDOWN_TAGS = new Set(['detach', 'dispose', 'keyup', 'mouseup'])
 
@@ -53,32 +53,32 @@ export class CdpDisconnectedError extends CdpError {
     )
   }
 }
-/** 会话初始化命令被拒。调用方必须撤销控制，不换命令重试。 */
+/** 会话初始化命令被拒绝。调用方必须撤销控制，不换用其他命令重试。 */
 export class CdpInitError extends CdpError {}
 
 export interface SendOptions {
   sessionId?: string
   timeoutMs?: number
-  /** 带上即按 teardown 发送；取消之后只有这一类还能出网。 */
+  /** 携带时按 teardown 发送；取消之后只有此类命令仍能发出。 */
   teardown?: TeardownTag
 }
 
 interface Pending {
   method: string
-  /** 收尾命令。取消时它们照常等回包，只有断连才结掉。 */
+  /** 收尾命令。取消时照常等待回包，只有断连时才结算。 */
   teardown: boolean
   resolve: (value: Record<string, unknown>) => void
   reject: (err: Error) => void
   timer: ReturnType<typeof setTimeout>
 }
 
-/** `Page.getFrameTree` 的一层。`url` 为空表示这一帧还没提交过任何文档。 */
+/** `Page.getFrameTree` 的一层。`url` 为空表示该帧尚未提交任何文档。 */
 interface FrameTreeNode {
   frame: { id: string; url?: string }
   childFrames?: FrameTreeNode[]
 }
 
-/** 没在盯的会话回这一份。调用方只读，不得往里写。 */
+/** 未跟踪帧导航状态的会话返回该集合。调用方只读，不得写入。 */
 const NO_FRAMES: ReadonlySet<string> = new Set()
 
 interface CdpMessage {
@@ -99,15 +99,15 @@ export interface WaiterStats {
 /**
  * 一次静默探针读数。
  *
- * 三个字段都可能缺席，缺席即探针不成立。**调用方不得把缺席当作「文档已就绪」**：
- * 那会让一个还在加载的页面提前通过静默判定。
+ * 三个字段都可能缺失，缺失即探针无效。调用方不得把缺失视为文档已就绪：
+ * 否则仍在加载的页面会提前通过静默判定。
  */
 export interface ProbeRead {
   /** `document.readyState`。 */
   ready?: string
   /** 探针建立以来的 DOM 变更条数。 */
   mutations?: number
-  /** 这个探针已经不在当前文档里：换过文档，或已被清理。 */
+  /** 该探针已不在当前文档中：文档已更换，或探针已被清理。 */
   gone?: boolean
 }
 
@@ -127,14 +127,14 @@ export interface CancelSummary {
 }
 
 /**
- * 页内等待器与静默探针。只 `querySelector` 观察、只数 DOM 变更，不点击、不提交、不输入。
+ * 页内等待器与静默探针。只用 `querySelector` 观察、只统计 DOM 变更，不点击、不提交、不输入。
  *
- * 注册表挂在 `window` 上，因此可以按 id 单独清理，并读回 observer 与 timer
- * 的计数作为清理证据。**探针必须走这张表建**：另挂一个观察器的话，取消与断连时
- * 的清理路径找不到它，它会跟着文档一直观察下去。
+ * 注册表挂载在 `window` 上，因此可按 id 单独清理，并读取 observer 与 timer
+ * 的计数作为清理证据。探针必须经由该注册表创建：另行注册观察器时，取消与断连时
+ * 的清理路径无法找到它，它会在文档存续期间持续观察。
  *
  * 等待器按状态判定选择器命中的第一个元素，状态的含义见 `BrowserWaitState`。除 DOM 变更外
- * 每 100 ms 再核一次：CSS 过渡、动画与布局变化不产生 DOM 变更，只靠观察器会漏掉可见性变化。
+ * 每 100 ms 复核一次：CSS 过渡、动画与布局变化不产生 DOM 变更，只依赖观察器会遗漏可见性变化。
  */
 const WAITER_RUNTIME = `(() => {
   if (window.__qyworkWaiters) return 'already'
@@ -232,42 +232,42 @@ export class CdpClient {
   /**
    * 跨站 iframe 的子会话。
    *
-   * 记的是「谁的子会话」而不是一张平表：观察要按页取它自己那几个帧，
-   * 平表在同时控制多页时会把别的页的帧算进来。
+   * 按父会话记录子会话，而不是使用一张平表：观察须按页取得该页自身的帧，
+   * 平表在同时控制多页时会把其他页的帧计入。
    *
-   * `ready` 表示 `#initChildSession` 已经跑完。登记发生在 `Target.attachedToTarget`
-   * 到达时，开域是随后的异步命令——两者之间这个会话答不出 AX 树。
+   * `ready` 表示 `#initChildSession` 已经执行完毕。登记发生在 `Target.attachedToTarget`
+   * 到达时，启用域是随后的异步命令，两者之间该会话无法返回 AX 树。
    */
   #childSessions = new Map<string, { parent: string; targetId: string; ready: boolean }>()
   /**
-   * 每个会话的根帧编号，以及它的文档树里此刻有导航在飞的帧。
+   * 每个会话的根帧编号，以及其文档树中当前有导航进行中的帧。
    *
-   * 观察要判的是「等一等这一帧会不会有内容」，而 DOM 快照答不了这件事：
-   * `loading="lazy"` 还没被触发的帧与正在导航的帧，在快照里都是一个 `about:blank`
-   * 空文档。按形状判的话，一页上所有延迟加载的帧每次观察都被算成未就位。
+   * 观察需要判定的是等待后该帧是否会有内容，而 DOM 快照无法回答：
+   * `loading="lazy"` 尚未触发的帧与正在导航的帧，在快照中都是 `about:blank`
+   * 空文档。按快照内容判定时，页面上所有延迟加载的帧每次观察都会被计为未就位。
    *
-   * 进出由浏览器自己报：`Page.frameStartedLoading` 进，`frameStoppedLoading` 与
-   * `frameDetached` 出——跨站帧提交时换渲染进程，以 detach 的形式离开父会话。
+   * 加入与移除依据浏览器报告的事件：`Page.frameStartedLoading` 加入，`frameStoppedLoading` 与
+   * `frameDetached` 移除；跨站帧提交时切换渲染进程，以 detach 的形式离开父会话。
    */
   #frameLoads = new Map<string, { root: string; loading: Set<string> }>()
   /**
-   * 本客户端按下、尚未确认抬起的键，键为 `会话|code`。取消与收尾按它补发 keyUp。
+   * 本客户端按下、尚未确认抬起的键，键为 `会话|code`。取消与收尾据此补发 keyUp。
    *
-   * 按下在入网前登记，抬起**收到回包之后**才摘：超时、断连时抬起可能没到页面，
-   * 提前摘掉就没有依据再补、也报不出哪个键可能还按着。摘之前核对条目身份，
-   * 同一个键在抬起回包之前又被按下时，旧回包不摘新的那一条。
+   * 按下在发出前登记，抬起在收到回包之后才移除：超时、断连时抬起可能未到达页面，
+   * 提前移除会失去补发依据，也无法报告哪个键可能仍处于按下状态。移除前核对条目身份，
+   * 同一个键在抬起回包之前再次按下时，旧回包不移除新条目。
    */
   #heldKeys = new Map<string, Held<{ params: Record<string, unknown> }>>()
   /**
-   * 本客户端按下、尚未确认抬起的鼠标键，连同最后一次移动到的坐标。登记与摘除规则同 `#heldKeys`。
+   * 本客户端按下、尚未确认抬起的鼠标键，连同最后一次移动到的坐标。登记与移除规则同 `#heldKeys`。
    *
-   * 只记本客户端自己发出去的按下：收尾时按它补 `mouseReleased`，不对别的会话或用户
-   * 桌面释放输入。不靠成功路径最后那一条 `mouseReleased` ——拖动中途失败时它发不出来。
+   * 只记录本客户端发出的按下：收尾时据此补发 `mouseReleased`，不对其他会话或用户
+   * 桌面释放输入。不依赖成功路径最后的 `mouseReleased`：拖动中途失败时它无法发出。
    */
   #heldMouse = new Map<string, Held<{ button: string; x: number; y: number }>>()
-  /** 取消或断开时触发。输入执行器的计时等待靠它提前结束，不睡满按住时长。 */
+  /** 取消或断开时触发。输入执行器的计时等待据此提前结束，不等待完整的按住时长。 */
   #halt = new AbortController()
-  /** 短寿命事件订阅。每一项只服务一次调用，由建立方在结束时摘掉。 */
+  /** 短期事件订阅。每一项只服务一次调用，由建立方在结束时移除。 */
   #watchers = new Set<{ sessionId: string; listener: (event: CdpEvent) => void }>()
   #businessClosed = false
   #cancelled = false
@@ -282,7 +282,7 @@ export class CdpClient {
     socket.onerror = () => {}
   }
 
-  /** 连上宿主分配的回环端点。端点只有在第一个子视图建出来之后才开始监听。 */
+  /** 连接宿主分配的回环端点。端点在第一个子视图创建之后才开始监听。 */
   static async connect(debugPort: number, timeoutMs = 10_000): Promise<CdpClient> {
     try {
       const res = await fetch(`http://127.0.0.1:${debugPort}/json/version`, {
@@ -291,7 +291,7 @@ export class CdpClient {
       if (!res.ok) throw new Error(`调试端点返回 HTTP ${res.status}`)
       const version = (await res.json()) as { webSocketDebuggerUrl?: string }
       const url = version.webSocketDebuggerUrl
-      if (!url) throw new Error('调试端点没有给出 WebSocket 地址')
+      if (!url) throw new Error('调试端点未返回 WebSocket 地址')
       const socket = new WebSocket(url)
       await new Promise<void>((resolve, reject) => {
         const fail = (detail: string) => {
@@ -329,16 +329,16 @@ export class CdpClient {
     return this.#cancelled
   }
 
-  /** 取消或连接断开时置位。之后业务命令一律发不出去。 */
+  /** 取消或连接断开时置位。此后业务命令一律无法发出。 */
   get halted(): AbortSignal {
     return this.#halt.signal
   }
 
   /**
-   * 发一条命令。
+   * 发送一条命令。
    *
-   * 白名单、取消状态、连接状态三项在**入网之前**判定：判定放到回包那一侧的话，
-   * 取消之后的命令已经到了网站上。
+   * 白名单、取消状态、连接状态三项在发出之前判定：在回包一侧判定时，
+   * 取消之后的命令已经送达网站。
    */
   send<T extends Record<string, unknown> = Record<string, unknown>>(
     method: string,
@@ -350,10 +350,10 @@ export class CdpClient {
       return Promise.reject(new CdpError(`方法不在白名单内：${method}`))
     }
     if (teardown && !TEARDOWN_TAGS.has(teardown)) {
-      return Promise.reject(new CdpError(`认不出的 teardown 标记：${teardown}`))
+      return Promise.reject(new CdpError(`无法识别的 teardown 标记：${teardown}`))
     }
     if (!teardown && this.#businessClosed) {
-      return Promise.reject(new CdpCancelledError(`发送口已关闭，拒绝 ${method}`))
+      return Promise.reject(new CdpCancelledError(`发送通道已关闭，拒绝 ${method}`))
     }
     if (this.#socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new CdpDisconnectedError(`连接不可用，拒绝 ${method}`))
@@ -388,7 +388,7 @@ export class CdpClient {
         }),
       )
     })
-    // 先于调用方的 await 注册：调用方拿到回包时按下账已经是确认之后的状态。
+    // 先于调用方的 await 注册：调用方取得回包时，按键记录已处于确认后的状态。
     if (settle) {
       sent.then(
         () => settle('applied'),
@@ -399,9 +399,9 @@ export class CdpClient {
   }
 
   /**
-   * 按宿主注入的标记找到这一页并附加。
+   * 按宿主注入的标记找到目标页并附加。
    *
-   * 不按 URL 或标题匹配：两个同 URL 的子视图在目标清单里完全相同。
+   * 不按 URL 或标题匹配：两个同 URL 的子视图在目标清单中完全相同。
    */
   async attachByMarker(marker: string): Promise<{ targetId: string; sessionId: string }> {
     const { targetInfos } = await this.send<{
@@ -425,15 +425,15 @@ export class CdpClient {
       }
       await this.send('Target.detachFromTarget', { sessionId }, { teardown: 'detach' })
     }
-    throw new CdpError('目标清单里没有带这个标记的页面')
+    throw new CdpError('目标清单中没有带该标记的页面')
   }
 
   /**
    * 页会话初始化。
    *
-   * 焦点仿真被拒即撤销控制，不换命令重试——没有它，网页里的输入框焦点判定不成立。
-   * 生效与否只看命令回包：CDP 合成点击会把 `document.hasFocus()` 变成 true 并保持，
-   * 按它判会得到假阳性。
+   * 焦点仿真被拒绝时撤销控制，不换用其他命令重试：缺少焦点仿真时，网页中的输入框焦点判定不成立。
+   * 是否生效只依据命令回包：CDP 合成点击会使 `document.hasFocus()` 变为 true 并保持，
+   * 依据它判定会得到假阳性。
    */
   async #initPageSession(sessionId: string): Promise<void> {
     await this.#watchFrames(sessionId)
@@ -450,7 +450,7 @@ export class CdpClient {
       await this.send('Emulation.setFocusEmulationEnabled', { enabled: true }, { sessionId })
     } catch (err) {
       if (err instanceof CdpDisconnectedError) throw err
-      throw new CdpInitError(`焦点仿真被拒：${err instanceof Error ? err.message : String(err)}`)
+      throw new CdpInitError(`焦点仿真被拒绝：${err instanceof Error ? err.message : String(err)}`)
     }
     await this.send(
       'Page.addScriptToEvaluateOnNewDocument',
@@ -467,14 +467,14 @@ export class CdpClient {
   }
 
   /**
-   * 一页的跨站 iframe 子会话，含嵌套的那几层。
+   * 一页的跨站 iframe 子会话，包括嵌套的各层。
    *
-   * 按父链归属，不按附加顺序：同时控制两页时，平表会把另一页的帧算进这一页。
+   * 按父链归属，不按附加顺序：同时控制两页时，平表会把另一页的帧计入本页。
    */
   #ownedChildren(pageSessionId: string): { sessionId: string; targetId: string; ready: boolean }[] {
     const out: { sessionId: string; targetId: string; ready: boolean }[] = []
     const owned = new Set([pageSessionId])
-    // 子会话可能先于它的父会话登记，所以按表长度兜一圈直到不再增长。
+    // 子会话可能先于其父会话登记，因此重复遍历直到结果不再增长，遍历次数以表长度为上限。
     for (let pass = 0; pass < this.#childSessions.size + 1; pass++) {
       let grew = false
       for (const [sessionId, info] of this.#childSessions) {
@@ -489,10 +489,10 @@ export class CdpClient {
   }
 
   /**
-   * 一页里**已经开完域**的跨站 iframe 子会话。
+   * 一页中已启用域的跨站 iframe 子会话。
    *
-   * 只回就绪的：刚登记、`Runtime` / `DOM` / `Accessibility` 还没开的会话答不出 AX 树，
-   * 交给采集只会得到一个空帧。调用方据此判定「这一帧还没就位」，不要改成回全部。
+   * 只返回已就绪的会话：刚登记、`Runtime` / `DOM` / `Accessibility` 尚未启用的会话无法返回 AX 树，
+   * 交给采集只会得到空帧。调用方据此判定该帧尚未就位，不要改为返回全部会话。
    */
   childSessionsOf(pageSessionId: string): { sessionId: string; targetId: string }[] {
     return this.#ownedChildren(pageSessionId)
@@ -501,9 +501,9 @@ export class CdpClient {
   }
 
   /**
-   * 忘掉一个页会话及它的子会话。
+   * 移除一个页会话及其子会话的记录。
    *
-   * 页被关掉之后这些会话在远端已经不存在了，留在表里只会让取消时的清理命令
+   * 页面关闭后这些会话在远端已不存在，保留在表中只会使取消时的清理命令
    * 逐条报 `No session with given id`。
    */
   forgetSession(pageSessionId: string): void {
@@ -522,12 +522,12 @@ export class CdpClient {
   }
 
   async #initChildSession(sessionId: string): Promise<void> {
-    // 帧导航状态放在最前：子会话附上时它的文档刚提交，里面的帧随后才建，早开一步少漏一帧。
+    // 帧导航状态最先启用：子会话附加时其文档刚提交，其中的帧随后才创建，提前启用可避免遗漏帧。
     await this.#watchFrames(sessionId)
     await this.send('Runtime.enable', {}, { sessionId })
     await this.send('DOM.enable', {}, { sessionId })
     await this.send('Accessibility.enable', {}, { sessionId })
-    // 嵌套的跨站 iframe 同样要附加，否则第二层帧里的元素观察不到。
+    // 嵌套的跨站 iframe 同样需要附加，否则无法观察第二层帧中的元素。
     await this.send(
       'Target.setAutoAttach',
       { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
@@ -536,15 +536,15 @@ export class CdpClient {
   }
 
   /**
-   * 开 `Page` 域并开始记这个会话的帧导航状态。
+   * 启用 `Page` 域并开始记录该会话的帧导航状态。
    *
-   * 登记在 `Page.enable` 之前：这条命令一生效事件就来，晚一步登记就漏掉它们。
-   * `Page` 域同时也是导航订阅（`onSessionEvent`）的事件来源。
+   * 登记在 `Page.enable` 之前：该命令生效后事件随即到达，登记晚于命令会遗漏这些事件。
+   * `Page` 域同时是导航订阅（`onSessionEvent`）的事件来源。
    *
-   * 附上会话这一刻已经在飞的导航没有事件可收，所以文档还没 `complete` 时，
-   * 把帧树里尚无文档的帧一并记成在导航，由根帧的 `frameStoppedLoading` 统一清掉——
-   * 根帧要等子树里全部在飞的导航结束才停。**文档已经 `complete` 时一个都不记**：
-   * 那时没有在飞的导航，而清空它们的那个事件也不会再来，记下就是永远不退的未就位。
+   * 附加会话时已在进行的导航不会产生事件，因此文档尚未 `complete` 时，
+   * 把帧树中尚无文档的帧一并记为导航中，由根帧的 `frameStoppedLoading` 统一清除：
+   * 根帧在子树中全部进行中的导航结束后才停止加载。文档已 `complete` 时不记录任何帧：
+   * 此时没有进行中的导航，清除记录的事件也不会再到达，记录后将一直处于未就位状态。
    */
   async #watchFrames(sessionId: string): Promise<void> {
     const entry = { root: '', loading: new Set<string>() }
@@ -572,12 +572,12 @@ export class CdpClient {
   }
 
   /**
-   * 这一页里此刻还在往就位走的帧，含嵌套的那几层。
+   * 该页中当前尚未就位的帧，包括嵌套的各层。
    *
-   * 两种来源：浏览器报着有导航在飞的帧，以及子会话已经附上、域还没开完的帧
-   * （那一段它答不出 AX 树）。观察按它判一帧等不等得到内容，见 `page.ts` 的
-   * `pendingFrames`——两样都不占的帧，要么已经能采，要么由页面自己推迟着
-   * （`loading="lazy"` 未触发），等它只是白花时间。
+   * 两种来源：浏览器报告有导航进行中的帧，以及子会话已附加但域尚未启用完毕的帧
+   * （此期间它无法返回 AX 树）。观察据此判定等待后能否取得该帧的内容，见 `page.ts` 的
+   * `pendingFrames`。不属于这两类的帧，要么已可采集，要么由页面自身推迟加载
+   * （`loading="lazy"` 未触发），等待它们只会浪费时间。
    */
   settlingFrames(pageSessionId: string): ReadonlySet<string> {
     const out = new Set<string>(this.#frameLoads.get(pageSessionId)?.loading ?? NO_FRAMES)
@@ -593,9 +593,9 @@ export class CdpClient {
   /**
    * 订阅一个页会话上的协议事件，返回取消函数。
    *
-   * 只服务一次调用：在发命令之前建立，结束时必须调返回的函数。不调的话订阅表会跟着
-   * 轮数长，而且上一次调用的判断会被这一次的事件改写。`Page` 域的事件由
-   * `Page.enable` 发布，页会话初始化时已经开过。
+   * 只服务一次调用：在发送命令之前建立，结束时必须调用返回的函数。不调用时订阅表会随
+   * 轮数增长，且上一次调用的判定会被本次的事件改写。`Page` 域的事件由
+   * `Page.enable` 发布，页会话初始化时已启用。
    */
   onSessionEvent(sessionId: string, listener: (event: CdpEvent) => void): () => void {
     const entry = { sessionId, listener }
@@ -610,7 +610,7 @@ export class CdpClient {
     return this.#watchers.size
   }
 
-  /** 登记一个静默探针并返回它的页内 id。探针只数 DOM 变更，不查选择器、不动页面。 */
+  /** 登记一个静默探针并返回它的页内 id。探针只统计 DOM 变更，不查询选择器、不修改页面。 */
   async startProbe(sessionId: string, timeoutMs: number): Promise<number> {
     const created = await this.#evalObject<{ id?: number }>(
       sessionId,
@@ -618,16 +618,16 @@ export class CdpClient {
       timeoutMs,
     )
     const id = created.id
-    if (typeof id !== 'number') throw new CdpError('静默探针没有登记成功')
+    if (typeof id !== 'number') throw new CdpError('静默探针登记失败')
     return id
   }
 
   /**
-   * 读一次探针。结果按 `ProbeRead` 判定，缺字段的读数不得当作就绪。
+   * 读取一次探针。结果按 `ProbeRead` 判定，缺少字段的读数不得视为就绪。
    *
-   * 运行时缺席在表达式里就地答成 `gone`，不走 `#evalObject` 的补注入：探针随文档走，
-   * 换过文档的探针本来就已失效，`gone` 正是调用方要的那个终态——它据此重建探针，
-   * 而重建走 `startProbe`，注入在那一边补。
+   * 运行时缺失时在表达式中直接返回 `gone`，不经由 `#evalObject` 的补注入：探针随文档存续，
+   * 文档更换后探针已失效，`gone` 正是调用方需要的终态，调用方据此重建探针，
+   * 重建经由 `startProbe`，注入在该路径中补发。
    */
   async readProbe(sessionId: string, probeId: number, timeoutMs: number): Promise<ProbeRead> {
     const r = await this.send<{ result: { value?: ProbeRead } }>(
@@ -641,7 +641,7 @@ export class CdpClient {
     return r.result.value ?? { gone: true }
   }
 
-  /** 登记一个等待器并返回它的页内 id。返回后调用方用 `awaitWaiter` 等结果。 */
+  /** 登记一个等待器并返回它的页内 id。返回后调用方使用 `awaitWaiter` 等待结果。 */
   async startWaiter(
     sessionId: string,
     spec: { selector: string; state: string; expected?: string },
@@ -655,7 +655,7 @@ export class CdpClient {
       `window.__qyworkWait(${args})`,
     )
     const id = created.id
-    if (typeof id !== 'number') throw new CdpError('页内等待器没有登记成功')
+    if (typeof id !== 'number') throw new CdpError('页内等待器登记失败')
     return id
   }
 
@@ -672,15 +672,15 @@ export class CdpClient {
   }
 
   /**
-   * 在页内求一次值，回包必须是对象。
+   * 在页内求值一次，回包必须是对象。
    *
-   * 等待器运行时不在当前文档时（还没注入完，或者文档换了），页内求值抛的是
-   * `undefined is not an object`，`returnByValue` 下 `result.value` 是 `undefined`。
-   * **必须在这里结掉**：直接交给调用方，下一步解引用它会以一句内部异常原文结束，
-   * 而那句话对调用方没有下一步。
+   * 等待器运行时不在当前文档中时（尚未注入完成，或文档已更换），页内求值抛出
+   * `undefined is not an object`，`returnByValue` 下 `result.value` 为 `undefined`。
+   * 必须在此处处理：直接交给调用方时，下一步解引用会以内部异常原文结束，
+   * 而该信息无法指导调用方的下一步操作。
    *
-   * 缺席时先补一次注入再求一次值——注入是运行时自己的既有路径，页面状态不受影响；
-   * 重发的是取值，不是业务动作。补过还不成立就报出来。
+   * 缺失时先补发一次注入再求值一次：注入是运行时既有的路径，页面状态不受影响；
+   * 重发的是取值，而非业务动作。补发后仍不成立时报告失败。
    */
   async #evalObject<T>(sessionId: string, expression: string, timeoutMs?: number): Promise<T> {
     const opts = { sessionId, ...(timeoutMs === undefined ? {} : { timeoutMs }) }
@@ -702,10 +702,10 @@ export class CdpClient {
         )
       }
     }
-    throw new CdpError('页面还没准备好等待器，请重新观察后再等')
+    throw new CdpError('页面尚未准备好等待器，请重新观察后再等待')
   }
 
-  /** 清掉一个页内等待器或探针并读回计数。计数是清理证据，不是调试输出。 */
+  /** 清理一个页内等待器或探针并读取计数。计数是清理证据，不是调试输出。 */
   async disposeWaiter(sessionId: string, waiterId: number): Promise<WaiterStats> {
     const r = await this.send<{ result: { value: WaiterStats } }>(
       'Runtime.evaluate',
@@ -716,11 +716,11 @@ export class CdpClient {
   }
 
   /**
-   * 取消：关业务发送口 → 本地拒绝 pending → 清页内等待器 → 收尾按下的键 →
-   * detach 子会话与页会话。原生页不关。重复调用是空操作。
+   * 取消：关闭业务发送通道 → 本地拒绝 pending → 清理页内等待器 → 释放已按下的键 →
+   * detach 子会话与页会话。原生页不关闭。重复调用为空操作。
    *
-   * `deadline` 是整次收尾的绝对截止时刻，每条清理命令的超时从剩余时间取小。
-   * 按页各给满额度的话，收尾时长随本客户端控制的页数线性增长。
+   * `deadline` 是整次收尾的绝对截止时刻，每条清理命令的超时取剩余时间与单条上限中的较小值。
+   * 每页各分配完整额度时，收尾时长随本客户端控制的页数线性增长。
    */
   async cancel(reason = '已取消', deadline?: number): Promise<CancelSummary> {
     if (this.#cancelled) {
@@ -737,7 +737,7 @@ export class CdpClient {
     this.#halt.abort()
     const left = (cap: number) =>
       deadline === undefined ? cap : Math.max(1, Math.min(cap, deadline - Date.now()))
-    // 在飞的收尾命令不结掉：动作自己的收尾可能正在补抬起，结掉它等于让这个键留在按下状态。
+    // 进行中的收尾命令不结算：动作自身的收尾可能正在补发抬起，结算它会使该键保持按下状态。
     const rejectedPending = this.#failPending(new CdpCancelledError(reason), true)
     const waiterStats: WaiterStats[] = []
     for (const sessionId of this.#pageSessions) {
@@ -777,10 +777,10 @@ export class CdpClient {
   }
 
   /**
-   * 把已按下未确认抬起的键补一次 keyUp。走 teardown 身份，不是新的业务动作。
+   * 为已按下未确认抬起的键补发一次 keyUp。使用 teardown 身份，不是新的业务动作。
    *
-   * 取消与动作收尾可能同时走到这里：同一条目的在飞释放只发一次，后到的等同一个结果。
-   * 没确认的条目留在表里，由 `heldKeys` 报出。
+   * 取消与动作收尾可能同时执行到此处：同一条目的进行中释放只发送一次，后到者等待同一结果。
+   * 未确认的条目保留在表中，由 `heldKeys` 报告。
    */
   async releaseHeldKeys(deadline?: number): Promise<string[]> {
     const released: string[] = []
@@ -805,9 +805,9 @@ export class CdpClient {
   }
 
   /**
-   * 把已按下未确认抬起的鼠标键补一次 `mouseReleased`。走 teardown 身份，不是新的业务动作。
+   * 为已按下未确认抬起的鼠标键补发一次 `mouseReleased`。使用 teardown 身份，不是新的业务动作。
    *
-   * 坐标取最后一次移动到的位置：在起点释放会让拖动落回原处，而那不是页面此刻的状态。
+   * 坐标取最后一次移动到的位置：在起点释放会使拖动回到原处，与页面当前状态不符。
    */
   async releaseHeldMouse(deadline?: number): Promise<string[]> {
     const released: string[] = []
@@ -831,7 +831,7 @@ export class CdpClient {
     return released
   }
 
-  /** 一次收尾释放。结束后清掉在飞标记：失败的条目留在表里，下一次收尾可以再试。 */
+  /** 一次收尾释放。结束后清除进行中标记：失败的条目保留在表中，下一次收尾可以重试。 */
   #releaseOnce<T extends object>(
     held: Held<T>,
     kind: 'keyup' | 'mouseup',
@@ -844,7 +844,7 @@ export class CdpClient {
           const what = kind === 'keyup' ? '按键' : '鼠标'
           log.warn(
             'browser',
-            `收尾${what}失败：${err instanceof Error ? err.message : String(err)}`,
+            `释放${what}失败：${err instanceof Error ? err.message : String(err)}`,
           )
           return false
         },
@@ -869,10 +869,10 @@ export class CdpClient {
   }
 
   /**
-   * 按键账：按下在入网前登记，返回回包到达时的处理。
+   * 按键记录：按下在发出前登记，返回回包到达时的处理函数。
    *
-   * 按下被协议明确拒绝即没有生效，摘掉；超时、断连、取消时按下可能已经生效，留着。
-   * 抬起只有确认之后才摘，且只摘发出那一刻的那一条。
+   * 按下被协议明确拒绝即未生效，移除记录；超时、断连、取消时按下可能已生效，保留记录。
+   * 抬起在确认之后才移除，且只移除发出时对应的条目。
    */
   #trackKey(
     sessionId: string | undefined,
@@ -899,7 +899,7 @@ export class CdpClient {
     }
   }
 
-  /** 鼠标按下状态：登记与摘除同 `#trackKey`；移动在入网前更新坐标，滚轮不改按下状态。 */
+  /** 鼠标按下状态：登记与移除同 `#trackKey`；移动在发出前更新坐标，滚轮不改变按下状态。 */
   #trackMouse(
     sessionId: string | undefined,
     params: Record<string, unknown>,
@@ -949,7 +949,7 @@ export class CdpClient {
     }
     if (msg.id !== undefined) {
       const pending = this.#pending.get(msg.id)
-      // 迟到回包：对应 pending 已被本地拒绝并删除，丢弃即可。
+      // 迟到回包：对应 pending 已被本地拒绝并删除，直接丢弃。
       if (!pending) return
       this.#pending.delete(msg.id)
       clearTimeout(pending.timer)
@@ -967,11 +967,11 @@ export class CdpClient {
           ready: false,
         }
         this.#childSessions.set(sessionId, entry)
-        // 子会话要先开域才观察得到。附加是事件驱动的，这里只能异步补，开完才置 ready；
-        // 失败时这一帧留在未就绪，由观察侧报出，不当作没有这一帧。
+        // 子会话须先启用域才能观察。附加由事件驱动，此处只能异步启用，完成后才置 ready；
+        // 失败时该帧保持未就绪，由观察侧报告，不视为该帧不存在。
         void this.#initChildSession(sessionId)
           .then(() => {
-            // 期间可能已经 detach 再附上另一条会话，只认自己登记的那一条。
+            // 期间可能已 detach 并附加了另一条会话，只处理本次登记的会话。
             if (this.#childSessions.get(sessionId) === entry) entry.ready = true
           })
           .catch((err) => {
@@ -1001,9 +1001,9 @@ export class CdpClient {
   }
 
   /**
-   * 按 `Page` 的帧事件维护「这一帧正在导航」。
+   * 按 `Page` 的帧事件维护各帧的导航状态。
    *
-   * 根帧停下来意味着子树里在飞的导航都已结束，附上会话那一刻记下的那批随之作废，
+   * 根帧停止加载意味着子树中进行中的导航均已结束，附加会话时记录的帧随之作废，
    * 见 `#watchFrames`。
    */
   #trackFrameLoad(msg: CdpMessage): void {
@@ -1032,10 +1032,10 @@ export class CdpClient {
   }
 }
 
-/** 一条输入命令的回包结果：生效、被协议拒绝（没有生效）、不明（超时、断连、取消）。 */
+/** 一条输入命令的回包结果：生效、被协议拒绝（未生效）、不明（超时、断连、取消）。 */
 type Outcome = 'applied' | 'rejected' | 'unknown'
 
-/** 一条按下记录。`release` 是在飞的收尾释放，非空时后到的释放者等它，不再发第二条。 */
+/** 一条按下记录。`release` 是进行中的收尾释放，非空时后到的释放方等待它，不再发送第二条。 */
 type Held<T> = T & { sessionId: string; release: Promise<boolean> | null }
 
 /** 收尾命令的超时：剩余预算与单条上限取小。 */
@@ -1044,8 +1044,8 @@ function teardownLimit(deadline: number | undefined): number {
 }
 
 /**
- * 这个失败之后命令可能已经在页面上生效：超时、断连、取消都是「已入网未确认」。
- * 协议错误回包说明对端拒绝了它，没有生效。
+ * 该失败发生后命令可能已在页面上生效：超时、断连、取消均属于已发出未确认。
+ * 协议错误回包表示对端拒绝了该命令，命令未生效。
  */
 function unconfirmed(err: unknown): boolean {
   return (

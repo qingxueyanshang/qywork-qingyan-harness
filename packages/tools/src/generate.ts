@@ -1,11 +1,11 @@
 /**
- * 生成：经生成端口调用已配置的生成模型，产物写进工作区。
+ * 生成：经生成端口调用已配置的生成模型，产物写入工作区。
  *
- * `generateMedia` / `resumeMedia` 是唯一的执行路径：读输入、调端口、记远端任务、落盘、收尾都在这里，
- * 与 `read_file` / `write_file` 走同一条路径边界与可写判定。生成、取回工具与服务端画布服务都调它们，
- * 工具只负责解析参数和把结果写成给大模型读的回执。选模型、推操作、校验参数、调接口在端口实现里。
+ * `generateMedia` / `resumeMedia` 是唯一的执行路径：读取输入、调用端口、记录远端任务、落盘与收尾均在此完成，
+ * 与 `read_file` / `write_file` 使用同一路径边界与可写判定。生成工具、取回工具与服务端画布服务均调用它们，
+ * 工具只负责解析参数并把结果写成供模型读取的回执。选择模型、推断操作、校验参数与调用接口由端口实现负责。
  *
- * 结果只回产物的工作区路径，不带字节：用户点路径在右侧预览里看，大模型要看图就自己 `read_file`。
+ * 结果只返回产物的工作区路径，不含字节：用户点击路径在右侧预览中查看，模型需要查看图片时自行调用 `read_file`。
  */
 
 import { lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -31,7 +31,7 @@ import {
 } from './paths.ts'
 import { renameWithRetry } from './rename.ts'
 
-/** 没给输出路径时写到这个工作区目录。 */
+/** 未提供输出路径时写入该工作区目录。 */
 const DEFAULT_DIR = 'generated'
 
 const EXTENSION: Record<string, string> = {
@@ -48,16 +48,16 @@ const EXTENSION: Record<string, string> = {
   'audio/pcm': '.pcm',
 }
 
-/** 扩展名到格式，`EXTENSION` 的反查，外加同一格式的别名。 */
+/** 扩展名到格式的映射：`EXTENSION` 的反向映射，另含同一格式的别名。 */
 const MIME_OF_EXTENSION: Record<string, string> = {
   ...Object.fromEntries(Object.entries(EXTENSION).map(([mime, ext]) => [ext, mime])),
   '.jpeg': 'image/jpeg',
 }
 
 /**
- * 产物实际要落盘的路径。没写扩展名就按实际格式补上；写了一个与实际格式不符的已知扩展名
- * （如要 `.mp3` 而接口回的是 WAV）就换成实际格式的，否则文件名与内容对不上，播放器按错的格式解析。
- * 不认识的扩展名原样保留。
+ * 产物实际落盘的路径。未写扩展名时按实际格式补全；写了与实际格式不符的已知扩展名
+ * （如请求 `.mp3` 而接口返回 WAV）时改为实际格式的扩展名，否则文件名与内容不一致，播放器按错误的格式解析。
+ * 无法识别的扩展名原样保留。
  */
 function landingPath(target: string, mime: string): string {
   const actual = EXTENSION[mime]
@@ -68,7 +68,7 @@ function landingPath(target: string, mime: string): string {
   return declared && declared !== mime ? `${target.slice(0, -ext.length)}${actual}` : target
 }
 
-/** 远端任务记录的后缀。记录与产物同目录，文件树里看得见。 */
+/** 远端任务记录的后缀。记录与产物位于同一目录，在文件树中可见。 */
 export const TASK_SUFFIX = '.task.json'
 
 /** 默认文件名的时间戳：`YYYYMMDD-HHmmss`，本地时间。 */
@@ -94,7 +94,7 @@ function workspaceOf(roots: RootsInput): string {
   return typeof roots === 'string' ? roots : roots.workspaceRoot
 }
 
-/** 落进工作区的一个产物。`path` 是工作区相对路径（正斜杠）。 */
+/** 写入工作区的产物。`path` 是工作区相对路径（正斜杠）。 */
 export interface GeneratedFile {
   path: string
   mime: string
@@ -102,8 +102,8 @@ export interface GeneratedFile {
 }
 
 /**
- * 产物落在哪：`target` 按实际格式定扩展名（`landingPath`）后，从第 `first` 个编号起找第一个没被占的位置
- * （第 1 个不加编号，之后加 `-2`、`-3`），回绝对路径。已存在的文件不覆盖。
+ * 产物的写入位置：`target` 按实际格式确定扩展名（`landingPath`）后，从第 `first` 个编号起查找第一个未被占用的位置
+ * （第 1 个不加编号，之后加 `-2`、`-3`），返回绝对路径。已存在的文件不覆盖。
  */
 export async function freeLandingPath(
   roots: RootsInput,
@@ -121,9 +121,9 @@ export async function freeLandingPath(
 }
 
 /**
- * 把产物写进工作区。先写 `.part` 再改名：半截文件不会出现在工作区里，写失败时删掉 `.part`。
+ * 把产物写入工作区。先写入 `.part` 再重命名：不完整的文件不会出现在工作区中，写入失败时删除 `.part`。
  *
- * 多张时从第二张起加 `-2`、`-3`，撞名继续往后加（`freeLandingPath`）。
+ * 多张时自第二张起追加 `-2`、`-3`，重名时序号继续递增（`freeLandingPath`）。
  */
 export async function landFiles(
   roots: RootsInput,
@@ -152,12 +152,12 @@ export async function landFiles(
 }
 
 /**
- * 本进程里已被占用、产物还没落盘的默认输出位置（绝对路径）。
- * 默认名精确到秒，同一秒里的两次生成（画布上连点两张卡）靠它错开，否则会共用一份任务记录。
+ * 本进程中已被占用、产物尚未落盘的默认输出位置（绝对路径）。
+ * 默认名称精确到秒，同一秒内的两次生成（如在画布上连续点击两张卡片）依靠它区分，否则会共用同一份任务记录。
  */
 const reserved = new Set<string>()
 
-/** 占一个默认输出位置：`generated/<时间>`，被占或已有同名任务记录就往后加 `-2`、`-3`。 */
+/** 占用一个默认输出位置：`generated/<时间>`；已被占用或已有同名任务记录时依次追加 `-2`、`-3`。 */
 async function reserveDefault(roots: RootsInput): Promise<{ target: string; release(): void }> {
   const base = join(DEFAULT_DIR, stamp())
   for (let n = 1; ; n++) {
@@ -173,17 +173,17 @@ async function reserveDefault(roots: RootsInput): Promise<{ target: string; rele
   }
 }
 
-/** 远端视频任务的本地记录：停止、超时、进程退出之后，靠它接续取回、不重新提交。 */
+/** 远端视频任务的本地记录：停止、超时或进程退出之后，依据它接续取回，不重新提交。 */
 interface TaskRecord {
   provider: string
   model: string
   taskId: string
-  /** 产物要写到的工作区路径（可以没有扩展名，落盘时补上）。 */
+  /** 产物的目标工作区路径（可以不含扩展名，落盘时补全）。 */
   output: string
   submittedAt: string
 }
 
-/** 写任务记录，不覆盖已有的记录（那是另一个还没取回的任务）：撞名就往后加 `-2`。返回写到的绝对路径。 */
+/** 写入任务记录，不覆盖已有记录（已有记录属于另一个尚未取回的任务）：重名时追加 `-2` 并依次递增。返回写入的绝对路径。 */
 async function writeRecord(roots: RootsInput, target: string, record: TaskRecord): Promise<string> {
   const text = `${JSON.stringify(record, null, 2)}\n`
   for (let n = 1; ; n++) {
@@ -202,7 +202,7 @@ async function writeRecord(roots: RootsInput, target: string, record: TaskRecord
   }
 }
 
-/** 一次生成。输入只给路径，读字节与类型检查在 `generateMedia` 里做。 */
+/** 一次生成请求。输入只提供路径，读取字节与类型检查由 `generateMedia` 完成。 */
 export interface GenerateRequest {
   roots: RootsInput
   media: MediaPort
@@ -212,9 +212,9 @@ export interface GenerateRequest {
   inputs: { role: MediaInputRole; path: string }[]
   params: Record<string, unknown>
   pick?: { provider: string; model: string }
-  /** 输出路径；已存在就在调接口之前拒绝。不给时写到 `generated/<时间>`。 */
+  /** 输出路径；已存在时在调用接口之前拒绝。未提供时写入 `generated/<时间>`。 */
   output?: string
-  /** 视频任务号到手、任务记录写好之后回调。`record` 是记录的工作区相对路径。 */
+  /** 取得视频任务号并写入任务记录之后回调。`record` 是记录的工作区相对路径。 */
   onTask?: (task: {
     record: string
     taskId: string
@@ -222,13 +222,13 @@ export interface GenerateRequest {
     model: string
   }) => void | Promise<void>
   onStatus?: (status: string) => void
-  /** 拿到结果时回报这次的花费。 */
+  /** 取得结果时回报本次的花费。 */
   onSpend?: (spend: MediaSpend) => void
 }
 
 /**
- * 生成的结果。失败时 `executed: false` 表示在调接口之前就退回了（没有花钱）；
- * `record` 表示远端任务还在、任务记录留着，可以按它取回。
+ * 生成的结果。失败时 `executed: false` 表示在调用接口之前已拒绝（未产生费用）；
+ * `record` 表示远端任务仍存在且任务记录已保留，可按它取回。
  */
 export type GenerateOutcome =
   | { ok: true; provider: string; model: string; files: GeneratedFile[]; warning?: string }
@@ -238,7 +238,7 @@ function refused(message: string, errorKind: string): GenerateOutcome {
   return { ok: false, message, executed: false, errorKind }
 }
 
-/** 读输入文件。路径走工作区边界；类型不对在调接口之前就退回。 */
+/** 读取输入文件。路径经过工作区边界检查；类型不符时在调用接口之前拒绝。 */
 async function readInputs(
   roots: RootsInput,
   inputs: GenerateRequest['inputs'],
@@ -266,15 +266,15 @@ async function readInputs(
   return read
 }
 
-/** 生成一次并落盘。视频在任务号到手时写任务记录，成功后删掉，远端终态失败也删掉。 */
+/** 执行一次生成并落盘。视频在取得任务号时写入任务记录，成功或远端终态失败后删除。 */
 export async function generateMedia(req: GenerateRequest): Promise<GenerateOutcome> {
   const inputs = await readInputs(req.roots, req.inputs)
   if (!Array.isArray(inputs)) return inputs
   if (req.output !== undefined) {
     const abs = await resolveWritablePath(req.roots, req.output, { followFinalSymlink: false })
-    // 生成按次计费：写不进去的调用在花钱之前就要挡掉。
+    // 生成按次计费：无法写入的调用必须在产生费用之前拒绝。
     if (await occupied(abs)) {
-      return refused(`${req.output} 已存在，不会覆盖。换一个输出路径，或不填 output`, 'file_exists')
+      return refused(`${req.output} 已存在，不会覆盖。更换输出路径，或省略 output`, 'file_exists')
     }
   }
   const slot =
@@ -322,7 +322,7 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
   }
 }
 
-/** 按任务记录取回：只查询与下载，不再提交、不重复扣费。 */
+/** 按任务记录取回：只查询与下载，不重新提交、不重复扣费。 */
 export async function resumeMedia(req: {
   roots: RootsInput
   media: MediaPort
@@ -358,7 +358,7 @@ export async function resumeMedia(req: {
 }
 
 /**
- * 收尾：成功就落盘并删掉任务记录；远端还在（`pendingTaskId`）就留着记录；终态失败删掉记录。
+ * 收尾：成功时落盘并删除任务记录；远端任务仍存在（`pendingTaskId`）时保留记录；终态失败时删除记录。
  */
 async function settle(
   roots: RootsInput,
@@ -393,7 +393,7 @@ async function settle(
   }
 }
 
-/** 用实际产物核对张数与明确指定的像素尺寸；不把接口少返或降分辨率当作完整成功。 */
+/** 按实际产物核对张数与明确指定的像素尺寸；接口少返回图片或降低分辨率时不视为完整成功。 */
 function imageResultWarning(
   files: MediaFile[],
   params: Record<string, unknown> | undefined,
@@ -430,7 +430,7 @@ function imageResultWarning(
 
 // ── 工具 ──
 
-/** 参数对象以 JSON 字符串传入：严格模式的工具 schema 表达不了「字段由模型决定」的开放对象。 */
+/** 参数对象以 JSON 字符串传入：严格模式的工具 schema 无法表达字段由模型决定的开放对象。 */
 function parseParams(raw: unknown): Record<string, unknown> | string {
   if (raw === undefined || raw === null || raw === '') return {}
   try {
@@ -450,7 +450,7 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-/** 两个生成工具共有的参数：提示词、参数表、模型点名、输出路径。 */
+/** 三个生成工具共有的参数：提示词、参数表、指定模型、输出路径。 */
 function commonArgs(args: Record<string, unknown>):
   | {
       prompt: string
@@ -466,7 +466,7 @@ function commonArgs(args: Record<string, unknown>):
   const provider = text(args.provider)
   const model = text(args.model)
   if ((provider === undefined) !== (model === undefined)) {
-    return failure('provider 与 model 要一起给，或都不给', 'invalid_tool_arguments')
+    return failure('provider 与 model 须同时提供或同时省略', 'invalid_tool_arguments')
   }
   return {
     prompt,
@@ -476,20 +476,20 @@ function commonArgs(args: Record<string, unknown>):
   }
 }
 
-/** 路径参数：单个字符串或字符串数组，空值即没给。 */
+/** 路径参数：单个字符串或字符串数组，空值视为未提供。 */
 function pathList(raw: unknown): string[] {
   if (Array.isArray(raw)) return raw.map(String)
   return raw === undefined || raw === null || raw === '' ? [] : [String(raw)]
 }
 
-/** 把生成结果写成给大模型读的回执。 */
+/** 把生成结果写成供模型读取的回执。 */
 function receipt(outcome: GenerateOutcome, noun: (count: number) => string): ToolOutcome {
   if (!outcome.ok) {
     return {
       status: 'failure',
       executed: outcome.executed,
       message: outcome.record
-        ? `${outcome.message}\n任务记录在 ${outcome.record}，用 retrieve_video 的 path 传这个路径取回，不会重新提交。`
+        ? `${outcome.message}\n任务记录位于 ${outcome.record}，用 retrieve_video 的 path 传入该路径取回，不会重新提交。`
         : outcome.message,
       ...(outcome.errorKind ? { errorKind: outcome.errorKind } : {}),
     }
@@ -515,8 +515,8 @@ const PARAMS_NOTE =
   'provider 与 model 须取自该清单的同一行；两者均省略时使用默认模型。'
 
 /**
- * 生成文件在会话中的唯一展示入口：回复里的路径链接，点击由正文链接的处理交给右侧文件预览。
- * 不写明时模型会以 Markdown 图片嵌入，相对地址在会话里是一张损坏的图，或同一路径写出多次。
+ * 生成文件在会话中的唯一展示入口是回复中的路径链接，点击后由正文链接的处理逻辑交给右侧文件预览。
+ * 不写明时模型会以 Markdown 图片嵌入（相对地址在会话中渲染为损坏的图片），或多次写出同一路径。
  */
 const DISPLAY_NOTE =
   '回复中以 Markdown 链接写出生成文件的工作区路径，链接文字与地址均为该路径，例如 [generated/cover.png](generated/cover.png)，' +
@@ -557,7 +557,7 @@ export const generateImageTool: ToolSpec = {
   objectLabel: '图片',
   category: 'media',
   facet: '生成',
-  summary: '用图像生成模型出图或改图',
+  summary: '用图像生成模型生成或编辑图片',
   targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
   permissionEffect: 'write',
   async fn(args, ctx) {
@@ -652,7 +652,7 @@ export const generateVideoTool: ToolSpec = {
       ...(common.pick ? { pick: common.pick } : {}),
       ...(common.output ? { output: common.output } : {}),
       onTask: ({ taskId, record }) =>
-        ctx.emit('progress', `已提交远端任务 ${taskId}，记录在 ${record}\n`),
+        ctx.emit('progress', `已提交远端任务 ${taskId}，记录位于 ${record}\n`),
       onStatus,
     })
     return receipt(outcome, () => '视频')
@@ -724,7 +724,7 @@ export const generateAudioTool: ToolSpec = {
   objectLabel: '音频',
   category: 'media',
   facet: '生成',
-  summary: '用语音合成模型把文字读成音频',
+  summary: '用语音合成模型将文本合成为音频',
   targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
   permissionEffect: 'write',
   async fn(args, ctx) {
@@ -746,7 +746,7 @@ export const generateAudioTool: ToolSpec = {
   },
 }
 
-/** 每个生成类别对应的工具。注册、本轮快照与会话里「这一类有没有工具」都查这一张表。 */
+/** 每个生成类别对应的工具。注册、本轮快照与会话中判断某一类别是否有工具均查询本表。 */
 export const MEDIA_TOOLS: Record<MediaOutput, ToolSpec> = {
   image: generateImageTool,
   video: generateVideoTool,

@@ -11,7 +11,7 @@ import type { LoopPersistence, ToolContextBase } from '../index.ts'
 /**
  * 第 n 次重发之前的退避基准（毫秒）与允许的抖动上界。
  *
- * 数字在这里独立写一遍，不从 `attempt.ts` 导入：导进来的断言等于拿实现校验实现。
+ * 数值在此处独立定义，不从 `attempt.ts` 导入：导入后的断言等于用实现校验实现本身。
  */
 export const BACKOFF_STEPS = [2_000, 4_000, 8_000, 16_000, 30_000] as const
 export const BACKOFF_JITTER_MAX = 1.1
@@ -35,9 +35,9 @@ export function fakeAdapter(turns: (WireToolCall[] | null)[], model = 'claude-op
     spec,
     async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
       const calls = turns[turn++] ?? null
-      // 三个真适配器都是 `estimateRequest(req)`，假的必须同口径：没有锚点时
-      // 面板的总数就是这个值，而分组明细是同一次装配的估算，两者相等是恒等式。
-      // 给一个与请求无关的常数，等于让假适配器造出真适配器造不出的状态。
+      // 三个真实适配器都使用 `estimateRequest(req)`，模拟适配器必须采用同一口径：没有锚点时
+      // 面板的总数即该值，而分组明细是同一次装配的估算，两者必然相等。
+      // 使用与请求无关的常数，会使模拟适配器产生真实适配器不可能产生的状态。
       yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, spec.density) }
       yield { type: 'response_started', headersAt: Date.now() }
       if (calls) {
@@ -85,7 +85,7 @@ export function call(name: string, args: Record<string, unknown> = {}): WireTool
   return { id: `c_${Math.random().toString(36).slice(2)}`, name, arguments: args }
 }
 
-/** 最小可用的 ToolContext。测试只关心 loop 的编排，工具本身不碰这些字段。 */
+/** 最小可用的 ToolContext。测试只检查 loop 的编排，工具本身不访问这些字段。 */
 export function baseCtx(runId: string): ToolContextBase {
   return {
     workspaceRoot: '/tmp',

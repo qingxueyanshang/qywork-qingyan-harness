@@ -1,19 +1,19 @@
 /**
- * `idle-timeout.test.ts` 的子进程侧：在 `BUN_CONFIG_HTTP_IDLE_TIMEOUT=1` 的进程里，
- * 起一个静默 `SILENT_MS` 的 SSE 服务，三种协议的适配器各读一条流，裸 fetch 作对照。
- * 结果按 `{ 协议: 'ok' | 错误文案 }` 以 JSON 写到 stdout。
+ * `idle-timeout.test.ts` 的子进程部分：在 `BUN_CONFIG_HTTP_IDLE_TIMEOUT=1` 的进程中，
+ * 启动一个静默 `SILENT_MS` 的 SSE 服务，三种协议的适配器各读取一条流，以裸 fetch 作对照。
+ * 结果按 `{ 协议: 'ok' | 错误文案 }` 以 JSON 写入 stdout。
  */
 import { buildAdapter } from '../factory.ts'
 import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ChatRequest, ProviderProfile } from '../types.ts'
 
-/** Bun 1.4 的空闲定时器为 1 秒阈值补一个 4 秒刻度，再向上取整；跨过两轮并留余量。 */
+/** Bun 1.4 的空闲定时器对 1 秒阈值追加一个 4 秒刻度，再向上取整；静默时长须超过两个周期并留有余量。 */
 const SILENT_MS = 9_000
 
 const sse = (events: Record<string, unknown>[]): string =>
   events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')
 
-/** 每种协议的流拆成两半：第一半发出后静默，第二半收尾。键是请求路径的结尾。 */
+/** 每种协议的流分为两部分：第一部分发出后静默，第二部分结束流。键为请求路径的末段。 */
 const STREAMS: Record<string, [string, string]> = {
   '/v1/messages': [
     sse([
@@ -108,7 +108,7 @@ async function drain(kind: ProviderProfile['kind'], model: string): Promise<stri
       signal: new AbortController().signal,
     }
     for await (const _ of adapter.stream(req)) {
-      // 读完即可
+      // 只需读完
     }
     return 'ok'
   } catch (err) {
@@ -116,7 +116,7 @@ async function drain(kind: ProviderProfile['kind'], model: string): Promise<stri
   }
 }
 
-/** 对照组：不带 `timeout: false` 的裸 fetch，必须被空闲定时器掐断。 */
+/** 对照组：不带 `timeout: false` 的裸 fetch，必须被空闲定时器中止。 */
 async function control(): Promise<string> {
   try {
     const res = await fetch(`${base}/raw`)

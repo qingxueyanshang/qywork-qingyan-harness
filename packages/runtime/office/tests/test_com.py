@@ -1,7 +1,7 @@
 """覆盖 com.py 的组件规则表（rule_for）、宿主进程号解析（host_of）、残留扫描排除本调用实例
 （foreign_residue）与异常结束后的清理（cleanup）。
 
-cleanup 用本测试自己起的子进程代替办公软件进程，不启动 WPS / Office。
+cleanup 用本测试自行启动的子进程代替办公软件进程，不启动 WPS / Office。
 """
 
 import subprocess

@@ -1,7 +1,7 @@
 /**
- * 覆盖范围：`compaction.ts`（选界 / 收纳 / 摘要接线 / 三区投影 / 落库守卫）。
- * 压缩算法本身在 `agent/compaction.test.ts`，与主循环的接线在
- * `agent/compaction-loop.test.ts`。
+ * 覆盖范围：`compaction.ts`（选界 / 收纳 / 摘要接入 / 三区投影 / 落库守卫）。
+ * 压缩算法本身由 `agent/compaction.test.ts` 覆盖，与主循环的接入由
+ * `agent/src/loop/compact.test.ts` 覆盖。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -23,11 +23,11 @@ import {
 import { RuntimeCompaction } from './compaction.ts'
 import { buildHistory } from './transcript.ts'
 
-/** 助手回复垫长一点，单元之间才有体积差，选界不至于一刀切到底。 */
+/** 加长助手回复，使单元之间存在体积差异，选界不会把全部单元划到同一侧。 */
 const PAD = 'x'.repeat(1000)
 
 /**
- * 一轮对话按真实形状落库：用户的话进 `messages`，助手回复是这句话名下 run 里的 text step。
+ * 按真实形状落库一轮对话：用户消息写入 `messages`，助手回复是该消息所属 run 中的 text step。
  * 返回用户消息 id。
  */
 function turn(
@@ -63,7 +63,7 @@ function turn(
   return message.id
 }
 
-/** `messageCount` 条对话：偶数位是用户的话，奇数位是上一句的助手回复。`ids` 只含用户消息。 */
+/** `messageCount` 条对话：偶数位是用户消息，奇数位是上一条消息的助手回复。`ids` 只含用户消息。 */
 function fresh(messageCount = 8) {
   const store = new Store({ path: ':memory:' })
   const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
@@ -100,10 +100,10 @@ function port(store: Store, conversationId: string, summarize: Summarizer = summ
 }
 
 /**
- * 造出「刚刚越线」的压力：占用取会话装配后的真实估算，窗口取同一个数。
+ * 构造刚越过阈值的占用：占用取会话装配后的真实估算，窗口取同一数值。
  *
- * 因此软阈值（窗口的 80%）必定低于占用，保留预算（窗口的 1/4）留住尾巴——
- * 不用去猜某个模型档的具体数字，也不会因为估算系数微调就整片红。
+ * 因此软阈值（窗口的 80%）必定低于占用，保留预算（窗口的 1/4）保留尾部：
+ * 无需推测某个模型的具体数值，估算系数微调时也不会导致大量用例失败。
  */
 async function pressure(store: Store, conversationId: string): Promise<CompactionRunInput> {
   const history = await buildHistory(store, conversationId as never, null, async (c) => c)
@@ -123,7 +123,7 @@ async function history(store: Store, conversationId: string): Promise<WireMessag
   return buildHistory(store, conversationId as never, null, async (c) => c)
 }
 
-/** 给一条 run 挂 n 个工具波次，每个波次一条调用，结果正文按 payloadChars 撑大。 */
+/** 为一条 run 添加 n 个工具批次，每个批次一条调用，结果正文按 payloadChars 填充。 */
 function addToolWaves(
   store: Store,
   runId: string,
@@ -167,7 +167,7 @@ function addToolWaves(
 }
 
 describe('压缩是投影，不销毁数据', () => {
-  test('压缩后原始消息一条不少', async () => {
+  test('压缩后原始消息完整保留', async () => {
     const { store, conv } = fresh()
     const before = store.db
       .query<{ n: number }, [string]>(
@@ -187,7 +187,7 @@ describe('压缩是投影，不销毁数据', () => {
     store.close()
   })
 
-  test('manifest 落在 conversations 上，可跨进程恢复', async () => {
+  test('manifest 保存在 conversations 上，可跨进程恢复', async () => {
     const { store, conv } = fresh()
     await port(store, conv.id).run(await pressure(store, conv.id))
 
@@ -211,7 +211,7 @@ describe('投影三区', () => {
     store.close()
   })
 
-  test('摘要线以内换成摘要 + 事实清单两条，尾部原样', async () => {
+  test('摘要线以内替换为摘要与事实清单两条消息，尾部保持原样', async () => {
     const { store, conv } = fresh()
     const p = port(store, conv.id)
     await p.run(await pressure(store, conv.id))
@@ -221,12 +221,12 @@ describe('投影三区', () => {
     expect(projected.length).toBeLessThan(h.length)
     expect(projected[0]!.content).toContain('被压缩的早期对话摘要')
     expect(projected[1]!.content).toContain('事实清单')
-    // 最后一条永远保留：压掉它模型就忘了自己刚被问了什么。
+    // 最后一条始终保留：压缩该条会使模型丢失当前的提问。
     expect(projected[projected.length - 1]!.content).toBe(h[h.length - 1]!.content as string)
     store.close()
   })
 
-  test('最新运行上下文跨过摘要线时只保留一份，并贴着摘要用户消息', async () => {
+  test('最新运行上下文跨过摘要线时只保留一份，并紧邻摘要用户消息', async () => {
     const { store, ws, conv, ids } = fresh(8)
     createRun(store, {
       conversationId: conv.id,
@@ -255,7 +255,7 @@ describe('投影三区', () => {
     store.close()
   })
 
-  test('与上一轮相同的段只回放一次；被摘要线折掉后从最新快照钉回，段不丢也不重复', async () => {
+  test('与上一轮相同的段只回放一次；被摘要线折叠后从最新快照补回，段既不丢失也不重复', async () => {
     const { store, ws, conv, ids } = fresh(8)
     const segments = [
       { content: '工作区：C:/ws', group: 'workspaceState' as const },
@@ -424,12 +424,12 @@ describe('投影三区', () => {
   })
 
   /**
-   * 待办表与大回执落在同一个执行波次时的粒度。
+   * 待办表与大回执位于同一执行批次时的保留粒度。
    *
-   * 保留粒度取单元的话，同批的子 agent 回执跟着钉在窗口里：收纳线前移、
-   * 投影一个 token 不降，此后每轮都判 `nothing_to_fold` 直到撞窗。
+   * 保留粒度取单元时，同批的子 agent 回执随之固定在窗口中：收纳线前移，
+   * 投影却没有减少任何 token，此后每轮都判定 `nothing_to_fold`，直到触及上下文窗口上限。
    */
-  test('待办表与大回执同批时只保留整表那一条调用与结果', async () => {
+  test('待办表与大回执同批时只保留整表对应的调用与结果', async () => {
     const { store, ws, conv, ids } = fresh(2)
     const run = createRun(store, {
       conversationId: conv.id,
@@ -460,7 +460,7 @@ describe('投影三区', () => {
       },
       outcome: { status: 'success', executed: true, message: '第 1/2 步' },
     })
-    // 同一个 providerBatchId：`stepsToUnits` 把两条调用并进同一个可折单元。
+    // 同一个 providerBatchId：`stepsToUnits` 把两条调用合并到同一个可折单元。
     const receipt = appendStep(store, {
       runId: run.id,
       seq: 2,
@@ -481,7 +481,7 @@ describe('投影三区', () => {
         data: { output: 'z'.repeat(300_000), conversationId: 'cv_cli' },
       },
     })
-    // 尾部要攒够保留预算，否则那个大单元自己就落在收纳线之后，测不到粒度。
+    // 尾部必须累积足够的保留预算，否则该大单元本身位于收纳线之后，无法测试粒度。
     addToolWaves(store, run.id, 24, 12_000, 3)
 
     const p = port(store, conv.id)
@@ -494,7 +494,7 @@ describe('投影三区', () => {
       message.toolCalls?.some((call) => call.id === 'todo_same_batch'),
     )
     expect(assistant).toBeDefined()
-    // 整表逐字：调用参数一字不改。
+    // 整表逐字保留：调用参数不做任何修改。
     expect(assistant!.toolCalls!.find((call) => call.id === 'todo_same_batch')!.arguments).toEqual({
       todos: [
         { content: '派外部 CLI 审查 game.js', status: 'in_progress' },
@@ -506,7 +506,7 @@ describe('投影三区', () => {
     )
     expect(JSON.parse(String(table?.content)).status).toBe('success')
 
-    // 同批的大回执换信封：正文不再上线。
+    // 同批的大回执替换为信封：正文不再发送。
     const envelope = JSON.parse(
       String(
         projected.find(
@@ -521,7 +521,7 @@ describe('投影三区', () => {
       true,
     )
 
-    // 收纳确实回收了体积，不是只把线往前推。
+    // 收纳确实回收了体积，不只是前移收纳线。
     expect(estimateMessages(projected, DEFAULT_DENSITY)).toBeLessThan(
       estimateMessages(before, DEFAULT_DENSITY) / 2,
     )
@@ -529,10 +529,10 @@ describe('投影三区', () => {
   })
 
   /**
-   * 落库的读数与投影必须是同一份内容量出来的。
+   * 落库的读数与投影必须基于同一份内容计量。
    *
-   * `contextAfter.measured` 由 `estimateProjection` 算，模型看到的由 `project` 拼；
-   * 两处对「哪几条逐字保留」判得不一样时，面板报的回收量达不到，而两边都不报错。
+   * `contextAfter.measured` 由 `estimateProjection` 计算，模型看到的内容由 `project` 组装；
+   * 两处对逐字保留条目的判定不一致时，面板报告的回收量无法达到，且两处都不报错。
    */
   test('落库读数与投影口径一致', async () => {
     const { store, ws, conv, ids } = fresh(2)
@@ -605,7 +605,7 @@ describe('投影三区', () => {
     store.close()
   })
 
-  test('manifest 与当前历史对不上时不平白多两条', async () => {
+  test('manifest 与当前历史不一致时不额外插入两条消息', async () => {
     const { store, conv } = fresh()
     const p = port(store, conv.id)
     await p.run(await pressure(store, conv.id))
@@ -616,16 +616,16 @@ describe('投影三区', () => {
   })
 
   /**
-   * **带图的工具结果必须收得掉。**
+   * 带图的工具结果必须能被收纳。
    *
-   * 这条盯的是一个完全静默的形状：收纳对非字符串 content 一旦原样放行
-   * （`agent/compaction.ts` 的 `condenseToolResult`），因此一张几 MB 的截图
-   * 在此后每一轮满额重放，直到撞上窗口上限——而压缩机制对它不做任何处理。
+   * 本用例针对一种完全静默的失败形状：收纳一旦原样放行非字符串 content
+   * （`agent/compaction.ts` 的 `condenseToolResult`），一张数 MB 的截图
+   * 会在此后每一轮完整重放，直到触及窗口上限，而压缩机制对其不做任何处理。
    *
-   * 两半都要断言：图**丢掉**，信封**留下**。只丢不留的话模型连「那一轮读过一张图」
-   * 都不知道，重新取都无从取起。
+   * 两部分都必须断言：图片被丢弃，信封被保留。只丢弃不保留时，模型无从得知
+   * 该轮读取过一张图片，也无法重新取得。
    */
-  test('收纳区带图的工具结果丢掉图、留下信封', async () => {
+  test('收纳区带图的工具结果丢弃图片、保留信封', async () => {
     const { store, ws, conv, ids } = fresh(4)
     const run = createRun(store, {
       conversationId: conv.id,
@@ -636,7 +636,7 @@ describe('投影三区', () => {
       messageIdUpperBound: ids[0]!,
       contextSnapshot: [],
     })
-    // 每一波带一张「图」：内容不重要，体积重要——要撑得起选界。
+    // 每一批带一张图片：内容无关紧要，体积必须足以影响选界。
     for (let w = 0; w < 12; w++) {
       const step = appendStep(store, {
         runId: run.id,
@@ -671,23 +671,23 @@ describe('投影三区', () => {
     await p.run(await pressure(store, conv.id))
     const projected = p.project(before)
 
-    // 收纳段里的图没了，保留区那几张还在。
+    // 收纳段中的图片已移除，保留区的图片仍在。
     expect(imagesIn(projected)).toBeGreaterThan(0)
     expect(imagesIn(projected)).toBeLessThan(12)
 
-    // 被收掉的那些：信封完整，模型仍然知道那一轮读过哪个文件、成没成功。
+    // 被收纳的条目：信封完整，模型仍可知道该轮读取了哪个文件以及是否成功。
     const condensed = projected.filter((m) => m.role === 'tool' && typeof m.content === 'string')
     expect(condensed.length).toBeGreaterThan(0)
     const env = JSON.parse(condensed[0]!.content as string) as Record<string, unknown>
     expect(env.tool).toBe('read_file')
     expect(env.status).toBe('success')
     expect(String(env.summary)).toContain('.png')
-    // 字节一个都不许留在信封里。
+    // 信封中不得保留任何图片字节。
     expect(condensed.every((m) => !(m.content as string).includes('AAAA'))).toBe(true)
     store.close()
   })
 
-  test('收纳区的工具结果只剩信封与定位符，正文不再上线', async () => {
+  test('收纳区的工具结果只保留信封与定位符，正文不再发送', async () => {
     const { store, ws, conv, ids } = fresh(4)
     const run = createRun(store, {
       conversationId: conv.id,
@@ -709,7 +709,7 @@ describe('投影三区', () => {
     expect(tools.length).toBeGreaterThan(0)
     const condensed = tools.filter((m) => (m.content as string).includes('result_omitted'))
     expect(condensed.length).toBeGreaterThan(0)
-    // 定位符必须活下来，否则 sink 里那份正文再也调不起来。
+    // 定位符必须保留，否则 sink 中的正文将无法再取回。
     expect(condensed.some((m) => (m.content as string).includes('rs_'))).toBe(true)
     expect(estimateMessages(projected, DEFAULT_DENSITY)).toBeLessThan(
       estimateMessages(before, DEFAULT_DENSITY) / 2,
@@ -721,12 +721,12 @@ describe('投影三区', () => {
 /**
  * 复现原始失败形状。
  *
- * 账本里那条会话是 2 条 user 消息 + 287 条工具 step：按「user 消息条数」判门槛
- * 时它恒回 `too_few_messages`，一次也压不动，而真正占掉 66 万字符的正是那些
- * 工具结果。压缩单元改成「执行波次」之后，它有几十个可折单元。
+ * 账本中的会话是 2 条 user 消息与 287 条工具 step：按 user 消息条数判定门槛
+ * 时恒返回 `too_few_messages`，无法压缩，而实际占用 66 万字符的正是这些
+ * 工具结果。压缩单元为执行批次时，该会话有数十个可折单元。
  */
-describe('长 run 少消息的会话必须压得动', () => {
-  test('2 条用户消息 + 大量工具波次：折得动，不再回跳过', async () => {
+describe('长 run 少消息的会话必须可以压缩', () => {
+  test('2 条用户消息 + 大量工具批次：可以折叠，不返回跳过', async () => {
     const store = new Store({ path: ':memory:' })
     const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
     const conv = createConversation(store, {
@@ -758,8 +758,8 @@ describe('长 run 少消息的会话必须压得动', () => {
   })
 })
 
-describe('切界永不切开 tool_call 与 tool_result', () => {
-  test('任意保留预算下投影里都没有孤儿工具消息', async () => {
+describe('切分边界不会分开 tool_call 与 tool_result', () => {
+  test('任意保留预算下投影中都没有孤立的工具消息', async () => {
     const { store, ws, conv, ids } = fresh(4)
     const run = createRun(store, {
       conversationId: conv.id,
@@ -774,7 +774,7 @@ describe('切界永不切开 tool_call 与 tool_result', () => {
 
     const before = await history(store, conv.id)
     const total = estimateMessages(before, DEFAULT_DENSITY)
-    // 从「几乎全折」到「几乎全留」扫一遍窗口，每一档都要求配对完整。
+    // 从几乎全部折叠到几乎全部保留遍历窗口，每一档都要求配对完整。
     for (let window = 400; window <= total * 2; window += Math.max(1, Math.floor(total / 8))) {
       const p = port(store, conv.id)
       await p.run({
@@ -802,8 +802,8 @@ describe('切界永不切开 tool_call 与 tool_result', () => {
   })
 })
 
-describe('收纳段单独够用时零模型调用', () => {
-  test('工具正文占大头：不调摘要器，占用照样降下来', async () => {
+describe('仅收纳段即足够时不调用模型', () => {
+  test('工具正文占多数：不调用摘要器，占用同样下降', async () => {
     const { store, ws, conv, ids } = fresh(4)
     const run = createRun(store, {
       conversationId: conv.id,
@@ -826,10 +826,10 @@ describe('收纳段单独够用时零模型调用', () => {
 
     expect(r.status).toBe('compacted')
     expect(r.status === 'compacted' && r.summarized).toBe(false)
-    // 没有失败码 = 没走摘要段，不是摘要段失败后的兜底。
+    // 没有失败码表示未执行摘要段，而不是摘要段失败后的回退处理。
     expect(r.status === 'compacted' && r.reasonCode).toBeUndefined()
     expect(calls).toBe(0)
-    // 被折区的工具正文全换成信封；余下的是保留预算里那一段尾巴。
+    // 折叠区的工具正文全部替换为信封；其余是保留预算内的尾部。
     expect(estimateMessages(p.project(before), DEFAULT_DENSITY)).toBeLessThan(
       estimateMessages(before, DEFAULT_DENSITY) * 0.4,
     )
@@ -847,7 +847,7 @@ describe('收纳段单独够用时零模型调用', () => {
     const r = await p.run({
       ...input,
       trigger: 'manual',
-      // 只有模型窗口 10% 的低占用：旧逻辑拿窗口 1/4 保留尾部，整段都无可折。
+      // 占用仅为模型窗口的 10%：若按窗口的 1/4 保留尾部，整段历史均无可折叠的内容。
       contextWindow: input.contextWindow * 10,
     })
 
@@ -860,7 +860,7 @@ describe('收纳段单独够用时零模型调用', () => {
 })
 
 describe('事实提取', () => {
-  test('文件类动作的 target 进清单，命令串不进', async () => {
+  test('文件类动作的 target 列入清单，命令字符串不列入', async () => {
     const { store, ws, conv, ids } = fresh()
     const run = createRun(store, {
       conversationId: conv.id,
@@ -887,7 +887,7 @@ describe('事实提取', () => {
       outcome: { status: 'success', executed: true, message: '改了 3 处' },
       action: { kind: 'edit', objectLabel: '文件', target: 'src/auth/token.ts' },
     })
-    // 正文压得小，收纳段单独不够，摘要段必定跑起来——事实包才有产出。
+    // 正文较小，仅靠收纳段不够，摘要段必定执行，事实包因此有产出。
     addToolWaves(store, run.id, 4, 100, 2)
 
     const r = await port(store, conv.id).run(await pressure(store, conv.id))
@@ -897,7 +897,7 @@ describe('事实提取', () => {
     store.close()
   })
 
-  test('还在 running 的波次不进事实包 —— 结果未知不能当已完成', async () => {
+  test('仍在 running 的批次不列入事实包：结果未知，不能视为已完成', async () => {
     const { store, ws, conv, ids } = fresh()
     const run = createRun(store, {
       conversationId: conv.id,
@@ -932,10 +932,10 @@ describe('事实提取', () => {
 })
 
 /**
- * 一段几十万 token 的续读投递单独就超过保留量。模型看过之后整段留在保留尾部的话，
- * 压缩后占用仍在软阈值附近，下一段只剩一份保留量的空间；模型没看过时必须整段留着。
+ * 一段数十万 token 的续读投递本身即超过保留量。模型已查看后若整段留在保留尾部，
+ * 压缩后占用仍接近软阈值，下一段只剩一份保留量的空间；模型未查看时必须整段保留。
  */
-describe('已看过的超大单元压缩时一并收纳', () => {
+describe('模型已查看的超大单元在压缩时一并收纳', () => {
   async function withHugeLastUnit() {
     const { store, ws, conv, ids } = fresh(2)
     const run = createRun(store, {
@@ -953,7 +953,7 @@ describe('已看过的超大单元压缩时一并收纳', () => {
   const lastTool = (messages: WireMessage[]) =>
     String([...messages].reverse().find((m) => m.role === 'tool')?.content ?? '')
 
-  test('看过：收纳它，只收纳不摘要', async () => {
+  test('已查看：收纳该单元，只收纳不摘要', async () => {
     const { store, conv } = await withHugeLastUnit()
     const p = port(store, conv.id)
     const outcome = await p.run({ ...(await pressure(store, conv.id)), latestUnitSeen: true })
@@ -964,7 +964,7 @@ describe('已看过的超大单元压缩时一并收纳', () => {
     store.close()
   })
 
-  test('没看过：整段保留', async () => {
+  test('未查看：整段保留', async () => {
     const { store, conv } = await withHugeLastUnit()
     const p = port(store, conv.id)
     await p.run({ ...(await pressure(store, conv.id)), latestUnitSeen: false })
@@ -973,14 +973,14 @@ describe('已看过的超大单元压缩时一并收纳', () => {
   })
 })
 
-describe('软阈值以下只做收回量够大的收纳', () => {
+describe('软阈值以下只执行回收量足够大的收纳', () => {
   /** 占用低于软阈值：窗口取占用的 1.3 倍，软阈值 = 1.04 × 占用。 */
   async function belowLine(store: Store, conversationId: string): Promise<CompactionRunInput> {
     const load = await pressure(store, conversationId)
     return { ...load, contextWindow: Math.round(load.occupancy * 1.3) }
   }
 
-  test('收回不足半份保留量：跳过，不调摘要器，manifest 不变', async () => {
+  test('回收量不足半份保留量：跳过，不调用摘要器，manifest 不变', async () => {
     const { store, conv } = fresh(8)
     let calls = 0
     const p = port(store, conv.id, async () => {
@@ -994,7 +994,7 @@ describe('软阈值以下只做收回量够大的收纳', () => {
     store.close()
   })
 
-  test('收回够大：只收纳，不调摘要器', async () => {
+  test('回收量足够：只收纳，不调用摘要器', async () => {
     const { store, ws, conv, ids } = fresh(8)
     const run = createRun(store, {
       conversationId: conv.id,
@@ -1034,7 +1034,7 @@ describe('增量压缩', () => {
     store.close()
   })
 
-  test('没有新单元时跳过，不多一次无效的摘要调用', async () => {
+  test('没有新单元时跳过，不产生无效的摘要调用', async () => {
     const { store, conv } = fresh()
     let calls = 0
     const p = port(store, conv.id, async () => {
@@ -1054,7 +1054,7 @@ describe('增量压缩', () => {
 })
 
 describe('摘要段失败不回退收纳段', () => {
-  test('摘要器抛错：收纳照常落库，结果对用户可见', async () => {
+  test('摘要器抛错：收纳正常落库，结果对用户可见', async () => {
     const { store, conv } = fresh()
     const r = await port(store, conv.id, async () => {
       throw new Error('上下文超限')
@@ -1075,11 +1075,11 @@ describe('摘要段失败不回退收纳段', () => {
 /**
  * 中断安全。
  *
- * 复现的原始失败形状：用户按停止之后 8 毫秒，一份机械截取的 manifest 落了库，
- * 32 万 token 的上下文在下一轮变成 4.5 万——不可逆，用户也看不出发生过什么。
+ * 复现的原始失败形状：用户点击停止 8 毫秒后，一份机械截取的 manifest 被写入数据库，
+ * 32 万 token 的上下文在下一轮变为 4.5 万；该变化不可逆，界面上也没有任何提示。
  */
 describe('中断即丢弃', () => {
-  test('摘要已经写完但信号被拉起：manifest 未变更', async () => {
+  test('摘要已生成但中断信号已触发：manifest 未变更', async () => {
     const { store, conv } = fresh()
     const ac = new AbortController()
     const before = getConversation(store, conv.id)!.compactionManifest
@@ -1093,7 +1093,7 @@ describe('中断即丢弃', () => {
     store.close()
   })
 
-  test('摘要调用被中断时不落任何行', async () => {
+  test('摘要调用被中断时不写入任何行', async () => {
     const { store, conv } = fresh()
     const ac = new AbortController()
     const r = await port(store, conv.id, async () => {
@@ -1105,8 +1105,8 @@ describe('中断即丢弃', () => {
     store.close()
   })
 
-  /** 中断之后投影必须与中断前逐条相等——占用跳水就是从这里发生的。 */
-  test('中断之后投影不变，历史一条不少', async () => {
+  /** 中断之后投影必须与中断前逐条相等：占用骤降正是在此处发生。 */
+  test('中断之后投影不变，历史完整保留', async () => {
     const { store, conv } = fresh()
     const ac = new AbortController()
     const p = port(store, conv.id, async () => {
@@ -1122,14 +1122,14 @@ describe('中断即丢弃', () => {
 })
 
 /**
- * run 内注入的那句用户消息，折进摘要线之后必须**留得下、取得回**。
+ * run 内注入的用户消息折叠进摘要线之后，必须得到保留并可取回。
  *
- * 折叠区拼摘要段时只收 `row` 与 assistant 正文，user 角色的单元消息不在其中，
- * 而注入单元的 `actions` 是空的——不给它 `row` 的话，用户改方向的那句话
- * 在一次压缩之后一个字都不剩，模型接着按改之前的判断跑，界面上没有任何提示。
+ * 折叠区组装摘要段时只收录 `row` 与 assistant 正文，不包含 user 角色的单元消息，
+ * 而注入单元的 `actions` 为空：不为其设置 `row` 时，用户调整方向的消息
+ * 在一次压缩后完全丢失，模型继续按调整之前的判断执行，界面上没有任何提示。
  */
 describe('注入的用户消息与压缩', () => {
-  test('进得了摘要段，地址是 <runId>:<stepId>', async () => {
+  test('可进入摘要段，地址为 <runId>:<stepId>', async () => {
     const { store, conv, ids } = fresh(8)
     const run = createRun(store, {
       conversationId: conv.id,
@@ -1149,7 +1149,7 @@ describe('注入的用户消息与压缩', () => {
       payload: { kind: 'user' },
     })
 
-    // 摘要器收到的提示词里带着折叠区的全部段落，断言直接读它。
+    // 摘要器收到的提示词包含折叠区的全部段落，断言直接读取该提示词。
     let prompt = ''
     const spy: Summarizer = async (text) => {
       prompt = text
@@ -1159,14 +1159,14 @@ describe('注入的用户消息与压缩', () => {
 
     expect(result.status).toBe('compacted')
     expect(prompt).toContain('所有路径都用正斜杠')
-    // 印成 `[message:<runId>:<stepId>]`：它不在 messages 表里，
-    // 由 `HistoryPort.message` 的复合形式解析回来。
+    // 输出为 `[message:<runId>:<stepId>]`：该消息不在 messages 表中，
+    // 由 `HistoryPort.message` 的复合形式解析。
     expect(prompt).toContain(`[message:${run.id}:${injected.id}] 用户：所有路径都用正斜杠`)
     store.close()
   })
 
-  /** F19：助手正文的地址是它自己的 text step，不是所属用户消息的 id。 */
-  test('助手正文进摘要段时，地址是它自己的 <runId>:<stepId>', async () => {
+  /** 助手正文的地址是其自身的 text step，不是所属用户消息的 id。 */
+  test('助手正文进入摘要段时，地址为其自身的 <runId>:<stepId>', async () => {
     const { store, conv, ids } = fresh(8)
     const run = createRun(store, {
       conversationId: conv.id,
@@ -1201,20 +1201,20 @@ describe('注入的用户消息与压缩', () => {
 })
 
 /**
- * 占用走 provider 真值、回收量走本地估算时，两把尺不许直接相减。
+ * 占用取 provider 真值、回收量取本地估算时，两种口径不得直接相减。
  *
- * 复现的形状：未收录档实测高 1.47 倍，因此收纳回收量虚高同样的倍数，
- * `condenseOnly` 判成「收纳就够了」而实际不够——摘要线不前移，此后每一轮都判
- * `nothing_to_fold`，占用只增不减直到撞窗。修前实测压完真值 2179 而软阈值 2177。
+ * 复现的形状：未收录模型的估算实测偏高 1.47 倍，因此收纳回收量虚高同样的倍数，
+ * `condenseOnly` 判定「仅收纳即可」而实际不足：摘要线不前移，此后每一轮都判定
+ * `nothing_to_fold`，占用只增不减，直到触及上下文窗口上限。直接相减时实测压缩后真值为 2179，软阈值为 2177。
  *
- * 断言写成「压完之后真值必须落到软阈值之下」，不写「摘要跑没跑」：后者是实现，
- * 前者才是压缩这一步要交付的结果。真值按同一个倍率反推——倍率是这条会话实测出来的
+ * 断言写为压缩之后真值必须低于软阈值，不断言摘要是否执行：后者是实现细节，
+ * 前者是压缩这一步应交付的结果。真值按同一倍率反推：该倍率是这条会话实测得到的
  * 常数（六次请求恒为 1.470），不是假设。
  */
-describe('两把尺不许直接相减', () => {
-  test('回收量按实测比折算后再减，压完真值落到软阈值之下', async () => {
+describe('两种计量口径不得直接相减', () => {
+  test('回收量按实测比值折算后再相减，压缩后真值低于软阈值', async () => {
     const K = 1.47
-    // 三档窗口都落在「收纳刚好不够」的那一段：修前三档全部越线，修后全部达标。
+    // 三档窗口都处于收纳恰好不足的区间：直接相减时三档全部越过阈值，折算后全部达标。
     for (const contextWindow of [2722, 2400, 2000]) {
       const { store, ws, conv, ids } = fresh()
       const run = createRun(store, {
@@ -1232,7 +1232,7 @@ describe('两把尺不许直接相减', () => {
       const estimated = estimateMessages(before, DEFAULT_DENSITY)
       const occupancy = Math.round(estimated / K)
       const limit = softLimit({ contextWindow })
-      // 前提：真值确实越线，否则这一轮不该压，测的就不是这件事。
+      // 前提：真值确实越过阈值，否则本轮不应压缩，用例即不针对该问题。
       expect(occupancy).toBeGreaterThan(limit)
 
       const p = port(store, conv.id)

@@ -25,7 +25,7 @@ function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
 }
 
 describe('模型侧 MCP 配置工具', () => {
-  test('只有装配了 MCP 配置通道才注册', () => {
+  test('只在装配 MCP 配置通道时注册', () => {
     const bare = new ToolRegistry()
     registerBuiltinTools(bare)
     expect(bare.get('write_mcp_server')).toBeUndefined()
@@ -36,7 +36,7 @@ describe('模型侧 MCP 配置工具', () => {
     expect(ready.get('move_mcp_server')).toBeDefined()
   })
 
-  test('明确的 global 原样传到真正写入端口', async () => {
+  test('明确指定的 global 原样传给实际写入的端口', async () => {
     let received: unknown
     const result = await writeMcpServerTool.fn(
       { name: 'docs', config_json: '{"url":"https://example.com/mcp"}', scope: 'global' },
@@ -65,7 +65,7 @@ describe('模型侧 MCP 配置工具', () => {
     expect(received).toMatchObject({ name: 'docs', scope: 'global' })
   })
 
-  test('迁移是一个端口动作，不由模型拼成写后删除两步', async () => {
+  test('迁移是单个端口动作，不由模型拆成先写入再删除两步', async () => {
     let calls = 0
     const result = await moveMcpServerTool.fn(
       { name: 'docs', from_scope: 'project', to_scope: 'global' },

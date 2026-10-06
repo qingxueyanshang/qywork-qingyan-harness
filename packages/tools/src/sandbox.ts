@@ -1,42 +1,42 @@
 /**
- * 起子进程的唯一出口，以及套在它外面的 OS 沙箱。
+ * 启动子进程的唯一入口，以及包裹它的操作系统沙箱。
  *
- * **为什么要有这个文件。** `run_command` 是整套权限模型里唯一一条**能同时绕开路径约束和 SSRF 闸**的
- * 路径——命令字符串里的路径不经过本仓任何一行代码。在它之上加的静态规则和分类器都是 **文本判断*
- * *：静态规则是一张想得到才写得出的表，分类器是概率。两者都挡不住一个没想到的写法，而「没想到」这
- * 件事按定义列不完。
+ * 用途：`run_command` 是权限模型中唯一能同时绕过路径约束与 SSRF 防护的路径，
+ * 命令字符串中的路径不经过本仓库的任何代码。在其上叠加的静态规则与分类器都是文本判断：
+ * 静态规则只覆盖已列举的写法，分类器的结果是概率。两者都无法拦截未列举的写法，
+ * 而可能的写法无法穷举。
  *
- * 内核层的边界不一样：它不关心命令长什么样，只关心系统调用打到哪个 inode。
- * 所以这个文件的目标不是「再加一层规则」，是**把边界从文本层挪到内核层**。
+ * 内核层的边界与命令文本无关，只取决于系统调用访问的 inode。
+ * 因此本文件的目标不是再增加一层规则，而是把边界从文本层移到内核层。
  *
- * 收成一个函数是前提：包装点必须唯一。散落在两处的 `Bun.spawn` 意味着
- * 加沙箱时要记得两个地方都改，而漏掉的那处不会报错，只会安静地没有边界。
+ * 前提是包装点唯一，因此收敛为一个函数。`Bun.spawn` 分散在两处时，
+ * 添加沙箱必须同时修改两处，遗漏的一处不会报错，只是没有边界。
  *
- * **三档平台，分开报，不合并成「有沙箱」。**
+ * 各平台的沙箱状态分别上报，不合并为单一的「有沙箱」。
  *
  * | 平台 | 后端 | 边界 |
  * |---|---|---|
  * | Linux / WSL2 | bubblewrap | 内核级：写边界 + 凭证目录屏蔽 |
- * | macOS | seatbelt（`sandbox-exec`） | 同上，用 SBPL 规则而不是挂载表达 |
- * | 原生 Windows | 暂无（决定不做） | 只有静态规则与分类器 |
+ * | macOS | seatbelt（`sandbox-exec`） | 同上，以 SBPL 规则而非挂载实现 |
+ * | 原生 Windows | 暂无（不实现） | 只有静态规则与分类器 |
  * | WSL1 | 暂无 | 没有独立内核，namespace 不可用 |
  *
- * 合并成一个布尔值在插件侧出过同一个问题：界面显示「沙箱：开」，
- * 而实际生效的可能只有其中一维。**分维度报**。
+ * 合并为一个布尔值时，界面显示「沙箱：开」，
+ * 而实际生效的可能只是其中一个维度，因此按维度分别上报。
  *
- * **「装了」不等于「能用」，所以要真跑一次。** `detectSandbox()` 不是查 `which` 就下结论——它**真
- * 的执行一次**空命令。Ubuntu 24.04+ 默认禁掉无特权用户命名空间，那种机器上 bwrap 在 PATH 里、但一
- * 条命令都跑不起来；只查 `which` 会报「有边界」，而那是最坏的一种错——用户据此认为 shell 被拦住
- * 了。
+ * 已安装不等于可用，因此必须实际执行一次。`detectSandbox()` 不以 `which` 的结果为准，
+ * 而是实际执行一次空命令。Ubuntu 24.04+ 默认禁用无特权用户命名空间，此时 bwrap 位于 PATH 中，
+ * 但任何命令都无法运行；只查 `which` 会报告有边界，这是最严重的误报：
+ * 用户会据此认为 shell 已受约束。
  *
- * 这也是 macOS 那条的保证方式：本仓库没有 Mac，profile 生成只有纯函数测试；
- * **真正确认它可用的是用户机器上的那次自检**，失败就降级报 `none`。
+ * macOS 后端同样依靠自检保证：本仓库没有 Mac 测试环境，profile 生成只有纯函数测试；
+ * 确认其可用的是用户机器上的自检，失败时降级上报 `none`。
  *
- * **argv 自己拼，不引现成的沙箱运行时。** 两条硬约束：现成方案的 vendor 二进制是
- * 磁盘上的文件，而发布产物是单文件二进制，带不了（同 netguard 那条）；本机装不上
- * 它的依赖，也就验不了，而验不了的能力不能当边界发出去。
+ * 自行生成 argv，不引入现成的沙箱运行时，原因有二：现成方案的 vendor 二进制是
+ * 磁盘上的文件，而发布产物是单文件二进制，无法携带（约束与 `netguard.ts` 相同）；
+ * 本机无法安装其依赖，因而无法验证，未经验证的能力不能作为边界发布。
  *
- * 真要换，接在本文件 `wrap()` 后面，不要再开第二个 spawn 点。
+ * 如需更换实现，在本文件的 `spawnGuarded` 中接入，不要新增第二个 spawn 入口。
  */
 
 import { randomUUID } from 'node:crypto'
@@ -45,29 +45,29 @@ import { rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join as joinNative } from 'node:path'
 /*
- * bwrap 只在 Linux 上跑，所以它的路径**永远是 POSIX 形式**。
+ * bwrap 只在 Linux 上运行，因此其路径始终是 POSIX 形式。
  *
- * 用平台相关的 `node:path` 会在 Windows 开发机上把 `/ws` 拼成 `C:\ws`、
- * 把分隔符写成反斜杠——生成的 argv 变成一串在 Linux 上无效的路径，
- * 而且因为 Windows 上不会启用沙箱，**这个错误在运行时永远不会暴露**，
- * 只会在有人把它当真拿去调试时才发现。固定用 posix 版本。
+ * 使用平台相关的 `node:path` 时，Windows 开发机上会把 `/ws` 拼接为 `C:\ws`、
+ * 把分隔符写为反斜杠，生成的 argv 在 Linux 上无效；
+ * 且 Windows 上不启用沙箱，该错误在运行时不会暴露，
+ * 只有在 Windows 上调试这些函数时才会发现。因此固定使用 posix 版本。
  */
 import { isAbsolute, join, normalize } from 'node:path/posix'
 import type { CommandRunner, ProcessLike } from './runner.ts'
 
 /*
- * bwrap 与 seatbelt 都只在类 Unix 上跑，路径一律 POSIX 形式，所以上面那条
- * import 覆盖了这个文件里**全部**的路径拼接。唯一的例外是 `whichSync`——
- * 它查的是本机 PATH，那必须用平台原生的 `join`。
+ * bwrap 与 seatbelt 都只在类 Unix 系统上运行，路径一律为 POSIX 形式，因此上方的
+ * import 用于本文件中沙箱参数的路径拼接。例外是访问本机文件系统的位置
+ * （`whichSync`、`findGitBash`、PowerShell 安装位置、临时脚本路径），它们必须使用平台原生的 `joinNative`。
  */
 
 export type SandboxBackend = 'bwrap' | 'seatbelt' | 'none'
 
 export interface SandboxStatus {
   backend: SandboxBackend
-  /** 这次执行是不是真的有内核边界。**唯一可以对用户说「拦得住」的判据。** */
+  /** 本次执行是否有内核边界。只有此字段为 true 时，才能向用户声明 shell 受约束。 */
   active: boolean
-  /** 为什么是这个结论。要能直接贴给用户，不要「不支持」这种没有下一步的话。 */
+  /** 该结论的原因。必须能直接展示给用户，不要只写「不支持」这类不含下一步操作的文字。 */
   reason: string
   platform: NodeJS.Platform
   /** WSL 版本号字符串，非 WSL 为 null。WSL1 没有独立内核，等同原生 Windows。 */
@@ -80,36 +80,36 @@ export interface SandboxPolicy {
   /** 额外可写根目录（`additionalDirectories`），绝对路径。 */
   writableRoots?: readonly string[]
   /**
-   * 工作区内只读的那几条路径（相对工作区）：`.qy`、`.agents/mcp.json`——
-   * 判据是「写进去会不会给自己加工具」，见 `PROTECTED_DIRS`。
-   * 条目可以是文件也可以是目录（`--ro-bind-try` 两者都吃）。
+   * 工作区内只读的路径（相对工作区）：`.qy`、`.agents/mcp.json`。
+   * 判据是写入后能否为自身添加工具，见 `PROTECTED_DIRS`。
+   * 条目可以是文件或目录（`--ro-bind-try` 两者都支持）。
    *
-   * 与文件工具那边的 `PROTECTED_DIRS` 是同一件事的两种实现：
-   * 那边挡工具参数，这边挡 shell。两边都要有——**shell 那条路
-   * 在没有沙箱的平台上只剩静态规则的文本匹配**。
+   * 与文件工具的 `PROTECTED_DIRS` 是同一约束的两种实现：
+   * 前者拦截工具参数，本字段拦截 shell。两侧都必须存在：
+   * 在没有沙箱的平台上，shell 一侧只剩静态规则的文本匹配。
    */
   readOnlySubdirs?: readonly string[]
   /**
-   * 完全屏蔽（挂空目录盖住）的绝对路径，典型是凭证目录。
+   * 完全屏蔽（以空目录覆盖）的绝对路径，通常是凭证目录。
    *
-   * 不填时用 `defaultMaskPaths()`。
+   * 未提供时使用 `defaultMaskPaths()`。
    */
   maskPaths?: readonly string[]
   /**
-   * 断掉 shell 命令的出网。默认 `false`。
+   * 禁止 shell 命令访问网络。默认 `false`。
    *
-   * **为什么默认不断。** 断网的 agent 装不了依赖、拉不了代码、跑不了大半的测试。默认打开的话，
-   * 用户遇到的第一个现象是 `npm install` 失败，而**报错跟网络毫不相干**
-   * （包管理器只会说拉取失败）。查到原因之前他会先把整个沙箱关掉——
-   * 因此文件边界也一起没了。
+   * 默认不禁止：禁止网络后 agent 无法安装依赖、拉取代码，多数测试也无法运行。默认开启时，
+   * 用户首先遇到的是 `npm install` 失败，且报错与网络无关
+   * （包管理器只报告拉取失败）。查明原因之前，用户通常会先关闭整个沙箱，
+   * 文件边界随之失效。
    *
-   * **为什么仍然给这个开关。** 出网是这套模型里唯一一条**完全没有边界**的路：`web_fetch` 过 SSRF
-   * 闸，而 shell 里一句 `curl` 什么都不过。对于「跑一段来路不明的代码」这类场景，全断比不断好得
-   * 多，而且它是二值的——不需要域名白名单那一整套 MITM 代理 + 自签 CA。
+   * 仍提供此开关的原因：网络访问是该模型中唯一完全没有边界的路径。`web_fetch` 经过 SSRF
+   * 防护，而 shell 中的 `curl` 不经过任何检查。对于运行来源不明的代码这类场景，完全断网
+   * 明显更安全，且它是二值开关，不需要域名白名单所需的 MITM 代理与自签 CA。
    *
-   * **中间态（按域名过滤）刻意不做**：它需要在沙箱里起代理、在沙箱外做转发、
-   * 还要让 TLS 校验认自签的 CA。那套组件会在别人的机器上以各种方式坏掉，
-   * 而坏掉的表现是「网络时好时坏」——比没有这个功能糟得多。
+   * 有意不实现按域名过滤：它需要在沙箱内启动代理、在沙箱外转发，
+   * 并使 TLS 校验接受自签 CA。这套组件在不同机器上有多种失败方式，
+   * 失败时网络间歇性不可用，比不提供该功能更糟。
    */
   denyNetwork?: boolean
 }
@@ -119,8 +119,8 @@ export interface SandboxPolicy {
 /**
  * WSL 版本。非 Linux 或非 WSL 返回 null。
  *
- * WSL1 要单独认出来：它把 Linux 系统调用翻译到 NT 内核上，**没有真正的
- * namespace**，bwrap 在那里要么起不来要么给不出边界。报成「有沙箱」是最坏的结果。
+ * WSL1 必须单独识别：它把 Linux 系统调用转换到 NT 内核上，没有真正的
+ * namespace，bwrap 在其中无法启动或无法提供边界。将其报告为「有沙箱」是最严重的误报。
  */
 function detectWsl(): string | null {
   if (process.platform !== 'linux') return null
@@ -128,7 +128,7 @@ function detectWsl(): string | null {
     const v = readFileSync('/proc/version', 'utf8')
     const m = v.match(/WSL(\d+)/i)
     if (m?.[1]) return m[1]
-    // WSL1 的老格式里没有版本号，只有 "Microsoft"。
+    // WSL1 的旧格式中没有版本号，只有 "Microsoft"。
     if (v.toLowerCase().includes('microsoft')) return '1'
     return null
   } catch {
@@ -136,7 +136,7 @@ function detectWsl(): string | null {
   }
 }
 
-/** 在 PATH 里找一个可执行文件。找不到返回 null。 */
+/** 在 PATH 里查找一个可执行文件。未找到时返回 null。 */
 function whichSync(name: string): string | null {
   const paths = (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':')
   for (const dir of paths) {
@@ -150,8 +150,8 @@ function whichSync(name: string): string | null {
 let cached: SandboxStatus | null = null
 
 /**
- * 本机有没有内核级边界可用。结果缓存——它在一次进程生命周期内不会变，
- * 而 `run_command` 每次调用都要问。
+ * 本机是否有可用的内核级边界。结果会缓存：它在进程生命周期内不变，
+ * 而 `run_command` 每次调用都要查询。
  */
 export function detectSandbox(): SandboxStatus {
   if (cached) return cached
@@ -160,32 +160,32 @@ export function detectSandbox(): SandboxStatus {
 }
 
 /**
- * 自检用的最小策略：一个一定存在的可写根，没有屏蔽项。
+ * 自检使用的最小策略：一个必然存在的可写根，没有屏蔽项。
  *
- * 刻意不用真实策略——自检要回答的是「这台机器允不允许建命名空间」，
- * 与具体放开哪些目录无关，而掺进真实路径只会让探针在某个目录恰好不存在时
- * 假红一次。
+ * 有意不使用真实策略：自检只判定本机是否允许创建命名空间，
+ * 与开放哪些目录无关；引入真实路径会使探测在某个目录恰好不存在时
+ * 误报失败。
  */
 const PROBE_POLICY: SandboxPolicy = { workspaceRoot: '/tmp', maskPaths: [] }
 
 /**
- * 真的跑一次，确认这个后端在**这台机器上**确实能用。
+ * 实际执行一次，确认该后端在本机可用。
  *
- * **为什么不能只查 `which`。** 「二进制在 PATH 里」和「它能建出一个命名空间」是两件事，而它们分开的
- * 情况一点也不罕见：
+ * 不能只查 `which`：二进制位于 PATH 中与能够创建命名空间是两个条件，二者不一致的
+ * 情况很常见：
  *
- * - **Ubuntu 24.04+ 默认开着 `kernel.apparmor_restrict_unprivileged_userns`**，
- *   因此 `unshare(CLONE_NEWUSER)` 成功但**新命名空间里没有 capability**，
- *   bwrap 起不来。
- * - 无特权容器里 `--proc` 不可用。
- * - macOS 的 `sandbox-exec` 会因为 profile 语法或 SIP 策略拒绝执行。
+ * - Ubuntu 24.04+ 默认开启 `kernel.apparmor_restrict_unprivileged_userns`，
+ *   `unshare(CLONE_NEWUSER)` 成功但新命名空间中没有 capability，
+ *   bwrap 无法启动。
+ * - 无特权容器中 `--proc` 不可用。
+ * - macOS 的 `sandbox-exec` 会因 profile 语法或 SIP 策略拒绝执行。
  *
- * 只查 `which` 的后果是**报告说有边界，实际一条命令都跑不了**——
- * 而这个方向的错是最坏的一种：用户据此认为 shell 是被拦住的。
+ * 只查 `which` 时会报告有边界，而实际任何命令都无法运行；
+ * 这一方向的误报最严重：用户会据此认为 shell 已受约束。
  *
- * 返回 `null` = 可用；返回一句话 = 不可用及其原因。
+ * 返回 `null` 表示可用；返回字符串表示不可用及其原因。
  *
- * 代价是一次进程启动，**整个进程生命周期只付一次**（`detectSandbox` 缓存结果）。
+ * 代价是一次进程启动，整个进程生命周期只执行一次（`detectSandbox` 缓存结果）。
  */
 function selfCheck(argv: readonly string[]): string | null {
   try {
@@ -198,7 +198,7 @@ function selfCheck(argv: readonly string[]): string | null {
     const err = new TextDecoder().decode(r.stderr).trim()
     return err.split('\n')[0] ?? `退出码 ${r.exitCode}`
   } catch (e) {
-    // 二进制不存在、权限不足、被安全软件拦下——都落这里。
+    // 二进制不存在、权限不足、被安全软件拦截，均进入此分支。
     return e instanceof Error ? e.message : String(e)
   }
 }
@@ -227,10 +227,10 @@ function probe(): SandboxStatus {
         wsl,
       }
     }
-    // 装了 ≠ 能用。见 selfCheck 的注释。
-    // 自检用**最小策略**：要验的只是「命名空间建得起来」。
-    // 用真实策略的话，`workspaceRoot: '/'` 会拼出 `--bind / /`（整机可写），
-    // 而一条把整机变可写的探针放在安全模块里，迟早会被人当成真实配置读。
+    // 已安装不等于可用，见 selfCheck 的注释。
+    // 自检使用最小策略：只验证能否创建命名空间。
+    // 使用真实策略时，`workspaceRoot: '/'` 会生成 `--bind / /`（整机可写），
+    // 安全模块中使整机可写的探测参数容易被误读为真实配置。
     const check = selfCheck(buildBwrapArgv(PROBE_POLICY, ['/bin/true']))
     if (check !== null) {
       return {
@@ -275,17 +275,17 @@ function probe(): SandboxStatus {
       backend: 'none',
       active: false,
       /*
-       * 措辞要**按真实的残余风险**写，不能只说「没有沙箱」。
+       * 措辞必须按实际的残余风险编写，不能只写「没有沙箱」。
        *
-       * 不要写成「只受静态规则与分类器约束，两者都是文本判断」：补完字面路径那条
-       * 之后，确定性拦得住的写法已经不少，那句话把缺口说大了。
-       * 说大和说小一样不如实，而说大的代价是用户对提示脱敏，真出问题时没人再看它。
+       * 不要写成「只受静态规则与分类器约束，两者都是文本判断」：静态规则已包含字面路径检查，
+       * 可确定拦截的写法已经较多，该说法夸大了缺口。
+       * 夸大与低估同样不准确，且夸大会使用户习惯性忽略该提示，出现问题时不再关注。
        *
-       * 这段话会原样出现在设置页里，所以**不写内部文档的编号**——用户打不开
-       * 那些文档，那行字对他只是噪音。
+       * 该文字原样显示在设置页中，因此不写内部文档的编号：用户无法打开
+       * 这些文档，编号对用户没有信息量。
        *
-       * **只写边界，不写机制。** 用户据以决策的只有一句——工作区外且家目录外的
-       * 路径拦不住。静态规则与分类器怎么判、WSL2 有什么出路，都不进这句话。
+       * 只写边界，不写机制。用户据以决策的只有一点：工作区外且家目录外的
+       * 路径无法拦截。静态规则与分类器的判定方式、WSL2 的替代方案均不写入。
        */
       reason: '原生 Windows 无内核沙箱后端，工作区与家目录之外的路径不受约束。',
       platform,
@@ -307,21 +307,21 @@ function probe(): SandboxStatus {
 /**
  * 默认屏蔽的凭证目录。
  *
- * **挑几个目录屏蔽，不做「整个家目录不可见」。** 整个家目录盖掉的话，`~/.gitconfig`、`~/.npmrc`、
- * nvm/rustup/pyenv 全部消失，因此 `git commit` 没有作者、`npm install` 换了 registry、`node` 可能
- * 根本找不到。那种沙箱用户开一次就会关掉，而关掉之后一层都不剩。
+ * 只屏蔽选定的目录，不使整个家目录不可见。屏蔽整个家目录时，`~/.gitconfig`、`~/.npmrc`、
+ * nvm/rustup/pyenv 全部不可见，`git commit` 没有作者、`npm install` 使用其他 registry、`node` 可能
+ * 无法定位。用户开启一次这样的沙箱就会关闭，关闭后不剩任何防护。
  *
- * 真正要防的是**跨出这台机器的泄露**，与 `secrets.ts` 的口径一致。按这个口径，
- * 家目录里危险的是凭证文件，不是配置文件。所以家目录整体**只读**（写边界照常生效），
- * 额外把凭证目录盖成空的。
+ * 要防范的是向本机之外的泄露，与 `secrets.ts` 的口径一致。按此口径，
+ * 家目录中有风险的是凭证文件而非配置文件。因此家目录整体只读（写边界照常生效），
+ * 另外以空目录覆盖凭证目录。
  *
- * 这是一份**列举**，因此和静态规则一样有「没想到就是个洞」的性质。
- * 区别在于代价：这里漏一条是少屏蔽一个目录，静态规则漏一条是放行一条命令。
+ * 该清单是列举，因此与静态规则一样，未列入的目录不受保护。
+ * 区别在于代价：此处遗漏一项是少屏蔽一个目录，静态规则遗漏一项是放行一条命令。
  */
 export function defaultMaskPaths(home = homedir()): string[] {
-  // 非 POSIX 绝对路径（Windows 的 `C:\\Users\\x`）拼出来会是
-  // `C:\\Users\\x/.ssh` 这种两种分隔符混用的字符串。两个后端都只在类 Unix 上跑，
-  // 所以这里的正确答案是**给不出**，而不是给一个看起来像路径的字符串。
+  // 非 POSIX 绝对路径（Windows 的 `C:\\Users\\x`）拼接后为
+  // `C:\\Users\\x/.ssh` 这类混用两种分隔符的字符串。两个后端都只在类 Unix 系统上运行，
+  // 因此此处应返回空列表，而不是返回形似路径的字符串。
   if (!home.startsWith('/')) return []
   return [
     join(home, '.ssh'),
@@ -331,45 +331,45 @@ export function defaultMaskPaths(home = homedir()): string[] {
     join(home, '.kube'),
     join(home, '.config', 'gh'),
     join(home, '.config', 'gcloud'),
-    // qywork 自己的配置目录：里面就是 provider 的 API Key 明文。
+    // qywork 的配置目录：其中保存 provider 的明文 API Key。
     join(home, '.qywork'),
   ]
 }
 
 /**
- * 把策略翻成 bwrap 参数。**纯函数**——不碰文件系统，任何平台都跑得起来，
- * 所以它进得了 `bun test`。
+ * 将策略转换为 bwrap 参数。文件系统访问经 `opts.exists` 注入，因此可在任何平台上运行，
+ * 可纳入 `bun test`。
  *
- * 边界的形状：
+ * 边界构成：
  *
- * - `--ro-bind / /`：整机可读、**不可写**。这是「写边界」，不是读边界。
- *   读边界要靠只 bind 少数几个目录，而那样 `/usr`、`/lib`、`/etc` 全没了，
- *   基本上什么都跑不起来。如实记在 `docs/permissions.md`：
- *   **工作区外的文件仍然读得到**，凭证目录是单独盖掉的。
+ * - `--ro-bind / /`：整机可读、不可写。这是写边界，不是读边界。
+ *   读边界需要只 bind 少数目录，此时 `/usr`、`/lib`、`/etc` 均不可见，
+ *   几乎无法运行任何程序。`docs/permissions.md` 中已写明：
+ *   工作区外的文件仍可读取，凭证目录单独屏蔽。
  * - 可写根目录逐个 `--bind`。
- * - `.qy/` 在可写根之后再 `--ro-bind` 盖回只读：**顺序不能反**，bwrap 后到的赢。
- * - 凭证目录 `--tmpfs` 盖成空的。
- * - `--unshare-pid` + `--proc /proc`：看不到宿主进程表（`/proc/<pid>/environ`
- *   里有别的进程的环境变量，而凭证刚在本进程侧被剥干净）。
- * - **不 `--unshare-net`**：网络照常。断网的 agent 装不了依赖、拉不了代码，
- *   而按域名过滤要一整套代理。这是刻意留下的缺口，见文件头注释与文档。
- * - **不加 `--die-with-parent`**：它给命名空间的 init 设 `PR_SET_PDEATHSIG`，bwrap 外层进程
- *   在 shell 退出时随之退出，init 收到 SIGKILL，内核结束命名空间里的全部进程，命令留下的
- *   后台进程因此一个不剩；runner 退出时同理。超时、中断与探测收尾由 `killTree` 按进程组发信号，
- *   命名空间里的进程与外层同组，不依赖这个选项。
- * - 命名空间的 init 持有 stdout / stderr，直到其中最后一个进程退出。后台进程即使重定向了输出，
- *   `collectProcess` 也报 `backgroundHeld`。
+ * - `.qy/` 在可写根之后再以 `--ro-bind` 恢复为只读：顺序不能颠倒，bwrap 中后出现的挂载生效。
+ * - 凭证目录以 `--tmpfs` 覆盖为空目录。
+ * - `--unshare-pid` + `--proc /proc`：无法查看宿主进程表（`/proc/<pid>/environ`
+ *   中有其他进程的环境变量，而传给子进程的环境变量已剥离凭证）。
+ * - 默认不使用 `--unshare-net`：网络照常可用。断网后 agent 无法安装依赖、拉取代码，
+ *   而按域名过滤需要完整的代理组件。这是有意保留的缺口，见 `SandboxPolicy.denyNetwork` 与文档。
+ * - 不使用 `--die-with-parent`：它为命名空间的 init 设置 `PR_SET_PDEATHSIG`，bwrap 外层进程
+ *   在 shell 退出时随之退出，init 收到 SIGKILL，内核结束命名空间中的全部进程，命令留下的
+ *   后台进程因此全部终止；runner 退出时同理。超时、中断与探测结束时由 `killTree` 按进程组发送信号，
+ *   命名空间中的进程与外层进程同组，不依赖该选项。
+ * - 命名空间的 init 持有 stdout / stderr，直到其中最后一个进程退出。因此后台进程即使重定向了输出，
+ *   `collectProcess` 仍报告 `backgroundHeld`。
  */
 export function buildBwrapArgv(
   policy: SandboxPolicy,
   inner: readonly string[],
   opts: { exists?: (p: string) => boolean } = {},
 ): string[] {
-  // 注入是为了让这个函数在任何平台上都可测。默认就是真的查磁盘。
+  // 注入 exists 使该函数可在任何平台上测试。默认访问实际磁盘。
   const exists = opts.exists ?? existsSync
   const args: string[] = [
     'bwrap',
-    // 整机只读。后面的 --bind 会在此之上开出可写的口子。
+    // 整机只读。后续的 --bind 在此基础上开放可写目录。
     '--ro-bind',
     '/',
     '/',
@@ -378,15 +378,15 @@ export function buildBwrapArgv(
   ]
 
   /*
-   * /tmp 必须可写：编译器、包管理器、git 都往那儿写。
-   * 用 tmpfs 而不是 bind：宿主 /tmp 里可能留有别的进程写下的临时凭证文件。
+   * /tmp 必须可写：编译器、包管理器、git 都向其中写入。
+   * 使用 tmpfs 而不是 bind：宿主 /tmp 中可能有其他进程写入的临时凭证文件。
    *
-   * **它必须排在可写 bind 之前。** bwrap 按出现顺序叠加，反过来写的话
-   * 一个位于 /tmp 下的工作区会被随后的 tmpfs 整个盖掉——而且**不报错**：
-   * 命令照常执行，只是工作区在里面是空的。
+   * 它必须排在可写 bind 之前。bwrap 按出现顺序叠加，顺序颠倒时，
+   * 位于 /tmp 下的工作区会被随后的 tmpfs 完全覆盖，且不报错：
+   * 命令照常执行，但工作区在沙箱内为空。
    *
-   * `bun test` 里的纯函数断言看不见这条：参数生成得完全正确，
-   * 错的是两条正确参数之间的顺序。
+   * `bun test` 中的纯函数断言无法发现该错误：每个参数都正确，
+   * 错误在于两个参数之间的顺序。
    */
   args.push('--tmpfs', '/tmp')
 
@@ -395,34 +395,34 @@ export function buildBwrapArgv(
     args.push('--bind', dir, dir)
   }
 
-  // 只读子目录**必须排在可写根之后**——bwrap 按出现顺序叠加，后到的覆盖先到的。
-  // 反过来写的话 .qy/ 会被随后的 --bind 重新变成可写，而且不报错。
+  // 只读子目录必须排在可写根之后：bwrap 按出现顺序叠加，后出现的覆盖先出现的。
+  // 顺序颠倒时 .qy/ 会被随后的 --bind 恢复为可写，且不报错。
   for (const root of writable) {
     for (const sub of policy.readOnlySubdirs ?? []) {
       args.push('--ro-bind-try', join(root, sub), join(root, sub))
     }
   }
 
-  // 凭证目录盖空。**必须先确认它存在**——`--tmpfs` 没有 `-try` 变体，
-  // 而它会去 mkdir 挂载点，父目录只读时直接失败：
+  // 以空目录覆盖凭证目录。必须先确认目录存在：`--tmpfs` 没有 `-try` 变体，
+  // 它会创建挂载点，父目录只读时直接失败：
   //
   //     bwrap: Can't mkdir /root/.nope: Read-only file system
   //
-  // 一台没有 `~/.aws` 的机器上，盲目屏蔽它会让**每一条命令**
-  // 都起不来。屏蔽清单是按常见凭证目录列的，而任何一台机器都只会有其中几个。
+  // 在没有 `~/.aws` 的机器上无条件屏蔽该目录，会使每一条命令
+  // 都无法启动。屏蔽清单按常见凭证目录列出，任何一台机器通常只有其中几个。
   for (const p of policy.maskPaths ?? defaultMaskPaths()) {
     if (exists(p)) args.push('--tmpfs', p)
   }
 
   args.push('--unshare-pid', '--unshare-uts', '--unshare-ipc', '--proc', '/proc')
-  // `--unshare-net` 把网络命名空间清空，里面只剩 lo。
-  // 不加代理桥接就是**彻底断网**，这正是这个开关的语义。
+  // `--unshare-net` 创建空的网络命名空间，其中只有 lo。
+  // 不配置代理桥接即完全断网，这正是该开关的语义。
   if (policy.denyNetwork) args.push('--unshare-net')
   args.push('--', ...inner)
   return args
 }
 
-/** 去掉尾部斜杠，但保留根目录的那一个。 */
+/** 去掉尾部斜杠，根目录 `/` 除外。 */
 function trimSlash(p: string): string {
   return p.length > 1 && p.endsWith('/') ? p.slice(0, -1) : p
 }
@@ -430,16 +430,16 @@ function trimSlash(p: string): string {
 // ───────────────────────── 策略 → seatbelt profile ─────────────────────────
 
 /**
- * 把策略翻成 macOS 的 SBPL（sandbox profile language）。**纯函数**，任何平台可测。
+ * 将策略转换为 macOS 的 SBPL（sandbox profile language）。文件系统访问经 `opts.exists` 注入，任何平台均可测试。
  *
- * 边界与 bwrap 那份**刻意保持一致**，因为它们服务同一份文档里的同一张表：
- * 整机可读、只有可写根目录能写、凭证目录连读都不行、网络不限。
- * 两边形状不同（一个是挂载，一个是规则），但**用户看到的承诺必须是同一句话**——
- * 否则 `docs/permissions.md` 就得按平台分叉，而分叉的文档没人维护得住。
+ * 边界有意与 bwrap 保持一致，二者对应同一份文档中的同一张表：
+ * 整机可读、只有可写根目录可写、凭证目录不可读、网络不受限。
+ * 两者实现方式不同（挂载与规则），但对用户的承诺必须相同，
+ * 否则 `docs/permissions.md` 需要按平台分别说明，难以维护。
  *
- * 一处必然的差别要写清楚：bwrap 是把凭证目录**盖成空的**（看得见但是空），
- * seatbelt 没有挂载这回事，只能**拒绝读**（存在但打不开）。
- * 防的行为一样，报错文案会不同。
+ * 一处差别无法避免：bwrap 以空目录覆盖凭证目录（可见但为空），
+ * seatbelt 没有挂载机制，只能拒绝读取（存在但无法打开）。
+ * 拦截的行为相同，报错文字不同。
  */
 export function buildSeatbeltProfile(
   policy: SandboxPolicy,
@@ -449,11 +449,11 @@ export function buildSeatbeltProfile(
   const writable = dedupe([policy.workspaceRoot, ...(policy.writableRoots ?? [])])
   const lines: string[] = [
     '(version 1)',
-    // 先全放行，再逐条收紧。反过来（deny default）要枚举出一个能跑起 node/git 的
-    // 完整白名单，而那份名单一定会漏——漏的表现是某个工具起不来，且报错里没有原因。
+    // 先全部放行，再逐条收紧。反向写法（deny default）需要枚举能运行 node/git 的
+    // 完整白名单，该名单必然有遗漏，遗漏时某个工具无法启动，且报错中没有原因。
     '(allow default)',
     '',
-    ';; 写：默认全禁，只开可写根目录',
+    ';; 写入：默认全部禁止，只开放可写根目录',
     '(deny file-write*)',
   ]
 
@@ -461,18 +461,18 @@ export function buildSeatbeltProfile(
     lines.push(`(allow file-write* (subpath ${sbplString(dir)}))`)
   }
 
-  // /tmp 与 /private/var/folders（macOS 的真实临时目录）必须可写：
-  // 编译器、包管理器、git 都往那儿写。
+  // /tmp 与 /private/var/folders（macOS 的实际临时目录）必须可写：
+  // 编译器、包管理器、git 都向其中写入。
   lines.push('(allow file-write* (subpath "/tmp") (subpath "/private/tmp"))')
   lines.push('(allow file-write* (subpath "/private/var/folders"))')
   lines.push(
     '(allow file-write* (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr"))',
   )
 
-  // 只读子目录要排在可写根**之后**：SBPL 是最后匹配的规则赢，
-  // 与 bwrap 的挂载顺序是同一个道理，反了同样不报错。
+  // 只读子目录必须排在可写根之后：SBPL 中最后匹配的规则生效，
+  // 与 bwrap 的挂载顺序原理相同，顺序颠倒时同样不报错。
   if (policy.readOnlySubdirs?.length) {
-    lines.push('', ';; 工作区内禁止写入的目录（.qy/ 等），必须排在上面的放行之后')
+    lines.push('', ';; 工作区内禁止写入的目录（.qy/ 等），必须排在上方的放行规则之后')
     for (const root of writable) {
       for (const sub of policy.readOnlySubdirs) {
         lines.push(`(deny file-write* (subpath ${sbplString(join(root, sub))}))`)
@@ -481,7 +481,7 @@ export function buildSeatbeltProfile(
   }
 
   if (policy.denyNetwork) {
-    lines.push('', ';; 断网：出站全禁，本机 socket 仍然放行（很多工具用它做 IPC）')
+    lines.push('', ';; 断网：禁止全部出站连接，本机 socket 仍然放行（许多工具用它实现 IPC）')
     lines.push('(deny network-outbound)')
     lines.push('(allow network-outbound (literal "/private/var/run/mDNSResponder"))')
     lines.push('(allow network-bind (local ip))')
@@ -489,7 +489,7 @@ export function buildSeatbeltProfile(
 
   const masked = (policy.maskPaths ?? defaultMaskPaths()).filter(exists)
   if (masked.length) {
-    lines.push('', ';; 凭证目录：连读都不行')
+    lines.push('', ';; 凭证目录：禁止读取')
     for (const p of masked) {
       lines.push(`(deny file-read* (subpath ${sbplString(p)}))`)
     }
@@ -510,9 +510,9 @@ export function buildSeatbeltArgv(
 /**
  * SBPL 字符串字面量。
  *
- * **必须转义**，而且这是一条安全边界不是格式化：路径里的一个 `"` 能让后面的
- * 规则整个跑出字符串外，变成 profile 的一部分——那等于让路径名去改写沙箱策略。
- * macOS 的文件名允许引号和反斜杠，所以这不是理论问题。
+ * 必须转义，这是安全边界而非格式处理：路径中的一个 `"` 会使其后的
+ * 内容脱离字符串，成为 profile 的一部分，即路径名可以改写沙箱策略。
+ * macOS 的文件名允许包含引号和反斜杠，因此该情况实际可能发生。
  */
 function sbplString(p: string): string {
   return `"${p.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
@@ -523,8 +523,8 @@ function dedupe(items: readonly string[]): string[] {
   const out: string[] = []
   for (const raw of items) {
     if (!raw || !isAbsolute(raw)) continue
-    // 只做 posix 规范化（去掉重复斜杠与尾部斜杠），不做 resolve——
-    // resolve 会把结果拼到**本机 cwd** 上，而这里的路径是给另一个内核用的。
+    // 只做 posix 规范化（去掉重复斜杠与尾部斜杠），不做 resolve：
+    // resolve 会把结果拼接到本机 cwd 上，而此处的路径供另一个内核使用。
     const p = trimSlash(normalize(raw))
     if (seen.has(p)) continue
     seen.add(p)
@@ -533,13 +533,13 @@ function dedupe(items: readonly string[]): string[] {
   return out
 }
 
-// ───────────────────────── 唯一的 spawn 出口 ─────────────────────────
+// ───────────────────────── 唯一的 spawn 入口 ─────────────────────────
 
 /**
- * 起子进程的两种写法：交给 shell 的一条命令，或直接执行的参数数组。
+ * 启动子进程的两种输入：交给 shell 执行的命令，或直接执行的参数数组。
  *
- * 参数数组给产品自己的执行程序用（`office` 的 Python worker）：程序与参数都由产品确定，
- * 模型代码经文件传递，不经 shell 转义。两种写法共用下面的沙箱、runner 与返回形状。
+ * 参数数组供产品自身的执行程序使用（`office` 的 Python worker）：程序与参数均由产品确定，
+ * 模型代码经文件传递，不经 shell 转义。两种输入共用下方的沙箱、runner 与返回结构。
  */
 export type GuardedSpawnInput = GuardedSpawnCommon &
   (
@@ -558,42 +558,42 @@ export type GuardedSpawnInput = GuardedSpawnCommon &
 interface GuardedSpawnCommon {
   /** 已解析的绝对工作目录。 */
   cwd: string
-  /** 已剥过凭证的环境变量。这个函数**不做脱敏**——那是调用方的事。 */
+  /** 已剥离凭证的环境变量。本函数不做脱敏，由调用方负责。 */
   env: Record<string, string>
   /**
-   * 沙箱策略。`null` = 明确不套沙箱（插件的 `exec.run` 走另一套隔离）。
+   * 沙箱策略。`null` 表示明确不使用沙箱（插件的 `exec.run` 使用独立的隔离机制）。
    *
-   * 传 `null` 与「本机没有沙箱」是两件不同的事，所以返回的 `sandbox.reason`
-   * 会分别说明——把它们混成一句「无沙箱」，排查时就分不出是配置问题还是环境问题。
+   * 传入 `null` 与本机没有沙箱是两种情况，返回的 `sandbox.reason`
+   * 分别说明；合并为「无沙箱」时，排查中无法区分配置问题与环境问题。
    */
   policy: SandboxPolicy | null
 }
 
 export interface GuardedSpawn {
   /**
-   * 两条输出流 + 退出码 + pid，够 `collectProcess` 和 `killTree` 用。
+   * 两条输出流、退出码与 pid，满足 `collectProcess` 和 `killTree` 的需要。
    *
-   * **这里确实有两个实现**：本进程直接 spawn 的 `Bun.Subprocess`，以及由 runner
-   * 代跑的那一份（`runner.ts`）。后者存在的理由是「谁是父进程」——命令必须挂在一个
-   * 比监听端口先出生的进程底下，否则它派生的后台服务会把端口攥走。
+   * 该字段有两个实现：本进程直接 spawn 的 `Bun.Subprocess`，以及由 runner
+   * 代为执行的进程（`runner.ts`）。后者用于确定父进程：命令必须运行在一个
+   * 先于监听端口启动的进程之下，否则其派生的后台服务会继承并占用监听端口。
    */
   proc: ProcessLike
   sandbox: SandboxStatus
 }
 
 /**
- * Git for Windows 自带的 bash。找不到返回 `null`。
+ * Git for Windows 自带的 bash。未找到时返回 `null`。
  *
- * 这是 Windows 上**唯一**认的 bash——`locateBash` 的 win32 分支只调它。
+ * Windows 上只采用该 bash：`resolveBashPath` 的 win32 分支只调用它（由 `probeBash` 注入）。
  *
- * **不查 PATH。** 这台机器上 `where bash` 的第一条是
- * `C:\Windows\System32\bash.exe` —— 那是 **WSL 启动器**，它把命令送进另一个
- * 发行版的文件系统里跑（工作区在那边是 `/mnt/c/...`），cwd 和路径全对不上，
- * 而且失败形状是「命令跑了但找不到文件」，比没有 bash 难查得多。
- * 所以只认 Git 的安装目录，按确定的几个位置找。
+ * 不查 PATH。本机 `where bash` 的第一条结果是
+ * `C:\Windows\System32\bash.exe`，即 WSL 启动器，它在另一个
+ * 发行版的文件系统中运行命令（工作区在其中位于 `/mnt/c/...`），cwd 和路径全部不一致，
+ * 且失败形式是「命令已执行但文件不存在」，比没有 bash 更难排查。
+ * 因此只采用 Git 的安装目录，按几个确定的位置查找。
  *
- * 从 `git.exe` 反推要往上走两级**和**三级：PATH 上可能是 `Git\cmd\git.exe`，
- * 也可能是 `Git\mingw64\bin\git.exe`（本机实测两条都在）。
+ * 从 `git.exe` 反推时必须同时向上查找两级和三级：PATH 上可能是 `Git\cmd\git.exe`，
+ * 也可能是 `Git\mingw64\bin\git.exe`（本机实测两者都存在）。
  */
 function findGitBash(): string | null {
   const candidates: string[] = []
@@ -616,68 +616,68 @@ function findGitBash(): string | null {
   return candidates.find((p) => existsSync(p)) ?? null
 }
 
-/** bash 路径的环境变量覆盖。装在非常规位置（scoop、MSYS2、Cygwin）时唯一的出路。 */
+/** 覆盖 bash 路径的环境变量。bash 安装在非常规位置（scoop、MSYS2、Cygwin）时只能经由它指定。 */
 export const BASH_PATH_ENV = 'QYWORK_BASH_PATH'
 
 /**
- * 探测结果。形状照 `SandboxStatus`：**「没有」也是一种可上报的状态，不是崩溃。**
+ * bash 的探测结果。结构与 `SandboxStatus` 相同：未找到是可上报的状态，不是异常。
  *
- * 坑：不要在模块加载时抛。没有 bash 的机器上那会让整个 `qy serve` 起不来，
- * 用户在浏览器里只看到「连不上」。终端程序可以 `exit(1)` 打一行了事，带界面的
- * 服务端不行——它得能起来，然后如实说「这台机器没有 bash」。
+ * 易错点：不要在模块加载时抛出异常。否则在没有 bash 的机器上整个 `qy serve` 无法启动，
+ * 用户在浏览器中只看到无法连接。终端程序可以 `exit(1)` 输出一行后退出，带界面的
+ * 服务端不可以：它必须能启动，并如实报告本机没有 bash。
  *
- * 这里只回答「有没有 bash」这一件事。没有的时候命令落到哪个 shell，
- * 由 `resolveCommandShell` 定。
+ * 本类型只表示是否有 bash。没有 bash 时命令交给哪个 shell，
+ * 由 `resolveCommandShell` 决定。
  */
 export interface BashResolution {
-  /** 找到的 bash 可执行文件；`null` = 这台机器上没有可用的 bash。 */
+  /** 找到的 bash 可执行文件；`null` 表示本机没有可用的 bash。 */
   path: string | null
-  /** `path` 为 `null` 时说明为什么、下一步怎么办；找到时是空串。 */
+  /** `path` 为 `null` 时说明原因与下一步操作；找到时为空串。 */
   reason: string
 }
 
-/** 命令交给哪个 shell。`null` = 一个可用的 shell 都没有，`run_command` 因此不会被注册。 */
+/** 执行命令的 shell。`null` 表示没有任何可用的 shell，此时 `run_command` 不会被注册。 */
 export interface CommandShell {
   readonly path: string
   readonly argv: readonly string[]
   readonly hint: string
   /**
-   * 把命令写成脚本文件之后怎么跑它。给了这个的档，在 Windows 上走文件交付。
+   * 命令写入脚本文件后的执行方式。提供此字段的 shell 在 Windows 上经脚本文件传递命令。
    *
-   * **只有 bash 档给。** Windows 上 argv 要经一次命令行字符串的往返，而 MSYS
-   * 那侧按自己的规则解回来，成对的反斜杠会被折掉一半——实测发 1/2/3/4 个到达
-   * 1/2/2 个（`ceil(n/2)`）。后果是模型写的 `'\\'` 到 python 手里成了 `'\'`，
-   * 一条 `SyntaxError` 而没人知道命令被改过；正则的 `\\d`、Windows 路径同理。
-   * 走文件之后 1/2/3/4 个原样到达 1/2/3/4 个。
+   * 只有 bash 提供此字段。Windows 上 argv 需要经过一次命令行字符串的转换，而 MSYS
+   * 按自身规则解析时会去掉成对反斜杠的一半：实测发送 1/2/3/4 个，到达
+   * 1/1/2/2 个（`ceil(n/2)`）。结果是模型写的 `'\\'` 传给 python 时变为 `'\'`，
+   * 产生 `SyntaxError`，且无从得知命令已被修改；正则的 `\\d`、Windows 路径同理。
+   * 经脚本文件传递时，1/2/3/4 个反斜杠原样到达。
    *
-   * **PowerShell 两档不给，这是实测结论**：它们的 argv 本来就不丢反斜杠
-   * （`-Command` 与 `-File` 都拿到 4 个），而改用 `-File` 会丢掉原生命令的非零
-   * 退出码（`cmd /c exit 7` 下 `-Command` 回 1、`-File` 回 0）——那比反斜杠严重。
+   * 两种 PowerShell 不提供此字段，依据是实测结果：它们的 argv 不丢失反斜杠
+   * （`-Command` 与 `-File` 都收到 4 个），而改用 `-File` 会丢失原生命令的非零
+   * 退出码（`cmd /c exit 7` 时 `-Command` 返回 1、`-File` 返回 0），这比反斜杠问题更严重。
    */
   readonly scriptArgv?: (scriptPath: string) => readonly string[]
 }
 
 /**
- * 本机的 bash。找不到返回 `null` 加原因，**这一层不落回任何别的 shell**——
- * 落回哪个由 `resolveCommandShell` 定，那里才看得见全部三档。
+ * 本机的 bash。未找到时返回 `null` 与原因，本函数不回退到其他 shell：
+ * 回退到哪个 shell 由 `resolveCommandShell` 决定，只有那里能看到全部三种 shell。
  *
- * **必须有环境变量这个口。** 落回的 PowerShell 语法和 bash 差得远，所以「bash 装在别处」必须有一个
- * **用户自己能指的地方**，否则 bash 装在 scoop / MSYS2 / Cygwin / 自定义盘符的
- * 机器上会被判成没有 bash，然后拿到一个它本来不需要的语法。
+ * 必须提供环境变量入口。回退后的 PowerShell 语法与 bash 差异很大，因此 bash 安装在其他位置时，
+ * 必须有一处用户可以自行指定的配置，否则 bash 安装在 scoop / MSYS2 / Cygwin / 自定义盘符的
+ * 机器会被判定为没有 bash，从而使用本不需要的语法。
  *
- * **指了但不存在照样抛，不静默回到搜索**：回搜索会把「路径指错了」变成
- * 「跑起来了，但跑的不是指定的那个」，而后者要靠对比输出才能发现。
+ * 指定的路径不存在时返回 `null` 与原因，不静默回退到自动查找：回退会把路径配置错误变成
+ * 「已运行，但运行的不是指定的 bash」，后者只能通过对比输出发现。
  *
- * **顺序。** Windows 只认 Git for Windows（见 `findGitBash` 上方为什么不查 PATH）。
- * 其余平台按位置找，**Homebrew 的 bash 5 排在 `/bin/bash` 前面**：macOS 自带的
- * 是 bash 3.2（2007 年，卡在 GPLv2），没有 `declare -A`、`mapfile`、`${x,,}`，
- * 而模型写的是 bash 4+ 的语法。
+ * 查找顺序：Windows 只采用 Git for Windows（不查 PATH 的原因见 `findGitBash`）。
+ * 其余平台按位置查找，Homebrew 的 bash 5 排在 `/bin/bash` 之前：macOS 自带的
+ * 是 bash 3.2（2007 年，停留在 GPLv2），没有 `declare -A`、`mapfile`、`${x,,}`，
+ * 而模型按 bash 4+ 的语法编写。
  *
- * 不用 `/bin/sh`：那在 Debian 系是 dash，`[[ ]]`、数组、`<(...)` 全部散架。
- * 判据是模型的默认语法要和真正执行的 shell 对得上——同一条判据让 PowerShell
- * 只在**一个 bash 都找不到**时才轮得到，见 `resolveCommandShell`。
+ * 不使用 `/bin/sh`：它在 Debian 系发行版上是 dash，`[[ ]]`、数组、`<(...)` 均不可用。
+ * 判据是模型的默认语法必须与实际执行的 shell 一致；按同一判据，PowerShell
+ * 只在未找到任何 bash 时才被采用，见 `resolveCommandShell`。
  *
- * 参数全部注入，是为了能直接测顺序和逃生口，不必重载模块。
+ * 参数全部注入，以便直接测试查找顺序与环境变量覆盖，无需重新加载模块。
  */
 export function resolveBashPath(deps: {
   env: Record<string, string | undefined>
@@ -690,7 +690,7 @@ export function resolveBashPath(deps: {
     if (deps.exists(pinned)) return { path: pinned, reason: '' }
     return {
       path: null,
-      reason: `${BASH_PATH_ENV} 指向 ${pinned}，但那个位置没有文件。修正该值，或不设置该变量以启用自动查找。`,
+      reason: `${BASH_PATH_ENV} 指向 ${pinned}，但该位置不存在文件。修正该值，或不设置该变量以启用自动查找。`,
     }
   }
 
@@ -700,8 +700,8 @@ export function resolveBashPath(deps: {
     return {
       path: null,
       reason:
-        '没找到 Git for Windows 自带的 bash（找过 git.exe 的同级目录、' +
-        `Program Files\\Git\\bin、LOCALAPPDATA\\Programs\\Git\\bin）。装 Git for Windows，或用 ${BASH_PATH_ENV} 指向已有的 bash.exe。`,
+        '未找到 Git for Windows 自带的 bash（已查找 git.exe 的同级目录、' +
+        `Program Files\\Git\\bin、LOCALAPPDATA\\Programs\\Git\\bin）。安装 Git for Windows，或用 ${BASH_PATH_ENV} 指向已有的 bash.exe。`,
     }
   }
 
@@ -710,16 +710,16 @@ export function resolveBashPath(deps: {
   if (found !== undefined) return { path: found, reason: '' }
   return {
     path: null,
-    reason: `这几个位置都没有 bash：${candidates.join('、')}。装 bash，或用 ${BASH_PATH_ENV} 指向它。`,
+    reason: `以下位置均未找到 bash：${candidates.join('、')}。安装 bash，或用 ${BASH_PATH_ENV} 指向 bash。`,
   }
 }
 
 /**
- * 探测结果。**每次调用重新探测，不缓存。**
+ * 探测本机的 bash。每次调用重新探测，不缓存。
  *
- * 判据抄 `detectSandbox()` 上方那段：缓存的话「装完 git 之后重连一下就生效」不成立，
- * 用户得重启整个服务，而他不会知道要重启。探测本身是几次 `existsSync`
- * （`whichSync` 是纯 PATH 扫描，不起进程），每次跑得起。
+ * 缓存时，安装 git 后重新连接不会生效，
+ * 用户必须重启整个服务，且无从得知需要重启。探测只是几次 `existsSync`
+ * （`whichSync` 只扫描 PATH，不启动进程），每次执行的开销可以接受。
  */
 export function probeBash(): BashResolution {
   return resolveBashPath({
@@ -731,27 +731,27 @@ export function probeBash(): BashResolution {
 }
 
 /**
- * 三档探测的注入口。
+ * 三种 shell 探测的注入参数。
  *
- * 参数全部注入，理由同 `resolveBashPath`：**本机只可能命中其中一档**
- * （装了 Git Bash 的机器第一步就返回），顺序与另外两档的落点只能这么测。
+ * 参数全部注入，理由同 `resolveBashPath`：本机只会命中其中一种
+ * （安装了 Git Bash 的机器在第一步即返回），查找顺序与另外两种的结果只能以注入方式测试。
  */
 export interface ShellProbeDeps {
   bash: () => BashResolution
-  /** PATH 上找一个可执行文件。 */
+  /** 在 PATH 上查找可执行文件。 */
   which: (name: string) => string | null
   exists: (p: string) => boolean
   env: Record<string, string | undefined>
 }
 
-/** PowerShell 7 的默认安装位置。装在别处时靠 PATH 上的 `pwsh.exe` 找到。 */
+/** PowerShell 7 的默认安装位置。安装在其他位置时经由 PATH 上的 `pwsh.exe` 查找。 */
 function pwsh7Install(env: Record<string, string | undefined>): string {
   return joinNative(env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe')
 }
 
 /**
- * Windows PowerShell 5.1 的固定位置。**系统盘不一定是 C:**，所以跟着 `SystemRoot` 走；
- * 它是系统组件，不查 PATH——PATH 上叫 `powershell` 的可能是别人放的同名程序。
+ * Windows PowerShell 5.1 的固定位置。系统盘不一定是 C:，因此按 `SystemRoot` 确定；
+ * 它是系统组件，不查 PATH：PATH 上名为 `powershell` 的可能是其他同名程序。
  */
 function windowsPowerShellInstall(env: Record<string, string | undefined>): string {
   return joinNative(
@@ -764,38 +764,38 @@ function windowsPowerShellInstall(env: Record<string, string | undefined>): stri
 }
 
 /**
- * 命令交给哪个 shell，以及**模型必须知道的那条语法差异**。
+ * 选择执行命令的 shell，并给出模型必须知道的语法差异。
  *
- * **顺序：bash → pwsh 7 → Windows PowerShell 5.1 → 一个都没有。**
+ * 顺序：bash → pwsh 7 → Windows PowerShell 5.1 → 无可用 shell。
  *
- * **bash 永远排第一。** 模型的默认语法是 POSIX——「跑一条命令」这个语境在训练
- * 数据里绝大多数是 bash，账本里有过只被告知「平台：win32」就写出 POSIX 写法、
- * 在 PowerShell 上一个字都没执行的调用（`node --version & python --version`）。
- * 有 bash 的机器上行为与只有 bash 那时完全一致。
+ * bash 始终排第一。模型的默认语法是 POSIX：训练数据中运行命令的语境
+ * 绝大多数是 bash；账本中有过只被告知「平台：win32」就按 POSIX 写法编写、
+ * 在 PowerShell 上完全未执行的调用（`node --version & python --version`）。
+ * 有 bash 的机器上始终使用 bash。
  *
- * **pwsh 7 排在 5.1 前面是硬差别，不是偏好。** 5.1 上 `&&` / `||` 是解析错误
- * （实测 `标记「&&」不是此版本中的有效语句分隔符`），三元 `? :`、`??`、`?.`、
- * `ConvertFrom-Json -AsHashtable` 一个都没有——同一条命令在 7 上跑得通、在 5.1 上
- * 整条废掉。两个都在就必须挑 7。
+ * pwsh 7 优先于 5.1 是硬性差异，不是偏好。5.1 上 `&&` / `||` 是解析错误
+ * （实测 `标记「&&」不是此版本中的有效语句分隔符`），也不支持三元 `? :`、`??`、`?.`、
+ * `ConvertFrom-Json -AsHashtable`：同一条命令在 7 上执行成功，在 5.1 上
+ * 整条失败。两者都存在时必须选择 7。
  *
- * `-NoProfile` 两档都要：用户 profile 会改变行为（别名、函数、`$ErrorActionPreference`），
- * 而它在别人机器上的内容无从预知。
+ * 两种 PowerShell 都必须使用 `-NoProfile`：用户 profile 会改变行为（别名、函数、`$ErrorActionPreference`），
+ * 而其内容在其他机器上无法预知。
  *
- * **语法分叉的代价付在三个地方。**
+ * 语法差异带来三处成本：
  *
- * `policy.ts` 的拒绝规则要同时认两种语法、涉及命令的测试要按 shell 分叉、
- * 模型拿到的提示也分叉。前两条是死账，只能付。第三条靠**语法提示前置**缓解：
- * `hint` 是 `run_command` 描述的第一句，且非 bash 时第一句就说「不是 bash」。
- * 缓解不是消除——`run_command` 这个名字本身不携带语法，而名字的信号比描述强。
+ * `policy.ts` 的拒绝规则必须同时识别两种语法、涉及命令的测试必须按 shell 区分、
+ * 模型收到的提示也随之不同。前两处是固定成本，无法避免。第三处通过将语法提示前置缓解：
+ * `hint` 是 `run_command` 描述的第一句，非 bash 时第一句即声明「不是 bash」。
+ * 缓解不等于消除：`run_command` 这个名称本身不携带语法信息，而名称的影响强于描述。
  *
- * 换来的是：没装 Git Bash 的 Windows 机器上，agent 从「一条命令都跑不了」变成能跑。
+ * 收益是：未安装 Git Bash 的 Windows 机器上，agent 从无法运行任何命令变为可以运行。
  *
- * `hint` 会原样进 `run_command` 的工具说明，与 `spawnGuarded` 用的是同一份 argv：
- * 两处各写一遍必然漂移，而漂移的表现是**告诉模型的那个 shell 和真正执行的不是
- * 同一个**，比不告诉更糟。
+ * `hint` 原样写入 `run_command` 的工具说明，与 `spawnGuarded` 使用的 argv 来自同一对象：
+ * 两处分别编写必然不一致，告知模型的 shell 与实际执行的 shell 不同，
+ * 比不告知更糟。
  *
- * 三档全落空返回 `null`，`run_command` **不会被注册**（`tools/index.ts`）——
- * 模型手里没有这个工具，而不是有一个必然失败的工具。
+ * 三种 shell 均未找到时返回 `null`，`run_command` 不会被注册（`tools/index.ts`）：
+ * 模型没有该工具，而不是持有一个必然失败的工具。
  */
 export function resolveCommandShell(deps: ShellProbeDeps): CommandShell | null {
   const bash = deps.bash().path
@@ -803,7 +803,7 @@ export function resolveCommandShell(deps: ShellProbeDeps): CommandShell | null {
     return {
       path: bash,
       argv: [bash, '-c'],
-      // 路径用正斜杠交给 MSYS：反斜杠形式本身也要过那道会折反斜杠的解析。
+      // 以正斜杠形式把路径交给 MSYS：反斜杠形式的路径同样会经过上述去除反斜杠的解析。
       scriptArgv: (scriptPath) => [bash, scriptPath.replaceAll('\\', '/')],
       hint:
         '命令由 `bash -c` 执行（POSIX 语法；Windows 上是 Git for Windows 自带的 bash，' +
@@ -811,7 +811,7 @@ export function resolveCommandShell(deps: ShellProbeDeps): CommandShell | null {
     }
   }
 
-  // pwsh 7 装在哪都行，所以 PATH 优先；默认安装位置兜住「装了但没进 PATH」。
+  // pwsh 7 可安装在任意位置，因此优先查 PATH；已安装但未加入 PATH 时由默认安装位置查找。
   const installed = pwsh7Install(deps.env)
   const pwsh7 = deps.which('pwsh.exe') ?? (deps.exists(installed) ? installed : null)
   if (pwsh7 !== null) {
@@ -819,9 +819,9 @@ export function resolveCommandShell(deps: ShellProbeDeps): CommandShell | null {
       path: pwsh7,
       argv: [pwsh7, '-NoProfile', '-NonInteractive', '-Command'],
       hint:
-        '**这台机器没有 bash：命令由 PowerShell 7（`pwsh -NoProfile -NonInteractive -Command`）' +
-        '执行，不是 bash。** 按 PowerShell 写：`&&`、`||`、管道可用，但管道里流的是对象不是文本；' +
-        '`2>/dev/null` 写成 `2>$null`；环境变量是 `$env:NAME`；`ls`/`cat`/`rm` 是 cmdlet 的别名，' +
+        '**本机没有 bash：命令由 PowerShell 7（`pwsh -NoProfile -NonInteractive -Command`）' +
+        '执行，不是 bash。** 按 PowerShell 语法编写：`&&`、`||`、管道可用，但管道中传递的是对象而非文本；' +
+        '`2>/dev/null` 写作 `2>$null`；环境变量写作 `$env:NAME`；`ls`/`cat`/`rm` 是 cmdlet 的别名，' +
         '参数写法与 POSIX 不同（`ls -Recurse`、`rm -Recurse -Force`）。',
     }
   }
@@ -832,12 +832,12 @@ export function resolveCommandShell(deps: ShellProbeDeps): CommandShell | null {
       path: ps51,
       argv: [ps51, '-NoProfile', '-NonInteractive', '-Command'],
       hint:
-        '**这台机器没有 bash 也没有 PowerShell 7：命令由 Windows PowerShell 5.1' +
+        '**本机既没有 bash 也没有 PowerShell 7：命令由 Windows PowerShell 5.1' +
         '（`powershell -NoProfile -NonInteractive -Command`）执行，不是 bash。** ' +
-        '5.1 上这几样不存在，照 PowerShell 7 的写法写会整条命令废掉：' +
-        '`&&` / `||`（解析错误——顺序执行用 `;`，「上一条成功才继续」用 `if ($?) { … }`）、' +
+        '5.1 不支持以下写法，按 PowerShell 7 的写法编写会导致整条命令失败：' +
+        '`&&` / `||`（解析错误；顺序执行用 `;`，仅在上一条成功时继续用 `if ($?) { … }`）、' +
         '三元 `? :`、null 合并 `??`、null 条件 `?.`、`ConvertFrom-Json -AsHashtable`。' +
-        '其余按 PowerShell 写：`2>$null`、`$env:NAME`、`ls -Recurse`。',
+        '其余按 PowerShell 语法编写：`2>$null`、`$env:NAME`、`ls -Recurse`。',
     }
   }
 
@@ -845,8 +845,8 @@ export function resolveCommandShell(deps: ShellProbeDeps): CommandShell | null {
 }
 
 /**
- * 本机的 shell。**每次调用重新探测**，理由同 `probeBash`：装完之后
- * 下一条消息就该有 `run_command`，而不是要用户重启服务。
+ * 本机的 shell。每次调用重新探测，理由同 `probeBash`：安装完成后，
+ * 下一条消息即应可用 `run_command`，无需用户重启服务。
  */
 export function commandShell(): CommandShell | null {
   return resolveCommandShell({
@@ -858,18 +858,13 @@ export function commandShell(): CommandShell | null {
 }
 
 /**
- * **本项目唯一一处为模型给出的命令起子进程的地方。**
+ * 命令的父进程由谁担任。
  *
- * 新增调用方之前先想清楚：绕开这里就等于绕开沙箱，而且不会有任何报错。
- */
-/**
- * 命令挂在谁底下。
+ * 这是进程级的事实，因此使用进程级变量：进程要么绑定了监听端口（此时必须经由
+ * runner），要么没有（直接 spawn 即可）。它不随调用方、会话、工作区变化，
+ * 作为参数逐层传递只会把同一个事实复制多份。
  *
- * **进程级的事实，所以是进程级的变量**：一个进程要么绑了监听端口（那就必须借
- * runner），要么没绑（直接 spawn 就对）。它不随调用方、会话、工作区变化，
- * 穿成参数逐层传下去只是把同一个事实复制多份。
- *
- * `qy serve` 在**绑端口之前**注册；`qy exec`、测试进程不注册，走直接 spawn。
+ * `qy serve` 在绑定端口之前注册；`qy exec` 与测试进程不注册，直接 spawn。
  */
 let runner: CommandRunner | null = null
 
@@ -877,31 +872,31 @@ export function setCommandRunner(next: CommandRunner | null): void {
   runner = next
 }
 
-/** 沙箱与 runner 之内真正执行的 argv；命令写法在 Windows 上另有一个随进程删除的脚本文件。 */
+/** 在沙箱与 runner 之内实际执行的 argv；命令输入在 Windows 上另有一个随进程退出删除的脚本文件。 */
 async function innerArgv(
   input: GuardedSpawnInput,
   isWindows: boolean,
 ): Promise<{ inner: string[]; scriptPath: string | null }> {
   if ('argv' in input) return { inner: [...input.argv], scriptPath: null }
 
-  // `run_command` 在一个 shell 都没有时不注册，所以正常路径到不了这里；
-  // 插件的 `exec.run` 走的是同一个函数，它需要一个明确的错误信息，而非在 argv 处崩溃。
+  // 没有任何 shell 时 `run_command` 不注册，因此正常路径不会到达此处；
+  // 插件的 `exec.run` 调用同一函数，需要明确的错误信息，而不是在构造 argv 时崩溃。
   const shell = input.shell
   if (shell === null) {
-    // 说 bash 那一档的原因：三档里只有它给得出「下一步怎么办」（装 Git for Windows），
-    // 而另外两档是「这台机器上就是没有」，没有可操作的下一步。
+    // 报告 bash 的原因：三种 shell 中只有它能给出下一步操作（安装 Git for Windows），
+    // 另外两种只能说明本机没有，没有可执行的下一步。
     throw new Error(
-      `没有可用的 shell（bash / pwsh / powershell 都没找到），命令跑不了：${probeBash().reason}`,
+      `没有可用的 shell（bash / pwsh / powershell 均未找到），无法执行命令：${probeBash().reason}`,
     )
   }
 
   /*
-   * 命令原样交给 shell，不做「安全化」处理——立场承自 shell.ts：
-   * 转义黑名单挡不住构造，真正的边界在内核那一层。
+   * 命令原样交给 shell，不做转义处理，与 shell.ts 的约定一致：
+   * 转义黑名单无法拦截构造出的命令，实际边界在内核层。
    *
-   * **原样的前提是它真能原样送到。** Windows 上 argv 要经一次命令行字符串的往返，
-   * 成对的反斜杠在 MSYS 那侧被折掉一半（见 `CommandShell.scriptArgv`）。所以那一档
-   * 改走脚本文件：命令正文不再进 argv，逐字节到达。
+   * 原样传递的前提是命令能原样到达。Windows 上 argv 需要经过一次命令行字符串的转换，
+   * 成对的反斜杠在 MSYS 一侧会去掉一半（见 `CommandShell.scriptArgv`）。因此 bash
+   * 改为经脚本文件传递：命令正文不进入 argv，逐字节到达。
    */
   const scriptRun = isWindows ? shell.scriptArgv : undefined
   const scriptPath = scriptRun ? joinNative(tmpdir(), `qy-cmd-${randomUUID()}.sh`) : null
@@ -911,6 +906,11 @@ async function innerArgv(
   return { inner, scriptPath }
 }
 
+/**
+ * 本项目中为模型给出的命令启动子进程的唯一位置。
+ *
+ * 新增调用方之前须确认：绕过此处即绕过沙箱，且不会有任何报错。
+ */
 export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpawn> {
   const status = detectSandbox()
   const isWindows = process.platform === 'win32'
@@ -926,21 +926,21 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
 
   const effective: SandboxStatus =
     input.policy === null
-      ? { ...status, active: false, reason: '本次调用显式不套沙箱（插件 exec 走独立隔离）' }
+      ? { ...status, active: false, reason: '本次调用显式不使用沙箱（插件 exec 使用独立隔离）' }
       : status
 
   /**
-   * 脚本文件跟着进程走：它退出了就删。
+   * 脚本文件的生命周期与进程一致：进程退出后删除。
    *
-   * 不在返回前删——那时命令还没开始读它。删失败也不抛：临时目录里留一个几百字节
-   * 的文件，比因为清理失败把一次成功的命令报成失败要好。
+   * 不在返回前删除：此时命令尚未开始读取。删除失败也不抛出异常：临时目录中残留一个几百字节
+   * 的文件，好于因清理失败把一次成功的命令报告为失败。
    */
   const sweep = (proc: { exited: Promise<unknown> }): void => {
     if (!scriptPath) return
     void proc.exited.then(() => rm(scriptPath, { force: true }).catch(() => {}))
   }
 
-  // 有 runner 就由它来当父进程（理由见 `runner.ts` 的模块注释）。
+  // 有 runner 时由它担任父进程（理由见 `runner.ts` 的模块注释）。
   if (runner) {
     const proc = await runner.spawn({
       argv,
@@ -953,24 +953,24 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
   }
 
   /*
-   * 三个流的形态写在类型里，不靠推断：带 spread 的字面量会把它推成
-   * `'inherit'`，因此 `proc.stderr` 变成可能 undefined，而真正读它的地方在别的文件。
+   * 三个流的类型显式声明，不依赖推断：带 spread 的字面量会被推断为
+   * `'inherit'`，`proc.stderr` 因此可能为 undefined，而读取它的代码在其他文件中。
    */
   const opts = {
     cwd: input.cwd,
     stdout: 'pipe',
     stderr: 'pipe',
-    // 关掉 stdin：交互式提示在这里等不到人，只会挂到超时。
+    // 关闭 stdin：交互式提示在此处无人响应，只会等待至超时。
     stdin: 'ignore',
     env: input.env,
     /*
-     * 非 Windows 上自成进程组，`killTree` 才有整组可杀。
+     * 非 Windows 平台上子进程自成进程组，`killTree` 才能终止整个进程组。
      *
-     * 不这么做的话它和 `qy serve` 同组，按它的 pid 找不到进程组，`killTree`
-     * 只杀得到 shell 本身，shell 派生的子孙照常运行。
+     * 否则它与 `qy serve` 同组，按其 pid 无法定位进程组，`killTree`
+     * 只能终止 shell 本身，shell 派生的子孙进程继续运行。
      *
-     * Windows 不加：那边靠 `taskkill /T` 走进程树，不需要组语义，
-     * 而 detached 在 Windows 上是「脱离控制台」，与这里的目的无关。
+     * Windows 不设置：Windows 由 `taskkill /T` 遍历进程树，不需要进程组语义，
+     * 且 detached 在 Windows 上表示脱离控制台，与此处目的无关。
      */
     ...(isWindows ? {} : { detached: true }),
   } as Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>
@@ -981,36 +981,36 @@ export async function spawnGuarded(input: GuardedSpawnInput): Promise<GuardedSpa
 }
 
 /**
- * 杀掉整棵进程树。
+ * 终止整个进程树。
  *
- * **为什么不能只 `proc.kill()`。** spawn 的从来不是命令本身，是一个 shell
- * （`commandShell()` 的 argv + 命令串）。真正执行命令的是它的**子进程**，
- * 而 `proc.kill()` 只杀那一个 shell：实测 shell 退出后服务进程仍在监听、孙进程
- * 握着 stdout，管道 3 秒不 EOF（Windows 11 / Bun 1.3.14）。
+ * 不能只调用 `proc.kill()`：spawn 启动的不是命令本身，而是一个 shell
+ * （`commandShell()` 的 argv 加命令字符串）。实际执行命令的是它的子进程，
+ * 而 `proc.kill()` 只终止该 shell：实测 shell 退出后服务进程仍在监听、孙进程
+ * 持有 stdout，管道 3 秒内没有 EOF（Windows 11 / Bun 1.3.14）。
  *
- * **管道不 EOF 比服务没死严重。** 谁要是拿管道 EOF 当「命令结束了」的判据，那次
- * `registry.execute` 就永不返回，而 `agent/loop/tool-wave.ts` 调它的那一处外面没有任何超时。后果
- * 逐层传导到 `run-control.ts` 的 finally 不执行、`runs.unregister` 不执行——
- * **这条会话从此永远回绝「已有任务在执行」，直到重启 `qy serve`**。触发它不需要
- * 「起服务器」这种边角：任何经 shell 派生了子进程的命令（`npm test` → node、
- * `python x.py`）碰上超时或用户中断都会走到。
+ * 管道没有 EOF 比服务未终止更严重。若以管道 EOF 作为命令结束的判据，该次
+ * `registry.execute` 永不返回，而 `agent/loop/tool-wave.ts` 中调用它的位置外层没有任何超时。结果
+ * 逐层传导：`run-control.ts` 的 finally 不执行、`runs.unregister` 不执行，
+ * 该会话此后一直以「已有任务在执行」拒绝新任务，直到重启 `qy serve`。触发条件不限于
+ * 启动服务器这类少见情况：任何经 shell 派生子进程的命令（`npm test` → node、
+ * `python x.py`）遇到超时或用户中断都会触发。
  *
- * 树杀让这两个症状一次消失，但它**够不着已经脱离父子关系的孤儿**——树散之后再补一次
- * `taskkill /F /T`，回的是 `The process not found`，而管道照旧不 EOF。所以「命令结束
- * 了没有」不能靠管道 EOF 判，那条判据归 `shell.ts` 的 `settle()`：进程退出才是权威。
+ * 终止进程树可同时消除这两个问题，但无法终止已脱离父子关系的孤儿进程：进程树解散后再执行一次
+ * `taskkill /F /T`，返回 `The process not found`，而管道仍没有 EOF。因此命令是否结束
+ * 不能以管道 EOF 判定，该判据由 `collectProcess` 负责：以进程退出为准。
  *
- * **平台**：
- * - **Windows**：`taskkill /F /T`，`/T` 连子孙一起。上面那段是本机实测。
- * - **其余平台**：向以 `proc.pid` 为组号的进程组发 SIGKILL。`detached` 起的子进程自成一组，
- *   组号即其 pid，shell 派生的子孙与 bwrap 命名空间里的进程都在组内（Linux / WSL2 实测，
- *   macOS 未实测）。不是 detached 起的子进程不是组长，不存在以它的 pid 为组号的组，
- *   调用抛 ESRCH，落到单进程 kill；这一下不会命中 `qy serve` 自己所在的组。
- *   不要改成先用 `process.getpgid` 验组长：Bun 1.3.14 没有这个方法，验证永远不通过，
- *   树杀退化为只杀 shell。
+ * 平台：
+ * - Windows：`taskkill /F /T`，`/T` 包括全部子孙进程。上文数据为本机实测。
+ * - 其余平台：向以 `proc.pid` 为组号的进程组发送 SIGKILL。以 `detached` 启动的子进程自成一组，
+ *   组号即其 pid，shell 派生的子孙进程与 bwrap 命名空间中的进程都在组内（Linux / WSL2 实测，
+ *   macOS 未实测）。非 detached 启动的子进程不是组长，不存在以其 pid 为组号的组，
+ *   调用抛出 ESRCH，转为终止单个进程；该调用不会命中 `qy serve` 自身所在的组。
+ *   不要改成先用 `process.getpgid` 验证组长：Bun 1.3.14 没有该方法，验证始终不通过，
+ *   进程树终止将退化为只终止 shell。
  */
 export function killTree(proc: { pid: number; kill(): void }): void {
   if (process.platform === 'win32') {
-    // 同步等它杀完：异步的话调用方紧接着读流，可能读到一个还没断的管道。
+    // 同步等待终止完成：异步时调用方随即读取流，可能读到尚未关闭的管道。
     Bun.spawnSync(['taskkill', '/F', '/T', '/PID', String(proc.pid)], {
       stdout: 'ignore',
       stderr: 'ignore',
@@ -1021,30 +1021,30 @@ export function killTree(proc: { pid: number; kill(): void }): void {
     process.kill(-proc.pid, 'SIGKILL')
     return
   } catch {
-    // 没有这个进程组：它不是 detached 起的，或整组已经退出。
+    // 该进程组不存在：子进程不是以 detached 启动的，或整组已经退出。
   }
   proc.kill()
 }
 
 /**
- * 进程退出之后，把管道里的残余字节取干净所留的时间。
+ * 进程退出后，读取管道中剩余字节的时限。
  *
- * 这**不是**超时兜底：正常命令上它的代价是 0——EOF 紧跟退出到达，下面那个 race
- * 立刻就赢了。只有当有后代进程扣着写端时才付这一次固定小额。
+ * 这不是超时后备处理：正常命令上它没有开销，EOF 紧随退出到达，下方的 race
+ * 立即结束。只有后代进程持有写端时才产生这一次固定的少量等待。
  *
- * 这个数从哪来：写端在管道写满时阻塞，所以进程退出前它的输出已经被读走了
- * （本机实测 `seq 1 200000` 加一个后台孙进程，退出时 1288895 字节一个不少，
- * 最后一个 chunk 比退出还早 9ms）；退出后残留的至多是一个内核缓冲区
- * （Windows 默认 64KB），读它是本地内存拷贝。留 200ms 是给调度抖动的余量，
- * 不是给命令的。
+ * 取值依据：写端在管道写满时阻塞，因此进程退出前其输出已被读取
+ * （本机实测 `seq 1 200000` 加一个后台孙进程，退出时 1288895 字节完整无缺，
+ * 最后一个 chunk 比退出早 9ms）；退出后剩余的至多是一个内核缓冲区
+ * （Windows 默认 64KB），读取它只是本地内存拷贝。200ms 是为调度抖动留的余量，
+ * 不是为命令留的时间。
  */
 const DRAIN_AFTER_EXIT_MS = 200
 
 /**
- * 代码页号 → `TextDecoder` 认得的标签。
+ * 代码页号 → `TextDecoder` 支持的标签。
  *
- * 只列需要改名的那几个：Bun 不认 `windows-936` / `x-cp936`，认 `gb18030`。
- * 没列的按 `windows-<页号>` 拼（1250–1258 那一族），拼不出来的落回 UTF-8。
+ * 只列出需要换名的代码页：Bun 不支持 `windows-936` / `x-cp936`，支持 `gb18030`。
+ * 未列出的按 `windows-<页号>` 拼接（1250–1258 系列），无法识别的回退到 UTF-8。
  */
 const CODE_PAGE_LABELS: Record<string, string> = {
   '932': 'shift_jis',
@@ -1054,26 +1054,26 @@ const CODE_PAGE_LABELS: Record<string, string> = {
   '65001': 'utf-8',
 }
 
-/** 探测结果只算一次：代码页是机器属性，不随调用变。 */
+/** 探测结果只计算一次：代码页是机器属性，不随调用变化。 */
 let cachedCharset: string | null = null
 
 /**
- * 按运行时算出来的标签造解码器。
+ * 按运行时计算出的标签创建解码器。
  *
- * Bun 把标签类型窄成了一个字面量联合，而代码页是现算的，落不进那个联合。
- * **断言的正当性由构造本身提供**：认不出的标签在这里当场抛，调用方接住后落回 UTF-8，
- * 不会有一个假标签活到解码那一步。
+ * Bun 把标签类型收窄为字面量联合，而代码页在运行时计算，不属于该联合。
+ * 类型断言的正确性由构造本身保证：无法识别的标签在此处立即抛出异常，调用方捕获后回退到 UTF-8，
+ * 无效标签不会进入解码阶段。
  */
 function decoderFor(label: string): TextDecoder {
   return new TextDecoder(label as ConstructorParameters<typeof TextDecoder>[0])
 }
 
 /**
- * 本机原生程序按哪个字符集往管道里写字节。
+ * 本机原生程序向管道写入字节时使用的字符集。
  *
- * Windows 下读注册表的 ACP——`chcp` 拿到的是控制台代码页，而 sidecar 被外壳拉起时
- * 没有控制台，那条路会时灵时不灵。探不到、拼不出、或者不是 Windows，
- * 一律当 UTF-8：那是改动之前的行为，不会比现在更差。
+ * Windows 下读取注册表中的 ACP：`chcp` 取得的是控制台代码页，而 sidecar 由外壳启动时
+ * 没有控制台，该方式的结果不稳定。探测失败、无法拼接标签或不是 Windows 时，
+ * 一律按 UTF-8 处理。
  */
 function consoleCharset(): string {
   if (cachedCharset !== null) return cachedCharset
@@ -1090,7 +1090,7 @@ function consoleCharset(): string {
     const page = new TextDecoder().decode(out.stdout).match(/ACP\s+REG_SZ\s+(\d+)/)?.[1]
     if (!page) return cachedCharset
     const label = CODE_PAGE_LABELS[page] ?? `windows-${page}`
-    // 认不认由 TextDecoder 自己说了算，别在这里维护第二份「支持哪些」的清单。
+    // 是否支持由 TextDecoder 判定，不要在此处另维护一份支持清单。
     decoderFor(label)
     cachedCharset = label
   } catch {
@@ -1102,16 +1102,16 @@ function consoleCharset(): string {
 /**
  * 子进程输出的解码器。
  *
- * **不许钉死 UTF-8。** Windows 上原生程序按系统代码页出字节（实测 `powershell`、
- * mingw 的 `curl` 都是 GBK），按 UTF-8 解出来是一屏 U+FFFD——而模型会把那屏乱码
- * 当事实用，据此做出错误判断再花一整轮去证伪。**也不许钉死代码页**：
- * 同一台机器上 node、带 `PYTHONIOENCODING` 的 python 出的是 UTF-8。
+ * 不能固定为 UTF-8：Windows 上原生程序按系统代码页输出字节（实测 `powershell`、
+ * mingw 的 `curl` 均为 GBK），按 UTF-8 解码会得到大量 U+FFFD，模型会把这些乱码
+ * 当作事实，据此做出错误判断，再用一整轮去证伪。也不能固定为代码页：
+ * 同一台机器上 node、设置了 `PYTHONIOENCODING` 的 python 输出 UTF-8。
  *
- * 判据是字节本身：严格 UTF-8 解码器对跨片的半个字符不抛（`{ stream: true }` 会把
- * 它留在内部缓冲里），只对真正非法的序列抛。抛了就说明这条流不是 UTF-8。
+ * 判据是字节本身：严格 UTF-8 解码器对跨片的不完整字符不抛出异常（`{ stream: true }` 会把
+ * 它保留在内部缓冲中），只对非法序列抛出异常。抛出异常即说明该流不是 UTF-8。
  *
- * **判定之后不再回头。** 两种编码在一条流里交替不是真实场景，而来回切换会把跨片
- * 字符切碎。代价是切换那一刻缓冲里至多三个字节的半个字符会丢——不为它加第二套缓冲。
+ * 判定后不再切换回 UTF-8。同一条流中交替出现两种编码不是实际场景，而反复切换会截断跨片
+ * 字符。代价是切换时缓冲中至多三个字节的不完整字符会丢失，不为此增加第二套缓冲。
  */
 export function makeOutputDecoder(): (chunk: Uint8Array) => string {
   const utf8 = new TextDecoder('utf-8', { fatal: true })
@@ -1131,61 +1131,61 @@ export interface CollectedProcess {
   exitCode: number
   stdout: string
   stderr: string
-  /** `timeoutMs` 或 `idleMs` 到点，进程树已被杀。 */
+  /** `timeoutMs` 或 `idleMs` 已到期，进程树已终止。 */
   timedOut: boolean
   /**
-   * 进程已经退出，但仍有后代持有输出管道，读取由本地主动结束。
+   * 进程已经退出，但仍有后代进程持有输出管道，读取由本地主动结束。
    *
-   * 调用方该据此告诉上游「后台还有进程在跑，它之后的输出不在这份结果里」——
-   * 起后台服务的脚本就是这个形状，而那件事在结果里没有别的痕迹。
+   * 调用方应据此告知上游：后台仍有进程在运行，其后续输出不在本结果中。
+   * 启动后台服务的脚本属于这种情况，且结果中没有其他迹象。
    */
   backgroundHeld: boolean
 }
 
 export interface CollectOptions {
-  /** 到点树杀。不给就不设超时——只有形状上不可能长跑的命令才该这么用。 */
+  /** 到期后终止进程树。不提供时不设超时，只适用于不可能长时间运行的命令。 */
   timeoutMs?: number
   /**
-   * 静默上限：任一条流每来一片就重置计时，到点树杀并报 `timedOut`。
+   * 无输出时限：任一条流每收到一片输出即重置计时，到期后终止进程树并报告 `timedOut`。
    *
-   * 与 `timeoutMs` 各自成立，两者都给时先到的那个生效。**判据不同**：
-   * `timeoutMs` 量的是总时长，分不出「仍在产出」与「已经停止响应」；
-   * `idleMs` 量的是两片输出之间的间隔，只要还在写就一直等。
+   * 与 `timeoutMs` 相互独立，两者都提供时先到期的生效。二者判据不同：
+   * `timeoutMs` 计量总时长，无法区分仍在输出与已停止响应；
+   * `idleMs` 计量两片输出之间的间隔，只要仍在输出就持续等待。
    */
   idleMs?: number
-  /** 中断信号。abort 即树杀，这样用户点停止时子进程真的会停。 */
+  /** 中断信号。abort 时终止进程树，使用户点击停止后子进程确实停止。 */
   signal?: AbortSignal
-  /** 每片解码后的文本先过它，**返回值**才计入结果。脱敏与流式回传都在这里做。 */
+  /** 每片解码后的文本先经过此函数，其返回值计入结果。脱敏与流式回传都在此完成。 */
   onText?: (channel: 'stdout' | 'stderr', text: string) => string
-  /** 流收尾时补一段（典型是脱敏器的跨片缓冲）。返回值不再过 `onText`。 */
+  /** 流结束时追加的内容（通常是脱敏器的跨片缓冲）。返回值不再经过 `onText`。 */
   onEnd?: (channel: 'stdout' | 'stderr') => string
   /**
-   * 每条流的字符上限。**上限是读取行为的上限，不是返回值的上限**——
-   * 读完再截的话，一条 `yes` 能在截断生效之前把内存吃光。
-   * 触到上限的判断留给调用方（长度到界即是），这里只负责不再往下读。
+   * 每条流的字符上限。它限制的是读取本身，而不只是返回值：
+   * 读完再截断时，一条 `yes` 命令会在截断生效之前耗尽内存。
+   * 是否达到上限由调用方判断（长度达到上限即是），此处只负责停止读取。
    */
   maxChars?: number
 }
 
 /**
- * 等一个子进程跑完，并把它写出的字节收回来。
+ * 等待子进程执行完毕，并读取其输出的字节。
  *
- * **这是「等子进程」的唯一出口**，与 `spawnGuarded` 是「起子进程」的唯一出口同一条
- * 理由：散在各处的等待意味着完成判据要各写一遍，而写错的那一处不会报错，
- * 只会永远挂着。
+ * 这是等待子进程的唯一入口，理由与 `spawnGuarded` 是启动子进程的唯一入口相同：
+ * 等待逻辑分散在各处时，完成判据需要分别实现，实现错误的一处不会报错，
+ * 只会永久阻塞。
  *
- * **完成判据是进程退出，不是管道 EOF。** EOF 的含义是「所有继承了写端的进程都关掉了它」——那是一群
- * **不属于这次调用**的进程共同决定的事。任何经 shell 派生、又脱离父子关系活下去的进程都能永久扣住
- * 它，而起后台服务的脚本正是这个形状，且那是脚本**正确**的行为：服务本来就该留下。
- * 实测 `bash -c 'echo hello; sleep 20 &'`：26ms 拿到退出码，6 秒后 EOF 仍未到达。
+ * 完成判据是进程退出，不是管道 EOF。EOF 表示所有继承了写端的进程都已关闭写端，这取决于
+ * 一组不属于本次调用的进程。任何经 shell 派生、脱离父子关系后继续存活的进程都能永久持有
+ * 写端，启动后台服务的脚本正是这种情况，且这是脚本的正确行为：服务本应继续运行。
+ * 实测 `bash -c 'echo hello; sleep 20 &'`：26ms 收到退出码，6 秒后 EOF 仍未到达。
  *
- * 拿 EOF 当判据的代价不止这一次调用：调用方不返回 → `run-control` 的 finally
- * 不执行 → `runs.unregister` 不执行 → **整条会话此后回绝所有新任务，而且用户点
- * 停止也停不下来**（停止只是 abort，停不掉一个不返回的 await），直到重启服务。
+ * 以 EOF 为判据的代价不限于本次调用：调用方不返回 → `run-control` 的 finally
+ * 不执行 → `runs.unregister` 不执行 → 该会话此后拒绝所有新任务，且用户点击
+ * 停止也无法停止（停止只是 abort，无法结束一个不返回的 await），直到重启服务。
  *
- * **退出之后为什么还要再等一小会儿。** 反过来「退出即收手」会静默吞字节：内核缓冲里可能还压着最后一
- * 截。所以退出后给 `DRAIN_AFTER_EXIT_MS` 把它捞干净，到点仍无 EOF 就认定有后代扣着写端，取消读端
- * 并如实报 `backgroundHeld`。
+ * 退出后仍需短暂等待：退出后立即停止读取会静默丢失字节，内核缓冲中可能还有最后一段输出。
+ * 因此退出后留出 `DRAIN_AFTER_EXIT_MS` 读取剩余字节，到期仍无 EOF 即判定有后代进程持有写端，
+ * 取消读取并如实报告 `backgroundHeld`。
  */
 export async function collectProcess(
   proc: ProcessLike,
@@ -1194,13 +1194,13 @@ export async function collectProcess(
   const text: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' }
   let timedOut = false
   let backgroundHeld = false
-  // 类型从 `getReader()` 本身推：直接写 `ReadableStreamDefaultReader` 会取到
-  // Bun 的那个全局声明（多一个 `readMany`），与 `node:stream/web` 的那个对不上。
+  // 类型从 `getReader()` 推断：直接写 `ReadableStreamDefaultReader` 会使用
+  // Bun 的全局声明（多一个 `readMany`），与 `node:stream/web` 的声明不一致。
   const readers: ReturnType<ReadableStream<Uint8Array>['getReader']>[] = []
 
-  // 静默计时。每片输出重置一次，所以它量的是两片之间的间隔而不是总时长。
-  // 进程退出后必须停掉：退出之后还有一段捞缓冲的时间，那段没有输出是正常的，
-  // 不停的话一次正常退出会被报成 `timedOut`。
+  // 无输出计时。每片输出重置一次，因此计量的是两片之间的间隔而不是总时长。
+  // 进程退出后必须停止：退出后还有一段读取剩余缓冲的时间，其间没有输出属于正常情况，
+  // 不停止时一次正常退出会被报告为 `timedOut`。
   let idleTimer: ReturnType<typeof setTimeout> | null = null
   const stopIdle = () => {
     if (idleTimer !== null) clearTimeout(idleTimer)
@@ -1215,9 +1215,9 @@ export async function collectProcess(
     }, opts.idleMs)
   }
 
-  // 用显式 reader 而不是 `for await`：后者把流锁在循环里，收尾时外面调
-  // `stream.cancel()` 直接抛 `locked`；而不 cancel、只是丢开这个 promise 的话，
-  // 孤儿进程往管道里写多少，这里就涨多少——那是内存泄漏。
+  // 使用显式 reader 而不是 `for await`：后者把流锁定在循环中，结束时在外部调用
+  // `stream.cancel()` 会直接抛出 `locked`；若不 cancel 而只是放弃该 promise，
+  // 孤儿进程向管道写入多少，此处内存就增长多少，造成内存泄漏。
   const pump = async (stream: ReadableStream<Uint8Array>, channel: 'stdout' | 'stderr') => {
     const reader = stream.getReader()
     readers.push(reader)
@@ -1230,8 +1230,8 @@ export async function collectProcess(
         const decoded = decode(value)
         text[channel] += opts.onText ? opts.onText(channel, decoded) : decoded
         if (opts.maxChars !== undefined && text[channel].length >= opts.maxChars) {
-          // **必须 cancel，不能只 break。** 读端还开着的话写端写满就阻塞，
-          // 进程永远退不出——那等于把输出上限变成一个新的挂死点。
+          // 必须 cancel，不能只 break。读端未关闭时，写端写满后阻塞，
+          // 进程无法退出，输出上限会成为新的阻塞点。
           await reader.cancel().catch(() => {})
           break
         }
@@ -1242,12 +1242,12 @@ export async function collectProcess(
     }
   }
 
-  // 先起计时再开泵：一个字节都不写的进程同样要到点被杀。
+  // 先启动计时再开始读取：不输出任何字节的进程同样必须在到期时终止。
   armIdle()
   const pumping = Promise.all([pump(proc.stdout, 'stdout'), pump(proc.stderr, 'stderr')])
 
-  // 总时长到点、静默到点与中断都走**树杀**：起的是一个 shell 或一个会派生子进程的程序，
-  // 只杀它自己的话，实际执行的那个仍在运行（详见 `killTree`）。
+  // 总时长到期、无输出到期与中断都终止整个进程树：启动的是 shell 或会派生子进程的程序，
+  // 只终止它本身时，实际执行命令的进程仍在运行（详见 `killTree`）。
   const timer =
     opts.timeoutMs === undefined
       ? null

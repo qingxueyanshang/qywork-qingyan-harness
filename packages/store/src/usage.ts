@@ -1,11 +1,10 @@
 /**
  * 用量账本。
  *
- * `runs` 上的 usage 回答的是「这一轮花了多少」；账本回答的是
- * 「这个月花了多少」「哪个模型最贵」「这个工作区烧了多少」。
- * 后者没法从 `runs` 查出来，因为**删会话是正常操作，而账目不该跟着消失**。
+ * `runs` 上的 usage 记录单轮花费；账本统计本月花费、各模型花费、
+ * 各工作区花费。后者无法从 `runs` 查询，因为**删除会话是正常操作，而账目不应随之消失**。
  *
- * 所以账本不设外键：`run_id` / `conversation_id` 只是线索，指向的行没了不影响账目成立。
+ * 因此账本不设外键：`run_id` / `conversation_id` 只是线索，所指向的行被删除不影响账目成立。
  */
 
 import type { Currency, UsageBucket, UsageKind, UsageLedgerRow, UsageTotals } from '@qywork/core'
@@ -22,22 +21,22 @@ export interface UsageEntry {
   provider: string
   inputTokens: number
   outputTokens: number
-  /** null = provider 未回报，与真实 0 命中是两回事。 */
+  /** null 表示 provider 未回报，与实际命中为 0 含义不同。 */
   cachedTokens?: number | null
   cacheWriteTokens?: number | null
   reasoningTokens?: number
   cost: number
-  /** 上面那个数字的币种。省略即 USD。**不换算**，各币种分开合计。 */
+  /** `cost` 的币种。省略即 USD。**不换算**，各币种分开合计。 */
   currency?: Currency
   occurredAt?: number
 }
 
 /**
- * 记一笔。
+ * 记录一笔账目。
  *
- * 同一个 run 重复记会被唯一索引挡住——这里**吞掉那个冲突**而不是抛：
- * 账本是旁路记账，它不该让一次已经跑完的 run 在收尾时失败。
- * 但也不能静默到毫无痕迹，所以返回是否真的写进去了。
+ * 同一个 run 重复记账会被唯一索引拦截；此处**忽略该冲突**而不是抛错：
+ * 账本是旁路记账，不应使一个已执行完毕的 run 在收尾时失败。
+ * 但结果必须可见，因此返回是否实际写入。
  */
 export function recordUsage(store: Store, entry: UsageEntry): boolean {
   try {
@@ -68,16 +67,16 @@ export function recordUsage(store: Store, entry: UsageEntry): boolean {
       )
     return true
   } catch (err) {
-    // **这个 catch 只吞一种错：唯一索引冲突 = 这笔已经记过了**
-    // （收尾逻辑被走两遍时不该让账目翻倍）。
+    // 此 catch 只忽略一种错误：唯一索引冲突，即该笔已记录
+    // （收尾逻辑执行两次时不应使账目翻倍）。
     //
-    // 写成 `catch {}` 会把**所有**错误一起吞掉，因此有一类很难查的故障：给 kind 加新值
-    // 而 schema 上的 CHECK 约束没跟着改，插入直接抛——而这里静默 return false。
-    // 现象是那笔开销照常发生、账本里一行都没有，任何地方都不报错。
+    // 写成 `catch {}` 会忽略**所有**错误：为 kind 新增值
+    // 而 schema 上的 CHECK 约束未同步修改时，插入直接抛错，此处 return false 且不报告，
+    // 结果是开销照常发生、账本中没有任何记录，且任何地方都不报错。
     //
-    // 所以只吞那一种，其余一律说出来。
-    // **仍然不抛**：账本是旁路记账，不该让一次已经跑完的 run 在收尾时失败——
-    // 但「不失败」不等于「不报告」。
+    // 因此只忽略这一种，其余一律报告。
+    // 仍然不抛错：账本是旁路记账，不应使一个已执行完毕的 run 在收尾时失败；
+    // 不抛错不等于不报告。
     const msg = err instanceof Error ? err.message : String(err)
     if (!/UNIQUE constraint failed/i.test(msg)) {
       log.error('usage', `记账失败：${msg}`, { kind: entry.kind })
@@ -87,15 +86,15 @@ export function recordUsage(store: Store, entry: UsageEntry): boolean {
 }
 
 export interface UsageQuery {
-  /** 起始时间（含）。不传 = 从头。 */
+  /** 起始时间（含）。不传时从最早的记录开始。 */
   since?: number
-  /** 结束时间（不含）。不传 = 到现在。 */
+  /** 结束时间（不含）。不传时截至当前。 */
   until?: number
   workspaceId?: string
   /**
-   * 只看这一条会话。**它包含这条会话引发的全部开销**：对话轮次、压缩摘要那次调用
-   * （自动与手动摘要都归入所属轮次），以及它派出去的子会话。
-   * 外部 CLI 的钱花在别家账上，这里拿不到。
+   * 只统计该会话。**包含该会话引发的全部开销**：对话轮次、压缩摘要调用
+   * （自动与手动摘要都归入所属轮次），以及其派发的子会话。
+   * 外部 CLI 的花费记在其他服务商的账上，此处无法取得。
    */
   conversationId?: string
   kind?: UsageKind
@@ -117,9 +116,9 @@ function where(q: UsageQuery): { sql: string; args: (string | number)[] } {
     args.push(q.workspaceId)
   }
   if (q.conversationId) {
-    // 子会话的账记在它自己的 conversation_id 下，父会话按 parent_conversation_id 收回来。
-    // 子会话已被删掉时它的账本行留着但不再匹配——账目按设计比业务数据活得久，
-    // 而「这条会话花了多少」问的是现在还挂在它名下的那些。
+    // 子会话的账目记在其自身的 conversation_id 下，父会话按 parent_conversation_id 汇总。
+    // 子会话已被删除时其账本行保留但不再匹配：按设计，账目的生命周期长于业务数据，
+    // 而会话花费统计的是当前仍归属于该会话的记录。
     parts.push(
       '(conversation_id = ? OR conversation_id IN (SELECT id FROM conversations WHERE parent_conversation_id = ?))',
     )
@@ -157,24 +156,24 @@ function shape(r: RawTotals): UsageTotals {
     entries: r.n,
     inputTokens: r.input_tokens ?? 0,
     outputTokens: r.output_tokens ?? 0,
-    // SUM 会把全 NULL 也算成 NULL，但「有几笔回报过」要单独数——
-    // 一笔都没回报时必须是 null，否则界面上会显示「缓存命中 0」，
-    // 而那是个具体但错误的结论。
+    // 全部为 NULL 时 SUM 的结果为 NULL，但已回报的笔数需要单独统计：
+    // 没有任何一笔回报时必须为 null，否则界面上会显示「缓存命中 0」，
+    // 这是一个具体但错误的结论。
     cachedTokens: r.cached_reports > 0 ? (r.cached_tokens ?? 0) : null,
-    // 同上：一笔都没回报过时是 null，不是 0。缓存写入按「建缓存付了多少」计价，
-    // 和命中是两笔，界面上分开显示。
+    // 同上：没有任何一笔回报时为 null，不是 0。缓存写入按创建缓存的费用计价，
+    // 与命中是两项，界面上分开显示。
     cacheWriteTokens: r.cache_write_reports > 0 ? (r.cache_write_tokens ?? 0) : null,
     reasoningTokens: r.reasoning_tokens ?? 0,
-    // 金额单独查（见 `costsOf`）：一行 SUM 出不来「按币种分开」。
+    // 金额单独查询（见 `costsOf`）：单个 SUM 无法按币种分开统计。
     cost: {},
   }
 }
 
 /**
- * 这段区间里各币种各花了多少。
+ * 区间内各币种的花费。
  *
- * 单独一条 `GROUP BY currency` 而不是塞进 `TOTAL_COLS`：一次 SUM 只能得到
- * 一个数字，而把两种货币加起来的那个数字没有意义。
+ * 使用单独的 `GROUP BY currency` 查询而不是放入 `TOTAL_COLS`：一次 SUM 只能得到
+ * 一个数字，而两种货币相加得到的数字没有意义。
  */
 function costsOf(store: Store, where: string, args: (string | number)[]): Record<string, number> {
   const rows = store.db
@@ -204,8 +203,8 @@ export type GroupBy = 'model' | 'day' | 'workspace' | 'kind' | 'currency'
 
 const GROUP_EXPR: Record<GroupBy, string> = {
   model: 'model',
-  // 按**本地日**分组。用 SQLite 的 localtime 而不是 UTC：用户问「今天花了多少」
-  // 问的是自己那天，UTC 分组会让晚上八点之后的花费算到「明天」。
+  // 按**本地日期**分组。使用 SQLite 的 localtime 而不是 UTC：用户查询当天花费时
+  // 指的是本地日期，按 UTC 分组会使东八区晚上八点之后的花费计入次日。
   day: "strftime('%Y-%m-%d', occurred_at / 1000, 'unixepoch', 'localtime')",
   workspace: "COALESCE(workspace_id, '(无)')",
   kind: 'kind',
@@ -215,10 +214,10 @@ const GROUP_EXPR: Record<GroupBy, string> = {
 /**
  * 分组统计。
  *
- * 按**笔数**倒序，不按金额：多币种下「最贵的排前面」没有唯一解
- * （¥100 和 $20 谁在前？要汇率才知道）。笔数无量纲、跨币种可比，
- * 而且「哪个模型用得最多」本身也是这张表要回答的问题之一。
- * 金额仍在每行里按币种分开列出。
+ * 按**笔数**倒序，不按金额：多币种下按金额倒序没有唯一解
+ * （¥100 与 $20 的先后取决于汇率）。笔数无量纲，可跨币种比较，
+ * 且各模型的使用次数本身也是该统计要回答的问题之一。
+ * 金额仍在每行中按币种分开列出。
  */
 export function usageBy(store: Store, by: GroupBy, q: UsageQuery = {}): UsageBucket[] {
   const w = where(q)
@@ -230,8 +229,8 @@ export function usageBy(store: Store, by: GroupBy, q: UsageQuery = {}): UsageBuc
     )
     .all(...w.args)
 
-  // 金额按 (分组键, 币种) 再查一遍。同一个分组里出现两种币种是可能的
-  // ——`--by day` 就是典型：同一天用了 Claude 也用了 GLM。
+  // 金额按 (分组键, 币种) 再查询一次。同一分组中可能出现两种币种，
+  // `--by day` 是典型情况：同一天既使用了 Claude 也使用了 GLM。
   const costRows = store.db
     .query<{ key: string; currency: string; total: number | null }, (string | number)[]>(
       `SELECT ${expr} AS key, currency, SUM(cost) AS total FROM usage_ledger ${w.sql}
@@ -250,11 +249,11 @@ export function usageBy(store: Store, by: GroupBy, q: UsageQuery = {}): UsageBuc
 }
 
 /**
- * 逐笔列出账目。**分组统计答不了「这一笔是什么时候发生的」**，而「这条会话花在哪」
- * 要按时间把每一笔摆出来：哪一轮、以及夹在轮次之间的那次压缩摘要。
+ * 逐笔列出账目。**分组统计无法给出每笔的发生时间**，而会话花费明细
+ * 需要按时间列出每一笔：所属轮次，以及轮次之间的压缩摘要。
  *
- * 只给界面真要用的列。请求体、指纹这类排查用的数据不在账本里，它们在
- * `provider_requests`。
+ * 只返回界面实际使用的列。请求体、指纹等排查用数据不在账本中，而在
+ * `provider_requests` 中。
  */
 export function usageEntries(store: Store, q: UsageQuery = {}): UsageLedgerRow[] {
   const w = where(q)
@@ -294,29 +293,29 @@ interface RawEntry {
   occurred_at: number
 }
 
-/** 删掉某个时间点之前的账目。用户要清账时用，不是自动 GC。 */
+/** 删除某个时间点之前的账目。供用户手动清理账目，不是自动 GC。 */
 export function pruneUsage(store: Store, before: number): number {
   const r = store.db.query('DELETE FROM usage_ledger WHERE occurred_at < ?').run(before)
   return Number(r.changes ?? 0)
 }
 
 /**
- * 摘要调用**实际写了多长**的分位数（输出 token）。
+ * 摘要调用**实际输出长度**的分位数（输出 token）。
  *
- * 压缩的摘要预算取「装得下多少」与「实际需要多少」的较小者，这个函数回答后半句：
- * 该留多长由分布决定，不由拍一个上限决定。取 p95 而不是极大值——硬上界另有
- * `headroom` 一层，这里只需要覆盖常态；写超了的那次会被「截断作废」闸捕获，
+ * 压缩的摘要预算取可容纳长度与实际所需长度的较小者，本函数给出后者：
+ * 预留长度由分布决定，不由人为设定的上限决定。取 p95 而不是最大值：硬上限另有
+ * `headroom` 一层，此处只需覆盖常见情况；超出预算的那次会被截断作废检查捕获，
  * 并作为一个更大的样本进入下一次的分布。
  *
- * 一笔观测都没有时返回 null（冷启动），调用方退回纯 headroom。
+ * 没有任何观测时返回 null（冷启动），调用方退回仅使用 headroom。
  */
 export function summaryOutputPercentile(
   store: Store,
   workspaceId: string,
   percentile: number,
 ): number | null {
-  // 当前摘要统一来自 provider_requests；旧版本独立摘要只在长期账本里。
-  // 当前轮次费用记 kind=run，不会与旧摘要样本重复。
+  // 当前摘要统一来自 provider_requests；历史独立摘要只在账本中。
+  // 当前轮次费用记为 kind=run，不会与历史摘要样本重复。
   const rows = store.db
     .query<{ output_tokens: number }, [string, string]>(
       `SELECT output_tokens FROM (

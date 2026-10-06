@@ -1,17 +1,17 @@
 /**
- * 本机装了哪些外部 agent CLI，以及它接没接入。
+ * 识别本机已安装的外部 agent CLI 及其接入状态。
  *
- * **为什么内置一张表。** 让用户填「命令、参数模板、输出格式、结果字段」这四项，实测的结果是这一段没
- * 人用：填错了要等到编排跑到一半才报错，而正确答案只能去各家文档里翻。所以改成认表：表里只收**几
- * 家模型厂商自己的 code CLI**，别家不收。
+ * **使用内置厂商表的原因。** 由用户填写命令、参数模板、输出格式、结果字段四项时，实测该功能无人
+ * 使用：填写错误要到编排执行中途才报错，而正确值只能从各厂商文档中查找。因此采用内置表，表中只收录
+ * **模型厂商自身的 code CLI**，不收录其他厂商。
  *
- * 代价明写在这里：表会过期。某家改了调用参数，这里就调不动它；某家改了凭证存放位置，
- * 这里就把已经登录的那条报成「未接入」。两种都表现为界面上少一条或状态不对，
- * 不会表现为跑到一半失败——**加新的一家就往 `KNOWN` 里加一条**。
+ * 代价：厂商表会过期。某厂商修改调用参数后，此处无法调用该 CLI；修改凭证存放位置后，
+ * 已登录的 CLI 会被报告为「未接入」。两种情况都表现为界面上缺少一项或状态错误，
+ * 不会表现为执行中途失败。**新增厂商时在 `KNOWN` 中增加一项**。
  *
- * **「接入」的判据是凭证，不是能不能跑。** 真要确认接没接上，唯一可靠的办法是拿它跑一次——那要花
- * 钱、要几十秒，而这是一个打开设置页就该出结果的探测。所以判据取「见没见到凭证」：环境变量有值，
- * 或者那家的凭证文件在。
+ * **「接入」的判据是凭证，不是能否运行。** 确认接入的唯一可靠方法是实际运行一次，而这会产生
+ * 费用并耗时数十秒，但该探测需要在打开设置页时立即给出结果。因此判据为是否检测到凭证：环境变量有值，
+ * 或该厂商的凭证文件存在。
  */
 
 import { constants } from 'node:fs'
@@ -21,34 +21,34 @@ import { delimiter, isAbsolute, join } from 'node:path'
 import type { CliAgent } from './types.ts'
 
 interface KnownCli extends Omit<CliAgent, 'command'> {
-  /** PATH 上要找的名字。 */
+  /** 在 PATH 上查找的命令名。 */
   bin: string
-  /** 这几个环境变量任一有值就算接入。 */
+  /** 其中任一环境变量有值即视为已接入。 */
   envKeys: string[]
-  /** 家目录下这几个路径任一存在就算接入。 */
+  /** 家目录下其中任一路径存在即视为已接入。 */
   credentials: string[]
 }
 
 /**
- * 认得的几家。**只收模型厂商自己的 code CLI**——编辑器厂商、社区包装不收：
- * 收进来就要跟着它们各自的参数演进，而它们没有稳定的非交互调用约定。
+ * 已知的 CLI。**只收录模型厂商自身的 code CLI**，不收录编辑器厂商与社区封装：
+ * 收录后须跟随其参数变化，而它们没有稳定的非交互调用约定。
  */
 const KNOWN: KnownCli[] = [
   {
     id: 'claude',
     vendor: 'Anthropic',
     bin: 'claude',
-    // `-p` 是它的非交互调用：给一段提示词、跑完就退出。派活只能这么调——
-    // 它跑在服务端，没有人坐在那儿回答它的问题。
+    // `-p` 是其非交互调用方式：传入一段提示词，执行完毕即退出。派发任务只能使用这种方式：
+    // CLI 运行在服务端，无人应答其提问。
     //
-    // `stream-json` 而不是 `json`：后者跑完才一次性返回一个大对象，右侧面板里
-    // 那一页在它结束之前一个字都没有。`--verbose` 是 stream-json 在 `-p` 下的前提。
+    // 使用 `stream-json` 而不是 `json`：后者执行完毕才一次性返回一个大对象，右侧面板中
+    // 对应页面在执行结束之前没有任何内容。`--verbose` 是 `-p` 模式下使用 stream-json 的前提。
     //
-    // `--permission-mode acceptEdits` 不是可选项：不给的话它**一个字节都写不了**。
-    // 实测（2026-08-24）派它建一个文件加改一行，四种写法（Write / Edit / Bash 重定向 /
-    // PowerShell）全被它自己的权限闸拦下，原话「requested permissions to write … but you
-    // haven't granted it yet」——stdin 已关闭，无人能应答该权限请求。**它退出码仍是 0**，
-    // 因此这一侧照样算它做成了。它接受的只是工作目录内的编辑，边界与派活这件事本身同宽。
+    // `--permission-mode acceptEdits` 是必需参数：不传入时它**无法写入任何字节**。
+    // 实测（2026-08-24）派发任务要求它创建一个文件并修改一行，四种写法（Write / Edit / Bash 重定向 /
+    // PowerShell）均被其自身的权限检查拦截，原文「requested permissions to write … but you
+    // haven't granted it yet」：stdin 已关闭，无人能应答该权限请求。**其退出码仍为 0**，
+    // 因此本侧仍会判定任务成功。该模式只允许工作目录内的编辑，边界与派发任务本身的范围一致。
     args: [
       '-p',
       '{prompt}',
@@ -60,15 +60,15 @@ const KNOWN: KnownCli[] = [
     ],
     output: 'jsonl',
     resultField: 'result',
-    // 正文与工具名都在 `assistant` 那种行的内容块数组里：文本块有 `text`，
-    // 工具调用块有 `name`。不声明这两条路径的话，实时页显示的是 `thinking_tokens`
-    // 这类计数事件的原始 JSON 行，而没有 `result` 行时回执也取不到正文。
+    // 正文与工具名都在 `assistant` 类型行的内容块数组中：文本块有 `text`，
+    // 工具调用块有 `name`。不声明这两条路径时，实时页显示的是 `thinking_tokens`
+    // 等计数事件的原始 JSON 行，且没有 `result` 行时回执无法取得正文。
     narrate: { text: 'message.content[].text', tool: 'message.content[].name' },
-    // 会话 id 在顶层 `session_id` 上（`system/init` 与 `result` 两行都带）。
-    // **不能写 `result.session_id`**：末行那个 `result` 是答案正文，是字符串不是对象。
+    // 会话 id 在顶层 `session_id` 上（`system/init` 与 `result` 两行都有）。
+    // **不能写 `result.session_id`**：末行的 `result` 是答案正文，是字符串而不是对象。
     sessionField: 'session_id',
-    // `--resume` 按它的帮助只在 `--print` 下有效，正是派活这条路。实测接着问
-    // 「你刚才改了哪些文件」，它凭记忆答得出来，没有重新去读文件。
+    // 按其帮助说明，`--resume` 只在 `--print` 下有效，即派发任务所用的调用方式。实测续问
+    // 「你刚才改了哪些文件」时，它依据会话记录作答，未重新读取文件。
     resumeArgs: [
       '-p',
       '{prompt}',
@@ -87,16 +87,16 @@ const KNOWN: KnownCli[] = [
     id: 'codex',
     vendor: 'OpenAI',
     bin: 'codex',
-    // `--skip-git-repo-check` 不是可选项：codex 默认拒绝在非 git 目录里跑
-    // （原话「Not inside a trusted directory」），因此派给它的节点在任何一个
-    // 不是 git 仓库的工作区里必然失败。工作区是用户自己选的、模型是他自己派的，
-    // 这层判断该由 qywork 的权限模式管，不该由被调度的 CLI 再拦一道。
+    // `--skip-git-repo-check` 是必需参数：codex 默认拒绝在非 git 目录中运行
+    // （原文「Not inside a trusted directory」），因此派发给它的节点在任何
+    // 非 git 仓库的工作区中必然失败。工作区由用户选择，派发由用户的模型发起，
+    // 该判断应由 qywork 的权限模式负责，不应由被调度的 CLI 再次拦截。
     args: ['exec', '--json', '--skip-git-repo-check', '{prompt}'],
     output: 'jsonl',
-    // 答案在 `item.completed` 那种行的 `item.text` 上，顶层没有 `result`。
+    // 答案在 `item.completed` 类型行的 `item.text` 上，顶层没有 `result`。
     resultField: 'item.text',
-    // 中途的每条 `item.text` 都是它这一步说的话，正文路径与答案同一条；
-    // 工具名不在这个路径下（命令行在 `item.command` 上），因此只声明正文。
+    // 中途的每条 `item.text` 都是该步骤的输出，正文路径与答案路径相同；
+    // 工具名不在该路径下（命令行在 `item.command` 上），因此只声明正文。
     narrate: { text: 'item.text' },
     // 会话 id 在第一行 `thread.started` 的顶层 `thread_id` 上。
     sessionField: 'thread_id',
@@ -126,14 +126,14 @@ const KNOWN: KnownCli[] = [
     id: 'grok',
     vendor: 'xAI',
     bin: 'grok',
-    // `-p` 是它的 `--single`：跑一轮打印结果就退出。默认它是个 TUI。
+    // `-p` 等同于其 `--single`：执行一轮、打印结果后退出。默认模式是 TUI。
     //
-    // `--output-format json` 出来的是**一个**缩进过的对象（不是逐行），所以走 `json` 那一档；
-    // 逐行解析对它一行都取不到。
+    // `--output-format json` 输出的是**一个**缩进过的对象（不是逐行），因此使用 `json` 格式；
+    // 逐行解析无法取得任何一行。
     //
     // **`--always-approve` 不能换成 `--permission-mode acceptEdits`**：实测（2026-08-25）
-    // 后者会让它在第一次工具调用处停下，回来的对象是 `stopReason: "cancelled"`、`num_turns: 1`，
-    // 正文写着「正在创建 g1.txt」而文件没有。stdin 是关的，没有人能批准那一次调用。
+    // 后者会使其在第一次工具调用处停止，返回的对象为 `stopReason: "cancelled"`、`num_turns: 1`，
+    // 正文为「正在创建 g1.txt」而文件并未创建。stdin 已关闭，无人能批准该次调用。
     args: ['-p', '{prompt}', '--output-format', 'json', '--always-approve'],
     output: 'json',
     resultField: 'text',
@@ -154,15 +154,15 @@ const KNOWN: KnownCli[] = [
     id: 'kimi',
     vendor: '月之暗面',
     bin: 'kimi',
-    // **不要加 `--auto` 或 `-y/--yolo`**：实测（2026-08-25）它当场拒绝，
-    // 原话「Cannot combine --prompt with --auto」，因此每一次派活都以退出码 1 收场。
+    // **不要添加 `--auto` 或 `-y/--yolo`**：实测（2026-08-25）它直接拒绝，
+    // 原文「Cannot combine --prompt with --auto」，因此每一次派发任务都以退出码 1 结束。
     //
-    // 它**有** `--output-format stream-json` 与 `-S/--session <id>`，所以接着问这条路存在，
-    // 但那两项要填进表里得先看一次成功的输出。**这台机器上采不到**：它的服务端对
-    // 四个模型别名（kimi-for-coding / -highspeed / k3 / k3-256k）全部回 500
-    // （`APIStatusError`，它自己重试到第 10 次放弃），流里只见得到 `turn.step.retrying`。
-    // 已知的形状只有事件信封是 `{ role, type, … }`。**采到之前不猜**：
-    // 猜错的表现是「表里写着能接着问，跑起来取不到 id」。
+    // 它**支持** `--output-format stream-json` 与 `-S/--session <id>`，因此存在续问的调用方式，
+    // 但将这两项写入厂商表之前须先查看一次成功的输出。**本机无法采集**：其服务端对
+    // 四个模型别名（kimi-for-coding / -highspeed / k3 / k3-256k）全部返回 500
+    // （`APIStatusError`，它自行重试至第 10 次后放弃），流中只有 `turn.step.retrying`。
+    // 已知的结构只有事件信封为 `{ role, type, … }`。**采集到输出之前不推测**：
+    // 推测错误会导致表中声明支持续问、运行时却无法取得 id。
     args: ['-p', '{prompt}'],
     output: 'text',
     envKeys: ['KIMI_API_KEY'],
@@ -171,26 +171,26 @@ const KNOWN: KnownCli[] = [
 ]
 
 export interface DetectedCli extends CliAgent {
-  /** 解析出来的可执行文件绝对路径。 */
+  /** 解析得到的可执行文件绝对路径。 */
   path: string
-  /** 见到凭证了。见文件头：判的是凭证在不在，不是真的跑通了。 */
+  /** 已检测到凭证。见文件头：判定的是凭证是否存在，不是能否实际运行成功。 */
   connected: boolean
 }
 
 /**
- * 扫一遍 PATH，返回装着的那几家。没装的**不出现在结果里**。
- *
- * `env` 可注入是为了测试；生产上就是 `process.env`。
- */
-/**
- * 一次识别的结果在进程内缓存这么久。识别要按 PATH 的每个目录逐个探文件，Windows 上
- * 一次要上千次 stat；每一轮开始都要这份清单，不缓存的话每轮都付这个代价。
- * 装卸 CLI 是机器级操作，半分钟内看不到新装的那个是可接受的边界。
+ * 识别结果在进程内的缓存时长。识别需要在 PATH 的每个目录中逐个检查文件，在 Windows 上
+ * 一次需要上千次 stat；每一轮开始都需要该清单，不缓存时每轮都要承担该开销。
+ * 安装或卸载 CLI 是机器级操作，半分钟内识别不到新安装的 CLI 是可接受的边界。
  */
 const DETECT_CACHE_MS = 30_000
-/** 缓存按 PATH 的内容认，不按 env 对象认：`process.env` 永远是同一个对象，PATH 改了也得重扫。 */
+/** 缓存按 PATH 的内容判定，不按 env 对象判定：`process.env` 始终是同一个对象，PATH 修改后也必须重新扫描。 */
 let detected: { path: string; at: number; value: DetectedCli[] } | null = null
 
+/**
+ * 扫描 PATH，返回已安装的 CLI。未安装的**不出现在结果中**。
+ *
+ * `env` 可注入用于测试；生产环境中即为 `process.env`。
+ */
 export async function detectClis(env: NodeJS.ProcessEnv = process.env): Promise<DetectedCli[]> {
   const path = env.PATH ?? env.Path ?? ''
   if (detected && detected.path === path && Date.now() - detected.at < DETECT_CACHE_MS) {
@@ -214,10 +214,10 @@ async function scanClis(env: NodeJS.ProcessEnv): Promise<DetectedCli[]> {
       args: k.args,
       output: k.output,
       ...(k.resultField ? { resultField: k.resultField } : {}),
-      // 这两项漏抄的话「接着问」会静默失效：表里写着，跑起来却没有。
+      // 遗漏复制这两项时续问会失效且不报错：厂商表中有声明，运行时却没有。
       ...(k.sessionField ? { sessionField: k.sessionField } : {}),
       ...(k.resumeArgs ? { resumeArgs: k.resumeArgs } : {}),
-      // 漏抄它的表现是实时页只有原始 JSON 行、没有 result 行的那次回执为空。
+      // 遗漏复制该项时，实时页只有原始 JSON 行，没有 result 行时回执为空。
       ...(k.narrate ? { narrate: k.narrate } : {}),
       path,
       connected: await hasCredentials(k, home, env),
@@ -226,7 +226,7 @@ async function scanClis(env: NodeJS.ProcessEnv): Promise<DetectedCli[]> {
   return found
 }
 
-/** 按 id 取一条识别结果，给编排与工具用。没装或不认识的返回 undefined。 */
+/** 按 id 取一条识别结果，供编排与工具使用。未安装或未知的 id 返回 undefined。 */
 export async function findCli(
   id: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -243,12 +243,12 @@ async function hasCredentials(k: KnownCli, home: string, env: NodeJS.ProcessEnv)
 }
 
 /**
- * 在 PATH 上找一个命令，返回绝对路径。
+ * 在 PATH 上查找命令，返回绝对路径。
  *
- * **Windows 上必须自己按后缀试。** 同一个名字在 PATH 上往往有三个入口
- * （`x`、`x.cmd`、`x.exe`），无后缀的那个是 sh 脚本，交给 Windows 起进程会失败；
- * 按 PATHEXT 的顺序找出真正能执行的那个，路径也要落到绝对路径上——
- * 相对名字会让子进程继承一次 PATH 查找，结果可能与这里探到的不是同一个文件。
+ * **Windows 上必须自行按后缀尝试。** 同一个名称在 PATH 上通常有三个入口
+ * （`x`、`x.cmd`、`x.exe`），无后缀的入口是 sh 脚本，交给 Windows 启动进程会失败；
+ * 按 PATHEXT 的顺序找出实际可执行的入口，并解析为绝对路径：
+ * 使用相对名称时子进程会再做一次 PATH 查找，结果可能与此处找到的不是同一个文件。
  */
 async function resolveOnPath(bin: string, env: NodeJS.ProcessEnv): Promise<string | null> {
   const dirs = (env.PATH ?? env.Path ?? '').split(delimiter).filter(Boolean)
@@ -263,16 +263,16 @@ async function resolveOnPath(bin: string, env: NodeJS.ProcessEnv): Promise<strin
       const p = join(base, bin + ext.toLowerCase())
       if (await runnable(p)) return p
     }
-    // POSIX 上没有后缀这一说；Windows 上无后缀的那个也要认（可能是真的可执行文件）。
+    // POSIX 上不区分后缀；Windows 上无后缀的文件同样识别（可能是实际的可执行文件）。
     if (process.platform === 'win32' && (await exists(join(base, bin)))) return join(base, bin)
   }
   return null
 }
 
 /**
- * 这个路径能否当命令执行。POSIX 上要求是带执行位的普通文件：没有执行位的文件与同名目录，
- * `execve` 以 EACCES 拒绝，shell 按 PATH 查找时跳过它们继续往后找。
- * Windows 没有执行位，能否执行由后缀决定，存在即可。
+ * 判断路径能否作为命令执行。POSIX 上要求是带执行位的普通文件：没有执行位的文件与同名目录，
+ * `execve` 以 EACCES 拒绝，shell 按 PATH 查找时跳过它们并继续向后查找。
+ * Windows 没有执行位，能否执行由后缀决定，文件存在即可。
  */
 async function runnable(p: string): Promise<boolean> {
   if (process.platform === 'win32') return exists(p)

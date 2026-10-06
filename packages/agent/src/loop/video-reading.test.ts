@@ -1,9 +1,9 @@
 /**
- * 工具读到的视频：怎么进请求、怎么计读数。
+ * 工具读取的视频：如何写入请求、如何计入读数。
  *
  * 覆盖范围：`loop/request.ts` 的 `toolResultContent` / `videosOf` / `envelopeResult` / `omitImages`
  * 对视频块的处理，`ai` 的 `estimateContent` 对视频计 0，`loop/context.ts` 的 `contextEvent` 与
- * `loop/run-state.ts` 的 `unmeasuredVideos` 标出还没有真值的视频，`loop/turn-end.ts` 拿带视频的请求当锚点。
+ * `loop/run-state.ts` 的 `unmeasuredVideos` 标出尚无真值的视频，`loop/turn-end.ts` 将带视频的请求作为锚点。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -20,8 +20,8 @@ import { envelopeResult, omitImages, toolResultContent } from './request.ts'
 
 const VIDEO = { path: '/w/generated/a.mp4', mime: 'video/mp4' }
 
-describe('工具结果里的视频块', () => {
-  test('按路径挂在信封旁边，信封里不留路径', () => {
+describe('工具结果中的视频块', () => {
+  test('按路径作为信封之后的内容块，信封中不保留路径', () => {
     const content = toolResultContent('{"summary":"读取"}', { videos: [VIDEO], note: 1 })
     expect(content).toEqual([
       { type: 'text', text: '{"summary":"读取"}' },
@@ -30,7 +30,7 @@ describe('工具结果里的视频块', () => {
     expect(envelopeResult({ videos: [VIDEO], note: 1 })).toEqual({ note: 1 })
   })
 
-  test('已送达过的视频同图片一样摘掉，信封标 images_omitted', () => {
+  test('已送达的视频与图片一样被移除，信封标记 images_omitted', () => {
     const message: WireMessage = {
       role: 'tool',
       toolCallId: 'c1',
@@ -60,7 +60,7 @@ describe('工具结果里的视频块', () => {
   })
 })
 
-/** 第一轮调一个读视频的工具，第二轮（带着视频块）回报 5 万输入 token 后结束。 */
+/** 第一轮调用一个读取视频的工具，第二轮（携带视频块）回报 5 万输入 token 后结束。 */
 function adapter(): LlmAdapter & { seen: ChatRequest[] } {
   const spec = { ...lookupModel('qwen3.6-plus', 'openai_chat_completions'), video: true }
   const seen: ChatRequest[] = []
@@ -126,13 +126,13 @@ test('带视频的请求发出前标出未计的视频；回执之后读数采�
     events.push(ev)
   }
   const contexts = events.filter((e) => e.type === 'context')
-  // 第二次请求带着视频块；发出前的读数标出 1 段未计。
+  // 第二次请求携带视频块；发出前的读数标出 1 段未计入的视频。
   const withVideo = a.seen[1]!.messages.some(
     (m) => typeof m.content !== 'string' && m.content.some((b) => b.type === 'video'),
   )
   expect(withVideo).toBe(true)
   expect(contexts.some((e) => e.type === 'context' && e.unmeasuredVideos === 1)).toBe(true)
-  // 视频留在请求里，之后每次都随请求发出：收尾的读数采用那次含视频的 5 万真值，不再标未计。
+  // 视频保留在请求中，此后每次都随请求发出：结束时的读数采用该次含视频的 5 万真值，不再标出未计入的视频。
   const last = contexts.at(-1)
   expect(last?.type === 'context' && last.tokens).toBeGreaterThanOrEqual(50_000)
   expect(last?.type === 'context' && last.unmeasuredVideos).toBeFalsy()

@@ -18,7 +18,7 @@ import {
   settleVersion,
 } from './canvas.ts'
 
-/** 依次返回 a1、a2……的 id 生成器，让断言能写死 id。 */
+/** 依次返回 a1、a2……的 id 生成器，使断言可以使用固定 id。 */
 function ids(prefix = 'a'): () => string {
   let n = 0
   return () => `${prefix}${++n}`
@@ -45,7 +45,7 @@ function gen(doc: CanvasDoc, id: string): CanvasGenerateNode {
 const made = { prompt: 'p', provider: 'qwen', model: 'wan', params: {}, inputs: [], at: 't' }
 const version = (id: string, path: string): CanvasVersion => ({ id, path, made })
 
-/** 小满、妈妈两张图，视频1（已有一版），视频2 以两张图为参考。 */
+/** 两张图（小满、妈妈），视频1（已有一个版本），视频2 以两张图为参考。 */
 function sample(): CanvasDoc {
   let doc = apply(emptyCanvas(), [
     { op: 'add_file', ref: '$xm', path: '角色/小满.png' },
@@ -60,7 +60,7 @@ function sample(): CanvasDoc {
 }
 
 describe('画布：格式', () => {
-  test('模型参数按节点与接口分别记忆，换回来和重开画布均恢复', () => {
+  test('模型参数按节点与接口分别保存，切换回原接口和重新打开画布后均恢复', () => {
     let doc = apply(emptyCanvas(), [
       {
         op: 'add_generate',
@@ -82,7 +82,7 @@ describe('画布：格式', () => {
     doc = apply(doc, [{ op: 'update', id: 'a1', provider: 'other', model: 'qwen' }])
     expect(gen(doc, 'a1').params).toEqual({})
   })
-  test('文件类别按扩展名判：图片、视频、音频、正文，其余回 null', () => {
+  test('文件类别按扩展名判定：图片、视频、音频、正文，其余返回 null', () => {
     expect(['a.PNG', 'b.mp4', 'c.m4a', 'd.md', 'e.txt', 'f.pdf'].map(canvasFileKind)).toEqual([
       'image',
       'video',
@@ -93,14 +93,14 @@ describe('画布：格式', () => {
     ])
   })
 
-  test('写出再读回，字节不变', () => {
+  test('写出后重新读取，字节不变', () => {
     const text = serializeCanvas(sample())
     const back = parseCanvas(text)
     expect(back.ok).toBe(true)
     if (back.ok) expect(serializeCanvas(back.doc)).toBe(text)
   })
 
-  test('不认识的字段、坏 JSON、不认识的版本都拒绝', () => {
+  test('未知字段、无效 JSON、未知版本均被拒绝', () => {
     expect(parseCanvas('{').ok).toBe(false)
     expect(parseCanvas('{"version":2,"nodes":[],"edges":[]}').ok).toBe(false)
     const extra = JSON.parse(serializeCanvas(sample()))
@@ -108,7 +108,7 @@ describe('画布：格式', () => {
     expect(parseCanvas(JSON.stringify(extra)).ok).toBe(false)
   })
 
-  test('生成记录：追加在文档末尾，写出再读回字节不变；没有记录时文件里没有这个键', () => {
+  test('生成记录：追加在文档末尾，写出后重新读取字节不变；没有记录时文件中不含该键', () => {
     const doc = sample()
     expect(JSON.parse(serializeCanvas(doc))).not.toHaveProperty('runs')
     const r = recordRun(doc, {
@@ -134,7 +134,7 @@ describe('画布：格式', () => {
     expect(serializeCanvas(back.doc)).toBe(text)
   })
 
-  test('生成记录：结果词不认识、多出字段、输入不合法的都拒绝', () => {
+  test('生成记录：结果值未知、含多余字段、输入不合法时均被拒绝', () => {
     const base = { node: 'a1', action: 'run', start: 's', end: 'e', result: 'done' } as const
     expect(recordRun(sample(), { ...base, result: 'ok' as 'done' }).ok).toBe(false)
     const text = (run: unknown) =>
@@ -145,7 +145,7 @@ describe('画布：格式', () => {
     expect(parseCanvas(text({ ...base, cost: '1' })).ok).toBe(false)
   })
 
-  test('手改出悬空 @ 的文件读不进来', () => {
+  test('手动修改后含悬空 @ 的文件无法读取', () => {
     const doc = JSON.parse(serializeCanvas(sample()))
     doc.edges = []
     const r = parseCanvas(JSON.stringify(doc))
@@ -154,7 +154,7 @@ describe('画布：格式', () => {
 })
 
 describe('画布：操作', () => {
-  test('批内名字换成分配的 id，提示词里的 @ 自动连上参考线', () => {
+  test('批内名称替换为分配的 id，提示词中的 @ 自动建立参考图连线', () => {
     const doc = sample()
     expect(gen(doc, 'a4').prompt).toBe('@[a1] 和 @[a2] 在校门口')
     expect(doc.edges.map((e) => [e.from, e.to, e.role])).toEqual([
@@ -163,29 +163,29 @@ describe('画布：操作', () => {
     ])
   })
 
-  test('改提示词新引用未连的视频节点，补一条参考视频线', () => {
+  test('修改提示词后新引用未连接的视频节点，补充一条参考视频连线', () => {
     const doc = apply(sample(), [
       { op: 'update', id: 'a4', prompt: '@[a1] 接 @[a3] 的最后一个镜头' },
     ])
     expect(doc.edges.find((e) => e.from === 'a3')).toMatchObject({ to: 'a4', role: 'video' })
-    // 从提示词里去掉 @ 不删线：输入只由线决定。
+    // 从提示词中删除 @ 不删除连线：输入只由连线决定。
     expect(doc.edges.some((e) => e.from === 'a2' && e.to === 'a4')).toBe(true)
   })
 
-  test('删节点连带删线，别的提示词里对它的 @ 变成名字纯文本', () => {
+  test('删除节点时一并删除连线，其他提示词中对它的 @ 变为名称纯文本', () => {
     const doc = apply(sample(), [{ op: 'remove', id: 'a2' }])
     expect(doc.nodes.some((n) => n.id === 'a2')).toBe(false)
     expect(doc.edges.some((e) => e.from === 'a2')).toBe(false)
     expect(gen(doc, 'a4').prompt).toBe('@[a1] 和 妈妈 在校门口')
   })
 
-  test('单删一条线，对应的 @ 同样变成纯文本', () => {
+  test('单独删除一条连线，对应的 @ 同样变为纯文本', () => {
     const edge = sample().edges.find((e) => e.from === 'a1')!
     const doc = apply(sample(), [{ op: 'remove', id: edge.id }])
     expect(gen(doc, 'a4').prompt).toBe('小满 和 @[a2] 在校门口')
   })
 
-  test('切到首尾帧：前两张图变首帧、尾帧；再切回全变参考', () => {
+  test('切换到首尾帧：前两张图变为首帧、尾帧；切换回来后全部变为参考', () => {
     let doc = apply(sample(), [
       { op: 'add_file', ref: '$tk', path: '道具/三轮车.png' },
       { op: 'connect', from: '$tk', to: 'a4', role: 'reference' },
@@ -197,13 +197,13 @@ describe('画布：操作', () => {
       ['a1', 'first_frame'],
       ['a2', 'last_frame'],
     ])
-    // 断开的那张图在提示词里变成纯文本。
+    // 断开的图片在提示词中变为纯文本。
     expect(gen(doc, 'a4').prompt).toBe('@[a1] 和 @[a2] 推着 三轮车')
     doc = apply(doc, [{ op: 'set_mode', id: 'a4', mode: 'reference' }])
     expect(doc.edges.filter((e) => e.to === 'a4').every((e) => e.role === 'reference')).toBe(true)
   })
 
-  test('首尾帧互换：同一批改两条线的用途', () => {
+  test('首尾帧互换：同一批修改两条连线的用途', () => {
     let doc = apply(sample(), [{ op: 'set_mode', id: 'a4', mode: 'first_last' }])
     const [first, last] = doc.edges.filter((e) => e.to === 'a4')
     doc = apply(doc, [
@@ -213,32 +213,32 @@ describe('画布：操作', () => {
     expect(doc.edges.find((e) => e.id === first!.id)?.role).toBe('last_frame')
   })
 
-  test('首尾帧模式下 @ 一个未连的节点，整批拒绝', () => {
+  test('首尾帧模式下 @ 未连接的节点，整批拒绝', () => {
     const doc = apply(sample(), [
       { op: 'set_mode', id: 'a4', mode: 'first_last' },
       { op: 'add_file', ref: '$tk', path: '道具/三轮车.png' },
     ])
     const tk = doc.nodes.at(-1)!.id
     expect(rejects(doc, [{ op: 'update', id: 'a4', prompt: `推着 @[${tk}]` }])).toContain('首尾帧')
-    // 连线也一样：首尾帧与参考图不能同时给。
+    // 连线同理：首尾帧与参考图不能同时提供。
     expect(rejects(doc, [{ op: 'connect', from: tk, to: 'a4', role: 'reference' }])).toContain(
       '首尾帧',
     )
   })
 
-  test('@ 自己、连到自己都拒绝', () => {
+  test('@ 自身、连接到自身均被拒绝', () => {
     expect(rejects(sample(), [{ op: 'update', id: 'a4', prompt: '@[a4]' }])).toContain('自己')
     expect(rejects(sample(), [{ op: 'connect', from: 'a4', to: 'a4', role: 'video' }])).toContain(
       '自己',
     )
   })
 
-  test('用途方向或类别不对，整批拒绝', () => {
+  test('用途方向或类别不符时整批拒绝', () => {
     const doc = sample()
-    // 视频连到出图节点、图片当参考视频、连到文件节点、文本当输入。
+    // 视频连接到出图节点、图片作为参考视频、连接到文件节点、文本作为输入。
     const img = apply(doc, [{ op: 'add_generate', output: 'image' }], ids('i'))
     expect(rejects(img, [{ op: 'connect', from: 'a3', to: 'i1', role: 'reference' }])).toContain(
-      '只收参考图',
+      '只接受参考图',
     )
     expect(rejects(doc, [{ op: 'connect', from: 'a1', to: 'a3', role: 'video' }])).toContain(
       '只能作为参考图',
@@ -252,7 +252,7 @@ describe('画布：操作', () => {
     )
   })
 
-  test('一批三条第三条失败，前两条不生效', () => {
+  test('一批三条操作中第三条失败，前两条不生效', () => {
     const doc = sample()
     const before = serializeCanvas(doc)
     rejects(doc, [
@@ -263,7 +263,7 @@ describe('画布：操作', () => {
     expect(serializeCanvas(doc)).toBe(before)
   })
 
-  test('当前版本只能指到存在的版本；删当前版退到最后一版', () => {
+  test('当前版本只能指向存在的版本；删除当前版本后回退到最后一个版本', () => {
     const doc = apply(sample(), [], ids())
     expect(rejects(doc, [{ op: 'update', id: 'a3', current: 'v-none' }])).toContain('当前版本')
     const two = addVersions(doc, 'a3', [version('v-new', 'generated/2.mp4')])
@@ -273,14 +273,14 @@ describe('画布：操作', () => {
     expect(rejects(back, [{ op: 'remove', id: 'a3', version: 'v-none' }])).toContain('版本')
   })
 
-  test('操作里写不进版本', () => {
+  test('操作中无法写入版本', () => {
     const r = parseCanvasOps([{ op: 'update', id: 'a3', versions: [] }])
     expect(r.ok).toBe(false)
     expect(parseCanvasOps([{ op: 'toString', id: 'a3' }]).ok).toBe(false)
     expect(parseCanvasOps([{ op: 'remove', id: 'a3' }]).ok).toBe(true)
   })
 
-  test('删掉的节点 id 不会分给同一批新建的节点', () => {
+  test('被删除节点的 id 不会分配给同一批新建的节点', () => {
     // 生成器第一次返回被删节点的 id。
     const seq = ['a2', 'fresh']
     const doc = apply(
@@ -294,18 +294,18 @@ describe('画布：操作', () => {
     expect(doc.nodes.at(-1)!.id).toBe('fresh')
   })
 
-  test('重复 id 的文件读不进来', () => {
+  test('含重复 id 的文件无法读取', () => {
     const doc = JSON.parse(serializeCanvas(sample()))
     doc.nodes[1].id = doc.nodes[0].id
     expect(parseCanvas(JSON.stringify(doc)).ok).toBe(false)
   })
 
-  test('默认名按同类最大序号加一', () => {
+  test('默认名称取同类最大序号加一', () => {
     const doc = apply(sample(), [{ op: 'add_generate', output: 'video' }], ids('n'))
     expect(gen(doc, 'n1').name).toBe('视频3')
   })
 
-  test('beside 放在源节点右侧的空位：被占就往下挪，同一批加的两个也不相交', () => {
+  test('beside 放在源节点右侧的空位：被占用时向下移动，同一批添加的两个节点也不相交', () => {
     const base = apply(
       emptyCanvas(),
       [
@@ -335,7 +335,7 @@ describe('画布：操作', () => {
     }
   })
 
-  test('复制：选区内的连线与 @ 指向副本；不带输入时外部 @ 变名字，带输入时连上外部线', () => {
+  test('复制：选区内的连线与 @ 指向副本；不带输入时外部 @ 变为名称，带输入时连接外部连线', () => {
     const base = apply(
       emptyCanvas(),
       [
@@ -374,7 +374,7 @@ describe('画布：操作', () => {
         .sort(),
     ).toEqual(['s1', 's2'])
 
-    // 粘到另一张没有这两个素材的画布：带输入也连不上，@ 改成名字。
+    // 粘贴到不含这两个素材的另一张画布：带输入也无法连接，@ 改为名称。
     const other = apply(
       emptyCanvas(),
       copyOps(doc, ['s3'], emptyCanvas(), { dx: 0, dy: 0 }, true),
@@ -384,7 +384,7 @@ describe('画布：操作', () => {
     expect(other.edges).toEqual([])
   })
 
-  test('near 以该点为中心放，被占就往下挪；格式不对的点整批拒绝', () => {
+  test('near 以该点为中心放置，被占用时向下移动；坐标格式错误时整批拒绝', () => {
     const base = apply(emptyCanvas(), [{ op: 'add_file', path: 'a.png', x: 0, y: 0 }], ids('b'))
     const free = apply(
       base,
@@ -409,7 +409,7 @@ describe('画布：操作', () => {
     )
   })
 
-  test('beside 给了 x、y 以它们为准；指向不存在的节点整批拒绝', () => {
+  test('beside 同时给出 x、y 时以 x、y 为准；指向不存在的节点时整批拒绝', () => {
     const doc = apply(
       sample(),
       [{ op: 'add_file', path: 'x.png', beside: 'a1', x: 7, y: 9 }],
@@ -422,7 +422,7 @@ describe('画布：操作', () => {
 })
 
 describe('画布：版本', () => {
-  test('追加多版时当前版指向第一张；改指路径按版本 id 找', () => {
+  test('追加多个版本时当前版本指向第一张；修改版本路径时按版本 id 查找', () => {
     const r = addVersions(sample(), 'a4', [
       version('p1', 'generated/a.png'),
       version('p2', 'generated/a-2.png'),
@@ -439,7 +439,7 @@ describe('画布：版本', () => {
   })
 })
 
-describe('画布：框按媒体比例', () => {
+describe('画布：框按媒体比例调整', () => {
   const box = (doc: CanvasDoc, id: string) => {
     const n = doc.nodes.find((x) => x.id === id)!
     return { w: n.w, h: n.h }
@@ -478,13 +478,13 @@ describe('画布：框按媒体比例', () => {
     expect(box(source, 'a1')).toEqual({ w: 169, h: 169 })
   })
 
-  test('短边不变、长边按媒体的宽高比：竖图的宽取横图的高', async () => {
+  test('短边不变、长边按媒体宽高比计算：竖图的宽度取横图的高度', async () => {
     const { fitBox } = await import('./canvas.ts')
     expect(fitBox({ w: 169, h: 169 }, { w: 1536, h: 1024 })).toEqual({ w: 254, h: 169 })
     expect(fitBox({ w: 169, h: 169 }, { w: 1080, h: 1920 })).toEqual({ w: 169, h: 300 })
   })
 
-  test('出结果时框换成当前版的比例；切版本、删当前版跟着换；没有尺寸的版本不动框', () => {
+  test('取得结果时框改为当前版本的比例；切换版本、删除当前版本时随之调整；没有尺寸的版本不改变框', () => {
     let doc = apply(emptyCanvas(), [{ op: 'add_generate', ref: '$g', output: 'image' }])
     expect(box(doc, 'a1')).toEqual({ w: 169, h: 169 })
     const r = addVersions(doc, 'a1', [
@@ -505,12 +505,12 @@ describe('画布：框按媒体比例', () => {
     doc = apply(doc, [{ op: 'remove', id: 'a1', version: 'plain' }])
     expect(gen(doc, 'a1').current).toBe('tall')
     expect(box(doc, 'a1')).toEqual({ w: 169, h: 254 })
-    // 同一次操作给了 w / h 时以它们为准。
+    // 同一次操作给出 w / h 时以其为准。
     doc = apply(doc, [{ op: 'update', id: 'a1', current: 'tall', w: 300, h: 100 }])
     expect(box(doc, 'a1')).toEqual({ w: 300, h: 100 })
   })
 
-  test('取回的视频带尺寸落定后，竖版视频的框变竖', () => {
+  test('取回的视频带尺寸确定后，竖版视频的框变为竖向', () => {
     const r = addVersions(
       apply(emptyCanvas(), [{ op: 'add_generate', ref: '$v', output: 'video' }]),
       'a1',
@@ -524,7 +524,7 @@ describe('画布：框按媒体比例', () => {
     expect(box(s.doc, 'a1')).toEqual({ w: 169, h: 300 })
   })
 
-  test('加文件节点带尺寸时按缺省框的短边与文件比例定框；换文件也换比例；尺寸随文档写出读回', () => {
+  test('添加带尺寸的文件节点时按缺省框的短边与文件比例确定框；更换文件时比例随之更换；尺寸随文档写出并读取', () => {
     let doc = apply(emptyCanvas(), [
       { op: 'add_file', ref: '$p', path: 'a.png', size: { w: 1000, h: 1000 } },
       { op: 'add_file', ref: '$q', path: 'b.png' },
@@ -545,14 +545,14 @@ describe('画布：框按媒体比例', () => {
     expect(serializeCanvas(back.doc)).toBe(text)
   })
 
-  test('提交的操作里不认 size：只由服务端核验路径时填', () => {
+  test('提交的操作中不接受 size：只由服务端核验路径时填写', () => {
     const r = parseCanvasOps([{ op: 'add_file', path: 'a.png', size: { w: 1, h: 1 } }])
     expect(r.ok).toBe(false)
   })
 })
 
 describe('画布：提示词编译', () => {
-  /** 小满、妈妈两张图，视频1 已有一版，视频2 引用两张图与视频1。 */
+  /** 两张图（小满、妈妈），视频1 已有一个版本，视频2 引用两张图与视频1。 */
   function mixed(): CanvasDoc {
     return apply(sample(), [
       { op: 'update', id: 'a4', prompt: '@[a1] 和 @[a2] 接 @[a3]，@[a1] 撑伞' },
@@ -562,7 +562,7 @@ describe('画布：提示词编译', () => {
   const SEEDANCE_25 = { image: '@图片{n}', video: '@视频{n}', audio: '@音频{n}' }
   const WAN = { image: '图{n}', video: '视频{n}', audio: '音频{n}' }
 
-  test('两张图一段视频混合引用，按各家写法、按类别分别计数；同一节点两次编号相同', () => {
+  test('两张图与一段视频混合引用，按各模型的写法、按类别分别计数；同一节点两次引用编号相同', () => {
     expect(compilePrompt(mixed(), 'a4', SEEDANCE_20)).toBe('图片1 和 图片2 接 视频1，图片1 撑伞')
     expect(compilePrompt(mixed(), 'a4', SEEDANCE_25)).toBe(
       '@图片1 和 @图片2 接 @视频1，@图片1 撑伞',
@@ -570,18 +570,18 @@ describe('画布：提示词编译', () => {
     expect(compilePrompt(mixed(), 'a4', WAN)).toBe('图1 和 图2 接 视频1，图1 撑伞')
   })
 
-  test('没登记写法的模型换成名字', () => {
+  test('未登记写法的模型替换为名称', () => {
     expect(compilePrompt(mixed(), 'a4')).toBe('小满 和 妈妈 接 视频1，小满 撑伞')
   })
 
-  test('首尾帧模式下 @ 首帧、尾帧编译成名字，不套写法', () => {
+  test('首尾帧模式下 @ 首帧、尾帧编译为名称，不套用写法', () => {
     const doc = apply(sample(), [{ op: 'set_mode', id: 'a4', mode: 'first_last' }])
     expect(compilePrompt(doc, 'a4', SEEDANCE_20)).toBe('小满 和 妈妈 在校门口')
   })
 })
 
 describe('画布：参考音频', () => {
-  test('音频节点连到视频卡用途为 audio，@ 它自动补 audio 线并编成「音频1」', () => {
+  test('音频节点连接到视频卡时用途为 audio，@ 它时自动补充 audio 连线并编译为「音频1」', () => {
     const doc = apply(sample(), [
       { op: 'add_file', ref: '$voice', path: '声音/小满.wav' },
       { op: 'update', id: 'a4', prompt: '@[a1] 用 @[$voice] 的声音说话' },
@@ -593,12 +593,12 @@ describe('画布：参考音频', () => {
     )
   })
 
-  test('音频连不到出图卡、不能当参考图；首尾帧模式不收音频', () => {
+  test('音频不能连接到出图卡、不能作为参考图；首尾帧模式不接受音频', () => {
     const doc = apply(sample(), [{ op: 'add_file', ref: '$voice', path: '声音/小满.mp3' }])
     const voice = doc.nodes.at(-1)!.id
     const img = apply(doc, [{ op: 'add_generate', output: 'image' }], ids('i'))
     expect(rejects(img, [{ op: 'connect', from: voice, to: 'i1', role: 'reference' }])).toContain(
-      '只收参考图',
+      '只接受参考图',
     )
     expect(rejects(doc, [{ op: 'connect', from: voice, to: 'a3', role: 'reference' }])).toContain(
       '参考音频',
@@ -613,7 +613,7 @@ describe('画布：参考音频', () => {
 describe('画布：时间线', () => {
   const clip = (path: string, from: number, to: number) => ({ path, in: from, out: to })
 
-  test('新建空时间线只有轨道高度；放进片段后长出预览区，清空后收回；默认名按序号', () => {
+  test('新建的空时间线只有轨道高度；放入片段后出现预览区，清空后移除；默认名称按序号生成', () => {
     let doc = apply(emptyCanvas(), [
       { op: 'add_timeline', ref: '$t' },
       { op: 'add_timeline', clips: [clip('素材/a.mp4', 0, 2)] },
@@ -628,7 +628,7 @@ describe('画布：时间线', () => {
     expect(doc.nodes[0]!.h).toBe(120)
   })
 
-  test('片段只收工作区里的视频、入点小于出点；不合法整批拒绝', () => {
+  test('片段只接受工作区中的视频，且入点小于出点；不合法时整批拒绝', () => {
     const doc = apply(emptyCanvas(), [{ op: 'add_timeline' }])
     expect(rejects(doc, [{ op: 'update', id: 'a1', clips: [clip('素材/a.png', 0, 1)] }])).toContain(
       '只有视频',
@@ -644,7 +644,7 @@ describe('画布：时间线', () => {
     )
   })
 
-  test('静音开关；时间线没有提示词，生成卡与文件没有片段；改名不能清空', () => {
+  test('静音开关；时间线没有提示词，生成卡与文件没有片段；改名时名称不能为空', () => {
     let doc = apply(emptyCanvas(), [{ op: 'add_timeline' }, { op: 'add_file', path: '素材/a.mp4' }])
     doc = apply(doc, [{ op: 'update', id: 'a1', muted: true }])
     expect(doc.nodes[0]).toMatchObject({ muted: true })
@@ -652,7 +652,7 @@ describe('画布：时间线', () => {
     expect('muted' in doc.nodes[0]!).toBe(false)
     expect(rejects(doc, [{ op: 'update', id: 'a1', prompt: 'x' }])).toContain('时间线没有 prompt')
     expect(rejects(doc, [{ op: 'update', id: 'a2', clips: [] }])).toContain('只有时间线')
-    expect(rejects(doc, [{ op: 'update', id: 'a1', name: '' }])).toContain('必须有名字')
+    expect(rejects(doc, [{ op: 'update', id: 'a1', name: '' }])).toContain('必须有名称')
   })
 
   test('时间线不能作为生成的输入，也不能被连线指向', () => {
@@ -662,11 +662,11 @@ describe('画布：时间线', () => {
       '不能作为',
     )
     expect(rejects(doc, [{ op: 'connect', from: 'a1', to: t, role: 'reference' }])).toContain(
-      '只能连到生成节点',
+      '只能连接到生成节点',
     )
   })
 
-  test('写出再读回不变；复制带上片段与静音；提交的操作按字段表核对', () => {
+  test('写出后重新读取内容不变；复制时带上片段与静音设置；提交的操作按字段表核对', () => {
     const doc = apply(emptyCanvas(), [
       { op: 'add_timeline', name: '粗剪', muted: true, clips: [clip('素材/a.mp4', 0.5, 2)] },
     ])

@@ -1,19 +1,19 @@
 /**
- * 把工作区里写好的一个插件目录装进本机的插件目录。
+ * 把工作区中已编写好的插件目录安装到本机的插件目录。
  *
- * **定义与装是两件事。** 写代码用普通文件工具就行——插件目录在全局，本来就不在工作区里，
- * 模型写多少遍都不会有任何代码跑起来。**装**才是那条分界线：装完之后，
- * 那段代码在下一次加载时会真的执行。
+ * **编写与安装是两个步骤。** 编写代码使用普通文件工具：本机插件目录是全局目录，不在工作区内，
+ * 模型在工作区中编写多少次都不会运行任何代码。**安装**才是分界：安装之后，
+ * 这段代码会在下一次加载时执行。
  *
- * **把关在清单校验上，不在弹窗上。** 这个产品只有 `auto` / `full` 两种权限模式，
- * 没有「逐次询问」那一档；跑到这个工具就是同意。所以形状不对必须当场拒、不落盘：
- * 清单里认不出的 `permissionEffect`、声明了工具却没声明相应权限，都在装之前挡掉。
+ * **安全检查依靠清单校验，不依靠确认弹窗。** 本产品只有 `auto` / `full` 两种权限模式，
+ * 没有「逐次询问」模式；执行到本工具即视为同意。因此格式不正确时必须立即拒绝，且不写入磁盘：
+ * 清单中无法识别的 `permissionEffect`、声明了工具却未声明相应权限，都在安装前拦截。
  *
- * **装进去的是快照。** 装 = 整目录复制。工作区里的源码之后再改不会影响已装的那份，改完要再装一次，
- * 新的一版同样先过清单校验。
+ * **安装的是快照。** 安装即整目录复制。之后修改工作区中的源码不影响已安装的副本，修改后需重新安装，
+ * 新版本同样先经过清单校验。
  *
- * **装完不立刻生效。** 扩展按工作区缓存，下一条消息新建会话时才重新加载。返回值里必须说清这句话，
- * 否则模型会在同一轮里反复找那个新工具，然后判定「装失败了」。
+ * **安装后不立即生效。** 扩展按工作区缓存，下一条消息新建会话时才重新加载。返回信息中必须说明这一点，
+ * 否则模型会在同一轮中反复查找新工具，然后判定安装失败。
  */
 
 import type { ToolContext, ToolSpec } from '@qywork/agent'
@@ -21,16 +21,16 @@ import type { ToolContext, ToolSpec } from '@qywork/agent'
 export const installPluginTool: ToolSpec = {
   name: 'install_plugin',
   description:
-    '把工作区里已经写好的一个插件目录装进本机的插件目录。' +
-    '目录里要有合法的 qywork.plugin.json。装完在下一条消息生效，不是当场。' +
-    '改了插件代码要再装一次——装进去的是快照。',
+    '把工作区中已编写好的插件目录安装到本机的插件目录。' +
+    '目录中必须有合法的 qywork.plugin.json。安装后从下一条消息起生效，不立即生效。' +
+    '修改插件代码后需重新安装：安装的是快照。',
   parameters: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: '插件目录，相对工作区，如 my-plugin' },
+      path: { type: 'string', description: '插件目录，相对于工作区，如 my-plugin' },
       replace: {
         type: 'boolean',
-        description: '本机已经装过同 id 时是否覆盖。默认否——不覆盖就直接拒绝。',
+        description: '本机已安装同 id 的插件时是否覆盖。默认否，不覆盖时拒绝安装。',
       },
     },
     required: ['path'],
@@ -40,21 +40,21 @@ export const installPluginTool: ToolSpec = {
   objectLabel: '插件',
   category: 'plugins',
   facet: '扩展',
-  summary: '装一个插件',
+  summary: '安装一个插件',
   targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
-  // 它让一段代码在下次加载时跑起来，与 `run_command` 同一档。
+  // 安装使一段代码在下次加载时运行，权限级别与 `run_command` 相同。
   permissionEffect: 'execute',
   parallelSafe: false,
 
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
     const port = ctx.plugins
     if (!port) {
-      // 正常不会走到：没有这条通道时这个工具不注册。
-      return { status: 'failure' as const, message: '本次执行装不了插件' }
+      // 正常情况下不会执行到此处：没有插件通道时不注册本工具。
+      return { status: 'failure' as const, message: '本次执行无法安装插件' }
     }
 
     const dir = typeof args.path === 'string' ? args.path.trim() : ''
-    if (!dir) return { status: 'failure' as const, message: '要装哪个目录' }
+    if (!dir) return { status: 'failure' as const, message: '需指定要安装的目录' }
     const replace = args.replace === true
 
     const found = await port.inspect(dir)
@@ -68,20 +68,20 @@ export const installPluginTool: ToolSpec = {
     if (found.replacing && !replace) {
       return {
         status: 'failure' as const,
-        message: `本机已经装了 ${found.id}。确认要换成这一份就带上 replace: true 再来一次`,
+        message: `本机已安装 ${found.id}。确认用当前目录替换时，带上 replace: true 重新调用`,
         errorKind: 'conflict',
       }
     }
 
-    // 复制在端口那边：它装之前会把清单再读一次——中间隔着模型的几步，
-    // 那个目录可能已经不是 inspect 时的那一份了。
+    // 复制由端口执行：端口在安装前会再次读取清单，因为 inspect 与安装之间隔着模型的若干步，
+    // 目录内容可能已与 inspect 时不同。
     const done = await port.install(dir, { replace })
     if (!done.ok) {
-      return { status: 'failure' as const, message: done.error ?? '装失败了' }
+      return { status: 'failure' as const, message: done.error ?? '安装失败' }
     }
     return {
       status: 'success' as const,
-      message: `装好了 ${found.name ?? found.id}。**下一条消息才生效**——扩展是新建会话时加载的，这一轮里还看不到它的工具`,
+      message: `已安装 ${found.name ?? found.id}。**从下一条消息起生效**：扩展在新建会话时加载，本轮中尚无该插件的工具`,
       data: { id: found.id, tools: found.tools ?? [] },
     }
   },

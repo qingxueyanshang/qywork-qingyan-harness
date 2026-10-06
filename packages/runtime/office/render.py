@@ -1,9 +1,9 @@
 """渲染：只读打开文件，导出 PDF 或逐页图片，按文件哈希缓存；供 write 的渲染阶段、view 与 PDF 附带输出使用。
 
-PDF 原件只供 view：不经过办公软件，直接按页栅格化，且只转被查看的页。
+PDF 原件只供 view：不经过办公软件，直接按页栅格化，且只转换被查看的页。
 
-缓存目录 <cache_dir>/<sha256>/，manifest.json 最后写入：它存在就说明这一份渲染是完整的。
-整页按 200 dpi 渲染；局部图从这份原始渲染图裁出，不先缩小再放大。
+缓存目录 <cache_dir>/<sha256>/，manifest.json 最后写入：该文件存在即表示本份渲染完整。
+整页按 200 dpi 渲染；局部图从原始渲染图裁出，不先缩小再放大。
 """
 
 import re
@@ -13,12 +13,12 @@ from pathlib import Path
 import util
 
 DPI = 200
-# 幻灯片导出宽度的上限（像素）；16:9 按 200 dpi 约 2667，取整到这个上限以内。
+# 幻灯片导出宽度的上限（像素）；16:9 按 200 dpi 约为 2667，限制在该上限以内。
 SLIDE_MAX_WIDTH = 2400
 
 
 class Unreadable(Exception):
-    """PDF 打不开：已加密、已损坏或不是 PDF。"""
+    """无法打开的 PDF：已加密、已损坏或不是 PDF。"""
 
 
 def _open_pdf(pdf_path):
@@ -68,14 +68,14 @@ def page_texts(pdf_path):
 
 
 def segments(lo, hi, breaks):
-    """按分页符把 [lo, hi] 切成若干段，每个分页符所在的行（列）是新一段的起点。"""
+    """按分页符把 [lo, hi] 分为若干段，每个分页符所在的行（列）是新一段的起点。"""
     starts = [lo] + sorted(b for b in breaks if lo < b <= hi)
     ends = [s - 1 for s in starts[1:]] + [hi]
     return list(zip(starts, ends))
 
 
 def page_ranges(ws):
-    """按打印区域（没有就用已用区域）与分页符算出每页对应的单元格区域；算不出返回 None。"""
+    """按打印区域（未设置时使用已用区域）与分页符计算每页对应的单元格区域；无法计算时返回 None。"""
     try:
         area = ws.PageSetup.PrintArea
         rng = ws.Range(area) if area else ws.UsedRange
@@ -112,7 +112,7 @@ def _fresh(d):
 
 
 def seed_docx(path, pdf, cache_dir, renderer):
-    """用已经导出的 PDF 建 docx 的渲染缓存。pdf 必须由与 path 当前字节相同的文件导出。"""
+    """用已导出的 PDF 建立 docx 的渲染缓存。pdf 必须由与 path 当前字节相同的文件导出。"""
     sha, d = _cache_dir(path, cache_dir)
     if (d / "manifest.json").exists():
         return
@@ -132,7 +132,7 @@ def render(path, fmt, cache_dir, apps):
         return util.read_json(manifest_path)
     _fresh(d)
     if fmt == "pdf":
-        # 清单只列页，图在 view 时按页转：大文件不为没看的页付栅格化时间和磁盘。
+        # 清单只列出页，图片在 view 时按页转换：大文件不为未查看的页耗费栅格化时间与磁盘空间。
         doc = _open_pdf(path)
         try:
             count = len(doc)
@@ -196,7 +196,7 @@ def render(path, fmt, cache_dir, apps):
 
 
 def export_pdf(path, fmt, dst, cache_dir, apps):
-    """PDF 附带输出。docx 复用渲染缓存里的 PDF；xlsx 导出整个工作簿；pptx 另存为 PDF。"""
+    """PDF 附带输出。docx 复用渲染缓存中的 PDF；xlsx 导出整个工作簿；pptx 另存为 PDF。"""
     if fmt == "docx":
         manifest = render(path, fmt, cache_dir, apps)
         util.atomic_copy(manifest["pdf"], dst)
@@ -222,7 +222,7 @@ def _safe(key):
 
 
 def _ensure_pdf_page(path, page):
-    """PDF 原件的页在第一次被查看时转图。源用本次调用的 path：缓存按字节哈希共享，清单里不记来源路径。"""
+    """PDF 原件的页在首次被查看时转换为图片。来源使用本次调用的 path：缓存按字节哈希共享，清单中不记录来源路径。"""
     png = Path(page["png"])
     if not png.exists():
         doc = _open_pdf(path)
@@ -237,7 +237,7 @@ def _ensure_pdf_page(path, page):
 
 
 def view(path, fmt, pages, region, cache_dir, call_dir, apps):
-    """返回所选页的整页图或局部图，以及找不到的页。"""
+    """返回所选页的整页图或局部图，以及未找到的页。"""
     from PIL import Image
 
     manifest = render(path, fmt, cache_dir, apps)

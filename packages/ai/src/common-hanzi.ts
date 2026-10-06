@@ -1,5 +1,5 @@
 /**
- * GB2312 一级汉字（3755 字，16–55 区，按区位顺序）：GBK 解码 0xB0A1–0xD7F9 逐字生成，不手抄。
+ * GB2312 一级汉字（3755 字，16–55 区，按区位顺序）：GBK 解码 0xB0A1–0xD7F9 逐字生成，不手工录入。
  * 估算器用它把常用字与其余汉字分成两档（`tokens.ts` 的 `TokenDensity`）。
  */
 export const COMMON_HANZI =

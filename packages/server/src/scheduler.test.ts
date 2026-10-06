@@ -1,20 +1,20 @@
 /**
  * 定时任务的完整触发链路。**覆盖范围**：`scheduler.ts` 与 `api/schedules.ts`，
- * 并穿过 `store/schedules.ts` 的认领事务、`run-control.ts` 的投递与 `tools/schedules.ts` 的
+ * 并经过 `store/schedules.ts` 的认领事务、`run-control.ts` 的投递与 `tools/schedules.ts` 的
  * 模型工具投影。
  *
  * 四条断言直接复现原始失败形状：
  *
- * - **E04**：服务以工作区 A 启动，工作区 B 的到期任务照样触发；模型返回 401 之后，任务 API、
- *   `list_schedules` 工具与再取一次（刷新）读到同一个 Run 终态。
- * - **E05**：同一到期时机两个 `serve()` 实例只产生一条会话、一条 Run、一次模型请求。
- * - 目标会话被进程内占位占住时，这次触发排进跟进队列而不是落一条 `run.error`。
+ * - 服务以工作区 A 启动，工作区 B 的到期任务同样触发；模型返回 401 之后，任务 API、
+ *   `list_schedules` 工具与再次读取（刷新）得到同一个 Run 终态。
+ * - 同一到期时机两个 `serve()` 实例只产生一条会话、一条 Run、一次模型请求。
+ * - 目标会话已被进程内占位时，本次触发排入跟进队列，而不是产生一条 `run.error`。
  * - 认领新建会话时广播 `conversation.created`，信封上不带会话归属。
  *
- * 计时器是真的：两条都由 `serve()` 自己的 `setInterval` 驱动，测试不直接调推进函数。
- * 注入的只有 tick 间隔与假 provider 的响应。
+ * 使用真实计时器：两条均由 `serve()` 自身的 `setInterval` 驱动，测试不直接调用推进函数。
+ * 只注入 tick 间隔与假 provider 的响应。
  *
- * 单进程内的两个实例不可能真正交错（认领事务是同步的），跨操作系统进程的竞争由
+ * 单进程内的两个实例无法真正交错执行（认领事务是同步的），跨操作系统进程的竞争由
  * `schedule-race.test.ts` 覆盖。
  */
 
@@ -39,7 +39,7 @@ import { registerBuiltinTools } from '@qywork/tools'
 import { tickSchedules } from './scheduler.ts'
 import { serve } from './server.ts'
 
-/** 401 假 provider：只计数、只回鉴权失败。auth_failed 不在重发名单里，一次就落终态。 */
+/** 401 假 provider：只计数，只返回鉴权失败。auth_failed 不在重发列表中，一次请求即进入终态。 */
 let providerCalls = 0
 const provider = Bun.serve({
   port: 0,
@@ -77,7 +77,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  // 同一个进程里跑着别的测试文件，QYWORK_HOME 不还回去会跟着漏过去。
+  // 同一进程中还运行其他测试文件，不恢复 QYWORK_HOME 会影响它们。
   if (prevHome === undefined) delete process.env.QYWORK_HOME
   else process.env.QYWORK_HOME = prevHome
   provider.stop(true)
@@ -95,7 +95,7 @@ async function waitFor<T>(read: () => T | null, note: string, timeoutMs = 15_000
   }
 }
 
-/** 建任务的那条会话。任务绑定它，触发时消息发进去。 */
+/** 创建任务的会话。任务绑定该会话，触发时消息发送到该会话。 */
 function homeConversation(store: Store, workspaceId: WorkspaceId, title: string): ConversationId {
   return createConversation(store, {
     workspaceId,
@@ -105,7 +105,7 @@ function homeConversation(store: Store, workspaceId: WorkspaceId, title: string)
   }).id
 }
 
-/** 一条已经到期的间隔任务，绑定在给定会话上。 */
+/** 已到期的间隔任务，绑定到给定会话。 */
 function dueSchedule(
   store: Store,
   workspaceRoot: string,
@@ -127,7 +127,7 @@ function countOf(store: Store, sql: string): number {
   return store.db.query<{ n: number }, []>(sql).get()?.n ?? 0
 }
 
-/** 模型工具的读法：端口按会话工作区收窄，与 `runtime/session.ts` 的注入同形。 */
+/** 模型工具的读取方式：端口按会话工作区限定范围，与 `runtime/session.ts` 的注入方式相同。 */
 async function listViaTool(store: Store, workspaceRoot: string): Promise<string> {
   const registry = new ToolRegistry()
   registerBuiltinTools(registry)
@@ -158,7 +158,7 @@ async function listViaTool(store: Store, workspaceRoot: string): Promise<string>
   return (await spec.fn({}, ctx)).message ?? ''
 }
 
-test('E04：以 A 启动的服务照样触发 B 的到期任务，401 终态在 API、模型工具与刷新后一致', async () => {
+test('E04：以 A 启动的服务同样触发 B 的到期任务，401 终态在 API、模型工具与刷新后一致', async () => {
   const dirA = await mkdtemp(join(root, 'a-'))
   const dirB = await mkdtemp(join(root, 'b-'))
   const store = new Store({ path: join(root, 'e04.sqlite3') })
@@ -173,7 +173,7 @@ test('E04：以 A 启动的服务照样触发 B 的到期任务，401 终态在 
     workspaceRoot: dirA,
     port: 0,
     host: '127.0.0.1',
-    // 真实计时器驱动生产的推进函数；测试不直接调 tickSchedules。
+    // 由真实计时器驱动生产代码的推进函数；测试不直接调用 tickSchedules。
     schedulerTickMs: 40,
   })
   const auth = { authorization: `Bearer ${handle.token}` }
@@ -204,12 +204,12 @@ test('E04：以 A 启动的服务照样触发 B 的到期任务，401 终态在 
     )
 
     runId = run.id
-    // 触发发生在 B，而不是服务启动时挂着的 A。
+    // 触发发生在 B，而不是服务启动时所用的 A。
     expect(run.workspace_id).toBe(wsB.id)
     expect(run.status).toBe('failed')
     expect(run.error_code).toBe('auth_failed')
     expect(run.error_message ?? '').not.toBe('')
-    // 这一轮跑在建任务的那条会话里，没有另建。
+    // 该轮在创建任务的会话中运行，没有新建会话。
     expect(run.conversation_id).toBe(homeB)
     expect(countOf(store, 'SELECT COUNT(*) AS n FROM conversations')).toBe(1)
 
@@ -239,7 +239,7 @@ test('E04：以 A 启动的服务照样触发 B 的到期任务，401 终态在 
       errorMessage: run.error_message,
     })
 
-    // 刷新读到同一份：投影每次现算，没有第二本缓存的错误账。
+    // 刷新后读取到相同结果：投影每次实时计算，不存在另一份缓存。
     expect(await fetchB()).toEqual(first)
 
     // 模型工具读到同一个终态。
@@ -248,7 +248,7 @@ test('E04：以 A 启动的服务照样触发 B 的到期任务，401 终态在 
     expect(toolText).toContain('失败：')
     expect(toolText).toContain((run.error_message ?? '').split('\n')[0]!)
 
-    // A 的面板看不到 B 的任务。
+    // A 的面板不显示 B 的任务。
     const forA = (await (
       await fetch(`http://127.0.0.1:${handle.port}/api/schedules?ws=${wsA.id}`, { headers: auth })
     ).json()) as Payload
@@ -258,7 +258,7 @@ test('E04：以 A 启动的服务照样触发 B 的到期任务，401 终态在 
     store.close()
   }
 
-  // 重启：投影没有进程内缓存，换一个连接读同一个库应当得到同一份终态。
+  // 重启：投影没有进程内缓存，使用新连接读取同一数据库应得到相同的终态。
   const reopened = new Store({ path: join(root, 'e04.sqlite3') })
   try {
     const after = listSchedules(reopened, dirB, Date.now())[0]!
@@ -269,7 +269,7 @@ test('E04：以 A 启动的服务照样触发 B 的到期任务，401 终态在 
   }
 }, 30_000)
 
-test('PUT 是部分更新：只发 enabled 不带时刻，启停不被判成不合法', async () => {
+test('PUT 是部分更新：只发送 enabled 而不带时刻时，启停不被判定为不合法', async () => {
   const dir = await mkdtemp(join(root, 'put-'))
   const store = new Store({ path: join(root, 'put.sqlite3') })
   const ws = upsertWorkspace(store, dir, 'W')
@@ -293,7 +293,7 @@ test('PUT 是部分更新：只发 enabled 不带时刻，启停不被判成不�
     workspaceRoot: dir,
     port: 0,
     host: '127.0.0.1',
-    // tick 拉到很长：这条只验 HTTP 面，不该被自动触发插进来改游标。
+    // tick 间隔设为很长：本用例只验证 HTTP 接口，不应由自动触发修改游标。
     schedulerTickMs: 3_600_000,
   })
   const put = (id: string, body: unknown) =>
@@ -316,7 +316,7 @@ test('PUT 是部分更新：只发 enabled 不带时刻，启停不被判成不�
     expect(two.atHour).toBe(9)
     expect(two.atMinute).toBe(30)
 
-    // 切触发方式：与新 kind 无关的旧字段写 NULL，不留一个不再生效的时刻。
+    // 切换触发方式：与新 kind 无关的旧字段写入 NULL，不保留不再生效的时刻。
     expect((await put(interval.id, { kind: 'daily', atHour: 9, atMinute: 0 })).status).toBe(200)
     const switched = store.db
       .query<{ kind: string; every_minutes: number | null; at_hour: number | null }, [string]>(
@@ -338,7 +338,7 @@ test('PUT 是部分更新：只发 enabled 不带时刻，启停不被判成不�
   }
 }, 30_000)
 
-test('一条投递失败不影响同一批里后面那条：认领已提交，跳过就是静默丢一次触发', async () => {
+test('一条投递失败不影响同一批中的后一条：认领已提交，跳过即静默丢失一次触发', async () => {
   const dir = await mkdtemp(join(root, 'isolate-'))
   const store = new Store({ path: join(root, 'isolate.sqlite3') })
   const ws = upsertWorkspace(store, dir, 'W')
@@ -368,16 +368,16 @@ test('一条投递失败不影响同一批里后面那条：认领已提交，�
   }
 
   try {
-    // 两条都投过：抛错那条没有把另一条一起跳掉。同一毫秒建的两条按 id 排，顺序不作断言。
+    // 两条均已投递：抛错的一条未导致另一条被跳过。同一毫秒创建的两条按 id 排序，不对顺序作断言。
     expect(started.length).toBe(2)
     expect(started).toContain('执行 先跑的')
     expect(started).toContain('执行 后跑的')
-    // 失败那条单独一行，带得出是哪一条任务。
-    const failure = lines.find((l) => l.includes('起轮失败'))
+    // 失败的任务在日志中单独记录一行，能够识别是哪一条任务。
+    const failure = lines.find((l) => l.includes('启动失败'))
     expect(failure).toContain('先跑的')
     expect(failure).toContain(first)
-    expect(lines.filter((l) => l.includes('起轮失败')).length).toBe(1)
-    // 两条的认领都已提交：游标推进、会话取定，投影按「没有执行记录」显示。
+    expect(lines.filter((l) => l.includes('启动失败')).length).toBe(1)
+    // 两条的认领均已提交：游标已推进、会话已确定，投影按「没有执行记录」显示。
     const views = listSchedules(store, dir, Date.now())
     expect(views.map((v) => v.id).sort()).toEqual([first, second].sort())
     for (const v of views) {
@@ -391,8 +391,8 @@ test('一条投递失败不影响同一批里后面那条：认领已提交，�
 })
 
 /**
- * 「立刻跑一次」与 tick 共用同一个投递函数，所以它是这两条断言的确定性入口：
- * tick 由计时器驱动，占位那一步没有可插进去的时机。
+ * 「立即运行」与 tick 使用同一个投递函数，因此作为以下两条断言的确定性入口：
+ * tick 由计时器驱动，无法在占位步骤中插入操作。
  */
 function collectFrames(handle: ReturnType<typeof serve>): {
   frames: EventEnvelope[]
@@ -411,13 +411,13 @@ function collectFrames(handle: ReturnType<typeof serve>): {
 }
 
 /*
- * 原始失败形状：触发那一刻用户恰好在这条会话里说了话，直接起轮会被进程内占位回绝成一条
- * `run.error`，这次触发随之丢掉。走用户消息入口则排成跟进消息。
+ * 原始失败形状：触发时用户恰好在该会话中发送了消息，直接启动一轮会被进程内占位拒绝，
+ * 产生一条 `run.error`，本次触发随之丢失。经由用户消息入口时，触发排入跟进队列。
  *
- * 占位而不落 run 行，正是 `startRun` 里「reserve 成功、runId 还没拿到」那一段的形状：
- * 认领事务查 runs 表判不出忙，闸只有 `runs.hasRun`。
+ * 只占位而不写入 run 行，对应 `startRun` 中「reserve 成功、runId 尚未取得」的阶段：
+ * 认领事务查询 runs 表无法判定会话忙碌，唯一的判定依据是 `runs.hasRun`。
  */
-test('目标会话正忙时触发排进跟进队列，不落 run.error', async () => {
+test('目标会话正忙时触发排入跟进队列，不产生 run.error', async () => {
   const dir = await mkdtemp(join(root, 'busy-'))
   const store = new Store({ path: join(root, 'busy.sqlite3') })
   const ws = upsertWorkspace(store, dir, 'W')
@@ -430,7 +430,7 @@ test('目标会话正忙时触发排进跟进队列，不落 run.error', async (
     workspaceRoot: dir,
     port: 0,
     host: '127.0.0.1',
-    // tick 拉到很长：这条走「立刻跑一次」，不该被自动触发插进来。
+    // tick 间隔设为很长：本用例使用「立即运行」，不应插入自动触发。
     schedulerTickMs: 3_600_000,
   })
 
@@ -442,7 +442,7 @@ test('目标会话正忙时触发排进跟进队列，不落 run.error', async (
       { method: 'POST', headers: { authorization: `Bearer ${handle.token}` } },
     )
     expect(res.status).toBe(200)
-    // 投递是 fire-and-forget，等这一跳的微任务排空。
+    // 投递不等待结果（fire-and-forget），此处等待微任务队列清空。
     await Bun.sleep(50)
     probe.stop()
 
@@ -458,8 +458,8 @@ test('目标会话正忙时触发排进跟进队列，不落 run.error', async (
 }, 30_000)
 
 /*
- * 左栏要能当场看见这条会话。`conversation.created` 是**工作区级**事件：信封不带
- * conversationId，否则只有已经订阅了它的客户端收得到，而列表里本来就没有这一条。
+ * 左栏必须立即显示该会话。`conversation.created` 是**工作区级**事件：信封不带
+ * conversationId，否则只有已订阅该会话的客户端能收到，而列表中尚无该会话。
  */
 test('认领新建会话时广播 conversation.created，信封不带会话归属', async () => {
   const dir = await mkdtemp(join(root, 'created-'))
@@ -493,7 +493,7 @@ test('认领新建会话时广播 conversation.created，信封不带会话归�
     const created = hit?.event.type === 'conversation.created' ? hit.event.conversation : null
     expect(created?.workspaceId).toBe(ws.id)
     expect(created?.id).not.toBe(home)
-    // 广播的那条就是这次触发进的会话，账本里也是它。
+    // 广播的会话即本次触发进入的会话，账本中记录的也是该会话。
     expect(listSchedules(store, dir, Date.now())[0]!.conversationId).toBe(created?.id)
   } finally {
     handle.stop()
@@ -538,7 +538,7 @@ test('E05：同一到期时机两个 serve() 实例只产生一条会话、一�
           .get(),
       '两个实例中有一个把 Run 跑到终态',
     )
-    // 落终态之后再多等几个 tick：漏掉的第二次触发要在这段时间里显形。
+    // 进入终态后再等待几个 tick：若存在第二次触发，会在这段时间内出现。
     await Bun.sleep(300)
 
     expect(countOf(one, 'SELECT COUNT(*) AS n FROM conversations')).toBe(1)

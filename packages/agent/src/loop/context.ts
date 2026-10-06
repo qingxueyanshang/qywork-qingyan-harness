@@ -1,11 +1,11 @@
-/** 请求发送与回执完成后发布同一把上下文读数，避免最后一轮停在发送前估算。 */
+/** 请求发送时与回执完成后发布同一口径的上下文读数，避免最后一轮的读数停留在发送前的估算值。 */
 
 import type { AgentEvent } from '@qywork/core'
 import { reconcileBreakdown } from '@qywork/core'
 import { softLimit } from './request.ts'
 import type { LoopHost, RunState, TurnState } from './run-state.ts'
 
-/** 读数里还没有真值的视频如实标出段数（`RunState.unmeasuredVideos`）。 */
+/** 读数中如实标出尚无真值的视频段数（`RunState.unmeasuredVideos`）。 */
 export function contextEvent(
   host: LoopHost,
   run: RunState,

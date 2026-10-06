@@ -1,11 +1,11 @@
 /**
  * `CompactionPort` 的实际装配。
  *
- * loop 只知道「投影历史」和「跑一次压缩」两个动作；manifest 存在哪张表、
- * 可折单元怎么从账本里取、摘要预算的观测从哪查，全在这一层。
+ * loop 只依赖「投影历史」与「执行一次压缩」两个动作；manifest 存储在哪张表、
+ * 可折单元如何从账本中取得、摘要预算的观测从何处查询，均由本层负责。
  *
- * 单元序**必须与 loop 装配出来的那一份逐字对齐**：两边都靠 `stepsToUnits` /
- * `stepStamp` 造戳，戳不同形就会按两条不同的线去切同一段内容。
+ * 单元顺序必须与 loop 装配的结果逐字一致：两侧都依据 `stepsToUnits` /
+ * `stepStamp` 生成标记，标记形式不同时会按两条不同的边界切分同一段内容。
  */
 
 import type {
@@ -58,23 +58,23 @@ import {
 /**
  * 摘要输出的观测分位。
  *
- * 取 p95 而不是极大值：硬上界由 headroom 给，这个数只需要覆盖常态；
- * 写超了的那一次被「截断作废」闸捕获，并作为更大的样本进入下一次的分布。
+ * 取 p95 而不是最大值：硬上界由 headroom 提供，该值只需覆盖常态；
+ * 超出预算的那一次由「截断作废」检查捕获，并作为更大的样本进入下一次的分布。
  */
 const SUMMARY_PERCENTILE = 0.95
 
 export interface CompactionDeps {
   store: Store
   conversationId: ConversationId
-  /** run 创建时定格的消息高水位，压缩范围不得越过它。 */
+  /** run 创建时固定的消息高水位，压缩范围不得越过它。 */
   messageIdUpperBound: MessageId | null
   /** 摘要生成器。 */
   summarize: Summarizer
-  /** 与当前主模型的历史投影同源；压缩不能换一套 wire 形状。 */
+  /** 与当前主模型的历史投影同源；压缩不能使用另一套 wire 形状。 */
   preserveAssistantReasoning?: boolean
 }
 
-/** 一个可折单元在账本侧的形态。切界只落在单元之间。 */
+/** 可折单元在账本侧的形态。切分边界只位于单元之间。 */
 interface Unit {
   key: string
   cut: CompactionCut
@@ -82,22 +82,22 @@ interface Unit {
   messages: WireMessage[]
   /** 会话消息行；执行记录单元为 null。 */
   row: CompactionInput['messages'][number] | null
-  /** 单元里助手正文的取回地址 `<runId>:<stepId>`；会话消息单元与没有助手正文的单元为 null。 */
+  /** 单元中助手正文的取回地址 `<runId>:<stepId>`；会话消息单元与没有助手正文的单元为 null。 */
   assistantId: string | null
   actions: CompactionAction[]
 }
 
 export class RuntimeCompaction implements CompactionPort {
   /**
-   * 内存里的当前 manifest。
+   * 内存中的当前 manifest。
    *
-   * 读一次缓存住而不是每次投影都查库：投影在**每次构造请求**时都会调用，
-   * 一轮几十次，每次一个 SQL 查询纯属浪费。压缩由本对象自己执行，所以它总是知道最新值。
+   * 读取一次后缓存，而不是每次投影都查询数据库：投影在每次构造请求时都会调用，
+   * 一轮数十次，每次执行一条 SQL 查询没有必要。压缩由本对象执行，因此本对象始终持有最新值。
    */
   private manifest: CompactionManifest | null
   /**
-   * 最新 run 的完整快照。回放去重后一段可能只出现在早期轮次，被摘要线折掉时从这里
-   * 钉回，模型看到的仍是完整的当前快照。空快照也要覆盖旧 run，不能误把旧上下文钉回来。
+   * 最新 run 的完整快照。回放去重后，某一段可能只出现在早期轮次，被摘要线折叠时从此处
+   * 补回，模型看到的仍是完整的当前快照。空快照同样覆盖旧 run，不得把旧上下文误补回。
    */
   private readonly latestContext: ReturnType<typeof latestContextSnapshot>
 
@@ -106,7 +106,7 @@ export class RuntimeCompaction implements CompactionPort {
     this.latestContext = latestContextSnapshot(deps.store, deps.conversationId)
   }
 
-  /** 最新快照里在 `visible` 中找不到的段，按快照顺序做成待钉回的上下文消息。 */
+  /** 最新快照中在 `visible` 里未找到的段，按快照顺序生成待补回的上下文消息。 */
   private missingContext(visible: readonly WireMessage[]): WireMessage[] {
     if (!this.latestContext) return []
     const { userMessageId, segments } = this.latestContext
@@ -131,11 +131,11 @@ export class RuntimeCompaction implements CompactionPort {
   /**
    * 投影，分三区。
    *
-   * 摘要线以内 → 换成「摘要 + 事实清单」两条；摘要线到收纳线之间 → 消息原样、
-   * 工具正文换信封；收纳线之后 → 逐字原样。模型因此看到一个保真度梯度。
+   * 摘要线以内 → 替换为「摘要 + 事实清单」两条；摘要线到收纳线之间 → 消息保持原样、
+   * 工具正文替换为信封；收纳线之后 → 逐字保留。模型因此看到逐级变化的保真度。
    *
-   * 判断边界用单元键而不是数组下标：一条用户消息前还有它所属的运行上下文，
-   * assistant/tool 也按执行波次成组。按下标切会拆坏这些结构。
+   * 判断边界使用单元键而不是数组下标：用户消息之前还有其所属的运行上下文，
+   * assistant/tool 也按执行批次成组。按下标切分会破坏这些结构。
    */
   project(history: WireMessage[]): WireMessage[] {
     const m = this.manifest
@@ -167,8 +167,8 @@ export class RuntimeCompaction implements CompactionPort {
       )
     }
 
-    // 一条都没折掉说明摘要线与当前历史对不上（换了会话、消息被删）。
-    // 这时插两条摘要只会平白多两条消息。
+    // 一条都未折叠说明摘要线与当前历史不一致（切换了会话、消息被删除）。
+    // 此时插入两条摘要只会增加两条无用的消息。
     if (folded === 0) return out
 
     const manifest = projectManifest(m).map((p) => ({
@@ -193,10 +193,10 @@ export class RuntimeCompaction implements CompactionPort {
   }
 
   /**
-   * 跑一次压缩并落库。
+   * 执行一次压缩并落库。
    *
-   * 顺序是固定的：选界 → 可行性 → 收纳 → 够了就落库 → 不够才调模型 → 落库前查信号。
-   * `signal` 逐层带到落库点前。**可缺**：手动压缩不属于任何 run。
+   * 顺序固定：选界 → 可行性 → 收纳 → 足够时落库 → 不足时调用模型 → 落库前检查信号。
+   * `signal` 逐层传递到落库点之前。可以缺省：手动压缩不属于任何 run。
    */
   async run(input: CompactionRunInput): Promise<CompactionOutcome> {
     const { store, conversationId } = this.deps
@@ -211,8 +211,8 @@ export class RuntimeCompaction implements CompactionPort {
     const automaticRetain = tailRetain(input.contextWindow)
     /*
      * 自动压缩按 `tailRetain` 保留尾部；手动压缩发生在用户明确要求收纳时，
-     * 若仍拿模型总窗口的 1/4 当尾部预算，低占用会话的整段历史可能还不够这个数，
-     * `/compact` 就只能回 `nothing_to_fold`。手动入口仍用同一个选界函数，只把
+     * 若仍以模型总窗口的 1/4 作为尾部预算，低占用会话的整段历史可能不足该数值，
+     * `/compact` 只能返回 `nothing_to_fold`。手动入口仍使用同一个选界函数，只把
      * 保留量收敛到当前可折历史的 1/4，至少保留最后一个完整单元。
      */
     const retain =
@@ -228,7 +228,7 @@ export class RuntimeCompaction implements CompactionPort {
     const todoFacts = currentTodoFacts(units)
     const todoTable = todoFacts[0]
 
-    // 收纳段：折叠线以内的工具正文换信封。**零模型调用**，回收量当场估得出。
+    // 收纳段：折叠线以内的工具正文替换为信封。不调用模型，回收量可当场估算。
     const messages: CompactionInput['messages'] = []
     const actions: CompactionAction[] = []
     let foldedMessageCount = 0
@@ -237,7 +237,7 @@ export class RuntimeCompaction implements CompactionPort {
     let condensedRegion = 0
     for (let i = 0; i <= foldIndex; i++) {
       const u = units[i]!
-      // 摘要线以内的已经不在投影里了，既不用再收纳也不用再摘要。
+      // 摘要线以内的内容已不在投影中，无需再收纳或摘要。
       if (u.key <= summaryKey) continue
       if (u.row) {
         messages.push(u.row)
@@ -250,7 +250,7 @@ export class RuntimeCompaction implements CompactionPort {
           typeof m.content === 'string' &&
           m.content.trim()
         ) {
-          // 地址用助手正文自己的 step：用所属用户消息的 id 的话，模型按摘要里的标记读回的是用户的原话。
+          // 地址使用助手正文自身的 step：若使用所属用户消息的 id，模型按摘要中的标记读取到的是用户的原话。
           messages.push({
             id: u.assistantId,
             role: 'assistant',
@@ -273,33 +273,33 @@ export class RuntimeCompaction implements CompactionPort {
 
     const limit = softLimit({ contextWindow: input.contextWindow })
     /*
-     * 回收量先折算再减。
+     * 回收量先折算再相减。
      *
      * `occupancy` 锚定之后是 provider 真值，而 `originalNew` / `condensedNew` 只能
-     * 本地估算。直接相减是拿一把尺的差额去改另一把尺的读数：未收录档实测高 1.47 倍，
-     * 因此回收量虚高同样的倍数，`condenseOnly` 判成「收纳就够了」而实际不够——
-     * 摘要线不前移，此后每一轮都判 `nothing_to_fold`，占用只增不减直到撞窗。
-     * 实测越线量上界是 0.32 × (占用 − 软阈值)。
+     * 本地估算。直接相减等于用一种口径的差额修改另一种口径的读数：未收录模型的估算实测偏高 1.47 倍，
+     * 因此回收量虚高同样的倍数，`condenseOnly` 判定「仅收纳即可」而实际不足：
+     * 摘要线不前移，此后每一轮都判定 `nothing_to_fold`，占用只增不减，直到触及上下文窗口上限。
+     * 实测越过阈值的量上界为 0.32 × (占用 − 软阈值)。
      *
-     * 比值取这一份内容上两把尺的实测比，不是常数：同一份请求两个数都在手里。
-     * 没有锚点时两者相等，比值为 1，算式退化成相减本身。
+     * 比值取这一份内容在两种口径下的实测比，不是常数：同一份请求的两个数值均已知。
+     * 没有锚点时两者相等，比值为 1，算式退化为直接相减。
      *
-     * **折算完要取整。** 这个数往下传成 `projectionBudget`，而那是给摘要器的
-     * token 预算——不取整的话小数会逐层传进提示词（真机上量到过
+     * 折算后必须取整。该值向下传递为 `projectionBudget`，即提供给摘要器的
+     * token 预算；不取整时小数会逐层传入提示词（真机上实测出现过
      * `2702.675848654075`）。
      */
     const scale = input.estimatedOccupancy > 0 ? input.occupancy / input.estimatedOccupancy : 1
     const afterCondense = input.occupancy - Math.round((originalNew - condensedNew) * scale)
-    // 手动触发是明确的摘要请求；即使收纳已经够用，也必须继续尝试摘要段。
+    // 手动触发是明确的摘要请求；即使收纳已足够，也必须继续尝试摘要段。
     const condenseOnly = input.trigger === 'automatic' && afterCondense <= limit
 
     /*
-     * 占用未越过软阈值时只做收回量够大的收纳，不摘要。
+     * 占用未越过软阈值时只执行回收量足够大的收纳，不摘要。
      *
-     * 收纳改写的是从第一个被收纳单元起的投影，整段保留尾部要重新计费；收回几十个 token 的收纳
-     * 腾不出空间，却每次决策都破一次缓存。下限取半份保留量：一段续读投递最多一份保留量，
-     * 收掉一段扣去信封仍要能过线；取整份时 32K 续读在收纳后仍放不下下一段。
-     * 越过软阈值时判据不变：收纳够就收纳，不够就摘要。
+     * 收纳改写的是从第一个被收纳单元起的投影，整段保留尾部需重新计费；只回收数十个 token 的收纳
+     * 无法腾出空间，却在每次决策时使缓存失效一次。下限取半份保留量：一段续读投递最多一份保留量，
+     * 收纳一段扣去信封后仍须达到下限；取整份时 32K 续读在收纳后仍无法容纳下一段。
+     * 越过软阈值时判据不变：收纳足够时只收纳，不足时摘要。
      */
     if (
       input.trigger === 'automatic' &&
@@ -309,16 +309,16 @@ export class RuntimeCompaction implements CompactionPort {
       return { status: 'skipped', reasonCode: 'nothing_to_fold' }
     }
 
-    // 可行性：这一次必须真的推进一条线。收纳够用时摘要线不动，那就要求收纳线能前移。
+    // 可行性：本次必须实际推进一条边界线。收纳足够时摘要线不动，此时要求收纳线能够前移。
     if (fold.key <= summaryKey || (condenseOnly && fold.key <= condenseKey)) {
       return { status: 'skipped', reasonCode: 'nothing_to_fold' }
     }
 
     /*
-     * 投影总预算：摘要线推到折叠线之后，还能往里放多少。
+     * 投影总预算：摘要线推进到折叠线之后，还能容纳的 token 数。
      *
-     * 被摘要替换掉的是「收纳后的被折区」加「上一份摘要投影」，两者都腾出来；
-     * 事实清单逐字优先占，摘要拿剩下的（`compact()` 里分）。全程 token 计。
+     * 被摘要替换的是「收纳后的折叠区」与「上一份摘要投影」，两者占用的空间都被释放；
+     * 事实清单逐字优先占用，摘要使用剩余部分（在 `compact()` 中分配）。全程以 token 计。
      */
     const oldProjection = summary ? estimateMessages(projectManifest(previous!), input.density) : 0
     const latestContextUnit = [...units]
@@ -363,14 +363,14 @@ export class RuntimeCompaction implements CompactionPort {
 
     if (outcome.status === 'compacted') {
       /*
-       * 落库前最后一次查信号。
+       * 落库前最后一次检查信号。
        *
-       * **检查点必须紧贴这条 UPDATE**：中间再插一个 await 就又留出一个窗口，
-       * 而这条 UPDATE 是不可逆的——它改写模型此后看到的全部历史。用户按下停止
-       * 之后落库的那份 manifest，是他没有等到、也无从撤销的。
+       * 检查点必须紧邻这条 UPDATE：中间每插入一个 await 就多出一个时间窗口，
+       * 而这条 UPDATE 不可逆：它改写模型此后看到的全部历史。用户点击停止
+       * 之后写入的 manifest 既不是用户等待的结果，也无法撤销。
        *
-       * 落库与内存的顺序不能反：反过来中途崩溃会留下「内存说压过了、库里没有」，
-       * 下次启动时该投影将丢失，而模型会突然又看到全部历史。
+       * 落库与更新内存的顺序不能颠倒：颠倒后中途崩溃会留下「内存已压缩、数据库中没有」的状态，
+       * 下次启动时该投影丢失，模型重新看到全部历史。
        */
       if (input.signal?.aborted) return { status: 'aborted' }
       const before = this.estimateProjection(units, previous, input.density)
@@ -394,11 +394,11 @@ export class RuntimeCompaction implements CompactionPort {
   }
 
   /**
-   * 用主模型的同一把尺量 manifest 前后的历史投影。
+   * 用主模型的同一计量口径测量 manifest 前后的历史投影。
    *
-   * 面板只拿两者差额去修正完整请求，因此系统提示词、工具表等头部不在这里重复
-   * 造账。附件在 `collectUnits` 里按 `MEDIA_TOKENS` 计入 `unit.tokens`；收纳工具
-   * 正文时仍把附件差额补回，口径与活请求一致。
+   * 面板只用两者差额修正完整请求，因此系统提示词、工具表等头部不在此处重复
+   * 计量。附件在 `collectUnits` 里按 `MEDIA_TOKENS` 计入 `unit.tokens`；收纳工具
+   * 正文时仍补回附件差额，口径与实际请求一致。
    */
   private estimateProjection(
     units: readonly Unit[],
@@ -437,7 +437,7 @@ export class RuntimeCompaction implements CompactionPort {
       }
     }
 
-    // manifest 的切线与当前历史不相交时，投影函数也不会平白插入摘要。
+    // manifest 的切分线与当前历史不相交时，投影函数不会插入摘要。
     if (folded === 0) return total
     total += estimateMessages(this.missingContext(visible), density)
     if (summaryKey !== null) {
@@ -449,11 +449,11 @@ export class RuntimeCompaction implements CompactionPort {
   }
 
   /**
-   * 把整条会话拉平成可折单元序列。
+   * 把整条会话展开为可折单元序列。
    *
-   * 口径与 `buildHistory` 一致：被接替的 run 不收（失败尝试说过的话不该进摘要），
-   * 还在 running 的批次不收（结果未知不能当已完成，`stepsToUnits` 整批跳过）。
-   * **本 run 已终结的 step 在内**——run 内涨起来的正是它们，无法压缩到目标即没有实际压缩效果。
+   * 口径与 `buildHistory` 一致：被接替的 run 不收录（失败尝试中的输出不应进入摘要），
+   * 仍在 running 的批次不收录（结果未知，不能视为已完成，`stepsToUnits` 整批跳过）。
+   * 本 run 已终结的 step 包含在内：run 内增长的正是这些 step，不压缩它们就没有实际压缩效果。
    */
   private collectUnits(density: TokenDensity): Unit[] {
     const { store, conversationId, messageIdUpperBound } = this.deps
@@ -484,7 +484,7 @@ export class RuntimeCompaction implements CompactionPort {
       units.push({
         key: cutKey(cut),
         cut,
-        // 附件按固定值计、视频不计，与装配那侧（`estimateContent`）同一口径；按 base64 长度估会高出两个数量级。
+        // 附件按固定值计入、视频不计入，与装配侧（`estimateContent`）口径一致；按 base64 长度估算会高出两个数量级。
         tokens:
           estimateMessages([...context, wire], density) +
           m.attachments.filter((a) => !isInlineVideo(a.path)).length * MEDIA_TOKENS,
@@ -515,15 +515,15 @@ export class RuntimeCompaction implements CompactionPort {
               files.filter((a) => !isInlineVideo(a.path)).length * MEDIA_TOKENS,
             messages: u.messages,
             /*
-             * run 内注入的那句用户消息也要有 `row`，否则它折进摘要线之后
-             * **一个字都不会进摘要**：下面拼摘要段时只收 `row` 与 assistant 正文，
-             * user 角色的单元消息不在其中，而它的 `actions` 是空的。
-             * 表现是用户改方向的那句话在一次压缩后彻底消失，模型接着按改之前的判断跑。
+             * run 内注入的用户消息同样需要 `row`，否则该消息折叠进摘要线之后
+             * 不会有任何内容进入摘要：下方组装摘要段时只收录 `row` 与 assistant 正文，
+             * 不包含 user 角色的单元消息，而该单元的 `actions` 为空。
+             * 其后果是用户调整方向的消息在一次压缩后完全丢失，模型继续按调整之前的判断执行。
              *
-             * id 用 `<runId>:<stepId>`——它不在 `messages` 表里，
-             * 由 `HistoryPort.message` 的复合形式解析回来。
+             * id 使用 `<runId>:<stepId>`：该消息不在 `messages` 表中，
+             * 由 `HistoryPort.message` 的复合形式解析。
              */
-            // 执行事实不是用户的话，不以用户的名义进摘要。
+            // 执行事实不是用户消息，不以用户的名义进入摘要。
             row:
               u.userStep && !isNoticeStep(u.userStep)
                 ? {
@@ -547,18 +547,18 @@ interface TodoFact {
   key: string
   messages: WireMessage[]
   /**
-   * 这条事实里逐字保留的调用 id。整表是 `write_todos` 那一条，回执为空集。
+   * 该事实中逐字保留的调用 id。整表为 `write_todos` 调用，回执为空集。
    *
-   * 粒度必须是调用，不是单元：同一个执行波次里还有别的工具，实测一份 261,929
-   * 字符的子 agent 回执与 `write_todos` 同批，按单元保留会把它一并钉在窗口里，
-   * 收纳线前移而占用不降。
+   * 粒度必须是调用而不是单元：同一执行批次中还有其他工具，实测一份 261,929
+   * 字符的子 agent 回执与 `write_todos` 同批，按单元保留会把该回执一并固定在窗口中，
+   * 收纳线前移而占用不下降。
    */
   pinned: ReadonlySet<string>
 }
 
 const NO_PINS: ReadonlySet<string> = new Set()
 
-/** 把 wire history 按执行单元分组；同一波 assistant 调用与所有结果必须同进同出。 */
+/** 把 wire history 按执行单元分组；同一批 assistant 调用与全部结果必须一同保留或一同移除。 */
 function messageUnits(history: readonly WireMessage[]): { key: string; messages: WireMessage[] }[] {
   const units = new Map<string, WireMessage[]>()
   for (const message of history) {
@@ -575,7 +575,7 @@ function messageUnits(history: readonly WireMessage[]): { key: string; messages:
 
 /**
  * 当前待办的最小验收链：最近成功整表，以及它之后明确绑定父待办的成功子任务回执。
- * 回执不是 completed；钉住它是为了长会话压缩后父会话仍能验收或决定返工。
+ * 回执不是 completed；固定保留回执，使长会话压缩后父会话仍能验收或决定返工。
  * 新整表表示父会话已经作出更新，因此替换此前的待验收链。
  */
 function currentTodoFacts(units: readonly { key: string; messages: WireMessage[] }[]): TodoFact[] {
@@ -601,27 +601,27 @@ function currentTodoFacts(units: readonly { key: string; messages: WireMessage[]
 }
 
 /**
- * 整表那条调用与它的结果逐字保留；同一波次的其余消息与待验收回执只留调用摘录
- * 与成功摘要，不能把大段产出钉在窗口里。
+ * 整表调用与其结果逐字保留；同一批次的其余消息与待验收回执只保留调用摘录
+ * 与成功摘要，不能把大段产出固定在窗口中。
  */
 function todoFactMessages(fact: TodoFact): WireMessage[] {
   return fact.messages.map((message) => condenseExcept(message, fact.pinned))
 }
 
-/** 某个单元在收纳区里逐字保留的调用 id。只有最近整表所在的那个单元有。 */
+/** 单元在收纳区中逐字保留的调用 id。只有最近整表所在的单元有此项。 */
 function pinsAt(key: string, table: TodoFact | undefined): ReadonlySet<string> {
   return table?.key === key ? table.pinned : NO_PINS
 }
 
 /**
- * 收纳一条消息，但 `pinned` 里那几个调用逐字保留：它们的参数与结果不换信封，
- * 同一条消息里的其余调用、同一单元里的其余消息照常收纳。
+ * 收纳一条消息，但 `pinned` 中的调用逐字保留：其参数与结果不替换为信封，
+ * 同一条消息中的其余调用、同一单元中的其余消息正常收纳。
  *
- * 投影、收纳量估算、事实清单三处共用这一个函数——三处各写一份判断必然漂移，
- * 而口径不一致时压缩会报出一个自己都达不到的回收量。
+ * 投影、收纳量估算、事实清单三处共用本函数：三处各写一份判断必然产生偏差，
+ * 口径不一致时压缩会报告一个实际无法达到的回收量。
  */
 function condenseExcept(message: WireMessage, pinned: ReadonlySet<string>): WireMessage {
-  // 绝大多数消息不在事实里，走原路径不重建对象：投影每次构造请求都跑一遍。
+  // 绝大多数消息不在事实中，直接返回原对象而不重建：投影在每次构造请求时都会执行。
   if (pinned.size === 0) return condenseMessage(message)
   if (message.role === 'tool') {
     return message.toolCallId && pinned.has(message.toolCallId) ? message : condenseMessage(message)
@@ -674,11 +674,11 @@ function toolEnvelopeStatus(content: WireMessage['content']): string | null {
 }
 
 /**
- * 折叠线：最后一个**不**保留的单元的下标。`-1` = 尾部尚未累积足够的保留预算，无可折。
+ * 折叠线：最后一个不保留的单元的下标。`-1` 表示尾部尚未累积足够的保留预算，没有可折叠的单元。
  *
- * 先加后判，把总量顶过预算的那个单元自己也留着——除非模型已经看过它、且它单独就超过保留量：
- * 那是一段几十万 token 的续读投递，整段留着的话压缩后占用仍在软阈值附近，下一段只剩一份保留量的空间。
- * 模型还没看过的最后一个单元总是留着。
+ * 先累加后判定，使总量超过预算的那个单元本身也被保留；例外是模型已查看该单元、且它本身即超过保留量：
+ * 那是一段数十万 token 的续读投递，整段保留时压缩后占用仍接近软阈值，下一段只剩一份保留量的空间。
+ * 模型尚未查看的最后一个单元始终保留。
  */
 function foldIndexOf(units: Unit[], retain: number, latestUnitSeen: boolean): number {
   let spent = 0

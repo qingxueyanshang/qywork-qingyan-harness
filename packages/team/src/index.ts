@@ -1,13 +1,13 @@
 /**
- * `@qywork/team` 的对外面。**这里列的就是承诺，没列的就是内部实现。**
- * 具名导出，不用 `export *`（B6）；加一行之前先确认它真有包外调用点（B3）。
+ * `@qywork/team` 的对外接口。**此处列出的即对外承诺，未列出的均为内部实现。**
+ * 使用具名导出，不用 `export *`（B6）；新增导出前先确认它确有包外调用方（B3）。
  */
 
-// 外部 CLI 的执行器：编排器在包内用，server 的派活端口在包外用
+// 外部 CLI 的执行器：编排器在包内使用，server 的派发端口在包外使用
 export { runCli } from './cli-backend.ts'
-// 本机装了哪几家外部 CLI：server 的设置页端点与派活端口按它解析目标
+// 本机已安装的外部 CLI：server 的设置页端点与派发端口据此解析目标
 export { type DetectedCli, detectClis, findCli } from './cli-detect.ts'
-// 推进器：server 的派活端口（`workflow` 工具那条）是唯一入口
+// 推进器：server 的派发端口（`workflow` 工具对应的端口）是唯一入口
 export {
   type AdvanceInput,
   type AdvanceResult,
@@ -17,5 +17,5 @@ export {
   type PlanKnown,
   validatePlan,
 } from './orchestrator.ts'
-// 配置形状：runtime 解析、server 消费
+// 配置结构：runtime 解析、server 消费
 export type { CliAgent, PlanNode, Role, TeamRules } from './types.ts'

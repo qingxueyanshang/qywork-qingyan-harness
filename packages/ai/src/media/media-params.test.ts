@@ -11,7 +11,7 @@ const active = (
 ) => activeMediaParams(findMediaModel(id)!.params, operation, params, images)
 
 describe('生成参数按模型和输入模式匹配', () => {
-  test('各家展示自己的控制项，没有的字段不会因共用协议出现', () => {
+  test('各厂商只显示各自的控制项，共用协议不会引入其不支持的字段', () => {
     const labels = (id: string) =>
       findMediaModel(id)!
         .params.filter((p) => p.label)
@@ -29,7 +29,7 @@ describe('生成参数按模型和输入模式匹配', () => {
     expect(labels('veo-3.1-generate-preview')).not.toContain('generate_audio')
   })
 
-  test('max 只在支持的模型上通过；未设置质量不自动补 max', () => {
+  test('max 只在支持的模型上通过；未设置质量时不自动补充 max', () => {
     expect(active('gpt-image-2.5-sunburst', 'edit', { quality: 'max' }, 1)).toEqual({
       quality: 'max',
     })
@@ -48,7 +48,7 @@ describe('生成参数按模型和输入模式匹配', () => {
     expect(active('qwen-image-3.0', 'generate', prefs)).toEqual(prefs)
   })
 
-  test('万相 Pro 的 4K 在图生时隐藏且不发送，回文生时恢复', () => {
+  test('万相 Pro 的 4K 在图生图时隐藏且不发送，切回文生图时恢复', () => {
     const model = findMediaModel('wan2.7-image-pro')!
     const prefs = { size: '4K', thinking_mode: true, seed: 99 }
     const size = model.params.find((p) => p.name === 'size')!
@@ -59,7 +59,7 @@ describe('生成参数按模型和输入模式匹配', () => {
     expect(active(model.id, 'edit', { size: '4096*4096' }, 1)).toEqual({})
   })
 
-  test('格式与透明背景、PNG 与压缩质量组合不能误发', () => {
+  test('格式与透明背景、PNG 与压缩质量的冲突组合不会被发送', () => {
     expect(active('gpt-image-2.5-flare', 'generate', { output_compression: 90 })).toEqual({})
     expect(
       active('gpt-image-2.5-flare', 'generate', {
@@ -104,7 +104,7 @@ describe('生成参数按模型和输入模式匹配', () => {
     ).toEqual({ generate_audio: false })
   })
 
-  test('直接工具调用仍拒绝非法值，避免将拼错的参数当作成功执行', () => {
+  test('直接工具调用仍拒绝非法值，不将拼写错误的参数视为执行成功', () => {
     const gpt = findMediaModel('gpt-image-2.5-flare')!
     expect(
       validateMediaCall(gpt, 'generate', { size: '1000x1000' }, { images: 0, videos: 0 }).join(),

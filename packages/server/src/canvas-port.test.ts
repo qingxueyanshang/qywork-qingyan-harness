@@ -1,8 +1,8 @@
 /**
- * 覆盖 `canvas.ts` 的 `canvasPort`：Agent 经端口与界面经 HTTP 用的是同一个画布服务。
+ * 覆盖 `canvas.ts` 的 `canvasPort`：Agent 经由端口与界面经由 HTTP 使用同一个画布服务。
  *
- * 锁三件事：同一批操作两条路径写出的文件逐字节相同；Agent 与用户同时改，两边的改动都在；
- * 经端口运行视频时，任务节点在端口返回（工具结束）之前就已写进画布并发出通知。
+ * 锁定三项行为：同一批操作经两条路径写出的文件逐字节相同；Agent 与用户同时修改时，双方的改动均保留；
+ * 经端口运行视频时，任务节点在端口返回（工具结束）之前已写入画布并发出通知。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -69,7 +69,7 @@ describe('画布端口', () => {
     expect(parseCanvas(a).ok).toBe(true)
   })
 
-  test('Agent 与用户同时改，两边的改动都在', async () => {
+  test('Agent 与用户同时修改，双方的改动均保留', async () => {
     const root = await workspace()
     const svc = new CanvasService({ publish: () => {} })
     const port = canvasPort(svc, { id: 'ws', root })
@@ -87,7 +87,7 @@ describe('画布端口', () => {
     ])
   })
 
-  test('经端口运行视频：任务节点在端口返回之前就写进画布并发出 file.changed', async () => {
+  test('经端口运行视频：任务节点在端口返回之前写入画布并发出 file.changed', async () => {
     const root = await workspace()
     const r = applyCanvasOps(emptyCanvas(), OPS)
     if (!r.ok) throw new Error(r.error)

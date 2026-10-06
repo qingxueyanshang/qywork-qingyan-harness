@@ -2,10 +2,10 @@
 
 办公软件只读打开工作副本导出 PDF，按标题文字在目录之后各页出现的位置得到页码，再由本模块改写目录域的结果：
 域代码（begin、instrText、separate、end）不动，结果段落换成「条目文字 + 制表符 + 页码」，右对齐点线制表位。
-回填后再导出一次核对页码；目录长度变化使页码改变时按新页码再回填一次，仍不一致就报告。
+回填后再导出一次核对页码；目录长度变化使页码改变时按新页码再回填一次，仍不一致时报告。
 
-只处理 TOC 域。有标题在导出页面里找不到时，整个目录保留原结果并报告，不猜测页码。
-不要改成让办公软件更新域并另存：WPS 文字没有 SaveCopyAs，另存会写最近文档与账号打开记录，并重写整个文件包。
+只处理 TOC 域。有标题在导出页面中未找到时，整个目录保留原结果并报告，不推测页码。
+不要改为由办公软件更新域并另存：WPS 文字没有 SaveCopyAs，另存会写入最近文档与账号打开记录，并重写整个文件包。
 """
 
 import copy
@@ -29,7 +29,7 @@ def _w(tag):
 
 
 def find_toc(body):
-    """找第一个 TOC 域。返回 {begin, code, end, instr}，code 为 begin 到 separate（含）的各个 run。"""
+    """查找第一个 TOC 域。返回 {begin, code, end, instr}，code 为 begin 到 separate（含）的各个 run。"""
     depth = 0
     cur = None
     for r in body.iter(_w("r")):
@@ -65,7 +65,7 @@ def toc_levels(instr):
 
 
 def style_levels(styles):
-    """样式 id → 大纲级别（从 1 起）。认 outlineLvl、「heading N」样式名，并沿 basedOn 继承。"""
+    """样式 id → 大纲级别（从 1 起）。识别 outlineLvl 与「heading N」样式名，并沿 basedOn 继承。"""
     if styles is None:
         return {}
     direct, based = {}, {}
@@ -93,7 +93,7 @@ def style_levels(styles):
 
 
 def _visible_text(p):
-    """段落里未设隐藏（w:vanish）的文字。隐藏文字不出现在导出页面里，也就定不了页码。"""
+    """段落中未设为隐藏（w:vanish）的文字。隐藏文字不出现在导出页面中，无法确定页码。"""
     parts = []
     for r in p.iter(_w("r")):
         rpr = r.find(_w("rPr"))
@@ -105,7 +105,7 @@ def _visible_text(p):
 
 
 def headings_after(body, end_run, levels, slevels):
-    """目录域之后、在目录级别范围内的标题 [(级别, 文字)]。整段都是隐藏文字的标题不进目录。"""
+    """目录域之后、在目录级别范围内的标题 [(级别, 文字)]。整段均为隐藏文字的标题不列入目录。"""
     end_p = end_run.getparent()
     after = False
     out = []
@@ -132,13 +132,13 @@ def headings_after(body, end_run, levels, slevels):
     return out
 
 
-# 标题前的自动编号（多级列表）：它不在 w:t 里，只出现在导出页面上。
+# 标题前的自动编号（多级列表）：它不在 w:t 中，只出现在导出页面上。
 NUMBERING = re.compile(r"\d+(?:[.．]\d+)*[.．、]?|第[一二三四五六七八九十百零〇\d]+[章节部分篇条]"
                        r"|[一二三四五六七八九十]+、|[（(][一二三四五六七八九十\d]+[)）]")
 
 
 def _stripped(raw):
-    """去掉空白后的文字，以及每个字符在原文里的位置。导出文字里中英文之间会插空格，比较前要去掉。"""
+    """去除空白后的文字，以及每个字符在原文中的位置。导出文字的中英文之间会插入空格，比较前须去除。"""
     chars, pos = [], []
     for i, ch in enumerate(raw):
         if not ch.isspace():
@@ -159,14 +159,14 @@ def _ends_line(raw, end):
 
 
 def locate(headings, page_texts):
-    """按文档顺序在导出页面里找每个标题：[(页码, 目录条目文字)]，找不到为 None。
+    """按文档顺序在导出页面中查找每个标题：[(页码, 目录条目文字)]，未找到为 None。
 
-    正文里的标题是一整段：出现处后面紧跟换行，前面是行首、空白或自动编号。目录条目后面跟着点线与页码，
-    正文句子里出现的同样文字前后还有别的字，两者都不算。不要改成「后面紧跟数字就跳过」：
-    下一行以编号开头（「1.2.1 …」）时，去掉换行后标题后面就是数字。
-    查找位置按页与页内位置向后推进，重名的标题按出现顺序对应。
-    导出文字偶尔把标题接在上一段的末行后面，只隔一个空格，所以前面是空白也算。
-    条目文字带上页面上显示的自动编号。
+    正文中的标题独占一段：匹配处之后紧跟换行，前面是行首、空白或自动编号。目录条目之后是点线与页码，
+    正文句子中的相同文字前后还有其他字符，两者都不算匹配。不要改为「后面紧跟数字就跳过」：
+    下一行以编号开头（「1.2.1 …」）时，去除换行后标题之后即为数字。
+    查找位置按页与页内偏移向后推进，同名标题按出现顺序对应。
+    导出文字有时把标题接在上一段末行之后，仅隔一个空格，因此前面是空白也算匹配。
+    条目文字包含页面上显示的自动编号。
     """
     pages = [(raw, *_stripped(raw)) for raw in page_texts]
     out = []
@@ -235,14 +235,14 @@ def rewrite_toc(document_xml: bytes, entries, styled_levels: set) -> bytes:
     body = doc.find(_w("body"))
     toc = find_toc(body)
     if toc is None:
-        raise ValueError("文档里没有目录域")
+        raise ValueError("文档中没有目录域")
     begin, end = toc["begin"], toc["end"]
     p_b, p_e = begin.getparent(), end.getparent()
     if etree.QName(p_b).localname != "p" or etree.QName(p_e).localname != "p":
-        raise ValueError("目录域不在普通段落里，本工具不支持这种结构")
+        raise ValueError("目录域不在普通段落中，本工具不支持该结构")
     container = p_b.getparent()
     if p_e.getparent() is not container:
-        raise ValueError("目录域的开始与结束不在同一层，本工具不支持这种结构")
+        raise ValueError("目录域的开始与结束不在同一层级，本工具不支持该结构")
     kids = list(container)
     i_b, i_e = kids.index(p_b), kids.index(p_e)
 
@@ -323,7 +323,7 @@ def update(path, apps, call_dir):
     body = etree.fromstring(document_xml).find(_w("body"))
     toc = find_toc(body)
     if toc is None:
-        return {"status": "not_run", "detail": "文档里没有目录域（TOC）"}
+        return {"status": "not_run", "detail": "文档中没有目录域（TOC）"}
     levels = toc_levels(toc["instr"])
     headings = headings_after(body, toc["end"], levels, style_levels(styles))
     if not headings:
@@ -354,7 +354,7 @@ def update(path, apps, call_dir):
         if None in check:
             util.replace_parts(path, {"word/document.xml": document_xml})
             return {"status": "failed", "passes": passes,
-                    "detail": "回填后按导出页面核对时找不到部分标题，目录保留原结果"}
+                    "detail": "回填后按导出页面核对时未找到部分标题，目录保留原结果"}
         found = check
     return {"status": "failed", "passes": passes,
-            "detail": "回填后目录页数变化，两次回填页码仍不一致；目录里的页码可能有偏差"}
+            "detail": "回填后目录页数变化，两次回填页码仍不一致；目录中的页码可能有偏差"}

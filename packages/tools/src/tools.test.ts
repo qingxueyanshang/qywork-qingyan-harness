@@ -68,11 +68,11 @@ test('内置工具名全部符合 provider 约束', () => {
 })
 
 /**
- * 在「这台机器没有 bash」的状态里跑一段。
+ * 在「本机没有 bash」的状态下执行一段代码。
  *
- * 用 `QYWORK_BASH_PATH` 指到一个不存在的位置来制造这个状态——那是探测的第一顺位，
- * 所以它同时验了两件事：**指错即无**，以及**探测是每次现跑的**（缓存的话这里拿到的
- * 还是上一轮的结果）。
+ * 通过把 `QYWORK_BASH_PATH` 指向一个不存在的位置构造此状态：它是探测的第一优先级，
+ * 因此同时验证两件事：路径错误即视为不存在，以及探测每次实时执行（若有缓存，此处取得的
+ * 仍是上一轮的结果）。
  *
  * 工具注册时选择解释器，执行时使用同一份结果。此处保持探测环境一致，
  * 安装过程中解释器变化的回归由 shell.test.ts 单独覆盖。
@@ -89,11 +89,11 @@ async function withoutBash<T>(fn: () => T | Promise<T>): Promise<T> {
 }
 
 /**
- * 越界被拒之后，模型手里那条回话决定它下一步干什么。
+ * 越界被拒绝后，模型收到的结果决定它下一步的行为。
  *
- * 复现的原始失败形状：读桌面上某个项目被拒，回话只有一句「工具 read_file
- * 执行出错: 路径越界」——模型把它当成偶发故障，转头用 `run_command` 绕过去
- * （shell 只锁 cwd，命令正文里 `cd` 得出去），全程没告诉用户发生了什么。
+ * 复现的原始失败：读取桌面上某个项目被拒绝，结果只有一句「工具 read_file
+ * 执行出错: 路径越界」，模型将其当作偶发故障，转而用 `run_command` 绕过
+ * （shell 只限定 cwd，命令正文中的 `cd` 可以离开工作区），全程未告知用户。
  */
 describe('越界拒绝是判定，不是崩溃', () => {
   const denial = async () => {
@@ -105,21 +105,21 @@ describe('越界拒绝是判定，不是崩溃', () => {
     )
   }
 
-  test('不套「执行出错」的壳，errorKind 说清是哪一类', async () => {
+  test('不使用「执行出错」的通用包装，errorKind 指明类别', async () => {
     const out = await denial()
     expect(out.status).toBe('failure')
     expect(out.errorKind).toBe('path_out_of_workspace')
     expect(out.message).not.toContain('执行出错')
-    // 什么都没发生过——`executed: true` 会让崩溃恢复按「可能有副作用」处理。
+    // 未产生任何副作用：`executed: true` 会使崩溃恢复按「可能有副作用」处理。
     expect(out.executed).toBe(false)
   })
 
   /**
-   * 两条出路都要给全：切「完全访问」是真的能解开（那个模式下路径边界整个不设），
-   * 加 `additionalDirectories` 则是不放开全部权限、只开这一个目录。
-   * 少说一条就是把用户往另一条上逼。
+   * 两种解决方式都必须给出：切换到「完全访问」可以解除限制（该模式下不设路径边界），
+   * 添加 `additionalDirectories` 则不放开全部权限、只开放该目录。
+   * 只给出一种，等于迫使用户选择它。
    */
-  test('回话给出两条出路，不承诺命令裁决会拒绝同一路径', async () => {
+  test('结果给出两种解决方式，不承诺命令裁决会拒绝同一路径', async () => {
     const out = await denial()
     expect(out.message).toContain('完全访问')
     expect(out.message).toContain('additionalDirectories')
@@ -129,36 +129,36 @@ describe('越界拒绝是判定，不是崩溃', () => {
 })
 
 /**
- * 「完全访问」= 全部权限，**路径边界也归它管**。
+ * 「完全访问」即全部权限，路径边界也由它决定。
  *
- * 原始失败形状（会话 `cv_0msw3jst9`）：用户开着完全访问，`read_file` 桌面上的
- * 项目被路径层拒，而同一个模式下 `run_command` 是全放行的——模型因此
- * `cd /c/Users/.../qywork && head -c 6000 README.md` 读到了同一个文件，
- * 全程没告诉用户。只放开权限闸、留着路径层，得到的不是更安全，是两套账。
+ * 原始失败（会话 `cv_0msw3jst9`）：用户开启完全访问，`read_file` 读取桌面上的
+ * 项目被路径层拒绝，而同一模式下 `run_command` 全部放行，模型因此通过
+ * `cd /c/Users/.../qywork && head -c 6000 README.md` 读取了同一个文件，
+ * 全程未告知用户。只放开权限检查而保留路径层，结果不是更安全，而是形成两套账。
  */
-describe('完全访问：路径边界跟着一起放开', () => {
-  test('工作区外的绝对路径照读', async () => {
+describe('完全访问：路径边界一并放开', () => {
+  test('工作区外的绝对路径照常读取', async () => {
     const root = await workspace()
     const outside = await mkdtemp(join(tmpdir(), 'qywork-outside-'))
     await writeFile(join(outside, 'note.md'), '界外的正文\n', 'utf8')
 
-    // 走 `rootsOf`，一并覆盖 ToolContext 的 `unrestrictedPaths` → 根目录清单那一跳。
+    // 经由 `rootsOf`，一并覆盖 ToolContext 的 `unrestrictedPaths` 到根目录清单的转换。
     const roots = rootsOf({ workspaceRoot: root, unrestrictedPaths: true })
     await expect(
       resolveInWorkspace(roots, join(outside, 'note.md'), { mustExist: true }),
     ).resolves.toContain('note.md')
-    // 同一个路径在自动审批下仍然拒——放开的是模式，不是这条判定本身。
+    // 同一路径在自动审批下仍被拒绝：放开的是模式，而不是这条判定本身。
     await expect(
       resolveInWorkspace({ workspaceRoot: root }, join(outside, 'note.md'), { mustExist: true }),
     ).rejects.toBeInstanceOf(PathEscapeError)
   })
 
   /**
-   * `.agents/` 那条挡的是「给自己加工具」，而完全访问下模型手里的 `run_command`
-   * 是全放行的，`echo > .agents/x` 一行就写进去了。留着只会变成又一处
-   * 「文件工具拦、shell 不拦」。
+   * `.agents/` 规则拦截的是「为自己添加工具」，而完全访问下模型的 `run_command`
+   * 全部放行，一行 `echo > .agents/x` 即可写入。保留该规则只会再形成一处
+   * 「文件工具拦截、shell 不拦截」的不一致。
    */
-  test('受保护目录的写入也跟着放开', async () => {
+  test('受保护目录的写入也一并放开', async () => {
     const root = await workspace()
     await expect(
       resolveWritablePath({ workspaceRoot: root, unrestricted: true }, '.agents/mcp.json'),
@@ -169,10 +169,10 @@ describe('完全访问：路径边界跟着一起放开', () => {
   })
 
   /**
-   * 放开的是**归属判定**，不是解析本身：返回的仍然是 realpath 之后那一个路径。
-   * 返回字面路径的话，调用方拿它记「本轮读过没有」，软链根下的新鲜度判定会恒错。
+   * 放开的是归属判定，而不是解析本身：返回的仍是 realpath 之后的路径。
+   * 返回字面路径时，调用方用它记录「本轮是否读过」，软链根下的新鲜度判定会始终出错。
    */
-  test('仍然返回 realpath 之后的路径，不是字面路径', async () => {
+  test('仍返回 realpath 之后的路径，而不是字面路径', async () => {
     const root = await workspace()
     const resolved = await resolveInWorkspace(
       { workspaceRoot: root, unrestricted: true },
@@ -205,7 +205,7 @@ describe('路径约束', () => {
     try {
       await symlink(outside, join(root, 'link'))
     } catch {
-      return // Windows 上无权限建符号链接时跳过
+      return // Windows 上无权限创建符号链接时跳过
     }
     await expect(
       resolveInWorkspace(root, 'link/secret.txt', { mustExist: true }),
@@ -236,8 +236,8 @@ describe('额外根目录', () => {
     await expect(resolveWritablePath(roots, join(extra, 'out.txt'))).resolves.toContain('out.txt')
   })
 
-  test('清单**外**的路径仍然拒绝', async () => {
-    // 这条是整个特性的反向对照：加了额外目录不等于边界没了。
+  test('清单外的路径仍被拒绝', async () => {
+    // 本测试是该特性的反向对照：添加额外目录不等于取消边界。
     const { root, extra } = await withExtra()
     const other = await mkdtemp(join(tmpdir(), 'qywork-other-'))
     await expect(
@@ -245,40 +245,40 @@ describe('额外根目录', () => {
     ).rejects.toBeInstanceOf(PathEscapeError)
   })
 
-  test('不配额外目录时行为完全不变', async () => {
+  test('未配置额外目录时行为完全不变', async () => {
     const { root, extra } = await withExtra()
     await expect(resolveInWorkspace(root, join(extra, 'notes.md'))).rejects.toBeInstanceOf(
       PathEscapeError,
     )
   })
 
-  test('相对路径的基准永远是工作区，不会落到额外目录里', async () => {
-    // 否则 `read_file("notes.md")` 变成「在几个根里逐个试探」，
-    // 命中哪一个取决于目录内容——同一句话两次可能读到不同的文件。
+  test('相对路径的基准始终是工作区，不会解析到额外目录中', async () => {
+    // 否则 `read_file("notes.md")` 将在多个根目录中逐个尝试，
+    // 命中哪一个取决于目录内容：同一请求两次可能读取到不同的文件。
     //
-    // 报的是**不存在**而不是**越界**：这个相对路径解析出来就在工作区里，
-    // 只是那儿没有这个文件。报成越界的话，模型收到的是一句它无法执行的权限话术
-    // （「让用户切到完全访问」），而真相是它把文件名记错了。
+    // 报告的是「不存在」而不是「越界」：该相对路径解析后位于工作区内，
+    // 只是该位置不存在此文件。报告为越界时，模型收到的是一条它无法执行的权限说明
+    // （「请用户切换到完全访问」），而实际原因是文件名有误。
     const { root, extra } = await withExtra()
     await expect(
       resolveInWorkspace({ workspaceRoot: root, additional: [extra] }, 'notes.md', {
         mustExist: true,
       }),
     ).rejects.toBeInstanceOf(PathNotFoundError)
-    // 额外目录里那一份没有被拿来顶替——这才是这条测试真正要锁的点。
+    // 额外目录中的同名文件未被用作替代，这是本测试锁定的行为。
     expect(await stat(join(extra, 'notes.md')).then(() => true)).toBe(true)
   })
 
-  test('额外目录里的软链逃不出去', async () => {
-    // 只按字面比较的话，额外目录里一个指向别处的软链能把整棵树带出来。
-    // 额外根目录必须走与工作区**完全相同**的 realpath 判定。
+  test('额外目录中的软链无法越出边界', async () => {
+    // 只按字面比较时，额外目录中一个指向别处的软链可以把整棵目录树带出边界。
+    // 额外根目录必须使用与工作区完全相同的 realpath 判定。
     const { root, extra } = await withExtra()
     const outside = await mkdtemp(join(tmpdir(), 'qywork-escape-'))
     await writeFile(join(outside, 'secret.txt'), 'nope', 'utf8')
     try {
       await symlink(outside, join(extra, 'link'))
     } catch {
-      return // Windows 上无权限建符号链接时跳过
+      return // Windows 上无权限创建符号链接时跳过
     }
     await expect(
       resolveInWorkspace(
@@ -291,7 +291,7 @@ describe('额外根目录', () => {
     ).rejects.toBeInstanceOf(PathEscapeError)
   })
 
-  test('额外目录不存在时只是不生效，不会让整次解析抛错', async () => {
+  test('额外目录不存在时仅不生效，不会使整次解析抛错', async () => {
     const { root } = await withExtra()
     const roots = { workspaceRoot: root, additional: [join(tmpdir(), 'qywork-not-here-at-all')] }
     await expect(resolveInWorkspace(roots, 'a.txt', { mustExist: true })).resolves.toContain(
@@ -309,7 +309,7 @@ describe('额外根目录', () => {
     ).rejects.toThrow(/权限|扩展配置/)
   })
 
-  test('相对路径的配置项被拒，并且说得出为什么', async () => {
+  test('相对路径的配置项被拒绝，并说明原因', async () => {
     const bad = normalizeAdditionalDirectories(['notes', './x'])
     expect(bad.dirs).toEqual([])
     expect(bad.problems).toHaveLength(2)
@@ -322,8 +322,8 @@ describe('额外根目录', () => {
     expect(dirs).toHaveLength(1)
   })
 
-  test('displayPath 对工作区外的文件给绝对路径', async () => {
-    // 算成 `../../别处/x.ts` 的话，模型读不懂，拿去回填还会因为基准不同指向别处。
+  test('displayPath 对工作区外的文件返回绝对路径', async () => {
+    // 计算为 `../../别处/x.ts` 时，模型无法理解，回填时还会因基准不同指向错误位置。
     const { root, extra } = await withExtra()
     expect(displayPath(root, join(extra, 'notes.md'))).toBe(join(extra, 'notes.md'))
     expect(displayPath(root, join(root, 'a.txt'))).toBe('a.txt')
@@ -352,14 +352,14 @@ describe('只读根目录', () => {
     expect(out.executed).toBe(false)
   })
 
-  test('只读根里指向界外的软链不放行', async () => {
+  test('只读根中指向界外的软链不放行', async () => {
     const { root, skills } = await withSkills()
     const outside = await mkdtemp(join(tmpdir(), 'qywork-escape-'))
     await writeFile(join(outside, 'secret.txt'), 'nope', 'utf8')
     try {
       await symlink(outside, join(skills, 'link'))
     } catch {
-      return // Windows 上无权限建符号链接时跳过
+      return // Windows 上无权限创建符号链接时跳过
     }
     await expect(
       resolveInWorkspace(
@@ -382,14 +382,14 @@ describe('文件工具', () => {
   })
 
   /**
-   * 读不出整数的 offset 是**失败**，不是一次读到 0 行的成功。
+   * 无法解析为整数的 offset 是失败，而不是一次读到 0 行的成功。
    *
-   * 原始失败形状：模型把行区间写成一个串（`offset: "1,4000"`），
+   * 原始失败：模型把行区间写成一个字符串（`offset: "1,4000"`），
    * `Math.max(1, Number(...))` 得到 NaN，`slice(NaN, NaN)` 是空数组，
-   * `truncated` 拿 NaN 去比也为假——回给模型的是
-   * 「success / 0 行 / 没截断 / 文件有 349 行」四条互相矛盾的事实。
+   * `truncated` 与 NaN 比较也为假，返回给模型的是
+   * 「success / 0 行 / 未截断 / 文件有 349 行」四条互相矛盾的事实。
    */
-  test('offset 读不出整数时失败，而不是成功读到 0 行', async () => {
+  test('offset 无法解析为整数时失败，而不是成功读到 0 行', async () => {
     const root = await workspace()
     const out = await registry().execute(
       'read_file',
@@ -401,7 +401,7 @@ describe('文件工具', () => {
     expect(out.message).toContain('1,4000')
   })
 
-  test('字符串写的整数照收，越界的整数仍然钳到第一行', async () => {
+  test('字符串形式的整数照常接受，越界的整数仍限定为第一行', async () => {
     const root = await workspace()
     const r = registry()
     const asText = await r.execute('read_file', { path: 'a.txt', offset: '2' }, ctx(root))
@@ -423,7 +423,7 @@ describe('文件工具', () => {
     expect(out.errorKind).toBe('stale_write')
     expect(out.message).toContain('read_file')
     expect(out.message).not.toContain('list_dir')
-    // 磁盘内容必须原封不动。
+    // 磁盘内容必须保持不变。
     expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello\nworld\n')
   })
 
@@ -497,7 +497,7 @@ describe('文件工具', () => {
     expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello\nthere\n')
   })
 
-  test('新建文件不需要先读', async () => {
+  test('新建文件无需先读取', async () => {
     const root = await workspace()
     const out = await registry().execute(
       'write_file',
@@ -594,8 +594,8 @@ describe('文件工具', () => {
   })
 
   /**
-   * 原始失败：用户要求「新建一个 notes.md」而该文件已存在，模型按「固定文件名用 error」停下来询问用户。
-   * 不传 on_conflict 时新建重名直接改名写入，回执写明原名已被占用与实际路径。
+   * 原始失败：用户要求「新建一个 notes.md」而该文件已存在，模型按「固定文件名用 error」停止并询问用户。
+   * 不传 on_conflict 时新建重名文件自动改名写入，回执写明原名已被占用与实际路径。
    */
   test('不传 on_conflict 时新建重名自动改名，回执写明原名已存在与实际路径', async () => {
     const root = await workspace()
@@ -693,7 +693,7 @@ describe('文件工具', () => {
     expect(await stat(join(outside, 'page.html')).catch(() => null)).toBeNull()
   })
 
-  test('覆盖模式不新建；读后的内容改变仍然拒绝覆盖', async () => {
+  test('覆盖模式不新建文件；读取后内容发生变化时仍拒绝覆盖', async () => {
     const root = await workspace()
     const r = registry()
     const c = ctx(root)
@@ -747,9 +747,9 @@ describe('文件工具', () => {
   })
 
   /**
-   * 增删数按**位置**算。
+   * 增删数按位置计算。
    *
-   * 每一条都是「按文本出现过没有」那种算法会数错的形状——它们全部会被算成 0。
+   * 以下每一项都是按文本是否出现过计数的算法会计算错误的情形：结果都为 0。
    */
   describe('行级增删', () => {
     const rewrite = async (before: string, after: string) => {
@@ -767,44 +767,44 @@ describe('文件工具', () => {
       return out.fileChanges?.[0]
     }
 
-    test('插进去的空行算新增', async () => {
+    test('插入的空行计为新增', async () => {
       expect(await rewrite('a\n\nb\n', 'a\n\n\n\nb\n')).toMatchObject({
         additions: 2,
         deletions: 0,
       })
     })
 
-    test('旧文件里别处有同一行，照样算新增', async () => {
-      // `}` 在旧文件里已经有一个；新增的那一段自带一个，它是真新增。
+    test('旧文件的其他位置有相同的行时，仍计为新增', async () => {
+      // 旧文件中已有一个 `}`；新增段落也含一个，该行应计为新增。
       expect(await rewrite('f()\n}\n', 'f()\n}\ng()\n}\n')).toMatchObject({
         additions: 2,
         deletions: 0,
       })
     })
 
-    test('整块搬家两头都算', async () => {
+    test('整块移动时两端都计入', async () => {
       expect(await rewrite('a\nb\nc\nd\n', 'c\nd\na\nb\n')).toMatchObject({
         additions: 2,
         deletions: 2,
       })
     })
 
-    test('一个字没动就是 0', async () => {
+    test('内容未变时为 0', async () => {
       expect(await rewrite('a\nb\nc\n', 'a\nb\nc\n')).toMatchObject({
         additions: 0,
         deletions: 0,
       })
     })
 
-    test('整份换掉：新的全算增、旧的全算删', async () => {
+    test('整份替换：新内容全部计为新增，旧内容全部计为删除', async () => {
       expect(await rewrite('a\nb\nc\n', 'x\ny\n')).toMatchObject({ additions: 2, deletions: 3 })
     })
 
     /**
-     * 封顶那一档。差得比 MAX_EDIT 还远时报满——**不是回落到别的算法**。
-     * 一万行全不一样，报 10000/10000 就是对的。
+     * 达到上限的情形。差异超过 MAX_EDIT 时按全量报告，而不是回退到其他算法。
+     * 一万行全部不同时，报告 10000/10000 即为正确。
      */
-    test('差到封顶之外报满，且不会跑很久', async () => {
+    test('差异超出上限时按全量报告增删，且执行时间短', async () => {
       const old = Array.from({ length: 10_000 }, (_, i) => `旧 ${i}`).join('\n')
       const now = Array.from({ length: 10_000 }, (_, i) => `新 ${i}`).join('\n')
       const started = performance.now()
@@ -814,16 +814,16 @@ describe('文件工具', () => {
   })
 
   /**
-   * **读记录的寿命由装配方定，这里只验两端。**
+   * 读取记录的生命周期由装配方决定，此处只验证两端。
    *
-   * 上一轮读过、这一轮直接改，是完全正常的用法。记录挂在 run 内的便签上时
-   * 每轮清零一次，因此这种用法必然先失败一次「本轮未读取过」。
+   * 上一轮读取、本轮直接修改是正常用法。记录存放在 run 内的临时状态中时
+   * 每轮清零一次，因此该用法必然先失败一次「本轮未读取过」。
    *
-   * 接上会话级 port 之后不再重来；而**没接上时行为一个字不变**（更严的那一侧），
-   * 所以两条都测。
+   * 接入会话级 port 后不再需要重新读取；未接入时行为完全不变（更严格的一侧），
+   * 因此两种情况都测试。
    */
-  describe('跨轮读记录', () => {
-    /** 一个最小的会话级 port：两个 run 共用同一份，正是 runtime 注入的那种形状。 */
+  describe('跨轮读取记录', () => {
+    /** 最小的会话级 port：两个 run 共用同一份，与 runtime 注入的结构相同。 */
     function sessionReads() {
       const m = new Map<string, string>()
       return {
@@ -832,11 +832,11 @@ describe('文件工具', () => {
       }
     }
 
-    test('接上会话级记录后，上一轮读过这一轮就能直接改', async () => {
+    test('接入会话级记录后，上一轮读取过的文件本轮可直接修改', async () => {
       const root = await workspace()
       const r = registry()
       const reads = sessionReads()
-      // 第一轮：读。第二轮是**另一个 ToolContext**（run 之间必须重建）。
+      // 第一轮读取。第二轮使用另一个 ToolContext（run 之间必须重建）。
       await r.execute('read_file', { path: 'a.txt' }, { ...ctx(root), reads })
       const out = await r.execute(
         'edit_file',
@@ -847,7 +847,7 @@ describe('文件工具', () => {
       expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello\nthere\n')
     })
 
-    test('没接 port 时仍然要求本 run 读过 —— 退化到更严的一侧', async () => {
+    test('未接入 port 时仍要求本 run 读取过：退回更严格的一侧', async () => {
       const root = await workspace()
       const r = registry()
       await r.execute('read_file', { path: 'a.txt' }, ctx(root))
@@ -860,12 +860,12 @@ describe('文件工具', () => {
       expect(out.errorKind).toBe('stale_write')
     })
 
-    test('会话级记录照样拦得住「你读完之后文件被改过」', async () => {
+    test('会话级记录同样能拦截「读取之后文件被修改」', async () => {
       const root = await workspace()
       const r = registry()
       const reads = sessionReads()
       await r.execute('read_file', { path: 'a.txt' }, { ...ctx(root), reads })
-      // 别人（用户、另一个进程）改了盘上的内容。
+      // 其他方（用户、另一个进程）修改了磁盘上的内容。
       await writeFile(join(root, 'a.txt'), 'hello\nworld\nplus\n', 'utf8')
       const out = await r.execute(
         'edit_file',
@@ -908,7 +908,7 @@ describe('文件工具', () => {
   })
 })
 
-describe('权限闸', () => {
+describe('权限检查', () => {
   test('拒绝授权时不执行，且 executed=false', async () => {
     const root = await workspace()
     const out = await registry().execute(
@@ -931,7 +931,7 @@ describe('注册表', () => {
     expect(out.errorKind).toBe('unregistered_tool_call')
   })
 
-  test('重名注册直接抛，不静默覆盖', () => {
+  test('重名注册直接抛错，不静默覆盖', () => {
     const r = registry()
     expect(() => registerBuiltinTools(r)).toThrow(/重复注册/)
   })
@@ -953,16 +953,16 @@ describe('搜索与命令', () => {
   })
 
   /**
-   * 单个文件命中过多时**必须报截断**，而且两条引擎给同一个上界。
+   * 单个文件命中过多时必须报告截断，且两种引擎使用同一个上界。
    *
-   * 原始失败形状：ripgrep 那条带每文件上限，而 `truncated` 只按总条数（200）算——
-   * 实测本仓 `packages/ai` 搜 `cache`：真实 168 行、拿回 159 行、报 `truncated: false`。
-   * 丢了 9 行，模型据此认为搜全了。降级那条则完全没有每文件上限，
-   * 同一个查询在装没装 rg 的机器上结果不同。
+   * 原始失败：ripgrep 路径有每文件上限，而 `truncated` 只按总条数（200）计算。
+   * 实测在本仓库 `packages/ai` 中搜索 `cache`：实际 168 行、取回 159 行、报告 `truncated: false`，
+   * 丢失 9 行，模型据此认为搜索完整。降级路径则完全没有每文件上限，
+   * 同一查询在是否安装 rg 的机器上结果不同。
    *
-   * 第二个模式带前瞻断言：rg 的引擎不认（退出码 2），因此必然走降级遍历。
+   * 第二个模式带前瞻断言：rg 的引擎不支持（退出码 2），因此必然使用降级遍历。
    */
-  test('单个文件命中超过每文件上限时报截断，两条引擎同一个上界', async () => {
+  test('单个文件命中超过每文件上限时报告截断，两种引擎使用同一个上界', async () => {
     const root = await workspace()
     const many = Array.from({ length: 60 }, (_, i) => `needle ${i}`).join('\n')
     await writeFile(join(root, 'many.txt'), many, 'utf8')
@@ -977,13 +977,13 @@ describe('搜索与命令', () => {
   })
 
   /**
-   * 起点是一个**文件**时照样搜得到。
+   * 起点是一个文件时同样能搜索到结果。
    *
-   * 原始失败形状：`grep(pattern, path="js/game.js")` 回 `success` + 0 命中——
-   * rg 那条拿文件当 `cwd` 去 spawn 直接抛、降级那条对文件 `readdir` 也抛被吞掉，
-   * 两条一起落空。模型据此判定「这个符号不存在」，然后去读整个文件。
+   * 原始失败：`grep(pattern, path="js/game.js")` 返回 `success` + 0 命中。
+   * rg 路径以文件作为 `cwd` 调用 spawn 直接抛错，降级路径对文件调用 `readdir` 也抛错且错误被忽略，
+   * 两条路径均无结果。模型据此判定「这个符号不存在」，转而读取整个文件。
    */
-  test('grep 的起点可以是一个文件，不只是目录', async () => {
+  test('grep 的起点可以是一个文件，不限于目录', async () => {
     const root = await workspace()
     const out = await registry().execute(
       'grep',
@@ -995,11 +995,11 @@ describe('搜索与命令', () => {
   })
 
   /**
-   * 命中路径**永远相对工作区根**，不随搜索起点变。
+   * 命中路径始终相对于工作区根，不随搜索起点变化。
    *
-   * rg 打印的是相对搜索起点的路径：`path="src"` 时它给的是 `main.ts`，
-   * 而模型只会照着这个字符串去 `read_file`，拿到的是「文件不存在」。
-   * 两条实现路径也必须给出同一种路径——否则同一个工具会随 rg 装没装而变。
+   * rg 输出的是相对搜索起点的路径：`path="src"` 时它给出 `main.ts`，
+   * 而模型会按该字符串调用 `read_file`，得到「文件不存在」。
+   * 两种实现路径也必须给出同一种路径格式，否则同一个工具的输出会随是否安装 rg 而变化。
    */
   test('grep 的命中路径相对工作区根，与搜索起点无关', async () => {
     const root = await workspace()
@@ -1010,13 +1010,13 @@ describe('搜索与命令', () => {
   })
 
   /**
-   * 降级遍历给出与 rg **同一种**结果，起点是文件时也一样。
+   * 降级遍历给出与 rg 相同格式的结果，起点是文件时也一样。
    *
    * 触发方式是前瞻断言：rg 的引擎不支持 look-around，会以退出码 2 失败，
-   * 而 JS 的 `RegExp` 认它——所以这条在装了 rg 和没装 rg 的机器上都走降级路径。
-   * 装没装 rg 是机器差异，而一个工具的返回格式不该随机器变。
+   * 而 JS 的 `RegExp` 支持，因此本测试在是否安装 rg 的机器上都使用降级路径。
+   * 是否安装 rg 是机器差异，而工具的返回格式不应随机器变化。
    */
-  test('rg 跑不了的正则降级到内置遍历，路径格式不变', async () => {
+  test('rg 无法执行的正则降级到内置遍历，路径格式不变', async () => {
     const root = await workspace()
     const out = await registry().execute(
       'grep',
@@ -1027,7 +1027,7 @@ describe('搜索与命令', () => {
     expect(out.data?.matches).toEqual(['src/main.ts:1:export const answer = 42'])
   })
 
-  test('glob 能按模式找文件', async () => {
+  test('glob 能按模式查找文件', async () => {
     const root = await workspace()
     const out = await registry().execute('glob', { pattern: '**/*.ts' }, ctx(root))
     expect(out.status).toBe('success')
@@ -1035,33 +1035,33 @@ describe('搜索与命令', () => {
   })
 
   /**
-   * 工具说明里必须写明**真正在跑的那个 shell**，而且写在第一句。
+   * 工具说明中必须写明实际执行命令的 shell，且写在第一句。
    *
-   * `run_command` 这个名字不携带语法，模型的默认输出是 bash——语法只剩描述这一个
-   * 来源，而描述是从头读的。埋在第三句等于没说：账本里有过只被告知「平台：win32」
-   * 就写出 POSIX 组合命令、在 PowerShell 上一个字都没执行的调用。
-   * 锁的是「说的和跑的是同一个」，不是某句文案。
+   * `run_command` 这一名称不携带语法信息，模型默认输出 bash 语法：语法信息只能来自描述，
+   * 而描述从头读取。放在第三句即失去作用：账本中有过只被告知「平台：win32」
+   * 即写出 POSIX 组合命令、在 PowerShell 上完全未执行的调用。
+   * 锁定的是「说明与执行一致」，而不是某句文案。
    */
-  test('run_command 的说明第一句就是语法提示，且点到真正那个可执行文件', () => {
+  test('run_command 的说明第一句是语法提示，且指明实际的可执行文件', () => {
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
     const spec = registry()
       .list()
       .find((t) => t.name === 'run_command')
     expect(spec?.description.startsWith(shell.hint)).toBe(true)
-    // 三档共用一条断言：提示里必须出现真正被 spawn 的那个可执行文件的名字。
+    // 三档共用一条断言：提示中必须出现实际被 spawn 的可执行文件名。
     const exe = basename(shell.path).toLowerCase().replace('.exe', '')
     expect(shell.hint.toLowerCase()).toContain(exe)
   })
 
   /**
-   * **一个 shell 都没有才不给 `run_command`**，而不是有一个必然失败的工具。
+   * 只有在没有任何 shell 时才不提供 `run_command`，而不是提供一个必然失败的工具。
    *
-   * 藏起 bash 之后这台机器落到哪一档，由它自己装了什么定，所以两条路都断言：
-   * - 落到 PowerShell → 照样注册，**而且真跑得通一条命令**。注册了却跑不了比不注册更糟。
-   * - 一档都没有 → 工具表里少那一格，其余一个不少。
+   * 隐藏 bash 后本机使用哪一档，取决于本机安装的 shell，因此两种情况都断言：
+   * - 使用 PowerShell：仍然注册，且能成功执行一条命令。注册后无法执行比不注册危害更大。
+   * - 无可用 shell：工具表中不含该工具，其余工具完整保留。
    */
-  test('藏起 bash 之后：有 PowerShell 就照样注册并跑得通，一档都没有才不注册', async () => {
+  test('隐藏 bash 后：有 PowerShell 时仍注册且能成功执行，无可用 shell 时不注册', async () => {
     const root = await workspace()
     expect(
       registry()
@@ -1075,7 +1075,7 @@ describe('搜索与命令', () => {
         .list()
         .map((t) => t.name),
     )
-    // 其余工具一个都不能少——shell 那一格只影响这一个。
+    // 其余工具必须完整保留：shell 一项只影响 run_command。
     expect(names).toContain('read_file')
     expect(names).toContain('grep')
 
@@ -1084,7 +1084,7 @@ describe('搜索与命令', () => {
       return
     }
     expect(names).toContain('run_command')
-    // 非 bash 的语法提示必须自己否掉 bash，否则模型照 POSIX 写。
+    // 非 bash 的语法提示必须明确声明不是 bash，否则模型按 POSIX 语法编写。
     expect(shell.hint).toContain('不是 bash')
     const out = await withoutBash(() =>
       registry().execute('run_command', { command: 'echo qywork-shell-ok' }, ctx(root)),
@@ -1094,13 +1094,13 @@ describe('搜索与命令', () => {
   }, 20_000)
 
   /**
-   * 顺序执行两条命令，用**当前这个 shell 的写法**。
+   * 顺序执行两条命令，使用当前 shell 的语法。
    *
-   * 测的是原始失败形状：bash 与 pwsh 7 上是 `&&`，而 Windows PowerShell 5.1 上
-   * `&&` 是解析错误、整条命令一个字都不执行，那一档的写法只能是 `;`。
-   * 分叉按可执行文件名判——那正是 `resolveCommandShell` 挑中它用的同一把钥匙。
+   * 测试的是原始失败：bash 与 pwsh 7 使用 `&&`，而 Windows PowerShell 5.1 上
+   * `&&` 是解析错误、整条命令完全不执行，该档只能使用 `;`。
+   * 按可执行文件名区分：这正是 `resolveCommandShell` 选择该 shell 时使用的依据。
    */
-  test('当前 shell 的组合命令能跑通', async () => {
+  test('当前 shell 的组合命令能成功执行', async () => {
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
     const root = await workspace()
@@ -1123,24 +1123,24 @@ describe('搜索与命令', () => {
   })
 
   /**
-   * **原始失败形状**：命令跑完了、shell 也正常退出了，但它留下的后台进程继承了
-   * stdout 的写端仍未关闭，因此管道永远不 EOF。账本里那次是 `run.ps1 start`
-   * （起了个 node 服务留在后台，而那正是脚本该做的事）：界面上那条 `run_command`
-   * 停在「正在执行」371 秒不动，超过默认超时 120 秒两倍还多——超时到点的树杀够不着
-   * 已经脱离父子关系的孙进程，而超时那条返回分支又排在等 EOF 之后，因此永远走不到。
-   * 后果不止这一次调用：`runs.unregister` 不执行，整条会话此后回绝所有新任务。
+   * 原始失败：命令执行完毕、shell 也正常退出，但其遗留的后台进程继承了
+   * stdout 的写端且未关闭，因此管道始终不到达 EOF。账本中的实例是 `run.ps1 start`
+   * （在后台启动 node 服务，这正是脚本的用途）：界面上该 `run_command`
+   * 停留在「正在执行」371 秒，超过默认超时 120 秒的两倍：超时触发的进程树终止无法覆盖
+   * 已脱离父子关系的孙进程，而超时返回分支又排在等待 EOF 之后，因此始终不会执行。
+   * 影响不限于该次调用：`runs.unregister` 不执行，整个会话此后拒绝所有新任务。
    *
-   * 锁两件事：**它按时回传**，以及**它说出了后台还留着进程**。只锁前者的话，
-   * 一条没复现出这个形状的命令也能让这条测试全绿。
+   * 锁定两件事：按时返回，以及说明后台仍留有进程。只锁定前者时，
+   * 一条未复现该情形的命令也能使本测试通过。
    *
-   * PowerShell 那一档的写法**本机没验过**（这台机器有 bash，走的是另一条）。
+   * PowerShell 一档的写法未在本机验证（本机有 bash，使用的是另一档）。
    */
-  test('留下后台进程扣住管道时，命令仍按时回传并说明情况', async () => {
+  test('遗留的后台进程持有管道时，命令仍按时返回并说明情况', async () => {
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
     const root = await workspace()
-    // 按 argv 分叉而不是按可执行文件名：`-Command` 是两档 PowerShell 共有的，
-    // 而名字要同时认 powershell.exe 和 pwsh.exe。
+    // 按 argv 区分而不是按可执行文件名：`-Command` 是两档 PowerShell 共有的参数，
+    // 而按名称判断需同时识别 powershell.exe 和 pwsh.exe。
     const command = shell.argv.includes('-Command')
       ? "Write-Output started; Start-Process -NoNewWindow -FilePath cmd.exe -ArgumentList '/c','ping -n 21 127.0.0.1'"
       : 'echo started; sleep 20 &'
@@ -1151,20 +1151,20 @@ describe('搜索与命令', () => {
 
     expect(out.status).toBe('success')
     expect(String(out.data?.stdout)).toContain('started')
-    // 挂死的话这里是 20 秒起步，改回等 EOF 就永远回不来。
+    // 若挂起，此处至少需要 20 秒；改为等待 EOF 时永远不会返回。
     expect(elapsed).toBeLessThan(5_000)
     expect(out.message).toContain('后台进程仍在运行并持有输出管道')
   }, 30_000)
 
   /**
-   * 同一件事在 **runner 路径**上也要成立——那才是产品实际走的那条。
+   * 同一行为在 runner 路径上也必须成立：产品实际使用该路径。
    *
-   * `qy serve` 的命令一律由 runner 代跑（它是那个「先于监听端口出生」的父进程），
-   * 上一条测的却是直接 spawn。两条路的差别恰好落在这句话上：runner 那侧一旦在
-   * 收到退出码时就把流关掉，读端立刻拿到 EOF，`backgroundHeld` 恒为 false——
-   * 因此这句提示在真正跑着的产品里一次也发不出来，而两条路的测试都是绿的。
+   * `qy serve` 的命令一律由 runner 代为执行（它是先于监听端口启动的父进程），
+   * 上一条测试使用的却是直接 spawn。两条路径的差别正在于该提示：runner 一侧若在
+   * 收到退出码时即关闭流，读端立即收到 EOF，`backgroundHeld` 始终为 false，
+   * 该提示在实际运行的产品中永远不会发出，而两条路径的测试都会通过。
    */
-  test('runner 代跑时同样说得出后台进程', async () => {
+  test('runner 代为执行时同样能报告后台进程', async () => {
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
     const root = await workspace()
@@ -1186,17 +1186,17 @@ describe('搜索与命令', () => {
       expect(Date.now() - started).toBeLessThan(5_000)
       expect(out.message).toContain('后台进程仍在运行并持有输出管道')
     } finally {
-      // 这是个进程级变量，留着会让本文件后面的命令都改走 runner。
+      // 该变量是进程级的，不恢复会使本文件后续的命令都改由 runner 执行。
       setCommandRunner(null)
       runner.stop()
     }
   }, 30_000)
 
   /**
-   * 工作区观察窗口先于进程打开。进程起不来时窗口必须收掉：漏收的窗口一直排在最前，
-   * 此后每条命令的事件都归它，结果里的文件改动一条都没有。
+   * 工作区观察窗口先于进程打开。进程无法启动时窗口必须关闭：未关闭的窗口始终排在最前，
+   * 此后每条命令的事件都归属于它，结果中不会有任何文件改动。
    */
-  test('进程起不来时收掉观察窗口，下一条命令的文件改动照常报出', async () => {
+  test('进程无法启动时关闭观察窗口，下一条命令的文件改动照常报告', async () => {
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
     const root = await workspace()
@@ -1213,8 +1213,8 @@ describe('搜索与命令', () => {
       setCommandRunner(null)
     }
 
-    // 删除只有事件看得见，收尾扫描补不上：窗口漏收时删除报不出来。先等一下再删，
-    // 是让删除落在 macOS 的事件流开始之后：事件流在 `watch()` 返回之后才开始投递。
+    // 删除只能由事件观察到，收尾扫描无法补充：窗口未关闭时删除无法报告。先短暂等待再删除，
+    // 是为了使删除发生在 macOS 的事件流开始之后：事件流在 `watch()` 返回之后才开始投递。
     const command = shell.argv.includes('-Command')
       ? 'Start-Sleep -Milliseconds 300; Remove-Item a.txt; Set-Content made.txt made'
       : 'sleep 0.3; rm a.txt && echo made > made.txt'
@@ -1227,9 +1227,9 @@ describe('搜索与命令', () => {
   }, 30_000)
 
   /**
-   * 原始失败形状：Linux 的 bwrap 沙箱在 shell 退出时结束命名空间里的全部进程，`npm run dev &`
-   * 这类后台服务随命令返回一起消失，结果里没有任何说明。锁的是进程确实留下：命令返回之后，
-   * 它仍然写得出文件。
+   * 原始失败：Linux 的 bwrap 沙箱在 shell 退出时结束命名空间中的全部进程，`npm run dev &`
+   * 等后台服务随命令返回一并终止，结果中没有任何说明。本测试锁定进程保留：命令返回之后，
+   * 它仍能写入文件。
    */
   test('命令返回之后，它留下的后台进程继续运行', async () => {
     const shell = commandShell()
@@ -1251,15 +1251,15 @@ describe('搜索与命令', () => {
   }, 30_000)
 
   /**
-   * **用户点了停止，它就得停。**
+   * 用户点击停止后，命令必须停止。
    *
-   * 这是上一条的同一个根因在另一面的表现：中断只是 abort 一个信号，它停不掉一个
-   * 不返回的 `await`。命令派生了脱离进程树的后台进程时，树杀杀得掉前台那半、
-   * 杀不掉那个孤儿，因此等 EOF 的调用继续挂着——界面上就是「点了停止但它不停」。
+   * 与上一条测试同一根因：中断只是对信号调用 abort，无法终止一个不返回的 `await`。
+   * 命令派生了脱离进程树的后台进程时，进程树终止只能结束前台部分、无法结束该孤儿进程，
+   * 因此等待 EOF 的调用继续挂起，停止操作不生效。
    *
-   * 前台那半故意留长（30 秒），孤儿也留着：**两半都得停，测试才算数**。
+   * 前台部分有意设为较长的 30 秒，并保留孤儿进程：两部分同时存在时，本测试才能验证中断的效果。
    */
-  test('中断时立刻收手，哪怕有孤儿进程扣着管道', async () => {
+  test('中断时立即返回，即使有孤儿进程持有管道', async () => {
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
     const root = await workspace()
@@ -1277,21 +1277,21 @@ describe('搜索与命令', () => {
     )
     const elapsed = Date.now() - started
 
-    // 不断言状态：被杀掉的进程退出码由平台定。要锁的是「它回来了」。
+    // 不断言状态：被终止进程的退出码由平台决定。要锁定的是调用已返回。
     expect(out).toBeTruthy()
     expect(elapsed).toBeLessThan(5_000)
   }, 30_000)
 })
 
 /**
- * 凭证不进上下文。
+ * 凭证不进入上下文。
  *
- * `read_file` 这条路不接脱敏就是把磁盘字节直接交给模型。一头拦一头不拦等于没拦
- * ——模型拿不到 `cat .env` 的输出，换 `read_file` 就拿到了，
- * 而它并不是在绕过什么，只是换了个工具。
+ * `read_file` 路径不接入脱敏时，磁盘字节会直接交给模型。只拦截一侧等于没有拦截：
+ * 模型无法取得 `cat .env` 的输出，改用 `read_file` 即可取得，
+ * 而模型并非有意绕过，只是更换了工具。
  */
 describe('read_file 的凭证脱敏', () => {
-  test('工作区里的私钥读不出明文', async () => {
+  test('工作区中的私钥无法读出明文', async () => {
     const root = await workspace()
     const body = 'MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn'
     await writeFile(
@@ -1306,7 +1306,7 @@ ${body}
     expect(String(out.data?.content)).not.toContain(body)
   })
 
-  test('.env 里的 token 读不出明文', async () => {
+  test('.env 中的 token 无法读出明文', async () => {
     const root = await workspace()
     const token = 'ghp_abcdefghijklmnopqrstuvwxyz12'
     await writeFile(
@@ -1317,14 +1317,14 @@ PORT=3000
       'utf8',
     )
     const out = await registry().execute('read_file', { path: '.env' }, ctx(root))
-    // 变量名和其余内容照常可见，只有值被屏蔽——模型仍然看得懂这个文件的结构。
+    // 变量名与其余内容照常可见，只有值被屏蔽：模型仍能理解文件结构。
     const content = String(out.data?.content)
     expect(content).not.toContain(token)
     expect(content).toContain('GITHUB_TOKEN')
     expect(content).toContain('PORT=3000')
   })
 
-  /** 普通代码一个字都不许动，否则模型读到的和磁盘上的对不上，编辑就会失败。 */
+  /** 普通代码不得有任何改动，否则模型读到的内容与磁盘不一致，编辑会失败。 */
   test('普通文件原样返回', async () => {
     const root = await workspace()
     const out = await registry().execute('read_file', { path: 'src/main.ts' }, ctx(root))
@@ -1333,13 +1333,13 @@ PORT=3000
 })
 
 /**
- * `probe_url`：起服务 → 等就绪 → 抓一次响应 → 关掉，一次调用内完成。
+ * `probe_url`：启动服务 → 等待就绪 → 获取一次响应 → 关闭，在一次调用内完成。
  *
- * 存在的理由是「起个服务看看页面能不能打开」在本仓**形状上做不到**：
- * `run_command` 是同步的，起一个不会自己退出的服务器就是阻塞到超时——
- * 与权限模式无关（实测：开了完全访问照样只等到 output_truncated）。
+ * 该工具的必要性在于：「启动服务并检查页面能否打开」在本仓库的执行方式下无法完成：
+ * `run_command` 是同步的，启动一个不会自行退出的服务器会阻塞直至超时，
+ * 与权限模式无关（实测：开启完全访问后仍只等到 output_truncated）。
  *
- * 这一组先测边界再测功能：边界写错的代价是多一条绕开 SSRF 闸的出网通道，
+ * 本组先测边界再测功能：边界写错的代价是多出一条绕开 SSRF 防护的网络访问通道，
  * 比功能不可用严重得多。
  */
 describe('probe_url', () => {
@@ -1347,10 +1347,10 @@ describe('probe_url', () => {
     registry().execute('run_command', { command, probe_url, timeout_ms }, ctx(root))
 
   /**
-   * **只准回环。** `web_fetch` 那条路刻意挡掉本机（127.0.0.1 后面可能是 qy
-   * 自己的 API），这条方向相反、边界也相反。放宽一点它就是第二条出网通道。
+   * 只允许回环地址。`web_fetch` 有意拒绝本机地址（127.0.0.1 上可能运行 qy
+   * 自身的 API），此处方向相反、边界也相反。任何放宽都会形成第二条网络访问通道。
    */
-  test('非回环地址一律拒绝，且不起进程', async () => {
+  test('非回环地址一律拒绝，且不启动进程', async () => {
     const root = await workspace()
     for (const url of [
       'http://example.com/',
@@ -1366,10 +1366,10 @@ describe('probe_url', () => {
     }
   })
 
-  /** IPv6 的等价写法按数值判，不按字面量——`::ffff:127.0.0.1` 也是回环。 */
-  test('回环的各种写法都认', async () => {
+  /** IPv6 的等价写法按数值判定，不按字面量：`::ffff:127.0.0.1` 也是回环地址。 */
+  test('回环地址的各种写法都被接受', async () => {
     const root = await workspace()
-    // 端口挑一个必然没人听的：这里只验「没被边界拒掉」，探测失败是预期的。
+    // 选择一个必然无人监听的端口：此处只验证未被边界拒绝，探测失败是预期结果。
     for (const url of [
       'http://localhost:19801/',
       'http://127.0.0.1:19801/',
@@ -1380,18 +1380,18 @@ describe('probe_url', () => {
     }
   }, 20_000)
 
-  test('非 http/https 拒绝', async () => {
+  test('非 http/https 协议被拒绝', async () => {
     const root = await workspace()
     const out = await run(root, 'exit 0', 'file:///etc/passwd')
     expect(out.errorKind).toBe('bad_request')
   })
 
-  /** 起真服务、真探测、真关掉——这条是整个功能的验收。 */
-  test('起服务、抓到响应、进程随调用结束而消失', async () => {
+  /** 启动真实服务、实际探测并关闭：这是整个功能的验收。 */
+  test('启动服务、获取响应、进程随调用结束而退出', async () => {
     const root = await workspace()
     const port = 19807
-    // 服务源码写进文件：放进 `node -e` 的话要按 shell 的引号规则转义，POSIX 与 Windows 写法不同。
-    // 后缀用 `.cjs`：临时目录在仓库里，上层 package.json 的 `"type": "module"` 会让 `.js` 按 ESM 加载。
+    // 服务源码写入文件：放入 `node -e` 时需要按 shell 的引号规则转义，POSIX 与 Windows 写法不同。
+    // 后缀使用 `.cjs`：临时目录位于仓库中，上层 package.json 的 `"type": "module"` 会使 `.js` 按 ESM 加载。
     await writeFile(
       join(root, 'server.cjs'),
       `require('http').createServer((_,r)=>{r.writeHead(200);r.end('hello from probe')}).listen(${port},'127.0.0.1');setInterval(()=>{},1000)`,
@@ -1403,8 +1403,8 @@ describe('probe_url', () => {
     expect(probe.status).toBe(200)
     expect(probe.body).toContain('hello from probe')
 
-    // **进程必须已经没了。** 这是这个形状的全部承诺：不跨出这次调用。
-    // 还连得上就说明留了个孤儿，而孤儿会占着端口坑下一次运行。
+    // 进程必须已经退出。这是该功能的全部承诺：进程的生命周期不超出本次调用。
+    // 仍能连接说明遗留了孤儿进程，它会占用端口，导致下一次运行失败。
     let gone = false
     for (let i = 0; i < 20 && !gone; i++) {
       await Bun.sleep(100)
@@ -1418,15 +1418,15 @@ describe('probe_url', () => {
   }, 30_000)
 
   /**
-   * 连不上要把**进程自己的输出**带回来。
+   * 无法连接时必须带回进程自身的输出。
    *
-   * 端口被占、模块缺失这类原因只写在服务器的 stderr 里；只报一句「没连上」
-   * 等于让模型去猜，而它猜的方向通常是再试一次。
+   * 端口被占用、模块缺失等原因只输出到服务器的 stderr；只报告「无法连接」
+   * 时模型只能推测，而它通常推测为应当重试。
    */
   test('探测失败带回进程输出', async () => {
     const root = await workspace()
-    // 三层引号（shell / JS 源码 / 字符串字面量）嵌起来极易写错，
-    // 用一个不含引号的消息，靠 process.stderr.write 输出。
+    // 三层引号（shell / JS 源码 / 字符串字面量）嵌套极易出错，
+    // 因此使用不含引号的消息，经 process.stderr.write 输出。
     const marker = 'PORT_TAKEN_MARKER'
     const cmd =
       process.platform === 'win32'
@@ -1442,39 +1442,39 @@ describe('probe_url', () => {
 /**
  * `.qy/` 与 `.agents/` 的写保护。
  *
- * 这一条挡的不是越权，是**自我提权**：`.agents/mcp.json` 决定模型能拿到哪些
- * 工具，`.qy/team.json` 决定派活前哪些角色要人点头。模型完全合法地能写工作区内的
- * 文件，因此它可以通过写一个自己有权限写的文件，给自己加工具。
+ * 该层拦截的不是越权，而是自我提权：`.agents/mcp.json` 决定模型能获得哪些
+ * 工具，`.qy/team.json` 决定派发任务前哪些角色需要用户批准。模型可以合法写入工作区内的
+ * 文件，因此它能通过写入一个有权限写入的文件，为自己添加工具。
  *
- * **判据是「会不会给自己加工具」**：技能与记忆同在 `.agents/` 下却不在墙内——
- * 一篇 SKILL.md 是一段提示词，一条记忆是一句事实，两者都不给新能力。
- * 按目录一刀切挡住它们的实测后果：设置页的「新增技能」把话头递给模型，
- * 而模型写不了那个文件，那颗按钮等于点了没反应。
+ * 判据是「是否会为自己添加工具」。技能与记忆同在 `.agents/` 下却不受保护：
+ * 一篇 SKILL.md 是一段提示词，一条记忆是一句事实，两者都不提供新能力。
+ * 按整个目录拦截它们的实测后果：设置页的「新增技能」把请求转交给模型，
+ * 而模型无法写入该文件，该按钮点击后无响应。
  *
- * `full` 下这一层不设（`resolveWritablePath` 的 `unrestricted`）：那个模式里
- * `run_command` 全放行，只拦文件工具就是两套账。
+ * `full` 下这一层不设（`resolveWritablePath` 的 `unrestricted`）：该模式下
+ * `run_command` 全部放行，只拦截文件工具就形成两套账。
  */
 describe('受保护目录', () => {
-  test('.qy 下的写入被拒，且理由说清是为什么', async () => {
+  test('.qy 下的写入被拒绝，且说明理由', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     await expect(resolveWritablePath(dir, '.qy/team.json')).rejects.toThrow(/权限|扩展配置/)
   })
 
   /*
-   * 项目层的 MCP 配置搬到 `.agents/` 之后，保护必须跟着搬。
-   * 不搬的话这条防线就只剩一个空目录名——而空目录名看起来和防线一模一样。
+   * 保护范围必须覆盖项目层 MCP 配置的实际位置 `.agents/`。
+   * 保护指向其他目录时只覆盖一个空目录，而这在外观上与有效保护无法区分。
    */
-  test('会加工具的那一条被拒：mcp.json', async () => {
+  test('会添加工具的配置被拒绝：mcp.json', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     await expect(resolveWritablePath(dir, '.agents/mcp.json')).rejects.toThrow(/权限|扩展配置/)
   })
 
   /**
-   * 复现的失败形状：「新增技能」这颗按钮把话头递给模型，而模型一写
-   * `.agents/skills/x/SKILL.md` 就被这道墙拒了——那颗按钮等于点了没反应。
-   * 技能是提示词，不给任何新能力，本来就不该在墙内。
+   * 复现的失败：「新增技能」按钮把请求转交给模型，而模型写入
+   * `.agents/skills/x/SKILL.md` 时被保护规则拒绝，该按钮点击后无响应。
+   * 技能是提示词，不提供任何新能力，不应受保护。
    */
-  test('技能与记忆不在墙内 —— 它们不给新能力', async () => {
+  test('技能与记忆不受保护：它们不提供新能力', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     await expect(resolveWritablePath(dir, '.agents/skills/发版/SKILL.md')).resolves.toContain(
       'SKILL.md',
@@ -1482,14 +1482,14 @@ describe('受保护目录', () => {
     await expect(resolveWritablePath(dir, '.agents/memory/x.md')).resolves.toContain('x.md')
   })
 
-  /** 逐段比而不是字符串前缀：`.qyX` 不在 `.qy` 目录下。 */
-  test('名字撞了前缀的目录不受牵连', async () => {
+  /** 逐段比较而不是比较字符串前缀：`.qyX` 不在 `.qy` 目录下。 */
+  test('名称以受保护目录名为前缀的目录不受影响', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     await expect(resolveWritablePath(dir, '.qyX/a.md')).resolves.toContain('a.md')
   })
 
-  /** 绕过尝试：`..` 回绕、大小写、分隔符混用。判定基于已解析的绝对路径，都该挡住。 */
-  test('绕不过去', async () => {
+  /** 绕过尝试：`..` 回退、大小写、分隔符混用。判定基于已解析的绝对路径，均应被拦截。 */
+  test('绕过尝试均被拦截', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     const backslash = String.fromCharCode(92)
     const attempts = [
@@ -1505,17 +1505,17 @@ describe('受保护目录', () => {
     }
   })
 
-  test('工作区里其它地方照常能写', async () => {
+  test('工作区中的其他位置照常可写', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     await expect(resolveWritablePath(dir, 'src/a.ts')).resolves.toContain('a.ts')
-    // 名字里带 .qy 但不是那个目录的，不能误伤。
+    // 名称中含 .qy 但不是该目录的路径不得被误拦截。
     await expect(resolveWritablePath(dir, '.qyx/a.ts')).resolves.toContain('a.ts')
     await expect(resolveWritablePath(dir, 'docs/.qy.md')).resolves.toContain('.qy.md')
     await expect(resolveWritablePath(dir, '.agentsx/a.ts')).resolves.toContain('a.ts')
   })
 
-  /** 读不受限制：模型需要能看懂现有配置才能给出合理建议，看不等于改。 */
-  test('只挡写，不挡读', async () => {
+  /** 读取不受限制：模型需要理解现有配置才能给出合理建议，读取不等于修改。 */
+  test('只拦截写入，不拦截读取', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-protected-'))
     expect(isProtectedPath(dir, join(dir, '.qy', 'team.json'))).toBe(true)
     expect(isProtectedPath(dir, join(dir, '.agents', 'mcp.json'))).toBe(true)
@@ -1525,10 +1525,10 @@ describe('受保护目录', () => {
 
 describe('噪音目录', () => {
   /**
-   * 复现原始失败形状：噪音目录清单各抄一份（界面文件树 / glob·grep / list_dir）
-   * 会漂——实测漂到过 13 / 12 / 11 条。`coverage` 不是点目录，躲不过任何一条
-   * 点开头规则，所以它是唯一真正露出来的那个：
-   * 用户在文件树里看不到，模型 `list_dir` 却列得出来，`grep` 又搜不进去。
+   * 复现原始失败：噪音目录清单各自维护一份（界面文件树 / glob·grep / list_dir）
+   * 会出现偏差，实测曾分别为 13 / 12 / 11 条。`coverage` 不是点目录，不受任何
+   * 点前缀规则覆盖，因此它是唯一实际暴露出来的目录：
+   * 文件树中不显示，模型 `list_dir` 却能列出，`grep` 又搜索不到。
    */
   test('list_dir 与 glob 对 coverage 给出同一个答案', async () => {
     const root = await workspace()
@@ -1547,18 +1547,18 @@ describe('噪音目录', () => {
 
 describe('写路径的软链边界', () => {
   /**
-   * 原始失败形状：`resolveInWorkspace(mustExist:false)` 只解析目标**已存在的祖先**，
-   * 却返回未解析的字面路径。工作区里放一条指向界外的软链，
-   * 边界查的是工作区、写下去的是软链指向的地方。
+   * 原始失败：`resolveInWorkspace(mustExist:false)` 只解析目标已存在的祖先，
+   * 却返回未解析的字面路径。工作区中放置一条指向界外的软链后，
+   * 边界检查的是工作区，实际写入的是软链指向的位置。
    *
-   * 这里直接复现那个形状——包括**悬挂**软链（目标还不存在），
-   * 那才是「写新文件」这条路上真正的破口。
+   * 此处直接复现该情形，包括悬挂软链（目标尚不存在），
+   * 悬挂软链是新建文件路径上的实际漏洞。
    */
-  test('指向界外的软链（含悬挂）不能写进去', async () => {
+  test('指向界外的软链（含悬挂软链）不能写入', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-ws-'))
     const outside = await mkdtemp(join(tmpdir(), 'qy-out-'))
 
-    // 1. 悬挂软链：目标尚不存在，realpath 会失败，但写入照样跟随它。
+    // 1. 悬挂软链：目标尚不存在，realpath 会失败，但写入仍会跟随它。
     await symlink(join(outside, '还不存在.txt'), join(root, 'dangling'))
     expect(resolveInWorkspace(root, 'dangling')).rejects.toThrow(PathEscapeError)
 
@@ -1567,12 +1567,12 @@ describe('写路径的软链边界', () => {
     await symlink(join(outside, '已存在.txt'), join(root, 'existing'))
     expect(resolveInWorkspace(root, 'existing')).rejects.toThrow(PathEscapeError)
 
-    // 3. 中间目录是软链，同样不行。
+    // 3. 中间目录是软链，同样拒绝。
     await symlink(outside, join(root, 'dir'))
     expect(resolveInWorkspace(root, 'dir/新文件.txt')).rejects.toThrow(PathEscapeError)
   })
 
-  /** 别拒过头：工作区内还不存在的新文件必须照常解析得出来。 */
+  /** 不要过度拒绝：工作区内尚不存在的新文件必须能正常解析。 */
   test('工作区内的新文件正常放行，且返回解析后的路径', async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-ws-')))
     const abs = await resolveInWorkspace(root, '子目录/新文件.txt')
@@ -1580,10 +1580,10 @@ describe('写路径的软链边界', () => {
   })
 
   /**
-   * 读与写必须落在**同一个键**上。
+   * 读与写必须解析为同一个键。
    *
-   * 两者不同的话，`files.ts` 的「本轮读过没有」在软链根下永远取不到值，
-   * 覆盖已存在的文件被恒定拒绝（macOS 的 /tmp → /private/tmp 就是这个形状）。
+   * 两者不同时，`files.ts` 的「本轮是否读过」在软链根下始终无法取得值，
+   * 覆盖已存在的文件会被一律拒绝（macOS 的 /tmp → /private/tmp 即属此类）。
    */
   test('读路径与写路径解析出同一个绝对路径', async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-ws-')))
@@ -1595,16 +1595,16 @@ describe('写路径的软链边界', () => {
 })
 
 /**
- * grep 的两条引擎必须有同一个上界。
+ * grep 的两种引擎必须使用同一个上界。
  *
- * 复现的是一次真账（会话 `cv_0mt0x92q10000mx0dff`）：一次不限文件类型的 grep
- * 命中 152 行，151 行都不到 600 字符，剩下那一行是 `three.min.js` 的第 6 行——
- * **603,378 个字符**，约 17 万 token。它随工具结果进上下文之后再没出去，
- * 此后每一轮都重付一遍，还把请求顶过了长上下文档的价钱，一轮 $3.49。
+ * 复现的是一次真实记录（会话 `cv_0mt0x92q10000mx0dff`）：一次不限文件类型的 grep
+ * 命中 152 行，其中 151 行不足 600 字符，其余一行是 `three.min.js` 的第 6 行，
+ * 共 603,378 个字符，约 17 万 token。它随工具结果进入上下文后再未移出，
+ * 此后每一轮都重复计费，还使请求超出长上下文档位的价格线，一轮费用 $3.49。
  *
- * 成因是两条引擎两套口径：内置遍历那条截到 400，ripgrep 那条只限条数不限长度。
- * 所以断言不能只测「有截断」，要测**两条引擎给出同一个上界**——
- * 只测一条的话，另一条正是出事的那条。
+ * 成因是两种引擎使用两套标准：内置遍历截断到 400，ripgrep 只限条数不限长度。
+ * 因此断言不能只测试「有截断」，而要测试两种引擎给出同一个上界：
+ * 只测试一种时，出问题的可能恰好是另一种。
  */
 describe('grep 的单条上界', () => {
   const MINIFIED = `!function(t){"use strict";${'x'.repeat(50_000)}/* bug */}(this)`
@@ -1612,7 +1612,7 @@ describe('grep 的单条上界', () => {
   const bothEngines = async (root: string) => {
     const { grepTool } = await import('./search.ts')
     const viaRg = await grepTool.fn!({ pattern: 'bug', path: '.' }, ctx(root))
-    // 把 PATH 清空逼它走内置遍历：找不到 rg 时的降级路径就是这么触发的。
+    // 清空 PATH 迫使其使用内置遍历：未找到 rg 时的降级路径即由此触发。
     const prevPath = process.env.PATH
     process.env.PATH = ''
     let viaBuiltin: Awaited<ReturnType<NonNullable<typeof grepTool.fn>>>
@@ -1624,7 +1624,7 @@ describe('grep 的单条上界', () => {
     return { viaRg, viaBuiltin }
   }
 
-  test('压缩过的一整行不会整段进上下文，两条引擎同一个上界', async () => {
+  test('压缩过的整行不会完整进入上下文，两种引擎使用同一个上界', async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-')))
     await writeFile(join(root, 'vendor.min.js'), MINIFIED, 'utf8')
 
@@ -1637,10 +1637,10 @@ describe('grep 的单条上界', () => {
       expect(out.status, name).toBe('success')
       const matches = (out.data as { matches: string[] }).matches
       expect(matches.length, name).toBeGreaterThan(0)
-      // 单条正文被截住：旧代码在 ripgrep 这条路上是 50,000+ 字符。
+      // 单条正文被截断：未截断时 ripgrep 路径上的单条正文超过 50,000 字符。
       const longest = Math.max(...matches.map((m) => m.length))
       expect(longest, name).toBeLessThan(600)
-      // 路径与行号一个字节不能少——模型要靠它们去 read_file 取原文。
+      // 路径与行号必须完整保留：模型依据它们调用 read_file 读取原文。
       expect(matches[0], name).toMatch(/^vendor\.min\.js:\d+:/)
     }
   })
@@ -1649,17 +1649,17 @@ describe('grep 的单条上界', () => {
 /**
  * grep 必须计入本次决策的投递额度。
  *
- * `agent/loop/tool-wave.ts` 每下发一波之前 `resetBatchBudget`，理由写在那里：「压缩只留一个入口」
- * 的前提正是**两次检查之间的跳变有上界**。grep 不记账的话，单次 200 条 × 400 字符
- * 最坏约 32,000 token，已经越过单次上界 25,000；它又是 `parallelSafe`，
- * 一波五个就是整波上界的三倍多。
+ * `agent/loop/tool-wave.ts` 在每次下发一批工具之前调用 `resetBatchBudget`，理由写在该文件中：「压缩只留一个入口」
+ * 的前提正是两次检查之间的增量有上界。grep 不记账时，单次 200 条 × 400 字符
+ * 最坏约 32,000 token，已超过单次上界 25,000；它又是 `parallelSafe`，
+ * 一批五个即为整批上界的三倍多。
  *
- * 断言的是「裁而不是拒」：这个工具本来就有截断契约，超预算走同一条路。
+ * 断言的是截断而不是拒绝：该工具已有截断约定，超出预算时使用同一处理方式。
  */
 describe('grep 计入投递额度', () => {
-  test('超出剩余额度时少给几条并标 truncated，不是失败', async () => {
+  test('超出剩余额度时减少条数并标记 truncated，而不是失败', async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-budget-')))
-    // 每行都命中、每行都吃满单条上界，堆到远超额度。
+    // 每行都命中且都达到单条上界，总量远超额度。
     const line = `bug ${'y'.repeat(500)}`
     await writeFile(join(root, 'noisy.txt'), Array.from({ length: 200 }, () => line).join('\n'))
 
@@ -1674,8 +1674,8 @@ describe('grep 计入投递额度', () => {
     expect(out.message).toContain('已按上下文剩余空间截断')
   })
 
-  /** 正常体量的搜索不受影响——额度只在真的越界时才动手。 */
-  test('装得下时一条不少，也不标截断', async () => {
+  /** 正常体量的搜索不受影响：额度只在确实越界时生效。 */
+  test('可以容纳时完整返回，不标记截断', async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'qy-grep-small-')))
     await writeFile(join(root, 'a.txt'), 'bug one\nbug two\nbug three\n')
 
@@ -1689,23 +1689,23 @@ describe('grep 计入投递额度', () => {
 })
 
 /**
- * `read_file` 的图片与 PDF 两条分派。
+ * `read_file` 的图片与 PDF 两个分支。
  *
- * 两条都必须在**二进制嗅探之前**分派：手机照片和多数 PDF 都超过嗅探的大小线，
- * 放晚一行它们会先被判成二进制而拒绝。这一组盯的就是那个顺序。
+ * 两者都必须在二进制嗅探之前分派：手机照片和多数 PDF 都超过嗅探的大小阈值，
+ * 分派稍晚就会先被判为二进制而拒绝。本组测试锁定的正是这一顺序。
  */
-describe('read_file 认图片', () => {
+describe('read_file 识别图片', () => {
   const PNG = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
     'base64',
   )
 
   /**
-   * **字节就地定格，不给路径。**
+   * 在读取时固定字节，不返回路径。
    *
-   * 给路径的话记录里存的是「去哪看」而不是「看到了什么」，而模型改完页面会重新
-   * 截图覆盖同名文件——那是「对比改前改后」的自然动作，之后历史里那一张就永远
-   * 取不回来了。捕获只能发生在观察的那一刻。
+   * 返回路径时，记录中保存的是「去哪里查看」而不是「看到了什么」，而模型修改页面后会重新
+   * 截图并覆盖同名文件（这是对比修改前后的常规操作），此后历史中的该图片将
+   * 无法取回。捕获只能在观察的时刻进行。
    */
   test('返回字节，不返回路径', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-img-'))
@@ -1717,20 +1717,20 @@ describe('read_file 认图片', () => {
     expect(data.images?.[0]?.data).toBe(PNG.toString('base64'))
     expect(data.images?.[0]?.mime).toBe('image/png')
 
-    // 覆盖同名文件之后，刚才那一份仍然完好——这就是不给路径的全部意义。
+    // 覆盖同名文件后，先前取得的副本保持不变：这是不返回路径的目的。
     await writeFile(join(root, 'a.png'), Buffer.concat([PNG, Buffer.from('x')]))
     expect(data.images?.[0]?.data).toBe(PNG.toString('base64'))
   })
 
   /**
-   * 当前模型不收图片：**在读字节之前就回绝**，而且话里要带下一步。
+   * 当前模型不接受图片：在读取字节之前即拒绝，且说明中给出下一步。
    *
-   * 只说「读取失败」的话，模型除了原样再读一遍没有别的选择，而每一遍都会失败——
-   * 那正是「陷进死循环」的形状。所以断言的不只是 `failure`，还有那句「不要再读」。
+   * 只返回「读取失败」时，模型除了原样重读没有其他选择，而每次都会失败，
+   * 形成死循环。因此断言的不只是 `failure`，还有「不要再读」这句说明。
    *
-   * `null` 是「厂商规格页没写」，照常读（判据只认 `false`）。
+   * `null` 表示厂商规格页未写明，照常读取（判据只认 `false`）。
    */
-  test('模型不收图片：不读字节，失败信息带下一步', async () => {
+  test('模型不接受图片：不读取字节，失败信息给出下一步', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-img3-'))
     await writeFile(join(root, 'a.png'), PNG)
 
@@ -1742,7 +1742,7 @@ describe('read_file 认图片', () => {
     expect(out.status).toBe('failure')
     expect(out.message).toContain('当前模型不接受图片输入')
     expect(out.message).toContain('不要再读')
-    // 一个字节都没读出来：读了再丢等于徒劳一次缩放、白扣一次投递额度。
+    // 未读取任何字节：读取后再丢弃会浪费一次缩放，并多扣一次投递额度。
     expect(out.data).toBeUndefined()
 
     const ok = await registry().execute(
@@ -1754,10 +1754,10 @@ describe('read_file 认图片', () => {
   })
 
   /**
-   * 视频交出路径引用，发出前才读字节；不收原生视频、又没有抽帧环境时当场回绝并带下一步，同图片。
-   * 有抽帧环境时的那一支在 `office.test.ts`。
+   * 视频返回路径引用，发送前才读取字节；不接受原生视频且没有抽帧环境时立即拒绝并给出下一步，与图片相同。
+   * 有抽帧环境的情形由 `office.test.ts` 覆盖。
    */
-  test('读视频：收视频时交出路径引用，不收且没有抽帧环境时回绝', async () => {
+  test('读取视频：接受视频时返回路径引用，不接受且没有抽帧环境时拒绝', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-video-'))
     await writeFile(join(root, 'clip.mp4'), new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]))
 
@@ -1778,8 +1778,8 @@ describe('read_file 认图片', () => {
     })
   })
 
-  /** 超过嗅探大小线的图片必须走图片那条，不能被判成二进制拒绝。 */
-  test('大图报的是图片的错，不是「分段读取」', async () => {
+  /** 超过嗅探大小阈值的图片必须进入图片分支，不能被判为二进制而拒绝。 */
+  test('大图片按图片分支读取，不提示「分段读取」', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-img2-'))
     await writeFile(join(root, 'big.png'), Buffer.concat([PNG, Buffer.alloc(2 * 1024 * 1024)]))
     const out = await registry().execute('read_file', { path: 'big.png' }, ctx(root))
@@ -1788,10 +1788,10 @@ describe('read_file 认图片', () => {
   })
 
   /**
-   * 读过图之后必须能覆盖写。
+   * 读取图片之后必须能够覆盖写入。
    *
-   * 图片分支跳过了文本那套流程，不补记一次读记录的话，`write_file` 会回
-   * 「已存在但没读取过。先 read_file 再覆盖」——**而模型照做也永远过不去**。
+   * 图片分支跳过了文本流程，若不补记一次读取记录，`write_file` 会返回
+   * 「尚未读取，已拒绝覆盖修改。先 read_file 再覆盖」，而模型按提示操作后仍然无法通过。
    */
   test('读过的图片能被 write_file 覆盖', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-img3-'))
@@ -1805,11 +1805,11 @@ describe('read_file 认图片', () => {
 })
 
 /**
- * F01：大于 1 MB 的文本不再在读取之前整份拒绝。投多少由投递额度定，
- * 整份读取的上限只按内存算（20 MB，与 PDF 同一口径）。
+ * 大于 1 MB 的文本不在读取之前整份拒绝。投递量由投递额度决定，
+ * 整份读取的上限只按内存计算（20 MB，与 PDF 相同）。
  */
-describe('read_file 读大文本', () => {
-  test('1.3 MB 文本按 offset=1、limit=1 读得到第一行', async () => {
+describe('read_file 读取大文本', () => {
+  test('1.3 MB 文本按 offset=1、limit=1 能读取到第一行', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-big-text-'))
     const line = 'x'.repeat(99)
     await writeFile(
@@ -1826,7 +1826,7 @@ describe('read_file 读大文本', () => {
     expect((out.data as { totalLines: number }).totalLines).toBe(13_000)
   })
 
-  test('读过的大文本能被 edit_file 修改，外部改过之后照旧拦住', async () => {
+  test('读取过的大文本能被 edit_file 修改，外部修改后仍被拦截', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-big-edit-'))
     const body = Array.from({ length: 13_000 }, (_, i) => `row ${i} ${'y'.repeat(95)}`).join('\n')
     await writeFile(join(root, 'big.log'), body)
@@ -1844,8 +1844,8 @@ describe('read_file 读大文本', () => {
     expect((await r.execute('edit_file', edit, c)).status).toBe('success')
   })
 
-  /** 文本没有大小上限：按行流式读，内存只放本轮要投递的那几行。 */
-  test('25 MB 的多行文本按范围读得到末尾附近的行，总行数正确', async () => {
+  /** 文本没有大小上限：按行流式读取，内存中只保留本轮要投递的行。 */
+  test('25 MB 的多行文本按范围能读取到末尾附近的行，总行数正确', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-huge-text-'))
     const rows = 250_000
     await writeFile(
@@ -1867,10 +1867,10 @@ describe('read_file 读大文本', () => {
   })
 
   /**
-   * 读取一侧边读边算哈希，编辑一侧对整份正文算：两侧解码不同（BOM、非法字节）或切行不同（CRLF）时，
-   * 读过的文件会被判成「读取之后被改过」而永远改不了。
+   * 读取一侧在读取过程中计算哈希，编辑一侧对整份正文计算：两侧解码不同（BOM、非法字节）或分行不同（CRLF）时，
+   * 读取过的文件会被判为「读取之后被修改」而始终无法编辑。
    */
-  test('带 BOM、CRLF 与非法字节的文件读过之后可以编辑', async () => {
+  test('带 BOM、CRLF 与非法字节的文件读取后可以编辑', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-odd-bytes-'))
     const bytes = Buffer.concat([
       Buffer.from([0xef, 0xbb, 0xbf]),

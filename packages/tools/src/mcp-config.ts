@@ -1,8 +1,8 @@
 /**
  * 模型侧 MCP 配置动作。
  *
- * 工具只负责参数与动作语义，真正解析和落盘走 `ToolContext.mcpConfig`。解析器与作用域路径分别属于两个
- * 同层包，不能在这里复制一份规则或加一条横向依赖。
+ * 工具只负责参数与动作语义，实际的解析与落盘经由 `ToolContext.mcpConfig`。解析器与作用域路径分别属于两个
+ * 同层包，不能在此处复制规则或新增横向依赖。
  */
 
 import type { ToolSpec } from '@qywork/agent'
@@ -11,7 +11,7 @@ function scopeProperty(): Record<string, unknown> {
   return {
     type: 'string',
     enum: ['project', 'global'],
-    description: '写入层；不传默认 project，用户明确要求全局时必须传 global',
+    description: '写入层；不传时默认为 project，用户明确要求全局时必须传 global',
   }
 }
 
@@ -76,7 +76,7 @@ export const writeMcpServerTool: ToolSpec = {
 export const moveMcpServerTool: ToolSpec = {
   name: 'move_mcp_server',
   description:
-    '把一个 MCP server 从项目层迁移到全局层，或从全局层迁回项目层。成功后只保留目标层配置；目标层已有同名服务时拒绝且不改来源。',
+    '把一个 MCP server 从项目层迁移到全局层，或从全局层迁回项目层。成功后只保留目标层配置；目标层已有同名服务时拒绝且不修改来源层。',
   parameters: {
     type: 'object',
     properties: {

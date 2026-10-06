@@ -1,9 +1,9 @@
 /**
- * Session 的装配面：工具集与角色约束。
+ * Session 的装配结果：工具集与角色约束。
  *
- * 不测「跑一轮」——那需要真实 provider，归 scripts/smoke-serve.ts。
- * 这里测的是**装配结果**，因为 Agent Team 的角色隔离完全建立在它上面：
- * 一个「只读」角色如果 allowedTools 没生效，它照样能改文件，而配置看着是对的。
+ * 不测试完整执行一轮：完整执行需要真实 provider，由 scripts/smoke-serve.ts 覆盖。
+ * 此处测试装配结果，因为 Agent Team 的角色隔离完全建立在装配结果之上：
+ * 「只读」角色的 allowedTools 未生效时，该角色仍能修改文件，而配置看起来正确。
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -54,7 +54,7 @@ async function session(over: Partial<ConstructorParameters<typeof Session>[0]> =
     signal: new AbortController().signal,
     ...over,
   })
-  // 工具表是私有的，从公开的 schema 出口读——测的是模型实际看到什么。
+  // 工具表是私有的，经由公开的 `schemas()` 读取：测试的是模型实际看到的内容。
   const names = () =>
     (s as unknown as { registry: { schemas(): { name: string }[] } }).registry
       .schemas()
@@ -93,8 +93,8 @@ const delegate: DelegatePort = {
   inflight: () => [],
 }
 
-describe('派活工具只给有派活通道的会话', () => {
-  test('顶层会话有 define_role、subagent、workflow；成员会话一个都没有', async () => {
+describe('派发工具只提供给有派发通道的会话', () => {
+  test('顶层会话有 define_role、subagent、workflow；成员会话均没有', async () => {
     const top = await session({ delegate })
     expect(top.names()).toContain('define_role')
     expect(top.names()).toContain('subagent')
@@ -111,7 +111,7 @@ describe('派活工具只给有派活通道的会话', () => {
 })
 
 describe('附件请求形状', () => {
-  /** 1×1 的 PNG：在缩图上限与 300 KB 以内，按原样编码。 */
+  /** 1×1 的 PNG：在缩放上限与 300 KB 以内，按原样编码。 */
   const PNG_1X1 = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
     'base64',
@@ -124,8 +124,8 @@ describe('附件请求形状', () => {
     path: name,
   })
 
-  /** 每一轮的图片都进内容块，正文里留名字与路径：换出之后模型凭这一行找到原文件。 */
-  test('图片编码成 base64 图块，正文留名字与路径', async () => {
+  /** 每一轮的图片都放入内容块，正文中保留名称与路径：换出之后模型依据该行定位原文件。 */
+  test('图片编码为 base64 图像块，正文保留名称与路径', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))
     await writeFile(join(root, 'chart.png'), PNG_1X1)
     const out = await withAttachments(root, '分析这张图', [attachment('chart.png', 'image')])
@@ -141,7 +141,7 @@ describe('附件请求形状', () => {
     expect(text).toContain(`（附件 chart.png：${join(root, 'chart.png').replaceAll('\\', '/')}）`)
   })
 
-  test('视频进路径块，普通文件只留路径，读不到的留一行说明', async () => {
+  test('视频放入路径块，普通文件只保留路径，无法读取的附件保留一行说明', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))
     await writeFile(join(root, 'clip.mp4'), Buffer.from([0, 0, 0]))
     await writeFile(join(root, 'notes.txt'), 'x')
@@ -159,8 +159,8 @@ describe('附件请求形状', () => {
     expect(out[1]!.text).toContain('（附件 gone.png 已不存在，跳过）')
   })
 
-  /** 附件是活引用：文件改了，下一轮读到新内容，不返回缓存里的旧编码。 */
-  test('文件改动后重新编码', async () => {
+  /** 附件是实时引用：文件修改后，下一轮读取新内容，不返回缓存中的旧编码。 */
+  test('文件修改后重新编码', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))
     const path = join(root, 'live.png')
     await writeFile(path, PNG_1X1)
@@ -178,7 +178,7 @@ describe('附件请求形状', () => {
 })
 
 describe('工具集', () => {
-  test('不传 allowedTools 时是全部内置工具', async () => {
+  test('不传 allowedTools 时注册全部内置工具', async () => {
     const { names, store } = await session()
     expect(names()).toContain('read_file')
     expect(names()).toContain('run_command')
@@ -186,17 +186,17 @@ describe('工具集', () => {
     store.close()
   })
 
-  test('传了就只注册这些', async () => {
+  test('传入时只注册所列工具', async () => {
     const { names, store } = await session({ allowedTools: ['read_file', 'grep'] })
     expect(names().sort()).toEqual(['grep', 'read_file'])
     store.close()
   })
 
   /**
-   * 空数组与不传是两回事。合并它们会让「只让它分析、不给任何工具」
-   * 这类角色配置静默变成「什么都能干」——而且看不出来。
+   * 空数组与不传语义不同。合并两者会使「只做分析、不提供任何工具」
+   * 这类角色配置静默变为「允许全部工具」，且无法察觉。
    */
-  test('空数组 = 一个工具都不给，不是「回落到全部」', async () => {
+  test('空数组表示不提供任何工具，不回退到全部工具', async () => {
     const { names, store } = await session({ allowedTools: [] })
     expect(names()).toEqual([])
     store.close()
@@ -209,7 +209,7 @@ describe('工具集', () => {
   })
 })
 
-/** 按 `makeLoop` 的真实入参取系统提示词：构造 loop 时只读适配器的 `spec`。 */
+/** 按 `makeLoop` 的真实入参取得系统提示词：构造 loop 时只读取适配器的 `spec`。 */
 function systemPromptFor(
   s: Session,
   model: string,
@@ -224,7 +224,7 @@ function systemPromptFor(
 }
 
 describe('角色约束', () => {
-  test('extraSystem 进冻结前缀', async () => {
+  test('extraSystem 写入冻结前缀', async () => {
     const { s, store } = await session({ extraSystem: '你只做代码审查，不改任何文件' })
     expect(systemPromptFor(s, 'deepseek-flash', 'openai_chat_completions')).toContain(
       '你只做代码审查',
@@ -232,7 +232,7 @@ describe('角色约束', () => {
     store.close()
   })
 
-  test('不传时前缀与默认完全一致 —— 免得平白多一段把缓存冲掉', async () => {
+  test('不传时前缀与默认完全一致，避免多出一段导致缓存失效', async () => {
     const { s, store } = await session()
     expect(systemPromptFor(s, 'deepseek-flash', 'openai_chat_completions')).not.toContain('## 角色')
     store.close()
@@ -240,7 +240,7 @@ describe('角色约束', () => {
 })
 
 describe('输出上限说明', () => {
-  test('按本轮模型的目录条目给：Claude 附上限原文，别家不附', async () => {
+  test('按本轮模型的目录条目决定：Claude 附加上限原文，其他厂商不附加', async () => {
     const { s, store } = await session()
     expect(systemPromptFor(s, 'claude-opus-5-5', 'anthropic_messages')).toContain(
       outputLimitNote(128_000),
@@ -258,7 +258,7 @@ describe('顶层会话的可分配模型快照', () => {
     return null
   }
 
-  test('从当前配置只提取接口与模型，随 run 落库供规划模型选择', async () => {
+  test('从当前配置只提取接口与模型，随 run 写入数据库供规划模型选择', async () => {
     const liveConfig: QyConfig = {
       active: { provider: '智谱接口', model: 'glm-5.3-flash' },
       providers: {
@@ -286,12 +286,12 @@ describe('顶层会话的可分配模型快照', () => {
       .join('\n')
     expect(snapshot).toContain('provider 参数 `智谱接口`；model 参数 `glm-5.3-flash`')
     expect(snapshot).toContain('provider 参数 `千问接口`；model 参数 `qwen/model-3.8`')
-    // 角色、外部 CLI、本会话已有的子 agent 同一份快照里给出，模型按 id 引用。
+    // 角色、外部 CLI、本会话已有的子 agent 在同一份快照中给出，模型按 id 引用。
     expect(snapshot).toContain('角色 id `reviewer`：审查员，看代码；模型 p / m')
     expect(snapshot).toContain('外部 CLI id `codex`：OpenAI，本机进程，自带模型与账号，已接入')
     expect(snapshot).toContain('subagentId `cv_sub`：查资料，临时，模型 p / m，空闲')
     expect(snapshot).toContain(
-      'subagentId `cv_cli`：OpenAI codex，外部 CLI，模型 cli / codex，空闲，不可续接：没有会话号，续派它不记得上一轮',
+      'subagentId `cv_cli`：OpenAI codex，外部 CLI，模型 cli / codex，空闲，不可续接：缺少会话号，再次派发时不保留上一轮上下文',
     )
     expect(snapshot).not.toContain('sk-never-send-this')
     expect(snapshot).not.toContain('private-relay.example')
@@ -299,7 +299,7 @@ describe('顶层会话的可分配模型快照', () => {
     store.close()
   })
 
-  test('没有派活工具的成员或普通 runtime 会话不携带模型清单', async () => {
+  test('没有派发工具的成员或普通 runtime 会话不携带模型清单', async () => {
     const { s, store } = await session()
 
     await firstEvent(s)
@@ -345,8 +345,8 @@ describe('顶层会话的可分配模型快照', () => {
 })
 
 /**
- * 压缩会把工具结果压成 320 字摘录，workflowId 与 checkpointId 可能整个不在里面。
- * 快照必须把这张图的 id 与各节点续接情况送回模型，否则它只能整张重派。
+ * 压缩会将工具结果缩减为 320 字摘录，workflowId 与 checkpointId 可能完全不在其中。
+ * 快照必须将该任务图的 id 与各节点续接情况重新提供给模型，否则模型只能重新派发整张图。
  */
 describe('未完成 workflow 的运行快照', () => {
   const seedWaitingGraph = (store: Store, conversationId: ConversationId) => {
@@ -381,7 +381,7 @@ describe('未完成 workflow 的运行快照', () => {
       status: 'running',
       payload: { kind: 'tool_call', args },
     })
-    // 回执就是格的终态：两格都落了终态，检查点因此是待审查那一个。
+    // 回执即节点的终态：两个节点都已进入终态，因此当前检查点是待审查的那一个。
     setStepNodeState(store, step.id, 'build-glm', {
       phase: 'done',
       label: 'glm',
@@ -409,7 +409,7 @@ describe('未完成 workflow 的运行快照', () => {
     return step.id
   }
 
-  test('第二轮快照带上待审查的 workflowId、检查点与各节点续接情况', async () => {
+  test('第二轮快照包含待审查的 workflowId、检查点与各节点续接情况', async () => {
     const { s, store } = await session({ delegate })
     for await (const _ of s.ask('第一轮')) break
     const conversation = listRecentConversations(store, 1)[0]!
@@ -428,7 +428,7 @@ describe('未完成 workflow 的运行快照', () => {
     store.close()
   })
 
-  test('没有派活通道的会话不带这一段', async () => {
+  test('没有派发通道的会话不包含该段', async () => {
     const { s, store } = await session()
     for await (const _ of s.ask('第一轮')) break
     const conversation = listRecentConversations(store, 1)[0]!
@@ -446,14 +446,14 @@ describe('未完成 workflow 的运行快照', () => {
 })
 
 /**
- * 被拦命令回给模型的那句话。
+ * 被拦截的命令返回给模型的说明。
  *
- * 锁的是**这句话把模型推向哪里**，不是逐字文案（逐字断言改一个字就红，
- * 锁的是文案不是行为）。教它「换一条命令」的代价是具体的：`rm -rf ~/x`
- * 被拦就改写成 `python -c "import shutil; shutil.rmtree(...)"`，
- * 而后者不在 HARD_DENY 表里，因此同一件事照样发生。
+ * 锁定的是该说明引导模型采取的行为，不是逐字文案（逐字断言在改动一个字时即失败，
+ * 锁定的是文案而不是行为）。引导模型「换一条命令」会使拦截失效：`rm -rf ~/x`
+ * 被拦截后改写为 `python -c "import shutil; shutil.rmtree(...)"`，
+ * 而后者不在 HARD_DENY 表中，因此同一操作仍会执行。
  */
-describe('被拒的裁决怎么说话', () => {
+describe('被拒绝时返回的说明', () => {
   type Deny = { allowed: false; reason: string }
   const denyFor = async (command: string) => {
     const { s, store } = await session()
@@ -466,14 +466,14 @@ describe('被拒的裁决怎么说话', () => {
     return v
   }
 
-  test('给的是「让用户提权」和「跳过」两条出路', async () => {
+  test('给出「由用户提升权限」与「跳过」两种处理方式', async () => {
     const v = await denyFor('rm -rf ~/')
     expect(v.allowed).toBe(false)
     expect(v.reason).toContain('完全访问')
     expect(v.reason).toContain('跳过')
   })
 
-  test('不引导换写法：提到「换」的地方必须都是否定句', async () => {
+  test('不引导更换写法：提及「换」之处必须都是否定句', async () => {
     const { reason } = await denyFor('rm -rf ~/')
     const mentions = (reason.match(/换/g) ?? []).length
     const negated = (reason.match(/不要换|不能换|别换/g) ?? []).length
@@ -482,10 +482,10 @@ describe('被拒的裁决怎么说话', () => {
 })
 
 /**
- * 一个真的能握手的 MCP server，工具表由调用方给。
+ * 可真实完成握手的 MCP server，工具表由调用方提供。
  *
- * 两个 describe 共用：一个测 allowedTools 的过滤，一个测 schema 按量转按需。
- * 两边都要一个真实的 stdio server——照抄一份的代价是它们迟早只有一份被改。
+ * 两个 describe 共用：一个测试 allowedTools 的过滤，一个测试 schema 按总量转为按需加载。
+ * 两者都需要真实的 stdio server：复制为两份会导致后续修改只作用于其中一份。
  */
 async function workspaceWithMcp(
   server = 'demo',
@@ -497,7 +497,7 @@ async function workspaceWithMcp(
   const root = await mkdtemp(join(tmpdir(), 'qywork-sess-mcp-'))
   await mkdir(join(root, '.agents'), { recursive: true })
   /*
-   * 加载时会合入全局层的 `mcp.json`，所以指向临时的 `QYWORK_HOME`，不连本机真配置里的 server。
+   * 加载时会合并全局层的 `mcp.json`，因此指向临时的 `QYWORK_HOME`，不连接本机真实配置中的 server。
    * 还原由文件末尾的 `afterEach` 负责。
    */
   process.env.QYWORK_HOME = await mkdtemp(join(tmpdir(), 'qywork-sess-home-'))
@@ -535,14 +535,14 @@ async function workspaceWithMcp(
 }
 
 /**
- * allowedTools 必须同时管得住扩展工具，也必须**认得出**它们。
+ * allowedTools 必须同时约束扩展工具，也必须识别它们。
  *
- * 只过滤内置工具的话，一个「只读」角色照样能调插件里的写工具；
- * 而判定「这个名字是不是写错了」如果在扩展加载之前做，一个合法的
- * `mcp__demo__ping` 会被报成未知——让人去查一个不存在的问题。
+ * 只过滤内置工具时，一个「只读」角色仍能调用插件中的写工具；
+ * 而「名称是否写错」的判定如果在扩展加载之前执行，合法的
+ * `mcp__demo__ping` 会被报告为未知，导致用户排查一个不存在的问题。
  */
 describe('allowedTools 与扩展工具', () => {
-  test('allowedTools 里可以点名 MCP 工具，且只放行点到的那个', async () => {
+  test('allowedTools 中可以指定 MCP 工具，且只放行指定的工具', async () => {
     const store = new Store({ path: ':memory:' })
     const root = await workspaceWithMcp()
     const s = new Session({
@@ -560,7 +560,7 @@ describe('allowedTools 与扩展工具', () => {
       .map((t) => t.name)
       .sort()
     expect(names).toEqual(['mcp__demo__ping', 'read_file'])
-    // 同一个 server 的另一个工具没被点名，就不该出现。
+    // 同一 server 的另一个工具未被指定，不应出现。
     expect(names).not.toContain('mcp__demo__pong')
     s.dispose()
     store.close()
@@ -568,15 +568,15 @@ describe('allowedTools 与扩展工具', () => {
 })
 
 /**
- * 外部工具的 schema 按量转按需。
+ * 外部工具的 schema 按总量转为按需加载。
  *
- * 锁的是**超预算时那些 schema 真的没进请求**：这一条反过来不会报错，
- * 只会表现为账单照旧——按需加载做了等于没做，谁都不会发现。
+ * 锁定的是超出预算时这些 schema 确实未进入请求：该约束失效时不会报错，
+ * 只会使费用不变，按需加载失去作用且无法察觉。
  *
- * 阈值与实测的量在 `tools/tool-pool.ts`。这里的胖 server 用长描述凑量，
- * 不依赖具体阈值取值，只依赖「它超了」。
+ * 阈值与实测数据在 `tools/tool-pool.ts`。此处的大体积 server 用长描述增加总量，
+ * 不依赖具体阈值，只依赖总量超出预算。
  */
-describe('外部工具按量转按需', () => {
+describe('外部工具按总量转为按需加载', () => {
   const fatTools = Array.from({ length: 8 }, (_, i) => ({
     name: `t${i}`,
     description: 'x'.repeat(800),
@@ -618,7 +618,7 @@ describe('外部工具按量转按需', () => {
     return { store, s, conv, registry, nextSnapshot }
   }
 
-  test('超预算时那批工具不进 schemas，只出现一个 load_tool', async () => {
+  test('超出预算时外部工具不进入 schemas，只出现一个 load_tool', async () => {
     const { store, s, registry, nextSnapshot } = await assemble()
     const names = registry.schemas().map((t) => t.name)
 
@@ -630,7 +630,7 @@ describe('外部工具按量转按需', () => {
     store.close()
   }, 20_000)
 
-  test('load_tool 装完就进 schemas，下一次 run 的快照不再列它', async () => {
+  test('load_tool 加载后即进入 schemas，下一次 run 的快照不再列出该工具', async () => {
     const { store, s, registry, nextSnapshot } = await assemble()
     const out = await registry.execute(
       'load_tool',
@@ -648,10 +648,10 @@ describe('外部工具按量转按需', () => {
   }, 20_000)
 
   /**
-   * Session 每条消息新建一个，进程内的「已加载」集合无法跨越本条消息存活。
-   * 落账本才有意义——不然模型每轮都得重装一遍。
+   * 每条消息新建一个 Session，进程内的「已加载」集合无法跨消息保留。
+   * 只有写入账本才有效，否则模型每轮都须重新加载。
    */
-  test('装过的下一条消息直接在工具表里', async () => {
+  test('已加载的工具在下一条消息中直接位于工具表内', async () => {
     const { store, s, conv, registry } = await assemble()
     await registry.execute(
       'load_tool',
@@ -676,7 +676,7 @@ describe('外部工具按量转按需', () => {
       .schemas()
       .map((t) => t.name)
     expect(names).toContain('mcp__fat__t0')
-    // 只把装过的那个放回去，其余照旧待加载。
+    // 只恢复已加载的工具，其余仍待加载。
     expect(names).not.toContain('mcp__fat__t1')
     next.dispose()
     s.dispose()
@@ -687,9 +687,9 @@ describe('外部工具按量转按需', () => {
 /**
  * 新建会话的来源标记。
  *
- * `ask` 不带 conversationId 时会**当场建一个会话**——这一步在任何 provider
- * 调用之前发生，所以下面用一个必然连不上的 baseUrl 就能测到它：请求失败，
- * 但会话已经在库里了。
+ * `ask` 不带 conversationId 时会立即创建会话：这一步发生在任何 provider
+ * 调用之前，因此使用必然无法连接的 baseUrl 即可测试：请求失败，
+ * 但会话已写入数据库。
  */
 describe('新建会话的来源', () => {
   const offline: QyConfig = {
@@ -698,7 +698,7 @@ describe('新建会话的来源', () => {
       p: {
         kind: 'openai_chat_completions',
         apiKey: 'sk-x',
-        // 端口 1 上不会有人在听，连接立刻被拒——不出网、不等超时。
+        // 端口 1 上没有监听方，连接立即被拒绝：不访问网络，也不等待超时。
         baseUrl: 'http://127.0.0.1:1/v1',
         models: { 'deepseek-v4-flash': {} },
       },
@@ -720,22 +720,22 @@ describe('新建会话的来源', () => {
     })
     try {
       for await (const ev of s.ask('查一下这个函数', undefined, over)) {
-        // 只要跑到第一次 provider 调用就够了，产出不关心。这条事件说明那次调用已经
-        // 失败，后面是分钟量级的重发退避，停掉它。
+        // 只需执行到第一次 provider 调用，不检查产出。该事件说明该次调用已经
+        // 失败，其后是分钟量级的重发退避，因此在此中止。
         if (ev.type === 'run.retrying') controller.abort()
       }
     } catch {
-      // 连不上是预期的。
+      // 连接失败符合预期。
     }
     s.dispose()
     return { store, root }
   }
 
   /**
-   * 复现原始失败形状：team 成员的子会话不打来源标记的话，每跑一次 team，
-   * 用户的会话列表里就多出 N 条以成员 prompt 开头的条目。
+   * 复现原始失败形状：team 成员的子会话不带来源标记时，每执行一次 team，
+   * 用户的会话列表中就多出 N 条以成员 prompt 开头的条目。
    */
-  test("source: 'temp' 的会话不进会话列表", async () => {
+  test("source: 'temp' 的会话不列入会话列表", async () => {
     const { store, root } = await askOnce({ source: 'temp', sourceRef: 'reviewer' })
     const ws = upsertWorkspace(store, root, 'x')
     expect(listConversations(store, ws.id)).toEqual([])
@@ -743,8 +743,8 @@ describe('新建会话的来源', () => {
     store.close()
   })
 
-  /** 不填仍然是用户会话——`qy run "..."` 走的就是这条，它必须能被列出来。 */
-  test('不填来源的仍然是用户会话', async () => {
+  /** 不填写时仍为用户会话：`qy run "..."` 使用此路径，此类会话必须能被列出。 */
+  test('未填写来源的仍为用户会话', async () => {
     const { store, root } = await askOnce()
     const ws = upsertWorkspace(store, root, 'x')
     expect(listConversations(store, ws.id)).toHaveLength(1)
@@ -752,10 +752,10 @@ describe('新建会话的来源', () => {
   })
 
   /**
-   * 没配模型时发送被拒：起 run 前就抛，且**不建会话**——不能先落一条没有模型、
-   * 发不出请求的会话再报错。这测的是行为，不是「调了几次」。
+   * 未配置模型时发送被拒绝：在创建 run 之前抛出，且不创建会话；不能先写入一条没有模型、
+   * 无法发出请求的会话再报错。此处测试的是行为，不是调用次数。
    */
-  test('没配模型时起 run 前就拒绝，且不建会话', async () => {
+  test('未配置模型时在创建 run 之前拒绝，且不创建会话', async () => {
     const store = new Store({ path: ':memory:' })
     const root = await mkdtemp(join(tmpdir(), 'qywork-src-'))
     const noModel = { providers: {} } as QyConfig
@@ -780,14 +780,14 @@ describe('新建会话的来源', () => {
 })
 
 /**
- * 读记录接没接上。
+ * 读取记录是否已接入。
  *
- * 这条锁的是**装配**：`files.ts` 那边只约定形状，寿命由这里给。没接上的话
- * 它会静默退回 run 内记账，表现是「上一轮读过、这一轮改文件先失败一次」——
- * 而那正是要修的原始形状，且不会有任何报错。
+ * 本组锁定装配：`files.ts` 只约定形状，生命周期由此处提供。未接入时
+ * 它会静默回退到 run 内记账，上一轮已读取的文件在本轮修改时因此先失败一次：
+ * 即原始失败形状，且不产生任何报错。
  */
-describe('工具上下文的读记录', () => {
-  test('两个 run 共用同一份，且落在账本里按会话归属', async () => {
+describe('工具上下文的读取记录', () => {
+  test('两个 run 共用同一份记录，且写入账本并按会话归属', async () => {
     const { s, store } = await session()
     const ws = listWorkspaces(store)[0]!
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -810,12 +810,12 @@ describe('工具上下文的读记录', () => {
 /*
  * 会话标题。
  *
- * **产生点只有这一处**：第一条用户消息落库之后。建会话的时候不取——那一刻正文
- * 还不存在（界面端是先建会话、后发第一句话），因此取到的只能是空串，
- * 侧栏里一整列「新对话」就是这么来的。
+ * 标题只在一处产生：第一条用户消息写入数据库之后。创建会话时不生成标题：此时正文
+ * 尚不存在（界面端先创建会话、后发送第一条消息），只能取得空串，
+ * 侧栏会因此显示一整列「新对话」。
  *
- * 这里只吃 `ask()` 的第一条事件就停：标题在那之前就写好了，而再往下走要真的
- * 连 provider。停在这儿测的正好是「不发一次请求也该有标题」。
+ * 此处只消费 `ask()` 的第一条事件即停止：标题在此之前已写入，继续执行则需要真实
+ * 连接 provider。在此处停止同时验证：不发出任何请求时标题已经存在。
  */
 describe('会话标题', () => {
   const firstEvent = async (s: Session, prompt: string, existing?: string) => {
@@ -823,7 +823,7 @@ describe('会话标题', () => {
     return null
   }
 
-  test('第一句话定标题，并当场广播出去', async () => {
+  test('第一条消息确定标题，并立即广播', async () => {
     const { s, store } = await session()
     const ev = await firstEvent(s, '帮我把侧栏的时间显示出来\n第二行是细节')
     expect(ev?.type).toBe('conversation.updated')
@@ -836,7 +836,7 @@ describe('会话标题', () => {
     store.close()
   })
 
-  test('上一份待办全部完成后，第二条指令的 run 快照不再带旧清单', async () => {
+  test('上一份待办全部完成后，第二条指令的 run 快照不再包含旧清单', async () => {
     const { s, store } = await session()
     const ws = listWorkspaces(store)[0]!
     const conv = createConversation(store, {
@@ -873,8 +873,8 @@ describe('会话标题', () => {
     store.close()
   })
 
-  /* 第二句话不许盖掉第一句定下的名字——列表里那一行会随每次发言变来变去。 */
-  test('第二句话不覆盖已有标题', async () => {
+  /* 第二条消息不得覆盖第一条消息确定的名称，否则列表中该行会随每次发言变化。 */
+  test('第二条消息不覆盖已有标题', async () => {
     const { s, store } = await session()
     await firstEvent(s, '第一句')
     const conv = listRecentConversations(store, 1)[0]
@@ -883,8 +883,8 @@ describe('会话标题', () => {
     store.close()
   })
 
-  /* 用户改过的名字更不许被下一句话盖掉。 */
-  test('用户改过的名字不被覆盖', async () => {
+  /* 用户修改过的名称同样不得被下一条消息覆盖。 */
+  test('用户修改过的名称不被覆盖', async () => {
     const { s, store } = await session()
     await firstEvent(s, '第一句')
     const conv = listRecentConversations(store, 1)[0]
@@ -895,10 +895,10 @@ describe('会话标题', () => {
   })
 
   /*
-   * 第一句话读会话与写自动标题之间隔着若干 await。在其中必经的 `delegate.targets()` 里改名，
-   * 复现「发出第一句话后立刻改名」：自动标题不许盖掉这个名字。
+   * 处理第一条消息时，读取会话与写入自动标题之间间隔若干 await。在其间必经的 `delegate.targets()` 中改名，
+   * 复现发出第一条消息后立即改名的情况：自动标题不得覆盖该名称。
    */
-  test('读会话之后、写自动标题之前用户改了名：保留用户的名字', async () => {
+  test('读取会话之后、写入自动标题之前用户修改了名称：保留用户的名称', async () => {
     let target: Store | null = null
     const renaming: DelegatePort = {
       ...delegate,
@@ -918,14 +918,14 @@ describe('会话标题', () => {
 })
 
 /*
- * 被折叠历史的回读。
+ * 被折叠历史的读取。
  *
- * 摘要里 run 内注入的那句用户消息印的是 `[message:<runId>:<stepId>]` ——
- * 它不在 `messages` 表里。这条通道少了那一手回落，摘要上写着地址、取回却报
- * 「不存在」，压缩就真成了丢信息。
+ * 摘要中 run 内注入的用户消息标记为 `[message:<runId>:<stepId>]`，
+ * 该消息不在 `messages` 表中。此通道缺少这一回退时，摘要中写有地址、取回却报告
+ * 不存在，压缩即造成信息丢失。
  */
-describe('注入消息的回读', () => {
-  test('按 <runId>:<stepId> 取得回原文，执行记录那一侧回 null', async () => {
+describe('注入消息的读取', () => {
+  test('按 <runId>:<stepId> 取回原文，执行记录入口返回 null', async () => {
     const { s, store } = await session()
     const ws = listWorkspaces(store)[0]!
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -955,10 +955,10 @@ describe('注入消息的回读', () => {
     const address = `${run.id}:${step.id}`
 
     expect(ctx.history?.message(address)).toEqual({ role: 'user', content: '改成只列文件名' })
-    // 执行记录那一侧必须回 null：它的返回形状是 {tool,status,args,outcome}，
-    // 套上去只会得到一个 tool:'unknown' 加两个空 JSON——看起来被处理了。
+    // 执行记录入口必须返回 null：其返回形状是 {tool,status,args,outcome}，
+    // 套用到该记录只会得到 tool:'unknown' 与两个空 JSON，看起来已被处理。
     expect(ctx.history?.step(address)).toBeNull()
-    // 搜索按「消息」报，因此模型拿到的标记是 [message:…]，与取回入口对得上。
+    // 搜索按消息类型报告，因此模型取得的标记是 [message:…]，与取回入口一致。
     expect(ctx.history?.search('只列文件名', 10)).toEqual([
       { id: address, kind: 'message', line: '改成只列文件名' },
     ])
@@ -966,10 +966,10 @@ describe('注入消息的回读', () => {
   })
 
   /**
-   * F18：助手正文在 text step 里。摘要里给它的地址是这次生成的第一条 text step，
-   * 读回的必须是整段正文（思考把它切成了几条），执行记录那一侧回 null，搜索按消息报。
+   * 助手正文位于 text step 中。摘要中给出的地址是本次生成的第一条 text step，
+   * 读取结果必须是整段正文（思考将其切分为多条），执行记录入口返回 null，搜索按消息类型报告。
    */
-  test('助手正文按 <runId>:<stepId> 取得回整段，搜得到，执行记录那一侧回 null', async () => {
+  test('助手正文按 <runId>:<stepId> 取回整段且可被搜索，执行记录入口返回 null', async () => {
     const { s, store } = await session()
     const ws = listWorkspaces(store)[0]!
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -1017,7 +1017,7 @@ describe('注入消息的回读', () => {
       content: '先定签名算法：用 RS256。',
     })
     expect(ctx.history?.step(address)).toBeNull()
-    // 命中的是切开后的那一条；按它的地址读回的仍是整段。
+    // 命中的是切分后的其中一条；按其地址读取的仍是整段。
     expect(ctx.history?.search('RS256', 10)).toEqual([
       { id: `${run.id}:${rest.id}`, kind: 'message', line: '用 RS256。' },
     ])
@@ -1027,13 +1027,13 @@ describe('注入消息的回读', () => {
 })
 
 /*
- * 带图执行记录的回读。
+ * 带图执行记录的读取。
  *
- * 图像字节定格在 step payload 的 `outcome.data.images` 里；取回时必须作为图像块交出，
- * outcome 文本里不能夹着 base64——那是一段模型读不懂、却按满额计费的正文。
+ * 图像字节固定保存在 step payload 的 `outcome.data.images` 中；取回时必须作为图像块返回，
+ * outcome 文本中不得包含 base64：模型无法理解这段正文，却按全额计费。
  */
-describe('带图执行记录的回读', () => {
-  test('call_id 与 step id 两条入口都把图拆成图像块，outcome 文本无字节', async () => {
+describe('带图执行记录的读取', () => {
+  test('call_id 与 step id 两个入口都将图片拆分为图像块，outcome 文本不含字节', async () => {
     const { s, store } = await session()
     const ws = listWorkspaces(store)[0]!
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -1103,15 +1103,15 @@ describe('带图执行记录的回读', () => {
   })
 })
 
-/** `workspaceWithMcp` 会改 `QYWORK_HOME`，每条用例跑完还回去。 */
+/** `workspaceWithMcp` 会修改 `QYWORK_HOME`，每条用例执行完毕后恢复原值。 */
 const HOME_BEFORE = process.env.QYWORK_HOME
 afterEach(() => {
   if (HOME_BEFORE === undefined) delete process.env.QYWORK_HOME
   else process.env.QYWORK_HOME = HOME_BEFORE
 })
 
-describe('浏览器控制跟着这一轮执行走', () => {
-  /** 只记下它被怎么用过。断言的是「什么时候释放」，不是调了几次。 */
+describe('浏览器控制与本轮执行绑定', () => {
+  /** 只记录调用情况。断言的是释放时机，不是调用次数。 */
   function fakeBrowser(): { port: BrowserPort; released: () => number } {
     let released = 0
     const tab = { tabId: 'bt_1', url: 'https://a', title: 'A', controlled: true }
@@ -1141,7 +1141,7 @@ describe('浏览器控制跟着这一轮执行走', () => {
     return { port, released: () => released }
   }
 
-  test('用户停止的那一刻就撤销控制，不等这一轮收尾', async () => {
+  test('用户停止时立即撤销控制，不等待本轮收尾', async () => {
     const browser = fakeBrowser()
     const ac = new AbortController()
     const { s, store } = await session({ browser: browser.port, signal: ac.signal })
@@ -1153,7 +1153,7 @@ describe('浏览器控制跟着这一轮执行走', () => {
     store.close()
   })
 
-  test('收尾同样释放一次，重复调用由端口自己吸收', async () => {
+  test('收尾时同样释放一次，重复调用由端口自行处理', async () => {
     const browser = fakeBrowser()
     const { s, store } = await session({ browser: browser.port })
     s.dispose()
@@ -1162,7 +1162,7 @@ describe('浏览器控制跟着这一轮执行走', () => {
     store.close()
   })
 
-  /** 七个内置浏览器工具。整组按通道注册，不逐个开关。 */
+  /** 七个内置浏览器工具。整组按通道注册，不单独开关。 */
   const SEVEN = [
     'browser_tabs',
     'browser_navigate',
@@ -1173,7 +1173,7 @@ describe('浏览器控制跟着这一轮执行走', () => {
     'browser_download',
   ]
 
-  test('没有端口时七个浏览器工具都不注册，不留必然报错的名字', async () => {
+  test('没有端口时七个浏览器工具均不注册，不保留必然报错的工具名', async () => {
     const { s, store, names } = await session()
     const listed = names()
     for (const name of SEVEN) expect(listed).not.toContain(name)
@@ -1181,7 +1181,7 @@ describe('浏览器控制跟着这一轮执行走', () => {
     store.close()
   })
 
-  test('接上端口之后七个都进工具表', async () => {
+  test('接入端口之后七个工具均进入工具表', async () => {
     const browser = fakeBrowser()
     const { s, store, names } = await session({ browser: browser.port })
     const listed = names()
@@ -1190,7 +1190,7 @@ describe('浏览器控制跟着这一轮执行走', () => {
     store.close()
   })
 
-  test('角色的 allowedTools 同样筛浏览器工具', async () => {
+  test('角色的 allowedTools 同样筛选浏览器工具', async () => {
     const browser = fakeBrowser()
     const { s, store, names } = await session({
       browser: browser.port,
@@ -1203,7 +1203,7 @@ describe('浏览器控制跟着这一轮执行走', () => {
     store.close()
   })
 
-  test('成员会话没有端口，点名了也注册不进来', async () => {
+  test('成员会话没有端口，即使指定也无法注册', async () => {
     const { s, store, names } = await session({
       allowedTools: ['browser_observe', 'read_file'],
     })
@@ -1214,7 +1214,7 @@ describe('浏览器控制跟着这一轮执行走', () => {
     store.close()
   })
 
-  test('没有端口时工具上下文里就没有浏览器通道', async () => {
+  test('没有端口时工具上下文中没有浏览器通道', async () => {
     const { s, store } = await session()
     const ctx = (
       s as unknown as {
@@ -1241,11 +1241,11 @@ describe('浏览器控制跟着这一轮执行走', () => {
 })
 
 /*
- * 同一会话被另一个进程占着（例如终端里的 qy 正在跑这条会话，桌面端又发了一句）。
- * 占用进程是 `store` 包的测试子进程，建一轮后不退出。
+ * 同一会话被另一个进程占用（例如终端的 qy 正在运行该会话，桌面端又发送了一条消息）。
+ * 占用进程是 `store` 包的测试子进程，创建一轮后不退出。
  */
-describe('会话被另一个进程占着', () => {
-  test('起轮被拒并说出占用方，这句话不落库', async () => {
+describe('会话被另一个进程占用', () => {
+  test('创建轮次被拒绝并说明占用方，该消息不写入数据库', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-sess-busy-'))
     const path = join(dir, 'ledger.sqlite3')
     const store = new Store({ path, owner: 'serve' })
@@ -1288,13 +1288,13 @@ describe('会话被另一个进程占着', () => {
       let error: unknown = null
       try {
         for await (const _ of s.ask('桌面端发的一句', conv.id)) {
-          // 被拒时一个事件都不该产生。
+          // 被拒绝时不应产生任何事件。
         }
       } catch (err) {
         error = err
       }
       expect(String((error as Error | null)?.message)).toContain(
-        `该会话已在终端里的 qy 中执行（pid ${holder.pid}）`,
+        `该会话已在终端的 qy 中执行（pid ${holder.pid}）`,
       )
       expect(listMessages(store, conv.id)).toEqual([])
     } finally {

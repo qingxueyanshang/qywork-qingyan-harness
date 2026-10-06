@@ -1,13 +1,13 @@
 /**
- * `qy usage` —— 问「这个月花了多少」。
+ * `qy usage`：回答「本月花费多少」。
  *
- * `runs` 上的 usage 答不了这个问题：它按 run 存，而删会话是正常操作。
+ * `runs` 上的 usage 无法回答这个问题：它按 run 存储，而删除会话是正常操作。
  * 账本是独立的一张表，没有外键，因此账目的留存时间长于业务数据。
  *
  *   qy usage                 最近 30 天
  *   qy usage --days 7        最近 7 天
- *   qy usage --by day        按天（还可以 model / workspace / kind）
- *   qy usage --json          给脚本用
+ *   qy usage --by day        按天分组（也可为 model / workspace / kind）
+ *   qy usage --json          供脚本使用
  */
 
 import { formatCosts } from '@qywork/core'
@@ -28,11 +28,11 @@ export async function runUsage(args: string[]): Promise<number> {
   const by = byFlag >= 0 ? (args[byFlag + 1] as GroupBy) : 'model'
 
   if (!Number.isFinite(days) || days <= 0) {
-    process.stderr.write(`--days 必须为正数，收到：${args[daysFlag + 1]}\n`)
+    process.stderr.write(`--days 必须为正数，实际为：${args[daysFlag + 1]}\n`)
     return 2
   }
   if (!GROUPS.includes(by)) {
-    process.stderr.write(`--by 只能是 ${GROUPS.join(' / ')}，收到：${by}\n`)
+    process.stderr.write(`--by 只能是 ${GROUPS.join(' / ')}，实际为：${by}\n`)
     return 2
   }
 
@@ -57,12 +57,12 @@ export async function runUsage(args: string[]): Promise<number> {
     for (const r of rows) {
       process.stdout.write(
         `  ${pad(r.key, width)}  ${formatCosts(r.cost)}  ` +
-          `${DIM}入 ${num(r.inputTokens)} 出 ${num(r.outputTokens)} ${cacheNote(r.cachedTokens)}${RESET}\n`,
+          `${DIM}输入 ${num(r.inputTokens)} 输出 ${num(r.outputTokens)} ${cacheNote(r.cachedTokens)}${RESET}\n`,
       )
     }
     process.stdout.write(
       `\n  ${pad('合计', width)}  ${BOLD}${formatCosts(totals.cost)}${RESET}  ` +
-        `${DIM}入 ${num(totals.inputTokens)} 出 ${num(totals.outputTokens)} ${cacheNote(totals.cachedTokens)}${RESET}\n`,
+        `${DIM}输入 ${num(totals.inputTokens)} 输出 ${num(totals.outputTokens)} ${cacheNote(totals.cachedTokens)}${RESET}\n`,
     )
     return 0
   } finally {
@@ -70,7 +70,7 @@ export async function runUsage(args: string[]): Promise<number> {
   }
 }
 
-/** 未回报显示「未回报」，不显示 0——后者是个具体但错误的结论。 */
+/** 未回报时显示「未回报」而不是 0：0 是一个具体但错误的结论。 */
 function cacheNote(cached: number | null): string {
   return cached === null ? '缓存未回报' : `缓存 ${num(cached)}`
 }
@@ -79,7 +79,7 @@ function num(n: number): string {
   return n.toLocaleString('en-US')
 }
 
-/** 中文字符占两列。不按显示宽度对齐的话，中英混排的表格会全歪。 */
+/** 中文字符占两列。不按显示宽度对齐时，中英文混排的表格会错位。 */
 function displayWidth(s: string): number {
   let w = 0
   for (const ch of s) w += /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹯＀-｠￠-￦]/.test(ch) ? 2 : 1

@@ -1,13 +1,13 @@
 /**
  * 压缩与主循环的接线测试。
  *
- * `compaction.test.ts` 验的是压缩算法本身；这里验的是**发送前检查 → 压缩 →
- * 重新装配**这条控制流真的走通了。两者分开是因为前者纯函数、后者要造占用压力，
- * 混在一起会让「算法对不对」和「接线对不对」在失败时分不出来。
+ * `compaction.test.ts` 验证压缩算法本身；本文件验证**发送前检查 → 压缩 →
+ * 重新装配**这条控制流确实能够执行。两者分开是因为前者是纯函数，后者需要构造占用压力，
+ * 合在一起时，失败无法区分是算法错误还是接线错误。
  *
- * 覆盖范围：`loop/compact.ts` 的压缩触发与容量恢复。其中「压缩重发另开一行账」那条接真
- * `Store`，连带覆盖 `store/repos.ts` 的 `openProviderRequest` 在同一轮多次发送下
- * 与 `uq_provider_run_turn` 的关系——别的用例都把这个端口打桩成常量。
+ * 覆盖范围：`loop/compact.ts` 的压缩触发与容量恢复。其中「压缩后重发在账本中另记一行」用例接入真实
+ * `Store`，同时覆盖 `store/repos.ts` 的 `openProviderRequest` 在同一轮多次发送时
+ * 与 `uq_provider_run_turn` 的关系；其他用例都把该端口打桩为常量。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -37,7 +37,7 @@ import { compactionEpoch, ToolRegistry } from '../registry.ts'
 import { MAX_RESENDS } from './attempt.ts'
 import { softLimit } from './request.ts'
 
-/** 落库的压缩 step，供「中断不记账」「payload 与事件同源」两组断言读。 */
+/** 落库的压缩 step，供「中断不记账」「payload 与事件同源」两组断言读取。 */
 type RecordedCompaction = Parameters<LoopPersistence['recordCompaction']>[2]
 
 function noopPersistence(recorded: RecordedCompaction[] = []): LoopPersistence {
@@ -96,7 +96,7 @@ function paramError(): unknown {
   return classifyProviderError('anthropic_messages', err)
 }
 
-/** 前 N 次以给定错误失败，之后正常。用来验证「压缩后重发」真的发生。 */
+/** 前 N 次以给定错误失败，之后正常返回。用于验证「压缩后重发」确实发生。 */
 function rejectingAdapter(rejectTimes: number, makeError = capacityError) {
   const state = { attempts: 0 }
   const adapter: LlmAdapter = {
@@ -142,10 +142,10 @@ const okOutcome: CompactionOutcome = {
 }
 
 /**
- * 真的会让请求变小的假压缩。
+ * 确实会使请求变小的模拟压缩。
  *
- * `fakeCompaction` 的投影是原样返回，用它测不出溢出恢复——恢复的判据正是
- * 「压完请求有没有变小」，不变小就不重发。
+ * `fakeCompaction` 的投影原样返回，无法用于测试溢出恢复：恢复的判据正是
+ * 「压缩后请求是否变小」，未变小时不重发。
  */
 function shrinkingCompaction(outcome: CompactionOutcome = okOutcome) {
   const state = { runs: 0, folded: false }
@@ -177,7 +177,7 @@ function fakeCompaction(outcome: CompactionOutcome) {
   return { port, state }
 }
 
-/** 一段够大的历史：投影把它砍掉之后请求才真的变小，恢复判据才有意义。 */
+/** 一段足够大的历史：投影将其删除之后请求才实际变小，恢复判据才有意义。 */
 function bulkyHistory() {
   return Array.from({ length: 20 }, (_, i) => ({
     role: 'user' as const,
@@ -224,7 +224,7 @@ function build(
     systemPrompt: 'sys',
     persist: noopPersistence(),
     makeToolContext: makeCtx,
-    // 退避真等下去的话，「非容量错误照常上报」那条要等满五次指数退避。
+    // 若实际等待退避，「非容量错误照常上报」用例需要等满五次指数退避。
     sleep: async () => {},
     ...(compaction ? { compaction } : {}),
   })
@@ -232,9 +232,9 @@ function build(
 
 describe('发送前检查：唯一的压缩触发', () => {
   /**
-   * 占用没到软阈值就**一次也不压**。
+   * 占用未达到软阈值时**一次也不压缩**。
    *
-   * 这是「不在不需要的时候损失信息」那条原则的落点：靠阈值本身足够高
+   * 这是「不在不必要时损失信息」原则的实现方式：依靠阈值本身足够高
    * （窗口的 80%）。
    */
   test('占用远低于阈值时不压缩', async () => {
@@ -246,12 +246,12 @@ describe('发送前检查：唯一的压缩触发', () => {
   })
 
   /**
-   * 占用越过软阈值 → 发出去**之前**压一次，然后重新装配。
+   * 占用越过软阈值 → 发送**之前**压缩一次，然后重新装配。
    *
-   * 「重新装配」不能省：压缩改的是投影，拿压缩前那份请求发出去，
-   * 这次压缩就白花了。
+   * 「重新装配」不能省略：压缩修改的是投影，发送压缩前装配的请求时，
+   * 本次压缩没有任何效果。
    */
-  test('越过软阈值：发送前压一次并重新装配', async () => {
+  test('越过软阈值：发送前压缩一次并重新装配', async () => {
     const comp = fakeCompaction(okOutcome)
     let ctx: ToolContext | undefined
     const loop = new AgentLoop({
@@ -269,7 +269,7 @@ describe('发送前检查：唯一的压缩触发', () => {
     for await (const ev of loop.run({
       runId: 'rn_high' as never,
       history: [],
-      // 锚点直接把占用顶到阈值之上——不用真造一段几十万字的历史。
+      // 锚点直接把占用设到阈值之上，无需构造几十万字的历史。
       // 1M 窗口 × 0.8 → 软阈值 800,000。
       anchor: {
         tokens: 900_000,
@@ -286,21 +286,21 @@ describe('发送前检查：唯一的压缩触发', () => {
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'started')).toBe(true)
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'done')).toBe(true)
     expect(events.find((e) => e.type === 'run.finished')?.type).toBe('run.finished')
-    // 工具据这个次数判断早先投递的结果是否仍逐字可见（电脑控制的差异基底）。
+    // 工具据此次数判断先前投递的结果是否仍逐字可见（电脑控制的差异基底）。
     expect(ctx ? compactionEpoch(ctx.state) : -1).toBe(1)
   })
 
   /**
-   * 信封换一份不再白压一次。
+   * 信封变化时不做无效压缩。
    *
-   * 用户报过的形状：升一次构建后信封指纹必变，锚点整条作废，占用改由裸估算尺报，
-   * 而未收录档那把尺实测高 1.4 倍——真实占用远在阈值之下的会话被判成越线，
-   * 压一次、丢一段上下文，全程静默。
+   * 用户报告的失败形状：每次升级构建后信封指纹必然变化，锚点整体作废，占用改由裸估算报告，
+   * 而未收录模型的估算实测偏高 1.4 倍：真实占用远低于阈值的会话被判定为越线，
+   * 压缩一次并丢失一段上下文，全程没有提示。
    *
-   * 对照组只换模型：那一种锚点确实修正不回来，压缩照旧触发。两组用同一份历史，
-   * 因此这段历史的裸估算确实越线，不是测了个空请求。
+   * 对照组只更换模型：这种情况下锚点确实无法修正，压缩照常触发。两组使用同一份历史，
+   * 因此这段历史的裸估算确实越线，测试的不是空请求。
    */
-  test('信封变了不白压一次，换模型仍按估算尺判', async () => {
+  test('信封变化时不做无效压缩，更换模型时仍按估算判定', async () => {
     // 1M 窗口 × 0.8 → 软阈值 800,000。裸估算按 2.5 字符/token 计，这段正文约 96 万。
     const bulk = 'x'.repeat(2_400_000)
     const runOnce = async (model: string) => {
@@ -317,7 +317,7 @@ describe('发送前检查：唯一的压缩触发', () => {
       for await (const ev of loop.run({
         runId: 'rn_envelope' as never,
         history: [{ role: 'user', content: bulk, _group: 'historyMessages', _messageId: 'ms_1' }],
-        // 真值 700,000 在阈值之下；`throughMessageId` 盖住这条历史，锚点已经算过它。
+        // 真值 700,000 低于阈值；`throughMessageId` 覆盖这条历史，锚点已计入它。
         anchor: {
           tokens: 700_000,
           throughMessageId: 'ms_1',
@@ -339,12 +339,12 @@ describe('发送前检查：唯一的压缩触发', () => {
   })
 
   /**
-   * 压不动不是致命错：照常发出去，让 provider 来判。
+   * 无法压缩不是致命错误：照常发送，由 provider 判定。
    *
-   * 「没什么可压」走 `skipped` 而不是 `failed`——显示成失败会让用户去查一个
+   * 「没有可压缩的内容」报告为 `skipped` 而不是 `failed`：显示为失败会使用户排查一个
    * 并不存在的故障。
    */
-  test('压不动时照常发送，不把 run 掐死', async () => {
+  test('无法压缩时照常发送，不终止 run', async () => {
     const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_to_fold' })
     const loop = new AgentLoop({
       adapter: okAdapter(),
@@ -376,19 +376,19 @@ describe('发送前检查：唯一的压缩触发', () => {
   })
 
   /**
-   * **容量拒绝先压一次再重发。**
+   * **容量拒绝后先压缩一次再重发。**
    *
-   * 原始失败形状：占用读数对附件按固定值估，一份大附件低估两个数量级 →
-   * 发送前检查恒放行 → provider 恒拒绝 → 重试拿到同一个估算 → 会话永久卡死，
-   * 手动压缩也救不回（附件在保留区里）。这条锁的就是那个形状有终态。
+   * 原始失败形状：占用读数对附件按固定值估算，一份大附件被低估两个数量级 →
+   * 发送前检查始终放行 → provider 始终拒绝 → 重试得到同一个估算 → 会话永久停滞，
+   * 手动压缩也无法恢复（附件在保留区中）。本用例锁定该失败形状有终态。
    */
-  test('容量拒绝：压一次让请求变小之后重发成功', async () => {
+  test('容量拒绝：压缩一次使请求变小后重发成功', async () => {
     const comp = shrinkingCompaction()
     const { adapter, state } = rejectingAdapter(1)
     const events = await collectWith(build(adapter, comp.port), 'rn_overflow', bulkyHistory())
 
     expect(comp.state.runs).toBe(1)
-    // 发了两次：撞窗那次 + 压完重发那次。
+    // 发送了两次：超出窗口的那次 + 压缩后重发的那次。
     expect(state.attempts).toBe(2)
     expect(events.some((e) => e.type === 'run.error')).toBe(false)
     const finished = events.find((e) => e.type === 'run.finished')
@@ -396,14 +396,14 @@ describe('发送前检查：唯一的压缩触发', () => {
   })
 
   /**
-   * **压缩重发是账本上的第二行，不是同一行。**
+   * **压缩后重发是账本中的第二行，不是同一行。**
    *
-   * 这条接真 `Store`：别的用例把 `openRequest` 打桩成常量，唯一索引不参与，
-   * 两次发送共用一组键也不会有任何反应。实测形状是撞窗那次与压完重发那次同为
-   * `(run_id, 0, 0)`，第二次插入撞 `uq_provider_run_turn`，异常上抛，整轮死在
-   * 一句 SQLite 约束报错上——压缩白压，模型一次都没答上话。
+   * 本用例接入真实 `Store`：其他用例把 `openRequest` 打桩为常量，唯一索引不参与，
+   * 两次发送共用一组键也不会报错。实测形状是超出窗口的那次与压缩后重发的那次同为
+   * `(run_id, 0, 0)`，第二次插入违反 `uq_provider_run_turn`，异常上抛，整轮因
+   * 一条 SQLite 约束报错而失败：压缩无效，模型一次都未作答。
    */
-  test('压缩重发另开一行账，不撞唯一索引', async () => {
+  test('压缩后重发在账本中另记一行，不违反唯一索引', async () => {
     const store = new Store({ path: ':memory:' })
     const ws = upsertWorkspace(store, 'C:/ws', 'ws')
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -437,7 +437,7 @@ describe('发送前检查：唯一的压缩触发', () => {
 
     expect(events.some((e) => e.type === 'run.error')).toBe(false)
     expect(state.attempts).toBe(2)
-    // 同一轮、两个发送序号；第一行是撞窗那次，第二行是压完重发那次。
+    // 同一轮、两个发送序号；第一行是超出窗口的那次，第二行是压缩后重发的那次。
     const rows = listProviderRequests(store, run.id)
     expect(rows.map((r) => [r.turnIndex, r.retryIndex])).toEqual([
       [0, 0],
@@ -448,14 +448,14 @@ describe('发送前检查：唯一的压缩触发', () => {
   })
 
   /**
-   * **压不小就不重发。**
+   * **压缩未使请求变小时不重发。**
    *
-   * 同一份字节再发一次只会拿到同一个拒绝，而那一次要付全额的长 prompt 费用。
-   * 判据是「请求有没有变小」，不是「压缩返回成功」——收纳段可能落了库却一个
-   * token 没省。
+   * 同一份字节再发一次只会得到同一个拒绝，而那一次需要支付全额的长 prompt 费用。
+   * 判据是「请求是否变小」，不是「压缩返回成功」：收纳段可能已经落库，却未减少任何
+   * token。
    */
-  test('压缩没让请求变小时不重发，如实上报容量拒绝', async () => {
-    // `fakeCompaction` 的投影原样返回：压缩「成功」但请求一个字节没少。
+  test('压缩未使请求变小时不重发，如实上报容量拒绝', async () => {
+    // `fakeCompaction` 的投影原样返回：压缩「成功」但请求未减少任何字节。
     const comp = fakeCompaction(okOutcome)
     const { adapter, state } = rejectingAdapter(1)
     const events = await collect(build(adapter, comp.port), 'rn_noshrink')
@@ -469,12 +469,12 @@ describe('发送前检查：唯一的压缩触发', () => {
   /**
    * **一个 run 内只恢复一次。**
    *
-   * 用状态机而不是重试计数：没有「几次算够」这个问题——压完还撞说明压缩已经
-   * 压不动了，再压一次的输入与上一次逐字相同。
+   * 用状态机而不是重试计数：不存在「几次足够」的问题。压缩后仍超出窗口，说明压缩已
+   * 无法继续缩减，再压缩一次的输入与上一次逐字相同。
    */
-  test('连续撞窗只恢复一次，不进死循环', async () => {
+  test('连续超出窗口只恢复一次，不进入死循环', async () => {
     const comp = shrinkingCompaction()
-    // 两次都拒绝：第一次触发恢复，重发那次仍被拒 → 直接上报，不再压第三次。
+    // 两次都拒绝：第一次触发恢复，重发仍被拒绝 → 直接上报，不再压缩并发送第三次。
     const { adapter, state } = rejectingAdapter(2)
     const events = await collectWith(build(adapter, comp.port), 'rn_twice', bulkyHistory())
 
@@ -485,10 +485,10 @@ describe('发送前检查：唯一的压缩触发', () => {
   })
 
   /**
-   * 端口缺省时由构造函数补一个透传实现，语义与「没有压缩」逐字相同：
-   * 投影原样返回、压缩报「没什么可折」，因此容量拒绝照旧上报。
+   * 端口缺省时由构造函数补充一个透传实现，语义与「没有压缩」完全相同：
+   * 投影原样返回、压缩报告「没有可折叠的内容」，因此容量拒绝照常上报。
    */
-  test('没有压缩端口时容量拒绝照样上报，不静默卡住', async () => {
+  test('没有压缩端口时容量拒绝照常上报，不静默停滞', async () => {
     const { adapter } = rejectingAdapter(1)
     const events = await collect(build(adapter), 'rn_nocomp')
     const err = events.find((e) => e.type === 'run.error')
@@ -499,10 +499,10 @@ describe('发送前检查：唯一的压缩触发', () => {
    * **静默截断：provider 不报错，直接丢弃超出的部分。**
    *
    * 实测 deepseek-v4-flash：发出约 200 万 token，自报收到 1,000,086，
-   * 窗口正好 1,000,000，全程无错误。错误分类在这种 provider 上拿不到凭证，
-   * 判据只能从两个真值反推——自报输入顶到了模型自带的窗口。
+   * 窗口正好 1,000,000，全程无错误。错误分类在这类 provider 上无法取得依据，
+   * 判据只能由两个真值反推：自报输入达到了模型自身的窗口。
    */
-  test('自报输入顶到窗口时放开压缩闸，下一步重折', async () => {
+  test('自报输入达到窗口时解除压缩限制，下一步重新折叠', async () => {
     const comp = shrinkingCompaction()
     const spec = lookupModel('claude-opus-5', 'anthropic_messages')
     let turn = 0
@@ -513,7 +513,7 @@ describe('发送前检查：唯一的压缩触发', () => {
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
         if (turn++ === 0) {
-          // 第一轮：provider 自报输入顶到窗口——它把超出的丢了，却没报错。
+          // 第一轮：provider 自报输入达到窗口，它丢弃了超出的部分，但没有报错。
           yield {
             type: 'usage',
             usage: {
@@ -551,15 +551,15 @@ describe('发送前检查：唯一的压缩触发', () => {
       fn: async () => ({ status: 'success', message: 'ok' }),
     })
     await collectWith(build(adapter, comp.port, registry), 'rn_silent', bulkyHistory())
-    // 静默截断被认出来了：压缩闸放开，第二步真的折了一次。
+    // 静默截断已被识别：压缩限制解除，第二步确实折叠了一次。
     expect(comp.state.runs).toBeGreaterThan(0)
   })
 
   test('非容量错误照常上报', async () => {
     const comp = fakeCompaction(okOutcome)
-    // 把重发额度拒满再多拒一次：参数错误与「上游暂时不可用」同归
-    // `provider_unavailable`，会被自动重发（代价写在 `loop/attempt.ts` 的 `RESENDABLE_CODES` 上）。
-    // 拒的次数不够的话某一次就成功了，断言的是重发路径而不是上报路径。
+    // 拒绝次数比重发额度多一次：参数错误与「上游暂时不可用」同归入
+    // `provider_unavailable`，会被自动重发（代价说明见 `loop/attempt.ts` 的 `RESENDABLE_CODES`）。
+    // 拒绝次数不足时某一次会成功，断言的就是重发路径而不是上报路径。
     const { adapter } = rejectingAdapter(MAX_RESENDS + 1, paramError)
     const events = await collect(build(adapter, comp.port), 'rn_param')
     expect(comp.state.runs).toBe(0)
@@ -568,7 +568,7 @@ describe('发送前检查：唯一的压缩触发', () => {
 })
 
 describe('投影时机', () => {
-  test('每次构造请求都重新投影 —— 拿旧投影等于那次压缩白花了', async () => {
+  test('每次构造请求都重新投影：使用旧投影会使该次压缩无效', async () => {
     const registry = new ToolRegistry()
     registry.register({
       name: 'noop',
@@ -607,7 +607,7 @@ describe('投影时机', () => {
     const comp = fakeCompaction(okOutcome)
     await collect(build(adapter, comp.port, registry), 'rn_6')
 
-    // 两轮请求 = 两次投影。缓存一次投影结果重复用，压缩生效后第一轮仍会发全量历史。
+    // 两轮请求对应两次投影。缓存投影结果重复使用时，压缩生效后的第一轮仍会发送全量历史。
     expect(comp.state.projects).toBe(2)
   })
 })
@@ -629,7 +629,7 @@ function noopRegistry(): ToolRegistry {
   return registry
 }
 
-/** 第一轮调一次工具，第二轮收尾。两轮之间 transcript 会长出一个新单元。 */
+/** 第一轮调用一次工具，第二轮结束。两轮之间 transcript 会新增一个单元。 */
 function twoTurnAdapter(): LlmAdapter {
   let turn = 0
   return {
@@ -658,7 +658,7 @@ async function runHigh(loop: AgentLoop, runId: string): Promise<AgentEvent[]> {
   for await (const ev of loop.run({
     runId: runId as never,
     history: [],
-    // 1M 窗口 × 0.8 → 软阈值 800,000，锚点直接顶到线上。
+    // 1M 窗口 × 0.8 → 软阈值 800,000，锚点直接设在阈值之上。
     anchor: {
       tokens: 900_000,
       throughMessageId: null,
@@ -676,27 +676,27 @@ async function runHigh(loop: AgentLoop, runId: string): Promise<AgentEvent[]> {
 /**
  * 进展判据。
  *
- * 取代的是「一个 run 只压一次」那条闸：它的前提（run 内没有新的可折内容）随
- * transcript 进投影一起消失了——run 内涨起来的正是工具结果，压不到它就等于
- * 压了个寂寞。判据换成「transcript 有没有长出新单元」，两个方向各锁一条：
- * 压太多（每步一次）和永远不再压都是回归。
+ * 判据是「transcript 是否新增单元」，不是「一个 run 只压缩一次」：后者的前提（run 内没有新的可折叠内容）
+ * 在 transcript 参与投影后不再成立，run 内增长的正是工具结果，无法压缩这部分
+ * 等于压缩无效。两个方向各锁定一条：
+ * 压缩过多（每步一次）与永不再压缩都是回归。
  */
-describe('有新可折单元才再压', () => {
-  test('压不动但长出了新单元：下一步再试一次', async () => {
+describe('有新的可折叠单元时才再次压缩', () => {
+  test('无法压缩但新增了单元：下一步再尝试一次', async () => {
     const comp = fakeCompaction({ status: 'skipped', reasonCode: 'nothing_to_fold' })
     await runHigh(build(twoTurnAdapter(), comp.port, noopRegistry()), 'rn_again')
     expect(comp.state.projects).toBe(2)
     expect(comp.state.runs).toBe(2)
   })
 
-  test('折叠成功之后不连环触发 —— 锚点跟着作废，读数真的降了', async () => {
+  test('折叠成功之后不连续触发：锚点随之作废，读数确实下降', async () => {
     const comp = fakeCompaction(okOutcome)
     const events = await runHigh(build(twoTurnAdapter(), comp.port, noopRegistry()), 'rn_chain')
     expect(comp.state.runs).toBe(1)
     expect(events.filter((e) => e.type === 'compaction' && e.phase === 'started').length).toBe(1)
   })
 
-  test('transcript 没变长就不重试', async () => {
+  test('transcript 未增长时不重试', async () => {
     let turn = 0
     const adapter: LlmAdapter = {
       kind: 'anthropic_messages',
@@ -704,7 +704,7 @@ describe('有新可折单元才再压', () => {
       spec: lookupModel('claude-opus-5', 'anthropic_messages'),
       async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
         yield { type: 'request_prepared', measuredInputTokens: 10 }
-        // 服务端把这一轮切开了：没有正文也没有调用，transcript 一个字没长。
+        // 服务端将这一轮拆分返回：没有正文也没有调用，transcript 没有增长。
         yield {
           type: 'done',
           stopReason: turn++ === 0 ? 'pause_turn' : 'end_turn',
@@ -718,7 +718,7 @@ describe('有新可折单元才再压', () => {
     expect(comp.state.runs).toBe(1)
   })
 
-  test('压缩端口拿到的占用与窗口就是触发判定用的那两个数', async () => {
+  test('压缩端口取得的占用与窗口即触发判定所用的两个数值', async () => {
     const comp = fakeCompaction(okOutcome)
     await runHigh(build(okAdapter(), comp.port), 'rn_args')
     expect(comp.state.seen[0]!.occupancy).toBe(900_000)
@@ -727,13 +727,13 @@ describe('有新可折单元才再压', () => {
 })
 
 /**
- * 缺陷 E：run 内的执行记录必须真的能被折掉。
+ * run 内的执行记录必须能够被折叠。
  *
- * 改造前 `project()` 只作用于 `input.history`，transcript 在投影**之后**才拼上去，
- * 因此 run 内涨起来的那几十波工具结果压缩一条也碰不到——而涨的正是那部分。
+ * `project()` 必须覆盖 transcript：只作用于 `input.history` 时，transcript 在投影**之后**才拼接，
+ * run 内增长的几十批工具结果一条也无法被压缩，而占用增长的正是这部分。
  */
 describe('run 内 transcript 参与投影', () => {
-  test('投影丢掉带戳的消息时，请求里就真的没有它们', async () => {
+  test('投影丢弃带戳的消息时，请求中确实不包含它们', async () => {
     const registry = noopRegistry()
     const { adapter, seen } = capturingAdapter(lookupModel('claude-opus-5', 'anthropic_messages'))
     let turn = 0
@@ -756,7 +756,7 @@ describe('run 内 transcript 参与投影', () => {
         }
       },
     }
-    // 把「折掉本 run 的执行记录」这件事做到底：带戳的一律不发。
+    // 将「折叠本 run 的执行记录」执行到底：带戳的消息一律不发送。
     const port: CompactionPort = {
       project: (messages) => messages.filter((m) => !m._step),
       run: async () => okOutcome,
@@ -775,7 +775,7 @@ describe('run 内 transcript 参与投影', () => {
       userMessageId: 'ms_001',
       signal: new AbortController().signal,
     })) {
-      // 只看装配结果
+      // 只检查装配结果
     }
 
     expect(seen).toHaveLength(2)
@@ -786,9 +786,9 @@ describe('run 内 transcript 参与投影', () => {
 /**
  * 单元戳。
  *
- * 活的 transcript 与「跨 run 从 steps 投影回历史」必须盖出同一个戳，否则同一个
- * 单元在两个时刻定位不同，压缩会按两条线切同一段内容。这一侧钉的是规则本身：
- * 一个波次共用一个戳，取值是波次末 step 的 seq；另一侧在
+ * 运行中的 transcript 与「跨 run 从 steps 投影回历史」必须生成同一个戳，否则同一
+ * 单元在两个时刻定位不同，压缩会按两个不同的切分点切分同一段内容。本侧锁定规则本身：
+ * 一个波次共用一个戳，取值为波次末 step 的 seq；另一侧见
  * `runtime/transcript.test.ts` 的「可折单元的戳」。
  */
 describe('transcript 的可折单元', () => {
@@ -837,14 +837,14 @@ describe('transcript 的可折单元', () => {
       userMessageId: 'ms_001',
       signal: new AbortController().signal,
     })) {
-      // 只看装配出来的那份
+      // 只检查装配结果
     }
 
-    // 第二次装配时，第一轮的执行波次已经在 transcript 里。
+    // 第二次装配时，第一轮的执行波次已在 transcript 中。
     const second = seen[1]!
     const assistant = second.find((m) => m.role === 'assistant' && m.toolCalls?.length)!
     const result = second.find((m) => m.role === 'tool')!
-    // 工具 step 拿的是本 run 第一个 seq（这一轮没有文本 step）。
+    // 工具 step 取得本 run 的第一个 seq（这一轮没有文本 step）。
     expect(assistant._step).toBe(stepStamp('rn_stamp', 1))
     expect(result._step).toBe(assistant._step)
     expect(assistant._messageId).toBe('ms_001')
@@ -855,9 +855,9 @@ describe('transcript 的可折单元', () => {
 /**
  * 触发线。
  *
- * 复现的原始失败形状是 §0.1 那条：1M 窗口的 deepseek 档，软阈值只有 366,000
- * （36.6%）——阈值把模型的输出**规格上限**整块减掉了，因此同为 1M 窗口的两个
- * 模型会得到两条完全不同的线。
+ * 复现的原始失败形状：1M 窗口的 deepseek 档位，软阈值只有 366,000
+ * （36.6%）：阈值减去了模型的全部输出**规格上限**，因此同为 1M 窗口的两个
+ * 模型会得到两个完全不同的阈值。
  */
 describe('软阈值只由窗口决定', () => {
   test('1M / 384K 档：触发线是 800,000，不是 366,000', () => {
@@ -871,8 +871,8 @@ describe('软阈值只由窗口决定', () => {
     expect(softLimit({ contextWindow: 32_000 })).toBe(25_600)
   })
 
-  /** 触发线不许随模型的输出上限漂移——那正是 366,000 与 622,000 并存的成因。 */
-  test('同一窗口下换输出上限，线不动', () => {
+  /** 触发线不得随模型的输出上限变化：这正是 366,000 与 622,000 并存的成因。 */
+  test('同一窗口下更换输出上限，触发线不变', () => {
     const a = lookupModel('deepseek-flash', 'openai_chat_completions')
     const b = lookupModel('claude-opus-5', 'anthropic_messages')
     expect(a.maxOutputTokens).not.toBe(b.maxOutputTokens)
@@ -880,7 +880,7 @@ describe('软阈值只由窗口决定', () => {
   })
 })
 
-/** 装配时捕获实际发出的请求，用来验申报值。 */
+/** 装配时捕获实际发出的请求，用于验证申报值。 */
 function capturingAdapter(spec: LlmAdapter['spec']) {
   const seen: ChatRequest[] = []
   const adapter: LlmAdapter = {
@@ -921,7 +921,7 @@ describe('缓存断点', () => {
       ],
       signal: new AbortController().signal,
     })) {
-      // 只看装配结果
+      // 只检查装配结果
     }
 
     const messages = seen[0]!.messages
@@ -933,11 +933,11 @@ describe('缓存断点', () => {
    * 复现的是原始失败形状：会话 `cv_0mszld8o60000yi2u5m` 的 rn_0mszqkz8d 产出约
    * 1.4 万 token 的 grep 结果，下一轮 rn_0mszqmhqh 只命中 192。
    *
-   * 成因是装配顺序：注记夹在 history 与 transcript 之间时，跨 run 的公共前缀
-   * 在上一轮 history 末尾就断了——上一轮跑出来的全部工具结果必然全价重付。
+   * 成因是装配顺序：注记位于 history 与 transcript 之间时，跨 run 的公共前缀
+   * 止于上一轮 history 末尾，上一轮执行产生的全部工具结果必然按全价重新计费。
    *
-   * 所以断言的是**字节**：下一轮首请求与上一轮末请求的最长公共前缀，
-   * 必须长过上一轮那些工具结果。旧布局下这个断言必然失败。
+   * 因此断言针对**字节**：下一轮首个请求与上一轮最后一个请求的最长公共前缀，
+   * 必须长于上一轮的工具结果。注记位于 history 与 transcript 之间时，该断言必然失败。
    */
   test('跨 run 的公共前缀覆盖上一轮的全部工具结果', async () => {
     const registry = new ToolRegistry()
@@ -963,7 +963,7 @@ describe('缓存断点', () => {
       async *stream(req: ChatRequest): AsyncGenerator<ProviderEvent, void, unknown> {
         seen.push(req)
         yield { type: 'request_prepared', measuredInputTokens: 10 }
-        // 第一轮：调一次 grep，产出一大段工具结果；之后只说话。
+        // 第一轮：调用一次 grep，产生一大段工具结果；之后只输出正文。
         if (turn++ === 0) {
           yield {
             type: 'tool_calls',
@@ -1001,10 +1001,10 @@ describe('缓存断点', () => {
       history,
       signal: new AbortController().signal,
     })) {
-      // 跑完第一轮
+      // 执行完第一轮
     }
 
-    // 第一轮的产出折进历史，第二轮开一个新 run——这正是账本里那两轮的关系。
+    // 第一轮的产出并入历史，第二轮新开一个 run：这正是账本中那两轮的关系。
     const carried: WireMessage[] = [
       ...history,
       ...seen[seen.length - 1]!.messages.filter((m) => m._group === 'executionRecords'),
@@ -1022,14 +1022,14 @@ describe('缓存断点', () => {
       history: carried,
       signal: new AbortController().signal,
     })) {
-      // 跑完第二轮
+      // 执行完第二轮
     }
 
     /*
-     * 比的是**上线字节**，所以内部标记要剥掉：`cacheBreakpoint` 在兼容协议上
-     * 一个字节都不上线（`openai-compat.ts` 从不读它），`_group` / `_messageId` /
-     * `_step` 同理。不剥的话断言测的是内部结构而不是缓存看到的字节——
-     * 而 history 末尾那个断点本来就该随历史增长往后走。
+     * 比较的是**实际发送的字节**，因此必须剥离内部标记：`cacheBreakpoint` 在兼容协议上
+     * 不发送任何字节（`openai-compat.ts` 从不读取它），`_group` / `_messageId` /
+     * `_step` 同理。不剥离时断言测试的是内部结构，而不是缓存看到的字节；
+     * 而 history 末尾的断点本应随历史增长后移。
      */
     const wire = (req: ChatRequest) =>
       JSON.stringify(
@@ -1051,7 +1051,7 @@ describe('缓存断点', () => {
     ) {
       common++
     }
-    // 那一大坨工具结果必须落在公共前缀之内。旧布局下公共前缀止于 history 末尾。
+    // 这段大体量的工具结果必须位于公共前缀之内。注记位于 history 与 transcript 之间时，公共前缀止于 history 末尾。
     const toolResult = seen[before - 1]!.messages.find((m) => m.role === 'tool')
     expect(toolResult).toBeDefined()
     expect(common).toBeGreaterThan(JSON.stringify(toolResult).length)
@@ -1068,13 +1068,13 @@ describe('申报按占用钳位', () => {
   })
 
   /**
-   * 高占用下静态申报规格上限就是 `输入 + max_tokens > 窗口`，provider 直接拒。
-   * 申报回答的是「这一轮还装得下多少输出」。
+   * 高占用时静态申报规格上限会导致 `输入 + max_tokens > 窗口`，provider 直接拒绝。
+   * 申报值表示「本轮还能容纳多少输出」。
    *
-   * **还要再留一份余量。** 占用是估算出来的，估算低估多少申报就超出多少，
-   * 而那个 400 若被容量分类认成撞窗，会多一次无效的有损压缩去救一个申报错误。
-   * 断言写成区间而不是等式：余量比例调整时这条不该整片红，
-   * 它锁的是「申报之后仍装得下，且没把剩余空间全占满」。
+   * **还需预留一份余量。** 占用是估算值，估算低估多少，申报就超出多少；
+   * 该 400 若被容量分类判定为超出窗口，会多执行一次无效的有损压缩来补救一个申报错误。
+   * 断言写成区间而不是等式：余量比例调整时本用例不应整体失败，
+   * 它锁定的是「申报之后仍能容纳，且未占满剩余空间」。
    */
   test('高占用时申报随剩余空间收缩，并留出估算误差的余量', async () => {
     const { adapter, seen } = capturingAdapter(spec)
@@ -1097,19 +1097,19 @@ describe('申报按占用钳位', () => {
     const declared = seen[0]!.maxOutputTokens!
     const room = spec.contextWindow - occupancy
     expect(declared).toBeGreaterThan(0)
-    // 装得下：申报加上占用不越窗，且离窗口还有余量。
+    // 可以容纳：申报值加占用不超过窗口，且距窗口仍有余量。
     expect(occupancy + declared).toBeLessThan(spec.contextWindow)
-    // 没把剩余空间全占满——余量确实留了。
+    // 未占满剩余空间：确实预留了余量。
     expect(declared).toBeLessThan(room)
   })
 })
 
 describe('压缩被中断', () => {
   /**
-   * 中断的压缩什么都没落库，所以事件流与账本上都不该留下终态。
-   * 停止时刻多一张红卡是噪音，而记一条 step 会让「什么都没发生」看起来像发生过。
+   * 中断的压缩没有落库任何内容，因此事件流与账本中都不应留下终态。
+   * 停止时多显示一张错误卡片是噪音，而记录一条 step 会使「没有发生任何操作」看似发生过操作。
    */
-  test('不发终态事件、不记 step，run 以中断收尾', async () => {
+  test('不发送终态事件、不记录 step，run 以中断结束', async () => {
     const comp = fakeCompaction({ status: 'aborted' })
     const recorded: RecordedCompaction[] = []
     const loop = new AgentLoop({
@@ -1186,7 +1186,7 @@ describe('结果形态对用户可见', () => {
     ])
   })
 
-  /** 只收纳没摘要也要说出来：不说的话用户看到的和一次完整压缩一模一样。 */
+  /** 只收纳而未摘要时也必须标明：否则用户看到的与一次完整压缩完全相同。 */
   test('只收纳时 summarized 为 false', async () => {
     const comp = fakeCompaction({ ...okOutcome, summarized: false })
     const recorded: RecordedCompaction[] = []
@@ -1210,7 +1210,7 @@ describe('结果形态对用户可见', () => {
       },
       signal: new AbortController().signal,
     })) {
-      // 只看落库结果
+      // 只检查落库结果
     }
     expect(recorded[0]?.summarized).toBe(false)
   })
@@ -1238,7 +1238,7 @@ describe('结果形态对用户可见', () => {
       },
       signal: new AbortController().signal,
     })) {
-      // 只看落库结果
+      // 只检查落库结果
     }
     expect(recorded[0]?.phase).toBe('skipped')
     expect(recorded[0]?.reasonCode).toBe('nothing_to_fold')
@@ -1246,8 +1246,8 @@ describe('结果形态对用户可见', () => {
 })
 
 /**
- * 会调摘要器的压缩端口：通过 `trace` 把摘要请求记成这一轮的普通请求。
- * 投影在压过之后变小，重发才有意义。
+ * 调用摘要器的压缩端口：通过 `trace` 把摘要请求记录为本轮的普通请求。
+ * 投影在压缩之后变小，重发才有意义。
  */
 function summarizingCompaction(outcome: CompactionOutcome) {
   const state = { runs: 0, folded: false }
@@ -1290,7 +1290,7 @@ function summarizingCompaction(outcome: CompactionOutcome) {
   return { port, state }
 }
 
-/** 与 `okAdapter` 同形，只多回报一次 usage：这里要看 usage 里有没有两笔。 */
+/** 与 `okAdapter` 结构相同，只多报告一次 usage：此处需要检查 usage 中是否有两笔。 */
 function usageAdapter(): LlmAdapter {
   return {
     kind: 'anthropic_messages',
@@ -1339,9 +1339,9 @@ function storedRun() {
 }
 
 /**
- * 压缩时的摘要请求是这一轮的普通请求：发出前落 provider_requests（purpose = summary），
- * 占一个 turn 编号，回报的 usage 并进这一轮。锁的失败形状：它原来只记在账本里，
- * 逐请求表看不见它，运行面板另立一行按时间排。
+ * 压缩时的摘要请求是本轮的普通请求：发出前写入 provider_requests（purpose = summary），
+ * 占用一个 turn 编号，报告的 usage 计入本轮。锁定的失败形状：摘要请求只记录在账本中时，
+ * 逐请求表不显示它，运行面板另起一行按时间排序。
  */
 describe('摘要请求按普通请求记账', () => {
   test('发送前压缩：摘要请求占 turn 0，主请求顺延到 turn 1，usage 含两笔', async () => {
@@ -1378,7 +1378,7 @@ describe('摘要请求按普通请求记账', () => {
       [1, 0, 'turn', 'received'],
     ])
     expect(rows[0]?.providerOutputTokens).toBe(3)
-    // 压缩一结束就有一条 usage 事件，此时只有摘要那一笔。
+    // 压缩结束时立即产生一条 usage 事件，此时只包含摘要请求的用量。
     const first = events.find((e) => e.type === 'usage')
     expect(first?.type === 'usage' && first.usage.inputTokens).toBe(7)
     const last = saved.at(-1)
@@ -1390,7 +1390,7 @@ describe('摘要请求按普通请求记账', () => {
     store.close()
   })
 
-  test('容量拒绝后压缩：被拒、摘要、重发各占一个 turn，按发生顺序排', async () => {
+  test('容量拒绝后压缩：被拒、摘要、重发各占一个 turn，按发生顺序排列', async () => {
     const { store, run, persist } = storedRun()
     const comp = summarizingCompaction(okOutcome)
     const { adapter, state } = rejectingAdapter(1)

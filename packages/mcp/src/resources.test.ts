@@ -1,8 +1,8 @@
 /**
- * MCP `resources/*` 与「握手成功但什么都没注册」这类静默失败。
+ * 覆盖 MCP `resources/*`，以及「握手成功但未注册任何工具」这类静默失败。
  *
- * 与 `mcp.test.ts` 一样起**真的** server 子进程：要验的是握手声明与后续请求
- * 之间的配合，把传输换成内存对象就把被验的那一层替换掉了。
+ * 与 `mcp.test.ts` 相同，启动真实的 server 子进程：验证的是握手声明与后续请求
+ * 之间的配合，把传输替换为内存对象会替换掉被验证的那一层。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -15,15 +15,15 @@ import { CLIENT_PROTOCOL_VERSION, KNOWN_VERSION_LIST } from './client.ts'
 import { loadMcpServers, parseMcpConfig, unsupportedCapabilities } from './load.ts'
 
 interface ServerShape {
-  /** 握手时声明的能力。`undefined` = 整个 capabilities 字段都不发。 */
+  /** 握手时声明的能力。`undefined` 表示不发送 capabilities 字段。 */
   capabilities?: Record<string, unknown>
-  /** 回报的协议版本。默认 2025-06-18（不触发 server/discover）。 */
+  /** 返回的协议版本。默认 2025-06-18（不触发 server/discover）。 */
   version?: string
-  /** `server/discover` 返回的能力。`undefined` = 不实现这个方法。 */
+  /** `server/discover` 返回的能力。`undefined` 表示不实现该方法。 */
   discover?: Record<string, unknown>
-  /** 只接受这一版协议，其余一律回「不支持的协议版本」——用来验降版重试。 */
+  /** 只接受该版本协议，其余一律返回「不支持的协议版本」，用于验证降版重试。 */
   onlyAcceptVersion?: string
-  /** 提供 tools/list。与是否声明能力互相独立——现实里两者会不一致。 */
+  /** 提供 tools/list。与是否声明能力相互独立：实际中两者可能不一致。 */
   serveTools?: boolean
   serveResources?: boolean
   /** resources/list 分页。 */
@@ -121,48 +121,48 @@ async function load(s: ServerShape) {
   return { reg, logs }
 }
 
-describe('capabilities 不再被丢掉', () => {
-  test('握手声明的能力留在 LoadedServer 上', async () => {
+describe('capabilities 不被丢弃', () => {
+  test('握手声明的能力保留在 LoadedServer 上', async () => {
     const { reg } = await load({ capabilities: { tools: {}, resources: {} }, serveTools: true })
     expect(reg.servers[0]?.capabilities).toEqual({ tools: {}, resources: {} })
     await reg.stopAll()
   })
 
-  test('声明了但未接入的能力要说出来', async () => {
-    // 不说出来的话，一个只提供 prompts 的 server 表现是：连上、握手成功、
-    // 注册 0 个工具、**没有任何错误**。用户看到「配了但什么都没发生」。
+  test('已声明但未接入的能力必须报告', async () => {
+    // 不报告时，只提供 prompts 的 server 会连接成功、握手成功、
+    // 注册 0 个工具且没有任何错误，用户只看到配置后没有任何效果。
     const { reg, logs } = await load({ capabilities: { prompts: {} } })
     expect(reg.servers[0]?.unsupported).toEqual(['prompts'])
     expect(logs.join('\n')).toContain('prompts')
     await reg.stopAll()
   })
 
-  test('产出为零时进 failures，理由里带上 server 声明了什么', async () => {
+  test('产出为零时记入 failures，原因中包含 server 声明的能力', async () => {
     const { reg } = await load({ capabilities: { prompts: {} } })
     const f = reg.failures.find((x) => x.server === 'demo')
     expect(f).toBeDefined()
     expect(f?.reason).toContain('prompts')
-    // 「没注册任何工具」和「连不上」是两件事，理由必须让人分得开。
+    // 「未注册任何工具」与「无法连接」是不同的情况，原因必须能区分两者。
     expect(f?.reason).toContain('握手成功')
     await reg.stopAll()
   })
 
-  test('一个能力都不声明、也不响应 tools/list → 说清是这两件事', async () => {
+  test('未声明任何能力且不响应 tools/list 时，原因中写明这两点', async () => {
     const { reg } = await load({})
     expect(reg.failures[0]?.reason).toContain('没有声明任何能力')
     await reg.stopAll()
   })
 
-  test('不声明 capabilities 但正常提供 tools 的 server 照常工作', async () => {
-    // 这条锁的是**不能按声明去卡**。本仓库自己的两个测试夹具就是这样，
-    // 按声明卡的话它们的工具会被静默丢光——那是把一个静默失败换成另一个。
+  test('未声明 capabilities 但正常提供 tools 的 server 正常工作', async () => {
+    // 本测试锁定：不能按能力声明进行限制。本仓库的两个测试夹具即属于这种情况，
+    // 按声明限制时它们的工具会被静默全部丢弃，只是把一种静默失败替换为另一种。
     const { reg } = await load({ serveTools: true })
     expect(reg.toolSpecs.map((s) => s.name)).toContain('mcp__demo__ping')
     expect(reg.failures).toEqual([])
     await reg.stopAll()
   })
 
-  test('声明了 tools 却列不出来 → 是真故障，进 failures', async () => {
+  test('声明了 tools 却无法列出时属于真实故障，记入 failures', async () => {
     const { reg } = await load({ capabilities: { tools: {} }, serveTools: false })
     expect(reg.failures.length).toBeGreaterThan(0)
     await reg.stopAll()
@@ -170,30 +170,30 @@ describe('capabilities 不再被丢掉', () => {
 })
 
 describe('resource 工具', () => {
-  test('声明了 resources 才注册这两个工具', async () => {
+  test('声明 resources 时才注册这两个工具', async () => {
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     const names = reg.toolSpecs.map((s) => s.name).sort()
     expect(names).toEqual(['mcp__demo__fetch_resource', 'mcp__demo__list_resources'])
     await reg.stopAll()
   })
 
-  test('没声明 resources 就不注册', async () => {
-    // 注册了的话，模型会调、拿到 Method not found、然后重试——
-    // 因为它没法从那条错误看出「这个 server 没这个能力」。
+  test('未声明 resources 时不注册', async () => {
+    // 若注册，模型会调用并得到 Method not found，然后重试：
+    // 模型无法从该错误判断出 server 不具备该能力。
     const { reg } = await load({ capabilities: { tools: {} }, serveTools: true })
     expect(reg.toolSpecs.map((s) => s.name)).not.toContain('mcp__demo__list_resources')
     await reg.stopAll()
   })
 
-  test('工具名不叫 read_resource（那个名字被内置工具占了，而且语义相反）', async () => {
+  test('工具名不使用 read_resource（该名称已被内置工具占用，且语义相反）', async () => {
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     expect(reg.toolSpecs.map((s) => s.name)).not.toContain('read_resource')
     await reg.stopAll()
   })
 
-  test('工具名带 mcp__ 前缀（sink 的落盘判据靠它）', async () => {
-    // 少了前缀，一份超预算的 resource 正文会被直接截断丢掉，
-    // 而且不留 resource id——模型连「还有没看到的部分」都不知道。
+  test('工具名带 mcp__ 前缀（sink 的落盘判据依赖该前缀）', async () => {
+    // 缺少前缀时，超出预算的 resource 正文会被直接截断丢弃，
+    // 且不保留 resource id，模型无从得知还有未读取的部分。
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     for (const s of reg.toolSpecs) expect(s.name.startsWith('mcp__')).toBe(true)
     await reg.stopAll()
@@ -203,14 +203,14 @@ describe('resource 工具', () => {
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     for (const s of reg.toolSpecs) {
       expect(s.permissionEffect).toBe('read')
-      // 动作轴与权限轴正交：正文来自外部 server，动作是 call，副作用仍然只是读。
+      // 动作维度与权限维度正交：正文来自外部 server，动作是 call，副作用仍然只是读取。
       expect(s.actionKind).toBe('call')
       expect(s.targetExtractor?.({})).toBe('mcp:demo/resource')
     }
     await reg.stopAll()
   })
 
-  test('列清单跟完游标，且只有元数据不含正文', async () => {
+  test('列出清单时遍历全部游标，且只含元数据不含正文', async () => {
     const { reg } = await load({
       capabilities: { resources: {} },
       serveResources: true,
@@ -219,14 +219,14 @@ describe('resource 工具', () => {
     const list = reg.toolSpecs.find((s) => s.name.endsWith('list_resources'))!
     const out = await list.fn({}, ctx())
     expect(out.message).toContain('file:///a.md')
-    // 第二页丢了的话，后面那些 resource 就凭空消失了。
+    // 丢失第二页时，其后的 resource 不会出现在清单中。
     expect(out.message).toContain('file:///b.md')
-    // 清单里**不能**有正文——整个方案 D 的前提就是「一个字节不进上下文」。
+    // 清单中不能包含正文：该设计的前提是 resource 正文不进入上下文。
     expect(out.message).not.toContain('# 正文')
     await reg.stopAll()
   })
 
-  test('按 uri 读正文', async () => {
+  test('按 uri 读取正文', async () => {
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     const fetch = reg.toolSpecs.find((s) => s.name.endsWith('fetch_resource'))!
     const out = await fetch.fn({ uri: 'file:///a.md' }, ctx())
@@ -235,8 +235,8 @@ describe('resource 工具', () => {
     await reg.stopAll()
   })
 
-  test('二进制只留一行占位，不内联 base64', async () => {
-    // 内联会瞬间占掉几万 token，而模型通常用不上。
+  test('二进制内容只保留一行占位，不内联 base64', async () => {
+    // 内联会立即占用数万 token，而模型通常不需要这些内容。
     const { reg } = await load({
       capabilities: { resources: {} },
       serveResources: true,
@@ -249,7 +249,7 @@ describe('resource 工具', () => {
     await reg.stopAll()
   })
 
-  test('空 uri 直接失败，不发请求', async () => {
+  test('空 uri 直接失败，不发送请求', async () => {
     const { reg } = await load({ capabilities: { resources: {} }, serveResources: true })
     const fetch = reg.toolSpecs.find((s) => s.name.endsWith('fetch_resource'))!
     expect((await fetch.fn({ uri: '  ' }, ctx())).status).toBe('failure')
@@ -258,9 +258,9 @@ describe('resource 工具', () => {
 })
 
 describe('unsupportedCapabilities', () => {
-  test('按支持清单算，不另写一遍 if', () => {
-    // 另写一遍的话，将来接了 prompts 却忘了改这里，
-    // 用户会一直看到一句「尚未接 prompts」的假警告。
+  test('按支持清单计算，不另写 if 判断', () => {
+    // 另写判断时，接入 prompts 后若未同步修改此处，
+    // 用户会持续看到「尚未接入 prompts」的错误警告。
     expect(unsupportedCapabilities({ tools: {}, resources: {}, prompts: {}, logging: {} })).toEqual(
       ['logging', 'prompts'],
     )
@@ -289,11 +289,11 @@ function ctx() {
 /**
  * 协议版本协商。
  *
- * 2026-07-28 把**能力声明从 `initialize` 挪到了 `server/discover`**。
- * 这不是一条可以「以后再说」的版本差异：qywork 是否注册 resource 工具、
- * 是否报「声明了没接的能力」，全都读 `capabilities`。只读 initialize 的话，
- * 一个现代 server 上那个字段是空的——因此**一个工具都不注册、也不报错**，
- * 正是上一组刚修掉的那个静默失败，换个版本原样复发。
+ * 2026-07-28 修订把能力声明从 `initialize` 移到了 `server/discover`。
+ * 这一版本差异必须处理：qywork 是否注册 resource 工具、
+ * 是否报告「已声明但未接入的能力」，都读取 `capabilities`。只读取 initialize 时，
+ * 新版 server 上该字段为空，因此不注册任何工具，也不报错，
+ * 即上一组测试覆盖的静默失败在新版本上再次出现。
  */
 describe('协议版本协商', () => {
   test('声明的是最新修订', () => {
@@ -301,15 +301,15 @@ describe('协议版本协商', () => {
     expect(KNOWN_VERSION_LIST[0]).toBe(CLIENT_PROTOCOL_VERSION)
   })
 
-  test('已知修订按新到旧排列——降版重试依赖这个顺序', () => {
+  test('已知修订按从新到旧排列，降版重试依赖该顺序', () => {
     const sorted = [...KNOWN_VERSION_LIST].sort().reverse()
     expect([...KNOWN_VERSION_LIST]).toEqual(sorted)
   })
 
-  test('现代 server：能力从 server/discover 拿，resource 工具照常注册', async () => {
+  test('新版 server：能力取自 server/discover，resource 工具正常注册', async () => {
     const { reg } = await load({
       version: '2026-07-28',
-      // initialize 里**什么都不给**，这正是新修订的形状。
+      // initialize 中不提供任何能力，这正是新修订的格式。
       discover: { resources: {} },
       serveResources: true,
     })
@@ -321,8 +321,8 @@ describe('协议版本协商', () => {
     await reg.stopAll()
   })
 
-  test('旧 server：不发 server/discover，沿用 initialize 的能力', async () => {
-    // 对旧 server 发这条只会拿到 Method not found，多一次无效的往返。
+  test('旧 server：不发送 server/discover，沿用 initialize 的能力', async () => {
+    // 向旧 server 发送该请求只会得到 Method not found，多一次无效的往返。
     const { reg, logs } = await load({
       version: '2025-06-18',
       capabilities: { resources: {} },
@@ -333,8 +333,8 @@ describe('协议版本协商', () => {
     await reg.stopAll()
   })
 
-  test('声明新版本却没实现 server/discover：记一行，沿用 initialize 那份', async () => {
-    // 现实里一定会遇到。这时 initialize 里那份（如果有）仍然算数。
+  test('声明新版本却未实现 server/discover：记录一行日志，沿用 initialize 中的能力', async () => {
+    // 实际中必然会出现这种情况。此时 initialize 中的能力声明（若有）仍然有效。
     const { reg, logs } = await load({
       version: '2026-07-28',
       capabilities: { resources: {} },
@@ -345,8 +345,8 @@ describe('协议版本协商', () => {
     await reg.stopAll()
   })
 
-  test('两处都给了取并集，不是替换', async () => {
-    // 少的那一方是「没说」，不是「没有」。直接覆盖会把一份真实的声明擦掉。
+  test('两处都提供能力时取并集，而不是替换', async () => {
+    // 能力较少的一方表示未声明，而不是不具备。直接覆盖会丢失一份真实的声明。
     const { reg } = await load({
       version: '2026-07-28',
       capabilities: { tools: {} },
@@ -358,9 +358,9 @@ describe('协议版本协商', () => {
     await reg.stopAll()
   })
 
-  test('server 只认旧版本时逐档回退，最终连得上', async () => {
-    // 抬高版本号导致一个昨天还能用的 server 今天完全连不上，
-    // 对用户来说是最坏的一种「升级」。
+  test('server 只接受旧版本时逐档回退，最终连接成功', async () => {
+    // 提高版本号后，此前可用的 server 若完全无法连接，
+    // 对用户而言是最差的升级结果。
     const { reg, logs } = await load({
       onlyAcceptVersion: '2025-06-18',
       version: '2025-06-18',

@@ -1,11 +1,11 @@
 /**
- * 日志文件 sink：一行一条追加，超过上限改名成 `.1` 后重开。
+ * 日志文件 sink：每条日志追加为一行，超过上限时重命名为 `.1` 并重新打开。
  *
- * 同步写。日志量小（连接开合、启动停止、异常），而进程级兜底要在 `exit(1)` 之前把
- * 最后一行落盘，异步写做不到。
+ * 使用同步写入。日志量小（连接建立与关闭、启动与停止、异常），而进程级后备处理须在
+ * `exit(1)` 之前将最后一行写入磁盘，异步写入无法保证这一点。
  *
- * 默认同时镜像到 stderr：终端里跑 `qy serve` 的人照旧看得到，桌面壳同样能够缓冲
- * stderr 尾部作退出记录。
+ * 默认同时镜像到 stderr：在终端中运行 `qy serve` 的用户照常可见，桌面外壳同样能够缓冲
+ * stderr 末尾作为退出记录。
  */
 
 import { closeSync, fstatSync, mkdirSync, openSync, renameSync, writeSync } from 'node:fs'
@@ -33,7 +33,7 @@ export function fileLogSink(
 
   const rotate = (): void => {
     closeSync(fd)
-    // 只留上一份：日志不是账本，保两份足够回看一次故障。
+    // 只保留上一份：日志不是账本，两份足以回溯一次故障。
     renameSync(path, `${path}.1`)
     fd = openSync(path, 'a')
     size = 0

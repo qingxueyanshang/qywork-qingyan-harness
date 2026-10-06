@@ -1,6 +1,6 @@
-"""测试共用：把 office 目录放进导入路径，建临时目录，生成样本文件。
+"""测试共用函数：把 office 目录加入导入路径，创建临时目录，生成样本文件。
 
-临时目录取自 tempfile，受 TEMP / TMP / TMPDIR 控制；门禁把它们设到仓库的 .tmp 下。
+临时目录取自 tempfile，受 TEMP / TMP / TMPDIR 控制；门禁把它们设置为仓库 .tmp 下的目录。
 """
 
 import shutil

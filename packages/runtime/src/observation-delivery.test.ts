@@ -1,21 +1,21 @@
 /**
- * 观察结果从工具边界一直走到会话账本的整条链路。
+ * 观察结果从工具边界到会话账本的完整链路。
  *
- * **覆盖范围**：`tools/desktop-results.ts`、`tools/browser-results.ts`、`tools/resources.ts`
+ * 覆盖范围：`tools/desktop-results.ts`、`tools/browser-results.ts`、`tools/resources.ts`
  * 与 `runtime/sink.ts` 的 `RuntimeSink` / `collectResourceGarbage` 在真实 `Store` +
- * `ContentStore` 上的合作；`agent/registry.ts` 的 `ToolRegistry.execute` 与 `agent/delivery.ts` 的投递额度记账；
- * `runtime/transcript.ts` 的工具结果信封与 `agent/loop/request.ts` 当轮信封的同形；
+ * `ContentStore` 上的协作；`agent/registry.ts` 的 `ToolRegistry.execute` 与 `agent/delivery.ts` 的投递额度记账；
+ * `runtime/transcript.ts` 的工具结果信封与 `agent/loop/request.ts` 当轮信封的形状一致；
  * `agent/compaction.ts` 的 `condenseMessage` 对资源引用的保留；电脑控制的观察在
- * `agent/loop/index.ts` 装配的请求里只追加：同一窗口的多份整份、上一个 run 留在历史里的表、
- * 差异投递的基底，在之后的请求里都逐字在场。
+ * `agent/loop/index.ts` 装配的请求中只追加：同一窗口的多份完整观察、上一个 run 留在历史中的控件表、
+ * 差异投递的基底，在之后的请求中都逐字保留。
  *
- * 工具侧的上限、视图选取与故障降级在 `tools/desktop-results.test.ts`、
- * `tools/browser-results.test.ts`、`tools/resources.test.ts` 里用内存 sink 验过，
- * 这里只验跨层的部分：真实分片存储、step 落账、回放、只追加、收纳、回收与跨工具记账。
+ * 工具侧的上限、视图选取与故障降级已在 `tools/desktop-results.test.ts`、
+ * `tools/browser-results.test.ts`、`tools/resources.test.ts` 中用内存 sink 验证，
+ * 此处只验证跨层部分：真实分片存储、step 写入账本、回放、只追加、收纳、回收与跨工具记账。
  *
- * 夹具全部合成：控件名、元素名、页面标题与地址都不取自真实应用或网页。
- * 正文按内容库的分片大小构造——跨分片读回才证得了分片拼接没有错位，
- * 断言用 `ContentStore.info().chunkCount` 取实际分片数，不在测试里复制那个常数。
+ * 夹具全部为合成数据：控件名、元素名、页面标题与地址均不取自真实应用或网页。
+ * 正文按内容库的分片大小构造：只有跨分片读取才能证明分片拼接没有错位；
+ * 断言用 `ContentStore.info().chunkCount` 取得实际分片数，不在测试中复制该常数。
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -69,12 +69,12 @@ const WINDOW = 200_000
 
 // ─────────────────────────── 夹具 ───────────────────────────
 
-/** 控件行的行尾标记。命中落在长行末尾，从行首截出来的那段里没有它。 */
+/** 控件行的行尾标记。命中位于长行末尾，从行首截取的片段中不包含该标记。 */
 const 行尾标记 = '末尾标记-'
-/** 带行尾标记的控件个数。搜索续查要在真实分片存储上跨页，这个数远超单页输出量。 */
+/** 带行尾标记的控件个数。搜索续查须在真实分片存储上跨页，该数量远超单页输出量。 */
 const 条目数 = 480
 
-/** 一个控件的值长到单独一个就装不下视图，用来验长值留在存盘正文里。 */
+/** 单个控件的值超出视图容量，用于验证长值保留在存盘正文中。 */
 const 长值 = '合成长文本。'.repeat(10_000)
 
 const 根: DesktopElement = {
@@ -125,10 +125,10 @@ const 长值框: DesktopElement = {
   actions: [{ action: 'set_value', delivery: ['background'] }],
 }
 /**
- * 空串、false、0 与一个 null 字段一起进存盘正文。
+ * 空串、false、0 与一个 null 字段一并写入存盘正文。
  *
- * 协议里没有 null 字段，夹具里造一个：JSONL 把 null 折成缺席与把缺席补成 null
- * 都会让回读与原观察不等，而两种都不会报错。
+ * 协议中没有 null 字段，由夹具构造一个：JSONL 将 null 转为缺省，或将缺省补为 null，
+ * 都会使读取结果与原观察不相等，且两种情况都不会报错。
  */
 const 特殊值: DesktopElement = {
   ref: 'e5',
@@ -144,7 +144,7 @@ const 特殊值: DesktopElement = {
   selection: { multiple: false, required: false, selected: [], truncated: null },
   actions: [],
 } as unknown as DesktopElement
-/** 动作目标，排在整张表最后：进视图靠优先级，不靠位置。 */
+/** 动作目标，排在整张表最后：能否进入视图取决于优先级，与位置无关。 */
 const 目标: DesktopElement = {
   ref: 'e6',
   parentRef: 'e2',
@@ -157,7 +157,7 @@ const 目标: DesktopElement = {
   actions: [{ action: 'invoke', delivery: ['background'] }],
 }
 
-/** `value` 写在最后一个键上，标记因此落在这一行的行尾。 */
+/** `value` 是最后一个键，因此标记位于该行行尾。 */
 function 条目(i: number): DesktopElement {
   return {
     ref: `e${100 + i}`,
@@ -226,7 +226,7 @@ function desktopPort(table: DesktopElement[]): DesktopPort {
   }
 }
 
-/** 名称、值与正文按采集侧的 200 字上限写满，一律用中文占满字节。 */
+/** 名称、值与正文按采集侧的 200 字上限填满，一律使用中文字符以占满字节。 */
 function 大元素(i: number): BrowserElement {
   return {
     ref: `e${i}`,
@@ -238,7 +238,7 @@ function 大元素(i: number): BrowserElement {
   }
 }
 
-/** 缺席的 `checked` / `expanded` / `selected` 不许在往返里变成 false。 */
+/** 缺省的 `checked` / `expanded` / `selected` 在往返过程中不得变为 false。 */
 const 状态齐全: BrowserElement = {
   ref: 'e117',
   role: 'checkbox',
@@ -259,7 +259,7 @@ function 选项(i: number): BrowserSelectOption {
   }
 }
 
-/** 三个下拉合计 90 个选项摘要，与采集侧的合计上限同量级。 */
+/** 三个下拉框合计 90 个选项摘要，与采集侧的合计上限处于同一量级。 */
 function 下拉(ref: string): BrowserElement {
   return {
     ref,
@@ -293,7 +293,7 @@ const 大页: BrowserObservation = {
   framesPending: ['f9c1'],
 }
 
-/** 30 项是采集侧一次返回的选项上限，每项的 label 与 value 各按 200 字写满。 */
+/** 30 项是采集侧单次返回的选项上限，每项的 label 与 value 各按 200 字填满。 */
 const 大选项页: BrowserOptionsPage = {
   tabId: 'bt_1',
   observationId: 'ob_1',
@@ -349,10 +349,10 @@ interface Harness {
 }
 
 /**
- * 每条用例一对真实库文件。
+ * 每条用例使用一对真实数据库文件。
  *
- * **目录不在这里删**：关库不保证释放文件句柄（见 `Store.close`），Windows 上同进程
- * `rmSync` 报 EBUSY。整轮的临时目录由 `scripts/run-tests.ts` 在测试子进程退出之后统一清掉。
+ * 目录不在此处删除：关闭数据库不保证释放文件句柄（见 `Store.close`），Windows 上同一进程内
+ * `rmSync` 会报 EBUSY。整轮的临时目录由 `scripts/run-tests.ts` 在测试子进程退出之后统一清理。
  */
 const open: Harness[] = []
 afterEach(() => {
@@ -360,7 +360,7 @@ afterEach(() => {
     try {
       h.content.close()
     } catch {
-      // 用例可能已经关掉正文库来造写失败。
+      // 用例可能已关闭正文库以制造写入失败。
     }
     h.store.close()
   }
@@ -442,7 +442,7 @@ function resourceIdOf(outcome: Outcome): string {
   return String(refs[0]?.resourceId)
 }
 
-/** 存进内容库的那份字节，与工具结果无关地从账本取回。 */
+/** 存入内容库的字节，经由账本取回，不依赖工具结果。 */
 function storedBody(h: Harness, resourceId: string): Uint8Array {
   const row = getResource(h.store, resourceId)
   expect(row?.contentHash).toBeTruthy()
@@ -451,7 +451,7 @@ function storedBody(h: Harness, resourceId: string): Uint8Array {
   return body as Uint8Array
 }
 
-/** 沿 `nextOffset` 逐页读到末尾，返回拼回来的正文。页不前进就失败。 */
+/** 沿 `nextOffset` 逐页读取到末尾，返回拼接后的正文。页位置未前进时失败。 */
 async function readWhole(h: Harness, ctx: ToolContext, resourceId: string): Promise<string> {
   const registry = h.registry
   let offset: number | null = 0
@@ -506,7 +506,7 @@ async function searchWhole(
   return hits
 }
 
-/** 存盘正文按行拼回一份观察。 */
+/** 将存盘正文按行还原为一份观察。 */
 function fromJsonl(text: string): { meta: Record<string, unknown>; rows: unknown[] } {
   const lines = text.split('\n')
   return {
@@ -515,10 +515,10 @@ function fromJsonl(text: string): { meta: Record<string, unknown>; rows: unknown
   }
 }
 
-// ─────────────────────────── 真实分片存储上的存盘与回读 ───────────────────────────
+// ─────────────────────────── 真实分片存储上的存盘与读取 ───────────────────────────
 
-describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读回', () => {
-  test('desktop 大观察：回读字节与存盘正文相等，逐行与原观察字段值深等', async () => {
+describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读取', () => {
+  test('desktop 大观察：读取的字节与存盘正文相等，逐行与原观察字段值深度相等', async () => {
     const h = harness()
     const ctx = toolCtx({ h, desktop: desktopPort(大表) })
     const r = await h.registry.execute(
@@ -531,7 +531,7 @@ describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读回'
     const id = resourceIdOf(r)
     const stored = storedBody(h, id)
     const hash = getResource(h.store, id)?.contentHash ?? ''
-    // 跨分片才证得了分片拼接没有错位。
+    // 只有跨分片才能证明分片拼接没有错位。
     expect(h.content.info(hash)?.chunkCount).toBeGreaterThan(1)
 
     const back = await readWhole(h, ctx, id)
@@ -542,7 +542,7 @@ describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读回'
     const { elements, ...expected } = 快照(大表, 'do_2')
     expect(meta).toEqual(expected)
     expect(rows).toEqual(elements)
-    // 缺席、null、false、0、空串与长值都按原样回来。
+    // 缺省、null、false、0、空串与长值均原样保留。
     const 回读特殊 = rows.find((e) => (e as DesktopElement).ref === 'e5') as Record<string, unknown>
     expect(回读特殊.value).toBe('')
     expect(回读特殊.enabled).toBe(false)
@@ -554,7 +554,7 @@ describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读回'
     )
   })
 
-  test('browser 大页：回读字节与存盘正文相等，缺席的状态位没有被补成 false', async () => {
+  test('browser 大页：读取的字节与存盘正文相等，缺省的状态位未被补为 false', async () => {
     const h = harness()
     const ctx = toolCtx({ h, browser: browserPort(大页) })
     const r = await h.registry.execute('browser_observe', { tabId: 'bt_1' }, ctx)
@@ -582,10 +582,10 @@ describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读回'
   })
 
   /**
-   * 选项页一次最多 30 项、每项 200 字，正文进不了第二个分片。
-   * 这条验的是同一条回读路径在小正文上的字段保全，跨分片由上面两条覆盖。
+   * 选项页一次最多 30 项、每项 200 字，正文无法进入第二个分片。
+   * 本用例验证同一读取路径在小正文上的字段完整性，跨分片由前两条用例覆盖。
    */
-  test('browser 选项页：回读字节与存盘正文相等，所属观察与翻页位置原样', async () => {
+  test('browser 选项页：读取的字节与存盘正文相等，所属观察与翻页位置保持原样', async () => {
     const h = harness()
     const ctx = toolCtx({ h, browser: browserPort(大页) })
     const r = await h.registry.execute(
@@ -612,27 +612,27 @@ describe('真实内容库：存盘正文跨分片，沿 nextOffset 完整读回'
 })
 
 describe('真实分片存储上的搜索续查', () => {
-  test('长控件行行尾的命中：跨页读完不漏不重，返回整条控件记录，lineOffset 指向该控件的行首', async () => {
+  test('长控件行行尾的命中：跨页读完无遗漏、无重复，返回整条控件记录，lineOffset 指向该控件的行首', async () => {
     const h = harness()
     const ctx = toolCtx({ h, desktop: desktopPort(大表) })
     const r = await h.registry.execute('desktop_observe', { windowId: 'dw_1' }, ctx)
     const id = resourceIdOf(r)
 
-    // 元数据一行，之后是 `大表` 的元素；带标记的第一个控件因此落在第 7 行。
+    // 第一行为元数据，之后是 `大表` 的元素；因此带标记的第一个控件位于第 7 行。
     const 首行 = 1 + 大表.findIndex((e) => e.ref === 'e101') + 1
     const hits = await searchWhole(h, ctx, id, 行尾标记)
     expect(hits.map((x) => x.line)).toEqual(Array.from({ length: 条目数 }, (_, i) => 首行 + i))
     expect(new Set(hits.map((x) => x.offset)).size).toBe(条目数)
-    // 行号与命中正文互相对得上：漏一条、重一条都会让这一组错位。
+    // 行号与命中正文一致：遗漏或重复一条都会使这一组错位。
     for (const hit of hits) expect(hit.text).toContain(`${行尾标记}${hit.line - 首行 + 1}`)
 
-    // 命中在行尾：返回的是整条控件记录，从行首的 ref 起，可直接解析。
+    // 命中位于行尾：返回整条控件记录，从行首的 ref 开始，可直接解析。
     const 末条 = hits[hits.length - 1] as Hit
     expect(末条.wholeLine).toBe(true)
     expect(末条.text).toContain(`${行尾标记}${条目数}`)
     expect((JSON.parse(末条.text) as { ref: string }).ref).toBe(`e${100 + 条目数}`)
 
-    // 拿 lineOffset 当 offset 读回来的是这个控件整行的行首。
+    // 以 lineOffset 作为 offset 读取，得到的是该控件所在行的行首。
     const 整行 = await h.registry.execute(
       'read_resource',
       { resource_id: id, offset: 末条.lineOffset, length: 64 },
@@ -643,7 +643,7 @@ describe('真实分片存储上的搜索续查', () => {
     ).toBe(true)
   })
 
-  test('单页装不下时给出续查位置，读到末尾才为 null', async () => {
+  test('单页无法容纳时给出续查位置，读取到末尾时才为 null', async () => {
     const h = harness()
     const ctx = toolCtx({ h, desktop: desktopPort(大表) })
     const id = resourceIdOf(await h.registry.execute('desktop_observe', { windowId: 'dw_1' }, ctx))
@@ -661,7 +661,7 @@ describe('真实分片存储上的搜索续查', () => {
   })
 })
 
-// ─────────────────────────── 各层同形 ───────────────────────────
+// ─────────────────────────── 各层形状一致 ───────────────────────────
 
 const okOutcome: CompactionOutcome = {
   status: 'compacted',
@@ -676,7 +676,7 @@ const okOutcome: CompactionOutcome = {
   },
 }
 
-/** 按脚本回放的假 adapter，并把每次收到的请求原样留下。 */
+/** 按脚本回放的模拟 adapter，原样记录每次收到的请求。 */
 function scriptedAdapter(turns: (WireToolCall[] | null)[], seen: ChatRequest[]): LlmAdapter {
   let turn = 0
   const spec = lookupModel('claude-opus-5', 'anthropic_messages')
@@ -696,7 +696,7 @@ function scriptedAdapter(turns: (WireToolCall[] | null)[], seen: ChatRequest[]):
   }
 }
 
-/** step 落进真库；`userSteps` 记 run 内有没有被补发过用户消息。 */
+/** step 写入真实数据库；`userSteps` 记录 run 内是否补发过用户消息。 */
 function persistence(store: Store, counters: { userSteps: number }): LoopPersistence {
   let seq = 0
   return {
@@ -758,7 +758,7 @@ function makeBase(h: Harness, runId: RunId, desktop: DesktopPort): () => ToolCon
   })
 }
 
-/** 同一个会话里再开一条 run：换 run 读同一个资源，以及把上一条 run 的消息投影回历史。 */
+/** 在同一会话中新建一条 run：用于在另一个 run 中读取同一资源，以及将上一条 run 的消息投影为历史。 */
 function anotherRun(h: Harness): RunId {
   return createRun(h.store, {
     conversationId: h.conversationId,
@@ -793,7 +793,7 @@ function countRows(h: Harness): { refs: number; blobs: number } {
   }
 }
 
-/** 跑一轮：一次 desktop 动作加一次收尾，返回当轮信封与落账所需的那几项。 */
+/** 执行一轮：一次 desktop 动作与一次收尾，返回当轮信封与核对账本所需的字段。 */
 async function runDesktopAct(
   h: Harness,
   table: DesktopElement[],
@@ -821,7 +821,7 @@ async function runDesktopAct(
     makeToolContext: makeBase(h, runId, desktopPort(table)),
   })
   for await (const _ of loop.run({ runId, history: [], signal: new AbortController().signal })) {
-    // 事件由具体用例各自断言，这里只把 run 跑完。
+    // 事件由各用例自行断言，此处只将 run 执行完毕。
   }
   expect(seen).toHaveLength(2)
   const live = toolMessageOf((seen[1] as ChatRequest).messages, callId).content
@@ -829,7 +829,7 @@ async function runDesktopAct(
   return { runId, callId, live: live as string }
 }
 
-describe('同一份结果在各层同形', () => {
+describe('同一份结果在各层形状一致', () => {
   test('当轮请求信封与回放信封逐字相同，资源 id 是同一个已定稿 id', async () => {
     const h = harness()
     const { runId, callId, live } = await runDesktopAct(h, 大表)
@@ -839,23 +839,23 @@ describe('同一份结果在各层同形', () => {
     expect(envelope.resources).toHaveLength(1)
     const id = String(envelope.resources?.[0])
 
-    // 账本里就这一条引用，指向的正是信封里那个 id。
+    // 账本中只有这一条引用，指向信封中的同一个 id。
     expect(getResource(h.store, id)?.toolName).toBe('desktop_act')
     expect(countRows(h)).toEqual({ refs: 1, blobs: 1 })
 
     expect(replayToolContent(h, runId, callId)).toBe(live)
-    // 回放只是读账本：不重新生成地址，也不再存一份正文。
+    // 回放只读取账本：不重新生成地址，也不再存储一份正文。
     expect(countRows(h)).toEqual({ refs: 1, blobs: 1 })
   })
 
-  test('小控件表整份内联：两侧同样逐字相同，且不产生资源', async () => {
+  test('小控件表完整内联：两侧同样逐字相同，且不产生资源', async () => {
     const h = harness()
     const { runId, callId, live } = await runDesktopAct(h, 小表)
 
     const envelope = JSON.parse(live) as { resources?: string[]; result?: Record<string, unknown> }
     expect(envelope.resources).toBeUndefined()
-    // 投递形状是紧凑的：按结果自带的默认值与动作字典还原后，与去掉 parentRef 的原表相等。
-    // 字典按投递方式分组，`小表` 的动作表每张都只有一种投递方式，还原顺序与原表一致。
+    // 投递使用紧凑形状：按结果自带的默认值与动作字典还原后，与去掉 parentRef 的原表相等。
+    // 字典按投递方式分组，`小表` 的每张动作表都只有一种投递方式，还原顺序与原表一致。
     const observation = envelope.result?.observation as {
       defaults: Record<string, unknown>
       actionSets: Record<string, string[]>[]
@@ -873,7 +873,7 @@ describe('同一份结果在各层同形', () => {
     expect(replayToolContent(h, runId, callId)).toBe(live)
   })
 
-  test('sequence：逐步回执与停止点落账，回放与当轮逐字相同', async () => {
+  test('sequence：逐步回执与停止点写入账本，回放与当轮逐字相同', async () => {
     const h = harness()
     const runId = h.runId
     const callId = 'c_seq_1'
@@ -909,7 +909,7 @@ describe('同一份结果在各层同形', () => {
       history: [],
       signal: new AbortController().signal,
     })) {
-      // 事件在这条用例里不作断言，只把 run 跑完。
+      // 事件在这条用例里不作断言，只将 run 执行完毕。
     }
 
     const live = toolMessageOf((seen[1] as ChatRequest).messages, callId).content as string
@@ -925,12 +925,12 @@ describe('同一份结果在各层同形', () => {
   })
 
   /**
-   * 观察 → 动作（界面几乎没变，差异投递）→ 动作（页面跳转，整份投递）。
+   * 观察 → 动作（界面几乎不变，差异投递）→ 动作（页面跳转，完整投递）。
    *
-   * 基底与差异在之后的每个请求里都逐字在场，页面跳转之后的整份不改写它们。差异那一条的
-   * 回放与当轮逐字相同。
+   * 基底与差异在之后的每个请求中都逐字保留，页面跳转之后的完整投递不改写它们。差异投递
+   * 那一条的回放与当轮逐字相同。
    */
-  test('差异投递：基底与差异在之后的请求里逐字留着，回放与当轮逐字相同', async () => {
+  test('差异投递：基底与差异在之后的请求中逐字保留，回放与当轮逐字相同', async () => {
     const h = harness()
     const runId = h.runId
     const 改名 = 小表.map((e) => (e.ref === 'e6' ? { ...e, name: '改过名的按钮' } : e))
@@ -973,7 +973,7 @@ describe('同一份结果在各层同形', () => {
       makeToolContext: makeBase(h, runId, port),
     })
     for await (const _ of loop.run({ runId, history: [], signal: new AbortController().signal })) {
-      // 事件在这条用例里不作断言，只把 run 跑完。
+      // 事件在这条用例里不作断言，只将 run 执行完毕。
     }
     expect(seen).toHaveLength(4)
     const envelopeIn = (req: ChatRequest, callId: string) =>
@@ -1000,14 +1000,14 @@ describe('同一份结果在各层同形', () => {
 
 type Envelope = { result_omitted?: true; result?: Record<string, unknown> }
 
-/** 请求里某次调用的 tool 消息正文。 */
+/** 请求中某次调用的 tool 消息正文。 */
 function contentIn(req: ChatRequest, callId: string): string {
   const content = toolMessageOf(req.messages, callId).content
   expect(typeof content).toBe('string')
   return content as string
 }
 
-/** 请求里换成收纳信封的 tool 消息的调用 id。 */
+/** 请求中已替换为收纳信封的 tool 消息的调用 id。 */
 function condensedIn(req: ChatRequest): string[] {
   return req.messages
     .filter((m) => m.role === 'tool' && typeof m.content === 'string')
@@ -1015,7 +1015,7 @@ function condensedIn(req: ChatRequest): string[] {
     .map((m) => m.toolCallId ?? '')
 }
 
-/** 每次观察交回下一份表，观察编号 do_1、do_2……。 */
+/** 每次观察返回下一份控件表，观察编号为 do_1、do_2……。 */
 function observingPort(tables: DesktopElement[][]): DesktopPort {
   let at = 0
   return {
@@ -1027,7 +1027,7 @@ function observingPort(tables: DesktopElement[][]): DesktopPort {
   }
 }
 
-/** 跑一个 run：按脚本逐轮观察，收尾一轮纯文本。交回适配器收到的每一份请求。 */
+/** 执行一个 run：按脚本逐轮观察，最后一轮输出纯文本并结束。返回适配器收到的每一份请求。 */
 async function runObservations(
   h: Harness,
   runId: RunId,
@@ -1052,17 +1052,17 @@ async function runObservations(
     makeToolContext: makeBase(h, runId, port),
   })
   for await (const _ of loop.run({ runId, history, signal: new AbortController().signal })) {
-    // 事件在这组用例里不作断言，只把 run 跑完。
+    // 本组用例不断言事件，只将 run 执行完毕。
   }
   expect(seen).toHaveLength(callIds.length + 1)
   return seen
 }
 
-describe('电脑控制的观察在历史里只追加', () => {
+describe('电脑控制的观察在历史中只追加', () => {
   const 改名 = (name: string) => 小表.map((e) => (e.ref === 'e6' ? { ...e, name } : e))
 
-  /** 原始失败形状：同一窗口的后一份整份观察把前面各份换成收纳信封，改写已发出的前缀。 */
-  test('同一窗口连续三次整份观察：之后的请求里三份表都逐字在场，没有收纳信封', async () => {
+  /** 原始失败形状：同一窗口的后一份完整观察将之前各份替换为收纳信封，改写了已发出的前缀。 */
+  test('同一窗口连续三次完整观察：之后的请求中三份控件表均逐字保留，没有收纳信封', async () => {
     const h = harness()
     const calls = ['c_obs1', 'c_obs2', 'c_obs3']
     const port = observingPort([改名('第一次'), 改名('第二次'), 改名('第三次')])
@@ -1079,8 +1079,8 @@ describe('电脑控制的观察在历史里只追加', () => {
     expect(condensedIn(last)).toEqual([])
   })
 
-  /** 原始失败形状：下一个 run 第一次观察同一窗口，上一个 run 留在历史里的末份表被收起。 */
-  test('第二个 run 的第一次整份观察之后，历史里上一个 run 的表逐字不变', async () => {
+  /** 原始失败形状：下一个 run 首次观察同一窗口时，上一个 run 留在历史中的最后一份控件表被收纳。 */
+  test('第二个 run 的首次完整观察之后，历史中上一个 run 的控件表逐字不变', async () => {
     const h = harness()
     const port = observingPort([改名('第一个 run'), 改名('第二个 run')])
     const first = await runObservations(
@@ -1107,8 +1107,8 @@ describe('电脑控制的观察在历史里只追加', () => {
   })
 })
 
-describe('收纳之后地址仍在', () => {
-  test('resources 保留、result 被省略，拿这个 id 仍能读回全文', async () => {
+describe('收纳之后地址仍保留', () => {
+  test('resources 保留、result 被省略，凭该 id 仍能读取全文', async () => {
     const h = harness()
     const { runId, callId, live } = await runDesktopAct(h, 大表)
     const id = String((JSON.parse(live) as { resources: string[] }).resources[0])
@@ -1127,7 +1127,7 @@ describe('收纳之后地址仍在', () => {
     expect(envelope.result).toBeUndefined()
     expect(envelope.result_omitted).toBe(true)
 
-    // 回放出来的那一份收纳后同形：两侧不同形的话，同一次调用在本轮与下一轮长得不一样。
+    // 回放结果收纳后形状一致：两侧形状不一致时，同一次调用在本轮与下一轮的内容不同。
     const replayed = condenseMessage({
       role: 'tool',
       content: replayToolContent(h, runId, callId),
@@ -1141,8 +1141,8 @@ describe('收纳之后地址仍在', () => {
   })
 })
 
-describe('重启、切会话与回收之后仍读得到', () => {
-  test('关掉再打开两个库：同一个 id 读回的正文一字不差', async () => {
+describe('重启、切换会话与回收之后仍可读取', () => {
+  test('关闭并重新打开两个数据库：同一 id 读取的正文完全相同', async () => {
     const h = harness()
     const ctx = toolCtx({ h, desktop: desktopPort(大表) })
     const id = resourceIdOf(await h.registry.execute('desktop_observe', { windowId: 'dw_1' }, ctx))
@@ -1153,7 +1153,7 @@ describe('重启、切会话与回收之后仍读得到', () => {
     h.store = new Store({ path: h.dbPath })
     h.content = new ContentStore(contentPathFor(h.dbPath))
 
-    // 切会话：另开一条 run 的 sink 去读同一个 id。
+    // 切换会话：用另一条 run 的 sink 读取同一 id。
     const other = anotherRun(h)
     const reopened = toolCtx({
       h,
@@ -1163,7 +1163,7 @@ describe('重启、切会话与回收之后仍读得到', () => {
     expect(await readWhole(h, reopened, id)).toBe(before)
   })
 
-  test('活着的 run：回收一次正文还在；run 被删后才随之回收，读回报资源不存在', async () => {
+  test('存续中的 run：回收一次后正文仍保留；run 被删除后才随之回收，读取时报告资源不存在', async () => {
     const h = harness()
     const ctx = toolCtx({ h, desktop: desktopPort(大表) })
     const id = resourceIdOf(await h.registry.execute('desktop_observe', { windowId: 'dw_1' }, ctx))
@@ -1172,7 +1172,7 @@ describe('重启、切会话与回收之后仍读得到', () => {
     expect(h.sink.stat(id)).not.toBeNull()
     expect((await readWhole(h, ctx, id)).length).toBeGreaterThan(0)
 
-    // 沿用现有的级联删除：删 run → 账本行随之消失 → 正文才可回收。
+    // 沿用现有的级联删除：删除 run → 账本行随之删除 → 正文变为可回收。
     h.store.db.query('DELETE FROM runs WHERE id = ?').run(h.runId)
     expect(collectResourceGarbage(h.store, h.content).removed).toBe(1)
 
@@ -1183,14 +1183,14 @@ describe('重启、切会话与回收之后仍读得到', () => {
 })
 
 describe('实际用量跨工具可见', () => {
-  test('超额的观察不被拒、用量全记，随后的读取看到的余额是 0、仍投递最小的一份', async () => {
+  test('超额的观察不被拒绝、用量全额记账，随后的读取看到余额为 0，仍投递最小的一份', async () => {
     const h = harness()
     const window = 32_000
     const ctx = toolCtx({ h, window, desktop: desktopPort(大表) })
     writeFileSync(join(h.dir, 'note.txt'), '合成正文\n'.repeat(50), 'utf8')
 
     openBatchBudget(ctx.state, 1000)
-    // 本次决策先前的读取已经用掉大部分额度。
+    // 本次决策之前的读取已用掉大部分额度。
     expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
     expect(batchRemaining(ctx)).toBe(200)
 
@@ -1203,18 +1203,18 @@ describe('实际用量跨工具可见', () => {
     expect((act.data as { dispatch: string }).dispatch).toBe('submitted')
 
     expect(batchRemaining(ctx)).toBe(0)
-    // 累计值没有被截回额度：1 token 的准入也不再通过。
+    // 累计值未被截断到额度以内：1 token 的准入也不再通过。
     expect(chargeBatchBudget(ctx, 1).ok).toBe(false)
 
-    // 余量为 0 时读取仍投递最小的一份，不报失败；这份小文件整份在最小份之内。
+    // 余量为 0 时读取仍投递最小的一份，不报失败；该小文件的完整内容在最小份以内。
     const read = await h.registry.execute('read_file', { path: 'note.txt' }, ctx)
     expect(read.status).toBe('success')
     expect((read.data as { content: string }).content).toContain('合成正文')
   })
 })
 
-describe('越过收纳线之后同一轮继续', () => {
-  test('历史里带 resources 的观察结果：收纳后接着调 read_resource，不用补发用户消息', async () => {
+describe('越过收纳阈值之后在同一轮内继续', () => {
+  test('历史中带 resources 的观察结果：收纳后继续调用 read_resource，无需补发用户消息', async () => {
     const h = harness()
     const first = await runDesktopAct(h, 大表)
     const id = String((JSON.parse(first.live) as { resources: string[] }).resources[0])
@@ -1251,7 +1251,7 @@ describe('越过收纳线之后同一轮继续', () => {
     for await (const ev of loop.run({
       runId,
       history,
-      // 锚点把占用顶到软阈值之上：1M 窗口 × 0.8 → 800,000。
+      // 锚点使占用超过软阈值：1M 窗口 × 0.8 → 800,000。
       anchor: {
         tokens: 900_000,
         throughMessageId: null,
@@ -1266,15 +1266,15 @@ describe('越过收纳线之后同一轮继续', () => {
 
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'done')).toBe(true)
     expect(events.some((e) => e.type === 'run.finished')).toBe(true)
-    // 同一轮做完：没有任何被补发的用户消息。
+    // 在同一轮内完成：没有补发任何用户消息。
     expect(counters.userSteps).toBe(0)
     expect(history.some((m) => m.role === 'user')).toBe(false)
 
     /*
-     * 收纳之后重建的那份请求里，定位符仍在规范的 `resources` 键上。
+     * 收纳之后重建的请求中，定位符仍位于规范的 `resources` 键上。
      *
-     * 不要改成在整条信封里找这个 id 的子串：`summary` 里印着同一个 id，
-     * 而收纳把 `summary` 原样留下，子串断言在定位符被丢掉时照样通过。
+     * 不要改为在整条信封中查找该 id 的子串：`summary` 中含有同一个 id，
+     * 而收纳会原样保留 `summary`，子串断言在定位符被丢弃时仍会通过。
      */
     const sent = (seen[0] as ChatRequest).messages
     const condensed = sent
@@ -1283,7 +1283,7 @@ describe('越过收纳线之后同一轮继续', () => {
     expect(condensed.flatMap((c) => c.resources ?? [])).toEqual([id])
     expect(condensed.some((c) => c.result_omitted === true)).toBe(true)
 
-    // 模型接着读回原文，拿到的是存盘那一份里的命中。
+    // 模型随后读取原文，取得的是存盘正文中的命中。
     const result = replayToolContent(h, runId, callId)
     const envelope = JSON.parse(result) as { status: string; result?: { hits: Hit[] } }
     expect(envelope.status).toBe('success')
@@ -1291,8 +1291,8 @@ describe('越过收纳线之后同一轮继续', () => {
   })
 })
 
-describe('存盘失败：地址不发、执行事实不变', () => {
-  test('land 抛错时 step 里没有 resources，delivery.unsaved 在，回放同形', async () => {
+describe('存盘失败：不发送地址，执行事实不变', () => {
+  test('land 抛错时 step 中没有 resources，保留 delivery.unsaved，回放形状一致', async () => {
     const h = harness()
     // 正文库不可用：`ContentStore.put` 抛错，主库事务随之回滚。
     h.content.close()
@@ -1318,7 +1318,7 @@ describe('存盘失败：地址不发、执行事实不变', () => {
     expect(payload.outcome.resources).toBeUndefined()
     expect(payload.outcome.data.observation.delivery.unsaved).toBeTruthy()
 
-    // 账本里没有留下指向不存在正文的行。
+    // 账本中没有留下指向不存在正文的行。
     expect(
       h.store.db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM intermediate_resources').get()
         ?.n,

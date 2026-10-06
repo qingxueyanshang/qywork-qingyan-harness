@@ -1,14 +1,14 @@
 /**
- * shell 的写入贯通到变更页。
+ * shell 的写入完整传递到变更页。
  *
- * 覆盖范围：`tools/shell.ts` 的 `run_command` 输出（真的起 shell，不打桩）、
+ * 覆盖范围：`tools/shell.ts` 的 `run_command` 输出（实际启动 shell，不使用桩）、
  * `store/repos.ts` 的 `listConversationChangesPage` 归轮与分页、
  * `api/conversations.ts` 的 `GET /api/conversations/:id/changes`。
  * 观察器自身的忽略判定由 `tools/workspace-watch.test.ts` 覆盖；
- * 外部 CLI 与内置子 agent 那两条来源由 `delegate.test.ts` 覆盖。
+ * 外部 CLI 与内置子 agent 两种来源由 `delegate.test.ts` 覆盖。
  *
- * shell 与外部 CLI 的写入没有精确明细：路径与变更类型是观察器能知道的全部，
- * 改过的与删掉的不带行数。并行执行时几个窗口叠着开，归属按最早那个算，是估算。
+ * shell 与外部 CLI 的写入没有精确明细：观察器只能得知路径与变更类型，
+ * 修改与删除不带行数。并行执行时多个观察窗口重叠，归属按最早的窗口计算，属于估算。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -42,10 +42,10 @@ let workspaceId = ''
 
 const registry = new ToolRegistry()
 registerBuiltinTools(registry)
-/** `run_command` 按能力注册：这台机器上一个 shell 都没有时它不存在，本测试也就跑不了。 */
+/** `run_command` 按能力注册：本机没有任何 shell 时该工具不存在，本测试也无法运行。 */
 const runCommand = registry.get('run_command')
 
-/** 命令交给真的 shell 执行，写盘那几步由一个 bun 脚本做：bash 与 PowerShell 的语法不同。 */
+/** 命令交给实际的 shell 执行，写入磁盘的步骤由一个 bun 脚本完成：bash 与 PowerShell 的语法不同。 */
 const command = (tag: string) => `bun "${script}" ${tag}`
 
 const SCRIPT = `
@@ -106,9 +106,9 @@ async function changesPage(
 }
 
 /**
- * 跑几条真的命令，把结果按 `run_command` 的账本形状落成**一轮**。
+ * 执行几条真实命令，把结果按 `run_command` 的账本形状写成一轮。
  *
- * 一轮共用一个 `ctx.state`：观察器按「本轮已经报过哪些路径」对账，那份累计集合存在里面。
+ * 一轮共用一个 `ctx.state`：观察器按「本轮已报告过的路径」去重，该累计集合保存在其中。
  */
 async function turn(conversationId: ConversationId, text: string, tags: string[]) {
   if (!runCommand) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
@@ -145,7 +145,7 @@ async function turn(conversationId: ConversationId, text: string, tags: string[]
       payload: {
         kind: 'tool_result',
         args: { command: command(tags[i] as string) },
-        // 落库的规范结果里 `executed` 不是可选的，缺省即真——注册表那一层也是这么补的。
+        // 写入账本的规范结果中 `executed` 不是可选字段，缺省为真；注册表层以同样方式补全。
         outcome: { ...outcome, executed: outcome.executed ?? true },
       },
     })
@@ -154,7 +154,7 @@ async function turn(conversationId: ConversationId, text: string, tags: string[]
   return { outcomes, messageId: message.id }
 }
 
-/** 这一轮里每个路径依次被报成了什么。折叠成行是界面的事，这里只交出它要的那个序列。 */
+/** 本轮中每个路径依次被报告的变更类型。折叠成行由界面负责，此处只返回界面所需的序列。 */
 function typesByPath(page: ConversationChangesPageResponse, turnIndex = 0): Map<string, string[]> {
   const out = new Map<string, string[]>()
   for (const step of page.turns[turnIndex]?.steps ?? []) {
@@ -186,7 +186,7 @@ beforeAll(async () => {
   await writeFile(join(dir, 'tracked.ts'), 'export const t = 1\n')
   await writeFile(join(dir, 'doomed.ts'), 'export const d = 1\n')
   git('add', '.gitignore', 'tracked.ts', 'doomed.ts')
-  // 让「创建时间在窗口之前」成立：文件系统的时间戳精度以毫秒计。
+  // 使「创建时间早于观察窗口」成立：文件系统时间戳的精度为毫秒。
   await Bun.sleep(20)
 
   store = new Store({ path: ':memory:' })
@@ -198,8 +198,8 @@ afterAll(async () => {
   await rm(binDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
 })
 
-describe('shell 的写入进变更页', () => {
-  test('项目点路径进账、被忽略的产物不进；新建 / 修改 / 删除各判其类', async () => {
+describe('shell 的写入进入变更页', () => {
+  test('项目中以点开头的路径计入，被忽略的产物不计入；新建、修改、删除分别判定', async () => {
     const conv = createConversation(store, {
       workspaceId: workspaceId as WorkspaceId,
       provider: 'p',
@@ -208,7 +208,7 @@ describe('shell 的写入进变更页', () => {
     const { outcomes } = await turn(conv.id, '跑一条命令', ['one'])
     const outcome = outcomes[0] as ToolOutcome
 
-    // 工具结果这一层就得对：账本与变更页都只是把它原样带下去。
+    // 工具结果层必须正确：账本与变更页只原样传递工具结果。
     expect(shape(outcome.fileChanges ?? [])).toEqual([
       ['.editorconfig', 'created', true],
       ['.github/workflows/ci.yml', 'created', true],
@@ -225,7 +225,7 @@ describe('shell 的写入进变更页', () => {
     )
   })
 
-  test('两轮之间按用户消息分页，游标翻页', async () => {
+  test('两轮之间按用户消息分页，按游标翻页', async () => {
     const conv = createConversation(store, {
       workspaceId: workspaceId as WorkspaceId,
       provider: 'p',
@@ -243,14 +243,14 @@ describe('shell 的写入进变更页', () => {
 
     const rest = await changesPage(conv.id, `limit=1&before=${head.nextCursor}`)
     expect(rest.turns.map((t) => t.text)).toEqual(['第一轮'])
-    // 前面没有第三轮了，游标到头。
+    // 之前没有第三轮，游标已到末尾。
     expect(rest.nextCursor).toBeNull()
     expect(shape(rest.turns[0]?.steps[0]?.fileChanges ?? [])).toEqual([
       ['docs/b.md', 'created', true],
     ])
   })
 
-  test('整个目录被删：其中的文件报出删除，目录自己不报', async () => {
+  test('整个目录被删除：其中的文件报告为删除，目录本身不报告', async () => {
     const conv = createConversation(store, {
       workspaceId: workspaceId as WorkspaceId,
       provider: 'p',
@@ -266,8 +266,8 @@ describe('shell 的写入进变更页', () => {
     expect(shape(outcomes[1]?.fileChanges ?? [])).toEqual([
       ['probe/profile/a.bin', 'modified', false],
     ])
-    // 递归 watch 对 `rm -rf` 只给目录一条事件，深一层的 b.bin 没有事件也扫不到；
-    // 三个目录自己不进结果。
+    // 递归 watch 对 `rm -rf` 只产生目录的一条事件，深一层的 b.bin 既没有事件也无法扫描到；
+    // 三个目录本身不进入结果。
     expect(shape(outcomes[2]?.fileChanges ?? [])).toEqual([
       ['probe/profile/a.bin', 'deleted', false],
       ['probe/profile/deep/b.bin', 'deleted', false],
@@ -277,17 +277,17 @@ describe('shell 的写入进变更页', () => {
     const byPath = typesByPath(page)
     expect(byPath.get('probe/profile/a.bin')).toEqual(['created', 'modified', 'deleted'])
     expect(byPath.get('probe/profile/deep/b.bin')).toEqual(['created', 'deleted'])
-    // 没被删的留着，整轮净效果仍是新建。
+    // 未删除的文件保留，整轮净效果仍是新建。
     expect(byPath.get('kept.txt')).toEqual(['created'])
     expect([...byPath.keys()].filter((p) => p.startsWith('probe/profile/deep'))).toEqual([
       'probe/profile/deep/b.bin',
     ])
-    // 合计与界面上那些行折的是同一个函数：建了又删的两个路径一个都不在里面。
+    // 合计与界面中的各行使用同一个折叠函数：创建后又删除的两个路径都不在其中。
     expect(page.totals.paths).toEqual(['kept.txt'])
     expect(page.totals.additions).toBeGreaterThan(0)
   })
 
-  test('对照：目录不删时其中的文件以新建出现', async () => {
+  test('对照：目录未删除时其中的文件显示为新建', async () => {
     const conv = createConversation(store, {
       workspaceId: workspaceId as WorkspaceId,
       provider: 'p',
@@ -299,7 +299,7 @@ describe('shell 的写入进变更页', () => {
     const byPath = typesByPath(page)
     expect(byPath.get('probe/profile/a.bin')).toEqual(['created'])
     expect(byPath.get('probe/profile/deep/b.bin')).toEqual(['created'])
-    // 没删就没有净效果可折，两个路径都在合计里。
+    // 未删除时没有可折叠的净效果，两个路径都在合计中。
     expect([...page.totals.paths].sort()).toEqual([
       'kept.txt',
       'probe/profile/a.bin',

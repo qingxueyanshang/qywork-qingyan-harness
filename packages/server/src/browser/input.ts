@@ -3,11 +3,11 @@
  *
  * 三条不变量：
  *
- * 1. **一份按下账。** 本地只记这次动作按着哪些键（`Keyboard`）用来算下一条事件的字段；
- *    页面上可能还按着什么以 `CdpClient` 的按下表为准，收尾与回执都只认那一份。
- * 2. **按住靠服务端计时。** 时长用本地定时器走完再发下一条事件，不在事件的 `timestamp`
- *    里填将来的时间；定时等待随客户端取消或断开立即结束，不睡满按住时长。
- * 3. **不补发。** 某一段迟到了就照实晚发，不把后面几段的按下与抬起挤在一起补跑。
+ * 1. **按下状态只有一份记录。** 本地只记录本次动作按下的键（`Keyboard`），用于计算下一条事件的字段；
+ *    页面上可能仍处于按下状态的键以 `CdpClient` 的按下表为准，收尾与回执只以该表为准。
+ * 2. **按住时长由服务端计时。** 本地定时器计满时长后再发送下一条事件，不在事件的 `timestamp`
+ *    中填写将来的时间；定时等待在客户端取消或断开时立即结束，不等满按住时长。
+ * 3. **不补发。** 某一段延迟时按实际时间推后发送，不将后续各段的按下与抬起集中补发。
  */
 
 import { type BrowserExecution, keyEvent, modifierBits } from '@qywork/agent'
@@ -22,20 +22,20 @@ import {
 /**
  * 一次输入动作的绝对期限。
  *
- * 定位、布局复核、全部业务事件与按住时长合用它，单条命令从剩余预算取小。**不要改成每条
- * 命令各给一份额度**：2000 个码点乘以单条上限，一次调用能挂住几十分钟。它要大于按住时长
- * 的合计上限（`INPUT_LIMITS.totalMs`），给定位与复核留出余量。
+ * 定位、布局复核、全部业务事件与按住时长共用该期限，单条命令取剩余预算与单条上限的较小值。**不要改成每条
+ * 命令各分配一份额度**：2000 个码点乘以单条上限，一次调用可阻塞数十分钟。该期限须大于按住时长
+ * 的合计上限（`INPUT_LIMITS.totalMs`），为定位与复核留出余量。
  */
 export const ACTION_BUDGET_MS = 30_000
 /** 单条输入事件的上限。剩余预算更少时按剩余预算发。 */
 export const EVENT_TIMEOUT_MS = 5_000
-/** 输入收尾的独立预算。业务预算用尽之后仍要能把按下的键与鼠标放开。 */
+/** 输入收尾的独立预算。业务预算用尽之后仍须能够释放按下的键与鼠标键。 */
 const TEARDOWN_BUDGET_MS = 3_000
 
-/** 距截止时间还剩多少毫秒。 */
+/** 距截止时间的剩余毫秒数。 */
 export const leftMs = (deadline: number) => deadline - Date.now()
 
-/** 一条命令的超时：剩余预算与本条上限取小。发命令前由调用方判定预算是否已经耗尽。 */
+/** 一条命令的超时：取剩余预算与本条上限中的较小值。发送命令前由调用方判定预算是否已耗尽。 */
 export function within(deadline: number, capMs: number): { timeoutMs: number } {
   return { timeoutMs: Math.max(1, Math.min(capMs, leftMs(deadline))) }
 }
@@ -45,9 +45,9 @@ export type Point = { x: number; y: number }
 /**
  * 一次输入动作的发送记账。
  *
- * 一个单元就是回执里 `confirmedUnits` 的一格，由调用方在单元完成时 `unit()`。
- * 已发出却没等到确认的那一条决定终态是 `unknown` 而不是 `partial` ——它可能已经在
- * 页面上生效了，说成「没做」会诱使调用方重放。收尾没能确认松开的键同样是 `unknown`。
+ * 一个单元对应回执中 `confirmedUnits` 的一次计数，由调用方在单元完成时调用 `unit()`。
+ * 存在已发出但未确认的事件时，终态为 `unknown` 而不是 `partial`：该事件可能已在
+ * 页面上生效，报告为未执行会导致调用方重放。收尾时未能确认释放的键同样使终态为 `unknown`。
  */
 export class Execution {
   /** 本次动作的绝对期限。定位、布局复核、业务事件与按住时长共用它。 */
@@ -59,7 +59,7 @@ export class Execution {
   #unreleased: string[] = []
 
   /**
-   * 还能不能继续发业务事件：没停过、客户端未取消、预算未尽。不能时记下原因。
+   * 判断能否继续发送业务事件：未停止、客户端未取消、预算未耗尽。不能继续时记录原因。
    */
   open(client: CdpClient): boolean {
     if (this.#reason !== null) return false
@@ -68,12 +68,12 @@ export class Execution {
     return this.#reason === null
   }
 
-  /** 计划里的单元一个不少地确认完了。 */
+  /** 计划中的全部单元均已确认。 */
   finish(): void {
     this.#finished = true
   }
 
-  /** 本地判定要停，记下第一个原因。已发出的事件不受影响。 */
+  /** 本地判定停止，记录第一个原因。已发出的事件不受影响。 */
   stop(reason: string): void {
     this.#reason ??= reason
   }
@@ -84,10 +84,10 @@ export class Execution {
   }
 
   /**
-   * 还能发时发一段事件，返回是否发成。
+   * 可以继续发送时发送一段事件，返回是否发送成功。
    *
-   * 失败分两类：本地拒绝与协议错误回包都没有在页面上生效，按已确认前缀收场；
-   * 超时、断连、取消是「已入网未确认」，整次动作按 `unknown` 收场。
+   * 失败分两类：本地拒绝与协议错误响应均未在页面上生效，按已确认的前缀结束；
+   * 超时、断开与取消属于「已发出未确认」，整次动作以 `unknown` 结束。
    */
   async run(client: CdpClient, task: () => Promise<void>): Promise<boolean> {
     if (!this.open(client)) return false
@@ -95,7 +95,7 @@ export class Execution {
       await task()
       return true
     } catch (err) {
-      // 断连的长说明由后续观察那一格给出，这里只记原因本身。
+      // 断开连接的完整说明由后续观察的 `observationError` 给出，此处只记录原因。
       this.stop(
         err instanceof CdpDisconnectedError
           ? err.detail
@@ -114,7 +114,7 @@ export class Execution {
     }
   }
 
-  /** 按住 `ms` 毫秒。被取消、断开或期限不够时记下原因并返回 `false`。 */
+  /** 按住 `ms` 毫秒。被取消、断开或期限不足时记录原因并返回 `false`。 */
   async hold(client: CdpClient, ms: number): Promise<boolean> {
     if (ms <= 0) return this.open(client)
     if (ms > leftMs(this.deadline)) {
@@ -128,7 +128,7 @@ export class Execution {
     return this.open(client)
   }
 
-  /** 收尾之后仍未确认松开的键与鼠标键。 */
+  /** 收尾之后仍未确认释放的键与鼠标键。 */
   unreleased(keys: string[]): void {
     this.#unreleased = keys
   }
@@ -141,7 +141,7 @@ export class Execution {
     return {
       state,
       confirmedUnits: this.#confirmed,
-      ...(state === 'completed' ? {} : { reason: this.#reason ?? '动作没有做完' }),
+      ...(state === 'completed' ? {} : { reason: this.#reason ?? '动作未完成' }),
       ...unreleased,
     }
   }
@@ -167,10 +167,10 @@ function pause(signal: AbortSignal, ms: number): Promise<boolean> {
 }
 
 /**
- * 输入收尾：把本客户端还按着的键与鼠标放开，返回这几个会话里仍未确认松开的键码与鼠标键。
- * 成功、失败、取消同一条路径。
+ * 输入收尾：释放本客户端仍按下的键与鼠标键，返回这些会话中仍未确认释放的键码与鼠标键。
+ * 成功、失败与取消使用同一路径。
  *
- * 用独立的清理预算，不从动作预算里扣：动作预算耗尽正是最需要收尾的时候。
+ * 使用独立的清理预算，不从动作预算中扣除：动作预算耗尽时仍须完成收尾。
  */
 export async function settleInput(
   client: CdpClient,
@@ -187,9 +187,9 @@ export async function settleInput(
 }
 
 /**
- * 一个会话上这次动作按着的键。
+ * 本次动作在一个会话上按下的键。
  *
- * 只用来算下一条事件的 `key` / `text` / `modifiers`，不是释放依据：释放依据是
+ * 只用于计算下一条事件的 `key` / `text` / `modifiers`，不作为释放依据：释放依据是
  * `CdpClient` 的按下表，见文件头第 1 条。
  */
 export class Keyboard {
@@ -200,14 +200,14 @@ export class Keyboard {
     readonly sessionId: string,
   ) {}
 
-  /** 此刻按着的修饰键的位，鼠标事件的 `modifiers` 取它。 */
+  /** 当前按下的修饰键位，鼠标事件的 `modifiers` 取此值。 */
   get modifiers(): number {
     return modifierBits(this.#down)
   }
 
   /**
-   * 把按下集合换成 `keys`：先按与按下相反的顺序抬起不再需要的键，再按 `keys` 的顺序按下
-   * 新增的键。已经按着的键不重发，页面看到的是一次按下与一次抬起，不是连续重复。
+   * 将按下集合更换为 `keys`：先按与按下相反的顺序抬起不再需要的键，再按 `keys` 的顺序按下
+   * 新增的键。已按下的键不重发，页面收到的是一次按下与一次抬起，而不是连续重复。
    */
   async to(keys: readonly string[], deadline: number): Promise<void> {
     for (const code of [...this.#down].reverse()) {
@@ -223,15 +223,15 @@ export class Keyboard {
   }
 
   /**
-   * 发一条按键事件。字段按发出那一刻的按下集合算：修饰键自己的按下含自身，抬起不含自身。
+   * 发送一条按键事件。字段按发送时刻的按下集合计算：修饰键按下时包含自身，抬起时不包含自身。
    *
-   * `nativeVirtualKeyCode` 各平台都填 Windows 虚拟键码，不按宿主平台分支：Windows 上它就是
-   * 原生键码；Linux 的 Chrome 154 上填与不填，字符、回车、退格、方向键、Tab、`Ctrl+A`、
-   * `Ctrl+Z` 与文本插入的结果完全一致。有字符的按下发 `keyDown` 带 `text`，否则 `rawKeyDown`。
+   * `nativeVirtualKeyCode` 在各平台均填写 Windows 虚拟键码，不按宿主平台分支：在 Windows 上它即为
+   * 原生键码；在 Linux 的 Chrome 154 上，无论是否填写，字符、回车、退格、方向键、Tab、`Ctrl+A`、
+   * `Ctrl+Z` 与文本插入的结果完全一致。带字符的按下发送带 `text` 的 `keyDown`，否则发送 `rawKeyDown`。
    */
   async #send(type: 'keyDown' | 'keyUp', code: string, deadline: number): Promise<void> {
     const fields = keyEvent(code, this.#down)
-    if (!fields) throw new CdpError(`认不出的键码 ${code}`)
+    if (!fields) throw new CdpError(`无法识别的键码 ${code}`)
     const text = type === 'keyDown' ? fields.text : undefined
     await this.client.send(
       'Input.dispatchKeyEvent',
@@ -250,11 +250,11 @@ export class Keyboard {
 }
 
 /**
- * 按阶段执行一段按键计划，返回是否全部做完。一个阶段是一个单元。
+ * 按阶段执行一段按键计划，返回是否全部完成。一个阶段是一个单元。
  *
- * 每个阶段先换按下集合、再按住它的时长。`guard` 在第二个阶段起每次换集合之前调用，
- * 返回非空即停——文档换了之后，计划的后半段不能落到新页面上。最后一个阶段按完之后
- * 全部抬起；中途停下时由调用方的收尾放开。
+ * 每个阶段先更换按下集合，再按住该阶段的时长。从第二个阶段起，每次更换集合之前调用 `guard`，
+ * 返回非空即停止：文档更换之后，计划的后续部分不得作用于新页面。最后一个阶段完成之后
+ * 全部抬起；中途停止时由调用方的收尾释放。
  */
 export async function runKeyPhases(
   keyboard: Keyboard,
@@ -278,7 +278,7 @@ export async function runKeyPhases(
   return run.run(client, () => keyboard.to([], run.deadline))
 }
 
-/** 发一条鼠标事件。坐标必须属于接收命令的会话本地根，不能把顶层坐标交给子帧。 */
+/** 发送一条鼠标事件。坐标必须属于接收命令的会话的本地根，不得将顶层坐标交给子帧。 */
 export async function mouseEvent(
   client: CdpClient,
   sessionId: string,
@@ -295,10 +295,10 @@ export async function mouseEvent(
 }
 
 /**
- * 把指针移到落点。按下之前必须先发这一条。
+ * 将指针移到落点。按下之前必须先发送此事件。
  *
- * 让页面先收到指针进入与悬停，再按下。移动不构成渲染同步，不能靠它保证跨帧命中；
- * 调用方必须传入目标会话及其坐标。它不计入点击或拖动回执的单元数。
+ * 使页面先收到指针进入与悬停，再收到按下。移动不构成渲染同步，不能依靠它保证跨帧命中；
+ * 调用方必须传入目标会话及其坐标。该事件不计入点击或拖动回执的单元数。
  */
 export async function aimAt(
   client: CdpClient,

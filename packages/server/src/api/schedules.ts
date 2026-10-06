@@ -1,10 +1,10 @@
 /**
  * 定时任务。
  *
- * 只暴露当前请求指定的那个工作区：任务表是全机一份，但一个工作区的界面不该看到、
- * 更不该改到另一个工作区的任务。
+ * 只暴露当前请求指定的工作区：任务表全机共用一份，但一个工作区的界面不应看到，
+ * 更不应修改另一个工作区的任务。
  *
- * 上一次跑成什么样由仓储按关联 Run 投影（`scheduleView`），这里不另拼一份终态——
+ * 上一次执行的结果由仓储按关联 Run 投影（`scheduleView`），此处不另行拼接终态：
  * 界面、模型工具与刷新之后必须给出同一个答案。
  */
 
@@ -20,9 +20,9 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
   if (p === '/api/schedules' && req.method === 'GET') {
     return json({
       schedules: listSchedules(d.store, d.workspaceRoot, Date.now()),
-      // 这句必须由服务端给，别让每个客户端各写一遍措辞：
-      // 「关掉应用就不触发」是这个功能的前提，不是补充说明。
-      runtimeOnly: '仅在应用运行时触发；关闭期间错过的不逐次补跑，重新打开后每条任务最多跑一次',
+      // 该说明必须由服务端下发，不要让各客户端各自撰写措辞：
+      // 关闭应用即不触发是该功能的前提，不是补充说明。
+      runtimeOnly: '仅在应用运行时触发；关闭期间错过的不逐次补执行，重新打开后每条任务最多执行一次',
     })
   }
 
@@ -42,12 +42,12 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
       const body = (await req.json().catch(() => null)) as Partial<Schedule> | null
       if (!body) return json({ error: 'bad request' }, 400)
       // id / workspaceRoot / createdAt / 触发游标 / 绑定会话 / newConversation
-      // 一律不接受客户端改写：让客户端能写 lastRunAt 等于把「下次什么时候触发」交给它决定，
-      // 而改 newConversation 会让同一条任务的历史一半在绑定会话里、一半散在别处。
+      // 一律不接受客户端修改：允许客户端写入 lastRunAt 等于把下次触发时间交给客户端决定，
+      // 而修改 newConversation 会使同一任务的历史一半在绑定会话中、一半分散在其他会话中。
       //
-      // 部分更新以现值为底：时间字段按**最终** kind 从 `current` 兜底，只发 `{enabled}`
-      // 的启停不该因为没带时刻而被判不合法。与最终 kind 无关的那些字段不带，
-      // 切换触发方式时旧字段随之写 NULL，不留一个不再生效却还在盘上的时刻。
+      // 部分更新以当前值为基础：时间字段按最终的 kind 从 `current` 回退取值，只发送 `{enabled}`
+      // 的启停请求不应因未携带时刻而被判定为不合法。与最终 kind 无关的字段不携带，
+      // 切换触发方式时旧字段随之写为 NULL，不在磁盘上保留一个不再生效的时刻。
       const kind = body.kind ?? current.kind
       const everyMinutes = body.everyMinutes ?? current.everyMinutes
       const atHour = body.atHour ?? current.atHour
@@ -73,18 +73,18 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
     }
   }
 
-  // 立刻跑一次。
+  // 立即运行。
   //
-  // 这是这个功能唯一能被**当场验证**的入口：定时触发要等到点，
-  // 而「配好了会不会跑」是用户第一个想知道的事。
+  // 这是该功能唯一能当场验证的入口：定时触发需要等到触发时刻，
+  // 而配置完成后能否执行是用户最先关心的问题。
   //
-  // 走与自动触发同一个认领事务和同一个投递函数，但不推进自动触发游标：推进的话
-  // 「每天 9 点」会因为下午点过一次试跑而当天不再自动触发。上一轮还没落终态时回 409，
+  // 使用与自动触发相同的认领事务与投递函数，但不推进自动触发游标：推进游标时，
+  // 「每天 9 点」会因下午手动试运行一次而当天不再自动触发。上一轮尚未进入终态时返回 409，
   // 不叠加第二轮。
   const schedRunMatch = /^\/api\/schedules\/([^/]+)\/run$/.exec(p)
   if (schedRunMatch && req.method === 'POST') {
     if (d.runs.updating) return json({ error: '应用正在更新，请稍后重试' }, 409)
-    // 没配默认模型就没法定会话的接口与模型；当场回 422，而不是建一条发不出请求的会话。
+    // 未配置默认模型时无法确定会话的接口与模型；当场返回 422，而不是创建一条无法发出请求的会话。
     if (!d.config.active) return json({ error: NO_MODEL_MESSAGE }, 422)
     const claimed = claimScheduleNow(d.store, schedRunMatch[1]!, d.workspaceRoot, {
       now: Date.now(),
@@ -92,7 +92,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
       model: d.config.active.model,
     })
     if (!claimed.ok) {
-      if (claimed.reason === 'busy') return json({ error: '上一次触发还没跑完' }, 409)
+      if (claimed.reason === 'busy') return json({ error: '上一次触发尚未执行完毕' }, 409)
       if (claimed.reason === 'workspace_missing') return json({ error: '项目已移除' }, 409)
       return json({ error: 'not found' }, 404)
     }

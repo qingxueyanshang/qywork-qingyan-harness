@@ -1,12 +1,12 @@
 /**
  * `qy exec` 与 `qy tui` 的启动段。**覆盖范围**：`index.ts` 的 `runExec` 与 `tui.ts` 的
- * `runTui` 里「开主库 → 导入旧任务文件 → 开正文库 → 回收孤儿正文」这四步，
- * 以及给交互式那条路做入口的 `tui-child.ts`。
+ * `runTui` 中「打开主库 → 导入旧任务文件 → 打开正文库 → 回收孤儿正文」这四步，
+ * 以及交互模式的子进程入口 `tui-child.ts`。
  *
- * 两条都起真进程：这两个入口各自开库、各自装配，在同一个测试进程里调它们既跑不到
- * `runExec`（没有导出），也会让 `runTui` 去抢测试进程的 stdin。
+ * 两个用例都启动真实进程：这两个入口各自打开数据库、各自装配，在同一个测试进程中调用它们，既无法调用
+ * `runExec`（未导出），也会使 `runTui` 争用测试进程的 stdin。
  *
- * 模型请求一律回 401：要验的是起轮之前那几步，`auth_failed` 不在重发名单里，一次就落终态。
+ * 模型请求一律返回 401：要验证的是开始一轮之前的步骤，`auth_failed` 不在重发列表中，一次即进入终态。
  */
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
@@ -63,8 +63,8 @@ interface Fixture {
 }
 
 /**
- * 一份「上一个进程留下的现场」：旧任务文件还在，正文库中存在一条尚未登记完成的孤儿记录，
- * 另有一条仍被引用的正文。两库都关掉再交给子进程——Windows 上同一个文件两个写句柄要撞锁。
+ * 构造上一个进程遗留的现场：旧任务文件仍在，正文库中存在一条尚未完成登记的孤儿记录，
+ * 另有一条仍被引用的正文。两个库都关闭后再交给子进程：Windows 上同一文件的两个写句柄会发生锁冲突。
  */
 async function fixture(name: string): Promise<Fixture> {
   const home = await mkdtemp(join(root, `${name}-home-`))
@@ -108,10 +108,10 @@ async function fixture(name: string): Promise<Fixture> {
     sourceType: 'shell',
     body: enc.encode('还有人引用'),
   })
-  // 正文提交了、引用没登记——进程在主库提交前退出留下的就是这个形状。
+  // 正文已提交、引用未登记：进程在主库提交前退出时遗留的即为这种形状。
   const orphan = content.put(enc.encode(`${name} 上次没登记完`))
 
-  // 旧文件里那条记录的原样形状。键名是历史事实，不跟着 `Schedule` 改。
+  // 旧文件中记录的原始形状。键名是历史事实，不随 `Schedule` 修改。
   const legacy = [
     {
       id: `sc_legacy_${name}`,
@@ -139,12 +139,12 @@ async function fixture(name: string): Promise<Fixture> {
   }
 }
 
-/** 重开两库核对结果，核完关掉。 */
+/** 重新打开两个库核对结果，核对完毕后关闭。 */
 function verify(f: Fixture): void {
   const store = new Store({ path: f.dbPath })
   const content = new ContentStore(f.contentPath)
   try {
-    // 旧文件改名了，且只改名一次：重启时文件不在就不再导入。
+    // 旧文件已改名，且只改名一次：重启时文件不存在即不再导入。
     expect(existsSync(join(f.home, 'schedules.json'))).toBe(false)
     expect(existsSync(join(f.home, 'schedules.json.imported'))).toBe(true)
 
@@ -153,7 +153,7 @@ function verify(f: Fixture): void {
     expect(rows[0]?.title).toBe('旧文件里的任务')
     expect(rows[0]?.everyMinutes).toBe(30)
 
-    // 孤儿收掉了，仍被引用的一个字节没动。
+    // 孤儿正文已回收，仍被引用的正文未作任何改动。
     expect(content.info(f.orphanHash)).toBeNull()
     expect(content.info(f.keptHash)).not.toBeNull()
   } finally {
@@ -172,35 +172,35 @@ async function run(argv: string[], home: string): Promise<{ exitCode: number; st
   return { exitCode, stderr }
 }
 
-test('qy exec 跑一次：旧任务文件导进表并改名，孤儿正文回收', async () => {
+test('qy exec 执行一次：旧任务文件导入数据表并改名，孤儿正文被回收', async () => {
   const f = await fixture('exec')
   const before = providerCalls
   const { exitCode, stderr } = await run(
     [process.execPath, CLI, 'exec', '汇报一次', '--cwd', f.ws, '--json'],
     f.home,
   )
-  // 401 落终态，`qy exec` 以 1 退出——这一轮确实发出去了，不是在开库那一步就停了。
+  // 401 进入终态，`qy exec` 以 1 退出：本轮请求确实已发出，而不是在打开数据库时就已停止。
   expect(exitCode).toBe(1)
   expect(providerCalls).toBeGreaterThan(before)
   expect(stderr).not.toContain('正文回收失败')
   verify(f)
 }, 120_000)
 
-test('qy tui 起一次：同样导入并回收，读不到输入就收尾', async () => {
+test('qy tui 启动一次：同样导入并回收，无法读取输入时结束', async () => {
   const f = await fixture('tui')
   const { exitCode, stderr } = await run([process.execPath, TUI_CHILD, f.home, f.ws], f.home)
   expect(exitCode).toBe(0)
-  // stderr 上有一条模型不在内置目录的提醒；回收失败会另写一行，不能被它盖过去。
+  // stderr 中有一条模型不在内置目录的提醒；回收失败会另写一行，断言只针对后者。
   expect(stderr).not.toContain('正文回收失败')
   verify(f)
 }, 120_000)
 
-test('第二次起同一个 home 不再导入，也不误删仍被引用的正文', async () => {
+test('第二次以同一个 home 启动时不再导入，也不误删仍被引用的正文', async () => {
   const f = await fixture('twice')
   await run([process.execPath, TUI_CHILD, f.home, f.ws], f.home)
   verify(f)
 
-  // 再放一个孤儿，再起一次：改名后的文件不会被当成待导入的输入，任务仍是一条。
+  // 再放入一条孤儿正文并再次启动：改名后的文件不会被当作待导入的输入，任务仍为一条。
   const content = new ContentStore(f.contentPath)
   const second = content.put(enc.encode('第二次留下的孤儿'))
   content.close()

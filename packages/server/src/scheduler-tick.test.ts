@@ -1,13 +1,13 @@
 /**
- * 生产的 tick 间隔常量本身。**覆盖范围**：`scheduler.ts` 的 `SCHEDULER_TICK_MS` 缺省值，
+ * 生产环境的 tick 间隔常量。**覆盖范围**：`scheduler.ts` 的 `SCHEDULER_TICK_MS` 缺省值，
  * 以及 `server.ts` 不传 `schedulerTickMs` 时的装配。
  *
- * **这条测试要跑半分多钟，是全仓最慢的一条。** 它必须存在：其余调度用例都经
- * `ServeOptions.schedulerTickMs` 注入毫秒级间隔，因此那个缺省值改成 30 分钟、
- * 或者 `startScheduler` 的第二个参数在装配时被漏掉，全部照样绿。
- * 这条不注入任何间隔，等的就是真实的第一跳。
+ * **该测试需要运行半分钟以上，是全仓最慢的测试。** 它必须存在：其余调度用例都经由
+ * `ServeOptions.schedulerTickMs` 注入毫秒级间隔，因此缺省值被改为 30 分钟、
+ * 或 `startScheduler` 的第二个参数在装配时被遗漏时，全部用例仍然通过。
+ * 本用例不注入任何间隔，等待真实的第一次 tick。
  *
- * 只等一跳，不等第二跳：要验的是缺省值能把任务带到终态，不是间隔的精度。
+ * 只等待第一次 tick，不等待第二次：验证的是缺省值能使任务到达终态，而不是间隔的精度。
  */
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
@@ -18,7 +18,7 @@ import { configPath, loadConfig, type QyConfig } from '@qywork/runtime'
 import { createConversation, createSchedule, Store, upsertWorkspace } from '@qywork/store'
 import { serve } from './server.ts'
 
-/** 401 假 provider：`auth_failed` 不在重发名单里，一次就落终态。 */
+/** 401 假 provider：`auth_failed` 不在重发名单中，一次即进入终态。 */
 let providerCalls = 0
 const provider = Bun.serve({
   port: 0,
@@ -63,7 +63,7 @@ afterAll(async () => {
   await rm(home, { recursive: true, force: true }).catch(() => {})
 })
 
-test('不注入间隔：生产的缺省 tick 把一条到期任务带到 Run 终态', async () => {
+test('不注入间隔：生产环境的缺省 tick 使到期任务的 Run 进入终态', async () => {
   const dir = await mkdtemp(join(root, 'ws-'))
   const store = new Store({ path: join(root, 'tick.sqlite3') })
   const ws = upsertWorkspace(store, dir, '定时')
@@ -79,7 +79,7 @@ test('不注入间隔：生产的缺省 tick 把一条到期任务带到 Run 终
     { title: '每分钟一次', prompt: '汇报一次。', kind: 'interval', everyMinutes: 1 },
     home.id,
   )
-  // 建出来就已经到期：`isDue` 按 createdAt 与游标算，回拨两分钟让第一跳就认领得到。
+  // 创建时即已到期：`isDue` 按 createdAt 与游标计算，回拨两分钟使第一次 tick 即可认领。
   store.db
     .query('UPDATE schedules SET created_at = ? WHERE id = ?')
     .run(Date.now() - 120_000, made.id)
@@ -112,9 +112,9 @@ test('不注入间隔：生产的缺省 tick 把一条到期任务带到 Run 终
     expect(run.status).toBe('failed')
     expect(run.error_code).toBe('auth_failed')
     expect(providerCalls).toBeGreaterThan(0)
-    // 第一跳不可能早于 30 秒：早于它说明装配处又把间隔注了进去。
+    // 第一次 tick 不可能早于 30 秒：早于 30 秒说明装配处注入了间隔。
     expect(waited).toBeGreaterThanOrEqual(30_000)
-    // 只认领一次：绑定的那条会话原样复用，一条 Run。
+    // 只认领一次：复用绑定的会话，只有一条 Run。
     const counts = store.db
       .query<{ conversations: number; runs: number }, []>(
         'SELECT (SELECT count(*) FROM conversations) AS conversations, (SELECT count(*) FROM runs) AS runs',

@@ -59,7 +59,7 @@ function fresh() {
   cleanups.push(() => {
     content.close()
     store.close()
-    // 删不掉不当失败：`serve()` 预热扩展是异步的，用例结束时它可能还握着这个目录。
+    // 删除失败不算失败：`serve()` 预热扩展是异步的，用例结束时它可能仍占用这个目录。
     // 整个 .tmp/tests/run-* 由 scripts/run-tests.ts 统一收尾。
     try {
       rmSync(dir, { recursive: true, force: true })
@@ -209,7 +209,7 @@ test('回收失败与删除成功分开回：会话确实删了，另给一句�
 
   expect(res.status).toBe(200)
   expect(res.body.ok).toBe(true)
-  expect(String(res.body.reclaimError)).toMatch(/^已删除，但正文空间没回收：/)
+  expect(String(res.body.reclaimError)).toMatch(/^已删除，但正文空间未回收：/)
   expect(getConversation(store, c.conv.id)).toBeNull()
 })
 
@@ -247,7 +247,7 @@ test('反复启动关闭之后，停掉的服务不再认领到期任务', async
     handle.stop()
   }
 
-  // 全停之后才放一条到期任务。还有计时器在跑的话，10 ms 一跳，下面这段等待里必被认领。
+  // 全停之后才放一条到期任务。仍有计时器在运行的话，每 10 ms 触发一次，下面这段等待里必被认领。
   const home = createConversation(store, {
     workspaceId: ws.id,
     provider: 'fake',

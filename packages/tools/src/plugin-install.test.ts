@@ -1,8 +1,8 @@
 /**
- * 覆盖范围：`plugin-install.ts`（装插件工具）。
+ * 覆盖范围：`plugin-install.ts`（安装插件工具）。
  *
- * 这条路径通向「一段代码在下次加载时会跑」，而这个产品没有「逐次询问」那一档，
- * 所以**把关全在清单校验上**：清单不合法不装、同 id 不带 replace 不装。
+ * 安装使一段代码在下次加载时执行，而本产品没有「逐次询问」权限模式，
+ * 因此**安全检查全部依赖清单校验**：清单不合法时不安装，同 id 且未带 replace 时不安装。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -60,33 +60,33 @@ function ctx(plugins: ToolContext['plugins'], approve = true): ToolContext & { a
   } as ToolContext & { asked: string[] }
 }
 
-describe('装插件', () => {
-  test('校验过了就装，不问任何人', async () => {
+describe('安装插件', () => {
+  test('校验通过即安装，不请求用户确认', async () => {
     const p = port(good)
     const c = ctx(p.port)
     const res = await installPluginTool.fn({ path: 'demo' }, c)
     expect(res.status).toBe('success')
     expect(p.installs).toEqual([{ dir: 'demo', replace: false }])
-    // 这个产品只有 auto / full 两档，没有「逐次询问」。
+    // 本产品只有 auto / full 两种权限模式，没有「逐次询问」。
     expect(c.asked).toHaveLength(0)
   })
 
-  test('端口回拒时如实报失败', async () => {
+  test('端口拒绝时如实报告失败', async () => {
     const p = port(good, { ok: false, error: '目标目录写不进去' })
     const res = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))
     expect(res.status).toBe('failure')
     expect(res.message).toContain('写不进去')
   })
 
-  test('清单不合法当场拒，也不往下走', async () => {
+  test('清单不合法时立即拒绝，不继续安装', async () => {
     const p = port({ ok: false, error: '目录里没有 qywork.plugin.json' })
     const res = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))
     expect(res.status).toBe('failure')
     expect(p.installs).toHaveLength(0)
   })
 
-  /** 覆盖已装的那一份要模型显式说：`replace` 不给就是拒绝，不是默认覆盖。 */
-  test('同 id 已存在：不带 replace 直接拒，带了才往下走', async () => {
+  /** 覆盖已安装的插件需要模型显式声明：未传 `replace` 即拒绝，不默认覆盖。 */
+  test('同 id 已存在：未带 replace 时直接拒绝，带上后才继续安装', async () => {
     const p = port({ ...good, replacing: true })
     const first = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))
     expect(first.status).toBe('failure')
@@ -98,13 +98,13 @@ describe('装插件', () => {
   })
 
   /** 安装后不会立即生效；若不说明，模型会在同一轮内反复查找该新工具。 */
-  test('装完的提示里说清下一条消息才生效', async () => {
+  test('安装完成的提示中写明下一条消息起生效', async () => {
     const p = port(good)
     const res = await installPluginTool.fn({ path: 'demo' }, ctx(p.port))
     expect(res.message).toContain('下一条消息')
   })
 
-  test('没有通道时不装也不假装', async () => {
+  test('没有插件通道时不安装，也不报告成功', async () => {
     const res = await installPluginTool.fn({ path: 'demo' }, ctx(undefined))
     expect(res.status).toBe('failure')
   })

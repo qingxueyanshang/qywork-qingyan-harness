@@ -1,12 +1,12 @@
 /**
- * desktop 结果的投递闸。
+ * desktop 结果的投递上限处理。
  *
- * **覆盖范围**：`desktop-results.ts` 的上限、大小判定、紧凑表示的无损往返、视图选取、
+ * 覆盖范围：`desktop-results.ts` 的上限、大小判定、紧凑表示的无损往返、视图选取、
  * 长值处理、JSONL 存盘、资源引用与实际用量记账、无名结构容器的省略与 `depth` 重算、
  * `rect` 开关、动作字典的分组写法、差异投递的三个条件与差异形状，以及 `desktop.ts` 四个
- * 出口（observe 含补图分支、act、wait、act_sequence）接上它之后的结果形状。
+ * 出口（observe 含附图分支、act、wait、act_sequence）接入它之后的结果形状。
  *
- * 夹具是合成的：控件名称、值与窗口标题都不取自真实应用或网页。
+ * 夹具为合成数据：控件名称、值与窗口标题均不取自真实应用或网页。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -35,7 +35,7 @@ import { observationBudget } from './sink.ts'
 
 const WINDOW = 200_000
 const LIMIT = observationBudget(WINDOW)
-/** 一个控件的值长到单独一个就装不下视图。 */
+/** 单个控件的值长度即超出视图上限。 */
 const LONG_VALUE = '合成长文本。'.repeat(10_000)
 
 const 根: DesktopElement = {
@@ -71,7 +71,7 @@ const 内层: DesktopElement = {
   offscreen: false,
   actions: [],
 }
-/** 值特别长的那一个，排在表的前面：视图装它时预算还很宽，值仍然只能留前缀。 */
+/** 值极长的控件，位于表的前部：视图放入它时预算仍充足，值仍只保留前缀。 */
 const 长值框: DesktopElement = {
   ref: 'e4',
   parentRef: 'e1',
@@ -97,7 +97,7 @@ const 焦点框: DesktopElement = {
   focused: true,
   actions: [{ action: 'set_value', delivery: ['background'] }],
 }
-/** 动作目标，排在整张表的最后一个：优先进视图靠的是优先级，不是位置。 */
+/** 动作目标，位于整张表的末尾：进入视图的先后由优先级决定，不由位置决定。 */
 const 目标: DesktopElement = {
   ref: 'e6',
   parentRef: 'e3',
@@ -125,7 +125,7 @@ function filler(count: number): DesktopElement[] {
   }))
 }
 
-/** 自己就带着长值的动作目标，打字动作打在它上面。 */
+/** 自身带有长值的动作目标，输入动作作用于该控件。 */
 const 长值目标: DesktopElement = {
   ref: 'e7',
   parentRef: 'e3',
@@ -219,7 +219,7 @@ function fakePort(table: DesktopElement[], acted: Acted): DesktopPort {
   }
 }
 
-/** 观察与动作后重读都带同一个超长标题。 */
+/** 观察与动作后的重读带有同一个超长标题。 */
 function longTitlePort(title: string, acted: Acted): DesktopPort {
   const after = snapshot(大表, { observationId: 'do_2', title })
   return {
@@ -274,7 +274,7 @@ interface Delivery {
   unsaved?: string
 }
 
-/** 交给模型的一个控件：动作表换成下标，与默认值相同的格省掉。 */
+/** 交给模型的控件：动作表替换为下标，省略与默认值相同的字段。 */
 type CompactElement = Omit<DesktopElement, 'actions' | 'enabled' | 'offscreen' | 'automationId'> & {
   enabled?: boolean
   offscreen?: boolean
@@ -284,7 +284,7 @@ type CompactElement = Omit<DesktopElement, 'actions' | 'enabled' | 'offscreen' |
   valueOmittedChars?: number
 }
 
-/** 字典里的一项：按投递方式分组的动作名，`unavailable` 是此刻做不了的动作与原因。 */
+/** 字典中的一项：按投递方式分组的动作名，`unavailable` 是此刻无法执行的动作与原因。 */
 type ActionGroups = Record<string, string[] | Record<string, string>>
 
 interface DeliveredObservation {
@@ -305,12 +305,12 @@ function observationOf(outcome: ToolOutcome): DeliveredObservation {
   return (data.observation ?? data) as DeliveredObservation
 }
 
-/** 动作表按动作名排序：分组写法不保留组与组之间的原顺序，比较时两边都排一次。 */
+/** 动作表按动作名排序：分组写法不保留组间的原顺序，比较时两侧各排序一次。 */
 function sorted(actions: DesktopElement['actions']): DesktopElement['actions'] {
   return [...actions].sort((a, b) => (a.action < b.action ? -1 : a.action > b.action ? 1 : 0))
 }
 
-/** 字典里的一项还原成动作表。 */
+/** 把字典中的一项还原为动作表。 */
 function actionsOf(groups: ActionGroups | undefined): DesktopElement['actions'] {
   if (groups === undefined) throw new Error('actionSet 不在字典里')
   const out: DesktopElement['actions'] = []
@@ -328,7 +328,7 @@ function actionsOf(groups: ActionGroups | undefined): DesktopElement['actions'] 
   return sorted(out)
 }
 
-/** 投给模型的控件不带 `parentRef` 与 `rect`：层级由前序顺序与 `depth` 表达。 */
+/** 投递给模型的控件不含 `parentRef` 与 `rect`：层级由前序顺序与 `depth` 表达。 */
 function delivered(
   elements: readonly DesktopElement[],
 ): Omit<DesktopElement, 'parentRef' | 'rect'>[] {
@@ -338,7 +338,7 @@ function delivered(
   }))
 }
 
-/** 按结果自带的默认值与动作字典还原成完整控件。 */
+/** 按结果自带的默认值与动作字典还原为完整控件。 */
 function expand(observation: DeliveredObservation): DesktopElement[] {
   return observation.elements.map(({ actionSet, ...rest }) => {
     const actions = actionsOf(observation.actionSets[actionSet])
@@ -346,7 +346,7 @@ function expand(observation: DeliveredObservation): DesktopElement[] {
   })
 }
 
-/** 存盘正文按行拼回一份观察。 */
+/** 把存盘正文按行重组为一份观察。 */
 function fromJsonl(body: Uint8Array): DesktopSnapshot {
   const lines = new TextDecoder().decode(body).split('\n')
   const meta = JSON.parse(lines[0] as string) as Omit<DesktopSnapshot, 'elements'>
@@ -359,7 +359,7 @@ async function actOnTarget(ctx: ToolContext, observationId = 'do_1'): Promise<To
 }
 
 describe('小控件表整份内联', () => {
-  test('控件按结果自带的字典还原后与观察逐字段相等（不带 parentRef），元数据原样，不带投递说明，也不落盘', async () => {
+  test('控件按结果自带的字典还原后与观察逐字段相等（不含 parentRef），元数据不变，不含投递说明，也不落盘', async () => {
     const sink = fakeSink()
     const ctx = context(fakePort(小表, { acts: 0 }), sink)
     const r = await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
@@ -374,7 +374,7 @@ describe('小控件表整份内联', () => {
     expect(sink.landed).toHaveLength(0)
   })
 
-  test('动作表去重：同一个动作表只进字典一次，与默认值相同的格不出现在控件上', async () => {
+  test('动作表去重：同一动作表只登记进字典一次，与默认值相同的字段不出现在控件上', async () => {
     const ctx = context(fakePort(小表, { acts: 0 }), fakeSink())
     const observation = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
 
@@ -385,7 +385,7 @@ describe('小控件表整份内联', () => {
     }
   })
 
-  /** 字典按投递方式分组：还原后与端口交回的动作表逐项相等，组内同名动作只写一次。 */
+  /** 字典按投递方式分组：还原后与端口返回的动作表逐项相等，组内同名动作只写一次。 */
   test('动作字典按投递方式分组，还原后与原动作表逐项相等', async () => {
     const 混合: DesktopElement['actions'] = [
       { action: 'set_value', delivery: [], unavailable: 'read_only' },
@@ -409,7 +409,7 @@ describe('小控件表整份内联', () => {
     expect(expand(observation)).toEqual(delivered([根, 甲, 乙]))
   })
 
-  test('动作结果里的观察同样整份内联，回执字段原样', async () => {
+  test('动作结果中的观察同样整份内联，回执字段不变', async () => {
     const sink = fakeSink()
     const ctx = context(fakePort(小表, { acts: 0 }), sink)
     const r = await actOnTarget(ctx)
@@ -422,11 +422,11 @@ describe('小控件表整份内联', () => {
   })
 
   /**
-   * 原始失败形状：110 个控件，账号、密码与登录按钮排在第 84–91 项，前面是 73 个浏览器
-   * 外框节点。按比例缩过的上限只投前 26 项，三个表单控件全部缺席。外框里的无名 pane
-   * 是结构容器，不列。
+   * 原始失败形状：110 个控件，账号、密码与登录按钮位于第 84–91 项，其前为 73 个浏览器
+   * 外框节点。按比例缩小后的上限只投递前 26 项，三个表单控件全部缺失。外框中的无名 pane
+   * 是结构容器，不列出。
    */
-  test('装得下单次投递上限的整窗控件表整份给出，排在末尾的表单控件都在', async () => {
+  test('不超过单次投递上限的整窗控件表整份给出，位于末尾的表单控件全部包含在内', async () => {
     const 外框 = Array.from({ length: 73 }, (_, i) => ({
       ref: `e${10 + i}`,
       parentRef: 'e1',
@@ -481,8 +481,8 @@ describe('小控件表整份内联', () => {
   })
 })
 
-describe('大控件表只投一部分', () => {
-  test('目标与它的祖先在视图里，即使目标排在整张表的最后', async () => {
+describe('大控件表只投递一部分', () => {
+  test('目标及其祖先在视图中，即使目标位于整张表的末尾', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
     const view = observationOf(await actOnTarget(ctx)).elements
     const refs = view.map((e) => e.ref)
@@ -494,14 +494,14 @@ describe('大控件表只投一部分', () => {
     expect(view.length).toBeLessThan(大表.length)
   })
 
-  test('当前焦点控件在视图里', async () => {
+  test('当前焦点控件在视图中', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
     const view = observationOf(await actOnTarget(ctx)).elements
     expect(view.map((e) => e.ref)).toContain('e5')
   })
 
-  /** 视图里层级只由 `depth` 与顺序表达：祖先缺席时，焦点控件读起来挂在前一个控件下面。 */
-  test('焦点控件的祖先随它一起进视图', async () => {
+  /** 视图中的层级只由 `depth` 与顺序表达：祖先缺失时，焦点控件会被解读为前一个控件的子控件。 */
+  test('焦点控件的祖先随其一起进入视图', async () => {
     const 深外层 = { ...外层, ref: 'e9', automationId: 'deepOuter' }
     const 深内层 = { ...内层, ref: 'e10', parentRef: 'e9', automationId: 'deepInner' }
     const 深焦点 = { ...焦点框, ref: 'e11', parentRef: 'e10', depth: 3 }
@@ -513,15 +513,15 @@ describe('大控件表只投一部分', () => {
     expect(view.map((e) => e.ref).slice(-3)).toEqual(['e9', 'e10', 'e11'])
   })
 
-  /** 动作行行尾的窗口名取自这两格，裁过的观察里它们必须还在。 */
-  test('窗口的 app 与 title 留在原位置', async () => {
+  /** 动作行末尾的窗口名取自这两个字段，裁剪后的观察中必须保留它们。 */
+  test('窗口的 app 与 title 保留在原位置', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
     const observation = observationOf(await actOnTarget(ctx))
     expect(observation.app).toBe('合成应用')
     expect(observation.title).toBe('合成标题')
   })
 
-  test('控件不从中间切开，长值留前 200 字并标出省略字数，动作表下标都指得到', async () => {
+  test('控件不从中间截断，长值保留前 200 字并标出省略字数，动作表下标均有效', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
     const observation = observationOf(await actOnTarget(ctx))
     const view = observation.elements
@@ -546,7 +546,7 @@ describe('大控件表只投一部分', () => {
     expect(picked).toEqual([...picked].sort((a, b) => a - b))
   })
 
-  test('写明共多少、给了多少、其余在哪读', async () => {
+  test('写明总数、已投递数与其余部分的读取位置', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
     const r = await actOnTarget(ctx)
     const delivery = observationOf(r).delivery
@@ -555,12 +555,12 @@ describe('大控件表只投一部分', () => {
     expect(delivery?.deliveredElements).toBe(observationOf(r).elements.length)
     expect(delivery?.resourceId).toBe('rs_1')
     expect(delivery?.unsaved).toBeUndefined()
-    expect(r.message).toContain(`已投 ${delivery?.deliveredElements}/${大表.length} 个控件`)
+    expect(r.message).toContain(`已投递 ${delivery?.deliveredElements}/${大表.length} 个控件`)
     expect(r.message).toContain('rs_1')
     expect(r.message).toContain('read_resource')
   })
 
-  test('采集侧的未采全与投递侧的没给全分列', async () => {
+  test('采集侧的采集不完整与投递侧的投递不完整分别列出', async () => {
     const port = fakePort(大表, { acts: 0 })
     const ctx = context(
       {
@@ -588,8 +588,8 @@ describe('大控件表只投一部分', () => {
     expect(size).toBeLessThanOrEqual(LIMIT)
   })
 
-  /** 标题由窗口自报、长度无界，而上限按整条结果计量：原值进视图时控件一个都投不出去。 */
-  test('超长窗口标题只留前缀并标出省略字数，原值在存盘正文里，窗口名仍显示得出', async () => {
+  /** 标题由窗口自行报告，长度无上限，而上限按整条结果计量：原值进入视图时，任何控件都无法投递。 */
+  test('超长窗口标题只保留前缀并标出省略字数，原值在存盘正文中，窗口名仍能显示', async () => {
     const 长标题 = '合成标题'.repeat(2_000)
     const sink = fakeSink()
     const ctx = context(longTitlePort(长标题, { acts: 0 }), sink)
@@ -608,7 +608,7 @@ describe('大控件表只投一部分', () => {
     expect(size).toBeLessThanOrEqual(LIMIT)
   })
 
-  test('observe 的 message 里超长标题只印前缀，控件照样投得出去', async () => {
+  test('observe 的 message 中超长标题只输出前缀，控件仍能投递', async () => {
     const 长标题 = '合成标题'.repeat(2_000)
     const ctx = context(longTitlePort(长标题, { acts: 0 }), fakeSink())
     const r = await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
@@ -621,10 +621,10 @@ describe('大控件表只投一部分', () => {
 })
 
 /**
- * 目标控件的值也可能很长。回执与控件表两处印同一份长文本时，回执自己就把上限吃满，
+ * 目标控件的值也可能很长。回执与控件表同时输出同一份长文本时，回执本身即占满上限，
  * 视图只剩优先控件。
  */
-describe('目标值很长时回执仍然短', () => {
+describe('目标值很长时回执仍保持简短', () => {
   const 打字 = {
     windowId: 'dw_1',
     observationId: 'do_1',
@@ -650,17 +650,17 @@ describe('目标值很长时回执仍然短', () => {
     )
   }
 
-  test('回执只印值有多少字，原文不进 message', async () => {
+  test('回执只输出值的字数，原文不进入 message', async () => {
     const after = `${LONG_VALUE}尾巴`
     const r = await desktopActTool.fn(打字, typingContext(after))
 
     expect(r.message).toContain(`值 ${after.length} 字`)
-    expect(r.message).toContain('在控件表里')
+    expect(r.message).toContain('见控件表')
     expect(r.message).not.toContain('合成长文本。合成长文本。')
     expect(r.message.length).toBeLessThan(500)
   })
 
-  test('整条结果不超过上限，视图里还有按原顺序补进来的控件', async () => {
+  test('整条结果不超过上限，视图中还包含按原顺序补入的控件', async () => {
     const r = await desktopActTool.fn(打字, typingContext(`${LONG_VALUE}尾巴`))
     const view = observationOf(r).elements
 
@@ -669,30 +669,30 @@ describe('目标值很长时回执仍然短', () => {
       DEFAULT_DENSITY,
     )
     expect(size).toBeLessThanOrEqual(LIMIT)
-    // 目标与祖先之外还装得下别的控件。
+    // 除目标与祖先外，还能容纳其他控件。
     expect(view.filter((e) => e.name.startsWith('合成条目')).length).toBeGreaterThan(0)
     const target = view.find((e) => e.ref === 'e7')
     expect(target?.value).toBe(LONG_VALUE.slice(0, 200))
     expect(target?.valueOmittedChars).toBe(LONG_VALUE.length + 2 - 200)
   })
 
-  test('读回按完整值判：目标里有这段文字就是一致', async () => {
+  test('回读按完整值判定：目标中包含输入的文字即为一致', async () => {
     const r = await desktopActTool.fn(打字, typingContext(`${LONG_VALUE}尾巴`))
     expect(r.status).toBe('success')
-    expect(r.message).not.toContain('读回不一致')
+    expect(r.message).not.toContain('回读不一致')
   })
 
-  test('读回按完整值判：目标里没有这段文字就是不一致', async () => {
+  test('回读按完整值判定：目标中不包含输入的文字即为不一致', async () => {
     const r = await desktopActTool.fn(打字, typingContext(LONG_VALUE))
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
     expect(r.errorKind).toBe('desktop_readback_mismatch')
-    expect(r.message).toContain('读回不一致')
+    expect(r.message).toContain('回读不一致')
   })
 })
 
 describe('存盘正文与资源引用', () => {
-  test('JSONL 第一行是非元素元数据，之后每行一个控件，拼回与原观察相等', async () => {
+  test('JSONL 第一行是非元素元数据，之后每行一个控件，重组后与原观察相等', async () => {
     const 带空值: DesktopElement = {
       ref: 'e8',
       parentRef: 'e1',
@@ -704,7 +704,7 @@ describe('存盘正文与资源引用', () => {
       enabled: false,
       offscreen: false,
       weakIdentity: false,
-      // 协议里没有 null 字段；夹具里造一个，锁住 JSONL 不把 null 折成缺席。
+      // 协议中没有 null 字段；夹具中构造一个，确保 JSONL 不把 null 转换为缺失。
       selection: { multiple: false, required: false, selected: [], truncated: null },
       actions: [],
     } as unknown as DesktopElement
@@ -737,7 +737,7 @@ describe('存盘正文与资源引用', () => {
     expect(back.elements[3]?.value).toBe(LONG_VALUE)
   })
 
-  test('资源引用进 outcome.resources，带状态、字节数与覆盖事实', async () => {
+  test('资源引用写入 outcome.resources，包含状态、字节数与覆盖事实', async () => {
     const sink = fakeSink()
     const ctx = context(fakePort(大表, { acts: 0 }), sink)
     const r = await actOnTarget(ctx)
@@ -756,8 +756,8 @@ describe('存盘正文与资源引用', () => {
   })
 })
 
-describe('存不下时照实说', () => {
-  test('没有正文库：动作事实不变，不给地址，写明未返回的部分读不回来', async () => {
+describe('无法保存时如实说明', () => {
+  test('没有正文库：动作事实不变，不提供地址，写明未返回的部分无法读取', async () => {
     const acted = { acts: 0 }
     const ctx = context(fakePort(大表, acted), null)
     const r = await actOnTarget(ctx)
@@ -772,11 +772,11 @@ describe('存不下时照实说', () => {
     expect(r.message).toContain('未保存')
     expect(r.message).toContain('无法回读')
     expect(r.message).not.toContain('read_resource')
-    // 不重做动作。
+    // 不重新执行动作。
     expect(acted.acts).toBe(1)
   })
 
-  test('写失败：原因照实回，仍然只投一部分，不发假地址', async () => {
+  test('写入失败：如实返回原因，仍只投递一部分，不提供无效地址', async () => {
     const acted = { acts: 0 }
     const failing: SinkPort = {
       land() {
@@ -797,7 +797,7 @@ describe('存不下时照实说', () => {
     expect(acted.acts).toBe(1)
   })
 
-  test('小表不受影响：没有 sink 也整份内联', async () => {
+  test('小表不受影响：没有 sink 时同样整份内联', async () => {
     const ctx = context(fakePort(小表, { acts: 0 }), null)
     const r = await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
     expect(observationOf(r).delivery).toBeUndefined()
@@ -806,7 +806,7 @@ describe('存不下时照实说', () => {
 })
 
 describe('实际用量记账', () => {
-  test('投多少记多少，只记一次', async () => {
+  test('按实际投递量记账，只记一次', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
     openBatchBudget(ctx.state, 1_000_000)
     const r = await actOnTarget(ctx)
@@ -818,7 +818,7 @@ describe('实际用量记账', () => {
     expect(1_000_000 - batchRemaining(ctx)).toBe(spent)
   })
 
-  test('越过本次决策额度时动作不被拒，余额报 0，其后的读取准入不使用假余额', async () => {
+  test('超出本次决策额度时不拒绝动作，余额报告为 0，其后的读取准入不使用虚假余额', async () => {
     const ctx = context(fakePort(大表, { acts: 0 }), fakeSink())
     openBatchBudget(ctx.state, 1000)
     expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
@@ -828,13 +828,13 @@ describe('实际用量记账', () => {
     expect(r.status).toBe('success')
     expect((r.data as { dispatch: string }).dispatch).toBe('submitted')
     expect(batchRemaining(ctx)).toBe(0)
-    // 累计值没有被截回额度：随后的读取准入照旧拒绝。
+    // 累计值未被截断到额度：随后的读取准入仍然拒绝。
     expect(chargeBatchBudget(ctx, 100).ok).toBe(false)
   })
 })
 
 describe('四个出口', () => {
-  test('observe 的补图分支：图片走 images 通道，不进存盘正文，窗口名仍在 data 顶层', async () => {
+  test('observe 的附图分支：图片经由 images 通道，不进入存盘正文，窗口名仍在 data 顶层', async () => {
     const sink = fakeSink()
     const ctx = context(fakePort(大表, { acts: 0 }), sink)
     const r = await desktopObserveTool.fn({ windowId: 'dw_1', capture: 'combined' }, ctx)
@@ -848,7 +848,7 @@ describe('四个出口', () => {
     expect(observationOf(r).delivery?.resourceId).toBe('rs_1')
   })
 
-  test('wait 保留 found 与原因，只有观察被裁', async () => {
+  test('wait 保留 found 与原因，只裁剪观察', async () => {
     const port = fakePort(大表, { acts: 0 })
     const ctx = context(
       {
@@ -875,7 +875,7 @@ describe('四个出口', () => {
     expect(observationOf(r).elements.map((e) => e.ref)).toContain('e6')
   })
 
-  test('序列保留逐步回执与停止点，只有最后那份观察按上限处理', async () => {
+  test('序列保留逐步回执与停止点，只有最后一份观察按上限处理', async () => {
     const acted = { acts: 0 }
     const ctx = context(fakePort(大表, acted), fakeSink())
     const r = await desktopActSequenceTool.fn(
@@ -923,7 +923,7 @@ describe('精简投递', () => {
     rect: 盒,
     actions: [],
   }
-  /** 无名 pane，只承载层级。挂着滚动入视动作，那不算状态。 */
+  /** 无名 pane，只承载层级。带有 scroll_into_view 动作，该动作不算作状态。 */
   const 外壳: DesktopElement = {
     ref: 'e21',
     parentRef: 'e1',
@@ -973,23 +973,23 @@ describe('精简投递', () => {
     rect: { x: 420, y: 310, width: 200, height: 24 },
     actions: [{ action: 'set_value', delivery: ['background'] }],
   }
-  /** 无名但带着滚动位置：状态在，照列。 */
+  /** 无名但带有滚动位置：存在状态，照常列出。 */
   const 滚动区: DesktopElement = { ...外壳, ref: 'e25', automationId: '', scroll: { vertical: 0 } }
-  /** 无名但被禁用：非默认状态，照列。 */
+  /** 无名但被禁用：属于非默认状态，照常列出。 */
   const 灰容器: DesktopElement = { ...夹层, ref: 'e26', parentRef: 'e1', depth: 1, enabled: false }
   const 精简表 = [登录页, 说明, 外壳, 表单, 夹层, 账号, 滚动区, 灰容器]
 
-  /** 端口形状去掉 `parentRef` 与 `rect`，换上投递里的 `depth`。 */
+  /** 端口形状去除 `parentRef` 与 `rect`，改用投递中的 `depth`。 */
   function lean(e: DesktopElement, depth: number): Omit<DesktopElement, 'parentRef' | 'rect'> {
     const { parentRef: _parentRef, rect: _rect, ...rest } = e
     return { ...rest, depth }
   }
 
   /**
-   * 原 `depth` 留着的话，账号框是 4 层、前面没有 3 层的控件，读起来就近挂到说明文字那一层；
-   * 重算之后它的父控件是前面最近的 1 层「登录」。
+   * 保留原 `depth` 时，账号框为第 4 层而前面没有第 3 层的控件，会被解读为说明文字所在层级的子控件；
+   * 重算后它的父控件是前面最近的第 1 层「登录」。
    */
-  test('无名结构容器不列，depth 按列出的祖先计，其余字段与端口形状逐字段相同', async () => {
+  test('无名结构容器不列出，depth 按列出的祖先计算，其余字段与端口形状逐字段相同', async () => {
     const ctx = context(fakePort(精简表, { acts: 0 }), fakeSink())
     const observation = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
 
@@ -1003,7 +1003,7 @@ describe('精简投递', () => {
     ])
   })
 
-  test('includeRect 为真时带 rect；默认与动作之后的观察都不带', async () => {
+  test('includeRect 为真时包含 rect；默认观察与动作之后的观察均不包含', async () => {
     const ctx = context(fakePort(精简表, { acts: 0 }), fakeSink())
     const withRect = observationOf(
       await desktopObserveTool.fn({ windowId: 'dw_1', includeRect: true }, ctx),
@@ -1023,7 +1023,7 @@ describe('精简投递', () => {
     expect(JSON.stringify(acted.data)).not.toContain('"rect"')
   })
 
-  test('动作目标是无名容器时照样列出，它下面的层级随之按它计', async () => {
+  test('动作目标是无名容器时仍然列出，其下层级以它为基准计算', async () => {
     const ctx = context(fakePort(精简表, { acts: 0 }), fakeSink())
     const acted = await desktopActTool.fn(
       { windowId: 'dw_1', observationId: 'do_1', action: 'scroll_into_view', ref: 'e21' },
@@ -1037,7 +1037,7 @@ describe('精简投递', () => {
     expect(observed.elements.map((e) => e.ref)).not.toContain('e21')
   })
 
-  test('按角色或文字筛出来的结构容器照样列出，命中数不变', async () => {
+  test('按角色或文字筛选出的结构容器仍然列出，命中数不变', async () => {
     const ctx = context(fakePort(精简表, { acts: 0 }), fakeSink())
     const byRole = await desktopObserveTool.fn({ windowId: 'dw_1', role: 'pane' }, ctx)
     expect(observationOf(byRole).elements.map((e) => e.ref)).toEqual(['e1', 'e21', 'e25'])
@@ -1048,7 +1048,7 @@ describe('精简投递', () => {
     expect(byQuery.message).toContain('命中的 1 个控件')
   })
 
-  test('「已投 N/M」只数列出的控件，结构容器不算未投', async () => {
+  test('「已投递 N/M」只统计列出的控件，结构容器不计为未投递', async () => {
     const 容器们 = Array.from({ length: 50 }, (_, i) => ({
       ...外壳,
       ref: `e${9000 + i}`,
@@ -1060,7 +1060,7 @@ describe('精简投递', () => {
     expect(delivery?.totalElements).toBe(大表.length)
   })
 
-  test('存盘正文仍是端口交回的整份：结构容器、rect 与原 depth 都在', async () => {
+  test('存盘正文仍是端口返回的整份控件表：结构容器、rect 与原 depth 均保留', async () => {
     const 带容器的大表 = [...大表.slice(0, -1), 外壳, 表单, 夹层, 账号, 目标]
     const sink = fakeSink()
     const ctx = context(fakePort(带容器的大表, { acts: 0 }), sink)
@@ -1071,8 +1071,8 @@ describe('精简投递', () => {
   })
 
   /**
-   * 合成一张浏览器形状的表：外框三层无名 pane 包着标题栏按钮、工具栏与地址栏，网页正文
-   * 六层无名 group 包着文字、链接、两个输入框与一个登录按钮，每个控件都带包围盒与指针动作。
+   * 合成一张浏览器结构的控件表：外框三层无名 pane 包含标题栏按钮、工具栏与地址栏，网页正文
+   * 六层无名 group 包含文字、链接、两个输入框与一个登录按钮，每个控件均带有包围盒与指针动作。
    */
   function browserShaped(): { host: DesktopElement[]; port: DesktopElement[] } {
     const pointer: DesktopElement['actions'] = [
@@ -1148,7 +1148,7 @@ describe('精简投递', () => {
     return { host, port }
   }
 
-  /** 端口直接交出宿主 ref 时的投递：长编号、rect 与结构容器都在，字典规则与现投递相同。 */
+  /** 端口直接返回宿主 ref 时的投递：包含长编号、rect 与结构容器，字典规则与当前投递相同。 */
   function hostShapedChars(table: readonly DesktopElement[]): number {
     const sets: string[] = []
     const elements = table.map(
@@ -1169,8 +1169,8 @@ describe('精简投递', () => {
     return JSON.stringify({ defaults, actionSets, elements }).length
   }
 
-  /** 这张表的比值约三成；`rect` 或长编号回到投递里，比值超过四成。 */
-  test('浏览器形状的控件表：精简投递不到宿主编号写法的四成', async () => {
+  /** 该表的比值约为三成；投递中重新加入 `rect` 或长编号时，比值超过四成。 */
+  test('浏览器结构的控件表：精简投递不足宿主编号写法的四成', async () => {
     const { host, port } = browserShaped()
     const ctx = context(fakePort(port, { acts: 0 }), fakeSink())
     const observation = observationOf(await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx))
@@ -1183,7 +1183,7 @@ describe('精简投递', () => {
 })
 
 describe('差异投递', () => {
-  /** 一张装得下单次上限的表：窗口根、两个分组，其下各一串可点的条目。 */
+  /** 一张不超过单次上限的表：窗口根、两个分组，每个分组下有一组可点击的条目。 */
   function page(prefix: string, count: number): DesktopElement[] {
     const click: DesktopElement['actions'] = [
       { action: 'invoke', delivery: ['background'] },
@@ -1207,7 +1207,7 @@ describe('差异投递', () => {
     return [根, ...groups, ...items]
   }
 
-  /** 观察交回第 0 份，之后每次动作依次交回下一份，编号 do_1、do_2……。 */
+  /** 观察返回第 0 份，之后每次动作依次返回下一份，编号为 do_1、do_2……。 */
   function steppedPort(tables: DesktopElement[][]): { port: DesktopPort; acted: string[] } {
     const acted: string[] = []
     let at = 0
@@ -1243,8 +1243,8 @@ describe('差异投递', () => {
   const act = (ctx: ToolContext, observationId: string, ref = 'e10') =>
     desktopActTool.fn({ windowId: 'dw_1', observationId, action: 'invoke', ref }, ctx)
 
-  /** 原始失败形状：点一下什么都没变，下一份观察仍整份重投。 */
-  test('动作之后界面没变：只投一句「与基底相同」，字符数不到整份的一成', async () => {
+  /** 原始失败形状：点击后界面没有变化，下一份观察仍整份重新投递。 */
+  test('动作之后界面未变化：只投递一句「与基底相同」，字符数不足整份的一成', async () => {
     const table = page('', 80)
     const ctx = context(steppedPort([table, table]).port, fakeSink())
     const base = await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
@@ -1261,7 +1261,7 @@ describe('差异投递', () => {
     expect(JSON.stringify(observationOf(after)).length).toBeLessThanOrEqual(full * 0.1)
   })
 
-  test('新增、改变与消失各自列出：新增与改变整行给出并带 parentRef，字典只含用到的项', async () => {
+  test('新增、改变与消失分别列出：新增与改变整行给出并附带 parentRef，字典只包含用到的项', async () => {
     const before = page('', 80)
     const after = before
       .filter((e) => e.ref !== 'e11')
@@ -1288,8 +1288,8 @@ describe('差异投递', () => {
     ])
   })
 
-  /** 压缩按全部消息留尾部：别的工具的大结果能把基底挤出去，基底之后落定过压缩就不再用它。 */
-  test('基底之后落定过一次压缩：整份投递，并成为新的基底', async () => {
+  /** 压缩按全部消息保留尾部：其他工具的大结果可能使基底移出保留范围，因此基底之后完成过压缩即不再使用它。 */
+  test('基底之后完成过一次压缩：整份投递，并成为新的基底', async () => {
     const table = page('', 80)
     const ctx = context(steppedPort([table, table, table]).port, fakeSink())
     await desktopObserveTool.fn({ windowId: 'dw_1' }, ctx)
@@ -1301,7 +1301,7 @@ describe('差异投递', () => {
     expect(diffOf(await act(ctx, 'do_2')).since).toBe('do_2')
   })
 
-  test('换了父控件的控件记作改变：差异里的行不在原位置上，只比投递字段会漏掉它', async () => {
+  test('更换父控件的控件记为改变：差异中的行不在原位置，只比较投递字段会遗漏它', async () => {
     const before = page('', 80)
     const moved = before.map((e) => (e.ref === 'e10' ? { ...e, parentRef: 'e3' } : e))
     const ctx = context(steppedPort([before, moved]).port, fakeSink())
@@ -1311,7 +1311,7 @@ describe('差异投递', () => {
     expect(diff.changed?.map((e) => [e.ref, e.parentRef])).toEqual([['e10', 'e3']])
   })
 
-  test('页面跳转，没变的控件不到一半：整份投递，并成为下一次差异的基底', async () => {
+  test('页面跳转后未变化的控件不足一半：整份投递，并成为下一次差异的基底', async () => {
     const first = page('', 80)
     const jumped = page('另一页 ', 80)
     const ctx = context(steppedPort([first, jumped, jumped]).port, fakeSink())
@@ -1323,7 +1323,7 @@ describe('差异投递', () => {
     expect(diffOf(await act(ctx, 'do_2')).since).toBe('do_2')
   })
 
-  test('基底与之后的差异累计超过单次上限：整份投递，从这一份重新累计', async () => {
+  test('基底与之后的差异累计超过单次上限：整份投递，从该份重新累计', async () => {
     const table = page('', 80)
     const input = (
       observationId: string,
@@ -1339,7 +1339,7 @@ describe('差异投递', () => {
     })
     const size = (parts: { message: string; data: unknown }) =>
       deliveredTokens(JSON.stringify({ message: parts.message, data: parts.data }), DEFAULT_DENSITY)
-    // 先量出一份整份与一份差异各多大。
+    // 先测量一份整份投递与一份差异的大小。
     const probe = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY)
     const base = size(desktopResult(input('do_1', 'top', probe)))
     const diff = size(desktopResult(input('do_2', 'observation', probe)))
@@ -1356,8 +1356,8 @@ describe('差异投递', () => {
     expect((run('do_4', 'observation').observation as DiffObservation).since).toBe('do_3')
   })
 
-  /** 历史只追加：整窗的整份投递之后，局部读取范围的基底仍在上下文里，照样当基底。 */
-  test('基底按窗口与读取范围分开记：整窗整份不作废同一窗口局部读取范围的基底', async () => {
+  /** 历史只追加：整窗的整份投递之后，局部读取范围的基底仍在上下文中，仍作为基底使用。 */
+  test('基底按窗口与读取范围分别记录：整窗整份投递不使同一窗口局部读取范围的基底失效', async () => {
     const table = page('', 80)
     const state = openBatchBudget(new Map<string, unknown>(), Number.POSITIVE_INFINITY)
     const run = (observationId: string, scope: string | undefined, incremental: boolean) =>
@@ -1375,13 +1375,13 @@ describe('差异投递', () => {
     expect((run('do_4', undefined, true).observation as DiffObservation).since).toBe('do_2')
   })
 
-  test('筛过的视图不当基底，分页的观察不当基底且作废之前的基底', async () => {
+  test('筛选后的视图不作为基底，分页的观察不作为基底且使之前的基底失效', async () => {
     const table = page('', 80)
     const filtered = context(steppedPort([table, table]).port, fakeSink())
     await desktopObserveTool.fn({ windowId: 'dw_1', role: 'button' }, filtered)
     expect(diffOf(await act(filtered, 'do_1')).since).toBeUndefined()
 
-    // 小表先整份投递成为基底，随后同一个窗口的观察大到只能分页：之前的基底随之作废。
+    // 小表先整份投递并成为基底，随后同一窗口的观察过大而只能分页：之前的基底随之失效。
     const { port } = steppedPort([table, 大表, table])
     const paged = context({ ...port, observe: async () => snapshot(table) }, fakeSink())
     await desktopObserveTool.fn({ windowId: 'dw_1' }, paged)
@@ -1389,14 +1389,14 @@ describe('差异投递', () => {
     expect(diffOf(await act(paged, 'do_2', 'e6')).since).toBeUndefined()
   })
 
-  test('带 rect 的整份观察不当基底', async () => {
+  test('带 rect 的整份观察不作为基底', async () => {
     const table = page('', 80)
     const ctx = context(steppedPort([table, table]).port, fakeSink())
     await desktopObserveTool.fn({ windowId: 'dw_1', includeRect: true }, ctx)
     expect(diffOf(await act(ctx, 'do_1')).since).toBeUndefined()
   })
 
-  test('基底只在本 run 里成立：新 run 的第一份重读整份投递', async () => {
+  test('基底只在本 run 内有效：新 run 的第一次重读整份投递', async () => {
     const table = page('', 80)
     const { port } = steppedPort([table, table])
     await desktopObserveTool.fn({ windowId: 'dw_1' }, context(port, fakeSink()))
@@ -1405,7 +1405,7 @@ describe('差异投递', () => {
     expect(next.elements).toBeDefined()
   })
 
-  test('差异里没列出的控件照用基底里的编号，下一次动作带差异那一份的观察编号', async () => {
+  test('差异中未列出的控件沿用基底中的编号，下一次动作使用差异那一份的观察编号', async () => {
     const table = page('', 80)
     const { port, acted } = steppedPort([table, table, table])
     const ctx = context(port, fakeSink())

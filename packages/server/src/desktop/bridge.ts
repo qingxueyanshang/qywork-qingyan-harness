@@ -1,19 +1,19 @@
 ﻿/**
  * 桌面原生宿主连接的服务端一侧。
  *
- * 这条连接由宿主主动连上来，只承载桌面控件的观察与动作；聊天指令与浏览器资源操作
- * 都不经这里。服务端不发起连接，也不知道宿主进程在哪。
+ * 该连接由宿主主动建立，只承载桌面控件的观察与动作；聊天指令与浏览器资源操作
+ * 均不经由此处。服务端不发起连接，也不知道宿主进程的位置。
  *
  * 四条边界：
  *
- * 1. **宿主身份由服务端判定**，不看客户端自报的任何字段：只有本机回环连接、
- *    且带着本次启动的宿主凭据，才会被升级到这条路径；是哪一种宿主由 URL 路径决定。
- * 2. **断线即所有待决调用收尾，按执行事实分类**：写进 socket 之前失败的记
- *    `not_dispatched`，已经写出去的记 `unknown`。**不重放**任何已发出的操作。
+ * 1. **宿主身份由服务端判定**，不读取客户端自报的任何字段：只有本机回环连接、
+ *    且携带本次启动的宿主凭据，才会被升级到该路径；宿主类型由 URL 路径决定。
+ * 2. **断线时结束全部待决调用，按执行事实分类**：写入 socket 之前失败的记为
+ *    `not_dispatched`，已写出的记为 `unknown`。**不重放**任何已发出的操作。
  * 3. **跨代际的结果一律丢弃**：结果按 `requestId` 加 `connectionEpoch` 加
- *    `hostId`/`hostEpoch` 四项配对，对不上的迟到结果不得完成另一次调用。
- * 4. **执行实例换代走重发 `host.ready`**：WS 不断而 worker 被换掉时，宿主用新的
- *    `hostEpoch` 再发一次注册帧，旧实例名下的待决调用按第 2 条收尾。
+ *    `hostId`/`hostEpoch` 四项配对，不一致的迟到结果不得完成另一次调用。
+ * 4. **执行实例更换代际时重发 `host.ready`**：WS 未断开而 worker 被替换时，宿主以新的
+ *    `hostEpoch` 重新发送注册帧，旧实例名下的待决调用按第 2 条结束。
  */
 
 import type {
@@ -39,7 +39,7 @@ import { timingSafeEqual } from '../pairing.ts'
 /** 一次操作的默认期限。宿主按它拒绝过期请求，服务端按它拒绝本地待决调用。 */
 const DEFAULT_DEADLINE_MS = 20_000
 
-/** 已连上的宿主。没有宿主时整条电脑控制能力不发布。 */
+/** 已连接的宿主。没有宿主时不发布电脑控制能力。 */
 export interface NativeDesktopHost {
   hostId: string
   hostEpoch: number
@@ -53,15 +53,15 @@ export interface NativeDesktopHost {
 /**
  * 一次调用的结果。
  *
- * `dispatch` 是执行事实，**任何失败都要带着它**：把「宿主断了」压成一个普通异常，
- * 调用方就分不出「没执行」和「可能已经执行」，而后者禁止重发。
+ * `dispatch` 是执行事实，**任何失败都必须携带它**：将宿主断开概括为普通异常时，
+ * 调用方无法区分「未执行」与「可能已执行」，而后者禁止重发。
  */
 export interface DesktopCallResult {
   dispatch: DesktopResultFrame['dispatch']
   reason?: string
   observation?: DesktopObservation
   observationError?: string
-  /** 动作调用尚未返回时目标进程此刻的顶层窗口。见协议里的 `blocking`。 */
+  /** 动作调用尚未返回时目标进程当前的顶层窗口。见协议中的 `blocking`。 */
   blocking?: DesktopBlockingWindow[]
 }
 
@@ -82,7 +82,7 @@ interface Pending {
   hostId: string
   hostEpoch: number
   executorId: string
-  /** 这一帧有没有真的写进 socket。没写出去的那些收尾时记 `not_dispatched`。 */
+  /** 该帧是否已写入 socket。未写出的请求在结束时记为 `not_dispatched`。 */
   sent: boolean
 }
 
@@ -124,8 +124,8 @@ export class DesktopBridge {
   #hostChanges = new Set<(host: NativeDesktopHost | null) => void>()
 
   /**
-   * `foreground` 每条请求现读一次，不存快照：存一份的话，用户在运行中关掉前台接管
-   * 要等宿主换代际才生效。
+   * `foreground` 每条请求实时读取一次，不保存快照：保存快照时，用户在运行中关闭前台接管
+   * 要等到宿主更换代际才生效。
    */
   constructor(key: string, foreground: () => boolean) {
     this.#key = key
@@ -133,14 +133,14 @@ export class DesktopBridge {
   }
 
   /**
-   * 这条请求能不能升级成宿主连接。
+   * 判定该请求能否升级为宿主连接。
    *
-   * 回环地址是硬条件：局域网监听器复用同一份 handler，少了这一条，手机侧也能
-   * 走到凭据比较那一步。
+   * 回环地址是必要条件：局域网监听器复用同一份 handler，缺少该条件时手机端也能
+   * 进入凭据比较。
    *
-   * 凭据与浏览器宿主是同一份：两条路径由同一个桌面外壳进程发起，同一次启动只有一个
-   * 随机值。**区分宿主种类的是 URL 路径，不是客户端自报的字段**，所以共用凭据不会让
-   * 一条连接串到另一条的帧处理上。
+   * 凭据与浏览器宿主共用同一份：两条路径由同一个桌面外壳进程发起，同一次启动只有一个
+   * 随机值。**区分宿主种类的是 URL 路径，不是客户端自报的字段**，因此共用凭据不会使
+   * 一条连接进入另一类连接的帧处理。
    */
   accepts(req: Request, address: string | null): boolean {
     if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
@@ -149,7 +149,7 @@ export class DesktopBridge {
     return timingSafeEqual(presented, this.#key)
   }
 
-  /** 已连上的宿主。`null` = 现在没有桌面控制能力。 */
+  /** 已连接的宿主。`null` 表示当前没有桌面控制能力。 */
   host(): NativeDesktopHost | null {
     return this.#host
   }
@@ -167,8 +167,8 @@ export class DesktopBridge {
   /**
    * 发起一次桌面操作。
    *
-   * 没有宿主、worker 没就绪、系统没授权，三种都在本地拒绝且记 `not_dispatched`——
-   * 不能等远端返回，远端可能已经不在了。写 socket 之后才可能出现 `unknown`。
+   * 没有宿主、worker 未就绪、系统未授权，三种情况均在本地拒绝并记为 `not_dispatched`：
+   * 不能等待远端返回，远端可能已不存在。写入 socket 之后才可能出现 `unknown`。
    */
   request(
     op: DesktopOp,
@@ -222,7 +222,7 @@ export class DesktopBridge {
       const timer = setTimeout(() => {
         const pending = this.#pending.get(requestId)
         this.#pending.delete(requestId)
-        // 超时的动作请求可能已经在 OS 里执行完只是回执没回来，所以按已派发记。
+        // 超时的动作请求可能已在 OS 中执行完毕而回执尚未返回，因此按已派发记录。
         reject(
           new DesktopBridgeError(
             `桌面操作 ${op} 超时`,
@@ -241,7 +241,7 @@ export class DesktopBridge {
         sent: false,
       }
       this.#pending.set(requestId, entry)
-      // 登记先于发送：回执可能在 send 返回之前就被派发进来，那时表里必须已经有它。
+      // 先登记再发送：回执可能在 send 返回之前到达，此时表中必须已有该条目。
       try {
         socket.send(JSON.stringify(frame))
         entry.sent = true
@@ -250,7 +250,7 @@ export class DesktopBridge {
         clearTimeout(timer)
         reject(
           new DesktopBridgeError(
-            `桌面操作 ${op} 没有发出：${err instanceof Error ? err.message : String(err)}`,
+            `桌面操作 ${op} 未发出：${err instanceof Error ? err.message : String(err)}`,
             'not_dispatched',
           ),
         )
@@ -258,7 +258,7 @@ export class DesktopBridge {
     })
   }
 
-  /** 宿主连接上来。握手在 `accepts` 里做完了，这里只登记 socket。 */
+  /** 宿主已连接。握手已在 `accepts` 中完成，此处只登记 socket。 */
   open(ws: ServerWebSocket<SocketData>): void {
     if (this.#socket && this.#socket !== ws) {
       this.#socket.close(1000, 'replaced')
@@ -267,7 +267,7 @@ export class DesktopBridge {
     this.#socket = ws
   }
 
-  /** 宿主断开：待决调用按执行事实收尾，能力随之下线。 */
+  /** 宿主断开：待决调用按执行事实结束，能力随之撤销。 */
   close(ws: ServerWebSocket<SocketData>): void {
     if (this.#socket !== ws) return
     this.#socket = null
@@ -297,8 +297,8 @@ export class DesktopBridge {
   }
 
   #ready(frame: DesktopHostReadyFrame): void {
-    // 重连或换 worker 都按新代际重建：先让上一代的待决调用收尾，再登记新身份。
-    this.#failPending('桌面宿主已换代')
+    // 重连或更换 worker 均按新代际重建：先结束上一代的待决调用，再登记新身份。
+    this.#failPending('桌面宿主已重新注册')
     this.#host = {
       hostId: frame.hostId,
       hostEpoch: frame.hostEpoch,
@@ -323,7 +323,7 @@ export class DesktopBridge {
   /**
    * 认领一条结果。
    *
-   * 四项身份全对上才认。只对 `requestId` 的话，重连或换 worker 之后一条迟到的回执
+   * 四项身份全部一致才认领。只比较 `requestId` 时，重连或更换 worker 之后一条迟到的回执
    * 会结算一次编号恰好相同的新调用。
    */
   #result(frame: DesktopResultFrame): void {
@@ -334,7 +334,7 @@ export class DesktopBridge {
       pending.hostId !== frame.hostId ||
       pending.hostEpoch !== frame.hostEpoch
     ) {
-      log.warn('desktop', '丢弃代际对不上的迟到回执', { requestId: frame.requestId })
+      log.warn('desktop', '丢弃代际不一致的迟到回执', { requestId: frame.requestId })
       return
     }
     this.#pending.delete(frame.requestId)
@@ -351,8 +351,8 @@ export class DesktopBridge {
   /**
    * worker 就绪与系统授权的变化。
    *
-   * 只认当前执行实例发来的：旧实例的状态帧改不了新实例的能力。换实例走重发
-   * `host.ready`，不从这条事件里推。
+   * 只接受当前执行实例发送的事件：旧实例的状态帧不能改变新实例的能力。更换实例经由重发
+   * `host.ready` 完成，不从该事件推断。
    */
   #event(frame: DesktopEventFrame): void {
     const host = this.#host
@@ -362,11 +362,11 @@ export class DesktopBridge {
       frame.hostId !== host.hostId ||
       frame.hostEpoch !== host.hostEpoch
     ) {
-      log.warn('desktop', '丢弃代际对不上的状态事件', { kind: frame.kind })
+      log.warn('desktop', '丢弃代际不一致的状态事件', { kind: frame.kind })
       return
     }
     if (frame.kind !== 'worker.state') {
-      log.warn('desktop', '认不出的宿主事件', { kind: frame.kind })
+      log.warn('desktop', '无法识别的宿主事件', { kind: frame.kind })
       return
     }
     if (
@@ -376,7 +376,7 @@ export class DesktopBridge {
     ) {
       return
     }
-    // worker 退出或授权被撤销时，在途的那些调用已经没有人会回执，按已派发收尾。
+    // worker 退出或授权被撤销时，在途调用不会再收到回执，按执行事实结束。
     if (!frame.workerReady || !frame.authorized) this.#failPending('桌面宿主已不可用')
     this.#host = {
       ...host,
@@ -388,20 +388,20 @@ export class DesktopBridge {
   }
 
   /**
-   * 收掉一个执行者名下的待决调用。执行者释放时由协调器调。
+   * 结束某个执行者名下的待决调用。执行者释放时由协调器调用。
    *
-   * 分类与断线收尾同一条：**可证明未派发的才记 `not_dispatched`**。
+   * 分类规则与断线时相同：**可证明未派发的才记为 `not_dispatched`**。
    */
   settleExecutor(executorId: string, reason: string): void {
     this.#failPending(reason, (pending) => pending.executorId === executorId)
   }
 
   /**
-   * 待决调用收尾。
+   * 结束待决调用。
    *
-   * **可证明未派发的才记 `not_dispatched`**：`sent` 为假表示这一帧还没写进 socket。
-   * 其余一律 `unknown`——帧已经出去了，宿主收没收到、worker 有没有执行无从确定，
-   * 记成未执行会让调用方重发一次可能已经生效的动作。
+   * **可证明未派发的才记为 `not_dispatched`**：`sent` 为假表示该帧尚未写入 socket。
+   * 其余一律记为 `unknown`：帧已发出，宿主是否收到、worker 是否执行均无法确定，
+   * 记为未执行会使调用方重发一次可能已生效的动作。
    */
   #failPending(reason: string, match?: (pending: Pending) => boolean): void {
     for (const [id, pending] of [...this.#pending]) {

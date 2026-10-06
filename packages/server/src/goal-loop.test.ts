@@ -1,16 +1,16 @@
 /**
- * 目标自动续起的端到端回归。**用假 provider，不花钱、不联网。**
+ * 目标自动继续的端到端回归测试。**使用假 provider，不产生费用、不访问网络。**
  *
- * **覆盖范围**：`run-control.ts` 的续起判定（`startRun` 的 finally、排队、
- * 陈旧拒绝、停下的三条出口）、用户立目标那条路（`setGoal`）、`commands.ts` 的
- * `goal.set` 分支、`runs.ts` 的待续起标记，以及 `runtime/session.ts` 把
- * `run.error` 的正文写进 run 行那一手（这里有现成的真链路 + 会失败的假 provider）。
- * 目标本身的生命周期规则在 `store/goals.test.ts`，工具那一层在 `tools/goals.test.ts`。
+ * **覆盖范围**：`run-control.ts` 的自动继续判定（`startRun` 的 finally、排队、
+ * 陈旧拒绝、停止的三个出口）、用户设立目标的路径（`setGoal`）、`commands.ts` 的
+ * `goal.set` 分支、`runs.ts` 的自动继续标记，以及 `runtime/session.ts` 把
+ * `run.error` 的正文写入 run 行的步骤（此处已有真实链路与会失败的假 provider）。
+ * 目标本身的生命周期规则由 `store/goals.test.ts` 覆盖，工具层由 `tools/goals.test.ts` 覆盖。
  *
- * **为什么必须走真链路。** 这个功能的形状就是「一轮结束之后**自己**又起了一轮」。把 `startRun` 换成
- * 桩来测，测到的只是「桩被调用了」——真正会坏的是装配：
- * 目标事件到没到得了 run-control、finally 里读到的 stopReason 对不对、
- * 下一轮的用户消息里写了什么。
+ * **必须使用真实链路的原因。** 该功能的行为是「一轮结束之后**自动**发起下一轮」。把 `startRun`
+ * 替换为桩来测试，只能验证「桩被调用」；真正容易出错的是装配：
+ * 目标事件能否到达 run-control、finally 中读取的 stopReason 是否正确、
+ * 下一轮的用户消息写入了什么。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -66,7 +66,7 @@ function toolTurn(name: string, args: unknown): string {
   ])
 }
 
-/** 一轮纯文本收尾。 */
+/** 一轮以纯文本结束的响应。 */
 function textTurn(text: string): string {
   return sse([
     { type: 'response.created', response: { id: 'resp_text' } },
@@ -82,7 +82,7 @@ function usage() {
   return { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 0 } }
 }
 
-/** 这次请求怎么答。 */
+/** 本次请求的应答方式。 */
 type Turn = (body: string) => Response | Promise<Response>
 
 let script: Turn[] = []
@@ -95,15 +95,15 @@ const provider = Bun.serve({
     bodies.push(body)
     const next = script.shift()
     /*
-     * **脚本用完 = 401，不是再给一句无害的文本。**
+     * **脚本用完时返回 401，而不是再返回一句无害的文本。**
      *
-     * 循环没有轮数上限，而一句正常收尾的文本会让服务端接着起下一轮——脚本一空，
-     * 那条会话就在后台持续转下去，占用后面用例的脚本，断言全成赛跑。
-     * 401 判成 `auth_failed`，是个**当场终结**的答复（不在 `CONTINUABLE` 里）→
-     * 目标转 blocked → 循环停下。用例要多跑几轮就多写几条脚本。
+     * 循环没有轮数上限，而一条正常结束的文本响应会使服务端继续发起下一轮：脚本耗尽后，
+     * 该会话会在后台持续运行，占用后续用例的脚本，所有断言都变为竞态。
+     * 401 判定为 `auth_failed`，是**立即终止**的应答（不在 `CONTINUABLE` 中）→
+     * 目标转为 blocked → 循环停止。用例需要执行更多轮时，相应增加脚本条目。
      *
-     * 不要换成 5xx 或 400：那一档归 `provider_unavailable`，agent 循环会退避后
-     * 自动重发一次，因此脚本用完还会再打一次请求，`bodies` 平白多一条。
+     * 不要改为 5xx 或 400：它们归入 `provider_unavailable`，agent 循环会退避后
+     * 自动重发一次，因此脚本用完后还会再发出一次请求，`bodies` 会多出一条。
      */
     if (!next) return new Response('脚本已用完', { status: 401 })
     return next(body)
@@ -126,7 +126,7 @@ let subagents: SubagentRegistry
 let config: QyConfig
 let workspaceId = ''
 
-/** 收到的全部事件，按顺序。断言与等待都读它。 */
+/** 收到的全部事件，按到达顺序排列。断言与等待都读取它。 */
 let events: EventEnvelope[] = []
 
 beforeAll(async () => {
@@ -169,7 +169,7 @@ function deps() {
   return { store, content, config, bus, runs, subagents }
 }
 
-/** 每个用例一条干净的会话与一份干净的脚本。 */
+/** 每个用例使用一条新会话与一份新脚本。 */
 function conversation(): ConversationId {
   script = []
   bodies = []
@@ -191,17 +191,17 @@ async function waitFor(what: (e: AgentEvent) => boolean, ms = 10_000): Promise<A
   return null
 }
 
-/** 排队是 setTimeout(0)，多等几拍确认**没有**下一轮起来。 */
+/** 排队使用 setTimeout(0)，多等待几个周期以确认**没有**启动下一轮。 */
 async function settle(): Promise<void> {
   await Bun.sleep(120)
 }
 
 /**
- * 直接往账本里立一个目标并挂上待续起标记 —— 模拟「循环正开着」。
+ * 直接在账本中设立一个目标并设置自动继续标记，模拟「循环已开启」。
  *
- * 用真链路跑到那一步也可以，但那样每个用例都得先演一遍立目标的两轮对话。
- * 注意循环**没有轮数上限**：用例必须自己把它收掉（模型 complete / blocked，
- * 或制造一次非正常收尾），否则脚本一用完它会持续续起，占用后面用例的脚本。
+ * 也可以经由真实链路执行到这一步，但每个用例都需要先完成设立目标的两轮对话。
+ * 注意循环**没有轮数上限**：用例必须自行结束它（模型 complete / blocked，
+ * 或构造一次非正常收尾），否则脚本用完后它会持续自动继续，占用后续用例的脚本。
  */
 function seed(cv: ConversationId) {
   const r = createGoal(store, { conversationId: cv, objective: '慢慢做这件事' })
@@ -211,10 +211,10 @@ function seed(cv: ConversationId) {
 }
 
 /**
- * 立目标并**当场起第一轮** —— 用户 `/goal` 那条路。
+ * 设立目标并**立即发起第一轮**：对应用户 `/goal` 的路径。
  *
- * 直接落账本再走 `resumeGoal`（与 `setGoal` 收尾同一个排队入口），
- * 这样用例可以精确控制起点，不必先演一遍指令分发。
+ * 直接写入账本再调用 `resumeGoal`（与 `setGoal` 收尾使用同一个排队入口），
+ * 这样用例可以精确控制起点，无需先模拟一遍指令分发。
  */
 function startLoop(cv: ConversationId) {
   const goal = seed(cv)
@@ -225,25 +225,24 @@ function startLoop(cv: ConversationId) {
 
 // ───────────────────────── 用例 ─────────────────────────
 
-describe('一轮接一轮', () => {
+describe('连续执行多轮', () => {
   /**
-   * 原始缺口：`agent/loop/index.ts` 的 step 循环是 **run 内**的，一轮跑完就真的结束了，
-   * 没有任何代码会自动再起一轮。这条走的是**用户 `/goal` 那条真入口**——
-   * 立目标当场起第一轮，第二轮的请求必须由服务端自己发出来。
-   *
+   * 原始缺口：`agent/loop/index.ts` 的 step 循环在 **run 内**，一轮执行完毕即结束，
+   * 没有任何代码会自动发起下一轮。本用例经由**用户 `/goal` 的真实入口**：
+   * 设立目标时立即发起第一轮，第二轮的请求必须由服务端自行发出。
    */
-  test('用户立目标 → 当场起一轮 → 自己续下一轮 → 模型宣布完成就停', async () => {
+  test('用户设立目标 → 立即发起一轮 → 自动继续下一轮 → 模型宣布完成后停止', async () => {
     const cv = conversation()
     script = [
       (body) => {
-        expect(body).toContain('[自动续起]')
+        expect(body).toContain('[自动继续]')
         expect(body).toContain('把 calc 修好')
         return new Response(textTurn('先看一眼代码。'), { headers: SSE_HEADERS })
       },
-      // 第二轮：模型这次读到的 goal_id / revision 是真的，所以拿账本里的值来答。
+      // 第二轮：模型此次读取到的 goal_id / revision 是真实值，因此用账本中的值应答。
       (body) => {
         const goal = currentGoal(store, cv)
-        expect(body).toContain('[自动续起]')
+        expect(body).toContain('[自动继续]')
         return new Response(
           toolTurn('update_goal', {
             goal_id: goal?.id,
@@ -267,18 +266,18 @@ describe('一轮接一轮', () => {
     const goal = currentGoal(store, cv)
     expect(goal?.status).toBe('completed')
     expect(goal?.objective).toContain('把 calc 修好')
-    // 两轮 = 三个请求（第一轮一个、第二轮工具调用加收尾）。第三轮不该存在。
+    // 两轮共三个请求（第一轮一个，第二轮为工具调用与收尾）。不应存在第三轮。
     expect(bodies).toHaveLength(3)
     expect(runs.armedOf(cv)).toBeNull()
   }, 20_000)
 
   /**
-   * 同一条会话再 `/goal` 一次 = **改写现在这个**，不是并排立第二个。
+   * 同一条会话再执行一次 `/goal` 即**改写当前目标**，而不是另立第二个。
    *
-   * 起点是一个模型自己宣布受阻的目标：那之后循环停着、没有 run 在跑，
-   * 正是用户会再敲一次 `/goal` 的那一刻。
+   * 起点是一个由模型宣布受阻的目标：此后循环停止、没有 run 在运行，
+   * 正是用户会再次输入 `/goal` 的时刻。
    */
-  test('对着停下的目标再 /goal 一次 —— 改写正文并接着跑，不新开一个', async () => {
+  test('对已停止的目标再执行一次 /goal：改写正文并继续执行，不新建目标', async () => {
     const cv = conversation()
     script = [
       () => {
@@ -300,25 +299,25 @@ describe('一轮接一轮', () => {
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'blocked')
     await settle()
 
-    // 改写之后那一轮的脚本与请求单独看：验的是「新指令真的被跑了」。
+    // 单独检查改写之后那一轮的脚本与请求：验证「新指令确实被执行」。
     script = [ok(textTurn('换个方向做。'))]
     bodies = []
     events = []
     expect(setGoal(cv, '改成做乙', deps()).ok).toBe(true)
-    // 那一轮跑完脚本就空了，下一轮 500 收尾——循环不会留在后台转。
+    // 该轮执行完毕后脚本即用尽，下一轮以 401 结束，循环不会留在后台运行。
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'blocked')
     await settle()
 
     const second = currentGoal(store, cv)
-    // 同一个目标改了正文，不是并排立了第二个——账本里一条会话只有一个目标。
+    // 同一个目标改写了正文，而不是另立第二个：账本中一条会话只有一个目标。
     expect(second?.id).toBe(first.id)
     expect(second?.objective).toBe('改成做乙')
-    // 改写之后循环真的接着跑了，跑的是新指令。
+    // 改写之后循环确实继续执行，执行的是新指令。
     expect(bodies[0]).toContain('改成做乙')
   }, 20_000)
 
-  /** 有一轮在跑的时候不许改目标——那等于中途换掉它正在执行的指令。 */
-  test('正在跑的时候拒绝立目标，且说得出为什么', async () => {
+  /** 有一轮在运行时不允许修改目标：否则等于中途替换其正在执行的指令。 */
+  test('运行中拒绝设立目标，并给出原因', async () => {
     const cv = conversation()
     const hang: { release: (() => void) | null } = { release: null }
     script = [
@@ -340,15 +339,15 @@ describe('一轮接一轮', () => {
   }, 20_000)
 
   /**
-   * **循环不会自己停。** 没有轮数上限：模型不宣布收尾，它就一轮接一轮跑下去。
+   * **循环不会自行停止。** 没有轮数上限：模型不宣布结束，就会持续执行下一轮。
    *
-   * 这条锁的是那个决定本身。反过来说也是这条用例的价值——哪天有人给循环加回
-   * 一个静默的配额，这里会立刻红。收尾靠中断，不靠等它自己累死。
+   * 本用例锁定这一设计决定：给循环加入静默的配额时，本用例会立即失败。
+   * 结束依靠中断，而不是等待其自行耗尽。
    */
-  test('模型不收尾就一直续起，不存在自动上限', async () => {
+  test('模型不宣布结束就持续自动继续，不存在自动上限', async () => {
     const cv = conversation()
     const ROUNDS = 5
-    // 状态在**每一轮里面**取：跑完再取是赛跑——脚本一耗尽下一轮立刻 500 转 blocked。
+    // 状态在**每一轮内部**读取：执行完毕后再读取会产生竞态，因为脚本耗尽后下一轮立即以 401 转为 blocked。
     const seen: (string | undefined)[] = []
     script = Array.from({ length: ROUNDS }, (_, i) => () => {
       seen.push(currentGoal(store, cv)?.status)
@@ -356,48 +355,48 @@ describe('一轮接一轮', () => {
     })
 
     startLoop(cv)
-    // 收尾靠脚本耗尽（500 → blocked），不是靠等它自己累死。
+    // 结束依靠脚本耗尽（401 → blocked），而不是等待循环自行终止。
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'blocked')
     await settle()
 
-    // 五轮全都在目标 active 的状态下跑掉了——旧世界默认 12 轮，这里没有那个数。
+    // 五轮全都在目标 active 的状态下执行完毕，不存在默认 12 轮的上限。
     expect(seen).toEqual(Array(ROUNDS).fill('active'))
     expect(runs.armedOf(cv)).toBeNull()
   }, 20_000)
 })
 
-describe('四条防失控', () => {
+describe('四条防失控规则', () => {
   /**
-   * 人类消息优先。原始失败形状：用户插一句话，而排着的那次自动续起照样发出去，
-   * 因此模型手上同时有两条互相打架的指令。
+   * 用户消息优先。原始失败形状：用户插入一条消息，而已排队的自动继续仍被发出，
+   * 模型因此同时持有两条相互冲突的指令。
    */
-  test('用户发消息就把待续起标记清掉', async () => {
+  test('用户发送消息即清除自动继续标记', async () => {
     const cv = conversation()
-    // 目标直接落账本、标记手工挂上：这条用例要验的是「人一说话会怎样」，
-    // 前面那段怎么进入循环由别的用例覆盖。
+    // 目标直接写入账本、标记手动设置：本用例验证的是「用户发言后的行为」，
+    // 如何进入循环由其他用例覆盖。
     expect(seed(cv).status).toBe('active')
 
     script = [ok(textTurn('收到。'))]
     await startRun(cv, '先停一下，看看这个', undefined, deps())
-    // 同步就该清掉：清得晚一点，中间那次排队照样会发出去。
+    // 必须同步清除：清除稍晚时，期间已排队的那一次仍会被发出。
     expect(runs.armedOf(cv)).toBeNull()
 
     await waitFor((e) => e.type === 'run.finished')
     await settle()
-    // 人类那一轮之后没有再自动起轮。
+    // 用户发起的那一轮之后没有再自动发起新一轮。
     expect(bodies).toHaveLength(1)
     expect(currentGoal(store, cv)?.status).toBe('active')
   }, 20_000)
 
   /**
-   * 预留 + 陈旧拒绝。排队时记下 {goalId, revision}，真正发起前重读——
-   * 版本变了就丢弃这次排队。
+   * 预留与陈旧拒绝。排队时记录 {goalId, revision}，实际发起前重新读取；
+   * 版本变化即丢弃本次排队。
    */
-  test('排队期间目标被改过，这次排队作废', async () => {
+  test('排队期间目标被修改，本次排队作废', async () => {
     const cv = conversation()
     const goal = seed(cv)
 
-    // 排队之后、发起之前，目标被改了一次（另一端改写，或者模型自己改的）。
+    // 排队之后、发起之前，目标被修改了一次（由另一端改写，或由模型修改）。
     expect(resumeGoal(cv, deps())).toEqual({ ok: true })
     const edited = updateGoal(store, {
       conversationId: cv,
@@ -409,15 +408,15 @@ describe('四条防失控', () => {
     expect(edited.ok).toBe(true)
 
     await settle()
-    // 一个请求都没发出去——按几秒前的版本继续跑，跑的就不是这件事了。
+    // 未发出任何请求：按数秒前的版本继续执行，执行的就不再是当前的目标。
     expect(bodies).toHaveLength(0)
     expect(runs.armedOf(cv)).toBeNull()
   }, 20_000)
 
   /**
-   * 不自动重试异常。**provider 的错不会抛出 `session.ask`**，它被就地转成
-   * `run.finished{stopReason:'provider_error'}`——只认异常的话，一次故障会被
-   * 判成「正常跑完」然后接着续起，把一次失败放大成一串。
+   * 不自动重试异常。**provider 的错误不会从 `session.ask` 抛出**，它被就地转换为
+   * `run.finished{stopReason:'provider_error'}`：只识别异常时，一次故障会被
+   * 判定为「正常执行完毕」并继续自动执行，把一次失败放大为一连串失败。
    */
   test('provider 报错之后停在 blocked，不再自动重试', async () => {
     const cv = conversation()
@@ -433,17 +432,17 @@ describe('四条防失控', () => {
     expect(goal?.blockedCode).toBe('provider_error')
     expect(goal?.blockedReason).toBeTruthy()
     expect(runs.armedOf(cv)).toBeNull()
-    // 报错那一轮之后一个请求都不该再发。
+    // 报错的那一轮之后不应再发出任何请求。
     const after = bodies.length
     await settle()
     expect(bodies.length).toBe(after)
   }, 20_000)
 
   /** 取消之后暂停，不自动重启。 */
-  test('中断这一轮 = 目标转 paused 并解除标记', async () => {
+  test('中断本轮时目标转为 paused 并解除标记', async () => {
     const cv = conversation()
-    // 挂在对象上而不是裸 `let`：赋值发生在回调里，TS 的控制流分析看不见它，
-    // 裸变量在 finally 那一行会被窄化成 `never`。
+    // 存放在对象上而不是独立的 `let` 变量：赋值发生在回调中，TS 的控制流分析无法识别，
+    // 独立变量在 finally 所在行会被收窄为 `never`。
     const hang: { release: (() => void) | null } = { release: null }
     script = [
       () =>
@@ -477,12 +476,12 @@ describe('四条防失控', () => {
 })
 
 /**
- * 指令入口那一格。`handleCommand` 的分支只有一行，但**未实现 / 被拒的分支
- * 静默 return 是这个文件顶部点名的头号毛病**——客户端发完等不到任何反馈，
- * 界面上和「服务端正在处理」分不出来。
+ * 指令入口。`handleCommand` 的分支只有一行，但**未实现或被拒绝的分支不得静默 return**：
+ * 静默 return 时客户端发送后收不到任何反馈，
+ * 界面上与「服务端正在处理」无法区分。
  */
 describe('goal.set 指令', () => {
-  /** 收到指令的假连接：只记回执，不真的开 socket。 */
+  /** 接收指令的假连接：只记录回执，不打开真实的 socket。 */
   function socket() {
     const sent: Record<string, unknown>[] = []
     return {
@@ -494,9 +493,9 @@ describe('goal.set 指令', () => {
     }
   }
 
-  test('指令走通到账本，第一轮当场起来', async () => {
+  test('指令写入账本，并立即发起第一轮', async () => {
     const cv = conversation()
-    // 第一轮就把目标收掉：留着一个 12 轮的循环在跑，会占用后面用例的脚本。
+    // 第一轮即结束目标：留下一个运行中的循环会占用后续用例的脚本。
     script = [
       () => {
         const goal = currentGoal(store, cv)
@@ -524,12 +523,12 @@ describe('goal.set 指令', () => {
 
     await settle()
     expect(currentGoal(store, cv)?.objective).toBe('把测试跑绿')
-    // 指令被接受就不该有回执——回执只在拒绝时发。
+    // 指令被接受时不应有回执：回执只在拒绝时发送。
     expect(sock.sent).toHaveLength(0)
   }, 20_000)
 
-  /** 空正文被账本拒，理由必须**回到客户端**，不能只在服务端消失。 */
-  test('空正文被拒，且拒绝有回执', async () => {
+  /** 空正文被账本拒绝，原因必须**返回给客户端**，不能只停留在服务端。 */
+  test('空正文被拒绝，且拒绝有回执', async () => {
     const cv = conversation()
     const sock = socket()
 
@@ -545,11 +544,11 @@ describe('goal.set 指令', () => {
 })
 
 /**
- * 停止按钮那一格。
+ * 停止按钮。
  *
- * 按会话中断返回 `boolean`，指令入口必须把它答回去。丢掉它的现象是这一整类
- * 里最难查的一种：用户点了停止，按钮没反应、转圈继续转、一条日志都没有，
- * 「服务端在处理」和「这条指令没人接」在界面上完全一样。
+ * 按会话中断返回 `boolean`，指令入口必须把它作为应答返回。丢弃该返回值时问题最难排查：
+ * 用户点击停止后按钮无响应、运行状态持续、没有任何日志，
+ * 「服务端正在处理」与「该指令无人处理」在界面上完全相同。
  */
 describe('conversation.interrupt 指令', () => {
   function socket() {
@@ -563,7 +562,7 @@ describe('conversation.interrupt 指令', () => {
     }
   }
 
-  test('这条会话没有 run 在跑时必须回绝，不能静默', async () => {
+  test('会话没有运行中的 run 时必须拒绝，不能静默', async () => {
     const sock = socket()
     await handleCommand({ type: 'conversation.interrupt', conversationId: 'cv_idle' } as never, {
       ...deps(),
@@ -574,7 +573,7 @@ describe('conversation.interrupt 指令', () => {
     expect(sock.sent[0]?.command).toBe('conversation.interrupt')
   })
 
-  test('真的中断到了就不发回执 —— 回执只在拒绝时发', async () => {
+  test('实际中断成功时不发送回执：回执只在拒绝时发送', async () => {
     const sock = socket()
     const d = deps()
     const controller = new AbortController()
@@ -593,12 +592,12 @@ describe('conversation.interrupt 指令', () => {
   })
 })
 
-describe('用户点继续', () => {
+describe('用户点击继续', () => {
   /**
-   * resume **自己发起一轮**，不能等下一次别的 run 收尾——那时候用户已经等了
-   * 不知道多久，而界面上什么都没发生。
+   * resume **自行发起一轮**，不能等待下一次其他 run 收尾：届时用户已等待了
+   * 不确定的时长，而界面上没有任何变化。
    */
-  test('resume 把目标转回 active 并当场起一轮', async () => {
+  test('resume 把目标转回 active 并立即发起一轮', async () => {
     const cv = conversation()
     const goal = seed(cv)
     const paused = updateGoal(store, {
@@ -610,7 +609,7 @@ describe('用户点继续', () => {
     expect(paused.ok).toBe(true)
     runs.disarm(cv)
 
-    // 这一轮里就把目标收掉：循环没有上限，不收的话它会持续占用后面用例的脚本。
+    // 本轮即结束目标：循环没有上限，不结束时会持续占用后续用例的脚本。
     script = [
       () => {
         const g = currentGoal(store, cv)
@@ -629,12 +628,12 @@ describe('用户点继续', () => {
 
     await waitFor((e) => e.type === 'goal' && e.goal.status === 'completed')
     await settle()
-    expect(bodies[0]).toContain('[自动续起]')
+    expect(bodies[0]).toContain('[自动继续]')
     expect(bodies[0]).toContain('慢慢做这件事')
     expect(runs.armedOf(cv)).toBeNull()
   }, 20_000)
 
-  test('会话正忙时回绝，不排第二轮进去', () => {
+  test('会话正忙时拒绝，不排入第二轮', () => {
     const cv = conversation()
     runs.reserve(cv)
     const r = resumeGoal(cv, deps())
@@ -642,25 +641,25 @@ describe('用户点继续', () => {
     runs.release(cv)
   })
 
-  test('没有目标时说清楚是没有目标', () => {
+  test('没有目标时明确说明没有目标', () => {
     const cv = conversation()
     const r = resumeGoal(cv, deps())
-    expect(r).toEqual({ ok: false, message: '这条会话没有目标' })
+    expect(r).toEqual({ ok: false, message: '该会话没有目标' })
   })
 })
 
 /**
- * 报错正文落账本。覆盖 `runtime/session.ts` 收 `run.error` 那一手。
+ * 报错正文写入账本。覆盖 `runtime/session.ts` 接收 `run.error` 的步骤。
  *
- * **原始失败形状**：一条 `stop_reason = 'provider_error'` 的 run，账本里的
- * `error_message` 是 `null`——两列从建表起就在、`RunRecord` 也一直转出去，
- * 只是从来没有人写过。表现是刷新之后「为什么停」只剩「模型服务出错」，
- * 连不上、key 错了、上下文满了，看起来一模一样。
+ * **原始失败形状**：一条 `stop_reason = 'provider_error'` 的 run，账本中的
+ * `error_message` 为 `null`：两列自建表起即存在、`RunRecord` 也一直输出它们，
+ * 但从未有代码写入。刷新之后「停止原因」只剩「模型服务出错」，
+ * 连接失败、key 错误、上下文已满三种情形无法区分。
  */
-describe('报错正文落账本', () => {
-  test('provider 报错的那一轮，error_message 与 error_code 都读得回来', async () => {
+describe('报错正文写入账本', () => {
+  test('provider 报错的那一轮，error_message 与 error_code 都能读取', async () => {
     const cv = conversation()
-    // 脚本留空 = 假 provider 回 401，正是一次真实的 provider 失败。
+    // 脚本为空时假 provider 返回 401，即一次真实的 provider 失败。
     await startRun(cv, '随便说点什么', undefined, deps())
     await waitFor((e) => e.type === 'run.finished')
 
@@ -670,8 +669,8 @@ describe('报错正文落账本', () => {
     expect(run?.errorMessage).toBeTruthy()
   }, 20_000)
 
-  /** 正常收尾不留报错正文——留了的话每一轮读数条上都挂着上一次的错。 */
-  test('正常收尾的那一轮两列都是 null', async () => {
+  /** 正常结束时不保留报错正文：保留时每一轮的读数条上都会显示上一次的错误。 */
+  test('正常结束的一轮两列均为 null', async () => {
     const cv = conversation()
     script = [ok(textTurn('好了。'))]
     await startRun(cv, '随便说点什么', undefined, deps())

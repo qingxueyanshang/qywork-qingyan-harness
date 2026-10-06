@@ -1,13 +1,13 @@
 ﻿/**
- * `@qywork/core` 的对外面。**这里列的就是承诺，没列的就是内部实现。**
- * 具名导出，不用 `export *`（B6）；加一行之前先确认它真有包外调用点（B3）。
+ * `@qywork/core` 的对外接口。**此处列出的即对外承诺，未列出的均为内部实现。**
+ * 使用具名导出，不用 `export *`（B6）；新增导出前先确认它确有包外调用方（B3）。
  *
- * **事件与指令的成员类型刻意不逐个导出。** `AgentEvent` / `ClientCommand` 是可辨识
- * 联合，消费方按 `type` 收窄就拿得到成员形状；逐个导出等于把三十多个只在联合里
- * 出现过的名字推出去，而它们没有调用点。
+ * 事件与指令的成员类型有意不逐个导出。`AgentEvent` / `ClientCommand` 是可辨识
+ * 联合，消费方按 `type` 收窄即可得到成员类型；逐个导出会把三十多个只在联合中
+ * 出现的名称暴露出去，而它们没有调用点。
  *
- * 不要再给 `domain/` 和 `protocol/` 各建一个 `index.ts`：它们只会被本文件引用，
- * 等于同一份清单维护两遍。
+ * 不要为 `domain/` 和 `protocol/` 各建一个 `index.ts`：它们只会被本文件引用，
+ * 相当于同一份清单维护两次。
  */
 
 // 画布文档：格式、操作与不变式。服务端画布服务、画布工具与界面共用同一套规则
@@ -99,7 +99,7 @@ export {
   mediaParamValues,
   resolveMediaParam,
 } from './domain/media-params.ts'
-// 领域模型：落库形状与读数口径，几乎每个包都要
+// 领域模型：落库结构与读数规则，几乎每个包都依赖
 export {
   type Attachment,
   attachmentTypeOf,
@@ -187,7 +187,7 @@ export {
   type Workspace,
 } from './domain/model.ts'
 
-// 定时任务：仓储（store）、HTTP 面、模型工具与面板共用同一份类型与时间判定
+// 定时任务：仓储（store）、HTTP 接口、模型工具与面板共用同一份类型与时间判定
 export {
   diagnoseSchedule,
   isDue,
@@ -199,7 +199,7 @@ export {
   type ScheduleView,
 } from './domain/schedule.ts'
 
-// workflow 的跨层序列化契约与纯投影：team/server/web 共用，不能各算一份。
+// workflow 的跨层序列化契约与纯投影：team/server/web 共用，不能各自计算。
 export {
   applyRevision,
   checkpointOutput,
@@ -234,7 +234,7 @@ export {
   workflowResults,
   workflowTransitionOf,
 } from './domain/workflow.ts'
-// 运行日志：各包只调 `log.*`，落到哪里由 `setLogSink` 注入的 sink 决定
+// 运行日志：各包只调用 `log.*`，输出位置由 `setLogSink` 注入的 sink 决定
 export {
   formatLogLine,
   type LogLevel,
@@ -255,7 +255,7 @@ export type {
   EventEnvelope,
   GitStateEvent,
 } from './protocol/events.ts'
-// 单次派活那张卡上那个子节点的 id：服务端发事件、前端画节点，两侧要用同一个值
+// 单次派发任务卡上子节点的 id：服务端发送事件、前端绘制节点，两侧必须使用同一个值
 export { SUBAGENT_NODE_ID } from './protocol/events.ts'
 export type {
   ConversationChangeStep,
@@ -269,7 +269,7 @@ export type {
   LiveRequestSnapshot,
   UsageResponse,
 } from './protocol/http.ts'
-// 原生浏览器宿主连接的帧与操作枚举：Rust 宿主与 server 两侧按这一份编解码
+// 原生浏览器宿主连接的帧与操作枚举：Rust 宿主与 server 两侧按同一份定义编解码
 export {
   BROWSER_EVENT_KINDS,
   type BrowserEventFrame,
@@ -283,7 +283,7 @@ export {
   NATIVE_BROWSER_PATH,
   type NativeBrowserUpFrame,
 } from './protocol/native-browser.ts'
-// 桌面原生宿主连接的帧与操作枚举：宿主与 server 两侧按这一份编解码
+// 桌面原生宿主连接的帧与操作枚举：宿主与 server 两侧按同一份定义编解码
 export {
   type DesktopAction,
   type DesktopActionKind,

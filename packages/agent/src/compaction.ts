@@ -1,28 +1,28 @@
 /**
- * 上下文压缩：两段式管线，一个入口。
+ * 上下文压缩：两段式流程，单一入口。
  *
- * 这个文件只管**怎么压**；**什么时候压**是 `agent/loop/compact.ts` 的事（发送前按占用与
- * 软阈值判），取数与落库是 `runtime/compaction.ts` 的事。
+ * 本文件只负责压缩方式；压缩时机由 `agent/loop/compact.ts` 决定（发送前按占用与软阈值判定），
+ * 取数与落库由 `runtime/compaction.ts` 负责。
  *
- * 分工按内容性质划：**确定性内容归算法，叙事性内容归模型。**
- * 工具结果正文、调用参数、文件路径、资源定位符经一次概括就不可靠，而模型会拿
- * 它们去改文件，所以收纳段（`condenseMessage`）只换信封不改字节；多轮意图、
- * 当前状态、关键决定正则做不了归纳，交给摘要段。
+ * 按内容性质分工：确定性内容由算法处理，叙事性内容由模型处理。
+ * 工具结果正文、调用参数、文件路径、资源定位符经过一次概括即不再可靠，而模型会依据
+ * 它们修改文件，因此收纳段（`condenseMessage`）只保留信封、不改写保留的字节；多轮意图、
+ * 当前状态、关键决定无法用正则归纳，交给摘要段。
  *
  * 四条不变量：
  *
- * 1. **压缩是投影，不销毁数据。** 产出一份 manifest，构造请求时按它投影；
- *    **Message / Step / 正文库一个字节不动**。所以压缩可撤销、可重放、历史面板
- *    永远显示完整会话。
- * 2. **两条边界，收纳线 ≥ 摘要线。** 摘要线以内换成「摘要 + 事实清单」，
- *    摘要线到收纳线之间消息原样、工具正文瘦身，收纳线之后逐字原样。
- * 3. **摘要段失败不回退整次压缩。** 收纳段是确定性产物，模型没写出摘要时它照常
- *    落库、摘要线不动。不要为此加一条本地拼装的降级摘要：机械截取的那份看起来
- *    和模型写的一样，而用户无从分辨。
- * 4. **中断即丢弃，不设例外。** 信号 abort 之后一律返回 `aborted`——包括摘要
- *    已经生成完的那种。压缩不可逆地改写模型可见历史，中断之后落库等于用用户
- *    没等到的那份摘要替换掉他的会话。**不要为「摘要已经算完」开口子**：
- *    加一条例外就是两条规则，而重算一次压缩的成本是零次模型调用。
+ * 1. 压缩是投影，不销毁数据。压缩产出一份 manifest，构造请求时按它投影；
+ *    Message、Step 与正文库的字节均不改动。因此压缩可撤销、可重放，历史面板
+ *    始终显示完整会话。
+ * 2. 两条边界，收纳线 ≥ 摘要线。摘要线以内替换为「摘要 + 事实清单」，
+ *    摘要线到收纳线之间消息原样、工具正文精简，收纳线之后逐字原样。
+ * 3. 摘要段失败不回退整次压缩。收纳段是确定性产物，模型未写出摘要时收纳段照常
+ *    落库、摘要线不变。不要为此增加本地拼装的降级摘要：机械截取的摘要与模型写的
+ *    摘要外观相同，用户无从分辨。
+ * 4. 中断即丢弃，不设例外。信号 abort 之后一律返回 `aborted`，包括摘要已生成完成的
+ *    情形。压缩不可逆地改写模型可见的历史，中断后落库等于用用户未等待的摘要替换其会话。
+ *    不要为「摘要已生成完成」设例外：增加一条例外即形成两条规则，而重新执行压缩的成本
+ *    是零次模型调用。
  */
 
 import type {
@@ -42,41 +42,40 @@ import type {
 } from '@qywork/core'
 
 /**
- * 摘录界：一条 segment、一条事实、一个被折叠的调用参数，共用这一个长度。
+ * 摘录长度上限：segment、事实条目、被折叠的调用参数共用该长度。
  *
- * 「一条事实一两句话」是可读性决策，运行期没有可测的真源。
+ * 「一条事实一两句话」是可读性取舍，运行期没有可测量的依据。
  */
 const EXCERPT = 320
 
 /**
- * 事实清单最多占投影预算的几成。
+ * 事实清单占投影预算的比例上限。
  *
- * 两半：逐字事实一半，叙事摘要一半。不切开的话，事实清单在预算紧的时候会占满整份
- * 预算，摘要段随即以「没有空间」失败，而那份刚裁好的事实清单也跟着作废
- * ——摘要线不动，它没进 manifest。
+ * 逐字事实与叙事摘要各占一半。不划分时，事实清单在预算紧张时占满整份预算，摘要段随即
+ * 因没有空间而失败，刚裁剪好的事实清单也随之作废：摘要线不变，事实清单不进入 manifest。
  */
 const FACTS_BUDGET_SHARE = 0.5
 
 /**
  * 可折单元的戳记。
  *
- * 字典序等于产生顺序：run id 与 step seq 都是单调的，seq 定宽补零。
- * **同一个执行波次的全部消息共用一个戳**，切界只落在戳之间。
+ * 字典序即产生顺序：run id 与 step seq 都单调递增，seq 定宽补零。
+ * 同一执行波次的全部消息共用一个戳，切分边界只落在戳之间。
  */
 export function stepStamp(runId: string, seq: number): string {
   return `${runId}:${String(seq).padStart(9, '0')}`
 }
 
 /**
- * 一条消息在折叠序上的位置。`null` = 不参与折叠（摘要投影等无戳消息）。
+ * 一条消息在折叠顺序中的位置。`null` 表示不参与折叠（摘要投影等无戳消息）。
  *
- * 先比消息 id、同一条消息内再比 step 戳：消息本体的戳为空串，排在它的执行记录之前。
+ * 先比较消息 id，同一消息内再比较 step 戳：消息本体的戳为空串，排在其执行记录之前。
  */
 export function unitKey(m: WireMessage): string | null {
   return m._messageId ? `${m._messageId}|${m._step ?? ''}` : null
 }
 
-/** 边界在折叠序上的位置。与 `unitKey` 同一口径，两处不同形就切错线。 */
+/** 边界在折叠顺序中的位置。必须与 `unitKey` 格式一致，否则边界切分位置错误。 */
 export function cutKey(cut: CompactionCut): string {
   return `${cut.messageId}|${cut.step ?? ''}`
 }
@@ -90,23 +89,23 @@ export function summaryCutOf(m: CompactionManifest | null): CompactionCut | null
   }
 }
 
-/** 收纳线。缺这个键的 manifest 收纳线与摘要线重合。 */
+/** 收纳线。manifest 缺少该键时收纳线与摘要线重合。 */
 export function condenseCutOf(m: CompactionManifest | null): CompactionCut | null {
   return m?.condensedThrough ?? summaryCutOf(m)
 }
 
 /**
- * 收纳一条消息：换信封，不改字节。
+ * 收纳一条消息：只保留信封，保留部分的字节不改写。
  *
- * 工具结果只留 `call_id / tool / status / executed / summary` 与落盘定位符 `resources`，
- * 正文去掉——超过投递界的那些本来就落了 sink，`read_resource` 按那些 id
- * 取得回原文。调用参数里的长字符串（`write_file` 的整份正文）折成摘录 + 标记。
+ * 工具结果只保留 `call_id / tool / status / executed / summary` 与落盘定位符 `resources`，
+ * 移除正文：超过投递上限的正文已写入 sink，`read_resource` 可按这些 id 取回原文。
+ * 调用参数中的长字符串（如 `write_file` 的完整正文）折叠为摘录与标记。
  *
- * `reasoningContent` 原样保留：DeepSeek 类兼容端点对带 tool_calls 的历史
- * assistant 消息缺思考正文会 400。
+ * `reasoningContent` 原样保留：带 tool_calls 的历史 assistant 消息缺少思考正文时，
+ * DeepSeek 类兼容端点返回 400。
  *
- * **产物必须是纯函数结果、逐字稳定**：投影每次构造请求都跑一遍，掺进时间戳或
- * 随机量会让缓存断点之前的字节每次都变，前缀缓存从此全程不命中。
+ * 产物必须是纯函数结果、逐字稳定：每次构造请求都会执行投影，混入时间戳或随机量会使
+ * 缓存断点之前的字节每次变化，前缀缓存始终无法命中。
  */
 export function condenseMessage(m: WireMessage): WireMessage {
   if (m.role === 'tool') {
@@ -118,29 +117,29 @@ export function condenseMessage(m: WireMessage): WireMessage {
 }
 
 /**
- * 媒体块被换掉后信封里 `images_omitted` 的值，装配换出（`loop/request.ts` 的 `evictedMedia`
- * 与 `omitImages`）与收纳共用。
+ * 媒体块被移出后信封中 `images_omitted` 的值，由装配阶段的换出（`loop/request.ts` 的
+ * `evictedMedia` 与 `omitImages`）与收纳共用。
  *
- * 陈述「此前已发送给你、现已移出」这一传输事实：装配换出只动最后一条 assistant 之前的媒体，
- * 它们已随得到回应的请求发出过；收纳只作用于收纳线以前的较早轮次。
- * 不要写成「你已看过」：端点收到请求不等于模型读到了图，部分端点会丢弃媒体块而不报错。
- * 也不要只写 `true` 或「已提供」：摘图会让其后的原生推理失效，模型会判断自己没收到过这张图，
- * 向用户否认之前的检查并反复读回。系统提示词「工作方式」段有同一条规则。
- * 必须逐字稳定，投影每次构造请求都会重写这一段。
+ * 该值陈述「此前已发送给你、现已移出」这一传输事实：装配阶段只换出最后一条 assistant 之前的
+ * 媒体，它们已随得到回应的请求发出；收纳只作用于收纳线之前的较早轮次。
+ * 不要写成「你已看过」：端点收到请求不等于模型读到了图像，部分端点会丢弃媒体块而不报错。
+ * 也不要只写 `true` 或「已提供」：移除图像会使其后的原生推理失效，模型会判断自己从未收到
+ * 该图像，向用户否认之前的检查并反复重新读取。系统提示词「工作方式」一节有同一条规则。
+ * 必须逐字稳定：每次构造请求时投影都会重新生成这段文字。
  */
 export const IMAGES_OMITTED =
   '此图像或视频此前已随请求发送给你，现已从请求中移出（较早的媒体超出保留上限，或这段上下文已压缩）。需要画面细节时，通过 read_history 按 call_id 取回。'
 
 function condenseToolResult(content: WireMessage['content']): WireMessage['content'] {
   /*
-   * 块数组：**丢掉媒体块，只把文本信封收起来，并在信封里标 `images_omitted`**。
+   * 块数组：丢弃媒体块，只收纳文本信封，并在信封中标记 `images_omitted`。
    *
-   * 装配时还挂着的媒体（`loop/request.ts` 的 `evictedMedia` 没换出的那些），到了收纳线以前也一并丢掉：
-   * 压缩说明上下文已经吃紧，较早轮次的媒体最先让位。标记不可省：收纳后的信封与新鲜的成功信封同形，
-   * 缺这一位模型会把图当成仍然可见。要再看按原路径重新 `read_file`，或用 `call_id`
-   * 经 `read_history` 取回。
+   * 装配时仍保留的媒体（`loop/request.ts` 的 `evictedMedia` 未换出的部分）位于收纳线之前时同样丢弃：
+   * 触发压缩说明上下文空间已紧张，较早轮次的媒体最先移出。标记不可省略：收纳后的信封与新生成的
+   * 成功信封形状相同，缺少该字段时模型会认为图像仍然可见。需要再次查看时按原路径重新 `read_file`，
+   * 或用 `call_id` 经 `read_history` 取回。
    *
-   * 写成 `return content` 原样放行的话，带图的工具结果**永远收不掉**。
+   * 不要改为 `return content` 原样返回，否则带图的工具结果永远无法收纳。
    */
   if (Array.isArray(content)) {
     const text = content.find((b) => b.type === 'text')
@@ -162,7 +161,7 @@ function condenseToolResult(content: WireMessage['content']): WireMessage['conte
     summary: env.summary,
     ...(env.resources ? { resources: env.resources } : {}),
     ...(env.images_omitted ? { images_omitted: IMAGES_OMITTED } : {}),
-    // 收纳过的再收纳一次必须逐字相同：投影每次构造请求都跑，产物一抖动缓存就全失配。
+    // 已收纳的内容再次收纳必须逐字相同：每次构造请求都执行投影，产物一旦变化，缓存全部失效。
     ...(env.result !== undefined || env.result_omitted ? { result_omitted: true } : {}),
   })
 }
@@ -170,9 +169,9 @@ function condenseToolResult(content: WireMessage['content']): WireMessage['conte
 /**
  * 工具结果信封的反序列化。
  *
- * 正文由 `agent/loop/request.ts` 与 `runtime/transcript.ts` 用 `JSON.stringify` 造，
- * 这里是它的反向。解析不出来的原样返回——收纳换不了信封时保留原文是安全方向，
- * 而让一次投影抛异常会把整轮 run 带崩。
+ * 正文由 `agent/loop/request.ts` 与 `runtime/transcript.ts` 用 `JSON.stringify` 生成，
+ * 此处执行逆操作。无法解析时原样返回：无法收纳时保留原文是安全的处理，
+ * 而投影抛出异常会使整轮 run 失败。
  */
 function parseEnvelope(content: string): Record<string, unknown> | null {
   try {
@@ -193,9 +192,10 @@ function foldCallArguments(call: WireToolCall): WireToolCall {
 }
 
 /**
- * 把任意深度的长字符串折成摘录 + 标记，对象与数组的结构原样保留。没有可折的返回原引用。
+ * 把任意深度的长字符串折叠为摘录与标记，对象与数组的结构原样保留。没有可折叠内容时返回原引用。
  *
- * 不要只折顶层：批量写入类工具把正文放在 `files[].content` 这类嵌套位置，只折顶层时这些参数永远收纳不掉。
+ * 不要只折叠顶层：批量写入类工具把正文放在 `files[].content` 等嵌套位置，只折叠顶层时
+ * 这些参数永远无法收纳。
  */
 function foldValue(value: unknown): unknown {
   if (typeof value === 'string') {
@@ -217,11 +217,11 @@ function foldValue(value: unknown): unknown {
 }
 
 /**
- * 判断一条用户消息是否带硬约束。
+ * 判断一条用户消息是否包含硬约束。
  *
- * **只决定排序，不决定去留**：约束类排在前面，裁旧时最后被裁。
- * 用它做去留过滤时正则漏判一条就等于那条约束只存在于摘要里（可能被改写），
- * 实测在真实会话上抓到 0 条。
+ * 只决定排序，不决定去留：约束类排在前面，裁剪时最后被裁。
+ * 用它过滤去留时，正则每漏判一条，该约束就只存在于摘要中（可能被改写）；
+ * 实测在真实会话上命中 0 条。
  */
 function looksLikeConstraint(text: string): boolean {
   return (
@@ -231,7 +231,7 @@ function looksLikeConstraint(text: string): boolean {
   )
 }
 
-/** 目标算「文件」的动作类别。`run` / `call` / `query` 的 target 是命令串与查询串，不进文件清单。 */
+/** target 视为文件路径的动作类别。`run` / `call` / `query` 的 target 是命令串与查询串，不进入文件清单。 */
 const FILE_ACTION_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([
   'read',
   'write',
@@ -243,14 +243,14 @@ export interface CompactionAction {
   stepId: string
   tool: string
   status: string
-  /** 动作类别，决定 target 是不是文件路径。 */
+  /** 动作类别，决定 target 是否为文件路径。 */
   actionKind: ActionKind | null
   target: string | null
   summary: string
   errorCode?: string | null
-  /** 这次调用落盘的正文 id。压缩后靠它才能把内容库里那份读回来。 */
+  /** 本次调用落盘的正文 id。压缩后依靠它从内容库读取原文。 */
   resourceId?: string | null
-  /** 按行读取时这次读过的行段与文件总行数；其余调用为 null 或缺省。 */
+  /** 按行读取时本次读取的行段与文件总行数；其余调用为 null 或缺省。 */
   lines?: { from: number; to: number; total: number } | null
 }
 
@@ -258,10 +258,10 @@ export interface CompactionInput {
   /** 上一条摘要线到新折叠线之间的对话文本，按时间升序。 */
   messages: {
     /**
-     * 取回地址，摘要里印成 `[message:<id>]`。**两种形状**：
-     * `messages` 表的行是 `MessageId`；run 内注入的那句话是 `<runId>:<stepId>`
-     * ——它不在 `messages` 表里（见 `StepKind` 的 `'user'`）。
-     * 两种都由 `HistoryPort.message` 解析，模型侧看不出区别。
+     * 取回地址，在摘要中写为 `[message:<id>]`。有两种格式：
+     * `messages` 表中的行是 `MessageId`；run 内注入的用户消息是 `<runId>:<stepId>`，
+     * 它不在 `messages` 表中（见 `StepKind` 的 `'user'`）。
+     * 两种都由 `HistoryPort.message` 解析，对模型没有区别。
      */
     id: string
     role: 'user' | 'assistant'
@@ -272,31 +272,31 @@ export interface CompactionInput {
   actions: CompactionAction[]
   /** 上一份 manifest；增量压缩时在它基础上推进。 */
   previous: CompactionManifest | null
-  /** 这一次的折叠线。收纳线一定推进到它；摘要线只有摘要段成功才推进到它。 */
+  /** 本次的折叠线。收纳线必定推进到此处；摘要线只在摘要段成功时推进到此处。 */
   fold: CompactionCut
-  /** 收纳段单独就把占用拉回软阈值之下：不调模型，只前移收纳线。 */
+  /** 仅收纳段即可使占用回到软阈值以下：不调用模型，只前移收纳线。 */
   condenseOnly: boolean
   /**
-   * 会话主模型那把尺。**不是 summarizer 的**——这些量描述的是主模型看到的上下文，
-   * 换成摘要模型的尺就是拿另一个 tokenizer 去量别人的窗口。
+   * 会话主模型的估算密度，不是 summarizer 的：这些量描述主模型看到的上下文，
+   * 改用摘要模型的密度等于用另一个 tokenizer 度量主模型的窗口。
    */
   density: TokenDensity
-  /** 投影总预算（token）。事实清单先占，摘要拿剩下的。 */
+  /** 投影总预算（token）。事实清单优先占用，摘要使用剩余部分。 */
   projectionBudget: number
-  /** 摘要输出的常态观测（token，p95）。无观测为 null，此时预算就是 headroom。 */
+  /** 摘要输出长度的常态观测值（token，p95）。无观测时为 null，此时预算等于 headroom。 */
   typicalSummaryTokens: number | null
-  /** 被摘要替换掉那一段在收纳之后的占用（token），「必须更小」闸的右侧。 */
+  /** 被摘要替换的区段在收纳之后的占用（token），即「必须更小」检查的右侧。 */
   condensedRegionTokens: number
   /** 本次进入摘要线的会话消息条数。 */
   foldedMessageCount: number
-  /** 一轮之内压缩时的记账钩子；手动压缩不给。 */
+  /** 摘要请求的记账钩子：一轮之内压缩时由主循环提供，手动压缩时由服务端提供。 */
   trace?: SummaryTrace
 }
 
 export type CompactionOutcome =
   /**
-   * `summarized` 表示摘要线是否随之前移。false 时 `reasonCode` 说明摘要段为什么
-   * 没做成；没有 `reasonCode` 就是不需要调模型（收纳段已经够了）。
+   * `summarized` 表示摘要线是否随之前移。为 false 时 `reasonCode` 说明摘要段未完成的原因；
+   * 没有 `reasonCode` 表示无需调用模型（仅收纳段即已足够）。
    */
   | {
       status: 'compacted'
@@ -305,29 +305,29 @@ export type CompactionOutcome =
       reasonCode?: string
       message?: string
     }
-  /** 折叠线以内没有新单元。**不是失败**——调用方不该报错。 */
+  /** 折叠线以内没有新单元。这不是失败，调用方不应报错。 */
   | { status: 'skipped'; reasonCode: 'nothing_to_fold' }
-  /** 摘要段没做成，且收纳段也无可推进——这一次什么都没做到。 */
+  /** 摘要段未完成，且收纳线也无法前移：本次压缩没有产生任何结果。 */
   | { status: 'failed'; reasonCode: string; message: string }
   /**
    * 执行期间被中断，整次丢弃，没有任何持久副作用。
    *
-   * **调用方不得把它当失败上报**：中断是用户自己的动作，停止时刻多一张红卡是噪音。
+   * 调用方不得将其作为失败上报：中断由用户主动发起，停止时额外显示一张错误卡片属于干扰信息。
    */
   | { status: 'aborted' }
 
 /**
- * 摘要请求的记账钩子。一轮之内压缩时由主循环提供：摘要请求按这一轮的普通请求落
- * `provider_requests`，回报的 usage 并进所属轮次；手动压缩也使用同一份记账钩子。
+ * 摘要请求的记账钩子。一轮之内压缩时由主循环提供：摘要请求按该轮的普通请求写入
+ * `provider_requests`，返回的 usage 计入所属轮次；手动压缩使用同一套记账钩子。
  */
 export interface SummaryTrace {
-  /** 发出之前登记，返回请求 id。 */
+  /** 发送前登记，返回请求 id。 */
   open(req: ChatRequest, adapter?: import('@qywork/ai').LlmAdapter): string
   sent(requestId: string): void
   /** `at` 是 `response_started` 带来的传输层观察时刻，不是调用时刻。 */
   headers(requestId: string, at: number): void
   firstEvent(requestId: string): void
-  /** 每一段非空内容都调；`at` 是适配器解析该段时的观察时刻，不是调用时刻。 */
+  /** 每段非空内容都调用；`at` 是适配器解析该段时的观察时刻，不是调用时刻。 */
   content(
     requestId: string,
     at: number,
@@ -344,7 +344,7 @@ export interface SummaryTrace {
   ): void
 }
 
-/** 由调用方注入的摘要生成器。预算是 token。返回 null = 空摘要或被输出上限截断。 */
+/** 由调用方注入的摘要生成器，预算单位为 token。返回 null 表示摘要为空或被输出上限截断。 */
 export type Summarizer = (
   prompt: string,
   budgetTokens: number,
@@ -352,10 +352,10 @@ export type Summarizer = (
 ) => Promise<string | null>
 
 /**
- * 摘要调用是不是被中断掐掉的。
+ * 摘要调用是否因中断而终止。
  *
- * 认 `name` 而不是 `instanceof DOMException`：中断可能由 `AbortSignal` 原生抛出，
- * 也可能由适配器层包一层再抛，跨 realm 时 `instanceof` 不成立而 `name` 恒成立。
+ * 按 `name` 判定，不用 `instanceof DOMException`：中断可能由 `AbortSignal` 原生抛出，
+ * 也可能由适配器层包装后抛出；跨 realm 时 `instanceof` 不成立，而 `name` 始终成立。
  */
 function isAbortError(err: unknown): boolean {
   return (err as { name?: unknown } | null | undefined)?.name === 'AbortError'
@@ -364,8 +364,8 @@ function isAbortError(err: unknown): boolean {
 /**
  * 执行一次压缩，产出新的 manifest。
  *
- * **永不抛异常**：压缩失败要返回结构化结果，让调用方决定是原样重试还是放弃。
- * 抛出来会让「压缩失败」和「run 崩了」在调用栈上无法区分。
+ * 不抛出异常：压缩失败时返回结构化结果，由调用方决定原样重试或放弃。
+ * 抛出异常会使压缩失败与 run 异常终止在调用栈上无法区分。
  */
 export async function compact(
   input: CompactionInput,
@@ -380,7 +380,7 @@ export async function compact(
     return { status: 'compacted', summarized: false, manifest: advanceCondense(previous, fold) }
   }
 
-  /** 摘要段没做成时的终态：收纳能推进就照常落库，推不动才算这一次彻底没做到。 */
+  /** 摘要段未完成时的终态：收纳线可前移时照常落库，无法前移时本次判定为失败。 */
   const summaryFailed = (reasonCode: string, message: string): CompactionOutcome =>
     advancesCondense
       ? {
@@ -397,11 +397,11 @@ export async function compact(
     Math.floor(input.projectionBudget * FACTS_BUDGET_SHARE),
     input.density,
   )
-  // 事实清单逐字，优先占预算；摘要拿剩下的。两个量全程按 token 计，没有折算点。
+  // 事实清单逐字保留，优先占用预算；摘要使用剩余部分。两个量全程按 token 计，不做单位换算。
   const headroom = input.projectionBudget - estimateText(factsContent(facts), input.density)
   const budget =
     input.typicalSummaryTokens === null ? headroom : Math.min(headroom, input.typicalSummaryTokens)
-  if (budget <= 0) return summaryFailed('no_headroom', '折叠之后仍然没有放摘要的空间')
+  if (budget <= 0) return summaryFailed('no_headroom', '折叠后仍没有容纳摘要的空间')
 
   let summary: string | null
   try {
@@ -415,19 +415,19 @@ export async function compact(
       input.trace,
     )
   } catch (err) {
-    // 中断与 provider 失败必须分开：中断整次丢弃，其余只是摘要段没做成。
+    // 中断与 provider 失败必须区分：中断时整次丢弃，其余失败只表示摘要段未完成。
     if (isAbortError(err)) return { status: 'aborted' }
     return summaryFailed('summary_error', err instanceof Error ? err.message : String(err))
   }
 
-  // 摘要期间信号被拉起（摘要器自己吞掉了中断）时，这一次的产物同样作废。
-  // 落库端还有一道守卫，两道的判据是同一个信号。
+  // 摘要期间中止信号已触发（摘要器自行捕获了中断而未抛出）时，本次产物同样作废。
+  // 落库端另有一道检查，两处依据同一个信号。
   if (signal?.aborted) return { status: 'aborted' }
   if (!summary?.trim()) return summaryFailed('summary_empty', '摘要为空或被输出上限截断')
   /*
-   * 「在预算内」闸：摘要超出事实清单之外的余量就作废摘要段，提示词里写明了这条。
-   * 只查下面那道「必须更小」不够：被替换的区域很大时，一份远超预算的摘要同样比它小，
-   * 压缩落库之后占用仍在软阈值之上。
+   * 「在预算内」检查：摘要超出事实清单之外的剩余预算时作废摘要段，提示词中已写明该限制。
+   * 只有下方的「必须更小」检查不够：被替换的区域很大时，远超预算的摘要同样比它小，
+   * 压缩落库后占用仍在软阈值以上。
    */
   if (estimateText(summary.trim(), input.density) > headroom) {
     return summaryFailed('over_budget', '摘要超出投影预算')
@@ -445,17 +445,17 @@ export async function compact(
   }
 
   /*
-   * 「必须更小」闸。
+   * 「必须更小」检查。
    *
-   * 两侧用同一把估算尺，系统性偏差同向抵消。不成立就作废摘要段——投影比被它
-   * 替换的内容还大时，这次压缩把上下文变大了，而不会有任何报错。
-   * 它同时是事实包跨压缩累积的总闸：每折一次，模型看到的总量必须净减。
+   * 两侧使用同一估算方法，系统性偏差同向抵消。条件不成立时作废摘要段：投影大于被替换的
+   * 内容时，本次压缩反而增大上下文，且不产生任何错误。
+   * 该检查同时约束事实包跨多次压缩的累积：每次折叠后，模型看到的总量必须净减少。
    */
   const replaced =
     (previous ? estimateMessages(projectManifest(previous), input.density) : 0) +
     input.condensedRegionTokens
   if (estimateMessages(projectManifest(candidate), input.density) >= replaced) {
-    return summaryFailed('not_smaller', '新投影没有比被替换的内容更小')
+    return summaryFailed('not_smaller', '新投影不小于被替换的内容')
   }
 
   return { status: 'compacted', summarized: true, manifest: candidate }
@@ -481,10 +481,10 @@ function advanceCondense(
 }
 
 /**
- * 把消息与动作拉平成带来源标记的片段。
+ * 把消息与动作展平为带来源标记的片段。
  *
- * `[message:id]` / `[action:id]` 前缀是刻意保留的：摘要里出现「之前读过 config.ts」时，
- * 能顺着 id 回到原始记录。摘要是**投影**不是替代，可追溯是它的前提。
+ * `[message:id]` / `[action:id]` 前缀有意保留：摘要中提到某次读取（如 config.ts）时，
+ * 可按 id 回溯原始记录。摘要是投影而不是替代，可追溯是其前提。
  */
 function buildSegments(
   messages: CompactionInput['messages'],
@@ -510,10 +510,10 @@ function buildSegments(
 /**
  * 提取精确事实包。
  *
- * 这部分**不经过模型**——文件路径、用户约束这类事实一旦被摘要改写就不再可靠，
- * 而模型后续会拿它们去改文件。宁可机械提取得保守一点，也不能让它们变成一个近似的路径。
+ * 此部分不经过模型：文件路径、用户约束等事实一经摘要改写即不再可靠，
+ * 而模型后续会依据它们修改文件。机械提取应保守，不能产生近似的路径。
  *
- * 与上一份 facts 合并而不是替换：压缩是增量的，早期定下的约束不能随着一次新压缩消失。
+ * 与上一份 facts 合并而不是替换：压缩是增量的，早期确定的约束不能随新一次压缩消失。
  */
 function extractFacts(
   messages: CompactionInput['messages'],
@@ -521,21 +521,21 @@ function extractFacts(
   previous: CompactionFacts | undefined,
 ): CompactionFacts {
   const filesTouched = new Set(previous?.filesTouched ?? [])
-  // 按动作类别收，**不要按 target 长得像不像路径收**：`run_command` 的 target 是
-  // 整条命令串，正则一放它们就整串进来，实测清单胀到摘要的十几倍。
+  // 按动作类别收录，不要按 target 是否形似路径收录：`run_command` 的 target 是整条命令串，
+  // 用正则判定时整串命令都会被收录，实测清单膨胀到摘要的十几倍。
   for (const a of actions) {
     if (a.target && a.actionKind && FILE_ACTION_KINDS.has(a.actionKind)) filesTouched.add(a.target)
   }
 
-  // 落盘产物的定位符。合并而不是替换——早期落的那份正文压缩之后照样要能读回。
+  // 落盘产物的定位符。合并而不是替换：较早落盘的正文在压缩后仍须可以读取。
   const resources = new Set(previous?.resources ?? [])
   for (const a of actions) {
     if (a.resourceId) resources.add(`${actionLabel(a)} → ${a.resourceId}`)
   }
   /*
-   * 未解决项按时间顺序核销：同一工具对同一目标在失败之后成功，那条失败就不再是未解决。
-   * 判据只认工具与目标都相同，无关目标的成功不核销。只累加不核销的话，
-   * 模型每次压缩后都会看到一条已经解决的失败，并据此重做。
+   * 未解决项按时间顺序核销：同一工具对同一目标先失败后成功时，该失败不再列为未解决。
+   * 判据要求工具与目标都相同，其他目标的成功不核销。只累加不核销时，
+   * 模型每次压缩后都会看到已解决的失败，并据此重做。
    */
   let openItems = [...(previous?.openItems ?? [])]
   for (const a of actions) {
@@ -548,13 +548,13 @@ function extractFacts(
   }
 
   /*
-   * 用户消息**全部**进事实包，约束类排前面。
+   * 用户消息全部进入事实包，约束类排在前面。
    *
-   * 用正则筛去留会漏：真实会话上那三条正则一条都没命中过。逐字收录不会把投影
-   * 推过原文——事实包是原文的子集，上界由「必须更小」闸与 `fitFacts` 的预算兜住。
+   * 用正则筛选去留会遗漏：在真实会话上三条正则均未命中。逐字收录不会使投影超过原文：
+   * 事实包是原文的子集，上限由「必须更小」检查与 `fitFacts` 的预算保证。
    *
-   * 长消息按全文判约束、摘出带约束的句子，并附原文地址：先截头部再判的话，
-   * 写在后面的「不要…」既不算约束，也不在事实包里。
+   * 长消息按全文判定约束，摘录带约束的句子并附原文地址：先截取头部再判定时，
+   * 位于后部的「不要…」既不被判定为约束，也不进入事实包。
    */
   const fresh: string[] = []
   for (const m of messages) {
@@ -614,16 +614,16 @@ function readProgressLine(p: FileReadProgress): string {
   return `${p.path}：已读第 ${ranges} 行（共 ${p.totalLines} 行）`
 }
 
-/** 动作在事实清单里的名字：工具名加目标。未解决项的核销按它逐字匹配。 */
+/** 动作在事实清单中的名称：工具名加目标。未解决项按该名称逐字匹配核销。 */
 function actionLabel(a: CompactionAction): string {
   return `${a.tool}${a.target ? ` ${a.target}` : ''}`
 }
 
 /**
- * 一条用户消息在事实包里的写法。
+ * 一条用户消息在事实包中的写法。
  *
- * 装得下就是原文。装不下时先摘出带约束的句子，没有再取头部；截过的附上 `[message:…]`，
- * 模型需要全文时按它用 `read_history` 取回。
+ * 未超出长度上限时写原文；超出时摘录带约束的句子，没有则取头部；截断过的附上 `[message:…]`，
+ * 模型需要全文时据此用 `read_history` 取回。
  */
 function userFact(id: string, text: string): string {
   if (text.length <= EXCERPT) return excerpt(text, EXCERPT)
@@ -634,7 +634,7 @@ function userFact(id: string, text: string): string {
 function dedupeKeepLatest(list: string[]): string[] {
   const seen = new Set<string>()
   const out: string[] = []
-  // 从后往前去重再反转：重复项保留**最近**那次，早期的同义重复丢掉。
+  // 从后往前去重再反转：重复项保留最近一次，较早的重复项丢弃。
   for (let i = list.length - 1; i >= 0; i--) {
     const v = list[i]!
     if (seen.has(v)) continue
@@ -645,16 +645,16 @@ function dedupeKeepLatest(list: string[]): string[] {
 }
 
 /**
- * 把事实清单裁进预算。
+ * 把事实清单裁剪到预算以内。
  *
- * 收的顺序就是裁旧的反序：**约束最后被裁**，其次未解决项与落盘定位符，
- * 文件清单最先让位——文件路径重读一次就有，而「永远不要 force-push」这类
- * 该不变量一旦丢失将无法恢复。每类内部从最近往早收。
+ * 收录顺序与裁剪顺序相反：约束最后被裁剪，其次是未解决项与落盘定位符，文件清单最先被裁剪：
+ * 文件路径重新读取即可恢复，而「永远不要 force-push」这类约束一旦丢失将无法恢复。
+ * 每类内部从最近向较早收录。
  *
- * 用户消息里带约束的先收、其余后收：两者混在一起从最近往早收的话，
- * 较新的闲聊会先把预算用完，较早的禁止要求被挤掉。
+ * 用户消息中带约束的先收录、其余后收录：两者混合按时间倒序收录时，较新的普通消息会先
+ * 耗尽预算，挤掉较早的禁止性要求。
  *
- * 顺序写成代码不写成配置：它是正确性判断，不是口味。
+ * 顺序写在代码中而不是配置中：它关系到正确性，不是偏好。
  */
 function fitFacts(facts: CompactionFacts, budget: number, density: TokenDensity): CompactionFacts {
   let spent = 0
@@ -674,7 +674,7 @@ function fitFacts(facts: CompactionFacts, budget: number, density: TokenDensity)
     ...take(facts.userConstraints.filter((t) => !looksLikeConstraint(t))),
   ]
   const openItems = take(facts.openItems)
-  // 读取进度排在文件清单之前：丢了它模型不知道读到哪里，会从头重读。
+  // 读取进度排在文件清单之前：缺少读取进度时模型无法得知读取位置，会从头重新读取。
   const readLines = new Set(take((facts.filesRead ?? []).map(readProgressLine)))
   const filesRead = (facts.filesRead ?? []).filter((p) => readLines.has(readProgressLine(p)))
   const resources = take(facts.resources ?? [])
@@ -689,22 +689,21 @@ function fitFacts(facts: CompactionFacts, budget: number, density: TokenDensity)
 }
 
 /**
- * 摘要提示。**分节，不是一段并列的自由要求。**
+ * 摘要提示词：分节输出，而不是一段并列的自由要求。
  *
- * 并列要求会被模型当成风格建议，「约束用原话」在长会话里几乎必然被概括掉，
- * 而约束一旦被概括就可能反转含义。分节的关键在头两节：**逐条列出全部用户消息**、
- * **带上文件路径**——这把「保真」变成可检查的结构，少列一条用户消息是看得出来的，
- * 而「概括得不够准」看不出来。
+ * 并列要求会被模型视为风格建议，「约束用原话」在长会话中几乎必然被概括，
+ * 而约束一经概括就可能反转含义。分节的关键在前两节：逐条列出全部用户消息、注明文件路径。
+ * 这使保真度成为可检查的结构：少列一条用户消息可以发现，而概括不准确无法发现。
  *
- * 被折区的大头是执行记录不是对话，所以节题按执行记录组织，并明确要求
- * 不复述调用过程——过程已经由收纳段的信封逐条留着了，摘要再抄一遍就是两份。
+ * 被折叠区域的主要内容是执行记录而不是对话，因此各节标题按执行记录组织，并明确要求
+ * 不复述调用过程：收纳段的信封已逐条保留调用过程，摘要再复述即形成两份。
  */
 /**
- * 一个 token 大约折几个中文字。
+ * 一个 token 约合多少个汉字。
  *
- * 用来把 token 预算翻译成提示词里那句字数要求——**模型只认字数，不认 token**。
- * 取 0.6 而不是 1/1.5：留一成余量，因为摘要里混着文件路径这类 ASCII，
- * 同样的字数会比纯中文多耗 token。宁可写短一点，也不能被 `max_tokens` 截断作废。
+ * 用于把 token 预算换算为提示词中的字数要求：模型能遵循字数，无法遵循 token 数。
+ * 取 0.6 而不是 1/1.5，预留一成余量：摘要中混有文件路径等 ASCII 内容，相同字数比纯中文
+ * 消耗更多 token。摘要宁可偏短，也不能被 `max_tokens` 截断而作废。
  */
 const CHARS_PER_TOKEN_ZH = 0.6
 
@@ -714,48 +713,47 @@ function buildSummaryPrompt(
   budgetTokens: number,
 ): string {
   const head = previousSummary
-    ? `已有摘要（本次在它基础上续写，不要重复其中内容）：\n${previousSummary}\n\n`
+    ? `已有摘要（本次在其基础上续写，不要重复其中内容）：\n${previousSummary}\n\n`
     : ''
   return (
-    `${head}把下面的执行记录压缩成一份交接摘要，按这几节输出，不要开场白：\n\n` +
-    `## 用户要求\n逐条列出**全部**用户消息的意图，一条不能少。原话里的约束` +
+    `${head}将以下执行记录压缩为一份交接摘要，按下列各节输出，不要开场白：\n\n` +
+    `## 用户要求\n逐条列出**全部**用户消息的意图，不得遗漏。原话中的约束` +
     `（不要做什么、必须用什么、具体数值与期限）**逐字引用**，不要改写。\n\n` +
-    `## 已完成与产出\n改了哪些文件、做成了什么。带上文件路径。\n\n` +
-    `## 关键发现与结论\n查出了什么、定了什么、为什么这么定。保留判断理由；` +
+    `## 已完成与产出\n修改了哪些文件、完成了什么。注明文件路径。\n\n` +
+    `## 关键发现与结论\n查明了什么、确定了什么、为何如此确定。保留判断理由；` +
     `缺少理由会导致下一轮重复讨论。\n\n` +
-    `## 当前状态与未解决\n正在做什么、卡在哪里、有哪些已知失败。\n\n` +
-    `## 下一步\n接手者应该先做什么。涉及具体位置时**引用原文**，不要只说「那个文件」。\n\n` +
-    `**工具调用过程不要复述**，只留结论与产物；失败的尝试细节、重复的确认可以丢掉。\n\n` +
+    `## 当前状态与未解决\n正在进行什么、在何处受阻、有哪些已知失败。\n\n` +
+    `## 下一步\n接手者应先做什么。涉及具体位置时**引用原文**，不要只写「那个文件」。\n\n` +
+    `**不要复述工具调用过程**，只保留结论与产物；失败尝试的细节与重复的确认可以省略。\n\n` +
     /*
-     * 字数要求不是排版偏好，是**硬约束**。
+     * 字数要求是硬约束，不是排版偏好。
      *
-     * 摘要以 `max_tokens` 收尾时整份作废（半份摘要看起来完整，比没有更坏），
-     * 而不告诉模型预算，它就按自己的节奏写、写超、被截断、作废——因此摘要段
-     * 恒失败，压缩退化成只有收纳段，占用降不下来，下一次预算还是这么小。
-     * 这条恶性循环在小窗口模型上必然发生。
+     * 摘要以 `max_tokens` 结束时整份作废（不完整的摘要外观完整，比没有摘要更有害）。
+     * 不告知模型预算时，模型按自身习惯输出、超出长度、被截断并作废，摘要段因此始终失败，
+     * 压缩只剩收纳段，占用无法下降，下一次预算依然很小。该循环在小窗口模型上必然出现。
      */
     `**整份摘要控制在 ${Math.max(200, Math.floor(budgetTokens * CHARS_PER_TOKEN_ZH))} 字以内**，` +
     `超出长度会被截断并整份作废。超长时压缩各节措辞，不得省略章节。\n\n` +
     /*
-     * 定位符必须完整穿过摘要。
+     * 定位符必须完整保留在摘要中。
      *
-     * 每条记录前面的 `[message:…]` / `[action:…]` 是原文的地址，摘要之后模型
-     * 只能靠它用 `read_history` 回到原文。丢掉它，压缩就从「把内容挪到按需读取」
-     * 退回成「丢掉」——而这正是这一段提示词存在的全部理由。
+     * 每条记录前的 `[message:…]` / `[action:…]` 是原文地址，摘要之后模型只能依靠它
+     * 用 `read_history` 回溯原文。缺少定位符时，压缩从「把内容移到按需读取」变为
+     * 「丢弃内容」；这段提示词用于防止这种情况。
      */
-    `提到某条具体记录时，把它前面那个 \`[message:…]\` 或 \`[action:…]\` 标记` +
-    `**原样带上**（例如「按 [message:ms_x] 的要求…」）。标记是原文的地址，` +
+    `提到某条具体记录时，将其前面的 \`[message:…]\` 或 \`[action:…]\` 标记` +
+    `**原样写入**（例如「按 [message:ms_x] 的要求…」）。标记是原文的地址，` +
     `缺失后无法回溯原文。不要生成不存在的标记。\n\n` +
     `执行记录：\n${segments.join('\n')}`
   )
 }
 
 /**
- * 把 manifest 投影成发给模型的消息。
+ * 把 manifest 投影为发给模型的消息。
  *
- * 返回的是**替代被压缩那一段历史**的两条消息：摘要 + 事实清单。
- * 事实清单单独成条而不是拼进摘要，是因为它必须**逐字稳定**——
- * 拼进自由文本会被后续压缩再次改写，文件路径经不起两轮改写。
+ * 返回替代被压缩历史的两条消息：摘要与事实清单。
+ * 事实清单单独成条而不是并入摘要，因为它必须逐字稳定：并入自由文本后会被后续压缩
+ * 再次改写，文件路径无法承受多次改写。
  */
 export function projectManifest(
   manifest: CompactionManifest,
@@ -763,18 +761,19 @@ export function projectManifest(
   return [
     {
       role: 'user',
-      // 尾巴上这句是**能力边界**不是解释：没有它，模型不知道折掉的原文还取得回来，
-      // 因此要么当作已经丢失、要么重新把工作做一遍。
-      // 不要写进 `revision`：只推进收纳线也会递增它，这条消息紧跟 system，一变整段历史的缓存前缀都失效。
+      // 末尾一句是能力边界而不是解释：缺少它时模型不知道折叠的原文仍可取回，
+      // 会将其视为已丢失，或重新执行一遍工作。
+      // 不要写入 `revision`：只推进收纳线也会使其递增，而该消息紧跟 system，内容一变，
+      // 整段历史的缓存前缀全部失效。
       content:
         `[此处是被压缩的早期对话摘要]\n\n${manifest.summary}\n\n` +
-        `（摘要里的 [message:…] / [action:…] 是原文地址，需要原文用 read_history 取回。）`,
+        `（摘要中的 [message:…] / [action:…] 是原文地址，需要原文时用 read_history 取回。）`,
     },
     { role: 'assistant', content: factsContent(manifest.facts) },
   ]
 }
 
-/** 事实清单那一条的正文。预算估算与投影共用它，两处各拼一遍就会各估各的。 */
+/** 事实清单消息的正文。预算估算与投影共用它：两处分别拼接时估算结果会不一致。 */
 function factsContent(f: CompactionFacts): string {
   const lines: string[] = []
   if (f.userConstraints.length)

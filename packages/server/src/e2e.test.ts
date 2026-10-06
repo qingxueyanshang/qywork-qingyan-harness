@@ -1,19 +1,19 @@
 /**
- * `qy serve` 的完整链路端到端——**用假 provider，不花钱，进 `bun test`**。
+ * `qy serve` 完整链路的端到端测试：**使用假 provider，不产生费用，纳入 `bun test`**。
  *
- * **为什么要有这一层。** 只有 `bun test`（免费、无网络、只测单元）和 `scripts/smoke-serve.ts`（真
- * key、五分钟、跑真模型）两档的话，**中间是空的**，而那道缝真的漏过缺陷：`bun test` 看不见 serve
- * 的装配，smoke-serve 要真 key 才跑、因此少有人跑，一条不再成立的断言长期留在缝里没有变红。
+ * **本层的必要性。** `bun test`（免费、无网络、只测单元）与 `scripts/smoke-serve.ts`（真实
+ * key、耗时五分钟、调用真实模型）之间存在覆盖空缺：`bun test`
+ * 不覆盖 serve 的装配，smoke-serve 需要真实 key 才能运行、因此很少运行，失效的断言会长期
+ * 未被发现。
  *
- * 这一层验的是**协议与装配**，不验模型：握手鉴权、订阅、指令 fail-closed（未知指令、处理抛出）、
+ * 本层验证**协议与装配**，不验证模型：握手鉴权、订阅、指令 fail-closed（未知指令、处理抛出）、
  * 一轮完整的 run（工具调用 → 文件改动 → 收尾）、seq 单调、断线补发。
- * 模型的行为由脚本化的 SSE 决定，所以它是确定性的——
- * 一次红就是一次真的回归，不是 provider 抖动。
+ * 模型的行为由脚本化的 SSE 决定，因此结果是确定的：
+ * 一次失败即一次真实的回归，而不是 provider 的波动。
  *
- * **假 provider 的形状。** 一个 `Bun.serve`，按调用次数返回不同的 SSE：第一轮发工具调用，
- * 第二轮发文本并收尾。这样才走得到「工具执行 → 结果回灌 → 再请求」
- * 那条最容易在装配上出错的路——只发一轮文本的话，
- * 整个工具链路一行都没被执行到。
+ * **假 provider 的结构。** 一个 `Bun.serve`，按调用次数返回不同的 SSE：第一轮发出工具调用，
+ * 第二轮发出文本并结束。这样才能覆盖「工具执行 → 结果回传 → 再次请求」
+ * 这条最容易在装配上出错的路径；只发一轮文本时，工具链路的代码完全不会被执行。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -38,7 +38,7 @@ function sse(events: { type: string; [k: string]: unknown }[]): string {
   return `${events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n`).join('\n')}\n`
 }
 
-/** 第一轮：调 write_file 往工作区写一个文件。 */
+/** 第一轮：调用 write_file 向工作区写入一个文件。 */
 function toolTurn(path: string, content: string): string {
   return sse([
     { type: 'response.created', response: { id: 'resp_fake_1' } },
@@ -64,7 +64,7 @@ function toolTurn(path: string, content: string): string {
   ])
 }
 
-/** 第二轮：纯文本收尾。 */
+/** 第二轮：以纯文本结束。 */
 function textTurn(text: string): string {
   return sse([
     { type: 'response.created', response: { id: 'resp_fake_2' } },
@@ -89,7 +89,7 @@ function chatTextTurn(text: string): string {
 }
 
 let calls = 0
-/** 假 provider 收到的请求体。附件链路的断言要看模型**实际收到了什么**。 */
+/** 假 provider 收到的请求体。附件链路的断言必须检查模型**实际收到的内容**。 */
 const seenBodies: string[] = []
 const provider = Bun.serve({
   port: 0,
@@ -141,15 +141,15 @@ beforeAll(async () => {
   }
 
   /*
-   * **配置只有一个真源：`configPath()` 那个文件。**
+   * **配置只有一个真源：`configPath()` 指向的文件。**
    *
-   * 先写文件，再 `loadConfig()` 读回来交给 `serve` ——和 `qy serve` 一模一样。
-   * 直接把上面那个对象递进去也能跑，但那样测试手里就有两份（一份在内存、
-   * 一份在盘上），改一处漏一处时的表现是「界面读到 A、请求发去 B」。
+   * 先写入文件，再用 `loadConfig()` 读取后交给 `serve`，与 `qy serve` 完全一致。
+   * 直接传入上面的对象也能运行，但测试中会存在两份配置（一份在内存、
+   * 一份在磁盘），修改一处而遗漏另一处时，界面读取的配置与请求使用的配置不一致。
    *
-   * `QYWORK_HOME` 指到临时目录，不是另开一条路径——`configPath()` 全仓只有
-   * 一处实现，这里换的是它的落点。跑在开发机那份真配置上的话，测试会按
-   * 开发者本人配的接口发请求，配置那几条用例还会写他的文件。
+   * `QYWORK_HOME` 指向临时目录，而不是另设一条路径：`configPath()` 全仓只有
+   * 一处实现，这里改变的是它的位置。在开发机的真实配置上运行时，测试会按
+   * 开发者本人配置的接口发送请求，配置相关的用例还会改写其配置文件。
    */
   prevHome = process.env.QYWORK_HOME
   process.env.QYWORK_HOME = await mkdtemp(join(tmpdir(), 'qywork-e2e-home-'))
@@ -166,23 +166,23 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  // 同一个进程里跑着别的测试文件，QYWORK_HOME 不还回去会跟着漏过去。
+  // 同一进程中还运行着其他测试文件，不恢复 QYWORK_HOME 会影响它们。
   if (prevHome === undefined) delete process.env.QYWORK_HOME
   else process.env.QYWORK_HOME = prevHome
   handle?.stop()
   provider.stop(true)
   store?.close()
   content?.close()
-  // 临时目录删不掉不该让整个测试文件红。Windows 上 SQLite 的文件句柄
-  // 释放有延迟，而「临时目录还在」与被测行为毫无关系——
-  // 让它红等于用一条与结论无关的噪声掩盖真正的失败。
+  // 临时目录删除失败不应使整个测试文件失败。Windows 上 SQLite 的文件句柄
+  // 释放有延迟，而临时目录是否残留与被测行为无关；
+  // 此时报告失败会以无关的噪声掩盖真正的失败。
   await rm(ws_dir, { recursive: true, force: true }).catch(() => {})
 })
 
 const base = () => `http://127.0.0.1:${handle.port}`
 const auth = () => ({ authorization: `Bearer ${handle.token}` })
 
-describe('HTTP 面', () => {
+describe('HTTP 接口', () => {
   test('健康检查免鉴权', async () => {
     const r = (await (await fetch(`${base()}/api/health`)).json()) as {
       ok?: boolean
@@ -190,7 +190,7 @@ describe('HTTP 面', () => {
     expect(r.ok).toBe(true)
   })
 
-  test('无令牌 / 错令牌一律 401', async () => {
+  test('缺少令牌或令牌错误一律返回 401', async () => {
     expect((await fetch(`${base()}/api/workspaces`)).status).toBe(401)
     const bad = await fetch(`${base()}/api/workspaces`, {
       headers: { authorization: `Bearer ${'0'.repeat(handle.token.length)}` },
@@ -198,10 +198,10 @@ describe('HTTP 面', () => {
     expect(bad.status).toBe(401)
   })
 
-  test('跨源预检在鉴权之前答复，正常响应带 CORS 头', async () => {
-    // 桌面端的页面与本服务不同源（dev 是 vite 的 5180，装机版是 tauri 的 asset 协议）。
-    // 预检不带 Authorization：拿它去验令牌会得到 401，而预检 401 意味着真正的请求
-    // 不会发出——表现是 WebSocket 连着、所有面板却永远停在「读取中」。
+  test('跨源预检在鉴权之前响应，正常响应带 CORS 头', async () => {
+    // 桌面端的页面与本服务不同源（开发时是 vite 的 5180，安装版是 tauri 的 asset 协议）。
+    // 预检不带 Authorization：对其校验令牌会返回 401，而预检返回 401 意味着真正的请求
+    // 不会发出：WebSocket 保持连接，而所有经由 HTTP 读取数据的面板均无法取得数据。
     const pre = await fetch(`${base()}/api/config`, {
       method: 'OPTIONS',
       headers: {
@@ -222,11 +222,11 @@ describe('HTTP 面', () => {
   })
 
   /**
-   * 附件上传的自定义头必须在预检的放行名单里。
+   * 附件上传的自定义头必须在预检的允许列表中。
    *
-   * 漏掉它的表现极具误导性：整条上传链路 100% 失败，而前端拿到的是裸的
-   * `TypeError: Failed to fetch`——没有状态码、没有响应体，看不出是被浏览器
-   * 在发出之前挡下的。这条断言锁的就是那个名字。
+   * 遗漏时整条上传链路全部失败，而前端只收到
+   * `TypeError: Failed to fetch`，没有状态码与响应体，无法看出请求是被浏览器
+   * 在发出之前拦截的。本断言锁定该头名。
    */
   test('预检放行附件上传的 x-attachment-name', async () => {
     const pre = await fetch(`${base()}/api/attachments`, {
@@ -241,14 +241,14 @@ describe('HTTP 面', () => {
     expect(pre.headers.get('access-control-allow-headers')).toContain('x-attachment-name')
   })
 
-  test('不带 providers 的配置 PUT 被挡住，不会把接口清空', async () => {
+  test('不带 providers 的配置 PUT 被拒绝，不会清空接口', async () => {
     /*
-     * `mergeConfig` 从 `incoming.providers ?? {}` **重建**接口表——
-     * 一次只带 mode 的 PUT 会把所有接口抹掉。
+     * `mergeConfig` 从 `incoming.providers ?? {}` **重建**接口表，
+     * 一次只带 mode 的 PUT 会清除所有接口。
      *
-     * 界面上的 ModeChip 因此是**先读全量再写回**的。但那只是调用方守规矩，
-     * 真正兜底的必须是服务端：这条断言锁的是「即使客户端写错了，也不会落盘」。
-     * 表现如果失守，是用户点一下权限开关，所有 API Key 配置消失。
+     * 因此界面上的 ModeChip **先读取全量再写回**。但这只是调用方遵守约定，
+     * 最终的保障必须在服务端：本断言锁定「即使客户端写错，也不会写入磁盘」。
+     * 该保障失效时，用户点击一次权限开关，所有 API Key 配置都会丢失。
      */
     const before = (await (await fetch(`${base()}/api/config`, { headers: auth() })).json()) as {
       config: { active: { provider: string; model: string }; providers: Record<string, unknown> }
@@ -260,7 +260,7 @@ describe('HTTP 面', () => {
       headers: { ...auth(), 'content-type': 'application/json' },
       body: JSON.stringify({ config: { active: before.config.active, mode: 'full' } }),
     })
-    // 校验先于落盘：active 指向一个不存在的接口，422 且不写。
+    // 校验先于落盘：active 指向不存在的接口，返回 422 且不写入。
     expect(res.status).toBe(422)
 
     const after = (await (await fetch(`${base()}/api/config`, { headers: auth() })).json()) as {
@@ -269,9 +269,9 @@ describe('HTTP 面', () => {
     expect(Object.keys(after.config.providers)).toEqual(Object.keys(before.config.providers))
   })
 
-  test('记忆看得到也删得掉，非法 key 被挡住', async () => {
-    // agent 能写记忆，人却看不到也删不掉——这条接口补的是这个不对称。写入只走工具，
-    // 这里按工具落盘的位置直接放一个文件。
+  test('记忆可查看、可删除，非法 key 被拒绝', async () => {
+    // 该接口使用户能够查看与删除 agent 写入的记忆。写入只经由工具，
+    // 此处按工具的写入位置直接放置一个文件。
     const dir = join(ws_dir, MEMORY_DIR)
     await mkdir(dir, { recursive: true })
     await writeFile(join(dir, 'build-commands.md'), '构建用 bun run gate，不要单独跑 tsc。', 'utf8')
@@ -281,7 +281,7 @@ describe('HTTP 面', () => {
     }
     expect(list.entries?.some((e) => e.key === 'build-commands')).toBe(true)
 
-    // 路径穿越：安全化之后不该还能碰到 .qy/memory 之外。
+    // 路径穿越：安全化处理后不得访问 .qy/memory 之外的路径。
     const traversal = await fetch(
       `${base()}/api/memory/${encodeURIComponent('../../etc/passwd')}`,
       { method: 'DELETE', headers: auth() },
@@ -293,7 +293,7 @@ describe('HTTP 面', () => {
       headers: auth(),
     })
     expect(del.status).toBe(200)
-    // 删一个不存在的回 404 而不是静默成功——静默成功会让「删了却还在」查不出原因。
+    // 删除不存在的条目返回 404 而不是静默成功：静默成功会使「已删除却仍存在」无法排查。
     const again = await fetch(`${base()}/api/memory/build-commands`, {
       method: 'DELETE',
       headers: auth(),
@@ -302,13 +302,13 @@ describe('HTTP 面', () => {
   })
 
   /**
-   * 附件的两条出口。
+   * 附件的两条路径。
    *
-   * **只有拿不到源路径时才走上传**——桌面端拖入给的是绝对路径，那条在前端就地
-   * 组装，不经过这个接口。所以这里测的是「剪贴板位图 / 浏览器上传」那一条：
-   * 落进会话自己的目录，删会话时整个目录一起走。
+   * **只有无法取得源路径时才经由上传**：桌面端拖入提供的是绝对路径，该路径在前端直接
+   * 组装，不经过此接口。因此这里测试的是「剪贴板位图 / 浏览器上传」路径：
+   * 文件写入会话自己的目录，删除会话时整个目录一并删除。
    */
-  test('附件上传：流式落进会话目录，回可直接发的 Attachment', async () => {
+  test('附件上传：流式写入会话目录，返回可直接发送的 Attachment', async () => {
     const png = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
       'base64',
@@ -324,7 +324,7 @@ describe('HTTP 面', () => {
         body,
       })
 
-    // 没有会话就没有归属：附件目录按会话删，落一份没人认领的等于造孤儿。
+    // 没有会话即没有归属：附件目录按会话删除，写入无归属的文件会产生孤立文件。
     const orphan = await fetch(`${base()}/api/attachments`, {
       method: 'POST',
       headers: { ...auth(), 'content-type': 'image/png', 'x-attachment-name': 'a.png' },
@@ -332,29 +332,29 @@ describe('HTTP 面', () => {
     })
     expect(orphan.status).toBe(422)
 
-    // 会话 id 要进路径，分隔符必须被挡掉，否则写入点能被带到目录之外。
+    // 会话 id 会进入路径，必须拒绝分隔符，否则写入位置可被引导到目录之外。
     const traversal = await post('a.png', png, '../../evil')
     expect(traversal.status).toBe(422)
 
     const up = await post(encodeURIComponent('截图 1.png'), png)
     expect(up.status).toBe(200)
     const { attachment } = (await up.json()) as { attachment: import('@qywork/core').Attachment }
-    // 分类按扩展名，与「发出去时内联哪些」同一份判据。
+    // 分类按扩展名，与「发送时内联哪些附件」使用同一判据。
     expect(attachment.type).toBe('image')
     expect(attachment.name).toBe('截图 1.png')
     expect(attachment.mime).toBe('image/png')
     expect(attachment.size).toBe(png.length)
-    // 落在会话自己的目录里，与会话库同一棵树——不是工作区。
+    // 写入会话自己的目录，与会话库位于同一目录树，而不是工作区。
     const home = process.env.QYWORK_HOME as string
     expect(attachment.path).toContain(`/attachments/${cid}/`)
     expect(attachment.path.startsWith(toPosixPath(home))).toBe(true)
-    // 一律正斜杠：这个值要跨端传，反斜杠在别处会被当转义。
+    // 一律使用正斜杠：该值需要跨端传输，反斜杠在其他环境中会被当作转义符。
     expect(attachment.path).not.toContain(String.fromCharCode(92))
-    // 中文名安全化后仍要保留可读的部分，不能被削成空串。
+    // 中文名安全化后仍须保留可读部分，不能被截成空字符串。
     expect(attachment.path).toContain('.png')
     expect(await readFile(attachment.path)).toEqual(png)
 
-    // 按路径回读原始字节，供界面显示缩略图——不再存第二份。
+    // 按路径读取原始字节，供界面显示缩略图，不另存副本。
     const raw = await fetch(
       `${base()}/api/attachments/raw?path=${encodeURIComponent(attachment.path)}`,
       { headers: auth() },
@@ -362,7 +362,7 @@ describe('HTTP 面', () => {
     expect(raw.status).toBe(200)
     expect(new Uint8Array(await raw.arrayBuffer())).toEqual(new Uint8Array(png))
 
-    // 同名再传一次不能覆盖上一份——否则上一条消息引用的图会被下一条换掉。
+    // 同名文件再次上传不能覆盖前一份，否则上一条消息引用的图片会被下一条替换。
     const second = (await (await post('a.png', png)).json()) as { attachment: { path: string } }
     const third = (await (await post('a.png', png)).json()) as { attachment: { path: string } }
     expect(second.attachment.path).not.toBe(third.attachment.path)
@@ -386,7 +386,7 @@ describe('HTTP 面', () => {
       expect(await readFile(uploaded.attachment.path)).toEqual(png)
     }
 
-    // qywork 不用统一媒体阈值替 Provider 裁决。
+    // qywork 不使用统一的媒体阈值代替 Provider 裁决。
     const large = new Uint8Array(10 * 1024 * 1024 + 1)
     large[0] = 7
     large[large.length - 1] = 9
@@ -400,7 +400,7 @@ describe('HTTP 面', () => {
     expect(storedLarge.byteLength).toBe(large.length)
     expect(storedLarge[0]).toBe(7)
     expect(storedLarge[storedLarge.length - 1]).toBe(9)
-    // 缩略图回读仍有自己的浏览器内存保护；它不影响原文件落盘和模型发送。
+    // 缩略图读取仍有独立的浏览器内存保护，不影响原文件写入磁盘与发送给模型。
     const largeRaw = await fetch(
       `${base()}/api/attachments/raw?path=${encodeURIComponent(largeAttachment.attachment.path)}`,
       { headers: auth() },
@@ -408,8 +408,8 @@ describe('HTTP 面', () => {
     expect(largeRaw.status).toBe(413)
 
     /*
-     * 删会话把目录一起带走——这就是「附件属于会话」的全部实现，
-     * 不再需要「扫目录找没人引用的孤儿」那套回收。
+     * 删除会话时一并删除其目录：这就是「附件属于会话」的全部实现，
+     * 无需另设「扫描目录查找无引用的孤立文件」的回收机制。
      */
     const del = await fetch(`${base()}/api/conversations/${cid}`, {
       method: 'DELETE',
@@ -424,9 +424,9 @@ describe('HTTP 面', () => {
     ).toBe(false)
   })
 
-  test('文件接口走同一套路径约束', async () => {
-    // HTTP 入口和工具入口不能有两套安全策略——两套必然漂移，
-    // 而漂移的方向通常是 HTTP 那套更松（它看起来「只是给 UI 用的」）。
+  test('文件接口使用同一套路径约束', async () => {
+    // HTTP 入口与工具入口不能有两套安全策略：两套必然产生偏差，
+    // 且偏差方向通常是 HTTP 一侧更宽松（它被视为「只供 UI 使用」）。
     const esc = await fetch(`${base()}/api/files/preview?path=../../../etc/passwd`, {
       headers: auth(),
     })
@@ -435,7 +435,7 @@ describe('HTTP 面', () => {
 })
 
 describe('WebSocket 协议与一轮完整 run', () => {
-  test('握手期错误令牌被拒', async () => {
+  test('握手阶段的错误令牌被拒绝', async () => {
     const bad = new WebSocket(`ws://127.0.0.1:${handle.port}/stream?token=wrong`)
     const closed = await new Promise<boolean>((res) => {
       bad.addEventListener('close', () => res(true), { once: true })
@@ -445,7 +445,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
     expect(closed).toBe(true)
   })
 
-  test('握手 → 下发 → 工具执行 → 收尾，全链路走通', async () => {
+  test('握手 → 下发 → 工具执行 → 结束，全链路执行成功', async () => {
     const created = (await (
       await fetch(`${base()}/api/conversations`, {
         method: 'POST',
@@ -510,43 +510,43 @@ describe('WebSocket 协议与一轮完整 run', () => {
     expect(hello?.type).toBe('hello.ok')
 
     /*
-     * 权限模式也走握手，理由和沙箱同一条：它回答的是「这一轮跑在什么边界里」。
-     * 界面上那个 chip 读的就是这个字段——不进握手的话，客户端只能自己再拉一次
-     * 配置，因此同一个值有两条来路。**只有两种模式**，多出第三种就是 bug。
+     * 权限模式同样经由握手下发，理由与沙箱相同：它说明本轮的运行边界。
+     * 界面上的 chip 读取该字段；不进入握手时，客户端只能另行拉取一次
+     * 配置，同一个值因此有两个来源。**只有两种模式**，出现第三种即为缺陷。
      */
     expect(['auto', 'full']).toContain(hello?.capabilities?.mode ?? '')
 
     /*
-     * 沙箱状态必须**进握手**。
+     * 沙箱状态必须**包含在握手中**。
      *
-     * 桌面端和手机端用户唯一能知道「这条命令跑在什么边界里」的地方就是界面——
-     * `qy config` 他们不会去跑。而「看着被拦住、实际没拦」是这套权限模型
-     * 最危险的误解，所以这条不能是个加了没人验的字段。
+     * 桌面端与手机端用户只能通过界面了解命令的运行边界，
+     * 他们不会运行 `qy config`。而「看似已拦截、实际未拦截」是这套权限模型
+     * 最危险的误解，因此该字段必须有测试验证。
      *
-     * 断言的是**形状与自洽**，不是具体后端：CI 跑在什么平台上不该决定这条测试的成败。
+     * 断言的是**结构与自洽**，不是具体后端：CI 运行的平台不应决定本测试的成败。
      */
     const sb = hello?.capabilities?.sandbox
     expect(sb).toBeDefined()
     expect(typeof sb?.active).toBe('boolean')
-    // 报后端名而不是布尔值——合并成一个 boolean 在插件侧出过同一个问题。
+    // 报告后端名而不是布尔值：合并为一个 boolean 后无法区分不同的后端。
     expect(typeof sb?.backend).toBe('string')
-    // 「没有沙箱」也必须说得出为什么、下一步怎么办。
+    // 「没有沙箱」时也必须说明原因与后续操作。
     expect((sb?.reason ?? '').length).toBeGreaterThan(10)
     if (sb?.backend === 'none') expect(sb.active).toBe(false)
 
     // 指令 fail-closed：未实现的指令必须有回执。
-    // 静默吞掉的话，客户端永远等不到反馈，而「服务端正在处理」与
-    // 「服务端没收到」在界面上完全无法区分。
+    // 静默丢弃时，客户端永远收不到反馈，「服务端正在处理」与
+    // 「服务端未收到」在界面上完全无法区分。
     ws.send(JSON.stringify({ type: 'no.such.command' }))
     await Bun.sleep(150)
     expect(rejections.some((r) => r.reason === 'unknown_command')).toBe(true)
 
     /*
-     * **另开一个客户端，明确一条会话事件都不订阅。**
+     * **另开一个客户端，明确不订阅任何会话事件。**
      *
-     * 左栏那一行的转圈就靠它：客户端只订阅当前会话，别的会话在跑时它一条 run
-     * 事件都收不到——原始失败形状是「只有点开的那条会话才转得起来」。
-     * 忙闲必须是工作区级的（信封不带归属），而正文仍然按订阅拦住。
+     * 左栏会话行的运行指示依赖于此：客户端只订阅当前会话，其他会话运行时它收不到任何
+     * run 事件，原始失败形状是「只有已打开的会话才显示运行指示」。
+     * 忙闲状态必须是工作区级的（信封不带归属），而正文仍按订阅过滤。
      */
     const peer = new WebSocket(
       `ws://127.0.0.1:${handle.port}/stream?token=${handle.token}&origin=mobile`,
@@ -590,7 +590,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
     expect(types.has('text.delta')).toBe(true)
     expect(types.has('file.changed')).toBe(true)
 
-    // 工具**真的执行了**，不是只发了事件。
+    // 工具**实际执行**，而不只是发出了事件。
     expect(await readFile(join(ws_dir, 'out.txt'), 'utf8')).toBe('written by fake\n')
 
     const finished = frames.find((f) => f.event.type === 'run.finished')?.event as
@@ -598,25 +598,25 @@ describe('WebSocket 协议与一轮完整 run', () => {
       | undefined
     expect(finished?.status).toBe('done')
 
-    // 收尾那一下（`runs.unregister`）在 run.finished 之后，等它到齐再看。
+    // 收尾动作（`runs.unregister`）在 run.finished 之后执行，等待其完成后再检查。
     await Bun.sleep(300)
     const peerBusy = peerFrames
       .filter((f) => f.event.type === 'conversation.busy')
       .map((f) => f.event as Extract<AgentEvent, { type: 'conversation.busy' }>)
-    // 一开一收，两头都要有：只有开头的话左栏那一行会永远转下去。
+    // 开始与结束都必须广播：只广播开始时，左栏的会话行会始终显示运行中。
     expect(peerBusy.map((e) => e.busy)).toEqual([true, true, false])
     expect(peerBusy.every((e) => e.conversationId === conversationId)).toBe(true)
-    // 正文仍然按订阅拦住——退订了还收到正文，那是另一个方向的串台。
+    // 正文仍按订阅过滤：退订后仍收到正文，属于另一方向的会话串扰。
     expect(peerFrames.some((f) => f.event.type === 'text.delta')).toBe(false)
     peer.close()
 
-    // seq 严格单调递增：断线补发的缺口计算全靠它。
+    // seq 严格单调递增：断线补发的缺口计算完全依赖于此。
     const seqs = frames.map((f) => f.seq)
     expect(seqs.every((s, i) => i === 0 || s > (seqs[i - 1] as number))).toBe(true)
 
-    // 断线补发：从中途的 seq 要能补出后面全部，已同步的补出空。
-    // 订阅传 null = 还没声明过订阅，全收——这里验的是缺口计算，不是过滤
-    // （过滤本身在 bus.test.ts 里单独锁）。
+    // 断线补发：从中途的 seq 开始必须能补发其后的全部事件，已同步时补发为空。
+    // 订阅传 null 表示尚未声明订阅、全部接收；这里验证的是缺口计算，不是过滤
+    // （过滤本身由 bus.test.ts 单独锁定）。
     const anySub = { id: 'x', origin: 'cli', conversations: null, send: () => {} } as const
     const stream = handle.bus.streamId
     const mid = seqs[Math.floor(seqs.length / 2)] as number
@@ -633,13 +633,13 @@ describe('WebSocket 协议与一轮完整 run', () => {
   /**
    * 指令处理抛出异常时的回执。
    *
-   * 注入用 `PRAGMA query_only`：`conversation.setModel` 那一次 UPDATE 因此抛 SQLite
-   * 错误。SQLite 的写在真实运行里会因并发写锁、磁盘满、库文件只读而失败。
+   * 用 `PRAGMA query_only` 注入：`conversation.setModel` 的 UPDATE 因此抛出 SQLite
+   * 错误。真实运行中，SQLite 写入会因并发写锁、磁盘已满、库文件只读而失败。
    *
-   * 断言到「连接仍在、后一条指令照常有答复」为止：没有回执时的形状不是报错难看，
-   * 是客户端一条帧都收不到，界面停在生成中直到重连。
+   * 断言到「连接仍在、后一条指令正常得到答复」为止：没有回执时，问题不在于报错形式，
+   * 而在于客户端收不到任何帧，界面停留在生成中直到重连。
    */
-  test('指令处理抛出 —— 回执带指令名，连接不断，后续指令照常处理', async () => {
+  test('指令处理抛出异常：回执带指令名，连接保持，后续指令正常处理', async () => {
     const created = (await (
       await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
     ).json()) as { conversation: { id: string } }
@@ -681,7 +681,7 @@ describe('WebSocket 协议与一轮完整 run', () => {
     expect((rejections[0]?.message ?? '').length).toBeGreaterThan(0)
     expect(ws.readyState).toBe(WebSocket.OPEN)
 
-    // 同一条指令在写恢复之后照常处理：广播到达即这条连接还在分发指令。
+    // 写入恢复后同一条指令正常处理：广播到达即表明该连接仍在分发指令。
     ws.send(setModel)
     await Bun.sleep(300)
     expect(seen.some((e) => e.type === 'conversation.updated')).toBe(true)
@@ -691,25 +691,25 @@ describe('WebSocket 协议与一轮完整 run', () => {
 })
 
 /*
- * 这一块**必须放在文件最后**。
+ * 本 describe **必须放在文件末尾**。
  *
- * 假 provider 是按调用次数发不同脚本的（第一次工具轮、之后文本轮）。
- * 把这个 describe 放在前面会占用前两次调用，因此「全链路走通」那条拿不到
- * 工具轮，断言 `tool.started` 直接红——而红的地方和真正的改动无关。
+ * 假 provider 按调用次数返回不同脚本（第一次为工具轮，之后为文本轮）。
+ * 把本 describe 放在前面会占用前两次调用，使「全链路执行成功」用例无法取得
+ * 工具轮，断言 `tool.started` 失败，而失败位置与实际改动无关。
  */
 describe('图片附件', () => {
   /**
-   * 回归测试：**附件必须真的到达模型请求体**。
+   * 回归测试：**附件必须实际到达模型请求体**。
    *
-   * 这条链路很容易变成死链路：`Attachment` 类型在、`messages.attachments` 列在、
-   * `repos.ts` 会写、三个 provider 都会编码 image 块，而中间任一处把它丢在地上
-   * （服务端不转发 / `session.ts` 落库不带 / 装配历史时只取 `content`），
-   * 后果是有类型、有列、有编码器，就是没有数据。
+   * 该链路很容易成为未接通的链路：`Attachment` 类型存在、`messages.attachments` 列存在、
+   * `repos.ts` 会写入、三个 provider 都会编码 image 块，而中间任一环节丢弃附件
+   * （服务端不转发 / `session.ts` 落库时不带 / 装配历史时只取 `content`），
+   * 结果是类型、列、编码器俱全，却没有数据。
    *
-   * 所以断言不能停在「接口回了 200」，必须看**假 provider 收到的字节里有没有那张图**。
+   * 因此断言不能止于「接口返回 200」，必须检查**假 provider 收到的字节中是否包含该图片**。
    */
   test('随消息发出的图片进入请求体的 image 块', async () => {
-    // 一个 1x1 的 PNG，够小又是真图。
+    // 1x1 的 PNG：体积小且是有效图片。
     const png = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
       'base64',
@@ -728,8 +728,8 @@ describe('图片附件', () => {
     ws.addEventListener('message', (e) => {
       const msg = JSON.parse(String(e.data)) as { type?: string; event?: { type?: string } }
       if (msg.type === 'hello.ok') {
-        // 默认那条模型不收图片（目录里 `vision: false`），图像块会被换成一句话。
-        // 先切到收图片的那条——「要发图片就得挑一个收图片的模型」正是这条链路的前提。
+        // 默认模型不接受图片（目录中 `vision: false`），图像块会被替换为一句文字。
+        // 先切换到接受图片的模型：「发送图片必须选择接受图片的模型」正是该链路的前提。
         ws.send(
           JSON.stringify({
             type: 'conversation.setModel',
@@ -776,12 +776,12 @@ describe('图片附件', () => {
 
     const body = seenBodies.slice(before).join('')
     expect(body.length).toBeGreaterThan(0)
-    // 图片以 base64 进 image 块——原始字节的前缀应当出现在请求体里。
+    // 图片以 base64 写入 image 块：原始字节编码后的前缀应出现在请求体中。
     expect(body).toContain(png.toString('base64').slice(0, 40))
   })
 
-  /** 媒体按字节预算换出（`agent` 的 `evictedMedia`）：小视频在上限内，下一轮仍在请求里。 */
-  test('当前轮视频进入 video_url，下一轮在保留上限内仍带着它', async () => {
+  /** 媒体按字节预算移出（`agent` 的 `evictedMedia`）：小视频在上限内，下一轮仍保留在请求中。 */
+  test('当前轮视频写入 video_url，下一轮在保留上限内仍包含该视频', async () => {
     const video = Buffer.from('native-video-e2e')
     await writeFile(join(ws_dir, 'clip.mp4'), video)
     const conv = (await (
@@ -860,16 +860,16 @@ describe('图片附件', () => {
   })
 
   /**
-   * 回归测试：**非图片附件给的是位置，不是字节**。
+   * 回归测试：**非图片附件提供的是路径，不是字节**。
    *
-   * 图片除了内联没有别的路（模型看不到工具读不出来的内容），其余附件只把路径
-   * 写进正文，模型要看自己 `read_file`。省掉的是每一轮重放时那份 base64——
-   * provider 无状态，一份 200 KB 的文档在二十轮的会话里会被发二十次。
+   * 图片只能内联（模型无法看到工具读不出的内容），其余附件只把路径
+   * 写入正文，模型需要时自行调用 `read_file`。由此省去每一轮重放时的 base64：
+   * provider 无状态，一份 200 KB 的文档在二十轮的会话中会被发送二十次。
    *
-   * 两个方向都要断言：路径**在**请求体里、内容**不在**。只测前者的话，
-   * 有人把内容也一起塞回去这条仍然是绿的。
+   * 两个方向都要断言：路径**在**请求体中、内容**不在**。只测前者时，
+   * 内容被一并写回请求，本用例仍会通过。
    */
-  test('随消息发出的文档只给路径，不给字节', async () => {
+  test('随消息发出的文档只提供路径，不提供字节', async () => {
     const marker = 'MARKER_ONLY_IN_THE_FILE_BODY'
     const name = '会议记录（第 1 版） #讨论.md'
 
@@ -926,7 +926,7 @@ describe('图片附件', () => {
     const body = seenBodies.slice(before).join('')
     expect(body).toContain(name)
     expect(body).toContain(attachment.path)
-    // 正文里给的是位置，不是内容——文件里那个标记一个字节都不该出现。
+    // 正文中提供的是路径，不是内容：文件中的标记不应出现在请求体中。
     expect(body).not.toContain(marker)
     expect(body).not.toContain(Buffer.from(marker).toString('base64'))
 

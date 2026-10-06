@@ -1,46 +1,47 @@
 /**
- * 建一个角色，写进工作区的 `.qy/team.json`。
+ * 创建角色，写入工作区的 `.qy/team.json`。
  *
- * 角色是持久定义，不是运行中的子 agent。只在用户明确要求创建或修改角色时使用
- * （`/role` 命令或一句明确的话），模型没有自主建角色的权限。
+ * 角色是持久定义，不是运行中的子 agent。仅在用户明确要求创建或修改角色时使用
+ * （`/role` 命令或明确的文字要求），模型无权自主创建角色。
  *
- * **为什么必须是一个专门的工具。** `.qy` 是受保护目录（`paths.ts` 的 `PROTECTED_DIRS`），
- * `write_file` 写不进去。那道墙挡的是**自我提权**——改 `.agents/` 就是给自己加工具。但「建一个角
- * 色」不属于那一类：角色的 `allowedTools` 只能从现有工具里**收窄**，它拿不到任何新能力。
+ * 必须是专用工具：`.qy` 是受保护目录（`paths.ts` 的 `PROTECTED_DIRS`），`write_file` 无法写入。
+ * 该限制防止的是自我提权：修改 `.agents/` 等于为自身添加工具。创建角色不属于此类：
+ * 角色的 `allowedTools` 只能在现有工具中收窄，无法获得新能力。
+ * 没有专用工具时，设置页的「添加」把请求转交给模型，模型无法写入该文件，只能回复「被系统拒绝，请手动创建」。
  *
- * 实测形状：设置页的「添加」把话头递给模型，而模型写不了那个文件，因此它只能
- * 回一句「被系统拒绝，请手动创建」——一条设计成走对话的路径，走不通。
- *
- * **只动 `roles`，绝不碰 `rules`。** `rules.shared` 是用户对这台机器定的纪律，追加给所有角色。让模型
- * 整份改写这个文件，它就能一并改掉这一条。所以这里读出原文、只替换 `roles` 里的一条、其余键原样写回。
+ * 只修改 `roles`，不修改 `rules`。`rules.shared` 是用户为本机设定的约束，追加给所有角色；
+ * 允许模型整份改写该文件，就等于允许它修改这条约束。因此读取原文，只替换 `roles` 中的一项，其余键原样写回。
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { ToolContext, ToolSpec } from '@qywork/agent'
 
-/** 角色配置落在这里。与 `runtime` 的 `TEAM_CONFIG` 同一个值——那边是加载方，这边是写入方。 */
+/** 角色配置文件的路径。与 `runtime` 的 `TEAM_CONFIG` 取值相同：`runtime` 负责加载，本文件负责写入。 */
 const TEAM_CONFIG = '.qy/team.json'
 
-/** id 只收这几类字符：它要出现在编排图里被引用，也要能当文件里的键。 */
+/** id 只接受以下字符：它在编排图中被引用，也用作配置文件中的键。 */
 const ID_OK = /^[a-zA-Z0-9_-]{1,40}$/
 
 export const defineRoleTool: ToolSpec = {
   name: 'define_role',
   description:
-    '用户明确要求创建或修改角色时（/role 命令或一句明确的话），把角色写进工作区的 .qy/team.json；' +
-    '用户没有要求就不建。角色是持久定义：有自己的系统提示词、可选的模型与工具范围，' +
-    '之后建子 agent 时按 role id 引用。同名 id 直接覆盖。',
+    '用户明确要求创建或修改角色时（/role 命令或明确的文字要求），把角色写入工作区的 .qy/team.json；' +
+    '用户未要求时不创建。角色是持久定义：有自己的系统提示词、可选的模型与工具范围，' +
+    '之后新建子 agent 时按 role id 引用。同名 id 直接覆盖。',
   parameters: {
     type: 'object',
     properties: {
-      id: { type: 'string', description: '角色 id，之后建子 agent 时按它引用。字母数字与 - _' },
-      name: { type: 'string', description: '给人看的名字，如「代码审查员」' },
+      id: {
+        type: 'string',
+        description: '角色 id，之后新建子 agent 时按此 id 引用。只能包含字母、数字与 - _',
+      },
+      name: { type: 'string', description: '显示名称，如「代码审查员」' },
       description: {
         type: 'string',
-        description: '一句话说明它擅长什么。',
+        description: '一句话说明该角色的专长。',
       },
-      systemPrompt: { type: 'string', description: '它的系统提示词：身份、纪律、产出要求' },
+      systemPrompt: { type: 'string', description: '角色的系统提示词：身份、纪律、产出要求' },
       provider: {
         type: 'string',
         description: '指定模型时，同时逐字填写运行上下文「已配置模型」清单中的 provider 参数',
@@ -48,12 +49,13 @@ export const defineRoleTool: ToolSpec = {
       model: {
         type: 'string',
         description:
-          '指定模型：运行上下文「已配置模型」清单里的 model 参数，逐字，并同时填 provider。留空跟着当前会话',
+          '指定模型：逐字填写运行上下文「已配置模型」清单中的 model 参数，并同时填写 provider。留空时使用当前会话的模型',
       },
       allowedTools: {
         type: 'array',
         items: { type: 'string' },
-        description: '只给它这几样工具。空数组 = 一个都不给（纯分析角色）；不填 = 全给',
+        description:
+          '仅向该角色提供这些工具。空数组 = 不提供任何工具（纯分析角色）；不填 = 提供全部工具',
       },
     },
     required: ['id', 'name', 'description', 'systemPrompt'],
@@ -63,7 +65,7 @@ export const defineRoleTool: ToolSpec = {
   objectLabel: '角色',
   category: 'session',
   facet: '协作',
-  summary: '建一个角色',
+  summary: '创建角色',
   targetExtractor: (a) => (typeof a.id === 'string' ? a.id : null),
   permissionEffect: 'write',
   parallelSafe: false,
@@ -72,13 +74,16 @@ export const defineRoleTool: ToolSpec = {
   async fn(args: Record<string, unknown>, ctx: ToolContext) {
     const id = String(args.id ?? '').trim()
     if (!ID_OK.test(id)) {
-      return { status: 'failure' as const, message: 'id 只能用字母数字与 - _，且不超过 40 个字符' }
+      return {
+        status: 'failure' as const,
+        message: 'id 只能包含字母、数字与 - _，且不超过 40 个字符',
+      }
     }
     const name = String(args.name ?? '').trim()
     const description = String(args.description ?? '').trim()
     const systemPrompt = String(args.systemPrompt ?? '').trim()
     if (!name || !description || !systemPrompt) {
-      return { status: 'failure' as const, message: 'name、description、systemPrompt 都不能为空' }
+      return { status: 'failure' as const, message: 'name、description、systemPrompt 均不能为空' }
     }
     const provider = typeof args.provider === 'string' ? args.provider.trim() : ''
     const model = typeof args.model === 'string' ? args.model.trim() : ''
@@ -88,7 +93,7 @@ export const defineRoleTool: ToolSpec = {
     let resolvedModel: { provider: string; model: string } | undefined
     if (model) {
       if (!ctx.delegate) {
-        return { status: 'failure' as const, message: '本次执行拿不到模型配置，不能校验角色模型' }
+        return { status: 'failure' as const, message: '本次执行无法获取模型配置，无法校验角色模型' }
       }
       const resolved = ctx.delegate.resolveModel(model, provider || undefined)
       if ('error' in resolved) {
@@ -106,15 +111,15 @@ export const defineRoleTool: ToolSpec = {
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
           return {
             status: 'failure' as const,
-            message: `${TEAM_CONFIG} 不是一个对象，先修好再建角色`,
+            message: `${TEAM_CONFIG} 不是 JSON 对象，需先修复再创建角色`,
           }
         }
         doc = parsed as Record<string, unknown>
       } catch (e) {
-        // 坏 JSON 不覆盖：整份写回会把用户手写的规则一起冲掉。
+        // JSON 无法解析时不覆盖：整份写回会丢失用户手写的规则。
         return {
           status: 'failure' as const,
-          message: `${TEAM_CONFIG} 解析不了，不敢覆盖：${e instanceof Error ? e.message : String(e)}`,
+          message: `${TEAM_CONFIG} 无法解析，不予覆盖：${e instanceof Error ? e.message : String(e)}`,
         }
       }
     }
@@ -125,10 +130,10 @@ export const defineRoleTool: ToolSpec = {
       name,
       description,
       systemPrompt,
-      // 校验得到的结构化真值直接落盘。尤其是撞名模型，不能把临时的
-      // `接口/模型` 选择串塞进 model 字段，Role 本来就有独立的 provider。
+      // 直接写入校验得到的结构化结果。模型重名时不要把临时的 `接口/模型` 选择串写入 model 字段：
+      // Role 有独立的 provider 字段。
       ...(resolvedModel ? { provider: resolvedModel.provider, model: resolvedModel.model } : {}),
-      // 空数组与不填是两回事：前者是「一个工具都不给」，后者是「全给」。
+      // 空数组与未填写含义不同：前者表示不提供任何工具，后者表示提供全部工具。
       ...(Array.isArray(args.allowedTools) ? { allowedTools: args.allowedTools.map(String) } : {}),
     }
     const at = roles.findIndex((r) => String(r.id ?? '') === id)
@@ -141,7 +146,7 @@ export const defineRoleTool: ToolSpec = {
     await writeFile(file, `${JSON.stringify(doc, null, 2)}\n`, 'utf8')
     return {
       status: 'success' as const,
-      message: `${replaced ? '改好了' : '建好了'}角色 ${name}（${id}），建子 agent 时按 role 引用`,
+      message: `${replaced ? '已修改' : '已创建'}角色 ${name}（${id}），新建子 agent 时按 role 引用`,
       data: { id, replaced, path: TEAM_CONFIG },
     }
   },

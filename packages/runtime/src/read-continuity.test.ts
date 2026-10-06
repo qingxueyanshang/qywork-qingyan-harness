@@ -1,12 +1,12 @@
 /**
- * 远大于窗口的文件经 AgentLoop 逐段读完：投递额度、部分投递、续读位置、发送前压缩与落账重放的整条链路。
+ * 远大于窗口的文件经 AgentLoop 逐段读完：投递额度、部分投递、续读位置、发送前压缩与账本重放的完整链路。
  *
- * **覆盖范围**：`agent/loop/tool-wave.ts` 的按决策开账与 `agent/loop/compact.ts` 的两个压缩检查点，
+ * 覆盖范围：`agent/loop/tool-wave.ts` 按决策开立额度账目、`agent/loop/compact.ts` 的两个压缩检查点，
  * `tools/files.ts` 的部分投递与 `offset` 续读，`runtime/compaction.ts` 的 `RuntimeCompaction`
  * 在真实 `Store` 上折叠已发送的段落，`runtime/transcript.ts` 的 `stepsToUnits` 重放。
  *
- * 模型由脚本扮演：每轮读上一段结果里的 `nextOffset` 接着读，没有就收尾。窗口取 32K 合成规格
- * （DeepSeek V4.1 Flash 只有 1M 一档），文件约为窗口的四倍，一轮读不完、历史必须被折叠。
+ * 模型由脚本模拟：每轮读取上一段结果中的 `nextOffset` 继续读取，没有时结束。窗口取 32K 合成规格
+ * （DeepSeek V4.1 Flash 只有 1M 一档），文件约为窗口的四倍，一轮无法读完，历史必须被折叠。
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -66,7 +66,7 @@ afterEach(() => {
   }
 })
 
-/** 读上一次工具结果里的 `nextOffset`：有就接着读，没有就收尾。 */
+/** 读取上一次工具结果中的 `nextOffset`：存在时继续读取，否则结束。 */
 function readerAdapter(seen: ChatRequest[]): LlmAdapter {
   let call = 0
   return {
@@ -110,7 +110,7 @@ function readerAdapter(seen: ChatRequest[]): LlmAdapter {
   }
 }
 
-/** step 落进真库，压缩记录也落，这样重放能看到它在 step 序列里的位置。 */
+/** step 与压缩记录都写入真实数据库，使重放能看到压缩记录在 step 序列中的位置。 */
 function persistence(store: Store, compactions: { count: number }): LoopPersistence {
   let seq = 0
   let requests = 0
@@ -158,7 +158,7 @@ function persistence(store: Store, compactions: { count: number }): LoopPersiste
         payload: { kind: 'compaction', ...payload },
       })
     },
-    // 请求 id 就是工具记录的批次 id：每次请求必须不同，否则所有决策会合成一个单元。
+    // 请求 id 即工具记录的批次 id：每次请求必须不同，否则所有决策会合并为一个单元。
     openRequest: () => `pr_${++requests}`,
     markRequestSent: () => {},
     settleRequest: () => {},
@@ -245,7 +245,7 @@ async function readThrough() {
 }
 
 describe('远大于窗口的文件逐段读完', () => {
-  test('每段都在额度内、全部成功，沿 offset 拼回整份，过程中发生压缩', async () => {
+  test('每段都在额度内且全部成功，沿 offset 拼接出完整内容，过程中发生压缩', async () => {
     const { store, run, lines, seen, compactions, stop } = await readThrough()
     expect(stop).toBe('completed')
 
@@ -262,7 +262,7 @@ describe('远大于窗口的文件逐段读完', () => {
     const numbered = lines.map((l, i) => `${i + 1}\t${l}`).join('\n')
     expect(outcomes.map((o) => o.data.content).join('\n')).toBe(numbered)
 
-    // 窗口装不下整份：必须折叠已发送的段落，而每一次请求都在窗口之内。
+    // 窗口无法容纳完整文件：必须折叠已发送的段落，且每一次请求都在窗口之内。
     expect(compactions.count).toBeGreaterThan(0)
     for (const req of seen)
       expect(estimateRequest(req, spec.density)).toBeLessThan(spec.contextWindow)
@@ -270,10 +270,10 @@ describe('远大于窗口的文件逐段读完', () => {
   }, 60_000)
 
   /**
-   * 结果在工具侧定稿后落库：重放出来的工具消息与发给模型的那一份逐字相同，
-   * 一次决策仍是一个单元（压缩记录没有夹进同一批次的工具记录之间）。
+   * 结果在工具侧定稿后写入数据库：重放得到的工具消息与发送给模型的内容逐字相同，
+   * 一次决策仍是一个单元（压缩记录未插入同一批次的工具记录之间）。
    */
-  test('重放与当轮逐字同形，每次决策一个单元', async () => {
+  test('重放与当轮逐字一致，每次决策一个单元', async () => {
     const { store, run, seen } = await readThrough()
     const units = stepsToUnits(listSteps(store, run.id))
     const replayed = new Map<string, unknown>()
@@ -282,7 +282,7 @@ describe('远大于窗口的文件逐段读完', () => {
       expect(calls.length).toBeLessThanOrEqual(1)
       for (const m of u.messages) if (m.role === 'tool') replayed.set(m.toolCallId ?? '', m.content)
     }
-    // 每次决策的结果都出现在紧接着的那一次请求里（最新单元不会被折叠）。
+    // 每次决策的结果都出现在紧随其后的请求中（最新单元不会被折叠）。
     let checked = 0
     for (const req of seen) {
       const last = [...req.messages].reverse().find((m) => m.role === 'tool')
@@ -295,9 +295,9 @@ describe('远大于窗口的文件逐段读完', () => {
 })
 
 /**
- * 按脚本读一串文件的模型：读到 `nextOffset` 就接着读同一个文件，否则读下一个；
- * 从第三个文件起每次响应先说一段话（聊天为主的负载）。每次请求记下本地估算的体积。
- * 回报的输入量是本地估算除以 `ratio`：取 1 时两把尺重合，取 1.7 是 V02 在 Flash 上实测的代码读取比值。
+ * 按脚本读取一组文件的模型：取得 `nextOffset` 时继续读取同一文件，否则读取下一个；
+ * 从第三个文件起每次响应先输出一段文字（以聊天为主的负载）。每次请求记录本地估算的体积。
+ * 返回的输入量为本地估算除以 `ratio`：取 1 时两种计量一致，取 1.7 为 Flash 上读取代码时实测的比值。
  */
 function scriptedAdapter(
   window: number,
@@ -396,8 +396,8 @@ async function readScript(window: number, files: { name: string; tokens: number 
   registry.register(full.get('read_file')!)
   const sizes: number[] = []
   /*
-   * 每次压缩腾出多少：同一份历史在压缩前后的投影体积之差。历史取最近一次装配请求时的那份，
-   * 执行工具之前的检查点压的正是它。
+   * 每次压缩释放的空间：同一份历史在压缩前后的投影体积之差。历史取最近一次装配请求时的版本，
+   * 执行工具之前的检查点压缩的正是该版本。
    */
   const port = new RuntimeCompaction({
     store,
@@ -466,17 +466,17 @@ async function readScript(window: number, files: { name: string; tokens: number 
   })) {
     if (ev.type === 'run.finished') stop = ev.stopReason
   }
-  // 请求与压缩按 step 序号交错：压缩记录的 seq 夹在前后两次请求的工具记录之间。
+  // 请求与压缩按 step 序号交错：压缩记录的 seq 位于前后两次请求的工具记录之间。
   const steps = listSteps(store, run.id)
   return { stop, steps, recoveries }
 }
 
 /**
- * 占用落在「软阈值 − 尾部保留量」与软阈值之间时，执行工具之前的检查点每次决策都会尝试压缩。
- * 只要有新可折单元就收纳的话，每次收纳几乎不腾空间却改写投影，下一次请求照样变大；
- * 收不出时又会落一串跳过记录。收纳必须让下一次请求变小，跳过不留记录，读取全部成功。
+ * 占用位于「软阈值 − 尾部保留量」与软阈值之间时，执行工具之前的检查点在每次决策时都会尝试压缩。
+ * 若只要存在新的可折叠单元就收纳，每次收纳几乎不释放空间却改写投影，下一次请求仍然变大；
+ * 无法收纳时又会写入一连串跳过记录。收纳必须使下一次请求变小，跳过不留记录，读取全部成功。
  */
-describe('压缩线附近的收纳必须腾出空间', () => {
+describe('压缩阈值附近的收纳必须释放空间', () => {
   const tiny = (i: number) => ({ name: `s${i}.txt`, tokens: 0 })
   for (const [label, files] of [
     [
@@ -502,11 +502,11 @@ describe('压缩线附近的收纳必须腾出空间', () => {
       for (const s of steps.filter((step) => step.kind === 'tool_action')) {
         expect(s.status).toBe('success')
       }
-      // 没有跳过记录：软阈值以下收不出时不留痕迹，越过软阈值的场景这里不出现。
+      // 没有跳过记录：软阈值以下无法收纳时不留记录，本组不涉及越过软阈值的场景。
       for (const s of steps.filter((step) => step.kind === 'compaction')) {
         expect((s.payload as { phase?: string }).phase).toBe('done')
       }
-      // 软阈值以下的每次收纳至少腾出半份保留量。
+      // 软阈值以下的每次收纳至少释放半份保留量。
       const below = recoveries.filter((r) => !r.overLine)
       expect(below.length).toBeGreaterThan(0)
       for (const r of below) expect(r.recovered).toBeGreaterThanOrEqual(tailRetain(200_000) / 2)
@@ -515,11 +515,11 @@ describe('压缩线附近的收纳必须腾出空间', () => {
 })
 
 /**
- * 读约 3 倍窗口的文件：每段读完、模型看过之后，下一次压缩把它整段收纳，下一段能读满余量。
- * 看过的超大段整段留在保留尾部时，续读段会一大一小交替，压缩次数翻倍。
+ * 读取约为窗口 3 倍的文件：每段读完且模型已查看后，下一次压缩将该段整体收纳，下一段可读满余量。
+ * 已查看的超大段整体留在保留尾部时，续读段会大小交替，压缩次数翻倍。
  */
 describe('远大于窗口的文件每段都能读满', () => {
-  test('只收纳不摘要，行段首尾相接读到末尾，除最后一段外每段至少占窗口的 40%', async () => {
+  test('只收纳不摘要，各段按行号首尾相接读取到末尾，除最后一段外每段至少占窗口的 40%', async () => {
     const window = 200_000
     const { stop, steps } = await readScript(window, [{ name: 'huge.txt', tokens: 3 * window }])
     expect(stop).toBe('completed')
@@ -554,11 +554,11 @@ describe('远大于窗口的文件每段都能读满', () => {
 })
 
 /**
- * 本地估算比 provider 真值高时（V02：Flash 上的代码读取约 1.7 倍），执行工具之前的触发线与投递额度必须按同一个
- * 折算比：触发线按放大的比值算、额度按不放大算时，余量只够半份保留量而触发线未到，压缩之前多读两段被卡在半份
- * 保留量的小段。
+ * 本地估算高于 provider 真值时（实测 Flash 上读取代码约为 1.7 倍），执行工具之前的触发阈值与投递额度必须使用同一
+ * 折算比：触发阈值按放大后的比值计算、额度按未放大的比值计算时，余量只够半份保留量而触发阈值尚未达到，压缩之前
+ * 多读取的两段被限制为半份保留量的小段。
  */
-describe('估算偏高时续读段不被卡在半份保留量', () => {
+describe('估算偏高时续读段不受限于半份保留量', () => {
   test('除最后一段外，每段都大于半份保留量', async () => {
     const window = 200_000
     const { stop, steps } = await readScript(

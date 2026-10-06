@@ -1,23 +1,23 @@
 /**
- * 出网安全闸。
+ * 网络访问的 SSRF 防护。
  *
- * **这不是「加固」，是 agent 出网工具的前置条件。** agent 会拿**模型生成的 URL** 去发请求。模型的 URL
- * 可能来自它读到的网页内容、用户贴的文本、或者纯粹的臆造。不挡内网就等于把 SSRF 的能力直接递给了模
- * 型：
+ * **这是 agent 网络访问工具的前置条件，不是额外加固。** agent 会用模型生成的 URL 发出请求，
+ * 这些 URL 可能来自模型读到的网页内容、用户粘贴的文本，或纯属臆造。不拦截内网地址，
+ * 就等于把 SSRF 能力直接交给模型：
  *
- * - `169.254.169.254` —— 云厂商的元数据端点。一次请求就能拿到实例凭证。
- * - `127.0.0.1` / `localhost` —— 本机上跑着的其他服务，包括 qy 自己的 API。
- * - `10.x` / `192.168.x` / `172.16-31.x` —— 内网其他机器。
+ * - `169.254.169.254`：云厂商的元数据端点，一次请求即可取得实例凭证。
+ * - `127.0.0.1` / `localhost`：本机上运行的其他服务，包括 qy 自身的 API。
+ * - `10.x` / `192.168.x` / `172.16-31.x`：内网中的其他机器。
  *
- * **三条容易漏掉的**：
- * 1. **重定向后必须重新校验。** 只查首个 URL 挡不住 `http://evil.com` 302 到
- *    `http://169.254.169.254`。所以 fetch 必须手动跟随重定向，每一跳都过闸。
- * 2. **要按解析后的 IP 判，不能只看主机名。** `metadata.evil.com` 可以 A 记录
- *    指向 169.254.169.254。DNS 是攻击者控制的。
+ * **三个易遗漏的环节**：
+ * 1. **重定向后必须重新校验。** 只检查首个 URL 无法拦截 `http://evil.com` 302 到
+ *    `http://169.254.169.254`。因此 fetch 必须手动跟随重定向，每一跳都重新检查。
+ * 2. **必须按解析后的 IP 判定，不能只看主机名。** `metadata.evil.com` 的 A 记录可以
+ *    指向 169.254.169.254，DNS 由攻击者控制。
  * 3. **IPv6 的等价写法**：`::1`、`::ffff:127.0.0.1`（IPv4 映射地址）、
- *    `fc00::/7`（唯一本地地址）都要挡。只挡 `127.0.0.1` 的字符串等于没挡。
+ *    `fc00::/7`（唯一本地地址）都必须拦截。只匹配 `127.0.0.1` 字符串的检查无效。
  *
- * 默认拒绝：无法判定的一律拒。
+ * 默认拒绝：无法判定的地址一律拒绝。
  */
 
 import { lookup } from 'node:dns/promises'
@@ -37,24 +37,24 @@ export type BlockReason =
 export interface SafetyVerdict {
   allowed: boolean
   reason?: BlockReason
-  /** 给用户和模型看的说明。要具体到能判断为什么被挡。 */
+  /** 展示给用户与模型的说明，必须具体到能据此判断拒绝原因。 */
   message?: string
-  /** 解析到的地址，允许时用它连接以避免 DNS 重绑定。 */
+  /** 解析得到的地址。放行时用它建立连接，以避免 DNS 重绑定。 */
   resolved?: string
 }
 
-/** 只允许 http/https。file:// 能读本地文件，ftp/gopher 是经典 SSRF 跳板。 */
+/** 只允许 http/https。file:// 可读取本地文件，ftp/gopher 是常见的 SSRF 利用协议。 */
 const ALLOWED_SCHEMES = new Set(['http:', 'https:'])
 
 /**
  * 允许的端口。
  *
- * 不限制端口的话，`http://127.0.0.1:6379` 这类打内网 Redis 的请求也会放行——
- * 虽然主机检查已经挡住了回环，但多一层限制能挡住「内网某台机器的非 Web 服务」。
+ * 不限制端口时，`http://127.0.0.1:6379` 这类攻击内网 Redis 的请求也会被放行。
+ * 主机检查已拦截回环地址，端口限制可以额外拦截内网机器上的非 Web 服务。
  */
 const ALLOWED_PORTS = new Set([80, 443, 8080, 8443, 3000, 8000])
 
-/** 云厂商元数据端点。命中即拒，且单独归类——这条是最危险的。 */
+/** 云厂商元数据端点。命中即拒绝，并单独归类：这类端点风险最高。 */
 const METADATA_HOSTS = new Set([
   '169.254.169.254',
   'metadata.google.internal',
@@ -65,8 +65,8 @@ const METADATA_HOSTS = new Set([
 
 export interface SafetyOptions {
   /**
-   * 允许访问私有网络。**默认 false。**
-   * 只有用户在配置里显式打开才为 true（本地开发时抓自己起的服务）。
+   * 允许访问私有网络，默认 false。
+   * 仅在用户于配置中显式开启时为 true，用于本地开发时访问自行启动的服务。
    */
   allowPrivate?: boolean
   /** 额外放行的主机名（用户显式配置的内网服务）。 */
@@ -78,11 +78,10 @@ export interface SafetyOptions {
 /**
  * 带超时的 DNS 解析。
  *
- * `dns.lookup()` 本身没有超时参数，走的是系统解析器——DNS 被劫持、
- * 上游不可达、或者查的是不存在的 TLD 时，它可能挂到系统级超时（几十秒）。
- * 那段时间里整个工具调用是卡住的，用户只看到一个转圈。
+ * `dns.lookup()` 没有超时参数，经由系统解析器执行。DNS 被劫持、上游不可达
+ * 或查询不存在的 TLD 时，它可能等待到系统级超时（数十秒），期间整个工具调用处于阻塞状态。
  *
- * 超时当作解析失败处理（默认拒绝），而不是放行。
+ * 超时按解析失败处理（默认拒绝），不放行。
  */
 async function resolveWithTimeout(host: string, timeoutMs: number): Promise<string> {
   const timer = new Promise<never>((_, reject) =>
@@ -93,10 +92,10 @@ async function resolveWithTimeout(host: string, timeoutMs: number): Promise<stri
 }
 
 /**
- * 校验一个 URL 是否可以请求。
+ * 校验一个 URL 是否允许请求。
  *
- * 做 DNS 解析，所以是异步的。**返回的 `resolved` 应当被用来实际连接**——
- * 校验时解析一次、连接时再解析一次，中间那个窗口就是 DNS 重绑定攻击的入口。
+ * 需要 DNS 解析，因此是异步函数。**返回的 `resolved` 应当用于实际连接**：
+ * 校验时与连接时各解析一次，两次之间的间隔就是 DNS 重绑定攻击的入口。
  */
 export async function checkUrl(raw: string, opts: SafetyOptions = {}): Promise<SafetyVerdict> {
   let url: URL
@@ -133,7 +132,7 @@ export async function checkUrl(raw: string, opts: SafetyOptions = {}): Promise<S
     return { allowed: false, reason: 'port_not_allowed', message: `端口 ${port} 不在允许列表内` }
   }
 
-  // 主机名本身就是 IP 时不必解析。
+  // 主机名本身是 IP 时无需解析。
   const literal = isIP(host)
   let address = host
   if (!literal) {
@@ -143,7 +142,7 @@ export async function checkUrl(raw: string, opts: SafetyOptions = {}): Promise<S
     try {
       address = await resolveWithTimeout(host, opts.dnsTimeoutMs ?? 3000)
     } catch {
-      // 解析不了就拒。放行等于把判定推给 fetch，而那时已经在连接了。
+      // 无法解析即拒绝。放行会把判定交给 fetch，而 fetch 此时已在建立连接。
       return { allowed: false, reason: 'dns_failed', message: `域名解析失败：${host}` }
     }
   }
@@ -157,9 +156,9 @@ export async function checkUrl(raw: string, opts: SafetyOptions = {}): Promise<S
 }
 
 /**
- * 按解析出的 IP 分类。
+ * 按解析得到的 IP 分类。
  *
- * 返回 null = 是公网地址。
+ * 返回 null 表示公网地址。
  */
 export function classifyAddress(address: string): { reason: BlockReason; message: string } | null {
   const v = isIP(address)
@@ -177,7 +176,7 @@ function classifyV4(address: string): { reason: BlockReason; message: string } |
 
   if (a === 127) return { reason: 'loopback', message: `拒绝访问回环地址 ${address}` }
   if (a === 0) return { reason: 'reserved', message: `拒绝访问保留地址 ${address}` }
-  // 169.254/16 是链路本地，云元数据端点就在这个段里。
+  // 169.254/16 是链路本地段，云元数据端点位于该段内。
   if (a === 169 && b === 254) {
     return { reason: 'link_local', message: `拒绝访问链路本地地址 ${address}（含云元数据端点）` }
   }
@@ -201,12 +200,12 @@ function classifyV4(address: string): { reason: BlockReason; message: string } |
 }
 
 /**
- * 展开成 8 组 16 位数。`::` 补零，尾部的点分十进制段折成两组。
+ * 展开为 8 组 16 位数。`::` 补零，尾部的点分十进制段折算为两组。
  *
- * 判 IPv6 **只能按展开后的数值判，不能按字面量匹配**：同一个地址有无数种写法，
- * `::ffff:127.0.0.1` 和 `::ffff:7f00:1` 是同一个回环地址，按写法枚举永远漏。
+ * IPv6 **只能按展开后的数值判定，不能按字面量匹配**：同一地址有大量等价写法，
+ * `::ffff:127.0.0.1` 与 `::ffff:7f00:1` 是同一个回环地址，按写法枚举必然遗漏。
  *
- * 解析不出来返回 null，调用方按默认拒绝处理。
+ * 无法解析时返回 null，调用方按默认拒绝处理。
  */
 function expandV6(address: string): number[] | null {
   // 区域标识（fe80::1%eth0）不参与地址判定。
@@ -256,8 +255,8 @@ function classifyV6(address: string): { reason: BlockReason; message: string } |
     return { reason: 'loopback', message: `拒绝访问回环地址 ${address}` }
   }
 
-  // IPv4 映射（::ffff:x）与 IPv4 兼容（::x）：低 32 位就是一个 IPv4 地址，
-  // 必须还原成 IPv4 再判，否则一个前缀就绕过了全部 IPv4 规则。
+  // IPv4 映射（::ffff:x）与 IPv4 兼容（::x）地址：低 32 位即 IPv4 地址，
+  // 必须还原为 IPv4 后判定，否则加一个前缀即可绕过全部 IPv4 规则。
   if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) {
     const hi = g[6] as number
     const lo = g[7] as number
@@ -280,7 +279,7 @@ function classifyV6(address: string): { reason: BlockReason; message: string } |
   return null
 }
 
-/** 单次请求最多跟随几跳重定向。 */
+/** 单次请求最多跟随的重定向次数。 */
 export const MAX_REDIRECTS = 5
 
 export interface SafeFetchResult {
@@ -290,20 +289,20 @@ export interface SafeFetchResult {
   contentType: string | null
   body: Uint8Array
   /**
-   * 响应超过读取上限，`body` 只是开头那一段。调用方必须把这件事告诉模型，
+   * 响应超过读取上限，`body` 只含开头部分。调用方必须告知模型，
    * 否则截断后的正文会被当作完整的远端内容保存与引用。
    */
   truncated: boolean
-  /** 被挡时的原因。 */
+  /** 被拒绝时的原因。 */
   blocked?: { reason: BlockReason; message: string; url: string }
   redirects: string[]
 }
 
 /**
- * 过安全闸的 fetch。
+ * 经过 SSRF 防护的 fetch。
  *
- * **手动跟随重定向**，每一跳都重新校验。用 `redirect: 'follow'` 让运行时自己跟，
- * 中间那几跳就完全绕过了检查——这正是最常见的绕过方式。
+ * **手动跟随重定向**，每一跳都重新校验。使用 `redirect: 'follow'` 由运行时自动跟随时，
+ * 中间各跳完全不经过检查，这是最常见的绕过方式。
  */
 export async function safeFetch(
   raw: string,
@@ -311,9 +310,9 @@ export async function safeFetch(
     signal?: AbortSignal
     maxBytes?: number
     timeoutMs?: number
-    /** 默认 GET。非 GET 只有插件的 net.fetch 会用到。 */
+    /** 默认 GET。只有插件的 net.fetch 使用非 GET 方法。 */
     method?: string
-    /** 额外请求头。逐跳头和 host 会被剥掉。 */
+    /** 额外请求头。逐跳头与 host 会被剥离。 */
     headers?: Record<string, string>
     body?: string
   } = {},
@@ -347,9 +346,9 @@ export async function safeFetch(
     const timeout = AbortSignal.timeout(opts.timeoutMs ?? 30_000)
     const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout
 
-    // **按校验时解析出的 IP 连接**，而不是把主机名再交给 fetch 解析一次。
-    // 解析两次中间那个窗口就是 DNS 重绑定：第一次回公网 IP 过闸，
-    // 第二次回 127.0.0.1 / 169.254.169.254。
+    // 按校验时解析得到的 IP 连接，不把主机名再交给 fetch 解析。
+    // 两次解析之间存在 DNS 重绑定窗口：第一次返回公网 IP 并通过检查，
+    // 第二次返回 127.0.0.1 / 169.254.169.254。
     const pinned = pinToAddress(current, verdict.resolved)
 
     const res = await fetch(pinned.url, {
@@ -357,15 +356,15 @@ export async function safeFetch(
       redirect: 'manual',
       signal,
       headers: {
-        // 明示身份。伪装成浏览器只会让站点的反爬策略更难被诊断。
+        // 如实声明客户端身份。伪装成浏览器只会使站点的反爬策略更难诊断。
         'user-agent': 'qywork-agent/0.1 (+https://github.com/qywork)',
         accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5',
         ...extraHeaders,
-        // URL 里放的是 IP，得把原主机名带回去，虚拟主机才路由得对。
+        // URL 中是 IP，必须带上原主机名，虚拟主机才能正确路由。
         ...(pinned.host ? { host: pinned.host } : {}),
       },
-      // TLS 证书仍按**原主机名**校验：servername 给错名字连不上（已实测），
-      // 所以钉 IP 不等于把证书校验降级。
+      // TLS 证书仍按原主机名校验：servername 不正确时连接失败（已实测），
+      // 因此固定 IP 不会降低证书校验强度。
       ...(pinned.servername ? { tls: { servername: pinned.servername } } : {}),
       ...(body !== undefined && method !== 'GET' && method !== 'HEAD' ? { body } : {}),
     } as RequestInit)
@@ -376,16 +375,16 @@ export async function safeFetch(
       redirects.push(current)
       const next = new URL(location, current).toString()
 
-      // 跨源跳转必须丢掉 authorization。
+      // 跨源跳转必须丢弃 authorization。
       //
-      // 不丢的话，任何能让 agent 打开一个 URL 的人都能把凭证钓走：请求
-      // api.example.com（带 token）→ 对方回 302 到 evil.com → 凭证跟着过去。
-      // 浏览器默认就这么做；这里是手动跟随重定向，因此要自己做。
+      // 否则任何能让 agent 打开 URL 的人都能窃取凭证：请求
+      // api.example.com（带 token）→ 对方返回 302 到 evil.com → 凭证随之发出。
+      // 浏览器默认执行此处理；这里手动跟随重定向，因此必须自行处理。
       if (originOf(next) !== origin) extraHeaders = dropAuth(extraHeaders)
 
-      // 303 一律转 GET；301/302 上的非 GET 也转 GET 并丢掉请求体——
-      // 规范说该保留，但全世界的客户端都转，服务端也按转了写。跟规范不跟现实
-      // 会在真实站点上表现为「重定向之后把整个请求体又发了一遍」。
+      // 303 一律改为 GET；301/302 上的非 GET 请求也改为 GET 并丢弃请求体。
+      // 规范要求保留方法，但主流客户端均改为 GET，服务端也按此实现；
+      // 按规范保留会使真实站点在重定向后再次收到整个请求体。
       if (res.status === 303 || ((res.status === 301 || res.status === 302) && method !== 'GET')) {
         method = 'GET'
         body = undefined
@@ -421,9 +420,9 @@ export async function safeFetch(
 /**
  * 逐跳头（hop-by-hop）与 host 不允许调用方指定。
  *
- * 它们描述的是「这一跳连接怎么走」，由 fetch 自己算。让调用方覆盖 `host`
- * 更是直接绕过 SSRF 闸：闸按 URL 里的主机解析 IP，而请求到达时反代看的是 Host 头，
- * 两者不一致就能把校验过的 IP 和实际访问的服务掰开。
+ * 这些头描述当前一跳连接的传输方式，由 fetch 自行计算。允许调用方覆盖 `host`
+ * 会直接绕过 SSRF 防护：防护按 URL 中的主机解析 IP，而反向代理按 Host 头路由，
+ * 两者不一致时，校验过的 IP 与实际访问的服务不再对应。
  */
 const FORBIDDEN_HEADERS = new Set([
   'host',
@@ -444,7 +443,7 @@ function sanitizeHeaders(raw: Record<string, string> | undefined): Record<string
   for (const [k, v] of Object.entries(raw)) {
     const key = k.toLowerCase().trim()
     if (!key || FORBIDDEN_HEADERS.has(key)) continue
-    // 头值里的 CR/LF 是响应拆分/请求走私的入口，直接剔掉整条。
+    // 头值中的 CR/LF 可用于响应拆分与请求走私，含有时丢弃整个头。
     if (/[\r\n]/.test(String(v))) continue
     out[key] = String(v)
   }
@@ -452,10 +451,10 @@ function sanitizeHeaders(raw: Record<string, string> | undefined): Record<string
 }
 
 /**
- * 把 URL 的主机换成已解析的 IP，并交出要带回去的原主机名。
+ * 把 URL 的主机替换为已解析的 IP，并返回需要随请求发送的原主机名。
  *
- * `resolved` 与原主机相同（主机名本来就是字面 IP，或走了 allowHosts）时原样返回，
- * 不做无谓改写。
+ * `resolved` 与原主机相同（主机名本身是 IP 字面量，或命中 allowHosts）时原样返回，
+ * 不做多余改写。
  */
 function pinToAddress(
   raw: string,
@@ -477,11 +476,11 @@ function pinToAddress(
 }
 
 /**
- * 跨源跳转要丢掉的请求头。
+ * 跨源跳转时保留的请求头。
  *
- * 不能只列 `authorization` / `cookie`：凭证同样常见于 `x-api-key` 这类自定义头，
- * 插件的 net.fetch 就是这么用的。所以用**正面白名单之外一律丢**的口径——
- * 逐条枚举「哪些头是凭证」永远列不全，而跨源之后本来也没有几个头值得带过去。
+ * 不能只删除 `authorization` / `cookie`：凭证同样常见于 `x-api-key` 等自定义头，
+ * 插件的 net.fetch 即如此使用。因此采用白名单，名单之外的头一律丢弃：
+ * 逐条枚举凭证头无法列全，而跨源之后值得保留的头本来就很少。
  */
 const CROSS_ORIGIN_KEEP = new Set(['accept', 'accept-language', 'user-agent', 'content-type'])
 
@@ -502,12 +501,12 @@ function originOf(url: string): string {
 }
 
 /**
- * 有上限地读取响应体。
+ * 按上限读取响应体。
  *
- * 不能直接 `res.arrayBuffer()`：对方可以返回一个无限流，那会耗尽内存。
- * Content-Length 不可信（可以不发，也可以与实际不符），所以按实际读取的字节数计。
+ * 不能直接调用 `res.arrayBuffer()`：对方可以返回无限流，导致内存耗尽。
+ * Content-Length 不可信（可以不发送，也可以与实际不符），因此按实际读取的字节数计算。
  *
- * `truncated` 按实际读到的字节判：读满上限时再读一次，流没结束就是截断。
+ * `truncated` 按实际读取的字节判定：读满上限后再读一次，流未结束即为截断。
  */
 async function readBounded(
   res: Response,
@@ -527,7 +526,7 @@ async function readBounded(
     }
     truncated = total > maxBytes || (total === maxBytes && !(await reader.read()).done)
   } finally {
-    // 提前停止时要主动取消，否则连接会挂到超时。
+    // 提前停止时必须主动取消，否则连接会保持到超时。
     await reader.cancel().catch(() => {})
   }
 

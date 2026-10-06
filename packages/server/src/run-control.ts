@@ -1,16 +1,16 @@
 /**
- * run 的起、重试、压缩，以及**目标的自动续起**。
+ * run 的启动、重试、压缩，以及**目标的自动继续**。
  *
- * 五条入口共用同一个 `Session` 装配：手动发消息、定时任务触发、重试、目标续起、
- * 跟进消息火发。给任何一条单开一套装配就是五套会漂移的行为。
+ * 五条入口共用同一个 `Session` 装配：手动发送消息、定时任务触发、重试、目标自动继续、
+ * 跟进消息发起。为任何一条单独建立一套装配，都会得到五套可能相互偏离的行为。
  *
- * **续起为什么判在 `startRun` 的 `finally`。** 那里已经在做 `runs.unregister` / `release` /
- * `session.dispose()`，是「这一轮干完了」的**唯一汇合处**——正常结束、抛错、被中断三条路都要经过
- * 它。
+ * **自动继续在 `startRun` 的 `finally` 中判定。** 该处已执行 `runs.unregister` / `release` /
+ * `session.dispose()`，是「本轮已完成」的**唯一汇合处**：正常结束、抛错、被中断三条路径都经过
+ * 该处。
  *
- * **不是 `recoverStaleRuns`**：那个只在 `createServer` 启动时跑一次（开服之前），
- * 把目标判定放进进程启动，正是「崩溃之后自动复活」——`GoalArm` 上那段注释
- * 要防的第一件事。两处差着一整个生命周期。
+ * **不在 `recoverStaleRuns` 中判定**：它只在 `createServer` 启动时执行一次（开始监听之前），
+ * 把目标判定放入进程启动流程即形成「崩溃后自动恢复执行」，这正是 `GoalArm` 注释
+ * 首要防止的情形。两处相差一个完整的生命周期。
  */
 
 import { createSummaryTrace } from '@qywork/agent'
@@ -60,27 +60,27 @@ import { makePluginPort } from './plugin-port.ts'
 import type { GoalArm } from './runs.ts'
 
 /**
- * 这一轮是谁发起的。
+ * 本轮的发起方。
  *
- * 唯一的作用是把「人在说话」和另外两种发起分开：人的动作一进来就把待续起标记
- * 清掉（人类消息优先），而目标续起与子 agent 回执都不是人的动作，清了循环最多跑一轮。
- * 缺席 = 人（发消息、重试、定时触发）。
+ * 唯一用途是把用户发起与另外两种发起区分开：用户操作到达时立即清除自动继续标记
+ * （用户消息优先）；目标自动继续与子 agent 回执都不是用户操作，它们若也清除标记，循环最多执行一轮。
+ * 缺省 = 用户（发送消息、重试、定时触发）。
  */
 export type RoundSource =
   | { kind: 'goal'; arm: GoalArm }
   | { kind: 'receipt'; origin: 'subagent' | 'workflow' }
 
 /**
- * 一条消息进这条会话：有 run 在跑就排进队列，闲着就当场起一轮。
+ * 向会话投递一条消息：有 run 在运行时排入队列，空闲时立即启动一轮。
  *
- * **用户发的消息、子 agent 的回执与定时触发走同一个函数。** 三处各写一遍的话，
- * 「判忙与起轮在同一个同步块里」这条要守三次，而漏掉的那一次不会报错。
+ * **用户消息、子 agent 回执与定时触发经由同一个函数。** 三处分别实现时，
+ * 「忙碌判定与启动一轮在同一个同步块中」这一约束需要维护三次，遗漏的一处不会报错。
  *
- * **闸是 `hasRun` 不是 `isBusy`**：只有子 agent 在跑时这条会话没有可注入的那一轮，
- * 排进队列就没有人会去消费它。
+ * **判定条件是 `hasRun` 而不是 `isBusy`**：只有子 agent 在运行时，该会话没有可注入消息的一轮，
+ * 排入队列后无人消费。
  *
- * **空闲时回执还要再过一道父轮终态**（见 `continuableAfterLastRun`）；
- * 人发的消息不过这道闸——他是新预算的发起方。
+ * **会话空闲时，回执还需检查父轮的终态**（见 `continuableAfterLastRun`）；
+ * 用户消息不做该检查：用户是新预算的发起方。
  */
 export async function submitMessage(
   conversationId: ConversationId,
@@ -108,13 +108,13 @@ export async function submitMessage(
 /**
  * 发起一轮。
  *
- * deps 里**不含 `ws`**：这条路径除了 `handleCommand`，还要给定时任务用，
- * 而定时触发没有发起方的连接。它本来也没用过 `ws`——事件全部走 bus 广播，
- * 因为同一个会话可能同时开在桌面端和手机上。
+ * deps 中**不含 `ws`**：该路径除 `handleCommand` 外还供定时任务使用，
+ * 而定时触发没有发起方的连接。该路径也不使用 `ws`：事件全部经由 bus 广播，
+ * 因为同一个会话可能同时在桌面端与手机上打开。
  *
- * **返回的 promise 不会 reject**：占位失败发一条 `run.error` 后正常返回，
- * 占位之后的一切（含起轮序言）都在后台那段异步的 try/finally 里收尾。
- * 调用方因此不必接 `.catch()`。
+ * **返回的 promise 不会 reject**：占位失败时发布一条 `run.error` 后正常返回，
+ * 占位之后的全部步骤（含启动前的准备阶段）都在后台异步执行的 try/finally 中结束。
+ * 调用方因此无需 `.catch()`。
  */
 export async function startRun(
   conversationId: ConversationId,
@@ -125,12 +125,12 @@ export async function startRun(
   source?: RoundSource,
 ): Promise<void> {
   /*
-   * 占位与检查必须是同一个同步动作：只检查不占位的话，从这里到 `runs.register()`
-   * 之间隔着好几个 await，两条几乎同时到达的消息会双双通过。
+   * 占位与检查必须在同一个同步步骤中完成：只检查不占位时，此处到 `runs.register()`
+   * 之间有多个 await，两条几乎同时到达的消息会同时通过检查。
    *
-   * **走得到这条回绝的只剩一处竞态**：目标续起的 `setTimeout` 到点时会话又忙了
-   * （`fireGoalRound`）。用户发消息与定时触发都不再走到这里——两者都经 `submitMessage`，
-   * 忙时排进队列。
+   * **只有一处竞态会触发该拒绝**：目标自动继续的 `setTimeout` 到期时会话已再次忙碌
+   * （`fireGoalRound`）。用户消息与定时触发不会执行到此处：两者都经由 `submitMessage`，
+   * 忙碌时排入队列。
    */
   if (!deps.runs.reserve(conversationId)) {
     deps.bus.publish(
@@ -146,56 +146,56 @@ export async function startRun(
   }
 
   /*
-   * 后台跑，不阻塞 WebSocket 消息循环——否则一轮 agent 跑十分钟，
-   * 这十分钟里连中断指令都收不到。
+   * 在后台运行，不阻塞 WebSocket 消息循环：否则一轮 agent 运行十分钟时，
+   * 这十分钟内无法接收任何指令，包括中断。
    *
-   * **占位之后的一切都在这个 try 里**，包括起轮的序言（查项目目录、定模型、装配
-   * Session 与它的端口）。序言留在 try 之外的话，那里任何一处抛出（落库失败、
-   * 工具注册冲突）都没有人释放占位，此后这条会话每条消息都被回绝
-   * 「已有任务在执行」，直到进程重启。
+   * **占位之后的全部步骤都在该 try 中**，包括启动前的准备阶段（查询项目目录、确定模型、
+   * 装配 Session 及其端口）。准备阶段位于 try 之外时，其中任何一处抛出（写库失败、
+   * 工具注册冲突）都不会释放占位，此后该会话的每条消息都以
+   * 「已有任务在执行」被拒绝，直到进程重启。
    *
-   * 序言整段是同步的，因此 `startRun` 返回之前它已经跑完——起轮的闸仍然是
-   * 「检查与占位在同一个同步块里」。
+   * 准备阶段全部同步执行，因此 `startRun` 返回之前它已执行完毕，启动一轮的判定条件
+   * 仍然是「检查与占位在同一个同步块中」。
    */
   void (async () => {
     /*
-     * 序言里装出来的两样，收尾要用。
-     * **声明在 try 外**：抛在赋值之前时它们仍是 null，收尾照走。
+     * 准备阶段创建的两个对象，结束阶段需要使用。
+     * **声明在 try 之外**：在赋值之前抛出时它们仍为 null，结束阶段照常执行。
      */
     let ws: Workspace | null = null
     let session: Session | null = null
     const controller = new AbortController()
     let currentRunId: RunId | null = null
     /*
-     * 这一轮怎么收的场，只在续起判定里用。
+     * 本轮的结束方式，只用于自动继续判定。
      *
-     * **两个都要收，因为报错有两条路**：loop 内部的 provider 错误**不会抛出来**，
-     * 它被就地转成 `run.error` + `run.finished{stopReason:'provider_error'}`
-     * （`agent/loop/index.ts`）；只有 loop 之外的错（装配 adapter、解析档案）才走 catch。
-     * 只认 catch 的话，一次 provider 报错会被判成「这一轮正常跑完了」然后接着续起
-     * ——那正是「不自动重试异常」要防的形状。
+     * **两项都需要记录，因为报错有两条路径**：loop 内部的 provider 错误**不会抛出**，
+     * 而是就地转换为 `run.error` + `run.finished{stopReason:'provider_error'}`
+     * （`agent/loop/index.ts`）；只有 loop 之外的错误（装配 adapter、解析档案）进入 catch。
+     * 只检查 catch 时，一次 provider 报错会被判定为「本轮正常执行完毕」并自动继续，
+     * 违反「不自动重试异常」规则。
      */
     let stopReason: StopReason | null = null
     let failure: string | null = null
 
     try {
       /*
-       * **人类消息优先。** 用户发消息（以及重试、定时触发）一进来，排着的那次自动
-       * 续起就作废——他插的这一句才是这条会话现在该干的事。
+       * **用户消息优先。** 用户发送消息（以及重试、定时触发）时，已排队的自动继续
+       * 立即作废：用户插入的消息才是该会话当前应执行的任务。
        *
-       * 目标续起与子 agent 回执都不清：它们不是人的动作。
-       * 放在 reserve 成功之后：被回绝的消息没有发生，不该动任何状态。
+       * 目标自动继续与子 agent 回执不清除标记：它们不是用户操作。
+       * 位于 reserve 成功之后：被拒绝的消息视为未发生，不应修改任何状态。
        */
       if (!source) deps.runs.disarm(conversationId)
 
       /*
-       * 这一轮跑在哪个目录下，**按会话查，不问进程**。
+       * 本轮的运行目录**按会话查询，不取自进程**。
        *
-       * 服务进程不许拿一个 `workspaceRoot` 常量（启动时的 `--cwd`）：那样一个进程
-       * 只服务得了一个项目，而那个常量本身就是 `workspaces` 表的一份缓存。
+       * 服务进程不得持有 `workspaceRoot` 常量（启动时的 `--cwd`）：否则一个进程
+       * 只能服务一个项目，且该常量本身就是 `workspaces` 表的一份缓存。
        *
-       * 查不到就停：回落到某个默认根等于拿着 A 项目的会话去 B 项目的目录里跑命令，
-       * 而工具的路径约束、shell 的沙箱边界全部以这个根为界。
+       * 未查到时停止：回退到默认根目录等于在 B 项目的目录中执行 A 项目会话的命令，
+       * 而工具的路径约束与 shell 的沙箱边界都以该根目录为界。
        */
       ws = workspaceOf(deps.store, conversationId)
       if (!ws) {
@@ -204,7 +204,7 @@ export async function startRun(
             type: 'run.error',
             runId: '' as RunId,
             code: 'internal_error',
-            message: '这个会话找不到对应的项目目录，无法执行',
+            message: '本会话未找到对应的项目目录，无法执行',
           },
           conversationId,
         )
@@ -212,9 +212,9 @@ export async function startRun(
       }
 
       /*
-       * 没有可用模型就不起这一轮。真源是「本轮显式 > 会话当前 > 配置默认」这条链
-       * （与 `session.ask` 同一条），三者皆空 = 用户还没配模型。**在这里拦下并回结构化
-       * `no_model`**，而不是拿一个不存在的接口发出去等 401。界面另有就地拦截，这条是兜底。
+       * 没有可用模型时不启动本轮。真源是「本轮显式指定 > 会话当前 > 配置默认」这条优先链
+       * （与 `session.ask` 相同），三者皆空表示用户尚未配置模型。**在此处拦截并返回结构化的
+       * `no_model`**，而不是向不存在的接口发出请求后等待 401。界面另有就地拦截，此处为后备处理。
        */
       const runModel =
         model || getConversation(deps.store, conversationId)?.model || deps.config.active?.model
@@ -232,14 +232,14 @@ export async function startRun(
         content: deps.content,
         workspaceRoot: ws.rootPath,
         signal: controller.signal,
-        // 派活通道只给顶层会话。成员会话（`team-run.ts`）不传，因此它那边连
-        // `subagent` 工具都不注册——子 agent 再派活没有终止条件。
+        // 任务派发通道只提供给顶层会话。成员会话（`team-run.ts`）不传入，因此成员会话中
+        // 不注册 `subagent` 工具：子 agent 再派发任务没有终止条件。
         delegate: makeDelegate({
           deps,
           workspaceRoot: ws.rootPath,
           conversationId,
-          // 回执可能在这一轮结束很久之后才到，那时这个 Session 早已 dispose：
-          // 投递走的是会话级的那条路，与用户发消息同一个函数。
+          // 回执可能在本轮结束很久之后才到达，那时该 Session 已经 dispose：
+          // 投递经由会话级路径，与用户发送消息使用同一个函数。
           deliver: (followUp) => {
             void submitMessage(conversationId, followUp, deps).catch((err) => {
               deps.bus.publish(
@@ -254,42 +254,42 @@ export async function startRun(
             })
           },
         }),
-        // 装插件同样只给顶层会话：成员会话不该给整台机器装插件。
+        // 插件安装端口同样只提供给顶层会话：成员会话不应为整台机器安装插件。
         plugins: makePluginPort({ workspaceRoot: ws.rootPath }),
         /*
-         * 浏览器控制**按当前宿主状态现判**，不缓存。
+         * 浏览器控制**按当前宿主状态实时判定**，不缓存。
          *
-         * 宿主没连上或运行时版本不达标时不注入端口，这一轮连浏览器工具都不注册；
-         * 装配成「先给一个端口，调用时再报错」的话，模型会拿到一个必然失败的能力。
+         * 宿主未连接或运行时版本不满足要求时不注入端口，本轮不注册浏览器工具；
+         * 若先提供端口、调用时再报错，模型会得到一个必然失败的能力。
          */
         ...(deps.browser?.available()
           ? { browser: deps.browser.portFor(conversationId, ws.id) }
           : {}),
         /*
-         * 电脑控制同样**现判**：用户的启用开关、宿主连接、worker 就绪与系统授权四项
-         * 由协调器一次判完，缺任一项就不注入端口，这一轮连桌面工具都不注册。
+         * 电脑控制同样**实时判定**：用户的启用开关、宿主连接、worker 就绪与系统授权四项
+         * 由协调器一次判定，缺少任一项时不注入端口，本轮不注册桌面工具。
          *
-         * 端口按执行者发放，顶层会话与它派出去的成员各领一份：停止只撤销自己名下的
-         * 排队请求，不会连带撤掉另一条会话正在做的动作。
+         * 端口按执行者分配，顶层会话与其派发的成员各持有一个：停止只撤销本会话的
+         * 排队请求，不会撤销其他会话正在执行的动作。
          */
         ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(conversationId) } : {}),
-        // Office 同样现判：开关关着或本机缺 Python 与文档库时不给端口，这一轮没有 `office`。
+        // Office 同样实时判定：开关关闭或本机缺少 Python 与文档库时不提供端口，本轮没有 `office`。
         ...officePortOf(deps),
         ...(deps.canvas
           ? { canvas: canvasPort(deps.canvas, { id: ws.id, root: ws.rootPath }) }
           : {}),
-        // 跟进消息队列同样只给顶层会话：成员会话不在界面上，没有人往它里面插话。
+        // 跟进消息队列同样只提供给顶层会话：成员会话不显示在界面上，用户无法向其插入消息。
         followUps: (id) => deps.runs.takeSteered(id),
       })
 
       for await (const ev of session.ask(content, conversationId, {
         ...(model ? { model } : {}),
         ...(attachments?.length ? { attachments } : {}),
-        // 回执起的那一轮，消息行上要写清是谁投的：界面按它渲染成回执行而不是用户气泡。
+        // 由回执启动的一轮，消息行必须标明投递方：界面据此渲染为回执行，而不是用户气泡。
         ...(source?.kind === 'receipt' ? { origin: source.origin } : {}),
       })) {
         // 并非所有事件都带 runId（git.state / file.changed 是工作区级的），
-        // 取之前先窄化，不能假设字段存在。
+        // 读取前先收窄类型，不能假设字段存在。
         if ('runId' in ev && ev.runId && currentRunId === null) {
           currentRunId = ev.runId as RunId
           deps.runs.register({
@@ -302,11 +302,11 @@ export async function startRun(
         if (ev.type === 'run.finished') stopReason = ev.stopReason
         if (ev.type === 'run.error') failure = ev.message
         /*
-         * **续起标记只由目标事件驱动**，不由「谁调过目标工具」推。
+         * **自动继续标记只由目标事件驱动**，不根据「谁调用过目标工具」推断。
          *
-         * 目标的真源在账本，而这条事件是账本刚刚变成什么样的如实广播
-         * （`runtime/session.ts` 的 `announce`）。模型在同一轮里立了目标又
-         * 自己 complete 掉时，后一条事件把标记解除，循环不会白起一轮。
+         * 目标的真源在账本，该事件如实广播账本的最新状态
+         * （`runtime/session.ts` 的 `announce`）。模型在同一轮中设立目标后又
+         * 自行 complete 时，后一条事件解除标记，循环不会多启动一轮。
          */
         if (ev.type === 'goal') {
           if (ev.goal.status === 'active') {
@@ -318,15 +318,15 @@ export async function startRun(
         deps.bus.publish(ev, conversationId)
       }
     } catch (err) {
-      // 在 loop 之外抛出的错误（装配 adapter、解析档案）走这里。
+      // 在 loop 之外抛出的错误（装配 adapter、解析档案）进入此处。
       //
-      // 别硬编码 `internal_error`：那样「没配 key」在 CLI 里报 no_api_key、
-      // 在桌面端却报 internal_error，前端的「去配置」引导永远不触发。
-      // 错误码是给前端决定引导动作用的，压平成 internal_error 就等于没有分类。
+      // 不要硬编码 `internal_error`：否则「未配置 key」在 CLI 中报 no_api_key，
+      // 在桌面端却报 internal_error，前端的「去配置」引导永远不会触发。
+      // 错误码供前端决定引导操作，统一为 internal_error 等于没有分类。
       const pe = err instanceof ProviderError ? err : null
       const base = pe?.message ?? (err instanceof Error ? err.message : String(err))
-      // 桌面端用户手边不一定有终端，「运行 qy init」对他们只是一句空话。
-      // 把配置文件路径带上——那是他们真正能打开的位置。
+      // 桌面端用户不一定有终端，无法执行「运行 qy init」。
+      // 因此附上配置文件路径，用户可以直接打开该文件。
       const message =
         pe?.code === 'no_api_key' || pe?.code === 'auth_failed'
           ? `${base}\n配置文件：${configPath()}`
@@ -342,38 +342,38 @@ export async function startRun(
         conversationId,
       )
     } finally {
-      // register 过就走 unregister，没跑起来的由 release 收——两者都不做的话
-      // 这个会话会被永久占住，之后每一条消息都被回绝「已有任务在执行」。
+      // 已 register 的执行 unregister，未启动的由 release 回收；两者都不执行时
+      // 该会话被永久占用，之后的每条消息都以「已有任务在执行」被拒绝。
       if (currentRunId) deps.runs.unregister(currentRunId)
       else deps.runs.release(conversationId)
-      // 每条消息一个 Session，每个 Session 都持有扩展的一份引用。
-      // 不释放的话引用只增不减，插件与 MCP 子进程到进程退出都关不掉。
-      // null = 序言没走到装配就停了（查不到项目、没有模型、装配抛错）。
+      // 每条消息对应一个 Session，每个 Session 都持有扩展的一份引用。
+      // 不释放时引用只增不减，插件与 MCP 子进程直到进程退出都无法关闭。
+      // null 表示准备阶段在装配前已停止（未查到项目、没有模型、装配抛错）。
       await session?.dispose().catch((error) => {
         log.error('extensions', `会话扩展关闭失败：${String(error)}`, { conversationId })
       })
       const interrupted = controller.signal.aborted || stopReason === 'user_interrupt'
       /*
-       * 「调整方向」只对发出它的那一轮成立。这一轮收尾了，没赶上 step 边界的那些
-       * 用户条目再没有可注入的地方；留着标记的话下一轮开跑会把它们注入到一轮用户
-       * 没有指向过的执行里。带 `origin` 的回执不在此列，理由见 `resetSteer`。
+       * 「调整方向」只对发出它的那一轮有效。本轮结束后，未赶上 step 边界的
+       * 用户条目已无处注入；保留标记时，下一轮开始时会把它们注入到用户
+       * 并未针对的执行中。带 `origin` 的回执不在此列，原因见 `resetSteer`。
        */
       deps.runs.resetSteer(conversationId)
       /*
-       * **跟进消息压过目标续起**：人插的那句话才是这条会话现在该干的事，
-       * 与 `startRun` 开头那条「人类消息优先」的 `disarm` 同一条学说。
+       * **跟进消息优先于目标自动继续**：用户插入的消息才是该会话当前应执行的任务，
+       * 与 `startRun` 开头「用户消息优先」的 `disarm` 遵循同一原则。
        *
-       * 但只压过续起那一支。`settleGoalAfterRun` 的 pause / blocked 两支是收尾不是
-       * 续起——跳掉它们的失败形状是：中断且队列非空时目标停不进 `paused`、
-       * 续起标记悬在表里，界面上那条目标永远显示在跑。
+       * 但只跳过自动继续分支。`settleGoalAfterRun` 的 pause / blocked 两个分支是收尾而不是
+       * 自动继续，跳过它们的失败形状是：中断且队列非空时目标无法转为 `paused`，
+       * 自动继续标记残留，界面上该目标始终显示运行中。
        */
       const fired =
         !interrupted &&
         !!stopReason &&
         CONTINUABLE.includes(stopReason) &&
         fireFollowUpRound(conversationId, deps)
-      // 判定放在 dispose **之后**：占位放了、扩展也放了，这一轮才算真的干完，
-      // 下一轮起来时不会和上一轮的子进程叠在一起。
+      // 判定位于 dispose **之后**：占位与扩展均已释放，本轮才真正完成，
+      // 下一轮启动时不会与上一轮的子进程重叠。
       settleGoalAfterRun({
         conversationId,
         deps,
@@ -382,20 +382,20 @@ export async function startRun(
         failure,
         skipResume: fired,
       })
-      // 查不到项目目录时没有可播的工作区，这一轮也没碰过任何文件。
+      // 未查到项目目录时没有可广播的工作区，本轮也未访问任何文件。
       if (ws) void publishGitState(ws.rootPath, ws.id, deps.bus)
     }
   })()
 }
 
 /**
- * run 收尾时把队首那条跟进消息发成下一轮。返回 true = 取到了、已排上。
+ * run 结束时把队首的跟进消息作为下一轮发起。返回 true 表示已取出并已排队。
  *
- * **同步取走、异步发起。** 取走与「跳不跳目标续起」是同一个决定，拆开就会出现
- * 「续起已经被跳过，而那条消息在 setTimeout 到点之前被用户删了」——两边都没跑。
+ * **同步取出、异步发起。** 取出与「是否跳过目标自动继续」是同一个决定，拆开后会出现
+ * 「自动继续已被跳过，而该消息在 setTimeout 到期前被用户删除」的情形，两者都不会执行。
  *
- * 到点时会话又忙了（另一端刚发了一条），把它塞回队首，不丢。
- * 异步发起的理由与 `queueGoalRound` 一样：不叠在这一轮的 `finally` 里。
+ * 到期时若会话再次忙碌（另一端刚发送了消息），把它放回队首，不丢弃。
+ * 异步发起的原因与 `queueGoalRound` 相同：不嵌套在本轮的 `finally` 中执行。
  */
 function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDeps, 'ws'>): boolean {
   const item = deps.runs.takeNext(conversationId)
@@ -424,25 +424,25 @@ function fireFollowUpRound(conversationId: ConversationId, deps: Omit<CommandDep
   return true
 }
 
-// ───────────────────────── 目标的自动续起 ─────────────────────────
+// ───────────────────────── 目标的自动继续 ─────────────────────────
 
 /**
- * **只有这两种收尾算「这一轮正常跑完了」。** 其余一律停下等人。
+ * **只有列出的停止原因视为「本轮正常执行完毕」。** 其余原因一律停止并等待用户处理。
  *
- * 白名单而不是黑名单：漏了一种停止原因时，白名单的表现是「停下来问一句」，
- * 黑名单的表现是「按一个没人想过的状态接着自动跑」。
+ * 使用白名单而不是黑名单：遗漏某种停止原因时，白名单的结果是停止并询问，
+ * 黑名单的结果是在未经设计的状态下继续自动执行。
  */
 const CONTINUABLE: StopReason[] = ['completed']
 
 /**
- * 这条会话最近一轮是不是正常收尾。回执在会话空闲时按它决定起轮还是入队。
+ * 该会话最近一轮是否正常结束。会话空闲时，回执据此决定启动一轮还是排入队列。
  *
- * **与收尾处的火发判据同一个 `CONTINUABLE`**：回执早到时走收尾那条路，晚到时走
- * 这条路，两条路各写一套白名单的话，同一条回执按到达时机得到两种答案——晚到的那次
- * 会绕过已经耗尽的重试预算，拿到全新的五次额度。
+ * **与结束处的发起判定使用同一个 `CONTINUABLE`**：回执在本轮结束前到达时经由结束处的路径，
+ * 结束后到达时经由此处。两条路径各写一套白名单时，同一条回执按到达时机得到两种结果，
+ * 晚到的回执会绕过已耗尽的重试预算，获得全新的五次额度。
  *
- * 查不到任何一轮时按可续：回执的父轮必然存在过，查不到说明账本里没有可裁决的终态，
- * 入队会让它没有任何起轮者。
+ * 未查到任何一轮时视为可继续：回执的父轮必然存在过，未查到说明账本中没有可判定的终态，
+ * 此时排入队列会导致没有任何一方启动下一轮。
  */
 function continuableAfterLastRun(
   conversationId: ConversationId,
@@ -454,27 +454,27 @@ function continuableAfterLastRun(
 }
 
 /**
- * 停下来的说法。**每一种都要有话说**——没理由的 blocked 是最坏的一种停：
- * 循环不动了，而界面上只有「受阻」两个字。
+ * 停止原因的说明。**每一种都必须有说明**：没有原因的 blocked 最难处理：
+ * 循环已停止，而界面上只显示「受阻」。
  */
 const STOP_NOTE: Record<string, string> = {
   provider_error: '上一轮因出错而中断',
-  no_progress: '上一轮在原地打转',
+  no_progress: '上一轮因连续无进展而终止',
   output_truncated: '上一轮输出被截断',
 }
 
 /**
- * 一轮跑完，决定要不要再起一轮。
+ * 一轮执行完毕后，决定是否启动下一轮。
  *
  * 三条出口，**没有第四条**：
  * - 被中断 → 目标置 `paused`，解除标记。取消之后不自动重启，这是硬规则；
- * - 非正常收尾（provider 报错、原地打转…）→ 目标置 `blocked`，
- *   解除标记。**不重试**——隐式重试会把一次故障放大成一串一模一样的失败，
- *   而用户只看到会话在那儿自己转；
- * - 正常收尾 → 排队起下一轮。
+ * - 非正常结束（provider 报错、连续无进展等）→ 目标置 `blocked`，
+ *   解除标记。**不重试**：隐式重试会把一次故障放大为一连串相同的失败，
+ *   而用户只能看到会话持续自行运行；
+ * - 正常结束 → 排队启动下一轮。
  *
- * 没有待续起标记就直接走人：那说明这条会话不在自动循环里
- * （或者进程重启过——标记不落盘，见 `GoalArm`）。
+ * 没有自动继续标记时直接返回：说明该会话不在自动循环中
+ * （或进程已重启：标记不落盘，见 `GoalArm`）。
  */
 function settleGoalAfterRun(input: {
   conversationId: ConversationId
@@ -483,10 +483,10 @@ function settleGoalAfterRun(input: {
   stopReason: StopReason | null
   failure: string | null
   /**
-   * 队首那条跟进消息已经排上下一轮，**只跳过续起那一支**。
+   * 队首的跟进消息已排为下一轮，**只跳过自动继续分支**。
    *
-   * 下面 pause / blocked 两支照走：它们是收尾不是续起，跳掉会把目标留在 active
-   * 且续起标记不解除。
+   * 下方 pause / blocked 两个分支照常执行：它们是收尾而不是自动继续，跳过时目标会停留在
+   * active 且自动继续标记不解除。
    */
   skipResume: boolean
 }): void {
@@ -500,7 +500,7 @@ function settleGoalAfterRun(input: {
       return
     }
     if (!input.stopReason || !CONTINUABLE.includes(input.stopReason)) {
-      const note = (input.stopReason && STOP_NOTE[input.stopReason]) ?? '上一轮没有正常收尾'
+      const note = (input.stopReason && STOP_NOTE[input.stopReason]) ?? '上一轮未正常结束'
       stopGoal(deps, conversationId, armed, {
         action: 'blocked',
         code: input.stopReason ?? 'internal_error',
@@ -516,10 +516,10 @@ function settleGoalAfterRun(input: {
 }
 
 /**
- * 把目标停在某个状态上并解除标记。
+ * 把目标置于指定的停止状态并解除标记。
  *
- * 用**刚读到的** revision 而不是续起标记里那个：模型可能在这一轮里改过目标，
- * 那些改动是真的，不该被一次中断按旧版本覆盖回去。
+ * 使用**刚读取的** revision 而不是自动继续标记中的值：模型可能在本轮中修改过目标，
+ * 这些修改有效，不应被一次中断按旧版本覆盖。
  */
 function stopGoal(
   deps: Omit<CommandDeps, 'ws'>,
@@ -529,7 +529,7 @@ function stopGoal(
 ): void {
   deps.runs.disarm(conversationId)
   const goal = currentGoal(deps.store, conversationId)
-  // 目标已经被换掉或者进了终态，就没有什么可停的了。
+  // 目标已被替换或已进入终态时，无需停止。
   if (!goal || goal.id !== armed.goalId || goal.status === 'completed') return
 
   const result = updateGoal(deps.store, {
@@ -544,10 +544,10 @@ function stopGoal(
 }
 
 /**
- * 排下一轮。**异步排队，不是同步递归调 `startRun`**——同步调会把下一轮的执行栈
- * 叠在这一轮的 `finally` 里：栈越叠越深，而且下一轮开跑时上一轮还没收完尾。
+ * 排队启动下一轮。**异步排队，而不是同步递归调用 `startRun`**：同步调用会把下一轮的执行栈
+ * 嵌套在本轮的 `finally` 中，栈深度持续增加，且下一轮开始时上一轮尚未完成收尾。
  *
- * 用户点「继续」走的也是这里（`resumeGoal`），不另开一条起轮的路。
+ * 用户点击「继续」同样经由此处（`resumeGoal`），不另设启动路径。
  */
 function queueGoalRound(
   conversationId: ConversationId,
@@ -562,11 +562,11 @@ function queueGoalRound(
 }
 
 /**
- * 真的起下一轮。
+ * 实际启动下一轮。
  *
- * **发起之前重读目标**：排队到现在这段时间里，用户可能插了一句话（标记已被清）、
- * 模型可能已经把目标改了或做完了。预留（goalId + revision）对不上就**丢弃这次排队**
- * ——按一个几秒前的版本继续跑，跑的就不是用户现在要的那件事。
+ * **发起之前重新读取目标**：排队期间用户可能插入了消息（标记已被清除），
+ * 模型可能已修改或完成目标。预留（goalId + revision）不一致时**丢弃本次排队**：
+ * 按几秒前的版本继续执行，执行的就不再是用户当前的要求。
  */
 async function fireGoalRound(
   conversationId: ConversationId,
@@ -588,13 +588,13 @@ async function fireGoalRound(
   }
 
   /*
-   * **没有轮数上限，所以这里不再有配额判定。** 循环的出口只有三个：模型自检
-   * `complete`、模型 `blocked`、用户中断转 `paused`；外加这一轮没正常收尾时
-   * （`CONTINUABLE` 之外的停止原因）由 `settleGoalAfterRun` 转 `blocked`。
+   * **没有轮数上限，因此此处没有配额判定。** 循环的出口只有三个：模型自检后
+   * `complete`、模型 `blocked`、用户中断转为 `paused`；此外，本轮未正常结束时
+   * （`CONTINUABLE` 之外的停止原因）由 `settleGoalAfterRun` 转为 `blocked`。
    *
-   * 也不再有「轮次 +1」这一步：没有计数器要记，`revision` 保持不变，
-   * 预留（goalId + revision）因此天然还对得上——模型一旦 complete / blocked，
-   * revision 就变了，下一次排队自己判成陈旧退出。
+   * 也没有「轮次 +1」步骤：没有计数器，`revision` 保持不变，
+   * 预留（goalId + revision）因此保持一致；模型执行 complete / blocked 后
+   * revision 改变，下一次排队判定为陈旧并退出。
    */
   await startRun(conversationId, goalRoundPrompt(goal), undefined, deps, undefined, {
     kind: 'goal',
@@ -603,11 +603,11 @@ async function fireGoalRound(
 }
 
 /**
- * 用户用 `/goal` 立目标，或改写现在这个。**立目标的唯一入口。**
+ * 用户通过 `/goal` 设立目标，或改写当前目标。**设立目标的唯一入口。**
  *
- * 模型手里没有 `create_goal`（见 `tools/goals.ts` 顶部）。这条路要么建新的，
- * 要么改写在跑的那个正文——两者之后一律交给 `resumeGoal` 去转 active、上标记、
- * 起第一轮。**不自己再写一遍那三步**：同一件事的第二条实现迟早给出两种答案。
+ * 模型没有 `create_goal` 工具（见 `tools/goals.ts` 顶部）。该函数新建目标，
+ * 或改写当前目标的正文；之后统一交给 `resumeGoal` 转为 active、设置标记、
+ * 启动第一轮。**不在此处重复实现这三步**：同一件事的第二份实现终将给出不同结果。
  *
  */
 export function setGoal(
@@ -615,13 +615,13 @@ export function setGoal(
   objective: string,
   deps: Omit<CommandDeps, 'ws'>,
 ): { ok: true } | { ok: false; message: string } {
-  // 起轮的闸只认 run：子 agent 在跑不挡立目标，那一轮与它们并行，与发消息同一条规矩。
+  // 启动一轮只检查 run：子 agent 运行中不阻止设立目标，新一轮与子 agent 并行，规则与发送消息相同。
   if (deps.runs.hasRun(conversationId)) {
-    return { ok: false, message: '该会话已有任务在执行，先停下这一轮再立目标' }
+    return { ok: false, message: '该会话已有任务在执行，请先停止再设立目标' }
   }
   try {
     const existing = currentGoal(deps.store, conversationId)
-    // 已完成的目标是终态，一条出边都没有——那时候只能立新的。
+    // 已完成的目标是终态，没有任何出边，此时只能新建目标。
     const written =
       !existing || existing.status === 'completed'
         ? createGoal(deps.store, { conversationId, objective })
@@ -632,8 +632,8 @@ export function setGoal(
             action: 'edit',
             objective,
           })
-    // 校验（空正文、轮数越界）在账本里，回绝原样带回给用户——
-    // 服务端再抄一份判定就是两处会漂的规则。
+    // 校验（如空正文）位于账本中，拒绝原因原样返回给用户；
+    // 服务端再复制一份判定会形成两处可能不一致的规则。
     if (!written.ok) return { ok: false, message: written.message }
     publishGoal(deps, written.goal)
     return resumeGoal(conversationId, deps)
@@ -644,10 +644,10 @@ export function setGoal(
 }
 
 /**
- * 用户在界面上点「继续」。
+ * 用户在界面上点击「继续」。
  *
- * **它自己发起一轮**，不等下一次别的 run 收尾——那时候用户已经等了不知道多久，
- * 而界面上什么都没发生。走的是与自动续起同一个 `queueGoalRound`。
+ * **由该函数自行发起一轮**，不等待下一次其他 run 结束：届时用户已等待了不确定的时长，
+ * 而界面上没有任何变化。与自动继续使用同一个 `queueGoalRound`。
  */
 export function resumeGoal(
   conversationId: ConversationId,
@@ -658,7 +658,7 @@ export function resumeGoal(
   }
   try {
     const goal = currentGoal(deps.store, conversationId)
-    if (!goal) return { ok: false, message: '这条会话没有目标' }
+    if (!goal) return { ok: false, message: '该会话没有目标' }
 
     let live = goal
     if (goal.status !== 'active') {
@@ -684,10 +684,10 @@ export function resumeGoal(
 }
 
 /**
- * 目标账本读坏了（revision 断号、非法转移）时的收敛动作：**停循环并说出来**。
+ * 目标账本读取失败（revision 不连续、非法转移）时的处理：**停止循环并记录错误**。
  *
- * 回放是 fail-closed 的（`store/goals.ts` 直接抛）。这里不重试也不吞：
- * 重试只会把一次破损变成一串一模一样的报错，吞掉则是一个自己停了、
+ * 回放是 fail-closed 的（`store/goals.ts` 直接抛出）。这里既不重试也不丢弃错误：
+ * 重试只会把一次损坏变成一连串相同的报错，丢弃则得到一个自行停止、
  * 无法判定成因的循环。
  */
 function abortGoalLoop(
@@ -696,7 +696,7 @@ function abortGoalLoop(
   err: unknown,
 ): void {
   deps.runs.disarm(conversationId)
-  log.error('goal', `目标续起中止：${err instanceof Error ? err.message : String(err)}`, {
+  log.error('goal', `目标自动继续已中止：${err instanceof Error ? err.message : String(err)}`, {
     conversationId,
   })
 }
@@ -706,41 +706,41 @@ function publishGoal(deps: Omit<CommandDeps, 'ws'>, goal: Goal): void {
 }
 
 /**
- * 自动续起那一轮发给模型的话。
+ * 自动继续的一轮发给模型的消息。
  *
- * 措辞是这个功能里最容易做坏的一处：说轻了模型草率宣布完成，一个没做完的目标
- * 被 `complete` 掉；说重了它卡住也不肯 `blocked`，转满轮数。
- * 所以这段话必须做到四件事——**引用完整目标**、**报清第几轮**、
- * **点明谁才是权威**（工作区里的文件、这一轮工具跑出来的结果、落库的会话状态，
- * 而不是前几轮自己说过的话）、**要求完成前先拿证据**。
+ * 措辞是该功能中最容易出错的部分：语气过轻时模型草率宣布完成，未完成的目标
+ * 被 `complete`；语气过重时模型停滞也不调用 `blocked`，循环持续执行。
+ * 因此该消息必须做到三点：**引用完整目标**、
+ * **指明判断依据**（工作区中的文件、本轮工具的执行结果、已写入账本的会话状态，
+ * 而不是前几轮模型自己的表述）、**要求完成前先取得证据**。
  */
 function goalRoundPrompt(goal: Goal): string {
   return [
-    '[自动续起] 这条消息由系统发出，不是用户在说话。',
+    '[自动继续] 本消息由系统发出，不是用户发言。',
     '',
     `目标（goal_id=${goal.id}，revision=${goal.revision}）：`,
     goal.objective,
     '',
-    '权威只有三样：工作区里文件当前的样子、这一轮工具跑出来的结果、以及会话里已经落下的状态。',
-    '前几轮说过「已经改好了」不作数——要用就自己重新核一遍。',
+    '判断依据只有三项：工作区中文件的当前内容、本轮工具的执行结果、会话中已记录的状态。',
+    '前几轮中「已经修改完成」等表述不作为依据，需要时重新核对。',
     '',
-    '接着往下做。宣布完成之前先拿到证据（跑一次命令、读一次文件），不要只凭印象：',
-    '- 确认达成了：调 update_goal(action="complete")，并把证据写在回答里。',
-    '- 需要用户拍板，或者缺东西做不下去：调 update_goal(action="blocked")，写清卡在哪、要什么才能继续。',
-    '- 还没做完：什么都不用调，目标保持 active，这一轮结束后会自动再来一轮。',
-    '这个循环没有轮数上限：不宣布收尾它就一直跑下去，所以做到了要说，做不下去也要说。',
-    'goal_id 与 revision 以 read_goal 读到的为准。',
+    '继续执行。声明完成之前先取得证据（执行一次命令或读取一次文件），不要仅凭印象：',
+    '- 确认已达成：调用 update_goal(action="complete")，并在回答中写明证据。',
+    '- 需要用户决定，或缺少条件无法继续：调用 update_goal(action="blocked")，写明阻塞点以及继续所需的条件。',
+    '- 尚未完成：无需调用，目标保持 active，本轮结束后会自动开始下一轮。',
+    '该循环没有轮数上限：不声明结束就会持续执行，因此达成时要声明，无法继续时也要声明。',
+    'goal_id 与 revision 以 read_goal 读取的结果为准。',
   ].join('\n')
 }
 
 /**
- * 手动压缩一个会话。
+ * 手动压缩会话。
  *
- * 与自动路径共用同一个 `RuntimeCompaction` 和同一份摘要装配（`makeSummarizer`），
- * 两条入口只差一个发起理由——两套实现迟早会漂移，且漂移了很难发现。
+ * 与自动路径共用同一个 `RuntimeCompaction` 与同一份摘要装配（`makeSummarizer`），
+ * 两条入口只有发起原因不同：两套实现终将出现差异，且差异难以发现。
  *
- * 事件走总线广播而不是只回发起方：压缩改变了会话的后续行为，
- * 另一端开着同一个会话的人必须看到。
+ * 事件经由总线广播，而不是只返回给发起方：压缩改变了会话此后的行为，
+ * 在另一端打开同一会话的用户必须能看到。
  */
 export async function compactConversation(
   conversationId: ConversationId,
@@ -749,7 +749,7 @@ export async function compactConversation(
   const emit = (ev: AgentEvent) => deps.bus.publish(ev, conversationId)
   const conversation = getConversation(deps.store, conversationId)
   if (!conversation) throw new Error('会话不存在')
-  // 用户发起的维护操作也有真实轮次，摘要和压缩结果因此能进入同一份会话账。
+  // 用户发起的维护操作也有真实的 run，摘要与压缩结果因此写入同一份会话账本。
   const run = createRun(deps.store, {
     conversationId,
     workspaceId: conversation.workspaceId,
@@ -779,15 +779,15 @@ export async function compactConversation(
             ?.effort,
       }),
     })
-    // 占用与窗口从会话现算：维护轮次没有主请求回执，没有活的计量。
-    // 面板与触发判定用的是同一把尺（`contextPanel` 的锚点口径），不另起一本账。
-    // 窗口与密度取同一份 spec：这两个数要互相比较，出自两份 spec 就是两本账。
+    // 占用与窗口从会话实时计算：维护操作没有主请求回执，没有实时计量。
+    // 面板与触发判定使用同一计量口径（`contextPanel` 的锚点口径），不另建一份账。
+    // 窗口与密度取自同一份 spec：两个数需要相互比较，取自两份 spec 会形成两份账。
     const adapter = buildAdapter(summaryProfile(deps, conversationId))
     const spec = adapter.spec
     usageProvider = adapter.kind
     run.usage.currency = spec.pricing.currency ?? 'USD'
     const providerName = getConversation(deps.store, conversationId)?.provider
-    if (!providerName) throw new Error('这条旧会话尚未绑定接口，请重新选择模型')
+    if (!providerName) throw new Error('该会话未记录所属接口，请重新选择模型后继续')
     const panel = contextPanel(deps.store, conversationId, {
       ...spec,
       providerName,
@@ -807,7 +807,7 @@ export async function compactConversation(
       // 手动压缩发生在两轮之间，模型已对最后一批结果作出响应。
       latestUnitSeen: true,
       occupancy: panel.total,
-      // 同一份面板的两把尺，压缩按它们的比值折算回收量。
+      // 同一面板的两种计量，压缩按二者的比值折算回收量。
       estimatedOccupancy: panel.measured,
       contextWindow: spec.contextWindow,
       density: spec.density,
@@ -853,7 +853,7 @@ export async function compactConversation(
         ...(outcome.reasonCode ? { reasonCode: outcome.reasonCode } : {}),
       })
       // 手动压缩后没有下一次 request_prepared 事件，必须从刚落库的同一份 manifest
-      // 重算并广播；否则模型下一轮已看到压缩投影，面板却一直停在压缩前。
+      // 重算并广播；否则模型下一轮已看到压缩投影，面板仍显示压缩前的数值。
       const updated = contextPanel(deps.store, conversationId, {
         ...spec,
         providerName,
@@ -871,20 +871,20 @@ export async function compactConversation(
         omitted: updated.omitted,
       })
     } else if (outcome.status === 'aborted') {
-      // 手动压缩不往 `run()` 传信号，这条终态走不到。留着是因为静默吞掉一个终态
-      // 与「按钮点了没反应」在用户那边是同一件事。
+      // 手动压缩不向 `run()` 传入信号，这条终态不可达。保留它是因为静默丢弃一个终态
+      // 对用户而言等同于「点击按钮没有反应」。
       emit({ type: 'compaction', runId, phase: 'failed', reasonCode: 'aborted' })
     } else if (outcome.status === 'skipped') {
-      // 「没什么可压」不是失败：用户点了按钮，必须有回音，但不能报错。
+      // 「没有可压缩的内容」不是失败：用户点击了按钮，必须有反馈，但不能报错。
       emit({ type: 'compaction', runId, phase: 'skipped', reasonCode: outcome.reasonCode })
     } else {
       emit({ type: 'compaction', runId, phase: 'failed', reasonCode: outcome.reasonCode })
     }
   } catch (err) {
-    // `reasonCode` 是**码**，不是消息。塞 `err.message.slice(0, 80)` 的话，
-    // 前端把这个字段直接括号显示，异常原文（英文、半截、带内部标识）
-    // 就成了给用户看的界面文案。分类和 run.error 那条一个口径：
-    // 认得的走 ProviderError 的码，其余一律 internal_error。
+    // `reasonCode` 是**错误码**，不是消息。写入 `err.message.slice(0, 80)` 时，
+    // 前端会把该字段直接显示在括号中，异常原文（英文、被截断、带内部标识）
+    // 会成为显示给用户的界面文案。分类与 run.error 口径一致：
+    // 可识别的使用 ProviderError 的错误码，其余一律为 internal_error。
     const reasonCode = err instanceof ProviderError ? err.code : 'internal_error'
     const message = clean(err instanceof Error ? err.message : String(err))
     appendStep(deps.store, {
@@ -916,7 +916,7 @@ export async function compactConversation(
     })
   } finally {
     clearInterval(heartbeat)
-    // 与普通轮次一样只在收尾记一笔；请求明细和长期费用账各自保留原有职责。
+    // 与普通轮次一样只在结束时记录一次用量；请求明细与长期费用账各自保持原有职责。
     if (usageProvider !== null && run.usage.turns.length > 0) {
       recordUsage(deps.store, {
         kind: 'run',
@@ -940,8 +940,8 @@ export async function compactConversation(
 /**
  * 手动压缩使用会话绑定的接口与模型，同名模型不能借用全局默认接口。
  *
- * 字段集必须与 `Session.resolveProfile` 逐项相同——少给一项（`maxOutputTokens`
- * 就漏过一次）的表现是手动摘要按另一套上限发出去，两条入口的产出从此不可比。
+ * 字段集必须与 `Session.resolveProfile` 逐项相同：缺少任一项时，
+ * 手动摘要按另一套参数发出，两条入口的产出不可比较。
  */
 function summaryProfile(deps: CommandDeps, conversationId: ConversationId): ProviderProfile {
   const conversation = getConversation(deps.store, conversationId)
@@ -949,7 +949,7 @@ function summaryProfile(deps: CommandDeps, conversationId: ConversationId): Prov
   const stored = conversation?.provider
     ? resolveModel(deps.config, { provider: conversation.provider, model: conversation.model })
     : undefined
-  if (!stored) throw new Error(model ? `配置里没有模型 "${model}"` : NO_MODEL_MESSAGE)
+  if (!stored) throw new Error(model ? `配置中没有模型 "${model}"` : NO_MODEL_MESSAGE)
   return {
     kind: stored.kind,
     apiKey: stored.apiKey ?? '',

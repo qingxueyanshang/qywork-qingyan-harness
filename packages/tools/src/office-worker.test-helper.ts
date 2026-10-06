@@ -1,8 +1,9 @@
 /**
- * `office.test.ts` 与 `tools.test.ts`（视频抽帧）用的假 worker：按协议读请求、写 `response.json`，行为由脚本文件名决定。
+ * `office.test.ts` 与 `tools.test.ts`（视频抽帧）使用的模拟 worker：按协议读取请求并写入 `response.json`，
+ * 行为由脚本文件名决定。
  *
- * - `crash.py`：不写结果，以 1 退出（工具随后应以 cleanup 再起一次）。
- * - 其余脚本：给每个输出写一份内容，回报已写入、页数与一条提示。
+ * - `crash.py`：不写结果，以退出码 1 退出（工具随后应以 cleanup 动作再启动一次 worker）。
+ * - 其余脚本：为每个输出写入内容，返回已写入状态、页数与一条检查提示。
  * 每次调用把收到的请求追加到调用目录上一级的 `requests.jsonl`，测试据此核对请求。
  */
 
@@ -70,8 +71,8 @@ switch (req.action) {
     break
   }
   case 'frames': {
-    // 两帧，说明里回显收到的区间，测试据此核对 start / end 传到了 worker。
-    // 与真 worker 一样写进调用目录下的 frames/，工具读完要删掉它。
+    // 返回两帧，说明中回显收到的区间，测试据此核对 start / end 已传给 worker。
+    // 与实际 worker 相同，帧写入调用目录下的 frames/，工具读取后应删除该目录。
     mkdirSync(join(callDir, 'frames'), { recursive: true })
     const images = [0, 1].map((i) => {
       const img = join(callDir, 'frames', `frame-${i}.jpg`)
@@ -81,7 +82,7 @@ switch (req.action) {
     respond({
       action: 'frames',
       message: '返回 2 帧',
-      text: `区间 ${String(req.start ?? '头')}–${String(req.end ?? '尾')}；声音没有处理`,
+      text: `区间 ${String(req.start ?? '头')}–${String(req.end ?? '尾')}；声音未处理`,
       images,
     })
     break

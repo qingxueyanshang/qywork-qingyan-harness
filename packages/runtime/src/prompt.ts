@@ -16,55 +16,55 @@ import type { MediaModelEntry } from './config.ts'
 /**
  * 三层冻结前缀：system → environment → rules。
  *
- * 这三段跨 run 逐字节稳定，是提示缓存能命中的前提。**日期、技能清单、记忆、
- * 工作区文件列表一律不进这里**——它们随时间和用户操作而变。Session 在 run 开始时
- * 冻结一份快照，runtime 把它放在所属真实用户消息前，协议层再并进同一条 user。
+ * 这三段跨 run 逐字节稳定，是提示缓存命中的前提。日期、技能清单、记忆、
+ * 工作区文件列表一律不放入此处：它们随时间和用户操作而变化。Session 在 run 开始时
+ * 冻结一份快照，runtime 将其放在所属的真实用户消息之前，协议层再合并到同一条 user 消息中。
  *
- * 措辞刻意克制：当前模型对系统提示的服从度很高，为老模型写的
- * 「CRITICAL / YOU MUST / 如有疑问就用 X」会造成过度触发。说清楚该做什么就够了。
+ * 措辞保持克制：当前模型对系统提示的遵循度很高，面向旧模型的
+ * 「CRITICAL / YOU MUST / 如有疑问就用 X」式写法会造成过度触发。只需写明应做什么。
  */
 
-export const SYSTEM_LAYER = `你是 qywork 的 harness agent，运行在用户本机，读写用户工作区里的文件、调用工具完成他交给你的任务。
+export const SYSTEM_LAYER = `你是 qywork 的 harness agent，运行在用户本机，读写用户工作区中的文件，调用工具完成用户交付的任务。
 
-你的输出会被渲染在一个图形界面里，用户能看到你调用的每一个工具和它的结果。
+你的输出渲染在图形界面中，用户可以看到每一次工具调用及其结果。
 
-完成任务，而不是描述如何完成任务。需要修改文件或执行测试时直接执行。只有当不同的理解会导致做出实质不同的结果时，才停下来问。`
+完成任务，而不是描述如何完成任务。需要修改文件或执行测试时直接执行。只有当不同的理解会导致实质不同的结果时，才向用户确认。`
 
 export const ENVIRONMENT_LAYER = `## 工作方式
 
-执行任务前先分析用户意图、拆解需求、对需求评级，据此决定修改力度。需求是大幅度修改调整时不要只轻微改动，需求是小幅度优化时不要大批量修改。
+执行任务前先分析用户意图、拆解需求并评估需求规模，据此确定修改幅度。需求为大幅调整时不要只做轻微改动，需求为小幅优化时不要大范围修改。
 
 处理已有行为异常时，先确认用户描述的具体可观察现象，并优先取得修改前证据，例如实际复现、错误堆栈或明确的代码执行路径。修复后必须检查同一个现象；当前环境无法验证时，要明确说明未验证，不要把推测表述为根因。
 
-先用 grep 与 glob 定位，再读定位到的部分，不要通读文件。
+先用 grep 与 glob 定位，再读取定位到的部分，不要通读整个文件。
 
 新建与修改文件必须明确区分：write_file 的 mode=create 只新建，不覆盖已有文件；重名时工具自动追加 -2、-3 等后缀，写入未占用的名称，后续使用回执中的实际路径，并在回复中说明实际文件名。用户明确要求必须使用原文件名时传 on_conflict=error。覆盖属于修改，用 mode=overwrite；与 edit_file 一样，必须先 read_file，写入时会校验读取后的内容是否仍是最新版本。
 
 改动代码时匹配周围代码的风格：命名、注释密度、惯用法。
 
-多步任务动手之前先用 write_todos 列一份清单，执行中对照清单检查完成情况。做完一条立刻再调一次 write_todos，把它标成 completed、把下一条标成 in_progress；清单按条推进，每条完成时各标一次。单步任务不列清单。跨轮继续已有任务时，先提交清单并认领本次要执行的项。用户只询问原因、进度或要求暂停时，不恢复旧任务。确实受阻且当前没有可执行项时，把进行中的项改回 pending，保留其余未完成项，在普通回复中说明阻塞及解除条件后结束；不得把受阻任务标为 completed，也不重复观察同一阻塞。
+多步任务执行前先用 write_todos 列出清单，执行中对照清单检查完成情况。每完成一项立即调用 write_todos，将该项标为 completed、下一项标为 in_progress；清单逐项推进，每项完成时各更新一次。单步任务不列清单。跨轮继续已有任务时，先提交清单并认领本次要执行的项。用户只询问原因、进度或要求暂停时，不恢复旧任务。确实受阻且当前没有可执行项时，把进行中的项改回 pending，保留其余未完成项，在普通回复中说明阻塞及解除条件后结束；不得把受阻任务标为 completed，也不重复观察同一阻塞。
 
-注释写用途与约束：这段代码负责什么、调用方必须遵守什么。不要逐行复述代码，不要写变更经过，那属于提交记录。
+注释写用途与约束：这段代码负责什么、调用方必须遵守什么。不要逐行复述代码，不要写变更经过，变更经过属于提交记录。
 
-命令失败时先把输出读完再决定怎么改，不要立刻重试同一条。
+命令失败时先读完整个输出再确定修改方案，不要立即重复执行同一条命令。
 
-工具结果与用户附件中的图像和视频会留在之后的请求里，需要时直接查看历史中的原图和视频，不必重新读取。累计较多时最早的一批会换成带 images_omitted 的说明，需要其中的画面时用 read_history 按 call_id 取回。`
+工具结果与用户附件中的图像和视频保留在后续请求中，需要时直接查看历史中的原图和视频，无需重新读取。累计较多时，最早的一批替换为带 images_omitted 的说明，需要其中的画面时用 read_history 按 call_id 取回。`
 
 /**
- * 能力段。**每个类目一条不少地告诉模型**——不说它就想不起来自己能做这件事，
- * 这是当前模型不主动用记忆、技能、派活、定时、电脑控制的直接原因。
+ * 能力段。每个类目都须逐条告知模型：未告知时模型不会使用该能力，
+ * 这是当前模型不主动使用记忆、技能、任务派发、定时、电脑控制的直接原因。
  *
- * 每行绑定一个门槛工具，只有它在注册表里才发出这一行：subagent / workflow /
- * load_tool / install_plugin / 桌面那五个按通道注册（见 `tools/src/index.ts`），
- * 没有对应通道时发出去就是指着一个不存在的工具。
- * 过滤结果在一个会话内固定，冻结前缀因此仍然逐字节稳定。
+ * 每行绑定一个工具，该工具已注册时才输出这一行：subagent / workflow /
+ * load_tool / install_plugin / 五个桌面工具按通道注册（见 `tools/src/index.ts`），
+ * 没有对应通道时输出该行等于指向一个不存在的工具。
+ * 过滤结果在一个会话内固定，因此冻结前缀仍然逐字节稳定。
  *
- * files 与 code 不在这里：身份段已经点名，planning 由「工作方式」的待办段落管。
+ * files 与 code 不在此处：身份段已经提及，planning 由「工作方式」中的待办段落负责。
  */
 const CAPABILITY_LINES: { tool: string; line: string }[] = [
   {
     tool: 'run_command',
-    line: '- 命令：用 run_command 执行 shell 命令。临时文件、缓存放工作区的 .tmp/，那里不计入变更。起 Chrome 必须带 --user-data-dir=.tmp/chrome，不带时每次启动都在临时目录留一份删不掉的崩溃指标文件。',
+    line: '- 命令：用 run_command 执行 shell 命令。临时文件与缓存放在工作区的 .tmp/，该目录不计入变更。启动 Chrome 时必须指定 --user-data-dir=.tmp/chrome，否则每次启动都会在临时目录留下一份无法删除的崩溃指标文件。',
   },
   {
     tool: 'read_canvas',
@@ -110,19 +110,19 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'write_memory',
-    line: '- 记忆写入：用户说明的偏好、项目约定、下次还用得上的结论用 write_memory 存。默认 scope=project；用户明确指定全局时必须传 scope=global。',
+    line: '- 记忆写入：用户说明的偏好、项目约定以及后续可复用的结论用 write_memory 保存。默认 scope=project；用户明确指定全局时必须传 scope=global。',
   },
   {
     tool: 'move_memory',
-    line: '- 记忆迁移：项目层与全局层之间迁移用 move_memory，不得用复制留下双份。',
+    line: '- 记忆迁移：项目层与全局层之间迁移用 move_memory，不得通过复制保留两份。',
   },
   {
     tool: 'read_skill',
-    line: '- 技能读取：有既定步骤的任务，先看末尾清单并用 read_skill 读正文。用户用 `#技能名` 明确选中时，先读取该技能再执行。',
+    line: '- 技能读取：有既定步骤的任务，先查看末尾清单并用 read_skill 读取正文。用户用 `#技能名` 明确选中时，先读取该技能再执行。',
   },
   {
     tool: 'import_skill',
-    line: '- 安装现成技能：目录或 ZIP 用 import_skill，完整保留包内资源；不执行包内安装脚本，不自行猜安装路径。以工具的扫描、读取和实际生效副本为准，再用 read_skill 读取正文。',
+    line: '- 安装现成技能：目录或 ZIP 用 import_skill，完整保留包内资源；不执行包内安装脚本，不自行推测安装路径。以工具的扫描、读取和实际生效副本为准，再用 read_skill 读取正文。',
   },
   {
     tool: 'write_skill',
@@ -142,56 +142,62 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'load_tool',
-    line: '- 外部工具：MCP 与插件的工具不在工具表里，末尾清单只列名字，用 load_tool 加载后才能调用。用户用 `@工具注册名` 明确点名时，加载并调用该工具。',
+    line: '- 外部工具：MCP 与插件的工具不在工具表里，末尾清单仅列出名称，用 load_tool 加载后才能调用。用户用 `@工具注册名` 明确点名时，加载并调用该工具。',
   },
   {
     tool: 'define_role',
-    line: '- 角色：用户明确要求创建或修改角色（/role 命令或一句明确的话）时，用 define_role 把可长期复用的角色写进当前项目的 Agent Team；没有要求就不建。角色是持久定义，之后建子 agent 时按 role id 引用。',
+    line: '- 角色：用户明确要求创建或修改角色（/role 命令或明确的文字要求）时，用 define_role 把可长期复用的角色写进当前项目的 Agent Team；未提出要求时不创建。角色是持久定义，之后建子 agent 时按 role id 引用。',
   },
   {
     tool: 'subagent',
-    line: '- 子 agent：一件事派给一个子 agent，用 subagent；它跑在自己的会话里，中间过程不占你的上下文。派出去就返回，它做完之后回执会作为一条消息送到本会话，不要为了等回执反复调用。第一次按 kind 建：role 按角色，temp 临时；cli 是本机另一个进程，用它自己的模型和账号，过程看不到，只在用户用 `@cli:id` 点名或明确要求时派。之后按 subagentId 续接，三种都能续。用户用 `@角色id` 点名时，就派给那个角色。',
+    line: '- 子 agent：单项任务用 subagent 委派给一个子 agent；子 agent 在独立会话中运行，执行过程不占用当前上下文。调用在派发后立即返回，子 agent 完成后回执以消息形式送达本会话，不要为等待回执反复调用。首次按 kind 创建：role 按角色，temp 为临时；cli 是本机另一个进程，使用其自身的模型和账号，执行过程不可见，仅在用户用 `@cli:id` 点名或明确要求时派发。之后按 subagentId 续接，三种类型均可续接。用户用 `@角色id` 点名时，委派给该角色。',
   },
   {
     tool: 'workflow',
-    line: '- 工作流：两个及以上子 agent、要验收或有先后依赖时，用 workflow 一次交一整张图。调用只把就绪的格派出去就返回；每格的回执与检查点回执都会作为消息送到本会话。收到检查点回执后再决定：approve 进下一批，revise 让点名的节点在它原来的子会话里继续，批准之后仍可 revise。',
+    line: '- 工作流：涉及两个及以上子 agent、需要验收或存在先后依赖时，用 workflow 一次提交完整的任务图。调用派发已就绪的节点后立即返回；各节点的回执与检查点回执都以消息形式送达本会话。收到检查点回执后再决定：approve 进入下一批，revise 让指定的节点在其原有子会话中继续，批准之后仍可 revise。',
   },
-  { tool: 'create_schedule', line: '- 定时任务：需要按时间反复执行的事用 create_schedule 挂上。' },
-  { tool: 'read_goal', line: '- 目标：跨会话的长期目标用 read_goal 读、update_goal 更新。' },
+  {
+    tool: 'create_schedule',
+    line: '- 定时任务：需要按时间重复执行的任务用 create_schedule 创建。',
+  },
+  { tool: 'read_goal', line: '- 目标：跨会话的长期目标用 read_goal 读取、update_goal 更新。' },
   {
     tool: 'read_history',
-    line: '- 会话内容：本次会话之前的对话用 read_history 检索，工具产出的大块内容用 read_resource 读。',
+    line: '- 会话内容：本次会话之前的对话用 read_history 检索，工具产出的较长内容用 read_resource 读取。',
   },
-  { tool: 'web_search', line: '- 网络：需要外部信息用 web_search 搜、web_fetch 抓。' },
+  {
+    tool: 'web_search',
+    line: '- 网络：需要外部信息时用 web_search 检索、web_fetch 获取网页内容。',
+  },
 ]
 
 export const RULES_LAYER = `## 边界
 
-交付用户要求的内容，按他要求的范围。不要附带重构、不要加没被要求的抽象、不要为不可能发生的情况写兜底。
+交付用户要求的内容，范围以用户要求为准。不要附带重构，不要添加未被要求的抽象，不要为不会发生的情况编写容错处理。
 
-认为需求有问题或有更好的做法时，用一句话说明，然后按原需求执行——禁止以此为由拒绝执行或缩减交付，也不得在未说明的情况下缩小、扩大或改变需求范围。
+认为需求有问题或有更好的做法时，用一句话说明，然后按原需求执行；不得以此为由拒绝执行或缩减交付，也不得在未说明的情况下缩小、扩大或改变需求范围。
 
-把整个任务做完再报告完成。有做不了的部分，把其余部分做完并说清缺了什么、为什么。
+完成整个任务后再报告完成。存在无法完成的部分时，完成其余部分，并说明缺少的内容及原因。
 
-只报告真的发生过的事。工具调用是执行的唯一形式，不要把计划复述成结果。
+只报告实际发生的事。工具调用是执行的唯一形式，不要把计划表述为结果。
 
-会改变系统状态的操作——删除、重启、改配置、推送——执行前先确认证据支持这个具体动作。
+会改变系统状态的操作（删除、重启、修改配置、推送），执行前先确认有证据支持该具体操作。
 
 ## 表达
 
-先说结果。完成后的第一句话要回答「发生了什么」或「发现了什么」。细节和推理放在后面。
+先说结果。完成后的第一句话回答「发生了什么」或「发现了什么」，细节和推理放在后面。
 
-可读比简短重要。缩短输出的办法是少说不影响读者下一步决定的内容，不是改用短语、缩写与符号连接。要说的部分用完整句子写，术语写全称。
+可读性优先于简短。缩短输出的方式是减少不影响读者下一步决定的内容，而不是改用短语、缩写或符号连接。保留的内容用完整句子表述，术语写全称。
 
 同一件事只说一次，禁止重复表述「继续第 N 条/项/步」。
 
-简单的问题用一段话直接回答，不要套标题和分节。`
+简单的问题用一段话直接回答，不使用标题与分节。`
 
 /**
- * Anthropic 官方给长交付物的输出上限说明，原文只把上限换成模型的 `maxOutputTokens`。
+ * Anthropic 官方针对长交付物的输出上限说明，只将原文中的上限替换为模型的 `maxOutputTokens`。
  *
- * 不要改写或翻译：措辞是官方调过的。上限取模型值而不是单次请求钳位后的值：
- * 这段在冻结前缀里，必须跨 run 逐字节稳定。
+ * 不要改写或翻译：措辞经过官方调校。上限取模型值而不是单次请求钳制后的值：
+ * 该段位于冻结前缀中，必须跨 run 逐字节稳定。
  */
 export function outputLimitNote(limit: number): string {
   return `Everything Claude produces in one reply, including any reasoning or drafting it does before the reply, counts toward a single limit of about ${limit.toLocaleString('en-US')} tokens. If that limit is reached before the reply is finished, the person receives a cut-off response and has to start over. Composing an entire output or deliverable in full as reasoning and then again as a reply would double the length of the turn without improving the result, so Claude doesn't do that.
@@ -199,14 +205,14 @@ Instead, when the person has asked for a long or effort-intensive deliverable su
 }
 
 /**
- * `toolNames` 是当前注册表里的工具名，决定能力段发哪几行。
- * `outputLimit` 给出时在末尾附 `outputLimitNote`，由模型目录的 `outputLimitNote` 决定给不给。
+ * `toolNames` 是当前注册表中的工具名，决定能力段输出哪些行。
+ * `outputLimit` 存在时在末尾附加 `outputLimitNote`，是否提供由模型目录的 `outputLimitNote` 决定。
  */
 export function buildSystemPrompt(toolNames: ReadonlySet<string>, outputLimit?: number): string {
   const caps = CAPABILITY_LINES.filter((c) => toolNames.has(c.tool)).map((c) => c.line)
   /*
-   * 外部 schema 小于预算时直接注册，不会有 `load_tool`。这时同样要解释输入区的
-   * `@注册名`，门槛就是注册表里真的出现了扩展命名的工具，不能只绑 load_tool。
+   * 外部 schema 小于预算时直接注册，不存在 `load_tool`。此时同样需要解释输入区的
+   * `@注册名`，判据是注册表中出现了扩展命名的工具，不能只绑定 load_tool。
    */
   if ([...toolNames].some((name) => name.startsWith('mcp__') || name.includes('__'))) {
     caps.push(
@@ -225,29 +231,29 @@ export function buildSystemPrompt(toolNames: ReadonlySet<string>, outputLimit?: 
 }
 
 /**
- * 一条运行上下文及它归哪个桶。
+ * 一条运行上下文及其所属分组。
  *
- * 分组必须带出来，**不能一律标成 `workspaceState`**：那样面板上「记忆内容」
- * 与「技能清单」两行**永远是 0**——数据一直在发，只是没人按组去量。
+ * 必须携带分组，不能一律标为 `workspaceState`：否则面板上「记忆内容」
+ * 与「技能清单」两行始终为 0，数据仍在发送，但未按分组统计。
  */
 export type TailNote = RunContextSegment
 
 /**
- * 外部工具那一行摘要截多长。
+ * 外部工具清单中每行摘要的截断长度。
  *
- * MCP 与插件的 `summary` 就是第三方给的 description 原文，可以是好几段。
- * 实测（2026-08-16，四个真实 server 共 41 个工具）：原样拼 2620 token，
- * 截到 100 字 1187 token。截的是**清单**不是工具本身——完整说明由
- * `load_tool` 按需拉，清单只负责让模型知道有这么一个工具。
+ * MCP 与插件的 `summary` 即第三方提供的 description 原文，可能包含多段。
+ * 实测（2026-08-16，四个真实 server 共 41 个工具）：原样拼接为 2620 token，
+ * 截断到 100 字为 1187 token。截断的是清单而不是工具本身：完整说明由
+ * `load_tool` 按需加载，清单只用于让模型知道该工具存在。
  */
 const SUMMARY_MAX_CHARS = 100
 
 /**
- * 取摘要里第一句有内容的话。
+ * 取摘要中第一行有内容的文本。
  *
  * 必须跳过空行与 markdown 标题行：第三方 description 常以空行或 `## Overview`
- * 开头，只取第一行会让清单里那一行退化成光秃秃一个工具名，
- * 模型据此判断不出该不该 `load_tool`。
+ * 开头，只取第一行会使清单中该行只剩工具名，
+ * 模型无法据此判断是否需要 `load_tool`。
  */
 function oneLine(text: string): string {
   const first = text
@@ -259,11 +265,11 @@ function oneLine(text: string): string {
 }
 
 /**
- * `process.platform` 的人读名。
+ * `process.platform` 的可读名称。
  *
- * **不要把 `process.platform` 原样写进提示词。** 它是 Node 的内部常量，
- * `win32` 会被读成「Windows 32 位」——实测模型照着它对用户复述过一次。
- * 未收录的取值原样返回：编一个名字比给出原值更糟。
+ * 不要将 `process.platform` 原样写入提示词：它是 Node 的内部常量，
+ * `win32` 会被理解为「Windows 32 位」，实测中模型曾据此向用户复述。
+ * 未收录的取值原样返回：虚构名称的危害大于给出原值。
  */
 function osName(platform: string): string {
   if (platform === 'win32') return 'Windows'
@@ -272,7 +278,7 @@ function osName(platform: string): string {
   return platform
 }
 
-/** 待办状态的人读名。 */
+/** 待办状态的可读名称。 */
 const TODO_LABEL: Record<TodoItem['status'], string> = {
   pending: '未开始',
   in_progress: '进行中',
@@ -281,7 +287,7 @@ const TODO_LABEL: Record<TodoItem['status'], string> = {
 
 const MEDIA_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
 
-/** 提示词里指代参考素材的写法，写成一行给大模型。序号按类别分别计数，顺序同 images / videos / audios 参数。 */
+/** 提示词中指代参考素材的写法，以一行提供给大模型。序号按类别分别计数，顺序与 images / videos / audios 参数相同。 */
 function mentionNote(style: MentionStyle): string {
   const kinds = MEDIA_OUTPUTS.flatMap((k) =>
     style[k]
@@ -290,10 +296,10 @@ function mentionNote(style: MentionStyle): string {
         ]
       : [],
   )
-  return `提示词里指代参考素材：${kinds.join('，')}，按类别分别计数，顺序同参数里的 images / videos / audios`
+  return `提示词中指代参考素材：${kinds.join('，')}，按类别分别计数，顺序与参数中的 images / videos / audios 相同`
 }
 
-/** 生成模型与各自的参数表。参数名是接口原生字段，原样写进 `params_json`。 */
+/** 生成模型及其参数表。参数名是接口原生字段，原样写入 `params_json`。 */
 function mediaModelsNote(models: MediaModelEntry[]): string {
   const sections: string[] = []
   for (const output of MEDIA_OUTPUTS) {
@@ -325,60 +331,60 @@ function mediaModelsNote(models: MediaModelEntry[]): string {
 }
 
 /**
- * 生成一次 run 的非对话上下文快照。调用方只在 run 建立前调用一次并原子落库；
- * 不得在每个 provider 请求前重算，否则同一 run 的线上字节会漂移，重试与缓存都失真。
+ * 生成一次 run 的非对话上下文快照。调用方只在 run 建立前调用一次并原子写入数据库；
+ * 不得在每次 provider 请求前重新计算，否则同一 run 实际发出的字节会变化，重试与缓存均会出错。
  */
 export function buildTailNotes(input: {
   workspaceRoot: string
-  /** `process.platform` 的原值。人读名由 `osName` 在这里换，调用方不必先翻译。 */
+  /** `process.platform` 的原值。可读名称由 `osName` 在此处转换，调用方无需预先转换。 */
   platform: string
   gitBranch?: string | null
   /**
-   * 权限模式。**必须告诉模型**：不说它只能靠撞——每撞一次就多付一轮
-   * 「被拒 → 改写 → 重发」的 token，而被拒的那次工具调用本身也已经计过费。
+   * 权限模式。必须告知模型：未告知时模型只能逐次试探，每次被拒绝都多消耗一轮
+   * 「被拒 → 改写 → 重发」的 token，而被拒绝的工具调用本身也已计费。
    */
   mode: 'auto' | 'full'
-  /** 技能索引：只有 name + description，正文由模型按需 read_skill 拉取。 */
+  /** 技能索引：只含 name 与 description，正文由模型按需通过 read_skill 读取。 */
   skills?: { name: string; description: string }[]
-  /** 记忆索引：只有 key + 首行摘要，正文由模型按需 read_memory 拉取。 */
+  /** 记忆索引：只含 key 与首行摘要，正文由模型按需通过 read_memory 读取。 */
   memories?: { key: string; preview: string }[]
   /**
-   * 顶层会话可分配的真实模型。只传接口名与模型 id，不把 key、端点、headers 带进提示词。
+   * 顶层会话可分配的真实模型。只传入接口名与模型 id，不将 key、端点、headers 写入提示词。
    *
-   * `undefined` = 本会话没有派活能力，不展示；空数组 = 有派活能力但当前没配模型，
-   * 两者不能合并，否则后者会诱使模型继续无依据地生成一个名称。
+   * `undefined` = 本会话没有任务派发能力，不展示；空数组 = 有任务派发能力但当前未配置模型，
+   * 两者不能合并，否则后者会导致模型无依据地生成一个名称。
    */
   models?: { provider: string; model: string }[]
   /**
-   * 已配置的生成模型。只在注册了生成工具时传：大模型据此选模型、按参数表填 `params_json`。
-   * 参数表取自生成目录，与发出前的校验是同一份，不会出现「表上有、校验却拒」。
+   * 已配置的生成模型。只在注册了生成工具时传入：大模型据此选择模型、按参数表填写 `params_json`。
+   * 参数表取自生成目录，与发送前的校验使用同一份数据，不会出现参数表列出而校验拒绝的情况。
    */
   mediaModels?: MediaModelEntry[]
-  /** 当前项目的角色与本机识别到的外部 CLI。`undefined` = 本会话没有派活能力。 */
+  /** 当前项目的角色与本机识别到的外部 CLI。`undefined` = 本会话没有任务派发能力。 */
   team?: {
     roles: { id: string; name: string; description: string; provider?: string; model?: string }[]
     clis: { id: string; vendor: string; connected: boolean }[]
   }
-  /** 本会话已有的子 agent。`undefined` = 本会话没有派活能力。 */
+  /** 本会话已有的子 agent。`undefined` = 本会话没有任务派发能力。 */
   subagents?: SubagentSummary[]
   /**
-   * 待加载的外部工具：只有工具名 + 一句话，完整参数说明由模型按需 load_tool 拉。
+   * 待加载的外部工具：只含工具名与一句摘要，完整参数说明由模型按需通过 load_tool 加载。
    *
-   * 这份清单属于 run 快照，不能进冻结 system 前缀——它随用户装卸 MCP / 插件而变。
+   * 该清单属于 run 快照，不能放入冻结 system 前缀：它随用户安装或卸载 MCP / 插件而变化。
    */
   externalTools?: { name: string; summary: string }[]
   /**
-   * run 开始时会话账本里的待办快照。run 内更新仍以真实 `write_todos` 与绑定父待办的
-   * `subagent` 调用/回执为准；压缩层保留这组最小事实链，不另造 Todo 状态。
-   * 全部完成的清单属于上一件事，只留在历史里，不再冒充下一条指令的“当前待办”。
+   * run 开始时会话账本中的待办快照。run 内的更新仍以真实的 `write_todos` 与绑定父待办的
+   * `subagent` 调用和回执为准；压缩层保留这组最小事实链，不另建 Todo 状态。
+   * 全部完成的清单属于上一项任务，只保留在历史中，不作为下一条指令的「当前待办」。
    */
   todos?: TodoItem[] | null
   /**
-   * run 开始时本会话还没走完的 workflow 投影。
+   * run 开始时本会话尚未完成的 workflow 投影。
    *
-   * 压缩会把工具结果压成 320 字摘录，workflowId 与 checkpointId 可能整个不在里面；
-   * 没有这一段，模型手上就没有续接这张图的任何 id，只能整张重派。
-   * 真相仍在 step 账本里，这里只是把它送回模型眼前，不产生第二份可写状态。
+   * 压缩会将工具结果缩减为 320 字摘录，workflowId 与 checkpointId 可能完全不在其中；
+   * 缺少本段时，模型没有续接该任务图的任何 id，只能重新派发整张图。
+   * 事实来源仍是 step 账本，此处只将其重新提供给模型，不产生第二份可写状态。
    */
   workflows?: WorkflowProjection[]
 }): TailNote[] {
@@ -391,13 +397,13 @@ export function buildTailNotes(input: {
   if (input.gitBranch) lines.push(`git 分支：${input.gitBranch}`)
   lines.push(
     input.mode === 'full'
-      ? '权限模式：完全访问——不做裁决，路径边界也不设。'
-      : '权限模式：auto——工作区外的写删、改系统状态的命令、读写凭证文件会被拒绝，其余放行。',
+      ? '权限模式：完全访问，不做裁决，也不设路径边界。'
+      : '权限模式：auto，工作区外的写入与删除、修改系统状态的命令、读写凭证文件会被拒绝，其余放行。',
   )
 
   /*
-   * 生成模型的参数表排在最前，工作区状态行在它之后。快照与用户那句话并在同一条消息里，
-   * 参数表若是最后一节，紧跟其后的用户请求会被读成参数表的一部分：实测模型回复「没有说要画什么」。
+   * 生成模型的参数表排在最前，工作区状态行在其后。快照与用户消息合并在同一条消息中，
+   * 参数表若是最后一节，紧随其后的用户请求会被视为参数表的一部分：实测中模型回复「没有说要画什么」。
    */
   const notes: TailNote[] = [
     ...(input.mediaModels?.length
@@ -407,9 +413,9 @@ export function buildTailNotes(input: {
   ]
 
   /*
-   * 模型清单放动态快照，不放冻结 system 前缀：设置页保存后，下一轮就应看到新配置，
-   * 同一 run 内则必须保持不变。接口与模型始终分列：两边都允许自由文本，任何分隔符
-   * 都可能本来就在名字里，拼成一个选择串就没有结构性无歧义可言。
+   * 模型清单放在动态快照中，不放在冻结 system 前缀中：设置页保存后，下一轮即应看到新配置，
+   * 同一 run 内则必须保持不变。接口与模型始终分列：两者都允许自由文本，任何分隔符
+   * 都可能出现在名称中，拼接为一个选择串后无法保证结构上无歧义。
    */
   if (input.models) {
     const list = input.models.length
@@ -420,8 +426,8 @@ export function buildTailNotes(input: {
     notes.push({
       content:
         `## 可分配给子 agent 的已配置模型（本次运行快照）\n${list}\n\n` +
-        'provider 与 model 两个参数只接受清单里同一行的值；用户点名了模型就填进这两个参数，写在任务正文里不生效。' +
-        '用户说的厂商、系列或简称（例如 glm）对应哪一行，由你按语义判断。',
+        'provider 与 model 两个参数只接受清单中同一行的值；用户指定模型时填入这两个参数，写在任务正文中不生效。' +
+        '用户提及的厂商、系列或简称（例如 glm）对应哪一行，按语义判断。',
       group: 'workspaceState',
     })
   }
@@ -441,7 +447,7 @@ export function buildTailNotes(input: {
     notes.push({
       content:
         `## 当前项目的角色与外部 CLI（本次运行快照）\n${list}\n\n` +
-        '新建子 agent 时 role 填角色 id，cli 填外部 CLI 的 id，逐字使用清单里的值。',
+        '新建子 agent 时 role 填写角色 id，cli 填写外部 CLI 的 id，逐字使用清单中的值。',
       group: 'workspaceState',
     })
   }
@@ -451,23 +457,23 @@ export function buildTailNotes(input: {
         .map(
           (item) =>
             `- subagentId \`${item.id}\`：${item.name}，${SUBAGENT_KIND_LABEL[item.kind]}，模型 ${item.provider} / ${item.model}，${SUBAGENT_STATUS[item.status]}${
-              item.resumable ? '' : '，不可续接：没有会话号，续派它不记得上一轮'
+              item.resumable ? '' : '，不可续接：缺少会话号，再次派发时不保留上一轮上下文'
             }`,
         )
-        .join('\n') || '- 本会话还没有子 agent'
+        .join('\n') || '- 本会话尚无子 agent'
     notes.push({
       content:
         `## 本会话的子 agent（本次运行快照）\n${list}\n\n` +
-        '给已有子 agent 派任务时 subagent 填这里的 id，它接着自己的上下文继续。',
+        '向已有子 agent 派发任务时，subagent 填写此处的 id，子 agent 在原上下文中继续执行。',
       group: 'workspaceState',
     })
   }
 
   //
-  // 技能与记忆都**只放标题**：正文全放进来，十来条就能占掉几万 token，而一次任务
-  // 通常只用得上其中一两条。标题的成本线性于条数不是内容，全列也装得下，
-  // 哪条要展开由模型看着标题自己判断——它手上有当前任务的全部细节，
-  // 而任何按当轮文本打分的召回只看得见字面重合度。
+  // 技能与记忆都只放标题：放入全部正文时，十余条即可占用数万 token，而一次任务
+  // 通常只用到其中一两条。标题的成本与条数成正比而与内容无关，全部列出也能容纳；
+  // 需要展开哪一条由模型根据标题判断：模型掌握当前任务的全部细节，
+  // 而任何按当轮文本打分的召回只能衡量字面重合度。
   if (input.skills?.length) {
     const list = input.skills.map((s) => `- ${s.name}：${s.description}`).join('\n')
     notes.push({
@@ -482,8 +488,8 @@ export function buildTailNotes(input: {
       group: 'memory',
     })
   }
-  // 外部工具同技能与记忆：**清单常驻、参数说明按需**。它归 `mcpTools` 桶，
-  // 与那些工具的 schema 同一格——面板上「外部工具」那一行答的就是这件事的开销。
+  // 外部工具与技能、记忆的处理方式相同：清单常驻，参数说明按需加载。它归入 `mcpTools` 分组，
+  // 与这些工具的 schema 同组：面板上「外部工具」一行显示的就是这部分开销。
   if (input.externalTools?.length) {
     const list = input.externalTools.map((t) => `- ${t.name}：${oneLine(t.summary)}`).join('\n')
     notes.push({
@@ -509,10 +515,10 @@ export function buildTailNotes(input: {
     notes.push({
       content:
         `## 未完成的 workflow（本次运行快照）\n${list}\n\n` +
-        '还在跑的格会把回执作为消息送到本会话，不要为了等它们调用 workflow。' +
-        '续接用同一个 workflowId 与该图当前的 checkpointId 调用 workflow：' +
-        'approve 进入下一批，revise 让点名的节点在它原来的子会话里继续。' +
-        '被中断的节点续发时写清「已完成则复述最终产出，否则接着做」——中断之前的产出不在这份快照里。',
+        '运行中的节点完成后，回执以消息形式送达本会话，不要为等待回执调用 workflow。' +
+        '续接时用同一个 workflowId 与该图当前的 checkpointId 调用 workflow：' +
+        'approve 进入下一批，revise 让指定的节点在其原有子会话中继续。' +
+        '重新派发被中断的节点时写明「已完成则复述最终产出，否则继续执行」，中断之前的产出不在本快照中。',
       group: 'workspaceState',
     })
   }
@@ -522,7 +528,7 @@ export function buildTailNotes(input: {
 const SUBAGENT_STATUS: Record<SubagentSummary['status'], string> = {
   running: '进行中',
   idle: '空闲',
-  failed: '上一轮没跑完',
+  failed: '上一轮未完成',
 }
 
 const WORKFLOW_PHASE: Record<WorkflowPhase, string> = {
@@ -532,7 +538,7 @@ const WORKFLOW_PHASE: Record<WorkflowPhase, string> = {
   failed: '已中断',
 }
 
-/** 一张未完成的图一行，后面缩进列出每个 agent 节点的最近状态与能不能续接。 */
+/** 每张未完成的任务图占一行，其后缩进列出每个 agent 节点的最近状态与是否可续接。 */
 function workflowLine(projection: WorkflowProjection): string {
   const head = [
     `- workflowId=${projection.workflowId}`,
@@ -544,7 +550,7 @@ function workflowLine(projection: WorkflowProjection): string {
     .filter((node) => node.kind !== 'checkpoint')
     .map((node) => {
       const result = projection.results[node.id]
-      if (!result) return `  - ${node.id}：还没有回执`
+      if (!result) return `  - ${node.id}：尚无回执`
       const reason = result.error ? `：${oneLine(result.error)}` : ''
       const resumable = result.subagentId ? '，可续接原会话' : ''
       return `  - ${node.id}：${result.status}${reason}${resumable}`

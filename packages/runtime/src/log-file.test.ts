@@ -1,4 +1,4 @@
-/** 覆盖 `log-file.ts`：追加、轮转、不镜像时不碰 stderr。 */
+/** 覆盖 `log-file.ts`：追加、轮转、不镜像时不写入 stderr。 */
 
 import { describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
@@ -16,7 +16,7 @@ const record = (message: string): LogRecord => ({
 })
 
 describe('fileLogSink', () => {
-  test('一行一条追加，目录不存在就建', async () => {
+  test('每条日志追加为一行，目录不存在时创建', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-log-'))
     const sink = fileLogSink(join(root, 'logs'), { mirror: false })
     sink(record('one'))
@@ -29,7 +29,7 @@ describe('fileLogSink', () => {
     ])
   })
 
-  test('超过上限改名成 .1 后重开，只留一份旧的', async () => {
+  test('超过上限时重命名为 .1 并重新打开，只保留一份旧日志', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-log-'))
     const sink = fileLogSink(root, { mirror: false, maxBytes: 60 })
     sink(record('first'))
@@ -45,7 +45,7 @@ describe('fileLogSink', () => {
     expect(existsSync(`${sink.path}.2`)).toBe(false)
   })
 
-  test('重开时接着已有文件的大小算', async () => {
+  test('重新打开时从已有文件的大小继续计算', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-log-'))
     const first = fileLogSink(root, { mirror: false, maxBytes: 60 })
     first(record('first'))

@@ -1,28 +1,28 @@
-"""视频抽帧：在指定区间里按画面变化挑出有上限的一组帧，存成 JPEG，带真实时间戳。
+"""视频抽帧：在指定区间内按画面变化选出数量有上限的一组帧，保存为 JPEG，带真实时间戳。
 
-解码用 PyAV（自带 LGPL 的 FFmpeg）。它是可选依赖：缺了只有抽帧不可用，Office 其余动作照常。
-声音不处理，回执里写明，模型不能据画面回答声音相关的问题。
+解码使用 PyAV（自带 LGPL 的 FFmpeg）。它是可选依赖：缺少时只有抽帧不可用，Office 其余动作不受影响。
+不处理声音，并在回执中写明：模型不能依据画面回答与声音相关的问题。
 """
 
 from pathlib import Path
 
-# 候选时间点个数：帧上限的 4 倍，至少 8 个，至多 48 个。每个候选要从前一个关键帧解码过来，再多就慢了。
+# 候选时间点个数：帧上限的 4 倍，至少 8 个，至多 48 个。每个候选都需从前一个关键帧开始解码，数量更多时耗时过长。
 CANDIDATES_PER_FRAME = 4
 MIN_CANDIDATES = 8
 MAX_CANDIDATES = 48
 MAX_FRAMES = 24
 THUMB = 16
-# 16×16 灰度缩略图的平均逐像素差超过它算画面变化；编码噪声在同一画面内的差在 3 以下。
+# 16×16 灰度缩略图的平均逐像素差超过该值即视为画面变化；同一画面内编码噪声造成的差在 3 以下。
 CHANGE = 6
 JPEG_QUALITY = 80
 
 
 class Unreadable(Exception):
-    """打不开或没有视频轨的文件。消息给用户看，带文件名。"""
+    """无法打开或没有视频轨的文件。消息面向用户，包含文件名。"""
 
 
 def clock(seconds):
-    """秒数写成 mm:ss.s；超过一小时写 h:mm:ss.s。"""
+    """秒数格式化为 mm:ss.s；超过一小时时为 h:mm:ss.s。"""
     whole = int(seconds)
     tenth = int(round((seconds - whole) * 10))
     if tenth == 10:
@@ -41,7 +41,7 @@ def _duration(container, stream):
 
 
 def _frame_at(container, stream, t):
-    """时间点 t（秒）处或其后的第一帧，交回 (实际时间, 帧)。读不到时交回 None。"""
+    """时间点 t（秒）处或其后的第一帧，返回 (实际时间, 帧)。无法读取时返回 None。"""
     container.seek(int(t / stream.time_base), stream=stream, backward=True, any_frame=False)
     last = None
     for frame in container.decode(stream):
@@ -54,7 +54,7 @@ def _frame_at(container, stream, t):
 
 
 def _fit(img, max_edge):
-    """按长边缩到 max_edge 以内。候选帧一解出来就缩：4K 原图留 48 张要几百 MB 内存。"""
+    """按长边缩小到 max_edge 以内。候选帧解码后立即缩小：保留 48 张 4K 原图需要数百 MB 内存。"""
     scale = max_edge / max(img.size)
     if scale >= 1:
         return img
@@ -66,11 +66,11 @@ def _difference(a, b):
 
 
 def pick(times, thumbs, limit):
-    """从候选里挑至多 limit 个下标，按时间排序。
+    """从候选中选出至多 limit 个下标，按时间排序。
 
-    首尾必选；再选画面明显变化的候选（与前一个候选的差超过 `CHANGE`），差大的先选；剩下的名额按时间
-    补匀：每次选离已选时间点最远的候选，相同时取靠前的。不要改成全按画面差排序：静止画面里候选之间
-    的差都接近 0，排序退化成按下标，帧全挤在区间开头。
+    首尾必选；其次选择画面明显变化的候选（与前一个候选的差超过 `CHANGE`），差值大的优先；剩余名额按时间
+    均匀补足：每次选择距已选时间点最远的候选，距离相同时取靠前者。不要改为全部按画面差排序：静止画面中
+    候选之间的差都接近 0，排序退化为按下标排列，帧全部集中在区间开头。
     """
     n = len(times)
     if n <= limit:
@@ -89,7 +89,7 @@ def pick(times, thumbs, limit):
 
 
 def sample(path, out_dir, start=None, end=None, max_frames=12, max_edge=1024):
-    """抽帧并写出 JPEG。交回时长、画面尺寸、音轨、本次区间与每一帧的 (时间, 路径, 宽, 高)。"""
+    """抽帧并写出 JPEG。返回时长、画面尺寸、音轨、本次区间与每一帧的 (时间, 路径, 宽, 高)。"""
     import av
 
     path = Path(path)
@@ -97,11 +97,11 @@ def sample(path, out_dir, start=None, end=None, max_frames=12, max_edge=1024):
     try:
         container = av.open(str(path))
     except (av.FFmpegError, OSError) as e:
-        raise Unreadable(f"{path.name} 打不开（{e}）") from e
+        raise Unreadable(f"{path.name} 无法打开（{e}）") from e
     with container:
         stream = next(iter(container.streams.video), None)
         if stream is None:
-            raise Unreadable(f"{path.name} 里没有视频轨")
+            raise Unreadable(f"{path.name} 中没有视频轨")
         stream.thread_type = "AUTO"
         duration = _duration(container, stream)
         has_audio = bool(container.streams.audio)
@@ -112,7 +112,7 @@ def sample(path, out_dir, start=None, end=None, max_frames=12, max_edge=1024):
         if hi is None or hi <= lo:
             raise Unreadable(f"{path.name} 的区间 {lo}–{hi} 不成立（时长 {duration}）")
         count = max(MIN_CANDIDATES, min(MAX_CANDIDATES, max_frames * CANDIDATES_PER_FRAME))
-        # 末尾留一点余量：正好落在时长上的时间点常常已经没有帧。
+        # 末尾保留少量余量：恰好位于时长终点的时间点通常已没有帧。
         span = max(hi - lo - 0.05, 0.0)
         wanted = [lo + span * i / (count - 1) for i in range(count)]
         seen, times, frames = set(), [], []
@@ -128,7 +128,7 @@ def sample(path, out_dir, start=None, end=None, max_frames=12, max_edge=1024):
             times.append(actual)
             frames.append(_fit(frame.to_image().convert("RGB"), max_edge))
         if not frames:
-            raise Unreadable(f"{path.name} 在 {clock(lo)}–{clock(hi)} 之间解不出画面")
+            raise Unreadable(f"{path.name} 在 {clock(lo)}–{clock(hi)} 之间无法解码出画面")
         thumbs = [img.convert("L").resize((THUMB, THUMB)).tobytes() for img in frames]
         keep = pick(times, thumbs, max_frames)
         out_dir = Path(out_dir)
@@ -153,7 +153,7 @@ def sample(path, out_dir, start=None, end=None, max_frames=12, max_edge=1024):
 
 
 def describe(name, result):
-    """给模型看的说明：概况、实际看到的时间点、最大的未看区间、怎么续读、声音未处理。"""
+    """提供给模型的说明：概况、实际查看的时间点、最大的未查看区间、继续读取的方式、声音未处理。"""
     frames = result["frames"]
     times = [f["time"] for f in frames]
     size = f"{result['width']}×{result['height']}" if result["width"] else "尺寸未知"
@@ -161,8 +161,8 @@ def describe(name, result):
     total = f"时长 {result['duration']:.1f} 秒" if result["duration"] else "时长未知"
     lines = [f"视频 {name}：{total}，{size}{fps}，{'有音轨' if result['has_audio'] else '没有音轨'}。"]
     lines.append(
-        f"本次区间 {clock(result['start'])}–{clock(result['end'])}，从 {result['candidates']} 个候选时间点里"
-        f"按画面变化选了 {len(frames)} 帧：" + "、".join(clock(t) for t in times) + "。"
+        f"本次区间 {clock(result['start'])}–{clock(result['end'])}，从 {result['candidates']} 个候选时间点中"
+        f"按画面变化选取 {len(frames)} 帧："+ "、".join(clock(t) for t in times) + "。"
     )
     edges = [result["start"], *times, result["end"]]
     gap, at = 0.0, (result["start"], result["end"])
@@ -171,8 +171,8 @@ def describe(name, result):
             gap, at = b - a, (a, b)
     lines.append(
         f"只看到这些时间点的画面；相邻两帧最长相隔 {gap:.1f} 秒（{clock(at[0])}–{clock(at[1])}），"
-        "中间的画面没有看到。需要某一段的细节时，用 read_file 的 start 与 end（秒）指定这一段再读。"
+        "中间的画面没有看到。需要某一段的细节时，用 read_file 的 start 与 end（秒）指定该区间后重新读取。"
     )
     if result["has_audio"]:
-        lines.append("声音没有处理：不能据这些画面回答声音或对白相关的问题。")
+        lines.append("声音未处理：不能依据这些画面回答与声音或对白相关的问题。")
     return "\n".join(lines)

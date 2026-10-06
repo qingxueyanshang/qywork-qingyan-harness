@@ -1,11 +1,11 @@
 /**
  * 消息级缓存断点的位置与每一步的缓存命中。
  *
- * 覆盖范围：`loop/index.ts` 的 `buildRequest` 打在 history 末条、最后一批工具调用所属的
- * assistant 消息与末尾的三个断点，以及它们与 `loop/request.ts` 的 `evictedMedia` 换出的配合。
- * 断言落在适配器收到的请求上，按 Anthropic 的缓存规则算每一步命中到哪一条。
+ * 覆盖范围：`loop/index.ts` 的 `buildRequest` 设置在 history 末条、最后一批工具调用所属的
+ * assistant 消息与末尾消息上的三个断点，以及它们与 `loop/request.ts` 的 `evictedMedia` 换出的配合。
+ * 断言针对适配器收到的请求，按 Anthropic 的缓存规则计算每一步命中到哪一条消息。
  *
- * 盯两件事：图留在请求里时每一步命中上一步的全部内容；媒体超过保留上限时只有换出的那一步
+ * 检查两项：图片保留在请求中时，每一步命中上一步的全部内容；媒体超过保留上限时，只有换出的那一步
  * 改写一次前缀，之后恢复整段命中。
  */
 
@@ -20,13 +20,13 @@ import { AgentLoop } from './index.ts'
 const PNG =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
-/** 请求体里的字节：内部标记（`_` 前缀）与断点标记不影响前缀是否相同。 */
+/** 请求体中的字节：内部标记（`_` 前缀）与断点标记不影响前缀是否相同。 */
 function wire(m: WireMessage): string {
   return JSON.stringify(m, (k, v) => (k === 'cacheBreakpoint' || k.startsWith('_') ? undefined : v))
 }
 
 /**
- * 按 Anthropic 的缓存规则算每一步命中的消息条数：条目只写在断点处，命中取以往请求写过
+ * 按 Anthropic 的缓存规则计算每一步命中的消息条数：缓存条目只在断点处写入，命中取以往请求已写入
  * 条目的最长相同前缀。
  */
 function cachedPrefixes(requests: readonly WireMessage[][]): number[] {
@@ -44,7 +44,7 @@ function cachedPrefixes(requests: readonly WireMessage[][]): number[] {
   })
 }
 
-/** 这一步与上一步第一处不同的消息下标；上一步整段未变时为上一步的条数。 */
+/** 本步与上一步第一处不同的消息下标；上一步整段未变时为上一步的消息条数。 */
 function firstChange(prev: readonly WireMessage[], cur: readonly WireMessage[]): number {
   const i = prev.findIndex((m, at) => wire(m) !== wire(cur[at]!))
   return i < 0 ? prev.length : i
@@ -54,7 +54,7 @@ function hasImage(m: WireMessage | undefined): boolean {
   return Array.isArray(m?.content) && m.content.some((b) => b.type === 'image')
 }
 
-/** 每一步截一张图、跑 `steps` 步，返回每次请求的消息。 */
+/** 每一步截取一张图、共执行 `steps` 步，返回每次请求的消息。 */
 async function shootSteps(steps: number, data: () => string): Promise<WireMessage[][]> {
   const registry = new ToolRegistry()
   let shots = 0
@@ -101,12 +101,12 @@ async function shootSteps(steps: number, data: () => string): Promise<WireMessag
     history: [{ role: 'user', content: '截图', _group: 'historyMessages' }],
     signal: new AbortController().signal,
   })) {
-    // 断言落在适配器收到的请求上。
+    // 断言针对适配器收到的请求。
   }
   return seen
 }
 
-test('工具每一步带回一张图：图留在请求里，每一步命中上一步的全部内容', async () => {
+test('工具每一步返回一张图：图片保留在请求中，每一步命中上一步的全部内容', async () => {
   const seen = await shootSteps(5, () => PNG)
   expect(seen).toHaveLength(5)
   const tools = (seen[4] ?? []).filter((m) => m.role === 'tool')
@@ -120,7 +120,7 @@ test('工具每一步带回一张图：图留在请求里，每一步命中上�
   }
 })
 
-/** 解码后约 1.5 MB 的图：第 4 张让总量过 5 MB，换出前三张。 */
+/** 解码后约 1.5 MB 的图片：第 4 张使总量超过 5 MB，换出前三张。 */
 const LARGE = () => 'A'.repeat(2 * 1024 * 1024)
 
 test('媒体超过保留上限：只有换出的那一步改写前缀，之后恢复整段命中', async () => {

@@ -1,14 +1,14 @@
 /**
- * 五个内置桌面工具。**覆盖范围**：`desktop.ts` 的参数校验、局部查询参数、层级消歧回执、
+ * 五个内置桌面工具。覆盖范围：`desktop.ts` 的参数校验、局部查询参数、层级消歧回执、
  * 动作前置条件、三态回执与动作后观察的透传、选择容器的选中项渲染、等待条件与终态、
  * 注册元数据，以及采集模式、
- * 两种取景、图片走 `images` 通道、几何与图像尺寸的核对、不收图片的模型，
+ * 两种采集区域参数、图片经由 `images` 通道传递、几何与图像尺寸的核对、不接受图片的模型，
  * 以及有限动作序列的逐步执行、引用接续、后置条件、七种停止边界与 `executed` 语义。
  * strict 参数另覆盖两种 OpenAI 接口的实际请求定义与 wheel 的空参数执行。
  *
- * 端口那一侧由 `packages/server/src/desktop/bridge.test.ts` 与同目录的
- * `coordinator.test.ts` 覆盖。这里用一份记账假端口：断言的是「交给端口的是什么」与
- * 「有没有交下去」，不是调了几次。
+ * 端口一侧由 `packages/server/src/desktop/bridge.test.ts` 与同目录的
+ * `coordinator.test.ts` 覆盖。此处使用记录调用的模拟端口：断言的是交给端口的内容与
+ * 是否交给端口，不是调用次数。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -36,7 +36,7 @@ import {
 } from './desktop.ts'
 import { MAX_EDGE } from './image.ts'
 
-/** 窗口根。同名按钮分在两个分组下，只有祖先路径区分得开。 */
+/** 窗口根。同名按钮分属两个分组，只有祖先路径能区分它们。 */
 const 窗口: DesktopElement = {
   ref: 'e1',
   windowRoot: true,
@@ -212,7 +212,7 @@ const 长列表: DesktopElement = {
   scroll: { vertical: 0 },
   selection: { multiple: false, required: false },
 }
-/** 前台模式开着时读到的按钮：指针动作带 foreground delivery，后台动作照常。 */
+/** 前台模式开启时读取到的按钮：指针动作带有 foreground delivery，后台动作不变。 */
 const 前台按钮: DesktopElement = {
   ref: 'e16',
   parentRef: 'e1',
@@ -231,7 +231,7 @@ const 前台按钮: DesktopElement = {
     { action: 'wheel', delivery: ['foreground'] },
   ],
 }
-/** 持有键盘焦点的那一个。键盘动作只挂在它身上。 */
+/** 持有键盘焦点的控件。键盘动作只附加在该控件上。 */
 const 焦点框: DesktopElement = {
   ref: 'e17',
   parentRef: 'e1',
@@ -251,7 +251,7 @@ const 焦点框: DesktopElement = {
     { action: 'press_key', delivery: ['foreground'] },
   ],
 }
-/** 前台模式开着时的窗口根：窗口动作挂在它身上。 */
+/** 前台模式开启时的窗口根：窗口动作附加在窗口根上。 */
 const 前台窗口: DesktopElement = {
   ...窗口,
   actions: [
@@ -263,9 +263,9 @@ const 前台窗口: DesktopElement = {
   ],
 }
 /**
- * 自绘界面的观察：树上只有窗口根，一个业务控件都没有。
+ * 自绘界面的观察：树上只有窗口根，没有任何业务控件。
  *
- * 键盘动作挂在窗口根上——这类窗口给不出一个持有焦点的控件。
+ * 键盘动作附加在窗口根上：这类窗口无法提供持有焦点的控件。
  */
 const 自绘窗口: DesktopElement = {
   ...窗口,
@@ -294,7 +294,7 @@ const 文档框: DesktopElement = {
   text: true,
 }
 
-/** 收起的组合框：控件表里没有它的项，选中项只在 selection.selected 里。 */
+/** 收起的组合框：控件表中没有它的项，选中项只在 selection.selected 中。 */
 const 组合框: DesktopElement = {
   ref: 'e18',
   parentRef: 'e1',
@@ -331,10 +331,10 @@ const TABLE = [
   组合框,
 ]
 
-/** 前台模式开着时那一份控件表。窗口根换成带窗口动作的那一个。 */
+/** 前台模式开启时的控件表。窗口根替换为带窗口动作的版本。 */
 const FOREGROUND_TABLE = [前台窗口, ...TABLE.slice(1), 前台按钮, 焦点框]
 
-/** 一个控件在 TABLE 里的全部祖先 ref，由近及远。 */
+/** 一个控件在 TABLE 中的全部祖先 ref，由近及远。 */
 function ancestorsOf(element: DesktopElement): string[] {
   const out: string[] = []
   let at = element.parentRef
@@ -364,10 +364,10 @@ function snapshot(over: Partial<DesktopSnapshot> = {}): DesktopSnapshot {
 }
 
 /**
- * 一段够 `imageSizeOf` 认出宽高的 PNG 字节：签名加 IHDR 头。
+ * 足以让 `imageSizeOf` 识别宽高的 PNG 字节：签名加 IHDR 头。
  *
- * 不带像素数据是有意的：长边在 `MAX_EDGE` 以内时 `shrinkImage` 一个字节都不动，
- * 这条路径上没有人会去解码它。
+ * 有意不含像素数据：长边在 `MAX_EDGE` 以内时 `shrinkImage` 不修改任何字节，
+ * 该路径上不会解码图像。
  */
 function png(width: number, height: number): string {
   const bytes = new Uint8Array(33)
@@ -487,7 +487,7 @@ function run(
 }
 
 describe('注册元数据', () => {
-  test('五个工具都在 desktop 类目下，权限效果单列', () => {
+  test('五个工具均属于 desktop 类目，权限效果单独列出', () => {
     expect(desktopTools.map((t) => t.name)).toEqual([
       'desktop_windows',
       'desktop_observe',
@@ -501,8 +501,8 @@ describe('注册元数据', () => {
     }
   })
 
-  /** 句柄进了参数表，模型就能自己拼一个目标——那条路必须不存在。 */
-  test('参数表里没有窗口句柄，只有不透明 id', () => {
+  /** 句柄进入参数表后，模型能够自行构造目标，因此参数表中不得出现句柄。 */
+  test('参数表中没有窗口句柄，只有不透明 id', () => {
     for (const spec of desktopTools) {
       const props = (spec.parameters as { properties?: Record<string, unknown> }).properties ?? {}
       expect(Object.keys(props)).not.toContain('window')
@@ -513,12 +513,12 @@ describe('注册元数据', () => {
 })
 
 describe('没有端口与已停止', () => {
-  test('没有端口时如实报，不当成执行过', async () => {
+  test('没有端口时如实报告，不视为已执行', async () => {
     const r = await run(desktopWindowsTool, {}, ctxWith())
     expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: 'unsupported' })
   })
 
-  test('这一轮已停止时不再发起新动作', async () => {
+  test('本轮已停止时不再发起新动作', async () => {
     const controller = new AbortController()
     controller.abort()
     const { port, calls } = fakeDesktop()
@@ -533,7 +533,7 @@ describe('没有端口与已停止', () => {
 })
 
 describe('目标解析与层级消歧', () => {
-  test('按 ref 唯一命中时才把它交给端口', async () => {
+  test('仅在按 ref 唯一命中时交给端口', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -572,11 +572,11 @@ describe('目标解析与层级消歧', () => {
   })
 
   /**
-   * 同名两个按钮，挑第一个就是在另一个控件上执行动作，而且不报错。
+   * 两个同名按钮，选择第一个可能在错误的控件上执行动作，且不报错。
    *
-   * 回执要能让模型分得开这两个：只有祖先路径说得出「一个在工具栏里、一个在文件组里」。
+   * 回执必须让模型能够区分两者：只有祖先路径能说明「一个在工具栏里、一个在文件组里」。
    */
-  test('同名歧义时不执行，候选带祖先路径交回模型', async () => {
+  test('同名歧义时不执行，候选附带祖先路径返回给模型', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -591,8 +591,8 @@ describe('目标解析与层级消歧', () => {
     expect(calls).toEqual([])
   })
 
-  /** 候选清单与动作回执共用长值规则：十个候选各印一份长值就把整条结果撑掉。 */
-  test('候选控件的长值只印字数，原文不进 message', async () => {
+  /** 候选清单与动作回执共用长值规则：十个候选各输出一份长值会使整条结果超出上限。 */
+  test('候选控件的长值只输出字数，原文不进入 message', async () => {
     const 长值 = '文'.repeat(60_000)
     const { port } = fakeDesktop({
       elements: () => [
@@ -614,8 +614,8 @@ describe('目标解析与层级消歧', () => {
     expect(r.message.length).toBeLessThan(500)
   })
 
-  /** 祖先不在表里时走到哪算哪，不编一段路径出来。 */
-  test('父控件不在这份表里时祖先路径只写到断点', async () => {
+  /** 祖先不在表中时只输出已找到的部分，不虚构路径。 */
+  test('父控件不在本表中时祖先路径只写到中断处', async () => {
     const partial = [表单保存, 灰按钮].map((e) => ({ ...e }))
     const { port } = fakeDesktop({
       elements: () => [...partial, { ...工具栏保存 }],
@@ -629,7 +629,7 @@ describe('目标解析与层级消歧', () => {
     expect(r.message).not.toContain('位于')
   })
 
-  test('加 role 收窄之后仍然不唯一就还是歧义，命中不到就是缺失', async () => {
+  test('附加 role 收窄后仍不唯一即为歧义，无命中即为缺失', async () => {
     const { port } = fakeDesktop()
     const missing = await run(
       desktopActTool,
@@ -639,7 +639,7 @@ describe('目标解析与层级消歧', () => {
     expect(missing).toMatchObject({ executed: false, errorKind: 'desktop_target_missing' })
   })
 
-  test('观察过期时要求重新观察，一帧都不发', async () => {
+  test('观察过期时要求重新观察，不发送任何帧', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -650,7 +650,7 @@ describe('目标解析与层级消歧', () => {
     expect(calls).toEqual([])
   })
 
-  test('这份观察里没有的 ref 直接拒绝', async () => {
+  test('本次观察中不存在的 ref 直接拒绝', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -674,7 +674,7 @@ describe('动作前置条件', () => {
     expect(calls).toEqual([])
   })
 
-  test('控件不支持这个动作时不派发，并说清它支持什么', async () => {
+  test('控件不支持该动作时不派发，并说明它支持的动作', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -686,7 +686,7 @@ describe('动作前置条件', () => {
     expect(calls).toEqual([])
   })
 
-  test('set_value 少了 value 是参数错；空串是清空，照发', async () => {
+  test('set_value 缺少 value 属于参数错误；空串表示清空，照常发送', async () => {
     const { port, calls } = fakeDesktop()
     const missing = await run(
       desktopActTool,
@@ -704,7 +704,7 @@ describe('动作前置条件', () => {
     expect(calls[0]).toMatchObject({ input: { action: { kind: 'set_value', value: '' } } })
   })
 
-  test('invoke 带 value 是写错，不静默忽略', async () => {
+  test('invoke 带 value 属于参数错误，不静默忽略', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -717,8 +717,8 @@ describe('动作前置条件', () => {
 })
 
 describe('动作族：参数、目标态与前置条件', () => {
-  /** 可用动作表说得出「此刻能不能执行」，只读的那一项 delivery 为空且带原因。 */
-  test('delivery 为空的动作在本地就被拒，原因如实带出来', async () => {
+  /** 可用动作表能说明此刻能否执行，只读控件的动作项 delivery 为空且附带原因。 */
+  test('delivery 为空的动作在本地即被拒绝，并如实返回原因', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -736,7 +736,7 @@ describe('动作族：参数、目标态与前置条件', () => {
     expect(calls).toEqual([])
   })
 
-  test('数值越界在本地按观察里的区间拒绝，不夹到边界上', async () => {
+  test('数值越界时在本地按观察中的区间拒绝，不截断到边界值', async () => {
     const { port, calls } = fakeDesktop()
     const over = await run(
       desktopActTool,
@@ -767,8 +767,8 @@ describe('动作族：参数、目标态与前置条件', () => {
     expect(calls[0]).toMatchObject({ input: { action: { kind: 'set_range_value', value: 42 } } })
   })
 
-  /** 目标态就是目标态：已经在那个状态上时不发动作，也不「切一次」。 */
-  test('set_toggle 按目标态发，已经是目标态就不发', async () => {
+  /** 参数是目标状态：已处于该状态时不发送动作，也不执行一次切换。 */
+  test('set_toggle 按目标状态发送，已处于目标状态时不发送', async () => {
     const { port, calls } = fakeDesktop()
     await run(
       desktopActTool,
@@ -800,8 +800,8 @@ describe('动作族：参数、目标态与前置条件', () => {
     expect(calls).toHaveLength(1)
   })
 
-  /** 容器的多选约束在祖先那一格上，本地顺着 parentRef 就判得出来。 */
-  test('单选容器上的增选在本地被拒，select 照发', async () => {
+  /** 容器的多选约束位于祖先的字段上，本地沿 parentRef 即可判定。 */
+  test('单选容器上的增选在本地被拒绝，select 照常发送', async () => {
     const { port, calls } = fakeDesktop()
     const add = await run(
       desktopActTool,
@@ -819,7 +819,7 @@ describe('动作族：参数、目标态与前置条件', () => {
     expect(calls[0]).toMatchObject({ input: { action: { kind: 'select' } } })
   })
 
-  test('已经收起的树节点不再 collapse，expand 照发', async () => {
+  test('已收起的树节点不再 collapse，expand 照常发送', async () => {
     const { port, calls } = fakeDesktop()
     const again = await run(
       desktopActTool,
@@ -862,7 +862,7 @@ describe('动作族：参数、目标态与前置条件', () => {
     })
   })
 
-  test('realize_item 要给项名，select_text 要给起点与长度', async () => {
+  test('realize_item 必须提供项名，select_text 必须提供起点与长度', async () => {
     const { port, calls } = fakeDesktop()
     await run(
       desktopActTool,
@@ -903,8 +903,8 @@ describe('动作族：参数、目标态与前置条件', () => {
     expect(bare).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
   })
 
-  /** 不属于这个动作的参数一律拒绝：静默忽略会让「写了值」这件事看起来发生过。 */
-  test('参数不属于这个动作就拒绝，不静默忽略', async () => {
+  /** 不属于该动作的参数一律拒绝：静默忽略会使未发生的写入看似已经发生。 */
+  test('参数不属于该动作时拒绝，不静默忽略', async () => {
     const { port, calls } = fakeDesktop()
     for (const args of [
       { action: 'invoke', ref: 'e3', value: 'x' },
@@ -923,8 +923,8 @@ describe('动作族：参数、目标态与前置条件', () => {
 })
 
 describe('按需字段', () => {
-  /** 两个开关各自独立，都只在显式关掉时才交给端口。 */
-  test('includeValue 与 includeState 只在关掉时下传', async () => {
+  /** 两个开关相互独立，都只在显式关闭时才交给端口。 */
+  test('includeValue 与 includeState 只在关闭时传给端口', async () => {
     const { port, calls } = fakeDesktop()
     await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(calls[0]).toEqual({ method: 'observe', input: { windowId: 'dw_1' } })
@@ -945,8 +945,8 @@ describe('按需字段', () => {
 })
 
 describe('选择容器的选中项', () => {
-  /** 收起的组合框在表里没有子控件，选中项只能由容器那一格交出来。 */
-  test('收起的组合框把选中项随观察交出来', async () => {
+  /** 收起的组合框在表中没有子控件，选中项只能由容器的字段提供。 */
+  test('收起的组合框随观察提供选中项', async () => {
     const { port } = fakeDesktop()
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     const table = (r.data as unknown as DesktopSnapshot).elements
@@ -955,8 +955,8 @@ describe('选择容器的选中项', () => {
     expect(table.filter((e) => e.parentRef === combo?.ref)).toEqual([])
   })
 
-  /** 改完选中项，同次带回的那份观察里容器已经是新值：模型不必再单独观察一次。 */
-  test('动作同次带回的观察里容器的选中项已更新', async () => {
+  /** 修改选中项后，同次带回的观察中容器已是新值：模型无需再单独观察一次。 */
+  test('动作同次带回的观察中容器的选中项已更新', async () => {
     const { port } = fakeDesktop({
       act: async () => ({
         dispatch: 'submitted',
@@ -985,8 +985,8 @@ describe('选择容器的选中项', () => {
     ])
   })
 
-  /** 目标本身是容器时那一行就印出选中的是哪几项；名单不全时一并说出来。 */
-  test('目标是容器时行上印出选中项与名单不全', async () => {
+  /** 目标本身是容器时，该行输出选中项；列表不完整时一并说明。 */
+  test('目标是容器时该行输出选中项与列表不完整的事实', async () => {
     const { port } = fakeDesktop({
       act: async () => ({
         dispatch: 'submitted',
@@ -1021,8 +1021,8 @@ describe('选择容器的选中项', () => {
     expect(r.message).toContain('选中 "甲"、"乙" 等')
   })
 
-  /** includeState=false 的那份观察里没有这一格，行上也就不印选中项。 */
-  test('不取状态细节时行上不印选中项', async () => {
+  /** includeState=false 的观察中没有该字段，因此该行不输出选中项。 */
+  test('不读取状态细节时该行不输出选中项', async () => {
     const 无状态长列表: DesktopElement = { ...长列表 }
     delete 无状态长列表.selection
     delete 无状态长列表.scroll
@@ -1049,8 +1049,8 @@ describe('选择容器的选中项', () => {
   })
 })
 
-describe('读文本与选区', () => {
-  test('capture=text 读文档文本与选区，不换观察编号', async () => {
+describe('读取文本与选区', () => {
+  test('capture=text 读取文档文本与选区，不更换观察编号', async () => {
     const { port, calls } = fakeDesktop({
       readText: async (input) => {
         calls.push({ method: 'readText', input })
@@ -1080,7 +1080,7 @@ describe('读文本与选区', () => {
     expect(r.message).toContain('截断')
   })
 
-  test('没有 TextPattern 的控件读不了文本，一帧都不发', async () => {
+  test('没有 TextPattern 的控件无法读取文本，不发送任何帧', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1093,7 +1093,7 @@ describe('读文本与选区', () => {
     expect(calls).toEqual([])
   })
 
-  test('容器没有文本和值时提示读子树，按提示可以取得控件表', async () => {
+  test('容器没有文本和值时提示读取子树，按提示可以取得控件表', async () => {
     const { port, calls } = fakeDesktop()
     const context = ctxWith(port)
     const r = await run(
@@ -1114,7 +1114,7 @@ describe('读文本与选区', () => {
     expect(calls.map((c) => c.method)).toEqual(['observe'])
   })
 
-  test.each(['', '当前内容'])('控件确实有 value 时才提示读取值（%j）', async (value) => {
+  test.each(['', '当前内容'])('仅在控件有 value 时提示读取值（%j）', async (value) => {
     const { port, calls } = fakeDesktop({ elements: () => [{ ...输入框, value }] })
     const r = await run(
       desktopObserveTool,
@@ -1122,14 +1122,14 @@ describe('读文本与选区', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
-    expect(r.message).toContain('当前值已在观察的 value 里')
+    expect(r.message).toContain('当前值已在观察的 value 中')
     expect(calls).toEqual([])
   })
 })
 
 describe('三态回执与动作后观察', () => {
-  /** 动作同次带回新观察：模型不必再单独 observe 就能接着发下一个动作。 */
-  test('submitted 是成功，结果里带动作身份与新的观察编号', async () => {
+  /** 动作同次带回新观察：模型无需单独 observe 即可发送下一个动作。 */
+  test('submitted 表示成功，结果中包含动作身份与新的观察编号', async () => {
     const { port } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -1147,11 +1147,11 @@ describe('三态回执与动作后观察', () => {
     const observation = (r.data as { observation: DesktopSnapshot }).observation
     expect(observation.observationId).toBe('do_2')
     expect(r.message).toContain('do_2')
-    // 目标控件的新值直接出现在回执里，不用再读一次。
+    // 目标控件的新值直接出现在回执中，无需再读取一次。
     expect(r.message).toContain('张三')
   })
 
-  test('not_dispatched 是没执行，executed 为假', async () => {
+  test('not_dispatched 表示未执行，executed 为假', async () => {
     const { port } = fakeDesktop({
       act: async () => ({
         dispatch: 'not_dispatched',
@@ -1202,8 +1202,8 @@ describe('三态回执与动作后观察', () => {
     expect(r.message).toContain('do_2')
   })
 
-  /** 结果未知是禁止重发的那一侧：它必须记成已执行。 */
-  test('unknown 记成已执行，并要求先重新观察', async () => {
+  /** 结果未知时禁止重发：它必须记为已执行。 */
+  test('unknown 记为已执行，并要求先重新观察', async () => {
     const { port } = fakeDesktop({
       act: async () => ({
         dispatch: 'unknown',
@@ -1224,8 +1224,8 @@ describe('三态回执与动作后观察', () => {
     expect(r.data).toMatchObject({ dispatch: 'unknown', actionId: 'da_3' })
   })
 
-  /** 重读失败不改执行事实：动作已经发出去了。 */
-  test('submitted 但重读失败仍记已执行', async () => {
+  /** 重读失败不改变执行事实：动作已经发出。 */
+  test('submitted 但重读失败时仍记为已执行', async () => {
     const { port } = fakeDesktop({
       act: async () => ({
         dispatch: 'submitted',
@@ -1248,10 +1248,10 @@ describe('三态回执与动作后观察', () => {
   })
 
   /**
-   * 调用没返回时目标窗口读不动，宿主换成一份窗口清单。回执要把新出现的那个窗口
-   * 点名交出去，模型下一步观察它而不是目标窗口。
+   * 调用未返回时目标窗口无法读取，宿主改为返回窗口清单。回执必须指明新出现的窗口，
+   * 模型下一步观察该窗口而不是目标窗口。
    */
-  test('调用未返回时回执给出新窗口的 windowId，不报「没有读数」', async () => {
+  test('调用未返回时回执给出新窗口的 windowId，不报告无法读取控件表', async () => {
     const { port } = fakeDesktop({
       act: async () => ({
         dispatch: 'submitted',
@@ -1274,13 +1274,13 @@ describe('三态回执与动作后观察', () => {
     expect(r.message).toContain('dw_9')
     expect(r.message).toContain('另存为')
     expect(r.message).toContain('调用未返回')
-    // 没出现过的那个窗口不喧宾夺主：只点名新出现的。
+    // 已有的目标窗口不列出：只指明新出现的窗口。
     expect(r.message).not.toContain('dw_1 fixture.exe 夹具')
     expect(r.data).toMatchObject({ dispatch: 'submitted' })
   })
 
-  /** 结果未知时仍要说「先读状态，别重放」。 */
-  test('调用未返回且没有证据时是 unknown，仍要求先重新观察', async () => {
+  /** 结果未知时仍必须要求先读取状态，不得重放。 */
+  test('调用未返回且没有证据时为 unknown，仍要求先重新观察', async () => {
     const { port } = fakeDesktop({
       act: async () => ({
         dispatch: 'unknown',
@@ -1298,12 +1298,12 @@ describe('三态回执与动作后观察', () => {
     )
     expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'desktop_unknown' })
     expect(r.message).toContain('结果未确认')
-    // 没有新窗口时如实列当前窗口，不硬说有新窗口。
+    // 没有新窗口时如实列出当前窗口，不虚报新窗口。
     expect(r.message).toContain('当前窗口')
   })
 
-  /** 端口自己声明的执行前拒绝优先于「调进去过」这一判据。 */
-  test('端口按 DesktopRefusal 拒绝时不记成已执行', async () => {
+  /** 端口自行声明的执行前拒绝优先于「已调用端口」这一判据。 */
+  test('端口按 DesktopRefusal 拒绝时不记为已执行', async () => {
     class Refused extends Error implements DesktopRefusal {
       readonly errorKind = 'desktop_unavailable' as const
       readonly executed = false as const
@@ -1342,7 +1342,7 @@ describe('局部读取、视图筛选与字段选择', () => {
     })
   })
 
-  test('角色与文字只筛交给模型的视图：命中的控件连同祖先列出，并说明其余控件仍在观察里', async () => {
+  test('角色与文字只筛选交给模型的视图：命中的控件连同祖先列出，并说明其余控件仍在观察中', async () => {
     const { port } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1364,14 +1364,14 @@ describe('局部读取、视图筛选与字段选择', () => {
       viewFilter: ['role=button', 'query=保存'],
       matched: hits.length,
     })
-    expect(r.message).toContain('其余控件仍在这份观察里')
+    expect(r.message).toContain('其余控件仍在本次观察中')
   })
 
   /**
-   * 原始失败形状：按文字筛出密码框之后，用同一份观察按登录按钮执行，返回“没有匹配的控件”。
-   * 视图筛选不缩小控件表，筛出的视图之外的控件照样能按同一个观察编号执行。
+   * 原始失败形状：按文字筛选出密码框之后，用同一份观察对登录按钮执行动作，返回「没有匹配的控件」。
+   * 视图筛选不缩小控件表，筛选视图之外的控件仍能按同一个观察编号执行。
    */
-  test('筛过视图之后，视图外的控件仍按同一个观察编号执行', async () => {
+  test('筛选视图之后，视图外的控件仍按同一个观察编号执行', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(desktopObserveTool, { windowId: 'dw_1', query: '姓名' }, ctxWith(port))
     const shown = (r.data as { elements: DesktopElement[] }).elements.map((e) => e.ref)
@@ -1385,13 +1385,13 @@ describe('局部读取、视图筛选与字段选择', () => {
     expect(calls.map((c) => c.method)).toEqual(['observe', 'act'])
   })
 
-  test('没给筛选参数时一个都不往下传', async () => {
+  test('未提供筛选参数时不向端口传递任何筛选条件', async () => {
     const { port, calls } = fakeDesktop()
     await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(calls[0]).toEqual({ method: 'observe', input: { windowId: 'dw_1' } })
   })
 
-  test('观察的上限按参数夹住，读不出数就是参数错', async () => {
+  test('观察的上限按参数范围截断，无法解析为数字即为参数错误', async () => {
     const { port, calls } = fakeDesktop()
     await run(desktopObserveTool, { windowId: 'dw_1', maxNodes: 99_999 }, ctxWith(port))
     expect(calls[0]).toMatchObject({ input: { windowId: 'dw_1', maxNodes: 4000 } })
@@ -1400,8 +1400,8 @@ describe('局部读取、视图筛选与字段选择', () => {
     expect(bad).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
   })
 
-  /** 截断与读取范围是两件事：一个说「没读全」，一个说「只读了这一段」，回执里各说一次。 */
-  test('截断与读取范围分别如实报出来', async () => {
+  /** 截断与读取范围含义不同：前者表示未读取完整，后者表示只读取了指定范围，回执中分别说明。 */
+  test('截断与读取范围分别如实报告', async () => {
     const { port } = fakeDesktop({
       observe: async (input) =>
         snapshot({
@@ -1418,8 +1418,8 @@ describe('局部读取、视图筛选与字段选择', () => {
     expect(r.data).toMatchObject({ visited: 900 })
   })
 
-  /** 模态窗口挡住时控件一个都动不了，这一句必须出现在读数里。 */
-  test('窗口被挡住时观察如实说明', async () => {
+  /** 模态窗口遮挡时任何控件都无法操作，该说明必须出现在读数中。 */
+  test('窗口被遮挡时观察如实说明', async () => {
     const { port } = fakeDesktop({
       observe: async (input) => snapshot({ windowId: input.windowId, windowEnabled: false }),
     })
@@ -1428,28 +1428,28 @@ describe('局部读取、视图筛选与字段选择', () => {
   })
 
   /**
-   * 原始失败形状：被盖住的浏览器窗口只交出外框、不算截断，模型把用户那一页当成空页改写了地址栏。
-   * 读数必须说出窗口被盖住，控件表同时照常交付。
+   * 原始失败形状：被遮挡的浏览器窗口只返回外框且不计为截断，模型把用户的页面当作空页并改写了地址栏。
+   * 读数必须说明窗口被遮挡，控件表同时照常交付。
    */
-  test('窗口被盖住时读数如实说明，结果里带着这一格', async () => {
+  test('窗口被遮挡时读数如实说明，结果中包含该字段', async () => {
     const { port } = fakeDesktop({
       observe: async (input) => snapshot({ windowId: input.windowId, windowCovered: true }),
     })
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
-    expect(r.message).toContain('窗口被盖住或已最小化')
+    expect(r.message).toContain('窗口被遮挡或已最小化')
     expect(r.data).toMatchObject({ windowCovered: true })
   })
 
-  test('窗口没被盖住时读数不提这一句', async () => {
+  test('窗口未被遮挡时读数不包含该说明', async () => {
     const { port } = fakeDesktop()
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
-    expect(r.message).not.toContain('窗口被盖住')
+    expect(r.message).not.toContain('窗口被遮挡')
   })
 })
 
 describe('采集模式', () => {
-  /** 默认不采图：多一次采集就是多一次目标进程的合成与一次编码。 */
-  test('不给 capture 就只读结构，端口的采集入口一次都不碰', async () => {
+  /** 默认不采集图像：每增加一次采集，目标进程即增加一次合成与一次编码。 */
+  test('未提供 capture 时只读取结构，不调用端口的采集入口', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(calls.map((c) => c.method)).toEqual(['observe'])
@@ -1457,13 +1457,13 @@ describe('采集模式', () => {
     expect(r.data).not.toHaveProperty('imageRef')
   })
 
-  test('capture=structure 同样不采图', async () => {
+  test('capture=structure 同样不采集图像', async () => {
     const { port, calls } = fakeDesktop()
     await run(desktopObserveTool, { windowId: 'dw_1', capture: 'structure' }, ctxWith(port))
     expect(calls.map((c) => c.method)).toEqual(['observe'])
   })
 
-  test('capture=region_image 只采图，不读树', async () => {
+  test('capture=region_image 只采集图像，不读取控件树', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1475,7 +1475,7 @@ describe('采集模式', () => {
     expect(r.data).toMatchObject({ imageRef: 'di_1', source: 'wgc', imageCapturedAt: 2 })
   })
 
-  test('capture=combined 两样都要，两个时刻分开记', async () => {
+  test('capture=combined 同时读取控件树与图像，两个时刻分别记录', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1486,11 +1486,11 @@ describe('采集模式', () => {
     expect(r.data).toMatchObject({ capturedAt: 1, imageCapturedAt: 2, observationId: 'do_1' })
   })
 
-  /** 树已经读到了就交出去：图没采到不该把这一次观察一起作废。 */
-  test('combined 采图失败时控件表照样交回，并说清图为什么没有', async () => {
+  /** 已读取的控件树照常返回：图像采集失败不应使本次观察一并作废。 */
+  test('combined 采图失败时仍返回控件表，并说明缺少图像的原因', async () => {
     const { port } = fakeDesktop({
       captureImage: async () => {
-        throw new Error('window_minimized: 窗口已最小化，采不到内容')
+        throw new Error('window_minimized: 窗口已最小化，无法采集内容')
       },
     })
     const r = await run(
@@ -1502,10 +1502,10 @@ describe('采集模式', () => {
     expect(r.data).toMatchObject({ observationId: 'do_1' })
     expect(r.data).not.toHaveProperty('images')
     expect(String(r.data?.imageError)).toContain('window_minimized')
-    expect(r.message).toContain('没有采到图')
+    expect(r.message).toContain('未采集到图像')
   })
 
-  test('取景参数只在采图模式下成立', async () => {
+  test('采集区域参数只在采集图像的模式下有效', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1516,7 +1516,7 @@ describe('采集模式', () => {
     expect(calls).toEqual([])
   })
 
-  test('around 与 imageRef 同时给时不挑一个，当场拒绝', async () => {
+  test('around 与 imageRef 同时提供时不选择其一，立即拒绝', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1535,8 +1535,8 @@ describe('采集模式', () => {
   })
 })
 
-describe('按控件与按图取景', () => {
-  test('around 把控件包围盒外扩若干像素交给端口', async () => {
+describe('按控件与按图确定采集区域', () => {
+  test('around 将控件包围盒向外扩展若干像素后交给端口', async () => {
     const { port, calls } = fakeDesktop()
     await run(
       desktopObserveTool,
@@ -1560,12 +1560,12 @@ describe('按控件与按图取景', () => {
   })
 
   /**
-   * combined 先读树，旧观察编号随之作废。拿调用方给的那个编号去解析 around，
-   * 解出来的是一份已经不存在的表。
+   * combined 先读取控件树，旧观察编号随之作废。用调用方提供的编号解析 around，
+   * 解析依据的是一份已不存在的表。
    */
-  test('combined 的 around 按这次读到的控件表解析', async () => {
+  test('combined 的 around 按本次读取的控件表解析', async () => {
     const { port, calls } = fakeDesktop({
-      // 这一份端口只认 do_1；combined 读完树拿到的是 do_1 的内容，但不该再查一次。
+      // 该端口只接受 do_1；combined 读取控件树后取得的是 do_1 的内容，但不应再查询一次。
       elements: () => null,
       observe: async (input) => snapshot({ windowId: input.windowId, observationId: 'do_9' }),
     })
@@ -1574,7 +1574,7 @@ describe('按控件与按图取景', () => {
       { windowId: 'dw_1', capture: 'combined', around: 'e5', pad: 5 },
       ctxWith(port),
     )
-    // `elements` 恒回 null：走到它就会以「观察已失效」收尾，采不到图。
+    // `elements` 恒返回 null：调用它会以「观察已失效」结束，无法采集图像。
     expect(r.status).toBe('success')
     expect(calls.map((c) => c.method)).toEqual(['captureImage'])
     expect(calls[0]).toMatchObject({
@@ -1593,7 +1593,7 @@ describe('按控件与按图取景', () => {
     expect(calls).toEqual([])
   })
 
-  test('没给 pad 就按包围盒本身取景', async () => {
+  test('未提供 pad 时按包围盒本身确定采集区域', async () => {
     const { port, calls } = fakeDesktop()
     await run(
       desktopObserveTool,
@@ -1605,8 +1605,8 @@ describe('按控件与按图取景', () => {
     })
   })
 
-  /** 没有包围盒的控件取不了景，编一个矩形出来采回的是别处。 */
-  test('控件没有包围盒时拒绝取景，一帧都不发', async () => {
+  /** 没有包围盒的控件无法确定采集区域，构造的矩形采集到的是其他位置的画面。 */
+  test('控件没有包围盒时拒绝采集，不发送任何帧', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1617,7 +1617,7 @@ describe('按控件与按图取景', () => {
     expect(calls).toEqual([])
   })
 
-  test('观察失效时 around 在本地就被挡下', async () => {
+  test('观察失效时 around 在本地即被拦截', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1651,7 +1651,7 @@ describe('按控件与按图取景', () => {
     })
   })
 
-  test('给了 imageRef 没给 imageRect 时拒绝，一帧都不发', async () => {
+  test('提供 imageRef 而未提供 imageRect 时拒绝，不发送任何帧', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1663,10 +1663,10 @@ describe('按控件与按图取景', () => {
   })
 
   /** 失效的 imageRef 由端口判定，工具原样透传它的拒绝。 */
-  test('端口拒绝失效的 imageRef 时原样交回模型', async () => {
+  test('端口拒绝失效的 imageRef 时原样返回给模型', async () => {
     const { port } = fakeDesktop({
       captureImage: async () => {
-        const err = Object.assign(new Error('di_1 已经失效：桌面宿主换过代际，请重新采图'), {
+        const err = Object.assign(new Error('di_1 已失效：桌面宿主的代际已变化，请重新采图'), {
           errorKind: 'invalid_argument',
           executed: false,
         })
@@ -1684,13 +1684,13 @@ describe('按控件与按图取景', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
-    expect(r.message).toContain('已经失效')
+    expect(r.message).toContain('已失效')
   })
 })
 
-describe('图片通道与几何定稿', () => {
-  /** base64 留在 message 里模型读不懂，只照价计费；字节只走 data.images。 */
-  test('图像字节走 images 通道，不进回执正文', async () => {
+describe('图片通道与几何核对', () => {
+  /** base64 留在 message 中模型无法理解，只会按长度计费；字节只经由 data.images 传递。 */
+  test('图像字节经由 images 通道传递，不进入回执正文', async () => {
     const { port } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1704,7 +1704,7 @@ describe('图片通道与几何定稿', () => {
     expect(r.message).not.toContain(images[0]?.data ?? '')
   })
 
-  test('几何随图一起交回，说得出图像尺寸与它对应的屏幕矩形', async () => {
+  test('几何随图像一起返回，包含图像尺寸与对应的屏幕矩形', async () => {
     const { port } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1724,11 +1724,11 @@ describe('图片通道与几何定稿', () => {
   })
 
   /**
-   * 几何在采集端定稿，这里只核对。
+   * 几何在采集端确定，此处只核对。
    *
-   * 尺寸对不上意味着模型看到的与几何记的不是同一张图，按图算出来的屏幕坐标就是错的。
+   * 尺寸不一致说明模型看到的图像与几何记录的不是同一张，按图计算的屏幕坐标是错误的。
    */
-  test('图像尺寸与几何对不上时不把这张图交给模型', async () => {
+  test('图像尺寸与几何不一致时不把这张图交给模型', async () => {
     const { port } = fakeDesktop({
       captureImage: async () => image({ data: png(320, 240) }),
     })
@@ -1741,7 +1741,7 @@ describe('图片通道与几何定稿', () => {
     expect(r.data).toBeUndefined()
   })
 
-  test('combined 下尺寸对不上时控件表仍然交回，图不交', async () => {
+  test('combined 下尺寸不一致时仍返回控件表，不返回图像', async () => {
     const { port } = fakeDesktop({
       captureImage: async () => image({ data: png(320, 240) }),
     })
@@ -1753,11 +1753,11 @@ describe('图片通道与几何定稿', () => {
     expect(r.status).toBe('success')
     expect(r.data).toMatchObject({ observationId: 'do_1' })
     expect(r.data).not.toHaveProperty('images')
-    expect(String(r.data?.imageError)).toContain('对不上')
+    expect(String(r.data?.imageError)).toContain('不一致')
   })
 
-  /** 退路采集画不全的区域是黑的，模型要知道这张图能不能当依据。 */
-  test('退路采集在回执里点名', async () => {
+  /** 备用方式采集时未重绘的区域为黑色，模型需要知道该图像能否作为依据。 */
+  test('备用方式采集在回执中注明', async () => {
     const { port } = fakeDesktop({
       captureImage: async () => image({ source: 'print_window' }),
     })
@@ -1767,13 +1767,13 @@ describe('图片通道与几何定稿', () => {
       ctxWith(port),
     )
     expect(r.data).toMatchObject({ source: 'print_window' })
-    expect(r.message).toContain('黑的')
+    expect(r.message).toContain('黑色')
   })
 })
 
-describe('不收图片的模型', () => {
-  /** 采一张模型看不到的图要付出整条采集与编码的代价，所以在采之前就回绝。 */
-  test('vision=false 时采图模式在发请求之前回绝', async () => {
+describe('不接受图片的模型', () => {
+  /** 采集模型无法查看的图像需要付出完整的采集与编码开销，因此在采集之前即拒绝。 */
+  test('vision=false 时采集图像的模式在发送请求之前拒绝', async () => {
     const { port, calls } = fakeDesktop()
     const ctx = { ...ctxWith(port), vision: false as const }
     for (const capture of ['region_image', 'combined']) {
@@ -1792,8 +1792,8 @@ describe('不收图片的模型', () => {
     expect(calls.map((c) => c.method)).toEqual(['observe'])
   })
 
-  /** 三态里只有 `false` 拦：`null` 是没有出处，按放行算。 */
-  test('vision=null 时照常采图', async () => {
+  /** 三种取值中只有 `false` 拒绝：`null` 表示没有来源信息，按允许处理。 */
+  test('vision=null 时照常采集图像', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -1806,7 +1806,7 @@ describe('不收图片的模型', () => {
 })
 
 describe('等待', () => {
-  test('盯已知控件的条件按同一套目标解析，参数逐项交给端口', async () => {
+  test('针对已知控件的条件按同一套规则解析目标，参数逐项交给端口', async () => {
     const { port, calls } = fakeDesktop()
     await run(
       desktopWaitTool,
@@ -1825,7 +1825,7 @@ describe('等待', () => {
     })
   })
 
-  test('until=value 少了 value 是参数错', async () => {
+  test('until=value 缺少 value 属于参数错误', async () => {
     const { port, calls } = fakeDesktop()
     const bad = await run(
       desktopWaitTool,
@@ -1836,7 +1836,7 @@ describe('等待', () => {
     expect(calls).toEqual([])
   })
 
-  /** 等的是还不存在的控件或窗口，就不该要求它先出现在某一份观察里。 */
+  /** 等待的是尚不存在的控件或窗口，因此不应要求它先出现在某一份观察中。 */
   test('appears 与 window 不解析已有控件，按文字条件交给端口', async () => {
     const { port, calls } = fakeDesktop()
     await run(
@@ -1844,7 +1844,7 @@ describe('等待', () => {
       { windowId: 'dw_1', observationId: 'do_1', until: 'appears', name: '完成', role: 'button' },
       ctxWith(port),
     )
-    // appears 找的是控件文字，window 找的是窗口标题：两种条件落在不同字段上，不能混。
+    // appears 匹配控件文字，window 匹配窗口标题：两种条件对应不同字段，不能混用。
     expect(calls[0]).toMatchObject({
       method: 'wait',
       input: { until: 'appears', query: '完成', role: 'button' },
@@ -1860,7 +1860,7 @@ describe('等待', () => {
     expect((calls[1]?.input as { query?: string }).query).toBeUndefined()
   })
 
-  test('appears 与 window 缺了条件就是参数错', async () => {
+  test('appears 与 window 缺少条件属于参数错误', async () => {
     const { port, calls } = fakeDesktop()
     for (const args of [{ until: 'window' }, { until: 'appears' }]) {
       const r = await run(
@@ -1873,7 +1873,7 @@ describe('等待', () => {
     expect(calls).toEqual([])
   })
 
-  test('等到了带回新的观察编号', async () => {
+  test('条件满足时带回新的观察编号', async () => {
     const { port } = fakeDesktop()
     const r = await run(
       desktopWaitTool,
@@ -1884,7 +1884,7 @@ describe('等待', () => {
     expect(r.message).toContain('do_3')
   })
 
-  test('到期没等到不是执行失败，executed 为假，并带回当时的控件表', async () => {
+  test('到期未满足不算执行失败，executed 为假，并带回到期时刻的控件表', async () => {
     const { port } = fakeDesktop({
       wait: async () => ({
         found: false,
@@ -1906,8 +1906,8 @@ describe('等待', () => {
     expect(r.message).toContain('do_9')
   })
 
-  /** 原始失败形状：等刚点过的链接的值，页面跳转后链接不在，此前轮询到超时、回执只写 timeout。 */
-  test('要等的控件已不在时回执写明原因，不写成超时', async () => {
+  /** 原始失败形状：等待刚点击过的链接的值，页面跳转后链接已不存在，轮询直至超时，回执只写 timeout。 */
+  test('等待的控件已不存在时回执写明原因，不写为超时', async () => {
     const { port } = fakeDesktop({
       wait: async () => ({
         found: false,
@@ -1925,11 +1925,11 @@ describe('等待', () => {
       executed: false,
       errorKind: 'desktop_wait_target_gone',
     })
-    expect(r.message).toContain('e7 已不在窗口里，条件不会再成立')
+    expect(r.message).toContain('e7 已不在窗口中，条件不会再成立')
     expect(r.message).not.toContain('timeout')
   })
 
-  test('被撤销时如实回撤销，不当成超时', async () => {
+  test('被取消时如实返回取消原因，不视为超时', async () => {
     const { port } = fakeDesktop({
       wait: async () => ({
         found: false,
@@ -1999,7 +1999,7 @@ describe('前台动作', () => {
     expect(calls).toEqual([])
   })
 
-  test('表里有 foreground delivery 时照常交给端口', async () => {
+  test('表中有 foreground delivery 时照常交给端口', async () => {
     const { port, calls } = foregroundPort()
     const r = await run(
       desktopActTool,
@@ -2079,7 +2079,7 @@ describe('前台动作', () => {
     expect(result.message).not.toContain('已关闭')
   })
 
-  test('双击按 count 表达，上限是 2', async () => {
+  test('双击按 count 表达，上限为 2', async () => {
     const { port, calls } = foregroundPort()
     await run(
       desktopActTool,
@@ -2096,12 +2096,12 @@ describe('前台动作', () => {
       { windowId: 'dw_1', observationId: 'do_1', action: 'click', ref: 'e16', count: 9 },
       ctxWith(port),
     )
-    // 越界按上限夹，不拒：三击没有额外语义，两下已经是双击。
+    // 越界时截断到上限，不拒绝：三击没有额外语义，两次点击即为双击。
     expect(r.status).toBe('success')
     expect((calls[1]?.input as { action: { count: number } }).action.count).toBe(2)
   })
 
-  test('键盘动作只挂在持有焦点的控件上', async () => {
+  test('键盘动作只附加在持有焦点的控件上', async () => {
     const { port, calls } = foregroundPort()
     const blocked = await run(
       desktopActTool,
@@ -2128,10 +2128,10 @@ describe('前台动作', () => {
   })
 
   /**
-   * 自绘界面：树上只有窗口根，键盘动作挂在它身上，投递时不带控件。
+   * 自绘界面：树上只有窗口根，键盘动作附加在窗口根上，投递时不指定控件。
    *
-   * 少了这条路，`type_text` 对这类应用整条不可用——它们永远给不出一个持有键盘焦点的
-   * 控件，而模型只能绕去 shell 自己写脚本。
+   * 缺少该路径时，`type_text` 对这类应用完全不可用：它们无法提供持有键盘焦点的
+   * 控件，模型只能改用 shell 自行编写脚本。
    */
   function 自绘Port(over: Partial<DesktopPort> = {}) {
     const base = fakeDesktop(over)
@@ -2145,7 +2145,7 @@ describe('前台动作', () => {
     }
   }
 
-  test('窗口根挂着键盘动作时，不点名控件的输入按窗口投递', async () => {
+  test('窗口根带有键盘动作时，不指定控件的输入按窗口投递', async () => {
     const { port, calls } = 自绘Port()
     const r = await run(
       desktopActTool,
@@ -2165,7 +2165,7 @@ describe('前台动作', () => {
     ])
   })
 
-  test('点名窗口根与不点名发的是同一种请求，都不带 ref', async () => {
+  test('指定窗口根与不指定控件发送同一种请求，都不带 ref', async () => {
     const { port, calls } = 自绘Port()
     await run(
       desktopActTool,
@@ -2186,8 +2186,8 @@ describe('前台动作', () => {
     })
   })
 
-  /** 原始失败形状：activate 不给 ref 被「没给目标」拒，而 worker 执行它只用窗口句柄。 */
-  test('activate 不给目标时作用于窗口，发出去带窗口根的 ref', async () => {
+  /** 原始失败形状：activate 未提供 ref 时以「未指定目标」被拒绝，而 worker 执行它只需要窗口句柄。 */
+  test('activate 未提供目标时作用于窗口，发出的请求带窗口根的 ref', async () => {
     const { port, calls } = 自绘Port()
     const r = await run(
       desktopActTool,
@@ -2203,8 +2203,8 @@ describe('前台动作', () => {
     })
   })
 
-  /** 原始失败形状：按键带截图坐标时回执说「只能按控件执行」，而不给 ref 就能投给焦点。 */
-  test('键盘动作带图像点时回执指明不给 ref 即投给焦点', async () => {
+  /** 原始失败形状：按键带截图坐标时回执说明「只能按控件执行」，而省略 ref 即可投递给焦点。 */
+  test('键盘动作带图像点时回执指明省略 ref 即投递给焦点', async () => {
     const { port, calls } = 自绘Port()
     const r = await run(
       desktopActTool,
@@ -2220,12 +2220,12 @@ describe('前台动作', () => {
       ctxWith(port),
     )
     expect(r.executed).toBe(false)
-    expect(r.message).toContain('不给 ref 即投给窗口当前的焦点')
+    expect(r.message).toContain('省略 ref 即投递给窗口当前的焦点')
     expect(r.message).not.toContain('只能按控件执行')
     expect(calls).toEqual([])
   })
 
-  test('对不接受按键的控件按键时，回执指明不给 ref 即投给焦点', async () => {
+  test('对不接受按键的控件按键时，回执指明省略 ref 即投递给焦点', async () => {
     const { port, calls } = fakeDesktop({
       elements: (windowId, observationId) =>
         windowId === 'dw_1' && observationId === 'do_1' ? [自绘窗口, 文档框] : null,
@@ -2237,12 +2237,12 @@ describe('前台动作', () => {
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'desktop_action_unsupported' })
     expect(r.message).toContain('e15 不支持')
-    expect(r.message).toContain('不给 ref 即投给窗口当前的焦点')
+    expect(r.message).toContain('省略 ref 即投递给窗口当前的焦点')
     expect(calls).toEqual([])
   })
 
   /** 子树读取的根同样 `depth` 为 0、没有 `parentRef`，但它不是窗口元素。 */
-  test('只读过子树的观察没有窗口根，不点名控件的输入在派发之前被拒', async () => {
+  test('只读取过子树的观察没有窗口根，不指定控件的输入在派发之前被拒绝', async () => {
     const { windowRoot: _root, ...子树根 } = 自绘窗口
     const { port, calls } = fakeDesktop({
       elements: (windowId, observationId) =>
@@ -2258,7 +2258,7 @@ describe('前台动作', () => {
     expect(calls).toEqual([])
   })
 
-  test('窗口根没有键盘动作时，不点名控件的输入在派发之前被拒', async () => {
+  test('窗口根没有键盘动作时，不指定控件的输入在派发之前被拒绝', async () => {
     const { port, calls } = foregroundPort()
     const r = await run(
       desktopActTool,
@@ -2270,15 +2270,14 @@ describe('前台动作', () => {
   })
 
   /**
-   * `type_text` 之后读回来的值里没有这段文字时不许报成功。
+   * `type_text` 之后回读的值中不包含输入的文字时不得报告成功。
    *
-   * 派发事实与读回是两件事：投递口收下了全部字符只说明它们进了目标的消息队列，
-   * 目标控件里落成什么字要按动作后的重读判。少了这一条，一次把
-   * 「哦哦行，那你先用这个号跑吧」打成「哦哦行，，先用这个号跑吧」的输入在回执里
-   * 与打对了完全一样。
+   * 派发事实与回读含义不同：投递接口接收全部字符只说明它们进入了目标的消息队列，
+   * 目标控件中的最终文字需要按动作后的回读判定。缺少该判定时，把「那你」
+   * 错误输入为「，」的一次输入在回执中与正确输入完全相同。
    */
   function typedPort(value: string | null) {
-    // 值缺席要把键去掉，不是给空串：空串是「控件里此刻是空的」，缺席是「这个控件不回值」。
+    // 值缺失时必须删除该键，而不是设为空串：空串表示控件当前为空，缺失表示该控件不返回值。
     const { value: _dropped, ...无值框 } = 焦点框
     return foregroundPort({
       act: async () => ({
@@ -2299,7 +2298,7 @@ describe('前台动作', () => {
       ctxWith(port),
     )
 
-  test('type_text 读回的值里没有这段文字时按读回不一致返回，不报成功', async () => {
+  test('type_text 回读的值中不包含输入的文字时按回读不一致返回，不报告成功', async () => {
     const { port } = typedPort('哦哦行，，先用这个号跑吧')
     const r = await 输入(port, '哦哦行，那你先用这个号跑吧')
     expect(r).toMatchObject({
@@ -2307,31 +2306,31 @@ describe('前台动作', () => {
       executed: true,
       errorKind: 'desktop_readback_mismatch',
     })
-    expect(r.message).toContain('读回不一致')
-    // 控件此刻的内容由观察那一行给，读回这句不再印一遍。
+    expect(r.message).toContain('回读不一致')
+    // 控件当前内容由观察中的对应行提供，回读说明中不再重复输出。
     expect(r.message).toContain('"哦哦行，，先用这个号跑吧"')
   })
 
-  test('type_text 落在已有内容后面时读回按含不含判，仍然是成功', async () => {
+  test('type_text 输入在已有内容之后时回读按是否包含判定，仍为成功', async () => {
     const { port } = typedPort('原有内容哦哦行，那你先用这个号跑吧')
     const r = await 输入(port, '哦哦行，那你先用这个号跑吧')
     expect(r.status).toBe('success')
-    expect(r.message).not.toContain('读回不一致')
-    expect(r.message).not.toContain('读不回控件值')
+    expect(r.message).not.toContain('回读不一致')
+    expect(r.message).not.toContain('无法回读控件值')
   })
 
-  test('type_text 的目标读不回控件值时回执如实说读不回', async () => {
+  test('type_text 的目标无法回读控件值时回执如实说明无法回读', async () => {
     const { port } = typedPort(null)
     const r = await 输入(port, '张三')
     expect(r.status).toBe('success')
-    expect(r.message).toContain('读不回控件值')
-    expect(r.message).not.toContain('读回不一致')
+    expect(r.message).toContain('无法回读控件值')
+    expect(r.message).not.toContain('回读不一致')
   })
 
   /**
-   * 全角标点不再让文字改道：请求原样发下去，回执里没有第二种投递，也不提剪贴板。
+   * 全角标点不改变文字的投递方式：请求原样发送，回执中没有第二种投递方式，也不提及剪贴板。
    */
-  test('含全角标点的文字按原文发一次，回执不提剪贴板', async () => {
+  test('含全角标点的文字按原文发送一次，回执不提及剪贴板', async () => {
     const seen: unknown[] = []
     const { port } = foregroundPort({
       act: async (input) => {
@@ -2353,7 +2352,7 @@ describe('前台动作', () => {
     expect(seen).toEqual([{ kind: 'type_text', text: '哦哦行，那你先用这个号跑吧' }])
   })
 
-  test('读回只管 type_text，别的动作不按输入文字判', async () => {
+  test('回读只适用于 type_text，其他动作不按输入文字判定', async () => {
     const { port } = typedPort('别的值')
     const r = await run(
       desktopActTool,
@@ -2367,11 +2366,11 @@ describe('前台动作', () => {
       ctxWith(port),
     )
     expect(r.status).toBe('success')
-    expect(r.message).not.toContain('读回不一致')
-    expect(r.message).not.toContain('读不回控件值')
+    expect(r.message).not.toContain('回读不一致')
+    expect(r.message).not.toContain('无法回读控件值')
   })
 
-  test('键盘之外的动作不点名控件仍然要求目标', async () => {
+  test('键盘以外的动作未指定控件时仍然要求目标', async () => {
     const { port, calls } = 自绘Port()
     const r = await run(
       desktopActTool,
@@ -2379,15 +2378,15 @@ describe('前台动作', () => {
       ctxWith(port),
     )
     expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
-    expect(r.message).toContain('ref、automationId 或 name 给一个')
+    expect(r.message).toContain('需提供 ref、automationId 或 name 之一')
     expect(calls).toEqual([])
   })
 
   /**
-   * 自绘界面的观察回执要自己说清「这里没有控件」与下一步，不然模型只会反复读树，
-   * 或者绕去 shell 写截图脚本。
+   * 自绘界面的观察回执必须说明没有可操作控件以及下一步操作，否则模型会反复读取控件树，
+   * 或改用 shell 编写截图脚本。
    */
-  test('树上只有窗口与标题栏时，观察回执指出要取图并给坐标', async () => {
+  test('树上只有窗口与标题栏时，观察回执指出需要采集图像并提供坐标', async () => {
     const 标题栏: DesktopElement = {
       ref: 'e20',
       parentRef: 'e1',
@@ -2433,17 +2432,17 @@ describe('前台动作', () => {
     )
     expect(r.status).toBe('success')
     expect(r.message).toContain('无可操作控件')
-    // 同一次调用把整窗图一并给了，调用方不必再发一次采图。
+    // 同一次调用已附带整窗图，调用方无需再请求一次采图。
     const shots = calls.filter((c) => c.method === 'captureImage')
     expect(shots).toHaveLength(1)
     expect(shots[0]?.input).toMatchObject({ windowId: 'dw_1' })
     expect(r.message).toContain('di_1')
     expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
-    // 前台开着（表里有 foreground），不该再说它没启用。
+    // 前台操作已开启（表中有 foreground），不应再说明它未启用。
     expect(r.message).not.toContain('前台操作未启用')
   })
 
-  test('无可操作控件但模型不收图片：只给控件表，不采那张看不到的图', async () => {
+  test('无可操作控件但模型不接受图片：只提供控件表，不采集模型无法查看的图像', async () => {
     const 画布: DesktopElement = {
       ref: 'e22',
       parentRef: 'e1',
@@ -2465,7 +2464,7 @@ describe('前台动作', () => {
     expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
   })
 
-  test('控件表里有业务控件时不附图：调用方按控件表就能定位', async () => {
+  test('控件表中有业务控件时不附图：调用方按控件表即可定位', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -2477,7 +2476,7 @@ describe('前台动作', () => {
     expect(calls.map((c) => c.method)).toEqual(['observe'])
   })
 
-  test('前台操作关着时，同一行补上它没启用', async () => {
+  test('前台操作关闭时，同一行补充说明其未启用', async () => {
     const 后台窗口: DesktopElement = { ...窗口, actions: [] }
     const 画布: DesktopElement = {
       ref: 'e22',
@@ -2510,8 +2509,8 @@ describe('前台动作', () => {
     expect(result.message).not.toContain('前台操作已关闭')
   })
 
-  /** 筛出零个控件与「这个窗口没有控件」是两回事，混起来就成了一句假话。 */
-  test('筛过或截断的观察不说这句话', async () => {
+  /** 筛选结果为零个控件与窗口没有控件含义不同，混为一谈会产生错误的陈述。 */
+  test('筛选或截断的观察不输出该说明', async () => {
     const { port } = fakeDesktop({
       observe: async () => snapshot({ elements: [自绘窗口], filteredBy: ['role=button'] }),
     })
@@ -2526,14 +2525,14 @@ describe('前台动作', () => {
     expect(truncated.message).not.toContain('没有暴露可操作的控件')
   })
 
-  /** 有业务控件的窗口不该被说成自绘界面。 */
-  test('树里有可操作的业务控件时不说这句话', async () => {
+  /** 有业务控件的窗口不应被描述为自绘界面。 */
+  test('树中有可操作的业务控件时不输出该说明', async () => {
     const { port } = fakeDesktop()
     const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
     expect(r.message).not.toContain('没有暴露可操作的控件')
   })
 
-  test('组合键的修饰键按词表校验，重复的只留一份', async () => {
+  test('组合键的修饰键按词表校验，重复项只保留一份', async () => {
     const { port, calls } = foregroundPort()
     await run(
       desktopActTool,
@@ -2567,7 +2566,7 @@ describe('前台动作', () => {
     expect(bad).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
   })
 
-  test('徽标键 / Command / Super 统一叫 meta，win 不是别名', async () => {
+  test('徽标键 / Command / Super 统一称为 meta，win 不是别名', async () => {
     const { port, calls } = foregroundPort()
     await run(
       desktopActTool,
@@ -2602,7 +2601,7 @@ describe('前台动作', () => {
     expect(calls).toHaveLength(1)
   })
 
-  test('拖拽终点二选一：控件或像素偏移，都给即拒', async () => {
+  test('拖拽终点二选一：控件或像素偏移，同时提供即拒绝', async () => {
     const { port, calls } = foregroundPort()
     const byOffset = await run(
       desktopActTool,
@@ -2685,10 +2684,10 @@ describe('前台动作', () => {
   })
 
   /**
-   * 按图定位说明调用方看的是图不是控件表，动作后的控件数对它零信息量。
-   * 回执自带动作后的整窗图，省掉随后那次单独采图。
+   * 按图定位说明调用方依据图像而非控件表，动作后的控件数对它没有信息量。
+   * 回执附带动作后的整窗图，省去随后单独的一次采图。
    */
-  test('按图定位的动作回执自带动作后的整窗图', async () => {
+  test('按图定位的动作回执附带动作后的整窗图', async () => {
     const { port, calls } = foregroundPort()
     const r = await run(
       desktopActTool,
@@ -2710,7 +2709,7 @@ describe('前台动作', () => {
     expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
   })
 
-  test('按图点击未派发但窗口准备已改变界面：回执补新图，保持未执行', async () => {
+  test('按图点击未派发但窗口准备已改变界面：回执附带新图，保持未执行', async () => {
     const { port, calls } = foregroundPort({
       act: async () => ({
         dispatch: 'not_dispatched',
@@ -2763,7 +2762,7 @@ describe('前台动作', () => {
     expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
   })
 
-  test('按控件定位的动作不附图：控件表本身就说得出动作后的状态', async () => {
+  test('按控件定位的动作不附图：控件表本身即可说明动作后的状态', async () => {
     const { port, calls } = foregroundPort()
     await run(
       desktopActTool,
@@ -2773,10 +2772,10 @@ describe('前台动作', () => {
     expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
   })
 
-  test('失效的 imageRef 由端口拒绝，回执按未执行记', async () => {
+  test('失效的 imageRef 由端口拒绝，回执记为未执行', async () => {
     const { port } = foregroundPort({
       act: async () => {
-        throw Object.assign(new Error('di_1 已经失效：桌面宿主换过代际，请重新采图'), {
+        throw Object.assign(new Error('di_1 已失效：桌面宿主的代际已变化，请重新采图'), {
           errorKind: 'invalid_argument',
           executed: false,
         } satisfies DesktopRefusal)
@@ -2798,7 +2797,7 @@ describe('前台动作', () => {
     expect(r.message).toContain('重新采图')
   })
 
-  test('窗口动作认 windowState，不与复选的 state 混用', async () => {
+  test('窗口动作使用 windowState，不与复选框的 state 混用', async () => {
     const { port, calls } = foregroundPort()
     await run(
       desktopActTool,
@@ -2829,7 +2828,7 @@ describe('前台动作', () => {
     expect(wrongParam).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
   })
 
-  test('部分派发按未知记，回执带上已发出多少与下一步', async () => {
+  test('部分派发记为未知，回执包含已发出的数量与下一步', async () => {
     const { port } = foregroundPort({
       act: async () => ({
         dispatch: 'unknown',
@@ -2878,7 +2877,7 @@ describe('前台动作', () => {
     expect(r.message).toContain('foreground_disabled')
   })
 
-  test('关闭窗口带回提示框的窗口 id，让调用方接着观察它', async () => {
+  test('关闭窗口时带回提示框的窗口 id，供调用方继续观察', async () => {
     const { port } = foregroundPort({
       act: async () => ({
         dispatch: 'submitted',
@@ -2912,7 +2911,7 @@ describe('前台动作', () => {
     ])
   })
 
-  test('改窗口矩形的动作不进序列，整组在派发之前被拒', async () => {
+  test('改变窗口矩形的动作不能进入序列，整组在派发之前被拒绝', async () => {
     const { port, calls } = foregroundPort()
     for (const action of ['set_window_state', 'move_window', 'resize_window', 'close_window']) {
       const r = await run(
@@ -2943,8 +2942,8 @@ describe('前台动作', () => {
 /**
  * 有限动作序列：一次调用交付一组已确定的后台动作。
  *
- * 这里的假端口比上面那份多一层状态：动作按语义落在一份可变的控件表上，每次动作换一个
- * 观察编号。序列的判据是「上一步带回的那份表」，一个永远回同一份表的假端口证明不了
+ * 此处的模拟端口比前一个多一层状态：动作按语义作用于一份可变的控件表，每次动作更换一个
+ * 观察编号。序列的判据是上一步带回的控件表，始终返回同一份表的模拟端口无法验证
  * 引用接续。
  */
 describe('有限动作序列', () => {
@@ -3075,10 +3074,10 @@ describe('有限动作序列', () => {
   })
 
   /**
-   * 自绘界面的常见三连。控件表上只有窗口根：第一步按图给坐标，后两步投给窗口本身。
-   * 一次调用跑完，末尾带一张动作后的整窗图。
+   * 自绘界面的常见三步操作。控件表中只有窗口根：第一步按图提供坐标，后两步投递给窗口本身。
+   * 一次调用执行完毕，末尾附带一张动作后的整窗图。
    */
-  test('自绘界面：按图点击加两步键盘一次跑完，末尾附动作后的图', async () => {
+  test('自绘界面：按图点击与两步键盘操作一次执行完毕，末尾附带动作后的图', async () => {
     const bare = [自绘窗口]
     const calls: Recorded[] = []
     let observationId = 'do_1'
@@ -3126,12 +3125,12 @@ describe('有限动作序列', () => {
     expect(calls.map((c) => c.method)).toEqual(['act', 'act', 'act', 'captureImage'])
     const acts = calls.slice(0, 3).map((c) => c.input as Record<string, unknown>)
     expect(acts[0]).toMatchObject({ at: { imageRef: 'di_1', x: 700, y: 900 } })
-    // 键盘两步不点名控件：目标是窗口本身，帧里既没有 ref 也没有 at。
+    // 两步键盘操作不指定控件：目标是窗口本身，帧中既没有 ref 也没有 at。
     expect(acts[1]).not.toHaveProperty('ref')
     expect(acts[1]).not.toHaveProperty('at')
     expect(acts[1]).toMatchObject({ action: { kind: 'type_text', text: '好的' } })
     expect(acts[2]).toMatchObject({ action: { kind: 'press_key', key: 'enter' } })
-    // 每一步按上一步带回的那个编号发出。
+    // 每一步按上一步带回的编号发出。
     expect(acts.map((a) => a.observationId)).toEqual(['do_1', 'do_2', 'do_3'])
     expect(r.message).toContain('di_1')
     expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
@@ -3147,7 +3146,7 @@ describe('有限动作序列', () => {
     expect(calls.filter((c) => c.method === 'captureImage')).toEqual([])
   })
 
-  test('按图定位的步骤不接受 expect：没有控件可判', async () => {
+  test('按图定位的步骤不接受 expect：没有可判定的控件', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3168,10 +3167,10 @@ describe('有限动作序列', () => {
   })
 
   /**
-   * 未派发的一步一条系统调用都没发出，控件表与观察编号停在原处仍然成立。
-   * 回执说清这件事，调用方据此改条件重试，不必先重新观察一次。
+   * 未派发的步骤没有发出任何系统调用，控件表与观察编号保持不变且仍然有效。
+   * 回执说明这一点，调用方据此修改条件后重试，无需先重新观察。
    */
-  test('第一步就未派发：控件表没有被作废，回执说手上那个编号仍然有效', async () => {
+  test('第一步即未派发：控件表未作废，回执说明当前编号仍然有效', async () => {
     const { port } = sequencePort({
       acts: [{ dispatch: 'not_dispatched', reason: 'occluded: 680,853', observation: null }],
     })
@@ -3186,7 +3185,7 @@ describe('有限动作序列', () => {
     expect(r).toMatchObject({ status: 'failure', executed: false })
     expect(r.message).toContain('occluded: 680,853')
     expect(r.message).toContain('观察 do_1 仍然有效')
-    expect(r.message).not.toContain('读不到最后一份控件表')
+    expect(r.message).not.toContain('无法读取最后一份控件表')
   })
 
   test('未派发时交付新观察并停止序列，不重复或继续后续动作', async () => {
@@ -3238,7 +3237,7 @@ describe('有限动作序列', () => {
     expect(calls).toHaveLength(1)
   })
 
-  test('按图序列未派发但返回新观察时补图，后续点击不执行', async () => {
+  test('按图序列未派发但返回新观察时附图，后续点击不执行', async () => {
     const { port, calls } = sequencePort({
       acts: [
         {
@@ -3267,7 +3266,7 @@ describe('有限动作序列', () => {
     expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
   })
 
-  test('逐步执行，每步一个 actionId，动作按顺序带着当时那份观察编号发出', async () => {
+  test('逐步执行，每步一个 actionId，动作按顺序携带发出时刻的观察编号发出', async () => {
     const { port, calls, current } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3284,7 +3283,7 @@ describe('有限动作序列', () => {
     expect(calls.map((c) => c.method)).toEqual(['act', 'act', 'act'])
     const inputs = calls.map((c) => c.input as { observationId: string; ref: string })
     expect(inputs.map((i) => i.ref)).toEqual(['e5', 'e10', 'e12'])
-    // 每一步按上一步带回的那个编号发出，不是原地复用第一个。
+    // 每一步按上一步带回的编号发出，不重复使用第一个编号。
     expect(inputs.map((i) => i.observationId)).toEqual(['do_1', 'do_2', 'do_3'])
 
     const data = r.data as {
@@ -3302,14 +3301,14 @@ describe('有限动作序列', () => {
     expect(data.observation.observationId).toBe('do_4')
     expect(r.message).toContain('3 步全部提交')
 
-    // 夹具自己的状态说得出这三步真落下去了。
+    // 夹具自身的状态可以证明这三步确实已执行。
     const table = current()
     expect(table.find((e) => e.ref === 'e5')?.value).toBe('张三')
     expect(table.find((e) => e.ref === 'e10')?.toggle).toBe('on')
     expect(table.find((e) => e.ref === 'e12')?.selected).toBe(true)
   })
 
-  test('序列只调端口，不经过任何模型请求通道', async () => {
+  test('序列只调用端口，不经过任何模型请求通道', async () => {
     const { port, calls } = sequencePort()
     await run(
       desktopActSequenceTool,
@@ -3345,7 +3344,7 @@ describe('有限动作序列', () => {
     expect(sent[1]?.delta).toContain('2 invoke e3 已提交')
   })
 
-  test('第 2 步结果未知时停下，第 3 步不执行', async () => {
+  test('第 2 步结果未知时停止，第 3 步不执行', async () => {
     const { port, calls } = sequencePort({
       acts: [null, { dispatch: 'unknown', reason: '调用超时' }],
     })
@@ -3370,7 +3369,7 @@ describe('有限动作序列', () => {
     expect(r.message).toContain('未执行 3 invoke')
   })
 
-  test('某步没有执行时停下，已派发的前缀如实保留', async () => {
+  test('某步未执行时停止，已派发的前缀如实保留', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3382,7 +3381,7 @@ describe('有限动作序列', () => {
       ctxWith(port),
     )
 
-    // 第 2 步的目标是禁用控件：本地判完就停，一帧都没发。
+    // 第 2 步的目标是禁用控件：本地判定后即停止，未发送任何帧。
     expect(calls).toHaveLength(1)
     expect(r).toMatchObject({
       status: 'failure',
@@ -3395,7 +3394,7 @@ describe('有限动作序列', () => {
     expect(r.message).toContain('2 invoke e7 未执行')
   })
 
-  test('第一步就没有执行时整组记未执行', async () => {
+  test('第一步即未执行时整组记为未执行', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3410,7 +3409,7 @@ describe('有限动作序列', () => {
     expect((r.data as { dispatched: number[] }).dispatched).toEqual([])
   })
 
-  test('后置条件按动作带回的观察判，满足就不发等待', async () => {
+  test('后置条件按动作带回的观察判定，满足时不发送等待', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3442,7 +3441,7 @@ describe('有限动作序列', () => {
     expect(r.message).toContain('后置条件 value 已满足')
   })
 
-  test('后置条件没等到即截断后缀', async () => {
+  test('后置条件等待未满足即截断后缀', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3457,7 +3456,7 @@ describe('有限动作序列', () => {
       ]),
       ctxWith(port),
     )
-    // 观察里判不成立才发等待，等待到期仍不成立就停。
+    // 观察中判定不成立时才发送等待，等待到期仍不成立即停止。
     expect(calls.map((c) => c.method)).toEqual(['act', 'wait'])
     expect(r).toMatchObject({
       status: 'failure',
@@ -3470,7 +3469,7 @@ describe('有限动作序列', () => {
     expect(r.message).toContain('后置条件 value 未满足')
   })
 
-  test('toggle 与 selected 没有宿主等待，不成立当场停', async () => {
+  test('toggle 与 selected 没有宿主等待，不成立时立即停止', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3519,7 +3518,7 @@ describe('有限动作序列', () => {
     expect(data.notExecuted).toEqual([3])
   })
 
-  test('动作之后读不到控件表时截断后缀', async () => {
+  test('动作之后无法读取控件表时截断后缀', async () => {
     const { port, calls } = sequencePort({
       acts: [{ observation: null, observationError: '宿主不可用' }],
     })
@@ -3540,7 +3539,7 @@ describe('有限动作序列', () => {
     expect(r.message).toContain('宿主不可用')
   })
 
-  test('步与步之间检查取消，已派发的不重放', async () => {
+  test('步骤之间检查取消，已派发的步骤不重放', async () => {
     const controller = new AbortController()
     const { port, calls } = sequencePort({ onAct: () => controller.abort() })
     const r = await run(
@@ -3556,7 +3555,7 @@ describe('有限动作序列', () => {
     expect((r.data as { notExecuted: number[] }).notExecuted).toEqual([2])
   })
 
-  test('超过长度上限整组被拒，一步都不派发', async () => {
+  test('超过长度上限时整组被拒绝，不派发任何一步', async () => {
     const { port, calls } = sequencePort()
     const steps = Array.from({ length: 11 }, () => ({
       action: 'set_value',
@@ -3569,7 +3568,7 @@ describe('有限动作序列', () => {
     expect(r.message).toContain('最多 10 步')
   })
 
-  test('close_window 不论在哪一步都被拒，一步都不派发', async () => {
+  test('close_window 无论位于哪一步都被拒绝，不派发任何一步', async () => {
     const { port, calls } = sequencePort()
     const notLast = await run(
       desktopActSequenceTool,
@@ -3594,7 +3593,7 @@ describe('有限动作序列', () => {
     expect(calls).toEqual([])
   })
 
-  test('不认的动作名整组被拒', async () => {
+  test('无法识别的动作名使整组被拒绝', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3605,7 +3604,7 @@ describe('有限动作序列', () => {
     expect(calls).toEqual([])
   })
 
-  test('步里给了不属于这个动作的参数即整组拒绝', async () => {
+  test('步骤中提供了不属于该动作的参数时整组拒绝', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3617,7 +3616,7 @@ describe('有限动作序列', () => {
     expect(calls).toEqual([])
   })
 
-  test('步与后置条件里用不上的参数填空位时照常执行', async () => {
+  test('步骤与后置条件中无关的参数填写空值时照常执行', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3671,7 +3670,7 @@ describe('有限动作序列', () => {
     expect(calls).toEqual([])
   })
 
-  test('引用接续：子树之外的旧 ref 在新编号下仍然解析得到', async () => {
+  test('引用接续：子树之外的旧 ref 在新编号下仍可解析', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3687,7 +3686,7 @@ describe('有限动作序列', () => {
     expect(second.observationId).toBe('do_2')
   })
 
-  test('引用接续：新观察里没有这个 ref 就停下来交回模型，不另找一个顶上', async () => {
+  test('引用接续：新观察中没有该 ref 时停止并返回给模型，不另选控件替代', async () => {
     const rebuilt = TABLE.map((e) => (e.ref === 'e10' ? { ...e, ref: 'e77' } : { ...e }))
     const { port, calls } = sequencePort({
       acts: [{ observation: snapshot({ observationId: 'do_9', elements: rebuilt }) }],
@@ -3709,7 +3708,7 @@ describe('有限动作序列', () => {
     expect(r.message).toContain('2 set_toggle e10 未执行')
   })
 
-  test('引用接续：按 automationId 定位的步骤在新观察里重新解析', async () => {
+  test('引用接续：按 automationId 定位的步骤在新观察中重新解析', async () => {
     const rebuilt = TABLE.map((e) => (e.ref === 'e10' ? { ...e, ref: 'e77' } : { ...e }))
     const { port, calls } = sequencePort({
       acts: [{ observation: snapshot({ observationId: 'do_9', elements: rebuilt }) }],
@@ -3728,7 +3727,7 @@ describe('有限动作序列', () => {
     expect(second.observationId).toBe('do_9')
   })
 
-  test('目标歧义时停在那一步，候选按祖先路径列出', async () => {
+  test('目标歧义时停在该步骤，候选按祖先路径列出', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3747,7 +3746,7 @@ describe('有限动作序列', () => {
     expect(r.message).toContain('匹配 2 个')
   })
 
-  test('起手那份观察已经失效时一步都不派发', async () => {
+  test('初始观察已经失效时不派发任何一步', async () => {
     const { port, calls } = sequencePort()
     const r = await run(
       desktopActSequenceTool,
@@ -3779,12 +3778,12 @@ describe('有限动作序列', () => {
     expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: 'aborted' })
   })
 
-  test('没有端口时如实报，不当成执行过', async () => {
+  test('没有端口时如实报告，不视为已执行', async () => {
     const r = await run(desktopActSequenceTool, seq([{ action: 'invoke', ref: 'e3' }]), ctxWith())
     expect(r).toMatchObject({ status: 'failure', executed: false, errorKind: 'unsupported' })
   })
 
-  test('端口声明执行前拒绝时这一步记没有执行', async () => {
+  test('端口声明执行前拒绝时该步骤记为未执行', async () => {
     const refusal: DesktopRefusal = { errorKind: 'desktop_unavailable', executed: false }
     const { port } = sequencePort()
     const failing: DesktopPort = {
@@ -3805,7 +3804,7 @@ describe('有限动作序列', () => {
     })
   })
 
-  test('端口没声明执行事实时按可能已生效收尾', async () => {
+  test('端口未声明执行事实时按可能已生效结束', async () => {
     const { port } = sequencePort()
     const failing: DesktopPort = {
       ...port,
@@ -3830,11 +3829,11 @@ describe('有限动作序列', () => {
 })
 
 /**
- * strict 工具 schema 把每个可选参数都列进 `required` 并在类型里加 `null`，
- * 模型因此为用不上的参数填 `null`。这些 `null` 必须与「没给」等价。
+ * strict 工具 schema 把每个可选参数都列入 `required` 并在类型中加入 `null`，
+ * 模型因此为无关参数填写 `null`。这些 `null` 必须与未提供等价。
  */
-describe('可选参数填空位', () => {
-  /** 按 strict 形状补齐：schema 里的每个键都在，没点名的填 null。 */
+describe('可选参数填写空值', () => {
+  /** 按 strict 形状补全：schema 中的每个键都存在，未指定的键填写 null。 */
   function strictArgs(spec: ToolSpec, named: Record<string, unknown>): Record<string, unknown> {
     const props = (spec.parameters as { properties?: Record<string, unknown> }).properties ?? {}
     const out: Record<string, unknown> = {}
@@ -3842,7 +3841,7 @@ describe('可选参数填空位', () => {
     return out
   }
 
-  test('两种 OpenAI 接口允许 wheel 的无关枚举填 null，并按原坐标派发滚动', async () => {
+  test('两种 OpenAI 接口允许 wheel 的无关枚举填写 null，并按原坐标派发滚动', async () => {
     const registry = new ToolRegistry()
     registry.register(desktopActTool)
     registry.register(desktopObserveTool)
@@ -3933,7 +3932,7 @@ describe('可选参数填空位', () => {
     }
   })
 
-  test('structure 观察带着 imageRect: null 仍然读树', async () => {
+  test('structure 观察附带 imageRect: null 时仍读取控件树', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopObserveTool,
@@ -3944,7 +3943,7 @@ describe('可选参数填空位', () => {
     expect(calls.map((c) => c.method)).toEqual(['observe'])
   })
 
-  test('structure 的 imageRect 空对象仍拒绝，按回执改为 null 后只读树', async () => {
+  test('structure 的 imageRect 空对象仍被拒绝，按回执改为 null 后只读取控件树', async () => {
     const { port, calls } = fakeDesktop()
     const context = ctxWith(port)
     const args = strictArgs(desktopObserveTool, {
@@ -3967,7 +3966,7 @@ describe('可选参数填空位', () => {
     expect(calls.map((c) => c.method)).toEqual(['observe'])
   })
 
-  test('invoke 带着另外二十来个 null 参数仍然派发', async () => {
+  test('invoke 附带约二十个其他 null 参数时仍然派发', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -3986,7 +3985,7 @@ describe('可选参数填空位', () => {
     })
   })
 
-  test('空位填空串时同样派发：模型两种填法都见过', async () => {
+  test('空值填写空串时同样派发：模型的两种填写方式均已出现过', async () => {
     const { port, calls } = fakeDesktop()
     const padded = strictArgs(desktopActTool, {
       windowId: 'dw_1',
@@ -3995,7 +3994,7 @@ describe('可选参数填空位', () => {
       ref: 'e5',
       value: '张三',
     })
-    // 字符串型的空位填空串，数值型的填 null——实测里模型就是这么混着填的。
+    // 字符串型参数填写空串，数值型参数填写 null：实测中模型混用这两种填写方式。
     for (const [key, v] of Object.entries(padded)) if (v === null) padded[key] = ''
     padded.number = null
     padded.imageRect = null
@@ -4005,11 +4004,11 @@ describe('可选参数填空位', () => {
   })
 
   /**
-   * 原始失败形状（DeepSeek Flash，strict 与原样 schema 下都出现）：用不上的参数填字符串 "null"、
-   * 空串、0 与 "0"，imageRef 也填 "null"。改前这些都算「给了」，invoke 先被当成按图定位拒掉，
-   * 再按多余参数拒掉，模型换着填法连发 8 次也没派发出去。
+   * 原始失败形状（DeepSeek Flash，strict 与原样 schema 下均出现）：无关参数填写字符串 "null"、
+   * 空串、0 与 "0"，imageRef 也填写 "null"。这些值被视为已提供时，invoke 先被当作按图定位拒绝，
+   * 再按多余参数拒绝，模型更换填写方式连续调用 8 次均未派发。
    */
-  test('空位填字符串 null、0 与 "0" 时照常按控件派发', async () => {
+  test('空值填写字符串 null、0 与 "0" 时照常按控件派发', async () => {
     const { port, calls } = fakeDesktop()
     const padded = strictArgs(desktopActTool, {
       windowId: 'dw_1',
@@ -4029,7 +4028,7 @@ describe('可选参数填空位', () => {
     })
   })
 
-  test('真的给了不属于这个动作的值仍然当场拒绝', async () => {
+  test('确实提供了不属于该动作的值时仍立即拒绝', async () => {
     const { port, calls } = fakeDesktop()
     const r = await run(
       desktopActTool,
@@ -4049,11 +4048,11 @@ describe('可选参数填空位', () => {
 })
 
 /**
- * 原始失败形状：资源管理器隐藏了已知扩展名，改名框里只有「盘点草稿-0037」。模型在一个序列里
- * F2 → 输入「盘点终稿-0037.txt」→ 回车，输入投给窗口，回执只说「已执行」，文件变成 `.txt.txt`。
- * 回执必须说出输入框在输入前后的值，模型才看得到框里原本没有扩展名。
+ * 原始失败形状：资源管理器隐藏了已知扩展名，重命名框中只有「盘点草稿-0037」。模型在一个序列中执行
+ * F2 → 输入「盘点终稿-0037.txt」→ 回车，输入投递给窗口，回执只说明「已执行」，文件变为 `.txt.txt`。
+ * 回执必须给出输入框在输入前后的值，模型才能看到框中原本没有扩展名。
  */
-describe('type_text 回执里的输入框原值与现值', () => {
+describe('type_text 回执中的输入框原值与现值', () => {
   const 改名窗口: DesktopElement = {
     ...窗口,
     actions: [
@@ -4084,7 +4083,7 @@ describe('type_text 回执里的输入框原值与现值', () => {
     }
   }
 
-  test('输入投给窗口时，回执按持有焦点的输入框印出原值与现值', async () => {
+  test('输入投递给窗口时，回执按持有焦点的输入框输出原值与现值', async () => {
     const { port } = renamePort()
     const r = await run(
       desktopActTool,
@@ -4095,7 +4094,7 @@ describe('type_text 回执里的输入框原值与现值', () => {
     expect(r.message).toContain('e17 原值 "盘点草稿-0037" → 现值 "盘点终稿-0037.txt"')
   })
 
-  test('序列里的 type_text 一步同样印出原值与现值', async () => {
+  test('序列中的 type_text 步骤同样输出原值与现值', async () => {
     const { port } = renamePort()
     const r = await run(
       desktopActSequenceTool,
@@ -4115,9 +4114,9 @@ describe('type_text 回执里的输入框原值与现值', () => {
   })
 })
 
-describe('set_value 回执里的原值', () => {
-  /** 隐藏扩展名的改名：名称单元格原值没有扩展名，写入带扩展名的全名，回执要说出原值。 */
-  test('单动作 set_value 回执补上原值，现值留在目标那一行', async () => {
+describe('set_value 回执中的原值', () => {
+  /** 隐藏扩展名时的重命名：名称单元格的原值没有扩展名，写入带扩展名的全名，回执必须给出原值。 */
+  test('单动作 set_value 回执补充原值，现值保留在目标所在行', async () => {
     const 名称格: DesktopElement = { ...焦点框, name: '名称', value: '盘点草稿-0037' }
     const base = fakeDesktop({
       act: async () => ({

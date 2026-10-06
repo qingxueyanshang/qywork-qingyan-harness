@@ -1,8 +1,8 @@
 /**
- * run 内压缩的三个调用点：发送前按占用触发、执行工具之前按占用触发，以及 provider 容量拒绝后压一次再重发。
+ * run 内压缩的三个调用点：发送前按占用触发、执行工具之前按占用触发，以及 provider 容量拒绝后压缩一次再重发。
  *
- * 三处调的是同一个 `CompactionPort.run()`、落同一份 manifest、走同一条落库路径，
- * 它们是调用点不是三个权威。
+ * 三处调用同一个 `CompactionPort.run()`、写入同一份 manifest、使用同一条落库路径，
+ * 它们是调用点，不是三个权威。
  */
 
 import type { ProviderError } from '@qywork/ai'
@@ -17,16 +17,16 @@ import { type LoopHost, type RunState, type TurnState, untilAborted } from './ru
 /**
  * ── 压缩触发：主入口 ──
  *
- * 发送前按占用检查。容量拒绝那条（`recoverFromOverflow`）是第二个**调用点**，不是第二个
- * 权威：调的是同一个 `CompactionPort.run()`、落同一份 manifest。
+ * 发送前按占用检查。容量拒绝路径（`recoverFromOverflow`）是第二个**调用点**，不是第二个
+ * 权威：调用同一个 `CompactionPort.run()`、写入同一份 manifest。
  *
- * 主路径不写成「先发、被 provider 拒了再压、然后重发」：那个形状每次触发都要
- * 先烧掉一次注定失败的长请求，长 prompt 上是几秒到几十秒外加计费。占用取的是
- * 锚定尺（provider 真值 + 锚点后的一轮本地增量），误差被限制在单轮增量内，
- * 够做发送前判断。
+ * 主路径不采用「先发送、被 provider 拒绝后压缩、然后重发」：该方式每次触发都要
+ * 先消耗一次必然失败的长请求，长 prompt 下耗时几秒到几十秒且产生费用。占用读数采用
+ * 锚定估算（provider 真值 + 锚点之后一轮的本地增量），误差限制在单轮增量之内，
+ * 足以用于发送前判断。
  *
- * 估算失误时这里放行，由容量拒绝那条窄路兜底——凭证收得很窄，
- * 泛化的 400 不触发（理由写在那个函数上）。
+ * 估算失误时此处放行，由容量拒绝路径作为后备处理；该路径的触发条件很严格，
+ * 泛化的 400 不触发（理由见该函数的注释）。
  *
  * 返回 `interrupted` 时 `run.stopReason` 已置为 `user_interrupt`，调用方结束循环。
  */
@@ -36,7 +36,7 @@ export async function* compactBeforeSend(
   turn: TurnState,
 ): AsyncGenerator<AgentEvent, 'sent' | 'interrupted', unknown> {
   if (run.transcript.length <= run.compactedAt) return 'sent'
-  // 摘要请求占这一轮的编号，主请求顺延。
+  // 摘要请求占用本轮的编号，主请求顺延。
   const done = yield* compactOverSoftLimit(host, run, turn, {
     occupancy: run.occupancyOf(turn.req),
     estimated: estimateRequest(turn.req, run.density),
@@ -48,27 +48,27 @@ export async function* compactBeforeSend(
 }
 
 /**
- * 执行工具之前的检查点：软阈值以下的余量不足一份尾部保留量时先压一次。
- * 返回此刻的占用读数与估算尺折算比，投递额度按这两个数开账；
- * `interrupted` 时 `run.stopReason` 已置为 `user_interrupt`。
+ * 执行工具之前的检查点：软阈值以下的余量不足一份尾部保留量时先压缩一次。
+ * 返回当前的占用读数与估算折算比，投递额度按这两个数值开立；
+ * 返回 `interrupted` 时 `run.stopReason` 已置为 `user_interrupt`。
  *
- * 折算比是整份请求上本地估算与 provider 真值之比，只缩不放（上限 1）：它是平均值，
- * 一段结果的比值可能低得多。V00 实测整份请求 1.2–1.6、生僻字正文 0.65；按 1.23 放大时，
- * 62 万字的生僻字文件一次整读，下一次请求真值 101.7 万、超出 1M 窗口。
- * 触发线与投递额度必须用同一个比值：触发线按放大后的比值算、额度按不放大算时，
- * 余量已只够一小段而触发线未到，续读段在压缩之前缩成两份半保留量（V02 实测）。
+ * 折算比是整份请求的本地估算与 provider 真值之比，只缩小不放大（上限为 1）：它是平均值，
+ * 单段结果的比值可能低得多。实测整份请求为 1.2–1.6、生僻字正文为 0.65；按 1.23 放大时，
+ * 一次完整读取 62 万字的生僻字文件，下一次请求的真值为 101.7 万，超出 1M 窗口。
+ * 触发线与投递额度必须使用同一个比值：触发线按放大后的比值计算、额度按未放大的比值计算时，
+ * 余量只够容纳一小段而触发线尚未达到，续读段在压缩之前缩小为两份半保留量（实测）。
  *
- * 触发线比发送前那一处低一份尾部保留量（按两把尺的比值折成真值）：余量不足这么多时，
- * 这次决策只放得下一小段甚至一行都放不下。本次响应的输出把占用推过软阈值时同理，那时额度为 0。
- * 软阈值以下端口只做收回量够大的收纳、不摘要，收不出时不动，这次决策按剩下的余量部分投递。
+ * 触发线比发送前的触发线低一份尾部保留量（按两种估算的比值折算为真值）：余量不足该值时，
+ * 本次决策只能容纳一小段，甚至一行都无法容纳。本次响应的输出使占用超过软阈值时同理，此时额度为 0。
+ * 软阈值以下时端口只执行回收量足够大的收纳、不摘要，无法回收时不做改动，本次决策按剩余余量部分投递。
  *
- * **必须在打开第一条工具记录之前调。** 压缩记录占一个 step 序号，夹在同一批次的工具记录之间时，
- * `runtime/transcript.ts` 的 `stepsToUnits` 只收连续的同批次记录，这次决策会被拆成两个单元：
- * 重建出的历史与实际对话不同形，前一段的结果还可能在模型看到之前被折叠。落在本次响应的
- * text / thinking 与工具记录之间则仍是一个单元。
+ * **必须在打开第一条工具记录之前调用。** 压缩记录占用一个 step 序号，位于同一批次的工具记录之间时，
+ * `runtime/transcript.ts` 的 `stepsToUnits` 只收集连续的同批次记录，本次决策会被拆成两个单元：
+ * 重建的历史与实际对话结构不同，前一段的结果还可能在模型看到之前被折叠。位于本次响应的
+ * text / thinking 与工具记录之间时仍是一个单元。
  *
- * 读数与发送前同一把尺：有锚点取锚点（响应后已含本轮输出）；没有锚点时是上一次请求的估算
- * 加上本次响应推进 transcript 的那条 assistant 消息。不为量占用重装请求：装配会多投影一次。
+ * 读数与发送前采用同一口径：有锚点时取锚点（响应后已包含本轮输出）；没有锚点时取上一次请求的估算
+ * 加上本次响应推进 transcript 的 assistant 消息。不为计算占用而重新装配请求：装配会多执行一次投影。
  */
 export async function* compactBeforeTools(
   host: LoopHost,
@@ -80,9 +80,9 @@ export async function* compactBeforeTools(
     estimateMessages(run.transcript.slice(turn.unitStart), run.density)
   const occupancy = run.anchor ? run.meter(0).tokens : estimated
   const scale = occupancy > 0 ? Math.min(1, estimated / occupancy) : 1
-  // 上一次尝试已看到本次响应之前的全部历史：本次响应属于最后一个单元，不可折，不再重试。
+  // 上一次尝试已看到本次响应之前的全部历史：本次响应属于最后一个单元，不可折叠，不再重试。
   if (run.compactedAt >= turn.unitStart) return { occupancy, scale }
-  // 这一轮的编号已被刚完成的主请求占用：摘要请求占下一个，下一轮主请求再顺延。
+  // 本轮的编号已被刚完成的主请求占用：摘要请求占用下一个编号，下一轮主请求再顺延。
   const done = yield* compactOverSoftLimit(host, run, turn, {
     occupancy,
     estimated,
@@ -92,16 +92,16 @@ export async function* compactBeforeTools(
   })
   if (done === 'interrupted') return 'interrupted'
   if (done === 'unchanged') return { occupancy, scale }
-  // 压缩生效后锚点作废、请求已按新投影重装（含本次响应），读数改按重装后的请求估，两把尺重合。
+  // 压缩生效后锚点作废、请求已按新投影重新装配（含本次响应），读数改按重新装配后的请求估算，两种口径一致。
   return { occupancy: estimateRequest(turn.req, run.density), scale: 1 }
 }
 
 /**
- * 占用越过 `threshold` 时压一次。
+ * 占用超过 `threshold` 时压缩一次。
  *
- * 占用未越过软阈值时端口只收纳或跳过、不调模型（`CompactionRunInput.occupancy` 的约定），
- * 因此不播报开始；这时的跳过也不落记录、不发事件：什么都没改，也没有需要用户知道的状态。
- * 越过软阈值时照旧播报开始，跳过要落记录——那表示上下文仍在软阈值以上。
+ * 占用未超过软阈值时端口只收纳或跳过、不调用模型（`CompactionRunInput.occupancy` 的约定），
+ * 因此不发送开始事件；此时的跳过也不写入记录、不发送事件：没有任何改动，也没有需要告知用户的状态。
+ * 超过软阈值时照常发送开始事件，跳过必须写入记录：它表示上下文仍在软阈值以上。
  */
 async function* compactOverSoftLimit(
   host: LoopHost,
@@ -120,15 +120,15 @@ async function* compactOverSoftLimit(
   if (occupancy <= at.threshold) return 'unchanged'
 
   run.compactedAt = run.transcript.length
-  log.info('agent', '占用越过压缩线，触发压缩', {
+  log.info('agent', '占用超过压缩阈值，触发压缩', {
     occupancy,
     threshold: Math.round(at.threshold),
     softLimit: softLimit(adapter.spec),
   })
   const overLine = occupancy > softLimit(adapter.spec)
   if (overLine) yield { type: 'compaction', runId: input.runId, phase: 'started' }
-  // 同工具波次：压缩可能要调一次模型，卡住的话整轮停在这里，而且它不写
-  // `provider_requests`，账本上连「卡在哪」都看不出来。
+  // 与工具波次相同：压缩可能调用一次模型，停滞时整轮阻塞于此，且它不写入
+  // `provider_requests`，账本上无法看出阻塞于何处。
   const trace = host.summaryTrace(run, at.summaryTurn)
   const outcome = await untilAborted(
     input.signal,
@@ -153,9 +153,9 @@ async function* compactOverSoftLimit(
   }
   if (outcome.status === 'aborted') {
     /*
-     * 中断的压缩什么都没落库，所以这里什么都不发、什么都不记：
-     * run 随即以 `user_interrupt` 收尾，停止时刻多一张红卡是噪音，
-     * 而账本上无痕正是「它没有产生任何副作用」这件事的如实记法。
+     * 中断的压缩没有落库任何内容，因此此处不发送事件、不写入记录：
+     * run 随即以 `user_interrupt` 结束，停止时多显示一张错误卡片是噪音，
+     * 而账本上不留记录正是对「没有产生任何副作用」的如实反映。
      */
     run.stopReason = 'user_interrupt'
     return 'interrupted'
@@ -185,22 +185,22 @@ async function* compactOverSoftLimit(
     /*
      * 锚点作废。
      *
-     * 锚点描述的是**折叠前**那个前缀，折完还拿它算就是读数不降，
-     * 下一步又越线、又压一次——压缩变成每步一次的死循环。
-     * 退回估算尺一轮，下一个 provider 真值到来即重锚。
+     * 锚点描述的是**折叠前**的前缀，折叠后仍用它计算会使读数不下降，
+     * 下一步再次越线、再次压缩：压缩变成每步一次的死循环。
+     * 退回估算口径一轮，下一个 provider 真值到来即重新锚定。
      *
-     * 这里不套信封修正（`RunState.rebaseAnchor`）：压缩换掉的是消息侧的大头，
-     * 头部修正只覆盖信封那三项，修正完的数仍然是折叠前那个数。
+     * 此处不应用信封修正（`RunState.rebaseAnchor`）：压缩替换的是消息侧的主要部分，
+     * 头部修正只覆盖信封的三项，修正后的数值仍是折叠前的数值。
      */
     run.anchor = null
-    // 压缩改的是投影，必须重新装配——拿旧请求发出去等于这次压缩白花。
+    // 压缩修改的是投影，必须重新装配：发送旧请求会使本次压缩无效。
     turn.req = host.buildRequest(run)
     turn.breakdown = breakdownOf(turn.req, density)
     return 'compacted'
   } else {
-    // 压不动不是致命错：照常发出去，让 provider 来判。
-    // **skipped 与 failed 分开报**：「没什么可压」不是失败，
-    // 把它显示成红色的压缩失败会让用户去查一个并不存在的故障。
+    // 无法压缩不是致命错误：照常发送，由 provider 判定。
+    // **skipped 与 failed 分开报告**：「没有可压缩的内容」不是失败，
+    // 将其显示为红色的压缩失败会使用户排查一个并不存在的故障。
     const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
     if (phase === 'skipped' && !overLine) return 'unchanged'
     persist.recordCompaction(input.runId, run.nextSeq(), {
@@ -224,35 +224,35 @@ async function* compactOverSoftLimit(
   return 'unchanged'
 }
 
-/** 容量拒绝那一次尝试的现场，由发送阶段交过来。 */
+/** 被容量拒绝的那次尝试的现场信息，由发送阶段传入。 */
 export interface OverflowAttempt {
-  /** 被拒的错误本身；恢复不成时原样上抛。 */
+  /** 被拒的错误本身；恢复失败时原样上抛。 */
   err: unknown
   pe: ProviderError
-  /** 把这次尝试的重试裁决写进请求账。 */
+  /** 把本次尝试的重试裁决写入请求账。 */
   recordDecision(decision: 'interrupted' | 'context_compaction' | 'context_compaction_failed'): void
-  /** 本轮已经开过几行账，与发送阶段共用一份；压缩后重发另起一个 turn，从 0 重新数。 */
+  /** 本轮已开的请求记录行数，与发送阶段共用；压缩后重发另起一个 turn，从 0 重新计数。 */
   ledger: { sendIndex: number }
 }
 
 /**
- * ── 容量拒绝：压一次再重发 ──
+ * ── 容量拒绝：压缩一次再重发 ──
  *
- * 这是压缩的**第二个调用点**，不是第二个权威：调的是同一个
- * `CompactionPort.run()`、落同一份 manifest、走同一条落库路径、
- * 失败仍报 `context_overflow`。
+ * 这是压缩的**第二个调用点**，不是第二个权威：调用同一个
+ * `CompactionPort.run()`、写入同一份 manifest、使用同一条落库路径、
+ * 失败时仍报告 `context_overflow`。
  *
- * 为什么必须有它：占用读数对附件按固定值估（`ai/tokens.ts` 的
- * `MEDIA_TOKENS`），一份大附件能低估两个数量级。那时发送前检查恒放行、
- * provider 恒拒绝、重试拿到的还是同一个估算——**会话就此卡死，
- * 而手动压缩也救不回来**（附件在保留区里）。失败路径必须有终态。
+ * 必须保留本路径：占用读数对附件按固定值估算（`ai/tokens.ts` 的
+ * `MEDIA_TOKENS`），一份大附件可能被低估两个数量级。此时发送前检查始终放行、
+ * provider 始终拒绝、重试得到的仍是同一个估算：**会话就此停滞，
+ * 手动压缩也无法恢复**（附件在保留区中）。失败路径必须有终态。
  *
- * 凭证收得很窄：光看 `code` 不够，必须同时有 `capacity`
- * （`ai/capacity.ts` 的窄分类：provider 原生容量码或强消息匹配），
- * 泛化的 400 不触发。宁可不救，也不能把一次参数错误当成容量问题
+ * 触发条件很严格：只有 `code` 不够，必须同时带有 `capacity`
+ * （`ai/capacity.ts` 的严格分类：provider 原生容量码或强消息匹配），
+ * 泛化的 400 不触发。宁可不恢复，也不能把一次参数错误当作容量问题
  * 反复压缩。
  *
- * 调用方只在 `code === 'context_overflow'`、带 `capacity` 且本 run 还没恢复过时调用。
+ * 调用方只在 `code === 'context_overflow'`、带有 `capacity` 且本 run 尚未恢复过时调用。
  * 返回即表示请求已重建、应当重发；其余情形原样抛出被拒的错误。
  */
 export async function* recoverFromOverflow(
@@ -266,9 +266,9 @@ export async function* recoverFromOverflow(
   run.overflowRecovered = true
   const cap = pe.capacity!
   /*
-   * 用 provider 自报的输入量校正锚点——它是真值，而本地那个估算
-   * 刚刚被证明是错的。拿不到就把锚点作废退回估算，**不要用本地估算
-   * 去填这个位置**：那正是撞窗的原因，填进去等于确认一遍错误。
+   * 用 provider 自报的输入量校正锚点：它是真值，而本地估算
+   * 刚被证明有误。无法取得时把锚点作废、退回估算，**不要用本地估算
+   * 填入此处**：本地估算正是超出窗口的原因，填入等于再次确认错误。
    */
   if (cap.reportedInputTokens !== null) {
     run.anchor = {
@@ -283,13 +283,13 @@ export async function* recoverFromOverflow(
   } else {
     run.anchor = null
   }
-  // 压缩前后用**同一把尺**量请求本身。判据不是「压缩返回成功」——
-  // 收纳段可能落了库却一个 token 没省。
+  // 压缩前后用**同一口径**估算请求本身。判据不是「压缩返回成功」：
+  // 收纳段可能已经落库，却未减少任何 token。
   const sizeBefore = estimateRequest(turn.req, density)
   yield { type: 'compaction', runId: input.runId, phase: 'started' }
   /*
-   * 被拒的那次已占着 (requestTurn, retry)。摘要请求记到下一个 turn；压缩后重发的
-   * 是另一份内容（历史已换成摘要），不再算同一 turn 的重试，也另起一个 turn。
+   * 被拒的那次已占用 (requestTurn, retry)。摘要请求记入下一个 turn；压缩后重发的
+   * 是另一份内容（历史已替换为摘要），不再算作同一 turn 的重试，同样另起一个 turn。
    */
   const trace = host.summaryTrace(run, run.requestTurn + 1)
   const outcome = await untilAborted(
@@ -299,10 +299,10 @@ export async function* recoverFromOverflow(
       trace,
       trigger: 'automatic',
       model: adapter.spec.id,
-      // 被拒的那次请求里最后一批结果还没到模型手里。
+      // 被拒的那次请求中的最后一批结果尚未送达模型。
       latestUnitSeen: false,
       occupancy: cap.reportedInputTokens ?? run.occupancyOf(turn.req),
-      // `sizeBefore` 就是这一份请求的本地估算，同一次装配、同一把尺。
+      // `sizeBefore` 即本次请求的本地估算，来自同一次装配、同一口径。
       estimatedOccupancy: sizeBefore,
       contextWindow: adapter.spec.contextWindow,
       density,
@@ -354,8 +354,8 @@ export async function* recoverFromOverflow(
     }
   }
   /*
-   * **没变小就不重发。** 同一份字节再发一次只会拿到同一个拒绝，
-   * 而那一次要付全额的长 prompt 费用。
+   * **请求未变小时不重发。** 同一份字节再发一次只会得到同一个拒绝，
+   * 而那一次需要支付全额的长 prompt 费用。
    */
   const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
   const reasonCode = outcome.status === 'compacted' ? 'no_reduction' : outcome.reasonCode

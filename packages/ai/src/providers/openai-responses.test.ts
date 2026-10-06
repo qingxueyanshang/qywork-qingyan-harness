@@ -1,10 +1,10 @@
 /**
  * Responses 协议适配器。
  *
- * 重点全在**形状**上：`input` 是条目序列不是消息序列，工具调用是顶层条目，
- * 工具定义扁平，输入侧文本用 `input_text` 输出侧用 `output_text`。
- * 这几条按 chat 协议写都会得到一个「结构合法但语义错误」的请求——
- * 那种错不会报错，只会让模型看不到自己调过什么。
+ * 重点在于形状：`input` 是条目序列而非消息序列，工具调用是顶层条目，
+ * 工具定义是扁平的，输入侧文本使用 `input_text`，输出侧使用 `output_text`。
+ * 以上各条按 chat 协议编写都会得到「结构合法但语义错误」的请求；
+ * 此类请求不会报错，模型却无法看到自己调用过的内容。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -13,14 +13,14 @@ import type { ProviderUsage, WireMessage } from '../types.ts'
 import { applyUsage, buildInput, buildTools } from './openai-responses.ts'
 
 describe('input 是条目序列，不是消息序列', () => {
-  test('普通用户消息用 input_text', () => {
+  test('普通用户消息使用 input_text', () => {
     const items = buildInput([{ role: 'user', content: '你好' }], 'none')
     expect(items).toEqual([
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: '你好' }] },
     ])
   })
 
-  test('运行上下文并入所属用户，协议里没有额外角色或条目', () => {
+  test('运行上下文并入所属的用户消息，协议中没有额外的角色或条目', () => {
     const items = buildInput(
       [
         { role: 'context', content: '工作区：C:/ws' },
@@ -37,17 +37,17 @@ describe('input 是条目序列，不是消息序列', () => {
     ])
   })
 
-  /** 输入侧与输出侧的文本块类型不同。写反了被拒，而错误只说「content 无效」。 */
-  test('assistant 正文用 output_text', () => {
+  /** 输入侧与输出侧的文本块类型不同。写反时请求被拒绝，而错误只提示「content 无效」。 */
+  test('assistant 正文使用 output_text', () => {
     const items = buildInput([{ role: 'assistant', content: '好的' }], 'none')
     expect((items[0]!.content as { type: string }[])[0]!.type).toBe('output_text')
   })
 
   /**
-   * 工具调用是**顶层条目**，不是挂在 assistant message 上的字段。
-   * 这是按 chat 协议写时最容易错的一处。
+   * 工具调用是顶层条目，而不是 assistant message 上的字段。
+   * 这是按 chat 协议编写时最容易出错之处。
    */
-  test('工具调用展开成顶层 function_call 条目', () => {
+  test('工具调用展开为顶层 function_call 条目', () => {
     const items = buildInput(
       [
         {
@@ -68,7 +68,7 @@ describe('input 是条目序列，不是消息序列', () => {
     })
   })
 
-  test('没有正文的工具轮只产出 function_call，不塞一条空 message', () => {
+  test('没有正文的工具轮只产生 function_call，不添加空的 message', () => {
     const items = buildInput(
       [{ role: 'assistant', content: '', toolCalls: [{ id: 'c', name: 'x', arguments: {} }] }],
       'none',
@@ -77,7 +77,7 @@ describe('input 是条目序列，不是消息序列', () => {
     expect(items[0]!.type).toBe('function_call')
   })
 
-  test('工具结果是 function_call_output，按 call_id 对上', () => {
+  test('工具结果是 function_call_output，按 call_id 对应', () => {
     const items = buildInput([{ role: 'tool', toolCallId: 'call_1', content: '读到了' }], 'none')
     expect(items[0]).toEqual({
       type: 'function_call_output',
@@ -96,7 +96,7 @@ describe('input 是条目序列，不是消息序列', () => {
     })
   })
 
-  test('工具结果里的图片走 function_call_output 的内容块，call_id 保留', () => {
+  test('工具结果中的图片使用 function_call_output 的内容块，保留 call_id', () => {
     const items = buildInput(
       [
         {
@@ -119,7 +119,7 @@ describe('input 是条目序列，不是消息序列', () => {
     ])
   })
 
-  test('多模态：图片走 input_image 的 data URL', () => {
+  test('多模态：图片使用 input_image 的 data URL', () => {
     const msg: WireMessage = {
       role: 'user',
       content: [
@@ -153,12 +153,12 @@ describe('input 是条目序列，不是消息序列', () => {
 })
 
 /**
- * 回传由目录那一格（`spec.reasoningEcho`）声明，两个方向各有一个 400：
- * 声明要回传的端点少发就 `must be passed back to the API`，
- * 声明不回传的端点多发就 `array too long. Expected an array with maximum length 0`。
+ * 是否回传由目录字段 `spec.reasoningEcho` 声明，两个方向各对应一种 400：
+ * 声明须回传的端点少发送时返回 `must be passed back to the API`，
+ * 声明不回传的端点多发送时返回 `array too long. Expected an array with maximum length 0`。
  *
- * 两者都只在**第二轮**发作：第一轮没有历史可回传，全程正常；模型一旦调了工具、
- * 把结果回传就 400。任何单轮测试都测不出它，而 agent 主循环全是多轮。
+ * 两者都只在第二轮出现：第一轮没有可回传的历史，请求正常；模型调用工具并
+ * 回传结果后即返回 400。任何单轮测试都无法发现，而 agent 主循环均为多轮。
  * 实测规则见适配器文件头。
  */
 describe('思考内容回传', () => {
@@ -173,7 +173,7 @@ describe('思考内容回传', () => {
     { role: 'tool', toolCallId: 'c1', content: '晴 28 度' },
   ]
 
-  test('reasoning 条目排在它对应的 function_call 之前', () => {
+  test('reasoning 条目排在其对应的 function_call 之前', () => {
     const items = buildInput(withReasoning, 'reasoning_text')
     expect(items.map((i) => i.type)).toEqual([
       'message',
@@ -187,7 +187,7 @@ describe('思考内容回传', () => {
     })
   })
 
-  /** 有正文的工具轮，顺序是 reasoning → 正文 → 调用。实测这个顺序端点认。 */
+  /** 有正文的工具轮，顺序为 reasoning → 正文 → 调用。实测端点接受该顺序。 */
   test('带正文时 reasoning 仍在最前', () => {
     const items = buildInput(
       [
@@ -204,10 +204,10 @@ describe('思考内容回传', () => {
   })
 
   /**
-   * 压缩投影或旧记录会让某一轮丢掉思考内容。补一个占位——
-   * **空串等于没传**，照样 400，所以占位文本不能为空。
+   * 压缩投影或旧记录会使某一轮缺失思考内容，此时补充占位文本。
+   * 空串等同于未发送，同样返回 400，因此占位文本不能为空。
    */
-  test('声明要回传时，缺失思考内容的轮次补占位而不是留空', () => {
+  test('声明须回传时，缺失思考内容的轮次补充占位文本而非留空', () => {
     const items = buildInput(
       [
         ...withReasoning,
@@ -228,19 +228,19 @@ describe('思考内容回传', () => {
   })
 
   /**
-   * 反方向那个 400 的回归锁。
+   * 锁定反方向 400 的回归。
    *
-   * 摘要型端点（`reasoning.summary`）照样会给出思考内容，历史里因此**有**
-   * `reasoningContent`——按「历史里有就回传」判就是假阳性，而它的代价是
+   * 摘要型端点（`reasoning.summary`）同样会返回思考内容，历史中因此存在
+   * `reasoningContent`；按「历史中有即回传」判定会产生假阳性，其后果是
    * `Invalid 'input[1].content': array too long. Expected an array with maximum
-   * length 0`：每一轮工具调用之后都发不出去。判据只能来自目录。
+   * length 0`：每一轮工具调用之后的请求都无法发送。判据只能来自目录。
    */
-  test('声明不回传时，历史里带着思考内容也不产出 reasoning 条目', () => {
+  test('声明不回传时，历史中带有思考内容也不产生 reasoning 条目', () => {
     const items = buildInput(withReasoning, 'none')
     expect(items.map((i) => i.type)).toEqual(['message', 'function_call', 'function_call_output'])
   })
 
-  test('声明要回传时，空白的 reasoningContent 补占位而不是留空', () => {
+  test('声明须回传时，空白的 reasoningContent 补充占位文本而非留空', () => {
     const items = buildInput(
       [
         {
@@ -276,7 +276,7 @@ describe('工具定义是扁平的', () => {
     { name: 'a_tool', description: 'a', parameters: { type: 'object' } },
   ]
 
-  test('没有 chat 协议那层 function 包装', () => {
+  test('没有 chat 协议的 function 包装层', () => {
     const out = buildTools(tools)
     expect(out[0]).toEqual({
       type: 'function',
@@ -287,8 +287,8 @@ describe('工具定义是扁平的', () => {
     expect('function' in out[0]!).toBe(false)
   })
 
-  /** 工具渲染在前缀最前面，顺序一抖整段缓存失效。 */
-  test('按名排序，顺序确定', () => {
+  /** 工具渲染在前缀的最前面，顺序变化会使整段缓存失效。 */
+  test('按名称排序，顺序确定', () => {
     expect(buildTools(tools).map((t) => t.name)).toEqual(['a_tool', 'b_tool'])
   })
 })
@@ -304,10 +304,10 @@ describe('用量口径', () => {
   })
 
   /**
-   * Responses 的 `input_tokens` **含**缓存命中，Anthropic 的不含。
-   * 不减的话缓存命中越多账单偏差越大——同一个问题在兼容适配器上出现过。
+   * Responses 的 `input_tokens` 包含缓存命中，Anthropic 的不包含。
+   * 不扣除时缓存命中越多，账单偏差越大；兼容适配器存在同一问题。
    */
-  test('input_tokens 减去缓存命中，收敛到排他口径', () => {
+  test('input_tokens 扣除缓存命中，统一为排他口径', () => {
     const u = fresh()
     applyUsage(u, {
       input_tokens: 1000,
@@ -326,10 +326,10 @@ describe('用量口径', () => {
   })
 
   /**
-   * 写入那项也含在 `input_tokens` 里。不减掉的话它会同时留在 inputTokens 并进
-   * cacheWriteTokens，`computeCost` 按 1.0x 和 1.25x 各算一遍。
+   * 缓存写入量也包含在 `input_tokens` 中。不扣除时该部分会同时计入 inputTokens 与
+   * cacheWriteTokens，`computeCost` 按 1.0x 与 1.25x 各计算一次。
    */
-  test('input_tokens 同时减去命中与新写入', () => {
+  test('input_tokens 同时扣除命中量与新写入量', () => {
     const u = fresh()
     applyUsage(u, {
       input_tokens: 2600,
@@ -352,7 +352,7 @@ describe('用量口径', () => {
     expect(u.inputTokens).toBe(200)
   })
 
-  test('推理 token 单独取', () => {
+  test('推理 token 单独读取', () => {
     const u = fresh()
     applyUsage(u, {
       input_tokens: 10,
@@ -362,7 +362,7 @@ describe('用量口径', () => {
     expect(u.reasoningTokens).toBe(70)
   })
 
-  test('回报过就标 provider，不再当估算', () => {
+  test('端点返回用量时标记为 provider，不再视为估算', () => {
     const u = fresh()
     applyUsage(u, { input_tokens: 1, output_tokens: 1 })
     expect(u.source).toBe('provider')
@@ -376,7 +376,7 @@ describe('用量口径', () => {
 })
 
 describe('装配', () => {
-  test('factory 现在真的能造出 responses 适配器', async () => {
+  test('factory 能够构造 responses 适配器', async () => {
     const { buildAdapter } = await import('../factory.ts')
     const a = buildAdapter({
       kind: 'openai_responses',
@@ -388,17 +388,17 @@ describe('装配', () => {
   })
 
   /**
-   * `transmits` 必须按 spec 的参数格式算，不能是类级常量，也不能只看档位表非空。
+   * `transmits` 必须按 spec 的参数格式计算，不能是类级常量，也不能只检查档位表是否非空。
    *
-   * `gpt-5` 不在目录里 → `thinking:'none'` + `effortLevels:[]` → 装配期把 reasoning
-   * 整个省掉，请求里一个字节都没有。此处若声明成 true，`qy probe` 的探针会「通过」
-   * （不是端点支持，是客户端没发），`--save` 再把这份没有依据的结论覆盖回目录。
+   * `gpt-5` 不在目录中 → `thinking:'none'` + `effortLevels:[]` → 装配期省略整个 reasoning，
+   * 请求中没有任何相关字节。此处若声明为 true，`qy probe` 的探针会判定「通过」
+   * （并非端点支持，而是客户端未发送），`--save` 再将无依据的结论写回目录。
    *
-   * `claude-opus-5` 是另一头：`lookupModel` 的兜底只改写协议、保留能力约束，
-   * 因此它带着五档 effort 落到 Responses 上——**但 `output_config.effort` 那套在这条
-   * 协议上发不出去**，声明成会发同样是假通过。
+   * `claude-opus-5` 是相反情形：`lookupModel` 的回退只改写协议、保留能力约束，
+   * 因此该模型以五档 effort 使用 Responses 协议，但 `output_config.effort` 无法经由本
+   * 协议发送，声明为可发送同样会导致误判通过。
    */
-  test('按参数格式声明：发不出去的就不能声明成会发', async () => {
+  test('按参数格式声明：无法发送的字段不得声明为可发送', async () => {
     const { buildAdapter } = await import('../factory.ts')
     const unknown = buildAdapter({
       kind: 'openai_responses',
@@ -425,7 +425,7 @@ describe('装配', () => {
     expect(native.transmits).toEqual({ effort: true })
   })
 
-  test('spec 未知时用保守默认值，不假装认识它', async () => {
+  test('spec 未知时使用保守默认值，不视为已知模型', async () => {
     const { buildAdapter } = await import('../factory.ts')
     const a = buildAdapter({
       kind: 'openai_responses',
@@ -437,7 +437,7 @@ describe('装配', () => {
     expect(a.spec.pricing.input).toBe(0)
   })
 
-  test('lookupModel 对 responses 供应商同样给保守默认', () => {
+  test('lookupModel 对 responses 供应商同样返回保守默认值', () => {
     expect(lookupModel('x', 'openai_responses').thinking).toBe('none')
   })
 })

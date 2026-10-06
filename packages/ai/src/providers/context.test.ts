@@ -31,7 +31,7 @@ describe('内部上下文归并', () => {
     ])
   })
 
-  test('上下文不能挂到 assistant/tool，也不能孤立上线', () => {
+  test('上下文不能附加到 assistant/tool，也不能单独发送', () => {
     expect(() =>
       mergeContextIntoUsers([
         { role: 'context', content: '内部' },

@@ -1,15 +1,15 @@
 /**
  * 定时任务仓储：到期判定、认领、投影。
  *
- * **认领是一个写事务，不是三段。** 重新读任务、判到期、查上一轮忙不忙、建会话、推进触发
- * 游标全部在同一个 `Store.tx()`（IMMEDIATE）里；只有提交成功的那一方才去 `startRun`。
- * 拆成「先改内存快照 → 建会话 → 起轮 → 最后整表回写」的话，中间每个 await 都是另一个
- * 服务实例可以对同一条到期任务再起一轮的时间窗。
+ * 认领是一个写事务，不拆分为多段。重新读取任务、判定到期、查询上一轮是否仍在运行、创建会话、推进触发
+ * 游标全部在同一个 `Store.tx()`（IMMEDIATE）中完成；只有提交成功的一方调用 `startRun`。
+ * 拆成「先改内存快照 → 创建会话 → 开始执行 → 最后整表回写」时，中间每个 await 都是另一个
+ * 服务实例可以对同一条到期任务再次开始执行的时间窗口。
  *
- * **忙态查的是 runs 表，不是进程内的 RunManager**：跨进程的竞争只有落盘的状态答得了。
+ * 忙态查询 runs 表，不查询进程内的 RunManager：跨进程的竞争只能由已写入磁盘的状态判定。
  *
- * **这里不存执行结果。** 上一次跑成什么样按 `conversation_id` 关联的 Run 读
- * （`scheduleView`）。任务表里再存一份 status/error 就是第二本账。
+ * 此处不存储执行结果。上一次的执行结果从 `conversation_id` 关联的 Run 读取
+ * （`scheduleView`）。任务表中再存一份 status/error 即形成第二本账。
  */
 
 import type {
@@ -26,21 +26,21 @@ import type { Store } from './db.ts'
 import { createConversation, normalizeWorkspaceRoot } from './repos.ts'
 import type { ScheduleRow } from './schema.ts'
 
-/** 认领成功的一次触发。调用方在事务提交之后把 prompt 发进 `conversationId`。 */
+/** 一次认领成功的触发。调用方在事务提交之后把 prompt 发送到 `conversationId`。 */
 export interface ScheduleClaim {
   schedule: Schedule
   workspaceId: WorkspaceId
   workspaceRoot: string
-  /** 这次触发发进哪条会话。 */
+  /** 本次触发的目标会话。 */
   conversationId: ConversationId
-  /** 这次认领新建的会话；复用绑定会话时为 null。调用方据此决定要不要广播。 */
+  /** 本次认领新建的会话；复用绑定会话时为 null。调用方据此决定是否广播。 */
   created: Conversation | null
 }
 
 /**
  * 单条认领的结果。
  *
- * `workspace_missing` 与 `busy` 都不推进游标：任务仍然到期，下一个 tick 再判一次。
+ * `workspace_missing` 与 `busy` 都不推进游标：任务仍处于到期状态，下一个 tick 再次判定。
  */
 export type ScheduleClaimResult =
   | { ok: true; claim: ScheduleClaim }
@@ -70,10 +70,10 @@ function readOne(store: Store, id: string): Schedule | null {
 }
 
 /**
- * 绑定会话里最近一条 run 的终态。
+ * 绑定会话中最近一条 run 的终态。
  *
- * 会话被删除时列已被 `ON DELETE SET NULL` 置空，因此这里读到的一定是仍然存在的会话；
- * 查不到 run 就如实回 `runId: null`。边界见 `ScheduleLastRun`。
+ * 会话被删除时该列已由 `ON DELETE SET NULL` 置空，因此此处读取的必然是仍存在的会话；
+ * 查询不到 run 时如实返回 `runId: null`。边界见 `ScheduleLastRun`。
  */
 function lastRunOf(store: Store, s: Schedule): ScheduleLastRun | null {
   const cid = s.conversationId
@@ -97,12 +97,12 @@ function lastRunOf(store: Store, s: Schedule): ScheduleLastRun | null {
       }
 }
 
-/** 任务 + 派生读数。HTTP 面与模型工具共用这一份，两处各拼一遍会给出两种终态。 */
+/** 任务与派生读数。HTTP 接口与模型工具共用本函数，两处各自拼装会给出不同的终态。 */
 function scheduleView(store: Store, s: Schedule, now: number): ScheduleView {
   return { ...s, nextRunAt: nextRunAt(s, now), due: isDue(s, now), lastRun: lastRunOf(store, s) }
 }
 
-/** 某个工作区的全部任务，按建立先后。 */
+/** 某个工作区的全部任务，按创建顺序排列。 */
 export function listSchedules(store: Store, workspaceRoot: string, now: number): ScheduleView[] {
   return store.db
     .query<ScheduleRow, [string]>(
@@ -138,11 +138,11 @@ function insert(store: Store, s: Schedule): void {
 }
 
 /**
- * 建一条任务。id 与 createdAt 在这里生成——两个入口各拼一遍 id 前缀，
- * 设置页和调度器会各认得一半。
+ * 创建一条任务。id 与 createdAt 在此处生成：两个入口各自拼装 id 前缀时，
+ * 设置页与调度器各自只能识别其中一部分。
  *
- * `conversationId` 是建任务的那条会话，触发时消息发进它。**归属只在建的时候写得对**，
- * 所以它必填；`draft.newConversation` 为真的任务每次触发另建会话，不绑定它。
+ * `conversationId` 是创建任务的会话，触发时消息发送到该会话。归属只能在创建时正确写入，
+ * 因此该参数必填；`draft.newConversation` 为真的任务每次触发另建会话，不绑定该会话。
  */
 export function createSchedule(
   store: Store,
@@ -165,11 +165,11 @@ export function createSchedule(
 }
 
 /**
- * 改一条任务的可编辑字段。
+ * 修改一条任务的可编辑字段。
  *
- * 触发游标、归属工作区、createdAt、`newConversation` 不接受外部改写：让调用方能写
- * `lastRunAt` 等于把「下次什么时候触发」交给它决定，而改 `newConversation` 会让同一条
- * 任务的历史一半在绑定会话里、一半散在别处。
+ * 触发游标、归属工作区、createdAt、`newConversation` 不接受外部修改：允许调用方写入
+ * `lastRunAt` 等于让它决定下次触发时间，而修改 `newConversation` 会使同一条
+ * 任务的历史一部分在绑定会话中、另一部分分散在其他会话中。
  */
 export function updateSchedule(
   store: Store,
@@ -197,7 +197,7 @@ export function updateSchedule(
   return changed === 0 ? null : readOne(store, id)
 }
 
-/** 删一条任务；不存在或不属于这个工作区时返回 null。 */
+/** 删除一条任务；不存在或不属于该工作区时返回 null。 */
 export function deleteSchedule(store: Store, id: string, workspaceRoot: string): Schedule | null {
   const found = readOne(store, id)
   if (found === null || found.workspaceRoot !== normalizeWorkspaceRoot(workspaceRoot)) return null
@@ -208,8 +208,8 @@ export function deleteSchedule(store: Store, id: string, workspaceRoot: string):
 /**
  * 整表插入已有 id 的任务，用于一次性导入旧数据。
  *
- * **调用方必须把它包进 `store.tx()`**：半张表比不导入坏得多，而导入方还要在同一个事务里
- * 完成旧文件的收尾。原 id、createdAt、触发游标与关联会话原样保留；重复 id 由主键约束当场
+ * 调用方必须在 `store.tx()` 中调用：只导入一部分比不导入更糟，且导入方还需要在同一个事务中
+ * 完成旧文件的收尾。原 id、createdAt、触发游标与关联会话原样保留；重复 id 由主键约束立即
  * 报错，整个事务随之回滚。
  */
 export function insertSchedules(store: Store, list: Schedule[]): void {
@@ -218,7 +218,7 @@ export function insertSchedules(store: Store, list: Schedule[]): void {
   }
 }
 
-/** 工作区必须仍然登记且未移除，否则这条任务不触发。 */
+/** 工作区必须仍然登记且未移除，否则该任务不触发。 */
 function workspaceIdForRoot(store: Store, root: string): WorkspaceId | null {
   const row = store.db
     .query<{ id: string }, [string]>(
@@ -229,9 +229,9 @@ function workspaceIdForRoot(store: Store, root: string): WorkspaceId | null {
 }
 
 /**
- * 最近一次触发进的那条会话（含它派出的子会话）还有没有未落终态的 run。
+ * 最近一次触发所用的会话（含其派发的子会话）是否仍有未进入终态的 run。
  *
- * 查落盘状态而不是进程内的登记表：另一个进程正在跑的那一轮，这个进程的 RunManager 里
+ * 查询已写入磁盘的状态而不是进程内的登记表：另一个进程正在运行的轮次，在本进程的 RunManager 中
  * 没有记录。启动时的 `recoverStaleRuns` 负责回收无人持有的残留行。
  */
 function hasLiveRun(store: Store, conversationId: string | undefined): boolean {
@@ -253,7 +253,7 @@ interface ClaimInput {
   model: string
 }
 
-/** 事务内的单条认领。调用方负责把它包进 `store.tx()`。 */
+/** 事务内的单条认领。调用方负责在 `store.tx()` 中调用。 */
 function claimInTx(
   store: Store,
   s: Schedule,
@@ -265,12 +265,12 @@ function claimInTx(
   if (hasLiveRun(store, s.conversationId)) return { ok: false, reason: 'busy' }
 
   /*
-   * 复用绑定会话，`conversation_id` 为空才新建。空只有两种来路：会话被删
-   * （`ON DELETE SET NULL`）与旧数据从未绑定。不在这里另查会话存不存在——外键已经
-   * 把「指着一条不存在的会话」排除了。
+   * 复用绑定会话，`conversation_id` 为空时才新建。为空只有两种来源：会话被删除
+   * （`ON DELETE SET NULL`）与旧数据从未绑定。不在此处另行查询会话是否存在：外键已经
+   * 排除了指向不存在会话的情况。
    *
-   * `newConversation` 的任务每次都新建，本次进的那条照样写回该列：忙态判定与终态
-   * 投影读的是同一格，分叉的话两种任务要各写一套判定。
+   * `newConversation` 的任务每次都新建，本次使用的会话同样写回该列：忙态判定与终态
+   * 投影读取同一字段，两者分开时两种任务需要各写一套判定。
    */
   const created =
     s.newConversation || s.conversationId === undefined
@@ -304,10 +304,10 @@ function claimInTx(
 }
 
 /**
- * 认领这一刻所有到期的任务。
+ * 认领当前时刻所有到期的任务。
  *
- * 扫的是全部已启用任务，不按启动时的工作区过滤：一个进程服务多个项目，按启动目录筛选
- * 会让别的项目的任务永远不触发。归属由每条任务自己的 `workspaceRoot` 决定。
+ * 扫描全部已启用任务，不按启动时的工作区过滤：一个进程服务多个项目，按启动目录筛选
+ * 会使其他项目的任务永远不触发。归属由每条任务自身的 `workspaceRoot` 决定。
  */
 export function claimDueSchedules(store: Store, input: ClaimInput): ScheduleClaim[] {
   return store.tx(() => {
@@ -328,10 +328,10 @@ export function claimDueSchedules(store: Store, input: ClaimInput): ScheduleClai
 }
 
 /**
- * 「立刻跑一次」：同一个认领事务，但**不推进自动触发游标**。
+ * 「立即运行一次」：使用同一个认领事务，但不推进自动触发游标。
  *
- * 推进的话「每天 9 点」会因为下午点过一次试跑而当天不再自动触发。本次进的那条会话仍然
- * 写回，试跑的结果因此和自动触发一样能在面板上看到。
+ * 推进游标时，「每天 9 点」的任务会因下午手动运行过一次而当天不再自动触发。本次使用的会话仍然
+ * 写回，因此手动运行的结果与自动触发一样显示在面板上。
  */
 export function claimScheduleNow(
   store: Store,

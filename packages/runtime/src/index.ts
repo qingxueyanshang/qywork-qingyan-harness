@@ -1,9 +1,9 @@
 /**
- * `@qywork/runtime` 的对外面。**这里列的就是承诺，没列的就是内部实现。**
- * 具名导出，不用 `export *`（B6）；加一行之前先确认它真有包外调用点（B3）。
+ * `@qywork/runtime` 的对外接口。此处列出的即对外承诺，未列出的均为内部实现。
+ * 使用具名导出，不用 `export *`（B6）；新增导出前先确认它确有包外调用方（B3）。
  *
- * 这个包是装配层：把 agent / ai / store / tools / mcp / plugins / team 拼成一个
- * `Session`。**下游只该看见装配结果**，不该看见它是怎么拼的。
+ * 本包是装配层：将 agent / ai / store / tools / mcp / plugins / team 组装为
+ * `Session`。下游只应看到装配结果，不应依赖装配过程。
  */
 
 // 会话导出：`qy export`
@@ -35,12 +35,12 @@ export {
   type StoredProvider,
   saveConfig,
 } from './config.ts'
-// 上下文面板：按会话现算，切会话/刷新后仍可查
+// 上下文面板：按会话实时计算，切换会话或刷新后仍可查询
 export { type ContextPanel, contextPanel } from './context-panel.ts'
-// 扩展装配：插件 + MCP + team。
-// `toolNamePrefix` / `pluginToolPrefix` 由这里转出——CLI 不直接依赖 mcp / plugins
-// 两个包，但 `qy mcp` / `qy doctor` / `qy plugins` 都要按前缀数工具，
-// 而自己拼未消毒的前缀会一条都匹配不上。
+// 扩展装配：插件、MCP 与 team。
+// `toolNamePrefix` / `pluginToolPrefix` 由此转出：CLI 不直接依赖 mcp / plugins 两个包，
+// 而 `qy mcp` / `qy doctor` / `qy plugins` 需要按前缀统计工具；
+// 自行拼接未经清洗的前缀将无法匹配任何工具。
 export {
   acquireExtensions,
   globalPluginsDir,
@@ -55,13 +55,13 @@ export {
   releaseExtensions,
   toolNamePrefix,
 } from './extensions.ts'
-// 日志文件 sink：`qy serve` 启动时装上，之后各包的 `log.*` 都落到 `<configDir>/logs/`
+// 日志文件 sink：`qy serve` 启动时安装，此后各包的 `log.*` 写入 `<configDir>/logs/`
 export { type FileLogSink, fileLogSink, LOG_FILE } from './log-file.ts'
 // MCP 配置：server 的导入接口与会话里的模型工具共用同一份写入实现
 export { makeMcpConfigPort, mergeMcpServers, type WritableMcpScope } from './mcp-config-store.ts'
-// 生成端口：会话里的生成工具与 server 的画布（界面发起的生成）共用同一份选模型、校验与计价
+// 生成端口：会话中的生成工具与 server 的画布（界面发起的生成）共用同一份模型选择、校验与计价
 export { cancelMediaTask, makeMediaPort } from './media.ts'
-// Office 执行程序的宿主侧：服务端与 CLI 各建一个，会话按它给出的端口注册 `office`。
+// Office 执行程序的宿主侧：服务端与 CLI 各创建一个，会话按其提供的端口注册 `office`。
 export {
   createOfficeHost,
   findPython,
@@ -69,18 +69,18 @@ export {
   type OfficeStatus,
   officeDir,
 } from './office.ts'
-// 提示词装配：agent 的前缀审计测试要拿真实的那一份来审（走动态 import）
+// 提示词装配：agent 的前缀审计测试经动态 import 取得真实实现进行审计
 export { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 // 主请求与摘要请求共用的持久化边界。
 export { requestPersistence } from './request-persistence.ts'
-// 全机任务文件导入账本：server 在开始服务之前调一次
+// 全机任务文件导入账本：server 在开始服务之前调用一次
 export { importLegacySchedules } from './schedules.ts'
 // 会话：装配的最终产物，CLI 与 server 的唯一入口。
 // `makeSummarizer` 一并转出：server 的手动压缩与会话内的自动压缩共用同一份摘要装配。
 export { makeSummarizer, Session } from './session.ts'
 // 正文落盘：会话内的工具产出与服务端的子 agent 回执共用同一份实现。
-// `collectResourceGarbage` 与它同一条锁顺序，删会话之后与开库之后各调一次。
+// `collectResourceGarbage` 与它遵循同一锁顺序，在删除会话之后与打开数据库之后各调用一次。
 export { collectResourceGarbage, RuntimeSink } from './sink.ts'
-// 历史投影：`Session.ask` 内部用它装配这一轮的历史，回归测试用它验证
-// 「活的 transcript 与跨 run 投影回来的那一份逐条同位」。
+// 历史投影：`Session.ask` 用它装配本轮历史，回归测试用它验证
+// 运行中的 transcript 与跨 run 投影出的历史逐条位置一致。
 export { buildHistory } from './transcript.ts'

@@ -1,13 +1,13 @@
 /**
  * 配置脱敏与回填。
  *
- * **覆盖范围**：`config.ts` 的 `redactConfig` / `mergeConfig`，以及
- * `GET /api/config` 的读盘时机、`PUT /api/config` 的落盘门禁与以盘上内容为基准的版本校验。
+ * 覆盖范围：`config.ts` 的 `redactConfig` / `mergeConfig`，以及
+ * `GET /api/config` 读取磁盘的时机、`PUT /api/config` 的落盘门禁与以磁盘内容为基准的版本校验。
  *
- * 这两个函数是**明文 key 不出进程**这条边界的全部实现，所以这里测得比别处细。
- * 最严重的一条不是「key 泄漏了」——那种当场就看得出来；是**「打开设置页看一眼再保存」
- * 把 key 静默清掉**：保存那一刻没有任何反馈，要到下一次调用模型才炸，
- * 那时已经很难把它和刚才改过的 baseUrl 联系起来。
+ * 这两个函数是「明文 key 不出进程」这一边界的全部实现，因此此处的测试比其他位置更细。
+ * 最严重的情形不是 key 泄漏（泄漏可立即发现），而是「打开设置页、不做修改直接保存」
+ * 时静默清除 key：保存时没有任何反馈，直到下一次调用模型才失败，
+ * 此时已难以将失败与刚才修改的 baseUrl 关联起来。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -41,13 +41,13 @@ describe('脱敏', () => {
     expect(wire).not.toContain('sk-real-secret-value')
   })
 
-  test('有 key 的接口报 hasApiKey: true，没有的报 false', () => {
+  test('有 key 的接口返回 hasApiKey: true，没有 key 的返回 false', () => {
     const r = redactConfig(cfg())
     expect(r.providers.main?.hasApiKey).toBe(true)
     expect(r.providers.local?.hasApiKey).toBe(false)
   })
 
-  test('空串 key 算「没有」 —— 否则界面会显示已配置而实际调用会 401', () => {
+  test('空串 key 视为没有 key：否则界面显示已配置而实际调用返回 401', () => {
     const c = cfg()
     c.providers.main = { ...c.providers.main!, apiKey: '' }
     expect(redactConfig(c).providers.main?.hasApiKey).toBe(false)
@@ -111,11 +111,11 @@ describe('回填', () => {
     return mergeConfig(current, wire)
   }
 
-  test('原样存回不会动 key —— 这是最常见的一次保存', () => {
+  test('原样保存不改变 key：这是最常见的保存方式', () => {
     expect(roundTrip(() => {}).providers.main?.apiKey).toBe('sk-real-secret-value')
   })
 
-  test('改别的字段也不会动 key', () => {
+  test('修改其他字段不改变 key', () => {
     const out = roundTrip((r) => {
       r.providers.main = { ...r.providers.main!, baseUrl: 'https://relay.example/v1' }
     })
@@ -123,34 +123,34 @@ describe('回填', () => {
     expect(out.providers.main?.baseUrl).toBe('https://relay.example/v1')
   })
 
-  test('显式传新 key 就换掉', () => {
+  test('显式传入新 key 时替换', () => {
     const out = roundTrip((r) => {
       ;(r.providers.main as { apiKey?: string }).apiKey = 'sk-new'
     })
     expect(out.providers.main?.apiKey).toBe('sk-new')
   })
 
-  test('显式传空串是「清掉」，与「没带」区分开', () => {
+  test('显式传入空串表示清除，与未携带区分', () => {
     const out = roundTrip((r) => {
       ;(r.providers.main as { apiKey?: string }).apiKey = ''
     })
     expect(out.providers.main?.apiKey).toBeUndefined()
   })
 
-  test('hasApiKey 谎报 true 也变不出 key —— 库里没有就是没有', () => {
+  test('hasApiKey 误报 true 时不会产生 key：已保存的配置中没有 key 时结果仍为没有', () => {
     const out = roundTrip((r) => {
       r.providers.local = { ...r.providers.local!, hasApiKey: true }
     })
     expect(out.providers.local?.apiKey).toBeUndefined()
   })
 
-  test('hasApiKey 报 false 表示这个接口本来就没配，不影响别人', () => {
+  test('hasApiKey 为 false 表示该接口未配置 key，不影响其他接口', () => {
     const out = roundTrip(() => {})
     expect(out.providers.local?.apiKey).toBeUndefined()
     expect(out.providers.main?.apiKey).toBe('sk-real-secret-value')
   })
 
-  test('新增接口带明文 key 的话照收', () => {
+  test('新增接口携带明文 key 时照常接受', () => {
     const out = roundTrip((r) => {
       r.providers.added = {
         kind: 'anthropic_messages',
@@ -162,14 +162,14 @@ describe('回填', () => {
     expect(out.providers.added?.apiKey).toBe('sk-added')
   })
 
-  test('hasApiKey 这个字段本身不会漏进落盘的配置里', () => {
+  test('hasApiKey 字段本身不会写入磁盘上的配置', () => {
     const out = roundTrip(() => {})
     for (const p of Object.values(out.providers)) {
       expect('hasApiKey' in p).toBe(false)
     }
   })
 
-  test('顶层字段以传入的为准', () => {
+  test('顶层字段以传入值为准', () => {
     const out = roundTrip((r) => {
       r.mode = 'full'
       r.active = { provider: 'local', model: 'qwen' }
@@ -179,10 +179,10 @@ describe('回填', () => {
   })
 
   /**
-   * 默认生成模型与 active 同规则。原始失败形状：界面删掉最后一个图像模型、不再带 `mediaDefaults`，
-   * 服务端按展开合并留下旧默认，校验判它指向已删的模型，保存被 422 挡住，模型删不掉。
+   * 默认生成模型与 active 规则相同。原始失败形状：界面删除最后一个图像模型、不再携带 `mediaDefaults`，
+   * 服务端按展开合并保留了旧默认值，校验判定它指向已删除的模型，保存被 422 拒绝，模型无法删除。
    */
-  test('默认生成模型以客户端为准，没带就删', () => {
+  test('默认生成模型以客户端为准，未携带时删除', () => {
     const base = cfg()
     const current: QyConfig = {
       ...base,
@@ -204,22 +204,22 @@ describe('回填', () => {
   })
 
   /**
-   * **界面认识的字段，比配置里真实存在的字段少。**
+   * 界面已知的字段少于配置中实际存在的字段。
    *
-   * `apps/web` 够不着 `@qywork/runtime`（层级不允许），所以那边手抄了一份
-   * `RedactedConfig`。抄的那份现在就少一个 `sandboxNetwork`——它只在 CLI 里配。
+   * `apps/web` 无法引用 `@qywork/runtime`（层级不允许），因此界面手工复制了一份
+   * `RedactedConfig`，其中缺少 `sandboxNetwork`：该字段只在配置文件中设置。
    *
-   * 因此失败形状是：用户 `qy config` 设了 `sandboxNetwork: 'deny'`，
-   * 然后打开设置页改个模型保存，那一项被抹掉。**保存那一刻毫无反馈**，
-   * 而它是条安全设置，等发现时已经跑过若干条不受限的命令。
+   * 因此失败形状是：用户在配置文件中设置 `sandboxNetwork: 'deny'`，
+   * 然后在设置页修改模型并保存，该项被清除。保存时没有任何反馈，
+   * 而它是一项安全设置，被发现时已有若干条命令在不受限的情况下执行。
    *
-   * 现在不会抹，靠的是 `mergeConfig` 里 `{ ...current, ...incoming }` 这个展开
-   * ——incoming 没有这个键就不会覆盖。但那是一行代码的副作用，没人钉住它，
-   * 改成逐字段赋值就当场坏。这条测试钉的就是它。
+   * 该项不被清除，依靠的是 `mergeConfig` 中 `{ ...current, ...incoming }` 的展开：
+   * incoming 没有该键时不会覆盖。但这只是一行代码的副作用，
+   * 改为逐字段赋值即会失效。本测试锁定的正是这一行为。
    */
-  test('客户端不认识的顶层字段不会被抹掉', () => {
+  test('客户端未知的顶层字段不会被清除', () => {
     const current: QyConfig = { ...cfg(), sandboxNetwork: 'deny', envAllowList: ['GITHUB_TOKEN'] }
-    // 模拟界面：把服务端回的那份按自己认识的字段重建一遍，多余的键丢掉。
+    // 模拟界面：将服务端返回的配置按界面已知的字段重建，丢弃其余的键。
     const wire = redactConfig(current)
     const asClientSeesIt = {
       active: wire.active,
@@ -228,7 +228,7 @@ describe('回填', () => {
       additionalDirectories: wire.additionalDirectories,
       envAllowList: wire.envAllowList,
     }
-    // 过一遍 JSON：真实路径上 `undefined` 的键不会上线，别在内存里假装它在。
+    // 经过一次 JSON 序列化：实际传输中值为 `undefined` 的键不会发送，不要在内存中保留这些键。
     const incoming = JSON.parse(JSON.stringify(asClientSeesIt)) as RedactedConfig
 
     const out = mergeConfig(current, incoming)
@@ -237,14 +237,14 @@ describe('回填', () => {
     expect(out.envAllowList).toEqual(['GITHUB_TOKEN'])
   })
 
-  test('多轮往返不掉 key —— 用户会反复打开设置页', () => {
+  test('多轮往返不丢失 key：用户会反复打开设置页', () => {
     let c = cfg()
     for (let i = 0; i < 5; i++) c = mergeConfig(c, redactConfig(c))
     expect(c.providers.main?.apiKey).toBe('sk-real-secret-value')
   })
 })
 
-describe('读盘时机', () => {
+describe('读取磁盘的时机', () => {
   const get = async (d: ApiDeps) => {
     const url = new URL('http://127.0.0.1/api/config')
     const res = await handleConfigApi(url, new Request(url.href, { method: 'GET' }), d as never)
@@ -252,13 +252,13 @@ describe('读盘时机', () => {
   }
 
   /**
-   * 进程外改过的配置，不能被下一次保存整份盖掉。
+   * 进程外修改的配置不得被下一次保存整份覆盖。
    *
-   * 形状是这样的：保存走「读回整份 → 改一格 → 整份写回」，所以 GET 回什么，
-   * 下一次 PUT 就把什么写进文件。GET 回启动时那份的话，`qy probe` 落下的校准
-   * 结果、手编的 JSON、另一个实例写的改动，都会在用户改一格设置时消失。
+   * 保存流程是「读取整份 → 修改一项 → 整份写回」，因此 GET 返回的内容
+   * 即下一次 PUT 写入文件的内容。GET 返回启动时的配置时，`qy probe` 写入的校准
+   * 结果、手工编辑的 JSON、另一个实例写入的改动，都会在用户修改一项设置时丢失。
    */
-  test('每次 GET 都按文件回答，进程里那份跟着换', async () => {
+  test('每次 GET 都按文件内容返回，进程内的配置随之更新', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home
@@ -274,7 +274,7 @@ describe('读盘时机', () => {
     try {
       const d = { config: cfg() } as unknown as ApiDeps
 
-      // 起手就和 `cfg()` 里那份不同，第一条断言才证明得了「读的是盘」。
+      // 初始内容与 `cfg()` 不同，第一条断言才能证明读取的是磁盘内容。
       await write('openai_chat_completions')
       expect((await get(d)).config.providers.main?.kind).toBe('openai_chat_completions')
 
@@ -308,16 +308,16 @@ describe('落盘门禁', () => {
   }
 
   /**
-   * 没配 key 不拦保存。原始失败形状：加一个新接口、给它挂第一个模型（active 随之切到
-   * 这个还没填 key 的接口），保存被 422 顶回，模型加不进去；先填 key 还是先填 url 也因此
-   * 变得有讲究。这里锁的是「active 接口没 key 也能落盘」，key 稍后再填。
+   * 未配置 key 不阻止保存。原始失败形状：添加一个新接口并为其添加第一个模型（active 随之切换到
+   * 该尚未填写 key 的接口），保存被 422 拒绝，模型无法添加；填写 key 与 url 的先后顺序也因此
+   * 受到限制。此处锁定的是「active 接口没有 key 也能保存」，key 可稍后填写。
    */
-  test('active 接口没 key 也能保存，只在 problems 里提示', async () => {
+  test('active 接口没有 key 也能保存，只在 problems 中提示', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home
     try {
-      // 进程内的配置总是从盘上读来的：夹具先把同一份写到盘上。
+      // 进程内的配置始终从磁盘读取：夹具先将同一份配置写入磁盘。
       await writeFile(join(home, 'config.json'), JSON.stringify(cfg()))
       const d = { config: cfg() } as unknown as ApiDeps
       const res = await put(d, {
@@ -329,10 +329,10 @@ describe('落盘门禁', () => {
         mode: 'auto',
       })
       expect(res!.status).toBe(200)
-      // 落盘了：新接口在，main 的 key 也没被 hasApiKey:true 抹掉。
+      // 已写入磁盘：新接口存在，main 的 key 也未因 hasApiKey:true 被清除。
       expect(d.config.providers.newp?.models.m1).toBeDefined()
       expect(d.config.providers.main?.apiKey).toBe('sk-real-secret-value')
-      // 但要显示出来——GET 的 problems 带上「没配 key」，用户看得见还差一步。
+      // 但须提示：GET 的 problems 包含缺少 key 的提示，用户可以看到尚未完成的步骤。
       expect((await get(d)).problems.some((p) => p.includes('未配置 API Key'))).toBe(true)
     } finally {
       if (prev === undefined) delete process.env.QYWORK_HOME
@@ -340,8 +340,8 @@ describe('落盘门禁', () => {
     }
   })
 
-  /** 不成形仍然拦：active 指向不存在的接口，422 且不落盘。 */
-  test('active 指向不存在的接口仍 422，不落盘', async () => {
+  /** 结构不合法时仍拒绝：active 指向不存在的接口时返回 422 且不写入磁盘。 */
+  test('active 指向不存在的接口时仍返回 422，不写入磁盘', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home
@@ -356,7 +356,7 @@ describe('落盘门禁', () => {
         mode: 'auto',
       })
       expect(res!.status).toBe(422)
-      // 没写进去：进程内那份的 active 未被改动。
+      // 未写入：进程内配置的 active 未被改动。
       expect(d.config.active?.provider).toBe('main')
     } finally {
       if (prev === undefined) delete process.env.QYWORK_HOME
@@ -365,11 +365,11 @@ describe('落盘门禁', () => {
   })
 
   /**
-   * 电脑控制那两格只收布尔。设置页写出去的是 `true` / `false`，别的客户端写进一个
-   * 字符串时必须在落盘前拦住：`desktopEnabled` 的判据是「不是 false 就算开」，
-   * 一个 `'off'` 落进去读出来是开着的。
+   * 电脑控制的两个字段只接受布尔值。设置页写入的是 `true` / `false`，其他客户端写入
+   * 字符串时必须在写入磁盘前拒绝：`desktopEnabled` 的判据是「不为 false 即视为开启」，
+   * 写入 `'off'` 后读取的结果是开启。
    */
-  test('电脑控制的开关不是布尔时 422，不落盘', async () => {
+  test('电脑控制的开关不是布尔值时返回 422，不写入磁盘', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home
@@ -391,11 +391,11 @@ describe('落盘门禁', () => {
   })
 
   /**
-   * 原始失败形状：删掉某一类最后一个生成模型（默认随之删掉）后，到另一个接口下挂同一个模型，保存被 422 拒绝
-   * 「默认生成模型不在配置里」。进程里那份留着已删的默认，GET 把它回给设置页；设置页见这一类已有默认就不再改，
-   * 因此带着指向已删模型的默认提交。这里按设置页的改法走一遍。
+   * 原始失败形状：删除某一类别的最后一个生成模型（默认值随之删除）后，在另一个接口下添加同一个模型，保存被 422 拒绝，
+   * 原因是默认生成模型不在配置中。进程内的配置保留了已删除的默认值，GET 将其返回给设置页；设置页发现该类别已有默认值便不再修改，
+   * 因此提交了指向已删除模型的默认值。此处按设置页的修改方式执行一次。
    */
-  test('删掉的默认生成模型不留在进程里，换接口重挂能保存', async () => {
+  test('已删除的默认生成模型不保留在进程内，更换接口重新添加后可以保存', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home
@@ -407,7 +407,7 @@ describe('落盘门禁', () => {
       start.mediaDefaults = { image: { provider: 'main', model: 'gpt-image-2.5-sunburst' } }
       expect((await put(d, start))!.status).toBe(200)
 
-      // 设置页删掉 main 下那一个：这一类没有别的模型，默认一起删掉。
+      // 设置页删除 main 下的模型：该类别没有其他模型，默认值一并删除。
       const removed = (await get(d)).config
       removed.providers.main!.media = {}
       delete removed.mediaDefaults
@@ -415,7 +415,7 @@ describe('落盘门禁', () => {
 
       const fresh = (await get(d)).config
       expect(fresh.mediaDefaults).toBeUndefined()
-      // 设置页的添加：挂到 local 下，这一类还没有默认时才设它为默认。
+      // 设置页的添加操作：添加到 local 下，该类别尚无默认值时才将其设为默认。
       fresh.providers.local!.media = image
       fresh.mediaDefaults ??= { image: { provider: 'local', model: 'gpt-image-2.5-sunburst' } }
       expect((await put(d, fresh))!.status).toBe(200)
@@ -427,16 +427,16 @@ describe('落盘门禁', () => {
   })
 
   /**
-   * 乐观并发：带一个过期的 baseVersion（模拟另一个窗口已经改过）保存，回 409 且不落盘。
-   * 带当前 version 的正常保存放行。不带 baseVersion 的老客户端/脚本照旧放行。
+   * 乐观并发：携带过期的 baseVersion（模拟另一个窗口已修改过）保存时返回 409 且不写入磁盘。
+   * 携带当前 version 的正常保存放行。不携带 baseVersion 的客户端或脚本同样放行。
    */
-  test('baseVersion 对不上回 409 不落盘，对得上放行', async () => {
+  test('baseVersion 不一致时返回 409 且不落盘，一致时放行', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home
     try {
       const d = { config: cfg() } as unknown as ApiDeps
-      // GET 会把 d.config 按盘上（这个空 temp home）刷成默认；current 是那一版的指纹。
+      // GET 会按磁盘内容（空的临时 home 目录）将 d.config 重置为默认值；current 是该版本的指纹。
       const current = (await get(d)).version
       const body = {
         active: { provider: 'main', model: 'claude-opus-5' },
@@ -448,14 +448,14 @@ describe('落盘门禁', () => {
 
       const stale = await put(d, body, 'deadbeefdeadbeef')
       expect(stale!.status).toBe(409)
-      // 没落盘：这次 PUT 的接口 main 没进 d.config。
+      // 未写入磁盘：本次 PUT 的接口 main 未进入 d.config。
       expect(d.config.providers.main).toBeUndefined()
 
       const ok = await put(d, body, current)
       expect(ok!.status).toBe(200)
       expect(d.config.providers.main).toBeDefined()
 
-      // 不带 baseVersion：老客户端照旧放行。
+      // 不携带 baseVersion：此类客户端同样放行。
       const legacy = await put(d, body)
       expect(legacy!.status).toBe(200)
     } finally {
@@ -465,10 +465,10 @@ describe('落盘门禁', () => {
   })
 
   /**
-   * 原始失败形状：设置页 GET 之后、PUT 之前，另一个进程（`qy probe`、另一个 qywork 实例）往配置里
-   * 加了一个接口；设置页带着 GET 时的版本号保存。返回 200 就意味着那个接口连同 key 被整份抹掉。
+   * 原始失败形状：设置页 GET 之后、PUT 之前，另一个进程（`qy probe`、另一个 qywork 实例）向配置中
+   * 添加了一个接口；设置页携带 GET 时的版本号保存。此时返回 200 即表示该接口连同 key 被整份覆盖清除。
    */
-  test('GET 之后别的进程写了配置：旧版本号保存回 409，文件里别的进程的改动保留', async () => {
+  test('GET 之后其他进程写入了配置：以旧版本号保存时返回 409，文件中其他进程的改动保留', async () => {
     const home = await mkdtemp(join(tmpdir(), 'qy-cfg-'))
     const prev = process.env.QYWORK_HOME
     process.env.QYWORK_HOME = home

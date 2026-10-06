@@ -1,12 +1,12 @@
 /**
- * 工具图片在「下一次请求被回绝」之后还能不能回到模型面前。
+ * 工具返回的图片在下一次请求被拒绝之后能否重新发送给模型。
  *
- * 覆盖范围：`agent/loop/index.ts` 的媒体去留（`loop/request.ts` 的 `evictedMedia`：
- * 最后一条 assistant 之后的媒体不换出）、`runtime/transcript.ts` 把执行记录投影回 history，
- * 经 `@qywork/ai` 的三协议故障端点跑真实 HTTP、真实 `Store`。
+ * 覆盖范围：`agent/loop/index.ts` 的媒体保留与换出（`loop/request.ts` 的 `evictedMedia`：
+ * 最后一条 assistant 之后的媒体不换出）、`runtime/transcript.ts` 将执行记录投影为 history；
+ * 经 `@qywork/ai` 的三协议故障端点发送真实 HTTP 请求，使用真实 `Store`。
  *
- * 原始失败形状：工具成功之后那次请求 503 耗尽预算，换一个 run 带着 history 续跑时
- * 图片被当成旧图省略，模型在没有观察结果的情况下接着做。断言落在线上那份请求体上。
+ * 原始失败形状：工具成功之后的请求因 503 耗尽重试预算，在新 run 中携带 history 继续执行时，
+ * 图片被视为旧图而省略，模型在没有观察结果的情况下继续操作。断言针对实际发出的请求体。
  */
 
 import { expect, test } from 'bun:test'
@@ -38,7 +38,7 @@ import {
 } from '@qywork/store'
 import { stepsToUnits } from './transcript.ts'
 
-/** 工具回传的图片字节。请求体里直接按它找，不逐协议解析结构。 */
+/** 工具返回的图片字节。在请求体中直接查找该字节串，不按协议解析结构。 */
 const BYTES = 'IMGONE'
 
 interface Harness {
@@ -124,7 +124,7 @@ function baseCtx(runId: string): ToolContextBase {
   }
 }
 
-/** 夹具那一头的工具调用恒名 `echo`；这里让它回一张图。 */
+/** 夹具发起的工具调用固定名为 `echo`；此处令其返回一张图片。 */
 function shotRegistry(counter: { runs: number }): ToolRegistry {
   const registry = new ToolRegistry()
   registry.register({
@@ -182,7 +182,7 @@ async function drainRun(opts: {
     makeToolContext: baseCtx,
     persist: opts.h.persist,
     streamIdleTimeoutMs: 5_000,
-    // 退避在这里只会拖长测试：本组问的是请求体里有没有图，不是等了多久。
+    // 退避只会延长测试耗时：本组验证请求体是否包含图片，与等待时长无关。
     sleep: async () => {},
   })
   for await (const _ of loop.run({
@@ -190,7 +190,7 @@ async function drainRun(opts: {
     history: opts.history,
     signal: new AbortController().signal,
   })) {
-    // 断言落在夹具收到的请求体与请求账上。
+    // 断言针对夹具收到的请求体与请求记录。
   }
 }
 
@@ -202,9 +202,9 @@ function turnRows(h: Harness, runId: RunId): ProviderRequest[] {
 
 for (const { kind, model } of FAULT_PROTOCOLS) {
   /**
-   * T13 最新图片恢复：工具成功 → 下一次请求 503 耗尽预算 → 换一个 run 带 history 续跑。
+   * 最新图片恢复：工具成功 → 下一次请求因 503 耗尽重试预算 → 在新 run 中携带 history 继续执行。
    */
-  test(`${kind} 工具成功后请求被拒，跨 run 续跑仍带原图且工具只跑一次`, async () => {
+  test(`${kind} 工具成功后请求被拒，跨 run 继续执行时仍带原图且工具只执行一次`, async () => {
     const h = harness()
     const counter = { runs: 0 }
     try {
@@ -222,12 +222,12 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
           registry,
         })
 
-        // 工具跑了一次；其后每一次请求都带着那张图，直到预算耗尽。
+        // 工具执行一次；其后每一次请求都携带该图片，直到重试预算耗尽。
         expect(counter.runs).toBe(1)
         const failedRows = turnRows(h, failed)
         expect(failedRows.slice(1).every((r) => r.status === 'rejected')).toBe(true)
 
-        // 跨 run 续跑：history 由执行记录投影而来，那张图从来没被对端接收过。
+        // 跨 run 继续执行：history 由执行记录投影得到，该图片从未被对端接收。
         const history = [
           USER,
           ...stepsToUnits(listSteps(h.store, failed)).flatMap((u) => u.messages),
@@ -241,13 +241,13 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
         expect(resumedRows).toHaveLength(1)
         expect(resumedRows[0]!.status).toBe('received')
 
-        // 图在保留上限以内：之后的 run 仍带着它，前缀不变。
+        // 图片在保留上限以内：之后的 run 仍携带该图片，前缀不变。
         const after = newRun(h, 'images-after')
         await drainRun({ h, runId: after, baseUrl, profile: { kind, model }, history, registry })
         const afterRows = turnRows(h, after)
         expect(afterRows).toHaveLength(1)
 
-        // 线上那份字节：调工具之前那次没有图，此后每一次都带着它。
+        // 实际发出的请求体：调用工具之前的请求不含图片，此后每一次请求都包含该图片。
         const rows = [...failedRows, ...resumedRows, ...afterRows]
         expect(fault.bodies).toHaveLength(rows.length)
         expect(fault.bodies.map((b) => b.includes(BYTES))).toEqual(rows.map((_, i) => i > 0))

@@ -164,7 +164,7 @@ export async function probeToolCalls(
         check.status = 'passed'
         break
       }
-      // 回传的只有真实收到的模型消息。凭据在工具结果中首次出现，下一轮必须读到它。
+      // 只回传实际收到的模型消息。凭据首次出现在工具结果中，下一轮必须读取该凭据。
       label = crypto.randomUUID()
       messages.push(
         {

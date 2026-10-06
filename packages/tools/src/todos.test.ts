@@ -33,7 +33,7 @@ function ctx(): ToolContext & { emitted: TodoItem[][] } {
 
 const run = (todos: unknown, c = ctx()) => writeTodosTool.fn({ todos }, c).then((r) => ({ r, c }))
 
-describe('todos 事件终于有了生产者', () => {
+describe('todos 事件的生产者', () => {
   test('提交待办会广播整表快照', async () => {
     const { r, c } = await run([
       { content: '读现有实现', status: 'completed' },
@@ -46,23 +46,23 @@ describe('todos 事件终于有了生产者', () => {
     expect(c.emitted[0]![1]!.status).toBe('in_progress')
   })
 
-  test('没有 emitTodos 装配时不炸 —— 工具照样记账', async () => {
+  test('未装配 emitTodos 时不抛错，工具仍记账', async () => {
     const bare = ctx()
     delete (bare as { emitTodos?: unknown }).emitTodos
     const r = await writeTodosTool.fn({ todos: [{ content: 'x', status: 'pending' }] }, bare)
     expect(r.status).toBe('success')
   })
 
-  test('回执里也带整表 —— 模型下一轮据此接着改', async () => {
+  test('回执中也包含整表：模型下一轮据此继续修改', async () => {
     const { r } = await run([{ content: '第一步', status: 'in_progress' }])
     expect((r.data as { todos: TodoItem[] }).todos[0]!.content).toBe('第一步')
   })
 
   /**
-   * 口径与输入框上那条状态条一致：数的是「正在做第几步」，不是「做完了几步」。
-   * 两处各数各的话，同一屏上卡片写「0/5」而状态条写「第 1 / 5 步」。
+   * 口径与输入框上方的状态条一致：计数的是正在执行第几步，而不是已完成几步。
+   * 两处各自计数时，同一屏上卡片显示「0/5」而状态条显示「第 1 / 5 步」。
    */
-  test('message 报的是正在做第几步 —— 与状态条同一个数', async () => {
+  test('message 报告正在执行第几步，与状态条的数值一致', async () => {
     const { r } = await run([
       { content: '甲', status: 'completed' },
       { content: '乙', status: 'in_progress' },
@@ -70,7 +70,7 @@ describe('todos 事件终于有了生产者', () => {
     expect(r.message).toBe('第 2/2 步：乙')
   })
 
-  test('没有进行中的那条时说出来 —— 打完勾不认领下一条正是停在半路的样子', async () => {
+  test('没有进行中的条目时明确说明：标记完成后未认领下一条会使清单停滞在中途', async () => {
     const { r } = await run([
       { content: '甲', status: 'completed' },
       { content: '乙', status: 'pending' },
@@ -150,11 +150,11 @@ describe('硬约束：拒绝而不是静默纠正', () => {
     expect(r.status).toBe('failure')
     expect(r.errorKind).toBe('invalid_plan')
     expect(r.message).toContain('只能有一条')
-    // 拒绝就不该广播 —— 广播了前端会显示一份服务端并不认可的清单。
+    // 拒绝时不应广播：广播后前端会显示一份服务端并不认可的清单。
     expect(c.emitted).toHaveLength(0)
   })
 
-  test('拒绝时不改动已有清单 —— 前端手上还是上一份', async () => {
+  test('拒绝时不改动已有清单：前端保留上一份', async () => {
     const c = ctx()
     await run([{ content: '好计划', status: 'in_progress' }], c)
     await run(
@@ -168,29 +168,29 @@ describe('硬约束：拒绝而不是静默纠正', () => {
     expect(c.emitted[0]![0]!.content).toBe('好计划')
   })
 
-  test('空清单被拒 —— 不需要列清单就别调这个工具', async () => {
+  test('空清单被拒绝：不需要清单时不应调用本工具', async () => {
     const { r } = await run([])
     expect(r.status).toBe('failure')
   })
 
-  test('非数组被拒', async () => {
+  test('非数组被拒绝', async () => {
     const { r } = await run('不是数组')
     expect(r.status).toBe('failure')
   })
 
-  test('缺 content 被拒且指出是第几条', async () => {
+  test('缺少 content 时被拒绝并指出是第几条', async () => {
     const { r } = await run([{ content: 'ok', status: 'pending' }, { status: 'pending' }])
     expect(r.status).toBe('failure')
     expect(r.message).toContain('第 2 条')
   })
 
-  test('非法 status 被拒', async () => {
+  test('非法 status 被拒绝', async () => {
     const { r } = await run([{ content: 'x', status: 'doing' }])
     expect(r.status).toBe('failure')
     expect(r.message).toContain('status')
   })
 
-  test('超过上限被拒 —— 提示拆分任务', async () => {
+  test('超过上限被拒绝并提示拆分任务', async () => {
     const { r } = await run(
       Array.from({ length: 41 }, (_, i) => ({ content: `第 ${i}`, status: 'pending' })),
     )
@@ -198,7 +198,7 @@ describe('硬约束：拒绝而不是静默纠正', () => {
     expect(r.message).toContain('拆分任务')
   })
 
-  test('零条 in_progress 是合法的（全做完了）', async () => {
+  test('零条 in_progress 是合法的（全部已完成）', async () => {
     const { r } = await run([
       { content: '甲', status: 'completed' },
       { content: '乙', status: 'completed' },
@@ -209,34 +209,34 @@ describe('硬约束：拒绝而不是静默纠正', () => {
 })
 
 describe('权限', () => {
-  test('是内部记账，不走权限闸 —— 列个清单不该弹窗打断用户', () => {
+  test('属于内部记账，不经过权限检查：列出清单不应弹窗打断用户', () => {
     expect(writeTodosTool.permissionEffect).toBe('internal_control')
   })
 
-  test('不可并行 —— 两次并发提交谁赢全看调度', () => {
+  test('不可并行：两次并发提交的结果取决于调度顺序', () => {
     expect(writeTodosTool.parallelSafe).toBe(false)
   })
 })
 
 /**
- * 动作语义。别为它专造一个 `plan` 动作：配上对象「待办」，界面上读出来是
- * 「规划待办」——动宾同义反复。
+ * 动作语义。不要为它新增 `plan` 动作：与对象「待办」组合后，界面上读作
+ * 「规划待办」，动宾语义重复。
  *
- * 判据走 `ctx.todos`（会话级端口，读的是账本里上一条 `write_todos` step），
- * **不是** `ctx.state`：那个 Map 是 run 级的，跨轮查不到上一份清单，
- * 表现是每轮的第一次提交都说「创建」。拍成常量是反过来的同一个毛病。
+ * 判据使用 `ctx.todos`（会话级端口，读取账本中上一条 `write_todos` step），
+ * 而不是 `ctx.state`：该 Map 是 run 级的，跨轮无法查到上一份清单，
+ * 结果是每轮的第一次提交都显示「创建」。硬编码为常量是方向相反的同类缺陷。
  */
-describe('动作语义：首建是创建，改已有的才是编辑', () => {
+describe('动作语义：首次提交是创建，修改已有清单才是编辑', () => {
   const kindWith = (prev: TodoItem[] | null) =>
     (writeTodosTool.actionKind as (a: Record<string, unknown>, c?: ToolContext) => string)({}, {
       todos: { read: () => prev },
     } as ToolContext)
 
-  test('没有上一份清单 —— 创建', () => {
+  test('没有上一份清单：创建', () => {
     expect(kindWith(null)).toBe('write')
   })
 
-  test('上一份还没做完 —— 修改', () => {
+  test('上一份尚未全部完成：修改', () => {
     expect(
       kindWith([
         { id: 'todo_1', content: '甲', status: 'completed' },
@@ -245,16 +245,16 @@ describe('动作语义：首建是创建，改已有的才是编辑', () => {
     ).toBe('edit')
   })
 
-  /** 上一份全做完了，再提交一份是**下一件事**的清单，说「创建」才对。 */
-  test('上一份全做完 —— 又是创建', () => {
+  /** 上一份已全部完成时，再提交的是下一项任务的清单，应显示「创建」。 */
+  test('上一份已全部完成：视为创建', () => {
     expect(kindWith([{ id: 'todo_1', content: '甲', status: 'completed' }])).toBe('write')
   })
 
   /**
-   * 端口没接上（`qy exec` 这类一次性执行没有会话）时按「创建」。
-   * 反过来说「修改」是在没有清单时声称改过一份不存在的清单。
+   * 端口未接入（`qy exec` 这类一次性执行没有会话）时按「创建」处理。
+   * 显示「修改」则是在没有清单时声称修改了一份不存在的清单。
    */
-  test('端口没接上 —— 按创建，不按修改', () => {
+  test('端口未接入：按创建处理，不按修改', () => {
     const spec = writeTodosTool.actionKind as (
       a: Record<string, unknown>,
       c?: ToolContext,
@@ -263,8 +263,8 @@ describe('动作语义：首建是创建，改已有的才是编辑', () => {
     expect(spec({}, {} as ToolContext)).toBe('write')
   })
 
-  /** 对象是「待办」不是「计划」：计划（方案）是另一类产物，这个工具不产出它。 */
-  test('对象恒为「待办」', () => {
+  /** 对象是「待办」而不是「计划」：计划（方案）是另一类产物，本工具不产出它。 */
+  test('对象始终为「待办」', () => {
     expect(writeTodosTool.objectLabel).toBe('待办')
   })
 })

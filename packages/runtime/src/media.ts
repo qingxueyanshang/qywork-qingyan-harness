@@ -1,8 +1,8 @@
 /**
- * 生成端口的实现：选模型、由输入推操作、按目录校验参数、调生成接口。读输入与写产物在工具里（`tools/generate.ts`）。
+ * 生成端口的实现：选择模型、由输入推断操作、按目录校验参数、调用生成接口。读取输入与写入产物由工具负责（`tools/generate.ts`）。
  *
- * 失败一律回 `{ ok: false, message }`，消息直接给大模型读，要写明怎么改：可选的模型、合法的取值。
- * 用户停止时 signal 中止，异常原样抛出，由工具波次按中断收尾。
+ * 失败一律返回 `{ ok: false, message }`，消息直接交给大模型阅读，须写明修改方法：可选的模型、合法的取值。
+ * 用户停止时 signal 中止，异常原样抛出，由工具波次按中断处理收尾。
  */
 
 import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/agent'
@@ -25,8 +25,8 @@ import { listMediaModels, type QyConfig, resolveMediaModel } from './config.ts'
 const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
 
 /**
- * 由输入推操作。不让大模型选操作：少一个它会填错的枚举，也不会出现「选了图生却没给图」。
- * 输入组合本身不成立时回 `problem`，直接退回。
+ * 由输入推断操作。操作不由大模型选择：可减少一个易填错的枚举参数，也避免出现选择了图生视频却未提供图片的情况。
+ * 输入组合本身无效时返回 `problem`，直接拒绝。
  */
 export function operationOf(
   type: MediaOutput,
@@ -34,11 +34,11 @@ export function operationOf(
 ): { operation: MediaOperation } | { problem: string } {
   const count = (role: MediaInput['role']) => inputs.filter((i) => i.role === role).length
   if (type === 'audio') {
-    return inputs.length ? { problem: '语音合成不收输入文件' } : { operation: 'speech' }
+    return inputs.length ? { problem: '语音合成不接受输入文件' } : { operation: 'speech' }
   }
   const first = count('first_frame')
   const last = count('last_frame')
-  if (first > 1 || last > 1) return { problem: '首帧、尾帧各只能给一张' }
+  if (first > 1 || last > 1) return { problem: '首帧、尾帧各只能提供一张' }
   return {
     operation: mediaOperationFor(
       type,
@@ -48,8 +48,8 @@ export function operationOf(
 }
 
 /**
- * 一次成功生成的花费。数量按类别取接口回报的张数、秒数或字符数，金额见 `mediaCost`。
- * 只在成功时产生：失败的请求各家都不计费。
+ * 一次成功生成的花费。数量按类别取接口返回的张数、秒数或字符数，金额由 `mediaCost` 计算。
+ * 只在成功时产生：各厂商对失败的请求均不计费。
  */
 function spendOf(
   spec: MediaModelSpec,
@@ -72,7 +72,7 @@ function spendOf(
   }
 }
 
-/** `onSpend`：每次成功生成交出花费，由会话层记进所属轮次。 */
+/** `onSpend`：每次成功生成时传出花费，由会话层记入所属轮次。 */
 export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) => void): MediaPort {
   return {
     async generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult> {
@@ -88,21 +88,21 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
         return {
           ok: false,
           message: ref
-            ? `没有这个${label}模型：${ref.provider} / ${ref.model}。可选：${choices}`
-            : `没有默认的${label}模型，用 provider 与 model 指定一个。可选：${choices}`,
+            ? `未找到该${label}模型：${ref.provider} / ${ref.model}。可选：${choices}`
+            : `没有默认的${label}模型，请通过 provider 与 model 指定。可选：${choices}`,
         }
       }
       if (!target.apiKey) {
         return {
           ok: false,
-          message: `接口 ${target.provider} 没有配置 API Key，在设置 → 模型里填写`,
+          message: `接口 ${target.provider} 未配置 API Key，请在设置 → 模型中填写`,
         }
       }
 
       const inferred = operationOf(call.type, call.inputs)
-      if ('problem' in inferred) return { ok: false, message: `没有发出请求：${inferred.problem}` }
+      if ('problem' in inferred) return { ok: false, message: `未发出请求：${inferred.problem}` }
       const op = inferred.operation
-      // 接续取回不再提交，参数与输入都不会发出，不校验。
+      // 接续取回不会重新提交，参数与输入均不发出，因此不校验。
       if (!call.resumeTaskId) {
         const spec = lookupMediaModel(target.model, target.kind)
         const problems = validateMediaCall(spec, op, call.params, {
@@ -120,7 +120,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
           return {
             ok: false,
             message:
-              `没有发出请求：\n- ${problems.join('\n- ')}` +
+              `未发出请求：\n- ${problems.join('\n- ')}` +
               (others.length && !spec.operations.includes(op)
                 ? `\n支持${operationLabel(op)}的其他模型：${others.join('、')}`
                 : ''),
@@ -178,8 +178,8 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
 }
 
 /**
- * 撤销一个已提交的视频任务。`unsupported`：这个接口没有撤销，撤不回、按结果计费。
- * 模型已从配置里删掉或没有密钥时抛错：撤不撤得动都无从知道，不能当成撤不回。
+ * 撤销已提交的视频任务。`unsupported`：该接口不支持撤销，任务无法撤回，按结果计费。
+ * 模型已从配置中删除或没有密钥时抛错：此时无法确定能否撤销，不能视为无法撤回。
  */
 export async function cancelMediaTask(
   config: QyConfig,
@@ -188,7 +188,9 @@ export async function cancelMediaTask(
 ): Promise<MediaCancel | 'unsupported'> {
   const target = resolveMediaModel(config, 'video', { provider: task.provider, model: task.model })
   if (!target?.apiKey) {
-    throw new MediaError(`接口 ${task.provider} / ${task.model} 不在配置里或没有 API Key，没有撤销`)
+    throw new MediaError(
+      `接口 ${task.provider} / ${task.model} 不在配置中或未配置 API Key，未执行撤销`,
+    )
   }
   const adapter = buildMediaAdapter({
     kind: target.kind,

@@ -1,10 +1,10 @@
 /**
- * `qy mcp` —— 查看工作区中的 MCP server 是否已连接。
+ * `qy mcp`：查看工作区中的 MCP server 是否已连接。
  *
- * 没有这条命令的话，「配了但工具没出现」只能靠翻 `qy serve` 的日志排查，
- * 而那些日志混在启动输出里、还会被桌面外壳吞掉。MCP 的失败又特别常见：
- * 命令没装、包名写错、要的凭证没给——每一种的处置办法都不同，
- * 所以要**逐条把原因打出来**，而不是只说「有 2 个 server 连不上」。
+ * 没有该命令时，「已配置但工具未出现」只能通过查阅 `qy serve` 的日志排查，
+ * 而这些日志混在启动输出中，且会被桌面外壳丢弃。MCP 的失败较为常见：
+ * 命令未安装、包名错误、未提供所需凭证，每一种的处置办法都不同，
+ * 因此要**逐条输出原因**，而不是只说「有 2 个 server 无法连接」。
  */
 
 import { resolve } from 'node:path'
@@ -31,7 +31,7 @@ export async function runMcp(args: string[]): Promise<number> {
   try {
     if (reg.servers.length === 0 && reg.failures.length === 0) {
       process.stderr.write(
-        `没有配置 MCP server。在工作区建 ${MCP_CONFIG}：\n\n` +
+        `没有配置 MCP server。在工作区创建 ${MCP_CONFIG}：\n\n` +
           `${DIM}{\n  "mcpServers": {\n    "filesystem": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]\n    }\n  }\n}${RESET}\n`,
       )
       return 0
@@ -39,31 +39,31 @@ export async function runMcp(args: string[]): Promise<number> {
 
     for (const s of reg.servers) {
       const tools = reg.toolSpecs.filter((t) => t.name.startsWith(toolNamePrefix(s.name)))
-      // 报出传输种类：本地进程和远端 server 的排查方向完全不同，
-      // 直接看出是哪一种，比事后推断可靠。
+      // 输出传输类型：本地进程和远端 server 的排查方向完全不同，
+      // 直接显示类型比事后推断可靠。
       process.stderr.write(
         `${GREEN}✓${RESET} ${BOLD}${s.name}${RESET} ` +
           `${DIM}${s.client.transportKind} · ${s.serverInfo.name ?? '?'} ${s.serverInfo.version ?? ''} · 协议 ${s.protocolVersion || '未回报'} · ${tools.length} 个工具${RESET}\n`,
       )
       /*
-       * server 声明了、本仓未接入的能力**必须显示**，而且不能只在 --tools 下显示。
+       * server 已声明而本仓库未接入的能力**必须显示**，且不能只在 --tools 下显示。
        *
-       * 这是「配了 MCP 但什么都没发生」这条现象的唯一线索：一个只提供
-       * `prompts` 的 server 连得上、握得了手、注册 0 个工具，
-       * 如果这里不说，用户手上就没有任何可查的线索。
+       * 这是「配置了 MCP 但没有任何效果」这一现象的唯一线索：只提供
+       * `prompts` 的 server 能够连接、完成握手、注册 0 个工具，
+       * 此处若不说明，用户没有任何可查的线索。
        */
       if (s.unsupported.length > 0) {
         process.stderr.write(
-          `${YELLOW}  ⚠ 该 server 还声明了 qywork 尚未支持的能力：${s.unsupported.join('、')}` +
-            `（它们提供的东西不会出现在工具列表里）${RESET}\n`,
+          `${YELLOW}  ⚠ 该 server 另外声明了 qywork 尚未支持的能力：${s.unsupported.join('、')}` +
+            `（它们提供的内容不会出现在工具列表中）${RESET}\n`,
         )
       }
       if (verbose) {
         for (const t of s.tools) {
           process.stderr.write(`    ${t.name}${DIM} — ${t.description ?? ''}${RESET}\n`)
         }
-        // resource 工具不在 s.tools 里（它们由本仓合成，不是 server 报的），
-        // 但对用户来说它们就是「这个 server 能干什么」的一部分。
+        // resource 工具不在 s.tools 中（由本仓库合成，不是 server 声明的），
+        // 但对用户而言它们属于该 server 提供的能力。
         for (const t of tools.filter((x) => !s.tools.some((d) => x.name.endsWith(`__${d.name}`)))) {
           process.stderr.write(`    ${t.name}${DIM} — ${t.description}${RESET}\n`)
         }
@@ -75,13 +75,13 @@ export async function runMcp(args: string[]): Promise<number> {
     }
 
     if (!verbose && reg.servers.length) {
-      process.stderr.write(`\n${DIM}加 --tools 看每个 server 提供哪些工具${RESET}\n`)
+      process.stderr.write(`\n${DIM}加 --tools 查看每个 server 提供的工具${RESET}\n`)
     }
 
-    // 有 server 连不上时退非零：CI 里 `qy mcp` 就能当一条检查用。
+    // 有 server 无法连接时返回非零：`qy mcp` 因此可在 CI 中用作一项检查。
     return reg.failures.length > 0 ? 1 : 0
   } finally {
-    // 探测完就把子进程收掉。留着的话这条命令会挂住不返回。
+    // 探测完成后终止子进程，否则该命令会阻塞而不返回。
     await reg.stopAll()
   }
 }

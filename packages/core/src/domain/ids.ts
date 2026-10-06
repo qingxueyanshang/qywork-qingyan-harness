@@ -1,16 +1,16 @@
 /**
  * 领域标识符。
  *
- * 全部用带前缀的字符串 ID，不用自增整数：这几张表都有删除路径，自增主键会复用
- * 被删的最高 id，导致 retry_of_run_id / step.artifact_id 这类跨引用静默指向
- * 另一行。带前缀的随机 ID 从结构上消灭这个问题，也让日志里直接看得出类型。
+ * 全部使用带前缀的字符串 ID，不使用自增整数：这些表都有删除路径，自增主键会复用
+ * 被删除的最大 id，导致 retry_of_run_id / step.artifact_id 等跨表引用静默指向
+ * 另一行。带前缀的随机 ID 从结构上消除该问题，日志中也可直接识别类型。
  */
 
 const ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
 
-/** 时间戳段宽度。base36 下 9 位可表示到公元 5000 年后，长度恒定不会跳档。 */
+/** 时间戳段宽度。base36 下 9 位可表示到公元 5000 年后，长度恒定，不会增加位数。 */
 const TS_WIDTH = 9
-/** 同毫秒序号段宽度。base36 四位 = 每毫秒 167 万个，远超任何真实产生速率。 */
+/** 同毫秒序号段宽度。base36 四位可表示每毫秒 167 万个，远超实际生成速率。 */
 const SEQ_WIDTH = 4
 
 let lastMs = 0
@@ -27,20 +27,20 @@ function base36(value: number, width: number): string {
 }
 
 /**
- * 单调递增 ID：`<时间戳><同毫秒序号><随机尾>`，三段都是**定宽**。
+ * 单调递增 ID：`<时间戳><同毫秒序号><随机后缀>`，三段均为**定宽**。
  *
- * 字典序必须严格等于生成顺序——这不是「排序好看一点」的优化，而是两处正确性依赖：
+ * 字典序必须严格等于生成顺序，两处正确性依赖于此：
  * - 会话/消息列表按 id 排序；
  * - `listMessages` 用 `id <= upperBound` 划定 run 的消息高水位。
  *
- * 只编码毫秒时间戳、后缀直接用随机字节的话，**同一毫秒内的 ID 字典序是随机的**。
- * 后果不是排序难看：高水位会把同毫秒写入的前序消息误判成「在水位之后」，
- * 直接从 run 的历史里丢掉（`ids.test.ts` 锁着这条）。
+ * 只编码毫秒时间戳、后缀直接使用随机字节时，**同一毫秒内的 ID 字典序是随机的**。
+ * 高水位会把同一毫秒内写入的前序消息误判为「在水位之后」，
+ * 使其从 run 的历史中丢失（由 `ids.test.ts` 锁定）。
  *
- * 定宽同样是必需的：变长时 'z9' 会排在 'aaa' 之前，跨越长度边界时排序将失效。
+ * 定宽同样是必需的：变长时 'aaa' 会排在数值更小的 'z9' 之前，跨越长度边界时排序失效。
  *
  * 时钟回拨（NTP 校时、虚拟机挂起恢复）时不回退：沿用上一个毫秒值并继续递增序号，
- * 宁可 ID 里的时间戳略微超前，也不能让顺序倒置。
+ * ID 中的时间戳可以略微超前，但顺序不得倒置。
  */
 function monotonicId(): string {
   const now = Date.now()
@@ -77,11 +77,11 @@ export const newResourceId = () => `rs_${monotonicId()}` as ResourceId
 export const newProviderRequestId = () => `pr_${monotonicId()}` as ProviderRequestId
 export const newWorkspaceId = () => `ws_${monotonicId()}` as WorkspaceId
 /**
- * 目标 id。**字典序即创建顺序这条在这里是被依赖的**：
- * `goal_events` 表没有自增列，「这条会话最新的那个目标」正是靠
- * `ORDER BY goal_id DESC` 取出来的。
+ * 目标 id。**此处依赖「字典序即创建顺序」**：
+ * `goal_events` 表没有自增列，会话的最新目标通过
+ * `ORDER BY goal_id DESC` 取得。
  */
 export const newGoalId = () => `gl_${monotonicId()}` as GoalId
 
-/** 账本条目。不是领域实体，没有品牌类型——它只是一行记账。 */
+/** 账本条目。不是领域实体，没有品牌类型，只是一行用量记录。 */
 export const newUsageId = () => `ug_${monotonicId()}`

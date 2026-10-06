@@ -1,9 +1,9 @@
 /**
- * 画布：读、改、新建、运行、取回、取帧、发送前的花费。
+ * 画布接口：读取、修改、新建、运行、取回、截取帧、发送前的花费。
  *
- * 写入与生成全部交给 `canvas.ts` 的画布服务，这里只做入参核对与出参形状。入参不合法回 422 且不落盘，
- * 在跑时的冲突回 409；运行与取回在校验通过、卡片已标成在跑之后立刻返回，不挂在请求上：
- * 关掉页签不中断已付费的调用，结果经 `canvas.run` 与 `file.changed` 事件送达。
+ * 写入与生成全部交给 `canvas.ts` 的画布服务，此处只负责入参校验与返回结构。入参不合法时返回 422 且不写入磁盘，
+ * 运行中的冲突返回 409；运行与取回在校验通过、卡片已标为运行中之后立即返回，不占用请求：
+ * 关闭标签页不会中断已付费的调用，结果经 `canvas.run` 与 `file.changed` 事件送达。
  */
 
 import { lookupMediaModel, MediaError, quoteMedia } from '@qywork/ai'
@@ -19,22 +19,22 @@ import { recordUsage } from '@qywork/store'
 import { CanvasFailure, type CanvasStep } from '../canvas.ts'
 import { type ApiHandler, type ApiRequestDeps, json } from './types.ts'
 
-/** `POST /api/canvas/ops` 的回体：应用后的画布与批内名字对照。 */
+/** `POST /api/canvas/ops` 的响应体：应用后的画布与本批操作的名称对照表。 */
 export interface CanvasOpsResponse extends CanvasView {
   refs: Record<string, string>
-  /** 这次写盘前后的文档指纹，撤销与重做用。 */
+  /** 本次写入前后的文档指纹，供撤销与重做使用。 */
   step: CanvasStep
 }
 
-/** `POST /api/canvas/quote` 的回体。`null` = 推不出（按 token 计价等），界面不显示。 */
+/** `POST /api/canvas/quote` 的响应体。`null` 表示无法估算（如按 token 计价），界面不显示。 */
 export interface CanvasQuoteResponse {
   quote: { cost: number; currency: string } | null
 }
 
-/** 取帧的名字：首帧、尾帧或时刻（`12.4s`）。名字进文件名，只收这三种形状。 */
+/** 截取帧的名称：首帧、尾帧或时刻（`12.4s`）。名称会写入文件名，只接受这三种格式。 */
 const FRAME_LABEL = /^(首帧|尾帧|\d{1,5}(\.\d)?s)$/
 
-/** 导出会话号：服务端 `randomUUID` 生成。 */
+/** 导出会话号：由服务端 `randomUUID` 生成。 */
 const EXPORT_ID = /^[0-9a-f-]{36}$/
 
 function failed(err: unknown): Response {
@@ -59,8 +59,8 @@ function text(value: unknown): string | undefined {
 }
 
 /**
- * 界面发起的生成用的端口：花费写成一行 `kind='media'`、无轮次无会话、带项目的账。
- * Agent 发起的不走这里，用它本轮的 `ctx.media`，花费进本轮。
+ * 界面发起的生成所用的端口：花费记为一行 `kind='media'`、无轮次、无会话、带项目的账目。
+ * Agent 发起的生成不经过此处，使用其本轮的 `ctx.media`，花费计入本轮。
  */
 export function uiMediaPort(d: Pick<ApiRequestDeps, 'config' | 'store' | 'workspaceId'>) {
   return makeMediaPort(d.config, (spend) => {
@@ -94,19 +94,19 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
 
     if (req.method !== 'POST') return null
 
-    // 取帧：请求体是浏览器导出的 PNG 字节，其余参数在查询串里。
+    // 截取帧：请求体是浏览器导出的 PNG 字节，其余参数位于查询字符串中。
     if (p === '/api/canvas/frame') {
       const q = url.searchParams
       const path = q.get('path')
       const nodeId = q.get('nodeId')
       const label = q.get('label') ?? ''
       if (!path || !nodeId) return invalid('缺少画布路径或节点 id')
-      if (!FRAME_LABEL.test(label)) return invalid(`帧的名字不合法：${label}`)
+      if (!FRAME_LABEL.test(label)) return invalid(`帧名称不合法：${label}`)
       const bytes = new Uint8Array(await req.arrayBuffer())
       return json(await d.canvas.captureFrame(d.workspaceRoot, path, nodeId, label, bytes))
     }
 
-    // 时间线导出：开始拿会话号，按位置写字节块，完成落盘，或放弃。写的请求体是字节，位置在查询串里。
+    // 时间线导出：开始时取得会话号，按位置写入字节块，完成时写入磁盘，或放弃。写入请求的请求体是字节，位置位于查询字符串中。
     if (p === '/api/canvas/export/start') {
       const b = await body(req)
       const path = text(b?.path)
@@ -144,7 +144,7 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
       const name = q.get('name')
       if (!path || !name) return invalid('缺少画布路径或文件名')
       const beside = q.get('beside')
-      // 先判有没有：`Number(null)` 是 0，缺参数会被当成原点。
+      // 先判断参数是否存在：`Number(null)` 为 0，缺少参数时会被当作原点。
       const x = q.has('x') ? Number(q.get('x')) : Number.NaN
       const y = q.has('y') ? Number(q.get('y')) : Number.NaN
       if (!beside && !(Number.isFinite(x) && Number.isFinite(y))) return invalid('缺少位置')
@@ -244,7 +244,7 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
     const nodeId = text(b.nodeId)
     if (!nodeId) return invalid('缺少节点 id')
 
-    // 停止：按接口能力撤销远端任务，回 `outcome`。撤不回时生成照常进行，由界面说明会照常计费。
+    // 停止：按接口能力撤销远端任务，返回 `outcome`。无法撤销时生成照常进行，由界面提示照常计费。
     if (p === '/api/canvas/cancel') {
       try {
         const outcome = await d.canvas.cancel(d.workspaceRoot, path, nodeId, (task) =>
@@ -253,11 +253,11 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
         return json({ outcome })
       } catch (err) {
         if (!(err instanceof MediaError)) throw err
-        return json({ error: 'upstream', message: `没有取消：${err.message}` }, 502)
+        return json({ error: 'upstream', message: `取消失败：${err.message}` }, 502)
       }
     }
 
-    // 发送 = 先提交面板里的改动再运行，同一次请求：运行用的就是刚提交的那一份。
+    // 发送即在同一次请求中先提交面板中的改动再运行：运行使用的正是刚提交的版本。
     if (p === '/api/canvas/run') {
       if (ops.length > 0) await d.canvas.apply(d.workspaceRoot, path, ops)
       await d.canvas.run(ws, path, nodeId, { media: uiMediaPort(d) })

@@ -1,9 +1,9 @@
 /**
  * 生成：`generate.ts` 的 `generate_image`、`generate_video`、`generate_audio`、`generateMedia`、`landFiles`，
- * 以及 `index.ts` 里按类别注册的那一条。
+ * 以及 `index.ts` 中按类别注册的逻辑。
  *
- * 端口用一个记录调用的假实现：这里验的是工具这一侧的事——输入怎么读、参数怎么解析、
- * 产物落在哪、已存在的输出路径在调接口之前就拒绝、视频任务记录何时写何时删。
+ * 端口使用记录调用的模拟实现：此处验证工具一侧的行为，包括输入的读取、参数的解析、
+ * 产物的写入位置、已存在的输出路径在调用接口之前被拒绝、视频任务记录的写入与删除时机。
  */
 
 import { beforeEach, describe, expect, setSystemTime, test } from 'bun:test'
@@ -27,7 +27,7 @@ const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 7])
 
 let calls: MediaCall[] = []
 let answer: MediaCallResult = { ok: true, provider: 'qwen', model: 'qwen-image-3.0', files: [] }
-/** 端口返回之前做的事：视频测试在这里触发任务号回调。 */
+/** 端口返回之前执行的操作：视频测试在此触发任务号回调。 */
 let during: (call: MediaCall) => Promise<void> = async () => {}
 
 function ctx(root: string): ToolContext {
@@ -69,7 +69,7 @@ beforeEach(() => {
 })
 
 describe('generate_image', () => {
-  test('部分返回仍保存图片，回执同时带上缺少张数的提示', async () => {
+  test('部分返回时仍保存图片，回执同时提示缺少的张数', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-partial-'))
     const reason = '部分图片生成失败：内容审核未通过'
     const warning = `请求 4 张，实际返回 1 张；${reason}`
@@ -83,7 +83,7 @@ describe('generate_image', () => {
     expect(calls).toHaveLength(1)
   })
 
-  test('没给输出路径时写到 generated/，结果只带路径不带字节', async () => {
+  test('未提供输出路径时写入 generated/，结果只含路径不含字节', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
     const out = await run(root, { prompt: '一只猫', params_json: '{"size":"1024*1536"}' })
     expect(out.status).toBe('success')
@@ -100,15 +100,15 @@ describe('generate_image', () => {
     expect(new Uint8Array(await readFile(join(root, 'generated', name!)))).toEqual(PNG)
   })
 
-  /** 产物在会话里只经回复中的路径链接展示；说明里不写明时，模型会以 Markdown 图片嵌入或把路径写出多次。 */
-  test('三个生成工具的说明都写明产物以路径链接展示、不以图片嵌入', () => {
+  /** 产物在会话中只经由回复中的路径链接展示；说明中不写明时，模型会以 Markdown 图片嵌入或多次写出同一路径。 */
+  test('三个生成工具的说明均写明产物以路径链接展示、不以图片嵌入', () => {
     for (const tool of Object.values(MEDIA_TOOLS)) {
       expect(tool.description).toContain('回复中以 Markdown 链接写出生成文件的工作区路径')
       expect(tool.description).toContain('不得以 Markdown 图片形式嵌入')
     }
   })
 
-  test('给了参考图就按修改发，图按字节与类型读好', async () => {
+  test('提供参考图时按编辑请求发送，图片按字节与类型读取', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
     await writeFile(join(root, 'cat.jpg'), JPEG)
     await run(root, {
@@ -123,8 +123,8 @@ describe('generate_image', () => {
     expect(calls[0]?.provider).toBe('qwen')
   })
 
-  /** 生成按次计费：写不进去的调用在花钱之前就要挡掉。 */
-  test('输出路径已存在时不调接口、不覆盖', async () => {
+  /** 生成按次计费：无法写入的调用必须在产生费用之前拒绝。 */
+  test('输出路径已存在时不调用接口、不覆盖', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
     await writeFile(join(root, 'logo.png'), 'old')
     const out = await run(root, { prompt: 'x', output: 'logo.png' })
@@ -134,7 +134,7 @@ describe('generate_image', () => {
     expect(await readFile(join(root, 'logo.png'), 'utf8')).toBe('old')
   })
 
-  test('多张时第二张起加序号，撞名继续往后加', async () => {
+  test('多张时自第二张起追加序号，重名时序号继续递增', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
     await mkdir(join(root, 'out'))
     await writeFile(join(root, 'out', 'a-2.png'), 'taken')
@@ -152,7 +152,7 @@ describe('generate_image', () => {
     expect(await readFile(join(root, 'out', 'a-2.png'), 'utf8')).toBe('taken')
   })
 
-  test('参数、模型点名与参考图类型不对时不调接口', async () => {
+  test('参数、指定模型或参考图类型不合法时不调用接口', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
     await writeFile(join(root, 'a.txt'), 'x')
     expect((await run(root, { prompt: 'x', params_json: '[1]' })).errorKind).toBe(
@@ -167,7 +167,7 @@ describe('generate_image', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('端口的失败消息原样交给大模型，工作区不留文件', async () => {
+  test('端口的失败消息原样交给模型，工作区不留下文件', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
     answer = { ok: false, message: '没有发出请求：\n- 参数 n 的值 9 不合法：范围 1–6' }
     const out = await run(root, { prompt: 'x' })
@@ -178,7 +178,7 @@ describe('generate_image', () => {
 })
 
 describe('按类别注册', () => {
-  test('没有图像模型时不注册出图工具', () => {
+  test('没有图像模型时不注册图像生成工具', () => {
     const none = new ToolRegistry()
     registerBuiltinTools(none)
     expect(none.has('generate_image')).toBe(false)
@@ -188,7 +188,7 @@ describe('按类别注册', () => {
   })
 })
 
-test('输出路径没写扩展名时按实际格式补上', async () => {
+test('输出路径未写扩展名时按实际格式补全', async () => {
   const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
   const out = await run(root, { prompt: 'x', output: 'generated/panda' })
   expect(out.fileChanges?.map((c) => c.path)).toEqual(['generated/panda.png'])
@@ -202,7 +202,7 @@ describe('generate_video', () => {
     await call.onTask?.({ taskId: 'task-1', provider: 'qwen', model: 'wan3.0-video' })
   }
 
-  test('输入按用途读好；提交即写任务记录，成功落盘后删掉', async () => {
+  test('输入按用途读取；提交即写入任务记录，落盘成功后删除', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
     await writeFile(join(root, 'a.png'), PNG)
     await writeFile(join(root, 'b.png'), PNG)
@@ -235,8 +235,8 @@ describe('generate_video', () => {
     expect((await readdir(join(root, 'clips'))).sort()).toEqual(['bloom.mp4'])
   })
 
-  /** 远端还在（等待超时等）：记录留着，消息告诉大模型怎么取回。 */
-  test('可接续的失败留下任务记录；终态失败删掉', async () => {
+  /** 远端任务仍存在（如等待超时）：保留记录，消息中告知模型取回方式。 */
+  test('可接续的失败保留任务记录；终态失败删除记录', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
     during = submitted
     answer = { ok: false, message: '等待超过 20 分钟仍未完成', pendingTaskId: 'task-1' }
@@ -251,7 +251,7 @@ describe('generate_video', () => {
     expect(await readdir(root)).toEqual(['wave.task.json'])
   })
 
-  test('按任务记录取回：不再提交，落到记录里的输出位置，取回后删掉记录', async () => {
+  test('按任务记录取回：不重新提交，写入记录中的输出位置，取回后删除记录', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
     await writeFile(
       join(root, 'wave.task.json'),
@@ -275,7 +275,7 @@ describe('generate_video', () => {
     expect(await readdir(root)).toEqual(['wave.mp4'])
   })
 
-  test('取回必须提供任务路径，生成必须提供提示词；无效记录不提交生成', async () => {
+  test('取回必须提供任务路径，生成必须提供提示词；记录无效时不提交生成', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
     const registry = new ToolRegistry()
     registerBuiltinTools(registry, { media: ['video'] })
@@ -303,7 +303,7 @@ describe('generate_video', () => {
   })
 })
 
-test('只配了视频模型时只注册出视频的工具', () => {
+test('只配置视频模型时只注册视频生成工具', () => {
   const registry = new ToolRegistry()
   registerBuiltinTools(registry, { media: ['video'] })
   expect(registry.has('generate_video')).toBe(true)
@@ -315,7 +315,7 @@ test('只配了视频模型时只注册出视频的工具', () => {
 })
 
 describe('generate_audio', () => {
-  test('文字按 prompt 交给端口，产物按格式补扩展名', async () => {
+  test('文本作为 prompt 交给端口，产物按格式补全扩展名', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gena-'))
     const WAV = new Uint8Array([0x52, 0x49, 0x46, 0x46])
     answer = {
@@ -339,8 +339,8 @@ describe('generate_audio', () => {
   })
 })
 
-/** 端到端里模型要了 `.mp3`，百炼回的是 WAV：按请求原样落盘的话文件名与内容对不上。 */
-test('请求的扩展名与实际格式不符时换成实际格式的，不认识的扩展名原样保留', async () => {
+/** 端到端测试中模型请求 `.mp3`，百炼返回 WAV：按请求原样落盘时文件名与内容不一致。 */
+test('请求的扩展名与实际格式不符时改为实际格式的扩展名，无法识别的扩展名原样保留', async () => {
   const root = await mkdtemp(join(tmpdir(), 'qy-gena-'))
   const { generateAudioTool } = await import('./generate.ts')
   answer = {
@@ -366,7 +366,7 @@ test('请求的扩展名与实际格式不符时换成实际格式的，不认�
 describe('generateMedia / landFiles', () => {
   const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 
-  test('同一秒并发两次不给输出路径的视频生成，各有各的任务记录与产物', async () => {
+  test('同一秒内并发两次未指定输出路径的视频生成，各自拥有独立的任务记录与产物', async () => {
     setSystemTime(new Date(2026, 8, 29, 10, 10, 10))
     try {
       const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
@@ -407,7 +407,7 @@ describe('generateMedia / landFiles', () => {
     }
   })
 
-  test('generateMedia 按路径读输入，任务号到手时回报记录的工作区路径', async () => {
+  test('generateMedia 按路径读取输入，取得任务号时回报记录的工作区路径', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
     await writeFile(join(root, 'a.png'), PNG)
     const seen: string[] = []
@@ -450,7 +450,7 @@ describe('generateMedia / landFiles', () => {
 })
 
 describe('generate_video 的参考音频', () => {
-  test('audios 按 wav / mp3 读好、用途为 audio；不是音频的在调接口之前退回', async () => {
+  test('audios 按 wav / mp3 读取、用途为 audio；非音频文件在调用接口之前被拒绝', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gena-'))
     await writeFile(join(root, 'a.png'), PNG)
     await writeFile(join(root, 'v.wav'), 'RIFF')

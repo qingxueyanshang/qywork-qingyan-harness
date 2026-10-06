@@ -1,10 +1,10 @@
 /**
- * `qy export` —— 把一个会话导出成 markdown 或 json。
+ * `qy export`：把会话导出为 markdown 或 json。
  *
  *   qy export                      列出会话供选择
- *   qy export <会话 id>            导出成 markdown 到 stdout
- *   qy export <会话 id> --json     导出成 json（完整，不裁剪）
- *   qy export <会话 id> -o out.md  写文件
+ *   qy export <会话 id>            以 markdown 格式输出到 stdout
+ *   qy export <会话 id> --json     导出为 json（完整，不裁剪）
+ *   qy export <会话 id> -o out.md  写入文件
  */
 
 import { writeFile } from 'node:fs/promises'
@@ -20,18 +20,18 @@ export async function runExport(args: string[]): Promise<number> {
   const thinking = args.includes('--thinking')
   const outFlag = args.findIndex((a) => a === '-o' || a === '--out')
   const out = outFlag >= 0 ? args[outFlag + 1] : undefined
-  // 没有 -o 时 outFlag 是 -1，`outFlag + 1` 就是 0——直接比会把第一个位置参数
-  // （也就是会话 id）当成 -o 的值排掉。这个下标运算必须先确认 -o 真的存在。
+  // 没有 -o 时 outFlag 为 -1，`outFlag + 1` 为 0；直接比较会把第一个位置参数
+  // （即会话 id）误当作 -o 的值而排除。计算该下标前必须先确认 -o 存在。
   const outValueIndex = outFlag >= 0 ? outFlag + 1 : -1
   const id = args.find((a, i) => !a.startsWith('-') && i !== outValueIndex)
 
   const store = new Store({ path: dataPath() })
   try {
     if (!id) {
-      // 不猜「最近那个」：导出结果用于存档或转发，导错的会话不会在使用中暴露。
+      // 不默认取最近的会话：导出结果用于存档或转发，导出了错误的会话在使用过程中不会被发现。
       const rows = listRecentConversations(store, 20)
       if (rows.length === 0) {
-        process.stderr.write('还没有任何会话。\n')
+        process.stderr.write('尚无会话。\n')
         return 1
       }
       process.stderr.write('请选择一个会话 id：\n\n')

@@ -1,9 +1,9 @@
 /**
  * 分支名数据源的边界。
  *
- * 覆盖 `git.ts` 的两件事：**detached HEAD 回 null 而不是一个叫 HEAD 的分支**，
- * 以及**这台机器上没装 git 时的形状**。
- * 其余由 git 自己保证，复刻一遍它的行为没有意义。
+ * 覆盖 `git.ts` 的两项行为：**detached HEAD 返回 null 而不是名为 HEAD 的分支**，
+ * 以及**本机未安装 git 时的形状**。
+ * 其余行为由 git 自身保证，无需在此重复验证。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -25,43 +25,43 @@ async function repoWithCommit(): Promise<string> {
 }
 
 describe('当前分支名', () => {
-  test('在分支上就是分支名', async () => {
+  test('位于分支上时返回分支名', async () => {
     expect(await currentBranch(await repoWithCommit())).toBe('main')
   })
 
   /**
-   * detached HEAD。**必须是 null，不能是字符串 `HEAD`**——
-   * `rev-parse --abbrev-ref HEAD` 在这个状态下回的正是后者，界面会把它当成
-   * 一个叫 HEAD 的分支挂在输入框上方。
+   * detached HEAD。**必须是 null，不能是字符串 `HEAD`**：
+   * `rev-parse --abbrev-ref HEAD` 在该状态下返回的正是后者，界面会把它当作
+   * 名为 HEAD 的分支显示在输入框上方。
    */
-  test('detached HEAD 回 null', async () => {
+  test('detached HEAD 返回 null', async () => {
     const dir = await repoWithCommit()
     const sha = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: dir }).stdout.toString().trim()
     Bun.spawnSync(['git', 'checkout', '-q', sha], { cwd: dir })
     expect(await currentBranch(dir)).toBeNull()
   })
 
-  test('不是仓库回 null', async () => {
+  test('不是仓库时返回 null', async () => {
     expect(await currentBranch(await mkdtemp(join(tmpdir(), 'qy-nogit-')))).toBeNull()
   })
 })
 
-describe('这台机器上没装 git', () => {
+describe('本机未安装 git', () => {
   /**
-   * **不能抛，只能报「不是仓库」。**
+   * **不能抛出，只能报告「不是仓库」。**
    *
-   * 原始失败形状是实测撞出来的：把 PATH 剥到只剩 System32 起一次服务，
-   * `Bun.spawn(['git', …])` 同步抛 ENOENT，而广播那一处是
-   * `void publishGitState(...)`——浮动 promise 没人接，因此启动时糊一屏栈，
-   * 此后每次广播再来一次。
+   * 原始失败形状由实测触发：将 PATH 精简到只剩 System32 后启动一次服务，
+   * `Bun.spawn(['git', …])` 同步抛出 ENOENT，而广播处是
+   * `void publishGitState(...)`：浮动 promise 无人处理，因此启动时输出大量调用栈，
+   * 此后每次广播都重复一次。
    *
-   * 判据是「git 跑不跑得起来」本来就属于 `git()` 的返回类型（它有 `ok: false` 这一档），
-   * 所以接在那里而不是给广播那一处加 `.catch`——后者是在下游堵症状。
+   * 「git 能否运行」本就属于 `git()` 的返回类型（它有 `ok: false` 这一分支），
+   * 因此在该处处理，而不是给广播处加 `.catch`：后者是在下游掩盖症状。
    *
-   * PATH 指向一个空目录制造这个状态。不要改成空串：PATH 为空时 Bun 在 POSIX 上按缺省路径查找，
-   * 照样找得到 git。仓库建在分支上，回 null 只能来自找不到 git。
+   * 将 PATH 指向一个空目录以构造该状态。不要改为空字符串：PATH 为空时 Bun 在 POSIX 上按
+   * 默认路径查找，仍能找到 git。仓库位于分支上，返回 null 只能是因为未找到 git。
    */
-  test('git 不在 PATH 上时回 null，而不是抛', async () => {
+  test('git 不在 PATH 上时返回 null，而不是抛出', async () => {
     const dir = await repoWithCommit()
     const empty = await mkdtemp(join(tmpdir(), 'qy-nopath-'))
     const prev = process.env.PATH
@@ -75,10 +75,10 @@ describe('这台机器上没装 git', () => {
 })
 
 /**
- * 被拒时的那句话。**只测形状不测措辞**：断言里出现的是文件名和「未提交」这类关键字，
- * 换个说法不该让测试红。
+ * 切换被拒绝时的提示。**只测形状不测措辞**：断言中出现的是文件名与「未提交」等关键字，
+ * 换一种表述不应使测试失败。
  */
-describe('切不过去时说人话', () => {
+describe('无法切换时给出可读的提示', () => {
   async function dirtyBlocked(): Promise<string> {
     const dir = await mkdtemp(join(tmpdir(), 'qy-git-sw-'))
     const run = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir })
@@ -92,27 +92,27 @@ describe('切不过去时说人话', () => {
     await Bun.write(join(dir, 'a.txt'), 'dev')
     run('commit', '-qam', 'dev')
     run('switch', '-q', 'main')
-    // 这一份既没提交、又正好是两条分支不一样的那个文件——git 一定拒。
+    // 该文件既未提交，又恰好是两条分支之间存在差异的文件，git 必然拒绝切换。
     await Bun.write(join(dir, 'a.txt'), '我自己改的')
     const r = await switchTo(dir, 'dev')
     expect(r.ok).toBe(false)
     return r.message
   }
 
-  test('点名是哪个文件，且不吐英文', async () => {
+  test('指出具体文件，且不输出英文', async () => {
     const msg = await dirtyBlocked()
     expect(msg).toContain('a.txt')
     expect(msg).toContain('未提交')
-    // 必须压成一行：原始输出是四行英文加缩进。
+    // 必须压缩为一行：原始输出是四行带缩进的英文。
     expect(msg).not.toContain('\n')
     expect(msg).not.toContain('overwritten')
   })
 
-  test('没有这条分支时不去跑 git', async () => {
+  test('不存在该分支时不运行 git', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qy-git-none-'))
     Bun.spawnSync(['git', 'init', '-q', '-b', 'main', '.'], { cwd: dir })
     const r = await switchTo(dir, '--output=pwned')
     expect(r.ok).toBe(false)
-    expect(r.message).toContain('没有这条本地分支')
+    expect(r.message).toContain('本地分支不存在')
   })
 })

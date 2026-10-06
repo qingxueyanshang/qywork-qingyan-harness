@@ -2,8 +2,8 @@
  * 七个内置浏览器工具。**覆盖范围**：`browser.ts` 的参数校验、路径裁决、终态判定、
  * 观察投递与注册元数据。
  *
- * 端口那一侧由 `packages/server/src/browser/*.test.ts` 覆盖。这里用一份记账假端口：
- * 断言的是「宿主传下去的是什么」与「有没有传下去」，不是调了几次。
+ * 端口一侧由 `packages/server/src/browser/*.test.ts` 覆盖。此处使用一个记录调用的假端口：
+ * 断言的是宿主传给端口的内容以及是否传递，不是调用次数。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -137,7 +137,7 @@ function ctxWith(
   }
 }
 
-/** 带一个 a.txt 的工作区，上传与下载的路径裁决要真实文件系统。 */
+/** 含一个 a.txt 的工作区：上传与下载的路径裁决需要真实文件系统。 */
 async function workspace(): Promise<string> {
   const root = realpathSync(await mkdtemp(join(tmpdir(), 'qywork-browser-')))
   await writeFile(join(root, 'a.txt'), 'abc', 'utf8')
@@ -163,14 +163,14 @@ describe('注册元数据', () => {
       expect(spec.objectLabel).toBe('浏览器控制')
       expect(spec.facet).toBe('页面')
       expect(spec.summary.trim()).not.toBe('')
-      // 默认串行：不声明 parallelSafe，同一页上两个动作不进同一波次。
+      // 默认串行：不声明 parallelSafe，同一页面上的两个动作不进入同一批。
       expect(spec.parallelSafe).toBeUndefined()
     }
-    // summary 各写各的，不共用一句。
+    // 每个工具的 summary 各不相同，不共用同一句。
     expect(new Set(browserTools.map((t) => t.summary)).size).toBe(7)
   })
 
-  test('动作轴：读的是读，动页面的是 call', () => {
+  test('动作类型：只读操作为 read，改变页面的操作为 call', () => {
     const kind = (spec: ToolSpec, args: Record<string, unknown>) =>
       typeof spec.actionKind === 'function' ? spec.actionKind(args) : spec.actionKind
     expect(kind(browserTabsTool, { action: 'list' })).toBe('read')
@@ -184,7 +184,7 @@ describe('注册元数据', () => {
     expect(kind(browserDownloadTool, {})).toBe('call')
   })
 
-  test('目标取 tabId，tabs 没给时退回 browser', () => {
+  test('目标取 tabId，browser_tabs 未提供 tabId 时回退为 browser', () => {
     expect(browserActTool.targetExtractor?.({ tabId: 'bt_1' })).toBe('bt_1')
     expect(browserActTool.targetExtractor?.({})).toBeNull()
     expect(browserTabsTool.targetExtractor?.({ action: 'close', tabId: 'bt_1' })).toBe('bt_1')
@@ -192,7 +192,7 @@ describe('注册元数据', () => {
   })
 })
 
-describe('发动作之前的终态', () => {
+describe('发送动作之前的终态', () => {
   test('没有端口时七个工具都明确失败，不静默成功', async () => {
     const ctx = ctxWith('/w')
     for (const spec of browserTools) {
@@ -203,7 +203,7 @@ describe('发动作之前的终态', () => {
     }
   })
 
-  test('已停止就不再发动作', async () => {
+  test('已停止时不再发送动作', async () => {
     const { port, calls } = fakeBrowser()
     const ac = new AbortController()
     ac.abort()
@@ -264,7 +264,7 @@ describe('发动作之前的终态', () => {
     })
   })
 
-  test('本地路径带查询串时只按 ? 之前的部分找文件，查询串与片段接到 file URL 上', async () => {
+  test('本地路径带查询串时只按 ? 之前的部分查找文件，查询串与片段附加到 file URL', async () => {
     const root = await workspace()
     await mkdir(join(root, '.tmp'))
     const page = join(root, '.tmp', 'autotest.html')
@@ -295,8 +295,8 @@ describe('发动作之前的终态', () => {
     for (const [url, kind] of [
       ['missing.html', 'path_not_found'],
       [root, 'invalid_argument'],
-      // 用编码的分隔符：`fileURLToPath` 在各平台都拒绝它。`%ZZ` 这类非法转义会被原样保留，
-      // POSIX 上得到的是一个合法的绝对路径。
+      // 使用编码后的分隔符：`fileURLToPath` 在各平台都拒绝它。`%ZZ` 等非法转义会被原样保留，
+      // 在 POSIX 上得到合法的绝对路径。
       ['file:///a%2Fb.html', 'invalid_argument'],
     ]) {
       const r = await browserTabsTool.fn({ action: 'create', url }, ctxWith(root, port))
@@ -336,7 +336,7 @@ describe('发动作之前的终态', () => {
     }
   })
 
-  test('认不出的动作名直接拒绝，不猜一个近似的', async () => {
+  test('无法识别的动作名直接拒绝，不推测近似的动作', async () => {
     const { port, calls } = fakeBrowser()
     const r = await browserActTool.fn(
       { tabId: 'bt_1', observationId: 'ob_1', action: 'swipe', ref: 'e1' },
@@ -347,7 +347,7 @@ describe('发动作之前的终态', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('元素动作缺 ref、press 缺 phases 都在调端口前判', async () => {
+  test('元素动作缺少 ref、press 缺少 phases 时在调用端口前拒绝', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const noRef = await browserActTool.fn(
@@ -393,7 +393,7 @@ describe('发动作之前的终态', () => {
 describe('动作的适用范围', () => {
   const base = { tabId: 'bt_1', observationId: 'ob_1' }
 
-  test('schema 的动作枚举与运行时接受的动作是同一份', () => {
+  test('schema 的动作枚举与运行时接受的动作一致', () => {
     const actionEnum = (browserActTool.parameters as { properties: { action: { enum: string[] } } })
       .properties.action.enum
     expect(actionEnum).toEqual([
@@ -410,7 +410,7 @@ describe('动作的适用范围', () => {
     ])
   })
 
-  test('新动作的合法参数原样到端口', async () => {
+  test('新动作的合法参数原样传给端口', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     for (const action of ['hover', 'dblclick', 'rightclick']) {
@@ -452,18 +452,18 @@ describe('动作的适用范围', () => {
     expect(calls.at(-1)?.input).toEqual({ ...base, action: 'scroll', deltaX: -200 })
   })
 
-  test('鼠标动作缺 ref 在调端口前判', async () => {
+  test('鼠标动作缺少 ref 时在调用端口前拒绝', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     for (const action of ['click', 'dblclick', 'rightclick', 'hover']) {
       const r = await browserActTool.fn({ ...base, action }, ctx)
       expect(r.executed).toBe(false)
-      expect(r.message).toContain('必须给 ref')
+      expect(r.message).toContain('必须提供 ref')
     }
     expect(calls).toHaveLength(0)
   })
 
-  test('drag 要路径与起点，起终点不能是同一个点', async () => {
+  test('drag 必须提供路径与起点，起点与终点不能相同', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const drag = { ...base, action: 'drag' }
@@ -474,7 +474,7 @@ describe('动作的适用范围', () => {
 
     const noFrom = await browserActTool.fn({ ...drag, path: [{ ref: 'e2' }] }, ctx)
     expect(noFrom.executed).toBe(false)
-    expect(noFrom.message).toContain('必须给 ref')
+    expect(noFrom.message).toContain('必须提供 ref')
 
     const same = await browserActTool.fn({ ...drag, ref: 'e1', path: [{ ref: 'e1' }] }, ctx)
     expect(same.executed).toBe(false)
@@ -488,7 +488,7 @@ describe('动作的适用范围', () => {
     expect(noStepRef.message).toContain('path[0].ref')
     expect(calls).toHaveLength(0)
 
-    // 同一个元素上的两个不同点是合法的拖动，canvas 靠它画线。
+    // 同一元素上的两个不同点构成合法的拖动，canvas 依赖它绘制线条。
     const line = await browserActTool.fn(
       { ...drag, ref: 'e1', point: { x: 0, y: 0 }, path: [{ ref: 'e1', point: { x: 50, y: 0 } }] },
       ctx,
@@ -496,11 +496,11 @@ describe('动作的适用范围', () => {
     expect(line.status).toBe('success')
   })
 
-  test('落点、按住时长与按着的键在调端口前判', async () => {
+  test('落点、按住时长与按住的键在调用端口前校验', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const cases: [Record<string, unknown>, string][] = [
-      [{ action: 'scroll', point: { x: 1, y: 1 } }, 'point 必须与 ref 一起给'],
+      [{ action: 'scroll', point: { x: 1, y: 1 } }, 'point 必须与 ref 一起提供'],
       [{ action: 'click', ref: 'e1', point: { x: -1, y: 1 } }, '不能为负'],
       [{ action: 'click', ref: 'e1', point: [1, 2] }, 'point 必须是'],
       [{ action: 'click', ref: 'e1', holdMs: 6000 }, 'holdMs'],
@@ -515,7 +515,7 @@ describe('动作的适用范围', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('用不上的参数拒绝，不静默忽略', async () => {
+  test('不适用的参数予以拒绝，不静默忽略', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const cases: Record<string, unknown>[] = [
@@ -539,7 +539,7 @@ describe('动作的适用范围', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('type 的长度与控制字符在调端口前判', async () => {
+  test('type 的长度与控制字符在调用端口前校验', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const typing = { ...base, action: 'type', ref: 'e1' }
@@ -554,7 +554,7 @@ describe('动作的适用范围', () => {
 
     const empty = await browserActTool.fn({ ...typing, text: '' }, ctx)
     expect(empty.executed).toBe(false)
-    expect(empty.message).toContain('type 必须给 text')
+    expect(empty.message).toContain('type 必须提供 text')
     expect(calls).toHaveLength(0)
 
     const edge = await browserActTool.fn({ ...typing, text: 'a'.repeat(2000) }, ctx)
@@ -571,7 +571,7 @@ describe('动作的适用范围', () => {
     expect(calls.at(-1)?.input).toMatchObject({ text: 'a\nb\nc\td' })
   })
 
-  test('press 的阶段整段预检，键码与上限和端口同一张表', async () => {
+  test('press 的阶段整体预检，键码与上限和端口使用同一张表', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const press = { ...base, action: 'press' }
@@ -587,7 +587,7 @@ describe('动作的适用范围', () => {
       expect(r.status).toBe('success')
       expect(calls.at(-1)?.input).toMatchObject({ phases })
     }
-    // strict 改写会把没填的 durationMs 写成 null：按缺席算。键码两端的空白去掉。
+    // strict 改写会把未填写的 durationMs 写为 null，按缺失处理。键码两端的空白会被去除。
     await browserActTool.fn({ ...press, phases: [{ keys: [' KeyW '], durationMs: null }] }, ctx)
     expect(calls.at(-1)?.input).toMatchObject({ phases: [{ keys: ['KeyW'] }] })
 
@@ -628,7 +628,7 @@ describe('动作的适用范围', () => {
 })
 
 describe('部分完成与结果未知', () => {
-  test('partial 是失败，回执与新观察都在，消息说明不要重放', async () => {
+  test('partial 视为失败，保留回执与新观察，消息说明不要重放', async () => {
     const { port } = fakeBrowser({
       act: async () => ({
         element: 'textarea 备注',
@@ -676,7 +676,7 @@ describe('部分完成与结果未知', () => {
     expect(r.executed).toBe(true)
     expect(r.errorKind).toBe('browser_unknown')
     expect(r.message).toContain('结果未知（控制连接已断开）')
-    // 页面可能仍认为这个键按着：说出来，调用方才不会把后续异常当成页面自己的问题。
+    // 页面可能仍认为该键处于按下状态：结果中说明这一点，调用方才不会把后续异常归因于页面本身。
     expect(r.message).toContain('未确认松开：KeyW')
     expect(r.message).toContain('连接已断开')
     expect(r.message).toContain('不要重放')
@@ -686,7 +686,7 @@ describe('部分完成与结果未知', () => {
     })
   })
 
-  test('completed 与缺席都按普通成功投递', async () => {
+  test('completed 与缺失均按普通成功投递', async () => {
     const { port } = fakeBrowser({
       act: async () => ({
         element: 'button 提交',
@@ -706,8 +706,8 @@ describe('部分完成与结果未知', () => {
     })
   })
 
-  test('端口回执里的其他字段原样带出，不逐个挑', async () => {
-    // 字段名由动作那一侧定（fill 的规范化值、约束结果）；这里验的是投递不挑字段。
+  test('端口回执中的其他字段原样返回，不逐个挑选', async () => {
+    // 字段名由动作一侧决定（fill 的规范化值、约束结果）；此处验证投递时不筛选字段。
     const receipt = {
       element: 'input 生日',
       point: { x: 10, y: 20 },
@@ -729,8 +729,8 @@ describe('部分完成与结果未知', () => {
   })
 })
 
-describe('null 与空串的缺席语义', () => {
-  test('observe 的可选字段写成 null 时按没给算', async () => {
+describe('null 与空字符串的缺失语义', () => {
+  test('observe 的可选字段写为 null 时按未提供处理', async () => {
     const { port, calls } = fakeBrowser()
     const r = await browserObserveTool.fn(
       { tabId: 'bt_1', frame: null, offset: null, screenshot: null, optionsFor: null },
@@ -740,7 +740,7 @@ describe('null 与空串的缺席语义', () => {
     expect(calls).toEqual([{ method: 'observe', input: { tabId: 'bt_1' } }])
   })
 
-  test('fill 的空串是清空，null 才是未提供', async () => {
+  test('fill 的空字符串表示清空，只有 null 表示未提供', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     await browserActTool.fn(
@@ -756,7 +756,7 @@ describe('null 与空串的缺席语义', () => {
     expect(calls.at(-1)?.input).not.toHaveProperty('text')
   })
 
-  test('等待时长截到范围内，没给时用默认值', async () => {
+  test('等待时长截断到允许范围内，未提供时使用默认值', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     await browserWaitTool.fn({ tabId: 'bt_1', selector: '#x' }, ctx)
@@ -769,7 +769,7 @@ describe('null 与空串的缺席语义', () => {
 })
 
 describe('观察的投递', () => {
-  test('截图走 images，普通字段里不留 base64', async () => {
+  test('截图经由 images 返回，普通字段中不保留 base64', async () => {
     const shot = { ...OB, image: { data: 'QUJD', mime: 'image/png' } }
     const { port } = fakeBrowser({ observe: async () => shot })
     const r = await browserObserveTool.fn({ tabId: 'bt_1', screenshot: true }, ctxWith('/w', port))
@@ -778,7 +778,7 @@ describe('观察的投递', () => {
     expect(JSON.stringify({ ...data(r), images: null })).not.toContain('QUJD')
   })
 
-  test('动作带回观察时展开到顶层，observationId 可直接用', async () => {
+  test('动作返回观察时展开到顶层，observationId 可直接使用', async () => {
     const { port } = fakeBrowser()
     const r = await browserActTool.fn(
       { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1' },
@@ -794,7 +794,7 @@ describe('观察的投递', () => {
     expect(data(r).elements).toHaveLength(1)
   })
 
-  test('navigate 同样带回观察，不另回一份 tab/url/title', async () => {
+  test('navigate 同样返回观察，不另外返回 tab/url/title', async () => {
     const { port } = fakeBrowser()
     const r = await browserNavigateTool.fn(
       { tabId: 'bt_1', action: 'goto', url: 'https://a/' },
@@ -805,7 +805,7 @@ describe('观察的投递', () => {
     expect(data(r)).not.toHaveProperty('tab')
   })
 
-  test('观察缺席时失败但 executed 为真，回执保留、不给旧编号', async () => {
+  test('观察缺失时结果为失败但 executed 为真，保留回执，不返回旧编号', async () => {
     const { port } = fakeBrowser({
       act: async () => ({
         element: 'button 提交',
@@ -825,7 +825,7 @@ describe('观察的投递', () => {
     expect(r.message).toContain('不要重复动作')
   })
 
-  test('wait 超时仍可带观察，状态按 met 定', async () => {
+  test('wait 超时仍可返回观察，状态由 met 决定', async () => {
     const { port } = fakeBrowser({
       wait: async () => ({ met: false, reason: 'timeout', observation: OB }),
     })
@@ -833,10 +833,10 @@ describe('观察的投递', () => {
     expect(r.status).toBe('failure')
     expect(r.executed).toBe(true)
     expect(data(r)).toMatchObject({ met: false, reason: 'timeout', observationId: 'ob_1' })
-    expect(r.message).toContain('没等到 #x')
+    expect(r.message).toContain('未等到 #x')
   })
 
-  test('wait 的状态缺省为可见；text / value 必须给 expected，空串是合法的期望值', async () => {
+  test('wait 的状态缺省为可见；text / value 必须提供 expected，空字符串是合法的期望值', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
 
@@ -861,10 +861,10 @@ describe('观察的投递', () => {
 
     const sent = calls.length
     const bad: [Record<string, unknown>, string][] = [
-      [{ selector: '#q', state: 'text' }, '必须给 expected'],
+      [{ selector: '#q', state: 'text' }, '必须提供 expected'],
       [{ selector: '#q', state: 'visible', expected: 'x' }, '不接受 expected'],
       [{ selector: '#q', state: 'shown' }, 'state 只能是'],
-      [{ state: 'hidden' }, '要与 selector 一起给'],
+      [{ state: 'hidden' }, '须与 selector 一起提供'],
     ]
     for (const [args, text] of bad) {
       const one = await browserWaitTool.fn({ tabId: 'bt_1', ...args }, ctx)
@@ -874,7 +874,7 @@ describe('观察的投递', () => {
     expect(calls).toHaveLength(sent)
   })
 
-  test('不给 selector 时等满时长再观察，不走选择器等待', async () => {
+  test('未提供 selector 时等待完整时长后再观察，不使用选择器等待', async () => {
     const { port, calls } = fakeBrowser()
     const started = Date.now()
     const r = await browserWaitTool.fn({ tabId: 'bt_1', timeoutMs: 150 }, ctxWith('/w', port))
@@ -882,10 +882,10 @@ describe('观察的投递', () => {
     expect(r.status).toBe('success')
     expect(calls).toEqual([{ method: 'observe', input: { tabId: 'bt_1' } }])
     expect(data(r)).toMatchObject({ waitedMs: 150, observationId: 'ob_1' })
-    expect(r.message).toContain('已等 150 毫秒')
+    expect(r.message).toContain('已等待 150 毫秒')
   })
 
-  test('按时长等待期间取消：不再观察，按已停止收尾', async () => {
+  test('按时长等待期间取消：不再观察，按已停止结束', async () => {
     const { port, calls } = fakeBrowser()
     const stop = new AbortController()
     const pending = browserWaitTool.fn(
@@ -901,7 +901,7 @@ describe('观察的投递', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('端口进去之后出错记 executed:true', async () => {
+  test('进入端口之后出错时记为 executed:true', async () => {
     const { port } = fakeBrowser({
       act: async () => {
         throw new Error('连接已断开')
@@ -916,7 +916,7 @@ describe('观察的投递', () => {
     expect(r.message).toContain('连接已断开')
   })
 
-  test('连接准备失败和动作发出后断连按端口证据区分，向模型保留恢复指引', async () => {
+  test('按端口提供的依据区分连接准备失败与动作发出后断开，向模型保留恢复指引', async () => {
     for (const executed of [false, true]) {
       const error = Object.assign(
         new Error(
@@ -945,12 +945,12 @@ describe('观察的投递', () => {
   })
 
   /**
-   * 端口自己声明的执行前拒绝盖过「进没进过端口」的推断。
+   * 端口自身声明的执行前拒绝优先于「是否进入过端口」的推断。
    *
-   * 页面已经被另一个执行者占住时这次调用一帧都没发出去，标成已执行会让模型认为
-   * 页面已被动过而不再重试。判据只能是契约字段，不是错误文案。
+   * 页面已被另一个执行者占用时，本次调用未发出任何帧，标记为已执行会使模型认为
+   * 页面已被改动而不再重试。判据只能是契约字段，不能是错误文案。
    */
-  test('端口按契约拒绝时记 executed:false，错误种类原样带出', async () => {
+  test('端口按契约拒绝时记为 executed:false，错误种类原样返回', async () => {
     const refusal: BrowserRefusal = { errorKind: 'browser_busy', executed: false }
     const refuse = () => {
       throw Object.assign(new Error('标签页 bt_1 正被另一个任务操作'), refusal)
@@ -976,8 +976,8 @@ describe('观察的投递', () => {
     }
   })
 
-  /** 看不见的 tabId 与 busy 同样一帧未发，回执是参数不合法，不是「已执行但失败」。 */
-  test('看不见的 tabId 按契约拒绝时记 executed:false 与 invalid_argument', async () => {
+  /** 不可见的 tabId 与 busy 相同，未发出任何帧，回执为参数不合法，而不是「已执行但失败」。 */
+  test('不可见的 tabId 按契约拒绝时记为 executed:false 与 invalid_argument', async () => {
     const refusal: BrowserRefusal = { errorKind: 'invalid_argument', executed: false }
     const deny = (message: string) => async () => {
       throw Object.assign(new Error(message), refusal)
@@ -997,7 +997,7 @@ describe('观察的投递', () => {
       ),
       await browserObserveTool.fn(
         { tabId: 'bt_9' },
-        ctxWith('/w', fakeBrowser({ observe: deny('认不出的标签页 bt_9') }).port),
+        ctxWith('/w', fakeBrowser({ observe: deny('无法识别的标签页 bt_9') }).port),
       ),
     ]
     for (const r of outcomes) {
@@ -1010,7 +1010,7 @@ describe('观察的投递', () => {
 })
 
 describe('选项读取', () => {
-  test('optionsFor 到达端口，选项页展开到 data，范围与下一页写进消息', async () => {
+  test('optionsFor 传到端口，选项页展开到 data，范围与下一页写入消息', async () => {
     const { port, calls } = fakeBrowser()
     const r = await browserObserveTool.fn(
       { tabId: 'bt_1', optionsFor: { observationId: 'ob_1', ref: 'e3', offset: 0 } },
@@ -1025,14 +1025,14 @@ describe('选项读取', () => {
     ])
     expect(data(r)).toMatchObject({ ref: 'e3', total: 42, offset: 0, nextOffset: 2 })
     expect(data(r).items).toHaveLength(2)
-    // 选项页不是观察：不给元素表，也不冒充一个新的 observationId。
+    // 选项页不是观察：不返回元素表，也不生成新的 observationId。
     expect(data(r)).not.toHaveProperty('elements')
     expect(data(r).observationId).toBe('ob_1')
     expect(r.message).toContain('1-2/42')
     expect(r.message).toContain('optionsFor.offset=2')
   })
 
-  test('optionsFor 与 frame、screenshot、offset 混用在调端口前拒绝', async () => {
+  test('optionsFor 与 frame、screenshot、offset 同时提供时在调用端口前拒绝', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const optionsFor = { observationId: 'ob_1', ref: 'e3' }
@@ -1045,7 +1045,7 @@ describe('选项读取', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('optionsFor 的必填项与取值范围在调端口前判', async () => {
+  test('optionsFor 的必填项与取值范围在调用端口前校验', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const cases = [
@@ -1066,7 +1066,7 @@ describe('选项读取', () => {
 })
 
 describe('路径裁决', () => {
-  test('上传路径先过工作区裁决，越界时一个都不到端口', async () => {
+  test('上传路径先经过工作区裁决，越界时没有任何文件传到端口', async () => {
     const root = await workspace()
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith(root, port)
@@ -1079,12 +1079,12 @@ describe('路径裁决', () => {
     const out = await browserUploadTool.fn({ ...args, paths: ['a.txt', '../../hosts'] }, ctx)
     expect(out.status).toBe('failure')
     expect(out.executed).toBe(false)
-    // 路径拒绝原样端出去，不压成一句通用错误。
+    // 路径拒绝原样返回，不合并为一句通用错误。
     expect(out.errorKind).toBe('path_out_of_workspace')
     expect(calls.filter((c) => c.method === 'upload')).toHaveLength(1)
   })
 
-  test('上传数量越界在调端口前拒绝', async () => {
+  test('上传数量超限时在调用端口前拒绝', async () => {
     const root = await workspace()
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith(root, port)
@@ -1101,7 +1101,7 @@ describe('路径裁决', () => {
     expect(calls).toHaveLength(0)
   })
 
-  test('下载先裁决路径再触发，端口拿到绝对路径', async () => {
+  test('下载先裁决路径再触发，端口收到绝对路径', async () => {
     const root = await workspace()
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith(root, port)
@@ -1120,7 +1120,7 @@ describe('路径裁决', () => {
     expect(calls.filter((c) => c.method === 'download')).toHaveLength(1)
   })
 
-  test('被宿主拦下的下载是失败，原因原样带回', async () => {
+  test('被宿主拦截的下载视为失败，原因原样返回', async () => {
     const root = await workspace()
     const { port } = fakeBrowser({
       download: async () => ({ blocked: '目标已存在', suggestedName: 'report.bin' }),
@@ -1136,16 +1136,16 @@ describe('路径裁决', () => {
 })
 
 describe('标签页', () => {
-  test('list 分清归本会话的页与用户开的页', async () => {
+  test('list 区分归属本会话的页面与用户打开的页面', async () => {
     const { port } = fakeBrowser()
     const r = await browserTabsTool.fn({ action: 'list' }, ctxWith('/w', port))
     expect(r.status).toBe('success')
     expect(r.message).toContain('2 个标签页')
-    expect(r.message).toContain('1 个是用户开的')
+    expect(r.message).toContain('1 个是用户打开的')
     expect(data(r).tabs).toHaveLength(2)
   })
 
-  test('bind 与 close 要 tabId，缺了在调端口前拒绝', async () => {
+  test('bind 与 close 必须提供 tabId，缺少时在调用端口前拒绝', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     expect((await browserTabsTool.fn({ action: 'bind' }, ctx)).executed).toBe(false)
@@ -1157,8 +1157,8 @@ describe('标签页', () => {
     expect(calls).toEqual([{ method: 'close', input: 'bt_1' }])
   })
 
-  /** 网址长度无界，message 只放短的执行事实；端口拿到的与 data 里的都是原值。 */
-  test('开页回执里的超长网址截短，端口与 data 拿到原值', async () => {
+  /** 网址长度没有上限，message 只包含简短的执行事实；端口收到的值与 data 中的值都是原值。 */
+  test('打开页面的回执中超长网址被截短，端口与 data 收到原值', async () => {
     const { port, calls } = fakeBrowser()
     const url = `https://a/${'p'.repeat(500)}`
     const r = await browserTabsTool.fn({ action: 'create', url }, ctxWith('/w', port))

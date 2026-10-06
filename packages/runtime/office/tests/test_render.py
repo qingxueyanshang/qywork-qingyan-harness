@@ -1,5 +1,5 @@
 """覆盖 render.py 的 segments、seed_docx、rasterize，view 在缓存命中时的整页、局部与缺页处理，
-以及 PDF 原件按页栅格化与打不开的 PDF（均不启动办公软件）。"""
+以及 PDF 原件按页栅格化与无法打开的 PDF（均不启动办公软件）。"""
 
 import unittest
 

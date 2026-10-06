@@ -18,7 +18,7 @@ const outcome = (data: WorkflowTransition) => ({
 })
 
 describe('workflow 调用判别', () => {
-  test('strict wire 的 null 仍能判成首次派发', () => {
+  test('strict wire 的 null 仍判定为首次派发', () => {
     const got = parseWorkflowCall({
       goal: '做完',
       nodes: [
@@ -40,7 +40,7 @@ describe('workflow 调用判别', () => {
           needs: ['a'],
           name: null,
           task: null,
-          // OpenAI strict 参数补全实测可能给 checkpoint 填默认 true；该字段无语义。
+          // 实测 OpenAI strict 参数补全可能为 checkpoint 填入默认值 true；该字段对检查点没有含义。
           passInput: true,
           provider: null,
           model: null,
@@ -66,7 +66,7 @@ describe('workflow 调用判别', () => {
     })
   })
 
-  test('兼容端把可空字段写成 "null" 时仍按首次派发解析', () => {
+  test('兼容端把可空字段写为 "null" 时仍按首次派发解析', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
@@ -122,7 +122,7 @@ describe('workflow 调用判别', () => {
     ).toMatchObject({ ok: true, call: { kind: 'review', decision: 'approve' } })
   })
 
-  test('兼容端把 nodes 与 revisions 再次 JSON 编码时只在结构入口解一层', () => {
+  test('兼容端把 nodes 与 revisions 再次 JSON 编码时只在结构化入口解码一层', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
@@ -152,7 +152,7 @@ describe('workflow 调用判别', () => {
     })
   })
 
-  test('maxConcurrent 缺省回默认值，正整数原样带出，非正整数拒绝', () => {
+  test('maxConcurrent 缺省时取默认值，正整数原样保留，非正整数被拒绝', () => {
     expect(
       parseWorkflowCall({
         goal: '做完',
@@ -178,7 +178,7 @@ describe('workflow 调用判别', () => {
     ).toEqual({ ok: false, error: 'maxConcurrent 必须是正整数' })
   })
 
-  test('审查动作带 maxConcurrent 被拒，与 goal / nodes 同一条规则', () => {
+  test('审查动作填写 maxConcurrent 时被拒绝，与 goal / nodes 规则相同', () => {
     expect(
       parseWorkflowCall({
         workflowId: 'wf',
@@ -186,13 +186,13 @@ describe('workflow 调用判别', () => {
         decision: 'approve',
         maxConcurrent: 3,
       }),
-    ).toEqual({ ok: false, error: '审查动作不能带 maxConcurrent' })
+    ).toEqual({ ok: false, error: '审查动作不能填写 maxConcurrent' })
   })
 
   test('损坏的结构字符串仍由原有校验拒绝', () => {
     expect(parseWorkflowCall({ goal: '做完', nodes: '[{"id":' })).toEqual({
       ok: false,
-      error: '图里一个节点都没有',
+      error: '图中没有任何节点',
     })
   })
 
@@ -245,7 +245,7 @@ describe('workflow 调用判别', () => {
         goal: null,
         nodes: null,
       }),
-    ).toEqual({ ok: false, error: 'revise 必须带至少一条 revisions' })
+    ).toEqual({ ok: false, error: 'revise 必须至少填写一条 revisions' })
   })
 })
 
@@ -265,8 +265,8 @@ const cell = (input: {
 })
 
 describe('workflow 投影', () => {
-  /** 回执只有一个来源：格的终态。转移里只剩「派了谁、批了什么」。 */
-  test('回执从格状态折出，批准把上游产出定格进 approvals', () => {
+  /** 回执只有一个来源：节点的终态。转移中只记录派发了哪些节点、批准了什么。 */
+  test('回执由节点状态折叠得出，批准把上游产出固定写入 approvals', () => {
     const records: WorkflowCallRecord[] = [
       {
         stepId: 'wf1',
@@ -320,7 +320,7 @@ describe('workflow 投影', () => {
     expect(folded.projection.approvals.cp).toContain('对')
   })
 
-  /** 派生的 phase：上游全部终态且没批准，那个检查点就是当前待审查的。 */
+  /** 派生的 phase：上游全部为终态且未批准时，该检查点即当前待审查的检查点。 */
   test('上游全部终态、检查点未批准时投影为待审查', () => {
     const folded = foldWorkflow(
       [
@@ -351,8 +351,8 @@ describe('workflow 投影', () => {
     expect(folded.projection.results.b).toMatchObject({ status: 'failed', error: '连不上' })
   })
 
-  /** 还有格在跑时不算到达检查点：它没有终态，也就没有回执。 */
-  test('有格还在跑时投影为执行中', () => {
+  /** 仍有节点运行时不算到达检查点：该节点没有终态，因此没有回执。 */
+  test('有节点仍在运行时投影为执行中', () => {
     const folded = foldWorkflow(
       [
         {
@@ -380,8 +380,8 @@ describe('workflow 投影', () => {
   })
 
   /**
-   * 编排器与投影共用 `revisionClosure`，所以这条锁的是两边同一份行为：批准之后 revise
-   * 仍然成立，且该检查点的批准被撤销。撤不掉的话卡片上会显示成「已通过」而服务端在重跑。
+   * 编排器与投影共用 `revisionClosure`，因此本测试锁定两侧的同一行为：批准之后 revise
+   * 仍然有效，且该检查点的批准被撤销。若无法撤销，卡片上会显示「已通过」而服务端正在重新执行。
    */
   test('对已批准的检查点 revise：撤销批准、只作废选中节点', () => {
     const nodes = [
@@ -441,9 +441,9 @@ describe('workflow 投影', () => {
     if (!folded.ok) return
     expect(folded.projection.approvals['audit-builds']).toBeUndefined()
     expect(folded.projection.results['build-qwen']).toBeUndefined()
-    // 没被点名的那个节点结果留着：它不需要重跑，检查点等它的回执。
+    // 未被选中的节点结果保留：它不需要重新执行，检查点等待它的回执。
     expect(folded.projection.results['build-glm']?.output).toBe('glm 初稿')
-    // 作废的格保留子 agent id：续发是向原子 agent 接着说，不是另起一个。
+    // 作废的节点保留子 agent id：续发是向原子 agent 继续发送，而不是新建一个子 agent。
     expect(folded.projection.states['build-qwen']).toMatchObject({
       phase: 'waiting',
       subagentId: 'cv_qwen',
@@ -451,10 +451,10 @@ describe('workflow 投影', () => {
   })
 
   /**
-   * 首派被进程退出截断时投影必须落 failed。停在 running 的话 review 只会收到
-   * 「当前不是待审查状态（running）」，图上也一直转圈。
+   * 首次派发被进程退出截断时投影必须为 failed。停留在 running 时 review 只会收到
+   * 「当前不是待审查状态（running）」，图上的加载状态也不会结束。
    */
-  test('首派没有 transition 且已落失败终态时投影为 failed', () => {
+  test('首次派发没有 transition 且已落失败终态时投影为 failed', () => {
     const folded = foldWorkflow(
       [
         {
@@ -476,7 +476,7 @@ describe('workflow 投影', () => {
     expect(folded.projection.phase).toBe('failed')
   })
 
-  test('被中断的格折出「调用中断」回执，revise 才找得到要续的会话', () => {
+  test('被中断的节点折叠出「调用中断」回执，revise 才能找到要续接的会话', () => {
     const folded = foldWorkflow(
       [
         {
@@ -501,7 +501,7 @@ describe('workflow 投影', () => {
     )
     expect(folded.ok).toBe(true)
     if (!folded.ok) return
-    // 中断也是终态：检查点因此仍然到得了，图不会卡在没有出口的地方。
+    // 中断也是终态：检查点因此仍可到达，图不会停滞在没有出口的状态。
     expect(folded.projection.phase).toBe('waiting_review')
     expect(folded.projection.results.a).toMatchObject({
       status: 'failed',
@@ -516,10 +516,10 @@ describe('workflow 投影', () => {
   })
 
   /**
-   * 派出即返回之后，一格跑完的回调随时会重建投影，而那时批准那次调用可能还没落终态。
-   * 不认它的话同一个检查点会被判成第二次就绪，回执发两遍。
+   * 派发后立即返回，之后任一节点执行完毕的回调随时会重建投影，而此时批准调用可能尚未落终态。
+   * 不计入该调用时，同一检查点会被再次判定为就绪，回执发送两次。
    */
-  test('还在跑的批准也算数', () => {
+  test('仍在执行的批准同样计入', () => {
     const folded = foldWorkflow(
       [
         {
@@ -553,11 +553,11 @@ describe('workflow 投影', () => {
     expect(folded.projection.checkpointId).toBeUndefined()
   })
 
-  test('运行中的续调立刻按 args.workflowId 归回首轮', () => {
+  test('运行中的续接调用立即按 args.workflowId 归入首次调用', () => {
     expect(workflowGroupId({ stepId: 'current', args: { workflowId: 'anchor' } })).toBe('anchor')
   })
 
-  test('revise 刚开始就让选中节点和本批下游失效，不显示旧回执', () => {
+  test('revise 开始时即令选中节点与本批下游失效，不显示旧回执', () => {
     const records: WorkflowCallRecord[] = [
       {
         stepId: 'wf',
@@ -596,8 +596,8 @@ describe('workflow 投影', () => {
     expect(folded.projection.results.b).toBeUndefined()
   })
 
-  /** revise 的那次调用自己派出去的格不能被它自己作废，否则重新派发的内容将立即丢失。 */
-  test('revise 那一次调用写下的格状态压过作废', () => {
+  /** revise 调用自身派发的节点不能被同一调用作废，否则重新派发的内容将立即丢失。 */
+  test('revise 调用写入的节点状态覆盖作废结果', () => {
     const records: WorkflowCallRecord[] = [
       {
         stepId: 'wf',
@@ -633,14 +633,14 @@ describe('workflow 投影', () => {
   })
 })
 
-describe('转移只记这次调用做了什么', () => {
-  test('只带 workflowId 不成立：审查动作必须点名检查点', () => {
+describe('转移只记录本次调用执行的操作', () => {
+  test('只提供 workflowId 无效：审查动作必须指定检查点', () => {
     const got = parseWorkflowCall({ workflowId: 'wf' })
     expect(got.ok).toBe(false)
-    if (!got.ok) expect(got.error).toBe('审查动作必须带 workflowId 和 checkpointId')
+    if (!got.ok) expect(got.error).toBe('审查动作必须填写 workflowId 和 checkpointId')
   })
 
-  test('派出去的格原样读回', () => {
+  test('已派发的节点原样读取', () => {
     const transition = workflowTransitionOf(outcome({ workflowId: 'wf', dispatched: ['a', 'c'] }))
     expect(transition).toEqual({ workflowId: 'wf', dispatched: ['a', 'c'] })
   })

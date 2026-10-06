@@ -1,16 +1,16 @@
 /**
- * 推进器：给定格状态算出这一趟派谁、跳过谁、到没到检查点。
+ * 推进器：根据节点状态计算本次派发哪些节点、跳过哪些节点、是否到达检查点。
  *
  * 覆盖范围：`orchestrator.ts` 的 `advance` 与 `validatePlan`。
- * 这里不派活也不等——派出去、写状态、发回执都在 server 的派活通道，
- * 它那一侧由 `server/delegate.test.ts` 覆盖。
+ * 此处不派发任务也不等待：派发、写入状态、发送回执都在 server 的派发通道中完成，
+ * 该侧由 `server/delegate.test.ts` 覆盖。
  */
 import { describe, expect, test } from 'bun:test'
 import { DEFAULT_MAX_CONCURRENT, type NodeState, type SubagentTarget } from '@qywork/core'
 import { type AdvanceInput, advance, validatePlan } from './orchestrator.ts'
 import type { PlanNode } from './types.ts'
 
-/** 派给角色 r 的节点；图里绝大多数格子都是它。 */
+/** 派发给角色 r 的节点；图中绝大多数节点都是这种。 */
 function node(id: string, task: string, extra: Partial<PlanNode> = {}): PlanNode {
   return {
     id,
@@ -34,7 +34,7 @@ const KNOWN = {
   subagents: new Set(['cv_known']),
 }
 
-/** 一格的终态。回执就是它，推进器不认第二个来源。 */
+/** 节点的终态。回执即终态，推进器不接受第二个来源。 */
 function cell(
   label: string,
   input: {
@@ -95,10 +95,10 @@ describe('计划校验', () => {
   })
 
   /**
-   * 成环在运行时的表现是「一直没有可启动节点」——从这个现象倒推原因很费劲，
-   * 所以必须在加载期报出确切的环路径。
+   * 成环在运行时表现为始终没有可启动的节点，从该现象反推原因很困难，
+   * 因此必须在加载期报告确切的环路径。
    */
-  test('循环依赖在加载期就报出环路径', () => {
+  test('循环依赖在加载期报告环路径', () => {
     expect(() =>
       validatePlan(
         [
@@ -116,8 +116,8 @@ describe('计划校验', () => {
   })
 
   /**
-   * 每个节点的成败都要有检查点裁决。没有的话终态只能按「任一回执非 done 即失败」粗判，
-   * 而失败之后没有回流入口——这正是四个节点全部失败后只能新开子会话的形状。
+   * 每个节点的成败都必须由检查点裁决。否则终态只能按「任一回执非 done 即失败」粗略判定，
+   * 且失败之后没有回流入口，四个节点全部失败后只能新建子会话。
    */
   test('节点后面没有检查点直接拒绝', () => {
     expect(() => validatePlan([node('a', '干完')], KNOWN)).toThrow(/节点 a 后面没有检查点/)
@@ -143,8 +143,8 @@ describe('计划校验', () => {
   })
 })
 
-describe('这一趟派谁', () => {
-  test('首派只派依赖已就绪的格', () => {
+describe('本次派发哪些节点', () => {
+  test('首次派发只派发依赖已就绪的节点', () => {
     const plan = [node('a', '先做'), node('b', '后做', { needs: ['a'] }), checkpoint('cp', ['b'])]
     const result = step(plan)
     expect(dispatched(result)).toEqual(['a'])
@@ -152,7 +152,7 @@ describe('这一趟派谁', () => {
     expect(result.completed).toBe(false)
   })
 
-  test('一格跑完之后派它的下游，上游产出注入任务', () => {
+  test('节点执行完毕后派发其下游，上游产出写入任务', () => {
     const plan = [
       node('a', '先做'),
       node('b', '基于 {input} 继续', { needs: ['a'] }),
@@ -163,13 +163,13 @@ describe('这一趟派谁', () => {
     expect(promptOf(result, 'b')).toBe('基于 A 的产出 继续')
   })
 
-  test('没写 {input} 时上游产出追加到末尾，而不是丢掉', () => {
+  test('未写 {input} 时上游产出追加到末尾，而不是丢弃', () => {
     const plan = [node('a', '先做'), node('b', '复核', { needs: ['a'] }), checkpoint('cp', ['b'])]
     const result = step(plan, { states: { a: cell('a', { output: 'A 的产出' }) } })
     expect(promptOf(result, 'b')).toBe('复核\n\n## 上游产出\n\nA 的产出')
   })
 
-  test('passInput: false 时依赖只管顺序，不传产出', () => {
+  test('passInput: false 时依赖只决定顺序，不传递产出', () => {
     const plan = [
       node('a', '先做'),
       node('b', '复核', { needs: ['a'], passInput: false }),
@@ -179,7 +179,7 @@ describe('这一趟派谁', () => {
     expect(promptOf(result, 'b')).toBe('复核')
   })
 
-  test('没有上游时不留空的「上游产出」小节，{goal} 就地替换', () => {
+  test('没有上游时不保留空的「上游产出」小节，{goal} 原位替换', () => {
     const plan = [node('a', '围绕 {goal} 做'), checkpoint('cp', ['a'])]
     expect(promptOf(step(plan), 'a')).toBe('围绕 把这件事做完 做')
   })
@@ -203,13 +203,13 @@ describe('这一趟派谁', () => {
     expect(targetOf(step(plan), 'a')).toEqual({ subagent: 'cv_known' })
   })
 
-  test('已经在跑的格不重复派', () => {
+  test('运行中的节点不重复派发', () => {
     const plan = [node('a', '做'), node('b', '也做'), checkpoint('cp', ['a', 'b'])]
     const result = step(plan, { states: { a: { phase: 'working', label: 'a' } } })
     expect(dispatched(result)).toEqual(['b'])
   })
 
-  test('并发闸按在跑的格数算，超出的标排队', () => {
+  test('并发上限按运行中的节点数计算，超出的节点标记为排队', () => {
     const plan = [
       node('a', '做'),
       node('b', '做'),
@@ -225,7 +225,7 @@ describe('这一趟派谁', () => {
     expect(result.queued[0]?.state.phase).toBe('queued')
   })
 
-  test('已经标过排队的格不重复标', () => {
+  test('已标记为排队的节点不重复标记', () => {
     const plan = [node('a', '做'), node('b', '做'), checkpoint('cp', ['a', 'b'])]
     const result = step(plan, {
       maxConcurrent: 1,
@@ -236,8 +236,8 @@ describe('这一趟派谁', () => {
   })
 })
 
-describe('一格失败，其余照跑', () => {
-  test('失败的格不挡住同批还在跑的格，检查点也还没到', () => {
+describe('单个节点失败，其余照常运行', () => {
+  test('失败的节点不阻止同批运行中的节点，检查点尚未到达', () => {
     const plan = [node('a', '做'), node('b', '也做'), checkpoint('cp', ['a', 'b'])]
     const result = step(plan, {
       states: {
@@ -249,7 +249,7 @@ describe('一格失败，其余照跑', () => {
     expect(dispatched(result)).toEqual([])
   })
 
-  test('上游失败时下游跳过，不拿着坏输入继续，跳过还会传播', () => {
+  test('上游失败时下游跳过，不以错误输入继续执行，跳过状态向下传播', () => {
     const plan = [
       node('a', '做'),
       node('b', '接着做', { needs: ['a'] }),
@@ -260,7 +260,7 @@ describe('一格失败，其余照跑', () => {
     expect(result.skipped.map((s) => s.nodeId)).toEqual(['b', 'c'])
     expect(result.skipped[0]?.state).toMatchObject({ phase: 'skipped', error: '上游节点未成功' })
     expect(dispatched(result)).toEqual([])
-    // 跳过是终态：检查点因此到得了，图不会停在没有出口的地方。
+    // 跳过是终态：检查点因此可以到达，图不会停滞在没有出口的位置。
     expect(result.checkpoint).toBe('cp')
   })
 
@@ -285,7 +285,7 @@ describe('检查点审查', () => {
     checkpoint('cp2', ['b']),
   ]
 
-  test('approve 之后派下一批，批准的正文带着上游产出', () => {
+  test('approve 之后派发下一批，批准的正文包含上游产出', () => {
     const result = step(plan, {
       states: { a: cell('a', { output: 'A 的产出' }) },
       review: { checkpointId: 'cp', decision: 'approve', note: '通过', revisions: [] },
@@ -295,7 +295,7 @@ describe('检查点审查', () => {
     expect(promptOf(result, 'b')).toContain('A 的产出')
   })
 
-  test('approve 接受了未完成的格时逐条列出来', () => {
+  test('approve 接受了未完成的节点时逐条列出', () => {
     const result = step(plan, {
       states: { a: cell('a', { phase: 'failed', error: '连不上' }) },
       review: { checkpointId: 'cp', decision: 'approve', note: '先往下走', revisions: [] },
@@ -303,7 +303,7 @@ describe('检查点审查', () => {
     expect(result.review?.acceptedFailures).toEqual([{ nodeId: 'a', reason: '连不上' }])
   })
 
-  test('上游还没终态就 approve 直接拒绝', () => {
+  test('上游尚未到达终态时 approve 直接拒绝', () => {
     expect(() =>
       step(plan, {
         states: { a: { phase: 'working', label: 'a' } },
@@ -322,7 +322,7 @@ describe('检查点审查', () => {
     ).toThrow(/已经批准/)
   })
 
-  test('全部格终态、全部检查点已批准 = 完成', () => {
+  test('全部节点到达终态、全部检查点已批准 = 完成', () => {
     const result = step(plan, {
       states: { a: cell('a', { output: 'A' }), b: cell('b', { output: 'B' }) },
       approvals: { cp: '批了' },
@@ -333,7 +333,7 @@ describe('检查点审查', () => {
   })
 })
 
-describe('revise 只动闭包', () => {
+describe('revise 只影响闭包', () => {
   const plan = [
     node('a', '研究'),
     node('b', '复核', { needs: ['a'] }),
@@ -341,7 +341,7 @@ describe('revise 只动闭包', () => {
     checkpoint('cp', ['b', 'c']),
   ]
 
-  test('被点名的格向原子 agent 续发，只发指令与最新上游产出', () => {
+  test('被指定的节点向原有子 agent 续发，只发送指令与最新上游产出', () => {
     const result = step(plan, {
       states: {
         a: cell('a', { output: '旧 A', subagentId: 'cv_a' }),
@@ -359,11 +359,11 @@ describe('revise 只动闭包', () => {
     expect(dispatched(result)).toEqual(['a'])
     expect(targetOf(result, 'a')).toEqual({ subagent: 'cv_a' })
     expect(promptOf(result, 'a')).toBe('补证据')
-    // 闭包内的下游这一趟还派不了（上游没有回执），但它的旧回执已经作废。
+    // 闭包内的下游本次仍无法派发（上游没有回执），但其旧回执已作废。
     expect(result.checkpoint).toBeNull()
   })
 
-  test('闭包内没被点名的格随后续发默认指令，仍接原子 agent', () => {
+  test('闭包内未被指定的节点随后续发默认指令，仍续接原有子 agent', () => {
     const result = step(plan, {
       states: {
         a: cell('a', { output: '新 A', subagentId: 'cv_a' }),
@@ -377,7 +377,7 @@ describe('revise 只动闭包', () => {
     expect(promptOf(result, 'b')).toContain('新 A')
   })
 
-  test('点名一个还没终态的格直接拒绝', () => {
+  test('指定尚未到达终态的节点时直接拒绝', () => {
     expect(() =>
       step(plan, {
         states: { a: { phase: 'working', label: 'a' } },
@@ -388,7 +388,7 @@ describe('revise 只动闭包', () => {
           revisions: [{ nodeId: 'a', instruction: '改' }],
         },
       }),
-    ).toThrow(/还没有终态/)
+    ).toThrow(/尚无终态/)
   })
 
   test('revise 撤销该检查点的批准', () => {
@@ -410,11 +410,11 @@ describe('revise 只动闭包', () => {
     expect(result.completed).toBe(false)
   })
 
-  test('找不到检查点直接拒绝', () => {
+  test('未找到检查点时直接拒绝', () => {
     expect(() =>
       step(plan, {
         review: { checkpointId: 'nope', decision: 'approve', note: '', revisions: [] },
       }),
-    ).toThrow(/找不到检查点 nope/)
+    ).toThrow(/未找到检查点 nope/)
   })
 })

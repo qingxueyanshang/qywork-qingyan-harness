@@ -5,8 +5,8 @@
  * tool 分支、`mediaBytes` / `evictedMedia` / `omitImages` 的按字节预算换出，以及
  * `compaction.ts` 的 `condenseMessage` 对块数组的处置。
  *
- * 这一组盯着三个**完全静默**的方向：图片跨轮变成两种形状、收纳收不掉图、
- * 以及附件的 base64 被回写进 transcript。
+ * 本文件锁定三类不报错的失败：图片跨轮次出现两种形态、收纳无法移除图片、
+ * 附件的 base64 被回写到 transcript。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -56,18 +56,18 @@ const media = (image: boolean | null, video = false, mediaPaths = false) => ({
   mediaPaths,
 })
 
-describe('工具结果里的图像块', () => {
-  test('没有 images 时仍然是纯字符串', () => {
+describe('工具结果中的图像块', () => {
+  test('没有 images 时返回纯字符串', () => {
     expect(toolResultContent(envelope, { lines: 3 })).toBe(envelope)
   })
 
   /**
-   * 有图时是**两块**：信封那一块逐字不变。
+   * 有图片时返回两个块，信封块逐字不变。
    *
-   * 信封被改动的话，量账（`breakdownOf`）与收纳（`condenseMessage`）都靠解析它
-   * 认路，两者会同时失效——而它们失效不会有任何报错。
+   * 不要改动信封：上下文分项统计（`breakdownOf`）与收纳（`condenseMessage`）都依赖解析信封
+   * 定位内容，信封改动会使两者同时失效且不报错。
    */
-  test('有图时信封逐字不变，图片并列成第二块', () => {
+  test('有图片时信封逐字不变，图片作为第二个块', () => {
     const out = toolResultContent(envelope, { images: [{ data: 'QUJD', mime: 'image/png' }] })
     expect(Array.isArray(out)).toBe(true)
     const blocks = out as ContentBlock[]
@@ -80,12 +80,11 @@ describe('工具结果里的图像块', () => {
   })
 
   /**
-   * **几张就是几块。**
+   * 每张图片各对应一个块。
    *
-   * MCP 一次调用带回一组截图是常规用法。取第一张就是把其余的静默丢掉——
-   * 而那正是这一整轮改动在收拾的那类毛病。
+   * MCP 一次调用返回多张截图是常规用法。只取第一张会静默丢弃其余图片。
    */
-  test('多张图各成一块，一张都不丢', () => {
+  test('多张图片各成一块，全部保留', () => {
     const out = toolResultContent(envelope, {
       images: [
         { data: 'QQ==', mime: 'image/png' },
@@ -102,16 +101,16 @@ describe('工具结果里的图像块', () => {
   })
 
   /**
-   * **图像字节不许进信封。**
+   * 图像字节不得写入信封。
    *
-   * 信封是一段 JSON 文本。字节留在里面的话同一份 base64 会在请求体里出现两次——
-   * 一次在图像块、一次在信封文本，而后者对模型毫无用处，只是照价计费。
+   * 信封是一段 JSON 文本。字节保留在信封中时，同一份 base64 会在请求体中出现两次：
+   * 一次在图像块，一次在信封文本；后者对模型没有用途，但同样计费。
    */
-  test('信封里摘掉图像字节，其余字段留着', () => {
+  test('信封中移除图像字节，保留其余字段', () => {
     expect(envelopeResult({ images: [{ data: 'QUJD', mime: 'image/png' }], lines: 1 })).toEqual({
       lines: 1,
     })
-    // 摘完什么都不剩就整个不出现，而不是留一个空对象。
+    // 移除后没有剩余字段时返回 undefined，不保留空对象。
     expect(envelopeResult({ images: [{ data: 'QUJD', mime: 'image/png' }] })).toBeUndefined()
     // 没有图的结果原样返回。
     expect(envelopeResult({ lines: 3 })).toEqual({ lines: 3 })
@@ -120,11 +119,11 @@ describe('工具结果里的图像块', () => {
 
 describe('materialize', () => {
   /**
-   * **产副本，绝不回写。**
+   * 生成副本，不回写原对象。
    *
-   * 重试循环复用同一个 `messages` 数组，而 `payloadHash` 在每次尝试发出之前就落账。
-   * 原地改的话第二次尝试会对同一份内容算出不同的哈希，而那个字段的职责是
-   * 「认出同一份内容发了两遍」。
+   * 重试循环复用同一个 `messages` 数组，`payloadHash` 在每次尝试发出之前写入账本。
+   * 原地修改时，第二次尝试会对同一份内容算出不同的哈希，而该字段的用途是
+   * 识别同一份内容被发送了两次。
    */
   test('不改原对象，原消息仍是 path 形态', async () => {
     const { path } = await fixture()
@@ -145,14 +144,14 @@ describe('materialize', () => {
     expect(after[1]).toMatchObject({ source: { kind: 'base64', data: PNG.toString('base64') } })
   })
 
-  /** 全是字符串时原样返回，不白拷一遍。 */
-  test('没有内容块时原对象直接返回', async () => {
+  /** 内容全部为字符串时返回原对象，不复制。 */
+  test('没有内容块时返回原对象', async () => {
     const r = req([{ role: 'user', content: '你好' }])
     expect(await materialize(r, media(true))).toBe(r)
   })
 
-  /** 文件没了同样是终态，不抛——一张图发不出去不该让整轮起不来。 */
-  test('文件不存在时换成一句话', async () => {
+  /** 文件不存在同样是终态，不抛异常：一张图无法发送不应导致整轮无法启动。 */
+  test('文件不存在时替换为文本说明', async () => {
     const out = await materialize(
       req([
         {
@@ -170,13 +169,13 @@ describe('materialize', () => {
   })
 
   /**
-   * 原始失败形状：模型不收图片，请求体里却带着图像块，端点回 400。
+   * 原始失败形状：模型不接受图片输入，请求体中却带有图像块，端点返回 400。
    *
-   * 三种来源在同一处收口——用户附件（path 形态）、工具与 MCP 返回的图（base64
-   * 形态）、以及换模型之前留在历史里的旧图。锁的是**请求体里一个图像块都没有**，
-   * 且换上的那句话模型看得见。
+   * 三种来源在同一处处理：用户附件（path 形态）、工具与 MCP 返回的图片（base64
+   * 形态）、切换模型之前留在历史中的图片。本测试锁定请求体中没有任何图像块，
+   * 且替换后的文本说明对模型可见。
    */
-  test('模型不收图片：图像块换成文本注记，两种来源都覆盖', async () => {
+  test('模型不接受图片：图像块替换为文本注记，覆盖两种来源', async () => {
     const { path } = await fixture()
     const out = await materialize(
       req([
@@ -208,8 +207,8 @@ describe('materialize', () => {
     expect(texts.some((t) => t.includes('当前模型不接受图片输入'))).toBe(true)
   })
 
-  /** `null` 是「厂商规格页没写」，不是「不支持」——照常发。 */
-  test('没有出处时照常发图片', async () => {
+  /** `null` 表示厂商规格页未注明，不表示不支持，照常发送。 */
+  test('能力未注明时照常发送图片', async () => {
     const { path } = await fixture()
     const out = await materialize(
       req([
@@ -246,7 +245,7 @@ describe('materialize', () => {
     })
   })
 
-  /** 常驻上限以内的视频整份内联进请求副本，首尾字节不变。 */
+  /** 常驻上限以内的视频完整内联到请求副本，首尾字节不变。 */
   test('常驻上限以内的本地视频整份进入请求副本', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-video-large-'))
     const path = join(dir, 'clip.mp4').replaceAll('\\', '/')
@@ -293,9 +292,9 @@ describe('materialize', () => {
     })
   })
 
-  /** 用户附件的视频是路径块：不收原生视频、收图片的模型由说明指向 read_file 抽帧，不另做一套。 */
-  /** 收原生视频但不能上传：超过常驻上限的视频内联进去下一步就被换出，换成指向 read_file 抽帧的说明。 */
-  test('收原生视频、超过常驻上限又不能上传：换成说明；能上传时交出路径', async () => {
+  /** 用户附件中的视频是路径块：对不接受原生视频但接受图片的模型，由说明指向 read_file 抽帧，不另设实现。 */
+  /** 模型接受原生视频但不能上传时：超过常驻上限的视频若内联，下一步即被换出，因此替换为指向 read_file 抽帧的说明。 */
+  test('接受原生视频、超过常驻上限且不能上传时替换为说明；能上传时传递路径', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-video-big-'))
     const path = join(dir, 'big.mp4').replaceAll('\\', '/')
     await writeFile(path, new Uint8Array(6 * 1024 * 1024))
@@ -318,7 +317,7 @@ describe('materialize', () => {
     ).toEqual({ type: 'video', mimeType: 'video/mp4', source: { kind: 'path', path } })
   })
 
-  test('不收原生视频、收图片：路径视频换成指向 read_file 的说明', async () => {
+  test('不接受原生视频但接受图片：路径视频替换为指向 read_file 的说明', async () => {
     const path = '/ws/clip.mp4'
     const block = (image: boolean | null) =>
       materialize(
@@ -332,7 +331,7 @@ describe('materialize', () => {
       ).then((out) => (out.messages[0]?.content as ContentBlock[])[0])
     expect(await block(true)).toEqual({
       type: 'text',
-      text: `［视频 ${path}：当前模型或接口不接受原生视频输入，这一段没有发出去；需要画面时用 read_file 读这个路径，会按时间抽取若干帧］`,
+      text: `［视频 ${path}：当前模型或接口不接受原生视频输入，此视频未发送；需要画面时用 read_file 读取此路径，将按时间抽取若干帧］`,
     })
     const noImages = (await block(false)) as { text: string }
     expect(noImages.text).not.toContain('read_file')
@@ -362,12 +361,12 @@ describe('materialize', () => {
 
 describe('收纳', () => {
   /**
-   * 带图的工具结果**必须收得掉**。
+   * 带图片的工具结果必须能被收纳。
    *
-   * 走「非字符串原样放行」的话，一张几 MB 的截图会在此后每一轮
-   * 满额重放，直到撞窗——而收纳的整个用途就是把大段正文换成一句话。
+   * 若非字符串内容原样保留，一张数 MB 的截图会在此后每一轮
+   * 完整重发，直到超出窗口；收纳的用途正是把大段正文替换为一句说明。
    */
-  test('丢掉图像块，只留收好的信封', () => {
+  test('丢弃图像块，只保留收纳后的信封', () => {
     const m: WireMessage = {
       role: 'tool',
       toolCallId: 'c1',
@@ -380,10 +379,10 @@ describe('收纳', () => {
     expect(typeof out.content).toBe('string')
     const env = JSON.parse(out.content as string) as Record<string, unknown>
     expect(env.call_id).toBe('c1')
-    // 正文被换成标记，模型仍能靠信封里的定位符重新取。
+    // 正文替换为标记，模型仍能依据信封中的定位符重新读取。
     expect(env.result_omitted).toBe(true)
     expect(env.result).toBeUndefined()
-    // 图像被丢必须留痕：收纳后的信封与新鲜成功信封同形，缺这一位模型会把图当成仍然可见。
+    // 丢弃图像必须留下标记：收纳后的信封与新生成的成功信封结构相同，缺少该字段时模型会认为图片仍然可见。
     expect(env.images_omitted).toBe(IMAGES_OMITTED)
   })
 
@@ -405,7 +404,7 @@ describe('收纳', () => {
   })
 })
 
-describe('换出的媒体换成说明', () => {
+describe('换出的媒体替换为说明', () => {
   const withImage = (): WireMessage => ({
     role: 'tool',
     toolCallId: 'c1',
@@ -415,8 +414,8 @@ describe('换出的媒体换成说明', () => {
     ],
   })
 
-  /** 信封保留 `result`，只摘图像块并标记；模型据标记知道图不在场。 */
-  test('带图的工具结果换成 images_omitted 信封，result 保留', () => {
+  /** 信封保留 `result`，只移除图像块并添加标记；模型据此得知图片已不在请求中。 */
+  test('带图片的工具结果替换为 images_omitted 信封，保留 result', () => {
     const out = omitImages(withImage())
     expect(typeof out.content).toBe('string')
     const env = JSON.parse(out.content as string) as Record<string, unknown>
@@ -426,9 +425,9 @@ describe('换出的媒体换成说明', () => {
   })
 
   /**
-   * 标记只写 `true` 或只写「已提供」时，模型读到信封会判断自己从未收到过这张图，
-   * 向用户否认之前的检查并反复读回。写成「你已看过」则超出传输记录能证明的事实：
-   * 端点收到请求不等于模型读到了图。标记写明此前已发送、现已移出、怎么取回。
+   * 标记只写 `true` 或只写「已提供」时，模型读取信封后会判断自己从未收到过这张图片，
+   * 向用户否认此前的检查并反复重新读取。写成「你已看过」则超出传输记录能证明的事实：
+   * 端点收到请求不等于模型读取了图片。标记写明此前已发送、现已移出以及取回方式。
    */
   test('省略标记只陈述传输事实并给出取回方式', () => {
     const env = JSON.parse(omitImages(withImage()).content as string) as Record<string, unknown>
@@ -439,8 +438,8 @@ describe('换出的媒体换成说明', () => {
     expect(env.images_omitted).not.toContain('看过')
   })
 
-  /** 用户消息的附件媒体换成一行说明，正文不动；路径在附件说明里，说明指过去。 */
-  test('用户消息的附件媒体换成说明，正文保留', () => {
+  /** 用户消息的附件媒体替换为一行说明，正文不变；路径位于附件说明中，替换说明指向它。 */
+  test('用户消息的附件媒体替换为说明，保留正文', () => {
     const user: WireMessage = {
       role: 'user',
       content: [
@@ -455,7 +454,7 @@ describe('换出的媒体换成说明', () => {
     ])
   })
 
-  /** 投影每次请求都跑：无媒体必须回原引用，有媒体必须逐字稳定，否则前缀缓存全失配。 */
+  /** 投影在每次请求时执行：无媒体时必须返回原引用，有媒体时产物必须逐字稳定，否则前缀缓存全部失效。 */
   test('无媒体原引用返回，有媒体两次产物逐字相同', () => {
     const plain: WireMessage = { role: 'tool', toolCallId: 'c2', content: envelope }
     expect(omitImages(plain)).toBe(plain)
@@ -464,7 +463,7 @@ describe('换出的媒体换成说明', () => {
     expect(omitImages(withImage()).content).toBe(omitImages(withImage()).content)
   })
 
-  /** 换出来的信封再收纳一次仍带标记，两条路径产物同形。 */
+  /** 换出后的信封再次收纳后仍带标记，两条路径的产物结构相同。 */
   test('省略后的信封经收纳仍标 images_omitted', () => {
     const env = JSON.parse(condenseMessage(omitImages(withImage())).content as string) as Record<
       string,
@@ -475,14 +474,14 @@ describe('换出的媒体换成说明', () => {
 })
 
 describe('媒体按字节预算换出', () => {
-  /** 解码后正好 `bytes` 字节的 base64 图。 */
+  /** 解码后恰为 `bytes` 字节的 base64 图片。 */
   const shot = (bytes: number): ContentBlock => ({
     type: 'image',
     mimeType: 'image/jpeg',
     source: { kind: 'base64', data: 'A'.repeat(Math.ceil((bytes * 4) / 3)) },
   })
   const MB = 1024 * 1024
-  /** 收图片、收原生视频、适配器只内联：大多数原生视频接口的发法。 */
+  /** 接受图片与原生视频、适配器只支持内联：大多数原生视频接口的发送方式。 */
   const CAPS = { image: true, video: true }
   const call = (id: string): WireMessage => ({
     role: 'assistant',
@@ -498,7 +497,7 @@ describe('媒体按字节预算换出', () => {
   const steps = (sizes: number[]): WireMessage[] =>
     sizes.flatMap((size, i) => [call(`c${i}`), result(`c${i}`, size)])
 
-  test('base64 按解码后的字节计，内联的路径视频按文件大小计，读不到记 0', async () => {
+  test('base64 按解码后的字节计，内联的路径视频按文件大小计，无法读取时记 0', async () => {
     expect(mediaBytes(result('c', MB), CAPS)).toBeGreaterThanOrEqual(MB)
     const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
     const path = join(dir, 'clip.mp4')
@@ -522,10 +521,10 @@ describe('媒体按字节预算换出', () => {
   })
 
   /**
-   * 路径视频按这一轮的发法计：上传成地址的、超过常驻上限又不能上传的（改走抽帧）、模型不收的都不进请求体，记 0。
-   * 按文件大小一律计的话，上传成地址的 18 MB 视频下一步就被换出，模型只看到一眼（Qwen3.8 Flash 实测）。
+   * 路径视频按本轮的发送方式计算：上传为地址的、超过常驻上限且不能上传的（改用抽帧）、模型不接受的均不进入请求体，记为 0。
+   * 若一律按文件大小计算，上传为地址的 18 MB 视频在下一步即被换出，模型只能看到一次（Qwen3.8 Flash 实测）。
    */
-  test('路径视频按发法计字节：上传、抽帧、不收都记 0', async () => {
+  test('路径视频按发送方式计字节：上传、抽帧、不接受均记 0', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-media-'))
     const big = join(dir, 'big.mp4')
     await writeFile(big, new Uint8Array(6 * MB))
@@ -540,31 +539,31 @@ describe('媒体按字节预算换出', () => {
     expect(videoDelivery(6 * MB, { video: true })).toBe('frames')
     expect(videoDelivery(MB, { video: true })).toBe('inline')
     expect(videoDelivery(MB, { video: false })).toBe('frames')
-    // 上传成地址的视频不计字节，就一直留在请求里，模型之后的每一步都看得到。
+    // 上传为地址的视频不计字节，因此始终保留在请求中，模型在此后每一步都能看到。
     const messages = [video, call('c0'), result('c0', MB), call('c1'), result('c1', MB)]
     const upload = { ...CAPS, mediaPaths: true, mediaUploadAbove: 2 * MB }
     expect(evictedMedia(messages, upload).has(0)).toBe(false)
   })
 
-  test('模型不收图片时图片不计字节', () => {
+  test('模型不接受图片时图片不计字节', () => {
     expect(mediaBytes(result('c', MB), { image: false, video: false })).toBe(0)
   })
 
-  test('总量在上限内一张都不换', () => {
+  test('总量在上限内时不换出任何图片', () => {
     expect(evictedMedia(steps([MB, MB, MB]), CAPS).size).toBe(0)
   })
 
-  /** 超上限时从最早的起整条换出，直到不超过下限：换一次少变几次前缀。 */
+  /** 超过上限时从最早的消息起整条换出，直到不超过下限：一次换出较多内容可减少前缀变化的次数。 */
   test('超过上限时从最早的整批换出，降到下限以内', () => {
     const messages = steps([MB, MB, MB, MB, MB, MB])
     const evicted = evictedMedia(messages, CAPS)
-    // 第 6 张让总量到 6 MB（> 5 MB），换出最早的四张，剩 2 MB。
+    // 第 6 张使总量达到 6 MB（> 5 MB），换出最早的四张，剩余 2 MB。
     expect([...evicted]).toEqual([1, 3, 5, 7])
     const left = messages.reduce((n, m, i) => n + (evicted.has(i) ? 0 : mediaBytes(m, CAPS)), 0)
     expect(left).toBeLessThanOrEqual(MEDIA_RETAIN_LOW_BYTES)
   })
 
-  /** 最后一条 assistant 之后的媒体还没随任何一次得到回应的请求发出去过，单张超限也不换。 */
+  /** 最后一条 assistant 之后的媒体尚未随任何已得到响应的请求发出，单张超过上限也不换出。 */
   test('最后一条 assistant 之后的媒体不换出', () => {
     const messages = [...steps([MB, MB]), call('big'), result('big', 6 * MB)]
     const evicted = evictedMedia(messages, CAPS)
@@ -572,15 +571,15 @@ describe('媒体按字节预算换出', () => {
     expect([...evicted]).toEqual([1, 3])
   })
 
-  /** 用户消息带的附件同样计入，第一次请求（没有 assistant）时全部保留。 */
-  test('附件计入同一预算；还没有 assistant 时一张都不换', () => {
+  /** 用户消息携带的附件同样计入，第一次请求（没有 assistant）时全部保留。 */
+  test('附件计入同一预算；尚无 assistant 时不换出任何图片', () => {
     const user: WireMessage = { role: 'user', content: [shot(5 * MB), { type: 'text', text: 'x' }] }
     expect(evictedMedia([user], CAPS).size).toBe(0)
     expect([...evictedMedia([user, call('c0'), result('c0', MB)], CAPS)]).toEqual([0])
   })
 
-  /** 追加消息只会多换出，已换出的不会回来：前缀只在换出那一刻变。 */
-  test('同一历史结果相同，追加消息不让已换出的回来', () => {
+  /** 追加消息只会增加换出项，已换出的不会恢复：前缀只在换出时变化。 */
+  test('同一历史结果相同，追加消息不会恢复已换出的媒体', () => {
     const sizes = [MB, 2 * MB, MB, 3 * MB, MB, MB, 2 * MB, MB]
     let previous = new Set<number>()
     for (let n = 1; n <= sizes.length; n++) {

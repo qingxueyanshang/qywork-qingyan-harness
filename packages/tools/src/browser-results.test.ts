@@ -1,9 +1,9 @@
 /**
- * browser 结果的投递闸。
+ * browser 结果的投递控制。
  *
- * **覆盖范围**：`browser-results.ts` 的上限、大小判定、视图选取、JSONL 存盘、资源引用与
+ * 覆盖范围：`browser-results.ts` 的上限、大小判定、视图选取、JSONL 存盘、资源引用与
  * 实际用量记账，以及 `browser.ts` 五个出口（observe 含选项页、act 含 partial / unknown、
- * navigate、wait，以及 tabs / upload / download 这三条短回执）接上它之后的结果形状。
+ * navigate、wait，以及 tabs / upload / download 三种短回执）接入后的结果结构。
  *
  * 夹具是合成的：元素名称、值、正文与页面标题都不取自真实网页。
  */
@@ -42,7 +42,7 @@ import { observationResultBudget } from './sink.ts'
 const WINDOW = 200_000
 const LIMIT = observationResultBudget(WINDOW)
 
-/** 名称、值与正文都按采集侧的 200 字上限写满。 */
+/** 名称、值与正文都按采集侧的 200 字上限填满。 */
 function bigElement(i: number): BrowserElement {
   return {
     ref: `e${i + 1}`,
@@ -54,7 +54,7 @@ function bigElement(i: number): BrowserElement {
   }
 }
 
-/** 缺席的 `checked` / `expanded` / `selected` 不许在往返里变成 false。 */
+/** 缺失的 `checked` / `expanded` / `selected` 在写入与读取后不得变为 false。 */
 const 状态齐全: BrowserElement = {
   ref: 'e119',
   role: 'checkbox',
@@ -68,7 +68,7 @@ const 状态齐全: BrowserElement = {
   value: '',
 }
 
-/** 中文、emoji、空串与嵌套数组一起进存盘正文。 */
+/** 中文、emoji、空串与嵌套数组一并写入存盘正文。 */
 const 选择框: BrowserElement = {
   ref: 'e120',
   role: 'combobox',
@@ -212,7 +212,7 @@ function elementsOf(r: ToolOutcome): BrowserElement[] {
   return (r.data as { elements: BrowserElement[] }).elements
 }
 
-/** 整条结果的 token 数，与上限同一把尺：截图走图像块，不算在内。 */
+/** 整条结果的 token 数，与上限使用同一计量方式：截图以图像块发送，不计入。 */
 function sizeOf(r: ToolOutcome): number {
   const { images: _images, ...data } = r.data ?? {}
   return deliveredTokens(
@@ -224,7 +224,7 @@ function sizeOf(r: ToolOutcome): number {
 /** 一张超过上限的合成截图。 */
 const 大截图 = { data: 'Q'.repeat(200_000), mime: 'image/png' }
 
-/** 存盘正文按行拼回一页。 */
+/** 将存盘正文按行重新组合为一页。 */
 function fromJsonl(body: Uint8Array): Record<string, unknown> {
   const lines = new TextDecoder().decode(body).split('\n')
   const meta = JSON.parse(lines[0] as string) as Record<string, unknown>
@@ -235,7 +235,7 @@ function fromJsonl(body: Uint8Array): Record<string, unknown> {
 const CLICK = { tabId: 'bt_1', observationId: 'ob_0', action: 'click', ref: 'e1' }
 
 describe('小页整份内联', () => {
-  test('observe 的 data 与端口交回的那一份逐字相同，不带投递说明，也不落盘', async () => {
+  test('observe 的 data 与端口返回的内容逐字相同，不带投递说明，也不存盘', async () => {
     const sink = fakeSink()
     const ctx = context(fakeBrowser({ observe: async () => 小页 }), sink)
     const r = await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
@@ -246,7 +246,7 @@ describe('小页整份内联', () => {
     expect(sink.landed).toHaveLength(0)
   })
 
-  test('动作结果里的观察同样整份内联，回执与 settle 在原位置', async () => {
+  test('动作结果中的观察同样整份内联，回执与 settle 在原位置', async () => {
     const sink = fakeSink()
     const ctx = context(
       fakeBrowser({
@@ -262,7 +262,7 @@ describe('小页整份内联', () => {
     expect(sink.landed).toHaveLength(0)
   })
 
-  test('截图走 images，普通字段里不留 base64', async () => {
+  test('截图经由 images 发送，普通字段中不保留 base64', async () => {
     const shot = { ...小页, image: { data: 'QUJD', mime: 'image/png' } }
     const ctx = context(fakeBrowser({ observe: async () => shot }), fakeSink())
     const r = await browserObserveTool.fn({ tabId: 'bt_1', screenshot: true }, ctx)
@@ -272,10 +272,10 @@ describe('小页整份内联', () => {
   })
 
   /**
-   * 页面自报的标题与网址长度都无界（data URL 可以有几万字）。message 不参与视图裁剪，
-   * 这两格印原值会把整条结果的上限吃满，元素表因此一个都投不出去。
+   * 页面自报的标题与网址长度都没有上限（data URL 可达数万字）。message 不参与视图裁剪，
+   * 这两个字段写入原值会耗尽整条结果的上限，元素表因此无法投递任何元素。
    */
-  test('超长标题与网址在 message 里截短，data 里仍是原值', async () => {
+  test('超长标题与网址在 message 中截短，data 中仍是原值', async () => {
     const title = '标'.repeat(400)
     const url = `https://a/${'p'.repeat(400)}`
     const ctx = context(fakeBrowser({ observe: async () => ({ ...小页, title, url }) }), fakeSink())
@@ -283,7 +283,7 @@ describe('小页整份内联', () => {
     const data = r.data as { title: string; url: string }
 
     expect(r.message.length).toBeLessThan(600)
-    // 网址留开头：origin 与路径前段还看得出打开的是哪一站。
+    // 网址保留开头：根据 origin 与路径前段仍可识别打开的站点。
     expect(r.message).toContain('https://a/pppp')
     expect(data.title).toBe(title)
     expect(data.url).toBe(url)
@@ -291,8 +291,8 @@ describe('小页整份内联', () => {
     expect(sizeOf(r)).toBeLessThanOrEqual(LIMIT)
   })
 
-  /** 截图按图像块发出，不进信封文本：把它算进上限会让一页三个元素的小页去存盘。 */
-  test('带一张大截图的小页仍整份内联，不落盘', async () => {
+  /** 截图以图像块发送，不进入信封文本：将其计入上限会使只有三个元素的小页被存盘。 */
+  test('带一张大截图的小页仍整份内联，不存盘', async () => {
     const sink = fakeSink()
     const shot = { ...小页, image: 大截图 }
     const ctx = context(fakeBrowser({ observe: async () => shot }), sink)
@@ -307,7 +307,7 @@ describe('小页整份内联', () => {
   })
 })
 
-describe('大页只投前面一部分', () => {
+describe('大页只投递前一部分', () => {
   test('视图是本次元素表的前缀，每个元素原样，不从中间切开', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     const view = elementsOf(await browserObserveTool.fn({ tabId: 'bt_1' }, ctx))
@@ -318,10 +318,10 @@ describe('大页只投前面一部分', () => {
   })
 
   /**
-   * 元素编号只属于产生它的那一次观察。动作参数里的 `ref` 与动作后观察里的同名编号
-   * 指的不是同一个节点，按它把元素提到前面等于把另一个节点当成目标。
+   * 元素编号只属于产生它的观察。动作参数中的 `ref` 与动作后观察中的同名编号
+   * 指向不同的节点，据此将元素排到前面等于将另一个节点当作目标。
    */
-  test('动作参数里的旧编号不改变视图的取法', async () => {
+  test('动作参数中的旧编号不改变视图的选取方式', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     const 前缀 = elementsOf(await browserObserveTool.fn({ tabId: 'bt_1' }, ctx))
     const 动作后 = elementsOf(
@@ -336,7 +336,7 @@ describe('大页只投前面一部分', () => {
     expect(动作后.length).toBeLessThanOrEqual(前缀.length)
   })
 
-  test('写明给了多少、本次采到多少、其余在哪读', async () => {
+  test('写明已投递数量、本次采集数量与其余部分的读取位置', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     const r = await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
     const delivery = deliveryOf(r)
@@ -345,12 +345,12 @@ describe('大页只投前面一部分', () => {
     expect(delivery?.collected).toBe(大页元素.length)
     expect(delivery?.resourceId).toBe('rs_1')
     expect(delivery?.unsaved).toBeUndefined()
-    expect(r.message).toContain(`已投 ${delivery?.delivered}/${大页元素.length} 个元素`)
+    expect(r.message).toContain(`已投递 ${delivery?.delivered}/${大页元素.length} 个元素`)
     expect(r.message).toContain('rs_1')
     expect(r.message).toContain('read_resource')
   })
 
-  test('采集侧的未采全与投递侧的没给全分列，顶层字段原样', async () => {
+  test('采集侧的未采集完整与投递侧的未投递完整分别记录，顶层字段保持原样', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     const r = await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
     const data = r.data as {
@@ -384,8 +384,8 @@ describe('大页只投前面一部分', () => {
     }
   })
 
-  /** 标题与网址由页面自报、长度无界，而上限按整条结果计量：原值进视图时元素一个都投不出去。 */
-  test('超长标题与网址只留前缀并标出省略字数，原值在存盘正文里', async () => {
+  /** 标题与网址由页面自报、长度没有上限，而上限按整条结果计量：原值写入视图时无法投递任何元素。 */
+  test('超长标题与网址只保留前缀并标出省略字数，原值在存盘正文中', async () => {
     const title = '标'.repeat(5_000)
     const url = `https://a/${'p'.repeat(5_000)}`
     const sink = fakeSink()
@@ -412,7 +412,7 @@ describe('大页只投前面一部分', () => {
     expect(meta.url).toBe(url)
   })
 
-  test('单项超长的值只留前缀并标出省略字数，排在它后面的元素照样投出，原值在存盘正文里', async () => {
+  test('单项超长的值只保留前缀并标出省略字数，其后的元素仍然投递，原值保存在存盘正文中', async () => {
     const value = '长'.repeat(5_000)
     const 长值元素: BrowserElement = {
       ref: 'e0',
@@ -439,7 +439,7 @@ describe('大页只投前面一部分', () => {
     expect(rows[0]?.value).toBe(value)
   })
 
-  test('message 只放执行事实，不印元素正文', async () => {
+  test('message 只包含执行事实，不写入元素正文', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     const r = await browserActTool.fn(CLICK, ctx)
     expect(r.message).not.toContain('合成正文')
@@ -448,7 +448,7 @@ describe('大页只投前面一部分', () => {
 })
 
 describe('存盘正文与资源引用', () => {
-  test('第一行是非元素元数据，之后每行一个元素，拼回与原观察相等', async () => {
+  test('第一行是非元素元数据，之后每行一个元素，重新组合后与原观察相等', async () => {
     const sink = fakeSink()
     const ctx = context(fakeBrowser(), sink)
     await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
@@ -473,7 +473,7 @@ describe('存盘正文与资源引用', () => {
     expect(rows).toEqual(大页元素)
   })
 
-  test('缺席的状态位不补成 false，空串、中文与 emoji 原样', async () => {
+  test('缺失的状态位不补为 false，空串、中文与 emoji 保持原样', async () => {
     const sink = fakeSink()
     await browserObserveTool.fn({ tabId: 'bt_1' }, context(fakeBrowser(), sink))
     const { rows } = fromJsonl(sink.landed[0] as Uint8Array) as { rows: BrowserElement[] }
@@ -497,7 +497,7 @@ describe('存盘正文与资源引用', () => {
     expect(下拉.optionsTruncated).toBe(true)
   })
 
-  test('资源引用进 outcome.resources，带状态、字节数与覆盖事实', async () => {
+  test('资源引用写入 outcome.resources，包含状态、字节数与覆盖信息', async () => {
     const sink = fakeSink()
     const ctx = context(fakeBrowser(), sink)
     const r = await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
@@ -515,7 +515,7 @@ describe('存盘正文与资源引用', () => {
     expect(ref?.coverage.deliveredBytes).toBeLessThan(body.byteLength)
   })
 
-  test('截图不进存盘正文', async () => {
+  test('截图不写入存盘正文', async () => {
     const sink = fakeSink()
     const shot = { ...大页, image: { data: 'QUJD', mime: 'image/png' } }
     await browserObserveTool.fn(
@@ -527,7 +527,7 @@ describe('存盘正文与资源引用', () => {
     expect(body).not.toContain('image')
   })
 
-  test('大页带截图时投出的元素数与不带截图相同，图仍在 images 里', async () => {
+  test('大页带截图时投递的元素数与不带截图时相同，截图仍在 images 中', async () => {
     const sink = fakeSink()
     const 无图 = await browserObserveTool.fn({ tabId: 'bt_1' }, context(fakeBrowser(), fakeSink()))
     const r = await browserObserveTool.fn(
@@ -546,7 +546,7 @@ describe('存盘正文与资源引用', () => {
 describe('选项页', () => {
   const 读选项 = { tabId: 'bt_1', optionsFor: { observationId: 'ob_1', ref: 'e3', offset: 40 } }
 
-  test('只投前面一部分选项，所属观察与翻页位置原样', async () => {
+  test('只投递前一部分选项，所属观察与翻页位置保持原样', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     const r = await browserObserveTool.fn(读选项, ctx)
     const data = r.data as {
@@ -568,14 +568,14 @@ describe('选项页', () => {
     expect(data.items).toEqual(大选项页.items.slice(0, data.items.length))
     expect(deliveryOf(r)?.collected).toBe(大选项页.items.length)
     expect(deliveryOf(r)?.resourceId).toBe('rs_1')
-    expect(r.message).toContain(`已投 ${data.items.length}/${大选项页.items.length} 个选项`)
+    expect(r.message).toContain(`已投递 ${data.items.length}/${大选项页.items.length} 个选项`)
     expect(r.message).toContain('read_resource')
-    // 范围与下一页照旧写在 message 里。
+    // 范围与下一页仍写在 message 中。
     expect(r.message).toContain('41-100/420')
     expect(sizeOf(r)).toBeLessThanOrEqual(LIMIT)
   })
 
-  test('存盘正文拼回与原选项页相等', async () => {
+  test('存盘正文重新组合后与原选项页相等', async () => {
     const sink = fakeSink()
     await browserObserveTool.fn(读选项, context(fakeBrowser(), sink))
     const { meta, rows } = fromJsonl(sink.landed[0] as Uint8Array) as {
@@ -595,10 +595,10 @@ describe('选项页', () => {
   })
 })
 
-describe('动作回执不因归档改口', () => {
+describe('动作回执的结论不因归档而改变', () => {
   const 打字 = { tabId: 'bt_1', observationId: 'ob_0', action: 'type', ref: 'e1', text: '一二三' }
 
-  test('partial 仍是失败，确认数量保留，观察按上限投', async () => {
+  test('partial 仍是失败，确认数量保留，观察按上限投递', async () => {
     const ctx = context(
       fakeBrowser({
         act: async () => ({
@@ -627,7 +627,7 @@ describe('动作回执不因归档改口', () => {
     expect(sizeOf(r)).toBeLessThanOrEqual(LIMIT)
   })
 
-  test('unknown 没有观察时不落盘，回执与失败原因原样', async () => {
+  test('unknown 没有观察时不存盘，回执与失败原因保持原样', async () => {
     const sink = fakeSink()
     const ctx = context(
       fakeBrowser({
@@ -649,7 +649,7 @@ describe('动作回执不因归档改口', () => {
     expect(sink.landed).toHaveLength(0)
   })
 
-  test('wait 超时仍可带观察，状态按 met 定', async () => {
+  test('wait 超时仍可附带观察，状态按 met 判定', async () => {
     const ctx = context(
       fakeBrowser({ wait: async () => ({ met: false, reason: 'timeout', observation: 大页 }) }),
       fakeSink(),
@@ -663,8 +663,8 @@ describe('动作回执不因归档改口', () => {
   })
 })
 
-describe('存不下时照实说', () => {
-  test('没有正文库：动作事实不变，不给地址，写明未返回的部分读不回来', async () => {
+describe('无法保存时如实说明', () => {
+  test('没有正文库：动作事实不变，不提供地址，写明未返回的部分无法读取', async () => {
     const acted = { acts: 0 }
     const ctx = context(fakeBrowser({}, acted), null)
     const r = await browserActTool.fn(CLICK, ctx)
@@ -676,12 +676,12 @@ describe('存不下时照实说', () => {
     expect(deliveryOf(r)?.resourceId).toBeUndefined()
     expect(deliveryOf(r)?.unsaved).toBe('本次执行没有正文库')
     expect(r.message).toContain('未保存')
-    expect(r.message).toContain('无法回读')
+    expect(r.message).toContain('无法读取')
     expect(r.message).not.toContain('read_resource')
     expect(acted.acts).toBe(1)
   })
 
-  test('写失败：原因照实回，仍然只投一部分，不发假地址，不重做', async () => {
+  test('写入失败：如实返回原因，仍只投递一部分，不提供虚假地址，不重新执行', async () => {
     const acted = { acts: 0 }
     const ctx = context(fakeBrowser({}, acted), failingSink)
     const r = await browserActTool.fn(CLICK, ctx)
@@ -722,7 +722,7 @@ describe('存不下时照实说', () => {
 })
 
 describe('实际用量记账', () => {
-  test('投多少记多少，只记一次', async () => {
+  test('按实际投递量记录，只记录一次', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     openBatchBudget(ctx.state, 1_000_000)
     const r = await browserActTool.fn(CLICK, ctx)
@@ -730,7 +730,7 @@ describe('实际用量记账', () => {
     expect(1_000_000 - batchRemaining(ctx)).toBe(sizeOf(r))
   })
 
-  test('记进本波的用量不含截图字节', async () => {
+  test('计入本批的用量不含截图字节', async () => {
     const ctx = context(
       fakeBrowser({ observe: async () => ({ ...大页, image: 大截图 }) }),
       fakeSink(),
@@ -743,7 +743,7 @@ describe('实际用量记账', () => {
     expect(spent).toBeLessThanOrEqual(LIMIT)
   })
 
-  test('越过本次决策额度时动作不被拒，余额报 0，其后的读取准入不使用假余额', async () => {
+  test('超出本次决策额度时动作不被拒绝，余额报告为 0，其后的读取准入不使用虚假余额', async () => {
     const ctx = context(fakeBrowser(), fakeSink())
     openBatchBudget(ctx.state, 1000)
     expect(chargeBatchBudget(ctx, 800).ok).toBe(true)
@@ -757,8 +757,8 @@ describe('实际用量记账', () => {
   })
 })
 
-describe('短回执不落盘', () => {
-  test('tabs、upload、download 照旧原样返回', async () => {
+describe('短回执不存盘', () => {
+  test('tabs、upload、download 仍原样返回', async () => {
     const root = realpathSync(await mkdtemp(join(tmpdir(), 'qywork-browser-results-')))
     await writeFile(join(root, 'a.txt'), 'abc', 'utf8')
     const sink = fakeSink()

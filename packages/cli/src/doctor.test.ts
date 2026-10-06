@@ -1,15 +1,15 @@
 /**
  * `qy doctor`。
  *
- * 断言的是**结论与自洽**，不是文案：输出措辞会变，绑定文案的断言会被降级成
- * 「只验不抛异常」。
+ * 断言的是**结论与自洽性**，不是文案：输出措辞会变化，绑定文案的断言最终会被弱化为
+ * 「只验证不抛异常」。
  *
- * 所以这里验三件事：
+ * 因此这里验证三件事：
  *
- * 1. 每一段都在（少一段就是少查一类状态，而少查是静默的）；
- * 2. 每一条结论都说得出**为什么**（`⚠` 和 `✗` 没有 detail 等于告诉用户
- *    「出问题了，自己猜」）；
- * 3. 退出码只由 `✗` 决定：`⚠` 也退非零的话，无内核沙箱的机器上退出码恒为非零。
+ * 1. 每一段都存在（缺少一段即少检查一类状态，且缺失不产生任何提示）；
+ * 2. 每一条非正常结论都说明**原因**（`⚠` 和 `✗` 没有 detail 时，用户只能
+ *    自行推测原因）；
+ * 3. 退出码只由 `✗` 决定：若 `⚠` 也返回非零，无内核沙箱的机器上退出码恒为非零。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -24,7 +24,7 @@ let report: Section[] = []
 const prevHome = process.env.QYWORK_HOME
 
 beforeAll(async () => {
-  // 指向临时目录：体检会往配置目录写一个探针文件，不能落到用户真的 ~/.qywork 里。
+  // 指向临时目录：体检会在配置目录中写入一个探针文件，不得写入用户实际的 ~/.qywork。
   home = await mkdtemp(join(tmpdir(), 'qy-doctor-home-'))
   ws = await mkdtemp(join(tmpdir(), 'qy-doctor-ws-'))
   process.env.QYWORK_HOME = home
@@ -40,14 +40,14 @@ afterAll(async () => {
 
 const all = () => report.flatMap((s) => s.lines)
 
-describe('体检覆盖面', () => {
-  test('六段都在', () => {
-    // 少一段就是少查一类状态，而缺段不会让输出显得不完整。
+describe('体检覆盖范围', () => {
+  test('六段均存在', () => {
+    // 缺少一段即少检查一类状态，而缺段不会使输出显得不完整。
     expect(report.map((s) => s.title)).toEqual([
       '配置',
       'shell 沙箱',
       '账本与正文库',
-      '端点收尾',
+      '请求完成率',
       'MCP',
       '插件',
     ])
@@ -58,8 +58,8 @@ describe('体检覆盖面', () => {
   })
 })
 
-describe('结论要可操作', () => {
-  test('警告与失败必须说得出为什么', () => {
+describe('结论须可操作', () => {
+  test('警告与失败必须说明原因', () => {
     // 没有 detail 的警告与失败不可操作。
     for (const l of all()) {
       if (l.level === 'ok') continue
@@ -67,8 +67,8 @@ describe('结论要可操作', () => {
     }
   })
 
-  test('沙箱那条永远在，有没有都报', () => {
-    // 无内核边界是多数机器的默认状态，且不产生任何错误信号，只能由体检主动报出。
+  test('沙箱一项始终输出，无论是否具备沙箱', () => {
+    // 无内核边界是多数机器的默认状态，且不产生任何错误信号，只能由体检主动报告。
     const sb = report.find((s) => s.title === 'shell 沙箱')
     expect(sb?.lines).toHaveLength(1)
     expect(sb?.lines[0]?.detail?.length ?? 0).toBeGreaterThan(10)
@@ -76,18 +76,18 @@ describe('结论要可操作', () => {
 
   test('空工作区本身不产生阻断项', () => {
     /*
-     * 范围是**工作区相关的那几段**，不含配置：临时 QYWORK_HOME 里没有配置文件，
-     * 配置段本来就该判 fail（见下面「没有 key 时配置那段判 fail」）。
+     * 范围是**与工作区相关的各段**，不含配置：临时 QYWORK_HOME 中没有配置文件，
+     * 配置段应判定为 fail（见下方「没有 key 时配置段判定为 fail 而不是 warn」）。
      *
-     * 这条验的是空目录不因「空」而报 fail——否则首次运行的红项指向一个不存在的
+     * 本用例验证空目录不会因为「空」而报 fail：否则首次运行时的失败项会指向一个不存在的
      * 安装问题。
      */
     const wsSections = report.filter((s) => s.title !== '配置')
     expect(wsSections.flatMap((s) => s.lines).filter((l) => l.level === 'fail')).toEqual([])
   })
 
-  test('没配 MCP / 没装插件报成正常，不报成警告', () => {
-    // 「没有」不是「有问题」。报成警告会让首次运行默认带两条 warn，稀释警告的指示性。
+  test('未配置 MCP、未安装插件时报告为正常而不是警告', () => {
+    // 「没有」不等于「有问题」。报告为警告会使首次运行默认带有两条 warn，削弱警告的提示作用。
     for (const title of ['MCP', '插件']) {
       const s = report.find((x) => x.title === title)
       expect(s?.lines.every((l) => l.level === 'ok')).toBe(true)
@@ -100,12 +100,12 @@ describe('等级判定', () => {
     for (const l of all()) expect(['ok', 'warn', 'fail']).toContain(l.level)
   })
 
-  test('没有 key 时配置那段判 fail 而不是 warn', async () => {
-    // 没有 key 就发不出任何请求——那是阻断，不是「需要知道」。
-    // 判成 warn 的话 `qy doctor` 在一台完全没配好的机器上会退 0。
+  test('没有 key 时配置段判定为 fail 而不是 warn', async () => {
+    // 没有 key 时无法发出任何请求，属于阻断而不是警告。
+    // 若判定为 warn，`qy doctor` 在完全未配置的机器上会以 0 退出。
     const cfg = report.find((s) => s.title === '配置')
     expect(cfg).toBeDefined()
-    // 本次跑在临时 QYWORK_HOME 上，没有配置文件 → 走默认档案 → 没有 key。
+    // 本次运行使用临时 QYWORK_HOME，没有配置文件 → 使用默认配置 → 没有 key。
     expect(cfg?.lines.some((l) => l.level === 'fail')).toBe(true)
   })
 })

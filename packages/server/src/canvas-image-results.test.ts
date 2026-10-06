@@ -63,7 +63,7 @@ async function setup(n = 4) {
 }
 
 describe('图片生成的完整结果与部分结果', () => {
-  test('16:9、4K、最高质量、四张原样进入 HTTP；返回低分辨率时保存原图并说明差异', async () => {
+  test('16:9、4K、最高质量、四张原样写入 HTTP 请求；返回低分辨率时保存原图并说明差异', async () => {
     const png = Buffer.alloc(33)
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png)
     png.writeUInt32BE(13, 8)
@@ -138,7 +138,7 @@ describe('图片生成的完整结果与部分结果', () => {
     },
   )
 
-  test('第一次出图、第二次 HTTP 400：保留原图，不增加虚假版本；再成功时清除失败', async () => {
+  test('第一次生成图片、第二次 HTTP 400：保留原图，不增加虚假版本；再次成功时清除失败', async () => {
     const { root, svc, id, run, card } = await setup(1)
     reply = () => Response.json({ data: [{ b64_json: images[0]!.toString('base64') }] })
     await run()

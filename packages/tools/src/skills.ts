@@ -1,21 +1,21 @@
 /**
  * 技能。
  *
- * 技能 = 一个目录里的 `SKILL.md`，前置元信息声明 name/description，正文是操作指南。
- * 与记忆的区别：**记忆是事实，技能是流程**。「这个项目用 pnpm」是记忆，
- * 「怎么发一个版本」是技能。
+ * 技能是目录中的 `SKILL.md`：前置元信息声明 name/description，正文是操作指南。
+ * 与记忆的区别：记忆是事实，技能是流程。「这个项目用 pnpm」是记忆，
+ * 「如何发布一个版本」是技能。
  *
- * **按需加载，索引进尾区，正文只在被读时才进上下文。** 这是技能体系的全部价值。把所有技能正文都塞进
- * system prompt 的话，十个技能就能占掉几万 token，而一次任务通常只用得上其中一个。
+ * 按需加载：索引放在上下文末尾，正文只在被读取时进入上下文。这是技能体系的核心价值。
+ * 若把所有技能正文都写入 system prompt，十个技能即可占用数万 token，而一次任务通常只用到其中一个。
  *
- * 所以：**索引**（name + description，每条一行）进尾区注记，模型看到后
- * 自己决定要不要 `read_skill` 拉全文。
+ * 因此索引（name + description，每条一行）写入上下文末尾的注记，模型看到后
+ * 自行决定是否调用 `read_skill` 读取全文。
  *
- * 索引同样**永不进冻结前缀**——用户装一个技能就会让整个 provider 缓存失效。
+ * 索引同样不进入冻结前缀：否则用户安装一个技能就会使整个 provider 缓存失效。
  *
- * **三层作用域，读跨层，写默认项目层。** 工作区 `.agents/skills/`（项目层）和 `~/.qywork/skills/`
- * （全局层）两处都扫描，同名时以先扫描到的为准。用户明确指定全局时写入全局；迁移由单个工具完成，目标冲突时不改来源，
- * 成功后不保留双份。
+ * 三层作用域，读取跨层，写入默认项目层。工作区 `.agents/skills/`（项目层）和 `~/.qywork/skills/`
+ * （全局层）都会扫描，同名时以先扫描到的为准。用户明确指定全局时写入全局；迁移由单个工具完成，
+ * 目标冲突时不修改来源，成功后不保留两份副本。
  */
 
 import { cp, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
@@ -34,7 +34,7 @@ import {
 import { deliverReadable } from './sink.ts'
 import { commitSkillDirectory, importSkills } from './skills/install.ts'
 
-/** 各层根目录下装技能的那个子目录。`.agents/skills` 是跨客户端约定的那条。 */
+/** 各层根目录下存放技能的子目录。`.agents/skills` 是跨客户端约定的路径。 */
 export const SKILLS_SUBDIR = 'skills'
 /** 项目层技能相对工作区的路径。 */
 export const SKILLS_DIR = `.agents/${SKILLS_SUBDIR}`
@@ -43,20 +43,20 @@ export interface SkillMeta {
   name: string
   description: string
   /**
-   * 技能目录的**绝对路径**。
+   * 技能目录的绝对路径。
    *
-   * 不能相对工作区：全局层的技能不在工作区里，相对路径表达不了它，
-   * 而拼出来的 `../../..` 既读不懂、回填给工具还会指向别处。
+   * 不能相对于工作区：全局层的技能不在工作区中，相对路径无法表示，
+   * 拼接出的 `../../..` 既难以阅读，回填给工具时还会指向错误位置。
    */
   dir: string
   scope: Scope
 }
 
 /**
- * 扫一个目录里的技能。
+ * 扫描一个目录中的技能。
  *
- * 单个技能坏了（缺 SKILL.md、前置元信息写错）**只跳过它自己**，不影响其余——
- * 一个手滑的技能包让整个技能体系不可用是不可接受的。
+ * 单个技能损坏（缺少 SKILL.md、前置元信息有误）时只跳过该技能，不影响其余技能：
+ * 一个有误的技能包不应使整个技能体系不可用。
  */
 export async function scanSkillDir(root: string, scope: Scope): Promise<SkillMeta[]> {
   const names = await readdir(root).catch(() => [] as string[])
@@ -71,8 +71,8 @@ export async function scanSkillDir(root: string, scope: Scope): Promise<SkillMet
     if (text === null) continue
 
     const meta = parseFrontmatter(text)
-    // description 是模型判断「何时用这个技能」的唯一依据。没有就等于装了也不会被用到，
-    // 与其静默收录一个永远不会触发的技能，不如跳过并让它在扫描结果里缺席。
+    // description 是模型判断何时使用该技能的唯一依据。缺少它时技能安装后也不会被使用，
+    // 与其静默收录一个永远不会触发的技能，不如跳过，使它不出现在扫描结果中。
     if (!meta.description || /^[|>][+-]?\d?$/.test(meta.description)) continue
 
     out.push({
@@ -86,10 +86,10 @@ export async function scanSkillDir(root: string, scope: Scope): Promise<SkillMet
 }
 
 /**
- * 三层合起来的技能索引。同名只留优先级最高的那个。
+ * 三层合并后的技能索引。同名时只保留优先级最高的一项。
  *
- * **加载器和设置页共用这一个函数。** 两边各扫一遍的话，菜单描述的是一个技能、
- * 跑的是另一个——而这种错只在同名时才犯，最难被当成 bug 报出来。
+ * 加载器和设置页共用此函数。两处各自扫描时，菜单描述的是一个技能、
+ * 实际执行的是另一个；这种错误只在同名时出现，最难被识别为缺陷。
  */
 export function scanSkills(rootsOrWorkspace: string | ScopeRoots): Promise<SkillMeta[]> {
   const roots =
@@ -98,10 +98,10 @@ export function scanSkills(rootsOrWorkspace: string | ScopeRoots): Promise<Skill
 }
 
 /**
- * 每一层各自装了哪些技能，被同名盖住的也在里面。
+ * 每一层各自安装的技能，包括被同名技能覆盖的项。
  *
- * 设置页按层分列要的是这一份。去重之后被盖住的那个直接消失，而「全局装了一个
- * 同名技能、生效的却是项目里那个」正是靠它才答得出来。
+ * 设置页按层分列时使用此结果。去重后被覆盖的项直接消失，而「全局安装了同名技能、
+ * 生效的却是项目层的技能」这一情况只能依据此结果说明。
  */
 export function scanAllSkills(roots: ScopeRoots): Promise<ScopedItem<SkillMeta>[]> {
   return scanAllScopes(roots, SKILLS_SUBDIR, scanSkillDir, (s) => s.name)
@@ -110,9 +110,9 @@ export function scanAllSkills(roots: ScopeRoots): Promise<ScopedItem<SkillMeta>[
 /**
  * 解析 YAML 前置元信息。
  *
- * 只认 `name` 和 `description` 两个标量键，不引 YAML 库：技能元信息就这两个字段，
- * 为它引一个解析器（以及它的攻击面）不划算。写了别的键会被安静忽略——
- * 这里宽松是对的，将来加字段时旧技能不会因此报错。
+ * 只识别 `name` 和 `description` 两个标量键，不引入 YAML 库：技能元信息只有这两个字段，
+ * 为此引入解析器（及其攻击面）得不偿失。其他键会被忽略：
+ * 此处保持宽松，将来增加字段时旧技能不会因此报错。
  */
 export function parseFrontmatter(text: string): { name: string; description: string } {
   const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)
@@ -123,7 +123,7 @@ export function parseFrontmatter(text: string): { name: string; description: str
     const kv = /^\s*(name|description)\s*:\s*(.*)$/.exec(line)
     if (!kv) continue
     let value = kv[2]!.trim()
-    // 去掉可选的引号。YAML 的多行标量不支持——技能描述是一句话，需要多行说明就写正文。
+    // 去除可选的引号。不支持 YAML 多行标量：技能描述是一句话，需要多行说明时写在正文中。
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
       (value.startsWith("'") && value.endsWith("'"))
@@ -157,19 +157,19 @@ function scopeProperty(): Record<string, unknown> {
   return {
     type: 'string',
     enum: ['project', 'global'],
-    description: '写入层；不传默认 project，用户明确要求全局时必须传 global',
+    description: '写入层；不传时默认 project，用户明确要求全局时必须传 global',
   }
 }
 
 function skillRoot(workspaceRoot: string, scope: WritableScope): string {
   const root = scopeDir(scopeRoots(workspaceRoot), scope, SKILLS_SUBDIR)
-  if (root === null) throw new Error('这一层不可写')
+  if (root === null) throw new Error('该层不可写')
   return root
 }
 
 export const readSkillTool: ToolSpec = {
   name: 'read_skill',
-  description: '读取一个技能的完整内容（操作步骤）。名称从尾区的技能索引里取。',
+  description: '读取一个技能的完整内容（操作步骤）。名称取自上下文末尾的技能索引。',
   parameters: {
     type: 'object',
     properties: { name: { type: 'string', description: '技能名称' } },
@@ -180,7 +180,7 @@ export const readSkillTool: ToolSpec = {
   objectLabel: '技能',
   category: 'skills',
   facet: '技能',
-  summary: '读一个技能的完整操作步骤',
+  summary: '读取一个技能的完整操作步骤',
   targetExtractor: (a) => (typeof a.name === 'string' ? a.name : null),
   permissionEffect: 'internal_control',
   parallelSafe: true,
@@ -193,11 +193,11 @@ export const readSkillTool: ToolSpec = {
     const skills = await scanSkills(ctx.workspaceRoot)
     const hit = skills.find((s) => s.name === wanted || s.dir.endsWith(wanted))
     if (!hit) {
-      // 列出可用的名字而不是只说「找不到」：模型通常是名字记错了一个字，
-      // 给它候选它下一轮就能自己修正。
+      // 列出可用名称而不是只返回「未找到」：模型通常只是把名称记错了一个字，
+      // 给出候选后，它在下一轮即可自行修正。
       return {
         status: 'failure',
-        message: `没有技能 ${wanted}${skills.length ? `。可用：${skills.map((s) => s.name).join('、')}` : ''}`,
+        message: `未找到技能 ${wanted}${skills.length ? `。可用：${skills.map((s) => s.name).join('、')}` : ''}`,
         errorKind: 'not_found',
       }
     }
@@ -206,7 +206,7 @@ export const readSkillTool: ToolSpec = {
     if (text === null) {
       return { status: 'failure', message: `技能 ${wanted} 的 SKILL.md 读取失败` }
     }
-    // SKILL.md 没有长度上限：装不下本轮剩余额度时存进正文库续读。
+    // SKILL.md 没有长度上限：超出本轮剩余额度时存入正文库供续读。
     const data = { name: hit.name, dir: hit.dir, scope: hit.scope }
     return deliverReadable(ctx, {
       toolName: 'read_skill',
@@ -221,7 +221,7 @@ export const readSkillTool: ToolSpec = {
 export const writeSkillTool: ToolSpec = {
   name: 'write_skill',
   description:
-    '创建或更新一个 qywork 技能。默认写项目层；用户明确要求全局时 scope 必须传 global。content 是 SKILL.md 的正文，不含前置元信息；附带脚本或模板放在 files。',
+    '创建或更新一个 qywork 技能。默认写入项目层；用户明确要求全局时 scope 必须传 global。content 是 SKILL.md 的正文，不含前置元信息；附带脚本或模板放在 files。',
   parameters: {
     type: 'object',
     properties: {
@@ -353,7 +353,11 @@ export const moveSkillTool: ToolSpec = {
     const sourceSkills = await scanSkillDir(fromRoot, from)
     const hit = sourceSkills.find((s) => s.name === wanted || basename(s.dir) === wanted)
     if (!hit) {
-      return { status: 'failure', message: `${from} 层没有技能 ${wanted}`, errorKind: 'not_found' }
+      return {
+        status: 'failure',
+        message: `${from} 层中未找到技能 ${wanted}`,
+        errorKind: 'not_found',
+      }
     }
     const target = join(skillRoot(ctx.workspaceRoot, to), basename(hit.dir))
     try {
@@ -379,7 +383,7 @@ export const moveSkillTool: ToolSpec = {
 export const importSkillTool: ToolSpec = {
   name: 'import_skill',
   description:
-    '安装现成技能目录或 ZIP，完整保留脚本、模板和二进制资源。程序计算安装目录并验证扫描读取；不要运行包内安装脚本。默认项目层，明确全局时传 global；用户授权替换已有版本时传 replace=true。',
+    '安装现成技能目录或 ZIP，完整保留脚本、模板和二进制资源。程序计算安装目录并验证扫描读取；不要运行包内安装脚本。默认安装到项目层，明确要求全局时传 global；用户授权替换已有版本时传 replace=true。',
   parameters: {
     type: 'object',
     properties: {

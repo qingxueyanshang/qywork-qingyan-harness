@@ -1,28 +1,28 @@
 /**
- * desktop 四个出口的结果生产。
+ * desktop 四个出口的结果生成。
  *
- * 控件表装得下单次投递上限就整份内联，装不下就整份存盘，结果里放一部分控件加规范资源
- * 引用；动作与等待之后的重读在条件成立时只投与上一份整份相比的变化。七条边界：
+ * 控件表未超出单次投递上限时整份内联，超出时整份存盘，结果中放入部分控件与规范资源
+ * 引用；动作与等待之后的重读在条件成立时只投递与上一份整份投递相比的变化。七条边界：
  *
- * 1. **判定线与视图上限是同一个数**，按 `deliveredTokens` 量整条结果——控件、观察
- *    元数据、回执、message 与资源引用都算在内。只量元素数组会把回执与长 message
- *    漏在上限之外。上限取单次投递上限本身，不要改成 browser 那样按比例缩：多数整窗控件表
- *    会因此分页，排在尾部的动作目标首读不在视图里，分页的结果也当不了差异基底。历史里的
- *    控件表只追加，累积由精简投递、差异投递与压缩承担。
- * 2. **动作判定与读回核验不看这里的视图**，它们用端口交回的完整控件表。
- * 3. **采集侧与投递侧分列**：`truncated` / `truncatedBy` / `filteredBy` 说的是没采到，
- *    `delivery` 说的是采到了没投。两者不能合并成一格。
- * 4. **图像字节不进这里**：它走 `data.images`，既不计入上限也不写进存盘正文。
- * 5. **按角色或文字筛选只作用于视图**：观察编号与控件表是端口交回的整份，筛出来的控件与
- *    其余控件的 `ref` 同样可以直接用。存盘正文是整份控件表。
- * 6. **投递形状只有一种**：`actions` 按投递方式分组、去重成 `actionSets`，控件上只留下标；与 `defaults`
- *    相同的格省掉；`rect` 只在调用方要时给；无名结构容器不列，`depth` 按列出的祖先计。
- *    小表与大表的视图同形，字典随每个结果自带。存盘正文仍是一行一个完整原始控件，
- *    不依赖字典。
- * 7. **差异只相对一份仍然可见的整份投递**：本 run、同窗口、同读取范围、未筛选、未分页、
- *    不带 `rect` 的那一份；逐字未变的控件过半；这份基底与之后各次差异累计不超过单次上限，
- *    压缩保留的尾部（两倍单次上限）因此装得下它们；基底之后本 run 没有落定过压缩（尾部按全部
- *    消息计，别的工具的大结果能把基底挤出去）。任一条不成立即整份投递并成为新基底。
+ * 1. **判定阈值与视图上限是同一个数**，按 `deliveredTokens` 计量整条结果：控件、观察
+ *    元数据、回执、message 与资源引用都计算在内。只计量元素数组会把回执与长 message
+ *    遗漏在上限之外。上限取单次投递上限本身，不要改成 browser 那样按比例缩小：多数整窗控件表
+ *    会因此分页，位于尾部的动作目标在首次读取时不在视图中，分页的结果也无法作为差异基底。
+ *    历史中的控件表只追加，累积量由精简投递、差异投递与压缩承担。
+ * 2. **动作判定与回读核验不使用此处的视图**，它们使用端口返回的完整控件表。
+ * 3. **采集侧与投递侧分别列出**：`truncated` / `truncatedBy` / `filteredBy` 表示未采集到，
+ *    `delivery` 表示已采集但未投递。两者不能合并为一个字段。
+ * 4. **图像字节不经过此处**：它经由 `data.images`，既不计入上限，也不写入存盘正文。
+ * 5. **按角色或文字筛选只作用于视图**：观察编号与控件表是端口返回的整份，筛选出的控件与
+ *    其余控件的 `ref` 同样可以直接使用。存盘正文是整份控件表。
+ * 6. **投递形状只有一种**：`actions` 按投递方式分组、去重为 `actionSets`，控件上只保留下标；
+ *    省略与 `defaults` 相同的字段；`rect` 只在调用方要求时提供；无名结构容器不列出，
+ *    `depth` 按列出的祖先计算。小表与大表的视图形状相同，字典随每个结果附带。
+ *    存盘正文仍是每行一个完整原始控件，不依赖字典。
+ * 7. **差异只相对于一份仍在上下文中的整份投递**：本 run、同窗口、同读取范围、未筛选、未分页、
+ *    不带 `rect` 的那一份；逐字未变的控件过半；该基底与之后各次差异累计不超过单次上限，
+ *    因此压缩保留的尾部（两倍单次上限）能够容纳它们；基底之后本 run 没有完成过压缩（尾部按
+ *    全部消息计算，其他工具的大结果可能使基底移出保留范围）。任一条不成立即整份投递并成为新基底。
  */
 
 import {
@@ -41,35 +41,35 @@ import { deliver, type LandedResult, observationBudget, viewLimit } from './sink
 const JSONL_MIME = 'application/x-ndjson'
 const SOURCE_TYPE = 'desktop:observation'
 /**
- * 骨架估算时给 resource id 留的位置。
+ * 骨架估算时为 resource id 预留的长度。
  *
- * 真 id 在存盘之后才有，而视图要在存盘之前选好。取 32 字符是上界：高估只让视图
- * 少装一个控件，低估会让结果越过上限。
+ * 实际 id 在存盘之后才生成，而视图必须在存盘之前选定。取 32 字符作为上界：高估只使视图
+ * 少容纳一个控件，低估会使结果超出上限。
  */
 const ID_ESTIMATE = 'r'.repeat(32)
 /**
- * 视图里窗口标题与控件名称、值各自最多留多少字。
+ * 视图中窗口标题与控件名称、值各自最多保留的字数。
  *
- * 取 200，与 message 里控件值的上限同一量级。这几格由窗口与应用自报、长度无界，而上限
- * 按整条结果计量：一格长文本会把视图预算吃光，排在它后面的控件一个都投不出去。只用在
- * 大表视图上，完整原值在存盘正文里。
+ * 取 200，与 message 中控件值的上限同一量级。这些字段由窗口与应用自行报告，长度无上限，而上限
+ * 按整条结果计量：一个长文本字段会耗尽视图预算，位于其后的控件均无法投递。只用于
+ * 大表视图，完整原值在存盘正文中。
  */
 export const MAX_TITLE_CHARS = 200
 
 /**
- * 控件上缺席时取的值。每个结果都带一份，模型读结果时不依赖别处的约定。
+ * 控件上缺失字段时取的值。每个结果都附带一份，模型读取结果时不依赖其他位置的约定。
  *
  * 取绝大多数控件的实际值：可用、可见、没有稳定标识。
  */
 const DEFAULTS = { enabled: true, offscreen: false, automationId: '' } as const
 /** 结构容器的角色。这几种控件没有名称与状态时只承载层级。 */
 const CONTAINER_ROLES: ReadonlySet<string> = new Set(['pane', 'group', 'custom'])
-/** `ctx.state` 里记差异基底的键。`ctx.state` 是 run 级的：新 run 的第一次投递一定整份。 */
+/** `ctx.state` 中记录差异基底的键。`ctx.state` 是 run 级的：新 run 的第一次投递必然是整份投递。 */
 const BASES_KEY = 'desktop:bases'
 /**
- * 差异投递要求与基底逐字相同的控件至少占多少，分母取基底与这一份里较多的那个。
+ * 差异投递要求与基底逐字相同的控件所占的最低比例，分母取基底与本份中控件数较多者。
  *
- * 低于它说明界面已经大改（页面跳转、换了对话框），整份投递读起来更直接，且成为新基底。
+ * 低于该比例说明界面已大幅变化（页面跳转、更换对话框），整份投递更易读，且成为新基底。
  */
 const MIN_UNCHANGED_SHARE = 0.5
 
@@ -81,12 +81,12 @@ type DesktopResultContext = Pick<
 type Actions = DesktopElement['actions']
 
 /**
- * 交给模型的一个控件：`actions` 换成 `actionSets` 的下标，与 `DEFAULTS` 相同的格省掉。
- * 大表视图里超长的名称与值只留前缀，并标明省掉多少字。
+ * 交给模型的控件：`actions` 替换为 `actionSets` 的下标，省略与 `DEFAULTS` 相同的字段。
+ * 大表视图中超长的名称与值只保留前缀，并标明省略的字数。
  *
- * 不带 `parentRef`：控件按前序排列，父控件是前面最近的、`depth` 小一层的那一个。再带一份
+ * 不含 `parentRef`：控件按前序排列，父控件是前面最近的、`depth` 小一层的控件。额外附带
  * 父控件引用约占控件表的四分之一，且每一步都是新内容，无法命中缓存。`rect` 只在
- * `includeRect` 为真时带：它约占控件表的五分之一，按控件动作与取景都不读投递里的这一格。
+ * `includeRect` 为真时提供：它约占控件表的五分之一，按控件执行动作与确定采集区域都不读取投递中的该字段。
  */
 export type CompactElement = Omit<
   DesktopElement,
@@ -100,13 +100,13 @@ export type CompactElement = Omit<
   valueOmittedChars?: number
 }
 
-/** 投递事实。与采集侧的 `truncated` / `filteredBy` 是两回事。 */
+/** 投递事实。与采集侧的 `truncated` / `filteredBy` 含义不同。 */
 interface Delivery {
   deliveredElements: number
   totalElements: number
-  /** 存盘成功才有：完整控件表按它读。 */
+  /** 仅在存盘成功时存在：按它读取完整控件表。 */
   resourceId?: string
-  /** 存盘没成功才有：原因。未返回的控件此后读不回来。 */
+  /** 仅在存盘失败时存在：失败原因。未返回的控件此后无法读取。 */
   unsaved?: string
 }
 
@@ -116,26 +116,26 @@ export interface DesktopResultInput {
   snapshot: DesktopSnapshot
   /** 观察放在 `data` 顶层（observe），还是 `data.observation` 下（act / wait / sequence）。 */
   place: 'top' | 'observation'
-  /** 结果里除观察以外的字段：回执、步骤表、found。 */
+  /** 结果中除观察以外的字段：回执、步骤表、found。 */
   receipt?: Record<string, unknown>
-  /** 本次动作的目标控件，它与它的祖先优先进视图。没有目标给 null。 */
+  /** 本次动作的目标控件，它及其祖先优先进入视图。没有目标时为 null。 */
   targetRef?: string | null
   /** 视图只列命中这些条件的控件及其祖先。 */
   filter?: ViewFilter
-  /** 控件带不带 `rect`。缺席不带。 */
+  /** 控件是否包含 `rect`。缺失时不包含。 */
   includeRect?: boolean
   /**
-   * 动作与等待之后的重读传 true：条件成立时只投与上一份整份投递相比的变化。
-   * `desktop_observe` 不传，一律整份：模型主动要看的是整张表。
+   * 动作与等待之后的重读传 true：条件成立时只投递与上一份整份投递相比的变化。
+   * `desktop_observe` 不传，一律整份投递：模型主动观察时需要整张表。
    */
   incremental?: boolean
-  /** message 的执行事实部分。控件内容不进 message。 */
+  /** message 的执行事实部分。控件内容不进入 message。 */
   lead: string
   /** 上限，缺省取单份视图尺寸（`observationBudget`）与剩余额度的较小者。 */
   limit?: number
 }
 
-/** 视图的筛选条件。`query` 看名称、稳定标识与值，不分大小写。 */
+/** 视图的筛选条件。`query` 匹配名称、稳定标识与值，不区分大小写。 */
 export interface ViewFilter {
   role?: string
   query?: string
@@ -148,9 +148,9 @@ export interface DesktopResultParts {
 }
 
 /**
- * 把一份观察与本次回执合成工具结果。**四个出口只有这一个入口。**
+ * 把一份观察与本次回执合成为工具结果。四个出口都只经由此入口。
  *
- * 存不下的部分照实说：没有 sink 或写失败时不给地址，执行事实一个字不改。
+ * 无法保存的部分如实说明：没有 sink 或写入失败时不提供地址，执行事实保持不变。
  */
 export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const { ctx } = input
@@ -167,7 +167,7 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   const { elements: read, ...meta } = snapshot
   const targetRef = input.targetRef ?? null
   const elements = listable(read, new Set([...keptAnyway(read, targetRef), ...hits]))
-  // 筛过的视图不碰基底。
+  // 筛选后的视图不修改基底。
   const bases = input.filter ? null : basesOf(ctx)
   const key = baseKeyOf(snapshot)
   const rows = bases ? new Map(elements.map((e) => [e.ref, rowKey(e)])) : null
@@ -192,7 +192,7 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
   }
   const wholeTokens = tokensOf(whole, ctx.density)
   if (wholeTokens <= limit) {
-    // 带 rect 的整份不当基底：之后的差异不带 rect，未列出的控件在基底里的 rect 可能已经过时。
+    // 带 rect 的整份投递不作为基底：之后的差异不含 rect，未列出的控件在基底中的 rect 可能已经过时。
     if (bases && rows && !includeRect) {
       bases.set(key, {
         observationId: snapshot.observationId,
@@ -268,18 +268,18 @@ export function desktopResult(input: DesktopResultInput): DesktopResultParts {
 }
 
 /**
- * 模型手上的一份整份控件表：本 run 里某个窗口、某个读取范围最近一次整份、未筛选、未分页的
- * 投递。差异投递按它比较。
+ * 模型已持有的一份整份控件表：本 run 中某个窗口、某个读取范围最近一次整份、未筛选、未分页的
+ * 投递。差异投递以它为比较对象。
  *
- * 它只记投递出去了什么，不参与动作判定：动作仍按协调器交回的完整表核对。
+ * 它只记录已投递的内容，不参与动作判定：动作仍按协调器返回的完整表核对。
  */
 interface Base {
   observationId: string
-  /** 编号 → 这一行投递内容的比较串，见 `rowKey`。 */
+  /** 编号 → 该行投递内容的比较串，见 `rowKey`。 */
   rows: Map<string, string>
-  /** 这份基底与之后各次差异一共投了多少 token。不超过单次上限，基底才仍在压缩保留的尾部里。 */
+  /** 该基底与之后各次差异共投递的 token 数。不超过单次上限时，基底才仍在压缩保留的尾部中。 */
   spent: number
-  /** 基底投递时的压缩次数（`compactionEpoch`）。之后落定过压缩，基底可能已换成信封，不再用。 */
+  /** 基底投递时的压缩次数（`compactionEpoch`）。之后完成过压缩时，基底可能已被替换为信封，不再使用。 */
   epoch: number
 }
 
@@ -295,26 +295,26 @@ function basesOf(ctx: DesktopResultContext): Bases {
 }
 
 /**
- * 基底按窗口与读取范围分开记，整窗读取没有读取范围。
+ * 基底按窗口与读取范围分别记录，整窗读取没有读取范围。
  *
- * 一份不筛选的结果只更新同一个键：历史只追加，别的键的基底仍逐字在上下文里。
+ * 一份未筛选的结果只更新对应的键：历史只追加，其他键的基底仍逐字保留在上下文中。
  */
 function baseKeyOf(snapshot: DesktopSnapshot): string {
   return JSON.stringify([snapshot.windowId, snapshot.scope ?? null])
 }
 
 /**
- * 一行投递内容的比较串：投递形状（不含 `rect`）、它的动作字典项与列出的父控件。
+ * 一行投递内容的比较串：投递形状（不含 `rect`）、其动作字典项与列出的父控件。
  *
- * 父控件要算进来：差异里的行不在原位置上，换了父控件而其余字段不变的控件，只比投递字段
- * 会被判成未变。
+ * 父控件必须计入：差异中的行不在原位置，更换父控件而其余字段不变的控件，只比较投递字段
+ * 会被判定为未变化。
  */
 function rowKey(e: DesktopElement): string {
   const { actionSet: _index, ...row } = compactOf(e, 0, false)
   return JSON.stringify({ ...row, parentRef: e.parentRef ?? null, actions: groupsOf(e.actions) })
 }
 
-/** 与基底相比的变化。三类都按这一份里的顺序排，`removed` 按基底里的顺序。 */
+/** 与基底相比的变化。`added` 与 `changed` 按本份中的顺序排列，`removed` 按基底中的顺序排列。 */
 interface Diff {
   since: string
   unchanged: number
@@ -323,7 +323,7 @@ interface Diff {
   removed: string[]
 }
 
-/** 与基底相比的变化；逐字未变的控件不到 `MIN_UNCHANGED_SHARE` 时交回 `null`，整份投递。 */
+/** 与基底相比的变化；逐字未变的控件不足 `MIN_UNCHANGED_SHARE` 时返回 `null`，改为整份投递。 */
 function diffOf(
   base: Base,
   elements: readonly DesktopElement[],
@@ -345,10 +345,10 @@ function diffOf(
 }
 
 /**
- * 差异结果。观察元数据与整份投递相同，控件表换成 `since` / `unchanged` 与三类变化。
+ * 差异结果。观察元数据与整份投递相同，控件表替换为 `since` / `unchanged` 与三类变化。
  *
- * 行不在原位置上，所以 `added` 与 `changed` 的每一行都带 `parentRef`（列出的父控件）；
- * 字典只含这两类行用到的项。
+ * 行不在原位置，因此 `added` 与 `changed` 的每一行都附带 `parentRef`（列出的父控件）；
+ * 字典只包含这两类行用到的项。
  */
 function diffParts(
   input: DesktopResultInput,
@@ -380,12 +380,12 @@ function diffParts(
   }
 }
 
-/** 按视图条件筛过的观察。没有条件时原样返回。 */
+/** 按视图条件筛选后的观察。没有条件时原样返回。 */
 type ShownSnapshot = DesktopSnapshot & { viewFilter?: string[]; matched?: number }
 
 /**
- * 视图只列命中条件的控件，连同它们的祖先：祖先不留的话层级读不出来，同名控件分不开。
- * `matched` 是命中数，不含祖先；`hits` 是命中的那几个，结构容器命中了同样列出。
+ * 视图只列出命中条件的控件及其祖先：不保留祖先时无法读出层级，也无法区分同名控件。
+ * `matched` 是命中数，不含祖先；`hits` 是命中的控件，结构容器命中时同样列出。
  */
 function viewOf(
   snapshot: DesktopSnapshot,
@@ -421,8 +421,8 @@ function viewOf(
 /**
  * 无名结构容器：pane / group / custom，没有名称、值与文本，也没有任何非默认状态。
  *
- * 它们只承载层级。可用动作不参与判定：浏览器里几乎每个节点都挂着 scroll_into_view 与
- * 指针动作，按它判等于一个都不省。
+ * 它们只承载层级。可用动作不参与判定：浏览器中几乎每个节点都带有 scroll_into_view 与
+ * 指针动作，按动作判定则没有任何容器能被省略。
  */
 function structural(e: DesktopElement): boolean {
   return (
@@ -445,19 +445,19 @@ function structural(e: DesktopElement): boolean {
 }
 
 /**
- * 投给模型的控件：无名结构容器不列，`keep` 里的照列；`depth` 改成列出的祖先个数，
- * `parentRef` 改成最近一个列出的祖先。
+ * 投递给模型的控件：无名结构容器不列出，`keep` 中的照常列出；`depth` 改为列出的祖先个数，
+ * `parentRef` 改为最近一个列出的祖先。
  *
- * 不要保留原 `depth`：容器省掉之后层数跳级，它的子控件读起来挂在前一个兄弟下面。按列出的
- * 祖先计数，「父控件是前面最近的、depth 小一层的那一个」对投递出去的表仍然成立；一个都
- * 没省时它与原值相同。父控件不在表里的控件两格都沿用原值。
+ * 不要保留原 `depth`：省略容器后层数出现跳跃，其子控件会被解读为前一个兄弟控件的子控件。
+ * 按列出的祖先计数，「父控件是前面最近的、depth 小一层的控件」对投递出的表仍然成立；
+ * 未省略任何容器时它与原值相同。父控件不在表中的控件，这两个字段都沿用原值。
  */
 function listable(
   elements: readonly DesktopElement[],
   keep: ReadonlySet<string>,
 ): DesktopElement[] {
   const levels = new Map<string, number>()
-  /** 编号 → 它自己（列出时）或它最近一个列出的祖先。 */
+  /** 编号 → 控件自身（列出时）或其最近一个列出的祖先。 */
   const anchors = new Map<string, string | undefined>()
   const listed = new Set<string>()
   const out: DesktopElement[] = []
@@ -489,12 +489,12 @@ function matchesFilter(element: DesktopElement, filter: ViewFilter): boolean {
   )
 }
 
-/** message 里的视图筛选事实：命中多少，以及其余控件仍属这份观察。 */
+/** message 中的视图筛选事实：命中数，以及其余控件仍属于本次观察。 */
 function filterNote(snapshot: ShownSnapshot): string {
-  return `视图按 ${snapshot.viewFilter?.join(' ')} 列出命中的 ${snapshot.matched} 个控件及其祖先，其余控件仍在这份观察里`
+  return `视图按 ${snapshot.viewFilter?.join(' ')} 列出命中的 ${snapshot.matched} 个控件及其祖先，其余控件仍在本次观察中`
 }
 
-/** 观察在 data 里的位置。两处的字段名与层级都由调用方那一侧的界面消费，不要挪。 */
+/** 观察在 data 中的位置。两处的字段名与层级都由调用方的界面读取，不要移动。 */
 function compose(
   receipt: Record<string, unknown>,
   observation: Record<string, unknown>,
@@ -511,16 +511,16 @@ interface Packed {
 }
 
 /**
- * 字典里的一项：一个控件的动作表按投递方式分组。
+ * 字典中的一项：一个控件的动作表按投递方式分组。
  *
- * 键是 `delivery` 的取值，一个动作有多种投递方式时按字母序用 `+` 连起来；值是这一组的
- * 动作名，顺序同端口交回的动作表。`delivery` 为空的动作放进 `unavailable`，值是原因。
- * 组与组之间不保留原顺序：按投递方式列同一组动作名只写一次，动作名的相对顺序对调用方
- * 不构成约定。
+ * 键是 `delivery` 的取值，一个动作有多种投递方式时按字母序用 `+` 连接；值是该组的
+ * 动作名，顺序与端口返回的动作表相同。`delivery` 为空的动作放入 `unavailable`，值是原因。
+ * 组间不保留原顺序：按投递方式分组后同一组动作名只写一次，动作名的相对顺序不构成
+ * 对调用方的约定。
  */
 type ActionGroups = Record<string, string[] | Record<string, string>>
 
-/** 一个动作表的字典形状。组的键按字母序，`unavailable` 在最后，同一张表只有一种写法。 */
+/** 一个动作表的字典形状。组的键按字母序排列，`unavailable` 位于最后，同一张表只有一种写法。 */
 function groupsOf(actions: Actions): ActionGroups {
   const groups = new Map<string, string[]>()
   const unavailable: Record<string, string> = {}
@@ -540,12 +540,12 @@ function groupsOf(actions: Actions): ActionGroups {
   return out
 }
 
-/** 动作字典。下标按第一次登记的先后编号，同一个结果里一种分组只占一个下标。 */
+/** 动作字典。下标按首次登记的先后编号，同一结果中每种分组只占一个下标。 */
 class ActionSets {
   readonly list: ActionGroups[] = []
   #index = new Map<string, number>()
 
-  /** 这个动作表的下标、字典形状，以及它是不是还没登记过。只查不登记。 */
+  /** 该动作表的下标、字典形状，以及它是否尚未登记。只查询，不登记。 */
   peek(actions: Actions): { index: number; fresh: boolean; groups: ActionGroups } {
     const groups = groupsOf(actions)
     const known = this.#index.get(JSON.stringify(groups))
@@ -571,7 +571,7 @@ function pack(elements: readonly DesktopElement[], includeRect: boolean): Packed
   return { defaults: DEFAULTS, actionSets: sets.list, elements: packed }
 }
 
-/** 一个控件的投递形状。`element` 可以是已经留了前缀的那一份，省略字数随之带上。 */
+/** 单个控件的投递形状。`element` 可以是已截取前缀的版本，省略字数随之附带。 */
 function compactOf(
   element: DesktopElement & { nameOmittedChars?: number; valueOmittedChars?: number },
   actionSet: number,
@@ -613,10 +613,10 @@ function assemble(
 }
 
 /**
- * 视图里的窗口标题：超过 `MAX_TITLE_CHARS` 只留前缀，并标明省掉多少字。
+ * 视图中的窗口标题：超过 `MAX_TITLE_CHARS` 时只保留前缀，并标明省略的字数。
  *
- * 只用在大观察路径上。完整原值在存盘正文的第一行，按 `delivery.resourceId` 读得回来；
- * 留前缀而不是整格去掉，是因为动作行上的窗口名取的就是这一格。
+ * 只用于大观察路径。完整原值在存盘正文的第一行，可按 `delivery.resourceId` 读取；
+ * 保留前缀而不整体删除该字段，是因为动作行上的窗口名取自该字段。
  */
 function boundedTitle(snapshot: DesktopSnapshot): Record<string, unknown> {
   if (snapshot.title.length <= MAX_TITLE_CHARS) return { ...snapshot }
@@ -627,11 +627,11 @@ function boundedTitle(snapshot: DesktopSnapshot): Record<string, unknown> {
   }
 }
 
-/** message 里的投递事实：给了多少、其余在哪读，或者为什么读不回来。 */
+/** message 中的投递事实：已投递数量、其余部分的读取位置，或无法读取的原因。 */
 function noteOf(delivery: Delivery): string {
-  const head = `已投 ${delivery.deliveredElements}/${delivery.totalElements} 个控件`
+  const head = `已投递 ${delivery.deliveredElements}/${delivery.totalElements} 个控件`
   if (delivery.resourceId !== undefined) {
-    return `${head} · 完整控件表 ${delivery.resourceId}，用 read_resource 读`
+    return `${head} · 完整控件表 ${delivery.resourceId}，用 read_resource 读取`
   }
   return `${head} · 完整控件表未保存 · ${delivery.unsaved} · 未返回的部分无法回读`
 }
@@ -650,7 +650,7 @@ function resourceRef(landed: LandedResult): IntermediateResourceRef {
 /**
  * 存盘正文：第一行是观察的全部非元素元数据，之后每行一个完整控件，顺序不变。
  *
- * 字段缺席、null、false、0、空串原样保留——回读要按字段和值与原观察核对。
+ * 字段缺失、null、false、0、空串原样保留：读取存盘正文时需要按字段和值与原观察核对。
  */
 function jsonlBody(snapshot: DesktopSnapshot): Uint8Array {
   const { elements, ...meta } = snapshot
@@ -659,12 +659,12 @@ function jsonlBody(snapshot: DesktopSnapshot): Uint8Array {
 }
 
 /**
- * 大表视图选谁：本次动作目标、当前焦点控件及它们的祖先优先，其余按原始顺序补到上限为止。
+ * 大表视图的选取规则：本次动作目标、当前焦点控件及其祖先优先，其余按原始顺序补入，直至达到上限。
  *
- * **控件不从中间切开**：超长的名称与值先留前缀，装不下就停。优先那几个一律装入——
- * 目标不在视图里，模型就只能再观察一次。输出按原始顺序；其余部分是原始顺序的前缀，
- * 优先那几个连同祖先一起装入，视图里每个控件列出的祖先因此都在视图里，层级按 `depth`
- * 读得出。一个控件的成本含它第一次带进字典的那个动作表。
+ * 控件不从中间截断：超长的名称与值先保留前缀，超出上限即停止。优先控件一律放入：
+ * 目标不在视图中时，模型只能再观察一次。输出按原始顺序；其余部分是原始顺序的前缀，
+ * 优先控件连同祖先一起放入，因此视图中每个控件列出的祖先都在视图中，层级可按 `depth`
+ * 读出。一个控件的成本包含它首次带入字典的动作表。
  */
 function pickView(
   elements: readonly DesktopElement[],
@@ -699,19 +699,19 @@ function pickView(
 }
 
 /**
- * 是结构容器也照列的那几个：本次动作目标与当前焦点控件本身。
+ * 即使是结构容器也照常列出的控件：本次动作目标与当前焦点控件本身。
  *
- * 它们的无名祖先照常省掉：`depth` 按列出的祖先计，省掉之后层级仍然读得出。
+ * 它们的无名祖先照常省略：`depth` 按列出的祖先计算，省略之后层级仍可读出。
  */
 function keptAnyway(elements: readonly DesktopElement[], targetRef: string | null): string[] {
   return elements.filter((e) => e.ref === targetRef || e.focused === true).map((e) => e.ref)
 }
 
 /**
- * 大表视图里不受上限约束的那几个：本次动作目标、当前焦点控件，以及它们的祖先。
+ * 大表视图中不受上限约束的控件：本次动作目标、当前焦点控件，以及它们的祖先。
  *
- * 按端口交回的整份表走 `parentRef`，在省掉结构容器之前算。其中被省掉的容器不在视图里，
- * 其余的连同祖先一起装入。
+ * 按端口返回的整份表沿 `parentRef` 查找，在省略结构容器之前计算。其中被省略的容器不在视图中，
+ * 其余控件连同祖先一起放入。
  */
 function priorityOf(elements: readonly DesktopElement[], targetRef: string | null): Set<string> {
   const byRef = new Map(elements.map((e) => [e.ref, e]))
@@ -730,7 +730,7 @@ function priorityOf(elements: readonly DesktopElement[], targetRef: string | nul
   return priority
 }
 
-/** 超长的名称与值只留前 `MAX_TITLE_CHARS` 字，并标明省掉多少字。短的原样。 */
+/** 超长的名称与值只保留前 `MAX_TITLE_CHARS` 字，并标明省略的字数。未超长的原样保留。 */
 function boundedFields(
   element: DesktopElement,
 ): DesktopElement & { nameOmittedChars?: number; valueOmittedChars?: number } {
@@ -754,20 +754,20 @@ function boundedFields(
   }
 }
 
-/** 一项在视图里占多少，含数组分隔符。 */
+/** 一项在视图中占用的大小，含数组分隔符。 */
 function costOf(item: unknown, density: TokenDensity): number {
   return deliveredTokens(`${JSON.stringify(item)},`, density)
 }
 
-/** 整条结果交给模型的部分有多大。 */
+/** 整条结果中交给模型部分的大小。 */
 function tokensOf(parts: DesktopResultParts, density: TokenDensity): number {
   return deliveredTokens(JSON.stringify(parts), density)
 }
 
 /**
- * 结果定稿后记一次已投递用量。
+ * 结果确定后记录一次已投递用量。
  *
- * 记的是实际投了多少，允许越过本波预算：动作已经执行，按预算改报失败等于骗模型。
+ * 记录实际投递量，允许超出本批预算：动作已经执行，按预算改报失败是向模型报告虚假结果。
  */
 function recorded(ctx: DesktopResultContext, parts: DesktopResultParts): DesktopResultParts {
   recordBatchSpent(ctx, tokensOf(parts, ctx.density))

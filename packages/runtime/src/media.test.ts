@@ -1,12 +1,12 @@
 /**
  * 生成端口、参数表快照与生成花费的记账。
  *
- * 覆盖范围：`media.ts` 的 `makeMediaPort`（选模型、发出前校验、接口错误的转述、成功时交出花费）与 `operationOf`，
- * `prompt.ts` 里「可用的生成模型」那一节，`session.ts` 按 `mediaEnabled` 注册画布与生成工具，
- * 以及 `session.ts` 把生成花费写进本轮 usage、`runs` 行与账本。
+ * 覆盖范围：`media.ts` 的 `makeMediaPort`（模型选择、发送前校验、接口错误的转述、成功时返回花费）与 `operationOf`，
+ * `prompt.ts` 中「可用的生成模型」一节，`session.ts` 按 `mediaEnabled` 注册画布与生成工具，
+ * 以及 `session.ts` 将生成花费写入本轮 usage、`runs` 行与账本。
  *
- * 端口对面是一个本机假百炼端点：参数不合法时它必须一次都没收到请求。
- * 记账那一组另起一个假的对话接口，脚本化地先调出图工具、再收尾，跑完整的一轮。
+ * 端口的对端是本机模拟的百炼端点：参数不合法时该端点不得收到任何请求。
+ * 记账一组另行启动模拟的对话接口，按脚本先调用图片生成工具、再结束本轮，执行完整的一轮。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
@@ -86,7 +86,7 @@ const call = (over: Record<string, unknown> = {}) => ({
 })
 
 describe('生成端口', () => {
-  test('Gemini 与 Grok 图片生成通过同一端口交出文件与费用', async () => {
+  test('Gemini 与 Grok 图片生成通过同一端口返回文件与费用', async () => {
     const models = [
       {
         id: 'gemini-3.1-flash-image',
@@ -156,7 +156,7 @@ describe('生成端口', () => {
     }
   })
 
-  test('不点名用默认模型，结果是下载好的字节', async () => {
+  test('未指定模型时使用默认模型，结果为已下载的字节', async () => {
     const out = await makeMediaPort(config()).generate(
       call({ params: { size: '1024*1536' } }),
       signal(),
@@ -170,19 +170,19 @@ describe('生成端口', () => {
     expect(hits).toEqual(['/api/v1/services/aigc/multimodal-generation/generation'])
   })
 
-  /** 生成按次计费：参数错的调用一次都不能发出去。 */
-  test('参数不合法时不发请求，消息里给出合法取值', async () => {
+  /** 生成按次计费：参数错误的调用不得发出。 */
+  test('参数不合法时不发送请求，消息中给出合法取值', async () => {
     const out = await makeMediaPort(config()).generate(
       call({ params: { n: 9, quality: 'high' } }),
       signal(),
     )
     expect(out.ok).toBe(false)
     expect(!out.ok && out.message).toContain('范围 1–6')
-    expect(!out.ok && out.message).toContain('可用：size')
+    expect(!out.ok && out.message).toContain('可用参数：size')
     expect(hits).toEqual([])
   })
 
-  test('点名的模型不存在、没有默认模型、接口没有 key，各自说清怎么改', async () => {
+  test('指定的模型不存在、没有默认模型、接口未配置 key 时，分别说明修改方法', async () => {
     const port = makeMediaPort(config())
     const missing = await port.generate(call({ provider: 'qwen', model: '没有' }), signal())
     expect(!missing.ok && missing.message).toContain(
@@ -193,18 +193,18 @@ describe('生成端口', () => {
     const noKey = config()
     delete noKey.providers.qwen!.apiKey
     const keyless = await makeMediaPort(noKey).generate(call(), signal())
-    expect(!keyless.ok && keyless.message).toContain('没有配置 API Key')
+    expect(!keyless.ok && keyless.message).toContain('未配置 API Key')
     expect(hits).toEqual([])
   })
 
-  test('接口报错时带模型名与接口原文', async () => {
+  test('接口报错时附带模型名与接口原文', async () => {
     reply = () =>
       Response.json({ code: 'InvalidParameter', message: 'size 不合法' }, { status: 400 })
     const out = await makeMediaPort(config()).generate(call(), signal())
     expect(!out.ok && out.message).toBe('qwen / qwen-image-3.0：HTTP 400：size 不合法')
   })
 
-  test('成功时按接口回报的计量交出花费（记账与本次调用各一份、同一个数），失败时不交', async () => {
+  test('成功时按接口返回的计量给出花费（记账与本次调用各一份，数值相同），失败时不给出', async () => {
     reply = () =>
       Response.json({
         output: {
@@ -248,7 +248,7 @@ describe('生成端口', () => {
   })
 })
 
-/** 对话接口的一段 SSE：先调一次出图工具，下一次请求收尾。 */
+/** 对话接口的 SSE 正文：第一次请求调用图片生成工具，下一次请求结束本轮。 */
 function chatTurn(turn: number): string {
   const chunk = (body: unknown) => `data: ${JSON.stringify(body)}\n\n`
   if (turn === 1) {
@@ -292,11 +292,11 @@ function chatTurn(turn: number): string {
 
 describe('生成花费', () => {
   /**
-   * 原始失败形状：一轮里生成了图片，读数条、「运行」面板与账本都看不到这笔花费。
-   * 这里跑完整的一轮：花费随本轮 usage 事件与收尾事件带出，写进 `runs` 行，收尾时记进账本；
-   * 记账的 `run` 那一行仍只是模型调用。
+   * 原始失败形状：一轮中生成了图片，读数条、「运行」面板与账本均不显示这笔花费。
+   * 此处执行完整的一轮：花费随本轮 usage 事件与收尾事件发出，写入 `runs` 行，收尾时记入账本；
+   * 账本中 `run` 类型的行仍只记录模型调用。
    */
-  test('一次出图的花费进本轮 usage、runs 行与账本', async () => {
+  test('一次图片生成的花费计入本轮 usage、runs 行与账本', async () => {
     let turn = 0
     chat = () => chatTurn(++turn)
     reply = () =>
@@ -338,7 +338,7 @@ describe('生成花费', () => {
       }
       expect(finished.usage.media).toEqual([expect.objectContaining(spend)])
       expect(runCosts(finished.usage)).toEqual({ CNY: 0.18 })
-      // 轮次还在跑时就有一次带着这笔花费的 usage 事件。
+      // 轮次运行期间已发出一次携带该笔花费的 usage 事件。
       expect(events.some((e) => e.type === 'usage' && e.usage.media?.length === 1)).toBe(true)
       expect(getRun(store, finished.runId)?.usage.media).toEqual([expect.objectContaining(spend)])
       expect(
@@ -363,8 +363,8 @@ describe('生成花费', () => {
 })
 
 describe('画布与生成开关', () => {
-  /** 设置页「画布与生成」组头的开关写的是 `mediaEnabled`；会话据此决定注册不注册这组工具。 */
-  test('mediaEnabled 为 false 时画布与生成工具都不注册；缺席按启用', async () => {
+  /** 设置页「画布与生成」分组标题上的开关写入 `mediaEnabled`；会话据此决定是否注册这组工具。 */
+  test('mediaEnabled 为 false 时不注册画布与生成工具；缺省时按启用处理', async () => {
     const names = async (over: Partial<QyConfig>) => {
       const store = new Store({ path: ':memory:' })
       const s = new Session({
@@ -402,16 +402,16 @@ describe('参数表快照', () => {
     expect(text).toContain('model `qwen-image-3.0`（默认）：生成、修改，参考图最多 3 张')
     expect(text).toContain('  - prompt_extend：true | false')
     expect(text).toContain('model `wan2.7-image`：生成、修改，参考图最多 9 张')
-    // 参数表排在工作区状态行之前：排在最后时，紧跟的用户请求被模型读成参数表的一部分。
+    // 参数表排在工作区状态行之前：参数表排在最后时，紧随其后的用户请求会被模型视为参数表的一部分。
     expect(text.indexOf('可用的生成模型')).toBeLessThan(text.indexOf('工作区：'))
   })
 
-  test('没有生成模型时不出现这一节', () => {
+  test('没有生成模型时不输出该节', () => {
     const notes = buildTailNotes({ workspaceRoot: '/w', platform: 'linux', mode: 'auto' })
     expect(notes.map((n) => n.content).join('\n')).not.toContain('可用的生成模型')
   })
 
-  test('登记了指代写法的模型多一行写法，没登记的不出现', () => {
+  test('登记了指代写法的模型额外输出一行写法，未登记的不输出', () => {
     const notes = buildTailNotes({
       workspaceRoot: '/w',
       platform: 'linux',
@@ -442,7 +442,7 @@ describe('参数表快照', () => {
     })
     const text = notes.map((n) => n.content).join('\n')
     expect(text).toContain(
-      '提示词里指代参考素材：图像写「@图片1」「@图片2」，视频写「@视频1」「@视频2」',
+      '提示词中指代参考素材：图像写「@图片1」「@图片2」，视频写「@视频1」「@视频2」',
     )
     expect(text).toContain('图像写「图1」「图2」')
     const kling = text.slice(text.indexOf('kling/kling-v3-video-generation'))
@@ -450,7 +450,7 @@ describe('参数表快照', () => {
   })
 })
 
-describe('视频：由输入推操作', () => {
+describe('视频：由输入推断操作', () => {
   const input = (role: MediaInputRole) => ({
     role,
     bytes: new Uint8Array([1]),
@@ -715,11 +715,11 @@ describe('生成模型协议映射', () => {
   })
 })
 
-test('语音合成不收输入文件', () => {
+test('语音合成不接受输入文件', () => {
   expect(operationOf('audio', [])).toEqual({ operation: 'speech' })
   expect(
     operationOf('audio', [
       { role: 'reference', bytes: new Uint8Array([1]), mime: 'image/png', path: '/w/a' },
     ]),
-  ).toEqual({ problem: '语音合成不收输入文件' })
+  ).toEqual({ problem: '语音合成不接受输入文件' })
 })

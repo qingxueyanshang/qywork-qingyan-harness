@@ -1,8 +1,8 @@
 /**
- * workflow 的恢复权威：同一父会话里已经落库的 workflow 工具 step。
+ * workflow 的恢复权威：同一父会话中已写入数据库的 workflow 工具 step。
  *
- * **没有第二份运行表。** 图的形状、每一次审查、每一批回执全在这些 step 的
- * args 与 outcome 里，`foldWorkflow` 把它们折成投影。这里只负责把它们按时间取出来。
+ * 没有第二份运行表。图的结构、每一次审查、每一批回执都在这些 step 的
+ * args 与 outcome 中，由 `foldWorkflow` 折叠为投影。本模块只负责按时间顺序读取它们。
  */
 
 import {
@@ -16,10 +16,10 @@ import type { Store } from './db.ts'
 import { listRuns, listSteps } from './repos.ts'
 
 /**
- * 这条会话里全部 workflow 调用记录，按 run 与 seq 的顺序。
+ * 会话中的全部 workflow 调用记录，按 run 与 seq 排序。
  *
- * `exclude` 是正在执行的那一步：它还没有结果，取进来等于把请求当成事实。
- * 续接调用必须传它自己的 stepId；只读快照不传。
+ * `exclude` 是正在执行的 step：它尚无结果，读取它等于将请求当作事实。
+ * 续接调用必须传入自身的 stepId；只读快照不传。
  */
 export function listWorkflowRecords(
   store: Store,
@@ -48,8 +48,8 @@ export function listWorkflowRecords(
 }
 
 /**
- * 这条会话派出去的每个子 agent 最后一次出现在卡上时的状态，键是子 agent 的会话 id。
- * 派一件与图上的格子同一份来源（step payload 的 `nodes`），按 step 顺序后者覆盖前者。
+ * 会话派发的每个子 agent 最后一次出现在卡片上时的状态，键是子 agent 的会话 id。
+ * 单个派发与工作流图的节点使用同一来源（step payload 的 `nodes`），按 step 顺序后者覆盖前者。
  */
 export function latestSubagentPhases(
   store: Store,
@@ -71,8 +71,8 @@ export function latestSubagentPhases(
 }
 
 /**
- * 这条会话里每一张图的首派记录 stepId。首派 step 的 id 就是 workflowId
- * （`runGraph` 用它当图的身份），所以只认「args 能解析成首派」的那些。
+ * 会话中每张工作流图首次派发的 stepId。首次派发 step 的 id 即 workflowId
+ * （`runGraph` 以它作为图的标识），因此只选取 args 能解析为首次派发的 step。
  */
 export function workflowIdsOf(records: readonly WorkflowCallRecord[]): string[] {
   return records

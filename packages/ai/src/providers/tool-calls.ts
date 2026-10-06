@@ -1,12 +1,12 @@
 /**
- * 流里拼好的工具调用分片交成 `WireToolCall`。三种协议共用这一处。
+ * 将流中拼接完成的工具调用分片转换为 `WireToolCall`。三种协议共用此实现。
  */
 
 import type { ProviderKind } from '@qywork/core'
 import { namelessToolCall } from '../errors.ts'
 import type { WireToolCall } from '../types.ts'
 
-/** 按 provider 给的序号收拢的一条调用：id、名字与参数 JSON 的拼接原文。 */
+/** 按 provider 给出的序号汇总的一条调用：id、名称与参数 JSON 的拼接原文。 */
 export interface ToolCallSlot {
   id: string
   name: string
@@ -14,13 +14,13 @@ export interface ToolCallSlot {
 }
 
 /**
- * 按序号排好交出。参数只接受 JSON 对象：空串按无参数处理；解析失败、`null`、数组与
- * 标量都把原文挂在 `argumentsError` 上，`arguments` 置为 `{}`，由 loop 拒绝执行并把
- * 失败结果回给模型。
+ * 按序号排序后返回。参数只接受 JSON 对象：空串按无参数处理；解析失败、`null`、数组与
+ * 标量均将原文记录在 `argumentsError` 上，`arguments` 置为 `{}`，由 loop 拒绝执行并将
+ * 失败结果返回给模型。
  *
- * 不要把非对象的解析结果交下去：工具的动作解析在单次执行的错误处理之外读取参数字段，
- * `null` 会在那里抛出 TypeError，整轮 run 随之失败。也不要在解析失败时静默交 `{}`：
- * 那等于告诉模型参数已被接受。
+ * 不要向下传递非对象的解析结果：工具的动作解析在单次执行的错误处理之外读取参数字段，
+ * `null` 会在该处抛出 TypeError，整轮 run 随之失败。也不要在解析失败时静默传递 `{}`：
+ * 这等于告知模型参数已被接受。
  */
 export function collectToolCalls(
   partial: ReadonlyMap<number, ToolCallSlot>,

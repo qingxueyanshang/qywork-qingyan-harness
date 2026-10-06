@@ -49,7 +49,7 @@ function newRun(store: Store, ws: { id: string }, conv: { id: string }) {
 }
 
 describe('会话级模型切换', () => {
-  test('写入后 getConversation 读到新模型', () => {
+  test('写入后 getConversation 读取到新模型', () => {
     const { store, conv } = fresh()
     const updated = setConversationModel(store, conv.id, {
       provider: 'mirror',
@@ -59,7 +59,7 @@ describe('会话级模型切换', () => {
     expect(updated?.provider).toBe('mirror')
     const back = getConversation(store, conv.id)
     expect(back?.model).toBe('deepseek-v4-pro')
-    // 接口跟着一起换：只写模型的话，同名模型挂在两个接口下时会话归谁靠猜。
+    // 接口与模型一同更换：只写入模型时，若两个接口下配置了同名模型，会话的归属只能推测。
     expect(back?.provider).toBe('mirror')
     store.close()
   })
@@ -74,11 +74,11 @@ describe('会话级模型切换', () => {
 })
 
 describe('崩溃恢复', () => {
-  test('没进执行器的 run 判为可安全重来', () => {
+  test('未进入执行器的 run 判定为可以安全重新执行', () => {
     const { store, ws, conv } = fresh()
     const run = newRun(store, ws, conv)
     markRunRunning(store, run.id)
-    // 有 step，但从没调用 markStepExecuting —— 确定没进执行器。
+    // 有 step，但从未调用 markStepExecuting：确定未进入执行器。
     appendStep(store, {
       runId: run.id,
       seq: 1,
@@ -94,9 +94,9 @@ describe('崩溃恢复', () => {
     const after = getRun(store, run.id)!
     expect(after.status).toBe('interrupted')
     /*
-     * **不是 `user_interrupt`。** 用户没点过停止，是服务进程退出了。
-     * 两件事共用一个停止原因的话，事后分不出来，而界面上只会说「已中断」——
-     * 用户看到的是一个自己没做过的动作。判据写在 `recoverStaleRuns` 顶上。
+     * 不是 `user_interrupt`：用户没有点击停止，而是服务进程退出。
+     * 两者共用一个停止原因时事后无法区分，界面只显示「已中断」，
+     * 进程退出因此被显示为用户的停止操作。判据写在 `recoverStaleRuns` 顶部。
      */
     expect(after.stopReason).toBe('process_exit')
     expect(after.interruption).toMatchObject({
@@ -107,7 +107,7 @@ describe('崩溃恢复', () => {
     store.close()
   })
 
-  test('桌面外壳观察到的退出码和 stderr 尾段跟着 run 落库', () => {
+  test('桌面外壳观察到的退出码与 stderr 末段随 run 写入账本', () => {
     const { store, ws, conv } = fresh()
     const run = newRun(store, ws, conv)
     markRunRunning(store, run.id)
@@ -134,7 +134,7 @@ describe('崩溃恢复', () => {
     store.close()
   })
 
-  test('已发出但未收尾的 provider 请求随孤儿 run 落成 uncertain', () => {
+  test('已发出但未结束的 provider 请求随孤儿 run 记为 uncertain', () => {
     const { store, ws, conv } = fresh()
     const run = newRun(store, ws, conv)
     markRunRunning(store, run.id)
@@ -162,7 +162,7 @@ describe('崩溃恢复', () => {
     store.close()
   })
 
-  test('进了执行器却没落终态的 run 判为结果不可信', () => {
+  test('已进入执行器但未写入终态的 run 判定为结果不可信', () => {
     const { store, ws, conv } = fresh()
     const run = newRun(store, ws, conv)
     markRunRunning(store, run.id)
@@ -180,12 +180,12 @@ describe('崩溃恢复', () => {
 
     const after = getRun(store, run.id)!
     expect(after.stopReason).toBe('internal_guard')
-    // 两种情况的 stopReason 必须不同：统一了就分不出「进程崩了」和「用户点了停止」。
+    // 两种情况的 stopReason 必须不同：统一后无法区分「进程崩溃」与「用户点击了停止」。
     expect(after.stopReason).not.toBe('user_interrupt')
     store.close()
   })
 
-  test('卡在 running 的 step 一并落终态 —— 否则 UI 留一张永远转圈的卡', () => {
+  test('停留在 running 的 step 一并写入终态，否则界面上会留下一张持续加载的卡片', () => {
     const { store, ws, conv } = fresh()
     const run = newRun(store, ws, conv)
     markRunRunning(store, run.id)
@@ -207,7 +207,7 @@ describe('崩溃恢复', () => {
     store.close()
   })
 
-  test('落终态只写 outcome —— action 和 args 必须原样留着', () => {
+  test('写入终态时只修改 outcome，action 与 args 必须原样保留', () => {
     const { store, ws, conv } = fresh()
     const run = newRun(store, ws, conv)
     markRunRunning(store, run.id)
@@ -239,16 +239,16 @@ describe('崩溃恢复', () => {
 
     recoverStaleRuns(store)
 
-    // 接 `StepPayload` 里 tool_result 那一支，不另编形状：这条测的正是收尾之后
-    // 那个 payload 长什么样，编一份的话写入侧改了字段名这里不会红。
+    // 使用 `StepPayload` 中 tool_result 分支的类型，不另行定义：本测试验证的是结束之后
+    // payload 的形状，另行定义时，写入侧修改字段名不会使本测试失败。
     const payloadOf = (id: string) =>
       listSteps(store, run.id).find((x) => x.id === id)!.payload as Extract<
         StepPayload,
         { kind: 'tool_result' }
       >
 
-    // action 一丢，这条 step 在会话流里就只剩一个没有主语的「失败」——
-    // 标题（动词 + 对象 + 目标）全部由它提供，前端回猜不出来。
+    // action 丢失后，该 step 在会话流中只显示「失败」，没有标题：
+    // 标题（动词 + 对象 + 目标）全部由它提供，前端无法推测。
     for (const id of [started.id, notStarted.id]) {
       const p = payloadOf(id)
       expect(p.kind).toBe('tool_result')
@@ -260,7 +260,7 @@ describe('崩溃恢复', () => {
     const one = payloadOf(started.id)
     expect(one.action?.objectLabel).toBe('命令')
     expect(one.args?.command).toBe('docker start sqhj-postgres')
-    // 两种情况的判据不能被这次合并抹平。
+    // 合并写入 outcome 之后，两种情况的 executed 仍须不同。
     expect(one.outcome.executed).toBe(true)
     const two = payloadOf(notStarted.id)
     expect(two.outcome.executed).toBe(false)
@@ -299,7 +299,7 @@ describe('崩溃恢复', () => {
     store.close()
   })
 
-  test('干净启动时是零成本的 no-op', () => {
+  test('无残留时启动是零开销的 no-op', () => {
     const { store } = fresh()
     expect(recoverStaleRuns(store)).toEqual({ recovered: 0, ambiguous: 0, heldByOthers: 0 })
     store.close()
@@ -307,14 +307,14 @@ describe('崩溃恢复', () => {
 })
 
 /**
- * **只回收没人在跑的那些。**
+ * 只回收已无进程执行的 run。
  *
- * 账本是共享的：两个工作区的 sidecar、开发态热重载、终端里的 `qy exec` 都写它。
- * 无差别回收会把另一个进程正在跑的一轮判死。实测形状：那条 run 已经跑了
- * 40 步，第 27 次请求发出后 257 毫秒被写成 interrupted，写入者是刚起来的进程。
+ * 账本是共享的：两个工作区的 sidecar、开发模式热重载、终端中的 `qy exec` 都会写入。
+ * 不加区分地回收会把另一个进程正在执行的一轮判定为中断。实测形状：该 run 已执行了
+ * 40 步，第 27 次请求发出后 257 毫秒被写为 interrupted，写入者是刚启动的进程。
  *
- * 四条判据两两互补，所以四条都要测：pid 会被复用（只看 pid 会漏），
- * 崩溃后立刻重启时心跳还是新的（只看心跳会漏）。
+ * 四条判据两两互补，因此四条都需要测试：pid 会被复用（只检查 pid 会遗漏），
+ * 崩溃后立即重启时心跳仍是新的（只检查心跳会遗漏）。
  */
 describe('run 归属', () => {
   const setOwner = (store: Store, id: string, pid: number, beat: number) =>
@@ -329,9 +329,9 @@ describe('run 归属', () => {
     return { ...f, run }
   }
 
-  test('归属进程存活、心跳在推 → 跳过，这是别的进程正在跑的那一轮', () => {
+  test('归属进程存活、心跳持续更新 → 跳过，这是其他进程正在执行的一轮', () => {
     const { store, run } = running()
-    // 父进程一定存活，且不是本进程——正是「另一个仍在跑的进程」的形状。
+    // 父进程必然存活，且不是本进程：符合「另一个仍在运行的进程」的条件。
     setOwner(store, run.id, process.ppid, Date.now())
 
     const r = recoverStaleRuns(store)
@@ -341,7 +341,7 @@ describe('run 归属', () => {
     store.close()
   })
 
-  test('归属进程存活但心跳已停 → 回收（pid 被复用的兜底）', () => {
+  test('归属进程存活但心跳已停止 → 回收（应对 pid 被复用）', () => {
     const { store, run } = running()
     setOwner(store, run.id, process.ppid, Date.now() - 10 * 60_000)
 
@@ -350,9 +350,9 @@ describe('run 归属', () => {
     store.close()
   })
 
-  test('归属进程已经没了 → 回收，哪怕心跳是刚推的', async () => {
+  test('归属进程已退出 → 回收，即使心跳刚刚更新', async () => {
     const { store, run } = running()
-    // 真起一个进程再等它退出：拿一个确定已退出的 pid，不靠猜一个大数字。
+    // 实际启动一个进程并等待其退出，以取得确定已退出的 pid，不使用推测的大数值。
     const dead = Bun.spawn([process.execPath, '-e', ''], { stdout: 'ignore', stderr: 'ignore' })
     await dead.exited
     setOwner(store, run.id, dead.pid, Date.now())
@@ -363,11 +363,11 @@ describe('run 归属', () => {
   })
 
   /**
-   * **这条是「不要引入新 bug」的那一条。**
+   * 本用例锁定 pid 被复用时的判定顺序。
    *
-   * 崩溃后立刻重启，Windows 把同一个 pid 发给了新进程。此时 pid 存活（就是本进程）、
-   * 心跳才过去两秒——只按这两条判都会认定仍有进程在跑，那条 run 因此永远没人
-   * 回收，会话被 isBusy 永久锁死。所以「归属是本进程」必须单独成一条，且在心跳之前。
+   * 崩溃后立即重启时，Windows 把同一个 pid 分配给了新进程。此时 pid 存活（即本进程）、
+   * 心跳仅过去两秒：只按这两条判定都会认为仍有进程在运行，该 run 因此永远不会
+   * 被回收，会话被 isBusy 永久锁定。因此「归属是本进程」必须单独成为一条判据，且位于心跳之前。
    */
   test('归属是本进程的 pid → 回收：本进程刚启动，不可能拥有任何 run', () => {
     const { store, run } = running()
@@ -378,7 +378,7 @@ describe('run 归属', () => {
     store.close()
   })
 
-  test('心跳只推 running 的行 —— 终态 run 不该看起来像还在跑', () => {
+  test('心跳只更新 running 的行，终态 run 不应显示为仍在运行', () => {
     const { store, run } = running()
     finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
     setOwner(store, run.id, process.ppid, 0)
@@ -394,8 +394,8 @@ describe('run 归属', () => {
   })
 })
 
-describe('会话级读记录', () => {
-  test('记下、读回、覆盖只留最近一次', () => {
+describe('会话级读取记录', () => {
+  test('记录与读取，覆盖时只保留最近一次', () => {
     const { store, conv } = fresh()
     expect(fileReadHash(store, conv.id, 'C:/ws/a.ts')).toBeNull()
 
@@ -407,7 +407,7 @@ describe('会话级读记录', () => {
     store.close()
   })
 
-  test('按会话隔离 —— 另一条会话读过不算你读过', () => {
+  test('按会话隔离：其他会话的读取不计入当前会话', () => {
     const { store, ws, conv } = fresh()
     const other = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
     recordFileRead(store, conv.id, 'C:/ws/a.ts', 'h1')
@@ -416,19 +416,19 @@ describe('会话级读记录', () => {
   })
 })
 
-describe('终态 run 底下的孤儿 step', () => {
+describe('终态 run 下的孤儿 step', () => {
   /**
-   * **这条是回归测试，挡的是一个真实写错过的形状。**
+   * 本用例是回归测试，锁定已实际出现的错误形状。
    *
-   * 孤儿扫描原本写在「有 stale run」的早退之后，因此最常见的情形——
-   * run 全是终态、底下留着 running step——那趟扫描一次都不会跑。
-   * 而这正是它要治的场景：`tool.started` 的 yield 处被生成器 `.return()`
-   * 掐断，step 已经 running 但没人收尾，随后 run 被标成 interrupted 终态。
+   * 孤儿扫描若位于「存在 stale run」的提前返回之后，在最常见的情形下，
+   * 即 run 全部为终态、其下留有 running step 时，孤儿扫描不会执行。
+   * 该情形正是孤儿扫描的处理对象：生成器在 `tool.started` 的 yield 处被 `.return()`
+   * 中止，step 已是 running 但未被结束，随后 run 被标为 interrupted 终态。
    *
-   * 后果不是「UI 上一张转圈的卡」：历史投影必须跳过含未终结调用的整个 batch，
-   * 一条孤儿会让同批次里**已经成功的写文件结果一起从历史里消失**。
+   * 除界面上持续加载的卡片外，历史投影必须跳过含未终结调用的整个 batch，
+   * 因此一条孤儿 step 会使同批次中已成功的写文件结果一并从历史中消失。
    */
-  test('没有任何 stale run 时，孤儿 step 照样被收尾', () => {
+  test('没有任何 stale run 时，孤儿 step 同样被结束', () => {
     const store = new Store({ path: ':memory:' })
     const ws = upsertWorkspace(store, 'C:/ws', 'ws')
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
@@ -453,28 +453,28 @@ describe('终态 run 底下的孤儿 step', () => {
       payload: { kind: 'tool_call', args: { path: 'a.ts' } },
     })
     markStepExecuting(store, orphan.id)
-    // run 先落终态——这一步让它逃出「status IN ('running','queued')」那次扫描。
+    // run 先写入终态，使它不在「status IN ('running','queued')」扫描的范围内。
     finishRun(store, run.id, { status: 'interrupted', stopReason: 'user_interrupt' })
 
     const result = recoverStaleRuns(store)
-    // 一个 stale run 都没有。
+    // 不存在任何 stale run。
     expect(result.recovered).toBe(0)
 
     const settled = listSteps(store, run.id)[0]
     expect(settled?.status).toBe('failure')
-    // 已进执行器 → 保守标「可能已执行」，不能说没执行。
+    // 已进入执行器 → 保守标记为「可能已执行」，不能声称未执行。
     expect((settled?.payload as { outcome?: { executed?: boolean } })?.outcome?.executed).toBe(true)
     store.close()
   })
 })
 
 /**
- * 派活卡上的格不跟着 run 收尾走：子 agent 的生命期跟着会话，回执可能几分钟后才到。
- * 重启之后进程里没有任何人在收那份回执了，所以回收要把它们扫成中断——
- * 不扫的话那张图既 approve 不了（上游回执不齐）也 revise 不了（点名的格没有终态）。
+ * 派发任务卡上的节点不随 run 结束：子 agent 的生命周期与会话一致，回执可能几分钟后才到达。
+ * 重启之后进程中已无接收方处理该回执，因此回收时须把它们标为中断；
+ * 否则该图既无法 approve（上游回执不完整）也无法 revise（指定的节点没有终态）。
  */
-describe('重启回收扫派活卡上的格', () => {
-  test('终态 run 底下没落终态的格扫成中断，已终态的不动', () => {
+describe('重启回收扫描派发任务卡上的节点', () => {
+  test('终态 run 下未写入终态的节点标为中断，已有终态的不变', () => {
     const { store, ws, conv } = fresh()
     const run = newRun(store, ws, conv)
     markRunRunning(store, run.id)
@@ -488,7 +488,7 @@ describe('重启回收扫派活卡上的格', () => {
     })
     setStepNodeState(store, step.id, 'fast', { phase: 'done', label: '快', durationMs: 1 })
     setStepNodeState(store, step.id, 'slow', { phase: 'working', label: '慢' })
-    // 工具已经返回：派出即返回，格的终态写在一张已经收成终态的卡上。
+    // 工具已经返回：派出即返回，节点的终态写在一张已处于终态的卡片上。
     settleToolStep(store, step.id, 'success', {
       kind: 'tool_result',
       args: {},

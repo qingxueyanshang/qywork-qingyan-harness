@@ -2,11 +2,11 @@
  * 桌面宿主连接的准入、代际配对与断线收尾。
  *
  * 覆盖范围：`desktop/bridge.ts` 全部、`desktop/capability.ts`、`desktop/coordinator.ts`
- * 里的窗口身份映射与观察代际，`server.ts` 里 `/native/desktop` 的升级与帧分派，
- * 以及 `handshake.ts` 报出的 `capabilities.desktop` 与两条进程级状态事件。
+ * 中的窗口身份映射与观察代际，`server.ts` 中 `/native/desktop` 的升级与帧分派，
+ * 以及 `handshake.ts` 报告的 `capabilities.desktop` 与两条进程级状态事件。
  *
- * 用真 WebSocket 连真 `serve()`：凭据判定、回环判定、按路径分派宿主种类三件事都在
- * `server.ts` 的 fetch 里，拿假 socket 测等于把被测那一段跳过去。
+ * 使用真实 WebSocket 连接真实的 `serve()`：凭据判定、回环判定与按路径分派宿主种类均位于
+ * `server.ts` 的 fetch 中，使用假 socket 测试会跳过被测代码。
  */
 
 import { afterEach, expect, test } from 'bun:test'
@@ -60,7 +60,7 @@ function fresh(cfg = config()): ReturnType<typeof serve> {
     handle.stop()
     content.close()
     store.close()
-    // Windows 上 SQLite 的文件句柄释放有延迟，临时目录删不掉与被测行为无关。
+    // Windows 上 SQLite 的文件句柄释放有延迟，临时目录删除失败与被测行为无关。
     try {
       rmSync(dir, { recursive: true, force: true })
     } catch {}
@@ -68,10 +68,10 @@ function fresh(cfg = config()): ReturnType<typeof serve> {
   return handle
 }
 
-/** 连一条假宿主，收尾登记进本文件的清理队列。 */
+/** 连接一个假宿主，清理操作登记到本文件的清理队列。 */
 const connect = (port: number, key = HOST_KEY) => FakeDesktopHost.connect(port, key, cleanups)
 
-/** 让事件循环把已经到达的帧派发完。 */
+/** 等待事件循环派发完已到达的帧。 */
 const settle = () => new Promise((r) => setTimeout(r, 30))
 
 /** 网络帧何时到达由事件循环决定，不能用固定延迟代替收到帧。 */
@@ -82,10 +82,10 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 /**
- * 取一次失败的原因。
+ * 取得一次调用失败的原因。
  *
- * 不用 `expect(...).rejects`：那个断言在等一条要靠 WebSocket 回帧才结得掉的
- * Promise 时不会让出事件循环，回帧因此永远到不了，测试只会撞超时。
+ * 不使用 `expect(...).rejects`：该断言在等待一个须由 WebSocket 响应帧才能结算的
+ * Promise 时不会让出事件循环，响应帧因此永远无法到达，测试只会超时。
  */
 async function failure(
   pending: Promise<unknown> | undefined,
@@ -99,7 +99,7 @@ async function failure(
   return out as Error & { dispatch?: string }
 }
 
-test('凭据不对或缺凭据的连接一律拒绝，不进入宿主生命周期', async () => {
+test('凭据错误或缺少凭据的连接一律拒绝，不进入宿主生命周期', async () => {
   const handle = fresh()
   expect(await failure(connect(handle.port, 'wrong-key'))).toBeInstanceOf(Error)
   const bare = new WebSocket(`ws://127.0.0.1:${handle.port}${NATIVE_DESKTOP_PATH}`)
@@ -110,7 +110,7 @@ test('凭据不对或缺凭据的连接一律拒绝，不进入宿主生命周�
   expect(handle.desktop?.available()).toBe(false)
 })
 
-test('普通配对连接发桌面宿主帧也注册不了宿主', async () => {
+test('普通配对连接发送桌面宿主帧时无法注册宿主', async () => {
   const handle = fresh()
   const ws = new WebSocket(
     `ws://127.0.0.1:${handle.port}/stream?origin=desktop&token=${handle.token}`,
@@ -125,7 +125,7 @@ test('普通配对连接发桌面宿主帧也注册不了宿主', async () => {
   expect(handle.desktop?.available()).toBe(false)
 })
 
-test('三项能力位分开报，worker 没就绪或没授权时不发布能力', async () => {
+test('三项能力位分别报告，worker 未就绪或未授权时不发布能力', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready({ workerReady: false })
@@ -141,7 +141,7 @@ test('三项能力位分开报，worker 没就绪或没授权时不发布能力'
   expect(handle.desktop?.available()).toBe(true)
 })
 
-test('用户没启用时宿主连上也不发布能力', async () => {
+test('用户未启用时宿主连接后也不发布能力', async () => {
   const handle = fresh(config(false))
   const host = await connect(handle.port)
   host.ready()
@@ -150,11 +150,11 @@ test('用户没启用时宿主连上也不发布能力', async () => {
 })
 
 /**
- * 握手报的那一份与事件推的那一份是同一个判定。
+ * 握手报告的状态与事件推送的状态来自同一个判定。
  *
- * 宿主在应用启动之后才连上来：只有握手那一份的话，界面要等下一次重连才看得见状态。
+ * 宿主在应用启动之后才连接：只在握手中报告时，界面要等到下一次重连才能显示状态。
  */
-test('握手报出三项能力位，宿主连上之后由事件推同一份投影', async () => {
+test('握手报告三项能力位，宿主连接之后由事件推送同一份投影', async () => {
   const handle = fresh()
   const client = new WebSocket(
     `ws://127.0.0.1:${handle.port}/stream?origin=desktop&token=${handle.token}`,
@@ -189,12 +189,12 @@ test('握手报出三项能力位，宿主连上之后由事件推同一份投�
     desktop: { connected: true, workerReady: true, authorized: true, missing: [] },
   })
 
-  // 正在操作哪个应用：执行者碰到窗口时推上去，释放时推回 null。
+  // 当前操作的应用：执行者访问窗口时推送，释放时推送 null。
   const port = handle.desktop?.portFor('cv_a')
   const listing = port?.windows()
   host.reply(await host.next())
   await listing
-  // 读树的回执故意不给：目标在发请求之前就登记，界面不必等回包才说得出在操作谁。
+  // 有意不返回读取控件树的回执：目标在发送请求之前登记，界面无需等待响应即可显示操作对象。
   const observing = port?.observe({ windowId: 'dw_1' }).catch(() => null)
   await host.next()
   await settle()
@@ -217,7 +217,7 @@ test('握手报出三项能力位，宿主连上之后由事件推同一份投�
   expect(cleared.at(-1)?.target).toBe(null)
 })
 
-test('请求帧带齐身份字段：连接代际、执行实例、执行者与截止时刻', async () => {
+test('请求帧携带全部身份字段：连接代际、执行实例、执行者与截止时刻', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
@@ -233,11 +233,11 @@ test('请求帧带齐身份字段：连接代际、执行实例、执行者与�
   expect(frame.executorId).toMatch(/^dx_/)
   expect(frame.deadline).toBeGreaterThan(Date.now())
   host.reply(frame)
-  // OS 句柄不出端口：模型拿到的只有不透明 id 与应用名。
+  // OS 句柄不经端口传出：模型取得的只有不透明 id 与应用名。
   expect(await pending).toEqual([{ windowId: 'dw_1', app: '记事本', title: '未命名' }])
 })
 
-test('首连、补发和换流重连都恢复当前桌面目标及其所属会话', async () => {
+test('首次连接、补发与更换事件流后重连均恢复当前桌面目标及其所属会话', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
@@ -270,7 +270,7 @@ test('首连、补发和换流重连都恢复当前桌面目标及其所属会�
       client.onerror = () => reject(new Error('配对连接应当能建立'))
     })
     cleanups.push(() => client.close())
-    // 即使只订阅别的会话，快照仍保留实际归属，切回时无需等待目标再次变化。
+    // 即使只订阅其他会话，快照仍保留实际归属，切回时无需等待目标再次变化。
     client.send(
       JSON.stringify({
         type: 'hello',
@@ -294,14 +294,14 @@ test('首连、补发和换流重连都恢复当前桌面目标及其所属会�
   host.reply(await host.next())
   await releasing
 
-  // 补发里有旧目标；最后一帧必须是现在已释放的快照。
+  // 补发的帧中包含旧目标；最后一帧必须是当前已释放的快照。
   const replayed = await snapshot({ streamId: handle.bus.streamId, lastSeq: 0 })
   expect(replayed.some((event) => event.target?.conversationId === 'cv_wechat')).toBe(true)
   expect(replayed.at(-1)?.target).toBeNull()
   expect((await snapshot({ streamId: 'previous-server', lastSeq: 9000 })).at(-1)?.target).toBeNull()
 })
 
-test('代际对不上的迟到回执不得完成这次调用', async () => {
+test('代际不一致的迟到回执不得完成本次调用', async () => {
   for (const broken of [
     { connectionEpoch: 4 },
     { hostEpoch: 9 },
@@ -316,14 +316,14 @@ test('代际对不上的迟到回执不得完成这次调用', async () => {
     const frame = await host.next()
     host.reply(frame, broken)
     await settle()
-    // 调用仍然待决——用断开来证明它没有被那一帧结掉。
+    // 调用仍处于待决状态：断开连接后它因断开而失败，证明未被该帧结算。
     host.socket.close()
     const err = await failure(pending)
     expect(err.message).toMatch(/断开/)
   }
 })
 
-test('断线让在途调用按已派发收尾，不记成未执行', async () => {
+test('断线时在途调用按已派发结束，不记为未执行', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
@@ -333,13 +333,13 @@ test('断线让在途调用按已派发收尾，不记成未执行', async () =>
   await host.next()
   host.socket.close()
   const err = await failure(pending)
-  // 帧已经写出去了，宿主收没收到无从确定：这一条必须是 unknown。
+  // 帧已写出，宿主是否收到无法确定，因此必须记为 unknown。
   expect(err.dispatch).toBe('unknown')
   await settle()
   expect(handle.desktop?.available()).toBe(false)
 })
 
-test('同一条 WS 上换执行实例：旧待决收尾，能力按新代际重建', async () => {
+test('同一条 WS 上更换执行实例：旧的待决调用结束，能力按新代际重建', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
@@ -347,7 +347,7 @@ test('同一条 WS 上换执行实例：旧待决收尾，能力按新代际重�
   const port = handle.desktop?.portFor('cv_a')
   const pending = port?.windows()
   const stale = await host.next()
-  // worker 被换掉：hostId 与连接都没变，只有执行实例代际推进。
+  // 更换 worker：hostId 与连接不变，只有执行实例代际递增。
   host.ready({ hostEpoch: 3 })
   const err = await failure(pending)
   expect(err.dispatch).toBe('unknown')
@@ -362,7 +362,7 @@ test('同一条 WS 上换执行实例：旧待决收尾，能力按新代际重�
   expect(await again).toHaveLength(1)
 })
 
-test('worker 掉线的状态事件让能力下线，并收掉在途调用', async () => {
+test('worker 离线的状态事件撤销能力，并结束在途调用', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
@@ -386,10 +386,10 @@ test('worker 掉线的状态事件让能力下线，并收掉在途调用', asyn
 })
 
 /**
- * 授权事实在同一个执行实例内变化：worker 起来时没授权、用户在系统设置里打开之后由事件推上来，
- * 不必重连也不必换 worker。只缺屏幕录制时能力照常发布，缺项原样交给界面。
+ * 授权状态在同一个执行实例内变化：worker 启动时未授权，用户在系统设置中开启后由事件推送，
+ * 无需重连，也无需更换 worker。只缺少屏幕录制权限时能力照常发布，缺项原样交给界面。
  */
-test('授权变化经状态事件更新能力与缺项，不换执行实例', async () => {
+test('授权变化经状态事件更新能力与缺项，不更换执行实例', async () => {
   const handle = fresh()
   const client = new WebSocket(
     `ws://127.0.0.1:${handle.port}/stream?origin=desktop&token=${handle.token}`,
@@ -441,7 +441,7 @@ test('授权变化经状态事件更新能力与缺项，不换执行实例', as
   ])
 })
 
-test('代际对不上的状态事件改不了能力', async () => {
+test('代际不一致的状态事件不得改变能力', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
@@ -460,7 +460,7 @@ test('代际对不上的状态事件改不了能力', async () => {
   expect(handle.desktop?.available()).toBe(true)
 })
 
-test('窗口消失后旧的不透明 id 在本地就被拒绝，一帧都不发', async () => {
+test('窗口消失后旧的不透明 id 在本地被拒绝，不发送任何帧', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
@@ -478,17 +478,17 @@ test('窗口消失后旧的不透明 id 在本地就被拒绝，一帧都不发'
 
   const before = host.received.length
   const err = await failure(port?.observe({ windowId: 'dw_1' }))
-  expect(err.message).toMatch(/认不出的窗口/)
+  expect(err.message).toMatch(/无法识别的窗口/)
   expect(host.received.length).toBe(before)
 })
 
-test('释放之后端口报废，并向宿主发出按执行者撤销', async () => {
+test('释放之后端口失效，并向宿主发送按执行者撤销的请求', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
   await settle()
   const port = handle.desktop?.portFor('cv_a')
-  // 失败处理要在释放之前挂上：`release` 同步收掉在途调用，晚一步挂就是一次未处理的拒绝。
+  // 失败处理必须在释放之前注册：`release` 同步结束在途调用，晚于释放注册会产生一次未处理的拒绝。
   const pending = failure(port?.windows())
   const frame = await host.next()
   const cancelling = host.next()
@@ -499,7 +499,7 @@ test('释放之后端口报废，并向宿主发出按执行者撤销', async ()
   expect(cancel.executorId).toBe(frame.executorId)
   host.reply(cancel)
   await releasing
-  // 释放是幂等的，重复调用不再发第二条撤销。
+  // 释放是幂等的，重复调用不再发送第二条撤销。
   const count = host.received.filter((f) => f.op === 'cancel').length
   await port?.release()
   await settle()
@@ -510,10 +510,10 @@ test('释放之后端口报废，并向宿主发出按执行者撤销', async ()
 /**
  * 前台开关随每条请求下发。
  *
- * 宿主与 worker 都不缓存它：缓存一份的话，用户在运行中关掉前台接管要等宿主换代际
- * 才生效，而那中间的每一次派发都还带着旧值。
+ * 宿主与 worker 均不缓存它：缓存时，用户在运行中关闭前台接管要等宿主更换代际
+ * 才生效，期间的每一次派发仍携带旧值。
  */
-test('前台开关每条请求现读一次，运行中关掉在下一次派发就生效', async () => {
+test('前台开关在每条请求时实时读取，运行中关闭后下一次派发即生效', async () => {
   const cfg = config()
   cfg.desktopForeground = true
   const handle = fresh(cfg)
@@ -538,8 +538,8 @@ test('前台开关每条请求现读一次，运行中关掉在下一次派发�
   await second
 })
 
-/** 配置缺席时，端口报告与请求帧均启用前台操作。 */
-test('没配过前台开关时默认启用', async () => {
+/** 未配置时，端口报告与请求帧均启用前台操作。 */
+test('未配置前台开关时默认启用', async () => {
   const handle = fresh()
   const host = await connect(handle.port)
   host.ready()
@@ -556,10 +556,10 @@ test('没配过前台开关时默认启用', async () => {
 /**
  * 运行态读数区分后台与前台。
  *
- * 只进不退：一次前台点击之后焦点已经在目标应用上，之后的后台读取改不回来这件事；
- * 执行者释放时随应用名一起清回去。
+ * 只进不退：一次前台点击之后焦点已位于目标应用，之后的后台读取无法改变这一事实；
+ * 执行者释放时与应用名一起清除。
  */
-test('前台接管过之后运行态读数说得出这一点，释放时清回去', async () => {
+test('前台接管之后运行态读数如实反映，释放时清除', async () => {
   const cfg = config()
   cfg.desktopForeground = true
   const handle = fresh(cfg)
@@ -589,7 +589,7 @@ test('前台接管过之后运行态读数说得出这一点，释放时清回�
 
   const targets = () => frames.map((f) => f.event).filter((e) => e?.type === 'desktop.target')
 
-  // 后台观察：目标登记上去，但还没有前台接管。
+  // 后台观察：目标已登记，但尚未前台接管。
   const observing = port?.observe({ windowId: 'dw_1' }).catch(() => null)
   await host.next()
   await settle()

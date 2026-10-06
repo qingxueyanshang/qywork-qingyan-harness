@@ -2,8 +2,8 @@
  * `ark_videos`：火山方舟的视频生成任务（Seedance）。
  *
  * 提交 `POST {base}/contents/generations/tasks`，查询 `GET {base}/contents/generations/tasks/{id}`。
- * 输入全放进 `content[]`：文字一条，图片、视频、音频各一条并带 `role`（首帧、尾帧、参考图、参考视频、参考音频）。
- * 参数（分辨率、画幅、时长……）是请求体顶层字段。
+ * 输入全部放入 `content[]`：文字占一项，每个图片、视频、音频各占一项并带 `role`（首帧、尾帧、参考图、参考视频、参考音频）。
+ * 参数（分辨率、画幅、时长等）是请求体顶层字段。
  */
 
 import type { MediaModelSpec } from '../catalog.ts'
@@ -45,7 +45,7 @@ export function arkVideoContent(req: MediaRequest): Record<string, unknown>[] {
 }
 
 /**
- * 任务的计量。计费按 `usage.completion_tokens`（有参考视频时不足最低用量按最低用量回报）；
+ * 任务的计量。计费按 `usage.completion_tokens`（有参考视频时，不足最低用量的按最低用量返回）；
  * `duration` 是输出秒数，`resolution` 与 `generate_audio` 是实际生成的规格。
  */
 function taskUsage(body: Record<string, unknown>): MediaUsage {
@@ -97,9 +97,9 @@ export class ArkVideosAdapter implements MediaAdapter {
   }
 
   /**
-   * 撤销任务：`DELETE {base}/contents/generations/tasks/{id}`，方舟只撤得动排队中（`queued`）的任务。
-   * 先查状态、排队中才删：同一个接口对已结束的任务是删掉任务记录，结果就取不回了。
-   * 删除被拒时再查一次，已不在排队（查询与删除之间开始了）回 `started`，仍在排队原样抛。
+   * 撤销任务：`DELETE {base}/contents/generations/tasks/{id}`，方舟只能撤销排队中（`queued`）的任务。
+   * 先查询状态，排队中才删除：同一接口对已结束的任务会删除任务记录，结果将无法取回。
+   * 删除被拒绝时再查询一次，已不在排队（查询与删除之间已开始执行）则返回 `started`，仍在排队则原样抛出。
    */
   async cancel(taskId: string, signal: AbortSignal): Promise<MediaCancel> {
     const base = (this.profile.baseUrl ?? '').trim().replace(/\/+$/, '') || DEFAULT_BASE
@@ -138,7 +138,7 @@ export class ArkVideosAdapter implements MediaAdapter {
     if (status === 'succeeded') {
       const content = body.content as { video_url?: unknown; last_frame_url?: unknown } | undefined
       const url = content?.video_url
-      // 请求里带了 `return_last_frame` 才有尾帧地址，有效期同视频地址。
+      // 请求中带有 `return_last_frame` 时才有尾帧地址，有效期与视频地址相同。
       const last = content?.last_frame_url
       if (typeof url === 'string') {
         return {

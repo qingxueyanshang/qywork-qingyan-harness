@@ -1,13 +1,11 @@
 /**
  * Agent Team 配置读写。
  *
- * 这一页明确按「只读不写」设计，理由是「配置有两个来源迟早分叉」。
- * 结论下错了：界面直接读写**同一个** .qy/team.json，来源仍然只有一个，
- * 界面只是它的编辑器。分叉风险来自「界面另存一份」，不来自「有界面」。
+ * 界面直接读写同一个 .qy/team.json，配置来源只有一个，界面只是它的编辑器。
+ * 来源分叉的风险来自界面另存一份配置，而不是来自提供编辑界面。
  *
- * 与「禁止写 .qy/」不冲突：那条硬边界拦的是 **agent 工具**
- * （tools.ts:resolveWritablePath、policy.ts 的命令裁决），
- * 拦的是 agent 改自己的配置，不是用户经 UI 的显式操作。见 docs/permissions.md。
+ * 与「禁止写 .qy/」不冲突：该边界由文件工具执行（`tools/src/paths.ts` 的 `PROTECTED_DIRS`），
+ * 约束的是 agent 修改自身配置，不约束用户经界面的显式操作。见 docs/permissions.md。
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -26,7 +24,7 @@ export const handleTeamApi: ApiHandler = async (url, req, d) => {
     if (req.method === 'PUT') {
       const body = (await req.json().catch(() => null)) as { raw?: string } | null
       if (typeof body?.raw !== 'string') return json({ error: 'bad request' }, 400)
-      // 先解析再落盘：写进去一份坏 JSON，下次编排会在完全无关的地方失败。
+      // 先解析再落盘：写入损坏的 JSON 后，下次编排会在完全无关的位置失败。
       try {
         JSON.parse(body.raw)
       } catch (e) {
@@ -39,8 +37,8 @@ export const handleTeamApi: ApiHandler = async (url, req, d) => {
   }
 
   if (p === '/api/team') {
-    // 直接读工作区配置而不是返回启动时的缓存：用户可能刚改完 team.json，
-    // 让他为了看到新配置去重启服务是不合理的。
+    // 直接读取工作区配置而不是返回启动时的缓存：用户可能刚修改完 team.json，
+    // 要求用户重启服务才能看到新配置是不合理的。
     const { loadTeamConfig } = await import('@qywork/runtime')
     const team = await loadTeamConfig(d.workspaceRoot)
     return json({
@@ -55,8 +53,8 @@ export const handleTeamApi: ApiHandler = async (url, req, d) => {
     })
   }
 
-  // 本机装了哪几家外部 agent CLI。**只读**：这份清单来自探测，不落任何文件，
-  // 所以没有对应的写接口——设置页要做的只是把它显示出来。
+  // 本机安装了哪些外部 agent CLI。只读：该清单来自探测，不写入任何文件，
+  // 因此没有对应的写接口；设置页只负责显示。
   if (p === '/api/team/cli' && req.method === 'GET') {
     const { detectClis } = await import('@qywork/team')
     const found = await detectClis()

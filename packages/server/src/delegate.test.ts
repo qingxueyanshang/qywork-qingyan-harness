@@ -1,18 +1,18 @@
 /**
- * 派活通道的事件形状。**用假 provider 跑真链路，不花钱、不联网。**
+ * 任务派发通道的事件形状。使用假 provider 运行真实链路，不产生费用，不访问网络。
  *
- * 覆盖范围：`delegate.ts` 的 `makeDelegate()` —— 派出即返回、完成回调落格状态与回执、
- * 回执正文的形状、按会话停止、图的推进（首派 → 一格跑完派下游 → 一格失败先交回 →
- * 上游齐了发检查点回执 → approve / revise），以及 `subagents.ts` 那张在跑表。
+ * 覆盖范围：`delegate.ts` 的 `makeDelegate()`：派发后立即返回、完成回调写入节点状态与回执、
+ * 回执正文的形状、按会话停止、图的推进（首次派发 → 一个节点执行完毕后派发下游 → 一个节点失败时先发送失败回执 →
+ * 上游全部完成后发送检查点回执 → approve / revise），以及 `subagents.ts` 的运行表。
  *
- * **为什么走真链路。** 这条通道的形状就是「派出去之后，卡上那一格跟着动、回执自己回来」。
- * 把 `runBuiltinMember` 换成桩，测到的只是「桩被调用了」；真正会坏的是装配——
- * 事件带没带 stepId（不带前端整条丢弃）、终态发没发（不发那一格永远停在进行中）、
- * 回执投没投（不投这次派活就等于丢了）。
+ * 使用真实链路的原因：该通道的行为是「派发之后，卡片上对应的节点随之更新，回执自动返回」。
+ * 把 `runBuiltinMember` 换成桩只能验证「桩被调用」；实际可能出错的是装配：
+ * 事件是否携带 stepId（不携带则前端整条丢弃）、终态是否发送（不发送则该节点始终停在进行中）、
+ * 回执是否投递（不投递则本次派发等同于丢失）。
  *
- * 外部 CLI 那一支覆盖「派出去、跑完、格里落了写入」、观察器的忽略判定，以及起不来时
- * 观察窗口照样收掉：PATH 上放一个假的 `codex.cmd`。
- * 真正的 CLI 会不会照约定输出由真机验收（`scripts/smoke-cli-receipt.ts`）。
+ * 外部 CLI 分支覆盖「派发、执行完毕、节点记录写入」、观察器的忽略判定，以及无法启动时
+ * 观察窗口照常关闭：在 PATH 上放置一个假的 `codex.cmd`。
+ * 实际 CLI 是否按约定输出由真机验收（`scripts/smoke-cli-receipt.ts`）。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -60,7 +60,7 @@ function sse(events: { type: string; [k: string]: unknown }[]): string {
   return `${events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n`).join('\n')}\n`
 }
 
-/** 一轮纯文本收尾：子 agent 说完这句就结束，产出就是它。 */
+/** 一轮纯文本回复：子 agent 输出该句后结束，该句即为产出。 */
 function textTurn(text: string): string {
   return sse([
     { type: 'response.created', response: { id: 'resp_text' } },
@@ -79,10 +79,10 @@ function textTurn(text: string): string {
 const say = (text: string) => () => new Response(textTurn(text), { headers: SSE_HEADERS })
 
 /**
- * 扣住一次请求：等它真的发出来，再把响应放出去。
+ * 暂缓应答一次请求：等待请求实际发出后，再返回响应。
  *
- * **必须先等 `arrived()`**：派出即返回，子 agent 的请求在 `runGraph` 返回之后才发出去，
- * 提前放响应放的是上一个 resolver，那次请求会一直挂着。
+ * **必须先等待 `arrived()`**：派发后立即返回，子 agent 的请求在 `runGraph` 返回之后才发出，
+ * 提前返回响应会作用于上一个 resolver，该次请求将一直挂起。
  */
 function gate() {
   let release: (response: Response) => void = () => {}
@@ -99,8 +99,8 @@ function gate() {
 }
 
 /**
- * 按任务正文分流。并行的格谁先发出请求不定，按下标发会串台；
- * 认不出的任务当场 401，那一格落失败终态，不会让子会话自己接着转。
+ * 按任务正文分流。并行节点发出请求的先后顺序不确定，按下标应答会错配；
+ * 无法识别的任务立即返回 401，该节点写入失败终态，子会话不会继续执行。
  */
 function byTask(map: Record<string, string>) {
   return (body: string) => {
@@ -111,7 +111,7 @@ function byTask(map: Record<string, string>) {
   }
 }
 
-/** 这次请求怎么答。按顺序用完就 401；`router` 非空时改按正文分流。 */
+/** 本次请求的应答。按顺序用完后返回 401；`router` 非空时改为按正文分流。 */
 let script: ((body: string) => Response)[] = []
 let router: ((body: string) => Response | Promise<Response>) | null = null
 
@@ -127,7 +127,7 @@ const provider = Bun.serve({
 })
 
 let dir = ''
-/** 账本放工作区外面：工作区观察窗口扫的是工作区，账本的 WAL 不该被扫成「改动」。 */
+/** 账本放在工作区之外：工作区观察窗口扫描的是工作区，账本的 WAL 不应被识别为「改动」。 */
 let dbDir = ''
 let store: Store
 let content: ContentStore
@@ -183,7 +183,7 @@ afterAll(async () => {
   await rm(dbDir, { recursive: true, force: true }).catch(() => {})
 })
 
-/** 每个用例一条干净的会话与一份干净的脚本。 */
+/** 每个用例使用新的会话与新的脚本。 */
 function conversation(): ConversationId {
   script = []
   router = null
@@ -206,7 +206,7 @@ function delegate(conversationId: ConversationId) {
   })
 }
 
-/** 派出即返回，所以每条断言前都要等那件事真的发生。 */
+/** 派发后立即返回，因此每条断言前都须等待对应事件实际发生。 */
 async function until(check: () => boolean, label: string, timeoutMs = 3000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -217,10 +217,10 @@ async function until(check: () => boolean, label: string, timeoutMs = 3000): Pro
 }
 
 /**
- * 广播出去的成员事件，按顺序。
+ * 已广播的成员事件，按发送顺序排列。
  *
- * 成员类型按 `type` 收窄拿到——`@qywork/core` 刻意不逐个导出事件成员，
- * 它们只在 `AgentEvent` 这个可辨识联合里出现。
+ * 成员类型按 `type` 收窄取得：`@qywork/core` 不逐个导出事件成员，
+ * 它们只出现在 `AgentEvent` 可辨识联合中。
  */
 type MemberEvent = Extract<AgentEvent, { type: 'team.member' }>
 
@@ -234,19 +234,19 @@ function phasesOf(nodeId: string): string[] {
     .map((m) => m.state.phase)
 }
 
-/** 这一格挂在哪：run 必须是真实的一行，落盘的正文按它登记。 */
+/** 节点所属的 run 与 step：run 必须是真实存在的一行，落盘的正文按它登记。 */
 function spot(conversationId: ConversationId): { runId: RunId; stepId: string } {
   return { runId: run(conversationId, 'spot'), stepId: 'st_1' }
 }
 
-/** 首派参数与真实入口同一条解析路径，节点字段的形状只在 core 定义一次。 */
+/** 首次派发的参数与真实入口使用同一条解析路径，节点字段的结构只在 core 中定义一次。 */
 function parsedStart(args: Record<string, unknown>): WorkflowCall {
   const parsed = parseWorkflowCall(args)
   if (!parsed.ok) throw new Error(parsed.error)
   return parsed.call
 }
 
-/** 一次真实的 workflow 调用：开卡 → 推进 → 按返回值落终态，与工具那条路同形。 */
+/** 一次真实的 workflow 调用：创建卡片 → 推进 → 按返回值写入终态，与工具的调用路径一致。 */
 async function invoke(
   parent: ConversationId,
   runId: RunId,
@@ -291,8 +291,8 @@ function run(conversationId: ConversationId, key: string): RunId {
   }).id
 }
 
-describe('派出即返回', () => {
-  test('派出去就回派出事实，产出不在返回值里', async () => {
+describe('派发后立即返回', () => {
+  test('派发后立即返回派发事实，产出不在返回值中', async () => {
     const cid = conversation()
     const where = spot(cid)
     script = [say('查完了')]
@@ -306,7 +306,7 @@ describe('派出即返回', () => {
     expect(res.subagentId).toBeTruthy()
     expect(res).toMatchObject({ name: '临时', kind: 'temp', created: true })
     expect(res).not.toHaveProperty('output')
-    // 返回的那一刻它才刚起跑：卡上是「进行中」，不是终态。
+    // 返回时任务刚开始执行：卡片显示「进行中」，而不是终态。
     expect(phasesOf('child')).toEqual(['working'])
     expect(members()[0]?.state.subagentId).toBe(res.subagentId as ConversationId)
 
@@ -315,7 +315,7 @@ describe('派出即返回', () => {
     expect(members().every((m) => m.stepId === 'st_1' && m.runId === where.runId)).toBe(true)
   })
 
-  test('结构化 provider + model 一路写进成员会话，不经过字符串拆分', async () => {
+  test('结构化 provider + model 沿整条链路写入成员会话，不经过字符串拆分', async () => {
     const cid = conversation()
     script = [say('选型正确')]
     const res = await delegate(cid).dispatch({
@@ -333,8 +333,8 @@ describe('派出即返回', () => {
     await until(() => !runs.isBusy(cid), '子 agent 结束')
   })
 
-  /** 派不出去那一格直接记失败：没有「跑着」那一帧，也不留一格永远等待。 */
-  test('目标不存在时那一格只有一条失败状态，也没有回执', async () => {
+  /** 无法派发的节点直接记为失败：不产生「运行中」状态，也不遗留永远等待的节点。 */
+  test('目标不存在时该节点只有一条失败状态，也没有回执', async () => {
     const cid = conversation()
     const res = await delegate(cid).dispatch({
       target: { kind: 'role', role: '查无此角色' },
@@ -349,10 +349,10 @@ describe('派出即返回', () => {
   })
 
   /**
-   * 拿不到卡片 id 时整条不发。发出去也没有卡片认领它（前端按 stepId 找），
-   * 只是白广播——而派活本身照跑，回执与终态都不依赖这条通道。
+   * 无法取得卡片 id 时不发送任何状态：发出后也没有卡片认领（前端按 stepId 查找），
+   * 只是无效广播；任务派发本身照常执行，回执与终态均不依赖该通道。
    */
-  test('没有卡片 id 时一条状态都不发，活照派、回执照回', async () => {
+  test('没有卡片 id 时不发送任何状态，任务照常派发、回执照常返回', async () => {
     const cid = conversation()
     script = [say('查完了')]
     const res = await delegate(cid).dispatch({
@@ -367,10 +367,10 @@ describe('派出即返回', () => {
   })
 
   /**
-   * 子会话的事件按**它自己的会话 id** 广播。右侧那一页订阅的就是这个 id——
-   * 不发的话它在子 agent 跑完之前一个字都画不出来。
+   * 子会话的事件按其自身的会话 id 广播。右侧面板订阅的即是该 id：
+   * 不按该 id 发送时，右侧面板在子 agent 执行完毕之前无法渲染任何内容。
    */
-  test('子会话的事件按它自己的 id 发出去，不挂在父会话上', async () => {
+  test('子会话的事件按其自身的 id 发送，不归入父会话', async () => {
     const cid = conversation()
     script = [say('看完了')]
     const res = await delegate(cid).dispatch({
@@ -385,7 +385,7 @@ describe('派出即返回', () => {
     expect(inner.map((f) => f.event.type)).toContain('run.started')
     expect(inner.map((f) => f.event.type)).toContain('run.finished')
     expect(runs.isBusy(child)).toBe(false)
-    // 父会话那条上只有图卡进度，没有子会话的内层事件。
+    // 父会话中只有图卡进度，没有子会话的内层事件。
     expect(
       events
         .filter((f) => f.conversationId === cid)
@@ -394,10 +394,10 @@ describe('派出即返回', () => {
   })
 
   /**
-   * 原始失败形状：子 agent 跑着时切到另一条会话，再切回来会从正在执行的 step 回放。
-   * `team.member` 只活在订阅期，入口若等终态才落库，这张回放卡没有 id、节点被禁用。
+   * 原始失败形状：子 agent 运行时切换到另一条会话，再切换回来时从正在执行的 step 回放。
+   * `team.member` 只存在于订阅期间，入口若等到终态才落库，回放的卡片没有 id，节点被禁用。
    */
-  test('派出去那一刻子会话入口已经落进这条 step', async () => {
+  test('派发时子会话入口已写入这条 step', async () => {
     const cid = conversation()
     const runId = run(cid, 'early-child')
     const step = appendStep(store, {
@@ -431,7 +431,7 @@ describe('派出即返回', () => {
 })
 
 describe('回执是一条消息', () => {
-  test('做成了：种类、名字、id、产出摘录与续派接法各占一行', async () => {
+  test('成功：种类、名称、id、产出摘录与续派方式各占一行', async () => {
     const cid = conversation()
     script = [say('查完了，结论是这样')]
     const res = await delegate(cid).dispatch({
@@ -447,14 +447,14 @@ describe('回执是一条消息', () => {
     const lines = receipt.content.split('\n')
     expect(lines[0]).toBe(`[子 agent 回执] 临时 查资料（subagentId ${res.subagentId}）已返回`)
     expect(receipt.content).toContain('查完了，结论是这样')
-    // 只有事实：接法在工具描述里，回执里再写一遍就是给模型的口水。
+    // 只包含事实：续派方式已写在工具描述中，回执中重复只会增加冗余内容。
     expect(receipt.content).not.toContain('接着派它')
     expect(lines).toHaveLength(2)
   })
 
-  test('没做成：第一行就写清原因', async () => {
+  test('失败：第一行写明原因', async () => {
     const cid = conversation()
-    // 脚本空着 = 401，子会话当场终结。
+    // 脚本为空时返回 401，子会话立即终止。
     const res = await delegate(cid).dispatch({
       target: { kind: 'temp', name: '临时' },
       task: '去查一下',
@@ -463,12 +463,12 @@ describe('回执是一条消息', () => {
     await until(() => receipts.length > 0, '回执')
 
     expect(receipts[0]?.content.split('\n')[0]).toContain(
-      `[子 agent 回执] 临时 临时（subagentId ${res.subagentId}）没做成：`,
+      `[子 agent 回执] 临时 临时（subagentId ${res.subagentId}）失败：`,
     )
     expect(phasesOf('child')).toEqual(['working', 'failed'])
   })
 
-  /** 产出过投递闸：一份没有上界的正文整段进上下文，压缩层已经无从下手。 */
+  /** 产出经过投递限制：没有上限的正文若整段进入上下文，压缩层无法处理。 */
   test('超长产出在回执里是有界摘录加定位符', async () => {
     const cid = conversation()
     const huge = '审查结论。'.repeat(40_000)
@@ -486,8 +486,8 @@ describe('回执是一条消息', () => {
   })
 })
 
-describe('在跑表按会话', () => {
-  test('派出与结束各报一次忙态，子 agent 在跑时会话是忙的', async () => {
+describe('运行表按会话管理', () => {
+  test('派发与结束各报告一次忙态，子 agent 运行时会话处于忙碌状态', async () => {
     const cid = conversation()
     script = [say('查完了')]
     const res = await delegate(cid).dispatch({
@@ -497,7 +497,7 @@ describe('在跑表按会话', () => {
     })
 
     expect(runs.isBusy(cid)).toBe(true)
-    // 起轮的闸不含子 agent：它在跑不该挡住这条会话开新一轮。
+    // 发起轮次的忙碌检查不包含子 agent：子 agent 运行中不应阻止该会话发起新一轮。
     expect(runs.hasRun(cid)).toBe(false)
     expect(subagents.listOf(cid)).toEqual([
       { subagentId: res.subagentId as string, name: '临时', kind: 'temp' },
@@ -511,8 +511,8 @@ describe('在跑表按会话', () => {
     expect(busy).toEqual([true, false])
   })
 
-  /** 停止按会话全停：格落中断，而且**不发回执**——投一条进去等于停完又起一轮。 */
-  test('按会话停止：格落中断，不投回执', async () => {
+  /** 按会话停止时全部停止：节点写入中断状态，且不发送回执，因为投递回执会在停止后再次发起一轮。 */
+  test('按会话停止：节点写入中断，不投递回执', async () => {
     const cid = conversation()
     router = () =>
       new Response(sse([{ type: 'response.created', response: { id: 'r' } }]), {
@@ -530,7 +530,7 @@ describe('在跑表按会话', () => {
     expect(runs.isBusy(cid)).toBe(false)
   })
 
-  test('没有在跑的子 agent 时停止返回 false', () => {
+  test('没有运行中的子 agent 时停止返回 false', () => {
     const cid = conversation()
     expect(subagents.interruptConversation(cid)).toBe(false)
   })
@@ -547,7 +547,7 @@ describe('图按事件推进', () => {
     ],
   }
 
-  test('首派只派就绪的格，全图先标等待', async () => {
+  test('首次派发只派发就绪的节点，全图先标记为等待', async () => {
     const parent = conversation()
     router = byTask({ '做 A': 'A 的产出' })
     const runId = run(parent, 'wf-first')
@@ -556,23 +556,23 @@ describe('图按事件推进', () => {
     expect(result.ok).toBe(true)
     expect(result.transition?.dispatched).toEqual(['a'])
     expect(result.completed).toBe(false)
-    // 刷新之后要看得见全貌：没派的格也有一帧等待。
+    // 刷新之后须能看到全貌：未派发的节点也有一条等待状态。
     expect(phasesOf('b')).toEqual(['waiting'])
     await until(() => receipts.length > 0, '检查点回执')
   })
 
   /**
-   * 解析目标要 await（读角色库、探测 CLI）。那段窗口里另一格跑完会重新推进一次，
-   * 而那时这一格在账本上还没有状态——推进器会把它再派一次，同一格因此有两个子 agent。
+   * 解析目标需要 await（读取角色库、探测 CLI）。在此期间另一个节点执行完毕会重新推进一次，
+   * 而此时该节点在账本中尚无状态：推进器会再次派发它，同一节点因此有两个子 agent。
    */
-  test('推进返回时派出去的格在账本上已经是 working', async () => {
+  test('推进返回时已派发的节点在账本中已是 working', async () => {
     const parent = conversation()
     const slow = gate()
     router = slow.respond
     const runId = run(parent, 'wf-reserve')
     const { step } = await invoke(parent, runId, 1, twoStage, parsedStart(twoStage))
 
-    // 同步断言：这一刻子 agent 连请求都还没发出去，格上却已经写着「进行中」。
+    // 同步断言：此时子 agent 尚未发出请求，节点状态已经是「进行中」。
     const states = (
       listSteps(store, runId).find((s) => s.id === step.id)?.payload as {
         nodes?: Record<string, { phase: string }>
@@ -585,7 +585,7 @@ describe('图按事件推进', () => {
     await until(() => receipts.length > 0, '检查点回执')
   })
 
-  test('一格跑完到检查点：回执列出上游各格，末行只有 id', async () => {
+  test('一个节点执行完毕后到达检查点：回执列出上游各节点，末行只有 id', async () => {
     const parent = conversation()
     router = byTask({ '做 A': 'A 的产出' })
     const runId = run(parent, 'wf-checkpoint')
@@ -598,11 +598,11 @@ describe('图按事件推进', () => {
     expect(receipt.content).toContain('### a（a）已返回')
     expect(receipt.content).toContain('A 的产出')
     expect(receipt.content).toContain(`workflowId=${step.id}，checkpointId=cp`)
-    // 接法在工具描述里，回执不再教一遍。
+    // 续派方式已写在工具描述中，回执中不再重复。
     expect(receipt.content).not.toContain('approve')
   })
 
-  test('approve 之后派下一批，全部批准且格全终态时报完成', async () => {
+  test('approve 之后派发下一批，全部批准且所有节点均为终态时报告完成', async () => {
     const parent = conversation()
     router = byTask({ '做 A': 'A 的产出', '做 B': 'B 的产出' })
     const runId = run(parent, 'wf-approve')
@@ -642,7 +642,7 @@ describe('图按事件推进', () => {
     expect(third.result.completed).toBe(true)
   })
 
-  test('一格失败：先单发失败回执，其余格照跑', async () => {
+  test('一个节点失败：先单独发送失败回执，其余节点照常执行', async () => {
     const parent = conversation()
     const parallel = {
       goal: '两个候选',
@@ -655,7 +655,7 @@ describe('图按事件推进', () => {
     const slow = gate()
     router = (body) => {
       if (body.includes('做 X')) return new Response('脚本没有匹配项', { status: 401 })
-      // Y 慢：失败回执必须在它跑完之前就到。
+      // Y 较慢：失败回执必须在它执行完毕之前到达。
       return slow.respond()
     }
     const runId = run(parent, 'wf-fail')
@@ -663,7 +663,7 @@ describe('图按事件推进', () => {
 
     await until(() => receipts.length > 0, '失败回执')
     expect(receipts[0]?.origin).toBe('workflow')
-    expect(receipts[0]?.content).toContain('[workflow 回执] x（x）没做成')
+    expect(receipts[0]?.content).toContain('[workflow 回执] x（x）失败')
     expect(receipts[0]?.content).toContain('workflowId=')
     expect(receipts[0]?.content).not.toContain('其余格照跑')
     expect(phasesOf('y').at(-1)).toBe('working')
@@ -672,10 +672,10 @@ describe('图按事件推进', () => {
     slow.open('Y 的产出')
     await until(() => receipts.length > 1, '检查点回执')
     expect(receipts[1]?.content).toContain('检查点 验收 的上游已经全部返回')
-    expect(receipts[1]?.content).toContain('### x（x）没做成')
+    expect(receipts[1]?.content).toContain('### x（x）失败')
   })
 
-  test('上游没成功时下游跳过，检查点照样到得了', async () => {
+  test('上游未成功时下游跳过，检查点仍可到达', async () => {
     const parent = conversation()
     const chain = {
       goal: '串起来',
@@ -693,8 +693,8 @@ describe('图按事件推进', () => {
     await until(() => receipts.some((r) => r.content.includes('检查点 验收')), '检查点回执')
   })
 
-  /** 图跑着时刷新页面要能重画：子会话 id 必须在派出时按节点写进这条 step。 */
-  test('每个节点的子会话入口按节点落库，节点 id 带点号也不当路径解析', async () => {
+  /** 图运行时刷新页面须能重新渲染：子会话 id 必须在派发时按节点写入该 step。 */
+  test('每个节点的子会话入口按节点落库，节点 id 含点号时也不按路径解析', async () => {
     const parent = conversation()
     const dotted = {
       goal: '两个候选',
@@ -720,8 +720,8 @@ describe('图按事件推进', () => {
   })
 
   /**
-   * 原始失败形状：agent 节点全部失败，主会话仍在检查点批准，此后要让其中一个节点
-   * 在它自己那条子会话里继续做。批准即解散时模型只剩 subagent，而那条每次新建会话。
+   * 原始失败形状：agent 节点全部失败，主会话仍在检查点批准，此后需要其中一个节点
+   * 在其自身的子会话中继续执行。批准即解散时模型只能使用 subagent，而 subagent 每次都新建会话。
    */
   test('approve 之后 revise 仍向首派那条子会话续发', async () => {
     const parent = conversation()
@@ -788,7 +788,7 @@ describe('图按事件推进', () => {
     }
     const revised = await invoke(parent, runId, 3, reviseArgs, { kind: 'review', ...reviseArgs })
     expect(revised.result.transition?.dispatched).toEqual(['build-qwen'])
-    // 续发到首派那条子会话，不是新开一条。
+    // 续发到首次派发的子会话，而不是新建会话。
     const lastAsked = () =>
       listMessages(store, qwenChild as ConversationId)
         .filter((message) => message.role === 'user')
@@ -796,7 +796,7 @@ describe('图按事件推进', () => {
     await until(() => lastAsked().includes('按 bug 列表继续改'), '续发指令进原子会话')
   })
 
-  test('首派落失败终态之后 approve 报重新派发，不再说不是待审查状态', async () => {
+  test('首次派发写入失败终态之后 approve 报告重新派发，不报告非待审查状态', async () => {
     const parent = conversation()
     const runId = run(parent, 'wf-dead')
     const args = {
@@ -815,7 +815,7 @@ describe('图按事件推进', () => {
       status: 'running',
       payload: { kind: 'tool_call', args },
     })
-    // 进程退出收尾把 running 的 step 原地落成没有 transition 数据的失败终态。
+    // 进程退出时的收尾将 running 的 step 原地写为没有 transition 数据的失败终态。
     settleToolStep(store, step.id, 'failure', {
       kind: 'tool_result',
       args,
@@ -873,8 +873,8 @@ describe('图按事件推进', () => {
     expect(listRuns(store, ordinary.id)).toHaveLength(0)
   })
 
-  /** 续接已有子 agent 的格接的是它自己的会话：历史在那边，任务不重抄一遍。 */
-  test('续接已有子 agent 的格发进同一条子会话', async () => {
+  /** 续接已有子 agent 的节点接入其自身的会话：历史保存在该会话中，任务不重复写入。 */
+  test('续接已有子 agent 的节点发送到同一条子会话', async () => {
     const parent = conversation()
     const child = createConversation(store, {
       workspaceId: workspaceId as never,
@@ -918,14 +918,14 @@ describe('图按事件推进', () => {
 })
 
 /**
- * 变更页并进子 agent 与外部 CLI 的写入，走真链路：
- * - 内置子 agent：假 provider 让子会话真的调 `write_file`，写入落在子会话的 step 里，
- *   投影按父 step 的 `subagentId` 与执行窗口归到父轮；
- * - 外部 CLI：PATH 上放一个假的 `codex.cmd`，它往工作区写一个文件，
- *   派活期间的工作区观察窗口把路径写进那一格，投影从格里取。
+ * 变更页合并子 agent 与外部 CLI 的写入，使用真实链路：
+ * - 内置子 agent：假 provider 使子会话实际调用 `write_file`，写入记录在子会话的 step 中，
+ *   投影按父 step 的 `subagentId` 与执行窗口归入父轮；
+ * - 外部 CLI：在 PATH 上放置一个假的 `codex.cmd`，它向工作区写入一个文件，
+ *   任务派发期间的工作区观察窗口将路径写入对应的节点，投影从节点中读取。
  */
-describe('变更页并进子 agent 与外部 CLI 的写入', () => {
-  /** 子会话第一轮：调 write_file 往工作区写一个文件。 */
+describe('变更页合并子 agent 与外部 CLI 的写入', () => {
+  /** 子会话第一轮：调用 write_file 向工作区写入一个文件。 */
   function writeTurn(path: string, content: string): string {
     return sse([
       { type: 'response.created', response: { id: 'resp_write' } },
@@ -951,7 +951,7 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     ])
   }
 
-  /** 父会话里一条有用户消息的轮，派活 step 是真实的一行：投影按它归轮。 */
+  /** 父会话中一条有用户消息的轮，派发任务的 step 是真实的一行：投影按它归轮。 */
   function parentTurn(cid: ConversationId, text: string) {
     const user = appendMessage(store, { conversationId: cid, role: 'user', content: text })
     const runId = createRun(store, {
@@ -974,7 +974,7 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     return { runId, step }
   }
 
-  /** 派出即返回：真实的循环在派出后立刻收尾这一步，时长只有一百多毫秒，子会话还在跑。 */
+  /** 派发后立即返回：真实循环在派发后立即结束该 step，耗时约一百多毫秒，子会话仍在运行。 */
   function settle(stepId: string, task: string) {
     settleToolStep(
       store,
@@ -989,7 +989,7 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     )
   }
 
-  test('子会话里的 write_file 出现在父轮里，标着子 agent 的名字', async () => {
+  test('子会话中的 write_file 出现在父轮中，并标注子 agent 的名称', async () => {
     const cid = conversation()
     const { runId, step } = parentTurn(cid, '派个写手')
     script = [
@@ -1016,7 +1016,7 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
       '本次子 agent 落终态',
     )
     expect(await Bun.file(join(dir, 'sub.txt')).text()).toBe('hello\n')
-    // 来源在建 run 时就写上了：投影按它归轮，不看时间。
+    // 来源在创建 run 时写入：投影按来源归入轮次，不按时间判断。
     expect(listRuns(store, res.subagentId as ConversationId).at(-1)).toMatchObject({
       dispatchStepId: step.id,
       dispatchNodeId: 'child',
@@ -1034,11 +1034,11 @@ describe('变更页并进子 agent 与外部 CLI 的写入', () => {
     expect(page.totals.additions).toBeGreaterThan(0)
   })
 
-  test('外部 CLI 改的文件出现在父轮里，标着节点名；项目点路径进账，被忽略的缓存不进', async () => {
+  test('外部 CLI 修改的文件出现在父轮中，并标注节点名；项目点路径计入，被忽略的缓存不计入', async () => {
     const bin = join(dir, 'fake-bin')
     await mkdir(bin, { recursive: true })
-    // 假的 codex：不看参数，往当前目录写三个文件（普通、项目点路径、被忽略的缓存），
-    // 再按 codex 的 jsonl 形状报一句结果。Windows 使用 npm 的 Node 入口，POSIX 使用 sh 入口。
+    // 假的 codex：忽略参数，向当前目录写入三个文件（普通文件、项目点路径、被忽略的缓存），
+    // 再按 codex 的 jsonl 格式输出一条结果。Windows 使用 npm 的 Node 入口，POSIX 使用 sh 入口。
     await writeFile(
       join(bin, 'codex'),
       [
@@ -1074,15 +1074,15 @@ fs.mkdirSync('.profile-cache', { recursive: true });
 fs.writeFileSync('.profile-cache/state.bin', 'x\\n');
 console.log(JSON.stringify({ type: 'item.completed', item: { text: 'done' } }));`,
     )
-    // 观察器的忽略判定问的是 git，忽略规则得有来源，所以这条测试把夹具目录做成仓库。
+    // 观察器的忽略判定查询 git，忽略规则须有来源，因此本测试将夹具目录初始化为仓库。
     const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir })
     git('init', '-q', '-b', 'main', '.')
     git('config', 'user.email', 't@t')
     git('config', 'user.name', 't')
     await writeFile(join(dir, '.gitignore'), '.profile-cache/\n')
     const env = { PATH: process.env.PATH, OPENAI_API_KEY: process.env.OPENAI_API_KEY }
-    // 只保留假 CLI、系统命令、Git 与 Node 所在目录；凭证判据是这个变量有值。
-    // git 必须留着：观察器收尾时要起它判忽略规则，找不到就只能报观察范围不完整。
+    // 只保留假 CLI、系统命令、Git 与 Node 所在目录；凭证按该变量是否有值判定。
+    // 必须保留 git：观察器收尾时须启动它判定忽略规则，未找到时只能报告观察范围不完整。
     const gitDir = dirname(Bun.which('git') ?? '')
     const nodeDir = dirname(Bun.which('node') ?? '')
     const sys =
@@ -1125,7 +1125,7 @@ console.log(JSON.stringify({ type: 'item.completed', item: { text: 'done' } }));
           ],
         ],
       ])
-      // 项目的点路径进账，被 `.gitignore` 挡住的缓存不进。
+      // 项目的点路径计入，被 `.gitignore` 忽略的缓存不计入。
       expect([...page.totals.paths].sort()).toEqual(['.github/workflows/ci.yml', 'cli-made.txt'])
       expect(page.totals.additions).toBe(4)
       expect(page.totals.deletions).toBe(0)
@@ -1137,10 +1137,10 @@ console.log(JSON.stringify({ type: 'item.completed', item: { text: 'done' } }));
   })
 
   /**
-   * 原始失败形状：外部 CLI 起不来（`Bun.spawn` 找不到可执行文件）时观察窗口没有收掉。窗口先于进程
-   * 打开，漏收的那个一直排在最前，此后同一工作区的窗口收不到任何事件，删除一条都报不出来。
+   * 原始失败形状：外部 CLI 无法启动（`Bun.spawn` 未找到可执行文件）时观察窗口未关闭。窗口先于进程
+   * 打开，未关闭的窗口始终排在最前，此后同一工作区的窗口无法收到任何事件，删除也无法报告。
    */
-  test('外部 CLI 起不来时收掉观察窗口，此后的窗口照常收到删除', async () => {
+  test('外部 CLI 无法启动时关闭观察窗口，此后的窗口照常收到删除', async () => {
     const bin = join(dir, 'vanished-bin')
     await mkdir(bin, { recursive: true })
     await writeFile(join(bin, 'codex'), '#!/bin/sh\n', { mode: 0o755 })
@@ -1149,7 +1149,7 @@ console.log(JSON.stringify({ type: 'item.completed', item: { text: 'done' } }));
     process.env.PATH = bin
     process.env.OPENAI_API_KEY = 'sk-test'
     try {
-      // 识别结果按 PATH 缓存：先识别到再删掉文件，派活时 spawn 才找不到它。
+      // 识别结果按 PATH 缓存：先完成识别，然后删除文件，派发任务时 spawn 才会无法找到它。
       expect((await findCli('codex'))?.id).toBe('codex')
       await rm(bin, { recursive: true, force: true })
       const cid = conversation()
@@ -1170,7 +1170,7 @@ console.log(JSON.stringify({ type: 'item.completed', item: { text: 'done' } }));
       else process.env.OPENAI_API_KEY = env.OPENAI_API_KEY
     }
 
-    // 删除只有事件看得见，收尾扫描补不上：前一个窗口漏收时这一条报不出来。
+    // 删除只能通过事件观察到，收尾扫描无法补充：前一个窗口未关闭时该删除无法报告。
     await writeFile(join(dir, 'doomed.txt'), 'x\n')
     const window = openChangeWindow(dir)
     await Bun.sleep(250)

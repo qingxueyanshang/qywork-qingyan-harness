@@ -1,69 +1,66 @@
 /**
- * 工作区路径约束 —— 安全边界，不是便利函数。
+ * 工作区路径约束。这是安全边界，不是便利函数。
  *
- * 模型给出的 path 是不可信输入。每一次文件操作前都必须把它解析成规范形式并确认
- * 仍在工作区内；越界就拒绝。这里要挡住的是：`..` 回溯、绝对路径、符号链接逃逸、
- * URL 编码的 `%2e%2e%2f`、以及 Windows 上的盘符切换与 UNC 路径。
+ * 模型给出的 path 是不可信输入。每次文件操作前都必须把它解析为规范形式，并确认
+ * 仍在工作区内；越界即拒绝。需要拦截的有：`..` 回溯、绝对路径、符号链接逃逸、
+ * URL 编码的 `%2e%2e%2f`，以及 Windows 上的盘符切换与 UNC 路径。
  *
- * 绝不允许把原始 path 直接交给 open/readFile/unlink——那是这类工具最常见的破口。
+ * 不得把原始 path 直接交给 open/readFile/unlink：这是此类工具最常见的漏洞。
  */
 
 import { readlink, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 /**
- * 越界被拒。
+ * 路径位于允许范围内，但该位置不存在文件。
  *
- * **这条回话必须说清「接下来怎么办」。** 账本里留下过一次实证：模型读桌面上的某个项目被拒，只拿到一
- * 句「工具 read_file 执行出错: 路径越界」，因此它把这当成偶发故障，转头用 `run_command` 绕过去
- * （shell 只锁 cwd，命令正文里 `cd` 得出去），也没告诉用户发生了什么。**一条被当成崩溃的策略判定，
- * 模型只会去找绕路。**
+ * **必须与「越界」区分。** `realpath` 对 ENOENT 与真正的越界抛出同一个错误，
+ * 若 `mustExist` 一律把它捕获为越界，模型读取不存在的文件时收到的是「路径越界，已拒绝……
+ * 切换到完全访问或加入 additionalDirectories」，其中没有一项可执行：
+ * 该路径是工作区内的相对路径，模型无法据此判断文件不存在还是名称有误。
  *
- * 回话说明本次路径参数被拒的原因与两条出路，不替命令裁决层承诺结果。
- * 命令规则允许普通的工作区外读取，因此不能声称 run_command 必然拒绝同一路径。
- *
- * **两条出路都要给全**，因为这条拒绝只发生在「自动审批」下：切「完全访问」
- * 是真的能解开（那个模式下路径边界整个不设），加 `additionalDirectories`
- * 则是在不放开全部权限的前提下只开这一个目录。少说一条就是把用户往另一条上逼。
- *
- * `errorKind` 让注册表把它当**判定**而不是异常端出去（见 `agent/registry.ts`
- * 的 catch）：`executed: false`，且不套「执行出错」的壳。
- */
-/**
- * 路径在允许范围内，但那个位置上没有文件。
- *
- * **必须与「越界」分开。** 从前两者共用 `PathEscapeError`：`realpath` 对
- * ENOENT 和真正的越界抛的是同一个错，`mustExist` 那条把它一律 catch 成越界。
- * 因此模型读一个不存在的文件，收到的是「路径越界，已拒绝……要么让用户切到
- * 完全访问，要么把这个目录加进 additionalDirectories」——**一句都不可执行**：
- * 那个路径是工作区内的相对路径，模型没法据此判断文件是不存在还是名字写错。
- *
- * 实测代价（会话 `cv_0mt0x92q10000mx0dff`）：模型读一个不存在的
- * `client/src/battle/battle-snapshot.js`，拿到这句权限话术之后绕开了这个工具，
- * 却在回话里把那个文件写进了「已用 read_file 校验最新版」的清单——
- * 用户看见的是「读取 2 个文件、1 个失败」，模型说的是「5 个核心文件都已确认」。
+ * 实测后果（会话 `cv_0mt0x92q10000mx0dff`）：模型读取不存在的
+ * `client/src/battle/battle-snapshot.js`，收到权限提示后改用其他方式，
+ * 却在回复中把该文件列为「已用 read_file 校验最新版」，与界面上「读取 2 个文件、1 个失败」不一致。
  */
 export class PathNotFoundError extends Error {
   readonly errorKind = 'path_not_found'
 
   constructor(readonly attempted: string) {
     super(`路径不存在：${attempted}
-用 list_dir 或 glob 确认它的真实位置再试。`)
+用 list_dir 或 glob 确认其实际位置后重试。`)
     this.name = 'PathNotFoundError'
   }
 }
 
+/**
+ * 路径越界，已拒绝。
+ *
+ * **错误信息必须说明下一步操作。** 只返回「路径越界」时，模型会把策略判定当作偶发故障，
+ * 转而用 `run_command` 绕过（shell 只限定 cwd，命令中的 `cd` 可以离开工作区），且不告知用户。
+ * 账本中有一次实际记录。
+ *
+ * 信息说明本次路径参数被拒的原因与两种处理方式，不替命令裁决层承诺结果：
+ * 命令规则允许普通的工作区外读取，因此不能声称 run_command 必然拒绝同一路径。
+ *
+ * **两种处理方式都必须列出**，因为该拒绝只发生在「自动审批」模式下：切换到「完全访问」
+ * 确实能解除限制（该模式下不设路径边界），加入 `additionalDirectories`
+ * 则在不放开全部权限的前提下只放行该目录。只列一种，用户就只能采用这一种。
+ *
+ * `errorKind` 使注册表把它作为**判定**而不是异常返回（见 `agent/registry.ts`
+ * 的 catch）：`executed: false`，且不加「执行出错」前缀。
+ */
 export class PathEscapeError extends Error {
   readonly errorKind = 'path_out_of_workspace'
 
   constructor(readonly attempted: string) {
     super(
       `路径越界，已拒绝：${attempted}\n` +
-        '这个路径不在工作区（以及配置里显式放行的额外目录）之内，' +
-        '而当前是「自动审批」模式。\n' +
-        '要么改用工作区内的路径继续，要么停下来告诉用户，让他二选一：' +
-        '切到「完全访问」（放开全部权限，包括路径），' +
-        '或者把这个目录加进配置的 additionalDirectories（只开这一个）。' +
+        '该路径不在工作区（以及配置中显式放行的额外目录）之内，' +
+        '且当前为「自动审批」模式。\n' +
+        '要么改用工作区内的路径继续，要么停止并告知用户，由用户二选一：' +
+        '切换到「完全访问」（放开全部权限，包括路径），' +
+        '或将该目录加入配置的 additionalDirectories（仅放开该目录）。' +
         '这是本次路径参数的边界；run_command 的命令内容由命令权限规则另行裁决。',
     )
     this.name = 'PathEscapeError'
@@ -73,55 +70,54 @@ export class PathEscapeError extends Error {
 /**
  * 可访问的根目录集合。
  *
- * **为什么是「集合」而不是单个工作区。** 「要内核级沙箱」和「要操作电脑」是方向相反的两个需求，而额
- * 外根目录正是让两者共存的那个机制：边界仍然是白名单，只是白名单里不止一项。没有它的话，想让
- * agent 碰工作区外的任何路径，唯一的办法是整个关掉边界。
+ * **使用集合而不是单个工作区。** 「内核级沙箱」与「操作电脑」是方向相反的两项需求，额外根目录
+ * 使两者可以共存：边界仍是白名单，只是白名单中不止一项。没有额外根目录时，
+ * 让 agent 访问工作区外的任何路径只能整体关闭边界。
  *
  * **这份清单必须同时传给三层**（路径解析、`policy.ts` 的静态规则、沙箱 bind 列表）。
- * 只接一层的症状都是「配了但不管用」，而三层各自的错误信息完全不同——
- * 三个错误信息看起来是三个 bug。
+ * 只接入一层时的症状都是「已配置但不生效」，而三层的错误信息各不相同，
+ * 看起来像三个独立的缺陷。
  */
 export interface WorkspaceRoots {
   workspaceRoot: string
   /**
-   * 「完全访问」模式：**边界整个不设**，任何路径都放行。
+   * 「完全访问」模式：**不设边界**，任何路径都放行。
    *
-   * 这不是给路径层开的后门，是让它和别的层用同一个定义。`full` 的语义就是
-   * 「不裁决」——同一个模式下 `run_command` 早就是全放行的（`session.ts` 的
-   * `decide` 一进来就返回 allowed，静态规则那层不跑），而 shell 里一个 `cd`
-   * 就出得去。路径层单独硬拦的结果不是「更安全」，是**两套边界**：
-   * 模型 `read_file` 被拒、转头 `run_command` 读到了，账本里有一次实证。
+   * 这不是路径层的后门，而是与其他层使用同一个定义。`full` 的语义是「不裁决」：
+   * 同一模式下 `run_command` 已全部放行（`session.ts` 的 `decide` 在入口处直接返回 allowed，
+   * 不执行静态规则），shell 中一个 `cd` 即可离开工作区。路径层单独拦截不会更安全，
+   * 只会形成**两套边界**：模型的 `read_file` 被拒后改用 `run_command` 读到同一文件，账本中有一次实际记录。
    *
-   * 也不新增暴露面：`full` 下能用 shell 读到的文件，本来就一样能读到。
+   * 也不新增暴露面：`full` 下能用 shell 读到的文件，本来同样能读到。
    */
   unrestricted?: boolean
   /**
    * 额外可读写的根目录，**必须是绝对路径**。
    *
-   * 相对路径的基准是进程 cwd，而 `qy` 可以从任何目录启动——
-   * 同一份配置在不同地方含义不同，那是配置项最坏的一种失败方式。
-   * 非绝对路径在配置体检期就会被指出来，这里再滤一道（防止绕过上游校验）。
+   * 相对路径的基准是进程 cwd，而 `qy` 可以从任何目录启动，
+   * 同一份配置在不同位置启动时含义不同，这是配置项最难排查的失败方式。
+   * 非绝对路径在配置检查阶段即会被指出，此处再过滤一次，防止绕过上游校验。
    */
   additional?: readonly string[]
   /**
    * 只读根目录（已安装技能的目录）。读取按与上面相同的真实路径判定放行；
-   * `resolveWritablePath` 不认这一组，写入落不进来。
+   * `resolveWritablePath` 不使用这一组，写入无法进入这些目录。
    */
   readOnly?: readonly string[]
 }
 
-/** 调用方可以只传工作区字符串——绝大多数地方没有额外根目录。 */
+/** 调用方可以只传工作区路径字符串：多数调用点没有额外根目录。 */
 export type RootsInput = string | WorkspaceRoots
 
 /**
- * 从 `ToolContext` 取根目录清单。
+ * 从 `ToolContext` 取得根目录清单。
  *
- * 参数写成结构类型而不是 `import type { ToolContext }`：这个模块是纯路径判定，
- * 不该为了一个两字段的读取把整个 agent 包拖进来。
+ * 参数写成结构类型而不是 `import type { ToolContext }`：本模块只做路径判定，
+ * 不应为读取几个字段引入整个 agent 包。
  *
- * 每个工具各写一遍 `{ workspaceRoot: ctx.workspaceRoot, additional: ... }` 的话，
- * 漏掉 `additional` 的那个工具会安静地退回「只认工作区」——而那正是
- * 「配了但只有一半管用」的来源。走同一个函数，漏不掉。
+ * 每个工具各自构造 `{ workspaceRoot: ctx.workspaceRoot, additional: ... }` 时，
+ * 遗漏 `additional` 的工具会退回只认工作区，形成配置只部分生效的问题。
+ * 统一经由本函数即可避免遗漏。
  */
 export function rootsOf(ctx: {
   workspaceRoot: string
@@ -138,13 +134,13 @@ export function rootsOf(ctx: {
 }
 
 /**
- * 校验并规范化配置里的额外根目录。
+ * 校验并规范化配置中的额外根目录。
  *
- * 唯一入口，配置体检和装配走同一份判定——两边各写一遍必然会分叉，
- * 而分叉的表现是「体检说没问题，运行时不生效」。
+ * 这是唯一入口，配置检查与装配使用同一份判定：两处各写一份必然出现分歧，
+ * 表现为「检查通过，运行时不生效」。
  *
- * 拒绝而不是静默修正：一条被静默忽略的额外目录，用户看到的是「配了却还是被拒」，
- * 而错误出在用户自己的配置行上，本可用一句提示说明。
+ * 拒绝而不是静默修正：被静默忽略的额外目录会让用户看到「已配置但仍被拒绝」，
+ * 而错误出在用户自己的配置项上，本可用一句提示说明。
  */
 export function normalizeAdditionalDirectories(raw: readonly string[] | undefined): {
   dirs: string[]
@@ -179,8 +175,8 @@ function normalizeRoots(input: RootsInput): WorkspaceRoots {
 }
 
 /**
- * 去掉只读根目录后的清单。写入目标与命令的工作目录只按它判定：
- * 命令工作目录落进技能目录的话，命令里的相对路径写入就写进了只读根。
+ * 去除只读根目录后的清单。写入目标与命令的工作目录只按此清单判定：
+ * 命令工作目录位于技能目录内时，命令中以相对路径写入的内容会进入只读根目录。
  */
 export function writableRoots(roots: RootsInput): WorkspaceRoots {
   const { readOnly: _readOnly, ...rest } = normalizeRoots(roots)
@@ -188,15 +184,15 @@ export function writableRoots(roots: RootsInput): WorkspaceRoots {
 }
 
 /**
- * 把工具参数里的相对路径解析成允许范围内的绝对路径。
+ * 把工具参数中的路径解析为允许范围内的绝对路径。
  *
- * `mustExist=false`（写入新文件）时目标可能还不存在，但**判定与返回值都必须是
- * 解析后的路径**：只解祖先、返回字面路径的话，`out` 是一条指向界外的软链时，
- * 边界查的是 `<工作区>`、写下去的却是 `out` 指向的地方——软链逃逸在写路径上原样成立。
- * 悬挂软链（指向一个还不存在的位置）也要按它指向的地方判，见 `resolveForWrite`。
+ * `mustExist=false`（写入新文件）时目标可能尚不存在，但**判定与返回值都必须是
+ * 解析后的路径**：只解析祖先并返回字面路径时，若 `out` 是指向边界外的软链，
+ * 边界检查的是 `<工作区>`，实际写入的却是 `out` 指向的位置，软链逃逸在写路径上依然成立。
+ * 悬挂软链（指向尚不存在的位置）同样按其指向判定，见 `resolveForWrite`。
  *
- * 额外根目录走的是**完全相同的一套判定**（先 realpath 再比对），不是另开一条
- * 宽松通道：一个指向清单内目录的软链，如果只按字面比较就能把整棵树带出来。
+ * 额外根目录使用**完全相同的判定**（先 realpath 再比对），不另设宽松路径：
+ * 只按字面比较时，借助软链即可访问清单外的整棵目录树。
  */
 export async function resolveInWorkspace(
   roots: RootsInput,
@@ -207,21 +203,21 @@ export async function resolveInWorkspace(
   // 从 file URL 解出的路径已是文件系统字面值，不再解码文件名中的百分号。
   const raw = opts.literal ? candidate : decodeSafely(candidate)
 
-  // 相对路径的基准永远是工作区，不是额外根目录——额外根目录只能用绝对路径够到。
-  // 否则 `read_file("notes.md")` 会变成「在若干个根里逐个试探」，
-  // 而命中哪一个取决于目录内容，同一句话两次可能读到不同的文件。
+  // 相对路径的基准始终是工作区，不是额外根目录；额外根目录只能用绝对路径访问。
+  // 否则 `read_file("notes.md")` 会在多个根目录中逐个尝试，
+  // 命中哪一个取决于目录内容，同一调用两次可能读到不同的文件。
   const joined = isAbsolute(raw) ? resolve(raw) : resolve(workspaceRoot, raw)
 
   /*
-   * **存在性不在这里判。** `realpath` 对「不存在」和「越界」抛的是同一个错，
-   * 在这里 catch 成 `PathEscapeError` 就是把「文件不存在」报成「没有权限」。
-   * 这条与下面几行给工作区根写的理由是同一条：那条 ENOENT 指向真正的问题，
-   * 换成「路径越界」只会把排查方向引到别处。
+   * **此处不判定存在性。** `realpath` 对「不存在」与「越界」抛出同一个错误，
+   * 在此处捕获为 `PathEscapeError` 会把「文件不存在」报告为「没有权限」。
+   * 理由与下方工作区根的处理相同：ENOENT 指向真正的问题，
+   * 改报「路径越界」会把排查方向引向别处。
    *
-   * 两条路因此都走 `resolveForWrite`——它对不存在的目标解析到最近的已存在祖先，
-   * 中间目录的软链照样解开，逃逸挡得住。存在性等边界判完再回答。
+   * 因此两种情形都经由 `resolveForWrite`：它把不存在的目标解析到最近的已存在祖先，
+   * 中间目录的软链同样被解析，逃逸可以被拦截。存在性在边界判定之后再检查。
    */
-  // 独占新建操作的是目录项本身：末段软链也占用名称，不能解析到其目标再创建。
+  // 独占新建操作的对象是目录项本身：末段软链也占用名称，不能解析到其目标后再创建。
   // 父目录仍解析软链并接受同一套工作区边界检查。
   const targetReal =
     opts.followFinalSymlink === false
@@ -229,18 +225,18 @@ export async function resolveInWorkspace(
       : await resolveForWrite(joined)
 
   /*
-   * 「完全访问」下不设边界。**解析照做、只跳过归属判定**——返回的仍然是
-   * 按本次操作解析后的路径，因为「判的和写的是同一个路径」这条与边界无关：
-   * 调用方拿它去记「本轮读过没有」，返回字面路径会让软链根下的新鲜度判定恒错。
+   * 「完全访问」下不设边界。**照常解析，只跳过归属判定**：返回的仍是
+   * 按本次操作解析后的路径，因为「判定的路径即写入的路径」与边界无关：
+   * 调用方用它记录本轮是否已读取，返回字面路径会使软链根目录下的新鲜度判定始终错误。
    */
   if (unrestricted) {
     if (opts.mustExist) await assertExists(targetReal, candidate)
     return targetReal
   }
 
-  // 工作区根解析不了是**装配错误**，让它原样抛：那条 ENOENT 指向真正的问题，
-  // 换成「路径越界」只会把排查方向引到用户输入上去。
-  // 额外根目录不同——用户配错一条不该让整次解析失败，跳过即可。
+  // 工作区根无法解析属于装配错误，原样抛出：ENOENT 指向真正的问题，
+  // 改报「路径越界」会把排查方向引向用户输入。
+  // 额外根目录不同：用户配错一条不应使整次解析失败，跳过即可。
   const rootReals = [await realpath(workspaceRoot)]
   for (const extra of additional ?? []) {
     const real = await realpath(extra).catch(() => null)
@@ -250,21 +246,21 @@ export async function resolveInWorkspace(
   for (const rootReal of rootReals) {
     if (isInside(rootReal, targetReal)) {
       /*
-       * **先判边界，再判存在。顺序是安全属性，不是风格。**
+       * **先判定边界，再判定存在性。该顺序是安全属性，不是风格。**
        *
-       * 反过来的话，「这个文件不存在」这句话本身就泄露了工作区外某个路径存不存在
-       * ——而挡住界外正是这一层的全部工作。
+       * 顺序相反时，「文件不存在」这一回复本身就泄露了工作区外某个路径是否存在，
+       * 而拦截边界外的访问正是这一层的职责。
        */
       if (opts.mustExist) await assertExists(targetReal, candidate)
-      // **判定用的和返回的是同一个路径。** 两者不同的话，判的是 A、写的是 B，
-      // 边界就只是看起来在那里；调用方按返回值记账时也会与读路径对不上
-      // （否则 `files.ts` 的「本轮读过没有」在软链根下恒判 stale）。
+      // 判定与返回使用同一个路径。两者不同时，判定的是 A、写入的是 B，
+      // 边界检查形同虚设；调用方按返回值记录读取状态时也会与读取路径不一致
+      // （`files.ts` 的本轮已读判定在软链根目录下会始终判为 stale）。
       return targetReal
     }
   }
 
-  // 只读根目录在可写根之后判：同一路径同时落在两类根里时按可写根返回。
-  // 判的是真实路径，技能目录里指向目录外的链接因此不放行。
+  // 只读根目录在可写根之后判定：同一路径同时位于两类根中时按可写根返回。
+  // 判定使用真实路径，因此技能目录中指向目录外的链接不放行。
   for (const extra of readOnly ?? []) {
     const real = await realpath(extra).catch(() => null)
     if (real !== null && isInside(real, targetReal)) {
@@ -277,14 +273,14 @@ export async function resolveInWorkspace(
 }
 
 /**
- * 解析一个「即将写入」的路径。
+ * 解析一个即将写入的路径。
  *
- * 三种情形，都要落到**它实际会写到的那个位置**：
- * 1. 目标已存在（含软链）——realpath 直接解开。
- * 2. 目标是**悬挂软链** —— realpath 会失败，但写下去照样跟随它。
- *    所以 lstat 到软链时按 readlink 的指向判，这是「写新文件」这条路上的真正破口。
- * 3. 目标确实不存在 —— 解析已存在的最近祖先，再把消耗掉的段接回去，
- *    这样中间目录的软链也已经解开。
+ * 三种情形都必须解析到**实际写入的位置**：
+ * 1. 目标已存在（含软链）：realpath 直接解析。
+ * 2. 目标是**悬挂软链**：realpath 会失败，但写入时仍会跟随它。
+ *    因此 readlink 成功时按其指向判定，这是写入新文件时的主要漏洞。
+ * 3. 目标确实不存在：解析已存在的最近祖先，再拼接剩余的路径段，
+ *    中间目录的软链因此也已解析。
  */
 async function resolveForWrite(target: string): Promise<string> {
   const real = await realpath(target).catch(() => null)
@@ -297,7 +293,7 @@ async function resolveForWrite(target: string): Promise<string> {
   return rest.length ? resolve(ancestor, ...rest) : ancestor
 }
 
-/** 目标真的在那儿吗。`mustExist` 的调用方靠它拿到「不存在」而不是「没权限」。 */
+/** 确认目标存在。`mustExist` 的调用方由此得到「不存在」而不是「没有权限」。 */
 async function assertExists(target: string, candidate: string): Promise<void> {
   const ok = await stat(target).then(
     () => true,
@@ -306,13 +302,13 @@ async function assertExists(target: string, candidate: string): Promise<void> {
   if (!ok) throw new PathNotFoundError(candidate)
 }
 
-/** 已存在的最近祖先目录，以及从它到目标之间被消耗掉的路径段。 */
+/** 已存在的最近祖先目录，以及从该目录到目标之间的剩余路径段。 */
 async function nearestExisting(target: string): Promise<{ real: string; rest: string[] }> {
   const rest: string[] = []
   let cur = target
   for (;;) {
     const parent = resolve(cur, '..')
-    if (parent === cur) return { real: cur, rest } // 到根了
+    if (parent === cur) return { real: cur, rest } // 已到达根目录
     rest.unshift(basename(cur))
     const real = await realpath(parent).catch(() => null)
     if (real !== null) return { real, rest }
@@ -323,13 +319,13 @@ async function nearestExisting(target: string): Promise<{ real: string; rest: st
 function isInside(root: string, target: string): boolean {
   if (target === root) return true
   const rel = relative(root, target)
-  // relative() 越界时会以 '..' 开头；跨盘符时会返回绝对路径。两种都要挡。
+  // relative() 在越界时以 '..' 开头，跨盘符时返回绝对路径，两种情况都必须拦截。
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
 }
 
 /**
- * 反复解码百分号转义，直到不再变化。
- * 单次解码挡不住 `%252e%252e%252f` 这类双重编码。
+ * 反复解码百分号转义，直到结果不再变化。
+ * 单次解码无法拦截 `%252e%252e%252f` 这类双重编码。
  */
 function decodeSafely(input: string): string {
   let cur = input
@@ -348,56 +344,56 @@ function decodeSafely(input: string): string {
 }
 
 /**
- * 工作区内**禁止写入**的几条路径。
+ * 工作区内**禁止写入**的路径。
  *
- * **判据是「会不会给自己加工具」，不是「在不在配置目录里」。** 工作区约束挡的是「越界」，而这些路径
- * 就在工作区**里面**，完全合法地通过了 `resolveInWorkspace`。挡它们是因为写进去等于**自我提权**：
+ * **判据是「写入后是否会为自身增加工具」，不是「是否位于配置目录」。** 工作区约束拦截的是越界，
+ * 而这些路径位于工作区**内部**，能合法通过 `resolveInWorkspace`。拦截它们是因为写入即**自我提权**：
  *
- * - `.agents/mcp.json` —— 配哪些 MCP server，写一行就多一批工具；
- * - `.qy/` —— `plugins/` 是装进来的插件本体（一段下次加载就会跑的代码），
+ * - `.agents/mcp.json`：配置 MCP server，写入一行即增加一批工具；
+ * - `.qy/`：`plugins/` 是已安装的插件本体（下次加载时就会执行的代码），
  *   `plugin-data/` 是插件的私有存储。
  *
- * **技能与记忆不在里面**，虽然它们同在 `.agents/` 下：一篇 SKILL.md 是一段提示词，
- * 一条记忆是一句事实，两者都不给模型任何新能力。按目录一刀切挡过它们，代价是
- * 实打实的——设置页的「新增技能」把话头递给模型，而模型写不了那个文件，
- * 那颗按钮等于点了没反应（B5）。
+ * **技能与记忆不在其中**，尽管它们同样位于 `.agents/` 下：一篇 SKILL.md 是一段提示词，
+ * 一条记忆是一条事实，两者都不给模型任何新能力。按整个目录拦截的代价是：
+ * 设置页的「新增技能」把请求交给模型，而模型无法写入该文件，
+ * 该按钮因此点击后无响应（B5）。
  *
- * 角色（`.qy/team.json` 的 `roles`）同理不给新能力，但它和门禁同在一个文件里，
- * 所以走 `define_role` 那条只动 `roles` 的写入路径，不是把整个 `.qy/` 放开。
+ * 角色（`.qy/team.json` 的 `roles`）同样不提供新能力，但它与门禁位于同一个文件中，
+ * 因此经由 `define_role` 只修改 `roles` 的写入路径，而不是放开整个 `.qy/`。
  *
- * **`full` 下不挡**（判据在 `resolveWritablePath` 的 `unrestricted`）：那个模式下
- * `run_command` 全放行，`echo > .agents/mcp.json` 一行就写进去了，只拦文件工具就是
- * 「文件工具拦、shell 不拦」的两套账。
+ * **`full` 下不拦截**（判据在 `resolveWritablePath` 的 `unrestricted`）：该模式下
+ * `run_command` 全部放行，`echo > .agents/mcp.json` 一行即可写入，只拦截文件工具会形成
+ * 「文件工具拦截、shell 不拦截」的两套账。
  *
- * **它挡不住什么。** `run_command` 里的路径不经过这里（`rm .qy/mcp.json` 照样能跑）。
- * 那条路只能靠 OS 沙箱，Windows 上暂时没有。
+ * **它无法拦截的情形。** `run_command` 中的路径不经过这里（`rm .qy/mcp.json` 仍能执行）。
+ * 这条路径只能依靠 OS 沙箱，Windows 上目前没有。
  *
- * **为什么 `.agents/` 也在里面。** 项目层的 MCP 配置搬到了 `.agents/`（跨客户端约定的那条路径）。
- * 搬家之后保护必须跟着搬，否则这条防线就只剩一个空目录名。
+ * **`.agents/` 下的 MCP 配置必须在其中。** 项目层的 MCP 配置位于 `.agents/`（跨客户端约定的路径），
+ * 保护必须覆盖该位置，否则这项防护只剩一个空目录名。
  *
- * **插件不在这里**：它只从 `~/.qywork/plugins/` 加载，工作区里没有插件目录，
- * 挡 `.agents/plugins` 是在保护一条没有加载方的路径。
+ * **插件不在其中**：插件只从 `~/.qywork/plugins/` 加载，工作区中没有插件目录，
+ * 拦截 `.agents/plugins` 等于保护一条没有加载方的路径。
  *
- * **记忆是例外，但不需要例外条款**：它也在 `.agents/memory/` 下，而
- * `write_memory` 走的是 `resolveInWorkspace` 不是这里——记忆本来就该由模型写，
- * 只是必须走那一条唯一的写入路径，而不是拿 `write_file` 直接改。
+ * **记忆无需例外条款**：它位于 `.agents/memory/` 下，而
+ * `write_memory` 经由 `resolveInWorkspace` 而不是本清单。记忆应由模型写入，
+ * 但必须经由这条唯一的写入路径，而不是用 `write_file` 直接修改。
  */
 export const PROTECTED_DIRS: readonly string[] = ['.qy', '.agents/mcp.json']
 
 /**
- * **模型**遍历工作区时跳过的噪音目录——依赖树、构建产物、缓存。
+ * **模型**遍历工作区时跳过的噪音目录：依赖树、构建产物、缓存。
  *
- * **为什么必须是一份。** 模型侧三处消费它：`tools/search.ts`（glob / grep）、`tools/files.ts`（list_dir）
- * 与 `tools/workspace-watch.ts`（命令改了哪些文件）。各抄一份的话会漂——实测漂到过 13 / 12 / 11 条。
- * **后果不是不整洁，是几处对「这个目录存不存在」给出不同答案**：`list_dir` 把 `coverage/` 列出来、`grep` 又搜不进去，模型据此去读一份构建产物
- * 当源码，或者报告「在 coverage/lcov-report/x.html 里找到了」。
+ * **必须只有一份。** 模型侧三处使用它：`tools/search.ts`（glob / grep）、`tools/files.ts`（list_dir）
+ * 与 `tools/workspace-watch.ts`（命令修改了哪些文件）。各自复制一份必然产生分歧，
+ * 使各处对「该目录是否存在」给出不同答案：`list_dir` 列出 `coverage/` 而 `grep` 不搜索它，
+ * 模型据此把构建产物当作源码读取，或报告「在 coverage/lcov-report/x.html 中找到」。
  *
- * **界面文件树不用它**（`server/files.ts`）：那是用户自己的文件浏览器，磁盘上
- * 有什么就列什么。不一致的方向只允许是「界面比模型看得多」——反过来用户就
- * 没法核对模型说的话。
+ * **界面文件树不使用它**（`server/files.ts`）：那是用户自己的文件浏览器，磁盘上
+ * 有什么就列出什么。两者不一致时只允许界面比模型看到的多，否则用户
+ * 无法核对模型的说法。
  *
- * 它和 `PROTECTED_DIRS` 不是一回事，不要合并：那份是**安全边界**（挡自我提权），
- * 这份是**噪音过滤**（省 token）。跳过噪音目录不构成任何保护。
+ * 它与 `PROTECTED_DIRS` 用途不同，不要合并：后者是**安全边界**（拦截自我提权），
+ * 本清单是**噪音过滤**（节省 token）。跳过噪音目录不构成任何保护。
  */
 export const IGNORED_DIRS: ReadonlySet<string> = new Set([
   'node_modules',
@@ -419,23 +415,23 @@ export class ProtectedPathError extends Error {
   constructor(readonly attempted: string) {
     super(
       `拒绝写入 ${attempted}：该目录保存的是权限与扩展配置，` +
-        `改它等于给自己加工具。需要改请让用户手动改。`,
+        `修改它等同于为自身添加工具。如需修改，请由用户手动修改。`,
     )
     this.name = 'ProtectedPathError'
   }
 }
 
 /**
- * 这个已解析的绝对路径是不是落在受保护目录里。
+ * 判断已解析的绝对路径是否位于受保护目录内。
  *
- * 入参必须是 `resolveInWorkspace` 的输出——在原始参数上判等于把
- * `..` 和符号链接的活又干一遍，而那是已经做过且容易做错的事。
+ * 入参必须是 `resolveInWorkspace` 的输出：在原始参数上判定等于重新处理一遍
+ * `..` 与符号链接，而这正是已经完成且容易出错的步骤。
  */
 export function isProtectedPath(workspaceRoot: string, resolved: string): boolean {
   const rel = relative(workspaceRoot, resolved)
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false
-  // 逐段比，不用字符串前缀：`.qyX` 不在 `.qy` 目录下，
-  // 而 `startsWith` 会把它一起挡掉。
+  // 逐段比较，不用字符串前缀：`.qyX` 不在 `.qy` 目录下，
+  // 而 `startsWith` 会把它一并拦截。
   const parts = rel.split(sep)
   return PROTECTED_DIRS.some((p) => {
     const want = p.split('/')
@@ -444,14 +440,14 @@ export function isProtectedPath(workspaceRoot: string, resolved: string): boolea
 }
 
 /**
- * 写路径解析：先过根目录约束，再挡受保护目录。
+ * 写入路径解析：先经过根目录约束，再拦截受保护目录。
  *
- * `.qy/` 的保护**只按工作区判**，与额外根目录无关——它是一条工作区内的
- * 路径判定。额外根目录再多也不会让 `<工作区>/.qy/` 变得可写。
+ * `.qy/` 的保护**只按工作区判定**，与额外根目录无关：它是工作区内的
+ * 路径判定。额外根目录再多也不会使 `<工作区>/.qy/` 变为可写。
  *
- * 「完全访问」下这一层也不设：它挡的是「给自己加工具」，而同一个模式下模型
- * 手里的 `run_command` 是全放行的，`echo > .agents/x` 一行就写进去了。
- * 留着只会变成又一处「文件工具拦、shell 不拦」的两套账。
+ * 「完全访问」下不设这一层：它拦截的是「为自身添加工具」，而同一模式下模型
+ * 的 `run_command` 全部放行，`echo > .agents/x` 一行即可写入。
+ * 保留它只会形成又一处「文件工具拦截、shell 不拦截」的两套账。
  */
 export async function resolveWritablePath(
   roots: RootsInput,
@@ -468,11 +464,11 @@ export async function resolveWritablePath(
 }
 
 /**
- * 展示给用户/模型的路径。
+ * 展示给用户与模型的路径。
  *
- * 工作区内用相对形式（短、稳定、不泄露绝对路径）。**工作区外则原样给绝对路径**——
- * 额外根目录下的文件算出来是 `../../别处/x.ts` 那种形状，既读不懂，
- * 拿去回填给工具还会因为基准不同而指向别的地方。
+ * 工作区内使用相对形式（简短、稳定、不泄露绝对路径）。**工作区外原样返回绝对路径**：
+ * 额外根目录下的文件按相对形式计算会得到 `../../别处/x.ts`，既难以阅读，
+ * 回传给工具时还会因基准不同而指向其他位置。
  */
 export function displayPath(workspaceRoot: string, absolute: string): string {
   const rel = relative(workspaceRoot, absolute)

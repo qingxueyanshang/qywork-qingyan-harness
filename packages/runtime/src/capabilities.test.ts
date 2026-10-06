@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { HostCallContext } from '@qywork/plugins'
 import { HOST_CAPABILITIES, makeCapabilityHandler } from './capabilities.ts'
 
-/** 「把某个环境变量原样打出来」。命令一律跑 bash（`commandShell()`），所以只有一种写法。 */
+/** 原样输出某个环境变量的命令。命令一律由 bash 执行（`commandShell()`），因此只有一种写法。 */
 const echoEnv = (name: string) => `echo "[$${name}]"`
 
 async function fixture() {
@@ -21,7 +21,7 @@ async function fixture() {
   }
 }
 
-/** 一次调用的可信身份。宿主能力只读它，不读插件参数里自报的那些。 */
+/** 一次调用的可信身份。宿主能力只读取该身份，不读取插件参数中自行声明的身份。 */
 function context(root: string, over: Partial<HostCallContext> = {}): HostCallContext {
   return {
     pluginId: 'test.plugin',
@@ -35,11 +35,11 @@ function context(root: string, over: Partial<HostCallContext> = {}): HostCallCon
 }
 
 /*
- * 这几条能力回什么。
+ * 各项能力的返回值。
  *
- * `CapabilityHandler` 的返回是 `Promise<unknown>` 且**有意如此**：它是一条 JSON RPC
- * 边界，每个方法回的形状不同，插件那侧也只拿得到 JSON。所以断言前在这里收窄——
- * 收窄写错了，下面那条断言就会红，这正是测试该干的事。
+ * `CapabilityHandler` 的返回类型是 `Promise<unknown>`，且**有意如此**：它是一条 JSON RPC
+ * 边界，每个方法返回的形状不同，插件侧也只能取得 JSON。因此断言前在此处收窄类型：
+ * 收窄写错时，下方的断言会失败，这正是测试应有的作用。
  */
 interface FsRead {
   content: string
@@ -57,7 +57,7 @@ interface StorageGet {
 }
 
 describe('fs 能力', () => {
-  test('读文本', async () => {
+  test('读取文本', async () => {
     const { call } = await fixture()
     expect(await call('fs.read', { path: 'a.txt' })).toEqual({
       content: '甲乙丙',
@@ -65,13 +65,13 @@ describe('fs 能力', () => {
     })
   })
 
-  test('读二进制走 base64', async () => {
+  test('读取二进制使用 base64', async () => {
     const { call } = await fixture()
     const r = (await call('fs.read', { path: 'a.txt', encoding: 'base64' })) as FsRead
     expect(Buffer.from(r.content, 'base64').toString('utf8')).toBe('甲乙丙')
   })
 
-  test('列目录标出类型', async () => {
+  test('列出目录时标明类型', async () => {
     const { call } = await fixture()
     const r = (await call('fs.list', { path: '.' })) as FsList
     expect(r.entries.find((e) => e.name === 'sub')?.kind).toBe('dir')
@@ -79,7 +79,7 @@ describe('fs 能力', () => {
     expect(r.truncated).toBe(false)
   })
 
-  test('写入后能读回，父目录自动创建', async () => {
+  test('写入后可读取，父目录自动创建', async () => {
     const { root, call } = await fixture()
     await call('fs.write', { path: 'deep/nested/c.txt', content: 'x' })
     expect(await readFile(join(root, 'deep/nested/c.txt'), 'utf8')).toBe('x')
@@ -91,49 +91,49 @@ describe('fs 能力', () => {
     expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('甲乙丙丁')
   })
 
-  test('删文件可以，删目录被拒 —— 后果差着数量级', async () => {
+  test('允许删除文件，拒绝删除目录：两者的后果相差数个量级', async () => {
     const { call } = await fixture()
     expect(await call('fs.delete', { path: 'sub/b.txt' })).toMatchObject({ deleted: 'sub/b.txt' })
     expect(call('fs.delete', { path: 'sub' })).rejects.toThrow('拒绝删除目录')
   })
 
-  test('stat 给类型与大小', async () => {
+  test('stat 返回类型与大小', async () => {
     const { call } = await fixture()
     expect(await call('fs.stat', { path: 'a.txt' })).toMatchObject({ kind: 'file', size: 9 })
   })
 })
 
-describe('工作区边界 —— 权限说「能读工作区」不等于能读 ~/.ssh', () => {
+describe('工作区边界：可读取工作区的权限不等于可读取 ~/.ssh', () => {
   for (const method of ['fs.read', 'fs.stat', 'fs.delete']) {
-    test(`${method} 挡住 ..`, async () => {
+    test(`${method} 拒绝 ..`, async () => {
       const { call } = await fixture()
       expect(call(method, { path: '../../../etc/passwd' })).rejects.toThrow()
     })
   }
 
-  test('fs.write 挡住 ..（目标还不存在也要挡）', async () => {
+  test('fs.write 拒绝 ..（目标尚不存在时同样拒绝）', async () => {
     const { call } = await fixture()
     expect(call('fs.write', { path: '../escaped.txt', content: 'x' })).rejects.toThrow()
   })
 
-  test('挡住双重 URL 编码', async () => {
+  test('拒绝双重 URL 编码', async () => {
     const { call } = await fixture()
     expect(call('fs.read', { path: '%252e%252e%252fescaped' })).rejects.toThrow()
   })
 
-  test('挡住绝对路径', async () => {
+  test('拒绝绝对路径', async () => {
     const { call } = await fixture()
     expect(call('fs.read', { path: 'C:/Windows/win.ini' })).rejects.toThrow()
   })
 
-  test('exec 的 cwd 也过同一道闸', async () => {
+  test('exec 的 cwd 经过同一项边界检查', async () => {
     const { call } = await fixture()
     expect(call('exec.run', { command: 'echo x', cwd: '../..' })).rejects.toThrow()
   })
 })
 
 describe('配额', () => {
-  test('超大文件拒绝读，而不是读进内存再说', async () => {
+  test('拒绝读取超大文件，不先读入内存', async () => {
     const { root, call } = await fixture()
     await writeFile(join(root, 'big.bin'), Buffer.alloc(5 * 1024 * 1024), 'utf8')
     expect(call('fs.read', { path: 'big.bin' })).rejects.toThrow('上限')
@@ -147,26 +147,26 @@ describe('配额', () => {
   })
 })
 
-describe('exec —— 绝不透传宿主环境变量', () => {
-  test('能跑命令并拿到退出码与输出', async () => {
+describe('exec：不透传宿主环境变量', () => {
+  test('能执行命令并取得退出码与输出', async () => {
     const { call } = await fixture()
     const r = (await call('exec.run', { command: 'echo hello' })) as ExecRun
     expect(r.exitCode).toBe(0)
     expect(r.stdout).toContain('hello')
   })
 
-  test('非零退出码如实回报，不当异常抛', async () => {
+  test('非零退出码如实返回，不作为异常抛出', async () => {
     const { call } = await fixture()
     expect(((await call('exec.run', { command: 'exit 3' })) as ExecRun).exitCode).toBe(3)
   })
 
   /**
-   * 这条是整个插件隔离的成败所在。
+   * 本条决定插件隔离是否成立。
    *
-   * 宿主特意把插件进程的 env 洗干净（不给 API Key），如果插件转手能
-   * exec 出一句 echo $ANTHROPIC_API_KEY 就全部落空。
+   * 宿主专门清理了插件进程的 env（不提供 API Key）；若插件能经由
+   * exec 执行 echo $ANTHROPIC_API_KEY，这层清理即失效。
    */
-  test('宿主的密钥类环境变量在子进程里读不到', async () => {
+  test('宿主的密钥类环境变量在子进程中无法读取', async () => {
     process.env.QYWORK_CAP_SECRET = 'super-secret-value'
     try {
       const { call } = await fixture()
@@ -186,7 +186,7 @@ describe('exec —— 绝不透传宿主环境变量', () => {
 })
 
 describe('插件私有存储', () => {
-  test('存了能取回', async () => {
+  test('写入后可取回', async () => {
     const { call } = await fixture()
     await call('storage.set', { key: 'k', value: { n: 1 } })
     expect(await call('storage.get', { key: 'k' })).toMatchObject({
@@ -195,19 +195,19 @@ describe('插件私有存储', () => {
     })
   })
 
-  test('没存过时 exists=false 而不是抛', async () => {
+  test('未写入时返回 exists=false 而不是抛错', async () => {
     const { call } = await fixture()
     expect(await call('storage.get', { key: '没有' })).toMatchObject({ value: null, exists: false })
   })
 
-  test('删除后取不到', async () => {
+  test('删除后无法取得', async () => {
     const { call } = await fixture()
     await call('storage.set', { key: 'k', value: 1 })
     expect(await call('storage.delete', { key: 'k' })).toMatchObject({ deleted: true })
     expect(await call('storage.get', { key: 'k' })).toMatchObject({ exists: false })
   })
 
-  test('两个插件的存储互相看不见', async () => {
+  test('两个插件的存储互相不可见', async () => {
     const { call } = await fixture()
     await call('storage.set', { key: 'k', value: '甲的' }, { pluginId: 'plugin.a' })
     await call('storage.set', { key: 'k', value: '乙的' }, { pluginId: 'plugin.b' })
@@ -219,29 +219,29 @@ describe('插件私有存储', () => {
     ).toBe('乙的')
   })
 
-  test('list 只列自己的 key', async () => {
+  test('list 只列出本插件的 key', async () => {
     const { call } = await fixture()
     await call('storage.set', { key: 'x', value: 1 }, { pluginId: 'plugin.a' })
     await call('storage.set', { key: 'y', value: 1 }, { pluginId: 'plugin.b' })
     expect(await call('storage.list', {}, { pluginId: 'plugin.a' })).toEqual({ keys: ['x'] })
   })
 
-  test('id 里的路径穿越直接拒绝，不试图消毒后继续', async () => {
+  test('id 中的路径穿越直接拒绝，不尝试清理后继续', async () => {
     const { call } = await fixture()
-    // 合法 id 在 manifest 解析期就限死了，能走到这里说明上游校验被绕过——
-    // 那种情况下「尽力消毒后继续」是错的，应该停。
+    // 合法 id 在 manifest 解析阶段已经限定，执行到此处说明上游校验被绕过；
+    // 此时清理后继续执行是错误的，应当终止。
     expect(call('storage.set', { key: 'k', value: 1 }, { pluginId: '../../evil' })).rejects.toThrow(
       '非法插件 id',
     )
   })
 
-  test('斜杠被消掉而不是变成子目录', async () => {
+  test('斜杠被移除而不是成为子目录', async () => {
     const { root, call } = await fixture()
     await call('storage.set', { key: 'k', value: 1 }, { pluginId: 'a/b' })
     expect(await Bun.file(join(root, '.store', 'a_b.json')).exists()).toBe(true)
   })
 
-  test('存储文件坏了当空处理，不让插件起不来', async () => {
+  test('存储文件损坏时按空处理，不导致插件无法启动', async () => {
     const { root, call } = await fixture()
     await mkdir(join(root, '.store'), { recursive: true })
     await writeFile(join(root, '.store', 'test.plugin.json'), '{ 不是 json', 'utf8')
@@ -261,13 +261,13 @@ describe('插件私有存储', () => {
   })
 })
 
-describe('net.fetch 过 SSRF 闸', () => {
+describe('net.fetch 经过 SSRF 防护', () => {
   test('内网地址被拒', async () => {
     const { call } = await fixture()
     expect(call('net.fetch', { url: 'http://127.0.0.1:1/x' })).rejects.toThrow()
   })
 
-  test('云元数据端点被拒 —— 这是 SSRF 最经典的目标', async () => {
+  test('云元数据端点被拒：这是 SSRF 最典型的目标', async () => {
     const { call } = await fixture()
     expect(call('net.fetch', { url: 'http://169.254.169.254/latest/meta-data/' })).rejects.toThrow()
   })
@@ -277,22 +277,22 @@ describe('net.fetch 过 SSRF 闸', () => {
     expect(call('net.fetch', { url: 'file:///etc/passwd' })).rejects.toThrow()
   })
 
-  test('缺 url 被拒', async () => {
+  test('缺少 url 被拒', async () => {
     const { call } = await fixture()
     expect(call('net.fetch', {})).rejects.toThrow('缺少 url')
   })
 })
 
 describe('未登记的方法', () => {
-  test('明确抛出，不返回 null —— 返回 null 在插件侧是一次成功调用', async () => {
+  test('明确抛错，不返回 null：返回 null 在插件侧表现为一次成功调用', async () => {
     const { call } = await fixture()
     expect(call('fs.chmod', { path: 'a.txt' })).rejects.toThrow('尚未实现')
   })
 
-  test('能力清单与实现是同一份事实', async () => {
+  test('能力清单与实现一致', async () => {
     const { call } = await fixture()
     for (const m of HOST_CAPABILITIES) {
-      // 只要不是「尚未实现」就说明这条在 switch 里有分支；参数错随便报什么都行。
+      // 错误不是「尚未实现」即说明该方法在 switch 中有分支；参数错误时报告任何错误均可。
       const err = await call(m, {}).catch((e: Error) => e.message)
       expect(String(err)).not.toContain('尚未实现')
     }

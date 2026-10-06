@@ -1,8 +1,8 @@
 /**
  * 中间资源登记。
  *
- * 与 `content.ts` 的分工：正文库存**字节**，这里存**事实**。
- * 两者跨库，没有外键，所以顺序是硬约束：**先在正文库定稿 blob，再往这里登记。**
+ * 与 `content.ts` 的分工：正文库存储字节，此处存储事实。
+ * 两者位于不同的库，没有外键，因此顺序是硬约束：先在正文库定稿 blob，再在此处登记。
  */
 
 import { newResourceId, type ResourceId } from '@qywork/core'
@@ -13,17 +13,17 @@ import type { IntermediateResourceRow } from './schema.ts'
 export type ResourceStatus = 'complete' | 'partial' | 'failed'
 
 /**
- * 覆盖事实：模型看到的那一小段，相对于完整正文是什么位置、占多少。
+ * 覆盖范围：模型看到的片段在完整正文中的位置与占比。
  *
- * 这几个数字**必须交给模型**。只给一段截断正文而不说「这是 2.3 MB 里的前 4 KB」，
- * 模型会把它当成全部，然后基于不完整的信息下结论——那比不给它更糟。
+ * 这些数值必须提供给模型。只提供截断后的正文而不说明「这是 2.3 MB 中的前 4 KB」时，
+ * 模型会将其视为全部内容，并基于不完整的信息下结论，后果比不提供正文更严重。
  */
 export interface ResourceCoverage {
   /** 投递给模型的字节数。 */
   deliveredBytes?: number
   /** 完整正文的字节数。 */
   totalBytes?: number
-  /** 是否只投了一部分。 */
+  /** 是否只投递了一部分。 */
   truncated?: boolean
   /** 产生它的查询/命令，供模型判断这段内容的语义。 */
   query?: string
@@ -37,7 +37,7 @@ export interface IntermediateResource {
   toolName: string
   sourceType: string
   status: ResourceStatus
-  /** null = 没有定稿的正文（抓取失败/中途断开）。登记仍然保留。 */
+  /** null 表示没有定稿的正文（获取失败或中途断开）。登记记录仍然保留。 */
   contentHash: string | null
   sizeBytes: number
   mimeType: string | null
@@ -113,8 +113,8 @@ export function listResourcesForRun(store: Store, runId: string): IntermediateRe
 /**
  * 全量引用集合，供正文库 GC。
  *
- * **必须是全量**：`ContentStore.collectGarbage` 会删掉不在集合里的一切，
- * 传某个会话的局部引用等于把别的会话的正文全删了。
+ * 必须是全量集合：`ContentStore.collectGarbage` 会删除集合之外的全部正文，
+ * 只传某个会话的引用会删除其他会话的全部正文。
  */
 export function referencedContentHashes(store: Store): string[] {
   return store.db

@@ -55,8 +55,8 @@ async function attempt(
 ): Promise<{ step: ProbeStep; thought: boolean; verdict: Verdict; effortRejected?: boolean }> {
   let thought = false
   try {
-    // 探针必须把候选值真正发出去；运行时的目录白名单不能提前过滤它。
-    // 非法值只在这次局部请求中越过类型约束，永不进入探测档位或持久化结果。
+    // 探针必须实际发送候选值；运行时的目录白名单不得提前过滤候选值。
+    // 非法值只在本次局部请求中越过类型约束，永不进入探测档位或持久化结果。
     const effort = level as EffortLevel | undefined
     const adapter = buildAdapter(
       level === undefined
@@ -213,7 +213,7 @@ async function probeEffort(
             !selected.thinkingObserved)))
     )
       selected = result
-    // 临时错误不作为更换参数格式的依据；完整正向证据无需继续试其他格式。
+    // 临时错误不作为更换参数格式的依据；取得完整的正向证据后无需继续尝试其他格式。
     if (interrupted) {
       selected.inconclusive = ['effort']
       break

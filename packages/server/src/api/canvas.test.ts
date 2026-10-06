@@ -1,8 +1,8 @@
 /**
- * 覆盖 `api/canvas.ts`：入参核对、界面发起的生成不挂在请求上、花费记成无轮次的账、用量页列得出、
- * 发送前的花费、模型行只下发有界面名的参数（`api/conversations.ts` 的 `MediaModelRow.params`）。
+ * 覆盖 `api/canvas.ts`：入参校验、界面发起的生成不阻塞请求、花费记为无轮次的账目并在用量页列出、
+ * 发送前的花费、模型行只下发带界面名称的参数（`api/conversations.ts` 的 `MediaModelRow.params`）。
  *
- * 生成走真的端口与百炼适配器，端点是本机假服务：它先扣住响应，测试据此确认请求在生成结束之前就返回了。
+ * 生成使用真实的端口与百炼适配器，端点是本机模拟服务：该服务暂缓返回响应，测试据此确认请求在生成结束之前已经返回。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -119,7 +119,7 @@ function call(d: ApiDeps & { workspaceId: string }, path: string, body?: unknown
 }
 
 describe('画布接口', () => {
-  test('操作不合法回 422，文件字节不变', async () => {
+  test('操作不合法时返回 422，文件字节不变', async () => {
     const { d, root } = await setup()
     const before = await readFile(join(root, PATH), 'utf8')
     const bad = await call(d, '/api/canvas/ops', {
@@ -135,7 +135,7 @@ describe('画布接口', () => {
     expect(await readFile(join(root, PATH), 'utf8')).toBe(before)
   })
 
-  test('上传：原始字节落进 uploads/ 并以给定点为中心加节点；缺位置回 422 且不落盘', async () => {
+  test('上传：原始字节写入 uploads/ 并以给定点为中心添加节点；缺少位置时返回 422 且不写入磁盘', async () => {
     const { d, root } = await setup()
     const upload = (query: string) => {
       const url = `http://127.0.0.1/api/canvas/upload?${query}&ws=${d.workspaceId}`
@@ -162,7 +162,7 @@ describe('画布接口', () => {
     expect(doc.nodes.filter((n) => n.path === 'uploads/a.jpg')).toHaveLength(0)
   })
 
-  test('时间线导出：开始拿会话号、按位置写字节、完成落进 generated/；写入位置与会话号不合法回 422', async () => {
+  test('时间线导出：开始时取得会话号、按位置写入字节、完成时写入 generated/；写入位置与会话号不合法时返回 422', async () => {
     const { d, root } = await setup()
     const made = await call(d, '/api/canvas/ops', {
       path: PATH,
@@ -193,7 +193,7 @@ describe('画布接口', () => {
     expect(new Uint8Array(await readFile(join(root, r.path)))).toEqual(mp4)
   })
 
-  test('运行立刻返回；生成完成后账本多一行无轮次无会话、带项目的 media 账，用量页列得出', async () => {
+  test('运行立即返回；生成完成后账本新增一行无轮次、无会话、带项目的 media 账目，并在用量页列出', async () => {
     const { d, root, nodeId, done } = await setup()
     held = new Promise((resolve) => {
       release = resolve
@@ -201,7 +201,7 @@ describe('画布接口', () => {
     const res = await call(d, '/api/canvas/run', { path: PATH, nodeId })
     expect(res.status).toBe(200)
     const view = (await res.json()) as CanvasView
-    // 端点还扣着响应，接口已经返回：生成不挂在这次请求上。
+    // 端点尚未返回响应，接口已经返回：生成不阻塞本次请求。
     expect(view.states[nodeId]).toMatchObject({ state: 'running' })
     release()
     await done()
@@ -231,7 +231,7 @@ describe('画布接口', () => {
     ).toEqual(Buffer.from(JPEG))
   })
 
-  test('发送前的花费：万相 3.0 720P 5 秒 ¥3.00；按接口档位计价的回 null', async () => {
+  test('发送前的花费：万相 3.0 720P 5 秒 ¥3.00；按接口档位计价的返回 null', async () => {
     const { d } = await setup()
     const video = (await (
       await call(d, '/api/canvas/quote', {
@@ -247,7 +247,7 @@ describe('画布接口', () => {
     expect(image.quote).toBeNull()
   })
 
-  test('模型行只下发标了界面名的参数，不带给大模型看的说明', async () => {
+  test('模型行只下发标有界面名称的参数，不包含给模型的说明', async () => {
     const { d } = await setup()
     const models = (await (await call(d, '/api/models')).json()) as ModelsResponse
     const wan = models.media.find((m) => m.id === 'wan3.0-video')!

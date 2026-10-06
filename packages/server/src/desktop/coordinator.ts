@@ -1,27 +1,27 @@
 /**
  * 电脑控制协调器：应用进程级对象，由 `serve` 装配。
  *
- * 它只执行已经绑定身份的操作——不规划任务，不存第二份「任务进行到哪」。
+ * 只执行已绑定身份的操作，不规划任务，不另存任务进度。
  *
- * 五条边界：
+ * 边界：
  *
- * 1. **OS 句柄不出这一层。** 模型拿到的是 `dw_N` 这样的不透明 id；句柄、pid 与进程
- *    启动时刻记在这里，发请求时才拼成目标身份交给宿主。
- * 2. **观察按窗口留一份。** 同一个窗口再观察一次，上一份编号即作废；宿主换代际
- *    （重连、换 worker）时全部作废。动作只认还在表里的编号。每份观察只含同一次读取
- *    的节点，动作与等待之后按它的读取范围整份重读，不与别的读取拼接。
- * 3. **占用是执行者级的，权威只有这里一处。** 物理桌面只有一个，同一时刻只有一个
- *    执行者能在窗口上观察与动作；同时要桌面的其余执行者排队等它释放。宿主那侧不记
- *    谁在占用，它只按请求自己带的身份派发。
- * 4. **释放中仍占用。** 顺序固定：禁新派发 → 撤掉排队中的自己 → 结清在途调用 →
- *    让宿主撤销尚未派发的请求。宿主确认这个执行者名下已无在执行的请求之后，才让
- *    下一个进来；确认不了就整条挡住，等宿主换代际。
- * 5. **「正在操作哪个应用」跟随占用。** 只有持有桌面的那个执行者写得动它；它释放、
- *    宿主断开或换代际都要清回 `null`。
- * 6. **控件编号在这里发放，也只在这里翻译。** 宿主的 ref 带下标路径与身份段，只用于
- *    宿主重新定位控件；端口交出去的是按控件身份分配的短编号 `e<n>`。进宿主的每一处按
- *    本次观察的对应表翻回完整 ref，宿主回包里的 ref 在 `#absorb` 换成短编号。工具层
- *    不翻译、不另存对应关系。
+ * 1. **OS 句柄不出本层。** 模型取得的是 `dw_N` 形式的不透明 id；句柄、pid 与进程
+ *    启动时刻记录在本模块，发送请求时才组装为目标身份交给宿主。
+ * 2. **每个窗口只保留一份观察。** 同一窗口再次观察后，上一份编号作废；宿主代际变化
+ *    （重连、更换 worker）时全部作废。动作只接受表中仍存在的编号。每份观察只含同一次读取
+ *    的节点，动作与等待之后按其读取范围整份重新读取，不与其他读取结果拼接。
+ * 3. **占用以执行者为单位，权威只在本模块。** 物理桌面只有一个，同一时刻只有一个
+ *    执行者能在窗口上观察与执行动作；同时请求桌面的其余执行者排队等待释放。宿主一侧
+ *    不记录占用者，只按请求自带的身份派发。
+ * 4. **释放过程中仍视为占用。** 顺序固定：禁止新派发 → 撤销自身的排队 → 结清在途调用 →
+ *    请宿主撤销尚未派发的请求。宿主确认该执行者名下已无执行中的请求后，才放行下一个
+ *    执行者；无法确认时阻塞整个桌面，直到宿主代际变化。
+ * 5. **「正在操作的应用」跟随占用。** 只有持有桌面的执行者能写入该值；执行者释放、
+ *    宿主断开或代际变化时都清为 `null`。
+ * 6. **控件编号只在本模块发放与转换。** 宿主的 ref 含下标路径与身份段，只用于
+ *    宿主重新定位控件；端口交出的是按控件身份分配的短编号 `e<n>`。发往宿主的每一处按
+ *    本次观察的对应表转换回完整 ref，宿主回包中的 ref 在 `#absorb` 中替换为短编号。
+ *    工具层不做转换，也不另存对应关系。
  */
 
 import type {
@@ -60,48 +60,48 @@ import {
   type NativeDesktopHost,
 } from './bridge.ts'
 
-/** 读树的默认上限。请求里没给时用它，给了也不超过工具那侧声明的上限。 */
+/** 读取控件树的默认上限。请求未指定时使用；指定时也不超过工具一侧声明的上限。 */
 const DEFAULT_MAX_NODES = 1500
 const DEFAULT_MAX_DEPTH = 20
-/** 读树的时间预算。UIA 这类跨进程接口没有请求级硬上界，只能给采集端一个预算。 */
+/** 读取控件树的时间预算。UIA 等跨进程接口没有请求级的硬性上限，只能为采集端设定预算。 */
 const READ_TREE_BUDGET_MS = 4_000
-/** 等待时两次判定之间至少隔多久。判定在宿主那一侧做，这个数只是它的轮询下界。 */
+/** 等待时两次判定的最小间隔。判定在宿主一侧执行，此值只是其轮询下限。 */
 const WAIT_POLL_MS = 250
 /**
- * 等待请求的期限比调用方要的时长多出来的那一段。
+ * 等待请求的期限超出调用方所请求时长的部分。
  *
- * 宿主到点之后还要按读取范围重读一次才回执，这一段要盖得住那次读取；给短了的话，本地的
- * 超时会先到，一次正常到期的等待会被记成宿主不可用。
+ * 宿主在到期后还要按读取范围重新读取一次才回执，这部分时长必须覆盖该次读取；过短时
+ * 本地超时先触发，一次正常到期的等待会被记为宿主不可用。
  */
 const WAIT_SLACK_MS = READ_TREE_BUDGET_MS + 2_000
 /**
  * 撤销请求的期限。
  *
- * 它的回执说的是「这个执行者名下还有没有可能正在执行的请求」，所以要给宿主留出足够
- * 时间等手上那一次调用收完：读树的预算是 `READ_TREE_BUDGET_MS`，再加一次 UIA 连接
- * 超时的余量。给得太短的话，每次在读树中途停止都会让桌面挡到宿主换代际为止。
+ * 其回执回答「该执行者名下是否还有可能正在执行的请求」，因此必须给宿主留出足够
+ * 时间等待当前调用结束：读取控件树的预算是 `READ_TREE_BUDGET_MS`，另加一次 UIA 连接
+ * 超时的余量。期限过短时，每次在读取控件树中途停止都会使桌面阻塞到宿主代际变化为止。
  */
 const CANCEL_DEADLINE_MS = READ_TREE_BUDGET_MS + 4_000
 /**
- * 一次采集等一帧的上限。
+ * 一次采集等待一帧的上限。
  *
- * WGC 的帧由合成器推过来，实测一两个合成周期就到；退路的 `PrintWindow` 是同步调用。
- * 给到 3 秒是留给挂起的应用，到期即如实回失败。
+ * WGC 的帧由合成器推送，实测一到两个合成周期即可到达；后备的 `PrintWindow` 是同步调用。
+ * 3 秒的上限为挂起的应用预留，到期即如实返回失败。
  */
 const CAPTURE_BUDGET_MS = 3_000
 /**
- * 一张图编码之后的字节上限。
+ * 单张图像编码后的字节上限。
  *
- * 宿主连接的单帧上限是 8 MiB，base64 把字节数放大到 4/3，因此 4 MiB 的 PNG 在连接上
- * 约占 5.4 MiB。超过这个数的请求在采集端就被拒，不让一帧把宿主连接打断。
+ * 宿主连接的单帧上限是 8 MiB，base64 将字节数放大为 4/3，因此 4 MiB 的 PNG 在连接上
+ * 约占 5.4 MiB。超过此值的请求在采集端即被拒绝，避免单帧中断宿主连接。
  */
 const CAPTURE_MAX_BYTES = 4 * 1024 * 1024
 /**
- * 走前台投递的动作。
+ * 经由前台投递的动作。
  *
- * 只用来判「这一次算不算前台接管」，让运行态读数说得出此刻在前台操作，
- * 而且只在宿主真的派发了之后才上调。**准入不在这里判**：前台模式有没有开由宿主
- * 那一侧按请求自带的开关裁决，在这里再判一遍就是第二处裁决。
+ * 只用于判定「本次是否属于前台接管」，使运行状态能显示当前正在前台操作，
+ * 并且只在宿主实际派发之后才标记为前台。**准入不在这里判定**：前台模式是否开启由宿主
+ * 一侧按请求自带的开关裁决，在这里再判定一次就形成第二处裁决。
  */
 const FOREGROUND_ACTIONS: ReadonlySet<string> = new Set([
   'click',
@@ -116,29 +116,29 @@ const FOREGROUND_ACTIONS: ReadonlySet<string> = new Set([
   'resize_window',
   'close_window',
 ])
-/** 接受图像点落点的那几种。其余动作只能按控件执行。 */
+/** 接受图像点作为落点的动作。其余动作只能按控件执行。 */
 const FOREGROUND_POINTER: ReadonlySet<string> = new Set(['click', 'hover', 'drag', 'wheel'])
 /**
- * 可以不给目标、直接投给窗口的那几种。
+ * 可以不指定目标、直接投递给窗口的动作。
  *
- * 键盘输入去的是系统焦点所在，不是某个被点名的控件。准入判定在 worker 那一侧
- * （前台窗口就是目标窗口且窗口未被禁用），这里只是不拦。
+ * 键盘输入发往系统焦点所在位置，而不是某个指定的控件。准入判定在 worker 一侧
+ * （前台窗口即目标窗口且窗口未被禁用），这里不拦截。
  */
 const WINDOW_TARGET: ReadonlySet<string> = new Set(['type_text', 'press_key'])
 /**
- * 一个窗口的编号表最多记多少个控件身份，超过即淘汰最久没出现的那个。
+ * 单个窗口的编号表最多记录的控件身份数，超过即淘汰最久未出现的身份。
  *
- * 要高于单次读取的节点数（工具侧上限 4000）：同一份观察里的控件在表里互相挤掉的话，
- * 下一份观察里它们会拿到新号。
+ * 必须高于单次读取的节点数（工具侧上限 4000）：同一份观察中的控件在表中互相淘汰时，
+ * 下一份观察中它们会获得新编号。
  */
 export const MAX_WINDOW_REFS = 8192
-/** 宿主在 `filteredBy` 里记读取范围的那一项的前缀，其后是宿主的完整 ref。 */
+/** 宿主在 `filteredBy` 中记录读取范围的条目前缀，其后是宿主的完整 ref。 */
 const ROOT_FILTER = 'root='
 
 /**
- * 端口已经释放，或者此刻没有可用的宿主。
+ * 端口已释放，或当前没有可用的宿主。
  *
- * 判定落在本地，本次操作没有向宿主发出任何帧，因此按 `DesktopRefusal` 声明
+ * 判定在本地完成，本次操作未向宿主发送任何帧，因此按 `DesktopRefusal` 声明
  * `executed:false`。
  */
 export class DesktopUnavailableError extends Error implements DesktopRefusal {
@@ -146,18 +146,18 @@ export class DesktopUnavailableError extends Error implements DesktopRefusal {
   readonly executed = false as const
 }
 
-/** 目标窗口、观察编号或控件引用在本地就对不上。同样一帧都没发出去。 */
+/** 目标窗口、观察编号或控件引用在本地即判定不一致。同样未发送任何帧。 */
 export class DesktopTargetError extends Error implements DesktopRefusal {
   readonly errorKind = 'invalid_argument' as const
   readonly executed = false as const
 }
 
 /**
- * 宿主 ref 里的控件身份，编号表的键。
+ * 宿主 ref 中的控件身份，作为编号表的键。
  *
- * 有 RuntimeId 时取 `#` 之后的身份段：控件挪了位置、下标路径变了，它仍是同一个键。
+ * 有 RuntimeId 时取 `#` 之后的身份段：控件移动位置、下标路径变化后，仍是同一个键。
  * 身份段以 `~` 开头（属性指纹）或为空时取整条 ref：指纹对同角色同名的兄弟控件不唯一，
- * 单独作键会把两个控件编成同一个号。
+ * 单独作键会把两个控件编为同一个编号。
  */
 function identityOfRef(hostRef: string): string {
   const at = hostRef.indexOf('#')
@@ -166,16 +166,16 @@ function identityOfRef(hostRef: string): string {
 }
 
 /**
- * 一个窗口的控件编号表：控件身份 → `e<n>`。
+ * 单个窗口的控件编号表：控件身份 → `e<n>`。
  *
- * 编号只增不减，淘汰掉的身份再出现时拿新号。RuntimeId 可能被另一个控件复用，表因此按窗口
- * 隔离、有上限；同一个号不会发给两个身份。`Map` 的插入顺序就是最近出现的先后。
+ * 编号只增不减，被淘汰的身份再次出现时分配新编号。RuntimeId 可能被另一个控件复用，因此表
+ * 按窗口隔离并设上限；同一编号不会分配给两个身份。`Map` 的插入顺序即最近出现的先后顺序。
  */
 class WindowRefs {
   #ids = new Map<string, string>()
   #last = 0
 
-  /** 这个宿主 ref 在本窗口的编号。见过的身份沿用原号，并记为最近出现。 */
+  /** 该宿主 ref 在本窗口的编号。已出现过的身份沿用原编号，并记为最近出现。 */
   of(hostRef: string): string {
     const key = identityOfRef(hostRef)
     const known = this.#ids.get(key)
@@ -195,7 +195,7 @@ class WindowRefs {
   }
 }
 
-/** 一个已发现窗口的完整身份。`windowId` 之外的三项都不交给模型。 */
+/** 已发现窗口的完整身份。句柄、pid 与进程启动时刻不交给模型。 */
 interface KnownWindow {
   windowId: string
   handle: number
@@ -203,24 +203,24 @@ interface KnownWindow {
   processStartedAt: number
   app: string
   title: string
-  /** 这个窗口的控件编号表。窗口身份一变即换一个 `windowId`，表随之重开。 */
+  /** 该窗口的控件编号表。窗口身份变化即分配新的 `windowId`，编号表随之重建。 */
   refs: WindowRefs
 }
 
-/** 一次观察的记录。动作前的唯一匹配与前置条件按它判。 */
+/** 一次观察的记录。动作前的唯一匹配与前置条件按它判定。 */
 interface ObservationRecord {
   observationId: string
   windowId: string
-  /** 采集这一份时的宿主代际。代际一变这份记录即作废。 */
+  /** 采集本份记录时的宿主代际。代际变化即作废。 */
   epochKey: string
   /**
-   * 读取范围的根：`ref` 是交给端口的短编号，`host` 是宿主的完整 ref。缺席表示整窗。
-   * 动作与等待之后按 `host` 重读。
+   * 读取范围的根：`ref` 是交给端口的短编号，`host` 是宿主的完整 ref。缺省表示整个窗口。
+   * 动作与等待之后按 `host` 重新读取。
    */
   scope?: { ref: string; host: string }
   /** 端口形状：`ref` 与 `parentRef` 是本窗口的短编号。 */
   elements: DesktopElement[]
-  /** 本次观察里短编号 → 宿主的完整 ref。发往宿主的控件引用一律按它翻译。 */
+  /** 本次观察中短编号 → 宿主完整 ref 的对应表。发往宿主的控件引用一律按它转换。 */
   hostRefs: Map<string, string>
   truncatedBy: string[]
   filteredBy: string[]
@@ -231,53 +231,53 @@ interface ObservationRecord {
 }
 
 /**
- * 一张已经交给模型的图。`imageRef` 指的就是这一条。
+ * 已交给模型的图像。`imageRef` 指向该记录。
  *
- * 绑定四项：目标窗口身份（`windowId` 加它的身份键）、宿主三条代际（`epochKey`）、
- * 几何（含窗口矩形代际）与采集时刻。任一项对不上，按这个 ref 定位的请求都不该派发。
+ * 绑定四项：目标窗口身份（`windowId` 及其身份键）、宿主的三项代际（`epochKey`）、
+ * 几何（含窗口矩形代际）与采集时刻。任一项不一致，按该 ref 定位的请求都不应派发。
  */
 interface ImageRecord {
   imageRef: string
   windowId: string
-  /** 采集时那个窗口的身份键。窗口关掉重开之后它就变了。 */
+  /** 采集时窗口的身份键。窗口关闭后重新打开即变化。 */
   identityKey: string
   epochKey: string
   geometry: DesktopImageGeometry
   capturedAt: number
 }
 
-/** 一次执行持有的身份。`released` 置上之后这个端口永不再取得能力。 */
+/** 一次执行持有的身份。`released` 置位后，该端口不再取得任何能力。 */
 interface Lease {
   owner: number
   executorId: string
   conversationId: string
   released: boolean
-  /** 本执行者的观察记录，按 `windowId` 各留最近一份。 */
+  /** 本执行者的观察记录，按 `windowId` 各保留最近一份。 */
   observations: Map<string, ObservationRecord>
-  /** 本执行者交出去的图，按 `imageRef` 索引。 */
+  /** 本执行者交出的图像，按 `imageRef` 索引。 */
   images: Map<string, ImageRecord>
 }
 
-/** 排在桌面占用后面的执行者。撤销时按 `lease` 认领自己那一条。 */
+/** 排在桌面占用之后的执行者。撤销时按 `lease` 找到自身的条目。 */
 interface Waiter {
   lease: Lease
   resolve: () => void
   reject: (err: Error) => void
 }
 
-/** 宿主代际键。三项任一变化即旧观察与旧引用整体作废。 */
+/** 宿主代际键。三项中任一项变化，旧观察与旧引用即整体作废。 */
 function epochKeyOf(host: NativeDesktopHost): string {
   return `${host.hostId}#${host.hostEpoch}#${host.connectionEpoch}`
 }
 
-/** 窗口身份键。句柄与 pid 都会被复用，三项一起才认得出还是不是同一个窗口。 */
+/** 窗口身份键。句柄与 pid 都会被复用，三项组合才能判定是否为同一个窗口。 */
 function identityKey(w: { handle: number; pid: number; processStartedAt: number }): string {
   return `${w.handle}:${w.pid}:${w.processStartedAt}`
 }
 
 /**
- * 一个控件的端口形状。`ref` 与 `parentRef` 按 `refOf` 换成短编号，`parentRef` 指同一张表
- * 里的父控件。
+ * 控件的端口形状。`ref` 与 `parentRef` 按 `refOf` 转换为短编号，`parentRef` 指向同一张表
+ * 中的父控件。
  */
 function elementOf(node: DesktopNode, refOf: (hostRef: string) => string): DesktopElement {
   return {
@@ -329,22 +329,22 @@ export class DesktopCoordinator {
   #nextImage = 0
   /** 已发现的窗口，按不透明 id 索引。 */
   #windows = new Map<string, KnownWindow>()
-  /** 身份键 → 不透明 id。同一个窗口再次被发现时沿用同一个 id。 */
+  /** 身份键 → 不透明 id。同一窗口再次被发现时沿用同一个 id。 */
   #byIdentity = new Map<string, string>()
   #leases = new Map<number, Lease>()
-  /** 此刻持有桌面的执行者。`null` = 没人在占。 */
+  /** 当前持有桌面的执行者。`null` 表示无人占用。 */
   #holder: Lease | null = null
-  /** 等着进场的执行者，先到先得。 */
+  /** 等待取得桌面的执行者，按到达顺序排队。 */
   #queue: Waiter[] = []
   /**
-   * 挡住整个桌面的原因。`null` = 没挡。
+   * 阻塞整个桌面的原因。`null` 表示未阻塞。
    *
-   * 上一个执行者释放时宿主说不出它名下的请求有没有执行完，这时不能放下一个进来：
-   * 两个执行者会同时在动同一个桌面。挡到宿主换代际为止——那时旧执行实例名下的一切
-   * 本来就已经作废。
+   * 上一个执行者释放时，宿主无法确认其名下的请求是否执行完毕，此时不能放行下一个执行者，
+   * 否则两个执行者会同时操作同一个桌面。阻塞持续到宿主代际变化为止，届时旧执行实例名下的
+   * 全部请求均已作废。
    */
   #blocked: string | null = null
-  /** 只有 `#holder` 写得动的目标快照，会话归属与应用、前台状态一起发布和清空。 */
+  /** 只有 `#holder` 能写入的目标快照，会话归属与应用、前台状态一起发布和清空。 */
   #target: DesktopTargetEvent['target'] = null
   #targetChanges = new Set<(target: DesktopTargetEvent['target']) => void>()
   #offHostChange: () => void
@@ -352,14 +352,14 @@ export class DesktopCoordinator {
   constructor(bridge: DesktopBridge, enabled: () => boolean) {
     this.#bridge = bridge
     this.#enabled = enabled
-    // 宿主断开或换代际：已发现的窗口与正在操作的读数都不再成立，挡住桌面的那条理由
-    // 也随之失效——它说的是一个已经不存在的执行实例。
+    // 宿主断开或代际变化：已发现的窗口与正在操作的应用均不再成立，阻塞桌面的原因
+    // 也随之失效，因为它针对的执行实例已不存在。
     this.#offHostChange = bridge.onHostChange(() => {
       this.#windows.clear()
       this.#byIdentity.clear()
       this.#clearTarget()
       if (this.#blocked === null) return
-      log.info('desktop', `桌面占用解除挂起：${this.#blocked}`)
+      log.info('desktop', `桌面占用的阻塞已解除：${this.#blocked}`)
       this.#blocked = null
       this.#handOver()
     })
@@ -368,15 +368,15 @@ export class DesktopCoordinator {
   /**
    * 电脑控制能力是否可用。
    *
-   * 四项缺一不可：用户启用了、宿主连上了、worker 就绪了、系统授权了。
-   * 装配方按它决定要不要注入端口——不是先给一个端口、调用时再报错。
+   * 四项缺一不可：用户已启用、宿主已连接、worker 已就绪、系统已授权。
+   * 装配方据此决定是否注入端口，而不是先提供端口、调用时再报错。
    */
   available(): boolean {
     const host = this.#bridge.host()
     return this.#enabled() && host !== null && host.workerReady && host.authorized
   }
 
-  /** 此刻哪条会话在操作哪个应用。握手与实时事件都取这一份。 */
+  /** 当前由哪条会话操作哪个应用。握手与实时事件都读取这一份。 */
   target(): DesktopTargetEvent['target'] {
     return this.#target
   }
@@ -387,13 +387,13 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 给一次执行造一个端口。
+   * 为一次执行创建端口。
    *
-   * `executorId` 每次不同：占用、排队与撤销按它记，两条会话、父任务与子任务因此
-   * 各占各的、各撤各的。`conversationId` 用于日志和目标读数的归属；桌面仍按执行者
+   * `executorId` 每次不同：占用、排队与撤销按它记录，因此两条会话、父任务与子任务
+   * 各自占用、各自撤销。`conversationId` 用于日志与目标状态的归属；桌面仍按执行者
    * 串行占用，不因界面切换会话而改变。
    *
-   * 端口自己不占桌面，第一次在窗口上观察或动作才占。
+   * 端口本身不占用桌面，首次在窗口上观察或执行动作时才占用。
    */
   portFor(conversationId: string): DesktopPort {
     this.#nextOwner += 1
@@ -424,7 +424,7 @@ export class DesktopCoordinator {
     for (const lease of [...this.#leases.values()]) void this.#release(lease)
   }
 
-  /** 本次执行还能不能操作桌面。每个发请求的入口都要过这一关。 */
+  /** 本次执行是否仍能操作桌面。每个发送请求的入口都必须先经过此检查。 */
   #liveHost(lease: Lease): NativeDesktopHost {
     if (lease.released) throw new DesktopUnavailableError('本次执行的电脑控制已经结束')
     if (!this.available()) throw new DesktopUnavailableError('电脑控制此刻不可用')
@@ -434,11 +434,11 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 取得桌面占用。已经持有时是空操作，别人持有时排队等它释放。
+   * 取得桌面占用。已持有时为空操作，他人持有时排队等待释放。
    *
-   * 窗口发现不走这里：它不绑定任何窗口，也不改变任何状态，而执行者要先看得见窗口
-   * 才谈得上要不要这个桌面。绑定窗口的观察、动作与等待都要先过这一关——`ref` 是在
-   * 观察里产生、在动作里消费的，两者之间插进另一个执行者的动作，`ref` 就不再成立。
+   * 窗口发现不经过这里：它不绑定任何窗口，也不改变任何状态，而执行者必须先看到窗口
+   * 才能决定是否需要桌面。绑定窗口的观察、动作与等待都必须先经过这里：`ref` 在
+   * 观察中产生、在动作中使用，两者之间插入另一个执行者的动作，`ref` 即不再成立。
    */
   #acquire(lease: Lease): Promise<void> {
     if (lease.released) {
@@ -457,7 +457,7 @@ export class DesktopCoordinator {
     })
   }
 
-  /** 把桌面交给下一个排队的。调用前占用必须已经空出来。 */
+  /** 把桌面交给下一个排队的执行者。调用前占用必须已经清空。 */
   #handOver(): void {
     this.#holder = null
     if (this.#blocked !== null) return
@@ -471,7 +471,7 @@ export class DesktopCoordinator {
     }
   }
 
-  /** 排队中撤销：还没轮到它就直接拿掉，不占着后面那些的位置。 */
+  /** 排队中撤销：尚未轮到时直接移出队列，不占用后续执行者的位置。 */
   #dropWaiter(lease: Lease, reason: string): void {
     const at = this.#queue.findIndex((w) => w.lease === lease)
     if (at < 0) return
@@ -480,10 +480,10 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 挡住整个桌面，排队的一并拒掉。
+   * 阻塞整个桌面，并拒绝全部排队者。
    *
-   * 不让它们继续等：等的是一个说不出何时结束的状态，而工具调用挂在那里说不出原因。
-   * 拒掉之后模型拿到的是一句明确的失败，重新观察即可。
+   * 不让排队者继续等待：等待的是一个无法确定何时结束的状态，工具调用会一直挂起且无法说明原因。
+   * 拒绝之后模型收到明确的失败，重新观察即可。
    */
   #block(reason: string): void {
     this.#blocked = reason
@@ -498,9 +498,9 @@ export class DesktopCoordinator {
     const result = await this.#bridge.request('list_windows', { executorId: lease.executorId })
     const observation = expect(result, 'windows')
     const out = this.#register(observation.windows)
-    // 这一次没再出现的窗口就地作废：句柄会被 OS 复用，留着旧 id 等于给一个可能
-    // 指向另一个窗口的目标。**只有整机清单能这样剪**——动作回执带回的是单个进程的窗口，
-    // 拿它剪会把别的进程的窗口一并作废。
+    // 本次未再出现的窗口立即作废：句柄会被 OS 复用，保留旧 id 等于提供一个可能
+    // 指向另一个窗口的目标。**只有整机清单可用于这种裁剪**：动作回执带回的只是单个进程的窗口，
+    // 据此裁剪会把其他进程的窗口一并作废。
     const seen = new Set(observation.windows.map(identityKey))
     for (const [key, id] of [...this.#byIdentity]) {
       if (seen.has(key)) continue
@@ -511,8 +511,8 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 把一批窗口登记成不透明 id。**这是 id 的唯一产生处**：同一个窗口在窗口清单里与在
-   * 动作回执里拿到的是同一个 id，模型因此不必分辨它是从哪一条路径来的。
+   * 把一批窗口登记为不透明 id。**这是 id 的唯一产生处**：同一个窗口在窗口清单中与在
+   * 动作回执中取得的是同一个 id，模型因此无需区分它来自哪条路径。
    */
   #register(windows: DesktopWindow[]): DesktopWindowInfo[] {
     const out: DesktopWindowInfo[] = []
@@ -524,7 +524,7 @@ export class DesktopCoordinator {
         windowId = `dw_${this.#nextWindow}`
         this.#byIdentity.set(key, windowId)
       }
-      // 编号表跟着窗口身份走，再次发现同一个窗口时沿用：换一张新表会让同一个控件换号。
+      // 编号表随窗口身份保留，再次发现同一窗口时沿用：新建编号表会使同一个控件更换编号。
       const refs = this.#windows.get(windowId)?.refs ?? new WindowRefs()
       this.#windows.set(windowId, { windowId, ...w, refs })
       out.push({ windowId, app: w.app, title: w.title })
@@ -532,11 +532,11 @@ export class DesktopCoordinator {
     return out
   }
 
-  /** 把不透明 id 还原成目标身份。认不出的 id 在本地就拒绝，一帧都不发。 */
+  /** 把不透明 id 还原为目标身份。无法识别的 id 在本地即拒绝，不发送任何帧。 */
   #targetOf(windowId: string): KnownWindow {
     const known = this.#windows.get(windowId)
     if (!known) {
-      throw new DesktopTargetError(`认不出的窗口 ${windowId}，请重新调用 desktop_windows`)
+      throw new DesktopTargetError(`无法识别的窗口 ${windowId}，请重新调用 desktop_windows`)
     }
     return known
   }
@@ -558,16 +558,16 @@ export class DesktopCoordinator {
   ): Promise<DesktopSnapshot> {
     this.#liveHost(lease)
     await this.#acquire(lease)
-    // 排队可能等了很久：进场之后重新确认宿主还在、重新解析目标，并取当次的代际。
-    // 等待期间宿主换过代际的话，这个不透明 id 已经不在窗口表里，要的是那一句拒绝。
+    // 排队可能持续很久：取得占用后重新确认宿主仍在、重新解析目标，并读取当前代际。
+    // 等待期间宿主代际变化时，该不透明 id 已不在窗口表中，此处应返回拒绝。
     this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
-    // 子树根必须来自本执行者对这个窗口的上一份观察：现编一个编号等于让宿主去定位一个
-    // 没人见过的位置。
+    // 子树根必须来自本执行者对该窗口的上一份观察：自行编造编号等于让宿主定位一个
+    // 从未观察过的位置。
     const root =
       input.root === undefined ? undefined : this.#requireRef(lease, input.windowId, input.root)
-    // 目标在**发请求之前**就登记：读树可能挂在 provider 上直到超时，等回包之后再登记的话，
-    // 界面在这段时间里说不出正在操作谁。
+    // 目标在**发送请求之前**登记：读取控件树可能在 provider 上阻塞直到超时，回包后才登记时，
+    // 界面在这段时间内无法显示正在操作的对象。
     this.#setTarget(lease, known.app)
     const result = await this.#bridge.request('read_tree', {
       executorId: lease.executorId,
@@ -583,17 +583,17 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 用一份读取结果整份替换本执行者对这个窗口的观察，并换一个新编号。
+   * 用一份读取结果整份替换本执行者对该窗口的观察，并分配新编号。
    *
-   * 不要把它改回与上一份拼接：拼进来的旧节点带着新编号、新时刻与这次读取的完整性，
-   * 而它们的状态与可用动作停在上一次读取那一刻。换编号是硬性的：旧编号对应的那张表
-   * 已经不是这一张，留着它等于让模型在两份表之间挑。
+   * 不要改为与上一份拼接：拼入的旧节点会带上新编号、新时刻与本次读取的完整性，
+   * 而它们的状态与可用动作仍停留在上一次读取的时刻。必须更换编号：旧编号对应的表
+   * 已不是当前这张，保留它等于让模型在两份表之间选择。
    *
-   * 整窗读的第一项是窗口元素本身：标上 `windowRoot`，它的名称就是此刻的窗口标题，一并刷新
-   * 窗口表里的那一格——窗口表只在发现窗口时写入，页面换过之后仍是旧标题。
+   * 整窗读取的第一项是窗口元素本身：标记 `windowRoot`，其名称即当前的窗口标题，并据此刷新
+   * 窗口表中的标题字段：窗口表只在发现窗口时写入，页面切换后仍是旧标题。
    *
-   * 宿主回包里带 ref 的三处在这里换成短编号：控件的 `ref` / `parentRef`、`scope`，以及
-   * `filteredBy` 里的 `root=` 那一项。
+   * 宿主回包中含 ref 的三处在这里替换为短编号：控件的 `ref` / `parentRef`、`scope`，以及
+   * `filteredBy` 中的 `root=` 条目。
    */
   #absorb(lease: Lease, windowId: string, body: DesktopTreeBody): DesktopSnapshot {
     const host = this.#liveHost(lease)
@@ -632,11 +632,11 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 取回一次观察记录。代际变了、窗口对不上、编号换过，三种都回 `null`。
+   * 取回一次观察记录。代际变化、窗口不一致、编号已更换，三种情形都返回 `null`。
    *
-   * worker 没了也回 `null`，且这一条不能等代际变：产生这份观察的执行实例已经不在了，
-   * 而宿主要到下一个 worker 握手成功才会报出新的 `hostEpoch`。那段时间里代际还是旧值，
-   * 只按它判的话，模型会拿一份已经作废的引用去发动作。
+   * worker 未就绪时同样返回 `null`，且不能等代际变化后再判定：产生该观察的执行实例已不存在，
+   * 而宿主要到下一个 worker 握手成功后才报告新的 `hostEpoch`。这段时间内代际仍是旧值，
+   * 只按代际判定时，模型会用一份已作废的引用发送动作。
    */
   #elements(lease: Lease, windowId: string, observationId: string): DesktopElement[] | null {
     if (lease.released) return null
@@ -648,27 +648,27 @@ export class DesktopCoordinator {
     return record.elements
   }
 
-  /** 这个短编号在指定那份观察里对应的宿主 ref。观察失效或编号不在其中即在本地拒绝。 */
+  /** 该短编号在指定观察中对应的宿主 ref。观察失效或编号不在其中时在本地拒绝。 */
   #recordOf(lease: Lease, windowId: string, observationId: string, ref: string): string {
     if (!this.#elements(lease, windowId, observationId)) {
       throw new DesktopTargetError(`观察 ${observationId} 已经失效，请重新观察`)
     }
     const hostRef = lease.observations.get(windowId)?.hostRefs.get(ref)
     if (hostRef === undefined) {
-      throw new DesktopTargetError(`观察 ${observationId} 里没有控件 ${ref}`)
+      throw new DesktopTargetError(`观察 ${observationId} 中没有控件 ${ref}`)
     }
     return hostRef
   }
 
   /**
-   * 采一张目标窗口的图。
+   * 截取目标窗口的图像。
    *
-   * 三种取景：整窗、窗口内的屏幕矩形、上一张图里的一块。第三种是 `imageRef` 的消费端，
-   * 走的就是后续按图定位的动作要走的那条换算与核对路径——
-   * **这里换算成屏幕矩形并带上窗口几何代际，宿主在派发前重新核对窗口矩形**。
+   * 三种取景：整个窗口、窗口内的屏幕矩形、上一张图像中的一块区域。第三种使用 `imageRef`，
+   * 与后续按图像定位的动作经由同一条换算与核对路径：
+   * **这里换算为屏幕矩形并附带窗口几何代际，宿主在派发前重新核对窗口矩形**。
    *
-   * 失效的 `imageRef` 在本地就拒绝，一帧都不发：换算要用采集那一刻的几何，而那份几何
-   * 已经不成立了。
+   * 失效的 `imageRef` 在本地即拒绝，不发送任何帧：换算需要采集时刻的几何，而该几何
+   * 已不成立。
    */
   async #captureImage(
     lease: Lease,
@@ -725,11 +725,11 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 这次采集要采哪一块，以及要不要带上窗口几何代际。
+   * 本次采集的区域，以及是否附带窗口几何代际。
    *
-   * `imageRef` 那一支的失效判据四条，逐条都是可核实的事实：本执行者交出过这个 ref、
-   * 宿主没换过代际、那张图采的是同一个窗口身份、那块矩形与图有交集。任一条不成立即
-   * 在本地拒绝——**不伪造一个能发出去的矩形**。
+   * `imageRef` 分支的失效判据有四条，每条都是可核实的事实：本执行者交出过该 ref、
+   * 宿主代际未变化、该图像采自同一个窗口身份、所给矩形与图像有交集。任一条不成立即
+   * 在本地拒绝，**不构造一个可发送的矩形**。
    */
   #regionOf(
     lease: Lease,
@@ -740,43 +740,43 @@ export class DesktopCoordinator {
       return input.region === undefined ? {} : { region: input.region }
     }
     if (input.imageRect === undefined) {
-      throw new DesktopTargetError('按上一张图取区域时要给 imageRect')
+      throw new DesktopTargetError('按上一张图像截取区域时必须提供 imageRect')
     }
     const record = this.#imageOf(lease, known, input.windowId, input.imageRef)
     const region = imageRectToScreen(record.geometry, input.imageRect)
     if (!region) {
-      throw new DesktopTargetError(`给的矩形不在 ${input.imageRef} 覆盖的范围里`)
+      throw new DesktopTargetError(`提供的矩形不在 ${input.imageRef} 的覆盖范围内`)
     }
     return { region, expectGeneration: record.geometry.generation }
   }
 
   /**
-   * 取一张交出去过的图，并核对它此刻还成不成立。
+   * 取出一张已交出的图像，并核对它当前是否仍然成立。
    *
-   * 四条判据逐条都是可核实的事实：本执行者交出过这个 ref、宿主没换过代际、那张图采的是
-   * 同一个窗口身份、窗口几何代际随请求一起交给宿主再核一次。任一条不成立即在本地拒绝
-   * ——**不伪造一个能发出去的坐标**。
+   * 四条判据都是可核实的事实：本执行者交出过该 ref、宿主代际未变化、该图像采自
+   * 同一个窗口身份、窗口几何代际随请求交给宿主再次核对。任一条不成立即在本地拒绝，
+   * **不构造一个可发送的坐标**。
    */
   #imageOf(lease: Lease, known: KnownWindow, windowId: string, imageRef: string): ImageRecord {
     const record = lease.images.get(imageRef)
     if (!record) {
-      throw new DesktopTargetError(`认不出的图 ${imageRef}，请重新采图`)
+      throw new DesktopTargetError(`无法识别的图像 ${imageRef}，请重新采图`)
     }
     const host = this.#bridge.host()
     if (!host || record.epochKey !== epochKeyOf(host)) {
-      throw new DesktopTargetError(`${imageRef} 已经失效：桌面宿主换过代际，请重新采图`)
+      throw new DesktopTargetError(`${imageRef} 已失效：桌面宿主的代际已变化，请重新采图`)
     }
     if (record.windowId !== windowId || record.identityKey !== identityKey(known)) {
-      throw new DesktopTargetError(`${imageRef} 采的不是这个窗口，请重新采图`)
+      throw new DesktopTargetError(`${imageRef} 不是从该窗口采集的，请重新采图`)
     }
     return record
   }
 
-  /** 这个短编号在本执行者对该窗口的最近一份观察里对应的宿主 ref，不看观察编号。 */
+  /** 该短编号在本执行者对该窗口最近一份观察中对应的宿主 ref，不核对观察编号。 */
   #requireRef(lease: Lease, windowId: string, ref: string): string {
     const hostRef = lease.observations.get(windowId)?.hostRefs.get(ref)
     if (hostRef === undefined) {
-      throw new DesktopTargetError(`这个窗口最近一份观察里没有控件 ${ref}，请重新观察`)
+      throw new DesktopTargetError(`该窗口最近一份观察中没有控件 ${ref}，请重新观察`)
     }
     return hostRef
   }
@@ -792,7 +792,7 @@ export class DesktopCoordinator {
     },
   ): Promise<DesktopActResult> {
     this.#liveHost(lease)
-    // 观察已经占下了桌面，这里通常是空操作；观察之后被强制释放过才会真的排队。
+    // 观察时已占用桌面，此处通常为空操作；观察之后被强制释放过才会实际排队。
     await this.#acquire(lease)
     this.#liveHost(lease)
     const known = this.#targetOf(input.windowId)
@@ -814,7 +814,7 @@ export class DesktopCoordinator {
         maxDepth: DEFAULT_MAX_DEPTH,
         timeBudgetMs: READ_TREE_BUDGET_MS,
       })
-      // 前台接管的读数按请求动作的回执上调；窗口准备后的观察独立接收。
+      // 前台接管状态按所请求动作的回执更新；窗口准备后的观察单独接收。
       if (FOREGROUND_ACTIONS.has(input.action.kind) && result.dispatch !== 'not_dispatched') {
         this.#setTarget(lease, known.app, true)
       }
@@ -833,8 +833,8 @@ export class DesktopCoordinator {
       }
     } catch (err) {
       if (!(err instanceof DesktopBridgeError)) throw err
-      // 执行事实来自异常自己带的那一格：压成一句失败的话，调用方分不出「没执行」
-      // 与「可能已经执行」，而后者禁止重发。
+      // 执行事实取自异常自带的字段：压缩为一句失败时，调用方无法区分「未执行」
+      // 与「可能已执行」，而后者禁止重发。
       return {
         dispatch: err.dispatch,
         actionId,
@@ -844,20 +844,21 @@ export class DesktopCoordinator {
           input.windowId,
           err.dispatch,
           undefined,
-          '宿主不可用，动作之后没有重读',
+          '宿主不可用，动作之后未重新读取',
         ),
       }
     }
   }
 
   /**
-   * 这次动作打在哪儿：控件引用、上一张图里那个点换算出来的屏幕坐标，或者两样都不给。
+   * 本次动作的目标：控件引用、由上一张图像中的点换算出的屏幕坐标，或两者都不提供。
    *
-   * **前两种只能给一个。** 给控件时按观察编号核对它还在不在这一份表里；给图像点时走
-   * 与按图重采同一条换算与代际核对路径，失效的 `imageRef` 在本地就拒绝，一帧都不发。
+   * **前两种只能提供一种。** 提供控件时按观察编号核对它是否仍在该份表中；提供图像点时
+   * 经由与按图像重新截取相同的换算与代际核对路径，失效的 `imageRef` 在本地即拒绝，
+   * 不发送任何帧。
    *
-   * 两样都不给时目标是窗口本身，只有键盘输入能这样发：它去的是系统焦点所在，
-   * 准入由 worker 按「前台窗口就是目标窗口」判。
+   * 两者都不提供时目标是窗口本身，只有键盘输入可以这样发送：它发往系统焦点所在位置，
+   * 准入由 worker 按「前台窗口即目标窗口」判定。
    */
   #aim(
     lease: Lease,
@@ -871,25 +872,25 @@ export class DesktopCoordinator {
     },
   ): { ref?: string; point?: { x: number; y: number }; expectGeneration?: string } {
     if (input.ref !== undefined && input.at !== undefined) {
-      throw new DesktopTargetError('控件与图像点只能给一个')
+      throw new DesktopTargetError('控件与图像点只能提供其中一个')
     }
     if (input.ref !== undefined) {
       return { ref: this.#recordOf(lease, input.windowId, input.observationId, input.ref) }
     }
     if (input.at === undefined) {
       if (WINDOW_TARGET.has(input.action.kind)) return {}
-      throw new DesktopTargetError('要给控件或图像点')
+      throw new DesktopTargetError('必须提供控件或图像点')
     }
     if (!FOREGROUND_POINTER.has(input.action.kind)) {
-      throw new DesktopTargetError(`${input.action.kind} 只能按控件执行，不能给图像点`)
+      throw new DesktopTargetError(`${input.action.kind} 只能按控件执行，不接受图像点`)
     }
     const record = this.#imageOf(lease, known, input.windowId, input.at.imageRef)
     const { imageWidth, imageHeight } = record.geometry
-    // 图外的坐标在本地就拒：换算出来的屏幕点落在窗口外面，宿主只说得出「落点不在窗口里」，
-    // 而调用方要的是「这个点不在那张图上」。
+    // 图像外的坐标在本地拒绝：换算出的屏幕点位于窗口外时，宿主只能报告「落点不在窗口内」，
+    // 而调用方需要的是「该点不在那张图像上」。
     if (input.at.x < 0 || input.at.y < 0 || input.at.x >= imageWidth || input.at.y >= imageHeight) {
       throw new DesktopTargetError(
-        `给的坐标不在 ${input.at.imageRef} 覆盖的范围里（图是 ${imageWidth}×${imageHeight}）`,
+        `提供的坐标不在 ${input.at.imageRef} 的覆盖范围内（图像尺寸为 ${imageWidth}×${imageHeight}）`,
       )
     }
     const point = imagePointToScreen(record.geometry, input.at.x, input.at.y)
@@ -897,11 +898,11 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 发给宿主的动作载荷。只有拖拽的控件终点带控件引用，它要在本执行者对这个窗口的最近一份
-   * 观察里，并翻成宿主 ref；其余动作原样交回。
+   * 发给宿主的动作载荷。只有终点为控件的拖拽带控件引用，该引用必须在本执行者对该窗口
+   * 最近一份观察中，并转换为宿主 ref；其余动作原样返回。
    *
-   * 终点写在动作里而不是另开一格：只有拖拽有终点，多一格空字段会让调用方按它给出
-   * 一个不会被读的值。像素偏移不需要核对，它由宿主在派发前夹进目标窗口。
+   * 终点写在动作内而不是单独设字段：只有拖拽有终点，多出一个空字段会使调用方为它提供
+   * 一个不会被读取的值。像素偏移无需核对，由宿主在派发前限制在目标窗口内。
    */
   #hostAction(lease: Lease, windowId: string, action: DesktopAction): DesktopAction {
     if (action.kind !== 'drag' || action.to.kind !== 'ref') return action
@@ -909,9 +910,9 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 读一个控件的文档文本与选区。
+   * 读取控件的文档文本与选区。
    *
-   * **它不换观察编号**：读文本不动控件表，换号会让调用方手上刚拿到的 `ref` 一并作废。
+   * **不更换观察编号**：读取文本不改变控件表，更换编号会使调用方刚取得的 `ref` 一并作废。
    */
   async #readText(
     lease: Lease,
@@ -941,14 +942,14 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 等一个后置条件成立。
+   * 等待一个后置条件成立。
    *
-   * 判定下沉到宿主：这里只发一条请求并等它的终态，不在本地按固定间隔重读。期限比调用方
-   * 要的时长多一段，宿主到点之后还要按当前观察的读取范围重读一次。
+   * 判定由宿主执行：这里只发送一条请求并等待其终态，不在本地按固定间隔重新读取。期限比
+   * 调用方请求的时长多出一段，因为宿主到期后还要按当前观察的读取范围重新读取一次。
    *
-   * **等待期间本次执行仍然占着桌面**：引用在观察里产生、在动作里消费，中间放别人进来
-   * 它就不再成立。占用不会被等待卡死——`release` 一到就撤销这条请求，宿主在一个轮询间隔
-   * 内以 `cancelled` 收尾，桌面随即交给下一个执行者。
+   * **等待期间本次执行仍占用桌面**：引用在观察中产生、在动作中使用，期间放行其他执行者
+   * 会使引用不再成立。占用不会因等待而无限期持续：`release` 调用后即撤销该请求，宿主在
+   * 一个轮询间隔内以 `cancelled` 结束，桌面随即交给下一个执行者。
    */
   async #wait(
     lease: Lease,
@@ -1014,10 +1015,10 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 动作调用尚未返回时同次带回的那份窗口清单。
+   * 随动作回执一并带回的阻塞窗口清单。
    *
-   * 走 `#register`——与 `desktop_windows` 同一条登记路径：调用方拿到的 `windowId` 可以
-   * 直接观察，不必先再列一次窗口。这一批不剪旧窗口，它只覆盖目标那一个进程。
+   * 经由 `#register`，与 `desktop_windows` 使用同一条登记路径：调用方取得的 `windowId` 可以
+   * 直接用于观察，无需先重新列出窗口。这一批不裁剪旧窗口，因为它只覆盖目标所在的进程。
    */
   #blockedBy(blocking: DesktopBlockingWindow[] | undefined): {
     blocking?: DesktopBlockingWindowInfo[]
@@ -1033,14 +1034,14 @@ export class DesktopCoordinator {
   }
 
   /**
-   * 动作或等待之后的那份重读。
+   * 动作或等待之后的重新读取。
    *
-   * 读到了就整份替换观察并换新编号。没有新观察时，只有请求动作未派发且宿主没有报告
-   * 重读失败，才保留上一份观察与编号。窗口准备后即使输入被拒绝，
-   * 也可能带回新观察或重读错误；错误时不能再保留旧表。已派发与结果未知却没有观察时，
+   * 取得读取结果时整份替换观察并更换编号。没有新观察时，只有请求的动作未派发且宿主未报告
+   * 重新读取失败，才保留上一份观察与编号。窗口准备后即使输入被拒绝，
+   * 也可能带回新观察或重新读取错误；出现错误时不能保留旧表。已派发或结果未知且没有观察时，
    * 控件表同样整份作废。
    *
-   * `dispatch` 给 `null` 表示这次调用不派发动作（等待），它总带着一份重读。
+   * `dispatch` 为 `null` 表示本次调用不派发动作（等待），它总是带有一份重新读取结果。
    * 执行事实不受这里影响。
    */
   #followUp(
@@ -1054,23 +1055,23 @@ export class DesktopCoordinator {
       return { observation: this.#absorb(lease, windowId, observation) }
     }
     if (dispatch === 'not_dispatched' && error === undefined) {
-      return { observation: null, observationError: '动作没有派发，上一份观察仍然有效' }
+      return { observation: null, observationError: '动作未派发，上一份观察仍然有效' }
     }
     lease.observations.delete(windowId)
-    return { observation: null, observationError: error ?? '宿主没有回传动作之后的读数' }
+    return { observation: null, observationError: error ?? '宿主未回传动作之后的观察' }
   }
 
   /**
-   * 释放这次执行。重复调用是空操作，不是第二条路径。
+   * 释放本次执行。重复调用为空操作，不构成第二条路径。
    *
-   * 顺序固定，每一步都不能提前：
+   * 顺序固定，任何一步都不能提前：
    *
-   * 1. `released` 置上——此后这个端口的任何入口都被 `#liveHost` 挡下，不再有新派发。
-   * 2. 排队中的自己拿掉，它还没进场，直接让后面的人往前挪。
-   * 3. 本地在途调用按执行事实收尾。撤销帧发不发得出去都不影响它们已经没有回执可等。
-   * 4. 让宿主撤销这个执行者名下尚未派发的请求，并回答它名下还有没有可能正在执行的
-   *    请求。**只有回答是「没有」才放下一个执行者进来**：截止时刻到了而执行状态未知
-   *    时放行，等于两个执行者同时在动同一个桌面。
+   * 1. 置位 `released`：此后该端口的所有入口都被 `#liveHost` 拒绝，不再有新派发。
+   * 2. 将自身移出排队：它尚未取得占用，后续执行者直接前移。
+   * 3. 本地在途调用按执行事实结束。无论撤销帧能否发出，它们都已没有回执可等待。
+   * 4. 请宿主撤销该执行者名下尚未派发的请求，并报告其名下是否还有可能正在执行的
+   *    请求。**只有报告为「没有」时才放行下一个执行者**：截止时刻已到而执行状态未知
+   *    时放行，等于两个执行者同时操作同一个桌面。
    */
   async #release(lease: Lease): Promise<void> {
     if (lease.released) return
@@ -1084,7 +1085,7 @@ export class DesktopCoordinator {
     this.#bridge.settleExecutor(lease.executorId, '本次执行的电脑控制已经结束')
     const before = this.#bridge.host()
     if (!before) {
-      // 宿主没了，这个执行实例名下的一切随之作废，没有什么要等着结清。
+      // 宿主已断开，该执行实例名下的请求随之作废，无需等待结清。
       if (held) this.#handOver()
       return
     }
@@ -1099,7 +1100,7 @@ export class DesktopCoordinator {
         return false
       })
     if (!held) return
-    // 等回执期间宿主换了代际或断开：旧执行实例名下的一切本来就已作废，没有什么要挡。
+    // 等待回执期间宿主代际变化或断开：旧执行实例名下的请求均已作废，无需阻塞。
     const after = this.#bridge.host()
     const sameHost = after !== null && epochKeyOf(after) === epochKeyOf(before)
     if (settled || !sameHost) {
@@ -1109,12 +1110,12 @@ export class DesktopCoordinator {
     log.warn('desktop', '执行者释放后仍可能有请求在执行，桌面暂不交给下一个执行者', {
       executorId: lease.executorId,
     })
-    this.#block('上一次电脑控制还没有确认结清，此刻不能操作桌面')
+    this.#block('上一次电脑控制尚未确认结束，当前无法操作桌面')
   }
 
   #setTarget(lease: Lease, app: string, foreground = false): void {
-    // 只有持有桌面的执行者写得动这个读数。少了这一条，两个执行者的目标会互相覆盖，
-    // 界面上显示的是最后写进来的那一个，而不是此刻真在操作的那一个。
+    // 只有持有桌面的执行者能写入此状态。缺少该条件时，两个执行者的目标会互相覆盖，
+    // 界面显示的是最后写入的目标，而不是当前实际操作的目标。
     if (this.#holder !== lease) return
     const takeover = this.#target?.foreground || foreground
     if (
@@ -1134,7 +1135,7 @@ export class DesktopCoordinator {
   }
 }
 
-/** 一份记录交给调用方的形状。应用名与标题来自窗口表，不是观察里的。 */
+/** 交给调用方的记录形状。应用名与标题取自窗口表，不取自观察。 */
 function snapshotOf(record: ObservationRecord, known: KnownWindow): DesktopSnapshot {
   return {
     windowId: record.windowId,
@@ -1154,13 +1155,13 @@ function snapshotOf(record: ObservationRecord, known: KnownWindow): DesktopSnaps
 }
 
 /**
- * 取一份指定种类的观察。
+ * 取出指定种类的观察。
  *
- * 种类对不上即协议错，抛出而不是当成空结果：把一份 `element` 读成 `windows`
- * 会让调用方拿到一张空的窗口表，而那与「这台机器上没有窗口」无法区分。
+ * 种类不一致即协议错误，应抛出而不是当作空结果：把一份 `element` 读成 `windows`
+ * 会使调用方得到一张空的窗口表，与「本机没有窗口」无法区分。
  *
- * 宿主拒绝这次请求时原因在 `reason` 或 `observationError` 里，要带上：少了它，
- * 目标失效、组件没起来、协议对不上三种都只剩「没有回传观察」这一句话。
+ * 宿主拒绝请求时，原因在 `reason` 或 `observationError` 中，必须一并带上：缺少原因时，
+ * 目标失效、组件未启动、协议不一致三种情形都只剩「未回传观察」一句。
  */
 function expect<K extends DesktopObservation['kind']>(
   result: DesktopCallResult,
@@ -1169,7 +1170,7 @@ function expect<K extends DesktopObservation['kind']>(
   const observation = result.observation
   if (observation?.kind !== kind) {
     throw new DesktopBridgeError(
-      `宿主没有回传 ${kind} 观察：${result.reason ?? result.observationError ?? '没有说明原因'}`,
+      `宿主未回传 ${kind} 观察：${result.reason ?? result.observationError ?? '未说明原因'}`,
       result.dispatch,
     )
   }

@@ -1,27 +1,27 @@
 /**
  * 命令运行在一个先于监听端口创建的子进程中。
  *
- * **为什么必须这样。** Windows 上句柄是继承的：`qy serve` 绑好端口之后再 spawn 出去的任何进程，都会
- * 拿到那个监听 socket 的一份句柄。命令自己派生的后台服务（`run.ps1 start` 那种）活得比 sidecar 久，
- * 因此 **sidecar 退出之后端口仍然被持有**——连接表里记的还是那个已经退出的 PID，看着像「没人占着
- * 却起不来」。
+ * **必须如此的原因。** Windows 上句柄会被继承：`qy serve` 绑定端口之后再 spawn 的任何进程，都会
+ * 获得该监听 socket 的一份句柄。命令自行派生的后台服务（如 `run.ps1 start`）存活时间比 sidecar 长，
+ * 因此 **sidecar 退出之后端口仍被持有**：连接表中记录的仍是已退出的 PID，现象是「端口无人占用
+ * 却无法启动」。
  *
  * 实测过六种写法（detached、windowsHide、`node:child_process`、`node:http` 监听、`reusePort`），
- * 只要监听在前、派生在后就一律被占；**先 spawn 子进程再开始监听是唯一成立的做法**。
+ * 只要先监听后派生，端口一律被占用；**先 spawn 子进程再开始监听是唯一可行的做法**。
  *
- * 这个模块就是那一行：**在 `serve()` 之前**起一个 runner，之后所有 `run_command` 都由它来 spawn。
- * 它出生时监听 socket 还不存在，所以它和它的子孙手里都没有那份句柄，谁活多久都不会把端口带走。
+ * 本模块即实现这一做法：**在 `serve()` 之前**启动 runner，之后所有 `run_command` 都由它 spawn。
+ * runner 创建时监听 socket 尚不存在，因此它及其后代进程都不持有该句柄，无论存活多久都不会占用端口。
  *
  * **边界**：
- * - **没有 runner 就直接 spawn**（`qy exec` 一次性执行、测试进程都是这条）。
- *   那些进程里没有监听 socket，没有可继承的句柄，不需要绕这一圈。
- * - runner 只转发字节，不解析命令、不判权限：裁决在 `policy.ts`，沙箱在
- *   `spawnGuarded`，这里只负责「谁是父进程」。
- * - 它退出就直接抛，不自动重启：重启一次意味着「哪些命令还在跑」这本账要跟着重建，
- *   而那是第二套生命周期。跑不了命令时直接报错，不静默换一条路。
+ * - **没有 runner 时直接 spawn**（`qy exec` 一次性执行、测试进程均属此类）。
+ *   这些进程中没有监听 socket，没有可继承的句柄，无需经由 runner。
+ * - runner 只转发字节，不解析命令、不判定权限：裁决在 `policy.ts`，沙箱在
+ *   `spawnGuarded`，这里只负责决定由谁作为父进程。
+ * - runner 退出后直接抛出错误，不自动重启：重启意味着「哪些命令仍在运行」的记录需要随之重建，
+ *   而那是第二套生命周期。无法执行命令时直接报错，不静默改用其他方式。
  */
 
-/** `collectProcess` / `killTree` 真正用到的那几样。Bun 的 Subprocess 天然满足。 */
+/** `collectProcess` / `killTree` 实际使用的成员。Bun 的 Subprocess 直接满足该接口。 */
 export interface ProcessLike {
   readonly pid: number
   readonly exited: Promise<number>
@@ -37,7 +37,7 @@ interface SpawnRequest {
   argv: string[]
   cwd?: string
   env?: Record<string, string | undefined>
-  /** 非 Windows 上自成进程组，树杀才有整组可杀（同 `spawnGuarded` 的理由）。 */
+  /** 非 Windows 上自成进程组，树杀才能终止整个进程组（理由同 `spawnGuarded`）。 */
   detached: boolean
 }
 interface KillRequest {
@@ -45,8 +45,8 @@ interface KillRequest {
   id: number
 }
 /**
- * 读端不要这条流了。**runner 收到后只是不再转发，仍旧把管道读空**——
- * 停读会让还扣着写端的后台进程在管道写满时卡死，而那些进程正是用户要留下的。
+ * 读端不再需要这条流。**runner 收到后只停止转发，仍持续读空管道**：
+ * 停止读取会使仍持有写端的后台进程在管道写满时阻塞，而这些进程正是用户需要保留的。
  */
 interface DetachRequest {
   t: 'detach'
@@ -59,18 +59,18 @@ type Reply =
   | { t: 'pid'; id: number; pid: number }
   | { t: 'out'; id: number; d: string }
   | { t: 'err'; id: number; d: string }
-  /** 这条管道真的关了（所有继承过写端的进程都撒手了）。 */
+  /** 该管道已真正关闭（所有继承写端的进程都已关闭写端）。 */
   | { t: 'eof'; id: number; ch: 'out' | 'err' }
   | { t: 'exit'; id: number; code: number }
   | { t: 'fail'; id: number; message: string }
 
-/** 一个还没结束的调用：两条流的写端 + 退出的解析器。 */
+/** 一个尚未结束的调用：两条流的写端与退出结果的解析器。 */
 interface Pending {
   /**
-   * 两条流的写端。收到 EOF、或读端自己 cancel 之后置 `null`。
+   * 两条流的写端。收到 EOF 或读端自行 cancel 之后置为 `null`。
    *
-   * **置 null 之后不能再入队**：往已关闭或已弃用的 controller 里 `enqueue` 会抛，
-   * 而这里是 IPC 回调，抛出去没有人接。
+   * **置为 null 之后不能再入队**：向已关闭或已弃用的 controller 调用 `enqueue` 会抛出异常，
+   * 而此处是 IPC 回调，异常无人捕获。
    */
   streams: {
     out: ReadableStreamDefaultController<Uint8Array> | null
@@ -82,7 +82,7 @@ interface Pending {
   pid: (n: number) => void
 }
 
-/** 起 runner 的那一侧。 */
+/** 启动 runner 的一侧。 */
 export interface CommandRunner {
   spawn(input: {
     argv: string[]
@@ -99,17 +99,17 @@ const B64 = {
 }
 
 /**
- * 起一个 runner 子进程。**必须在绑端口之前调用**，否则它一样会拿到那份句柄。
+ * 启动一个 runner 子进程。**必须在绑定端口之前调用**，否则它同样会获得该句柄。
  *
- * `argv` 由调用方给：源码直跑时是 `[bun, <入口>.ts, 'runner']`，打包之后是
- * `[qy, 'runner']`——这个模块不猜自己被怎么装起来的。
+ * `argv` 由调用方提供：从源码直接运行时为 `[bun, <入口>.ts, 'runner']`，打包后为
+ * `[qy, 'runner']`。本模块不推测自身的安装方式。
  */
 export function startCommandRunner(argv: string[]): CommandRunner {
   const pending = new Map<number, Pending>()
   let next = 1
   let dead: Error | null = null
 
-  /** 退出码和两条流都到齐了才丢掉这一条，不然后到的消息就没有着落了。 */
+  /** 退出码与两条流都结束后才删除该记录，否则后到达的消息无法找到对应的调用。 */
   const reap = (id: number, p: Pending): void => {
     if (p.exited && !p.streams.out && !p.streams.err) pending.delete(id)
   }
@@ -133,13 +133,13 @@ export function startCommandRunner(argv: string[]): CommandRunner {
         p.reject(new Error(msg.message))
       } else {
         /*
-         * **退出不关流。**
+         * **进程退出时不关闭流。**
          *
-         * 关掉的话读端立刻拿到 EOF，因此「进程退出了但后代仍扣着写端」这件事
-         * 在直接 spawn 那条路上看得见、在 runner 这条路上永远看不见——
-         * `collectProcess` 的 `backgroundHeld` 因此恒为 false，
-         * 而它是「后台还留着进程在跑」这句话唯一的来源。
-         * 收手由读端决定（`collectProcess` 排空到点就 cancel），这里只如实转发。
+         * 关闭后读端立即收到 EOF，「进程已退出但后代仍持有写端」这一状态
+         * 在直接 spawn 的路径上可见、在 runner 路径上永远不可见：
+         * `collectProcess` 的 `backgroundHeld` 因此始终为 false，
+         * 而它是「后台仍有进程在运行」这一提示的唯一来源。
+         * 何时结束读取由读端决定（`collectProcess` 排空时限到达即 cancel），这里只如实转发。
          */
         p.exited = true
         p.settle(msg.code)
@@ -164,8 +164,8 @@ export function startCommandRunner(argv: string[]): CommandRunner {
       if (dead) throw dead
       const id = next++
       const streams: Pending['streams'] = { out: null, err: null }
-      // 读端撒手就通知 runner 别再转发这条。**只发一次**：置 null 之后
-      // 这条流不会再有第二次 cancel。
+      // 读端放弃读取时通知 runner 停止转发该流。只发送一次：置为 null 之后
+      // 该流不会再次 cancel。
       const pipe = (ch: 'out' | 'err') =>
         new ReadableStream<Uint8Array>({
           start: (c) => {
@@ -184,8 +184,8 @@ export function startCommandRunner(argv: string[]): CommandRunner {
       let exitCode: number | null = null
       const pidReady = Promise.withResolvers<number>()
       const exited = Promise.withResolvers<number>()
-      // 退出码不是每个调用方都会等（起完就不管的那种）。runner 退出时这里会 reject，
-      // 而没有处理器的 rejection 会把整个进程带下去，所以先挂一个空的。
+      // 并非每个调用方都等待退出码（启动后不再跟踪的调用）。runner 退出时此处会 reject，
+      // 而未处理的 rejection 会使整个进程退出，因此先注册一个空处理器。
       void exited.promise.catch(() => {})
       pending.set(id, {
         streams,
@@ -232,24 +232,24 @@ function closeQuietly(c: ReadableStreamDefaultController<Uint8Array> | null): vo
   try {
     c.close()
   } catch {
-    // 读端已经 cancel 过了（`collectProcess` 撞上输出上限时就会）。
+    // 读端已 cancel（`collectProcess` 达到输出上限时会出现这种情况）。
   }
 }
 
 /**
- * runner 那一侧的主循环。由 CLI 的隐藏子命令进入，不单独成一个可执行文件——
- * 打包之后没有独立的脚本可跑，只有那一个二进制。
+ * runner 一侧的主循环。由 CLI 的隐藏子命令进入，不作为单独的可执行文件：
+ * 打包后没有可单独运行的脚本，只有一个二进制文件。
  */
 export function runCommandRunner(): void {
   /**
-   * 还没收完的调用。
+   * 输出尚未收取完毕的调用。
    *
-   * **退出之后不立刻丢**：管道可能还被后代扣着，那时读端要么等到真 EOF、
-   * 要么撒手（`detach`），这两件事都发生在退出之后。
+   * **进程退出后不立即删除**：管道可能仍被后代进程持有，此时读端或者等到真正的 EOF，
+   * 或者放弃读取（`detach`），两者都发生在退出之后。
    */
   interface Call {
     proc: { pid: number; kill(): void }
-    /** 读端已撒手的那条流：不再转发，但继续读空——停读会把还在写的进程卡死。 */
+    /** 读端已放弃的流：不再转发，但继续读空；停止读取会使仍在写入的进程阻塞。 */
     dropped: { out: boolean; err: boolean }
     exited: boolean
     open: number
@@ -258,11 +258,11 @@ export function runCommandRunner(): void {
   const reply = (msg: Reply) => process.send?.(msg)
 
   /*
-   * 父进程没了就跟着退。**不杀已经在跑的那些命令**——它们派生的服务是用户要的
-   * 进程，而且手里没有那份监听句柄，留着不会占住任何端口。
+   * 父进程退出后随之退出。**不终止已在运行的命令**：它们派生的服务是用户需要的
+   * 进程，且不持有监听句柄，保留它们不会占用任何端口。
    *
-   * 两条判据都要：IPC 通道关闭是正常退出路径；父进程被强杀时那个事件不一定到，
-   * 所以再盯一遍 pid。
+   * 两条判据都需要：IPC 通道关闭是正常退出路径；父进程被强制终止时该事件不一定到达，
+   * 因此另外轮询父进程 pid。
    */
   process.on('disconnect', () => process.exit(0))
   const parent = process.ppid
@@ -302,9 +302,9 @@ export function runCommandRunner(): void {
         ...(req.detached ? { detached: true } : {}),
       } as Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>)
       /*
-       * **脱开 runner 的生命周期。** 不 unref 的话 runner 退出时 Bun 会把它起的
-       * 子进程一并带走——而那些正是「命令留下的服务」，用户要它们继续运行。
-       * runner 退出只该带走那份监听句柄，不该带走任何进程。
+       * **与 runner 的生命周期解耦。** 不调用 unref 时，runner 退出时 Bun 会一并结束它启动的
+       * 子进程，而这些正是命令留下的服务，用户需要它们继续运行。
+       * runner 退出不应结束任何子进程。
        */
       proc.unref()
       const call: Call = { proc, dropped: { out: false, err: false }, exited: false, open: 2 }
@@ -334,7 +334,7 @@ export function runCommandRunner(): void {
   })
 }
 
-/** 一条流转发到底。`end` 在真 EOF 时调一次——那是「没人再扣着写端了」的唯一信号。 */
+/** 持续转发一条流直到结束。`end` 在真正 EOF 时调用一次，这是「已无进程持有写端」的唯一信号。 */
 async function relay(
   stream: ReadableStream<Uint8Array>,
   send: (d: string) => void,
@@ -352,7 +352,7 @@ async function relay(
   }
 }
 
-/** runner 自己那一份树杀。与 `sandbox.ts` 的同名函数同形，但那边不能反向依赖这里。 */
+/** runner 自身的树杀实现，与 `sandbox.ts` 的 `killTree` 结构相同。不从该文件导入：`sandbox.ts` 已依赖本文件，反向导入会形成循环依赖。 */
 function killTreeHere(proc: { pid: number; kill(): void }): void {
   if (process.platform === 'win32') {
     Bun.spawnSync(['taskkill', '/F', '/T', '/PID', String(proc.pid)], {

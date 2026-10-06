@@ -4,15 +4,15 @@
  * 覆盖范围：`transcript.ts` 全部（`stepsToUnits` + `stepsToWireMessages` +
  * `buildHistory`），以及 `store/repos.ts` 的 `settleRunningSteps`。
  *
- * **这一组要证伪的是什么。** 原始失败形状是实测出来的：运行库里
- * `SELECT role, COUNT(*) FROM messages GROUP BY role` 只回一行 `user`，
- * 而同一会话的 steps 有 20 条 text + 42 条 tool_action。模型第二轮起看到的
- * 输入字面上是「用户说了三次话，助手一次都没回」。
+ * 本组测试用于证伪以下问题。原始失败形状来自实测：运行库中
+ * `SELECT role, COUNT(*) FROM messages GROUP BY role` 只返回一行 `user`，
+ * 而同一会话的 steps 有 20 条 text 与 42 条 tool_action。从第二轮起，模型取得的
+ * 输入中只有用户消息，没有任何助手回复。
  *
- * 所以断言不能是「投影函数返回了几条消息」——那种断言在顺序错、配对错、
- * 重复注入这三种失败形状下**全都放行**。下面四组是叠加的，缺一放行一类 bug：
- * 结构（形状与精确条数）· 配对（provider 会不会收）· 复现（原始失败形状本身）·
- * 中断残留（波次 1 的成果不许被吞）。
+ * 因此断言不能是「投影函数返回了几条消息」：这种断言在顺序错误、配对错误、
+ * 重复注入三种失败形状下全部通过。下面四组相互叠加，缺少任一组都会漏过一类缺陷：
+ * 结构（形状与精确条数）· 配对（provider 是否接受）· 复现（原始失败形状本身）·
+ * 中断残留（波次 1 的结果不得丢失）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -131,11 +131,11 @@ function step(over: Partial<Step>): Step {
 }
 
 /**
- * provider 侧的配对规则，写成断言。
+ * provider 侧的配对规则，以断言表示。
  *
  * Anthropic 与多数兼容端点都要求：每条 assistant 的 tool_call 必须紧跟配对的
- * tool 结果，缺一条或多一条都是 400。把它做成校验器而不是「相信不会错」，
- * 是因为顺序/配对出问题时**子串断言完全看不出来**——请求体里确实「含」那段字。
+ * tool 结果，缺少或多出一条都返回 400。将其实现为校验器而不是假定不会出错，
+ * 是因为顺序或配对出错时子串断言无法发现：请求体中确实包含该段文字。
  */
 function assertPairs(messages: WireMessage[]): void {
   for (let i = 0; i < messages.length; i++) {
@@ -146,7 +146,7 @@ function assertPairs(messages: WireMessage[]): void {
     expect(following.map((f) => f.role)).toEqual(ids.map(() => 'tool'))
     expect(following.map((f) => f.toolCallId)).toEqual(ids)
   }
-  // 反过来也要成立：没有孤儿 tool 消息。
+  // 反向同样成立：不存在孤儿 tool 消息。
   const declared = new Set(messages.flatMap((m) => m.toolCalls?.map((c) => c.id) ?? []))
   for (const m of messages) {
     if (m.role === 'tool') expect(declared.has(m.toolCallId ?? '')).toBe(true)
@@ -156,12 +156,12 @@ function assertPairs(messages: WireMessage[]): void {
 /**
  * 单元戳。
  *
- * 压缩按戳切界，所以这里钉两件事：**一个执行波次的全部消息共用一个戳**
- * （共戳即同进同出，tool_call 与 tool_result 永远不会被切开），
- * **戳取单元里最后一个 step 的 seq**（活的 transcript 那侧盖的是波次跑完时的
+ * 压缩按戳划分边界，因此此处锁定两项约束：一个执行波次的全部消息共用一个戳
+ * （共用一个戳即一同保留或一同压缩，tool_call 与 tool_result 不会被分开），
+ * 戳取单元中最后一个 step 的 seq（实时 transcript 一侧标记的是波次执行完毕时的
  * 高水位，两处必须是同一个数）。
  */
-describe('可折单元的戳', () => {
+describe('可折叠单元的戳', () => {
   test('一个波次的 assistant 与它的 tool 结果共用一个戳', () => {
     const units = stepsToUnits([
       step({ seq: 1, kind: 'text', content: '先读两个文件。', toolName: null, toolCallId: null }),
@@ -177,7 +177,7 @@ describe('可折单元的戳', () => {
     ])
   })
 
-  test('不同波次各自一个戳，且按 seq 递增', () => {
+  test('不同波次各有一个戳，且按 seq 递增', () => {
     const units = stepsToUnits([
       step({ seq: 1, providerBatchId: 'b1', toolCallId: 'A' }),
       step({ seq: 2, providerBatchId: 'b2', toolCallId: 'B' }),
@@ -186,7 +186,7 @@ describe('可折单元的戳', () => {
     expect(units[0]!.stamp < units[1]!.stamp).toBe(true)
   })
 
-  test('尾部的纯文本自成一个单元，戳取它自己的 seq', () => {
+  test('尾部的纯文本单独构成一个单元，戳取其自身的 seq', () => {
     const units = stepsToUnits([
       step({ seq: 1, toolCallId: 'A', callIndex: 0 }),
       step({ seq: 2, kind: 'text', content: '说完了。', toolName: null, toolCallId: null }),
@@ -195,7 +195,7 @@ describe('可折单元的戳', () => {
     expect(units[1]!.stamp).toBe(stepStamp('rn', 2))
   })
 
-  test('归属消息 id 与戳一起盖上，跨 run 投影回历史后定位不变', () => {
+  test('归属消息 id 与戳一同标记，跨 run 投影回历史后定位不变', () => {
     const units = stepsToUnits([step({ seq: 5, toolCallId: 'A', callIndex: 0 })], {
       messageId: 'ms_001' as MessageId,
     })
@@ -219,7 +219,7 @@ describe('steps 投影', () => {
     ).toBe('先分析')
   })
 
-  test('完整回放模式不丢只有思考、没有正文的终止轮', () => {
+  test('完整回放模式不丢弃只有思考、没有正文的终止轮', () => {
     const out = stepsToWireMessages(
       [
         step({
@@ -244,7 +244,7 @@ describe('steps 投影', () => {
       step({ seq: 3, toolCallId: 'B', callIndex: 1 }),
     ])
 
-    // 精确条数是抓「重复注入」的唯一手段——多折一遍照样能通过子串断言。
+    // 精确条数是检出重复注入的唯一手段：多折叠一次同样能通过子串断言。
     expect(out).toHaveLength(3)
     expect(out[0]!.role).toBe('assistant')
     expect(out[0]!.toolCalls?.map((c) => c.id)).toEqual(['A', 'B'])
@@ -255,11 +255,11 @@ describe('steps 投影', () => {
   })
 
   /**
-   * DeepSeek 类兼容端点要求带 tool_calls 的 assistant 消息原样回传
-   * `reasoning_content`，**否则后续轮次 400**（`ai/types.ts` 与
-   * `openai-compat.ts` 都记着这条，标注「这不是可选优化」）。
+   * DeepSeek 等兼容端点要求带 tool_calls 的 assistant 消息原样回传
+   * `reasoning_content`，否则后续轮次返回 400（`ai/types.ts` 与
+   * `openai-compat.ts` 均记录了该要求）。
    */
-  test('思考正文从独立 step 读回，挂在 assistant 上', () => {
+  test('思考正文从独立 step 读取，附加在 assistant 消息上', () => {
     const out = stepsToWireMessages([
       step({ seq: 1, kind: 'thinking', content: '让我先看看这个文件。' }),
       step({ seq: 2, toolCallId: 'A', callIndex: 0 }),
@@ -268,7 +268,7 @@ describe('steps 投影', () => {
     expect(out[0]!.reasoningContent).toBe('让我先看看这个文件。')
   })
 
-  test('callIndex 决定顺序，不是落库顺序', () => {
+  test('callIndex 决定顺序，而不是写入顺序', () => {
     const out = stepsToWireMessages([
       step({ seq: 1, toolCallId: 'B', callIndex: 1 }),
       step({ seq: 2, toolCallId: 'A', callIndex: 0 }),
@@ -277,7 +277,7 @@ describe('steps 投影', () => {
     assertPairs(out)
   })
 
-  test('不同 batch 不合并成一个 assistant 轮', () => {
+  test('不同 batch 不合并为一个 assistant 轮', () => {
     const out = stepsToWireMessages([
       step({ seq: 1, providerBatchId: 'b1', toolCallId: 'A' }),
       step({ seq: 2, providerBatchId: 'b2', toolCallId: 'B' }),
@@ -287,10 +287,10 @@ describe('steps 投影', () => {
   })
 
   /**
-   * 归属未记录的旧文本不能被当成「另一次生成」。拆开它等于凭空造出一条
-   * 没有工具调用的 assistant 消息，而那段正文在活侧本来就挂在下面这批调用上。
+   * 归属未记录的旧文本不能视为另一次生成。将其拆分等于凭空构造一条
+   * 没有工具调用的 assistant 消息，而该段正文在实时 transcript 中与其后的这批调用属于同一条消息。
    */
-  test('文本归属为 null 时不与其后的工具调用切开', () => {
+  test('文本归属为 null 时不与其后的工具调用分开', () => {
     const out = stepsToWireMessages([
       step({
         seq: 1,
@@ -330,8 +330,8 @@ describe('steps 投影', () => {
     expect(out.map((m) => m.content)).toEqual(['上半句', '下半句'])
   })
 
-  /** 恢复路径整体替换 payload，`args` 被抹掉——投影不能因此崩，也不能编参数。 */
-  test('孤儿 payload（args 被抹）投影成空参数 + failure，不编造', () => {
+  /** 恢复路径整体替换 payload，`args` 被清除：投影不得因此崩溃，也不得编造参数。 */
+  test('孤儿 payload（args 已清除）投影为空参数与 failure，不编造参数', () => {
     const out = stepsToWireMessages([
       step({
         seq: 1,
@@ -368,12 +368,12 @@ describe('历史装配', () => {
   }
 
   /**
-   * **原始失败形状的直接复现。**
+   * 原始失败形状的直接复现。
    *
-   * 第一轮跑完之后，第二轮装配出的历史里必须有 assistant 内容。
-   * 实测库里 messages 表只有 user 行，这条断言在修复前必红。
+   * 第一轮执行完毕之后，第二轮装配的历史中必须有 assistant 内容。
+   * 实测库中 messages 表只有 user 行，该断言在修复前必然失败。
    */
-  test('第二轮的历史里有第一轮的 assistant 与工具结果', async () => {
+  test('第二轮的历史中包含第一轮的 assistant 与工具结果', async () => {
     const { store, conv, ask, run } = fixture()
     const m1 = ask('帮我做一个我的世界游戏')
     const r1 = run(m1)
@@ -403,13 +403,13 @@ describe('历史装配', () => {
     expect(history.some((m) => m.role === 'tool')).toBe(true)
     expect(JSON.stringify(history)).toContain('写入 main.js')
     assertPairs(history)
-    // 两条 user + 一条 assistant(text 与 toolCalls 合流) + 一条 tool。
+    // 两条 user、一条 assistant（text 与 toolCalls 合并）、一条 tool。
     expect(history.filter((m) => m.role === 'user')).toHaveLength(2)
     expect(history).toHaveLength(4)
   })
 
   /** 媒体去留由装配按字节预算决定（`agent` 的 `evictedMedia`），历史轮次的附件与当前轮同样转换。 */
-  test('历史与当前用户消息的附件都经同一个转换', async () => {
+  test('历史与当前用户消息的附件经过同一转换', async () => {
     const { store, conv } = fixture()
     appendMessage(store, {
       conversationId: conv.id,
@@ -526,13 +526,13 @@ describe('历史装配', () => {
   })
 
   /**
-   * **中断残留。** 波次 1 已成功、波次 2 被掐断留下 running 行。
+   * 中断残留：波次 1 已成功，波次 2 被中止并留下 running 行。
    *
-   * 整批跳过是崩溃窗口的窄守卫，但一个 batchId 覆盖整个模型回合——
-   * 如果 `settleRunningSteps` 不工作，跳过会连带吞掉波次 1 已经写盘的结果，
-   * 而那正是「工具重复执行、文件重读」这个要治的问题在中断场景的复发。
+   * 整批跳过是针对崩溃窗口的窄守卫，但一个 batchId 覆盖整个模型回合：
+   * 若 `settleRunningSteps` 失效，跳过会一并丢弃波次 1 已写入磁盘的结果，
+   * 即「工具重复执行、文件重读」这一问题在中断场景下复现。
    */
-  test('中断后：孤儿落终态、配对完整、已成功的结果仍在', async () => {
+  test('中断后：孤儿 step 写为终态、配对完整、已成功的结果保留', async () => {
     const { store, conv, ask, run } = fixture()
     const m1 = ask('批量改文件')
     const r1 = run(m1)
@@ -552,7 +552,7 @@ describe('历史装配', () => {
       args: { path: 'a.ts' },
       outcome: { status: 'success', executed: true, message: '写入 a.ts' },
     })
-    // 波次 2：进了执行器就被掐断。
+    // 波次 2：进入执行器后即被中止。
     const orphan = appendStep(store, {
       runId: r1.id,
       seq: 2,
@@ -573,15 +573,15 @@ describe('历史装配', () => {
     const history = await buildHistory(store, conv.id, m2, noAttachments)
 
     assertPairs(history)
-    // 已经写盘的那条不许消失。
+    // 已写入磁盘的结果不得丢失。
     expect(JSON.stringify(history)).toContain('写入 a.ts')
-    // 被掐断的那条如实说「可能已执行、结果未知」，不说「没执行」。
+    // 被中止的调用如实标为「可能已执行、结果未知」，不标为「未执行」。
     const unknown = history.find((m) => m.role === 'tool' && m.toolCallId === 'B')
     expect(JSON.parse(String(unknown?.content)).executed).toBe(true)
   })
 
-  /** 未进执行器就被中断的，如实标「没执行」——不能和「结果未知」混成一种。 */
-  test('未进执行器的中断标 executed=false', async () => {
+  /** 未进入执行器即被中断的调用如实标为「未执行」，不得与「结果未知」合并为同一种。 */
+  test('未进入执行器的中断标为 executed=false', async () => {
     const { store, ask, run } = fixture()
     const m1 = ask('跑')
     const r1 = run(m1)
@@ -605,12 +605,12 @@ describe('历史装配', () => {
 
 describe('思考的投影', () => {
   /**
-   * 复现的是原始失败形状：迁移 26 之前思考寄生在批次首条工具行的 `content` 上，
-   * 因此纯文本轮的思考无处可放、直接丢弃。
+   * 复现原始失败形状：迁移 26 之前思考附带在批次首条工具行的 `content` 中，
+   * 因此纯文本轮的思考没有存放位置，被直接丢弃。
    *
-   * 模型侧与界面侧口径**刻意不同**，这里锁的是模型侧：
-   * 纯文本轮不带 `reasoningContent`——活的 transcript 只在有工具调用时才挂它
-   * （`agent/loop/turn-end.ts`），投影多带一份就与活的不同形，缓存前缀从那里断掉。
+   * 模型侧与界面侧的口径有意不同，此处锁定的是模型侧：
+   * 纯文本轮不带 `reasoningContent`：实时 transcript 只在有工具调用时附加该字段
+   * （`agent/loop/turn-end.ts`），投影多带一份即与实时 transcript 结构不同，缓存前缀从该处失效。
    */
   test('有工具调用时带上思考，纯文本轮不带', () => {
     const withTools = stepsToWireMessages([
@@ -631,13 +631,13 @@ describe('思考的投影', () => {
   })
 
   /**
-   * 轮内自动重发留下的死思考不进模型视图。
+   * 轮内自动重发留下的失败思考不进入模型视图。
    *
-   * 复现的是原始失败形状：断流重发**不换 run**，失败那次与重发那次的思考落在
-   * 同一个 run 的 step 表里且相邻。不排除的话两段无关生成会被拼成一条
-   * `reasoningContent` 回传，与活侧不同形。
+   * 复现原始失败形状：断流后重发不更换 run，失败请求与重发请求的思考写入
+   * 同一个 run 的 step 表且相邻。不排除时两段无关的生成会被拼接为一条
+   * `reasoningContent` 回传，与实时 transcript 结构不同。
    */
-  test('失败的思考 step 不进 reasoningContent', () => {
+  test('失败的思考 step 不进入 reasoningContent', () => {
     const out = stepsToWireMessages([
       step({
         id: 'st1' as never,
@@ -652,7 +652,7 @@ describe('思考的投影', () => {
     expect(out[0]?.reasoningContent).toBe('重发那段')
   })
 
-  test('工具行正文不再是思考的第二来源', () => {
+  test('工具行正文不作为思考的第二来源', () => {
     const out = stepsToWireMessages([step({ id: 'st1' as never, seq: 1, content: '错误旧形状' })])
     expect(out[0]?.reasoningContent).toBeUndefined()
   })

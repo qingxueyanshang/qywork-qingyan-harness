@@ -1,8 +1,8 @@
 /**
- * `office.ts` 的 Office 宿主（开关与缺 Python 时不给端口），以及 `session.ts` 里与 `office`
- * 相关的装配：有端口才注册 Office 工具；本轮技能索引里的目录成为工具的只读根。
+ * `office.ts` 的 Office 宿主（开关关闭与缺少 Python 时不提供端口），以及 `session.ts` 中与 `office`
+ * 相关的装配：有端口时才注册 Office 工具；本轮技能索引中的目录成为工具的只读根。
  *
- * 真实探测（起 Python、导入文档库、识别办公软件）由 `bun run test:office` 与真机验收覆盖。
+ * 真实探测（启动 Python、导入文档库、识别办公软件）由 `bun run test:office` 与真机验收覆盖。
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
@@ -28,7 +28,7 @@ const PORT: OfficePort = {
 }
 
 describe('Office 宿主', () => {
-  test('指定的解释器不存在：不可用，不给端口', async () => {
+  test('指定的解释器不存在：不可用，不提供端口', async () => {
     const config = {
       providers: {},
       officePython: join(tmpdir(), 'qywork-no-python.exe'),
@@ -41,7 +41,7 @@ describe('Office 宿主', () => {
     expect(host.port()).toBeUndefined()
   })
 
-  test('开关按取状态时的配置现判', () => {
+  test('开关按读取状态时的配置实时判定', () => {
     let config = { providers: {} } as QyConfig
     const host = createOfficeHost(() => config)
     expect(host.status().enabled).toBe(true)
@@ -86,7 +86,7 @@ function config(): QyConfig {
   }
 }
 
-/** 第一轮调一次工具，第二轮收尾。 */
+/** 第一轮调用一次工具，第二轮结束。 */
 function toolThenStop(name: string, args: Record<string, unknown>) {
   const chunk = (body: unknown) => `data: ${JSON.stringify(body)}\n\n`
   return (n: number) =>
@@ -132,7 +132,7 @@ async function session(office?: OfficePort) {
 }
 
 describe('会话装配', () => {
-  test('有端口才注册 office', async () => {
+  test('有端口时才注册 office', async () => {
     const withPort = await session(PORT)
     const tools = ['read_office_guide', 'read_office', 'write_office', 'view_office']
     expect(withPort.names()).toEqual(expect.arrayContaining(tools))
@@ -143,7 +143,7 @@ describe('会话装配', () => {
     without.store.close()
   })
 
-  test('全局技能目录里的参考文件可以读，不能写', async () => {
+  test('全局技能目录中的参考文件可读取，不可写入', async () => {
     process.env.QYWORK_HOME = await mkdtemp(join(tmpdir(), 'qywork-office-home-'))
     const dir = join(process.env.QYWORK_HOME, 'skills', 'deck')
     await mkdir(dir, { recursive: true })

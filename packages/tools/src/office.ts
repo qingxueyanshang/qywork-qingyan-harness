@@ -1,8 +1,8 @@
 /**
  * Office 工具分别提供操作说明、读取、制作与页面查看，共用一个执行程序（Python worker）。
  *
- * 模型写 Python 制作脚本，`write` 执行它；办公软件只以只读方式打开文件做重算、目录页码回填、导出与渲染，
- * 交付件从不经办公软件另存（WPS 另存会写最近文档与账号打开记录，并重写整个文件包）。
+ * 模型编写 Python 制作脚本，由 `write` 执行；办公软件只以只读方式打开文件，用于重算、目录页码回填、导出与渲染，
+ * 交付文件从不经由办公软件另存（WPS 另存会写入最近文档与账号打开记录，并重写整个文件包）。
  * 执行程序的位置与本机能力由宿主注入（`ctx.office`），没有可用的 Python 与文档库时本工具不注册。
  *
  * worker 的调用约定见 `office-worker.ts`。
@@ -33,10 +33,10 @@ import {
 import { redactSecrets } from './secrets.ts'
 import { deliverReadable } from './sink.ts'
 
-/** `write` 执行模型脚本并渲染整份文件，大文档导出要几十秒；其余动作只读。 */
+/** `write` 执行模型脚本并渲染整份文件，大文档导出需要数十秒；其余动作只读。 */
 const WRITE_TIMEOUT_MS = 600_000
 
-/** 回执里脚本输出的保留长度。完整输出在调用目录的 `response.json` 里。 */
+/** 回执中保留的脚本输出长度。完整输出位于调用目录的 `response.json` 中。 */
 const SCRIPT_OUTPUT_CHARS = 4000
 
 const FORMATS = ['docx', 'pptx', 'xlsx'] as const
@@ -47,7 +47,7 @@ function formatOf(path: string): Format | null {
   return (FORMATS as readonly string[]).includes(ext) ? (ext as Format) : null
 }
 
-/** view 另收 PDF 原件（worker 直接按页栅格化，不经过办公软件）；read、write 仍只认 `FORMATS`。 */
+/** view 另外接受 PDF 原件（worker 直接按页栅格化，不经过办公软件）；read、write 只接受 `FORMATS`。 */
 function viewable(path: string): boolean {
   return formatOf(path) !== null || extname(path).toLowerCase() === '.pdf'
 }
@@ -86,7 +86,7 @@ async function read(ctx: ToolContext, port: OfficePort, args: Record<string, unk
   const res = run.response
   if (!res.ok) return { status: 'failure' as const, message: res.message + stageNote(res) }
   const sha = res.files?.[0]?.sha256
-  // 记下读到的那一版：之后的 write 以它为预期，文件被别处改过就返回冲突。
+  // 记录读取时的版本：之后的 write 以它为预期版本，文件被其他程序修改时返回冲突。
   if (sha) readHashes(ctx).set(abs, sha)
   const head = `${displayPath(ctx.workspaceRoot, abs)}\n`
   const text = res.text ?? ''
@@ -127,7 +127,7 @@ async function write(ctx: ToolContext, port: OfficePort, args: Record<string, un
       return {
         status: 'failure' as const,
         executed: false,
-        message: `${displayPath(ctx.workspaceRoot, abs)} 已存在但没读取过。先用 read_office 读取，再修改。`,
+        message: `${displayPath(ctx.workspaceRoot, abs)} 已存在但尚未读取。先用 read_office 读取，再修改。`,
       }
     }
     existed.add(abs)
@@ -167,7 +167,7 @@ async function write(ctx: ToolContext, port: OfficePort, args: Record<string, un
         : ''
     const state = f.committed
       ? `已写入${pages ? `（${pages}）` : ''}，sha256 ${f.sha256?.slice(0, 12)}`
-      : `未写入${f.candidate ? `，候选在 ${f.candidate}` : ''}`
+      : `未写入${f.candidate ? `，候选文件位于 ${f.candidate}` : ''}`
     lines.push(`- ${shown}：${state}`)
     for (const c of f.checks ?? []) {
       if (c.level !== 'info') lines.push(`  · [${c.level}] ${c.message}`)
@@ -200,7 +200,7 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
   if (ctx.vision === false) {
     return {
       status: 'failure' as const,
-      message: '当前模型不接受图片输入，看不了页面。换一个支持图片的模型再查看。',
+      message: '当前模型不接受图片输入，无法查看页面。更换支持图片的模型后再查看。',
     }
   }
   const abs = await resolveInWorkspace(rootsOf(ctx), String(args.path ?? ''), { mustExist: true })
@@ -225,7 +225,7 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
   for (const img of res.images) {
     const raw = new Uint8Array(await readFile(img.path))
     const fit = await shrinkImage(raw, 'image/png')
-    // 余量放不下一张图时照样投递，超出的部分由下一次发送前的压缩收回（同 read_file）。
+    // 余量不足以容纳一张图片时仍然投递，超出部分由下一次发送前的压缩回收（与 read_file 相同）。
     if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
     images.push({ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime })
   }
@@ -335,7 +335,7 @@ export const writeOfficeTool: ToolSpec = {
       inputs: {
         type: 'array',
         items: { type: 'string' },
-        description: '脚本要读的文件（模板、素材、数据）',
+        description: '脚本读取的文件（模板、素材、数据）',
       },
       outputs: {
         type: 'array',
@@ -375,7 +375,7 @@ export const viewOfficeTool: ToolSpec = {
       pages: {
         type: 'array',
         items: { type: 'string' },
-        description: '页码，可一次给多页，默认第 1 页；xlsx 写「工作表名:页码」',
+        description: '页码，可一次提供多页，默认第 1 页；xlsx 写「工作表名:页码」',
       },
       region: {
         type: 'object',
@@ -387,7 +387,7 @@ export const viewOfficeTool: ToolSpec = {
         },
         required: ['left', 'top', 'width', 'height'],
         additionalProperties: false,
-        description: '可选，按页面比例（0 到 1）裁出局部，从原始渲染图裁取',
+        description: '可选，按页面比例（0 到 1）指定局部区域，从原始渲染图裁剪',
       },
     },
     required: ['path'],

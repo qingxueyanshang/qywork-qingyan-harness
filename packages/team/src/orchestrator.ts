@@ -1,11 +1,11 @@
 /**
- * workflow 的推进器：给定这张图此刻的格状态与批准，算出**这一趟该派哪几格**、
- * 哪几格因为上游没成功而跳过、到了哪个检查点。
+ * workflow 的推进器：根据工作流图当前的节点状态与批准记录，计算**本次应派发的节点**、
+ * 因上游未成功而跳过的节点，以及已到达的检查点。
  *
- * **纯函数，不等任何一格。** 派出去、写状态、发回执由派活通道做；一格跑完它再调一次
- * 这里。并行只发生在同一批就绪节点之间，上限沿用首派那次的约定。
+ * **纯函数，不等待任何节点。** 派发、写入状态、发送回执由派发通道完成；节点执行完毕后派发通道再次调用
+ * 本函数。并行只发生在同一批就绪节点之间，上限沿用首次派发时的设定。
  *
- * 节点派给谁、怎么建、怎么续，全在派活通道：这里只管依赖、并发与检查点，
+ * 节点的派发目标、创建方式与续接方式全部由派发通道决定：此处只处理依赖、并发与检查点，
  * 不区分内置子 agent 与外部 CLI。
  */
 import {
@@ -23,7 +23,7 @@ import {
 } from '@qywork/core'
 import type { PlanNode } from './types.ts'
 
-/** 加载期校验引用用的已知集合：角色 id、CLI id、本会话已有子 agent id。 */
+/** 加载期校验引用所用的已知集合：角色 id、CLI id、本会话已有的子 agent id。 */
 export interface PlanKnown {
   roles: ReadonlySet<string>
   clis: ReadonlySet<string>
@@ -40,16 +40,16 @@ export interface OrchestratorReview {
 export interface AdvanceInput {
   plan: PlanNode[]
   goal: string
-  /** 一张图里同时最多几个节点在跑。由 workflow 首派参数决定，没有第二个来源。 */
+  /** 一张图中同时运行的节点数上限。由 workflow 首次派发的参数决定，没有第二个来源。 */
   maxConcurrent: number
-  /** 每一格最近一次状态。回执与「在不在跑」都从它读，没有第二份。 */
+  /** 每个节点的最近状态。回执与运行状态都从此读取，没有第二份。 */
   states: Record<string, NodeState>
   approvals: Record<string, string>
-  /** 这次调用带的审查动作。一格跑完后的推进不带。 */
+  /** 本次调用携带的审查动作。节点执行完毕后的推进不携带。 */
   review?: OrchestratorReview
 }
 
-/** 一格要怎么派：目标与任务正文都算好了，派活通道照着发。 */
+/** 节点的派发内容：目标与任务正文均已计算完成，派发通道按此发送。 */
 export interface NodeDispatch {
   nodeId: string
   target: SubagentTarget
@@ -60,30 +60,30 @@ export interface NodeDispatch {
 
 export interface AdvanceResult {
   dispatch: NodeDispatch[]
-  /** 上游没成功、这一趟直接判跳过的格。它们是终态，检查点据此往下走。 */
+  /** 因上游未成功而在本次判定为跳过的节点。跳过是终态，检查点据此继续推进。 */
   skipped: { nodeId: string; state: NodeState }[]
-  /** 依赖齐了但撞并发闸的格。 */
+  /** 依赖已满足但受并发上限限制的节点。 */
   queued: { nodeId: string; state: NodeState }[]
-  /** 上游全部终态、还没批准的检查点。到了就发检查点回执。 */
+  /** 上游全部到达终态、尚未批准的检查点。到达时发送检查点回执。 */
   checkpoint: string | null
-  /** 全部格终态、全部检查点已批准。 */
+  /** 全部节点到达终态，全部检查点已批准。 */
   completed: boolean
-  /** 这次调用应用下去的审查，随转移落库。 */
+  /** 本次调用应用的审查，随状态转移写入数据库。 */
   review?: WorkflowAppliedReview
 }
 
 const isCheckpoint = (node: PlanNode): node is WorkflowCheckpointNode => node.kind === 'checkpoint'
 const isAgent = (node: PlanNode): node is WorkflowAgentNode => node.kind !== 'checkpoint'
 
-/** 续接原子 agent 时，没有点名指令的那几格发这一句。 */
+/** 续接原有子 agent 时，未指定指令的节点发送此句。 */
 const RESUME_INSTRUCTION =
   '上游结果已被主会话要求修订。请重新核验原任务，并基于更新后的上游产出给出新版结果。'
 
 /**
- * 推进一趟。**入参不被修改**：状态怎么落是调用方的事。
+ * 推进一次。**不修改入参**：状态如何写入由调用方负责。
  *
- * 审查不成立（检查点不存在、重复批准、点名的格还没有终态）直接抛：那是模型写错了
- * 参数，要原样交回去，不能压成一句「工具执行出错」。
+ * 审查不成立（检查点不存在、重复批准、指定的节点尚未到达终态）时直接抛错：这是模型写错了
+ * 参数，错误必须原样返回，不能简化为「工具执行出错」。
  */
 export function advance(input: AdvanceInput): AdvanceResult {
   const { plan, goal, maxConcurrent } = input
@@ -99,8 +99,8 @@ export function advance(input: AdvanceInput): AdvanceResult {
   let results = workflowResults(plan, states)
   const skipped: { nodeId: string; state: NodeState }[] = []
   /*
-   * 上游没成功的格判跳过，而且跳过会传播：不判到不动为止的话，它下游那个检查点
-   * 这一趟不会被判成就绪，图就停在没有人能推进的地方。
+   * 上游未成功的节点判定为跳过，且跳过会向下传播：不迭代到结果不再变化时，其下游检查点
+   * 本次不会被判定为就绪，图将停滞在无法推进的位置。
    */
   let changed = true
   while (changed) {
@@ -129,8 +129,8 @@ export function advance(input: AdvanceInput): AdvanceResult {
     if (results[node.id] || states[node.id]?.phase === 'working') continue
     if (!dependenciesResolved(node, results, approvals)) continue
     if (working + dispatch.length >= maxConcurrent) {
-      // 依赖已经齐了却没启动，唯一原因就是并发闸。没有这一帧时图上只剩一格
-      // 无说明的灰块，用户无法区分「正在排队」和「调度器漏掉了它」。
+      // 依赖已满足却未启动，唯一原因是并发上限。不发送该状态时图上只有一个
+      // 无说明的灰色节点，用户无法区分正在排队与调度器遗漏。
       const prior = states[node.id]
       if (prior?.phase === 'queued') continue
       queued.push({
@@ -156,13 +156,13 @@ export function advance(input: AdvanceInput): AdvanceResult {
 }
 
 /**
- * 批准或修订落到状态上。
+ * 将批准或修订应用到状态上。
  *
- * 三道前置条件只约束 approve：必须还没批准过、上游回执齐全、检查点存在。
- * revise 一条都不设：批准之后要能返工（否则一次 approve 等于解散整张图），
- * 上一轮被中断、只有部分节点留下回执时也要能对留下回执的那个续发。
- * revise 自己的前置条件是**被点名的格已经终态**——还在跑的格改不了，
- * 它的回执马上就到。
+ * 三项前置条件只约束 approve：尚未批准过、上游回执齐全、检查点存在。
+ * revise 不设这三项：批准之后必须能够返工（否则一次 approve 即等于结束整张图），
+ * 上一轮被中断、只有部分节点留下回执时，也必须能够对留下回执的节点续发。
+ * revise 自身的前置条件是**被指定的节点已到达终态**：仍在运行的节点无法修订，
+ * 其回执即将到达。
  */
 function applyReview(
   plan: PlanNode[],
@@ -174,7 +174,7 @@ function applyReview(
   const checkpoint = plan.find(
     (node): node is WorkflowCheckpointNode => isCheckpoint(node) && node.id === review.checkpointId,
   )
-  if (!checkpoint) throw new Error(`找不到检查点 ${review.checkpointId}`)
+  if (!checkpoint) throw new Error(`未找到检查点 ${review.checkpointId}`)
   const results = workflowResults(plan, states)
 
   if (review.decision === 'approve') {
@@ -202,7 +202,7 @@ function applyReview(
 
   for (const revision of review.revisions) {
     if (!results[revision.nodeId]) {
-      throw new Error(`节点 ${revision.nodeId} 还没有终态，等它的回执再修订`)
+      throw new Error(`节点 ${revision.nodeId} 尚无终态，收到其回执后再修订`)
     }
     corrections.set(revision.nodeId, revision.instruction)
   }
@@ -220,13 +220,13 @@ function dependenciesResolved(
 }
 
 /**
- * 一格派出去时的目标与任务正文。
+ * 节点派发时的目标与任务正文。
  *
- * 格上留着子 agent id 又没有回执，说明它跑过、被 revise 作废了：向**原子 agent**
- * 续发，只发修订指令与最新上游产出。把整段任务再抄一遍会让它每一轮都从头读同一段话。
+ * 节点上保留子 agent id 而没有回执，说明该节点执行过且已被 revise 作废：向**原有子 agent**
+ * 续发，只发送修订指令与最新上游产出。重复发送整段任务会使其每一轮都重新阅读同一段内容。
  *
- * **判据是这一格跑过没有，不是目标像不像已有子 agent。** 首次派给一个已有子 agent 的格
- * 要发它自己的 `task`——按目标判的话那段任务一个字都发不出去。
+ * **判据是该节点是否执行过，不是目标是否为已有子 agent。** 首次派发给已有子 agent 的节点
+ * 必须发送节点自身的 `task`：按目标判定时该任务将完全无法发出。
  */
 function planDispatch(
   node: WorkflowAgentNode,
@@ -265,7 +265,7 @@ function planDispatch(
     nodeId: node.id,
     target,
     prompt,
-    // 续接已有子 agent 时模型跟着它自己的会话走，节点上的覆盖只在新建时生效。
+    // 续接已有子 agent 时模型沿用其会话的设置，节点上的覆盖只在新建时生效。
     ...(!continuing && node.provider ? { provider: node.provider } : {}),
     ...(!continuing && node.model ? { model: node.model } : {}),
   }
@@ -282,7 +282,7 @@ function ancestorOf(plan: PlanNode[], ancestor: string, nodeId: string): boolean
   return visit(nodeId)
 }
 
-/** 加载期挡住成环、悬空引用、引用不存在的目标，以及会绕过主会话检查点的分支。 */
+/** 在加载期拒绝成环、悬空引用、引用不存在的目标，以及会绕过主会话检查点的分支。 */
 export function validatePlan(plan: PlanNode[], known: PlanKnown): void {
   const nodeIds = new Set(plan.map((node) => node.id))
   if (nodeIds.size !== plan.length) throw new Error('plan 节点 id 重复')
@@ -340,8 +340,8 @@ export function validatePlan(plan: PlanNode[], known: PlanKnown): void {
       }
     }
   }
-  // 每个节点的成败都必须由某个检查点裁决。没有下游检查点的节点谁都没验收过，
-  // 失败之后也没有回流入口。不需要验收的一次性派活归 subagent，不画图。
+  // 每个节点的成败都必须由某个检查点裁决。没有下游检查点的节点未经任何验收，
+  // 失败之后也没有回流入口。不需要验收的一次性任务派发使用 subagent，不使用工作流图。
   for (const node of plan) {
     if (isCheckpoint(node)) continue
     if (!checkpoints.some((checkpoint) => ancestorOf(plan, node.id, checkpoint.id))) {

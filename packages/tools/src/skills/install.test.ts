@@ -50,7 +50,7 @@ function context(paths: string[] = []): ToolContext {
   }
 }
 
-test('会话 ZIP 附件经正式工具导入，包内脚本不执行，二进制保真并可当轮读取', async () => {
+test('会话 ZIP 附件经正式工具导入，包内脚本不执行，二进制内容不变，并可在当前轮次读取', async () => {
   const path = await bundle({
     'release/skills/demo/SKILL.md': strToU8(markdown()),
     'release/skills/demo/assets/中文.bin': binary,
@@ -77,7 +77,7 @@ test('会话 ZIP 附件经正式工具导入，包内脚本不执行，二进制
   expect(await readdir(join(root, '.agents'))).toEqual(['skills'])
 })
 
-test('全局导入遵循 QYWORK_HOME；被项目层覆盖时明确回报实际副本', async () => {
+test('全局导入遵循 QYWORK_HOME；被项目层覆盖时明确报告实际生效的副本', async () => {
   const path = await bundle({ 'demo/SKILL.md': strToU8(markdown()) })
   expect((await importSkills(root, 'project', path)).ok).toBe(true)
   const global = await importSkills(root, 'global', path)
@@ -109,7 +109,7 @@ test('无描述、YAML 多行标量、路径穿越及符号链接条目均在提
   expect(await scanSkills(root)).toEqual([])
 })
 
-test('替换需要显式授权，升级完整替换资源，失败保持旧版本', async () => {
+test('替换需要显式授权，升级时完整替换资源，失败时保留旧版本', async () => {
   const initial = await bundle({
     'demo/SKILL.md': strToU8(markdown()),
     'demo/obsolete.txt': binary,
@@ -126,7 +126,7 @@ test('替换需要显式授权，升级完整替换资源，失败保持旧版�
   expect((await scanSkills(root))[0]?.description).toBe('新版')
 })
 
-test('两个并发安装不会覆盖同目录；层内元信息重名也不能静默失效', async () => {
+test('两个并发安装不会覆盖同一目录；层内元信息重名时不会静默失效', async () => {
   const path = await bundle({ 'demo/SKILL.md': strToU8(markdown()) })
   const results = await Promise.all([
     importSkills(root, 'project', path),

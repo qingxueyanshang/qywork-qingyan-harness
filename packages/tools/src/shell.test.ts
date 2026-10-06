@@ -10,7 +10,7 @@ import { makeShellTool } from './shell.ts'
 
 const shell = { path: 'unused', argv: [], hint: '测试 shell。' }
 
-test('同一轮安装 Git 后仍使用声明的 PowerShell，新工具才切换到 Bash', async () => {
+test('同一轮内安装 Git 后已创建的工具仍使用声明的 PowerShell，新创建的工具切换到 Bash', async () => {
   if (process.platform !== 'win32') return
   const installed = commandShell()
   if (!installed?.scriptArgv) throw new Error('本回归测试需要 Git Bash')
@@ -74,8 +74,8 @@ describe('run_command 参数校验', () => {
 })
 
 describe('run_command 的子进程环境', () => {
-  /** 三个变量名分别归 bash / cmd / POSIX 工具链，取哪一个由子进程自己定，所以三个都要指对。 */
-  test('临时目录指到工作区的 .tmp，且目录先建出来', async () => {
+  /** 三个变量分别由 bash、cmd 与 POSIX 工具链读取，使用哪一个由子进程决定，因此三个都必须指向同一目录。 */
+  test('临时目录指向工作区的 .tmp，且目录已预先创建', async () => {
     const found = commandShell()
     if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
     const root = await mkdtemp(join(tmpdir(), 'qywork-shell-'))
@@ -103,8 +103,8 @@ describe('run_command 的子进程环境', () => {
 })
 
 describe('run_command 的用量记账', () => {
-  /** 命令已经执行、摘录已经投出，这一笔不记等于让同一决策里后面的读取工具按一份不存在的余额作准入。 */
-  test('额度剩不下时照样记账，同一决策里后面的读取工具看到余额 0', async () => {
+  /** 命令已执行、摘录已投递；不记录这笔用量，同一决策中后续的读取工具会按不存在的余额准入。 */
+  test('额度不足时仍记录用量，同一决策中后续的读取工具读到余额为 0', async () => {
     const found = commandShell()
     if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
     const root = await mkdtemp(join(tmpdir(), 'qywork-shell-budget-'))

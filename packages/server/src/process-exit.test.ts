@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { processExitObservationFromEnv, sanitizeProcessExitObservation } from './process-exit.ts'
 
-describe('上一份 sidecar 的退出现场', () => {
-  test('退出码、信号、时间和 stderr 原样解析，不用真假值吞掉退出码 0', () => {
+describe('上一个 sidecar 进程的退出信息', () => {
+  test('退出码、信号、时间和 stderr 原样解析，不因按真假值判断而丢失退出码 0', () => {
     expect(
       processExitObservationFromEnv({
         QYWORK_PREVIOUS_EXIT_KIND: 'terminated',
@@ -21,7 +21,7 @@ describe('上一份 sidecar 的退出现场', () => {
     })
   })
 
-  test('缺少可信的种类或时间就忽略，不能把普通 CLI 启动编成崩溃恢复', () => {
+  test('缺少可信的种类或时间时忽略，不能把普通 CLI 启动记为崩溃恢复', () => {
     expect(processExitObservationFromEnv({ QYWORK_PREVIOUS_EXIT_CODE: '1' })).toBeUndefined()
     expect(
       processExitObservationFromEnv({

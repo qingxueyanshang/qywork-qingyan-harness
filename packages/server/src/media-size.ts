@@ -1,17 +1,17 @@
 /**
- * 读工作区里图片、视频的像素宽高，给画布节点按实际比例定框；读视频时长，核对时间线片段。只读文件头与索引，不解码画面。
+ * 读取工作区中图片、视频的像素宽高，供画布节点按实际比例确定尺寸；读取视频时长，用于核对时间线片段。只读取文件头与索引，不解码画面。
  *
- * 图片认 PNG / JPEG / GIF / WebP（`imageSizeOf`）；视频认 ISO 基础媒体格式（mp4 / mov / m4v），
- * 取第一条宽高非零的轨道。其余格式与读不出的文件回 `null`，调用方按缺省框处理。
+ * 图片支持 PNG / JPEG / GIF / WebP（`imageSizeOf`）；视频支持 ISO 基础媒体格式（mp4 / mov / m4v），
+ * 取第一条宽高非零的轨道。其余格式与无法读取的文件返回 `null`，调用方按默认尺寸处理。
  */
 
 import { open } from 'node:fs/promises'
 import { type CanvasPixels, isInlineImage } from '@qywork/core'
 import { imageSizeOf } from '@qywork/tools'
 
-/** JPEG 的尺寸在第一个 SOF 段里，前面可能隔着带缩略图的 EXIF（上限 64 KB），读这么多足够。 */
+/** JPEG 的尺寸位于第一个 SOF 段中，其前可能有带缩略图的 EXIF（上限 64 KB），读取该长度即足够。 */
 const IMAGE_HEAD = 256 * 1024
-/** `moov` 只存索引，长视频也在几 MB 以内；超过这个数视为异常文件，不读。 */
+/** `moov` 只存储索引，长视频也在数 MB 以内；超过此值视为异常文件，不读取。 */
 const MAX_MOOV = 64 * 1024 * 1024
 const VIDEO_RE = /\.(mp4|mov|m4v)$/i
 
@@ -20,12 +20,12 @@ export async function mediaSizeOf(abs: string): Promise<CanvasPixels | null> {
     if (isInlineImage(abs)) return await imageHead(abs)
     if (VIDEO_RE.test(abs)) return await videoSize(abs)
   } catch {
-    // 读不出就按缺省框：尺寸只影响显示比例。
+    // 无法读取时按默认尺寸处理：尺寸只影响显示比例。
   }
   return null
 }
 
-/** 视频的时长（秒），取 `mvhd`。不是 mp4 / mov / m4v 或读不出时回 `null`，调用方不做时长核对。 */
+/** 视频的时长（秒），取自 `mvhd`。不是 mp4 / mov / m4v 或无法读取时返回 `null`，调用方不做时长核对。 */
 export async function mediaDurationOf(abs: string): Promise<number | null> {
   try {
     if (!VIDEO_RE.test(abs)) return null
@@ -53,7 +53,7 @@ async function videoSize(abs: string): Promise<CanvasPixels | null> {
   return moov ? trackSize(moov) : null
 }
 
-/** 顶层逐个读 box 头跳过 `mdat` 等大块，找到 `moov` 整块读进来。`moov` 在文件尾也能找到。 */
+/** 在顶层逐个读取 box 头以跳过 `mdat` 等较大的 box，找到 `moov` 后整块读入。`moov` 位于文件末尾时同样能找到。 */
 async function readMoov(abs: string): Promise<Buffer | null> {
   const fh = await open(abs, 'r')
   try {
@@ -78,7 +78,7 @@ async function readMoov(abs: string): Promise<Buffer | null> {
   }
 }
 
-/** 读 `at` 处的 box 头。`size` 为 1 时真实长度在其后 8 字节，为 0 时延伸到末尾（`left`）。 */
+/** 读取 `at` 处的 box 头。`size` 为 1 时实际长度在其后 8 字节，为 0 时延伸到末尾（`left`）。 */
 function boxAt(
   buf: Buffer,
   at: number,
@@ -111,7 +111,7 @@ function movieDuration(moov: Buffer): number | null {
   return null
 }
 
-/** `moov` 里各 `trak` 的 `tkhd`：第一条宽高非零的就是画面轨道。 */
+/** `moov` 中各 `trak` 的 `tkhd`：第一条宽高非零的即为画面轨道。 */
 function trackSize(moov: Buffer): CanvasPixels | null {
   for (const trak of children(moov, 'trak')) {
     for (const tkhd of children(trak, 'tkhd')) {
@@ -133,8 +133,8 @@ function* children(parent: Buffer, type: string): Generator<Buffer> {
 }
 
 /**
- * `tkhd`：版本 0 与 1 的时间字段一个 4 字节、一个 8 字节，之后是 3×3 变换矩阵与 16.16 定点的宽高。
- * 矩阵表示旋转 90° 或 270° 时（a = 0）显示宽高对调：手机竖拍的视频常按横向存、靠矩阵转正。
+ * `tkhd`：版本 0 与 1 的时间字段分别为 4 字节与 8 字节，之后是 3×3 变换矩阵与 16.16 定点数的宽高。
+ * 矩阵表示旋转 90° 或 270° 时（a = 0）显示宽高对调：手机竖拍的视频常按横向存储，依靠矩阵旋转为正向。
  */
 function tkhdSize(body: Buffer): CanvasPixels | null {
   const matrix = body[0] === 1 ? 52 : 40

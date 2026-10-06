@@ -1,9 +1,9 @@
 /**
  * 冻结前缀审计。
  *
- * 这一组里最重要的是最后那个 describe：它拿**真实的**系统提示词去审。
- * 前面几条验的是审计器本身，最后那条验的是被审的前缀——
- * 前者绿了不代表后者没问题，而后者才是会花钱的那个。
+ * 最关键的是最后一个 describe：它用真实的系统提示词进行审计。
+ * 前面的用例验证审计器本身，最后一组验证被审计的前缀；
+ * 前者通过不代表后者没有问题，而产生费用的是后者。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -21,7 +21,7 @@ const block = (text: string, brk = false): SystemBlock =>
   brk ? { text, cacheBreakpoint: true } : { text }
 
 describe('冻结区边界是最后一个断点', () => {
-  test('断点之前（含）算冻结区', () => {
+  test('断点及其之前属于冻结区', () => {
     const sys = [block('a'), block('b', true), block('c')]
     expect(frozenBlocks(sys).map((b) => b.text)).toEqual(['a', 'b'])
   })
@@ -32,25 +32,25 @@ describe('冻结区边界是最后一个断点', () => {
   })
 
   /**
-   * 没有断点 = 没有声明冻结区，审计范围是空而不是「全部」。
-   * 判成全部的话，任何一次正常的历史增长都会被报成漂移，
-   * 而假警报多了真警报就没人看了。
+   * 没有断点表示未声明冻结区，审计范围为空而不是全部。
+   * 若判定为全部，任何一次正常的历史增长都会被报告为漂移，
+   * 误报过多会使真实告警被忽略。
    */
-  test('一个断点都没有时审计范围为空，不是全部', () => {
+  test('没有断点时审计范围为空，而不是全部', () => {
     expect(frozenBlocks([block('a'), block('b')])).toEqual([])
   })
 })
 
 describe('哈希', () => {
-  test('同样的内容同样的哈希', () => {
+  test('相同内容得到相同哈希', () => {
     expect(hashFrozen([block('x', true)])).toBe(hashFrozen([block('x', true)]))
   })
 
-  test('差一个字节就不同', () => {
+  test('相差一个字节即不同', () => {
     expect(hashFrozen([block('x', true)])).not.toBe(hashFrozen([block('x ', true)]))
   })
 
-  /** 拼接歧义：`['ab','']` 与 `['a','b']` 直接相连是同一串，但它们是不同的前缀。 */
+  /** 拼接歧义：`['ab','']` 与 `['a','b']` 直接拼接得到同一字符串，但它们是不同的前缀。 */
   test('分段方式不同 → 哈希不同', () => {
     const a = [block('ab'), block('', true)]
     const b = [block('a'), block('b', true)]
@@ -64,7 +64,7 @@ describe('哈希', () => {
   })
 })
 
-describe('静态审计：天生会变的字段不该进前缀', () => {
+describe('静态审计：本身会变化的字段不应进入前缀', () => {
   test('日期', () => {
     expect(auditFrozenText('今天是 2026-08-09').map((h) => h.kind)).toContain('date')
   })
@@ -73,45 +73,45 @@ describe('静态审计：天生会变的字段不该进前缀', () => {
     expect(auditFrozenText('现在 14:30').map((h) => h.kind)).toContain('time')
   })
 
-  test('绝对路径（Windows 与 POSIX 都认）', () => {
+  test('绝对路径（识别 Windows 与 POSIX）', () => {
     expect(auditFrozenText('工作区 C:\\Users\\me\\proj').map((h) => h.kind)).toContain('abs-path')
     expect(auditFrozenText('工作区 /home/me/proj').map((h) => h.kind)).toContain('abs-path')
   })
 
-  test('run id 之类的 uuid', () => {
+  test('run id 等 uuid', () => {
     const t = '本轮 550e8400-e29b-41d4-a716-446655440000'
     expect(auditFrozenText(t).map((h) => h.kind)).toContain('uuid')
   })
 
-  test('干净文本零命中', () => {
+  test('不含可变字段的文本无命中', () => {
     expect(auditFrozenText('你是一个编码 agent，完成任务而不是描述任务。')).toEqual([])
   })
 
-  test('每条命中都要说清为什么会变 —— 只说「有问题」没法改', () => {
+  test('每条命中都说明变化原因：只报告存在问题无法据此修改', () => {
     for (const hit of auditFrozenText('2026-08-09 /home/x/y 12:00')) {
       expect(hit.why.length).toBeGreaterThan(5)
       expect(hit.sample.length).toBeGreaterThan(0)
     }
   })
 
-  test('只审冻结区，断点之后的日期是合法的', () => {
+  test('只审计冻结区，断点之后的日期合法', () => {
     const sys = [block('稳定内容', true), block('当前日期：2026-08-09')]
     expect(auditFrozenPrefix(sys)).toEqual([])
   })
 })
 
 describe('运行时审计', () => {
-  test('第一次观测不报', () => {
+  test('第一次观测不报告', () => {
     expect(new PrefixAudit().observe('cv1', [block('a', true)])).toBeNull()
   })
 
-  test('内容不变不报', () => {
+  test('内容不变时不报告', () => {
     const a = new PrefixAudit()
     a.observe('cv1', [block('a', true)])
     expect(a.observe('cv1', [block('a', true)])).toBeNull()
   })
 
-  test('变了要报，并指出第几段、变成了什么', () => {
+  test('变化时报告，并指出变化的段序号与新内容', () => {
     const a = new PrefixAudit()
     a.observe('cv1', [block('第一段'), block('第二段', true)])
     const d = a.observe('cv1', [block('第一段'), block('第二段改了', true)])
@@ -121,7 +121,7 @@ describe('运行时审计', () => {
     expect(d!.after).toBe('第二段改了')
   })
 
-  test('段数变了也报', () => {
+  test('段数变化时同样报告', () => {
     const a = new PrefixAudit()
     a.observe('cv1', [block('x', true)])
     const d = a.observe('cv1', [block('x'), block('y', true)])
@@ -129,17 +129,17 @@ describe('运行时审计', () => {
   })
 
   /**
-   * 报完要把基线更新成新值。
-   * 不更新的话第一次漂移之后每一轮都重复报同一条，真正的第二次漂移被淹掉。
+   * 报告后必须把基线更新为新值。
+   * 不更新时，第一次漂移之后每一轮都重复报告同一条，真正的第二次漂移会被掩盖。
    */
-  test('报过之后基线更新，同样的内容不再重复报', () => {
+  test('报告后基线更新，相同内容不再重复报告', () => {
     const a = new PrefixAudit()
     a.observe('cv1', [block('a', true)])
     expect(a.observe('cv1', [block('b', true)])).not.toBeNull()
     expect(a.observe('cv1', [block('b', true)])).toBeNull()
   })
 
-  test('漂移次数累计 —— 反复漂和只漂一次是两种 bug', () => {
+  test('漂移次数累计：反复漂移与单次漂移是两种不同的缺陷', () => {
     const a = new PrefixAudit()
     a.observe('cv1', [block('a', true)])
     expect(a.observe('cv1', [block('b', true)])!.occurrence).toBe(1)
@@ -160,7 +160,7 @@ describe('运行时审计', () => {
     expect(a.size).toBe(0)
   })
 
-  test('说明里要点明代价 —— 不然读日志的人不知道这条要不要管', () => {
+  test('说明中写明代价：否则日志读者无法判断是否需要处理', () => {
     const a = new PrefixAudit()
     a.observe('cv1', [block('a', true)])
     const text = describeDrift(a.observe('cv1', [block('b', true)])!)
@@ -169,8 +169,8 @@ describe('运行时审计', () => {
   })
 })
 
-describe('审真实的系统提示词', () => {
-  /** 门槛工具全在，能力段全部发出——审的是最长的那份前缀。 */
+describe('审计真实的系统提示词', () => {
+  /** 门槛工具全部存在，能力段全部发出：审计的是最长的前缀。 */
   const GATES = [
     'run_command',
     'write_memory',
@@ -190,7 +190,7 @@ describe('审真实的系统提示词', () => {
   ]
   const ALL = new Set(GATES)
 
-  test('三层冻结前缀里没有天生会变的字段', async () => {
+  test('三层冻结前缀中没有本身会变化的字段', async () => {
     const { buildSystemPrompt } = await import('@qywork/runtime')
     expect(auditFrozenText(buildSystemPrompt(ALL))).toEqual([])
     expect(auditFrozenText(buildSystemPrompt(ALL, 128_000))).toEqual([])
@@ -201,28 +201,28 @@ describe('审真实的系统提示词', () => {
     expect(buildSystemPrompt(ALL)).toBe(buildSystemPrompt(ALL))
   })
 
-  /** 缺一条模型就想不起来自己能做这件事，所以每个类目都要发到。 */
-  test('能力段把每个类目都告诉模型', async () => {
+  /** 缺少任何一条，模型都无法得知自己具备该能力，因此每个类目都必须发出。 */
+  test('能力段向模型说明每个类目', async () => {
     const { buildSystemPrompt } = await import('@qywork/runtime')
     const p = buildSystemPrompt(ALL)
     for (const tool of GATES) expect(p).toContain(tool)
-    // 两个派活工具的选择判据必须发到：一件事一个子 agent；两个及以上、要验收或有先后依赖用 workflow。
-    expect(p).toContain('一件事派给一个子 agent')
+    // 两个派发工具的选择判据必须写入提示词：单项任务用一个子 agent；两个及以上、需要验收或有先后依赖时用 workflow。
+    expect(p).toContain('单项任务用 subagent 委派给一个子 agent')
     expect(p).toContain('两个及以上子 agent')
-    expect(p).toContain('revise 让点名的节点在它原来的子会话里继续')
+    expect(p).toContain('revise 让指定的节点在其原有子会话中继续')
     expect(p).toContain('批准之后仍可 revise')
-    // 完成是事件：两条派活线都要说清回执自己会回来，否则模型会为了等它反复调用。
-    expect(p).toContain('回执会作为一条消息送到本会话，不要为了等回执反复调用')
-    expect(p).toContain('每格的回执与检查点回执都会作为消息送到本会话')
-    // CLI 的派出判据：只在用户点名或明确要求时派，不是默认目标。
-    expect(p).toContain('只在用户用 `@cli:id` 点名或明确要求时派')
+    // 完成是事件：两种派发方式都要说明回执会自动送达，否则模型会为等待回执反复调用。
+    expect(p).toContain('回执以消息形式送达本会话，不要为等待回执反复调用')
+    expect(p).toContain('各节点的回执与检查点回执都以消息形式送达本会话')
+    // CLI 的派发判据：只在用户点名或明确要求时派发，不是默认目标。
+    expect(p).toContain('仅在用户用 `@cli:id` 点名或明确要求时派发')
   })
 
   /**
-   * 复现的是原始失败形状：`run_command` / `subagent` / `workflow` / `load_tool`
-   * 按通道注册，写死会让没有对应通道的会话读到一个不存在的工具。
+   * 复现原始失败形状：`run_command` / `subagent` / `workflow` / `load_tool`
+   * 按通道注册，固定写入提示词会使没有对应通道的会话读到不存在的工具。
    */
-  test('缺通道时那一行不发，其余照常', async () => {
+  test('缺少通道时不发送对应行，其余照常', async () => {
     const { buildSystemPrompt } = await import('@qywork/runtime')
     const p = buildSystemPrompt(new Set(['write_memory', 'read_skill']))
     expect(p).not.toContain('run_command')
@@ -231,7 +231,7 @@ describe('审真实的系统提示词', () => {
     expect(p).toContain('write_memory')
     expect(p).toContain('read_skill')
 
-    // 一个门槛工具都没有时整段不出现，而不是留一个空标题。
+    // 没有任何门槛工具时整段不出现，不保留空标题。
     expect(buildSystemPrompt(new Set())).not.toContain('## 能力')
   })
 
@@ -250,10 +250,10 @@ describe('审真实的系统提示词', () => {
   })
 
   /**
-   * 尾区注记**应该**含日期——这条反过来验：那些会变的字段确实被放在了
-   * 断点之外。它绿了才说明分层是真的分开了，而不是两边都干净所以看着没问题。
+   * 上下文末尾注记应包含日期。本用例反向验证：会变化的字段确实位于
+   * 断点之外。本用例通过才能说明分层确实生效，而不是两侧都不含可变字段而看似正确。
    */
-  test('尾区注记确实带着会变的内容（证明分层不是摆设）', async () => {
+  test('上下文末尾注记包含会变化的内容（验证分层生效）', async () => {
     const { buildTailNotes } = await import('@qywork/runtime')
     const notes = buildTailNotes({ workspaceRoot: '/tmp/ws', platform: 'linux', mode: 'auto' })
       .map((n) => n.content)

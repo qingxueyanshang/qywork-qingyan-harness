@@ -1,9 +1,9 @@
 /**
- * `office.ts` 的 `officeTools`：请求组装、读后再写的冲突检查、结果映射（写入记录、文件变更、图片）、
- * worker 没有写出结果时以 cleanup 再起一次；`index.ts` 按通道注册的那一条；
- * `files.ts` 遇到 Office 文件与没有文字层的 PDF 时的指路。
+ * 覆盖范围：`office.ts` 的 `officeTools`：请求组装、先读后写的冲突检查、结果映射（写入记录、文件变更、图片）、
+ * worker 未写出结果时以 cleanup 再启动一次；`index.ts` 按通道注册 Office 工具；
+ * `files.ts` 遇到 Office 文件与无文字层 PDF 时给出的工具指引。
  *
- * worker 用 `office-worker.test-helper.ts`（由 Bun 执行）代替 Python：这里验的是工具这一侧，
+ * worker 由 `office-worker.test-helper.ts`（由 Bun 执行）代替 Python：此处验证工具一侧，
  * worker 本身的行为由 `packages/runtime/office/tests` 与真机验收覆盖。
  */
 
@@ -90,7 +90,7 @@ async function requests(root: string): Promise<Record<string, unknown>[]> {
 }
 
 describe('office write', () => {
-  test('新建输出：回执带页数与检查，文件变更为 created，之后再写同一路径不需要先读', async () => {
+  test('新建输出：回执包含页数与检查结果，文件变更为 created，之后写入同一路径无需先读取', async () => {
     const root = await workspace()
     const c = ctx(root)
     const first = await writeOfficeTool.fn({ script: 'make.py', outputs: ['out/report.docx'] }, c)
@@ -108,7 +108,7 @@ describe('office write', () => {
     expect(expected).toMatch(/^[0-9a-f]{64}$/)
   })
 
-  test('已存在而没读取过的输出：不起 worker，直接拒绝', async () => {
+  test('已存在但未读取的输出：不启动 worker，直接拒绝', async () => {
     const root = await workspace()
     await writeFile(join(root, 'old.xlsx'), 'user data')
     const res = await writeOfficeTool.fn({ script: 'make.py', outputs: ['old.xlsx'] }, ctx(root))
@@ -119,7 +119,7 @@ describe('office write', () => {
     expect(await readFile(join(root, 'old.xlsx'), 'utf8')).toBe('user data')
   })
 
-  test('read 之后再写：预期哈希就是读到的那一版', async () => {
+  test('read 之后再写入：预期哈希即读取时的版本', async () => {
     const root = await workspace()
     await writeFile(join(root, 'deck.pptx'), 'v1')
     const c = ctx(root)
@@ -137,7 +137,7 @@ describe('office write', () => {
     expect(res.fileChanges).toContainEqual({ path: 'deck.pdf', changeType: 'created' })
   })
 
-  test('worker 没有写出结果：以 cleanup 再起一次，回执写明残留处理', async () => {
+  test('worker 未写出结果：以 cleanup 再启动一次，回执写明残留处理', async () => {
     const root = await workspace()
     await writeFile(join(root, 'crash.py'), 'raise SystemExit(1)\n')
     const res = await writeOfficeTool.fn({ script: 'crash.py', outputs: ['a.docx'] }, ctx(root))
@@ -146,7 +146,7 @@ describe('office write', () => {
     expect((await requests(root)).map((r) => r.action)).toEqual(['write', 'cleanup'])
   })
 
-  test('脚本不是 .py、输出不是 Office 文件：参数错误，不起 worker', async () => {
+  test('脚本不是 .py 或输出不是 Office 文件：参数错误，不启动 worker', async () => {
     const root = await workspace()
     const bad1 = await writeOfficeTool.fn({ script: 'make.sh', outputs: ['a.docx'] }, ctx(root))
     const bad2 = await writeOfficeTool.fn({ script: 'make.py', outputs: ['a.txt'] }, ctx(root))
@@ -157,7 +157,7 @@ describe('office write', () => {
 })
 
 describe('office view 与 guide', () => {
-  test('view 返回图片字节与页标签，请求带当前文件哈希', async () => {
+  test('view 返回图片字节与页标签，请求包含当前文件哈希', async () => {
     const root = await workspace()
     await writeFile(join(root, 'r.docx'), 'doc')
     const res = await viewOfficeTool.fn({ path: 'r.docx', pages: ['2'] }, ctx(root))
@@ -170,7 +170,7 @@ describe('office view 与 guide', () => {
     expect(view?.expected_sha256).toBe(new Bun.CryptoHasher('sha256').update('doc').digest('hex'))
   })
 
-  test('view 收 PDF 原件，read 不收', async () => {
+  test('view 接受 PDF 原件，read 不接受', async () => {
     const root = await workspace()
     await writeFile(join(root, 'scan.pdf'), 'pdf')
     const view = await viewOfficeTool.fn({ path: 'scan.pdf' }, ctx(root))
@@ -184,7 +184,7 @@ describe('office view 与 guide', () => {
     expect((await requests(root)).filter((r) => r.action === 'read')).toEqual([])
   })
 
-  test('模型不收图片时 view 直接拒绝', async () => {
+  test('模型不接受图片时 view 直接拒绝', async () => {
     const root = await workspace()
     await writeFile(join(root, 'r.docx'), 'doc')
     const res = await viewOfficeTool.fn({ path: 'r.docx' }, { ...ctx(root), vision: false })
@@ -192,7 +192,7 @@ describe('office view 与 guide', () => {
     expect(await requests(root)).toEqual([])
   })
 
-  test('开关在调用前现判：关掉之后的调用不起 worker', async () => {
+  test('开关在每次调用前判定：关闭后的调用不启动 worker', async () => {
     const root = await workspace()
     const res = await readOfficeGuideTool.fn(
       { format: 'docx' },
@@ -210,7 +210,7 @@ describe('office view 与 guide', () => {
   })
 })
 
-describe('注册与指路', () => {
+describe('注册与工具指引', () => {
   test('每个工具的必填参数缺失时不启动 worker；脚本执行被拒绝时不写文件', async () => {
     const root = await workspace()
     const registry = new ToolRegistry()
@@ -244,7 +244,7 @@ describe('注册与指路', () => {
     expect(await readdir(root)).toEqual(['make.py'])
   })
 
-  test('有 Office 通道才注册 office', () => {
+  test('存在 Office 通道时才注册 office', () => {
     const without = new ToolRegistry()
     registerBuiltinTools(without, {})
     for (const tool of officeTools) expect(without.has(tool.name)).toBe(false)
@@ -254,7 +254,7 @@ describe('注册与指路', () => {
     expect(withOffice.has('office')).toBe(false)
   })
 
-  test('read_file 读 Office 文件：有 office 时指向 read_office，没有时照旧', async () => {
+  test('read_file 读取 Office 文件：有 office 时指向 read_office，否则保持原有提示', async () => {
     const root = await workspace()
     await writeFile(join(root, 'a.docx'), new Uint8Array([0x50, 0x4b, 0, 0, 1]))
     const withOffice = await readFileTool.fn({ path: 'a.docx' }, ctx(root))
@@ -263,7 +263,7 @@ describe('注册与指路', () => {
     expect(withoutOffice.message).toContain('run_command')
   })
 
-  test('read_file 读没有文字层的 PDF：能看页面时指向 view_office，否则写明没有这个能力', async () => {
+  test('read_file 读取无文字层的 PDF：可查看页面时指向 view_office，否则写明不具备该能力', async () => {
     const root = await workspace()
     await writeFile(join(root, 'scan.pdf'), blankPdf())
     const viewable = await readFileTool.fn({ path: 'scan.pdf' }, ctx(root))
@@ -282,15 +282,15 @@ describe('注册与指路', () => {
   })
 })
 
-describe('read_file 读视频：不收原生视频时按时间抽帧', () => {
+describe('read_file 读取视频：模型不接受原生视频时按时间抽帧', () => {
   async function clip(): Promise<string> {
     const root = await workspace()
     await writeFile(join(root, 'clip.mp4'), new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]))
     return root
   }
 
-  /** 帧作为图片返回，说明原样交给模型；start / end 传到 worker，回执里看得到。 */
-  test('收图片、不收视频：经 worker 抽帧，帧作为图片返回', async () => {
+  /** 帧作为图片返回，说明文字原样交给模型；start / end 传给 worker，并体现在回执中。 */
+  test('接受图片、不接受视频：经 worker 抽帧，帧作为图片返回', async () => {
     const root = await clip()
     const res = await readFileTool.fn(
       { path: 'clip.mp4', start: 2, end: 8 },
@@ -299,9 +299,9 @@ describe('read_file 读视频：不收原生视频时按时间抽帧', () => {
     expect(res.status).toBe('success')
     const images = (res.data as { images: { mime: string }[] }).images
     expect(images).toHaveLength(2)
-    expect(res.message).toBe('区间 2–8；声音没有处理')
+    expect(res.message).toBe('区间 2–8；声音未处理')
     expect(res.data).not.toHaveProperty('videos')
-    // 帧已经定格进回执，调用目录里那批图要删掉，不在工作区里越积越多。
+    // 帧已写入回执，调用目录中的图片必须删除，避免在工作区中持续累积。
     const calls = await readdir(join(root, '.tmp', 'office'))
     for (const call of calls.filter((c) => c !== 'cache' && !c.endsWith('.jsonl'))) {
       expect(await readdir(join(root, '.tmp', 'office', call))).not.toContain('frames')
@@ -309,10 +309,10 @@ describe('read_file 读视频：不收原生视频时按时间抽帧', () => {
   })
 
   /**
-   * 收原生视频的模型：接口能上传就交路径；不能上传又超过常驻上限时同样抽帧，并说明原因，
-   * 判据与发送时的 `videoDelivery` 同一条。
+   * 接受原生视频的模型：接口支持上传时交出路径；不支持上传且超过常驻上限时同样抽帧，并说明原因，
+   * 判据与发送时的 `videoDelivery` 相同。
    */
-  test('收原生视频但太大：能上传交路径，不能上传改为抽帧', async () => {
+  test('接受原生视频但文件过大：可上传时交出路径，不可上传时改为抽帧', async () => {
     const root = await workspace()
     await writeFile(join(root, 'big.mp4'), new Uint8Array(6 * 1024 * 1024))
     const upload = await readFileTool.fn(
@@ -324,12 +324,12 @@ describe('read_file 读视频：不收原生视频时按时间抽帧', () => {
     })
     const inline = await readFileTool.fn({ path: 'big.mp4' }, { ...ctx(root), video: true })
     expect(inline.status).toBe('success')
-    expect(inline.message.startsWith('这段视频 6.0 MB')).toBe(true)
+    expect(inline.message.startsWith('该视频 6.0 MB')).toBe(true)
     expect(inline.message).toContain('改为按时间抽帧')
     expect((inline.data as { images: unknown[] }).images).toHaveLength(2)
   })
 
-  test('区间不成立时不起 worker，直接说原因', async () => {
+  test('区间无效时不启动 worker，直接返回原因', async () => {
     const root = await clip()
     const res = await readFileTool.fn(
       { path: 'clip.mp4', start: 5, end: 5 },
@@ -338,7 +338,7 @@ describe('read_file 读视频：不收原生视频时按时间抽帧', () => {
     expect(res).toEqual({ status: 'failure', message: 'end 必须大于 start' })
   })
 
-  test('收原生视频的模型照旧交出路径，不抽帧', async () => {
+  test('接受原生视频的模型仍交出路径，不抽帧', async () => {
     const root = await clip()
     const res = await readFileTool.fn({ path: 'clip.mp4' }, { ...ctx(root), video: true })
     expect(res.status).toBe('success')
@@ -347,7 +347,7 @@ describe('read_file 读视频：不收原生视频时按时间抽帧', () => {
     })
   })
 
-  test('没有 Office 环境，或模型连图片也不收：回绝并带下一步', async () => {
+  test('没有 Office 环境，或模型也不接受图片：拒绝并给出下一步操作', async () => {
     const root = await clip()
     const noOffice = await readFileTool.fn(
       { path: 'clip.mp4' },

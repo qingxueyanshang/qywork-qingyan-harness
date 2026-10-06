@@ -1,6 +1,6 @@
 /**
  * 定时任务仓储。**覆盖范围**：`schedules.ts` 的读写、Run 终态投影与认领事务，
- * 以及迁移 54 建的 `schedules` 表在会话被删除时的外键行为。
+ * 以及迁移 54 创建的 `schedules` 表在会话被删除时的外键行为。
  *
  * 跨进程竞争由 `packages/server/src/schedule-race.test.ts` 覆盖，
  * 整条触发链路由 `packages/server/src/scheduler.test.ts` 覆盖。
@@ -29,14 +29,14 @@ import {
 } from './schedules.ts'
 
 let store: Store
-// 已归一的形式（`normalizeWorkspaceRoot`）：仓储层落盘与回读都是这一份。
+// 规范化后的形式（`normalizeWorkspaceRoot`）：仓储层写入与读取都使用该形式。
 const ROOT_A = resolve('/ws/a')
 const ROOT_B = resolve('/ws/b')
-/** 同一目录未归一的写法：分隔符换成 `/` 再加末尾分隔符。Windows 上两处都要归一，POSIX 上是末尾那个。 */
+/** 同一目录未规范化的写法：分隔符替换为 `/` 并追加末尾分隔符。Windows 上两处都需要规范化，POSIX 上只有末尾分隔符需要。 */
 const ROOT_A_UNNORMALIZED = `${ROOT_A.replaceAll(sep, '/')}/`
 let wsA: WorkspaceId
 let wsB: WorkspaceId
-/** 建任务的那条会话，绑定与复用都以它为准。 */
+/** 创建任务的会话，绑定与复用都以它为准。 */
 let homeA: ConversationId
 let homeB: ConversationId
 
@@ -47,7 +47,7 @@ function newConversation(workspaceId: WorkspaceId, title: string): ConversationI
 }
 
 beforeEach(() => {
-  // 内存库：这一组全是单连接读写，落盘只会在 Windows 上留下删不掉的句柄。
+  // 使用内存库：本组测试均为单连接读写，使用磁盘文件只会在 Windows 上留下无法删除的句柄。
   store = new Store({ path: ':memory:' })
   wsA = upsertWorkspace(store, ROOT_A, 'A').id
   wsB = upsertWorkspace(store, ROOT_B, 'B').id
@@ -59,12 +59,12 @@ afterEach(() => {
   store.close()
 })
 
-/** 建任务时绑定的那条会话按工作区取，与 `SchedulePort` 的注入同形。 */
+/** 创建任务时绑定的会话按工作区选取，与 `SchedulePort` 的注入方式一致。 */
 function homeOf(root: string): ConversationId {
   return root === ROOT_B ? homeB : homeA
 }
 
-/** 一条已经到期的间隔任务：创建时刻推到过去，`isDue` 立即为真。 */
+/** 一条已到期的间隔任务：创建时刻设为过去，`isDue` 立即为真。 */
 function dueSchedule(root: string, title = '日报', draft: { newConversation?: boolean } = {}) {
   const s = createSchedule(
     store,
@@ -93,7 +93,7 @@ function runFor(conversationId: ConversationId, workspaceId: WorkspaceId): RunId
 }
 
 describe('读写', () => {
-  test('建出来的任务默认启用、绑定建它的那条会话，归属由调用方给，不由请求方填', () => {
+  test('新建任务默认启用并绑定创建它的会话，归属由调用方提供，不由请求方填写', () => {
     const s = createSchedule(
       store,
       ROOT_A,
@@ -106,11 +106,11 @@ describe('读写', () => {
     expect(s.createdAt > 0).toBe(true)
     expect(s.conversationId).toBe(homeA)
     expect(s.newConversation).toBe(false)
-    // 每天那两个字段不该存在，不是存成 undefined。
+    // daily 专用的两个字段不应存在，而不是存为 undefined。
     expect('atHour' in s).toBe(false)
   })
 
-  test('声明每次新建会话的任务不绑定建它的那条会话', () => {
+  test('声明每次新建会话的任务不绑定创建它的会话', () => {
     const s = createSchedule(
       store,
       ROOT_A,
@@ -140,10 +140,10 @@ describe('读写', () => {
   })
 
   /*
-   * `workspace_root` 与 `workspaces.root_path` 走同一份归一。不归一的话，
-   * 用未归一写法建的任务在归一写法的那次列表里查不到，而工作区是同一个。
+   * `workspace_root` 与 `workspaces.root_path` 使用同一规范化函数。不规范化时，
+   * 用未规范化写法创建的任务无法按规范化写法列出，而两者是同一个工作区。
    */
-  test('同一目录的两种写法指同一个工作区', () => {
+  test('同一目录的两种写法指向同一个工作区', () => {
     const s = createSchedule(
       store,
       ROOT_A_UNNORMALIZED,
@@ -158,7 +158,7 @@ describe('读写', () => {
     expect(deleteSchedule(store, s.id, ROOT_A_UNNORMALIZED)?.id).toBe(s.id)
   })
 
-  test('改不到别的工作区的任务，删也删不掉', () => {
+  test('无法修改其他工作区的任务，也无法删除', () => {
     const s = createSchedule(
       store,
       ROOT_B,
@@ -178,7 +178,7 @@ describe('读写', () => {
     expect(listSchedules(store, ROOT_B, Date.now()).length).toBe(1)
   })
 
-  test('改任务不动触发游标与绑定会话', () => {
+  test('修改任务不改变触发游标与绑定会话', () => {
     const s = dueSchedule(ROOT_A)
     claimDueSchedules(store, { now: Date.now(), ...CLAIM })
     const before = listSchedules(store, ROOT_A, Date.now())[0]!
@@ -224,11 +224,11 @@ describe('读写', () => {
     expect(s.lastRunAt).toBe(222)
     expect(s.enabled).toBe(false)
     expect(s.atMinute).toBe(30)
-    // 没有可核验的 Run 就如实回 null，不伪造一条历史执行。
+    // 没有可核验的 Run 时如实返回 null，不伪造历史执行记录。
     expect(s.lastRun).toBe(null)
   })
 
-  test('重复 id 撞主键，整个事务回滚，不留半张表', () => {
+  test('重复 id 触发主键冲突，整个事务回滚，不留下部分写入', () => {
     expect(() =>
       store.tx(() => {
         insertSchedules(store, [
@@ -262,7 +262,7 @@ describe('读写', () => {
 })
 
 describe('Run 终态投影', () => {
-  test('失败的 Run 原样投影到任务上，任务表里没有第二份错误', () => {
+  test('失败的 Run 原样投影到任务，任务表中没有第二份错误', () => {
     dueSchedule(ROOT_A)
     const claims = claimDueSchedules(store, { now: Date.now(), ...CLAIM })
     const runId = runFor(claims[0]!.conversationId, wsA)
@@ -287,7 +287,7 @@ describe('Run 终态投影', () => {
     expect(columns).not.toContain('last_error')
   })
 
-  test('认领了还没起轮时如实说没有 Run', () => {
+  test('已认领但尚未开始执行时如实报告没有 Run', () => {
     dueSchedule(ROOT_A)
     const claims = claimDueSchedules(store, { now: Date.now(), ...CLAIM })
     const view = listSchedules(store, ROOT_A, Date.now())[0]!
@@ -299,7 +299,7 @@ describe('Run 终态投影', () => {
     })
   })
 
-  test('绑定会话被删除后触发游标保留，执行记录变成没有', () => {
+  test('绑定会话被删除后保留触发游标，执行记录为空', () => {
     dueSchedule(ROOT_A)
     const claims = claimDueSchedules(store, { now: Date.now(), ...CLAIM })
     const before = listSchedules(store, ROOT_A, Date.now())[0]!
@@ -312,7 +312,7 @@ describe('Run 终态投影', () => {
 })
 
 describe('认领事务', () => {
-  test('到期的认领一次并推进游标，同一时刻再认领不再命中', () => {
+  test('到期任务认领一次并推进游标，同一时刻再次认领不再命中', () => {
     dueSchedule(ROOT_A)
     const before = conversationCount()
     const now = Date.now()
@@ -326,10 +326,10 @@ describe('认领事务', () => {
   })
 
   /*
-   * 原始失败形状：用户在会话里说「每 30 分钟查一次」，之后每次触发都是一条没有上下文的
-   * 新会话。认领必须落回建这条任务的那条会话。
+   * 原始失败形状：用户在会话中说「每 30 分钟查一次」，之后每次触发都新建一条没有上下文的
+   * 会话。认领必须回到创建该任务的会话。
    */
-  test('连续两次到期发进同一条会话，会话数不增加', () => {
+  test('连续两次到期都发往同一条会话，会话数不增加', () => {
     dueSchedule(ROOT_A)
     const before = conversationCount()
 
@@ -347,7 +347,7 @@ describe('认领事务', () => {
     expect(conversationCount()).toBe(before)
   })
 
-  test('绑定会话被删之后新建一条并写回绑定，之后接着复用它', () => {
+  test('绑定会话被删除后新建一条并写回绑定，此后继续复用该会话', () => {
     dueSchedule(ROOT_A)
     deleteConversation(store, homeA)
     const before = conversationCount()
@@ -371,7 +371,7 @@ describe('认领事务', () => {
     expect(conversationCount()).toBe(before + 1)
   })
 
-  test('声明每次新建会话的任务每次都另建一条，且都报为新建', () => {
+  test('声明每次新建会话的任务每次都另建会话，且均报告为新建', () => {
     dueSchedule(ROOT_A, '日报', { newConversation: true })
     const before = conversationCount()
 
@@ -387,19 +387,19 @@ describe('认领事务', () => {
     expect(second[0]!.created?.id).toBe(second[0]!.conversationId)
     expect(second[0]!.conversationId).not.toBe(first[0]!.conversationId)
     expect(conversationCount()).toBe(before + 2)
-    // 忙态与终态投影读的是同一格：最近一次触发进的那条。
+    // 忙态与终态投影读取同一字段：最近一次触发所用的会话。
     expect(listSchedules(store, ROOT_A, Date.now())[0]!.conversationId).toBe(
       second[0]!.conversationId,
     )
   })
 
-  test('别的项目的到期任务照样认领，不按启动目录筛选', () => {
+  test('其他项目的到期任务同样认领，不按启动目录筛选', () => {
     dueSchedule(ROOT_B, 'B 的日报')
     const claims = claimDueSchedules(store, { now: Date.now(), ...CLAIM })
     expect(claims.map((c) => c.workspaceRoot)).toEqual([ROOT_B])
   })
 
-  test('上一轮还没落终态就不叠加', () => {
+  test('上一轮未进入终态时不叠加触发', () => {
     dueSchedule(ROOT_A)
     const before = conversationCount()
     const first = claimDueSchedules(store, { now: Date.now(), ...CLAIM })
@@ -410,7 +410,7 @@ describe('认领事务', () => {
     expect(conversationCount()).toBe(before)
   })
 
-  test('上一轮落终态之后才继续触发', () => {
+  test('上一轮进入终态之后才继续触发', () => {
     dueSchedule(ROOT_A)
     const first = claimDueSchedules(store, { now: Date.now(), ...CLAIM })
     const runId = runFor(first[0]!.conversationId, wsA)
@@ -420,7 +420,7 @@ describe('认领事务', () => {
     expect(claimDueSchedules(store, { now: later, ...CLAIM }).length).toBe(1)
   })
 
-  test('工作区已移除就不触发，游标也不动', () => {
+  test('工作区已移除时不触发，游标不变', () => {
     dueSchedule(ROOT_B)
     removeWorkspace(store, upsertWorkspace(store, ROOT_B, 'B').id)
     expect(claimDueSchedules(store, { now: Date.now(), ...CLAIM })).toEqual([])
@@ -439,7 +439,7 @@ describe('认领事务', () => {
     expect(claimDueSchedules(store, { now: Date.now(), ...CLAIM })).toEqual([])
   })
 
-  test('注入时钟：daily 任务当天只触发一次，跨到第二天再触发', () => {
+  test('注入时钟：daily 任务当天只触发一次，第二天再次触发', () => {
     const localAt = (d: number, h: number, mi = 0) => new Date(2026, 7, d, h, mi, 0, 0).getTime()
     const s = createSchedule(
       store,
@@ -456,12 +456,12 @@ describe('认领事务', () => {
     const runId = runFor(hit[0]!.conversationId, wsA)
     finishRun(store, runId, { status: 'done', stopReason: 'completed' })
 
-    // 同一天再 tick 不重复；跨到第二天到点再触发一次。
+    // 同一天再次 tick 不重复触发；第二天到达设定时刻时再触发一次。
     expect(claimDueSchedules(store, { now: localAt(10, 23, 59), ...CLAIM })).toEqual([])
     expect(claimDueSchedules(store, { now: localAt(11, 9, 0), ...CLAIM }).length).toBe(1)
   })
 
-  test('立刻跑一次发进绑定会话但不推进自动触发游标', () => {
+  test('立即执行一次，发往绑定会话但不推进自动触发游标', () => {
     const s = createSchedule(
       store,
       ROOT_A,
@@ -479,7 +479,7 @@ describe('认领事务', () => {
     expect(view.conversationId).toBe(homeA)
   })
 
-  test('立刻跑一次也认忙态与归属', () => {
+  test('立即执行一次同样遵守忙态与归属', () => {
     const s = dueSchedule(ROOT_A)
     expect(claimScheduleNow(store, s.id, ROOT_B, { now: Date.now(), ...CLAIM })).toEqual({
       ok: false,

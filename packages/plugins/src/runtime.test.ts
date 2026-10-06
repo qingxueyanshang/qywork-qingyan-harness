@@ -1,18 +1,18 @@
 /**
  * 运行时解析与沙箱。
  *
- * 这一组里最重要的两条都不是「功能对不对」：
+ * 本组最重要的两条断言都不针对功能是否正确：
  *
- * - **不能拿 `process.execPath` 当默认运行时。** 发布产物是单文件二进制，
- *   那个路径是 qy 自己，拿它跑插件只会打出用法说明——插件在开发机上正常，
- *   装了包的用户那里一个都起不来。
- * - **隔离的范围要如实报，而且要分维度报。** 沙箱（`--permission`）与出网闸
- *   （`netguard.ts`）的成立条件不同——版本要求不同，bun 上一个都没有。
- *   合并成一句「已隔离」就是把知情同意换成了一个不成立的承诺。
+ * - 不能把 `process.execPath` 用作默认运行时。发布产物是单文件二进制，
+ *   该路径指向 qy 本身，用它运行插件只会输出用法说明：插件在开发机上正常，
+ *   在安装了发布包的用户机器上全部无法启动。
+ * - 隔离范围必须如实上报，且分维度上报。沙箱（`--permission`）与网络访问限制
+ *   （`netguard.ts`）的成立条件不同：版本要求不同，bun 上两者均不具备。
+ *   合并为一句「已隔离」会给出一个不成立的承诺，用户的知情同意因此失去依据。
  *
- * 所以这里有两类断言，缺一不可：**上报口径对不对**（`netGuarded` 什么时候该是
- * false），和**实际挡不挡得住**（逐条逃逸路径真的跑一遍）。
- * 只测前者会得到一个诚实但没用的闸，只测后者会得到一个有用但会骗人的上报。
+ * 因此这里有两类断言，缺一不可：上报口径是否正确（`netGuarded` 何时应为
+ * false），以及实际能否拦截（逐条执行逃逸路径）。
+ * 只测前者会得到如实上报但无效的限制，只测后者会得到有效但失实的上报。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -30,27 +30,27 @@ const req = (permissions: PluginPermission[] = []) => ({
 })
 
 describe('沙箱参数', () => {
-  test('Node 23+ 用 --permission', () => {
+  test('Node 23+ 使用 --permission', () => {
     expect(sandboxArgs(24, req())?.args[0]).toBe('--permission')
   })
 
-  test('Node 20~22 用 --experimental-permission —— 旗名给错进程直接起不来', () => {
+  test('Node 20~22 使用 --experimental-permission，标志名错误时进程无法启动', () => {
     expect(sandboxArgs(22, req())?.args[0]).toBe('--experimental-permission')
   })
 
-  test('Node 18 没有权限模型，返回 null 而不是编一组旗子', () => {
+  test('Node 18 没有权限模型，返回 null 而不是构造一组参数', () => {
     expect(sandboxArgs(18, req())).toBeNull()
   })
 
-  test('插件目录永远可读 —— 否则连入口文件都加载不了', () => {
+  test('插件目录始终可读，否则无法加载入口文件', () => {
     expect(sandboxArgs(24, req())?.args).toContain('--allow-fs-read=/ws/.qy/plugins/p')
   })
 
-  test('没声明 workspace:read 就读不到工作区', () => {
+  test('未声明 workspace:read 时无法读取工作区', () => {
     expect(sandboxArgs(24, req())?.args).not.toContain('--allow-fs-read=/ws')
   })
 
-  test('声明了才给，读写分开', () => {
+  test('声明后才授予，读写分开授予', () => {
     const read = sandboxArgs(24, req(['workspace:read']))!.args
     expect(read).toContain('--allow-fs-read=/ws')
     expect(read.some((a) => a.startsWith('--allow-fs-write'))).toBe(false)
@@ -59,16 +59,16 @@ describe('沙箱参数', () => {
     expect(write).toContain('--allow-fs-write=/ws')
   })
 
-  test('process:exec 才给 --allow-child-process', () => {
+  test('只有 process:exec 授予 --allow-child-process', () => {
     expect(sandboxArgs(24, req())?.args).not.toContain('--allow-child-process')
     expect(sandboxArgs(24, req(['process:exec']))?.args).toContain('--allow-child-process')
   })
 
   /**
-   * worker 能另起一套绕开权限模型，原生插件直接进内核态调用。
-   * 插件没有任何正当理由需要它们，所以哪个权限都不换来这两个旗子。
+   * worker 可另起一套运行环境绕过权限模型，原生插件可直接发起系统调用。
+   * 插件没有正当理由需要它们，因此任何权限都不授予这两个参数。
    */
-  test('永不给 --allow-worker / --allow-addons', () => {
+  test('从不授予 --allow-worker / --allow-addons', () => {
     const all: PluginPermission[] = [
       'workspace:read',
       'workspace:write',
@@ -80,33 +80,33 @@ describe('沙箱参数', () => {
     expect(args.some((a) => a.includes('worker') || a.includes('addons'))).toBe(false)
   })
 
-  test('说明里必须交代出网这一面 —— 不管是拦住了还是没拦住', () => {
+  test('说明必须包含网络访问的状态，无论是否已拦截', () => {
     for (const perms of [[], ['network'], ['process:exec']] as PluginPermission[][]) {
       const note = sandboxArgs(24, req(perms))?.note ?? ''
-      expect(note).toMatch(/出网/)
+      expect(note).toMatch(/网络访问/)
     }
   })
 })
 
 /**
- * 出网闸的**上报**，与它实际挡不挡得住分开测。
+ * 网络访问限制的上报与实际拦截效果分开测试。
  *
- * 这一组全是「说的和做的是不是一回事」——这个项目在插件隔离上犯过的错
- * 正是文档比实现乐观，所以宁可多几条断言盯着上报口径。
+ * 本组检查上报与实际行为是否一致：文档比实现乐观是插件隔离最常见的错误形状，
+ * 因此对上报口径设置较多断言。
  */
-describe('出网闸的上报口径', () => {
-  test('版本够就装上，且 netGuarded 为 true', () => {
+describe('网络访问限制的上报口径', () => {
+  test('版本满足时安装，且 netGuarded 为 true', () => {
     const r = sandboxArgs(24, req(['workspace:read']), 13)!
     expect(r.netGuarded).toBe(true)
     expect(r.args).toContain('--import')
   })
 
   /**
-   * `module.registerHooks` 是 22.15 / 23.5 才有的。版本不够时**不装半截的闸**：
-   * 只删全局 fetch 而模块照样 require，比不装更糟——上报说「已拦截」，
-   * 实际一 `require('net')` 就出去了。
+   * `module.registerHooks` 自 22.15 / 23.5 起提供。版本不足时不安装不完整的网络访问限制：
+   * 只删除全局 fetch 而模块仍可 require，比不安装更糟：上报为「已拦截」，
+   * 实际调用 `require('net')` 即可联网。
    */
-  test('版本不够时不装，也不谎报', () => {
+  test('版本不足时不安装，也不误报', () => {
     for (const [major, minor] of [
       [22, 14],
       [23, 4],
@@ -119,25 +119,25 @@ describe('出网闸的上报口径', () => {
     }
   })
 
-  test('版本刚好够的边界上要装', () => {
+  test('版本恰好满足时安装', () => {
     expect(sandboxArgs(22, req(), 15)!.netGuarded).toBe(true)
     expect(sandboxArgs(23, req(), 5)!.netGuarded).toBe(true)
   })
 
   /**
-   * 能起子进程就能跑 curl。这不是漏洞是定义——授予执行权就是授予
-   * 「做任何本机能做的事」。所以这时候 `netGuarded` **必须报 false**，
-   * 哪怕闸确实注入了。报 true 会让权限清单看起来比实际严。
+   * 能启动子进程即可运行 curl。这是定义而不是漏洞：授予执行权即授予
+   * 本机的全部操作能力。因此此时 `netGuarded` 必须上报 false，
+   * 即使限制脚本确实已注入。上报 true 会使权限清单显得比实际严格。
    */
-  test('持有 process:exec 时如实报 false —— 闸装了也不算挡住', () => {
+  test('持有 process:exec 时上报 false，限制脚本已注入也不视为已拦截', () => {
     const r = sandboxArgs(24, req(['process:exec']), 13)!
     expect(r.args).toContain('--import')
     expect(r.netGuarded).toBe(false)
     expect(r.note).toContain('process:exec')
   })
 
-  /** 引导脚本自己也在权限模型底下，读不到它的话插件直接起不来。 */
-  test('给引导脚本所在目录单独放行', () => {
+  /** 引导脚本同样受权限模型约束，读取被拒绝时插件无法启动。 */
+  test('单独放行引导脚本所在目录', () => {
     const r = sandboxArgs(24, req(), 13)!
     const guardArg = r.args.find((a) => a.startsWith('--import'))
     expect(guardArg).toBeDefined()
@@ -145,12 +145,12 @@ describe('出网闸的上报口径', () => {
   })
 
   /**
-   * **Windows 上 `--import` 不接受裸盘符路径**，报的是
-   * `ERR_UNSUPPORTED_ESM_URL_SCHEME: Received protocol 'c:'`——它把 `C:` 当协议名。
-   * 类 Unix 上传绝对路径能过，所以这条只在 Windows 炸，
-   * 而且表现是「插件启动即退出」，跟出网闸看不出任何关系。
+   * Windows 上 `--import` 不接受裸盘符路径，报
+   * `ERR_UNSUPPORTED_ESM_URL_SCHEME: Received protocol 'c:'`，即把 `C:` 当作协议名。
+   * 类 Unix 系统接受绝对路径，因此该错误只出现在 Windows 上，
+   * 现象是插件启动即退出，与网络访问限制没有可见的关联。
    */
-  test('--import 传的是 file:// URL，不是裸路径', () => {
+  test('--import 的参数是 file:// URL，不是裸路径', () => {
     const args = sandboxArgs(24, req(), 13)!.args
     const value = args[args.indexOf('--import') + 1]!
     expect(value.startsWith('file://')).toBe(true)
@@ -158,7 +158,7 @@ describe('出网闸的上报口径', () => {
 })
 
 describe('运行时解析', () => {
-  test('显式指定就用它，不再猜', () => {
+  test('显式指定时直接使用，不再推测', () => {
     const rt = resolvePluginRuntime({ ...req(), override: '/opt/custom-node' })
     expect(rt.command).toBe('/opt/custom-node')
     expect(rt.args).toEqual([])
@@ -166,22 +166,22 @@ describe('运行时解析', () => {
   })
 
   /**
-   * 自动解析必须落到一个**真的能执行 JS** 的运行时上。
-   * 单文件二进制里 `process.execPath` 是 qy 自己，选中它等于插件全部起不来。
+   * 自动解析必须选中能执行 JS 的运行时。
+   * 单文件二进制中 `process.execPath` 是 qy 本身，选中它会使所有插件都无法启动。
    */
-  test('自动解析出的运行时是 node 或 bun，绝不是宿主二进制', () => {
+  test('自动解析出的运行时是 node 或 bun，不是宿主二进制', () => {
     const rt = resolvePluginRuntime(req(['workspace:read']))
     const name = basename(rt.command).toLowerCase()
     expect(name.startsWith('node') || name.startsWith('bun')).toBe(true)
   })
 
-  test('解析到 node 时沙箱开着并如实说明；解析到 bun 时明说没有', () => {
+  test('解析到 node 时启用沙箱；解析到 bun 时说明没有沙箱', () => {
     const rt = resolvePluginRuntime(req(['workspace:read']))
     if (basename(rt.command).toLowerCase().startsWith('node')) {
       expect(rt.sandboxed).toBe(true)
       expect(rt.args).toContain('--allow-fs-read=/ws')
     } else {
-      // bun 没有权限模型。这时候**必须**报 false —— 含糊比没有更糟。
+      // bun 没有权限模型，此时必须上报 false：含糊的上报比不上报更糟。
       expect(rt.sandboxed).toBe(false)
       expect(rt.note).toContain('node')
     }
@@ -250,11 +250,11 @@ describe('沙箱实测：只声明 workspace:read 的插件', () => {
     return { out, sandboxed, netGuarded }
   }
 
-  test('沙箱生效时读不到主目录、写不了盘、起不了子进程', async () => {
+  test('沙箱生效时无法读取主目录、无法写入磁盘、无法启动子进程', async () => {
     const { out, sandboxed } = await probePlugin()
     if (!sandboxed) {
-      // 本机没有 node 20+。**不静默跳过**：断言「宿主如实报了没有隔离」，
-      // 这样测试仍然在验一件事，而不是变成一个永远通过的空壳。
+      // 本机没有 node 20+。不静默跳过：断言宿主如实上报没有隔离，
+      // 使测试仍然验证一项事实，而不是恒定通过。
       expect(out.home).toBe('OK')
       return
     }
@@ -264,14 +264,14 @@ describe('沙箱实测：只声明 workspace:read 的插件', () => {
   }, 20_000)
 
   /**
-   * 出网闸装上之后，插件进程内的直接出网通道被拆掉，只剩 `host.net.fetch`。
-   * 这条锁的就是那个事实——它红了说明出网闸没装上或被绕过了。
+   * 网络访问限制安装后，插件进程内的直接网络通道被移除，只剩 `host.net.fetch`。
+   * 本用例锁定这一事实：失败说明网络访问限制未安装或已被绕过。
    */
-  test('直接开套接字已被挡住', async () => {
+  test('直接打开套接字被拦截', async () => {
     const { out, netGuarded } = await probePlugin()
     if (!netGuarded) {
-      // 本机装不上闸（bun / 旧 node）。**不静默跳过**：断言宿主如实报了没有闸，
-      // 并且此时网络确实还通——这样测试仍然在验一件事。
+      // 本机无法安装网络访问限制（bun / 低版本 node）。不静默跳过：断言宿主如实上报没有限制，
+      // 且此时网络确实可用，使测试仍然验证一项事实。
       expect(out.net).toBe('OK')
       return
     }
@@ -282,23 +282,23 @@ describe('沙箱实测：只声明 workspace:read 的插件', () => {
 /**
  * 逃逸路径逐条实测。
  *
- * 「挡住了」这件事只写在文档里的话，没有任何检查盯着它。
- * 这一组把每条路径变成断言：**哪条被绕开了，这里就红**。
+ * 拦截效果只写在文档中时，没有任何检查保证它成立。
+ * 本组把每条路径写成断言：任何一条被绕过，本组即失败。
  *
- * 全部在一个插件进程里跑完，因为起一个带权限模型的 node 要几十毫秒，
- * 逐条起进程会让这一组变成整个测试套件里最慢的部分。
+ * 全部在一个插件进程中执行：启动一个带权限模型的 node 需要数十毫秒，
+ * 逐条启动进程会使本组成为整个测试套件中最慢的部分。
  */
-describe('出网闸实测：每条逃逸路径', () => {
+describe('网络访问限制实测：每条逃逸路径', () => {
   async function escapeProbe(permissions: PluginPermission[] = ['network']) {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-ng-'))
     const entry = join(dir, 'index.mjs')
     const NL = String.fromCharCode(10)
-    // 每条探针都写成「拿到了 = OK，抛了 = BLOCKED」。
-    // 断言 BLOCKED 而不是断言抛出的错误文案：文案会改，能不能拿到不会。
+    // 每条探针的结果为：取得 = OK，抛错 = BLOCKED。
+    // 断言 BLOCKED 而不断言错误文案：文案可能修改，能否取得不会改变。
     const probes: [string, string][] = [
       ['esmNet', "const m = await import('node:net'); return typeof m.createConnection"],
-      // 这条**不该**被出网闸挡：child_process 由权限模型管，不由这里管。
-      // 两套机制对同一件事给出相反答案，比缺一层防护更难查。
+      // 本条不应被网络访问限制拦截：child_process 由权限模型管理。
+      // 两套机制对同一件事给出相反结论，比缺少一层防护更难排查。
       [
         'cp',
         "const m = await import('node:child_process'); m.execSync('echo hi'); return 'function'",
@@ -319,8 +319,8 @@ describe('出网闸实测：每条逃逸路径', () => {
       ['binding', "return typeof process.binding('tcp_wrap')"],
       [
         'reHook',
-        // 插件自己注册一个短路钩子放行 node:net。后注册的先执行——
-        // 不把 node:module 一起挡住的话，这一条能把上面全部解开。
+        // 插件自行注册短路钩子放行 node:net。后注册的钩子先执行：
+        // 不一并拦截 node:module 时，本条可使以上全部拦截失效。
         "const m = await import('node:module'); m.registerHooks({ resolve(s, c, n) { if (s === 'node:net') return { url: 'node:net', shortCircuit: true }; return n(s, c) } }); const net = await import('node:net'); return typeof net.createConnection",
       ],
       [
@@ -355,9 +355,9 @@ describe('出网闸实测：每条逃逸路径', () => {
       version: '1.0.0',
       description: 'd',
       main: 'index.mjs',
-      // 默认声明 network：出网闸对**声明了网络权限的插件同样生效**，
-      // 因为目标是把 host.net.fetch 做成唯一通道（它过 SSRF 闸），
-      // 而不是「声明了就任意连」。
+      // 默认声明 network：网络访问限制对声明了网络权限的插件同样生效，
+      // 目标是使 host.net.fetch（经过 SSRF 防护）成为唯一通道，
+      // 而不是声明后即可任意连接。
       permissions,
       contributes: {},
     } as unknown as PluginManifest
@@ -387,46 +387,46 @@ describe('出网闸实测：每条逃逸路径', () => {
     return { out, netGuarded, keys: probes.map(([k]) => k) }
   }
 
-  test('每一条都挡住，一条都不许漏', async () => {
+  test('每条路径都被拦截，没有遗漏', async () => {
     const { out, netGuarded, keys } = await escapeProbe()
     if (!netGuarded) {
-      // 装不上闸的机器上不能静默通过。断言「确实没挡住」——
-      // 一个在两种环境下都恒绿的测试等于没有测试。
+      // 无法安装网络访问限制的机器上不能静默通过，此时断言确实未拦截：
+      // 在两种环境下都恒定通过的测试不验证任何内容。
       expect(out.esmNet).toBe('OK')
       return
     }
-    // cp 归权限模型管，不在出网闸的职责范围内，单独看。
+    // cp 由权限模型管理，不属于网络访问限制的职责范围，单独断言。
     const leaked = keys.filter((k) => k !== 'cp' && out[k] === 'OK')
     expect(leaked).toEqual([])
   }, 30_000)
 
   /**
-   * 出网闸不许侵占权限模型的地盘。
+   * 网络访问限制不得越过权限模型的职责范围。
    *
-   * 一个**被明确授予** `process:exec` 的插件必须真的能起子进程——
-   * 拿到了 `--allow-child-process` 旗子却在模块层被挡掉，
-   * 是两套机制对同一件事给出相反的答案，那种自相矛盾比缺一层防护更难查。
+   * 被明确授予 `process:exec` 的插件必须能启动子进程：
+   * 取得 `--allow-child-process` 参数却在模块层被拒绝，
+   * 是两套机制对同一件事给出相反结论，比缺少一层防护更难排查。
    */
-  test('授予 process:exec 的插件仍然起得了子进程，出网闸不越界', async () => {
+  test('授予 process:exec 的插件仍能启动子进程，网络访问限制不越界', async () => {
     const { out } = await escapeProbe(['process:exec'])
     expect(out.cp).toBe('OK')
-    // 一并联网的路照样拆掉了——只是因为 exec 能绕，上报时不算「已拦截」。
+    // 联网路径同样已被移除；由于 exec 可以绕过，上报时不视为已拦截。
     expect(out.esmNet).toBe('BLOCKED')
   }, 30_000)
 
-  test('没有 process:exec 的插件起不了子进程 —— 那是权限模型挡的', async () => {
+  test('没有 process:exec 的插件无法启动子进程，由权限模型拦截', async () => {
     const { out } = await escapeProbe(['network'])
     expect(out.cp).toBe('BLOCKED')
   }, 30_000)
 
   /**
-   * 声明了 `network` 权限也一样挡。
+   * 声明 `network` 权限的插件同样被拦截。
    *
-   * 权限的含义是「可以通过 host.net.fetch 出网」，不是「可以自己连」——
-   * 前者过 SSRF 闸和审计，后者什么都不过。这两件事经常被混为一谈，
-   * 所以单独立一条。
+   * 该权限的含义是可以经由 host.net.fetch 访问网络，不是可以自行建立连接：
+   * 前者经过 SSRF 防护与审计，后者不经过任何检查。两者容易混淆，
+   * 因此单独设一条断言。
    */
-  test('声明 network 权限不等于放行直接出网', async () => {
+  test('声明 network 权限不等于放行直接网络访问', async () => {
     const { out, netGuarded } = await escapeProbe()
     if (!netGuarded) return
     expect(out.esmNet).toBe('BLOCKED')

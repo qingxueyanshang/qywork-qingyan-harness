@@ -2,7 +2,7 @@ import { resolve } from 'node:path'
 
 const pending = new Map<string, Promise<void>>()
 
-/** 按规范路径串行提交；多路径按固定顺序获取，迁移不会交叉等待。 */
+/** 按规范路径串行执行；多个路径按固定顺序加锁，迁移不会因交叉等待而死锁。 */
 export async function withFileLocks<T>(paths: string[], action: () => Promise<T>): Promise<T> {
   const keys = [
     ...new Set(

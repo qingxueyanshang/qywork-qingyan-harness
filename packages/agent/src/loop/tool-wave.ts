@@ -1,6 +1,6 @@
 /**
- * 一轮响应里的工具调用：挡掉未注册与参数不是对象的调用，按波次执行其余调用，结果回给模型，
- * 并按批记一条进展证据。
+ * 处理一轮响应中的工具调用：拒绝未注册与参数不是对象的调用，按波次执行其余调用，结果返回给模型，
+ * 并为每批记录一条进展证据。
  */
 
 import type { WireToolCall } from '@qywork/ai'
@@ -34,33 +34,33 @@ export async function* executeCalls(
   const { input, persist, registry, transcript, fileChanges, ctx, emitQueue } = run
   const { calls, requestId } = turn
 
-  // 压缩检查点必须在打开第一条工具记录之前，理由见 `compactBeforeTools`。
+  // 压缩检查点必须位于开启第一条工具记录之前，理由见 `compactBeforeTools`。
   const reading = yield* compactBeforeTools(host, run, turn)
   if (reading === 'interrupted') return 'stop'
   /*
-   * 投递额度按决策开一次账，全部波次共用：余量 = 软阈值 − 此刻占用，按检查点给出的折算比
-   * 折成估算尺（占用是 provider 真值，工具结果按本地估算记账）。折算比只缩不放，理由见 `compactBeforeTools`。
+   * 投递额度按决策计算一次，全部波次共用：余量 = 软阈值 − 当前占用，按检查点给出的折算比
+   * 折算为本地估算值（占用是 provider 真值，工具结果按本地估算计量）。折算比只缩小不放大，理由见 `compactBeforeTools`。
    */
   openBatchBudget(ctx.state, (softLimit(run.adapter.spec) - reading.occupancy) * reading.scale)
 
   /*
-   * **名字不在注册表里的、参数不是 JSON 对象的，一律不进执行链。**
+   * 名称不在注册表中的调用与参数不是 JSON 对象的调用，一律不进入执行链。
    *
-   * 注册表是工具的唯一权威——名字不在表里就是未注册调用，不是一种工具。
-   * 放它进去会开出一条没有动作、也没有执行事实的 tool step，迫使界面替它
-   * 编造标题。
+   * 注册表是工具的唯一权威：名称不在表中即为未注册调用，不是一种工具。
+   * 进入执行链会创建一条没有动作、也没有执行事实的 tool step，界面只能为它
+   * 虚构标题。
    *
-   * 参数不是 JSON 对象（解析失败、`null`、数组或标量）时适配器把 `arguments` 交成
-   * `{}` 并把原文挂在 `argumentsError` 上。必填项校验（`ToolRegistry.execute`）只挡得住
-   * 声明了 `required` 的工具，`required: []` 的工具会把这个空对象当成「没有参数」照常执行。
-   * 所以判据取 `argumentsError` 本身，不取校验结果。
+   * 参数不是 JSON 对象（解析失败、`null`、数组或标量）时，适配器将 `arguments` 设为
+   * `{}`，并将原文记录在 `argumentsError` 上。必填项校验（`ToolRegistry.execute`）只能拦截
+   * 声明了 `required` 的工具，`required: []` 的工具会把该空对象视为没有参数并照常执行。
+   * 因此判据取 `argumentsError` 本身，不取校验结果。
    *
-   * 在这里挡掉之后，**下游每一条 step 都必然有 spec、必然解析得出动作**，
-   * 渲染那侧不再需要任何兜底分支。
+   * 在此拦截后，下游每一条 step 都必然有 spec、必然能解析出动作，
+   * 渲染侧无需任何后备分支。
    *
-   * 但结果**必须回给模型**：provider 的契约是每个 tool_call 都要有一条
-   * 对应 id 的 tool 结果，少一条下一轮直接 400。所以照常推一条失败结果，
-   * 它自己会改用真实存在的工具或重发完整参数。
+   * 结果仍必须返回给模型：provider 要求每个 tool_call 都有一条
+   * 对应 id 的 tool 结果，缺少时下一轮请求返回 400。因此照常追加一条失败结果，
+   * 模型据此改用实际存在的工具或重新发送完整参数。
    */
   // 本批（一次 provider 决策）的逐调用证据，波次全部结束后聚合成一条。
   const batchEvidence: {
@@ -96,9 +96,9 @@ export async function* executeCalls(
   }
 
   /*
-   * 两套下标不可混用：`planWaves` 的 callIndex 是过滤后下标，进账本与
-   * 事件，语义保持不变；批证据要按 provider 原调用顺序聚合，用原始下标
-   * ——被挡下的调用的证据（上面）就是按原始下标记的，混用会让含被挡调用的
+   * 两套下标不可混用：`planWaves` 的 callIndex 是过滤后下标，写入账本与
+   * 事件，语义保持不变；批次证据按 provider 原调用顺序聚合，使用原始下标：
+   * 上方被拦截调用的证据按原始下标记录，混用会使含被拦截调用的
    * 批次聚合顺序偏离原顺序。
    */
   const known: WireToolCall[] = []
@@ -114,8 +114,8 @@ export async function* executeCalls(
     const wave = waves[waveIndex]!
     const results = await Promise.all(
       wave.map(async ({ call, callIndex }) => {
-        // 非空断言成立：上面已经把不在注册表里的调用整段挡掉了，
-        // 走到这里的每一条都有 spec。
+        // 非空断言成立：上方已拦截所有不在注册表中的调用，
+        // 执行到此处的每一条调用都有 spec。
         const action = resolveAction(registry.get(call.name)!, call.arguments, ctx)
         const stepId = persist.openToolStep(
           input.runId,
@@ -130,7 +130,7 @@ export async function* executeCalls(
       }),
     )
 
-    // 先把「开始了」全部广播出去，UI 才能同时点亮同一波的多个工具卡。
+    // 先广播全部 tool.started 事件，界面才能同时将同一波次的多个工具卡片显示为运行中。
     for (const r of results) {
       yield {
         type: 'tool.started',
@@ -147,12 +147,12 @@ export async function* executeCalls(
     }
 
     /*
-     * 与停止赛跑，并且**边等边把中途输出交出去**。
+     * 与停止信号竞争，并在等待期间发出中途输出。
      *
-     * 裸 `Promise.all` 有两处问题：一个不返回的工具把整轮钉死在这里，
-     * 而停止按钮只是置了个信号没人看；以及这一波跑多久，shell 的 stdout
-     * 就在内存里压多久（实测 `npm test` 50.7 秒，界面全程不动）。
-     * `drainUntil` 两件都管——它的返回值就是这一波的执行结果。
+     * 直接使用 `Promise.all` 有两个问题：一个不返回的工具会使整轮阻塞于此，
+     * 而停止按钮只设置了一个无人检查的信号；此外本波次运行期间，shell 的 stdout
+     * 一直积压在内存中（实测 `npm test` 50.7 秒，界面全程无变化）。
+     * `drainUntil` 同时处理这两个问题，其返回值即本波次的执行结果。
      */
     const settled = yield* drainUntil(
       emitQueue,
@@ -161,7 +161,7 @@ export async function* executeCalls(
         Promise.all(
           results.map(async (r) => {
             const started = Date.now()
-            // 提交「即将执行」的时间戳必须在调用执行器之前——这是崩溃恢复的歧义边界。
+            // 必须在调用执行器之前写入「即将执行」时间戳：崩溃恢复以此区分未执行与执行状态不明的调用。
             persist.markExecuting(r.stepId)
             const outcome = await registry.execute(
               r.call.name,
@@ -184,11 +184,11 @@ export async function* executeCalls(
       }
 
       /*
-       * 文件页要失效的判据来自工具声明的副作用，不猜命令正文。
+       * 文件页失效的判据来自工具声明的副作用，不根据命令正文推测。
        *
-       * write/delete/execute 都可能落盘；文件工具会给精确明细，shell、格式化器、
-       * 构建器和子流程通常只能确认“执行过”。后者发空 changes：刷新磁盘快照，但
-       * 不把未知路径伪装成变更记录。权限拒绝 (`executed:false`) 没真正执行，不发。
+       * write/delete/execute 都可能写入磁盘；文件工具会给出精确明细，shell、格式化器、
+       * 构建器和子流程通常只能确认已执行。后者发送空 changes：刷新磁盘快照，但
+       * 不把未知路径记为变更记录。权限拒绝（`executed:false`）未实际执行，不发送。
        */
       const effect = resolvePermissionEffect(registry.get(s.call.name)!, s.call.arguments)
       if (
@@ -209,7 +209,7 @@ export async function* executeCalls(
         durationMs: s.durationMs,
       }
 
-      // 工具结果必须原样回传给模型——这是不可改写的事实，
+      // 工具结果必须原样返回给模型：这是不可改写的事实，
       // 装配层不得摘要、截断或改写措辞。
       transcript.push({
         role: 'tool',
@@ -231,9 +231,9 @@ export async function* executeCalls(
   }
 
   /*
-   * 一次 provider 决策只记**一条**进展证据：监督器数的是「看过结果仍作
-   * 相同决策」的周期数，不是工具调用数。逐调用记账时，单次响应内的重复
-   * 调用会在模型看到任何结果之前满足三次阈值并误停。
+   * 一次 provider 决策只记录一条进展证据：判定统计的是看过结果后仍作出
+   * 相同决策的周期数，不是工具调用数。逐调用记录时，单次响应内的重复
+   * 调用会在模型看到任何结果之前满足三次阈值并导致错误停止。
    * 按 callIndex 排序，保证聚合顺序与 provider 原调用顺序一致。
    */
   if (batchEvidence.length) {
@@ -251,13 +251,13 @@ export async function* executeCalls(
     })
   }
 
-  // 波次跑完才知道这个单元的末 step seq，整段重盖一次。
+  // 波次全部执行完毕后才能确定本单元末尾的 step seq，因此对整段重新标记一次。
   run.stampUnit(turn.unitStart)
 
-  // 原地打转：调用或参数校验失败的结果重复、没有副作用，连着三个周期。
-  // **判在批次跑完之后**，不在下发之前——提前中断会在 transcript 里留下
+  // 重复无进展：调用或参数校验失败的结果重复且没有副作用，连续三个周期。
+  // 判定在批次执行完毕之后进行，不在下发之前：提前中断会在 transcript 中留下
   // 一条有 tool_calls 却没有 tool 结果的 assistant 消息，下一轮请求会被
-  // provider 直接 400。代价是晚一轮才停，仍然远好过继续空转。
+  // provider 以 400 拒绝。代价是晚一轮停止，仍优于继续无进展地执行。
   if (run.stalled()) {
     run.stopReason = 'no_progress'
     run.stopDetail = `连续三轮工具调用没有进展：${[...new Set(calls.map((c) => c.name))].join('、')}`
@@ -267,15 +267,15 @@ export async function* executeCalls(
 }
 
 /**
- * 给这一次调用配一个带 stepId 的 `emit`。
+ * 为本次调用构造带 stepId 的 `emit`。
  *
- * 中途输出的事件必须认得出属于哪张卡片——前端拿 stepId 在 transcript 里找那一条，
- * 找不到就整条丢弃。而 stepId 是开 step 时才产生的，装配方造不出来，
- * 所以这条通道只能在这里绑（见 `ToolContext.emit`）。
+ * 中途输出事件必须能识别所属的卡片：前端按 stepId 在 transcript 中查找对应条目，
+ * 未找到则整条丢弃。stepId 在开启 step 时才产生，装配方无法构造，
+ * 因此该通道只能在此处绑定（见 `ToolContext.emit`）。
  *
- * **其余字段原样带过去**：`state` / `resources` 传的是同一个 Map 引用，
- * 「ToolContext 整个 run 只建一个」那条不变量护的是这几本账跨调用可见，
- * 外面套一层壳不动它们。
+ * 其余字段原样传递：`state` / `resources` 是同一个 Map 引用。
+ * 「每个 run 只创建一个 ToolContext」这条不变量保证这些状态跨调用可见，
+ * 外层包装不改变它们。
  */
 function withStep(
   base: ToolContextBase,
@@ -295,11 +295,11 @@ function withStep(
 /**
  * 执行波次规划。
  *
- * 默认全部串行。只有当**连续**若干个调用都声明了并行安全、且它们触碰的资源键
- * 互不相交时，才合并成一个波次。
+ * 默认全部串行。只有连续若干个调用都声明了并行安全、且涉及的资源键
+ * 互不相交时，才合并为一个波次。
  *
- * 「连续」这条限制很重要：模型给出的调用顺序本身携带意图（先读后写），
- * 跨越一个不安全调用去合并后面的安全调用会打乱这个顺序。
+ * 必须限定为连续调用：模型给出的调用顺序本身包含意图（先读后写），
+ * 跨越一个不安全调用合并其后的安全调用会打乱该顺序。
  */
 export function planWaves(
   calls: WireToolCall[],
@@ -324,7 +324,7 @@ export function planWaves(
       return
     }
     const keys = spec?.resourceKeys?.(call.arguments) ?? []
-    // 资源冲突：同一个文件不能在同一波里被两个调用碰。
+    // 资源冲突：同一个文件不能在同一波次中被两个调用访问。
     if (keys.some((k) => currentKeys.has(k))) flush()
     for (const k of keys) currentKeys.add(k)
     current.push({ call, callIndex })
@@ -335,13 +335,13 @@ export function planWaves(
 }
 
 /**
- * 这次调用是否确凿没有产生副作用。契约见 `ProgressEvidence.noProgress`：
- * 只有明确事实参与空转判定，含糊一律视为可能有副作用。
+ * 本次调用是否确定没有产生副作用。约定见 `ProgressEvidence.noProgress`：
+ * 只有明确事实参与无进展判定，不确定的情况一律视为可能有副作用。
  *
- * `fileChanges` 非空直接判为有副作用；`executed: false` 表示没有进入执行器；
+ * `fileChanges` 非空直接判定为有副作用；`executed: false` 表示没有进入执行器；
  * 其余只认注册期声明为纯 `read` 的工具。不要放宽到 `execute` / `network` /
- * `internal_control`：它们即使返回失败也可能已修改外部状态（写到一半再抛也是错），
- * 字段缺席不能当成「明确没有变更」。
+ * `internal_control`：它们即使返回失败也可能已修改外部状态（写入一半后抛出同样是失败），
+ * 字段缺失不能视为明确没有变更。
  */
 export function provablyNoEffect(effect: PermissionEffect, outcome: ToolOutcome): boolean {
   if (outcome.fileChanges?.length) return false

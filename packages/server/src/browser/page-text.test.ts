@@ -50,7 +50,7 @@ function textNode() {
   return { node, state, inspect: (x?: number, y?: number) => inspect.call(node, x, y) }
 }
 
-test('多行文字取真实文字片段中心，动作前重新量取而非缓存旧坐标', () => {
+test('多行文字取实际文字片段的中心，动作前重新测量，不使用缓存的旧坐标', () => {
   const { state, inspect } = textNode()
   expect(inspect()).toMatchObject({ x: 20, y: 28, sameTree: true, identity: '#text|F1' })
   state.bounds = rect(210, 220, 20, 16)
@@ -58,14 +58,14 @@ test('多行文字取真实文字片段中心，动作前重新量取而非缓�
   expect(inspect()).toMatchObject({ x: 220, y: 228, sameTree: true })
 })
 
-test('文字行间空白不成为合法落点，兄弟遮挡不按同一父容器放行', () => {
+test('文字行间空白不是合法落点，兄弟节点遮挡时不因属于同一父容器而放行', () => {
   const { state, inspect } = textNode()
   expect(inspect(50, 25)).toMatchObject({ inBox: false, sameTree: false })
   state.hit = { contains: () => true }
   expect(inspect().sameTree).toBe(false)
 })
 
-test('没有文字矩形不能点击，禁用祖先仍拒绝', () => {
+test('没有文字矩形时不可点击，祖先被禁用时仍拒绝', () => {
   const { node, state, inspect } = textNode()
   node.parentElement.closest = () => ({ disabled: true })
   expect(inspect().disabled).toBe(true)
@@ -73,7 +73,7 @@ test('没有文字矩形不能点击，禁用祖先仍拒绝', () => {
   expect(inspect()).toMatchObject({ inBox: false, sameTree: false })
 })
 
-test('复用同一文本节点改成另一楼层，身份指纹同步改变', () => {
+test('同一文本节点被复用为另一楼层的内容时，身份指纹随之改变', () => {
   const { node, inspect } = textNode()
   expect(inspect().identity).toBe('#text|F1')
   node.nodeValue = 'F2'

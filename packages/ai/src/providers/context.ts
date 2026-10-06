@@ -5,11 +5,11 @@ export type ProviderWireMessage = Omit<WireMessage, 'role'> & {
 }
 
 /**
- * 把 runtime 的内部上下文段并入它所归属的真实用户消息。
+ * 将 runtime 的内部上下文段并入其所属的真实用户消息。
  *
- * `context` 不是任何 provider 的线上角色。三类协议共用这一处归一化，确保最终请求
- * 没有额外的 user/system 轮，也没有 `<system-reminder>` 包装。非法顺序直接报错，
- * 不能把上下文静默挂到另一条消息上。
+ * `context` 不是任何 provider 协议中的角色。三类协议共用此处的归一化，确保最终请求
+ * 没有额外的 user/system 轮，也没有 `<system-reminder>` 包装。顺序非法时报错，
+ * 不得将上下文静默附加到其他消息上。
  */
 export function mergeContextIntoUsers(messages: readonly WireMessage[]): ProviderWireMessage[] {
   const out: ProviderWireMessage[] = []

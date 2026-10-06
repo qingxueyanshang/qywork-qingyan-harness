@@ -1,16 +1,16 @@
 /**
- * 生成适配器共用的 HTTP：发请求、读错误原文、下载产物、认图片格式。
+ * 生成适配器共用的 HTTP 函数：发送请求、读取错误原文、下载产物、识别文件格式。
  */
 
 import { MediaError } from './types.ts'
 
 /**
- * 同步生成一次请求的上限。OpenAI 文档写明复杂提示词最长约 2 分钟；超过 5 分钟没有响应按失败回报，
- * 不无限等。用户停止走调用方的 signal，与这个上限互不替代。
+ * 同步生成单次请求的时限。OpenAI 文档写明复杂提示词最长约 2 分钟；超过 5 分钟无响应即按失败回报，
+ * 不无限等待。用户停止经由调用方的 signal 传递，与该时限互不替代。
  */
 export const SYNC_TIMEOUT_MS = 5 * 60_000
 
-/** 错误响应里接口自己的那句话。各家字段名不同：`error.message`、`message`、`code`。 */
+/** 错误响应中接口返回的错误信息。各厂商字段名不同：`error.message`、`message`、`code`。 */
 async function providerMessage(res: Response): Promise<string> {
   const text = await res.text().catch(() => '')
   try {
@@ -23,7 +23,7 @@ async function providerMessage(res: Response): Promise<string> {
   return text.trim().slice(0, 500) || res.statusText
 }
 
-/** 发请求，非 2xx 抛 `MediaError`（带状态码与接口原文）。 */
+/** 发送请求，非 2xx 时抛出 `MediaError`（含状态码与接口原文）。 */
 export async function send(url: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
   let res: Response
   try {
@@ -34,7 +34,7 @@ export async function send(url: string, init: RequestInit, signal: AbortSignal):
   } catch (err) {
     if (signal.aborted) throw err
     const reason = err instanceof Error ? err.message : String(err)
-    throw new MediaError(`请求没有到达接口或没有收到响应：${reason}`)
+    throw new MediaError(`请求未到达接口或未收到响应：${reason}`)
   }
   if (init.redirect === 'manual' && [301, 302, 303, 307, 308].includes(res.status)) return res
   if (!res.ok) {
@@ -45,7 +45,7 @@ export async function send(url: string, init: RequestInit, signal: AbortSignal):
   return res
 }
 
-/** 发 JSON 请求并解析 JSON 响应。 */
+/** 发送 JSON 请求并解析 JSON 响应。 */
 export async function postJson(
   url: string,
   body: unknown,
@@ -64,7 +64,7 @@ export async function postJson(
   return (await res.json()) as Record<string, unknown>
 }
 
-/** 发 GET 并解析 JSON 响应。查询异步任务用。 */
+/** 发送 GET 请求并解析 JSON 响应，用于查询异步任务。 */
 export async function getJson(
   url: string,
   headers: Record<string, string>,
@@ -75,8 +75,8 @@ export async function getJson(
 }
 
 /**
- * 下载接口给的临时地址。地址 24 小时或 60 分钟后失效，所以拿到就下，地址不出适配器。
- * 下载失败算这次生成失败：图已经生成、费用已经发生，消息里写明这一点。
+ * 下载接口返回的临时地址。地址在 24 小时或 60 分钟后失效，因此取得后立即下载，地址不传出适配器。
+ * 下载失败计为本次生成失败：产物已生成、费用已发生，错误消息中写明这一点。
  */
 export async function download(
   url: string,
@@ -107,14 +107,14 @@ export async function download(
   } catch (err) {
     if (signal.aborted) throw err
     const reason = err instanceof Error ? err.message : String(err)
-    throw new MediaError(`已生成，但下载结果失败（费用已发生）：${reason}`)
+    throw new MediaError(`已生成，但结果下载失败（费用已发生）：${reason}`)
   }
   const bytes = new Uint8Array(await res.arrayBuffer())
   const header = res.headers.get('content-type')?.split(';')[0]?.trim()
   return { bytes, mime: sniffMime(bytes) ?? header ?? 'application/octet-stream' }
 }
 
-/** 文件头是否以这串 ASCII 开头（从 `offset` 起）。 */
+/** 文件头自 `offset` 起是否为指定的 ASCII 字符串。 */
 function magic(bytes: Uint8Array, text: string, offset = 0): boolean {
   for (let i = 0; i < text.length; i++) {
     if (bytes[offset + i] !== text.charCodeAt(i)) return false
@@ -123,8 +123,8 @@ function magic(bytes: Uint8Array, text: string, offset = 0): boolean {
 }
 
 /**
- * 按文件头认格式。接口回的 base64 不带类型，下载地址的 content-type 也常是
- * `application/octet-stream`；认错了落盘的扩展名就错，预览按扩展名认不出。
+ * 按文件头识别格式。接口返回的 base64 不含类型，下载地址的 content-type 也常为
+ * `application/octet-stream`；识别错误会使写入磁盘的扩展名错误，预览按扩展名无法识别该文件。
  */
 export function sniffMime(bytes: Uint8Array): string | null {
   if (bytes[0] === 0x89 && magic(bytes, 'PNG', 1)) return 'image/png'
@@ -140,13 +140,13 @@ export function sniffMime(bytes: Uint8Array): string | null {
   return null
 }
 
-/** 接口 JSON 里的一个数：非数字、负数都当作没有回报。字符串形式的数（可灵的 `duration`）照读。 */
+/** 读取接口 JSON 中的数值：非数字与负数均视为未回报。字符串形式的数值（可灵的 `duration`）同样读取。 */
 export function count(value: unknown): number | undefined {
   const n = typeof value === 'string' && value.trim() ? Number(value) : value
   return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined
 }
 
-/** 去掉值为 `undefined` 的键：`exactOptionalPropertyTypes` 下可选字段不接受 `undefined`。 */
+/** 删除值为 `undefined` 的键：`exactOptionalPropertyTypes` 下可选字段不接受 `undefined`。 */
 export function defined<T extends object>(value: { [K in keyof T]?: T[K] | undefined }): T {
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T
 }

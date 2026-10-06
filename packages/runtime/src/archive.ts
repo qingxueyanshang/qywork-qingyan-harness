@@ -1,15 +1,15 @@
 /**
  * 会话导出。
  *
- * 「把会话搬到另一台机器」不做（那要账号体系、要冲突合并、要正文迁移）；
- * 「把这次会话导出成一份能读、能存档、能贴进 issue 的文档」是真实需求。
- * 两者的界限就在这里——本模块**只读**，产出物是死的，不承诺能被导回来。
+ * 不支持把会话迁移到另一台机器（需要账号体系、冲突合并与正文迁移）；
+ * 支持把会话导出为可阅读、可存档、可附在 issue 中的文档。
+ * 本模块只读，导出物是静态快照，不承诺可以导回。
  *
  * 两种格式，各有明确用途：
  *
- * - **markdown**：给人读。工具调用折叠成一行摘要，失败的展开；正文不含 base64。
- * - **json**：给脚本读。**完整**导出消息、run、step、payload，不做任何裁剪——
- *   两种格式的取舍相反，混成一种就两边都不好用。
+ * - markdown：供人阅读。工具调用折叠为一行摘要，失败的调用展开；正文不含 base64。
+ * - json：供脚本读取。完整导出消息、run、step、payload，不做任何裁剪。
+ *   两种格式的取舍相反，合并为一种会使两种用途都无法满足。
  */
 
 import { applySpecOverride, diagnosticEndpoint, lookupModel } from '@qywork/ai'
@@ -45,9 +45,9 @@ import { contextPanel } from './context-panel.ts'
 export type ArchiveFormat = 'markdown' | 'json'
 
 export interface ArchiveOptions {
-  /** 工具参数与结果的截断长度。markdown 用，json 不截。 */
+  /** 工具参数与结果的截断长度。仅用于 markdown，json 不截断。 */
   maxToolChars?: number
-  /** 含思考内容。默认不含——它通常很长，而且对读者价值最低。 */
+  /** 是否包含思考内容。默认不包含：思考内容通常很长，且对读者价值最低。 */
   includeThinking?: boolean
 }
 
@@ -82,7 +82,7 @@ export interface ChildConversationLink {
 
 export interface ConversationTree {
   rootConversationId: ConversationId
-  /** 根会话仍在诊断包顶层；这里仅放全部后代，按首次出现顺序排列。 */
+  /** 根会话位于诊断包顶层；此处只包含全部后代，按首次出现顺序排列。 */
   childConversations: ArchiveBundle[]
   /** 扁平边表可还原父子层级，同一子会话被多处引用时正文只导出一份。 */
   links: ChildConversationLink[]
@@ -92,7 +92,7 @@ export interface ConversationTree {
   }[]
 }
 
-/** 把一个会话的全部账本读出来。两种格式共用这一份采集。 */
+/** 读取一个会话的全部账本。两种格式共用同一份采集结果。 */
 export function collect(store: Store, conversationId: ConversationId): ArchiveBundle {
   const conversation = getConversation(store, conversationId)
   if (!conversation) throw new Error(`会话不存在：${conversationId}`)
@@ -141,8 +141,8 @@ export function collect(store: Store, conversationId: ConversationId): ArchiveBu
 /**
  * 沿父工具 step 递归收集子 Agent 会话。
  *
- * 会话 id 是去重键，也同时是循环保护：损坏账本即使出现 A → B → A，也只采集两份正文，
- * 但三条关联事实仍会留在 `links` 里供排查。
+ * 会话 id 既是去重键，也用于防止循环：损坏的账本即使出现 A → B → A，也只采集两份正文，
+ * 三条关联事实仍保留在 `links` 中供排查。
  */
 function collectConversationTree(
   store: Store,
@@ -190,7 +190,7 @@ function collectConversationTree(
   return { rootConversationId, childConversations, links, unresolvedChildren }
 }
 
-/** 一条派活 step 起过的子会话：卡上每一格建过的那个子 agent。 */
+/** 任务派发 step 创建的子会话：派发卡片上每一项创建的子 agent。 */
 function childConversationsFrom(
   step: Step,
 ): { id: ConversationId; source: ChildConversationLink['source'] }[] {
@@ -202,8 +202,8 @@ function childConversationsFrom(
 }
 
 /**
- * 诊断包是给人转发的，工具图片的原始字节不属于排障事实。
- * 运行账本和普通 JSON 存档保持完整；只在这个分享边界把字节换成明确的长度元数据。
+ * 诊断包用于转发给他人，工具图片的原始字节不属于排障信息。
+ * 运行账本与普通 JSON 存档保持完整；只在分享这一边界把字节替换为明确的长度元数据。
  */
 function diagnosticBundle(bundle: ArchiveBundle): ArchiveBundle {
   return {
@@ -236,12 +236,12 @@ function diagnosticBundle(bundle: ArchiveBundle): ArchiveBundle {
 }
 
 /**
- * 给排障人员的当前会话快照。
+ * 供排障人员使用的当前会话快照。
  *
- * 会话正文、思考、工具与逐请求账本全部来自 `collect`，没有一份前端临时投影；
- * 工具结果里的媒体字节只在导出边界替换为长度元数据。
- * 接口配置只带判断请求形状所需的字段：协议、地址、思考档位、请求头名字与模型库覆盖。
- * API key 和请求头值绝不进入导出物。
+ * 会话正文、思考、工具与逐请求账本全部来自 `collect`，不含任何前端临时投影；
+ * 工具结果中的媒体字节只在导出边界替换为长度元数据。
+ * 接口配置只包含判断请求形状所需的字段：协议、地址、思考档位、请求头名称与模型库覆盖。
+ * API key 与请求头的值不进入导出物。
  */
 export function exportConversationDiagnostics(
   store: Store,
@@ -401,10 +401,10 @@ export function exportConversation(
 }
 
 /**
- * JSON：**不裁剪**。
+ * JSON：不裁剪。
  *
- * 这份是给脚本用的，裁剪等于把「导出的内容不全」这件事藏起来——
- * 而脚本没法像人一样看出「这里少了点什么」。
+ * 该格式供脚本使用，裁剪会隐藏导出内容不完整这一事实，
+ * 而脚本无法像人一样察觉内容缺失。
  */
 function toJson(bundle: ArchiveBundle): string {
   return `${JSON.stringify(bundle, null, 2)}\n`
@@ -435,12 +435,12 @@ function toMarkdown(bundle: ArchiveBundle, opts: ArchiveOptions): string {
     `- ${bundle.runs.length} 轮 · 入 ${totals.input} 出 ${totals.output} · $${totals.cost.toFixed(4)}`,
   )
 
-  // 压缩过的会话要**在最上面**说清楚：读者看到的历史与模型看到的不是同一份，
-  // 不说的话「模型为什么忘了前面」会变成一个查不出原因的问题。
+  // 压缩过的会话必须在开头注明：读者看到的历史与模型看到的不同，
+  // 不注明时，模型遗忘前文的原因将无从查明。
   if (c.compactionManifest) {
     out.push(
-      `- ⚠ 本会话被压缩过（修订 ${c.compactionManifest.revision}）：` +
-        '模型看到的是摘要，下面的原文是完整的',
+      `- ⚠ 本会话已压缩（修订 ${c.compactionManifest.revision}）：` +
+        '模型收到的是摘要，以下为完整原文',
     )
   }
   out.push('')
@@ -465,7 +465,7 @@ function renderRun(run: ArchiveBundle['runs'][number], limit: number, thinking: 
       continue
     }
     if (s.kind === 'compaction') {
-      out.push('> （此处发生了一次上下文压缩）', '')
+      out.push('> （此处进行了一次上下文压缩）', '')
       continue
     }
     if (s.kind === 'tool_action') {
@@ -473,11 +473,11 @@ function renderRun(run: ArchiveBundle['runs'][number], limit: number, thinking: 
       continue
     }
     /*
-     * run 内注入的那句用户消息。**必须在下面那个兜底之前拦下来**——
-     * 兜底把剩下的一切都当思考渲染，掉进去的结果是用户的话被标成模型的思考，
-     * 而不导出思考时它整句消失。
+     * run 内注入的用户消息。必须在下方的默认分支之前处理：
+     * 默认分支把其余内容全部按思考渲染，进入该分支会使用户消息被标为模型的思考，
+     * 不导出思考时整句消失。
      *
-     * 用二级标题打断助手那一段：它确实是对话换了个人说话。
+     * 用二级标题分隔助手段落：此处对话的发言者发生了变化。
      */
     if (s.kind === 'user') {
       if (s.content?.trim() && !isNoticeStep(s)) {
@@ -497,10 +497,10 @@ function renderRun(run: ArchiveBundle['runs'][number], limit: number, thinking: 
 }
 
 /**
- * 工具调用一行摘要，**失败的展开**。
+ * 工具调用渲染为一行摘要，失败的调用展开。
  *
- * 成功的调用读者基本不看；失败的是最需要看到细节的地方。
- * 一视同仁地折叠或一视同仁地展开，都会让这份文档在最有用的地方最没用。
+ * 读者通常不查看成功的调用；失败的调用最需要细节。
+ * 全部折叠或全部展开，都会使文档在最需要信息的位置缺少有效信息。
  */
 function renderTool(s: Step, limit: number): string[] {
   const p = s.payload
@@ -526,7 +526,7 @@ function renderTool(s: Step, limit: number): string[] {
 }
 
 function clip(text: string, limit: number): string {
-  return text.length <= limit ? text : `${text.slice(0, limit)}\n…（截断，完整内容见 json 导出）`
+  return text.length <= limit ? text : `${text.slice(0, limit)}\n…（已截断，完整内容见 json 导出）`
 }
 
 function iso(ms: number): string {

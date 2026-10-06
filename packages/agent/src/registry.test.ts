@@ -1,12 +1,12 @@
 /**
  * 工具名的 provider 约束、必填参数与唯一执行入口。
  *
- * 这条是实测撞出来的，而且只在**真实产物 + 真实 provider**下才会出现：
- * 装一个 id 叫 `demo.lines` 的插件（反向域名风格，清单文档自己推荐的写法），
- * 工具名成了 `demo.lines__count`，然后每一轮 run 都被
- * `Invalid 'tools[0].function.name'` 400 拒绝——而错误信息不说是哪个插件。
+ * 该问题由实测发现，且只在真实产物与真实 provider 下出现：
+ * 安装 id 为 `demo.lines` 的插件（反向域名风格，清单文档推荐的写法）后，
+ * 工具名为 `demo.lines__count`，此后每一轮 run 都被
+ * `Invalid 'tools[0].function.name'` 400 拒绝，且错误信息不指明是哪个插件。
  *
- * 单测、typecheck、本地跑 agent 全都是绿的：内置工具名里没有点。
+ * 单元测试、typecheck、本地运行 agent 均能通过：内置工具名中没有点。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -32,8 +32,8 @@ const spec = (name: string): ToolSpec => ({
   fn: async () => ({ status: 'success', message: 'ok' }),
 })
 
-describe('注册期就挡住 provider 不收的名字', () => {
-  test('点被拒 —— 反向域名风格的插件 id 就会产生它', () => {
+describe('注册期拒绝 provider 不接受的名称', () => {
+  test('拒绝含点的名称：反向域名风格的插件 id 会产生点', () => {
     expect(() => new ToolRegistry().register(spec('demo.lines__count'))).toThrow('provider')
   })
 
@@ -43,11 +43,11 @@ describe('注册期就挡住 provider 不收的名字', () => {
     })
   }
 
-  test('超过 64 字符被拒', () => {
+  test('超过 64 字符时拒绝', () => {
     expect(() => new ToolRegistry().register(spec('a'.repeat(65)))).toThrow()
   })
 
-  test('合法的照常注册', () => {
+  test('合法名称照常注册', () => {
     const r = new ToolRegistry()
     r.register(spec('read_file'))
     r.register(spec('mcp__github__create-issue'))
@@ -114,27 +114,27 @@ describe('执行入口 fail-closed', () => {
   })
 })
 
-describe('消毒', () => {
-  test('非法字符统一换成下划线', () => {
+describe('规范化', () => {
+  test('非法字符统一替换为下划线', () => {
     expect(sanitizeToolName('demo.lines__count')).toBe('demo_lines__count')
     expect(sanitizeToolName('mcp__my.server__do:it')).toBe('mcp__my_server__do_it')
   })
 
-  test('消毒结果一定能通过校验', () => {
+  test('规范化结果必定能通过校验', () => {
     for (const raw of ['a.b', '中文工具', 'x/y z', '@scope/pkg__tool']) {
       expect(TOOL_NAME_PATTERN.test(sanitizeToolName(raw))).toBe(true)
     }
   })
 
-  test('截到 64 —— provider 的上限也是硬的', () => {
+  test('截断至 64 字符：provider 的上限同样是硬性限制', () => {
     expect(sanitizeToolName('x'.repeat(100))).toHaveLength(64)
   })
 
   /**
-   * 消毒**会**制造碰撞。这里钉住这个事实：产出方必须自己查重，
-   * 不能假设消毒后还是唯一的。
+   * 规范化会产生重名。本用例锁定这一事实：生成名称的一方必须自行查重，
+   * 不能假设规范化后的名称仍然唯一。
    */
-  test('a.b 与 a_b 消毒后同名 —— 调用方必须自己查重', () => {
+  test('a.b 与 a_b 规范化后同名：调用方必须自行查重', () => {
     expect(sanitizeToolName('a.b')).toBe(sanitizeToolName('a_b'))
   })
 })
@@ -142,16 +142,16 @@ describe('消毒', () => {
 /**
  * 动作语义的解析。
  *
- * 兜底那条是实打实的坑：给注册表里查不到的工具兜一个
- * `{ kind: 'read', objectLabel: 工具名 }`，就是让一个可能在写、在删、在跑的陌生
- * 工具在卡片上写着「读取 xxx」——不是把原词当动词，是**编了一个具体且错误的动词**。
+ * 不要为注册表中未找到的工具返回默认值
+ * `{ kind: 'read', objectLabel: 工具名 }`：这会使一个可能执行写入、删除或命令的未知
+ * 工具在卡片上显示「读取 xxx」，即编造一个具体且错误的动词。
  */
-describe('动作语义按参数解析，不按工具名猜', () => {
+describe('动作语义按参数解析，不按工具名推测', () => {
   test('常量 kind 原样返回', () => {
     expect(resolveAction(spec('read_thing'), {}).kind).toBe('read')
   })
 
-  test('函数 kind 拿得到 args', () => {
+  test('函数 kind 能取得 args', () => {
     const s: ToolSpec = {
       ...spec('facade'),
       actionKind: (a) => (a.mode === 'rm' ? 'delete' : 'read'),
@@ -160,8 +160,8 @@ describe('动作语义按参数解析，不按工具名猜', () => {
     expect(resolveAction(s, { mode: 'cat' }).kind).toBe('read')
   })
 
-  /** 有些动作光看参数分不出创建还是编辑，差别在 ctx.state 里的既有状态。 */
-  test('函数 kind 拿得到 ctx', () => {
+  /** 部分动作仅凭参数无法区分创建与编辑，区别在于 ctx.state 中的既有状态。 */
+  test('函数 kind 能取得 ctx', () => {
     const s: ToolSpec = {
       ...spec('stateful'),
       actionKind: (_a, c) => (c?.state.get('has') ? 'edit' : 'write'),

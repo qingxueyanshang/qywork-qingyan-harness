@@ -1,8 +1,8 @@
 /**
  * `openai_speech`：OpenAI 形状的语音合成 `POST {base}/audio/speech`，OpenAI、New API、One API 共用。
  *
- * 请求是 JSON，响应体直接是音频字节。格式先按文件头认，认不出再用 `response_format`：
- * `pcm` 没有文件头，只能按请求时的格式定。
+ * 请求为 JSON，响应体即音频字节。格式先按文件头识别，无法识别时使用 `response_format`：
+ * `pcm` 没有文件头，只能按请求时指定的格式确定。
  */
 
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'

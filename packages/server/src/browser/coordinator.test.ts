@@ -4,13 +4,13 @@
  * 覆盖范围：`coordinator.ts` 的按执行者控制槽与页级独占、版本准入、`browserEnabled` 开关、会话归属校验、
  * 按会话关页、释放与迟到回包的收尾、宿主断开重连，动作与导航之后的静默等待、
  * 观察登记与失败说明，
- * 选项页读取不发新编号、多事件动作没做完时仍带回观察，
+ * 选项页读取不分配新编号、多事件动作未完成时仍返回观察，
  * 下载的身份登记与终态认领，以及它经 `bridge.ts` 发出的
- * `create` / `bind` / `close.conversation` / `download.arm` / `download.disarm` 形状。
+ * `create` / `bind` / `close.conversation` / `download.arm` / `download.disarm` 帧格式。
  *
- * 对端是一个自动应答的假宿主，外加一个只走通路的假调试端点——这里问的是
- * 「哪条会话的页归谁、两条会话能不能同时操作各自的页、删会话关不关得掉页」，
- * 不是 CDP 协议细节（那在 `cdp.test.ts`）。
+ * 对端是自动应答的假宿主，以及只覆盖基本流程的假调试端点。本文件测试页面归属、
+ * 两条会话能否同时操作各自的页、删除会话能否关闭页面，
+ * 不测试 CDP 协议细节（见 `cdp.test.ts`）。
  */
 
 import { afterEach, expect, test } from 'bun:test'
@@ -54,7 +54,7 @@ import { meetsRuntimeFloor } from './coordinator.ts'
 
 const HOST_KEY = 'coordinator-host-key'
 
-/** 这些用例默认都在这个工作区里。跨工作区的过滤另有专门用例，显式传第二个 id。 */
+/** 用例默认位于该工作区。跨工作区的过滤由专门用例覆盖，显式传入第二个 id。 */
 const WS = 'ws_a'
 
 const config: QyConfig = {
@@ -77,7 +77,7 @@ afterEach(() => {
 
 const settle = () => new Promise((r) => setTimeout(r, 40))
 
-/** observe 按输入返回元素表或选项页；这些用例只用元素表里的第一个编号。 */
+/** observe 按输入返回元素表或选项页；用例只使用元素表中的第一个编号。 */
 function firstRef(ob: BrowserObservation | BrowserOptionsPage | undefined): string {
   return ob && 'elements' in ob ? (ob.elements[0]?.ref ?? '') : ''
 }
@@ -92,7 +92,7 @@ async function failure(pending: Promise<unknown> | undefined): Promise<Error> {
   return out as Error
 }
 
-/** 等一件事发生。成员会话是派出即返回的，断言前要等它真的走到那一步。 */
+/** 等待条件成立。成员会话派出后立即返回，断言前须等待它执行到该步骤。 */
 async function until(check: () => boolean, label: string): Promise<void> {
   for (let i = 0; i < 600; i += 1) {
     if (check()) return
@@ -101,7 +101,7 @@ async function until(check: () => boolean, label: string): Promise<void> {
   throw new Error(`等不到：${label}`)
 }
 
-/** 一个手动兑现的闸。屏障用例用它把第二个执行者的调用插进第一个的在途阶段。 */
+/** 手动兑现的 Promise。屏障用例用它把第二个执行者的调用插入第一个执行者的在途阶段。 */
 function gate(): { promise: Promise<void>; open: () => void } {
   let open: () => void = () => {}
   const promise = new Promise<void>((resolve) => {
@@ -110,37 +110,37 @@ function gate(): { promise: Promise<void>; open: () => void } {
   return { promise, open }
 }
 
-/** 假调试端点的开关：单条用例按需改它，改完影响其后的每一条命令。 */
+/** 假调试端点的开关：用例按需修改，修改后影响此后的每一条命令。 */
 interface Devtools {
   port: number
   disconnect: (index?: number) => void
   rejectConnections: boolean
   clicks: () => number
-  /** 收到过多少条命令。页级互斥的用例按它断言被拒的一方一帧都没发到浏览器。 */
+  /** 已收到的命令数。页级互斥的用例据此断言被拒绝的一方未向浏览器发送任何帧。 */
   commands: () => number
-  /** 命中这个方法的回包压后到 `gate` 兑现，用来把别的调用插进在途的附页或收尾。 */
+  /** 该方法的回包推迟到 `gate` 兑现后返回，用于把其他调用插入进行中的附页或收尾。 */
   hold: { method: string; gate: Promise<unknown> } | null
-  /** 下一次 goto 回这个 errorText，模拟导航被拒。 */
+  /** 下一次 goto 返回该 errorText，模拟导航被拒绝。 */
   navigateError: string | null
-  /** 让采集命令报错，模拟动作之后观察取不到。 */
+  /** 使采集命令报错，模拟动作之后无法取得观察。 */
   failObserve: boolean
-  /** 每次探针读数都换一个变更计数，模拟持续变化的页面。 */
+  /** 每次探针读数返回不同的变更计数，模拟持续变化的页面。 */
   churn: boolean
-  /** 探针读数不给 ready 与 mutations，模拟探针无效。 */
+  /** 探针读数不含 ready 与 mutations，模拟探针无效。 */
   blindProbe: boolean
-  /** 第几条按键事件回错误：模拟多事件动作中途注入失败。 */
+  /** 第几条按键事件返回错误：模拟多事件动作中途注入失败。 */
   failKeyAt: number | null
-  /** 每条命令答完回调一次。用来在动作与观察之间插事。 */
+  /** 每条命令应答后回调一次，用于在动作与观察之间插入操作。 */
   onCommand: ((method: string, expression: string) => void) | null
 }
 
 /**
- * 只走通路的假调试端点：一个 page target、一个可点的下载链接、一个可读选项的下拉。
+ * 只覆盖基本流程的假调试端点：一个 page target、一个可点击的下载链接、一个可读取选项的下拉框。
  *
- * 元素与动作的判定在 `page.test.ts`；这里只要让观察、点击与导航能走通，
- * 好把下载的授权、触发、终态、磁盘核对，以及动作之后的静默等待与观察这两条链接起来。
- * 导航按真端点的形状回 frameId 并补发 `Page.frameNavigated`：协调器按事件确认导航，
- * 不按「令牌没变就是同文档」推断。探针按真实表达式应答并给全 `ready` 与 `mutations`。
+ * 元素与动作的判定见 `page.test.ts`；此处只需使观察、点击与导航能够执行，
+ * 以便串联下载的授权、触发、终态、磁盘核对，以及动作之后的静默等待与观察这两条链路。
+ * 导航按真实端点的格式返回 frameId 并补发 `Page.frameNavigated`：协调器按事件确认导航，
+ * 不按「令牌未变即同一文档」推断。探针按真实表达式应答并返回完整的 `ready` 与 `mutations`。
  */
 function fakeDevtools(marker: string): Devtools {
   const sockets = new Set<ServerWebSocket<unknown>>()
@@ -349,31 +349,31 @@ function fakeDevtools(marker: string): Devtools {
 }
 
 /**
- * 自动应答的假宿主。记下收到的每一帧，供归属与形状断言。
+ * 自动应答的假宿主。记录收到的每一帧，供归属与格式断言。
  *
- * 它按真宿主的准入规则答 `bind`：用户页（归属为 `null`）可被点名接管到发起会话，
- * 已归本会话是幂等，已归**另一条**会话一律拒绝。归属只跟着会话 id 走，页面内容与
- * 模型给的 tabId 都改不了它——跨会话隔离正是这一层要挡住的事。
+ * 它按真实宿主的准入规则应答 `bind`：用户页（归属为 `null`）可被点名接管到发起会话，
+ * 已归属本会话时为幂等操作，已归属另一条会话时一律拒绝。归属只由会话 id 决定，页面内容与
+ * 模型给出的 tabId 都无法改变它：这一层负责跨会话隔离。
  */
 class AutoHost {
   socket: WebSocket
   received: BrowserRequestFrame[] = []
   marker = 'marker-1'
-  /** tabId → 归属会话 id。`null` = 用户手动开的页，未归任何会话。 */
+  /** tabId → 归属会话 id。`null` 表示用户手动打开的页，不属于任何会话。 */
   owners = new Map<string, string | null>()
-  /** tabId → 所属工作区。建页时定，此后不改；`bind` 跨工作区一律拒绝。 */
+  /** tabId → 所属工作区。建页时确定，此后不变；跨工作区的 `bind` 一律拒绝。 */
   workspaces = new Map<string, string>()
-  /** tabId → 尚未消费的授权。按真宿主的形状记身份与目标路径。 */
+  /** tabId → 尚未消费的授权。按真实宿主的格式记录身份与目标路径。 */
   arms = new Map<string, { downloadId: string; path: string }>()
-  /** 本次连接的纪元。重连用例给新连接换一个值，旧纪元的事件随之作废。 */
+  /** 本次连接的纪元。重连用例为新连接设置新值，旧纪元的事件随之作废。 */
   epoch = 1
-  /** 答完一次 `create` 之后回调一次。用来把释放插进建页回包与登记之间。 */
+  /** 应答一次 `create` 后回调一次，用于把释放插入建页回包与登记之间。 */
   onCreate: (() => void) | null = null
   /**
-   * 命中这个 op 的回包压后到 `gate` 兑现。
+   * 该 op 的回包推迟到 `gate` 兑现后返回。
    *
-   * 事件照常先发：真宿主也是先广播 `opened` / `control` 再回结果，页级占用的用例
-   * 要的正是「事件已到、回包未到」那一段。
+   * 事件照常先发送：真实宿主同样先广播 `opened` / `control` 再返回结果，页级占用的用例
+   * 需要的正是事件已到达而回包未到达的时段。
    */
   hold: { op: string; gate: Promise<unknown> } | null = null
   #nextTab = 0
@@ -394,7 +394,7 @@ class AutoHost {
         data.title = '夹具页'
         this.owners.set(tabId, frame.conversationId ?? null)
         this.workspaces.set(tabId, frame.workspaceId ?? '')
-        // 真宿主在回结果之前先发 `opened`，存活快照只从那条来。
+        // 真实宿主在返回结果之前先发送 `opened`，存活快照只来源于该事件。
         this.emit({
           kind: 'opened',
           tabId,
@@ -409,11 +409,11 @@ class AutoHost {
         const tabId = frame.tabId ?? ''
         const owner = this.owners.get(tabId)
         if (owner === undefined) {
-          error = `认不出的标签页 ${tabId}`
+          error = `无法识别的标签页 ${tabId}`
         } else if (this.workspaces.get(tabId) !== frame.workspaceId) {
-          error = '这一页属于另一个工作区，接管不了'
+          error = '该页属于另一个工作区，无法接管'
         } else if (owner === null || owner === frame.conversationId) {
-          // 用户页归到发起会话；已归本会话是幂等。都回同一份 marker。
+          // 用户页归属发起会话；已归属本会话时为幂等操作。两种情况返回同一个 marker。
           if (owner === null) {
             this.owners.set(tabId, frame.conversationId ?? null)
             this.emit({ kind: 'control', tabId, conversationId: frame.conversationId ?? null })
@@ -422,7 +422,7 @@ class AutoHost {
           data.url = 'http://127.0.0.1:1/page'
           data.title = '夹具页'
         } else {
-          error = '这一页归另一条会话，接管不了'
+          error = '该页属于另一条会话，无法接管'
         }
       }
       if (frame.op === 'close') {
@@ -470,10 +470,10 @@ class AutoHost {
   }
 
   /**
-   * 一次下载走到终态：消费掉这一页的授权，并把它的身份带进事件。
+   * 一次下载进入终态：消费该页的授权，并把其身份写入事件。
    *
-   * 真宿主把 downloadId 绑在 `ICoreWebView2DownloadOperation` 上再随终态回报，
-   * 所以这里也只能从被消费的那份授权取身份，不能由调用方另给一个。
+   * 真实宿主把 downloadId 绑定到 `ICoreWebView2DownloadOperation` 上并随终态回报，
+   * 因此此处只能从被消费的授权取得身份，不能由调用方另行提供。
    */
   finishDownload(
     tabId: string,
@@ -484,7 +484,7 @@ class AutoHost {
     this.emit({ ...over, tabId, ...(arm ? { downloadId: arm.downloadId } : {}) })
   }
 
-  /** 用户自己在某个工作区新开一页：归属为 `null`，走 `opened` 进存活快照。 */
+  /** 用户在某个工作区新开一页：归属为 `null`，经由 `opened` 进入存活快照。 */
   userOpen(tabId: string, workspaceId = WS, url = 'http://127.0.0.1:1/page'): void {
     this.owners.set(tabId, null)
     this.workspaces.set(tabId, workspaceId)
@@ -530,7 +530,7 @@ class AutoHost {
     return this.received.map((f) => f.op)
   }
 
-  /** 宿主主动发的事件：归属变化、下载终态、被拦、导航都走这条。 */
+  /** 宿主主动发送的事件：归属变化、下载终态、下载被拦截、导航均经由此方法。 */
   emit(frame: Omit<BrowserEventFrame, 'type' | 'connectionEpoch' | 'seq'>): void {
     this.socket.send(
       JSON.stringify({ type: 'browser.event', connectionEpoch: this.epoch, seq: 1, ...frame }),
@@ -565,7 +565,7 @@ function fresh(): Fixture {
     handle.stop()
     content.close()
     store.close()
-    // Windows 上 SQLite 的文件句柄释放有延迟，临时目录删不掉与被测行为无关。
+    // Windows 上 SQLite 的文件句柄释放有延迟，临时目录删除失败与被测行为无关。
     try {
       rmSync(dir, { recursive: true, force: true })
     } catch {}
@@ -603,11 +603,11 @@ function browserContext(dir: string, browser: BrowserPort | undefined): ToolCont
 }
 
 /**
- * 同一条会话的两个执行者各开各的页。
+ * 同一会话的两个执行者各自打开页面。
  *
- * 子 agent 与并行成员共用顶层会话 id，控制槽按会话分的话它们从第二个起就没有浏览器。
+ * 子 agent 与并行成员共用顶层会话 id，控制槽按会话划分时，从第二个执行者起均无法使用浏览器。
  */
-test('同会话两个执行各开各的页，观察与动作都各自完成', async () => {
+test('同一会话的两个执行者各自打开页面，观察与动作各自完成', async () => {
   const { handle, host } = await ready()
   const first = handle.browser?.portFor('cv_1', WS)
   const second = handle.browser?.portFor('cv_1', WS)
@@ -640,19 +640,19 @@ test('同会话两个执行各开各的页，观察与动作都各自完成', as
   expect(actB?.element).toBe('dl')
   expect(host.ops().filter((op) => op === 'create')).toHaveLength(2)
 
-  // 一方释放不牵连另一方：槽按执行者分，收尾只收自己那一个。
+  // 一方释放不影响另一方：控制槽按执行者划分，收尾只处理自身的控制槽。
   await first?.release()
   const again = await second?.observe({ tabId: tabB?.tabId ?? '' })
   expect(again?.observationId).toBeTruthy()
 })
 
 /**
- * 页级独占：第二个执行者碰同一页时被拒，而且拒绝发生在发帧之前。
+ * 页级独占：第二个执行者操作同一页时被拒绝，且拒绝发生在发送帧之前。
  *
- * 少了这一条，两个执行者会双双附上同一页各发各的输入，宿主的下载授权也按页一份
- * 互相顶掉。
+ * 缺少该限制时，两个执行者会同时附加到同一页并各自发送输入，宿主按页保存的下载授权
+ * 也会互相覆盖。
  */
-test('一页被占住后，另一个执行的每种页面操作都被拒，宿主与浏览器一帧不收', async () => {
+test('页面被占用后，另一个执行者的每种页面操作均被拒绝，宿主与浏览器不收到任何帧', async () => {
   const { handle, host, devtools } = await ready()
   const holder = handle.browser?.portFor('cv_1', WS)
   const other = handle.browser?.portFor('cv_1', WS)
@@ -688,7 +688,7 @@ test('一页被占住后，另一个执行的每种页面操作都被拒，宿�
   expect(host.received).toHaveLength(frames)
   expect(devtools.commands()).toBe(commands)
 
-  // 另开一页照常：互斥只到这一页，不到这条会话。
+  // 另开一页不受影响：互斥范围为页面，而非会话。
   const mine = await other?.open('http://127.0.0.1:1/other')
   const obOther = await other?.observe({ tabId: mine?.tabId ?? '' })
   expect(obOther?.observationId).toBeTruthy()
@@ -701,10 +701,10 @@ test('一页被占住后，另一个执行的每种页面操作都被拒，宿�
 })
 
 /**
- * 设置页「浏览器控制」组头的开关写的是 `browserEnabled`。关闭后不再发布能力，
- * 运行中已经取得的端口在下一次操作时被拒，且一帧不发。
+ * 设置页「浏览器控制」分组标题上的开关写入 `browserEnabled`。关闭后不再发布能力，
+ * 运行中已取得的端口在下一次操作时被拒绝，且不发送任何帧。
  */
-test('关闭浏览器控制后能力不发布，已发出的端口按未执行拒绝，重新开启后照常', async () => {
+test('关闭浏览器控制后不发布能力，已发出的端口按未执行拒绝，重新开启后恢复', async () => {
   const { handle, host } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   expect(handle.browser?.available()).toBe(true)
@@ -726,11 +726,11 @@ test('关闭浏览器控制后能力不发布，已发出的端口按未执行�
 })
 
 /**
- * 「这个 tabId 你看不见」的四种拒绝都在同步段判完，一帧未发，回执因此与 busy 同形。
+ * tabId 不可见的四种拒绝均在同步段中判定，未发送任何帧，回执因此与 busy 格式相同。
  *
- * 标成已执行的话，模型会当成页面已被动过而不再换一页重试。
+ * 标为已执行时，模型会认为页面已被操作，不再换一页重试。
  */
-test('看不见的 tabId 一律按未执行拒绝，宿主一帧不收', async () => {
+test('不可见的 tabId 一律按未执行拒绝，宿主不收到任何帧', async () => {
   const { handle, host } = await ready()
   host.userOpen('bt_u', WS)
   host.userOpen('bt_ub', 'ws_b')
@@ -754,7 +754,7 @@ test('看不见的 tabId 一律按未执行拒绝，宿主一帧不收', async (
   expect(host.received).toHaveLength(frames)
 })
 
-test('同会话两个执行同时接管一个用户页，只有一个成功，另一个没发 bind 帧', async () => {
+test('同一会话的两个执行者同时接管一个用户页时只有一个成功，另一个未发送 bind 帧', async () => {
   const { handle, host } = await ready()
   host.userOpen('bt_u')
   await settle()
@@ -765,16 +765,16 @@ test('同会话两个执行同时接管一个用户页，只有一个成功，�
   expect(settled.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
   const refused = settled.find((r) => r.status === 'rejected')
   expect(String(refused?.reason)).toMatch(/正被另一个任务操作/)
-  // 失败方一帧都没发：登记与冲突检查在同一个同步段里。
+  // 失败方未发送任何帧：登记与冲突检查位于同一同步段中。
   expect(host.ops().filter((op) => op === 'bind')).toHaveLength(1)
 })
 
 /**
- * 占用从登记那一刻起成立，不等宿主回包。
+ * 占用从登记时起成立，不等待宿主回包。
  *
- * 等回包再登记的话，`bind` 在途的那一段里第二个执行者查不到持有者，两边都会附上去。
+ * 等待回包后再登记时，`bind` 在途期间第二个执行者查询不到持有者，双方都会附加到该页。
  */
-test('bind 回包还在途时，同一页对另一个执行已经是占用中', async () => {
+test('bind 回包仍在途时，同一页对另一个执行者已处于占用状态', async () => {
   const { handle, host } = await ready()
   host.userOpen('bt_u')
   await settle()
@@ -792,12 +792,12 @@ test('bind 回包还在途时，同一页对另一个执行已经是占用中', 
 })
 
 /**
- * 附页失败不留占用，收尾中的占用也不提前消失。
+ * 附页失败不保留占用，收尾中的占用也不提前解除。
  *
- * 旧连接的取消会清掉页内等待器与按住的输入，接手者此刻登记的等待器会被那一次清理
- * 带走，因此要等整槽收尾结束再放手。
+ * 旧连接的取消会清理页内等待器与按住的输入，接手者此时登记的等待器会被该次清理
+ * 一并清除，因此须等整个控制槽收尾结束后再释放。
  */
-test('持有者正在收尾时，接手者等它结束再占页，不报占用中', async () => {
+test('持有者正在收尾时，接手者等待其结束后再占用页面，不报告占用中', async () => {
   const { handle, devtools } = await ready()
   const holder = handle.browser?.portFor('cv_1', WS)
   const next = handle.browser?.portFor('cv_1', WS)
@@ -814,7 +814,7 @@ test('持有者正在收尾时，接手者等它结束再占页，不报占用�
     return ob
   })
   await settle()
-  // 收尾没结束之前不放手，也不把接手者挡成失败。
+  // 收尾结束之前不释放，也不使接手者失败。
   expect(taken).toBe(false)
 
   g.open()
@@ -823,11 +823,11 @@ test('持有者正在收尾时，接手者等它结束再占页，不报占用�
 })
 
 /**
- * `opened` 先于 create 回包到达，另一个执行者据此先占了这一页。
+ * `opened` 先于 create 回包到达，另一个执行者据此先占用了该页。
  *
- * 建页不预占，先操作的一方先持有；创建者随后拿到明确失败，不抢占、不另记一本预订账。
+ * 建页不预先占用，先操作的一方先持有；创建者随后收到明确的失败，不抢占，也不另行记录预订。
  */
-test('建页不占页：别人先操作那一页时，创建者随后被拒，页不被回收', async () => {
+test('建页不占用页面：其他执行者先操作该页时，创建者随后被拒绝，页面不被回收', async () => {
   const { handle, host } = await ready()
   const creator = handle.browser?.portFor('cv_1', WS)
   const rival = handle.browser?.portFor('cv_1', WS)
@@ -836,19 +836,19 @@ test('建页不占页：别人先操作那一页时，创建者随后被拒，�
   host.hold = { op: 'create', gate: g.promise }
   const opening = creator?.open('http://127.0.0.1:1/page')
   await settle()
-  // 回包还没到，`opened` 已经到了：另一个执行者据此占住这一页。
+  // 回包尚未到达，`opened` 已到达：另一个执行者据此占用该页。
   const ob = await rival?.observe({ tabId: 'bt_1' })
   expect(ob?.observationId).toBeTruthy()
 
   g.open()
   expect((await opening)?.tabId).toBe('bt_1')
   expect((await failure(creator?.observe({ tabId: 'bt_1' }))).message).toMatch(/正被另一个任务操作/)
-  // 建页不附页，也不因为拿不到控制权就把页关掉。
+  // 建页不附加页面，也不因无法取得控制权而关闭页面。
   expect(host.ops()).not.toContain('close')
   expect((await creator?.tabs())?.map((t) => t.tabId)).toEqual(['bt_1'])
 })
 
-test('建页回包晚于释放时如实返回这一页，不附页也不回收', async () => {
+test('建页回包晚于释放时如实返回该页，不附加也不回收', async () => {
   const { handle, host } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const opening = port?.open('http://127.0.0.1:1/page')
@@ -859,11 +859,11 @@ test('建页回包晚于释放时如实返回这一页，不附页也不回收',
   expect((await opening)?.tabId).toBe('bt_1')
   await settle()
   expect(host.ops()).not.toContain('close')
-  // 页留在宿主上，归属不变，下一条消息接着用。
+  // 页面保留在宿主上，归属不变，下一条消息继续使用。
   expect((await handle.browser?.portFor('cv_1', WS).tabs())?.map((t) => t.tabId)).toEqual(['bt_1'])
 })
 
-test('附页途中这一页被关掉时不复活它，占用随之释放', async () => {
+test('附页过程中页面被关闭时不恢复该页，占用随之释放', async () => {
   const { handle, host, devtools } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -878,11 +878,11 @@ test('附页途中这一页被关掉时不复活它，占用随之释放', async
   g.open()
   expect((await failure(pending)).message).toMatch(/已经关闭/)
   await settle()
-  // 这一页已经不在存活表里：迟到的附加不能把它登记回来。
-  expect((await failure(port?.observe({ tabId }))).message).toMatch(/认不出的标签页/)
+  // 该页已不在存活表中：迟到的附加不能将其重新登记。
+  expect((await failure(port?.observe({ tabId }))).message).toMatch(/无法识别的标签页/)
 })
 
-test('会话删除收尾这条会话的全部槽，只发一次按会话关页', async () => {
+test('删除会话时收尾该会话的全部控制槽，只发送一次按会话关页', async () => {
   const { handle, host } = await ready()
   const mine = [1, 2, 3].map(() => handle.browser?.portFor('cv_1', WS))
   const other = handle.browser?.portFor('cv_2', WS)
@@ -896,12 +896,12 @@ test('会话删除收尾这条会话的全部槽，只发一次按会话关页',
   await handle.browser?.closeConversation('cv_1')
   await settle()
   expect(host.received.filter((f) => f.op === 'close.conversation')).toHaveLength(1)
-  // 三个槽都收了尾，名下的页都关掉；别的会话的页不受影响。
+  // 三个控制槽均已收尾，名下的页全部关闭；其他会话的页不受影响。
   expect(await handle.browser?.portFor('cv_1', WS).tabs()).toEqual([])
   expect((await other?.tabs())?.map((t) => t.tabId)).toEqual([tabC?.tabId ?? ''])
 })
 
-test('同会话三个执行逐个释放后槽全空，页仍留在宿主上，重复释放加入同一次收尾', async () => {
+test('同一会话的三个执行者逐个释放后控制槽全部清空，页面仍保留在宿主上，重复释放加入同一次收尾', async () => {
   const { handle, host } = await ready()
   const ports = [1, 2, 3].map(() => handle.browser?.portFor('cv_1', WS))
   const tabs: string[] = []
@@ -913,11 +913,11 @@ test('同会话三个执行逐个释放后槽全空，页仍留在宿主上，�
   for (const port of ports) await Promise.all([port?.release(), port?.release()])
   await settle()
 
-  // 释放只收控制，不关页。
+  // 释放只收回控制权，不关闭页面。
   expect(host.ops()).not.toContain('close')
   const next = handle.browser?.portFor('cv_1', WS)
   expect((await next?.tabs())?.map((t) => t.tabId).sort()).toEqual([...tabs].sort())
-  // 三页都不再被占：新执行者逐个接手得了。
+  // 三页均不再被占用：新执行者可逐个接手。
   for (const tabId of tabs) {
     expect((await next?.observe({ tabId }))?.observationId).toBeTruthy()
   }
@@ -929,7 +929,7 @@ function sse(events: { type: string; [k: string]: unknown }[]): string {
   return `${events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n`).join('\n')}\n`
 }
 
-/** 一轮工具调用。成员会话按它去调内置浏览器工具，走的是真实的工具执行器。 */
+/** 一轮工具调用。成员会话据此调用内置浏览器工具，经由真实的工具执行器。 */
 function toolTurn(id: string, name: string, args: Record<string, unknown>): string {
   return sse([
     { type: 'response.created', response: { id: `resp_${id}` } },
@@ -957,12 +957,12 @@ function toolTurn(id: string, name: string, args: Record<string, unknown>): stri
 
 /**
  * 停止链路：真实的 `conversation.interrupt` 指令 → 子 agent 表 → 成员 Session 收尾 →
- * 各自释放控制槽。页留在宿主上，下一个执行者接手得了。
+ * 各自释放控制槽。页面保留在宿主上，下一个执行者可以接手。
  *
- * 直接调协调器的 release 代替不了它：要验的正是这条装配上每一环都传得到，
- * 少一环的表现是停止之后那两页永远被占着，而没有入口解得开。
+ * 直接调用协调器的 release 无法替代该链路：本用例验证装配链路的每一环都能传递，
+ * 缺少任一环时，停止后两页会一直被占用，且没有入口可以解除。
  */
-test('停止指令收走每个成员的控制槽，页留在宿主上给下一个执行者', async () => {
+test('停止指令收回每个成员的控制槽，页面保留在宿主上供下一个执行者使用', async () => {
   const { handle, host, store, content, dir, workspaceId } = await ready()
 
   const parked = gate()
@@ -984,7 +984,7 @@ test('停止指令收走每个成员的控制槽，页留在宿主上给下一�
           headers: SSE_HEADERS,
         })
       }
-      // 两个成员都停在这一次请求上：停止发生时它们手里各占着一页。
+      // 两个成员都停留在本次请求上：停止发生时它们各自占用一页。
       await parked.promise
       return new Response('已取消', { status: 499 })
     },
@@ -1022,7 +1022,7 @@ test('停止指令收走每个成员的控制槽，页留在宿主上给下一�
     messageIdUpperBound: null,
     contextSnapshot: [],
   }).id
-  // 顶层那一轮也登记进 RunManager：停止指令的两条分支都要真的走到。
+  // 顶层轮次同样登记到 RunManager：停止指令的两条分支都须实际执行。
   const parentRun = new AbortController()
   runs.register({ runId, conversationId: parent, controller: parentRun, startedAt: Date.now() })
 
@@ -1067,12 +1067,12 @@ test('停止指令收走每个成员的控制槽，页留在宿主上给下一�
 
   const frames = host.received.length
   await settle()
-  // 停止之后不再向宿主发帧，也不关页：停止只收控制。
+  // 停止之后不再向宿主发送帧，也不关闭页面：停止只收回控制权。
   expect(host.received).toHaveLength(frames)
   expect(host.ops()).not.toContain('close')
   expect(host.ops()).not.toContain('close.conversation')
 
-  // 收尾之后这两页都不再被占，下一个执行者直接接手。
+  // 收尾之后两页均不再被占用，下一个执行者可直接接手。
   const next = handle.browser?.portFor(parent, workspaceId)
   expect((await next?.tabs())?.map((t) => t.tabId).sort()).toEqual(['bt_1', 'bt_2'])
   expect((await next?.observe({ tabId: 'bt_1' }))?.observationId).toBeTruthy()
@@ -1080,7 +1080,7 @@ test('停止指令收走每个成员的控制槽，页留在宿主上给下一�
   parked.open()
 })
 
-test('两条会话各自建页、观察、动作，互不相干', async () => {
+test('两条会话各自建页、观察、执行动作，互不影响', async () => {
   const { handle, host } = await ready()
   const a = handle.browser?.portFor('cv_a', WS)
   const b = handle.browser?.portFor('cv_b', WS)
@@ -1111,10 +1111,10 @@ test('两条会话各自建页、观察、动作，互不相干', async () => {
   ])
   expect(actA?.element).toBe('dl')
   expect(actB?.element).toBe('dl')
-  // 两条会话各自建了一页，没有任何一条被 busy 挡掉。
+  // 两条会话各自建了一页，均未被 busy 拒绝。
   expect(host.ops().filter((op) => op === 'create')).toHaveLength(2)
 
-  // 对方的 tabId 拿不到：归属挡在附页之前，动作连同它的观察编号一起被拦住。
+  // 对方的 tabId 无法取得：归属检查在附页之前，动作连同其观察编号一并被拦截。
   expect((await failure(a?.observe({ tabId: tabB?.tabId ?? '' }))).message).toMatch(/不归本会话/)
   expect(
     (
@@ -1130,7 +1130,7 @@ test('两条会话各自建页、观察、动作，互不相干', async () => {
   ).toMatch(/不归本会话/)
 })
 
-test('一条会话释放不影响另一条：B 的页、观察与连接都还在', async () => {
+test('一条会话释放不影响另一条：B 的页、观察与连接均保留', async () => {
   const { handle } = await ready()
   const a = handle.browser?.portFor('cv_a', WS)
   const b = handle.browser?.portFor('cv_b', WS)
@@ -1160,25 +1160,25 @@ test('两条会话同时接管同一个用户页，只有一条成功', async ()
   const settled = await Promise.allSettled([a?.bind('bt_u'), b?.bind('bt_u')])
   const ok = settled.filter((r) => r.status === 'fulfilled')
   expect(ok).toHaveLength(1)
-  // 页级占用先成立，后到的一方连 bind 帧都没发出去；归属那一层由宿主在下一次拒绝。
+  // 页级占用先成立，后到的一方未发出 bind 帧；归属检查由宿主在下一次操作时拒绝。
   const refused = settled.find((r) => r.status === 'rejected')
   expect(String(refused?.reason)).toMatch(/正被另一个任务操作/)
   expect(host.ops().filter((op) => op === 'bind')).toHaveLength(1)
 })
 
-test('停止之后同会话立刻再启动，新执行不被上一次的收尾牵连', async () => {
+test('停止之后同一会话立即重新启动，新执行不受上一次收尾的影响', async () => {
   const { handle, host } = await ready()
   const first = handle.browser?.portFor('cv_1', WS)
   await first?.open('http://127.0.0.1:1/page')
 
-  // 不等收尾完成就起下一轮：这一页要等上一次清理结束才放手，而不是回 busy。
+  // 不等待收尾完成即启动下一轮：该页在上一次清理结束后才释放，而不是返回 busy。
   const releasing = first?.release()
   const second = handle.browser?.portFor('cv_1', WS)
   const ob = await second?.observe({ tabId: 'bt_1' })
   await releasing
   expect(ob?.observationId).toBeTruthy()
 
-  // 收尾属于旧槽，不能把新槽的观察表清掉。
+  // 收尾属于旧控制槽，不能清除新控制槽的观察表。
   await settle()
   const acted = await second?.act({
     tabId: 'bt_1',
@@ -1190,7 +1190,7 @@ test('停止之后同会话立刻再启动，新执行不被上一次的收尾�
   expect(host.ops()).not.toContain('close')
 })
 
-test('宿主断开让全部控制作废，重连之后的新执行照常建槽', async () => {
+test('宿主断开使全部控制作废，重连之后的新执行照常创建控制槽', async () => {
   const { handle, host } = await ready()
   const before = handle.browser?.portFor('cv_1', WS)
   await before?.open('http://127.0.0.1:1/page')
@@ -1207,7 +1207,7 @@ test('宿主断开让全部控制作废，重连之后的新执行照常建槽',
   const after = handle.browser?.portFor('cv_1', WS)
   const tab = await after?.open('http://127.0.0.1:1/page')
   expect(tab?.tabId).toBe('bt_1')
-  // 旧槽的收尾按槽对象删表项，删不掉重连之后建出来的这一个。
+  // 旧控制槽的收尾按槽对象删除表项，不会删除重连之后新建的控制槽。
   await settle()
   const ob = await after?.observe({ tabId: tab?.tabId ?? '' })
   expect(ob?.observationId).toBeTruthy()
@@ -1279,7 +1279,7 @@ test('控制连接建立失败明确声明页面操作未执行，端点恢复�
   expect((await port?.observe({ tabId: 'bt_1' }))?.observationId).toBeTruthy()
 })
 
-test('点击发出后 CDP 断连保留结果不明，不重放点击，下一次观察恢复', async () => {
+test('点击发出后 CDP 断连时保留结果不明，不重放点击，下一次观察时恢复', async () => {
   const { handle, devtools, dir } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const registry = new ToolRegistry()
@@ -1303,7 +1303,7 @@ test('点击发出后 CDP 断连保留结果不明，不重放点击，下一次
     browserContext(dir, port),
   )
   held.open()
-  // 按下已经发出、抬起发不出去：结果未知，按下的鼠标键如实列出，不按「没执行」收场。
+  // 按下已发出而抬起无法发出：结果未知，如实列出按下的鼠标键，不按未执行处理。
   expect(result).toMatchObject({
     status: 'failure',
     errorKind: 'browser_unknown',
@@ -1319,7 +1319,7 @@ test('点击发出后 CDP 断连保留结果不明，不重放点击，下一次
   expect(devtools.clicks()).toBe(1)
 })
 
-test('不归本会话的标签页在发请求之前就被挡住，归本会话的照常带会话 id 走', async () => {
+test('不属于本会话的标签页在发送请求之前被拦截，属于本会话的照常携带会话 id 发送', async () => {
   const { handle, host } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1343,7 +1343,7 @@ test('不归本会话的标签页在发请求之前就被挡住，归本会话�
   expect((await failure(port?.close('bt_9'))).message).toMatch(/bt_9/)
   expect(host.received).toHaveLength(before)
 
-  // 归本会话的那一页照常走到宿主，并带上本会话 id。
+  // 属于本会话的页照常发送到宿主，并携带本会话 id。
   const pending = port?.download({
     tabId: tab?.tabId ?? '',
     observationId: ob?.observationId ?? '',
@@ -1369,56 +1369,56 @@ test('归属跨消息稳定：同一会话的下一条消息直接操作，不�
   await first?.observe({ tabId: tab?.tabId ?? '' })
   await first?.release()
 
-  // 第二条消息：新端口，同一会话。直接 observe 就能用——这一页仍归 cv_1。
+  // 第二条消息：新端口，同一会话。直接调用 observe 即可：该页仍属于 cv_1。
   const second = handle.browser?.portFor('cv_1', WS)
   const ob = await second?.observe({ tabId: 'bt_1' })
   expect(ob?.observationId).toBeTruthy()
   // 全程没有 bind、没有交接：宿主只收到过一次 create。
   expect(host.ops()).toEqual(['create'])
-  // 归属仍在，这一页对 cv_1 是可控的。
+  // 归属保留，该页对 cv_1 可控。
   expect(await second?.tabs()).toEqual([
     { tabId: 'bt_1', url: 'http://127.0.0.1:1/page', title: '夹具页', controlled: true },
   ])
 })
 
-test('别的会话看不到、也操作不了本会话的页', async () => {
+test('其他会话无法查看或操作本会话的页', async () => {
   const { handle } = await ready()
   const owner = handle.browser?.portFor('cv_a', WS)
   await owner?.open('http://127.0.0.1:1/page')
   await owner?.release()
 
-  // 另一条会话：这一页不在它的存活清单里。
+  // 另一条会话：该页不在其存活清单中。
   const other = handle.browser?.portFor('cv_b', WS)
   expect(await other?.tabs()).toEqual([])
-  // 硬拿这一页也拿不到：归属对不上，挡在附页之前。
+  // 强制指定该页同样无法取得：归属不一致，在附页之前即被拦截。
   expect((await failure(other?.observe({ tabId: 'bt_1' }))).message).toMatch(/不归本会话/)
 })
 
-test('用户开的页默认不可操作，点名 bind 后才归本会话', async () => {
+test('用户打开的页默认不可操作，点名 bind 后才归属本会话', async () => {
   const { handle, host } = await ready()
   host.userOpen('bt_u')
   await settle()
 
   const port = handle.browser?.portFor('cv_1', WS)
-  // 用户页列得出来，但标成不可控：AI 不自动操作。
+  // 用户页会列出，但标记为不可控：AI 不自动操作。
   expect(await port?.tabs()).toEqual([
     { tabId: 'bt_u', url: 'http://127.0.0.1:1/page', title: '用户开的页', controlled: false },
   ])
   expect((await failure(port?.observe({ tabId: 'bt_u' }))).message).toMatch(/不归本会话/)
 
-  // 用户在聊天里点名，模型按 tabId 接管。接管只改归属，不改这一页的标题。
+  // 用户在聊天中点名，模型按 tabId 接管。接管只修改归属，不修改该页的标题。
   await port?.bind('bt_u')
   await settle()
   expect(await port?.tabs()).toEqual([
     { tabId: 'bt_u', url: 'http://127.0.0.1:1/page', title: '用户开的页', controlled: true },
   ])
-  // 接管之后能直接操作。
+  // 接管之后可直接操作。
   const ob = await port?.observe({ tabId: 'bt_u' })
   expect(ob?.observationId).toBeTruthy()
 })
 
-/** AI 主动关页与别的页面操作走同一道准入：归属、工作区、页级占用一个都不少。 */
-test('本槽持有的页关得掉，未接管的用户页与别的会话的页关不掉', async () => {
+/** AI 主动关页与其他页面操作经由同一准入检查：归属、工作区、页级占用均须校验。 */
+test('本控制槽持有的页可以关闭，未接管的用户页与其他会话的页无法关闭', async () => {
   const { handle, host } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1437,7 +1437,7 @@ test('本槽持有的页关得掉，未接管的用户页与别的会话的页�
   expect((await port?.tabs())?.map((t) => t.tabId)).toEqual(['bt_u'])
 })
 
-test('持有者释放之后，另一个执行者关得掉那一页', async () => {
+test('持有者释放之后，另一个执行者可以关闭该页', async () => {
   const { handle, host } = await ready()
   const holder = handle.browser?.portFor('cv_1', WS)
   const next = handle.browser?.portFor('cv_1', WS)
@@ -1451,7 +1451,7 @@ test('持有者释放之后，另一个执行者关得掉那一页', async () =>
   expect(host.received.filter((f) => f.op === 'close').map((f) => f.tabId)).toEqual([tabId])
 })
 
-test('别的会话接管不了已归他人的页', async () => {
+test('其他会话无法接管已归属其他会话的页', async () => {
   const { handle } = await ready()
   const owner = handle.browser?.portFor('cv_a', WS)
   await owner?.open('http://127.0.0.1:1/page')
@@ -1462,12 +1462,12 @@ test('别的会话接管不了已归他人的页', async () => {
 })
 
 /**
- * 工作区是列页的第一道过滤，会话归属在它之上。
+ * 工作区是列出页面时的第一层过滤，会话归属在其之上。
  *
- * 少了这一道，B 工作区的用户页会出现在 A 的会话清单里并可被 `bind` 接管——
- * 那一页此后归 A 的会话，而它摆在 B 的页签条上。
+ * 缺少该过滤时，B 工作区的用户页会出现在 A 的会话清单中并可被 `bind` 接管，
+ * 该页此后属于 A 的会话，却显示在 B 的页签栏上。
  */
-test('只列本工作区里归本会话或归用户的页', async () => {
+test('只列出本工作区中属于本会话或用户的页', async () => {
   const { handle, host } = await ready()
   const other = 'ws_b'
   host.userOpen('bt_ua', WS)
@@ -1485,12 +1485,12 @@ test('只列本工作区里归本会话或归用户的页', async () => {
   expect((await inB?.tabs())?.map((t) => t.tabId).sort()).toEqual(
     [tabB?.tabId ?? '', 'bt_ub'].sort(),
   )
-  // 建页请求带着各自的工作区，宿主按它落归属。
+  // 建页请求携带各自的工作区，宿主据此确定归属。
   const creates = host.received.filter((f) => f.op === 'create')
   expect(creates.map((f) => f.workspaceId)).toEqual([WS, other])
 })
 
-test('硬传另一个工作区的 tabId，bind 与 observe 都被拒', async () => {
+test('强制传入另一个工作区的 tabId 时，bind 与 observe 均被拒绝', async () => {
   const { handle, host } = await ready()
   host.userOpen('bt_ub', 'ws_b')
   await settle()
@@ -1499,11 +1499,11 @@ test('硬传另一个工作区的 tabId，bind 与 observe 都被拒', async () 
   expect((await failure(inA?.bind('bt_ub'))).message).toMatch(/不在本工作区/)
   expect((await failure(inA?.observe({ tabId: 'bt_ub' }))).message).toMatch(/不在本工作区/)
   expect((await failure(inA?.close('bt_ub'))).message).toMatch(/不在本工作区/)
-  // 一帧都没发到宿主：跨工作区在本地就挡住了。
+  // 未向宿主发送任何帧：跨工作区请求在本地即被拦截。
   expect(host.ops()).toEqual([])
 })
 
-test('会话删除关掉它名下的全部页，不留孤儿', async () => {
+test('删除会话时关闭其名下的全部页，不留下孤立页面', async () => {
   const { handle, host } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   await port?.open('http://127.0.0.1:1/page')
@@ -1515,19 +1515,19 @@ test('会话删除关掉它名下的全部页，不留孤儿', async () => {
   const closer = host.received.at(-1)
   expect(closer?.op).toBe('close.conversation')
   expect(closer?.conversationId).toBe('cv_1')
-  // 宿主按会话关页并回投 closed，存活快照清空。
+  // 宿主按会话关页并回发 closed，存活快照清空。
   const next = handle.browser?.portFor('cv_1', WS)
   expect(await next?.tabs()).toEqual([])
 })
 
-test('释放只断本次 CDP 连接，不向宿主发帧，重复释放也是空操作', async () => {
+test('释放只断开本次 CDP 连接，不向宿主发送帧，重复释放为空操作', async () => {
   const { handle, host } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   await port?.open('http://127.0.0.1:1/page')
   const after = host.received.length
 
   await port?.release()
-  // 释放不经宿主：没有 cancel，也没有 close，页留给下一条消息。
+  // 释放不经由宿主：没有 cancel，也没有 close，页面保留给下一条消息。
   expect(host.received).toHaveLength(after)
   expect(host.ops()).not.toContain('close')
 
@@ -1535,7 +1535,7 @@ test('释放只断本次 CDP 连接，不向宿主发帧，重复释放也是空
   expect(host.received).toHaveLength(after)
 })
 
-test('运行时版本低于下限时不发控制权，也不向宿主发请求', async () => {
+test('运行时版本低于下限时不授予控制权，也不向宿主发送请求', async () => {
   const { handle } = fresh()
   const host = await AutoHost.connect(handle.port)
   host.ready(fakeDevtools(host.marker).port, '110.0.1587.0')
@@ -1547,10 +1547,10 @@ test('运行时版本低于下限时不发控制权，也不向宿主发请求',
 })
 
 /**
- * 原始失败形状：下限写成一个 WebView2 构建号 `152.0.4191.66` 并逐段比较，主版本同为 152 的
- * 较早 Edge 构建 `152.0.4100.12` 被判不达标，AI 控制不发布。
+ * 下限必须按 Chromium 主版本比较：写成 WebView2 构建号 `152.0.4191.66` 并逐段比较时，
+ * 主版本同为 152 的较早 Edge 构建 `152.0.4100.12` 会被判定为不达标，AI 控制不发布。
  */
-test('运行时下限按 Chromium 主版本判，主版本达标的任一构建都放行', async () => {
+test('运行时下限按 Chromium 主版本判定，主版本达标的任一构建均放行', async () => {
   const { handle } = fresh()
   const host = await AutoHost.connect(handle.port)
   host.ready(fakeDevtools(host.marker).port, '152.0.4100.12')
@@ -1564,7 +1564,7 @@ test('运行时下限按 Chromium 主版本判，主版本达标的任一构建�
   expect(meetsRuntimeFloor('dev')).toBe(false)
 })
 
-test('释放之后这个端口再也拿不到控制权', async () => {
+test('释放之后该端口无法再取得控制权', async () => {
   const { handle, host } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   await port?.open('http://127.0.0.1:1/page')
@@ -1573,7 +1573,7 @@ test('释放之后这个端口再也拿不到控制权', async () => {
   const before = host.received.length
   expect((await failure(port?.open('http://127.0.0.1:1/page'))).message).toMatch(/已经结束/)
   expect((await failure(port?.observe({ tabId: 'bt_1' }))).message).toMatch(/已经结束/)
-  // 一条请求都没发出去：拒绝发生在取控制槽那一步。
+  // 未发出任何请求：拒绝发生在获取控制槽的步骤。
   expect(host.received).toHaveLength(before)
 })
 
@@ -1599,7 +1599,7 @@ test('释放之后旧端口的观察与动作一并失败', async () => {
   expect(host.ops()).not.toContain('close')
 })
 
-test('下载：先授权再点，等宿主给终态，最后核对磁盘', async () => {
+test('下载：先授权再点击，等待宿主返回终态，最后核对磁盘', async () => {
   const { handle, host, devtools } = await ready()
   const dir = mkdtempSync(join(tmpdir(), 'qywork-dl-'))
   cleanups.push(() => {
@@ -1621,7 +1621,7 @@ test('下载：先授权再点，等宿主给终态，最后核对磁盘', async
     timeoutMs: 5_000,
   })
   await settle()
-  // 授权必须先于点击到达宿主：反过来的话钩子拿不到授权，这次下载会被取消。
+  // 授权必须先于点击到达宿主：顺序颠倒时钩子无法取得授权，本次下载会被取消。
   const armIndex = host.received.findIndex((f) => f.op === 'download.arm')
   expect(armIndex).toBeGreaterThanOrEqual(0)
   expect(host.received[armIndex]?.path).toBe(target)
@@ -1634,7 +1634,7 @@ test('下载：先授权再点，等宿主给终态，最后核对磁盘', async
   expect(await pending).toEqual({ path: target, bytes: 6 })
 })
 
-test('被拦下的下载如实进结果，不谎报成功', async () => {
+test('被拦截的下载如实写入结果，不误报成功', async () => {
   const { handle, host } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1656,7 +1656,7 @@ test('被拦下的下载如实进结果，不谎报成功', async () => {
   expect(await pending).toEqual({ blocked: 'exists', suggestedName: 'fixture.bin' })
 })
 
-test('换一次导航就作废旧观察，动作拿不到过期编号', async () => {
+test('导航一次即作废旧观察，动作无法使用过期编号', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1677,7 +1677,7 @@ test('换一次导航就作废旧观察，动作拿不到过期编号', async ()
   ).toMatch(/失效/)
 })
 
-test('导航只作废目标页的观察，别的标签页的编号照常可用', async () => {
+test('导航只作废目标页的观察，其他标签页的编号照常可用', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const one = await port?.open('http://127.0.0.1:1/page')
@@ -1687,7 +1687,7 @@ test('导航只作废目标页的观察，别的标签页的编号照常可用',
 
   await port?.navigate({ tabId: one?.tabId ?? '', action: 'reload' })
 
-  // 另一页没被这次导航动过，它的编号仍然指得到节点。
+  // 另一页未受本次导航影响，其编号仍指向有效节点。
   const other = await port?.act({
     tabId: two?.tabId ?? '',
     observationId: obTwo?.observationId ?? '',
@@ -1695,7 +1695,7 @@ test('导航只作废目标页的观察，别的标签页的编号照常可用',
     ref: firstRef(obTwo),
   })
   expect(other?.element).toBe('dl')
-  // 导航的那一页旧编号作废。
+  // 发生导航的页面旧编号作废。
   expect(
     (
       await failure(
@@ -1710,7 +1710,7 @@ test('导航只作废目标页的观察，别的标签页的编号照常可用',
   ).toMatch(/失效/)
 })
 
-test('动作之后直接给出新观察，用它再动作一次不必中间再观察', async () => {
+test('动作之后直接返回新观察，据此再次执行动作时无需另行观察', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1727,7 +1727,7 @@ test('动作之后直接给出新观察，用它再动作一次不必中间再�
   expect(first.settle).toBe('quiet')
   expect(first.observation.observationId).not.toBe(ob?.observationId)
 
-  // 拿回来的编号直接用：这中间一次 observe 都没有。
+  // 取回的编号直接使用：其间没有任何一次 observe。
   const second = await port?.act({
     tabId: tab?.tabId ?? '',
     observationId: first.observation.observationId,
@@ -1739,10 +1739,10 @@ test('动作之后直接给出新观察，用它再动作一次不必中间再�
 })
 
 /**
- * `browser_act` 的说明让模型在同一轮里用同一个 observationId 连发多个输入。
+ * `browser_act` 的说明允许模型在同一轮中使用同一个 observationId 连续发送多个输入。
  * 动作后的自动观察只登记新编号，不作废同一文档里先前的那一份。
  */
-test('动作之后先前那份观察仍可用：同一个 observationId 连发两次动作', async () => {
+test('动作之后先前的观察仍可用：同一个 observationId 连续执行两次动作', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1761,7 +1761,7 @@ test('动作之后先前那份观察仍可用：同一个 observationId 连发�
   expect(second?.element).toBe('dl')
 })
 
-test('动作发出后观察取不到时保留回执，另说明为什么没看见', async () => {
+test('动作发出后无法取得观察时保留回执，并说明未能观察的原因', async () => {
   const { handle, devtools } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1775,14 +1775,14 @@ test('动作发出后观察取不到时保留回执，另说明为什么没看�
     ref: firstRef(ob),
   })
   if (!r || r.observation !== null) throw new Error('这次观察本应取不到')
-  // 动作已经发出去了：回执留着，模型据此知道不该重复点。
+  // 动作已发出：回执保留，模型据此得知不应重复点击。
   expect(r.element).toBe('dl')
   expect(r.point).toEqual({ x: 10, y: 10 })
   expect(r.observationError).toContain('采集失败')
   expect(devtools.clicks()).toBe(1)
 })
 
-test('探针读数缺字段时不报静默，按阶段上限如实标注', async () => {
+test('探针读数缺少字段时不报告静默，按阶段上限如实标注', async () => {
   const { handle, devtools } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1799,13 +1799,13 @@ test('探针读数缺字段时不报静默，按阶段上限如实标注', async
   expect(r.settle).toBe('deadline')
 })
 
-test('取消之后不再开新观察，动作回执仍然给得出', async () => {
+test('取消之后不再开始新观察，仍能返回动作回执', async () => {
   const { handle, devtools } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
   const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
 
-  // 点击已经发出、静默探针刚登记上就释放控制：这一刻之后不得再开新观察。
+  // 点击已发出、静默探针刚登记时释放控制：此后不得再开始新观察。
   devtools.onCommand = (_method, expression) => {
     if (!expression.includes('__qyworkProbe(')) return
     devtools.onCommand = null
@@ -1823,7 +1823,7 @@ test('取消之后不再开新观察，动作回执仍然给得出', async () =>
   expect(devtools.clicks()).toBe(1)
 })
 
-test('导航回的是导航之后的观察，不再另回一份标签信息', async () => {
+test('导航返回导航之后的观察，不再另外返回标签信息', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1834,13 +1834,13 @@ test('导航回的是导航之后的观察，不再另回一份标签信息', as
     url: 'http://127.0.0.1:1/next',
   })
   if (!r || r.observation === null) throw new Error('这次导航本应带回观察')
-  // 地址取自观察，是页面此刻的实际地址，不是请求过的那个。
+  // 地址取自观察，是页面当前的实际地址，而非请求的地址。
   expect(r.observation.url).toBe('http://127.0.0.1:1/page')
   expect(r.observation.elements.length).toBeGreaterThan(0)
   expect(r.settle).toBe('quiet')
 })
 
-test('导航被拒时报失败，不拿旧页快照冒充跳转成功', async () => {
+test('导航被拒绝时报告失败，不以旧页快照冒充跳转成功', async () => {
   const { handle, devtools } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1856,7 +1856,7 @@ test('导航被拒时报失败，不拿旧页快照冒充跳转成功', async ()
   expect(err.message).toMatch(/ERR_NAME_NOT_RESOLVED/)
 })
 
-test('等待结束后直接采一次观察，不做静默等待也不带静默标注', async () => {
+test('等待结束后直接采集一次观察，不做静默等待也不附带静默标注', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1872,7 +1872,7 @@ test('等待结束后直接采一次观察，不做静默等待也不带静默�
   expect('settle' in r).toBe(false)
   expect(r.observation.elements.length).toBeGreaterThan(0)
 })
-test('同一页上一次调用的迟到终态不结算这一次，无授权的终态谁也不结算', async () => {
+test('同一页上一次调用的迟到终态不结算本次调用，无授权的终态不结算任何调用', async () => {
   const { handle, host } = await ready()
   const dir = mkdtempSync(join(tmpdir(), 'qywork-dl-'))
   cleanups.push(() => {
@@ -1897,7 +1897,7 @@ test('同一页上一次调用的迟到终态不结算这一次，无授权的�
   const mine = host.received.findLast((f) => f.op === 'download.arm')?.downloadId
   expect(mine).toBeTruthy()
 
-  // 同一页上另一个身份的终态：既不是本次调用的，也没有别的调用在等它。
+  // 同一页上另一个身份的终态：既不属于本次调用，也没有其他调用在等待它。
   writeFileSync(target, 'qywork', 'utf8')
   host.emit({
     kind: 'download.finished',
@@ -1910,12 +1910,12 @@ test('同一页上一次调用的迟到终态不结算这一次，无授权的�
   host.emit({ kind: 'download.finished', tabId: tab?.tabId ?? '', path: target, success: true })
   await settle()
 
-  // 只有带本次身份的那一条能结算。
+  // 只有携带本次身份的终态能结算。
   host.finishDownload(tab?.tabId ?? '', { kind: 'download.finished', path: target, success: true })
   expect(await pending).toEqual({ path: target, bytes: 6 })
 })
 
-test('两条会话下载到同一个路径时后一份授权被拒，各自路径则都放行', async () => {
+test('两条会话下载到同一路径时后一份授权被拒绝，路径不同时均放行', async () => {
   const { handle, host } = await ready()
   const dir = mkdtempSync(join(tmpdir(), 'qywork-dl-'))
   cleanups.push(() => {
@@ -1956,7 +1956,7 @@ test('两条会话下载到同一个路径时后一份授权被拒，各自路�
     ).message,
   ).toMatch(/路径已被/)
 
-  // 换一个路径就不冲突：授权照常登记，点击照常发出。
+  // 路径不同时不冲突：授权照常登记，点击照常发出。
   const other = b?.download({
     tabId: tabB?.tabId ?? '',
     observationId: obB?.observationId ?? '',
@@ -1973,7 +1973,7 @@ test('两条会话下载到同一个路径时后一份授权被拒，各自路�
   await heldOutcome
 })
 
-test('释放撤销未消费的授权，正在等终态的下载按未确认返回', async () => {
+test('释放撤销未消费的授权，正在等待终态的下载按未确认返回', async () => {
   const { handle, host } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -1986,20 +1986,20 @@ test('释放撤销未消费的授权，正在等终态的下载按未确认返�
     absolutePath: join(tmpdir(), 'qywork-never.bin'),
     timeoutMs: 30_000,
   })
-  // 先挂上失败处理再释放：释放会就地终结这次等待，晚一步接就成了没人处理的拒绝。
+  // 先注册失败处理再释放：释放会立即终结本次等待，注册晚于释放时会成为未处理的拒绝。
   const outcome = failure(pending)
   await settle()
   const armed = host.received.findLast((f) => f.op === 'download.arm')?.downloadId
 
   await port?.release()
-  // 不等 30 秒期限：等待随释放结束，且明确说没有确认到终态。
-  expect((await outcome).message).toMatch(/没有确认到终态/)
+  // 不等待 30 秒期限：等待随释放结束，并明确说明未确认终态。
+  expect((await outcome).message).toMatch(/未确认终态/)
   const disarm = host.received.findLast((f) => f.op === 'download.disarm')
   expect(disarm?.downloadId).toBe(armed)
   expect(host.arms.size).toBe(0)
 })
 
-test('optionsFor 按原观察读一页选项，不产生新的观察编号', async () => {
+test('optionsFor 按原观察读取一页选项，不产生新的观察编号', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -2016,7 +2016,7 @@ test('optionsFor 按原观察读一页选项，不产生新的观察编号', asy
   expect(options.total).toBe(3)
   expect(options.items).toHaveLength(3)
 
-  // 没发新编号：原观察里的动作照常可用。
+  // 未分配新编号：原观察中的动作照常可用。
   const acted = await port?.act({
     tabId: tab?.tabId ?? '',
     observationId: ob.observationId,
@@ -2026,7 +2026,7 @@ test('optionsFor 按原观察读一页选项，不产生新的观察编号', asy
   expect(acted?.element).toBe('dl')
 })
 
-test('optionsFor 用过期观察时明确失败，不改成采一份新观察', async () => {
+test('optionsFor 使用过期观察时明确失败，不改为采集新观察', async () => {
   const { handle } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
@@ -2045,13 +2045,13 @@ test('optionsFor 用过期观察时明确失败，不改成采一份新观察', 
   expect(ob?.observationId).toBeTruthy()
 })
 
-test('多事件动作中途失败仍带回后续观察，回执如实标注没做完', async () => {
+test('多事件动作中途失败时仍返回后续观察，回执如实标注未完成', async () => {
   const { handle, devtools } = await ready()
   const port = handle.browser?.portFor('cv_1', WS)
   const tab = await port?.open('http://127.0.0.1:1/page')
   const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
 
-  // 第 3 条按键事件是第二个字符的按下：第一个字符已经进了页面。
+  // 第 3 条按键事件是第二个字符的按下：第一个字符已输入页面。
   devtools.failKeyAt = 3
   const r = await port?.act({
     tabId: tab?.tabId ?? '',

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { checkPermission, type HostCallContext, PluginHost, requiredPermissions } from './host.ts'
 import type { PluginManifest } from './manifest.ts'
 
-/** 写一个真实的插件进程到临时目录。用假 mock 验不出进程隔离。 */
+/** 在临时目录中写入真实的插件入口。mock 无法验证进程隔离。 */
 async function pluginWith(body: string): Promise<{ dir: string; entry: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'qywork-plugin-'))
   const entry = join(dir, 'index.mjs')
@@ -65,7 +65,7 @@ function host(
   })
 }
 
-/** 一次调用的可信身份。宿主按它裁决，插件那侧永远只有一个 callId。 */
+/** 一次调用的可信身份。宿主据此裁决，插件一侧始终只有 callId。 */
 function ctx(over: Partial<HostCallContext> = {}): HostCallContext {
   return {
     pluginId: 'test-plugin',
@@ -79,10 +79,10 @@ function ctx(over: Partial<HostCallContext> = {}): HostCallContext {
 }
 
 /**
- * 取一次失败的原因。
+ * 取得一次调用失败的原因。
  *
- * 不用 `expect(promise).rejects`：等一条要靠子进程回帧才结得掉的 Promise 时它不让出
- * 事件循环，对端已经发出的帧永远到不了，测试只会撞超时。
+ * 不使用 `expect(promise).rejects`：等待依赖子进程回帧才能完成的 Promise 时，它不让出
+ * 事件循环，对端已发出的帧无法到达，测试只会超时。
  */
 async function failure(promise: Promise<unknown>): Promise<string> {
   try {
@@ -94,7 +94,7 @@ async function failure(promise: Promise<unknown>): Promise<string> {
 }
 
 describe('进程生命周期', () => {
-  test('启动握手后可以调用，调用结果原样回来', async () => {
+  test('启动握手后可以调用，调用结果原样返回', async () => {
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
         if (msg.type === 'call') send({ id: msg.id, ok: true, result: { echo: msg.params } })
@@ -120,7 +120,7 @@ describe('进程生命周期', () => {
     h.stop()
   })
 
-  test('插件返回失败时以异常上抛', async () => {
+  test('插件返回失败时抛出异常', async () => {
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
         if (msg.type === 'call') send({ id: msg.id, ok: false, error: { message: '插件内部错误' } })
@@ -132,7 +132,7 @@ describe('进程生命周期', () => {
     h.stop()
   })
 
-  test('进程中途崩溃时在飞的调用被逐个拒绝，不是挂到超时', async () => {
+  test('进程中途崩溃时逐个拒绝进行中的调用，而不是等待至超时', async () => {
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
         if (msg.type === 'call') process.exit(3)
@@ -140,29 +140,29 @@ describe('进程生命周期', () => {
     `)
     const h = host(entry, dir)
     await h.start()
-    // 挂到超时对用户表现为「卡住」，而这里明确知道不会再有答复了。
+    // 等待至超时在用户看来是「无响应」，而这里已确知不会再有答复。
     expect(h.call('m', {}, ctx())).rejects.toThrow('插件进程退出')
     h.stop()
   })
 
-  test('启动即退出的插件报错而不是无限等', async () => {
+  test('启动即退出的插件报错，而不是无限等待', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-plugin-'))
     const entry = join(dir, 'index.mjs')
     await writeFile(entry, 'process.exit(1)\n', 'utf8')
     expect(host(entry, dir).start()).rejects.toThrow()
   })
 
-  test('从不发 ready 的插件在超时后报错', async () => {
+  test('从不发送 ready 的插件在超时后报错', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-plugin-'))
     const entry = join(dir, 'index.mjs')
-    // 挂住不动，不发 ready。
+    // 保持运行但不发送 ready。
     await writeFile(entry, 'setInterval(() => {}, 1000)\n', 'utf8')
     expect(host(entry, dir).start()).rejects.toThrow('超时')
   }, 15_000)
 })
 
-describe('隔离：插件拿不到宿主的模块', () => {
-  test('宿主环境变量不透传 —— API Key 不该白送给插件', async () => {
+describe('隔离：插件无法取得宿主的模块', () => {
+  test('不透传宿主环境变量：API Key 不提供给插件', async () => {
     process.env.QYWORK_TEST_SECRET = 'sk-绝密'
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
@@ -186,7 +186,7 @@ describe('隔离：插件拿不到宿主的模块', () => {
     delete process.env.QYWORK_TEST_SECRET
   })
 
-  test('插件只拿到自己的 id 与权限声明', async () => {
+  test('插件只取得自己的 id 与权限声明', async () => {
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
         if (msg.type === 'call') send({ id: msg.id, ok: true, result: {
@@ -204,11 +204,11 @@ describe('隔离：插件拿不到宿主的模块', () => {
   })
 
   /**
-   * 指定了运行时就没有强制隔离——这条**故意断言「没挡住」**。
+   * 指定运行时后没有强制隔离，本用例有意断言「未拦截」。
    *
-   * 子进程本身不是沙箱。别把它说成「插件拿不到 fs / net / child_process」——
-   * 那会让用户把权限清单当沙箱看，因此「它只声明了读，装了没风险」这个判断是错的。
-   * 只有走自动解析、且机器上有 node 20+ 时才有强制隔离（见 runtime.test.ts）。
+   * 子进程本身不是沙箱。不要将其描述为「插件无法取得 fs / net / child_process」：
+   * 这会使用户把权限清单当作沙箱，进而作出「只声明了读权限，安装没有风险」的错误判断。
+   * 只有经自动解析且本机有 node 20+ 时才有强制隔离（见 runtime.test.ts）。
    */
   test('指定运行时时没有强制隔离：node:fs 仍然可用', async () => {
     const { dir, entry } = await pluginWith(`
@@ -218,7 +218,7 @@ describe('隔离：插件拿不到宿主的模块', () => {
         send({ id: msg.id, ok: true, result: { reachable } })
       }
     `)
-    // host() 传的是 runtime: process.execPath，即显式指定。
+    // host() 传入 runtime: process.execPath，即显式指定运行时。
     const h = host(entry, dir, { permissions: [] })
     await h.start()
     expect(h.runtime?.sandboxed).toBe(false)
@@ -230,7 +230,7 @@ describe('隔离：插件拿不到宿主的模块', () => {
 })
 
 describe('权限在宿主侧强制', () => {
-  test('未声明权限的宿主调用被拒', async () => {
+  test('未声明权限的宿主调用被拒绝', async () => {
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
         if (msg.type === 'call') {
@@ -251,7 +251,7 @@ describe('权限在宿主侧强制', () => {
     })
     await h.start()
     await h.call('go', {}, ctx())
-    // 调用到达了宿主，但被权限闸拒了 —— 插件自己没有 fs。
+    // 调用到达宿主，并被权限检查拒绝。
     expect(attempted).toContain('fs.write')
     h.stop()
   })
@@ -267,7 +267,7 @@ describe('权限在宿主侧强制', () => {
     expect(checkPermission(h, 'fs.write').ok).toBe(false)
   })
 
-  test('未登记的方法名一律拒绝 —— fail-closed', () => {
+  test('未登记的方法名一律拒绝（fail-closed）', () => {
     const h = new PluginHost({
       manifest: manifest([
         'workspace:read',
@@ -280,13 +280,13 @@ describe('权限在宿主侧强制', () => {
       entry: '/tmp/x.mjs',
       onCapability: async () => null,
     })
-    // 就算声明了全部权限，没登记的方法名也进不来。
-    // 忘了登记的后果是「新能力用不了」，不是「新能力对所有插件无条件开放」。
+    // 即使声明了全部权限，未登记的方法名同样被拒绝。
+    // 遗漏登记的后果是「新能力不可用」，而不是「新能力对所有插件无条件开放」。
     expect(requiredPermissions('secret.backdoor')).toBeNull()
     expect(checkPermission(h, 'secret.backdoor').ok).toBe(false)
   })
 
-  test('方法名到权限的映射覆盖全部能力轴', () => {
+  test('方法名到权限的映射覆盖全部宿主能力', () => {
     expect(requiredPermissions('fs.read')).toEqual(['workspace:read'])
     expect(requiredPermissions('fs.write')).toEqual(['workspace:write'])
     expect(requiredPermissions('fs.delete')).toEqual(['workspace:write'])
@@ -296,7 +296,7 @@ describe('权限在宿主侧强制', () => {
   })
 })
 
-/** 反向 RPC 的样板：原样带回宿主给的 callId，同时在参数里另报一份假身份。 */
+/** 反向 RPC 的插件代码：原样带回宿主提供的 callId，同时在参数中附带伪造的身份。 */
 const REVERSE = `
       let pendingCall = null
       function handle(msg) {
@@ -318,7 +318,7 @@ const REVERSE = `
 `
 
 describe('可信调用上下文', () => {
-  test('身份来自宿主的待决调用表，插件自报的工作区/会话/Run 不作数', async () => {
+  test('身份取自宿主的待决调用表，插件自报的工作区、会话与 Run 无效', async () => {
     const { dir, entry } = await pluginWith(REVERSE)
     let seen: HostCallContext | null = null
     const h = host(entry, dir, {
@@ -362,7 +362,7 @@ describe('可信调用上下文', () => {
     h.stop()
   })
 
-  /** 这次调用不回复，只在指定延迟后反过来请求宿主。 */
+  /** 不回复本次调用，只在指定延迟后反向请求宿主。 */
   const LATE = (delayMs: number) => `
       function handle(msg) {
         if (msg.type === 'call') {
@@ -374,7 +374,7 @@ describe('可信调用上下文', () => {
       }
 `
 
-  test('取消之后 parentCallId 立刻失效，迟到的反向 RPC 被拒', async () => {
+  test('取消后 parentCallId 立即失效，迟到的反向 RPC 被拒绝', async () => {
     const { dir, entry } = await pluginWith(LATE(200))
     const lines: string[] = []
     let called = 0
@@ -397,7 +397,7 @@ describe('可信调用上下文', () => {
     h.stop()
   })
 
-  test('超时之后同样失效，不是只删待决项让插件接着跑', async () => {
+  test('超时后同样失效，而不是只删除待决项、任由插件继续运行', async () => {
     const { dir, entry } = await pluginWith(LATE(300))
     const lines: string[] = []
     let called = 0
@@ -417,7 +417,7 @@ describe('可信调用上下文', () => {
     h.stop()
   })
 
-  test('调用正常结束之后，迟到的反向 RPC 也被拒', async () => {
+  test('调用正常结束后，迟到的反向 RPC 同样被拒绝', async () => {
     const { dir, entry } = await pluginWith(`
       function handle(msg) {
         if (msg.type === 'call') {
