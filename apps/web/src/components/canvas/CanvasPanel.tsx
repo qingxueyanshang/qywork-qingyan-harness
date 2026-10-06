@@ -10,6 +10,7 @@
 
 import {
   applyCanvasOps,
+  blankBox,
   type CanvasDoc,
   type CanvasGenerateNode,
   type CanvasNode,
@@ -100,7 +101,7 @@ const CLIP_LINK = 'clip:'
 const SNAP = 6
 
 /**
- * `at`：从连接点拖到空白处松开时新卡片放在该点；右键菜单中的粘贴、新建与上传也放在该点（画布坐标）。
+ * `at`：从连接点拖到空白处松开时新卡片的输入端位于该点；右键菜单中的粘贴、新建与上传放在该点（画布坐标）。
  * 右键菜单（`context`）的 `nodeId` 为空字符串，作用对象在 `target` 中。
  * 时间线的「+」（`clip`）：选中的视频插入第 `gap` 个间隙。
  */
@@ -1233,7 +1234,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     }
   }
 
-  /** 从节点新建一张后续生成卡，并把该节点连接为输入：视频节点作为参考视频，图片作为首帧（视频生成）或参考（图像生成）。 */
+  /**
+   * 从节点新建一张后续生成卡，并把该节点连接为输入：视频节点作为参考视频，图片作为首帧（视频生成）或参考（图像生成）。
+   * 给出 `at` 时，卡片左边沿中点（输入连线的终点）位于该点，与已有节点重叠时也不移动。
+   * 不要改为 `near`：它以该点为卡片中心，且与已有节点相交时下移，落点靠近源节点时卡片被移到源节点下方。
+   */
   const extend = async (nodeId: string, output: MediaOutput, at?: { x: number; y: number }) => {
     setMenu(null)
     const source = byId(nodeId)
@@ -1241,8 +1246,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     if (!source || !kind) return
     const role: MediaInputRole =
       output === 'image' ? 'reference' : kind === 'image' ? 'first_frame' : kind
+    const place = at
+      ? { x: Math.round(at.x), y: Math.round(at.y - blankBox(output).h / 2) }
+      : { beside: nodeId }
     const r = await apply([
-      { op: 'add_generate', ref: '$n', output, ...(at ? { near: at } : { beside: nodeId }) },
+      { op: 'add_generate', ref: '$n', output, ...place },
       { op: 'connect', from: nodeId, to: '$n', role },
     ])
     if (r?.refs.$n) setSelected(new Set([r.refs.$n]))
@@ -2112,7 +2120,12 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 </AnchoredMenu>
               </Match>
               <Match when={m().kind === 'out' || m().kind === 'version'}>
-                <AnchoredMenu class="canvas-menu" anchor={m().anchor}>
+                {/* 后续生成菜单从锚点向右展开：连线从左侧进入锚点，新卡片也位于锚点右侧。 */}
+                <AnchoredMenu
+                  class="canvas-menu"
+                  anchor={m().anchor}
+                  placement={m().kind === 'out' ? 'below-start' : 'below-end'}
+                >
                   <Switch>
                     <Match when={m().kind === 'out'}>
                       <For each={extendable((m() as { nodeId: string }).nodeId)}>

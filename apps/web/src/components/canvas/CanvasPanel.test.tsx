@@ -2396,14 +2396,39 @@ describe('画布：连线', () => {
     expect(server.ops).toEqual([])
   })
 
-  test('拖到空白处松开：在落点打开后续生成菜单，选择一项后新卡片放在落点并完成连接', async () => {
+  /**
+   * 原始失败形状：落点靠近源节点时，新卡片以落点为中心放置、与源节点相交后被移到其下方，
+   * 位置与落点无关；菜单的右边沿对齐落点，向左展开。
+   */
+  test('拖到空白处松开：菜单从落点向右展开，新卡片的输入端位于落点并完成连接', async () => {
     const { host, server, refs } = await mount(CARD)
-    const port = node(host, refs.$a!).querySelector<HTMLElement>('.canvas-port.out')!
-    await dragLink(host, port, host.querySelector('.canvas-stage'))
-    await waitFor(
-      () => !!document.querySelector('.canvas-menu'),
-      () => '',
-    )
+    const z = zoom(host)
+    const stage = host.querySelector<HTMLElement>('.canvas-stage')!
+    const px = Number.parseFloat(stage.style.getPropertyValue('--px'))
+    const py = Number.parseFloat(stage.style.getPropertyValue('--py'))
+    // happy-dom 不进行布局：为落点锚点与菜单提供尺寸，菜单的定位才能区分向左与向右展开。
+    const rect = spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.classList.contains('canvas-drop-anchor')) {
+        return { left: 500, right: 500, top: 300, bottom: 300, width: 0, height: 0 } as DOMRect
+      }
+      if (this.classList.contains('canvas-menu')) {
+        return { left: 0, right: 160, top: 0, bottom: 40, width: 160, height: 40 } as DOMRect
+      }
+      return { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 } as DOMRect
+    })
+    try {
+      const port = node(host, refs.$a!).querySelector<HTMLElement>('.canvas-port.out')!
+      await dragLink(host, port, host.querySelector('.canvas-stage'))
+      await waitFor(
+        () => !!document.querySelector('.canvas-menu'),
+        () => '',
+      )
+      expect(document.querySelector<HTMLElement>('.canvas-menu')!.style.left).toBe('500px')
+    } finally {
+      rect.mockRestore()
+    }
     ;[...document.querySelectorAll<HTMLButtonElement>('.canvas-menu button')]
       .find((b) => b.textContent === '图像生成')!
       .click()
@@ -2412,8 +2437,10 @@ describe('画布：连线', () => {
       () => JSON.stringify(server.ops),
     )
     expect(server.ops[0]![0]).toMatchObject({ op: 'add_generate', output: 'image' })
-    expect(server.ops[0]![0]).toHaveProperty('near')
     expect(server.ops[0]![1]).toMatchObject({ op: 'connect', from: refs.$a!, role: 'reference' })
+    const added = server.doc().nodes.find((n) => n.id !== refs.$a && n.id !== refs.$v)!
+    expect(added.x).toBe(Math.round((120 - px) / z))
+    expect(Math.abs(added.y + added.h / 2 - (40 - py) / z)).toBeLessThanOrEqual(1)
   })
 
   test('点击连线将其选中，按 Delete 删除', async () => {
