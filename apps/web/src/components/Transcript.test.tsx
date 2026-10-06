@@ -1205,6 +1205,87 @@ describe('子会话与主会话共用流式外壳', () => {
     }
   })
 
+  /** 原始失败形状：整页刷新后会话流回到底部，刷新前的阅读位置丢失。 */
+  test('刷新前未跟随底部时，恢复到刷新前距底部的距离；回到底部后不再记录', async () => {
+    const store = await import('../lib/store/index.ts')
+    const { readSession, writeSession } = await import('../lib/session.ts')
+    const apiBefore = store.client.api
+    ;(store.client as unknown as { api: () => Promise<unknown> }).api = async () => ({
+      messages: [],
+      steps: [],
+      runs: [],
+      todos: [],
+      nextCursor: null,
+    })
+    // 本次页面加载中该会话尚未显示过、记录中有刷新前的距离，与刷新后的状态相同。
+    writeSession('qywork.scroll:cv_scroll', 300)
+    store.openConversationTab('cv_scroll', '子 agent')
+    store.syncViews()
+    store.setState({
+      activeConversation: null,
+      busyConversations: [],
+      connection: 'ready',
+      views: {
+        cv_scroll: {
+          transcript: [],
+          history: { loading: null, nextCursor: null, error: null },
+          changes: null,
+          runUserMessageId: null,
+          runStartedAt: null,
+          usage: null,
+          generatingToolCall: false,
+          request: null,
+          error: null,
+        },
+      },
+    } as never)
+    const proto = HTMLElement.prototype
+    const height = Object.getOwnPropertyDescriptor(proto, 'scrollHeight')
+    const client = Object.getOwnPropertyDescriptor(proto, 'clientHeight')
+    Object.defineProperty(proto, 'scrollHeight', { configurable: true, get: () => 1000 })
+    Object.defineProperty(proto, 'clientHeight', { configurable: true, get: () => 100 })
+
+    const { render } = await import('solid-js/web')
+    const { default: ConversationPanel } = await import('./ConversationPanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(
+      () => <ConversationPanel id="conversation-cv_scroll" />,
+      host as unknown as HTMLElement,
+    )
+
+    try {
+      const scroller = host.querySelector<HTMLElement>('.child-cv')!
+      for (let i = 0; i < 100 && scroller.scrollTop !== 600; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+      expect(scroller.scrollTop).toBe(600)
+
+      scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
+      scroller.scrollTop = 200
+      scroller.dispatchEvent(new Event('scroll'))
+      expect(readSession<number>('qywork.scroll:cv_scroll')).toBe(700)
+
+      scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }))
+      scroller.scrollTop = 900
+      scroller.dispatchEvent(new Event('scroll'))
+      expect(readSession('qywork.scroll:cv_scroll')).toBeUndefined()
+    } finally {
+      for (const [name, d] of [
+        ['scrollHeight', height],
+        ['clientHeight', client],
+      ] as const) {
+        if (d) Object.defineProperty(proto, name, d)
+        else Reflect.deleteProperty(proto, name)
+      }
+      dispose()
+      host.remove()
+      store.closePanelTab('conversation-cv_scroll')
+      store.syncViews()
+      ;(store.client as unknown as { api: typeof apiBefore }).api = apiBefore
+    }
+  })
+
   test('父步骤不能替子会话伪造忙态', async () => {
     const store = await import('../lib/store/index.ts')
     const apiBefore = store.client.api

@@ -16,8 +16,12 @@ beforeAll(() => {
 })
 afterEach(async () => {
   const store = await import('../lib/store/index.ts')
+  const { flushSession } = await import('../lib/session.ts')
   store.setPanelMaximized(false)
   store.setState('context', null)
+  // 草稿在挂载之间保留（刷新恢复），每条用例从空输入框开始。
+  flushSession()
+  sessionStorage.clear()
   document.body.replaceChildren()
 })
 afterAll(async () => {
@@ -251,6 +255,25 @@ describe('放大面板中的输入区', () => {
       expect(reveal.getAttribute('aria-expanded')).toBe('true')
     } finally {
       dispose()
+    }
+  })
+
+  /** 原始失败形状：整页刷新后未发送的草稿与附件丢失。刷新以 `flushSession` 后重新挂载模拟。 */
+  test('未发送的草稿与附件在刷新后恢复', async () => {
+    const { flushSession, writeSession } = await import('../lib/session.ts')
+    const first = await mountComposer(false)
+    input(first.textarea, '刷新前的草稿')
+    first.dispose()
+    writeSession('qywork.draft.attachments', [
+      { type: 'image', name: 'a.png', mime: 'image/png', size: 0, path: 'C:/a.png' },
+    ])
+    flushSession()
+    const second = await mountComposer(false)
+    try {
+      expect(second.textarea.value).toBe('刷新前的草稿')
+      expect(second.host.querySelector('[aria-label="移除 a.png"]')).not.toBeNull()
+    } finally {
+      second.dispose()
     }
   })
 

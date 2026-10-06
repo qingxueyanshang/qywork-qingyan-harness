@@ -8,6 +8,7 @@
 import type { Attachment, Conversation, EffortLevel } from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { ApiError } from '../client.ts'
+import { readSession, writeSession } from '../session.ts'
 import { client, discardPace, reloadActiveConversation, syncViews } from './connection.ts'
 import {
   addWorkspace,
@@ -20,7 +21,7 @@ import {
 } from './settings.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
 import { hasRun, isRunning, LOCAL_ID_PREFIX, prepayBusy, setState, state } from './state.ts'
-import { setOpenFile, setWorkspace } from './ui.ts'
+import { setOpenFile, setWorkspace, workspace } from './ui.ts'
 
 /**
  * 获取当前项目的会话列表，并保证始终有一条活动会话。
@@ -37,11 +38,19 @@ export async function loadConversations(): Promise<void> {
   const res = await client.api<{ conversations: Conversation[] }>('/api/conversations')
   setState('conversations', res.conversations)
   if (state.activeConversation) return
-  if (res.conversations[0]) {
-    await selectConversation(res.conversations[0].id)
+  // 刷新后回到刷新前的会话；它已被删除或归档时不在列表中，改为第一条。
+  const saved = readSession<string>(conversationKey())
+  const pick = res.conversations.find((c) => c.id === saved) ?? res.conversations[0]
+  if (pick) {
+    await selectConversation(pick.id)
     return
   }
   await newConversation()
+}
+
+/** 当前会话的记录键，按项目区分：会话 id 只在所属项目的列表中有效。 */
+function conversationKey(): string {
+  return `qywork.conversation:${workspace()?.id ?? ''}`
 }
 
 /**
@@ -96,6 +105,7 @@ export async function selectConversation(id: string): Promise<void> {
   const current = state.views[id]
   if (state.activeConversation === id && current && current.history.loading !== 'unloaded') return
   setState({ activeConversation: id, fileChanges: [] })
+  writeSession(conversationKey(), id)
   discardPace()
   // 在此处显式建立视图表并订阅，不等待 effect 执行：下方紧接着 await，
   // 重新获取的结果要写入该会话的视图表，视图表尚未建立时正文无处写入。
