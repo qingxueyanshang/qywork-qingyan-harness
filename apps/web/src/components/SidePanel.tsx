@@ -17,6 +17,7 @@ import {
 } from 'solid-js'
 import { ApiError } from '../lib/client.ts'
 import { loaded } from '../lib/resource.ts'
+import { MAP_CODEC, SET_CODEC, sessionSignal } from '../lib/session.ts'
 import { clamp, diffFrom, firstString } from '../lib/step-view.ts'
 import {
   absPath,
@@ -622,18 +623,35 @@ function FileBrowser() {
    */
   const treeError = () => (tree.error ? explainApiError(tree.error, '读取失败') : null)
 
-  const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
+  // 展开的目录、选中的行、搜索词与根目录展开按项目记录，刷新后恢复；展开的目录在挂载后按需重新获取。
+  const ws = workspace()?.id ?? ''
+  const [expanded, setExpanded] = sessionSignal<ReadonlySet<string>>(
+    `qywork.files.expanded:${ws}`,
+    new Set(),
+    SET_CODEC,
+  )
   const [kids, setKids] = createSignal<ReadonlyMap<string, FileNode[]>>(new Map())
-  /** 选中的行。它同时决定新建的位置，因此文件与目录都会记录。 */
-  const [selected, setSelected] = createSignal<FileNode | null>(null)
+  /** 选中的行。它同时决定新建的位置，因此文件与目录都会记录。记录时不含子层。 */
+  const [selected, setSelected] = sessionSignal<FileNode | null>(
+    `qywork.files.selected:${ws}`,
+    null,
+    {
+      save: (node) => {
+        if (!node) return null
+        const { children: _, ...rest } = node
+        return rest
+      },
+      load: (raw) => raw as FileNode | null,
+    },
+  )
   const [creating, setCreating] = createSignal<{ kind: 'file' | 'dir'; dir: string } | null>(null)
   const [renaming, setRenaming] = createSignal<FileNode | null>(null)
   const [nameError, setNameError] = createSignal<string | null>(null)
   const [menuAt, setMenuAt] = createSignal<{ node: FileNode; x: number; y: number } | null>(null)
   const [revealError, setRevealError] = createSignal<string | null>(null)
   const [doomed, setDoomed] = createSignal<FileNode | null>(null)
-  const [query, setQuery] = createSignal('')
-  const [rootOpen, setRootOpen] = createSignal(true)
+  const [query, setQuery] = sessionSignal(`qywork.files.query:${ws}`, '')
+  const [rootOpen, setRootOpen] = sessionSignal(`qywork.files.root:${ws}`, true)
   /**
    * 手动刷新作用于整个文件页，不只是左侧文件树。
    *
@@ -1468,13 +1486,21 @@ function ChangeList(props: { changes: ChangesView; conversationId: string | null
    * 记录明确的状态值而不是切换标记：新一轮到达后，原先的第一轮移到第二位，
    * 未点击过时按默认收起，点击过时保持用户设定的状态。
    */
-  const [explicit, setExplicit] = createSignal<ReadonlyMap<string, boolean>>(new Map())
+  const [explicit, setExplicit] = sessionSignal<ReadonlyMap<string, boolean>>(
+    'qywork.changes.turns',
+    new Map(),
+    MAP_CODEC,
+  )
   const turnOpen = (turnId: string, index: number) => explicit().get(turnId) ?? index === 0
   const toggleTurn = (turnId: string, index: number) =>
     setExplicit((cur) => new Map(cur).set(turnId, !turnOpen(turnId, index)))
 
   /** 已展开的文件，键为「轮次 + 路径」：同一文件在不同轮次中分别展开或收起。 */
-  const [openFiles, setOpenFiles] = createSignal<ReadonlySet<string>>(new Set())
+  const [openFiles, setOpenFiles] = sessionSignal<ReadonlySet<string>>(
+    'qywork.changes.files',
+    new Set(),
+    SET_CODEC,
+  )
   const fileKey = (turnId: string, path: string) => `${turnId}\n${path}`
   const toggleFile = (key: string) =>
     setOpenFiles((cur) => {

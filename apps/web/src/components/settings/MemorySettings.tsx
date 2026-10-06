@@ -1,5 +1,6 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
+import { sessionSignal } from '../../lib/session.ts'
 import { askInChat, deleteMemory, loadMemory, type Scope } from '../../lib/store/index.ts'
 import { IconTrash } from '../Icons.tsx'
 import { LoadState } from './LoadState.tsx'
@@ -23,7 +24,7 @@ import { newMemoryPrompt } from './ScopePrompts.ts'
 export default function MemorySettings() {
   const [mem, { refetch }] = createResource(loadMemory)
   /** 当前查看的层级。新建的条目也写入该层，因为用户正在查看它。 */
-  const [scope, setScope] = createSignal<Scope>('project')
+  const [scope, setScope] = sessionSignal<Scope>('qywork.settings.memory.scope', 'project')
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
 

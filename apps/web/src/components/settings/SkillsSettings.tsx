@@ -1,5 +1,6 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../../lib/resource.ts'
+import { sessionSignal } from '../../lib/session.ts'
 import {
   askInChat,
   deleteSkill,
@@ -40,7 +41,7 @@ export default function SkillsSettings() {
     () => [workspace()?.id, extensionsRevision()],
     loadSkills,
   )
-  const [scope, setScope] = createSignal<Scope>('project')
+  const [scope, setScope] = sessionSignal<Scope>('qywork.settings.skills.scope', 'project')
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [okMsg, setOkMsg] = createSignal<string | null>(null)

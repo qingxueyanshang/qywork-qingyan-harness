@@ -1,4 +1,5 @@
-import { createSignal, Show } from 'solid-js'
+import { Show } from 'solid-js'
+import { sessionSignal } from '../../lib/session.ts'
 import { actOnUpdate, appUpdate, updatePresentation } from '../../lib/store/app-update.ts'
 import { config, replaceConfig } from './configStore.ts'
 
@@ -10,7 +11,7 @@ const MODES = {
 }
 
 export function UpdateSettings() {
-  const [notes, showNotes] = createSignal(false)
+  const [notes, showNotes] = sessionSignal('qywork.settings.update.notes', false)
   const preferences = () => config()?.updates ?? { autoCheck: true, autoDownload: true }
   const toggle = (field: 'autoCheck' | 'autoDownload', value: boolean) =>
     void replaceConfig((cur) => ({

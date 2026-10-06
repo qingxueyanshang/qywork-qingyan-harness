@@ -37,6 +37,10 @@ afterEach(async () => {
   store.setOpenFile(null)
   store.setSidePanel(null)
   store.setWorkspace(null)
+  // 文件树的展开与选中在挂载之间保留（刷新恢复），每条用例从未记录的状态开始。
+  const { flushSession } = await import('../lib/session.ts')
+  flushSession()
+  sessionStorage.clear()
   store.setState({
     activeConversation: null,
     connection: 'connecting',
@@ -223,6 +227,29 @@ describe('在资源管理器中显示', () => {
     page.clickReveal('视频 1.mp4')
     expect(paths).toEqual([expectedRoot, expectedDir, expectedDir])
     expect(page.host.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  /** 原始失败形状：整页刷新后文件树收起、选中行丢失。刷新以 `flushSession` 后重新挂载模拟。 */
+  test('刷新后恢复展开的目录与选中的行', async () => {
+    const { flushSession } = await import('../lib/session.ts')
+    const first = await mount('C:\\项目 工作', async () => {})
+    first.row('素材 文件').click()
+    await waitFor(
+      () => first.host.textContent?.includes('视频 1.mp4') ?? false,
+      () => first.host.innerHTML,
+    )
+    dispose?.()
+    dispose = undefined
+    document.body.replaceChildren()
+    restoreApi?.()
+    restoreShell?.()
+    flushSession()
+    const second = await mount('C:\\项目 工作', async () => {})
+    await waitFor(
+      () => second.host.textContent?.includes('视频 1.mp4') ?? false,
+      () => second.host.innerHTML,
+    )
+    expect(second.row('素材 文件').classList.contains('selected')).toBe(true)
   })
 
   test('桌面命令失败后显示原因，再次操作清除旧错误', async () => {

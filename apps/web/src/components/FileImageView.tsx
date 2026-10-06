@@ -1,4 +1,16 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
+import { readSession, writeSession } from '../lib/session.ts'
+
+type Mode = 'fit' | 'width' | number
+
+/** 当前图片的缩放模式与滚动位置。只记录一张，按地址区分：刷新后同一张图片按记录恢复。 */
+const VIEW_KEY = 'qywork.file.image'
+interface ViewRecord {
+  src: string
+  mode: Mode
+  left: number
+  top: number
+}
 
 /** 图片的缩放只依赖原始尺寸与预览区尺寸，文件树和路径栏不参与计算。 */
 export default function FileImageView(props: { src: string; alt: string }) {
@@ -6,7 +18,16 @@ export default function FileImageView(props: { src: string; alt: string }) {
   let image!: HTMLImageElement
   const [size, setSize] = createSignal({ width: 0, height: 0 })
   const [space, setSpace] = createSignal({ width: 0, height: 0 })
-  const [mode, setMode] = createSignal<'fit' | 'width' | number>('fit')
+  const [mode, setMode] = createSignal<Mode>('fit')
+  /** 待恢复的滚动位置，在图片尺寸取得后应用一次。 */
+  let restoring: ViewRecord | null = null
+  const save = () =>
+    writeSession(VIEW_KEY, {
+      src: source(),
+      mode: mode(),
+      left: viewport.scrollLeft,
+      top: viewport.scrollTop,
+    } satisfies ViewRecord)
   const [failed, setFailed] = createSignal(false)
   const source = createMemo(() => props.src)
   const scale = createMemo(() => {
@@ -39,13 +60,16 @@ export default function FileImageView(props: { src: string; alt: string }) {
     viewport.scrollTop = 0
   }
   createEffect(
-    on(source, () => {
+    on(source, (src) => {
+      const saved = readSession<ViewRecord>(VIEW_KEY)
+      restoring = saved?.src === src ? saved : null
       setSize({ width: 0, height: 0 })
-      setMode('fit')
+      setMode(restoring?.mode ?? 'fit')
       setFailed(false)
       resetScroll()
     }),
   )
+  createEffect(on(mode, save, { defer: true }))
 
   const selectMode = (next: 'fit' | 'width' | number) => {
     setMode(next)
@@ -104,7 +128,7 @@ export default function FileImageView(props: { src: string; alt: string }) {
           </button>
         </span>
       </fieldset>
-      <div class="image-preview-viewport" ref={viewport} data-mode={mode()}>
+      <div class="image-preview-viewport" ref={viewport} data-mode={mode()} onScroll={save}>
         <Show when={failed()}>
           <div class="preview-note">无法加载图片</div>
         </Show>
@@ -120,12 +144,20 @@ export default function FileImageView(props: { src: string; alt: string }) {
               height: `${size().height * scale()}px`,
               visibility: scale() ? 'visible' : 'hidden',
             }}
-            onLoad={(event) =>
+            onLoad={(event) => {
               setSize({
                 width: event.currentTarget.naturalWidth,
                 height: event.currentTarget.naturalHeight,
               })
-            }
+              const at = restoring
+              restoring = null
+              if (!at) return
+              // 尺寸写入后的下一帧图片才按缩放占据空间，此前设置的滚动位置会被限制为 0。
+              zoomFrame = requestAnimationFrame(() => {
+                viewport.scrollLeft = at.left
+                viewport.scrollTop = at.top
+              })
+            }}
             onError={() => setFailed(true)}
           />
         </div>

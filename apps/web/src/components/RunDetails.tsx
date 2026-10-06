@@ -8,8 +8,9 @@ import type {
   UsageTotals,
 } from '@qywork/core'
 import { formatCosts, formatMoney, MEDIA_OUTPUT_UNIT, runCosts } from '@qywork/core'
-import { createMemo, createResource, createSignal, For, Show } from 'solid-js'
+import { createMemo, createResource, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
+import { sessionSignal } from '../lib/session.ts'
 import { compact, requestOutcome, stopReasonLabel } from '../lib/step-view.ts'
 import { client, ledgerRevision, openSettings, state } from '../lib/store/index.ts'
 import { IconChevron } from './Icons.tsx'
@@ -90,7 +91,7 @@ export default function RunDetails() {
   )
 
   /** 当前展开的行。同一时刻只展开一行：每次查看的是单轮明细，不并排比较多轮。 */
-  const [picked, setPicked] = createSignal<string | null>(null)
+  const [picked, setPicked] = sessionSignal<string | null>('qywork.runs.picked', null)
 
   const retry = () => {
     void refetchRuns()

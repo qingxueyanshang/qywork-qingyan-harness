@@ -1,5 +1,6 @@
 import { MEDIA_OUTPUTS, type MediaKind, type MediaOutput } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
+import { sessionSignal } from '../../lib/session.ts'
 import {
   explainApiError,
   type LibraryVendor,
@@ -83,7 +84,10 @@ export function ModelLibrary(props: {
   /** 获取失败时的原因。不显示原因时本节为空白，看起来像内置库中没有任何模型。 */
   error: unknown
 }) {
-  const [category, setCategory] = createSignal<Category>('chat')
+  const [category, setCategory] = sessionSignal<Category>(
+    'qywork.settings.library.category',
+    'chat',
+  )
   const categories = (): Category[] => [
     'chat',
     ...MEDIA_OUTPUTS.filter((o) => props.media.some((m) => m.output === o)),

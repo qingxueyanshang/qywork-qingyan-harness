@@ -24,9 +24,13 @@ beforeAll(() => {
   } as typeof ResizeObserver
 })
 
-afterEach(() => {
+afterEach(async () => {
   dispose?.()
   document.body.replaceChildren()
+  // 缩放模式与阅读位置在挂载之间保留（刷新恢复），每条用例从未记录的状态开始。
+  const { flushSession } = await import('../lib/session.ts')
+  flushSession()
+  sessionStorage.clear()
 })
 
 afterAll(async () => {
@@ -75,6 +79,26 @@ test('同一资源的预览结果刷新时保留缩放与长图阅读位置，�
   load(1080, 1920)
   expect(host.querySelector('fieldset')!.disabled).toBe(false)
   expect(image.style.visibility).toBe('visible')
+})
+
+/** 原始失败形状：整页刷新后图片回到「适应窗口」与顶部。刷新以 `flushSession` 后重新挂载模拟。 */
+test('刷新后同一张图片恢复缩放模式与阅读位置', async () => {
+  const { flushSession } = await import('../lib/session.ts')
+  const first = await mount()
+  first.load(1000, 10000)
+  first.button('适应宽度').click()
+  const before = first.host.querySelector<HTMLElement>('.image-preview-viewport')!
+  before.scrollTop = 3000
+  before.dispatchEvent(new Event('scroll'))
+  dispose?.()
+  document.body.replaceChildren()
+  flushSession()
+
+  const second = await mount()
+  expect(second.button('适应宽度').getAttribute('aria-pressed')).toBe('true')
+  second.load(1000, 10000)
+  await new Promise((resolve) => requestAnimationFrame(resolve))
+  expect(second.host.querySelector<HTMLElement>('.image-preview-viewport')!.scrollTop).toBe(3000)
 })
 
 test('加载失败时显示错误并禁用缩放，切换到有效图片后恢复', async () => {

@@ -1,5 +1,6 @@
 import { createEffect, createResource, createSignal, For, Show } from 'solid-js'
 import { loaded } from '../lib/resource.ts'
+import { sessionSignal } from '../lib/session.ts'
 import { hasAppUpdate } from '../lib/store/app-update.ts'
 import {
   activateWorkspace,
@@ -59,7 +60,10 @@ export function Sidebar(props: { onClose?: () => void }) {
   const desktop = isDesktopShell()
   const [known, { refetch: refetchWorkspaces }] = createResource(loadKnownWorkspaces)
   const [error, setError] = createSignal<string | null>(null)
-  const [collapsedPath, setCollapsedPath] = createSignal<string | null>(null)
+  const [collapsedPath, setCollapsedPath] = sessionSignal<string | null>(
+    'qywork.sidebar.collapsedProject',
+    null,
+  )
 
   /*
    * 连接恢复后立即重新获取项目清单。
