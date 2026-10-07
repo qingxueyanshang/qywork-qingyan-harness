@@ -111,6 +111,25 @@ export function displayTarget(target: string): string {
   return target.replace(/^(?:mcp|plugin):/, '')
 }
 
+/**
+ * `read_file` 实际交付的行号范围（`395-448`），附加在路径之后。
+ *
+ * 同一文件分段读取时，不带范围的几行显示同一路径，与重复读取无法区分。
+ * 读取整个文件、或起始行超出文件末尾（结果为 0 行）时返回 null。
+ */
+export function readRange(data: unknown): string | null {
+  const d = data as { startLine?: unknown; endLine?: unknown; totalLines?: unknown } | undefined
+  if (
+    typeof d?.startLine !== 'number' ||
+    typeof d.endLine !== 'number' ||
+    typeof d.totalLines !== 'number'
+  ) {
+    return null
+  }
+  if (d.endLine < d.startLine || (d.startLine <= 1 && d.endLine >= d.totalLines)) return null
+  return `${d.startLine}-${d.endLine}`
+}
+
 /** 终态文字。成功时为空字符串：一屏几十行都显示「成功」不提供任何信息。 */
 export function statusWord(status: 'running' | 'success' | 'failure' | undefined): string {
   return status === 'failure' ? '失败' : ''

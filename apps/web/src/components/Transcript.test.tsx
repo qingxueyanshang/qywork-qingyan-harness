@@ -635,6 +635,59 @@ test.each(['running', 'success', 'failure'] as const)(
   },
 )
 
+test('分段读取的文件行在路径后显示行号范围', async () => {
+  const store = await import('../lib/store/index.ts')
+  const { render } = await import('solid-js/web')
+  const { Transcript } = await import('./Transcript.tsx')
+  const workspaceBefore = store.workspace()
+  store.setState({
+    activeConversation: CV,
+    busyConversations: [],
+    views: {
+      [CV]: {
+        history: { loading: null, nextCursor: null, error: null },
+        changes: null,
+        runUserMessageId: null,
+        runStartedAt: null,
+        usage: null,
+        generatingToolCall: false,
+        request: null,
+        error: null,
+        transcript: [
+          {
+            id: 'read-mid',
+            kind: 'tool',
+            text: '',
+            toolName: 'read_file',
+            action: { kind: 'read', objectLabel: '文件', target: 'scripts/check.py' },
+            args: { path: 'scripts/check.py', offset: 395, limit: 54 },
+            status: 'success',
+            outcome: {
+              status: 'success',
+              executed: true,
+              message: '读取 scripts/check.py（54 行，已截断）',
+              data: { content: '', startLine: 395, endLine: 448, totalLines: 700 },
+            },
+          },
+        ],
+      },
+    },
+  })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <Transcript />, host)
+  try {
+    expect(host.querySelector('.fold-target')?.getAttribute('data-tip')).toBe(
+      'scripts/check.py:395-448',
+    )
+  } finally {
+    dispose()
+    host.remove()
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+  }
+})
+
 describe('工具图片回放', () => {
   test('read_file 图片只交给模型，不自动渲染为会话图片', async () => {
     const store = await import('../lib/store/index.ts')

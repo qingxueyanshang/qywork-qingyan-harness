@@ -21,6 +21,7 @@ import {
   firstString,
   hitRate,
   listOf,
+  readRange,
   requestOutcome,
   resultImages,
   sanitizeTarget,
@@ -135,6 +136,21 @@ describe('target 截断方向', () => {
     expect(cut2.length).toBe(TARGET_MAX)
     expect(cut2.endsWith('…')).toBe(true)
     expect(cut2.startsWith('8888')).toBe(true)
+  })
+})
+
+describe('分段读取的行号范围', () => {
+  test('同一文件的不同段落各自显示实际读取的范围', () => {
+    expect(readRange({ startLine: 1, endLine: 70, totalLines: 700 })).toBe('1-70')
+    expect(readRange({ startLine: 395, endLine: 448, totalLines: 700 })).toBe('395-448')
+    expect(readRange({ startLine: 657, endLine: 700, totalLines: 700 })).toBe('657-700')
+  })
+
+  test('读取整个文件、0 行结果与缺少行号时不显示范围', () => {
+    expect(readRange({ startLine: 1, endLine: 144, totalLines: 144 })).toBeNull()
+    expect(readRange({ startLine: 800, endLine: 799, totalLines: 700 })).toBeNull()
+    expect(readRange({ content: 'x' })).toBeNull()
+    expect(readRange(undefined)).toBeNull()
   })
 })
 
