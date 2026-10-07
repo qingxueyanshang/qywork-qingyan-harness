@@ -43,6 +43,7 @@ import {
   type GraphNode,
   hitRate,
   listOf,
+  readRange,
   resultImages,
   sanitizeTarget,
   statusWord,
@@ -1630,6 +1631,7 @@ function cardTitle(item: TranscriptItem): string {
  * 动作行末尾显示的目标。浏览器工具的 `action.target` 是宿主的 tabId（打开新页面时是占位字符串），
  * 仅用于权限与冲突判定；界面显示该页面的标签页标题，页面已关闭时显示参数中的地址，两者都没有时不显示。
  * 电脑控制工具同理：`action.target` 是不透明的窗口编号，界面显示结果中返回的窗口标题。
+ * 分段读取文件时在路径后附加实际读取的行号范围。
  */
 function shownTarget(item: TranscriptItem): string | undefined {
   if (item.toolName === 'write_file' && item.status === 'success') {
@@ -1638,6 +1640,10 @@ function shownTarget(item: TranscriptItem): string | undefined {
   }
   const target = item.action?.target
   if (!target) return undefined
+  if (item.toolName === 'read_file') {
+    const range = readRange(item.outcome?.data)
+    return range ? `${displayTarget(target)}:${range}` : displayTarget(target)
+  }
   if (item.toolName?.startsWith('desktop_')) return desktopWindowLabel(item.outcome?.data)
   if (!item.toolName?.startsWith('browser_')) return displayTarget(target)
   const url = item.args?.url
