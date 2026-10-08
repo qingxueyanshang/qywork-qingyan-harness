@@ -9,7 +9,13 @@ import { describe, expect, test } from 'bun:test'
 import { type CanvasPort, type MediaPort, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { applyCanvasOps, type CanvasOp, type CanvasView, emptyCanvas } from '@qywork/core'
-import { editCanvasTool, readCanvasTool, retrieveCanvasTool, runCanvasTool } from './canvas.ts'
+import {
+  createCanvasTool,
+  editCanvasTool,
+  readCanvasTool,
+  retrieveCanvasTool,
+  runCanvasTool,
+} from './canvas.ts'
 import { registerBuiltinTools } from './index.ts'
 
 function view(): CanvasView {
@@ -33,7 +39,9 @@ function view(): CanvasView {
 }
 
 interface Seen {
+  creates: string[]
   edits: CanvasOp[][]
+  batches: { nodes: string[]; media: MediaPort; signal: AbortSignal }[]
   runs: { media: MediaPort; signal: AbortSignal }[]
   retrieves: {
     path: string
@@ -68,10 +76,14 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
   port: CanvasPort
   seen: Seen
 } {
-  const seen: Seen = { edits: [], runs: [], retrieves: [] }
+  const seen: Seen = { creates: [], edits: [], batches: [], runs: [], retrieves: [] }
   return {
     seen,
     port: {
+      create: async (path) => {
+        seen.creates.push(path)
+        return path
+      },
       list: async () => ['board.canvas.json', '分镜/第二集.canvas.json'],
       read: async () => view(),
       edit: async (_path, ops) => {
@@ -81,6 +93,10 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
       run: async (_path, _node, media, signal) => {
         seen.runs.push({ media, signal })
         return result
+      },
+      runBatch: async (_path, nodes, media, signal) => {
+        seen.batches.push({ nodes, media, signal })
+        return nodes.map((node) => ({ node, result }))
       },
       retrieve: async (path, node, version, media, signal) => {
         seen.retrieves.push({ path, node, version, media, signal })
@@ -101,7 +117,7 @@ describe('canvas 工具', () => {
     const withPort = new ToolRegistry()
     registerBuiltinTools(withPort, { canvas: true })
     expect(withPort.has('canvas')).toBe(false)
-    for (const name of ['edit_canvas', 'run_canvas', 'retrieve_canvas']) {
+    for (const name of ['create_canvas', 'edit_canvas', 'run_canvas', 'retrieve_canvas']) {
       expect(none.has(name)).toBe(false)
       expect(withPort.has(name)).toBe(true)
     }
@@ -112,11 +128,71 @@ describe('canvas 工具', () => {
     expect(readCanvasTool.actionKind).toBe('read')
     expect(readCanvasTool.permissionEffect).toBe('read')
     expect(editCanvasTool.actionKind).toBe('edit')
+    expect(createCanvasTool.actionKind).toBe('write')
     expect(runCanvasTool.actionKind).toBe('run')
-    for (const tool of [editCanvasTool, runCanvasTool, retrieveCanvasTool]) {
+    for (const tool of [createCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool]) {
       expect(tool.permissionEffect).toBe('write')
       expect(tool.parameters.properties).not.toHaveProperty('action')
     }
+  })
+
+  test('创建返回文件改动；缺参、非画布路径或权限拒绝不创建', async () => {
+    const { port, seen } = fakePort({ ok: true, paths: [] })
+    const registry = new ToolRegistry()
+    registerBuiltinTools(registry, { canvas: true })
+    const c = ctx(port)
+    expect(await registry.execute('create_canvas', {}, c)).toMatchObject({
+      errorKind: 'invalid_tool_arguments',
+    })
+    expect(await registry.execute('create_canvas', { path: 'a.json' }, c)).toMatchObject({
+      executed: false,
+    })
+    const path = '分镜/第一集.canvas.json'
+    const out = await registry.execute('create_canvas', { path }, c)
+    expect(out.status).toBe('success')
+    expect(out.data).toEqual({ path })
+    expect(out.fileChanges).toEqual([{ path, changeType: 'created' }])
+    c.requestPermission = async () => ({ allowed: false, reason: '用户拒绝' })
+    expect(await registry.execute('create_canvas', { path: 'b.canvas.json' }, c)).toMatchObject({
+      errorKind: 'permission_denied',
+    })
+    expect(seen.creates).toEqual([path])
+  })
+
+  test('批量 id 去重，仍使用本轮生成端口与中止信号；非法数组不派发', async () => {
+    const { port, seen } = fakePort({ ok: true, paths: ['a.png'] })
+    const c = ctx(port, media)
+    const args = { path: 'board.canvas.json', node: ['a', 'b', 'a'] }
+    expect((await runCanvasTool.fn(args, c)).status).toBe('success')
+    expect(seen.batches).toEqual([{ nodes: ['a', 'b'], media, signal: c.signal }])
+    for (const node of [[], ['a', ''], ['a', 1], { id: 'a' }, null]) {
+      expect(await runCanvasTool.fn({ ...args, node }, c)).toMatchObject({
+        executed: false,
+        errorKind: 'invalid_tool_arguments',
+      })
+    }
+    expect(seen.batches).toHaveLength(1)
+    expect(seen.runs).toHaveLength(0)
+  })
+
+  test('批量部分失败仍返回成功文件与逐节点结果，不把整批报告为成功', async () => {
+    const { port } = fakePort({ ok: true, paths: [] })
+    port.runBatch = async () => [
+      { node: 'a', result: { ok: true, paths: ['generated/a.png'] } },
+      { node: 'b', result: { ok: false, message: '等待超时', pending: true } },
+      { node: 'c', skipped: true, result: { ok: false, message: '上游失败', pending: false } },
+    ]
+    const out = await runCanvasTool.fn(
+      { path: 'board.canvas.json', node: ['a', 'b', 'c'] },
+      ctx(port, media),
+    )
+    expect(out.status).toBe('failure')
+    expect(out.executed).toBe(true)
+    expect(out.message).toContain('1 个成功，1 个失败，1 个未运行')
+    expect(out.message).toContain('retrieve_canvas')
+    expect(out.message).toContain('不要整批重新运行')
+    expect(out.fileChanges).toEqual([{ path: 'generated/a.png', changeType: 'created' }])
+    expect(out.data?.results).toHaveLength(3)
   })
 
   test('read 不提供路径时列出画布；提供路径时输出节点、状态与连线', async () => {
@@ -241,6 +317,6 @@ describe('canvas 工具', () => {
       }
     }
     expect(permissions).toEqual([])
-    expect(seen).toEqual({ edits: [], runs: [], retrieves: [] })
+    expect(seen).toEqual({ creates: [], edits: [], batches: [], runs: [], retrieves: [] })
   })
 })

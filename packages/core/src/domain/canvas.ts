@@ -183,6 +183,13 @@ export type CanvasRunResult =
   | { ok: true; paths: string[]; warning?: string }
   | { ok: false; message: string; pending: boolean }
 
+/** 批量运行按请求顺序返回每个节点的结果；skipped 表示该节点未提交生成。 */
+export type CanvasBatchRunResult = {
+  node: string
+  result: CanvasRunResult
+  skipped?: true
+}[]
+
 /** 视频生成节点的输入模式。不落盘，由输入线的用途推导（`modeOf`）。 */
 export type CanvasMode = 'reference' | 'first_last'
 

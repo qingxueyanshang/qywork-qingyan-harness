@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -186,10 +186,41 @@ describe('画布服务：写入', () => {
     const root = await workspace()
     const { svc } = service()
     const now = new Date(2026, 8, 29, 10, 0, 0)
-    expect(await svc.create(root, now)).toBe('canvas-20260929-100000.canvas.json')
-    expect(await svc.create(root, now)).toBe('canvas-20260929-100000-2.canvas.json')
+    expect(await svc.create(root, { now })).toBe('canvas-20260929-100000.canvas.json')
+    expect(await svc.create(root, { now })).toBe('canvas-20260929-100000-2.canvas.json')
     const view = await svc.read(root, 'canvas-20260929-100000-2.canvas.json')
     expect(view.doc.nodes).toEqual([])
+  })
+
+  test('指定名称创建父目录，保留字面百分号；并发创建同名文件仅一次成功，不覆盖内容', async () => {
+    const root = await workspace()
+    const { svc, events } = service()
+    const path = '分镜/完成%20/第1集.canvas.json'
+    const results = await Promise.allSettled([
+      svc.create(root, { path }),
+      svc.create(root, { path }),
+    ])
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1)
+    expect(events.filter((e) => e.type === 'file.changed')).toHaveLength(1)
+    expect((await svc.read(root, path)).doc.nodes).toEqual([])
+    await svc.apply(root, path, [{ op: 'add_generate', output: 'image', prompt: '保留我' }])
+    const saved = await readFile(join(root, path), 'utf8')
+    await expect(svc.create(root, { path })).rejects.toThrow('已存在')
+    expect(await readFile(join(root, path), 'utf8')).toBe(saved)
+  })
+
+  test('创建拒绝错误后缀、越界、受保护目录与通向工作区外的目录链接', async () => {
+    const root = await workspace()
+    const outside = await mkdtemp(join(tmpdir(), 'qywork-canvas-outside-'))
+    const { svc } = service()
+    await expect(svc.create(root, { path: 'a.json' })).rejects.toThrow('.canvas.json')
+    await expect(svc.create(root, { path: join(outside, 'a.canvas.json') })).rejects.toThrow()
+    await expect(svc.create(root, { path: '../outside.canvas.json' })).rejects.toThrow()
+    await expect(svc.create(root, { path: '.qy/a.canvas.json' })).rejects.toThrow()
+    await symlink(outside, join(root, 'outside'), process.platform === 'win32' ? 'junction' : 'dir')
+    await expect(svc.create(root, { path: 'outside/a.canvas.json' })).rejects.toThrow()
+    expect(await readdir(outside)).toEqual([])
   })
 })
 

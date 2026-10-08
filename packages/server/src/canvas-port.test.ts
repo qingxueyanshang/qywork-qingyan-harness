@@ -41,6 +41,32 @@ async function workspace(): Promise<string> {
 }
 
 describe('画布端口', () => {
+  test('创建后可直接编辑、读取并批量运行，使用同一份画布文件', async () => {
+    const root = await workspace()
+    const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
+    const path = await port.create('分镜/第1集.canvas.json')
+    const { refs } = await port.edit(path, [
+      { op: 'add_generate', output: 'image', ref: '$a', prompt: '角色' },
+      { op: 'add_generate', output: 'image', ref: '$b', prompt: '场景' },
+    ])
+    const results = await port.runBatch(
+      path,
+      [refs.$a!, refs.$b!],
+      {
+        generate: async () => ({
+          ok: true,
+          provider: 'q',
+          model: 'm',
+          files: [{ bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), mime: 'image/png' }],
+        }),
+      },
+      new AbortController().signal,
+    )
+    expect(results.every((r) => r.result.ok)).toBe(true)
+    const view = await port.read(path)
+    expect(Object.values(view.states).every((s) => s.state === 'normal')).toBe(true)
+    expect(view.doc.runs).toHaveLength(2)
+  })
   test('同一批操作经端口与经 HTTP 写出的文件逐字节相同', async () => {
     const viaPort = await workspace()
     const port = canvasPort(new CanvasService({ publish: () => {}, newId: sequence() }), {

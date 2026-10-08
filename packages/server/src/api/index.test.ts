@@ -1247,6 +1247,7 @@ describe('工具清单', () => {
     const rows = await tools()
     const category = (name: string) => rows.find((t) => t.name === name)?.category
     for (const name of [
+      'create_canvas',
       'read_canvas',
       'edit_canvas',
       'run_canvas',
@@ -1283,7 +1284,7 @@ describe('工具清单', () => {
       expect(row?.params.map((param) => param.name)).not.toContain('action')
     }
     for (const name of ['subagent', 'workflow', 'define_role']) expect(names).toContain(name)
-    for (const name of ['edit_canvas', 'run_canvas', 'retrieve_canvas']) {
+    for (const name of ['create_canvas', 'edit_canvas', 'run_canvas', 'retrieve_canvas']) {
       expect(
         rows.find((row) => row.name === name)?.params.map((param) => param.name),
       ).not.toContain('action')

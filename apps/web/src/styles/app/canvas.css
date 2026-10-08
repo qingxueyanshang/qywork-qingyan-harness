@@ -330,7 +330,6 @@
   align-items: center;
   align-content: center;
   column-gap: 12px;
-  transform: none;
 }
 .canvas-node.audio .canvas-snake {
   grid-row: 1 / 3;
@@ -494,7 +493,7 @@
   text-align: center;
   line-height: 1.5;
 }
-/* 加载图与计时按屏幕尺寸绘制：缩放不低于 50% 时每格恒为 8px，更小时随节点一起缩小。 */
+/* 加载动画、阶段与计时使用节点内尺寸，统一随画布等比例缩放。 */
 .canvas-live {
   display: grid;
   grid-template-columns: 56px;
@@ -504,7 +503,6 @@
   min-width: 56px;
   flex: none;
   gap: 10px;
-  transform: scale(min(calc(1 / var(--z, 1)), 2));
 }
 /* 阶段与计时始终各占一行，状态文字变化时不移动加载动画。 */
 .canvas-live .phase {

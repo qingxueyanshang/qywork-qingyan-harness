@@ -31,6 +31,7 @@ import {
   activeMediaParams,
   addVersions,
   applyCanvasOps,
+  type CanvasBatchRunResult,
   type CanvasClip,
   type CanvasDoc,
   type CanvasGenerateNode,
@@ -67,6 +68,7 @@ import {
   landFiles,
   renameWithRetry,
   resolveInWorkspace,
+  resolveWritablePath,
   resumeMedia,
   TASK_SUFFIX,
 } from '@qywork/tools'
@@ -222,6 +224,8 @@ export interface CanvasWorkspace {
 export interface CanvasRunOptions {
   media: MediaPort
   signal?: AbortSignal
+  /** 批量派发时再次检查已有远端任务，防止等待期间新出现的待取回版本被重复提交。 */
+  rejectPending?: true
 }
 
 /** 生成记录中在开始时确定、在生成过程中补充的字段；结果、结束时刻与失败原文在收尾时补充。 */
@@ -358,23 +362,133 @@ export class CanvasService {
     }
   }
 
-  /** 在工作区根新建一张空画布，返回工作区相对路径。 */
-  async create(workspaceRoot: string, now = new Date()): Promise<string> {
+  /** 新建空画布：指定路径时不覆盖已有文件；省略路径时在根目录按时间命名。 */
+  async create(workspaceRoot: string, opts: { path?: string; now?: Date } = {}): Promise<string> {
+    if (opts.path !== undefined && !opts.path.endsWith(CANVAS_SUFFIX))
+      throw new CanvasFailure('画布路径必须以 .canvas.json 结尾', 422)
+    const now = opts.now ?? new Date()
     const p = (n: number) => String(n).padStart(2, '0')
     const stamp =
       `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-` +
       `${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`
     for (let n = 1; ; n++) {
-      const name = `canvas-${stamp}${n === 1 ? '' : `-${n}`}${CANVAS_SUFFIX}`
+      const name = opts.path ?? `canvas-${stamp}${n === 1 ? '' : `-${n}`}${CANVAS_SUFFIX}`
+      const abs = await resolveWritablePath(workspaceRoot, name, {
+        literal: true,
+        followFinalSymlink: false,
+      })
+      await mkdir(dirname(abs), { recursive: true })
       try {
-        await writeFile(join(workspaceRoot, name), serializeCanvas(emptyCanvas()), { flag: 'wx' })
+        await writeFile(abs, serializeCanvas(emptyCanvas()), { flag: 'wx' })
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+          if (opts.path !== undefined)
+            throw new CanvasFailure(`${name} 已存在，请使用 edit_canvas 修改或指定其他路径`, 409)
+          continue
+        }
         throw err
       }
       this.changed()
-      return name
+      return this.relativeTo(workspaceRoot, abs)
     }
+  }
+
+  /**
+   * 只调度本次指定的节点，不自动扩展到其他上游。执行仍走 run，共用状态、版本与计费。
+   * 批内依赖失败时跳过下游，独立节点最多并行 4 个；中止后不再派发等待中的节点。
+   */
+  async runBatch(
+    ws: CanvasWorkspace,
+    path: string,
+    nodeIds: string[],
+    opts: CanvasRunOptions,
+  ): Promise<CanvasBatchRunResult> {
+    if (!nodeIds.length || nodeIds.some((id) => typeof id !== 'string' || !id.trim()))
+      throw new CanvasFailure('必须指定要运行的生成节点', 422)
+    const ids = [...new Set(nodeIds)]
+    const view = await this.read(ws.root, path)
+    const byId = new Map(view.doc.nodes.map((node) => [node.id, node]))
+    for (const id of ids) {
+      if (byId.get(id)?.type !== 'generate')
+        throw new CanvasFailure(`不是可运行的生成节点：${id}`, 422)
+    }
+    const selected = new Set(ids)
+    const dependencies = new Map(
+      ids.map((id) => [
+        id,
+        inputsOf(view.doc, id)
+          .map((e) => e.from)
+          .filter((id) => selected.has(id)),
+      ]),
+    )
+    // 在任何付费提交之前检查循环；顺序只描述本次调度，不写入第二份运行状态。
+    const waiting = new Set(ids)
+    const ordered: string[] = []
+    while (waiting.size) {
+      const ready = [...waiting].filter((id) =>
+        dependencies.get(id)!.every((dep) => !waiting.has(dep)),
+      )
+      if (!ready.length) throw new CanvasFailure('指定节点之间存在循环依赖，未运行任何节点', 422)
+      for (const id of ready) {
+        waiting.delete(id)
+        ordered.push(id)
+      }
+    }
+    for (const id of ordered) waiting.add(id)
+    type Entry = CanvasBatchRunResult[number]
+    const results = new Map<string, Entry>()
+    const active = new Map<string, Promise<Entry>>()
+    const skip = (node: string, message: string, pending = false) => {
+      results.set(node, { node, skipped: true, result: { ok: false, message, pending } })
+      waiting.delete(node)
+    }
+    while (waiting.size || active.size) {
+      for (const id of waiting) {
+        if (opts.signal?.aborted || this.shutdown.signal.aborted) {
+          skip(id, '运行已中止，未提交生成')
+          continue
+        }
+        const deps = dependencies.get(id)!
+        if (deps.some((dep) => !results.has(dep))) continue
+        const failed = deps.filter((dep) => !results.get(dep)!.result.ok)
+        if (failed.length) {
+          skip(id, `上游节点未成功：${failed.join('、')}，未提交生成`)
+          continue
+        }
+        const state = view.states[id]
+        if (state?.state === 'pending') {
+          skip(id, `已有待取回版本 ${state.version}，请使用 retrieve_canvas`, true)
+          continue
+        }
+        if (state?.state === 'running') {
+          skip(id, '该卡片正在生成，未重复提交')
+          continue
+        }
+        if (active.size >= 4) break
+        waiting.delete(id)
+        active.set(
+          id,
+          (async (): Promise<Entry> => {
+            try {
+              const { done } = await this.run(ws, path, id, { ...opts, rejectPending: true })
+              return { node: id, result: await done }
+            } catch (err) {
+              return {
+                node: id,
+                skipped: true,
+                result: { ok: false, message: (err as Error).message, pending: false },
+              }
+            }
+          })(),
+        )
+      }
+      if (active.size) {
+        const entry = await Promise.race(active.values())
+        active.delete(entry.node)
+        results.set(entry.node, entry)
+      }
+    }
+    return ids.map((id) => results.get(id)!)
   }
 
   /**
@@ -391,6 +505,8 @@ export class CanvasService {
     opts: CanvasRunOptions,
   ): Promise<{ done: Promise<CanvasRunResult> }> {
     const { rel, key, node, doc } = await this.target(ws, path, nodeId)
+    if (opts.rejectPending && node.versions.some((v) => v.path.endsWith(TASK_SUFFIX)))
+      throw new CanvasFailure('已有待取回版本，请使用 retrieve_canvas，不要重复提交生成', 409)
     if (!node.prompt.trim()) throw new CanvasFailure(`「${node.name}」的提示词为空`, 422)
     const inputs: CanvasMade['inputs'] = []
     // art 在当前页面上修改：当前版本的文件作为第一项参考输入。文件已不存在时从头生成。
@@ -448,6 +564,7 @@ export class CanvasService {
       params,
       inputs,
     }
+    opts.signal?.throwIfAborted()
     const entry = this.begin(key, ws, rel, nodeId, node.output === 'video')
     const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
       let versionId: string | null = null
@@ -1313,6 +1430,7 @@ export class CanvasService {
  */
 export function canvasPort(service: CanvasService, ws: CanvasWorkspace): CanvasPort {
   return {
+    create: (path) => service.create(ws.root, { path }),
     list: () => service.list(ws.root),
     read: (path) => service.read(ws.root, path),
     edit: async (path, ops) => {
@@ -1321,6 +1439,8 @@ export function canvasPort(service: CanvasService, ws: CanvasWorkspace): CanvasP
     },
     run: async (path, nodeId, media, signal) =>
       (await service.run(ws, path, nodeId, { media, signal })).done,
+    runBatch: (path, nodeIds, media, signal) =>
+      service.runBatch(ws, path, nodeIds, { media, signal }),
     retrieve: async (path, nodeId, version, media, signal) =>
       (await service.retrieve(ws, path, nodeId, version, { media, signal })).done,
   }
