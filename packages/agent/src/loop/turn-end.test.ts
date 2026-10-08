@@ -308,7 +308,7 @@ describe('正常响应结束不等于任务完成', () => {
     )
     expect(tails[1]?.role).toBe('user')
     expect(String(tails[1]?.content)).toContain('本轮待办仍在进行中：完成第 7 步；完成第 8 步')
-    expect(String(tails[1]?.content)).toContain('确实受阻时将进行中的项改回 pending')
+    expect(String(tails[1]?.content)).toContain('单个工具调用失败不是受阻')
   })
 
   test('相同未完成清单下连续三次只结束响应，停止原因为 no_progress', async () => {

@@ -11,6 +11,8 @@
  *
  *   bun run scripts/prompt-live.ts                       # 配置中的全部模型
  *   bun run scripts/prompt-live.ts deepseek/deepseek-v4-pro   # 指定模型
+ *   bun run scripts/prompt-live.ts --blocked openai/gpt-6.1-sol   # 只执行受阻判定
+ *   bun run scripts/prompt-live.ts --goal openai/gpt-6.1-sol      # 受阻判定，以目标模式执行
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -19,6 +21,7 @@ import type { AgentEvent, ConversationId, EventEnvelope, RunId } from '@qywork/c
 import { dataPath, loadConfig, type ModelRef, type QyConfig } from '@qywork/runtime'
 import { serve } from '@qywork/server'
 import {
+  currentGoal,
   latestTodos,
   listProviderRequests,
   listRunContextSnapshots,
@@ -122,6 +125,81 @@ async function turn(live: Live, conversationId: string, content: string): Promis
     ws.close()
   }
   return runId
+}
+
+/** 目标模式下最多等待的轮数。循环没有轮数上限，超过后中断会话，目标转为 paused。 */
+const GOAL_ROUNDS = 4
+
+/**
+ * 设立目标并等待循环停止。返回各轮的 runId。
+ *
+ * 目标离开 active 且没有运行中的轮次时视为停止。两种事件的先后不固定：模型在轮内声明 blocked 时
+ * 目标事件先到，轮次异常结束由服务端转为 blocked 时收尾事件先到。
+ */
+async function goalRounds(live: Live, conversationId: string, objective: string): Promise<RunId[]> {
+  const ws = new WebSocket(
+    `ws://127.0.0.1:${new URL(live.base).port}/stream?token=${live.token}&origin=desktop`,
+  )
+  await new Promise<void>((res, rej) => {
+    ws.addEventListener('open', () => res(), { once: true })
+    ws.addEventListener('error', () => rej(new Error('ws 连接失败')), { once: true })
+  })
+  const runs: RunId[] = []
+  let status = 'active'
+  let running = false
+  const done = Promise.withResolvers<void>()
+  const settle = () => {
+    if (status !== 'active' && !running) done.resolve()
+  }
+  ws.addEventListener('message', (e) => {
+    const msg = JSON.parse(String(e.data)) as EventEnvelope<AgentEvent> & {
+      type?: string
+      message?: string
+    }
+    if (msg.type === 'hello.err') return done.reject(new Error('hello 失败'))
+    if (msg.type === 'command.rejected') {
+      return done.reject(new Error(`设立目标被拒绝：${msg.message}`))
+    }
+    if (!msg.seq || !msg.event) return
+    const ev = msg.event
+    if (ev.type === 'run.started') {
+      runs.push(ev.runId)
+      running = true
+      if (runs.length > GOAL_ROUNDS) {
+        ws.send(JSON.stringify({ type: 'conversation.interrupt', conversationId }))
+      }
+    } else if (
+      (ev.type === 'run.finished' || ev.type === 'run.error') &&
+      ev.runId === runs.at(-1)
+    ) {
+      running = false
+      settle()
+    } else if (ev.type === 'goal') {
+      status = ev.goal.status
+      settle()
+    }
+  })
+  ws.send(
+    JSON.stringify({
+      type: 'hello',
+      token: live.token,
+      origin: 'desktop',
+      subscribe: [conversationId],
+    }),
+  )
+  await Bun.sleep(200)
+  ws.send(JSON.stringify({ type: 'goal.set', conversationId, objective }))
+  const timer = setTimeout(
+    () => done.reject(new Error('目标循环超时')),
+    RUN_TIMEOUT_MS * (GOAL_ROUNDS + 1),
+  )
+  try {
+    await done.promise
+  } finally {
+    clearTimeout(timer)
+    ws.close()
+  }
+  return runs
 }
 
 interface Live {
@@ -458,12 +536,152 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
   return v
 }
 
+/** 1×1 的 PNG：本地图片接口的成功产物。 */
+const PNG_B64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+
+/**
+ * 受阻判定：多步生成任务中一张图的接口固定返回 502，其余均可执行。
+ *
+ * 原始失败形状：模型在第一次 502 之后把其余待办全部改回 pending 并结束，其余可执行的项一次都未提交。
+ * 生成走本地的 OpenAI 图片形状接口（`/images/generations`），提示词含「灯塔」时返回 502，
+ * 其余返回 PNG；配置中去掉其他生成模型，模型只能使用该接口，不产生真实的生成费用。
+ */
+/** 出图提示词可能是中文或英文，三类图片按两种写法识别。 */
+const LIGHTHOUSE = /灯塔|lighthouse/i
+const RIVER = /河|river/i
+const TREE = /槐|tree/i
+
+const BLOCKED_TASK =
+  '在工作区里用 generate_image 依次生成五张图片，每做完一张就更新一次待办清单：' +
+  '1) 一只橘猫；2) 雪山日出；3) 海边灯塔；4) 秋天的河流；5) 一棵老槐树。' +
+  '全部完成后，把成功生成的文件路径逐行写入 images.md，然后报告结果。'
+
+async function runBlocked(
+  store: Store,
+  config: QyConfig,
+  ref: ModelRef,
+  goal: boolean,
+): Promise<Verdict> {
+  const name = `${ref.provider}/${ref.model}`
+  const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
+  const prompts: string[] = []
+  const stub = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    async fetch(req) {
+      const body = (await req.json().catch(() => ({}))) as { prompt?: string }
+      const prompt = String(body.prompt ?? '')
+      prompts.push(prompt)
+      if (LIGHTHOUSE.test(prompt)) {
+        return Response.json(
+          { error: { message: 'Upstream access forbidden, please contact administrator' } },
+          { status: 502 },
+        )
+      }
+      return Response.json({ data: [{ b64_json: PNG_B64 }] })
+    },
+  })
+  const providers = Object.fromEntries(
+    Object.entries(config.providers).map(([n, p]) => {
+      const { media: _media, ...rest } = p
+      return [n, rest]
+    }),
+  )
+  const scenario: QyConfig = {
+    ...config,
+    mediaEnabled: true,
+    providers: {
+      ...providers,
+      stub: {
+        kind: 'openai_chat_completions',
+        apiKey: 'stub',
+        baseUrl: `http://127.0.0.1:${stub.port}/v1`,
+        models: {},
+        media: { 'stub-image': { kind: 'openai_images' } },
+      },
+    },
+    mediaDefaults: { image: { provider: 'stub', model: 'stub-image' } },
+  }
+  const ws = `${wsFor(ref)}-${goal ? 'goal' : 'blocked'}`
+  await rm(ws, { recursive: true, force: true })
+  await mkdir(ws, { recursive: true })
+  const live = start(store, scenario, ws)
+  try {
+    const conv = await newConversation(live, `${goal ? '目标受阻判定' : '受阻判定'} · ${name}`)
+    if (!conv) throw new Error('创建会话失败')
+    v.conversationId = conv
+    await setModel(live, conv, ref)
+    const runs = goal
+      ? await goalRounds(live, conv, BLOCKED_TASK)
+      : [await turn(live, conv, BLOCKED_TASK)].filter((r) => r !== null)
+    if (!runs.length) throw new Error('该轮未启动 run')
+    v.turns = runs.length
+    const add = (n: string, ok: boolean, d = '') => v.checks.push({ name: n, ok, detail: d })
+    const tools = runs.flatMap((r) => toolCallsIn(store, r))
+    const first = prompts.findIndex((p) => LIGHTHOUSE.test(p))
+    const after = first < 0 ? [] : prompts.slice(first)
+    const failures = prompts.filter((p) => LIGHTHOUSE.test(p)).length
+    // 连续请求「灯塔」的最长次数：立即重试一次即为 2。
+    let streak = 0
+    let longest = 0
+    for (const p of prompts) {
+      streak = LIGHTHOUSE.test(p) ? streak + 1 : 0
+      longest = Math.max(longest, streak)
+    }
+    add('建立了 Todo', tools.includes('write_todos'))
+    add(
+      '一张图失败后继续生成其余可执行的图',
+      after.some((p) => RIVER.test(p)) && after.some((p) => TREE.test(p)),
+      `接口收到的提示词顺序：${prompts.map((p) => p.slice(0, 8)).join(' → ')}`,
+    )
+    add(
+      '服务端错误重试有限次（连续不超过两次，共不超过三次）',
+      failures >= 2 && longest <= 2 && failures <= 3,
+      `「灯塔」共请求 ${failures} 次，最长连续 ${longest} 次`,
+    )
+    const listed = await Bun.file(join(ws, 'images.md'))
+      .text()
+      .catch(() => '')
+    const paths = listed.split(NL).filter((l) => /\.png/.test(l))
+    add('images.md 列出成功生成的四张图', paths.length === 4, `${paths.length} 行`)
+    const todos = latestTodos(store, conv as ConversationId) ?? []
+    const lighthouse = todos.find((t) => LIGHTHOUSE.test(t.content))
+    add(
+      '失败的项未标为完成',
+      lighthouse !== undefined && lighthouse.status !== 'completed',
+      lighthouse ? lighthouse.status : '清单中没有该项',
+    )
+    const reasons = listRuns(store, conv as ConversationId)
+      .filter((r) => runs.includes(r.id))
+      .map((r) => r.stopReason ?? '未知')
+    add('结束原因（不计失败）', true, reasons.join(' → '))
+    if (goal) {
+      const g = currentGoal(store, conv as ConversationId)
+      add(
+        '目标状态（不计失败）',
+        true,
+        `${g?.status ?? '无目标'}${g?.blockedReason ? `：${g.blockedReason}` : ''}`,
+      )
+    }
+  } catch (err) {
+    v.error = err instanceof Error ? err.message : String(err)
+  } finally {
+    live.close()
+    stub.stop(true)
+  }
+  return v
+}
+
 async function main(): Promise<number> {
   const config = await loadConfig()
   // 写入主库，执行完毕后可在面板中查看每一轮。
   const store = new Store({ path: dataPath() })
 
-  const args = process.argv.slice(2)
+  // `--blocked`：只执行受阻判定一项（见 `runBlocked`）；`--goal`：同一任务以目标模式执行。
+  const blocked = process.argv.includes('--blocked')
+  const goal = process.argv.includes('--goal')
+  const args = process.argv.slice(2).filter((a) => a !== '--blocked' && a !== '--goal')
   const refs: ModelRef[] = args.length
     ? args.map((a) => {
         const i = a.indexOf('/')
@@ -473,12 +691,16 @@ async function main(): Promise<number> {
         Object.keys(p.models).map((model) => ({ provider, model })),
       )
 
-  line(`共 ${refs.length} 个模型，每个 ${Object.keys(TASKS).length} 轮真实请求。`)
+  line(
+    `共 ${refs.length} 个模型，每个 ${blocked || goal ? 1 : Object.keys(TASKS).length} 项真实任务。`,
+  )
   const all: Verdict[] = []
   for (const ref of refs) {
     line('')
     line(`── ${ref.provider}/${ref.model} ──`)
-    const v = await runFor(store, config, ref)
+    const v = await (blocked || goal
+      ? runBlocked(store, config, ref, goal)
+      : runFor(store, config, ref))
     all.push(v)
     if (v.error) {
       line(`  ✗ 执行失败：${v.error}（已完成 ${v.turns} 轮）`)
