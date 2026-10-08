@@ -67,7 +67,7 @@ import {
   runCli,
   validatePlan,
 } from '@qywork/team'
-import { deliverAgentOutput, MAX_TIMEOUT_MS, openChangeWindow } from '@qywork/tools'
+import { deliverAgentOutput, openChangeWindow } from '@qywork/tools'
 import type { CommandDeps } from './deps.ts'
 import { memberModel, resolveModel as resolveMemberModel, runBuiltinMember } from './team-run.ts'
 
@@ -494,15 +494,10 @@ export function makeDelegate(ctx: {
         else if (!conversation.externalSession) {
           notes.push('该 CLI 未提供会话号，再次派发时不会保留本次内容，任务须完整描述')
         }
-        const error = r.ok
-          ? undefined
-          : r.timedOut
-            ? `${MAX_TIMEOUT_MS / 1000} 秒无输出，已终止`
-            : `退出码 ${r.exitCode}${r.stderr ? `：${r.stderr.slice(-500)}` : ''}`
         return {
           ok: r.ok,
           output: r.output,
-          ...(error ? { error } : {}),
+          ...(r.error ? { error: r.error } : {}),
           ...(notes.length ? { note: notes.join('；') } : {}),
           ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
         }
@@ -688,9 +683,16 @@ export function makeDelegate(ctx: {
     }
     /*
      * 节点失败时先单独发送一条回执，其余节点照常执行：父会话无需等待整批执行完毕即可得知失败。
-     * 本次推进同时到达检查点时不单独发送：检查点回执已逐个列出节点，单独发送会使同一信息出现两次。
+     * 只有检查点直接列出了该失败节点时才去重。经由被跳过的下游到达检查点时，
+     * 检查点并不包含原失败节点，仍须单独回传其错误。
      */
-    if (just.failed && !result.checkpoint) {
+    const includedInCheckpoint = projection.nodes.some(
+      (node) =>
+        node.kind === 'checkpoint' &&
+        node.id === result.checkpoint &&
+        node.needs.includes(just.nodeId),
+    )
+    if (just.failed && !includedInCheckpoint) {
       const receipt = projection.results[just.nodeId]
       send(
         [

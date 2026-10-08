@@ -99,10 +99,10 @@ export {
   scopeRoots,
 } from './scopes.ts'
 // 脱敏：team/cli-backend.ts 启动外部 CLI 前剥离凭证；runtime 写入诊断前对异常原文脱敏。
-export { redactSecrets, scrubEnv } from './secrets.ts'
+export { createStreamRedactor, redactSecrets, scrubEnv } from './secrets.ts'
 // 环境变量的默认豁免名单：server/api 下发给设置页，作为留空时的实际值。
 // `MAX_TIMEOUT_MS` 是本机单次工具执行的时限：team 用作外部 CLI 的静默上限，
-// server 用于组装终止说明，三处共用同一数值。
+// 执行器据此组装终止说明。
 export { DEFAULT_ENV_ALLOW, MAX_TIMEOUT_MS, resolveCommandTimeout } from './shell.ts'
 // 子 agent 产出的投递限制：server 的派发通道组装回执时经过同一投递限制，不另设标准。
 export { deliverAgentOutput, observationBudget } from './sink.ts'

@@ -20,6 +20,20 @@ async function fakeBin(name: string): Promise<string> {
 }
 
 describe('外部 CLI 识别', () => {
+  test('三种结构化协议随探测结果传递，Codex 首次和续接均使用工作区写入沙箱', async () => {
+    for (const id of ['claude', 'codex', 'grok'] as const) {
+      const dir = await fakeBin(id)
+      const found = await findCli(id, { PATH: dir, PATHEXT: '.CMD' })
+      expect(found?.protocol).toBe(id)
+      if (id === 'codex') {
+        for (const args of [found!.args, found!.resumeArgs!]) {
+          expect(args.slice(0, 3)).toEqual(['exec', '--sandbox', 'workspace-write'])
+        }
+        expect(found!.resumeArgs![3]).toBe('resume')
+      }
+    }
+  })
+
   /**
    * 厂商表声明了续问参数时，识别结果必须包含这些参数。
    * 遗漏这两项会使续问失效且不报错：厂商表中有声明，运行时却视为不支持。

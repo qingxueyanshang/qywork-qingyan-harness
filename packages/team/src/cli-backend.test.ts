@@ -86,6 +86,136 @@ const run = (agent: CliAgent, root: string) =>
     signal: new AbortController().signal,
   })
 
+/** 真实子进程回放厂商输出，验证进程退出与结构化终态共同参与判定。 */
+describe('CLI 执行结果', () => {
+  const replay = (output: string, exitCode = 0, stderr = ''): CliAgent => ({
+    ...echo,
+    args: [
+      '-e',
+      `process.stdout.write(${JSON.stringify(output)});process.stderr.write(${JSON.stringify(stderr)});process.exitCode=${exitCode}`,
+    ],
+  })
+
+  test('所有输出格式的空结果均失败，不能仅凭零退出码报成功', async () => {
+    for (const id of ['codex', 'claude', 'grok', 'gemini', 'qwen', 'kimi']) {
+      const protocol = id === 'codex' || id === 'claude' || id === 'grok' ? id : undefined
+      const agent: CliAgent = {
+        ...replay(''),
+        id,
+        output: id === 'grok' ? 'json' : protocol ? 'jsonl' : 'text',
+        ...(protocol ? { protocol } : {}),
+      }
+      const got = await run(agent, await mkdtemp(join(tmpdir(), 'qy-cli-')))
+      expect(got.ok).toBe(false)
+      expect(got.exitCode).toBe(0)
+      expect(got.error).toBeTruthy()
+    }
+  })
+
+  test('Codex 只有 stdout 错误时返回原因、退出码与会话号', async () => {
+    const got = await run(
+      {
+        ...replay(
+          jsonl([
+            { type: 'thread.started', thread_id: 'codex-error-1' },
+            { type: 'turn.failed', error: { message: '模型没有访问权限' } },
+          ]),
+          1,
+        ),
+        output: 'jsonl',
+        protocol: 'codex',
+        resultField: 'item.text',
+        sessionField: 'thread_id',
+      },
+      await mkdtemp(join(tmpdir(), 'qy-cli-')),
+    )
+    expect(got).toMatchObject({ ok: false, exitCode: 1, stderr: '', session: 'codex-error-1' })
+    expect(got.error).toContain('模型没有访问权限')
+    expect(got.error).toContain('退出码 1')
+  })
+
+  test('Claude 错误终态与 Grok 取消即使退出码为零也失败', async () => {
+    const cases: CliAgent[] = [
+      {
+        ...replay(
+          jsonl([{ type: 'result', subtype: 'error_max_turns', errors: ['达到轮次上限'] }]),
+        ),
+        output: 'jsonl',
+        protocol: 'claude',
+      },
+      {
+        ...replay(JSON.stringify({ text: '开始修改', stopReason: 'cancelled' })),
+        output: 'json',
+        protocol: 'grok',
+        resultField: 'text',
+      },
+    ]
+    for (const agent of cases) {
+      const got = await run(agent, await mkdtemp(join(tmpdir(), 'qy-cli-')))
+      expect(got.ok).toBe(false)
+      expect(got.error).toBeTruthy()
+      expect(got.exitCode).toBe(0)
+    }
+  })
+
+  test('结构化成功不能覆盖非零退出码，stderr 启动错误仍保留', async () => {
+    const got = await run(
+      {
+        ...replay(JSON.stringify({ text: '完成', stopReason: 'end_turn' }), 2, '收尾失败'),
+        output: 'json',
+        protocol: 'grok',
+        resultField: 'text',
+      },
+      await mkdtemp(join(tmpdir(), 'qy-cli-')),
+    )
+    expect(got.ok).toBe(false)
+    expect(got.output).toBe('完成')
+    expect(got.error).toContain('收尾失败')
+  })
+
+  test('纯文本失败保留 stdout，正常退出时 stderr 提示不误报失败', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-cli-'))
+    const failed = await run(replay('登录已失效', 1), root)
+    expect(failed.error).toContain('登录已失效')
+    const success = await run(replay('任务完成', 0, '存在新版本'), root)
+    expect(success.ok).toBe(true)
+    expect(success.error).toBeUndefined()
+  })
+
+  test('新回传的错误与实时正文先脱敏，再截断和投递', async () => {
+    const secret = 'local-test-credential-123456789'
+    const chunks: string[] = []
+    const got = await runCli(
+      {
+        ...replay(
+          jsonl([
+            { type: 'item.completed', item: { type: 'agent_message', text: `读取 ${secret}` } },
+            { type: 'turn.failed', error: { message: `认证失败 ${secret}` } },
+          ]),
+          1,
+          `stderr ${secret}`,
+        ),
+        output: 'jsonl',
+        protocol: 'codex',
+        resultField: 'item.text',
+        narrate: { text: 'item.text' },
+      },
+      {
+        prompt: '检查',
+        workspaceRoot: await mkdtemp(join(tmpdir(), 'qy-cli-')),
+        signal: new AbortController().signal,
+        secrets: { values: [secret] },
+        onChunk: (text) => chunks.push(text),
+      },
+    )
+    expect(JSON.stringify(got)).not.toContain(secret)
+    expect(chunks.join('')).not.toContain(secret)
+    expect(got.error).toContain('认证失败')
+    expect(got.error).toContain('[REDACTED]')
+    expect(chunks.join('')).toContain('[REDACTED]')
+  })
+})
+
 describe('回执约定', () => {
   test('Windows npm 入口原样传递多行、引号与命令字符，不执行提示词内容', async () => {
     if (process.platform !== 'win32') return

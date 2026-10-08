@@ -61,6 +61,8 @@ export interface CliAgent {
    * - `json`：整段 stdout 是一个对象（可能缩进为多行），整段解析后按路径提取。
    */
   output: 'text' | 'jsonl' | 'json'
+  /** 结构化输出的终态协议。正文、退出码与厂商终态共同决定是否完成。 */
+  protocol?: 'codex' | 'claude' | 'grok'
   resultField?: string
   /**
    * 会话 id 所在的点分路径。识别出会话 id 才能续问：

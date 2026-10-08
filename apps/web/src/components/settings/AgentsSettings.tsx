@@ -182,7 +182,7 @@ export default function AgentsSettings() {
                           {/* 「接入」判断的是是否检测到凭证，而不是实际执行是否成功：
                                 实际执行一次需要付费且耗时数十秒，而该结果应在打开页面时即给出。 */}
                           <div class="entry-extra" classList={{ bad: !a.connected }}>
-                            {a.connected ? '已接入' : '未见凭证'}
+                            {a.connected ? '已检测到凭据' : '未见凭证'}
                           </div>
                         </EntryCard>
                       )}
