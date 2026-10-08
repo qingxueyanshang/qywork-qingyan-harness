@@ -18,7 +18,14 @@
 
 import { readFile, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { collectProcess, MAX_TIMEOUT_MS, scrubEnv } from '@qywork/tools'
+import {
+  collectProcess,
+  createStreamRedactor,
+  MAX_TIMEOUT_MS,
+  redactSecrets,
+  scrubEnv,
+} from '@qywork/tools'
+import { createCliOutput } from './cli-output.ts'
 import type { CliAgent } from './types.ts'
 
 /** npm 的 Windows 入口经 Node 直接启动，避免 cmd.exe 重新解释多行提示词与特殊字符。 */
@@ -46,7 +53,7 @@ async function commandFor(command: string, args: string[]): Promise<string[]> {
  * **交付物正文必须在前，回执作为最后一节**：`extract` 取的是最后一个非空目标字段，
  * 回执写在前面时，查询型任务的产出会变成一句状态汇报，而不是答案。
  *
- * 不按格式输出只是降级，不是失败：成败以退出码为准；回执信息不足时续接会话追问
+ * 不按回执格式输出只是降级：成败结合退出码、厂商终态与有效正文；回执信息不足时续接会话追问
  * （`runCli` 的 `resume`），该会话保留上一轮上下文。
  */
 const REPORT_CONTRACT = `
@@ -68,6 +75,8 @@ export interface CliRunResult {
   /** 因静默超时被终止。时限为 `MAX_TIMEOUT_MS`，与总时长无关。 */
   timedOut: boolean
   stderr: string
+  /** 已脱敏的失败原因；调度器、节点和回执共用，避免再次按 stderr 推测。 */
+  error?: string
   /**
    * 该 CLI 本次会话的 id，用于续接（`runCli` 的 `resume`）。
    *
@@ -145,7 +154,15 @@ export async function runCli(
     ...(process.platform === 'win32' ? {} : { detached: true }),
   })
 
-  const narrator = createNarrator(agent)
+  const parser = createCliOutput(agent)
+  const secrets = input.secrets ?? { values: [] }
+  const redactors = {
+    stdout: createStreamRedactor(secrets),
+    stderr: createStreamRedactor(secrets),
+  }
+  const publish = (text: string) => {
+    if (text) input.onChunk?.(redactSecrets(text, secrets))
+  }
 
   // 等待与收尾使用同一个出口：完成判据是进程退出而不是管道 EOF，超时与中断都执行**进程树终止**。
   // 被调度的 CLI 自身也在运行 agent，必然派生子进程；只终止 CLI 本身时子进程仍在运行，
@@ -158,172 +175,55 @@ export async function runCli(
   const got = await collectProcess(proc, {
     idleMs: MAX_TIMEOUT_MS,
     signal: input.signal,
-    // `onText` 的返回值是实际写入结果的文本，因此必须原样返回：
-    // 它是脱敏器的接入点，不是供观察者使用的。
-    //
-    // 解析只在此处执行一次，同一段正文交给两个消费者：实时页（`onChunk`）与回执
-    // （`narrator.narration()`）。**不要在 `extract` 中再解析一次流**：否则
-    // 实时页与回执是两次解析的结果，格式变化时只有一侧随之改变。
+    // 跨分片脱敏后才解析，实时页与回执使用同一条解析流。
     onText: (channel: 'stdout' | 'stderr', text: string) => {
-      if (channel === 'stdout') {
-        const narrated = narrator.feed(text)
-        if (narrated) input.onChunk?.(narrated)
-      }
-      return text
+      const safe = redactors[channel].push(text)
+      if (channel === 'stdout') publish(parser.feed(safe))
+      return safe
+    },
+    onEnd: (channel) => {
+      const safe = redactors[channel].flush()
+      if (channel === 'stdout') publish(parser.feed(safe))
+      return safe
     },
   })
   // 末行没有换行符时会留在缓冲区中，不清空缓冲区即丢失。
-  const tail = narrator.flush()
-  if (tail) input.onChunk?.(tail)
-
-  const session = agent.sessionField ? field(got.stdout, agent, agent.sessionField) : ''
+  publish(parser.flush())
+  const parsed = parser.result()
+  const output = redactSecrets(parsed.output, secrets)
+  const stderr = redactSecrets(got.stderr, secrets).slice(-4000)
+  // 厂商给出的结构化错误优先；原始 stderr 单独保留，避免大量告警淹没原因。
+  const detail = parsed.error || stderr.trim()
+  const incomplete = parsed.incomplete || (!parsed.hasResult ? 'CLI 没有返回有效结果' : '')
+  const error = input.signal.aborted
+    ? '已停止'
+    : got.timedOut
+      ? `${MAX_TIMEOUT_MS / 1000} 秒无输出，已终止${detail ? `：${detail}` : ''}`
+      : got.exitCode !== 0
+        ? `退出码 ${got.exitCode}：${detail || (agent.output === 'text' ? output : '') || parsed.incomplete || 'CLI 未提供错误详情'}`
+        : parsed.error ||
+          (incomplete ? `${incomplete}${stderr.trim() ? `：${stderr.trim()}` : ''}` : '')
 
   return {
-    ok: got.exitCode === 0 && !got.timedOut,
-    output: extract(got.stdout, agent, narrator.narration()),
+    ok: !error,
+    output,
     exitCode: got.exitCode,
     timedOut: got.timedOut,
     // stderr 只留尾部：CLI 的进度条可输出数万行，全部保留会超出上下文预算。
-    stderr: got.stderr.length > 4000 ? got.stderr.slice(-4000) : got.stderr,
-    ...(session ? { session } : {}),
+    stderr,
+    ...(error ? { error: redactSecrets(error, secrets).slice(0, 4000) } : {}),
+    ...(parsed.session ? { session: parsed.session } : {}),
   }
 }
 
-/**
- * 按点分路径从 stdout 中提取一个字符串。三种输出格式的提取方式不同：
- *
- * - `text`：没有结构可提取，返回空串（由调用方回退到整段输出）。
- * - `jsonl`：逐行 JSON，取**最后一个**非空值：agent 类 CLI 的流中最终答案总在末尾，
- *   取第一个会得到开始执行时的状态行。
- * - `json`：整段 stdout 是**一个**对象（如 grok，且缩进为多行），
- *   只能整段解析；逐行解析无法取得任何一行。
- *
- * 使用路径而不是键名，因为各厂商的字段嵌套深度不同：claude 的答案与会话 id 都在顶层，
- * codex 的答案在 `item.text`。
- */
-function field(stdout: string, agent: Pick<CliAgent, 'output'>, path: string): string {
-  const walk = (root: unknown): string => pick(root, path).at(-1) ?? ''
-  if (agent.output === 'text') return ''
-  if (agent.output === 'json') {
-    try {
-      return walk(JSON.parse(stdout))
-    } catch {
-      return ''
-    }
-  }
-  let last = ''
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    try {
-      const got = walk(JSON.parse(trimmed))
-      if (got) last = got
-    } catch {
-      // 非 JSON 行直接跳过：许多 CLI 会向 stdout 输出非结构化的横幅。
-    }
-  }
-  return last
-}
-
-/**
- * 按点分路径取值，段尾 `[]` 表示遍历该数组。按出现顺序返回非空字符串。
- *
- * 各厂商的字段嵌套深度不同：claude 的答案与会话 id 在顶层、正文在 `message.content[].text`
- * 数组中，codex 的答案在 `item.text`。
- */
-function pick(root: unknown, path: string): string[] {
-  const keys = path.split('.')
-  const out: string[] = []
-  const walk = (value: unknown, depth: number): void => {
-    if (depth === keys.length) {
-      if (typeof value === 'string' && value.trim()) out.push(value)
-      return
-    }
-    const key = keys[depth]!
-    const array = key.endsWith('[]')
-    const name = array ? key.slice(0, -2) : key
-    const next =
-      value && typeof value === 'object' ? (value as Record<string, unknown>)[name] : undefined
-    if (!array) {
-      walk(next, depth + 1)
-      return
-    }
-    if (!Array.isArray(next)) return
-    for (const item of next) walk(item, depth + 1)
-  }
-  walk(root, 0)
-  return out
-}
-
-/**
- * jsonl 流的解析入口。实时页与回执共用它，正文只解析一次。
- *
- * **必须按行缓冲。** `onText` 传入的是管道分片，一行 JSON 可能被切成两个分片，
- * 逐片解析时被切开的行总是失败，而失败的恰是最长的行，即正文所在的行。
- *
- * 三种输出格式的处理：`jsonl` 且厂商表声明了 `narrate` 时按路径提取；`text` 没有结构，
- * 原样交出；`json` 要整段结束才能解析，流中无法取得正文，返回空串。
- */
-function createNarrator(agent: Pick<CliAgent, 'output' | 'narrate'>) {
-  const narrate = agent.output === 'jsonl' ? agent.narrate : undefined
-  const parts: string[] = []
-  let buffer = ''
-
-  const take = (line: string): string => {
-    if (!narrate || !line.trim()) return ''
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(line.trim())
-    } catch {
-      // 非 JSON 行直接跳过：许多 CLI 会向 stdout 输出非结构化的横幅。
-      return ''
-    }
-    const pieces = pick(parsed, narrate.text)
-    if (narrate.tool) pieces.push(...pick(parsed, narrate.tool).map((name) => `[工具 ${name}]`))
-    if (pieces.length === 0) return ''
-    const text = `${pieces.join('\n')}\n`
-    parts.push(text)
-    return text
-  }
-
-  return {
-    /** 传入一个 stdout 分片，返回从该分片解析出的正文。 */
-    feed(chunk: string): string {
-      if (agent.output === 'text') return chunk
-      if (!narrate) return ''
-      buffer += chunk
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-      return lines.map(take).join('')
-    },
-    /** 流结束时处理缓冲区中的最后一行。 */
-    flush(): string {
-      const rest = buffer
-      buffer = ''
-      return take(rest)
-    },
-    /** 截至当前解析出的全部正文。`text` 与 `json` 格式恒为空串。 */
-    narration: (): string => parts.join(''),
-  }
-}
-
-/**
- * 从 stdout 提取交付物正文。
- *
- * jsonl 取不到 `resultField` 时使用流中解析出的正文，**不回退到整段 stdout**：
- * stream-json 中绝大多数行是计数与状态事件，整段交给模型既不是 CLI 的产出，
- * 又会一次性占满上下文窗口（实测一次被终止的派发任务留下 261,929 字符、507 行，
- * 其中 480 行是 `thinking_tokens`）。中途被终止时，正文即其已输出的内容。
- *
- * `json` 无法解析时返回空串：说明退出码非零或输出格式已变化，由调用方按失败处理。
- */
+/** 已收集输出的解析入口，复用执行期间的同一解析器。 */
 export function extract(
   stdout: string,
   agent: Pick<CliAgent, 'output' | 'resultField'>,
   narration: string,
 ): string {
-  if (agent.output === 'text') return stdout.trim()
-  const got = field(stdout, agent, agent.resultField ?? 'result')
-  if (got) return got
-  return agent.output === 'jsonl' ? narration.trim() : ''
+  const parser = createCliOutput(agent)
+  parser.feed(stdout)
+  parser.flush()
+  return parser.result().output || (agent.output === 'jsonl' ? narration.trim() : '')
 }

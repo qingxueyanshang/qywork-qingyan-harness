@@ -6,8 +6,8 @@
  * **模型厂商自身的 code CLI**，不收录其他厂商。
  *
  * 代价：厂商表会过期。某厂商修改调用参数后，此处无法调用该 CLI；修改凭证存放位置后，
- * 已登录的 CLI 会被报告为「未接入」。两种情况都表现为界面上缺少一项或状态错误，
- * 不会表现为执行中途失败。**新增厂商时在 `KNOWN` 中增加一项**。
+ * 已登录的 CLI 会被报告为「未见凭证」。参数变化可能在实际执行时报错。
+ * **新增厂商时在 `KNOWN` 中增加一项，并核对输出与终态协议**。
  *
  * **「接入」的判据是凭证，不是能否运行。** 确认接入的唯一可靠方法是实际运行一次，而这会产生
  * 费用并耗时数十秒，但该探测需要在打开设置页时立即给出结果。因此判据为是否检测到凭证：环境变量有值，
@@ -47,8 +47,8 @@ const KNOWN: KnownCli[] = [
     // `--permission-mode acceptEdits` 是必需参数：不传入时它**无法写入任何字节**。
     // 实测（2026-08-24）派发任务要求它创建一个文件并修改一行，四种写法（Write / Edit / Bash 重定向 /
     // PowerShell）均被其自身的权限检查拦截，原文「requested permissions to write … but you
-    // haven't granted it yet」：stdin 已关闭，无人能应答该权限请求。**其退出码仍为 0**，
-    // 因此本侧仍会判定任务成功。该模式只允许工作目录内的编辑，边界与派发任务本身的范围一致。
+    // haven't granted it yet」：stdin 已关闭，无人能应答该权限请求。其退出码可能仍为 0，
+    // 因此执行器还须检查 result 终态；具体工具权限仍由 Claude 自身的配置决定。
     args: [
       '-p',
       '{prompt}',
@@ -59,6 +59,7 @@ const KNOWN: KnownCli[] = [
       'acceptEdits',
     ],
     output: 'jsonl',
+    protocol: 'claude',
     resultField: 'result',
     // 正文与工具名都在 `assistant` 类型行的内容块数组中：文本块有 `text`，
     // 工具调用块有 `name`。不声明这两条路径时，实时页显示的是 `thinking_tokens`
@@ -91,8 +92,10 @@ const KNOWN: KnownCli[] = [
     // （原文「Not inside a trusted directory」），因此派发给它的节点在任何
     // 非 git 仓库的工作区中必然失败。工作区由用户选择，派发由用户的模型发起，
     // 该判断应由 qywork 的权限模式负责，不应由被调度的 CLI 再次拦截。
-    args: ['exec', '--json', '--skip-git-repo-check', '{prompt}'],
+    // 派发任务允许修改当前工作区。显式指定写入沙箱，避免落入 CLI 默认的只读模式。
+    args: ['exec', '--sandbox', 'workspace-write', '--json', '--skip-git-repo-check', '{prompt}'],
     output: 'jsonl',
+    protocol: 'codex',
     // 答案在 `item.completed` 类型行的 `item.text` 上，顶层没有 `result`。
     resultField: 'item.text',
     // 中途的每条 `item.text` 都是该步骤的输出，正文路径与答案路径相同；
@@ -100,7 +103,17 @@ const KNOWN: KnownCli[] = [
     narrate: { text: 'item.text' },
     // 会话 id 在第一行 `thread.started` 的顶层 `thread_id` 上。
     sessionField: 'thread_id',
-    resumeArgs: ['exec', 'resume', '{session}', '--json', '--skip-git-repo-check', '{prompt}'],
+    // sandbox 属于 exec 的参数，放在 resume 之前，首次与续接使用同一权限范围。
+    resumeArgs: [
+      'exec',
+      '--sandbox',
+      'workspace-write',
+      'resume',
+      '{session}',
+      '--json',
+      '--skip-git-repo-check',
+      '{prompt}',
+    ],
     envKeys: ['OPENAI_API_KEY'],
     credentials: ['.codex/auth.json'],
   },
@@ -136,6 +149,7 @@ const KNOWN: KnownCli[] = [
     // 正文为「正在创建 g1.txt」而文件并未创建。stdin 已关闭，无人能批准该次调用。
     args: ['-p', '{prompt}', '--output-format', 'json', '--always-approve'],
     output: 'json',
+    protocol: 'grok',
     resultField: 'text',
     sessionField: 'sessionId',
     resumeArgs: [
@@ -213,6 +227,7 @@ async function scanClis(env: NodeJS.ProcessEnv): Promise<DetectedCli[]> {
       command: path,
       args: k.args,
       output: k.output,
+      ...(k.protocol ? { protocol: k.protocol } : {}),
       ...(k.resultField ? { resultField: k.resultField } : {}),
       // 遗漏复制这两项时续问会失效且不报错：厂商表中有声明，运行时却没有。
       ...(k.sessionField ? { sessionField: k.sessionField } : {}),

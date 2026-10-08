@@ -291,6 +291,140 @@ function run(conversationId: ConversationId, key: string): RunId {
   }).id
 }
 
+/** 替换指定厂商的本机入口，保持真实探测、进程执行、调度和账本链路。 */
+async function withCliOutput(
+  id: string,
+  stdout: string,
+  exitCode: number,
+  check: () => Promise<void>,
+) {
+  const bin = await mkdtemp(join(dir, 'receipt-cli-'))
+  const code = `process.stdout.write(${JSON.stringify(stdout)});process.exitCode=${exitCode};`
+  await mkdir(join(bin, 'node_modules', 'fake-cli'), { recursive: true })
+  await writeFile(join(bin, 'node_modules', 'fake-cli', 'index.js'), code)
+  await writeFile(join(bin, id), `#!/usr/bin/env node\n${code}\n`, { mode: 0o755 })
+  await writeFile(
+    join(bin, `${id}.cmd`),
+    [
+      '@ECHO off',
+      'SET dp0=%~dp0',
+      'SET "_prog=node"',
+      'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\fake-cli\\index.js" %*',
+      '',
+    ].join('\r\n'),
+  )
+  const path = process.env.PATH
+  process.env.PATH = [bin, path].filter(Boolean).join(delimiter)
+  try {
+    await check()
+  } finally {
+    if (path === undefined) delete process.env.PATH
+    else process.env.PATH = path
+  }
+}
+
+describe('外部 CLI 失败回执', () => {
+  test('六种 CLI 的失败进入节点、持久化记录和单项回执', async () => {
+    const cases = [
+      {
+        id: 'codex',
+        stdout: [
+          { type: 'thread.started', thread_id: 'failed-codex-session' },
+          { type: 'turn.failed', error: { message: 'Codex 模型不可用' } },
+        ]
+          .map((event) => JSON.stringify(event))
+          .join('\n'),
+        exitCode: 1,
+        error: 'Codex 模型不可用',
+        session: 'failed-codex-session',
+      },
+      {
+        id: 'claude',
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          is_error: true,
+          errors: ['Claude 达到轮次上限'],
+          session_id: 'failed-claude-session',
+        }),
+        exitCode: 0,
+        error: 'Claude 达到轮次上限',
+        session: 'failed-claude-session',
+      },
+      {
+        id: 'grok',
+        stdout: JSON.stringify({
+          text: '已开始',
+          stopReason: 'cancelled',
+          sessionId: 'failed-grok-session',
+        }),
+        exitCode: 0,
+        error: 'cancelled',
+        session: 'failed-grok-session',
+      },
+      { id: 'gemini', stdout: '登录失效', exitCode: 1, error: '登录失效' },
+      { id: 'qwen', stdout: '', exitCode: 0, error: '没有返回有效结果' },
+      { id: 'kimi', stdout: '', exitCode: 0, error: '没有返回有效结果' },
+    ]
+    for (const sample of cases) {
+      await withCliOutput(sample.id, sample.stdout, sample.exitCode, async () => {
+        const cid = conversation()
+        const runId = run(cid, `调用 ${sample.id}`)
+        const step = appendStep(store, {
+          runId,
+          seq: 1,
+          kind: 'tool_action',
+          toolName: 'subagent',
+          toolCallId: `call_${cid}`,
+          status: 'running',
+          payload: { kind: 'tool_call', args: { task: '验证任务' } },
+        })
+        const result = await delegate(cid).dispatch({
+          target: { kind: 'cli', cli: sample.id },
+          task: '验证任务',
+          runId,
+          stepId: step.id,
+        })
+        expect(result.ok).toBe(true)
+        await until(() => receipts.length > 0, `${sample.id} 失败回执`, 10_000)
+        expect(members().at(-1)?.state.phase).toBe('failed')
+        expect(members().at(-1)?.state.error).toContain(sample.error)
+        expect(receipts[0]?.content).toContain(sample.error)
+        expect(JSON.stringify(listSteps(store, runId))).toContain(sample.error)
+        if (sample.session) {
+          expect(getConversation(store, result.subagentId as ConversationId)?.externalSession).toBe(
+            sample.session,
+          )
+        }
+      })
+    }
+  }, 30_000)
+
+  test('工作流外部 CLI 的具体错误进入回执，依赖节点不按成功推进', async () => {
+    await withCliOutput(
+      'codex',
+      JSON.stringify({ type: 'turn.failed', error: { message: '上游拒绝该模型' } }),
+      1,
+      async () => {
+        const cid = conversation()
+        const graph = {
+          goal: '失败链路验证',
+          nodes: [
+            { id: 'external', kind: 'cli', cli: 'codex', task: '执行任务' },
+            { id: 'next', kind: 'temp', name: '后续', task: '继续', needs: ['external'] },
+            { id: 'check', kind: 'checkpoint', label: '检查', needs: ['next'] },
+          ],
+        }
+        const runId = run(cid, 'cli-error-graph')
+        await invoke(cid, runId, 1, graph, parsedStart(graph))
+        await until(() => phasesOf('next').includes('skipped'), '依赖节点跳过', 10_000)
+        expect(receipts.map((receipt) => receipt.content).join('\n')).toContain('上游拒绝该模型')
+        expect(JSON.stringify(listSteps(store, runId))).toContain('上游拒绝该模型')
+      },
+    )
+  })
+})
+
 describe('派发后立即返回', () => {
   test('派发后立即返回派发事实，产出不在返回值中', async () => {
     const cid = conversation()
@@ -1048,7 +1182,8 @@ describe('变更页合并子 agent 与外部 CLI 的写入', () => {
         'echo ci > .github/workflows/ci.yml',
         'mkdir -p .profile-cache',
         'echo x > .profile-cache/state.bin',
-        `echo '{"type":"item.completed","item":{"text":"done"}}'`,
+        `echo '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'`,
+        `echo '{"type":"turn.completed"}'`,
         '',
       ].join('\n'),
       { mode: 0o755 },
@@ -1072,7 +1207,8 @@ fs.mkdirSync('.github/workflows', { recursive: true });
 fs.writeFileSync('.github/workflows/ci.yml', 'ci\\n');
 fs.mkdirSync('.profile-cache', { recursive: true });
 fs.writeFileSync('.profile-cache/state.bin', 'x\\n');
-console.log(JSON.stringify({ type: 'item.completed', item: { text: 'done' } }));`,
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } }));
+console.log(JSON.stringify({ type: 'turn.completed' }));`,
     )
     // 观察器的忽略判定查询 git，忽略规则须有来源，因此本测试将夹具目录初始化为仓库。
     const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir })
