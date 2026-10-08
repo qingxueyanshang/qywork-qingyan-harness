@@ -243,7 +243,7 @@ export async function* concludeWithoutTools(
       return 'stop'
     }
     run.notify(
-      `本轮待办仍在进行中：${unfinished.map((todo) => todo.content).join('；')}。继续执行；确实受阻时将进行中的项改回 pending，保留未完成项并在回复中说明原因，不重复观察同一阻塞。`,
+      `本轮待办仍在进行中：${unfinished.map((todo) => todo.content).join('；')}。继续执行；单个工具调用失败不是受阻，不依赖失败结果的项照常执行。剩余每一项都要等用户提供信息、授权或外部条件时，才把进行中的项改回 pending，并在回复中说明阻塞及解除条件。`,
     )
     return 'continue'
   }

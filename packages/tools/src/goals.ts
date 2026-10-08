@@ -103,7 +103,7 @@ export const updateGoalTool: ToolSpec = {
     'goal_id 与 revision 必填，先用 read_goal 读取最新的 goal_id 与 revision：' +
     'revision 不匹配会被拒绝，说明目标在读取之后已被修改。' +
     '目标未达成不要调用 complete：声明完成前先给出证据（执行一次命令、读取一次文件）。' +
-    'provider 报错、工具连续失败等异常一律使用 blocked，不要自行重试。' +
+    '单个工具调用失败不是受阻，按系统提示词「工作方式」一节的规则重试，并先执行不依赖它的工作。' +
     '目标正文与暂停由用户控制，本工具只能声明达成或受阻。' +
     BOUNDARY,
   parameters: {
