@@ -1,8 +1,33 @@
 /** 生成参数的声明与条件约束；目录、服务端校验和画布控件共用。 */
-import type { MediaInputRole, MediaOutput } from './media.ts'
+import type { GenerateOutput, MediaInputRole, MediaOutput } from './media.ts'
 
-/** 从输入用途推导生成模式；素材组合是否合法仍由生成入口校验。 */
-export function mediaOperationFor(output: MediaOutput, roles: readonly MediaInputRole[]) {
+type MediaOperation =
+  | 'edit'
+  | 'generate'
+  | 'speech'
+  | 'video_to_video'
+  | 'reference_to_video'
+  | 'first_last_frame'
+  | 'image_to_video'
+  | 'text_to_video'
+
+/**
+ * 从输入用途推导生成模式；素材组合是否合法仍由生成入口校验。`art` 只有一种模式，
+ * 参数表（`ART_SIZE_PARAM`）不按模式区分。
+ */
+export function mediaOperationFor(
+  output: MediaOutput,
+  roles: readonly MediaInputRole[],
+): MediaOperation
+export function mediaOperationFor(
+  output: GenerateOutput,
+  roles: readonly MediaInputRole[],
+): MediaOperation | 'art'
+export function mediaOperationFor(
+  output: GenerateOutput,
+  roles: readonly MediaInputRole[],
+): MediaOperation | 'art' {
+  if (output === 'art') return 'art'
   if (output === 'image') return roles.length ? 'edit' : 'generate'
   if (output === 'audio') return 'speech'
   if (roles.includes('video')) return 'video_to_video'

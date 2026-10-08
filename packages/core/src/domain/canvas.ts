@@ -12,7 +12,13 @@
  *   替换为节点名称纯文本；修改提示词后新引用了未连接的节点时补充一条连线。
  */
 
-import { MEDIA_INPUT_ROLES, MEDIA_OUTPUTS, type MediaInputRole, type MediaOutput } from './media.ts'
+import {
+  GENERATE_OUTPUTS,
+  type GenerateOutput,
+  MEDIA_INPUT_ROLES,
+  type MediaInputRole,
+  type MediaOutput,
+} from './media.ts'
 import { baseNameOf, isInlineImage, isInlineVideo } from './model.ts'
 
 /** 写入文件的 `version`。格式变化时加一，读取时遇到未知版本直接拒绝。 */
@@ -61,7 +67,7 @@ export interface CanvasFileNode {
 export interface CanvasGenerateNode {
   id: string
   type: 'generate'
-  output: MediaOutput
+  output: GenerateOutput
   name: string
   x: number
   y: number
@@ -206,7 +212,7 @@ export type CanvasOp =
   | {
       op: 'add_generate'
       ref?: string
-      output: MediaOutput
+      output: GenerateOutput
       name?: string
       prompt?: string
       provider?: string
@@ -288,21 +294,29 @@ export function mentionsOf(prompt: string): string[] {
 }
 
 const TEXT_RE = /\.(md|txt)$/i
+const ART_RE = /\.html?$/i
 
-/** 工作区文件放到画布上时的显示类别：图片、视频、音频按媒体显示，`.md` / `.txt` 显示正文，其余返回 null（只显示文件名）。 */
-export type CanvasFileKind = MediaOutput | 'text'
-export const CANVAS_FILE_KINDS: readonly CanvasFileKind[] = [...MEDIA_OUTPUTS, 'text']
+/**
+ * 工作区文件放到画布上时的显示类别：图片、视频、音频按媒体显示，HTML 按 Art 运行，`.md` / `.txt` 显示正文，
+ * 其余返回 null（只显示文件名）。
+ */
+export type CanvasFileKind = GenerateOutput | 'text'
+export const CANVAS_FILE_KINDS: readonly CanvasFileKind[] = [...GENERATE_OUTPUTS, 'text']
 
 export function canvasFileKind(path: string): CanvasFileKind | null {
   if (isInlineImage(path)) return 'image'
   if (isInlineVideo(path)) return 'video'
   if (AUDIO_RE.test(path)) return 'audio'
+  if (ART_RE.test(path)) return 'art'
   if (TEXT_RE.test(path)) return 'text'
   return null
 }
 
-/** 节点可作为哪一类输入。文件按扩展名判定；无法判定的（文本、压缩包等）不能作为生成的输入。 */
-export function canvasMediaOf(node: CanvasNode): MediaOutput | null {
+/**
+ * 节点的媒体类别。文件按扩展名判定，无法判定的（文本、压缩包等）为 null，不能作为生成的输入；
+ * `art` 有类别，同样不能作为输入（`roleProblem`）。
+ */
+export function canvasMediaOf(node: CanvasNode): GenerateOutput | null {
   if (node.type === 'generate') return node.output
   if (node.type === 'timeline') return null
   const kind = canvasFileKind(node.path)
@@ -321,7 +335,7 @@ export function displayNameOf(node: CanvasNode): string {
  * 提示词中指代第 n 个素材的写法，按类别登记，`{n}` 从 1 开始、按类别分别计数（如 `图片{n}`）。
  * 由生成目录按模型提供，见 `MediaModelSpec.mention`。
  */
-export type MentionStyle = Partial<Record<MediaOutput, string>>
+export type MentionStyle = Partial<Record<GenerateOutput, string>>
 
 /**
  * 把提示词中的 `@[id]` 编译为发给模型的文字。
@@ -333,7 +347,7 @@ export function compilePrompt(doc: CanvasDoc, nodeId: string, style: MentionStyl
   const node = doc.nodes.find((n) => n.id === nodeId)
   if (node?.type !== 'generate') return ''
   const numbered = new Map<string, string>()
-  const counts: Partial<Record<MediaOutput, number>> = {}
+  const counts: Partial<Record<GenerateOutput, number>> = {}
   for (const edge of inputsOf(doc, nodeId)) {
     if (edge.role === 'first_frame' || edge.role === 'last_frame') continue
     const source = doc.nodes.find((n) => n.id === edge.from)
@@ -370,16 +384,23 @@ function isRelativePath(path: string): boolean {
   return path.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..')
 }
 
-const OUTPUT_NAME: Record<MediaOutput, string> = { image: '图片', video: '视频', audio: '音频' }
-const GENERATE_SIZE: Record<MediaOutput, [number, number]> = {
+const OUTPUT_NAME: Record<GenerateOutput, string> = {
+  image: '图片',
+  video: '视频',
+  audio: '音频',
+  art: 'Art',
+}
+const GENERATE_SIZE: Record<GenerateOutput, [number, number]> = {
   image: [169, 169],
   video: [300, 169],
   audio: [300, 96],
+  art: [300, 169],
 }
-const FILE_SIZE: Record<MediaOutput | 'other', [number, number]> = {
+const FILE_SIZE: Record<GenerateOutput | 'other', [number, number]> = {
   image: [225, 169],
   video: [300, 169],
   audio: [300, 96],
+  art: [300, 169],
   other: [220, 138],
 }
 /**
@@ -432,7 +453,7 @@ export function fitBox(
 }
 
 /** 新建生成卡的缺省框。界面为空卡重新选择「自动」宽高比时按其比例还原。 */
-export function blankBox(output: MediaOutput): { w: number; h: number } {
+export function blankBox(output: GenerateOutput): { w: number; h: number } {
   const [w, h] = GENERATE_SIZE[output]
   return { w, h }
 }
@@ -802,7 +823,8 @@ function keepMentionsConnected(before: CanvasDoc, doc: CanvasDoc, mint: () => st
         fail(`「${node.name}」是首尾帧模式，不能引用首帧、尾帧以外的素材：${displayNameOf(source)}`)
       }
       const kind = canvasMediaOf(source)
-      if (!kind) fail(`「${displayNameOf(source)}」不能作为「${node.name}」的输入`)
+      if (!kind || kind === 'art')
+        fail(`「${displayNameOf(source)}」不能作为「${node.name}」的输入`)
       doc.edges.push({ id: mint(), from: source.id, to: node.id, role: MENTION_ROLE[kind] })
     }
   }
@@ -891,7 +913,7 @@ function roleProblem(
   const to = `「${target.name}」`
   const kind = canvasMediaOf(source)
   if (target.output === 'audio') return `${to} 是语音合成，不接受输入`
-  if (target.output === 'image') {
+  if (target.output === 'image' || target.output === 'art') {
     return kind === 'image' && role === 'reference' ? null : `${to} 只接受参考图，${from} 无法连接`
   }
   if (kind === 'image') {
@@ -1088,7 +1110,7 @@ function matches(v: unknown, shape: Shape): boolean {
     case 'role':
       return (MEDIA_INPUT_ROLES as readonly unknown[]).includes(v)
     case 'output':
-      return (MEDIA_OUTPUTS as readonly unknown[]).includes(v)
+      return (GENERATE_OUTPUTS as readonly unknown[]).includes(v)
     case 'mode':
       return v === 'reference' || v === 'first_last'
     case 'boolean':

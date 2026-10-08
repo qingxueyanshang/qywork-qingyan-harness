@@ -1177,7 +1177,8 @@ export class Session {
       mcpConfig: makeMcpConfigPort(this.opts.workspaceRoot),
       skillSourcePaths: () =>
         listMessages(store, conversationId, null).flatMap((m) => m.attachments.map((a) => a.path)),
-      ...(listMediaModels(this.opts.config).length
+      // 有画布时始终提供：画布上的 art 卡使用对话模型，没有配置生成模型也能运行。
+      ...(listMediaModels(this.opts.config).length || this.opts.canvas
         ? {
             media: makeMediaPort(this.opts.config, (spend) =>
               this.recordMediaSpend(runId, spend, emit),

@@ -48,8 +48,8 @@ import {
   compilePrompt,
   displayNameOf,
   emptyCanvas,
+  type GenerateOutput,
   inputsOf,
-  type MediaOutput,
   type MediaParamDefinition,
   type MentionStyle,
   mediaOperationFor,
@@ -169,7 +169,7 @@ function sizeField(size: CanvasPixels | null | undefined): { size?: CanvasPixels
 export interface CanvasServiceDeps {
   /** 当前模型的参数表，用于投影画布偏好为实际发送参数。 */
   paramSpecsOf?(
-    output: MediaOutput,
+    output: GenerateOutput,
     pick: { provider: string; model: string } | undefined,
   ): readonly MediaParamDefinition[] | undefined
   /** 发送一条全局事件（不带会话 id）。 */
@@ -178,7 +178,7 @@ export interface CanvasServiceDeps {
   updating?(): boolean
   /** 本次生成所用模型在提示词中指代素材的方式；未提供时按节点名写入提示词。 */
   mentionStyleOf?(
-    output: MediaOutput,
+    output: GenerateOutput,
     pick: { provider: string; model: string } | undefined,
   ): MentionStyle | undefined
   /** 只替换给出的函数，其余使用默认实现。 */
@@ -393,6 +393,10 @@ export class CanvasService {
     const { rel, key, node, doc } = await this.target(ws, path, nodeId)
     if (!node.prompt.trim()) throw new CanvasFailure(`「${node.name}」的提示词为空`, 422)
     const inputs: CanvasMade['inputs'] = []
+    // art 在当前页面上修改：当前版本的文件作为第一项参考输入。文件已不存在时从头生成。
+    const page =
+      node.output === 'art' ? node.versions.find((v) => v.id === node.current)?.path : undefined
+    if (page && (await this.isFile(ws.root, page))) inputs.push({ role: 'reference', path: page })
     for (const edge of inputsOf(doc, nodeId)) {
       const source = doc.nodes.find((n) => n.id === edge.from)!
       // 时间线不能作为输入（`validateCanvas` 拒绝），不会执行到此处。
@@ -791,13 +795,14 @@ export class CanvasService {
   }
 
   /**
-   * 接收浏览器从视频节点截取的一帧（PNG），按生成产物的落盘规则写入 `generated/<视频名>_<label>.png`
-   * （不覆盖，重名时加 `-2`），并在视频右侧添加一个引用它的节点。返回新节点的 id 与文件路径。
+   * 接收浏览器从视频节点截取的一帧或从 Art 节点截取的画面（PNG），按生成产物的落盘规则写入
+   * `generated/<节点名>_<label>.png`（不覆盖，重名时加 `-2`），并在该节点右侧添加一个引用它的节点。
+   * 返回新节点的 id 与文件路径。
    */
   async captureFrame(
     workspaceRoot: string,
     path: string,
-    videoNodeId: string,
+    sourceId: string,
     label: string,
     bytes: Uint8Array,
   ): Promise<{ nodeId: string; path: string }> {
@@ -805,10 +810,13 @@ export class CanvasService {
       throw new CanvasFailure('收到的不是 PNG 图片', 422)
     }
     const doc = await this.load(await this.locate(workspaceRoot, path))
-    const video = doc.nodes.find((n) => n.id === videoNodeId)
-    if (!video) throw new CanvasFailure(`目标已不存在：${videoNodeId}`, 404)
-    if (canvasMediaOf(video) !== 'video') throw new CanvasFailure('只能从视频节点取帧', 422)
-    const name = `${displayNameOf(video)}_${label}`.replace(/[\\/:*?"<>|]/g, '_')
+    const source = doc.nodes.find((n) => n.id === sourceId)
+    if (!source) throw new CanvasFailure(`目标已不存在：${sourceId}`, 404)
+    const kind = canvasMediaOf(source)
+    if (kind !== 'video' && kind !== 'art') {
+      throw new CanvasFailure('只能从视频或 Art 节点截取画面', 422)
+    }
+    const name = `${displayNameOf(source)}_${label}`.replace(/[\\/:*?"<>|]/g, '_')
     // 必须写出完整扩展名：名称为 `12.4s` 时若不带扩展名，`.4s` 会被视为扩展名，文件保存为无法识别的类型。
     const [landed] = await landFiles(
       workspaceRoot,
@@ -816,14 +824,15 @@ export class CanvasService {
       `generated/${name}.png`,
     )
     const { refs } = await this.apply(workspaceRoot, path, [
-      { op: 'add_file', ref: '$frame', path: landed!.path, beside: video.id },
+      { op: 'add_file', ref: '$frame', path: landed!.path, beside: source.id },
     ])
     return { nodeId: refs.$frame!, path: landed!.path }
   }
 
   /**
-   * 时间线导出成片：浏览器一边编码一边将字节按位置写入 `generated/.<会话号>.part`（`exportWrite`），
-   * 完成时（`exportFinish`）核对 mp4 文件头、保存为 `generated/<时间线名>.mp4`（重名时加 `-2`），并在时间线右侧添加节点。返回会话号。
+   * 时间线导出成片、Art 节点录制视频：浏览器一边编码一边将字节按位置写入 `generated/.<会话号>.part`（`exportWrite`），
+   * 完成时（`exportFinish`）核对 mp4 文件头、保存为 `generated/<节点名>.mp4`（重名时加 `-2`），并在来源节点右侧添加节点。
+   * 返回会话号。
    *
    * 临时文件的终态：完成时改名；失败、放弃、停止服务或 `EXPORT_IDLE_MS` 内无写入时删除（标签页关闭、网络断开时不会有调用方
    * 调用 `exportAbort`）；进程被结束时遗留的临时文件由下次启动的 `recover` 删除。
@@ -832,7 +841,9 @@ export class CanvasService {
     const canvas = await this.locate(workspaceRoot, path)
     const node = (await this.load(canvas)).nodes.find((n) => n.id === nodeId)
     if (!node) throw new CanvasFailure(`目标已不存在：${nodeId}`, 404)
-    if (node.type !== 'timeline') throw new CanvasFailure('只有时间线能导出成片', 422)
+    if (node.type !== 'timeline' && canvasMediaOf(node) !== 'art') {
+      throw new CanvasFailure('只有时间线与 Art 节点能导出视频', 422)
+    }
     const target = `${EXPORT_DIR}/${displayNameOf(node).replace(/[\\/:*?"<>|]/g, '_')}.mp4`
     // 临时文件与成片同目录：完成时改名不跨卷。
     const dir = dirname(await freeLandingPath(workspaceRoot, target, 'video/mp4'))
@@ -886,7 +897,7 @@ export class CanvasService {
       }
       const doc = await this.load(await this.locate(workspaceRoot, session.canvas))
       if (!doc.nodes.some((n) => n.id === session.source)) {
-        throw new CanvasFailure(`时间线已不存在：${session.source}`, 404)
+        throw new CanvasFailure(`目标已不存在：${session.source}`, 404)
       }
       const final = await this.claimExportName(workspaceRoot, session.target)
       try {

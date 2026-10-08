@@ -5,7 +5,7 @@
  * 列出全部生成类别：未配置模型的类别也能创建卡片，卡片上的模型按钮打开模型库。
  */
 
-import { CANVAS_FILE_KINDS, type MediaOutput } from '@qywork/core'
+import { CANVAS_FILE_KINDS, type GenerateOutput } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import FileTypeIcon from '../FileTypeIcon.tsx'
 import { IconFolder, IconUpload } from '../Icons.tsx'
@@ -20,9 +20,9 @@ const ICON = { size: 18, stroke: 1.9 }
 type OnPick = (path: string, first: boolean) => void
 
 export function Rail(props: {
-  outputs: MediaOutput[]
+  outputs: GenerateOutput[]
   disabled: boolean
-  onGenerate: (output: MediaOutput) => void
+  onGenerate: (output: GenerateOutput) => void
   onTimeline: () => void
   onPick: OnPick
   onUpload: (files: File[]) => void

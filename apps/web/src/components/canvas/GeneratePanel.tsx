@@ -8,6 +8,7 @@
  */
 
 import {
+  ART_SIZE_PARAM,
   activeMediaParams,
   blankBox,
   type CanvasGenerateNode,
@@ -18,12 +19,12 @@ import {
   displayNameOf,
   fitBox,
   formatMoney,
+  type GenerateOutput,
   inputsOf,
   isInlineAudio,
   isInlineImage,
   isInlineVideo,
   type MediaInputRole,
-  type MediaOutput,
   mediaOperationFor,
   mediaParamValues,
   modeOf,
@@ -80,10 +81,11 @@ export const ROLE_LABEL: Record<MediaInputRole, string> = {
   video: '视频',
   audio: '音频',
 }
-const PLACEHOLDER: Record<MediaOutput, string> = {
+const PLACEHOLDER: Record<GenerateOutput, string> = {
   image: '描述画面，输入 @ 引用素材',
   video: '描述画面变化，输入 @ 引用素材',
   audio: '输入要朗读的文字',
+  art: '描述页面或场景，输入 @ 引用参考图',
 }
 /** 带单位的参数：时长按秒，张数按张。 */
 const UNIT: Record<string, string> = {
@@ -98,6 +100,12 @@ const MAX_LISTED = 12
 const ONE_ROW = 10
 
 type SizeShape = NonNullable<MediaParamOption['shapes']>[number]
+
+/** 卡片模型菜单中的一项：生成模型，或 art 卡的对话模型。 */
+type CardModel = Pick<
+  MediaModelOption,
+  'provider' | 'id' | 'label' | 'operations' | 'isDefault' | 'params'
+>
 
 /** 参数取值的界面文字：布尔值显示为开、关，接口中表示自动选择的取值显示为「自动」，其余原样显示。 */
 export function valueText(v: unknown): string {
@@ -237,7 +245,7 @@ function sectionsOf(params: readonly MediaParamOption[]): Section[] {
 export function mediaOf(
   view: CanvasView,
   nodeId: string,
-): { kind: MediaOutput | null; path: string | null } {
+): { kind: GenerateOutput | null; path: string | null } {
   const node = view.doc.nodes.find((n) => n.id === nodeId)
   if (!node) return { kind: null, path: null }
   if (node.type === 'file') return { kind: canvasMediaOf(node), path: node.path }
@@ -331,9 +339,27 @@ export function GeneratePanel(props: {
   /** 停止请求尚未返回：停止键禁用，避免重复撤销。 */
   const [stopping, setStopping] = createSignal(false)
 
-  const models = (): MediaModelOption[] =>
-    (modelCatalog()?.media ?? []).filter((m) => m.output === props.node.output)
-  const model = (): MediaModelOption | undefined =>
+  /**
+   * 卡片可选的模型。art 卡使用对话模型：列出配置中的全部接口 × 模型，缺省为当前默认模型，参数只有尺寸。
+   * 经 memo 计算：菜单按对象判定当前项，每次读取都新建对象时判定不成立。
+   */
+  const models = createMemo((): CardModel[] => {
+    const catalog = modelCatalog()
+    if (props.node.output !== 'art') {
+      return (catalog?.media ?? []).filter((m) => m.output === props.node.output)
+    }
+    return (catalog?.providers ?? []).flatMap((p) =>
+      p.models.map((m) => ({
+        provider: p.name,
+        id: m.id,
+        label: m.label,
+        operations: [],
+        isDefault: catalog?.active?.provider === p.name && catalog.active.model === m.id,
+        params: [ART_SIZE_PARAM],
+      })),
+    )
+  })
+  const model = (): CardModel | undefined =>
     props.node.provider && props.node.model
       ? models().find((m) => m.provider === props.node.provider && m.id === props.node.model)
       : (models().find((m) => m.isDefault) ?? models()[0])
@@ -481,20 +507,27 @@ export function GeneratePanel(props: {
       return accepts(kind)
     })
   }
-  const accepts = (kind: MediaOutput) =>
-    props.node.output === 'image' ? kind === 'image' : props.node.output === 'video'
-  /** 首尾帧只接受图片；图像生成卡只接受图片；视频生成卡接受图片、视频、音频。 */
+  const accepts = (kind: GenerateOutput) =>
+    props.node.output === 'image' || props.node.output === 'art'
+      ? kind === 'image'
+      : props.node.output === 'video' && kind !== 'art'
+  /** 首尾帧只接受图片；图像生成卡与 Art 卡只接受图片；视频生成卡接受图片、视频、音频。 */
   const imagesOnly = () => {
     const role = roleOf(menu())
-    return role === 'first_frame' || role === 'last_frame' || props.node.output === 'image'
+    return (
+      role === 'first_frame' ||
+      role === 'last_frame' ||
+      props.node.output === 'image' ||
+      props.node.output === 'art'
+    )
   }
   const acceptsPath = (path: string) => {
     if (isInlineImage(path)) return true
     return !imagesOnly() && (isInlineVideo(path) || isInlineAudio(path))
   }
   const uploadAccept = () => (imagesOnly() ? 'image/*' : 'image/*,video/*,audio/*')
-  const roleFor = (kind: MediaOutput): MediaInputRole =>
-    kind === 'image' ? 'reference' : kind === 'video' ? 'video' : 'audio'
+  const roleFor = (kind: GenerateOutput): MediaInputRole =>
+    kind === 'video' ? 'video' : kind === 'audio' ? 'audio' : 'reference'
 
   const pick = (sourceId: string, m = menu()) => {
     setMenu(null)
@@ -843,14 +876,16 @@ export function GeneratePanel(props: {
       () => {
         const m = model()
         const mine = ++quoteSeq
-        if (!m) {
+        const output = props.node.output
+        // art 按 token 计价，发送前无法估算。
+        if (!m || output === 'art') {
           setPrice(null)
           return
         }
         const timer = setTimeout(() => {
           const roles = edges().map((e) => e.role)
           void quoteCard({
-            output: props.node.output,
+            output,
             provider: m.provider,
             model: m.id,
             params: activeParams(),

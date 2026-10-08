@@ -438,6 +438,39 @@ describe('generateMedia / landFiles', () => {
     })
   })
 
+  test('art：当前页面（HTML）作为参考输入读取为 text/html，产物写入 generated/<时间>.html；其他类别不接受 HTML', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gen-art-'))
+    await mkdir(join(root, 'generated'))
+    await writeFile(join(root, 'generated', '白模.html'), '<html></html>')
+    await writeFile(join(root, 'a.png'), PNG)
+    const seen: MediaCall[] = []
+    const media = {
+      async generate(call: MediaCall): Promise<MediaCallResult> {
+        seen.push(call)
+        return {
+          ok: true,
+          provider: 'relay',
+          model: 'chat',
+          files: [{ bytes: new TextEncoder().encode('<html>新</html>'), mime: 'text/html' }],
+        }
+      },
+    }
+    const inputs = [
+      { role: 'reference' as const, path: 'generated/白模.html' },
+      { role: 'reference' as const, path: 'a.png' },
+    ]
+    const common = { roots: root, media, signal: new AbortController().signal, params: {}, inputs }
+    const outcome = await generateMedia({ ...common, type: 'art', prompt: '降低镜头' })
+    if (!outcome.ok) throw new Error(outcome.message)
+    expect(seen[0]!.inputs.map((i) => i.mime)).toEqual(['text/html', 'image/png'])
+    expect(outcome.files[0]!.path).toMatch(/^generated\/\d{8}-\d{6}\.html$/)
+    expect(await readFile(join(root, outcome.files[0]!.path), 'utf8')).toBe('<html>新</html>')
+
+    const refused = await generateMedia({ ...common, type: 'image', prompt: '海报' })
+    expect(refused).toMatchObject({ ok: false, executed: false })
+    expect(seen).toHaveLength(1)
+  })
+
   test('landFiles 不覆盖已有文件，返回工作区相对路径', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-land-'))
     await mkdir(join(root, 'generated'))

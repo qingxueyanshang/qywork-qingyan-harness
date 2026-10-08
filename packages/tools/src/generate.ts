@@ -1,5 +1,5 @@
 /**
- * 生成：经生成端口调用已配置的生成模型，产物写入工作区。
+ * 生成：经生成端口调用已配置的生成模型（画布 art 卡为对话模型），产物写入工作区。
  *
  * `generateMedia` / `resumeMedia` 是唯一的执行路径：读取输入、调用端口、记录远端任务、落盘与收尾均在此完成，
  * 与 `read_file` / `write_file` 使用同一路径边界与可写判定。生成工具、取回工具与服务端画布服务均调用它们，
@@ -13,6 +13,7 @@ import { dirname, join, parse } from 'node:path'
 import type { MediaCall, MediaCallResult, MediaPort, ToolOutcome, ToolSpec } from '@qywork/agent'
 import type { MediaFile, MediaInput } from '@qywork/ai'
 import {
+  type GenerateOutput,
   isInlineAudio,
   isInlineImage,
   isInlineVideo,
@@ -46,6 +47,7 @@ const EXTENSION: Record<string, string> = {
   'audio/aac': '.aac',
   'audio/flac': '.flac',
   'audio/pcm': '.pcm',
+  'text/html': '.html',
 }
 
 /** 扩展名到格式的映射：`EXTENSION` 的反向映射，另含同一格式的别名。 */
@@ -207,7 +209,7 @@ export interface GenerateRequest {
   roots: RootsInput
   media: MediaPort
   signal: AbortSignal
-  type: MediaOutput
+  type: GenerateOutput
   prompt: string
   inputs: { role: MediaInputRole; path: string }[]
   params: Record<string, unknown>
@@ -238,20 +240,27 @@ function refused(message: string, errorKind: string): GenerateOutcome {
   return { ok: false, message, executed: false, errorKind }
 }
 
-/** 读取输入文件。路径经过工作区边界检查；类型不符时在调用接口之前拒绝。 */
+const HTML_RE = /\.html?$/i
+
+/**
+ * 读取输入文件。路径经过工作区边界检查；类型不符时在调用接口之前拒绝。
+ * `art` 的参考输入还可以是 HTML：即要在其上修改的当前页面。
+ */
 async function readInputs(
   roots: RootsInput,
+  type: GenerateOutput,
   inputs: GenerateRequest['inputs'],
 ): Promise<MediaInput[] | GenerateOutcome> {
   const read: MediaInput[] = []
   for (const { role, path } of inputs) {
     const abs = await resolveInWorkspace(roots, path, { mustExist: true })
+    const page = type === 'art' && role === 'reference' && HTML_RE.test(abs)
     const ok =
       role === 'video'
         ? isInlineVideo(abs)
         : role === 'audio'
           ? isInlineAudio(abs)
-          : isInlineImage(abs)
+          : isInlineImage(abs) || page
     if (!ok) {
       const want =
         role === 'video'
@@ -268,7 +277,7 @@ async function readInputs(
 
 /** 执行一次生成并落盘。视频在取得任务号时写入任务记录，成功或远端终态失败后删除。 */
 export async function generateMedia(req: GenerateRequest): Promise<GenerateOutcome> {
-  const inputs = await readInputs(req.roots, req.inputs)
+  const inputs = await readInputs(req.roots, req.type, req.inputs)
   if (!Array.isArray(inputs)) return inputs
   if (req.output !== undefined) {
     const abs = await resolveWritablePath(req.roots, req.output, { followFinalSymlink: false })

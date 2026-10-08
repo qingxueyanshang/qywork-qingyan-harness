@@ -19,7 +19,8 @@ export interface RenderClip {
   out: number
 }
 
-const FPS = 30
+/** 导出与录制的帧率。 */
+export const FPS = 30
 const RATE = 48000
 /** 交给 `write` 的每块大小上限：每块对应一次上传请求。 */
 const CHUNK = 4 * 1024 * 1024
@@ -37,7 +38,7 @@ const RETRY = (attempts: number) => (attempts < 2 ? 0.5 : null)
 const MAX_SIDES = [3840, 2160] as const
 
 /** 输出宽高：不超过 `MAX_SIDES`、保持比例、取偶数（H.264 的 4:2:0 采样要求宽高为偶数）。 */
-function outputSize(w: number, h: number): { width: number; height: number } {
+export function outputSize(w: number, h: number): { width: number; height: number } {
   const scale = Math.min(1, MAX_SIDES[0] / Math.max(w, h), MAX_SIDES[1] / Math.min(w, h))
   const even = (n: number) => Math.max(2, Math.floor((n * scale) / 2) * 2)
   return { width: even(w), height: even(h) }
@@ -75,20 +76,9 @@ export async function renderTimeline(
     if (!first) throw new Error('片段中没有画面')
     const { width, height } = outputSize(first.displayWidth, first.displayHeight)
 
-    const canvas = new OffscreenCanvas(width, height)
-    const ctx = canvas.getContext('2d')!
-    const target = new mb.StreamTarget(
-      new WritableStream({ write: (chunk) => write(chunk.data, chunk.position) }),
-      { chunked: true, chunkSize: CHUNK },
-    )
-    const output = new mb.Output({
-      format: new mb.Mp4OutputFormat({ fastStart: 'reserve' }),
-      target,
-    })
     const total = clips.reduce((n, c) => n + Math.max(1, Math.round((c.out - c.in) * FPS)), 0)
     const length = clips.reduce((n, c) => n + c.out - c.in, 0)
-    const video = new mb.CanvasSource(canvas, { codec: 'avc', bitrate: mb.QUALITY_HIGH })
-    output.addVideoTrack(video, { frameRate: FPS, maximumPacketCount: total })
+    const { output, video, ctx } = mp4Output(mb, width, height, total, write)
     const audio = muted
       ? null
       : new mb.AudioBufferSource({ codec: 'aac', bitrate: mb.QUALITY_HIGH })
@@ -148,6 +138,29 @@ export async function renderTimeline(
   } finally {
     for (const input of inputs) input.dispose()
   }
+}
+
+/**
+ * mp4 输出与其画面轨道：画面画到 `ctx` 后由 `video.add` 编码（H.264，30 帧/秒），字节按块交给 `write`。
+ * 索引按 `frames` 预留在文件开头（见文件头说明）。声音轨道由调用方在 `output.start()` 之前添加。
+ */
+export function mp4Output(
+  mb: typeof import('mediabunny'),
+  width: number,
+  height: number,
+  frames: number,
+  write: (bytes: Uint8Array<ArrayBuffer>, at: number) => Promise<void>,
+) {
+  const canvas = new OffscreenCanvas(width, height)
+  const ctx = canvas.getContext('2d')!
+  const target = new mb.StreamTarget(
+    new WritableStream({ write: (chunk) => write(chunk.data, chunk.position) }),
+    { chunked: true, chunkSize: CHUNK },
+  )
+  const output = new mb.Output({ format: new mb.Mp4OutputFormat({ fastStart: 'reserve' }), target })
+  const video = new mb.CanvasSource(canvas, { codec: 'avc', bitrate: mb.QUALITY_HIGH })
+  output.addVideoTrack(video, { frameRate: FPS, maximumPacketCount: frames })
+  return { output, video, ctx }
 }
 
 /**

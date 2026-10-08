@@ -90,6 +90,17 @@ describe('媒体像素宽高', () => {
     ).toEqual({ w: 1080, h: 1920 })
   })
 
+  test('HTML 读取 viewport 声明的宽高；没有声明时返回 null', async () => {
+    const page = (head: string) =>
+      new TextEncoder().encode(`<!doctype html><html><head>${head}</head><body></body></html>`)
+    expect(
+      await mediaSizeOf(
+        await file('a.html', page('<meta name="viewport" content="width=720, height=1280">')),
+      ),
+    ).toEqual({ w: 720, h: 1280 })
+    expect(await mediaSizeOf(await file('b.htm', page('<title>t</title>')))).toBeNull()
+  })
+
   test('无法读取时返回 null：文件头错误、截断、未识别的格式、不存在的文件', async () => {
     expect(await mediaSizeOf(await file('bad.png', new Uint8Array([1, 2, 3])))).toBeNull()
     expect(

@@ -198,6 +198,17 @@
   height: 100%;
   object-fit: cover;
 }
+/* Art 实时页面：按 viewport 声明的尺寸布局，再整体缩放到节点框（比例写在内联 transform 中）。
+   页面背景透明时与浏览器一样显示为白色。 */
+.canvas-art-frame {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  border: 0;
+  transform-origin: 0 0;
+  background: #fff;
+}
 .canvas-bitmap.failed {
   display: none;
 }

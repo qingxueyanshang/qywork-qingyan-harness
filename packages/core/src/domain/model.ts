@@ -308,7 +308,7 @@ export function isInlineAudio(pathOrName: string): boolean {
   return INLINE_AUDIO_RE.test(pathOrName)
 }
 
-/** 扩展名 → mime。只覆盖可内联的类型，其余返回通用二进制类型。 */
+/** 扩展名 → mime。只覆盖可内联的类型与 Art 页面（HTML），其余返回通用二进制类型。 */
 export function mimeOf(pathOrName: string): string {
   const ext = pathOrName.slice(pathOrName.lastIndexOf('.') + 1).toLowerCase()
   if (ext === 'png') return 'image/png'
@@ -321,6 +321,7 @@ export function mimeOf(pathOrName: string): string {
   if (ext === 'mkv') return 'video/x-matroska'
   if (ext === 'wav') return 'audio/wav'
   if (ext === 'mp3') return 'audio/mpeg'
+  if (ext === 'html' || ext === 'htm') return 'text/html'
   return 'application/octet-stream'
 }
 

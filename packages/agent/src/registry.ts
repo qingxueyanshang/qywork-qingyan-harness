@@ -18,11 +18,11 @@ import type {
   CanvasRunResult,
   CanvasView,
   FileChange,
+  GenerateOutput,
   Goal,
   GoalAction,
   GoalWriteResult,
   IntermediateResourceRef,
-  MediaOutput,
   MediaSpend,
   ResourceCoverage,
   RunId,
@@ -51,7 +51,8 @@ export interface MediaPort {
 }
 
 export interface MediaCall {
-  type: MediaOutput
+  /** `art` 由对话模型写出 HTML 页面，其余类别由生成模型生成。 */
+  type: GenerateOutput
   prompt: string
   /** 输入文件，各自带有用途。操作由用途推导（见实现方），不由大模型选择。 */
   inputs: MediaInput[]

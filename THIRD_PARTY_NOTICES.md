@@ -26,9 +26,11 @@
 | `highlight.js` | 11.11.1 | BSD-3-Clause |
 | `marked` | 18.0.9 | MIT |
 | `mediabunny` | 1.61.0 | MPL-2.0 |
+| `modern-screenshot` | 4.7.0 | MIT |
 | `openai` | 6.49.0 | Apache-2.0 |
 | `qrcode` | 1.5.4 | MIT |
 | `solid-js` | 1.9.14 | MIT |
+| `three` | 0.186.1 | MIT |
 | `unpdf` | 1.8.1 | MIT |
 | `xss` | 1.0.15 | MIT |
 

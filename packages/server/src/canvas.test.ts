@@ -432,6 +432,20 @@ describe('画布服务：取帧', () => {
     )
   })
 
+  test('Art 节点的截图保存为 generated/<节点名>_截图.png，放在该节点右侧', async () => {
+    const root = await workspace()
+    await mkdir(join(root, 'generated'), { recursive: true })
+    await writeFile(join(root, 'generated', '白模.html'), '<html></html>')
+    const { svc } = service()
+    const { refs } = await svc.apply(root, PATH, [
+      { op: 'add_file', ref: '$p', path: 'generated/白模.html', x: 0, y: 0 },
+    ])
+    const shot = await svc.captureFrame(root, PATH, refs.$p!, '截图', PNG)
+    expect(shot.path).toBe('generated/白模_截图.png')
+    const node = (await onDisk(root)).nodes.find((n) => n.id === shot.nodeId)!
+    expect(node.x).toBeGreaterThan(0)
+  })
+
   test('不是 PNG 时返回 422；不是视频节点时返回 422，均不落盘', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
@@ -515,6 +529,19 @@ describe('画布服务：时间线导出', () => {
     await svc.exportAbort(root, aborted)
     expect(await parts(root)).toEqual([])
     expect((await readdir(join(root, 'generated'))).filter((n) => n.endsWith('.mp4'))).toEqual([])
+  })
+
+  test('Art 节点录制的视频保存为 generated/<节点名>.mp4，放在该节点右侧', async () => {
+    const { root, svc } = await withTimeline()
+    const { refs } = await svc.apply(root, PATH, [
+      { op: 'add_generate', ref: '$a', output: 'art', name: '街口', x: 0, y: 800 },
+    ])
+    const id = await svc.exportStart(root, PATH, refs.$a!)
+    await svc.exportWrite(root, id, 0, MP4)
+    const landed = await svc.exportFinish(root, id)
+    expect(landed.path).toBe('generated/街口.mp4')
+    const node = (await onDisk(root)).nodes.find((n) => n.id === landed.nodeId)!
+    expect(node).toMatchObject({ type: 'file', y: 800 })
   })
 
   test('会话超过空闲上限未写入：作废并删除 .part', async () => {
