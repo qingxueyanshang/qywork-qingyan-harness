@@ -130,6 +130,153 @@ const VIDEO_CARD: CanvasOp[] = [
   { op: 'add_generate', ref: '$v', output: 'video', prompt: '@[$a] 走出校门' },
 ]
 
+describe('画布批量运行', () => {
+  const success: MediaCallResult = {
+    ok: true,
+    provider: 'q',
+    model: 'm',
+    files: [{ bytes: PNG, mime: 'image/png' }],
+  }
+  const ops: CanvasOp[] = [
+    { op: 'add_generate', ref: '$a', output: 'image', prompt: 'parent' },
+    { op: 'add_generate', ref: '$b', output: 'image', prompt: 'child @[$a]' },
+    { op: 'add_generate', ref: '$c', output: 'image', prompt: 'independent' },
+  ]
+
+  test('独立节点并行；批内依赖等上游落盘后运行，重复 id 不重复生成', async () => {
+    const { ws, svc, ids } = await setup(ops)
+    const fake = fakePort()
+    const batch = svc.runBatch(ws, PATH, [ids.$b!, ids.$a!, ids.$c!, ids.$a!], { media: fake.port })
+    const started = await Promise.all([fake.next(), fake.next()])
+    expect(started.map((p) => p.call.prompt).sort()).toEqual(['independent', 'parent'])
+    expect(fake.calls).toHaveLength(2)
+    started.find((p) => p.call.prompt === 'parent')!.finish(success)
+    const child = await fake.next()
+    const parent = await node(ws.root, ids.$a!)
+    expect(child.call.inputs.map((i) => i.path)).toEqual([join(ws.root, parent.versions[0]!.path)])
+    child.finish(success)
+    started.find((p) => p.call.prompt === 'independent')!.finish(success)
+    const results = await batch
+    expect(results.map((r) => r.node)).toEqual([ids.$b!, ids.$a!, ids.$c!])
+    expect(results.filter((r) => !r.result.ok)).toEqual([])
+    expect(fake.calls).toHaveLength(3)
+    expect((await onDisk(ws.root)).runs).toHaveLength(3)
+  })
+
+  test('最多 4 个在运行，完成一个就派发下一个，所有结果回写均保留', async () => {
+    const { ws, svc, ids } = await setup(
+      Array.from({ length: 6 }, (_, i) => ({
+        op: 'add_generate',
+        ref: `$${i}`,
+        output: 'image',
+        prompt: `p${i}`,
+      })),
+    )
+    const fake = fakePort()
+    const batch = svc.runBatch(ws, PATH, Object.values(ids), { media: fake.port })
+    const initial = await Promise.all(Array.from({ length: 4 }, () => fake.next()))
+    await Bun.sleep(0)
+    expect(fake.calls).toHaveLength(4)
+    initial[0]!.finish(success)
+    const fifth = await fake.next()
+    expect(fake.calls).toHaveLength(5)
+    fifth.finish(success)
+    const sixth = await fake.next()
+    sixth.finish(success)
+    for (const p of initial.slice(1)) p.finish(success)
+    expect((await batch).every((r) => r.result.ok)).toBe(true)
+    expect((await onDisk(ws.root)).runs).toHaveLength(6)
+    for (const id of Object.values(ids)) expect((await node(ws.root, id)).versions).toHaveLength(1)
+  })
+
+  test('上游本次失败时下游不使用旧版本继续运行；独立节点不受影响', async () => {
+    const { ws, svc, ids } = await setup(ops)
+    const first = await svc.run(ws, PATH, ids.$a!, { media: { generate: async () => success } })
+    await first.done
+    const fake = fakePort()
+    const batch = svc.runBatch(ws, PATH, [ids.$b!, ids.$a!, ids.$c!], { media: fake.port })
+    const started = await Promise.all([fake.next(), fake.next()])
+    started.find((p) => p.call.prompt === 'parent')!.finish({ ok: false, message: '上游拒绝' })
+    started.find((p) => p.call.prompt === 'independent')!.finish(success)
+    const results = await batch
+    expect(results[0]).toMatchObject({ node: ids.$b, skipped: true, result: { ok: false } })
+    expect(results[1]).toMatchObject({ result: { ok: false, message: '上游拒绝' } })
+    expect(results[2]!.result.ok).toBe(true)
+    expect(fake.calls).toHaveLength(2)
+    expect((await node(ws.root, ids.$a!)).versions).toHaveLength(1)
+    expect((await node(ws.root, ids.$b!)).versions).toHaveLength(0)
+  })
+
+  test('未指定的上游不自动生成；有已有结果时允许复用', async () => {
+    const { ws, svc, ids } = await setup(ops)
+    const fake = fakePort()
+    const absent = await svc.runBatch(ws, PATH, [ids.$b!], { media: fake.port })
+    expect(absent[0]).toMatchObject({ skipped: true, result: { ok: false } })
+    expect(fake.calls).toHaveLength(0)
+    await (await svc.run(ws, PATH, ids.$a!, { media: { generate: async () => success } })).done
+    const batch = svc.runBatch(ws, PATH, [ids.$b!], { media: fake.port })
+    ;(await fake.next()).finish(success)
+    expect((await batch)[0]!.result.ok).toBe(true)
+    expect((await node(ws.root, ids.$a!)).versions).toHaveLength(1)
+  })
+
+  test('循环、无效 id、文件节点或空数组在任何生成提交之前拒绝', async () => {
+    const { ws, svc, ids } = await setup([
+      ...ops,
+      { op: 'connect', from: '$b', to: '$a', role: 'reference' },
+      { op: 'add_file', path: 'a.png', ref: '$f' },
+    ])
+    const fake = fakePort()
+    for (const selected of [
+      [],
+      [ids.$c!, 'missing'],
+      [ids.$c!, ids.$f!],
+      [ids.$c!, ids.$a!, ids.$b!],
+    ]) {
+      await expect(svc.runBatch(ws, PATH, selected, { media: fake.port })).rejects.toThrow()
+    }
+    expect(fake.calls).toHaveLength(0)
+  })
+
+  test('中止会停止在运行的等待，不再提交排队节点；预先中止时无调用', async () => {
+    const { ws, svc, ids } = await setup(
+      Array.from({ length: 6 }, (_, i) => ({
+        op: 'add_generate',
+        ref: `$${i}`,
+        output: 'image',
+        prompt: `p${i}`,
+      })),
+    )
+    const fake = fakePort()
+    const stop = new AbortController()
+    const selected = Object.values(ids)
+    const batch = svc.runBatch(ws, PATH, selected, { media: fake.port, signal: stop.signal })
+    await Promise.all(Array.from({ length: 4 }, () => fake.next()))
+    stop.abort(new Error('用户停止'))
+    const results = await batch
+    expect(fake.calls).toHaveLength(4)
+    expect(results.filter((r) => r.skipped)).toHaveLength(2)
+    expect(results.every((r) => !r.result.ok)).toBe(true)
+    const again = await svc.runBatch(ws, PATH, selected, { media: fake.port, signal: stop.signal })
+    expect(again.every((r) => r.skipped)).toBe(true)
+    expect(fake.calls).toHaveLength(4)
+  })
+
+  test('已有待取回版本时批量不再次提交生成', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const first = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const call = await fake.next()
+    await call.submit('existing-task')
+    call.finish({ ok: false, message: '等待超时', pendingTaskId: 'existing-task' })
+    await first.done
+    const results = await svc.runBatch(ws, PATH, [ids.$v!], { media: fake.port })
+    expect(results[0]).toMatchObject({ skipped: true, result: { ok: false, pending: true } })
+    expect(fake.calls).toHaveLength(1)
+    expect((await node(ws.root, ids.$v!)).versions).toHaveLength(1)
+  })
+})
+
 describe('画布运行：图像', () => {
   test('隐藏参数不写入请求或历史记录，原选择保留并在恢复模式后重新发送', async () => {
     const model = findMediaModel('wan2.7-image-pro')!

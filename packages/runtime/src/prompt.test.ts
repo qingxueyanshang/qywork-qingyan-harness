@@ -358,17 +358,27 @@ describe('能力段', () => {
    */
   test('注册画布工具时写明画布的定义与对应工具，不限制电脑控制；未注册时不出现', () => {
     const prompt = buildSystemPrompt(
-      new Set(['read_canvas', 'edit_canvas', 'run_canvas', 'retrieve_canvas', 'desktop_windows']),
+      new Set([
+        'create_canvas',
+        'read_canvas',
+        'edit_canvas',
+        'run_canvas',
+        'retrieve_canvas',
+        'desktop_windows',
+      ]),
     )
     expect(prompt).toContain('*.canvas.json')
     expect(prompt).toContain('界面画布页呈现该文件的内容')
     expect(prompt).toContain('使用 read_canvas')
+    expect(prompt).toContain('使用 create_canvas')
+    expect(prompt).toContain('批量 id 数组')
     expect(prompt).toContain('使用 edit_canvas')
     expect(prompt).toContain('使用 run_canvas')
     expect(prompt).toContain('使用 retrieve_canvas')
     expect(prompt).not.toContain('不得使用电脑控制')
     expect(prompt.indexOf('- 画布：')).toBeLessThan(prompt.indexOf('- 电脑控制：'))
     expect(buildSystemPrompt(new Set(['desktop_windows']))).not.toContain('read_canvas')
+    expect(buildSystemPrompt(new Set(['desktop_windows']))).not.toContain('create_canvas')
   })
 
   test('没有桌面工具时不提及桌面工具', () => {

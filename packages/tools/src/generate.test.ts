@@ -364,6 +364,24 @@ test('请求的扩展名与实际格式不符时改为实际格式的扩展名�
 })
 
 describe('generateMedia / landFiles', () => {
+  test('同名产物并发落盘各自保留原始字节，不删除其他写入者的临时文件', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gen-concurrent-'))
+    await mkdir(join(root, 'generated'))
+    const part = join(root, 'generated', 'same.png.part')
+    await writeFile(part, '正在由其他调用写入')
+    const bytes = Array.from({ length: 12 }, (_, i) => new Uint8Array([...PNG, i]))
+    const outputs = await Promise.all(
+      bytes.map((data) => landFiles(root, [{ bytes: data, mime: 'image/png' }], 'generated/same')),
+    )
+    expect(new Set(outputs.map((files) => files[0]!.path)).size).toBe(12)
+    for (const [i, files] of outputs.entries()) {
+      expect(new Uint8Array(await readFile(join(root, files[0]!.path)))).toEqual(bytes[i]!)
+    }
+    expect(await readFile(part, 'utf8')).toBe('正在由其他调用写入')
+    expect(
+      (await readdir(join(root, 'generated'))).filter((name) => name.endsWith('.part')),
+    ).toEqual(['same.png.part'])
+  })
   const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 
   test('同一秒内并发两次未指定输出路径的视频生成，各自拥有独立的任务记录与产物', async () => {

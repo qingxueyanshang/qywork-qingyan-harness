@@ -380,7 +380,14 @@ describe('画布与生成开关', () => {
       store.close()
       return list
     }
-    const tools = ['read_canvas', 'edit_canvas', 'run_canvas', 'retrieve_canvas', 'generate_image']
+    const tools = [
+      'create_canvas',
+      'read_canvas',
+      'edit_canvas',
+      'run_canvas',
+      'retrieve_canvas',
+      'generate_image',
+    ]
     expect(await names({})).toEqual(expect.arrayContaining(tools))
     expect(await names({ mediaEnabled: true })).toEqual(expect.arrayContaining(tools))
     const off = await names({ mediaEnabled: false })

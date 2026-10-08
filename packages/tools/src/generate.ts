@@ -8,7 +8,7 @@
  * 结果只返回产物的工作区路径，不含字节：用户点击路径在右侧预览中查看，模型需要查看图片时自行调用 `read_file`。
  */
 
-import { lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, parse } from 'node:path'
 import type { MediaCall, MediaCallResult, MediaPort, ToolOutcome, ToolSpec } from '@qywork/agent'
 import type { MediaFile, MediaInput } from '@qywork/ai'
@@ -134,21 +134,37 @@ export async function landFiles(
 ): Promise<GeneratedFile[]> {
   const landed: GeneratedFile[] = []
   for (const [index, file] of files.entries()) {
-    const abs = await freeLandingPath(roots, target, file.mime, index + 1)
-    await mkdir(dirname(abs), { recursive: true })
-    const part = `${abs}.part`
-    try {
-      await writeFile(part, file.bytes, { flag: 'wx' })
-      await renameWithRetry(part, abs)
-    } catch (err) {
-      await rm(part, { force: true })
-      throw err
+    for (let suffix = index + 1; ; suffix++) {
+      const abs = await freeLandingPath(roots, target, file.mime, suffix)
+      await mkdir(dirname(abs), { recursive: true })
+      const part = `${abs}.part`
+      // 查到空名不代表占用成功。只有独占打开成功后才能写入或清理这个临时文件。
+      const handle = await open(part, 'wx').catch((err: NodeJS.ErrnoException) => {
+        if (err.code === 'EEXIST') return null
+        throw err
+      })
+      if (!handle) continue
+      let renamed = false
+      try {
+        try {
+          // 另一任务可能在查名与占用之间完成保存，此时继续选名，不能覆盖它的结果。
+          if (await occupied(abs)) continue
+          await handle.writeFile(file.bytes)
+        } finally {
+          await handle.close()
+        }
+        await renameWithRetry(part, abs)
+        renamed = true
+        landed.push({
+          path: displayPath(workspaceOf(roots), abs),
+          mime: file.mime,
+          bytes: file.bytes.length,
+        })
+        break
+      } finally {
+        if (!renamed) await rm(part, { force: true })
+      }
     }
-    landed.push({
-      path: displayPath(workspaceOf(roots), abs),
-      mime: file.mime,
-      bytes: file.bytes.length,
-    })
   }
   return landed
 }

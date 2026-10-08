@@ -55,6 +55,7 @@ export {
   normalizeAdditionalDirectories,
   PROTECTED_DIRS,
   resolveInWorkspace,
+  resolveWritablePath,
   rootsOf,
 } from './paths.ts'
 export { renameWithRetry } from './rename.ts'
@@ -119,7 +120,13 @@ export {
 export { type ChangeWindow, openChangeWindow } from './workspace-watch.ts'
 
 import type { MediaOutput } from '@qywork/core'
-import { editCanvasTool, readCanvasTool, retrieveCanvasTool, runCanvasTool } from './canvas.ts'
+import {
+  createCanvasTool,
+  editCanvasTool,
+  readCanvasTool,
+  retrieveCanvasTool,
+  runCanvasTool,
+} from './canvas.ts'
 import { defineRoleTool } from './define-role.ts'
 import { MEDIA_TOOLS, retrieveVideoTool } from './generate.ts'
 import { readHistoryTool } from './history.ts'
@@ -189,7 +196,9 @@ export function registerBuiltinTools(
     ...(opts.media ?? []).map((output) => MEDIA_TOOLS[output]),
     ...(opts.media?.includes('video') ? [retrieveVideoTool] : []),
     // 画布按通道注册：没有服务端（CLI 会话）时没有画布服务，工具调用必然失败。
-    ...(opts.canvas ? [readCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool] : []),
+    ...(opts.canvas
+      ? [createCanvasTool, readCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool]
+      : []),
     createScheduleTool,
     listSchedulesTool,
     deleteScheduleTool,

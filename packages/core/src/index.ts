@@ -27,6 +27,7 @@ export {
   blankBox,
   CANVAS_FILE_KINDS,
   CANVAS_SCHEMA_VERSION,
+  type CanvasBatchRunResult,
   type CanvasClip,
   type CanvasDoc,
   type CanvasEdge,

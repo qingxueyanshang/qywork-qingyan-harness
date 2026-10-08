@@ -67,6 +67,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line: '- 命令：用 run_command 执行 shell 命令。临时文件与缓存放在工作区的 .tmp/，该目录不计入变更。启动 Chrome 时必须指定 --user-data-dir=.tmp/chrome，否则每次启动都会在临时目录留下一份无法删除的崩溃指标文件。',
   },
   {
+    tool: 'create_canvas',
+    line: '- 画布创建：新建 *.canvas.json 使用 create_canvas，path 可指定目录与名称；已有画布使用 edit_canvas 修改。',
+  },
+  {
     tool: 'read_canvas',
     line: '- 画布：无限画布即工作区中的 *.canvas.json 文件，界面画布页呈现该文件的内容。读取节点、提示词与参数使用 read_canvas。',
   },
@@ -76,7 +80,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'run_canvas',
-    line: '- 画布生成：运行生成节点使用 run_canvas，每次提交新的生成任务并计费。',
+    line: '- 画布生成：运行生成节点使用 run_canvas，node 传单个 id 或批量 id 数组；只运行指定节点，独立节点并行、批内依赖按顺序执行。每个节点提交新的生成任务并计费，上游失败则跳过下游；已有待取回版本使用 retrieve_canvas。',
   },
   {
     tool: 'retrieve_canvas',

@@ -452,7 +452,7 @@ export function isProtectedPath(workspaceRoot: string, resolved: string): boolea
 export async function resolveWritablePath(
   roots: RootsInput,
   candidate: string,
-  opts: { mustExist?: boolean; followFinalSymlink?: boolean } = {},
+  opts: { mustExist?: boolean; literal?: boolean; followFinalSymlink?: boolean } = {},
 ): Promise<string> {
   const writable = writableRoots(roots)
   const { workspaceRoot, unrestricted } = writable

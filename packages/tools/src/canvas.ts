@@ -1,5 +1,5 @@
 /**
- * 画布工具：大模型经画布端口（`ctx.canvas`）读取、修改、运行工作区中的 `*.canvas.json`。
+ * 画布工具：大模型经画布端口（`ctx.canvas`）创建、读取、修改、运行工作区中的 `*.canvas.json`。
  *
  * 读取、编辑、运行与取回分别声明工具及参数；取回只查询已有任务，不重新提交生成。
  *
@@ -9,7 +9,13 @@
  */
 
 import type { CanvasPort, ToolOutcome, ToolSpec } from '@qywork/agent'
-import { ART_SIZE_PARAM, type CanvasView, displayNameOf, parseCanvasOps } from '@qywork/core'
+import {
+  ART_SIZE_PARAM,
+  type CanvasBatchRunResult,
+  type CanvasView,
+  displayNameOf,
+  parseCanvasOps,
+} from '@qywork/core'
 
 function failure(message: string, errorKind?: string): ToolOutcome {
   return { status: 'failure', executed: false, message, ...(errorKind ? { errorKind } : {}) }
@@ -78,6 +84,41 @@ const CANVAS_NOTE =
   '再次运行时在当前页面上修改；它只接受参考图，本身不能作为输入（截图与录制由用户在界面上完成）。' +
   '.html 文件放上画布同样作为 art 页面显示。'
 
+export const createCanvasTool: ToolSpec = {
+  name: 'create_canvas',
+  description:
+    '在工作区指定路径创建空画布，path 必须以 .canvas.json 结尾。自动创建父目录，已有文件不覆盖。' +
+    '随后使用 edit_canvas 添加节点与连线，使用 run_canvas 运行生成卡。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: '新画布的工作区路径，例如 分镜/第1集.canvas.json' },
+    },
+    required: ['path'],
+    additionalProperties: false,
+  },
+  actionKind: 'write',
+  objectLabel: '画布',
+  category: 'media',
+  facet: '生成',
+  summary: '在指定路径创建画布',
+  targetExtractor: (a) => text(a.path) ?? null,
+  permissionEffect: 'write',
+  async fn(args, ctx) {
+    if (!ctx.canvas) return failure('本次执行没有画布通道')
+    const path = text(args.path)
+    if (!path?.endsWith('.canvas.json'))
+      return failure('path 必须是以 .canvas.json 结尾的画布路径', 'invalid_tool_arguments')
+    const created = await ctx.canvas.create(path)
+    return {
+      status: 'success',
+      message: `已创建空画布：${created}。使用 edit_canvas 添加节点与连线。`,
+      data: { path: created },
+      fileChanges: [{ path: created, changeType: 'created' }],
+    }
+  },
+}
+
 export const readCanvasTool: ToolSpec = {
   name: 'read_canvas',
   description:
@@ -126,7 +167,7 @@ export const editCanvasTool: ToolSpec = {
   description:
     '修改画布的节点、提示词、参数与连线，不发起生成。' +
     CANVAS_NOTE +
-    '先用 read_canvas 查看节点与 id。' +
+    '先用 read_canvas 查看节点与 id；画布尚不存在时先用 create_canvas 创建。' +
     'ops_json 是一批操作的 JSON 数组，整批生效或整批不生效。操作：' +
     '{"op":"add_file","path":"工作区路径"}、{"op":"add_generate","output":"image|video|audio|art","prompt":"…"}、' +
     '{"op":"update","id":"节点或连线 id",…要改的字段}、{"op":"connect","from":"id","to":"生成卡 id","role":"…"}、' +
@@ -197,17 +238,43 @@ function generationReceipt(result: Awaited<ReturnType<CanvasPort['run']>>): Tool
   }
 }
 
+function batchReceipt(results: CanvasBatchRunResult): ToolOutcome {
+  const successful = results.filter((r) => r.result.ok).length
+  const skipped = results.filter((r) => r.skipped).length
+  const paths = results.flatMap((r) => (r.result.ok ? r.result.paths : []))
+  return {
+    status: successful === results.length ? 'success' : 'failure',
+    executed: results.some((r) => !r.skipped),
+    message:
+      `批量运行：${successful} 个成功，${results.length - successful - skipped} 个失败，${skipped} 个未运行。\n` +
+      results
+        .map(
+          ({ node, result, skipped }) =>
+            `- ${node}${skipped ? '（未运行）' : ''}：${generationReceipt(result).message}`,
+        )
+        .join('\n') +
+      '\n成功节点已保存结果，不要整批重新运行；只处理失败或未运行的节点。',
+    data: { results, paths },
+    fileChanges: paths.map((path) => ({ path, changeType: 'created' as const })),
+  }
+}
+
 export const runCanvasTool: ToolSpec = {
   name: 'run_canvas',
   description:
-    '运行画布上 node 指定的生成卡并等待结果。先用 read_canvas 查看节点与 id。' +
+    '运行画布上 node 指定的生成卡并等待结果；node 可为单个 id 或非空 id 数组。先用 read_canvas 查看节点与 id。' +
+    '批量时只运行指定节点（重复 id 只运行一次），最多同时运行 4 个独立节点，批内上游完成后才运行下游。' +
+    '上游失败或待取回时跳过下游；未指定的上游只使用已有结果，不自动运行。按节点返回成功、失败与未运行原因，勿整批重新运行。' +
     '每次运行提交新的生成任务，按次计费，不得为试探效果重复调用。' +
     '已有待取回版本使用 retrieve_canvas，不重新运行。修改提示词、参数与连线使用 edit_canvas。',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: '画布文件的工作区路径' },
-      node: { type: 'string', description: '要运行的生成卡 id' },
+      node: {
+        anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
+        description: '单个生成卡 id，或要批量运行的生成卡 id 数组',
+      },
     },
     required: ['path', 'node'],
     additionalProperties: false,
@@ -216,7 +283,7 @@ export const runCanvasTool: ToolSpec = {
   objectLabel: '画布',
   category: 'media',
   facet: '生成',
-  summary: '运行画布中的生成节点',
+  summary: '运行画布中的一个或多个生成节点',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
   async fn(args, ctx) {
@@ -224,11 +291,16 @@ export const runCanvasTool: ToolSpec = {
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
-    const node = text(args.node)
-    if (!node) return failure('缺少 node', 'invalid_tool_arguments')
+    const batch = Array.isArray(args.node)
+    const ids = (batch ? args.node : [args.node]) as unknown[]
+    if (!ids.length || ids.some((id) => !text(id)))
+      return failure('node 必须是生成卡 id 或非空 id 数组', 'invalid_tool_arguments')
+    const nodes = [...new Set(ids.map((id) => text(id)!))]
     if (!ctx.media) return failure('本次执行没有生成通道')
     try {
-      return generationReceipt(await canvas.run(path, node, ctx.media, ctx.signal))
+      return batch
+        ? batchReceipt(await canvas.runBatch(path, nodes, ctx.media, ctx.signal))
+        : generationReceipt(await canvas.run(path, nodes[0]!, ctx.media, ctx.signal))
     } catch (err) {
       return { status: 'failure', executed: true, message: (err as Error).message }
     }
