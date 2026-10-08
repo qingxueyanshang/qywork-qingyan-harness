@@ -35,8 +35,13 @@ export default defineConfig(({ command }) => ({
     proxy: {
       '/api': { target: `http://127.0.0.1:${AGENT_PORT}`, changeOrigin: true },
       '/stream': { target: `ws://127.0.0.1:${AGENT_PORT}`, ws: true },
+      // Art 页面的引导页与库文件由 qy serve 提供（见 packages/server/src/art.ts）。
+      '/art': { target: `http://127.0.0.1:${AGENT_PORT}`, changeOrigin: true },
     },
   },
+  // mediabunny 只经动态导入使用（时间线导出、Art 录制）。不预先声明时，开发服务器在第一次导出时才打包它
+  // 并作废已加载的依赖地址，这次导出以「Failed to fetch dynamically imported module」失败。
+  optimizeDeps: { include: ['mediabunny'] },
   build: {
     target: 'es2022',
     // 不要手动把 @codemirror/@lezer 归入同一个 chunk。
