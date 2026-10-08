@@ -1,5 +1,5 @@
 /**
- * 画布上的图片与视频封面按显示宽度解码后绘制到 `<canvas>`。
+ * 画布上的图片、视频封面与 Art 页面封面按显示宽度解码后绘制到 `<canvas>`。
  *
  * 不要改用 `<img>` 或常驻的 `<video>`：`<img>` 按原图分辨率解码，一张 4K 图约 33 MB，五十张 4K 图实测进程树
  * 内存增量 1.5 GB，缩放时解码缓存被逐出后重新解码，单帧停滞数秒；每个 `<video>` 各占一套解码器，二十个视频节点
@@ -7,7 +7,8 @@
  */
 
 import { createEffect, createMemo, createSignal, onCleanup, Show } from 'solid-js'
-import { IconImage, IconVideo } from '../Icons.tsx'
+import { IconArt, IconImage, IconVideo } from '../Icons.tsx'
+import { artPoster } from './art.ts'
 import { releaseVideo, seekVideo } from './frame.ts'
 
 /** 档位是 2 的幂，最小 256、最大 4096。放大越过更高一档时才重新解码，缩小时不重新解码。 */
@@ -101,6 +102,16 @@ export function decodeVideo(
   })
 }
 
+/** 取 Art 页面的封面（`artPoster`，按地址缓存）并等比缩小到填满 `box` 所需的宽度。 */
+export function decodeArt(url: string, box: DecodeBox): Promise<ImageBitmap> {
+  return limited(async () => {
+    const full = await createImageBitmap(await artPoster(url))
+    const small = await shrink(full, full.width, coverWidth(box, { w: full.width, h: full.height }))
+    if (small !== full) full.close()
+    return small
+  })
+}
+
 /** 把位图交给画布，位图随之失效。 */
 export function paint(canvas: HTMLCanvasElement, bitmap: ImageBitmap): void {
   canvas.width = bitmap.width
@@ -117,14 +128,14 @@ export function Bitmap(props: {
   src: string
   width: number
   height: number
-  kind?: 'image' | 'video'
+  kind?: 'image' | 'video' | 'art'
   onDuration?: (seconds: number) => void
 }) {
   let canvas!: HTMLCanvasElement
   const [failed, setFailed] = createSignal(false)
   // 地址与类别经 memo 取值：`props.src` 的取值依赖整个画布文档，不经 memo 隔离时，画布上任何一处修改都会触发重新解码。
   const src = createMemo(() => props.src)
-  const video = createMemo(() => props.kind === 'video')
+  const kind = createMemo(() => props.kind ?? 'image')
   let held = { src: '', tier: 0 }
   // 宽高比单独计算并取到千分位：缩放只改变框的大小、不改变比例，解码只随档位与比例重新执行；
   // 不取整时宽高各乘缩放后再相除，末位误差会使每次缩放都重新解码。
@@ -139,15 +150,18 @@ export function Bitmap(props: {
     const long = tier()
     const r = aspect()
     const box = r >= 1 ? { w: long, h: long / r } : { w: long * r, h: long }
-    const isVideo = video()
+    const k = kind()
     const abort = new AbortController()
     const timer = setTimeout(() => {
-      const work = isVideo
-        ? decodeVideo(url, box).then((r) => {
-            if (!abort.signal.aborted) props.onDuration?.(r.duration)
-            return r.bitmap
-          })
-        : decodeImage(url, box, abort.signal)
+      const work =
+        k === 'video'
+          ? decodeVideo(url, box).then((r) => {
+              if (!abort.signal.aborted) props.onDuration?.(r.duration)
+              return r.bitmap
+            })
+          : k === 'art'
+            ? decodeArt(url, box)
+            : decodeImage(url, box, abort.signal)
       work.then(
         (bitmap) => {
           if (abort.signal.aborted) bitmap.close()
@@ -171,7 +185,14 @@ export function Bitmap(props: {
       <canvas ref={canvas} class="canvas-bitmap" classList={{ failed: failed() }} />
       <Show when={failed()}>
         <span class="canvas-bitmap-failed">
-          <Show when={props.kind === 'video'} fallback={<IconImage size={20} />}>
+          <Show
+            when={props.kind === 'video'}
+            fallback={
+              <Show when={props.kind === 'art'} fallback={<IconImage size={20} />}>
+                <IconArt size={20} />
+              </Show>
+            }
+          >
             <IconVideo size={20} />
           </Show>
         </span>

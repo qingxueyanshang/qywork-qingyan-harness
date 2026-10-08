@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { ART_MENTION } from './art.ts'
 import {
   addVersions,
   applyCanvasOps,
@@ -82,15 +83,10 @@ describe('画布：格式', () => {
     doc = apply(doc, [{ op: 'update', id: 'a1', provider: 'other', model: 'qwen' }])
     expect(gen(doc, 'a1').params).toEqual({})
   })
-  test('文件类别按扩展名判定：图片、视频、音频、正文，其余返回 null', () => {
-    expect(['a.PNG', 'b.mp4', 'c.m4a', 'd.md', 'e.txt', 'f.pdf'].map(canvasFileKind)).toEqual([
-      'image',
-      'video',
-      'audio',
-      'text',
-      'text',
-      null,
-    ])
+  test('文件类别按扩展名判定：图片、视频、音频、HTML、正文，其余返回 null', () => {
+    expect(
+      ['a.PNG', 'b.mp4', 'c.m4a', 'g.html', 'h.HTM', 'd.md', 'e.txt', 'f.pdf'].map(canvasFileKind),
+    ).toEqual(['image', 'video', 'audio', 'art', 'art', 'text', 'text', null])
   })
 
   test('写出后重新读取，字节不变', () => {
@@ -686,5 +682,52 @@ describe('画布：时间线', () => {
     )
     expect(parseCanvasOps([{ op: 'update', id: 'a1', muted: 'yes' }]).ok).toBe(false)
     expect(parseCanvas(text.replace('"muted": true', '"muted": false')).ok).toBe(false)
+  })
+})
+
+describe('画布：Art', () => {
+  test('新建 Art 卡为 16:9 横向框，默认名称按 Art 计数', () => {
+    const doc = apply(emptyCanvas(), [
+      { op: 'add_generate', output: 'art' },
+      { op: 'add_generate', output: 'art' },
+    ])
+    expect([gen(doc, 'a1').name, gen(doc, 'a2').name]).toEqual(['Art1', 'Art2'])
+    expect([gen(doc, 'a1').w, gen(doc, 'a1').h]).toEqual([300, 169])
+  })
+
+  test('Art 卡只接受图片作参考图；Art 节点不能作为任何生成卡的输入', () => {
+    const doc = apply(emptyCanvas(), [
+      { op: 'add_file', ref: '$img', path: '参考/街口.png' },
+      { op: 'add_file', ref: '$mov', path: '参考/走位.mp4' },
+      { op: 'add_file', ref: '$page', path: 'generated/白模.html' },
+      { op: 'add_generate', ref: '$art', output: 'art' },
+      { op: 'add_generate', ref: '$pic', output: 'image' },
+      { op: 'add_generate', ref: '$vid', output: 'video' },
+      { op: 'connect', from: '$img', to: '$art', role: 'reference' },
+    ])
+    expect(doc.edges).toHaveLength(1)
+    expect(rejects(doc, [{ op: 'connect', from: 'a2', to: 'a4', role: 'video' }])).toContain(
+      '只接受参考图',
+    )
+    for (const to of ['a4', 'a5']) {
+      expect(rejects(doc, [{ op: 'connect', from: 'a3', to, role: 'reference' }])).toContain(
+        '只接受参考图',
+      )
+    }
+    expect(rejects(doc, [{ op: 'connect', from: 'a3', to: 'a6', role: 'video' }])).toContain(
+      '不能作为',
+    )
+    // 在提示词中 @ 一个 Art 节点：无法补充连线，整批拒绝。
+    expect(rejects(doc, [{ op: 'update', id: 'a6', prompt: '参考 @[a3]' }])).toContain('不能作为')
+  })
+
+  test('参考图在提示词中按「图n」编号，编号与连线顺序（即发送顺序）一致', () => {
+    const doc = apply(emptyCanvas(), [
+      { op: 'add_file', ref: '$a', path: 'a.png' },
+      { op: 'add_file', ref: '$b', path: 'b.png' },
+      { op: 'add_generate', ref: '$art', output: 'art', prompt: '按 @[$b] 的构图，@[$a] 的配色' },
+    ])
+    expect(doc.edges.map((e) => e.from)).toEqual(['a2', 'a1'])
+    expect(compilePrompt(doc, 'a3', ART_MENTION)).toBe('按 图1 的构图，图2 的配色')
   })
 })

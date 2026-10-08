@@ -1,7 +1,8 @@
 /**
  * 覆盖 `canvas/CanvasPanel.tsx`、`canvas/GeneratePanel.tsx`、`canvas/SourcePicker.tsx`、`canvas/search.ts`、
- * `canvas/Rail.tsx`、`canvas/Bitmap.tsx`、`canvas/Player.tsx`、`canvas/Timeline.tsx`、`canvas/prompt.ts` 与 `canvas/frame.ts` 的纯函数，
- * 以及 `lib/store/ui.ts` 的 `openCanvasTab`。
+ * `canvas/Rail.tsx`、`canvas/Bitmap.tsx`、`canvas/Player.tsx`、`canvas/Timeline.tsx`、`canvas/ArtView.tsx`、
+ * `canvas/prompt.ts`、`canvas/frame.ts` 与 `canvas/art.ts` 的纯函数，以及 `lib/store/ui.ts` 的 `openCanvasTab`。
+ * `art.ts` 中运行时在页面里的行为（时钟、截图、录制）由真实浏览器验证，happy-dom 不执行 iframe 中的页面。
  *
  * 服务端由内存中的一份画布模拟：`client.api` 的桩按路径分派，操作经 core 的 `applyCanvasOps` 应用，
  * 每次提交的操作都被记录，断言针对发送了哪几批操作。
@@ -2629,6 +2630,7 @@ describe('画布：左侧工具条', () => {
       '图像生成',
       '视频生成',
       '音频生成',
+      'Art 生成',
       '时间线',
       '从工作区选择',
       '从设备上传',
@@ -3224,5 +3226,194 @@ describe('画布：时间线', () => {
       () => JSON.stringify(server.exports),
     )
     expect(server.exports).toEqual(['start', 'abort'])
+  })
+})
+
+describe('画布：Art', () => {
+  const PAGE =
+    '<!doctype html><html><head><meta name="viewport" content="width=720, height=1280"></head><body>页</body></html>'
+  const CATALOG = {
+    ...MODELS,
+    providers: [
+      {
+        name: 'relay',
+        models: [
+          { id: 'opus', label: 'Opus', known: true },
+          { id: 'sonnet', label: 'Sonnet', known: true },
+        ],
+      },
+    ],
+    active: { provider: 'relay', model: 'sonnet' },
+  }
+
+  /** 页面文件返回 HTML，其余文件照常获取失败。 */
+  const servePages = () => {
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string) =>
+      String(url).includes('.html')
+        ? Promise.resolve(new Response(PAGE))
+        : original(url)) as unknown as typeof fetch
+    return () => {
+      globalThis.fetch = original
+    }
+  }
+  const choose = (host: HTMLElement, id: string) => {
+    pointer(node(host, id), 'pointerdown', 10, 10)
+    pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
+  }
+
+  test('未单独选中时显示封面；单独选中时运行沙箱中的实时页面，按 viewport 尺寸缩放到节点框；工具条为截图与录制', async () => {
+    const back = servePages()
+    try {
+      const { host, refs } = await mount([
+        { op: 'add_file', ref: '$p', path: 'generated/白模.html', x: 0, y: 0, w: 169, h: 300 },
+        { op: 'add_file', ref: '$a', path: 'a.png', x: 400, y: 0 },
+      ])
+      const art = node(host, refs.$p!)
+      const frame = () => art.querySelector<HTMLIFrameElement>('iframe.canvas-art-frame')
+      expect(art.querySelector('canvas.canvas-bitmap')).not.toBeNull()
+      expect(frame()).toBeNull()
+      choose(host, refs.$p!)
+      await waitFor(
+        () => !!frame(),
+        () => art.innerHTML,
+      )
+      const store = await import('../../lib/store/index.ts')
+      expect(frame()!.getAttribute('sandbox')).toBe('allow-scripts')
+      expect(frame()!.src).toBe(`${store.client.base}/art/host`)
+      expect([frame()!.width, frame()!.height]).toEqual(['720', '1280'])
+      expect(frame()!.style.transform).toBe(`scale(${169 / 720}, ${300 / 1280})`)
+
+      const tools = () => [...host.querySelectorAll<HTMLButtonElement>('.canvas-tools button')]
+      expect(tools().map((b) => b.textContent)).toEqual(['截图', '录制'])
+      tools()[1]!.click()
+      await waitFor(
+        () => !!document.querySelector('.canvas-menu'),
+        () => '',
+      )
+      expect(
+        [...document.querySelectorAll('.canvas-menu button')].map((b) => b.textContent),
+      ).toEqual(['5 秒', '10 秒'])
+
+      // 选中其他节点：实时页面关闭，回到封面。
+      choose(host, refs.$a!)
+      await waitFor(
+        () => !frame() && !!art.querySelector('canvas.canvas-bitmap'),
+        () => art.innerHTML,
+      )
+    } finally {
+      back()
+    }
+  })
+
+  test('Art 卡的模型菜单列出对话模型，缺省为当前默认模型；尺寸按宽高比选择，空卡的框随之改变形状', async () => {
+    const { host, server, refs } = await mount(
+      [{ op: 'add_generate', ref: '$g', output: 'art', x: 0, y: 0 }],
+      {},
+      CATALOG,
+    )
+    choose(host, refs.$g!)
+    await waitFor(
+      () => !!host.querySelector('.canvas-panel'),
+      () => host.innerHTML.slice(0, 200),
+    )
+    expect(host.querySelector('.canvas-prompt')!.getAttribute('data-placeholder')).toBe(
+      '描述页面或场景，输入 @ 引用参考图',
+    )
+    const modelChip = host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.model')!
+    expect(modelChip.textContent).toBe('Sonnet')
+    const params = host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!
+    expect(params.textContent).toBe('16:9')
+    // 按 token 计价，不估算花费。
+    expect(host.querySelector('.canvas-price')).toBeNull()
+
+    modelChip.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-bar-menu'),
+      () => '',
+    )
+    const items = [...document.querySelectorAll<HTMLButtonElement>('.canvas-bar-menu button')]
+    expect(items.map((b) => b.textContent)).toEqual(['Opus', 'Sonnet'])
+    items[0]!.click()
+    await waitFor(
+      () => server.ops.length === 1,
+      () => '',
+    )
+    expect(server.ops[0]!.at(-1)).toEqual({
+      op: 'update',
+      id: refs.$g!,
+      provider: 'relay',
+      model: 'opus',
+    })
+
+    params.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-params-panel'),
+      () => '',
+    )
+    const ratios = [
+      ...document.querySelectorAll<HTMLButtonElement>(
+        '.canvas-params-section .canvas-seg > button',
+      ),
+    ]
+    expect(ratios.map((b) => b.textContent)).toEqual(['16:9', '9:16', '1:1', '4:3', '3:4'])
+    ratios[1]!.click()
+    await waitFor(
+      () => server.ops.length === 2,
+      () => '',
+    )
+    expect(server.ops[1]).toEqual([
+      { op: 'update', id: refs.$g!, params: { size: '720x1280' }, w: 169, h: 300 },
+    ])
+  })
+
+  test('注入：运行时与 importmap 位于 head 最前、页面自己的模块脚本之前；运行时源码可单独解析', async () => {
+    const { prepareArt } = await import('./art.ts')
+    const html = prepareArt(
+      '<!doctype html><html><head><title>t</title><script type="module">import "three"</script></head></html>',
+      { lib: 'http://127.0.0.1:7/art/lib/', manual: true },
+    )
+    const head = html.slice(html.indexOf('<head>') + '<head>'.length)
+    expect(head.startsWith('<script>(')).toBe(true)
+    const runtime = /^<script>([\s\S]*?)<\/script>/.exec(head)![1]!
+    expect(runtime.endsWith('({"lib":"http://127.0.0.1:7/art/lib/","manual":true})')).toBe(true)
+    expect(() => new Function(runtime)).not.toThrow()
+    const map = /<script type="importmap">(.*?)<\/script>/.exec(html)![1]!
+    expect(JSON.parse(map)).toEqual({
+      imports: {
+        three: 'http://127.0.0.1:7/art/lib/three.module.js',
+        'three/addons/': 'http://127.0.0.1:7/art/lib/addons/',
+      },
+    })
+    expect(html.indexOf('type="importmap"')).toBeLessThan(html.indexOf('type="module"'))
+  })
+
+  test('从图片新建 Art 卡：图片作为参考图连入；Art 节点没有「从此节点生成」', async () => {
+    const back = servePages()
+    try {
+      const { host, server, refs } = await mount([
+        ...FILES,
+        { op: 'add_file', ref: '$p', path: 'generated/白模.html', x: 0, y: 400 },
+      ])
+      expect(node(host, refs.$p!).querySelector('.canvas-port.out')).toBeNull()
+      node(host, refs.$a!).querySelector<HTMLButtonElement>('.canvas-port.out')!.click()
+      await waitFor(
+        () => !!document.querySelector('.canvas-menu'),
+        () => '',
+      )
+      ;[...document.querySelectorAll<HTMLButtonElement>('.canvas-menu button')]
+        .find((b) => b.textContent?.includes('Art 生成'))!
+        .click()
+      await waitFor(
+        () => server.ops.length === 1,
+        () => '',
+      )
+      expect(server.ops[0]).toEqual([
+        { op: 'add_generate', ref: '$n', output: 'art', beside: refs.$a! },
+        { op: 'connect', from: refs.$a!, to: '$n', role: 'reference' },
+      ])
+    } finally {
+      back()
+    }
   })
 })

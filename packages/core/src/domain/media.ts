@@ -5,7 +5,7 @@
  * 都按它分派，合并后每一处都必须排除生成协议。
  */
 
-import type { Currency } from './model.ts'
+import type { Currency, ProviderKind } from './model.ts'
 
 /**
  * 一个值 = 一种请求形状，不是一个厂商：火山方舟的出图与 OpenAI 同形状，同属 `openai_images`。
@@ -33,6 +33,13 @@ export const MEDIA_OUTPUTS = ['image', 'video', 'audio'] as const
 export type MediaOutput = (typeof MEDIA_OUTPUTS)[number]
 
 /**
+ * 生成调用与画布生成卡的类别：生成模型的三类，加上 `art`（由对话模型写出的 HTML 页面）。
+ * `art` 不属于 `MEDIA_OUTPUTS`：它使用对话模型，模型库与生成模型的配置中没有这一类。
+ */
+export const GENERATE_OUTPUTS = [...MEDIA_OUTPUTS, 'art'] as const
+export type GenerateOutput = (typeof GENERATE_OUTPUTS)[number]
+
+/**
  * 生成输入的用途。生成请求（`MediaInput.role`）与画布连线使用同一组取值。
  *
  * `reference` 是参考图（出图时即待修改的图），`first_frame` / `last_frame` 是视频的首尾帧，
@@ -48,11 +55,15 @@ export const MEDIA_INPUT_ROLES = [
 ] as const
 export type MediaInputRole = (typeof MEDIA_INPUT_ROLES)[number]
 
-/** 生成花费中数量字段的单位：图片按张、视频按秒、语音按字符，与各厂商的计费口径一致。 */
-export const MEDIA_OUTPUT_UNIT: Record<MediaOutput, '张' | '秒' | '字符'> = {
+/**
+ * 生成花费中数量字段的单位：图片按张、视频按秒、语音按字符，与各厂商的计费口径一致；
+ * `art` 是对话模型的输出 token。
+ */
+export const MEDIA_OUTPUT_UNIT: Record<GenerateOutput, '张' | '秒' | '字符' | 'token'> = {
   image: '张',
   video: '秒',
   audio: '字符',
+  art: 'token',
 }
 
 /**
@@ -62,11 +73,12 @@ export const MEDIA_OUTPUT_UNIT: Record<MediaOutput, '张' | '秒' | '字符'> = 
  * 界面按既有约定将 0 显示为 N/A，不显示为免费。
  */
 export interface MediaSpend {
-  kind: MediaKind
+  /** 请求所用的协议：生成模型为生成协议，`art` 为对话协议。 */
+  kind: MediaKind | ProviderKind
   /** 接口名。 */
   provider: string
   model: string
-  output: MediaOutput
+  output: GenerateOutput
   /** 接口回报的数量，单位见 `MEDIA_OUTPUT_UNIT`；接口未回报时为 null。 */
   quantity: number | null
   cost: number

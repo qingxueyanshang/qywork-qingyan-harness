@@ -8,11 +8,13 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/agent'
 import { findMediaModel } from '@qywork/ai'
 import {
   type AgentEvent,
+  ART_MENTION,
+  ART_SIZE_PARAM,
   applyCanvasOps,
   type CanvasDoc,
   type CanvasGenerateNode,
@@ -287,6 +289,65 @@ describe('画布运行：图像', () => {
     expect(p.call.prompt).toBe('以 图片1 为参考')
     p.finish({ ok: false, message: 'x' })
     await second.done
+  })
+})
+
+describe('画布运行：Art', () => {
+  const page = (w: number, h: number, body: string) =>
+    new TextEncoder().encode(
+      `<!doctype html><html><head><meta name="viewport" content="width=${w}, height=${h}"></head><body>${body}</body></html>`,
+    )
+
+  test('再次运行时当前页面作为第一项参考输入；参考图按「图n」编号；产物尺寸取自 viewport，框随之调整', async () => {
+    const { ws, ids } = await setup([
+      { op: 'add_file', ref: '$a', path: 'a.png', name: '街口' },
+      { op: 'add_generate', ref: '$g', output: 'art', prompt: '按 @[$a] 搭白模' },
+      { op: 'update', id: '$g', params: { size: '720x1280', n: 4 } },
+    ])
+    // 与 server.ts 的装配相同：art 的参数表与指代写法固定。
+    const svc = new CanvasService({
+      publish: () => {},
+      paramSpecsOf: (o) => (o === 'art' ? [ART_SIZE_PARAM] : undefined),
+      mentionStyleOf: (o) => (o === 'art' ? ART_MENTION : undefined),
+    })
+    const fake = fakePort()
+    const first = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const p1 = await fake.next()
+    expect(p1.call.type).toBe('art')
+    expect(p1.call.prompt).toBe('按 图1 搭白模')
+    expect(p1.call.params).toEqual({ size: '720x1280' })
+    // 端口收到的是绝对路径。
+    const rel = (abs: string) => relative(ws.root, abs).replaceAll('\\', '/')
+    expect(p1.call.inputs.map((i) => rel(i.path))).toEqual(['a.png'])
+    p1.finish({
+      ok: true,
+      provider: 'relay',
+      model: 'chat',
+      files: [{ bytes: page(720, 1280, '一'), mime: 'text/html' }],
+    })
+    expect(await first.done).toMatchObject({ ok: true })
+    const g1 = await node(ws.root, ids.$g!)
+    const v1 = g1.versions[0]!
+    expect(v1.path).toMatch(/^generated\/\d{8}-\d{6}\.html$/)
+    expect(v1.size).toEqual({ w: 720, h: 1280 })
+    expect({ w: g1.w, h: g1.h }).toEqual({ w: 169, h: 300 })
+
+    const second = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const p2 = await fake.next()
+    expect(p2.call.inputs.map((i) => [rel(i.path), i.mime])).toEqual([
+      [v1.path, 'text/html'],
+      ['a.png', 'image/png'],
+    ])
+    p2.finish({
+      ok: true,
+      provider: 'relay',
+      model: 'chat',
+      files: [{ bytes: page(720, 1280, '二'), mime: 'text/html' }],
+    })
+    expect(await second.done).toMatchObject({ ok: true })
+    const g2 = await node(ws.root, ids.$g!)
+    expect(g2.versions).toHaveLength(2)
+    expect(g2.versions[1]!.made.inputs[0]).toEqual({ role: 'reference', path: v1.path })
   })
 })
 

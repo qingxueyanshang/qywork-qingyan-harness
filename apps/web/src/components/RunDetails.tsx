@@ -1,7 +1,7 @@
 import type {
   ConversationRunsResponse,
   ConversationUsageResponse,
-  MediaOutput,
+  GenerateOutput,
   ProviderRequest,
   Run,
   UsageLedgerRow,
@@ -360,8 +360,9 @@ function RequestLedger(props: { run: Run }) {
               }}
             </For>
             {/* 生成行：请求列显示类别，模型名放在 title 中：面板较窄，表格宽度增加十几像素即会裁掉最右一列；
-                按模型统计的费用在「用量」页。输出列显示接口返回的数量（张 / 秒 / 字符），没有 token 与缓存数据。
-                只有成功的生成才有对应行（各服务商对失败的生成均不计费），结果列与成功的请求相同，显示「已完成」。 */}
+                按模型统计的费用在「用量」页。输出列显示接口返回的数量（张 / 秒 / 字符，Art 为输出 token），没有输入与缓存数据。
+                生成模型只有成功的生成才有对应行（各服务商对失败的生成均不计费）；Art 收到用量即有对应行（对话接口对不完整的回复
+                同样计费），页面是否取得由画布卡片与工具回执报告。结果列表示请求已完成并计费，显示「已完成」。 */}
             <For each={media()}>
               {(m) => (
                 <tr data-tip={m.model}>
@@ -486,11 +487,12 @@ function addMaybe(acc: number | null, v: number | null | undefined): number | nu
   return v === null || v === undefined ? acc : (acc ?? 0) + v
 }
 
-/** 逐请求表中生成行的请求列：显示类别，名称与模型库页签一致。 */
-const MEDIA_REQUEST: Record<MediaOutput, string> = {
+/** 逐请求表中生成行的请求列：显示类别，名称与模型库页签、画布的新建菜单一致。 */
+const MEDIA_REQUEST: Record<GenerateOutput, string> = {
   image: '图像',
   video: '视频',
   audio: '音频',
+  art: 'Art',
 }
 
 /** 账本中非轮次条目的中文名称。键取自 `UsageKind`。 */

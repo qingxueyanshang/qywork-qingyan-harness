@@ -9,7 +9,7 @@
  */
 
 import type { CanvasPort, ToolOutcome, ToolSpec } from '@qywork/agent'
-import { type CanvasView, displayNameOf, parseCanvasOps } from '@qywork/core'
+import { ART_SIZE_PARAM, type CanvasView, displayNameOf, parseCanvasOps } from '@qywork/core'
 
 function failure(message: string, errorKind?: string): ToolOutcome {
   return { status: 'failure', executed: false, message, ...(errorKind ? { errorKind } : {}) }
@@ -73,7 +73,10 @@ const CANVAS_NOTE =
   '画布是工作区里的 *.canvas.json，只引用工作区文件：file 节点是一个文件路径，' +
   'generate 节点是一张生成卡（输出类别、提示词、模型、参数与历次结果），timeline 节点是一条视频时间线' +
   '（clips 按顺序首尾相接，每段 {"path":"视频路径","in":起始秒,"out":结束秒}，只引用、不修改源文件；成片须由用户在界面上点击导出，本工具无法完成）。连线将素材连接到生成卡，用途 role 为 ' +
-  'reference（参考图）、first_frame / last_frame（首尾帧，不能与参考素材同时提供）、video（参考视频）、audio（参考音频）。'
+  'reference（参考图）、first_frame / last_frame（首尾帧，不能与参考素材同时提供）、video（参考视频）、audio（参考音频）。' +
+  'output 为 art 的生成卡由对话模型写出一个 HTML 页面（3D 白模、动画、前端设计稿），产物是 generated/ 下的 .html，' +
+  '再次运行时在当前页面上修改；它只接受参考图，本身不能作为输入（截图与录制由用户在界面上完成）。' +
+  '.html 文件放上画布同样作为 art 页面显示。'
 
 export const readCanvasTool: ToolSpec = {
   name: 'read_canvas',
@@ -125,11 +128,12 @@ export const editCanvasTool: ToolSpec = {
     CANVAS_NOTE +
     '先用 read_canvas 查看节点与 id。' +
     'ops_json 是一批操作的 JSON 数组，整批生效或整批不生效。操作：' +
-    '{"op":"add_file","path":"工作区路径"}、{"op":"add_generate","output":"image|video|audio","prompt":"…"}、' +
+    '{"op":"add_file","path":"工作区路径"}、{"op":"add_generate","output":"image|video|audio|art","prompt":"…"}、' +
     '{"op":"update","id":"节点或连线 id",…要改的字段}、{"op":"connect","from":"id","to":"生成卡 id","role":"…"}、' +
     '{"op":"remove","id":"节点或连线 id"}（删除某一版时另加 "version"）、{"op":"set_mode","id":"视频卡 id","mode":"reference|first_last"}、' +
     '{"op":"add_timeline","clips":[…]}（修改片段时用 update 的 clips 整组替换，muted 切换整条静音）；' +
-    'add_file、add_generate、add_timeline 可选 name、x、y，或用 "beside":"节点 id" 放在该节点右侧的空位、"near":{"x":…,"y":…} 放在该点附近的空位；add_generate 可选 provider、model、params（取值见本轮「可用的生成模型」）。' +
+    'add_file、add_generate、add_timeline 可选 name、x、y，或用 "beside":"节点 id" 放在该节点右侧的空位、"near":{"x":…,"y":…} 放在该点附近的空位；add_generate 可选 provider、model、params（取值见本轮「可用的生成模型」；' +
+    `art 卡的 provider、model 是对话模型，缺省为当前对话模型，params 只有 size：${ART_SIZE_PARAM.values?.join('、')}）。` +
     'add_* 与 connect 可带 "ref":"$名字"，同一批中后续的操作与提示词用它代替新节点的 id。' +
     '提示词中用 @[节点 id] 指代素材，引用未连线的素材时自动连线。运行生成卡使用 run_canvas。',
   parameters: {
@@ -222,7 +226,7 @@ export const runCanvasTool: ToolSpec = {
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
     const node = text(args.node)
     if (!node) return failure('缺少 node', 'invalid_tool_arguments')
-    if (!ctx.media) return failure('本次执行没有生成通道：尚未配置生成模型')
+    if (!ctx.media) return failure('本次执行没有生成通道')
     try {
       return generationReceipt(await canvas.run(path, node, ctx.media, ctx.signal))
     } catch (err) {
@@ -260,7 +264,7 @@ export const retrieveCanvasTool: ToolSpec = {
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
     const node = text(args.node)
     if (!node) return failure('缺少 node', 'invalid_tool_arguments')
-    if (!ctx.media) return failure('本次执行没有生成通道：尚未配置生成模型')
+    if (!ctx.media) return failure('本次执行没有生成通道')
     try {
       return generationReceipt(
         await canvas.retrieve(path, node, text(args.version), ctx.media, ctx.signal),

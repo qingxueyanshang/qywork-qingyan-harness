@@ -31,8 +31,8 @@ export interface CanvasQuoteResponse {
   quote: { cost: number; currency: string } | null
 }
 
-/** 截取帧的名称：首帧、尾帧或时刻（`12.4s`）。名称会写入文件名，只接受这三种格式。 */
-const FRAME_LABEL = /^(首帧|尾帧|\d{1,5}(\.\d)?s)$/
+/** 截取画面的名称：视频的首帧、尾帧或时刻（`12.4s`），Art 节点的截图。名称会写入文件名，只接受这四种格式。 */
+const FRAME_LABEL = /^(首帧|尾帧|截图|\d{1,5}(\.\d)?s)$/
 
 /** 导出会话号：由服务端 `randomUUID` 生成。 */
 const EXPORT_ID = /^[0-9a-f-]{36}$/

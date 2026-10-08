@@ -10,6 +10,16 @@
  * 相当于同一份清单维护两次。
  */
 
+// Art 页面：尺寸参数与 viewport 读写。服务端生成、尺寸读取与界面渲染共用
+export {
+  ART_DEFAULT_SIZE,
+  ART_MENTION,
+  ART_SIZE_PARAM,
+  artSizeOf,
+  artViewportOf,
+  insertAfterHead,
+  withArtViewport,
+} from './domain/art.ts'
 // 画布文档：格式、操作与不变式。服务端画布服务、画布工具与界面共用同一套规则
 export {
   addVersions,
@@ -78,6 +88,8 @@ export {
 // 生成模型的协议与类别：配置校验、目录、设置页共用
 export {
   defaultMediaKind,
+  GENERATE_OUTPUTS,
+  type GenerateOutput,
   isArkEndpoint,
   isDashScopeEndpoint,
   MEDIA_INPUT_ROLES,

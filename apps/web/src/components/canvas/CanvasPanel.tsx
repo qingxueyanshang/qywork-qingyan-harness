@@ -21,10 +21,10 @@ import {
   canvasMediaOf,
   copyOps,
   displayNameOf,
+  GENERATE_OUTPUTS,
+  type GenerateOutput,
   inputsOf,
-  MEDIA_OUTPUTS,
   type MediaInputRole,
-  type MediaOutput,
   modeOf,
 } from '@qywork/core'
 import {
@@ -72,6 +72,8 @@ import {
 } from '../../lib/store/index.ts'
 import { AnchoredMenu } from '../AnchoredMenu.tsx'
 import { IconCanvas, IconCheck, IconChevron, IconFile, IconPlus, IconScissors } from '../Icons.tsx'
+import { type ArtLive, ArtView } from './ArtView.tsx'
+import { pngOf, recordArt } from './art.ts'
 import { Bitmap } from './Bitmap.tsx'
 import { dismissOnOutside } from './dismiss.ts'
 import { captureVideoFrame, frameLabel } from './frame.ts'
@@ -86,6 +88,8 @@ import { Timeline } from './Timeline.tsx'
 import { gapAt, insertClips, metaOf, sessionOf, splitAt, withoutClip } from './timeline.ts'
 
 const PANEL_W = 480
+/** Art 录制的时长选项（秒）。 */
+const RECORD_SECONDS = [5, 10] as const
 
 /**
  * 右键点击的对象：节点作用于选区（点击的节点不在选区中时先只选中它），空白处作用于点击位置；
@@ -108,7 +112,7 @@ const SNAP = 6
  * 时间线的「+」（`clip`）：选中的视频插入第 `gap` 个间隙。
  */
 type Menu = {
-  kind: 'frame' | 'out' | 'version' | 'context' | 'clip'
+  kind: 'frame' | 'out' | 'version' | 'context' | 'clip' | 'record'
   anchor: HTMLElement
   nodeId: string
   at?: { x: number; y: number }
@@ -190,9 +194,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const [now, setNow] = createSignal(Date.now())
   /** 选中的视频节点的播放器；取帧条读写它的时刻。 */
   const players = new Map<string, PlayerHandle>()
+  /** 单独选中的 Art 节点的实时页面；截图与录制经由它执行。 */
+  const arts = new Map<string, ArtLive>()
   /** 全屏编辑中的时间线。全屏打开时画布的按键处理只保留撤销与重做。 */
   const [fullscreen, setFullscreen] = sessionSignal<string | null>(`${key}.fullscreen`, null)
-  /** 导出中的时间线与进度（0–1）。 */
+  /** 导出中的时间线、录制中的 Art 节点与进度（0–1）。 */
   const [exports, setExports] = createSignal<Readonly<Record<string, number>>>({})
   const exportAborts = new Map<string, AbortController>()
   /** 拖动视频节点时指针下的时间线：松开指针时把这些视频加入其轨道。 */
@@ -979,7 +985,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       return [
         ...paste,
         ...(paste.length ? [null] : []),
-        ...MEDIA_OUTPUTS.map((o) => ({
+        ...GENERATE_OUTPUTS.map((o) => ({
           label: OUTPUT_LABEL[o],
           run: () => void addGenerate(o, at),
         })),
@@ -1046,7 +1052,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     return { x: (w / 2 - px()) / z(), y: (h / 2 - py()) / z() }
   }
 
-  const addGenerate = async (output: MediaOutput, near = center()) => {
+  const addGenerate = async (output: GenerateOutput, near = center()) => {
     setMenu(null)
     const r = await apply([{ op: 'add_generate', ref: '$n', output, near }])
     if (r?.refs.$n) setSelected(new Set([r.refs.$n]))
@@ -1133,10 +1139,20 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     await apply([{ op: 'update', id, clips: insertClips(n.clips, gap ?? n.clips.length, added) }])
   }
 
-  /** 导出成片：浏览器一边合成 mp4 一边写入服务端，完成后保存到 `generated/`，时间线右侧出现新的视频节点。 */
-  const exportTimeline = async (id: string) => {
-    const n = byId(id)
-    if (n?.type !== 'timeline' || !n.clips.length || exportAborts.has(id)) return
+  /**
+   * 导出视频：浏览器一边编码 mp4 一边写入服务端，完成后保存到 `generated/`，来源节点右侧出现新的视频节点。
+   * `encode` 把字节交给 `write`，进度经 `progress` 报告。返回新节点的 id；取消或失败时为 `null`。
+   */
+  const exportVideo = async (
+    id: string,
+    failText: string,
+    encode: (
+      write: (bytes: Uint8Array<ArrayBuffer>, at: number) => Promise<void>,
+      progress: (ratio: number) => void,
+      signal: AbortSignal,
+    ) => Promise<void>,
+  ): Promise<string | null> => {
+    if (exportAborts.has(id)) return null
     const ac = new AbortController()
     exportAborts.set(id, ac)
     setExports((x) => ({ ...x, [id]: 0 }))
@@ -1144,7 +1160,33 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     try {
       const session = await exportStart(props.path, id)
       upload = session
-      await renderTimeline(
+      await encode(
+        (bytes, at) => exportWrite(session, at, bytes),
+        (ratio) => setExports((x) => ({ ...x, [id]: ratio })),
+        ac.signal,
+      )
+      const r = await exportFinish(session)
+      upload = null
+      setFault(null)
+      void load()
+      return r.nodeId
+    } catch (e) {
+      // 未完成的文件由服务端删除；该请求失败时，服务端在空闲超时后同样会删除。
+      if (upload) void exportAbort(upload).catch(() => {})
+      if ((e as Error).name !== 'AbortError') setFault(explainApiError(e, failText))
+      return null
+    } finally {
+      exportAborts.delete(id)
+      setExports(({ [id]: _, ...rest }) => rest)
+    }
+  }
+
+  /** 导出时间线成片，完成后选中新节点（全屏编辑中不改变选区）。 */
+  const exportTimeline = async (id: string) => {
+    const n = byId(id)
+    if (n?.type !== 'timeline' || !n.clips.length) return
+    const created = await exportVideo(id, '导出失败', (write, progress, signal) =>
+      renderTimeline(
         n.clips.map((c) => ({
           url: client.fileUrl(c.path),
           name: c.path.split('/').pop() ?? c.path,
@@ -1152,22 +1194,39 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           out: c.out,
         })),
         !!n.muted,
-        (ratio) => setExports((x) => ({ ...x, [id]: ratio })),
-        ac.signal,
-        (bytes, at) => exportWrite(session, at, bytes),
-      )
-      const r = await exportFinish(session)
-      upload = null
+        progress,
+        signal,
+        write,
+      ),
+    )
+    if (created && !fullscreen()) setSelected(new Set([created]))
+  }
+
+  /**
+   * Art 录制：从实时页面当前的状态起录制 `seconds` 秒。Art 节点保持选中：取消选中会关闭实时页面，
+   * 用户转好的镜头随之丢失。
+   */
+  const recordNode = (id: string, seconds: number) => {
+    setMenu(null)
+    const live = arts.get(id)
+    if (!live) return setFault('页面尚未加载')
+    void exportVideo(id, '录制失败', async (write, progress, signal) => {
+      await live.handle.ready
+      await recordArt(live.handle, live.size, seconds, progress, signal, write)
+    })
+  }
+
+  /** Art 截图：截取实时页面当前的画面，保存为 PNG 节点放在右侧。Art 节点保持选中，理由同 `recordNode`。 */
+  const shoot = async (id: string) => {
+    const live = arts.get(id)
+    if (!live) return setFault('页面尚未加载')
+    try {
+      await live.handle.ready
+      await captureFrame(props.path, id, '截图', await pngOf(await live.handle.capture()))
       setFault(null)
-      if (!fullscreen()) setSelected(new Set([r.nodeId]))
       void load()
     } catch (e) {
-      // 未完成的文件由服务端删除；该请求失败时，服务端在空闲超时后同样会删除。
-      if (upload) void exportAbort(upload).catch(() => {})
-      if ((e as Error).name !== 'AbortError') setFault(explainApiError(e, '导出失败'))
-    } finally {
-      exportAborts.delete(id)
-      setExports(({ [id]: _, ...rest }) => rest)
+      setFault(explainApiError(e, '截图失败'))
     }
   }
 
@@ -1244,17 +1303,17 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   }
 
   /**
-   * 从节点新建一张后续生成卡，并把该节点连接为输入：视频节点作为参考视频，图片作为首帧（视频生成）或参考（图像生成）。
+   * 从节点新建一张后续生成卡，并把该节点连接为输入：视频节点作为参考视频，图片作为首帧（视频生成）或参考（图像生成、Art）。
    * 给出 `at` 时，卡片左边沿中点（输入连线的终点）位于该点，与已有节点重叠时也不移动。
    * 不要改为 `near`：它以该点为卡片中心，且与已有节点相交时下移，落点靠近源节点时卡片被移到源节点下方。
    */
-  const extend = async (nodeId: string, output: MediaOutput, at?: { x: number; y: number }) => {
+  const extend = async (nodeId: string, output: GenerateOutput, at?: { x: number; y: number }) => {
     setMenu(null)
     const source = byId(nodeId)
     const kind = mediaOf(view()!, nodeId).kind
-    if (!source || !kind) return
+    if (!source || !kind || kind === 'art') return
     const role: MediaInputRole =
-      output === 'image' ? 'reference' : kind === 'image' ? 'first_frame' : kind
+      output === 'image' || output === 'art' ? 'reference' : kind === 'image' ? 'first_frame' : kind
     const place = at
       ? { x: Math.round(at.x), y: Math.round(at.y - blankBox(output).h / 2) }
       : { beside: nodeId }
@@ -1273,7 +1332,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const v = view()
     const target = byId(to)
     const kind = v ? mediaOf(v, from).kind : null
-    if (!v || !kind || target?.type !== 'generate') return null
+    if (!v || !kind || kind === 'art' || target?.type !== 'generate') return null
     let role: MediaInputRole = kind === 'image' ? 'reference' : kind
     if (target.output === 'video' && kind === 'image' && modeOf(v.doc, to) === 'first_last') {
       const used = new Set(inputsOf(v.doc, to).map((e) => e.role))
@@ -1303,11 +1362,12 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     stage.setPointerCapture(e.pointerId)
   }
 
-  /** 可以从该节点新建的后续生成卡类别。 */
-  const extendable = (nodeId: string): MediaOutput[] => {
+  /** 可以从该节点新建的后续生成卡类别。Art 节点不能作为输入。 */
+  const extendable = (nodeId: string): GenerateOutput[] => {
     const kind = view() ? mediaOf(view()!, nodeId).kind : null
-    return MEDIA_OUTPUTS.filter((o) =>
-      o === 'image' ? kind === 'image' : o === 'video' && kind !== null,
+    if (kind === null || kind === 'art') return []
+    return GENERATE_OUTPUTS.filter((o) =>
+      o === 'image' || o === 'art' ? kind === 'image' : o === 'video',
     )
   }
 
@@ -1429,7 +1489,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   function Media(p: {
     nodeId: string
     path: string
-    kind: MediaOutput | null
+    kind: GenerateOutput | null
     w: number
     h: number
     controls: boolean
@@ -1493,6 +1553,22 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
             </Show>
           </div>
         </Match>
+        <Match when={p.kind === 'art'}>
+          <div class="canvas-media">
+            {/* 只在单独选中时运行实时页面：同时运行的 WebGL 页面有数量上限，平移缩放时每个页面都要重绘。 */}
+            <ArtView
+              url={client.fileUrl(p.path)}
+              w={p.w}
+              h={p.h}
+              z={z()}
+              live={p.controls && selected().size === 1}
+              register={(live) => {
+                if (live) arts.set(p.nodeId, live)
+                else arts.delete(p.nodeId)
+              }}
+            />
+          </div>
+        </Match>
         <Match when={p.kind === 'audio'}>
           <Show when={client.fileUrl(p.path)} keyed>
             {(src) => <AudioPlayer src={src} active={props.active} />}
@@ -1515,7 +1591,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const st = () => view()?.states[n().id]
     const at = () => pos(n())
     const isSelected = () => selected().has(n().id)
-    const kind = (): MediaOutput | 'text' | 'timeline' | null => {
+    const kind = (): GenerateOutput | 'text' | 'timeline' | null => {
       const node = n()
       if (node.type === 'generate') return node.output
       if (node.type === 'timeline') return 'timeline'
@@ -1797,11 +1873,43 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     return m?.kind === 'frame' && m.nodeId === nodeId ? players.get(nodeId) : undefined
   }
 
+  /**
+   * 选中工具条的按钮：视频取帧；Art 截图与录制。`menu` 为按钮打开的菜单（用于标出展开状态），
+   * 录制中按钮显示进度，点击即取消，同时间线的导出按钮。
+   */
   const tools = () => {
     const n = single()
     if (!n) return null
-    const items: { label: string; kind: 'frame' }[] = []
-    if (isVideo(n)) items.push({ label: '取帧', kind: 'frame' })
+    const items: {
+      label: string
+      tip?: string
+      menu?: Menu['kind']
+      run: (anchor: HTMLElement) => void
+    }[] = []
+    if (isVideo(n)) {
+      items.push({
+        label: '取帧',
+        menu: 'frame',
+        run: (anchor) => setMenu({ kind: 'frame', anchor, nodeId: n.id }),
+      })
+    }
+    if (view() && mediaOf(view()!, n.id).kind === 'art' && mediaOf(view()!, n.id).path) {
+      const progress = exports()[n.id]
+      items.push({ label: '截图', run: () => void shoot(n.id) })
+      items.push(
+        progress === undefined
+          ? {
+              label: '录制',
+              menu: 'record',
+              run: (anchor) => setMenu({ kind: 'record', anchor, nodeId: n.id }),
+            }
+          : {
+              label: `${Math.floor(progress * 100)}%`,
+              tip: '取消录制',
+              run: () => exportAborts.get(n.id)?.abort(),
+            },
+      )
+    }
     if (!items.length) return null
     const p = pos(n)
     return { node: n, items, left: px() + (p.x + n.w / 2) * z(), top: py() + p.y * z() - 26 }
@@ -1933,12 +2041,14 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                       <button
                         type="button"
                         aria-expanded={
-                          menu()?.kind === item.kind &&
-                          (menu() as { nodeId?: string }).nodeId === t().node.id
+                          item.menu
+                            ? menu()?.kind === item.menu &&
+                              (menu() as { nodeId?: string }).nodeId === t().node.id
+                            : undefined
                         }
-                        onClick={(e) =>
-                          setMenu({ kind: item.kind, anchor: e.currentTarget, nodeId: t().node.id })
-                        }
+                        aria-label={item.tip}
+                        data-tip={item.tip}
+                        onClick={(e) => item.run(e.currentTarget)}
                       >
                         {item.label}
                       </button>
@@ -2037,7 +2147,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       <Show when={fault()}>{(f) => <div class="canvas-fault">{f()}</div>}</Show>
 
       <Rail
-        outputs={[...MEDIA_OUTPUTS]}
+        outputs={[...GENERATE_OUTPUTS]}
         disabled={!view() || !!broken()}
         onGenerate={(o) => void addGenerate(o)}
         onTimeline={() => void addTimeline()}
@@ -2128,7 +2238,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                   />
                 </AnchoredMenu>
               </Match>
-              <Match when={m().kind === 'out' || m().kind === 'version'}>
+              <Match when={m().kind === 'out' || m().kind === 'version' || m().kind === 'record'}>
                 {/* 后续生成菜单从锚点向右展开：连线从左侧进入锚点，新卡片也位于锚点右侧。 */}
                 <AnchoredMenu
                   class="canvas-menu"
@@ -2136,6 +2246,15 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                   placement={m().kind === 'out' ? 'below-start' : 'below-end'}
                 >
                   <Switch>
+                    <Match when={m().kind === 'record'}>
+                      <For each={RECORD_SECONDS}>
+                        {(seconds) => (
+                          <button type="button" onClick={() => recordNode(m().nodeId, seconds)}>
+                            {seconds} 秒
+                          </button>
+                        )}
+                      </For>
+                    </Match>
                     <Match when={m().kind === 'out'}>
                       <For each={extendable((m() as { nodeId: string }).nodeId)}>
                         {(o) => (

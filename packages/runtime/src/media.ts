@@ -1,5 +1,6 @@
 /**
  * 生成端口的实现：选择模型、由输入推断操作、按目录校验参数、调用生成接口。读取输入与写入产物由工具负责（`tools/generate.ts`）。
+ * `art` 类别交给 `art.ts`，由对话模型写出 HTML 页面。
  *
  * 失败一律返回 `{ ok: false, message }`，消息直接交给大模型阅读，须写明修改方法：可选的模型、合法的取值。
  * 用户停止时 signal 中止，异常原样抛出，由工具波次按中断处理收尾。
@@ -20,6 +21,7 @@ import {
   validateMediaCall,
 } from '@qywork/ai'
 import { type MediaKind, type MediaOutput, type MediaSpend, mediaOperationFor } from '@qywork/core'
+import { generateArt } from './art.ts'
 import { listMediaModels, type QyConfig, resolveMediaModel } from './config.ts'
 
 const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
@@ -76,14 +78,17 @@ function spendOf(
 export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) => void): MediaPort {
   return {
     async generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult> {
-      const label = OUTPUT_LABEL[call.type]
-      const candidates = listMediaModels(config).filter((m) => m.output === call.type)
+      // art 使用对话模型，不经生成目录。
+      if (call.type === 'art') return generateArt(config, call, signal, onSpend)
+      const type = call.type
+      const label = OUTPUT_LABEL[type]
+      const candidates = listMediaModels(config).filter((m) => m.output === type)
       const choices = candidates.map((m) => `${m.provider} / ${m.model}`).join('、') || '（无）'
       const ref =
         call.provider !== undefined && call.model !== undefined
           ? { provider: call.provider, model: call.model }
           : undefined
-      const target = resolveMediaModel(config, call.type, ref)
+      const target = resolveMediaModel(config, type, ref)
       if (!target) {
         return {
           ok: false,
@@ -99,7 +104,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
         }
       }
 
-      const inferred = operationOf(call.type, call.inputs)
+      const inferred = operationOf(type, call.inputs)
       if ('problem' in inferred) return { ok: false, message: `未发出请求：${inferred.problem}` }
       const op = inferred.operation
       // 接续取回不会重新提交，参数与输入均不发出，因此不校验。
@@ -155,7 +160,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
             ...(call.resumeTaskId ? { resumeTaskId: call.resumeTaskId } : {}),
           },
         )
-        const spend = spendOf(adapter.spec, result.usage ?? {}, call.type, target)
+        const spend = spendOf(adapter.spec, result.usage ?? {}, type, target)
         onSpend?.(spend)
         call.onSpend?.(spend)
         return {

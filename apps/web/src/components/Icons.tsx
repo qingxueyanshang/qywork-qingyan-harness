@@ -275,7 +275,7 @@ export const IconCanvas = (p: IconProps) => (
   </Svg>
 )
 
-/** 画布节点的类别：图片、视频、音频。 */
+/** 画布节点的类别：图片、视频、音频、Art。 */
 export const IconImage = (p: IconProps) => (
   <Svg {...p}>
     <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
@@ -293,6 +293,14 @@ export const IconVideo = (p: IconProps) => (
 export const IconAudio = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2" />
+  </Svg>
+)
+
+/** Art：由代码绘制的页面，一个画框中的一对尖括号。 */
+export const IconArt = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
+    <path d="M9.5 9.5 7 12l2.5 2.5M14.5 9.5 17 12l-2.5 2.5" />
   </Svg>
 )
 

@@ -12,7 +12,13 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lookupMediaModel } from '@qywork/ai'
 import type { AgentEvent, ClientCommand, EventEnvelope, HelloFrame } from '@qywork/core'
-import { log, NATIVE_BROWSER_PATH, NATIVE_DESKTOP_PATH } from '@qywork/core'
+import {
+  ART_MENTION,
+  ART_SIZE_PARAM,
+  log,
+  NATIVE_BROWSER_PATH,
+  NATIVE_DESKTOP_PATH,
+} from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import {
   acquireExtensions,
@@ -37,6 +43,7 @@ import {
 import type { ServerWebSocket } from 'bun'
 import { uiMediaPort } from './api/canvas.ts'
 import { handleApi, json } from './api/index.ts'
+import { serveArt } from './art.ts'
 import { BrowserBridge } from './browser/bridge.ts'
 import { browserCapability } from './browser/capability.ts'
 import { BrowserCoordinator } from './browser/coordinator.ts'
@@ -156,14 +163,17 @@ export function serve(opts: ServeOptions) {
   const subagents = new SubagentRegistry()
   const runs = new RunManager(opts.store, bus, subagents)
   // 画布的写入与画布上的生成仅经由此实例；事件不带会话 id，推送给所有客户端。
+  // art 使用对话模型，参数表与指代写法是固定的，不查生成目录。
   const canvas = new CanvasService({
     paramSpecsOf: (output, pick) => {
+      if (output === 'art') return [ART_SIZE_PARAM]
       const target = resolveMediaModel(opts.config, output, pick)
       return target ? lookupMediaModel(target.model, target.kind).params : undefined
     },
     publish: (event) => bus.publish(event),
     updating: () => runs.updating,
     mentionStyleOf: (output, pick) => {
+      if (output === 'art') return ART_MENTION
       const target = resolveMediaModel(opts.config, output, pick)
       return target ? lookupMediaModel(target.model, target.kind).mention : undefined
     },
@@ -541,6 +551,10 @@ export function serve(opts: ServeOptions) {
         }
         return withCors(json({ error: 'not found' }, 404))
       }
+
+      // ── Art 页面的引导页与库文件：随应用发布的静态内容，不校验令牌（见 art.ts） ──
+      const art = serveArt(url.pathname)
+      if (art) return art
 
       // ── 静态资源 ──
       if (opts.staticDir) {

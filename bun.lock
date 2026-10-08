@@ -26,14 +26,14 @@
     },
     "apps/desktop": {
       "name": "@qywork/desktop",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "devDependencies": {
         "@tauri-apps/cli": "^2.11.4",
       },
     },
     "apps/web": {
       "name": "@qywork/web",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "dependencies": {
         "@codemirror/lang-css": "^6.3.1",
         "@codemirror/lang-html": "^6.4.9",
@@ -64,7 +64,7 @@
     },
     "packages/agent": {
       "name": "@qywork/agent",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "dependencies": {
         "@qywork/ai": "workspace:*",
         "@qywork/core": "workspace:*",
@@ -73,7 +73,7 @@
     },
     "packages/ai": {
       "name": "@qywork/ai",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.80.0",
         "@qywork/core": "workspace:*",
@@ -82,7 +82,7 @@
     },
     "packages/cli": {
       "name": "@qywork/cli",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "bin": {
         "qy": "./src/index.ts",
       },
@@ -101,11 +101,11 @@
     },
     "packages/core": {
       "name": "@qywork/core",
-      "version": "0.1.20",
+      "version": "0.2.2",
     },
     "packages/mcp": {
       "name": "@qywork/mcp",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/core": "workspace:*",
@@ -113,7 +113,7 @@
     },
     "packages/plugins": {
       "name": "@qywork/plugins",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/core": "workspace:*",
@@ -121,7 +121,7 @@
     },
     "packages/runtime": {
       "name": "@qywork/runtime",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/ai": "workspace:*",
@@ -135,7 +135,7 @@
     },
     "packages/server": {
       "name": "@qywork/server",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/ai": "workspace:*",
@@ -146,18 +146,20 @@
         "@qywork/store": "workspace:*",
         "@qywork/team": "workspace:*",
         "@qywork/tools": "workspace:*",
+        "modern-screenshot": "4.7.0",
+        "three": "0.186.1",
       },
     },
     "packages/store": {
       "name": "@qywork/store",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "dependencies": {
         "@qywork/core": "workspace:*",
       },
     },
     "packages/team": {
       "name": "@qywork/team",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "dependencies": {
         "@qywork/core": "workspace:*",
         "@qywork/tools": "workspace:*",
@@ -165,7 +167,7 @@
     },
     "packages/tools": {
       "name": "@qywork/tools",
-      "version": "0.1.20",
+      "version": "0.2.2",
       "dependencies": {
         "@qywork/agent": "workspace:*",
         "@qywork/ai": "workspace:*",
@@ -595,6 +597,8 @@
 
     "merge-anything": ["merge-anything@5.1.7", "", { "dependencies": { "is-what": "^4.1.8" } }, "sha512-eRtbOb1N5iyH0tkQDAoQ4Ipsp/5qSR79Dzrz8hEPxRX10RWWR/iQXdoKmBSRCThY1Fh5EhISDtpSc93fpxUniQ=="],
 
+    "modern-screenshot": ["modern-screenshot@4.7.0", "", {}, "sha512-9YxN+ddPSMMlhylOv25VHzXrl9u67QRxoh7+SEewGtgUw7t6hHTrjptSDJUSne9oG4Xk/h2cwG15nIt4Hc9ujg=="],
+
     "ms": ["ms@2.1.3", "", {}, "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="],
 
     "nanoid": ["nanoid@3.3.18", "", { "bin": { "nanoid": "bin/nanoid.cjs" } }, "sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w=="],
@@ -652,6 +656,8 @@
     "strip-ansi": ["strip-ansi@6.0.1", "", { "dependencies": { "ansi-regex": "^5.0.1" } }, "sha512-Y38VPSHcqkFrCpFnQ9vuSXmquuv5oXOKpGeT6aGrr3o3Gc9AlVa6JBfUSOCnbxGGZF+/0ooI7KrPuUSztUdU5A=="],
 
     "style-mod": ["style-mod@4.1.3", "", {}, "sha512-i/n8VsZydrugj3Iuzll8+x/00GH2vnYsk1eomD8QiRrSAeW6ItbCQDtfXCeJHd0iwiNagqjQkvpvREEPtW3IoQ=="],
+
+    "three": ["three@0.186.1", "", {}, "sha512-blFeqb49wRCSGUGj7gtpfnSGHy2lwDk94RhUmS1c/hTby70kvChbWpkJ4Pm1390LqzzvTmzgXKHPEafJwCb8jA=="],
 
     "tinyglobby": ["tinyglobby@0.2.17", "", { "dependencies": { "fdir": "^6.5.0", "picomatch": "^4.0.4" } }, "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g=="],
 

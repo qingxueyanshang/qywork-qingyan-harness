@@ -1,12 +1,14 @@
 /**
- * 读取工作区中图片、视频的像素宽高，供画布节点按实际比例确定尺寸；读取视频时长，用于核对时间线片段。只读取文件头与索引，不解码画面。
+ * 读取工作区中图片、视频与 Art 页面的像素宽高，供画布节点按实际比例确定尺寸；读取视频时长，用于核对时间线片段。
+ * 只读取文件头与索引，不解码画面。
  *
  * 图片支持 PNG / JPEG / GIF / WebP（`imageSizeOf`）；视频支持 ISO 基础媒体格式（mp4 / mov / m4v），
- * 取第一条宽高非零的轨道。其余格式与无法读取的文件返回 `null`，调用方按默认尺寸处理。
+ * 取第一条宽高非零的轨道；HTML 取 viewport 标签声明的宽高（`artViewportOf`）。
+ * 其余格式与无法读取的文件返回 `null`，调用方按默认尺寸处理。
  */
 
 import { open } from 'node:fs/promises'
-import { type CanvasPixels, isInlineImage } from '@qywork/core'
+import { artViewportOf, type CanvasPixels, isInlineImage } from '@qywork/core'
 import { imageSizeOf } from '@qywork/tools'
 
 /** JPEG 的尺寸位于第一个 SOF 段中，其前可能有带缩略图的 EXIF（上限 64 KB），读取该长度即足够。 */
@@ -14,11 +16,15 @@ const IMAGE_HEAD = 256 * 1024
 /** `moov` 只存储索引，长视频也在数 MB 以内；超过此值视为异常文件，不读取。 */
 const MAX_MOOV = 64 * 1024 * 1024
 const VIDEO_RE = /\.(mp4|mov|m4v)$/i
+const HTML_RE = /\.html?$/i
+/** viewport 标签位于 `<head>` 中，读取文件开头这一段即足够。 */
+const HTML_HEAD = 64 * 1024
 
 export async function mediaSizeOf(abs: string): Promise<CanvasPixels | null> {
   try {
     if (isInlineImage(abs)) return await imageHead(abs)
     if (VIDEO_RE.test(abs)) return await videoSize(abs)
+    if (HTML_RE.test(abs)) return await htmlSize(abs)
   } catch {
     // 无法读取时按默认尺寸处理：尺寸只影响显示比例。
   }
@@ -43,6 +49,17 @@ async function imageHead(abs: string): Promise<CanvasPixels | null> {
     const { bytesRead } = await fh.read(buf, 0, IMAGE_HEAD, 0)
     const size = imageSizeOf(buf.subarray(0, bytesRead))
     return size && size.width > 0 && size.height > 0 ? { w: size.width, h: size.height } : null
+  } finally {
+    await fh.close()
+  }
+}
+
+async function htmlSize(abs: string): Promise<CanvasPixels | null> {
+  const fh = await open(abs, 'r')
+  try {
+    const buf = new Uint8Array(HTML_HEAD)
+    const { bytesRead } = await fh.read(buf, 0, HTML_HEAD, 0)
+    return artViewportOf(new TextDecoder().decode(buf.subarray(0, bytesRead)))
   } finally {
     await fh.close()
   }
