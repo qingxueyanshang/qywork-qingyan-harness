@@ -11,7 +11,7 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [dev server 必须显式绑定 IPv4](dev-server-must-bind-ipv4.md) — vite 不设 host 时只监听 `::1`，Tauri/PowerShell 探测 localhost 使用 IPv4，现象为 `tauri dev` 停滞 180 秒；`strictPort` 同样必须开启
 - [桌面端 WebView 连接 CDP](tauri-webview-no-cdp.md) — 开发构建设置 `QYWORK_WEBVIEW_DEBUG_PORT` 并另起隔离实例；环境变量与策略注册表都不生效
 - [修改 terminal.rs 前先读这四条](pty-lessons-before-removal.md) — PTY 必须在 Rust 侧、slave 端立即释放、字节流按累积缓冲 lossy 解码、默认 shell 固定为 powershell 且不读 COMSPEC
-- [dev 状态下修改源码会作用于用户正在使用的窗口](dev-edits-hit-the-running-app.md) — 修改前端触发热更新、修改 core 触发整页刷新、修改 Rust 重启整个应用；取证须另起隔离实例
+- [dev 状态下修改源码会作用于用户正在使用的窗口](dev-edits-hit-the-running-app.md) — 修改前端触发热更新、修改 core 触发整页刷新、修改 packages 重启 dev.ts 的 sidecar、修改 Rust 重启整个应用；取证须另起隔离实例
 - [PTY 是否存活以进程树为准](pty-alive-check-by-process-tree.md) — `qywork.exe` 下有 `conhost.exe --headless` + shell 才算存活；只剩 webview 说明界面显示与实际不符
 - [本地打包产物收集到 .tmp/installer/](local-installer-lands-in-tmp.md) — `tauri:build` 末尾自动收集；正式发布通过 GitHub Actions 草稿 Release，不要把本地 exe 当作发布产物
 - [计时测试在机器高负载时成批超时](timing-tests-fail-under-machine-load.md) — followup / goal-loop / 插件 e2e 的 10s 上限；套件总时长翻倍且只有这几条失败即为负载所致，待负载回落后重新运行
