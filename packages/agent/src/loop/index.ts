@@ -203,7 +203,7 @@ export class AgentLoop {
       status:
         run.stopReason === 'user_interrupt'
           ? 'interrupted'
-          : run.stopReason === 'completed'
+          : run.stopReason === 'completed' || run.stopReason === 'awaiting_user'
             ? 'done'
             : 'failed',
       stopReason: run.stopReason,

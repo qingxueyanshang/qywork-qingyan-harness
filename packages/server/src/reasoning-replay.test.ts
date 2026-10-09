@@ -305,7 +305,7 @@ test('受阻结束、下轮解释与明确接续都以同一份待办账本裁�
   expect(bodies).toHaveLength(3)
   expect(latestTodos(store, cv)?.[0]?.status).toBe('pending')
   const stops = () => events.filter((f) => f.event.type === 'run.finished').slice(before)
-  expect(stops()[0]?.event).toMatchObject({ stopReason: 'no_progress' })
+  expect(stops()[0]?.event).toMatchObject({ status: 'done', stopReason: 'awaiting_user' })
 
   await startRun(cv, '为什么暂停', undefined, deps())
   await finished(before + 2)
