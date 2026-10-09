@@ -2725,7 +2725,7 @@ describe('画布：纯函数与标签页', () => {
   })
 
   test('参数取值决定的宽高比：对照表取对应项，比例取值取其本身，自动返回 auto，无关参数返回 null', async () => {
-    const { ratioOf } = await import('./GeneratePanel.tsx')
+    const { ratioOf } = await import('@qywork/core')
     const size: Parameters<typeof ratioOf>[0] = {
       name: 'size',
       label: '尺寸',
