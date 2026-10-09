@@ -368,10 +368,10 @@ describe('画布：操作', () => {
       ids('n'),
     )
     const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    expect(box('n1')).toMatchObject({ x: 400 + 225 + 150, y: 0 })
+    expect(box('n1')).toMatchObject({ x: 400 + 225 + 100, y: 0 })
     // 视频空卡缺省为横向，按当前框占位。
-    expect(box('n2')).toMatchObject({ x: box('n1').x + 225 + 150, y: 0 })
-    expect(box('n3')).toMatchObject({ x: box('n2').x + 300 + 150, y: 0 })
+    expect(box('n2')).toMatchObject({ x: box('n1').x + 225 + 100, y: 0 })
+    expect(box('n3')).toMatchObject({ x: box('n2').x + 300 + 100, y: 0 })
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
@@ -389,9 +389,9 @@ describe('画布：操作', () => {
       ids('n'),
     )
     const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    expect(box('n2')).toMatchObject({ x: 0, y: 300 + 150 })
-    expect(box('n3')).toMatchObject({ x: 0, y: 900 })
-    expect(box('n4')).toMatchObject({ x: 0, y: 900 + 169 + 150 })
+    expect(box('n2')).toMatchObject({ x: 0, y: 300 + 100 })
+    expect(box('n3')).toMatchObject({ x: 0, y: 800 })
+    expect(box('n4')).toMatchObject({ x: 0, y: 800 + 169 + 100 })
     const results = [
       ['n1', { w: 1672, h: 941 }],
       ['n2', { w: 1080, h: 1920 }],
@@ -508,11 +508,11 @@ describe('画布：操作', () => {
       ],
       ids('n'),
     )
-    expect(named.nodes[1]).toMatchObject({ x: 300 + 150, y: 0 })
+    expect(named.nodes[1]).toMatchObject({ x: 300 + 100, y: 0 })
     expect(parseCanvasOps([{ op: 'add_generate', output: 'image', beside: 'a1' }]).ok).toBe(true)
   })
 
-  test('一组一列、不同组横向：三个人物各两套服装各占一列并排，场景一列，两场戏的镜头各占一列在素材右侧，时间线在下方；从已有内容右侧开始', () => {
+  test('同组纵向一列、新组按创建顺序排在最右侧：三个人物各两套服装各占一列，服装变体引用基础定妆图时位置不变，时间线单独一列；从已有内容右侧开始', () => {
     const base = apply(
       emptyCanvas(),
       [
@@ -521,48 +521,39 @@ describe('画布：操作', () => {
       ],
       ids('b'),
     )
-    const outfit = (person: string, look: string): CanvasOp => ({
+    const outfit = (person: string, look: string, prompt = ''): CanvasOp => ({
       op: 'add_generate',
       output: 'image',
       name: `${person}_${look}`,
       group: person,
+      prompt,
       w: 169,
       h: 300,
     })
-    const place = (name: string): CanvasOp => ({
+    const wide = (name: string, group: string, prompt = ''): CanvasOp => ({
       op: 'add_generate',
       output: 'image',
       name,
-      group: '客厅',
+      group,
+      prompt,
       w: 300,
       h: 169,
     })
-    const shot = (name: string, scene: string, ref: string): CanvasOp => ({
-      op: 'add_generate',
-      output: 'video',
-      name,
-      group: scene,
-      prompt: `@[${ref}] 回头`,
-      w: 300,
-      h: 169,
-    })
-    // 按模型常见的顺序交错创建：先每人一套，再每人第二套。
+    // 按模型常见的顺序交错创建：先每人一套，再每人第二套；第二套以第一套为参考。
     const doc = apply(
       base,
       [
         outfit('林悦', '校服'),
         outfit('奶奶', '家常'),
         outfit('小满', '校服'),
-        outfit('林悦', '便装'),
-        outfit('奶奶', '外出'),
-        outfit('小满', '睡衣'),
-        place('客厅_白天'),
-        place('客厅_夜晚'),
-        shot('镜头1-1', '第1场', '林悦_校服'),
-        shot('镜头1-2', '第1场', '客厅_白天'),
-        shot('镜头1-3', '第1场', '奶奶_家常'),
-        shot('镜头2-1', '第2场', '小满_睡衣'),
-        shot('镜头2-2', '第2场', '客厅_夜晚'),
+        outfit('林悦', '便装', '@[林悦_校服] 换便装'),
+        outfit('奶奶', '外出', '@[奶奶_家常] 换外套'),
+        outfit('小满', '睡衣', '@[小满_校服] 换睡衣'),
+        wide('客厅_白天', '客厅'),
+        wide('客厅_夜晚', '客厅'),
+        wide('镜头1', '客厅·分镜', '@[林悦_校服] @[客厅_白天] 回头'),
+        wide('镜头2', '客厅·分镜', '@[奶奶_家常] @[客厅_白天] 笑'),
+        wide('镜头3', '阳台·分镜', '@[小满_睡衣] 数硬币'),
         { op: 'add_timeline', name: '成片' },
       ],
       ids('n'),
@@ -572,36 +563,24 @@ describe('画布：操作', () => {
       return [n.x, n.y]
     }
     // 已有的方形空卡按 300 见方占位，最右处为 -1972 + 300。
-    const x0 = -1672 + 150
+    const x0 = -1672 + 100
     const y0 = 1346
-    expect([at('n1'), at('n4')]).toEqual([
-      [x0, y0],
-      [x0, y0 + 450],
-    ])
-    expect([at('n2'), at('n5')]).toEqual([
-      [x0 + 319, y0],
-      [x0 + 319, y0 + 450],
-    ])
-    expect([at('n3'), at('n6')]).toEqual([
-      [x0 + 638, y0],
-      [x0 + 638, y0 + 450],
-    ])
-    const scene = x0 + 638 + 319
+    const column = (x: number, ...ids: string[]) =>
+      expect(ids.map(at)).toEqual(ids.map((_, i) => [x, y0 + i * 400]))
+    column(x0, 'n1', 'n4')
+    column(x0 + 269, 'n2', 'n5')
+    column(x0 + 538, 'n3', 'n6')
+    const scene = x0 + 807
     expect([at('n7'), at('n8')]).toEqual([
       [scene, y0],
-      [scene, y0 + 319],
+      [scene, y0 + 269],
     ])
-    const first = scene + 450
-    expect([at('n9'), at('n10'), at('n11')]).toEqual([
-      [first, y0],
-      [first, y0 + 319],
-      [first, y0 + 638],
+    expect([at('n9'), at('n10')]).toEqual([
+      [scene + 400, y0],
+      [scene + 400, y0 + 269],
     ])
-    expect([at('n12'), at('n13')]).toEqual([
-      [first + 450, y0],
-      [first + 450, y0 + 319],
-    ])
-    expect(at('n14')).toEqual([first, y0 + 638 + 169 + 150])
+    expect(at('n11')).toEqual([scene + 800, y0])
+    expect(at('n12')).toEqual([scene + 1200, y0])
     expect(gen(doc, 'n4').group).toBe('林悦')
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
@@ -613,7 +592,7 @@ describe('画布：操作', () => {
     })
   })
 
-  test('后续批次接在本组列末，不折列；已有镜头组时新的人物组排在素材区左侧', () => {
+  test('后续批次接在本组列末，不折列；时间线建好之后补镜头仍接在本组列末；后建的组排在最右侧', () => {
     const outfit = (name: string): CanvasOp => ({
       op: 'add_generate',
       output: 'image',
@@ -626,7 +605,7 @@ describe('画布：操作', () => {
       op: 'add_generate',
       output: 'video',
       name,
-      group: '第1场',
+      group: '客厅·分镜',
       prompt: `@[${ref}] 回头`,
       w: 300,
       h: 169,
@@ -640,17 +619,74 @@ describe('画布：操作', () => {
       const n = doc.nodes.find((x) => x.id === id)!
       return [n.x, n.y]
     }
-    expect(at('a7')).toEqual([0, 6 * 450])
-    doc = apply(doc, [shot('镜头1', '林悦_造型1')], ids('b'))
-    expect(at('b1')).toEqual([319, 0])
-    doc = apply(doc, [outfit('奶奶_家常')], ids('c'))
-    expect(at('c1')).toEqual([-319, 0])
-    doc = apply(doc, [outfit('林悦_造型8'), shot('镜头2', '奶奶_家常')], ids('d'))
-    expect(at('d1')).toEqual([0, 7 * 450])
-    expect(at('d2')).toEqual([319, 319])
+    expect(at('a7')).toEqual([0, 6 * 400])
+    doc = apply(doc, [shot('镜头1', '林悦_造型1'), { op: 'add_timeline', name: '成片' }], ids('b'))
+    expect(at('b1')).toEqual([269, 0])
+    expect(at('b2')).toEqual([669, 0])
+    doc = apply(doc, [shot('镜头2', '林悦_造型2'), outfit('奶奶_家常')], ids('c'))
+    expect(at('c1')).toEqual([269, 269])
+    expect(at('c2')).toEqual([669 + 480 + 100, 0])
+    doc = apply(doc, [outfit('林悦_造型8')], ids('d'))
+    expect(at('d1')).toEqual([0, 7 * 400])
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
+  })
+
+  /**
+   * 按固定种子生成多批随机操作：各组随机交错地新增卡片，穿插时间线。
+   * 每一批之后检查：互不相交；同组的卡位于同一列；同组相邻两张相隔正好一个间距（没有被其他组挡开）；
+   * 不同组不共用一列。
+   */
+  test('随机多批新增：同组同列且紧接、不同组不同列、互不相交', () => {
+    let seed = 7
+    const rand = (n: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return (seed >>> 16) % n
+    }
+    const shapes = [
+      { w: 169, h: 300 },
+      { w: 300, h: 169 },
+    ]
+    const groups = Array.from({ length: 8 }, (_, i) => ({ name: `组${i}`, ...shapes[i % 2]! }))
+    let doc = emptyCanvas()
+    let count = 0
+    for (let batch = 0; batch < 30; batch++) {
+      const ops: CanvasOp[] = []
+      for (let k = rand(4) + 1; k > 0; k--) {
+        const g = groups[rand(groups.length)]!
+        const ref = doc.nodes.find((n) => n.type === 'generate')?.name
+        ops.push({
+          op: 'add_generate',
+          output: 'image',
+          name: `卡${++count}`,
+          group: g.name,
+          prompt: ref && rand(2) ? `@[${ref}] 参考` : '',
+          w: g.w,
+          h: g.h,
+        })
+      }
+      if (rand(6) === 0) ops.push({ op: 'add_timeline', name: `时间线${batch}` })
+      doc = apply(doc, ops, ids(`b${batch}_`))
+      const cards = doc.nodes.filter((n) => n.type === 'generate')
+      for (const g of groups) {
+        const members = cards.filter((n) => n.group === g.name).sort((a, b) => a.y - b.y)
+        expect(new Set(members.map((n) => n.x)).size).toBeLessThanOrEqual(1)
+        for (let i = 1; i < members.length; i++) {
+          expect(members[i]!.y - members[i - 1]!.y - members[i - 1]!.h).toBe(100)
+        }
+      }
+      const columns = new Map<number, string>()
+      for (const n of cards) {
+        const owner = columns.get(n.x)
+        if (owner !== undefined) expect(owner).toBe(n.group!)
+        columns.set(n.x, n.group!)
+      }
+      for (const a of doc.nodes) {
+        for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+      }
+    }
+    expect(count).toBeGreaterThan(50)
   })
 })
 
