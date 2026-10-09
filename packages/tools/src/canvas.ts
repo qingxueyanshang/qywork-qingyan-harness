@@ -15,6 +15,7 @@ import {
   type CanvasOp,
   type CanvasView,
   canvasFileKind,
+  cardIdOf,
   displayNameOf,
   parseCanvasOps,
 } from '@qywork/core'
@@ -43,8 +44,9 @@ function describe(view: CanvasView): string {
           : ({ normal: '正常', missing: '文件缺失', empty: '未生成', running: '生成中' } as const)[
               state?.state ?? 'normal'
             ]
+    const group = n.type !== 'timeline' && n.group ? `（组：${n.group}）` : ''
     if (n.type === 'file') {
-      lines.push(`- ${n.id} 文件「${displayNameOf(n)}」${n.path}（${status}）`)
+      lines.push(`- ${n.id} 文件「${displayNameOf(n)}」${group}${n.path}（${status}）`)
       continue
     }
     if (n.type === 'timeline') {
@@ -59,7 +61,7 @@ function describe(view: CanvasView): string {
     const current = n.versions.find((v) => v.id === n.current)
     const model = n.provider && n.model ? `${n.provider} / ${n.model}` : '默认模型'
     lines.push(
-      `- ${n.id} ${n.output} 生成卡「${n.name}」${model}，${n.versions.length} 版` +
+      `- ${n.id} ${n.output} 生成卡「${n.name}」${group}${model}，${n.versions.length} 版` +
         `${current ? `，当前 ${current.path}` : ''}（${status}）`,
       `  提示词：${n.prompt || '（空）'}`,
     )
@@ -179,17 +181,17 @@ export const readCanvasTool: ToolSpec = {
 }
 
 /**
- * 新增操作中由模型给出的位置与尺寸。界面与服务端使用同一套操作，复制与粘贴需要坐标，因此只在本工具拒绝。
+ * 新增操作中由模型给出的位置与尺寸。界面与服务端使用同一套操作，复制、粘贴与取帧需要坐标或相邻节点，
+ * 因此只在本工具拒绝。
  *
- * 不要放开：读取画布的回执不含坐标，模型给出的坐标只能推测，同一模型会把 169 高的卡片按 350 或 950 的
- * 步长排列，也会放在远离已有节点的原点附近；画布按 beside、below 或默认规则计算时会避开已有节点并保持固定间距。
+ * 不要放开：模型给出的坐标与相邻节点使排列取决于模型的习惯，同一模型会把 169 高的卡片按 350 或 950 的
+ * 步长排列；相邻节点还要求每张卡引用另一张卡，引用写错时整批被拒。画布按 group 排位时与模型无关。
  */
 function placedOf(ops: readonly CanvasOp[]): string | null {
   for (const [i, op] of ops.entries()) {
     if (op.op !== 'add_file' && op.op !== 'add_generate' && op.op !== 'add_timeline') continue
-    const field = (['x', 'y', 'w', 'h', 'near'] as const).find((k) => k in op)
-    if (field)
-      return `第 ${i + 1} 条操作的 ${field} 不可用：新节点的位置由画布计算，用 beside 或 below 指定相邻节点`
+    const field = (['x', 'y', 'w', 'h', 'near', 'beside'] as const).find((k) => k in op)
+    if (field) return `第 ${i + 1} 条操作的 ${field} 不可用：新卡片的位置由画布按 group 排列`
   }
   return null
 }
@@ -199,23 +201,21 @@ export const editCanvasTool: ToolSpec = {
   description:
     '修改画布的节点、提示词、参数与连线，不发起生成。' +
     CANVAS_NOTE +
-    '先用 read_canvas 查看节点与 id；画布尚不存在时先用 create_canvas 创建。' +
+    '先用 read_canvas 查看画布；画布尚不存在时先用 create_canvas 创建。' +
     'ops_json 是一批操作的 JSON 数组，整批生效或整批不生效。操作：' +
-    '{"op":"add_file","path":"工作区路径"}、{"op":"add_generate","output":"image|video|audio|art","prompt":"…"}、' +
-    '{"op":"update","id":"节点或连线 id",…要改的字段}、{"op":"connect","from":"id","to":"生成卡 id","role":"…"}、' +
-    '{"op":"remove","id":"节点或连线 id"}（删除某一版时另加 "version"）、{"op":"set_mode","id":"视频卡 id","mode":"reference|first_last"}、' +
-    '{"op":"add_timeline","clips":[…]}（修改片段时用 update 的 clips 整组替换，muted 切换整条静音）；' +
-    'add_file、add_generate、add_timeline 可选 name，以及 "beside":"节点 id" 或 "below":"节点 id"（二者只给一个）。' +
-    '新节点的位置由画布计算：给出 beside 时排在该节点右侧的第一个空位，给出 below 时排在该节点下方的第一个空位，间距 100；' +
-    '都不给时作为新的一组，放在全部节点右侧相隔 200 处，与最上方的节点对齐。' +
-    '按此组织画布：角色、场景、道具等素材每类一组、排成一列，第一个不给位置，其余依次 below 前一个；' +
-    '分镜、镜头等有先后顺序的卡按顺序每行 5 个，第一个不给位置，同一行其余依次 beside 前一个，' +
-    '下一行的第一个 below 上一行的第一个；时间线 below 最后一行的第一个。' +
-    'add_generate 可选 provider、model、params（取值见本轮「可用的生成模型」；' +
-    `art 卡的 provider、model 是对话模型，缺省为当前对话模型，params 只有 size：${ART_SIZE_PARAM.values?.join('、')}）。` +
-    'add_* 与 connect 可带 "ref":"$名字"（名字可用中文），本轮回复中后续的操作与提示词可用它代替新节点的 id，' +
-    '此前对话中创建的节点使用 id。' +
-    '提示词中用 @[节点 id] 指代素材，引用未连线的素材时自动连线。运行生成卡使用 run_canvas。',
+    '{"op":"add_file","path":"工作区路径","name":"卡片名称","group":"组"}、' +
+    '{"op":"add_generate","output":"image|video|audio|art","name":"卡片名称","group":"组","prompt":"…","params":{…}}、' +
+    '{"op":"update","id":"卡片名称",…要改的字段}、{"op":"connect","from":"素材卡片名称","to":"生成卡名称","role":"…"}、' +
+    '{"op":"remove","id":"卡片名称或连线 id"}（删除某一版时另加 "version"）、{"op":"set_mode","id":"视频卡名称","mode":"reference|first_last"}、' +
+    '{"op":"add_timeline","name":"…","clips":[…]}（修改片段时用 update 的 clips 整组替换，muted 切换整条静音）。' +
+    '引用卡片时写卡片名称（读取回执中的 id 同样可用）；同一张画布中卡片名称不能重复。' +
+    '新卡片的位置由画布排列，不写坐标：group 写卡片所属的组（如「角色」「场景」「道具」「分镜」「镜头」），同组的卡排在一起。' +
+    '没有输入的组（素材）各成一列；连接了素材的组（分镜、镜头）在素材右侧按创建顺序每行 5 张；时间线在其下方。' +
+    '因此同组的卡按剧情顺序创建。' +
+    'add_generate 可选 provider、model、params：取值见本轮「可用的生成模型」，参数名与取值按所用模型核对，不合法时整批拒绝并列出可选值；' +
+    '宽高比或尺寸参数同时决定卡片形状；未给出时卡片为方形，并为横竖两种结果预留位置，排列较松。' +
+    `art 卡的 provider、model 是对话模型，缺省为当前对话模型，params 只有 size：${ART_SIZE_PARAM.values?.join('、')}。` +
+    '提示词中用 @[卡片名称] 指代素材，引用未连线的素材时自动连线。运行生成卡使用 run_canvas。',
   parameters: {
     type: 'object',
     properties: {
@@ -306,6 +306,18 @@ function generationReceipt(
   }
 }
 
+/** 卡片名称或 id 按画布当前内容换成 id；有一项无法确定时返回原因。 */
+async function idsOf(canvas: CanvasPort, path: string, refs: string[]): Promise<string[] | string> {
+  const { doc } = await canvas.read(path)
+  const ids: string[] = []
+  for (const ref of refs) {
+    const found = cardIdOf(doc, ref)
+    if (!found.ok) return found.error
+    ids.push(found.id)
+  }
+  return ids
+}
+
 function batchReceipt(results: CanvasBatchRunResult): ToolOutcome {
   const successful = results.filter((r) => r.result.ok).length
   const skipped = results.filter((r) => r.skipped).length
@@ -331,8 +343,8 @@ function batchReceipt(results: CanvasBatchRunResult): ToolOutcome {
 export const runCanvasTool: ToolSpec = {
   name: 'run_canvas',
   description:
-    '运行画布上 node 指定的生成卡并等待结果；node 是生成卡 id 的数组，单个节点写成一个元素的数组。先用 read_canvas 查看节点与 id。' +
-    '批量时只运行指定节点（重复 id 只运行一次），最多同时运行 4 个独立节点，批内上游完成后才运行下游。' +
+    '运行画布上 node 指定的生成卡并等待结果；node 是生成卡名称的数组，单张卡写成一个元素的数组。' +
+    '批量时只运行指定的卡（重复的只运行一次），最多同时运行 4 个独立节点，批内上游完成后才运行下游。' +
     '上游失败或待取回时跳过下游；未指定的上游只使用已有结果，不自动运行。按节点返回成功、失败与未运行原因，勿整批重新运行。' +
     '回执列出每个产物的宽高、时长与实际发送的参数。运行后核对结果：先核对回执中的宽高、时长与参数是否符合要求，' +
     '再用 read_file 查看图片与视频的画面是否符合提示词；不符合时用 edit_canvas 修改提示词或参数，再运行该节点。' +
@@ -348,7 +360,7 @@ export const runCanvasTool: ToolSpec = {
         type: 'array',
         items: { type: 'string' },
         minItems: 1,
-        description: '要运行的生成卡 id 数组；单个节点写成一个元素的数组',
+        description: '要运行的生成卡名称数组；单张卡写成一个元素的数组',
       },
     },
     required: ['path', 'node'],
@@ -366,15 +378,21 @@ export const runCanvasTool: ToolSpec = {
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
-    const ids = args.node
-    if (!Array.isArray(ids) || !ids.length || ids.some((id) => !text(id)))
+    const refs = args.node
+    if (!Array.isArray(refs) || !refs.length || refs.some((ref) => !text(ref)))
       return failure(
-        'node 必须是生成卡 id 的数组（不是 JSON 字符串），单个节点写成一个元素的数组',
+        'node 必须是生成卡名称的数组（不是 JSON 字符串），单张卡写成一个元素的数组',
         'invalid_tool_arguments',
       )
-    const nodes = [...new Set(ids.map((id) => text(id)!))]
     if (!ctx.media) return failure('本次执行没有生成通道')
     try {
+      const ids = await idsOf(
+        canvas,
+        path,
+        refs.map((ref) => text(ref)!),
+      )
+      if (typeof ids === 'string') return failure(ids, 'invalid_tool_arguments')
+      const nodes = [...new Set(ids)]
       return nodes.length > 1
         ? batchReceipt(await canvas.runBatch(path, nodes, ctx.media, ctx.signal))
         : generationReceipt(await canvas.run(path, nodes[0]!, ctx.media, ctx.signal))
@@ -393,7 +411,7 @@ export const retrieveCanvasTool: ToolSpec = {
     type: 'object',
     properties: {
       path: { type: 'string', description: '画布文件的工作区路径' },
-      node: { type: 'string', description: '待取回结果的生成卡 id' },
+      node: { type: 'string', description: '待取回结果的生成卡名称' },
       version: { type: 'string', description: '取回的版本；省略时取当前版或最新的待取回版' },
     },
     required: ['path', 'node'],
@@ -411,12 +429,14 @@ export const retrieveCanvasTool: ToolSpec = {
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
-    const node = text(args.node)
-    if (!node) return failure('缺少 node', 'invalid_tool_arguments')
+    const ref = text(args.node)
+    if (!ref) return failure('缺少 node', 'invalid_tool_arguments')
     if (!ctx.media) return failure('本次执行没有生成通道')
     try {
+      const ids = await idsOf(canvas, path, [ref])
+      if (typeof ids === 'string') return failure(ids, 'invalid_tool_arguments')
       return generationReceipt(
-        await canvas.retrieve(path, node, text(args.version), ctx.media, ctx.signal),
+        await canvas.retrieve(path, ids[0]!, text(args.version), ctx.media, ctx.signal),
       )
     } catch (err) {
       return { status: 'failure', executed: true, message: (err as Error).message }

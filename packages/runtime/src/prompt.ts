@@ -80,7 +80,7 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
   },
   {
     tool: 'run_canvas',
-    line: '- 画布生成：运行生成节点使用 run_canvas，node 传生成卡 id 数组，单个节点也写成数组；只运行指定节点，独立节点并行、批内依赖按顺序执行。每个节点提交新的生成任务并计费，上游失败则跳过下游；已有待取回版本使用 retrieve_canvas。',
+    line: '- 画布生成：运行生成节点使用 run_canvas，node 传生成卡名称数组，单张卡也写成数组；只运行指定节点，独立节点并行、批内依赖按顺序执行。每个节点提交新的生成任务并计费，上游失败则跳过下游；已有待取回版本使用 retrieve_canvas。',
   },
   {
     tool: 'retrieve_canvas',

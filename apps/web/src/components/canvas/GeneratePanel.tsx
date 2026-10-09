@@ -28,6 +28,7 @@ import {
   mediaOperationFor,
   mediaParamValues,
   modeOf,
+  ratioOf,
   resolveMediaParam,
 } from '@qywork/core'
 import {
@@ -165,21 +166,6 @@ export function paramsText(
     .filter((p) => p.type !== 'boolean' || current(p) === true || current(p) === 'true')
     .map((p) => chipText(p, current(p)))
     .join(' · ')
-}
-
-const RATIO_RE = /^\d+:\d+$/
-
-/**
- * 取值决定的宽高比：带对照表的尺寸取表中对应项的宽高比，取值列表中含比例的参数（视频的宽高比）取取值本身；
- * 由模型决定时返回 `auto`，参数与宽高比无关（分辨率、张数）或取值不在表中时返回 `null`。
- */
-export function ratioOf(p: MediaParamOption, v: unknown): string | null {
-  if (p.shapes) {
-    const at = shapeAt(p, v)
-    return at ? (at.ratio ?? 'auto') : null
-  }
-  if (!(p.values ?? []).some((x) => RATIO_RE.test(String(x)))) return null
-  return typeof v === 'string' && RATIO_RE.test(v) ? v : 'auto'
 }
 
 /** 比例（`16:9`）或像素尺寸（`1536x1024`）绘制成的框：长边 14px，短边按比例计算且不小于 5px。其余取值返回 `null`。 */

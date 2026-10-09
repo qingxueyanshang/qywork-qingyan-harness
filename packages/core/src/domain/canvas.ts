@@ -12,6 +12,7 @@
  *   替换为节点名称纯文本；修改提示词后新引用了未连接的节点时补充一条连线。
  */
 
+import { arrangeNew, CARD_GAP } from './canvas-arrange.ts'
 import {
   GENERATE_OUTPUTS,
   type GenerateOutput,
@@ -56,6 +57,8 @@ export interface CanvasFileNode {
   type: 'file'
   /** 缺省时显示去掉扩展名的文件名。 */
   name?: string
+  /** 所属的组（如「角色」「分镜」），决定新卡排在哪里，见 `canvas-arrange.ts`。界面添加的节点没有组。 */
+  group?: string
   path: string
   x: number
   y: number
@@ -69,6 +72,8 @@ export interface CanvasGenerateNode {
   type: 'generate'
   output: GenerateOutput
   name: string
+  /** 同 `CanvasFileNode.group`。 */
+  group?: string
   x: number
   y: number
   w: number
@@ -206,9 +211,10 @@ export type CanvasMode = 'reference' | 'first_last'
 /**
  * 界面与大模型可提交的操作。
  *
- * `ref`：以 `$` 开头的批内名称。同一批中后续的操作可以用它代替尚未分配的 id（`id` / `from` / `to` 与
- * 提示词中的 `@[$名称]`），应用结果返回名称到 id 的对照；调用方可把此前批次的对照传给 `applyCanvasOps`
- * 继续使用这些名称。`null` 表示清除该字段。
+ * 引用节点的字段（`id` / `from` / `to` / `beside` 与提示词中的 `@[…]`）接受节点 id、卡片名称或批内名称。
+ * `ref`：以 `$` 开头的批内名称，只在同一批中有效，应用结果返回名称到 id 的对照；界面据此取得新节点的 id。
+ * 新增操作不给出位置（`x` / `y` / `beside` / `near`）时按 `group` 排位，见 `canvas-arrange.ts`。
+ * `null` 表示清除该字段。
  */
 export type CanvasOp =
   | {
@@ -216,11 +222,10 @@ export type CanvasOp =
       ref?: string
       path: string
       name?: string
-      /** 放在该节点（id 或批内名称）右侧的第一个空位。给出 `x` / `y` 时以其为准。 */
+      group?: string
+      /** 放在该节点右侧的第一个空位。给出 `x` / `y` 时以其为准。 */
       beside?: string
-      /** 放在该节点（id 或批内名称）下方的第一个空位，与 `beside` 只能给出一个。给出 `x` / `y` 时以其为准。 */
-      below?: string
-      /** 以该点为中心放置，与已有节点相交时下移到空位。优先级低于 `x` / `y`、`beside` 与 `below`。 */
+      /** 以该点为中心放置，与已有节点相交时下移到空位。优先级低于 `x` / `y` 与 `beside`。 */
       near?: { x: number; y: number }
       x?: number
       y?: number
@@ -238,9 +243,9 @@ export type CanvasOp =
       provider?: string
       model?: string
       params?: Record<string, unknown>
-      /** 同 `add_file` 的 `beside`、`below` 与 `near`。 */
+      group?: string
+      /** 同 `add_file` 的 `beside` 与 `near`。 */
       beside?: string
-      below?: string
       near?: { x: number; y: number }
       x?: number
       y?: number
@@ -253,9 +258,8 @@ export type CanvasOp =
       name?: string
       clips?: CanvasClip[]
       muted?: boolean
-      /** 同 `add_file` 的 `beside`、`below` 与 `near`。 */
+      /** 同 `add_file` 的 `beside` 与 `near`。 */
       beside?: string
-      below?: string
       near?: { x: number; y: number }
       x?: number
       y?: number
@@ -308,8 +312,13 @@ export function newCanvasId(): string {
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 /** 批内名称允许中文等任意文字的字母与数字：只允许英文时，模型按画布内容起的中文名称整批被拒。 */
 const REF_RE = /^\$[\p{L}\p{N}_-]{1,64}$/u
-/** 节点 id 只含英文字母与数字；`$` 开头的是批内名称。 */
-const MENTION_RE = /@\[(\$[\p{L}\p{N}_-]{1,64}|[A-Za-z0-9_-]{1,64})\]/gu
+/** 已保存的提示词中的引用：只有节点 id。 */
+const MENTION_RE = /@\[([A-Za-z0-9_-]{1,64})\]/g
+/**
+ * 本批写入的提示词中的引用：节点 id、卡片名称或批内名称，保存前一律换成 id。
+ * 不要用于已保存的提示词：其中「@[」开头的普通文字会被当作引用，原本合法的文件读取时被拒。
+ */
+const INPUT_MENTION_RE = /@\[([^[\]\n]{1,80})\]/g
 const AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|flac|opus)$/i
 
 /** 提示词中 `@[id]` 引用的 id，按首次出现顺序去重。 */
@@ -456,10 +465,6 @@ function clipProblem(clip: CanvasClip): string | null {
   return null
 }
 
-/** `beside` 与右侧节点、`below` 与下方节点的间距，即同一组内相邻节点的间距。 */
-const NEW_NODE_GAP = 100
-/** 未给出相邻节点时，新的一组与左侧已有节点的间距。大于组内间距，各组在画布上可以区分。 */
-const GROUP_GAP = 200
 /** `near` 查找空位时与其他节点保留的间距，包含节点上方的标题行。 */
 const CLEARANCE = 40
 
@@ -500,13 +505,12 @@ function fail(message: string): never {
  * 按顺序应用一批操作。整批成功时才返回新文档；任何一条不成立都返回 `ok: false`，原文档不变。
  *
  * `newId` 只在测试中注入。分配的 id 不会与本批开始时文档中已有的任何 id 相同。
- * `earlier`：此前批次返回的批内名称对照，本批未定义的名称按它解析；本批重新定义的名称以本批为准。
+ * 未给出位置的新节点在全部操作与连线完成后按组排位：组的类别由连线决定。
  */
 export function applyCanvasOps(
   doc: CanvasDoc,
   ops: CanvasOp[],
   newId: () => string = newCanvasId,
-  earlier: Readonly<Record<string, string>> = {},
 ): CanvasResult {
   const next = structuredClone(doc)
   const refs: Record<string, string> = {}
@@ -528,10 +532,11 @@ export function applyCanvasOps(
   }
 
   try {
-    const named = (ref: string) => refs[ref] ?? earlier[ref] ?? unknownRef(ref)
-    for (const op of ops) applyOne(next, op, refs, named, mint)
-    resolvePromptRefs(next, named)
+    const pending: string[] = []
+    for (const op of ops) applyOne(next, op, refs, pending, mint)
+    resolveInputMentions(doc, next, refs)
     keepMentionsConnected(doc, next, mint)
+    arrangeNew(next, pending, extentOf)
   } catch (err) {
     if (err instanceof CanvasError) return { ok: false, error: err.message }
     throw err
@@ -544,10 +549,25 @@ function applyOne(
   doc: CanvasDoc,
   op: CanvasOp,
   refs: Record<string, string>,
-  named: (ref: string) => string,
+  pending: string[],
   mint: () => string,
 ): void {
-  const resolve = (id: string): string => (id.startsWith('$') ? named(id) : id)
+  const resolve = (ref: string): string => resolveRef(doc, refs, ref)
+  /** 给出位置时立即排位；否则坐标暂为 `NaN`，补上缺省的组，留待全部操作完成后按组排位。 */
+  const put = (
+    node: CanvasNode,
+    at: { x?: number; y?: number; beside?: string; near?: { x: number; y: number } },
+  ) => {
+    if (at.x !== undefined || at.y !== undefined || at.beside !== undefined || at.near) {
+      place(doc, node, at, resolve)
+    } else {
+      node.x = Number.NaN
+      node.y = Number.NaN
+      if (node.type !== 'timeline') node.group ??= defaultGroup(node)
+      pending.push(node.id)
+    }
+    doc.nodes.push(node)
+  }
   const claim = (ref: string | undefined, id: string) => {
     if (ref === undefined) return
     if (!REF_RE.test(ref))
@@ -574,8 +594,8 @@ function applyOne(
         h: op.h ?? fit.h,
       }
       if (op.name) node.name = op.name
-      place(doc, node, op, resolve)
-      doc.nodes.push(node)
+      if (op.group !== undefined) node.group = op.group
+      put(node, op)
       return
     }
     case 'add_generate': {
@@ -597,8 +617,8 @@ function applyOne(
       }
       if (op.provider !== undefined) node.provider = op.provider
       if (op.model !== undefined) node.model = op.model
-      place(doc, node, op, resolve)
-      doc.nodes.push(node)
+      if (op.group !== undefined) node.group = op.group
+      put(node, op)
       return
     }
     case 'add_timeline': {
@@ -616,8 +636,7 @@ function applyOne(
         clips,
       }
       if (op.muted) node.muted = true
-      place(doc, node, op, resolve)
-      doc.nodes.push(node)
+      put(node, op)
       return
     }
     case 'update': {
@@ -752,69 +771,41 @@ function applyOne(
 }
 
 /**
- * 确定新节点的位置：给出 `beside` 时放在该节点右侧的第一个空位，给出 `below` 时放在该节点下方的第一个空位；
- * 都未给出时作为新的一组，放在全部节点右侧相隔 `GROUP_GAP` 处并与最上方节点对齐，空画布从原点开始；
- * 给出 `near` 时以该点为中心，被占用时向下查找空位。调用方给出的 `x` / `y` 优先于此结果。
- * 不要让被占用的 `beside` 改为向下查找、`below` 改为向右查找：调用方用两者分别表达行与列，换向后行与列混在一起。
+ * 界面与服务端给出的位置：给出 `beside` 时放在该节点右侧的第一个空位；给出 `near` 时以该点为中心，
+ * 被占用时向下查找空位。调用方给出的 `x` / `y` 优先于此结果。
+ * 不要让被占用的 `beside` 改为向下查找：取帧、尾帧与导出依次排在源节点右侧，向下查找时与下方的卡混在一起。
  */
 function place(
   doc: CanvasDoc,
   node: CanvasNode,
-  op: {
-    x?: number
-    y?: number
-    beside?: string
-    below?: string
-    near?: { x: number; y: number }
-  },
-  resolve: (id: string) => string,
+  op: { x?: number; y?: number; beside?: string; near?: { x: number; y: number } },
+  resolve: (ref: string) => string,
 ): void {
-  if (op.beside !== undefined && op.below !== undefined) fail('beside 与 below 只能给出一个')
   const size = extentOf(node)
-  const anchor = (ref: string) => {
-    const id = resolve(ref)
-    const found = doc.nodes.find((n) => n.id === id)
-    // 模型常把刚起的卡片名称当作引用；报错写明引用方式，只写「不存在」时模型会去掉位置后重试。
-    return extentOf(
-      found ??
-        fail(
-          `节点不存在：${id}。引用节点时使用节点 id 或本轮用 ref 定义的 $名称，卡片名称不能作为引用`,
-        ),
-    )
-  }
   let spot = { x: 0, y: 0 }
   if (op.beside !== undefined) {
-    const source = anchor(op.beside)
-    const at = { x: source.x + source.w + NEW_NODE_GAP, y: source.y }
-    spot = freeSpot(doc, { ...size, ...at }, 'right', NEW_NODE_GAP)
-  } else if (op.below !== undefined) {
-    const source = anchor(op.below)
-    const at = { x: source.x, y: source.y + source.h + NEW_NODE_GAP }
-    spot = freeSpot(doc, { ...size, ...at }, 'down', NEW_NODE_GAP)
+    const id = resolve(op.beside)
+    const source = extentOf(doc.nodes.find((n) => n.id === id) ?? fail(`「${op.beside}」不是卡片`))
+    const at = { x: source.x + source.w + CARD_GAP, y: source.y }
+    spot = freeSpot(doc, { ...size, ...at }, 'right', CARD_GAP)
   } else if (op.near) {
     const at = { x: Math.round(op.near.x - node.w / 2), y: Math.round(op.near.y - node.h / 2) }
     spot = freeSpot(doc, { ...size, ...at }, 'down', CLEARANCE)
-  } else if (doc.nodes.length > 0) {
-    const boxes = doc.nodes.map(extentOf)
-    spot = {
-      x: Math.max(...boxes.map((b) => b.x + b.w)) + GROUP_GAP,
-      y: Math.min(...boxes.map((b) => b.y)),
-    }
   }
   node.x = op.x ?? spot.x
   node.y = op.y ?? spot.y
 }
 
 /**
- * 排位时节点占用的框。结果到达后，图片、视频与 Art 生成卡的形状按结果比例改变（`fitCurrent`，短边不变），
- * 因此当前版本尚无尺寸时按横、竖 16:9 两种形状都能容纳的框占位。音频没有尺寸，形状不变。
- * 不要改为只按当前框：169 见方的空卡生成 16:9 的结果后宽 300，按当前框间隔 100 排列的相邻卡会相交。
+ * 排位时节点占用的框。结果到达后，图片、视频与 Art 生成卡的形状按结果比例改变（`fitCurrent`，短边不变）。
+ * 尚无结果的方形卡不知道结果是横是竖，按横、竖 16:9 都能容纳的框占位；已按参数确定宽高比的卡按当前框占位。
+ * 音频没有尺寸，形状不变。不要让方形卡也按当前框：169 见方的空卡生成 16:9 的结果后宽 300，会压到相邻的卡。
  */
 function extentOf(n: CanvasNode): { x: number; y: number; w: number; h: number } {
-  if (n.type !== 'generate' || n.output === 'audio') return n
+  if (n.type !== 'generate' || n.output === 'audio' || n.w !== n.h) return n
   if (n.versions.find((v) => v.id === n.current)?.size) return n
-  const long = Math.round((Math.min(n.w, n.h) * 16) / 9)
-  return { x: n.x, y: n.y, w: Math.max(n.w, long), h: Math.max(n.h, long) }
+  const long = Math.round((n.w * 16) / 9)
+  return { x: n.x, y: n.y, w: long, h: long }
 }
 
 /**
@@ -856,24 +847,64 @@ function defaultName(doc: CanvasDoc, prefix: string): string {
   return `${prefix}${max + 1}`
 }
 
-/**
- * 批内名称无法解析时整批拒绝。报错写明名称的有效范围与替代写法：只写「未定义」时，模型无法得知改用节点 id，
- * 会删去相关的连线与引用后继续执行。
- */
-function unknownRef(ref: string): never {
-  return fail(
-    `${ref} 未定义：批内名称须先由本轮某一批操作的 ref 定义，引用此前对话中创建的节点时使用节点 id`,
-  )
+/** 未给出组的新节点的组：按卡片类别，如「图片」「视频」；文件按其媒体类别，其他文件为「文件」。 */
+function defaultGroup(node: CanvasFileNode | CanvasGenerateNode): string {
+  if (node.type === 'generate') return OUTPUT_NAME[node.output]
+  const kind = canvasMediaOf(node)
+  return kind ? OUTPUT_NAME[kind] : '文件'
 }
 
-/** 把提示词中的 `@[$名称]` 替换为分配的 id。 */
-function resolvePromptRefs(doc: CanvasDoc, named: (ref: string) => string): void {
+/**
+ * 引用的节点或连线 id。依次按 id、批内名称、卡片名称查找；卡片名称对应多张卡时整批拒绝。
+ * 不要只接受 id 与批内名称：大模型按自己起的卡片名称引用，要求它抄写随机 id 或批内名称时，
+ * 写错、跨批使用、编造 id 都会使整批被拒，模型随后删去连线继续执行。
+ */
+function resolveRef(doc: CanvasDoc, refs: Record<string, string>, ref: string): string {
+  if (doc.nodes.some((n) => n.id === ref) || doc.edges.some((e) => e.id === ref)) return ref
+  if (ref.startsWith('$')) {
+    return refs[ref] ?? fail(`${ref} 未定义：批内名称只在同一批操作中有效，引用卡片时写卡片名称`)
+  }
+  const named = doc.nodes.filter((n) => displayNameOf(n) === ref)
+  if (named.length > 1) {
+    fail(
+      `名称「${ref}」对应 ${named.length} 张卡（${named.map((n) => n.id).join('、')}），改用其中一张的 id`,
+    )
+  }
+  return named[0]?.id ?? fail(`未找到卡片「${ref}」：引用卡片时写画布上已有的卡片名称或 id`)
+}
+
+/** 按 id 或卡片名称找到节点的 id，规则同操作中的引用。未找到或名称对应多张卡时返回原因。 */
+export function cardIdOf(
+  doc: CanvasDoc,
+  ref: string,
+): { ok: true; id: string } | { ok: false; error: string } {
+  try {
+    return { ok: true, id: resolveRef(doc, {}, ref) }
+  } catch (err) {
+    if (err instanceof CanvasError) return { ok: false, error: err.message }
+    throw err
+  }
+}
+
+/**
+ * 把本批写入的提示词中的 `@[卡片名称]`、`@[$批内名称]` 换成 `@[id]`；未改动的提示词保持原样。
+ * 本批删除的节点的 id 不在此处解析，由 `keepMentionsConnected` 替换为名称纯文本。
+ */
+function resolveInputMentions(
+  before: CanvasDoc,
+  doc: CanvasDoc,
+  refs: Record<string, string>,
+): void {
+  const beforeById = new Map(before.nodes.map((n) => [n.id, n]))
   for (const n of doc.nodes) {
-    if (n.type !== 'generate' || !n.prompt.includes('@[$')) continue
-    n.prompt = n.prompt.replace(MENTION_RE, (whole, id: string) => {
-      if (!id.startsWith('$')) return whole
-      return `@[${named(id)}]`
-    })
+    if (n.type !== 'generate') continue
+    const old = beforeById.get(n.id)
+    if (old?.type === 'generate' && old.prompt === n.prompt) continue
+    n.prompt = n.prompt.replace(INPUT_MENTION_RE, (whole, key: string) =>
+      beforeById.has(key) || doc.nodes.some((x) => x.id === key)
+        ? whole
+        : `@[${resolveRef(doc, refs, key)}]`,
+    )
   }
 }
 
@@ -931,7 +962,14 @@ export function copyOps(
     const box = { x: n.x + offset.dx, y: n.y + offset.dy, w: n.w, h: n.h }
     const ref = refOf.get(n.id)!
     if (n.type === 'file') {
-      ops.push({ op: 'add_file', ref, path: n.path, ...(n.name ? { name: n.name } : {}), ...box })
+      ops.push({
+        op: 'add_file',
+        ref,
+        path: n.path,
+        ...(n.name ? { name: n.name } : {}),
+        ...(n.group ? { group: n.group } : {}),
+        ...box,
+      })
       continue
     }
     if (n.type === 'timeline') {
@@ -962,6 +1000,7 @@ export function copyOps(
       params: structuredClone(n.params),
       ...(n.provider !== undefined ? { provider: n.provider } : {}),
       ...(n.model !== undefined ? { model: n.model } : {}),
+      ...(n.group ? { group: n.group } : {}),
       ...box,
     })
   }
@@ -1255,8 +1294,8 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     ref: 'string',
     'path!': 'string',
     name: 'string',
+    group: 'string',
     beside: 'string',
-    below: 'string',
     near: 'point',
     ...BOX,
   },
@@ -1269,8 +1308,8 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     provider: 'string',
     model: 'string',
     params: 'object',
+    group: 'string',
     beside: 'string',
-    below: 'string',
     near: 'point',
     ...BOX,
   },
@@ -1281,7 +1320,6 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     clips: 'clips',
     muted: 'boolean',
     beside: 'string',
-    below: 'string',
     near: 'point',
     x: 'number',
     y: 'number',
@@ -1326,6 +1364,7 @@ const FILE_FIELDS: Record<string, Shape> = {
   'id!': 'string',
   'type!': 'string',
   name: 'string',
+  group: 'string',
   'path!': 'string',
   ...boxRequired(),
 }
@@ -1334,6 +1373,7 @@ const GENERATE_FIELDS: Record<string, Shape> = {
   'type!': 'string',
   'output!': 'output',
   'name!': 'string',
+  group: 'string',
   ...boxRequired(),
   'prompt!': 'string',
   provider: 'string',
@@ -1474,6 +1514,7 @@ export function serializeCanvas(doc: CanvasDoc): string {
           id: n.id,
           type: n.type,
           ...(n.name ? { name: n.name } : {}),
+          ...(n.group ? { group: n.group } : {}),
           path: n.path,
           x: n.x,
           y: n.y,
@@ -1497,6 +1538,7 @@ export function serializeCanvas(doc: CanvasDoc): string {
             type: n.type,
             output: n.output,
             name: n.name,
+            ...(n.group ? { group: n.group } : {}),
             x: n.x,
             y: n.y,
             w: n.w,

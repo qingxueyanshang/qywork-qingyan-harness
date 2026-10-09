@@ -169,6 +169,22 @@ export function mediaParamProblem(p: MediaParamDefinition, value: unknown): stri
   return p.sizeLimits ? mediaSizeProblem(value, p.sizeLimits) : null
 }
 
+const RATIO_RE = /^\d+:\d+$/
+
+/**
+ * 取值决定的宽高比：带对照表的尺寸取表中对应项的宽高比，取值列表中含比例的参数（视频的宽高比）取取值本身；
+ * 由模型决定时返回 `auto`，参数与宽高比无关（分辨率、张数）或取值不在表中时返回 `null`。
+ * 界面预览空卡与模型建卡共用：两处由同一取值得到同一形状。
+ */
+export function ratioOf(p: MediaParamDefinition, v: unknown): string | null {
+  if (p.shapes) {
+    const at = p.shapes.find((s) => s.value === v)
+    return at ? (at.ratio ?? 'auto') : null
+  }
+  if (!(p.values ?? []).some((x) => RATIO_RE.test(String(x)))) return null
+  return typeof v === 'string' && RATIO_RE.test(v) ? v : 'auto'
+}
+
 /** 画布保存选择偏好，只发送当前模式允许的值；直接生成工具仍逐项报错。 */
 export function activeMediaParams(
   specs: readonly MediaParamDefinition[],

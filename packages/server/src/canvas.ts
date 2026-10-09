@@ -72,6 +72,7 @@ import {
   resumeMedia,
   TASK_SUFFIX,
 } from '@qywork/tools'
+import { prepareAgentOps } from './canvas-agent-ops.ts'
 import { findByName } from './files.ts'
 import { mediaDurationOf, mediaSizeOf } from './media-size.ts'
 
@@ -1194,21 +1195,25 @@ export class CanvasService {
   }
 
   /**
-   * 应用一批操作并写入，返回应用后的文档与本批的批内名称对照；`earlier` 见 `applyCanvasOps`。
+   * 应用一批操作并写入，返回应用后的文档与批内名称对照。
    * 文件节点的路径先按工作区核实，并规范化为正斜杠相对路径；运行中的卡片不能删除（409）。
+   * `agent` 为真时先按 `prepareAgentOps` 核对与补全，在同一次读写中进行。
    */
   apply(
     workspaceRoot: string,
     path: string,
     ops: CanvasOp[],
-    earlier: Readonly<Record<string, string>> = {},
+    agent = false,
   ): Promise<{ doc: CanvasDoc; refs: Record<string, string>; step: CanvasStep }> {
     return this.enqueue(keyOf(workspaceRoot, path), async () => {
       const abs = await this.locate(workspaceRoot, path)
       const normalized = await Promise.all(ops.map((op) => this.normalizePath(workspaceRoot, op)))
       const r = await this.commit(abs, (doc) => {
-        this.refuseRemovingRunning(workspaceRoot, path, doc, normalized)
-        return applyCanvasOps(doc, normalized, this.deps.newId, earlier)
+        const prepared = agent
+          ? prepareAgentOps(doc, normalized, this.deps.paramSpecsOf)
+          : normalized
+        this.refuseRemovingRunning(workspaceRoot, path, doc, prepared)
+        return applyCanvasOps(doc, prepared, this.deps.newId)
       })
       return { doc: r.doc, refs: r.refs, step: r.step }
     })
@@ -1344,8 +1349,11 @@ export class CanvasService {
   ): void {
     const canvasKey = keyOf(workspaceRoot, path)
     for (const op of ops) {
-      if (op.op !== 'remove' || !this.running.has(`${canvasKey}#${op.id}`)) continue
-      const node = doc.nodes.find((n) => n.id === op.id)
+      if (op.op !== 'remove') continue
+      // 大模型按卡片名称引用，先按 id、再按名称找到节点。
+      const node =
+        doc.nodes.find((n) => n.id === op.id) ?? doc.nodes.find((n) => displayNameOf(n) === op.id)
+      if (!node || !this.running.has(`${canvasKey}#${node.id}`)) continue
       const inFlight =
         op.version === undefined ||
         (node?.type === 'generate' &&
@@ -1448,20 +1456,15 @@ export class CanvasService {
 /**
  * 提供给会话的画布端口：使用同一个画布服务，绑定该会话所在的项目。
  * 运行与取回在工具中等待至结束；中止信号来自本轮，停止本轮即停止等待，视频版本保留以待取回。
- *
- * 端口按轮创建，记录本轮每张画布已定义的批内名称，后续批次可继续使用。不要改为只在单批内有效：
- * 模型分批建卡时会在后一批用前一批的名称连线，被拒后删去连线继续执行，生成的视频与参考图无关。
+ * 修改按大模型的规则核对（`prepareAgentOps`）。
  */
 export function canvasPort(service: CanvasService, ws: CanvasWorkspace): CanvasPort {
-  const named = new Map<string, Record<string, string>>()
   return {
     create: (path) => service.create(ws.root, { path }),
     list: () => service.list(ws.root),
     read: (path) => service.read(ws.root, path),
     edit: async (path, ops) => {
-      const earlier = named.get(path) ?? {}
-      const { refs } = await service.apply(ws.root, path, ops, earlier)
-      named.set(path, { ...earlier, ...refs })
+      const { refs } = await service.apply(ws.root, path, ops, true)
       return { view: await service.read(ws.root, path), refs }
     },
     run: async (path, nodeId, media, signal) =>

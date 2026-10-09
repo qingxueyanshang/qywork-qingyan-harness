@@ -72,6 +72,18 @@ function ctx(port: CanvasPort | undefined, media?: MediaPort): ToolContext {
   }
 }
 
+/** 有三张生成卡的画布：id 为 a、b、c，名称为 镜头A、镜头B、镜头C。 */
+function cards(): CanvasView {
+  const order = ['a', 'b', 'c']
+  const r = applyCanvasOps(
+    emptyCanvas(),
+    order.map((id) => ({ op: 'add_generate', output: 'image', name: `镜头${id.toUpperCase()}` })),
+    () => order.shift()!,
+  )
+  if (!r.ok) throw new Error(r.error)
+  return { path: 'board.canvas.json', doc: r.doc, states: {} }
+}
+
 function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
   port: CanvasPort
   seen: Seen
@@ -161,13 +173,16 @@ describe('canvas 工具', () => {
     expect(seen.creates).toEqual([path])
   })
 
-  test('批量 id 去重，仍使用本轮生成端口与中止信号；非法数组不派发', async () => {
+  test('批量按卡片名称或 id 运行并去重，仍使用本轮生成端口与中止信号；非法数组或不存在的卡不派发', async () => {
     const { port, seen } = fakePort({ ok: true, outputs: [{ path: 'a.png' }], params: {} })
+    port.read = async () => cards()
     const c = ctx(port, media)
-    const args = { path: 'board.canvas.json', node: ['a', 'b', 'a'] }
+    const args = { path: 'board.canvas.json', node: ['a', '镜头B', 'a'] }
     expect((await runCanvasTool.fn(args, c)).status).toBe('success')
     expect(seen.batches).toEqual([{ nodes: ['a', 'b'], media, signal: c.signal }])
-    for (const node of [[], ['a', ''], ['a', 1], { id: 'a' }, null, 'a', '["a","b"]']) {
+    const missing = await runCanvasTool.fn({ ...args, node: ['镜头Z'] }, c)
+    expect(missing.message).toBe('未找到卡片「镜头Z」：引用卡片时写画布上已有的卡片名称或 id')
+    for (const node of [[], ['a', ''], ['a', 1], { id: 'a' }, null, 'a', '["a","b"]', ['镜头Z']]) {
       expect(await runCanvasTool.fn({ ...args, node }, c)).toMatchObject({
         executed: false,
         errorKind: 'invalid_tool_arguments',
@@ -179,6 +194,7 @@ describe('canvas 工具', () => {
 
   test('批量部分失败仍返回成功文件与逐节点结果，不把整批报告为成功', async () => {
     const { port } = fakePort(DONE)
+    port.read = async () => cards()
     port.runBatch = async () => [
       { node: 'a', result: { ok: true, outputs: [{ path: 'generated/a.png' }], params: {} } },
       { node: 'b', result: { ok: false, message: '等待超时', pending: true } },
@@ -203,9 +219,9 @@ describe('canvas 工具', () => {
     const list = await readCanvasTool.fn({}, ctx(port))
     expect(list.message).toContain('分镜/第二集.canvas.json')
     const one = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
-    expect(one.message).toContain('- id1 文件「小满」角色/小满.png（正常）')
+    expect(one.message).toContain('- id1 文件「小满」（组：图片）角色/小满.png（正常）')
     expect(one.message).toContain(
-      '- id2 video 生成卡「视频1」默认模型，0 版（失败：内容审核未通过）',
+      '- id2 video 生成卡「视频1」（组：视频）默认模型，0 版（失败：内容审核未通过）',
     )
     expect(one.message).toContain('提示词：@[id1] 走出校门')
     expect(one.message).toContain('  输入：小满（reference）')
@@ -243,20 +259,25 @@ describe('canvas 工具', () => {
     expect(seen.edits).toHaveLength(1)
   })
 
-  test('edit 的新增操作不接受坐标与尺寸，位置由画布计算；移动已有节点不受影响', async () => {
+  test('edit 的新增操作不接受坐标、尺寸与相邻节点，位置由画布按组排列；移动已有节点不受影响', async () => {
     const { port, seen } = fakePort(DONE)
-    for (const extra of ['"x":0,"y":950', '"w":1536,"h":1024', '"near":{"x":0,"y":0}']) {
+    for (const extra of [
+      '"x":0,"y":950',
+      '"w":1536,"h":1024',
+      '"near":{"x":0,"y":0}',
+      '"beside":"id1"',
+    ]) {
       const out = await editCanvasTool.fn(
         {
           path: 'board.canvas.json',
-          ops_json: `[{"op":"add_file","path":"a.png","beside":"id1"},{"op":"add_generate","output":"image",${extra}}]`,
+          ops_json: `[{"op":"add_file","path":"a.png","group":"素材"},{"op":"add_generate","output":"image",${extra}}]`,
         },
         ctx(port),
       )
       expect(out.status).toBe('failure')
       expect(out.errorKind).toBe('invalid_tool_arguments')
       expect(out.message).toContain('第 2 条操作')
-      expect(out.message).toContain('beside')
+      expect(out.message).toContain('由画布按 group 排列')
     }
     expect(seen.edits).toHaveLength(0)
     const moved = await editCanvasTool.fn(

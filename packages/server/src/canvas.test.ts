@@ -448,9 +448,9 @@ describe('画布服务：取帧', () => {
     expect(second.path).toBe('generated/视频1_尾帧-2.png')
     const doc = await onDisk(root)
     const node = doc.nodes.find((n) => n.id === first.nodeId)!
-    expect(node).toMatchObject({ type: 'file', path: 'generated/视频1_尾帧.png', x: 500, y: 40 })
+    expect(node).toMatchObject({ type: 'file', path: 'generated/视频1_尾帧.png', x: 550, y: 40 })
     const next = doc.nodes.find((n) => n.id === second.nodeId)!
-    expect(next).toMatchObject({ x: node.x + node.w + 100, y: 40 })
+    expect(next).toMatchObject({ x: node.x + node.w + 150, y: 40 })
     expect(new Uint8Array(await readFile(join(root, first.path)))).toEqual(PNG)
   })
 
@@ -524,7 +524,7 @@ describe('画布服务：时间线导出', () => {
     expect(new Uint8Array(await readFile(join(root, landed.path)))).toEqual(MP4)
     expect(await parts(root)).toEqual([])
     const node = (await onDisk(root)).nodes.find((n) => n.id === landed.nodeId)!
-    expect(node).toMatchObject({ type: 'file', path: 'generated/粗剪.mp4', x: 580, y: 400 })
+    expect(node).toMatchObject({ type: 'file', path: 'generated/粗剪.mp4', x: 630, y: 400 })
     // 会话完成即结束，不能再写入。
     expect((await failure(svc.exportWrite(root, id, 0, MP4))).status).toBe(404)
   })

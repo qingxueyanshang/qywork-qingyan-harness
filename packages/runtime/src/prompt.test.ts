@@ -371,7 +371,7 @@ describe('能力段', () => {
     expect(prompt).toContain('界面画布页呈现该文件的内容')
     expect(prompt).toContain('使用 read_canvas')
     expect(prompt).toContain('使用 create_canvas')
-    expect(prompt).toContain('node 传生成卡 id 数组，单个节点也写成数组')
+    expect(prompt).toContain('node 传生成卡名称数组，单张卡也写成数组')
     expect(prompt).toContain('使用 edit_canvas')
     expect(prompt).toContain('使用 run_canvas')
     expect(prompt).toContain('使用 retrieve_canvas')

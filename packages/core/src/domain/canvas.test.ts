@@ -162,33 +162,33 @@ describe('画布：操作', () => {
     ])
   })
 
-  test('传入此前批次的名称对照后可继续使用；本批重新定义时以本批为准；未定义时报错写明定义方式与改用节点 id', () => {
-    const first = applyCanvasOps(
+  test('引用卡片可写卡片名称：操作中的字段与提示词中的 @[名称] 都换成 id，跨批有效；卡片不存在、名称重复或批内名称跨批时整批拒绝', () => {
+    const first = apply(
       emptyCanvas(),
-      [{ op: 'add_file', ref: '$照片', path: '照片.png', x: 0, y: 0 }],
+      [{ op: 'add_file', ref: '$照片', path: '照片.png', name: '旧照片', x: 0, y: 0 }],
       ids('b'),
     )
-    if (!first.ok) throw new Error(first.error)
-    const later: CanvasOp[] = [
-      { op: 'add_generate', output: 'video', prompt: '@[$照片] 翻看照片', below: '$照片' },
-    ]
-    const next = applyCanvasOps(first.doc, later, ids('n'), first.refs)
-    if (!next.ok) throw new Error(next.error)
-    expect(gen(next.doc, 'n1')).toMatchObject({ prompt: '@[b1] 翻看照片', x: 0, y: 169 + 100 })
-    expect(next.doc.edges.some((e) => e.from === 'b1' && e.to === 'n1')).toBe(true)
-    const again = applyCanvasOps(
-      first.doc,
+    const next = apply(
+      first,
       [
-        { op: 'add_file', ref: '$照片', path: '新照片.png', x: 500, y: 0 },
-        { op: 'add_generate', output: 'image', prompt: '@[$照片] 微笑' },
+        { op: 'add_generate', output: 'video', name: '镜头1', prompt: '@[旧照片] 被翻开' },
+        { op: 'update', id: '镜头1', prompt: '@[旧照片] 被合上' },
       ],
-      ids('r'),
-      first.refs,
+      ids('n'),
     )
-    if (!again.ok) throw new Error(again.error)
-    expect(gen(again.doc, 'r2').prompt).toBe('@[r1] 微笑')
-    expect(rejects(first.doc, later)).toBe(
-      '$照片 未定义：批内名称须先由本轮某一批操作的 ref 定义，引用此前对话中创建的节点时使用节点 id',
+    expect(gen(next, 'n1').prompt).toBe('@[b1] 被合上')
+    expect(next.edges.filter((e) => e.from === 'b1' && e.to === 'n1')).toHaveLength(1)
+    expect(rejects(next, [{ op: 'connect', from: '新照片', to: '镜头1', role: 'reference' }])).toBe(
+      '未找到卡片「新照片」：引用卡片时写画布上已有的卡片名称或 id',
+    )
+    const twin = apply(
+      next,
+      [{ op: 'add_file', path: 'b.png', name: '旧照片', x: 500, y: 0 }],
+      ids('t'),
+    )
+    expect(rejects(twin, [{ op: 'remove', id: '旧照片' }])).toContain('名称「旧照片」对应 2 张卡')
+    expect(rejects(first, [{ op: 'add_generate', output: 'image', prompt: '@[$照片] 微笑' }])).toBe(
+      '$照片 未定义：批内名称只在同一批操作中有效，引用卡片时写卡片名称',
     )
   })
 
@@ -368,34 +368,34 @@ describe('画布：操作', () => {
       ids('n'),
     )
     const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    expect(box('n1')).toMatchObject({ x: 400 + 225 + 100, y: 0 })
-    expect(box('n2')).toMatchObject({ x: box('n1').x + 225 + 100, y: 0 })
-    // 视频空卡按横竖两种形状占位，宽 300。
-    expect(box('n3')).toMatchObject({ x: box('n2').x + 300 + 100, y: 0 })
+    expect(box('n1')).toMatchObject({ x: 400 + 225 + 150, y: 0 })
+    // 视频空卡缺省为横向，按当前框占位。
+    expect(box('n2')).toMatchObject({ x: box('n1').x + 225 + 150, y: 0 })
+    expect(box('n3')).toMatchObject({ x: box('n2').x + 300 + 150, y: 0 })
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
   })
 
-  test('尚无结果的图片、视频卡按横竖两种形状占位：结果改变卡片形状后与相邻的卡仍不相交', () => {
+  test('尚无结果的方形卡按横竖两种形状占位，已确定宽高比的卡按当前框：结果改变形状后与相邻的卡仍不相交', () => {
     let doc = apply(
       emptyCanvas(),
       [
-        { op: 'add_generate', ref: '$a', output: 'image' },
-        { op: 'add_generate', ref: '$b', output: 'image', beside: '$a' },
-        { op: 'add_generate', output: 'video', below: '$a' },
-        { op: 'add_generate', output: 'image', beside: '$b' },
+        { op: 'add_generate', output: 'image', group: '角色' },
+        { op: 'add_generate', output: 'image', group: '角色' },
+        { op: 'add_generate', output: 'image', group: '角色', w: 300, h: 169 },
+        { op: 'add_generate', output: 'image', group: '角色' },
       ],
       ids('n'),
     )
     const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    expect(box('n2')).toMatchObject({ x: 300 + 100, y: 0 })
-    expect(box('n3')).toMatchObject({ x: 0, y: 300 + 100 })
+    expect(box('n2')).toMatchObject({ x: 0, y: 300 + 150 })
+    expect(box('n3')).toMatchObject({ x: 0, y: 900 })
+    expect(box('n4')).toMatchObject({ x: 0, y: 900 + 169 + 150 })
     const results = [
       ['n1', { w: 1672, h: 941 }],
       ['n2', { w: 1080, h: 1920 }],
-      ['n3', { w: 1080, h: 1920 }],
-      ['n4', { w: 1920, h: 1080 }],
+      ['n4', { w: 1080, h: 1920 }],
     ] as const
     for (const [id, size] of results) {
       const r = addVersions(doc, id, [{ ...version(`p-${id}`, `generated/${id}.png`), size }])
@@ -404,7 +404,6 @@ describe('画布：操作', () => {
     }
     expect(box('n1')).toMatchObject({ w: 300, h: 169 })
     expect(box('n2')).toMatchObject({ w: 169, h: 300 })
-    expect(box('n2').x - (box('n1').x + box('n1').w)).toBe(100)
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
@@ -493,7 +492,7 @@ describe('画布：操作', () => {
     expect(!n.ok && n.error).toBe('第 1 条操作 的 x 类型错误：应为数字，收到的是字符串')
   })
 
-  test('beside 同时给出 x、y 时以 x、y 为准；指向不存在的节点时整批拒绝', () => {
+  test('beside 同时给出 x、y 时以 x、y 为准；指向不存在的节点时整批拒绝；可按卡片名称指定', () => {
     const doc = apply(
       sample(),
       [{ op: 'add_file', path: 'x.png', beside: 'a1', x: 7, y: 9 }],
@@ -501,16 +500,19 @@ describe('画布：操作', () => {
     )
     expect(doc.nodes.at(-1)).toMatchObject({ x: 7, y: 9 })
     expect(rejects(sample(), [{ op: 'add_file', path: 'x.png', beside: 'nope' }])).toContain('nope')
-    expect(
-      rejects(sample(), [
-        { op: 'add_generate', output: 'video', name: '镜头1' },
+    const named = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_generate', output: 'video', name: '镜头1', x: 0, y: 0 },
         { op: 'add_generate', output: 'video', beside: '镜头1' },
-      ]),
-    ).toContain('使用节点 id 或本轮用 ref 定义的 $名称，卡片名称不能作为引用')
+      ],
+      ids('n'),
+    )
+    expect(named.nodes[1]).toMatchObject({ x: 300 + 150, y: 0 })
     expect(parseCanvasOps([{ op: 'add_generate', output: 'image', beside: 'a1' }]).ok).toBe(true)
   })
 
-  test('未给出相邻节点时作为新的一组：放在全部节点右侧相隔 200 并与最上方节点对齐，内容远离原点时同样相邻', () => {
+  test('未给出位置的新卡按组排列：素材组各成一列，连接了素材的组在右侧每行 5 张，时间线在其下方；从已有内容右侧开始', () => {
     const base = apply(
       emptyCanvas(),
       [
@@ -519,52 +521,86 @@ describe('画布：操作', () => {
       ],
       ids('b'),
     )
+    const shots: CanvasOp[] = Array.from({ length: 7 }, (_, i) => ({
+      op: 'add_generate',
+      output: 'image',
+      name: `镜头${i + 1}`,
+      group: '分镜',
+      prompt: i % 2 ? '@[林悦] 回头' : '@[客厅] 空镜',
+      w: 300,
+      h: 169,
+    }))
     const doc = apply(
       base,
       [
-        { op: 'add_generate', ref: '$a', output: 'image' },
-        { op: 'add_generate', output: 'image' },
-        { op: 'add_generate', output: 'image', below: '$a' },
+        { op: 'add_generate', output: 'image', name: '林悦', group: '角色', w: 169, h: 300 },
+        { op: 'add_generate', output: 'image', name: '奶奶', group: '角色', w: 169, h: 300 },
+        { op: 'add_generate', output: 'image', name: '客厅', group: '场景', w: 300, h: 169 },
+        ...shots,
+        { op: 'add_timeline', name: '成片' },
       ],
       ids('n'),
     )
     const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    // 已有节点尚无结果，按 300 见方占位，最右处为 -1972 + 300。
-    expect(box('n1')).toMatchObject({ x: -1672 + 200, y: 1346 })
-    expect(box('n2')).toMatchObject({ x: -1472 + 300 + 200, y: 1346 })
-    expect(box('n3')).toMatchObject({ x: -1472, y: 1346 + 300 + 100 })
-    expect(apply(emptyCanvas(), [{ op: 'add_file', path: 'a.png' }]).nodes[0]).toMatchObject({
-      x: 0,
-      y: 0,
-    })
-  })
-
-  test('below 排在源节点下方的第一个空位，被占用时向下越过；素材按列、分镜按行换行时互不相交', () => {
-    const doc = apply(
-      emptyCanvas(),
-      [
-        { op: 'add_generate', ref: '$c1', output: 'image' },
-        { op: 'add_generate', output: 'image', below: '$c1' },
-        { op: 'add_generate', output: 'image', below: '$c1' },
-        { op: 'add_generate', ref: '$s1', output: 'video' },
-        { op: 'add_generate', output: 'video', beside: '$s1' },
-        { op: 'add_generate', output: 'video', below: '$s1' },
-      ],
-      ids('n'),
-    )
-    const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    expect(box('n2')).toMatchObject({ x: 0, y: 300 + 100 })
-    expect(box('n3')).toMatchObject({ x: 0, y: 800 })
-    expect(box('n4')).toMatchObject({ x: 300 + 200, y: 0 })
-    expect(box('n5')).toMatchObject({ x: 900, y: 0 })
-    expect(box('n6')).toMatchObject({ x: 500, y: 400 })
+    // 已有的方形空卡按 300 见方占位，最右处为 -1972 + 300。
+    expect(box('n1')).toMatchObject({ x: -1672 + 150, y: 1346 })
+    expect(box('n2')).toMatchObject({ x: -1522, y: 1346 + 300 + 150 })
+    expect(box('n3')).toMatchObject({ x: -1522 + 169 + 150, y: 1346 })
+    const left = -1203 + 300 + 150
+    expect(box('n4')).toMatchObject({ x: left, y: 1346 })
+    expect(box('n8')).toMatchObject({ x: left + 4 * 450, y: 1346 })
+    expect(box('n9')).toMatchObject({ x: left, y: 1346 + 169 + 150 })
+    expect(box('n10')).toMatchObject({ x: left + 450, y: 1665 })
+    expect(box('n11')).toMatchObject({ x: left, y: 1665 + 169 + 150 })
+    expect(gen(doc, 'n4').group).toBe('分镜')
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
-    expect(parseCanvasOps([{ op: 'add_timeline', below: 'a1' }]).ok).toBe(true)
-    expect(
-      rejects(emptyCanvas(), [{ op: 'add_file', path: 'a.png', beside: 'a1', below: 'a2' }]),
-    ).toContain('beside 与 below 只能给出一个')
+    expect(apply(emptyCanvas(), [{ op: 'add_file', path: 'a.png' }]).nodes[0]).toMatchObject({
+      x: 0,
+      y: 0,
+      group: '图片',
+    })
+  })
+
+  test('后续批次接在同组之后：素材列满 6 张另起一列；已有引用区时新的素材组排在素材区左侧；分镜接着按行排', () => {
+    let doc = apply(
+      emptyCanvas(),
+      Array.from({ length: 7 }, (_, i) => ({
+        op: 'add_generate' as const,
+        output: 'image' as const,
+        name: `道具${i + 1}`,
+        group: '道具',
+        w: 300,
+        h: 169,
+      })),
+      ids('a'),
+    )
+    const box = (id: string) => doc.nodes.find((n) => n.id === id)!
+    expect(box('a6')).toMatchObject({ x: 0, y: 5 * 319 })
+    expect(box('a7')).toMatchObject({ x: 450, y: 0 })
+    const shot = (name: string, prompt: string): CanvasOp => ({
+      op: 'add_generate',
+      output: 'video',
+      name,
+      group: '镜头',
+      prompt,
+      w: 300,
+      h: 169,
+    })
+    doc = apply(doc, [shot('镜头1', '@[道具1] 特写')], ids('b'))
+    expect(box('b1')).toMatchObject({ x: 900, y: 0 })
+    doc = apply(
+      doc,
+      [{ op: 'add_generate', output: 'image', name: '林悦', group: '角色', w: 169, h: 300 }],
+      ids('c'),
+    )
+    expect(box('c1')).toMatchObject({ x: -169 - 150, y: 0 })
+    doc = apply(doc, [shot('镜头2', '@[林悦] 回头')], ids('d'))
+    expect(box('d1')).toMatchObject({ x: 900 + 450, y: 0 })
+    for (const a of doc.nodes) {
+      for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+    }
   })
 })
 
@@ -598,7 +634,7 @@ describe('画布：框按媒体比例调整', () => {
 
   test('音频文件与生成节点使用横向紧凑框，放置相邻节点时使用相同尺寸', () => {
     const doc = apply(emptyCanvas(), [
-      { op: 'add_file', ref: '$a', path: 'voice.wav' },
+      { op: 'add_file', ref: '$a', path: 'voice.wav', x: 0, y: 0 },
       { op: 'add_generate', output: 'audio', beside: '$a' },
     ])
     expect(box(doc, 'a1')).toEqual({ w: 300, h: 96 })

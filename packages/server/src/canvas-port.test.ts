@@ -3,7 +3,7 @@
  *
  * 锁定四项行为：同一批操作经两条路径写出的文件逐字节相同；Agent 与用户同时修改时，双方的改动均保留；
  * 经端口运行视频时，任务节点在端口返回（工具结束）之前已写入画布并发出通知；
- * 同一端口的后续批次可继续使用此前批次的批内名称。
+ * 经端口的修改按卡片名称引用、名称不重复、参数按模型参数表核对（`canvas-agent-ops.ts`）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -16,6 +16,7 @@ import {
   applyCanvasOps,
   type CanvasOp,
   emptyCanvas,
+  type MediaParamDefinition,
   parseCanvas,
   serializeCanvas,
 } from '@qywork/core'
@@ -68,25 +69,70 @@ describe('画布端口', () => {
     expect(Object.values(view.states).every((s) => s.state === 'normal')).toBe(true)
     expect(view.doc.runs).toHaveLength(2)
   })
-  test('同一端口的后续批次可继续使用此前批次的批内名称；新端口（下一轮）不继承', async () => {
+  test('经端口按卡片名称引用并跨批有效；名称不能重复；参数按模型参数表核对，宽高比决定卡片形状', async () => {
     const root = await workspace()
-    const service = new CanvasService({ publish: () => {}, newId: sequence() })
+    const specs: MediaParamDefinition[] = [
+      { name: 'aspect_ratio', type: 'enum', values: ['16:9', '9:16', '1:1'] },
+      { name: 'duration', type: 'integer', min: 1, max: 15 },
+    ]
+    const service = new CanvasService({
+      publish: () => {},
+      newId: sequence(),
+      paramSpecsOf: () => specs,
+    })
     const port = canvasPort(service, { id: 'ws', root })
-    await port.edit(PATH, [{ op: 'add_file', ref: '$小满', path: 'a.png' }])
+    await port.edit(PATH, [{ op: 'add_file', path: 'a.png', name: '小满', group: '角色' }])
     const { view } = await port.edit(PATH, [
-      { op: 'add_generate', ref: '$走出校门', output: 'video', prompt: '@[$小满] 走出校门' },
-      { op: 'add_generate', output: 'video', prompt: '@[$小满] 回头', below: '$走出校门' },
+      {
+        op: 'add_generate',
+        output: 'video',
+        name: '走出校门',
+        group: '镜头',
+        prompt: '@[小满] 走出校门',
+        params: { aspect_ratio: '9:16', duration: 5 },
+      },
     ])
-    const cards = view.doc.nodes.filter((n) => n.type === 'generate')
-    expect(cards.map((n) => (n.type === 'generate' ? n.prompt : ''))).toEqual([
-      '@[id1] 走出校门',
-      '@[id1] 回头',
-    ])
-    expect(view.doc.edges.filter((e) => e.from === 'id1')).toHaveLength(2)
-    const next = canvasPort(service, { id: 'ws', root })
+    const card = () => view.doc.nodes.find((n) => n.type === 'generate')
+    expect(card()).toMatchObject({ prompt: '@[id1] 走出校门', w: 169, h: 300 })
+    expect(view.doc.edges.filter((e) => e.from === 'id1')).toHaveLength(1)
     await expect(
-      next.edit(PATH, [{ op: 'add_generate', output: 'image', below: '$小满' }]),
-    ).rejects.toThrow('$小满 未定义')
+      port.edit(PATH, [{ op: 'add_generate', output: 'video', name: '小满' }]),
+    ).rejects.toThrow('名称「小满」已被另一张卡使用')
+    await expect(
+      port.edit(PATH, [{ op: 'update', id: '走出校门', params: { duration: 30 } }]),
+    ).rejects.toThrow('「走出校门」的参数 duration 取值 30 不合法：范围 1–15')
+    await expect(
+      port.edit(PATH, [{ op: 'update', id: '走出校门', params: { seconds: 5 } }]),
+    ).rejects.toThrow('「走出校门」的参数 seconds 不存在。可用参数：aspect_ratio、duration')
+    const wide = await port.edit(PATH, [
+      { op: 'update', id: '走出校门', params: { aspect_ratio: '16:9' } },
+    ])
+    expect(wide.view.doc.nodes.find((n) => n.type === 'generate')).toMatchObject({
+      w: 300,
+      h: 169,
+    })
+  })
+  test('尺寸取值不在对照表中时按像素宽高确定卡片形状', async () => {
+    const root = await workspace()
+    const specs: MediaParamDefinition[] = [
+      {
+        name: 'size',
+        type: 'string',
+        shapes: [{ value: 'auto' }, { ratio: '1:1', value: '1024x1024' }],
+      },
+    ]
+    const service = new CanvasService({ publish: () => {}, paramSpecsOf: () => specs })
+    const port = canvasPort(service, { id: 'ws', root })
+    const { view } = await port.edit(PATH, [
+      {
+        op: 'add_generate',
+        output: 'image',
+        name: '林晚',
+        group: '角色',
+        params: { size: '1024x1536' },
+      },
+    ])
+    expect(view.doc.nodes[0]).toMatchObject({ w: 169, h: 254 })
   })
   test('同一批操作经端口与经 HTTP 写出的文件逐字节相同', async () => {
     const viaPort = await workspace()
