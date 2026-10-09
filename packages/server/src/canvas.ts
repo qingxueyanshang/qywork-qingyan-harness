@@ -72,7 +72,7 @@ import {
   resumeMedia,
   TASK_SUFFIX,
 } from '@qywork/tools'
-import { prepareAgentOps } from './canvas-agent-ops.ts'
+import { checkActiveParams, prepareAgentOps } from './canvas-agent-ops.ts'
 import { findByName } from './files.ts'
 import { mediaDurationOf, mediaSizeOf } from './media-size.ts'
 
@@ -1253,7 +1253,7 @@ export class CanvasService {
   /**
    * 应用一批操作并写入，返回应用后的文档与批内名称对照。
    * 文件节点的路径先按工作区核实，并规范化为正斜杠相对路径；运行中的卡片不能删除（409）。
-   * `agent` 为真时先按 `prepareAgentOps` 核对与补全，在同一次读写中进行。
+   * `agent` 为真时先按 `prepareAgentOps` 核对与补全，应用后按 `checkActiveParams` 核对参数可用，在同一次读写中进行。
    */
   apply(
     workspaceRoot: string,
@@ -1269,7 +1269,9 @@ export class CanvasService {
           ? prepareAgentOps(doc, normalized, this.deps.paramSpecsOf)
           : normalized
         this.refuseRemovingRunning(workspaceRoot, path, doc, prepared)
-        return applyCanvasOps(doc, prepared, this.deps.newId)
+        const applied = applyCanvasOps(doc, prepared, this.deps.newId)
+        if (agent && applied.ok) checkActiveParams(doc, applied.doc, this.deps.paramSpecsOf)
+        return applied
       })
       return { doc: r.doc, refs: r.refs, step: r.step }
     })

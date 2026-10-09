@@ -112,28 +112,81 @@ describe('画布端口', () => {
       h: 169,
     })
   })
-  test('尺寸取值不在对照表中时按像素宽高确定卡片形状', async () => {
+  /** 原始失败形状：模型填写表外的 1536x864，校验通过，而参数面板的宽高比与分辨率无一选中。 */
+  test('带对照表的尺寸只接受表中的取值，报错列出全部可选值；表中取值决定卡片形状', async () => {
     const root = await workspace()
     const specs: MediaParamDefinition[] = [
       {
         name: 'size',
         type: 'string',
-        shapes: [{ value: 'auto' }, { ratio: '1:1', value: '1024x1024' }],
+        pattern: '^(auto|\\d+x\\d+)$',
+        shapes: [
+          { value: 'auto' },
+          { ratio: '16:9', tier: '1K', value: '1360x768' },
+          { ratio: '2:3', tier: '1K', value: '832x1248' },
+        ],
       },
     ]
     const service = new CanvasService({ publish: () => {}, paramSpecsOf: () => specs })
     const port = canvasPort(service, { id: 'ws', root })
-    const { view } = await port.edit(PATH, [
-      {
-        op: 'add_generate',
-        output: 'image',
-        name: '林晚',
-        group: '角色',
-        params: { size: '1024x1536' },
-      },
-    ])
+    const add = (size: string) =>
+      port.edit(PATH, [
+        { op: 'add_generate', output: 'image', name: `林晚${size}`, params: { size } },
+      ])
+    await expect(add('1536x864')).rejects.toThrow(
+      '「林晚1536x864」的参数 size 取值 "1536x864" 不合法：可选 auto（自动宽高比）、1360x768（16:9 · 1K）、832x1248（2:3 · 1K）',
+    )
+    const { view } = await add('832x1248')
     expect(view.doc.nodes[0]).toMatchObject({ w: 169, h: 254 })
   })
+  /** 原始失败形状：模型写入当前模式下不可用的参数，工具返回成功，而画布不发送该参数，参数面板也不显示。 */
+  test('参数按卡片批后的输入与其他参数核对是否可用，不可用时整批拒绝', async () => {
+    const root = await workspace()
+    const specs: MediaParamDefinition[] = [
+      { name: 'output_format', type: 'enum', values: ['png', 'jpeg'], default: 'png' },
+      {
+        name: 'output_compression',
+        type: 'integer',
+        min: 0,
+        max: 100,
+        rules: [{ when: { params: { output_format: ['png'] } }, available: false }],
+      },
+      { name: 'input_fidelity', type: 'enum', values: ['low', 'high'], operations: ['edit'] },
+    ]
+    const service = new CanvasService({ publish: () => {}, paramSpecsOf: () => specs })
+    const port = canvasPort(service, { id: 'ws', root })
+    const card = (name: string, params: Record<string, unknown>, prompt = '') =>
+      port.edit(PATH, [{ op: 'add_generate', output: 'image', name, prompt, params }])
+    await expect(card('压缩', { output_compression: 90 })).rejects.toThrow(
+      '「压缩」的参数 output_compression 取值 90 在当前的输入与参数下不可用：当前生成模式或参数组合不支持此参数',
+    )
+    await card('压缩', { output_format: 'jpeg', output_compression: 90 })
+    await expect(card('保真', { input_fidelity: 'high' })).rejects.toThrow(
+      '「保真」的参数 input_fidelity 取值 "high" 在当前的输入与参数下不可用',
+    )
+    await port.edit(PATH, [{ op: 'add_file', path: 'a.png', name: '参考' }])
+    await card('保真', { input_fidelity: 'high' }, '@[参考] 换背景')
+  })
+
+  test('卡片写入的生成模型须已配置，未配置时整批拒绝', async () => {
+    const root = await workspace()
+    const specs: MediaParamDefinition[] = [{ name: 'n', type: 'integer', min: 1, max: 4 }]
+    const service = new CanvasService({
+      publish: () => {},
+      paramSpecsOf: (_output, pick) => (!pick || pick.model === 'img-1' ? specs : undefined),
+    })
+    const port = canvasPort(service, { id: 'ws', root })
+    const add = (name: string, model: string) =>
+      port.edit(PATH, [{ op: 'add_generate', output: 'image', name, provider: 'p', model }])
+    await expect(add('甲', 'img-x')).rejects.toThrow(
+      '「甲」的生成模型 p / img-x 未配置：provider 与 model 取自本轮「可用的生成模型」中的同一行',
+    )
+    await add('甲', 'img-1')
+    await expect(port.edit(PATH, [{ op: 'update', id: '甲', model: 'img-x' }])).rejects.toThrow(
+      '未配置',
+    )
+  })
+
   test('同一批操作经端口与经 HTTP 写出的文件逐字节相同', async () => {
     const viaPort = await workspace()
     const port = canvasPort(new CanvasService({ publish: () => {}, newId: sequence() }), {
