@@ -810,12 +810,12 @@ const LAYOUT_TASK =
   '最后为 7 个镜头各建一张图片分镜卡，把用到的参考图连到分镜卡，并把 script.md 放上画布。分镜卡只建卡与连线，不运行。'
 
 /**
- * 每个新节点到最近节点的空白上限。同一行内的间距是 100；尚无结果的卡为竖图预留 300 高，
- * 生成横图（169 高）后与下一行相隔 100 + 131。
+ * 每个新节点到最近节点的空白上限。同一组内的间距是 100，组与组相隔 200；尚无结果的卡为竖图预留 300 高，
+ * 生成横图（169 高）后与下方的卡相隔 100 + 131。
  */
 const LAYOUT_MAX_GAP = 100 + (300 - 169)
-/** 新节点所在的行数上限：角色、场景、分镜与脚本各占一行，再留一行余量。 */
-const LAYOUT_MAX_ROWS = 5
+/** 分镜卡每行的数量上限，与 edit_canvas 说明中的每行 5 个一致。 */
+const LAYOUT_ROW_CARDS = 5
 
 /** 尚无结果的生成卡按 `size` 的比例改变形状后的画布，用于检查之后生成时是否与相邻卡相交。 */
 function settledAs(doc: CanvasDoc, size: CanvasPixels): CanvasDoc {
@@ -839,11 +839,11 @@ function crossings(doc: CanvasDoc, old: ReadonlySet<string>): number {
 }
 
 /**
- * 布局判定：模型在已有内容的画布上分几批新建节点并运行其中两批，检查距离、相交与按行排列。
+ * 布局判定：模型在已有内容的画布上分几批新建节点并运行其中两批，检查距离、相交与排列形状。
  *
- * 原始失败形状有两种。模型自行给出坐标时，按 950 的步长排列 169 高的图片卡，新卡放在原点附近、
+ * 原始失败形状有三种。模型自行给出坐标时，按 950 的步长排列 169 高的图片卡，新卡放在原点附近、
  * 与远离原点的已有节点相隔一千以上。由画布计算位置时，169 见方的空卡按间隔 100 排列，生成 16:9 的结果后
- * 宽 300，相邻卡相交；未给 beside 的批次接在最右侧节点之后，几组卡排成一整行，beside 同一个节点的卡排成一列。
+ * 宽 300，相邻卡相交。每组各占一行时，素材与分镜都排成不换行的横行，画布只沿水平方向延伸。
  */
 async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise<Verdict> {
   const name = `${ref.provider}/${ref.model}`
@@ -908,9 +908,19 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       crossed.every((c) => c === 0),
       `${crossed.join(' / ')} 对相交`,
     )
-    const rows = new Set(fresh.map((n) => n.y)).size
-    add(`新节点按行排列，不超过 ${LAYOUT_MAX_ROWS} 行`, rows <= LAYOUT_MAX_ROWS, `${rows} 行`)
-    const ways = { xy: 0, beside: 0, near: 0, none: 0 }
+    // 已运行的是 3 张角色卡与 2 张场景卡，每类一列；未运行的生成卡是 7 张分镜卡，每行不超过 5 个。
+    const columns = new Set(sized.map((n) => n.x)).size
+    add('角色与场景卡按类排成列（不超过 2 列）', sized.length >= 5 && columns <= 2, `${columns} 列`)
+    const shots = fresh.filter((n) => n.type === 'generate' && !sized.includes(n))
+    const perRow = [...new Set(shots.map((n) => n.y))].map(
+      (y) => shots.filter((n) => n.y === y).length,
+    )
+    add(
+      `分镜卡每行不超过 ${LAYOUT_ROW_CARDS} 个并换行`,
+      shots.length >= 7 && perRow.length >= 2 && Math.max(...perRow) <= LAYOUT_ROW_CARDS,
+      `${shots.length} 张，每行 ${perRow.join('、')} 个`,
+    )
+    const ways = { xy: 0, beside: 0, below: 0, near: 0, none: 0 }
     for (const step of listSteps(store, runId)) {
       if (step.toolName !== 'edit_canvas') continue
       const args = (step.payload as { args?: { ops_json?: unknown } } | null)?.args
@@ -922,6 +932,7 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
         if (!String(op.op).startsWith('add_')) continue
         if (op.x !== undefined || op.y !== undefined) ways.xy++
         else if (op.beside !== undefined) ways.beside++
+        else if (op.below !== undefined) ways.below++
         else if (op.near !== undefined) ways.near++
         else ways.none++
       }
@@ -929,7 +940,8 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
     add(
       '位置写法（不计失败）',
       true,
-      `坐标 ${ways.xy}、beside ${ways.beside}、near ${ways.near}、缺省 ${ways.none}；生成请求 ${prompts.length} 次`,
+      `坐标 ${ways.xy}、beside ${ways.beside}、below ${ways.below}、near ${ways.near}、缺省 ${ways.none}；` +
+        `生成请求 ${prompts.length} 次`,
     )
   } catch (err) {
     v.error = err instanceof Error ? err.message : String(err)
