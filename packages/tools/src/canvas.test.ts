@@ -208,7 +208,14 @@ describe('canvas 工具', () => {
       '- id2 video 生成卡「视频1」默认模型，0 版（失败：内容审核未通过）',
     )
     expect(one.message).toContain('提示词：@[id1] 走出校门')
+    expect(one.message).toContain('  输入：小满（reference）')
     expect(one.message).toContain('小满 → 视频1（reference）')
+    port.read = async () => {
+      const v = view()
+      return { ...v, doc: { ...v.doc, edges: [] } }
+    }
+    const lone = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
+    expect(lone.message).toContain('  输入：无，只按提示词生成')
   })
 
   test('edit 解析 ops_json 后交给端口；不是 JSON 数组或操作不合法时不调用端口', async () => {

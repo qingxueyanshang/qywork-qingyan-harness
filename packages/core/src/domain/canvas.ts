@@ -542,7 +542,7 @@ function applyOne(
 ): void {
   const resolve = (id: string): string => {
     if (!id.startsWith('$')) return id
-    return refs[id] ?? fail(`${id} 未在本批之前的操作中定义`)
+    return refs[id] ?? unknownRef(id, '本批之前的操作中')
   }
   const claim = (ref: string | undefined, id: string) => {
     if (ref === undefined) return
@@ -846,12 +846,22 @@ function defaultName(doc: CanvasDoc, prefix: string): string {
 }
 
 /** 把提示词中的 `@[$名称]` 替换为分配的 id。 */
+/**
+ * 批内名称无法解析时整批拒绝。报错写明批内名称只在同一批中有效：只写「未定义」时，模型把此前批次的
+ * 批内名称当作持久名称使用后无法得知改用节点 id，会删去相关的连线与引用后继续执行。
+ */
+function unknownRef(ref: string, where: string): never {
+  return fail(
+    `${ref} 未在${where}定义：批内名称只在定义它的同一批操作中有效，引用此前创建的节点时使用节点 id`,
+  )
+}
+
 function resolvePromptRefs(doc: CanvasDoc, refs: Record<string, string>): void {
   for (const n of doc.nodes) {
     if (n.type !== 'generate' || !n.prompt.includes('@[$')) continue
     n.prompt = n.prompt.replace(MENTION_RE, (whole, id: string) => {
       if (!id.startsWith('$')) return whole
-      return `@[${refs[id] ?? fail(`${id} 未在本批中定义`)}]`
+      return `@[${refs[id] ?? unknownRef(id, '本批中')}]`
     })
   }
 }
