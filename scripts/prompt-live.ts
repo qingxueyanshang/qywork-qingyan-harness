@@ -21,6 +21,7 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
+import { lookupMediaModel } from '@qywork/ai'
 import {
   type AgentEvent,
   CANVAS_SCHEMA_VERSION,
@@ -582,6 +583,12 @@ const BLOCKED_TASK =
 const MP4_B64 =
   'AAAAHGZ0eXBpc29tAAACAGlzb21pc28ybXA0MQAAAAhmcmVlAAAE8G1kYXQAAAGzABAHAAABthMCjC02wnAxo22/jbb+Ntv422/jbb+Ntv422/jbb+Ntv38AAJQkYWm2E4GNG238bbfxtt/G238bbfxtt/G238bbfxtt+wAAqCRhabYTgY0bbfxtt/G238bbfxtt/G238bbfxtt/G237AAC8JGFpthOBjRtt/G238bbfxtt/G238bbfxtt/G238bbfsAANAkYWm2E4GNG238bbfxtt/G238bbfxtt/G238bbfxtt+wAA5CRhabYTgY0bbfxtt/G238bbfxtt/G238bbfxtt/G237AAABtleBH/0AAJQn/gAAqCf+AAC8J/4AANAn/gAA5Cf+AAABtlsBH/0AAJQn/gAAqCf+AAC8J/4AANAn/gAA5Cf+AAABtl+BH/0AAJQn/gAAqCf+AAC8J/4AANAn/gAA5Cf+AAABswAQRwAAAbYTAoyDbCUFGNtv422/jbb+Ntv422/jbb+Ntv422/jbb98AAJQkZBthKCjG238bbfxtt/G238bbfxtt/G238bbfxtt+AACoJGQbYSgoxtt/G238bbfxtt/G238bbfxtt/G238bbfgAAvCRkG2EoKMbbfxtt/G238bbfxtt/G238bbfxtt/G234AANAkZBthKCjG238bbfxtt/G238bbfxtt/G238bbfxtt+AADkJGQbYSgoxtt/G238bbfxtt/G238bbfxtt/G238bbfgAAAbZXgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZbAR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZfgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbMAEIcAAAG2EwKMKDbB9CiNtv422/jbb+Ntv422/jbb+Ntv422/jbb9AACUJGFBtg+hRG238bbfxtt/G238bbfxtt/G238bbfxtt+8AAKgkYUG2D6FEbbfxtt/G238bbfxtt/G238bbfxtt/G237wAAvCRhQbYPoURtt/G238bbfxtt/G238bbfxtt/G238bbfvAADQJGFBtg+hRG238bbfxtt/G238bbfxtt/G238bbfxtt+8AAOQkYUG2D8FMbbfxtt/G238bbfxtt/G238bbfxtt/G237wAAAbZXgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZbAR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZfgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbMAEMcAAAG2EwKMGs2/jbb+Ntv422/jbb+Ntv422/jbb+Ntv422/QAAlCRg1m38bbfxtt/G238bbfxtt/G238bbfxtt/G237wAAqCRg1m38bbfxtt/G238bbfxtt/G238bbfxtt/G237wAAvCRg1m38bbfxtt/G238bbfxtt/G238bbfxtt/G237wAA0CRg1m38bbfxtt/G238bbfxtt/G238bbfxtt/G237wAA5CRg1m38bbfxtt/G238bbfxtt/G238bbfxtt/G237wAAAbZXgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZbAR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZfgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAA49tb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAPoAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACunRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAPoAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAoAAAAFoAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAD6AAAAAAAAEAAAAAAjJtZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAAEAAAAEAAFXEAAAAAAAtaGRscgAAAAAAAAAAdmlkZQAAAAAAAAAAAAAAAFZpZGVvSGFuZGxlcgAAAAHdbWluZgAAABR2bWhkAAAAAQAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAABnXN0YmwAAADZc3RzZAAAAAAAAAABAAAAyW1wNHYAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAoABaAEgAAABIAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY//8AAABfZXNkcwAAAAADgICATgABAASAgIBAIBEAAAAAAAnQAAAAAAWAgIAuAAABsAEAAAG1iRMAAAEAAAABIADEjYgAJQUEC1RDAAABskxhdmM2My4xLjEwMgaAgIABAgAAABRidHJ0AAAAAAAACdAAAAAAAAAAGHN0dHMAAAAAAAAAAQAAABAAABAAAAAAIHN0c3MAAAAAAAAABAAAAAEAAAAFAAAACQAAAA0AAAAcc3RzYwAAAAAAAAABAAAAAQAAABAAAAABAAAAVHN0c3oAAAAAAAAAAAAAABAAAADcAAAAIQAAACEAAAAhAAAA1gAAACEAAAAhAAAAIQAAANsAAAAhAAAAIQAAACEAAADPAAAAIQAAACEAAAAhAAAAFHN0Y28AAAAAAAAAAQAAACwAAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYzLjEuMTAy'
 
+/** 模拟接口按请求的宽x高返回同尺寸的纯灰 PNG；未指定尺寸（auto）时返回 16:9 的 `PNG_B64`。 */
+function stubPngOf(size: unknown): string {
+  const m = /^(\d+)x(\d+)$/.exec(String(size))
+  return m ? grayPng(Number(m[1]), Number(m[2])) : PNG_B64
+}
+
 /** 指定宽高的纯灰 PNG（base64）。 */
 function grayPng(w: number, h: number): string {
   const chunk = (type: string, data: Uint8Array) => {
@@ -613,6 +620,9 @@ function grayPng(w: number, h: number): string {
  * 其余返回 `png(请求中的 size)`；视频任务提交后第一次查询即完成，内容为 `MP4_B64`。
  * `prompts` 与 `videos` 分别记录收到的出图与视频提示词。
  */
+/** 模拟接口登记的图片模型：使用目录中的真实参数表。 */
+const STUB_IMAGE = 'gpt-image-2.5-sunburst'
+
 function stubMedia(
   config: QyConfig,
   fails: (prompt: string) => boolean,
@@ -665,11 +675,15 @@ function stubMedia(
         apiKey: 'stub',
         baseUrl: `http://127.0.0.1:${stub.port}/v1`,
         models: {},
-        media: { 'stub-image': { kind: 'openai_images' }, 'stub-video': { kind: 'openai_videos' } },
+        // 图片登记为目录中的模型，判定使用其真实参数表（尺寸对照表）；请求仍发往本机模拟接口。
+        media: {
+          [STUB_IMAGE]: { kind: 'openai_images' },
+          'stub-video': { kind: 'openai_videos' },
+        },
       },
     },
     mediaDefaults: {
-      image: { provider: 'stub', model: 'stub-image' },
+      image: { provider: 'stub', model: STUB_IMAGE },
       video: { provider: 'stub', model: 'stub-video' },
     },
   }
@@ -817,11 +831,14 @@ const LAYOUT_TASK =
  */
 const LAYOUT_MAX_GAP = 100 + (300 - 169)
 
-/** 尚无结果的生成卡按 `size` 的比例改变形状后的画布，用于检查之后生成时是否与相邻卡相交。 */
+/**
+ * 尺寸未定的方形空卡按 `size` 的比例改变形状后的画布，用于检查之后生成时是否与相邻卡相交。
+ * 尺寸已定的卡按其参数出图，形状不变，不参与模拟；服务商不按请求的尺寸出图属于接口故障，不在布局中预留。
+ */
 function settledAs(doc: CanvasDoc, size: CanvasPixels): CanvasDoc {
   const next = structuredClone(doc)
   for (const n of next.nodes) {
-    if (n.type !== 'generate' || n.output === 'audio') continue
+    if (n.type !== 'generate' || n.output === 'audio' || n.w !== n.h) continue
     if (!n.versions.find((v) => v.id === n.current)?.size) Object.assign(n, fitBox(n, size))
   }
   return next
@@ -848,7 +865,7 @@ function crossings(doc: CanvasDoc, old: ReadonlySet<string>): number {
 async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise<Verdict> {
   const name = `${ref.provider}/${ref.model}`
   const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
-  const { scenario, prompts, stub } = stubMedia(config, () => false)
+  const { scenario, prompts, stub } = stubMedia(config, () => false, stubPngOf)
   const ws = `${wsFor(ref)}-layout`
   await rm(ws, { recursive: true, force: true })
   await mkdir(ws, { recursive: true })
@@ -884,8 +901,8 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
     const sized = fresh.filter(
       (n) => n.type === 'generate' && n.versions.find((v) => v.id === n.current)?.size,
     )
-    add('已运行的卡按 16:9 结果改变形状', sized.length >= 5, `${sized.length} 张`)
-    // 距离按全部卡生成 16:9 结果之后计算：空卡为容纳结果预留了位置，生成前的空白大于标准间距。
+    add('已运行的卡按结果改变形状', sized.length >= 5, `${sized.length} 张`)
+    // 距离按方形空卡生成横图之后计算：方形空卡为横竖两种结果预留了位置，生成前的空白大于标准间距。
     const wide = settledAs(doc, { w: 16, h: 9 })
     const nearest = wide.nodes
       .filter((n) => !old.has(n.id))
@@ -904,7 +921,7 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
     )
     const crossed = [doc, wide, settledAs(doc, { w: 9, h: 16 })].map((d) => crossings(d, old))
     add(
-      '节点互不重叠（当前、其余卡生成横图后、生成竖图后）',
+      '节点互不重叠（当前、尺寸未定的卡生成横图后、生成竖图后）',
       crossed.every((c) => c === 0),
       `${crossed.join(' / ')} 对相交`,
     )
@@ -936,6 +953,21 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       '分镜按场景分组（不是每张一组）',
       shots.length >= 7 && shotGroups.size >= 1 && shotGroups.size <= 4,
       `${shotGroups.size} 组：${[...shotGroups].join('、')}`,
+    )
+    // 原始失败形状：模型填写表外的 1536x864，参数面板的宽高比与分辨率无一选中。
+    const table = lookupMediaModel(STUB_IMAGE, 'openai_images').params.find(
+      (p) => p.name === 'size',
+    )
+    const sizes = fresh.flatMap((n) =>
+      n.type === 'generate' && n.output === 'image' && n.params.size !== undefined
+        ? [String(n.params.size)]
+        : [],
+    )
+    const outside = sizes.filter((v) => !table?.shapes?.some((s) => s.value === v))
+    add(
+      '图片卡的尺寸都在参数面板的对照表中',
+      outside.length === 0,
+      `填写 ${sizes.length} 张：${[...new Set(sizes)].join('、') || '均未填写'}${outside.length ? `；表外 ${outside.join('、')}` : ''}`,
     )
     const assetsRight = Math.max(...sized.map((n) => n.x + n.w))
     const shotsLeft = Math.min(...shots.map((n) => n.x))
@@ -1013,11 +1045,7 @@ const VERIFY_TASK =
 async function runVerify(store: Store, config: QyConfig, ref: ModelRef): Promise<Verdict> {
   const name = `${ref.provider}/${ref.model}`
   const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
-  const pngOf = (size: unknown) => {
-    const m = /^(\d+)x(\d+)$/.exec(String(size))
-    return m ? grayPng(Number(m[1]), Number(m[2])) : PNG_B64
-  }
-  const { scenario, prompts, videos, stub } = stubMedia(config, () => false, pngOf)
+  const { scenario, prompts, videos, stub } = stubMedia(config, () => false, stubPngOf)
   const ws = `${wsFor(ref)}-verify`
   await rm(ws, { recursive: true, force: true })
   await mkdir(ws, { recursive: true })
