@@ -1252,7 +1252,7 @@ describe('工具清单', () => {
       'edit_canvas',
       'run_canvas',
       'retrieve_canvas',
-      'retrieve_video',
+      'retrieve_media',
       'generate_image',
       'generate_video',
       'generate_audio',

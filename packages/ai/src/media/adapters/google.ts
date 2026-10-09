@@ -1,12 +1,22 @@
 /** Gemini Interactions 的图片、视频生成，以及 Veo 的长任务接口。 */
 import type { MediaKind } from '@qywork/core'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, defined, download, getJson, postJson, sniffMime } from '../http.ts'
+import {
+  count,
+  defined,
+  download,
+  getJson,
+  IMAGE_TIMEOUT_MS,
+  postJson,
+  sniffMime,
+} from '../http.ts'
+import { resolveImages } from '../image-result.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
   type MediaFile,
+  type MediaImageResult,
   type MediaInput,
   type MediaProfile,
   type MediaRequest,
@@ -132,15 +142,25 @@ export class GeminiMediaAdapter implements MediaAdapter {
         },
         auth,
         opts.signal,
+        type === 'image' ? { timeoutMs: IMAGE_TIMEOUT_MS } : {},
       )
-      // 图片工具使用同步生成；只有视频工具会持久化任务号并提供恢复入口。
+      // 图片使用同步生成，恢复保存输出引用；视频保存任务号。
       if (type === 'image') {
         if (initial.status !== 'completed' || outputs(initial, type).length === 0) {
           throw new MediaError(
             `Gemini 没有返回图片：${JSON.stringify(initial.error ?? initial.status ?? '空结果').slice(0, 500)}`,
           )
         }
-        return this.readResult(initial, type, base, auth, opts.signal)
+        const sources: MediaImageResult['sources'] = outputs(initial, 'image').map((part) => {
+          if (typeof part.data === 'string' && part.data)
+            return {
+              base64: part.data,
+              mime: typeof part.mime_type === 'string' ? part.mime_type : 'image/png',
+            }
+          if (typeof part.uri === 'string') return { url: part.uri }
+          throw new MediaError('Gemini 输出缺少文件内容或下载地址')
+        })
+        return this.resumeImage({ sources, usage: usageOf(initial, 'image', sources.length) }, opts)
       }
       if (typeof initial.id !== 'string' || !initial.id)
         throw new MediaError('Gemini 接口没有返回任务号')
@@ -175,6 +195,11 @@ export class GeminiMediaAdapter implements MediaAdapter {
       )
       return this.readResult(done.body, type, base, auth, opts.signal)
     })
+  }
+
+  resumeImage(result: MediaImageResult, opts: MediaRunOptions): Promise<MediaResult> {
+    const { base, auth } = connection(this.profile)
+    return resolveImages(result, opts, (url) => readFile(url, base, auth, opts.signal))
   }
 
   private async readResult(

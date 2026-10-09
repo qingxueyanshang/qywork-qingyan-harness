@@ -164,6 +164,38 @@ function settleVideo(
   )
 }
 
+/** 图片恢复记录替换为首张产物，其余图片成为同一卡片的版本。 */
+function settleImages(
+  doc: CanvasDoc,
+  nodeId: string,
+  versionId: string,
+  files: GeneratedFile[],
+  sizes: Map<string, CanvasPixels>,
+  warning?: string,
+): CanvasResult {
+  const first = files[0]!
+  const settled = settleVersion(doc, nodeId, versionId, first.path, sizes.get(first.path))
+  if (!settled.ok) return settled
+  const node = settled.doc.nodes.find((n) => n.id === nodeId) as CanvasGenerateNode
+  const version = node.versions.find((v) => v.id === versionId)!
+  if (warning) version.warning = warning
+  if (files.length === 1) return settled
+  const added = addVersions(
+    settled.doc,
+    nodeId,
+    files.slice(1).map((f) => ({
+      id: newCanvasId(),
+      path: f.path,
+      made: version.made,
+      ...sizeField(sizes.get(f.path)),
+      ...(warning ? { warning } : {}),
+    })),
+  )
+  return added.ok
+    ? applyCanvasOps(added.doc, [{ op: 'update', id: nodeId, current: node.current! }])
+    : added
+}
+
 /** 可选的 `size` 字段：无法读取尺寸时不写入该键。 */
 function sizeField(size: CanvasPixels | null | undefined): { size?: CanvasPixels } {
   return size ? { size } : {}
@@ -292,7 +324,7 @@ export class CanvasService {
     return Math.max(this.running.size, Number(this.recovering))
   }
 
-  /** 启动时接续各工作区已有的视频任务，沿用原任务号与取回路径，不重新生成。 */
+  /** 启动时取回各工作区已有的生成结果，沿用原恢复记录，不重新生成。 */
   recover(
     workspaces: CanvasWorkspace[],
     media: (ws: CanvasWorkspace, version: CanvasVersion) => MediaPort | undefined,
@@ -595,13 +627,18 @@ export class CanvasService {
             },
             () => {},
           )
-          entry.task = { taskId, provider, model, record, versionId }
+          if (taskId) entry.task = { taskId, provider, model, record, versionId }
           entry.arrive()
         },
       })
       if (!outcome.ok) {
         if (versionId && !outcome.record) await this.dropVersion(ws.root, rel, nodeId, versionId)
-        return { ok: false, message: outcome.message, pending: outcome.record !== undefined }
+        return {
+          ok: false,
+          message: outcome.message,
+          pending: outcome.record !== undefined,
+          ...(outcome.diagnostic ? { diagnostic: outcome.diagnostic } : {}),
+        }
       }
       facts.provider = outcome.provider
       facts.model = outcome.model
@@ -620,6 +657,8 @@ export class CanvasService {
         rel,
         { files, sizes, params },
         (d) => {
+          if (node.output === 'image' && id)
+            return settleImages(d, nodeId, id, files, sizes, outcome.warning)
           if (node.output !== 'video')
             return addVersions(
               d,
@@ -640,7 +679,7 @@ export class CanvasService {
   }
 
   /**
-   * 取回仍在远端的一个视频版本：只查询与下载，不再提交。`versionId` 缺省时取当前版本，当前版本不是任务记录时取最新的任务记录版本。
+   * 取回已有图片结果或视频任务：只查询与下载，不再提交。`versionId` 缺省时取当前版本，当前版本不是任务记录时取最新的任务记录版本。
    * 远端已失败或结果已过期时删除该版本与任务记录。
    */
   async retrieve(
@@ -659,7 +698,7 @@ export class CanvasService {
     if (!version) throw new CanvasFailure(`「${node.name}」没有待取回的任务`, 422)
 
     const facts: RunFacts = { action: 'retrieve', start: new Date().toISOString() }
-    const entry = this.begin(key, ws, rel, nodeId, true)
+    const entry = this.begin(key, ws, rel, nodeId, node.output === 'video')
     const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
       if (!(await this.isFile(ws.root, version.path))) {
         await this.dropVersion(ws.root, rel, nodeId, version.id)
@@ -683,14 +722,23 @@ export class CanvasService {
         if (outcome.executed && !outcome.record) {
           await this.dropVersion(ws.root, rel, nodeId, version.id)
         }
-        return { ok: false, message: outcome.message, pending: outcome.record !== undefined }
+        return {
+          ok: false,
+          message: outcome.message,
+          pending: outcome.record !== undefined,
+          ...(outcome.diagnostic ? { diagnostic: outcome.diagnostic } : {}),
+        }
       }
       const sizes = await this.sizesOf(ws.root, outcome.files)
       return this.writeBack(
         ws.root,
         rel,
         { files: outcome.files, sizes, params: version.made.params },
-        (d) => settleVideo(d, nodeId, version.id, outcome.files, sizes),
+        (d) =>
+          node.output === 'image'
+            ? settleImages(d, nodeId, version.id, outcome.files, sizes, outcome.warning)
+            : settleVideo(d, nodeId, version.id, outcome.files, sizes),
+        outcome.warning,
       )
     })
     this.running.get(key)!.done = done
@@ -849,11 +897,14 @@ export class CanvasService {
           ? 'done'
           : result.pending
             ? 'pending'
-            : 'failed',
+            : result.diagnostic?.outcome === 'unknown'
+              ? 'unknown'
+              : 'failed',
       ...(provider !== undefined ? { provider } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(task ? { task: task.taskId } : {}),
       ...(!result.ok && !entry?.cancelled ? { message: result.message } : {}),
+      ...(!result.ok && result.diagnostic ? { diagnostic: result.diagnostic } : {}),
     }
     // 画布文件已被删除或损坏时无法写入记录；生成本身的结果不因此改变。
     await this.mutate(ws.root, rel, (d) => recordRun(d, record)).catch(() => {})
@@ -1189,7 +1240,12 @@ export class CanvasService {
     const doc = await this.load(abs)
     const states: Record<string, CanvasNodeState> = {}
     for (const node of doc.nodes) {
-      states[node.id] = await this.stateOf(workspaceRoot, keyOf(workspaceRoot, path), node)
+      states[node.id] = await this.stateOf(
+        workspaceRoot,
+        keyOf(workspaceRoot, path),
+        node,
+        doc.runs?.findLast((r) => r.node === node.id),
+      )
     }
     return { path: await this.relativeTo(workspaceRoot, abs), doc, states }
   }
@@ -1308,6 +1364,7 @@ export class CanvasService {
     workspaceRoot: string,
     canvasKey: string,
     node: CanvasNode,
+    lastRun?: CanvasRunRecord,
   ): Promise<CanvasNodeState> {
     const exists = (path: string) =>
       stat(join(workspaceRoot, path)).then(
@@ -1333,6 +1390,8 @@ export class CanvasService {
     const tasks = node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))
     const pending = tasks.find((v) => v.id === node.current) ?? tasks.at(-1)
     if (pending) return { state: 'pending', version: pending.id }
+    if (lastRun?.result === 'unknown')
+      return { state: 'unknown', message: lastRun.message ?? '远端结果未知' }
     const failure = this.failures.get(key)
     if (failure !== undefined) return { state: 'failed', message: failure }
     const current = node.versions.find((v) => v.id === node.current)

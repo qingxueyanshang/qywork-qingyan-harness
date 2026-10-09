@@ -1754,11 +1754,13 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     }
     const failed = () => {
       const s = st()
-      return s?.state === 'failed' && !p.node.versions.length ? s : null
+      return (s?.state === 'failed' || s?.state === 'unknown') && !p.node.versions.length ? s : null
     }
     const current = () => currentOf(p.node)
     const notice = () => {
       const s = st()
+      if (s?.state === 'unknown')
+        return { failed: true, title: '远端结果未知，已保留原结果', message: s.message }
       if (s?.state === 'failed')
         return { failed: true, title: '本次生成失败，已保留原结果', message: s.message }
       const warning = current()?.warning

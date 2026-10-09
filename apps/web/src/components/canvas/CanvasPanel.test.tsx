@@ -1716,6 +1716,16 @@ describe('画布：生成卡与生成面板', () => {
       () => host.textContent?.includes('内容审核未通过') === true,
       () => `final=${host.innerHTML.slice(0, 400)}`,
     )
+    server.setView({
+      doc: fresh.doc,
+      states: { g1: { state: 'unknown', message: '本地等待超时；远端结果未知' } },
+    })
+    store.setState('fileVersion', 3)
+    await waitFor(
+      () => host.textContent?.includes('远端结果未知') === true,
+      () => host.innerHTML.slice(0, 400),
+    )
+    expect(host.textContent).not.toContain('内容审核未通过')
   })
 
   test('一次返回四张图片可逐版切换，部分返回与再次失败都在图片节点内提示', async () => {

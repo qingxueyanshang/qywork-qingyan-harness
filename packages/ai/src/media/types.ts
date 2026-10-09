@@ -4,7 +4,7 @@
  * 与对话适配器（`LlmAdapter`）分离：生成接口不是流式接口，没有 token 事件，结果是一组文件。
  */
 
-import type { Currency, MediaInputRole, MediaKind } from '@qywork/core'
+import type { Currency, MediaDiagnostic, MediaInputRole, MediaKind } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation } from './catalog.ts'
 
 /** 发送生成请求所需的端点与凭证。 */
@@ -76,8 +76,17 @@ export interface MediaResult {
   warning?: string
 }
 
+/** 图片接口已经返回的产物。持久化时不保存接口凭证，恢复时只读取这些产物。 */
+export interface MediaImageResult {
+  sources: ({ url: string } | { base64: string; mime: string })[]
+  usage?: MediaUsage
+  warning?: string
+}
+
 export interface MediaRunOptions {
   signal: AbortSignal
+  /** 在下载之前保存结果引用与计量；回调完成后才开始下载。 */
+  onImageResult?: (result: MediaImageResult) => void | Promise<void>
   /** 取得远端任务号后立即交出：调用方将其落盘，停止、超时或进程退出之后仍可取回。 */
   onTask?: (taskId: string) => void | Promise<void>
   /** 状态变化时回报一次（排队、生成中），不按轮询次数回报。 */
@@ -95,6 +104,8 @@ export interface MediaAdapter {
   readonly kind: MediaKind
   readonly spec: MediaModelSpec
   run(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult>
+  /** 只读取已返回的图片来源，不提交生成。 */
+  resumeImage?(result: MediaImageResult, opts: MediaRunOptions): Promise<MediaResult>
   /**
    * 撤销已提交的异步任务。仅接口支持撤销的适配器实现此方法；未实现的一律视为无法撤销。
    * 撤销失败（网络、鉴权）时抛出 `MediaError`，调用方不得据此视为已撤销。
@@ -112,17 +123,25 @@ export type MediaCancel = 'cancelled' | 'started'
  * 生成接口的失败。`status` 是 HTTP 状态码（网络层失败时缺省），`message` 含接口原文。
  *
  * `pendingTaskId`：远端任务已提交但尚无结果（等待超时），任务仍在远端，可以接续取回。
- * 不带该字段的失败是终态：远端报告了失败，或请求未被接受。
- *
- * 不归类为错误码：生成失败只交给大模型阅读，不进入重发表与 run 诊断链，原文比分类更有用。
+ * `diagnostic` 区分明确拒绝、结果未知与已有产物的下载失败；错误原文始终保留。
  */
 export class MediaError extends Error {
   readonly status: number | undefined
   readonly pendingTaskId: string | undefined
-  constructor(message: string, opts: { status?: number; pendingTaskId?: string } = {}) {
-    super(message)
+  readonly diagnostic: MediaDiagnostic | undefined
+  constructor(
+    message: string,
+    opts: {
+      status?: number
+      pendingTaskId?: string
+      diagnostic?: MediaDiagnostic
+      cause?: unknown
+    } = {},
+  ) {
+    super(message, { cause: opts.cause })
     this.name = 'MediaError'
     this.status = opts.status
     this.pendingTaskId = opts.pendingTaskId
+    this.diagnostic = opts.diagnostic
   }
 }

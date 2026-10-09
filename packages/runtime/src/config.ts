@@ -118,7 +118,7 @@ export interface QyConfig {
    */
   officeEnabled?: boolean
   /**
-   * 是否允许 agent 使用画布与生成工具（`read_canvas`、`edit_canvas`、`run_canvas`、`retrieve_canvas`、`generate_*`、`retrieve_video`）。
+   * 是否允许 agent 使用画布与生成工具（`read_canvas`、`edit_canvas`、`run_canvas`、`retrieve_canvas`、`generate_*`、`retrieve_media`）。
    * 缺省时视为启用，只有显式 `false` 表示关闭。
    *
    * 关闭时这些工具均不注册，提示词中的画布能力行与生成模型参数表随之省略。

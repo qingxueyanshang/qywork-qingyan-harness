@@ -55,6 +55,7 @@ export {
   mediaKindsOf,
   quoteMedia,
 } from './media/catalog.ts'
+export { isImageResult } from './media/image-result.ts'
 export { buildMediaAdapter } from './media/index.ts'
 export { describeParam, operationLabel, validateMediaCall } from './media/params.ts'
 export { type TaskPhase, taskPhase } from './media/task.ts'
@@ -63,6 +64,7 @@ export {
   type MediaCancel,
   MediaError,
   type MediaFile,
+  type MediaImageResult,
   type MediaInput,
   type MediaProfile,
   type MediaRequest,

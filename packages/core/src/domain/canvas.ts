@@ -17,6 +17,7 @@ import {
   GENERATE_OUTPUTS,
   type GenerateOutput,
   MEDIA_INPUT_ROLES,
+  type MediaDiagnostic,
   type MediaInputRole,
   type MediaOutput,
 } from './media.ts'
@@ -43,7 +44,7 @@ export interface CanvasPixels {
 
 export interface CanvasVersion {
   id: string
-  /** 产物的工作区路径；视频仍在远端时为任务记录（`.task.json`）的路径。 */
+  /** 产物的工作区路径；待取回时为恢复记录（`.task.json`）的路径。 */
   path: string
   made: CanvasMade
   /** 产物的像素宽高，由服务端落盘时从文件头读取；无法读取（音频、任务记录、未知格式）时缺省。 */
@@ -138,13 +139,14 @@ export interface CanvasDoc {
 export interface CanvasRunRecord {
   /** 生成卡的节点 id。 */
   node: string
-  /** `retrieve`：取回已提交的视频任务，不再提交、不重复计费。 */
+  /** `retrieve`：取回已有结果，不重新提交生成。 */
   action: 'run' | 'retrieve'
   /** 开始与结束时刻，ISO 8601。 */
   start: string
   end: string
-  /** `pending`：远端任务仍存在，可以取回。`cancelled`：排队期间撤销，不计费。 */
-  result: 'done' | 'failed' | 'pending' | 'cancelled'
+  /** `pending`：有恢复记录，可尝试取回。`unknown`：本地等待结束，不能确认远端结果。 */
+  result: 'done' | 'failed' | 'pending' | 'cancelled' | 'unknown'
+  diagnostic?: MediaDiagnostic
   /** 未发出请求即失败（没有可用模型）时缺省。 */
   provider?: string
   model?: string
@@ -156,14 +158,14 @@ export interface CanvasRunRecord {
   inputs?: { role: MediaInputRole; path: string }[]
   /** 失败或未能取回时的原文。 */
   message?: string
-  /** 按接口回报的用量折算的花费。取得结果时才计费，其他结果没有该字段。 */
+  /** 按接口回报的用量折算的花费；图片下载失败时仍保留已回报的用量。 */
   cost?: number
   currency?: string
 }
 
 /**
  * 节点在界面上的状态。由服务端根据磁盘与运行中集合推导，不落盘。
- * 优先级：运行中 > 待取回 > 失败 > 空 > 缺失 > 正常；生成中与待取回检查全部版本，而不只检查 `current`。
+ * 优先级：运行中 > 待取回 > 结果未知 > 失败 > 空 > 缺失 > 正常；生成中与待取回检查全部版本，而不只检查 `current`。
  */
 export type CanvasNodeState =
   | { state: 'normal' }
@@ -174,6 +176,7 @@ export type CanvasNodeState =
   /** `version`：点击「取回」时取回的版本。 */
   | { state: 'pending'; version: string }
   | { state: 'failed'; message: string }
+  | { state: 'unknown'; message: string }
 
 /** 读取画布接口的返回值：文档与各节点状态。 */
 export interface CanvasView {
@@ -192,11 +195,11 @@ export interface CanvasOutput {
 
 /**
  * 一次运行或取回的结果。`params` 是实际发送的参数（画布只发送当前模式允许的取值，可能少于卡片上保存的参数）；
- * `pending`：远端任务仍存在，该版本保留以待取回。
+ * `pending`：存在恢复记录，该版本保留以待取回。
  */
 export type CanvasRunResult =
   | { ok: true; outputs: CanvasOutput[]; params: Record<string, unknown>; warning?: string }
-  | { ok: false; message: string; pending: boolean }
+  | { ok: false; message: string; pending: boolean; diagnostic?: MediaDiagnostic }
 
 /** 批量运行按请求顺序返回每个节点的结果；skipped 表示该节点未提交生成。 */
 export type CanvasBatchRunResult = {
@@ -1191,6 +1194,7 @@ type Shape =
   | 'inputs'
   | 'action'
   | 'result'
+  | 'diagnostic'
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -1241,7 +1245,17 @@ function matches(v: unknown, shape: Shape): boolean {
     case 'action':
       return v === 'run' || v === 'retrieve'
     case 'result':
-      return v === 'done' || v === 'failed' || v === 'pending' || v === 'cancelled'
+      return (
+        v === 'done' || v === 'failed' || v === 'pending' || v === 'cancelled' || v === 'unknown'
+      )
+    case 'diagnostic':
+      return (
+        isObject(v) &&
+        ['generate', 'query', 'download'].includes(String(v.stage)) &&
+        ['timeout', 'connection', 'http', 'response'].includes(String(v.kind)) &&
+        ['unknown', 'rejected', 'available'].includes(String(v.outcome)) &&
+        checkFields('请求诊断', v, DIAGNOSTIC_FIELDS) === null
+      )
   }
 }
 
@@ -1408,7 +1422,19 @@ const MADE_FIELDS: Record<string, Shape> = {
   'at!': 'string',
 }
 const INPUT_FIELDS: Record<string, Shape> = { 'role!': 'role', 'path!': 'string' }
+const DIAGNOSTIC_FIELDS: Record<string, Shape> = {
+  'stage!': 'string',
+  'kind!': 'string',
+  'outcome!': 'string',
+  'host!': 'string',
+  'elapsedMs!': 'number',
+  'timeoutMs!': 'number',
+  status: 'number',
+  code: 'string',
+  requestId: 'string',
+}
 const RUN_FIELDS: Record<string, Shape> = {
+  diagnostic: 'diagnostic',
   'node!': 'string',
   'action!': 'action',
   'start!': 'string',
@@ -1572,6 +1598,7 @@ export function serializeCanvas(doc: CanvasDoc): string {
     start: r.start,
     end: r.end,
     result: r.result,
+    ...(r.diagnostic !== undefined ? { diagnostic: r.diagnostic } : {}),
     ...(r.provider !== undefined ? { provider: r.provider } : {}),
     ...(r.model !== undefined ? { model: r.model } : {}),
     ...(r.task !== undefined ? { task: r.task } : {}),

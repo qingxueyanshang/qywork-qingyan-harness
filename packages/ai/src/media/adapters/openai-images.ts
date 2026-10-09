@@ -11,11 +11,12 @@
 import { basename } from 'node:path'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, postJson, send, sniffMime } from '../http.ts'
+import { count, dataUri, defined, IMAGE_TIMEOUT_MS, postJson, sendJson } from '../http.ts'
+import { resolveImages } from '../image-result.ts'
 import {
   type MediaAdapter,
   MediaError,
-  type MediaFile,
+  type MediaImageResult,
   type MediaProfile,
   type MediaRequest,
   type MediaResult,
@@ -46,12 +47,12 @@ export class OpenAIImagesAdapter implements MediaAdapter {
         form.append('image[]', new Blob([input.bytes], { type: input.mime }), basename(input.path))
       }
       for (const [key, value] of Object.entries(req.params)) form.set(key, String(value))
-      const res = await send(
+      body = await sendJson(
         `${base}/images/edits`,
         { method: 'POST', headers: auth, body: form },
         signal,
+        { timeoutMs: IMAGE_TIMEOUT_MS },
       )
-      body = (await res.json()) as Record<string, unknown>
     } else {
       body = await postJson(
         `${base}/images/generations`,
@@ -63,10 +64,16 @@ export class OpenAIImagesAdapter implements MediaAdapter {
         },
         auth,
         signal,
+        { timeoutMs: IMAGE_TIMEOUT_MS },
       )
     }
-    const result = await readImages(body, signal)
-    return { ...result, usage: readUsage(body, result.files.length) }
+    const result = readImages(body)
+    result.usage = readUsage(body, result.sources.length)
+    return resolveImages(result, opts)
+  }
+
+  resumeImage(result: MediaImageResult, opts: MediaRunOptions): Promise<MediaResult> {
+    return resolveImages(result, opts)
   }
 }
 
@@ -87,30 +94,24 @@ function readUsage(body: Record<string, unknown>, received: number): MediaUsage 
 }
 
 /** 响应中的 `data[]`：每项是 `b64_json` 或 `url`。单项失败（火山逐张报错）合并到消息中，不静默丢弃。 */
-export async function readImages(
-  body: Record<string, unknown>,
-  signal: AbortSignal,
-): Promise<Pick<MediaResult, 'files' | 'warning'>> {
+export function readImages(body: Record<string, unknown>, usage?: MediaUsage): MediaImageResult {
   const data = Array.isArray(body.data) ? (body.data as Record<string, unknown>[]) : []
-  const files: MediaFile[] = []
+  const sources: MediaImageResult['sources'] = []
   const errors: string[] = []
   for (const item of data) {
-    if (typeof item.b64_json === 'string') {
-      const bytes = new Uint8Array(Buffer.from(item.b64_json, 'base64'))
-      files.push({ bytes, mime: sniffMime(bytes) ?? 'image/png' })
-    } else if (typeof item.url === 'string') {
-      files.push(await download(item.url, signal))
-    } else if (item.error && typeof item.error === 'object') {
+    if (typeof item.b64_json === 'string')
+      sources.push({ base64: item.b64_json, mime: 'image/png' })
+    else if (typeof item.url === 'string') sources.push({ url: item.url })
+    else if (item.error && typeof item.error === 'object')
       errors.push(String((item.error as Record<string, unknown>).message ?? '单张生成失败'))
-    }
   }
-  if (files.length === 0) {
+  if (!sources.length)
     throw new MediaError(
       errors.length ? `接口没有返回图片：${errors.join('；')}` : '接口没有返回图片',
     )
-  }
   return {
-    files,
+    sources,
+    ...(usage ? { usage: { ...usage, images: usage.images ?? sources.length } } : {}),
     ...(errors.length ? { warning: `部分图片生成失败：${errors.join('；')}` } : {}),
   }
 }

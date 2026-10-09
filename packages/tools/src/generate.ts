@@ -11,12 +11,13 @@
 import { lstat, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, parse } from 'node:path'
 import type { MediaCall, MediaCallResult, MediaPort, ToolOutcome, ToolSpec } from '@qywork/agent'
-import type { MediaFile, MediaInput } from '@qywork/ai'
+import { isImageResult, type MediaFile, type MediaImageResult, type MediaInput } from '@qywork/ai'
 import {
   type GenerateOutput,
   isInlineAudio,
   isInlineImage,
   isInlineVideo,
+  type MediaDiagnostic,
   type MediaInputRole,
   type MediaOutput,
   type MediaSpend,
@@ -191,11 +192,13 @@ async function reserveDefault(roots: RootsInput): Promise<{ target: string; rele
   }
 }
 
-/** 远端视频任务的本地记录：停止、超时或进程退出之后，依据它接续取回，不重新提交。 */
+/** 生成任务与已返回图片的恢复记录。恢复不重新提交生成。 */
 interface TaskRecord {
   provider: string
   model: string
-  taskId: string
+  taskId?: string
+  imageResult?: MediaImageResult
+  params?: Record<string, unknown>
   /** 产物的目标工作区路径（可以不含扩展名，落盘时补全）。 */
   output: string
   submittedAt: string
@@ -232,10 +235,10 @@ export interface GenerateRequest {
   pick?: { provider: string; model: string }
   /** 输出路径；已存在时在调用接口之前拒绝。未提供时写入 `generated/<时间>`。 */
   output?: string
-  /** 取得视频任务号并写入任务记录之后回调。`record` 是记录的工作区相对路径。 */
+  /** 写入恢复记录后回调。图片记录没有远端任务号。 */
   onTask?: (task: {
     record: string
-    taskId: string
+    taskId?: string
     provider: string
     model: string
   }) => void | Promise<void>
@@ -250,7 +253,14 @@ export interface GenerateRequest {
  */
 export type GenerateOutcome =
   | { ok: true; provider: string; model: string; files: GeneratedFile[]; warning?: string }
-  | { ok: false; message: string; executed: boolean; errorKind?: string; record?: string }
+  | {
+      ok: false
+      message: string
+      executed: boolean
+      errorKind?: string
+      record?: string
+      diagnostic?: MediaDiagnostic
+    }
 
 function refused(message: string, errorKind: string): GenerateOutcome {
   return { ok: false, message, executed: false, errorKind }
@@ -291,7 +301,7 @@ async function readInputs(
   return read
 }
 
-/** 执行一次生成并落盘。视频在取得任务号时写入任务记录，成功或远端终态失败后删除。 */
+/** 执行一次生成并落盘。取得任务号或图片来源时保存恢复记录。 */
 export async function generateMedia(req: GenerateRequest): Promise<GenerateOutcome> {
   const inputs = await readInputs(req.roots, req.type, req.inputs)
   if (!Array.isArray(inputs)) return inputs
@@ -315,6 +325,23 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
       params: req.params,
       ...(req.pick ?? {}),
       ...(req.onSpend ? { onSpend: req.onSpend } : {}),
+    }
+    if (req.type === 'image') {
+      call.onImageResult = async (result, provider, model) => {
+        recordPath = await writeRecord(req.roots, slot.target, {
+          provider,
+          model,
+          imageResult: result,
+          params: req.params,
+          output: slot.target,
+          submittedAt: new Date().toISOString(),
+        })
+        await req.onTask?.({
+          record: displayPath(workspaceOf(req.roots), recordPath),
+          provider,
+          model,
+        })
+      }
     }
     if (req.type === 'video') {
       call.onTask = async ({ taskId, provider, model }) => {
@@ -364,22 +391,36 @@ export async function resumeMedia(req: {
   } catch {
     return refused(`${req.record} 不是任务记录`, 'invalid_tool_arguments')
   }
-  if (!record.taskId || !record.provider || !record.model || !record.output) {
+  if (
+    !record ||
+    typeof record !== 'object' ||
+    typeof record.provider !== 'string' ||
+    !record.provider ||
+    typeof record.model !== 'string' ||
+    !record.model ||
+    typeof record.output !== 'string' ||
+    !record.output ||
+    (record.imageResult !== undefined
+      ? !isImageResult(record.imageResult)
+      : typeof record.taskId !== 'string' || !record.taskId)
+  ) {
     return refused(`${req.record} 缺少任务号、接口、模型或输出路径`, 'invalid_tool_arguments')
   }
   const call: MediaCall = {
-    type: 'video',
+    type: record.imageResult ? 'image' : 'video',
     prompt: '',
     inputs: [],
     params: {},
     provider: record.provider,
     model: record.model,
-    resumeTaskId: record.taskId,
+    ...(record.imageResult
+      ? { resumeImageResult: record.imageResult }
+      : { resumeTaskId: record.taskId! }),
     ...(req.onSpend ? { onSpend: req.onSpend } : {}),
   }
   if (req.onStatus) call.onStatus = req.onStatus
   const result = await req.media.generate(call, req.signal)
-  return settle(req.roots, result, record.output, recordPath)
+  return settle(req.roots, result, record.output, recordPath, record.params)
 }
 
 /**
@@ -393,16 +434,22 @@ async function settle(
   imageParams?: Record<string, unknown>,
 ): Promise<GenerateOutcome> {
   if (!result.ok) {
-    if (result.pendingTaskId && recordPath) {
+    if ((result.pendingTaskId || result.recoverable || result.executed === false) && recordPath) {
       return {
         ok: false,
-        executed: true,
+        executed: result.executed ?? true,
         message: result.message,
         record: displayPath(workspaceOf(roots), recordPath),
+        ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
       }
     }
     if (recordPath) await rm(recordPath, { force: true })
-    return { ok: false, executed: true, message: result.message }
+    return {
+      ok: false,
+      executed: result.executed ?? true,
+      message: result.message,
+      ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
+    }
   }
   const files = await landFiles(roots, result.files, target)
   if (recordPath) await rm(recordPath, { force: true })
@@ -514,9 +561,14 @@ function receipt(outcome: GenerateOutcome, noun: (count: number) => string): Too
       status: 'failure',
       executed: outcome.executed,
       message: outcome.record
-        ? `${outcome.message}\n任务记录位于 ${outcome.record}，用 retrieve_video 的 path 传入该路径取回，不会重新提交。`
+        ? `${outcome.message}\n任务记录位于 ${outcome.record}，用 retrieve_media 的 path 传入该路径取回，不会重新提交。`
         : outcome.message,
       ...(outcome.errorKind ? { errorKind: outcome.errorKind } : {}),
+      data: {
+        ...(outcome.record ? { record: outcome.record } : {}),
+        ...(outcome.diagnostic ? { diagnostic: outcome.diagnostic } : {}),
+      },
+      ...(outcome.diagnostic ? { errorKind: `media_${outcome.diagnostic.kind}` } : {}),
     }
   }
   return {
@@ -553,7 +605,7 @@ export const generateImageTool: ToolSpec = {
     '调用已配置的图像生成模型执行文生图或图像编辑，生成的文件写入工作区，结果仅返回文件路径。' +
     '未提供 images 时按提示词生成；提供 images（工作区内的图片路径）时以这些图片为基础进行编辑或参考生成，编辑的部位与方式在 prompt 中说明。' +
     PARAMS_NOTE +
-    '生成按次计费，不得为试探效果重复调用。' +
+    '生成按次计费；结果未知时停止自动重新生成，下载失败时使用恢复记录取回，不能通过修改提示词或参数重发生成。' +
     DISPLAY_NOTE,
   parameters: {
     type: 'object',
@@ -613,7 +665,7 @@ export const generateVideoTool: ToolSpec = {
     '提供 audios 为参考音频，须与 images 或 videos 同时提供。' +
     'first_frame、last_frame 不能与 images、videos、audios 同时提供。' +
     PARAMS_NOTE +
-    '提交后在输出位置旁写入 .task.json 任务记录；等待中断或超时后，用 retrieve_video 传入该记录路径取回结果，不会重新提交，也不会重复计费。' +
+    '提交后在输出位置旁写入 .task.json 任务记录；等待中断或超时后，用 retrieve_media 传入该记录路径取回结果，不会重新提交，也不会重复计费。' +
     DISPLAY_NOTE,
   parameters: {
     type: 'object',
@@ -684,11 +736,11 @@ export const generateVideoTool: ToolSpec = {
   },
 }
 
-export const retrieveVideoTool: ToolSpec = {
-  name: 'retrieve_video',
+export const retrieveMediaTool: ToolSpec = {
+  name: 'retrieve_media',
   description:
-    '根据 generate_video 返回的 .task.json 任务记录取回已有视频结果，不重新提交、不重复计费。' +
-    '模型、远端任务 id 与输出位置均从记录中读取；画布中的待取回版本使用 retrieve_canvas。' +
+    '根据 generate_image 或 generate_video 返回的 .task.json 记录取回原结果，不重新提交生成、不重复计费。' +
+    '模型、结果引用与输出位置均从记录中读取；画布中的待取回版本使用 retrieve_canvas。' +
     DISPLAY_NOTE,
   parameters: {
     type: 'object',
@@ -699,10 +751,10 @@ export const retrieveVideoTool: ToolSpec = {
     additionalProperties: false,
   },
   actionKind: 'write',
-  objectLabel: '视频',
+  objectLabel: '生成结果',
   category: 'media',
   facet: '生成',
-  summary: '取回独立生成的视频结果',
+  summary: '取回已有的图片或视频结果',
   targetExtractor: (a) => text(a.path) ?? null,
   permissionEffect: 'write',
   async fn(args, ctx) {
@@ -716,7 +768,7 @@ export const retrieveVideoTool: ToolSpec = {
       record: path,
       onStatus: (status: string) => ctx.emit('progress', `${status}\n`),
     })
-    return receipt(outcome, () => '视频')
+    return receipt(outcome, () => '产物')
   },
 }
 

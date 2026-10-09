@@ -1,10 +1,12 @@
 /** xAI 图片编辑使用 JSON；视频使用 request_id 提交与查询。 */
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, getJson, postJson } from '../http.ts'
+import { count, dataUri, defined, download, getJson, IMAGE_TIMEOUT_MS, postJson } from '../http.ts'
+import { resolveImages } from '../image-result.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
+  type MediaImageResult,
   type MediaProfile,
   type MediaRequest,
   type MediaResult,
@@ -49,9 +51,13 @@ export class XaiImagesAdapter implements MediaAdapter {
       },
       auth,
       opts.signal,
+      { timeoutMs: IMAGE_TIMEOUT_MS },
     )
-    const result = await readImages(body, opts.signal)
-    return { ...result, usage: { ...usageOf(body), images: result.files.length } }
+    return resolveImages(readImages(body, usageOf(body)), opts)
+  }
+
+  resumeImage(result: MediaImageResult, opts: MediaRunOptions): Promise<MediaResult> {
+    return resolveImages(result, opts)
   }
 }
 
