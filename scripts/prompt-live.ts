@@ -15,6 +15,7 @@
  *   bun run scripts/prompt-live.ts --goal openai/gpt-6.1-sol      # 受阻判定，以目标模式执行
  *   bun run scripts/prompt-live.ts --layout openai/gpt-6.1-sol    # 只执行画布布局判定
  *   bun run scripts/prompt-live.ts --verify openai/gpt-6.1-sol    # 只执行生成结果核对判定
+ *   bun run scripts/prompt-live.ts --real openai/gpt-6.1-sol      # 真实接口生成三镜头短片（产生费用）
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -41,6 +42,7 @@ import {
   listSteps,
   Store,
 } from '@qywork/store'
+import { mediaDurationOf, mediaSizeOf } from '../packages/server/src/media-size.ts'
 
 const WS_ROOT = join(import.meta.dir, '..', '.tmp', 'prompt-live')
 
@@ -810,10 +812,10 @@ const LAYOUT_TASK =
   '最后为 7 个镜头各建一张图片分镜卡，把用到的参考图连到分镜卡，并把 script.md 放上画布。分镜卡只建卡与连线，不运行。'
 
 /**
- * 每个新节点到最近节点的空白上限。同一组内的间距是 100，组与组相隔 200；尚无结果的卡为竖图预留 300 高，
- * 生成横图（169 高）后与下方的卡相隔 100 + 131。
+ * 每个新节点到最近节点的空白上限。卡片之间的间距一律是 150；没有宽高比参数的方形空卡为横竖两种结果预留 300 见方，
+ * 生成横图（169 高）后与下方的卡相隔 150 + 131。
  */
-const LAYOUT_MAX_GAP = 100 + (300 - 169)
+const LAYOUT_MAX_GAP = 150 + (300 - 169)
 /** 分镜卡每行的数量上限，与 edit_canvas 说明中的每行 5 个一致。 */
 const LAYOUT_ROW_CARDS = 5
 
@@ -920,6 +922,13 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       shots.length >= 7 && perRow.length >= 2 && Math.max(...perRow) <= LAYOUT_ROW_CARDS,
       `${shots.length} 张，每行 ${perRow.join('、')} 个`,
     )
+    const assetsRight = Math.max(...sized.map((n) => n.x + n.w))
+    const shotsLeft = Math.min(...shots.map((n) => n.x))
+    add(
+      '分镜卡在角色与场景卡右侧',
+      sized.length > 0 && shots.length > 0 && shotsLeft > assetsRight,
+      `素材右缘 ${assetsRight}，分镜左缘 ${shotsLeft}`,
+    )
     // 镜头 2、4 可以拍成存钱罐特写，素材中没有存钱罐的参考图，因此允许 2 张没有输入；
     // 原始失败形状是全部分镜卡都没有输入。
     const lone = shots.filter((n) => !doc.edges.some((e) => e.to === n.id))
@@ -928,7 +937,7 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       shots.length > 0 && lone.length <= 2,
       `${lone.length} 张没有输入${lone.length ? `：${lone.map((n) => n.name).join('、')}` : ''}`,
     )
-    const ways = { xy: 0, beside: 0, below: 0, near: 0, none: 0 }
+    const ways = { group: 0, none: 0, placed: 0 }
     const refused: string[] = []
     const failedRuns: string[] = []
     for (const step of listSteps(store, runId)) {
@@ -942,8 +951,7 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
         args?: { ops_json?: unknown }
         outcome?: { message?: unknown }
       } | null
-      const message = String(payload?.outcome?.message ?? '')
-      if (step.status !== 'success' && /批内名称|未定义/.test(message)) refused.push(message)
+      if (step.status !== 'success') refused.push(String(payload?.outcome?.message ?? ''))
       const args = payload?.args
       let ops: Record<string, unknown>[] = []
       try {
@@ -951,21 +959,18 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       } catch {}
       for (const op of ops) {
         if (!String(op.op).startsWith('add_')) continue
-        if (op.x !== undefined || op.y !== undefined) ways.xy++
-        else if (op.beside !== undefined) ways.beside++
-        else if (op.below !== undefined) ways.below++
-        else if (op.near !== undefined) ways.near++
+        if (['x', 'y', 'beside', 'near'].some((k) => op[k] !== undefined)) ways.placed++
+        else if (op.group !== undefined) ways.group++
         else ways.none++
       }
     }
     add(
       '位置写法（不计失败）',
       true,
-      `坐标 ${ways.xy}、beside ${ways.beside}、below ${ways.below}、near ${ways.near}、缺省 ${ways.none}；` +
-        `生成请求 ${prompts.length} 次`,
+      `带组 ${ways.group}、不带组 ${ways.none}、自行定位 ${ways.placed}；生成请求 ${prompts.length} 次`,
     )
-    // 原始失败形状：批内名称用中文、或在后一批引用前一批的名称时整批被拒，模型随后删去连线继续执行。
-    add('修改画布没有因批内名称被拒', refused.length === 0, refused.join(' | ').slice(0, 200))
+    // 原始失败形状：批内名称用中文、跨批引用名称、引用写错时整批被拒，模型随后删去连线继续执行。
+    add('修改画布没有被拒', refused.length === 0, refused.join(' | ').slice(0, 200))
     add('运行画布没有失败', failedRuns.length === 0, failedRuns.join(' | ').slice(0, 200))
   } catch (err) {
     v.error = err instanceof Error ? err.message : String(err)
@@ -1070,17 +1075,164 @@ async function runVerify(store: Store, config: QyConfig, ref: ModelRef): Promise
   return v
 }
 
+const REAL_CANVAS = '图书馆.canvas.json'
+const REAL_TASK =
+  `新建画布 ${REAL_CANVAS}，制作一个三个镜头的短片。角色：林晚（20 岁女大学生，黑色长发，白衬衫）、` +
+  '宋凌（21 岁男大学生，短发，灰色卫衣）。场景：大学图书馆门口，傍晚。' +
+  '镜头1：林晚抱着书从图书馆走出来；镜头2：宋凌在台阶下等她，抬手打招呼；镜头3：两人并肩走下台阶。' +
+  '先为两个角色各建一张定妆参考图、为场景建一张场景参考图，图片用 gpt-image-2.5-sunburst，运行生成并检查画面；' +
+  '再为三个镜头各建一张视频卡，连接所用的角色与场景参考图，视频用 grok-imagine-video-1.5，16:9、480p、每段 5 秒，运行生成。' +
+  '完成后核对每段视频的画面、宽高与时长是否符合要求，在回复中逐段写出结果。'
+
+/**
+ * 真实生成判定：用配置中的真实图片与视频接口（gpt-image、grok 视频）完成一个三镜头短片，产生真实的生成费用。
+ * 检查参数、连线、产物的实测宽高与时长、排列、工具调用是否被拒、是否查看了结果，以及回复是否按实测写出时长。
+ *
+ * 原始失败形状：视频卡参数丢失按缺省的 1080P、5 秒生成；视频卡没有连接任何参考图；排列沿一个方向无限延伸；
+ * 修改画布因引用、参数格式整批被拒；全程未查看结果。
+ */
+async function runReal(store: Store, config: QyConfig, ref: ModelRef): Promise<Verdict> {
+  const name = `${ref.provider}/${ref.model}`
+  const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
+  const scenario: QyConfig = {
+    ...config,
+    mediaDefaults: {
+      image: { provider: 'openai', model: 'gpt-image-2.5-sunburst' },
+      video: { provider: 'Grok', model: 'grok-imagine-video-1.5' },
+    },
+  }
+  const ws = `${wsFor(ref)}-real`
+  await rm(ws, { recursive: true, force: true })
+  await mkdir(ws, { recursive: true })
+  const live = start(store, scenario, ws)
+  try {
+    const conv = await newConversation(live, `真实生成判定 · ${name}`)
+    if (!conv) throw new Error('创建会话失败')
+    v.conversationId = conv
+    await setModel(live, conv, ref)
+    const runId = await turn(live, conv, REAL_TASK)
+    if (!runId) throw new Error('该轮未启动 run')
+    v.turns = 1
+    const add = (n: string, ok: boolean, d = '') => v.checks.push({ name: n, ok, detail: d })
+    const doc = JSON.parse(
+      await Bun.file(join(ws, REAL_CANVAS))
+        .text()
+        .catch(() => '{"nodes":[],"edges":[]}'),
+    ) as CanvasDoc
+    const cards = doc.nodes.flatMap((n) => (n.type === 'generate' ? [n] : []))
+    const images = cards.filter((n) => n.output === 'image')
+    const clips = cards.filter((n) => n.output === 'video')
+    add(
+      '3 张图片卡、3 张视频卡',
+      images.length === 3 && clips.length === 3,
+      `${images.length}、${clips.length}`,
+    )
+    const current = (n: (typeof cards)[number]) => n.versions.find((x) => x.id === n.current)
+    const done = cards.filter((n) => current(n))
+    add(
+      '全部生成卡都有结果',
+      cards.length > 0 && done.length === cards.length,
+      `${done.length}/${cards.length}`,
+    )
+    const lone = clips.filter((n) => !doc.edges.some((e) => e.to === n.id))
+    add('视频卡都连接了参考图', clips.length > 0 && lone.length === 0, `${lone.length} 张没有输入`)
+    const sent = clips.map((n) => current(n)?.made.params ?? {})
+    add(
+      '视频按 16:9、480p、5 秒发送',
+      sent.length > 0 &&
+        sent.every((p) => p.aspect_ratio === '16:9' && p.resolution === '480p' && p.duration === 5),
+      sent.map((p) => JSON.stringify(p)).join(' '),
+    )
+    const measured = await Promise.all(
+      clips.map(async (n) => {
+        const path = current(n)?.path
+        if (!path) return null
+        return {
+          size: await mediaSizeOf(join(ws, path)),
+          seconds: await mediaDurationOf(join(ws, path)),
+        }
+      }),
+    )
+    add(
+      '视频实测为横屏、约 5 秒',
+      measured.length > 0 &&
+        measured.every(
+          (m) =>
+            m?.size && m.size.w > m.size.h && m.seconds !== null && Math.abs(m.seconds - 5) <= 0.6,
+        ),
+      measured.map((m) => (m ? `${m.size?.w}×${m.size?.h} ${m.seconds} 秒` : '无结果')).join('、'),
+    )
+    const pairs = doc.nodes.flatMap((a, i) => doc.nodes.slice(i + 1).map((b) => [a, b] as const))
+    const crossed = pairs.filter(([a, b]) => overlaps(a, b)).length
+    add('卡片互不重叠', crossed === 0, `${crossed} 对相交`)
+    const imagesRight = Math.max(...images.map((n) => n.x + n.w))
+    const clipsLeft = Math.min(...clips.map((n) => n.x))
+    add(
+      '视频卡在参考图右侧，参考图按组成列',
+      images.length > 0 &&
+        clips.length > 0 &&
+        clipsLeft > imagesRight &&
+        new Set(images.map((n) => n.x)).size <= 2,
+      `参考图右缘 ${imagesRight}，视频左缘 ${clipsLeft}，参考图 ${new Set(images.map((n) => n.x)).size} 列`,
+    )
+    const steps = listSteps(store, runId)
+    const failed = (tool: string) =>
+      steps
+        .filter((s) => s.toolName === tool && s.status !== 'success')
+        .map((s) =>
+          String((s.payload as { outcome?: { message?: unknown } } | null)?.outcome?.message ?? ''),
+        )
+    add(
+      '修改画布没有被拒',
+      failed('edit_canvas').length === 0,
+      failed('edit_canvas').join(' | ').slice(0, 300),
+    )
+    add(
+      '运行画布没有因实参被拒（接口失败另计）',
+      failed('run_canvas').every((m) => !/node|未找到卡片|名称/.test(m)),
+      failed('run_canvas').join(' | ').slice(0, 300),
+    )
+    const reads = steps.flatMap((s) =>
+      s.toolName === 'read_file' && s.status === 'success'
+        ? [String((s.payload as { args?: { path?: unknown } } | null)?.args?.path)]
+        : [],
+    )
+    const viewed = (ext: RegExp) =>
+      reads.filter((p) => /generated[\\/]/.test(p) && ext.test(p)).length
+    add(
+      '查看了生成的图片',
+      viewed(/\.(png|jpe?g|webp)$/i) > 0,
+      `${viewed(/\.(png|jpe?g|webp)$/i)} 次`,
+    )
+    add('查看了生成的视频', viewed(/\.mp4$/i) > 0, `${viewed(/\.mp4$/i)} 次`)
+    const last = steps.findLastIndex((s) => s.toolName !== null)
+    const reply = steps
+      .slice(last + 1)
+      .filter((s) => s.kind === 'text')
+      .map((s) => s.content ?? '')
+      .join(NL)
+    add('回复写出实测时长', /5(\.\d+)?\s*秒/.test(reply), reply.replace(/\s+/g, ' ').slice(0, 200))
+  } catch (err) {
+    v.error = err instanceof Error ? err.message : String(err)
+  } finally {
+    live.close()
+  }
+  return v
+}
+
 async function main(): Promise<number> {
   const config = await loadConfig()
   // 写入主库，执行完毕后可在面板中查看每一轮。
   const store = new Store({ path: dataPath() })
 
   // `--blocked`：只执行受阻判定一项（见 `runBlocked`）；`--goal`：同一任务以目标模式执行；
-  // `--layout`：只执行画布布局判定一项（见 `runLayout`）；`--verify`：只执行结果核对判定一项（见 `runVerify`）。
+  // `--layout`：只执行画布布局判定一项（见 `runLayout`）；`--verify`：只执行结果核对判定一项（见 `runVerify`）；
+  // `--real`：用真实接口执行一个三镜头短片（见 `runReal`），产生生成费用。
   const blocked = process.argv.includes('--blocked')
   const goal = process.argv.includes('--goal')
   const layout = process.argv.includes('--layout')
   const verify = process.argv.includes('--verify')
+  const real = process.argv.includes('--real')
   const args = process.argv.slice(2).filter((a) => !a.startsWith('--'))
   const refs: ModelRef[] = args.length
     ? args.map((a) => {
@@ -1092,7 +1244,7 @@ async function main(): Promise<number> {
       )
 
   line(
-    `共 ${refs.length} 个模型，每个 ${blocked || goal || layout || verify ? 1 : Object.keys(TASKS).length} 项真实任务。`,
+    `共 ${refs.length} 个模型，每个 ${blocked || goal || layout || verify || real ? 1 : Object.keys(TASKS).length} 项真实任务。`,
   )
   const all: Verdict[] = []
   for (const ref of refs) {
@@ -1100,11 +1252,13 @@ async function main(): Promise<number> {
     line(`── ${ref.provider}/${ref.model} ──`)
     const v = await (layout
       ? runLayout(store, config, ref)
-      : verify
-        ? runVerify(store, config, ref)
-        : blocked || goal
-          ? runBlocked(store, config, ref, goal)
-          : runFor(store, config, ref))
+      : real
+        ? runReal(store, config, ref)
+        : verify
+          ? runVerify(store, config, ref)
+          : blocked || goal
+            ? runBlocked(store, config, ref, goal)
+            : runFor(store, config, ref))
     all.push(v)
     if (v.error) {
       line(`  ✗ 执行失败：${v.error}（已完成 ${v.turns} 轮）`)
