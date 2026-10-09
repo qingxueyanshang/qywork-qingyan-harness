@@ -46,6 +46,9 @@ function gen(doc: CanvasDoc, id: string): CanvasGenerateNode {
 const made = { prompt: 'p', provider: 'qwen', model: 'wan', params: {}, inputs: [], at: 't' }
 const version = (id: string, path: string): CanvasVersion => ({ id, path, made })
 
+const overlaps = (a: CanvasDoc['nodes'][number], b: CanvasDoc['nodes'][number]) =>
+  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+
 /** 两张图（小满、妈妈），视频1（已有一个版本），视频2 以两张图为参考。 */
 function sample(): CanvasDoc {
   let doc = apply(emptyCanvas(), [
@@ -157,6 +160,12 @@ describe('画布：操作', () => {
       ['a1', 'a4', 'reference'],
       ['a2', 'a4', 'reference'],
     ])
+  })
+
+  test('批内名称含 $ 后不允许的字符时整批拒绝，报错写明允许的字符', () => {
+    const error = rejects(emptyCanvas(), [{ op: 'add_file', ref: '$林悦', path: 'a.png' }])
+    expect(error).toContain('英文字母、数字、下划线或连字符')
+    expect(error).toContain('$林悦')
   })
 
   test('修改提示词后新引用未连接的视频节点，补充一条参考视频连线', () => {
@@ -301,7 +310,7 @@ describe('画布：操作', () => {
     expect(gen(doc, 'n1').name).toBe('视频3')
   })
 
-  test('beside 放在源节点右侧的空位：被占用时向下移动，同一批添加的两个节点也不相交', () => {
+  test('beside 排在源节点所在行右侧的第一个空位：被占用时向右越过，多个节点 beside 同一个节点时排成一行', () => {
     const base = apply(
       emptyCanvas(),
       [
@@ -320,12 +329,43 @@ describe('画布：操作', () => {
       ids('n'),
     )
     const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    expect(box('n1').x).toBe(400)
-    expect(box('n1').y).toBeGreaterThanOrEqual(box('b2').y + box('b2').h)
-    expect(box('n2').x).toBe(box('n1').x + box('n1').w + 100)
-    expect(box('n2').y).toBe(box('n1').y)
-    const overlaps = (a: CanvasDoc['nodes'][number], b: CanvasDoc['nodes'][number]) =>
-      a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+    expect(box('n1')).toMatchObject({ x: 400 + 225 + 100, y: 0 })
+    expect(box('n2')).toMatchObject({ x: box('n1').x + 225 + 100, y: 0 })
+    // 视频空卡按横竖两种形状占位，宽 300。
+    expect(box('n3')).toMatchObject({ x: box('n2').x + 300 + 100, y: 0 })
+    for (const a of doc.nodes) {
+      for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+    }
+  })
+
+  test('尚无结果的图片、视频卡按横竖两种形状占位：结果改变卡片形状后与相邻的卡仍不相交', () => {
+    let doc = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_generate', ref: '$a', output: 'image' },
+        { op: 'add_generate', ref: '$b', output: 'image', beside: '$a' },
+        { op: 'add_generate', output: 'video' },
+        { op: 'add_generate', output: 'image', beside: '$b' },
+      ],
+      ids('n'),
+    )
+    const box = (id: string) => doc.nodes.find((n) => n.id === id)!
+    expect(box('n2')).toMatchObject({ x: 300 + 100, y: 0 })
+    expect(box('n3')).toMatchObject({ x: 0, y: 300 + 100 })
+    const results = [
+      ['n1', { w: 1672, h: 941 }],
+      ['n2', { w: 1080, h: 1920 }],
+      ['n3', { w: 1080, h: 1920 }],
+      ['n4', { w: 1920, h: 1080 }],
+    ] as const
+    for (const [id, size] of results) {
+      const r = addVersions(doc, id, [{ ...version(`p-${id}`, `generated/${id}.png`), size }])
+      if (!r.ok) throw new Error(r.error)
+      doc = r.doc
+    }
+    expect(box('n1')).toMatchObject({ w: 300, h: 169 })
+    expect(box('n2')).toMatchObject({ w: 169, h: 300 })
+    expect(box('n2').x - (box('n1').x + box('n1').w)).toBe(100)
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
@@ -414,6 +454,35 @@ describe('画布：操作', () => {
     expect(doc.nodes.at(-1)).toMatchObject({ x: 7, y: 9 })
     expect(rejects(sample(), [{ op: 'add_file', path: 'x.png', beside: 'nope' }])).toContain('nope')
     expect(parseCanvasOps([{ op: 'add_generate', output: 'image', beside: 'a1' }]).ok).toBe(true)
+  })
+
+  test('未给出位置时另起一行：放在全部节点下方并与最左侧节点对齐，内容远离原点时同样相邻', () => {
+    const base = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_generate', output: 'image', x: -2263, y: 1346 },
+        { op: 'add_generate', output: 'video', x: -1972, y: 1600 },
+      ],
+      ids('b'),
+    )
+    const doc = apply(
+      base,
+      [
+        { op: 'add_generate', ref: '$a', output: 'image' },
+        { op: 'add_generate', output: 'image' },
+        { op: 'add_generate', output: 'image', beside: '$a' },
+      ],
+      ids('n'),
+    )
+    const box = (id: string) => doc.nodes.find((n) => n.id === id)!
+    // 已有节点尚无结果，按 300 见方占位，最低处为 1600 + 300。
+    expect(box('n1')).toMatchObject({ x: -2263, y: 1900 + 100 })
+    expect(box('n2')).toMatchObject({ x: -2263, y: 2000 + 300 + 100 })
+    expect(box('n3')).toMatchObject({ x: -2263 + 300 + 100, y: 2000 })
+    expect(apply(emptyCanvas(), [{ op: 'add_file', path: 'a.png' }]).nodes[0]).toMatchObject({
+      x: 0,
+      y: 0,
+    })
   })
 })
 

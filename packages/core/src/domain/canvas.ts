@@ -439,9 +439,9 @@ function clipProblem(clip: CanvasClip): string | null {
   return null
 }
 
-/** 未给出位置时，新节点放在最右侧节点右边相隔该距离处；`beside` 放在指定节点右侧相同距离处。 */
+/** 同一行中相邻节点的水平间距，也是新起一行与上方节点的垂直间距。 */
 const NEW_NODE_GAP = 100
-/** `beside` 查找空位时与其他节点保留的间距，包含节点上方的标题行。 */
+/** `near` 查找空位时与其他节点保留的间距，包含节点上方的标题行。 */
 const CLEARANCE = 40
 
 /**
@@ -530,7 +530,8 @@ function applyOne(
   }
   const claim = (ref: string | undefined, id: string) => {
     if (ref === undefined) return
-    if (!REF_RE.test(ref)) fail(`批内名称必须以 $ 开头：${ref}`)
+    if (!REF_RE.test(ref))
+      fail(`批内名称须为 $ 加 1 到 64 个英文字母、数字、下划线或连字符：${ref}`)
     if (refs[ref]) fail(`批内名称重复：${ref}`)
     refs[ref] = id
   }
@@ -543,19 +544,17 @@ function applyOne(
       const kind = canvasMediaOf({ id, type: 'file', path: op.path, x: 0, y: 0, w: 0, h: 0 })
       const [dw, dh] = FILE_SIZE[kind ?? 'other']
       const fit = op.size ? fitBox({ w: dw, h: dh }, op.size) : { w: dw, h: dh }
-      const w = op.w ?? fit.w
-      const h = op.h ?? fit.h
-      const spot = placeOf(doc, op, resolve, w, h)
       const node: CanvasFileNode = {
         id,
         type: 'file',
         path: op.path,
-        x: op.x ?? spot?.x ?? rightEdge(doc),
-        y: op.y ?? spot?.y ?? 0,
-        w,
-        h,
+        x: 0,
+        y: 0,
+        w: op.w ?? fit.w,
+        h: op.h ?? fit.h,
       }
       if (op.name) node.name = op.name
+      place(doc, node, op, resolve)
       doc.nodes.push(node)
       return
     }
@@ -563,24 +562,22 @@ function applyOne(
       const id = mint()
       claim(op.ref, id)
       const [dw, dh] = GENERATE_SIZE[op.output]
-      const w = op.w ?? dw
-      const h = op.h ?? dh
-      const spot = placeOf(doc, op, resolve, w, h)
       const node: CanvasGenerateNode = {
         id,
         type: 'generate',
         output: op.output,
         name: op.name || defaultName(doc, OUTPUT_NAME[op.output]),
-        x: op.x ?? spot?.x ?? rightEdge(doc),
-        y: op.y ?? spot?.y ?? 0,
-        w,
-        h,
+        x: 0,
+        y: 0,
+        w: op.w ?? dw,
+        h: op.h ?? dh,
         prompt: op.prompt ?? '',
         params: op.params ?? {},
         versions: [],
       }
       if (op.provider !== undefined) node.provider = op.provider
       if (op.model !== undefined) node.model = op.model
+      place(doc, node, op, resolve)
       doc.nodes.push(node)
       return
     }
@@ -588,19 +585,18 @@ function applyOne(
       const id = mint()
       claim(op.ref, id)
       const clips = structuredClone(op.clips ?? [])
-      const h = timelineHeight(clips)
-      const spot = placeOf(doc, op, resolve, TIMELINE_W, h)
       const node: CanvasTimelineNode = {
         id,
         type: 'timeline',
         name: op.name || defaultName(doc, TIMELINE_NAME),
-        x: op.x ?? spot?.x ?? rightEdge(doc),
-        y: op.y ?? spot?.y ?? 0,
+        x: 0,
+        y: 0,
         w: TIMELINE_W,
-        h,
+        h: timelineHeight(clips),
         clips,
       }
       if (op.muted) node.muted = true
+      place(doc, node, op, resolve)
       doc.nodes.push(node)
       return
     }
@@ -735,51 +731,73 @@ function applyOne(
   }
 }
 
-/** 最右侧节点再向右 `NEW_NODE_GAP`；空画布从 0 开始。 */
-function rightEdge(doc: CanvasDoc): number {
-  return doc.nodes.length ? Math.max(...doc.nodes.map((n) => n.x + n.w)) + NEW_NODE_GAP : 0
-}
-
-/** 由 `beside` 或 `near` 计算的位置；两者都未给出时返回 `null`，由调用方使用 `x` / `y` 或默认位置。 */
-function placeOf(
+/**
+ * 确定新节点的位置，节点按行排列：给出 `beside` 时放在该节点所在行、该节点右侧的第一个空位；
+ * 未给出位置时另起一行，放在全部节点下方并与最左侧节点对齐，空画布从原点开始；
+ * 给出 `near` 时以该点为中心，被占用时向下查找空位。调用方给出的 `x` / `y` 优先于此结果。
+ * 不要让 `beside` 被占用时向下查找：多个节点 `beside` 同一个节点时会排成一列，与其余按行排列的节点混在一起。
+ */
+function place(
   doc: CanvasDoc,
-  op: { beside?: string; near?: { x: number; y: number } },
+  node: CanvasNode,
+  op: { x?: number; y?: number; beside?: string; near?: { x: number; y: number } },
   resolve: (id: string) => string,
-  w: number,
-  h: number,
-): { x: number; y: number } | null {
+): void {
+  const size = extentOf(node)
+  let spot = { x: 0, y: 0 }
   if (op.beside !== undefined) {
     const id = resolve(op.beside)
-    const source = doc.nodes.find((n) => n.id === id) ?? fail(`节点不存在：${id}`)
-    return freeSpot(doc, source.x + source.w + NEW_NODE_GAP, source.y, w, h)
+    const source = extentOf(doc.nodes.find((n) => n.id === id) ?? fail(`节点不存在：${id}`))
+    spot = freeSpot(doc, { ...size, x: source.x + source.w + NEW_NODE_GAP, y: source.y }, 'right')
+  } else if (op.near) {
+    const at = { x: Math.round(op.near.x - node.w / 2), y: Math.round(op.near.y - node.h / 2) }
+    spot = freeSpot(doc, { ...size, ...at }, 'down')
+  } else if (doc.nodes.length > 0) {
+    const boxes = doc.nodes.map(extentOf)
+    spot = {
+      x: Math.min(...boxes.map((b) => b.x)),
+      y: Math.max(...boxes.map((b) => b.y + b.h)) + NEW_NODE_GAP,
+    }
   }
-  if (op.near)
-    return freeSpot(doc, Math.round(op.near.x - w / 2), Math.round(op.near.y - h / 2), w, h)
-  return null
+  node.x = op.x ?? spot.x
+  node.y = op.y ?? spot.y
 }
 
 /**
- * 从 (x, y) 开始查找空位：与已有节点（含同一批中先添加的节点）相交时移到该节点下沿之后，直到不再相交。
- * 每次下移至少越过一个节点，最多移动节点数次。
+ * 排位时节点占用的框。结果到达后，图片、视频与 Art 生成卡的形状按结果比例改变（`fitCurrent`，短边不变），
+ * 因此当前版本尚无尺寸时按横、竖 16:9 两种形状都能容纳的框占位。音频没有尺寸，形状不变。
+ * 不要改为只按当前框：169 见方的空卡生成 16:9 的结果后宽 300，按当前框间隔 100 排列的相邻卡会相交。
+ */
+function extentOf(n: CanvasNode): { x: number; y: number; w: number; h: number } {
+  if (n.type !== 'generate' || n.output === 'audio') return n
+  if (n.versions.find((v) => v.id === n.current)?.size) return n
+  const long = Math.round((Math.min(n.w, n.h) * 16) / 9)
+  return { x: n.x, y: n.y, w: Math.max(n.w, long), h: Math.max(n.h, long) }
+}
+
+/**
+ * 从 `box` 的位置开始查找空位：与已有节点（含同一批中先添加的节点）相交时，`right` 移到该节点右侧
+ * 相隔 `NEW_NODE_GAP` 处，`down` 移到该节点下沿之后，直到不再相交。每次移动至少越过一个节点。
  */
 function freeSpot(
   doc: CanvasDoc,
-  x: number,
-  top: number,
-  w: number,
-  h: number,
+  box: { x: number; y: number; w: number; h: number },
+  along: 'right' | 'down',
 ): { x: number; y: number } {
-  let y = top
+  let { x, y } = box
   for (;;) {
-    const hit = doc.nodes.find(
-      (n) =>
-        n.x < x + w + CLEARANCE &&
-        n.x + n.w + CLEARANCE > x &&
-        n.y < y + h + CLEARANCE &&
-        n.y + n.h + CLEARANCE > y,
-    )
+    const hit = doc.nodes
+      .map(extentOf)
+      .find(
+        (n) =>
+          n.x < x + box.w + CLEARANCE &&
+          n.x + n.w + CLEARANCE > x &&
+          n.y < y + box.h + CLEARANCE &&
+          n.y + n.h + CLEARANCE > y,
+      )
     if (!hit) return { x, y }
-    y = hit.y + hit.h + CLEARANCE
+    if (along === 'right') x = hit.x + hit.w + NEW_NODE_GAP
+    else y = hit.y + hit.h + CLEARANCE
   }
 }
 
