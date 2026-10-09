@@ -233,6 +233,30 @@ describe('canvas 工具', () => {
     expect(seen.edits).toHaveLength(1)
   })
 
+  test('edit 的新增操作不接受坐标与尺寸，位置由画布计算；移动已有节点不受影响', async () => {
+    const { port, seen } = fakePort({ ok: true, paths: [] })
+    for (const extra of ['"x":0,"y":950', '"w":1536,"h":1024', '"near":{"x":0,"y":0}']) {
+      const out = await editCanvasTool.fn(
+        {
+          path: 'board.canvas.json',
+          ops_json: `[{"op":"add_file","path":"a.png","beside":"id1"},{"op":"add_generate","output":"image",${extra}}]`,
+        },
+        ctx(port),
+      )
+      expect(out.status).toBe('failure')
+      expect(out.errorKind).toBe('invalid_tool_arguments')
+      expect(out.message).toContain('第 2 条操作')
+      expect(out.message).toContain('beside')
+    }
+    expect(seen.edits).toHaveLength(0)
+    const moved = await editCanvasTool.fn(
+      { path: 'board.canvas.json', ops_json: '[{"op":"update","id":"id1","x":10,"y":20}]' },
+      ctx(port),
+    )
+    expect(moved.status).toBe('success')
+    expect(seen.edits).toEqual([[{ op: 'update', id: 'id1', x: 10, y: 20 }]])
+  })
+
   test('run 使用本轮的生成端口与中止信号，产物写入改动清单', async () => {
     const { port, seen } = fakePort({ ok: true, paths: ['generated/a.mp4'] })
     const c = ctx(port, media)

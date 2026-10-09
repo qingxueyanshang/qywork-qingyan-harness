@@ -439,7 +439,7 @@ describe('画布服务：取帧', () => {
     return { root, video: r.refs.$v! }
   }
 
-  test('保存为 generated/<视频名>_尾帧.png，重名加 -2；节点位于视频右侧，第二帧排在第一帧下方', async () => {
+  test('保存为 generated/<视频名>_尾帧.png，重名加 -2；节点位于视频右侧，第二帧在同一行排在第一帧右侧', async () => {
     const { root, video } = await withVideo()
     const { svc } = service()
     const first = await svc.captureFrame(root, PATH, video, '尾帧', PNG)
@@ -449,9 +449,8 @@ describe('画布服务：取帧', () => {
     const doc = await onDisk(root)
     const node = doc.nodes.find((n) => n.id === first.nodeId)!
     expect(node).toMatchObject({ type: 'file', path: 'generated/视频1_尾帧.png', x: 500, y: 40 })
-    const below = doc.nodes.find((n) => n.id === second.nodeId)!
-    expect(below.x).toBe(500)
-    expect(below.y).toBeGreaterThanOrEqual(node.y + node.h)
+    const next = doc.nodes.find((n) => n.id === second.nodeId)!
+    expect(next).toMatchObject({ x: node.x + node.w + 100, y: 40 })
     expect(new Uint8Array(await readFile(join(root, first.path)))).toEqual(PNG)
   })
 

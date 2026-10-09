@@ -12,6 +12,7 @@ import type { CanvasPort, ToolOutcome, ToolSpec } from '@qywork/agent'
 import {
   ART_SIZE_PARAM,
   type CanvasBatchRunResult,
+  type CanvasOp,
   type CanvasView,
   displayNameOf,
   parseCanvasOps,
@@ -162,6 +163,22 @@ export const readCanvasTool: ToolSpec = {
   },
 }
 
+/**
+ * 新增操作中由模型给出的位置与尺寸。界面与服务端使用同一套操作，复制与粘贴需要坐标，因此只在本工具拒绝。
+ *
+ * 不要放开：读取画布的回执不含坐标，模型给出的坐标只能推测，同一模型会把 169 高的卡片按 350 或 950 的
+ * 步长排列，也会放在远离已有节点的原点附近；画布按 beside 或默认规则计算时会避开已有节点并保持固定间距。
+ */
+function placedOf(ops: readonly CanvasOp[]): string | null {
+  for (const [i, op] of ops.entries()) {
+    if (op.op !== 'add_file' && op.op !== 'add_generate' && op.op !== 'add_timeline') continue
+    const field = (['x', 'y', 'w', 'h', 'near'] as const).find((k) => k in op)
+    if (field)
+      return `第 ${i + 1} 条操作的 ${field} 不可用：新节点的位置由画布计算，用 beside 指定相邻节点`
+  }
+  return null
+}
+
 export const editCanvasTool: ToolSpec = {
   name: 'edit_canvas',
   description:
@@ -173,7 +190,10 @@ export const editCanvasTool: ToolSpec = {
     '{"op":"update","id":"节点或连线 id",…要改的字段}、{"op":"connect","from":"id","to":"生成卡 id","role":"…"}、' +
     '{"op":"remove","id":"节点或连线 id"}（删除某一版时另加 "version"）、{"op":"set_mode","id":"视频卡 id","mode":"reference|first_last"}、' +
     '{"op":"add_timeline","clips":[…]}（修改片段时用 update 的 clips 整组替换，muted 切换整条静音）；' +
-    'add_file、add_generate、add_timeline 可选 name、x、y，或用 "beside":"节点 id" 放在该节点右侧的空位、"near":{"x":…,"y":…} 放在该点附近的空位；add_generate 可选 provider、model、params（取值见本轮「可用的生成模型」；' +
+    'add_file、add_generate、add_timeline 可选 name 与 "beside":"节点 id"。新节点的位置由画布计算，节点按行排列：' +
+    '给出 beside 时排在该节点所在行、该节点右侧的第一个空位；未给出时另起一行，放在全部节点下方。' +
+    '因此同一组节点（如全部角色卡、全部分镜卡）的第一个不给 beside，其余依次 beside 前一个，每组各占一行。' +
+    'add_generate 可选 provider、model、params（取值见本轮「可用的生成模型」；' +
     `art 卡的 provider、model 是对话模型，缺省为当前对话模型，params 只有 size：${ART_SIZE_PARAM.values?.join('、')}）。` +
     'add_* 与 connect 可带 "ref":"$名字"，同一批中后续的操作与提示词用它代替新节点的 id。' +
     '提示词中用 @[节点 id] 指代素材，引用未连线的素材时自动连线。运行生成卡使用 run_canvas。',
@@ -207,6 +227,8 @@ export const editCanvasTool: ToolSpec = {
       }
       const parsed = parseCanvasOps(raw)
       if (!parsed.ok) return failure(parsed.error, 'invalid_tool_arguments')
+      const placed = placedOf(parsed.ops)
+      if (placed) return failure(placed, 'invalid_tool_arguments')
       const { view, refs } = await canvas.edit(path, parsed.ops)
       const named = Object.entries(refs).map(([ref, id]) => `${ref} = ${id}`)
       return {
