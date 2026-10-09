@@ -13,11 +13,23 @@
  *   bun run scripts/prompt-live.ts deepseek/deepseek-v4-pro   # 指定模型
  *   bun run scripts/prompt-live.ts --blocked openai/gpt-6.1-sol   # 只执行受阻判定
  *   bun run scripts/prompt-live.ts --goal openai/gpt-6.1-sol      # 受阻判定，以目标模式执行
+ *   bun run scripts/prompt-live.ts --layout openai/gpt-6.1-sol    # 只执行画布布局判定
+ *   bun run scripts/prompt-live.ts --verify openai/gpt-6.1-sol    # 只执行生成结果核对判定
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AgentEvent, ConversationId, EventEnvelope, RunId } from '@qywork/core'
+import { deflateSync } from 'node:zlib'
+import {
+  type AgentEvent,
+  CANVAS_SCHEMA_VERSION,
+  type CanvasDoc,
+  type CanvasPixels,
+  type ConversationId,
+  type EventEnvelope,
+  fitBox,
+  type RunId,
+} from '@qywork/core'
 import { dataPath, loadConfig, type ModelRef, type QyConfig } from '@qywork/runtime'
 import { serve } from '@qywork/server'
 import {
@@ -536,9 +548,13 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<Ve
   return v
 }
 
-/** 1×1 的 PNG：本地图片接口的成功产物。 */
+/**
+ * 160×90 的 PNG：本地图片接口的成功产物。结果到达后生成卡按 16:9 改变形状，与横屏分镜的实际产物一致；
+ * 不要换成 1×1：卡片形状不变，布局判定无法发现结果到达后相邻卡相交。也不要小于 10 像素：
+ * 模型用 read_file 查看时图片随请求发出，部分接口拒绝边长小于 10 的图片，整轮失败。
+ */
 const PNG_B64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+  'iVBORw0KGgoAAAANSUhEUgAAAKAAAABaCAAAAAAarQKOAAAAbklEQVR4nO3SQREAAAjDMKQjHRnlkSjY9Tb73OxzBipY80EFaz6oYM0HFaz5oII1H1Sw5oMK1nxQwZoPKljzQQVrPqhgzQcVrPmggjUfVLDmgwrWfFDBmg8qWPNBBWs+qGDNBxWs+aCCNR9UcGMHfrYhpc6JPZ8AAAAASUVORK5CYII='
 
 /**
  * 受阻判定：多步生成任务中一张图的接口固定返回 502，其余均可执行。
@@ -557,29 +573,78 @@ const BLOCKED_TASK =
   '1) 一只橘猫；2) 雪山日出；3) 海边灯塔；4) 秋天的河流；5) 一棵老槐树。' +
   '全部完成后，把成功生成的文件路径逐行写入 images.md，然后报告结果。'
 
-async function runBlocked(
-  store: Store,
+/**
+ * 160×90、4 秒、每秒换一种纯色的 MP4：本地视频接口的成功产物。不论请求的尺寸与时长都返回该文件，
+ * 用于判定模型是否按回执核对宽高与时长、是否用 read_file 抽帧查看画面。
+ */
+const MP4_B64 =
+  'AAAAHGZ0eXBpc29tAAACAGlzb21pc28ybXA0MQAAAAhmcmVlAAAE8G1kYXQAAAGzABAHAAABthMCjC02wnAxo22/jbb+Ntv422/jbb+Ntv422/jbb+Ntv38AAJQkYWm2E4GNG238bbfxtt/G238bbfxtt/G238bbfxtt+wAAqCRhabYTgY0bbfxtt/G238bbfxtt/G238bbfxtt/G237AAC8JGFpthOBjRtt/G238bbfxtt/G238bbfxtt/G238bbfsAANAkYWm2E4GNG238bbfxtt/G238bbfxtt/G238bbfxtt+wAA5CRhabYTgY0bbfxtt/G238bbfxtt/G238bbfxtt/G237AAABtleBH/0AAJQn/gAAqCf+AAC8J/4AANAn/gAA5Cf+AAABtlsBH/0AAJQn/gAAqCf+AAC8J/4AANAn/gAA5Cf+AAABtl+BH/0AAJQn/gAAqCf+AAC8J/4AANAn/gAA5Cf+AAABswAQRwAAAbYTAoyDbCUFGNtv422/jbb+Ntv422/jbb+Ntv422/jbb98AAJQkZBthKCjG238bbfxtt/G238bbfxtt/G238bbfxtt+AACoJGQbYSgoxtt/G238bbfxtt/G238bbfxtt/G238bbfgAAvCRkG2EoKMbbfxtt/G238bbfxtt/G238bbfxtt/G234AANAkZBthKCjG238bbfxtt/G238bbfxtt/G238bbfxtt+AADkJGQbYSgoxtt/G238bbfxtt/G238bbfxtt/G238bbfgAAAbZXgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZbAR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZfgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbMAEIcAAAG2EwKMKDbB9CiNtv422/jbb+Ntv422/jbb+Ntv422/jbb9AACUJGFBtg+hRG238bbfxtt/G238bbfxtt/G238bbfxtt+8AAKgkYUG2D6FEbbfxtt/G238bbfxtt/G238bbfxtt/G237wAAvCRhQbYPoURtt/G238bbfxtt/G238bbfxtt/G238bbfvAADQJGFBtg+hRG238bbfxtt/G238bbfxtt/G238bbfxtt+8AAOQkYUG2D8FMbbfxtt/G238bbfxtt/G238bbfxtt/G237wAAAbZXgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZbAR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZfgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbMAEMcAAAG2EwKMGs2/jbb+Ntv422/jbb+Ntv422/jbb+Ntv422/QAAlCRg1m38bbfxtt/G238bbfxtt/G238bbfxtt/G237wAAqCRg1m38bbfxtt/G238bbfxtt/G238bbfxtt/G237wAAvCRg1m38bbfxtt/G238bbfxtt/G238bbfxtt/G237wAA0CRg1m38bbfxtt/G238bbfxtt/G238bbfxtt/G237wAA5CRg1m38bbfxtt/G238bbfxtt/G238bbfxtt/G237wAAAbZXgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZbAR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAAbZfgR/9AACUJ/4AAKgn/gAAvCf+AADQJ/4AAOQn/gAAA49tb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAPoAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACunRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAPoAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAoAAAAFoAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAD6AAAAAAAAEAAAAAAjJtZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAAEAAAAEAAFXEAAAAAAAtaGRscgAAAAAAAAAAdmlkZQAAAAAAAAAAAAAAAFZpZGVvSGFuZGxlcgAAAAHdbWluZgAAABR2bWhkAAAAAQAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAABnXN0YmwAAADZc3RzZAAAAAAAAAABAAAAyW1wNHYAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAoABaAEgAAABIAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY//8AAABfZXNkcwAAAAADgICATgABAASAgIBAIBEAAAAAAAnQAAAAAAWAgIAuAAABsAEAAAG1iRMAAAEAAAABIADEjYgAJQUEC1RDAAABskxhdmM2My4xLjEwMgaAgIABAgAAABRidHJ0AAAAAAAACdAAAAAAAAAAGHN0dHMAAAAAAAAAAQAAABAAABAAAAAAIHN0c3MAAAAAAAAABAAAAAEAAAAFAAAACQAAAA0AAAAcc3RzYwAAAAAAAAABAAAAAQAAABAAAAABAAAAVHN0c3oAAAAAAAAAAAAAABAAAADcAAAAIQAAACEAAAAhAAAA1gAAACEAAAAhAAAAIQAAANsAAAAhAAAAIQAAACEAAADPAAAAIQAAACEAAAAhAAAAFHN0Y28AAAAAAAAAAQAAACwAAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYzLjEuMTAy'
+
+/** 指定宽高的纯灰 PNG（base64）。 */
+function grayPng(w: number, h: number): string {
+  const chunk = (type: string, data: Uint8Array) => {
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const out = Buffer.alloc(12 + data.length)
+    out.writeUInt32BE(data.length, 0)
+    body.copy(out, 4)
+    out.writeUInt32BE(Bun.hash.crc32(body), 8 + data.length)
+    return out
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(w, 0)
+  ihdr.writeUInt32BE(h, 4)
+  ihdr.set([8, 0, 0, 0, 0], 8)
+  const raw = Buffer.alloc(h * (w + 1), 128)
+  for (let y = 0; y < h; y++) raw[y * (w + 1)] = 0
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]).toString('base64')
+}
+
+/**
+ * 本地的 OpenAI 图片形状接口（`/images/generations`）与视频形状接口（`/videos`），以及只含这两个接口的生成配置。
+ *
+ * 去掉其他接口的生成模型：模型只能使用本地接口，不产生真实的生成费用。`fails` 为真的出图提示词返回 502，
+ * 其余返回 `png(请求中的 size)`；视频任务提交后第一次查询即完成，内容为 `MP4_B64`。
+ * `prompts` 与 `videos` 分别记录收到的出图与视频提示词。
+ */
+function stubMedia(
   config: QyConfig,
-  ref: ModelRef,
-  goal: boolean,
-): Promise<Verdict> {
-  const name = `${ref.provider}/${ref.model}`
-  const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
+  fails: (prompt: string) => boolean,
+  png: (size: unknown) => string = () => PNG_B64,
+) {
   const prompts: string[] = []
+  const videos: string[] = []
   const stub = Bun.serve({
     port: 0,
     hostname: '127.0.0.1',
     async fetch(req) {
-      const body = (await req.json().catch(() => ({}))) as { prompt?: string }
+      const path = new URL(req.url).pathname
+      if (req.method === 'GET' && path.endsWith('/content')) {
+        return new Response(Buffer.from(MP4_B64, 'base64'), {
+          headers: { 'content-type': 'video/mp4' },
+        })
+      }
+      if (req.method === 'GET') {
+        return Response.json({ id: path.split('/').pop(), status: 'completed', seconds: '4' })
+      }
+      const body = (await req.json().catch(() => ({}))) as { prompt?: string; size?: unknown }
       const prompt = String(body.prompt ?? '')
+      if (path.endsWith('/videos')) {
+        videos.push(prompt)
+        return Response.json({ id: `video_${videos.length}`, status: 'queued' })
+      }
       prompts.push(prompt)
-      if (LIGHTHOUSE.test(prompt)) {
+      if (fails(prompt)) {
         return Response.json(
           { error: { message: 'Upstream access forbidden, please contact administrator' } },
           { status: 502 },
         )
       }
-      return Response.json({ data: [{ b64_json: PNG_B64 }] })
+      return Response.json({ data: [{ b64_json: png(body.size) }] })
     },
   })
   const providers = Object.fromEntries(
@@ -598,11 +663,26 @@ async function runBlocked(
         apiKey: 'stub',
         baseUrl: `http://127.0.0.1:${stub.port}/v1`,
         models: {},
-        media: { 'stub-image': { kind: 'openai_images' } },
+        media: { 'stub-image': { kind: 'openai_images' }, 'stub-video': { kind: 'openai_videos' } },
       },
     },
-    mediaDefaults: { image: { provider: 'stub', model: 'stub-image' } },
+    mediaDefaults: {
+      image: { provider: 'stub', model: 'stub-image' },
+      video: { provider: 'stub', model: 'stub-video' },
+    },
   }
+  return { scenario, prompts, videos, stub }
+}
+
+async function runBlocked(
+  store: Store,
+  config: QyConfig,
+  ref: ModelRef,
+  goal: boolean,
+): Promise<Verdict> {
+  const name = `${ref.provider}/${ref.model}`
+  const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
+  const { scenario, prompts, stub } = stubMedia(config, (prompt) => LIGHTHOUSE.test(prompt))
   const ws = `${wsFor(ref)}-${goal ? 'goal' : 'blocked'}`
   await rm(ws, { recursive: true, force: true })
   await mkdir(ws, { recursive: true })
@@ -673,15 +753,299 @@ async function runBlocked(
   return v
 }
 
+interface Box {
+  id: string
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** 两框之间的空白距离；相交或相接时为 0。 */
+function gapOf(a: Box, b: Box): number {
+  const dx = Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w), 0)
+  const dy = Math.max(b.y - (a.y + a.h), a.y - (b.y + b.h), 0)
+  return Math.round(Math.hypot(dx, dy))
+}
+
+function overlaps(a: Box, b: Box): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+function boundsOf(boxes: Box[]): Box {
+  const x = Math.min(...boxes.map((b) => b.x))
+  const y = Math.min(...boxes.map((b) => b.y))
+  const w = Math.max(...boxes.map((b) => b.x + b.w)) - x
+  const h = Math.max(...boxes.map((b) => b.y + b.h)) - y
+  return { id: '', x, y, w, h }
+}
+
+/**
+ * 布局判定的画布：前期已有的四张卡，位置远离原点。
+ * 用户在界面上添加的节点落在视口中心，原点附近通常没有内容。
+ */
+const LAYOUT_CANVAS = '短片.canvas.json'
+const LAYOUT_EXISTING: Box[] = [
+  { id: 'pre00001', x: -2263, y: 1346, w: 169, h: 254 },
+  { id: 'pre00002', x: -1972, y: 1346, w: 300, h: 169 },
+  { id: 'pre00003', x: -2263, y: 1674, w: 169, h: 254 },
+  { id: 'pre00004', x: -1972, y: 1600, w: 300, h: 169 },
+]
+const LAYOUT_SCRIPT = [
+  '# 会说话的存钱罐',
+  '',
+  '角色：林悦（23 岁）、奶奶（75 岁）、小林悦（7 岁）。场景：老房子客厅、老房子阳台。',
+  '',
+  '1. 客厅，林悦推门回到老房子，屋里很安静。',
+  '2. 林悦在柜子上看到旧的小猪存钱罐。',
+  '3. 回忆：小林悦把硬币投进存钱罐，奶奶在旁边笑。',
+  '4. 存钱罐里传出奶奶录下的声音。',
+  '5. 林悦愣住，眼眶发红。',
+  '6. 阳台，林悦抱着存钱罐看向窗外。',
+  '7. 回忆：奶奶在阳台上教小林悦数硬币。',
+].join(NL)
+const LAYOUT_TASK =
+  `画布 ${LAYOUT_CANVAS} 上已有前期的几张卡。按 script.md 在这张画布上分步制作：` +
+  '先为 3 个角色各建一张定妆参考图生成卡并运行生成；再为 2 个场景各建一张场景参考图生成卡并运行生成；' +
+  '最后为 7 个镜头各建一张图片分镜卡，把用到的参考图连到分镜卡，并把 script.md 放上画布。分镜卡只建卡与连线，不运行。'
+
+/**
+ * 每个新节点到最近节点的空白上限。同一行内的间距是 100；尚无结果的卡为竖图预留 300 高，
+ * 生成横图（169 高）后与下一行相隔 100 + 131。
+ */
+const LAYOUT_MAX_GAP = 100 + (300 - 169)
+/** 新节点所在的行数上限：角色、场景、分镜与脚本各占一行，再留一行余量。 */
+const LAYOUT_MAX_ROWS = 5
+
+/** 尚无结果的生成卡按 `size` 的比例改变形状后的画布，用于检查之后生成时是否与相邻卡相交。 */
+function settledAs(doc: CanvasDoc, size: CanvasPixels): CanvasDoc {
+  const next = structuredClone(doc)
+  for (const n of next.nodes) {
+    if (n.type !== 'generate' || n.output === 'audio') continue
+    if (!n.versions.find((v) => v.id === n.current)?.size) Object.assign(n, fitBox(n, size))
+  }
+  return next
+}
+
+/** 至少一方是新节点的相交对数。预置的卡之间不计：它们的形状由预置数据决定，不经过画布排位。 */
+function crossings(doc: CanvasDoc, old: ReadonlySet<string>): number {
+  let crossed = 0
+  for (const [i, a] of doc.nodes.entries()) {
+    for (const b of doc.nodes.slice(i + 1)) {
+      if (!(old.has(a.id) && old.has(b.id)) && overlaps(a, b)) crossed++
+    }
+  }
+  return crossed
+}
+
+/**
+ * 布局判定：模型在已有内容的画布上分几批新建节点并运行其中两批，检查距离、相交与按行排列。
+ *
+ * 原始失败形状有两种。模型自行给出坐标时，按 950 的步长排列 169 高的图片卡，新卡放在原点附近、
+ * 与远离原点的已有节点相隔一千以上。由画布计算位置时，169 见方的空卡按间隔 100 排列，生成 16:9 的结果后
+ * 宽 300，相邻卡相交；未给 beside 的批次接在最右侧节点之后，几组卡排成一整行，beside 同一个节点的卡排成一列。
+ */
+async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise<Verdict> {
+  const name = `${ref.provider}/${ref.model}`
+  const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
+  const { scenario, prompts, stub } = stubMedia(config, () => false)
+  const ws = `${wsFor(ref)}-layout`
+  await rm(ws, { recursive: true, force: true })
+  await mkdir(ws, { recursive: true })
+  await writeFile(join(ws, 'script.md'), LAYOUT_SCRIPT)
+  const pre: CanvasDoc = {
+    version: CANVAS_SCHEMA_VERSION,
+    nodes: LAYOUT_EXISTING.map((b, i) => ({
+      ...b,
+      type: 'generate' as const,
+      output: i % 2 ? ('video' as const) : ('image' as const),
+      name: `前期${i + 1}`,
+      prompt: '',
+      params: {},
+      versions: [],
+    })),
+    edges: [],
+  }
+  await writeFile(join(ws, LAYOUT_CANVAS), JSON.stringify(pre, null, 2))
+  const live = start(store, scenario, ws)
+  try {
+    const conv = await newConversation(live, `布局判定 · ${name}`)
+    if (!conv) throw new Error('创建会话失败')
+    v.conversationId = conv
+    await setModel(live, conv, ref)
+    const runId = await turn(live, conv, LAYOUT_TASK)
+    if (!runId) throw new Error('该轮未启动 run')
+    v.turns = 1
+    const add = (n: string, ok: boolean, d = '') => v.checks.push({ name: n, ok, detail: d })
+    const doc = JSON.parse(await Bun.file(join(ws, LAYOUT_CANVAS)).text()) as CanvasDoc
+    const old = new Set(LAYOUT_EXISTING.map((b) => b.id))
+    const fresh = doc.nodes.filter((n) => !old.has(n.id))
+    add('新建节点不少于 13 个', fresh.length >= 13, `${fresh.length} 个`)
+    const sized = fresh.filter(
+      (n) => n.type === 'generate' && n.versions.find((v) => v.id === n.current)?.size,
+    )
+    add('已运行的卡按 16:9 结果改变形状', sized.length >= 5, `${sized.length} 张`)
+    // 距离按全部卡生成 16:9 结果之后计算：空卡为容纳结果预留了位置，生成前的空白大于标准间距。
+    const wide = settledAs(doc, { w: 16, h: 9 })
+    const nearest = wide.nodes
+      .filter((n) => !old.has(n.id))
+      .map((a) => Math.min(...wide.nodes.filter((b) => b.id !== a.id).map((b) => gapOf(a, b))))
+    const widest = nearest.length ? Math.max(...nearest) : 0
+    add(
+      `每个新节点到最近节点的空白不超过 ${LAYOUT_MAX_GAP}`,
+      fresh.length > 0 && widest <= LAYOUT_MAX_GAP,
+      `最大 ${widest}`,
+    )
+    const group = fresh.length ? gapOf(boundsOf(fresh), boundsOf(LAYOUT_EXISTING)) : 0
+    add(
+      '新节点与原有节点相邻（两组外接框相隔不超过 400）',
+      fresh.length > 0 && group <= 400,
+      `相隔 ${group}`,
+    )
+    const crossed = [doc, wide, settledAs(doc, { w: 9, h: 16 })].map((d) => crossings(d, old))
+    add(
+      '节点互不重叠（当前、其余卡生成横图后、生成竖图后）',
+      crossed.every((c) => c === 0),
+      `${crossed.join(' / ')} 对相交`,
+    )
+    const rows = new Set(fresh.map((n) => n.y)).size
+    add(`新节点按行排列，不超过 ${LAYOUT_MAX_ROWS} 行`, rows <= LAYOUT_MAX_ROWS, `${rows} 行`)
+    const ways = { xy: 0, beside: 0, near: 0, none: 0 }
+    for (const step of listSteps(store, runId)) {
+      if (step.toolName !== 'edit_canvas') continue
+      const args = (step.payload as { args?: { ops_json?: unknown } } | null)?.args
+      let ops: Record<string, unknown>[] = []
+      try {
+        ops = JSON.parse(String(args?.ops_json ?? '[]'))
+      } catch {}
+      for (const op of ops) {
+        if (!String(op.op).startsWith('add_')) continue
+        if (op.x !== undefined || op.y !== undefined) ways.xy++
+        else if (op.beside !== undefined) ways.beside++
+        else if (op.near !== undefined) ways.near++
+        else ways.none++
+      }
+    }
+    add(
+      '位置写法（不计失败）',
+      true,
+      `坐标 ${ways.xy}、beside ${ways.beside}、near ${ways.near}、缺省 ${ways.none}；生成请求 ${prompts.length} 次`,
+    )
+  } catch (err) {
+    v.error = err instanceof Error ? err.message : String(err)
+  } finally {
+    live.close()
+    stub.stop(true)
+  }
+  return v
+}
+
+const VERIFY_CANVAS = '海报.canvas.json'
+const VERIFY_TASK =
+  `新建画布 ${VERIFY_CANVAS}，建三张生成卡并运行：图片「封面横版」尺寸 1536x1024，提示词为清晨的海边小镇；` +
+  '图片「海报竖版」尺寸 1024x1536，提示词为雨夜的霓虹街道；视频「片头」时长 8 秒、尺寸 1280x720，提示词为海浪拍打礁石。' +
+  '完成后在回复中逐个写出实际得到的分辨率与视频时长，以及是否符合要求。'
+
+/**
+ * 结果核对判定：本地图片接口按请求的尺寸返回纯灰 PNG，宽高与要求一致，画面不符只能查看后发现；
+ * 视频接口都返回 160×90、4 秒的 MP4，宽高与时长不符可从回执发现。
+ * 检查模型是否设置了参数、是否查看图片并抽帧查看视频、重新运行是否有限，以及回复是否按回执写出视频的实际分辨率与时长。
+ *
+ * 原始失败形状：params 写成 JSON 字符串被拒后，模型删去参数继续运行，回执只有路径；
+ * 结束回复按自己的计划写「480p、15 秒」，实际产物是缺省的 1080P、5 秒，且全程未查看任何图片与视频。
+ */
+async function runVerify(store: Store, config: QyConfig, ref: ModelRef): Promise<Verdict> {
+  const name = `${ref.provider}/${ref.model}`
+  const v: Verdict = { ref: name, turns: 0, checks: [], cachedRatio: null, conversationId: '' }
+  const pngOf = (size: unknown) => {
+    const m = /^(\d+)x(\d+)$/.exec(String(size))
+    return m ? grayPng(Number(m[1]), Number(m[2])) : PNG_B64
+  }
+  const { scenario, prompts, videos, stub } = stubMedia(config, () => false, pngOf)
+  const ws = `${wsFor(ref)}-verify`
+  await rm(ws, { recursive: true, force: true })
+  await mkdir(ws, { recursive: true })
+  const live = start(store, scenario, ws)
+  try {
+    const conv = await newConversation(live, `结果核对判定 · ${name}`)
+    if (!conv) throw new Error('创建会话失败')
+    v.conversationId = conv
+    await setModel(live, conv, ref)
+    const runId = await turn(live, conv, VERIFY_TASK)
+    if (!runId) throw new Error('该轮未启动 run')
+    v.turns = 1
+    const add = (n: string, ok: boolean, d = '') => v.checks.push({ name: n, ok, detail: d })
+    const doc = JSON.parse(
+      await Bun.file(join(ws, VERIFY_CANVAS))
+        .text()
+        .catch(() => '{"nodes":[]}'),
+    ) as CanvasDoc
+    const cards = doc.nodes.flatMap((n) => (n.type === 'generate' ? [n] : []))
+    const images = cards.filter((n) => n.output === 'image')
+    const clips = cards.filter((n) => n.output === 'video')
+    const sized = (n: (typeof cards)[number]) => /^\d+x\d+$/.test(String(n.params.size))
+    add(
+      '图片卡都设置了尺寸参数',
+      images.length === 2 && images.every(sized),
+      images.map((n) => String(n.params.size ?? '未设置')).join('、'),
+    )
+    add(
+      '视频卡设置了时长与尺寸参数',
+      clips.length === 1 && clips.every((n) => n.params.seconds !== undefined && sized(n)),
+      clips.map((n) => JSON.stringify(n.params)).join('、'),
+    )
+    add(
+      '每张卡重新运行不超过一次',
+      prompts.length >= 2 && prompts.length <= 4 && videos.length >= 1 && videos.length <= 2,
+      `图片接口 ${prompts.length} 次，视频接口 ${videos.length} 次`,
+    )
+    const steps = listSteps(store, runId)
+    const reads = steps.flatMap((s) =>
+      s.toolName === 'read_file' && s.status === 'success'
+        ? [String((s.payload as { args?: { path?: unknown } } | null)?.args?.path)]
+        : [],
+    )
+    const viewed = (ext: RegExp) =>
+      reads.filter((p) => /generated[\\/]/.test(p) && ext.test(p)).length
+    add(
+      '查看了生成的图片',
+      viewed(/\.(png|jpe?g|webp)$/i) > 0,
+      `成功读取 ${viewed(/\.(png|jpe?g|webp)$/i)} 次`,
+    )
+    add('抽帧查看了生成的视频', viewed(/\.mp4$/i) > 0, `成功读取 ${viewed(/\.mp4$/i)} 次`)
+    // 回复是最后一次工具调用之后的正文；助手正文按步骤保存，不在消息表中。
+    const last = steps.findLastIndex((s) => s.toolName !== null)
+    const reply = steps
+      .slice(last + 1)
+      .filter((s) => s.kind === 'text')
+      .map((s) => s.content ?? '')
+      .join(NL)
+    add(
+      '回复按回执写出视频的实际分辨率 160×90 与时长 4 秒',
+      /160\s*[×xX*]\s*90/.test(reply) && /(^|[^\d.])4(\.0+)?\s*(秒|s\b)/.test(reply),
+      reply.replace(/\s+/g, ' ').slice(0, 200),
+    )
+  } catch (err) {
+    v.error = err instanceof Error ? err.message : String(err)
+  } finally {
+    live.close()
+    stub.stop(true)
+  }
+  return v
+}
+
 async function main(): Promise<number> {
   const config = await loadConfig()
   // 写入主库，执行完毕后可在面板中查看每一轮。
   const store = new Store({ path: dataPath() })
 
-  // `--blocked`：只执行受阻判定一项（见 `runBlocked`）；`--goal`：同一任务以目标模式执行。
+  // `--blocked`：只执行受阻判定一项（见 `runBlocked`）；`--goal`：同一任务以目标模式执行；
+  // `--layout`：只执行画布布局判定一项（见 `runLayout`）；`--verify`：只执行结果核对判定一项（见 `runVerify`）。
   const blocked = process.argv.includes('--blocked')
   const goal = process.argv.includes('--goal')
-  const args = process.argv.slice(2).filter((a) => a !== '--blocked' && a !== '--goal')
+  const layout = process.argv.includes('--layout')
+  const verify = process.argv.includes('--verify')
+  const args = process.argv.slice(2).filter((a) => !a.startsWith('--'))
   const refs: ModelRef[] = args.length
     ? args.map((a) => {
         const i = a.indexOf('/')
@@ -692,15 +1056,19 @@ async function main(): Promise<number> {
       )
 
   line(
-    `共 ${refs.length} 个模型，每个 ${blocked || goal ? 1 : Object.keys(TASKS).length} 项真实任务。`,
+    `共 ${refs.length} 个模型，每个 ${blocked || goal || layout || verify ? 1 : Object.keys(TASKS).length} 项真实任务。`,
   )
   const all: Verdict[] = []
   for (const ref of refs) {
     line('')
     line(`── ${ref.provider}/${ref.model} ──`)
-    const v = await (blocked || goal
-      ? runBlocked(store, config, ref, goal)
-      : runFor(store, config, ref))
+    const v = await (layout
+      ? runLayout(store, config, ref)
+      : verify
+        ? runVerify(store, config, ref)
+        : blocked || goal
+          ? runBlocked(store, config, ref, goal)
+          : runFor(store, config, ref))
     all.push(v)
     if (v.error) {
       line(`  ✗ 执行失败：${v.error}（已完成 ${v.turns} 轮）`)
