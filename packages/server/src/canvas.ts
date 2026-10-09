@@ -1194,20 +1194,21 @@ export class CanvasService {
   }
 
   /**
-   * 应用一批操作并写入，返回应用后的文档与批内名称对照。
+   * 应用一批操作并写入，返回应用后的文档与本批的批内名称对照；`earlier` 见 `applyCanvasOps`。
    * 文件节点的路径先按工作区核实，并规范化为正斜杠相对路径；运行中的卡片不能删除（409）。
    */
   apply(
     workspaceRoot: string,
     path: string,
     ops: CanvasOp[],
+    earlier: Readonly<Record<string, string>> = {},
   ): Promise<{ doc: CanvasDoc; refs: Record<string, string>; step: CanvasStep }> {
     return this.enqueue(keyOf(workspaceRoot, path), async () => {
       const abs = await this.locate(workspaceRoot, path)
       const normalized = await Promise.all(ops.map((op) => this.normalizePath(workspaceRoot, op)))
       const r = await this.commit(abs, (doc) => {
         this.refuseRemovingRunning(workspaceRoot, path, doc, normalized)
-        return applyCanvasOps(doc, normalized, this.deps.newId)
+        return applyCanvasOps(doc, normalized, this.deps.newId, earlier)
       })
       return { doc: r.doc, refs: r.refs, step: r.step }
     })
@@ -1447,14 +1448,20 @@ export class CanvasService {
 /**
  * 提供给会话的画布端口：使用同一个画布服务，绑定该会话所在的项目。
  * 运行与取回在工具中等待至结束；中止信号来自本轮，停止本轮即停止等待，视频版本保留以待取回。
+ *
+ * 端口按轮创建，记录本轮每张画布已定义的批内名称，后续批次可继续使用。不要改为只在单批内有效：
+ * 模型分批建卡时会在后一批用前一批的名称连线，被拒后删去连线继续执行，生成的视频与参考图无关。
  */
 export function canvasPort(service: CanvasService, ws: CanvasWorkspace): CanvasPort {
+  const named = new Map<string, Record<string, string>>()
   return {
     create: (path) => service.create(ws.root, { path }),
     list: () => service.list(ws.root),
     read: (path) => service.read(ws.root, path),
     edit: async (path, ops) => {
-      const { refs } = await service.apply(ws.root, path, ops)
+      const earlier = named.get(path) ?? {}
+      const { refs } = await service.apply(ws.root, path, ops, earlier)
+      named.set(path, { ...earlier, ...refs })
       return { view: await service.read(ws.root, path), refs }
     },
     run: async (path, nodeId, media, signal) =>
