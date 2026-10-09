@@ -617,7 +617,7 @@ export class CanvasService {
       return this.writeBack(
         ws.root,
         rel,
-        files,
+        { files, sizes, params },
         (d) => {
           if (node.output !== 'video')
             return addVersions(
@@ -685,8 +685,11 @@ export class CanvasService {
         return { ok: false, message: outcome.message, pending: outcome.record !== undefined }
       }
       const sizes = await this.sizesOf(ws.root, outcome.files)
-      return this.writeBack(ws.root, rel, outcome.files, (d) =>
-        settleVideo(d, nodeId, version.id, outcome.files, sizes),
+      return this.writeBack(
+        ws.root,
+        rel,
+        { files: outcome.files, sizes, params: version.made.params },
+        (d) => settleVideo(d, nodeId, version.id, outcome.files, sizes),
       )
     })
     this.running.get(key)!.done = done
@@ -877,18 +880,35 @@ export class CanvasService {
     return sizes
   }
 
-  /** 产物已落盘，回写画布。回写失败（节点或该版本已被外部修改）时，失败原文写明产物位置。 */
+  /**
+   * 产物已落盘，回写画布。成功时返回各产物的像素宽高与时长，以及实际发送的参数，供调用方核对结果。
+   * 回写失败（节点或该版本已被外部修改）时，失败原文写明产物位置。
+   */
   private async writeBack(
     root: string,
     rel: string,
-    files: GeneratedFile[],
+    made: {
+      files: GeneratedFile[]
+      sizes: Map<string, CanvasPixels>
+      params: Record<string, unknown>
+    },
     change: (doc: CanvasDoc) => CanvasResult,
     warning?: string,
   ): Promise<CanvasRunResult> {
-    const paths = files.map((f) => f.path)
+    const paths = made.files.map((f) => f.path)
     try {
       await this.mutate(root, rel, change)
-      return { ok: true, paths, ...(warning ? { warning } : {}) }
+      const outputs = await Promise.all(
+        paths.map(async (path) => {
+          const duration = await mediaDurationOf(join(root, path))
+          return {
+            path,
+            ...sizeField(made.sizes.get(path)),
+            ...(duration === null ? {} : { duration }),
+          }
+        }),
+      )
+      return { ok: true, outputs, params: made.params, ...(warning ? { warning } : {}) }
     } catch (err) {
       return {
         ok: false,

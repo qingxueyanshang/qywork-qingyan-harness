@@ -305,7 +305,8 @@ describe('画布运行：图像', () => {
       model: model.id,
       files: [{ bytes: PNG, mime: 'image/png' }],
     })
-    expect(await run.done).toMatchObject({ ok: true })
+    // 结果中的参数是实际发送的值，不是卡片上保存的偏好。
+    expect(await run.done).toMatchObject({ ok: true, params: { seed: 42 } })
     const saved = await node(ws.root, ids.$g!)
     expect(saved.params).toEqual(prefs)
     expect(saved.versions[0]!.made.params).toEqual({ seed: 42 })
@@ -541,6 +542,40 @@ describe('画布运行：视频', () => {
       false,
     )
     expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'normal' })
+  })
+
+  test('视频成功时结果带产物从文件头读取的时长与实际发送的参数；未设置参数时为空对象', async () => {
+    const box = (type: string, body: Buffer) => {
+      const head = Buffer.alloc(8)
+      head.writeUInt32BE(body.length + 8, 0)
+      head.write(type, 4, 'latin1')
+      return Buffer.concat([head, body])
+    }
+    // 只有 `moov/mvhd` 的 mp4：时间刻度 1000，时长 5040，即 5.04 秒。
+    const mvhd = Buffer.alloc(100)
+    mvhd.writeUInt32BE(1000, 12)
+    mvhd.writeUInt32BE(5040, 16)
+    const mp4 = Buffer.concat([
+      box('ftyp', Buffer.from('isom0000', 'latin1')),
+      box('moov', box('mvhd', mvhd)),
+    ])
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit()
+    p.finish({
+      ok: true,
+      provider: 'ark',
+      model: 'seedance',
+      files: [{ bytes: new Uint8Array(mp4), mime: 'video/mp4' }],
+    })
+    const result = await run.done
+    if (!result.ok) throw new Error(result.message)
+    expect(result.params).toEqual({})
+    expect(result.outputs).toEqual([
+      { path: expect.stringMatching(/^generated\/.+\.mp4$/), duration: 5.04 },
+    ])
   })
 
   test('模型返回尾帧：视频写入版本，尾帧图增加一个节点，名称为 <卡片名>_尾帧，位于卡片右侧', async () => {

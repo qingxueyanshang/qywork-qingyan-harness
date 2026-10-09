@@ -108,6 +108,8 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
 
 const media: MediaPort = { generate: async () => ({ ok: false, message: '不该直接调' }) }
 
+const DONE: Awaited<ReturnType<CanvasPort['run']>> = { ok: true, outputs: [], params: {} }
+
 describe('canvas 工具', () => {
   test('没有画布通道时不注册', () => {
     const none = new ToolRegistry()
@@ -137,7 +139,7 @@ describe('canvas 工具', () => {
   })
 
   test('创建返回文件改动；缺参、非画布路径或权限拒绝不创建', async () => {
-    const { port, seen } = fakePort({ ok: true, paths: [] })
+    const { port, seen } = fakePort(DONE)
     const registry = new ToolRegistry()
     registerBuiltinTools(registry, { canvas: true })
     const c = ctx(port)
@@ -160,7 +162,7 @@ describe('canvas 工具', () => {
   })
 
   test('批量 id 去重，仍使用本轮生成端口与中止信号；非法数组不派发', async () => {
-    const { port, seen } = fakePort({ ok: true, paths: ['a.png'] })
+    const { port, seen } = fakePort({ ok: true, outputs: [{ path: 'a.png' }], params: {} })
     const c = ctx(port, media)
     const args = { path: 'board.canvas.json', node: ['a', 'b', 'a'] }
     expect((await runCanvasTool.fn(args, c)).status).toBe('success')
@@ -176,9 +178,9 @@ describe('canvas 工具', () => {
   })
 
   test('批量部分失败仍返回成功文件与逐节点结果，不把整批报告为成功', async () => {
-    const { port } = fakePort({ ok: true, paths: [] })
+    const { port } = fakePort(DONE)
     port.runBatch = async () => [
-      { node: 'a', result: { ok: true, paths: ['generated/a.png'] } },
+      { node: 'a', result: { ok: true, outputs: [{ path: 'generated/a.png' }], params: {} } },
       { node: 'b', result: { ok: false, message: '等待超时', pending: true } },
       { node: 'c', skipped: true, result: { ok: false, message: '上游失败', pending: false } },
     ]
@@ -191,12 +193,13 @@ describe('canvas 工具', () => {
     expect(out.message).toContain('1 个成功，1 个失败，1 个未运行')
     expect(out.message).toContain('retrieve_canvas')
     expect(out.message).toContain('不要整批重新运行')
+    expect(out.message.match(/核对画面：用 read_file/g)).toHaveLength(1)
     expect(out.fileChanges).toEqual([{ path: 'generated/a.png', changeType: 'created' }])
     expect(out.data?.results).toHaveLength(3)
   })
 
   test('read 不提供路径时列出画布；提供路径时输出节点、状态与连线', async () => {
-    const { port } = fakePort({ ok: true, paths: [] })
+    const { port } = fakePort(DONE)
     const list = await readCanvasTool.fn({}, ctx(port))
     expect(list.message).toContain('分镜/第二集.canvas.json')
     const one = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
@@ -209,7 +212,7 @@ describe('canvas 工具', () => {
   })
 
   test('edit 解析 ops_json 后交给端口；不是 JSON 数组或操作不合法时不调用端口', async () => {
-    const { port, seen } = fakePort({ ok: true, paths: [] })
+    const { port, seen } = fakePort(DONE)
     const ok = await editCanvasTool.fn(
       {
         path: 'board.canvas.json',
@@ -234,7 +237,7 @@ describe('canvas 工具', () => {
   })
 
   test('edit 的新增操作不接受坐标与尺寸，位置由画布计算；移动已有节点不受影响', async () => {
-    const { port, seen } = fakePort({ ok: true, paths: [] })
+    const { port, seen } = fakePort(DONE)
     for (const extra of ['"x":0,"y":950', '"w":1536,"h":1024', '"near":{"x":0,"y":0}']) {
       const out = await editCanvasTool.fn(
         {
@@ -258,12 +261,42 @@ describe('canvas 工具', () => {
   })
 
   test('run 使用本轮的生成端口与中止信号，产物写入改动清单', async () => {
-    const { port, seen } = fakePort({ ok: true, paths: ['generated/a.mp4'] })
+    const { port, seen } = fakePort({
+      ok: true,
+      outputs: [{ path: 'generated/a.mp4' }],
+      params: {},
+    })
     const c = ctx(port, media)
     const out = await runCanvasTool.fn({ path: 'board.canvas.json', node: 'id2' }, c)
     expect(seen.runs[0]!.media).toBe(media)
     expect(seen.runs[0]!.signal).toBe(c.signal)
     expect(out.fileChanges).toEqual([{ path: 'generated/a.mp4', changeType: 'created' }])
+  })
+
+  test('运行回执写出产物实测的宽高与时长和实际发送的参数；未设置参数时写明按缺省值生成', async () => {
+    const { port } = fakePort({
+      ok: true,
+      outputs: [{ path: 'generated/a.mp4', size: { w: 1920, h: 1080 }, duration: 5.041 }],
+      params: {},
+    })
+    const out = await runCanvasTool.fn({ path: 'board.canvas.json', node: 'id2' }, ctx(port, media))
+    expect(out.message).toBe(
+      '已取得结果：\n  generated/a.mp4（1920×1080，5.04 秒）\n  发送的参数：未设置，按模型缺省值生成' +
+        '\n核对画面：用 read_file 查看上述图片与视频是否符合提示词。',
+    )
+    port.run = async () => ({
+      ok: true,
+      outputs: [{ path: 'generated/b.mp4', size: { w: 854, h: 480 }, duration: 15 }],
+      params: { resolution: '480P', duration: 15 },
+    })
+    const sent = await runCanvasTool.fn(
+      { path: 'board.canvas.json', node: 'id2' },
+      ctx(port, media),
+    )
+    expect(sent.message).toContain('generated/b.mp4（854×480，15 秒）')
+    expect(sent.message).toContain('发送的参数：{"resolution":"480P","duration":15}')
+    const read = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
+    expect(read.message).toContain('  参数：未设置，按模型缺省值生成')
   })
 
   test('远端任务未结束时回执说明取回方式；没有生成通道时不调用端口', async () => {
@@ -279,7 +312,7 @@ describe('canvas 工具', () => {
   })
 
   test('端口抛出的错误原文交给模型', async () => {
-    const { port } = fakePort({ ok: true, paths: [] })
+    const { port } = fakePort(DONE)
     port.read = async () => {
       throw new Error('board.canvas.json 不存在或不在当前项目中')
     }
@@ -293,7 +326,8 @@ describe('canvas 工具', () => {
   test('取回指定版本只调用 retrieve，保留本轮端口、信号与文件回执', async () => {
     const { port, seen } = fakePort({
       ok: true,
-      paths: ['generated/a.mp4'],
+      outputs: [{ path: 'generated/a.mp4' }],
+      params: {},
       warning: '部分结果可用',
     })
     const c = ctx(port, media)
@@ -322,7 +356,7 @@ describe('canvas 工具', () => {
   })
 
   test('缺少编辑操作或生成节点时在权限检查前拒绝，端口不执行', async () => {
-    const { port, seen } = fakePort({ ok: true, paths: [] })
+    const { port, seen } = fakePort(DONE)
     const c = ctx(port, media)
     const permissions: string[] = []
     c.requestPermission = async ({ toolName }) => {
