@@ -920,16 +920,25 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       shots.length >= 7 && perRow.length >= 2 && Math.max(...perRow) <= LAYOUT_ROW_CARDS,
       `${shots.length} 张，每行 ${perRow.join('、')} 个`,
     )
+    // 镜头 2、4 可以拍成存钱罐特写，素材中没有存钱罐的参考图，因此允许 2 张没有输入；
+    // 原始失败形状是全部分镜卡都没有输入。
     const lone = shots.filter((n) => !doc.edges.some((e) => e.to === n.id))
     add(
-      '分镜卡都连接了参考图',
-      shots.length > 0 && lone.length === 0,
+      '分镜卡连接了参考图（至多 2 张没有输入）',
+      shots.length > 0 && lone.length <= 2,
       `${lone.length} 张没有输入${lone.length ? `：${lone.map((n) => n.name).join('、')}` : ''}`,
     )
     const ways = { xy: 0, beside: 0, below: 0, near: 0, none: 0 }
+    const refused: string[] = []
     for (const step of listSteps(store, runId)) {
       if (step.toolName !== 'edit_canvas') continue
-      const args = (step.payload as { args?: { ops_json?: unknown } } | null)?.args
+      const payload = step.payload as {
+        args?: { ops_json?: unknown }
+        outcome?: { message?: unknown }
+      } | null
+      const message = String(payload?.outcome?.message ?? '')
+      if (step.status !== 'success' && /批内名称|未定义/.test(message)) refused.push(message)
+      const args = payload?.args
       let ops: Record<string, unknown>[] = []
       try {
         ops = JSON.parse(String(args?.ops_json ?? '[]'))
@@ -949,6 +958,8 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       `坐标 ${ways.xy}、beside ${ways.beside}、below ${ways.below}、near ${ways.near}、缺省 ${ways.none}；` +
         `生成请求 ${prompts.length} 次`,
     )
+    // 原始失败形状：批内名称用中文、或在后一批引用前一批的名称时整批被拒，模型随后删去连线继续执行。
+    add('修改画布没有因批内名称被拒', refused.length === 0, refused.join(' | ').slice(0, 200))
   } catch (err) {
     v.error = err instanceof Error ? err.message : String(err)
   } finally {
