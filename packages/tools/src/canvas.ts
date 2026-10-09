@@ -174,14 +174,14 @@ export const readCanvasTool: ToolSpec = {
  * 新增操作中由模型给出的位置与尺寸。界面与服务端使用同一套操作，复制与粘贴需要坐标，因此只在本工具拒绝。
  *
  * 不要放开：读取画布的回执不含坐标，模型给出的坐标只能推测，同一模型会把 169 高的卡片按 350 或 950 的
- * 步长排列，也会放在远离已有节点的原点附近；画布按 beside 或默认规则计算时会避开已有节点并保持固定间距。
+ * 步长排列，也会放在远离已有节点的原点附近；画布按 beside、below 或默认规则计算时会避开已有节点并保持固定间距。
  */
 function placedOf(ops: readonly CanvasOp[]): string | null {
   for (const [i, op] of ops.entries()) {
     if (op.op !== 'add_file' && op.op !== 'add_generate' && op.op !== 'add_timeline') continue
     const field = (['x', 'y', 'w', 'h', 'near'] as const).find((k) => k in op)
     if (field)
-      return `第 ${i + 1} 条操作的 ${field} 不可用：新节点的位置由画布计算，用 beside 指定相邻节点`
+      return `第 ${i + 1} 条操作的 ${field} 不可用：新节点的位置由画布计算，用 beside 或 below 指定相邻节点`
   }
   return null
 }
@@ -197,9 +197,12 @@ export const editCanvasTool: ToolSpec = {
     '{"op":"update","id":"节点或连线 id",…要改的字段}、{"op":"connect","from":"id","to":"生成卡 id","role":"…"}、' +
     '{"op":"remove","id":"节点或连线 id"}（删除某一版时另加 "version"）、{"op":"set_mode","id":"视频卡 id","mode":"reference|first_last"}、' +
     '{"op":"add_timeline","clips":[…]}（修改片段时用 update 的 clips 整组替换，muted 切换整条静音）；' +
-    'add_file、add_generate、add_timeline 可选 name 与 "beside":"节点 id"。新节点的位置由画布计算，节点按行排列：' +
-    '给出 beside 时排在该节点所在行、该节点右侧的第一个空位；未给出时另起一行，放在全部节点下方。' +
-    '因此同一组节点（如全部角色卡、全部分镜卡）的第一个不给 beside，其余依次 beside 前一个，每组各占一行。' +
+    'add_file、add_generate、add_timeline 可选 name，以及 "beside":"节点 id" 或 "below":"节点 id"（二者只给一个）。' +
+    '新节点的位置由画布计算：给出 beside 时排在该节点右侧的第一个空位，给出 below 时排在该节点下方的第一个空位，间距 100；' +
+    '都不给时作为新的一组，放在全部节点右侧相隔 200 处，与最上方的节点对齐。' +
+    '按此组织画布：角色、场景、道具等素材每类一组、排成一列，第一个不给位置，其余依次 below 前一个；' +
+    '分镜、镜头等有先后顺序的卡按顺序每行 5 个，第一个不给位置，同一行其余依次 beside 前一个，' +
+    '下一行的第一个 below 上一行的第一个；时间线 below 最后一行的第一个。' +
     'add_generate 可选 provider、model、params（取值见本轮「可用的生成模型」；' +
     `art 卡的 provider、model 是对话模型，缺省为当前对话模型，params 只有 size：${ART_SIZE_PARAM.values?.join('、')}）。` +
     'add_* 与 connect 可带 "ref":"$名字"，同一批中后续的操作与提示词用它代替新节点的 id。' +

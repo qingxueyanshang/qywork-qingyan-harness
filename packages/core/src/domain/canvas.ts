@@ -217,7 +217,9 @@ export type CanvasOp =
       name?: string
       /** 放在该节点（id 或批内名称）右侧的第一个空位。给出 `x` / `y` 时以其为准。 */
       beside?: string
-      /** 以该点为中心放置，与已有节点相交时下移到空位。优先级低于 `x` / `y` 与 `beside`。 */
+      /** 放在该节点（id 或批内名称）下方的第一个空位，与 `beside` 只能给出一个。给出 `x` / `y` 时以其为准。 */
+      below?: string
+      /** 以该点为中心放置，与已有节点相交时下移到空位。优先级低于 `x` / `y`、`beside` 与 `below`。 */
       near?: { x: number; y: number }
       x?: number
       y?: number
@@ -235,8 +237,9 @@ export type CanvasOp =
       provider?: string
       model?: string
       params?: Record<string, unknown>
-      /** 同 `add_file` 的 `beside` 与 `near`。 */
+      /** 同 `add_file` 的 `beside`、`below` 与 `near`。 */
       beside?: string
+      below?: string
       near?: { x: number; y: number }
       x?: number
       y?: number
@@ -249,8 +252,9 @@ export type CanvasOp =
       name?: string
       clips?: CanvasClip[]
       muted?: boolean
-      /** 同 `add_file` 的 `beside` 与 `near`。 */
+      /** 同 `add_file` 的 `beside`、`below` 与 `near`。 */
       beside?: string
+      below?: string
       near?: { x: number; y: number }
       x?: number
       y?: number
@@ -449,8 +453,10 @@ function clipProblem(clip: CanvasClip): string | null {
   return null
 }
 
-/** 同一行中相邻节点的水平间距，也是新起一行与上方节点的垂直间距。 */
+/** `beside` 与右侧节点、`below` 与下方节点的间距，即同一组内相邻节点的间距。 */
 const NEW_NODE_GAP = 100
+/** 未给出相邻节点时，新的一组与左侧已有节点的间距。大于组内间距，各组在画布上可以区分。 */
+const GROUP_GAP = 200
 /** `near` 查找空位时与其他节点保留的间距，包含节点上方的标题行。 */
 const CLEARANCE = 40
 
@@ -742,31 +748,46 @@ function applyOne(
 }
 
 /**
- * 确定新节点的位置，节点按行排列：给出 `beside` 时放在该节点所在行、该节点右侧的第一个空位；
- * 未给出位置时另起一行，放在全部节点下方并与最左侧节点对齐，空画布从原点开始；
+ * 确定新节点的位置：给出 `beside` 时放在该节点右侧的第一个空位，给出 `below` 时放在该节点下方的第一个空位；
+ * 都未给出时作为新的一组，放在全部节点右侧相隔 `GROUP_GAP` 处并与最上方节点对齐，空画布从原点开始；
  * 给出 `near` 时以该点为中心，被占用时向下查找空位。调用方给出的 `x` / `y` 优先于此结果。
- * 不要让 `beside` 被占用时向下查找：多个节点 `beside` 同一个节点时会排成一列，与其余按行排列的节点混在一起。
+ * 不要让被占用的 `beside` 改为向下查找、`below` 改为向右查找：调用方用两者分别表达行与列，换向后行与列混在一起。
  */
 function place(
   doc: CanvasDoc,
   node: CanvasNode,
-  op: { x?: number; y?: number; beside?: string; near?: { x: number; y: number } },
+  op: {
+    x?: number
+    y?: number
+    beside?: string
+    below?: string
+    near?: { x: number; y: number }
+  },
   resolve: (id: string) => string,
 ): void {
+  if (op.beside !== undefined && op.below !== undefined) fail('beside 与 below 只能给出一个')
   const size = extentOf(node)
+  const anchor = (ref: string) => {
+    const id = resolve(ref)
+    return extentOf(doc.nodes.find((n) => n.id === id) ?? fail(`节点不存在：${id}`))
+  }
   let spot = { x: 0, y: 0 }
   if (op.beside !== undefined) {
-    const id = resolve(op.beside)
-    const source = extentOf(doc.nodes.find((n) => n.id === id) ?? fail(`节点不存在：${id}`))
-    spot = freeSpot(doc, { ...size, x: source.x + source.w + NEW_NODE_GAP, y: source.y }, 'right')
+    const source = anchor(op.beside)
+    const at = { x: source.x + source.w + NEW_NODE_GAP, y: source.y }
+    spot = freeSpot(doc, { ...size, ...at }, 'right', NEW_NODE_GAP)
+  } else if (op.below !== undefined) {
+    const source = anchor(op.below)
+    const at = { x: source.x, y: source.y + source.h + NEW_NODE_GAP }
+    spot = freeSpot(doc, { ...size, ...at }, 'down', NEW_NODE_GAP)
   } else if (op.near) {
     const at = { x: Math.round(op.near.x - node.w / 2), y: Math.round(op.near.y - node.h / 2) }
-    spot = freeSpot(doc, { ...size, ...at }, 'down')
+    spot = freeSpot(doc, { ...size, ...at }, 'down', CLEARANCE)
   } else if (doc.nodes.length > 0) {
     const boxes = doc.nodes.map(extentOf)
     spot = {
-      x: Math.min(...boxes.map((b) => b.x)),
-      y: Math.max(...boxes.map((b) => b.y + b.h)) + NEW_NODE_GAP,
+      x: Math.max(...boxes.map((b) => b.x + b.w)) + GROUP_GAP,
+      y: Math.min(...boxes.map((b) => b.y)),
     }
   }
   node.x = op.x ?? spot.x
@@ -786,13 +807,14 @@ function extentOf(n: CanvasNode): { x: number; y: number; w: number; h: number }
 }
 
 /**
- * 从 `box` 的位置开始查找空位：与已有节点（含同一批中先添加的节点）相交时，`right` 移到该节点右侧
- * 相隔 `NEW_NODE_GAP` 处，`down` 移到该节点下沿之后，直到不再相交。每次移动至少越过一个节点。
+ * 从 `box` 的位置开始查找空位：与已有节点（含同一批中先添加的节点）相交时，`right` 移到该节点右侧、
+ * `down` 移到该节点下方相隔 `gap` 处，直到不再相交。每次移动至少越过一个节点。
  */
 function freeSpot(
   doc: CanvasDoc,
   box: { x: number; y: number; w: number; h: number },
   along: 'right' | 'down',
+  gap: number,
 ): { x: number; y: number } {
   let { x, y } = box
   for (;;) {
@@ -806,8 +828,8 @@ function freeSpot(
           n.y + n.h + CLEARANCE > y,
       )
     if (!hit) return { x, y }
-    if (along === 'right') x = hit.x + hit.w + NEW_NODE_GAP
-    else y = hit.y + hit.h + CLEARANCE
+    if (along === 'right') x = hit.x + hit.w + gap
+    else y = hit.y + hit.h + gap
   }
 }
 
@@ -1213,6 +1235,7 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     'path!': 'string',
     name: 'string',
     beside: 'string',
+    below: 'string',
     near: 'point',
     ...BOX,
   },
@@ -1226,6 +1249,7 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     model: 'string',
     params: 'object',
     beside: 'string',
+    below: 'string',
     near: 'point',
     ...BOX,
   },
@@ -1236,6 +1260,7 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     clips: 'clips',
     muted: 'boolean',
     beside: 'string',
+    below: 'string',
     near: 'point',
     x: 'number',
     y: 'number',
