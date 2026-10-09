@@ -228,8 +228,7 @@ export async function* concludeWithoutTools(
   const delegated = (ctx.delegate?.inflight().length ?? 0) > 0
   if (unfinished.length && !delegated) {
     if (!unfinished.some((todo) => todo.status === 'in_progress')) {
-      run.stopReason = 'no_progress'
-      run.stopDetail = '待办尚未完成，当前没有进行中的项；具体原因见本轮回复'
+      run.stopReason = 'awaiting_user'
       return 'stop'
     }
     const snapshot = unfinished.map((todo) => [todo.id, todo.content, todo.status])

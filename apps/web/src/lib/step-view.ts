@@ -313,6 +313,7 @@ export function stopReasonLabel(reason: string): string | null {
     completed: '已完成',
     // 当前负责在连续无进展时终止的是进展判据，增加轮数无助于恢复。
     no_progress: '模型执行出错，多次重复，已暂停',
+    awaiting_user: '等待用户回复',
     user_interrupt: '已中断',
     // 与「已中断」区分：用户未点击停止，是服务进程退出（热重载、崩溃、关机）。
     // 若两者都显示「已中断」，界面会显示一个用户未执行过的操作。

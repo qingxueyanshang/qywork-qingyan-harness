@@ -33,6 +33,7 @@ import {
 
 test('重复失败的停止原因使用标准短句', () => {
   expect(stopReasonLabel('no_progress')).toBe('模型执行出错，多次重复，已暂停')
+  expect(stopReasonLabel('awaiting_user')).toBe('等待用户回复')
 })
 
 test('未知停止码不把内部枚举显示到界面', () => {

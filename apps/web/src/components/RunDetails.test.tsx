@@ -278,4 +278,48 @@ describe('运行页', () => {
     expect(cells).toEqual(['图像', 'N/A', '1 张', 'N/A', 'N/A', '¥0.18', '已完成'])
     expect(host.querySelector('.run-req tbody tr')?.getAttribute('data-tip')).toBe('qwen-image-3.0')
   })
+
+  /** 原始失败形状：模型按约定停下等待用户确认，运行页却以红色标为「模型执行出错，多次重复」。 */
+  test('等待用户回复的轮次不标红，连续无进展的轮次标红', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
+      path: string,
+    ) => {
+      if (path.endsWith('/runs')) {
+        return {
+          runs: [
+            { ...run('rn_wait', 1, 'USD'), stopReason: 'awaiting_user' },
+            { ...run('rn_loop', 1, 'USD'), status: 'failed', stopReason: 'no_progress' },
+          ],
+        }
+      }
+      if (path.endsWith('/usage')) return { totals: { entries: 0, cost: {} }, entries: [] }
+      if (path.startsWith('/api/usage')) return { totals: { cost: {} } }
+      return {}
+    }
+    restoreApi = () => {
+      ;(store.client as unknown as { api: unknown }).api = originalApi
+    }
+    store.setState({ activeConversation: 'cv_parent', connection: 'ready' })
+
+    const { render } = await import('solid-js/web')
+    const { default: RunDetails } = await import('./RunDetails.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <RunDetails />, host as unknown as HTMLElement)
+
+    await waitFor(
+      () => host.querySelectorAll('.run-mark').length === 2,
+      () => `清单里有 ${host.querySelectorAll('.run-mark').length} 个标记`,
+    )
+    const marks = [...host.querySelectorAll('.run-mark')].map((el) => [
+      el.textContent,
+      el.classList.contains('bad'),
+    ])
+    expect(marks.sort()).toEqual([
+      ['模型执行出错，多次重复，已暂停', true],
+      ['等待用户回复', false],
+    ])
+  })
 })

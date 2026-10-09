@@ -338,7 +338,7 @@ describe('正常响应结束不等于任务完成', () => {
     expect(requests).toBe(3)
   })
 
-  test('本轮受阻清单只剩 pending，保留未完成项且一次响应后停止', async () => {
+  test('本轮受阻清单只剩 pending，保留未完成项且一次响应后停止，记为等待用户回复而不是出错', async () => {
     const todos = unfinished.map((todo) => ({ ...todo, status: 'pending' as const }))
     const inner = fakeAdapter([null])
     let requests = 0
@@ -360,7 +360,8 @@ describe('正常响应结束不等于任务完成', () => {
       makeToolContext: (runId) => ({ ...baseCtx(runId), todos: { read: () => todos } }),
     })
     const finished = await runToEnd(loop)
-    expect(finished.type === 'run.finished' && finished.stopReason).toBe('no_progress')
+    expect(finished).toMatchObject({ status: 'done', stopReason: 'awaiting_user' })
+    expect(finished.type === 'run.finished' && finished.stopDetail).toBeUndefined()
     expect(requests).toBe(1)
     expect(todos.every((todo) => todo.status === 'pending')).toBe(true)
   })

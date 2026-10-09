@@ -460,6 +460,7 @@ function continuableAfterLastRun(
 const STOP_NOTE: Record<string, string> = {
   provider_error: '上一轮因出错而中断',
   no_progress: '上一轮因连续无进展而终止',
+  awaiting_user: '上一轮等待用户回复',
   output_truncated: '上一轮输出被截断',
 }
 

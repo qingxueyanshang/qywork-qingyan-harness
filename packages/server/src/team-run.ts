@@ -100,6 +100,7 @@ function modelList(config: QyConfig): string {
  */
 const CUT_SHORT: Partial<Record<StopReason, string>> = {
   no_progress: '连续三轮没有任何进展，已自动停止',
+  awaiting_user: '待办受阻，等待补充信息或授权',
   user_interrupt: '被中断',
   process_exit: '进程退出',
   output_truncated: '产出被模型的单次长度上限截断',

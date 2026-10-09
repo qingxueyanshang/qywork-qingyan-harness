@@ -417,9 +417,10 @@ function LedgerLink() {
  */
 function runMark(r: Run): { text: string; bad?: boolean } | null {
   // 中文名称与会话流的收尾条共用同一张映射表，不要在此处直接显示英文代码。
+  // 红色按 run 状态判定：等待用户回复的轮次执行正确（`done`），不是出错。
   if (r.stopReason && r.stopReason !== 'completed') {
     const text = stopReasonLabel(r.stopReason)
-    return text ? { text, bad: true } : null
+    return text ? { text, bad: r.status !== 'done' } : null
   }
   if (r.finishedAt === null) return { text: '进行中' }
   return null
