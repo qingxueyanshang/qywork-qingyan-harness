@@ -63,6 +63,7 @@ export function tauriListen<T>(event: string, handler: (payload: T) => void): Pr
  * 监听位于模块级且只注册一次：`tauriListen` 不提供退订。接收方挂载时登记、卸载时注销；监听持续接收事件，没有接收方时丢弃。
  */
 export interface DropSink {
+  /** 坐标统一为 CSS 像素，与 `getBoundingClientRect()`、画布定位使用同一坐标系。 */
   hit(pos: { x: number; y: number }): boolean
   over(on: boolean): void
   paths(paths: string[], pos: { x: number; y: number }): void
@@ -79,19 +80,27 @@ export function registerDropSink(sink: DropSink): () => void {
   }
 }
 
+function dropClientPosition(position: { x: number; y: number } | undefined) {
+  if (!position) return
+  // Tauri 提供物理像素；每次事件读取当前比例，适配跨屏移动和页面缩放。
+  const scale = globalThis.devicePixelRatio ?? 1
+  return { x: position.x / scale, y: position.y / scale }
+}
+
 function wireShellDrop(): void {
   if (dropWired) return
   dropWired = true
   type DropPayload = { paths?: string[]; position?: { x: number; y: number } }
   void tauriListen<DropPayload>('tauri://drag-over', (pl) => {
-    for (const sink of dropSinks) sink.over(!!pl.position && sink.hit(pl.position))
+    const pos = dropClientPosition(pl.position)
+    for (const sink of dropSinks) sink.over(!!pos && sink.hit(pos))
   })
   void tauriListen<DropPayload>('tauri://drag-leave', () => {
     for (const sink of dropSinks) sink.over(false)
   })
   void tauriListen<DropPayload>('tauri://drag-drop', (pl) => {
     for (const sink of dropSinks) sink.over(false)
-    const pos = pl.position
+    const pos = dropClientPosition(pl.position)
     if (!pos) return
     const target = [...dropSinks].find((sink) => sink.hit(pos))
     target?.paths(pl.paths ?? [], pos)
