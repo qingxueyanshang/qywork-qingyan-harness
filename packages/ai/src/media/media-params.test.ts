@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { activeMediaParams, mediaParamValues, resolveMediaParam } from '@qywork/core'
 import { findMediaModel, type MediaOperation } from './catalog.ts'
-import { validateMediaCall } from './params.ts'
+import { describeParam, validateMediaCall } from './params.ts'
 
 const active = (
   id: string,
@@ -108,7 +108,7 @@ describe('生成参数按模型和输入模式匹配', () => {
     const gpt = findMediaModel('gpt-image-2.5-flare')!
     expect(
       validateMediaCall(gpt, 'generate', { size: '1000x1000' }, { images: 0, videos: 0 }).join(),
-    ).toContain('16 的倍数')
+    ).toContain('可选 auto（自动宽高比）、1552x656（21:9 · 1K）')
     expect(
       validateMediaCall(
         findMediaModel('qwen-image-3.0')!,
@@ -125,5 +125,49 @@ describe('生成参数按模型和输入模式匹配', () => {
         { images: 0, videos: 0 },
       ).length,
     ).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * 原始失败形状：模型按「任意宽x高」的说明填写 1536x864，校验通过，参数面板的宽高比与分辨率无一选中。
+ * 同一参数在大模型说明、校验与画布控件三处使用同一份对照表或预设。
+ */
+describe('带对照表与预设的参数只有一套取值', () => {
+  const gpt = findMediaModel('gpt-image-2.5-sunburst')!
+  const size = gpt.params.find((p) => p.name === 'size')!
+  const counts = { images: 0, videos: 0 }
+
+  test('尺寸只接受对照表中的取值，报错列出全部可选值', () => {
+    expect(validateMediaCall(gpt, 'generate', { size: '1360x768' }, counts)).toEqual([])
+    expect(validateMediaCall(gpt, 'generate', { size: 'auto' }, counts)).toEqual([])
+    const problems = validateMediaCall(gpt, 'generate', { size: '1536x864' }, counts).join()
+    expect(problems).toContain('1360x768（16:9 · 1K）')
+    expect(validateMediaCall(gpt, 'generate', { size: '1536x1024' }, counts)).toHaveLength(1)
+  })
+
+  test('音色只接受预设，与画布控件的选项一致', () => {
+    const tts = findMediaModel('gpt-4o-mini-tts')!
+    expect(validateMediaCall(tts, 'speech', { voice: 'nova' }, counts)).toEqual([])
+    expect(validateMediaCall(tts, 'speech', { voice: 'my-voice' }, counts).join()).toContain(
+      '可选 alloy | ash',
+    )
+  })
+
+  test('大模型读取的参数说明逐项列出对照表与预设，不再写任意宽高', () => {
+    const text = describeParam(size)
+    expect(text).toStartWith('size：取值为下列之一，括号内为参数面板中的显示：auto（自动宽高比）、')
+    expect(text).toContain('1360x768（16:9 · 1K）')
+    expect(text).toContain('2720x1536（16:9 · 2K）')
+    expect(text).not.toContain('16 的倍数')
+    const voice = findMediaModel('gpt-4o-mini-tts')!.params.find((p) => p.name === 'voice')!
+    expect(describeParam(voice)).toStartWith('voice：alloy | ash | ballad')
+  })
+
+  /** 参数面板按同一份有效参数显示：表外的旧取值显示为自动，与实际发送的请求一致。 */
+  test('卡片上表外的尺寸与其他不适用的取值一样不发送，表中取值照常发送', () => {
+    expect(active('gpt-image-2.5-sunburst', 'generate', { size: '1536x864' })).toEqual({})
+    expect(active('gpt-image-2.5-sunburst', 'generate', { size: '1360x768' })).toEqual({
+      size: '1360x768',
+    })
   })
 })

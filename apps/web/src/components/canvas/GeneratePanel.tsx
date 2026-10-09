@@ -135,7 +135,7 @@ function defaultText(p: MediaParamOption): string {
   return p.default === undefined ? '默认' : `默认（${cellText(p, p.default)}）`
 }
 
-/** 尺寸取值在对照表中对应的项；不在表中（模型填写的其他尺寸）时返回 `undefined`。 */
+/** 尺寸取值在对照表中对应的项；不在表中时返回 `undefined`。卡片上表外的取值不发送，参数面板按缺省值显示（`activeMediaParams`）。 */
 export function shapeAt(p: MediaParamOption, v: unknown): SizeShape | undefined {
   return p.shapes?.find((s) => s.value === v)
 }

@@ -5,7 +5,7 @@
  * 不符合预期的结果，两种情形均已计费。返回的消息中包含合法取值，供大模型在下一步自行修正。
  */
 
-import { mediaParamProblem, mediaParamValues, resolveMediaParam } from '@qywork/core'
+import { mediaParamProblem, mediaParamValues, resolveMediaParam, shapeChoices } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation, MediaParamSpec } from './catalog.ts'
 
 const OPERATION_LABEL: Record<MediaOperation, string> = {
@@ -22,7 +22,10 @@ const OPERATION_LABEL: Record<MediaOperation, string> = {
 /** 参数的取值说明，如「low | medium | high；默认 auto」。 */
 export function describeParam(p: MediaParamSpec): string {
   const parts: string[] = []
-  if (p.type === 'enum' && p.values) parts.push(p.values.join(' | '))
+  // 带对照表或预设的参数只列出其中的取值，与画布控件的选项一一对应；校验也只接受这些取值。
+  if (p.shapes) parts.push(`取值为下列之一，括号内为参数面板中的显示：${shapeChoices(p)}`)
+  else if (p.presets) parts.push(p.presets.join(' | '))
+  else if (p.type === 'enum' && p.values) parts.push(p.values.join(' | '))
   else if (p.type === 'boolean') parts.push('true | false')
   else if (p.min !== undefined || p.max !== undefined) {
     const auto = p.auto === undefined ? '' : ` 或 ${p.auto}`

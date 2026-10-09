@@ -166,7 +166,26 @@ export function mediaParamProblem(p: MediaParamDefinition, value: unknown): stri
   if (p.maxLength !== undefined && Array.from(value).length > p.maxLength)
     return `最多 ${p.maxLength} 字`
   if (p.pattern && !new RegExp(p.pattern).test(value)) return '格式不合法'
+  // 带对照表或预设的参数只接受其中的取值：画布控件只显示这些项，其他取值填入后控件无一选中。
+  // 对照表已按当前模式的 `sizeLimits` 过滤（`resolveMediaParam`），不要改回按 `sizeLimits` 接受任意宽高。
+  if (p.shapes) return p.shapes.some((s) => s.value === value) ? null : `可选 ${shapeChoices(p)}`
+  if (p.presets) return p.presets.includes(value) ? null : `可选 ${p.presets.join(' | ')}`
   return p.sizeLimits ? mediaSizeProblem(value, p.sizeLimits) : null
+}
+
+/**
+ * 对照表中的全部取值，每项写成「取值（参数面板中的显示）」，如「1360x768（16:9 · 1K）」「auto（自动宽高比）」。
+ * 大模型读取的参数说明与校验报错共用；括号内与参数面板底栏的文字相同。
+ * 不要把面板的显示写在取值前面（如「16:9 1K 1360x768」）：大模型会把整串当作取值填写。
+ */
+export function shapeChoices(p: MediaParamDefinition): string {
+  return (p.shapes ?? [])
+    .flatMap((s) =>
+      s.value === undefined
+        ? []
+        : [`${s.value}（${[s.ratio ?? '自动宽高比', s.tier].filter(Boolean).join(' · ')}）`],
+    )
+    .join('、')
 }
 
 const RATIO_RE = /^\d+:\d+$/
