@@ -773,7 +773,14 @@ function place(
   const size = extentOf(node)
   const anchor = (ref: string) => {
     const id = resolve(ref)
-    return extentOf(doc.nodes.find((n) => n.id === id) ?? fail(`节点不存在：${id}`))
+    const found = doc.nodes.find((n) => n.id === id)
+    // 模型常把刚起的卡片名称当作引用；报错写明引用方式，只写「不存在」时模型会去掉位置后重试。
+    return extentOf(
+      found ??
+        fail(
+          `节点不存在：${id}。引用节点时使用节点 id 或本轮用 ref 定义的 $名称，卡片名称不能作为引用`,
+        ),
+    )
   }
   let spot = { x: 0, y: 0 }
   if (op.beside !== undefined) {

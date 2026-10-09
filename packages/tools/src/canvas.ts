@@ -331,7 +331,7 @@ function batchReceipt(results: CanvasBatchRunResult): ToolOutcome {
 export const runCanvasTool: ToolSpec = {
   name: 'run_canvas',
   description:
-    '运行画布上 node 指定的生成卡并等待结果；node 可为单个 id 或非空 id 数组。先用 read_canvas 查看节点与 id。' +
+    '运行画布上 node 指定的生成卡并等待结果；node 是生成卡 id 的数组，单个节点写成一个元素的数组。先用 read_canvas 查看节点与 id。' +
     '批量时只运行指定节点（重复 id 只运行一次），最多同时运行 4 个独立节点，批内上游完成后才运行下游。' +
     '上游失败或待取回时跳过下游；未指定的上游只使用已有结果，不自动运行。按节点返回成功、失败与未运行原因，勿整批重新运行。' +
     '回执列出每个产物的宽高、时长与实际发送的参数。运行后核对结果：先核对回执中的宽高、时长与参数是否符合要求，' +
@@ -343,9 +343,12 @@ export const runCanvasTool: ToolSpec = {
     type: 'object',
     properties: {
       path: { type: 'string', description: '画布文件的工作区路径' },
+      // 只用数组一种类型：写成「字符串或数组」时，Claude 把数组编码为 JSON 字符串传入，整个字符串被当作一个 id。
       node: {
-        anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
-        description: '单个生成卡 id，或要批量运行的生成卡 id 数组',
+        type: 'array',
+        items: { type: 'string' },
+        minItems: 1,
+        description: '要运行的生成卡 id 数组；单个节点写成一个元素的数组',
       },
     },
     required: ['path', 'node'],
@@ -363,14 +366,16 @@ export const runCanvasTool: ToolSpec = {
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
-    const batch = Array.isArray(args.node)
-    const ids = (batch ? args.node : [args.node]) as unknown[]
-    if (!ids.length || ids.some((id) => !text(id)))
-      return failure('node 必须是生成卡 id 或非空 id 数组', 'invalid_tool_arguments')
+    const ids = args.node
+    if (!Array.isArray(ids) || !ids.length || ids.some((id) => !text(id)))
+      return failure(
+        'node 必须是生成卡 id 的数组（不是 JSON 字符串），单个节点写成一个元素的数组',
+        'invalid_tool_arguments',
+      )
     const nodes = [...new Set(ids.map((id) => text(id)!))]
     if (!ctx.media) return failure('本次执行没有生成通道')
     try {
-      return batch
+      return nodes.length > 1
         ? batchReceipt(await canvas.runBatch(path, nodes, ctx.media, ctx.signal))
         : generationReceipt(await canvas.run(path, nodes[0]!, ctx.media, ctx.signal))
     } catch (err) {
