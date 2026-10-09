@@ -198,6 +198,10 @@ describe('指令无法发送时返回回执', () => {
     expect(rejected).toHaveLength(1)
     expect(rejected[0]?.reason).toBe('not_ready')
     expect(rejected[0]?.command).toBe('conversation.setModel')
+    expect(rejected[0]?.message).toBe('连接已断开，正在重新连接')
+    c.close()
+    c.send({ type: 'conversation.interrupt', conversationId: 'cv_1' as never })
+    expect(rejected[1]?.message).toBe('连接已断开，请重新打开应用')
   })
 
   /**
@@ -328,6 +332,22 @@ describe('重连时原样携带订阅', () => {
     c.connect()
     sockets[1]!.fire('open')
     expect(helloOf(sockets[1]!).subscribe).toEqual([])
+    c.close()
+  })
+
+  /** 原始失败形状：服务重启后重连的一秒内订阅集变化，界面显示「连接已断开，请重新打开应用」。 */
+  test('断线重连期间修改订阅不产生拒绝回执，重连的 hello 帧携带修改后的订阅', () => {
+    const { c, sockets, rejected } = client()
+    c.connect()
+    sockets[0]!.fire('open')
+    c.subscribe(['cv_a'])
+    sockets[0]!.fire('close')
+    c.subscribe(['cv_a', 'cv_b'])
+    expect(rejected).toHaveLength(0)
+
+    c.connect()
+    sockets[1]!.fire('open')
+    expect(helloOf(sockets[1]!).subscribe).toEqual(['cv_a', 'cv_b'])
     c.close()
   })
 

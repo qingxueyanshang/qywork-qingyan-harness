@@ -387,7 +387,8 @@ export class QyClient {
       type: 'command.rejected',
       command: cmd.type,
       reason: 'not_ready',
-      message: '连接已断开，请重新打开应用',
+      // 仍在自动重连时不提示重新打开应用：重连成功后直接重试即可。
+      message: this.closed ? '连接已断开，请重新打开应用' : '连接已断开，正在重新连接',
       // 幂等键原样回传，与服务端回执的规则一致：接收方据此定位对应的操作，
       // 按回车时乐观写入的忙碌状态须依靠它才能撤销。
       ...('clientRequestId' in cmd ? { clientRequestId: cmd.clientRequestId } : {}),
@@ -403,6 +404,9 @@ export class QyClient {
    */
   subscribe(conversationIds: string[]): void {
     this.subscribed = conversationIds
+    // 未连通时只记录：下一次握手的 hello 帧携带它。不要改为经 `send` 报告 `not_ready`：
+    // 服务重启后的一秒重连期间切换子会话页，会显示一条与实际状态不符的断线提示。
+    if (this.ws?.readyState !== WebSocket.OPEN) return
     this.send({ type: 'subscribe', conversationIds: conversationIds as never })
   }
 
