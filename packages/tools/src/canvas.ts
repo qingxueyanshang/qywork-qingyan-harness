@@ -39,11 +39,13 @@ function describe(view: CanvasView): string {
     const status =
       state?.state === 'failed'
         ? `失败：${state.message}`
-        : state?.state === 'pending'
-          ? `待取回（版本 ${state.version}）`
-          : ({ normal: '正常', missing: '文件缺失', empty: '未生成', running: '生成中' } as const)[
-              state?.state ?? 'normal'
-            ]
+        : state?.state === 'unknown'
+          ? `结果未知：${state.message}`
+          : state?.state === 'pending'
+            ? `待取回（版本 ${state.version}）`
+            : (
+                { normal: '正常', missing: '文件缺失', empty: '未生成', running: '生成中' } as const
+              )[state?.state ?? 'normal']
     const group = n.type !== 'timeline' && n.group ? `（组：${n.group}）` : ''
     if (n.type === 'file') {
       lines.push(`- ${n.id} 文件「${displayNameOf(n)}」${group}${n.path}（${status}）`)
@@ -286,8 +288,11 @@ function generationReceipt(
       status: 'failure',
       executed: true,
       message: result.pending
-        ? `${result.message}\n远端任务仍存在，该版本保留在画布上，使用 retrieve_canvas 取回，不会重复计费。`
+        ? `${result.message}\n已保留恢复记录，使用 retrieve_canvas 取回原结果，不会重新提交生成。`
         : result.message,
+      ...(result.diagnostic
+        ? { data: { diagnostic: result.diagnostic }, errorKind: `media_${result.diagnostic.kind}` }
+        : {}),
     }
   }
   const outputs = result.outputs.map((o) => {

@@ -128,7 +128,7 @@ import {
   runCanvasTool,
 } from './canvas.ts'
 import { defineRoleTool } from './define-role.ts'
-import { MEDIA_TOOLS, retrieveVideoTool } from './generate.ts'
+import { MEDIA_TOOLS, retrieveMediaTool } from './generate.ts'
 import { readHistoryTool } from './history.ts'
 import { officeTools } from './office.ts'
 import { installPluginTool } from './plugin-install.ts'
@@ -194,7 +194,9 @@ export function registerBuiltinTools(
     ...(opts.mcpConfig ? [writeMcpServerTool, moveMcpServerTool] : []),
     // 生成工具按类别注册：没有图像模型时，图像生成工具的调用必然失败（B5）。
     ...(opts.media ?? []).map((output) => MEDIA_TOOLS[output]),
-    ...(opts.media?.includes('video') ? [retrieveVideoTool] : []),
+    ...(opts.media?.some((type) => type === 'video' || type === 'image')
+      ? [retrieveMediaTool]
+      : []),
     // 画布按通道注册：没有服务端（CLI 会话）时没有画布服务，工具调用必然失败。
     ...(opts.canvas
       ? [createCanvasTool, readCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool]

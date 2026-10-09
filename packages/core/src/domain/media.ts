@@ -86,6 +86,19 @@ export interface MediaSpend {
   at: number
 }
 
+/** 单次媒体请求的失败事实；连接中断与本地超时不能证明远端生成失败。 */
+export interface MediaDiagnostic {
+  stage: 'generate' | 'query' | 'download'
+  kind: 'timeout' | 'connection' | 'http' | 'response'
+  outcome: 'unknown' | 'rejected' | 'available'
+  host: string
+  elapsedMs: number
+  timeoutMs: number
+  status?: number
+  code?: string
+  requestId?: string
+}
+
 /** 协议决定类别。配置中不另存类别：两处各存一份可能导致不一致。 */
 export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   openai_images: 'image',

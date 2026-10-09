@@ -10,7 +10,7 @@
  * 3. **重名即装配错误。** 同名注册直接抛出异常，不静默覆盖：覆盖会丢弃整个插件的工具。
  */
 
-import type { MediaFile, MediaInput, TokenDensity, ToolSchema } from '@qywork/ai'
+import type { MediaFile, MediaImageResult, MediaInput, TokenDensity, ToolSchema } from '@qywork/ai'
 import type {
   ActionDescriptor,
   ActionKind,
@@ -24,6 +24,7 @@ import type {
   GoalAction,
   GoalWriteResult,
   IntermediateResourceRef,
+  MediaDiagnostic,
   MediaSpend,
   ResourceCoverage,
   RunId,
@@ -64,6 +65,13 @@ export interface MediaCall {
   model?: string
   /** 继续取回已提交的远端任务：只查询与下载，不再提交，不重复扣费。须同时提供 provider 与 model。 */
   resumeTaskId?: string
+  /** 已返回的图片来源；恢复时不得再提交生成。 */
+  resumeImageResult?: MediaImageResult
+  onImageResult?: (
+    result: MediaImageResult,
+    provider: string,
+    model: string,
+  ) => void | Promise<void>
   /**
    * 取得远端任务号后立即回调，附带实际选中的接口与模型，由调用方落盘；
    * 此后即使停止、超时或进程退出，仍可取回结果。
@@ -71,17 +79,24 @@ export interface MediaCall {
   onTask?: (task: { taskId: string; provider: string; model: string }) => void | Promise<void>
   /** 远端任务状态变化时回报一条状态文字。 */
   onStatus?: (status: string) => void
-  /** 本次生成的花费，取得结果时回报一次；失败不计费，不回报。 */
+  /** 本次生成的花费，取得服务商结果时回报一次；恢复下载不再次回报。 */
   onSpend?: (spend: MediaSpend) => void
 }
 
 /**
  * 失败（无法选定模型、参数不合法、接口报错）时的 `message` 直接交给大模型，须写明修正方法。
- * `pendingTaskId`：远端任务仍存在（等待超时、查询或下载失败），可以继续取回；不带该字段的失败是终态。
+ * `pendingTaskId` 或 `recoverable` 表示已有恢复依据；其余失败是否确定由 diagnostic.outcome 判定。
  */
 export type MediaCallResult =
   | { ok: true; provider: string; model: string; files: MediaFile[]; warning?: string }
-  | { ok: false; message: string; pendingTaskId?: string }
+  | {
+      ok: false
+      message: string
+      pendingTaskId?: string
+      recoverable?: boolean
+      diagnostic?: MediaDiagnostic
+      executed?: boolean
+    }
 
 /**
  * 中间资源落盘端口。

@@ -11,12 +11,24 @@ import {
   uploadDashScopeMedia,
 } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, getJson, postJson, send, sniffMime } from '../http.ts'
+import {
+  count,
+  dataUri,
+  defined,
+  download,
+  getJson,
+  IMAGE_TIMEOUT_MS,
+  postJson,
+  send,
+  sniffMime,
+} from '../http.ts'
+import { resolveImages } from '../image-result.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   type MediaCancel,
   MediaError,
+  type MediaImageResult,
   type MediaInput,
   type MediaProfile,
   type MediaRequest,
@@ -53,6 +65,7 @@ export class DashScopeImagesAdapter implements MediaAdapter {
       },
       { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers },
       signal,
+      { timeoutMs: IMAGE_TIMEOUT_MS },
     )
     const urls = imageUrls(body)
     if (urls.length === 0) {
@@ -62,9 +75,14 @@ export class DashScopeImagesAdapter implements MediaAdapter {
         `接口没有返回图片${code || message ? `：${code} ${message}`.trimEnd() : ''}`,
       )
     }
-    const files = []
-    for (const url of urls) files.push(await download(url, signal))
-    return { files, usage: imageUsage(body, files.length) }
+    return resolveImages(
+      { sources: urls.map((url) => ({ url })), usage: imageUsage(body, urls.length) },
+      opts,
+    )
+  }
+
+  resumeImage(result: MediaImageResult, opts: MediaRunOptions): Promise<MediaResult> {
+    return resolveImages(result, opts)
   }
 }
 

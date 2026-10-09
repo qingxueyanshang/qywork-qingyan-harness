@@ -18,7 +18,7 @@ import {
   generateVideoTool,
   landFiles,
   MEDIA_TOOLS,
-  retrieveVideoTool,
+  retrieveMediaTool,
 } from './generate.ts'
 import { registerBuiltinTools } from './index.ts'
 
@@ -88,6 +88,7 @@ describe('generate_image', () => {
     const out = await run(root, { prompt: '一只猫', params_json: '{"size":"1024*1536"}' })
     expect(out.status).toBe('success')
     expect(calls[0]).toEqual({
+      onImageResult: expect.any(Function),
       type: 'image',
       prompt: '一只猫',
       inputs: [],
@@ -242,7 +243,7 @@ describe('generate_video', () => {
     answer = { ok: false, message: '等待超过 20 分钟仍未完成', pendingTaskId: 'task-1' }
     const pending = await video(root, { prompt: '海浪', output: 'wave' })
     expect(pending.message).toContain('wave.task.json')
-    expect(pending.message).toContain('retrieve_video')
+    expect(pending.message).toContain('retrieve_media')
     expect(await readdir(root)).toEqual(['wave.task.json'])
 
     answer = { ok: false, message: '远端任务失败：不合规' }
@@ -263,7 +264,7 @@ describe('generate_video', () => {
       model: 'wan3.0-video',
       files: [{ bytes: MP4, mime: 'video/mp4' }],
     }
-    const out = await retrieveVideoTool.fn({ path: 'wave.task.json' }, ctx(root))
+    const out = await retrieveMediaTool.fn({ path: 'wave.task.json' }, ctx(root))
     expect(out.status).toBe('success')
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({
@@ -280,7 +281,7 @@ describe('generate_video', () => {
     const registry = new ToolRegistry()
     registerBuiltinTools(registry, { media: ['video'] })
     expect(generateVideoTool.parameters.properties).not.toHaveProperty('resume')
-    for (const name of ['generate_video', 'retrieve_video']) {
+    for (const name of ['generate_video', 'retrieve_media']) {
       expect(await registry.execute(name, {}, ctx(root))).toMatchObject({
         status: 'failure',
         executed: false,
@@ -289,7 +290,7 @@ describe('generate_video', () => {
     }
     await writeFile(join(root, 'invalid.task.json'), '{}')
     for (const path of ['invalid.task.json', 'missing.task.json']) {
-      expect((await registry.execute('retrieve_video', { path }, ctx(root))).status).toBe('failure')
+      expect((await registry.execute('retrieve_media', { path }, ctx(root))).status).toBe('failure')
     }
     expect(calls).toEqual([])
   })
@@ -307,11 +308,11 @@ test('只配置视频模型时只注册视频生成工具', () => {
   const registry = new ToolRegistry()
   registerBuiltinTools(registry, { media: ['video'] })
   expect(registry.has('generate_video')).toBe(true)
-  expect(registry.has('retrieve_video')).toBe(true)
+  expect(registry.has('retrieve_media')).toBe(true)
   expect(registry.has('generate_image')).toBe(false)
   const imagesOnly = new ToolRegistry()
   registerBuiltinTools(imagesOnly, { media: ['image'] })
-  expect(imagesOnly.has('retrieve_video')).toBe(false)
+  expect(imagesOnly.has('retrieve_media')).toBe(true)
 })
 
 describe('generate_audio', () => {

@@ -1,16 +1,19 @@
-/**
- * 生成适配器共用的 HTTP 函数：发送请求、读取错误原文、下载产物、识别文件格式。
- */
-
+/** 生成适配器共用的请求、诊断、下载与文件格式识别。 */
+import type { MediaDiagnostic } from '@qywork/core'
 import { MediaError } from './types.ts'
 
-/**
- * 同步生成单次请求的时限。OpenAI 文档写明复杂提示词最长约 2 分钟；超过 5 分钟无响应即按失败回报，
- * 不无限等待。用户停止经由调用方的 signal 传递，与该时限互不替代。
- */
+/** 同步生图最多等待 10 分钟；到期只结束本地等待，不推断远端状态。 */
+export const IMAGE_TIMEOUT_MS = 10 * 60_000
 export const SYNC_TIMEOUT_MS = 5 * 60_000
+export const QUERY_TIMEOUT_MS = 60_000
+export const DOWNLOAD_TIMEOUT_MS = 2 * 60_000
+const DOWNLOAD_ATTEMPTS = 3
 
-/** 错误响应中接口返回的错误信息。各厂商字段名不同：`error.message`、`message`、`code`。 */
+interface RequestPolicy {
+  stage?: MediaDiagnostic['stage']
+  timeoutMs?: number
+}
+
 async function providerMessage(res: Response): Promise<string> {
   const text = await res.text().catch(() => '')
   try {
@@ -23,36 +26,116 @@ async function providerMessage(res: Response): Promise<string> {
   return text.trim().slice(0, 500) || res.statusText
 }
 
-/** 发送请求，非 2xx 时抛出 `MediaError`（含状态码与接口原文）。 */
-export async function send(url: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
+/** 请求及响应体共用同一个期限。生成 POST 不自动重发。 */
+export async function send(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal,
+  policy: RequestPolicy = {},
+): Promise<Response> {
+  const stage = policy.stage ?? (init.method === 'GET' ? 'query' : 'generate')
+  const timeoutMs = policy.timeoutMs ?? (stage === 'query' ? QUERY_TIMEOUT_MS : SYNC_TIMEOUT_MS)
+  const timeout = AbortSignal.timeout(timeoutMs)
+  const startedAt = Date.now()
+  let response: Response | undefined
+  const diagnostic = (kind: MediaDiagnostic['kind']): MediaDiagnostic => ({
+    stage,
+    kind,
+    outcome: stage === 'download' ? 'available' : 'unknown',
+    host: new URL(url).host,
+    elapsedMs: Date.now() - startedAt,
+    timeoutMs,
+    ...(response ? { status: response.status } : {}),
+    ...(response?.headers.get('x-request-id') || response?.headers.get('request-id')
+      ? { requestId: (response.headers.get('x-request-id') ?? response.headers.get('request-id'))! }
+      : {}),
+  })
   let res: Response
   try {
-    res = await fetch(url, {
+    response = await fetch(url, {
       ...init,
-      signal: AbortSignal.any([signal, AbortSignal.timeout(SYNC_TIMEOUT_MS)]),
+      signal: AbortSignal.any([signal, timeout]),
+    })
+    if (init.redirect === 'manual' && [301, 302, 303, 307, 308].includes(response.status))
+      return response
+    const bytes = await response.arrayBuffer()
+    res = new Response([204, 205, 304].includes(response.status) ? null : bytes, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
     })
   } catch (err) {
-    if (signal.aborted) throw err
-    const reason = err instanceof Error ? err.message : String(err)
-    throw new MediaError(`请求未到达接口或未收到响应：${reason}`)
+    if (signal.aborted) throw signal.reason
+    const facts = diagnostic(timeout.aborted ? 'timeout' : 'connection')
+    const code =
+      (err as { code?: unknown; cause?: { code?: unknown } })?.code ??
+      (err as { cause?: { code?: unknown } })?.cause?.code
+    if (typeof code === 'string') facts.code = code
+    const reason = timeout.aborted
+      ? `本地等待超时（${timeoutMs / 1000} 秒）`
+      : `连接失败：${err instanceof Error ? err.message : String(err)}`
+    throw new MediaError(
+      `${reason}${stage === 'generate' ? '；远端结果未知，请勿自动重新生成' : ''}`,
+      { diagnostic: facts, cause: err },
+    )
   }
-  if (init.redirect === 'manual' && [301, 302, 303, 307, 308].includes(res.status)) return res
   if (!res.ok) {
-    throw new MediaError(`HTTP ${res.status}：${await providerMessage(res)}`, {
+    const facts = diagnostic('http')
+    if (stage !== 'download' && res.status >= 400 && res.status < 500 && res.status !== 408)
+      facts.outcome = 'rejected'
+    const uncertainty =
+      stage === 'generate' && facts.outcome === 'unknown' ? '；远端结果未知，请勿自动重新生成' : ''
+    throw new MediaError(`HTTP ${res.status}：${await providerMessage(res)}${uncertainty}`, {
       status: res.status,
+      diagnostic: facts,
     })
   }
   return res
 }
 
-/** 发送 JSON 请求并解析 JSON 响应。 */
+export async function sendJson(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal,
+  policy: RequestPolicy = {},
+): Promise<Record<string, unknown>> {
+  const startedAt = Date.now()
+  const stage = policy.stage ?? (init.method === 'GET' ? 'query' : 'generate')
+  const res = await send(url, init, signal, policy)
+  try {
+    const body: unknown = await res.json()
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('响应不是对象')
+    return body as Record<string, unknown>
+  } catch (err) {
+    throw new MediaError(
+      `接口响应无法解析${stage === 'generate' ? '；远端结果未知，请勿自动重新生成' : ''}`,
+      {
+        cause: err,
+        diagnostic: {
+          stage,
+          kind: 'response',
+          outcome: 'unknown',
+          host: new URL(url).host,
+          elapsedMs: Date.now() - startedAt,
+          timeoutMs: policy.timeoutMs ?? (stage === 'query' ? QUERY_TIMEOUT_MS : SYNC_TIMEOUT_MS),
+          status: res.status,
+          ...(res.headers.get('x-request-id')
+            ? { requestId: res.headers.get('x-request-id')! }
+            : {}),
+        },
+      },
+    )
+  }
+}
+
 export async function postJson(
   url: string,
   body: unknown,
   headers: Record<string, string>,
   signal: AbortSignal,
+  policy: RequestPolicy = {},
 ): Promise<Record<string, unknown>> {
-  const res = await send(
+  return sendJson(
     url,
     {
       method: 'POST',
@@ -60,58 +143,87 @@ export async function postJson(
       body: JSON.stringify(body),
     },
     signal,
+    policy,
   )
-  return (await res.json()) as Record<string, unknown>
 }
 
-/** 发送 GET 请求并解析 JSON 响应，用于查询异步任务。 */
 export async function getJson(
   url: string,
   headers: Record<string, string>,
   signal: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const res = await send(url, { method: 'GET', headers }, signal)
-  return (await res.json()) as Record<string, unknown>
+  return sendJson(url, { method: 'GET', headers }, signal)
 }
 
-/**
- * 下载接口返回的临时地址。地址在 24 小时或 60 分钟后失效，因此取得后立即下载，地址不传出适配器。
- * 下载失败计为本次生成失败：产物已生成、费用已发生，错误消息中写明这一点。
- */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', abort)
+      resolve()
+    }, ms)
+    signal.addEventListener('abort', abort, { once: true })
+  })
+}
+
+/** 重试只读取同一个产物，不提交生成。跨源重定向不得携带接口凭证。 */
 export async function download(
   url: string,
   signal: AbortSignal,
   headers: Record<string, string> = {},
 ): Promise<{ bytes: Uint8Array; mime: string }> {
-  let res: Response
-  try {
-    const origin = new URL(url).origin
-    let target = url
-    for (let redirects = 0; ; redirects++) {
-      // 自定义鉴权头（如 x-goog-api-key）不会被 fetch 在跨源重定向时自动清除。
-      res = await send(
-        target,
+  const origin = new URL(url).origin
+  for (let attempt = 0; ; attempt++) {
+    try {
+      let target = url
+      for (let redirects = 0; ; redirects++) {
+        const res = await send(
+          target,
+          {
+            method: 'GET',
+            redirect: 'manual',
+            headers: new URL(target).origin === origin ? headers : {},
+          },
+          signal,
+          { stage: 'download', timeoutMs: DOWNLOAD_TIMEOUT_MS },
+        )
+        if (res.ok) {
+          const bytes = new Uint8Array(await res.arrayBuffer())
+          const header = res.headers.get('content-type')?.split(';')[0]?.trim()
+          return { bytes, mime: sniffMime(bytes) ?? header ?? 'application/octet-stream' }
+        }
+        const location = res.headers.get('location')
+        await res.body?.cancel()
+        if (!location || redirects >= 5) throw new MediaError('下载重定向无效或次数过多')
+        target = new URL(location, target).href
+      }
+    } catch (err) {
+      if (signal.aborted) throw signal.reason
+      const transient =
+        err instanceof MediaError &&
+        (err.diagnostic?.kind === 'connection' ||
+          err.diagnostic?.kind === 'timeout' ||
+          err.status === 408 ||
+          err.status === 429 ||
+          (err.status !== undefined && err.status >= 500))
+      if (transient && attempt + 1 < DOWNLOAD_ATTEMPTS) {
+        await pause(500 * 2 ** attempt, signal)
+        continue
+      }
+      throw new MediaError(
+        `图片或媒体结果下载失败：${err instanceof Error ? err.message : String(err)}`,
         {
-          method: 'GET',
-          redirect: 'manual',
-          headers: new URL(target).origin === origin ? headers : {},
+          ...(err instanceof MediaError && err.status !== undefined ? { status: err.status } : {}),
+          ...(err instanceof MediaError && err.diagnostic ? { diagnostic: err.diagnostic } : {}),
+          cause: err,
         },
-        signal,
       )
-      if (res.ok) break
-      const location = res.headers.get('location')
-      await res.body?.cancel()
-      if (!location || redirects >= 5) throw new MediaError('下载重定向无效或次数过多')
-      target = new URL(location, target).href
     }
-  } catch (err) {
-    if (signal.aborted) throw err
-    const reason = err instanceof Error ? err.message : String(err)
-    throw new MediaError(`已生成，但结果下载失败（费用已发生）：${reason}`)
   }
-  const bytes = new Uint8Array(await res.arrayBuffer())
-  const header = res.headers.get('content-type')?.split(';')[0]?.trim()
-  return { bytes, mime: sniffMime(bytes) ?? header ?? 'application/octet-stream' }
 }
 
 /** 文件头自 `offset` 起是否为指定的 ASCII 字符串。 */

@@ -99,6 +99,7 @@ export {
   MEDIA_KINDS,
   MEDIA_OUTPUT_UNIT,
   MEDIA_OUTPUTS,
+  type MediaDiagnostic,
   type MediaInputRole,
   type MediaKind,
   type MediaOutput,
