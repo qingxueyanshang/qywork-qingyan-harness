@@ -95,7 +95,7 @@ describe('参数校验', () => {
       validateMediaCall(
         qwen,
         'generate',
-        { size: '1024*1536', n: 2, watermark: false },
+        { size: '832*1248', n: 2, watermark: false },
         { images: 0, videos: 0 },
       ),
     ).toEqual([])

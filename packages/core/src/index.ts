@@ -114,6 +114,7 @@ export {
   mediaParamValues,
   ratioOf,
   resolveMediaParam,
+  shapeChoices,
 } from './domain/media-params.ts'
 // 领域模型：落库结构与读数规则，几乎每个包都依赖
 export {

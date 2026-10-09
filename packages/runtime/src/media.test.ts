@@ -158,7 +158,7 @@ describe('生成端口', () => {
 
   test('未指定模型时使用默认模型，结果为已下载的字节', async () => {
     const out = await makeMediaPort(config()).generate(
-      call({ params: { size: '1024*1536' } }),
+      call({ params: { size: '832*1248' } }),
       signal(),
     )
     expect(out).toEqual({

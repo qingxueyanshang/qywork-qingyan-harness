@@ -349,9 +349,7 @@ const gptImageParams: readonly MediaParamSpec[] = [
       auto: 'auto',
       maxSide: 3840,
     }),
-    description:
-      '宽x高，边长须为 16 的倍数，宽高比 1:3 到 3:1，单边不超过 3840，总像素 655360 到 8294400；' +
-      '常用 1024x1024、1536x1024（横）、1024x1536（竖）、2048x2048、3840x2160',
+    description: '输出尺寸；auto 由模型决定',
   },
   {
     name: 'quality',
@@ -423,8 +421,7 @@ const seedreamParams: readonly MediaParamSpec[] = [
       sep: 'x',
       shorthand: true,
     }),
-    description:
-      '分辨率档位 1K / 1.5K / 2K（宽高比写在提示词中，由模型决定），或宽x高：总像素 921600 到 4624220、宽高比 1/16 到 16',
+    description: '输出尺寸；只写档位时宽高比写在提示词中，由模型决定',
   },
   {
     name: 'output_format',
@@ -468,7 +465,7 @@ const qwenImageParams: readonly MediaParamSpec[] = [
     pattern: '^\\d+\\*\\d+$',
     sizeLimits: { minPixels: 512 ** 2, maxPixels: 2048 ** 2, maxRatio: 8 },
     shapes: sizeTable({ tiers: [TIER_1K, TIER_2K], sep: '*', shorthand: false }),
-    description: '宽*高，以星号分隔，512*512 到 2048*2048；不填写时由模型决定',
+    description: '输出尺寸，宽与高以星号分隔；不填写时由模型决定',
   },
   {
     name: 'n',
@@ -571,11 +568,9 @@ function wanImageParams(pro: boolean): readonly MediaParamSpec[] {
         sep: '*',
         shorthand: true,
       }),
-      description: pro
-        ? '1K / 2K / 4K 或宽*高（星号分隔），宽高比 1:8 到 8:1；文生图总像素 768*768 到 4096*4096，' +
-          '有输入图时最大 2048*2048，4K 仅限文生图；只指定档位时文生图输出正方形，有输入图时沿用最后一张输入图的宽高比'
-        : '1K / 2K 或宽*高（星号分隔），总像素 768*768 到 2048*2048，宽高比 1:8 到 8:1；' +
-          '只指定档位时文生图输出正方形，有输入图时沿用最后一张输入图的宽高比',
+      description:
+        '输出尺寸，宽与高以星号分隔；只写档位时文生图输出正方形，有输入图时沿用最后一张输入图的宽高比' +
+        (pro ? '；有输入图时最大 2K，4K 仅限文生图' : ''),
     },
     ...wanImageRest,
   ]
@@ -969,8 +964,7 @@ const openaiSpeechParams: readonly MediaParamSpec[] = [
       'marin',
       'cedar',
     ],
-    description:
-      '音色：alloy、ash、ballad、coral、echo、fable、nova、onyx、sage、shimmer、verse、marin、cedar',
+    description: '音色',
   },
   {
     name: 'instructions',
@@ -1025,9 +1019,7 @@ const qwenSpeechParams: readonly MediaParamSpec[] = [
       'Aiden',
     ],
     description:
-      '系统音色：Cherry（明快女声）、Serena（温柔女声）、Ethan（北方口音男声）、Moon（随性男声）、Kai（舒缓男声）、' +
-      'Neil（新闻播音男声）、Maia、Momo、Vivian、Chelsie、Bella、Ryan、Katerina、Eldric Sage、Mia、Mochi、Bellona、' +
-      'Vincent、Bunny、Elias、Arthur、Nini、Seren、Pip、Stella、Nofish、Jennifer、Aiden',
+      '系统音色；Cherry 明快女声、Serena 温柔女声、Ethan 北方口音男声、Moon 随性男声、Kai 舒缓男声、Neil 新闻播音男声',
   },
   {
     name: 'language_type',
