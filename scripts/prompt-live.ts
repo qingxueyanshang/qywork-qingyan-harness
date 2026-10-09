@@ -908,7 +908,7 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       crossed.every((c) => c === 0),
       `${crossed.join(' / ')} 对相交`,
     )
-    // 已运行的是 3 张人物卡与 2 张场景卡，每个人物、每个场景各为一组；未运行的生成卡是 7 张分镜卡，按场次分组。
+    // 已运行的是 3 张人物卡与 2 张场景卡，每个人物、每个场景各为一组；未运行的生成卡是 7 张分镜卡，按发生的场景分组。
     const shots = fresh.filter((n) => n.type === 'generate' && !sized.includes(n))
     const groupOf = (n: CanvasDoc['nodes'][number]) => ('group' in n ? n.group : undefined)
     const columns = new Map<string, Set<number>>()
@@ -930,7 +930,7 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
     )
     const shotGroups = new Set(shots.map(groupOf))
     add(
-      '分镜按场次分组（不是每张一组）',
+      '分镜按场景分组（不是每张一组）',
       shots.length >= 7 && shotGroups.size >= 1 && shotGroups.size <= 4,
       `${shotGroups.size} 组：${[...shotGroups].join('、')}`,
     )
