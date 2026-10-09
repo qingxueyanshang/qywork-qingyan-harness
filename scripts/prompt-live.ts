@@ -930,7 +930,13 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
     )
     const ways = { xy: 0, beside: 0, below: 0, near: 0, none: 0 }
     const refused: string[] = []
+    const failedRuns: string[] = []
     for (const step of listSteps(store, runId)) {
+      // 桩接口总是成功：run_canvas 失败只可能来自实参，原始形状是 node 数组被编码为 JSON 字符串。
+      if (step.toolName === 'run_canvas' && step.status !== 'success') {
+        const outcome = (step.payload as { outcome?: { message?: unknown } } | null)?.outcome
+        failedRuns.push(String(outcome?.message ?? ''))
+      }
       if (step.toolName !== 'edit_canvas') continue
       const payload = step.payload as {
         args?: { ops_json?: unknown }
@@ -960,6 +966,7 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
     )
     // 原始失败形状：批内名称用中文、或在后一批引用前一批的名称时整批被拒，模型随后删去连线继续执行。
     add('修改画布没有因批内名称被拒', refused.length === 0, refused.join(' | ').slice(0, 200))
+    add('运行画布没有失败', failedRuns.length === 0, failedRuns.join(' | ').slice(0, 200))
   } catch (err) {
     v.error = err instanceof Error ? err.message : String(err)
   } finally {
