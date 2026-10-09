@@ -1,11 +1,14 @@
 /**
  * 未给出位置的新节点按组排列。只有大模型的操作走到这里：界面的新增操作都带坐标、`beside` 或 `near`。
  *
- * - 组是同一个对象：同一人物的各套服装、同一场景的各个角度、同一场戏的各个镜头。
- * - 同组纵向：一组只占一列，按创建顺序自上而下，不折成多列：折出的列与相邻的组无法区分。
- * - 不同组横向：各组从左到右排列。素材组（组内的卡都没有输入，如人物、场景、道具）在左，
- *   引用素材的组（组内有卡带输入，如分镜、镜头）在素材右侧，连线方向与阅读方向一致。
- * - 时间线放在引用素材的组下方。
+ * - 组是同一个对象：同一人物的各套服装、同一场景的各个角度、同一场景的各个分镜。
+ * - 同组纵向：一组只占一列，按创建顺序自上而下，接在本组最下方一张的下面。
+ * - 不同组横向：新的组放在全部已有内容的右侧，与顶端对齐，按创建顺序从左到右；每条时间线单独成一列。
+ *
+ * 各列只向下生长，新列只出现在最右侧，因此后加的卡不会被其他组挡住。
+ * 不要按「组内有没有输入」把组分到左右两区：同一人物的服装变体常以基础定妆图为参考，
+ * 按输入分区时该人物会被当作分镜，其他人物与场景被移到它的左侧。
+ * 素材先于引用它的分镜创建，按创建顺序已位于分镜左侧。
  *
  * 已有节点不移动；算出的位置被占用时沿竖直方向顺延到第一个空位。
  */
@@ -13,7 +16,7 @@
 import type { CanvasDoc, CanvasNode } from './canvas.ts'
 
 /** 相邻卡片之间的间距，横向与纵向相同，组与组之间也相同。 */
-export const CARD_GAP = 150
+export const CARD_GAP = 100
 /** 判定占用时额外保留的距离，包含卡片上方的标题行。 */
 const TITLE_CLEARANCE = 40
 
@@ -25,8 +28,8 @@ export interface Box {
 }
 
 /**
- * 依次为 `pending` 中的节点确定位置。调用前这些节点的坐标为 `NaN`，生成卡与文件节点已带 `group`；
- * 连线须已全部写入，组的类别按连线判定。`extentOf` 给出排位时节点占用的框。
+ * 依次为 `pending` 中的节点确定位置。调用前这些节点的坐标为 `NaN`，生成卡与文件节点已带 `group`。
+ * `extentOf` 给出排位时节点占用的框。
  */
 export function arrangeNew(
   doc: CanvasDoc,
@@ -36,8 +39,8 @@ export function arrangeNew(
   for (const id of pending) {
     const node = doc.nodes.find((n) => n.id === id)
     if (!node) continue
-    const spot =
-      node.type === 'timeline' ? timelineSpot(doc, node, extentOf) : cardSpot(doc, node, extentOf)
+    const size = extentOf({ ...node, x: 0, y: 0 })
+    const spot = freeSpot(doc, { ...size, ...spotOf(doc, node, extentOf) }, extentOf)
     node.x = spot.x
     node.y = spot.y
   }
@@ -49,88 +52,25 @@ function groupOf(n: CanvasNode): string | undefined {
   return n.type === 'timeline' ? undefined : n.group
 }
 
-/** 组内有卡带输入时为引用素材的组。同一批中尚未排位的成员一并计入。 */
-function consumes(doc: CanvasDoc, group: string): boolean {
-  return doc.nodes.some((n) => groupOf(n) === group && doc.edges.some((e) => e.to === n.id))
-}
-
-function bounds(boxes: readonly Box[]): Box | null {
-  if (!boxes.length) return null
-  const x = Math.min(...boxes.map((b) => b.x))
-  const y = Math.min(...boxes.map((b) => b.y))
-  return {
-    x,
-    y,
-    w: Math.max(...boxes.map((b) => b.x + b.w)) - x,
-    h: Math.max(...boxes.map((b) => b.y + b.h)) - y,
-  }
-}
-
-/** 已排位、带组的节点按组的类别分为素材区与引用区；时间线计入引用区。 */
-function regions(doc: CanvasDoc, extentOf: (n: CanvasNode) => Box) {
-  const assets: Box[] = []
-  const consumers: Box[] = []
-  for (const n of doc.nodes) {
-    if (!placed(n)) continue
-    if (n.type === 'timeline') consumers.push(extentOf(n))
-    const group = groupOf(n)
-    if (group === undefined) continue
-    ;(consumes(doc, group) ? consumers : assets).push(extentOf(n))
-  }
-  return { assets: bounds(assets), consumers: bounds(consumers) }
-}
-
-/** 画布上还没有带组的节点时，第一组的起点：已有内容右侧，与其顶端对齐；空画布从原点开始。 */
-function startOf(doc: CanvasDoc, extentOf: (n: CanvasNode) => Box): { x: number; y: number } {
-  const all = bounds(doc.nodes.filter(placed).map(extentOf))
-  return all ? { x: all.x + all.w + CARD_GAP, y: all.y } : { x: 0, y: 0 }
-}
-
-function cardSpot(
+/** 本组已有卡时接在最下方一张的下面；否则在全部已有内容右侧另起一列，空画布从原点开始。 */
+function spotOf(
   doc: CanvasDoc,
   node: CanvasNode,
   extentOf: (n: CanvasNode) => Box,
 ): { x: number; y: number } {
-  const size = extentOf({ ...node, x: 0, y: 0 })
   const group = groupOf(node)
-  const consumer = group !== undefined && consumes(doc, group)
-  const members = doc.nodes
-    .filter((n) => n !== node && placed(n) && group !== undefined && groupOf(n) === group)
-    .map(extentOf)
+  const others = doc.nodes.filter((n) => n !== node && placed(n))
+  const members = others.filter((n) => group !== undefined && groupOf(n) === group).map(extentOf)
   if (members.length) {
-    // 接在本组最下方一张的下面。
     const last = members.reduce((a, b) => (b.y + b.h > a.y + a.h ? b : a))
-    return freeSpot(doc, { ...size, x: last.x, y: last.y + last.h + CARD_GAP }, extentOf)
+    return { x: last.x, y: last.y + last.h + CARD_GAP }
   }
-  const { assets, consumers } = regions(doc, extentOf)
-  let at: { x: number; y: number }
-  if (consumer) {
-    const area = consumers ?? assets
-    at = area ? { x: area.x + area.w + CARD_GAP, y: area.y } : startOf(doc, extentOf)
-  } else if (assets) {
-    at = { x: assets.x + assets.w + CARD_GAP, y: assets.y }
-    // 引用区已在素材右侧时，新的素材列放到素材区左侧，不插入两区之间。
-    if (consumers && at.x + size.w + CARD_GAP > consumers.x)
-      at = { x: assets.x - size.w - CARD_GAP, y: assets.y }
-  } else if (consumers) {
-    at = { x: consumers.x - size.w - CARD_GAP, y: consumers.y }
-  } else {
-    at = startOf(doc, extentOf)
+  const boxes = others.map(extentOf)
+  if (!boxes.length) return { x: 0, y: 0 }
+  return {
+    x: Math.max(...boxes.map((b) => b.x + b.w)) + CARD_GAP,
+    y: Math.min(...boxes.map((b) => b.y)),
   }
-  return freeSpot(doc, { ...size, ...at }, extentOf)
-}
-
-/** 时间线：引用区（含已有时间线）下方，与引用区左端对齐；没有引用区时放在全部带组节点的下方。 */
-function timelineSpot(
-  doc: CanvasDoc,
-  node: CanvasNode,
-  extentOf: (n: CanvasNode) => Box,
-): { x: number; y: number } {
-  const { assets, consumers } = regions(doc, extentOf)
-  const area = consumers ?? assets
-  const size = extentOf({ ...node, x: 0, y: 0 })
-  if (!area) return freeSpot(doc, { ...size, ...startOf(doc, extentOf) }, extentOf)
-  return freeSpot(doc, { ...size, x: area.x, y: area.y + area.h + CARD_GAP }, extentOf)
 }
 
 /** 从 `box` 开始向下查找空位：与已排位的节点相交时移到该节点下方相隔 `CARD_GAP` 处。 */
