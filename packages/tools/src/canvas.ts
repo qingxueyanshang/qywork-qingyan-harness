@@ -64,6 +64,14 @@ function describe(view: CanvasView): string {
       `  提示词：${n.prompt || '（空）'}`,
     )
     lines.push(`  参数：${paramsText(n.params)}`)
+    // 每张卡写明输入：连线只列在末尾时，回执中不易发现哪张卡没有连接参考图。
+    const inputs = view.doc.edges
+      .filter((e) => e.to === n.id)
+      .map((e) => {
+        const from = byId.get(e.from)
+        return `${from ? displayNameOf(from) : e.from}（${e.role}）`
+      })
+    lines.push(`  输入：${inputs.length ? inputs.join('、') : '无，只按提示词生成'}`)
   }
   for (const e of view.doc.edges) {
     const from = byId.get(e.from)

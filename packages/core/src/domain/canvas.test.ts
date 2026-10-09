@@ -162,6 +162,27 @@ describe('画布：操作', () => {
     ])
   })
 
+  test('引用此前批次的批内名称时整批拒绝，报错写明批内名称只在同一批中有效、改用节点 id', () => {
+    const doc = apply(
+      emptyCanvas(),
+      [{ op: 'add_file', ref: '$photo', path: '照片.png', x: 0, y: 0 }],
+      ids('b'),
+    )
+    const later = [
+      { op: 'add_generate', ref: '$v', output: 'video' },
+      { op: 'connect', from: '$photo', to: '$v', role: 'reference' },
+    ] as const
+    for (const error of [
+      rejects(doc, [...later]),
+      rejects(doc, [{ op: 'add_generate', output: 'video', prompt: '@[$photo] 翻看照片' }]),
+    ]) {
+      expect(error).toContain('$photo')
+      expect(error).toContain(
+        '批内名称只在定义它的同一批操作中有效，引用此前创建的节点时使用节点 id',
+      )
+    }
+  })
+
   test('批内名称含 $ 后不允许的字符时整批拒绝，报错写明允许的字符', () => {
     const error = rejects(emptyCanvas(), [{ op: 'add_file', ref: '$林悦', path: 'a.png' }])
     expect(error).toContain('英文字母、数字、下划线或连字符')
