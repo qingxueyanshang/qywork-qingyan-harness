@@ -908,25 +908,28 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       crossed.every((c) => c === 0),
       `${crossed.join(' / ')} 对相交`,
     )
-    // 已运行的是 3 张人物卡与 2 张场景卡，每个人物、每个场景各为一组；未运行的生成卡是 7 张分镜卡，按发生的场景分组。
+    // 已运行的是 3 张人物卡与 2 张场景卡：人物一列、场景一列，组名为「类别/对象」；未运行的 7 张分镜卡按发生的场景成列。
     const shots = fresh.filter((n) => n.type === 'generate' && !sized.includes(n))
     const groupOf = (n: CanvasDoc['nodes'][number]) => ('group' in n ? n.group : undefined)
+    const columnOf = (g: string) => g.split('/')[0]!
     const columns = new Map<string, Set<number>>()
     for (const n of fresh) {
       const g = groupOf(n)
-      if (g !== undefined) columns.set(g, (columns.get(g) ?? new Set()).add(n.x))
+      if (g !== undefined)
+        columns.set(columnOf(g), (columns.get(columnOf(g)) ?? new Set()).add(n.x))
     }
     const xs = [...columns.values()].flatMap((set) => [...set])
     add(
-      '同组纵向占一列，不同组不共用一列',
+      '同一列的卡横坐标相同，不同列不共用横坐标',
       columns.size > 0 && xs.length === columns.size && new Set(xs).size === xs.length,
       [...columns].map(([g, set]) => `${g}@${[...set].join('/')}`).join('，'),
     )
+    const assetColumns = new Set(sized.map((n) => columnOf(groupOf(n) ?? '')))
     const assetGroups = new Set(sized.map(groupOf))
     add(
-      '人物与场景各为一组',
-      sized.length >= 5 && assetGroups.size === sized.length,
-      `${assetGroups.size} 组`,
+      '人物同列、场景同列，每个对象一个组名',
+      sized.length >= 5 && assetColumns.size === 2 && assetGroups.size === sized.length,
+      `${assetColumns.size} 列：${[...assetGroups].join('、')}`,
     )
     const shotGroups = new Set(shots.map(groupOf))
     add(
