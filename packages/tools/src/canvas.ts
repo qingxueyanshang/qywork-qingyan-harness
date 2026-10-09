@@ -213,7 +213,8 @@ export const editCanvasTool: ToolSpec = {
     '下一行的第一个 below 上一行的第一个；时间线 below 最后一行的第一个。' +
     'add_generate 可选 provider、model、params（取值见本轮「可用的生成模型」；' +
     `art 卡的 provider、model 是对话模型，缺省为当前对话模型，params 只有 size：${ART_SIZE_PARAM.values?.join('、')}）。` +
-    'add_* 与 connect 可带 "ref":"$名字"，同一批中后续的操作与提示词用它代替新节点的 id。' +
+    'add_* 与 connect 可带 "ref":"$名字"（名字可用中文），本轮回复中后续的操作与提示词可用它代替新节点的 id，' +
+    '此前对话中创建的节点使用 id。' +
     '提示词中用 @[节点 id] 指代素材，引用未连线的素材时自动连线。运行生成卡使用 run_canvas。',
   parameters: {
     type: 'object',

@@ -162,31 +162,49 @@ describe('画布：操作', () => {
     ])
   })
 
-  test('引用此前批次的批内名称时整批拒绝，报错写明批内名称只在同一批中有效、改用节点 id', () => {
-    const doc = apply(
+  test('传入此前批次的名称对照后可继续使用；本批重新定义时以本批为准；未定义时报错写明定义方式与改用节点 id', () => {
+    const first = applyCanvasOps(
       emptyCanvas(),
-      [{ op: 'add_file', ref: '$photo', path: '照片.png', x: 0, y: 0 }],
+      [{ op: 'add_file', ref: '$照片', path: '照片.png', x: 0, y: 0 }],
       ids('b'),
     )
-    const later = [
-      { op: 'add_generate', ref: '$v', output: 'video' },
-      { op: 'connect', from: '$photo', to: '$v', role: 'reference' },
-    ] as const
-    for (const error of [
-      rejects(doc, [...later]),
-      rejects(doc, [{ op: 'add_generate', output: 'video', prompt: '@[$photo] 翻看照片' }]),
-    ]) {
-      expect(error).toContain('$photo')
-      expect(error).toContain(
-        '批内名称只在定义它的同一批操作中有效，引用此前创建的节点时使用节点 id',
-      )
-    }
+    if (!first.ok) throw new Error(first.error)
+    const later: CanvasOp[] = [
+      { op: 'add_generate', output: 'video', prompt: '@[$照片] 翻看照片', below: '$照片' },
+    ]
+    const next = applyCanvasOps(first.doc, later, ids('n'), first.refs)
+    if (!next.ok) throw new Error(next.error)
+    expect(gen(next.doc, 'n1')).toMatchObject({ prompt: '@[b1] 翻看照片', x: 0, y: 169 + 100 })
+    expect(next.doc.edges.some((e) => e.from === 'b1' && e.to === 'n1')).toBe(true)
+    const again = applyCanvasOps(
+      first.doc,
+      [
+        { op: 'add_file', ref: '$照片', path: '新照片.png', x: 500, y: 0 },
+        { op: 'add_generate', output: 'image', prompt: '@[$照片] 微笑' },
+      ],
+      ids('r'),
+      first.refs,
+    )
+    if (!again.ok) throw new Error(again.error)
+    expect(gen(again.doc, 'r2').prompt).toBe('@[r1] 微笑')
+    expect(rejects(first.doc, later)).toBe(
+      '$照片 未定义：批内名称须先由本轮某一批操作的 ref 定义，引用此前对话中创建的节点时使用节点 id',
+    )
   })
 
-  test('批内名称含 $ 后不允许的字符时整批拒绝，报错写明允许的字符', () => {
-    const error = rejects(emptyCanvas(), [{ op: 'add_file', ref: '$林悦', path: 'a.png' }])
-    expect(error).toContain('英文字母、数字、下划线或连字符')
-    expect(error).toContain('$林悦')
+  test('批内名称可用中文；含空格或标点时整批拒绝，报错写明允许的字符', () => {
+    const doc = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_file', ref: '$林悦', path: 'a.png' },
+        { op: 'add_generate', output: 'image', prompt: '@[$林悦] 微笑' },
+      ],
+      ids('n'),
+    )
+    expect(gen(doc, 'n2').prompt).toBe('@[n1] 微笑')
+    const error = rejects(emptyCanvas(), [{ op: 'add_file', ref: '$林 悦', path: 'a.png' }])
+    expect(error).toContain('字母、数字、下划线或连字符，不含空格与标点')
+    expect(error).toContain('$林 悦')
   })
 
   test('修改提示词后新引用未连接的视频节点，补充一条参考视频连线', () => {

@@ -207,7 +207,8 @@ export type CanvasMode = 'reference' | 'first_last'
  * 界面与大模型可提交的操作。
  *
  * `ref`：以 `$` 开头的批内名称。同一批中后续的操作可以用它代替尚未分配的 id（`id` / `from` / `to` 与
- * 提示词中的 `@[$名称]`），应用结果返回名称到 id 的对照。`null` 表示清除该字段。
+ * 提示词中的 `@[$名称]`），应用结果返回名称到 id 的对照；调用方可把此前批次的对照传给 `applyCanvasOps`
+ * 继续使用这些名称。`null` 表示清除该字段。
  */
 export type CanvasOp =
   | {
@@ -305,8 +306,10 @@ export function newCanvasId(): string {
 }
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/
-const REF_RE = /^\$[A-Za-z0-9_-]{1,64}$/
-const MENTION_RE = /@\[(\$?[A-Za-z0-9_-]{1,64})\]/g
+/** 批内名称允许中文等任意文字的字母与数字：只允许英文时，模型按画布内容起的中文名称整批被拒。 */
+const REF_RE = /^\$[\p{L}\p{N}_-]{1,64}$/u
+/** 节点 id 只含英文字母与数字；`$` 开头的是批内名称。 */
+const MENTION_RE = /@\[(\$[\p{L}\p{N}_-]{1,64}|[A-Za-z0-9_-]{1,64})\]/gu
 const AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|flac|opus)$/i
 
 /** 提示词中 `@[id]` 引用的 id，按首次出现顺序去重。 */
@@ -497,11 +500,13 @@ function fail(message: string): never {
  * 按顺序应用一批操作。整批成功时才返回新文档；任何一条不成立都返回 `ok: false`，原文档不变。
  *
  * `newId` 只在测试中注入。分配的 id 不会与本批开始时文档中已有的任何 id 相同。
+ * `earlier`：此前批次返回的批内名称对照，本批未定义的名称按它解析；本批重新定义的名称以本批为准。
  */
 export function applyCanvasOps(
   doc: CanvasDoc,
   ops: CanvasOp[],
   newId: () => string = newCanvasId,
+  earlier: Readonly<Record<string, string>> = {},
 ): CanvasResult {
   const next = structuredClone(doc)
   const refs: Record<string, string> = {}
@@ -523,8 +528,9 @@ export function applyCanvasOps(
   }
 
   try {
-    for (const op of ops) applyOne(next, op, refs, mint)
-    resolvePromptRefs(next, refs)
+    const named = (ref: string) => refs[ref] ?? earlier[ref] ?? unknownRef(ref)
+    for (const op of ops) applyOne(next, op, refs, named, mint)
+    resolvePromptRefs(next, named)
     keepMentionsConnected(doc, next, mint)
   } catch (err) {
     if (err instanceof CanvasError) return { ok: false, error: err.message }
@@ -538,16 +544,14 @@ function applyOne(
   doc: CanvasDoc,
   op: CanvasOp,
   refs: Record<string, string>,
+  named: (ref: string) => string,
   mint: () => string,
 ): void {
-  const resolve = (id: string): string => {
-    if (!id.startsWith('$')) return id
-    return refs[id] ?? unknownRef(id, '本批之前的操作中')
-  }
+  const resolve = (id: string): string => (id.startsWith('$') ? named(id) : id)
   const claim = (ref: string | undefined, id: string) => {
     if (ref === undefined) return
     if (!REF_RE.test(ref))
-      fail(`批内名称须为 $ 加 1 到 64 个英文字母、数字、下划线或连字符：${ref}`)
+      fail(`批内名称须为 $ 加 1 到 64 个字母、数字、下划线或连字符，不含空格与标点：${ref}`)
     if (refs[ref]) fail(`批内名称重复：${ref}`)
     refs[ref] = id
   }
@@ -845,23 +849,23 @@ function defaultName(doc: CanvasDoc, prefix: string): string {
   return `${prefix}${max + 1}`
 }
 
-/** 把提示词中的 `@[$名称]` 替换为分配的 id。 */
 /**
- * 批内名称无法解析时整批拒绝。报错写明批内名称只在同一批中有效：只写「未定义」时，模型把此前批次的
- * 批内名称当作持久名称使用后无法得知改用节点 id，会删去相关的连线与引用后继续执行。
+ * 批内名称无法解析时整批拒绝。报错写明名称的有效范围与替代写法：只写「未定义」时，模型无法得知改用节点 id，
+ * 会删去相关的连线与引用后继续执行。
  */
-function unknownRef(ref: string, where: string): never {
+function unknownRef(ref: string): never {
   return fail(
-    `${ref} 未在${where}定义：批内名称只在定义它的同一批操作中有效，引用此前创建的节点时使用节点 id`,
+    `${ref} 未定义：批内名称须先由本轮某一批操作的 ref 定义，引用此前对话中创建的节点时使用节点 id`,
   )
 }
 
-function resolvePromptRefs(doc: CanvasDoc, refs: Record<string, string>): void {
+/** 把提示词中的 `@[$名称]` 替换为分配的 id。 */
+function resolvePromptRefs(doc: CanvasDoc, named: (ref: string) => string): void {
   for (const n of doc.nodes) {
     if (n.type !== 'generate' || !n.prompt.includes('@[$')) continue
     n.prompt = n.prompt.replace(MENTION_RE, (whole, id: string) => {
       if (!id.startsWith('$')) return whole
-      return `@[${refs[id] ?? unknownRef(id, '本批中')}]`
+      return `@[${named(id)}]`
     })
   }
 }

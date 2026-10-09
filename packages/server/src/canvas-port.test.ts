@@ -1,8 +1,9 @@
 /**
  * 覆盖 `canvas.ts` 的 `canvasPort`：Agent 经由端口与界面经由 HTTP 使用同一个画布服务。
  *
- * 锁定三项行为：同一批操作经两条路径写出的文件逐字节相同；Agent 与用户同时修改时，双方的改动均保留；
- * 经端口运行视频时，任务节点在端口返回（工具结束）之前已写入画布并发出通知。
+ * 锁定四项行为：同一批操作经两条路径写出的文件逐字节相同；Agent 与用户同时修改时，双方的改动均保留；
+ * 经端口运行视频时，任务节点在端口返回（工具结束）之前已写入画布并发出通知；
+ * 同一端口的后续批次可继续使用此前批次的批内名称。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -66,6 +67,26 @@ describe('画布端口', () => {
     const view = await port.read(path)
     expect(Object.values(view.states).every((s) => s.state === 'normal')).toBe(true)
     expect(view.doc.runs).toHaveLength(2)
+  })
+  test('同一端口的后续批次可继续使用此前批次的批内名称；新端口（下一轮）不继承', async () => {
+    const root = await workspace()
+    const service = new CanvasService({ publish: () => {}, newId: sequence() })
+    const port = canvasPort(service, { id: 'ws', root })
+    await port.edit(PATH, [{ op: 'add_file', ref: '$小满', path: 'a.png' }])
+    const { view } = await port.edit(PATH, [
+      { op: 'add_generate', ref: '$走出校门', output: 'video', prompt: '@[$小满] 走出校门' },
+      { op: 'add_generate', output: 'video', prompt: '@[$小满] 回头', below: '$走出校门' },
+    ])
+    const cards = view.doc.nodes.filter((n) => n.type === 'generate')
+    expect(cards.map((n) => (n.type === 'generate' ? n.prompt : ''))).toEqual([
+      '@[id1] 走出校门',
+      '@[id1] 回头',
+    ])
+    expect(view.doc.edges.filter((e) => e.from === 'id1')).toHaveLength(2)
+    const next = canvasPort(service, { id: 'ws', root })
+    await expect(
+      next.edit(PATH, [{ op: 'add_generate', output: 'image', below: '$小满' }]),
+    ).rejects.toThrow('$小满 未定义')
   })
   test('同一批操作经端口与经 HTTP 写出的文件逐字节相同', async () => {
     const viaPort = await workspace()
