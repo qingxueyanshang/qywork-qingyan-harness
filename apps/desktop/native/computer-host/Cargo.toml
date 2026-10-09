@@ -2,7 +2,7 @@
 name = "qy-computer-host"
 # 本行与 Cargo.lock 中本 crate 的 version 由 `scripts/sync-version.ts` 按仓库根
 # `VERSION` 同时写入，不要手工修改：只修改其中一处时，带 `--locked` 的检查、测试与构建全部失败。
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 rust-version = "1.80"
 publish = false
