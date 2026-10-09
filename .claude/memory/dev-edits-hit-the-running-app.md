@@ -14,9 +14,10 @@ metadata:
   前端状态全部丢失：页签、打开的文件、终端页都被清空。终端页会自动恢复（`terminal_list` 恢复页签 + `terminal_open` 回放最近 256K 输出，
   连接的仍是原有的那条 shell），其他状态不会恢复。
 - 修改 `apps/desktop/src-tauri/**` → `tauri dev` 重新编译并**重启整个应用**，运行中的 run 和终端一并丢失。
-- 修改 `packages/**` 的服务端源码 → 桌面端复用 `dev.ts` 的 sidecar（`qywork.log` 中为「复用 dev.ts 的 sidecar :7717」），
-  该 sidecar 随即重启，运行中的 run 中断。实测（2026-10-09）：保存 `packages/tools/src/canvas.ts` 后 0.3 秒 sidecar 重启，
-  用户的一轮在第一次重启前 0.45 秒刚好结束；客户端约一秒内自动重连。
+- 修改 `packages/**` 或 `apps/web/src/**` → 桌面端复用 `dev.ts` 的 sidecar（`qywork.log` 中为「复用 dev.ts 的 sidecar :7717」）。
+  `dev.ts` 的重载判据是「文件已变化，且没有进行中的 run」：运行中的 run 不会中断，全部结束后 sidecar 才重启，
+  客户端约一秒内自动重连。实测（2026-10-09）：用户的一轮结束后 0.45 秒 sidecar 重启。
+  多个文件须一次写完整：其间若最后一轮恰好结束，sidecar 会以写到一半的代码重启。
 
-因此：修改 `packages/**` 或 Rust 之前先查本机账本中有没有运行中的 run，有则告知用户；仅为取证而修改代码（例如添加 `--remote-debugging-port`）时不要修改 Rust，
+因此：修改 Rust 之前先确认用户没有运行中的 run；仅为取证而修改代码（例如添加 `--remote-debugging-port`）时不要修改 Rust，
 另起隔离实例（`qy serve --print-token` + 临时 `QYWORK_HOME`）验证。见 [[tauri-webview-no-cdp]]。
