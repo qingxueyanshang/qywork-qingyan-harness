@@ -1,10 +1,10 @@
 /**
  * 未给出位置的新节点按组排列。只有大模型的操作走到这里：界面的新增操作都带坐标、`beside` 或 `near`。
  *
- * - 素材组（组内的卡都没有输入，如角色、场景、道具）：每组一列，自上而下，满 `COLUMN_CARDS` 张另起一列；
- *   各组从左到右排列。
- * - 引用素材的组（组内有卡带输入，如分镜、镜头）：放在素材右侧，每组按创建顺序每行 `ROW_CARDS` 张；
- *   多个组自上而下叠放，画布不沿一个方向无限延伸。
+ * - 组是同一个对象：同一人物的各套服装、同一场景的各个角度、同一场戏的各个镜头。
+ * - 同组纵向：一组只占一列，按创建顺序自上而下，不折成多列：折出的列与相邻的组无法区分。
+ * - 不同组横向：各组从左到右排列。素材组（组内的卡都没有输入，如人物、场景、道具）在左，
+ *   引用素材的组（组内有卡带输入，如分镜、镜头）在素材右侧，连线方向与阅读方向一致。
  * - 时间线放在引用素材的组下方。
  *
  * 已有节点不移动；算出的位置被占用时沿竖直方向顺延到第一个空位。
@@ -14,10 +14,6 @@ import type { CanvasDoc, CanvasNode } from './canvas.ts'
 
 /** 相邻卡片之间的间距，横向与纵向相同，组与组之间也相同。 */
 export const CARD_GAP = 150
-/** 素材组一列的张数上限，超过时另起一列。 */
-const COLUMN_CARDS = 6
-/** 引用素材的组每行的张数。 */
-const ROW_CARDS = 5
 /** 判定占用时额外保留的距离，包含卡片上方的标题行。 */
 const TITLE_CLEARANCE = 40
 
@@ -102,18 +98,15 @@ function cardSpot(
     .filter((n) => n !== node && placed(n) && group !== undefined && groupOf(n) === group)
     .map(extentOf)
   if (members.length) {
-    return freeSpot(
-      doc,
-      { ...size, ...(consumer ? gridNext(members, size) : columnNext(members)) },
-      extentOf,
-    )
+    // 接在本组最下方一张的下面。
+    const last = members.reduce((a, b) => (b.y + b.h > a.y + a.h ? b : a))
+    return freeSpot(doc, { ...size, x: last.x, y: last.y + last.h + CARD_GAP }, extentOf)
   }
   const { assets, consumers } = regions(doc, extentOf)
   let at: { x: number; y: number }
   if (consumer) {
-    if (consumers) at = { x: consumers.x, y: consumers.y + consumers.h + CARD_GAP }
-    else if (assets) at = { x: assets.x + assets.w + CARD_GAP, y: assets.y }
-    else at = startOf(doc, extentOf)
+    const area = consumers ?? assets
+    at = area ? { x: area.x + area.w + CARD_GAP, y: area.y } : startOf(doc, extentOf)
   } else if (assets) {
     at = { x: assets.x + assets.w + CARD_GAP, y: assets.y }
     // 引用区已在素材右侧时，新的素材列放到素材区左侧，不插入两区之间。
@@ -125,26 +118,6 @@ function cardSpot(
     at = startOf(doc, extentOf)
   }
   return freeSpot(doc, { ...size, ...at }, extentOf)
-}
-
-/** 素材组的下一张：接在最右一列的末尾，该列已满时在右侧另起一列，与组的顶端对齐。 */
-function columnNext(members: readonly Box[]): { x: number; y: number } {
-  const lastX = Math.max(...members.map((b) => b.x))
-  const column = members.filter((b) => b.x === lastX)
-  const bottom = Math.max(...column.map((b) => b.y + b.h))
-  if (column.length < COLUMN_CARDS) return { x: lastX, y: bottom + CARD_GAP }
-  const width = Math.max(...column.map((b) => b.w))
-  return { x: lastX + width + CARD_GAP, y: Math.min(...members.map((b) => b.y)) }
-}
-
-/** 引用素材的组的下一张：按创建顺序每行 `ROW_CARDS` 张，格距取组内最大的卡。 */
-function gridNext(members: readonly Box[], size: Box): { x: number; y: number } {
-  const x = Math.min(...members.map((b) => b.x))
-  const y = Math.min(...members.map((b) => b.y))
-  const cellW = Math.max(size.w, ...members.map((b) => b.w)) + CARD_GAP
-  const cellH = Math.max(size.h, ...members.map((b) => b.h)) + CARD_GAP
-  const i = members.length
-  return { x: x + (i % ROW_CARDS) * cellW, y: y + Math.floor(i / ROW_CARDS) * cellH }
 }
 
 /** 时间线：引用区（含已有时间线）下方，与引用区左端对齐；没有引用区时放在全部带组节点的下方。 */
@@ -169,14 +142,18 @@ function freeSpot(
   const others = doc.nodes.filter(placed).map(extentOf)
   let { y } = box
   for (;;) {
-    const hit = others.find(
-      (n) =>
-        n.x < box.x + box.w + TITLE_CLEARANCE &&
-        n.x + n.w + TITLE_CLEARANCE > box.x &&
-        n.y < y + box.h + TITLE_CLEARANCE &&
-        n.y + n.h + TITLE_CLEARANCE > y,
-    )
+    const hit = others.find((n) => intersects(n, { ...box, y }))
     if (!hit) return { x: box.x, y }
     y = hit.y + hit.h + CARD_GAP
   }
+}
+
+/** 两个框是否相交，计入卡片上方的标题行。 */
+function intersects(a: Box, b: Box): boolean {
+  return (
+    a.x < b.x + b.w + TITLE_CLEARANCE &&
+    a.x + a.w + TITLE_CLEARANCE > b.x &&
+    a.y < b.y + b.h + TITLE_CLEARANCE &&
+    a.y + a.h + TITLE_CLEARANCE > b.y
+  )
 }
