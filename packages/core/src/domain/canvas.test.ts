@@ -512,76 +512,88 @@ describe('画布：操作', () => {
     expect(parseCanvasOps([{ op: 'add_generate', output: 'image', beside: 'a1' }]).ok).toBe(true)
   })
 
-  test('同组纵向一列、新组按创建顺序排在最右侧：三个人物各两套服装各占一列，服装变体引用基础定妆图时位置不变，时间线单独一列；从已有内容右侧开始', () => {
-    const base = apply(
-      emptyCanvas(),
-      [
-        { op: 'add_generate', output: 'image', x: -2263, y: 1346 },
-        { op: 'add_generate', output: 'video', x: -1972, y: 1600 },
-      ],
-      ids('b'),
-    )
-    const outfit = (person: string, look: string, prompt = ''): CanvasOp => ({
-      op: 'add_generate',
-      output: 'image',
-      name: `${person}_${look}`,
-      group: person,
-      prompt,
-      w: 169,
-      h: 300,
-    })
-    const wide = (name: string, group: string, prompt = ''): CanvasOp => ({
+  test('类别成列：第 1 幕建角色、场景、道具与两个场景的分镜和时间线，第 2 幕补衣服、新人物、新场景、新道具与分镜', () => {
+    const card = (name: string, group: string, w: number, h: number, prompt = ''): CanvasOp => ({
       op: 'add_generate',
       output: 'image',
       name,
       group,
       prompt,
-      w: 300,
-      h: 169,
+      w,
+      h,
     })
-    // 按模型常见的顺序交错创建：先每人一套，再每人第二套；第二套以第一套为参考。
-    const doc = apply(
-      base,
+    const person = (name: string, prompt = '') =>
+      card(name, `角色/${name.slice(0, name.indexOf('_'))}`, 169, 300, prompt)
+    const wide = (name: string, group: string, prompt = '') => card(name, group, 300, 169, prompt)
+    let doc = apply(
+      emptyCanvas(),
       [
-        outfit('林悦', '校服'),
-        outfit('奶奶', '家常'),
-        outfit('小满', '校服'),
-        outfit('林悦', '便装', '@[林悦_校服] 换便装'),
-        outfit('奶奶', '外出', '@[奶奶_家常] 换外套'),
-        outfit('小满', '睡衣', '@[小满_校服] 换睡衣'),
-        wide('客厅_白天', '客厅'),
-        wide('客厅_夜晚', '客厅'),
-        wide('镜头1', '客厅·分镜', '@[林悦_校服] @[客厅_白天] 回头'),
-        wide('镜头2', '客厅·分镜', '@[奶奶_家常] @[客厅_白天] 笑'),
-        wide('镜头3', '阳台·分镜', '@[小满_睡衣] 数硬币'),
-        { op: 'add_timeline', name: '成片' },
+        person('沈砚_主参考'),
+        person('沈砚_便装', '@[沈砚_主参考] 换便装'),
+        person('顾衡_主参考'),
+        person('顾衡_便装', '@[顾衡_主参考] 换便装'),
+        wide('山门_雨夜', '场景/山门'),
+        wide('山门_白天', '场景/山门'),
+        wide('书房', '场景/书房'),
+        wide('玉佩', '道具/玉佩'),
+        wide('长剑', '道具/长剑'),
+        wide('镜头1-1', '山门·分镜', '@[沈砚_主参考] @[山门_雨夜]'),
+        wide('镜头1-2', '山门·分镜', '@[顾衡_主参考] @[山门_雨夜]'),
+        wide('镜头1-3', '山门·分镜', '@[玉佩]'),
+        wide('镜头1-4', '书房·分镜', '@[沈砚_便装] @[书房]'),
+        wide('镜头1-5', '书房·分镜', '@[长剑] @[书房]'),
+        { op: 'add_timeline', name: '第1幕成片' },
       ],
-      ids('n'),
+      ids('a'),
     )
-    const at = (id: string) => {
-      const n = doc.nodes.find((x) => x.id === id)!
+    doc = apply(
+      doc,
+      [
+        person('沈砚_夜行衣', '@[沈砚_主参考] 换夜行衣'),
+        person('林婉_主参考'),
+        wide('竹林', '场景/竹林'),
+        wide('令牌', '道具/令牌'),
+        wide('镜头2-1', '竹林·分镜', '@[林婉_主参考] @[竹林]'),
+        wide('镜头2-2', '竹林·分镜', '@[沈砚_夜行衣] @[竹林]'),
+        wide('镜头2-3', '竹林·分镜', '@[令牌]'),
+        wide('镜头2-4', '山门·分镜', '@[顾衡_便装] @[山门_白天]'),
+      ],
+      ids('b'),
+    )
+    // 每一列自上而下的卡片名称，列按从左到右排列。
+    const columns = new Map<number, CanvasDoc['nodes']>()
+    for (const n of doc.nodes) columns.set(n.x, [...(columns.get(n.x) ?? []), n])
+    const layout = [...columns]
+      .sort(([a], [b]) => a - b)
+      .map(([, ns]) => ns.sort((a, b) => a.y - b.y).map((n) => n.name))
+    expect(layout).toEqual([
+      ['沈砚_主参考', '沈砚_便装', '沈砚_夜行衣', '顾衡_主参考', '顾衡_便装', '林婉_主参考'],
+      ['山门_雨夜', '山门_白天', '书房', '竹林'],
+      ['玉佩', '长剑', '令牌'],
+      ['镜头1-1', '镜头1-2', '镜头1-3', '镜头2-4'],
+      ['镜头1-4', '镜头1-5'],
+      ['第1幕成片'],
+      ['镜头2-1', '镜头2-2', '镜头2-3'],
+    ])
+    const at = (name: string) => {
+      const n = doc.nodes.find((x) => x.name === name)!
       return [n.x, n.y]
     }
-    // 已有的方形空卡按 300 见方占位，最右处为 -1972 + 300。
-    const x0 = -1672 + 100
-    const y0 = 1346
-    const column = (x: number, ...ids: string[]) =>
-      expect(ids.map(at)).toEqual(ids.map((_, i) => [x, y0 + i * 400]))
-    column(x0, 'n1', 'n4')
-    column(x0 + 269, 'n2', 'n5')
-    column(x0 + 538, 'n3', 'n6')
-    const scene = x0 + 807
-    expect([at('n7'), at('n8')]).toEqual([
-      [scene, y0],
-      [scene, y0 + 269],
+    // 补沈砚的夜行衣时，顾衡的两张卡下移一张卡与一个间距，林婉接在列末。
+    expect(['沈砚_夜行衣', '顾衡_主参考', '顾衡_便装', '林婉_主参考'].map(at)).toEqual([
+      [0, 800],
+      [0, 1200],
+      [0, 1600],
+      [0, 2000],
     ])
-    expect([at('n9'), at('n10')]).toEqual([
-      [scene + 400, y0],
-      [scene + 400, y0 + 269],
+    expect([at('山门_雨夜'), at('玉佩'), at('镜头1-1'), at('镜头1-4'), at('第1幕成片')]).toEqual([
+      [269, 0],
+      [669, 0],
+      [1069, 0],
+      [1469, 0],
+      [1869, 0],
     ])
-    expect(at('n11')).toEqual([scene + 800, y0])
-    expect(at('n12')).toEqual([scene + 1200, y0])
-    expect(gen(doc, 'n4').group).toBe('林悦')
+    expect(at('镜头2-1')).toEqual([1869 + 480 + 100, 0])
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
@@ -592,12 +604,20 @@ describe('画布：操作', () => {
     })
   })
 
-  test('后续批次接在本组列末，不折列；时间线建好之后补镜头仍接在本组列末；后建的组排在最右侧', () => {
+  test('从已有内容右侧开始；同一列不折列；时间线建好之后补镜头仍接在本列末尾；补衣服时下方的人物下移', () => {
+    const base = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_generate', output: 'image', x: -2263, y: 1346 },
+        { op: 'add_generate', output: 'video', x: -1972, y: 1600 },
+      ],
+      ids('p'),
+    )
     const outfit = (name: string): CanvasOp => ({
       op: 'add_generate',
       output: 'image',
       name,
-      group: name.slice(0, name.indexOf('_')),
+      group: `角色/${name.slice(0, name.indexOf('_'))}`,
       w: 169,
       h: 300,
     })
@@ -611,7 +631,7 @@ describe('画布：操作', () => {
       h: 169,
     })
     let doc = apply(
-      emptyCanvas(),
+      base,
       Array.from({ length: 7 }, (_, i) => outfit(`林悦_造型${i + 1}`)),
       ids('a'),
     )
@@ -619,36 +639,56 @@ describe('画布：操作', () => {
       const n = doc.nodes.find((x) => x.id === id)!
       return [n.x, n.y]
     }
-    expect(at('a7')).toEqual([0, 6 * 400])
+    // 已有的方形空卡按 300 见方占位，最右处为 -1972 + 300。
+    const x0 = -1672 + 100
+    const y0 = 1346
+    expect([at('a1'), at('a7')]).toEqual([
+      [x0, y0],
+      [x0, y0 + 6 * 400],
+    ])
     doc = apply(doc, [shot('镜头1', '林悦_造型1'), { op: 'add_timeline', name: '成片' }], ids('b'))
-    expect(at('b1')).toEqual([269, 0])
-    expect(at('b2')).toEqual([669, 0])
+    expect([at('b1'), at('b2')]).toEqual([
+      [x0 + 269, y0],
+      [x0 + 669, y0],
+    ])
     doc = apply(doc, [shot('镜头2', '林悦_造型2'), outfit('奶奶_家常')], ids('c'))
-    expect(at('c1')).toEqual([269, 269])
-    expect(at('c2')).toEqual([669 + 480 + 100, 0])
+    expect([at('c1'), at('c2')]).toEqual([
+      [x0 + 269, y0 + 269],
+      [x0, y0 + 7 * 400],
+    ])
     doc = apply(doc, [outfit('林悦_造型8')], ids('d'))
-    expect(at('d1')).toEqual([0, 7 * 400])
+    expect([at('d1'), at('c2')]).toEqual([
+      [x0, y0 + 7 * 400],
+      [x0, y0 + 8 * 400],
+    ])
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
   })
 
   /**
-   * 按固定种子生成多批随机操作：各组随机交错地新增卡片，穿插时间线。
-   * 每一批之后检查：互不相交；同组的卡位于同一列；同组相邻两张相隔正好一个间距（没有被其他组挡开）；
-   * 不同组不共用一列。
+   * 按固定种子生成多批随机操作：各列、各对象随机交错地新增卡片，穿插时间线。
+   * 每一批之后检查：互不相交；同一列的卡横坐标相同，上下相邻两张正好相隔一个间距；
+   * 同一对象的卡片在列中相连；不同列不共用一个横坐标。
    */
-  test('随机多批新增：同组同列且紧接、不同组不同列、互不相交', () => {
+  test('随机多批新增：同列同横坐标且紧接、同一对象相连、不同列不同横坐标、互不相交', () => {
     let seed = 7
     const rand = (n: number) => {
       seed = (seed * 1103515245 + 12345) % 2147483648
       return (seed >>> 16) % n
     }
-    const shapes = [
-      { w: 169, h: 300 },
-      { w: 300, h: 169 },
+    const groups = [
+      '角色/甲',
+      '角色/乙',
+      '角色/丙',
+      '场景/山门',
+      '场景/书房',
+      '道具/玉佩',
+      '山门·分镜',
+      '书房·分镜',
     ]
-    const groups = Array.from({ length: 8 }, (_, i) => ({ name: `组${i}`, ...shapes[i % 2]! }))
+    const columnOf = (g: string) => g.split('/')[0]!
+    const shape = (g: string) => (g.startsWith('角色') ? { w: 169, h: 300 } : { w: 300, h: 169 })
     let doc = emptyCanvas()
     let count = 0
     for (let batch = 0; batch < 30; batch++) {
@@ -660,28 +700,27 @@ describe('画布：操作', () => {
           op: 'add_generate',
           output: 'image',
           name: `卡${++count}`,
-          group: g.name,
+          group: g,
           prompt: ref && rand(2) ? `@[${ref}] 参考` : '',
-          w: g.w,
-          h: g.h,
+          ...shape(g),
         })
       }
       if (rand(6) === 0) ops.push({ op: 'add_timeline', name: `时间线${batch}` })
       doc = apply(doc, ops, ids(`b${batch}_`))
       const cards = doc.nodes.filter((n) => n.type === 'generate')
-      for (const g of groups) {
-        const members = cards.filter((n) => n.group === g.name).sort((a, b) => a.y - b.y)
-        expect(new Set(members.map((n) => n.x)).size).toBeLessThanOrEqual(1)
+      const xs = new Map<string, number>()
+      for (const column of new Set(groups.map(columnOf))) {
+        const members = cards.filter((n) => columnOf(n.group!) === column).sort((a, b) => a.y - b.y)
+        if (!members.length) continue
+        expect(new Set(members.map((n) => n.x)).size).toBe(1)
+        xs.set(column, members[0]!.x)
         for (let i = 1; i < members.length; i++) {
           expect(members[i]!.y - members[i - 1]!.y - members[i - 1]!.h).toBe(100)
         }
+        const runs = members.map((n) => n.group).filter((g, i, all) => g !== all[i - 1])
+        expect(new Set(runs).size).toBe(runs.length)
       }
-      const columns = new Map<number, string>()
-      for (const n of cards) {
-        const owner = columns.get(n.x)
-        if (owner !== undefined) expect(owner).toBe(n.group!)
-        columns.set(n.x, n.group!)
-      }
+      expect(new Set(xs.values()).size).toBe(xs.size)
       for (const a of doc.nodes) {
         for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
       }

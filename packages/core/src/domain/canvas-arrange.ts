@@ -1,21 +1,22 @@
 /**
  * 未给出位置的新节点按组排列。只有大模型的操作走到这里：界面的新增操作都带坐标、`beside` 或 `near`。
  *
- * - 组是同一个对象：同一人物的各套服装、同一场景的各个角度、同一场景的各个分镜。
- * - 同组纵向：一组只占一列，按创建顺序自上而下，接在本组最下方一张的下面。
- * - 不同组横向：新的组放在全部已有内容的右侧，与顶端对齐，按创建顺序从左到右；每条时间线单独成一列。
+ * - 组名决定列：「类别/对象」中斜杠前是列，如「角色/沈砚」「角色/顾衡」同在「角色」列；没有斜杠时整个组名是列，
+ *   如「山门·分镜」。
+ * - 同列纵向：按创建顺序自上而下。同一对象的卡片在列中相连：后补的卡接在该对象最下方一张之后，
+ *   列中位于其下方的卡整体下移；新对象接在列的末尾。
+ * - 不同列横向：新的列放在全部已有内容的右侧，与顶端对齐，按创建顺序从左到右；每条时间线单独成一列。
  *
- * 各列只向下生长，新列只出现在最右侧，因此后加的卡不会被其他组挡住。
- * 不要按「组内有没有输入」把组分到左右两区：同一人物的服装变体常以基础定妆图为参考，
- * 按输入分区时该人物会被当作分镜，其他人物与场景被移到它的左侧。
- * 素材先于引用它的分镜创建，按创建顺序已位于分镜左侧。
+ * 各列只向下生长，新列只出现在最右侧，因此后加的卡不会被其他列挡住。
+ * 不要按「组内有没有输入」把列分到左右两区：同一人物的服装变体常以基础定妆图为参考，
+ * 按输入分区时该人物会被当作分镜，其他列被移到它的左侧。素材先于引用它的分镜创建，按创建顺序已位于分镜左侧。
  *
- * 已有节点不移动；算出的位置被占用时沿竖直方向顺延到第一个空位。
+ * 除同列中为插入让位的卡之外，已有节点不移动；算出的位置被占用时沿竖直方向顺延到第一个空位。
  */
 
 import type { CanvasDoc, CanvasNode } from './canvas.ts'
 
-/** 相邻卡片之间的间距，横向与纵向相同，组与组之间也相同。 */
+/** 相邻卡片之间的间距，横向与纵向相同，列与列之间也相同。 */
 export const CARD_GAP = 100
 /** 判定占用时额外保留的距离，包含卡片上方的标题行。 */
 const TITLE_CLEARANCE = 40
@@ -40,7 +41,7 @@ export function arrangeNew(
     const node = doc.nodes.find((n) => n.id === id)
     if (!node) continue
     const size = extentOf({ ...node, x: 0, y: 0 })
-    const spot = freeSpot(doc, { ...size, ...spotOf(doc, node, extentOf) }, extentOf)
+    const spot = freeSpot(doc, { ...size, ...spotOf(doc, node, size, extentOf) }, extentOf)
     node.x = spot.x
     node.y = spot.y
   }
@@ -52,18 +53,44 @@ function groupOf(n: CanvasNode): string | undefined {
   return n.type === 'timeline' ? undefined : n.group
 }
 
-/** 本组已有卡时接在最下方一张的下面；否则在全部已有内容右侧另起一列，空画布从原点开始。 */
+/** 组名中的列：斜杠前的部分，没有斜杠时为整个组名。 */
+function columnOf(n: CanvasNode): string | undefined {
+  const group = groupOf(n)
+  if (group === undefined) return undefined
+  const slash = group.indexOf('/')
+  return slash < 0 ? group : group.slice(0, slash)
+}
+
+/** 组名中列内的对象：斜杠后的部分，没有斜杠时没有对象。 */
+function subjectOf(n: CanvasNode): string | undefined {
+  const group = groupOf(n)
+  if (group === undefined) return undefined
+  const slash = group.indexOf('/')
+  return slash < 0 ? undefined : group.slice(slash + 1)
+}
+
+/**
+ * 新卡的位置。本对象已有卡时插在其最下方一张之后，并把列中下方的卡整体下移；
+ * 本列已有卡时接在列的末尾；否则在全部已有内容右侧另起一列，空画布从原点开始。
+ */
 function spotOf(
   doc: CanvasDoc,
   node: CanvasNode,
+  size: Box,
   extentOf: (n: CanvasNode) => Box,
 ): { x: number; y: number } {
-  const group = groupOf(node)
   const others = doc.nodes.filter((n) => n !== node && placed(n))
-  const members = others.filter((n) => group !== undefined && groupOf(n) === group).map(extentOf)
+  const column = columnOf(node)
+  const members = column === undefined ? [] : others.filter((n) => columnOf(n) === column)
   if (members.length) {
-    const last = members.reduce((a, b) => (b.y + b.h > a.y + a.h ? b : a))
-    return { x: last.x, y: last.y + last.h + CARD_GAP }
+    const subject = subjectOf(node)
+    const same = subject === undefined ? [] : members.filter((n) => subjectOf(n) === subject)
+    const last = lowest((same.length ? same : members).map(extentOf))
+    const y = last.y + last.h + CARD_GAP
+    if (same.length) {
+      for (const n of members) if (extentOf(n).y >= y) n.y += size.h + CARD_GAP
+    }
+    return { x: last.x, y }
   }
   const boxes = others.map(extentOf)
   if (!boxes.length) return { x: 0, y: 0 }
@@ -71,6 +98,10 @@ function spotOf(
     x: Math.max(...boxes.map((b) => b.x + b.w)) + CARD_GAP,
     y: Math.min(...boxes.map((b) => b.y)),
   }
+}
+
+function lowest(boxes: readonly Box[]): Box {
+  return boxes.reduce((a, b) => (b.y + b.h > a.y + a.h ? b : a))
 }
 
 /** 从 `box` 开始向下查找空位：与已排位的节点相交时移到该节点下方相隔 `CARD_GAP` 处。 */
