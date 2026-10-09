@@ -344,7 +344,7 @@ describe('画布：操作', () => {
       [
         { op: 'add_generate', ref: '$a', output: 'image' },
         { op: 'add_generate', ref: '$b', output: 'image', beside: '$a' },
-        { op: 'add_generate', output: 'video' },
+        { op: 'add_generate', output: 'video', below: '$a' },
         { op: 'add_generate', output: 'image', beside: '$b' },
       ],
       ids('n'),
@@ -465,7 +465,7 @@ describe('画布：操作', () => {
     expect(parseCanvasOps([{ op: 'add_generate', output: 'image', beside: 'a1' }]).ok).toBe(true)
   })
 
-  test('未给出位置时另起一行：放在全部节点下方并与最左侧节点对齐，内容远离原点时同样相邻', () => {
+  test('未给出相邻节点时作为新的一组：放在全部节点右侧相隔 200 并与最上方节点对齐，内容远离原点时同样相邻', () => {
     const base = apply(
       emptyCanvas(),
       [
@@ -479,19 +479,47 @@ describe('画布：操作', () => {
       [
         { op: 'add_generate', ref: '$a', output: 'image' },
         { op: 'add_generate', output: 'image' },
-        { op: 'add_generate', output: 'image', beside: '$a' },
+        { op: 'add_generate', output: 'image', below: '$a' },
       ],
       ids('n'),
     )
     const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    // 已有节点尚无结果，按 300 见方占位，最低处为 1600 + 300。
-    expect(box('n1')).toMatchObject({ x: -2263, y: 1900 + 100 })
-    expect(box('n2')).toMatchObject({ x: -2263, y: 2000 + 300 + 100 })
-    expect(box('n3')).toMatchObject({ x: -2263 + 300 + 100, y: 2000 })
+    // 已有节点尚无结果，按 300 见方占位，最右处为 -1972 + 300。
+    expect(box('n1')).toMatchObject({ x: -1672 + 200, y: 1346 })
+    expect(box('n2')).toMatchObject({ x: -1472 + 300 + 200, y: 1346 })
+    expect(box('n3')).toMatchObject({ x: -1472, y: 1346 + 300 + 100 })
     expect(apply(emptyCanvas(), [{ op: 'add_file', path: 'a.png' }]).nodes[0]).toMatchObject({
       x: 0,
       y: 0,
     })
+  })
+
+  test('below 排在源节点下方的第一个空位，被占用时向下越过；素材按列、分镜按行换行时互不相交', () => {
+    const doc = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_generate', ref: '$c1', output: 'image' },
+        { op: 'add_generate', output: 'image', below: '$c1' },
+        { op: 'add_generate', output: 'image', below: '$c1' },
+        { op: 'add_generate', ref: '$s1', output: 'video' },
+        { op: 'add_generate', output: 'video', beside: '$s1' },
+        { op: 'add_generate', output: 'video', below: '$s1' },
+      ],
+      ids('n'),
+    )
+    const box = (id: string) => doc.nodes.find((n) => n.id === id)!
+    expect(box('n2')).toMatchObject({ x: 0, y: 300 + 100 })
+    expect(box('n3')).toMatchObject({ x: 0, y: 800 })
+    expect(box('n4')).toMatchObject({ x: 300 + 200, y: 0 })
+    expect(box('n5')).toMatchObject({ x: 900, y: 0 })
+    expect(box('n6')).toMatchObject({ x: 500, y: 400 })
+    for (const a of doc.nodes) {
+      for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+    }
+    expect(parseCanvasOps([{ op: 'add_timeline', below: 'a1' }]).ok).toBe(true)
+    expect(
+      rejects(emptyCanvas(), [{ op: 'add_file', path: 'a.png', beside: 'a1', below: 'a2' }]),
+    ).toContain('beside 与 below 只能给出一个')
   })
 })
 
