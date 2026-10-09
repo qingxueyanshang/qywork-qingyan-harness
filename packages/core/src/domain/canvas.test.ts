@@ -512,7 +512,7 @@ describe('画布：操作', () => {
     expect(parseCanvasOps([{ op: 'add_generate', output: 'image', beside: 'a1' }]).ok).toBe(true)
   })
 
-  test('未给出位置的新卡按组排列：素材组各成一列，连接了素材的组在右侧每行 5 张，时间线在其下方；从已有内容右侧开始', () => {
+  test('一组一列、不同组横向：三个人物各两套服装各占一列并排，场景一列，两场戏的镜头各占一列在素材右侧，时间线在下方；从已有内容右侧开始', () => {
     const base = apply(
       emptyCanvas(),
       [
@@ -521,38 +521,88 @@ describe('画布：操作', () => {
       ],
       ids('b'),
     )
-    const shots: CanvasOp[] = Array.from({ length: 7 }, (_, i) => ({
+    const outfit = (person: string, look: string): CanvasOp => ({
       op: 'add_generate',
       output: 'image',
-      name: `镜头${i + 1}`,
-      group: '分镜',
-      prompt: i % 2 ? '@[林悦] 回头' : '@[客厅] 空镜',
+      name: `${person}_${look}`,
+      group: person,
+      w: 169,
+      h: 300,
+    })
+    const place = (name: string): CanvasOp => ({
+      op: 'add_generate',
+      output: 'image',
+      name,
+      group: '客厅',
       w: 300,
       h: 169,
-    }))
+    })
+    const shot = (name: string, scene: string, ref: string): CanvasOp => ({
+      op: 'add_generate',
+      output: 'video',
+      name,
+      group: scene,
+      prompt: `@[${ref}] 回头`,
+      w: 300,
+      h: 169,
+    })
+    // 按模型常见的顺序交错创建：先每人一套，再每人第二套。
     const doc = apply(
       base,
       [
-        { op: 'add_generate', output: 'image', name: '林悦', group: '角色', w: 169, h: 300 },
-        { op: 'add_generate', output: 'image', name: '奶奶', group: '角色', w: 169, h: 300 },
-        { op: 'add_generate', output: 'image', name: '客厅', group: '场景', w: 300, h: 169 },
-        ...shots,
+        outfit('林悦', '校服'),
+        outfit('奶奶', '家常'),
+        outfit('小满', '校服'),
+        outfit('林悦', '便装'),
+        outfit('奶奶', '外出'),
+        outfit('小满', '睡衣'),
+        place('客厅_白天'),
+        place('客厅_夜晚'),
+        shot('镜头1-1', '第1场', '林悦_校服'),
+        shot('镜头1-2', '第1场', '客厅_白天'),
+        shot('镜头1-3', '第1场', '奶奶_家常'),
+        shot('镜头2-1', '第2场', '小满_睡衣'),
+        shot('镜头2-2', '第2场', '客厅_夜晚'),
         { op: 'add_timeline', name: '成片' },
       ],
       ids('n'),
     )
-    const box = (id: string) => doc.nodes.find((n) => n.id === id)!
+    const at = (id: string) => {
+      const n = doc.nodes.find((x) => x.id === id)!
+      return [n.x, n.y]
+    }
     // 已有的方形空卡按 300 见方占位，最右处为 -1972 + 300。
-    expect(box('n1')).toMatchObject({ x: -1672 + 150, y: 1346 })
-    expect(box('n2')).toMatchObject({ x: -1522, y: 1346 + 300 + 150 })
-    expect(box('n3')).toMatchObject({ x: -1522 + 169 + 150, y: 1346 })
-    const left = -1203 + 300 + 150
-    expect(box('n4')).toMatchObject({ x: left, y: 1346 })
-    expect(box('n8')).toMatchObject({ x: left + 4 * 450, y: 1346 })
-    expect(box('n9')).toMatchObject({ x: left, y: 1346 + 169 + 150 })
-    expect(box('n10')).toMatchObject({ x: left + 450, y: 1665 })
-    expect(box('n11')).toMatchObject({ x: left, y: 1665 + 169 + 150 })
-    expect(gen(doc, 'n4').group).toBe('分镜')
+    const x0 = -1672 + 150
+    const y0 = 1346
+    expect([at('n1'), at('n4')]).toEqual([
+      [x0, y0],
+      [x0, y0 + 450],
+    ])
+    expect([at('n2'), at('n5')]).toEqual([
+      [x0 + 319, y0],
+      [x0 + 319, y0 + 450],
+    ])
+    expect([at('n3'), at('n6')]).toEqual([
+      [x0 + 638, y0],
+      [x0 + 638, y0 + 450],
+    ])
+    const scene = x0 + 638 + 319
+    expect([at('n7'), at('n8')]).toEqual([
+      [scene, y0],
+      [scene, y0 + 319],
+    ])
+    const first = scene + 450
+    expect([at('n9'), at('n10'), at('n11')]).toEqual([
+      [first, y0],
+      [first, y0 + 319],
+      [first, y0 + 638],
+    ])
+    expect([at('n12'), at('n13')]).toEqual([
+      [first + 450, y0],
+      [first + 450, y0 + 319],
+    ])
+    expect(at('n14')).toEqual([first, y0 + 638 + 169 + 150])
+    expect(gen(doc, 'n4').group).toBe('林悦')
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
@@ -563,41 +613,41 @@ describe('画布：操作', () => {
     })
   })
 
-  test('后续批次接在同组之后：素材列满 6 张另起一列；已有引用区时新的素材组排在素材区左侧；分镜接着按行排', () => {
-    let doc = apply(
-      emptyCanvas(),
-      Array.from({ length: 7 }, (_, i) => ({
-        op: 'add_generate' as const,
-        output: 'image' as const,
-        name: `道具${i + 1}`,
-        group: '道具',
-        w: 300,
-        h: 169,
-      })),
-      ids('a'),
-    )
-    const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    expect(box('a6')).toMatchObject({ x: 0, y: 5 * 319 })
-    expect(box('a7')).toMatchObject({ x: 450, y: 0 })
-    const shot = (name: string, prompt: string): CanvasOp => ({
+  test('后续批次接在本组列末，不折列；已有镜头组时新的人物组排在素材区左侧', () => {
+    const outfit = (name: string): CanvasOp => ({
+      op: 'add_generate',
+      output: 'image',
+      name,
+      group: name.slice(0, name.indexOf('_')),
+      w: 169,
+      h: 300,
+    })
+    const shot = (name: string, ref: string): CanvasOp => ({
       op: 'add_generate',
       output: 'video',
       name,
-      group: '镜头',
-      prompt,
+      group: '第1场',
+      prompt: `@[${ref}] 回头`,
       w: 300,
       h: 169,
     })
-    doc = apply(doc, [shot('镜头1', '@[道具1] 特写')], ids('b'))
-    expect(box('b1')).toMatchObject({ x: 900, y: 0 })
-    doc = apply(
-      doc,
-      [{ op: 'add_generate', output: 'image', name: '林悦', group: '角色', w: 169, h: 300 }],
-      ids('c'),
+    let doc = apply(
+      emptyCanvas(),
+      Array.from({ length: 7 }, (_, i) => outfit(`林悦_造型${i + 1}`)),
+      ids('a'),
     )
-    expect(box('c1')).toMatchObject({ x: -169 - 150, y: 0 })
-    doc = apply(doc, [shot('镜头2', '@[林悦] 回头')], ids('d'))
-    expect(box('d1')).toMatchObject({ x: 900 + 450, y: 0 })
+    const at = (id: string) => {
+      const n = doc.nodes.find((x) => x.id === id)!
+      return [n.x, n.y]
+    }
+    expect(at('a7')).toEqual([0, 6 * 450])
+    doc = apply(doc, [shot('镜头1', '林悦_造型1')], ids('b'))
+    expect(at('b1')).toEqual([319, 0])
+    doc = apply(doc, [outfit('奶奶_家常')], ids('c'))
+    expect(at('c1')).toEqual([-319, 0])
+    doc = apply(doc, [outfit('林悦_造型8'), shot('镜头2', '奶奶_家常')], ids('d'))
+    expect(at('d1')).toEqual([0, 7 * 450])
+    expect(at('d2')).toEqual([319, 319])
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
