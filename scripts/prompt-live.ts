@@ -839,7 +839,7 @@ function crossings(doc: CanvasDoc, old: ReadonlySet<string>): number {
 }
 
 /**
- * 布局判定：模型在已有内容的画布上分几批新建节点并运行其中两批，检查距离、相交与排列形状。
+ * 布局判定：模型在已有内容的画布上分几批新建节点并运行其中两批，检查距离、相交、排列形状与分镜卡的连线。
  *
  * 原始失败形状有三种。模型自行给出坐标时，按 950 的步长排列 169 高的图片卡，新卡放在原点附近、
  * 与远离原点的已有节点相隔一千以上。由画布计算位置时，169 见方的空卡按间隔 100 排列，生成 16:9 的结果后
@@ -919,6 +919,12 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       `分镜卡每行不超过 ${LAYOUT_ROW_CARDS} 个并换行`,
       shots.length >= 7 && perRow.length >= 2 && Math.max(...perRow) <= LAYOUT_ROW_CARDS,
       `${shots.length} 张，每行 ${perRow.join('、')} 个`,
+    )
+    const lone = shots.filter((n) => !doc.edges.some((e) => e.to === n.id))
+    add(
+      '分镜卡都连接了参考图',
+      shots.length > 0 && lone.length === 0,
+      `${lone.length} 张没有输入${lone.length ? `：${lone.map((n) => n.name).join('、')}` : ''}`,
     )
     const ways = { xy: 0, beside: 0, below: 0, near: 0, none: 0 }
     for (const step of listSteps(store, runId)) {
