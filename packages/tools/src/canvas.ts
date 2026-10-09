@@ -14,6 +14,7 @@ import {
   type CanvasBatchRunResult,
   type CanvasOp,
   type CanvasView,
+  canvasFileKind,
   displayNameOf,
   parseCanvasOps,
 } from '@qywork/core'
@@ -62,8 +63,7 @@ function describe(view: CanvasView): string {
         `${current ? `，当前 ${current.path}` : ''}（${status}）`,
       `  提示词：${n.prompt || '（空）'}`,
     )
-    const params = Object.keys(n.params).length ? JSON.stringify(n.params) : ''
-    if (params) lines.push(`  参数：${params}`)
+    lines.push(`  参数：${paramsText(n.params)}`)
   }
   for (const e of view.doc.edges) {
     const from = byId.get(e.from)
@@ -73,6 +73,13 @@ function describe(view: CanvasView): string {
     )
   }
   return lines.join('\n')
+}
+
+/**
+ * 参数的文本形式。为空时写明按缺省值生成：不写这一行时，丢失参数的卡片在回执中与设置了参数的卡片无从区分。
+ */
+function paramsText(params: Record<string, unknown>): string {
+  return Object.keys(params).length ? JSON.stringify(params) : '未设置，按模型缺省值生成'
 }
 
 /** 读取与编辑工具共用的画布结构说明。 */
@@ -242,7 +249,24 @@ export const editCanvasTool: ToolSpec = {
   },
 }
 
-function generationReceipt(result: Awaited<ReturnType<CanvasPort['run']>>): ToolOutcome {
+/**
+ * 产物中有图片或视频时附在回执末尾的核对步骤，批量运行只附一次。
+ * 不要只写在工具说明中：只依据回执的模型按宽高一致即判定符合要求，不查看画面。
+ */
+function viewStep(paths: string[]): string {
+  return paths.some((p) => canvasFileKind(p) === 'image' || canvasFileKind(p) === 'video')
+    ? '\n核对画面：用 read_file 查看上述图片与视频是否符合提示词。'
+    : ''
+}
+
+/**
+ * 一次运行的回执：每个产物的路径与从文件头读取的宽高、时长，以及实际发送的参数。
+ * 不要只回传路径：模型据此核对结果是否符合要求，没有实测值时只能按自己设定的参数复述结果。
+ */
+function generationReceipt(
+  result: Awaited<ReturnType<CanvasPort['run']>>,
+  step = true,
+): ToolOutcome {
   if (!result.ok) {
     return {
       status: 'failure',
@@ -252,18 +276,28 @@ function generationReceipt(result: Awaited<ReturnType<CanvasPort['run']>>): Tool
         : result.message,
     }
   }
+  const outputs = result.outputs.map((o) => {
+    const measured = [
+      o.size ? `${o.size.w}×${o.size.h}` : null,
+      o.duration === undefined ? null : `${Math.round(o.duration * 100) / 100} 秒`,
+    ].filter((x) => x !== null)
+    return `  ${o.path}${measured.length ? `（${measured.join('，')}）` : ''}`
+  })
+  const paths = result.outputs.map((o) => o.path)
   return {
     status: 'success',
-    message: `已取得结果：${result.paths.join('、')}${result.warning ? `\n${result.warning}` : ''}`,
-    data: { paths: result.paths, ...(result.warning ? { warning: result.warning } : {}) },
-    fileChanges: result.paths.map((p) => ({ path: p, changeType: 'created' as const })),
+    message:
+      `已取得结果：\n${outputs.join('\n')}\n  发送的参数：${paramsText(result.params)}` +
+      `${result.warning ? `\n${result.warning}` : ''}${step ? viewStep(paths) : ''}`,
+    data: { outputs: result.outputs, params: result.params },
+    fileChanges: paths.map((p) => ({ path: p, changeType: 'created' as const })),
   }
 }
 
 function batchReceipt(results: CanvasBatchRunResult): ToolOutcome {
   const successful = results.filter((r) => r.result.ok).length
   const skipped = results.filter((r) => r.skipped).length
-  const paths = results.flatMap((r) => (r.result.ok ? r.result.paths : []))
+  const paths = results.flatMap((r) => (r.result.ok ? r.result.outputs.map((o) => o.path) : []))
   return {
     status: successful === results.length ? 'success' : 'failure',
     executed: results.some((r) => !r.skipped),
@@ -272,10 +306,11 @@ function batchReceipt(results: CanvasBatchRunResult): ToolOutcome {
       results
         .map(
           ({ node, result, skipped }) =>
-            `- ${node}${skipped ? '（未运行）' : ''}：${generationReceipt(result).message}`,
+            `- ${node}${skipped ? '（未运行）' : ''}：${generationReceipt(result, false).message}`,
         )
         .join('\n') +
-      '\n成功节点已保存结果，不要整批重新运行；只处理失败或未运行的节点。',
+      '\n成功节点已保存结果，不要整批重新运行；只处理失败或未运行的节点。' +
+      viewStep(paths),
     data: { results, paths },
     fileChanges: paths.map((path) => ({ path, changeType: 'created' as const })),
   }
@@ -287,7 +322,10 @@ export const runCanvasTool: ToolSpec = {
     '运行画布上 node 指定的生成卡并等待结果；node 可为单个 id 或非空 id 数组。先用 read_canvas 查看节点与 id。' +
     '批量时只运行指定节点（重复 id 只运行一次），最多同时运行 4 个独立节点，批内上游完成后才运行下游。' +
     '上游失败或待取回时跳过下游；未指定的上游只使用已有结果，不自动运行。按节点返回成功、失败与未运行原因，勿整批重新运行。' +
-    '每次运行提交新的生成任务，按次计费，不得为试探效果重复调用。' +
+    '回执列出每个产物的宽高、时长与实际发送的参数。运行后核对结果：先核对回执中的宽高、时长与参数是否符合要求，' +
+    '再用 read_file 查看图片与视频的画面是否符合提示词；不符合时用 edit_canvas 修改提示词或参数，再运行该节点。' +
+    '同一节点重新运行一次后仍不符合时停止重试，在回复中说明差异，由用户决定。回复中的分辨率、时长与参数以回执为准。' +
+    '每次运行提交新的生成任务，按次计费，结果符合要求时不重复运行。' +
     '已有待取回版本使用 retrieve_canvas，不重新运行。修改提示词、参数与连线使用 edit_canvas。',
   parameters: {
     type: 'object',

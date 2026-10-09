@@ -445,6 +445,15 @@ describe('画布：操作', () => {
     )
   })
 
+  test('字段类型不符时报错写明期望类型与收到的类型：params 写成 JSON 字符串时指出应为对象', () => {
+    const r = parseCanvasOps([
+      { op: 'add_generate', output: 'video', params: '{"resolution":"480P","duration":15}' },
+    ])
+    expect(!r.ok && r.error).toBe('第 1 条操作 的 params 类型错误：应为对象，收到的是字符串')
+    const n = parseCanvasOps([{ op: 'update', id: 'a1', x: '12' }])
+    expect(!n.ok && n.error).toBe('第 1 条操作 的 x 类型错误：应为数字，收到的是字符串')
+  })
+
   test('beside 同时给出 x、y 时以 x、y 为准；指向不存在的节点时整批拒绝', () => {
     const doc = apply(
       sample(),

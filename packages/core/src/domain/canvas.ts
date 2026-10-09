@@ -178,9 +178,19 @@ export interface CanvasView {
   states: Record<string, CanvasNodeState>
 }
 
-/** 一次运行或取回的结果。`pending`：远端任务仍存在，该版本保留以待取回。 */
+/** 一个产物：工作区路径，以及从文件头读取的像素宽高与时长（秒）；无法读取时缺省。 */
+export interface CanvasOutput {
+  path: string
+  size?: CanvasPixels
+  duration?: number
+}
+
+/**
+ * 一次运行或取回的结果。`params` 是实际发送的参数（画布只发送当前模式允许的取值，可能少于卡片上保存的参数）；
+ * `pending`：远端任务仍存在，该版本保留以待取回。
+ */
 export type CanvasRunResult =
-  | { ok: true; paths: string[]; warning?: string }
+  | { ok: true; outputs: CanvasOutput[]; params: Record<string, unknown>; warning?: string }
   | { ok: false; message: string; pending: boolean }
 
 /** 批量运行按请求顺序返回每个节点的结果；skipped 表示该节点未提交生成。 */
@@ -1166,9 +1176,32 @@ function checkFields(where: string, raw: unknown, fields: Record<string, Shape>)
       if (key.endsWith('!')) return `${where} 缺少 ${name}`
       continue
     }
-    if (!matches(raw[name], shape)) return `${where} 的 ${name} 不合法`
+    if (!matches(raw[name], shape)) {
+      const want = TYPE_NAMES[shape]
+      return want
+        ? `${where} 的 ${name} 类型错误：应为${want}，收到的是${typeName(raw[name])}`
+        : `${where} 的 ${name} 不合法`
+    }
   }
   return null
+}
+
+/**
+ * 类型不符时报错中写明的期望类型。不要只报「不合法」：大模型把对象再编码为 JSON 字符串时，
+ * 无从得知错在类型，会删去该字段重试，参数随之丢失。其余形状的报错由取值范围决定。
+ */
+const TYPE_NAMES: Partial<Record<Shape | 'null', string>> = {
+  string: '字符串',
+  number: '数字',
+  boolean: '布尔值',
+  object: '对象',
+  array: '数组',
+  null: 'null',
+}
+
+function typeName(v: unknown): string {
+  const type = v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v
+  return TYPE_NAMES[type as Shape | 'null'] ?? type
 }
 
 const BOX: Record<string, Shape> = { x: 'number', y: 'number', w: 'number', h: 'number' }
