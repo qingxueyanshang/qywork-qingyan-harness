@@ -167,7 +167,7 @@ describe('canvas 工具', () => {
     const args = { path: 'board.canvas.json', node: ['a', 'b', 'a'] }
     expect((await runCanvasTool.fn(args, c)).status).toBe('success')
     expect(seen.batches).toEqual([{ nodes: ['a', 'b'], media, signal: c.signal }])
-    for (const node of [[], ['a', ''], ['a', 1], { id: 'a' }, null]) {
+    for (const node of [[], ['a', ''], ['a', 1], { id: 'a' }, null, 'a', '["a","b"]']) {
       expect(await runCanvasTool.fn({ ...args, node }, c)).toMatchObject({
         executed: false,
         errorKind: 'invalid_tool_arguments',
@@ -274,7 +274,7 @@ describe('canvas 工具', () => {
       params: {},
     })
     const c = ctx(port, media)
-    const out = await runCanvasTool.fn({ path: 'board.canvas.json', node: 'id2' }, c)
+    const out = await runCanvasTool.fn({ path: 'board.canvas.json', node: ['id2'] }, c)
     expect(seen.runs[0]!.media).toBe(media)
     expect(seen.runs[0]!.signal).toBe(c.signal)
     expect(out.fileChanges).toEqual([{ path: 'generated/a.mp4', changeType: 'created' }])
@@ -286,7 +286,10 @@ describe('canvas 工具', () => {
       outputs: [{ path: 'generated/a.mp4', size: { w: 1920, h: 1080 }, duration: 5.041 }],
       params: {},
     })
-    const out = await runCanvasTool.fn({ path: 'board.canvas.json', node: 'id2' }, ctx(port, media))
+    const out = await runCanvasTool.fn(
+      { path: 'board.canvas.json', node: ['id2'] },
+      ctx(port, media),
+    )
     expect(out.message).toBe(
       '已取得结果：\n  generated/a.mp4（1920×1080，5.04 秒）\n  发送的参数：未设置，按模型缺省值生成' +
         '\n核对画面：用 read_file 查看上述图片与视频是否符合提示词。',
@@ -297,7 +300,7 @@ describe('canvas 工具', () => {
       params: { resolution: '480P', duration: 15 },
     })
     const sent = await runCanvasTool.fn(
-      { path: 'board.canvas.json', node: 'id2' },
+      { path: 'board.canvas.json', node: ['id2'] },
       ctx(port, media),
     )
     expect(sent.message).toContain('generated/b.mp4（854×480，15 秒）')
@@ -309,11 +312,11 @@ describe('canvas 工具', () => {
   test('远端任务未结束时回执说明取回方式；没有生成通道时不调用端口', async () => {
     const { port, seen } = fakePort({ ok: false, message: '等待超时', pending: true })
     const pending = await runCanvasTool.fn(
-      { path: 'board.canvas.json', node: 'id2' },
+      { path: 'board.canvas.json', node: ['id2'] },
       ctx(port, media),
     )
     expect(pending.message).toContain('retrieve_canvas')
-    const noMedia = await runCanvasTool.fn({ path: 'board.canvas.json', node: 'id2' }, ctx(port))
+    const noMedia = await runCanvasTool.fn({ path: 'board.canvas.json', node: ['id2'] }, ctx(port))
     expect(noMedia.message).toContain('没有生成通道')
     expect(seen.runs).toHaveLength(1)
   })

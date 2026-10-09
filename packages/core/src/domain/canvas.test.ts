@@ -501,6 +501,12 @@ describe('画布：操作', () => {
     )
     expect(doc.nodes.at(-1)).toMatchObject({ x: 7, y: 9 })
     expect(rejects(sample(), [{ op: 'add_file', path: 'x.png', beside: 'nope' }])).toContain('nope')
+    expect(
+      rejects(sample(), [
+        { op: 'add_generate', output: 'video', name: '镜头1' },
+        { op: 'add_generate', output: 'video', beside: '镜头1' },
+      ]),
+    ).toContain('使用节点 id 或本轮用 ref 定义的 $名称，卡片名称不能作为引用')
     expect(parseCanvasOps([{ op: 'add_generate', output: 'image', beside: 'a1' }]).ok).toBe(true)
   })
 
