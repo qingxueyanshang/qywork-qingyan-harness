@@ -242,13 +242,13 @@ function RunRow(props: { run: Run; name: string; open: boolean; onPick: () => vo
         <span class="run-when">{clockOf(r().createdAt)}</span>
         {/* 派发对象。本会话自身的轮次不显示该字段：这些行属于用户当前查看的会话。 */}
         <Show when={props.name}>{(name) => <span class="run-role truncate">{name()}</span>}</Show>
-        {/* 模型名是该行唯一长度不可控的字段，因此只截断模型名。 */}
+        {/* 宽度不足时模型名最先截断，收缩顺序见 panel.css 的 `.run-row`。 */}
         <span class="run-model truncate">{r().model}</span>
         <span class="run-meta">{r().stepCount} 步</span>
         <Show when={elapsed()}>{(e) => <span class="run-meta">{e()}</span>}</Show>
         <Show when={mark()}>
           {(m) => (
-            <span class="run-mark" classList={{ bad: m().bad }}>
+            <span class="run-mark" classList={{ bad: m().bad }} title={m().text}>
               {m().text}
             </span>
           )}
