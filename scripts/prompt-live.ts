@@ -816,8 +816,6 @@ const LAYOUT_TASK =
  * 生成横图（169 高）后与下方的卡相隔 150 + 131。
  */
 const LAYOUT_MAX_GAP = 150 + (300 - 169)
-/** 分镜卡每行的数量上限，与 edit_canvas 说明中的每行 5 个一致。 */
-const LAYOUT_ROW_CARDS = 5
 
 /** 尚无结果的生成卡按 `size` 的比例改变形状后的画布，用于检查之后生成时是否与相邻卡相交。 */
 function settledAs(doc: CanvasDoc, size: CanvasPixels): CanvasDoc {
@@ -910,17 +908,31 @@ async function runLayout(store: Store, config: QyConfig, ref: ModelRef): Promise
       crossed.every((c) => c === 0),
       `${crossed.join(' / ')} 对相交`,
     )
-    // 已运行的是 3 张角色卡与 2 张场景卡，每类一列；未运行的生成卡是 7 张分镜卡，每行不超过 5 个。
-    const columns = new Set(sized.map((n) => n.x)).size
-    add('角色与场景卡按类排成列（不超过 2 列）', sized.length >= 5 && columns <= 2, `${columns} 列`)
+    // 已运行的是 3 张人物卡与 2 张场景卡，每个人物、每个场景各为一组；未运行的生成卡是 7 张分镜卡，按场次分组。
     const shots = fresh.filter((n) => n.type === 'generate' && !sized.includes(n))
-    const perRow = [...new Set(shots.map((n) => n.y))].map(
-      (y) => shots.filter((n) => n.y === y).length,
-    )
+    const groupOf = (n: CanvasDoc['nodes'][number]) => ('group' in n ? n.group : undefined)
+    const columns = new Map<string, Set<number>>()
+    for (const n of fresh) {
+      const g = groupOf(n)
+      if (g !== undefined) columns.set(g, (columns.get(g) ?? new Set()).add(n.x))
+    }
+    const xs = [...columns.values()].flatMap((set) => [...set])
     add(
-      `分镜卡每行不超过 ${LAYOUT_ROW_CARDS} 个并换行`,
-      shots.length >= 7 && perRow.length >= 2 && Math.max(...perRow) <= LAYOUT_ROW_CARDS,
-      `${shots.length} 张，每行 ${perRow.join('、')} 个`,
+      '同组纵向占一列，不同组不共用一列',
+      columns.size > 0 && xs.length === columns.size && new Set(xs).size === xs.length,
+      [...columns].map(([g, set]) => `${g}@${[...set].join('/')}`).join('，'),
+    )
+    const assetGroups = new Set(sized.map(groupOf))
+    add(
+      '人物与场景各为一组',
+      sized.length >= 5 && assetGroups.size === sized.length,
+      `${assetGroups.size} 组`,
+    )
+    const shotGroups = new Set(shots.map(groupOf))
+    add(
+      '分镜按场次分组（不是每张一组）',
+      shots.length >= 7 && shotGroups.size >= 1 && shotGroups.size <= 4,
+      `${shotGroups.size} 组：${[...shotGroups].join('、')}`,
     )
     const assetsRight = Math.max(...sized.map((n) => n.x + n.w))
     const shotsLeft = Math.min(...shots.map((n) => n.x))
