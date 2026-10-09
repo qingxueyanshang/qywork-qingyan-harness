@@ -1218,8 +1218,8 @@
     scrollbar-color: transparent transparent;
   }
 }
-/* 收起的行只有三列：时间、是否出错、金额。模型名、步数、耗时与 token
-   都在展开区：它们只在选中后才需要，放在收起行中会使清单过于密集。 */
+/* 行宽固定（见 `.run-col`），各字段宽度之和不得超出行框：金额始终完整显示，
+   宽度不足时依次收缩模型名、派发对象、停止标记。 */
 .run-row {
   display: flex;
   align-items: center;
@@ -1267,15 +1267,20 @@
   font-variant-numeric: tabular-nums;
 }
 /* 模型名与步数、耗时：与时间位于同一行，字号低一档：同一层级不等于同等重要。
-   模型名是唯一长度不可控的部分，因此只有它可以被压缩。 */
+   基础宽度为 0、以 `max-width: max-content` 封顶：只分配其余字段放下之后的剩余宽度，
+   因此停止标记只在模型名与派发对象都让出全部宽度后才截断。
+   不要改回 `flex-shrink` 按比例收缩：按比例时标记也会被分走零点几像素，随即显示省略号。 */
 .run-model {
-  flex: 0 1 auto;
+  flex: 1 1 0;
+  max-width: max-content;
   color: var(--text-tertiary);
   font-size: var(--fs-xs);
 }
-/* 派发对象。与模型名同档，但优先收缩模型名：角色 id 是该行中区分执行者的字段。 */
+/* 派发对象。与模型名同档，但优先收缩模型名：角色 id 是该行中区分执行者的字段，
+   增长系数较大，剩余宽度优先分给它。 */
 .run-role {
-  flex: 0 2 auto;
+  flex: 10 1 0;
+  max-width: max-content;
   color: var(--text-secondary);
   font-size: var(--fs-xs);
 }
@@ -1285,10 +1290,13 @@
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
-/* 不收缩：它只有几个字，且是该行中唯一表示出错的字段，截断为「模型…」后
-   失去含义。该行的压缩额度全部分配给模型名。 */
+/* 最后收缩：标记长度随停止原因变化（3 至 14 字），设为不收缩时，长标记会把金额推出行框。
+   模型名与派发对象让出全部宽度后仍无法容纳时才截断，全文在 `title` 中。 */
 .run-mark {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   padding: 0 5px;
   border-radius: var(--r-xs);
