@@ -281,10 +281,23 @@ export function clamp(text: string): string {
 /**
  * 从编辑参数中取出可按删除与新增两侧呈现的两段内容。
  *
- * 先识别 old/new 这类成对字段，再回落到整段 patch。都无法取得时返回 null：
- * 返回空 diff 会在界面上渲染出一个空的差异框。
+ * 先识别 old/new 这类成对字段，再回落到整段 patch；`edits` 数组逐项识别后按顺序合并。
+ * 都无法取得时返回 null：返回空 diff 会在界面上渲染出一个空的差异框。
  */
 export function diffFrom(args: Record<string, unknown>): { removed: string; added: string } | null {
+  if (Array.isArray(args.edits)) {
+    const parts = args.edits
+      .map((e) => (e && typeof e === 'object' ? diffFrom(e as Record<string, unknown>) : null))
+      .filter((d) => d !== null)
+    if (parts.length === 0) return null
+    return {
+      removed: parts.map((p) => p.removed).join(''),
+      added: parts
+        .map((p) => p.added)
+        .filter(Boolean)
+        .join(NEWLINE),
+    }
+  }
   const removed = firstString(args, 'old_string', 'old', 'old_text', 'before')
   const added = firstString(args, 'new_string', 'new', 'new_text', 'after')
   if (removed || added) {

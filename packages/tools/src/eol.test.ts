@@ -88,7 +88,10 @@ describe('CRLF 文件上的文件工具', () => {
     // 模型持有的文本为 LF，即原始失败形状。
     const out = await r.execute(
       'edit_file',
-      { path: 'crlf.ts', old_string: 'const a = 1\nconst b = 2', new_string: 'const ab = 3' },
+      {
+        path: 'crlf.ts',
+        edits: [{ old_string: 'const a = 1\nconst b = 2', new_string: 'const ab = 3' }],
+      },
       c,
     )
     expect(out.status).toBe('success')
@@ -102,7 +105,10 @@ describe('CRLF 文件上的文件工具', () => {
     await r.execute('read_file', { path: 'crlf.ts' }, c)
     const out = await r.execute(
       'edit_file',
-      { path: 'crlf.ts', old_string: 'const b = 2', new_string: 'const b = 2\nconst b2 = 22' },
+      {
+        path: 'crlf.ts',
+        edits: [{ old_string: 'const b = 2', new_string: 'const b = 2\nconst b2 = 22' }],
+      },
       c,
     )
     expect(out.status).toBe('success')
@@ -118,7 +124,7 @@ describe('CRLF 文件上的文件工具', () => {
     await r.execute('read_file', { path: 'crlf.ts' }, c)
     const out = await r.execute(
       'edit_file',
-      { path: 'crlf.ts', old_string: 'const c = 3', new_string: 'const c = "$&"' },
+      { path: 'crlf.ts', edits: [{ old_string: 'const c = 3', new_string: 'const c = "$&"' }] },
       c,
     )
     expect(out.status).toBe('success')
@@ -152,7 +158,7 @@ describe('CRLF 文件上的文件工具', () => {
     )
     const out = await r.execute(
       'edit_file',
-      { path: 'crlf.ts', old_string: 'const z = 9', new_string: 'const z = 10' },
+      { path: 'crlf.ts', edits: [{ old_string: 'const z = 9', new_string: 'const z = 10' }] },
       c,
     )
     expect(out.status).toBe('success')
