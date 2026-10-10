@@ -93,7 +93,8 @@ export interface MediaDiagnostic {
   outcome: 'unknown' | 'rejected' | 'available'
   host: string
   elapsedMs: number
-  timeoutMs: number
+  /** 静默上限（毫秒）：连续这么久未收到数据即中止。生成请求不设上限，此项缺省。 */
+  timeoutMs?: number
   status?: number
   code?: string
   requestId?: string

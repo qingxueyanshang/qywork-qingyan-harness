@@ -103,7 +103,7 @@ export class KlingVideosAdapter implements MediaAdapter {
     }
     const id = taskId
     return afterSubmit(id, signal, async () => {
-      const done = await waitTask(id, () => this.check(base, id, auth, signal), opts)
+      const done = await waitTask(() => this.check(base, id, auth, signal), opts)
       return {
         files: [await download(done.url, signal)],
         ...(done.usage ? { usage: done.usage } : {}),

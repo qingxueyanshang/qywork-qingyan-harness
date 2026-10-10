@@ -602,16 +602,16 @@ describe('画布运行：视频', () => {
     expect((await node(ws.root, ids.$v!)).versions[0]!.path).toMatch(/\.mp4$/)
   })
 
-  test('等待超时：该版本保留，状态为待取回；取回后改为指向产物', async () => {
+  test('查询任务被拒绝：该版本保留，状态为待取回；取回后改为指向产物', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-1')
-    p.finish({ ok: false, message: '等待超过 20 分钟仍未完成', pendingTaskId: 't-1' })
+    p.finish({ ok: false, message: '查询任务被拒绝：HTTP 404', pendingTaskId: 't-1' })
     expect(await run.done).toEqual({
       ok: false,
-      message: '等待超过 20 分钟仍未完成',
+      message: '查询任务被拒绝：HTTP 404',
       pending: true,
     })
     const v = (await node(ws.root, ids.$v!)).versions[0]!
@@ -959,7 +959,7 @@ describe('画布运行：生成记录', () => {
     const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
     await p.submit('t-9')
-    p.finish({ ok: false, message: '等待超过 20 分钟仍未完成', pendingTaskId: 't-9' })
+    p.finish({ ok: false, message: '查询任务被拒绝：HTTP 404', pendingTaskId: 't-9' })
     await run.done
     const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
     const r = await fake.next()
@@ -976,7 +976,7 @@ describe('画布运行：生成记录', () => {
       ['run', 'pending', 't-9', 'ark', 'seedance', undefined],
       ['retrieve', 'done', 't-9', 'ark', 'seedance', 1.5],
     ])
-    expect(runs[0]!.message).toBe('等待超过 20 分钟仍未完成')
+    expect(runs[0]!.message).toBe('查询任务被拒绝：HTTP 404')
     expect(runs[1]).not.toHaveProperty('prompt')
   })
 

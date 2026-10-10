@@ -133,10 +133,10 @@ async function control(): Promise<string> {
   }
 }
 
-/** 生成接口的请求：期限远大于静默时长，响应头到达前不得被空闲定时器中止。 */
+/** 生成接口的请求：生成阶段不设静默上限，响应头到达前不得被运行时的空闲定时器中止。 */
 async function media(): Promise<string> {
   try {
-    await postJson(`${base}/media`, {}, {}, new AbortController().signal, { timeoutMs: 60_000 })
+    await postJson(`${base}/media`, {}, {}, new AbortController().signal)
     return 'ok'
   } catch (err) {
     return describe(err)

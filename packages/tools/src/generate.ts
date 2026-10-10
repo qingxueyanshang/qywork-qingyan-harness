@@ -665,7 +665,7 @@ export const generateVideoTool: ToolSpec = {
     '提供 audios 为参考音频，须与 images 或 videos 同时提供。' +
     'first_frame、last_frame 不能与 images、videos、audios 同时提供。' +
     PARAMS_NOTE +
-    '提交后在输出位置旁写入 .task.json 任务记录；等待中断或超时后，用 retrieve_media 传入该记录路径取回结果，不会重新提交，也不会重复计费。' +
+    '提交后在输出位置旁写入 .task.json 任务记录；等待中断后（停止、查询被拒绝或进程退出），用 retrieve_media 传入该记录路径取回结果，不会重新提交，也不会重复计费。' +
     DISPLAY_NOTE,
   parameters: {
     type: 'object',

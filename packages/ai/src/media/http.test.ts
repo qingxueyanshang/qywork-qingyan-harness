@@ -1,12 +1,11 @@
-/** 用本机接口验证请求与响应体的期限、下载重试及取消，不调用付费接口。 */
-import { afterAll, afterEach, beforeAll, expect, spyOn, test } from 'bun:test'
-import { download, IMAGE_TIMEOUT_MS, postJson } from './http.ts'
+/** 用本机接口验证按静默计算的期限、生成请求不设上限、下载重试及取消，不调用付费接口。 */
+import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test'
+import { download, postJson, send } from './http.ts'
 import { MediaError } from './types.ts'
 
 let server: ReturnType<typeof Bun.serve>
 let hits: string[] = []
 let reply: () => Response | Promise<Response> = () => Response.json({})
-let restore: (() => void) | undefined
 beforeAll(() => {
   server = Bun.serve({
     port: 0,
@@ -19,19 +18,11 @@ beforeAll(() => {
 })
 afterAll(() => server.stop(true))
 afterEach(() => {
-  restore?.()
-  restore = undefined
   hits = []
 })
 const url = () => `http://127.0.0.1:${server.port}/image`
 const signal = () => new AbortController().signal
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-function shortenTimeout(ms: number) {
-  const original = AbortSignal.timeout.bind(AbortSignal)
-  const spy = spyOn(AbortSignal, 'timeout').mockImplementation(() => original(ms))
-  restore = () => spy.mockRestore()
-  return spy
-}
 async function failure(work: Promise<unknown>): Promise<MediaError> {
   try {
     await work
@@ -42,50 +33,89 @@ async function failure(work: Promise<unknown>): Promise<MediaError> {
   throw new Error('应返回请求诊断')
 }
 
-test('生图等待上限为十分钟，提前返回立即完成，POST 仅发一次', async () => {
-  const timeout = shortenTimeout(1000)
+/**
+ * 原始失败形状：同步生图请求在远端仍在生成时被本地的固定期限中断，已计费的结果无法取回。
+ * 生成请求不设静默上限，只在收到响应、连接被关闭、用户停止时结束。
+ */
+test('生成请求在远端返回之前一直等待；连接被关闭时立即失败，标为结果未知且没有静默上限', async () => {
   reply = async () => {
-    await delay(30)
+    await delay(300)
     return Response.json({ data: [] })
   }
-  expect(await postJson(url(), {}, {}, signal(), { timeoutMs: IMAGE_TIMEOUT_MS })).toEqual({
-    data: [],
-  })
-  expect(timeout.mock.calls).toEqual([[600_000]])
+  expect(await postJson(url(), {}, {}, signal())).toEqual({ data: [] })
   expect(hits).toEqual(['POST'])
+
+  const closing = Bun.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    socket: { data: (socket) => void socket.end() },
+  })
+  try {
+    const error = await failure(
+      postJson(`http://127.0.0.1:${closing.port}/image`, {}, {}, signal()),
+    )
+    expect(error.diagnostic).toMatchObject({
+      stage: 'generate',
+      kind: 'connection',
+      outcome: 'unknown',
+    })
+    expect(error.diagnostic?.timeoutMs).toBeUndefined()
+    expect(error.message).toContain('远端结果未知')
+  } finally {
+    closing.stop(true)
+  }
 })
 
-test.each([false, true])('超时包含响应体阶段=%s，标为未知并保留请求标识', async (body) => {
-  shortenTimeout(80)
-  reply = async () => {
-    if (!body) {
-      await delay(200)
-      return Response.json({})
+test.each([false, true])(
+  '静默超过上限即中止，包含响应体阶段=%s，标为超时并保留请求标识',
+  async (body) => {
+    reply = async () => {
+      if (!body) {
+        await delay(300)
+        return Response.json({})
+      }
+      return new Response(
+        new ReadableStream({
+          async start(controller) {
+            controller.enqueue(new TextEncoder().encode('{'))
+            await delay(300)
+            try {
+              controller.enqueue(new TextEncoder().encode('}'))
+              controller.close()
+            } catch {}
+          },
+        }),
+        { headers: { 'x-request-id': 'req-body' } },
+      )
     }
-    return new Response(
+    const error = await failure(send(url(), { method: 'GET' }, signal(), { idleMs: 80 }))
+    expect(error.diagnostic).toMatchObject({
+      stage: 'query',
+      kind: 'timeout',
+      outcome: 'unknown',
+      timeoutMs: 80,
+    })
+    if (body) expect(error.diagnostic?.requestId).toBe('req-body')
+    expect(error.message).toBe('连续 0.08 秒未收到数据')
+    expect(hits).toEqual(['GET'])
+  },
+)
+
+test('数据持续到达时不中止：总时长超过静默上限仍读完响应体', async () => {
+  reply = () =>
+    new Response(
       new ReadableStream({
         async start(controller) {
-          controller.enqueue(new TextEncoder().encode('{'))
-          await delay(200)
-          try {
-            controller.enqueue(new TextEncoder().encode('}'))
-            controller.close()
-          } catch {}
+          for (let i = 0; i < 6; i++) {
+            controller.enqueue(new TextEncoder().encode(String(i)))
+            await delay(50)
+          }
+          controller.close()
         },
       }),
-      { headers: { 'x-request-id': 'req-body' } },
     )
-  }
-  const error = await failure(postJson(url(), {}, {}, signal(), { timeoutMs: IMAGE_TIMEOUT_MS }))
-  expect(error.diagnostic).toMatchObject({
-    stage: 'generate',
-    kind: 'timeout',
-    outcome: 'unknown',
-    timeoutMs: 600_000,
-  })
-  if (body) expect(error.diagnostic?.requestId).toBe('req-body')
-  expect(error.message).toContain('远端结果未知')
-  expect(hits).toEqual(['POST'])
+  const res = await send(url(), { method: 'GET' }, signal(), { stage: 'download', idleMs: 150 })
+  expect(await res.text()).toBe('012345')
 })
 
 test('HTTP 400 是明确拒绝，502 与无效 JSON 均不能确认远端结果', async () => {
@@ -120,7 +150,7 @@ test('用户停止立即结束，不误报本地超时也不触发重试', async
     return Response.json({})
   }
   const reason = new Error('用户停止')
-  const work = postJson(url(), {}, {}, controller.signal, { timeoutMs: IMAGE_TIMEOUT_MS })
+  const work = postJson(url(), {}, {}, controller.signal)
   setTimeout(() => controller.abort(reason), 30)
   await expect(work).rejects.toBe(reason)
   expect(hits).toEqual(['POST'])
