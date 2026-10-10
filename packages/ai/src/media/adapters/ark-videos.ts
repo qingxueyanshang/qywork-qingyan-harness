@@ -24,7 +24,8 @@ import {
 const DEFAULT_BASE = 'https://ark.cn-beijing.volces.com/api/v3'
 
 /** 任务的终止状态及其说明；`expired` 为排队中或运行中超过 `execution_expires_after` 后被终止。 */
-const ENDED: Record<string, string> = {
+/** 终态失败的状态说明，没有错误内容时显示。方舟与 OpenAI 视频对象使用同一组状态值。 */
+export const ENDED: Record<string, string> = {
   failed: '任务失败',
   cancelled: '任务已取消',
   expired: '任务超过过期时间未完成，已被终止',
