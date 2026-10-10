@@ -1,15 +1,15 @@
 /**
  * `openai_videos`：中转站的 `/v1/videos`（New API 等按 OpenAI 视频接口的形状转发各家视频模型）。
  *
- * 提交 `POST {base}/videos`，查询 `GET {base}/videos/{id}`，取内容 `GET {base}/videos/{id}/content`
- * （须携带同一个 key）。厂商扩展结构由目录声明，素材与参数按对应结构发送。
+ * 提交 `POST {base}/videos`，查询 `GET {base}/videos/{id}`（Mumugofe 为 `GET {base}/video/generations/{id}`），
+ * 取内容 `GET {base}/videos/{id}/content`（须携带同一个 key）。厂商扩展结构由目录声明，素材与参数按对应结构发送。
  */
 
 import { mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, dataUri, defined, download, getJson, postJson, sniffMime } from '../http.ts'
-import { afterSubmit, type TaskState, waitTask } from '../task.ts'
+import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
@@ -19,7 +19,7 @@ import {
   type MediaRunOptions,
   type MediaUsage,
 } from '../types.ts'
-import { arkVideoContent } from './ark-videos.ts'
+import { arkVideoContent, ENDED } from './ark-videos.ts'
 import { dashScopeVideoPayload } from './dashscope.ts'
 
 /** 按目录声明构造已核实的中转请求；未知型号只发送通用字段。 */
@@ -113,6 +113,22 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     signal: AbortSignal,
   ): Promise<TaskState> {
     const path = `${base}/videos/${encodeURIComponent(taskId)}`
+    if (this.spec.videoFormat === 'mumugofe') {
+      // 任务失败时 `/videos/{id}` 只返回「The video generation task failed.」，拒绝原因（如版权保护拒绝）
+      // 只在任务接口的 `fail_reason` 中。结果仍从 `/videos/{id}/content` 下载，与该接口的 `result_url` 相同。
+      const body = await getJson(
+        `${base}/video/generations/${encodeURIComponent(taskId)}`,
+        auth,
+        signal,
+      )
+      const task = (body.data ?? {}) as { status?: unknown; fail_reason?: unknown }
+      const status = String(task.status ?? '').toLowerCase()
+      if (status === 'success') return { state: 'done', url: `${path}/content` }
+      if (status === 'failure') {
+        return { state: 'failed', message: failureDetail(undefined, task.fail_reason, '任务失败') }
+      }
+      return { state: 'pending', status: status || 'queued' }
+    }
     const body = await getJson(path, auth, signal)
     const status = String(body.status ?? '')
     // 视频对象只包含时长 `seconds`（字符串），没有用量与金额字段。
@@ -123,9 +139,10 @@ export class OpenAIVideosAdapter implements MediaAdapter {
         usage: defined<MediaUsage>({ seconds: count(body.seconds) }),
       }
     }
-    if (status === 'failed' || status === 'cancelled' || status === 'expired') {
-      const error = body.error as { message?: unknown } | undefined
-      return { state: 'failed', message: `${status} ${String(error?.message ?? '')}`.trim() }
+    const ended = ENDED[status]
+    if (ended) {
+      const error = body.error as { code?: unknown; message?: unknown } | undefined
+      return { state: 'failed', message: failureDetail(error?.code, error?.message, ended) }
     }
     return { state: 'pending', status: status || 'queued' }
   }

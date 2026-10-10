@@ -772,6 +772,32 @@ describe('openai_videos', () => {
     expect(out.files[0]?.bytes).toEqual(MP4)
   })
 
+  test('远端失败显示错误码与原文，不显示状态值；没有错误内容时显示状态说明', async () => {
+    const adapter = buildMediaAdapter({
+      kind: 'openai_videos',
+      model: 'sora-2',
+      apiKey: 'sk-relay',
+      baseUrl: origin(),
+    })
+    const req = { operation: 'text_to_video' as const, prompt: '雨夜', inputs: [], params: {} }
+    for (const [body, message] of [
+      [
+        {
+          status: 'failed',
+          error: { message: 'The video generation task failed.', code: 'video_generation_failed' },
+        },
+        '远端任务失败：video_generation_failed：The video generation task failed.',
+      ],
+      [{ status: 'expired' }, '远端任务失败：任务超过过期时间未完成，已被终止'],
+    ] as const) {
+      submit = () => Response.json({ id: 'video_2', status: 'queued' })
+      polls = [() => Response.json(body)]
+      const failed = await rejection(adapter.run(req, opts()))
+      expect(failed.message).toBe(message)
+      expect(failed.pendingTaskId).toBeUndefined()
+    }
+  })
+
   test('经中转站调用 Seedance 时保留已核实的素材能力，未知型号只提供通用参数', () => {
     const spec = lookupMediaModel('doubao-seedance-2-5-260628', 'openai_videos')
     expect(spec.operations).toContain('reference_to_video')

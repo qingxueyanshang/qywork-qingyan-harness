@@ -14,6 +14,9 @@ const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
 const MP3 = new Uint8Array([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 0])
 const TASK = 'task_mumugofe_test'
+/** 2026-10-10 实测任务接口的拒绝原因原文；同一任务的 `/videos/{id}` 只返回通用失败信息。 */
+const REJECTED =
+  "版权保护拒绝（画面）：换掉参考素材或改提示词再试（跟时长无关）\n上游原话：For copyright protection, I can't show you the generated video. Use other references or edit the prompt and try again."
 interface Seen {
   method: string
   path: string
@@ -47,8 +50,26 @@ beforeAll(() => {
           object: 'video',
           model: MODEL,
           status,
-          ...(status === 'failed' ? { error: { message: 'video_generation_failed' } } : {}),
+          ...(status === 'failed'
+            ? {
+                error: {
+                  message: 'The video generation task failed.',
+                  code: 'video_generation_failed',
+                },
+              }
+            : {}),
           // 实测终态没有 seconds、usage 或扣费金额，不能用请求值伪造计量。
+        })
+      if (req.method === 'GET' && path === `/v1/video/generations/${TASK}`)
+        return Response.json({
+          code: 'success',
+          message: '',
+          data: {
+            task_id: TASK,
+            status: status === 'completed' ? 'SUCCESS' : 'FAILURE',
+            fail_reason: status === 'failed' ? REJECTED : '',
+            progress: '100%',
+          },
         })
       if (req.method === 'GET' && path === `/v1/videos/${TASK}/content`)
         return new Response(contentStatus === 200 ? MP4 : 'forbidden', {
@@ -137,7 +158,7 @@ test.each([{}, { seconds: '30', size: '1280x720' }])(
     expect(tasks).toEqual([{ taskId: TASK, provider: 'mumugofe', model: MODEL }])
     expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
       'POST /v1/videos',
-      `GET /v1/videos/${TASK}`,
+      `GET /v1/video/generations/${TASK}`,
       `GET /v1/videos/${TASK}/content`,
     ])
     expect(seen.every((s) => s.auth === 'Bearer test-only-key')).toBe(true)
@@ -227,19 +248,22 @@ test('下载失败保留任务号，恢复只查询下载，不重复提交', as
   contentStatus = 200
   expect(await port.generate(call({ resumeTaskId: TASK }), signal())).toMatchObject({ ok: true })
   expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
-    `GET /v1/videos/${TASK}`,
+    `GET /v1/video/generations/${TASK}`,
     `GET /v1/videos/${TASK}/content`,
   ])
 })
 
-test('远端明确失败原样返回，不下载或重新生成', async () => {
+test('远端明确失败时返回任务接口中的拒绝原因，不下载或重新生成', async () => {
   status = 'failed'
   const result = await makeMediaPort(config()).generate(call(), signal())
   expect(result.ok).toBe(false)
   if (result.ok) throw new Error('expected failure')
-  expect(result.message).toContain('video_generation_failed')
+  expect(result.message).toContain(`远端任务失败：${REJECTED}`)
   expect(result.pendingTaskId).toBeUndefined()
-  expect(seen.map((s) => s.method)).toEqual(['POST', 'GET'])
+  expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+    'POST /v1/videos',
+    `GET /v1/video/generations/${TASK}`,
+  ])
 })
 
 test('专享版独立登记能力，Agent 可见参考音频上限，不继承满血版固定时长', () => {
