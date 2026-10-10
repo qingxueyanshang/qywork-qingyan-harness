@@ -130,6 +130,12 @@ export function loadServerConfig(): Promise<ConfigPayload> {
   return client.api<ConfigPayload>('/api/config')
 }
 
+/** 本次保存中的接口改名关系；仅用于服务端回填密钥，不写入配置。 */
+export interface ProviderRename {
+  from: string
+  to: string
+}
+
 /**
  * 将 `client.api` 抛出的错误转换为一句可读的说明。
  *
@@ -177,11 +183,16 @@ export function explainApiError(e: unknown, fallback: string): string {
 export async function saveServerConfig(
   config: RedactedConfig,
   baseVersion?: string,
+  renameProvider?: ProviderRename,
 ): Promise<ConfigPayload> {
   try {
     await client.api<{ ok: boolean }>('/api/config', {
       method: 'PUT',
-      body: JSON.stringify({ config, ...(baseVersion ? { baseVersion } : {}) }),
+      body: JSON.stringify({
+        config,
+        ...(baseVersion ? { baseVersion } : {}),
+        ...(renameProvider ? { renameProvider } : {}),
+      }),
     })
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) throw e

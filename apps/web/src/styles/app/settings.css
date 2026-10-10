@@ -1053,7 +1053,8 @@ textarea.code-area::placeholder {
 }
 .lib-table.media th,
 .lib-table.media td {
-  padding-right: var(--s-3);
+  /* 生成表格的五列共用紧凑留白，使型号、操作和参数按钮在设置弹窗内完整显示。 */
+  padding: 2px 6px;
   white-space: nowrap;
 }
 /* 覆盖对话表按列序固定的列宽。 */

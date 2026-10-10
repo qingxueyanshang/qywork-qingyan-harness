@@ -9,6 +9,7 @@ import { MediaError } from './types.ts'
  * 静默时长就是生成耗时，任何上限都会截断仍在进行的生成；它只在收到响应、连接被关闭或重置、用户停止时结束。
  */
 const IDLE_MS: Record<MediaDiagnostic['stage'], number | undefined> = {
+  upload: undefined,
   generate: undefined,
   query: 60_000,
   download: 2 * 60_000,
@@ -23,6 +24,11 @@ interface RequestPolicy {
 
 function stageOf(init: RequestInit, policy: RequestPolicy): MediaDiagnostic['stage'] {
   return policy.stage ?? (init.method === 'GET' ? 'query' : 'generate')
+}
+
+/** 上传与生成分开诊断：素材上传失败时，生成请求尚未发出。 */
+function stageMessage(stage: MediaDiagnostic['stage'], message: string): string {
+  return stage === 'upload' ? `素材上传失败，未提交生成：${message}` : message
 }
 
 async function providerMessage(res: Response): Promise<string> {
@@ -122,7 +128,10 @@ export async function send(
       ? `连续 ${idleMs! / 1000} 秒未收到数据`
       : `连接失败：${err instanceof Error ? err.message : String(err)}`
     throw new MediaError(
-      `${reason}${stage === 'generate' ? '；远端结果未知，请勿自动重新生成' : ''}`,
+      stageMessage(
+        stage,
+        `${reason}${stage === 'generate' ? '；远端结果未知，请勿自动重新生成' : ''}`,
+      ),
       { diagnostic: facts, cause: err },
     )
   } finally {
@@ -134,10 +143,13 @@ export async function send(
       facts.outcome = 'rejected'
     const uncertainty =
       stage === 'generate' && facts.outcome === 'unknown' ? '；远端结果未知，请勿自动重新生成' : ''
-    throw new MediaError(`HTTP ${res.status}：${await providerMessage(res)}${uncertainty}`, {
-      status: res.status,
-      diagnostic: facts,
-    })
+    throw new MediaError(
+      stageMessage(stage, `HTTP ${res.status}：${await providerMessage(res)}${uncertainty}`),
+      {
+        status: res.status,
+        diagnostic: facts,
+      },
+    )
   }
   return res
 }
@@ -170,7 +182,10 @@ export async function sendJson(
     return body as Record<string, unknown>
   } catch (err) {
     throw new MediaError(
-      `接口响应无法解析${stage === 'generate' ? '；远端结果未知，请勿自动重新生成' : ''}`,
+      stageMessage(
+        stage,
+        `接口响应无法解析${stage === 'generate' ? '；远端结果未知，请勿自动重新生成' : ''}`,
+      ),
       {
         cause: err,
         diagnostic: {

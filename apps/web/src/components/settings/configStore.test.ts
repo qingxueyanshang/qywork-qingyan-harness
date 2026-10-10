@@ -17,7 +17,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { PermissionMode } from '@qywork/core'
-import type { ConfigPayload, RedactedConfig, RedactedProvider } from '../../lib/store/index.ts'
+import type {
+  ConfigPayload,
+  ProviderRename,
+  RedactedConfig,
+  RedactedProvider,
+} from '../../lib/store/index.ts'
 
 interface ServerProvider {
   kind: string
@@ -68,25 +73,29 @@ async function serverApi<T>(path: string, init?: RequestInit): Promise<T> {
   if (path !== '/api/config') throw new Error(`unexpected ${path}`)
   if (init?.method !== 'PUT') return payloadFromServer() as T
   await beforePut.shift()?.()
-  const { config, baseVersion } = JSON.parse(String(init.body)) as {
+  const { config, baseVersion, renameProvider } = JSON.parse(String(init.body)) as {
     config: RedactedConfig
     baseVersion?: string
+    renameProvider?: ProviderRename
   }
   injectConflictOnce?.()
   injectConflictOnce = null
   if (baseVersion !== undefined && baseVersion !== String(serverVersion)) {
     throw new clientModule.ApiError(409, path, JSON.stringify({ error: 'conflict' }))
   }
+  const providers: Record<string, ServerProvider> = {}
   for (const [name, p] of Object.entries(config.providers)) {
     const { hasApiKey, apiKey: explicit, baseUrl } = p
-    const prior = server.providers[name]?.apiKey
+    const prior = server.providers[renameProvider?.to === name ? renameProvider.from : name]?.apiKey
     const apiKey = explicit !== undefined ? explicit : hasApiKey ? prior : undefined
-    server.providers[name] = {
+    providers[name] = {
       kind: p.kind,
       ...(apiKey ? { apiKey } : {}),
       ...(baseUrl ? { baseUrl } : {}),
     }
   }
+  server.providers = providers
+  if (config.active) server.active = config.active
   if (config.updates) server.updates = { ...config.updates }
   serverVersion++
   return { ok: true } as T
@@ -134,6 +143,13 @@ const setUrl =
     providers: { ...cur.providers, ds: { ...cur.providers.ds!, baseUrl: url } },
   })
 
+const rename =
+  (from: string, to: string) =>
+  (cur: RedactedConfig): RedactedConfig => {
+    const { [from]: provider, ...rest } = cur.providers
+    return { ...cur, providers: { ...rest, [to]: provider! }, active: { provider: to, model: 'm' } }
+  }
+
 describe('配置写串行化与乐观并发', () => {
   beforeEach(async () => {
     server = {
@@ -157,12 +173,83 @@ describe('配置写串行化与乐观并发', () => {
     expect(server.providers.ds?.baseUrl).toBe('https://api.example.com/v1')
   })
 
+  test('填写密钥后立即连续改名，队列保留每次改名的来源并保持密钥', async () => {
+    const a = configStore.replaceConfig(setKey('sk-rename'))
+    const b = configStore.replaceConfig(rename('ds', '即梦'), { from: 'ds', to: '即梦' })
+    const c = configStore.replaceConfig(rename('即梦', '即梦1'), { from: '即梦', to: '即梦1' })
+    await Promise.all([a, b, c])
+    expect(Object.keys(server.providers)).toEqual(['即梦1'])
+    expect(server.providers.即梦1?.apiKey).toBe('sk-rename')
+    expect(configStore.config()?.providers.即梦1?.hasApiKey).toBe(true)
+    expect(configStore.config()?.active?.provider).toBe('即梦1')
+  })
+
+  test('改名保存遇到其他客户端轮换密钥，冲突重放仍使用同一改名关系', async () => {
+    await configStore.replaceConfig(setKey('sk-before'))
+    injectConflictOnce = () => {
+      server.providers.ds!.apiKey = 'sk-after'
+      server.providers.ds!.baseUrl = 'https://changed.example/v1'
+      serverVersion++
+    }
+    await configStore.replaceConfig(rename('ds', '即梦'), { from: 'ds', to: '即梦' })
+    expect(server.providers.ds).toBeUndefined()
+    expect(server.providers.即梦?.apiKey).toBe('sk-after')
+    expect(server.providers.即梦?.baseUrl).toBe('https://changed.example/v1')
+    expect(configStore.config()?.providers.即梦?.hasApiKey).toBe(true)
+  })
+
   test('顺序相反，先填写 url 再填写 key，同样不丢失', async () => {
     const a = configStore.replaceConfig(setUrl('https://api.example.com/v1'))
     const b = configStore.replaceConfig(setKey('sk-y'))
     await Promise.all([a, b])
     expect(server.providers.ds?.apiKey).toBe('sk-y')
     expect(server.providers.ds?.baseUrl).toBe('https://api.example.com/v1')
+  })
+
+  test('改名失败后，对新名称的后续编辑取消时保留失败提示', async () => {
+    beforePut.push(async () => {
+      throw new Error('接口改名保存失败')
+    })
+    const a = configStore.replaceConfig(rename('ds', '新名称'), { from: 'ds', to: '新名称' })
+    const b = configStore.replaceConfig((cur) => {
+      const provider = cur.providers.新名称
+      if (!provider) return null
+      return {
+        ...cur,
+        providers: {
+          ...cur.providers,
+          新名称: { ...provider, baseUrl: 'https://example.test/v1' },
+        },
+      }
+    })
+    await Promise.all([a, b])
+    expect(configStore.configWriteError()).toBe('接口改名保存失败')
+    expect(Object.keys(server.providers)).toEqual(['ds'])
+    expect(configStore.configBusy()).toBe(false)
+  })
+
+  test('最新配置使后续编辑校验失败时，投影与保存队列继续运行', async () => {
+    const first = pause()
+    beforePut.push(async () => {
+      await first.promise
+      throw new Error('接口改名保存失败')
+    })
+    const a = configStore.replaceConfig(rename('ds', '新名称'), { from: 'ds', to: '新名称' })
+    const b = configStore.replaceConfig((cur) => {
+      if (!cur.providers.新名称) throw new Error('接口已不存在')
+      return setUpdate('autoCheck', false)(cur)
+    })
+    const c = configStore.replaceConfig(setUpdate('autoDownload', false))
+    first.resume()
+    await Promise.all([a, b, c])
+    expect(server.updates).toEqual({ autoCheck: true, autoDownload: false })
+    expect(configStore.configWriteError()).toBeNull()
+    expect(configStore.configBusy()).toBe(false)
+    await configStore.replaceConfig(() => {
+      throw new Error('接口名称已存在')
+    })
+    expect(configStore.configWriteError()).toBe('接口名称已存在')
+    expect(configStore.configBusy()).toBe(false)
   })
 
   test('其他客户端并发修改配置引发 409：重新读取并重放，两处修改均保留', async () => {

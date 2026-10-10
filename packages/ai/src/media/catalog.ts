@@ -4,7 +4,8 @@
  * 按「模型 id × 协议」精确匹配，或使用该模型已声明的协议映射；其他组合使用协议默认规格。
  * 字段与对话目录不同：生成模型没有上下文窗口与思考档位，只有操作与参数表。
  *
- * 只收录各厂商当前最新一代。旧型号仍可经接口调用，使用协议默认的参数表。
+ * 官方模型收录各厂商当前最新一代；渠道模型按渠道公示的可调用列表登记。
+ * 未收录的型号仍可经接口调用，使用协议默认的参数表。
  *
  * 参数使用接口自身的字段名，不做跨厂商统一。生成质量 `quality` 与分辨率 `size` 分别声明；
  * 火山的尺寸可写 `size: 2K`，百炼可写 `size: 2048*2048`，各自遵守接口约束。
@@ -24,6 +25,7 @@ import {
   type MediaParamDefinition,
   type MentionStyle,
 } from '@qywork/core'
+import { BINGUO_DEFAULTS, BINGUO_MODELS } from './catalog-binguo.ts'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
 
@@ -1125,6 +1127,7 @@ const SEEDANCE_25_MENTION: MentionStyle = {
 const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: '音频{n}' }
 
 const SEEDS: readonly MediaModelSpec[] = [
+  ...BINGUO_MODELS,
   ...GOOGLE_XAI_MODELS,
   spec(
     'gpt-image-2.5-flare',
@@ -1423,6 +1426,7 @@ const SEEDS: readonly MediaModelSpec[] = [
  * 参数表取保守写法：多写一个接口不接受的字段会导致请求被拒绝；少写只使大模型少一个可调参数。
  */
 const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayName'>> = {
+  ...BINGUO_DEFAULTS,
   ...GOOGLE_XAI_DEFAULTS,
   openai_images: {
     vendor: null,

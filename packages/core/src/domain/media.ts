@@ -23,6 +23,7 @@ export const MEDIA_KINDS = [
   'gemini_videos',
   'veo_videos',
   'xai_videos',
+  'binguo_videos',
   'openai_speech',
   'dashscope_speech',
 ] as const
@@ -88,7 +89,7 @@ export interface MediaSpend {
 
 /** 单次媒体请求的失败事实；连接中断与本地超时不能证明远端生成失败。 */
 export interface MediaDiagnostic {
-  stage: 'generate' | 'query' | 'download'
+  stage: 'upload' | 'generate' | 'query' | 'download'
   kind: 'timeout' | 'connection' | 'http' | 'response'
   outcome: 'unknown' | 'rejected' | 'available'
   host: string
@@ -113,6 +114,7 @@ export const MEDIA_KIND_OUTPUT: Record<MediaKind, MediaOutput> = {
   gemini_videos: 'video',
   veo_videos: 'video',
   xai_videos: 'video',
+  binguo_videos: 'video',
   openai_speech: 'audio',
   dashscope_speech: 'audio',
 }
