@@ -1,0 +1,2007 @@
+{
+  "version": "0.2.4",
+  "config": {
+    "updates": {
+      "autoCheck": false,
+      "autoDownload": false
+    },
+    "active": {
+      "provider": "sample-anthropic_messages",
+      "model": "chat-anthropic_messages-minimal"
+    },
+    "providers": {
+      "sample-anthropic_messages": {
+        "kind": "anthropic_messages",
+        "apiKey": "sk-sample",
+        "baseUrl": "https://sample-0.invalid/v1",
+        "headers": {
+          "x-sample": "0"
+        },
+        "models": {
+          "chat-anthropic_messages-minimal": {
+            "effort": "minimal",
+            "transport": {
+              "effort": true,
+              "effortLevels": [
+                "minimal"
+              ],
+              "thinking": "adaptive_only",
+              "toolCalls": {
+                "kind": "anthropic_messages",
+                "model": "chat-anthropic_messages-minimal",
+                "baseUrl": "https://sample-0.invalid/v1",
+                "schema": "native",
+                "checkedAt": 1790000000000,
+                "status": "passed"
+              }
+            }
+          },
+          "chat-anthropic_messages-low": {
+            "effort": "low",
+            "transport": {
+              "effort": false,
+              "effortLevels": [
+                "minimal",
+                "low"
+              ],
+              "thinking": "always_on",
+              "toolCalls": {
+                "kind": "anthropic_messages",
+                "model": "chat-anthropic_messages-low",
+                "baseUrl": "https://sample-0.invalid/v1",
+                "schema": "openai_strict",
+                "checkedAt": 1790000000001,
+                "status": "failed"
+              }
+            }
+          },
+          "chat-anthropic_messages-medium": {
+            "effort": "medium",
+            "transport": {
+              "effort": true,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium"
+              ],
+              "thinking": "budget_tokens",
+              "toolCalls": {
+                "kind": "anthropic_messages",
+                "model": "chat-anthropic_messages-medium",
+                "baseUrl": "https://sample-0.invalid/v1",
+                "schema": "native",
+                "checkedAt": 1790000000002,
+                "status": "inconclusive"
+              }
+            }
+          },
+          "chat-anthropic_messages-high": {
+            "effort": "high",
+            "transport": {
+              "effort": false,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium",
+                "high"
+              ],
+              "thinking": "reasoning_effort",
+              "toolCalls": {
+                "kind": "anthropic_messages",
+                "model": "chat-anthropic_messages-high",
+                "baseUrl": "https://sample-0.invalid/v1",
+                "schema": "openai_strict",
+                "checkedAt": 1790000000003,
+                "status": "passed"
+              }
+            }
+          },
+          "chat-anthropic_messages-xhigh": {
+            "effort": "xhigh",
+            "transport": {
+              "effort": true,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "thinking": "deepseek_thinking",
+              "toolCalls": {
+                "kind": "anthropic_messages",
+                "model": "chat-anthropic_messages-xhigh",
+                "baseUrl": "https://sample-0.invalid/v1",
+                "schema": "native",
+                "checkedAt": 1790000000004,
+                "status": "failed"
+              }
+            }
+          },
+          "chat-anthropic_messages-max": {
+            "effort": "max",
+            "transport": {
+              "effort": false,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "thinking": "none",
+              "toolCalls": {
+                "kind": "anthropic_messages",
+                "model": "chat-anthropic_messages-max",
+                "baseUrl": "https://sample-0.invalid/v1",
+                "schema": "openai_strict",
+                "checkedAt": 1790000000005,
+                "status": "inconclusive"
+              }
+            }
+          }
+        },
+        "media": {
+          "media-openai_images": {
+            "kind": "openai_images"
+          },
+          "media-xai_images": {
+            "kind": "xai_images"
+          },
+          "media-dashscope_videos": {
+            "kind": "dashscope_videos"
+          },
+          "media-veo_videos": {
+            "kind": "veo_videos"
+          },
+          "media-openai_speech": {
+            "kind": "openai_speech"
+          }
+        }
+      },
+      "sample-openai_chat_completions": {
+        "kind": "openai_chat_completions",
+        "apiKey": "sk-sample",
+        "baseUrl": "https://sample-1.invalid/v1",
+        "headers": {
+          "x-sample": "1"
+        },
+        "models": {
+          "chat-openai_chat_completions-minimal": {
+            "effort": "minimal",
+            "transport": {
+              "effort": true,
+              "effortLevels": [
+                "minimal"
+              ],
+              "thinking": "adaptive_only",
+              "toolCalls": {
+                "kind": "openai_chat_completions",
+                "model": "chat-openai_chat_completions-minimal",
+                "baseUrl": "https://sample-1.invalid/v1",
+                "schema": "native",
+                "checkedAt": 1790000000006,
+                "status": "passed"
+              }
+            }
+          },
+          "chat-openai_chat_completions-low": {
+            "effort": "low",
+            "transport": {
+              "effort": false,
+              "effortLevels": [
+                "minimal",
+                "low"
+              ],
+              "thinking": "always_on",
+              "toolCalls": {
+                "kind": "openai_chat_completions",
+                "model": "chat-openai_chat_completions-low",
+                "baseUrl": "https://sample-1.invalid/v1",
+                "schema": "openai_strict",
+                "checkedAt": 1790000000007,
+                "status": "failed"
+              }
+            }
+          },
+          "chat-openai_chat_completions-medium": {
+            "effort": "medium",
+            "transport": {
+              "effort": true,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium"
+              ],
+              "thinking": "budget_tokens",
+              "toolCalls": {
+                "kind": "openai_chat_completions",
+                "model": "chat-openai_chat_completions-medium",
+                "baseUrl": "https://sample-1.invalid/v1",
+                "schema": "native",
+                "checkedAt": 1790000000008,
+                "status": "inconclusive"
+              }
+            }
+          },
+          "chat-openai_chat_completions-high": {
+            "effort": "high",
+            "transport": {
+              "effort": false,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium",
+                "high"
+              ],
+              "thinking": "reasoning_effort",
+              "toolCalls": {
+                "kind": "openai_chat_completions",
+                "model": "chat-openai_chat_completions-high",
+                "baseUrl": "https://sample-1.invalid/v1",
+                "schema": "openai_strict",
+                "checkedAt": 1790000000009,
+                "status": "passed"
+              }
+            }
+          },
+          "chat-openai_chat_completions-xhigh": {
+            "effort": "xhigh",
+            "transport": {
+              "effort": true,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "thinking": "deepseek_thinking",
+              "toolCalls": {
+                "kind": "openai_chat_completions",
+                "model": "chat-openai_chat_completions-xhigh",
+                "baseUrl": "https://sample-1.invalid/v1",
+                "schema": "native",
+                "checkedAt": 1790000000010,
+                "status": "failed"
+              }
+            }
+          },
+          "chat-openai_chat_completions-max": {
+            "effort": "max",
+            "transport": {
+              "effort": false,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "thinking": "none",
+              "toolCalls": {
+                "kind": "openai_chat_completions",
+                "model": "chat-openai_chat_completions-max",
+                "baseUrl": "https://sample-1.invalid/v1",
+                "schema": "openai_strict",
+                "checkedAt": 1790000000011,
+                "status": "inconclusive"
+              }
+            }
+          }
+        },
+        "media": {
+          "media-dashscope_images": {
+            "kind": "dashscope_images"
+          },
+          "media-openai_videos": {
+            "kind": "openai_videos"
+          },
+          "media-kling_videos": {
+            "kind": "kling_videos"
+          },
+          "media-xai_videos": {
+            "kind": "xai_videos"
+          },
+          "media-dashscope_speech": {
+            "kind": "dashscope_speech"
+          }
+        }
+      },
+      "sample-openai_responses": {
+        "kind": "openai_responses",
+        "apiKey": "sk-sample",
+        "baseUrl": "https://sample-2.invalid/v1",
+        "headers": {
+          "x-sample": "2"
+        },
+        "models": {
+          "chat-openai_responses-minimal": {
+            "effort": "minimal",
+            "transport": {
+              "effort": true,
+              "effortLevels": [
+                "minimal"
+              ],
+              "thinking": "adaptive_only",
+              "toolCalls": {
+                "kind": "openai_responses",
+                "model": "chat-openai_responses-minimal",
+                "baseUrl": "https://sample-2.invalid/v1",
+                "schema": "native",
+                "checkedAt": 1790000000012,
+                "status": "passed"
+              }
+            }
+          },
+          "chat-openai_responses-low": {
+            "effort": "low",
+            "transport": {
+              "effort": false,
+              "effortLevels": [
+                "minimal",
+                "low"
+              ],
+              "thinking": "always_on",
+              "toolCalls": {
+                "kind": "openai_responses",
+                "model": "chat-openai_responses-low",
+                "baseUrl": "https://sample-2.invalid/v1",
+                "schema": "openai_strict",
+                "checkedAt": 1790000000013,
+                "status": "failed"
+              }
+            }
+          },
+          "chat-openai_responses-medium": {
+            "effort": "medium",
+            "transport": {
+              "effort": true,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium"
+              ],
+              "thinking": "budget_tokens",
+              "toolCalls": {
+                "kind": "openai_responses",
+                "model": "chat-openai_responses-medium",
+                "baseUrl": "https://sample-2.invalid/v1",
+                "schema": "native",
+                "checkedAt": 1790000000014,
+                "status": "inconclusive"
+              }
+            }
+          },
+          "chat-openai_responses-high": {
+            "effort": "high",
+            "transport": {
+              "effort": false,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium",
+                "high"
+              ],
+              "thinking": "reasoning_effort",
+              "toolCalls": {
+                "kind": "openai_responses",
+                "model": "chat-openai_responses-high",
+                "baseUrl": "https://sample-2.invalid/v1",
+                "schema": "openai_strict",
+                "checkedAt": 1790000000015,
+                "status": "passed"
+              }
+            }
+          },
+          "chat-openai_responses-xhigh": {
+            "effort": "xhigh",
+            "transport": {
+              "effort": true,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "thinking": "deepseek_thinking",
+              "toolCalls": {
+                "kind": "openai_responses",
+                "model": "chat-openai_responses-xhigh",
+                "baseUrl": "https://sample-2.invalid/v1",
+                "schema": "native",
+                "checkedAt": 1790000000016,
+                "status": "failed"
+              }
+            }
+          },
+          "chat-openai_responses-max": {
+            "effort": "max",
+            "transport": {
+              "effort": false,
+              "effortLevels": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "thinking": "none",
+              "toolCalls": {
+                "kind": "openai_responses",
+                "model": "chat-openai_responses-max",
+                "baseUrl": "https://sample-2.invalid/v1",
+                "schema": "openai_strict",
+                "checkedAt": 1790000000017,
+                "status": "inconclusive"
+              }
+            }
+          }
+        },
+        "media": {
+          "media-gemini_images": {
+            "kind": "gemini_images"
+          },
+          "media-ark_videos": {
+            "kind": "ark_videos"
+          },
+          "media-gemini_videos": {
+            "kind": "gemini_videos"
+          },
+          "media-binguo_videos": {
+            "kind": "binguo_videos"
+          }
+        }
+      }
+    },
+    "catalog": {
+      "chat-anthropic_messages-minimal|anthropic_messages": {
+        "displayName": "Sample 0",
+        "vendor": "sample",
+        "contextWindow": 128000,
+        "maxOutputTokens": 8000,
+        "vision": false,
+        "input": 1,
+        "output": 2,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "USD",
+        "thinking": "adaptive_only",
+        "effortLevels": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": true,
+        "chatReasoningProtocol": "standard",
+        "reasoningEcho": "none",
+        "cacheRouting": "prompt_cache_key"
+      },
+      "chat-anthropic_messages-low|anthropic_messages": {
+        "displayName": "Sample 1",
+        "vendor": "sample",
+        "contextWindow": 128001,
+        "maxOutputTokens": 8001,
+        "vision": true,
+        "input": 2,
+        "output": 3,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "CNY",
+        "thinking": "always_on",
+        "effortLevels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "preserved",
+        "reasoningEcho": "reasoning_text",
+        "cacheRouting": "x_grok_conv_id"
+      },
+      "chat-anthropic_messages-medium|anthropic_messages": {
+        "displayName": "Sample 2",
+        "vendor": "sample",
+        "contextWindow": 128002,
+        "maxOutputTokens": 8002,
+        "vision": false,
+        "input": 3,
+        "output": 4,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "USD",
+        "thinking": "budget_tokens",
+        "effortLevels": [
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "qwen_preserved",
+        "reasoningEcho": "reasoning_text_object",
+        "cacheRouting": "none"
+      },
+      "chat-anthropic_messages-high|anthropic_messages": {
+        "displayName": "Sample 3",
+        "vendor": "sample",
+        "contextWindow": 128003,
+        "maxOutputTokens": 8003,
+        "vision": true,
+        "input": 4,
+        "output": 5,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "CNY",
+        "thinking": "reasoning_effort",
+        "effortLevels": [
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": true,
+        "chatReasoningProtocol": "glm_preserved",
+        "reasoningEcho": "encrypted_content",
+        "cacheRouting": "prompt_cache_key"
+      },
+      "chat-anthropic_messages-xhigh|anthropic_messages": {
+        "displayName": "Sample 4",
+        "vendor": "sample",
+        "contextWindow": 128004,
+        "maxOutputTokens": 8004,
+        "vision": false,
+        "input": 5,
+        "output": 6,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "USD",
+        "thinking": "deepseek_thinking",
+        "effortLevels": [
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "deepseek_preserved",
+        "reasoningEcho": "none",
+        "cacheRouting": "x_grok_conv_id"
+      },
+      "chat-anthropic_messages-max|anthropic_messages": {
+        "displayName": "Sample 5",
+        "vendor": "sample",
+        "contextWindow": 128005,
+        "maxOutputTokens": 8005,
+        "vision": true,
+        "input": 6,
+        "output": 7,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "CNY",
+        "thinking": "none",
+        "effortLevels": [
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "standard",
+        "reasoningEcho": "reasoning_text",
+        "cacheRouting": "none"
+      },
+      "chat-openai_chat_completions-minimal|openai_chat_completions": {
+        "displayName": "Sample 6",
+        "vendor": "sample",
+        "contextWindow": 128006,
+        "maxOutputTokens": 8006,
+        "vision": false,
+        "input": 7,
+        "output": 8,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "USD",
+        "thinking": "adaptive_only",
+        "effortLevels": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": true,
+        "chatReasoningProtocol": "preserved",
+        "reasoningEcho": "reasoning_text_object",
+        "cacheRouting": "prompt_cache_key"
+      },
+      "chat-openai_chat_completions-low|openai_chat_completions": {
+        "displayName": "Sample 7",
+        "vendor": "sample",
+        "contextWindow": 128007,
+        "maxOutputTokens": 8007,
+        "vision": true,
+        "input": 8,
+        "output": 9,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "CNY",
+        "thinking": "always_on",
+        "effortLevels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "qwen_preserved",
+        "reasoningEcho": "encrypted_content",
+        "cacheRouting": "x_grok_conv_id"
+      },
+      "chat-openai_chat_completions-medium|openai_chat_completions": {
+        "displayName": "Sample 8",
+        "vendor": "sample",
+        "contextWindow": 128008,
+        "maxOutputTokens": 8008,
+        "vision": false,
+        "input": 9,
+        "output": 10,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "USD",
+        "thinking": "budget_tokens",
+        "effortLevels": [
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "glm_preserved",
+        "reasoningEcho": "none",
+        "cacheRouting": "none"
+      },
+      "chat-openai_chat_completions-high|openai_chat_completions": {
+        "displayName": "Sample 9",
+        "vendor": "sample",
+        "contextWindow": 128009,
+        "maxOutputTokens": 8009,
+        "vision": true,
+        "input": 10,
+        "output": 11,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "CNY",
+        "thinking": "reasoning_effort",
+        "effortLevels": [
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": true,
+        "chatReasoningProtocol": "deepseek_preserved",
+        "reasoningEcho": "reasoning_text",
+        "cacheRouting": "prompt_cache_key"
+      },
+      "chat-openai_chat_completions-xhigh|openai_chat_completions": {
+        "displayName": "Sample 10",
+        "vendor": "sample",
+        "contextWindow": 128010,
+        "maxOutputTokens": 8010,
+        "vision": false,
+        "input": 11,
+        "output": 12,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "USD",
+        "thinking": "deepseek_thinking",
+        "effortLevels": [
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "standard",
+        "reasoningEcho": "reasoning_text_object",
+        "cacheRouting": "x_grok_conv_id"
+      },
+      "chat-openai_chat_completions-max|openai_chat_completions": {
+        "displayName": "Sample 11",
+        "vendor": "sample",
+        "contextWindow": 128011,
+        "maxOutputTokens": 8011,
+        "vision": true,
+        "input": 12,
+        "output": 13,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "CNY",
+        "thinking": "none",
+        "effortLevels": [
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "preserved",
+        "reasoningEcho": "encrypted_content",
+        "cacheRouting": "none"
+      },
+      "chat-openai_responses-minimal|openai_responses": {
+        "displayName": "Sample 12",
+        "vendor": "sample",
+        "contextWindow": 128012,
+        "maxOutputTokens": 8012,
+        "vision": false,
+        "input": 13,
+        "output": 14,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "USD",
+        "thinking": "adaptive_only",
+        "effortLevels": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": true,
+        "chatReasoningProtocol": "qwen_preserved",
+        "reasoningEcho": "none",
+        "cacheRouting": "prompt_cache_key"
+      },
+      "chat-openai_responses-low|openai_responses": {
+        "displayName": "Sample 13",
+        "vendor": "sample",
+        "contextWindow": 128013,
+        "maxOutputTokens": 8013,
+        "vision": true,
+        "input": 14,
+        "output": 15,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "CNY",
+        "thinking": "always_on",
+        "effortLevels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "glm_preserved",
+        "reasoningEcho": "reasoning_text",
+        "cacheRouting": "x_grok_conv_id"
+      },
+      "chat-openai_responses-medium|openai_responses": {
+        "displayName": "Sample 14",
+        "vendor": "sample",
+        "contextWindow": 128014,
+        "maxOutputTokens": 8014,
+        "vision": false,
+        "input": 15,
+        "output": 16,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "USD",
+        "thinking": "budget_tokens",
+        "effortLevels": [
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "deepseek_preserved",
+        "reasoningEcho": "reasoning_text_object",
+        "cacheRouting": "none"
+      },
+      "chat-openai_responses-high|openai_responses": {
+        "displayName": "Sample 15",
+        "vendor": "sample",
+        "contextWindow": 128015,
+        "maxOutputTokens": 8015,
+        "vision": true,
+        "input": 16,
+        "output": 17,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "CNY",
+        "thinking": "reasoning_effort",
+        "effortLevels": [
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": true,
+        "chatReasoningProtocol": "standard",
+        "reasoningEcho": "encrypted_content",
+        "cacheRouting": "prompt_cache_key"
+      },
+      "chat-openai_responses-xhigh|openai_responses": {
+        "displayName": "Sample 16",
+        "vendor": "sample",
+        "contextWindow": 128016,
+        "maxOutputTokens": 8016,
+        "vision": false,
+        "input": 17,
+        "output": 18,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "USD",
+        "thinking": "deepseek_thinking",
+        "effortLevels": [
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "preserved",
+        "reasoningEcho": "none",
+        "cacheRouting": "x_grok_conv_id"
+      },
+      "chat-openai_responses-max|openai_responses": {
+        "displayName": "Sample 17",
+        "vendor": "sample",
+        "contextWindow": 128017,
+        "maxOutputTokens": 8017,
+        "vision": true,
+        "input": 18,
+        "output": 19,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "CNY",
+        "thinking": "none",
+        "effortLevels": [
+          "max"
+        ],
+        "thinksByDefault": false,
+        "chatReasoningProtocol": "qwen_preserved",
+        "reasoningEcho": "reasoning_text",
+        "cacheRouting": "none"
+      }
+    },
+    "mediaDefaults": {
+      "image": {
+        "provider": "sample-anthropic_messages",
+        "model": "media-openai_images"
+      },
+      "video": {
+        "provider": "sample-openai_chat_completions",
+        "model": "media-openai_videos"
+      },
+      "audio": {
+        "provider": "sample-anthropic_messages",
+        "model": "media-openai_speech"
+      }
+    },
+    "mode": "auto",
+    "browserEnabled": false,
+    "desktopEnabled": false,
+    "desktopForeground": false,
+    "officeEnabled": false,
+    "mediaEnabled": false,
+    "officePython": "/usr/bin/python3",
+    "additionalDirectories": [
+      "/srv/qywork-sample"
+    ],
+    "sandboxNetwork": "deny",
+    "envAllowList": [
+      "GITHUB_TOKEN"
+    ]
+  },
+  "meaning": {
+    "active": {
+      "provider": "sample-anthropic_messages",
+      "kind": "anthropic_messages",
+      "model": "chat-anthropic_messages-minimal",
+      "baseUrl": "https://sample-0.invalid/v1",
+      "headers": {
+        "x-sample": "0"
+      },
+      "effort": "minimal",
+      "transport": {
+        "effort": true,
+        "effortLevels": [
+          "minimal"
+        ],
+        "thinking": "adaptive_only",
+        "toolCalls": {
+          "kind": "anthropic_messages",
+          "model": "chat-anthropic_messages-minimal",
+          "baseUrl": "https://sample-0.invalid/v1",
+          "schema": "native",
+          "checkedAt": 1790000000000,
+          "status": "passed"
+        }
+      },
+      "spec": {
+        "displayName": "Sample 0",
+        "vendor": "sample",
+        "contextWindow": 128000,
+        "maxOutputTokens": 8000,
+        "vision": false,
+        "input": 1,
+        "output": 2,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "currency": "USD",
+        "thinking": "adaptive_only",
+        "effortLevels": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "thinksByDefault": true,
+        "chatReasoningProtocol": "standard",
+        "reasoningEcho": "none",
+        "cacheRouting": "prompt_cache_key"
+      },
+      "hasApiKey": true
+    },
+    "models": {
+      "sample-anthropic_messages/chat-anthropic_messages-minimal": {
+        "provider": "sample-anthropic_messages",
+        "kind": "anthropic_messages",
+        "model": "chat-anthropic_messages-minimal",
+        "baseUrl": "https://sample-0.invalid/v1",
+        "headers": {
+          "x-sample": "0"
+        },
+        "effort": "minimal",
+        "transport": {
+          "effort": true,
+          "effortLevels": [
+            "minimal"
+          ],
+          "thinking": "adaptive_only",
+          "toolCalls": {
+            "kind": "anthropic_messages",
+            "model": "chat-anthropic_messages-minimal",
+            "baseUrl": "https://sample-0.invalid/v1",
+            "schema": "native",
+            "checkedAt": 1790000000000,
+            "status": "passed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 0",
+          "vendor": "sample",
+          "contextWindow": 128000,
+          "maxOutputTokens": 8000,
+          "vision": false,
+          "input": 1,
+          "output": 2,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "USD",
+          "thinking": "adaptive_only",
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": true,
+          "chatReasoningProtocol": "standard",
+          "reasoningEcho": "none",
+          "cacheRouting": "prompt_cache_key"
+        },
+        "hasApiKey": true
+      },
+      "sample-anthropic_messages/chat-anthropic_messages-low": {
+        "provider": "sample-anthropic_messages",
+        "kind": "anthropic_messages",
+        "model": "chat-anthropic_messages-low",
+        "baseUrl": "https://sample-0.invalid/v1",
+        "headers": {
+          "x-sample": "0"
+        },
+        "effort": "low",
+        "transport": {
+          "effort": false,
+          "effortLevels": [
+            "minimal",
+            "low"
+          ],
+          "thinking": "always_on",
+          "toolCalls": {
+            "kind": "anthropic_messages",
+            "model": "chat-anthropic_messages-low",
+            "baseUrl": "https://sample-0.invalid/v1",
+            "schema": "openai_strict",
+            "checkedAt": 1790000000001,
+            "status": "failed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 1",
+          "vendor": "sample",
+          "contextWindow": 128001,
+          "maxOutputTokens": 8001,
+          "vision": true,
+          "input": 2,
+          "output": 3,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "CNY",
+          "thinking": "always_on",
+          "effortLevels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "preserved",
+          "reasoningEcho": "reasoning_text",
+          "cacheRouting": "x_grok_conv_id"
+        },
+        "hasApiKey": true
+      },
+      "sample-anthropic_messages/chat-anthropic_messages-medium": {
+        "provider": "sample-anthropic_messages",
+        "kind": "anthropic_messages",
+        "model": "chat-anthropic_messages-medium",
+        "baseUrl": "https://sample-0.invalid/v1",
+        "headers": {
+          "x-sample": "0"
+        },
+        "effort": "medium",
+        "transport": {
+          "effort": true,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium"
+          ],
+          "thinking": "budget_tokens",
+          "toolCalls": {
+            "kind": "anthropic_messages",
+            "model": "chat-anthropic_messages-medium",
+            "baseUrl": "https://sample-0.invalid/v1",
+            "schema": "native",
+            "checkedAt": 1790000000002,
+            "status": "inconclusive"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 2",
+          "vendor": "sample",
+          "contextWindow": 128002,
+          "maxOutputTokens": 8002,
+          "vision": false,
+          "input": 3,
+          "output": 4,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "USD",
+          "thinking": "budget_tokens",
+          "effortLevels": [
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "qwen_preserved",
+          "reasoningEcho": "reasoning_text_object",
+          "cacheRouting": "none"
+        },
+        "hasApiKey": true
+      },
+      "sample-anthropic_messages/chat-anthropic_messages-high": {
+        "provider": "sample-anthropic_messages",
+        "kind": "anthropic_messages",
+        "model": "chat-anthropic_messages-high",
+        "baseUrl": "https://sample-0.invalid/v1",
+        "headers": {
+          "x-sample": "0"
+        },
+        "effort": "high",
+        "transport": {
+          "effort": false,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "thinking": "reasoning_effort",
+          "toolCalls": {
+            "kind": "anthropic_messages",
+            "model": "chat-anthropic_messages-high",
+            "baseUrl": "https://sample-0.invalid/v1",
+            "schema": "openai_strict",
+            "checkedAt": 1790000000003,
+            "status": "passed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 3",
+          "vendor": "sample",
+          "contextWindow": 128003,
+          "maxOutputTokens": 8003,
+          "vision": true,
+          "input": 4,
+          "output": 5,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "CNY",
+          "thinking": "reasoning_effort",
+          "effortLevels": [
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": true,
+          "chatReasoningProtocol": "glm_preserved",
+          "reasoningEcho": "encrypted_content",
+          "cacheRouting": "prompt_cache_key"
+        },
+        "hasApiKey": true
+      },
+      "sample-anthropic_messages/chat-anthropic_messages-xhigh": {
+        "provider": "sample-anthropic_messages",
+        "kind": "anthropic_messages",
+        "model": "chat-anthropic_messages-xhigh",
+        "baseUrl": "https://sample-0.invalid/v1",
+        "headers": {
+          "x-sample": "0"
+        },
+        "effort": "xhigh",
+        "transport": {
+          "effort": true,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "thinking": "deepseek_thinking",
+          "toolCalls": {
+            "kind": "anthropic_messages",
+            "model": "chat-anthropic_messages-xhigh",
+            "baseUrl": "https://sample-0.invalid/v1",
+            "schema": "native",
+            "checkedAt": 1790000000004,
+            "status": "failed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 4",
+          "vendor": "sample",
+          "contextWindow": 128004,
+          "maxOutputTokens": 8004,
+          "vision": false,
+          "input": 5,
+          "output": 6,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "USD",
+          "thinking": "deepseek_thinking",
+          "effortLevels": [
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "deepseek_preserved",
+          "reasoningEcho": "none",
+          "cacheRouting": "x_grok_conv_id"
+        },
+        "hasApiKey": true
+      },
+      "sample-anthropic_messages/chat-anthropic_messages-max": {
+        "provider": "sample-anthropic_messages",
+        "kind": "anthropic_messages",
+        "model": "chat-anthropic_messages-max",
+        "baseUrl": "https://sample-0.invalid/v1",
+        "headers": {
+          "x-sample": "0"
+        },
+        "effort": "max",
+        "transport": {
+          "effort": false,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinking": "none",
+          "toolCalls": {
+            "kind": "anthropic_messages",
+            "model": "chat-anthropic_messages-max",
+            "baseUrl": "https://sample-0.invalid/v1",
+            "schema": "openai_strict",
+            "checkedAt": 1790000000005,
+            "status": "inconclusive"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 5",
+          "vendor": "sample",
+          "contextWindow": 128005,
+          "maxOutputTokens": 8005,
+          "vision": true,
+          "input": 6,
+          "output": 7,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "CNY",
+          "thinking": "none",
+          "effortLevels": [
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "standard",
+          "reasoningEcho": "reasoning_text",
+          "cacheRouting": "none"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_chat_completions/chat-openai_chat_completions-minimal": {
+        "provider": "sample-openai_chat_completions",
+        "kind": "openai_chat_completions",
+        "model": "chat-openai_chat_completions-minimal",
+        "baseUrl": "https://sample-1.invalid/v1",
+        "headers": {
+          "x-sample": "1"
+        },
+        "effort": "minimal",
+        "transport": {
+          "effort": true,
+          "effortLevels": [
+            "minimal"
+          ],
+          "thinking": "adaptive_only",
+          "toolCalls": {
+            "kind": "openai_chat_completions",
+            "model": "chat-openai_chat_completions-minimal",
+            "baseUrl": "https://sample-1.invalid/v1",
+            "schema": "native",
+            "checkedAt": 1790000000006,
+            "status": "passed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 6",
+          "vendor": "sample",
+          "contextWindow": 128006,
+          "maxOutputTokens": 8006,
+          "vision": false,
+          "input": 7,
+          "output": 8,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "USD",
+          "thinking": "adaptive_only",
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": true,
+          "chatReasoningProtocol": "preserved",
+          "reasoningEcho": "reasoning_text_object",
+          "cacheRouting": "prompt_cache_key"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_chat_completions/chat-openai_chat_completions-low": {
+        "provider": "sample-openai_chat_completions",
+        "kind": "openai_chat_completions",
+        "model": "chat-openai_chat_completions-low",
+        "baseUrl": "https://sample-1.invalid/v1",
+        "headers": {
+          "x-sample": "1"
+        },
+        "effort": "low",
+        "transport": {
+          "effort": false,
+          "effortLevels": [
+            "minimal",
+            "low"
+          ],
+          "thinking": "always_on",
+          "toolCalls": {
+            "kind": "openai_chat_completions",
+            "model": "chat-openai_chat_completions-low",
+            "baseUrl": "https://sample-1.invalid/v1",
+            "schema": "openai_strict",
+            "checkedAt": 1790000000007,
+            "status": "failed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 7",
+          "vendor": "sample",
+          "contextWindow": 128007,
+          "maxOutputTokens": 8007,
+          "vision": true,
+          "input": 8,
+          "output": 9,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "CNY",
+          "thinking": "always_on",
+          "effortLevels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "qwen_preserved",
+          "reasoningEcho": "encrypted_content",
+          "cacheRouting": "x_grok_conv_id"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_chat_completions/chat-openai_chat_completions-medium": {
+        "provider": "sample-openai_chat_completions",
+        "kind": "openai_chat_completions",
+        "model": "chat-openai_chat_completions-medium",
+        "baseUrl": "https://sample-1.invalid/v1",
+        "headers": {
+          "x-sample": "1"
+        },
+        "effort": "medium",
+        "transport": {
+          "effort": true,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium"
+          ],
+          "thinking": "budget_tokens",
+          "toolCalls": {
+            "kind": "openai_chat_completions",
+            "model": "chat-openai_chat_completions-medium",
+            "baseUrl": "https://sample-1.invalid/v1",
+            "schema": "native",
+            "checkedAt": 1790000000008,
+            "status": "inconclusive"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 8",
+          "vendor": "sample",
+          "contextWindow": 128008,
+          "maxOutputTokens": 8008,
+          "vision": false,
+          "input": 9,
+          "output": 10,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "USD",
+          "thinking": "budget_tokens",
+          "effortLevels": [
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "glm_preserved",
+          "reasoningEcho": "none",
+          "cacheRouting": "none"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_chat_completions/chat-openai_chat_completions-high": {
+        "provider": "sample-openai_chat_completions",
+        "kind": "openai_chat_completions",
+        "model": "chat-openai_chat_completions-high",
+        "baseUrl": "https://sample-1.invalid/v1",
+        "headers": {
+          "x-sample": "1"
+        },
+        "effort": "high",
+        "transport": {
+          "effort": false,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "thinking": "reasoning_effort",
+          "toolCalls": {
+            "kind": "openai_chat_completions",
+            "model": "chat-openai_chat_completions-high",
+            "baseUrl": "https://sample-1.invalid/v1",
+            "schema": "openai_strict",
+            "checkedAt": 1790000000009,
+            "status": "passed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 9",
+          "vendor": "sample",
+          "contextWindow": 128009,
+          "maxOutputTokens": 8009,
+          "vision": true,
+          "input": 10,
+          "output": 11,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "CNY",
+          "thinking": "reasoning_effort",
+          "effortLevels": [
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": true,
+          "chatReasoningProtocol": "deepseek_preserved",
+          "reasoningEcho": "reasoning_text",
+          "cacheRouting": "prompt_cache_key"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_chat_completions/chat-openai_chat_completions-xhigh": {
+        "provider": "sample-openai_chat_completions",
+        "kind": "openai_chat_completions",
+        "model": "chat-openai_chat_completions-xhigh",
+        "baseUrl": "https://sample-1.invalid/v1",
+        "headers": {
+          "x-sample": "1"
+        },
+        "effort": "xhigh",
+        "transport": {
+          "effort": true,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "thinking": "deepseek_thinking",
+          "toolCalls": {
+            "kind": "openai_chat_completions",
+            "model": "chat-openai_chat_completions-xhigh",
+            "baseUrl": "https://sample-1.invalid/v1",
+            "schema": "native",
+            "checkedAt": 1790000000010,
+            "status": "failed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 10",
+          "vendor": "sample",
+          "contextWindow": 128010,
+          "maxOutputTokens": 8010,
+          "vision": false,
+          "input": 11,
+          "output": 12,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "USD",
+          "thinking": "deepseek_thinking",
+          "effortLevels": [
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "standard",
+          "reasoningEcho": "reasoning_text_object",
+          "cacheRouting": "x_grok_conv_id"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_chat_completions/chat-openai_chat_completions-max": {
+        "provider": "sample-openai_chat_completions",
+        "kind": "openai_chat_completions",
+        "model": "chat-openai_chat_completions-max",
+        "baseUrl": "https://sample-1.invalid/v1",
+        "headers": {
+          "x-sample": "1"
+        },
+        "effort": "max",
+        "transport": {
+          "effort": false,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinking": "none",
+          "toolCalls": {
+            "kind": "openai_chat_completions",
+            "model": "chat-openai_chat_completions-max",
+            "baseUrl": "https://sample-1.invalid/v1",
+            "schema": "openai_strict",
+            "checkedAt": 1790000000011,
+            "status": "inconclusive"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 11",
+          "vendor": "sample",
+          "contextWindow": 128011,
+          "maxOutputTokens": 8011,
+          "vision": true,
+          "input": 12,
+          "output": 13,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "CNY",
+          "thinking": "none",
+          "effortLevels": [
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "preserved",
+          "reasoningEcho": "encrypted_content",
+          "cacheRouting": "none"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_responses/chat-openai_responses-minimal": {
+        "provider": "sample-openai_responses",
+        "kind": "openai_responses",
+        "model": "chat-openai_responses-minimal",
+        "baseUrl": "https://sample-2.invalid/v1",
+        "headers": {
+          "x-sample": "2"
+        },
+        "effort": "minimal",
+        "transport": {
+          "effort": true,
+          "effortLevels": [
+            "minimal"
+          ],
+          "thinking": "adaptive_only",
+          "toolCalls": {
+            "kind": "openai_responses",
+            "model": "chat-openai_responses-minimal",
+            "baseUrl": "https://sample-2.invalid/v1",
+            "schema": "native",
+            "checkedAt": 1790000000012,
+            "status": "passed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 12",
+          "vendor": "sample",
+          "contextWindow": 128012,
+          "maxOutputTokens": 8012,
+          "vision": false,
+          "input": 13,
+          "output": 14,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "USD",
+          "thinking": "adaptive_only",
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": true,
+          "chatReasoningProtocol": "qwen_preserved",
+          "reasoningEcho": "none",
+          "cacheRouting": "prompt_cache_key"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_responses/chat-openai_responses-low": {
+        "provider": "sample-openai_responses",
+        "kind": "openai_responses",
+        "model": "chat-openai_responses-low",
+        "baseUrl": "https://sample-2.invalid/v1",
+        "headers": {
+          "x-sample": "2"
+        },
+        "effort": "low",
+        "transport": {
+          "effort": false,
+          "effortLevels": [
+            "minimal",
+            "low"
+          ],
+          "thinking": "always_on",
+          "toolCalls": {
+            "kind": "openai_responses",
+            "model": "chat-openai_responses-low",
+            "baseUrl": "https://sample-2.invalid/v1",
+            "schema": "openai_strict",
+            "checkedAt": 1790000000013,
+            "status": "failed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 13",
+          "vendor": "sample",
+          "contextWindow": 128013,
+          "maxOutputTokens": 8013,
+          "vision": true,
+          "input": 14,
+          "output": 15,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "CNY",
+          "thinking": "always_on",
+          "effortLevels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "glm_preserved",
+          "reasoningEcho": "reasoning_text",
+          "cacheRouting": "x_grok_conv_id"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_responses/chat-openai_responses-medium": {
+        "provider": "sample-openai_responses",
+        "kind": "openai_responses",
+        "model": "chat-openai_responses-medium",
+        "baseUrl": "https://sample-2.invalid/v1",
+        "headers": {
+          "x-sample": "2"
+        },
+        "effort": "medium",
+        "transport": {
+          "effort": true,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium"
+          ],
+          "thinking": "budget_tokens",
+          "toolCalls": {
+            "kind": "openai_responses",
+            "model": "chat-openai_responses-medium",
+            "baseUrl": "https://sample-2.invalid/v1",
+            "schema": "native",
+            "checkedAt": 1790000000014,
+            "status": "inconclusive"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 14",
+          "vendor": "sample",
+          "contextWindow": 128014,
+          "maxOutputTokens": 8014,
+          "vision": false,
+          "input": 15,
+          "output": 16,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "USD",
+          "thinking": "budget_tokens",
+          "effortLevels": [
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "deepseek_preserved",
+          "reasoningEcho": "reasoning_text_object",
+          "cacheRouting": "none"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_responses/chat-openai_responses-high": {
+        "provider": "sample-openai_responses",
+        "kind": "openai_responses",
+        "model": "chat-openai_responses-high",
+        "baseUrl": "https://sample-2.invalid/v1",
+        "headers": {
+          "x-sample": "2"
+        },
+        "effort": "high",
+        "transport": {
+          "effort": false,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "thinking": "reasoning_effort",
+          "toolCalls": {
+            "kind": "openai_responses",
+            "model": "chat-openai_responses-high",
+            "baseUrl": "https://sample-2.invalid/v1",
+            "schema": "openai_strict",
+            "checkedAt": 1790000000015,
+            "status": "passed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 15",
+          "vendor": "sample",
+          "contextWindow": 128015,
+          "maxOutputTokens": 8015,
+          "vision": true,
+          "input": 16,
+          "output": 17,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "CNY",
+          "thinking": "reasoning_effort",
+          "effortLevels": [
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": true,
+          "chatReasoningProtocol": "standard",
+          "reasoningEcho": "encrypted_content",
+          "cacheRouting": "prompt_cache_key"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_responses/chat-openai_responses-xhigh": {
+        "provider": "sample-openai_responses",
+        "kind": "openai_responses",
+        "model": "chat-openai_responses-xhigh",
+        "baseUrl": "https://sample-2.invalid/v1",
+        "headers": {
+          "x-sample": "2"
+        },
+        "effort": "xhigh",
+        "transport": {
+          "effort": true,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "thinking": "deepseek_thinking",
+          "toolCalls": {
+            "kind": "openai_responses",
+            "model": "chat-openai_responses-xhigh",
+            "baseUrl": "https://sample-2.invalid/v1",
+            "schema": "native",
+            "checkedAt": 1790000000016,
+            "status": "failed"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 16",
+          "vendor": "sample",
+          "contextWindow": 128016,
+          "maxOutputTokens": 8016,
+          "vision": false,
+          "input": 17,
+          "output": 18,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "USD",
+          "thinking": "deepseek_thinking",
+          "effortLevels": [
+            "xhigh",
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "preserved",
+          "reasoningEcho": "none",
+          "cacheRouting": "x_grok_conv_id"
+        },
+        "hasApiKey": true
+      },
+      "sample-openai_responses/chat-openai_responses-max": {
+        "provider": "sample-openai_responses",
+        "kind": "openai_responses",
+        "model": "chat-openai_responses-max",
+        "baseUrl": "https://sample-2.invalid/v1",
+        "headers": {
+          "x-sample": "2"
+        },
+        "effort": "max",
+        "transport": {
+          "effort": false,
+          "effortLevels": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "thinking": "none",
+          "toolCalls": {
+            "kind": "openai_responses",
+            "model": "chat-openai_responses-max",
+            "baseUrl": "https://sample-2.invalid/v1",
+            "schema": "openai_strict",
+            "checkedAt": 1790000000017,
+            "status": "inconclusive"
+          }
+        },
+        "spec": {
+          "displayName": "Sample 17",
+          "vendor": "sample",
+          "contextWindow": 128017,
+          "maxOutputTokens": 8017,
+          "vision": true,
+          "input": 18,
+          "output": 19,
+          "cacheRead": 0.1,
+          "cacheWrite": 1.25,
+          "currency": "CNY",
+          "thinking": "none",
+          "effortLevels": [
+            "max"
+          ],
+          "thinksByDefault": false,
+          "chatReasoningProtocol": "qwen_preserved",
+          "reasoningEcho": "reasoning_text",
+          "cacheRouting": "none"
+        },
+        "hasApiKey": true
+      }
+    },
+    "media": [
+      {
+        "provider": "sample-anthropic_messages",
+        "model": "media-openai_images",
+        "kind": "openai_images",
+        "output": "image",
+        "isDefault": true
+      },
+      {
+        "provider": "sample-anthropic_messages",
+        "model": "media-xai_images",
+        "kind": "xai_images",
+        "output": "image",
+        "isDefault": false
+      },
+      {
+        "provider": "sample-anthropic_messages",
+        "model": "media-dashscope_videos",
+        "kind": "dashscope_videos",
+        "output": "video",
+        "isDefault": false
+      },
+      {
+        "provider": "sample-anthropic_messages",
+        "model": "media-veo_videos",
+        "kind": "veo_videos",
+        "output": "video",
+        "isDefault": false
+      },
+      {
+        "provider": "sample-anthropic_messages",
+        "model": "media-openai_speech",
+        "kind": "openai_speech",
+        "output": "audio",
+        "isDefault": true
+      },
+      {
+        "provider": "sample-openai_chat_completions",
+        "model": "media-dashscope_images",
+        "kind": "dashscope_images",
+        "output": "image",
+        "isDefault": false
+      },
+      {
+        "provider": "sample-openai_chat_completions",
+        "model": "media-openai_videos",
+        "kind": "openai_videos",
+        "output": "video",
+        "isDefault": true
+      },
+      {
+        "provider": "sample-openai_chat_completions",
+        "model": "media-kling_videos",
+        "kind": "kling_videos",
+        "output": "video",
+        "isDefault": false
+      },
+      {
+        "provider": "sample-openai_chat_completions",
+        "model": "media-xai_videos",
+        "kind": "xai_videos",
+        "output": "video",
+        "isDefault": false
+      },
+      {
+        "provider": "sample-openai_chat_completions",
+        "model": "media-dashscope_speech",
+        "kind": "dashscope_speech",
+        "output": "audio",
+        "isDefault": false
+      },
+      {
+        "provider": "sample-openai_responses",
+        "model": "media-gemini_images",
+        "kind": "gemini_images",
+        "output": "image",
+        "isDefault": false
+      },
+      {
+        "provider": "sample-openai_responses",
+        "model": "media-ark_videos",
+        "kind": "ark_videos",
+        "output": "video",
+        "isDefault": false
+      },
+      {
+        "provider": "sample-openai_responses",
+        "model": "media-gemini_videos",
+        "kind": "gemini_videos",
+        "output": "video",
+        "isDefault": false
+      },
+      {
+        "provider": "sample-openai_responses",
+        "model": "media-binguo_videos",
+        "kind": "binguo_videos",
+        "output": "video",
+        "isDefault": false
+      }
+    ],
+    "mediaDefaults": {
+      "image": {
+        "provider": "sample-anthropic_messages",
+        "model": "media-openai_images",
+        "kind": "openai_images"
+      },
+      "video": {
+        "provider": "sample-openai_chat_completions",
+        "model": "media-openai_videos",
+        "kind": "openai_videos"
+      },
+      "audio": {
+        "provider": "sample-anthropic_messages",
+        "model": "media-openai_speech",
+        "kind": "openai_speech"
+      }
+    },
+    "settings": {
+      "updates": {
+        "autoCheck": false,
+        "autoDownload": false
+      },
+      "mode": "auto",
+      "browserEnabled": false,
+      "desktopEnabled": false,
+      "desktopForeground": false,
+      "officeEnabled": false,
+      "mediaEnabled": false,
+      "officePython": "/usr/bin/python3",
+      "additionalDirectories": [
+        "/srv/qywork-sample"
+      ],
+      "sandboxNetwork": "deny",
+      "envAllowList": [
+        "GITHUB_TOKEN"
+      ]
+    }
+  }
+}
