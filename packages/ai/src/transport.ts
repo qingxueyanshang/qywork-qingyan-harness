@@ -15,7 +15,12 @@
  * 不放在适配器实例上：同一个适配器会被并发请求共用。
  */
 
-import type { ProviderHedge, ProviderKind, ProviderTransportReading } from '@qywork/core'
+import {
+  log,
+  type ProviderHedge,
+  type ProviderKind,
+  type ProviderTransportReading,
+} from '@qywork/core'
 import { ProviderError } from './errors.ts'
 
 export interface TransportTrace {
@@ -125,15 +130,20 @@ interface Copy {
  * - 两份都没有取得 2xx，或未补发时，以原请求的结果为准：非 2xx 响应照常交给错误分类，连接错误照常抛出。
  *
  * 补发前原请求已失败的，不再补发：连接被拒、立即被关闭等失败与现状一样立即报告。
+ *
+ * 补发、择优与两份都失败时各写一行运行日志（`transport`），按时刻与请求账中带补发记录的行对照。
  */
 function firstResponse(
   trace: TransportTrace,
+  provider: ProviderKind,
   input: string | URL | Request,
   init: RequestInit | undefined,
   base: Fetch,
   hedgeAfterMs: number,
 ): Promise<{ res: Response; closing: AbortController }> {
   const caller = init?.signal
+  const host = new URL(input instanceof Request ? input.url : input).host
+  const seconds = (at: number) => Math.round((at - trace.sentAt) / 1000)
   return new Promise((resolve, reject) => {
     const copies: Copy[] = []
     let original: Outcome | undefined
@@ -143,7 +153,18 @@ function firstResponse(
       done = true
       clearTimeout(timer)
       for (const other of copies) if (other !== copy) other.closing.abort()
-      if (trace.hedge) trace.hedge.won = copy !== copies[0]
+      if (trace.hedge) {
+        trace.hedge.won = copy !== copies[0]
+        log.info(
+          'transport',
+          trace.hedge.won ? '采用补发的一份，原请求已中断' : '采用原请求，补发的一份已中断',
+          {
+            provider,
+            host,
+            headersSeconds: seconds(Date.now()),
+          },
+        )
+      }
       resolve({ res, closing: copy.closing })
     }
     const settle = (copy: Copy, outcome: Outcome) => {
@@ -158,6 +179,7 @@ function firstResponse(
       if (copies.some((c) => !c.settled)) return
       done = true
       clearTimeout(timer)
+      if (trace.hedge) log.warn('transport', '补发后两份请求均未取得 2xx 响应', { provider, host })
       if (original && 'res' in original) resolve({ res: original.res, closing: copies[0]!.closing })
       else reject(original?.err)
     }
@@ -177,6 +199,11 @@ function firstResponse(
     timer = setTimeout(() => {
       if (done || caller?.aborted) return
       trace.hedge = { sentAt: Date.now(), won: false }
+      log.warn('transport', '响应头之前等待超过补发时间，补发一份请求', {
+        provider,
+        host,
+        waitedSeconds: seconds(trace.hedge.sentAt),
+      })
       send()
     }, hedgeAfterMs)
   })
@@ -324,7 +351,7 @@ export function traceFetch(
   hedgeAfterMs = HEDGE_AFTER_MS,
 ): Fetch {
   return async (input, init) => {
-    const { res, closing } = await firstResponse(trace, input, init, base, hedgeAfterMs)
+    const { res, closing } = await firstResponse(trace, provider, input, init, base, hedgeAfterMs)
     const release = () => {
       closing.abort()
     }
