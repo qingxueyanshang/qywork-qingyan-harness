@@ -66,6 +66,31 @@ test('生成请求在远端返回之前一直等待；连接被关闭时立即�
   }
 })
 
+/**
+ * 原始失败形状：中转站关闭空闲连接，复用连接池中这条连接发出的生成请求立即 ECONNRESET，
+ * 标为结果未知。每次请求新建连接时不存在可复用的失效连接。
+ */
+test('每次请求新建连接，不复用连接池中的空闲连接', async () => {
+  const ports: number[] = []
+  const peer = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch(req, srv) {
+      ports.push(srv.requestIP(req)?.port ?? 0)
+      return Response.json({})
+    },
+  })
+  try {
+    const at = `http://127.0.0.1:${peer.port}/videos`
+    await postJson(at, {}, {}, signal())
+    await send(at, { method: 'GET' }, signal())
+    expect(ports).toHaveLength(2)
+    expect(ports[0]).not.toBe(ports[1])
+  } finally {
+    peer.stop(true)
+  }
+})
+
 test.each([false, true])(
   '静默超过上限即中止，包含响应体阶段=%s，标为超时并保留请求标识',
   async (body) => {

@@ -56,7 +56,10 @@ export const PROVIDER_HTTP = {
  * 派发任务由事件驱动，请求常在数分钟的等待之后发出（等待子 agent 回执、等待长时间运行的命令），
  * 因此必然遇到这种情况。代价是每次请求多一次 TLS 握手，远小于一次模型往返的耗时。
  *
- * 三个适配器都必须带上该请求头，缺少任何一个，对应的 provider 仍会出现该故障。
+ * 生成接口同样如此：2026-10-10 api.mumugofe.com 复用空闲约 100 秒的连接提交生成，241 毫秒即 `ECONNRESET`；
+ * 复用空闲 60 秒的连接发出的查询 7 分钟无响应。
+ *
+ * 对话的三个适配器与生成请求的 `send`（`media/http.ts`）都必须带上该请求头，缺少任何一处，对应的请求仍会出现该故障。
  */
 export const PROVIDER_HEADERS = { connection: 'close' } as const
 

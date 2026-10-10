@@ -1,6 +1,6 @@
 /** 生成适配器共用的请求、诊断、下载与文件格式识别。 */
 import type { MediaDiagnostic } from '@qywork/core'
-import { PROVIDER_HTTP } from '../types.ts'
+import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { MediaError } from './types.ts'
 
 /**
@@ -113,6 +113,7 @@ async function readBody(res: Response, heard: () => void): Promise<Uint8Array> {
  *
  * fetch 必须展开 `PROVIDER_HTTP.fetchOptions`：Bun 的 socket 空闲超时默认 300 秒，缺少该选项时
  * 生成请求静默 300 秒即以 `The operation timed out.` 中断。
+ * 请求头必须带 `PROVIDER_HEADERS`：复用已被中转站关闭的空闲连接时，生成请求立即 `ECONNRESET`，远端结果未知。
  */
 export async function send(
   url: string,
@@ -148,6 +149,7 @@ export async function send(
     response = await fetch(url, {
       ...PROVIDER_HTTP.fetchOptions,
       ...init,
+      headers: { ...PROVIDER_HEADERS, ...Object.fromEntries(new Headers(init.headers)) },
       signal: AbortSignal.any([signal, silence.signal]),
     })
     heard()
