@@ -16,6 +16,7 @@ import type {
   Attachment,
   ContextBreakdown,
   ContextOmitted,
+  ProviderHedge,
   ProviderKind,
   ProviderRequestConfiguration,
   ProviderRequestContentKind,
@@ -291,6 +292,11 @@ export interface LoopPersistence {
    * 不是本方法被调用的时刻。
    */
   markRequestHeaders?(requestId: string, at: number): void
+  /**
+   * 响应头之前补发过第二份请求。成功时由 `response_started` 携带，失败时取自诊断中的传输读数；
+   * 两份请求都没有返回响应头时同样记录。
+   */
+  markRequestHedge?(requestId: string, hedge: ProviderHedge): void
   /** 可选仅为兼容测试夹具；生产装配必须提供。 */
   markRequestFirstEvent?(requestId: string): void
   /**

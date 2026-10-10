@@ -162,6 +162,7 @@ export {
   type PermissionMode,
   PROVIDER_KINDS,
   type ProviderFailureCause,
+  type ProviderHedge,
   type ProviderKind,
   type ProviderRequest,
   type ProviderRequestConfiguration,

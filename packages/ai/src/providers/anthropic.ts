@@ -144,7 +144,11 @@ export class AnthropicAdapter implements LlmAdapter {
       }
 
       // `asResponse()` 返回时响应头已到达，早于 `message_start`。
-      yield { type: 'response_started', headersAt: trace.headersAt! }
+      yield {
+        type: 'response_started',
+        headersAt: trace.headersAt!,
+        ...(trace.hedge ? { hedge: trace.hedge } : {}),
+      }
 
       for await (const frame of readSse(res.body)) {
         const parsed = sseJson(frame.data)

@@ -218,6 +218,7 @@ export async function* sendTurn(
       if (pe?.transport?.headersAt != null) {
         persist.markRequestHeaders?.(requestId, pe.transport.headersAt)
       }
+      if (pe?.transport?.hedge) persist.markRequestHedge?.(requestId, pe.transport.hedge)
       const recordDecision = (
         decision: ProviderRetryDecision,
         attempt: number | null = null,
@@ -474,6 +475,7 @@ async function* consumeStream(
       case 'response_started':
         // 只作为传输遥测边界；不产生模型可见内容或 UI step。
         persist.markRequestHeaders?.(turn.requestId, ev.headersAt)
+        if (ev.hedge) persist.markRequestHedge?.(turn.requestId, ev.hedge)
         yield {
           type: 'run.request',
           runId: input.runId,

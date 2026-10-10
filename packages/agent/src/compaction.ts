@@ -39,6 +39,7 @@ import type {
   CompactionFacts,
   CompactionManifest,
   FileReadProgress,
+  ProviderHedge,
 } from '@qywork/core'
 
 /**
@@ -326,6 +327,8 @@ export interface SummaryTrace {
   sent(requestId: string): void
   /** `at` 是 `response_started` 带来的传输层观察时刻，不是调用时刻。 */
   headers(requestId: string, at: number): void
+  /** 响应头之前补发过第二份请求；规则与主请求相同。 */
+  hedge(requestId: string, hedge: ProviderHedge): void
   firstEvent(requestId: string): void
   /** 每段非空内容都调用；`at` 是适配器解析该段时的观察时刻，不是调用时刻。 */
   content(

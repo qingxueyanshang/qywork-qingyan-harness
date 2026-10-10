@@ -1334,6 +1334,8 @@ export interface ProviderRequest {
    * 连接未建立与接收后等待在账本中无法区分。
    */
   headersAt: number | null
+  /** 响应头之前补发的第二份请求；未补发或迁移前的旧行为 null。 */
+  hedge: ProviderHedge | null
   /** provider 返回的第一个流事件；不含本地 request_prepared 和响应头 response_started。 */
   firstEventAt: number | null
   /** 第一段思考、正文或工具调用到达的时刻。 */
@@ -1398,6 +1400,17 @@ export interface ProviderTransportReading {
   sinceLastByteMs: number | null
   /** SSE 注释行（以 `:` 开头）的条数，即服务端排队时的保活行。 */
   keepAliveLines: number
+  /** 响应头之前补发过第二份请求时存在。 */
+  hedge?: ProviderHedge
+}
+
+/**
+ * 响应头之前补发的第二份请求：发出时刻，以及最终采用的是否为它。
+ * 两份请求都已发出，都可能计费；被中断的一份是否计费由服务商决定。
+ */
+export interface ProviderHedge {
+  sentAt: number
+  won: boolean
 }
 
 /**

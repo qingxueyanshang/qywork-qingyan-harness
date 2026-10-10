@@ -3,6 +3,7 @@ import { type ChatRequest, estimateRequest, type LlmAdapter, type ProviderUsage 
 import {
   emptyBreakdown,
   emptyOmitted,
+  type ProviderHedge,
   type ProviderRequestContentKind,
   type ProviderRequestDiagnostic,
   type RunId,
@@ -17,6 +18,7 @@ type SummaryPersistence = Pick<
   | 'openRequest'
   | 'markRequestSent'
   | 'markRequestHeaders'
+  | 'markRequestHedge'
   | 'markRequestFirstEvent'
   | 'markRequestContent'
   | 'recordRequestDiagnostic'
@@ -60,6 +62,8 @@ export function createSummaryTrace(
     },
     sent: (requestId: string): void => persist.markRequestSent(requestId),
     headers: (requestId: string, at: number): void => persist.markRequestHeaders?.(requestId, at),
+    hedge: (requestId: string, hedge: ProviderHedge): void =>
+      persist.markRequestHedge?.(requestId, hedge),
     firstEvent: (requestId: string): void => persist.markRequestFirstEvent?.(requestId),
     content: (requestId: string, at: number, kind?: ProviderRequestContentKind): void =>
       persist.markRequestContent?.(requestId, at, kind, false),

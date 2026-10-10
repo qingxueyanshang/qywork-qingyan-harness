@@ -4,6 +4,7 @@ import {
   markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
+  markProviderRequestHedge,
   markProviderRequestSent,
   openProviderRequest,
   recordProviderRequestDiagnostic,
@@ -21,6 +22,7 @@ export function requestPersistence(store: Store, config: QyConfig) {
     saveUsage: (runId, usage) => updateRunUsage(store, runId, usage),
     markRequestSent: (id) => markProviderRequestSent(store, id as never),
     markRequestHeaders: (id, at) => markProviderRequestHeaders(store, id as never, at),
+    markRequestHedge: (id, hedge) => markProviderRequestHedge(store, id as never, hedge),
     markRequestFirstEvent: (id) => markProviderRequestFirstEvent(store, id as never),
     markRequestContent: (id, at, kind, visible) =>
       markProviderRequestContent(store, id as never, at, kind, visible),
@@ -59,6 +61,7 @@ export function requestPersistence(store: Store, config: QyConfig) {
     | 'saveUsage'
     | 'markRequestSent'
     | 'markRequestHeaders'
+    | 'markRequestHedge'
     | 'markRequestFirstEvent'
     | 'markRequestContent'
     | 'settleRequest'
