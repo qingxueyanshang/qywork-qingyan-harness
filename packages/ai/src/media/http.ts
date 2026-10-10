@@ -1,5 +1,6 @@
 /** 生成适配器共用的请求、诊断、下载与文件格式识别。 */
 import type { MediaDiagnostic } from '@qywork/core'
+import { PROVIDER_HTTP } from '../types.ts'
 import { MediaError } from './types.ts'
 
 /** 同步生图最多等待 10 分钟；到期只结束本地等待，不推断远端状态。 */
@@ -26,7 +27,12 @@ async function providerMessage(res: Response): Promise<string> {
   return text.trim().slice(0, 500) || res.statusText
 }
 
-/** 请求及响应体共用同一个期限。生成 POST 不自动重发。 */
+/**
+ * 请求及响应体共用同一个期限 `timeoutMs`，它是唯一的期限。生成 POST 不自动重发。
+ *
+ * fetch 必须展开 `PROVIDER_HTTP.fetchOptions`：Bun 的 socket 空闲超时默认 300 秒，缺少该选项时
+ * 生图接口静默 300 秒即以 `The operation timed out.` 中断，`IMAGE_TIMEOUT_MS` 不起作用。
+ */
 export async function send(
   url: string,
   init: RequestInit,
@@ -53,6 +59,7 @@ export async function send(
   let res: Response
   try {
     response = await fetch(url, {
+      ...PROVIDER_HTTP.fetchOptions,
       ...init,
       signal: AbortSignal.any([signal, timeout]),
     })

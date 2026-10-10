@@ -33,7 +33,7 @@ import type { ModelSpec, SpecOverride } from './catalog.ts'
  *   （`BUN_CONFIG_HTTP_IDLE_TIMEOUT`），正文静默达到时限即以 `TimeoutError` 中止流，早于看门狗
  *   触发：实测（2026-09-07，Bun 1.3.14）静默 300.6 秒后流被中止，deepseek-v4-pro max 档一轮
  *   思考期间静默 320 秒即因此失败。两个 SDK 把它合并进每次 fetch 的 init，手写 fetch 的
- *   适配器需要自行展开。标准 `RequestInit` 没有这个键，SDK 的 `fetchOptions` 又不接受
+ *   位置（`openai-responses.ts` 与生成接口的 `media/http.ts`）需要自行展开。标准 `RequestInit` 没有这个键，SDK 的 `fetchOptions` 又不接受
  *   body / headers / method / signal 四个键，因此类型声明为去掉这四个键的 `RequestInit`。
  */
 export const PROVIDER_HTTP = {

@@ -1,9 +1,11 @@
 /**
  * `idle-timeout.test.ts` 的子进程部分：在 `BUN_CONFIG_HTTP_IDLE_TIMEOUT=1` 的进程中，
- * 启动一个静默 `SILENT_MS` 的 SSE 服务，三种协议的适配器各读取一条流，以裸 fetch 作对照。
+ * 启动一个静默 `SILENT_MS` 的 SSE 服务，三种协议的适配器各读取一条流；生成接口的请求在响应头
+ * 之前静默 `SILENT_MS`。两种静默各以一条裸 fetch 作对照。
  * 结果按 `{ 协议: 'ok' | 错误文案 }` 以 JSON 写入 stdout。
  */
 import { buildAdapter } from '../factory.ts'
+import { postJson } from '../media/http.ts'
 import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ChatRequest, ProviderProfile } from '../types.ts'
 
@@ -77,6 +79,7 @@ const server = Bun.serve({
   idleTimeout: 0,
   fetch(req) {
     const path = new URL(req.url).pathname
+    if (path === '/media') return Bun.sleep(SILENT_MS).then(() => Response.json({ data: [] }))
     const match = Object.entries(STREAMS).find(([suffix]) => path.endsWith(suffix))
     if (!match) return new Response('not found', { status: 404 })
     const [head, tail] = match[1]
@@ -130,11 +133,33 @@ async function control(): Promise<string> {
   }
 }
 
-const [anthropic, compat, responses, raw] = await Promise.all([
+/** 生成接口的请求：期限远大于静默时长，响应头到达前不得被空闲定时器中止。 */
+async function media(): Promise<string> {
+  try {
+    await postJson(`${base}/media`, {}, {}, new AbortController().signal, { timeoutMs: 60_000 })
+    return 'ok'
+  } catch (err) {
+    return describe(err)
+  }
+}
+
+/** 对照组：响应头之前静默的裸 fetch，必须被空闲定时器中止。 */
+async function mediaControl(): Promise<string> {
+  try {
+    await (await fetch(`${base}/media`, { method: 'POST' })).text()
+    return 'ok'
+  } catch (err) {
+    return describe(err)
+  }
+}
+
+const [anthropic, compat, responses, raw, generated, generatedRaw] = await Promise.all([
   drain('anthropic_messages', 'claude-opus-5'),
   drain('openai_chat_completions', 'deepseek-flash'),
   drain('openai_responses', 'deepseek-flash'),
   control(),
+  media(),
+  mediaControl(),
 ])
 server.stop(true)
 await Bun.write(
@@ -144,6 +169,8 @@ await Bun.write(
     openai_chat_completions: compat,
     openai_responses: responses,
     control: raw,
+    media: generated,
+    media_control: generatedRaw,
   }),
 )
 process.exit(0)
