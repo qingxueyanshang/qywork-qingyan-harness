@@ -4,10 +4,11 @@
  *
  * 原始失败形状：响应头之前挂起的请求只能等满期限再从头重发；调低期限则会中断本身较慢的正常请求。
  * 补发只决定何时多发一份，不中断原请求。对端是本机 server，补发时间缩短为 100 毫秒。
+ * 补发、择优与两份都失败时写入的运行日志由截获的 sink 核对。
  */
 
 import { afterAll, afterEach, beforeAll, expect, spyOn, test } from 'bun:test'
-import type { ProviderKind } from '@qywork/core'
+import { type LogRecord, type ProviderKind, setLogSink } from '@qywork/core'
 import { buildAdapter } from './factory.ts'
 import { newTrace, readTransport, traceFetch } from './transport.ts'
 
@@ -38,10 +39,15 @@ beforeAll(() => {
   })
 })
 afterAll(() => server.stop(true))
+let logs: LogRecord[] = []
+beforeAll(() => setLogSink((record) => void logs.push(record)))
+afterAll(() => setLogSink(null))
 afterEach(() => {
   hits = 0
   aborted = []
+  logs = []
 })
+const transportLogs = () => logs.filter((r) => r.scope === 'transport').map((r) => r.message)
 
 const url = () => `http://127.0.0.1:${server.port}/v1`
 const post = (trace = newTrace(), signal?: AbortSignal, body: RequestInit['body'] = '{"a":1}') =>
@@ -68,6 +74,11 @@ test('原请求在响应头之前挂起：补发的一份先返回并被采用�
   await Bun.sleep(50)
   expect(aborted).toContain(0)
   expect(readTransport(trace).hedge).toEqual(trace.hedge!)
+  expect(transportLogs()).toEqual([
+    '响应头之前等待超过补发时间，补发一份请求',
+    '采用补发的一份，原请求已中断',
+  ])
+  expect(logs[0]?.fields).toMatchObject({ provider: 'openai_chat_completions', waitedSeconds: 0 })
 })
 
 test('原请求只是较慢：先返回者为原请求，补发的一份被中断，原请求不受计时影响', async () => {
@@ -78,6 +89,10 @@ test('原请求只是较慢：先返回者为原请求，补发的一份被中�
   expect(trace.hedge).toMatchObject({ won: false })
   await Bun.sleep(50)
   expect(aborted).toContain(1)
+  expect(transportLogs()).toEqual([
+    '响应头之前等待超过补发时间，补发一份请求',
+    '采用原请求，补发的一份已中断',
+  ])
 })
 
 test('响应头在补发时间之前到达时不补发', async () => {
@@ -88,6 +103,7 @@ test('响应头在补发时间之前到达时不补发', async () => {
   expect(hits).toBe(1)
   expect(trace.hedge).toBeNull()
   expect('hedge' in readTransport(trace)).toBe(false)
+  expect(transportLogs()).toEqual([])
 })
 
 test('补发的一份被拒绝时丢弃，继续等待原请求', async () => {
@@ -119,6 +135,7 @@ test('补发之后原请求返回非 2xx 时继续等待补发的一份；两份
   expect(res.status).toBe(503)
   expect(lost.status).toBe(503)
   expect(lost.hedge).toMatchObject({ won: false })
+  expect(transportLogs().at(-1)).toBe('补发后两份请求均未取得 2xx 响应')
 })
 
 test('补发之后原请求的连接被关闭时改用补发的一份', async () => {
