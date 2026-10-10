@@ -275,6 +275,14 @@ function MediaTable(props: { models: MediaLibraryModel[] }) {
  * 单列时视频页的表宽超出设置页，且语音页整列都是空值。首尾帧不计入。
  */
 function inputLimit(m: MediaLibraryModel, op: MediaOperationName): string {
+  if ((op === 'reference_to_video' || op === 'video_to_video') && m.maxAudios) {
+    const limits = [
+      ...(op === 'reference_to_video' && m.maxImages ? [`图≤${m.maxImages}`] : []),
+      ...(op === 'video_to_video' && m.maxVideos ? [`视频≤${m.maxVideos}`] : []),
+      `音频≤${m.maxAudios}`,
+    ]
+    return `（${limits.join('、')}）`
+  }
   const n =
     op === 'edit' || op === 'reference_to_video'
       ? m.maxImages

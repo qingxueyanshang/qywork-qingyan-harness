@@ -333,6 +333,7 @@ export interface MediaLibraryModel {
   operations: MediaOperationName[]
   maxImages: number
   maxVideos: number
+  maxAudios?: number
   params: string[]
 }
 
