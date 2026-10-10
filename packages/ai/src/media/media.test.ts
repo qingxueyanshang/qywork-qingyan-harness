@@ -288,7 +288,7 @@ describe('openai_images', () => {
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(MediaError)
     expect((err as MediaError).status).toBe(400)
-    expect((err as MediaError).message).toBe('HTTP 400：Invalid size')
+    expect((err as MediaError).message).toBe('HTTP 400 请求无效：Invalid size')
     expect(seen).toHaveLength(1)
   })
 

@@ -259,7 +259,7 @@ describe('dashscope_videos', () => {
     const failed = await rejection(
       adapter().run({ operation: 'text_to_video', prompt: 'x', inputs: [], params: {} }, opts()),
     )
-    expect(failed.message).toContain('DataInspectionFailed')
+    expect(failed.message).toBe('远端任务失败：DataInspectionFailed：不合规')
     expect(failed.pendingTaskId).toBeUndefined()
 
     polls = [
@@ -527,6 +527,35 @@ describe('ark_videos', () => {
       { bytes: JPEG, mime: 'image/jpeg' },
     ])
   })
+
+  test('远端失败显示错误码与原文；超时终止没有错误内容时显示状态说明', async () => {
+    const adapter = buildMediaAdapter({
+      kind: 'ark_videos',
+      model: 'doubao-seedance-2-5-260628',
+      apiKey: 'sk-ark',
+      baseUrl: `${origin()}/api/v3`,
+    })
+    const req = { operation: 'text_to_video' as const, prompt: '雨夜', inputs: [], params: {} }
+    for (const [body, message] of [
+      [
+        {
+          status: 'failed',
+          error: {
+            code: 'OutputVideoSensitiveContentDetected',
+            message: '生成的视频可能包含敏感信息',
+          },
+        },
+        '远端任务失败：OutputVideoSensitiveContentDetected：生成的视频可能包含敏感信息',
+      ],
+      [{ status: 'expired', error: null }, '远端任务失败：任务超过过期时间未完成，已被终止'],
+    ] as const) {
+      submit = () => Response.json({ id: 'cgt-2' })
+      polls = [() => Response.json(body)]
+      const failed = await rejection(adapter.run(req, opts()))
+      expect(failed.message).toBe(message)
+      expect(failed.pendingTaskId).toBeUndefined()
+    }
+  })
 })
 
 describe('kling_videos', () => {
@@ -671,7 +700,7 @@ describe('kling_videos', () => {
       contents: [{ type: 'prompt' }, { type: 'refer_image' }],
       settings: { aspect_ratio: '1:1' },
     })
-    expect(failed.message).toContain('内容不合规')
+    expect(failed.message).toBe('远端任务失败：内容不合规')
     expect(failed.pendingTaskId).toBeUndefined()
 
     submit = () => Response.json({ code: 1201, message: 'model not supported' })

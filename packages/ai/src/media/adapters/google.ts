@@ -3,7 +3,7 @@ import type { MediaKind } from '@qywork/core'
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, defined, download, getJson, postJson, sniffMime } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
-import { afterSubmit, type TaskState, waitTask } from '../task.ts'
+import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
@@ -30,6 +30,24 @@ function connection(profile: MediaProfile) {
     base: url.href.replace(/\/+$/, ''),
     auth: { 'x-goog-api-key': profile.apiKey, ...profile.headers },
   }
+}
+
+/** 交互的终止状态及其说明。 */
+const ENDED: Record<string, string> = {
+  failed: '任务失败',
+  cancelled: '任务已取消',
+  incomplete: '任务结束但结果不完整',
+}
+
+/**
+ * 交互未成功时的原因。接口参考把错误放在 `errors[]`，示例代码读取 `error`，两处都是官方字段。
+ */
+function interactionFailure(body: Record<string, unknown>): string {
+  const error = (Array.isArray(body.errors) ? body.errors[0] : body.error) as
+    | { code?: unknown; message?: unknown }
+    | undefined
+  const status = String(body.status ?? '')
+  return failureDetail(error?.code, error?.message, ENDED[status] ?? `未知任务状态 ${status}`)
 }
 
 /** API 凭证只用于同源文件端点；其他结果地址按公开临时链接下载。 */
@@ -139,7 +157,9 @@ export class GeminiMediaAdapter implements MediaAdapter {
       if (type === 'image') {
         if (initial.status !== 'completed' || outputs(initial, type).length === 0) {
           throw new MediaError(
-            `Gemini 没有返回图片：${JSON.stringify(initial.error ?? initial.status ?? '空结果').slice(0, 500)}`,
+            initial.status === 'completed'
+              ? '接口没有返回图片'
+              : `接口没有返回图片：${interactionFailure(initial)}`,
           )
         }
         const sources: MediaImageResult['sources'] = outputs(initial, 'image').map((part) => {
@@ -170,14 +190,14 @@ export class GeminiMediaAdapter implements MediaAdapter {
           if (outputs(body, type).length === 0)
             return {
               state: 'failed',
-              message: `Gemini 任务完成但没有返回${type === 'image' ? '图片' : '视频'}`,
+              message: `任务完成但没有返回${type === 'image' ? '图片' : '视频'}`,
             }
           return { state: 'done', body }
         }
         if (status === 'in_progress' || status === 'queued') return { state: 'pending', status }
         return {
           state: 'failed',
-          message: `Gemini ${status || '未知任务状态'}：${JSON.stringify(body.error ?? body.status ?? '').slice(0, 500)}`,
+          message: interactionFailure(body),
         }
       }, opts)
       return this.readResult(done.body, type, base, auth, opts.signal)
@@ -265,8 +285,10 @@ export class VeoVideosAdapter implements MediaAdapter {
             return { state: 'failed', message: 'Veo 任务号格式无效' }
           }
           const body = await getJson(`${base}/${id}`, auth, opts.signal)
-          if (body.error)
-            return { state: 'failed', message: JSON.stringify(body.error).slice(0, 500) }
+          // `error.code` 是 google.rpc.Code 的数值，不是 HTTP 状态码，只显示原文。
+          const error = body.error as { message?: unknown } | undefined
+          if (error)
+            return { state: 'failed', message: failureDetail(undefined, error.message, '任务失败') }
           if (body.done !== true) return { state: 'pending', status: 'processing' }
           const response = body.response as
             | {
@@ -284,7 +306,7 @@ export class VeoVideosAdapter implements MediaAdapter {
             ? { state: 'done', uris }
             : {
                 state: 'failed',
-                message: `Veo 没有返回视频：${result?.raiMediaFilteredReasons?.join('；') ?? '空结果'}`,
+                message: `没有返回视频：${result?.raiMediaFilteredReasons?.join('；') ?? '空结果'}`,
               }
         },
         opts,

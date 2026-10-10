@@ -43,6 +43,17 @@ export function taskPhase(status: string): TaskPhase | null {
   return PHASES[status.toLowerCase()] ?? null
 }
 
+/**
+ * 远端报告失败时显示的原因：错误码与错误信息原文；两者都没有时使用该状态的说明。
+ * 不显示 `failed` / `FAILED` 等状态值本身，它与「远端任务失败」重复。
+ */
+export function failureDetail(code: unknown, message: unknown, fallback: string): string {
+  const parts = [code, message].flatMap((v) =>
+    (typeof v === 'string' && v.trim()) || typeof v === 'number' ? [String(v).trim()] : [],
+  )
+  return parts.length ? parts.join('：').slice(0, 500) : fallback
+}
+
 /** 任务完成：结果地址与查询结果中的计量。 */
 export type TaskDone<T = TaskOutput> = Extract<TaskState<T>, { state: 'done' }>
 

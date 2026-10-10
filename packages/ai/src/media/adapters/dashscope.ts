@@ -13,7 +13,7 @@ import {
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, dataUri, defined, download, getJson, postJson, send, sniffMime } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
-import { afterSubmit, type TaskState, waitTask } from '../task.ts'
+import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   type MediaCancel,
@@ -31,6 +31,12 @@ import {
 const SYNC_PATH = '/api/v1/services/aigc/multimodal-generation/generation'
 /** 视频任务。只支持异步：不带 `X-DashScope-Async: enable` 时接口直接报错。 */
 const VIDEO_PATH = '/api/v1/services/aigc/video-generation/video-synthesis'
+/** 任务的终止状态及其说明；任务号超过 24 小时保留期后查询返回 `UNKNOWN`。 */
+const ENDED: Record<string, string> = {
+  FAILED: '任务失败',
+  CANCELED: '任务已取消',
+  UNKNOWN: '任务不存在或已超过保留期',
+}
 
 export class DashScopeImagesAdapter implements MediaAdapter {
   readonly kind = 'dashscope_images' as const
@@ -274,12 +280,8 @@ export class DashScopeVideosAdapter implements MediaAdapter {
       }
       return { state: 'failed', message: '任务成功但没有返回视频地址' }
     }
-    if (status === 'FAILED' || status === 'CANCELED' || status === 'UNKNOWN') {
-      return {
-        state: 'failed',
-        message: `${status} ${String(out.code ?? '')} ${String(out.message ?? '')}`.trim(),
-      }
-    }
+    const ended = ENDED[status]
+    if (ended) return { state: 'failed', message: failureDetail(out.code, out.message, ended) }
     return { state: 'pending', status: status || 'PENDING' }
   }
 

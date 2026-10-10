@@ -12,7 +12,7 @@
 import type { Currency } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation } from '../catalog.ts'
 import { count, defined, download, getJson, postJson } from '../http.ts'
-import { afterSubmit, type TaskState, waitTask } from '../task.ts'
+import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
@@ -132,7 +132,7 @@ export class KlingVideosAdapter implements MediaAdapter {
       return { state: 'failed', message: '任务成功但没有返回视频地址' }
     }
     if (status === 'failed') {
-      return { state: 'failed', message: `failed ${String(task?.message ?? '')}`.trim() }
+      return { state: 'failed', message: failureDetail(undefined, task?.message, '任务失败') }
     }
     return { state: 'pending', status: status || 'submitted' }
   }

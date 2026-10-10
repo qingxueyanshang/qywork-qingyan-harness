@@ -8,7 +8,7 @@
 
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, dataUri, defined, download, getJson, postJson, send } from '../http.ts'
-import { afterSubmit, type TaskState, waitTask } from '../task.ts'
+import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   type MediaCancel,
@@ -22,6 +22,13 @@ import {
 } from '../types.ts'
 
 const DEFAULT_BASE = 'https://ark.cn-beijing.volces.com/api/v3'
+
+/** 任务的终止状态及其说明；`expired` 为排队中或运行中超过 `execution_expires_after` 后被终止。 */
+const ENDED: Record<string, string> = {
+  failed: '任务失败',
+  cancelled: '任务已取消',
+  expired: '任务超过过期时间未完成，已被终止',
+}
 
 const ROLE: Record<MediaInput['role'], string> = {
   first_frame: 'first_frame',
@@ -152,12 +159,10 @@ export class ArkVideosAdapter implements MediaAdapter {
       }
       return { state: 'failed', message: '任务成功但没有返回视频地址' }
     }
-    if (status === 'failed' || status === 'cancelled' || status === 'expired') {
+    const ended = ENDED[status]
+    if (ended) {
       const error = body.error as { code?: unknown; message?: unknown } | undefined
-      return {
-        state: 'failed',
-        message: `${status} ${String(error?.code ?? '')} ${String(error?.message ?? '')}`.trim(),
-      }
+      return { state: 'failed', message: failureDetail(error?.code, error?.message, ended) }
     }
     return { state: 'pending', status: status || 'queued' }
   }

@@ -201,7 +201,7 @@ describe('生成端口', () => {
     reply = () =>
       Response.json({ code: 'InvalidParameter', message: 'size 不合法' }, { status: 400 })
     const out = await makeMediaPort(config()).generate(call(), signal())
-    expect(!out.ok && out.message).toBe('qwen / qwen-image-3.0：HTTP 400：size 不合法')
+    expect(!out.ok && out.message).toBe('qwen / qwen-image-3.0：HTTP 400 请求无效：size 不合法')
   })
 
   test('成功时按接口返回的计量给出花费（记账与本次调用各一份，数值相同），失败时不给出', async () => {
