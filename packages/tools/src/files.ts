@@ -6,7 +6,7 @@
  * 1. **新建不覆盖；修改前必须已读取。** edit/write 的修改模式要求先读取且内容未变。
  *    该规则防止模型基于过期内容覆盖用户刚做的修改：此类覆盖代价最高，
  *    且通常很晚才被发现。
- * 2. **edit 的 old_string 必须唯一命中。** 命中 0 次或多次都是失败，不推测为第一处。
+ * 2. **edit 每一项的 old_string 必须唯一命中。** 命中 0 次或多次的项不写入，不推测为第一处。
  *    推测错误时会静默修改错误的位置。
  */
 
@@ -739,18 +739,31 @@ export const writeFileTool: ToolSpec = {
 export const editFileTool: ToolSpec = {
   name: 'edit_file',
   description:
-    '在文件中把一段精确文本替换为另一段。old_string 必须在文件中恰好出现一次：' +
-    '出现 0 次或多次都会失败并返回实际次数，此时请加长 old_string 使其唯一。' +
+    '在一个文件中按顺序执行一组精确文本替换，同一文件的多处修改放在同一次调用的 edits 中。' +
+    '每一项的 old_string 必须在文件中恰好出现一次：出现 0 次或多次时该项不写入，回执给出实际次数，' +
+    '此时请加长 old_string 使其唯一。各项依次在前一项替换后的内容上执行；命中的项写入文件，' +
+    '未写入的项在回执中逐项列出，只需重新提交这些项。' +
     '调用前必须先 read_file。修改已有文件优先使用本工具：替换范围由 old_string 限定，不影响文件其余内容。',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: '工作区相对路径' },
-      old_string: { type: 'string', description: '要被替换的原文，需含足够上下文以保证唯一' },
-      new_string: { type: 'string', description: '替换后的文本' },
-      replace_all: { type: 'boolean', description: '为 true 时替换全部出现处' },
+      edits: {
+        type: 'array',
+        description: '按顺序执行的替换',
+        items: {
+          type: 'object',
+          properties: {
+            old_string: { type: 'string', description: '要被替换的原文，需含足够上下文以保证唯一' },
+            new_string: { type: 'string', description: '替换后的文本' },
+            replace_all: { type: 'boolean', description: '为 true 时替换全部出现处' },
+          },
+          required: ['old_string', 'new_string'],
+          additionalProperties: false,
+        },
+      },
     },
-    required: ['path', 'old_string', 'new_string'],
+    required: ['path', 'edits'],
     additionalProperties: false,
   },
   actionKind: 'edit',
@@ -764,9 +777,10 @@ export const editFileTool: ToolSpec = {
     const abs = await resolveWritablePath(rootsOf(ctx), String(args.path), {
       mustExist: true,
     })
-    const oldStr = String(args.old_string)
-    const newStr = String(args.new_string)
-    const replaceAll = args.replace_all === true
+    const edits = Array.isArray(args.edits) ? (args.edits as Record<string, unknown>[]) : []
+    if (edits.length === 0) {
+      return { status: 'failure', message: 'edits 不能为空', errorKind: 'invalid_tool_arguments' }
+    }
 
     const current = await readFile(abs, 'utf8')
     const seen = readHashes(ctx).get(abs)
@@ -794,32 +808,47 @@ export const editFileTool: ToolSpec = {
      *
      * 只替换命中的片段，其余字节原样保留：混合行尾的文件不会因一次单行编辑
      * 被整份重写。
+     *
+     * 各项逐一生效，未命中的项跳过。不要改为整组不写入：一项未命中即须重发全部项。
      */
-    const hits = oldStr
-      ? [...current.matchAll(new RegExp(eolInsensitivePattern(oldStr), 'g'))].map((m) => ({
-          at: m.index,
-          len: m[0].length,
-        }))
-      : []
-    if (hits.length === 0) {
-      return { status: 'failure', message: 'old_string 未在文件中找到', errorKind: 'no_match' }
-    }
-    if (hits.length > 1 && !replaceAll) {
-      return {
-        status: 'failure',
-        message: `old_string 命中 ${hits.length} 处，不唯一。请加长上下文，或设 replace_all=true。`,
-        errorKind: 'ambiguous_match',
-      }
-    }
-    const occurrences = hits.length
-
-    // 替换片段按文件的主导行尾编码。从后向前拼接：从前向后拼接时，前一次替换会使后续下标全部偏移。
-    const replacement = fromLf(newStr, dominantEol(current))
+    const eol = dominantEol(current)
     let next = current
-    for (let i = (replaceAll ? hits.length : 1) - 1; i >= 0; i--) {
-      const hit = hits[i]
-      if (!hit) continue
-      next = next.slice(0, hit.at) + replacement + next.slice(hit.at + hit.len)
+    const skipped: { index: number; message: string; errorKind: 'no_match' | 'ambiguous_match' }[] =
+      []
+    edits.forEach((edit, index) => {
+      const oldStr = String(edit.old_string ?? '')
+      const replaceAll = edit.replace_all === true
+      const hits = oldStr
+        ? [...next.matchAll(new RegExp(eolInsensitivePattern(oldStr), 'g'))].map((m) => ({
+            at: m.index,
+            len: m[0].length,
+          }))
+        : []
+      if (hits.length === 0) {
+        skipped.push({ index, message: 'old_string 未在文件中找到', errorKind: 'no_match' })
+        return
+      }
+      if (hits.length > 1 && !replaceAll) {
+        skipped.push({
+          index,
+          message: `old_string 命中 ${hits.length} 处，不唯一。请加长上下文，或设 replace_all=true`,
+          errorKind: 'ambiguous_match',
+        })
+        return
+      }
+      // 替换片段按文件的主导行尾编码。从后向前拼接：从前向后拼接时，前一次替换会使后续下标全部偏移。
+      const replacement = fromLf(String(edit.new_string ?? ''), eol)
+      for (let i = (replaceAll ? hits.length : 1) - 1; i >= 0; i--) {
+        const hit = hits[i]
+        if (!hit) continue
+        next = next.slice(0, hit.at) + replacement + next.slice(hit.at + hit.len)
+      }
+    })
+
+    const notes = skipped.map((s) => `第 ${s.index + 1} 项未写入：${s.message}`)
+    const first = skipped[0]
+    if (skipped.length === edits.length && first) {
+      return { status: 'failure', message: notes.join('\n'), errorKind: first.errorKind }
     }
     await writeFile(abs, next, 'utf8')
     readHashes(ctx).set(abs, hash(next))
@@ -829,11 +858,17 @@ export const editFileTool: ToolSpec = {
       changeType: 'modified',
       ...countDiff(current, next),
     }
-    return {
-      status: 'success',
-      message: `编辑 ${change.path}（${occurrences} 处）`,
-      fileChanges: [change],
+    const written = `编辑 ${change.path}（${edits.length - skipped.length}/${edits.length} 项已写入）`
+    // 部分写入记为失败：文件已改动，但请求未全部完成；fileChanges 照常记录实际改动。
+    if (first) {
+      return {
+        status: 'failure',
+        message: [written, ...notes].join('\n'),
+        errorKind: first.errorKind,
+        fileChanges: [change],
+      }
     }
+    return { status: 'success', message: written, fileChanges: [change] }
   },
 }
 

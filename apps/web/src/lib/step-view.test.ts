@@ -404,6 +404,19 @@ describe('diff 提取', () => {
     expect(d?.added).toBe('+ b')
   })
 
+  test('edits 数组逐项提取，按顺序合并删除与新增两侧', () => {
+    const d = diffFrom({
+      path: 'a.md',
+      edits: [
+        { old_string: '时长 6 秒', new_string: '时长 30 秒' },
+        { old_string: '时长 7 秒', new_string: '时长 28 秒' },
+      ],
+    })
+    expect(d?.removed).toBe('- 时长 6 秒\n- 时长 7 秒\n')
+    expect(d?.added).toBe('+ 时长 30 秒\n+ 时长 28 秒')
+    expect(diffFrom({ edits: [] })).toBeNull()
+  })
+
   test('只有一侧时同样成立：新建与删除都是合法的编辑', () => {
     expect(diffFrom({ new_string: 'only' })?.removed).toBe('')
     expect(diffFrom({ old_string: 'only' })?.added).toBe('')

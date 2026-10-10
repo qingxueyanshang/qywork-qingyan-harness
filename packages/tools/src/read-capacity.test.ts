@@ -165,7 +165,10 @@ describe('失败的读取不计为已读', () => {
     expect((await r.execute('read_file', { path: 'big.ts', offset: 'x' }, c)).status).toBe(
       'failure',
     )
-    const edit = { path: 'big.ts', old_string: `const v7 = f(7)`, new_string: `const v7 = f(70)` }
+    const edit = {
+      path: 'big.ts',
+      edits: [{ old_string: `const v7 = f(7)`, new_string: `const v7 = f(70)` }],
+    }
     expect((await r.execute('edit_file', edit, c)).status).toBe('failure')
   })
 })

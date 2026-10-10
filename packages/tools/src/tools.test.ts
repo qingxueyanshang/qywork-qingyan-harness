@@ -555,9 +555,7 @@ describe('文件工具', () => {
       'edit_file',
       {
         path: out.data?.path,
-        old_string: '新作品',
-        new_string: '调整标题',
-        replace_all: true,
+        edits: [{ old_string: '新作品', new_string: '调整标题', replace_all: true }],
       },
       c,
     )
@@ -840,7 +838,7 @@ describe('文件工具', () => {
       await r.execute('read_file', { path: 'a.txt' }, { ...ctx(root), reads })
       const out = await r.execute(
         'edit_file',
-        { path: 'a.txt', old_string: 'world', new_string: 'there' },
+        { path: 'a.txt', edits: [{ old_string: 'world', new_string: 'there' }] },
         { ...ctx(root), reads },
       )
       expect(out.status).toBe('success')
@@ -853,7 +851,7 @@ describe('文件工具', () => {
       await r.execute('read_file', { path: 'a.txt' }, ctx(root))
       const out = await r.execute(
         'edit_file',
-        { path: 'a.txt', old_string: 'world', new_string: 'there' },
+        { path: 'a.txt', edits: [{ old_string: 'world', new_string: 'there' }] },
         ctx(root),
       )
       expect(out.status).toBe('failure')
@@ -869,7 +867,7 @@ describe('文件工具', () => {
       await writeFile(join(root, 'a.txt'), 'hello\nworld\nplus\n', 'utf8')
       const out = await r.execute(
         'edit_file',
-        { path: 'a.txt', old_string: 'world', new_string: 'there' },
+        { path: 'a.txt', edits: [{ old_string: 'world', new_string: 'there' }] },
         { ...ctx(root), reads },
       )
       expect(out.status).toBe('failure')
@@ -885,7 +883,7 @@ describe('文件工具', () => {
     await r.execute('read_file', { path: 'dup.txt' }, c)
     const out = await r.execute(
       'edit_file',
-      { path: 'dup.txt', old_string: 'x', new_string: 'y' },
+      { path: 'dup.txt', edits: [{ old_string: 'x', new_string: 'y' }] },
       c,
     )
     expect(out.status).toBe('failure')
@@ -900,11 +898,103 @@ describe('文件工具', () => {
     await r.execute('read_file', { path: 'src/main.ts' }, c)
     const out = await r.execute(
       'edit_file',
-      { path: 'src/main.ts', old_string: '42', new_string: '43' },
+      { path: 'src/main.ts', edits: [{ old_string: '42', new_string: '43' }] },
       c,
     )
     expect(out.status).toBe('success')
     expect(await readFile(join(root, 'src', 'main.ts'), 'utf8')).toBe('export const answer = 43\n')
+  })
+
+  test('一次调用按顺序执行多处替换，后一项在前一项的结果上执行', async () => {
+    const root = await workspace()
+    await writeFile(join(root, 'units.md'), '单元1 时长 6 秒\n单元2 时长 7 秒\n单元3 时长 8 秒\n')
+    const r = registry()
+    const c = ctx(root)
+    await r.execute('read_file', { path: 'units.md' }, c)
+    const out = await r.execute(
+      'edit_file',
+      {
+        path: 'units.md',
+        edits: [
+          { old_string: '单元1 时长 6 秒', new_string: '单元1 时长 30 秒' },
+          { old_string: '单元3 时长 8 秒', new_string: '单元3 时长 26 秒' },
+          { old_string: '时长 30 秒', new_string: '时长 30 秒（已确认）' },
+        ],
+      },
+      c,
+    )
+    expect(out.status).toBe('success')
+    expect(out.fileChanges?.[0]).toMatchObject({ path: 'units.md', changeType: 'modified' })
+    expect(await readFile(join(root, 'units.md'), 'utf8')).toBe(
+      '单元1 时长 30 秒（已确认）\n单元2 时长 7 秒\n单元3 时长 26 秒\n',
+    )
+    // 写入后读取记录随之更新，下一次调用无须重新读取。
+    const again = await r.execute(
+      'edit_file',
+      { path: 'units.md', edits: [{ old_string: '时长 7 秒', new_string: '时长 28 秒' }] },
+      c,
+    )
+    expect(again.status).toBe('success')
+  })
+
+  test('部分项未命中时写入其余项，回执逐项列出未写入的项', async () => {
+    const root = await workspace()
+    await writeFile(join(root, 'units.md'), 'a1\nb1\nc1\nc1\n')
+    const r = registry()
+    const c = ctx(root)
+    await r.execute('read_file', { path: 'units.md' }, c)
+    const out = await r.execute(
+      'edit_file',
+      {
+        path: 'units.md',
+        edits: [
+          { old_string: 'a1', new_string: 'a2' },
+          { old_string: 'zz', new_string: 'yy' },
+          { old_string: 'b1', new_string: 'b2' },
+          { old_string: 'c1', new_string: 'c2' },
+        ],
+      },
+      c,
+    )
+    expect(out.status).toBe('failure')
+    expect(out.errorKind).toBe('no_match')
+    expect(out.message).toContain('2/4 项已写入')
+    expect(out.message).toContain('第 2 项未写入：old_string 未在文件中找到')
+    expect(out.message).toContain('第 4 项未写入：old_string 命中 2 处')
+    expect(out.fileChanges?.[0]?.path).toBe('units.md')
+    expect(await readFile(join(root, 'units.md'), 'utf8')).toBe('a2\nb2\nc1\nc1\n')
+    // 只重新提交未写入的项即可完成，不需要重新读取。
+    const retry = await r.execute(
+      'edit_file',
+      { path: 'units.md', edits: [{ old_string: 'c1', new_string: 'c2', replace_all: true }] },
+      c,
+    )
+    expect(retry.status).toBe('success')
+    expect(await readFile(join(root, 'units.md'), 'utf8')).toBe('a2\nb2\nc2\nc2\n')
+  })
+
+  test('全部项未命中时不写入，也不记录文件改动', async () => {
+    const root = await workspace()
+    const r = registry()
+    const c = ctx(root)
+    await r.execute('read_file', { path: 'src/main.ts' }, c)
+    const out = await r.execute(
+      'edit_file',
+      {
+        path: 'src/main.ts',
+        edits: [
+          { old_string: 'missing', new_string: 'x' },
+          { old_string: 'absent', new_string: 'y' },
+        ],
+      },
+      c,
+    )
+    expect(out.status).toBe('failure')
+    expect(out.fileChanges).toBeUndefined()
+    expect(out.message).toBe(
+      '第 1 项未写入：old_string 未在文件中找到\n第 2 项未写入：old_string 未在文件中找到',
+    )
+    expect(await readFile(join(root, 'src', 'main.ts'), 'utf8')).toBe('export const answer = 42\n')
   })
 })
 
@@ -1836,7 +1926,7 @@ describe('read_file 读取大文本', () => {
       'success',
     )
     await writeFile(join(root, 'big.log'), `${body}\nappended`)
-    const edit = { path: 'big.log', old_string: 'row 7 ', new_string: 'row seven ' }
+    const edit = { path: 'big.log', edits: [{ old_string: 'row 7 ', new_string: 'row seven ' }] }
     expect((await r.execute('edit_file', edit, c)).status).toBe('failure')
     expect((await r.execute('read_file', { path: 'big.log', offset: 5, limit: 2 }, c)).status).toBe(
       'success',
@@ -1886,7 +1976,7 @@ describe('read_file 读取大文本', () => {
     const content = (read.data as { content: string }).content
     expect(content).not.toContain('\r')
     expect(content.split('\n')[2]).toBe('3\tthird')
-    const edit = { path: 'odd.txt', old_string: 'third', new_string: 'THIRD' }
+    const edit = { path: 'odd.txt', edits: [{ old_string: 'third', new_string: 'THIRD' }] }
     expect((await r.execute('edit_file', edit, c)).status).toBe('success')
   })
 })
