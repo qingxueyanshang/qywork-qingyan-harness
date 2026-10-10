@@ -1,4 +1,9 @@
-/** xAI 图片编辑使用 JSON；视频使用 request_id 提交与查询。 */
+/**
+ * xAI 图片编辑使用 JSON；视频使用 request_id 提交与查询。
+ *
+ * 图片请求固定 `response_format: 'b64_json'`，图片内容随生成响应返回。不要改为默认的 `url`：
+ * 该值是 `imgen.x.ai` 上的临时地址，需另行连接下载；客户端无法访问该域名或地址过期时，已计费的结果无法取回。
+ */
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, dataUri, defined, download, getJson, postJson } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
@@ -46,6 +51,7 @@ export class XaiImagesAdapter implements MediaAdapter {
       {
         model: this.profile.model,
         prompt: req.prompt,
+        response_format: 'b64_json',
         ...req.params,
         ...(images.length === 1 ? { image: images[0] } : images.length ? { images } : {}),
       },

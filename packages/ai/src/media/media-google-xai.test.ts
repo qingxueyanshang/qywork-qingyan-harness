@@ -432,10 +432,15 @@ describe('Veo 长任务', () => {
 })
 
 describe('xAI 生成', () => {
-  test('图片编辑发送 JSON images，实际扣费优先于目录价目', async () => {
+  /** 未请求 `b64_json` 时 xAI 返回 imgen.x.ai 上的临时地址；此处用一个无法连接的地址代替。 */
+  test('图片编辑发送 JSON images，图片内容随响应返回，实际扣费优先于目录价目', async () => {
     reply = () =>
       Response.json({
-        data: [{ b64_json: Buffer.from(PNG).toString('base64') }],
+        data: [
+          requests.at(-1)?.body?.response_format === 'b64_json'
+            ? { b64_json: Buffer.from(PNG).toString('base64'), mime_type: 'image/jpeg' }
+            : { url: 'http://127.0.0.1:1/unreachable.png' },
+        ],
         usage: { cost_in_usd_ticks: 987000000 },
       })
     const a = adapter('xai_images', 'grok-imagine-image-2.0')
@@ -461,9 +466,12 @@ describe('xAI 生成', () => {
         ],
       },
     })
+    expect(requests).toHaveLength(1)
+    expect(result.files[0]!.bytes).toEqual(PNG)
     expect(mediaCost(a.spec, result.usage!).cost).toBeCloseTo(0.0987)
     requests = []
     await a.run(request(), { signal: signal() })
+    expect(requests).toHaveLength(1)
     expect(requests[0]!.path).toBe('/v1beta/images/generations')
     expect(requests[0]!.body!.images).toBeUndefined()
   })
