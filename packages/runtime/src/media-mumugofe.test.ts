@@ -8,9 +8,11 @@ import { makeMediaPort } from './media.ts'
 import { buildTailNotes } from './prompt.ts'
 
 const MODEL = '满血sd2.5(30-10-10原生过人脸/720P)'
+const EXCLUSIVE = '专享sd2.5(30图10音/4-30秒/720p)'
 const PROMPT = '雨后咖啡馆，一位成年女性坐下阅读。\n镜头缓慢后退，人物望向窗外微笑。'
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
+const MP3 = new Uint8Array([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 0])
 const TASK = 'task_mumugofe_test'
 interface Seen {
   method: string
@@ -64,17 +66,17 @@ beforeEach(() => {
   contentStatus = 200
 })
 
-const config = (): QyConfig => ({
+const config = (model = MODEL): QyConfig => ({
   providers: {
     mumugofe: {
       kind: 'openai_chat_completions',
       apiKey: 'test-only-key',
       baseUrl: `http://127.0.0.1:${server.port}/v1`,
       models: {},
-      media: { [MODEL]: { kind: 'openai_videos' } },
+      media: { [model]: { kind: 'openai_videos' } },
     },
   },
-  mediaDefaults: { video: { provider: 'mumugofe', model: MODEL } },
+  mediaDefaults: { video: { provider: 'mumugofe', model } },
 })
 const call = (over: Partial<MediaCall> = {}): MediaCall => ({
   type: 'video',
@@ -239,3 +241,169 @@ test('远端明确失败原样返回，不下载或重新生成', async () => {
   expect(result.pendingTaskId).toBeUndefined()
   expect(seen.map((s) => s.method)).toEqual(['POST', 'GET'])
 })
+
+test('专享版独立登记能力，Agent 可见参考音频上限，不继承满血版固定时长', () => {
+  const spec = findMediaModel(EXCLUSIVE)!
+  expect(spec).toMatchObject({
+    vendor: 'Mumugofe',
+    videoFormat: 'mumugofe',
+    operations: ['text_to_video', 'reference_to_video'],
+    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10 },
+  })
+  expect(spec.price).toBeUndefined()
+  expect(mediaKindsOf(spec)).toEqual(['openai_videos'])
+  const text = buildTailNotes({
+    workspaceRoot: '/w',
+    platform: 'win32',
+    mode: 'auto',
+    mediaModels: listMediaModels(config(EXCLUSIVE)),
+  })
+    .map((n) => n.content)
+    .join('\n')
+  expect(text).toContain('参考音频最多 10 段')
+  expect(text).toContain('4–30 秒整数，使用字符串')
+  expect(findMediaModel(MODEL)!.inputs.maxAudios).toBe(0)
+})
+
+test.each([undefined, '4', '17', '30'])(
+  '专享版默认 5 秒和 4–30 秒边界原样发送字符串：%s',
+  async (seconds) => {
+    const params = seconds === undefined ? {} : { seconds, size: '720x1280' }
+    const spends: MediaSpend[] = []
+    const result = await makeMediaPort(config(EXCLUSIVE), (s) => spends.push(s)).generate(
+      call({ params }),
+      signal(),
+    )
+    expect(result).toMatchObject({ ok: true, model: EXCLUSIVE })
+    expect(seen[0]?.body).toEqual({
+      model: EXCLUSIVE,
+      prompt: PROMPT,
+      seconds: seconds ?? '5',
+      size: seconds === undefined ? '1280x720' : '720x1280',
+    })
+    expect(spends[0]).toMatchObject({ quantity: null, cost: 0 })
+  },
+)
+
+test('图片和 MP3 交错输入时按类别保持顺序，音频别名统一成 audio/mpeg', async () => {
+  const inputs = [
+    { role: 'audio' as const, bytes: MP3, mime: 'audio/mp3', path: '/voice-1.mp3' },
+    { role: 'reference' as const, bytes: PNG, mime: 'image/png', path: '/image-1.png' },
+    {
+      role: 'audio' as const,
+      bytes: new Uint8Array([...MP3, 2]),
+      mime: 'audio/mpeg',
+      path: '/voice-2.mp3',
+    },
+    {
+      role: 'reference' as const,
+      bytes: new Uint8Array([...PNG, 2]),
+      mime: 'image/png',
+      path: '/image-2.png',
+    },
+  ]
+  expect(await makeMediaPort(config(EXCLUSIVE)).generate(call({ inputs }), signal())).toMatchObject(
+    {
+      ok: true,
+    },
+  )
+  expect(seen[0]?.body).toEqual({
+    model: EXCLUSIVE,
+    prompt: PROMPT,
+    seconds: '5',
+    size: '1280x720',
+    images: [inputs[1], inputs[3]].map(
+      (i) => `data:image/png;base64,${Buffer.from(i!.bytes).toString('base64')}`,
+    ),
+    audios: [inputs[0], inputs[2]].map(
+      (i) => `data:audio/mpeg;base64,${Buffer.from(i!.bytes).toString('base64')}`,
+    ),
+  })
+})
+
+test('专享版允许单独音频参考，最多 10 段，不伪造 images 字段', async () => {
+  const inputs = Array.from({ length: 10 }, (_, i) => ({
+    role: 'audio' as const,
+    bytes: new Uint8Array([...MP3, i]),
+    mime: 'audio/mpeg',
+    path: `/voice-${i}.mp3`,
+  }))
+  expect(await makeMediaPort(config(EXCLUSIVE)).generate(call({ inputs }), signal())).toMatchObject(
+    {
+      ok: true,
+    },
+  )
+  expect(seen[0]?.body).toEqual({
+    model: EXCLUSIVE,
+    prompt: PROMPT,
+    seconds: '5',
+    size: '1280x720',
+    audios: inputs.map((i) => `data:audio/mpeg;base64,${Buffer.from(i.bytes).toString('base64')}`),
+  })
+})
+
+test.each([
+  ['reference', 31],
+  ['audio', 11],
+] as const)('专享版素材数量越界时不提交：%s=%i', async (role, count) => {
+  const inputs = Array.from({ length: count }, () => ({
+    role,
+    bytes: role === 'audio' ? MP3 : PNG,
+    mime: role === 'audio' ? 'audio/mpeg' : 'image/png',
+    path: '/reference',
+  }))
+  expect(await makeMediaPort(config(EXCLUSIVE)).generate(call({ inputs }), signal())).toMatchObject(
+    {
+      ok: false,
+      executed: false,
+    },
+  )
+  expect(seen).toEqual([])
+})
+
+test.each([
+  { seconds: '3' },
+  { seconds: '31' },
+  { seconds: '4.5' },
+  { seconds: 4 },
+  { size: '1920x1080' },
+  { face: true },
+  { fps: 60 },
+  { temperature: 0.7 },
+])('专享版拒绝越界时长和未开放字段：%j', async (params) => {
+  expect(await makeMediaPort(config(EXCLUSIVE)).generate(call({ params }), signal())).toMatchObject(
+    {
+      ok: false,
+      executed: false,
+    },
+  )
+  expect(seen).toEqual([])
+})
+
+test.each<MediaInputRole>(['first_frame', 'last_frame', 'video'])(
+  '专享版未声明的素材类型在提交前拒绝：%s',
+  async (role) => {
+    expect(
+      await makeMediaPort(config(EXCLUSIVE)).generate(
+        call({ inputs: [{ role, bytes: MP4, mime: 'video/mp4', path: '/ref.mp4' }] }),
+        signal(),
+      ),
+    ).toMatchObject({ ok: false, executed: false })
+    expect(seen).toEqual([])
+  },
+)
+
+test.each(['audio/wav', 'audio/mp4', 'audio/mpeg'])(
+  '专享版拒绝非 MP3 内容，不因 MIME 标签而改写格式：%s',
+  async (mime) => {
+    const result = await makeMediaPort(config(EXCLUSIVE)).generate(
+      call({ inputs: [{ role: 'audio', bytes: MP4, mime, path: '/voice.mp3' }] }),
+      signal(),
+    )
+    expect(result).toMatchObject({ ok: false })
+    if (result.ok) throw new Error('expected failure')
+    expect(result.message).toContain('仅支持 MP3')
+    expect(result.message).toContain('未提交生成')
+    expect(seen).toEqual([])
+  },
+)

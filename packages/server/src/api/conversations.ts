@@ -150,6 +150,7 @@ export interface MediaLibraryModel {
   operations: MediaOperation[]
   maxImages: number
   maxVideos: number
+  maxAudios?: number
   params: string[]
 }
 
@@ -385,6 +386,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       operations: [...spec.operations],
       maxImages: spec.inputs.maxImages,
       maxVideos: spec.inputs.maxVideos,
+      maxAudios: spec.inputs.maxAudios ?? 0,
       params: spec.params.map(describeParam),
     }))
     const res: ModelsResponse = {

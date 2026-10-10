@@ -316,6 +316,7 @@ function mediaModelsNote(models: MediaModelEntry[]): string {
       const limits = [
         spec.inputs.maxImages ? `参考图最多 ${spec.inputs.maxImages} 张` : '',
         spec.inputs.maxVideos ? `参考视频最多 ${spec.inputs.maxVideos} 个` : '',
+        spec.inputs.maxAudios ? `参考音频最多 ${spec.inputs.maxAudios} 段` : '',
       ]
         .filter(Boolean)
         .join('、')

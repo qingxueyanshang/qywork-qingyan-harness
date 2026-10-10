@@ -115,6 +115,12 @@ test('官方及渠道模型均使用目录协议，模型库显示对应页签',
   const { ModelSettings } = await import('./ModelSettings.tsx')
   const cases: { id: string; kind: MediaKind; baseUrl: string; vendor: string }[] = [
     {
+      id: '专享sd2.5(30图10音/4-30秒/720p)',
+      kind: 'openai_videos',
+      baseUrl: 'https://api.mumugofe.com/v1',
+      vendor: 'Mumugofe',
+    },
+    {
       id: '满血sd2.5(30-10-10原生过人脸/720P)',
       kind: 'openai_videos',
       baseUrl: 'https://api.mumugofe.com/v1',
@@ -366,6 +372,42 @@ test('模型库按类别分页签；生成类一张表，厂商是一列，参�
     const row = table?.querySelector<HTMLTableRowElement>('tr.lib-params')
     expect(row?.cells[0]?.colSpan).toBe(5)
     expect(row?.querySelectorAll('li').length).toBe(3)
+  } finally {
+    dispose()
+    host.remove()
+  }
+})
+
+test('模型库分别显示参考图和音频上限', async () => {
+  const { render } = await import('solid-js/web')
+  const { ModelLibrary } = await import('./ModelLibrary.tsx')
+  const model: MediaLibraryModel = {
+    id: '专享sd2.5(30图10音/4-30秒/720p)',
+    label: '专享 SD2.5 · 720P · 4–30秒',
+    vendor: 'Mumugofe',
+    kind: 'openai_videos',
+    kinds: ['openai_videos'],
+    output: 'video',
+    operations: ['text_to_video', 'reference_to_video'],
+    maxImages: 30,
+    maxVideos: 0,
+    maxAudios: 10,
+    params: ['seconds：4–30 秒整数，使用字符串'],
+  }
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(
+    () => <ModelLibrary vendors={[]} media={[model]} loading={false} error={null} />,
+    host,
+  )
+  try {
+    fire(
+      Array.from(host.querySelectorAll<HTMLButtonElement>('.lib-tab')).find(
+        (t) => t.textContent === '视频',
+      )!,
+      'click',
+    )
+    expect(host.querySelector('.lib-table.media')?.textContent).toContain('图≤30、音频≤10')
   } finally {
     dispose()
     host.remove()

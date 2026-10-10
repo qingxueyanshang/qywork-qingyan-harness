@@ -8,7 +8,7 @@
 import { mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, getJson, postJson } from '../http.ts'
+import { count, dataUri, defined, download, getJson, postJson, sniffMime } from '../http.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
@@ -28,12 +28,27 @@ async function payloadOf(
   spec: MediaModelSpec,
 ): Promise<Record<string, unknown>> {
   switch (spec.videoFormat) {
-    case 'mumugofe':
-      // 画布省略处于默认值的参数；该渠道仍显式发送目录中实测的时长和尺寸。
+    case 'mumugofe': {
+      const images: string[] = []
+      const audios: string[] = []
+      for (const input of req.inputs) {
+        if (input.role === 'reference') images.push(dataUri(input.bytes, input.mime))
+        else if (input.role === 'audio' && spec.inputs.maxAudios) {
+          if (sniffMime(input.bytes) !== 'audio/mpeg') {
+            throw new MediaError('该模型的参考音频仅支持 MP3，请先转换为 MP3；未提交生成')
+          }
+          audios.push(dataUri(input.bytes, 'audio/mpeg'))
+        } else {
+          throw new MediaError('该模型尚未接通此类参考素材；未提交生成')
+        }
+      }
+      // 画布省略处于默认值的参数；该渠道仍显式发送目录中声明的时长和尺寸。
       return {
         ...mediaParamValues(spec.params, req.params),
-        ...(req.inputs.length ? { images: req.inputs.map((i) => dataUri(i.bytes, i.mime)) } : {}),
+        ...(images.length ? { images } : {}),
+        ...(audios.length ? { audios } : {}),
       }
+    }
     case 'dashscope':
       return { metadata: await dashScopeVideoPayload(req, spec, (i) => dataUri(i.bytes, i.mime)) }
     case 'ark':

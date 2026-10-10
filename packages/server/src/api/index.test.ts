@@ -496,6 +496,34 @@ describe('模型目录', () => {
     ])
   })
 
+  test('专享 SD2.5 将音频上限和原生时长选项同步到模型库与画布', async () => {
+    const id = '专享sd2.5(30图10音/4-30秒/720p)'
+    const d = withConfig('openai_chat_completions', 'm')
+    d.config.providers.p!.media = { [id]: { kind: 'openai_videos' } }
+    const response = await body(d)
+    expect(response.mediaLibrary.find((m) => m.id === id)).toMatchObject({
+      vendor: 'Mumugofe',
+      kinds: ['openai_videos'],
+      maxImages: 30,
+      maxVideos: 0,
+      maxAudios: 10,
+    })
+    const model = response.media.find((m) => m.id === id)!
+    expect(model.operations).toEqual(['text_to_video', 'reference_to_video'])
+    const seconds = model.params.find((p) => p.name === 'seconds')!
+    expect(seconds.type).toBe('enum')
+    expect(seconds.default).toBe('5')
+    expect(seconds.values).toHaveLength(27)
+    expect(seconds.values?.[0]).toBe('4')
+    expect(seconds.values?.at(-1)).toBe('30')
+    expect(seconds.valueLabels?.['4']).toBe('4秒')
+    expect(model.params.find((p) => p.name === 'size')?.shapes).toEqual([
+      { ratio: '16:9', tier: '720P', value: '1280x720' },
+      { ratio: '9:16', tier: '720P', value: '720x1280' },
+    ])
+    expect(model.params.map((p) => p.name)).toEqual(['seconds', 'size'])
+  })
+
   test('新编码模型只列出一行，保留订阅限制与未知单价', async () => {
     const response = await body(withConfig('openai_chat_completions', 'step-5-preview'))
     expect(response.providers[0]?.models[0]).toMatchObject({
