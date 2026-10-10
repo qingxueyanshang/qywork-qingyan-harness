@@ -21,6 +21,7 @@ import type {
   MessageId,
   NodePhase,
   NodeState,
+  ProviderHedge,
   ProviderKind,
   ProviderRequest,
   ProviderRequestConfiguration,
@@ -1587,6 +1588,7 @@ export function openProviderRequest(
     cacheRouteFingerprint: input.cacheRouteFingerprint ?? null,
     sentAt: null,
     headersAt: null,
+    hedge: null,
     firstEventAt: null,
     firstContentAt: null,
     lastContentAt: null,
@@ -1644,6 +1646,17 @@ export function markProviderRequestHeaders(store: Store, id: ProviderRequestId, 
   store.db
     .query('UPDATE provider_requests SET headers_at = COALESCE(headers_at, ?) WHERE id = ?')
     .run(at, id)
+}
+
+/** 响应头之前补发的第二份请求。`hedge` 来自传输层读数：成功时经 `response_started`，失败时经诊断中的传输读数。 */
+export function markProviderRequestHedge(
+  store: Store,
+  id: ProviderRequestId,
+  hedge: ProviderHedge,
+): void {
+  store.db
+    .query('UPDATE provider_requests SET hedge_sent_at = ?, hedge_won = ? WHERE id = ?')
+    .run(hedge.sentAt, hedge.won ? 1 : 0, id)
 }
 
 /** provider 的第一个实际流事件。重复调用时保留首次的值，不被后续事件覆盖。 */
@@ -1813,6 +1826,7 @@ function rowToProviderRequest(r: ProviderRequestRow): ProviderRequest {
     cacheRouteFingerprint: r.cache_route_fingerprint,
     sentAt: r.sent_at,
     headersAt: r.headers_at,
+    hedge: r.hedge_sent_at === null ? null : { sentAt: r.hedge_sent_at, won: r.hedge_won === 1 },
     firstEventAt: r.first_event_at,
     firstContentAt: r.first_content_at,
     lastContentAt: r.last_content_at,

@@ -190,3 +190,24 @@ test('结束轮次时立即将未完成的请求置为终态，保留未发送�
     h.store.close()
   }
 })
+
+test('摘要请求的补发记录经记账接口写入同一行', () => {
+  const h = fixture('http://127.0.0.1:9/v1')
+  try {
+    const id = h.trace.open({
+      model: 'diagnostic-model',
+      system: [],
+      messages: [{ role: 'user', content: '生成摘要' }],
+      tools: [],
+      maxOutputTokens: 16,
+      idleTimeoutMs: 1_000,
+    })
+    h.trace.hedge(id, { sentAt: 1_700_000_180_000, won: true })
+    expect(listProviderRequests(h.store, h.run.id)[0]?.hedge).toEqual({
+      sentAt: 1_700_000_180_000,
+      won: true,
+    })
+  } finally {
+    h.store.close()
+  }
+})

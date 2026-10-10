@@ -9,11 +9,13 @@
  * 监督：响应头到达之后，本文件是判定响应体何时结束的唯一权威：2xx 按字节空闲计时，
  * 非 2xx 按诊断读取上限截断。适配器与 AgentLoop 不另设计时。
  *
+ * 补发：响应头之前长时间无响应时再发一份相同的请求，先取得响应头的一份被采用（`traceFetch`）。
+ *
  * 每个请求各建一份读数，经 SDK 的 `withOptions({ fetch })` 绑定到该次调用，
  * 不放在适配器实例上：同一个适配器会被并发请求共用。
  */
 
-import type { ProviderKind, ProviderTransportReading } from '@qywork/core'
+import type { ProviderHedge, ProviderKind, ProviderTransportReading } from '@qywork/core'
 import { ProviderError } from './errors.ts'
 
 export interface TransportTrace {
@@ -23,6 +25,7 @@ export interface TransportTrace {
   bytes: number
   lastByteAt: number | null
   keepAliveLines: number
+  hedge: ProviderHedge | null
 }
 
 export function newTrace(now = Date.now()): TransportTrace {
@@ -33,6 +36,7 @@ export function newTrace(now = Date.now()): TransportTrace {
     bytes: 0,
     lastByteAt: null,
     keepAliveLines: 0,
+    hedge: null,
   }
 }
 
@@ -49,6 +53,7 @@ export function readTransport(trace: TransportTrace, now = Date.now()): Provider
     bytes: trace.bytes,
     sinceLastByteMs: trace.lastByteAt === null ? null : now - trace.lastByteAt,
     keepAliveLines: trace.keepAliveLines,
+    ...(trace.hedge ? { hedge: { ...trace.hedge } } : {}),
   }
 }
 
@@ -59,9 +64,9 @@ export function readTransport(trace: TransportTrace, now = Date.now()): Provider
  * 保活注释行也是字节，到达即重置计时：上游已断开而中转站持续发送心跳时，仅凭该连接
  * 无法判定上游已断开，本层不承诺此项判定。
  *
- * 响应头到达之前不受该上限约束：部分中转站在上游思考结束后才返回响应头，该阶段只有一个上限，
- * 即 `PROVIDER_HTTP.timeout`。不要让计时从请求发出时开始：否则 180 秒会先于 600 秒
- * 中止正在思考的请求，两个超时管理同一阶段即构成两本账。
+ * 响应头到达之前不受该上限约束：部分中转站在上游产出第一段内容后才返回响应头，该阶段的期限只有一个，
+ * 即 `PROVIDER_HTTP.timeout`（`HEDGE_AFTER_MS` 只触发补发，不中断请求）。不要让计时从请求发出时开始：
+ * 否则 180 秒会先于 600 秒中止正在等待的请求，两个超时管理同一阶段即构成两本账。
  * 180 秒用于响应头之后、首个字节之前：不回传思考内容的模型在此阶段不发送任何字节。
  * 误判的代价（中止一次正常的慢请求）大于漏判（无限期挂起）。
  *
@@ -81,10 +86,101 @@ export const STREAM_IDLE_TIMEOUT_MS = 180_000
 const ERROR_BODY_TIMEOUT_MS = 2_000
 const ERROR_BODY_MAX_BYTES = 32 * 1024
 
+/**
+ * 响应头之前补发第二份请求的等待时长。只决定何时多发一份，不中断原请求。
+ * 取值：本机账本 3425 次成功请求的响应头最慢 113 秒；思考内容、思考摘要或中转站保活在响应头之后到达，
+ * 思考强度不拉长响应头之前的等待，因此不按档位放宽。
+ */
+export const HEDGE_AFTER_MS = 180_000
+
 const COLON = 0x3a
 const LF = 0x0a
 
 export type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+
+/** 可以原样再发一次的请求：地址不是 `Request` 对象，请求体缺省、为字符串或字节。流只能读取一次。 */
+function replayable(input: string | URL | Request, init: RequestInit | undefined): boolean {
+  const body = init?.body
+  return (
+    !(input instanceof Request) &&
+    (body == null ||
+      typeof body === 'string' ||
+      body instanceof Uint8Array ||
+      body instanceof ArrayBuffer)
+  )
+}
+
+type Outcome = { res: Response } | { err: unknown }
+
+interface Copy {
+  closing: AbortController
+  settled: boolean
+}
+
+/**
+ * 发出请求，响应头之前等待超过 `hedgeAfterMs` 时补发一份，返回被采用的响应与它的中止器。
+ *
+ * - 先取得 2xx 响应头的一份被采用，另一份立即中断。
+ * - 任一份失败（非 2xx 或连接错误）而另一份仍在等待时，继续等待另一份。
+ * - 两份都没有取得 2xx，或未补发时，以原请求的结果为准：非 2xx 响应照常交给错误分类，连接错误照常抛出。
+ *
+ * 补发前原请求已失败的，不再补发：连接被拒、立即被关闭等失败与现状一样立即报告。
+ */
+function firstResponse(
+  trace: TransportTrace,
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+  base: Fetch,
+  hedgeAfterMs: number,
+): Promise<{ res: Response; closing: AbortController }> {
+  const caller = init?.signal
+  return new Promise((resolve, reject) => {
+    const copies: Copy[] = []
+    let original: Outcome | undefined
+    let done = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const win = (copy: Copy, res: Response) => {
+      done = true
+      clearTimeout(timer)
+      for (const other of copies) if (other !== copy) other.closing.abort()
+      if (trace.hedge) trace.hedge.won = copy !== copies[0]
+      resolve({ res, closing: copy.closing })
+    }
+    const settle = (copy: Copy, outcome: Outcome) => {
+      copy.settled = true
+      if (done) {
+        if ('res' in outcome) copy.closing.abort()
+        return
+      }
+      if ('res' in outcome && outcome.res.ok) return win(copy, outcome.res)
+      if (copy === copies[0]) original = outcome
+      else if ('res' in outcome) copy.closing.abort()
+      if (copies.some((c) => !c.settled)) return
+      done = true
+      clearTimeout(timer)
+      if (original && 'res' in original) resolve({ res: original.res, closing: copies[0]!.closing })
+      else reject(original?.err)
+    }
+    const send = () => {
+      const copy: Copy = { closing: new AbortController(), settled: false }
+      copies.push(copy)
+      base(input, {
+        ...init,
+        signal: caller ? AbortSignal.any([caller, copy.closing.signal]) : copy.closing.signal,
+      }).then(
+        (res) => settle(copy, { res }),
+        (err: unknown) => settle(copy, { err }),
+      )
+    }
+    send()
+    if (!replayable(input, init)) return
+    timer = setTimeout(() => {
+      if (done || caller?.aborted) return
+      trace.hedge = { sentAt: Date.now(), won: false }
+      send()
+    }, hedgeAfterMs)
+  })
+}
 
 /**
  * 将一批字节记入 `trace`，返回下一批的行首状态。
@@ -216,23 +312,22 @@ async function boundedErrorBody(
  * socket 仍保持打开，服务端既收不到断开也不会释放名额。因此此处自带中止器，
  * 与调用方的停止信号并联，正文提前结束（空闲超时、调用方取消、错误正文读到上限）时
  * 中止请求。调用方的信号仍然独立有效，两者不互相替代。
+ *
+ * **响应头之前补发一份**（`firstResponse`）：计时只决定何时多发一份，不中断原请求，本身较慢的请求不会因此被丢弃；
+ * 响应头之前的期限仍由调用方的信号执行（`PROVIDER_HTTP.timeout`），到期时两份同时中止。
  */
 export function traceFetch(
   trace: TransportTrace,
   provider: ProviderKind,
   idleMs: number,
   base: Fetch = fetch,
+  hedgeAfterMs = HEDGE_AFTER_MS,
 ): Fetch {
   return async (input, init) => {
-    const closing = new AbortController()
-    const caller = init?.signal
+    const { res, closing } = await firstResponse(trace, input, init, base, hedgeAfterMs)
     const release = () => {
       closing.abort()
     }
-    const res = await base(input, {
-      ...init,
-      signal: caller ? AbortSignal.any([caller, closing.signal]) : closing.signal,
-    })
     trace.status = res.status
     trace.headersAt = Date.now()
     const body = res.body

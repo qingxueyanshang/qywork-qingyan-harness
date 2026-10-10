@@ -167,7 +167,11 @@ export class OpenAICompatAdapter implements LlmAdapter {
 
       // `asResponse()` 返回时响应头已到达，正文 SSE 尚未开始。
       // 时刻取传输层观察到响应头的时刻，而非当前时刻。
-      yield { type: 'response_started', headersAt: trace.headersAt! }
+      yield {
+        type: 'response_started',
+        headersAt: trace.headersAt!,
+        ...(trace.hedge ? { hedge: trace.hedge } : {}),
+      }
 
       let chunks = 0
       for await (const frame of readSse(res.body)) {

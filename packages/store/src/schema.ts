@@ -2246,6 +2246,18 @@ ALTER TABLE runs DROP COLUMN assistant_message_id;
      */
     sql: `ALTER TABLE runs ADD COLUMN owner_kind TEXT;`,
   },
+  {
+    id: 69,
+    name: 'provider_request_hedge',
+    /**
+     * 响应头之前补发的第二份请求：发出时刻，以及最终采用的是否为它（0/1）。两份请求都已发出、都可能计费，
+     * 逐请求表据此与服务商账单对照。NULL 表示未补发或迁移前的旧行；不回填。
+     */
+    sql: `
+ALTER TABLE provider_requests ADD COLUMN hedge_sent_at INTEGER;
+ALTER TABLE provider_requests ADD COLUMN hedge_won INTEGER;
+`,
+  },
 ]
 
 /**
@@ -2408,6 +2420,10 @@ export interface ProviderRequestRow {
   input_image_batch_id: string | null
   sent_at: number | null
   headers_at: number | null
+  /** 补发第二份请求的时刻；未补发为 NULL。 */
+  hedge_sent_at: number | null
+  /** SQLite 没有布尔类型，使用 0/1。1 表示采用的是补发的一份；未补发为 NULL。 */
+  hedge_won: number | null
   first_event_at: number | null
   first_content_at: number | null
   last_content_at: number | null
@@ -2561,6 +2577,8 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'input_image_batch_id',
     'sent_at',
     'headers_at',
+    'hedge_sent_at',
+    'hedge_won',
     'first_event_at',
     'first_content_at',
     'last_content_at',

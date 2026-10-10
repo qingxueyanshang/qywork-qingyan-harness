@@ -9,6 +9,7 @@
 import type {
   ContextGroup,
   EffortLevel,
+  ProviderHedge,
   ProviderKind,
   ProviderRequestContentKind,
   ResponseReasoning,
@@ -23,9 +24,10 @@ import type { ModelSpec, SpecOverride } from './catalog.ts'
  * 三个适配器构造 SDK 客户端时共用的传输参数。只保留这一份，不得在各适配器中分别定义。
  *
  * - `timeout` 的计时截至**响应头到达**（两个 SDK 都在 fetch 的 finally 中 `clearTimeout`，
- *   `openai-responses` 手写的定时器同样如此）。响应头到达之前只有这一个上限：部分中转站在
- *   上游思考结束后才返回响应头，实测 gemini-3.8-flash 处理「写整个游戏」的请求，响应头在 39.7 秒
- *   后到达，长上下文耗时更长。响应头到达之后由传输层按字节计时（`transport.ts` 的 `traceFetch`，
+ *   `openai-responses` 手写的定时器同样如此）。响应头到达之前只有这一个期限：部分中转站在
+ *   上游产出第一段内容后才返回响应头，实测 gemini-3.8-flash 处理「写整个游戏」的请求，响应头在 39.7 秒
+ *   后到达，长上下文耗时更长。该阶段等待超过 `HEDGE_AFTER_MS` 时传输层补发一份请求，补发不中断原请求，
+ *   不构成第二个期限。响应头到达之后由传输层按字节计时（`transport.ts` 的 `traceFetch`，
  *   上限取自 `ChatRequest.idleTimeoutMs`）。两段各有一个权威，任何一方都不得跨段计时。
  * - `maxRetries: 0`：连接失败时 SDK 默认自行重试两次，等待时间因此变为三倍。
  *   自动重发由 AgentLoop 的统一判据负责，适配器不得另设重试。
@@ -288,8 +290,10 @@ export type ProviderEvent =
    * `headersAt` 取 `TransportTrace.headersAt`，即 `fetch` 返回响应头的时刻。
    * **不要改为事件产生时的当前时刻**：该事件在 SDK 解析完首批字节之后才能发出，
    * 两者相差的毫秒数正是这一列要度量的首包等待时间。
+   *
+   * `hedge` 取 `TransportTrace.hedge`：响应头之前补发过第二份请求时存在。
    */
-  | { type: 'response_started'; headersAt: number }
+  | { type: 'response_started'; headersAt: number; hedge?: ProviderHedge }
   /*
    * 带内容的五个事件都携带 `at`：该段内容**到达本地并解析完成**的时刻。
    *

@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`loop/attempt.ts` 的逐请求账在真实 HTTP 故障下写入的记录
- * （`openRequest` / `markRequestSent` / `markRequestHeaders` / `settleRequest`），
+ * （`openRequest` / `markRequestSent` / `markRequestHeaders` / `markRequestHedge` / `settleRequest`），
  * 与 `@qywork/ai` 的 `providers/fault-server.test-helper.ts` 三协议故障端点。
  *
  * 请求账使用真实的 `@qywork/store`：断言检查的是数据库中记录行的内容，
@@ -10,7 +10,13 @@
  */
 
 import { expect, test } from 'bun:test'
-import { buildAdapter, DEFAULT_DENSITY } from '@qywork/ai'
+import {
+  buildAdapter,
+  DEFAULT_DENSITY,
+  type LlmAdapter,
+  ProviderError,
+  type ProviderEvent,
+} from '@qywork/ai'
 import {
   closedPortBaseUrl,
   type FaultServer,
@@ -24,6 +30,7 @@ import {
   markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
+  markProviderRequestHedge,
   markProviderRequestSent,
   openProviderRequest,
   Store,
@@ -33,6 +40,7 @@ import {
 import { AgentLoop, type LoopPersistence, type ToolContextBase } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
 import { MAX_RESENDS } from './attempt.ts'
+import { fakeAdapter } from './fixtures.test-helper.ts'
 
 interface Ledger {
   runId: RunId
@@ -70,6 +78,7 @@ function ledger(): Ledger {
     openRequest: (input) => openProviderRequest(store, input).id,
     markRequestSent: (id) => markProviderRequestSent(store, id as never),
     markRequestHeaders: (id, at) => markProviderRequestHeaders(store, id as never, at),
+    markRequestHedge: (id, hedge) => markProviderRequestHedge(store, id as never, hedge),
     markRequestFirstEvent: (id) => markProviderRequestFirstEvent(store, id as never),
     markRequestContent: (id, at) => markProviderRequestContent(store, id as never, at),
     settleRequest: (id, status, usage, errorCode, finishReason, errorMessage) =>
@@ -237,3 +246,69 @@ test('用量已回报后流中断：终态非 received，已收到的用量保�
     fault.stop()
   }
 }, 30_000)
+
+/**
+ * 补发记录进入请求账：两份都没有返回响应头时经诊断中的传输读数写入，补发的一份被采用时经 `response_started` 写入。
+ * 补发本身由 `@qywork/ai` 的 `transport-hedge.test.ts` 覆盖；此处的适配器直接产出带补发记录的事件。
+ */
+test('补发记录写入请求账：两份都未返回时随失败写入，补发的一份被采用时随响应头写入', async () => {
+  const led = ledger()
+  const inner = fakeAdapter([null], 'deepseek-flash')
+  let calls = 0
+  const adapter: LlmAdapter = {
+    ...inner,
+    async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+      calls++
+      yield { type: 'request_prepared', measuredInputTokens: 1 }
+      if (calls === 1) {
+        const err = new ProviderError({
+          code: 'network_error',
+          message: '连接超时',
+          provider: 'openai_responses',
+          timedOut: true,
+        })
+        err.transport = {
+          status: null,
+          headersAfterMs: null,
+          headersAt: null,
+          bytes: 0,
+          sinceLastByteMs: null,
+          keepAliveLines: 0,
+          hedge: { sentAt: 1_700_000_180_000, won: false },
+        }
+        throw err
+      }
+      yield {
+        type: 'response_started',
+        headersAt: Date.now(),
+        hedge: { sentAt: 1_700_000_360_000, won: true },
+      }
+      yield { type: 'text_delta', delta: '完成', at: Date.now() }
+      yield { type: 'done', stopReason: 'end_turn', rawStopReason: 'completed' }
+    },
+  }
+  try {
+    const loop = new AgentLoop({
+      adapter,
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      makeToolContext: baseCtx,
+      persist: led.persist,
+      sleep: async () => {},
+    })
+    for await (const _ of loop.run({
+      runId: led.runId,
+      history: [],
+      signal: new AbortController().signal,
+    })) {
+      // 只需执行完毕
+    }
+    const [failed, received] = led.rows()
+    expect(failed?.status).toBe('uncertain')
+    expect(failed?.hedge).toEqual({ sentAt: 1_700_000_180_000, won: false })
+    expect(received?.status).toBe('received')
+    expect(received?.hedge).toEqual({ sentAt: 1_700_000_360_000, won: true })
+  } finally {
+    led.close()
+  }
+})

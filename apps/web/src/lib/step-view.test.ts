@@ -87,6 +87,33 @@ describe('请求结果只显示产品文案', () => {
     )
   })
 
+  /** 补发过第二份请求时两份都可能计费，结果列须注明，逐请求表才能与服务商账单对照。 */
+  test('补发过第二份请求时在结果后注明，并区分采用的是哪一份', () => {
+    const base = {
+      finishReason: 'stop',
+      errorCode: null,
+      errorMessage: null,
+      diagnostic: null,
+    } as const
+    expect(requestOutcome({ ...base, status: 'received', hedge: { won: true } })).toBe(
+      '已完成，采用补发的一份',
+    )
+    expect(requestOutcome({ ...base, status: 'received', hedge: { won: false } })).toBe(
+      '已完成，已补发',
+    )
+    expect(requestOutcome({ ...base, status: 'received', hedge: null })).toBe('已完成')
+    expect(
+      requestOutcome({
+        ...base,
+        status: 'uncertain',
+        finishReason: '',
+        errorCode: 'network_error',
+        diagnostic: { retry: { decision: 'resend' } },
+        hedge: { won: false },
+      }),
+    ).toBe('网络连接失败，已自动重发，已补发')
+  })
+
   test('没有 provider 原文时把错误码转换为用户文案', () => {
     expect(outcome({ status: 'uncertain', errorCode: 'network_error' })).toBe('网络连接失败')
     expect(outcome({ errorCode: 'internal_error' })).toBe('内部错误')

@@ -48,6 +48,7 @@ export {
   markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
+  markProviderRequestHedge,
   markProviderRequestSent,
   markRunRunning,
   markStepExecuting,

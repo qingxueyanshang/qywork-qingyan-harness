@@ -200,7 +200,11 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
 
     // fetch 在响应头到达时 resolve，此时正文 SSE 尚未开始。将该时刻记入账本，
     // 才能区分「请求上传或中转排队」与「provider 接收请求后的预填充或思考」。
-    yield { type: 'response_started', headersAt: trace.headersAt! }
+    yield {
+      type: 'response_started',
+      headersAt: trace.headersAt!,
+      ...(trace.hedge ? { hedge: trace.hedge } : {}),
+    }
 
     try {
       for await (const frame of readSse(res.body)) {

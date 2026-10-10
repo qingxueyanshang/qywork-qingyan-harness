@@ -361,6 +361,8 @@ interface RequestOutcomeLike {
   errorCode: string | null
   errorMessage: string | null
   diagnostic: { retry: { decision: ProviderRetryDecision } } | null
+  /** 响应头之前补发的第二份请求；未提供时按未补发处理。 */
+  hedge?: { won: boolean } | null
 }
 
 function finishReasonLabel(reason: string): string {
@@ -387,8 +389,14 @@ function appendFact(base: string, fact: string): string {
  *
  * provider 原始 finish reason、错误码与重试裁决都保留在账本中，但不能直接作为界面文案；
  * 由这一个出口穷举重试裁决，避免结果列与悬浮说明各自维护一部分映射。
+ * 补发过第二份请求时追加一项：两份请求都已发出，都可能计费，逐请求表须能与服务商账单对照。
  */
 export function requestOutcome(q: RequestOutcomeLike): string {
+  const base = outcomeText(q)
+  return q.hedge ? appendFact(base, q.hedge.won ? '采用补发的一份' : '已补发') : base
+}
+
+function outcomeText(q: RequestOutcomeLike): string {
   if (q.status === 'received') {
     const label = finishReasonLabel(q.finishReason)
     // 截断与拒绝仍显示原有文案：它们正是摘要未生成的原因。
