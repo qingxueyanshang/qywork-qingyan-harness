@@ -115,6 +115,12 @@ test('官方及渠道模型均使用目录协议，模型库显示对应页签',
   const { ModelSettings } = await import('./ModelSettings.tsx')
   const cases: { id: string; kind: MediaKind; baseUrl: string; vendor: string }[] = [
     {
+      id: '满血sd2.5(30-10-10原生过人脸/720P)',
+      kind: 'openai_videos',
+      baseUrl: 'https://api.mumugofe.com/v1',
+      vendor: 'Mumugofe',
+    },
+    {
       id: 'Seedance 2.5 720p',
       kind: 'binguo_videos',
       baseUrl: 'https://binguofilm.com',

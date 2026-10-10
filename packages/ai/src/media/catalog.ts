@@ -27,6 +27,7 @@ import {
 } from '@qywork/core'
 import { BINGUO_DEFAULTS, BINGUO_MODELS } from './catalog-binguo.ts'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
+import { MUMUGOFE_MODELS } from './catalog-mumugofe.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
 
 /**
@@ -147,7 +148,7 @@ export interface MediaModelSpec {
   /** 已核实的其他协议映射；未声明的协议不继承原生参数与能力。 */
   mappings?: Partial<Record<MediaKind, MediaMapping>>
   /** 通用视频端点中厂商扩展字段的请求结构。 */
-  videoFormat?: 'dashscope' | 'ark' | 'veo' | 'kling-omni'
+  videoFormat?: 'dashscope' | 'ark' | 'veo' | 'kling-omni' | 'mumugofe'
 }
 
 type MediaMapping = Partial<
@@ -1127,6 +1128,7 @@ const SEEDANCE_25_MENTION: MentionStyle = {
 const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: '音频{n}' }
 
 const SEEDS: readonly MediaModelSpec[] = [
+  ...MUMUGOFE_MODELS,
   ...BINGUO_MODELS,
   ...GOOGLE_XAI_MODELS,
   spec(

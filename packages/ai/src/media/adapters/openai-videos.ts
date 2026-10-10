@@ -5,6 +5,7 @@
  * （须携带同一个 key）。厂商扩展结构由目录声明，素材与参数按对应结构发送。
  */
 
+import { mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, dataUri, defined, download, getJson, postJson } from '../http.ts'
@@ -27,6 +28,12 @@ async function payloadOf(
   spec: MediaModelSpec,
 ): Promise<Record<string, unknown>> {
   switch (spec.videoFormat) {
+    case 'mumugofe':
+      // 画布省略处于默认值的参数；该渠道仍显式发送目录中实测的时长和尺寸。
+      return {
+        ...mediaParamValues(spec.params, req.params),
+        ...(req.inputs.length ? { images: req.inputs.map((i) => dataUri(i.bytes, i.mime)) } : {}),
+      }
     case 'dashscope':
       return { metadata: await dashScopeVideoPayload(req, spec, (i) => dataUri(i.bytes, i.mime)) }
     case 'ark':
