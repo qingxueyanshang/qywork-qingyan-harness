@@ -32,7 +32,7 @@
     "test:office": "bun run scripts/test-office.ts",
     "test:computer-host": "cargo test --quiet --locked --manifest-path apps/desktop/native/computer-host/Cargo.toml",
     "check": "biome check --write .",
-    "version:sync": "bun run scripts/sync-version.ts",
+    "version:sync": "bun run scripts/sync-version.ts && bun run scripts/config-sample.ts",
     "smoke:serve": "bun run scripts/smoke-serve.ts",
     "smoke:responses": "bun run scripts/smoke-responses.ts",
     "smoke:compaction": "bun run scripts/compaction-fidelity.ts",

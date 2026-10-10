@@ -476,6 +476,9 @@ sidecar 这一步拦截的是只在打包时才暴露的失败（例如 Bun 升�
 
 - **发布清单的 `version`** —— 真源是根 `VERSION`，只能由 `bun run scripts/sync-version.ts`
   写入。改版本只编辑 `VERSION` 一行，**禁止手工修改任何清单**；`--check` 用于门禁。
+- **配置样本** —— 改版本后运行 `bun run version:sync`，它同时写入该版本的配置样本
+  （`scripts/config-samples/<版本>.json`）。样本冻结后不再修改；门禁用当前代码加载全部样本，
+  删除词表取值、改名或删除配置字段而没有在 `loadConfig` 中写迁移时失败。
 - **落盘数据的 schema 版本** —— 就地定义 `<域>_SCHEMA_VERSION`，写入磁盘的键按它命名。
   **不设中心登记表**——中心表就是第二本账。
 - **协议契约版本** —— 后端为真源，前端只声明支持上限。
