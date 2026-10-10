@@ -26,9 +26,51 @@ function stageOf(init: RequestInit, policy: RequestPolicy): MediaDiagnostic['sta
   return policy.stage ?? (init.method === 'GET' ? 'query' : 'generate')
 }
 
-/** 上传与生成分开诊断：素材上传失败时，生成请求尚未发出。 */
-function stageMessage(stage: MediaDiagnostic['stage'], message: string): string {
-  return stage === 'upload' ? `素材上传失败，未提交生成：${message}` : message
+/**
+ * 报错由阶段前缀与原因组成，生成阶段结果未知时另加「远端结果未知」。
+ * 素材上传失败时生成请求尚未发出；下载的前缀由 `download` 添加。
+ */
+function stageMessage(
+  stage: MediaDiagnostic['stage'],
+  reason: string,
+  facts: MediaDiagnostic,
+): string {
+  if (stage === 'upload') return `素材上传失败，未提交生成：${reason}`
+  if (stage === 'query') return `任务查询失败：${reason}`
+  return stage === 'generate' && facts.outcome === 'unknown' ? `${reason}；远端结果未知` : reason
+}
+
+/** HTTP 状态码的通用名称（RFC 9110；429 见 RFC 6585），列在服务商原文之前，原文不翻译。 */
+const STATUS_NAMES: Record<number, string> = {
+  400: '请求无效',
+  401: '未授权',
+  402: '需要付费',
+  403: '禁止访问',
+  404: '未找到',
+  408: '请求超时',
+  413: '请求内容过大',
+  422: '无法处理的内容',
+  429: '请求过多',
+  500: '服务器内部错误',
+  502: '网关错误',
+  503: '服务不可用',
+  504: '网关超时',
+}
+
+function statusName(status: number): string {
+  return STATUS_NAMES[status] ?? (status >= 500 ? '服务器错误' : '请求被拒绝')
+}
+
+/**
+ * 连接在发出请求之前失败时的原因；其余连接错误返回 null。TLS 握手完成之前不发送 HTTP 字节，
+ * 证书与握手失败同属此类：Bun 把握手失败报为 `UNKNOWN_CERTIFICATE_VERIFICATION_ERROR`。
+ * Windows 上目标地址无应答时，Bun 在 21 秒后同样报 `ConnectionRefused`。
+ */
+function unsentReason(code: string | undefined, host: string): string | null {
+  if (code === 'ConnectionRefused') return `无法连接 ${host}`
+  if (code === 'ENOTFOUND') return `无法解析域名 ${host}`
+  if (code && /CERT|TLS|UNABLE_TO_VERIFY/.test(code)) return `与 ${host} 的 TLS 握手失败`
+  return null
 }
 
 async function providerMessage(res: Response): Promise<string> {
@@ -124,31 +166,30 @@ export async function send(
       (err as { code?: unknown; cause?: { code?: unknown } })?.code ??
       (err as { cause?: { code?: unknown } })?.cause?.code
     if (typeof code === 'string') facts.code = code
+    const unsent = silence.signal.aborted ? null : unsentReason(facts.code, facts.host)
+    if (unsent && stage !== 'download') facts.outcome = 'rejected'
     const reason = silence.signal.aborted
       ? `连续 ${idleMs! / 1000} 秒未收到数据`
-      : `连接失败：${err instanceof Error ? err.message : String(err)}`
-    throw new MediaError(
-      stageMessage(
-        stage,
-        `${reason}${stage === 'generate' ? '；远端结果未知，请勿自动重新生成' : ''}`,
-      ),
-      { diagnostic: facts, cause: err },
-    )
+      : (unsent ??
+        (facts.code === 'ECONNRESET'
+          ? '连接被断开'
+          : `连接失败：${err instanceof Error ? err.message : String(err)}`))
+    throw new MediaError(stageMessage(stage, reason, facts), { diagnostic: facts, cause: err })
   } finally {
     clearTimeout(timer)
   }
   if (!res.ok) {
+    // 收到错误状态即为被拒绝：远端已报告失败，不会再返回结果，失败的请求不计费。
+    // 只有没有收到响应或响应无法解析时远端结果未知。下载失败时产物仍在远端，保持可取回。
     const facts = diagnostic('http')
-    if (stage !== 'download' && res.status >= 400 && res.status < 500 && res.status !== 408)
-      facts.outcome = 'rejected'
-    const uncertainty =
-      stage === 'generate' && facts.outcome === 'unknown' ? '；远端结果未知，请勿自动重新生成' : ''
+    if (stage !== 'download') facts.outcome = 'rejected'
     throw new MediaError(
-      stageMessage(stage, `HTTP ${res.status}：${await providerMessage(res)}${uncertainty}`),
-      {
-        status: res.status,
-        diagnostic: facts,
-      },
+      stageMessage(
+        stage,
+        `HTTP ${res.status} ${statusName(res.status)}：${await providerMessage(res)}`,
+        facts,
+      ),
+      { status: res.status, diagnostic: facts },
     )
   }
   return res
@@ -181,27 +222,20 @@ export async function sendJson(
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('响应不是对象')
     return body as Record<string, unknown>
   } catch (err) {
-    throw new MediaError(
-      stageMessage(
-        stage,
-        `接口响应无法解析${stage === 'generate' ? '；远端结果未知，请勿自动重新生成' : ''}`,
-      ),
-      {
-        cause: err,
-        diagnostic: {
-          stage,
-          kind: 'response',
-          outcome: 'unknown',
-          host: new URL(url).host,
-          elapsedMs: Date.now() - startedAt,
-          ...(idleMs === undefined ? {} : { timeoutMs: idleMs }),
-          status: res.status,
-          ...(res.headers.get('x-request-id')
-            ? { requestId: res.headers.get('x-request-id')! }
-            : {}),
-        },
-      },
-    )
+    const diagnostic: MediaDiagnostic = {
+      stage,
+      kind: 'response',
+      outcome: 'unknown',
+      host: new URL(url).host,
+      elapsedMs: Date.now() - startedAt,
+      ...(idleMs === undefined ? {} : { timeoutMs: idleMs }),
+      status: res.status,
+      ...(res.headers.get('x-request-id') ? { requestId: res.headers.get('x-request-id')! } : {}),
+    }
+    throw new MediaError(stageMessage(stage, '响应无法解析', diagnostic), {
+      cause: err,
+      diagnostic,
+    })
   }
 }
 
@@ -284,14 +318,11 @@ export async function download(
         await pause(500 * 2 ** attempt, signal)
         continue
       }
-      throw new MediaError(
-        `图片或媒体结果下载失败：${err instanceof Error ? err.message : String(err)}`,
-        {
-          ...(err instanceof MediaError && err.status !== undefined ? { status: err.status } : {}),
-          ...(err instanceof MediaError && err.diagnostic ? { diagnostic: err.diagnostic } : {}),
-          cause: err,
-        },
-      )
+      throw new MediaError(`结果下载失败：${err instanceof Error ? err.message : String(err)}`, {
+        ...(err instanceof MediaError && err.status !== undefined ? { status: err.status } : {}),
+        ...(err instanceof MediaError && err.diagnostic ? { diagnostic: err.diagnostic } : {}),
+        cause: err,
+      })
     }
   }
 }

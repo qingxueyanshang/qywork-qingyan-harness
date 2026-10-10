@@ -297,13 +297,23 @@ describe('Gemini Interactions', () => {
   /** 原始失败形状：查询遇到一次网络波动即结束等待，远端仍在生成的任务只能事后取回。 */
   test('远端失败与空产物是终态；查询遇到可重发的失败时继续查询，被拒绝时保留任务号', async () => {
     const a = adapter('gemini_videos', 'gemini-omni-1.1-flash')
-    for (const body of [
-      { id: 'task-1', status: 'failed', error: { message: 'blocked' } },
-      { id: 'task-1', status: 'completed', steps: [] },
-    ]) {
+    for (const [body, message] of [
+      [{ id: 'task-1', status: 'failed', error: { message: 'blocked' } }, '远端任务失败：blocked'],
+      [
+        {
+          id: 'task-1',
+          status: 'failed',
+          errors: [{ code: 'content_blocked', message: 'blocked' }],
+        },
+        '远端任务失败：content_blocked：blocked',
+      ],
+      [{ id: 'task-1', status: 'cancelled' }, '远端任务失败：任务已取消'],
+      [{ id: 'task-1', status: 'completed', steps: [] }, '远端任务失败：任务完成但没有返回视频'],
+    ] as const) {
       reply = () => Response.json(body)
       const err = await a.run(request(), { signal: signal() }).catch((e: unknown) => e)
       expect(err).toBeInstanceOf(MediaError)
+      expect((err as MediaError).message).toBe(message)
       expect((err as MediaError).pendingTaskId).toBeUndefined()
     }
     let queries = 0
@@ -580,16 +590,23 @@ describe('xAI 生成', () => {
 
   test('xAI 失败、过期、审核失败均不作为可取回任务', async () => {
     const a = adapter('xai_videos', 'grok-imagine-video-1.5')
-    for (const body of [
-      { status: 'failed', error: { message: 'invalid' } },
-      { status: 'expired' },
-      { status: 'done', video: { respect_moderation: false, url: `${base()}/video.mp4` } },
-    ]) {
+    for (const [body, message] of [
+      [
+        { status: 'failed', error: { code: 'invalid_argument', message: 'invalid' } },
+        '远端任务失败：invalid_argument：invalid',
+      ],
+      [{ status: 'expired' }, '远端任务失败：未知任务状态 expired'],
+      [
+        { status: 'done', video: { respect_moderation: false, url: `${base()}/video.mp4` } },
+        '远端任务失败：视频未通过内容审核',
+      ],
+    ] as const) {
       reply = () => Response.json(body)
       const err = await a
         .run(request(), { signal: signal(), resumeTaskId: 'xai-task' })
         .catch((e: unknown) => e)
       expect(err).toBeInstanceOf(MediaError)
+      expect((err as MediaError).message).toBe(message)
       expect((err as MediaError).pendingTaskId).toBeUndefined()
     }
   })

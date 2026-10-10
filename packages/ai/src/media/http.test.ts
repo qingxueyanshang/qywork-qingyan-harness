@@ -1,4 +1,4 @@
-/** 用本机接口验证按静默计算的期限、生成请求不设上限、下载重试及取消，不调用付费接口。 */
+/** 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、下载重试及取消，不调用付费接口。 */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test'
 import { download, postJson, send } from './http.ts'
 import { MediaError } from './types.ts'
@@ -60,7 +60,7 @@ test('生成请求在远端返回之前一直等待；连接被关闭时立即�
       outcome: 'unknown',
     })
     expect(error.diagnostic?.timeoutMs).toBeUndefined()
-    expect(error.message).toContain('远端结果未知')
+    expect(error.message).toBe('连接被断开；远端结果未知')
   } finally {
     closing.stop(true)
   }
@@ -96,7 +96,7 @@ test.each([false, true])(
       timeoutMs: 80,
     })
     if (body) expect(error.diagnostic?.requestId).toBe('req-body')
-    expect(error.message).toBe('连续 0.08 秒未收到数据')
+    expect(error.message).toBe('任务查询失败：连续 0.08 秒未收到数据')
     expect(hits).toEqual(['GET'])
   },
 )
@@ -118,17 +118,62 @@ test('数据持续到达时不中止：总时长超过静默上限仍读完响�
   expect(await res.text()).toBe('012345')
 })
 
-test('HTTP 400 是明确拒绝，502 与无效 JSON 均不能确认远端结果', async () => {
-  for (const [status, content, outcome] of [
-    [400, 'bad input', 'rejected'],
-    [502, 'gateway', 'unknown'],
-    [200, '<html>', 'unknown'],
+/**
+ * 原始失败形状：中转站没有可用账号时 0.5 秒内返回 503，卡片却显示「远端结果未知，请勿自动重新生成」。
+ * 收到错误状态即为被拒绝，报错只写状态码名称与服务商原文；只有响应无法解析时远端结果未知。
+ */
+test('HTTP 错误状态均为被拒绝，报错为状态码名称加服务商原文；响应无法解析时远端结果未知', async () => {
+  for (const [status, content, outcome, message] of [
+    [
+      503,
+      '{"error":{"message":"No available compatible accounts","type":"api_error"}}',
+      'rejected',
+      'HTTP 503 服务不可用：No available compatible accounts',
+    ],
+    [400, 'bad input', 'rejected', 'HTTP 400 请求无效：bad input'],
+    [502, 'gateway', 'rejected', 'HTTP 502 网关错误：gateway'],
+    [418, 'teapot', 'rejected', 'HTTP 418 请求被拒绝：teapot'],
+    [200, '<html>', 'unknown', '响应无法解析；远端结果未知'],
   ] as const) {
     reply = () => new Response(content, { status })
     const error = await failure(postJson(url(), {}, {}, signal()))
     expect(error.diagnostic).toMatchObject({ status, outcome })
+    expect(error.message).toBe(message)
   }
-  expect(hits).toEqual(['POST', 'POST', 'POST'])
+  expect(hits).toEqual(['POST', 'POST', 'POST', 'POST', 'POST'])
+})
+
+/** 连接未建立时请求没有发出：端口拒绝连接与 TLS 握手失败均为被拒绝，不显示 Bun 的英文提示。 */
+test('连接被拒绝或 TLS 握手失败时请求未发出，判为被拒绝', async () => {
+  const refused = await failure(postJson('http://127.0.0.1:1/image', {}, {}, signal()))
+  expect(refused.diagnostic).toMatchObject({
+    kind: 'connection',
+    outcome: 'rejected',
+    code: 'ConnectionRefused',
+  })
+  expect(refused.message).toBe('无法连接 127.0.0.1:1')
+
+  const plain = Bun.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    socket: { data: (socket) => void socket.end('HTTP/1.1 200 OK\r\n\r\n') },
+  })
+  try {
+    const host = `127.0.0.1:${plain.port}`
+    const tls = await failure(postJson(`https://${host}/image`, {}, {}, signal()))
+    expect(tls.diagnostic).toMatchObject({ kind: 'connection', outcome: 'rejected' })
+    expect(tls.message).toBe(`与 ${host} 的 TLS 握手失败`)
+  } finally {
+    plain.stop(true)
+  }
+})
+
+test('查询失败带「任务查询失败」前缀，下载失败带「结果下载失败」前缀', async () => {
+  reply = () => Response.json({ error: { message: 'task not found' } }, { status: 404 })
+  const query = await failure(send(url(), { method: 'GET' }, signal()))
+  expect(query.message).toBe('任务查询失败：HTTP 404 未找到：task not found')
+  const fetched = await failure(download(url(), signal()))
+  expect(fetched.message).toBe('结果下载失败：HTTP 404 未找到：task not found')
 })
 
 test('下载遇到暂时错误只重试 GET，保留服务商已经返回产物的事实', async () => {

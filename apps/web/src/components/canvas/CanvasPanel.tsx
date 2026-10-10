@@ -1759,9 +1759,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const current = () => currentOf(p.node)
     const notice = () => {
       const s = st()
-      if (s?.state === 'unknown')
-        return { failed: true, title: '远端结果未知，已保留原结果', message: s.message }
-      if (s?.state === 'failed')
+      // 结果未知时报错原文已写明「远端结果未知」，标题与失败相同。
+      if (s?.state === 'failed' || s?.state === 'unknown')
         return { failed: true, title: '本次生成失败，已保留原结果', message: s.message }
       const warning = current()?.warning
       return warning ? { failed: false, title: '生成结果与设置不符', message: warning } : null

@@ -7,7 +7,7 @@
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, dataUri, defined, download, getJson, postJson } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
-import { afterSubmit, type TaskState, waitTask } from '../task.ts'
+import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
@@ -110,9 +110,9 @@ export class XaiVideosAdapter implements MediaAdapter {
         if (status === 'done') {
           const video = body.video as Record<string, unknown> | undefined
           if (video?.respect_moderation === false)
-            return { state: 'failed', message: 'xAI 视频未通过内容审核' }
+            return { state: 'failed', message: '视频未通过内容审核' }
           if (typeof video?.url !== 'string')
-            return { state: 'failed', message: 'xAI 任务完成但没有返回视频地址' }
+            return { state: 'failed', message: '任务完成但没有返回视频地址' }
           return {
             state: 'done',
             url: video.url,
@@ -124,9 +124,14 @@ export class XaiVideosAdapter implements MediaAdapter {
         }
         if (status === 'pending' || status === 'processing' || status === 'queued')
           return { state: 'pending', status }
+        const error = body.error as { code?: unknown; message?: unknown } | undefined
         return {
           state: 'failed',
-          message: `xAI ${status || '未知任务状态'}：${JSON.stringify(body.error ?? '').slice(0, 500)}`,
+          message: failureDetail(
+            error?.code,
+            error?.message,
+            status === 'failed' ? '任务失败' : `未知任务状态 ${status}`,
+          ),
         }
       }, opts)
       const url = new URL(done.url, `${base}/`)
