@@ -87,7 +87,7 @@ export class ArkVideosAdapter implements MediaAdapter {
     const id = taskId
     const videoInput = req.inputs.some((i) => i.role === 'video')
     return afterSubmit(id, signal, async () => {
-      const done = await waitTask(id, () => this.check(base, id, auth, signal), opts)
+      const done = await waitTask(() => this.check(base, id, auth, signal), opts)
       const extra = await Promise.all((done.extra ?? []).map((url) => download(url, signal)))
       return {
         files: [await download(done.url, signal), ...extra],
@@ -114,6 +114,8 @@ export class ArkVideosAdapter implements MediaAdapter {
         `${base}/contents/generations/tasks/${encodeURIComponent(taskId)}`,
         { method: 'DELETE', headers: auth },
         signal,
+        // 撤销可以重复发送，按查询计时；按生成计时则不设上限，撤销无响应时停止操作随之阻塞。
+        { stage: 'query' },
       )
       return 'cancelled'
     } catch (err) {

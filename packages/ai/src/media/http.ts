@@ -3,16 +3,26 @@ import type { MediaDiagnostic } from '@qywork/core'
 import { PROVIDER_HTTP } from '../types.ts'
 import { MediaError } from './types.ts'
 
-/** 同步生图最多等待 10 分钟；到期只结束本地等待，不推断远端状态。 */
-export const IMAGE_TIMEOUT_MS = 10 * 60_000
-export const SYNC_TIMEOUT_MS = 5 * 60_000
-export const QUERY_TIMEOUT_MS = 60_000
-export const DOWNLOAD_TIMEOUT_MS = 2 * 60_000
+/**
+ * 各阶段的静默上限：连续这么久没有收到任何数据（响应头或正文字节）即判定连接已失效，数据仍在到达时不中止。
+ * 查询与下载是只读请求，中止后重发不丢失结果。生成请求不设上限：同步接口在生成完成之前不返回任何数据，
+ * 静默时长就是生成耗时，任何上限都会截断仍在进行的生成；它只在收到响应、连接被关闭或重置、用户停止时结束。
+ */
+const IDLE_MS: Record<MediaDiagnostic['stage'], number | undefined> = {
+  generate: undefined,
+  query: 60_000,
+  download: 2 * 60_000,
+}
 const DOWNLOAD_ATTEMPTS = 3
 
 interface RequestPolicy {
   stage?: MediaDiagnostic['stage']
-  timeoutMs?: number
+  /** 替换该阶段的静默上限（`IDLE_MS`）。 */
+  idleMs?: number
+}
+
+function stageOf(init: RequestInit, policy: RequestPolicy): MediaDiagnostic['stage'] {
+  return policy.stage ?? (init.method === 'GET' ? 'query' : 'generate')
 }
 
 async function providerMessage(res: Response): Promise<string> {
@@ -27,11 +37,34 @@ async function providerMessage(res: Response): Promise<string> {
   return text.trim().slice(0, 500) || res.statusText
 }
 
+/** 读完响应体，每收到一段数据调用一次 `heard`。 */
+async function readBody(res: Response, heard: () => void): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = []
+  let size = 0
+  if (res.body) {
+    const reader = res.body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      size += value.length
+      heard()
+    }
+  }
+  const bytes = new Uint8Array(size)
+  let at = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, at)
+    at += chunk.length
+  }
+  return bytes
+}
+
 /**
- * 请求及响应体共用同一个期限 `timeoutMs`，它是唯一的期限。生成 POST 不自动重发。
+ * 发出请求并读完响应体。期限按静默计算（`IDLE_MS`）：每收到一段数据重新计时。生成 POST 不自动重发。
  *
  * fetch 必须展开 `PROVIDER_HTTP.fetchOptions`：Bun 的 socket 空闲超时默认 300 秒，缺少该选项时
- * 生图接口静默 300 秒即以 `The operation timed out.` 中断，`IMAGE_TIMEOUT_MS` 不起作用。
+ * 生成请求静默 300 秒即以 `The operation timed out.` 中断。
  */
 export async function send(
   url: string,
@@ -39,9 +72,14 @@ export async function send(
   signal: AbortSignal,
   policy: RequestPolicy = {},
 ): Promise<Response> {
-  const stage = policy.stage ?? (init.method === 'GET' ? 'query' : 'generate')
-  const timeoutMs = policy.timeoutMs ?? (stage === 'query' ? QUERY_TIMEOUT_MS : SYNC_TIMEOUT_MS)
-  const timeout = AbortSignal.timeout(timeoutMs)
+  const stage = stageOf(init, policy)
+  const idleMs = policy.idleMs ?? IDLE_MS[stage]
+  const silence = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const heard = () => {
+    clearTimeout(timer)
+    if (idleMs !== undefined) timer = setTimeout(() => silence.abort(), idleMs)
+  }
   const startedAt = Date.now()
   let response: Response | undefined
   const diagnostic = (kind: MediaDiagnostic['kind']): MediaDiagnostic => ({
@@ -50,7 +88,7 @@ export async function send(
     outcome: stage === 'download' ? 'available' : 'unknown',
     host: new URL(url).host,
     elapsedMs: Date.now() - startedAt,
-    timeoutMs,
+    ...(idleMs === undefined ? {} : { timeoutMs: idleMs }),
     ...(response ? { status: response.status } : {}),
     ...(response?.headers.get('x-request-id') || response?.headers.get('request-id')
       ? { requestId: (response.headers.get('x-request-id') ?? response.headers.get('request-id'))! }
@@ -58,14 +96,16 @@ export async function send(
   })
   let res: Response
   try {
+    heard()
     response = await fetch(url, {
       ...PROVIDER_HTTP.fetchOptions,
       ...init,
-      signal: AbortSignal.any([signal, timeout]),
+      signal: AbortSignal.any([signal, silence.signal]),
     })
+    heard()
     if (init.redirect === 'manual' && [301, 302, 303, 307, 308].includes(response.status))
       return response
-    const bytes = await response.arrayBuffer()
+    const bytes = await readBody(response, heard)
     res = new Response([204, 205, 304].includes(response.status) ? null : bytes, {
       status: response.status,
       statusText: response.statusText,
@@ -73,18 +113,20 @@ export async function send(
     })
   } catch (err) {
     if (signal.aborted) throw signal.reason
-    const facts = diagnostic(timeout.aborted ? 'timeout' : 'connection')
+    const facts = diagnostic(silence.signal.aborted ? 'timeout' : 'connection')
     const code =
       (err as { code?: unknown; cause?: { code?: unknown } })?.code ??
       (err as { cause?: { code?: unknown } })?.cause?.code
     if (typeof code === 'string') facts.code = code
-    const reason = timeout.aborted
-      ? `本地等待超时（${timeoutMs / 1000} 秒）`
+    const reason = silence.signal.aborted
+      ? `连续 ${idleMs! / 1000} 秒未收到数据`
       : `连接失败：${err instanceof Error ? err.message : String(err)}`
     throw new MediaError(
       `${reason}${stage === 'generate' ? '；远端结果未知，请勿自动重新生成' : ''}`,
       { diagnostic: facts, cause: err },
     )
+  } finally {
+    clearTimeout(timer)
   }
   if (!res.ok) {
     const facts = diagnostic('http')
@@ -100,6 +142,18 @@ export async function send(
   return res
 }
 
+/** 可以重发的只读请求失败：连接中断、静默超过上限、HTTP 408 / 429 / 5xx。 */
+export function transientFailure(err: unknown): boolean {
+  return (
+    err instanceof MediaError &&
+    (err.diagnostic?.kind === 'connection' ||
+      err.diagnostic?.kind === 'timeout' ||
+      err.status === 408 ||
+      err.status === 429 ||
+      (err.status !== undefined && err.status >= 500))
+  )
+}
+
 export async function sendJson(
   url: string,
   init: RequestInit,
@@ -107,7 +161,8 @@ export async function sendJson(
   policy: RequestPolicy = {},
 ): Promise<Record<string, unknown>> {
   const startedAt = Date.now()
-  const stage = policy.stage ?? (init.method === 'GET' ? 'query' : 'generate')
+  const stage = stageOf(init, policy)
+  const idleMs = policy.idleMs ?? IDLE_MS[stage]
   const res = await send(url, init, signal, policy)
   try {
     const body: unknown = await res.json()
@@ -124,7 +179,7 @@ export async function sendJson(
           outcome: 'unknown',
           host: new URL(url).host,
           elapsedMs: Date.now() - startedAt,
-          timeoutMs: policy.timeoutMs ?? (stage === 'query' ? QUERY_TIMEOUT_MS : SYNC_TIMEOUT_MS),
+          ...(idleMs === undefined ? {} : { timeoutMs: idleMs }),
           status: res.status,
           ...(res.headers.get('x-request-id')
             ? { requestId: res.headers.get('x-request-id')! }
@@ -196,7 +251,7 @@ export async function download(
             headers: new URL(target).origin === origin ? headers : {},
           },
           signal,
-          { stage: 'download', timeoutMs: DOWNLOAD_TIMEOUT_MS },
+          { stage: 'download' },
         )
         if (res.ok) {
           const bytes = new Uint8Array(await res.arrayBuffer())
@@ -210,14 +265,7 @@ export async function download(
       }
     } catch (err) {
       if (signal.aborted) throw signal.reason
-      const transient =
-        err instanceof MediaError &&
-        (err.diagnostic?.kind === 'connection' ||
-          err.diagnostic?.kind === 'timeout' ||
-          err.status === 408 ||
-          err.status === 429 ||
-          (err.status !== undefined && err.status >= 500))
-      if (transient && attempt + 1 < DOWNLOAD_ATTEMPTS) {
+      if (transientFailure(err) && attempt + 1 < DOWNLOAD_ATTEMPTS) {
         await pause(500 * 2 ** attempt, signal)
         continue
       }

@@ -11,7 +11,7 @@
 import { basename } from 'node:path'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, IMAGE_TIMEOUT_MS, postJson, sendJson } from '../http.ts'
+import { count, dataUri, defined, postJson, sendJson } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
 import {
   type MediaAdapter,
@@ -51,7 +51,6 @@ export class OpenAIImagesAdapter implements MediaAdapter {
         `${base}/images/edits`,
         { method: 'POST', headers: auth, body: form },
         signal,
-        { timeoutMs: IMAGE_TIMEOUT_MS },
       )
     } else {
       body = await postJson(
@@ -64,7 +63,6 @@ export class OpenAIImagesAdapter implements MediaAdapter {
         },
         auth,
         signal,
-        { timeoutMs: IMAGE_TIMEOUT_MS },
       )
     }
     const result = readImages(body)

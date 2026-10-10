@@ -11,17 +11,7 @@ import {
   uploadDashScopeMedia,
 } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import {
-  count,
-  dataUri,
-  defined,
-  download,
-  getJson,
-  IMAGE_TIMEOUT_MS,
-  postJson,
-  send,
-  sniffMime,
-} from '../http.ts'
+import { count, dataUri, defined, download, getJson, postJson, send, sniffMime } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
@@ -65,7 +55,6 @@ export class DashScopeImagesAdapter implements MediaAdapter {
       },
       { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers },
       signal,
-      { timeoutMs: IMAGE_TIMEOUT_MS },
     )
     const urls = imageUrls(body)
     if (urls.length === 0) {
@@ -241,7 +230,7 @@ export class DashScopeVideosAdapter implements MediaAdapter {
     const id = taskId
     const videoInput = req.inputs.some((i) => i.role === 'video')
     return afterSubmit(id, signal, async () => {
-      const done = await waitTask(id, () => this.check(origin, id, auth, signal), opts)
+      const done = await waitTask(() => this.check(origin, id, auth, signal), opts)
       return { files: [await download(done.url, signal)], usage: { ...done.usage, videoInput } }
     })
   }
@@ -258,6 +247,8 @@ export class DashScopeVideosAdapter implements MediaAdapter {
         `${origin}/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`,
         { method: 'POST', headers: auth },
         signal,
+        // 撤销可以重复发送，按查询计时；按生成计时则不设上限，撤销无响应时停止操作随之阻塞。
+        { stage: 'query' },
       )
       return 'cancelled'
     } catch (err) {

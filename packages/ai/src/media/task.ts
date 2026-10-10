@@ -1,14 +1,14 @@
 /**
- * 异步生成任务的等待：提交后按间隔查询，直到成功、失败或超过等待上限。
+ * 异步生成任务的等待：提交后按间隔查询，直到远端报告成功或失败，或用户停止。
  *
- * 任务号交出之后的失败（查询时网络中断、等待超时、下载失败）均不是终态：远端任务仍存在，
+ * 不设总时长上限：远端每次查询都报告任务所处阶段，排队与生成的耗时由远端决定。
+ * 任务号交出之后的其余失败（查询被拒绝、下载失败、进程停止）均不是终态：远端任务仍存在，
  * 结果地址 24 小时内有效，可用同一任务号接续取回。只有远端明确报告失败才是终态。
  */
 
+import { transientFailure } from './http.ts'
 import { MediaError, type MediaRunOptions, type MediaUsage } from './types.ts'
 
-/** 等待上限。视频生成通常需要 1–5 分钟，此处留足余量；超过上限时将任务号交还调用方，由其接续取回。 */
-export const TASK_WAIT_MS = 20 * 60_000
 const FIRST_INTERVAL_MS = 5_000
 const MAX_INTERVAL_MS = 15_000
 
@@ -65,26 +65,26 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 
 /**
  * 等待任务完成，返回结果地址与计量。首次查询不等待：接续取回时任务通常已完成。
+ * 查询遇到可重发的失败（`transientFailure`：连接中断、静默超时、408 / 429 / 5xx）时按间隔继续查询，
+ * 不结束等待；其余失败原样抛出，由 `afterSubmit` 附带任务号。
  * 状态变化时经 `onStatus` 回报一次，不按查询次数回报。
  */
 export async function waitTask<T = TaskOutput>(
-  taskId: string,
   check: () => Promise<TaskState<T>>,
   opts: MediaRunOptions,
 ): Promise<TaskDone<T>> {
-  const deadline = Date.now() + TASK_WAIT_MS
   let interval = FIRST_INTERVAL_MS
   let last = ''
   for (;;) {
-    const s = await check()
-    if (s.state === 'done') return s
-    if (s.state === 'failed') throw new RemoteTaskFailed(`远端任务失败：${s.message}`)
-    if (s.status !== last) {
+    const s = await check().catch((err: unknown) => {
+      if (opts.signal.aborted || !transientFailure(err)) throw err
+      return null
+    })
+    if (s?.state === 'done') return s
+    if (s?.state === 'failed') throw new RemoteTaskFailed(`远端任务失败：${s.message}`)
+    if (s && s.status !== last) {
       last = s.status
       opts.onStatus?.(s.status)
-    }
-    if (Date.now() + interval > deadline) {
-      throw new MediaError('等待超过 20 分钟仍未完成', { pendingTaskId: taskId })
     }
     await sleep(interval, opts.signal)
     interval = Math.min(Math.round(interval * 1.5), MAX_INTERVAL_MS)

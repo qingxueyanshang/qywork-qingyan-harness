@@ -1,5 +1,5 @@
 /** 图片请求、恢复记录、费用与画布经同一条真实 HTTP 路径验证，端点在本机。 */
-import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -156,34 +156,33 @@ test('画布重启后取回图片：替换待取回版本，多张图片留在�
   expect(methods.filter((m) => m === 'POST')).toHaveLength(1)
 })
 
-test('没有结果引用的本地超时：重启仍显示结果未知，不提供取回，不自动再提交', async () => {
+test('响应中途连接中断且没有结果引用：重启仍显示结果未知，不提供取回，不自动再提交', async () => {
   const { root, service, id, ws } = await canvas()
-  const original = AbortSignal.timeout.bind(AbortSignal)
-  const timer = spyOn(AbortSignal, 'timeout').mockImplementation(() => original(80))
-  reply = async () => {
-    await new Promise((r) => setTimeout(r, 250))
-    return Response.json({})
-  }
+  reply = () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{'))
+          controller.error(new Error('连接中断'))
+        },
+      }),
+    )
   const media = makeMediaPort(config())
-  try {
-    const failed = await (await service.run(ws, PATH, id, { media })).done
-    expect(failed).toMatchObject({
-      ok: false,
-      pending: false,
-      diagnostic: { kind: 'timeout', outcome: 'unknown', timeoutMs: 600_000 },
-    })
-    const view = await new CanvasService({ publish: () => {} }).read(root, PATH)
-    expect(view.doc.runs?.[0]?.result).toBe('unknown')
-    expect(view.doc.runs?.[0]?.diagnostic).toMatchObject({
-      stage: 'generate',
-      kind: 'timeout',
-      outcome: 'unknown',
-    })
-    expect(view.states[id]?.state).toBe('unknown')
-    expect((view.doc.nodes[0] as CanvasGenerateNode).versions).toHaveLength(0)
-    expect(await media.generate(call(), signal())).toMatchObject({ ok: false, executed: false })
-    expect(methods).toEqual(['POST'])
-  } finally {
-    timer.mockRestore()
-  }
+  const failed = await (await service.run(ws, PATH, id, { media })).done
+  expect(failed).toMatchObject({
+    ok: false,
+    pending: false,
+    diagnostic: { kind: 'connection', outcome: 'unknown' },
+  })
+  const view = await new CanvasService({ publish: () => {} }).read(root, PATH)
+  expect(view.doc.runs?.[0]?.result).toBe('unknown')
+  expect(view.doc.runs?.[0]?.diagnostic).toMatchObject({
+    stage: 'generate',
+    kind: 'connection',
+    outcome: 'unknown',
+  })
+  expect(view.states[id]?.state).toBe('unknown')
+  expect((view.doc.nodes[0] as CanvasGenerateNode).versions).toHaveLength(0)
+  expect(await media.generate(call(), signal())).toMatchObject({ ok: false, executed: false })
+  expect(methods).toEqual(['POST'])
 })

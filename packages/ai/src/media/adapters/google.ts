@@ -1,15 +1,7 @@
 /** Gemini Interactions 的图片、视频生成，以及 Veo 的长任务接口。 */
 import type { MediaKind } from '@qywork/core'
 import type { MediaModelSpec } from '../catalog.ts'
-import {
-  count,
-  defined,
-  download,
-  getJson,
-  IMAGE_TIMEOUT_MS,
-  postJson,
-  sniffMime,
-} from '../http.ts'
+import { count, defined, download, getJson, postJson, sniffMime } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
 import { afterSubmit, type TaskState, waitTask } from '../task.ts'
 import {
@@ -142,7 +134,6 @@ export class GeminiMediaAdapter implements MediaAdapter {
         },
         auth,
         opts.signal,
-        type === 'image' ? { timeoutMs: IMAGE_TIMEOUT_MS } : {},
       )
       // 图片使用同步生成，恢复保存输出引用；视频保存任务号。
       if (type === 'image') {
@@ -169,30 +160,26 @@ export class GeminiMediaAdapter implements MediaAdapter {
     }
     const id = taskId
     return afterSubmit(id, opts.signal, async () => {
-      const done = await waitTask<{ body: Record<string, unknown> }>(
-        id,
-        async () => {
-          const body =
-            initial ??
-            (await getJson(`${base}/interactions/${encodeURIComponent(id)}`, auth, opts.signal))
-          initial = undefined
-          const status = String(body.status ?? '')
-          if (status === 'completed') {
-            if (outputs(body, type).length === 0)
-              return {
-                state: 'failed',
-                message: `Gemini 任务完成但没有返回${type === 'image' ? '图片' : '视频'}`,
-              }
-            return { state: 'done', body }
-          }
-          if (status === 'in_progress' || status === 'queued') return { state: 'pending', status }
-          return {
-            state: 'failed',
-            message: `Gemini ${status || '未知任务状态'}：${JSON.stringify(body.error ?? body.status ?? '').slice(0, 500)}`,
-          }
-        },
-        opts,
-      )
+      const done = await waitTask<{ body: Record<string, unknown> }>(async () => {
+        const body =
+          initial ??
+          (await getJson(`${base}/interactions/${encodeURIComponent(id)}`, auth, opts.signal))
+        initial = undefined
+        const status = String(body.status ?? '')
+        if (status === 'completed') {
+          if (outputs(body, type).length === 0)
+            return {
+              state: 'failed',
+              message: `Gemini 任务完成但没有返回${type === 'image' ? '图片' : '视频'}`,
+            }
+          return { state: 'done', body }
+        }
+        if (status === 'in_progress' || status === 'queued') return { state: 'pending', status }
+        return {
+          state: 'failed',
+          message: `Gemini ${status || '未知任务状态'}：${JSON.stringify(body.error ?? body.status ?? '').slice(0, 500)}`,
+        }
+      }, opts)
       return this.readResult(done.body, type, base, auth, opts.signal)
     })
   }
@@ -270,7 +257,6 @@ export class VeoVideosAdapter implements MediaAdapter {
     const id = taskId
     return afterSubmit(id, opts.signal, async () => {
       const done = await waitTask<{ uris: string[] }>(
-        id,
         async (): Promise<TaskState<{ uris: string[] }>> => {
           if (
             !/^models\/[\w.-]+\/operations\/[\w.-]+$/.test(id) &&

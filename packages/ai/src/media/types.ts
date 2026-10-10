@@ -122,7 +122,7 @@ export type MediaCancel = 'cancelled' | 'started'
 /**
  * 生成接口的失败。`status` 是 HTTP 状态码（网络层失败时缺省），`message` 含接口原文。
  *
- * `pendingTaskId`：远端任务已提交但尚无结果（等待超时），任务仍在远端，可以接续取回。
+ * `pendingTaskId`：远端任务已提交但尚无结果（查询被拒绝、下载失败），任务仍在远端，可以接续取回。
  * `diagnostic` 区分明确拒绝、结果未知与已有产物的下载失败；错误原文始终保留。
  */
 export class MediaError extends Error {

@@ -1428,7 +1428,7 @@ const DIAGNOSTIC_FIELDS: Record<string, Shape> = {
   'outcome!': 'string',
   'host!': 'string',
   'elapsedMs!': 'number',
-  'timeoutMs!': 'number',
+  timeoutMs: 'number',
   status: 'number',
   code: 'string',
   requestId: 'string',

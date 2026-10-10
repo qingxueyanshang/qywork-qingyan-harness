@@ -240,7 +240,7 @@ describe('generate_video', () => {
   test('可接续的失败保留任务记录；终态失败删除记录', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-genv-'))
     during = submitted
-    answer = { ok: false, message: '等待超过 20 分钟仍未完成', pendingTaskId: 'task-1' }
+    answer = { ok: false, message: '查询任务被拒绝：HTTP 404', pendingTaskId: 'task-1' }
     const pending = await video(root, { prompt: '海浪', output: 'wave' })
     expect(pending.message).toContain('wave.task.json')
     expect(pending.message).toContain('retrieve_media')

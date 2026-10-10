@@ -1718,7 +1718,7 @@ describe('画布：生成卡与生成面板', () => {
     )
     server.setView({
       doc: fresh.doc,
-      states: { g1: { state: 'unknown', message: '本地等待超时；远端结果未知' } },
+      states: { g1: { state: 'unknown', message: '连接被断开；远端结果未知' } },
     })
     store.setState('fileVersion', 3)
     await waitFor(

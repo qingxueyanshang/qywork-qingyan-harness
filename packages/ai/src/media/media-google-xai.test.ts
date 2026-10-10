@@ -294,7 +294,8 @@ describe('Gemini Interactions', () => {
     ])
   })
 
-  test('远端失败与空产物是终态，查询时网络中断则保留任务号', async () => {
+  /** 原始失败形状：查询遇到一次网络波动即结束等待，远端仍在生成的任务只能事后取回。 */
+  test('远端失败与空产物是终态；查询遇到可重发的失败时继续查询，被拒绝时保留任务号', async () => {
     const a = adapter('gemini_videos', 'gemini-omni-1.1-flash')
     for (const body of [
       { id: 'task-1', status: 'failed', error: { message: 'blocked' } },
@@ -305,12 +306,23 @@ describe('Gemini Interactions', () => {
       expect(err).toBeInstanceOf(MediaError)
       expect((err as MediaError).pendingTaskId).toBeUndefined()
     }
-    reply = () => new Response('unavailable', { status: 503 })
+    let queries = 0
+    reply = (path) => {
+      if (path === '/video.mp4') return new Response(MP4)
+      queries++
+      return queries === 1
+        ? new Response('unavailable', { status: 503 })
+        : Response.json(completed('video'))
+    }
+    const result = await a.run(request(), { signal: signal(), resumeTaskId: 'task-1' })
+    expect(result.files).toEqual([{ bytes: MP4, mime: 'video/mp4' }])
+    expect(queries).toBe(2)
+    reply = () => new Response('not found', { status: 404 })
     const err = await a
       .run(request(), { signal: signal(), resumeTaskId: 'task-1' })
       .catch((e: unknown) => e)
     expect((err as MediaError).pendingTaskId).toBe('task-1')
-  })
+  }, 15_000)
 
   test('Omni 首帧与参考图组合按实际图片顺序声明用途', async () => {
     reply = () => Response.json(completed('video'))
