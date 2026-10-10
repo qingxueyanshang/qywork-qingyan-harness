@@ -95,6 +95,69 @@ test('原请求只是较慢：先返回者为原请求，补发的一份被中�
   ])
 })
 
+const enc = new TextEncoder()
+
+/** SSE 正文：依次发送各分片，分片之间间隔 `gapMs` 毫秒；`end` 为 false 时发完后不结束。 */
+const sse = (chunks: string[], gapMs = 0, end = true) =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      async start(controller) {
+        try {
+          for (const [i, chunk] of chunks.entries()) {
+            if (i > 0) await Bun.sleep(gapMs)
+            controller.enqueue(enc.encode(chunk))
+          }
+          if (end) controller.close()
+        } catch {}
+      },
+    }),
+    { headers: { 'content-type': 'text/event-stream' } },
+  )
+const KEEPALIVE = ': keep-alive\n\n'
+const STARTED = 'event: response.created\ndata: {"type":"response.created"}\n\n'
+const QUEUE_FULL = 'data: {"type":"error","error":{"code":"gateway_concurrency_limit"}}\n\n'
+
+/**
+ * 原始失败形状：中转站并发超限时先返回 200 响应头，只发保活，排队后才报错。按响应头择优时，
+ * 排队中的补发被采用、正在处理的原请求被中断。
+ */
+test('补发的一份在排队：不被采用，开始处理的原请求被采用，排队的一份随即中断', async () => {
+  handle = (i) => (i === 0 ? after(300, () => sse([STARTED])) : sse([KEEPALIVE, QUEUE_FULL], 1_000))
+  const trace = newTrace()
+  const res = await post(trace)
+  expect(await res.text()).toBe(STARTED)
+  expect(trace.hedge).toMatchObject({ won: false })
+  expect(trace.headersAt! - trace.sentAt).toBeGreaterThanOrEqual(295)
+  await Bun.sleep(50)
+  expect(aborted).toContain(1)
+})
+
+test('原请求在排队：开始处理的补发的一份被采用，排队的原请求随即中断', async () => {
+  handle = (i) =>
+    i === 0
+      ? after(150, () => sse([KEEPALIVE], 0, false))
+      : after(150, () => sse([KEEPALIVE, STARTED]))
+  const trace = newTrace()
+  const res = await post(trace)
+  expect(await res.text()).toBe(`${KEEPALIVE}${STARTED}`)
+  expect(trace.hedge).toMatchObject({ won: true })
+  await Bun.sleep(50)
+  expect(aborted).toContain(0)
+})
+
+test('两份都在排队后报错：以原请求的结果为准，错误事件原样交给适配器', async () => {
+  handle = (i) =>
+    i === 0
+      ? after(150, () => sse([KEEPALIVE, QUEUE_FULL], 300))
+      : sse([KEEPALIVE, QUEUE_FULL], 400)
+  const trace = newTrace()
+  const res = await post(trace)
+  expect(res.status).toBe(200)
+  expect(await res.text()).toBe(`${KEEPALIVE}${QUEUE_FULL}`)
+  expect(trace.hedge).toMatchObject({ won: false })
+  expect(transportLogs().at(-1)).toBe('补发后两份请求均未开始处理')
+})
+
 test('响应头在补发时间之前到达时不补发', async () => {
   handle = () => new Response('fast')
   const trace = newTrace()
@@ -135,7 +198,7 @@ test('补发之后原请求返回非 2xx 时继续等待补发的一份；两份
   expect(res.status).toBe(503)
   expect(lost.status).toBe(503)
   expect(lost.hedge).toMatchObject({ won: false })
-  expect(transportLogs().at(-1)).toBe('补发后两份请求均未取得 2xx 响应')
+  expect(transportLogs().at(-1)).toBe('补发后两份请求均未开始处理')
 })
 
 test('补发之后原请求的连接被关闭时改用补发的一份', async () => {

@@ -9,7 +9,7 @@
  * 监督：响应头到达之后，本文件是判定响应体何时结束的唯一权威：2xx 按字节空闲计时，
  * 非 2xx 按诊断读取上限截断。适配器与 AgentLoop 不另设计时。
  *
- * 补发：响应头之前长时间无响应时再发一份相同的请求，先取得响应头的一份被采用（`traceFetch`）。
+ * 补发：响应头之前长时间无响应时再发一份相同的请求，先开始处理的一份被采用（`traceFetch`）。
  *
  * 每个请求各建一份读数，经 SDK 的 `withOptions({ fetch })` 绑定到该次调用，
  * 不放在适配器实例上：同一个适配器会被并发请求共用。
@@ -120,14 +120,83 @@ type Outcome = { res: Response } | { err: unknown }
 interface Copy {
   closing: AbortController
   settled: boolean
+  /** 该份请求的响应头到达时刻。 */
+  headersAt: number | null
 }
 
 /**
- * 发出请求，响应头之前等待超过 `hedgeAfterMs` 时补发一份，返回被采用的响应与它的中止器。
+ * 读到第一条 SSE 字段行为止，返回接好的正文（已读出的字节在前，与未读取过一样）与该行是否为错误事件。
+ * 注释行（保活）不算：中转站排队等待并发名额时先返回 200 响应头并只发送保活，等不到名额才发出错误事件。
+ * 正文结束仍没有字段行时按已开始处理，正文交给适配器解析。
+ */
+async function firstEvent(
+  body: ReadableStream<Uint8Array>,
+): Promise<{ body: ReadableStream<Uint8Array>; failed: boolean }> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  const prefix: Uint8Array[] = []
+  const rest = (): ReadableStream<Uint8Array> => {
+    let next = 0
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (next < prefix.length) {
+          controller.enqueue(prefix[next++]!)
+          return
+        }
+        try {
+          const { done, value } = await reader.read()
+          if (done) controller.close()
+          else controller.enqueue(value)
+        } catch (err) {
+          controller.error(err)
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason)
+      },
+    })
+  }
+  let partial = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) return { body: rest(), failed: false }
+    prefix.push(value)
+    const lines = (partial + decoder.decode(value, { stream: true })).split('\n')
+    partial = lines.pop() ?? ''
+    for (const raw of lines) {
+      const line = raw.trim()
+      if (line && !line.startsWith(':')) return { body: rest(), failed: errorEvent(line) }
+    }
+  }
+}
+
+/**
+ * 字段行是否为错误事件：`event: error` / `event: response.failed`，或 data 为带 `error` 的对象、
+ * `type` 为 `error` / `response.failed` 的对象。三种协议的流内错误均为其中一种。
+ */
+function errorEvent(line: string): boolean {
+  if (line.startsWith('event:')) return /^(error|response\.failed)$/.test(line.slice(6).trim())
+  if (!line.startsWith('data:')) return false
+  try {
+    const v = JSON.parse(line.slice(5)) as Record<string, unknown> | null
+    return (
+      !!v &&
+      typeof v === 'object' &&
+      (v.error != null || v.type === 'error' || v.type === 'response.failed')
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 发出请求，响应头之前等待超过 `hedgeAfterMs` 时补发一份，返回被采用的响应、它的中止器与它的响应头时刻。
  *
- * - 先取得 2xx 响应头的一份被采用，另一份立即中断。
- * - 任一份失败（非 2xx 或连接错误）而另一份仍在等待时，继续等待另一份。
- * - 两份都没有取得 2xx，或未补发时，以原请求的结果为准：非 2xx 响应照常交给错误分类，连接错误照常抛出。
+ * - 未补发时与补发机制引入之前相同：响应头到达即返回。
+ * - 补发之后，以先收到第一条数据事件的一份为准，另一份立即中断。不以响应头为准：
+ *   排队中的一份同样先返回 200 响应头，只发保活，随后才报并发超限。
+ * - 任一份失败（非 2xx、连接错误、第一条事件为错误）而另一份仍在等待时，继续等待另一份。
+ * - 两份都失败，或未补发时，以原请求的结果为准：响应照常交给错误分类，连接错误照常抛出。
  *
  * 补发前原请求已失败的，不再补发：连接被拒、立即被关闭等失败与现状一样立即报告。
  *
@@ -140,7 +209,7 @@ function firstResponse(
   init: RequestInit | undefined,
   base: Fetch,
   hedgeAfterMs: number,
-): Promise<{ res: Response; closing: AbortController }> {
+): Promise<{ res: Response; closing: AbortController; headersAt: number }> {
   const caller = init?.signal
   const host = new URL(input instanceof Request ? input.url : input).host
   const seconds = (at: number) => Math.round((at - trace.sentAt) / 1000)
@@ -151,47 +220,75 @@ function firstResponse(
     let timer: ReturnType<typeof setTimeout> | undefined
     const win = (copy: Copy, res: Response) => {
       done = true
+      copy.settled = true
       clearTimeout(timer)
       for (const other of copies) if (other !== copy) other.closing.abort()
+      const headersAt = copy.headersAt ?? Date.now()
       if (trace.hedge) {
         trace.hedge.won = copy !== copies[0]
         log.info(
           'transport',
           trace.hedge.won ? '采用补发的一份，原请求已中断' : '采用原请求，补发的一份已中断',
-          {
-            provider,
-            host,
-            headersSeconds: seconds(Date.now()),
-          },
+          { provider, host, headersSeconds: seconds(headersAt) },
         )
       }
-      resolve({ res, closing: copy.closing })
+      resolve({ res, closing: copy.closing, headersAt })
     }
-    const settle = (copy: Copy, outcome: Outcome) => {
+    const fail = (copy: Copy, outcome: Outcome) => {
       copy.settled = true
       if (done) {
-        if ('res' in outcome) copy.closing.abort()
+        copy.closing.abort()
         return
       }
-      if ('res' in outcome && outcome.res.ok) return win(copy, outcome.res)
       if (copy === copies[0]) original = outcome
-      else if ('res' in outcome) copy.closing.abort()
+      else copy.closing.abort()
       if (copies.some((c) => !c.settled)) return
       done = true
       clearTimeout(timer)
-      if (trace.hedge) log.warn('transport', '补发后两份请求均未取得 2xx 响应', { provider, host })
-      if (original && 'res' in original) resolve({ res: original.res, closing: copies[0]!.closing })
+      if (trace.hedge) log.warn('transport', '补发后两份请求均未开始处理', { provider, host })
+      const first = copies[0]!
+      if (original && 'res' in original)
+        resolve({
+          res: original.res,
+          closing: first.closing,
+          headersAt: first.headersAt ?? Date.now(),
+        })
       else reject(original?.err)
     }
+    const arrived = (copy: Copy, res: Response) => {
+      copy.headersAt = Date.now()
+      if (done) {
+        copy.closing.abort()
+        return
+      }
+      if (!res.ok) return fail(copy, { res })
+      if (!trace.hedge || !res.body) return win(copy, res)
+      firstEvent(res.body).then(
+        ({ body, failed }) => {
+          if (done) {
+            copy.closing.abort()
+            return
+          }
+          const joined = new Response(body, {
+            status: res.status,
+            statusText: res.statusText,
+            headers: res.headers,
+          })
+          if (failed) fail(copy, { res: joined })
+          else win(copy, joined)
+        },
+        (err: unknown) => fail(copy, { err }),
+      )
+    }
     const send = () => {
-      const copy: Copy = { closing: new AbortController(), settled: false }
+      const copy: Copy = { closing: new AbortController(), settled: false, headersAt: null }
       copies.push(copy)
       base(input, {
         ...init,
         signal: caller ? AbortSignal.any([caller, copy.closing.signal]) : copy.closing.signal,
       }).then(
-        (res) => settle(copy, { res }),
-        (err: unknown) => settle(copy, { err }),
+        (res) => arrived(copy, res),
+        (err: unknown) => fail(copy, { err }),
       )
     }
     send()
@@ -351,12 +448,19 @@ export function traceFetch(
   hedgeAfterMs = HEDGE_AFTER_MS,
 ): Fetch {
   return async (input, init) => {
-    const { res, closing } = await firstResponse(trace, provider, input, init, base, hedgeAfterMs)
+    const { res, closing, headersAt } = await firstResponse(
+      trace,
+      provider,
+      input,
+      init,
+      base,
+      hedgeAfterMs,
+    )
     const release = () => {
       closing.abort()
     }
     trace.status = res.status
-    trace.headersAt = Date.now()
+    trace.headersAt = headersAt
     const body = res.body
     if (!body) return res
     if (!res.ok) return await boundedErrorBody(trace, res, body, release)
