@@ -3,7 +3,8 @@
  *
  * 锁定四项行为：同一批操作经两条路径写出的文件逐字节相同；Agent 与用户同时修改时，双方的改动均保留；
  * 经端口运行视频时，任务节点在端口返回（工具结束）之前已写入画布并发出通知；
- * 经端口的修改按卡片名称引用、名称不重复、参数按模型参数表核对（`canvas-agent-ops.ts`）。
+ * 经端口的修改按卡片名称引用、名称不重复、参数按模型参数表核对，经端口读取的生成卡参数为实际发送的参数
+ * （`canvas-agent-ops.ts`）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -168,6 +169,66 @@ describe('画布端口', () => {
     await card('保真', { input_fidelity: 'high' }, '@[参考] 换背景')
   })
 
+  /**
+   * 原始失败形状：后一批断开参考图，或原样重写已不可用的取值，参数不再发送、面板不再显示，而工具返回成功；
+   * 大模型读取的画布仍列出卡片上保存的全部参数，与参数面板不一致。
+   */
+  test('已发送的参数在后续批次中不会无提示地失效；大模型读取的参数与参数面板一致', async () => {
+    const root = await workspace()
+    const specs: MediaParamDefinition[] = [
+      { name: 'output_format', type: 'enum', values: ['png', 'jpeg'], default: 'png' },
+      { name: 'input_fidelity', type: 'enum', values: ['low', 'high'], operations: ['edit'] },
+    ]
+    const service = new CanvasService({ publish: () => {}, paramSpecsOf: () => specs })
+    const port = canvasPort(service, { id: 'ws', root })
+    const { view } = await port.edit(PATH, [
+      { op: 'add_file', path: 'a.png', name: '参考' },
+      {
+        op: 'add_generate',
+        output: 'image',
+        name: '保真',
+        prompt: '@[参考] 换背景',
+        params: { input_fidelity: 'high' },
+      },
+    ])
+    const edge = view.doc.edges[0]!
+    await expect(port.edit(PATH, [{ op: 'remove', id: edge.id }])).rejects.toThrow(
+      '「保真」的参数 input_fidelity 取值 "high" 在当前的输入与参数下不可用',
+    )
+    await port.edit(PATH, [
+      { op: 'remove', id: edge.id },
+      { op: 'update', id: '保真', params: { output_format: 'jpeg' } },
+    ])
+
+    await service.apply(root, PATH, [
+      { op: 'update', id: '保真', params: { input_fidelity: 'high', output_format: 'jpeg' } },
+    ])
+    const saved = (await service.read(root, PATH)).doc.nodes.find((n) => n.type === 'generate')
+    const read = (await port.read(PATH)).doc.nodes.find((n) => n.type === 'generate')
+    expect(saved?.type === 'generate' && saved.params).toEqual({
+      input_fidelity: 'high',
+      output_format: 'jpeg',
+    })
+    expect(read?.type === 'generate' && read.params).toEqual({ output_format: 'jpeg' })
+    await expect(
+      port.edit(PATH, [
+        { op: 'update', id: '保真', params: { input_fidelity: 'high', output_format: 'jpeg' } },
+      ]),
+    ).rejects.toThrow('「保真」的参数 input_fidelity 取值 "high" 在当前的输入与参数下不可用')
+
+    // 改换模型时恢复该模型保存的参数；取值与切换前相同的参数同样须可发送。
+    const high = { input_fidelity: 'high' }
+    await service.apply(root, PATH, [
+      { op: 'add_generate', output: 'image', name: '换模型', provider: 'p', model: 'm2' },
+      { op: 'update', id: '换模型', params: high },
+      { op: 'update', id: '换模型', model: 'm1' },
+      { op: 'update', id: '换模型', params: high },
+    ])
+    await expect(port.edit(PATH, [{ op: 'update', id: '换模型', model: 'm2' }])).rejects.toThrow(
+      '「换模型」的参数 input_fidelity 取值 "high" 在当前的输入与参数下不可用',
+    )
+  })
+
   test('卡片写入的生成模型须已配置，未配置时整批拒绝', async () => {
     const root = await workspace()
     const specs: MediaParamDefinition[] = [{ name: 'n', type: 'integer', min: 1, max: 4 }]
@@ -185,6 +246,16 @@ describe('画布端口', () => {
     await expect(port.edit(PATH, [{ op: 'update', id: '甲', model: 'img-x' }])).rejects.toThrow(
       '未配置',
     )
+    const bare = canvasPort(
+      new CanvasService({
+        publish: () => {},
+        paramSpecsOf: (_output, pick) => (pick?.model === 'img-1' ? specs : undefined),
+      }),
+      { id: 'ws', root },
+    )
+    await expect(
+      bare.edit(PATH, [{ op: 'add_generate', output: 'image', name: '乙' }]),
+    ).rejects.toThrow('「乙」未指定生成模型，且没有默认的生成模型')
   })
 
   test('同一批操作经端口与经 HTTP 写出的文件逐字节相同', async () => {
