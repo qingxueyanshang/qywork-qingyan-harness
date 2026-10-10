@@ -289,14 +289,19 @@ describe('读取磁盘的时机', () => {
 })
 
 describe('落盘门禁', () => {
-  const put = async (d: ApiDeps, config: unknown, baseVersion?: string) => {
+  const put = async (
+    d: ApiDeps,
+    config: unknown,
+    baseVersion?: string,
+    renameProvider?: unknown,
+  ) => {
     const url = new URL('http://127.0.0.1/api/config')
     return handleConfigApi(
       url,
       new Request(url.href, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ config, ...(baseVersion ? { baseVersion } : {}) }),
+        body: JSON.stringify({ config, ...(baseVersion ? { baseVersion } : {}), renameProvider }),
       }),
       d as never,
     )
@@ -306,6 +311,142 @@ describe('落盘门禁', () => {
     const res = await handleConfigApi(url, new Request(url.href, { method: 'GET' }), d as never)
     return (await res!.json()) as { config: RedactedConfig; problems: string[]; version: string }
   }
+
+  test('同一版本同时提交只能成功一次，冲突重放保留两处修改与密钥', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-parallel-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    try {
+      await writeFile(join(home, 'config.json'), JSON.stringify(cfg()))
+      const d = { config: cfg() } as unknown as ApiDeps
+      const initial = await get(d)
+      const keyEdit = structuredClone(initial.config)
+      ;(keyEdit.providers.main as { apiKey?: string }).apiKey = 'sk-rotated'
+      const urlEdit = structuredClone(initial.config)
+      urlEdit.providers.main!.baseUrl = 'https://concurrent.example/v1'
+      const replies = await Promise.all([
+        put(d, keyEdit, initial.version),
+        put(d, urlEdit, initial.version),
+      ])
+      expect(replies.map((r) => r!.status).sort()).toEqual([200, 409])
+      const fresh = await get(d)
+      if (replies[0]!.status === 409)
+        (fresh.config.providers.main as { apiKey?: string }).apiKey = 'sk-rotated'
+      else fresh.config.providers.main!.baseUrl = 'https://concurrent.example/v1'
+      expect((await put(d, fresh.config, fresh.version))!.status).toBe(200)
+      const saved = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as QyConfig
+      expect(saved.providers.main!.apiKey).toBe('sk-rotated')
+      expect(saved.providers.main!.baseUrl).toBe('https://concurrent.example/v1')
+      expect(d.config).toEqual(saved)
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
+  test('脱敏配置连续改名保留密钥、模型和默认引用，改名关系不落盘', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-rename-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    try {
+      const initial = cfg()
+      initial.providers.main!.baseUrl = 'https://relay.example/v1'
+      initial.providers.main!.media = { video: { kind: 'openai_videos' } }
+      initial.mediaDefaults = { video: { provider: 'main', model: 'video' } }
+      await writeFile(join(home, 'config.json'), JSON.stringify(initial))
+      const d = { config: structuredClone(initial) } as unknown as ApiDeps
+      for (const [from, to] of [
+        ['main', '即梦'],
+        ['即梦', '即梦1'],
+      ] as const) {
+        const fresh = await get(d)
+        const incoming = fresh.config
+        incoming.providers[to] = incoming.providers[from]!
+        delete incoming.providers[from]
+        incoming.active!.provider = to
+        incoming.mediaDefaults!.video!.provider = to
+        const res = await put(d, incoming, fresh.version, { from, to })
+        expect(res!.status).toBe(200)
+        expect(await res!.text()).not.toContain('sk-real-secret-value')
+        const saved = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as QyConfig
+        expect(saved.providers[to]).toEqual(initial.providers.main!)
+        expect(saved.providers[from]).toBeUndefined()
+        expect(saved.providers.local).toEqual(initial.providers.local!)
+        expect(saved.active).toEqual({ provider: to, model: 'claude-opus-5' })
+        expect(saved.mediaDefaults?.video).toEqual({ provider: to, model: 'video' })
+        expect(saved).not.toHaveProperty('renameProvider')
+        expect((await get(d)).config.providers[to]?.hasApiKey).toBe(true)
+      }
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
+  test('改名遇到密钥轮换先返回冲突，按最新配置重放后保留新密钥', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-rename-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    try {
+      const initial = cfg()
+      await writeFile(join(home, 'config.json'), JSON.stringify(initial))
+      const d = { config: structuredClone(initial) } as unknown as ApiDeps
+      const before = await get(d)
+      const rename = (wire: RedactedConfig) => {
+        wire.providers.renamed = wire.providers.main!
+        delete wire.providers.main
+        wire.active!.provider = 'renamed'
+        return wire
+      }
+      initial.providers.main!.apiKey = 'sk-rotated'
+      await writeFile(join(home, 'config.json'), JSON.stringify(initial))
+      expect(
+        (await put(d, rename(before.config), before.version, { from: 'main', to: 'renamed' }))!
+          .status,
+      ).toBe(409)
+      const fresh = await get(d)
+      const res = await put(d, rename(fresh.config), fresh.version, { from: 'main', to: 'renamed' })
+      expect(res!.status).toBe(200)
+      expect(await res!.text()).not.toContain('sk-rotated')
+      const saved = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as QyConfig
+      expect(saved.providers.renamed?.apiKey).toBe('sk-rotated')
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
+
+  test('缺少或错误的改名关系拒绝保存，不删除原密钥或覆盖其他接口', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-cfg-rename-'))
+    const prev = process.env.QYWORK_HOME
+    process.env.QYWORK_HOME = home
+    try {
+      const initial = cfg()
+      const original = JSON.stringify(initial)
+      await writeFile(join(home, 'config.json'), original)
+      const d = { config: structuredClone(initial) } as unknown as ApiDeps
+      const fresh = await get(d)
+      const wire = fresh.config
+      wire.providers.renamed = wire.providers.main!
+      delete wire.providers.main
+      wire.active!.provider = 'renamed'
+      for (const relation of [
+        undefined,
+        null,
+        { from: 'missing', to: 'renamed' },
+        { from: 'main', to: 'local' },
+        { from: 'local', to: 'renamed' },
+        { from: 'main', to: 'main' },
+        { from: 1, to: 'renamed' },
+      ]) {
+        expect((await put(d, wire, fresh.version, relation))!.status).toBe(422)
+        expect(await readFile(join(home, 'config.json'), 'utf8')).toBe(original)
+      }
+    } finally {
+      if (prev === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = prev
+    }
+  })
 
   /**
    * 未配置 key 不阻止保存。原始失败形状：添加一个新接口并为其添加第一个模型（active 随之切换到
@@ -401,6 +542,7 @@ describe('落盘门禁', () => {
     process.env.QYWORK_HOME = home
     const image = { 'gpt-image-2.5-sunburst': { kind: 'openai_images' as const } }
     try {
+      await writeFile(join(home, 'config.json'), JSON.stringify(cfg()))
       const d = { config: cfg() } as unknown as ApiDeps
       const start = redactConfig(cfg())
       start.providers.main!.media = image
@@ -441,7 +583,7 @@ describe('落盘门禁', () => {
       const body = {
         active: { provider: 'main', model: 'claude-opus-5' },
         providers: {
-          main: { kind: 'anthropic_messages', hasApiKey: true, models: { 'claude-opus-5': {} } },
+          main: { kind: 'anthropic_messages', hasApiKey: false, models: { 'claude-opus-5': {} } },
         },
         mode: 'auto' as const,
       }

@@ -74,6 +74,25 @@ describe('会话口径含子会话', () => {
 })
 
 describe('记账', () => {
+  test('渠道影币原样落账并与人民币和美元分开汇总', () => {
+    const s = fresh()
+    recordUsage(
+      s,
+      entry({
+        runId: 'coin',
+        kind: 'media',
+        model: 'Seedance 2.5 720p',
+        provider: '集梦',
+        cost: 1000,
+        currency: 'BINGUO_CREDIT',
+      }),
+    )
+    recordUsage(s, entry({ runId: 'yuan', cost: 2, currency: 'CNY' }))
+    recordUsage(s, entry({ runId: 'dollar', cost: 3, currency: 'USD' }))
+    expect(usageTotals(s).cost).toEqual({ BINGUO_CREDIT: 1000, CNY: 2, USD: 3 })
+    expect(usageEntries(s).find((row) => row.runId === 'coin')?.currency).toBe('BINGUO_CREDIT')
+    s.close()
+  })
   test('记录一笔后可查询到总数', () => {
     const s = fresh()
     recordUsage(s, entry())

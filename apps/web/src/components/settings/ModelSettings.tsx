@@ -113,13 +113,16 @@ export function ModelSettings() {
     let i = 2
     while (name in base.providers) name = `新接口 ${i++}`
     setPicked(name)
-    void replaceConfig((cur) => ({
-      ...cur,
-      providers: {
-        ...cur.providers,
-        [name]: { kind: 'openai_chat_completions', hasApiKey: false, models: {} },
-      },
-    }))
+    void replaceConfig((cur) => {
+      if (name in cur.providers) throw new Error(`接口名称「${name}」已存在`)
+      return {
+        ...cur,
+        providers: {
+          ...cur.providers,
+          [name]: { kind: 'openai_chat_completions', hasApiKey: false, models: {} },
+        },
+      }
+    })
   }
 
   // 删除不可恢复：明文 key 不回传前端，界面无法取回它。
@@ -144,31 +147,40 @@ export function ModelSettings() {
     })
   }
 
-  /** 接口改名：键即名称，因此改名等于删除旧键并新建，同时更新指向它的 active 与 mediaDefaults。 */
+  /** 接口改名时同步默认引用，并将改名关系交给服务端回填原密钥。 */
   const renameProvider = (from: string, to: string) => {
     const base = config()
     const p = base?.providers[from]
-    if (!base || !p || !to || to === from || to in base.providers) return
+    if (!base || !p || to === from) return false
+    if (!to || to in base.providers) {
+      reportConfigWriteError(!to ? '接口名称不能为空' : `接口名称「${to}」已存在`)
+      return false
+    }
     setPicked(to)
-    void replaceConfig((cur) => {
-      const moved = cur.providers[from]
-      if (!moved || to in cur.providers) return null
-      const { [from]: _drop, ...rest } = cur.providers
-      const next: RedactedConfig = {
-        ...cur,
-        providers: { ...rest, [to]: moved },
-        ...(cur.active?.provider === from ? { active: { ...cur.active, provider: to } } : {}),
-      }
-      if (cur.mediaDefaults) {
-        next.mediaDefaults = Object.fromEntries(
-          Object.entries(cur.mediaDefaults).map(([output, ref]) => [
-            output,
-            ref.provider === from ? { ...ref, provider: to } : ref,
-          ]),
-        )
-      }
-      return next
-    })
+    void replaceConfig(
+      (cur) => {
+        const moved = cur.providers[from]
+        if (!moved) throw new Error(`接口「${from}」已不存在`)
+        if (to in cur.providers) throw new Error(`接口名称「${to}」已存在`)
+        const { [from]: _drop, ...rest } = cur.providers
+        const next: RedactedConfig = {
+          ...cur,
+          providers: { ...rest, [to]: moved },
+          ...(cur.active?.provider === from ? { active: { ...cur.active, provider: to } } : {}),
+        }
+        if (cur.mediaDefaults) {
+          next.mediaDefaults = Object.fromEntries(
+            Object.entries(cur.mediaDefaults).map(([output, ref]) => [
+              output,
+              ref.provider === from ? { ...ref, provider: to } : ref,
+            ]),
+          )
+        }
+        return next
+      },
+      { from, to },
+    )
+    return true
   }
 
   /**
@@ -398,7 +410,11 @@ export function ModelSettings() {
                         <input
                           type="text"
                           value={name()}
-                          onBlur={(e) => renameProvider(name(), e.currentTarget.value.trim())}
+                          onBlur={(e) => {
+                            const from = name()
+                            if (!renameProvider(from, e.currentTarget.value.trim()))
+                              e.currentTarget.value = from
+                          }}
                         />
                       </Row>
 
@@ -466,12 +482,13 @@ export function ModelSettings() {
                                   class="model-pick"
                                   type="button"
                                   disabled={isDefault()}
-                                  onClick={() =>
+                                  onClick={() => {
+                                    const provider = name()
                                     void replaceConfig((cur) => ({
                                       ...cur,
-                                      active: { provider: name(), model: id },
+                                      active: { provider, model: id },
                                     }))
-                                  }
+                                  }}
                                 >
                                   {isDefault() ? '默认' : '设为默认'}
                                 </button>
@@ -537,15 +554,16 @@ export function ModelSettings() {
                                   class="model-pick"
                                   type="button"
                                   disabled={isDefault()}
-                                  onClick={() =>
+                                  onClick={() => {
+                                    const provider = name()
                                     void replaceConfig((cur) => ({
                                       ...cur,
                                       mediaDefaults: {
                                         ...cur.mediaDefaults,
-                                        [output]: { provider: name(), model: id },
+                                        [output]: { provider, model: id },
                                       },
                                     }))
-                                  }
+                                  }}
                                 >
                                   {isDefault() ? '默认' : '设为默认'}
                                 </button>

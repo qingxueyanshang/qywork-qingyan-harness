@@ -19,7 +19,7 @@ import {
   type StoredProvider,
   saveConfig,
 } from '@qywork/runtime'
-import { DEFAULT_ENV_ALLOW } from '@qywork/tools'
+import { DEFAULT_ENV_ALLOW, withFileLocks } from '@qywork/tools'
 import { type ApiHandler, json } from './types.ts'
 
 /**
@@ -64,11 +64,16 @@ export function redactConfig(cfg: QyConfig): RedactedConfig {
  * 但该守卫失效，而失效的守卫比没有守卫更容易造成误判。
  * `config.test.ts` 锁定该行为。
  */
-export function mergeConfig(current: QyConfig, incoming: RedactedConfig): QyConfig {
+export function mergeConfig(
+  current: QyConfig,
+  incoming: RedactedConfig,
+  renameProvider?: { from: string; to: string },
+): QyConfig {
   const providers: Record<string, StoredProvider> = {}
   for (const [name, p] of Object.entries(incoming.providers ?? {})) {
     const { hasApiKey, apiKey: explicit, ...rest } = p as RedactedProvider & { apiKey?: string }
-    const prior = current.providers[name]?.apiKey
+    const source = renameProvider?.to === name ? renameProvider.from : name
+    const prior = current.providers[source]?.apiKey
     const apiKey = explicit !== undefined ? explicit : hasApiKey ? prior : undefined
     providers[name] = {
       ...(rest as StoredProvider),
@@ -105,30 +110,32 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
 
   if (p === '/api/config' && req.method === 'GET') {
-    /*
-     * 每次都从磁盘读取，不返回进程启动时的配置。
-     *
-     * 保存流程是「读取完整配置 → 修改一项 → 整体写回」，此处返回的内容会被下一次 PUT
-     * 写入文件。若返回启动时的配置，进程运行期间由其他来源写入文件的改动
-     * （`qy probe` 写入的校准结果、手动编辑的 JSON、另一个 qywork 实例）会在用户下一次
-     * 修改任意设置项时被整体覆盖，且没有提示。
-     *
-     * 进程内不存在仅在内存中、磁盘上没有的配置状态：除本文件的 PUT 分支外，
-     * 全仓没有第二处写入 `d.config`，因此整体替换不会丢失字段。
-     */
-    adoptConfig(d.config, await loadConfig())
-    return json({
-      path: configPath(),
-      config: redactConfig(d.config),
-      // 客户端保存时回传该值，服务端据此检测读取与写入之间配置是否被其他位置修改（见 PUT）。
-      version: configVersion(d.config),
-      notices: configNotices(d.config),
-      // 保存时拒绝结构不合法的配置（`diagnoseConfig`）；未配置 key 只显示、不阻止保存（`diagnoseRunnable`）。
-      // 设置页将两者合并为一列显示；PUT 只依据前者返回 422，见下。
-      problems: [...diagnoseConfig(d.config), ...diagnoseRunnable(d.config)],
-      // `envAllowList` 留空时实际生效的名单。设置页将其作为占位符显示；
-      // 不下发时界面只能显示「留空使用默认名单」，无法得知名单内容。
-      defaultEnvAllowList: DEFAULT_ENV_ALLOW,
+    return withFileLocks([configPath()], async () => {
+      /*
+       * 每次都从磁盘读取，不返回进程启动时的配置。
+       *
+       * 保存流程是「读取完整配置 → 修改一项 → 整体写回」，此处返回的内容会被下一次 PUT
+       * 写入文件。若返回启动时的配置，进程运行期间由其他来源写入文件的改动
+       * （`qy probe` 写入的校准结果、手动编辑的 JSON、另一个 qywork 实例）会在用户下一次
+       * 修改任意设置项时被整体覆盖，且没有提示。
+       *
+       * 进程内不存在仅在内存中、磁盘上没有的配置状态：除本文件的 PUT 分支外，
+       * 全仓没有第二处写入 `d.config`，因此整体替换不会丢失字段。
+       */
+      adoptConfig(d.config, await loadConfig())
+      return json({
+        path: configPath(),
+        config: redactConfig(d.config),
+        // 客户端保存时回传该值，服务端据此检测读取与写入之间配置是否被其他位置修改（见 PUT）。
+        version: configVersion(d.config),
+        notices: configNotices(d.config),
+        // 保存时拒绝结构不合法的配置（`diagnoseConfig`）；未配置 key 只显示、不阻止保存（`diagnoseRunnable`）。
+        // 设置页将两者合并为一列显示；PUT 只依据前者返回 422，见下。
+        problems: [...diagnoseConfig(d.config), ...diagnoseRunnable(d.config)],
+        // `envAllowList` 留空时实际生效的名单。设置页将其作为占位符显示；
+        // 不下发时界面只能显示「留空使用默认名单」，无法得知名单内容。
+        defaultEnvAllowList: DEFAULT_ENV_ALLOW,
+      })
     })
   }
 
@@ -136,31 +143,68 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
     const body = (await req.json().catch(() => null)) as {
       config?: RedactedConfig
       baseVersion?: string
+      renameProvider?: { from: string; to: string }
     } | null
     if (!body?.config) return json({ error: 'bad request', message: '缺少 config' }, 400)
-    /*
-     * 乐观并发校验：多个客户端同时修改时，后发起的写入基于修改前的完整配置，整体回写
-     * 会覆盖前一次已保存的字段（典型为 API Key）。基线版本不一致时拒绝，由客户端重新
-     * 读取并重放本次修改。未携带 baseVersion 的旧客户端不受此校验限制。
-     *
-     * 比较基准是磁盘上的当前内容，先读取磁盘再比较。不要只与进程内的配置比较：它只在 GET 时刷新，
-     * 两次请求之间其他进程（`qy probe`、另一个 qywork 实例）写入文件的改动会被整体覆盖。
-     */
-    adoptConfig(d.config, await loadConfig())
-    if (typeof body.baseVersion === 'string' && body.baseVersion !== configVersion(d.config)) {
-      return json({ error: 'conflict', message: '配置已在其他位置修改，已基于最新内容重试' }, 409)
-    }
-    const merged = mergeConfig(d.config, body.config)
-    // 只依据 `diagnoseConfig`（结构不合法）返回 422。不要加入 `diagnoseRunnable`：未配置 key 是配置
-    // 中间态，阻止保存将使「新增接口 → 新增模型 → 再填写 key」这一流程无法完成（active 切换到新接口后即无法保存）。
-    const problems = diagnoseConfig(merged)
-    // 配置结构不合法时不落盘：写入后 CLI 将无法启动，后果比拒绝保存严重。
-    if (problems.length) return json({ error: 'invalid', problems }, 422)
-    await saveConfig(merged)
-    // 就地更新运行中的配置：否则保存成功后本进程仍使用旧配置，
-    // 下一轮对话仍使用旧模型。
-    adoptConfig(d.config, merged)
-    return json({ ok: true, config: redactConfig(d.config), notices: configNotices(d.config) })
+    const incoming = body.config
+    // 同一服务的读写按文件串行，版本比较与落盘不能被另一次保存穿插。
+    // 仅原子替换文件不够：两次 PUT 仍可能都读到旧版本并同时通过校验。
+    return withFileLocks([configPath()], async () => {
+      /*
+       * 乐观并发校验：多个客户端同时修改时，后发起的写入基于修改前的完整配置，整体回写
+       * 会覆盖前一次已保存的字段（典型为 API Key）。基线版本不一致时拒绝，由客户端重新
+       * 读取并重放本次修改。未携带 baseVersion 的旧客户端不受此校验限制。
+       *
+       * 比较基准是磁盘上的当前内容，先读取磁盘再比较。不要只与进程内的配置比较：它只在 GET 时刷新，
+       * 两次请求之间其他进程（`qy probe`、另一个 qywork 实例）写入文件的改动会被整体覆盖。
+       */
+      adoptConfig(d.config, await loadConfig())
+      if (typeof body.baseVersion === 'string' && body.baseVersion !== configVersion(d.config)) {
+        return json({ error: 'conflict', message: '配置已在其他位置修改，已基于最新内容重试' }, 409)
+      }
+      const rename = body.renameProvider
+      if (
+        rename !== undefined &&
+        (!rename ||
+          typeof rename.from !== 'string' ||
+          typeof rename.to !== 'string' ||
+          !rename.from.trim() ||
+          !rename.to.trim() ||
+          rename.from === rename.to ||
+          !Object.hasOwn(d.config.providers, rename.from) ||
+          Object.hasOwn(d.config.providers, rename.to) ||
+          Object.hasOwn(incoming.providers ?? {}, rename.from) ||
+          !Object.hasOwn(incoming.providers ?? {}, rename.to))
+      ) {
+        return json(
+          { error: 'invalid', message: '接口重命名无效：原名称不存在或新名称已被使用' },
+          422,
+        )
+      }
+      // 新名称不能靠 hasApiKey 推断旧密钥来源；缺少改名关系时拒绝保存，避免静默丢失。
+      if (
+        Object.entries(incoming.providers ?? {}).some(
+          ([name, provider]) =>
+            provider.hasApiKey &&
+            !('apiKey' in provider) &&
+            !Object.hasOwn(d.config.providers, name) &&
+            rename?.to !== name,
+        )
+      ) {
+        return json({ error: 'invalid', message: '无法保留接口密钥，请重新加载设置后重试' }, 422)
+      }
+      const merged = mergeConfig(d.config, incoming, rename)
+      // 只依据 `diagnoseConfig`（结构不合法）返回 422。不要加入 `diagnoseRunnable`：未配置 key 是配置
+      // 中间态，阻止保存将使「新增接口 → 新增模型 → 再填写 key」这一流程无法完成（active 切换到新接口后即无法保存）。
+      const problems = diagnoseConfig(merged)
+      // 配置结构不合法时不落盘：写入后 CLI 将无法启动，后果比拒绝保存严重。
+      if (problems.length) return json({ error: 'invalid', problems }, 422)
+      await saveConfig(merged)
+      // 就地更新运行中的配置：否则保存成功后本进程仍使用旧配置，
+      // 下一轮对话仍使用旧模型。
+      adoptConfig(d.config, merged)
+      return json({ ok: true, config: redactConfig(d.config), notices: configNotices(d.config) })
+    })
   }
 
   return null

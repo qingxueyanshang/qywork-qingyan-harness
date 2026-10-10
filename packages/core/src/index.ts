@@ -105,6 +105,7 @@ export {
   type MediaOutput,
   type MediaSpend,
 } from './domain/media.ts'
+export { mediaBoxAt, movieMetadataOf, videoMetadataOf } from './domain/media-container.ts'
 export {
   activeMediaParams,
   type MediaParamDefinition,
@@ -204,7 +205,6 @@ export {
   type UsageTotals,
   type Workspace,
 } from './domain/model.ts'
-
 // 定时任务：仓储（store）、HTTP 接口、模型工具与面板共用同一份类型与时间判定
 export {
   diagnoseSchedule,
@@ -216,7 +216,6 @@ export {
   type ScheduleLastRun,
   type ScheduleView,
 } from './domain/schedule.ts'
-
 // workflow 的跨层序列化契约与纯投影：team/server/web 共用，不能各自计算。
 export {
   applyRevision,

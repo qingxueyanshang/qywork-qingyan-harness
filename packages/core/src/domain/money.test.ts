@@ -33,6 +33,10 @@ describe('单币种', () => {
 })
 
 describe('多币种', () => {
+  test('集梦影币独立展示，不混入人民币或美元', () => {
+    expect(formatMoney(440, 'BINGUO_CREDIT')).toBe('440 影币')
+    expect(formatCosts({ BINGUO_CREDIT: 440, CNY: 2, USD: 3 })).toBe('440 影币 + ¥2.00 + $3.00')
+  })
   /**
    * 本文件中最重要的一条测试。
    *

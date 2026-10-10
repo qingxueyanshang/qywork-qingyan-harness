@@ -472,12 +472,15 @@ export interface Run {
  * 三方都使用它。各自定义时三份副本会逐渐不一致（`IGNORED_DIRS` 的三份副本
  * 出现过 13/12/11 条的差异）。
  *
- * 只包含目录中实际出现的两种。新增第三种时必须同时检查 `usage_ledger` 中
- * 已有的行：这些行的币种是历史事实，不能改记为其他币种。
+ * 包含货币及渠道独立结算单位。已有账本中的单位是历史事实，不能改记或隐式换算。
  */
-export type Currency = 'USD' | 'CNY'
+export type Currency = 'USD' | 'CNY' | 'BINGUO_CREDIT'
 
-export const CURRENCY_SYMBOL: Record<Currency, string> = { USD: '$', CNY: '¥' }
+export const CURRENCY_SYMBOL: Record<Currency, string> = {
+  USD: '$',
+  CNY: '¥',
+  BINGUO_CREDIT: '影币',
+}
 
 /**
  * 金额显示。命令行与界面共用本函数：两侧各写一份必然出现
@@ -488,6 +491,7 @@ export const CURRENCY_SYMBOL: Record<Currency, string> = { USD: '$', CNY: '¥' }
  * 「金额过小无法显示」与「没有费用」是不同的情况。
  */
 export function formatMoney(amount: number, currency: Currency = 'USD'): string {
+  if (currency === 'BINGUO_CREDIT') return `${amount} 影币`
   const s = CURRENCY_SYMBOL[currency] ?? '$'
   if (amount === 0) return `${s}0.00`
   if (amount < 0.0001) return `<${s}0.0001`

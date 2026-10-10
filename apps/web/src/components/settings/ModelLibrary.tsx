@@ -31,6 +31,7 @@ export const MEDIA_KIND_LABEL: Record<MediaKind, string> = {
   gemini_videos: 'Gemini',
   veo_videos: 'Veo',
   xai_videos: 'xAI',
+  binguo_videos: '集梦',
   openai_speech: 'OpenAI 兼容',
   dashscope_speech: '百炼',
 }

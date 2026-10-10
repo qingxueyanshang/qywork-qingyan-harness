@@ -108,12 +108,18 @@ test('模型库未知单价显示横线，并直接显示订阅限制', async ()
   }
 })
 
-test('官方及自定义地址添加 Google 与 xAI 均使用目录协议，模型库显示对应页签', async () => {
+test('官方及渠道模型均使用目录协议，模型库显示对应页签', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
   const { config, configBusy, reloadConfig } = await import('./configStore.ts')
   const { ModelSettings } = await import('./ModelSettings.tsx')
   const cases: { id: string; kind: MediaKind; baseUrl: string; vendor: string }[] = [
+    {
+      id: 'Seedance 2.5 720p',
+      kind: 'binguo_videos',
+      baseUrl: 'https://binguofilm.com',
+      vendor: '集梦',
+    },
     {
       id: 'gemini-3.1-flash-image',
       kind: 'gemini_images',
