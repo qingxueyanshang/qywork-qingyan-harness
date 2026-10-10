@@ -72,7 +72,7 @@ import {
   resumeMedia,
   TASK_SUFFIX,
 } from '@qywork/tools'
-import { checkActiveParams, prepareAgentOps } from './canvas-agent-ops.ts'
+import { agentView, checkActiveParams, prepareAgentOps } from './canvas-agent-ops.ts'
 import { findByName } from './files.ts'
 import { mediaDurationOf, mediaSizeOf } from './media-size.ts'
 
@@ -1234,8 +1234,11 @@ export class CanvasService {
       .map((m) => m.path)
   }
 
-  /** 读取画布与各节点状态。文件格式错误时返回 422，原文件不变。 */
-  async read(workspaceRoot: string, path: string): Promise<CanvasView> {
+  /**
+   * 读取画布与各节点状态。文件格式错误时返回 422，原文件不变。
+   * `agent` 为真时生成卡的参数为实际发送的参数（`agentView`）；界面需要卡片保存的全部偏好，不使用该投影。
+   */
+  async read(workspaceRoot: string, path: string, agent = false): Promise<CanvasView> {
     const abs = await this.locate(workspaceRoot, path)
     const doc = await this.load(abs)
     const states: Record<string, CanvasNodeState> = {}
@@ -1247,7 +1250,8 @@ export class CanvasService {
         doc.runs?.findLast((r) => r.node === node.id),
       )
     }
-    return { path: await this.relativeTo(workspaceRoot, abs), doc, states }
+    const view = { path: await this.relativeTo(workspaceRoot, abs), doc, states }
+    return agent ? agentView(view, this.deps.paramSpecsOf) : view
   }
 
   /**
@@ -1270,7 +1274,8 @@ export class CanvasService {
           : normalized
         this.refuseRemovingRunning(workspaceRoot, path, doc, prepared)
         const applied = applyCanvasOps(doc, prepared, this.deps.newId)
-        if (agent && applied.ok) checkActiveParams(doc, applied.doc, this.deps.paramSpecsOf)
+        if (agent && applied.ok)
+          checkActiveParams(doc, applied.doc, prepared, this.deps.paramSpecsOf)
         return applied
       })
       return { doc: r.doc, refs: r.refs, step: r.step }
@@ -1517,16 +1522,16 @@ export class CanvasService {
 /**
  * 提供给会话的画布端口：使用同一个画布服务，绑定该会话所在的项目。
  * 运行与取回在工具中等待至结束；中止信号来自本轮，停止本轮即停止等待，视频版本保留以待取回。
- * 修改按大模型的规则核对（`prepareAgentOps`）。
+ * 修改按大模型的规则核对（`prepareAgentOps`），读取的生成卡参数为实际发送的参数（`agentView`）。
  */
 export function canvasPort(service: CanvasService, ws: CanvasWorkspace): CanvasPort {
   return {
     create: (path) => service.create(ws.root, { path }),
     list: () => service.list(ws.root),
-    read: (path) => service.read(ws.root, path),
+    read: (path) => service.read(ws.root, path, true),
     edit: async (path, ops) => {
       const { refs } = await service.apply(ws.root, path, ops, true)
-      return { view: await service.read(ws.root, path), refs }
+      return { view: await service.read(ws.root, path, true), refs }
     },
     run: async (path, nodeId, media, signal) =>
       (await service.run(ws, path, nodeId, { media, signal })).done,
