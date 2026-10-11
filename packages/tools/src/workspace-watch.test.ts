@@ -45,6 +45,8 @@ describe('执行窗口内的工作区变更', () => {
       await writeFile(changed, 'before\n')
       const prior = await stat(changed)
       const window = openChangeWindow(root)
+      // macOS 的事件流异步启动；事件屏障只能确认已启动观察器的投递进度。
+      await settle()
       await observed(root)
       await writeFile(changed, 'after\n')
       await utimes(changed, prior.atime, prior.mtime)
