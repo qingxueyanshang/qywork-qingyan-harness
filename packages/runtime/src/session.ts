@@ -94,6 +94,7 @@ import {
   listWorkflowRecords,
   markRunRunning,
   markStepExecuting,
+  recordCompactionStep,
   recordFileRead,
   recordLoadedTools,
   recordUsage,
@@ -987,20 +988,12 @@ export class Session {
           durationMs,
         ),
       recordCompaction: (runId, seq, payload) => {
-        appendStep(store, {
-          runId,
-          seq,
+        recordCompactionStep(store, runId, seq, {
           kind: 'compaction',
-          // 列值由 phase 导出，不由调用方再报告一次：两处各报告一次即形成两本账，
-          // 且会出现不一致。终态的细分（skipped 与 failed）位于 payload 中。
-          status: payload.phase === 'done' ? 'success' : 'failure',
-          payload: {
-            kind: 'compaction',
-            ...payload,
-            ...(payload.message
-              ? { message: redactSecrets(payload.message, collectSecrets(this.opts.config)) }
-              : {}),
-          },
+          ...payload,
+          ...(payload.message
+            ? { message: redactSecrets(payload.message, collectSecrets(this.opts.config)) }
+            : {}),
         })
       },
       ...requestPersistence(store, this.opts.config),

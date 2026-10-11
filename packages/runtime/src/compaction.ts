@@ -357,11 +357,15 @@ export class RuntimeCompaction implements CompactionPort {
         foldedMessageCount,
         ...(input.trace ? { trace: input.trace } : {}),
       },
-      this.deps.summarize,
+      async (...args) => {
+        input.onProgress?.('summarizing')
+        return this.deps.summarize(...args)
+      },
       input.signal,
     )
 
     if (outcome.status === 'compacted') {
+      input.onProgress?.('saving')
       /*
        * 落库前最后一次检查信号。
        *

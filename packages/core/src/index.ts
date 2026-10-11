@@ -128,6 +128,7 @@ export {
   type CompactionCut,
   type CompactionFacts,
   type CompactionManifest,
+  type CompactionStage,
   type ContextBreakdown,
   type ContextGroup,
   type ContextOmitted,

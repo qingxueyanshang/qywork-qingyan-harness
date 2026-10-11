@@ -1519,7 +1519,7 @@ describe('投递额度按决策计算', () => {
       persist: {
         ...persist,
         recordCompaction: (...a) => {
-          order.push('compaction')
+          order.push(`compaction:${a[2].phase}`)
           persist.recordCompaction(...a)
         },
         openToolStep: (...a) => {
@@ -1549,7 +1549,7 @@ describe('投递额度按决策计算', () => {
     })
     await drain(loop)
     expect(runs).toBe(1)
-    expect(order).toEqual(['compaction', 'tool'])
+    expect(order).toEqual(['compaction:started', 'compaction:done', 'tool'])
     expect(admitted).toEqual([true])
     expect(seen[0]).toBeGreaterThan(700_000)
   })

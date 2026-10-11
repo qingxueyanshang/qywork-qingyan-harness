@@ -45,6 +45,7 @@ import {
   listMessages,
   listSteps,
   markStepExecuting,
+  recordCompactionStep,
   Store,
   settleToolStep,
   upsertWorkspace,
@@ -150,13 +151,7 @@ function persistence(store: Store, compactions: { count: number }): LoopPersiste
     saveUsage: () => {},
     recordCompaction: (runId, s, payload) => {
       if (payload.phase === 'done') compactions.count++
-      appendStep(store, {
-        runId,
-        seq: s,
-        kind: 'compaction',
-        status: payload.phase === 'done' ? 'success' : 'failure',
-        payload: { kind: 'compaction', ...payload },
-      })
+      recordCompactionStep(store, runId, s, { kind: 'compaction', ...payload })
     },
     // 请求 id 即工具记录的批次 id：每次请求必须不同，否则所有决策会合并为一个单元。
     openRequest: () => `pr_${++requests}`,

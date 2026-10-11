@@ -736,6 +736,8 @@ export type GoalWriteResult =
  */
 export type StepKind = 'text' | 'tool_action' | 'compaction' | 'thinking' | 'user'
 
+export type CompactionStage = 'preparing' | 'summarizing' | 'saving'
+
 export type ToolActionStatus = 'running' | 'success' | 'failure'
 
 export interface Step {
@@ -867,11 +869,12 @@ export type StepPayload =
   | {
       kind: 'compaction'
       /**
-       * 压缩终态，与 `CompactionEvent.phase` 同源；刷新之后压缩卡据此重建。
+       * 压缩状态，与 `CompactionEvent.phase` 同源；刷新之后压缩卡据此重建。
        *
        * 迁移 37 已补全旧行；新写入也必须带有该字段。
        */
-      phase: 'done' | 'skipped' | 'failed'
+      phase: 'started' | 'done' | 'skipped' | 'failed'
+      stage?: CompactionStage
       manifestRevision: number
       compactedMessages: number
       /** `phase='done'` 专有：摘要线随之前移（true），或只收纳了工具正文（false）。 */

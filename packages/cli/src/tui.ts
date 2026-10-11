@@ -286,7 +286,8 @@ function render(ev: AgentEvent): void {
       break
     }
     case 'compaction':
-      if (ev.phase === 'started') process.stdout.write(`${DIM}（正在压缩上下文…）${RESET}\n`)
+      if (ev.phase === 'started' && ev.stage === 'preparing')
+        process.stdout.write(`${DIM}（正在压缩上下文…）${RESET}\n`)
       break
     case 'run.error':
       process.stderr.write(`\n${RED}错误 [${ev.code}]${RESET} ${ev.message}\n`)

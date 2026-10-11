@@ -37,7 +37,7 @@ import { compactionEpoch, ToolRegistry } from '../registry.ts'
 import { MAX_RESENDS } from './attempt.ts'
 import { softLimit } from './request.ts'
 
-/** 落库的压缩 step，供「中断不记账」「payload 与事件同源」两组断言读取。 */
+/** 压缩 step 的写入快照，供进度与终态断言读取。 */
 type RecordedCompaction = Parameters<LoopPersistence['recordCompaction']>[2]
 
 function noopPersistence(recorded: RecordedCompaction[] = []): LoopPersistence {
@@ -1105,11 +1105,8 @@ describe('申报按占用钳位', () => {
 })
 
 describe('压缩被中断', () => {
-  /**
-   * 中断的压缩没有落库任何内容，因此事件流与账本中都不应留下终态。
-   * 停止时多显示一张错误卡片是噪音，而记录一条 step 会使「没有发生任何操作」看似发生过操作。
-   */
-  test('不发送终态事件、不记录 step，run 以中断结束', async () => {
+  /** 中断不更新 manifest；开始记录由运行收尾统一结束。 */
+  test('中断保留开始记录，run 以中断结束并负责收尾', async () => {
     const comp = fakeCompaction({ status: 'aborted' })
     const recorded: RecordedCompaction[] = []
     const loop = new AgentLoop({
@@ -1138,13 +1135,66 @@ describe('压缩被中断', () => {
 
     expect(events.some((e) => e.type === 'compaction' && e.phase === 'started')).toBe(true)
     expect(events.filter((e) => e.type === 'compaction' && e.phase !== 'started')).toHaveLength(0)
-    expect(recorded).toHaveLength(0)
+    expect(recorded).toEqual([expect.objectContaining({ phase: 'started', stage: 'preparing' })])
     const finished = events.find((e) => e.type === 'run.finished')
     expect(finished?.type === 'run.finished' && finished.status).toBe('interrupted')
   })
 })
 
 describe('结果形态对用户可见', () => {
+  test('摘要等待期间就发送进度，进度与终态共用同一条记录', async () => {
+    let release!: () => void
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const sequences: number[] = []
+    const persistence = noopPersistence()
+    const loop = new AgentLoop({
+      adapter: okAdapter(),
+      registry: new ToolRegistry(),
+      systemPrompt: 'sys',
+      persist: {
+        ...persistence,
+        recordCompaction: (_run, seq) => {
+          sequences.push(seq)
+        },
+      },
+      makeToolContext: makeCtx,
+      compaction: {
+        project: (messages) => messages,
+        run: async (input) => {
+          input.onProgress?.('summarizing')
+          await waiting
+          input.onProgress?.('saving')
+          return okOutcome
+        },
+      },
+    })
+    const phases: string[] = []
+    try {
+      for await (const event of loop.run({
+        runId: 'rn_progress' as never,
+        history: [],
+        anchor: {
+          tokens: 900_000,
+          throughMessageId: null,
+          model: 'claude-opus-5',
+          headTokens: 0,
+          envelopeFingerprint: null,
+        },
+        signal: new AbortController().signal,
+      })) {
+        if (event.type !== 'compaction') continue
+        phases.push(event.stage ?? event.phase)
+        if (event.stage === 'summarizing') release()
+      }
+      expect(phases).toEqual(['preparing', 'summarizing', 'saving', 'done'])
+      expect(new Set(sequences).size).toBe(1)
+    } finally {
+      release()
+    }
+  })
+
   test('done 带 summarized，step payload 与事件同源', async () => {
     const comp = fakeCompaction({ ...okOutcome, summarized: true })
     const recorded: RecordedCompaction[] = []
@@ -1175,6 +1225,7 @@ describe('结果形态对用户可见', () => {
     const done = events.find((e) => e.type === 'compaction' && e.phase === 'done')
     expect(done?.type === 'compaction' && done.summarized).toBe(true)
     expect(recorded).toEqual([
+      expect.objectContaining({ phase: 'started', stage: 'preparing' }),
       expect.objectContaining({
         phase: 'done',
         manifestRevision: 1,
@@ -1212,7 +1263,7 @@ describe('结果形态对用户可见', () => {
     })) {
       // 只检查落库结果
     }
-    expect(recorded[0]?.summarized).toBe(false)
+    expect(recorded.at(-1)?.summarized).toBe(false)
   })
 
   test('skipped 落库时带 skipped，不伪装成失败', async () => {
@@ -1240,8 +1291,8 @@ describe('结果形态对用户可见', () => {
     })) {
       // 只检查落库结果
     }
-    expect(recorded[0]?.phase).toBe('skipped')
-    expect(recorded[0]?.reasonCode).toBe('nothing_to_fold')
+    expect(recorded.at(-1)?.phase).toBe('skipped')
+    expect(recorded.at(-1)?.reasonCode).toBe('nothing_to_fold')
   })
 })
 

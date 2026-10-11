@@ -14,6 +14,7 @@ import type {
   ActionDescriptor,
   AgentEvent,
   Attachment,
+  CompactionStage,
   ContextBreakdown,
   ContextOmitted,
   ProviderHedge,
@@ -96,6 +97,7 @@ export interface CompactionPort {
 }
 
 export interface CompactionRunInput {
+  onProgress?: (stage: CompactionStage) => void
   /** 中断信号，可省略：手动压缩不属于任何 run，没有 run 信号。 */
   signal?: AbortSignal
   /** 轮内压缩时的记账钩子：摘要请求按本轮的普通请求记录。手动压缩不提供。 */
@@ -233,21 +235,18 @@ export interface LoopPersistence {
   ): void
   saveUsage(runId: RunId, usage: RunUsage): void
   /**
-   * 为压缩写入一条 step。
-   *
-   * 这是 `'compaction'` 类型 step 的唯一生产者。缺少它时，`steps.kind` 的 CHECK、
-   * `StepKind`、archive 渲染分支都成为没有生产者的链路（C1 第 1 款）：压缩条目只由
-   * 实时事件创建，刷新后即消失，而它是解释上下文占用下降原因的唯一依据。
+   * 按同一个 seq 更新压缩 step；开始、进度与终态均写入会话账本。
    */
   recordCompaction(
     runId: RunId,
     seq: number,
     payload: {
       /**
-       * 终态的唯一记录方式，与 `CompactionEvent.phase` 同源。
+       * 压缩状态与 `CompactionEvent.phase` 同源。
        * 行上的 `status` 列由它导出，不要改为由调用方分别上报。
        */
-      phase: 'done' | 'skipped' | 'failed'
+      phase: 'started' | 'done' | 'skipped' | 'failed'
+      stage?: CompactionStage
       manifestRevision: number
       compactedMessages: number
       /** 仅用于 `phase='done'`：摘要边界已前移（true），或只收纳了工具正文（false）。 */

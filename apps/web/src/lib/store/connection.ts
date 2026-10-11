@@ -557,33 +557,30 @@ function foldContent(cid: string, ev: AgentEvent): void {
         produce((s) => {
           const items = s.views[cid]?.transcript
           if (!items) return
-          // 压缩是会话管理的可见事件，不能静默发生：用户需要据此了解
-          // 模型为何不再记得之前的对话内容。
-          const existing = items.find(
-            (t) => t.kind === 'compaction' && t.compaction?.phase === 'started',
-          )
-          if (existing && ev.phase !== 'started') {
-            existing.compaction = {
-              phase: ev.phase,
-              ...(ev.reasonCode ? { reasonCode: ev.reasonCode } : {}),
-              ...(ev.summarized === undefined ? {} : { summarized: ev.summarized }),
-              ...(ev.manifest
-                ? {
-                    revision: ev.manifest.revision,
-                    compactedMessages: ev.manifest.compactedMessageCount,
-                  }
-                : {}),
-            }
+          const id = `cmp_${ev.runId}_${ev.stepSeq}`
+          const existing = items.find((t) => t.id === id)
+          const compaction: NonNullable<TranscriptItem['compaction']> = {
+            runId: ev.runId,
+            phase: ev.phase,
+            ...(ev.stage ? { stage: ev.stage } : {}),
+            ...(ev.reasonCode ? { reasonCode: ev.reasonCode } : {}),
+            ...(ev.summarized === undefined ? {} : { summarized: ev.summarized }),
+            ...(ev.manifest
+              ? {
+                  revision: ev.manifest.revision,
+                  compactedMessages: ev.manifest.compactedMessageCount,
+                }
+              : {}),
+          }
+          if (existing) {
+            existing.compaction = latestCompaction(existing.compaction, compaction)
             return
           }
           items.push({
-            id: `cmp_${Date.now()}`,
+            id,
             kind: 'compaction',
             text: '',
-            compaction: {
-              phase: ev.phase,
-              ...(ev.reasonCode ? { reasonCode: ev.reasonCode } : {}),
-            },
+            compaction,
           })
         }),
       )
@@ -611,6 +608,11 @@ function foldContent(cid: string, ev: AgentEvent): void {
         produce((s) => {
           const v = s.views[cid]
           if (!v) return
+          for (const item of v.transcript) {
+            if (item.compaction?.runId === ev.runId && item.compaction.phase === 'started') {
+              item.compaction = { runId: ev.runId, phase: 'failed', reasonCode: 'aborted' }
+            }
+          }
           // 收尾读数写入为一个条目，不写入全局字段：每轮一条，
           // 刷新后由 `reloadActiveConversation` 从 run 行原样重建。
           v.transcript.push({
@@ -966,6 +968,27 @@ function foldPage(page: HistoryPage): TranscriptItem[] {
   return [...page.workflowStarts.flatMap(stepToItems), ...foldTranscript(page)]
 }
 
+/** 同一压缩记录只向前推进，历史快照不能覆盖加载期间到达的新进度或终态。 */
+function latestCompaction(
+  current: TranscriptItem['compaction'],
+  incoming: NonNullable<TranscriptItem['compaction']>,
+): NonNullable<TranscriptItem['compaction']> {
+  const rank = (c: NonNullable<TranscriptItem['compaction']>) =>
+    c.phase !== 'started' ? 3 : c.stage === 'saving' ? 2 : c.stage === 'summarizing' ? 1 : 0
+  return current && rank(current) > rank(incoming) ? current : incoming
+}
+
+function mergeHistoryItems(items: TranscriptItem[], current: TranscriptItem[]): TranscriptItem[] {
+  const byId = new Map(current.map((item) => [item.id, item]))
+  const merged = items.map((item) =>
+    item.compaction
+      ? { ...item, compaction: latestCompaction(byId.get(item.id)?.compaction, item.compaction) }
+      : item,
+  )
+  const known = new Set(items.map((item) => item.id))
+  return [...merged, ...current.filter((item) => !known.has(item.id))]
+}
+
 // 600 轮、16.9 MiB 量级会话的实测：每页 30 轮时首屏虽能在 400ms 内显示第一行，
 // 但后续 Markdown 挂载仍占用主线程约 2.8s，快速切换到下一条会话时需要等待。每页 10 轮可将单页
 // 控制在约 300 KiB；历史记录完整保留，只缩小向前加载的粒度。
@@ -1058,7 +1081,19 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
   }
 
   const items: TranscriptItem[] = []
+  const maintenance = runs.filter((run) => run.userMessageId === null)
+  let maintenanceIndex = 0
+  const appendMaintenance = (before: number) => {
+    while (
+      maintenanceIndex < maintenance.length &&
+      maintenance[maintenanceIndex]!.createdAt < before
+    ) {
+      const run = maintenance[maintenanceIndex++]!
+      items.push(...(stepsByRun.get(run.id) ?? []).flatMap(stepToItems))
+    }
+  }
   for (const m of messages) {
+    appendMaintenance(m.createdAt)
     // 回执与用户输入都是 user 角色，且都能发起轮次：条目形态按 origin 区分，其下的
     // run 与 steps 按相同方式折叠。
     items.push(
@@ -1100,6 +1135,7 @@ function foldTranscript({ messages, runs, stepsByRun }: Folded): TranscriptItem[
       }
     }
   }
+  appendMaintenance(Number.POSITIVE_INFINITY)
   return items
 }
 
@@ -1129,10 +1165,8 @@ export async function loadConversationView(id: string): Promise<void> {
       produce((s) => {
         const v = s.views[id]
         if (!v) return
-        // 建表到本次拉取返回之间到达的条目接在后面，按 id 去重。同一个 step
-        // 两边都有时以账本为准：事件中的版本可能只输出了一部分（正文仍在流式输出）。
-        const known = new Set(items.map((i) => i.id))
-        v.transcript = [...items, ...v.transcript.filter((i) => !known.has(i.id))]
+        // 按 id 合并加载期间到达的事件；正文以账本为准，压缩保留较新的阶段。
+        v.transcript = mergeHistoryItems(items, v.transcript)
         v.history = { loading: null, nextCursor: page.nextCursor, error: null }
         restoreRequest(v, page.live)
         if (live) {
@@ -1179,8 +1213,7 @@ export async function loadOlderConversation(id: string): Promise<boolean> {
       produce((s) => {
         const v = s.views[id]
         if (!v) return
-        const olderIds = new Set(items.map((item) => item.id))
-        v.transcript = [...items, ...v.transcript.filter((item) => !olderIds.has(item.id))]
+        v.transcript = mergeHistoryItems(items, v.transcript)
         v.history = { loading: null, nextCursor: page.nextCursor, error: null }
       }),
     )
@@ -1511,9 +1544,8 @@ export async function reloadActiveConversation(): Promise<void> {
       produce((s) => {
         const v = s.views[id]
         if (v) {
-          // 请求期间到达的实时事件接在账本页之后；相同 id 以账本为准。
-          const known = new Set(items.map((item) => item.id))
-          v.transcript = [...items, ...v.transcript.filter((item) => !known.has(item.id))]
+          // 按 id 合并实时事件，压缩进度不可因较早的快照而回退。
+          v.transcript = mergeHistoryItems(items, v.transcript)
           v.history = { loading: null, nextCursor: folded.nextCursor, error: null }
           v.runStartedAt = live ? live.createdAt : null
           v.runUserMessageId = live?.userMessageId ?? null
@@ -1612,11 +1644,13 @@ function stepToItems(s: Step): TranscriptItem[] {
     if (p?.kind !== 'compaction' || !p.phase) return []
     return [
       {
-        id: s.id,
+        id: `cmp_${s.runId}_${s.seq}`,
         kind: 'compaction',
         text: '',
         compaction: {
+          runId: s.runId,
           phase: p.phase,
+          ...(p.stage ? { stage: p.stage } : {}),
           ...(p?.reasonCode ? { reasonCode: p.reasonCode } : {}),
           ...(p?.summarized === undefined ? {} : { summarized: p.summarized }),
           ...(p?.compactedMessages ? { compactedMessages: p.compactedMessages } : {}),

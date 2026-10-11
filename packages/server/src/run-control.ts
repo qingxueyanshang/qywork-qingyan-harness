@@ -18,6 +18,7 @@ import { buildAdapter, ProviderError, type ProviderProfile } from '@qywork/ai'
 import type {
   AgentEvent,
   Attachment,
+  CompactionStage,
   ConversationId,
   FollowUp,
   Goal,
@@ -38,7 +39,6 @@ import {
   Session,
 } from '@qywork/runtime'
 import {
-  appendStep,
   createGoal,
   createRun,
   currentGoal,
@@ -46,6 +46,7 @@ import {
   getConversation,
   listRuns,
   markRunRunning,
+  recordCompactionStep,
   recordUsage,
   touchRun,
   updateGoal,
@@ -764,11 +765,22 @@ export async function compactConversation(
   markRunRunning(deps.store, runId)
   const heartbeat = setInterval(() => touchRun(deps.store, runId), 10_000)
   const clean = (text: string) => redactSecrets(text, collectSecrets(deps.config))
-  let seq = 0
+  const stepSeq = 1
   let usageProvider: string | null = null
+  const onProgress = (stage: CompactionStage) => {
+    recordCompactionStep(deps.store, runId, stepSeq, {
+      kind: 'compaction',
+      phase: 'started',
+      stage,
+      manifestRevision: 0,
+      compactedMessages: 0,
+      trigger: 'manual',
+    })
+    emit({ type: 'compaction', runId, stepSeq, phase: 'started', stage })
+  }
 
   try {
-    emit({ type: 'compaction', runId, phase: 'started' })
+    onProgress('preparing')
     const compaction = new RuntimeCompaction({
       store: deps.store,
       conversationId,
@@ -795,6 +807,7 @@ export async function compactConversation(
       providerKind: adapter.kind,
     })
     const outcome = await compaction.run({
+      onProgress,
       trace: createSummaryTrace(
         requestPersistence(deps.store, deps.config),
         runId,
@@ -815,25 +828,19 @@ export async function compactConversation(
     })
     const phase =
       outcome.status === 'compacted' ? 'done' : outcome.status === 'skipped' ? 'skipped' : 'failed'
-    appendStep(deps.store, {
-      runId,
-      seq: ++seq,
+    recordCompactionStep(deps.store, runId, stepSeq, {
       kind: 'compaction',
-      status: phase === 'done' ? 'success' : 'failure',
-      payload: {
-        kind: 'compaction',
-        phase,
-        manifestRevision: outcome.status === 'compacted' ? outcome.manifest.revision : 0,
-        compactedMessages:
-          outcome.status === 'compacted' ? outcome.manifest.compactedMessageCount : 0,
-        ...(outcome.status === 'compacted' ? { summarized: outcome.summarized } : {}),
-        ...('reasonCode' in outcome ? { reasonCode: outcome.reasonCode } : {}),
-        ...('message' in outcome && outcome.message ? { message: clean(outcome.message) } : {}),
-        trigger: 'manual',
-        occupancy: panel.total,
-        estimatedOccupancy: panel.measured,
-        contextWindow: spec.contextWindow,
-      },
+      phase,
+      manifestRevision: outcome.status === 'compacted' ? outcome.manifest.revision : 0,
+      compactedMessages:
+        outcome.status === 'compacted' ? outcome.manifest.compactedMessageCount : 0,
+      ...(outcome.status === 'compacted' ? { summarized: outcome.summarized } : {}),
+      ...('reasonCode' in outcome ? { reasonCode: outcome.reasonCode } : {}),
+      ...('message' in outcome && outcome.message ? { message: clean(outcome.message) } : {}),
+      trigger: 'manual',
+      occupancy: panel.total,
+      estimatedOccupancy: panel.measured,
+      contextWindow: spec.contextWindow,
     })
     finishRun(deps.store, runId, {
       status: outcome.status === 'failed' || outcome.status === 'aborted' ? 'failed' : 'done',
@@ -848,6 +855,7 @@ export async function compactConversation(
       emit({
         type: 'compaction',
         runId,
+        stepSeq,
         phase: 'done',
         manifest: outcome.manifest,
         summarized: outcome.summarized,
@@ -874,12 +882,12 @@ export async function compactConversation(
     } else if (outcome.status === 'aborted') {
       // 手动压缩不向 `run()` 传入信号，这条终态不可达。保留它是因为静默丢弃一个终态
       // 对用户而言等同于「点击按钮没有反应」。
-      emit({ type: 'compaction', runId, phase: 'failed', reasonCode: 'aborted' })
+      emit({ type: 'compaction', runId, stepSeq, phase: 'failed', reasonCode: 'aborted' })
     } else if (outcome.status === 'skipped') {
       // 「没有可压缩的内容」不是失败：用户点击了按钮，必须有反馈，但不能报错。
-      emit({ type: 'compaction', runId, phase: 'skipped', reasonCode: outcome.reasonCode })
+      emit({ type: 'compaction', runId, stepSeq, phase: 'skipped', reasonCode: outcome.reasonCode })
     } else {
-      emit({ type: 'compaction', runId, phase: 'failed', reasonCode: outcome.reasonCode })
+      emit({ type: 'compaction', runId, stepSeq, phase: 'failed', reasonCode: outcome.reasonCode })
     }
   } catch (err) {
     // `reasonCode` 是**错误码**，不是消息。写入 `err.message.slice(0, 80)` 时，
@@ -888,20 +896,14 @@ export async function compactConversation(
     // 可识别的使用 ProviderError 的错误码，其余一律为 internal_error。
     const reasonCode = err instanceof ProviderError ? err.code : 'internal_error'
     const message = clean(err instanceof Error ? err.message : String(err))
-    appendStep(deps.store, {
-      runId,
-      seq: ++seq,
+    recordCompactionStep(deps.store, runId, stepSeq, {
       kind: 'compaction',
-      status: 'failure',
-      payload: {
-        kind: 'compaction',
-        phase: 'failed',
-        manifestRevision: 0,
-        compactedMessages: 0,
-        trigger: 'manual',
-        reasonCode,
-        message,
-      },
+      phase: 'failed',
+      manifestRevision: 0,
+      compactedMessages: 0,
+      trigger: 'manual',
+      reasonCode,
+      message,
     })
     finishRun(deps.store, runId, {
       status: 'failed',
@@ -912,6 +914,7 @@ export async function compactConversation(
     emit({
       type: 'compaction',
       runId,
+      stepSeq,
       phase: 'failed',
       reasonCode,
     })

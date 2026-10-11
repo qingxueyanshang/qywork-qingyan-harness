@@ -7,12 +7,24 @@
 
 import type { ProviderError } from '@qywork/ai'
 import { estimateMessages, estimateRequest } from '@qywork/ai'
-import type { AgentEvent } from '@qywork/core'
+import type { AgentEvent, CompactionStage } from '@qywork/core'
 import { envelopeHeadTokens, log } from '@qywork/core'
 import { tailRetain } from '../delivery.ts'
+import { drainUntil } from '../event-queue.ts'
 import { markCompacted } from '../registry.ts'
 import { breakdownOf, envelopeHashOf, softLimit } from './request.ts'
 import { type LoopHost, type RunState, type TurnState, untilAborted } from './run-state.ts'
+
+/** 先写会话记录再发送进度，刷新与实时事件读取同一份状态。 */
+function compactionProgress(run: RunState, stepSeq: number, stage: CompactionStage): AgentEvent {
+  run.persist.recordCompaction(run.input.runId, stepSeq, {
+    phase: 'started',
+    stage,
+    manifestRevision: 0,
+    compactedMessages: 0,
+  })
+  return { type: 'compaction', runId: run.input.runId, stepSeq, phase: 'started', stage }
+}
 
 /**
  * ── 压缩触发：主入口 ──
@@ -126,23 +138,31 @@ async function* compactOverSoftLimit(
     softLimit: softLimit(adapter.spec),
   })
   const overLine = occupancy > softLimit(adapter.spec)
-  if (overLine) yield { type: 'compaction', runId: input.runId, phase: 'started' }
-  // 与工具波次相同：压缩可能调用一次模型，停滞时整轮阻塞于此，且它不写入
-  // `provider_requests`，账本上无法看出阻塞于何处。
+  const stepSeq = run.nextSeq()
+  if (overLine) yield compactionProgress(run, stepSeq, 'preparing')
+  // 摘要请求按当前轮次记账，等待期间持续发送进度。
   const trace = host.summaryTrace(run, at.summaryTurn)
-  const outcome = await untilAborted(
-    input.signal,
-    host.compaction.run({
-      signal: input.signal,
-      trace,
-      trigger: 'automatic',
-      model: adapter.spec.id,
-      latestUnitSeen: at.latestUnitSeen,
-      occupancy,
-      estimatedOccupancy: at.estimated,
-      contextWindow: adapter.spec.contextWindow,
-      density,
-    }),
+  const outcome = yield* drainUntil(
+    run.emitQueue,
+    untilAborted(
+      input.signal,
+      host.compaction.run({
+        signal: input.signal,
+        trace,
+        trigger: 'automatic',
+        model: adapter.spec.id,
+        latestUnitSeen: at.latestUnitSeen,
+        occupancy,
+        estimatedOccupancy: at.estimated,
+        contextWindow: adapter.spec.contextWindow,
+        density,
+        onProgress: (stage) => {
+          if (overLine && !input.signal.aborted) {
+            run.emitQueue.push(compactionProgress(run, stepSeq, stage))
+          }
+        },
+      }),
+    ),
   )
   if (trace.opened) {
     run.requestTurn++
@@ -153,16 +173,14 @@ async function* compactOverSoftLimit(
   }
   if (outcome.status === 'aborted') {
     /*
-     * 中断的压缩没有落库任何内容，因此此处不发送事件、不写入记录：
-     * run 随即以 `user_interrupt` 结束，停止时多显示一张错误卡片是噪音，
-     * 而账本上不留记录正是对「没有产生任何副作用」的如实反映。
+     * 中断时不更新压缩投影；运行中的 step 由 run 收尾统一标记为停止。
      */
     run.stopReason = 'user_interrupt'
     return 'interrupted'
   }
   if (outcome.status === 'compacted') {
     markCompacted(run.ctx.state)
-    persist.recordCompaction(input.runId, run.nextSeq(), {
+    persist.recordCompaction(input.runId, stepSeq, {
       trigger: 'automatic',
       occupancy,
       estimatedOccupancy: at.estimated,
@@ -177,6 +195,7 @@ async function* compactOverSoftLimit(
     yield {
       type: 'compaction',
       runId: input.runId,
+      stepSeq,
       phase: 'done',
       manifest: outcome.manifest,
       summarized: outcome.summarized,
@@ -203,7 +222,7 @@ async function* compactOverSoftLimit(
     // 将其显示为红色的压缩失败会使用户排查一个并不存在的故障。
     const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
     if (phase === 'skipped' && !overLine) return 'unchanged'
-    persist.recordCompaction(input.runId, run.nextSeq(), {
+    persist.recordCompaction(input.runId, stepSeq, {
       trigger: 'automatic',
       occupancy,
       estimatedOccupancy: at.estimated,
@@ -217,6 +236,7 @@ async function* compactOverSoftLimit(
     yield {
       type: 'compaction',
       runId: input.runId,
+      stepSeq,
       phase,
       reasonCode: outcome.reasonCode,
     }
@@ -286,27 +306,34 @@ export async function* recoverFromOverflow(
   // 压缩前后用**同一口径**估算请求本身。判据不是「压缩返回成功」：
   // 收纳段可能已经落库，却未减少任何 token。
   const sizeBefore = estimateRequest(turn.req, density)
-  yield { type: 'compaction', runId: input.runId, phase: 'started' }
+  const stepSeq = run.nextSeq()
+  yield compactionProgress(run, stepSeq, 'preparing')
   /*
    * 被拒的那次已占用 (requestTurn, retry)。摘要请求记入下一个 turn；压缩后重发的
    * 是另一份内容（历史已替换为摘要），不再算作同一 turn 的重试，同样另起一个 turn。
    */
   const trace = host.summaryTrace(run, run.requestTurn + 1)
-  const outcome = await untilAborted(
-    input.signal,
-    host.compaction.run({
-      signal: input.signal,
-      trace,
-      trigger: 'automatic',
-      model: adapter.spec.id,
-      // 被拒的那次请求中的最后一批结果尚未送达模型。
-      latestUnitSeen: false,
-      occupancy: cap.reportedInputTokens ?? run.occupancyOf(turn.req),
-      // `sizeBefore` 即本次请求的本地估算，来自同一次装配、同一口径。
-      estimatedOccupancy: sizeBefore,
-      contextWindow: adapter.spec.contextWindow,
-      density,
-    }),
+  const outcome = yield* drainUntil(
+    run.emitQueue,
+    untilAborted(
+      input.signal,
+      host.compaction.run({
+        signal: input.signal,
+        trace,
+        trigger: 'automatic',
+        model: adapter.spec.id,
+        // 被拒的那次请求中的最后一批结果尚未送达模型。
+        latestUnitSeen: false,
+        occupancy: cap.reportedInputTokens ?? run.occupancyOf(turn.req),
+        // `sizeBefore` 即本次请求的本地估算，来自同一次装配、同一口径。
+        estimatedOccupancy: sizeBefore,
+        contextWindow: adapter.spec.contextWindow,
+        density,
+        onProgress: (stage) => {
+          if (!input.signal.aborted) run.emitQueue.push(compactionProgress(run, stepSeq, stage))
+        },
+      }),
+    ),
   )
   if (trace.opened) {
     run.requestTurn += 2
@@ -325,7 +352,7 @@ export async function* recoverFromOverflow(
     const rebuilt = host.buildRequest(run)
     if (estimateRequest(rebuilt, density) < sizeBefore) {
       markCompacted(run.ctx.state)
-      persist.recordCompaction(input.runId, run.nextSeq(), {
+      persist.recordCompaction(input.runId, stepSeq, {
         trigger: 'overflow',
         occupancy: cap.reportedInputTokens ?? run.occupancyOf(turn.req),
         estimatedOccupancy: sizeBefore,
@@ -340,6 +367,7 @@ export async function* recoverFromOverflow(
       yield {
         type: 'compaction',
         runId: input.runId,
+        stepSeq,
         phase: 'done',
         manifest: outcome.manifest,
         summarized: outcome.summarized,
@@ -359,7 +387,7 @@ export async function* recoverFromOverflow(
    */
   const phase = outcome.status === 'skipped' ? 'skipped' : 'failed'
   const reasonCode = outcome.status === 'compacted' ? 'no_reduction' : outcome.reasonCode
-  persist.recordCompaction(input.runId, run.nextSeq(), {
+  persist.recordCompaction(input.runId, stepSeq, {
     trigger: 'overflow',
     occupancy: cap.reportedInputTokens ?? run.occupancyOf(turn.req),
     estimatedOccupancy: sizeBefore,
@@ -370,7 +398,7 @@ export async function* recoverFromOverflow(
     compactedMessages: 0,
     reasonCode,
   })
-  yield { type: 'compaction', runId: input.runId, phase, reasonCode }
+  yield { type: 'compaction', runId: input.runId, stepSeq, phase, reasonCode }
   attempt.recordDecision('context_compaction_failed')
   throw err
 }

@@ -13,6 +13,7 @@
 import type {
   ActionDescriptor,
   Attachment,
+  CompactionStage,
   ContextBreakdown,
   ContextOmitted,
   Conversation,
@@ -75,7 +76,9 @@ export interface TranscriptItem {
   }
   /** kind='compaction' 专有 */
   compaction?: {
+    runId: string
     phase: 'started' | 'done' | 'skipped' | 'failed'
+    stage?: CompactionStage
     reasonCode?: string
     /** phase='done' 专有：摘要线是否随之前移；为 false 时只收纳了工具正文。 */
     summarized?: boolean

@@ -19,6 +19,37 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
+test('压缩提示只有原文和后置进度条，阶段变化不增加说明文字', async () => {
+  const { createSignal } = await import('solid-js')
+  const { render } = await import('solid-js/web')
+  const { TranscriptRows } = await import('./Transcript.tsx')
+  const item = (phase: string, stage?: string) => ({
+    id: 'cmp_rn_progress_1',
+    kind: 'compaction',
+    text: '',
+    compaction: { runId: 'rn_progress', phase, stage },
+  })
+  const [items, setItems] = createSignal([item('started', 'summarizing')])
+  const host = document.createElement('div')
+  const dispose = render(() => <TranscriptRows items={items() as never} />, host)
+  try {
+    const row = host.querySelector('.compaction')!
+    expect(row.textContent).toBe('正在压缩上下文')
+    expect(row.querySelector('svg')).toBeNull()
+    expect(row.firstElementChild?.textContent).toBe('正在压缩上下文')
+    expect(row.lastElementChild?.getAttribute('role')).toBe('progressbar')
+    expect(row.querySelectorAll('.complete')).toHaveLength(1)
+    setItems([item('started', 'saving')])
+    expect(host.querySelectorAll('.compaction-progress .complete')).toHaveLength(2)
+    expect(host.textContent).toBe('正在压缩上下文')
+    setItems([item('done')])
+    expect(host.querySelector('[role="progressbar"]')).toBeNull()
+    expect(host.textContent).toBe('上下文已压缩')
+  } finally {
+    dispose()
+  }
+})
+
 const resizeCallbacks = new Map<Element, ResizeObserverCallback>()
 
 beforeAll(async () => {

@@ -1,11 +1,98 @@
-/** 从真实 HTTP 摘要故障，经正式手动入口、SQLite，到会话导出的回归。 */
+/** 覆盖手动压缩入口、HTTP 摘要、SQLite 历史恢复与会话导出。 */
 import { expect, test } from 'bun:test'
 import { resolve } from 'node:path'
 import type { AgentEvent } from '@qywork/core'
 import { catalogKey, exportConversationDiagnostics, type QyConfig } from '@qywork/runtime'
-import { appendMessage, createConversation, Store, upsertWorkspace } from '@qywork/store'
+import {
+  appendMessage,
+  createConversation,
+  listConversationHistoryPage,
+  Store,
+  upsertWorkspace,
+} from '@qywork/store'
 import type { CommandDeps } from './deps.ts'
 import { compactConversation } from './run-control.ts'
+
+test('摘要尚未返回时历史页包含压缩进度，结束后更新同一条记录', async () => {
+  let release!: () => void
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let arrived!: () => void
+  const requested = new Promise<void>((resolve) => {
+    arrived = resolve
+  })
+  const provider = Bun.serve({
+    port: 0,
+    async fetch() {
+      arrived()
+      await waiting
+      return new Response(
+        [
+          { choices: [{ delta: { content: '已整理材料，继续核对。' }, finish_reason: null }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ]
+          .map((row) => `data: ${JSON.stringify(row)}\n\n`)
+          .join(''),
+        {
+          headers: { 'content-type': 'text/event-stream' },
+        },
+      )
+    },
+  })
+  const store = new Store({ path: ':memory:' })
+  let work: Promise<void> | undefined
+  try {
+    const ws = upsertWorkspace(store, resolve('.tmp/compaction-progress'), 'progress')
+    const cv = createConversation(store, {
+      workspaceId: ws.id,
+      provider: 'p',
+      model: 'diagnostic-model',
+    })
+    for (let i = 0; i < 5; i++)
+      appendMessage(store, {
+        conversationId: cv.id,
+        role: 'user',
+        content: `第${i}条${'核对材料。'.repeat(500)}`,
+      })
+    work = compactConversation(cv.id, {
+      store,
+      config: {
+        providers: {
+          p: {
+            kind: 'openai_chat_completions',
+            apiKey: 'test',
+            baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+            models: { 'diagnostic-model': {} },
+          },
+        },
+      },
+      bus: { publish() {} },
+    } as unknown as CommandDeps)
+    await requested
+    const during = listConversationHistoryPage(store, cv.id, { limit: 10 })
+    expect(during.steps).toHaveLength(1)
+    expect(during.steps[0]).toMatchObject({
+      status: 'running',
+      payload: { kind: 'compaction', phase: 'started', stage: 'summarizing' },
+    })
+    release()
+    await work
+    const after = listConversationHistoryPage(store, cv.id, { limit: 10 })
+    expect(after.steps).toHaveLength(1)
+    expect(after.steps[0]).toMatchObject({
+      id: during.steps[0]!.id,
+      status: 'success',
+      payload: { phase: 'done' },
+    })
+    expect(after.runs[0]?.stepCount).toBe(1)
+  } finally {
+    release()
+    await work
+    store.close()
+    provider.stop(true)
+  }
+})
 
 test('摘要被拒后仍保留原生错误、请求参数、降级原因，导出时改配置不改历史', async () => {
   const requests: Record<string, unknown>[] = []

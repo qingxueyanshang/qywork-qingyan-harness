@@ -33,6 +33,7 @@ import {
   markProviderRequestSent,
   openProviderRequest,
   providerFinishRates,
+  recordCompactionStep,
   setConversationTitle,
   setStepNodeState,
   settleProviderRequest,
@@ -48,6 +49,84 @@ function fresh() {
   const ws = upsertWorkspace(store, '/tmp/ws', 'ws')
   return { store, ws }
 }
+
+test('压缩进度在空会话中也可恢复，中断收尾保留压缩类型', () => {
+  const { store, ws } = fresh()
+  try {
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const run = createRun(store, {
+      conversationId: cv.id,
+      workspaceId: ws.id,
+      model: 'm',
+      clientRequestId: 'compact',
+      userMessageId: null,
+      messageIdUpperBound: null,
+      contextSnapshot: [],
+    })
+    recordCompactionStep(store, run.id, 1, {
+      kind: 'compaction',
+      phase: 'started',
+      stage: 'summarizing',
+      manifestRevision: 0,
+      compactedMessages: 0,
+    })
+    expect(
+      listConversationHistoryPage(store, cv.id, { limit: 10 }).steps[0]?.payload,
+    ).toMatchObject({ phase: 'started', stage: 'summarizing' })
+    settleRunningSteps(store, run.id)
+    expect(listSteps(store, run.id)[0]).toMatchObject({
+      kind: 'compaction',
+      status: 'failure',
+      payload: { kind: 'compaction', phase: 'failed', reasonCode: 'aborted' },
+    })
+  } finally {
+    store.close()
+  }
+})
+
+test('手动压缩随历史分页恢复，每条记录只属于一页', () => {
+  const { store, ws } = fresh()
+  try {
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+    const messages = [100, 200, 300].map((at) => {
+      const message = appendMessage(store, {
+        conversationId: cv.id,
+        role: 'user',
+        content: `${at}`,
+      })
+      store.db.query('UPDATE messages SET created_at = ? WHERE id = ?').run(at, message.id)
+      return message
+    })
+    const runs = [50, 150, 250, 350].map((at) => {
+      const run = createRun(store, {
+        conversationId: cv.id,
+        workspaceId: ws.id,
+        model: 'm',
+        clientRequestId: `${at}`,
+        userMessageId: null,
+        messageIdUpperBound: null,
+        contextSnapshot: [],
+      })
+      store.db.query('UPDATE runs SET created_at = ? WHERE id = ?').run(at, run.id)
+      recordCompactionStep(store, run.id, 1, {
+        kind: 'compaction',
+        phase: 'done',
+        manifestRevision: 1,
+        compactedMessages: 1,
+      })
+      finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
+      return run
+    })
+    const latest = listConversationHistoryPage(store, cv.id, { limit: 1 })
+    const middle = listConversationHistoryPage(store, cv.id, { limit: 1, before: messages[2]!.id })
+    const oldest = listConversationHistoryPage(store, cv.id, { limit: 1, before: messages[1]!.id })
+    expect(latest.runs.map((r) => r.id)).toEqual([runs[3]!.id])
+    expect(middle.runs.map((r) => r.id)).toEqual([runs[2]!.id])
+    expect(oldest.runs.map((r) => r.id)).toEqual([runs[0]!.id, runs[1]!.id])
+  } finally {
+    store.close()
+  }
+})
 
 describe('逐请求传输证据', () => {
   test('路由、体积、响应头、首事件、首内容与终态逐项写入账本', () => {

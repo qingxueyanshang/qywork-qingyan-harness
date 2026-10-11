@@ -987,6 +987,7 @@ function CompactionCard(props: { item: TranscriptItem }) {
   const label = () => {
     const phase = c()?.phase
     if (phase === 'started') return '正在压缩上下文'
+    if (c()?.reasonCode === 'aborted') return '压缩已停止'
     if (phase === 'skipped') return compactionSkipLabel(c()?.reasonCode)
     if (phase === 'failed') return compactionFailureLabel(c()?.reasonCode)
     // 必须区分三种结果：只收纳（未调用模型）、压缩完成、已收纳但摘要未完成。
@@ -998,11 +999,26 @@ function CompactionCard(props: { item: TranscriptItem }) {
     return n ? `上下文已压缩，折叠 ${n} 轮` : '上下文已压缩'
   }
   return (
-    <div class="compaction" classList={{ failed: c()?.phase === 'failed' }}>
-      <Show when={c()?.phase === 'started'}>
-        <IconSpinner size={13} />
-      </Show>
+    <div
+      class="compaction"
+      classList={{ failed: c()?.phase === 'failed' && c()?.reasonCode !== 'aborted' }}
+    >
       <span>{label()}</span>
+      <Show when={c()?.phase === 'started'}>
+        <div class="compaction-progress" role="progressbar" aria-label="正在压缩上下文">
+          <For each={['preparing', 'summarizing', 'saving']}>
+            {(stage, index) => (
+              <span
+                classList={{
+                  complete:
+                    index() < (c()?.stage === 'saving' ? 2 : c()?.stage === 'summarizing' ? 1 : 0),
+                  active: stage === (c()?.stage ?? 'preparing'),
+                }}
+              />
+            )}
+          </For>
+        </div>
+      </Show>
     </div>
   )
 }

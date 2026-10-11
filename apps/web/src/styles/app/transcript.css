@@ -782,6 +782,39 @@
 .compaction.failed {
   color: var(--danger);
 }
+.compaction-progress {
+  display: flex;
+  gap: 2px;
+  width: 72px;
+  height: 4px;
+  flex-shrink: 0;
+}
+.compaction-progress > span {
+  flex: 1;
+  background: currentColor;
+  opacity: 0.2;
+}
+.compaction-progress > .complete {
+  opacity: 0.8;
+}
+.compaction-progress > .active {
+  animation: compaction-progress-pulse 1.2s ease-in-out infinite;
+}
+@keyframes compaction-progress-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .compaction-progress > .active {
+    animation: none;
+    opacity: 0.6;
+  }
+}
 
 /* ── 运行读数条 ──
  *

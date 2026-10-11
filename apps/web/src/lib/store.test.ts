@@ -116,6 +116,85 @@ const {
 } = await import('./store/index.ts')
 const { flushSession } = await import('./session.ts')
 
+test('刷新恢复压缩后继续更新同一进度条，旧快照不覆盖新进度', async () => {
+  const id = 'cv_compaction_refresh'
+  const runId = 'rn_compaction_refresh'
+  const beforeApi = client.api
+  let duringLoad: (() => void) | undefined
+  const send = (phase: 'started' | 'done', stage?: 'summarizing' | 'saving') =>
+    applyEvent({
+      seq: 20,
+      at: Date.now(),
+      conversationId: id as never,
+      event: {
+        type: 'compaction',
+        runId: runId as never,
+        stepSeq: 1,
+        phase,
+        ...(stage ? { stage } : {}),
+      },
+    })
+  ;(client as unknown as { api: (path: string) => Promise<unknown> }).api = async (path) => {
+    if (path.includes('/history')) {
+      duringLoad?.()
+      return {
+        messages: [],
+        runs: [
+          { id: runId, userMessageId: null, createdAt: 1, status: 'running', finishedAt: null },
+        ],
+        steps: [
+          {
+            id: 'st_compact',
+            runId,
+            seq: 1,
+            kind: 'compaction',
+            status: 'running',
+            payload: {
+              kind: 'compaction',
+              phase: 'started',
+              stage: 'summarizing',
+              manifestRevision: 0,
+              compactedMessages: 0,
+            },
+          },
+        ],
+        todos: [],
+        workflowStarts: [],
+        nextCursor: null,
+        live: null,
+      }
+    }
+    if (path.includes('/context')) return { context: null }
+    if (path.includes('/goal')) return { goal: null }
+    if (path.includes('/queue')) return { queue: [] }
+    throw new Error(`未预期请求：${path}`)
+  }
+  try {
+    setState({ activeConversation: id })
+    dropView(id)
+    openView(id)
+    await reloadActiveConversation()
+    expect(viewOf(id).transcript).toHaveLength(1)
+    expect(viewOf(id).transcript[0]?.compaction).toMatchObject({
+      phase: 'started',
+      stage: 'summarizing',
+    })
+    duringLoad = () => send('started', 'saving')
+    await reloadActiveConversation()
+    expect(viewOf(id).transcript).toHaveLength(1)
+    expect(viewOf(id).transcript[0]?.compaction?.stage).toBe('saving')
+    duringLoad = () => send('done')
+    await reloadActiveConversation()
+    expect(viewOf(id).transcript).toHaveLength(1)
+    expect(viewOf(id).transcript[0]?.compaction?.phase).toBe('done')
+    send('started', 'summarizing')
+    expect(viewOf(id).transcript[0]?.compaction?.phase).toBe('done')
+  } finally {
+    client.api = beforeApi
+    dropView(id)
+  }
+})
+
 describe('激活项目复用服务端返回的会话列表', () => {
   test('新项目不追加会话列表请求与第二次创建请求', async () => {
     const calls: string[] = []

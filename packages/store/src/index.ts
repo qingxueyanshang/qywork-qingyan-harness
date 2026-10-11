@@ -56,6 +56,7 @@ export {
   openProviderRequest,
   type ProcessExitObservation,
   providerFinishRates,
+  recordCompactionStep,
   recordFileRead,
   recordProviderRequestDiagnostic,
   recoverStaleRuns,

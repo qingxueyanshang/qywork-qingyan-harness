@@ -624,28 +624,27 @@ export function listConversationHistoryPage(
   const hasMore = rows.length > limit
   const selected = rows.slice(0, limit)
   const oldest = selected.at(-1)?.id ?? null
-  if (!oldest) {
-    return {
-      messages: [],
-      runs: [],
-      steps: [],
-      todos: latestTodos(store, conversationId) ?? [],
-      workflowStarts: [],
-      nextCursor: null,
-    }
-  }
-
   const messages = selected.toReversed().map(rowToMessage)
 
   const userIds = selected.map((row) => row.id)
-  const marks = userIds.map(() => '?').join(',')
+  const marks = userIds.length ? userIds.map(() => '?').join(',') : 'NULL'
+  // 手动压缩没有 user_message_id，按发生时间归入同一分页区间。
+  const lowerTime = hasMore ? selected.at(-1)!.created_at : 0
+  const upperTime = before
+    ? (store.db
+        .query<{ created_at: number }, [string, string]>(
+          'SELECT created_at FROM messages WHERE conversation_id = ? AND id = ?',
+        )
+        .get(conversationId, before)?.created_at ?? 0)
+    : Number.MAX_SAFE_INTEGER
   const runs = store.db
-    .query<RunRow, string[]>(
+    .query<RunRow, (string | number)[]>(
       `SELECT * FROM runs
-       WHERE conversation_id = ? AND user_message_id IN (${marks})
+       WHERE conversation_id = ? AND (user_message_id IN (${marks})
+         OR (user_message_id IS NULL AND created_at >= ? AND created_at < ?))
        ORDER BY created_at ASC, id ASC`,
     )
-    .all(conversationId, ...userIds)
+    .all(conversationId, ...userIds, lowerTime, upperTime)
     .map(rowToRun)
 
   const runIds = runs.map((run) => run.id)
@@ -1435,6 +1434,13 @@ function pidAlive(pid: number): boolean {
  * 只显示一个红色的「失败」，没有动词、对象与目标，用户无法判断中断发生在哪一步。
  */
 export function settleRunningSteps(store: Store, runId: RunId): void {
+  store.db
+    .query(
+      `UPDATE steps SET status = 'failure',
+         payload = json_set(payload, '$.phase', 'failed', '$.reasonCode', 'aborted')
+       WHERE run_id = ? AND kind = 'compaction' AND status = 'running'`,
+    )
+    .run(runId)
   const settle = (executionStarted: boolean, outcome: Record<string, unknown>) =>
     store.db
       .query(
@@ -1896,6 +1902,29 @@ export function appendStep(
     )
   store.db.query('UPDATE runs SET step_count = step_count + 1 WHERE id = ?').run(input.runId)
   return step
+}
+
+/** 开始、进度与结束更新同一条压缩记录，刷新时直接从 steps 恢复。 */
+export function recordCompactionStep(
+  store: Store,
+  runId: RunId,
+  seq: number,
+  payload: Extract<NonNullable<Step['payload']>, { kind: 'compaction' }>,
+): void {
+  const status =
+    payload.phase === 'started' ? 'running' : payload.phase === 'done' ? 'success' : 'failure'
+  const existing = store.db
+    .query<{ id: string }, [string, number]>(
+      "SELECT id FROM steps WHERE run_id = ? AND seq = ? AND kind = 'compaction'",
+    )
+    .get(runId, seq)
+  if (existing) {
+    store.db
+      .query('UPDATE steps SET status = ?, payload = ? WHERE id = ?')
+      .run(status, writeJson(payload), existing.id)
+  } else {
+    appendStep(store, { runId, seq, kind: 'compaction', status, payload })
+  }
 }
 
 /**

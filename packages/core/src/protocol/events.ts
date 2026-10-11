@@ -13,6 +13,7 @@ import type { ConversationId, MessageId, RunId, StepId } from '../domain/ids.ts'
 import type {
   Attachment,
   CompactionManifest,
+  CompactionStage,
   ContextBreakdown,
   ContextOmitted,
   Conversation,
@@ -519,18 +520,21 @@ export interface GoalEvent {
 }
 
 /**
- * 一次压缩的结果。
+ * 一次压缩的进度与结果。
  *
  * 四个 phase 不能合并为三个。`skipped`（没有可压缩的内容）与 `failed`（压缩失败）
  * 对用户含义不同：前者无需任何操作，后者表示上下文仍然已满、下一轮很可能
  * 直接报错。合并后界面只能一律显示为失败。
  *
- * 被中断的压缩不发出事件：它没有写入任何内容，且 run 随即以 `user_interrupt` 收尾。
+ * 被中断的压缩由 run 收尾，正在进行的记录随之标记为停止。
  */
 export interface CompactionEvent {
   type: 'compaction'
   runId: RunId
+  stepSeq: number
   phase: 'started' | 'done' | 'skipped' | 'failed'
+  /** 运行中重复发送 started，更新同一个 step 的真实处理阶段。 */
+  stage?: CompactionStage
   manifest?: CompactionManifest
   /** `phase='done'` 专有：摘要线随之前移（true），或只收纳了工具正文（false）。 */
   summarized?: boolean
