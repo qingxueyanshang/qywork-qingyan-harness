@@ -726,6 +726,19 @@ export function importSkill(
     body: JSON.stringify({ scope, path }),
   })
 }
+
+export interface SkillSourceListing {
+  path: string
+  parent: string | null
+  selected: string | null
+  entries: { name: string; path: string; directory: boolean }[]
+  locations: { name: string; path: string; directory: boolean }[]
+}
+
+/** 本机统一选择器；业务安装仍走 /api/skills/import。 */
+export function listSkillSources(path?: string): Promise<SkillSourceListing> {
+  return tauriInvoke<SkillSourceListing>('list_skill_sources', { path: path ?? null })
+}
 /** 按目录名删除，而不是前置元信息中的 name：两者可以不同，而磁盘上只有目录。 */
 export function deleteSkill(dirName: string, scope: Scope): Promise<{ ok: boolean }> {
   return scheduleWrite(`/api/skills/${encodeURIComponent(dirName)}?scope=${scope}`, {

@@ -8,8 +8,6 @@ import {
   importSkill,
   isDesktopShell,
   loadSkills,
-  pickFiles,
-  pickWorkspace,
   type Scope,
   workspace,
 } from '../../lib/store/index.ts'
@@ -18,6 +16,7 @@ import { LoadState } from './LoadState.tsx'
 import { EmptyBox, EntryCard, Section } from './Page.tsx'
 import { ScopeTabs, ShadowTag } from './Scope.tsx'
 import { newSkillPrompt } from './ScopePrompts.ts'
+import { SkillImportDialog } from './SkillImportDialog.tsx'
 
 /**
  * 技能。
@@ -45,6 +44,7 @@ export default function SkillsSettings() {
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [okMsg, setOkMsg] = createSignal<string | null>(null)
+  const [importOpen, setImportOpen] = createSignal(false)
 
   const rows = () => loaded(data)?.skills.filter((s) => s.scope === scope()) ?? []
 
@@ -64,33 +64,37 @@ export default function SkillsSettings() {
     }
   }
 
-  const doImport = (path: string) =>
-    void run(async () => {
+  const doImport = async (path: string) => {
+    setError(null)
+    setOkMsg(null)
+    try {
       const r = await importSkill(scope(), path)
-      return r.installed
-        .map((s) => `已导入 ${s.name}${s.active ? '' : `，当前生效的是 ${s.effective.scope} 层`}`)
-        .join('；')
-    })
+      setOkMsg(
+        r.installed
+          .map((s) => `已导入 ${s.name}${s.active ? '' : `，当前生效的是 ${s.effective.scope} 层`}`)
+          .join('；'),
+      )
+    } finally {
+      // 多技能包可能部分成功，失败时也要刷新已安装的条目。
+      await refetch()
+    }
+  }
 
   /**
-   * 本页的动作按钮。路径所在行与空状态框共用同一份定义：两处分别实现时，
-   * 修改容易遗漏一处，而列表为空时用户看到的是空状态框中的那一份。
+   * 页面只保留一组动作，空状态不再重复导入入口。
    */
   const Actions = () => (
     <>
-      {/* 导入仅在桌面外壳中提供：网页中没有系统文件选择器，
+      {/* 导入仅在桌面外壳中提供：选择器需要读取本机来源目录，
           不显示点击后无响应的按钮（B5）。 */}
       <Show when={isDesktopShell()}>
-        <button class="btn-ghost sm" type="button" disabled={busy()} onClick={() => void browse()}>
-          导入目录
-        </button>
         <button
           class="btn-ghost sm"
           type="button"
           disabled={busy()}
-          onClick={() => void browseZip()}
+          onClick={() => setImportOpen(true)}
         >
-          导入 ZIP
+          导入
         </button>
       </Show>
       <button class="btn-ghost sm" type="button" onClick={() => askInChat(newSkillPrompt(scope()))}>
@@ -98,28 +102,6 @@ export default function SkillsSettings() {
       </button>
     </>
   )
-
-  /** 选择本机已存在的技能目录，选定后立即导入。 */
-  const browse = async () => {
-    if (!isDesktopShell()) return
-    setError(null)
-    setOkMsg(null)
-    try {
-      const picked = await pickWorkspace()
-      if (picked) doImport(picked)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  const browseZip = async () => {
-    try {
-      const path = (await pickFiles())[0]
-      if (path) doImport(path)
-    } catch (error) {
-      setError(String(error))
-    }
-  }
 
   return (
     <Show
@@ -141,10 +123,7 @@ export default function SkillsSettings() {
           />
 
           <Section>
-            <Show
-              when={rows().length > 0}
-              fallback={<EmptyBox label="暂无技能" actions={<Actions />} />}
-            >
+            <Show when={rows().length > 0} fallback={<EmptyBox label="暂无技能" />}>
               <div class="entry-list">
                 <For each={rows()}>
                   {(s) => (
@@ -190,6 +169,9 @@ export default function SkillsSettings() {
                 `Show` 将求值结果原样传给子函数，布尔值 `true` 会渲染为空框。 */}
           <Show when={error()}>{(e) => <p class="settings-notices bad">{e()}</p>}</Show>
           <Show when={okMsg()}>{(m) => <p class="settings-notices">{m()}</p>}</Show>
+          <Show when={importOpen()}>
+            <SkillImportDialog onImport={doImport} onClose={() => setImportOpen(false)} />
+          </Show>
         </>
       )}
     </Show>

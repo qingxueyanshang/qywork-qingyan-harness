@@ -12,6 +12,7 @@ const APP_COMMANDS: &[&str] = &[
     "app_update",
     "pick_workspace",
     "pick_files",
+    "list_skill_sources",
     "save_session_export",
     "reveal_workspace",
     "reveal_file",

@@ -9,6 +9,7 @@
     "core:window:allow-start-dragging",
     "allow-pick-workspace",
     "allow-pick-files",
+    "allow-list-skill-sources",
     "allow-save-session-export",
     "allow-reveal-workspace",
     "allow-reveal-file",

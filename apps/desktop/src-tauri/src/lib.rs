@@ -23,6 +23,7 @@ mod hostkey;
 mod logfile;
 mod restart;
 mod sidecar;
+mod skill_source;
 mod terminal;
 mod updater;
 mod ws;
@@ -525,6 +526,7 @@ pub fn run() {
             updater::app_update,
             pick_workspace,
             pick_files,
+            skill_source::list_skill_sources,
             save_session_export,
             reveal_workspace,
             reveal_file,
