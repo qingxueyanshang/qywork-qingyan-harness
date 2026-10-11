@@ -12,7 +12,7 @@
  *   替换为节点名称纯文本；修改提示词后新引用了未连接的节点时补充一条连线。
  */
 
-import { arrangeNew, CARD_GAP } from './canvas-arrange.ts'
+import { arrangeNew, CARD_GAP, keepSpacing, resizedCards } from './canvas-arrange.ts'
 import {
   GENERATE_OUTPUTS,
   type GenerateOutput,
@@ -539,7 +539,9 @@ export function applyCanvasOps(
     for (const op of ops) applyOne(next, op, refs, pending, mint)
     resolveInputMentions(doc, next, refs)
     keepMentionsConnected(doc, next, mint)
-    arrangeNew(next, pending, extentOf)
+    // 先移动再排新卡：新卡按移动之后的位置排位，不再被移动一次。
+    keepSpacing(next, resizedCards(doc, next))
+    arrangeNew(next, pending)
   } catch (err) {
     if (err instanceof CanvasError) return { ok: false, error: err.message }
     throw err
@@ -784,31 +786,18 @@ function place(
   op: { x?: number; y?: number; beside?: string; near?: { x: number; y: number } },
   resolve: (ref: string) => string,
 ): void {
-  const size = extentOf(node)
   let spot = { x: 0, y: 0 }
   if (op.beside !== undefined) {
     const id = resolve(op.beside)
-    const source = extentOf(doc.nodes.find((n) => n.id === id) ?? fail(`「${op.beside}」不是卡片`))
+    const source = doc.nodes.find((n) => n.id === id) ?? fail(`「${op.beside}」不是卡片`)
     const at = { x: source.x + source.w + CARD_GAP, y: source.y }
-    spot = freeSpot(doc, { ...size, ...at }, 'right', CARD_GAP)
+    spot = freeSpot(doc, { w: node.w, h: node.h, ...at }, 'right', CARD_GAP)
   } else if (op.near) {
     const at = { x: Math.round(op.near.x - node.w / 2), y: Math.round(op.near.y - node.h / 2) }
-    spot = freeSpot(doc, { ...size, ...at }, 'down', CLEARANCE)
+    spot = freeSpot(doc, { w: node.w, h: node.h, ...at }, 'down', CLEARANCE)
   }
   node.x = op.x ?? spot.x
   node.y = op.y ?? spot.y
-}
-
-/**
- * 排位时节点占用的框。结果到达后，图片、视频与 Art 生成卡的形状按结果比例改变（`fitCurrent`，短边不变）。
- * 尚无结果的方形卡不知道结果是横是竖，按横、竖 16:9 都能容纳的框占位；已按参数确定宽高比的卡按当前框占位。
- * 音频没有尺寸，形状不变。不要让方形卡也按当前框：169 见方的空卡生成 16:9 的结果后宽 300，会压到相邻的卡。
- */
-function extentOf(n: CanvasNode): { x: number; y: number; w: number; h: number } {
-  if (n.type !== 'generate' || n.output === 'audio' || n.w !== n.h) return n
-  if (n.versions.find((v) => v.id === n.current)?.size) return n
-  const long = Math.round((n.w * 16) / 9)
-  return { x: n.x, y: n.y, w: long, h: long }
 }
 
 /**
@@ -823,15 +812,13 @@ function freeSpot(
 ): { x: number; y: number } {
   let { x, y } = box
   for (;;) {
-    const hit = doc.nodes
-      .map(extentOf)
-      .find(
-        (n) =>
-          n.x < x + box.w + CLEARANCE &&
-          n.x + n.w + CLEARANCE > x &&
-          n.y < y + box.h + CLEARANCE &&
-          n.y + n.h + CLEARANCE > y,
-      )
+    const hit = doc.nodes.find(
+      (n) =>
+        n.x < x + box.w + CLEARANCE &&
+        n.x + n.w + CLEARANCE > x &&
+        n.y < y + box.h + CLEARANCE &&
+        n.y + n.h + CLEARANCE > y,
+    )
     if (!hit) return { x, y }
     if (along === 'right') x = hit.x + hit.w + gap
     else y = hit.y + hit.h + gap
@@ -1138,6 +1125,7 @@ export function addVersions(
   node.versions.push(...structuredClone(versions))
   node.current = versions[0]!.id
   fitCurrent(node)
+  keepSpacing(next, resizedCards(doc, next))
   const problem = validateCanvas(next)
   return problem ? { ok: false, error: problem } : { ok: true, doc: next, refs: {} }
 }
@@ -1162,6 +1150,7 @@ export function settleVersion(
   if (size) version.size = size
   else delete version.size
   fitCurrent(node)
+  keepSpacing(next, resizedCards(doc, next))
   const problem = validateCanvas(next)
   return problem ? { ok: false, error: problem } : { ok: true, doc: next, refs: {} }
 }

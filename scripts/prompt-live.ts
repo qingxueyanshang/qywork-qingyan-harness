@@ -24,12 +24,12 @@ import { deflateSync } from 'node:zlib'
 import { lookupMediaModel } from '@qywork/ai'
 import {
   type AgentEvent,
+  addVersions,
   CANVAS_SCHEMA_VERSION,
   type CanvasDoc,
   type CanvasPixels,
   type ConversationId,
   type EventEnvelope,
-  fitBox,
   type RunId,
 } from '@qywork/core'
 import { dataPath, loadConfig, type ModelRef, type QyConfig } from '@qywork/runtime'
@@ -825,21 +825,24 @@ const LAYOUT_TASK =
   '先为 3 个角色各建一张定妆参考图生成卡并运行生成；再为 2 个场景各建一张场景参考图生成卡并运行生成；' +
   '最后为 7 个镜头各建一张图片分镜卡，把用到的参考图连到分镜卡，并把 script.md 放上画布。分镜卡只建卡与连线，不运行。'
 
-/**
- * 每个新节点到最近节点的空白上限。卡片之间的间距一律是 100；没有宽高比参数的方形空卡为横竖两种结果预留 300 见方，
- * 生成横图（169 高）后与下方的卡相隔 100 + 131。
- */
-const LAYOUT_MAX_GAP = 100 + (300 - 169)
+/** 每个新节点到最近节点的空白上限：卡片之间的间距一律是 100，出图变大后相邻的卡被推开，间距不变。 */
+const LAYOUT_MAX_GAP = 100
 
 /**
- * 尺寸未定的方形空卡按 `size` 的比例改变形状后的画布，用于检查之后生成时是否与相邻卡相交。
- * 尺寸已定的卡按其参数出图，形状不变，不参与模拟；服务商不按请求的尺寸出图属于接口故障，不在布局中预留。
+ * 尺寸未定的方形空卡得到 `size` 比例的结果之后的画布。结果经 core `addVersions` 写入，与出图时相同：
+ * 卡片变大后推开相邻的卡。用于检查出图之后是否相交、间距是否保持。尺寸已定的卡按其参数出图，不参与模拟。
  */
 function settledAs(doc: CanvasDoc, size: CanvasPixels): CanvasDoc {
-  const next = structuredClone(doc)
-  for (const n of next.nodes) {
+  const made = { prompt: '', provider: 'stub', model: STUB_IMAGE, params: {}, inputs: [], at: '' }
+  let next = doc
+  for (const n of doc.nodes) {
     if (n.type !== 'generate' || n.output === 'audio' || n.w !== n.h) continue
-    if (!n.versions.find((v) => v.id === n.current)?.size) Object.assign(n, fitBox(n, size))
+    if (n.versions.find((v) => v.id === n.current)?.size) continue
+    const r = addVersions(next, n.id, [
+      { id: `settled-${n.id}`, path: `generated/${n.id}.png`, made, size },
+    ])
+    if (!r.ok) throw new Error(r.error)
+    next = r.doc
   }
   return next
 }

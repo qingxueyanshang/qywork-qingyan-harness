@@ -377,33 +377,188 @@ describe('画布：操作', () => {
     }
   })
 
-  test('尚无结果的方形卡按横竖两种形状占位，已确定宽高比的卡按当前框：结果改变形状后与相邻的卡仍不相交', () => {
+  /**
+   * 原始失败形状：给出 1:1 的方形空卡按 300 见方占位，人物列每 400 一张、列与列相隔 400，出图后空白约 230。
+   * 带组的卡按当前框排位，出图变大后推开同列下方与右侧的卡，间距仍为 100。
+   */
+  test('带组的方形空卡按当前框排位；出图变大后推开同列下方与右侧各列，间距保持 100', () => {
     let doc = apply(
       emptyCanvas(),
       [
-        { op: 'add_generate', output: 'image', group: '角色' },
-        { op: 'add_generate', output: 'image', group: '角色' },
-        { op: 'add_generate', output: 'image', group: '角色', w: 300, h: 169 },
-        { op: 'add_generate', output: 'image', group: '角色' },
+        { op: 'add_generate', output: 'image', group: '角色/甲' },
+        { op: 'add_generate', output: 'image', group: '角色/乙' },
+        { op: 'add_generate', output: 'image', group: '角色/丙', w: 300, h: 169 },
+        { op: 'add_generate', output: 'image', group: '角色/丁' },
+        { op: 'add_generate', output: 'image', group: '场景/山门' },
+        { op: 'add_generate', output: 'image', group: '场景/书房' },
       ],
       ids('n'),
     )
-    const box = (id: string) => doc.nodes.find((n) => n.id === id)!
-    expect(box('n2')).toMatchObject({ x: 0, y: 300 + 100 })
-    expect(box('n3')).toMatchObject({ x: 0, y: 800 })
-    expect(box('n4')).toMatchObject({ x: 0, y: 800 + 169 + 100 })
+    const at = (id: string) => {
+      const n = doc.nodes.find((x) => x.id === id)!
+      return [n.x, n.y, n.w, n.h]
+    }
+    expect(['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(at)).toEqual([
+      [0, 0, 169, 169],
+      [0, 269, 169, 169],
+      [0, 538, 300, 169],
+      [0, 807, 169, 169],
+      [400, 0, 169, 169],
+      [400, 269, 169, 169],
+    ])
     const results = [
       ['n1', { w: 1672, h: 941 }],
       ['n2', { w: 1080, h: 1920 }],
-      ['n4', { w: 1080, h: 1920 }],
+      ['n5', { w: 1536, h: 1024 }],
     ] as const
     for (const [id, size] of results) {
       const r = addVersions(doc, id, [{ ...version(`p-${id}`, `generated/${id}.png`), size }])
       if (!r.ok) throw new Error(r.error)
       doc = r.doc
     }
-    expect(box('n1')).toMatchObject({ w: 300, h: 169 })
-    expect(box('n2')).toMatchObject({ w: 169, h: 300 })
+    // n2 变高 131，下方两张下移 131；n1 变宽到 300，与「场景」列的间距仍为 100，不必移动；n5 变宽，列内不受影响。
+    expect(['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(at)).toEqual([
+      [0, 0, 300, 169],
+      [0, 269, 169, 300],
+      [0, 669, 300, 169],
+      [0, 938, 169, 169],
+      [400, 0, 254, 169],
+      [400, 269, 169, 169],
+    ])
+    const wide = addVersions(doc, 'n1', [
+      { ...version('p2-n1', 'generated/n1-2.png'), size: { w: 2520, h: 1080 } },
+    ])
+    if (!wide.ok) throw new Error(wide.error)
+    doc = wide.doc
+    // n1 换成 21:9 的结果，宽 394：「场景」整列右移到 394 + 100，与 n1 不相邻的 n6 随列移动，仍对齐。
+    expect([at('n1'), at('n5'), at('n6')]).toEqual([
+      [0, 0, 394, 169],
+      [494, 0, 254, 169],
+      [494, 269, 169, 169],
+    ])
+    for (const a of doc.nodes) {
+      for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+    }
+  })
+
+  test('界面添加的卡与画布排列的卡规则相同：按当前框放置，变大时推开相邻的节点', () => {
+    let doc = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_generate', ref: '$a', output: 'image', x: 0, y: 0 },
+        { op: 'add_file', path: 'b.png', beside: '$a' },
+        { op: 'add_file', path: 'c.png', x: 0, y: 350 },
+      ],
+      ids('u'),
+    )
+    expect(doc.nodes.map((n) => [n.x, n.y])).toEqual([
+      [0, 0],
+      [169 + 100, 0],
+      [0, 350],
+    ])
+    const r = addVersions(doc, 'u1', [
+      { ...version('p', 'generated/u1.png'), size: { w: 1080, h: 1920 } },
+    ])
+    if (!r.ok) throw new Error(r.error)
+    doc = r.doc
+    expect(doc.nodes.map((n) => [n.x, n.y, n.w, n.h])).toEqual([
+      [0, 0, 169, 300],
+      [269, 0, 225, 169],
+      // 原间距 181，按 CARD_GAP 保留 100：下移 50。
+      [0, 400, 225, 169],
+    ])
+  })
+
+  test('变小时收回：紧挨着的卡随之移回，隔得更远的卡不动', () => {
+    let doc = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_generate', output: 'video', group: '山门·镜头', w: 300, h: 169 },
+        { op: 'add_generate', output: 'image', group: '场景/山门', w: 169, h: 300 },
+      ],
+      ids('g'),
+    )
+    doc = apply(
+      doc,
+      [
+        { op: 'add_file', path: 'tail.png', beside: 'g2' },
+        { op: 'add_file', path: 'far.png', x: 2000, y: 0 },
+      ],
+      ids('m'),
+    )
+    const at = (id: string) => {
+      const n = doc.nodes.find((x) => x.id === id)!
+      return [n.x, n.y]
+    }
+    expect([at('g2'), at('m1'), at('m2')]).toEqual([
+      [400, 0],
+      [669, 0],
+      [2000, 0],
+    ])
+    const tall = addVersions(doc, 'g1', [
+      { ...version('p1', 'generated/g1.mp4'), size: { w: 720, h: 1280 } },
+    ])
+    if (!tall.ok) throw new Error(tall.error)
+    doc = tall.doc
+    // g1 宽 300 → 169：「场景」列与紧挨着它的界面卡各左移 131，间距仍为 100；远处的卡不动。
+    expect([at('g1'), at('g2'), at('m1'), at('m2')]).toEqual([
+      [0, 0],
+      [269, 0],
+      [538, 0],
+      [2000, 0],
+    ])
+  })
+
+  test('推开时界面放置的节点一并移开；与变大的卡不相对的节点不动', () => {
+    let doc = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_generate', output: 'image', group: '角色/甲' },
+        { op: 'add_generate', output: 'video', group: '山门·镜头', w: 300, h: 169 },
+        { op: 'add_generate', output: 'video', group: '山门·镜头', w: 300, h: 169 },
+      ],
+      ids('g'),
+    )
+    doc = apply(
+      doc,
+      [
+        { op: 'add_file', path: 'note.png', x: 269 + 300 + 100, y: 269 },
+        { op: 'add_file', path: 'far.png', x: 500, y: 3000 },
+      ],
+      ids('m'),
+    )
+    const at = (id: string) => {
+      const n = doc.nodes.find((x) => x.id === id)!
+      return [n.x, n.y]
+    }
+    expect([at('g2'), at('g3'), at('m1')]).toEqual([
+      [269, 0],
+      [269, 269],
+      [669, 269],
+    ])
+    const grow = addVersions(doc, 'g1', [
+      { ...version('p1', 'generated/g1.png'), size: { w: 1672, h: 941 } },
+    ])
+    if (!grow.ok) throw new Error(grow.error)
+    doc = grow.doc
+    // 「镜头」整列右移 131；界面放在第二张镜头右侧的卡随之右移，间距不变；远处的卡不动。
+    expect([at('g2'), at('g3'), at('m1'), at('m2')]).toEqual([
+      [400, 0],
+      [400, 269],
+      [800, 269],
+      [500, 3000],
+    ])
+    // 视频出竖图：宽变小、高变大。下方的镜头下移；界面放置的卡仍与第二张镜头相对，间距已是 100，不动。
+    const tall = addVersions(doc, 'g2', [
+      { ...version('p2', 'generated/g2.mp4'), size: { w: 720, h: 1280 } },
+    ])
+    if (!tall.ok) throw new Error(tall.error)
+    doc = tall.doc
+    expect([at('g2'), at('g3'), at('m1')]).toEqual([
+      [400, 0],
+      [400, 300 + 100],
+      [800, 269],
+    ])
     for (const a of doc.nodes) {
       for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
     }
@@ -639,7 +794,7 @@ describe('画布：操作', () => {
       const n = doc.nodes.find((x) => x.id === id)!
       return [n.x, n.y]
     }
-    // 已有的方形空卡按 300 见方占位，最右处为 -1972 + 300。
+    // 已有内容的最右处为视频卡的右缘 -1972 + 300。
     const x0 = -1672 + 100
     const y0 = 1346
     expect([at('a1'), at('a7')]).toEqual([
@@ -667,11 +822,12 @@ describe('画布：操作', () => {
   })
 
   /**
-   * 按固定种子生成多批随机操作：各列、各对象随机交错地新增卡片，穿插时间线。
+   * 按固定种子生成多批随机操作：各列、各对象随机交错地新增卡片，穿插时间线；部分卡片是方形空卡，
+   * 每一批之后随机为其中几张写入横图、竖图、方图或 21:9 的结果。
    * 每一批之后检查：互不相交；同一列的卡横坐标相同，上下相邻两张正好相隔一个间距；
-   * 同一对象的卡片在列中相连；不同列不共用一个横坐标。
+   * 同一对象的卡片在列中相连；不同列不共用一个横坐标，纵向相对的两张卡横向至少相隔一个间距。
    */
-  test('随机多批新增：同列同横坐标且紧接、同一对象相连、不同列不同横坐标、互不相交', () => {
+  test('随机多批新增与出图：同列紧接、同一对象相连、不同列相隔不少于一个间距、互不相交', () => {
     let seed = 7
     const rand = (n: number) => {
       seed = (seed * 1103515245 + 12345) % 2147483648
@@ -688,7 +844,18 @@ describe('画布：操作', () => {
       '书房·分镜',
     ]
     const columnOf = (g: string) => g.split('/')[0]!
-    const shape = (g: string) => (g.startsWith('角色') ? { w: 169, h: 300 } : { w: 300, h: 169 })
+    const shape = (g: string) =>
+      ['角色/丙', '道具/玉佩', '书房·分镜'].includes(g)
+        ? {}
+        : g.startsWith('角色')
+          ? { w: 169, h: 300 }
+          : { w: 300, h: 169 }
+    const results = [
+      { w: 1672, h: 941 },
+      { w: 1080, h: 1920 },
+      { w: 1024, h: 1024 },
+      { w: 2520, h: 1080 },
+    ]
     let doc = emptyCanvas()
     let count = 0
     for (let batch = 0; batch < 30; batch++) {
@@ -707,6 +874,19 @@ describe('画布：操作', () => {
       }
       if (rand(6) === 0) ops.push({ op: 'add_timeline', name: `时间线${batch}` })
       doc = apply(doc, ops, ids(`b${batch}_`))
+      for (let k = rand(3); k > 0; k--) {
+        const blank = doc.nodes.filter(
+          (n) => n.type === 'generate' && n.w === n.h && n.versions.length === 0,
+        )
+        const card = blank[rand(blank.length || 1)]
+        if (!card) break
+        const size = results[rand(results.length)]!
+        const r = addVersions(doc, card.id, [
+          { ...version(`r${batch}_${k}`, `generated/${card.id}.png`), size },
+        ])
+        if (!r.ok) throw new Error(r.error)
+        doc = r.doc
+      }
       const cards = doc.nodes.filter((n) => n.type === 'generate')
       const xs = new Map<string, number>()
       for (const column of new Set(groups.map(columnOf))) {
@@ -721,11 +901,23 @@ describe('画布：操作', () => {
         expect(new Set(runs).size).toBe(runs.length)
       }
       expect(new Set(xs.values()).size).toBe(xs.size)
+      const keyOf = (n: CanvasDoc['nodes'][number]) =>
+        n.type === 'timeline' ? n.id : columnOf(n.group!)
       for (const a of doc.nodes) {
-        for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+        for (const b of doc.nodes) {
+          if (a === b) continue
+          expect(overlaps(a, b)).toBe(false)
+          const facing = a.y < b.y + b.h && b.y < a.y + a.h
+          if (facing && keyOf(a) !== keyOf(b) && b.x >= a.x + a.w) {
+            expect(b.x - a.x - a.w).toBeGreaterThanOrEqual(100)
+          }
+        }
       }
     }
     expect(count).toBeGreaterThan(50)
+    expect(
+      doc.nodes.filter((n) => n.type === 'generate' && n.versions.length).length,
+    ).toBeGreaterThan(10)
   })
 })
 
