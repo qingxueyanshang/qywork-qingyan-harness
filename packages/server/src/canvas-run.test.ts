@@ -805,7 +805,7 @@ describe('画布运行：取消', () => {
     expect((await node(ws.root, ids.$v!)).versions[0]!.path).toMatch(/\.mp4$/)
   })
 
-  test('尚未取得任务号时先等待，取得后再撤销；图像等一次请求的生成不撤销；未在生成时返回 409', async () => {
+  test('尚未取得任务号时先等待，取得后再撤销；未在生成时返回 409', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
@@ -824,21 +824,34 @@ describe('画布运行：取消', () => {
     expect(
       (await failure(svc.cancel(ws.root, PATH, ids.$v!, async () => 'cancelled'))).status,
     ).toBe(409)
+  })
 
-    const image = await setup(IMAGE_CARD)
-    const imageFake = fakePort()
-    const run = await image.svc.run(image.ws, PATH, image.ids.$g!, { media: imageFake.port })
-    const q = await imageFake.next()
-    expect(
-      await image.svc.cancel(image.ws.root, PATH, image.ids.$g!, async () => 'cancelled'),
-    ).toBe('unsupported')
-    q.finish({
+  test('图像等单次请求远端始终不返回时，停止即结束本地等待：记为结果未知，卡片可以再次运行', async () => {
+    const { ws, svc, events, ids } = await setup(IMAGE_CARD)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    await fake.next()
+    let asked = 0
+    const outcome = await svc.cancel(ws.root, PATH, ids.$g!, async () => {
+      asked++
+      return 'cancelled'
+    })
+    expect(outcome).toBe('stopped')
+    expect(asked).toBe(0)
+    const message = '已停止等待；远端结果未知'
+    expect(await run.done).toEqual({ ok: false, message, pending: false })
+    expect((await svc.read(ws.root, PATH)).states[ids.$g!]).toEqual({ state: 'unknown', message })
+    expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({ result: 'unknown', message })
+    expect(events.at(-1)).toMatchObject({ type: 'canvas.run', state: 'failed', message })
+
+    const again = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    ;(await fake.next()).finish({
       ok: true,
       provider: 'ark',
       model: 'img',
       files: [{ bytes: PNG, mime: 'image/png' }],
     })
-    expect(await run.done).toMatchObject({ ok: true })
+    expect(await again.done).toMatchObject({ ok: true })
   })
 
   test('取回期间也能撤销：任务号从任务记录中读取', async () => {

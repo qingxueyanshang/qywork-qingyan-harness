@@ -285,7 +285,7 @@ export type CanvasCancelTask = (task: {
 interface RunEntry {
   startedAt: number
   done?: Promise<CanvasRunResult>
-  /** 只停止本次生成的本地等待：远端撤销成功后使用。 */
+  /** 只停止本次生成的本地等待：远端撤销成功后，或停止单次请求时使用。 */
   stop: AbortController
   /** 本次生成是否有远端任务：视频有；图像与音频为单次请求，没有任务号。 */
   expectsTask: boolean
@@ -836,9 +836,14 @@ export class CanvasService {
   }
 
   /**
-   * 取消一张卡片正在进行的生成。视频提交之后才有远端任务，尚未取得任务号时先等待（与本次生成的结束竞争）。
+   * 取消一张卡片正在进行的生成。
+   *
+   * 图像、音频等单次请求没有远端任务可撤销：停止本地等待，收尾时记为结果未知，返回 `stopped`。
+   * 不要改为继续等待：生成请求不设静默上限，远端既不返回也不断开连接时，停止是结束这次生成的唯一途径。
+   *
+   * 视频提交之后才有远端任务，尚未取得任务号时先等待（与本次生成的结束竞争）。
    * 撤销由 `cancelTask` 按接口能力执行：撤销成功时停止本地等待，收尾时删除该版本与任务记录、不记录失败，返回 `cancelled`。
-   * 无法撤销时本次生成照常进行：远端已开始或已结束时返回 `started`，接口不支持撤销或为图像、音频等单次请求时返回 `unsupported`；
+   * 无法撤销时本次生成照常进行：远端已开始或已结束时返回 `started`，接口不支持撤销时返回 `unsupported`；
    * 生成在取得任务号之前结束时返回 `ended`。撤销请求本身失败（网络、鉴权）时原样抛出，生成照常进行。
    */
   async cancel(
@@ -846,11 +851,15 @@ export class CanvasService {
     path: string,
     nodeId: string,
     cancelTask: CanvasCancelTask,
-  ): Promise<'cancelled' | 'started' | 'unsupported' | 'ended'> {
+  ): Promise<'cancelled' | 'stopped' | 'started' | 'unsupported' | 'ended'> {
     const entry = this.running.get(`${keyOf(workspaceRoot, path)}#${nodeId}`)
     if (!entry) throw new CanvasFailure('该卡片未在生成', 409)
     if (entry.cancelled) return 'cancelled'
-    if (!entry.expectsTask) return 'unsupported'
+    if (!entry.expectsTask) {
+      entry.stop.abort()
+      await entry.done
+      return 'stopped'
+    }
     if (!entry.task) await Promise.race([entry.taskArrived, entry.done])
     const task = entry.task
     if (!task) return 'ended'
@@ -884,6 +893,9 @@ export class CanvasService {
       await rm(join(ws.root, entry.task.record), { force: true })
       result = { ok: false, message: '已取消生成', pending: false }
     }
+    // 单次请求已停止等待：远端仍可能完成，结果未知。停止之前已成功的结果照常保留。
+    const stopped = !result.ok && !entry?.cancelled && entry?.stop.signal.aborted === true
+    if (stopped) result = { ok: false, message: '已停止等待；远端结果未知', pending: false }
     const task = entry?.task
     const provider = facts.provider ?? task?.provider
     const model = facts.model ?? task?.model
@@ -897,7 +909,7 @@ export class CanvasService {
           ? 'done'
           : result.pending
             ? 'pending'
-            : result.diagnostic?.outcome === 'unknown'
+            : stopped || result.diagnostic?.outcome === 'unknown'
               ? 'unknown'
               : 'failed',
       ...(provider !== undefined ? { provider } : {}),

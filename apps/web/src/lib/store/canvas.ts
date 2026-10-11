@@ -61,15 +61,15 @@ export function runCard(path: string, nodeId: string, ops: CanvasOp[] = []): Pro
 }
 
 /**
- * 停止卡片的生成。`cancelled`：远端已撤销、不计费，卡片恢复到本次生成之前；`started`：远端已开始，无法撤销；
- * `unsupported`：接口不支持撤销，或生成在单次请求中完成；`ended`：生成已结束。后三种情况下生成照常进行、按结果计费。
+ * 停止卡片的生成。`cancelled`：远端已撤销、不计费，卡片恢复到本次生成之前；`stopped`：单次请求已停止等待，远端结果未知；
+ * `started`：远端已开始，无法撤销；`unsupported`：接口不支持撤销；`ended`：生成已结束。后三种情况下生成照常进行、按结果计费。
  */
 export async function cancelCard(
   path: string,
   nodeId: string,
-): Promise<'cancelled' | 'started' | 'unsupported' | 'ended'> {
+): Promise<'cancelled' | 'stopped' | 'started' | 'unsupported' | 'ended'> {
   return (
-    await post<{ outcome: 'cancelled' | 'started' | 'unsupported' | 'ended' }>(
+    await post<{ outcome: 'cancelled' | 'stopped' | 'started' | 'unsupported' | 'ended' }>(
       '/api/canvas/cancel',
       { path, nodeId },
     )
