@@ -113,6 +113,24 @@ describe('画布端口', () => {
       h: 169,
     })
   })
+  /** 原始失败形状：模型在后一批中以另一个名称再次放置同一份制作稿，画布上同一文件出现两张卡。 */
+  test('经端口再次放置已在画布上的文件时整批拒绝，并给出已有卡片的名称', async () => {
+    const root = await workspace()
+    const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
+    await port.edit(PATH, [{ op: 'add_file', path: 'a.png', group: '角色/小满' }])
+    await expect(
+      port.edit(PATH, [{ op: 'add_file', path: 'a.png', name: '小满_审定', group: '角色/小满' }]),
+    ).rejects.toThrow('a.png 已在画布上，卡片名称为「a」：同一文件只放一张卡')
+    const other = await port.create('b.canvas.json')
+    await expect(
+      port.edit(other, [
+        { op: 'add_file', path: 'a.png', name: '小满' },
+        { op: 'add_file', path: 'a.png', name: '小满_审定' },
+      ]),
+    ).rejects.toThrow('a.png 已在画布上，卡片名称为「小满」')
+    const view = await port.read(PATH)
+    expect(view.doc.nodes.filter((n) => n.type === 'file')).toHaveLength(1)
+  })
   /** 原始失败形状：模型填写表外的 1536x864，校验通过，而参数面板的宽高比与分辨率无一选中。 */
   test('带对照表的尺寸只接受表中的取值，报错列出全部可选值；表中取值决定卡片形状', async () => {
     const root = await workspace()

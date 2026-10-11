@@ -2,6 +2,7 @@
  * 大模型提交的画布操作在应用前后的核对与补全。只用于画布端口（大模型），界面的操作不经过这里。
  *
  * - 卡片名称在同一张画布中不能重复：大模型按名称引用卡片，名称重复时无法确定所指。
+ * - 同一文件只放一张文件卡：已在画布上的文件再次放置时拒绝并给出已有卡片的名称。界面复制粘贴文件卡不经过这里。
  * - 参数按所用模型的参数表核对，应用后再按卡片的输入与其他参数核对是否可用：不存在、不合法或不可用的取值
  *   整批拒绝并列出可选值。大模型写入的每个参数都会发送，也都显示在参数面板上。
  * - 大模型读取的画布中，生成卡的参数为实际发送的参数（`agentView`），与参数面板的显示一致。
@@ -40,6 +41,10 @@ export function prepareAgentOps(
   specsOf: ParamSpecsOf | undefined,
 ): CanvasOp[] {
   const taken = new Set(doc.nodes.map(displayNameOf))
+  // 画布只接受规范的相对路径（core `isRelativePath`），同一文件的路径写法唯一，直接比较即可。
+  const placed = new Map(
+    doc.nodes.flatMap((n) => (n.type === 'file' ? [[n.path, displayNameOf(n)]] : [])),
+  )
   const out: CanvasOp[] = []
   for (const op of ops) {
     if (op.op === 'add_file' || op.op === 'add_generate' || op.op === 'add_timeline') {
@@ -49,6 +54,25 @@ export function prepareAgentOps(
         }
         taken.add(op.name)
       }
+    }
+    if (op.op === 'add_file') {
+      const held = placed.get(op.path)
+      if (held !== undefined) {
+        throw new Error(`${op.path} 已在画布上，卡片名称为「${held}」：同一文件只放一张卡`)
+      }
+      placed.set(
+        op.path,
+        displayNameOf({
+          id: '',
+          type: 'file',
+          path: op.path,
+          x: 0,
+          y: 0,
+          w: 0,
+          h: 0,
+          ...(op.name ? { name: op.name } : {}),
+        }),
+      )
     }
     if (op.op === 'add_generate') {
       const pick = op.provider && op.model ? { provider: op.provider, model: op.model } : undefined
