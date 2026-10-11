@@ -32,7 +32,7 @@ fn list_source(mut path: PathBuf, locations: Vec<Entry>) -> Result<Listing, Stri
             .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
     {
         let selected = path.clone();
-        path = path.parent().ok_or("找不到上级目录")?.to_path_buf();
+        path = path.parent().ok_or("未找到上级目录")?.to_path_buf();
         Some(selected)
     } else if info.is_dir() {
         None
@@ -97,7 +97,7 @@ pub async fn list_skill_sources(
             .collect();
         let source = match path.filter(|p| !p.trim().is_empty()) {
             Some(path) => PathBuf::from(path),
-            None => locations.first().ok_or("找不到默认目录")?.path.clone(),
+            None => locations.first().ok_or("未找到默认目录")?.path.clone(),
         };
         list_source(source, locations)
     })
