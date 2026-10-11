@@ -524,6 +524,19 @@ describe('模型目录', () => {
     expect(model.params.map((p) => p.name)).toEqual(['seconds', 'size'])
   })
 
+  /** 原始失败形状：只配置了视频模型的接口在输入框的模型选择中显示为一个没有模型的分组。 */
+  test('只配置了生成模型的接口不列入对话模型，其生成模型照常列出', async () => {
+    const d = withConfig('openai_chat_completions', 'm')
+    d.config.providers.video = {
+      kind: 'openai_chat_completions',
+      models: {},
+      media: { 'grok-imagine-video-1.5': { kind: 'xai_videos' } },
+    }
+    const response = await body(d)
+    expect(response.providers.map((p) => p.name)).toEqual(['p'])
+    expect(response.media.map((m) => m.provider)).toEqual(['video'])
+  })
+
   test('新编码模型只列出一行，保留订阅限制与未知单价', async () => {
     const response = await body(withConfig('openai_chat_completions', 'step-5-preview'))
     expect(response.providers[0]?.models[0]).toMatchObject({

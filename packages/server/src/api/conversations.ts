@@ -106,6 +106,7 @@ export interface ProviderRow {
  * 类型检查失败，因为它们校验的是自行定义的形状。
  */
 export interface ModelsResponse {
+  /** 配置了对话模型的接口。只配置了生成模型的接口不列出：它在输入框的模型选择中没有可选项。 */
   providers: ProviderRow[]
   /** 当前选中的接口与模型，形状与配置中的 `active` 一致。 */
   active: QyConfig['active']
@@ -329,37 +330,39 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
      * 选择器中没有接口这一层时，配置了多个接口也无法切换。
      */
     const overrides = d.config.catalog ?? {}
-    const providers: ProviderRow[] = Object.entries(d.config.providers).map(([name, provider]) => ({
-      name,
-      models: Object.keys(provider.models).map((id) => {
-        const declared = provider.models[id]
-        // 模型能力与参数按「模型 + 协议」从官方目录与模型库获取；当前第三方接口是否透传
-        // 控制参数只看该接口下此模型条目的 transport，不能写回全局目录。
-        const spec = applyTransportCapabilities(
-          lookupModel(id, provider.kind),
-          declared?.transport,
-          overrides[catalogKey(id, provider.kind)],
-        )
-        const effortLevels = effortIsTransmittable(spec) ? spec.effortLevels : []
-        const defaultBaseUrl = officialBaseUrl(spec)
-        return {
-          id,
-          ...(defaultBaseUrl ? { defaultBaseUrl } : {}),
-          chatToolSchema: spec.chatToolSchema,
-          label: spec.catalogued === false ? id : spec.displayName,
-          // 界面据此决定是否显示思考强度开关。空数组表示当前接口无法调节思考强度，
-          // 此时显示的开关选择后不产生任何效果。
-          effortLevels,
-          // 目录或端点校准变化后，旧选择不在可用档位中时视为未选择，不显示失效的状态。
-          effort:
-            declared?.effort && effortLevels.includes(declared.effort) ? declared.effort : null,
-          currency: spec.pricing.currency ?? 'USD',
-          vision: spec.vision,
-          video: spec.video,
-          known: spec.catalogued !== false,
-        }
-      }),
-    }))
+    const providers: ProviderRow[] = Object.entries(d.config.providers)
+      .filter(([, provider]) => Object.keys(provider.models).length > 0)
+      .map(([name, provider]) => ({
+        name,
+        models: Object.keys(provider.models).map((id) => {
+          const declared = provider.models[id]
+          // 模型能力与参数按「模型 + 协议」从官方目录与模型库获取；当前第三方接口是否透传
+          // 控制参数只看该接口下此模型条目的 transport，不能写回全局目录。
+          const spec = applyTransportCapabilities(
+            lookupModel(id, provider.kind),
+            declared?.transport,
+            overrides[catalogKey(id, provider.kind)],
+          )
+          const effortLevels = effortIsTransmittable(spec) ? spec.effortLevels : []
+          const defaultBaseUrl = officialBaseUrl(spec)
+          return {
+            id,
+            ...(defaultBaseUrl ? { defaultBaseUrl } : {}),
+            chatToolSchema: spec.chatToolSchema,
+            label: spec.catalogued === false ? id : spec.displayName,
+            // 界面据此决定是否显示思考强度开关。空数组表示当前接口无法调节思考强度，
+            // 此时显示的开关选择后不产生任何效果。
+            effortLevels,
+            // 目录或端点校准变化后，旧选择不在可用档位中时视为未选择，不显示失效的状态。
+            effort:
+              declared?.effort && effortLevels.includes(declared.effort) ? declared.effort : null,
+            currency: spec.pricing.currency ?? 'USD',
+            vision: spec.vision,
+            video: spec.video,
+            known: spec.catalogued !== false,
+          }
+        }),
+      }))
     const media: MediaModelRow[] = listMediaModels(d.config).map((m) => {
       const spec = lookupMediaModel(m.model, m.kind)
       return {
