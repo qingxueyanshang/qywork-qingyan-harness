@@ -825,7 +825,11 @@ export const editFileTool: ToolSpec = {
           }))
         : []
       if (hits.length === 0) {
-        skipped.push({ index, message: 'old_string 未在文件中找到', errorKind: 'no_match' })
+        skipped.push({
+          index,
+          message: `old_string 未在文件中找到${mismatchAt(next, oldStr)}`,
+          errorKind: 'no_match',
+        })
         return
       }
       if (hits.length > 1 && !replaceAll) {
@@ -915,6 +919,32 @@ export const listDirTool: ToolSpec = {
       data: { entries: rows },
     }
   },
+}
+
+/** 指出不一致位置所需的最短一致前缀；更短的前缀在文件中多处出现的可能大，给出的位置不可靠。 */
+const MISMATCH_MIN_PREFIX = 10
+
+/**
+ * old_string 未命中时，指出它与原文从哪里开始不一致。模型复述几百字的原文时常有一两个字的出入，
+ * 回执只写未找到时，它无从得知差在哪里，会带着同一处出入重发。
+ * 取 old_string 在文件中能找到的最长前缀；前缀过短或在文件中不止一处时不给出位置，返回空串。
+ */
+function mismatchAt(content: string, oldStr: string): string {
+  const text = toLf(content)
+  const old = toLf(oldStr)
+  let lo = 0
+  let hi = old.length
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if (text.includes(old.slice(0, mid))) lo = mid
+    else hi = mid - 1
+  }
+  const prefix = old.slice(0, lo)
+  const at = text.indexOf(prefix)
+  if (lo < MISMATCH_MIN_PREFIX || text.indexOf(prefix, at + 1) >= 0) return ''
+  const line = text.slice(0, at + lo).split('\n').length
+  const quote = (t: string) => JSON.stringify(t.slice(0, 24))
+  return `。前 ${lo} 字与原文一致，第 ${line} 行此后的原文为 ${quote(text.slice(at + lo))}，old_string 为 ${quote(old.slice(lo))}`
 }
 
 /**

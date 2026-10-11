@@ -973,6 +973,36 @@ describe('文件工具', () => {
     expect(await readFile(join(root, 'units.md'), 'utf8')).toBe('a2\nb2\nc2\nc2\n')
   })
 
+  /**
+   * 原始失败形状：模型复述四百余字的段落时把「胸前」写成「胸口」，回执只写未找到，
+   * 模型带着同一处出入连续重发。回执须指出从哪里开始不一致。
+   */
+  test('未命中时指出 old_string 与原文开始不一致的行与片段；前缀过短时不给出位置', async () => {
+    const root = await workspace()
+    await writeFile(
+      join(root, 'shot.md'),
+      '# 第一集\n0-5秒：近景过肩，等效40毫米，胸前卡槽打开。\n5-13秒：中景。\n',
+    )
+    const r = registry()
+    const c = ctx(root)
+    await r.execute('read_file', { path: 'shot.md' }, c)
+    const out = await r.execute(
+      'edit_file',
+      {
+        path: 'shot.md',
+        edits: [
+          { old_string: '0-5秒：近景过肩，等效40毫米，胸口卡槽打开。\n5-13秒', new_string: 'x' },
+          { old_string: '0-9秒：远景', new_string: 'y' },
+        ],
+      },
+      c,
+    )
+    expect(out.message).toBe(
+      '第 1 项未写入：old_string 未在文件中找到。前 18 字与原文一致，第 2 行此后的原文为 "前卡槽打开。\\n5-13秒：中景。\\n"，old_string 为 "口卡槽打开。\\n5-13秒"\n' +
+        '第 2 项未写入：old_string 未在文件中找到',
+    )
+  })
+
   test('全部项未命中时不写入，也不记录文件改动', async () => {
     const root = await workspace()
     const r = registry()
