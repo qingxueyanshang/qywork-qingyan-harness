@@ -300,18 +300,6 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     )
   }
 
-  /** 停止：无法撤回时用一句话说明照常计费；撤回成功时由 `canvas.run` 事件刷新，卡片恢复到本次生成之前。 */
-  const cancel = (nodeId: string) =>
-    cancelCard(props.path, nodeId).then(
-      (outcome) => {
-        if (outcome === 'started') setFault('已开始生成，平台不支持中途取消，完成后照常计费')
-        else if (outcome === 'unsupported') setFault('该平台不支持取消，完成后照常计费')
-      },
-      (e: unknown) => {
-        setFault(explainApiError(e, '取消失败'))
-      },
-    )
-
   const retrieve = (nodeId: string, version?: string) => {
     write(retrieveCard(props.path, nodeId, version)).catch((e: unknown) =>
       setFault(explainApiError(e, '无法开始取回')),
@@ -1027,18 +1015,6 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         run: () => v && void pasteNodes(v.doc, ids, null, true),
       },
       null,
-      ...(task?.taskId
-        ? [
-            {
-              label: '复制任务号',
-              run: () => {
-                void navigator.clipboard
-                  .writeText(task.taskId!)
-                  .catch((err: unknown) => setFault(explainApiError(err, '复制失败')))
-              },
-            },
-          ]
-        : []),
       ...(file && isDesktopShell()
         ? [
             {
@@ -1048,6 +1024,18 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 void revealFile(absPath(file)).catch((err: unknown) =>
                   setFault(explainApiError(err, '无法定位文件')),
                 )
+              },
+            },
+          ]
+        : []),
+      ...(task?.taskId
+        ? [
+            {
+              label: '复制任务号',
+              run: () => {
+                void navigator.clipboard
+                  .writeText(task.taskId!)
+                  .catch((err: unknown) => setFault(explainApiError(err, '复制失败')))
               },
             },
           ]
@@ -2187,7 +2175,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                 onTall={setTall}
                 apply={(ops) => apply(ops).then((r) => r !== null)}
                 run={(ops) => run(id, ops)}
-                cancel={() => cancel(id)}
+                cancel={() => cancelCard(props.path, id)}
                 place={(source) => placeInput(at().node, source)}
               />
             )

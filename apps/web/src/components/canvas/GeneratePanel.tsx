@@ -45,8 +45,10 @@ import {
 import { readSession, sessionSignal, writeSession } from '../../lib/session.ts'
 import {
   type CanvasQuote,
+  type cancelCard,
   client,
   ensureModelCatalog,
+  explainApiError,
   type MediaModelOption,
   type MediaParamOption,
   modelCatalog,
@@ -61,6 +63,7 @@ import {
   IconExpand,
   IconPlus,
   IconSend,
+  IconSpinner,
   IconStop,
   IconX,
 } from '../Icons.tsx'
@@ -281,8 +284,8 @@ export function GeneratePanel(props: {
   onTall: (tall: boolean) => void
   apply: (ops: CanvasOp[]) => Promise<boolean>
   run: (ops: CanvasOp[]) => void
-  /** 停止该卡片的生成。Promise 兑现时停止请求已返回。 */
-  cancel: () => Promise<void>
+  /** 远端无法取消时仍暂停本地等待，任务留在记录中供取回。 */
+  cancel: () => ReturnType<typeof cancelCard>
   /** 把工作区文件或本机文件添加到画布（位于该卡片附近），返回新节点的 id；添加失败时返回 `null`。 */
   place: (source: { path: string } | { file: File }) => Promise<string | null>
 }) {
@@ -324,6 +327,46 @@ export function GeneratePanel(props: {
   const running = () => props.state?.state === 'running'
   /** 停止请求尚未返回：停止键禁用，避免重复撤销。 */
   const [stopping, setStopping] = createSignal(false)
+  const [stopNotice, setStopNotice] = createSignal<string | null>(null)
+  const runStartedAt = createMemo(() =>
+    props.state?.state === 'running' ? props.state.startedAt : undefined,
+  )
+  let stopSequence = 0
+  // 结束事件可能先于停止响应到达。保留本次反馈，只有新任务才使旧响应失效。
+  createEffect(
+    on(runStartedAt, (startedAt) => {
+      if (startedAt === undefined) return
+      stopSequence++
+      setStopping(false)
+      setStopNotice(null)
+    }),
+  )
+  let disposed = false
+  onCleanup(() => {
+    disposed = true
+  })
+  const stop = async () => {
+    if (stopping()) return
+    const sequence = ++stopSequence
+    const current = () => !disposed && sequence === stopSequence
+    setStopNotice(null)
+    setStopping(true)
+    try {
+      const outcome = await props.cancel()
+      if (!current()) return
+      const messages = {
+        cancelled: '已取消生成',
+        not_submitted: '已取消，未提交生成，不产生生成费用',
+        stopped: '已停止等待，远端可能继续计费',
+        ended: '任务已结束',
+      }
+      setStopNotice(messages[outcome])
+    } catch (err) {
+      if (current()) setStopNotice(explainApiError(err, '暂停失败'))
+    } finally {
+      if (current()) setStopping(false)
+    }
+  }
 
   /**
    * 卡片可选的模型。art 卡使用对话模型：列出配置中的全部接口 × 模型，缺省为当前默认模型，参数只有尺寸。
@@ -985,6 +1028,12 @@ export function GeneratePanel(props: {
         }}
       />
 
+      <Show when={stopping() || stopNotice()}>
+        <output class="canvas-stop-notice" id={`canvas-stop-${nodeId}`}>
+          {stopping() ? '正在停止…' : stopNotice()}
+        </output>
+      </Show>
+
       <div class="canvas-bar">
         <button
           class="mode-chip model"
@@ -1043,14 +1092,16 @@ export function GeneratePanel(props: {
           <button
             class="send-btn"
             type="button"
-            aria-label="停止"
+            aria-label={stopping() ? '正在请求停止' : '停止'}
+            aria-busy={stopping()}
+            aria-describedby={stopping() || stopNotice() ? `canvas-stop-${nodeId}` : undefined}
+            title={stopNotice() ?? '暂停等待；支持取消时撤销任务'}
             disabled={stopping()}
-            onClick={() => {
-              setStopping(true)
-              void props.cancel().finally(() => setStopping(false))
-            }}
+            onClick={() => void stop()}
           >
-            <IconStop size={16} />
+            <Show when={stopping()} fallback={<IconStop size={16} />}>
+              <IconSpinner size={16} />
+            </Show>
           </button>
         </Show>
       </div>

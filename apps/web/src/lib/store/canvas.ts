@@ -4,7 +4,7 @@
  * 卡片状态与失败原文以读取画布的响应体为准；`canvas.run` 事件只递增 `canvasVersion`，已打开的页签据此重新读取。
  */
 
-import type { CanvasOp, CanvasView, MediaOutput } from '@qywork/core'
+import type { CanvasCancelOutcome, CanvasOp, CanvasView, MediaOutput } from '@qywork/core'
 import { client } from './connection.ts'
 
 /** 从文件树拖出一行时携带的数据类型，值为工作区相对路径。画布据此将拖入的文件添加为节点。 */
@@ -61,18 +61,15 @@ export function runCard(path: string, nodeId: string, ops: CanvasOp[] = []): Pro
 }
 
 /**
- * 停止卡片的生成。`cancelled`：远端已撤销、不计费，卡片恢复到本次生成之前；`stopped`：单次请求已停止等待，远端结果未知；
- * `started`：远端已开始，无法撤销；`unsupported`：接口不支持撤销；`ended`：生成已结束。后三种情况下生成照常进行、按结果计费。
+ * 停止卡片：已提交时优先撤销，否则暂停等待并保留恢复记录；not_submitted 表示尚未发出生成请求。
  */
-export async function cancelCard(
-  path: string,
-  nodeId: string,
-): Promise<'cancelled' | 'stopped' | 'started' | 'unsupported' | 'ended'> {
+export async function cancelCard(path: string, nodeId: string): Promise<CanvasCancelOutcome> {
   return (
-    await post<{ outcome: 'cancelled' | 'stopped' | 'started' | 'unsupported' | 'ended' }>(
-      '/api/canvas/cancel',
-      { path, nodeId },
-    )
+    await client.api<{ outcome: CanvasCancelOutcome }>('/api/canvas/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ path, nodeId }),
+      signal: AbortSignal.timeout(15_000),
+    })
   ).outcome
 }
 

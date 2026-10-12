@@ -32,6 +32,7 @@ import {
   addVersions,
   applyCanvasOps,
   type CanvasBatchRunResult,
+  type CanvasCancelOutcome,
   type CanvasClip,
   type CanvasDoc,
   type CanvasGenerateNode,
@@ -287,17 +288,15 @@ interface RunEntry {
   startedAt: number
   action: 'run' | 'retrieve'
   version?: string
+  /** false 仅在已接通发送边界的视频准备阶段使用；未接通的类型不能据此声称未付费。 */
+  requestSent?: boolean
+  stopMessage?: string
   done?: Promise<CanvasRunResult>
-  /** 只停止本次生成的本地等待：远端撤销成功后，或停止单次请求时使用。 */
+  /** 停止本地等待；只有 cancelled 表示远端确已撤销。 */
   stop: AbortController
-  /** 本次生成是否有远端任务：视频有；图像与音频为单次请求，没有任务号。 */
-  expectsTask: boolean
   task?: CanvasTask
   /** 平台报告的排队中 / 生成中；报告之前不存在。 */
   phase?: TaskPhase
-  /** 取得任务号时兑现：取消请求在取得任务号之前到达时等待它。 */
-  taskArrived: Promise<void>
-  arrive: () => void
   /** 远端已撤销：收尾时删除该版本与任务记录，不记录失败。 */
   cancelled?: true
 }
@@ -601,13 +600,24 @@ export class CanvasService {
       inputs,
     }
     opts.signal?.throwIfAborted()
-    const entry = this.begin(key, ws, rel, nodeId, node.output === 'video')
+    const entry = this.begin(key, ws, rel, nodeId)
+    if (node.output === 'video') entry.requestSent = false
     const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
       let versionId: string | null = null
       const outcome = await generateMedia({
         roots: ws.root,
         media: opts.media,
         signal: this.signalFor(entry, opts.signal),
+        onSubmit: () => {
+          entry.requestSent = true
+          this.deps.publish({
+            type: 'canvas.run',
+            workspaceId: ws.id,
+            path: rel,
+            nodeId,
+            state: 'running',
+          })
+        },
         onStatus: (status) => this.advance(entry, ws, rel, nodeId, status),
         onSpend: (spend) => {
           facts.cost = spend.cost
@@ -632,8 +642,8 @@ export class CanvasService {
             },
             () => {},
           )
-          if (taskId) entry.task = { taskId, provider, model, record, versionId }
-          entry.arrive()
+          if (taskId)
+            this.submitted(entry, ws, rel, nodeId, { taskId, provider, model, record, versionId })
         },
       })
       if (!outcome.ok) {
@@ -709,7 +719,7 @@ export class CanvasService {
       start: new Date().toISOString(),
       version: version.id,
     }
-    const entry = this.begin(key, ws, rel, nodeId, node.output === 'video', 'retrieve')
+    const entry = this.begin(key, ws, rel, nodeId, 'retrieve')
     entry.version = version.id
     const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
       if (!(await this.isFile(ws.root, version.path))) {
@@ -717,8 +727,12 @@ export class CanvasService {
         return { ok: false, message: `任务记录已不存在：${version.path}`, pending: false }
       }
       const task = await this.readTask(ws.root, version.path)
-      if (task) entry.task = { ...task, record: version.path, versionId: version.id }
-      entry.arrive()
+      if (task)
+        this.submitted(entry, ws, rel, nodeId, {
+          ...task,
+          record: version.path,
+          versionId: version.id,
+        })
       const outcome = await resumeMedia({
         roots: ws.root,
         media: opts.media,
@@ -781,23 +795,15 @@ export class CanvasService {
     ws: CanvasWorkspace,
     rel: string,
     nodeId: string,
-    expectsTask: boolean,
     action: 'run' | 'retrieve' = 'run',
   ): RunEntry {
     if (this.shutdown.signal.aborted || this.deps.updating?.())
       throw new CanvasFailure('应用正在更新或关闭，请稍后重试', 409)
     if (this.running.has(key)) throw new CanvasFailure('该卡片正在生成', 409)
-    let arrive = () => {}
-    const taskArrived = new Promise<void>((resolve) => {
-      arrive = resolve
-    })
     const entry: RunEntry = {
       startedAt: Date.now(),
       action,
       stop: new AbortController(),
-      expectsTask,
-      taskArrived,
-      arrive,
     }
     this.running.set(key, entry)
     this.failures.delete(key)
@@ -809,6 +815,26 @@ export class CanvasService {
       state: 'running',
     })
     return entry
+  }
+
+  /** 任务号落盘后即可对外读取，不必等生成结束或首次查询返回。 */
+  private submitted(
+    entry: RunEntry,
+    ws: CanvasWorkspace,
+    rel: string,
+    nodeId: string,
+    task: CanvasTask,
+  ): void {
+    entry.task = task
+    entry.requestSent = true
+    if (task.versionId) entry.version = task.versionId
+    this.deps.publish({
+      type: 'canvas.run',
+      workspaceId: ws.id,
+      path: rel,
+      nodeId,
+      state: 'running',
+    })
   }
 
   /** 平台报告的状态变化：记录排队中 / 生成中，发送一条 `canvas.run` 使界面重新读取。无法识别的状态值不修改。 */
@@ -860,34 +886,35 @@ export class CanvasService {
    * 图像、音频等单次请求没有远端任务可撤销：停止本地等待，收尾时记为结果未知，返回 `stopped`。
    * 不要改为继续等待：生成请求不设静默上限，远端既不返回也不断开连接时，停止是结束这次生成的唯一途径。
    *
-   * 视频提交之后才有远端任务，尚未取得任务号时先等待（与本次生成的结束竞争）。
+   * 视频生成请求尚未发出（包含上传素材中）时正常取消，返回 `not_submitted`，不产生生成费用。
+   * 请求发出但未取得任务号时立即停止本地等待，返回 `stopped`，不能无限等任务号。
+   * 此时无法确定平台是否已受理，不声称远端已撤销、不自动重发；若停止期间拿到任务号，保留记录供取回。
    * 撤销由 `cancelTask` 按接口能力执行：撤销成功时停止本地等待，收尾时删除该版本与任务记录、不记录失败，返回 `cancelled`。
-   * 无法撤销时本次生成照常进行：远端已开始或已结束时返回 `started`，接口不支持撤销时返回 `unsupported`；
-   * 生成在取得任务号之前结束时返回 `ended`。撤销请求本身失败（网络、鉴权）时原样抛出，生成照常进行。
+   * 无法撤销或撤销请求失败时仍暂停本地等待并保留任务；新生成和取回遵守相同的取消能力判断。
    */
   async cancel(
     workspaceRoot: string,
     path: string,
     nodeId: string,
     cancelTask: CanvasCancelTask,
-  ): Promise<'cancelled' | 'stopped' | 'started' | 'unsupported' | 'ended'> {
+  ): Promise<CanvasCancelOutcome> {
     const entry = this.running.get(`${keyOf(workspaceRoot, path)}#${nodeId}`)
     if (!entry) throw new CanvasFailure('该卡片未在生成', 409)
     if (entry.cancelled) return 'cancelled'
-    if (!entry.expectsTask) {
+    if (!entry.task) {
       entry.stop.abort()
-      await entry.done
-      return 'stopped'
+      const result = await entry.done
+      return result?.ok ? 'ended' : entry.requestSent === false ? 'not_submitted' : 'stopped'
     }
-    if (!entry.task) await Promise.race([entry.taskArrived, entry.done])
     const task = entry.task
-    if (!task) return 'ended'
-    const outcome = await cancelTask(task)
-    if (outcome !== 'cancelled') return outcome
-    entry.cancelled = true
+    try {
+      if ((await cancelTask(task)) === 'cancelled') entry.cancelled = true
+    } catch (err) {
+      entry.stopMessage = `未能确认远端取消：${err instanceof Error ? err.message : String(err)}`
+    }
     entry.stop.abort()
-    await entry.done
-    return 'cancelled'
+    const result = await entry.done
+    return result?.ok ? 'ended' : entry.cancelled ? 'cancelled' : 'stopped'
   }
 
   /** 收尾：清除运行标记、记录失败、发送结束事件。`work` 抛出异常时同样记为失败，`done` 不会拒绝。 */
@@ -907,14 +934,26 @@ export class CanvasService {
     }
     const entry = this.running.get(key)
     // 远端已撤销：删除该版本与任务记录，卡片恢复到本次生成之前的状态，不记录失败。
-    if (entry?.cancelled && entry.task) {
+    if (!result.ok && entry?.cancelled && entry.task) {
       if (entry.task.versionId) await this.dropVersion(ws.root, rel, nodeId, entry.task.versionId)
       await rm(join(ws.root, entry.task.record), { force: true })
       result = { ok: false, message: '已取消生成', pending: false }
     }
-    // 单次请求已停止等待：远端仍可能完成，结果未知。停止之前已成功的结果照常保留。
+    // 无回执时停止等待：远端仍可能完成。停止期间到达的任务号保留供取回，已成功的结果照常保留。
     const stopped = !result.ok && !entry?.cancelled && entry?.stop.signal.aborted === true
-    if (stopped) result = { ok: false, message: '已停止等待；远端结果未知', pending: false }
+    const unsent = stopped && entry.requestSent === false
+    if (stopped) {
+      const pending = !!entry.task && (await this.isFile(ws.root, entry.task.record))
+      result = {
+        ok: false,
+        message: unsent
+          ? '已取消，未提交生成，不产生生成费用'
+          : pending
+            ? `已暂停等待；任务已提交，远端可能继续生成并计费，可取回原任务${entry.stopMessage ? `；${entry.stopMessage}` : ''}`
+            : '已停止等待；远端结果未知',
+        pending,
+      }
+    }
     const task = entry?.task
     const provider = facts.provider ?? task?.provider
     const model = facts.model ?? task?.model
@@ -922,15 +961,16 @@ export class CanvasService {
       ...facts,
       node: nodeId,
       end: new Date().toISOString(),
-      result: entry?.cancelled
-        ? 'cancelled'
-        : result.ok
-          ? 'done'
-          : result.pending
-            ? 'pending'
-            : stopped || result.diagnostic?.outcome === 'unknown'
-              ? 'unknown'
-              : 'failed',
+      result:
+        (!result.ok && entry?.cancelled) || unsent
+          ? 'cancelled'
+          : result.ok
+            ? 'done'
+            : result.pending
+              ? 'pending'
+              : stopped || result.diagnostic?.outcome === 'unknown'
+                ? 'unknown'
+                : 'failed',
       ...(provider !== undefined ? { provider } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(task ? { task: task.taskId } : {}),
@@ -941,13 +981,13 @@ export class CanvasService {
     // 画布文件已被删除或损坏时无法写入记录；生成本身的结果不因此改变。
     await this.mutate(ws.root, rel, (d) => recordRun(d, record)).catch(() => {})
     this.running.delete(key)
-    if (!result.ok && !entry?.cancelled) this.failures.set(key, result.message)
+    if (!result.ok && !entry?.cancelled && !unsent) this.failures.set(key, result.message)
     this.deps.publish({
       type: 'canvas.run',
       workspaceId: ws.id,
       path: rel,
       nodeId,
-      ...(result.ok || entry?.cancelled
+      ...(result.ok || entry?.cancelled || unsent
         ? { state: 'done' }
         : { state: 'failed', message: result.message }),
     })
@@ -1437,6 +1477,9 @@ export class CanvasService {
         startedAt: run.startedAt,
         action: run.action,
         ...(run.version ? { version: run.version } : {}),
+        ...(run.requestSent !== undefined && !run.task
+          ? { stage: run.requestSent ? ('submitting' as const) : ('preparing' as const) }
+          : {}),
         ...(run.task ? { taskId: run.task.taskId } : {}),
         ...(run.phase ? { phase: run.phase } : {}),
       }

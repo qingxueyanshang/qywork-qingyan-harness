@@ -15,6 +15,7 @@ import {
   type CanvasOp,
   type CanvasView,
   canvasFileKind,
+  canvasRunLabel,
   cardIdOf,
   displayNameOf,
   parseCanvasOps,
@@ -43,9 +44,11 @@ function describe(view: CanvasView): string {
           ? `结果未知：${state.message}`
           : state?.state === 'pending'
             ? `待取回（版本 ${state.version}）`
-            : (
-                { normal: '正常', missing: '文件缺失', empty: '未生成', running: '生成中' } as const
-              )[state?.state ?? 'normal']
+            : state?.state === 'running'
+              ? canvasRunLabel(n.type === 'generate' ? n.output : 'image', state)
+              : ({ normal: '正常', missing: '文件缺失', empty: '未生成' } as const)[
+                  state?.state ?? 'normal'
+                ]
     const group = n.type !== 'timeline' && n.group ? `（组：${n.group}）` : ''
     if (n.type === 'file') {
       lines.push(`- ${n.id} 文件「${displayNameOf(n)}」${group}${n.path}（${status}）`)
@@ -68,6 +71,22 @@ function describe(view: CanvasView): string {
       `  提示词：${n.prompt || '（空）'}`,
     )
     lines.push(`  参数：${paramsText(n.params)}`)
+    for (const v of n.versions) {
+      const task = view.tasks?.[v.id]
+      if (!task) continue
+      lines.push(
+        `  已提交任务（版本 ${v.id}）：${task.taskId ?? '无任务号'}；恢复记录 ${task.record}；取回后结果位置 ${task.output}。取回此版本只查询、下载；再次生成会另发付费请求。`,
+      )
+    }
+    if (state?.state === 'running' && n.output === 'video') {
+      lines.push(
+        state.taskId
+          ? `  远端任务号：${state.taskId}`
+          : state.stage === 'preparing'
+            ? '  正在准备素材，尚未提交生成；此时可以取消，不产生生成费用。'
+            : '  尚未取得远端任务号，不能确认平台已受理；开始时间与用时仅为本地等待记录。',
+      )
+    }
     // 每张卡写明输入：连线只列在末尾时，回执中不易发现哪张卡没有连接参考图。
     const inputs = view.doc.edges
       .filter((e) => e.to === n.id)

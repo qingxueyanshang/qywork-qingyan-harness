@@ -234,6 +234,27 @@ describe('canvas 工具', () => {
     expect(lone.message).toContain('  输入：无，只按提示词生成')
   })
 
+  test('读取运行中的视频：无任务号明确未确认受理，已有任务号立即展示并区分平台阶段', async () => {
+    const { port } = fakePort(DONE)
+    const v = view()
+    port.read = async () => v
+    v.states.id2 = { state: 'running', startedAt: 1 }
+    const pending = await readCanvasTool.fn({ path: v.path }, ctx(port))
+    expect(pending.message).toContain('提交中')
+    expect(pending.message).toContain('尚未取得远端任务号，不能确认平台已受理')
+    expect(pending.message).not.toContain('排队中')
+    v.states.id2 = { state: 'running', startedAt: 1, taskId: 'remote-task' }
+    const submitted = await readCanvasTool.fn({ path: v.path }, ctx(port))
+    expect(submitted.message).toContain('已提交')
+    expect(submitted.message).toContain('远端任务号：remote-task')
+    v.states.id2.phase = 'queued'
+    const queued = await readCanvasTool.fn({ path: v.path }, ctx(port))
+    expect(queued.message).toContain('排队中')
+    expect(queued.message).not.toContain('不能确认平台已受理')
+    v.states.id2.phase = 'running'
+    expect((await readCanvasTool.fn({ path: v.path }, ctx(port))).message).toContain('生成中')
+  })
+
   test('edit 解析 ops_json 后交给端口；不是 JSON 数组或操作不合法时不调用端口', async () => {
     const { port, seen } = fakePort(DONE)
     const ok = await editCanvasTool.fn(

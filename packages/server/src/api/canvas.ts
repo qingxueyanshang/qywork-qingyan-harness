@@ -244,11 +244,11 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
     const nodeId = text(b.nodeId)
     if (!nodeId) return invalid('缺少节点 id')
 
-    // 停止，返回 `outcome`：单次请求停止本地等待；视频按接口能力撤销远端任务，无法撤销时生成照常进行，由界面提示照常计费。
+    // 优先撤销可取消的任务；无法撤销时暂停本地等待，保留原任务供取回。
     if (p === '/api/canvas/cancel') {
       try {
         const outcome = await d.canvas.cancel(d.workspaceRoot, path, nodeId, (task) =>
-          cancelMediaTask(d.config, task, new AbortController().signal),
+          cancelMediaTask(d.config, task, AbortSignal.timeout(10_000)),
         )
         return json({ outcome })
       } catch (err) {

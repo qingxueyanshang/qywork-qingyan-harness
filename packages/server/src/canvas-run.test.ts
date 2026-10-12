@@ -52,6 +52,7 @@ function fakePort(): { port: MediaPort; calls: Pending[]; next(): Promise<Pendin
   const waiters: ((p: Pending) => void)[] = []
   const port: MediaPort = {
     generate(call, signal) {
+      if (!call.resumeTaskId) call.onSubmit?.()
       return new Promise((resolve, reject) => {
         signal.addEventListener('abort', () => reject(signal.reason), { once: true })
         const p: Pending = {
@@ -792,38 +793,171 @@ describe('画布运行：取消', () => {
     expect(events.at(-1)).toMatchObject({ type: 'canvas.run', state: 'done' })
   })
 
-  test('远端已开始：无法撤销，生成照常进行到成功', async () => {
+  test.each(['started', 'unsupported'] as const)(
+    '远端 %s 无法撤销：暂停本地等待，原任务可取回',
+    async (outcome) => {
+      const { ws, svc, ids } = await setup(VIDEO_CARD)
+      const fake = fakePort()
+      const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+      const p = await fake.next()
+      await p.submit('t-1')
+      expect(await svc.cancel(ws.root, PATH, ids.$v!, async () => outcome)).toBe('stopped')
+      expect(await done).toMatchObject({
+        ok: false,
+        pending: true,
+        message: expect.stringContaining('可能继续生成并计费'),
+      })
+      const view = await svc.read(ws.root, PATH)
+      expect(view.states[ids.$v!]).toMatchObject({ state: 'pending' })
+      const v = (await node(ws.root, ids.$v!)).versions[0]!
+      expect(view.tasks?.[v.id]).toMatchObject({
+        taskId: 't-1',
+        output: expect.stringMatching(/^generated[\\/]/),
+      })
+      const retrieved = await svc.retrieve(ws, PATH, ids.$v!, v.id, { media: fake.port })
+      const resume = await fake.next()
+      expect(resume.call.resumeTaskId).toBe('t-1')
+      resume.finish(finished)
+      expect(await retrieved.done).toMatchObject({ ok: true })
+      expect((await node(ws.root, ids.$v!)).versions[0]!.path).toMatch(/\.mp4$/)
+    },
+  )
+
+  test('撤销接口失败仍暂停，保留失败原因与任务号供后续查询', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
-    const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
-    const p = await fake.next()
-    await p.submit('t-1')
-    expect(await svc.cancel(ws.root, PATH, ids.$v!, async () => 'started')).toBe('started')
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
-    p.finish(finished)
-    expect(await done).toMatchObject({ ok: true })
-    expect((await node(ws.root, ids.$v!)).versions[0]!.path).toMatch(/\.mp4$/)
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    await (await fake.next()).submit('cancel-error')
+    expect(
+      await svc.cancel(ws.root, PATH, ids.$v!, async () => {
+        throw new Error('HTTP 503')
+      }),
+    ).toBe('stopped')
+    expect(await run.done).toMatchObject({
+      pending: true,
+      message: expect.stringContaining('HTTP 503'),
+    })
+    expect(svc.busyCount).toBe(0)
+    expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({
+      task: 'cancel-error',
+      result: 'pending',
+    })
   })
 
-  test('尚未取得任务号时先等待，取得后再撤销；未在生成时返回 409', async () => {
+  test.each([true, false])(
+    '暂停旧任务后再次生成，再取回旧任务（成功=%s）不覆盖新成片或丢掉任务记录',
+    async (success) => {
+      const { ws, svc, ids } = await setup(VIDEO_CARD)
+      const fake = fakePort()
+      const id = ids.$v!
+      const old = await svc.run(ws, PATH, id, { media: fake.port })
+      await (await fake.next()).submit('old-task')
+      await svc.cancel(ws.root, PATH, id, async () => 'unsupported')
+      await old.done
+      const oldVersion = (await node(ws.root, id)).current!
+      const newer = await svc.run(ws, PATH, id, { media: fake.port })
+      const next = await fake.next()
+      await next.submit('new-task')
+      next.finish(finished)
+      await newer.done
+      const afterNew = await svc.read(ws.root, PATH)
+      expect(afterNew.states[id]).toEqual({ state: 'normal' })
+      expect(afterNew.tasks?.[oldVersion]?.taskId).toBe('old-task')
+      const current = (await node(ws.root, id)).current!
+      const newPath = (await node(ws.root, id)).versions.find((v) => v.id === current)!.path
+      const retrieve = await svc.retrieve(ws, PATH, id, oldVersion, { media: fake.port })
+      const resuming = await fake.next()
+      expect(resuming.call.resumeTaskId).toBe('old-task')
+      expect((await svc.read(ws.root, PATH)).states[id]).toMatchObject({
+        action: 'retrieve',
+        version: oldVersion,
+        taskId: 'old-task',
+      })
+      resuming.finish(success ? finished : { ok: false, message: '远端任务失败：余额不足' })
+      await retrieve.done
+      const final = await svc.read(ws.root, PATH)
+      expect(final.states[id]).toEqual({ state: 'normal' })
+      const finalNode = await node(ws.root, id)
+      expect(finalNode.current).toBe(current)
+      expect(finalNode.versions.find((v) => v.id === current)?.path).toBe(newPath)
+      expect(finalNode.versions).toHaveLength(success ? 2 : 1)
+      expect(final.doc.runs?.map((r) => [r.action, r.task, r.version, r.result])).toEqual([
+        ['run', 'old-task', oldVersion, 'pending'],
+        ['run', 'new-task', current, 'done'],
+        ['retrieve', 'old-task', oldVersion, success ? 'done' : 'failed'],
+      ])
+      if (success)
+        expect(final.doc.runs?.at(-1)?.output).toBe(
+          finalNode.versions.find((v) => v.id === oldVersion)?.path,
+        )
+      else expect(final.doc.runs?.at(-1)?.message).toContain('余额不足')
+      expect(fake.calls.filter((c) => !c.call.resumeTaskId)).toHaveLength(2)
+    },
+  )
+
+  test('视频尚未取得任务号时停止本地等待，不等任务号、不调用远端撤销；未在生成时返回 409', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
-    const p = await fake.next()
+    await fake.next()
     let asked = 0
-    const cancelling = svc.cancel(ws.root, PATH, ids.$v!, async () => {
+    const outcome = await svc.cancel(ws.root, PATH, ids.$v!, async () => {
       asked++
       return 'cancelled'
     })
-    await new Promise((r) => setTimeout(r, 20))
+    expect(outcome).toBe('stopped')
     expect(asked).toBe(0)
-    await p.submit('t-1')
-    expect(await cancelling).toBe('cancelled')
-    expect(asked).toBe(1)
-    await done
+    expect(await done).toEqual({ ok: false, message: '已停止等待；远端结果未知', pending: false })
+    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'unknown' })
+    expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({ result: 'unknown' })
+    expect(fake.calls).toHaveLength(1)
     expect(
       (await failure(svc.cancel(ws.root, PATH, ids.$v!, async () => 'cancelled'))).status,
     ).toBe(409)
+  })
+
+  test('停止期间到达的任务号仍落盘并留待取回，不把已有任务报成未知或重新提交', async () => {
+    const { ws, svc, ids } = await setup(VIDEO_CARD)
+    let entered = () => {}
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const media: MediaPort = {
+      async generate(call, signal) {
+        const aborted = new Promise<void>((resolve) =>
+          signal.addEventListener('abort', () => resolve(), { once: true }),
+        )
+        entered()
+        await aborted
+        await call.onTask?.({ taskId: 'late-task', provider: 'ark', model: 'seedance' })
+        throw signal.reason
+      },
+    }
+    const run = await svc.run(ws, PATH, ids.$v!, { media })
+    await ready
+    expect(
+      await svc.cancel(ws.root, PATH, ids.$v!, async () => {
+        throw new Error('不应撤销')
+      }),
+    ).toBe('stopped')
+    expect(await run.done).toEqual({
+      ok: false,
+      message: '已暂停等待；任务已提交，远端可能继续生成并计费，可取回原任务',
+      pending: true,
+    })
+    const version = (await node(ws.root, ids.$v!)).versions[0]!
+    expect(JSON.parse(await readFile(join(ws.root, version.path), 'utf8')).taskId).toBe('late-task')
+    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'pending' })
+    expect((await onDisk(ws.root)).runs?.at(-1)).toMatchObject({
+      result: 'pending',
+      task: 'late-task',
+    })
+    const fake = fakePort()
+    const resumed = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+    const p = await fake.next()
+    expect(p.call.resumeTaskId).toBe('late-task')
+    p.finish(finished)
+    expect(await resumed.done).toMatchObject({ ok: true })
   })
 
   test('图像等单次请求远端始终不返回时，停止即结束本地等待：记为结果未知，卡片可以再次运行', async () => {
@@ -854,26 +988,29 @@ describe('画布运行：取消', () => {
     expect(await again.done).toMatchObject({ ok: true })
   })
 
-  test('取回期间也能撤销：任务号从任务记录中读取', async () => {
-    const { ws, svc, ids } = await setup(VIDEO_CARD)
-    const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
-    const p = await fake.next()
-    await p.submit('t-9')
-    p.finish({ ok: false, message: '等待超时', pendingTaskId: 't-9' })
-    await run.done
-    const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
-    await fake.next()
-    const asked: { taskId: string }[] = []
-    const outcome = await svc.cancel(ws.root, PATH, ids.$v!, async (task) => {
-      asked.push(task)
-      return 'cancelled'
-    })
-    expect(outcome).toBe('cancelled')
-    expect(asked[0]!.taskId).toBe('t-9')
-    expect(await again.done).toMatchObject({ ok: false, message: '已取消生成' })
-    expect((await node(ws.root, ids.$v!)).versions).toEqual([])
-  })
+  test.each(['cancelled', 'started', 'unsupported'] as const)(
+    '取回期间停止按原任务的取消能力处理：%s',
+    async (remote) => {
+      const { ws, svc, ids } = await setup(VIDEO_CARD)
+      const fake = fakePort()
+      const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+      const p = await fake.next()
+      await p.submit('t-9')
+      p.finish({ ok: false, message: '等待超时', pendingTaskId: 't-9' })
+      await run.done
+      const again = await svc.retrieve(ws, PATH, ids.$v!, undefined, { media: fake.port })
+      await fake.next()
+      const asked: { taskId: string }[] = []
+      const outcome = await svc.cancel(ws.root, PATH, ids.$v!, async (task) => {
+        asked.push(task)
+        return remote
+      })
+      expect(outcome).toBe(remote === 'cancelled' ? 'cancelled' : 'stopped')
+      expect(asked[0]?.taskId).toBe('t-9')
+      expect(await again.done).toMatchObject({ ok: false, pending: remote !== 'cancelled' })
+      expect((await node(ws.root, ids.$v!)).versions).toHaveLength(remote === 'cancelled' ? 0 : 1)
+    },
+  )
 })
 
 describe('画布运行：排队中与生成中', () => {
@@ -882,7 +1019,9 @@ describe('画布运行：排队中与生成中', () => {
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
     const p = await fake.next()
+    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).not.toHaveProperty('taskId')
     await p.submit('t-1')
+    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ taskId: 't-1' })
     expect((await svc.read(ws.root, PATH)).states[ids.$v!]).not.toHaveProperty('phase')
     const runningEvents = () =>
       events.filter((e) => e.type === 'canvas.run' && e.state === 'running').length

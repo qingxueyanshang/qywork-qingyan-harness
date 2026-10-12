@@ -1576,6 +1576,16 @@ button.canvas-input:hover {
 .canvas-media-notice.failed > strong {
   color: var(--danger);
 }
+.canvas-stop-notice {
+  flex: none;
+  max-height: 60px;
+  overflow-y: auto;
+  padding: 4px 14px;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
 .canvas-bar {
   display: flex;
   align-items: center;

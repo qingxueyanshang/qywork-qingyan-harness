@@ -155,7 +155,9 @@ interface Server {
   /** 停止请求的节点 id，按请求顺序记录；返回结果取 `cancelOutcome`。 */
   cancels: string[]
   retrievals: { nodeId: string; version?: string }[]
-  cancelOutcome: 'cancelled' | 'started' | 'unsupported' | 'ended'
+  cancelOutcome: 'cancelled' | 'stopped' | 'not_submitted' | 'ended'
+  cancelHold: Promise<void> | null
+  cancelError: Error | null
   /** 设置时，编辑的响应体先按收到请求时的画布计算，等该 Promise 兑现后才返回：模拟响应晚于其后的重新读取到达。 */
   hold: Promise<void> | null
 }
@@ -187,7 +189,9 @@ async function mount(
     hold: null,
     cancels: [],
     retrievals: [],
-    cancelOutcome: 'started',
+    cancelOutcome: 'stopped',
+    cancelHold: null,
+    cancelError: null,
     ops: [],
     runs: [],
     reads: 0,
@@ -257,7 +261,11 @@ async function mount(
     }
     if (path.startsWith('/api/canvas/cancel')) {
       server.cancels.push(body.nodeId)
-      return { outcome: server.cancelOutcome }
+      const outcome = server.cancelOutcome
+      const error = server.cancelError
+      await server.cancelHold
+      if (error) throw error
+      return { outcome }
     }
     if (path.startsWith('/api/canvas/retrieve')) {
       server.retrievals.push({ nodeId: body.nodeId, version: body.version })
@@ -948,7 +956,7 @@ describe('画布：生成卡与生成面板', () => {
     }
   })
 
-  test('生成中发送键变为停止键：点击后发送停止请求；远端无法撤回时底部说明照常计费', async () => {
+  test('远端无法取消时允许暂停，提示任务保留与可能计费，不将停止永久禁用', async () => {
     const { host, server, refs } = await mount(CARD, {
       n2: { state: 'running', startedAt: Date.now() },
     })
@@ -957,10 +965,177 @@ describe('画布：生成卡与生成面板', () => {
     expect(stop.getAttribute('aria-label')).toBe('停止')
     stop.click()
     await waitFor(
-      () => host.querySelector('.canvas-fault')?.textContent?.includes('照常计费') === true,
-      () => host.querySelector('.canvas-fault')?.textContent ?? '',
+      () =>
+        host.querySelector('.canvas-panel output')?.textContent?.includes('已停止等待') === true,
+      () => host.querySelector('.canvas-stop-notice')?.textContent ?? '',
     )
     expect(server.cancels).toEqual([refs.$v!])
+    expect(stop.disabled).toBe(false)
+    expect(stop.getAttribute('aria-label')).toBe('停止')
+    expect(host.querySelector('.canvas-stop-notice')?.textContent).toContain('可能继续计费')
+    expect(host.querySelector('.canvas-fault')).toBeNull()
+    expect(node(host, refs.$v!).querySelector('.canvas-live')).not.toBeNull()
+    expect(server.cancels).toHaveLength(1)
+  })
+
+  test('暂停反馈在当前任务结束后保留，新任务不沿用上次提示', async () => {
+    const startedAt = Date.now() - 60_000
+    const { host, server, refs } = await mount(CARD, {
+      n2: { state: 'running', startedAt, phase: 'queued' },
+    })
+    server.cancelOutcome = 'stopped'
+    await select(host, refs.$v!)
+    const stop = host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!
+    stop.click()
+    const notice = () => host.querySelector('.canvas-stop-notice')?.textContent ?? ''
+    await waitFor(() => notice().includes('已停止等待'), notice)
+    expect(notice()).toContain('远端可能继续计费')
+    expect(stop.disabled).toBe(false)
+    expect(stop.getAttribute('aria-describedby')).toBe(
+      host.querySelector('.canvas-stop-notice')!.id,
+    )
+    expect(node(host, refs.$v!).querySelector('.phase')?.textContent).toBe('排队中')
+
+    const store = await import('../../lib/store/index.ts')
+    server.setView({ states: { n2: { state: 'running', startedAt, phase: 'running' } } })
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => node(host, refs.$v!).querySelector('.phase')?.textContent === '生成中',
+      () => node(host, refs.$v!).textContent ?? '',
+    )
+    expect(stop.disabled).toBe(false)
+    expect(notice()).toContain('已停止等待')
+
+    server.setView({ states: { n2: { state: 'normal' } } })
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => host.querySelector('.canvas-panel .send-btn')?.getAttribute('aria-label') === '生成',
+      () => host.querySelector('.canvas-panel')?.textContent ?? '',
+    )
+    expect(notice()).toContain('远端可能继续计费')
+
+    server.setView({ states: { n2: { state: 'running', startedAt: startedAt + 60_000 } } })
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => notice() === '',
+      () => stop.outerHTML,
+    )
+    expect(notice()).toBe('')
+    expect(host.querySelector('.canvas-panel .send-btn')?.getAttribute('aria-label')).toBe('停止')
+  })
+
+  test('结束事件先于停止响应时仍显示计费提示并解锁生成', async () => {
+    const { host, server, refs } = await mount(
+      [...CARD, { op: 'update', id: '$v', prompt: '镜头特写' }],
+      {
+        n2: { state: 'running', startedAt: Date.now() },
+      },
+    )
+    let release = () => {}
+    server.cancelHold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    server.cancelOutcome = 'stopped'
+    await select(host, refs.$v!)
+    host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!.click()
+    const store = await import('../../lib/store/index.ts')
+    server.setView({ states: { n2: { state: 'normal' } } })
+    store.setState('canvasVersion', (v) => v + 1)
+    try {
+      await waitFor(
+        () => host.querySelector('.canvas-panel .send-btn')?.getAttribute('aria-label') === '生成',
+        () => host.querySelector('.canvas-panel')?.textContent ?? '',
+      )
+    } finally {
+      release()
+    }
+    await waitFor(
+      () =>
+        host.querySelector('.canvas-stop-notice')?.textContent === '已停止等待，远端可能继续计费',
+      () => host.querySelector('.canvas-stop-notice')?.textContent ?? '',
+    )
+    expect(host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')?.disabled).toBe(false)
+  })
+
+  test('停止请求未返回时立即显示进度并阻止重复点击', async () => {
+    const { host, server, refs } = await mount(CARD, {
+      n2: { state: 'running', startedAt: Date.now() },
+    })
+    let release = () => {}
+    server.cancelHold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    server.cancelOutcome = 'stopped'
+    await select(host, refs.$v!)
+    const stop = host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!
+    try {
+      stop.click()
+      expect(stop.disabled).toBe(true)
+      expect(stop.getAttribute('aria-busy')).toBe('true')
+      expect(stop.querySelector('.icon-spin')).not.toBeNull()
+      expect(host.querySelector('.canvas-stop-notice')?.textContent).toBe('正在停止…')
+      stop.click()
+      expect(server.cancels).toHaveLength(1)
+    } finally {
+      release()
+    }
+    await waitFor(
+      () => !stop.disabled,
+      () => stop.outerHTML,
+    )
+    expect(stop.getAttribute('aria-busy')).toBe('false')
+    expect(stop.querySelector('.icon-spin')).toBeNull()
+  })
+
+  test('停止失败在按钮旁显示原文并允许重试，取消成功不会误报为平台不支持', async () => {
+    const { host, server, refs } = await mount(CARD, {
+      n2: { state: 'running', startedAt: Date.now() },
+    })
+    const { ApiError } = await import('../../lib/client.ts')
+    server.cancelError = new ApiError(
+      502,
+      '/api/canvas/cancel',
+      JSON.stringify({ message: '上游连接失败' }),
+    )
+    await select(host, refs.$v!)
+    const stop = host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!
+    const notice = () => host.querySelector('.canvas-stop-notice')?.textContent ?? ''
+    stop.click()
+    await waitFor(() => notice().includes('上游连接失败'), notice)
+    expect(stop.disabled).toBe(false)
+    expect(stop.getAttribute('aria-label')).toBe('停止')
+    server.cancelError = null
+    server.cancelOutcome = 'cancelled'
+    stop.click()
+    await waitFor(() => notice() === '已取消生成', notice)
+    expect(server.cancels).toHaveLength(2)
+  })
+
+  test('上次任务的停止响应迟到时不覆盖新任务的按钮与提示', async () => {
+    const startedAt = Date.now() - 60_000
+    const { host, server, refs } = await mount(CARD, { n2: { state: 'running', startedAt } })
+    let release = () => {}
+    server.cancelHold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    server.cancelOutcome = 'stopped'
+    await select(host, refs.$v!)
+    const stop = host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!
+    stop.click()
+    const store = await import('../../lib/store/index.ts')
+    server.setView({ states: { n2: { state: 'running', startedAt: startedAt + 60_000 } } })
+    store.setState('canvasVersion', (v) => v + 1)
+    try {
+      await waitFor(
+        () => !stop.disabled,
+        () => stop.outerHTML,
+      )
+    } finally {
+      release()
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(stop.disabled).toBe(false)
+    expect(host.querySelector('.canvas-stop-notice')).toBeNull()
   })
 
   test('版本切换保留旧任务和取回入口，不在面板堆叠任务记录', async () => {
