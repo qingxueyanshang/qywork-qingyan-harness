@@ -19,7 +19,7 @@ test('进入轮询之前已中止时不再查询远端', async () => {
   expect(queries).toBe(0)
 })
 
-test('状态回调中停止时立即退出，不因错过中止事件卡在轮询间隔', async () => {
+test('状态回调中停止时立即退出，不因错过中止事件阻塞于轮询间隔', async () => {
   const abort = new AbortController()
   const reason = new Error('已停止')
   let queries = 0
