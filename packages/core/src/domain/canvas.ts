@@ -152,6 +152,10 @@ export interface CanvasRunRecord {
   model?: string
   /** 远端任务号。仅视频生成具有。 */
   task?: string
+  /** 该次生成或取回所属的版本；多次取回沿用同一个版本。 */
+  version?: string
+  /** 结果已落盘的工作区路径。 */
+  output?: string
   /** 发出的提示词（编译后）、参数与输入。取回不重新提交，因此没有这三项。 */
   prompt?: string
   params?: Record<string, unknown>
@@ -165,18 +169,52 @@ export interface CanvasRunRecord {
 
 /**
  * 节点在界面上的状态。由服务端根据磁盘与运行中集合推导，不落盘。
- * 优先级：运行中 > 待取回 > 结果未知 > 失败 > 空 > 缺失 > 正常；生成中与待取回检查全部版本，而不只检查 `current`。
+ * 优先级：运行中 > 当前版本待取回 > 结果未知 > 失败 > 空 > 缺失 > 正常。其他版本的任务由 CanvasView.tasks 保留，不能遮住当前成片。
  */
 export type CanvasNodeState =
   | { state: 'normal' }
   | { state: 'missing' }
   | { state: 'empty' }
-  /** `phase`：远端任务处于排队中还是生成中，仅在平台回报后存在；图像与音频等单次请求的生成没有该字段。 */
-  | { state: 'running'; startedAt: number; phase?: 'queued' | 'running' }
+  /** `taskId`：平台已返回且已保存的任务号；`phase` 仅在平台回报后存在。没有回执不代表已排队。 */
+  | {
+      state: 'running'
+      startedAt: number
+      taskId?: string
+      phase?: 'queued' | 'running'
+      action?: 'run' | 'retrieve'
+      version?: string
+      stage?: 'preparing' | 'submitting'
+    }
   /** `version`：点击「取回」时取回的版本。 */
   | { state: 'pending'; version: string }
   | { state: 'failed'; message: string }
   | { state: 'unknown'; message: string }
+
+/** 界面与画布工具共用阶段名称；只有平台明确回报排队时才显示排队中。 */
+export function canvasRunLabel(
+  output: GenerateOutput,
+  state: Extract<CanvasNodeState, { state: 'running' }>,
+): string {
+  if (state.action === 'retrieve') return '取回中'
+  if (state.phase === 'queued') return '排队中'
+  if (state.phase === 'running') return '生成中'
+  return output === 'video'
+    ? state.taskId
+      ? '已提交'
+      : state.stage === 'preparing'
+        ? '准备中'
+        : '提交中'
+    : '生成中'
+}
+
+/** 从已有恢复记录读取的任务信息；不另建任务账本。键为版本 id。 */
+export interface CanvasTaskInfo {
+  taskId?: string
+  provider: string
+  model: string
+  record: string
+  output: string
+}
 
 /** 读取画布接口的返回值：文档与各节点状态。 */
 export interface CanvasView {
@@ -184,6 +222,7 @@ export interface CanvasView {
   path: string
   doc: CanvasDoc
   states: Record<string, CanvasNodeState>
+  tasks?: Record<string, CanvasTaskInfo>
 }
 
 /** 一个产物：工作区路径，以及从文件头读取的像素宽高与时长（秒）；无法读取时缺省。 */
@@ -1432,6 +1471,8 @@ const RUN_FIELDS: Record<string, Shape> = {
   provider: 'string',
   model: 'string',
   task: 'string',
+  version: 'string',
+  output: 'string',
   prompt: 'string',
   params: 'object',
   inputs: 'inputs',
@@ -1591,6 +1632,8 @@ export function serializeCanvas(doc: CanvasDoc): string {
     ...(r.provider !== undefined ? { provider: r.provider } : {}),
     ...(r.model !== undefined ? { model: r.model } : {}),
     ...(r.task !== undefined ? { task: r.task } : {}),
+    ...(r.version !== undefined ? { version: r.version } : {}),
+    ...(r.output !== undefined ? { output: r.output } : {}),
     ...(r.prompt !== undefined ? { prompt: r.prompt } : {}),
     ...(r.params !== undefined ? { params: r.params } : {}),
     ...(r.inputs !== undefined

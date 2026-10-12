@@ -30,10 +30,13 @@ async function payloadOf(
   switch (spec.videoFormat) {
     case 'providerb': {
       const images: string[] = []
+      const videos: string[] = []
       const audios: string[] = []
       for (const input of req.inputs) {
         if (input.role === 'reference') images.push(dataUri(input.bytes, input.mime))
-        else if (input.role === 'audio' && spec.inputs.maxAudios) {
+        else if (input.role === 'video' && spec.inputs.maxVideos) {
+          videos.push(dataUri(input.bytes, input.mime))
+        } else if (input.role === 'audio' && spec.inputs.maxAudios) {
           if (sniffMime(input.bytes) !== 'audio/mpeg') {
             throw new MediaError('该模型的参考音频仅支持 MP3，请先转换为 MP3；未提交生成')
           }
@@ -46,6 +49,7 @@ async function payloadOf(
       return {
         ...mediaParamValues(spec.params, req.params),
         ...(images.length ? { images } : {}),
+        ...(videos.length ? { videos } : {}),
         ...(audios.length ? { audios } : {}),
       }
     }
@@ -127,6 +131,8 @@ export class OpenAIVideosAdapter implements MediaAdapter {
       if (status === 'failure') {
         return { state: 'failed', message: failureDetail(undefined, task.fail_reason, '任务失败') }
       }
+      // providerb 实际返回 NOT_START：任务已创建、尚未开始，继续等待原任务。
+      if (status === 'not_start') return { state: 'pending', status: 'queued' }
       return { state: 'pending', status: status || 'queued' }
     }
     const body = await getJson(path, auth, signal)

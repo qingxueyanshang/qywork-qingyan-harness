@@ -19,6 +19,7 @@ import {
   type CanvasView,
   canvasFileKind,
   canvasMediaOf,
+  canvasRunLabel,
   copyOps,
   displayNameOf,
   GENERATE_OUTPUTS,
@@ -1008,6 +1009,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const ids = [...selected()]
     const single = ids.length === 1 ? byId(ids[0]!) : undefined
     const file = single && v ? mediaOf(v, single.id).path : null
+    const task =
+      single?.type === 'generate' && single.current ? taskInfo(single.id, single.current) : null
     return [
       { label: '复制', keys: `${MOD}C`, run: () => void copySelection() },
       {
@@ -1024,6 +1027,18 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         run: () => v && void pasteNodes(v.doc, ids, null, true),
       },
       null,
+      ...(task?.taskId
+        ? [
+            {
+              label: '复制任务号',
+              run: () => {
+                void navigator.clipboard
+                  .writeText(task.taskId!)
+                  .catch((err: unknown) => setFault(explainApiError(err, '复制失败')))
+              },
+            },
+          ]
+        : []),
       ...(file && isDesktopShell()
         ? [
             {
@@ -1742,15 +1757,67 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     )
   }
 
+  function taskInfo(nodeId: string, versionId: string) {
+    const board = view()
+    const n = board?.doc.nodes.find((n) => n.id === nodeId)
+    const version = n?.type === 'generate' ? n.versions.find((v) => v.id === versionId) : undefined
+    const task = board?.tasks?.[versionId]
+    const records =
+      board?.doc.runs?.filter((r) => r.node === nodeId && r.version === versionId) ?? []
+    const taskId = task?.taskId ?? records.findLast((r) => r.task)?.task
+    const output = task?.output ?? version?.path
+    const message = records.at(-1)?.message
+    return {
+      taskId,
+      message,
+      details: [
+        '取回原任务，不重新生成；远端费用以平台结算为准',
+        ...(taskId ? [`任务号：${taskId}`] : []),
+        ...(output ? [`结果位置：${output}`] : []),
+        ...(message ? [message] : []),
+      ].join('\n'),
+    }
+  }
+
+  function TaskNotice(p: {
+    nodeId: string
+    version?: string | undefined
+    retrieving?: boolean
+    phase?: 'queued' | 'running' | undefined
+  }) {
+    const message = () => p.version && taskInfo(p.nodeId, p.version).message
+    const title = () => {
+      if (!p.retrieving) return message() ? '本次等待已结束' : '原任务待取回'
+      if (p.phase === 'queued') return '原任务仍在排队'
+      if (p.phase === 'running') return '原任务仍在生成'
+      return '正在查询原任务'
+    }
+    return (
+      <output class="canvas-task-notice" onPointerDown={(e) => e.stopPropagation()}>
+        <strong>{title()}</strong>
+        <span>
+          {message()
+            ? `${p.retrieving ? '上次等待结束原因：' : ''}${message()}`
+            : '已保留原任务，取回会继续查询结果。'}
+        </span>
+      </output>
+    )
+  }
+
   function GenerateBody(p: { node: CanvasGenerateNode; selected: boolean }) {
     const st = () => view()?.states[p.node.id]
     const running = () => {
       const s = st()
-      return s?.state === 'running' ? s : null
+      return s?.state === 'running' &&
+        (s.version ? s.version === p.node.current : !currentOf(p.node))
+        ? s
+        : null
     }
     const pending = () => {
       const s = st()
-      return s?.state === 'pending' ? s : null
+      if (s?.state === 'pending') return s
+      const v = currentOf(p.node)
+      return v?.path.endsWith('.task.json') ? { version: v.id } : null
     }
     const failed = () => {
       const s = st()
@@ -1759,111 +1826,140 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const current = () => currentOf(p.node)
     const notice = () => {
       const s = st()
-      // 结果未知时报错原文已写明「远端结果未知」，标题与失败相同。
-      if (s?.state === 'failed' || s?.state === 'unknown')
+      if (s?.state === 'unknown')
+        return { failed: false, title: '本次结果未确认，已保留原结果', message: s.message }
+      if (s?.state === 'failed')
         return { failed: true, title: '本次生成失败，已保留原结果', message: s.message }
       const warning = current()?.warning
       return warning ? { failed: false, title: '生成结果与设置不符', message: warning } : null
     }
     const index = () => p.node.versions.findIndex((v) => v.id === p.node.current) + 1
     return (
-      <Switch
-        fallback={
-          <div class="canvas-media canvas-slot empty">
-            <KindIcon kind={p.node.output} size={22} stroke={1.6} />
-          </div>
-        }
-      >
-        <Match when={running()}>
-          {(s) => (
-            <div class="canvas-media canvas-slot">
-              <div class="canvas-live">
-                <span class="canvas-snake">
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                </span>
-                <span class="phase">
-                  {s().phase === 'queued' || (!s().phase && p.node.output === 'video')
-                    ? '排队中'
-                    : '生成中'}
-                </span>
-                <span class="time">{clock(now() - s().startedAt)}</span>
-              </div>
+      <div class="canvas-generate-body">
+        <Switch
+          fallback={
+            <div class="canvas-media canvas-slot empty">
+              <KindIcon kind={p.node.output} size={22} stroke={1.6} />
             </div>
-          )}
-        </Match>
-        <Match when={pending()}>
-          {(s) => (
-            <div class="canvas-media canvas-slot">
-              <button
-                class="canvas-ghost"
-                type="button"
-                onClick={() => retrieve(p.node.id, s().version)}
+          }
+        >
+          <Match when={running()}>
+            {(s) => (
+              <div
+                class="canvas-media canvas-slot"
+                classList={{ 'with-task-notice': s().action === 'retrieve' }}
               >
-                取回
-              </button>
-            </div>
-          )}
-        </Match>
-        <Match when={failed()}>
-          {(s) => (
-            <div class="canvas-media canvas-slot">
-              <KindIcon kind={p.node.output} size={22} />
-              <span class="error" role="alert">
-                {s().message}
-              </span>
-            </div>
-          )}
-        </Match>
-        <Match when={st()?.state === 'missing'}>
-          <div class="canvas-missing">
-            <span class="label">缺失</span>
-          </div>
-        </Match>
-        <Match when={current()}>
-          {(v) => (
-            <div class="canvas-media" style={{ overflow: 'hidden' }}>
-              <Media
-                nodeId={p.node.id}
-                path={v().path}
-                kind={p.node.output}
-                w={p.node.w}
-                h={p.node.h}
-                controls={p.selected}
-              />
-              <Show when={notice()}>
-                {(n) => (
-                  <div
-                    class="canvas-media-notice"
-                    classList={{ failed: n().failed }}
-                    role={n().failed ? 'alert' : 'status'}
-                    onPointerDown={(e) => e.stopPropagation()}
-                  >
-                    <strong>{n().title}</strong>
-                    <span>{n().message}</span>
+                <div class="canvas-task-progress">
+                  <div class="canvas-live">
+                    <span class="canvas-snake">
+                      <span />
+                      <span />
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                    <span class="phase" title={s().taskId ? `任务号：${s().taskId}` : undefined}>
+                      {canvasRunLabel(p.node.output, s())}
+                    </span>
+                    <span class="time" title="本次等待用时">
+                      {clock(now() - s().startedAt)}
+                    </span>
                   </div>
-                )}
-              </Show>
-              <Show when={p.node.versions.length > 1}>
-                <button
-                  class="canvas-badge version"
-                  type="button"
-                  aria-label={`切换版本（${index()} / ${p.node.versions.length}）`}
-                  onClick={(e) =>
-                    setMenu({ kind: 'version', anchor: e.currentTarget, nodeId: p.node.id })
-                  }
+                </div>
+                <Show when={s().action === 'retrieve'}>
+                  <TaskNotice
+                    nodeId={p.node.id}
+                    version={s().version ?? p.node.current}
+                    retrieving
+                    phase={s().phase}
+                  />
+                </Show>
+              </div>
+            )}
+          </Match>
+          <Match when={pending()}>
+            {(s) => (
+              <div class="canvas-media canvas-slot with-task-notice">
+                <div class="canvas-task-progress">
+                  <button
+                    class="canvas-ghost"
+                    type="button"
+                    disabled={st()?.state === 'running'}
+                    title={
+                      st()?.state === 'running'
+                        ? '请先暂停当前等待，再取回此任务'
+                        : taskInfo(p.node.id, s().version).details
+                    }
+                    onClick={() => retrieve(p.node.id, s().version)}
+                  >
+                    取回
+                  </button>
+                </div>
+                <TaskNotice nodeId={p.node.id} version={s().version} />
+              </div>
+            )}
+          </Match>
+          <Match when={failed()}>
+            {(s) => (
+              <div class="canvas-media canvas-slot">
+                <KindIcon kind={p.node.output} size={22} />
+                <span
+                  class="error"
+                  classList={{ unknown: s().state === 'unknown' }}
+                  role={s().state === 'unknown' ? 'status' : 'alert'}
                 >
-                  {index()} / {p.node.versions.length}
-                  <IconChevron size={10} />
-                </button>
-              </Show>
+                  {s().message}
+                </span>
+              </div>
+            )}
+          </Match>
+          <Match when={st()?.state === 'missing'}>
+            <div class="canvas-missing">
+              <span class="label">缺失</span>
             </div>
-          )}
-        </Match>
-      </Switch>
+          </Match>
+          <Match when={current()}>
+            {(v) => (
+              <div class="canvas-media" style={{ overflow: 'hidden' }}>
+                <Media
+                  nodeId={p.node.id}
+                  path={v().path}
+                  kind={p.node.output}
+                  w={p.node.w}
+                  h={p.node.h}
+                  controls={p.selected}
+                />
+                <Show when={notice()}>
+                  {(n) => (
+                    <div
+                      class="canvas-media-notice"
+                      classList={{ failed: n().failed }}
+                      role={n().failed ? 'alert' : 'status'}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      <strong>{n().title}</strong>
+                      <span>{n().message}</span>
+                    </div>
+                  )}
+                </Show>
+              </div>
+            )}
+          </Match>
+        </Switch>
+        <Show when={p.node.versions.length > 1}>
+          <button
+            class="canvas-badge version"
+            type="button"
+            aria-label={`切换版本（${index()} / ${p.node.versions.length}）`}
+            onClick={(e) =>
+              setMenu({ kind: 'version', anchor: e.currentTarget, nodeId: p.node.id })
+            }
+          >
+            {index()} / {p.node.versions.length}
+            <IconChevron size={10} />
+          </button>
+        </Show>
+      </div>
     )
   }
 
@@ -2286,6 +2382,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                               type="button"
                               role="menuitemradio"
                               aria-checked={current()}
+                              title={
+                                v.path.endsWith('.task.json')
+                                  ? taskInfo(m().nodeId, v.id).details
+                                  : v.path
+                              }
                               onClick={() => {
                                 // 先取得节点 id 再关闭菜单：关闭之后 `m()` 已失效。
                                 const id = (m() as { nodeId: string }).nodeId
@@ -2295,6 +2396,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                             >
                               <span>
                                 {i() + 1} · {madeAt(v.made.at)}
+                                {v.path.endsWith('.task.json') ? ' · 待取回' : ''}
                               </span>
                               <Show when={current()}>
                                 <IconCheck size={14} />

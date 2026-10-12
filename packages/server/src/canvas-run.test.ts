@@ -948,6 +948,7 @@ describe('画布运行：生成记录', () => {
         inputs: [{ role: 'reference', path: 'a.png' }],
         cost: 0.2,
         currency: 'CNY',
+        output: expect.stringMatching(/\.png$/),
       },
     ])
     expect(Date.parse(runs[0]!.end)).toBeGreaterThanOrEqual(Date.parse(runs[0]!.start))

@@ -118,6 +118,8 @@ describe('画布：格式', () => {
       result: 'failed',
       provider: 'ark',
       model: 'seedance',
+      version: 'old-version',
+      output: 'generated/original.mp4',
       prompt: '走出校门',
       params: { duration: 5 },
       inputs: [{ role: 'first_frame', path: 'a.png' }],

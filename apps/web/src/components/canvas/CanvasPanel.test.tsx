@@ -154,6 +154,7 @@ interface Server {
   exports: string[]
   /** 停止请求的节点 id，按请求顺序记录；返回结果取 `cancelOutcome`。 */
   cancels: string[]
+  retrievals: { nodeId: string; version?: string }[]
   cancelOutcome: 'cancelled' | 'started' | 'unsupported' | 'ended'
   /** 设置时，编辑的响应体先按收到请求时的画布计算，等该 Promise 兑现后才返回：模拟响应晚于其后的重新读取到达。 */
   hold: Promise<void> | null
@@ -172,13 +173,20 @@ async function mount(
   if (!seeded.ok) throw new Error(seeded.error)
   let doc = seeded.doc
   let extraStates = states
+  let extraTasks: NonNullable<CanvasView['tasks']> = {}
   let written = 0
   let fingerprint = 'd0'
   const snapshots = new Map<string, CanvasDoc>([['d0', doc]])
-  const view = (): CanvasView => ({ path: 'board.canvas.json', doc, states: extraStates })
+  const view = (): CanvasView => ({
+    path: 'board.canvas.json',
+    doc,
+    states: extraStates,
+    tasks: extraTasks,
+  })
   const server: Server = {
     hold: null,
     cancels: [],
+    retrievals: [],
     cancelOutcome: 'started',
     ops: [],
     runs: [],
@@ -191,6 +199,7 @@ async function mount(
         fingerprint = `x${++written}`
       }
       if (next.states) extraStates = next.states
+      if (next.tasks) extraTasks = next.tasks
     },
     broken: false,
     quote: null,
@@ -249,6 +258,10 @@ async function mount(
     if (path.startsWith('/api/canvas/cancel')) {
       server.cancels.push(body.nodeId)
       return { outcome: server.cancelOutcome }
+    }
+    if (path.startsWith('/api/canvas/retrieve')) {
+      server.retrievals.push({ nodeId: body.nodeId, version: body.version })
+      return view()
     }
     if (path.startsWith('/api/canvas/run')) {
       server.runs.push({ nodeId: body.nodeId, ops: body.ops ?? [] })
@@ -880,14 +893,25 @@ describe('画布：生成卡与生成面板', () => {
     const live = node(host, refs.$w!).querySelector('.canvas-live')!
     const phase = live.querySelector('.phase')!
     const snake = live.querySelector('.canvas-snake')!
-    expect(phase.textContent).toBe('排队中')
+    expect(phase.textContent).toBe('提交中')
     expect(live.querySelector('.time')?.textContent).toBe('00:00')
     expect(node(host, refs.$g!).querySelector('.canvas-live .phase')?.textContent).toBe('生成中')
-    server.setView({
-      states: { n3: { state: 'running', startedAt: Date.now(), phase: 'running' } },
-    })
     const store = await import('../../lib/store/index.ts')
+    server.setView({
+      states: { n3: { state: 'running', startedAt: Date.now(), taskId: 'submitted-task' } },
+    })
     store.setState('canvasVersion', 1)
+    await waitFor(
+      () => phase.textContent === '已提交',
+      () => phase.textContent ?? '',
+    )
+    expect(phase.getAttribute('title')).toBe('任务号：submitted-task')
+    server.setView({
+      states: {
+        n3: { state: 'running', startedAt: Date.now(), taskId: 'submitted-task', phase: 'running' },
+      },
+    })
+    store.setState('canvasVersion', 2)
     await waitFor(
       () => phase.textContent === '生成中',
       () => live.textContent ?? '',
@@ -937,6 +961,231 @@ describe('画布：生成卡与生成面板', () => {
       () => host.querySelector('.canvas-fault')?.textContent ?? '',
     )
     expect(server.cancels).toEqual([refs.$v!])
+  })
+
+  test('版本切换保留旧任务和取回入口，不在面板堆叠任务记录', async () => {
+    const { host, server, refs } = await mount(CARD)
+    const core = await import('@qywork/core')
+    const store = await import('../../lib/store/index.ts')
+    const id = refs.$v!
+    const made = {
+      prompt: '视频',
+      provider: 'qwen',
+      model: 'wan3.0-video',
+      params: {},
+      inputs: [],
+      at: '2026-10-12T10:00:00Z',
+    }
+    const added = core.addVersions(server.doc(), id, [
+      { id: 'old', path: 'generated/old.task.json', made },
+      { id: 'new', path: 'generated/new.mp4', made: { ...made, at: '2026-10-12T11:00:00Z' } },
+    ])
+    if (!added.ok) throw new Error(added.error)
+    const card = added.doc.nodes.find((n) => n.id === id)
+    if (card?.type === 'generate') card.current = 'new'
+    added.doc.runs = [
+      {
+        node: id,
+        action: 'run',
+        version: 'old',
+        task: 'original-task-id',
+        start: made.at,
+        end: made.at,
+        result: 'pending',
+        message: '查询异常 HTTP 503',
+      },
+    ]
+    server.setView({
+      doc: added.doc,
+      states: { [id]: { state: 'normal' } },
+      tasks: {
+        old: {
+          taskId: 'original-task-id',
+          provider: 'qwen',
+          model: 'wan3.0-video',
+          record: 'generated/old.task.json',
+          output: 'generated/old',
+        },
+      },
+    })
+    store.setState('canvasVersion', 1)
+    await select(host, id)
+    expect(host.querySelector('.canvas-task-toggle')).toBeNull()
+    expect(node(host, id).querySelector('.canvas-task-notice')).toBeNull()
+    const versions = () => node(host, id).querySelector<HTMLButtonElement>('.canvas-badge.version')!
+    await waitFor(
+      () => !!versions(),
+      () => node(host, id).textContent ?? '',
+    )
+    versions().click()
+    const old = () =>
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find((b) =>
+        b.textContent?.includes('待取回'),
+      )!
+    await waitFor(
+      () => !!old(),
+      () => document.body.textContent ?? '',
+    )
+    expect(old().title).toContain('original-task-id')
+    expect(old().title).toContain('generated/old')
+    expect(old().title).toContain('HTTP 503')
+    old().click()
+    const get = () => node(host, id).querySelector<HTMLButtonElement>('.canvas-ghost')!
+    await waitFor(
+      () => !!get(),
+      () => node(host, id).textContent ?? '',
+    )
+    expect(get().title).toContain('原任务，不重新生成')
+    const notice = () => node(host, id).querySelector('.canvas-task-notice')
+    expect(notice()?.textContent).toContain('本次等待已结束')
+    expect(notice()?.textContent).toContain('查询异常 HTTP 503')
+    expect(notice()?.tagName).toBe('OUTPUT')
+    get().click()
+    await waitFor(
+      () => server.retrievals.length === 1,
+      () => JSON.stringify(server.retrievals),
+    )
+    expect(server.retrievals).toEqual([{ nodeId: id, version: 'old' }])
+    expect(server.runs).toHaveLength(0)
+    server.setView({
+      states: {
+        [id]: {
+          state: 'running',
+          action: 'retrieve',
+          version: 'old',
+          taskId: 'original-task-id',
+          startedAt: Date.now(),
+        },
+      },
+    })
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => node(host, id).querySelector('.phase')?.textContent === '取回中',
+      () => node(host, id).textContent ?? '',
+    )
+    expect(notice()?.textContent).toContain('正在查询原任务')
+    expect(notice()?.textContent).toContain('上次等待结束原因：查询异常 HTTP 503')
+    for (const [phase, label] of [
+      ['queued', '原任务仍在排队'],
+      ['running', '原任务仍在生成'],
+    ] as const) {
+      server.setView({
+        states: {
+          [id]: {
+            state: 'running',
+            action: 'retrieve',
+            version: 'old',
+            taskId: 'original-task-id',
+            startedAt: Date.now(),
+            phase,
+          },
+        },
+      })
+      store.setState('canvasVersion', (v) => v + 1)
+      await waitFor(
+        () => notice()?.textContent?.includes(label) === true,
+        () => notice()?.textContent ?? '',
+      )
+      expect(notice()?.textContent).toContain('上次等待结束原因：查询异常 HTTP 503')
+    }
+    versions().click()
+    const completed = () =>
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
+        (b) => !b.textContent?.includes('待取回'),
+      )!
+    await waitFor(
+      () => !!completed(),
+      () => document.body.textContent ?? '',
+    )
+    completed().click()
+    await waitFor(
+      () => !node(host, id).querySelector('.canvas-live'),
+      () => node(host, id).textContent ?? '',
+    )
+    expect(host.querySelector<HTMLButtonElement>('.send-btn')?.disabled).toBe(false)
+    expect(notice()).toBeNull()
+  })
+
+  test('待取回原因来自当前版本最新记录；重新生成和取回完成后不残留旧原因', async () => {
+    const { host, server, refs } = await mount(CARD)
+    const core = await import('@qywork/core')
+    const store = await import('../../lib/store/index.ts')
+    const id = refs.$v!
+    const added = core.addVersions(server.doc(), id, [
+      {
+        id: 'task',
+        path: 'generated/video.task.json',
+        made: {
+          prompt: '视频',
+          provider: 'qwen',
+          model: 'wan3.0-video',
+          params: {},
+          inputs: [],
+          at: '2026-10-12T10:00:00Z',
+        },
+      },
+    ])
+    if (!added.ok) throw new Error(added.error)
+    const doc = added.doc
+    const record = {
+      node: id,
+      action: 'run' as const,
+      version: 'task',
+      task: 'original-task-id',
+      start: '2026-10-12T10:00:00Z',
+      end: '2026-10-12T10:01:00Z',
+      result: 'pending' as const,
+      message: '无法确认远端任务状态：not_start',
+    }
+    doc.runs = [
+      record,
+      { ...record, action: 'retrieve', message: '查询连接中断，原任务仍可取回' },
+      { ...record, version: 'another-version', message: '其他版本的失败原因' },
+    ]
+    server.setView({ doc, states: { [id]: { state: 'pending', version: 'task' } } })
+    store.setState('canvasVersion', (v) => v + 1)
+    const notice = () => node(host, id).querySelector('.canvas-task-notice')
+    await waitFor(
+      () => notice()?.textContent?.includes('查询连接中断') === true,
+      () => node(host, id).textContent ?? '',
+    )
+    expect(notice()?.textContent).not.toContain('not_start')
+    expect(notice()?.textContent).not.toContain('其他版本')
+
+    const next = structuredClone(doc)
+    next.runs = []
+    server.setView({ doc: next })
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => notice()?.textContent?.includes('原任务待取回') === true,
+      () => notice()?.textContent ?? '',
+    )
+    expect(notice()?.textContent).toContain('已保留原任务，取回会继续查询结果')
+    expect(notice()?.textContent).not.toContain('中断')
+
+    server.setView({
+      doc,
+      states: { [id]: { state: 'running', action: 'run', version: 'task', startedAt: Date.now() } },
+    })
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => !!node(host, id).querySelector('.canvas-live') && !notice(),
+      () => node(host, id).textContent ?? '',
+    )
+
+    const completed = structuredClone(doc)
+    const card = completed.nodes.find((n) => n.id === id)
+    if (card?.type !== 'generate') throw new Error('缺少生成卡')
+    card.versions[0]!.path = 'generated/video.mp4'
+    server.setView({ doc: completed, states: { [id]: { state: 'normal' } } })
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => !node(host, id).querySelector('.canvas-slot'),
+      () => node(host, id).textContent ?? '',
+    )
+    expect(notice()).toBeNull()
+    expect(server.runs).toHaveLength(0)
+    expect(server.retrievals).toHaveLength(0)
   })
 
   test('参数按钮只列出标有界面名称的参数；模式只列出模型支持的模式，切换到首尾帧时发送一条 set_mode', async () => {

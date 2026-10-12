@@ -115,6 +115,12 @@ test('官方及渠道模型均使用目录协议，模型库显示对应页签',
   const { ModelSettings } = await import('./ModelSettings.tsx')
   const cases: { id: string; kind: MediaKind; baseUrl: string; vendor: string }[] = [
     {
+      id: '高质量sd2.5(满血全参/720P/按次)',
+      kind: 'openai_videos',
+      baseUrl: 'https://providerb.example.com/v1',
+      vendor: 'providerb',
+    },
+    {
       id: '专享sd2.5(30图10音/4-30秒/720p)',
       kind: 'openai_videos',
       baseUrl: 'https://providerb.example.com/v1',
@@ -378,21 +384,30 @@ test('模型库按类别分页签；生成类一张表，厂商是一列，参�
   }
 })
 
-test('模型库分别显示参考图和音频上限', async () => {
+test.each([
+  ['专享sd2.5(30图10音/4-30秒/720p)', 0],
+  ['高质量sd2.5(满血全参/720P/按次)', 10],
+] as const)('模型库分别显示各类参考素材上限：%s', async (id, maxVideos) => {
   const { render } = await import('solid-js/web')
   const { ModelLibrary } = await import('./ModelLibrary.tsx')
   const model: MediaLibraryModel = {
-    id: '专享sd2.5(30图10音/4-30秒/720p)',
-    label: '专享 SD2.5 · 720P · 4–30秒',
+    id,
+    label: id,
     vendor: 'providerb',
     kind: 'openai_videos',
     kinds: ['openai_videos'],
     output: 'video',
-    operations: ['text_to_video', 'reference_to_video'],
+    operations: [
+      'text_to_video',
+      'reference_to_video',
+      ...(maxVideos ? ['video_to_video' as const] : []),
+    ],
     maxImages: 30,
-    maxVideos: 0,
+    maxVideos,
     maxAudios: 10,
-    params: ['seconds：4–30 秒整数，使用字符串'],
+    params: [
+      maxVideos ? 'seconds：固定 30 秒，使用字符串 "30"' : 'seconds：4–30 秒整数，使用字符串',
+    ],
   }
   const host = document.createElement('div')
   document.body.append(host)
@@ -408,6 +423,8 @@ test('模型库分别显示参考图和音频上限', async () => {
       'click',
     )
     expect(host.querySelector('.lib-table.media')?.textContent).toContain('图≤30、音频≤10')
+    if (maxVideos)
+      expect(host.querySelector('.lib-table.media')?.textContent).toContain('视频≤10、音频≤10')
   } finally {
     dispose()
     host.remove()

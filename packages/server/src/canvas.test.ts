@@ -261,11 +261,10 @@ describe('画布服务：节点状态', () => {
       version: 'task',
     })
 
-    // 当前版本切换到更早的版本（文件正常），仍为待取回。
+    // 当前版本切换到已有成片时正常展示，其他待取回版本不能盖住成片。
     await svc.apply(root, PATH, [{ op: 'update', id: video, current: 'old' }])
     expect((await svc.read(root, PATH)).states[video]).toEqual({
-      state: 'pending',
-      version: 'task',
+      state: 'normal',
     })
 
     await svc.apply(root, PATH, [{ op: 'remove', id: video, version: 'task' }])

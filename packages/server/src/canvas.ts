@@ -43,6 +43,7 @@ import {
   type CanvasResult,
   type CanvasRunRecord,
   type CanvasRunResult,
+  type CanvasTaskInfo,
   type CanvasVersion,
   type CanvasView,
   canvasMediaOf,
@@ -284,6 +285,8 @@ export type CanvasCancelTask = (task: {
 /** 一张卡的一次生成（运行或取回）。 */
 interface RunEntry {
   startedAt: number
+  action: 'run' | 'retrieve'
+  version?: string
   done?: Promise<CanvasRunResult>
   /** 只停止本次生成的本地等待：远端撤销成功后，或停止单次请求时使用。 */
   stop: AbortController
@@ -624,6 +627,8 @@ export class CanvasService {
           ).then(
             () => {
               versionId = id
+              facts.version = id
+              entry.version = id
             },
             () => {},
           )
@@ -643,6 +648,8 @@ export class CanvasService {
       facts.provider = outcome.provider
       facts.model = outcome.model
       const files = outcome.files
+      const output = node.output === 'video' ? videoOf(files).path : files[0]?.path
+      if (output) facts.output = output
       const sizes = await this.sizesOf(ws.root, files)
       const version = (path: string) => ({
         id: newCanvasId(),
@@ -697,8 +704,13 @@ export class CanvasService {
         : (tasks.find((v) => v.id === node.current) ?? tasks.at(-1))
     if (!version) throw new CanvasFailure(`「${node.name}」没有待取回的任务`, 422)
 
-    const facts: RunFacts = { action: 'retrieve', start: new Date().toISOString() }
-    const entry = this.begin(key, ws, rel, nodeId, node.output === 'video')
+    const facts: RunFacts = {
+      action: 'retrieve',
+      start: new Date().toISOString(),
+      version: version.id,
+    }
+    const entry = this.begin(key, ws, rel, nodeId, node.output === 'video', 'retrieve')
+    entry.version = version.id
     const done = this.settleRun(key, ws, rel, nodeId, facts, async () => {
       if (!(await this.isFile(ws.root, version.path))) {
         await this.dropVersion(ws.root, rel, nodeId, version.id)
@@ -730,6 +742,8 @@ export class CanvasService {
         }
       }
       const sizes = await this.sizesOf(ws.root, outcome.files)
+      const output = node.output === 'video' ? videoOf(outcome.files).path : outcome.files[0]?.path
+      if (output) facts.output = output
       return this.writeBack(
         ws.root,
         rel,
@@ -768,6 +782,7 @@ export class CanvasService {
     rel: string,
     nodeId: string,
     expectsTask: boolean,
+    action: 'run' | 'retrieve' = 'run',
   ): RunEntry {
     if (this.shutdown.signal.aborted || this.deps.updating?.())
       throw new CanvasFailure('应用正在更新或关闭，请稍后重试', 409)
@@ -778,6 +793,7 @@ export class CanvasService {
     })
     const entry: RunEntry = {
       startedAt: Date.now(),
+      action,
       stop: new AbortController(),
       expectsTask,
       taskArrived,
@@ -823,12 +839,15 @@ export class CanvasService {
   private async readTask(
     root: string,
     record: string,
-  ): Promise<{ taskId: string; provider: string; model: string } | null> {
+  ): Promise<(CanvasTaskInfo & { taskId: string }) | null> {
     try {
       const r = JSON.parse(await readFile(join(root, record), 'utf8')) as Record<string, unknown>
-      const { taskId, provider, model } = r
-      return typeof taskId === 'string' && typeof provider === 'string' && typeof model === 'string'
-        ? { taskId, provider, model }
+      const { taskId, provider, model, output } = r
+      return typeof taskId === 'string' &&
+        typeof provider === 'string' &&
+        typeof model === 'string' &&
+        typeof output === 'string'
+        ? { taskId, provider, model, output, record }
         : null
     } catch {
       return null
@@ -915,6 +934,7 @@ export class CanvasService {
       ...(provider !== undefined ? { provider } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(task ? { task: task.taskId } : {}),
+      ...(entry?.version ? { version: entry.version } : {}),
       ...(!result.ok && !entry?.cancelled ? { message: result.message } : {}),
       ...(!result.ok && result.diagnostic ? { diagnostic: result.diagnostic } : {}),
     }
@@ -1254,6 +1274,7 @@ export class CanvasService {
     const abs = await this.locate(workspaceRoot, path)
     const doc = await this.load(abs)
     const states: Record<string, CanvasNodeState> = {}
+    const tasks: Record<string, CanvasTaskInfo> = {}
     for (const node of doc.nodes) {
       states[node.id] = await this.stateOf(
         workspaceRoot,
@@ -1261,8 +1282,19 @@ export class CanvasService {
         node,
         doc.runs?.findLast((r) => r.node === node.id),
       )
+      if (node.type === 'generate') {
+        for (const version of node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))) {
+          const task = await this.readTask(workspaceRoot, version.path)
+          if (task) tasks[version.id] = task
+        }
+      }
     }
-    const view = { path: await this.relativeTo(workspaceRoot, abs), doc, states }
+    const view: CanvasView = {
+      path: await this.relativeTo(workspaceRoot, abs),
+      doc,
+      states,
+      ...(Object.keys(tasks).length ? { tasks } : {}),
+    }
     return agent ? agentView(view, this.deps.paramSpecsOf) : view
   }
 
@@ -1403,16 +1435,21 @@ export class CanvasService {
       return {
         state: 'running',
         startedAt: run.startedAt,
+        action: run.action,
+        ...(run.version ? { version: run.version } : {}),
+        ...(run.task ? { taskId: run.task.taskId } : {}),
         ...(run.phase ? { phase: run.phase } : {}),
       }
     }
     const tasks = node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))
-    const pending = tasks.find((v) => v.id === node.current) ?? tasks.at(-1)
+    const pending = tasks.find((v) => v.id === node.current)
     if (pending) return { state: 'pending', version: pending.id }
-    if (lastRun?.result === 'unknown')
+    const relevant =
+      lastRun?.action !== 'retrieve' || !node.current || lastRun.version === node.current
+    if (relevant && lastRun?.result === 'unknown')
       return { state: 'unknown', message: lastRun.message ?? '远端结果未知' }
     const failure = this.failures.get(key)
-    if (failure !== undefined) return { state: 'failed', message: failure }
+    if (relevant && failure !== undefined) return { state: 'failed', message: failure }
     const current = node.versions.find((v) => v.id === node.current)
     if (!current) return { state: 'empty' }
     return (await exists(current.path)) ? { state: 'normal' } : { state: 'missing' }
