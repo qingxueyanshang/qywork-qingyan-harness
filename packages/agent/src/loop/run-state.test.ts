@@ -61,6 +61,33 @@ describe('锚点的信封修正', () => {
   })
 })
 
+describe('压缩后的估算基准', () => {
+  test('按已发送请求的本地差额递增，真实回执优先，换模型不沿用', () => {
+    const run = state()
+    run.contextEstimate = {
+      basedOnProviderRequestId: null,
+      model: run.adapter.spec.id,
+      total: 184_162,
+      measured: 252_957,
+    }
+    expect(run.meter(253_561)).toEqual({ tokens: 184_766, source: 'estimated' })
+    expect(run.meter(254_561)).toEqual({ tokens: 185_766, source: 'estimated' })
+    run.anchor = {
+      tokens: 181_413,
+      uncovered: 0,
+      uncoveredVideos: 0,
+      transcriptIndex: 0,
+      model: run.adapter.spec.id,
+      headTokens: 0,
+      envelope: null,
+    }
+    expect(run.meter(253_561)).toEqual({ tokens: 181_413, source: 'actual' })
+    run.anchor = null
+    run.contextEstimate.model = 'other'
+    expect(run.meter(253_561)).toEqual({ tokens: 253_561, source: 'estimated' })
+  })
+})
+
 describe('无进展判据', () => {
   test('第二次重复时发出提示，第三次重复时停止', () => {
     const run = state()

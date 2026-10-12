@@ -89,6 +89,48 @@ function anchorTokens(r: {
   )
 }
 
+type ContextModel = {
+  id: string
+  providerName: string
+  providerKind: Exclude<ProviderRequest['providerKind'], null>
+}
+
+function onRoute(r: ProviderRequest, model: ContextModel): boolean {
+  return (
+    r.model === model.id &&
+    r.providerName === model.providerName &&
+    r.providerKind === model.providerKind
+  )
+}
+
+/**
+ * 面板与新一轮启动共用的计量依据。压缩前的回执不再描述当前投影，即使压缩后的请求失败或
+ * 没有 usage，也不能恢复它。manifest 的派生估算持续有效，直到收到压缩后的同路线真值。
+ */
+export function contextBasis(store: Store, conversationId: ConversationId, model: ContextModel) {
+  const sent = latestSentProviderRequest(store, conversationId)
+  const latest = latestAnchoredProviderRequest(store, conversationId)
+  const manifest = getConversation(store, conversationId)?.compactionManifest
+  const snapshot = manifest?.contextAfter
+  const anchored =
+    latest &&
+    onRoute(latest, model) &&
+    (!manifest ||
+      ((!snapshot?.basedOnProviderRequestId || latest.id > snapshot.basedOnProviderRequestId) &&
+        latest.sentAt !== null &&
+        latest.sentAt >= manifest.createdAt))
+      ? latest
+      : null
+  const compacted =
+    !anchored &&
+    snapshot?.model === model.id &&
+    // 快照继承其来源请求的计量口径，不能跨接口复用。尚无回执时仅有本地估算。
+    (latest ? onRoute(latest, model) : !sent || onRoute(sent, model))
+      ? snapshot
+      : null
+  return { sent, anchored, compacted }
+}
+
 export function contextPanel(
   store: Store,
   conversationId: ConversationId,
@@ -107,8 +149,7 @@ export function contextPanel(
   const limit = Math.max(1, model.contextWindow)
 
   // 分组明细取最近一次已发送的请求：它描述的是模型当前看到的上下文。
-  const sent = latestSentProviderRequest(store, conversationId)
-  const compacted = getConversation(store, conversationId)?.compactionManifest?.contextAfter
+  const { sent, anchored, compacted } = contextBasis(store, conversationId, model)
   /*
    * 手动压缩后没有紧随其后的 provider 请求，逐请求账仍是压缩前的数值。
    * manifest 上的派生快照只在它仍基于当前最后一次请求且模型未更换时生效；
@@ -158,19 +199,12 @@ export function contextPanel(
   // 锚点取最近一次带 usage 回报的请求，可能早于上方取得的请求。
   // 两者判据必须不同：超时或缺失 usage 的请求也属于已发送，
   // 以它作为锚点等于把锚点归零，会导致读数异常骤降。
-  const latest = latestAnchoredProviderRequest(store, conversationId)
-  const onRoute = (r: ProviderRequest) =>
-    r.model === model.id &&
-    r.providerName === model.providerName &&
-    r.providerKind === model.providerKind
   /*
    * 更换模型后没有锚点，不向前查找同模型的回执：更早的回执描述的是更短的
    * 上下文，是另一份内容的真值，其误差比估算更难察觉。此时退回估算口径，如实标为
    * `estimated`，下一轮回执到达后重新锚定。
    */
-  const anchored = latest && onRoute(latest) ? latest : null
-
-  const live = onRoute(sent) ? sent.occupancyTokens : null
+  const live = onRoute(sent, model) ? sent.occupancyTokens : null
   const { total, source } =
     anchored?.id === sent.id
       ? { total: anchorTokens(anchored), source: 'actual' as const }

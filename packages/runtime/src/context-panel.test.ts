@@ -30,7 +30,7 @@ import {
   settleProviderRequest,
   upsertWorkspace,
 } from '@qywork/store'
-import { contextPanel } from './context-panel.ts'
+import { contextBasis, contextPanel } from './context-panel.ts'
 
 const sum = (b: Record<string, number>) => Object.values(b).reduce((n, v) => n + v, 0)
 
@@ -119,12 +119,89 @@ describe('逐请求账', () => {
 
     const row = latestSentProviderRequest(store, conversationId)
     expect(row?.providerInputTokens).toBeNull()
-    // 写入 0 时，该行会被当作占用为零的合法锚点。
+    // 缺失必须保留 null；全零回执也不能成为有效锚点。
     expect(latestAnchoredProviderRequest(store, conversationId)).toBeNull()
   })
 })
 
 describe('上下文面板', () => {
+  test('压缩后的在途、失败与无 usage 请求不复用压缩前锚点，新回执到达后恢复真值', () => {
+    const { store, conversationId, runId } = fixture()
+    const first = send(store, runId, { measured: 827_548, occupancy: 602_487 })
+    settleProviderRequest(
+      store,
+      first,
+      'received',
+      { inputTokens: 2436, cachedTokens: 599_040, outputTokens: 1011, cacheWriteTokens: null },
+      null,
+    )
+    // 压缩前最后一次发送失败，真值回执比快照的来源请求还要早。
+    const failed = send(store, runId, { measured: 827_548, occupancy: 602_487 })
+    settleProviderRequest(store, failed, 'rejected', null, 'invalid_request')
+    const snapshot = {
+      basedOnProviderRequestId: failed,
+      model: 'm',
+      total: 184_162,
+      measured: 252_957,
+    }
+    setCompactionManifest(store, conversationId, {
+      revision: 1,
+      compactedThroughMessageId: null,
+      compactedMessageCount: 17,
+      summary: '摘要',
+      facts: { filesTouched: [], openItems: [], userConstraints: [] },
+      contextAfter: snapshot,
+      // 同一毫秒内发生的回执也不能越过来源请求的边界。
+      createdAt: latestAnchoredProviderRequest(store, conversationId)!.sentAt!,
+    })
+    const model = M(1_000_000)
+    expect(contextBasis(store, conversationId, model).anchored).toBeNull()
+    expect(contextBasis(store, conversationId, model).compacted).toEqual(snapshot)
+    expect(contextPanel(store, conversationId, model)).toMatchObject({
+      percent: 18.4,
+      source: 'estimated',
+    })
+    for (const status of ['rejected', 'received'] as const) {
+      const next = send(store, runId, { measured: 253_561, occupancy: 184_766 })
+      expect(contextPanel(store, conversationId, model)).toMatchObject({
+        total: 184_766,
+        source: 'estimated',
+      })
+      settleProviderRequest(
+        store,
+        next,
+        status,
+        null,
+        status === 'rejected' ? 'invalid_request' : null,
+      )
+      expect(contextBasis(store, conversationId, model).anchored).toBeNull()
+      expect(contextBasis(store, conversationId, model).compacted).toEqual(snapshot)
+      expect(contextPanel(store, conversationId, model)).toMatchObject({
+        total: 184_766,
+        source: 'estimated',
+      })
+    }
+    expect(
+      contextBasis(store, conversationId, { ...model, providerName: 'other' }).compacted,
+    ).toBeNull()
+    expect(contextBasis(store, conversationId, { ...model, id: 'other' }).compacted).toBeNull()
+    const calibrated = send(store, runId, { measured: 253_561, occupancy: 184_766 })
+    settleProviderRequest(
+      store,
+      calibrated,
+      'received',
+      { inputTokens: 177_506, outputTokens: 3907, cachedTokens: 0, cacheWriteTokens: null },
+      null,
+    )
+    expect(contextBasis(store, conversationId, model).compacted).toBeNull()
+    expect(contextPanel(store, conversationId, model)).toMatchObject({
+      total: 181_413,
+      percent: 18.1,
+      source: 'actual',
+    })
+    store.close()
+  })
+
   test('手动压缩后采用 manifest 的派生读数，发出新请求后立即恢复使用逐请求账', () => {
     const { store, conversationId, runId } = fixture()
     const first = send(store, runId, {

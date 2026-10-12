@@ -15,6 +15,7 @@ import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywor
 import {
   classifyProviderError,
   DEFAULT_DENSITY,
+  estimateRequest,
   lookupModel,
   STREAM_IDLE_TIMEOUT_MS,
 } from '@qywork/ai'
@@ -140,6 +141,91 @@ const okOutcome: CompactionOutcome = {
     createdAt: 0,
   },
 }
+
+test('自动压缩后的发送读数与请求账采用 manifest 估算，回执到达后切换为真值', async () => {
+  const spec = lookupModel('claude-opus-5', 'anthropic_messages')
+  let compressed = false
+  const recorded: number[] = []
+  const persist = noopPersistence()
+  persist.openRequest = (r) => {
+    recorded.push(r.occupancyTokens!)
+    return 'pr_compacted'
+  }
+  const loop = new AgentLoop({
+    adapter: {
+      kind: 'anthropic_messages',
+      spec,
+      transmits: { effort: true },
+      async *stream(req) {
+        expect(req.messages).toEqual([])
+        yield { type: 'request_prepared', measuredInputTokens: estimateRequest(req, spec.density) }
+        yield {
+          type: 'usage',
+          usage: {
+            source: 'provider',
+            inputTokens: 177_506,
+            outputTokens: 3907,
+            cachedTokens: 0,
+            cacheWriteTokens: null,
+            reasoningTokens: 0,
+          },
+        }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: 'end_turn' }
+      },
+    },
+    registry: new ToolRegistry(),
+    systemPrompt: 'sys',
+    persist,
+    makeToolContext: () => makeCtx(),
+    compaction: {
+      project: (messages) => (compressed ? [] : messages),
+      async run() {
+        compressed = true
+        return {
+          ...okOutcome,
+          manifest: {
+            ...okOutcome.manifest,
+            contextAfter: {
+              basedOnProviderRequestId: null,
+              model: spec.id,
+              total: 184_162,
+              measured: estimateRequest(
+                {
+                  model: spec.id,
+                  system: [{ text: 'sys' }],
+                  messages: [],
+                  tools: [],
+                  maxOutputTokens: spec.maxOutputTokens,
+                  idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+                },
+                spec.density,
+              ),
+            },
+          },
+        }
+      },
+    },
+  })
+  const readings: Extract<AgentEvent, { type: 'context' }>[] = []
+  for await (const ev of loop.run({
+    runId: 'rn_compacted' as never,
+    history: [{ role: 'user', content: '旧历史', _messageId: 'ms_old' }],
+    anchor: {
+      tokens: 900_000,
+      throughMessageId: 'ms_old',
+      model: spec.id,
+      headTokens: 0,
+      envelopeFingerprint: null,
+    },
+    signal: new AbortController().signal,
+  }))
+    if (ev.type === 'context') readings.push(ev)
+  expect(recorded).toEqual([184_162])
+  expect(readings.map(({ tokens, source }) => ({ tokens, source }))).toEqual([
+    { tokens: 184_162, source: 'estimated' },
+    { tokens: 181_413, source: 'actual' },
+  ])
+})
 
 /**
  * 确实会使请求变小的模拟压缩。

@@ -84,7 +84,6 @@ import {
   finishRun,
   getConversation,
   getRun,
-  latestAnchoredProviderRequest,
   latestTodos,
   listLoadedTools,
   listMessages,
@@ -131,6 +130,7 @@ import {
   type QyConfig,
   resolveModel,
 } from './config.ts'
+import { contextBasis } from './context-panel.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { makeMediaPort } from './media.ts'
@@ -596,26 +596,22 @@ export class Session {
     )
 
     /*
-     * 将账本中最后一次真值回执传给 loop 作为锚点。
+     * 与面板共用账本基准：当前投影的真值回执，或压缩后的派生估算。
      *
      * 覆盖边界取该回执所属 run 的消息高水位：其后的历史消息未计入锚点。
-     * 没有回执（新会话，或始终未取得 usage）时不传入，loop 回退到本地估算并如实
-     * 标记 `estimated`。
-     */
-    const latestAnchor = latestAnchoredProviderRequest(store, conversationId)
-    /*
+     * 压缩会使此前的真值失效；首个有效新回执到达前按 manifest 的估算推进。
+     * 没有可用基准时，loop 回退到本地估算并标记 `estimated`。
+     *
      * 真值锚点属于「接口 × 协议 × 模型」这一路线，不只属于模型名。
      * 同一 model id 配置在两个第三方接口上时，usage 统计口径与实际 tokenizer 都可能不同；
      * 只有完整路线匹配的数据才可复用。迁移前缺少接口或协议的旧行仍保留用于诊断，
      * 但不能参与当前上下文的裁决。
      */
-    const anchored =
-      latestAnchor &&
-      latestAnchor.model === adapter.spec.id &&
-      latestAnchor.providerName === resolvedTarget?.provider &&
-      latestAnchor.providerKind === adapter.kind
-        ? latestAnchor
-        : null
+    const { anchored, compacted } = contextBasis(store, conversationId, {
+      id: adapter.spec.id,
+      providerName: resolvedTarget?.provider ?? '',
+      providerKind: adapter.kind,
+    })
     const anchorRun = anchored ? getRun(store, anchored.runId) : null
     const anchor = anchored
       ? {
@@ -720,6 +716,7 @@ export class Session {
         // 第一次请求只能报告估算值（系统性偏低），第二次起恢复为真值，
         // 读数在每轮开头出现一次下跌。
         ...(anchor ? { anchor } : {}),
+        ...(compacted ? { contextEstimate: compacted } : {}),
       })) {
         if (ev.type === 'run.error') failure = { message: ev.message, code: ev.code }
         if (ev.type === 'usage') this.modelUsage.set(run.id, ev.usage)

@@ -14,6 +14,7 @@ import type {
   ActionDescriptor,
   AgentEvent,
   Attachment,
+  CompactionManifest,
   CompactionStage,
   ContextBreakdown,
   ContextOmitted,
@@ -338,6 +339,8 @@ export interface RunInput {
   effort?: ChatRequest['effort']
   cacheKey?: string
   signal: AbortSignal
+  /** 压缩后的派生估算。首个有效 usage 到达前，用同口径的请求估算差额推进读数。 */
+  contextEstimate?: CompactionManifest['contextAfter']
   /**
    * 上一次 provider 真值回执，从账本读取，决定本轮开头的读数是否沿用同一计量方式。
    *

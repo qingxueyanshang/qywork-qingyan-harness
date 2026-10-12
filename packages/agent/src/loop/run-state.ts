@@ -91,6 +91,8 @@ export class RunState {
    * 上一轮，不计入这部分就会漏算。
    */
   anchor: ContextAnchor | null
+  /** 来自压缩 manifest 的估算基准，不冒充 provider 真值。 */
+  contextEstimate: RunInput['contextEstimate']
 
   // 无限循环没有自然结束的分支。默认值按失败闭合处理，所有合法出口都必须显式设置终态；
   // 若误加一条裸 `break`，也不会把未完成的 run 报告为 completed。
@@ -143,6 +145,7 @@ export class RunState {
     this.registry = deps.registry
     this.persist = deps.persist
     this.density = deps.adapter.spec.density
+    this.contextEstimate = input.contextEstimate
     this.usage = {
       inputTokens: 0,
       outputTokens: 0,
@@ -213,7 +216,13 @@ export class RunState {
               ? 'projected'
               : 'actual',
         }
-      : { tokens: fallback, source: 'estimated' }
+      : {
+          tokens:
+            this.contextEstimate?.model === this.adapter.spec.id
+              ? Math.max(0, this.contextEstimate.total + fallback - this.contextEstimate.measured)
+              : fallback,
+          source: 'estimated',
+        }
   }
 
   /**
@@ -223,7 +232,7 @@ export class RunState {
    * 两个结论都会写入请求。
    */
   occupancyOf(req: ChatRequest): number {
-    return this.anchor ? this.meter(0).tokens : estimateRequest(req, this.density)
+    return this.meter(this.anchor ? 0 : estimateRequest(req, this.density)).tokens
   }
 
   /**

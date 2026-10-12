@@ -90,7 +90,7 @@ export async function* compactBeforeTools(
   const estimated =
     estimateRequest(turn.req, run.density) +
     estimateMessages(run.transcript.slice(turn.unitStart), run.density)
-  const occupancy = run.anchor ? run.meter(0).tokens : estimated
+  const occupancy = run.meter(estimated).tokens
   const scale = occupancy > 0 ? Math.min(1, estimated / occupancy) : 1
   // 上一次尝试已看到本次响应之前的全部历史：本次响应属于最后一个单元，不可折叠，不再重试。
   if (run.compactedAt >= turn.unitStart) return { occupancy, scale }
@@ -104,8 +104,13 @@ export async function* compactBeforeTools(
   })
   if (done === 'interrupted') return 'interrupted'
   if (done === 'unchanged') return { occupancy, scale }
-  // 压缩生效后锚点作废、请求已按新投影重新装配（含本次响应），读数改按重新装配后的请求估算，两种口径一致。
-  return { occupancy: estimateRequest(turn.req, run.density), scale: 1 }
+  // 新投影仍沿用 manifest 的估算基准，投递额度与发送前的读数保持一致。
+  const compactedEstimate = estimateRequest(turn.req, run.density)
+  const compactedOccupancy = run.meter(compactedEstimate).tokens
+  return {
+    occupancy: compactedOccupancy,
+    scale: compactedOccupancy > 0 ? Math.min(1, compactedEstimate / compactedOccupancy) : 1,
+  }
 }
 
 /**
@@ -206,12 +211,13 @@ async function* compactOverSoftLimit(
      *
      * 锚点描述的是**折叠前**的前缀，折叠后仍用它计算会使读数不下降，
      * 下一步再次越线、再次压缩：压缩变成每步一次的死循环。
-     * 退回估算口径一轮，下一个 provider 真值到来即重新锚定。
+     * 使用 manifest 的压缩后估算，按重建请求的本地差额推进；下一次真值到来即重新锚定。
      *
      * 此处不应用信封修正（`RunState.rebaseAnchor`）：压缩替换的是消息侧的主要部分，
      * 头部修正只覆盖信封的三项，修正后的数值仍是折叠前的数值。
      */
     run.anchor = null
+    run.contextEstimate = outcome.manifest.contextAfter
     // 压缩修改的是投影，必须重新装配：发送旧请求会使本次压缩无效。
     turn.req = host.buildRequest(run)
     turn.breakdown = breakdownOf(turn.req, density)
@@ -303,6 +309,7 @@ export async function* recoverFromOverflow(
   } else {
     run.anchor = null
   }
+  run.contextEstimate = undefined
   // 压缩前后用**同一口径**估算请求本身。判据不是「压缩返回成功」：
   // 收纳段可能已经落库，却未减少任何 token。
   const sizeBefore = estimateRequest(turn.req, density)
@@ -375,7 +382,9 @@ export async function* recoverFromOverflow(
       }
       run.compactedAt = transcript.length
       run.anchor = null
-      turn.req = rebuilt
+      run.contextEstimate = outcome.manifest.contextAfter
+      // 用压缩后的计量基准重新计算输出上限，避免沿用被拒请求的占用。
+      turn.req = host.buildRequest(run)
       turn.breakdown = breakdownOf(turn.req, density)
       attempt.recordDecision('context_compaction')
       return

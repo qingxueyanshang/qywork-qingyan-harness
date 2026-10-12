@@ -1775,8 +1775,8 @@ export function latestSentProviderRequest(
 /**
  * 本会话最近一次**带 usage 回报**的请求。
  *
- * 与 `latestSentProviderRequest` 的区别在于判据：本函数要求 provider 实际回报了用量。锚点必须取本函数的结果：
- * 超时或缺失 usage 的请求同样属于已发送，以它为锚点等于把锚点归零。
+ * 与 `latestSentProviderRequest` 的区别在于判据：本函数要求 provider 实际回报了正数用量。
+ * 与 loop 的锚点更新一致，全零 usage 也不能作为真值，否则漏报时会把锚点归零。
  */
 export function latestAnchoredProviderRequest(
   store: Store,
@@ -1787,6 +1787,8 @@ export function latestAnchoredProviderRequest(
       `SELECT pr.* FROM provider_requests pr
        JOIN runs r ON r.id = pr.run_id
        WHERE r.conversation_id = ? AND pr.purpose = 'turn' AND pr.provider_input_tokens IS NOT NULL
+         AND COALESCE(pr.provider_input_tokens, 0) + COALESCE(pr.provider_output_tokens, 0)
+           + COALESCE(pr.provider_cached_tokens, 0) + COALESCE(pr.provider_cache_write_tokens, 0) > 0
        ORDER BY pr.sent_at DESC, pr.id DESC
        LIMIT 1`,
     )

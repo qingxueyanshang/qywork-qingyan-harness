@@ -92,7 +92,7 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
      * 不要排除带视频的请求：本地估算对视频记 0，视频的占用只体现在真值中。保留在请求中的视频
      * 此后每次都随请求发出，排除后读数与压缩触发始终无法计入它。
      */
-    if (total > 0)
+    if (total > 0) {
       run.anchor = {
         tokens: total,
         uncovered: 0,
@@ -102,6 +102,8 @@ export function settleResponse(run: RunState, turn: TurnState): boolean {
         headTokens: envelopeHeadTokens(turn.breakdown),
         envelope: envelopeHashOf(turn.req),
       }
+      run.contextEstimate = undefined
+    }
     /*
      * 静默溢出。
      *
