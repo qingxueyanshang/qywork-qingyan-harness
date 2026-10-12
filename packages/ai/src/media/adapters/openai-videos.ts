@@ -5,6 +5,7 @@
  * 取内容 `GET {base}/videos/{id}/content`（须携带同一个 key）。厂商扩展结构由目录声明，素材与参数按对应结构发送。
  */
 
+import { basename } from 'node:path'
 import { mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
@@ -33,15 +34,27 @@ import { dashScopeVideoPayload } from './dashscope.ts'
 async function payloadOf(
   req: MediaRequest,
   spec: MediaModelSpec,
-): Promise<Record<string, unknown>> {
+  model: string,
+): Promise<Record<string, unknown> | FormData> {
   switch (spec.videoFormat) {
     case 'providerb': {
       const images: string[] = []
       const videos: string[] = []
       const audios: string[] = []
+      const form =
+        spec.inputs.transport === 'multipart' && req.inputs.some((i) => i.role === 'reference')
+          ? new FormData()
+          : undefined
       for (const input of req.inputs) {
-        if (input.role === 'reference') images.push(dataUri(input.bytes, input.mime))
-        else if (input.role === 'video' && spec.inputs.maxVideos) {
+        if (input.role === 'reference') {
+          if (form) {
+            form.append(
+              'input_reference',
+              new Blob([input.bytes], { type: input.mime }),
+              basename(input.path),
+            )
+          } else images.push(dataUri(input.bytes, input.mime))
+        } else if (input.role === 'video' && spec.inputs.maxVideos) {
           videos.push(dataUri(input.bytes, input.mime))
         } else if (input.role === 'audio' && spec.inputs.maxAudios) {
           if (sniffMime(input.bytes) !== 'audio/mpeg') {
@@ -53,12 +66,19 @@ async function payloadOf(
         }
       }
       // 画布省略处于默认值的参数；该渠道仍显式发送目录中声明的时长和尺寸。
-      return {
+      const fields = {
         ...mediaParamValues(spec.params, req.params),
         ...(images.length ? { images } : {}),
         ...(videos.length ? { videos } : {}),
         ...(audios.length ? { audios } : {}),
       }
+      if (!form) return fields
+      form.set('model', model)
+      form.set('prompt', req.prompt)
+      for (const [key, value] of Object.entries(fields)) {
+        form.set(key, Array.isArray(value) ? JSON.stringify(value) : String(value))
+      }
+      return form
     }
     case 'dashscope':
       return { metadata: await dashScopeVideoPayload(req, spec, (i) => dataUri(i.bytes, i.mime)) }
@@ -91,13 +111,12 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
     let taskId = opts.resumeTaskId
     if (!taskId) {
+      const payload = await payloadOf(req, this.spec, this.profile.model)
       const submitted = await postTask(
         `${base}/videos`,
-        {
-          model: this.profile.model,
-          prompt: req.prompt,
-          ...(await payloadOf(req, this.spec)),
-        },
+        payload instanceof FormData
+          ? payload
+          : { model: this.profile.model, prompt: req.prompt, ...payload },
         auth,
         opts,
         (body) => body.id,

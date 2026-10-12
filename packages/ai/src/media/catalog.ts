@@ -27,7 +27,7 @@ import {
 } from '@qywork/core'
 import { BINGUO_DEFAULTS, BINGUO_MODELS } from './catalog-binguo.ts'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
-import { providerb_MODELS } from './catalog-providerb.ts'
+import { providerb_MODELS, providerb_RETIRED_MODELS } from './catalog-providerb.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
 
 /**
@@ -133,7 +133,7 @@ export interface MediaModelSpec {
     }[]
   }
   params: readonly MediaParamSpec[]
-  /** false 表示目录中没有该 id，使用的是协议默认。 */
+  /** false 表示未列入内置目录；未知型号使用协议默认，下架型号保留旧配置规格。 */
   catalogued: boolean
   /**
    * 官方单价，按接口回报的计量计算金额。以下情形没有单价，金额不明：协议默认、按 id 回退到其他协议（第三方接口价格不同）、
@@ -1566,7 +1566,9 @@ export function mediaKindsOf(spec: MediaModelSpec): MediaKind[] {
  * 不继承无法正确序列化的原生参数、输入能力或官方单价。
  */
 export function lookupMediaModel(id: string, kind: MediaKind): MediaModelSpec {
-  const exact = SEEDS.find((m) => m.id === id && m.kind === kind)
+  const exact =
+    SEEDS.find((m) => m.id === id && m.kind === kind) ??
+    providerb_RETIRED_MODELS.find((m) => m.id === id && m.kind === kind)
   if (exact) return exact
   const base = PROTOCOL_DEFAULTS[kind]
   const byId = SEEDS.find(

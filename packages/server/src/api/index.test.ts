@@ -497,12 +497,18 @@ describe('模型目录', () => {
   })
 
   test.each([
-    ['专享sd2.5(30图10音/4-30秒/720p)', 0],
-    ['高质量sd2.5(满血全参/720P/按次)', 10],
+    ['video-sd25-30s', 0],
+    ['满血sd2.5(30-10-10原生过人脸/720P)', 10],
   ] as const)('SD2.5 将素材上限和原生时长选项同步到模型库与画布：%s', async (id, maxVideos) => {
     const d = withConfig('openai_chat_completions', 'm')
     d.config.providers.p!.media = { [id]: { kind: 'openai_videos' } }
     const response = await body(d)
+    expect(response.mediaLibrary.some((m) => m.id === '专享sd2.5(30图10音/4-30秒/720p)')).toBe(
+      false,
+    )
+    expect(response.mediaLibrary.some((m) => m.id === '高质量sd2.5(满血全参/720P/按次)')).toBe(
+      false,
+    )
     expect(response.mediaLibrary.find((m) => m.id === id)).toMatchObject({
       vendor: 'providerb',
       kinds: ['openai_videos'],
@@ -518,11 +524,9 @@ describe('模型目录', () => {
     ])
     const seconds = model.params.find((p) => p.name === 'seconds')!
     expect(seconds.type).toBe('enum')
-    expect(seconds.default).toBe(maxVideos ? '30' : '5')
-    expect(seconds.values).toHaveLength(maxVideos ? 1 : 27)
-    expect(seconds.values?.[0]).toBe(maxVideos ? '30' : '4')
-    expect(seconds.values?.at(-1)).toBe('30')
-    expect(seconds.valueLabels?.[maxVideos ? '30' : '4']).toBe(maxVideos ? '30秒' : '4秒')
+    expect(seconds.default).toBe('30')
+    expect(seconds.values).toEqual(['30'])
+    expect(seconds.valueLabels?.['30']).toBe('30秒')
     expect(model.params.find((p) => p.name === 'size')?.shapes).toEqual([
       { ratio: '16:9', tier: '720P', value: '1280x720' },
       { ratio: '9:16', tier: '720P', value: '720x1280' },

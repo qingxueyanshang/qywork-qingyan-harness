@@ -6,7 +6,7 @@
  * 可在服务商规定的结果保留期内用同一任务号接续取回。只有远端明确报告失败才是终态。
  */
 
-import { postJson, transientFailure } from './http.ts'
+import { sendJson, transientFailure } from './http.ts'
 import { MediaError, type MediaRunOptions, type MediaUsage } from './types.ts'
 
 const FIRST_INTERVAL_MS = 5_000
@@ -25,17 +25,26 @@ export async function postTask(
   opts.signal.throwIfAborted()
   opts.onSubmit?.()
   opts.signal.throwIfAborted()
-  const body = await postJson(url, payload, auth, opts.signal, {
-    validate(body) {
-      const id = idOf(body)
-      if (typeof id !== 'string' || !id.trim()) {
-        const error = body.error as { code?: unknown; message?: unknown } | undefined
-        const reason = failureDetail(error?.code ?? body.code, error?.message ?? body.message, '')
-        return `接口没有返回有效任务号${reason ? `：${reason}` : ''}`
-      }
-      taskId = id
+  const body = await sendJson(
+    url,
+    {
+      method: 'POST',
+      headers: payload instanceof FormData ? auth : { 'content-type': 'application/json', ...auth },
+      body: payload instanceof FormData ? payload : JSON.stringify(payload),
     },
-  })
+    opts.signal,
+    {
+      validate(body) {
+        const id = idOf(body)
+        if (typeof id !== 'string' || !id.trim()) {
+          const error = body.error as { code?: unknown; message?: unknown } | undefined
+          const reason = failureDetail(error?.code ?? body.code, error?.message ?? body.message, '')
+          return `接口没有返回有效任务号${reason ? `：${reason}` : ''}`
+        }
+        taskId = id
+      },
+    },
+  )
   // 保存回执失败时仍将已收到的任务号交回上层，不能把已提交误当作尚未提交。
   await afterSubmit(taskId, opts.signal, async () => opts.onTask?.(taskId))
   return { body, taskId }

@@ -9,7 +9,7 @@ import { CanvasService } from './canvas.ts'
 
 const models = {
   binguo_videos: 'Seedance 2.5 720p',
-  openai_videos: '专享sd2.5(30图10音/4-30秒/720p)',
+  openai_videos: 'video-sd25-30s',
   ark_videos: 'doubao-seedance-2-5-260628',
   dashscope_videos: 'wan3.0-video',
   kling_videos: 'kling-3.0',

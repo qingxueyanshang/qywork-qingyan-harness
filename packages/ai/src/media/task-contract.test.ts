@@ -25,6 +25,52 @@ beforeAll(() => {
 afterAll(() => server.stop(true))
 const request = { operation: 'text_to_video' as const, prompt: '', inputs: [], params: {} }
 const taskId = 'saved-task'
+
+test.each([false, true])(
+  'multipart 提交不重发，缺失回执或保存失败保留准确状态：id=%s',
+  async (hasId) => {
+    calls = []
+    reply = hasId ? { id: taskId } : {}
+    const adapter = buildMediaAdapter({
+      kind: 'openai_videos',
+      model: 'video-sd25-30s',
+      apiKey: 'test',
+      baseUrl: `http://127.0.0.1:${server.port}`,
+    })
+    let submits = 0
+    const error = await adapter
+      .run(
+        {
+          ...request,
+          operation: 'reference_to_video',
+          inputs: [
+            {
+              role: 'reference',
+              bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+              mime: 'image/png',
+              path: '/ref.png',
+            },
+          ],
+        },
+        {
+          signal: new AbortController().signal,
+          onSubmit: () => {
+            submits++
+          },
+          onTask: async () => {
+            throw new Error('save failed')
+          },
+        },
+      )
+      .catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(MediaError)
+    expect(calls).toEqual(['POST'])
+    expect(submits).toBe(1)
+    if (hasId) expect((error as MediaError).pendingTaskId).toBe(taskId)
+    else expect((error as MediaError).diagnostic?.outcome).toBe('unknown')
+  },
+)
+
 const cases: {
   kind: MediaKind
   model?: string
@@ -33,7 +79,7 @@ const cases: {
   { kind: 'openai_videos', body: (status) => ({ status }) },
   {
     kind: 'openai_videos',
-    model: '专享sd2.5(30图10音/4-30秒/720p)',
+    model: 'video-sd25-30s',
     body: (status) => ({ data: { status } }),
   },
   { kind: 'ark_videos', body: (status) => ({ status }) },

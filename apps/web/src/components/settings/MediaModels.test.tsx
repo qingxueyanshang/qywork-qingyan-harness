@@ -115,13 +115,7 @@ test('官方及渠道模型均使用目录协议，模型库显示对应页签',
   const { ModelSettings } = await import('./ModelSettings.tsx')
   const cases: { id: string; kind: MediaKind; baseUrl: string; vendor: string }[] = [
     {
-      id: '高质量sd2.5(满血全参/720P/按次)',
-      kind: 'openai_videos',
-      baseUrl: 'https://providerb.example.com/v1',
-      vendor: 'providerb',
-    },
-    {
-      id: '专享sd2.5(30图10音/4-30秒/720p)',
+      id: 'video-sd25-30s',
       kind: 'openai_videos',
       baseUrl: 'https://providerb.example.com/v1',
       vendor: 'providerb',
@@ -385,8 +379,8 @@ test('模型库按类别分页签；生成类一张表，厂商是一列，参�
 })
 
 test.each([
-  ['专享sd2.5(30图10音/4-30秒/720p)', 0],
-  ['高质量sd2.5(满血全参/720P/按次)', 10],
+  ['video-sd25-30s', 0],
+  ['满血sd2.5(30-10-10原生过人脸/720P)', 10],
 ] as const)('模型库分别显示各类参考素材上限：%s', async (id, maxVideos) => {
   const { render } = await import('solid-js/web')
   const { ModelLibrary } = await import('./ModelLibrary.tsx')
@@ -405,9 +399,7 @@ test.each([
     maxImages: 30,
     maxVideos,
     maxAudios: 10,
-    params: [
-      maxVideos ? 'seconds：固定 30 秒，使用字符串 "30"' : 'seconds：4–30 秒整数，使用字符串',
-    ],
+    params: ['seconds：固定 30 秒，使用字符串 "30"'],
   }
   const host = document.createElement('div')
   document.body.append(host)
@@ -425,6 +417,7 @@ test.each([
     expect(host.querySelector('.lib-table.media')?.textContent).toContain('图≤30、音频≤10')
     if (maxVideos)
       expect(host.querySelector('.lib-table.media')?.textContent).toContain('视频≤10、音频≤10')
+    else expect(host.querySelector('.lib-table.media')?.textContent).not.toContain('视频≤')
   } finally {
     dispose()
     host.remove()
