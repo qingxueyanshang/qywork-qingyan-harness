@@ -195,9 +195,9 @@ export function canvasRunLabel(
   output: GenerateOutput,
   state: Extract<CanvasNodeState, { state: 'running' }>,
 ): string {
-  if (state.action === 'retrieve') return '取回中'
   if (state.phase === 'queued') return '排队中'
   if (state.phase === 'running') return '生成中'
+  if (state.action === 'retrieve') return '取回中'
   return output === 'video'
     ? state.taskId
       ? '已提交'

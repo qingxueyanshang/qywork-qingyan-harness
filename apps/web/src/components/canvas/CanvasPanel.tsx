@@ -1767,27 +1767,14 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     }
   }
 
-  function TaskNotice(p: {
-    nodeId: string
-    version?: string | undefined
-    retrieving?: boolean
-    phase?: 'queued' | 'running' | undefined
-  }) {
+  function TaskNotice(p: { nodeId: string; version?: string | undefined; retrieving?: boolean }) {
     const message = () => p.version && taskInfo(p.nodeId, p.version).message
-    const title = () => {
-      if (!p.retrieving) return message() ? '本次等待已结束' : '原任务待取回'
-      if (p.phase === 'queued') return '原任务仍在排队'
-      if (p.phase === 'running') return '原任务仍在生成'
-      return '正在查询原任务'
-    }
     return (
       <output class="canvas-task-notice" onPointerDown={(e) => e.stopPropagation()}>
-        <strong>{title()}</strong>
-        <span>
-          {message()
-            ? `${p.retrieving ? '上次等待结束原因：' : ''}${message()}`
-            : '已保留原任务，取回会继续查询结果。'}
-        </span>
+        <strong>
+          {p.retrieving ? '上次等待结束原因' : message() ? '本次等待已结束' : '原任务待取回'}
+        </strong>
+        <span>{message() || '已保留原任务，取回会继续查询结果。'}</span>
       </output>
     )
   }
@@ -1812,6 +1799,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       return (s?.state === 'failed' || s?.state === 'unknown') && !p.node.versions.length ? s : null
     }
     const current = () => currentOf(p.node)
+    const retrievalMessage = () => {
+      const s = running()
+      const version = s?.version ?? p.node.current
+      return s?.action === 'retrieve' && version ? taskInfo(p.node.id, version).message : undefined
+    }
     const notice = () => {
       const s = st()
       if (s?.state === 'unknown')
@@ -1835,7 +1827,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
             {(s) => (
               <div
                 class="canvas-media canvas-slot"
-                classList={{ 'with-task-notice': s().action === 'retrieve' }}
+                classList={{ 'with-task-notice': !!retrievalMessage() }}
               >
                 <div class="canvas-task-progress">
                   <div class="canvas-live">
@@ -1854,12 +1846,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
                     </span>
                   </div>
                 </div>
-                <Show when={s().action === 'retrieve'}>
+                <Show when={retrievalMessage()}>
                   <TaskNotice
                     nodeId={p.node.id}
                     version={s().version ?? p.node.current}
                     retrieving
-                    phase={s().phase}
                   />
                 </Show>
               </div>

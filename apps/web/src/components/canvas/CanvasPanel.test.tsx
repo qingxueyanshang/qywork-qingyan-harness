@@ -1238,11 +1238,12 @@ describe('画布：生成卡与生成面板', () => {
       () => node(host, id).querySelector('.phase')?.textContent === '取回中',
       () => node(host, id).textContent ?? '',
     )
-    expect(notice()?.textContent).toContain('正在查询原任务')
-    expect(notice()?.textContent).toContain('上次等待结束原因：查询异常 HTTP 503')
+    expect(notice()?.textContent).not.toContain('正在查询原任务')
+    expect(notice()?.textContent).toContain('上次等待结束原因')
+    expect(notice()?.textContent).toContain('查询异常 HTTP 503')
     for (const [phase, label] of [
-      ['queued', '原任务仍在排队'],
-      ['running', '原任务仍在生成'],
+      ['queued', '排队中'],
+      ['running', '生成中'],
     ] as const) {
       server.setView({
         states: {
@@ -1258,10 +1259,12 @@ describe('画布：生成卡与生成面板', () => {
       })
       store.setState('canvasVersion', (v) => v + 1)
       await waitFor(
-        () => notice()?.textContent?.includes(label) === true,
-        () => notice()?.textContent ?? '',
+        () => node(host, id).querySelector('.phase')?.textContent === label,
+        () => node(host, id).textContent ?? '',
       )
-      expect(notice()?.textContent).toContain('上次等待结束原因：查询异常 HTTP 503')
+      expect(notice()?.textContent).toContain('上次等待结束原因')
+      expect(notice()?.textContent).toContain('查询异常 HTTP 503')
+      expect(notice()?.textContent).not.toContain(label)
     }
     versions().click()
     const completed = () =>
@@ -1337,6 +1340,32 @@ describe('画布：生成卡与生成面板', () => {
     )
     expect(notice()?.textContent).toContain('已保留原任务，取回会继续查询结果')
     expect(notice()?.textContent).not.toContain('中断')
+
+    for (const [phase, label] of [
+      [undefined, '取回中'],
+      ['queued', '排队中'],
+      ['running', '生成中'],
+    ] as const) {
+      server.setView({
+        states: {
+          [id]: {
+            state: 'running',
+            action: 'retrieve',
+            version: 'task',
+            startedAt: Date.now(),
+            ...(phase ? { phase } : {}),
+          },
+        },
+      })
+      store.setState('canvasVersion', (v) => v + 1)
+      await waitFor(
+        () => node(host, id).querySelector('.phase')?.textContent === label,
+        () => node(host, id).textContent ?? '',
+      )
+      expect(notice()).toBeNull()
+      expect(node(host, id).querySelector('.with-task-notice')).toBeNull()
+      expect(node(host, id).textContent).not.toContain('取回会继续查询结果')
+    }
 
     server.setView({
       doc,
