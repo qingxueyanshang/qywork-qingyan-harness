@@ -85,6 +85,8 @@ export interface MediaImageResult {
 
 export interface MediaRunOptions {
   signal: AbortSignal
+  /** 视频生成 POST 即将发出；素材上传不触发。用于区分未提交取消与受理结果未知。 */
+  onSubmit?: () => void
   /** 在下载之前保存结果引用与计量；回调完成后才开始下载。 */
   onImageResult?: (result: MediaImageResult) => void | Promise<void>
   /** 取得远端任务号后立即交出：调用方将其落盘，停止、超时或进程退出之后仍可取回。 */

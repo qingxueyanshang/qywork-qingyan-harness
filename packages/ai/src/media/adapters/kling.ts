@@ -11,8 +11,15 @@
 
 import type { Currency } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation } from '../catalog.ts'
-import { count, defined, download, getJson, postJson } from '../http.ts'
-import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
+import { count, defined, download, getJson } from '../http.ts'
+import {
+  afterSubmit,
+  failureDetail,
+  pendingTask,
+  postTask,
+  type TaskState,
+  waitTask,
+} from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
@@ -88,18 +95,20 @@ export class KlingVideosAdapter implements MediaAdapter {
               ],
               ...settings,
             }
-      const body = await postJson(
+      const submitted = await postTask(
         `${base}/${omni ? 'omni-video' : pathOf(req.operation)}/${encodeURIComponent(this.profile.model)}`,
         payload,
         auth,
-        signal,
+        opts,
+        (body) => {
+          if (typeof body.code === 'number' && body.code !== 0)
+            throw new MediaError(
+              `接口拒绝生成：${failureDetail(body.code, body.message, '未提供原因')}`,
+            )
+          return body.code === 0 ? (body.data as { id?: unknown } | undefined)?.id : undefined
+        },
       )
-      const data = body.data as { id?: unknown } | undefined
-      if (body.code !== 0 || typeof data?.id !== 'string') {
-        throw new MediaError(`接口没有返回任务号：${JSON.stringify(body).slice(0, 300)}`)
-      }
-      taskId = data.id
-      await opts.onTask?.(taskId)
+      taskId = submitted.taskId
     }
     const id = taskId
     return afterSubmit(id, signal, async () => {
@@ -129,11 +138,11 @@ export class KlingVideosAdapter implements MediaAdapter {
       if (typeof video?.url === 'string') {
         return { state: 'done', url: video.url, usage: taskUsage(video, task?.billing) }
       }
-      return { state: 'failed', message: '任务成功但没有返回视频地址' }
+      throw new MediaError('任务成功但没有返回视频地址')
     }
     if (status === 'failed') {
       return { state: 'failed', message: failureDetail(undefined, task?.message, '任务失败') }
     }
-    return { state: 'pending', status: status || 'submitted' }
+    return pendingTask(status, ['submitted', 'processing'])
   }
 }

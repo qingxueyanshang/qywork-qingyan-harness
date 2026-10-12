@@ -124,6 +124,13 @@ describe('画布：格式', () => {
       params: { duration: 5 },
       inputs: [{ role: 'first_frame', path: 'a.png' }],
       message: '内容审核未通过',
+      diagnostic: {
+        stage: 'upload',
+        outcome: 'rejected',
+        kind: 'connection',
+        host: 'example.com',
+        elapsedMs: 100,
+      },
     })
     if (!r.ok) throw new Error(r.error)
     expect(doc.runs).toBeUndefined()

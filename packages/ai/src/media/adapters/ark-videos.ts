@@ -7,8 +7,15 @@
  */
 
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, getJson, postJson, send } from '../http.ts'
-import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
+import { count, dataUri, defined, download, getJson, send } from '../http.ts'
+import {
+  afterSubmit,
+  failureDetail,
+  pendingTask,
+  postTask,
+  type TaskState,
+  waitTask,
+} from '../task.ts'
 import {
   type MediaAdapter,
   type MediaCancel,
@@ -80,17 +87,14 @@ export class ArkVideosAdapter implements MediaAdapter {
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
     let taskId = opts.resumeTaskId
     if (!taskId) {
-      const body = await postJson(
+      const submitted = await postTask(
         `${base}/contents/generations/tasks`,
         { model: this.profile.model, content: arkVideoContent(req), ...req.params },
         auth,
-        signal,
+        opts,
+        (body) => body.id,
       )
-      if (typeof body.id !== 'string') {
-        throw new MediaError(`接口没有返回任务号：${JSON.stringify(body).slice(0, 300)}`)
-      }
-      taskId = body.id
-      await opts.onTask?.(taskId)
+      taskId = submitted.taskId
     }
     const id = taskId
     const videoInput = req.inputs.some((i) => i.role === 'video')
@@ -158,13 +162,13 @@ export class ArkVideosAdapter implements MediaAdapter {
           usage: taskUsage(body),
         }
       }
-      return { state: 'failed', message: '任务成功但没有返回视频地址' }
+      throw new MediaError('任务成功但没有返回视频地址')
     }
     const ended = ENDED[status]
     if (ended) {
       const error = body.error as { code?: unknown; message?: unknown } | undefined
       return { state: 'failed', message: failureDetail(error?.code, error?.message, ended) }
     }
-    return { state: 'pending', status: status || 'queued' }
+    return pendingTask(status, ['queued', 'running'])
   }
 }

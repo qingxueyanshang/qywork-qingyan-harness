@@ -3,7 +3,14 @@ import type { MediaKind } from '@qywork/core'
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, defined, download, getJson, postJson, sniffMime } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
-import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
+import {
+  afterSubmit,
+  failureDetail,
+  pendingTask,
+  postTask,
+  type TaskState,
+  waitTask,
+} from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
@@ -141,20 +148,16 @@ export class GeminiMediaAdapter implements MediaAdapter {
         ...(references.length ? [`[# References ${references.join(' ')}]`] : []),
       ]
       input.push({ type: 'text', text: [...declarations, req.prompt].join(' ') })
-      initial = await postJson(
-        `${base}/interactions`,
-        {
-          model: this.profile.model,
-          input,
-          response_format: { type, ...req.params },
-          background: type === 'video',
-          store: type === 'video',
-        },
-        auth,
-        opts.signal,
-      )
+      const payload = {
+        model: this.profile.model,
+        input,
+        response_format: { type, ...req.params },
+        background: type === 'video',
+        store: type === 'video',
+      }
       // 图片使用同步生成，恢复保存输出引用；视频保存任务号。
       if (type === 'image') {
+        initial = await postJson(`${base}/interactions`, payload, auth, opts.signal)
         if (initial.status !== 'completed' || outputs(initial, type).length === 0) {
           throw new MediaError(
             initial.status === 'completed'
@@ -173,10 +176,15 @@ export class GeminiMediaAdapter implements MediaAdapter {
         })
         return this.resumeImage({ sources, usage: usageOf(initial, 'image', sources.length) }, opts)
       }
-      if (typeof initial.id !== 'string' || !initial.id)
-        throw new MediaError('Gemini 接口没有返回任务号')
-      taskId = initial.id
-      await opts.onTask?.(taskId)
+      const submitted = await postTask(
+        `${base}/interactions`,
+        payload,
+        auth,
+        opts,
+        (body) => body.id,
+      )
+      initial = submitted.body
+      taskId = submitted.taskId
     }
     const id = taskId
     return afterSubmit(id, opts.signal, async () => {
@@ -188,17 +196,11 @@ export class GeminiMediaAdapter implements MediaAdapter {
         const status = String(body.status ?? '')
         if (status === 'completed') {
           if (outputs(body, type).length === 0)
-            return {
-              state: 'failed',
-              message: `任务完成但没有返回${type === 'image' ? '图片' : '视频'}`,
-            }
+            throw new MediaError(`任务完成但没有返回${type === 'image' ? '图片' : '视频'}`)
           return { state: 'done', body }
         }
-        if (status === 'in_progress' || status === 'queued') return { state: 'pending', status }
-        return {
-          state: 'failed',
-          message: interactionFailure(body),
-        }
+        if (ENDED[status]) return { state: 'failed', message: interactionFailure(body) }
+        return pendingTask(status, ['in_progress', 'queued'])
       }, opts)
       return this.readResult(done.body, type, base, auth, opts.signal)
     })
@@ -260,19 +262,17 @@ export class VeoVideosAdapter implements MediaAdapter {
         if (i.role === 'first_frame') instance.image = inline(i)
         if (i.role === 'last_frame') instance.lastFrame = inline(i)
       }
-      const body = await postJson(
+      const submitted = await postTask(
         `${base}/models/${encodeURIComponent(this.profile.model)}:predictLongRunning`,
         {
           instances: [instance],
           parameters: req.params,
         },
         auth,
-        opts.signal,
+        opts,
+        (body) => body.name,
       )
-      if (typeof body.name !== 'string' || !body.name)
-        throw new MediaError('Veo 接口没有返回任务号')
-      taskId = body.name
-      await opts.onTask?.(taskId)
+      taskId = submitted.taskId
     }
     const id = taskId
     return afterSubmit(id, opts.signal, async () => {
@@ -282,14 +282,19 @@ export class VeoVideosAdapter implements MediaAdapter {
             !/^models\/[\w.-]+\/operations\/[\w.-]+$/.test(id) &&
             !/^operations\/[\w.-]+$/.test(id)
           ) {
-            return { state: 'failed', message: 'Veo 任务号格式无效' }
+            throw new MediaError('无法识别 Veo 任务号格式')
           }
           const body = await getJson(`${base}/${id}`, auth, opts.signal)
           // `error.code` 是 google.rpc.Code 的数值，不是 HTTP 状态码，只显示原文。
           const error = body.error as { message?: unknown } | undefined
           if (error)
             return { state: 'failed', message: failureDetail(undefined, error.message, '任务失败') }
-          if (body.done !== true) return { state: 'pending', status: 'processing' }
+          if (body.done !== true) {
+            // 未完成的 Operation 可省略 done=false，但必须仍有原任务 name；空对象不是有效进度。
+            if (body.done === false || (body.done === undefined && body.name === id))
+              return { state: 'pending', status: 'processing' }
+            throw new MediaError('无法确认 Veo 任务状态')
+          }
           const response = body.response as
             | {
                 generateVideoResponse?: {
@@ -302,6 +307,8 @@ export class VeoVideosAdapter implements MediaAdapter {
           const uris = (result?.generatedSamples ?? []).flatMap((s) =>
             typeof s.video?.uri === 'string' ? [s.video.uri] : [],
           )
+          if (!uris.length && !result?.raiMediaFilteredReasons?.length)
+            throw new MediaError('任务完成但没有返回视频地址')
           return uris.length
             ? { state: 'done', uris }
             : {

@@ -13,7 +13,14 @@ import {
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, dataUri, defined, download, getJson, postJson, send, sniffMime } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
-import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
+import {
+  afterSubmit,
+  failureDetail,
+  pendingTask,
+  postTask,
+  type TaskState,
+  waitTask,
+} from '../task.ts'
 import {
   type MediaAdapter,
   type MediaCancel,
@@ -31,11 +38,10 @@ import {
 const SYNC_PATH = '/api/v1/services/aigc/multimodal-generation/generation'
 /** 视频任务。只支持异步：不带 `X-DashScope-Async: enable` 时接口直接报错。 */
 const VIDEO_PATH = '/api/v1/services/aigc/video-generation/video-synthesis'
-/** 任务的终止状态及其说明；任务号超过 24 小时保留期后查询返回 `UNKNOWN`。 */
+/** 任务的终止状态及其说明。 */
 const ENDED: Record<string, string> = {
   FAILED: '任务失败',
   CANCELED: '任务已取消',
-  UNKNOWN: '任务不存在或已超过保留期',
 }
 
 export class DashScopeImagesAdapter implements MediaAdapter {
@@ -210,7 +216,7 @@ export class DashScopeVideosAdapter implements MediaAdapter {
       const payload = await dashScopeVideoPayload(req, this.spec, (input) =>
         this.source(input, signal),
       )
-      const body = await postJson(
+      const submitted = await postTask(
         `${origin}${VIDEO_PATH}`,
         {
           model: this.profile.model,
@@ -224,14 +230,10 @@ export class DashScopeVideosAdapter implements MediaAdapter {
             ? { 'x-dashscope-ossresourceresolve': 'enable' }
             : {}),
         },
-        signal,
+        opts,
+        (body) => (body.output as { task_id?: unknown } | undefined)?.task_id,
       )
-      const output = body.output as { task_id?: unknown } | undefined
-      if (typeof output?.task_id !== 'string') {
-        throw new MediaError(`接口没有返回任务号：${JSON.stringify(body).slice(0, 300)}`)
-      }
-      taskId = output.task_id
-      await opts.onTask?.(taskId)
+      taskId = submitted.taskId
     }
     const id = taskId
     const videoInput = req.inputs.some((i) => i.role === 'video')
@@ -278,11 +280,12 @@ export class DashScopeVideosAdapter implements MediaAdapter {
       if (typeof out.video_url === 'string') {
         return { state: 'done', url: out.video_url, usage: videoUsage(body.usage) }
       }
-      return { state: 'failed', message: '任务成功但没有返回视频地址' }
+      throw new MediaError('任务成功但没有返回视频地址')
     }
     const ended = ENDED[status]
     if (ended) return { state: 'failed', message: failureDetail(out.code, out.message, ended) }
-    return { state: 'pending', status: status || 'PENDING' }
+    if (status === 'UNKNOWN') throw new MediaError('任务状态未知，可能不存在或已超过保留期')
+    return pendingTask(status, ['PENDING', 'RUNNING'])
   }
 
   /**

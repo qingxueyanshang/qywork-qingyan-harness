@@ -243,6 +243,7 @@ export interface GenerateRequest {
     model: string
   }) => void | Promise<void>
   onStatus?: (status: string) => void
+  onSubmit?: () => void
   /** 取得结果时回报本次的花费。 */
   onSpend?: (spend: MediaSpend) => void
 }
@@ -344,6 +345,7 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
       }
     }
     if (req.type === 'video') {
+      if (req.onSubmit) call.onSubmit = req.onSubmit
       call.onTask = async ({ taskId, provider, model }) => {
         recordPath = await writeRecord(req.roots, slot.target, {
           provider,

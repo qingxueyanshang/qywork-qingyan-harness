@@ -77,18 +77,17 @@ function spendOf(
 
 /** `onSpend`：服务商返回生成结果时传出花费，由调用方记入账本。 */
 export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) => void): MediaPort {
-  // 端口按一轮执行创建；结果未知或待下载时，本轮只允许恢复，不再自动提交图片生成。
-  let unresolvedImage = false
+  // 端口按一轮执行创建；结果未知或待取回时，本轮只允许恢复该类产物，避免自动重发计费请求。
+  const unresolved = new Set<MediaOutput>()
   return {
     async generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult> {
       // art 使用对话模型，不经生成目录。
       if (call.type === 'art') return generateArt(config, call, signal, onSpend)
-      if (call.type === 'image' && unresolvedImage && !call.resumeImageResult) {
+      if (unresolved.has(call.type) && !call.resumeImageResult && !call.resumeTaskId) {
         return {
           ok: false,
           executed: false,
-          message:
-            '本轮图片结果尚未确认，已停止自动重新生成；已有任务记录时请取回原结果。重新生成须由用户明确发起。',
+          message: `本轮${call.type === 'image' ? '图片' : OUTPUT_LABEL[call.type]}结果尚未确认，已停止自动重新生成；已有任务记录时请取回原结果。重新生成须由用户明确发起。`,
         }
       }
       const type = call.type
@@ -180,6 +179,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
           },
           {
             signal,
+            ...(call.onSubmit ? { onSubmit: call.onSubmit } : {}),
             ...(type === 'image'
               ? {
                   onImageResult: async (result: MediaImageResult) => {
@@ -215,7 +215,14 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
             !(err instanceof MediaError) ||
             err.diagnostic?.outcome !== 'rejected')
         )
-          unresolvedImage = true
+          unresolved.add(type)
+        if (
+          type === 'video' &&
+          (!(err instanceof MediaError) ||
+            err.pendingTaskId ||
+            err.diagnostic?.outcome === 'unknown')
+        )
+          unresolved.add(type)
         if (signal.aborted || !(err instanceof MediaError)) throw err
         return {
           ok: false,

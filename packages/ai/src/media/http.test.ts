@@ -1,6 +1,6 @@
 /** 用本机接口验证按静默计算的期限、生成请求不设上限、失败判定与报错措辞、下载重试及取消，不调用付费接口。 */
-import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test'
-import { download, postJson, send } from './http.ts'
+import { afterAll, afterEach, beforeAll, expect, spyOn, test } from 'bun:test'
+import { download, postJson, send, sendJson } from './http.ts'
 import { MediaError } from './types.ts'
 
 let server: ReturnType<typeof Bun.serve>
@@ -143,20 +143,94 @@ test('数据持续到达时不中止：总时长超过静默上限仍读完响�
   expect(await res.text()).toBe('012345')
 })
 
+test.each([false, true])(
+  '素材上传无响应有默认期限，包含响应体阶段=%s，且明确未提交生成',
+  async (body) => {
+    const original = globalThis.setTimeout
+    const timers = spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: () => void,
+      ms: number,
+    ) => original(fn, ms === 300_000 ? 80 : ms)) as typeof setTimeout)
+    reply = async () => {
+      if (!body) {
+        await delay(300)
+        return Response.json({ url: 'https://example.com/image.png' })
+      }
+      return new Response(
+        new ReadableStream({
+          async start(controller) {
+            controller.enqueue(new TextEncoder().encode('{'))
+            await delay(300)
+            try {
+              controller.close()
+            } catch {}
+          },
+        }),
+      )
+    }
+    try {
+      const error = await failure(
+        sendJson(url(), { method: 'POST', body: 'file' }, signal(), { stage: 'upload' }),
+      )
+      expect(error.diagnostic).toMatchObject({
+        stage: 'upload',
+        kind: 'timeout',
+        outcome: 'rejected',
+        timeoutMs: 300_000,
+      })
+      expect(error.message).toBe('素材上传失败，未提交生成：连续 300 秒未收到数据')
+      expect(hits).toEqual(['POST'])
+    } finally {
+      timers.mockRestore()
+    }
+  },
+)
+
+test('上传的连接失败和无效响应均不误报生成结果未知', async () => {
+  const closed = Bun.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    socket: { data: (socket) => void socket.end() },
+  })
+  try {
+    const error = await failure(
+      sendJson(`http://127.0.0.1:${closed.port}/upload`, { method: 'POST' }, signal(), {
+        stage: 'upload',
+      }),
+    )
+    expect(error.diagnostic).toMatchObject({
+      stage: 'upload',
+      kind: 'connection',
+      outcome: 'rejected',
+    })
+    expect(error.message).toContain('未提交生成')
+  } finally {
+    closed.stop(true)
+  }
+  reply = () => new Response('<html>bad gateway</html>')
+  const invalid = await failure(sendJson(url(), { method: 'POST' }, signal(), { stage: 'upload' }))
+  expect(invalid.diagnostic).toMatchObject({
+    stage: 'upload',
+    kind: 'response',
+    outcome: 'rejected',
+  })
+  expect(invalid.message).toBe('素材上传失败，未提交生成：响应无法解析')
+})
+
 /**
- * 原始失败形状：第三方接口没有可用账号时 0.5 秒内返回 503，卡片却显示「远端结果未知，请勿自动重新生成」。
- * 收到错误状态即为被拒绝，报错只写状态码名称与服务商原文；只有响应无法解析时远端结果未知。
+ * 网关错误不能证明计费请求没有到达上游；保留 HTTP 状态和服务商原文，不自动重新提交。
  */
-test('HTTP 错误状态均为被拒绝，报错为状态码名称加服务商原文；响应无法解析时远端结果未知', async () => {
+test('客户端拒绝与网关结果未知分开报告，保留原文且生成只 POST 一次', async () => {
   for (const [status, content, outcome, message] of [
     [
       503,
       '{"error":{"message":"No available compatible accounts","type":"api_error"}}',
-      'rejected',
-      'HTTP 503 服务不可用：No available compatible accounts',
+      'unknown',
+      'HTTP 503 服务不可用：No available compatible accounts；远端结果未知',
     ],
     [400, 'bad input', 'rejected', 'HTTP 400 请求无效：bad input'],
-    [502, 'gateway', 'rejected', 'HTTP 502 网关错误：gateway'],
+    [502, 'gateway', 'unknown', 'HTTP 502 网关错误：gateway；远端结果未知'],
+    [408, 'timeout', 'unknown', 'HTTP 408 请求超时：timeout；远端结果未知'],
     [418, 'teapot', 'rejected', 'HTTP 418 请求被拒绝：teapot'],
     [200, '<html>', 'unknown', '响应无法解析；远端结果未知'],
   ] as const) {
@@ -165,7 +239,7 @@ test('HTTP 错误状态均为被拒绝，报错为状态码名称加服务商原
     expect(error.diagnostic).toMatchObject({ status, outcome })
     expect(error.message).toBe(message)
   }
-  expect(hits).toEqual(['POST', 'POST', 'POST', 'POST', 'POST'])
+  expect(hits).toEqual(['POST', 'POST', 'POST', 'POST', 'POST', 'POST'])
 })
 
 /** 连接未建立时请求没有发出：端口拒绝连接与 TLS 握手失败均为被拒绝，不显示 Bun 的英文提示。 */

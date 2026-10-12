@@ -2,8 +2,8 @@
 import { basename } from 'node:path'
 import { videoMetadataOf } from '@qywork/core'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, defined, download, getJson, postJson, sendJson } from '../http.ts'
-import { afterSubmit, type TaskState, waitTask } from '../task.ts'
+import { count, defined, download, getJson, sendJson } from '../http.ts'
+import { afterSubmit, postTask, type TaskState, waitTask } from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
@@ -78,7 +78,16 @@ export class BinguoAdapter implements MediaAdapter {
         `${root}/api/media/upload`,
         { method: 'POST', headers: auth, body: form },
         opts.signal,
-        { stage: 'upload' },
+        {
+          stage: 'upload',
+          validate(body) {
+            try {
+              resultUrl(body.url, root)
+            } catch {
+              return '接口没有返回有效素材地址'
+            }
+          },
+        },
       )
       const url = resultUrl(uploaded.url, root)
       if (input.role === 'video') {
@@ -102,11 +111,14 @@ export class BinguoAdapter implements MediaAdapter {
     const path = `${base}/videos`
     let id = opts.resumeTaskId
     if (!id) {
-      const body = await postJson(path, await this.payload(req, opts), auth, opts.signal)
-      if (typeof body.task_id !== 'string' || !body.task_id)
-        throw new MediaError('服务商D没有返回任务号')
-      id = body.task_id
-      await opts.onTask?.(id)
+      const submitted = await postTask(
+        path,
+        await this.payload(req, opts),
+        auth,
+        opts,
+        (body) => body.task_id,
+      )
+      id = submitted.taskId
     }
     const taskId = id
     return afterSubmit(taskId, opts.signal, async () => {

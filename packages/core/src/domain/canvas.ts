@@ -216,6 +216,8 @@ export interface CanvasTaskInfo {
   output: string
 }
 
+export type CanvasCancelOutcome = 'cancelled' | 'stopped' | 'not_submitted' | 'ended'
+
 /** 读取画布接口的返回值：文档与各节点状态。 */
 export interface CanvasView {
   /** 工作区相对路径。 */
@@ -1279,7 +1281,7 @@ function matches(v: unknown, shape: Shape): boolean {
     case 'diagnostic':
       return (
         isObject(v) &&
-        ['generate', 'query', 'download'].includes(String(v.stage)) &&
+        ['upload', 'generate', 'query', 'download'].includes(String(v.stage)) &&
         ['timeout', 'connection', 'http', 'response'].includes(String(v.kind)) &&
         ['unknown', 'rejected', 'available'].includes(String(v.outcome)) &&
         checkFields('请求诊断', v, DIAGNOSTIC_FIELDS) === null

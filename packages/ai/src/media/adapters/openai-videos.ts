@@ -8,8 +8,15 @@
 import { mediaParamValues } from '@qywork/core'
 import { normalizeBaseUrl } from '../../providers/openai-compat.ts'
 import type { MediaModelSpec } from '../catalog.ts'
-import { count, dataUri, defined, download, getJson, postJson, sniffMime } from '../http.ts'
-import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
+import { count, dataUri, defined, download, getJson, sniffMime } from '../http.ts'
+import {
+  afterSubmit,
+  failureDetail,
+  pendingTask,
+  postTask,
+  type TaskState,
+  waitTask,
+} from '../task.ts'
 import {
   type MediaAdapter,
   MediaError,
@@ -84,7 +91,7 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
     let taskId = opts.resumeTaskId
     if (!taskId) {
-      const body = await postJson(
+      const submitted = await postTask(
         `${base}/videos`,
         {
           model: this.profile.model,
@@ -92,13 +99,10 @@ export class OpenAIVideosAdapter implements MediaAdapter {
           ...(await payloadOf(req, this.spec)),
         },
         auth,
-        signal,
+        opts,
+        (body) => body.id,
       )
-      if (typeof body.id !== 'string') {
-        throw new MediaError(`接口没有返回任务号：${JSON.stringify(body).slice(0, 300)}`)
-      }
-      taskId = body.id
-      await opts.onTask?.(taskId)
+      taskId = submitted.taskId
     }
     const id = taskId
     return afterSubmit(id, signal, async () => {
@@ -133,7 +137,14 @@ export class OpenAIVideosAdapter implements MediaAdapter {
       }
       // providerb 实际返回 NOT_START：任务已创建、尚未开始，继续等待原任务。
       if (status === 'not_start') return { state: 'pending', status: 'queued' }
-      return { state: 'pending', status: status || 'queued' }
+      return pendingTask(status, [
+        'queued',
+        'pending',
+        'submitted',
+        'in_progress',
+        'processing',
+        'running',
+      ])
     }
     const body = await getJson(path, auth, signal)
     const status = String(body.status ?? '')
@@ -150,6 +161,6 @@ export class OpenAIVideosAdapter implements MediaAdapter {
       const error = body.error as { code?: unknown; message?: unknown } | undefined
       return { state: 'failed', message: failureDetail(error?.code, error?.message, ended) }
     }
-    return { state: 'pending', status: status || 'queued' }
+    return pendingTask(status, ['queued', 'in_progress'])
   }
 }

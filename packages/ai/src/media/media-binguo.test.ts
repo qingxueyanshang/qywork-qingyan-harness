@@ -216,6 +216,25 @@ test('不支持的首帧在上传或提交前拒绝', async () => {
   expect(calls).toHaveLength(0)
 })
 
+test.each([undefined, '', 'ftp://example.com/ref.png'])(
+  '上传未返回有效素材地址 %s 时明确未提交生成',
+  async (url) => {
+    upload = { url }
+    await expect(
+      adapter().run(
+        req({
+          inputs: [{ role: 'reference', path: '/work/ref.png', bytes: PNG, mime: 'image/png' }],
+        }),
+        { signal: signal() },
+      ),
+    ).rejects.toMatchObject({
+      diagnostic: { stage: 'upload', kind: 'response', outcome: 'rejected' },
+      message: expect.stringContaining('素材上传失败，未提交生成'),
+    })
+    expect(calls.map((c) => c.path)).toEqual(['/api/media/upload'])
+  },
+)
+
 test('查询失败和未知状态保留原任务号，恢复不上传也不提交', async () => {
   terminal.status = 'unrecognized'
   await expect(adapter().run(req(), { signal: signal() })).rejects.toMatchObject({

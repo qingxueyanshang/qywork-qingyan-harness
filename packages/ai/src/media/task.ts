@@ -6,11 +6,40 @@
  * 可在服务商规定的结果保留期内用同一任务号接续取回。只有远端明确报告失败才是终态。
  */
 
-import { transientFailure } from './http.ts'
+import { postJson, transientFailure } from './http.ts'
 import { MediaError, type MediaRunOptions, type MediaUsage } from './types.ts'
 
 const FIRST_INTERVAL_MS = 5_000
 const MAX_INTERVAL_MS = 15_000
+const MAX_QUERY_FAILURES = 3
+
+/** 提交只执行一次；任务号缺失或为空时沿用 HTTP 诊断标为结果未知，不能当作明确拒绝后重发。 */
+export async function postTask(
+  url: string,
+  payload: unknown,
+  auth: Record<string, string>,
+  opts: MediaRunOptions,
+  idOf: (body: Record<string, unknown>) => unknown,
+): Promise<{ body: Record<string, unknown>; taskId: string }> {
+  let taskId = ''
+  opts.signal.throwIfAborted()
+  opts.onSubmit?.()
+  opts.signal.throwIfAborted()
+  const body = await postJson(url, payload, auth, opts.signal, {
+    validate(body) {
+      const id = idOf(body)
+      if (typeof id !== 'string' || !id.trim()) {
+        const error = body.error as { code?: unknown; message?: unknown } | undefined
+        const reason = failureDetail(error?.code ?? body.code, error?.message ?? body.message, '')
+        return `接口没有返回有效任务号${reason ? `：${reason}` : ''}`
+      }
+      taskId = id
+    },
+  })
+  // 保存回执失败时仍将已收到的任务号交回上层，不能把已提交误当作尚未提交。
+  await afterSubmit(taskId, opts.signal, async () => opts.onTask?.(taskId))
+  return { body, taskId }
+}
 
 interface TaskOutput {
   url: string
@@ -28,7 +57,8 @@ export type TaskState<T = TaskOutput> =
 export type TaskPhase = 'queued' | 'running'
 
 const PHASES: Record<string, TaskPhase> = {
-  // 百炼 PENDING / RUNNING，方舟与 OpenAI queued，可灵 submitted / processing，xAI pending / processing，
+  // 百炼 PENDING / RUNNING，方舟与 OpenAI queued，可灵 submitted / processing，providerb pending；
+  // xAI 的 pending 由适配器按其含义转换为 processing，不能共用百炼的排队语义。
   // Gemini 交互 queued / in_progress。Veo 未完成时只有 processing，无法区分排队，按生成中处理。
   pending: 'queued',
   queued: 'queued',
@@ -41,6 +71,16 @@ const PHASES: Record<string, TaskPhase> = {
 /** 将各厂商查询结果中的进行中状态词归并为两个阶段；无法识别的返回 null。 */
 export function taskPhase(status: string): TaskPhase | null {
   return PHASES[status.toLowerCase()] ?? null
+}
+
+/** 只接受该协议声明的进行中状态；响应异常交给 afterSubmit 保留任务，不能编造排队或终态失败。 */
+export function pendingTask(
+  status: string,
+  allowed: readonly string[],
+): Extract<TaskState, { state: 'pending' }> {
+  if (!allowed.includes(status))
+    throw new MediaError(`无法确认远端任务状态：${status || '接口未返回状态'}`)
+  return { state: 'pending', status }
 }
 
 /**
@@ -61,23 +101,24 @@ export type TaskDone<T = TaskOutput> = Extract<TaskState<T>, { state: 'done' }>
 class RemoteTaskFailed extends MediaError {}
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms)
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer)
-        reject(signal.reason)
-      },
-      { once: true },
-    )
+    const abort = () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', abort)
+      resolve()
+    }, ms)
+    signal.addEventListener('abort', abort, { once: true })
   })
 }
 
 /**
  * 等待任务完成，返回结果地址与计量。首次查询不等待：接续取回时任务通常已完成。
  * 查询遇到可重发的失败（`transientFailure`：连接中断、静默超时、408 / 429 / 5xx）时按间隔继续查询，
- * 不结束等待；其余失败原样抛出，由 `afterSubmit` 附带任务号。
+ * 连续三次查询失败则结束本地等待；不把查询异常当作生成失败，由 `afterSubmit` 附带任务号供取回。
  * 状态变化时经 `onStatus` 回报一次，不按查询次数回报。
  */
 export async function waitTask<T = TaskOutput>(
@@ -86,11 +127,19 @@ export async function waitTask<T = TaskOutput>(
 ): Promise<TaskDone<T>> {
   let interval = FIRST_INTERVAL_MS
   let last = ''
+  let failures = 0
   for (;;) {
+    opts.signal.throwIfAborted()
     const s = await check().catch((err: unknown) => {
       if (opts.signal.aborted || !transientFailure(err)) throw err
+      if (++failures >= MAX_QUERY_FAILURES)
+        throw new MediaError(
+          `连续 ${failures} 次任务查询失败，已停止等待：${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        )
       return null
     })
+    if (s) failures = 0
     if (s?.state === 'done') return s
     if (s?.state === 'failed') throw new RemoteTaskFailed(`远端任务失败：${s.message}`)
     if (s && s.status !== last) {

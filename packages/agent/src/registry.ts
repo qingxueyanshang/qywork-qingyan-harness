@@ -77,6 +77,7 @@ export interface MediaCall {
    * 此后即使停止、超时或进程退出，仍可取回结果。
    */
   onTask?: (task: { taskId: string; provider: string; model: string }) => void | Promise<void>
+  onSubmit?: () => void
   /** 远端任务状态变化时回报一条状态文字。 */
   onStatus?: (status: string) => void
   /** 本次生成的花费，取得服务商结果时回报一次；恢复下载不再次回报。 */

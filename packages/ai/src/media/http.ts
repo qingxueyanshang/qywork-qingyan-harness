@@ -5,11 +5,12 @@ import { MediaError } from './types.ts'
 
 /**
  * 各阶段的静默上限：连续这么久没有收到任何数据（响应头或正文字节）即判定连接已失效，数据仍在到达时不中止。
+ * 素材上传每个请求最多等待 5 分钟响应；上传失败时生成尚未提交，可由用户重试，不能无限占住卡片。
  * 查询与下载是只读请求，中止后重发不丢失结果。生成请求不设上限：同步接口在生成完成之前不返回任何数据，
  * 静默时长就是生成耗时，任何上限都会截断仍在进行的生成；它只在收到响应、连接被关闭或重置、用户停止时结束。
  */
 const IDLE_MS: Record<MediaDiagnostic['stage'], number | undefined> = {
-  upload: undefined,
+  upload: 5 * 60_000,
   generate: undefined,
   query: 60_000,
   download: 2 * 60_000,
@@ -18,6 +19,8 @@ const DOWNLOAD_ATTEMPTS = 3
 
 interface RequestPolicy {
   stage?: MediaDiagnostic['stage']
+  /** 响应结构必须满足协议；HTTP 成功但缺少受理凭据仍为结果未知。 */
+  validate?: (body: Record<string, unknown>) => string | undefined
   /** 替换该阶段的静默上限（`IDLE_MS`）。 */
   idleMs?: number
 }
@@ -134,7 +137,7 @@ export async function send(
   const diagnostic = (kind: MediaDiagnostic['kind']): MediaDiagnostic => ({
     stage,
     kind,
-    outcome: stage === 'download' ? 'available' : 'unknown',
+    outcome: stage === 'upload' ? 'rejected' : stage === 'download' ? 'available' : 'unknown',
     host: new URL(url).host,
     elapsedMs: Date.now() - startedAt,
     ...(idleMs === undefined ? {} : { timeoutMs: idleMs }),
@@ -181,10 +184,14 @@ export async function send(
     clearTimeout(timer)
   }
   if (!res.ok) {
-    // 收到错误状态即为被拒绝：远端已报告失败，不会再返回结果，失败的请求不计费。
-    // 只有没有收到响应或响应无法解析时远端结果未知。下载失败时产物仍在远端，保持可取回。
+    // 生成的 408 / 5xx 可能来自网关，不能据此断言上游未受理。明确的客户端拒绝才可视为未生成。
+    // 上传错误发生在提交生成之前；下载失败时产物仍在远端，保持可取回。
     const facts = diagnostic('http')
-    if (stage !== 'download') facts.outcome = 'rejected'
+    if (
+      stage !== 'download' &&
+      !(stage === 'generate' && (res.status === 408 || res.status >= 500))
+    )
+      facts.outcome = 'rejected'
     throw new MediaError(
       stageMessage(
         stage,
@@ -219,22 +226,30 @@ export async function sendJson(
   const stage = stageOf(init, policy)
   const idleMs = policy.idleMs ?? IDLE_MS[stage]
   const res = await send(url, init, signal, policy)
+  let problem = '响应无法解析'
   try {
     const body: unknown = await res.json()
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('响应不是对象')
-    return body as Record<string, unknown>
+    const object = body as Record<string, unknown>
+    const invalid = policy.validate?.(object)
+    if (invalid) {
+      problem = invalid
+      throw new Error(invalid)
+    }
+    return object
   } catch (err) {
     const diagnostic: MediaDiagnostic = {
       stage,
       kind: 'response',
-      outcome: 'unknown',
+      outcome: stage === 'upload' ? 'rejected' : stage === 'download' ? 'available' : 'unknown',
       host: new URL(url).host,
       elapsedMs: Date.now() - startedAt,
       ...(idleMs === undefined ? {} : { timeoutMs: idleMs }),
       status: res.status,
       ...(res.headers.get('x-request-id') ? { requestId: res.headers.get('x-request-id')! } : {}),
     }
-    throw new MediaError(stageMessage(stage, '响应无法解析', diagnostic), {
+    if (err instanceof MediaError) throw err
+    throw new MediaError(stageMessage(stage, problem, diagnostic), {
       cause: err,
       diagnostic,
     })

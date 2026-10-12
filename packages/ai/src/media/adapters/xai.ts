@@ -7,17 +7,24 @@
 import type { MediaModelSpec } from '../catalog.ts'
 import { count, dataUri, defined, download, getJson, postJson } from '../http.ts'
 import { resolveImages } from '../image-result.ts'
-import { afterSubmit, failureDetail, type TaskState, waitTask } from '../task.ts'
 import {
-  type MediaAdapter,
-  MediaError,
-  type MediaImageResult,
-  type MediaProfile,
-  type MediaRequest,
-  type MediaResult,
-  type MediaRunOptions,
-  type MediaUsage,
+  afterSubmit,
+  failureDetail,
+  pendingTask,
+  postTask,
+  type TaskState,
+  waitTask,
+} from '../task.ts'
+import type {
+  MediaAdapter,
+  MediaImageResult,
+  MediaProfile,
+  MediaRequest,
+  MediaResult,
+  MediaRunOptions,
+  MediaUsage,
 } from '../types.ts'
+import { MediaError } from '../types.ts'
 import { readImages } from './openai-images.ts'
 
 function connection(profile: MediaProfile) {
@@ -86,7 +93,7 @@ export class XaiVideosAdapter implements MediaAdapter {
         if (i.role === 'first_frame') input.image = { url: dataUri(i.bytes, i.mime) }
         if (i.role === 'last_frame') input.last_frame = { url: dataUri(i.bytes, i.mime) }
       }
-      const body = await postJson(
+      const submitted = await postTask(
         `${base}/videos/generations`,
         {
           model: this.profile.model,
@@ -95,12 +102,10 @@ export class XaiVideosAdapter implements MediaAdapter {
           ...input,
         },
         auth,
-        opts.signal,
+        opts,
+        (body) => body.request_id,
       )
-      if (typeof body.request_id !== 'string' || !body.request_id)
-        throw new MediaError('xAI 接口没有返回任务号')
-      taskId = body.request_id
-      await opts.onTask?.(taskId)
+      taskId = submitted.taskId
     }
     const id = taskId
     return afterSubmit(id, opts.signal, async () => {
@@ -111,8 +116,7 @@ export class XaiVideosAdapter implements MediaAdapter {
           const video = body.video as Record<string, unknown> | undefined
           if (video?.respect_moderation === false)
             return { state: 'failed', message: '视频未通过内容审核' }
-          if (typeof video?.url !== 'string')
-            return { state: 'failed', message: '任务完成但没有返回视频地址' }
+          if (typeof video?.url !== 'string') throw new MediaError('任务完成但没有返回视频地址')
           return {
             state: 'done',
             url: video.url,
@@ -122,15 +126,18 @@ export class XaiVideosAdapter implements MediaAdapter {
             },
           }
         }
-        if (status === 'pending' || status === 'processing' || status === 'queued')
-          return { state: 'pending', status }
+        if (status !== 'failed' && status !== 'expired') {
+          // xAI 的 pending 表示仍在生成，与百炼的 PENDING（排队）语义不同。
+          const waiting = pendingTask(status, ['pending', 'processing', 'queued'])
+          return { ...waiting, status: status === 'pending' ? 'processing' : status }
+        }
         const error = body.error as { code?: unknown; message?: unknown } | undefined
         return {
           state: 'failed',
           message: failureDetail(
             error?.code,
             error?.message,
-            status === 'failed' ? '任务失败' : `未知任务状态 ${status}`,
+            status === 'failed' ? '任务失败' : '任务已过期',
           ),
         }
       }, opts)

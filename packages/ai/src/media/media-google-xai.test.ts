@@ -308,7 +308,6 @@ describe('Gemini Interactions', () => {
         '远端任务失败：content_blocked：blocked',
       ],
       [{ id: 'task-1', status: 'cancelled' }, '远端任务失败：任务已取消'],
-      [{ id: 'task-1', status: 'completed', steps: [] }, '远端任务失败：任务完成但没有返回视频'],
     ] as const) {
       reply = () => Response.json(body)
       const err = await a.run(request(), { signal: signal() }).catch((e: unknown) => e)
@@ -595,7 +594,7 @@ describe('xAI 生成', () => {
         { status: 'failed', error: { code: 'invalid_argument', message: 'invalid' } },
         '远端任务失败：invalid_argument：invalid',
       ],
-      [{ status: 'expired' }, '远端任务失败：未知任务状态 expired'],
+      [{ status: 'expired' }, '远端任务失败：任务已过期'],
       [
         { status: 'done', video: { respect_moderation: false, url: `${base()}/video.mp4` } },
         '远端任务失败：视频未通过内容审核',
