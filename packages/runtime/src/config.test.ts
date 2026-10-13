@@ -105,7 +105,7 @@ test.each([false, true])(
     const home = await mkdtemp(join(tmpdir(), 'qy-removed-providerb-'))
     const previousHome = process.env.QYWORK_HOME
     const removed = '高质量sd2.5/(全参原生过真人速度快720P)'
-    const keep = '全能sd2.5(满血内置过脸30图超分1080P)'
+    const keep = 'sd-25-30/10/1-1'
     const provider = {
       kind: 'openai_chat_completions' as const,
       baseUrl: 'https://providerb.example.com/v1',
@@ -141,6 +141,64 @@ test.each([false, true])(
       expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
       await saveConfig(loaded)
       expect(await loadConfig()).toEqual(loaded)
+    } finally {
+      if (previousHome === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = previousHome
+      await rm(home, { recursive: true, force: true })
+    }
+  },
+)
+
+test.each([false, true])(
+  '旧生成型号替换为新型号并迁移默认选择，不覆盖已有配置：已配置新型号=%s',
+  async (alreadyConfigured) => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-replace-providerb-'))
+    const previousHome = process.env.QYWORK_HOME
+    const replacements = [
+      ['全能sd2.5(满血内置过脸30图超分1080P)', 'sd-25-30/10/1-1'],
+      ['video-sd25-30s', '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)'],
+    ] as const
+    try {
+      process.env.QYWORK_HOME = home
+      for (const [removed, replacement] of replacements) {
+        const media = { kind: 'openai_videos' as const }
+        const raw: QyConfig = {
+          providers: {
+            channel: {
+              kind: 'openai_chat_completions',
+              baseUrl: 'https://providerb.example.com/v1',
+              apiKey: 'keep-secret',
+              models: { chat: {} },
+              media: {
+                [removed]: media,
+                keep: { kind: 'openai_images' },
+                ...(alreadyConfigured ? { [replacement]: media } : {}),
+              },
+            },
+          },
+          active: { provider: 'channel', model: 'chat' },
+          mediaDefaults: {
+            video: { provider: 'channel', model: removed },
+            image: { provider: 'channel', model: 'keep' },
+          },
+        }
+        await writeFile(join(home, 'config.json'), JSON.stringify(raw))
+        const loaded = await loadConfig()
+        expect(loaded.providers.channel).toEqual({
+          ...raw.providers.channel!,
+          media: { keep: { kind: 'openai_images' }, [replacement]: media },
+        })
+        expect(loaded.active).toEqual(raw.active)
+        expect(loaded.mediaDefaults).toEqual({
+          ...raw.mediaDefaults,
+          video: { provider: 'channel', model: replacement },
+        })
+        expect(resolveMediaModel(loaded, 'video')?.model).toBe(replacement)
+        expect(diagnoseConfig(loaded)).toEqual([])
+        expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
+        await saveConfig(loaded)
+        expect(await loadConfig()).toEqual(loaded)
+      }
     } finally {
       if (previousHome === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = previousHome

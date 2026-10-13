@@ -8,7 +8,7 @@ import { cancelMediaTask, makeMediaPort, type QyConfig } from '@qywork/runtime'
 import { CanvasService } from './canvas.ts'
 
 const models = {
-  openai_videos: 'video-sd25-30s',
+  openai_videos: 'sd-25-30/10/1-1',
   ark_videos: 'doubao-seedance-2-5-260628',
   dashscope_videos: 'wan3.0-video',
   kling_videos: 'kling-3.0',

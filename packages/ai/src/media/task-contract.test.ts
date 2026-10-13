@@ -33,7 +33,7 @@ test.each([false, true])(
     reply = hasId ? { id: taskId } : {}
     const adapter = buildMediaAdapter({
       kind: 'openai_videos',
-      model: 'video-sd25-30s',
+      model: 'sd-25-30/10/1-1',
       apiKey: 'test',
       baseUrl: `http://127.0.0.1:${server.port}`,
     })
@@ -79,7 +79,7 @@ const cases: {
   { kind: 'openai_videos', body: (status) => ({ status }) },
   {
     kind: 'openai_videos',
-    model: 'video-sd25-30s',
+    model: 'sd-25-30/10/1-1',
     body: (status) => ({ data: { status } }),
   },
   { kind: 'ark_videos', body: (status) => ({ status }) },

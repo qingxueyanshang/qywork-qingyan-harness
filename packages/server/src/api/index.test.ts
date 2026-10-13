@@ -497,45 +497,66 @@ describe('模型目录', () => {
   })
 
   test.each([
-    ['video-sd25-30s', 0],
-    ['满血sd2.5(30-10-10原生过人脸/720P)', 10],
-  ] as const)('SD2.5 将素材上限和原生时长选项同步到模型库与画布：%s', async (id, maxVideos) => {
-    const d = withConfig('openai_chat_completions', 'm')
-    d.config.providers.p!.media = { [id]: { kind: 'openai_videos' } }
-    const response = await body(d)
-    expect(
-      response.mediaLibrary.some((m) => m.id === '高质量sd2.5/(全参原生过真人速度快720P)'),
-    ).toBe(false)
-    expect(response.mediaLibrary.some((m) => m.id === '专享sd2.5(30图10音/4-30秒/720p)')).toBe(
-      false,
-    )
-    expect(response.mediaLibrary.some((m) => m.id === '高质量sd2.5(满血全参/720P/按次)')).toBe(
-      false,
-    )
-    expect(response.mediaLibrary.find((m) => m.id === id)).toMatchObject({
-      vendor: 'providerb',
-      kinds: ['openai_videos'],
-      maxImages: 30,
-      maxVideos,
-      maxAudios: 10,
-    })
-    const model = response.media.find((m) => m.id === id)!
-    expect(model.operations).toEqual([
-      'text_to_video',
-      'reference_to_video',
-      ...(maxVideos ? ['video_to_video' as const] : []),
-    ])
-    const seconds = model.params.find((p) => p.name === 'seconds')!
-    expect(seconds.type).toBe('enum')
-    expect(seconds.default).toBe('30')
-    expect(seconds.values).toEqual(['30'])
-    expect(seconds.valueLabels?.['30']).toBe('30秒')
-    expect(model.params.find((p) => p.name === 'size')?.shapes).toEqual([
-      { ratio: '16:9', tier: '720P', value: '1280x720' },
-      { ratio: '9:16', tier: '720P', value: '720x1280' },
-    ])
-    expect(model.params.map((p) => p.name)).toEqual(['seconds', 'size'])
-  })
+    ['sd-25-30/10/1-1', ['15', '30'], '30', false],
+    ['满血sd2.5(30-10-10原生过人脸/720P)', ['30'], '30', false],
+    [
+      '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
+      Array.from({ length: 27 }, (_, i) => String(i + 4)),
+      '5',
+      true,
+    ],
+  ] as const)(
+    'SD2.5 将素材上限和原生时长选项同步到模型库与画布：%s',
+    async (id, durations, defaultDuration, supports480p) => {
+      const d = withConfig('openai_chat_completions', 'm')
+      d.config.providers.p!.media = { [id]: { kind: 'openai_videos' } }
+      const response = await body(d)
+      for (const removed of ['video-sd25-30s', '全能sd2.5(满血内置过脸30图超分1080P)']) {
+        expect(response.mediaLibrary.some((m) => m.id === removed)).toBe(false)
+      }
+      expect(
+        response.mediaLibrary.some((m) => m.id === '高质量sd2.5/(全参原生过真人速度快720P)'),
+      ).toBe(false)
+      expect(response.mediaLibrary.some((m) => m.id === '专享sd2.5(30图10音/4-30秒/720p)')).toBe(
+        false,
+      )
+      expect(response.mediaLibrary.some((m) => m.id === '高质量sd2.5(满血全参/720P/按次)')).toBe(
+        false,
+      )
+      expect(response.mediaLibrary.find((m) => m.id === id)).toMatchObject({
+        vendor: 'providerb',
+        kinds: ['openai_videos'],
+        maxImages: 30,
+        maxVideos: 10,
+        maxAudios: 10,
+      })
+      const model = response.media.find((m) => m.id === id)!
+      expect(model.operations).toEqual(['text_to_video', 'reference_to_video', 'video_to_video'])
+      const seconds = model.params.find((p) => p.name === 'seconds')!
+      expect(seconds.type).toBe('enum')
+      expect(seconds.default).toBe(defaultDuration)
+      expect(seconds.values).toEqual(durations)
+      expect(seconds.valueLabels?.['30']).toBe('30秒')
+      expect(model.params.find((p) => p.name === 'size')?.shapes).toEqual([
+        { ratio: '16:9', tier: '720P', value: '1280x720' },
+        { ratio: '9:16', tier: '720P', value: '720x1280' },
+        ...(supports480p
+          ? [
+              { ratio: '16:9', tier: '480P', value: '854x480' },
+              { ratio: '9:16', tier: '480P', value: '480x854' },
+            ]
+          : []),
+      ])
+      if (supports480p)
+        expect(seconds.rules).toEqual([
+          {
+            when: { params: { size: ['1280x720', '720x1280'] } },
+            values: Array.from({ length: 12 }, (_, i) => String(i + 4)),
+          },
+        ])
+      expect(model.params.map((p) => p.name)).toEqual(['seconds', 'size'])
+    },
+  )
 
   /** 原始失败形状：只配置了视频模型的接口在输入框的模型选择中显示为一个没有模型的分组。 */
   test('只配置了生成模型的接口不列入对话模型，其生成模型照常列出', async () => {
