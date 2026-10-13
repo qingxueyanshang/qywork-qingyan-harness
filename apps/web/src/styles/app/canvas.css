@@ -111,7 +111,7 @@
   pointer-events: none;
 }
 /*
- * 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变 + 虚线流动，节奏与会话工作流图相同。
+ * 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变 + 虚线流动。
  * 流动由 `CanvasPanel` 的定时器写入 `--canvas-flow` 推进，不用 CSS 动画，原因写在该定时器处。
  */
 .canvas-edges path.live {

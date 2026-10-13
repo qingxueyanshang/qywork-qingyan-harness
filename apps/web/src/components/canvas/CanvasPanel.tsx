@@ -106,9 +106,9 @@ type ContextTarget =
 const CLIP_LINK = 'clip:'
 /** 拖动节点时的吸附范围（屏幕像素）：按缩放换算为画布单位，缩放后吸附距离不变。 */
 const SNAP = 6
-/** 生成中连线的虚线流动：每 0.7 秒前进一个虚线周期（`stroke-dasharray: 4 4`），每秒推进 24 次，每次位移约 0.5 像素。 */
+/** 生成中连线的虚线流动：每 0.8 秒前进一个虚线周期（`stroke-dasharray: 4 4`），每秒推进 24 次，每次位移约 0.4 像素。 */
 const FLOW_PERIOD = 8
-const FLOW_CYCLE_MS = 700
+const FLOW_CYCLE_MS = 800
 const FLOW_TICK_MS = 1000 / 24
 
 /**
