@@ -2,7 +2,7 @@
  * 一轮请求的发送、事件消费与自动重发。重发策略（可重发的码、次数上限、退避）同样定义在本文件。
  */
 
-import type { ProviderEvent } from '@qywork/ai'
+import type { ProviderEvent, WireMessage } from '@qywork/ai'
 import {
   estimateRequest,
   failureDiagnostics,
@@ -15,6 +15,7 @@ import { log } from '@qywork/core'
 import { recoverFromOverflow } from './compact.ts'
 import { contextEvent } from './context.ts'
 import {
+  breakdownOf,
   envelopeHashOf,
   mergeUsage,
   payloadSnapshotOf,
@@ -194,7 +195,7 @@ export async function* sendTurn(
     }
 
     try {
-      const stream = await host.openStream(turn.req)
+      const stream = await host.openStream(run, turn.req)
       persist.markRequestSent(turn.requestId)
       yield {
         type: 'run.request',
@@ -265,6 +266,12 @@ export async function* sendTurn(
 
       if (code === 'context_overflow' && pe?.capacity && !run.overflowRecovered) {
         yield* recoverFromOverflow(host, run, turn, { err, pe, recordDecision, ledger })
+        continue
+      }
+
+      if (pe && rejectedForImages(run, turn, pe)) {
+        removeImages(host, run, turn, pe)
+        recordDecision('images_removed')
         continue
       }
 
@@ -419,6 +426,79 @@ export async function* sendTurn(
   }
 }
 
+/**
+ * 被拒的请求是否按「接口拒绝图片」处理：provider 以 400 / 422 拒绝、本次请求含图像块、本 run 尚未停止发送图片。
+ *
+ * 不按报错文字判断：各第三方接口的措辞不同。判断有误的代价是一次不带图片的重发；重发仍被拒时
+ * `imagesRejected` 已为 true，按不可重发的错误结束本轮。模型声明不接受图片时（`vision === false`），
+ * 图片已在物化时替换为说明，被拒与图片无关。
+ *
+ * 不要放宽为全部 `invalid_request`：413 同属该码，原因是请求体大小，移除图片后重发虽然成功，
+ * 记录的「接口拒绝图片」却不成立，本会话会在该接口上停止发送图片。
+ */
+function rejectedForImages(run: RunState, turn: TurnState, pe: ProviderError): boolean {
+  return (
+    pe.code === 'invalid_request' &&
+    (pe.status === 400 || pe.status === 422) &&
+    !run.imagesRejected &&
+    run.adapter.spec.vision !== false &&
+    turn.req.messages.some(hasImage)
+  )
+}
+
+function hasImage(m: WireMessage): boolean {
+  return Array.isArray(m.content) && m.content.some((b) => b.type === 'image')
+}
+
+/**
+ * ── 接口拒绝图片：移除图片后重发一次 ──
+ *
+ * 被拒的事实作为执行事实交给模型，由模型决定下一步。本 run 随即停止发送图片，请求按同一装配重建，
+ * 物化时图片替换为说明。
+ *
+ * 执行事实只追加到 transcript，等重发被接口接受后才写入（`settleImagesNotice`）：重发仍被拒说明原因不在图片，
+ * 该事实不成立；写入后，其中的接口名与模型 id 是之后的 run 停止发送图片的判据（`RunInput.imagesRejected`）。
+ *
+ * 最后一条 assistant 之后的工具图片从未送达模型，写入时对应 step 一并标记为未送达，供界面显示；
+ * 此前已送达的图片不标记。
+ */
+function removeImages(host: LoopHost, run: RunState, turn: TurnState, pe: ProviderError): void {
+  const messages = turn.req.messages
+  let lastAssistant = -1
+  messages.forEach((m, i) => {
+    if (m.role === 'assistant') lastAssistant = i
+  })
+  const toolCallIds = messages
+    .slice(lastAssistant + 1)
+    .flatMap((m) => (m.role === 'tool' && m.toolCallId && hasImage(m) ? [m.toolCallId] : []))
+
+  run.imagesRejected = true
+  const reason = (pe.message.split(NEWLINE)[0] ?? '').trim().replace(/[，。,.;；]+$/u, '')
+  const text = `包含图片的请求被接口拒绝，接口返回 ${reason}。本会话此后发往该接口的请求不携带图片。`
+  const seq = run.nextSeq()
+  run.pushNotice(text, seq)
+  run.pendingImagesNotice = { seq, text, toolCallIds }
+  turn.req = host.buildRequest(run)
+  turn.breakdown = breakdownOf(turn.req, run.density)
+}
+
+/** 移除图片后的重发已被接口接受：写入执行事实，标记未送达图片的工具 step。 */
+function* settleImagesNotice(host: LoopHost, run: RunState): Generator<AgentEvent, void, unknown> {
+  const pending = run.pendingImagesNotice
+  if (!pending) return
+  run.pendingImagesNotice = null
+  const { input, persist, adapter } = run
+  persist.landUserStep(input.runId, pending.seq, {
+    text: pending.text,
+    notice: true,
+    imagesRejected: { provider: host.deps.providerName ?? '', model: adapter.spec.id },
+  })
+  const stepIds = persist.markImagesUndelivered?.(input.runId, pending.toolCallIds) ?? []
+  if (stepIds.length) {
+    yield { type: 'tool.images_undelivered', runId: input.runId, stepIds: stepIds as StepId[] }
+  }
+}
+
 /** 把一次尝试的 provider 事件合并到本轮状态并转换为界面事件。用户中止时提前返回。 */
 async function* consumeStream(
   host: LoopHost,
@@ -431,6 +511,8 @@ async function* consumeStream(
   const { adapter, input, persist, usage } = run
   for await (const ev of stream) {
     probe.lastEventAt = Date.now()
+    // 非 2xx 不产生 `request_prepared` 之外的任何事件，收到其他事件即表示接口已接受本次请求。
+    if (ev.type !== 'request_prepared') yield* settleImagesNotice(host, run)
     if (ev.type !== 'request_prepared' && ev.type !== 'response_started') {
       probe.providerEvents++
       if (!probe.recordedFirstEvent) {

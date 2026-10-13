@@ -68,6 +68,7 @@ export type AgentEvent =
   | ToolStartedEvent
   | ToolDeltaEvent
   | ToolFinishedEvent
+  | ToolImagesUndeliveredEvent
   // ── 状态面板 ──
   | UsageEvent
   | ContextEvent
@@ -457,6 +458,16 @@ export interface ToolFinishedEvent {
   status: ToolActionStatus
   outcome: ToolOutcomeWire
   durationMs: number
+}
+
+/**
+ * 这些工具 step 的结果图片未送达模型：包含它们的请求被接口拒绝，图片随后从请求中移除。
+ * 与 step payload 的 `imagesUndelivered` 同时写入，刷新之后由后者还原。
+ */
+export interface ToolImagesUndeliveredEvent {
+  type: 'tool.images_undelivered'
+  runId: RunId
+  stepIds: StepId[]
 }
 
 // ─────────────────────────────── 状态面板 ───────────────────────────────

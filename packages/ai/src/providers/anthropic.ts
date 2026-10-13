@@ -291,7 +291,7 @@ export class AnthropicAdapter implements LlmAdapter {
       }
       if (calls.length) yield { type: 'tool_calls', calls, at: Date.now() }
     } catch (err) {
-      throw classifyProviderError('anthropic_messages', err, readTransport(trace))
+      throw classifyProviderError('anthropic_messages', err, readTransport(trace), trace.errorBody)
     }
 
     yield { type: 'usage', usage }

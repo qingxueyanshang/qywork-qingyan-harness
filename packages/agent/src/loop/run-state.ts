@@ -45,7 +45,7 @@ export interface LoopHost {
     run: RunState,
     turnIndex: number,
   ): SummaryTrace & { opened: boolean; merged: boolean }
-  openStream(req: ChatRequest): Promise<AsyncIterable<ProviderEvent>>
+  openStream(run: RunState, req: ChatRequest): Promise<AsyncIterable<ProviderEvent>>
   buildRequest(run: RunState): ChatRequest
   /** 最近一次 `buildRequest` 算出的省略量。 */
   lastOmitted(): ContextOmitted
@@ -131,6 +131,16 @@ export class RunState {
    * 都重新计数，重发没有上限。正常结束的一轮将其清零。
    */
   carriedResends = 0
+  /**
+   * 本 run 是否已停止发送图片。初值来自 `RunInput.imagesRejected`；本 run 内请求因图片被接口拒绝时置为 true，
+   * 之后不复位。请求物化（`AgentLoop.mediaCapabilities`）与工具上下文（`tool-wave.ts` 的 `withStep`）都读取它。
+   */
+  imagesRejected: boolean
+  /**
+   * 已交给模型、尚未写入的「接口拒绝图片」执行事实（`attempt.ts` 的 `removeImages`）。
+   * 移除图片后的重发被接口接受时写入并清空；重发仍被拒时不写入。
+   */
+  pendingImagesNotice: { seq: number; text: string; toolCallIds: string[] } | null = null
 
   // 每个 run 只创建一个 ToolContext。工具写入 ctx.state 的状态
   // （files 插件记录的本轮已读文件、目录大小缓存等）必须跨调用可见；
@@ -146,6 +156,7 @@ export class RunState {
     this.persist = deps.persist
     this.density = deps.adapter.spec.density
     this.contextEstimate = input.contextEstimate
+    this.imagesRejected = input.imagesRejected === true
     this.usage = {
       inputTokens: 0,
       outputTokens: 0,
@@ -266,6 +277,14 @@ export class RunState {
   notify(text: string): void {
     const seq = this.nextSeq()
     this.persist.landUserStep(this.input.runId, seq, { text, notice: true })
+    this.pushNotice(text, seq)
+  }
+
+  /**
+   * 将执行事实追加到 transcript 末尾，单元戳取 `seq`。写入 step 由调用方负责，可以晚于追加，
+   * 但必须使用同一个 `seq`：投影按 seq 还原该消息的位置。
+   */
+  pushNotice(text: string, seq: number): void {
     this.transcript.push({
       role: 'user',
       content: text,

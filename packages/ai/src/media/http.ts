@@ -1,5 +1,6 @@
 /** 生成适配器共用的请求、诊断、下载与文件格式识别。 */
 import type { MediaDiagnostic } from '@qywork/core'
+import { httpStatusName } from '../errors.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { MediaError } from './types.ts'
 
@@ -41,27 +42,6 @@ function stageMessage(
   if (stage === 'upload') return `素材上传失败，未提交生成：${reason}`
   if (stage === 'query') return `任务查询失败：${reason}`
   return stage === 'generate' && facts.outcome === 'unknown' ? `${reason}；远端结果未知` : reason
-}
-
-/** HTTP 状态码的通用名称（RFC 9110；429 见 RFC 6585），列在服务商原文之前，原文不翻译。 */
-const STATUS_NAMES: Record<number, string> = {
-  400: '请求无效',
-  401: '未授权',
-  402: '需要付费',
-  403: '禁止访问',
-  404: '未找到',
-  408: '请求超时',
-  413: '请求内容过大',
-  422: '无法处理的内容',
-  429: '请求过多',
-  500: '服务器内部错误',
-  502: '网关错误',
-  503: '服务不可用',
-  504: '网关超时',
-}
-
-function statusName(status: number): string {
-  return STATUS_NAMES[status] ?? (status >= 500 ? '服务器错误' : '请求被拒绝')
 }
 
 /**
@@ -195,7 +175,7 @@ export async function send(
     throw new MediaError(
       stageMessage(
         stage,
-        `HTTP ${res.status} ${statusName(res.status)}：${await providerMessage(res)}`,
+        `HTTP ${res.status} ${httpStatusName(res.status)}：${await providerMessage(res)}`,
         facts,
       ),
       { status: res.status, diagnostic: facts },

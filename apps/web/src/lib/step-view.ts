@@ -131,8 +131,12 @@ export function readRange(data: unknown): string | null {
 }
 
 /** 终态文字。成功时为空字符串：一屏几十行都显示「成功」不提供任何信息。 */
-export function statusWord(status: 'running' | 'success' | 'failure' | undefined): string {
-  return status === 'failure' ? '失败' : ''
+export function statusWord(
+  status: 'running' | 'success' | 'failure' | undefined,
+  imagesUndelivered?: boolean,
+): string {
+  if (status === 'failure') return '失败'
+  return imagesUndelivered ? '图片未发送' : ''
 }
 
 /**
@@ -362,6 +366,7 @@ const RETRY_LABELS: Record<ProviderRetryDecision, string> = {
   limit_exhausted: '重试已用尽',
   context_compaction: '已压缩后重发',
   context_compaction_failed: '压缩失败，未重发',
+  images_removed: '已移除图片后重发',
   process_exit: '服务进程退出，结果不明',
   run_ended: '本轮已结束，未取得完整的请求结果',
 }

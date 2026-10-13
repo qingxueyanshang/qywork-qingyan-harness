@@ -397,9 +397,27 @@ describe('按用户的下一步动作分类', () => {
       const e = classifyProviderError(P, http(400, m))
       expect(e.code).toBe('invalid_request')
       expect(e.capacity).toBeUndefined()
-      // provider 原文原样保留：分类短语只能说明错误类别，无法指出具体参数。
-      expect(e.message).toBe(m)
+      // provider 原文原样保留，前面只加状态码名称：分类短语只能说明错误类别，无法指出具体参数。
+      expect(e.message).toBe(`HTTP 400 请求无效：${m}`)
     }
+  })
+
+  /**
+   * 原始失败形状：第三方接口后付费合约只包含文本，正文是顶层 `{code, message}`。
+   * OpenAI SDK 只从 `error` 字段取说明，消息退化为「400 status code (no body)」；
+   * Anthropic SDK 的消息是「400 + 空格 + 说明」。两种情形都必须显示正文中的原文。
+   */
+  test('400 报错取错误正文的原文，不带 SDK 拼接的状态码', () => {
+    const original = 'This contract currently includes text input and output only'
+    const body = JSON.stringify({ code: 'POSTPAID_REQUEST_NOT_INCLUDED', message: original })
+    const fromBody = classifyProviderError(P, http(400, '400 status code (no body)'), null, body)
+    expect(fromBody.code).toBe('invalid_request')
+    expect(fromBody.message).toBe(`HTTP 400 请求无效：${original}`)
+    expect(fromBody.detail?.providerMessage).toBe(original)
+
+    const fromSdk = classifyProviderError(P, http(400, `400 ${original}`))
+    expect(fromSdk.message).toBe(`HTTP 400 请求无效：${original}`)
+    expect(fromSdk.detail?.providerMessage).toBe(original)
   })
 
   /**
@@ -420,14 +438,20 @@ describe('按用户的下一步动作分类', () => {
     const e = classifyProviderError(P, http(400, 'Request contains an invalid argument.'))
     expect(e.code).toBe('provider_unavailable')
     expect(e.capacity).toBeUndefined()
-    expect(e.message).toBe('Request contains an invalid argument.')
+    expect(e.message).toBe('HTTP 400 请求无效：Request contains an invalid argument.')
+    // SDK 的消息以状态码开头；整句匹配取的是去掉状态码之后的原文。
+    expect(
+      classifyProviderError(P, http(400, '400 Request contains an invalid argument.')).code,
+    ).toBe('provider_unavailable')
   })
 
   test('第三方接口包装的上游 403 可换渠道重试，端点直接 403 仍是权限拒绝', () => {
     for (const status of [400, 422]) {
       const relayed = classifyProviderError(P, http(status, 'Upstream returned HTTP 403 Forbidden'))
       expect(relayed.code).toBe('provider_unavailable')
-      expect(relayed.message).toBe('Upstream returned HTTP 403 Forbidden')
+      expect(relayed.message).toBe(
+        `HTTP ${status} ${status === 400 ? '请求无效' : '无法处理的内容'}：Upstream returned HTTP 403 Forbidden`,
+      )
     }
 
     expect(classifyProviderError(P, http(403, 'Forbidden')).code).toBe('auth_failed')

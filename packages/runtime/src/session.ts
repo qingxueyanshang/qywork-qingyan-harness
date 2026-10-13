@@ -74,6 +74,7 @@ import {
   appendStep,
   appendTextToStep,
   type ContentStore,
+  conversationRejectsImages,
   createConversation,
   createRun,
   createSchedule,
@@ -91,6 +92,7 @@ import {
   listSchedules,
   listSteps,
   listWorkflowRecords,
+  markImagesUndelivered,
   markRunRunning,
   markStepExecuting,
   recordCompactionStep,
@@ -613,6 +615,13 @@ export class Session {
       providerKind: adapter.kind,
     })
     const anchorRun = anchored ? getRun(store, anchored.runId) : null
+    // 接口拒绝图片的记录按「接口名 × 模型」匹配：换用其他接口或模型后照常发送图片。
+    const imagesRejected = conversationRejectsImages(
+      store,
+      conversationId,
+      resolvedTarget?.provider ?? '',
+      adapter.spec.id,
+    )
     const anchor = anchored
       ? {
           tokens:
@@ -717,6 +726,7 @@ export class Session {
         // 读数在每轮开头出现一次下跌。
         ...(anchor ? { anchor } : {}),
         ...(compacted ? { contextEstimate: compacted } : {}),
+        ...(imagesRejected ? { imagesRejected: true as const } : {}),
       })) {
         if (ev.type === 'run.error') failure = { message: ev.message, code: ev.code }
         if (ev.type === 'usage') this.modelUsage.set(run.id, ev.usage)
@@ -957,8 +967,11 @@ export class Session {
             ...(input.attachments?.length ? { attachments: input.attachments } : {}),
             ...(input.origin ? { origin: input.origin } : {}),
             ...(input.notice ? { notice: true as const } : {}),
+            ...(input.imagesRejected ? { imagesRejected: input.imagesRejected } : {}),
           },
         }).id,
+      markImagesUndelivered: (runId, toolCallIds) =>
+        markImagesUndelivered(store, runId, toolCallIds),
       failThinkingSteps: (stepIds) => failThinkingSteps(store, stepIds as never),
       appendText: (stepId, delta) => appendTextToStep(store, stepId as never, delta),
       openToolStep: (runId, seq, call: WireToolCall, batchId, callIndex, waveIndex, action) =>

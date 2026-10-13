@@ -81,7 +81,7 @@ export class AgentLoop {
       compaction: this.compaction,
       backoff,
       summaryTrace: (run, turnIndex) => this.summaryTrace(run, turnIndex),
-      openStream: (req) => this.openStream(req),
+      openStream: (run, req) => this.openStream(run, req),
       buildRequest: (run) => this.buildRequest(run),
       lastOmitted: () => this.lastOmitted,
     }
@@ -103,12 +103,18 @@ export class AgentLoop {
     )
   }
 
-  /** 本轮的媒体发送方式。换出预算与发送前物化必须使用同一份，否则两处对同一段视频算出不同的字节数。 */
-  private mediaCapabilities(): InputMediaCapabilities {
+  /**
+   * 本轮的媒体发送方式。换出预算与发送前物化必须使用同一份，否则两处对同一段视频算出不同的字节数。
+   *
+   * 接口拒绝过包含图片的请求时（`RunState.imagesRejected`）不发送任何图片，包括此前已送达的：
+   * 合约变化之前送达的图片仍在保留区内，同样会使请求被拒。
+   */
+  private mediaCapabilities(run: RunState): InputMediaCapabilities {
     const { adapter } = this.deps
     const upload = adapter.transmits.mediaUploadAbove
     return {
-      image: adapter.spec.vision,
+      image: run.imagesRejected ? false : adapter.spec.vision,
+      ...(run.imagesRejected ? { imageRejected: true as const } : {}),
       video: adapter.spec.video && adapter.transmits.video === true,
       mediaPaths: adapter.transmits.mediaPaths === true,
       ...(upload !== undefined ? { mediaUploadAbove: upload } : {}),
@@ -116,8 +122,8 @@ export class AgentLoop {
   }
 
   /** 装配完成的请求按模型能力物化媒体后交给适配器。 */
-  private async openStream(req: ChatRequest): Promise<AsyncIterable<ProviderEvent>> {
-    const materialized = await materialize(req, this.mediaCapabilities())
+  private async openStream(run: RunState, req: ChatRequest): Promise<AsyncIterable<ProviderEvent>> {
+    const materialized = await materialize(req, this.mediaCapabilities(run))
     return this.deps.adapter.stream(materialized)
   }
 
@@ -269,7 +275,7 @@ export class AgentLoop {
      * 请求前缀就会变化，`replayReasoning` 随之剥离其后全部原生推理，模型既看不到图片，也失去查看图片时得出的
      * 判断，只能反复取回，实测因连续无进展被循环保护判定失败。
      */
-    const evicted = evictedMedia(assembledRaw, this.mediaCapabilities())
+    const evicted = evictedMedia(assembledRaw, this.mediaCapabilities(run))
     const scoped = evicted.size
       ? assembledRaw.map((m, i) => (evicted.has(i) ? omitImages(m) : m))
       : assembledRaw

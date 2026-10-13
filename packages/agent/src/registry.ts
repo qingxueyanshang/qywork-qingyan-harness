@@ -939,6 +939,11 @@ export interface ToolContext {
    */
   vision: boolean | null
   /**
+   * 接口拒绝过本会话中包含图片的请求（`RunState.imagesRejected`）。为 true 时工具不读取图片字节，直接返回失败：
+   * 图片发出前会被替换为说明。由 loop 按调用注入，装配方不设置。
+   */
+  imagesRejected?: true
+  /**
    * 本轮所用模型与接口是否接受原生视频：需模型具备该能力（`ModelSpec.video`）且适配器实现了视频传输。
    * 与 `vision` 相同，在执行时判定；`read_file` 据此决定读取视频时交付还是直接拒绝。省略即不接受。
    */

@@ -302,7 +302,12 @@ export class OpenAICompatAdapter implements LlmAdapter {
         })
       }
     } catch (err) {
-      throw classifyProviderError('openai_chat_completions', err, readTransport(trace))
+      throw classifyProviderError(
+        'openai_chat_completions',
+        err,
+        readTransport(trace),
+        trace.errorBody,
+      )
     }
 
     yield { type: 'usage', usage }

@@ -100,6 +100,8 @@ export interface TranscriptItem {
   args?: Record<string, unknown>
   status?: 'running' | 'success' | 'failure'
   outcome?: ToolOutcomeWire
+  /** kind='tool' 专有：结果图片未送达模型（step payload 的 `imagesUndelivered`）。 */
+  imagesUndelivered?: true
   durationMs?: number
   /** 长时间运行的工具的中途输出 */
   stdout?: string

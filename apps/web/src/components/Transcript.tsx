@@ -1683,7 +1683,7 @@ function ToolCard(props: { item: TranscriptItem }) {
         id={foldKey('tool', props.item.id)}
         failed={props.item.status === 'failure'}
         label={actionLabel(props.item)}
-        statusWord={statusWord(props.item.status)}
+        statusWord={statusWord(props.item.status, props.item.imagesUndelivered)}
         {...(shownTarget(props.item) ? { target: shownTarget(props.item)! } : {})}
         {...(changes() ? { changes: changes()! } : {})}
       >

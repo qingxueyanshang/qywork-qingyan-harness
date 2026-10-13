@@ -1853,6 +1853,16 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
     usage: null,
   }
 
+  /** 刷新之后由 step payload 还原：实时事件只存在于连接期间。 */
+  test('图片未送达的工具 step 刷新后仍带标记', async () => {
+    setState({ activeConversation: 'cv_1', busyConversations: [] })
+    freshView('cv_1')
+    const step = toolStep()
+    stub([{ ...step, payload: { ...step.payload, imagesUndelivered: true } }], [interruptedRun])
+    await reloadActiveConversation()
+    expect(transcript().find((item) => item.id === 'st_1')?.imagesUndelivered).toBe(true)
+  })
+
   test('独立的思考 step 折叠回会话流，位于工具卡之前', async () => {
     setState({ activeConversation: 'cv_1', busyConversations: ['cv_1'] })
     freshView('cv_1')
@@ -2908,6 +2918,24 @@ describe('工具卡按 stepId 认领实时输出', () => {
     applyEvent(delta('st_tool_1', '第二行\n'))
     applyEvent(finished('st_tool_1'))
     expect(transcript().find((t) => t.id === 'st_tool_1')?.stdout).toBe('第一行\n第二行\n')
+  })
+
+  /** 接口拒绝了包含图片的请求：事件只标记它列出的卡片，标记显示在对应的「读取文件」行上。 */
+  test('图片未送达的事件标记对应的卡片', () => {
+    setState({ activeConversation: 'cv_now' })
+    freshView('cv_now')
+    applyEvent(started('st_tool_1'))
+    applyEvent(finished('st_tool_1'))
+    applyEvent(started('st_tool_2'))
+    applyEvent(finished('st_tool_2'))
+    applyEvent({
+      seq: 4,
+      at: 0,
+      conversationId: 'cv_now',
+      event: { type: 'tool.images_undelivered', runId: 'run_1', stepIds: ['st_tool_1'] },
+    } as never)
+    expect(transcript().find((t) => t.id === 'st_tool_1')?.imagesUndelivered).toBe(true)
+    expect(transcript().find((t) => t.id === 'st_tool_2')).not.toHaveProperty('imagesUndelivered')
   })
 
   /**

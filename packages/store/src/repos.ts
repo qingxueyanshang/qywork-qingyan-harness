@@ -2013,6 +2013,58 @@ export function failThinkingSteps(store: Store, ids: StepId[]): void {
     .run(...ids)
 }
 
+/**
+ * 将同一会话中这些工具调用的 step 标记为图片未送达（payload 的 `imagesUndelivered`），返回被标记的 step id。
+ *
+ * `runId` 只用于限定会话：调用可能属于该会话的上一个 run。只标记已有结果的行。
+ */
+export function markImagesUndelivered(store: Store, runId: RunId, toolCallIds: string[]): StepId[] {
+  if (toolCallIds.length === 0) return []
+  const marks = toolCallIds.map(() => '?').join(',')
+  return store.tx(() => {
+    const rows = store.db
+      .query<{ id: string; payload: string | null }, string[]>(
+        `SELECT s.id, s.payload FROM steps s JOIN runs r ON r.id = s.run_id
+         WHERE r.conversation_id = (SELECT conversation_id FROM runs WHERE id = ?)
+           AND s.kind = 'tool_action' AND s.tool_call_id IN (${marks})`,
+      )
+      .all(runId, ...toolCallIds)
+    const marked: StepId[] = []
+    for (const row of rows) {
+      const payload = readJson<Step['payload']>(row.payload, null)
+      if (payload?.kind !== 'tool_result') continue
+      store.db
+        .query('UPDATE steps SET payload = ? WHERE id = ?')
+        .run(writeJson({ ...payload, imagesUndelivered: true }), row.id)
+      marked.push(row.id as StepId)
+    }
+    return marked
+  })
+}
+
+/**
+ * 会话中是否有「接口拒绝了包含图片的请求」的执行事实，且接口与模型与给定的相同
+ * （user step payload 的 `imagesRejected`）。
+ */
+export function conversationRejectsImages(
+  store: Store,
+  conversationId: ConversationId,
+  provider: string,
+  model: string,
+): boolean {
+  return (
+    store.db
+      .query<{ one: number }, [string, string, string]>(
+        `SELECT 1 AS one FROM steps s JOIN runs r ON r.id = s.run_id
+         WHERE r.conversation_id = ? AND s.kind = 'user'
+           AND json_extract(s.payload, '$.imagesRejected.provider') = ?
+           AND json_extract(s.payload, '$.imagesRejected.model') = ?
+         LIMIT 1`,
+      )
+      .get(conversationId, provider, model) !== null
+  )
+}
+
 export function appendTextToStep(store: Store, id: StepId, text: string): void {
   store.db.query("UPDATE steps SET content = COALESCE(content,'') || ? WHERE id = ?").run(text, id)
 }

@@ -31,6 +31,8 @@ export interface TransportTrace {
   lastByteAt: number | null
   keepAliveLines: number
   hedge: ProviderHedge | null
+  /** 非 2xx 响应的正文（`boundedErrorBody` 读取的部分）。2xx 与未收到响应时为 null。 */
+  errorBody: string | null
 }
 
 export function newTrace(now = Date.now()): TransportTrace {
@@ -42,6 +44,7 @@ export function newTrace(now = Date.now()): TransportTrace {
     lastByteAt: null,
     keepAliveLines: 0,
     hedge: null,
+    errorBody: null,
   }
 }
 
@@ -419,6 +422,7 @@ async function boundedErrorBody(
     joined.set(part, offset)
     offset += part.byteLength
   }
+  trace.errorBody = new TextDecoder().decode(joined)
   return new Response(joined, {
     status: res.status,
     statusText: res.statusText,

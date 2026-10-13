@@ -6,6 +6,7 @@ import {
   appendMessage,
   appendStep,
   archiveConversation,
+  conversationRejectsImages,
   createConversation,
   createRun,
   deleteConversation,
@@ -27,6 +28,7 @@ import {
   listRunContextSnapshots,
   listSteps,
   listWorkspaces,
+  markImagesUndelivered,
   markProviderRequestContent,
   markProviderRequestFirstEvent,
   markProviderRequestHeaders,
@@ -865,6 +867,80 @@ describe('思考 step 写入失败终态', () => {
   test('空列表不执行语句', () => {
     const { store } = fresh()
     expect(() => failThinkingSteps(store, [])).not.toThrow()
+    store.close()
+  })
+})
+
+describe('接口拒绝图片的记录', () => {
+  function conversationWithRuns() {
+    const { store, ws } = fresh()
+    const cv = createConversation(store, { workspaceId: ws.id, provider: 'relay', model: 'm' })
+    const other = createConversation(store, { workspaceId: ws.id, provider: 'relay', model: 'm' })
+    const newRun = (conversationId: typeof cv.id, key: string) =>
+      createRun(store, {
+        conversationId,
+        workspaceId: ws.id,
+        model: 'm',
+        clientRequestId: key,
+        userMessageId: null,
+        messageIdUpperBound: null,
+        contextSnapshot: [],
+      })
+    return { store, cv, other, newRun }
+  }
+
+  /** 未送达的图片可能来自上一个 run 的历史：按会话查找调用，其他会话的同名调用不受影响。 */
+  test('标记同一会话中的工具结果，跳过没有结果的行与其他会话', () => {
+    const { store, cv, other, newRun } = conversationWithRuns()
+    const earlier = newRun(cv.id, 'r1')
+    const current = newRun(cv.id, 'r2')
+    const elsewhere = newRun(other.id, 'r3')
+    const result = (runId: typeof earlier.id, seq: number, toolCallId: string) =>
+      appendStep(store, {
+        runId,
+        seq,
+        kind: 'tool_action',
+        toolCallId,
+        payload: {
+          kind: 'tool_result',
+          outcome: { status: 'success', executed: true, message: '读取 a.png' },
+        },
+      })
+    const shot = result(earlier.id, 1, 'call_1')
+    const running = appendStep(store, {
+      runId: earlier.id,
+      seq: 2,
+      kind: 'tool_action',
+      toolCallId: 'call_2',
+      payload: { kind: 'tool_call', args: {} },
+    })
+    const foreign = result(elsewhere.id, 1, 'call_1')
+
+    expect(markImagesUndelivered(store, current.id, ['call_1', 'call_2'])).toEqual([shot.id])
+    const steps = listSteps(store, earlier.id)
+    expect(steps.find((s) => s.id === shot.id)?.payload).toMatchObject({ imagesUndelivered: true })
+    expect(steps.find((s) => s.id === running.id)?.payload).not.toHaveProperty('imagesUndelivered')
+    expect(listSteps(store, elsewhere.id)[0]?.id).toBe(foreign.id)
+    expect(listSteps(store, elsewhere.id)[0]?.payload).not.toHaveProperty('imagesUndelivered')
+    expect(markImagesUndelivered(store, current.id, [])).toEqual([])
+    store.close()
+  })
+
+  /** 记录按「接口名 × 模型」匹配：换用其他接口或模型后照常发送图片。 */
+  test('只对同一会话中相同的接口与模型成立', () => {
+    const { store, cv, other, newRun } = conversationWithRuns()
+    const run = newRun(cv.id, 'r1')
+    appendStep(store, {
+      runId: run.id,
+      seq: 1,
+      kind: 'user',
+      content: '包含图片的请求被接口拒绝。',
+      payload: { kind: 'user', notice: true, imagesRejected: { provider: 'relay', model: 'm' } },
+    })
+    expect(conversationRejectsImages(store, cv.id, 'relay', 'm')).toBe(true)
+    expect(conversationRejectsImages(store, cv.id, 'official', 'm')).toBe(false)
+    expect(conversationRejectsImages(store, cv.id, 'relay', 'm2')).toBe(false)
+    expect(conversationRejectsImages(store, other.id, 'relay', 'm')).toBe(false)
     store.close()
   })
 })

@@ -862,6 +862,11 @@ export type StepPayload =
        * 崩溃恢复把未执行完毕的节点标记为中断。
        */
       nodes?: Record<string, NodeState>
+      /**
+       * 结果中的图片未送达模型：包含它的请求被接口拒绝，图片随后从请求中移除。
+       * 只供界面显示；模型看到的形态由同一会话的 `imagesRejected` 执行事实决定。
+       */
+      imagesUndelivered?: true
     }
   | {
       kind: 'compaction'
@@ -897,6 +902,11 @@ export type StepPayload =
        * 界面与导出不显示，投影到历史时归入运行上下文。
        */
       notice?: true
+      /**
+       * 执行事实是「接口拒绝了包含图片的请求」。同一会话之后发往同一接口与模型的请求不携带图片，
+       * 判据只有本字段（`store` 的 `conversationRejectsImages`）。`provider` 是配置中的接口名。
+       */
+      imagesRejected?: { provider: string; model: string }
     }
 
 /** 判定 step 是否为装配层交给模型的执行事实（见 `StepPayload` 的 `notice`），而不是任何参与者的发言。 */
@@ -1370,6 +1380,8 @@ export type ProviderRetryDecision =
   | 'limit_exhausted'
   | 'context_compaction'
   | 'context_compaction_failed'
+  /** 接口拒绝了包含图片的请求，移除图片后重发。 */
+  | 'images_removed'
   | 'process_exit'
   | 'run_ended'
 

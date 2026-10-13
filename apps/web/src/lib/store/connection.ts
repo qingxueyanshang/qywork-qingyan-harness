@@ -503,6 +503,18 @@ function foldContent(cid: string, ev: AgentEvent): void {
       toolFrames.push(bufKey(cid, ev.stepId), ev.delta)
       return
 
+    case 'tool.images_undelivered': {
+      const ids = new Set<string>(ev.stepIds)
+      setState(
+        produce((s) => {
+          for (const item of s.views[cid]?.transcript ?? []) {
+            if (ids.has(item.id)) item.imagesUndelivered = true
+          }
+        }),
+      )
+      return
+    }
+
     case 'team.output':
       nodeFrames.push(bufKey(cid, ev.stepId, ev.nodeId), ev.delta)
       return
@@ -1677,6 +1689,7 @@ function stepToItems(s: Step): TranscriptItem[] {
         ...(p?.nodes ? { nodes: p.nodes } : {}),
         status: s.status === 'success' ? 'success' : s.status === 'running' ? 'running' : 'failure',
         ...(outcome ? { outcome } : {}),
+        ...(p?.kind === 'tool_result' && p.imagesUndelivered ? { imagesUndelivered: true } : {}),
         // 存量行没有该数值，此时不显示耗时，不编造数值。
         ...(s.durationMs === null ? {} : { durationMs: s.durationMs }),
       },

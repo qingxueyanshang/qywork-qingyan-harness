@@ -1057,7 +1057,7 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     const err = events.find((e) => e.type === 'run.error')
     expect(err?.type === 'run.error' && err.code).toBe('provider_unavailable')
     expect(err?.type === 'run.error' && err.message).toBe(
-      'Request contains an invalid argument，已重发 5 次',
+      'HTTP 400 请求无效：Request contains an invalid argument，已重发 5 次',
     )
   })
 

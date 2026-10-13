@@ -370,6 +370,12 @@ export const readFileTool: ToolSpec = {
             `不要再读取该文件：更换支持图片的模型，或请用户描述图片内容。`,
         }
       }
+      if (ctx.imagesRejected) {
+        return {
+          status: 'failure',
+          message: `接口拒绝图片输入，${displayPath(ctx.workspaceRoot, abs)} 未读取。`,
+        }
+      }
       if (info.size > MAX_IMAGE_BYTES) {
         return {
           status: 'failure',

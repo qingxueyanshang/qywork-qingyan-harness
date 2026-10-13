@@ -174,7 +174,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
           readTransport(trace),
         )
       }
-      throw classifyProviderError('openai_responses', err, readTransport(trace))
+      throw classifyProviderError('openai_responses', err, readTransport(trace), trace.errorBody)
     } finally {
       clearTimeout(timer)
     }
@@ -356,7 +356,7 @@ export class OpenAIResponsesAdapter implements LlmAdapter {
         })
       }
     } catch (err) {
-      throw classifyProviderError('openai_responses', err, readTransport(trace))
+      throw classifyProviderError('openai_responses', err, readTransport(trace), trace.errorBody)
     }
 
     const calls = collectToolCalls(partial, 'openai_responses', req.model)

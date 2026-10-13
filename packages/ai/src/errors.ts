@@ -106,6 +106,62 @@ function messageOf(err: unknown): string {
   return String(err)
 }
 
+/** HTTP 状态码的通用名称（RFC 9110；429 见 RFC 6585），列在服务商原文之前，原文不翻译。 */
+const STATUS_NAMES: Record<number, string> = {
+  400: '请求无效',
+  401: '未授权',
+  402: '需要付费',
+  403: '禁止访问',
+  404: '未找到',
+  408: '请求超时',
+  413: '请求内容过大',
+  422: '无法处理的内容',
+  429: '请求过多',
+  500: '服务器内部错误',
+  502: '网关错误',
+  503: '服务不可用',
+  504: '网关超时',
+}
+
+export function httpStatusName(status: number): string {
+  return STATUS_NAMES[status] ?? (status >= 500 ? '服务器错误' : '请求被拒绝')
+}
+
+/** 错误正文中的说明：JSON 取 `error.message`、顶层 `message` 或字符串形式的 `error`，其余取正文原文。 */
+function bodyMessage(body: string): string | null {
+  const text = body.trim()
+  if (!text) return null
+  let json: unknown
+  try {
+    json = JSON.parse(text)
+  } catch {
+    return text
+  }
+  const nested =
+    typeof json === 'object' && json !== null ? (json as { error?: unknown }).error : null
+  return (
+    stringField(nested, 'message')?.trim() ||
+    stringField(json, 'message')?.trim() ||
+    (typeof nested === 'string' ? nested.trim() : '') ||
+    text
+  )
+}
+
+/**
+ * 服务商的报错原文。
+ *
+ * 优先取传输层读取的错误正文：OpenAI SDK 只从正文的 `error` 字段取说明，正文是顶层 `{code, message}`
+ * 时报为「400 status code (no body)」，原文随之丢失。没有正文时取 SDK 的消息并去掉开头的状态码：
+ * 两个 SDK 的 `APIError.message` 都是「状态码 + 空格 + 说明」，状态码另由 `status` 表达。
+ */
+function providerText(err: unknown, status: number | undefined, errorBody: string | null): string {
+  const fromBody = errorBody === null ? null : bodyMessage(errorBody)
+  if (fromBody) return fromBody
+  const message = messageOf(err)
+  const prefix = status === undefined ? null : `${status} `
+  return prefix && message.startsWith(prefix) ? message.slice(prefix.length) : message
+}
+
 function stringField(value: unknown, key: string): string | null {
   if (typeof value !== 'object' || value === null) return null
   const field = (value as Record<string, unknown>)[key]
@@ -176,12 +232,14 @@ function looksUnconfigured(err: unknown): boolean {
   return m.includes('unset') || m.includes('missing') || m.includes('no api key')
 }
 
+/** `errorBody` 是传输层读取的非 2xx 正文（`transport.ts` 的 `TransportTrace.errorBody`），没有时为 null。 */
 export function classifyProviderError(
   provider: ProviderKind,
   err: unknown,
   transport: ProviderTransportReading | null = null,
+  errorBody: string | null = null,
 ): ProviderError {
-  const classified = classify(provider, err)
+  const classified = classify(provider, err, errorBody)
   if (transport) classified.transport = transport
   return classified
 }
@@ -250,12 +308,12 @@ function carriedProviderError(err: unknown): ProviderError | null {
   return null
 }
 
-function classify(provider: ProviderKind, err: unknown): ProviderError {
+function classify(provider: ProviderKind, err: unknown, errorBody: string | null): ProviderError {
   const carried = carriedProviderError(err)
   if (carried) return carried
 
   const status = statusOf(err)
-  const message = messageOf(err)
+  const message = providerText(err, status, errorBody)
   const retryAfterMs = retryAfterOf(err)
   const providerCode = providerErrorField(err, 'code')
   const providerType = providerErrorField(err, 'type')
@@ -343,10 +401,12 @@ function classify(provider: ProviderKind, err: unknown): ProviderError {
        * 一次仍会被同样拒绝：不接受图片的模型收到图像块、`max_tokens` 越界，
        * 每次都会触发。归为可重发的码时界面显示「正在重连 N / M」，
        * 该提示无法指出真正的原因。
+       *
+       * 报错写成状态码名称加原文，与生成一侧（`media/http.ts`）相同；原文不翻译。
        */
       return build(
         looksRetryableRejection(status, message) ? 'provider_unavailable' : 'invalid_request',
-        message,
+        `HTTP ${status} ${httpStatusName(status)}：${message}`,
       )
     case 500:
     case 502:

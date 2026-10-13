@@ -181,8 +181,17 @@ export interface LoopPersistence {
       attachments?: Attachment[]
       origin?: 'subagent' | 'workflow'
       notice?: true
+      /** 执行事实是「接口拒绝了包含图片的请求」，见 `core` 的 `StepPayload`。 */
+      imagesRejected?: { provider: string; model: string }
     },
   ): string
+  /**
+   * 将同一会话中这些工具调用的 step 标记为图片未送达，返回被标记的 step id。
+   *
+   * 调用可能属于该会话的上一个 run：上一轮失败之后继续执行时，未送达的图片来自 history。
+   * 可选仅为兼容测试夹具；生产装配必须提供。
+   */
+  markImagesUndelivered?(runId: RunId, toolCallIds: string[]): string[]
   /**
    * `batchId` 是产生该段正文的请求 id，写入 `provider_batch_id`。
    * 工具行与同一次生成的思考行取相同的值：投影据此识别生成边界。
@@ -380,6 +389,13 @@ export interface RunInput {
      */
     envelopeFingerprint: string | null
   }
+  /**
+   * 本会话已有「接口拒绝了包含图片的请求」的执行事实，且接口与模型与本轮相同。
+   *
+   * 为 true 时本轮请求不携带图片，`read_file` 读取图片时直接返回。由 runtime 从会话记录推导
+   * （`store` 的 `conversationRejectsImages`）。
+   */
+  imagesRejected?: true
   /**
    * 本轮 transcript 所属的用户消息。
    *

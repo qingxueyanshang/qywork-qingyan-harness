@@ -166,7 +166,7 @@ export async function* executeCalls(
             const outcome = await registry.execute(
               r.call.name,
               r.call.arguments,
-              withStep(ctx, input.runId, r.stepId, emitQueue),
+              withStep(ctx, input.runId, r.stepId, emitQueue, run.imagesRejected),
             )
             return { ...r, outcome, durationMs: Date.now() - started }
           }),
@@ -282,9 +282,12 @@ function withStep(
   runId: RunId,
   stepId: string,
   queue: EventQueue,
+  imagesRejected: boolean,
 ): ToolContext {
   return {
     ...base,
+    // 按调用读取 `RunState.imagesRejected`：它可能在本 run 的上一次请求被拒时才置为 true。
+    ...(imagesRejected ? { imagesRejected: true as const } : {}),
     stepId,
     emit: (channel, delta) => {
       queue.push({ type: 'tool.delta', runId, stepId: stepId as never, channel, delta })

@@ -325,6 +325,9 @@ describe('读数格式', () => {
     expect(statusWord('running')).toBe('')
     expect(statusWord(undefined)).toBe('')
     expect(statusWord('failure')).toBe('失败')
+    // 图片未送达只在调用成功时显示：失败的调用没有结果图片。
+    expect(statusWord('success', true)).toBe('图片未发送')
+    expect(statusWord('failure', true)).toBe('失败')
   })
 })
 

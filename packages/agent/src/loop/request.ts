@@ -584,6 +584,8 @@ export function envelopeResult(
  */
 export interface InputMediaCapabilities {
   image: boolean | null
+  /** 接口拒绝了包含图片的请求（`RunState.imagesRejected`）。为 true 时 `image` 同为 false，替换说明不同。 */
+  imageRejected?: true
   video: boolean
   mediaPaths?: boolean
   /** 本地路径媒体超过该字节数时由适配器上传，请求中只带地址；缺失表示一律内联。 */
@@ -634,6 +636,10 @@ async function loadBlock(
   const where = b.source.kind === 'path' ? `${label} ${b.source.path}` : label
   const note = (why: string): ContentBlock => ({ type: 'text', text: `［${where}：${why}］` })
 
+  // 接口拒绝过包含图片的请求：说明写明是接口拒绝，模型本身接受图片。
+  if (b.type === 'image' && capabilities.imageRejected) {
+    return note('接口拒绝图片输入，此图片未发送')
+  }
   /*
    * 模型不接受图片：替换为文本说明，不发送图像块。
    *
