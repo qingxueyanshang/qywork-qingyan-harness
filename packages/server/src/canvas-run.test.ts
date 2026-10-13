@@ -634,21 +634,59 @@ describe('画布运行：视频', () => {
     expect((await node(ws.root, ids.$v!)).versions[0]!.path).toMatch(/\.mp4$/)
   })
 
-  test('远端明确失败：删除该版本与任务记录，最近失败带原文', async () => {
-    const { ws, svc, ids } = await setup(VIDEO_CARD)
-    const fake = fakePort()
-    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
-    const p = await fake.next()
-    await p.submit()
-    p.finish({ ok: false, message: '远端任务失败：不合规' })
-    await run.done
-    expect((await node(ws.root, ids.$v!)).versions).toEqual([])
-    expect(await readdir(join(ws.root, 'generated'))).toEqual([])
-    expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual({
-      state: 'failed',
-      message: '远端任务失败：不合规',
-    })
-  })
+  test.each([false, true])(
+    '远端明确失败后重启仍显示原文（已有成片=%s），再次成功后清除失败状态',
+    async (hasVideo) => {
+      const { ws, svc, ids } = await setup(VIDEO_CARD)
+      const fake = fakePort()
+      const finished: MediaCallResult = {
+        ok: true,
+        provider: 'ark',
+        model: 'seedance',
+        files: [{ bytes: MP4, mime: 'video/mp4' }],
+      }
+      if (hasVideo) {
+        const previous = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+        const p = await fake.next()
+        await p.submit('completed-task')
+        p.finish(finished)
+        await previous.done
+      }
+      const previous = await node(ws.root, ids.$v!)
+      const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+      const p = await fake.next()
+      await p.submit('rejected-task')
+      const message =
+        '远端任务失败：The request failed because the output video may be related to copyright restrictions.'
+      p.finish({ ok: false, message })
+      await run.done
+      const after = await node(ws.root, ids.$v!)
+      expect(after.versions).toEqual(previous.versions)
+      expect(after.current).toBe(previous.current)
+      expect(
+        (await readdir(join(ws.root, 'generated'))).filter((f) => f.endsWith('.task.json')),
+      ).toEqual([])
+      const expected = { state: 'failed', message } as const
+      expect((await svc.read(ws.root, PATH)).states[ids.$v!]).toEqual(expected)
+      const fresh = new CanvasService({ publish: () => {} })
+      const restored = await fresh.read(ws.root, PATH)
+      expect(restored.states[ids.$v!]).toEqual(expected)
+      expect(restored.doc.runs?.at(-1)).toMatchObject({
+        result: 'failed',
+        task: 'rejected-task',
+        message,
+      })
+      const retry = await fresh.run(ws, PATH, ids.$v!, { media: fake.port })
+      const next = await fake.next()
+      expect((await fresh.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({ state: 'running' })
+      await next.submit('retry-task')
+      next.finish(finished)
+      await retry.done
+      expect((await fresh.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'normal' })
+      const restarted = new CanvasService({ publish: () => {} })
+      expect((await restarted.read(ws.root, PATH)).states[ids.$v!]).toEqual({ state: 'normal' })
+    },
+  )
 
   test('生成期间删除同一卡片的另一个旧版本，成功后回写的仍是正确的版本', async () => {
     const { ws, svc, ids } = await setup(VIDEO_CARD)
@@ -877,6 +915,8 @@ describe('画布运行：取消', () => {
       await retrieve.done
       const final = await svc.read(ws.root, PATH)
       expect(final.states[id]).toEqual({ state: 'normal' })
+      const fresh = new CanvasService({ publish: () => {} })
+      expect((await fresh.read(ws.root, PATH)).states[id]).toEqual({ state: 'normal' })
       const finalNode = await node(ws.root, id)
       expect(finalNode.current).toBe(current)
       expect(finalNode.versions.find((v) => v.id === current)?.path).toBe(newPath)
@@ -1093,14 +1133,16 @@ describe('画布运行：生成记录', () => {
     expect(Date.parse(runs[0]!.end)).toBeGreaterThanOrEqual(Date.parse(runs[0]!.start))
   })
 
-  test('失败：一条 failed，带失败原文、没有花费；重启后原文仍在画布文件中', async () => {
+  test('失败：一条 failed，带失败原文、没有花费；重启后状态仍显示原文', async () => {
     const { ws, svc, ids } = await setup(IMAGE_CARD)
     const fake = fakePort()
     const { done } = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
     ;(await fake.next()).finish({ ok: false, message: 'qwen / img：内容审核未通过' })
     await done
     const fresh = new CanvasService({ publish: () => {} })
-    const runs = (await fresh.read(ws.root, PATH)).doc.runs ?? []
+    const view = await fresh.read(ws.root, PATH)
+    expect(view.states[ids.$g!]).toEqual({ state: 'failed', message: 'qwen / img：内容审核未通过' })
+    const runs = view.doc.runs ?? []
     expect(runs).toHaveLength(1)
     expect(runs[0]).toMatchObject({ result: 'failed', message: 'qwen / img：内容审核未通过' })
     expect(runs[0]).not.toHaveProperty('cost')

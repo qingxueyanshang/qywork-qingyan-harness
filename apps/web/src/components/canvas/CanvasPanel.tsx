@@ -1783,10 +1783,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const st = () => view()?.states[p.node.id]
     const running = () => {
       const s = st()
-      return s?.state === 'running' &&
-        (s.version ? s.version === p.node.current : !currentOf(p.node))
-        ? s
-        : null
+      return s?.state === 'running' && (!s.version || s.version === p.node.current) ? s : null
     }
     const pending = () => {
       const s = st()

@@ -929,6 +929,77 @@ describe('画布：生成卡与生成面板', () => {
     expect(live.children).toHaveLength(3)
   })
 
+  test('已有视频再次发送时立即显示准备与提交进度，失败后恢复原视频', async () => {
+    const { host, server, refs } = await mount(CARD)
+    const core = await import('@qywork/core')
+    const store = await import('../../lib/store/index.ts')
+    const id = refs.$v!
+    const previous = {
+      id: 'completed',
+      path: 'generated/completed.mp4',
+      made: {
+        prompt: '视频',
+        provider: 'qwen',
+        model: 'wan3.0-video',
+        params: {},
+        inputs: [],
+        at: '2026-10-13T08:00:00Z',
+      },
+    }
+    const added = core.addVersions(server.doc(), id, [previous])
+    if (!added.ok) throw new Error(added.error)
+    server.setView({ doc: added.doc, states: { [id]: { state: 'normal' } } })
+    store.setState('canvasVersion', 1)
+    await select(host, id)
+    await waitFor(
+      () => !!node(host, id).querySelector('video'),
+      () => node(host, id).innerHTML,
+    )
+    const editor = host.querySelector<HTMLElement>('.canvas-prompt')!
+    editor.textContent = '重新生成视频'
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+    const send = host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!
+    await waitFor(
+      () => !send.disabled,
+      () => send.outerHTML,
+    )
+    const startedAt = Date.now() - 20_000
+    server.setView({
+      states: { [id]: { state: 'running', action: 'run', startedAt, stage: 'preparing' } },
+    })
+    send.click()
+    const phase = () => node(host, id).querySelector('.canvas-live .phase')?.textContent
+    await waitFor(
+      () => phase() === '准备中',
+      () => node(host, id).textContent ?? '',
+    )
+    expect(server.runs).toHaveLength(1)
+    expect(node(host, id).querySelector('video')).toBeNull()
+    expect(node(host, id).querySelector('.canvas-live .time')?.textContent).toMatch(/^00:2\d$/)
+    server.setView({
+      states: { [id]: { state: 'running', action: 'run', startedAt, stage: 'submitting' } },
+    })
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => phase() === '提交中',
+      () => node(host, id).textContent ?? '',
+    )
+    expect(node(host, id).querySelector('video')).toBeNull()
+    const card = server.doc().nodes.find((n) => n.id === id)
+    expect(card?.type === 'generate' && card.current).toBe(previous.id)
+    expect(card?.type === 'generate' && card.versions).toEqual([previous])
+    server.setView({ states: { [id]: { state: 'failed', message: '生成请求被拒绝' } } })
+    store.setState('canvasVersion', (v) => v + 1)
+    await waitFor(
+      () => !!node(host, id).querySelector('video'),
+      () => node(host, id).innerHTML,
+    )
+    expect(node(host, id).querySelector('video')?.src).toContain('completed.mp4')
+    expect(node(host, id).querySelector('.canvas-live')).toBeNull()
+    expect(node(host, id).querySelector('[role="alert"]')?.textContent).toContain('生成请求被拒绝')
+    expect(server.runs).toHaveLength(1)
+  })
+
   test('开始运行时立即刷新计时，连续的状态刷新不推迟下一次计时', async () => {
     let time = Date.now()
     const date = spyOn(Date, 'now').mockImplementation(() => time)

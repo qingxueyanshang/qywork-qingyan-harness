@@ -1489,8 +1489,11 @@ export class CanvasService {
     if (pending) return { state: 'pending', version: pending.id }
     const relevant =
       lastRun?.action !== 'retrieve' || !node.current || lastRun.version === node.current
-    if (relevant && lastRun?.result === 'unknown')
-      return { state: 'unknown', message: lastRun.message ?? '远端结果未知' }
+    if (relevant && (lastRun?.result === 'unknown' || lastRun?.result === 'failed'))
+      return {
+        state: lastRun.result,
+        message: lastRun.message ?? (lastRun.result === 'unknown' ? '远端结果未知' : '生成失败'),
+      }
     const failure = this.failures.get(key)
     if (relevant && failure !== undefined) return { state: 'failed', message: failure }
     const current = node.versions.find((v) => v.id === node.current)
