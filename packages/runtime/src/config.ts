@@ -553,6 +553,32 @@ function migrateUnverifiedMediaKinds(cfg: QyConfig): string[] {
   return notices
 }
 
+/** 移除已停用渠道的配置与默认引用；混合接口保留其他模型及凭证。 */
+function migrateRemovedMediaKinds(cfg: QyConfig): string[] {
+  const notices: string[] = []
+  for (const [name, provider] of Object.entries(cfg.providers ?? {})) {
+    let removed = false
+    for (const [id, stored] of Object.entries(provider.media ?? {})) {
+      if ((stored.kind as string) !== 'binguo_videos') continue
+      delete provider.media![id]
+      removed = true
+      for (const output of MEDIA_OUTPUTS) {
+        const ref = cfg.mediaDefaults?.[output]
+        if (ref?.provider === name && ref.model === id) delete cfg.mediaDefaults![output]
+      }
+      notices.push(`已移除停用的服务商D模型 ${name} / ${id}。`)
+    }
+    if (!removed || Object.keys(provider.media ?? {}).length) continue
+    delete provider.media
+    if (Object.keys(provider.models ?? {}).length) continue
+    delete cfg.providers[name]
+    if (cfg.active?.provider === name) delete cfg.active
+  }
+  if (notices.length && cfg.mediaDefaults && !Object.keys(cfg.mediaDefaults).length)
+    delete cfg.mediaDefaults
+  return notices
+}
+
 export async function loadConfig(): Promise<QyConfig> {
   const raw = await readFile(configPath(), 'utf8').catch(() => null)
   if (raw === null) return structuredClone(DEFAULT_CONFIG)
@@ -573,6 +599,7 @@ export async function loadConfig(): Promise<QyConfig> {
   for (const n of migrateModelLibrary(cfg)) log.warn('config', n)
   for (const n of migrateDisabledEffort(cfg)) log.warn('config', n)
   for (const n of migrateRetiredDeepSeekOverrides(cfg)) log.warn('config', n)
+  for (const n of migrateRemovedMediaKinds(cfg)) log.warn('config', n)
   for (const n of migrateUnverifiedMediaKinds(cfg)) log.warn('config', n)
 
   /*

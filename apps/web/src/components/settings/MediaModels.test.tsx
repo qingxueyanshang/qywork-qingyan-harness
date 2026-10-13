@@ -133,12 +133,6 @@ test('官方及渠道模型均使用目录协议，模型库显示对应页签',
       vendor: 'providerb',
     },
     {
-      id: 'Seedance 2.5 720p',
-      kind: 'binguo_videos',
-      baseUrl: 'https://binguofilm.com',
-      vendor: '服务商D',
-    },
-    {
       id: 'gemini-3.1-flash-image',
       kind: 'gemini_images',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',

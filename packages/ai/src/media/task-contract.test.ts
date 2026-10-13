@@ -87,7 +87,6 @@ const cases: {
   { kind: 'kling_videos', body: (status) => ({ code: 0, data: [{ id: taskId, status }] }) },
   { kind: 'gemini_videos', body: (status) => ({ id: taskId, status }) },
   { kind: 'xai_videos', body: (status) => ({ status }) },
-  { kind: 'binguo_videos', body: (status) => ({ status }) },
 ]
 for (const item of cases) {
   for (const status of [
@@ -128,7 +127,6 @@ for (const kind of [
   'gemini_videos',
   'veo_videos',
   'xai_videos',
-  'binguo_videos',
 ] as const) {
   test(`${kind} 提交返回 200 但无任务号时结果未知，仅发送一次`, async () => {
     calls = []

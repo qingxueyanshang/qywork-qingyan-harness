@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -21,6 +21,7 @@ import {
   type QyConfig,
   resolveMediaModel,
   resolveModel,
+  saveConfig,
 } from './config.ts'
 
 function cfg(over: Partial<QyConfig> = {}): QyConfig {
@@ -37,6 +38,66 @@ function cfg(over: Partial<QyConfig> = {}): QyConfig {
     ...over,
   }
 }
+
+test.each([false, true])(
+  '移除服务商D旧配置及默认引用，保留其他模型、凭证和空接口：混合接口=%s',
+  async (mixed) => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-removed-media-'))
+    const previousHome = process.env.QYWORK_HOME
+    const otherMedia = { model: { kind: 'openai_images' as const } }
+    const other = {
+      kind: 'openai_chat_completions' as const,
+      apiKey: 'keep-secret',
+      models: {},
+      media: otherMedia,
+    }
+    const raw = {
+      providers: {
+        channel: {
+          kind: 'openai_chat_completions' as const,
+          baseUrl: 'https://binguofilm.com',
+          apiKey: 'channel-secret',
+          models: mixed ? { chat: {} } : {},
+          media: { 'Seedance 2.5 720p': { kind: 'binguo_videos' }, ...(mixed ? otherMedia : {}) },
+        },
+        other,
+        empty: { kind: 'openai_chat_completions' as const, models: {}, media: {} },
+      },
+      active: { provider: 'channel', model: mixed ? 'chat' : 'removed' },
+      mediaDefaults: {
+        video: { provider: 'channel', model: 'Seedance 2.5 720p' },
+        image: { provider: 'other', model: 'model' },
+      },
+    }
+    try {
+      process.env.QYWORK_HOME = home
+      await writeFile(join(home, 'config.json'), JSON.stringify(raw))
+      const loaded = await loadConfig()
+      expect(diagnoseConfig(loaded)).toEqual([])
+      expect(listMediaModels(loaded).some((m) => (m.kind as string) === 'binguo_videos')).toBe(
+        false,
+      )
+      expect(resolveMediaModel(loaded, 'video')).toBeUndefined()
+      expect(loaded.mediaDefaults).toEqual({ image: raw.mediaDefaults.image })
+      expect(loaded.providers.other).toEqual(other)
+      expect(loaded.providers.empty).toEqual(raw.providers.empty)
+      if (mixed) {
+        expect(loaded.providers.channel).toEqual({ ...raw.providers.channel, media: otherMedia })
+        expect(loaded.active).toEqual(raw.active)
+      } else {
+        expect(loaded.providers.channel).toBeUndefined()
+        expect(loaded.active).toBeUndefined()
+      }
+      expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
+      await saveConfig(loaded)
+      expect(await loadConfig()).toEqual(loaded)
+    } finally {
+      if (previousHome === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = previousHome
+      await rm(home, { recursive: true, force: true })
+    }
+  },
+)
 
 test('已落盘的旧参数模式不能覆盖模型库的协议策略', async () => {
   const model = 'mimo-v2.6-pro'

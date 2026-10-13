@@ -4,7 +4,6 @@
  */
 
 import { ArkVideosAdapter } from './adapters/ark-videos.ts'
-import { BinguoAdapter } from './adapters/binguo.ts'
 import {
   DashScopeImagesAdapter,
   DashScopeSpeechAdapter,
@@ -22,8 +21,6 @@ import type { MediaAdapter, MediaProfile } from './types.ts'
 export function buildMediaAdapter(profile: MediaProfile): MediaAdapter {
   const spec = lookupMediaModel(profile.model, profile.kind)
   switch (profile.kind) {
-    case 'binguo_videos':
-      return new BinguoAdapter(profile, spec)
     case 'gemini_images':
     case 'gemini_videos':
       return new GeminiMediaAdapter(profile, spec)

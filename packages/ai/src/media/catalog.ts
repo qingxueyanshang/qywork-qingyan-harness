@@ -25,7 +25,6 @@ import {
   type MediaParamDefinition,
   type MentionStyle,
 } from '@qywork/core'
-import { BINGUO_DEFAULTS, BINGUO_MODELS } from './catalog-binguo.ts'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
 import { providerb_MODELS, providerb_RETIRED_MODELS } from './catalog-providerb.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
@@ -1129,7 +1128,6 @@ const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: 
 
 const SEEDS: readonly MediaModelSpec[] = [
   ...providerb_MODELS,
-  ...BINGUO_MODELS,
   ...GOOGLE_XAI_MODELS,
   spec(
     'gpt-image-2.5-flare',
@@ -1428,7 +1426,6 @@ const SEEDS: readonly MediaModelSpec[] = [
  * 参数表取保守写法：多写一个接口不接受的字段会导致请求被拒绝；少写只使大模型少一个可调参数。
  */
 const PROTOCOL_DEFAULTS: Record<MediaKind, Omit<MediaModelSpec, 'id' | 'displayName'>> = {
-  ...BINGUO_DEFAULTS,
   ...GOOGLE_XAI_DEFAULTS,
   openai_images: {
     vendor: null,

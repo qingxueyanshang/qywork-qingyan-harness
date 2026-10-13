@@ -10,7 +10,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { MEDIA_KINDS, type MediaKind } from '@qywork/core'
-import { findMediaModel, lookupMediaModel, mediaCost, quoteMedia } from './catalog.ts'
+import { findMediaModel, lookupMediaModel, mediaCatalog, mediaCost, quoteMedia } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
 import { validateMediaCall } from './params.ts'
 import { MediaError, type MediaUsage } from './types.ts'
@@ -65,6 +65,14 @@ beforeEach(() => {
 const signal = () => new AbortController().signal
 
 describe('目录查找', () => {
+  test('服务商D渠道与专用协议已移除，其他视频模型仍可用', () => {
+    expect(MEDIA_KINDS).not.toContain('binguo_videos')
+    expect(findMediaModel('Seedance 2.5 720p')).toBeUndefined()
+    expect(mediaCatalog().some((m) => m.vendor === '服务商D')).toBe(false)
+    expect(findMediaModel('满血sd2.5(30-10-10原生过人脸/720P)')?.kind).toBe('openai_videos')
+    expect(findMediaModel('doubao-seedance-2-5-260628')?.kind).toBe('ark_videos')
+  })
+
   test('精确匹配返回该模型自身的参数表', () => {
     const spec = lookupMediaModel('qwen-image-3.0', 'dashscope_images')
     expect(spec.catalogued).toBe(true)

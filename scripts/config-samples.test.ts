@@ -35,7 +35,11 @@ const samples = readdirSync(SAMPLES_DIR)
 /** 当前代码对一份样本的检查结果：结构问题与含义改变的路径。 */
 async function check(sample: Pick<Sample, 'config' | 'meaning'>) {
   const cfg = await loadAsCurrent(sample.config, SCRATCH)
-  return { problems: diagnoseConfig(cfg), changes: meaningChanges(sample.meaning, meaningOf(cfg)) }
+  const recorded = structuredClone(sample.meaning)
+  // 服务商D渠道已明确移除；历史样本保持冻结，只豁免该协议条目的删除。
+  if (Array.isArray(recorded.media))
+    recorded.media = recorded.media.filter((m) => m.kind !== 'binguo_videos')
+  return { problems: diagnoseConfig(cfg), changes: meaningChanges(recorded, meaningOf(cfg)) }
 }
 
 test('当前版本已有配置样本', () => {
