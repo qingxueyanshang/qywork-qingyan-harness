@@ -99,6 +99,56 @@ test.each([false, true])(
   },
 )
 
+test.each([false, true])(
+  '清理高质量全参型号及默认引用，保留所属接口和其他型号：混合接口=%s',
+  async (mixed) => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-removed-providerb-'))
+    const previousHome = process.env.QYWORK_HOME
+    const removed = '高质量sd2.5/(全参原生过真人速度快720P)'
+    const keep = '全能sd2.5(满血内置过脸30图超分1080P)'
+    const provider = {
+      kind: 'openai_chat_completions' as const,
+      baseUrl: 'https://providerb.example.com/v1',
+      apiKey: 'keep-providerb-secret',
+      models: {},
+    }
+    const other = { kind: 'openai_chat_completions' as const, models: { chat: {} } }
+    const raw = {
+      providers: {
+        providerb: {
+          ...provider,
+          media: {
+            [removed]: { kind: 'openai_videos' as const },
+            ...(mixed ? { [keep]: { kind: 'openai_videos' as const } } : {}),
+          },
+        },
+        other,
+      },
+      mediaDefaults: { video: { provider: 'providerb', model: removed } },
+    }
+    try {
+      process.env.QYWORK_HOME = home
+      await writeFile(join(home, 'config.json'), JSON.stringify(raw))
+      const loaded = await loadConfig()
+      expect(diagnoseConfig(loaded)).toEqual([])
+      expect(loaded.providers.providerb).toEqual({
+        ...provider,
+        ...(mixed ? { media: { [keep]: { kind: 'openai_videos' } } } : {}),
+      })
+      expect(loaded.providers.other).toEqual(other)
+      expect(loaded.mediaDefaults).toBeUndefined()
+      expect(listMediaModels(loaded).map((m) => m.model)).toEqual(mixed ? [keep] : [])
+      expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
+      await saveConfig(loaded)
+      expect(await loadConfig()).toEqual(loaded)
+    } finally {
+      if (previousHome === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = previousHome
+      await rm(home, { recursive: true, force: true })
+    }
+  },
+)
+
 test('已落盘的旧参数模式不能覆盖模型库的协议策略', async () => {
   const model = 'mimo-v2.6-pro'
   const config = cfg({

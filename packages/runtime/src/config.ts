@@ -553,24 +553,31 @@ function migrateUnverifiedMediaKinds(cfg: QyConfig): string[] {
   return notices
 }
 
-/** 移除已停用渠道的配置与默认引用；混合接口保留其他模型及凭证。 */
-function migrateRemovedMediaKinds(cfg: QyConfig): string[] {
+/** 移除已停用生成模型及默认引用；仅删除模型时保留所属接口及凭证。 */
+function migrateRemovedMediaModels(cfg: QyConfig): string[] {
   const notices: string[] = []
   for (const [name, provider] of Object.entries(cfg.providers ?? {})) {
     let removed = false
+    let removedChannel = false
     for (const [id, stored] of Object.entries(provider.media ?? {})) {
-      if ((stored.kind as string) !== 'binguo_videos') continue
+      const isRemovedChannel = (stored.kind as string) === 'binguo_videos'
+      if (
+        !isRemovedChannel &&
+        !(stored.kind === 'openai_videos' && id === '高质量sd2.5/(全参原生过真人速度快720P)')
+      )
+        continue
       delete provider.media![id]
       removed = true
+      removedChannel ||= isRemovedChannel
       for (const output of MEDIA_OUTPUTS) {
         const ref = cfg.mediaDefaults?.[output]
         if (ref?.provider === name && ref.model === id) delete cfg.mediaDefaults![output]
       }
-      notices.push(`已移除停用的服务商D模型 ${name} / ${id}。`)
+      notices.push(`已移除停用的生成模型 ${name} / ${id}。`)
     }
     if (!removed || Object.keys(provider.media ?? {}).length) continue
     delete provider.media
-    if (Object.keys(provider.models ?? {}).length) continue
+    if (!removedChannel || Object.keys(provider.models ?? {}).length) continue
     delete cfg.providers[name]
     if (cfg.active?.provider === name) delete cfg.active
   }
@@ -599,7 +606,7 @@ export async function loadConfig(): Promise<QyConfig> {
   for (const n of migrateModelLibrary(cfg)) log.warn('config', n)
   for (const n of migrateDisabledEffort(cfg)) log.warn('config', n)
   for (const n of migrateRetiredDeepSeekOverrides(cfg)) log.warn('config', n)
-  for (const n of migrateRemovedMediaKinds(cfg)) log.warn('config', n)
+  for (const n of migrateRemovedMediaModels(cfg)) log.warn('config', n)
   for (const n of migrateUnverifiedMediaKinds(cfg)) log.warn('config', n)
 
   /*
