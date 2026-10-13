@@ -557,8 +557,12 @@ function migrateUnverifiedMediaKinds(cfg: QyConfig): string[] {
 function migrateRemovedMediaModels(cfg: QyConfig): string[] {
   const notices: string[] = []
   const replacements = new Map([
-    ['全能sd2.5(满血内置过脸30图超分1080P)', 'sd-25-30/10/1-1'],
     ['video-sd25-30s', '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)'],
+  ])
+  const removedModels = new Set([
+    '高质量sd2.5/(全参原生过真人速度快720P)',
+    '全能sd2.5(满血内置过脸30图超分1080P)',
+    'sd-25-30/10/1-1',
   ])
   for (const [name, provider] of Object.entries(cfg.providers ?? {})) {
     let removed = false
@@ -569,7 +573,7 @@ function migrateRemovedMediaModels(cfg: QyConfig): string[] {
       if (
         !replacement &&
         !isRemovedChannel &&
-        !(stored.kind === 'openai_videos' && id === '高质量sd2.5/(全参原生过真人速度快720P)')
+        !(stored.kind === 'openai_videos' && removedModels.has(id))
       )
         continue
       if (replacement) provider.media![replacement] ??= stored

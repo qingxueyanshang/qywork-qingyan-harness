@@ -115,12 +115,6 @@ test('官方及渠道模型均使用目录协议，模型库显示对应页签',
   const { ModelSettings } = await import('./ModelSettings.tsx')
   const cases: { id: string; kind: MediaKind; baseUrl: string; vendor: string }[] = [
     {
-      id: 'sd-25-30/10/1-1',
-      kind: 'openai_videos',
-      baseUrl: 'https://providerb.example.com/v1',
-      vendor: 'providerb',
-    },
-    {
       id: '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
       kind: 'openai_videos',
       baseUrl: 'https://providerb.example.com/v1',
@@ -386,7 +380,6 @@ test.each([
     '720P 为 4–15 秒，480P 为 4–30 秒',
   ],
   ['满血sd2.5(30-10-10原生过人脸/720P)', 10, 10, '固定 30 秒，使用字符串 "30"'],
-  ['sd-25-30/10/1-1', 10, 10, '15 或 30 秒，使用字符串'],
 ] as const)('模型库分别显示各类参考素材上限：%s', async (id, maxVideos, maxAudios, duration) => {
   const { render } = await import('solid-js/web')
   const { ModelLibrary } = await import('./ModelLibrary.tsx')

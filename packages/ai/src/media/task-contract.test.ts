@@ -27,13 +27,13 @@ const request = { operation: 'text_to_video' as const, prompt: '', inputs: [], p
 const taskId = 'saved-task'
 
 test.each([false, true])(
-  'multipart 提交不重发，缺失回执或保存失败保留准确状态：id=%s',
+  'providerb 提交不重发，缺失回执或保存失败保留准确状态：id=%s',
   async (hasId) => {
     calls = []
     reply = hasId ? { id: taskId } : {}
     const adapter = buildMediaAdapter({
       kind: 'openai_videos',
-      model: 'sd-25-30/10/1-1',
+      model: '满血sd2.5(30-10-10原生过人脸/720P)',
       apiKey: 'test',
       baseUrl: `http://127.0.0.1:${server.port}`,
     })
@@ -79,7 +79,7 @@ const cases: {
   { kind: 'openai_videos', body: (status) => ({ status }) },
   {
     kind: 'openai_videos',
-    model: 'sd-25-30/10/1-1',
+    model: '满血sd2.5(30-10-10原生过人脸/720P)',
     body: (status) => ({ data: { status } }),
   },
   { kind: 'ark_videos', body: (status) => ({ status }) },

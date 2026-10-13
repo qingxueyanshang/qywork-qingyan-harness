@@ -99,13 +99,18 @@ test.each([false, true])(
   },
 )
 
-test.each([false, true])(
-  '清理高质量全参型号及默认引用，保留所属接口和其他型号：混合接口=%s',
-  async (mixed) => {
+test.each(
+  [
+    '高质量sd2.5/(全参原生过真人速度快720P)',
+    '全能sd2.5(满血内置过脸30图超分1080P)',
+    'sd-25-30/10/1-1',
+  ].flatMap((removed) => [false, true].map((mixed) => [removed, mixed] as const)),
+)(
+  '清理停用型号及默认引用，保留所属接口和其他型号：型号=%s，混合接口=%s',
+  async (removed, mixed) => {
     const home = await mkdtemp(join(tmpdir(), 'qy-removed-providerb-'))
     const previousHome = process.env.QYWORK_HOME
-    const removed = '高质量sd2.5/(全参原生过真人速度快720P)'
-    const keep = 'sd-25-30/10/1-1'
+    const keep = '满血sd2.5(30-10-10原生过人脸/720P)'
     const provider = {
       kind: 'openai_chat_completions' as const,
       baseUrl: 'https://providerb.example.com/v1',
@@ -155,7 +160,6 @@ test.each([false, true])(
     const home = await mkdtemp(join(tmpdir(), 'qy-replace-providerb-'))
     const previousHome = process.env.QYWORK_HOME
     const replacements = [
-      ['全能sd2.5(满血内置过脸30图超分1080P)', 'sd-25-30/10/1-1'],
       ['video-sd25-30s', '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)'],
     ] as const
     try {
