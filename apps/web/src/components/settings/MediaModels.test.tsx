@@ -115,6 +115,12 @@ test('官方及渠道模型均使用目录协议，模型库显示对应页签',
   const { ModelSettings } = await import('./ModelSettings.tsx')
   const cases: { id: string; kind: MediaKind; baseUrl: string; vendor: string }[] = [
     {
+      id: '高质量sd2.5/(全参原生过真人速度快720P)',
+      kind: 'openai_videos',
+      baseUrl: 'https://providerb.example.com/v1',
+      vendor: 'providerb',
+    },
+    {
       id: 'video-sd25-30s',
       kind: 'openai_videos',
       baseUrl: 'https://providerb.example.com/v1',
@@ -379,9 +385,10 @@ test('模型库按类别分页签；生成类一张表，厂商是一列，参�
 })
 
 test.each([
-  ['video-sd25-30s', 0],
-  ['满血sd2.5(30-10-10原生过人脸/720P)', 10],
-] as const)('模型库分别显示各类参考素材上限：%s', async (id, maxVideos) => {
+  ['video-sd25-30s', 0, '固定 30 秒，使用字符串 "30"'],
+  ['满血sd2.5(30-10-10原生过人脸/720P)', 10, '固定 30 秒，使用字符串 "30"'],
+  ['高质量sd2.5/(全参原生过真人速度快720P)', 0, '4–30 秒整数，使用字符串'],
+] as const)('模型库分别显示各类参考素材上限：%s', async (id, maxVideos, duration) => {
   const { render } = await import('solid-js/web')
   const { ModelLibrary } = await import('./ModelLibrary.tsx')
   const model: MediaLibraryModel = {
@@ -399,7 +406,7 @@ test.each([
     maxImages: 30,
     maxVideos,
     maxAudios: 10,
-    params: ['seconds：固定 30 秒，使用字符串 "30"'],
+    params: [`seconds：${duration}`],
   }
   const host = document.createElement('div')
   document.body.append(host)
