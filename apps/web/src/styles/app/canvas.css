@@ -55,7 +55,7 @@
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
-/* 选中节点的连线：与生成中的连线使用同一套渐变（内联描边），实线不流动，以示区别。 */
+/* 选中节点的连线：与生成中的连线使用同一套渐变（内联描边），实线，以示区别。 */
 .canvas-edges path.hot {
   stroke-width: 1.5;
 }
@@ -108,16 +108,14 @@
   height: 0;
   pointer-events: none;
 }
-/* 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变 + 虚线流动，节奏与会话工作流图相同。 */
+/*
+ * 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变，虚线。
+ * 不要加 `stroke-dashoffset` 动画：该属性不能由合成线程执行，每一帧都重绘连线层及其覆盖范围内的卡片，
+ * 开销随显示器刷新率与连线覆盖的面积增长。
+ */
 .canvas-edges path.live {
   stroke-width: 1.5;
   stroke-dasharray: 4 4;
-  animation: canvas-flow 0.7s linear infinite;
-}
-@keyframes canvas-flow {
-  to {
-    stroke-dashoffset: -8;
-  }
 }
 
 .canvas-fault {
