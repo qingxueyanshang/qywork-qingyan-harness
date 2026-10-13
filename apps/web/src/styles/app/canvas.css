@@ -45,9 +45,11 @@
   top: 0;
   transform-origin: 0 0;
 }
+/* 连线层单独成层：生成中的连线逐次重绘时，不连带重新光栅化画布背景的网格点。 */
 .canvas-edges {
   overflow: visible;
   pointer-events: none;
+  will-change: transform;
 }
 .canvas-edges path {
   fill: none;
@@ -55,7 +57,7 @@
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
-/* 选中节点的连线：与生成中的连线使用同一套渐变（内联描边），实线，以示区别。 */
+/* 选中节点的连线：与生成中的连线使用同一套渐变（内联描边），实线不流动，以示区别。 */
 .canvas-edges path.hot {
   stroke-width: 1.5;
 }
@@ -109,13 +111,13 @@
   pointer-events: none;
 }
 /*
- * 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变，虚线。
- * 不要加 `stroke-dashoffset` 动画：该属性不能由合成线程执行，每一帧都重绘连线层及其覆盖范围内的卡片，
- * 开销随显示器刷新率与连线覆盖的面积增长。
+ * 流向正在生成的卡片的连线：`.run-galaxy` 同款渐变 + 虚线流动，节奏与会话工作流图相同。
+ * 流动由 `CanvasPanel` 的定时器写入 `--canvas-flow` 推进，不用 CSS 动画，原因写在该定时器处。
  */
 .canvas-edges path.live {
   stroke-width: 1.5;
   stroke-dasharray: 4 4;
+  stroke-dashoffset: var(--canvas-flow, 0);
 }
 
 .canvas-fault {
