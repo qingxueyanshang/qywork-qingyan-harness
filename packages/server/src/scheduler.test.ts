@@ -495,8 +495,16 @@ test('认领新建会话时广播 conversation.created，信封不带会话归�
     expect(created?.id).not.toBe(home)
     // 广播的会话即本次触发进入的会话，账本中记录的也是该会话。
     expect(listSchedules(store, dir, Date.now())[0]!.conversationId).toBe(created?.id)
+    // 本次模型请求结束后再释放共享 provider，避免其进入后续用例的请求计数。
+    await waitFor(
+      () =>
+        store.db
+          .query<{ id: string }, []>("SELECT id FROM runs WHERE status NOT IN ('queued','running')")
+          .get(),
+      '新建会话的定时任务进入终态',
+    )
   } finally {
-    handle.stop()
+    await handle.stop()
     store.close()
   }
 }, 30_000)

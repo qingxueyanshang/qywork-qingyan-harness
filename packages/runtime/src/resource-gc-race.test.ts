@@ -164,7 +164,7 @@ test('活跃写入期间另一个进程执行回收：等待后取得写锁，�
   }
 }, 60_000)
 
-test('大正文占用主库写锁期间，另一进程对主库的写入在 busy_timeout 内完成', async () => {
+test('正文写入持锁期间，另一进程等待后在 busy_timeout 内完成主库写入', async () => {
   const { dbPath, store, conv, run } = seed()
   store.close()
 
@@ -174,7 +174,8 @@ test('大正文占用主库写锁期间，另一进程对主库的写入在 busy
     QY_RACE_DB: dbPath,
     QY_RACE_BARRIER: String(gate.port),
     QY_RACE_COUNT: '2',
-    QY_RACE_BYTES: String(64 * 1024 * 1024),
+    QY_RACE_BYTES: String(256 * 1024),
+    QY_RACE_HOLD_MS: '250',
     QY_RACE_RUN: run.id,
   })
   const writer = spawnChild({
@@ -196,14 +197,28 @@ test('大正文占用主库写锁期间，另一进程对主库的写入在 busy
   const landed = JSON.parse(a.out) as { landMs: number[] }
   const wrote = JSON.parse(b.out) as { writes: number; maxMs: number; errors: string[] }
 
-  // 此处测量单次 land 的占锁时长：每份 64 MB，本机约为数百毫秒。
+  // 受控持锁覆盖真实 land 事务，不把磁盘吞吐量作为锁等待行为的前提。
   expect(landed.landMs.length).toBe(2)
-  expect(Math.max(...landed.landMs)).toBeGreaterThan(0)
+  expect(Math.min(...landed.landMs)).toBeGreaterThanOrEqual(250)
   // 另一进程确实遇到该锁（等待至少 100 ms），且在等待后取得，而不是被拒绝。
+  expect(wrote.errors).toEqual([])
   expect(wrote.maxMs).toBeGreaterThanOrEqual(100)
   expect(wrote.maxMs).toBeLessThan(5000)
-  expect(wrote.errors).toEqual([])
   expect(wrote.writes).toBeGreaterThan(0)
+  const check = new Store({ path: dbPath })
+  try {
+    expect(
+      check.db
+        .query<{ title: string }, [string]>('SELECT title FROM conversations WHERE id = ?')
+        .get(conv.id)?.title,
+    ).toBe(`t${wrote.writes - 1}`)
+    expect(
+      check.db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM intermediate_resources').get()
+        ?.n,
+    ).toBe(2)
+  } finally {
+    check.close()
+  }
 }, 120_000)
 
 test('进程在主库提交前退出：留下可回收的孤儿正文，不留悬空引用', async () => {

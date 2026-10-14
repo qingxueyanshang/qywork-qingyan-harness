@@ -22,6 +22,7 @@ const barrier = Number(process.env.QY_RACE_BARRIER ?? '0')
 const count = Number(process.env.QY_RACE_COUNT ?? '1')
 const bytes = Number(process.env.QY_RACE_BYTES ?? '1024')
 const durationMs = Number(process.env.QY_RACE_MS ?? '1000')
+const holdMs = Number(process.env.QY_RACE_HOLD_MS ?? '0')
 const runId = (process.env.QY_RACE_RUN ?? '') as RunId
 const convId = (process.env.QY_RACE_CONV ?? '') as ConversationId
 
@@ -43,7 +44,14 @@ async function waitAtBarrier(): Promise<void> {
 }
 
 const store = new Store({ path: dbPath })
-const content = new ContentStore(contentPathFor(dbPath))
+/** 在真实正文写入前延长主库持锁时间，竞争窗口不依赖大正文的处理速度。 */
+class ContendedContentStore extends ContentStore {
+  override put(raw: Uint8Array, resourceId?: string): ReturnType<ContentStore['put']> {
+    if (holdMs > 0) Bun.sleepSync(holdMs)
+    return super.put(raw, resourceId)
+  }
+}
+const content = new ContendedContentStore(contentPathFor(dbPath))
 
 try {
   if (mode === 'land') {
