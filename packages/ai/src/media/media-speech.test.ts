@@ -197,7 +197,11 @@ describe('Qwen-Audio 3.1', () => {
     expect(out.files).toEqual([{ bytes: WAV, mime: 'audio/wav' }])
     expect(out.usage).toEqual({ inputTokens: 1000, outputTokens: 2000 })
     expect(mediaCost(spec(flash), out.usage!)).toEqual({ cost: 0.0255, currency: 'CNY' })
-    expect(quoteMedia(spec(flash), {}, { images: 0, videos: 0 })).toBeNull()
+    expect(quoteMedia(spec(flash), {}, { images: 0, videos: 0 })).toEqual({
+      cost: null,
+      currency: 'CNY',
+      tokenRates: { input: 1.5, output: 12 },
+    })
   })
 
   test('Flash 选择 Opus 时省略采样率也不会发送非法默认 22050', async () => {
@@ -258,6 +262,11 @@ describe('Qwen-Audio 3.1', () => {
     expect(out.files).toEqual([{ bytes: WAV, mime: 'audio/wav' }])
     expect(out.usage).toEqual({})
     expect(spec(next).price!.cost(out.usage!)).toBeNull()
+    expect(quoteMedia(spec(next), {}, { images: 0, videos: 0 })).toEqual({
+      cost: null,
+      currency: 'CNY',
+      tokenRates: { input: 6, output: 12 },
+    })
     expect(mediaCost(spec(next), out.usage!)).toEqual({ cost: 0, currency: 'CNY' })
     expect(mediaCost(spec(next), { inputTokens: 1000, outputTokens: 2000 })).toEqual({
       cost: 0.03,

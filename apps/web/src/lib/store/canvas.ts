@@ -4,7 +4,13 @@
  * 卡片状态与失败原文以读取画布的响应体为准；`canvas.run` 事件只递增 `canvasVersion`，已打开的页签据此重新读取。
  */
 
-import type { CanvasCancelOutcome, CanvasOp, CanvasView, MediaOutput } from '@qywork/core'
+import type {
+  CanvasCancelOutcome,
+  CanvasOp,
+  CanvasView,
+  MediaOutput,
+  MediaQuote,
+} from '@qywork/core'
 import { client } from './connection.ts'
 
 /** 从文件树拖出一行时携带的数据类型，值为工作区相对路径。画布据此将拖入的文件添加为节点。 */
@@ -33,10 +39,7 @@ export interface CanvasEdit extends CanvasView {
   step: { before: string; after: string }
 }
 
-export interface CanvasQuote {
-  cost: number
-  currency: string
-}
+export type CanvasQuote = MediaQuote
 
 const post = <T>(path: string, body: unknown): Promise<T> =>
   client.api<T>(path, { method: 'POST', body: JSON.stringify(body) })
@@ -81,7 +84,7 @@ export function retrieveCard(path: string, nodeId: string, version?: string): Pr
   })
 }
 
-/** 发送前的预估花费。无法推算（按 token 计价等）时为 `null`，界面不显示。 */
+/** 发送前的预估花费或计费单价；没有可用价格时为 null。 */
 export async function quoteCard(input: {
   output: MediaOutput
   provider?: string

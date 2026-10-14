@@ -2,14 +2,18 @@
 import type { MediaModelSpec, MediaParamSpec, MediaPrice } from './catalog.ts'
 import { QWEN_AUDIO_VOICES } from './catalog-qwen-voices.ts'
 
-const price = (input: number): MediaPrice => ({
-  currency: 'CNY',
-  // Next 当前文档只返回 duration；缺少任一 Token 计量时金额未知，不按时长推算。
-  cost: (u) =>
-    u.inputTokens === undefined || u.outputTokens === undefined
-      ? null
-      : (u.inputTokens * input + u.outputTokens * 12) / 1e6,
-})
+const price = (input: number): MediaPrice => {
+  const tokenRates = { input, output: 12 }
+  return {
+    currency: 'CNY',
+    tokenRates,
+    // Next 当前文档只返回 duration；缺少任一 Token 计量时金额未知，不按时长推算。
+    cost: (u) =>
+      u.inputTokens === undefined || u.outputTokens === undefined
+        ? null
+        : (u.inputTokens * tokenRates.input + u.outputTokens * tokenRates.output) / 1e6,
+  }
+}
 const choice = (
   name: string,
   label: string,
@@ -179,7 +183,7 @@ const nextParams: MediaParamSpec[] = [
 export const QWEN_AUDIO_MODELS: readonly MediaModelSpec[] = [
   {
     id: 'qwen-audio-3.1-tts-flash',
-    displayName: '千问音频 3.1 TTS Flash',
+    displayName: 'Qwen Audio 3.1 TTS Flash',
     vendor: '阿里云',
     kind: 'dashscope_speech',
     operations: ['speech'],
@@ -191,7 +195,7 @@ export const QWEN_AUDIO_MODELS: readonly MediaModelSpec[] = [
   },
   {
     id: 'qwen-audio-3.1-tts-next',
-    displayName: '千问音频 3.1 TTS Next',
+    displayName: 'Qwen Audio 3.1 TTS Next',
     vendor: '阿里云',
     kind: 'dashscope_speech',
     operations: ['speech'],

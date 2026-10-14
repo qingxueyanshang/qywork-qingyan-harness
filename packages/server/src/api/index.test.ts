@@ -521,7 +521,7 @@ describe('模型目录', () => {
       d.config.providers.p!.media = { [id]: { kind } }
       const response = await body(d)
       expect(response.mediaLibrary.find((m) => m.id === id)).toMatchObject({
-        label: '千问图像 2.1 Pro',
+        label: 'Qwen Image 2.1 Pro',
         vendor: '阿里云',
         kind: 'dashscope_images',
         kinds: ['dashscope_images', 'openai_images'],

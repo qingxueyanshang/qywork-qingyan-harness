@@ -47,7 +47,7 @@ async function until(ok: () => boolean, ms = 3000): Promise<boolean> {
 
 const QWEN_IMAGE: MediaLibraryModel = {
   id: 'qwen-image-3.0',
-  label: '千问图像 3.0',
+  label: 'Qwen Image 3.0',
   vendor: '阿里云',
   kind: 'dashscope_images',
   kinds: ['dashscope_images', 'openai_images'],

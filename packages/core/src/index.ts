@@ -106,6 +106,7 @@ export {
   type MediaInputRole,
   type MediaKind,
   type MediaOutput,
+  type MediaQuote,
   type MediaSpend,
 } from './domain/media.ts'
 export { mediaBoxAt, movieMetadataOf, videoMetadataOf } from './domain/media-container.ts'

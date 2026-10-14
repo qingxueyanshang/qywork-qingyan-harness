@@ -933,7 +933,7 @@ export function GeneratePanel(props: {
     if (ops.length) void props.apply(ops)
   }
 
-  // 本次花费：模型、参数或输入数量变化时重新查询；无法推算时不显示。
+  // 模型、参数或输入数量变化时重新查询价格。
   let quoteSeq = 0
   createEffect(
     on(
@@ -947,6 +947,7 @@ export function GeneratePanel(props: {
       () => {
         const m = model()
         const mine = ++quoteSeq
+        setPrice(null)
         const output = props.node.output
         // art 按 token 计价，发送前无法估算。
         if (!m || output === 'art') {
@@ -1133,7 +1134,23 @@ export function GeneratePanel(props: {
         </Show>
         <span class="spacer" />
         <Show when={price()}>
-          {(q) => <span class="canvas-price">{formatMoney(q().cost, q().currency as never)}</span>}
+          {(q) => {
+            const label = () => {
+              const value = q()
+              return value.cost === null ? '按 Token 计费' : formatMoney(value.cost, value.currency)
+            }
+            const detail = () => {
+              const value = q()
+              return value.cost === null
+                ? `输入 ${formatMoney(value.tokenRates.input, value.currency)} / 百万 Token；输出 ${formatMoney(value.tokenRates.output, value.currency)} / 百万 Token`
+                : undefined
+            }
+            return (
+              <span class="canvas-price" data-tip={detail()}>
+                {label()}
+              </span>
+            )
+          }}
         </Show>
         {/* 生成中发送键替换为停止键，同会话输入框。 */}
         <Show

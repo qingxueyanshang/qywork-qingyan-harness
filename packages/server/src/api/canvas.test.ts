@@ -231,7 +231,7 @@ describe('画布接口', () => {
     ).toEqual(Buffer.from(JPEG))
   })
 
-  test('发送前的花费：万相 3.0 720P 5 秒 ¥3.00；按接口档位计价的返回 null', async () => {
+  test('发送前的花费：万相按秒、Qwen Image 按指定尺寸报价，自动尺寸返回 null', async () => {
     const { d } = await setup()
     const video = (await (
       await call(d, '/api/canvas/quote', {
@@ -245,6 +245,32 @@ describe('画布接口', () => {
       await call(d, '/api/canvas/quote', { output: 'image', params: {} })
     ).json()) as CanvasQuoteResponse
     expect(image.quote).toBeNull()
+    const sized = (await (
+      await call(d, '/api/canvas/quote', {
+        output: 'image',
+        params: { size: '768*1024', n: 2 },
+        inputs: { images: 1, videos: 0 },
+      })
+    ).json()) as CanvasQuoteResponse
+    expect(sized.quote).toEqual({ cost: 0.38, currency: 'CNY' })
+  })
+
+  test('Qwen Audio 生成前提供 Token 单价，不将未知用量显示为零费用', async () => {
+    const { d } = await setup()
+    d.config.providers.ds!.media!['qwen-audio-3.1-tts-flash'] = { kind: 'dashscope_speech' }
+    const response = (await (
+      await call(d, '/api/canvas/quote', {
+        output: 'audio',
+        provider: 'ds',
+        model: 'qwen-audio-3.1-tts-flash',
+        params: {},
+      })
+    ).json()) as CanvasQuoteResponse
+    expect(response.quote).toEqual({
+      cost: null,
+      currency: 'CNY',
+      tokenRates: { input: 1.5, output: 12 },
+    })
   })
 
   test('模型行只下发标有界面名称的参数，不包含给模型的说明', async () => {

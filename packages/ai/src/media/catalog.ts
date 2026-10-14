@@ -23,6 +23,7 @@ import {
   MEDIA_KIND_OUTPUT,
   type MediaKind,
   type MediaParamDefinition,
+  type MediaQuote,
   type MentionStyle,
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
@@ -164,6 +165,8 @@ type MediaMapping = Partial<
 
 export interface MediaPrice {
   currency: Currency
+  /** 每百万输入、输出 Token 单价，与实际用量计价共用。 */
+  tokenRates?: { input: number; output: number }
   /** 缺少计价所需的计量时返回 null。 */
   cost(u: MediaUsage): number | null
   /**
@@ -182,15 +185,18 @@ export interface MediaInputCount {
 
 /**
  * 发送前的花费：计量由 `usageOf` 按参数推算（未填写的参数取目录中的接口默认值），金额由同一个 `cost` 计算。
- * 无法推算或金额不明时返回 null，界面不显示。
+ * Token 用量未知时返回单价；其余无法推算或金额不明的情形返回 null。
  */
 export function quoteMedia(
   spec: MediaModelSpec,
   params: Record<string, unknown>,
   inputs: MediaInputCount,
-): { cost: number; currency: Currency } | null {
+): MediaQuote | null {
   const price = spec.price
-  if (!price?.usageOf) return null
+  if (!price) return null
+  if (price.tokenRates)
+    return { cost: null, currency: price.currency, tokenRates: price.tokenRates }
+  if (!price.usageOf) return null
   const defaults: Record<string, unknown> = {}
   for (const p of spec.params) if (p.default !== undefined) defaults[p.name] = p.default
   const usage = price.usageOf({ ...defaults, ...params }, inputs)
@@ -295,9 +301,21 @@ const seedreamFlashPrice: MediaPrice = {
   usageOf: (_params, inputs) => ({ images: 1, inputImages: inputs.images }),
 }
 // 百炼「模型调用价格」：千问图像 3.0 Pro 输出 1k ¥0.25、2k ¥0.5，3.0 输出 ¥0.18，输入均 ¥0.02 每张；
-// 档位取接口回报的 `output_image_type`。
-const qwenImagePrice = (rates: Record<string, number>) =>
-  perImage('CNY', (u) => tier(rates, u.imageTier), { rate: 0.02 })
+// 发送前按指定尺寸计算档位，成功后仍按接口回报的 `output_image_type` 记账。
+const qwenImagePrice = (rates: Record<string, number>): MediaPrice => ({
+  ...perImage('CNY', (u) => tier(rates, u.imageTier), { rate: 0.02 }),
+  usageOf: (p, inputs) => {
+    const size = typeof p.size === 'string' ? /^(\d+)\*(\d+)$/.exec(p.size) : null
+    if (!size) return null
+    const pixels = Number(size[1]) * Number(size[2])
+    if (!(pixels > 0)) return null
+    return {
+      images: Number(p.n),
+      inputImages: inputs.images,
+      imageTier: pixels <= 2_250_000 ? 'qima_output_1k' : 'qima_output_2k',
+    }
+  },
+})
 // 千问图像 2.1 Pro（2026-10-14 核对官方型号页）：北京地域每张输出 ¥0.25，参考图不另计费。
 const qwenImage21ProPrice: MediaPrice = {
   ...perImage('CNY', () => 0.25),
@@ -1190,7 +1208,7 @@ const SEEDS: readonly MediaModelSpec[] = [
   ),
   spec(
     'qwen-image-3.0-pro',
-    '千问图像 3.0 Pro',
+    'Qwen Image 3.0 Pro',
     '阿里云',
     'dashscope_images',
     IMAGE_OPERATIONS,
@@ -1202,7 +1220,7 @@ const SEEDS: readonly MediaModelSpec[] = [
   ),
   spec(
     'qwen-image-3.0',
-    '千问图像 3.0',
+    'Qwen Image 3.0',
     '阿里云',
     'dashscope_images',
     IMAGE_OPERATIONS,
@@ -1214,7 +1232,7 @@ const SEEDS: readonly MediaModelSpec[] = [
   ),
   spec(
     'qwen-image-2.1-pro',
-    '千问图像 2.1 Pro',
+    'Qwen Image 2.1 Pro',
     '阿里云',
     'dashscope_images',
     IMAGE_OPERATIONS,
@@ -1226,7 +1244,7 @@ const SEEDS: readonly MediaModelSpec[] = [
   ),
   spec(
     'wan2.7-image-pro',
-    '万相 2.7 图像 Pro',
+    'Wan 2.7 Image Pro',
     '阿里云',
     'dashscope_images',
     IMAGE_OPERATIONS,
@@ -1238,7 +1256,7 @@ const SEEDS: readonly MediaModelSpec[] = [
   ),
   spec(
     'wan2.7-image',
-    '万相 2.7 图像',
+    'Wan 2.7 Image',
     '阿里云',
     'dashscope_images',
     IMAGE_OPERATIONS,
@@ -1250,7 +1268,7 @@ const SEEDS: readonly MediaModelSpec[] = [
   ),
   spec(
     'wan3.0-video',
-    '万相 3.0 视频',
+    'Wan 3.0 Video',
     '阿里云',
     'dashscope_videos',
     VIDEO_OPERATIONS,
@@ -1262,7 +1280,7 @@ const SEEDS: readonly MediaModelSpec[] = [
   ),
   spec(
     'wan3.0-video-prime',
-    '万相 3.0 视频 Prime',
+    'Wan 3.0 Video Prime',
     '阿里云',
     'dashscope_videos',
     VIDEO_OPERATIONS,
@@ -1419,7 +1437,7 @@ const SEEDS: readonly MediaModelSpec[] = [
   ),
   spec(
     'qwen3-tts-flash',
-    '千问语音合成 3 Flash',
+    'Qwen3 TTS Flash',
     '阿里云',
     'dashscope_speech',
     SPEECH_OPERATIONS,
@@ -1429,7 +1447,7 @@ const SEEDS: readonly MediaModelSpec[] = [
   ),
   spec(
     'qwen3-tts-instruct-flash',
-    '千问语音合成 3 指令版',
+    'Qwen3 TTS Instruct Flash',
     '阿里云',
     'dashscope_speech',
     SPEECH_OPERATIONS,

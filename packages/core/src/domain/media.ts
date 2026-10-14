@@ -32,6 +32,11 @@ export type MediaKind = (typeof MEDIA_KINDS)[number]
 export const MEDIA_OUTPUTS = ['image', 'video', 'audio'] as const
 export type MediaOutput = (typeof MEDIA_OUTPUTS)[number]
 
+/** 发送前的价格：可计算时为本次金额，Token 用量未知时只提供每百万 Token 单价。 */
+export type MediaQuote =
+  | { cost: number; currency: Currency }
+  | { cost: null; currency: Currency; tokenRates: { input: number; output: number } }
+
 /**
  * 生成调用与画布生成卡的类别：生成模型的三类，加上 `art`（由对话模型写出的 HTML 页面）。
  * `art` 不属于 `MEDIA_OUTPUTS`：它使用对话模型，模型库与生成模型的配置中没有这一类。

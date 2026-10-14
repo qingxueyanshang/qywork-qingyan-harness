@@ -12,6 +12,7 @@ import {
   type CanvasView,
   MEDIA_OUTPUTS,
   type MediaOutput,
+  type MediaQuote,
   parseCanvasOps,
 } from '@qywork/core'
 import { cancelMediaTask, makeMediaPort, resolveMediaModel } from '@qywork/runtime'
@@ -26,9 +27,9 @@ export interface CanvasOpsResponse extends CanvasView {
   step: CanvasStep
 }
 
-/** `POST /api/canvas/quote` 的响应体。`null` 表示无法估算（如按 token 计价），界面不显示。 */
+/** `POST /api/canvas/quote` 的响应体，包含本次金额或已知的计费单价。 */
 export interface CanvasQuoteResponse {
-  quote: { cost: number; currency: string } | null
+  quote: MediaQuote | null
 }
 
 /** 截取画面的名称：视频的首帧、尾帧或时刻（`12.4s`），Art 节点的截图。名称会写入文件名，只接受这四种格式。 */

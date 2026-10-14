@@ -10,7 +10,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
-import type { CanvasDoc, CanvasOp, CanvasView } from '@qywork/core'
+import type { CanvasDoc, CanvasOp, CanvasView, MediaQuote } from '@qywork/core'
 
 beforeAll(() => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
@@ -80,7 +80,7 @@ const MODELS = {
       id: 'wan3.0-video',
       kind: 'dashscope_videos',
       output: 'video',
-      label: '万相 3.0 视频',
+      label: 'Wan 3.0 Video',
       operations: ['text_to_video', 'image_to_video', 'first_last_frame', 'reference_to_video'],
       isDefault: true,
       known: true,
@@ -115,7 +115,7 @@ const MODELS = {
       id: 'qwen-image-3.0',
       kind: 'dashscope_images',
       output: 'image',
-      label: '千问图像 3.0',
+      label: 'Qwen Image 3.0',
       operations: ['generate', 'edit'],
       isDefault: true,
       known: true,
@@ -145,7 +145,7 @@ interface Server {
   doc: () => CanvasDoc
   setView(next: Partial<CanvasView>): void
   broken: boolean
-  quote: { cost: number; currency: string } | null
+  quote: MediaQuote | null
   /** 上传请求的查询字符串，按请求顺序记录。 */
   uploads: URLSearchParams[]
   /** 撤销与重做请求，按请求顺序记录。 */
@@ -1919,7 +1919,7 @@ describe('画布：生成卡与生成面板', () => {
           id: 'qwen-image-3.0',
           kind: 'dashscope_images',
           output: 'image',
-          label: '千问图像 3.0',
+          label: 'Qwen Image 3.0',
           operations: ['generate', 'edit'],
           isDefault: false,
           known: true,
@@ -2042,7 +2042,7 @@ describe('画布：生成卡与生成面板', () => {
         () => host.textContent ?? '',
       )
     }
-    await switchTo('千问图像 3.0')
+    await switchTo('Qwen Image 3.0')
     expect(paramsButton().textContent).not.toContain('生成质量')
     paramsButton().click()
     await waitFor(
@@ -2073,7 +2073,7 @@ describe('画布：生成卡与生成面板', () => {
     expect((server.doc().nodes[0] as { params: Record<string, unknown> }).params).toEqual({
       quality: 'max',
     })
-    await switchTo('千问图像 3.0')
+    await switchTo('Qwen Image 3.0')
     expect((server.doc().nodes[0] as { params: Record<string, unknown> }).params).toEqual({
       seed: 12345,
       negative_prompt: '文字、水印',
@@ -2390,7 +2390,7 @@ describe('画布：生成卡与生成面板', () => {
     })
   })
 
-  test('无法推算花费时不显示；可以推算时显示', async () => {
+  test('可以推算花费时显示本次金额', async () => {
     const { host, server, refs } = await mount(CARD)
     server.quote = { cost: 3, currency: 'CNY' }
     await select(host, refs.$v!)
@@ -2399,6 +2399,20 @@ describe('画布：生成卡与生成面板', () => {
       () => '',
     )
     expect(host.querySelector('.canvas-price')!.textContent).toBe('¥3.00')
+  })
+
+  test('Token 用量未知时显示计价方式与全局单价提示，不显示虚构金额', async () => {
+    const { host, server, refs } = await mount(CARD)
+    server.quote = { cost: null, currency: 'CNY', tokenRates: { input: 1.5, output: 12 } }
+    await select(host, refs.$v!)
+    await waitFor(
+      () => !!host.querySelector('.canvas-price'),
+      () => '',
+    )
+    const price = host.querySelector<HTMLElement>('.canvas-price')!
+    expect(price.textContent).toBe('按 Token 计费')
+    expect(price.dataset.tip).toBe('输入 ¥1.50 / 百万 Token；输出 ¥12.00 / 百万 Token')
+    expect(price.hasAttribute('title')).toBe(false)
   })
 
   test('右侧「+」新建一张后续视频生成卡并把图片连接为首帧', async () => {

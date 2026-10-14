@@ -470,7 +470,7 @@ describe('Qwen-Image-2.1-Pro', () => {
     })
     const quote = quoteMedia(native, { n: 6, size: '2048*2048' }, { images: 10, videos: 0 })
     expect(quote).toEqual({ cost: 1.5, currency: 'CNY' })
-    expect(mediaCost(native, { images: 6, inputImages: 10 })).toEqual(quote!)
+    expect(quote).toEqual(mediaCost(native, { images: 6, inputImages: 10 }))
     expect(mediaCost(native, { images: 2 })).toEqual({ cost: 0.5, currency: 'CNY' })
     expect(native.price?.cost({})).toBeNull()
     expect(compatible.price).toBeUndefined()
@@ -550,8 +550,8 @@ describe('发送前的花费', () => {
   test('万相 3.0 720P 5 秒 ¥3.00，与账本金额一致；未填写的参数取接口默认值', () => {
     const q = quote('wan3.0-video', 'dashscope_videos', { resolution: '720P', duration: 5 })
     expect(q).toEqual({ cost: expect.closeTo(3, 10), currency: 'CNY' })
-    expect(ledger('wan3.0-video', 'dashscope_videos', { seconds: 5, resolution: '720p' })).toEqual(
-      q!,
+    expect(q).toEqual(
+      ledger('wan3.0-video', 'dashscope_videos', { seconds: 5, resolution: '720p' }),
     )
     // 默认 1080P、5 秒。
     expect(quote('wan3.0-video', 'dashscope_videos', {})?.cost).toBeCloseTo(6, 10)
@@ -563,7 +563,7 @@ describe('发送前的花费', () => {
     expect(q?.cost).toBeCloseTo(4.5, 10)
     expect(
       ledger(id, 'dashscope_videos', { seconds: 5, resolution: '720p', audio: true }).cost,
-    ).toBeCloseTo(q!.cost, 10)
+    ).toBeCloseTo(q!.cost!, 10)
   })
 
   test('Seedream Flash 每张 ¥0.12', () => {
@@ -572,7 +572,41 @@ describe('发送前的花费', () => {
     ).toEqual({ cost: 0.12, currency: 'CNY' })
   })
 
-  test('计量须由接口回报的情形不估算：Seedance、千问图像、万相带参考视频、时长由模型决定、可灵官方', () => {
+  test.each([
+    ['1500*1500', 1, 0, 'qima_output_1k', 0.25],
+    ['1501*1500', 1, 0, 'qima_output_2k', 0.5],
+    ['768*1024', 3, 2, 'qima_output_1k', 0.79],
+    ['2048*2048', 2, 3, 'qima_output_2k', 1.06],
+  ] as const)(
+    'Qwen Image 3.0 Pro 按指定尺寸、张数与参考图报价：%s',
+    (size, n, images, imageTier, amount) => {
+      const estimated = quote(
+        'qwen-image-3.0-pro',
+        'dashscope_images',
+        { size, n },
+        { images, videos: 0 },
+      )
+      expect(estimated).toEqual({ cost: expect.closeTo(amount, 10), currency: 'CNY' })
+      expect(estimated).toEqual(
+        ledger('qwen-image-3.0-pro', 'dashscope_images', {
+          images: n,
+          inputImages: images,
+          imageTier,
+        }),
+      )
+    },
+  )
+
+  test('Qwen Image 3.0 按指定尺寸报价，自动尺寸仍等待接口计量', () => {
+    expect(quote('qwen-image-3.0', 'dashscope_images', { size: '2048*2048', n: 2 })).toEqual({
+      cost: 0.36,
+      currency: 'CNY',
+    })
+    expect(quote('qwen-image-3.0-pro', 'dashscope_images', { size: 'auto' })).toBeNull()
+    expect(quote('qwen-image-3.0-pro', 'dashscope_images', { size: '0*1024' })).toBeNull()
+  })
+
+  test('计量须由接口回报的情形不估算：Seedance、自动尺寸、万相带参考视频、时长由模型决定、可灵官方', () => {
     expect(quote('doubao-seedance-2-0-260128', 'ark_videos', { resolution: '720p' })).toBeNull()
     expect(quote('qwen-image-3.0-pro', 'dashscope_images', {})).toBeNull()
     expect(quote('wan3.0-video', 'dashscope_videos', {}, { images: 0, videos: 1 })).toBeNull()
