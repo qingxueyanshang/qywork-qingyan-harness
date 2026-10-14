@@ -481,6 +481,23 @@ describe('模型目录', () => {
   /** 展平为一张表仅为便于断言；界面取得的是分组后的结构。 */
   const models = async (d: ApiDeps) => (await body(d)).providers.flatMap((p) => p.models)
 
+  test('Seedream 模型库与画布均显示水印默认关闭', async () => {
+    const d = withConfig('openai_chat_completions', 'm')
+    const ids = ['doubao-seedream-5-0-pro-260628', 'doubao-seedream-5-0-flash-260915']
+    d.config.providers.p!.media = Object.fromEntries(
+      ids.map((id) => [id, { kind: 'openai_images' as const }]),
+    )
+    const response = await body(d)
+    for (const id of ids) {
+      expect(response.mediaLibrary.find((m) => m.id === id)?.params.join('\n')).toContain(
+        'watermark：true | false；在右下角添加「AI 生成」水印；默认 false',
+      )
+      expect(response.media.find((m) => m.id === id)?.params).toContainEqual(
+        expect.objectContaining({ name: 'watermark', default: false }),
+      )
+    }
+  })
+
   test('生成接入方式由目录下发，不因自定义地址改变原生协议或添加其他厂商协议', async () => {
     const d = withConfig('openai_chat_completions', 'm')
     d.config.providers.p!.baseUrl = 'https://relay.example/v1'

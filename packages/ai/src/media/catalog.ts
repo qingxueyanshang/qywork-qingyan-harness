@@ -9,7 +9,7 @@
  *
  * 参数使用接口自身的字段名，不做跨厂商统一。生成质量 `quality` 与分辨率 `size` 分别声明；
  * 火山的尺寸可写 `size: 2K`，百炼可写 `size: 2048*2048`，各自遵守接口约束。
- * 参数原样发给接口，发送前按本表校验（`params.ts`）。
+ * 用户参数原样发给接口，发送前按本表校验（`params.ts`）；水印默认关闭，由生成入口显式补齐。
  *
  * 条目逐条与官方文档核对，核对日期写在每组上方。
  *
@@ -453,7 +453,7 @@ const seedreamParams: readonly MediaParamSpec[] = [
     label: '水印',
     advanced: true,
     type: 'boolean',
-    default: true,
+    default: false,
     description: '在右下角添加「AI 生成」水印',
   },
 ]

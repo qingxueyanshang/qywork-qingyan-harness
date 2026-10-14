@@ -170,12 +170,17 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
           const result = await adapter.resumeImage(call.resumeImageResult, { signal })
           return { ok: true, provider: target.provider, model: target.model, ...result }
         }
+        // 画布会省略默认值；水印必须显式发送目录默认值，避免远端缺省开启。
+        const params = { ...call.params }
+        const watermark = adapter.spec.params.find((p) => p.name === 'watermark')
+        if (params.watermark === undefined && watermark?.default !== undefined)
+          params.watermark = watermark.default
         const result = await adapter.run(
           {
             operation: op,
             prompt: call.prompt,
             inputs: call.inputs,
-            params: call.params,
+            params,
           },
           {
             signal,

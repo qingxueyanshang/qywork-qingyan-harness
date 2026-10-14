@@ -606,7 +606,13 @@ describe('生成模型协议映射', () => {
             },
           ],
         },
-        parameters: { resolution: '480P', ratio: '9:16', duration: 20, audio: false },
+        parameters: {
+          resolution: '480P',
+          ratio: '9:16',
+          duration: 20,
+          audio: false,
+          watermark: false,
+        },
       },
     })
     expect(hits).toEqual(['/v1/videos', '/v1/videos/wan-task', '/v1/videos/wan-task/content'])
