@@ -14,7 +14,7 @@
       "csp": {
         "default-src": "'self'",
         "img-src": "'self' data: blob: http://127.0.0.1:* http://localhost:*",
-        "media-src": "'self' data: blob: http://127.0.0.1:* http://localhost:*",
+        "media-src": "'self' data: blob: http://127.0.0.1:* http://localhost:* https://g-adoc.alcasset.com",
         "style-src": "'self' 'unsafe-inline'",
         "font-src": "'self' data:",
         "connect-src": "'self' http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*",

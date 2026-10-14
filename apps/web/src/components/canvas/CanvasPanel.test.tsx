@@ -1558,6 +1558,115 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
+  test('006 时长按清晰度联动，30 秒切至 720P 时原子调整为 15 秒并说明', async () => {
+    const { providerb_MODELS } = await import(
+      '../../../../../packages/ai/src/media/catalog-providerb.ts'
+    )
+    const spec = providerb_MODELS[1]!
+    const catalog = { ...MODELS, media: [{ ...MODELS.media[0], id: spec.id, params: spec.params }] }
+    const { host, server, refs } = await mount(
+      [
+        {
+          op: 'add_generate',
+          ref: '$g',
+          output: 'video',
+          params: { size: '854x480', seconds: '30' },
+        },
+      ],
+      {},
+      catalog,
+    )
+    await select(host, refs.$g!)
+    host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!.click()
+    const input = () => document.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
+    expect(input().max).toBe('30')
+    const tier = [
+      ...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button'),
+    ].find((b) => b.textContent === '720P')!
+    tier.click()
+    await waitFor(
+      () => input().max === '15' && input().value === '15',
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]?.[0]).toMatchObject({ params: { seconds: '15' } })
+    expect(document.querySelector('.canvas-param-notice')?.textContent).toBe('时长已调整为 15 秒')
+    const saved = server.doc().nodes[0]
+    expect(saved?.type === 'generate' && saved.params).toEqual({ seconds: '15' })
+    input().value = '99'
+    input().dispatchEvent(new Event('change', { bubbles: true }))
+    expect(input().value).toBe('15')
+    document.querySelector<HTMLButtonElement>('.canvas-stepper button[aria-label="减少"]')!.click()
+    await waitFor(
+      () => input().value === '14',
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.doc().nodes[0]).toMatchObject({ params: { seconds: '14' } })
+  })
+
+  test('固定 30 秒与 720P 均显示为只读，底栏与面板一致', async () => {
+    const { providerb_MODELS } = await import(
+      '../../../../../packages/ai/src/media/catalog-providerb.ts'
+    )
+    const spec = providerb_MODELS[0]!
+    const { host, refs } = await mount(
+      [{ op: 'add_generate', ref: '$g', output: 'video' }],
+      {},
+      {
+        ...MODELS,
+        media: [{ ...MODELS.media[0], id: spec.id, params: spec.params }],
+      },
+    )
+    await select(host, refs.$g!)
+    const chip = host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!
+    expect(chip.textContent).toBe('30 秒 · 16:9 · 720P')
+    chip.click()
+    expect(
+      [...document.querySelectorAll('.canvas-param-fixed')].map((el) => el.textContent),
+    ).toEqual(['30秒固定', '720P固定'])
+    expect(
+      [...document.querySelectorAll('.canvas-params-panel button')].map((el) => el.textContent),
+    ).toEqual(['16:9', '9:16'])
+  })
+
+  test('语速按 0.1 调整，音色展示名称且保存原始编号', async () => {
+    const { QWEN_AUDIO_MODELS } = await import(
+      '../../../../../packages/ai/src/media/catalog-qwen-audio.ts'
+    )
+    const spec = QWEN_AUDIO_MODELS.find((m) => m.id === 'qwen-audio-3.1-tts-flash')!
+    const { host, server, refs } = await mount(
+      [{ op: 'add_generate', ref: '$g', output: 'audio' }],
+      {},
+      {
+        ...MODELS,
+        media: [{ ...MODELS.media[0], id: spec.id, output: 'audio', params: spec.params }],
+      },
+    )
+    await select(host, refs.$g!)
+    host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!.click()
+    const rate = document.querySelector<HTMLInputElement>('input[aria-label="语速"]')!
+    rate.parentElement!.querySelector<HTMLButtonElement>('button[aria-label="增加"]')!.click()
+    await waitFor(
+      () => rate.value === '1.1',
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.doc().nodes[0]).toMatchObject({ params: { rate: 1.1 } })
+    document.querySelector<HTMLButtonElement>('button[aria-label="音色"]')!.click()
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="搜索音色"]')!
+    search.value = '英式男声'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    const options = [...document.querySelectorAll<HTMLButtonElement>('[data-param-option]')]
+    expect(options).toHaveLength(2)
+    expect(options[0]?.textContent).toContain('Eric_v3.1')
+    options[0]!.click()
+    await waitFor(
+      () => document.querySelector('button[aria-label="音色"]')?.textContent === 'Eric',
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.doc().nodes[0]).toMatchObject({ params: { voice: 'Eric_v3.1', rate: 1.1 } })
+    expect(document.querySelector('.canvas-param-picker')).toBeNull()
+    expect(document.querySelector('.canvas-params-panel')).not.toBeNull()
+  })
+
   test('选择 16:9、4K、最高质量、四张后，生成使用全部选择', async () => {
     const catalog = {
       ...MODELS,
@@ -1614,8 +1723,14 @@ describe('画布：生成卡与生成面板', () => {
       ['4', 'n', 4],
     ]
     for (const [label, key, value] of values) {
+      if (key === 'n')
+        document
+          .querySelector<HTMLButtonElement>('button.canvas-param-trigger[aria-label="张数"]')!
+          .click()
       const button = [
-        ...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button'),
+        ...document.querySelectorAll<HTMLButtonElement>(
+          '.canvas-params-panel button, .canvas-param-picker [data-param-option]',
+        ),
       ].find((b) => b.textContent === label)!
       button.click()
       await waitFor(
@@ -1624,7 +1739,7 @@ describe('画布：生成卡与生成面板', () => {
           return (
             n?.type === 'generate' &&
             n.params[key] === value &&
-            button.getAttribute('aria-checked') === 'true'
+            (key === 'n' || button.getAttribute('aria-checked') === 'true')
           )
         },
         () => JSON.stringify(server.ops),

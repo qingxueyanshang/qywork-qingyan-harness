@@ -26,6 +26,7 @@ import {
   isInlineVideo,
   type MediaInputRole,
   mediaOperationFor,
+  mediaParamProblem,
   mediaParamValues,
   modeOf,
   ratioOf,
@@ -69,6 +70,8 @@ import {
 } from '../Icons.tsx'
 import { Bitmap, decodeImage, paint } from './Bitmap.tsx'
 import { dismissOnOutside } from './dismiss.ts'
+import { ParamPicker } from './ParamPicker.tsx'
+import { numericRange, numericValue, PARAM_UNITS } from './param-controls.ts'
 import { promptOfEditor, promptParts } from './prompt.ts'
 import { SourcePicker } from './SourcePicker.tsx'
 
@@ -92,16 +95,11 @@ const PLACEHOLDER: Record<GenerateOutput, string> = {
   art: '描述页面或场景，输入 @ 引用参考图',
 }
 /** 带单位的参数：时长按秒，张数按张。 */
-const UNIT: Record<string, string> = {
-  duration: '秒',
-  durationSeconds: '秒',
-  seconds: '秒',
-  n: '张',
-}
+const UNIT = PARAM_UNITS
 /** 整数参数的取值个数不超过此值时逐项列出，否则使用加减按钮。 */
 const MAX_LISTED = 12
-/** 分段按钮不超过此数量时排成一行，否则每行 4 个。 */
-const ONE_ROW = 10
+/** 普通选项超过此数改为搜索菜单；比例图形超过此数时每行 4 个。 */
+const ONE_ROW = 6
 
 type SizeShape = NonNullable<MediaParamOption['shapes']>[number]
 
@@ -219,13 +217,13 @@ const ratiosOf = (p: MediaParamOption) => [...new Set((p.shapes ?? []).map((s) =
 const tiersOf = (p: MediaParamOption) =>
   [...new Set((p.shapes ?? []).map((s) => s.tier))].filter((t): t is string => t !== undefined)
 
-/** 带对照表的参数拆分为宽高比、分辨率两节；只有一个可选项的节不列出。 */
+/** 带对照表的参数拆分为宽高比、分辨率两节；固定档位也显示，使用只读说明。 */
 function sectionsOf(params: readonly MediaParamOption[]): Section[] {
   return params.flatMap((p): Section[] => {
     if (!p.shapes) return [{ kind: 'param', p }]
     const out: Section[] = []
-    if (ratiosOf(p).length > 1) out.push({ kind: 'ratio', p })
-    if (tiersOf(p).length > 1) out.push({ kind: 'tier', p })
+    if (ratiosOf(p).some((r) => r !== undefined)) out.push({ kind: 'ratio', p })
+    if (tiersOf(p).length) out.push({ kind: 'tier', p })
     return out
   })
 }
@@ -428,8 +426,8 @@ export function GeneratePanel(props: {
     sectionDefinitions().filter((s) => {
       const p = params().find((p) => p.name === s.p.name)
       if (!p) return false
-      if (s.kind === 'ratio') return ratiosOf(p).length > 1
-      if (s.kind === 'tier') return tiersOf(p).length > 1
+      if (s.kind === 'ratio') return ratiosOf(p).length > 0
+      if (s.kind === 'tier') return tiersOf(p).length > 0
       return true
     }),
   )
@@ -440,6 +438,13 @@ export function GeneratePanel(props: {
     return duration && audio ? [duration, audio] : []
   })
   const paramValue = (p: MediaParamOption) => activeParams()[p.name] ?? p.default
+  const [paramNotice, setParamNotice] = createSignal('')
+  createEffect(
+    on(
+      createMemo(() => model()?.id),
+      () => setParamNotice(''),
+    ),
+  )
   /** 再次点击同一按钮时收起。 */
   const toggle = (kind: 'model' | 'mode' | 'params', anchor: HTMLElement) =>
     setMenu(menu()?.kind === kind ? null : { kind, anchor })
@@ -636,6 +641,27 @@ export function GeneratePanel(props: {
     const next = { ...props.node.params }
     if (value === undefined || value === '' || value === p.default) delete next[p.name]
     else next[p.name] = value
+    const notices: string[] = []
+    // 切换清晰度等条件时，将越界的连续时长收至新范围，一次提交并明确提示。
+    for (const spec of modelParams()) {
+      if (spec.name === p.name || UNIT[spec.name] !== '秒') continue
+      const resolved = resolveMediaParam(
+        spec,
+        operation(),
+        mediaParamValues(modelParams(), next),
+        edges().filter((e) => e.role === 'reference').length,
+      )
+      const previous = paramValue(spec)
+      if (resolved.available === false || previous === undefined || !numericRange(resolved))
+        continue
+      if (!mediaParamProblem(resolved, previous)) continue
+      const adjusted = numericValue(resolved, Number(previous))
+      if (adjusted === undefined || mediaParamProblem(resolved, adjusted)) continue
+      if (adjusted === resolved.default) delete next[spec.name]
+      else next[spec.name] = adjusted
+      notices.push(`${spec.label}已调整为 ${paramText(resolved, adjusted)}`)
+    }
+    setParamNotice(notices.join('；'))
     void props.apply([
       { op: 'update', id: props.node.id, params: next, ...previewBox(ratioOf(p, value)) },
     ])
@@ -657,6 +683,9 @@ export function GeneratePanel(props: {
   const choicesOf = (p: MediaParamOption): (string | number | boolean | undefined)[] | null => {
     // 没有缺省值的参数增加一项「自动」：删除取值，由接口决定。
     const unset = p.default === undefined ? [undefined] : []
+    const range = numericRange(p)
+    if (range?.min !== undefined && range.min === range.max) return [range.min]
+    if (UNIT[p.name] === '秒' && range) return null
     if (p.values) return [...unset, ...p.values]
     if (p.type === 'enum') return [...unset, ...(p.values ?? [])]
     if (p.type === 'boolean') return [true, false]
@@ -728,17 +757,18 @@ export function GeneratePanel(props: {
   /** 加减：到达下限后再减一次为「自动」（有 `auto` 时），从「自动」增加一次回到下限。 */
   const step = (p: MediaParamOption, delta: number) => {
     const v = paramValue(p)
-    const min = p.min ?? 0
+    const range = numericRange(p)
+    const min = range?.min ?? 0
     if (v === undefined || v === p.auto) {
-      if (delta > 0) setParam(p, min)
+      if (delta > 0) setParam(p, numericValue(p, min))
       return
     }
-    const next = Number(v) + delta
+    const next = Number(v) + delta * (range?.step ?? 1)
     if (next < min) {
       if (p.auto !== undefined) setParam(p, p.auto)
       return
     }
-    setParam(p, Math.min(p.max ?? Number.POSITIVE_INFINITY, next))
+    setParam(p, numericValue(p, next))
   }
 
   const paramSection = (definition: Section) => {
@@ -757,7 +787,7 @@ export function GeneratePanel(props: {
           when={cellsOf(s)}
           fallback={
             <Show
-              when={s.p.type === 'string'}
+              when={s.p.type === 'string' && !numericRange(s.p)}
               fallback={
                 <div class="canvas-seg canvas-stepper">
                   <Show when={!s.p.advanced}>
@@ -768,9 +798,13 @@ export function GeneratePanel(props: {
                   <input
                     type="number"
                     aria-label={s.p.label}
-                    min={s.p.auto === undefined ? s.p.min : Math.min(s.p.min ?? s.p.auto, s.p.auto)}
-                    max={s.p.max}
-                    step={s.p.type === 'integer' ? 1 : 'any'}
+                    min={
+                      s.p.auto === undefined
+                        ? numericRange(s.p)?.min
+                        : Math.min(numericRange(s.p)?.min ?? s.p.auto, s.p.auto)
+                    }
+                    max={numericRange(s.p)?.max}
+                    step={numericRange(s.p)?.step ?? 1}
                     placeholder={
                       s.p.name === 'seed' ? '随机' : s.p.advanced ? defaultText(s.p) : '自动'
                     }
@@ -783,18 +817,15 @@ export function GeneratePanel(props: {
                     }
                     onChange={(e) => {
                       const value = e.currentTarget.value.trim()
-                      if (value === '') return setParam(s.p, undefined)
-                      const parsed = Number(value)
-                      const numeric = s.p.type === 'integer' ? Math.trunc(parsed) : parsed
-                      setParam(
-                        s.p,
-                        numeric === s.p.auto
-                          ? numeric
-                          : Math.max(
-                              s.p.min ?? Number.NEGATIVE_INFINITY,
-                              Math.min(s.p.max ?? Number.POSITIVE_INFINITY, numeric),
-                            ),
-                      )
+                      if (value === '') {
+                        e.currentTarget.value =
+                          s.p.advanced || s.p.default === s.p.auto ? '' : String(s.p.default ?? '')
+                        return setParam(s.p, undefined)
+                      }
+                      const numeric = numericValue(s.p, Number(value))
+                      if (numeric === undefined) return
+                      e.currentTarget.value = numeric === s.p.auto ? '' : String(numeric)
+                      setParam(s.p, numeric)
                     }}
                   />
                   <Show when={UNIT[s.p.name]}>
@@ -821,32 +852,46 @@ export function GeneratePanel(props: {
         >
           {(cells) => (
             <Show
-              when={s.p.advanced}
+              when={s.p.advanced && cells().length > 1}
               fallback={
-                <div
-                  class="canvas-seg"
-                  classList={{ drawn: drawn(s) }}
-                  style={{ '--cols': String(cells().length <= ONE_ROW ? cells().length : 4) }}
+                <Switch
+                  fallback={
+                    <div
+                      class="canvas-seg"
+                      classList={{ drawn: drawn(s) }}
+                      style={{ '--cols': String(cells().length <= ONE_ROW ? cells().length : 4) }}
+                    >
+                      <For each={cells().map((c) => c.of)}>
+                        {(value) => {
+                          const cell = () => cells().find((c) => c.of === value)
+                          return (
+                            <button
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={cell()?.checked() ?? false}
+                              onClick={() => cell()?.pick()}
+                            >
+                              <Show when={drawn(s)}>
+                                <RatioIcon of={value} />
+                              </Show>
+                              <span class="truncate">{cell()?.text}</span>
+                            </button>
+                          )
+                        }}
+                      </For>
+                    </div>
+                  }
                 >
-                  <For each={cells().map((c) => c.of)}>
-                    {(value) => {
-                      const cell = () => cells().find((c) => c.of === value)
-                      return (
-                        <button
-                          type="button"
-                          role="menuitemradio"
-                          aria-checked={cell()?.checked() ?? false}
-                          onClick={() => cell()?.pick()}
-                        >
-                          <Show when={drawn(s)}>
-                            <RatioIcon of={value} />
-                          </Show>
-                          <span class="truncate">{cell()?.text}</span>
-                        </button>
-                      )
-                    }}
-                  </For>
-                </div>
+                  <Match when={cells().length === 1}>
+                    <div class="canvas-param-fixed">
+                      <span>{cells()[0]?.text}</span>
+                      <span>固定</span>
+                    </div>
+                  </Match>
+                  <Match when={s.p.name === 'voice' || (!drawn(s) && cells().length > ONE_ROW)}>
+                    <ParamPicker param={s.p} choices={cells()} />
+                  </Match>
+                </Switch>
               }
             >
               <select
@@ -875,6 +920,25 @@ export function GeneratePanel(props: {
               </select>
             </Show>
           )}
+        </Show>
+        <Show
+          when={
+            UNIT[s.p.name] === '秒' &&
+            numericRange(s.p)?.min !== undefined &&
+            numericRange(s.p)?.max !== undefined
+          }
+        >
+          <Show
+            when={paramNotice()}
+            fallback={
+              <span class="canvas-param-description">
+                {numericRange(s.p)?.min}–{numericRange(s.p)?.max} 秒 · 每次{' '}
+                {numericRange(s.p)?.step} 秒
+              </span>
+            }
+          >
+            <output class="canvas-param-notice">{paramNotice()}</output>
+          </Show>
         </Show>
       </section>
     )

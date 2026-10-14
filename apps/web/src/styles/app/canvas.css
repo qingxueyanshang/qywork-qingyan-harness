@@ -1691,8 +1691,16 @@ button.canvas-input:hover {
   min-height: 64px;
 }
 .canvas-stepper > input {
-  flex: 1;
-  width: 80px;
+  flex: 0 1 72px;
+  width: 72px;
+  height: 32px;
+  text-align: center;
+  appearance: textfield;
+}
+.canvas-stepper > input::-webkit-inner-spin-button,
+.canvas-stepper > input::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
 }
 /* 选中态只有一层：描边改为墨色、文字改为主色，不加底色，外层也不加底色容器。 */
 .canvas-seg {
@@ -1747,6 +1755,8 @@ button.canvas-input:hover {
 .canvas-stepper {
   display: flex;
   align-items: center;
+  width: max-content;
+  max-width: 100%;
 }
 .canvas-stepper > button {
   flex: none;
@@ -1759,6 +1769,146 @@ button.canvas-input:hover {
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
+}
+
+.canvas-param-fixed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+.canvas-param-fixed > span:last-child {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.canvas-param-description,
+.canvas-param-id,
+.canvas-param-notice,
+.canvas-param-error {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.canvas-param-id {
+  color: var(--text-tertiary);
+}
+.canvas-param-error {
+  color: var(--danger);
+}
+.canvas-param-dropdown {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.canvas-param-dropdown > audio {
+  display: none;
+}
+.canvas-param-dropdown-current {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.canvas-param-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.canvas-param-trigger > svg,
+.canvas-param-preview > svg {
+  flex: none;
+}
+.canvas-param-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  gap: 5px;
+  flex: none;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: var(--r-md);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+.canvas-param-preview:hover,
+.canvas-param-trigger:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.canvas-param-picker {
+  position: fixed;
+  z-index: 61;
+  width: min(400px, calc(100vw - 16px));
+  max-height: min(400px, calc(100dvh - 16px));
+  padding: 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.canvas-param-picker-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(382px, calc(100dvh - 34px));
+}
+.canvas-param-picker input {
+  flex: none;
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+}
+.canvas-param-options {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.canvas-param-option {
+  display: flex;
+  gap: 4px;
+  border-radius: var(--r-md);
+}
+.canvas-param-option:hover,
+.canvas-param-option:focus-within {
+  background: var(--bg-hover);
+}
+.canvas-param-option > button:first-child {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
+  text-align: left;
+}
+.canvas-param-option-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
 }
 
 /* 生成面板底栏的模型与模式菜单：选中项右侧打勾，不加底色；底色只用于悬停。 */

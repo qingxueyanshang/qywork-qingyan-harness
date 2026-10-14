@@ -63,6 +63,9 @@ export interface MediaParamDefinition extends MediaParamLimits {
   label?: string
   /** 界面文案与原生取值分开；提交仍使用 values 中的值。 */
   valueLabels?: Readonly<Record<string, string>>
+  /** 选项的补充说明和官方试听，仅用于展示，不参与参数校验或提交。 */
+  valueDescriptions?: Readonly<Record<string, string>>
+  valueSamples?: Readonly<Record<string, { url: string; label?: string }>>
   type: 'enum' | 'integer' | 'number' | 'string' | 'boolean'
   auto?: number
   pattern?: string
