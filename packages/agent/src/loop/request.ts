@@ -214,11 +214,12 @@ export function reasoningPrefix(req: ChatRequest): string {
 }
 
 /**
- * 装配阶段的推理裁剪：请求中只保留当前协议会发送、且产生时前缀未变的推理。
+ * 装配阶段的推理裁剪：请求中只保留当前协议会发送、且满足其回放条件的推理。
  *
- * 原生条目记录的前缀与本次请求在该消息之前的前缀不同或缺失时即剥离：换模型、换工具表、
+ * 前缀绑定的原生条目与本次请求在该消息之前的前缀不同或缺失时即剥离：换模型、换工具表、
  * 压缩与收纳、图片省略、提示增删都会改变前缀，provider 不会按原样使用这类条目。
  * 某一条消息变化后，其后每一条的指纹都随之不同，因此剥离的总是该消息之后的全部条目。
+ * Google 内容片段签名按协议保留，与工具表或更早上下文的改动无关；其他格式不得混入。
  *
  * 必须在此处裁剪，不能只在适配器中裁剪：本地估算按请求中携带的推理计数，
  * 两处不一致时估算会多出一整段不会发送的思考。
@@ -231,7 +232,10 @@ export function replayReasoning(
   let prefix = envelope
   return messages.map((m) => {
     let out = m
-    if (out.responseReasoning && (!replay.opaque || out.responseReasoning.prefix !== prefix)) {
+    const validOpaque = replay.signatures
+      ? out.responseReasoning?.items.every((item) => item.type === replay.signatures)
+      : out.responseReasoning?.prefix === prefix
+    if (out.responseReasoning && (!replay.opaque || !validOpaque)) {
       const { responseReasoning: _dropped, ...rest } = out
       out = rest
     }

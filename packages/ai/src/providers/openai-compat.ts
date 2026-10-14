@@ -130,7 +130,11 @@ export class OpenAICompatAdapter implements LlmAdapter {
     let stopReason: ProviderStopReason = 'end_turn'
     // provider 返回的原值，只记入账本，不参与判断。结束时仍为空串表示流被截断，见下方的检查。
     let rawFinish = ''
-    const partial = new Map<number, { id: string; name: string; json: string }>()
+    const partial = new Map<
+      number,
+      { id: string; name: string; json: string; signature?: string }
+    >()
+    let messageSignature: string | undefined
     const splitter = createThinkingSplitter()
     const trace = newTrace()
 
@@ -197,6 +201,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
         if (!choice) continue
 
         const delta = choice.delta ?? {}
+        const signature = delta.extra_content?.google?.thought_signature
+        if (typeof signature === 'string' && signature) messageSignature = signature
 
         // DeepSeek / Kimi 使用 reasoning_content，部分第三方接口使用 reasoning，两者均接收。
         const reasoning = delta.reasoning_content ?? delta.reasoning
@@ -220,6 +226,8 @@ export class OpenAICompatAdapter implements LlmAdapter {
           // 名字有时分片到达，须补齐；id 同理。
           if (tc.id) slot.id = tc.id
           if (tc.function?.name) slot.name = tc.function.name
+          const signature = tc.extra_content?.google?.thought_signature
+          if (typeof signature === 'string' && signature) slot.signature = signature
           const argsDelta: string = tc.function?.arguments ?? ''
           if (argsDelta) {
             slot.json += argsDelta
@@ -300,6 +308,23 @@ export class OpenAICompatAdapter implements LlmAdapter {
           // 表示 provider 未回报任何用量，此时不附带，否则会将零作为真实值记入账本。
           ...(usage.source === 'provider' ? { usage } : {}),
         })
+      }
+      if (this.spec.chatReasoningProtocol === 'google_signatures') {
+        const items: Record<string, unknown>[] = [...partial.values()].flatMap((slot) =>
+          slot.signature
+            ? [{ type: 'google_chat_signature', callId: slot.id, signature: slot.signature }]
+            : [],
+        )
+        if (messageSignature) {
+          items.push({ type: 'google_chat_signature', signature: messageSignature })
+        }
+        if (items.length) {
+          yield {
+            type: 'response_reasoning',
+            reasoning: { items, tokens: usage.reasoningTokens },
+            at: Date.now(),
+          }
+        }
       }
     } catch (err) {
       throw classifyProviderError(
@@ -716,10 +741,12 @@ interface CompatChunk {
       /** DeepSeek / Kimi 使用 `reasoning_content`，部分第三方接口使用 `reasoning`。 */
       reasoning_content?: string
       reasoning?: string
+      extra_content?: GoogleSignatureContent
       tool_calls?: {
         index?: number
         id?: string
         function?: { name?: string; arguments?: string }
+        extra_content?: GoogleSignatureContent
       }[]
     }
     finish_reason?: string | null
@@ -739,8 +766,29 @@ interface CompatOutMessage {
   role: string
   content: string | CompatPart[] | null
   tool_call_id?: string | undefined
-  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
+  tool_calls?: {
+    id: string
+    type: 'function'
+    function: { name: string; arguments: string }
+    extra_content?: GoogleSignatureContent
+  }[]
+  extra_content?: GoogleSignatureContent
   reasoning_content?: string
+}
+
+interface GoogleSignatureContent {
+  google?: { thought_signature?: string }
+}
+
+/** 签名只回到原消息或原调用的位置，不为没有签名的并行调用复制或生成签名。 */
+function googleSignature(m: WireMessage, spec: ModelSpec, callId?: string) {
+  if (spec.chatReasoningProtocol !== 'google_signatures') return {}
+  const item = m.responseReasoning?.items.find(
+    (item) => item.type === 'google_chat_signature' && item.callId === callId,
+  )
+  return typeof item?.signature === 'string'
+    ? { extra_content: { google: { thought_signature: item.signature } } }
+    : {}
 }
 
 /** 观察消息开头的来源说明，模型据此区分工具输出与用户指令。 */
@@ -817,15 +865,17 @@ function toCompatMessage(
     return {
       role: 'assistant',
       content: typeof m.content === 'string' ? m.content || null : null,
+      ...googleSignature(m, spec),
       tool_calls: m.toolCalls.map((c) => ({
         id: c.id,
         type: 'function' as const,
         function: { name: c.name, arguments: JSON.stringify(c.arguments) },
+        ...googleSignature(m, spec, c.id),
       })),
       /*
        * 见文件头注释第 1 条：不回传该字段时，DeepSeek 思考模式的下一轮返回 400。
        *
-       * 此处无条件发送，不查询目录的 `reasoningEcho`：该字段只用于 Responses 协议。
+       * 除 Google 签名协议外，此处不查询目录的 `reasoningEcho`：该字段只用于 Responses 协议。
        * 两侧的不对称有依据：Responses 多发送的是一个条目，端点按 schema 直接拒绝
        * （`array too long. Expected an array with maximum length 0`）；本协议多发送的是
        * 一个字段，实测被忽略。改为查询目录反而会造成回归：第三方接口以自定义模型名提供
@@ -834,12 +884,15 @@ function toCompatMessage(
        * 边界：`reasoningContent` 是会话历史的属性，而不是端点的属性。会话中途更换过接口时，
        * 此处发送的可能是另一个端点记录的思考内容。
        */
-      ...(m.reasoningContent ? { reasoning_content: m.reasoningContent } : {}),
+      ...(m.reasoningContent && reasoningReplay(spec).text !== 'none'
+        ? { reasoning_content: m.reasoningContent }
+        : {}),
     }
   }
   return {
     role: m.role,
     content: typeof m.content === 'string' ? m.content : toMultimodal(m.content),
+    ...(m.role === 'assistant' ? googleSignature(m, spec) : {}),
     ...(m.role === 'assistant' && m.reasoningContent && reasoningReplay(spec).text === 'all'
       ? { reasoning_content: m.reasoningContent }
       : {}),

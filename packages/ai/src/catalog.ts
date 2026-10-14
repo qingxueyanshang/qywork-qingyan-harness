@@ -49,6 +49,7 @@ export const CHAT_REASONING_PROTOCOLS = [
   'qwen_preserved',
   'glm_preserved',
   'deepseek_preserved',
+  'google_signatures',
 ] as const
 export type ChatReasoningProtocol = (typeof CHAT_REASONING_PROTOCOLS)[number]
 
@@ -112,6 +113,7 @@ export interface ModelSpec {
    * `standard`：只为带 tool_calls 的 assistant 消息回放 `reasoning_content`。
    * `preserved`：回放全部历史思考，不增加请求开关；Qwen / GLM 另需请求开关，
    * 否则请求体启用了保留思考，而历史投影仍会丢弃思考内容。
+   * `google_signatures` 按原位置回传 Google 的工具调用与文本思考签名。
    */
   chatReasoningProtocol: ChatReasoningProtocol
   /**
@@ -692,6 +694,13 @@ function geminiFlashPromo(now: number): Pricing {
     : { input: 1.5, output: 7.5, cacheRead: 0.15, cacheWrite5m: 0, cacheWrite1h: 0 }
 }
 
+/** Argon 的标准处理促销截至 2026-11-30；只提供隐式缓存，不另收缓存写入费。 */
+function geminiArgonPromo(now: number): Pricing {
+  return now < Date.UTC(2026, 11, 1)
+    ? { input: 2, output: 10, cacheRead: 0.1, cacheWrite5m: 0, cacheWrite1h: 0 }
+    : { input: 4, output: 20, cacheRead: 0.2, cacheWrite5m: 0, cacheWrite1h: 0 }
+}
+
 /**
  * GLM-5.3-Flash 国内站限时半价，有效期至 2026-08-31；北京时间九月一日零点恢复原价。
  *
@@ -1214,10 +1223,11 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
     /*
      * ── Google Gemini ──
      *
-     * 官方定价页（2026-09）逐字，单位 $/百万：
+     * 官方定价页（Argon 于 2026-10-14 核对），单位 $/百万：
      *
      * | 模型 | 输入 | 输出 | 缓存 | 备注 |
      * |---|---|---|---|---|
+     * | gemini-4-argon | 2.00 | 10.00 | 0.10 | 促销至 2026-11-30，之后 4.00 / 20.00 / 0.20 |
      * | gemini-3.1-pro-preview | 2.00 | 12.00 | 0.20 | >200k：4.00 / 18.00 / 0.40 |
      * | gemini-3.8-flash | 0.75 | 3.75 | 0.075 | 促销至 2026-12-31，之后 1.50 / 7.50 / 0.15 |
      * | gemini-3.7-flash | 0.75 | 3.75 | 0.075 | 促销至 2026-12-31，之后 1.50 / 7.50 / 0.15 |
@@ -1228,8 +1238,24 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * Pro 的 id 是 `gemini-3.1-pro-preview`。
      *
      * 3.6 / 3.5 Flash 另有 `minimal`；3.8 / 3.7 Flash 与 3.1 Pro 从 `low` 起。
-     * 五条模型页均给出 1,048,576 输入与 65,536 输出上限。
+     * 3.x 给出 1,048,576 输入与 65,536 输出上限。Argon 的输入、思考和输出共用 1M 窗口；
+     * 当前 Chat 接入单次输出上限为 65,536，1M 长输出需另行接入后台续接。
      */
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high']),
+      id: 'gemini-4-argon',
+      displayName: 'Gemini 4 Argon',
+      vendor: 'google',
+      vision: true,
+      contextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+      chatReasoningProtocol: 'google_signatures',
+      chatToolSchema: 'native',
+      cacheRouting: 'none',
+      minCacheablePrefix: 4096,
+      pricing: geminiArgonPromo(now),
+    },
     {
       ...base,
       ...effort(['low', 'medium', 'high']),
@@ -1901,6 +1927,8 @@ export interface ReasoningReplay {
   text: 'none' | 'tool_turns' | 'all'
   /** 原生推理条目（带签名的思考块、加密推理）是否回放。 */
   opaque: boolean
+  /** Google 签名属于返回的内容片段；工具表或更早上下文变化后仍须随原片段回传。 */
+  signatures?: 'google_chat_signature'
 }
 
 /**
@@ -1911,7 +1939,7 @@ export interface ReasoningReplay {
  *   只有 `preserved` 系端点接受文字。
  * - `openai_responses`：由 `reasoningEcho` 声明，加密条目与文字条目二选一。
  * - `openai_chat_completions`：`reasoning_content` 字段，工具调用轮次始终携带（DeepSeek 思考模式
- *   缺少即返回 400，其余端点忽略该字段），`standard` 以外的协议在全部轮次携带。
+ *   缺少即返回 400，其余端点忽略该字段）；Google 回传签名，其余保留思考协议回传所有正文。
  */
 export function reasoningReplay(spec: ModelSpec): ReasoningReplay {
   if (spec.provider === 'anthropic_messages') {
@@ -1924,6 +1952,9 @@ export function reasoningReplay(spec: ModelSpec): ReasoningReplay {
     const text =
       spec.reasoningEcho === 'reasoning_text' || spec.reasoningEcho === 'reasoning_text_object'
     return { opaque: spec.reasoningEcho === 'encrypted_content', text: text ? 'all' : 'none' }
+  }
+  if (spec.chatReasoningProtocol === 'google_signatures') {
+    return { opaque: true, text: 'none', signatures: 'google_chat_signature' }
   }
   return { opaque: false, text: spec.chatReasoningProtocol === 'standard' ? 'tool_turns' : 'all' }
 }

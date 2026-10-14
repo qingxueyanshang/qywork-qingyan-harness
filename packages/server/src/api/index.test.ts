@@ -983,6 +983,28 @@ describe('模型目录', () => {
     }
   })
 
+  test('Gemini 4 在模型库和已配置模型选择器使用同一规格', async () => {
+    const b = await body(withConfig('openai_chat_completions', 'gemini-4-argon'))
+    const entry = b.library
+      .find((v) => v.id === 'google')!
+      .models.find((m) => m.id === 'gemini-4-argon')
+    expect(entry).toMatchObject({
+      label: 'Gemini 4 Argon',
+      contextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+      effortLevels: ['low', 'medium', 'high'],
+      vision: true,
+    })
+    expect(b.providers[0]!.models[0]).toMatchObject({
+      id: 'gemini-4-argon',
+      label: 'Gemini 4 Argon',
+      known: true,
+      chatToolSchema: 'native',
+      effortLevels: ['low', 'medium', 'high'],
+      defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    })
+  })
+
   /** 内置库不得缩减：缺少一家厂商时，设置页上该厂商的整组模型随之消失。 */
   test('内置库覆盖已收录厂商', async () => {
     const b = await body(withConfig('anthropic_messages', 'claude-opus-5'))
@@ -1003,6 +1025,7 @@ describe('模型目录', () => {
     for (const id of [
       'claude-fable-5-1',
       'gpt-5.6-sol',
+      'gemini-4-argon',
       'gemini-3.8-flash',
       'gemini-3.1-pro-preview',
       'grok-4.6',

@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ChatRequest, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
-import { lookupModel } from '@qywork/ai'
+import { lookupModel, reasoningReplay } from '@qywork/ai'
 import type { ResponseReasoning } from '@qywork/core'
 import { AgentLoop } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
@@ -30,6 +30,26 @@ function stampAfter(messages: WireMessage[], env = envelope): ResponseReasoning 
 
 describe('装配点裁剪', () => {
   const user: WireMessage = { role: 'user', content: '读 a.ts' }
+
+  test('Gemini 内容片段签名在工具表或上下文改变后保留，其他协议条目仍剥离', () => {
+    const replay = reasoningReplay(lookupModel('gemini-4-argon', 'openai_chat_completions'))
+    const signed: WireMessage = {
+      role: 'assistant',
+      content: '',
+      toolCalls: [call('read_file', { path: 'a.ts' })],
+      responseReasoning: {
+        items: [{ type: 'google_chat_signature', callId: 'a', signature: 'opaque' }],
+        tokens: 9,
+        prefix: 'previous-envelope',
+      },
+    }
+    expect(replayReasoning([user, signed], replay, envelope)[1]!.responseReasoning).toEqual(
+      signed.responseReasoning,
+    )
+    const other = { ...signed, responseReasoning: stampAfter([user]) }
+    expect(replayReasoning([user, other], replay, envelope)[1]!.responseReasoning).toBeUndefined()
+    expect(replayReasoning([user, signed], OPAQUE, envelope)[1]!.responseReasoning).toBeUndefined()
+  })
 
   test('前缀未变时原样保留，不携带思考正文', () => {
     const turn: WireMessage = {
@@ -113,61 +133,73 @@ describe('装配点裁剪', () => {
 })
 
 describe('循环集成', () => {
-  test('Claude 的原生思考标记前缀后写入账本，此后每一轮原样回放，不带正文', async () => {
-    const seen: WireMessage[][] = []
-    const persisted: unknown[] = []
-    const inner = fakeAdapter([])
-    const reasoning = { items, tokens: 9 }
-    const adapter: LlmAdapter = {
-      ...inner,
-      spec: lookupModel('claude-opus-5-5', 'anthropic_messages'),
-      async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
-        seen.push(structuredClone(req.messages))
-        yield { type: 'request_prepared', measuredInputTokens: 1 }
-        yield { type: 'thinking_delta', delta: '想', at: Date.now() }
-        if (seen.length < 3) {
-          yield { type: 'response_reasoning', reasoning, at: Date.now() }
-          const path = seen.length === 1 ? 'a.ts' : 'b.ts'
-          yield { type: 'tool_calls', calls: [call('read_file', { path })], at: Date.now() }
-          yield { type: 'done', stopReason: 'tool_use', rawStopReason: 'tool_use' }
-        } else {
-          yield { type: 'text_delta', delta: '完成', at: Date.now() }
-          yield { type: 'done', stopReason: 'end_turn', rawStopReason: 'end_turn' }
-        }
-      },
-    }
-    const persist = noopPersistence()
-    const original = persist.openThinkingStep
-    persist.openThinkingStep = (runId, seq, batchId, data) => {
-      persisted.push(data)
-      return original(runId, seq, batchId)
-    }
-    const loop = new AgentLoop({
-      adapter,
-      registry: new ToolRegistry(),
-      systemPrompt: 'sys',
-      persist,
-      makeToolContext: baseCtx,
-    })
-    for await (const _ of loop.run({
-      runId: 'rn_claude_native' as never,
-      history: [{ role: 'user', content: '读两个文件' }],
-      signal: new AbortController().signal,
-    })) {
-      // 只检查请求与写入账本的内容。
-    }
-    // 思考正文单独记录的步骤不带载荷，此处只检查两条原生条目。
-    expect(persisted.filter(Boolean)).toEqual([
-      { ...reasoning, prefix: expect.any(String) },
-      { ...reasoning, prefix: expect.any(String) },
-    ])
-    const assistants = (i: number) => seen[i]!.filter((m) => m.role === 'assistant')
-    expect(assistants(1).map((m) => [!!m.responseReasoning, m.reasoningContent])).toEqual([
-      [true, undefined],
-    ])
-    expect(assistants(2).map((m) => [!!m.responseReasoning, m.reasoningContent])).toEqual([
-      [true, undefined],
-      [true, undefined],
-    ])
-  })
+  test.each(['claude', 'gemini'] as const)(
+    '%s 的原生思考写入账本后逐轮回放，不带正文',
+    async (vendor) => {
+      const seen: WireMessage[][] = []
+      const persisted: unknown[] = []
+      const inner = fakeAdapter([])
+      const reasoning = {
+        items:
+          vendor === 'claude'
+            ? items
+            : [{ type: 'google_chat_signature', callId: 'a', signature: 's' }],
+        tokens: 9,
+      }
+      const adapter: LlmAdapter = {
+        ...inner,
+        spec:
+          vendor === 'claude'
+            ? lookupModel('claude-opus-5-5', 'anthropic_messages')
+            : lookupModel('gemini-4-argon', 'openai_chat_completions'),
+        async *stream(req): AsyncGenerator<ProviderEvent, void, unknown> {
+          seen.push(structuredClone(req.messages))
+          yield { type: 'request_prepared', measuredInputTokens: 1 }
+          yield { type: 'thinking_delta', delta: '想', at: Date.now() }
+          if (seen.length < 3) {
+            yield { type: 'response_reasoning', reasoning, at: Date.now() }
+            const path = seen.length === 1 ? 'a.ts' : 'b.ts'
+            yield { type: 'tool_calls', calls: [call('read_file', { path })], at: Date.now() }
+            yield { type: 'done', stopReason: 'tool_use', rawStopReason: 'tool_use' }
+          } else {
+            yield { type: 'text_delta', delta: '完成', at: Date.now() }
+            yield { type: 'done', stopReason: 'end_turn', rawStopReason: 'end_turn' }
+          }
+        },
+      }
+      const persist = noopPersistence()
+      const original = persist.openThinkingStep
+      persist.openThinkingStep = (runId, seq, batchId, data) => {
+        persisted.push(data)
+        return original(runId, seq, batchId)
+      }
+      const loop = new AgentLoop({
+        adapter,
+        registry: new ToolRegistry(),
+        systemPrompt: 'sys',
+        persist,
+        makeToolContext: baseCtx,
+      })
+      for await (const _ of loop.run({
+        runId: 'rn_claude_native' as never,
+        history: [{ role: 'user', content: '读两个文件' }],
+        signal: new AbortController().signal,
+      })) {
+        // 只检查请求与写入账本的内容。
+      }
+      // 思考正文单独记录的步骤不带载荷，此处只检查两条原生条目。
+      expect(persisted.filter(Boolean)).toEqual([
+        { ...reasoning, prefix: expect.any(String) },
+        { ...reasoning, prefix: expect.any(String) },
+      ])
+      const assistants = (i: number) => seen[i]!.filter((m) => m.role === 'assistant')
+      expect(assistants(1).map((m) => [!!m.responseReasoning, m.reasoningContent])).toEqual([
+        [true, undefined],
+      ])
+      expect(assistants(2).map((m) => [!!m.responseReasoning, m.reasoningContent])).toEqual([
+        [true, undefined],
+        [true, undefined],
+      ])
+    },
+  )
 })

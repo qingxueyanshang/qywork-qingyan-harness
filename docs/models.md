@@ -6,6 +6,34 @@
 接口支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
 选择协议时，以所连接端点提供的接口为准。通过第三方接口接入时，使用第三方接口给出的地址与凭证。
 
+## Gemini 4 Argon
+
+模型 ID 为 `gemini-4-argon`，选择 OpenAI Chat Completions；官方 Base URL 为
+`https://generativelanguage.googleapis.com/v1beta/openai`。支持文本、图片输入与文本输出。
+输入、思考和输出共用 1,048,576 token 窗口；当前接入的单次输出上限为 65,536 token。
+官方最高 1M 的长输出需要后台执行或续接，当前未接入该流程，也未开放原生音视频与 PDF 输入。
+
+思考档位为 `low / medium / high`，未选择时使用官方默认 `medium`。
+请求使用 `reasoning_effort`，不发送采样参数或显式缓存字段；工具 schema 保留原生可选字段。
+工具调用和文本响应中的思考签名沿现有推理记录落库，并在后续轮次回到原位置，
+不为无签名的并行调用补造签名。签名属于返回的内容片段，工具表或更早上下文变化后仍保留。
+
+标准处理价格，单位为美元 / 百万 token；输出包含思考 token：
+
+| 时段 | 输入 | 缓存读取 | 输出 |
+|---|---:|---:|---:|
+| 至 2026-11-30 | 2.00 | 0.10 | 10.00 |
+| 自 2026-12-01 | 4.00 | 0.20 | 20.00 |
+
+目录按 UTC 日期切换价目。仅支持隐式缓存，最小前缀为 4,096 token；不另收缓存写入费。
+新模型尚未标定 tokenizer 密度，使用通用保守估算，不沿用旧 Flash 的实测值。
+
+2026-10-14 核对：[模型规格](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)、
+[迁移与长输出](https://ai.google.dev/gemini-api/docs/latest-model)、
+[兼容接口](https://ai.google.dev/gemini-api/docs/openai)、
+[思考签名](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)、
+[价格](https://ai.google.dev/gemini-api/docs/pricing)。本地协议回归不等同于官方端点实测。
+
 ## MiniMax M3.1 Flash Preview 与 Step 5 Preview
 
 本次新增 `MiniMax-M3.1-Flash-Preview` 与 `step-5-preview`，不追加 MiniMax M2.x、Step 3.x 历史型号。

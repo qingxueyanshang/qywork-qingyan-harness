@@ -159,8 +159,8 @@ export interface WireMessage {
    */
   reasoningContent?: string
   /**
-   * 不可展示的原生推理条目。装配点只保留前缀未变的条目（`agent/loop/request.ts` 的
-   * `replayReasoning`），适配器收到后原样回放；存在该字段时不再发送思考正文。
+   * 不可展示的原生推理条目。装配点按模型协议裁决前缀绑定与内容片段签名的保留
+   * （`agent/loop/request.ts` 的 `replayReasoning`），适配器收到后回放；不再发送思考正文。
    */
   responseReasoning?: ResponseReasoning
   /**

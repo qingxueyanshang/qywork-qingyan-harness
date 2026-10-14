@@ -157,7 +157,7 @@ export type ReasoningEcho = (typeof REASONING_ECHOES)[number]
 
 /**
  * provider 返回的原生推理条目（Anthropic 带签名的思考块、Responses 的加密推理），
- * 不展示为思考正文，只在产生它的请求前缀未变时原样回放。
+ * 不展示为思考正文；回放条件由模型协议裁决，Google 内容片段签名须随原片段保留。
  */
 export interface ResponseReasoning {
   items: Record<string, unknown>[]
@@ -169,7 +169,7 @@ export interface ResponseReasoning {
   /**
    * 产生该条目的请求的前缀指纹（模型、系统提示、工具表与全部消息），由装配方写入，
    * 适配器不感知。回放时与本次请求在该消息之前的前缀比对，不同或缺失即不回放：
-   * 前缀变化后 provider 不会原样使用这些条目。
+   * 前缀绑定协议在变化后剥离条目；Google 内容片段签名不绑定整个请求前缀。
    */
   prefix?: string
 }

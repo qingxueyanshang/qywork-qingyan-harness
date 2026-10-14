@@ -18,6 +18,11 @@ describe('Base URL 留空时按模型库解析官方地址', () => {
     ['openai_responses', 'gpt-6-sol', 'https://api.openai.com/v1/responses'],
     [
       'openai_chat_completions',
+      'gemini-4-argon',
+      'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    ],
+    [
+      'openai_chat_completions',
       'gemini-3.8-flash',
       'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
     ],
