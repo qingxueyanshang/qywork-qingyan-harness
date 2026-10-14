@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import { onMount } from 'solid-js'
+import { onCleanup, onMount } from 'solid-js'
 
 /** 卡片与锚点之间的间距。 */
 const GAP = 4
@@ -50,8 +50,8 @@ export function placeMenu(
  * 先测量再定位，不使用估算高度：项数随客户端与状态变化（桌面端多一项），写死的常量会与实际不一致。
  * `onMount` 在插入 DOM 之后、当前帧绘制之前执行，定位时不会闪烁。
  *
- * 边界：坐标只在挂载时计算一次。容器滚动或窗口尺寸改变后卡片会与锚点错位，
- * 调用方需在此时收起菜单。向上弹出的卡片高度在挂载后也不得变化，否则下边缘会离开锚点。
+ * 展开期间逐帧测量锚点，覆盖画布平移、缩放及布局变化；坐标不变时不写入样式。
+ * 向上弹出的卡片高度在挂载后也不得变化，否则下边缘会离开锚点。
  */
 export function AnchoredMenu(props: {
   /** 卡片自身完整样式规则的类名。 */
@@ -66,21 +66,29 @@ export function AnchoredMenu(props: {
   children: JSX.Element
 }) {
   let el!: HTMLDivElement
-  onMount(() => {
+  let frame = 0
+  const position = () => {
     const anchor = props.anchor.getBoundingClientRect()
-    if (props.matchWidth)
-      el.style.width = `${Math.min(anchor.width, window.innerWidth - EDGE * 2)}px`
+    if (props.matchWidth) {
+      const width = `${Math.min(anchor.width, window.innerWidth - EDGE * 2)}px`
+      if (el.style.width !== width) el.style.width = width
+    }
     const box = el.getBoundingClientRect()
-    if (props.lockHeight) el.style.height = `${box.height}px`
+    if (props.lockHeight && !el.style.height) el.style.height = `${box.height}px`
     const at = placeMenu(
       anchor,
       box,
       { width: window.innerWidth, height: window.innerHeight },
       props.placement ?? 'below-end',
     )
-    el.style.top = `${at.top}px`
-    el.style.left = `${at.left}px`
-  })
+    const top = `${at.top}px`
+    const left = `${at.left}px`
+    if (el.style.top !== top) el.style.top = top
+    if (el.style.left !== left) el.style.left = left
+    frame = requestAnimationFrame(position)
+  }
+  onMount(position)
+  onCleanup(() => cancelAnimationFrame(frame))
 
   return (
     <div class={props.class} role="menu" ref={el}>

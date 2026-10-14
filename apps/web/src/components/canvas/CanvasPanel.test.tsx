@@ -1773,7 +1773,7 @@ describe('画布：生成卡与生成面板', () => {
     const options = [...document.querySelectorAll<HTMLButtonElement>('[data-param-option]')]
     expect(options).toHaveLength(2)
     expect(options[0]?.textContent).toBe('Eric')
-    expect(options[0]?.title).toContain('Eric_v3.1')
+    expect(options[0]?.dataset.tip).toContain('Eric_v3.1')
     options[0]!.click()
     await waitFor(
       () => document.querySelector('button[aria-label="音色"]')?.textContent === 'Eric',

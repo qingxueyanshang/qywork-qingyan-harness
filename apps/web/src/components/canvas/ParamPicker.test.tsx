@@ -54,7 +54,8 @@ function mount() {
 
 test('按特点搜索，键盘定位选项；试听或搜索不更改选中值', () => {
   const { picked, trigger } = mount()
-  expect(trigger.title).toBe('女声 · 温柔')
+  expect(trigger.dataset.tip).toBe('女声 · 温柔')
+  expect(document.querySelector('.canvas-param-dropdown [title]')).toBeNull()
   expect(document.querySelector('.canvas-param-description')).toBeNull()
   trigger.click()
   const input = document.querySelector<HTMLInputElement>('input[type="search"]')!
@@ -63,7 +64,8 @@ test('按特点搜索，键盘定位选项；试听或搜索不更改选中值',
   const options = document.querySelectorAll<HTMLButtonElement>('[data-param-option]')
   expect(options).toHaveLength(1)
   expect(options[0]?.textContent).toContain('音色乙')
-  expect(options[0]?.title).toBe('男声 · 英文\nb')
+  expect(options[0]?.dataset.tip).toBe('男声 · 英文\nb')
+  expect(document.querySelector('.canvas-param-picker [title]')).toBeNull()
   expect(document.querySelector('.canvas-param-id')).toBeNull()
   expect(document.querySelector('.canvas-param-option .canvas-param-description')).toBeNull()
   expect(picked).toEqual([])
@@ -73,6 +75,26 @@ test('按特点搜索，键盘定位选项；试听或搜索不更改选中值',
   expect(picked).toEqual(['b'])
   expect(trigger.textContent).toBe('音色乙')
   expect(document.querySelector('.canvas-param-picker')).toBeNull()
+})
+
+test('当前音色的试听独立于展开操作，使用全局悬浮提示', async () => {
+  const { picked, trigger, audio } = mount()
+  const play = spyOn(audio, 'play').mockResolvedValue(undefined)
+  const preview = document.querySelector<HTMLButtonElement>(
+    '.canvas-param-dropdown-current .canvas-param-preview',
+  )!
+  expect(preview.dataset.tip).toBe('官方样音')
+  preview.click()
+  await Promise.resolve()
+  expect(play).toHaveBeenCalledTimes(1)
+  expect(document.querySelector('.canvas-param-picker')).toBeNull()
+  expect(picked).toEqual([])
+  expect(preview.getAttribute('aria-label')).toBe('停止试听 音色甲')
+  trigger.click()
+  expect(document.querySelector('.canvas-param-picker')).not.toBeNull()
+  expect(play).toHaveBeenCalledTimes(1)
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(audio.getAttribute('src')).toBeNull()
 })
 
 test('切换试听停止上一个样音，不选中音色；旧播放失败不会覆盖新播放，Esc 停止并恢复焦点', async () => {

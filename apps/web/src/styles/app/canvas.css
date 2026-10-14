@@ -1728,7 +1728,15 @@ button.canvas-input:hover {
   color: var(--text-secondary);
 }
 .canvas-seg.drawn > button {
-  height: 44px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 16px 16px;
+  align-content: center;
+  justify-items: center;
+  gap: 4px;
+  height: 54px;
+  padding: 8px 4px;
+  line-height: 16px;
 }
 .canvas-seg > button:hover {
   border-color: var(--border-strong);
@@ -1796,21 +1804,36 @@ button.canvas-input:hover {
   display: none;
 }
 .canvas-param-dropdown-current {
+  position: relative;
   display: flex;
   align-items: center;
   height: 32px;
   min-width: 0;
   border: 1px solid var(--border-default);
   border-radius: var(--r-md);
+  transition:
+    background-color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.canvas-param-dropdown-current:hover,
+.canvas-param-dropdown-current:has([aria-expanded="true"]) {
+  background: var(--bg-hover);
+}
+.canvas-param-dropdown-current:has(button:active) {
+  background: var(--bg-active);
 }
 .canvas-param-dropdown-current:focus-within {
   border-color: var(--border-strong);
 }
 .canvas-param-dropdown-current > .canvas-param-preview {
+  position: absolute;
+  right: 28px;
   width: 28px;
   height: 28px;
-  margin-right: 1px;
   padding: 0;
+}
+.canvas-param-dropdown-current:has(> .canvas-param-preview) > .canvas-param-trigger {
+  gap: 40px;
 }
 .canvas-param-trigger {
   display: flex;
@@ -1844,9 +1867,7 @@ button.canvas-input:hover {
   font-size: var(--fs-xs);
   white-space: nowrap;
 }
-.canvas-param-preview:hover,
-.canvas-param-trigger:hover {
-  background: var(--bg-hover);
+.canvas-param-preview:hover {
   color: var(--text-primary);
 }
 .canvas-param-picker {

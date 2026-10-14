@@ -116,7 +116,7 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
           class="canvas-param-preview"
           type="button"
           aria-label={`${preview() === String(c.of) ? '停止试听' : '试听'} ${c.text}`}
-          title={sample().label ? `官方样音 · ${sample().label}` : '官方样音'}
+          data-tip={sample().label ? `官方样音 · ${sample().label}` : '官方样音'}
           onClick={() => void listen(c)}
         >
           <Show when={preview() === String(c.of)} fallback={<IconPlay size={12} />}>
@@ -163,7 +163,7 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
           class="canvas-param-trigger"
           type="button"
           aria-label={props.param.label}
-          title={description(current())}
+          data-tip={description(current())}
           aria-haspopup="menu"
           aria-expanded={open()}
           aria-controls={open() ? id : undefined}
@@ -214,7 +214,7 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
                         type="button"
                         role="menuitemradio"
                         aria-checked={c.checked()}
-                        title={[
+                        data-tip={[
                           description(c),
                           props.param.name === 'voice' ? String(c.of ?? '') : null,
                         ]
