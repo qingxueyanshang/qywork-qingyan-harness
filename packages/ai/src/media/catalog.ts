@@ -26,6 +26,7 @@ import {
   type MentionStyle,
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
+import { providera_MODELS } from './catalog-providera.ts'
 import { providerb_MODELS, providerb_RETIRED_MODELS } from './catalog-providerb.ts'
 import { QWEN_AUDIO_MODELS } from './catalog-qwen-audio.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
@@ -152,7 +153,7 @@ export interface MediaModelSpec {
   /** 已核实的其他协议映射；未声明的协议不继承原生参数与能力。 */
   mappings?: Partial<Record<MediaKind, MediaMapping>>
   /** 通用视频端点中厂商扩展字段的请求结构。 */
-  videoFormat?: 'dashscope' | 'ark' | 'veo' | 'kling-omni' | 'providerb'
+  videoFormat?: 'dashscope' | 'ark' | 'veo' | 'kling-omni' | 'providerb' | 'providera'
   /** 百炼新音频端点及输入结构；省略时使用原有 Qwen-TTS 多模态端点。 */
   speechFormat?: 'qwen-audio-tts' | 'qwen-audio-next'
 }
@@ -1143,6 +1144,7 @@ const SEEDANCE_25_MENTION: MentionStyle = {
 const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: '音频{n}' }
 
 const SEEDS: readonly MediaModelSpec[] = [
+  ...providera_MODELS,
   ...providerb_MODELS,
   ...GOOGLE_XAI_MODELS,
   ...QWEN_AUDIO_MODELS,

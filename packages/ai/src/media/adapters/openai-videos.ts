@@ -28,6 +28,7 @@ import {
 } from '../types.ts'
 import { arkVideoContent, ENDED } from './ark-videos.ts'
 import { dashScopeVideoPayload } from './dashscope.ts'
+import { provideraVideoPayload } from './providera.ts'
 
 /** 按目录声明构造已核实的第三方请求；未知型号只发送通用字段。 */
 async function payloadOf(
@@ -92,7 +93,10 @@ export class OpenAIVideosAdapter implements MediaAdapter {
     const auth = { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers }
     let taskId = opts.resumeTaskId
     if (!taskId) {
-      const payload = await payloadOf(req, this.spec)
+      const payload =
+        this.spec.videoFormat === 'providera'
+          ? await provideraVideoPayload(req, this.spec, base, auth, signal)
+          : await payloadOf(req, this.spec)
       const submitted = await postTask(
         `${base}/videos`,
         { model: this.profile.model, prompt: req.prompt, ...payload },
