@@ -319,6 +319,10 @@ function mediaModelsNote(models: MediaModelEntry[]): string {
         spec.inputs.maxImages ? `参考图最多 ${spec.inputs.maxImages} 张` : '',
         spec.inputs.maxVideos ? `参考视频最多 ${spec.inputs.maxVideos} 个` : '',
         spec.inputs.maxAudios ? `参考音频最多 ${spec.inputs.maxAudios} 段` : '',
+        spec.maxPromptLength ? `提示词最多 ${spec.maxPromptLength} 个字符` : '',
+        spec.inputs.maxAudioBytes
+          ? `每段参考音频最多 ${spec.inputs.maxAudioBytes / 1024 / 1024} MB`
+          : '',
       ]
         .filter(Boolean)
         .join('、')

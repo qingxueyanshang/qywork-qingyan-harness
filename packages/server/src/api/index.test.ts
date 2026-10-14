@@ -550,6 +550,33 @@ describe('模型目录', () => {
     },
   )
 
+  test('千问音频 3.1 的两种输入能力和各自参数进入模型库与画布', async () => {
+    const d = withConfig('openai_chat_completions', 'm')
+    d.config.providers.p!.media = {
+      'qwen-audio-3.1-tts-flash': { kind: 'dashscope_speech' },
+      'qwen-audio-3.1-tts-next': { kind: 'dashscope_speech' },
+    }
+    const response = await body(d)
+    for (const [suffix, audios] of [
+      ['flash', 0],
+      ['next', 3],
+    ] as const) {
+      const id = `qwen-audio-3.1-tts-${suffix}`
+      expect(response.mediaLibrary.find((m) => m.id === id)).toMatchObject({
+        kind: 'dashscope_speech',
+        kinds: ['dashscope_speech'],
+        output: 'audio',
+        maxAudios: audios,
+      })
+      const model = response.media.find((m) => m.id === id)!
+      expect(model.maxAudios).toBe(audios)
+      expect(model.known).toBe(true)
+      expect(model.params.map((p) => p.name)).toContain('sample_rate')
+      expect(model.params.some((p) => p.name === 'voice')).toBe(suffix === 'flash')
+      expect(model.params.some((p) => p.name === 'channels')).toBe(suffix === 'next')
+    }
+  })
+
   test.each([
     ['满血sd2.5(30-10-10原生过人脸/720P)', ['30'], '30', false],
     [

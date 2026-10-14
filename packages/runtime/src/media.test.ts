@@ -728,11 +728,74 @@ describe('生成模型协议映射', () => {
   })
 })
 
-test('语音合成不接受输入文件', () => {
+test('音频生成只接受音频用途，数量由模型目录校验', () => {
   expect(operationOf('audio', [])).toEqual({ operation: 'speech' })
+  expect(
+    operationOf('audio', [
+      { role: 'audio', bytes: new Uint8Array([1]), mime: 'audio/wav', path: '/w/a.wav' },
+    ]),
+  ).toEqual({ operation: 'speech' })
   expect(
     operationOf('audio', [
       { role: 'reference', bytes: new Uint8Array([1]), mime: 'image/png', path: '/w/a' },
     ]),
-  ).toEqual({ problem: '语音合成不接受输入文件' })
+  ).toEqual({ problem: '音频生成只接受参考音频' })
+})
+
+test('Next 参考音频通过生成端口；数量、类型、大小、文本及音色引用错误均在提交前拒绝', async () => {
+  const id = 'qwen-audio-3.1-tts-next'
+  const cfg = config()
+  cfg.providers.qwen!.media![id] = { kind: 'dashscope_speech' }
+  cfg.providers.qwen!.media!['qwen-audio-3.1-tts-flash'] = { kind: 'dashscope_speech' }
+  cfg.providers.qwen!.media!['qwen3-tts-flash'] = { kind: 'dashscope_speech' }
+  const input = {
+    role: 'audio' as const,
+    bytes: new Uint8Array(Buffer.from('RIFF\0\0\0\0WAVE')),
+    mime: 'audio/wav',
+    path: '/w/a.wav',
+  }
+  const base = {
+    type: 'audio' as const,
+    provider: 'qwen',
+    model: id,
+    prompt: '@voice1 说你好',
+    inputs: [input],
+    params: {},
+  }
+  let sent: unknown
+  reply = async (req) => {
+    sent = await req.json()
+    return Response.json({
+      output: { audio: { data: Buffer.from(input.bytes).toString('base64') } },
+      usage: { duration: 10 },
+    })
+  }
+  const port = makeMediaPort(cfg)
+  const out = await port.generate(base, signal())
+  expect(out.ok).toBe(true)
+  expect(hits).toEqual(['/api/v1/services/audio/tts/SpeechSynthesizer'])
+  expect(sent).toMatchObject({
+    model: id,
+    input: {
+      text_prompt: '@voice1 说你好',
+      references: [{ audio_data: expect.stringContaining('data:audio/wav;base64,') }],
+    },
+  })
+  for (const change of [
+    { inputs: [input, input, input, input] },
+    { inputs: [{ ...input, mime: 'audio/pcm' }] },
+    { inputs: [{ ...input, bytes: new Uint8Array(10 * 1024 * 1024 + 1) }] },
+    { prompt: '长'.repeat(3001) },
+    { prompt: '@voice2 说你好' },
+    { prompt: '@voice0 说你好' },
+    { prompt: '@voice1 说你好', inputs: [] },
+    { model: 'qwen-audio-3.1-tts-flash' },
+    { model: 'qwen3-tts-flash' },
+  ]) {
+    expect(await port.generate({ ...base, ...change }, signal())).toMatchObject({
+      ok: false,
+      executed: false,
+    })
+  }
+  expect(hits).toHaveLength(1)
 })

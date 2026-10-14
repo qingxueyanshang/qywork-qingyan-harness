@@ -5,6 +5,7 @@
  * 原生路径为 `/api/v1/services/…`，与上传共用地址规范化：去除兼容接口后缀，保留部署前缀。
  */
 
+import { mediaParamValues, resolveMediaParam } from '@qywork/core'
 import {
   DASHSCOPE_INLINE_SOURCE_BYTES,
   dashScopeBaseUrl,
@@ -36,6 +37,7 @@ import {
 
 /** 同步生成图片。修改与生成使用同一端点，参考图放入消息内容。 */
 const SYNC_PATH = '/api/v1/services/aigc/multimodal-generation/generation'
+const SPEECH_PATH = '/api/v1/services/audio/tts/SpeechSynthesizer'
 /** 视频任务。只支持异步：不带 `X-DashScope-Async: enable` 时接口直接报错。 */
 const VIDEO_PATH = '/api/v1/services/aigc/video-generation/video-synthesis'
 /** 任务的终止状态及其说明。 */
@@ -128,8 +130,9 @@ function imageUrls(body: Record<string, unknown>): string[] {
 }
 
 /**
- * 语音合成与图片生成使用同一同步端点，但参数（音色、语种、朗读要求）全部位于 `input` 中，与 `text` 并列，
- * 不在 `parameters` 中；放错位置时接口按默认音色合成且不报错。结果是地址（24 小时有效）或 base64。
+ * 语音参数全部位于 `input`。旧 Qwen-TTS 使用多模态端点，新 Qwen-Audio 使用 SpeechSynthesizer；
+ * Next 的正文为 text_prompt，参考音频为 references，且不能传 voice。结构由目录声明。
+ * 结果是地址（24 小时有效）或 base64。
  */
 export class DashScopeSpeechAdapter implements MediaAdapter {
   readonly kind = 'dashscope_speech' as const
@@ -141,24 +144,51 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
 
   async run(req: MediaRequest, opts: MediaRunOptions): Promise<MediaResult> {
     const { signal } = opts
-    const body = await postJson(
-      `${dashScopeBaseUrl(this.profile.baseUrl)}${SYNC_PATH}`,
-      {
-        model: this.profile.model,
-        input: {
+    const format = this.spec.speechFormat
+    const next = format === 'qwen-audio-next'
+    const sampling = this.spec.params.find((p) => p.name === 'sample_rate')
+    const input = next
+      ? {
+          text_prompt: req.prompt,
+          ...(req.inputs.length
+            ? { references: req.inputs.map((i) => ({ audio_data: dataUri(i.bytes, i.mime) })) }
+            : {}),
+          ...req.params,
+        }
+      : {
           text: req.prompt,
           voice: this.spec.params.find((p) => p.name === 'voice')?.default,
+          ...(sampling
+            ? {
+                sample_rate: resolveMediaParam(
+                  sampling,
+                  req.operation,
+                  mediaParamValues(this.spec.params, req.params),
+                ).default,
+              }
+            : {}),
           ...req.params,
-        },
+        }
+    const body = await postJson(
+      `${dashScopeBaseUrl(this.profile.baseUrl)}${format ? SPEECH_PATH : SYNC_PATH}`,
+      {
+        model: this.profile.model,
+        input,
       },
       { authorization: `Bearer ${this.profile.apiKey}`, ...this.profile.headers },
       signal,
     )
     const audio = (body.output as { audio?: { url?: unknown; data?: unknown } } | undefined)?.audio
-    // 千问语音合成 3 按输入字符计费，接口返回 `characters`（一个汉字计 2 个字符）。
-    const usage = defined<MediaUsage>({
-      characters: count((body.usage as Record<string, unknown> | undefined)?.characters),
-    })
+    const raw = (body.usage ?? {}) as Record<string, unknown>
+    // 新系列按 Token 计费；Next 的 duration 不能代替 Token。旧系列仍按 characters。
+    const usage = defined<MediaUsage>(
+      format
+        ? {
+            inputTokens: count(raw.input_tokens),
+            outputTokens: count(raw.output_tokens),
+          }
+        : { characters: count(raw.characters) },
+    )
     if (typeof audio?.url === 'string' && audio.url)
       return { files: [await download(audio.url, signal)], usage }
     if (typeof audio?.data === 'string' && audio.data) {

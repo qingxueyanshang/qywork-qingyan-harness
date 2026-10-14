@@ -7,6 +7,7 @@
 
 import { mediaParamProblem, mediaParamValues, resolveMediaParam, shapeChoices } from '@qywork/core'
 import type { MediaModelSpec, MediaOperation, MediaParamSpec } from './catalog.ts'
+import type { MediaRequest } from './types.ts'
 
 const OPERATION_LABEL: Record<MediaOperation, string> = {
   generate: '生成',
@@ -16,7 +17,7 @@ const OPERATION_LABEL: Record<MediaOperation, string> = {
   first_last_frame: '首尾帧生视频',
   reference_to_video: '参考素材生视频',
   video_to_video: '参考视频（编辑、延长、参考）',
-  speech: '语音合成',
+  speech: '音频生成',
 }
 
 /** 参数的取值说明，如「low | medium | high；默认 auto」。 */
@@ -58,8 +59,28 @@ export function validateMediaCall(
     firstFrames?: number
     lastFrames?: number
   },
+  content?: Pick<MediaRequest, 'prompt' | 'inputs'>,
 ): string[] {
   const problems: string[] = []
+  if (content) {
+    if (spec.maxPromptLength && [...content.prompt].length > spec.maxPromptLength)
+      problems.push(`${spec.id} 提示词最多 ${spec.maxPromptLength} 个字符`)
+    for (const input of content.inputs.filter((i) => i.role === 'audio')) {
+      if (spec.inputs.audioMimeTypes && !spec.inputs.audioMimeTypes.includes(input.mime))
+        problems.push(`${spec.id} 不支持参考音频格式 ${input.mime}`)
+      if (spec.inputs.maxAudioBytes && input.bytes.length > spec.inputs.maxAudioBytes)
+        problems.push(
+          `${spec.id} 每段参考音频不得超过 ${spec.inputs.maxAudioBytes / 1024 / 1024} MB`,
+        )
+    }
+    if (spec.mention?.audio === '@voice{n}') {
+      for (const match of content.prompt.matchAll(/@voice(\d+)\b/g)) {
+        const n = Number(match[1])
+        if (n < 1 || n > (counts.audios ?? 0))
+          problems.push(`参考音频 ${match[0]} 不存在，请按已提供音频的顺序引用`)
+      }
+    }
+  }
   const first = counts.firstFrames ?? 0
   const last = counts.lastFrames ?? 0
   const audios = counts.audios ?? 0

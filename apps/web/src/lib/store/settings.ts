@@ -314,6 +314,7 @@ export interface MediaModelOption {
   isDefault: boolean
   /** false 表示生成目录中没有该模型，参数表使用协议默认值。 */
   known: boolean
+  maxAudios?: number
   /** 画布生成面板上的参数控件：目录中标注了界面名称的参数。 */
   params: MediaParamOption[]
 }

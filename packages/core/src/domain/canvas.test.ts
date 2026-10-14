@@ -1090,6 +1090,19 @@ describe('画布：提示词编译', () => {
 })
 
 describe('画布：参考音频', () => {
+  test('音频卡接受参考音频并将标签按顺序编译为 @voiceN，拒绝图片输入', () => {
+    const doc = apply(sample(), [
+      { op: 'add_file', ref: '$voice', path: '声音/旁白.opus' },
+      { op: 'add_generate', ref: '$audio', output: 'audio', prompt: '@[$voice] 说你好' },
+    ])
+    const audio = doc.nodes.at(-1)!.id
+    const voice = doc.nodes.at(-2)!.id
+    expect(doc.edges.find((e) => e.to === audio)).toMatchObject({ from: voice, role: 'audio' })
+    expect(compilePrompt(doc, audio, { audio: '@voice{n}' })).toBe('@voice1 说你好')
+    expect(rejects(doc, [{ op: 'connect', from: 'a1', to: audio, role: 'reference' }])).toContain(
+      '只接受参考音频',
+    )
+  })
   test('音频节点连接到视频卡时用途为 audio，@ 它时自动补充 audio 连线并编译为「音频1」', () => {
     const doc = apply(sample(), [
       { op: 'add_file', ref: '$voice', path: '声音/小满.wav' },

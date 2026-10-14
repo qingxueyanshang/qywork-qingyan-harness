@@ -6,8 +6,11 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { activeMediaParams } from '@qywork/core'
+import { lookupMediaModel, mediaCost, quoteMedia } from './catalog.ts'
 import { sniffMime } from './http.ts'
 import { buildMediaAdapter } from './index.ts'
+import { validateMediaCall } from './params.ts'
 
 const WAV = new Uint8Array([...Buffer.from('RIFF'), 0, 0, 0, 0, ...Buffer.from('WAVEfmt ')])
 const MP3 = new Uint8Array([...Buffer.from('ID3'), 4, 0, 0])
@@ -128,5 +131,187 @@ describe('dashscope_speech', () => {
     )
     expect(out.files[0]).toEqual({ bytes: WAV, mime: 'audio/wav' })
     expect(seen[0]?.json?.input).toMatchObject({ voice: 'Cherry' })
+  })
+})
+
+describe('Qwen-Audio 3.1', () => {
+  const flash = 'qwen-audio-3.1-tts-flash'
+  const next = 'qwen-audio-3.1-tts-next'
+  const spec = (id: string) => lookupMediaModel(id, 'dashscope_speech')
+  const adapter = (model: string) =>
+    buildMediaAdapter({
+      kind: 'dashscope_speech',
+      model,
+      apiKey: 'sk',
+      baseUrl: `${origin()}/ali/compatible-mode/v1`,
+    })
+
+  test('Flash 使用新端点、新音色及 instruction，按输入输出 Token 计价', async () => {
+    reply = () =>
+      Response.json({
+        output: { audio: { url: `${origin()}/files/out.wav` } },
+        usage: { input_tokens: 1000, output_tokens: 2000, characters: 99999 },
+      })
+    const out = await adapter(flash).run(
+      {
+        operation: 'speech',
+        prompt: '[excited] 你好！',
+        inputs: [],
+        params: { instruction: '用温柔的语气', format: 'wav', rate: 1.2 },
+      },
+      signal(),
+    )
+    expect(seen[0]).toEqual({
+      path: '/ali/api/v1/services/audio/tts/SpeechSynthesizer',
+      json: {
+        model: flash,
+        input: {
+          text: '[excited] 你好！',
+          voice: 'longanhuan_v3.1',
+          sample_rate: 22050,
+          instruction: '用温柔的语气',
+          format: 'wav',
+          rate: 1.2,
+        },
+      },
+    })
+    expect(out.files).toEqual([{ bytes: WAV, mime: 'audio/wav' }])
+    expect(out.usage).toEqual({ inputTokens: 1000, outputTokens: 2000 })
+    expect(mediaCost(spec(flash), out.usage!)).toEqual({ cost: 0.0255, currency: 'CNY' })
+    expect(quoteMedia(spec(flash), {}, { images: 0, videos: 0 })).toBeNull()
+  })
+
+  test('Flash 选择 Opus 时省略采样率也不会发送非法默认 22050', async () => {
+    reply = () =>
+      Response.json({ output: { audio: { data: Buffer.from(WAV).toString('base64') } } })
+    await adapter(flash).run(
+      { operation: 'speech', prompt: '你好', inputs: [], params: { format: 'opus' } },
+      signal(),
+    )
+    expect(seen[0]?.json?.input).toMatchObject({ format: 'opus', sample_rate: 24000 })
+    expect(
+      validateMediaCall(
+        spec(flash),
+        'speech',
+        { format: 'opus', sample_rate: 22050 },
+        { images: 0, videos: 0 },
+      ),
+    ).toHaveLength(1)
+  })
+
+  test('Next 以 text_prompt 和有序 data URI 发送三段参考音频，不混入系统音色', async () => {
+    const inputs = [WAV, MP3, new Uint8Array(Buffer.from('OggS\0OpusHead'))].map((bytes, i) => ({
+      role: 'audio' as const,
+      bytes,
+      mime: ['audio/wav', 'audio/mpeg', 'audio/ogg'][i]!,
+      path: `/w/${i}`,
+    }))
+    reply = () =>
+      Response.json({
+        output: { audio: { url: `${origin()}/files/out.wav` } },
+        usage: { duration: 30 },
+      })
+    const prompt = '@voice1 和 @voice2 对话，@voice3 旁白，伴有鸟鸣'
+    const out = await adapter(next).run(
+      {
+        operation: 'speech',
+        prompt,
+        inputs,
+        params: { format: 'wav', sample_rate: 48000, channels: 2 },
+      },
+      signal(),
+    )
+    expect(seen[0]).toEqual({
+      path: '/ali/api/v1/services/audio/tts/SpeechSynthesizer',
+      json: {
+        model: next,
+        input: {
+          text_prompt: prompt,
+          references: inputs.map((i) => ({
+            audio_data: `data:${i.mime};base64,${Buffer.from(i.bytes).toString('base64')}`,
+          })),
+          format: 'wav',
+          sample_rate: 48000,
+          channels: 2,
+        },
+      },
+    })
+    expect(out.files).toEqual([{ bytes: WAV, mime: 'audio/wav' }])
+    expect(out.usage).toEqual({})
+    expect(spec(next).price!.cost(out.usage!)).toBeNull()
+    expect(mediaCost(spec(next), out.usage!)).toEqual({ cost: 0, currency: 'CNY' })
+    expect(mediaCost(spec(next), { inputTokens: 1000, outputTokens: 2000 })).toEqual({
+      cost: 0.03,
+      currency: 'CNY',
+    })
+    expect(spec(next).price!.cost({ inputTokens: 1000 })).toBeNull()
+    expect(spec(flash).price!.cost({ outputTokens: 2000 })).toBeNull()
+  })
+
+  test('Next 纯文本请求省略 references 和 voice，并保留服务端错误', async () => {
+    reply = () =>
+      Response.json({ output: { audio: { data: Buffer.from(MP3).toString('base64') } } })
+    const out = await adapter(next).run(
+      { operation: 'speech', prompt: '森林环境音', inputs: [], params: {} },
+      signal(),
+    )
+    expect(seen[0]?.json?.input).toEqual({ text_prompt: '森林环境音' })
+    expect(out.files).toEqual([{ bytes: MP3, mime: 'audio/mpeg' }])
+    reply = () => Response.json({ code: 'InvalidParameter', message: 'Model not exist.' })
+    await expect(
+      adapter(next).run({ operation: 'speech', prompt: 'x', inputs: [], params: {} }, signal()),
+    ).rejects.toThrow('InvalidParameter Model not exist.')
+  })
+
+  test('参数面板和提交校验分别限制新旧音色、采样率、声道及编码参数', () => {
+    const counts = { images: 0, videos: 0 }
+    expect(validateMediaCall(spec(flash), 'speech', { voice: 'Cherry' }, counts)).toHaveLength(1)
+    expect(
+      validateMediaCall(
+        spec(flash),
+        'speech',
+        { voice: 'Emily_v3.1', instruction: '温柔' },
+        counts,
+      ),
+    ).toEqual([])
+    for (const params of [
+      { voice: 'longanhuan_v3.1' },
+      { format: 'opus' },
+      { channels: '2' },
+      { channels: 3 },
+      { sample_rate: 22050 },
+      { quality: 10 },
+      { rate: 2.1 },
+      { volume: 101 },
+    ]) {
+      expect(validateMediaCall(spec(next), 'speech', params, counts).length).toBeGreaterThan(0)
+    }
+    expect(
+      activeMediaParams(spec(next).params, 'speech', {
+        format: 'wav',
+        quality: 4,
+        bit_rate: 192,
+        enable_cbr: true,
+      }),
+    ).toEqual({ format: 'wav' })
+    expect(
+      activeMediaParams(spec(next).params, 'speech', {
+        format: 'mp3',
+        quality: 4,
+        bit_rate: 192,
+        enable_cbr: false,
+      }),
+    ).toEqual({ format: 'mp3', quality: 4, enable_cbr: false })
+    expect(
+      validateMediaCall(
+        spec(next),
+        'speech',
+        { format: 'mp3', enable_cbr: true, sample_rate: 8000, bit_rate: 128 },
+        counts,
+      ),
+    ).toHaveLength(1)
+    expect(validateMediaCall(spec(next), 'speech', {}, { ...counts, audios: 3 })).toEqual([])
+    expect(validateMediaCall(spec(next), 'speech', {}, { ...counts, audios: 4 })).toHaveLength(1)
+    expect(validateMediaCall(spec(flash), 'speech', {}, { ...counts, audios: 1 })).toHaveLength(1)
   })
 })

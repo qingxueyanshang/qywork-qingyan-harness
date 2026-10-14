@@ -37,7 +37,9 @@ export function operationOf(
 ): { operation: MediaOperation } | { problem: string } {
   const count = (role: MediaInput['role']) => inputs.filter((i) => i.role === role).length
   if (type === 'audio') {
-    return inputs.length ? { problem: '语音合成不接受输入文件' } : { operation: 'speech' }
+    return inputs.some((i) => i.role !== 'audio')
+      ? { problem: '音频生成只接受参考音频' }
+      : { operation: 'speech' }
   }
   const first = count('first_frame')
   const last = count('last_frame')
@@ -123,13 +125,19 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
       // 接续取回不会重新提交，参数与输入均不发出，因此不校验。
       if (!call.resumeTaskId && !call.resumeImageResult) {
         const spec = lookupMediaModel(target.model, target.kind)
-        const problems = validateMediaCall(spec, op, call.params, {
-          images: call.inputs.filter((i) => i.role === 'reference').length,
-          videos: call.inputs.filter((i) => i.role === 'video').length,
-          audios: call.inputs.filter((i) => i.role === 'audio').length,
-          firstFrames: call.inputs.filter((i) => i.role === 'first_frame').length,
-          lastFrames: call.inputs.filter((i) => i.role === 'last_frame').length,
-        })
+        const problems = validateMediaCall(
+          spec,
+          op,
+          call.params,
+          {
+            images: call.inputs.filter((i) => i.role === 'reference').length,
+            videos: call.inputs.filter((i) => i.role === 'video').length,
+            audios: call.inputs.filter((i) => i.role === 'audio').length,
+            firstFrames: call.inputs.filter((i) => i.role === 'first_frame').length,
+            lastFrames: call.inputs.filter((i) => i.role === 'last_frame').length,
+          },
+          call,
+        )
         if (problems.length > 0) {
           const others = candidates
             .filter((m) => m.provider !== target.provider || m.model !== target.model)

@@ -27,6 +27,7 @@ import {
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
 import { providerb_MODELS, providerb_RETIRED_MODELS } from './catalog-providerb.ts'
+import { QWEN_AUDIO_MODELS } from './catalog-qwen-audio.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
 
 /**
@@ -105,6 +106,8 @@ export interface MediaModelSpec {
   vendor: string | null
   kind: MediaKind
   operations: readonly MediaOperation[]
+  /** 提示词字符上限；仅在官方文档明确给出时声明。 */
+  maxPromptLength?: number
   /**
    * 参考图、参考视频的数量上限与传递方式（首尾帧不计入）。传递方式由目录声明，不按模型名推测：
    * OpenAI 的修改使用 multipart `/edits`，其余均放入 JSON。
@@ -115,6 +118,8 @@ export interface MediaModelSpec {
     maxVideos: number
     /** 参考音频的段数上限。省略表示不接受参考音频（总时长上限由各厂商另行规定，本地不校验，由接口判定）。 */
     maxAudios?: number
+    audioMimeTypes?: readonly string[]
+    maxAudioBytes?: number
     transport: 'multipart' | 'json'
     types?: Partial<Record<MediaInput['role'], string>>
     /** 允许尾帧单独输入，或首尾帧与参考素材组合。省略时各组合互斥且尾帧需要首帧。 */
@@ -148,6 +153,8 @@ export interface MediaModelSpec {
   mappings?: Partial<Record<MediaKind, MediaMapping>>
   /** 通用视频端点中厂商扩展字段的请求结构。 */
   videoFormat?: 'dashscope' | 'ark' | 'veo' | 'kling-omni' | 'providerb'
+  /** 百炼新音频端点及输入结构；省略时使用原有 Qwen-TTS 多模态端点。 */
+  speechFormat?: 'qwen-audio-tts' | 'qwen-audio-next'
 }
 
 type MediaMapping = Partial<
@@ -1138,6 +1145,7 @@ const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: 
 const SEEDS: readonly MediaModelSpec[] = [
   ...providerb_MODELS,
   ...GOOGLE_XAI_MODELS,
+  ...QWEN_AUDIO_MODELS,
   spec(
     'gpt-image-2.5-flare',
     'GPT Image 2.5 Flare',

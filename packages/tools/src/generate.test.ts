@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { type MediaCall, type MediaCallResult, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
+  generateAudioTool,
   generateImageTool,
   generateMedia,
   generateVideoTool,
@@ -521,4 +522,33 @@ describe('generate_video 的参考音频', () => {
     expect(bad.message).toContain('wav / mp3 音频')
     expect(calls).toHaveLength(1)
   })
+})
+
+test('generate_audio 将有序 WAV 与 OGG Opus 参考音频交给统一生成入口，视频入口仍拒绝 OGG', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'qy-audio-next-'))
+  await writeFile(join(root, 'a.wav'), 'RIFF')
+  await writeFile(join(root, 'b.opus'), 'OggS\0OpusHead')
+  answer = { ok: false, message: '停在这里' }
+  await generateAudioTool.fn(
+    {
+      text: '@voice1 和 @voice2 对话',
+      audios: ['a.wav', 'b.opus'],
+      provider: 'qwen',
+      model: 'qwen-audio-3.1-tts-next',
+    },
+    ctx(root),
+  )
+  expect(calls[0]).toMatchObject({
+    type: 'audio',
+    prompt: '@voice1 和 @voice2 对话',
+    model: 'qwen-audio-3.1-tts-next',
+  })
+  expect(calls[0]?.inputs.map((i) => [i.role, i.mime])).toEqual([
+    ['audio', 'audio/wav'],
+    ['audio', 'audio/ogg'],
+  ])
+  expect(calls[0]?.inputs[1]?.bytes).toEqual(new Uint8Array(Buffer.from('OggS\0OpusHead')))
+  const bad = await generateVideoTool.fn({ prompt: '说话', audios: ['b.opus'] }, ctx(root))
+  expect(bad.errorKind).toBe('invalid_tool_arguments')
+  expect(calls).toHaveLength(1)
 })

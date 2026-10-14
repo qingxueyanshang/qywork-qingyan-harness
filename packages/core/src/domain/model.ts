@@ -303,9 +303,9 @@ export function isInlineVideo(pathOrName: string): boolean {
   return INLINE_VIDEO_RE.test(pathOrName)
 }
 
-/** 判定路径或文件名是否为可直接提交给视频模型的参考音频。各厂商都只接受 wav 与 mp3。 */
-export function isInlineAudio(pathOrName: string): boolean {
-  return INLINE_AUDIO_RE.test(pathOrName)
+/** 参考音频默认仅 WAV / MP3；支持 OGG Opus 的音频生成入口显式启用 allowOgg。 */
+export function isInlineAudio(pathOrName: string, allowOgg = false): boolean {
+  return INLINE_AUDIO_RE.test(pathOrName) || (allowOgg && /\.(ogg|opus)$/i.test(pathOrName))
 }
 
 /** 扩展名 → mime。只覆盖可内联的类型与 Art 页面（HTML），其余返回通用二进制类型。 */
@@ -321,6 +321,7 @@ export function mimeOf(pathOrName: string): string {
   if (ext === 'mkv') return 'video/x-matroska'
   if (ext === 'wav') return 'audio/wav'
   if (ext === 'mp3') return 'audio/mpeg'
+  if (ext === 'ogg' || ext === 'opus') return 'audio/ogg'
   if (ext === 'html' || ext === 'htm') return 'text/html'
   return 'application/octet-stream'
 }

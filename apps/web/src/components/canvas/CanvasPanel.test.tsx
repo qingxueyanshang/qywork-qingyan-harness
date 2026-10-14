@@ -3150,6 +3150,72 @@ describe('画布：连线', () => {
     expect(store.settingsPage()).toBe('models')
     store.closeSettings()
   })
+
+  test.each([
+    ['next', 3],
+    ['flash', 0],
+  ] as const)('音频卡按模型能力开放参考素材入口：%s', async (suffix, maxAudios) => {
+    const catalog = {
+      ...MODELS,
+      media: [
+        {
+          provider: 'qwen',
+          id: `qwen-audio-3.1-tts-${suffix}`,
+          kind: 'dashscope_speech',
+          output: 'audio',
+          label: suffix,
+          operations: ['speech'],
+          isDefault: true,
+          known: true,
+          maxAudios,
+          params: [],
+        },
+      ],
+    }
+    const { host, refs, server } = await mount(
+      [
+        { op: 'add_file', ref: '$voice', path: 'voice.opus' },
+        { op: 'add_file', ref: '$image', path: 'photo.png' },
+        { op: 'add_generate', ref: '$audio', output: 'audio' },
+      ],
+      {},
+      catalog,
+    )
+    pointer(node(host, refs.$audio!), 'pointerdown', 10, 10)
+    pointer(host.querySelector('.canvas-stage')!, 'pointerup', 10, 10)
+    await waitFor(
+      () => !!host.querySelector('.canvas-panel'),
+      () => '',
+    )
+    const add = host.querySelector<HTMLButtonElement>(
+      '.canvas-inputs button[aria-label="添加素材"]',
+    )
+    expect(Boolean(add)).toBe(maxAudios > 0)
+    expect(Boolean(host.querySelector('button[aria-label="引用素材"]'))).toBe(maxAudios > 0)
+    if (!add) return
+    add.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-pick input[type="file"]'),
+      () => '',
+    )
+    expect(
+      document.querySelector<HTMLInputElement>('.canvas-pick input[type="file"]')!.accept,
+    ).toBe('audio/*')
+    const choices = [...document.querySelectorAll<HTMLButtonElement>('.canvas-pick-list > button')]
+    expect(choices.some((b) => b.textContent?.includes('photo'))).toBe(false)
+    const voice = choices.find((b) => b.textContent?.includes('voice'))!
+    expect(voice).toBeDefined()
+    voice.click()
+    await waitFor(
+      () => server.doc().edges.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.doc().edges[0]).toMatchObject({
+      from: refs.$voice,
+      to: refs.$audio,
+      role: 'audio',
+    })
+  })
 })
 
 describe('画布：左侧工具条', () => {

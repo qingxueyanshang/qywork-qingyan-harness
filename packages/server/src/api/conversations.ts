@@ -132,6 +132,8 @@ export interface MediaModelRow {
   isDefault: boolean
   /** false 表示生成目录未收录，参数表取协议默认值。 */
   known: boolean
+  /** 参考音频上限，画布据此开放音频素材输入。 */
+  maxAudios?: number
   /** 画布生成面板上的参数控件。仅包含目录中标注了 `label` 的参数，其余参数只提供给大模型。 */
   params: MediaParamRow[]
 }
@@ -374,6 +376,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         operations: [...spec.operations],
         isDefault: m.isDefault,
         known: spec.catalogued,
+        maxAudios: spec.inputs.maxAudios ?? 0,
         params: spec.params.flatMap(({ description: _d, label, ...rest }) =>
           label ? [{ ...rest, label }] : [],
         ),

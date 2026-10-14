@@ -286,14 +286,16 @@ async function readInputs(
       role === 'video'
         ? isInlineVideo(abs)
         : role === 'audio'
-          ? isInlineAudio(abs)
+          ? isInlineAudio(abs, type === 'audio')
           : isInlineImage(abs) || page
     if (!ok) {
       const want =
         role === 'video'
           ? 'mp4 / mov / webm / mkv 视频'
           : role === 'audio'
-            ? 'wav / mp3 音频'
+            ? type === 'audio'
+              ? 'wav / mp3 / ogg / opus 音频'
+              : 'wav / mp3 音频'
             : 'png / jpg / gif / webp 图片'
       return refused(`${path} 不是 ${want}`, 'invalid_tool_arguments')
     }
@@ -777,14 +779,23 @@ export const retrieveMediaTool: ToolSpec = {
 export const generateAudioTool: ToolSpec = {
   name: 'generate_audio',
   description:
-    '调用已配置的语音合成模型将文本合成为音频，生成的文件写入工作区，结果仅返回文件路径。' +
-    '音色、语种、语气等在 params_json 中设置。' +
+    '调用已配置的音频模型生成语音、对话或音效，生成的文件写入工作区，结果仅返回文件路径。' +
+    '音色、语种、语气等在 params_json 中设置；支持参考音频的模型可通过 audios 提供素材，按该模型声明的写法引用。' +
     PARAMS_NOTE +
     DISPLAY_NOTE,
   parameters: {
     type: 'object',
     properties: {
-      text: { type: 'string', description: '待合成的文本' },
+      text: {
+        type: 'string',
+        description:
+          '待合成的文本或音频描述；Next 可用 @voice1、@voice2、@voice3 引用按顺序传入的音频',
+      },
+      audios: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '参考音频的工作区路径；数量与格式以模型限制为准',
+      },
       params_json: {
         type: 'string',
         description: '该模型的参数，JSON 对象，字段与取值见本轮「可用的生成模型」',
@@ -803,7 +814,7 @@ export const generateAudioTool: ToolSpec = {
   objectLabel: '音频',
   category: 'media',
   facet: '生成',
-  summary: '用语音合成模型将文本合成为音频',
+  summary: '用音频模型生成语音、对话或音效',
   targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
   permissionEffect: 'write',
   async fn(args, ctx) {
@@ -816,7 +827,7 @@ export const generateAudioTool: ToolSpec = {
       signal: ctx.signal,
       type: 'audio',
       prompt: common.prompt,
-      inputs: [],
+      inputs: pathList(args.audios).map((path) => ({ role: 'audio' as const, path })),
       params: common.params,
       ...(common.pick ? { pick: common.pick } : {}),
       ...(common.output ? { output: common.output } : {}),

@@ -1060,7 +1060,9 @@ function roleProblem(
   const from = `「${displayNameOf(source)}」`
   const to = `「${target.name}」`
   const kind = canvasMediaOf(source)
-  if (target.output === 'audio') return `${to} 是语音合成，不接受输入`
+  if (target.output === 'audio') {
+    return kind === 'audio' && role === 'audio' ? null : `${to} 只接受参考音频，${from} 无法连接`
+  }
   if (target.output === 'image' || target.output === 'art') {
     return kind === 'image' && role === 'reference' ? null : `${to} 只接受参考图，${from} 无法连接`
   }

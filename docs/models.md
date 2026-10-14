@@ -328,6 +328,25 @@ gatewaysoft 提供 xAI 格式的 Grok 视频与方舟格式的 Seedance 接口�
 已通过本地请求捕获、参数校验、PNG 下载及计费回归，尚未进行此型号的真实云端生成。
 依据：[官方型号与价格](https://help.aliyun.com/zh/model-studio/qwen-image-2-1-pro)、[生成与编辑 API](https://help.aliyun.com/zh/model-studio/qwen-image-generation-and-editing-api-reference)。
 
+2026-10-14 新增千问音频 3.1，接入方式均为「百炼」，使用非流式 HTTP 获取完整音频文件：
+
+| 模型 ID | 输入与控制 | 北京原价（元/百万 Token，输入 / 输出） |
+|---|---|---|
+| `qwen-audio-3.1-tts-flash` | 文本、新版系统音色、朗读要求、情绪标签、语速、音调、音量；输出 MP3/WAV/Opus | 1.5 / 12 |
+| `qwen-audio-3.1-tts-next` | 音频描述或对白，最多 3 段参考音频；支持声道和 MP3 编码控制；输出 WAV/MP3 | 6 / 12 |
+
+新系列使用 `/api/v1/services/audio/tts/SpeechSynthesizer`，参数置于 `input`。
+按官方文档使用业务空间地址 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com`，将占位符替换为自己的业务空间 ID，并配置北京地域 API Key。
+Flash 使用 `text`、`voice` 和单数 `instruction`，不能沿用旧版的 `Cherry` 音色或 `instructions` 字段。
+Next 使用 `text_prompt` 和 `references[].audio_data`，不接受 `voice`；参考音频按顺序以 `@voice1`、`@voice2`、`@voice3` 引用。
+在画布选择 Next 后可添加音频素材或用 `@` 引用；`generate_audio` 工具也支持 `audios` 路径数组。
+Next 提示词最多 3000 字符，每段参考音频不超过 10 MB、30 秒，支持 WAV、MP3 和 OGG Opus。
+本地校验数量、类型、大小和引用编号，时长与编码有效性由服务端判定。播客单次最多 240 秒，其他场景最多 120 秒，由提示词控制。
+当前接入系统音色与完整文件输出，不提供声音复刻管理、流式播放或裸 PCM 输出；新加坡价格不适用上表。
+Flash 读取 `input_tokens` / `output_tokens` 计价；Next 官方响应目前仅列出 `usage.duration`，缺少 Token 用量时金额显示 N/A，不用时长或字数推算。
+已覆盖本地请求捕获、参考音频、参数联动、下载与费用回归，尚未进行这两个型号的真实云端生成。
+依据：[Flash 型号与价格](https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-tts-flash)、[Flash HTTP API](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-http-api)、[新版音色](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-voice-list)、[Next 型号与价格](https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-tts-next)、[Next API](https://help.aliyun.com/zh/model-studio/audio-generation-api)。
+
 服务商D渠道及 `Seedance 2.5 720p` 已于 2026-10-13 移除，不再提供模型目录、协议选择、生成或任务取回。
 加载旧配置时移除该渠道的模型及对应默认引用，混合接口中的其他模型和凭证保留。
 该渠道专用的影币计价与展示已一并移除。
@@ -383,7 +402,7 @@ providerb 各型号均不添加未开放的 `face`、帧率或聊天采样参数
 
 ### 视频任务与停止（2026-10-12）
 
-当前目录包含 36 个生成模型（12 个图像、21 个视频、3 个语音），共 49 个原生或已登记的兼容组合。
+截至 2026-10-14，目录包含 37 个生成模型（13 个图像、19 个视频、5 个音频），共 51 个原生或已登记的兼容组合。
 模型库、参数面板、Agent 参数说明、发送前校验及适配器共用 `lookupMediaModel(id, kind)`；兼容组合不继承原生接口的官方价格。
 协议决定提交、上传、查询和取消方式，模型规格决定参数、素材角色、数量和请求内的特殊结构，不根据模型名称猜测协议。
 

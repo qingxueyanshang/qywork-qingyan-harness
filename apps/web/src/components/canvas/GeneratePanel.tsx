@@ -108,7 +108,7 @@ type SizeShape = NonNullable<MediaParamOption['shapes']>[number]
 /** 卡片模型菜单中的一项：生成模型，或 art 卡的对话模型。 */
 type CardModel = Pick<
   MediaModelOption,
-  'provider' | 'id' | 'label' | 'operations' | 'isDefault' | 'params'
+  'provider' | 'id' | 'label' | 'operations' | 'isDefault' | 'params' | 'maxAudios'
 >
 
 /** 参数取值的界面文字：布尔值显示为开、关，接口中表示自动选择的取值显示为「自动」，其余原样显示。 */
@@ -393,6 +393,8 @@ export function GeneratePanel(props: {
       ? models().find((m) => m.provider === props.node.provider && m.id === props.node.model)
       : (models().find((m) => m.isDefault) ?? models()[0])
   const modelParams = createMemo(() => model()?.params ?? [])
+  const audioReferences = () => (model()?.maxAudios ?? 0) > 0
+  const showInputs = () => props.node.output !== 'audio' || audioReferences() || edges().length > 0
   // 参数可见性与实际发送值都按目录和输入模式解析。
   const operation = () =>
     mediaOperationFor(
@@ -539,7 +541,9 @@ export function GeneratePanel(props: {
   const accepts = (kind: GenerateOutput) =>
     props.node.output === 'image' || props.node.output === 'art'
       ? kind === 'image'
-      : props.node.output === 'video' && kind !== 'art'
+      : props.node.output === 'audio'
+        ? audioReferences() && kind === 'audio'
+        : props.node.output === 'video' && kind !== 'art'
   /** 首尾帧只接受图片；图像生成卡与 Art 卡只接受图片；视频生成卡接受图片、视频、音频。 */
   const imagesOnly = () => {
     const role = roleOf(menu())
@@ -551,10 +555,12 @@ export function GeneratePanel(props: {
     )
   }
   const acceptsPath = (path: string) => {
+    if (props.node.output === 'audio') return audioReferences() && isInlineAudio(path, true)
     if (isInlineImage(path)) return true
     return !imagesOnly() && (isInlineVideo(path) || isInlineAudio(path))
   }
-  const uploadAccept = () => (imagesOnly() ? 'image/*' : 'image/*,video/*,audio/*')
+  const uploadAccept = () =>
+    props.node.output === 'audio' ? 'audio/*' : imagesOnly() ? 'image/*' : 'image/*,video/*,audio/*'
   const roleFor = (kind: GenerateOutput): MediaInputRole =>
     kind === 'video' ? 'video' : kind === 'audio' ? 'audio' : 'reference'
 
@@ -596,7 +602,7 @@ export function GeneratePanel(props: {
       if (menu()?.kind !== 'pick') void commit()
     })
     el.addEventListener('keydown', (e) => {
-      if (e.key === '@' && props.node.output !== 'audio') {
+      if (e.key === '@' && showInputs()) {
         e.preventDefault()
         openPicker(el)
       }
@@ -984,7 +990,7 @@ export function GeneratePanel(props: {
         <IconExpand size={14} collapse={props.tall} />
       </button>
 
-      <Show when={props.node.output !== 'audio'}>
+      <Show when={showInputs()}>
         <div class="canvas-inputs">
           <Show
             when={mode() === 'first_last'}
@@ -1020,7 +1026,11 @@ export function GeneratePanel(props: {
         class="canvas-prompt"
         contentEditable
         spellcheck={false}
-        data-placeholder={PLACEHOLDER[props.node.output]}
+        data-placeholder={
+          props.node.output === 'audio' && audioReferences()
+            ? '描述音频，输入 @ 引用音色'
+            : PLACEHOLDER[props.node.output]
+        }
         ref={(el) => {
           editor = el
           render(props.node.prompt)
@@ -1059,7 +1069,7 @@ export function GeneratePanel(props: {
             <IconChevron size={10} dir={chevron('params')} />
           </button>
         </Show>
-        <Show when={props.node.output !== 'audio'}>
+        <Show when={showInputs()}>
           <button
             class="mode-chip"
             type="button"
