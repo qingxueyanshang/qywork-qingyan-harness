@@ -21,7 +21,7 @@ import {
   type RedactedProvider,
 } from '../../lib/store/index.ts'
 import { ConfirmDialog } from '../ConfirmDialog.tsx'
-import { IconTrash } from '../Icons.tsx'
+import { IconPlus, IconTrash } from '../Icons.tsx'
 import { ConfigStatus } from './ConfigStatus.tsx'
 import {
   config,
@@ -34,6 +34,7 @@ import {
 } from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
 import { MEDIA_KIND_LABEL, ModelLibrary } from './ModelLibrary.tsx'
+import { ProviderTabs } from './ProviderTabs.tsx'
 import { Field, Row } from './Row.tsx'
 
 /**
@@ -337,25 +338,16 @@ export function ModelSettings() {
       {(c) => (
         <>
           <section class="settings-block">
-            <div class="tab-strip">
-              <For each={names()}>
-                {(n) => (
-                  <button
-                    class="tab-chip"
-                    classList={{
-                      active: !showLibrary() && current() === n,
-                      live: c().active?.provider === n,
-                    }}
-                    type="button"
-                    onClick={() => {
-                      setShowLibrary(false)
-                      setPicked(n)
-                    }}
-                  >
-                    {n}
-                  </button>
-                )}
-              </For>
+            <ProviderTabs
+              names={names()}
+              current={current()}
+              live={c().active?.provider}
+              library={showLibrary()}
+              onPick={(name) => {
+                setShowLibrary(false)
+                setPicked(name)
+              }}
+            >
               <button
                 class="tab-chip add"
                 type="button"
@@ -364,6 +356,7 @@ export function ModelSettings() {
                   addProvider()
                 }}
               >
+                <IconPlus size={12} />
                 添加接口
               </button>
               {/* 模型库与接口的内容类别不同（前者是模型参数，后者是端点与凭证），
@@ -376,7 +369,7 @@ export function ModelSettings() {
               >
                 模型库
               </button>
-            </div>
+            </ProviderTabs>
           </section>
 
           <Show when={!showLibrary() && current()}>

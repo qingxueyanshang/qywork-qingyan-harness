@@ -710,9 +710,77 @@ textarea.code-area::placeholder {
  * 查看 B 接口而实际生效的是另一个接口，是本页最常见的错误，其后果直到账单上才会显现。 */
 .tab-strip {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  height: 28px;
+}
+.provider-tabs {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex: 1;
+  min-width: 0;
+}
+.provider-tab-list {
+  display: flex;
+  align-items: center;
   gap: var(--s-4);
+  flex: 1;
+  min-width: 0;
+  padding-left: var(--s-2);
+  overflow: hidden;
+}
+.provider-tab-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* 标签字重保持一致，选中状态只改变颜色和下划线，避免切换时宽度变化。 */
+.provider-tab {
+  min-width: 0;
+  max-width: 120px;
+  flex: 0 1 auto;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.provider-more {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.provider-tabs-menu {
+  position: fixed;
+  z-index: 100;
+  width: 240px;
+  max-width: calc(100vw - 32px);
+  max-height: min(320px, calc(100dvh - 32px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--s-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.provider-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.provider-menu-item:hover,
+.provider-menu-item:focus-visible {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 /* ── 分段切换 ──
@@ -721,12 +789,12 @@ textarea.code-area::placeholder {
  * 它们回答的是同一个问题，即「当前查看的是哪一部分」；使用三种样式等于表明
  * 它们是三类控件。
  *
- * **选中状态用下划线表示，不用底色块。** 底色块需要内边距，因此一行中的
- * 第一项会偏离正文的左对齐线一个间距单位；下划线绘制在伪元素上，不占布局空间，第一项的文字
- * 与左对齐线对齐。
+ * **选中状态用下划线表示，不用底色块。** 下划线绘制在伪元素上，不占布局空间。
  * 使用伪元素而不是 `border-bottom`：后者要求未选中项同样占用 2px，否则切换时整行上下跳动。 */
 .scope-tab,
 .tab-chip,
+.provider-tab-measure,
+.provider-more-measure,
 .usage-chip,
 .lib-tab {
   position: relative;
@@ -765,20 +833,37 @@ textarea.code-area::placeholder {
 }
 /* 当前生效的接口前显示一个圆点。`active`（正在查看）与 `live`（当前生效）
    各占一种视觉标记：前者为下划线，后者为圆点，两者互不重叠。 */
-.tab-chip.live::before {
+.tab-chip.live::before,
+.provider-menu-item.live::before {
   content: "";
   width: 5px;
   height: 5px;
+  flex-shrink: 0;
   border-radius: 50%;
   background: var(--accent);
 }
-/* 「添加接口」是操作而不是分段，因此不沿用上方的分段样式：使用虚线边框按钮，
-   基线与同行标签对齐（`.tab-strip` 按基线排列）。 */
-.tab-chip.add {
-  padding: 2px var(--s-2);
-  border: 1px dashed var(--border-default);
-  border-radius: var(--r-sm);
-  color: var(--text-tertiary);
+/* 生效标记置于标签间距中，不改变标签宽度。 */
+.provider-tab.live::before {
+  position: absolute;
+  left: -8px;
+  top: calc((100% - 7px) / 2);
+  transform: translateY(-50%);
+}
+/* 测量元素沿用标签字号和宽度上限，不占可见栏的布局空间。 */
+.provider-tabs-measure,
+.provider-more-measure {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  width: max-content;
+}
+.provider-tabs-measure {
+  display: flex;
+  max-width: 100%;
+  overflow: hidden;
+}
+.provider-tabs-measure .provider-tab {
+  flex-shrink: 0;
 }
 
 /* ── 作用域标签页 ──
@@ -934,11 +1019,6 @@ textarea.code-area::placeholder {
 .model-row.add input:focus {
   outline: none;
   border-color: var(--accent);
-}
-
-/* 模型库标签与接口不属于同一类，与接口标签隔开，避免被视为另一个接口。 */
-.tab-chip.lib {
-  margin-left: auto;
 }
 
 /* ── 模型库 ──
