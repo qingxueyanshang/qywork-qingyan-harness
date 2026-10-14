@@ -262,4 +262,40 @@ describe('画布接口', () => {
     ])
     expect(JSON.stringify(wan.params)).not.toContain('description')
   })
+
+  test('providera 模型向画布下发 5–30 秒和三种画幅，报价随所选时长变化', async () => {
+    const { d } = await setup()
+    d.config.providers.providera = {
+      kind: 'openai_chat_completions',
+      apiKey: 'sk-test',
+      baseUrl: origin(),
+      models: {},
+      media: { 'TTseadanco2.5-720': { kind: 'openai_videos' } },
+    }
+    const models = (await (await call(d, '/api/models')).json()) as ModelsResponse
+    const model = models.media.find((m) => m.provider === 'providera')!
+    expect(model.known).toBe(true)
+    expect(model.label).toBe('Seedance 2.5 · 纵横 · 720P')
+    expect(model.maxAudios).toBe(10)
+    expect(model.params.map((p) => [p.name, p.label])).toEqual([
+      ['seconds', '时长'],
+      ['aspect_ratio', '画幅'],
+      ['resolution', '分辨率'],
+    ])
+    expect(model.params[0]?.values).toEqual(Array.from({ length: 26 }, (_, i) => String(i + 5)))
+    expect(model.params[1]?.shapes?.map((s) => s.ratio)).toEqual(['16:9', '9:16', '1:1'])
+    expect(model.params[2]?.values).toEqual(['720p'])
+    for (const seconds of ['5', '15', '30']) {
+      const result = (await (
+        await call(d, '/api/canvas/quote', {
+          output: 'video',
+          provider: 'providera',
+          model: model.id,
+          params: { seconds, aspect_ratio: '9:16', resolution: '720p' },
+        })
+      ).json()) as CanvasQuoteResponse
+      expect(result.quote?.currency).toBe('CNY')
+      expect(result.quote?.cost).toBeCloseTo(Number(seconds) * 0.42, 10)
+    }
+  })
 })

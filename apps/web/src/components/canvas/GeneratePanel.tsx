@@ -143,12 +143,19 @@ export function shapeAt(p: MediaParamOption, v: unknown): SizeShape | undefined 
 
 /**
  * 底栏按钮上的文字：只显示取值，取值本身无法表明是哪个参数时（自动、开关）附加参数名。
- * 带对照表的尺寸显示宽高比与档位；取值不在表中时原样显示。
+ * 带对照表的尺寸只显示可调整的宽高比与档位；取值不在表中时原样显示。
  */
 export function chipText(p: MediaParamOption, v: unknown): string {
   if (p.shapes) {
     const at = shapeAt(p, v)
-    return at ? [at.ratio ?? '自动宽高比', at.tier].filter(Boolean).join(' · ') : String(v)
+    return at
+      ? [
+          ratiosOf(p).length > 1 ? (at.ratio ?? '自动宽高比') : null,
+          tiersOf(p).length > 1 ? at.tier : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : String(v)
   }
   const text = paramText(p, v)
   if (text === '自动') return `自动${p.label}`
@@ -163,9 +170,10 @@ export function paramsText(
   current: (p: MediaParamOption) => unknown,
 ): string {
   return params
-    .filter((p) => !p.advanced)
+    .filter((p) => !p.advanced && choicesOf(p)?.length !== 1)
     .filter((p) => p.type !== 'boolean' || current(p) === true || current(p) === 'true')
     .map((p) => chipText(p, current(p)))
+    .filter(Boolean)
     .join(' · ')
 }
 
@@ -217,7 +225,7 @@ const ratiosOf = (p: MediaParamOption) => [...new Set((p.shapes ?? []).map((s) =
 const tiersOf = (p: MediaParamOption) =>
   [...new Set((p.shapes ?? []).map((s) => s.tier))].filter((t): t is string => t !== undefined)
 
-/** 带对照表的参数拆分为宽高比、分辨率两节；固定档位也显示，使用只读说明。 */
+/** 带对照表的参数拆分为宽高比、分辨率两节；显示时再按当前约束筛选。 */
 function sectionsOf(params: readonly MediaParamOption[]): Section[] {
   return params.flatMap((p): Section[] => {
     if (!p.shapes) return [{ kind: 'param', p }]
@@ -226,6 +234,25 @@ function sectionsOf(params: readonly MediaParamOption[]): Section[] {
     if (tiersOf(p).length) out.push({ kind: 'tier', p })
     return out
   })
+}
+
+/** 参数菜单中的逐项取值；连续时长和大范围整数使用加减按钮。 */
+function choicesOf(p: MediaParamOption): (string | number | boolean | undefined)[] | null {
+  const unset = p.default === undefined ? [undefined] : []
+  const range = numericRange(p)
+  if (range?.min !== undefined && range.min === range.max)
+    return p.auto === undefined || p.auto === range.min ? [range.min] : [p.auto, range.min]
+  if (UNIT[p.name] === '秒' && range) return null
+  if (p.values) return [...unset, ...p.values]
+  if (p.type === 'enum') return [...unset, ...(p.values ?? [])]
+  if (p.type === 'boolean') return [true, false]
+  if (p.type === 'string') return p.presets ? [...unset, ...p.presets] : null
+  if (p.type === 'integer' && p.min !== undefined && p.max !== undefined) {
+    const auto = p.auto === undefined ? [] : [p.auto]
+    if (p.max - p.min + 1 + auto.length > MAX_LISTED) return null
+    return [...auto, ...Array.from({ length: p.max - p.min + 1 }, (_, i) => (p.min as number) + i)]
+  }
+  return null
 }
 
 /** 节点当前指向的媒体：文件节点为其路径，生成节点为当前版本（仍在远端时为空）。 */
@@ -419,15 +446,17 @@ export function GeneratePanel(props: {
       ),
     )
   })
-  const params = createMemo(() => resolvedParams().filter((p) => p.available !== false))
+  const params = createMemo(() =>
+    resolvedParams().filter((p) => p.available !== false && choicesOf(p)?.length !== 1),
+  )
   // 节的标识只随模型目录变化；保存参数与重新读取画布时保留控件、焦点和滚动锚点。
   const sectionDefinitions = createMemo(() => sectionsOf(modelParams()))
   const sections = createMemo(() =>
     sectionDefinitions().filter((s) => {
       const p = params().find((p) => p.name === s.p.name)
       if (!p) return false
-      if (s.kind === 'ratio') return ratiosOf(p).length > 0
-      if (s.kind === 'tier') return tiersOf(p).length > 0
+      if (s.kind === 'ratio') return ratiosOf(p).length > 1
+      if (s.kind === 'tier') return tiersOf(p).length > 1
       return true
     }),
   )
@@ -438,13 +467,6 @@ export function GeneratePanel(props: {
     return duration && audio ? [duration, audio] : []
   })
   const paramValue = (p: MediaParamOption) => activeParams()[p.name] ?? p.default
-  const [paramNotice, setParamNotice] = createSignal('')
-  createEffect(
-    on(
-      createMemo(() => model()?.id),
-      () => setParamNotice(''),
-    ),
-  )
   /** 再次点击同一按钮时收起。 */
   const toggle = (kind: 'model' | 'mode' | 'params', anchor: HTMLElement) =>
     setMenu(menu()?.kind === kind ? null : { kind, anchor })
@@ -641,8 +663,7 @@ export function GeneratePanel(props: {
     const next = { ...props.node.params }
     if (value === undefined || value === '' || value === p.default) delete next[p.name]
     else next[p.name] = value
-    const notices: string[] = []
-    // 切换清晰度等条件时，将越界的连续时长收至新范围，一次提交并明确提示。
+    // 切换清晰度等条件时，将越界的连续时长收至新范围，与所选参数一次提交。
     for (const spec of modelParams()) {
       if (spec.name === p.name || UNIT[spec.name] !== '秒') continue
       const resolved = resolveMediaParam(
@@ -659,9 +680,7 @@ export function GeneratePanel(props: {
       if (adjusted === undefined || mediaParamProblem(resolved, adjusted)) continue
       if (adjusted === resolved.default) delete next[spec.name]
       else next[spec.name] = adjusted
-      notices.push(`${spec.label}已调整为 ${paramText(resolved, adjusted)}`)
     }
-    setParamNotice(notices.join('；'))
     void props.apply([
       { op: 'update', id: props.node.id, params: next, ...previewBox(ratioOf(p, value)) },
     ])
@@ -677,28 +696,6 @@ export function GeneratePanel(props: {
     const target = ratio === 'auto' ? blankBox(props.node.output) : { w: a, h: b }
     const box = fitBox(props.node, target)
     return box.w === props.node.w && box.h === props.node.h ? {} : box
-  }
-
-  /** 参数菜单中的逐项取值；整数范围过大时返回 `null`，改用加减按钮。 */
-  const choicesOf = (p: MediaParamOption): (string | number | boolean | undefined)[] | null => {
-    // 没有缺省值的参数增加一项「自动」：删除取值，由接口决定。
-    const unset = p.default === undefined ? [undefined] : []
-    const range = numericRange(p)
-    if (range?.min !== undefined && range.min === range.max) return [range.min]
-    if (UNIT[p.name] === '秒' && range) return null
-    if (p.values) return [...unset, ...p.values]
-    if (p.type === 'enum') return [...unset, ...(p.values ?? [])]
-    if (p.type === 'boolean') return [true, false]
-    if (p.type === 'string') return p.presets ? [...unset, ...p.presets] : null
-    if (p.type === 'integer' && p.min !== undefined && p.max !== undefined) {
-      const auto = p.auto === undefined ? [] : [p.auto]
-      if (p.max - p.min + 1 + auto.length > MAX_LISTED) return null
-      return [
-        ...auto,
-        ...Array.from({ length: p.max - p.min + 1 }, (_, i) => (p.min as number) + i),
-      ]
-    }
-    return null
   }
 
   /** 一节中的选项；大范围整数返回 `null`，改用加减按钮。 */
@@ -882,12 +879,6 @@ export function GeneratePanel(props: {
                     </div>
                   }
                 >
-                  <Match when={cells().length === 1}>
-                    <div class="canvas-param-fixed">
-                      <span>{cells()[0]?.text}</span>
-                      <span>固定</span>
-                    </div>
-                  </Match>
                   <Match when={s.p.name === 'voice' || (!drawn(s) && cells().length > ONE_ROW)}>
                     <ParamPicker param={s.p} choices={cells()} />
                   </Match>
@@ -920,25 +911,6 @@ export function GeneratePanel(props: {
               </select>
             </Show>
           )}
-        </Show>
-        <Show
-          when={
-            UNIT[s.p.name] === '秒' &&
-            numericRange(s.p)?.min !== undefined &&
-            numericRange(s.p)?.max !== undefined
-          }
-        >
-          <Show
-            when={paramNotice()}
-            fallback={
-              <span class="canvas-param-description">
-                {numericRange(s.p)?.min}–{numericRange(s.p)?.max} 秒 · 每次{' '}
-                {numericRange(s.p)?.step} 秒
-              </span>
-            }
-          >
-            <output class="canvas-param-notice">{paramNotice()}</output>
-          </Show>
         </Show>
       </section>
     )
@@ -1055,7 +1027,23 @@ export function GeneratePanel(props: {
       </button>
 
       <Show when={showInputs()}>
-        <div class="canvas-inputs">
+        <div
+          class="canvas-inputs"
+          onWheel={(e) => {
+            // 普通鼠标滚轮横向浏览素材，触控板的横向滚动保持原生行为。
+            if (e.ctrlKey || e.metaKey || e.deltaX !== 0 || e.deltaY === 0) return
+            const strip = e.currentTarget
+            if (strip.scrollWidth <= strip.clientWidth) return
+            const scale =
+              e.deltaMode === WheelEvent.DOM_DELTA_LINE
+                ? 16
+                : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+                  ? strip.clientWidth
+                  : 1
+            e.preventDefault()
+            strip.scrollLeft += e.deltaY * scale
+          }}
+        >
           <Show
             when={mode() === 'first_last'}
             fallback={
@@ -1123,7 +1111,7 @@ export function GeneratePanel(props: {
             <IconChevron size={10} dir={chevron('mode')} />
           </button>
         </Show>
-        <Show when={params().length}>
+        <Show when={sections().length}>
           <button
             class="mode-chip params"
             type="button"

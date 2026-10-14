@@ -19,7 +19,7 @@ export interface ParamChoice {
   pick: () => void
 }
 
-/** 大量选项的搜索菜单；音色说明与试听使用模型目录，不按音色编号猜测。 */
+/** 大量选项的搜索菜单；音色说明与试听使用模型目录，不按音色编号推测。 */
 export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoice[] }) {
   const [open, setOpen] = createSignal(false)
   const [query, setQuery] = createSignal('')
@@ -27,6 +27,7 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal('')
   const id = createUniqueId()
+  let field!: HTMLDivElement
   let trigger!: HTMLButtonElement
   let audio!: HTMLAudioElement
   let sequence = 0
@@ -59,7 +60,7 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
     if (!open()) return
     const outside = (e: Event) => {
       const target = e.target as Element | null
-      if (trigger.contains(target) || target?.closest(`#${id}`)) return
+      if (field.contains(target) || target?.closest(`#${id}`)) return
       close()
     }
     const onEscape = (e: KeyboardEvent) => {
@@ -108,7 +109,7 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
       }
     }
   }
-  const sampleButton = (c: ParamChoice) => (
+  const sampleButton = (c: ParamChoice, compact = false) => (
     <Show when={props.param.valueSamples?.[String(c.of)]}>
       {(sample) => (
         <button
@@ -123,7 +124,9 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
               <IconSpinner size={12} />
             </Show>
           </Show>
-          <span>{sample().label || '试听'}</span>
+          <Show when={!compact}>
+            <span>{sample().label || '试听'}</span>
+          </Show>
         </button>
       )}
     </Show>
@@ -154,12 +157,13 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
           setError('试听暂不可用，请重试')
         }}
       />
-      <div class="canvas-param-dropdown-current">
+      <div class="canvas-param-dropdown-current" ref={field}>
         <button
           ref={trigger}
           class="canvas-param-trigger"
           type="button"
           aria-label={props.param.label}
+          title={description(current())}
           aria-haspopup="menu"
           aria-expanded={open()}
           aria-controls={open() ? id : undefined}
@@ -174,17 +178,19 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
           <span class="truncate">{current()?.text ?? '请选择'}</span>
           <IconChevron size={12} dir={open() ? 'up' : 'down'} />
         </button>
-        <Show when={current()}>{(choice) => sampleButton(choice())}</Show>
+        <Show when={current()}>{(choice) => sampleButton(choice(), true)}</Show>
       </div>
-      <Show when={description(current())}>
-        <p class="canvas-param-description">{description(current())}</p>
-      </Show>
       <Show when={error()}>
         <output class="canvas-param-error">{error()}</output>
       </Show>
       <Show when={open()}>
         <Portal>
-          <AnchoredMenu class="canvas-param-picker" anchor={trigger} placement="below-start">
+          <AnchoredMenu
+            class="canvas-param-picker"
+            anchor={field}
+            placement="below-start"
+            matchWidth
+          >
             <div id={id} class="canvas-param-picker-content">
               <input
                 type="search"
@@ -208,6 +214,12 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
                         type="button"
                         role="menuitemradio"
                         aria-checked={c.checked()}
+                        title={[
+                          description(c),
+                          props.param.name === 'voice' ? String(c.of ?? '') : null,
+                        ]
+                          .filter(Boolean)
+                          .join('\n')}
                         onKeyDown={move}
                         onClick={() => {
                           c.pick()
@@ -215,17 +227,11 @@ export function ParamPicker(props: { param: MediaParamOption; choices: ParamChoi
                         }}
                       >
                         <span class="canvas-param-option-name">
-                          {c.text}
+                          <span class="truncate">{c.text}</span>
                           <Show when={c.checked()}>
                             <IconCheck size={12} />
                           </Show>
                         </span>
-                        <Show when={description(c)}>
-                          <span class="canvas-param-description">{description(c)}</span>
-                        </Show>
-                        <Show when={props.param.name === 'voice'}>
-                          <span class="canvas-param-id">{String(c.of ?? '')}</span>
-                        </Show>
                       </button>
                       {sampleButton(c)}
                     </div>

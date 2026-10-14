@@ -1558,7 +1558,82 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
-  test('006 时长按清晰度联动，30 秒切至 720P 时原子调整为 15 秒并说明', async () => {
+  test('providera 时长逐秒输入、固定清晰度不显示，提交仍使用字符串秒数', async () => {
+    const { lookupMediaModel } = await import('../../../../../packages/ai/src/media/catalog.ts')
+    const spec = lookupMediaModel('TTseadanco2.5-720', 'openai_videos')
+    const catalog = {
+      ...MODELS,
+      media: [
+        {
+          provider: 'providera',
+          id: spec.id,
+          kind: spec.kind,
+          output: 'video',
+          label: spec.displayName,
+          operations: spec.operations,
+          isDefault: true,
+          known: spec.catalogued,
+          maxAudios: spec.inputs.maxAudios,
+          params: spec.params.filter((p) => p.label),
+        },
+      ],
+    }
+    const { host, server, refs } = await mount(
+      [{ op: 'add_generate', ref: '$g', output: 'video', prompt: '镜头缓慢推进' }],
+      {},
+      catalog,
+    )
+    await select(host, refs.$g!)
+    const chip = host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!
+    chip.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-params-panel'),
+      () => host.textContent ?? '',
+    )
+    const panel = document.querySelector('.canvas-params-panel')!
+    const buttons = [...panel.querySelectorAll<HTMLButtonElement>('button')]
+    expect(buttons.map((b) => b.textContent)).toEqual(['−', '+', '16:9', '9:16', '1:1'])
+    expect([...panel.querySelectorAll('.canvas-params-title')].map((el) => el.textContent)).toEqual(
+      ['时长', '宽高比'],
+    )
+    expect(panel.textContent).not.toContain('720p')
+    expect(panel.querySelector('.canvas-param-description')).toBeNull()
+    const duration = panel.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
+    expect([duration.min, duration.max, duration.step]).toEqual(['5', '30', '1'])
+    for (const seconds of ['15', '30', '5', '15']) {
+      duration.value = seconds
+      duration.dispatchEvent(new Event('change', { bubbles: true }))
+      await waitFor(
+        () => {
+          const node = server.doc().nodes[0]
+          return node?.type === 'generate' && (node.params.seconds ?? '5') === seconds
+        },
+        () => JSON.stringify(server.ops),
+      )
+      expect(chip.textContent).toBe(`${seconds} 秒 · 16:9`)
+    }
+    buttons.find((b) => b.textContent === '9:16')!.click()
+    await waitFor(
+      () => {
+        const node = server.doc().nodes[0]
+        return node?.type === 'generate' && node.params.aspect_ratio === '9:16'
+      },
+      () => JSON.stringify(server.ops),
+    )
+    host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!.click()
+    await waitFor(
+      () => server.runs.length === 1,
+      () => JSON.stringify(server.runs),
+    )
+    const node = server.doc().nodes[0]
+    expect(node?.type === 'generate' && node.params).toEqual({
+      seconds: '15',
+      aspect_ratio: '9:16',
+    })
+    expect(server.runs[0]?.nodeId).toBe(refs.$g!)
+  })
+
+  test('006 时长按清晰度联动，30 秒切至 720P 时原子调整为 15 秒', async () => {
     const { providerb_MODELS } = await import(
       '../../../../../packages/ai/src/media/catalog-providerb.ts'
     )
@@ -1589,7 +1664,7 @@ describe('画布：生成卡与生成面板', () => {
       () => JSON.stringify(server.ops),
     )
     expect(server.ops[0]?.[0]).toMatchObject({ params: { seconds: '15' } })
-    expect(document.querySelector('.canvas-param-notice')?.textContent).toBe('时长已调整为 15 秒')
+    expect(document.querySelector('.canvas-param-notice')).toBeNull()
     const saved = server.doc().nodes[0]
     expect(saved?.type === 'generate' && saved.params).toEqual({ seconds: '15' })
     input().value = '99'
@@ -1603,7 +1678,7 @@ describe('画布：生成卡与生成面板', () => {
     expect(server.doc().nodes[0]).toMatchObject({ params: { seconds: '14' } })
   })
 
-  test('固定 30 秒与 720P 均显示为只读，底栏与面板一致', async () => {
+  test('固定 30 秒与 720P 不显示，底栏与面板只保留可选宽高比', async () => {
     const { providerb_MODELS } = await import(
       '../../../../../packages/ai/src/media/catalog-providerb.ts'
     )
@@ -1618,14 +1693,55 @@ describe('画布：生成卡与生成面板', () => {
     )
     await select(host, refs.$g!)
     const chip = host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!
-    expect(chip.textContent).toBe('30 秒 · 16:9 · 720P')
+    expect(chip.textContent).toBe('16:9')
     chip.click()
     expect(
-      [...document.querySelectorAll('.canvas-param-fixed')].map((el) => el.textContent),
-    ).toEqual(['30秒固定', '720P固定'])
+      [...document.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
+    ).toEqual(['宽高比'])
     expect(
       [...document.querySelectorAll('.canvas-params-panel button')].map((el) => el.textContent),
     ).toEqual(['16:9', '9:16'])
+  })
+
+  test('所有参数固定时不显示参数入口，已有固定参数仍用于提交', async () => {
+    const { host, server, refs } = await mount(
+      [
+        {
+          op: 'add_generate',
+          ref: '$g',
+          output: 'video',
+          prompt: '镜头推进',
+          params: { seconds: '30', resolution: '720p' },
+        },
+      ],
+      {},
+      {
+        ...MODELS,
+        media: [
+          {
+            ...MODELS.media[0],
+            params: [
+              { name: 'seconds', label: '时长', type: 'enum', values: ['30'], default: '30' },
+              {
+                name: 'resolution',
+                label: '分辨率',
+                type: 'enum',
+                values: ['720p'],
+                default: '720p',
+              },
+            ],
+          },
+        ],
+      },
+    )
+    await select(host, refs.$g!)
+    expect(host.querySelector('.canvas-bar .mode-chip.params')).toBeNull()
+    host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!.click()
+    await waitFor(
+      () => server.runs.length === 1,
+      () => JSON.stringify(server.runs),
+    )
+    expect(server.doc().nodes[0]).toMatchObject({ params: { seconds: '30', resolution: '720p' } })
   })
 
   test('语速按 0.1 调整，音色展示名称且保存原始编号', async () => {
@@ -1656,7 +1772,8 @@ describe('画布：生成卡与生成面板', () => {
     search.dispatchEvent(new Event('input', { bubbles: true }))
     const options = [...document.querySelectorAll<HTMLButtonElement>('[data-param-option]')]
     expect(options).toHaveLength(2)
-    expect(options[0]?.textContent).toContain('Eric_v3.1')
+    expect(options[0]?.textContent).toBe('Eric')
+    expect(options[0]?.title).toContain('Eric_v3.1')
     options[0]!.click()
     await waitFor(
       () => document.querySelector('button[aria-label="音色"]')?.textContent === 'Eric',
@@ -3509,7 +3626,7 @@ describe('画布：纯函数与标签页', () => {
     expect(paramsText([duration, lastFrame], (p) => values[p.name])).toBe('自动时长 · 返回尾帧开')
   })
 
-  test('带对照表的尺寸：按钮显示宽高比与档位，表外的取值原样显示', async () => {
+  test('带对照表的尺寸：固定档位不进入摘要，可变档位正常显示', async () => {
     const { chipText } = await import('./GeneratePanel.tsx')
     const size: Parameters<typeof chipText>[0] = {
       name: 'size',
@@ -3521,10 +3638,12 @@ describe('画布：纯函数与标签页', () => {
         { ratio: '1:1', value: '1024x1024' },
       ],
     }
-    expect(chipText(size, '2K')).toBe('自动宽高比 · 2K')
-    expect(chipText(size, '2720x1536')).toBe('16:9 · 2K')
+    expect(chipText(size, '2K')).toBe('自动宽高比')
+    expect(chipText(size, '2720x1536')).toBe('16:9')
     expect(chipText(size, '1024x1024')).toBe('1:1')
     expect(chipText(size, '800x600')).toBe('800x600')
+    size.shapes = [...size.shapes!, { ratio: '16:9', tier: '4K', value: '5440x3072' }]
+    expect(chipText(size, '2720x1536')).toBe('16:9 · 2K')
   })
 
   test('比例与像素尺寸绘制成的框：长边 14，短边按比例；其余取值不绘制', async () => {

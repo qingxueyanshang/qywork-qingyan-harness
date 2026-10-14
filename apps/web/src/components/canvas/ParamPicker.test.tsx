@@ -1,3 +1,4 @@
+/** 覆盖 ParamPicker 的搜索、键盘选择、紧凑展示与试听生命周期。 */
 import { afterAll, afterEach, beforeAll, expect, spyOn, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import { createSignal } from 'solid-js'
@@ -53,6 +54,8 @@ function mount() {
 
 test('按特点搜索，键盘定位选项；试听或搜索不更改选中值', () => {
   const { picked, trigger } = mount()
+  expect(trigger.title).toBe('女声 · 温柔')
+  expect(document.querySelector('.canvas-param-description')).toBeNull()
   trigger.click()
   const input = document.querySelector<HTMLInputElement>('input[type="search"]')!
   input.value = '英文'
@@ -60,6 +63,9 @@ test('按特点搜索，键盘定位选项；试听或搜索不更改选中值',
   const options = document.querySelectorAll<HTMLButtonElement>('[data-param-option]')
   expect(options).toHaveLength(1)
   expect(options[0]?.textContent).toContain('音色乙')
+  expect(options[0]?.title).toBe('男声 · 英文\nb')
+  expect(document.querySelector('.canvas-param-id')).toBeNull()
+  expect(document.querySelector('.canvas-param-option .canvas-param-description')).toBeNull()
   expect(picked).toEqual([])
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
   expect(document.activeElement).toBe(options[0]!)

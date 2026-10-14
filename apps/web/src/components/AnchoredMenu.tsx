@@ -61,14 +61,19 @@ export function AnchoredMenu(props: {
   placement?: MenuPlacement
   /** 按初次内容高度锁定外框，后续展开的内容在框内滚动。 */
   lockHeight?: boolean
+  /** 下拉菜单与输入控件等宽，仍受窗口边距约束。 */
+  matchWidth?: boolean
   children: JSX.Element
 }) {
   let el!: HTMLDivElement
   onMount(() => {
+    const anchor = props.anchor.getBoundingClientRect()
+    if (props.matchWidth)
+      el.style.width = `${Math.min(anchor.width, window.innerWidth - EDGE * 2)}px`
     const box = el.getBoundingClientRect()
     if (props.lockHeight) el.style.height = `${box.height}px`
     const at = placeMenu(
-      props.anchor.getBoundingClientRect(),
+      anchor,
       box,
       { width: window.innerWidth, height: window.innerHeight },
       props.placement ?? 'below-end',
