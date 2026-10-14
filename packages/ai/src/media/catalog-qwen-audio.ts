@@ -190,7 +190,8 @@ const flashParams: MediaParamSpec[] = [
 ]
 
 const nextParams: MediaParamSpec[] = [
-  choice('format', '输出格式', ['wav', 'mp3'], 'wav'),
+  // 产品统一默认 MP3；接口本身默认 WAV，适配器须显式发送此值。
+  choice('format', '输出格式', ['mp3', 'wav'], 'mp3'),
   { ...choice('sample_rate', '采样率', [8000, 16000, 24000, 44100, 48000], 48000), advanced: true },
   { ...choice('channels', '声道', [1, 2], 2), valueLabels: { 1: '单声道', 2: '双声道' } },
   volume,

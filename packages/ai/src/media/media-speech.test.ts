@@ -32,6 +32,7 @@ beforeAll(() => {
     async fetch(req) {
       const url = new URL(req.url)
       if (url.pathname === '/files/out.wav') return new Response(WAV)
+      if (url.pathname === '/files/out.mp3') return new Response(MP3)
       seen.push({ path: url.pathname, json: (await req.json()) as Record<string, unknown> })
       return reply()
     },
@@ -146,6 +147,24 @@ describe('Qwen-Audio 3.1', () => {
       baseUrl: `${origin()}/ali/compatible-mode/v1`,
     })
 
+  test.each([flash, next])('%s 画布省略默认格式时仍显式请求 MP3', async (model) => {
+    // 模拟服务端实际行为：省略 format 会返回 WAV，不能依赖远端默认值。
+    reply = () => {
+      const input = seen.at(-1)?.json?.input as Record<string, unknown>
+      const extension = input.format === 'mp3' ? 'mp3' : 'wav'
+      return Response.json({ output: { audio: { url: `${origin()}/files/out.${extension}` } } })
+    }
+    const params = activeMediaParams(spec(model).params, 'speech', {})
+    expect(params.format).toBeUndefined()
+    expect(spec(model).params.find((p) => p.name === 'format')?.default).toBe('mp3')
+    const out = await adapter(model).run(
+      { operation: 'speech', prompt: '格式检查。', inputs: [], params },
+      signal(),
+    )
+    expect(seen[0]?.json?.input).toMatchObject({ format: 'mp3' })
+    expect(out.files).toEqual([{ bytes: MP3, mime: 'audio/mpeg' }])
+  })
+
   test('Flash 使用新端点、新音色及 instruction，按输入输出 Token 计价', async () => {
     reply = () =>
       Response.json({
@@ -255,7 +274,7 @@ describe('Qwen-Audio 3.1', () => {
       { operation: 'speech', prompt: '森林环境音', inputs: [], params: {} },
       signal(),
     )
-    expect(seen[0]?.json?.input).toEqual({ text_prompt: '森林环境音' })
+    expect(seen[0]?.json?.input).toEqual({ text_prompt: '森林环境音', format: 'mp3' })
     expect(out.files).toEqual([{ bytes: MP3, mime: 'audio/mpeg' }])
     reply = () => Response.json({ code: 'InvalidParameter', message: 'Model not exist.' })
     await expect(

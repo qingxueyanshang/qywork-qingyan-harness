@@ -146,6 +146,11 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
     const { signal } = opts
     const format = this.spec.speechFormat
     const next = format === 'qwen-audio-next'
+    const params = { ...req.params }
+    const outputFormat = this.spec.params.find((p) => p.name === 'format')?.default
+    // 画布省略默认值；Flash 实测省略 format 时返回 WAV，与官方默认 MP3 的描述不符。
+    // 始终发送目录中的输出格式，保证面板默认值与实际请求一致。
+    if (params.format === undefined && outputFormat !== undefined) params.format = outputFormat
     const sampling = this.spec.params.find((p) => p.name === 'sample_rate')
     const input = next
       ? {
@@ -153,7 +158,7 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
           ...(req.inputs.length
             ? { references: req.inputs.map((i) => ({ audio_data: dataUri(i.bytes, i.mime) })) }
             : {}),
-          ...req.params,
+          ...params,
         }
       : {
           text: req.prompt,
@@ -163,11 +168,11 @@ export class DashScopeSpeechAdapter implements MediaAdapter {
                 sample_rate: resolveMediaParam(
                   sampling,
                   req.operation,
-                  mediaParamValues(this.spec.params, req.params),
+                  mediaParamValues(this.spec.params, params),
                 ).default,
               }
             : {}),
-          ...req.params,
+          ...params,
         }
     const body = await postJson(
       `${dashScopeBaseUrl(this.profile.baseUrl)}${format ? SPEECH_PATH : SYNC_PATH}`,
