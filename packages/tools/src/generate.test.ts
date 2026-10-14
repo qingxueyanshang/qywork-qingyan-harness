@@ -397,6 +397,7 @@ describe('generateMedia / landFiles', () => {
         files: [{ bytes: MP4, mime: 'video/mp4' }],
       }
       let submitted = 0
+      let recorded = 0
       let bothSubmitted: () => void = () => {}
       const barrier = new Promise<void>((resolve) => {
         bothSubmitted = resolve
@@ -404,7 +405,7 @@ describe('generateMedia / landFiles', () => {
       let records: string[] = []
       during = async (call) => {
         await call.onTask?.({ taskId: `task-${++submitted}`, provider: 'qwen', model: 'wan' })
-        if (submitted === 2) {
+        if (++recorded === 2) {
           const dir = join(root, 'generated')
           records = await Promise.all(
             (await readdir(dir)).map((f) => readFile(join(dir, f), 'utf8')),
