@@ -77,13 +77,14 @@ export class OpenAIImagesAdapter implements MediaAdapter {
 
 /**
  * 响应中的 `usage`。OpenAI 返回 token（`input_tokens_details` 区分文字与图片）；火山返回成功张数 `generated_images`、
- * 输入张数 `input_images` 与 `output_tokens`（像素总数 / 256）。张数以接口返回为准，未返回时取实际收到的张数。
+ * 输入张数 `input_images` 与 `output_tokens`（像素总数 / 256）；千问图像 2.1 返回 `image_count`。
+ * 张数以接口返回为准，未返回时取实际收到的张数。
  */
 function readUsage(body: Record<string, unknown>, received: number): MediaUsage {
   const u = (body.usage ?? {}) as Record<string, unknown>
   const input = (u.input_tokens_details ?? {}) as Record<string, unknown>
   return defined<MediaUsage>({
-    images: count(u.generated_images) ?? received,
+    images: count(u.generated_images) ?? count(u.image_count) ?? received,
     inputImages: count(u.input_images),
     inputTextTokens: count(input.text_tokens),
     inputImageTokens: count(input.image_tokens),

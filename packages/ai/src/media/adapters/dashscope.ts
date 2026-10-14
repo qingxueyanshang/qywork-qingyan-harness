@@ -88,8 +88,8 @@ export class DashScopeImagesAdapter implements MediaAdapter {
 }
 
 /**
- * 图片生成的计量。千问图像返回 `output_image_count`、`input_image_count` 与档位 `output_image_type`；
- * 万相图像返回 `image_count`（其 token 字段标明不计费，不读取）。
+ * 图片生成的计量。千问图像 3.0 返回 `output_image_count`、`input_image_count` 与档位 `output_image_type`；
+ * 千问图像 2.1 与万相图像返回 `image_count`（万相的 token 字段标明不计费，不读取）。
  */
 function imageUsage(body: Record<string, unknown>, received: number): MediaUsage {
   const u = (body.usage ?? {}) as Record<string, unknown>

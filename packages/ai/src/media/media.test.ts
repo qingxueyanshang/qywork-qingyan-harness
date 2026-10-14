@@ -9,7 +9,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
-import { MEDIA_KINDS, type MediaKind } from '@qywork/core'
+import { activeMediaParams, MEDIA_KINDS, type MediaKind } from '@qywork/core'
 import { findMediaModel, lookupMediaModel, mediaCatalog, mediaCost, quoteMedia } from './catalog.ts'
 import { buildMediaAdapter } from './index.ts'
 import { validateMediaCall } from './params.ts'
@@ -41,6 +41,9 @@ beforeAll(() => {
       const url = new URL(req.url)
       if (url.pathname === '/files/out.jpg') {
         return new Response(JPEG, { headers: { 'content-type': 'image/jpeg' } })
+      }
+      if (url.pathname === '/files/out.png') {
+        return new Response(PNG, { headers: { 'content-type': 'image/png' } })
       }
       const contentType = req.headers.get('content-type')
       const entry: Seen = {
@@ -174,6 +177,7 @@ describe('界面参数', () => {
     'wan2.7-image': { area: [768 * 768, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
     'qwen-image-3.0-pro': { area: [512 * 512, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
     'qwen-image-3.0': { area: [512 * 512, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
+    'qwen-image-2.1-pro': { area: [512 * 512, 2048 * 2048], ratio: 8, tiers: ['1K', '2K'] },
   }
 
   test('字符串参数提供选项、尺寸表，或受长度限制的高级文本输入', () => {
@@ -339,6 +343,138 @@ describe('openai_images', () => {
       inputImages: 2,
       outputTokens: 16384,
     })
+  })
+})
+
+describe('Qwen-Image-2.1-Pro', () => {
+  const id = 'qwen-image-2.1-pro'
+
+  for (const kind of ['dashscope_images', 'openai_images'] as const) {
+    const spec = lookupMediaModel(id, kind)
+    const size = kind === 'dashscope_images' ? '1024*1024' : '1024x1024'
+
+    test(`${kind}：支持 10 张参考图和 6 张输出，拒绝 3.0 专有参数及未提供的透明背景字段`, () => {
+      expect(spec.catalogued).toBe(true)
+      expect(spec.operations).toEqual(['generate', 'edit'])
+      expect(spec.inputs.transport).toBe('json')
+      expect(
+        validateMediaCall(
+          spec,
+          'edit',
+          { size, n: 6, seed: 2147483647 },
+          { images: 10, videos: 0 },
+        ),
+      ).toEqual([])
+      expect(validateMediaCall(spec, 'edit', {}, { images: 11, videos: 0 }).join()).toContain(
+        '最多接受 10 张',
+      )
+      for (const params of [
+        { n: 7 },
+        { n: '1' },
+        { seed: 2147483648 },
+        { size: kind === 'dashscope_images' ? '1024x1024' : '1024*1024' },
+        { negative_prompt: '模糊' },
+        { background: 'transparent' },
+        { output_format: 'png' },
+        { mask: 'mask.png' },
+      ]) {
+        expect(validateMediaCall(spec, 'generate', params, { images: 0, videos: 0 })).toHaveLength(
+          1,
+        )
+      }
+    })
+
+    test(`${kind}：编辑仅支持直接扩写，关闭扩写后思考与扩写方式不发送`, () => {
+      const prefs = { prompt_extend_mode: 'agent', enable_thinking: true, seed: 42 }
+      expect(activeMediaParams(spec.params, 'generate', prefs, 0)).toEqual(prefs)
+      expect(activeMediaParams(spec.params, 'edit', prefs, 10)).toEqual({
+        enable_thinking: true,
+        seed: 42,
+      })
+      expect(
+        activeMediaParams(spec.params, 'generate', { ...prefs, prompt_extend: false }, 0),
+      ).toEqual({ seed: 42, prompt_extend: false })
+      expect(validateMediaCall(spec, 'edit', prefs, { images: 10, videos: 0 }).join()).toContain(
+        'direct',
+      )
+    })
+
+    for (const operation of ['generate', 'edit'] as const) {
+      test(`${kind} ${operation}：原始请求、图片顺序、PNG 下载和接口回报张数`, async () => {
+        const prompt = '一只红色小猫贴纸，透明背景，保留 Alpha 通道'
+        const inputs = Array.from({ length: operation === 'edit' ? 10 : 0 }, (_, i) => ({
+          role: 'reference' as const,
+          bytes: new Uint8Array([...PNG, i]),
+          mime: 'image/png',
+          path: `/w/${i}.png`,
+        }))
+        const images = inputs.map(
+          (i) => `data:image/png;base64,${Buffer.from(i.bytes).toString('base64')}`,
+        )
+        const params = { size, n: 2, prompt_extend: false, watermark: false, seed: 42 }
+        // 故意让回报张数与 URL 数不同，确认读取官方 image_count，而非总用收到的 URL 数代替。
+        reply = () =>
+          Response.json({
+            ...(kind === 'dashscope_images'
+              ? {
+                  output: {
+                    choices: [{ message: { content: [{ image: `${origin()}/files/out.png` }] } }],
+                  },
+                }
+              : { data: [{ url: `${origin()}/files/out.png` }] }),
+            usage: { image_count: 2, width: 1024, height: 1024 },
+          })
+        const out = await buildMediaAdapter({
+          kind,
+          model: id,
+          apiKey: 'sk-ds',
+          baseUrl: `${origin()}/compatible-mode/v1`,
+        }).run({ operation, prompt, inputs, params }, { signal: signal() })
+        expect(seen).toHaveLength(1)
+        expect(seen[0]?.method).toBe('POST')
+        expect(seen[0]?.auth).toBe('Bearer sk-ds')
+        expect(seen[0]?.contentType).toContain('application/json')
+        expect(seen[0]?.path).toBe(
+          kind === 'dashscope_images'
+            ? '/api/v1/services/aigc/multimodal-generation/generation'
+            : '/compatible-mode/v1/images/generations',
+        )
+        expect(seen[0]?.json).toEqual(
+          kind === 'dashscope_images'
+            ? {
+                model: id,
+                input: {
+                  messages: [
+                    {
+                      role: 'user',
+                      content: [...images.map((image) => ({ image })), { text: prompt }],
+                    },
+                  ],
+                },
+                parameters: params,
+              }
+            : { model: id, prompt, ...(images.length ? { image: images } : {}), ...params },
+        )
+        expect(out.files).toEqual([{ bytes: PNG, mime: 'image/png' }])
+        expect(out.usage).toEqual({ images: 2 })
+      })
+    }
+  }
+
+  test('原生按输出张数计价，报价与账本一致；兼容协议不套用官方价格', () => {
+    const native = lookupMediaModel(id, 'dashscope_images')
+    const compatible = lookupMediaModel(id, 'openai_images')
+    expect(quoteMedia(native, {}, { images: 0, videos: 0 })).toEqual({
+      cost: 0.25,
+      currency: 'CNY',
+    })
+    const quote = quoteMedia(native, { n: 6, size: '2048*2048' }, { images: 10, videos: 0 })
+    expect(quote).toEqual({ cost: 1.5, currency: 'CNY' })
+    expect(mediaCost(native, { images: 6, inputImages: 10 })).toEqual(quote!)
+    expect(mediaCost(native, { images: 2 })).toEqual({ cost: 0.5, currency: 'CNY' })
+    expect(native.price?.cost({})).toBeNull()
+    expect(compatible.price).toBeUndefined()
+    expect(quoteMedia(compatible, { n: 6 }, { images: 10, videos: 0 })).toBeNull()
   })
 })
 

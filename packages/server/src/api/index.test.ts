@@ -513,6 +513,43 @@ describe('模型目录', () => {
     ])
   })
 
+  test.each(['dashscope_images', 'openai_images'] as const)(
+    '千问图像 2.1 Pro 将参考图上限和协议参数同步到模型库与画布：%s',
+    async (kind) => {
+      const id = 'qwen-image-2.1-pro'
+      const d = withConfig('openai_chat_completions', 'm')
+      d.config.providers.p!.media = { [id]: { kind } }
+      const response = await body(d)
+      expect(response.mediaLibrary.find((m) => m.id === id)).toMatchObject({
+        label: '千问图像 2.1 Pro',
+        vendor: '阿里云',
+        kind: 'dashscope_images',
+        kinds: ['dashscope_images', 'openai_images'],
+        output: 'image',
+        operations: ['generate', 'edit'],
+        maxImages: 10,
+      })
+      const model = response.media.find((m) => m.id === id)!
+      expect(model.known).toBe(true)
+      expect(model.kind).toBe(kind)
+      expect(model.params.map((p) => p.name)).toEqual([
+        'size',
+        'n',
+        'seed',
+        'prompt_extend',
+        'prompt_extend_mode',
+        'enable_thinking',
+        'watermark',
+      ])
+      expect(model.params.find((p) => p.name === 'size')?.shapes).toContainEqual({
+        ratio: '1:1',
+        tier: '2K',
+        value: kind === 'dashscope_images' ? '2048*2048' : '2048x2048',
+      })
+      expect(model.params.find((p) => p.name === 'n')).toMatchObject({ min: 1, max: 6, default: 1 })
+    },
+  )
+
   test.each([
     ['满血sd2.5(30-10-10原生过人脸/720P)', ['30'], '30', false],
     [

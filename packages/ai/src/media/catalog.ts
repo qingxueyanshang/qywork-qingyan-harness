@@ -290,6 +290,11 @@ const seedreamFlashPrice: MediaPrice = {
 // 档位取接口回报的 `output_image_type`。
 const qwenImagePrice = (rates: Record<string, number>) =>
   perImage('CNY', (u) => tier(rates, u.imageTier), { rate: 0.02 })
+// 千问图像 2.1 Pro（2026-10-14 核对官方型号页）：北京地域每张输出 ¥0.25，参考图不另计费。
+const qwenImage21ProPrice: MediaPrice = {
+  ...perImage('CNY', () => 0.25),
+  usageOf: (p) => ({ images: Number(p.n) }),
+}
 // 万相图像 2.7 Pro ¥0.50、2.7 ¥0.20 每张，只按输出计费。
 // 万相视频 3.0 Prime 480P ¥0.45、720P ¥0.9、1080P ¥1.8 每秒；3.0 ¥0.3、¥0.6、¥1.2；计费秒数含输入视频时长。
 const wanVideoPrice = (rates: Record<string, number>): MediaPrice => ({
@@ -535,6 +540,10 @@ const qwenImageParams: readonly MediaParamSpec[] = [
     description: '添加「Qwen-Image」水印',
   },
 ]
+
+// 2.1 Pro（2026-10-14 核对同一 API）：最多 10 张参考图，不支持 negative_prompt。
+// 透明背景由提示词控制，输出 PNG；接口未提供 background、output_format 或独立 mask 字段。
+const qwenImage21Params = qwenImageParams.filter((p) => p.name !== 'negative_prompt')
 
 /**
  * 百炼万相 2.7 图像（2026-09-30 核对「万相-图像生成与编辑 2.7 API 参考」）。
@@ -1192,6 +1201,18 @@ const SEEDS: readonly MediaModelSpec[] = [
     qwenImagePrice({ qima_output_1k: 0.18, qima_output_2k: 0.18 }),
     undefined,
     { openai_images: { params: compatibleImageParams(qwenImageParams) } },
+  ),
+  spec(
+    'qwen-image-2.1-pro',
+    '千问图像 2.1 Pro',
+    '阿里云',
+    'dashscope_images',
+    IMAGE_OPERATIONS,
+    { maxImages: 10, maxVideos: 0, transport: 'json' },
+    qwenImage21Params,
+    qwenImage21ProPrice,
+    undefined,
+    { openai_images: { params: compatibleImageParams(qwenImage21Params) } },
   ),
   spec(
     'wan2.7-image-pro',
