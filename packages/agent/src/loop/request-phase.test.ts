@@ -173,6 +173,8 @@ test('退避重发的阶段事件：退避 → 发出 → 响应头 → 内容�
     // 上游返回 Retry-After 60 时，事件与诊断中记录该值，不记录本地退避基准。
     expect(retrying.backoffMs).toBe(60_000)
     expect(retrying.requestId).toBe(rows[0]!.id)
+    expect(retrying.reason).toBe('服务端暂时不可用')
+    expect(retrying.reason).toBe(rows[0]!.diagnostic?.causes[0]?.message)
     expect(retrying.at).toBeGreaterThanOrEqual(rows[0]!.sentAt!)
     expect(rows[0]!.diagnostic?.retry).toMatchObject({
       decision: 'resend',

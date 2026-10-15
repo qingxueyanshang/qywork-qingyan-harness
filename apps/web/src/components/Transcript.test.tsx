@@ -533,12 +533,14 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
         requestId: 'pr_progress',
         attempt: 1,
         max: 5,
+        reason: '连接被断开',
         backoffMs: 60_000,
         at: Date.now(),
         failedThinkingStepIds: [],
       },
     } as never)
-    expect(notes()[0]).toMatch(/^等待重试，(60|61) 秒后…$/)
+    expect(notes()[0]).toMatch(/^第 1\/5 次重试 · 等待重试，(60|61) 秒后… · 上次失败：连接被断开$/)
+    expect(host.querySelector('.run-live')?.getAttribute('data-tip')).toBe(notes()[0])
     store.applyEvent({
       seq: ++seq,
       at: Date.now(),
@@ -553,7 +555,9 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
         at: Date.now(),
       },
     } as never)
-    expect(notes()[0]).toBe('正在重连 1 / 5…')
+    expect(notes()[0]).toBe('第 1/5 次重试 · 等待响应… · 上次失败：连接被断开')
+    store.setState('views', ids[0]!, 'request', 'sentAt', Date.now() - 78_000)
+    expect(notes()[0]).toMatch(/^第 1\/5 次重试 · 已 7[78] 秒没有响应 · 上次失败：连接被断开$/)
     store.applyEvent({
       seq: ++seq,
       at: Date.now(),
@@ -568,9 +572,25 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
         at: Date.now(),
       },
     } as never)
-    expect(notes()[0]).toBe('等待响应…')
+    expect(notes()[0]).toBe('第 1/5 次重试 · 等待响应… · 上次失败：连接被断开')
+    store.setState('views', ids[0]!, 'request', 'headersAt', Date.now() - 45_000)
+    expect(notes()[0]).toMatch(/^第 1\/5 次重试 · 已 4[45] 秒没有响应 · 上次失败：连接被断开$/)
+    store.setState('views', ids[0]!, 'request', 'headersAt', Date.now())
     progress(ids[0]!)
-    expect(notes()[0]).toBe('等待响应…')
+    expect(notes()[0]).toBe('第 1/5 次重试 · 等待响应… · 上次失败：连接被断开')
+    store.applyEvent({
+      seq: ++seq,
+      at: Date.now(),
+      conversationId: ids[0],
+      event: {
+        type: 'text.delta',
+        runId: 'rn_progress',
+        stepId: 'st_recovered',
+        delta: '恢复了',
+        at: Date.now(),
+      },
+    } as never)
+    expect(notes()[0]).toBe('正在回复…')
     store.applyEvent({
       seq: ++seq,
       at: Date.now(),

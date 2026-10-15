@@ -714,6 +714,8 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
           attempt: ev.attempt,
           max: ev.max,
           phase: ev.phase,
+          retryReason:
+            ev.attempt > 0 && ev.attempt === prev?.attempt ? (prev.retryReason ?? null) : null,
           // 发出即结束等待：清除截止点，保留次数。
           backoffUntil: null,
           sentAt:
@@ -741,6 +743,7 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
           attempt: ev.attempt,
           max: ev.max,
           phase: 'backoff',
+          retryReason: ev.reason ?? null,
           backoffUntil: ev.at + ev.backoffMs,
           sentAt: null,
           headersAt: null,
@@ -947,6 +950,7 @@ function projectLive(live: ConversationLiveSnapshot): RequestProjection | null {
     requestId: r.requestId,
     attempt: r.attempt,
     max: r.max,
+    retryReason: r.retryReason ?? null,
     phase,
     backoffUntil: r.backoffUntil,
     sentAt: r.sentAt,

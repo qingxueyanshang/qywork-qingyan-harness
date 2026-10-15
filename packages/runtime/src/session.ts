@@ -734,9 +734,11 @@ export class Session {
         // 下面记账使用的 `ev.usage` 仍只含模型调用部分。
         const spends = this.mediaSpends.get(run.id)
         const out =
-          spends?.length && (ev.type === 'usage' || ev.type === 'run.finished')
-            ? { ...ev, usage: { ...ev.usage, media: spends } }
-            : ev
+          ev.type === 'run.retrying' && ev.reason
+            ? { ...ev, reason: redactSecrets(ev.reason, collectSecrets(this.opts.config)) }
+            : spends?.length && (ev.type === 'usage' || ev.type === 'run.finished')
+              ? { ...ev, usage: { ...ev.usage, media: spends } }
+              : ev
         if (ev.type === 'run.finished') {
           finished = true
           const interruption =

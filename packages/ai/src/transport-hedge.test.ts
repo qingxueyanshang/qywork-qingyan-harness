@@ -141,8 +141,95 @@ test('原请求在排队：开始处理的补发的一份被采用，排队的�
   const res = await post(trace)
   expect(await res.text()).toBe(`${KEEPALIVE}${STARTED}`)
   expect(trace.hedge).toMatchObject({ won: true })
+  expect(trace.bytes).toBe(enc.encode(`${KEEPALIVE}${STARTED}`).byteLength)
+  expect(trace.keepAliveLines).toBe(1)
+  expect(readTransport(trace).pendingResponses).toBeUndefined()
   await Bun.sleep(50)
   expect(aborted).toContain(0)
+})
+
+test('补发后两份只有保活：尚未择优和中止后的诊断均保留各份实收数据', async () => {
+  handle = (i) =>
+    i === 0
+      ? after(150, () => sse([KEEPALIVE], 0, false))
+      : sse([': split', '-ping\n\n: second\n\n'], 20, false)
+  const controller = new AbortController()
+  const trace = newTrace()
+  const work = post(trace, controller.signal).then(
+    () => null,
+    (err: unknown) => err,
+  )
+  try {
+    await Bun.sleep(250)
+    const reading = readTransport(trace)
+    expect(reading.status).toBe(200)
+    expect(reading.headersAt).toBeNumber()
+    expect(reading.bytes).toBe(enc.encode(KEEPALIVE).byteLength)
+    expect(reading.keepAliveLines).toBe(1)
+    expect(reading.sinceLastByteMs).toBeNumber()
+    expect(reading.pendingResponses).toMatchObject([
+      { copy: 'original', status: 200, bytes: enc.encode(KEEPALIVE).byteLength, keepAliveLines: 1 },
+      {
+        copy: 'hedge',
+        status: 200,
+        bytes: enc.encode(': split-ping\n\n: second\n\n').byteLength,
+        keepAliveLines: 2,
+      },
+    ])
+  } finally {
+    controller.abort()
+    expect(await work).not.toBeNull()
+  }
+  expect(readTransport(trace).pendingResponses?.map((copy) => copy.bytes)).toEqual([
+    enc.encode(KEEPALIVE).byteLength,
+    enc.encode(': split-ping\n\n: second\n\n').byteLength,
+  ])
+})
+
+test('仅补发收到保活：失败诊断不再被无响应的原请求读数覆盖', async () => {
+  handle = (i, req) => (i === 0 ? hang(req) : sse([KEEPALIVE], 0, false))
+  const controller = new AbortController()
+  const trace = newTrace()
+  const work = post(trace, controller.signal).catch((err: unknown) => err)
+  try {
+    await Bun.sleep(200)
+    expect(readTransport(trace)).toMatchObject({
+      status: 200,
+      bytes: enc.encode(KEEPALIVE).byteLength,
+      keepAliveLines: 1,
+      pendingResponses: [
+        { copy: 'original', status: null, headersAt: null, bytes: 0 },
+        { copy: 'hedge', status: 200, bytes: enc.encode(KEEPALIVE).byteLength },
+      ],
+    })
+  } finally {
+    controller.abort()
+    await work
+  }
+  expect(readTransport(trace).headersAt).toBeNumber()
+})
+
+test('前缀回放不重复计数或刷新接收时刻', async () => {
+  handle = (i, req) => (i === 0 ? hang(req) : sse([`${KEEPALIVE}${STARTED}`]))
+  const trace = newTrace()
+  const res = await post(trace)
+  const receivedAt = trace.lastByteAt
+  await Bun.sleep(30)
+  expect(await res.text()).toBe(`${KEEPALIVE}${STARTED}`)
+  expect(trace.bytes).toBe(enc.encode(`${KEEPALIVE}${STARTED}`).byteLength)
+  expect(trace.keepAliveLines).toBe(1)
+  expect(trace.lastByteAt).toBe(receivedAt)
+  expect(readTransport(trace).sinceLastByteMs).toBeGreaterThanOrEqual(25)
+})
+
+test('择优前后分片相接：跨前缀边界的保活行只计一次', async () => {
+  handle = (i, req) => (i === 0 ? hang(req) : sse([`${STARTED}: par`, 'tial\n\n: next\n\n'], 50))
+  const trace = newTrace()
+  const res = await post(trace)
+  const text = await res.text()
+  expect(text).toBe(`${STARTED}: partial\n\n: next\n\n`)
+  expect(trace.bytes).toBe(enc.encode(text).byteLength)
+  expect(trace.keepAliveLines).toBe(2)
 })
 
 test('两份都在排队后报错：以原请求的结果为准，错误事件原样交给适配器', async () => {
@@ -154,6 +241,8 @@ test('两份都在排队后报错：以原请求的结果为准，错误事件�
   const res = await post(trace)
   expect(res.status).toBe(200)
   expect(await res.text()).toBe(`${KEEPALIVE}${QUEUE_FULL}`)
+  expect(trace.bytes).toBe(enc.encode(`${KEEPALIVE}${QUEUE_FULL}`).byteLength)
+  expect(trace.keepAliveLines).toBe(1)
   expect(trace.hedge).toMatchObject({ won: false })
   expect(transportLogs().at(-1)).toBe('补发后两份请求均未开始处理')
 })

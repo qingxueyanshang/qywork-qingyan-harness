@@ -306,6 +306,7 @@ function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSn
       requestId: last.id,
       attempt: resend?.attempt ?? 0,
       max: resend?.max ?? MAX_RESENDS,
+      retryReason: resend ? (decided?.diagnostic?.causes[0]?.message ?? null) : null,
       status: last.status,
       sentAt: last.sentAt,
       headersAt: last.headersAt,

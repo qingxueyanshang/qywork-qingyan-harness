@@ -33,6 +33,8 @@ export interface TransportTrace {
   hedge: ProviderHedge | null
   /** 非 2xx 响应的正文（`boundedErrorBody` 读取的部分）。2xx 与未收到响应时为 null。 */
   errorBody: string | null
+  /** 补发择优尚未结束时，各份响应的实际读数；选定响应后清除。 */
+  pending?: TransportTrace[]
 }
 
 export function newTrace(now = Date.now()): TransportTrace {
@@ -54,14 +56,30 @@ export function newTrace(now = Date.now()): TransportTrace {
  * `headersAt` 是例外：请求账的对应列记录的是时刻，非 2xx 时只有此路径能将它传出适配器。
  */
 export function readTransport(trace: TransportTrace, now = Date.now()): ProviderTransportReading {
+  // 尚未选出响应时，也不能把已经收到的响应头和保活报告为零。
+  // 顶层取第一份已收到响应头的读数，各份分别列出，避免混合状态码与字节数。
+  const pending = trace.hedge ? trace.pending : undefined
+  const observed = pending?.find((copy) => copy.headersAt !== null) ?? trace
   return {
-    status: trace.status,
-    headersAfterMs: trace.headersAt === null ? null : trace.headersAt - trace.sentAt,
-    headersAt: trace.headersAt,
-    bytes: trace.bytes,
-    sinceLastByteMs: trace.lastByteAt === null ? null : now - trace.lastByteAt,
-    keepAliveLines: trace.keepAliveLines,
+    status: observed.status,
+    headersAfterMs: observed.headersAt === null ? null : observed.headersAt - trace.sentAt,
+    headersAt: observed.headersAt,
+    bytes: observed.bytes,
+    sinceLastByteMs: observed.lastByteAt === null ? null : now - observed.lastByteAt,
+    keepAliveLines: observed.keepAliveLines,
     ...(trace.hedge ? { hedge: { ...trace.hedge } } : {}),
+    ...(pending
+      ? {
+          pendingResponses: pending.map((copy, i) => ({
+            copy: i === 0 ? ('original' as const) : ('hedge' as const),
+            status: copy.status,
+            headersAt: copy.headersAt,
+            bytes: copy.bytes,
+            sinceLastByteMs: copy.lastByteAt === null ? null : now - copy.lastByteAt,
+            keepAliveLines: copy.keepAliveLines,
+          })),
+        }
+      : {}),
   }
 }
 
@@ -123,8 +141,8 @@ type Outcome = { res: Response } | { err: unknown }
 interface Copy {
   closing: AbortController
   settled: boolean
-  /** 该份请求的响应头到达时刻。 */
-  headersAt: number | null
+  trace: TransportTrace
+  lineStart: boolean
 }
 
 /**
@@ -134,6 +152,7 @@ interface Copy {
  */
 async function firstEvent(
   body: ReadableStream<Uint8Array>,
+  copy: Copy,
 ): Promise<{ body: ReadableStream<Uint8Array>; failed: boolean }> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
@@ -163,6 +182,7 @@ async function firstEvent(
   for (;;) {
     const { done, value } = await reader.read()
     if (done) return { body: rest(), failed: false }
+    copy.lineStart = count(copy.trace, value, copy.lineStart)
     prefix.push(value)
     const lines = (partial + decoder.decode(value, { stream: true })).split('\n')
     partial = lines.pop() ?? ''
@@ -212,7 +232,13 @@ function firstResponse(
   init: RequestInit | undefined,
   base: Fetch,
   hedgeAfterMs: number,
-): Promise<{ res: Response; closing: AbortController; headersAt: number }> {
+): Promise<{
+  res: Response
+  closing: AbortController
+  headersAt: number
+  prefixBytes: number
+  lineStart: boolean
+}> {
   const caller = init?.signal
   const host = new URL(input instanceof Request ? input.url : input).host
   const seconds = (at: number) => Math.round((at - trace.sentAt) / 1000)
@@ -221,12 +247,24 @@ function firstResponse(
     let original: Outcome | undefined
     let done = false
     let timer: ReturnType<typeof setTimeout> | undefined
+    const selected = (copy: Copy, res: Response) => {
+      const { status, headersAt, bytes, lastByteAt, keepAliveLines } = copy.trace
+      Object.assign(trace, { status, headersAt, bytes, lastByteAt, keepAliveLines })
+      delete trace.pending
+      return {
+        res,
+        closing: copy.closing,
+        headersAt: headersAt!,
+        prefixBytes: bytes,
+        lineStart: copy.lineStart,
+      }
+    }
     const win = (copy: Copy, res: Response) => {
       done = true
       copy.settled = true
       clearTimeout(timer)
       for (const other of copies) if (other !== copy) other.closing.abort()
-      const headersAt = copy.headersAt ?? Date.now()
+      const headersAt = copy.trace.headersAt!
       if (trace.hedge) {
         trace.hedge.won = copy !== copies[0]
         log.info(
@@ -235,7 +273,7 @@ function firstResponse(
           { provider, host, headersSeconds: seconds(headersAt) },
         )
       }
-      resolve({ res, closing: copy.closing, headersAt })
+      resolve(selected(copy, res))
     }
     const fail = (copy: Copy, outcome: Outcome) => {
       copy.settled = true
@@ -250,23 +288,19 @@ function firstResponse(
       clearTimeout(timer)
       if (trace.hedge) log.warn('transport', '补发后两份请求均未开始处理', { provider, host })
       const first = copies[0]!
-      if (original && 'res' in original)
-        resolve({
-          res: original.res,
-          closing: first.closing,
-          headersAt: first.headersAt ?? Date.now(),
-        })
+      if (original && 'res' in original) resolve(selected(first, original.res))
       else reject(original?.err)
     }
     const arrived = (copy: Copy, res: Response) => {
-      copy.headersAt = Date.now()
+      copy.trace.headersAt = Date.now()
+      copy.trace.status = res.status
       if (done) {
         copy.closing.abort()
         return
       }
       if (!res.ok) return fail(copy, { res })
       if (!trace.hedge || !res.body) return win(copy, res)
-      firstEvent(res.body).then(
+      firstEvent(res.body, copy).then(
         ({ body, failed }) => {
           if (done) {
             copy.closing.abort()
@@ -284,8 +318,14 @@ function firstResponse(
       )
     }
     const send = () => {
-      const copy: Copy = { closing: new AbortController(), settled: false, headersAt: null }
+      const copy: Copy = {
+        closing: new AbortController(),
+        settled: false,
+        trace: newTrace(),
+        lineStart: true,
+      }
       copies.push(copy)
+      trace.pending = copies.map((item) => item.trace)
       base(input, {
         ...init,
         signal: caller ? AbortSignal.any([caller, copy.closing.signal]) : copy.closing.signal,
@@ -338,9 +378,10 @@ function supervise(
   provider: ProviderKind,
   idleMs: number,
   release: () => void,
+  prefixBytes: number,
+  lineStart: boolean,
 ): ReadableStream<Uint8Array> {
   const reader = body.getReader()
-  let lineStart = true
   let timer: ReturnType<typeof setTimeout> | undefined
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -363,7 +404,11 @@ function supervise(
           controller.close()
           return
         }
-        lineStart = count(trace, result.value, lineStart)
+        // 择优阶段已读的前缀只回放给解析器，不重复计数或刷新最后接收时刻。
+        const skipped = Math.min(prefixBytes, result.value.byteLength)
+        prefixBytes -= skipped
+        const fresh = result.value.subarray(skipped)
+        if (fresh.byteLength > 0) lineStart = count(trace, fresh, lineStart)
         controller.enqueue(result.value)
       } catch (err) {
         // 先取消再中止：取消使尚未完成的 `read()` 以 done 结束；省略取消时，
@@ -452,7 +497,7 @@ export function traceFetch(
   hedgeAfterMs = HEDGE_AFTER_MS,
 ): Fetch {
   return async (input, init) => {
-    const { res, closing, headersAt } = await firstResponse(
+    const { res, closing, headersAt, prefixBytes, lineStart } = await firstResponse(
       trace,
       provider,
       input,
@@ -468,7 +513,7 @@ export function traceFetch(
     const body = res.body
     if (!body) return res
     if (!res.ok) return await boundedErrorBody(trace, res, body, release)
-    return new Response(supervise(trace, body, provider, idleMs, release), {
+    return new Response(supervise(trace, body, provider, idleMs, release, prefixBytes, lineStart), {
       status: res.status,
       statusText: res.statusText,
       headers: res.headers,

@@ -1341,6 +1341,7 @@ describe('事件按会话归属过滤', () => {
         requestId: 'pr_fail_' + attempt,
         attempt,
         max: 5,
+        reason: '连接被断开',
         backoffMs,
         at,
         failedThinkingStepIds: [],
@@ -1380,6 +1381,7 @@ describe('事件按会话归属过滤', () => {
       max: 5,
       phase: 'backoff',
       backoffUntil: 61_000,
+      retryReason: '连接被断开',
     })
   })
 
@@ -1443,9 +1445,16 @@ describe('事件按会话归属过滤', () => {
       max: 5,
       backoffUntil: null,
       sentAt: 2_000,
+      retryReason: '连接被断开',
     })
     applyEvent(requestFrame('headers', 2, 2_400))
-    expect(viewOf('cv_now').request).toMatchObject({ phase: 'headers', headersAt: 2_400 })
+    expect(viewOf('cv_now').request).toMatchObject({
+      phase: 'headers',
+      headersAt: 2_400,
+      retryReason: '连接被断开',
+    })
+    applyEvent(requestFrame('sent', 0, 4_000))
+    expect(viewOf('cv_now').request?.retryReason).toBeNull()
   })
 
   test('工具参数进度推进内容时刻，不提前创建工具步骤', () => {
@@ -2639,6 +2648,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     requestId: 'pr_live',
     attempt: 2,
     max: 5,
+    retryReason: '连接被断开',
     status: 'in_flight',
     sentAt: 1_000,
     headersAt: null,
@@ -2664,6 +2674,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
       requestId: 'pr_live',
       attempt: 2,
       max: 5,
+      retryReason: '连接被断开',
       phase: 'backoff',
       backoffUntil: 61_000,
     })
@@ -2675,6 +2686,7 @@ describe('刷新按同一份请求账恢复当前请求', () => {
       phase: 'sent',
       attempt: 2,
       sentAt: 1_000,
+      retryReason: '连接被断开',
       headersAt: null,
       lastContentAt: null,
     })

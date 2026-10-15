@@ -494,34 +494,38 @@ function liveStatus(now: number, conversationId: string): string {
 
   const req = current.request
   if (!req) return '正在请求…'
+  const waiting = (message: string): string =>
+    req.attempt > 0
+      ? `第 ${req.attempt}/${req.max} 次重试 · ${message}${req.retryReason ? ` · 上次失败：${req.retryReason}` : ''}`
+      : message
   switch (req.phase) {
     case 'backoff': {
-      if (req.backoffUntil === null) return '等待重试…'
+      if (req.backoffUntil === null) return waiting('等待重试…')
       // 倒计时仅用于显示：重发由服务端按同一截止时刻发起，前端在倒计时归零时不执行任何操作。
-      return `等待重试，${Math.max(0, Math.ceil((req.backoffUntil - now) / 1000))} 秒后…`
+      return waiting(`等待重试，${Math.max(0, Math.ceil((req.backoffUntil - now) / 1000))} 秒后…`)
     }
     case 'sent':
     case 'headers': {
       const since = req.phase === 'sent' ? req.sentAt : req.headersAt
       if (since !== null && now - since >= SILENT_MS) {
-        return `已 ${Math.round((now - since) / 1000)} 秒没有响应`
+        return waiting(`已 ${Math.round((now - since) / 1000)} 秒没有响应`)
       }
-      if (req.phase === 'headers') return '等待响应…'
-      return req.attempt > 0 ? `正在重连 ${req.attempt} / ${req.max}…` : '正在请求…'
+      if (req.phase === 'headers' || req.attempt > 0) return waiting('等待响应…')
+      return '正在请求…'
     }
     case 'content': {
       if (req.lastContentAt !== null && now - req.lastContentAt >= SILENT_MS) {
-        return `已 ${Math.round((now - req.lastContentAt) / 1000)} 秒无新增内容`
+        return waiting(`已 ${Math.round((now - req.lastContentAt) / 1000)} 秒无新增内容`)
       }
       // 上游仍在发送工具参数时，用户长时间看不到新内容的情况同样需要显示。
       // 旧快照中的请求没有 `lastVisibleAt`，不以首个内容时刻推测可见进展。
       const visibleSince = req.lastVisibleAt ?? req.headersAt ?? req.sentAt
       if (req.lastContentKind != null && visibleSince !== null && now - visibleSince >= SILENT_MS) {
-        return `等待响应，已 ${Math.round((now - visibleSince) / 1000)} 秒无可见进展`
+        return waiting(`等待响应，已 ${Math.round((now - visibleSince) / 1000)} 秒无可见进展`)
       }
       // 内容类别取自请求投影；旧快照没有类别时，回退为按最后一条 transcript 判定。
       if (req.lastContentKind === 'tool_arguments' || req.lastContentKind === 'other')
-        return '等待响应…'
+        return waiting('等待响应…')
       if (req.lastContentKind === 'thinking') return '正在思考…'
       if (req.lastContentKind === 'text') return '正在回复…'
       if (current.generatingToolCall) return '等待响应…'
@@ -899,7 +903,9 @@ function RunStatusBar(props: {
          * 执行完毕后说明停止原因，位置与语义一致。
          */}
         <Show when={props.running && props.liveNote}>
-          <span class="run-live">{props.liveNote}</span>
+          <span class="run-live" data-tip={props.liveNote}>
+            {props.liveNote}
+          </span>
         </Show>
         {/* 停止原因排在末位：它长度不定，排在最前会把后续读数整体右移，
             出错的轮次与正常轮次的列无法对齐。排在末位时，前面各字段的位置固定。 */}

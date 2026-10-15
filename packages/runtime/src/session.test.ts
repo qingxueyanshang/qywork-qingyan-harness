@@ -6,13 +6,13 @@
  * 「只读」角色的 allowedTools 未生效时，该角色仍能修改文件，而配置看起来正确。
  */
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, spyOn, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { BrowserPort, DelegatePort, ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY, lookupModel, type TokenDensity } from '@qywork/ai'
-import type { ConversationId } from '@qywork/core'
+import type { AgentEvent, ConversationId } from '@qywork/core'
 import {
   appendStep,
   createConversation,
@@ -92,6 +92,44 @@ const delegate: DelegatePort = {
   runGraph: async () => ({ ok: true }),
   inflight: () => [],
 }
+
+test('实时重试原因与账本一样脱敏，不把配置密钥显示到等待状态', async () => {
+  const secret = 'test-retry-key-123456'
+  const { s, store } = await session({
+    config: { ...config, providers: { p: { ...config.providers.p!, apiKey: secret } } },
+  })
+  const reason = `连接失败 ${secret}`
+  const mock = spyOn(
+    s as unknown as { makeLoop(): { run(): AsyncGenerator<AgentEvent> } },
+    'makeLoop',
+  ).mockReturnValue({
+    async *run() {
+      yield {
+        type: 'run.retrying',
+        runId: 'rn_retry' as never,
+        requestId: 'pr_retry',
+        attempt: 1,
+        max: 5,
+        reason,
+        backoffMs: 0,
+        at: 1,
+        failedThinkingStepIds: [],
+      }
+    },
+  })
+  try {
+    let observed: string | undefined
+    for await (const ev of s.ask('检查重试状态')) {
+      if (ev.type === 'run.retrying') observed = ev.reason
+    }
+    expect(observed).toContain('连接失败')
+    expect(observed).not.toContain(secret)
+  } finally {
+    mock.mockRestore()
+    s.dispose()
+    store.close()
+  }
+})
 
 describe('派发工具只提供给有派发通道的会话', () => {
   test('顶层会话有 define_role、subagent、workflow；成员会话均没有', async () => {

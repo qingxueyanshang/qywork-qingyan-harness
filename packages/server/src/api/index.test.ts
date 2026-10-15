@@ -1578,7 +1578,9 @@ describe('会话历史分页接口', () => {
     markProviderRequestSent(d.store, failed.id)
     settleProviderRequest(d.store, failed.id, 'rejected', null, 'provider_unavailable')
     recordProviderRequestDiagnostic(d.store, failed.id, {
-      causes: [],
+      causes: [
+        { name: 'ProviderError', code: 'provider_unavailable', message: '服务端暂时不可用' },
+      ],
       providerEvents: 0,
       silentMs: 0,
       transport: null,
@@ -1602,6 +1604,7 @@ describe('会话历史分页接口', () => {
       // 次数取自上一行的重发裁决，而非 `retry_index`：后者在每个 turn 中从 0 开始。
       attempt: 1,
       max: 5,
+      retryReason: '服务端暂时不可用',
       status: 'in_flight',
       headersAt: 1_700_000_061_000,
       firstContentAt: 1_700_000_062_000,
@@ -1648,7 +1651,7 @@ describe('会话历史分页接口', () => {
     markProviderRequestSent(d.store, failed.id)
     settleProviderRequest(d.store, failed.id, 'rejected', null, 'provider_unavailable')
     recordProviderRequestDiagnostic(d.store, failed.id, {
-      causes: [],
+      causes: [{ name: 'ProviderError', code: 'network_error', message: '连接被断开' }],
       providerEvents: 0,
       silentMs: 0,
       transport: null,
@@ -1663,6 +1666,7 @@ describe('会话历史分页接口', () => {
       requestId: failed.id,
       attempt: 2,
       max: 5,
+      retryReason: '连接被断开',
       status: 'rejected',
       lastContentAt: null,
       backoffUntil: 1_700_000_060_000,

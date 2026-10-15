@@ -158,6 +158,8 @@ export interface RequestProjection {
   /** 本次故障链内的重发序号，首发 0。 */
   attempt: number
   max: number
+  /** 同一故障链上次失败的分类说明，响应恢复后不再显示。 */
+  retryReason?: string | null
   phase: 'backoff' | 'sent' | 'headers' | 'content'
   /** 退避倒计时的截止点；只有 `backoff` 阶段非空。 */
   backoffUntil: number | null

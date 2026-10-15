@@ -304,6 +304,8 @@ export interface RunRetryingEvent {
   attempt: number
   /** 重发上限。真源是 `agent` 的 `MAX_RESENDS`，界面不硬编码该值。 */
   max: number
+  /** 上次失败的分类说明，与请求诊断中的首个 cause 相同；旧服务端可省略。 */
+  reason?: string
   /** 本次等待时长。0 表示上游要求立即重发。 */
   backoffMs: number
   /** 等待开始的时刻。倒计时截止点为 `at + backoffMs`，客户端不使用本地当前时刻计算。 */

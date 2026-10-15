@@ -1419,6 +1419,18 @@ export interface ProviderTransportReading {
   keepAliveLines: number
   /** 响应头之前补发过第二份请求时存在。 */
   hedge?: ProviderHedge
+  /**
+   * 补发后尚未选定响应时，各份响应已经收到的读数。此时顶层读数取第一份已收到响应头的响应，
+   * 不代表它已被采用，也不把另一份的字节或保活混入。选定后仅保留所选响应的顶层读数。
+   */
+  pendingResponses?: Array<{
+    copy: 'original' | 'hedge'
+    status: number | null
+    headersAt: number | null
+    bytes: number
+    sinceLastByteMs: number | null
+    keepAliveLines: number
+  }>
 }
 
 /**

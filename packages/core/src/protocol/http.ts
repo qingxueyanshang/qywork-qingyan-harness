@@ -80,6 +80,8 @@ export interface LiveRequestSnapshot {
   /** 本次故障链内的重发序号，首发为 0。与 `run.request` 口径相同。 */
   attempt: number
   max: number
+  /** 上次失败的分类说明，从同一故障链的请求诊断恢复。 */
+  retryReason?: string | null
   status: ProviderRequestStatus
   sentAt: number | null
   headersAt: number | null
