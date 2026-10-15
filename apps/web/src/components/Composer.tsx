@@ -7,7 +7,7 @@ import {
   mimeOf,
   toPosixPath,
 } from '@qywork/core'
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from 'solid-js'
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { matchesMention, mentionQuery, replaceMention } from '../lib/composer-suggestions.ts'
 import { sessionSignal } from '../lib/session.ts'
@@ -306,6 +306,8 @@ type MentionOption = {
 
 type PickerOption = { kind: 'command'; command: Command } | { kind: 'mention'; item: MentionOption }
 
+type ComposerDraft = { text: string; attachments: Attachment[] }
+
 function scopeLabel(skill: SkillMeta): string {
   if (skill.scope === 'project') return '项目技能'
   if (skill.scope === 'global') return '全局技能'
@@ -360,11 +362,41 @@ function toolOption(tool: ToolMeta): MentionOption {
  * - 高度自适应，达到上限后改为内部滚动，不挤占会话区。
  */
 export function Composer(props: { empty: boolean }) {
-  // 草稿与待发送附件在刷新后恢复；附件只记录路径，文件已在磁盘上。
-  const [text, setText] = sessionSignal('qywork.draft.text', '')
+  // 草稿按会话保存并在刷新后恢复；异步附件完成后仍写入发起时的会话。
+  const [drafts, setDrafts] = sessionSignal<Record<string, ComposerDraft>>('qywork.drafts', {})
+  const text = () => drafts()[state.activeConversation ?? '']?.text ?? ''
+  const pending = () => drafts()[state.activeConversation ?? '']?.attachments ?? []
+  const updateDraft = (
+    conversationId: string | null,
+    change: (draft: ComposerDraft) => ComposerDraft,
+  ) => {
+    if (!conversationId) return
+    setDrafts((all) => ({
+      ...all,
+      [conversationId]: change(all[conversationId] ?? { text: '', attachments: [] }),
+    }))
+  }
+  const setText = (next: string | ((current: string) => string)) => {
+    updateDraft(state.activeConversation, (draft) => ({
+      ...draft,
+      text: typeof next === 'function' ? next(draft.text) : next,
+    }))
+  }
+  const setPending = (
+    next: Attachment[] | ((current: Attachment[]) => Attachment[]),
+    conversationId = state.activeConversation,
+  ) => {
+    updateDraft(conversationId, (draft) => ({
+      ...draft,
+      attachments: typeof next === 'function' ? next(draft.attachments) : next,
+    }))
+  }
   const [menuCursor, setMenuCursor] = createSignal(0)
-  const [pending, setPending] = sessionSignal<Attachment[]>('qywork.draft.attachments', [])
-  const [uploading, setUploading] = createSignal(0)
+  const [uploads, setUploads] = createSignal<Record<string, number>>({})
+  const uploading = () => uploads()[state.activeConversation ?? ''] ?? 0
+  const changeUploading = (conversationId: string, delta: number) => {
+    setUploads((all) => ({ ...all, [conversationId]: (all[conversationId] ?? 0) + delta }))
+  }
   const [dragOver, setDragOver] = createSignal(false)
   const [panelDockOpen, setPanelDockOpen] = createSignal(false)
   const [panelDockFocused, setPanelDockFocused] = createSignal(false)
@@ -398,6 +430,7 @@ export function Composer(props: { empty: boolean }) {
   }
   let ta!: HTMLTextAreaElement
   let filePicker!: HTMLInputElement
+  let filePickerConversation: string | null = null
   let wrap: HTMLDivElement | undefined
   let stopVoiceForSubmit = () => {}
   let panelDockCloseTimer: ReturnType<typeof setTimeout> | undefined
@@ -584,13 +617,13 @@ export function Composer(props: { empty: boolean }) {
    *
    * `size` 填 0：此处无法取得字节数，而该字段没有消费者（约定写在 `Attachment` 上）。
    */
-  const takePaths = (paths: string[]) => {
+  const takePaths = (paths: string[], conversationId = state.activeConversation) => {
     const next = paths.filter(Boolean).map((raw) => {
       const path = toPosixPath(raw)
       const name = baseNameOf(path)
       return { type: attachmentTypeOf(name), name, mime: mimeOf(name), size: 0, path }
     })
-    if (next.length) setPending((prev) => [...prev, ...next])
+    if (next.length) setPending((prev) => [...prev, ...next], conversationId)
   }
 
   /**
@@ -601,26 +634,25 @@ export function Composer(props: { empty: boolean }) {
    *
    * 失败逐个报告并继续处理其余文件：一张图片过大不应导致另外三张也添加失败。
    */
-  const takeFiles = async (files: FileList | File[]) => {
+  const takeFiles = async (files: FileList | File[], conversationId = state.activeConversation) => {
     const list = Array.from(files)
     if (!list.length) return
-    const conversationId = state.activeConversation
     // 没有会话就没有归属，与「发送」使用同一判据（`sendMessage` 也在此情况下提前返回）。
     if (!conversationId) return
-    setUploading((n) => n + list.length)
+    changeUploading(conversationId, list.length)
     for (const f of list) {
       try {
         const a = await uploadAttachment(f, conversationId)
         // 粘贴的文件已持有字节，缩略图直接使用它，省去一次读取。
         if (isInlineImage(a.path)) localThumbs.set(a.path, URL.createObjectURL(f))
-        setPending((prev) => [...prev, a])
+        setPending((prev) => [...prev, a], conversationId)
       } catch (e) {
         setState('notice', {
           message: `${f.name}：${e instanceof Error ? e.message : String(e)}`,
           reason: 'attachment_upload_failed',
         })
       } finally {
-        setUploading((n) => n - 1)
+        changeUploading(conversationId, -1)
       }
     }
   }
@@ -637,7 +669,7 @@ export function Composer(props: { empty: boolean }) {
         return !!r && pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom
       },
       over: setDragOver,
-      paths: takePaths,
+      paths: (paths) => takePaths(paths),
     })
     onCleanup(unregister)
   })
@@ -675,10 +707,16 @@ export function Composer(props: { empty: boolean }) {
     ta.style.height = 'auto'
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
   }
-  // 高度只在输入时计算，刷新后恢复的草稿需在挂载时计算一次。
-  onMount(() => {
-    if (text()) autosize()
-  })
+  createEffect(
+    on(
+      () => state.activeConversation,
+      () => {
+        setMenuCursor(0)
+        setDragOver(false)
+        autosize()
+      },
+    ),
+  )
 
   /** `/`、`#`、`@` 共用一个弹层与一套键盘游标，任何时刻只显示当前词对应的一类。 */
   const pickerOptions = (): PickerOption[] => {
@@ -1078,7 +1116,7 @@ export function Composer(props: { empty: boolean }) {
               style={{ display: 'none' }}
               onChange={(e) => {
                 const fs = e.currentTarget.files
-                if (fs) void takeFiles(fs)
+                if (fs) void takeFiles(fs, filePickerConversation)
                 // 清空 value：同一个文件连续选择两次也必须能触发 change。
                 e.currentTarget.value = ''
               }}
@@ -1090,9 +1128,11 @@ export function Composer(props: { empty: boolean }) {
               data-tip="添加附件，也可直接粘贴或拖入"
               onClick={() => {
                 if (isDesktopShell()) {
-                  void pickFiles().then(takePaths)
+                  const conversationId = state.activeConversation
+                  void pickFiles().then((paths) => takePaths(paths, conversationId))
                   return
                 }
+                filePickerConversation = state.activeConversation
                 filePicker.click()
               }}
             >
@@ -1110,16 +1150,20 @@ export function Composer(props: { empty: boolean }) {
             <span class="spacer" />
 
             {/* 语音输入。特性检测不通过时组件自身不渲染，见 VoiceButton。 */}
-            <VoiceButton
-              draft={text()}
-              bindSubmitStop={(stop) => {
-                stopVoiceForSubmit = stop
-              }}
-              onText={(next) => {
-                setText(next)
-                autosize()
-              }}
-            />
+            <Show when={state.activeConversation} keyed>
+              {(conversationId) => (
+                <VoiceButton
+                  draft={drafts()[conversationId]?.text ?? ''}
+                  bindSubmitStop={(stop) => {
+                    stopVoiceForSubmit = stop
+                  }}
+                  onText={(next) => {
+                    updateDraft(conversationId, (draft) => ({ ...draft, text: next }))
+                    autosize()
+                  }}
+                />
+              )}
+            </Show>
 
             {/* 此处不显示金额：会话流末尾的运行读数条（Transcript 的 `.run-strip`）
               已显示同一金额。同源同值显示两次，会被读成两笔费用。

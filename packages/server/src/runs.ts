@@ -233,7 +233,10 @@ export class RunManager {
    * 该会话中，其他客户端收到后没有用途。
    */
   private announceQueue(conversationId: ConversationId): void {
-    this.bus.publish({ type: 'queue.changed', conversationId, queue: this.queueOf(conversationId) })
+    this.bus.publish(
+      { type: 'queue.changed', conversationId, queue: this.queueOf(conversationId) },
+      conversationId,
+    )
   }
 
   /** 该会话排队中的跟进消息。返回副本：调用方用它发送事件，不应修改内部数据。 */

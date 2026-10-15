@@ -81,7 +81,7 @@ export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
   if (!first) throw new Error('项目没有可用会话')
   setWorkspace({ id: ws.id, root: ws.rootPath, name: ws.name })
   setOpenFile(null)
-  setState({ conversations, activeConversation: null, fileChanges: [], git: null })
+  setState({ conversations, activeConversation: null, followUps: [], fileChanges: [], git: null })
   syncViews()
   await selectConversation(first.id)
   // 桌面端记录最后打开的目录，下次启动时据此回到该项目。
@@ -104,7 +104,8 @@ export async function activateWorkspace(input: WorkspaceInput): Promise<void> {
 export async function selectConversation(id: string): Promise<void> {
   const current = state.views[id]
   if (state.activeConversation === id && current && current.history.loading !== 'unloaded') return
-  setState({ activeConversation: id, fileChanges: [] })
+  // 队列只属于当前会话；切换时立即撤下，不能等历史请求返回后再替换。
+  setState({ activeConversation: id, followUps: [], fileChanges: [] })
   writeSession(conversationKey(), id)
   discardPace()
   // 在此处显式建立视图表并订阅，不等待 effect 执行：下方紧接着 await，
@@ -369,7 +370,7 @@ async function dropConversation(id: string): Promise<void> {
   const wasActive = state.activeConversation === id
   setState('conversations', (list) => list.filter((c) => c.id !== id))
   if (!wasActive) return
-  setState({ activeConversation: null, fileChanges: [] })
+  setState({ activeConversation: null, followUps: [], fileChanges: [] })
   syncViews()
   await loadConversations()
 }

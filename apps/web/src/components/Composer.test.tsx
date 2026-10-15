@@ -6,6 +6,7 @@
  *
  * 另锁定主按钮的一条判据：忙态包含运行中的子 agent，此时主按钮仍是停止。
  * 补全菜单以输入框定位，运行位置行的显隐不改变定位基准，选择候选不提交表单。
+ * 草稿、待发送附件与异步上传按会话隔离，切回与刷新后均恢复所属会话的内容。
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
@@ -33,6 +34,7 @@ async function mountComposer(maximized = true, empty: () => boolean = () => true
   const { Composer } = await import('./Composer.tsx')
   const store = await import('../lib/store/index.ts')
   store.setPanelMaximized(maximized)
+  if (!store.state.activeConversation) store.setState('activeConversation', 'cv_composer')
   // ModelPicker 挂载时会获取一次目录；本测试只测试停靠交互，不应依赖本地服务是否启动。
   const originalApi = store.client.api
   store.client.api = async <T,>(path: string, init?: RequestInit) => {
@@ -84,6 +86,95 @@ function input(textarea: HTMLTextAreaElement, value: string) {
   }
   textarea.dispatchEvent(new InputEvent('input', { bubbles: true, data: value }))
 }
+
+test('切换会话与项目时草稿各自保留，发送只清空当前会话', async () => {
+  const store = await import('../lib/store/index.ts')
+  const conversationsBefore = [...store.state.conversations]
+  store.setState({
+    activeConversation: 'cv_draft_a',
+    busyConversations: [],
+    followUps: [],
+    conversations: ['cv_draft_a', 'cv_draft_b'].map((id) => ({
+      id,
+      provider: 'test',
+      model: 'test-model',
+    })) as never,
+  })
+  const { dispose, host, textarea } = await mountComposer(false)
+  const beforeSend = store.client.send
+  const commands: unknown[] = []
+  store.client.send = (command) => commands.push(command)
+  try {
+    input(textarea, '会话 A 的草稿')
+    store.setState('activeConversation', 'cv_draft_b')
+    expect(textarea.value).toBe('')
+    input(textarea, '会话 B 的草稿')
+    store.setState('activeConversation', 'cv_draft_a')
+    expect(textarea.value).toBe('会话 A 的草稿')
+    store.setState('activeConversation', null)
+    expect(textarea.value).toBe('')
+    store.setState('activeConversation', 'cv_draft_b')
+    expect(textarea.value).toBe('会话 B 的草稿')
+    click(host.querySelector('.send-btn') as HTMLButtonElement)
+    expect(commands).toContainEqual(
+      expect.objectContaining({
+        type: 'message.send',
+        conversationId: 'cv_draft_b',
+        content: '会话 B 的草稿',
+      }),
+    )
+    expect(textarea.value).toBe('')
+    store.setState('activeConversation', 'cv_draft_a')
+    expect(textarea.value).toBe('会话 A 的草稿')
+  } finally {
+    store.client.send = beforeSend
+    dispose()
+    store.setState({
+      activeConversation: null,
+      busyConversations: [],
+      followUps: [],
+      conversations: conversationsBefore,
+    })
+  }
+})
+
+test('附件上传期间切换会话，完成后只加入原会话草稿', async () => {
+  const store = await import('../lib/store/index.ts')
+  store.setState('activeConversation', 'cv_upload_a')
+  const { dispose, host, textarea } = await mountComposer(false)
+  const beforeApi = store.client.api
+  let finish!: (value: unknown) => void
+  let requestPath = ''
+  store.client.api = async <T,>(path: string) => {
+    requestPath = path
+    return (await new Promise<unknown>((resolve) => {
+      finish = resolve
+    })) as T
+  }
+  try {
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', {
+      value: { files: [new File(['attachment'], 'a.txt', { type: 'text/plain' })] },
+    })
+    textarea.dispatchEvent(paste)
+    expect(requestPath).toContain('cv_upload_a')
+    expect(host.textContent).toContain('上传中 1')
+    store.setState('activeConversation', 'cv_upload_b')
+    expect(host.textContent).not.toContain('上传中 1')
+    finish({
+      attachment: { type: 'file', name: 'a.txt', mime: 'text/plain', size: 10, path: 'C:/a.txt' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(host.querySelector('[aria-label="移除 a.txt"]')).toBeNull()
+    store.setState('activeConversation', 'cv_upload_a')
+    expect(host.querySelector('[aria-label="移除 a.txt"]')).not.toBeNull()
+    expect(host.textContent).not.toContain('上传中')
+  } finally {
+    store.client.api = beforeApi
+    dispose()
+    store.setState('activeConversation', null)
+  }
+})
 
 test('重新打开技能候选或收到安装事件后重新读取，过期请求不得覆盖新结果', async () => {
   const { dispose, host, textarea } = await mountComposer(false)
@@ -260,20 +351,38 @@ describe('放大面板中的输入区', () => {
 
   /** 原始失败形状：整页刷新后未发送的草稿与附件丢失。刷新以 `flushSession` 后重新挂载模拟。 */
   test('未发送的草稿与附件在刷新后恢复', async () => {
-    const { flushSession, writeSession } = await import('../lib/session.ts')
+    const { flushSession } = await import('../lib/session.ts')
+    const store = await import('../lib/store/index.ts')
+    store.setState('activeConversation', 'cv_refresh_draft')
     const first = await mountComposer(false)
+    const beforeApi = store.client.api
+    store.client.api = async <T,>() =>
+      ({
+        attachment: { type: 'file', name: 'a.txt', mime: 'text/plain', size: 1, path: 'C:/a.txt' },
+      }) as T
     input(first.textarea, '刷新前的草稿')
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', {
+      value: { files: [new File(['a'], 'a.txt', { type: 'text/plain' })] },
+    })
+    first.textarea.dispatchEvent(paste)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    store.client.api = beforeApi
     first.dispose()
-    writeSession('qywork.draft.attachments', [
-      { type: 'image', name: 'a.png', mime: 'image/png', size: 0, path: 'C:/a.png' },
-    ])
     flushSession()
     const second = await mountComposer(false)
     try {
       expect(second.textarea.value).toBe('刷新前的草稿')
-      expect(second.host.querySelector('[aria-label="移除 a.png"]')).not.toBeNull()
+      expect(second.host.querySelector('[aria-label="移除 a.txt"]')).not.toBeNull()
+      store.setState('activeConversation', 'cv_refresh_other')
+      expect(second.textarea.value).toBe('')
+      expect(second.host.querySelector('[aria-label="移除 a.txt"]')).toBeNull()
+      store.setState('activeConversation', 'cv_refresh_draft')
+      expect(second.textarea.value).toBe('刷新前的草稿')
+      expect(second.host.querySelector('[aria-label="移除 a.txt"]')).not.toBeNull()
     } finally {
       second.dispose()
+      store.setState('activeConversation', null)
     }
   })
 

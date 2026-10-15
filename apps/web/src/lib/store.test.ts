@@ -15,7 +15,8 @@
  *
  * 覆盖范围（B6：一个 test 覆盖多个源文件时须在此列明）：`store/ui.ts` 的面板宽度、
  * 页签与刷新后的恢复、`store/browser.ts` 的内置浏览器归属、`store/connection.ts` 的 `applyEvent`
- * 归属过滤与能力投影替换、`store/settings.ts` 的 API 错误解释。
+ * 归属过滤与能力投影替换、`store/actions.ts` 切换会话时的队列重置、
+ * `store/settings.ts` 的 API 错误解释。
  *
  * 不要在此断言模块加载时读取的宽度：`bun test` 一次执行多个文件时共用一份
  * 模块表，`client.test.ts` 先行 import 了 `client.ts`，`store/ui.ts` 在此处
@@ -902,6 +903,85 @@ describe('事件按会话归属过滤', () => {
     reset('cv_now')
     applyEvent(deltaFrame('cv_other', '别人的话'))
     expect(transcript()).toHaveLength(0)
+  })
+
+  test('其他会话的回执和清空快照不替换当前输入框的跟进队列', () => {
+    reset('cv_now')
+    const queue = [{ id: 'q_current', content: '当前会话的跟进', steer: false }]
+    const snapshot = (conversationId: string, items: typeof queue) =>
+      applyEvent({
+        seq: 1,
+        at: 0,
+        conversationId,
+        event: { type: 'queue.changed', conversationId, queue: items },
+      } as never)
+
+    snapshot('cv_now', queue)
+    expect(state.followUps).toEqual(queue)
+    openConversationTab('cv_child_queue', '子 agent')
+    syncViews()
+    try {
+      for (const id of ['cv_other', 'cv_child_queue']) {
+        snapshot(id, [{ id: 'q_other', content: '[workflow 回执] 已返回', steer: true }])
+        snapshot(id, [])
+        expect(state.followUps).toEqual(queue)
+      }
+      setState({ activeConversation: null, followUps: [] })
+      syncViews()
+      snapshot('cv_child_queue', queue)
+      expect(state.followUps).toEqual([])
+    } finally {
+      closePanelTab('conversation-cv_child_queue')
+      syncViews()
+    }
+  })
+
+  test('切换会话立即撤下旧回执，历史加载期间不把旧队列留在新输入框', async () => {
+    reset('cv_queue_a')
+    const receipt = {
+      id: 'q_receipt',
+      content: '[workflow 回执] 检查点 校对结果汇总 的上游已经全部返回',
+      steer: true,
+      origin: 'workflow' as const,
+    }
+    setState('followUps', [receipt])
+    const apiBefore = client.api
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    ;(client as unknown as { api: (path: string) => Promise<unknown> }).api = async (path) => {
+      await pending
+      if (path.includes('/history')) {
+        return {
+          messages: [],
+          runs: [],
+          steps: [],
+          todos: [],
+          workflowStarts: [],
+          nextCursor: null,
+        }
+      }
+      if (path.includes('/context')) return { context: null }
+      if (path.includes('/goal')) return { goal: null }
+      if (path.includes('/queue')) return { queue: path.includes('/cv_queue_a/') ? [receipt] : [] }
+      throw new Error(`未预期请求：${path}`)
+    }
+    const loading = selectConversation('cv_queue_b')
+    try {
+      expect(state.activeConversation).toBe('cv_queue_b')
+      expect(state.followUps).toEqual([])
+      release()
+      await loading
+      expect(state.followUps).toEqual([])
+      await selectConversation('cv_queue_a')
+      expect(state.followUps).toEqual([receipt])
+    } finally {
+      release()
+      await loading
+      client.api = apiBefore
+      setState('followUps', [])
+    }
   })
 
   /**

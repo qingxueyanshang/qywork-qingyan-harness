@@ -3,7 +3,8 @@
  *
  * 覆盖范围：`RunManager` 的会话占位（reserve / release）、忙态的两项查询
  * （hasRun / isBusy）、忙闲广播（conversation.busy）与按会话中断
- * （interruptConversation）。指令入口层的拒绝由 `goal-loop.test.ts` 覆盖，
+ * （interruptConversation），以及队列快照经 `EventBus` 实时推送和补发时的会话隔离。
+ * 指令入口层的拒绝由 `goal-loop.test.ts` 覆盖，
  * 运行表本身（`subagents.ts`）由 `delegate.test.ts` 覆盖，这里不重复。
  */
 
@@ -42,6 +43,56 @@ describe('更新与新任务互斥', () => {
     expect(runs.reserve('another' as ConversationId)).toBe(false)
     runs.cancelUpdate()
     expect(runs.reserve(cv)).toBe(true)
+  })
+})
+
+describe('跟进队列按会话发布', () => {
+  test('后台回执与队列清空只送达所属会话，断线补发保持相同归属', () => {
+    const bus = new EventBus()
+    const runs = new RunManager(null as never, bus, new SubagentRegistry())
+    const parent = 'cv_parent' as ConversationId
+    const other = 'cv_other' as ConversationId
+    const subscribe = (id: string, conversations: ConversationId[]) => {
+      const frames: EventEnvelope[] = []
+      const subscriber = {
+        id,
+        origin: 'desktop' as const,
+        conversations: new Set(conversations),
+        send: (frame: EventEnvelope) => frames.push(frame),
+      }
+      bus.subscribe(subscriber)
+      return { frames, subscriber }
+    }
+    const a = subscribe('parent', [parent])
+    const b = subscribe('other', [other])
+    const none = subscribe('unsubscribed', [])
+    const from = { streamId: bus.streamId, lastSeq: bus.currentSeq }
+    const receipt = {
+      id: 'workflow-receipt',
+      content: '[workflow 回执] 检查点 校对结果汇总 的上游已经全部返回',
+      steer: true,
+      origin: 'workflow' as const,
+    }
+    const user = { id: 'user-followup', content: '当前会话的跟进', steer: false }
+
+    runs.enqueue(other, user)
+    runs.enqueue(parent, receipt)
+    runs.takeNext(parent)
+
+    expect(a.frames.map((frame) => frame.event)).toEqual([
+      { type: 'queue.changed', conversationId: parent, queue: [receipt] },
+      { type: 'queue.changed', conversationId: parent, queue: [] },
+    ])
+    expect(a.frames.every((frame) => frame.conversationId === parent)).toBe(true)
+    expect(b.frames.map((frame) => frame.event)).toEqual([
+      { type: 'queue.changed', conversationId: other, queue: [user] },
+    ])
+    expect(b.frames.every((frame) => frame.conversationId === other)).toBe(true)
+    expect(none.frames).toEqual([])
+    expect(runs.queueOf(other)).toEqual([user])
+    expect(bus.replayFrom(from, a.subscriber)).toEqual(a.frames)
+    expect(bus.replayFrom(from, b.subscriber)).toEqual(b.frames)
+    expect(bus.replayFrom(from, none.subscriber)).toEqual([])
   })
 })
 
