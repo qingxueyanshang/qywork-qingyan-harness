@@ -6,8 +6,10 @@ let dispose: (() => void) | undefined
 let measure: (width: number, height: number) => void
 let originalObserver: typeof ResizeObserver
 
-beforeAll(() => {
+beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
+  const { delegateEvents, DelegatedEvents } = await import('solid-js/web')
+  delegateEvents([...DelegatedEvents])
   originalObserver = globalThis.ResizeObserver
   globalThis.ResizeObserver = class {
     constructor(callback: ResizeObserverCallback) {

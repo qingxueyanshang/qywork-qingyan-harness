@@ -164,6 +164,7 @@ test('画布链接进入画布页并复用页签，返回文件页后选中该�
   )
   page.host.querySelector<HTMLButtonElement>('[data-path="output/final/分镜.canvas.json"]')!.click()
   expect(page.store.activePanelTab()).toBe('canvas-output/final/分镜.canvas.json')
+  await waitFor(() => page.host.querySelector('.canvas-stage') !== null)
 })
 
 test('无鼠标端的画布文件保留文本入口', async () => {
