@@ -41,6 +41,7 @@ git diff --check
 - 安装包的 `.sig` 签名与 `latest.json` 更新清单；
 - `SHA256SUMS-windows-x86_64.txt` 完整性校验文件；
 - GitHub 根据提交记录生成的版本说明。
+- `WINDOWS-SIGNATURES.json`：安装包及解压后全部 EXE、DLL 的 Authenticode 状态、签名者与 SHA-256。
 
 工作流使用仓库自带的 `GITHUB_TOKEN` 写入 Release，不需要配置 SSH 或个人访问令牌。
 
@@ -59,7 +60,32 @@ git diff --check
 才会面向访客提供安装包。
 
 当前安装包没有 Authenticode 签名，Windows 可能显示 SmartScreen 提示；这不阻塞草稿构建和
-GitHub Release 上传。
+GitHub Release 上传。启用了应用程序控制的设备还可能阻止内部后台程序启动。
+
+Windows 工作流使用 7-Zip 解压本次安装包，再检查实际包内程序；缺少主程序或 `externalBin`
+声明的程序时检查失败。默认仅报告签名状态并显示警告，不把未签名包标记为已通过签名验证。
+取得可信代码签名证书并接入签名后，将仓库 Variable `QYWORK_REQUIRE_WINDOWS_SIGNATURE` 设为
+`true`，任何文件未通过 Authenticode 检查都会使工作流失败。该变量只启用检查，不执行签名。
+失败时已生成的草稿仍须保持未发布，签名报告会上传到该草稿。
+
+本地检查已解压的安装包：
+
+```powershell
+powershell -NoProfile -File scripts/check-windows-signatures.ps1 -InstallerPath .tmp/installer/qywork-setup.exe -PayloadDirectory .tmp/installer/extracted -ReportPath .tmp/installer/signatures.json -RequireSigned
+```
+
+必须使用同一个安装包的解压内容；编译目录不能证明安装包中各个程序的签名状态。
+检查通过表示本机 Authenticode 验证通过，单位设备的应用控制策略仍需由其管理员批准。
+
+## 启动失败诊断
+
+Windows 启动失败对话框提供“复制诊断信息”。错误码 4551 显示应用程序控制拦截提示，
+并提供 Windows 安全中心入口；具体策略以系统日志为准，不根据错误码推断智能应用控制开关。
+
+诊断在失败后采集应用版本、Windows 版本、正在启动的程序路径、签名状态和相关
+CodeIntegrity 事件，写入现有的 `~/.qywork/logs/qywork.log`；设置 `QYWORK_HOME` 时使用该目录。
+不读取配置文件、会话内容或完整环境变量。系统检查限时执行，超时、权限不足或 PowerShell
+也被拦截时保留原始错误及可用信息。日志写入失败时仍可复制诊断信息。
 
 ## 应用内更新
 

@@ -49,8 +49,11 @@ log = "0.4"
 windows = { version = "0.61", features = [
   "Win32_Graphics_Dwm",
   "Win32_UI_Controls",
-  # 启动失败时弹出 MessageBoxW。它不依赖 WebView，能覆盖窗口创建之前的失败。
+  # 启动失败对话框、诊断复制与 Windows 安全中心入口均不依赖 WebView。
   "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Shell",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
   # 浏览器 profile 的本机占用锁（CreateMutexW）与宿主凭据的随机数（BCryptGenRandom）。
   "Win32_Security",
   "Win32_Security_Cryptography",

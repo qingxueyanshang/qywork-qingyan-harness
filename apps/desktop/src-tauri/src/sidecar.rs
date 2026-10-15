@@ -153,9 +153,14 @@ fn spawn_process(
             )
             .env("QYWORK_PREVIOUS_STDERR_TAIL", &exit.stderr_tail);
     }
-    command
-        .spawn()
-        .map_err(|e| anyhow!("启动 qy serve 失败：{e}"))
+    command.spawn().map_err(|source| {
+        // 使用 shell 插件解析实际路径，诊断不另行推导安装目录。
+        let executable = app.shell().sidecar("qy").ok().map(|command| {
+            let command: std::process::Command = command.into();
+            PathBuf::from(command.get_program())
+        });
+        crate::startup::LaunchError { executable, source }.into()
+    })
 }
 
 /** 把当前子进程交给生命周期 state；退出已开始时立即终止新进程。 */

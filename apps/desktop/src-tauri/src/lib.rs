@@ -24,6 +24,7 @@ mod logfile;
 mod restart;
 mod sidecar;
 mod skill_source;
+mod startup;
 mod terminal;
 mod updater;
 mod ws;
@@ -370,29 +371,6 @@ fn extend_frame_for_shadow(window: &tauri::WebviewWindow) {
     }
 }
 
-/// 启动失败时显示原因。
-///
-/// **不能依赖 stderr**：release 使用 `windows_subsystem = "windows"`，没有控制台，
-/// 输出不可见。也不能使用 Tauri 的对话框插件：它需要 app handle，
-/// 而此路径正是 app 未能创建的情形。因此直接调用系统 MessageBox。
-#[cfg(windows)]
-fn show_fatal(message: &str) {
-    use windows::core::HSTRING;
-    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-    let text = HSTRING::from(message);
-    let caption = HSTRING::from("qywork 启动失败");
-    // SAFETY: 两个字符串在调用期间都有效；hwnd 传 None 表示无父窗口的模态框。
-    unsafe {
-        MessageBoxW(None, &text, &caption, MB_OK | MB_ICONERROR);
-    }
-}
-
-#[cfg(not(windows))]
-fn show_fatal(message: &str) {
-    // 非 Windows 平台有控制台，使用 stderr 即可。
-    eprintln!("[qywork] {message}");
-}
-
 /// 启动失败的唯一终态：弹出对话框，再以非 0 退出码结束进程。
 ///
 /// **setup 钩子中的错误必须在钩子内部交给本函数，不能返回 `Err`。** tauri 收到 `Err`
@@ -400,10 +378,8 @@ fn show_fatal(message: &str) {
 /// `windows_subsystem = "windows"`（没有控制台）：进程无提示地退出，
 /// 而 sidecar 缺失、被安全软件删除、在输出令牌前退出正是最常见的
 /// 一类启动故障。对话框不依赖 WebView，覆盖窗口创建之前的阶段。
-fn fatal_exit(error: &dyn std::fmt::Display) -> ! {
-    let msg = format!("qywork 启动失败：{error}");
-    log::error!("{msg}");
-    show_fatal(&msg);
+fn fatal_exit(error: &(dyn std::error::Error + 'static)) -> ! {
+    startup::report_and_show(error);
     std::process::exit(1);
 }
 
@@ -600,7 +576,7 @@ pub fn run() {
 
             // 错误就地转为对话框：返回 Err 会导致 tauri panic，见 `fatal_exit`。
             if let Err(e) = started {
-                fatal_exit(&e);
+                fatal_exit(e.as_ref());
             }
             Ok(())
         })

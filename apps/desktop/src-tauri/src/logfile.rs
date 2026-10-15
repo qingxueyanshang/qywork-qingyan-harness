@@ -26,15 +26,15 @@ pub fn data_dir() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".qywork"))
 }
 
-/// 追加一行。写入失败时静默忽略：日志本身不得成为外壳报错的原因，且 stderr 已写入同一内容。
-pub fn append(line: &str) {
+/// 追加一行并返回写入结果。日志写入失败不影响外壳生命周期。
+pub fn append(line: &str) -> bool {
     let Some(dir) = data_dir().map(|d| d.join("logs")) else {
-        return;
+        return false;
     };
     let path = dir.join(FILE);
     let _guard = WRITE_LOCK.lock();
     if std::fs::create_dir_all(&dir).is_err() {
-        return;
+        return false;
     }
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() + line.len() as u64 > MAX_BYTES {
@@ -43,9 +43,9 @@ pub fn append(line: &str) {
         }
     }
     let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
-        return;
+        return false;
     };
-    let _ = writeln!(file, "{line}");
+    writeln!(file, "{line}").is_ok()
 }
 
 /// 当前 UTC 时间，`2026-09-12T01:02:03.004Z`，与 sidecar 的行格式一致。

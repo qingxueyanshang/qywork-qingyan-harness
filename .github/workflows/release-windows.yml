@@ -59,6 +59,35 @@ jobs:
           generateReleaseNotes: true
           releaseBody: ${{ steps.prepare.outputs.notes }}
 
+      - name: Check Windows Authenticode signatures
+        id: authenticode
+        shell: pwsh
+        env:
+          REQUIRE_SIGNATURE: ${{ vars.QYWORK_REQUIRE_WINDOWS_SIGNATURE }}
+        run: |
+          if ($env:REQUIRE_SIGNATURE -notin '', 'true', 'false') {
+            throw 'QYWORK_REQUIRE_WINDOWS_SIGNATURE must be true, false, or empty.'
+          }
+          $installers = @(Get-ChildItem '.tmp/cargo-target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one Windows installer.' }
+          $payload = Join-Path (Get-Location) ('.tmp/signatures-' + [Guid]::NewGuid())
+          & 7z x $installers[0].FullName "-o$payload" -y
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract the Windows installer.' }
+          & ./scripts/check-windows-signatures.ps1 -InstallerPath $installers[0].FullName -PayloadDirectory $payload -ReportPath WINDOWS-SIGNATURES.json -RequireSigned:($env:REQUIRE_SIGNATURE -eq 'true')
+          exit $LASTEXITCODE
+
+      - name: Upload Windows signature report
+        if: ${{ always() && steps.authenticode.outcome != 'skipped' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if (Test-Path -LiteralPath WINDOWS-SIGNATURES.json) {
+            $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+            gh release upload "v$version" WINDOWS-SIGNATURES.json --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
       - name: Create checksum
         shell: bash
         run: |
