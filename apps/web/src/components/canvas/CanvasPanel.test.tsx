@@ -4110,23 +4110,35 @@ describe('画布：时间线', () => {
   })
 
   test('导出失败：显示原因，通知服务端放弃本次导出，按钮恢复为可再次导出，不保留进度', async () => {
-    const { host, server, refs } = await mount(TIMELINE)
-    const button = node(host, refs.$t!).querySelector<HTMLButtonElement>('.canvas-tl-export')!
-    button.click()
-    await waitFor(
-      () => !!host.querySelector('.canvas-fault'),
-      () => button.outerHTML,
-    )
-    await waitFor(
-      () => button.getAttribute('aria-label') === '导出',
-      () => button.outerHTML,
-    )
-    expect(button.textContent).toBe('')
-    await waitFor(
-      () => server.exports.includes('abort'),
-      () => JSON.stringify(server.exports),
-    )
-    expect(server.exports).toEqual(['start', 'abort'])
+    // 本用例验证导出失败后的界面与上传清理，不依赖编解码库的加载耗时和网络重试。
+    const renderer = await import('./render.ts')
+    const render = spyOn(renderer, 'renderTimeline').mockRejectedValue(new Error('视频解码失败'))
+    try {
+      const { host, server, refs } = await mount(TIMELINE)
+      const button = node(host, refs.$t!).querySelector<HTMLButtonElement>('.canvas-tl-export')!
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        button.click()
+        await waitFor(
+          () => host.querySelector('.canvas-fault')?.textContent === '视频解码失败',
+          () => host.querySelector('.canvas-fault')?.textContent ?? button.outerHTML,
+        )
+        await waitFor(
+          () => button.getAttribute('aria-label') === '导出',
+          () => button.outerHTML,
+        )
+        expect(button.textContent).toBe('')
+        expect(button.disabled).toBe(false)
+        await waitFor(
+          () => server.exports.length === attempt * 2,
+          () => JSON.stringify(server.exports),
+        )
+        expect(server.exports).toEqual(
+          Array.from({ length: attempt }, () => ['start', 'abort']).flat(),
+        )
+      }
+    } finally {
+      render.mockRestore()
+    }
   })
 })
 
