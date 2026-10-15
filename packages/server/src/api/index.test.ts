@@ -578,23 +578,32 @@ describe('模型目录', () => {
   })
 
   test.each([
-    ['满血sd2.5(30-10-10原生过人脸/720P)', ['30'], '30', false],
     [
-      '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
-      Array.from({ length: 27 }, (_, i) => String(i + 4)),
+      '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
+      Array.from({ length: 12 }, (_, i) => String(i + 4)),
       '5',
-      true,
+      '720P',
+      ['1280x720', '720x1280'],
+    ],
+    [
+      '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
+      Array.from({ length: 26 }, (_, i) => String(i + 5)),
+      '5',
+      '480P',
+      ['854x480', '480x854'],
     ],
   ] as const)(
     'SD2.5 将素材上限和原生时长选项同步到模型库与画布：%s',
-    async (id, durations, defaultDuration, supports480p) => {
+    async (id, durations, defaultDuration, tier, sizes) => {
       const d = withConfig('openai_chat_completions', 'm')
       d.config.providers.p!.media = { [id]: { kind: 'openai_videos' } }
       const response = await body(d)
       for (const removed of [
+        '满血sd2.5(30-10-10原生过人脸/720P)',
         'video-sd25-30s',
         '全能sd2.5(满血内置过脸30图超分1080P)',
         'sd-25-30/10/1-1',
+        '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
       ]) {
         expect(response.mediaLibrary.some((m) => m.id === removed)).toBe(false)
       }
@@ -620,24 +629,13 @@ describe('模型目录', () => {
       expect(seconds.type).toBe('enum')
       expect(seconds.default).toBe(defaultDuration)
       expect(seconds.values).toEqual(durations)
-      expect(seconds.valueLabels?.['30']).toBe('30秒')
+      expect(seconds.valueLabels?.[durations.at(-1)!]).toBe(`${durations.at(-1)}秒`)
       expect(model.params.find((p) => p.name === 'size')?.shapes).toEqual([
-        { ratio: '16:9', tier: '720P', value: '1280x720' },
-        { ratio: '9:16', tier: '720P', value: '720x1280' },
-        ...(supports480p
-          ? [
-              { ratio: '16:9', tier: '480P', value: '854x480' },
-              { ratio: '9:16', tier: '480P', value: '480x854' },
-            ]
-          : []),
+        { ratio: '16:9', tier, value: sizes[0] },
+        { ratio: '9:16', tier, value: sizes[1] },
       ])
-      if (supports480p)
-        expect(seconds.rules).toEqual([
-          {
-            when: { params: { size: ['1280x720', '720x1280'] } },
-            values: Array.from({ length: 12 }, (_, i) => String(i + 4)),
-          },
-        ])
+      expect(seconds.rules).toBeUndefined()
+      if (id.startsWith('006')) expect(model.label).toBe(id)
       expect(model.params.map((p) => p.name)).toEqual(['seconds', 'size'])
     },
   )

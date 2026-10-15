@@ -1561,137 +1561,187 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
-  test('providera 时长逐秒输入、固定清晰度不显示，提交仍使用字符串秒数', async () => {
-    const { lookupMediaModel } = await import('../../../../../packages/ai/src/media/catalog.ts')
-    const spec = lookupMediaModel('TTseadanco2.5-720', 'openai_videos')
-    const catalog = {
-      ...MODELS,
-      media: [
-        {
-          provider: 'providera',
-          id: spec.id,
-          kind: spec.kind,
-          output: 'video',
-          label: spec.displayName,
-          operations: spec.operations,
-          isDefault: true,
-          known: spec.catalogued,
-          maxAudios: spec.inputs.maxAudios,
-          params: spec.params.filter((p) => p.label),
-        },
-      ],
-    }
-    const { host, server, refs } = await mount(
-      [{ op: 'add_generate', ref: '$g', output: 'video', prompt: '镜头缓慢推进' }],
-      {},
-      catalog,
-    )
-    await select(host, refs.$g!)
-    const chip = host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!
-    chip.click()
-    await waitFor(
-      () => !!document.querySelector('.canvas-params-panel'),
-      () => host.textContent ?? '',
-    )
-    const panel = document.querySelector('.canvas-params-panel')!
-    const buttons = [...panel.querySelectorAll<HTMLButtonElement>('button')]
-    expect(buttons.map((b) => b.textContent)).toEqual(['−', '+', '16:9', '9:16', '1:1'])
-    expect([...panel.querySelectorAll('.canvas-params-title')].map((el) => el.textContent)).toEqual(
-      ['时长', '宽高比'],
-    )
-    expect(panel.textContent).not.toContain('720p')
-    expect(panel.querySelector('.canvas-param-description')).toBeNull()
-    const duration = panel.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
-    expect([duration.min, duration.max, duration.step]).toEqual(['5', '30', '1'])
-    for (const seconds of ['15', '30', '5', '15']) {
-      duration.value = seconds
-      duration.dispatchEvent(new Event('change', { bubbles: true }))
+  test.each([
+    { id: 'TTseadanco2.5-720', min: '5', defaultSeconds: '5' },
+    { id: 'TTsedanco2.5-480', min: '5', defaultSeconds: '5' },
+  ])(
+    'providera 时长逐秒输入、固定清晰度隐藏，提交字符串秒数：$id',
+    async ({ id, min, defaultSeconds }) => {
+      const { lookupMediaModel } = await import('../../../../../packages/ai/src/media/catalog.ts')
+      const spec = lookupMediaModel(id, 'openai_videos')
+      const catalog = {
+        ...MODELS,
+        media: [
+          {
+            provider: 'providera',
+            id: spec.id,
+            kind: spec.kind,
+            output: 'video',
+            label: spec.displayName,
+            operations: spec.operations,
+            isDefault: true,
+            known: spec.catalogued,
+            maxAudios: spec.inputs.maxAudios,
+            params: spec.params.filter((p) => p.label),
+          },
+        ],
+      }
+      const { host, server, refs } = await mount(
+        [{ op: 'add_generate', ref: '$g', output: 'video', prompt: '镜头缓慢推进' }],
+        {},
+        catalog,
+      )
+      await select(host, refs.$g!)
+      const chip = host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!
+      expect(host.querySelector('.canvas-bar .mode-chip.model')?.textContent).toContain(id)
+      chip.click()
+      await waitFor(
+        () => !!document.querySelector('.canvas-params-panel'),
+        () => host.textContent ?? '',
+      )
+      const panel = document.querySelector('.canvas-params-panel')!
+      const buttons = [...panel.querySelectorAll<HTMLButtonElement>('button')]
+      expect(buttons.map((b) => b.textContent)).toEqual(['−', '+', '16:9', '9:16', '1:1'])
+      expect(
+        [...panel.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
+      ).toEqual(['时长', '宽高比'])
+      expect(panel.textContent).not.toContain('720p')
+      expect(panel.querySelector('.canvas-param-description')).toBeNull()
+      const duration = panel.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
+      expect([duration.min, duration.max, duration.step, duration.value]).toEqual([
+        min,
+        '30',
+        '1',
+        defaultSeconds,
+      ])
+      for (const seconds of ['15', '30', min, '15']) {
+        duration.value = seconds
+        duration.dispatchEvent(new Event('change', { bubbles: true }))
+        await waitFor(
+          () => {
+            const node = server.doc().nodes[0]
+            return node?.type === 'generate' && (node.params.seconds ?? defaultSeconds) === seconds
+          },
+          () => JSON.stringify(server.ops),
+        )
+        expect(chip.textContent).toBe(`${seconds} 秒 · 16:9`)
+      }
+      buttons.find((b) => b.textContent === '9:16')!.click()
       await waitFor(
         () => {
           const node = server.doc().nodes[0]
-          return node?.type === 'generate' && (node.params.seconds ?? '5') === seconds
+          return node?.type === 'generate' && node.params.aspect_ratio === '9:16'
         },
         () => JSON.stringify(server.ops),
       )
-      expect(chip.textContent).toBe(`${seconds} 秒 · 16:9`)
-    }
-    buttons.find((b) => b.textContent === '9:16')!.click()
-    await waitFor(
-      () => {
-        const node = server.doc().nodes[0]
-        return node?.type === 'generate' && node.params.aspect_ratio === '9:16'
-      },
-      () => JSON.stringify(server.ops),
-    )
-    host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!.click()
-    await waitFor(
-      () => server.runs.length === 1,
-      () => JSON.stringify(server.runs),
-    )
-    const node = server.doc().nodes[0]
-    expect(node?.type === 'generate' && node.params).toEqual({
-      seconds: '15',
-      aspect_ratio: '9:16',
-    })
-    expect(server.runs[0]?.nodeId).toBe(refs.$g!)
-  })
+      host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!.click()
+      await waitFor(
+        () => server.runs.length === 1,
+        () => JSON.stringify(server.runs),
+      )
+      const node = server.doc().nodes[0]
+      expect(node?.type === 'generate' && node.params).toEqual({
+        seconds: '15',
+        aspect_ratio: '9:16',
+      })
+      expect(server.runs[0]?.nodeId).toBe(refs.$g!)
+    },
+  )
 
-  test('006 时长按清晰度联动，30 秒切至 720P 时原子调整为 15 秒', async () => {
-    const { providerb_MODELS } = await import(
-      '../../../../../packages/ai/src/media/catalog-providerb.ts'
-    )
-    const spec = providerb_MODELS[1]!
-    const catalog = { ...MODELS, media: [{ ...MODELS.media[0], id: spec.id, params: spec.params }] }
-    const { host, server, refs } = await mount(
-      [
-        {
-          op: 'add_generate',
-          ref: '$g',
-          output: 'video',
-          params: { size: '854x480', seconds: '30' },
+  test.each([
+    { index: 0, min: '4', max: '15', portrait: '720x1280' },
+    { index: 1, min: '5', max: '30', portrait: '480x854' },
+  ])(
+    '006 独立型号隐藏固定清晰度，时长与横竖屏按型号保存：%j',
+    async ({ index, min, max, portrait }) => {
+      const { providerb_MODELS } = await import(
+        '../../../../../packages/ai/src/media/catalog-providerb.ts'
+      )
+      const spec = providerb_MODELS[index]!
+      const catalog = {
+        ...MODELS,
+        media: [{ ...MODELS.media[0], id: spec.id, label: spec.id, params: spec.params }],
+      }
+      const { host, server, refs } = await mount(
+        [
+          {
+            op: 'add_generate',
+            ref: '$g',
+            output: 'video',
+            params: {},
+          },
+        ],
+        {},
+        catalog,
+      )
+      await select(host, refs.$g!)
+      host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!.click()
+      const input = () => document.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
+      expect([input().min, input().max, input().value]).toEqual([min, max, '5'])
+      expect(
+        [...document.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
+      ).toEqual(['时长', '宽高比'])
+      expect(document.querySelector('.canvas-params-panel')?.textContent).not.toMatch(/720P|480P/)
+      expect(host.querySelector('.canvas-bar .mode-chip.model')?.textContent).toContain(spec.id)
+      const ratio = [
+        ...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button'),
+      ].find((b) => b.textContent === '9:16')!
+      ratio.click()
+      await waitFor(
+        () => {
+          const node = server.doc().nodes[0]
+          return node?.type === 'generate' && node.params.size === portrait
         },
-      ],
-      {},
-      catalog,
-    )
-    await select(host, refs.$g!)
-    host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!.click()
-    const input = () => document.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
-    expect(input().max).toBe('30')
-    const tier = [
-      ...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button'),
-    ].find((b) => b.textContent === '720P')!
-    tier.click()
-    await waitFor(
-      () => input().max === '15' && input().value === '15',
-      () => JSON.stringify(server.ops),
-    )
-    expect(server.ops[0]?.[0]).toMatchObject({ params: { seconds: '15' } })
-    expect(document.querySelector('.canvas-param-notice')).toBeNull()
-    const saved = server.doc().nodes[0]
-    expect(saved?.type === 'generate' && saved.params).toEqual({ seconds: '15' })
-    input().value = '99'
-    input().dispatchEvent(new Event('change', { bubbles: true }))
-    expect(input().value).toBe('15')
-    document.querySelector<HTMLButtonElement>('.canvas-stepper button[aria-label="减少"]')!.click()
-    await waitFor(
-      () => input().value === '14',
-      () => JSON.stringify(server.ops),
-    )
-    expect(server.doc().nodes[0]).toMatchObject({ params: { seconds: '14' } })
-  })
+        () => JSON.stringify(server.ops),
+      )
+      expect(document.querySelector('.canvas-param-notice')).toBeNull()
+      input().value = '99'
+      input().dispatchEvent(new Event('change', { bubbles: true }))
+      expect(input().value).toBe(max)
+      await waitFor(
+        () => {
+          const node = server.doc().nodes[0]
+          return node?.type === 'generate' && node.params.seconds === max
+        },
+        () => JSON.stringify(server.ops),
+      )
+      document
+        .querySelector<HTMLButtonElement>('.canvas-stepper button[aria-label="减少"]')!
+        .click()
+      await waitFor(
+        () => input().value === String(Number(max) - 1),
+        () => JSON.stringify(server.ops),
+      )
+      expect(server.doc().nodes[0]).toMatchObject({
+        params: { seconds: String(Number(max) - 1), size: portrait },
+      })
+    },
+  )
 
   test('固定 30 秒与 720P 不显示，底栏与面板只保留可选宽高比', async () => {
-    const { providerb_MODELS } = await import(
-      '../../../../../packages/ai/src/media/catalog-providerb.ts'
-    )
-    const spec = providerb_MODELS[0]!
     const { host, refs } = await mount(
       [{ op: 'add_generate', ref: '$g', output: 'video' }],
       {},
       {
         ...MODELS,
-        media: [{ ...MODELS.media[0], id: spec.id, params: spec.params }],
+        media: [
+          {
+            ...MODELS.media[0],
+            params: [
+              { name: 'seconds', label: '时长', type: 'enum', values: ['30'], default: '30' },
+              {
+                name: 'size',
+                label: '尺寸',
+                type: 'string',
+                default: '1280x720',
+                shapes: [
+                  { ratio: '16:9', tier: '720P', value: '1280x720' },
+                  { ratio: '9:16', tier: '720P', value: '720x1280' },
+                ],
+              },
+            ],
+          },
+        ],
       },
     )
     await select(host, refs.$g!)

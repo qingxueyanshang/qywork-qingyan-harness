@@ -556,10 +556,21 @@ function migrateUnverifiedMediaKinds(cfg: QyConfig): string[] {
 /** 迁移已停用生成模型及默认引用；替换或删除型号时保留所属接口及凭证。 */
 function migrateRemovedMediaModels(cfg: QyConfig): string[] {
   const notices: string[] = []
-  const replacements = new Map([
-    ['video-sd25-30s', '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)'],
+  const replacements = new Map<string, string[]>([
+    ['video-sd25-30s', ['006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)']],
+    [
+      '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
+      [
+        '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
+        '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
+      ],
+    ],
   ])
   const removedModels = new Set([
+    'seedance-2.5（YX）',
+    'seedance2.5-yx-count',
+    'wf-sd2.5-v2',
+    '满血sd2.5(30-10-10原生过人脸/720P)',
     '高质量sd2.5/(全参原生过真人速度快720P)',
     '全能sd2.5(满血内置过脸30图超分1080P)',
     'sd-25-30/10/1-1',
@@ -576,19 +587,19 @@ function migrateRemovedMediaModels(cfg: QyConfig): string[] {
         !(stored.kind === 'openai_videos' && removedModels.has(id))
       )
         continue
-      if (replacement) provider.media![replacement] ??= stored
+      for (const model of replacement ?? []) provider.media![model] ??= { ...stored }
       delete provider.media![id]
       removed = true
       removedChannel ||= isRemovedChannel
       for (const output of MEDIA_OUTPUTS) {
         const ref = cfg.mediaDefaults?.[output]
         if (ref?.provider !== name || ref.model !== id) continue
-        if (replacement) ref.model = replacement
+        if (replacement) ref.model = replacement[0]!
         else delete cfg.mediaDefaults![output]
       }
       notices.push(
         replacement
-          ? `已将生成模型 ${name} / ${id} 替换为 ${replacement}。`
+          ? `已将生成模型 ${name} / ${id} 替换为 ${replacement.join('、')}。`
           : `已移除停用的生成模型 ${name} / ${id}。`,
       )
     }

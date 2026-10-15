@@ -33,7 +33,7 @@ test.each([false, true])(
     reply = hasId ? { id: taskId } : {}
     const adapter = buildMediaAdapter({
       kind: 'openai_videos',
-      model: '满血sd2.5(30-10-10原生过人脸/720P)',
+      model: '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
       apiKey: 'test',
       baseUrl: `http://127.0.0.1:${server.port}`,
     })
@@ -79,7 +79,7 @@ const cases: {
   { kind: 'openai_videos', body: (status) => ({ status }) },
   {
     kind: 'openai_videos',
-    model: '满血sd2.5(30-10-10原生过人脸/720P)',
+    model: '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
     body: (status) => ({ data: { status } }),
   },
   { kind: 'ark_videos', body: (status) => ({ status }) },

@@ -101,6 +101,10 @@ test.each([false, true])(
 
 test.each(
   [
+    'seedance-2.5（YX）',
+    'seedance2.5-yx-count',
+    'wf-sd2.5-v2',
+    '满血sd2.5(30-10-10原生过人脸/720P)',
     '高质量sd2.5/(全参原生过真人速度快720P)',
     '全能sd2.5(满血内置过脸30图超分1080P)',
     'sd-25-30/10/1-1',
@@ -110,7 +114,7 @@ test.each(
   async (removed, mixed) => {
     const home = await mkdtemp(join(tmpdir(), 'qy-removed-providerb-'))
     const previousHome = process.env.QYWORK_HOME
-    const keep = '满血sd2.5(30-10-10原生过人脸/720P)'
+    const keep = '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)'
     const provider = {
       kind: 'openai_chat_completions' as const,
       baseUrl: 'https://providerb.example.com/v1',
@@ -160,7 +164,14 @@ test.each([false, true])(
     const home = await mkdtemp(join(tmpdir(), 'qy-replace-providerb-'))
     const previousHome = process.env.QYWORK_HOME
     const replacements = [
-      ['video-sd25-30s', '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)'],
+      ['video-sd25-30s', ['006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)']],
+      [
+        '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
+        [
+          '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
+          '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
+        ],
+      ],
     ] as const
     try {
       process.env.QYWORK_HOME = home
@@ -176,7 +187,7 @@ test.each([false, true])(
               media: {
                 [removed]: media,
                 keep: { kind: 'openai_images' },
-                ...(alreadyConfigured ? { [replacement]: media } : {}),
+                ...(alreadyConfigured ? { [replacement[0]]: media } : {}),
               },
             },
           },
@@ -190,14 +201,17 @@ test.each([false, true])(
         const loaded = await loadConfig()
         expect(loaded.providers.channel).toEqual({
           ...raw.providers.channel!,
-          media: { keep: { kind: 'openai_images' }, [replacement]: media },
+          media: {
+            keep: { kind: 'openai_images' },
+            ...Object.fromEntries(replacement.map((id) => [id, media])),
+          },
         })
         expect(loaded.active).toEqual(raw.active)
         expect(loaded.mediaDefaults).toEqual({
           ...raw.mediaDefaults,
-          video: { provider: 'channel', model: replacement },
+          video: { provider: 'channel', model: replacement[0] },
         })
-        expect(resolveMediaModel(loaded, 'video')?.model).toBe(replacement)
+        expect(resolveMediaModel(loaded, 'video')?.model).toBe(replacement[0])
         expect(diagnoseConfig(loaded)).toEqual([])
         expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
         await saveConfig(loaded)
