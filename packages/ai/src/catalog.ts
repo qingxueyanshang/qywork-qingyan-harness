@@ -761,7 +761,6 @@ export function claudeCatalog(): ModelSpec[] {
       id: 'claude-opus-5-5',
       displayName: 'Claude Opus 5.5',
       pricing: { ...anthropicPricing(4, 20), cacheRead: 0.2 },
-      thinking: 'always_on',
       thinksByDefault: true,
       minCacheablePrefix: 512,
     },
@@ -771,7 +770,6 @@ export function claudeCatalog(): ModelSpec[] {
       displayName: 'Claude Fable 5.1',
       // 5.1 的缓存读取是输入价的 0.025 倍；写入仍是 1.25 / 2 倍。
       pricing: { ...anthropicPricing(10, 50), cacheRead: 0.25 },
-      thinking: 'always_on',
       thinksByDefault: true,
       minCacheablePrefix: 512,
     },
@@ -796,8 +794,6 @@ export function claudeCatalog(): ModelSpec[] {
       id: 'claude-fable-5',
       displayName: 'Claude Fable 5',
       pricing: anthropicPricing(10, 50),
-      // 思考始终开启：发送 {type:'disabled'} 也返回 400，只能完全省略 thinking 字段。
-      thinking: 'always_on',
       thinksByDefault: true,
       minCacheablePrefix: 512,
     },

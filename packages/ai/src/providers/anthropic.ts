@@ -11,7 +11,7 @@
  *
  * 1. 采样参数（temperature/top_p/top_k）在 Claude 5 系一律返回 400 → 不提供入口。
  * 2. `budget_tokens` 在 Opus 5 / Sonnet 5 / Fable 5 系 / Opus 4.7+ 一律返回 400 → 按 spec.thinking 分派。
- * 3. Fable 5 系思考恒开，连 `{type:'disabled'}` 也返回 400 → 省略 thinking 字段。
+ * 3. Opus 5.5 / Fable 5 系接受 adaptive；须显式请求 summarized，否则思考块正文默认省略。
  * 4. Opus 5 关闭思考时 effort 最高只允许 high，搭配 xhigh/max 会返回 400 → 只发送目录声明的档位
  *    （`resolveEffort`），越界时省略字段。
  * 5. Opus 5 / Sonnet 5 省略 thinking 时仍会思考，而 max_tokens 同时限制思考与正文
@@ -332,16 +332,10 @@ export class AnthropicAdapter implements LlmAdapter {
   }
 
   /**
-   * 思考配置。返回 undefined 表示省略整个 thinking 字段：这是 Fable 5 系唯一
-   * 合法的写法，对 Opus 5 / Sonnet 5 则等价于 adaptive（二者默认思考）。
-   *
-   * 只按 `spec.thinking` 分派：调用方不指定思考形态，强度经由 `output_config.effort`
-   * 传递。不要改为从请求中读取形态：`budget_tokens` 旧形态在 Opus 5 /
-   * Sonnet 5 上一律返回 400。
+   * 按模型库声明发送自适应思考与可见摘要；其余形态省略 thinking 字段。
+   * 强度由 output_config.effort 独立控制，不向现代 Claude 发送 budget_tokens。
    */
   private resolveThinking() {
-    // adaptive_only 以外的取值（always_on / budget_tokens / none）一律省略：
-    // 思考恒开的模型收到任何显式配置都返回 400，本项目不请求旧形态。
     if (this.spec.thinking !== 'adaptive_only') return undefined
     return { type: 'adaptive' as const, display: 'summarized' as const }
   }

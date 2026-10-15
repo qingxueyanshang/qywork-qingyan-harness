@@ -95,7 +95,7 @@ test('Claude Opus 5.5 的官方价格、缓存与恒开思考规格', () => {
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     vision: true,
-    thinking: 'always_on',
+    thinking: 'adaptive_only',
     thinksByDefault: true,
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
     minCacheablePrefix: 512,
@@ -841,7 +841,7 @@ describe('目录中的价格与档位', () => {
     expect(fable.maxOutputTokens).toBe(128_000)
     expect(fable.vision).toBe(true)
     expect(fable.video).toBe(false)
-    expect(fable.thinking).toBe('always_on')
+    expect(fable.thinking).toBe('adaptive_only')
     expect(fable.thinksByDefault).toBe(true)
     expect(fable.minCacheablePrefix).toBe(512)
     expect(fable.pricing).toMatchObject({

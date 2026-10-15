@@ -8,9 +8,9 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { EffortLevel } from '@qywork/core'
 import { lookupModel } from '../catalog.ts'
+import { buildAdapter } from '../factory.ts'
 import { STREAM_IDLE_TIMEOUT_MS } from '../transport.ts'
 import type { ProviderEvent, ProviderProfile, WireMessage } from '../types.ts'
-import { AnthropicAdapter } from './anthropic.ts'
 
 const bodies: Record<string, unknown>[] = []
 const requestHeaders: Headers[] = []
@@ -74,6 +74,7 @@ async function send(
   messages: WireMessage[],
   effort?: EffortLevel,
   model = 'claude-opus-5',
+  transport?: ProviderProfile['transport'],
 ): Promise<Record<string, unknown>> {
   bodies.length = 0
   const profile: ProviderProfile = {
@@ -81,8 +82,9 @@ async function send(
     apiKey: 'sk-x',
     model,
     baseUrl: base,
+    ...(transport ? { transport } : {}),
   }
-  const adapter = new AnthropicAdapter(profile, lookupModel(model, 'anthropic_messages'))
+  const adapter = buildAdapter(profile)
   lastEvents = []
   for await (const event of adapter.stream({
     model,
@@ -100,11 +102,17 @@ async function send(
 }
 
 describe('思考档位严格遵守用户选择', () => {
-  test('Claude Opus 5.5 思考恒开，强度通过 output_config 发送', async () => {
-    const body = await send([{ role: 'user', content: 'hi' }], 'medium', 'claude-opus-5-5')
-    expect(body.model).toBe('claude-opus-5-5')
-    expect(body).not.toHaveProperty('thinking')
-    expect(body.output_config).toEqual({ effort: 'medium' })
+  test('Claude 恒开思考模型请求摘要，旧检测记录不覆盖模型库声明', async () => {
+    for (const model of ['claude-opus-5-5', 'claude-fable-5-1', 'claude-fable-5']) {
+      for (const effort of ['medium', 'xhigh'] as const) {
+        const body = await send([{ role: 'user', content: 'hi' }], effort, model, {
+          thinking: 'always_on',
+        })
+        expect(body.model).toBe(model)
+        expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+        expect(body.output_config).toEqual({ effort })
+      }
+    }
   })
 
   test('MiMo 按 Messages 形状回传文本轮与工具轮思考，不发送虚构的强度参数', async () => {
@@ -422,6 +430,10 @@ async function capture(events: Record<string, unknown>[]): Promise<ProviderEvent
 describe('原生思考块', () => {
   test('采集签名、密文与位置锚，思考 token 取自回执', async () => {
     const events = await capture([...THINKING_TURN, { type: 'message_stop' }])
+    expect(bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    const thinkingIndex = events.findIndex((e) => e.type === 'thinking_delta' && e.delta === '先看')
+    expect(thinkingIndex).toBeGreaterThan(-1)
+    expect(thinkingIndex).toBeLessThan(events.findIndex((e) => e.type === 'text_delta'))
     const reasoning = events.find((e) => e.type === 'response_reasoning')
     expect(reasoning?.type === 'response_reasoning' && reasoning.reasoning).toEqual({
       items: [
