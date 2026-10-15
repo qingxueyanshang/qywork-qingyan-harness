@@ -45,6 +45,12 @@ describe('聊天中的本机文件地址', () => {
     )
     expect(workspaceFile('./out/%E5%9B%BE%201.png?x=1#a', 'C:\\ws')).toBe('out/图 1.png')
     expect(workspaceFile('out\\a.png', 'C:\\ws')).toBe('out/a.png')
+    expect(workspaceFile('./out/../out//图%231.png', 'C:\\ws')).toBe('out/图#1.png')
+    expect(workspaceFile('../outside.png', 'C:\\ws')).toBeNull()
+    expect(workspaceFile('C:/ws/../outside.png', 'C:\\ws')).toBeNull()
+    expect(workspaceFile('file:///C:/ws/out/%E5%9B%BE%201.png', 'C:\\ws')).toBe('out/图 1.png')
+    expect(workspaceFile('file://server/share/ws/a.png', '\\\\server\\share\\ws')).toBe('a.png')
+    expect(workspaceFile('/a.png', '/')).toBe('a.png')
   })
 
   test('绝对路径位于工作区内时才转换为相对路径，按 Windows 规则不区分大小写', () => {
@@ -62,7 +68,7 @@ describe('聊天中的本机文件地址', () => {
       'javascript:a.png',
       'java\nscript:a.png',
       'data:image/png;base64,AAAA',
-      'file:///C:/ws/a.png',
+      'file:///C:/ws/a%00.png',
       'mailto:a@b.com',
     ]) {
       expect(localPath(href)).toBeNull()

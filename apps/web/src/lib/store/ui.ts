@@ -712,22 +712,10 @@ export function closeSettings(): void {
  * 不让出位置：查看文件与查看对话位于两个区域，不应互相替换。
  *
  * 这是「打开了哪个文件」的唯一权威。不要在面板中另存一份，两份必然不一致。
- * 它不负责高亮哪一行：高亮由 `FileBrowser` 中的 `selected`（最后点击的行）决定，
- * 两者混用会导致点击文件夹时不高亮。
+ * 高亮由 `FileBrowser` 中的 `selected` 决定。打开文件时同步选择，
+ * 随后点击目录可以改变选中行，不能用预览路径覆盖目录选择。
  */
 export const [openFile, setOpenFile] = sessionSignal<string | null>('qywork.file.open', null)
-
-/**
- * 打开文件。必须经由此函数：它同时保证面板已展开且显示文件页。
- *
- * 直接设置 `openFile` 时，若从其他位置触发，
- * 面板可能处于收起状态或显示「变更」页，用户点击后看不到任何内容。
- * 不改变放大态：放大时面板占满内容区，适合查看文件。
- */
-export function openFileInPanel(path: string): void {
-  setOpenFile(path)
-  openPanel('files')
-}
 
 /**
  * 当前项目。

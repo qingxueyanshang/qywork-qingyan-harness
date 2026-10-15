@@ -68,16 +68,18 @@ import {
 export function openLink(e: MouseEvent): void {
   const link = (e.target as Element).closest('a')
   const href = link?.getAttribute('href') ?? ''
+  if (!link || e.defaultPrevented) return
+  const file = workspaceFile(href, workspace()?.root ?? '')
+  if (file) {
+    e.preventDefault()
+    openFileInPanel(file, href)
+    return
+  }
   if (/^https?:\/\//i.test(href) || localHtmlUrl(href, '/')) {
     e.preventDefault()
     openLinkInPanel(href)
     return
   }
-  // 工作区中的其他文件在右侧文件预览中打开，与工具产物路径使用同一个入口。
-  const file = workspaceFile(href, workspace()?.root ?? '')
-  if (!file) return
-  e.preventDefault()
-  openFileInPanel(file)
 }
 
 /** 完成状态的停留时长。短于此值时图标切换难以察觉，过长则会延续到下一次点击。 */

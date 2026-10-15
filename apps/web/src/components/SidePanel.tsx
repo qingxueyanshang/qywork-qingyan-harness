@@ -23,21 +23,19 @@ import {
   absPath,
   activePanelTab,
   browserReady,
-  CANVAS_SUFFIX,
   type ChangesView,
   type ChangeTurn,
   canvasAvailable,
-  canvasTitle,
   client,
   closePanel,
   closePanelTab,
   createCanvas,
   explainApiError,
+  fileRevealRequest,
   isDesktopShell,
   loadConversationChanges,
   loadOlderConversationChanges,
   openBrowserTab,
-  openCanvasTab,
   openFile,
   openFileInPanel,
   openPanelTab,
@@ -47,6 +45,7 @@ import {
   panelWidth,
   resizePanel,
   revealWorkspace,
+  setFileRevealRequest,
   setOpenFile,
   setSidePanel,
   sidePanel,
@@ -133,13 +132,7 @@ const VIEWS: { view: PanelView; label: string }[] = [
 /** 看板上的「无限画布」：在工作区根新建一张空画布并打开它。 */
 async function openNewCanvas(): Promise<void> {
   const path = await createCanvas()
-  openCanvasTab(path, canvasTitle(path))
-}
-
-/** 在文件树中点击文件：画布文件在鼠标端打开画布页，其余文件在主区预览。 */
-function openPath(path: string): void {
-  if (path.endsWith(CANVAS_SUFFIX) && canvasAvailable()) openCanvasTab(path, canvasTitle(path))
-  else openFileInPanel(path)
+  openFileInPanel(path)
 }
 
 /**
@@ -632,16 +625,12 @@ function FileBrowser() {
   )
   const [kids, setKids] = createSignal<ReadonlyMap<string, FileNode[]>>(new Map())
   /** 选中的行。它同时决定新建的位置，因此文件与目录都会记录。记录时不含子层。 */
-  const [selected, setSelected] = sessionSignal<FileNode | null>(
+  const [selected, setSelected] = sessionSignal<Pick<FileNode, 'path' | 'kind'> | null>(
     `qywork.files.selected:${ws}`,
     null,
     {
-      save: (node) => {
-        if (!node) return null
-        const { children: _, ...rest } = node
-        return rest
-      },
-      load: (raw) => raw as FileNode | null,
+      save: (node) => (node ? { path: node.path, kind: node.kind } : null),
+      load: (raw) => raw as Pick<FileNode, 'path' | 'kind'> | null,
     },
   )
   const [creating, setCreating] = createSignal<{ kind: 'file' | 'dir'; dir: string } | null>(null)
@@ -659,6 +648,23 @@ function FileBrowser() {
    * 刷新看起来没有响应。该递增值只表示一次刷新命令，不另存任何文件状态。
    */
   const [manualRefresh, setManualRefresh] = createSignal(0)
+
+  // 打开文件时同步选中并展开祖先目录；后续点击目录仍由 selected 决定高亮。
+  createEffect(
+    on(fileRevealRequest, (request) => {
+      if (!request || request.workspaceId !== ws) return
+      setSelected({ path: request.path, kind: 'file' })
+      setQuery('')
+      setRootOpen(true)
+      setExpanded((current) => {
+        const next = new Set(current)
+        const parts = request.path.split('/')
+        for (let i = 1; i < parts.length; i++) next.add(parts.slice(0, i).join('/'))
+        return next
+      })
+      setFileRevealRequest(null)
+    }),
+  )
 
   /*
    * 根树重取时，展开目录的懒加载缓存必须同时失效。只重取根节点时，已展开的目录
@@ -717,7 +723,7 @@ function FileBrowser() {
     },
     pick: (node) => {
       setSelected(node)
-      openPath(node.path)
+      openFileInPanel(node.path)
     },
     menu: (node, x, y) => {
       setSelected(node)
@@ -1277,6 +1283,7 @@ function NameRow(props: {
 }
 
 function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
+  let button: HTMLButtonElement | undefined
   const open = () => props.ctx.expanded().has(props.node.path)
   const children = () => props.ctx.childrenOf(props.node.path) ?? props.node.children ?? null
   const editing = () => props.ctx.renaming() === props.node.path
@@ -1287,9 +1294,18 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
     if (open() && children() === null) props.ctx.load(props.node.path)
   })
 
+  createEffect(() => {
+    if (props.ctx.selected() === props.node.path) {
+      button?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }
+  })
+
   const row = (onClick: () => void) => (
     <button
       class="tree-item"
+      ref={button}
+      data-path={props.node.path}
+      aria-current={props.ctx.selected() === props.node.path ? 'true' : undefined}
       classList={{ selected: props.ctx.selected() === props.node.path }}
       type="button"
       style={{ 'padding-left': `${treeIndent(props.depth)}px` }}

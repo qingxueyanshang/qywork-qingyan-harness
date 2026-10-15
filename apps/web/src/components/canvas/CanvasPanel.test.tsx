@@ -12,8 +12,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'b
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { CanvasDoc, CanvasOp, CanvasView, MediaQuote } from '@qywork/core'
 
-beforeAll(() => {
+beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
+  // 组件可能已由导航用例导入；委托事件属于 document，不随模块缓存恢复。
+  const { delegateEvents, DelegatedEvents } = await import('solid-js/web')
+  delegateEvents([...DelegatedEvents])
   // happy-dom 不提供这两个 API，真实 WebView 中均有提供。尺寸由 `resize` 手动报告。
   ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
     constructor(private readonly callback: () => void) {}

@@ -30,7 +30,7 @@ export function canvasAvailable(): boolean {
 /** 页签名称：去掉 `.canvas.json` 后缀的文件名。 */
 export function canvasTitle(path: string): string {
   const name = path.split('/').pop() ?? path
-  return name.endsWith(CANVAS_SUFFIX) ? name.slice(0, -CANVAS_SUFFIX.length) : name
+  return name.toLowerCase().endsWith(CANVAS_SUFFIX) ? name.slice(0, -CANVAS_SUFFIX.length) : name
 }
 
 export interface CanvasEdit extends CanvasView {

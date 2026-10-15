@@ -18,15 +18,23 @@ export function localHtmlUrl(href: string, workspaceRoot: string): string | null
 
 /**
  * Markdown 中指向本机文件的地址：相对路径、Windows 或 POSIX 绝对路径。去除查询与锚点并解码后以正斜杠形式返回；
- * 网址、带协议的地址、`//` 开头的网络地址与页内锚点返回 null。
+ * 支持 file URL；网址、其他协议、`//` 开头的网络地址与页内锚点返回 null。
  */
 export function localPath(href: string): string | null {
   const value = href.trim()
   if (!value || value.startsWith('#') || value.startsWith('//') || /\p{Cc}/u.test(value))
     return null
-  if (!/^[a-z]:[/\\]/i.test(value) && /^[^/?#\\]*:/.test(value)) return null
   try {
-    return decodeURI(value.replace(/[?#].*$/s, '')).replaceAll('\\', '/') || null
+    let path: string
+    if (/^file:/i.test(value)) {
+      const url = new URL(value)
+      path = decodeURIComponent(url.pathname).replace(/^\/(?=[a-z]:\/)/i, '')
+      if (url.hostname) path = `//${url.hostname}${path}`
+    } else {
+      if (!/^[a-z]:[/\\]/i.test(value) && /^[^/?#\\]*:/.test(value)) return null
+      path = decodeURIComponent(value.replace(/[?#].*$/s, ''))
+    }
+    return path && !/\p{Cc}/u.test(path) ? path.replaceAll('\\', '/') : null
   } catch {
     return null
   }
@@ -34,16 +42,31 @@ export function localPath(href: string): string | null {
 
 /** 本机文件地址 → 工作区相对路径，供右侧文件预览使用；位于工作区之外时返回 null。 */
 export function workspaceFile(href: string, workspaceRoot: string): string | null {
-  const path = localPath(href)
+  const raw = localPath(href)
+  const path = raw ? normalizePath(raw) : null
   if (!path) return null
-  const windows = /^[a-z]:\//i.test(path)
-  if (!windows && !path.startsWith('/')) return path.replace(/^(\.\/)+/, '')
-  const root = workspaceRoot.replaceAll('\\', '/').replace(/\/+$/, '')
-  if (!root) return null
+  const windows = /^[a-z]:\//i.test(path) || path.startsWith('//')
+  if (!windows && !path.startsWith('/')) return path
+  const root = normalizePath(workspaceRoot.replaceAll('\\', '/'))?.replace(/\/+$/, '')
+  if (root === null || root === undefined || !workspaceRoot) return null
   const inside = windows
     ? path.toLowerCase().startsWith(`${root.toLowerCase()}/`)
     : path.startsWith(`${root}/`)
   return inside ? path.slice(root.length + 1) : null
+}
+
+/** 将等价路径归一到文件树使用的路径；不允许相对路径越过工作区根。 */
+function normalizePath(path: string): string | null {
+  const prefix = path.match(/^(?:[a-z]:\/|\/\/|\/)/i)?.[0] ?? ''
+  const parts: string[] = []
+  for (const part of path.slice(prefix.length).split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..') {
+      if (!parts.length) return null
+      parts.pop()
+    } else parts.push(part)
+  }
+  return prefix + parts.join('/')
 }
 
 /** 根目录与不带协议的 Windows 路径是文件系统字面值，其中的百分号、问号与井号不是 URL 分隔符。 */

@@ -11,8 +11,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { readFileSync } from 'node:fs'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
-beforeAll(() => {
+beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
+  // 组件可能已由其他用例导入；每个新 document 均需注册 JSX 的委托事件。
+  const { delegateEvents, DelegatedEvents } = await import('solid-js/web')
+  delegateEvents([...DelegatedEvents])
 })
 
 let dispose: (() => void) | undefined

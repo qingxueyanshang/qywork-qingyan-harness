@@ -32,6 +32,7 @@ export {
   WORKSPACE_PATH_TYPE,
 } from './canvas.ts'
 export * from './connection.ts'
+export { fileRevealRequest, openFileInPanel, setFileRevealRequest } from './files.ts'
 export * from './settings.ts'
 // 使用具名导出，不沿用上方的 `export *`：B6 的判据是「该模块对外承诺了什么」，
 // 而 shell 与 theme 只对外承诺列出的符号。
