@@ -31,7 +31,7 @@ import {
   resolveWritablePath,
   rootsOf,
 } from './paths.ts'
-import { renameWithRetry } from './rename.ts'
+import { renameWithRetry, retryWhileBusy } from './rename.ts'
 
 /** 未提供输出路径时写入该工作区目录。 */
 const DEFAULT_DIR = 'generated'
@@ -140,10 +140,12 @@ export async function landFiles(
       await mkdir(dirname(abs), { recursive: true })
       const part = `${abs}.part`
       // 查到空名不代表占用成功。只有独占打开成功后才能写入或清理这个临时文件。
-      const handle = await open(part, 'wx').catch((err: NodeJS.ErrnoException) => {
-        if (err.code === 'EEXIST') return null
-        throw err
-      })
+      const handle = await retryWhileBusy(() => open(part, 'wx')).catch(
+        (err: NodeJS.ErrnoException) => {
+          if (err.code === 'EEXIST') return null
+          throw err
+        },
+      )
       if (!handle) continue
       let renamed = false
       try {

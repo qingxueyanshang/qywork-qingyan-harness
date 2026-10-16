@@ -6,7 +6,8 @@
  * 产物的写入位置、已存在的输出路径在调用接口之前被拒绝、视频任务记录的写入与删除时机。
  */
 
-import { beforeEach, describe, expect, setSystemTime, test } from 'bun:test'
+import { beforeEach, describe, expect, setSystemTime, spyOn, test } from 'bun:test'
+import * as fs from 'node:fs/promises'
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -366,6 +367,37 @@ test('请求的扩展名与实际格式不符时改为实际格式的扩展名�
 })
 
 describe('generateMedia / landFiles', () => {
+  test('临时文件占用结束后保存原始字节；无法取得所有权时不删除文件', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gen-busy-'))
+    const open = fs.open
+    const failure = Object.assign(new Error('temporary file busy'), { code: 'EPERM' })
+    const mocked = spyOn(fs, 'open')
+    try {
+      mocked.mockRejectedValueOnce(failure).mockImplementation(open)
+      const save = landFiles(root, [{ bytes: PNG, mime: 'image/png' }], 'generated/same')
+      if (process.platform === 'win32') {
+        const files = await save
+        expect(files.map((file) => file.path)).toEqual(['generated/same.png'])
+        expect(new Uint8Array(await readFile(join(root, files[0]!.path)))).toEqual(PNG)
+        expect(await readdir(join(root, 'generated'))).toEqual(['same.png'])
+      } else {
+        await expect(save).rejects.toBe(failure)
+        expect(await readdir(join(root, 'generated'))).toEqual([])
+      }
+
+      const part = join(root, 'generated', 'held.png.part')
+      await writeFile(part, 'other writer')
+      mocked.mockRejectedValue(failure)
+      await expect(
+        landFiles(root, [{ bytes: PNG, mime: 'image/png' }], 'generated/held'),
+      ).rejects.toBe(failure)
+      expect(await readFile(part, 'utf8')).toBe('other writer')
+      expect((await readdir(join(root, 'generated'))).includes('held.png')).toBe(false)
+    } finally {
+      mocked.mockRestore()
+    }
+  })
+
   test('同名产物并发落盘各自保留原始字节，不删除其他写入者的临时文件', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-concurrent-'))
     await mkdir(join(root, 'generated'))
