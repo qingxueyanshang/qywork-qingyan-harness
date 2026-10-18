@@ -118,8 +118,6 @@ export class RunState {
   compactedAt = -1
   /** 进展证据，按调用顺序累积，用于判定重复无进展，见 progress.ts。 */
   readonly progress: ProgressEvidence[] = []
-  /** 本轮成功的只读调用已投递过的结果指纹（`resultFingerprint`），用于识别再投递。 */
-  readonly deliveredReads = new Set<string>()
   /**
    * 请求账的轮次编号（`uq_provider_run_turn` 的第二段）。主循环每轮推进一次，
    * 压缩的摘要请求占用编号时由压缩阶段另行推进。
