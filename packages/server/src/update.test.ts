@@ -1,9 +1,10 @@
 /** 覆盖 server.ts 的本机更新鉴权，以及 runs/commands 的更新与任务互斥。 */
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from '@qywork/store'
+import { CanvasService } from './canvas.ts'
 import { handleCommand } from './commands.ts'
 import type { CommandDeps } from './deps.ts'
 import { serve } from './server.ts'
@@ -13,6 +14,18 @@ test('配对令牌不能取得更新占位；宿主占位后新指令被明确�
   const previousHome = process.env.QYWORK_HOME
   process.env.QYWORK_HOME = root
   const store = new Store({ path: join(root, 'data.sqlite3') })
+  let completeScan!: () => void
+  const scanning = new Promise<void>((resolve) => {
+    completeScan = resolve
+  })
+  const list = CanvasService.prototype.list
+  const scan = spyOn(CanvasService.prototype, 'list').mockImplementation(async function (
+    this: CanvasService,
+    root,
+  ) {
+    await scanning
+    return list.call(this, root)
+  })
   const handle = serve({
     store,
     config: { providers: {}, mode: 'auto' },
@@ -29,12 +42,23 @@ test('配对令牌不能取得更新占位；宿主占位后新指令被明确�
       headers: { 'x-qywork-update-key': key, Authorization: 'Bearer pairing-token' },
       body,
     })
+  const claimUpdate = async () =>
+    (await request('{"action":"claim"}')).json() as Promise<{ claimed: boolean; busy: number }>
   try {
     expect((await request('{"action":"claim"}', 'pairing-token')).status).toBe(401)
     expect((await request('null')).status).toBe(400)
     expect((await request('{')).status).toBe(400)
     handle.runs.reserve('busy' as never)
-    expect(await (await request('{"action":"claim"}')).json()).toEqual({ claimed: false, busy: 1 })
+    expect(await (await request('{"action":"claim"}')).json()).toEqual({ claimed: false, busy: 2 })
+    completeScan()
+    let claim = await claimUpdate()
+    const deadline = performance.now() + 2000
+    while (claim.busy === 2 && performance.now() < deadline) {
+      expect(claim.claimed).toBe(false)
+      await Bun.sleep(5)
+      claim = await claimUpdate()
+    }
+    expect(claim).toEqual({ claimed: false, busy: 1 })
     handle.runs.release('busy' as never)
     expect(await (await request('{"action":"claim"}')).json()).toEqual({ claimed: true, busy: 0 })
     const frames: string[] = []
@@ -61,7 +85,9 @@ test('配对令牌不能取得更新占位；宿主占位后新指令被明确�
     expect(handle.runs.reserve('new' as never)).toBe(true)
     handle.runs.release('new' as never)
   } finally {
-    handle.stop()
+    completeScan()
+    await handle.stop()
+    scan.mockRestore()
     store.close()
     if (previousHome === undefined) delete process.env.QYWORK_HOME
     else process.env.QYWORK_HOME = previousHome
