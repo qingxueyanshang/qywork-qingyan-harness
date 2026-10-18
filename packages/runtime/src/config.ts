@@ -207,8 +207,6 @@ export interface StoredProvider {
 export interface StoredMediaModel {
   /** 生成请求使用的协议。添加时默认取目录协议，保存后不随接口地址变化。 */
   kind: MediaKind
-  /** 公网参考素材的上传接口名，复用该接口的端点与凭证。 */
-  provideraUploadProvider?: string
 }
 
 /**
@@ -555,6 +553,20 @@ function migrateUnverifiedMediaKinds(cfg: QyConfig): string[] {
   return notices
 }
 
+/** 参考图由生成渠道原生上传，加载时清除停用的跨渠道上传引用。 */
+function migrateMediaUploadProvider(cfg: QyConfig): string[] {
+  const notices: string[] = []
+  for (const [name, provider] of Object.entries(cfg.providers ?? {})) {
+    for (const [id, stored] of Object.entries(provider.media ?? {})) {
+      const legacy = stored as StoredMediaModel & { provideraUploadProvider?: unknown }
+      if (!Object.hasOwn(legacy, 'provideraUploadProvider')) continue
+      delete legacy.provideraUploadProvider
+      notices.push(`已清除 ${name} / ${id} 的跨渠道上传引用。`)
+    }
+  }
+  return notices
+}
+
 /** 清理已停用生成模型及默认引用，保留所属接口及凭证。 */
 function migrateRemovedMediaModels(cfg: QyConfig): string[] {
   const notices: string[] = []
@@ -563,8 +575,6 @@ function migrateRemovedMediaModels(cfg: QyConfig): string[] {
     '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
     '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
     '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
-    'seedance-2.5（YX）',
-    'seedance2.5-yx-count',
     'wf-sd2.5-v2',
     '满血sd2.5(30-10-10原生过人脸/720P)',
     '高质量sd2.5/(全参原生过真人速度快720P)',
@@ -619,6 +629,7 @@ export async function loadConfig(): Promise<QyConfig> {
   for (const n of migrateDisabledEffort(cfg)) log.warn('config', n)
   for (const n of migrateRetiredDeepSeekOverrides(cfg)) log.warn('config', n)
   for (const n of migrateRemovedMediaModels(cfg)) log.warn('config', n)
+  for (const n of migrateMediaUploadProvider(cfg)) log.warn('config', n)
   for (const n of migrateUnverifiedMediaKinds(cfg)) log.warn('config', n)
 
   /*
@@ -756,7 +767,6 @@ export interface ResolvedMediaModel {
   apiKey?: string
   baseUrl?: string
   headers?: Record<string, string>
-  provideraUploadProvider?: string
 }
 
 /**
@@ -783,9 +793,6 @@ export function resolveMediaModel(
     ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
     ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
     ...(provider.headers ? { headers: provider.headers } : {}),
-    ...(stored.provideraUploadProvider
-      ? { provideraUploadProvider: stored.provideraUploadProvider }
-      : {}),
   }
 }
 
@@ -971,14 +978,6 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
    */
   for (const [name, p] of Object.entries(cfg.providers)) {
     for (const [id, m] of Object.entries(p.media ?? {})) {
-      if (
-        m?.provideraUploadProvider !== undefined &&
-        (typeof m.provideraUploadProvider !== 'string' || !m.provideraUploadProvider.trim())
-      ) {
-        problems.push(`${name} / ${id} 的 provideraUploadProvider 必须是非空接口名`)
-      } else if (m?.provideraUploadProvider && !cfg.providers[m.provideraUploadProvider]) {
-        problems.push(`${name} / ${id} 的上传接口 ${m.provideraUploadProvider} 不在配置中`)
-      }
       if (!MEDIA_KINDS.includes(m?.kind)) {
         problems.push(
           `${name} / ${id} 的生成协议 "${String(m?.kind)}" 不是有效值。\n` +

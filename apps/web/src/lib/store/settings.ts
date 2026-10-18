@@ -60,7 +60,7 @@ export interface RedactedProvider {
   headers?: Record<string, string>
   models: Record<string, RedactedModel>
   /** 该接口下的生成模型，键为模型 id。与 `models` 分开存放：输入框的模型选择只列出 `models`。 */
-  media?: Record<string, { kind: MediaKind; provideraUploadProvider?: string }>
+  media?: Record<string, { kind: MediaKind }>
   hasApiKey: boolean
   /**
    * 只写字段。读接口从不返回它（返回的是上方的 `hasApiKey`），

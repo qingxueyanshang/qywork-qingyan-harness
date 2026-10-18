@@ -81,22 +81,6 @@ export function mergeConfig(
     }
   }
   const merged: QyConfig = { ...current, ...incoming, providers }
-  // 上传引用随接口重命名更新；删除接口时清除关联，避免同名接口重建后继续共享素材。
-  for (const provider of Object.values(providers)) {
-    if (!provider.media) continue
-    provider.media = Object.fromEntries(
-      Object.entries(provider.media).map(([model, stored]) => {
-        const source = stored?.provideraUploadProvider
-        if (typeof source !== 'string' || !source) return [model, stored]
-        const target = source === renameProvider?.from ? renameProvider.to : source
-        if (Object.hasOwn(providers, target))
-          return [model, { ...stored, provideraUploadProvider: target }]
-        if (!Object.hasOwn(current.providers, source)) return [model, stored]
-        const { provideraUploadProvider: _upload, ...rest } = stored
-        return [model, rest]
-      }),
-    )
-  }
   /*
    * active 与 mediaDefaults 不脱敏，以前端提交的值为准：未携带即表示没有默认模型（最后一个模型已删除）。
    * 不要用 `{ ...current, ...incoming }` 保留旧的默认值：删除全部模型后，保存会被 422 拒绝

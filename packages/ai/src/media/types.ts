@@ -14,12 +14,6 @@ export interface MediaProfile {
   apiKey: string
   baseUrl?: string
   headers?: Record<string, string>
-  /** 公网参考素材使用的 providera 上传端点与凭证，与生成接口独立。 */
-  provideraUpload?: {
-    baseUrl: string
-    apiKey: string
-    headers?: Record<string, string>
-  }
 }
 
 /** 输入文件。字节由调用方预先读取，适配器只负责按协议放入请求。用途的含义见 `MediaInputRole`。 */

@@ -29,7 +29,8 @@ import {
 } from '../types.ts'
 import { arkVideoContent, ENDED } from './ark-videos.ts'
 import { dashScopeVideoPayload } from './dashscope.ts'
-import { provideraVideoPayload, uploadprovideraReference } from './providera.ts'
+import { provideraVideoPayload } from './providera.ts'
+import { uploadproviderbReference } from './providerb.ts'
 
 /** 按目录声明构造已核实的第三方请求；未知型号只发送通用字段。 */
 async function payloadOf(
@@ -56,19 +57,15 @@ async function payloadOf(
         if (input.role === 'audio' && sniffMime(input.bytes) !== 'audio/mpeg')
           throw new MediaError('该模型的参考音频仅支持 MP3，请先转换为 MP3；未提交生成')
       }
-      const upload = profile.provideraUpload
-      if (spec.inputs.publicUrls && req.inputs.length && !upload)
-        throw new MediaError('该模型的公网参考素材尚未配置上传接口；未提交生成')
       for (const input of req.inputs) {
-        const value =
-          spec.inputs.publicUrls && upload
-            ? await uploadprovideraReference(
-                input,
-                upload.baseUrl,
-                { authorization: `Bearer ${upload.apiKey}`, ...upload.headers },
-                signal,
-              )
-            : dataUri(input.bytes, input.role === 'audio' ? 'audio/mpeg' : input.mime)
+        const value = spec.inputs.publicUrls
+          ? await uploadproviderbReference(
+              input,
+              normalizeBaseUrl(profile.baseUrl),
+              { authorization: `Bearer ${profile.apiKey}`, ...profile.headers },
+              signal,
+            )
+          : dataUri(input.bytes, input.role === 'audio' ? 'audio/mpeg' : input.mime)
         if (input.role === 'reference' && spec.inputs.maxImages) {
           images.push(value)
         } else if (input.role === 'video' && spec.inputs.maxVideos) {

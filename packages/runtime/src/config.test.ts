@@ -39,31 +39,29 @@ function cfg(over: Partial<QyConfig> = {}): QyConfig {
   }
 }
 
-test.each(['', 'missing-provider', 1, null])('上传接口引用无效时配置校验拒绝：%s', (value) => {
-  const config = cfg()
-  config.providers.ds!.media = {
-    'seedance2.5-V': { kind: 'openai_videos', provideraUploadProvider: value as string },
+test('原生上传迁移只清除跨渠道引用，保留模型、默认选择和全部凭证', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'qy-native-upload-'))
+  const previousHome = process.env.QYWORK_HOME
+  const raw = cfg({ mediaDefaults: { video: { provider: 'ds', model: 'seedance2.5-V' } } })
+  const stored = { kind: 'openai_videos' as const, provideraUploadProvider: 'missing-provider' }
+  raw.providers.ds!.media = { 'seedance2.5-V': stored }
+  const expected = structuredClone(raw)
+  expected.providers.ds!.media!['seedance2.5-V'] = { kind: 'openai_videos' }
+  try {
+    process.env.QYWORK_HOME = home
+    await writeFile(join(home, 'config.json'), JSON.stringify(raw))
+    const loaded = await loadConfig()
+    expect(loaded).toEqual({ mode: 'auto', ...expected })
+    expect(diagnoseConfig(loaded)).toEqual([])
+    expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
+    await saveConfig(loaded)
+    expect(await loadConfig()).toEqual(loaded)
+    expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(loaded)
+  } finally {
+    if (previousHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
   }
-  expect(
-    diagnoseConfig(config).some((message) => /provideraUploadProvider|上传接口/.test(message)),
-  ).toBe(true)
-})
-
-test('生成模型只解析上传接口引用，不复制上传凭证到模型配置', () => {
-  const config = cfg()
-  config.providers.ds!.media = {
-    'seedance2.5-V': { kind: 'openai_videos', provideraUploadProvider: 'ds' },
-  }
-  expect(diagnoseConfig(config)).toEqual([])
-  expect(
-    resolveMediaModel(config, 'video', { provider: 'ds', model: 'seedance2.5-V' }),
-  ).toMatchObject({
-    provideraUploadProvider: 'ds',
-  })
-  expect(config.providers.ds!.media!['seedance2.5-V']).toEqual({
-    kind: 'openai_videos',
-    provideraUploadProvider: 'ds',
-  })
 })
 
 test.each([false, true])(
@@ -132,8 +130,6 @@ test.each(
     '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
     '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
     '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
-    'seedance-2.5（YX）',
-    'seedance2.5-yx-count',
     'wf-sd2.5-v2',
     '满血sd2.5(30-10-10原生过人脸/720P)',
     '高质量sd2.5/(全参原生过真人速度快720P)',
@@ -179,6 +175,41 @@ test.each(
       expect(loaded.mediaDefaults).toBeUndefined()
       expect(listMediaModels(loaded).map((m) => m.model)).toEqual(mixed ? [keep] : [])
       expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
+      await saveConfig(loaded)
+      expect(await loadConfig()).toEqual(loaded)
+    } finally {
+      if (previousHome === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = previousHome
+      await rm(home, { recursive: true, force: true })
+    }
+  },
+)
+
+test.each(['seedance-2.5（YX）', 'seedance2.5-yx-count'])(
+  '加载和保存配置保留启用的 YX 型号及默认引用：%s',
+  async (model) => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-providera-yx-'))
+    const previousHome = process.env.QYWORK_HOME
+    const raw = {
+      providers: {
+        providera: {
+          kind: 'openai_chat_completions' as const,
+          baseUrl: 'https://providera.example.com',
+          apiKey: 'test-providera-key',
+          models: {},
+          media: { [model]: { kind: 'openai_videos' as const } },
+        },
+      },
+      mediaDefaults: { video: { provider: 'providera', model } },
+    }
+    try {
+      process.env.QYWORK_HOME = home
+      await writeFile(join(home, 'config.json'), JSON.stringify(raw))
+      const loaded = await loadConfig()
+      expect(loaded.providers).toEqual(raw.providers)
+      expect(loaded.mediaDefaults).toEqual(raw.mediaDefaults)
+      expect(diagnoseConfig(loaded)).toEqual([])
+      expect(listMediaModels(loaded).map((entry) => entry.model)).toEqual([model])
       await saveConfig(loaded)
       expect(await loadConfig()).toEqual(loaded)
     } finally {

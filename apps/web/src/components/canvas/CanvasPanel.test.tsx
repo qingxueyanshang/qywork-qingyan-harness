@@ -1566,6 +1566,8 @@ describe('画布：生成卡与生成面板', () => {
     { id: 'TTsedanco2.5-480', min: '5', defaultSeconds: '5' },
     { id: 'GGseadanco2.5/720', min: '5', defaultSeconds: '5' },
     { id: 'GGsedanco2.5/480', min: '5', defaultSeconds: '5' },
+    { id: 'seedance-2.5（YX）', min: '4', defaultSeconds: '30' },
+    { id: 'seedance2.5-yx-count', min: '4', defaultSeconds: '30' },
   ])(
     'providera 时长逐秒输入、固定清晰度隐藏，提交字符串秒数：$id',
     async ({ id, min, defaultSeconds }) => {

@@ -294,9 +294,18 @@ describe('画布接口', () => {
     { id: 'TTsedanco2.5-480', min: 5, rate: 0.312, resolution: '480p', maxVideos: 10 },
     { id: 'GGseadanco2.5/720', min: 5, rate: 0.54, resolution: '720p', maxVideos: 10 },
     { id: 'GGsedanco2.5/480', min: 5, rate: 0.42, resolution: '480p', maxVideos: 0 },
+    { id: 'seedance-2.5（YX）', min: 4, rate: 0.4, resolution: '720p', maxVideos: 10 },
+    {
+      id: 'seedance2.5-yx-count',
+      min: 4,
+      rate: 5.6,
+      perRequest: true,
+      resolution: '720p',
+      maxVideos: 10,
+    },
   ])(
     'providera 下发模型 ID、时长范围和画幅，报价遵循计费单位：$id',
-    async ({ id, min, rate, resolution, maxVideos }) => {
+    async ({ id, min, rate, resolution, maxVideos, perRequest }) => {
       const { d } = await setup()
       d.config.providers.providera = {
         kind: 'openai_chat_completions',
@@ -309,7 +318,7 @@ describe('画布接口', () => {
       const model = models.media.find((m) => m.provider === 'providera')!
       expect(model.known).toBe(true)
       expect(model.label).toBe(id)
-      for (const removed of ['seedance-2.5（YX）', 'seedance2.5-yx-count', 'wf-sd2.5-v2'])
+      for (const removed of ['seedance-2.5（YX）-按次', 'wf-sd2.5-v2'])
         expect(models.mediaLibrary.some((entry) => entry.id === removed)).toBe(false)
       expect(model.maxAudios).toBe(10)
       expect(model.operations.includes('video_to_video')).toBe(maxVideos > 0)
@@ -333,7 +342,7 @@ describe('画布接口', () => {
           })
         ).json()) as CanvasQuoteResponse
         expect(result.quote?.currency).toBe('CNY')
-        expect(result.quote?.cost).toBeCloseTo(Number(seconds) * rate, 10)
+        expect(result.quote?.cost).toBeCloseTo(perRequest ? rate : Number(seconds) * rate, 10)
       }
     },
   )
