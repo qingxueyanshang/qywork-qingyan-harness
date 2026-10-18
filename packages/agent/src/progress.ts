@@ -47,6 +47,13 @@ export interface ProgressEvidence {
    * 使其保持可重试，而不是计入无进展。
    */
   noProgress: boolean
+  /**
+   * 本周期的每一次调用都只是把本轮已投递过的内容再投递一次（`resultFingerprint` 相同）。
+   *
+   * 再投递的组合每批不同（取回的 call_id、重读的文件各不相同），周期指纹因此每批不同，
+   * 而模型可见的信息没有任何增加。缺省视为否。
+   */
+  redelivered?: boolean
 }
 
 /** 稳定序列化：对象键排序，保证相同内容得到相同字符串。 */
@@ -99,6 +106,24 @@ export function cycleFingerprint(
   )
 }
 
+/**
+ * 只按结果计算的指纹，用于判定一次读取是否把本轮已投递过的内容再投递一次。
+ * 不含工具名与参数：同一段内容经 `read_file` 读取与经 `read_history` 取回，对模型是同一份信息。
+ */
+export function resultFingerprint(outcome: {
+  status: string
+  message?: string
+  data?: unknown
+}): string {
+  return digest(
+    stable({
+      status: outcome.status,
+      summary: outcome.message ?? '',
+      result: outcome.data ?? null,
+    }),
+  )
+}
+
 /** 宽度上限。见文件头：更宽的重复难以确认为循环，误判代价更大。 */
 export const MAX_CYCLE_WIDTH = 3
 
@@ -119,6 +144,8 @@ export function repeatsNoProgress(
   repeats = REQUIRED_REPEATS,
 ): boolean {
   if (history.length < repeats) return false
+  // 模型可见的结果未变化的第二种形状：连续若干周期都只再投递已看过的内容，且没有副作用。
+  if (history.slice(-repeats).every((e) => e.noProgress && e.redelivered)) return true
   const upper = Math.min(Math.max(1, maxWidth), Math.floor(history.length / repeats))
   for (let w = 1; w <= upper; w++) {
     const windows: ProgressEvidence[][] = []

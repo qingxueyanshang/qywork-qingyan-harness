@@ -591,3 +591,8 @@ describe('媒体按字节预算换出', () => {
     }
   })
 })
+
+/** 移出说明中写给模型的容量必须与实际上限一致：说明写错时，模型按错误的容量安排对比。 */
+test('移出说明中的容量与保留上限一致', () => {
+  expect(IMAGES_OMITTED).toContain(`约 ${MEDIA_RETAIN_HIGH_BYTES / 1024 / 1024} MB`)
+})

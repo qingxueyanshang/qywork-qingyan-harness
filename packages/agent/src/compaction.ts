@@ -127,9 +127,11 @@ export function condenseMessage(m: WireMessage): WireMessage {
  * 也不要只写 `true` 或「已提供」：移除图像会使其后的原生推理失效，模型会判断自己从未收到
  * 该图像，向用户否认之前的检查并反复重新读取。系统提示词「工作方式」一节有同一条规则。
  * 必须逐字稳定：每次构造请求时投影都会重新生成这段文字。
+ * 其中的「约 5 MB」即 `loop/request.ts` 的 `MEDIA_RETAIN_HIGH_BYTES`，修改上限时一并修改（有测试核对）。
+ * 写明「取回同样计入上限」：一次需要对比的画面超过上限时，反复取回只会依次移出另一部分画面。
  */
 export const IMAGES_OMITTED =
-  '此图像或视频此前已随请求发送给你，现已从请求中移出（较早的媒体超出保留上限，或这段上下文已压缩）。需要画面细节时，通过 read_history 按 call_id 取回。'
+  '此图像或视频此前已随请求发送给你，现已从请求中移出（请求中的图像与视频合计超过约 5 MB 时从最早的一批起移出，或这段上下文已压缩）。需要画面细节时，通过 read_history 按 call_id 取回；取回的画面同样计入该上限，会使其他较早的画面被移出。'
 
 function condenseToolResult(content: WireMessage['content']): WireMessage['content'] {
   /*

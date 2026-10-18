@@ -8,7 +8,7 @@ import type { AgentEvent, RunId } from '@qywork/core'
 import { openBatchBudget } from '../delivery.ts'
 import type { EventQueue } from '../event-queue.ts'
 import { drainUntil } from '../event-queue.ts'
-import { cycleFingerprint } from '../progress.ts'
+import { cycleFingerprint, resultFingerprint } from '../progress.ts'
 import {
   isParallelSafe,
   type PermissionEffect,
@@ -67,6 +67,8 @@ export async function* executeCalls(
     callIndex: number
     cycle: string
     noProgress: boolean
+    /** 只读调用成功，且结果与本轮已投递过的某次结果相同。 */
+    redelivered: boolean
   }[] = []
 
   for (const [callIndex, c] of calls.entries()) {
@@ -92,6 +94,7 @@ export async function* executeCalls(
       callIndex,
       cycle: cycleFingerprint(c.name, c.arguments, outcome),
       noProgress: true,
+      redelivered: false,
     })
   }
 
@@ -219,14 +222,15 @@ export async function* executeCalls(
         _batch: requestId,
       })
 
+      const delivered =
+        effect === 'read' && s.outcome.status === 'success' ? resultFingerprint(s.outcome) : null
       batchEvidence.push({
         callIndex: originalIndexes[s.callIndex]!,
         cycle: cycleFingerprint(s.call.name, s.call.arguments, s.outcome),
-        noProgress: provablyNoEffect(
-          resolvePermissionEffect(registry.get(s.call.name)!, s.call.arguments),
-          s.outcome,
-        ),
+        noProgress: provablyNoEffect(effect, s.outcome),
+        redelivered: delivered !== null && run.deliveredReads.has(delivered),
       })
+      if (delivered !== null) run.deliveredReads.add(delivered)
     }
   }
 
@@ -248,6 +252,7 @@ export async function* executeCalls(
         },
       ),
       noProgress: ordered.every((e) => e.noProgress),
+      redelivered: ordered.every((e) => e.redelivered),
     })
   }
 
