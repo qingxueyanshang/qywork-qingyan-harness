@@ -72,7 +72,7 @@ export function noopPersistence(): LoopPersistence {
     appendText: () => {},
     openToolStep: () => `st_tool_${seq}`,
     markExecuting: () => {},
-    settleTool: () => {},
+    settleTool: (_stepId, _status, outcome) => outcome,
     saveUsage: () => {},
     recordCompaction: () => {},
     openRequest: () => 'pr_test',

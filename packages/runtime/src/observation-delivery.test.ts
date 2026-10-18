@@ -731,7 +731,7 @@ function persistence(store: Store, counters: { userSteps: number }): LoopPersist
         status,
         { kind: 'tool_result', args, outcome, action },
         durationMs,
-      ),
+      ).outcome,
     saveUsage: () => {},
     recordCompaction: () => {},
     openRequest: () => 'pr_test',

@@ -40,8 +40,6 @@ import { startRun, submitMessage } from './run-control.ts'
 import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
 
-const blobs = new ContentStore(':memory:')
-
 // ───────────────────────── 假 provider ─────────────────────────
 
 function sse(events: { type: string; [k: string]: unknown }[]): string {
@@ -521,7 +519,7 @@ describe('注入当前一轮', () => {
     held.release()
     await idle(cv)
 
-    const history = await buildHistory(store, blobs, cv, null, async (text) => text)
+    const history = await buildHistory(store, cv, null, async (text) => text)
     const at = (pred: (m: (typeof history)[number]) => boolean) => history.findIndex(pred)
     const injected = at((m) => m.role === 'user' && m.content === '顺带说一句')
     const firstTool = at((m) => m.role === 'tool' && m.toolCallId === 'call_a')

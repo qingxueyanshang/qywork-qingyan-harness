@@ -31,12 +31,10 @@ import type {
 } from '@qywork/core'
 import { isNoticeStep } from '@qywork/core'
 import {
-  type ContentStore,
   listMessages,
   listRunContextSnapshots,
   listRuns,
   listSteps,
-  loadToolImages,
   type Store,
 } from '@qywork/store'
 
@@ -432,7 +430,6 @@ export function attachmentsOf(step: Step | undefined): Attachment[] {
  */
 export async function buildHistory(
   store: Store,
-  content: ContentStore,
   conversationId: ConversationId,
   upperBound: MessageId | null,
   attachments: (content: string, list: unknown[]) => Promise<string | ContentBlock[]>,
@@ -469,8 +466,7 @@ export async function buildHistory(
        * 逐单元处理而不是直接展平：注入消息的附件须在此处解析（读取磁盘），
        * 而 `stepsToUnits` 是同步函数，压缩一侧也共用它。
        */
-      const steps = loadToolImages(store, content, listSteps(store, r.id))
-      for (const u of stepsToUnits(steps, { messageId: m.id, ...opts })) {
+      for (const u of stepsToUnits(listSteps(store, r.id), { messageId: m.id, ...opts })) {
         const files = attachmentsOf(u.userStep)
         for (const msg of u.messages) {
           out.push(

@@ -99,6 +99,7 @@ export { STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 export type {
   ChatRequest,
   ContentBlock,
+  ImageSource,
   LlmAdapter,
   ProviderEvent,
   ProviderProfile,

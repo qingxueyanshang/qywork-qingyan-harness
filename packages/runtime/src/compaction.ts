@@ -39,13 +39,11 @@ import type {
 } from '@qywork/core'
 import { isInlineVideo, isNoticeStep } from '@qywork/core'
 import {
-  type ContentStore,
   getConversation,
   latestSentProviderRequest,
   listMessages,
   listRuns,
   listSteps,
-  loadToolImages,
   type Store,
   setCompactionManifest,
   summaryOutputPercentile,
@@ -67,8 +65,6 @@ const SUMMARY_PERCENTILE = 0.95
 
 export interface CompactionDeps {
   store: Store
-  /** 还原工具结果中的图像：单元的消息必须与装配侧 `buildHistory` 逐字相同。 */
-  content: ContentStore
   conversationId: ConversationId
   /** run 创建时固定的消息高水位，压缩范围不得越过它。 */
   messageIdUpperBound: MessageId | null
@@ -507,15 +503,12 @@ export class RuntimeCompaction implements CompactionPort {
         actions: [],
       })
       for (const r of byUser.get(m.id) ?? []) {
-        for (const u of stepsToUnits(
-          loadToolImages(store, this.deps.content, listSteps(store, r.id)),
-          {
-            messageId: m.id,
-            ...(this.deps.preserveAssistantReasoning !== undefined
-              ? { preserveAssistantReasoning: this.deps.preserveAssistantReasoning }
-              : {}),
-          },
-        )) {
+        for (const u of stepsToUnits(listSteps(store, r.id), {
+          messageId: m.id,
+          ...(this.deps.preserveAssistantReasoning !== undefined
+            ? { preserveAssistantReasoning: this.deps.preserveAssistantReasoning }
+            : {}),
+        })) {
           const stepCut: CompactionCut = { messageId: m.id, step: u.stamp }
           const files = attachmentsOf(u.userStep)
           units.push({

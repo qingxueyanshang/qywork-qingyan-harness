@@ -176,7 +176,14 @@ export async function* executeCalls(
 
     for (const s of settled) {
       const status = s.outcome.status === 'success' ? 'success' : 'failure'
-      persist.settleTool(s.stepId, status, s.outcome, s.call.arguments, s.action, s.durationMs)
+      const recorded = persist.settleTool(
+        s.stepId,
+        status,
+        s.outcome,
+        s.call.arguments,
+        s.action,
+        s.durationMs,
+      )
 
       const exactFileChanges = s.outcome.fileChanges ?? []
       if (exactFileChanges.length) {
@@ -210,11 +217,11 @@ export async function* executeCalls(
       }
 
       // 工具结果必须原样返回给模型：这是不可改写的事实，
-      // 装配层不得摘要、截断或改写措辞。
+      // 装配层不得摘要、截断或改写措辞。由写入账本的记录生成，图像只带引用，理由见 `settleTool`。
       transcript.push({
         role: 'tool',
         toolCallId: s.call.id,
-        content: toolOutcomeContent(s.call, s.outcome),
+        content: toolOutcomeContent(s.call, recorded),
         _group: 'executionRecords',
         _batch: requestId,
       })

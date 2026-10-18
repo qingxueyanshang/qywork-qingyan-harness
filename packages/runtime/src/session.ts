@@ -596,7 +596,6 @@ export class Session {
     const preserveAssistantReasoning = adapter.spec.chatReasoningProtocol !== 'standard'
     const history = await buildHistory(
       store,
-      this.opts.content,
       conversationId,
       run.messageIdUpperBound,
       (content, list) => withAttachments(this.opts.workspaceRoot, content, list as Attachment[]),
@@ -685,7 +684,6 @@ export class Session {
     // 否则会将排队期间新到达的消息一并压缩，而本轮尚未读取这些消息。
     const compaction = new RuntimeCompaction({
       store,
-      content: this.opts.content,
       conversationId,
       messageIdUpperBound: run.messageIdUpperBound,
       summarize: makeSummarizer({
@@ -1020,7 +1018,7 @@ export class Session {
           { kind: 'tool_result', args, outcome, action },
           durationMs,
           content,
-        ),
+        ).outcome,
       recordCompaction: (runId, seq, payload) => {
         recordCompactionStep(store, runId, seq, {
           kind: 'compaction',
@@ -1474,7 +1472,10 @@ function stepRecord(st: Step): HistoryStep {
     outcome.data && typeof outcome.data === 'object'
       ? (outcome.data as Record<string, unknown>)
       : undefined
-  const images = imagesOf(data)
+  // 调用方已经 `loadToolImages` 还原字节；正文缺失的图像已移出列表并计入 `imagesMissing`。
+  const images = imagesOf(data).flatMap((i) =>
+    i.source.kind === 'base64' ? [{ data: i.source.data, mime: i.mime }] : [],
+  )
   const videos = videosOf(data)
   const rest = envelopeResult(data)
   const { data: _dropped, ...withoutData } = outcome

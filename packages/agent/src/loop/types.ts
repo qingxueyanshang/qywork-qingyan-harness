@@ -231,6 +231,10 @@ export interface LoopPersistence {
     action: ActionDescriptor,
   ): string
   markExecuting(stepId: string): void
+  /**
+   * 返回写入账本的 outcome：图像字节已移入正文库，`data.images` 只带引用。本轮的工具消息由返回值生成，
+   * 不要改用执行器返回的 outcome：那份结果带全部图像字节，会在整个 run 期间留在上下文中。
+   */
   settleTool(
     stepId: string,
     status: 'success' | 'failure',
@@ -242,7 +246,7 @@ export interface LoopPersistence {
      * 一处测量、两处使用，事件供运行期间的界面使用，写库供刷新之后的回放使用。
      */
     durationMs: number,
-  ): void
+  ): ToolOutcomeWire
   saveUsage(runId: RunId, usage: RunUsage): void
   /**
    * 按同一个 seq 更新压缩 step；开始、进度与终态均写入会话账本。

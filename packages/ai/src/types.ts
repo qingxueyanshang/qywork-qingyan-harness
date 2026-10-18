@@ -198,7 +198,8 @@ export interface WireMessage {
 /**
  * 图像块字节的来源。**判据是「这是一个引用，还是一次观察」。**
  *
- * path 与 base64 是进入适配器前的两种来源。url 只存在于单次 Provider 请求的副本中，
+ * path、base64 与 resource 只存在于会话历史中，发出前由 `agent` 的 `materialize` 转换为 base64
+ * （适配器接受本地路径时保留 path）。url 只存在于单次 Provider 请求的副本中，
  * 用于必须先上传媒体再引用的协议，不进入会话历史。
  */
 export type MediaSource =
@@ -208,14 +209,22 @@ export type MediaSource =
    */
   | { kind: 'path'; path: string }
   /**
-   * 工具读取的图片。字节在**观察时**即固定写入执行记录
-   * （`tools/files.ts` 的 `read_file` 图片分支）。
+   * 图片字节：用户附件的图片（`runtime` 的 `withAttachments` 每轮编码），以及工具读取的图片在写入执行记录之前的形态
+   * （`tools/files.ts` 的 `read_file` 图片分支），写入之后为 resource。
    *
    * 不使用路径的原因：模型修改页面后会重新截图并**覆盖同名文件**，这是对比修改前后的
    * 常规操作。保存路径记录的是「在哪里查看」而不是「看到了什么」，
    * 文件被覆盖后历史中的那张图将无法取回，而捕获只能在观察时进行。
    */
   | { kind: 'base64'; data: string }
+  /**
+   * 已写入正文库的工具图片：字节在观察时固定，按内容寻址，不随工作区文件变化。
+   * `bytes` 是解码后的字节数，换出预算据此计算而不读取正文。
+   *
+   * 不要在装配历史时把它解码为 base64：请求只携带约 5 MB 的媒体，长任务的历史中有数百 MB 图像，
+   * 全部解码后在整个 run 期间常驻内存。
+   */
+  | { kind: 'resource'; resourceId: string; bytes: number }
   | { kind: 'url'; url: string }
 
 export type ImageSource = MediaSource
@@ -235,7 +244,7 @@ export type ContentBlock =
 /**
  * 取得图像块的 base64。
  *
- * **执行到此处时仍为 path 形态即属装配错误**：遗漏了 `materialize`，或新增了
+ * **执行到此处时仍为 path 或 resource 形态即属装配错误**：遗漏了 `materialize`，或新增了
  * 绕过它的 `adapter.stream` 调用点。此处直接抛出，不要发送空的 data：
  * 否则 provider 只返回一个含义不明的 400，而真正的原因位于调用栈中很远的位置。
  */

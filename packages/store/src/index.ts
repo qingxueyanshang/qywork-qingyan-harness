@@ -101,7 +101,7 @@ export { SCHEMA_VERSION } from './schema.ts'
 // 待办：只读取，不另行写入；真源是父会话验收后提交的 write_todos tool step
 export { latestTodos } from './todos.ts'
 // 工具结果的图像：写入由 settleToolStep 完成，读取账本的各方经此还原字节
-export { loadToolImages } from './tool-images.ts'
+export { isStoredToolImage, loadToolImages, type StoredToolImage } from './tool-images.ts'
 // 花费账本
 export {
   type GroupBy,

@@ -1,10 +1,12 @@
 /**
  * 工具结果中的图像字节。
  *
- * 内存中（本轮请求、`tool.finished` 事件）的形态是 `data.images: [{ data, mime }]`，`data` 为 base64；
- * 账本中的形态是 `data.images: [{ resourceId, mime }]`，字节以原始二进制存入正文库，按内容哈希去重，
- * `intermediate_resources` 登记引用（`step_id` 指向该 step）。两种形态只在本文件第三方换：
- * 写入账本时 `storeToolImages`，读取账本时 `loadToolImages`。
+ * 工具返回时（`tool.finished` 事件）的形态是 `data.images: [{ data, mime }]`，`data` 为 base64；
+ * 账本中的形态是 `data.images: [{ resourceId, mime, bytes }]`，字节以原始二进制存入正文库，按内容哈希去重，
+ * `intermediate_resources` 登记引用（`step_id` 指向该 step）。写入账本时由 `storeToolImages` 转换。
+ *
+ * 请求历史直接使用引用（`agent` 的 `imagesOf` 按 `isStoredToolImage` 识别），发出前只读取未被换出的那些；
+ * 界面、导出与 `read_history` 需要字节，经 `loadToolImages` 还原。
  *
  * 不要把字节写回 payload：同一张图被读取、经 `read_history` 取回时各存一份 base64，
  * 账本随图片读取次数线性增长，而历史接口与 `read_history` 每次都要解析全部字节。
@@ -22,10 +24,11 @@ import type { ContentStore } from './content.ts'
 import type { Store } from './db.ts'
 import { getResource, registerResource } from './resources.ts'
 
-/** 账本中一张图像的引用。`mime` 与写入前相同，其余字段原样保留。 */
-interface StoredImage {
+/** 账本中一张图像的引用。`mime` 与写入前相同，`bytes` 为解码后的字节数，其余字段原样保留。 */
+export interface StoredToolImage {
   resourceId: string
   mime: string
+  bytes: number
 }
 
 function withBytes(entry: unknown): entry is { data: string; mime: string } {
@@ -37,11 +40,13 @@ function withBytes(entry: unknown): entry is { data: string; mime: string } {
   )
 }
 
-function stored(entry: unknown): entry is StoredImage {
+export function isStoredToolImage(entry: unknown): entry is StoredToolImage {
   return (
     !!entry &&
     typeof entry === 'object' &&
     typeof (entry as { resourceId?: unknown }).resourceId === 'string' &&
+    typeof (entry as { mime?: unknown }).mime === 'string' &&
+    typeof (entry as { bytes?: unknown }).bytes === 'number' &&
     !('data' in entry)
   )
 }
@@ -86,7 +91,7 @@ export function storeToolImages(
         sizeBytes: blob.originalBytes,
         mimeType: entry.mime,
       })
-      return { ...rest, resourceId: res.id }
+      return { ...rest, resourceId: res.id, bytes: blob.originalBytes }
     }),
   }
 }
@@ -103,17 +108,17 @@ export function loadToolImages(store: Store, content: ContentStore, steps: Step[
     if (payload?.kind !== 'tool_result') return step
     const data = payload.outcome.data
     const images = imagesField(data)
-    if (!images?.some(stored)) return step
+    if (!images?.some(isStoredToolImage)) return step
     let missing = 0
     const loaded = images.flatMap((entry) => {
-      if (!stored(entry)) return [entry]
+      if (!isStoredToolImage(entry)) return [entry]
       const res = getResource(store, entry.resourceId)
       const bytes = res?.contentHash ? content.readAll(res.contentHash) : null
       if (!bytes) {
         missing++
         return []
       }
-      const { resourceId: _id, ...rest } = entry
+      const { resourceId: _id, bytes: _bytes, ...rest } = entry
       return [{ ...rest, data: Buffer.from(bytes).toString('base64') }]
     })
     if (missing) {

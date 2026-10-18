@@ -8,6 +8,7 @@ import { readFile, stat } from 'node:fs/promises'
 import type {
   ChatRequest,
   ContentBlock,
+  ImageSource,
   LlmAdapter,
   ReasoningReplay,
   TokenDensity,
@@ -25,8 +26,9 @@ import {
 } from '@qywork/ai'
 import type { ContextBreakdown, ProviderRequestConfiguration, RunUsage } from '@qywork/core'
 import { emptyBreakdown } from '@qywork/core'
+import { isStoredToolImage } from '@qywork/store'
 import { IMAGES_OMITTED } from '../compaction.ts'
-import type { ToolOutcome } from '../registry.ts'
+import type { SinkPort, ToolOutcome } from '../registry.ts'
 
 /** 与装配的请求一同写入请求账；之后修改模型设置不会改写本次申报。 */
 export function requestConfiguration(
@@ -166,7 +168,31 @@ export function mergeUsage(
 export function payloadSnapshotOf(req: ChatRequest): { hash: string; bytes: number } {
   // 该序列化结果用于计算指纹；在同一字符串上读取字节数，避免为测量再次遍历长历史。
   const serialized = JSON.stringify([req.system, req.messages, req.tools])
-  return { hash: Bun.hash(serialized).toString(36), bytes: Buffer.byteLength(serialized) }
+  return {
+    hash: Bun.hash(serialized).toString(36),
+    bytes: Buffer.byteLength(serialized) + resourceExpansion(req),
+  }
+}
+
+const BASE64_SOURCE_FRAME = JSON.stringify({ kind: 'base64', data: '' }).length
+
+/**
+ * 正文库引用块物化为 base64 之后，序列化长度增加的字节数。
+ *
+ * `requestBytes` 记录的是模型可见请求主体的大小，引用块按引用本身计时，带图请求只记下几十字节，
+ * 请求体大小与响应头时间、413 拒绝之间的对照因此失效。
+ */
+function resourceExpansion(req: ChatRequest): number {
+  let extra = 0
+  for (const m of req.messages) {
+    if (typeof m.content === 'string' || !m.content) continue
+    for (const b of m.content) {
+      if (b.type === 'text' || b.source.kind !== 'resource') continue
+      extra +=
+        BASE64_SOURCE_FRAME + Math.ceil(b.source.bytes / 3) * 4 - JSON.stringify(b.source).length
+    }
+  }
+  return extra
 }
 
 /**
@@ -358,12 +384,12 @@ export function toolOutcomeContent(
  * 信封 JSON 不得改动：估算（`breakdownOf`）与收纳（`condenseMessage`）都依赖解析它。
  * 图片作为并列的内容块放在信封之后，不写入信封。
  *
- * 图像块使用已有的 base64，视频块只带路径，均不读取磁盘，因此本函数是同步的，
+ * 图像块使用正文库引用（或尚未写入账本的 base64），视频块只带路径，均不读取正文，因此本函数是同步的，
  * 投影侧（`runtime/transcript.ts` 的 `toolContent`）才能用同一形状重建历史：
- * 投影侧有一个同步调用方（压缩的单元装配），读取磁盘会使整条调用链变为 async。
+ * 投影侧有一个同步调用方（压缩的单元装配），读取正文会使整条调用链变为 async。
  *
  * 两侧必须逐字同形。形状不同时，同一次调用在本轮与下一轮的内容不一致，
- * 模型会视为两次调用，且这种不一致不会产生任何报错。
+ * 模型会视为两次调用，且这种不一致不会产生任何报错。两侧都由写入账本的记录生成（`LoopPersistence.settleTool`）。
  */
 export function toolResultContent(
   envelope: string,
@@ -374,13 +400,7 @@ export function toolResultContent(
   if (!images.length && !videos.length) return envelope
   return [
     { type: 'text', text: envelope },
-    ...images.map(
-      (i): ContentBlock => ({
-        type: 'image',
-        mimeType: i.mime,
-        source: { kind: 'base64', data: i.data },
-      }),
-    ),
+    ...images.map((i): ContentBlock => ({ type: 'image', mimeType: i.mime, source: i.source })),
     ...videos.map(
       (v): ContentBlock => ({
         type: 'video',
@@ -445,7 +465,7 @@ export function videoDelivery(
 }
 
 /**
- * 一条消息中媒体块实际写入请求体的字节数。base64 按解码后的长度计；路径视频按 `videoDelivery`：
+ * 一条消息中媒体块实际写入请求体的字节数。base64 按解码后的长度计，正文库引用按记录的字节数计；路径视频按 `videoDelivery`：
  * 内联的按文件大小计，上传后发送地址的与不直接发送的记 0。不发送的图片（模型不接受图片）记 0，无法读取的文件记 0。
  *
  * 不要改为一律按文件大小计：上传后发送地址的大视频会被计为数十 MB，在下一步即被换出，模型只能看到一次。
@@ -458,6 +478,7 @@ export function mediaBytes(m: WireMessage, caps: InputMediaCapabilities): number
     if (b.type === 'image' && caps.image === false) continue
     if (b.type === 'video' && !caps.video) continue
     if (b.source.kind === 'base64') total += Math.floor((b.source.data.length * 3) / 4)
+    else if (b.source.kind === 'resource') total += b.source.bytes
     else if (b.source.kind === 'path') {
       let size = 0
       try {
@@ -546,22 +567,32 @@ export function omitImages(m: WireMessage): WireMessage {
 }
 
 /**
- * `outcome.data.images` 中的图片。
+ * `outcome.data.images` 中的图片：工具返回的 base64，或写入账本之后的正文库引用（`@qywork/store` 的 `tool-images.ts`）。
  *
  * 类型是数组而不是单张：MCP 工具一次调用可返回多张图片，只取第一张会丢弃其余图片且没有提示。
  * `read_file` 读取一个文件时返回单元素数组。
  */
 export function imagesOf(
   data: Record<string, unknown> | undefined,
-): { data: string; mime: string }[] {
+): { mime: string; source: ImageSource }[] {
   const raw = data?.images
   if (!Array.isArray(raw)) return []
-  const out: { data: string; mime: string }[] = []
+  const out: { mime: string; source: ImageSource }[] = []
   for (const item of raw) {
+    if (isStoredToolImage(item)) {
+      out.push({
+        mime: item.mime,
+        source: { kind: 'resource', resourceId: item.resourceId, bytes: item.bytes },
+      })
+      continue
+    }
     if (!item || typeof item !== 'object') continue
     const { data: bytes, mime } = item as { data?: unknown; mime?: unknown }
     if (typeof bytes === 'string' && bytes) {
-      out.push({ data: bytes, mime: typeof mime === 'string' ? mime : 'image/png' })
+      out.push({
+        mime: typeof mime === 'string' ? mime : 'image/png',
+        source: { kind: 'base64', data: bytes },
+      })
     }
   }
   return out
@@ -597,7 +628,7 @@ export interface InputMediaCapabilities {
 }
 
 /**
- * 将 path 形态的图片和视频块转换为临时 base64，交给适配器。
+ * 将 path 与 resource 形态的图片和视频块转换为临时 base64，交给适配器。已换出的媒体此前已替换为说明，不读取。
  *
  * 只生成副本，不得修改原对象。原地修改会同时造成两个错误：
  *
@@ -607,8 +638,8 @@ export interface InputMediaCapabilities {
  * - `req.messages` 的元素与 `transcript` 是同一批对象，原地修改会使 base64 在
  *   整个 run 期间常驻内存。
  *
- * path 形态只剩视频（用户附件与工具读取的视频）。图片进入消息时已经是字节：工具图片保存在执行记录中，
- * 附件图片由 `runtime` 的 `withAttachments` 编码。
+ * path 形态只剩视频（用户附件与工具读取的视频）。工具图片在消息中是正文库引用，经 `sink` 读取；
+ * 附件图片由 `runtime` 的 `withAttachments` 编码为字节。
  *
  * 图片按模型能力裁决；视频还要求当前适配器实现原生视频传输，发送方式按 `videoDelivery`。
  *
@@ -619,12 +650,13 @@ export interface InputMediaCapabilities {
 export async function materialize(
   req: ChatRequest,
   capabilities: InputMediaCapabilities,
+  sink: SinkPort | null,
 ): Promise<ChatRequest> {
   if (!req.messages.some((m) => typeof m.content !== 'string')) return req
   const messages = await Promise.all(
     req.messages.map(async (m) => {
       if (typeof m.content === 'string') return m
-      const blocks = await Promise.all(m.content.map((b) => loadBlock(b, capabilities)))
+      const blocks = await Promise.all(m.content.map((b) => loadBlock(b, capabilities, sink)))
       return { ...m, content: blocks }
     }),
   )
@@ -634,6 +666,7 @@ export async function materialize(
 async function loadBlock(
   b: ContentBlock,
   capabilities: InputMediaCapabilities,
+  sink: SinkPort | null,
 ): Promise<ContentBlock> {
   if (b.type === 'text') return b
   const label = b.type === 'image' ? '图片' : '视频'
@@ -666,6 +699,12 @@ async function loadBlock(
     return note(`当前模型或接口不接受原生视频输入，此视频未发送${next}`)
   }
 
+  if (b.source.kind === 'resource') {
+    const { resourceId, bytes } = b.source
+    const body = sink?.read(resourceId, 0, bytes) ?? null
+    if (body?.byteLength !== bytes) return note('已不存在')
+    return { ...b, source: { kind: 'base64', data: Buffer.from(body).toString('base64') } }
+  }
   if (b.source.kind !== 'path') return b
   const { path } = b.source
 

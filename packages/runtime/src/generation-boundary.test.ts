@@ -99,7 +99,7 @@ function harness(): Harness {
         status,
         { kind: 'tool_result', args, outcome, action },
         durationMs,
-      ),
+      ).outcome,
     saveUsage: () => {},
     recordCompaction: () => {},
     openRequest: (input) => openProviderRequest(store, input).id,

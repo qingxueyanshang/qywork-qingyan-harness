@@ -121,9 +121,9 @@ export class AgentLoop {
     }
   }
 
-  /** 装配完成的请求按模型能力物化媒体后交给适配器。 */
+  /** 装配完成的请求按模型能力物化媒体后交给适配器。工具图片经本轮工具上下文的 `sink` 从正文库读取。 */
   private async openStream(run: RunState, req: ChatRequest): Promise<AsyncIterable<ProviderEvent>> {
-    const materialized = await materialize(req, this.mediaCapabilities(run))
+    const materialized = await materialize(req, this.mediaCapabilities(run), run.ctx.sink)
     return this.deps.adapter.stream(materialized)
   }
 

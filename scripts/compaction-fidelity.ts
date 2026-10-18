@@ -143,7 +143,7 @@ async function main(): Promise<number> {
     })
     finishRun(store, run.id, { status: 'done', stopReason: 'completed' })
   }
-  const history = await buildHistory(store, content, conv.id, null, async (c) => c)
+  const history = await buildHistory(store, conv.id, null, async (c) => c)
 
   const adapter = buildAdapter({
     kind: profile.kind,
@@ -182,7 +182,6 @@ async function main(): Promise<number> {
   })
   const compaction = new RuntimeCompaction({
     store,
-    content,
     conversationId: conv.id,
     messageIdUpperBound: null,
     /*

@@ -95,7 +95,6 @@ const summary: Summarizer = async () => '模型写的摘要'
 
 function port(store: Store, conversationId: string, summarize: Summarizer = summary) {
   return new RuntimeCompaction({
-    content: blobs,
     store,
     conversationId: conversationId as never,
     messageIdUpperBound: null,
@@ -110,7 +109,7 @@ function port(store: Store, conversationId: string, summarize: Summarizer = summ
  * 无需推测某个模型的具体数值，估算系数微调时也不会导致大量用例失败。
  */
 async function pressure(store: Store, conversationId: string): Promise<CompactionRunInput> {
-  const history = await buildHistory(store, blobs, conversationId as never, null, async (c) => c)
+  const history = await buildHistory(store, conversationId as never, null, async (c) => c)
   const total = estimateMessages(history, DEFAULT_DENSITY)
   return {
     trigger: 'automatic',
@@ -124,7 +123,7 @@ async function pressure(store: Store, conversationId: string): Promise<Compactio
 }
 
 async function history(store: Store, conversationId: string): Promise<WireMessage[]> {
-  return buildHistory(store, blobs, conversationId as never, null, async (c) => c)
+  return buildHistory(store, conversationId as never, null, async (c) => c)
 }
 
 /** 为一条 run 添加 n 个工具批次，每个批次一条调用，结果正文按 payloadChars 填充。 */

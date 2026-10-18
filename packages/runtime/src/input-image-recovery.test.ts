@@ -29,7 +29,6 @@ import {
   failThinkingSteps,
   listProviderRequests,
   listSteps,
-  loadToolImages,
   markProviderRequestSent,
   markStepExecuting,
   openProviderRequest,
@@ -38,6 +37,7 @@ import {
   settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
+import { RuntimeSink } from './sink.ts'
 import { stepsToUnits } from './transcript.ts'
 
 /** 工具返回的图片字节。在请求体中直接查找该字节串，不按协议解析结构。 */
@@ -92,7 +92,7 @@ function harness(): Harness {
         { kind: 'tool_result', args, outcome, action },
         durationMs,
         blobs,
-      ),
+      ).outcome,
     saveUsage: () => {},
     recordCompaction: () => {},
     openRequest: (input) => openProviderRequest(store, input).id,
@@ -111,7 +111,8 @@ function harness(): Harness {
   return { store, workspaceId: ws.id, conversationId: conv.id, persist }
 }
 
-function baseCtx(runId: string): ToolContextBase {
+/** 与 `Session` 相同：sink 与执行记录使用同一个正文库，发送前由它读取工具图片。 */
+function baseCtx(store: Store, runId: string): ToolContextBase {
   return {
     workspaceRoot: 'C:/ws-images',
     conversationId: 'cv',
@@ -122,7 +123,7 @@ function baseCtx(runId: string): ToolContextBase {
     vision: null,
     resources: new Map(),
     state: new Map(),
-    sink: null,
+    sink: new RuntimeSink(store, blobs, runId as RunId),
     signal: new AbortController().signal,
     requestPermission: async () => ({ allowed: true }),
   }
@@ -183,7 +184,7 @@ async function drainRun(opts: {
     adapter: buildAdapter({ ...opts.profile, apiKey: 'sk-fault', baseUrl: opts.baseUrl }),
     registry: opts.registry,
     systemPrompt: 'sys',
-    makeToolContext: baseCtx,
+    makeToolContext: (runId) => baseCtx(opts.h.store, runId),
     persist: opts.h.persist,
     streamIdleTimeoutMs: 5_000,
     // 退避只会延长测试耗时：本组验证请求体是否包含图片，与等待时长无关。
@@ -234,9 +235,7 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
         // 跨 run 继续执行：history 由执行记录投影得到，该图片从未被对端接收。
         const history = [
           USER,
-          ...stepsToUnits(loadToolImages(h.store, blobs, listSteps(h.store, failed))).flatMap(
-            (u) => u.messages,
-          ),
+          ...stepsToUnits(listSteps(h.store, failed)).flatMap((u) => u.messages),
         ]
         fault.mode = 'complete'
         const resumed = newRun(h, 'images-resumed')

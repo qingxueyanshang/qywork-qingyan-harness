@@ -35,8 +35,6 @@ import {
 } from '@qywork/store'
 import { buildHistory, stepsToUnits, stepsToWireMessages } from './transcript.ts'
 
-const blobs = new ContentStore(':memory:')
-
 const noAttachments = async (content: string) => content
 
 test('连续文本续写按密文快照保留每次生成的边界', () => {
@@ -400,7 +398,7 @@ describe('历史装配', () => {
     finishRun(store, r1.id, { status: 'done', stopReason: 'completed' })
 
     const m2 = ask('继续')
-    const history = await buildHistory(store, blobs, conv.id, m2, noAttachments)
+    const history = await buildHistory(store, conv.id, m2, noAttachments)
 
     expect(history.some((m) => m.role === 'assistant')).toBe(true)
     expect(history.some((m) => m.role === 'tool')).toBe(true)
@@ -412,6 +410,55 @@ describe('历史装配', () => {
   })
 
   /** 媒体去留由装配按字节预算决定（`agent` 的 `evictedMedia`），历史轮次的附件与当前轮同样转换。 */
+  /**
+   * 原始失败形状：装配历史时把正文库中的工具图片全部解码为 base64，长任务的历史有数百 MB 图片，
+   * 而请求只携带约 5 MB。历史中只带引用，字节由发送前的 `materialize` 按需读取。
+   */
+  test('工具图片以正文库引用进入历史，不解码字节', async () => {
+    const { store, conv, ask, run } = fixture()
+    const content = new ContentStore(':memory:')
+    const r1 = run(ask('截图'))
+    const tool = appendStep(store, {
+      runId: r1.id,
+      seq: 1,
+      kind: 'tool_action',
+      toolName: 'read_file',
+      toolCallId: 'A',
+      providerBatchId: 'b1',
+      callIndex: 0,
+      status: 'running',
+      payload: { kind: 'tool_call', args: { path: 'shot.png' } },
+    })
+    const shot = Buffer.alloc(30_000, 5)
+    settleToolStep(
+      store,
+      tool.id,
+      'success',
+      {
+        kind: 'tool_result',
+        args: { path: 'shot.png' },
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '读取 shot.png（图片）',
+          data: { images: [{ data: shot.toString('base64'), mime: 'image/png' }] },
+        },
+      },
+      undefined,
+      content,
+    )
+    finishRun(store, r1.id, { status: 'done', stopReason: 'completed' })
+
+    const history = await buildHistory(store, conv.id, ask('继续'), noAttachments)
+    const result = history.find((m) => m.role === 'tool')
+    expect(Array.isArray(result?.content) && result.content[1]).toEqual({
+      type: 'image',
+      mimeType: 'image/png',
+      source: { kind: 'resource', resourceId: expect.any(String), bytes: shot.byteLength },
+    })
+    expect(JSON.stringify(history)).not.toContain(shot.toString('base64').slice(0, 64))
+  })
+
   test('历史与当前用户消息的附件经过同一转换', async () => {
     const { store, conv } = fixture()
     appendMessage(store, {
@@ -431,7 +478,7 @@ describe('历史装配', () => {
       ],
     }).id
     const passed: string[][] = []
-    await buildHistory(store, blobs, conv.id, current, async (content, files) => {
+    await buildHistory(store, conv.id, current, async (content, files) => {
       passed.push((files as { name: string }[]).map((f) => f.name))
       return content
     })
@@ -457,8 +504,8 @@ describe('历史装配', () => {
       { content: '## 记忆索引\n- no-repeat\n- second', group: 'memory' },
     ])
 
-    const first = await buildHistory(store, blobs, conv.id, m3, noAttachments)
-    const second = await buildHistory(store, blobs, conv.id, m3, noAttachments)
+    const first = await buildHistory(store, conv.id, m3, noAttachments)
+    const second = await buildHistory(store, conv.id, m3, noAttachments)
     expect(second).toEqual(first)
     expect(first.map((message) => message.role)).toEqual([
       'context',
@@ -483,7 +530,7 @@ describe('历史装配', () => {
     run(m2, [{ content: '工作区：C:/other', group: 'workspaceState' }])
     run(m2, [{ content: '工作区：C:/ws', group: 'workspaceState' }])
 
-    const out = await buildHistory(store, blobs, conv.id, m2, noAttachments)
+    const out = await buildHistory(store, conv.id, m2, noAttachments)
     expect(out.map((message) => message.role)).toEqual(['context', 'user', 'user'])
     store.close()
   })
@@ -516,7 +563,7 @@ describe('历史装配', () => {
     finishRun(store, r1.id, { status: 'failed', stopReason: 'no_progress' })
 
     const m2 = ask('继续')
-    const history = await buildHistory(store, blobs, conv.id, m2, noAttachments)
+    const history = await buildHistory(store, conv.id, m2, noAttachments)
     const result = history.find((m) => m.role === 'tool')
     expect(result).toBeDefined()
     expect(JSON.parse(String(result!.content))).toMatchObject({
@@ -573,7 +620,7 @@ describe('历史装配', () => {
     finishRun(store, r1.id, { status: 'interrupted', stopReason: 'user_interrupt' })
 
     const m2 = ask('接着来')
-    const history = await buildHistory(store, blobs, conv.id, m2, noAttachments)
+    const history = await buildHistory(store, conv.id, m2, noAttachments)
 
     assertPairs(history)
     // 已写入磁盘的结果不得丢失。

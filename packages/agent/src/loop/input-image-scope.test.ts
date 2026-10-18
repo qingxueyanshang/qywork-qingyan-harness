@@ -2,7 +2,8 @@
  * 工具图片与附件图片在后续请求中的保留范围。
  *
  * 覆盖范围：`loop/index.ts` 的 `buildRequest` 媒体去留（`loop/request.ts` 的 `evictedMedia`），
- * 以及它与 `materialize` 能力过滤、`compaction.ts` 收纳的先后关系。
+ * 以及它与 `materialize` 能力过滤、`compaction.ts` 收纳的先后关系；正文库引用形态的工具图片只在发送前读取保留的那些，
+ * 轮内的工具消息由 `settleTool` 返回的记录生成（`loop/tool-wave.ts`）。
  *
  * 断言针对适配器实际收到的请求：去留、投影、能力过滤三个步骤都在它之前，
  * 只检查装配中间结果会遗漏「模型不接受图片、图片被替换为文字注记」这一分支。
@@ -10,11 +11,18 @@
  */
 
 import { expect, test } from 'bun:test'
-import type { ChatRequest, ContentBlock, LlmAdapter, ProviderEvent, WireMessage } from '@qywork/ai'
+import type {
+  ChatRequest,
+  ContentBlock,
+  LlmAdapter,
+  ProviderEvent,
+  WireMessage,
+  WireToolCall,
+} from '@qywork/ai'
 import { DEFAULT_DENSITY, estimateRequest, lookupModel } from '@qywork/ai'
 import { condenseMessage, IMAGES_OMITTED } from '../compaction.ts'
 import { AgentLoop } from '../index.ts'
-import type { ToolContextBase } from '../registry.ts'
+import type { SinkPort, ToolContextBase } from '../registry.ts'
 import { ToolRegistry } from '../registry.ts'
 import type { LoopPersistence } from './types.ts'
 
@@ -30,7 +38,7 @@ function persistence(): LoopPersistence {
     appendText: () => {},
     openToolStep: () => `st_tool_${seq}`,
     markExecuting: () => {},
-    settleTool: () => {},
+    settleTool: (_stepId, _status, outcome) => outcome,
     saveUsage: () => {},
     recordCompaction: () => {},
     openRequest: () => `pr_${++requests}`,
@@ -59,7 +67,7 @@ function capturingAdapter(opts: { vision: boolean | null } = { vision: true }): 
   }
 }
 
-function baseCtx(runId: string): ToolContextBase {
+function baseCtx(runId: string, sink: SinkPort | null = null): ToolContextBase {
   return {
     workspaceRoot: '/tmp',
     conversationId: 'cv',
@@ -70,7 +78,7 @@ function baseCtx(runId: string): ToolContextBase {
     vision: null,
     resources: new Map(),
     state: new Map(),
-    sink: null,
+    sink,
     signal: new AbortController().signal,
     requestPermission: async () => ({ allowed: true }),
   }
@@ -126,12 +134,14 @@ async function askOnce(
   history: WireMessage[],
   runId: string,
   compaction?: { project: (m: WireMessage[]) => WireMessage[] },
+  sink: SinkPort | null = null,
+  registry = new ToolRegistry(),
 ): Promise<void> {
   const loop = new AgentLoop({
     adapter,
-    registry: new ToolRegistry(),
+    registry,
     systemPrompt: 'sys',
-    makeToolContext: baseCtx,
+    makeToolContext: (id) => baseCtx(id, sink),
     persist,
     ...(compaction
       ? {
@@ -248,4 +258,158 @@ test('压缩收纳带图片的结果后请求中没有图片，信封带标记',
   for (const t of tools) {
     expect(JSON.parse(String(t.content))).toMatchObject({ images_omitted: IMAGES_OMITTED })
   }
+})
+
+/** 正文库的替身：记录发送前读取了哪些引用。 */
+function blobSink(bodies: Map<string, Buffer>): SinkPort & { reads: string[] } {
+  const reads: string[] = []
+  return {
+    reads,
+    land: () => {
+      throw new Error('本组不写入正文库')
+    },
+    read: (resourceId, start, length) => {
+      reads.push(resourceId)
+      return bodies.get(resourceId)?.subarray(start, start + length) ?? null
+    },
+    stat: () => null,
+  }
+}
+
+/** 一条引用正文库图片的工具结果，结构与写入账本后由 `toolResultContent` 生成的相同。 */
+function storedShot(
+  callId: string,
+  batchId: string,
+  resourceId: string,
+  bytes: number,
+): WireMessage {
+  return {
+    role: 'tool',
+    toolCallId: callId,
+    content: [
+      { type: 'text', text: envelopeOf(callId) },
+      { type: 'image', mimeType: 'image/png', source: { kind: 'resource', resourceId, bytes } },
+    ],
+    _group: 'executionRecords',
+    _batch: batchId,
+  }
+}
+
+/**
+ * 原始失败形状：历史中的工具图片在装配时全部解码为 base64（实测一条会话 526 MB），而请求只携带约 5 MB。
+ * 引用形态下只有未被换出的图片在发送前读取正文。
+ */
+test('正文库中的工具图片：发送前只读取保留在请求中的那些', async () => {
+  const MB = 1024 * 1024
+  const tags = ['one', 'two', 'three', 'four']
+  const bodies = new Map(tags.map((t, i) => [`rs_${t}`, Buffer.alloc(Math.round(1.9 * MB), i + 1)]))
+  const sink = blobSink(bodies)
+  const adapter = capturingAdapter()
+  await askOnce(
+    adapter,
+    persistence(),
+    [
+      USER,
+      ...tags.flatMap((t, i) => [
+        callsMessage(`pr_${i}`, [t]),
+        storedShot(t, `pr_${i}`, `rs_${t}`, bodies.get(`rs_${t}`)!.byteLength),
+      ]),
+    ],
+    'rn_stored',
+    undefined,
+    sink,
+  )
+  // 换出边界与 base64 形态相同：前两张换出，后两张保留。
+  expect(sink.reads).toEqual(['rs_three', 'rs_four'])
+  expect(imagesIn(adapter.seen[0])).toEqual([
+    bodies.get('rs_three')!.toString('base64'),
+    bodies.get('rs_four')!.toString('base64'),
+  ])
+  const sent = (adapter.seen[0]?.messages ?? []).flatMap((m) =>
+    typeof m.content === 'string' ? [] : m.content,
+  )
+  expect(sent.some((b) => b.type !== 'text' && b.source.kind === 'resource')).toBe(false)
+})
+
+test('正文缺失的引用替换为文字说明，不发送空图片', async () => {
+  const adapter = capturingAdapter()
+  await askOnce(
+    adapter,
+    persistence(),
+    [USER, callsMessage('pr_gone', ['gone']), storedShot('gone', 'pr_gone', 'rs_gone', 100)],
+    'rn_gone',
+    undefined,
+    blobSink(new Map()),
+  )
+  const tool = adapter.seen[0]?.messages.find((m) => m.role === 'tool')
+  expect(imagesIn(adapter.seen[0])).toEqual([])
+  expect(tool?.content).toContainEqual({ type: 'text', text: '［图片：已不存在］' })
+})
+
+/**
+ * 轮内的工具消息由写入账本的记录生成：执行器返回的字节不留在上下文中，下一次请求从正文库读取。
+ * 改回用执行器的结果生成时，长任务中每张截图的 base64 都在整个 run 期间常驻内存。
+ */
+test('轮内的工具图片写入账本后以引用进入上下文，下一次请求从正文库读取', async () => {
+  const shotBytes = Buffer.alloc(3000, 9)
+  const bodies = new Map<string, Buffer>()
+  const sink = blobSink(bodies)
+  const persist: LoopPersistence = {
+    ...persistence(),
+    // 与 `settleToolStep` 相同：字节移入正文库，记录中只留引用。
+    settleTool: (_stepId, _status, outcome) => {
+      const images = (outcome.data?.images ?? []) as { data: string; mime: string }[]
+      return {
+        ...outcome,
+        data: {
+          ...outcome.data,
+          images: images.map((img, i) => {
+            const body = Buffer.from(img.data, 'base64')
+            bodies.set(`rs_live_${i}`, body)
+            return { resourceId: `rs_live_${i}`, mime: img.mime, bytes: body.byteLength }
+          }),
+        },
+      }
+    },
+  }
+  const registry = new ToolRegistry()
+  registry.register({
+    name: 'screenshot',
+    description: '截图。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    actionKind: 'read',
+    objectLabel: '截图',
+    category: 'session',
+    facet: '测试',
+    summary: '测试夹具',
+    permissionEffect: 'read',
+    async fn() {
+      return {
+        status: 'success',
+        message: '截图完成',
+        data: { images: [{ data: shotBytes.toString('base64'), mime: 'image/png' }] },
+      }
+    },
+  })
+  const base = capturingAdapter()
+  const call: WireToolCall = { id: 'c_shot', name: 'screenshot', arguments: {} }
+  let turn = 0
+  const adapter: typeof base = {
+    ...base,
+    async *stream(req) {
+      base.seen.push(req)
+      yield { type: 'request_prepared', measuredInputTokens: 10 }
+      if (turn++ === 0) {
+        yield { type: 'tool_calls', calls: [call], at: Date.now() }
+        yield { type: 'done', stopReason: 'tool_use', rawStopReason: '' }
+        return
+      }
+      yield { type: 'text_delta', delta: '完成', at: Date.now() }
+      yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
+    },
+  }
+  await askOnce(adapter, persist, [USER], 'rn_live', undefined, sink, registry)
+  expect(base.seen).toHaveLength(2)
+  expect(sink.reads).toEqual(['rs_live_0'])
+  expect(imagesIn(base.seen[1])).toEqual([shotBytes.toString('base64')])
 })

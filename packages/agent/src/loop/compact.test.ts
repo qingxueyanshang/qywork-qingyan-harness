@@ -52,7 +52,7 @@ function noopPersistence(recorded: RecordedCompaction[] = []): LoopPersistence {
     appendText: () => {},
     openToolStep: () => `st_${seq}`,
     markExecuting: () => {},
-    settleTool: () => {},
+    settleTool: (_stepId, _status, outcome) => outcome,
     saveUsage: () => {},
     recordCompaction: (_runId, _seq, payload) => {
       recorded.push(payload)

@@ -22,7 +22,8 @@ import { referencedContentHashes } from './resources.ts'
 import { loadToolImages } from './tool-images.ts'
 
 /** 一张约 300 KB 的图像（标准 base64），大小与审图任务中一张缩放后的渲染页相当。 */
-const PAGE = Buffer.alloc(225_000, 7).toString('base64')
+const PAGE_BYTES = 225_000
+const PAGE = Buffer.alloc(PAGE_BYTES, 7).toString('base64')
 const OTHER = Buffer.from('another image').toString('base64')
 
 function fixture(store: Store) {
@@ -89,7 +90,7 @@ describe('工具结果的图像写入正文库，账本只存引用', () => {
 
     for (const id of ids) {
       expect(imagesOf(store, run.id, id)).toEqual([
-        { mime: 'image/jpeg', resourceId: expect.any(String) },
+        { mime: 'image/jpeg', resourceId: expect.any(String), bytes: PAGE_BYTES },
       ])
     }
     expect(
@@ -242,7 +243,7 @@ describe('迁移 70：已有执行记录中的图像字节移入正文库', () =
         expect(store.migrateInBackground(content)).toBe(false)
         for (const id of old) {
           expect(imagesOf(store, run.id, id)).toEqual([
-            { mime: 'image/jpeg', resourceId: expect.any(String) },
+            { mime: 'image/jpeg', resourceId: expect.any(String), bytes: PAGE_BYTES },
           ])
         }
         expect(listSteps(store, run.id).find((s) => s.id === textual.id)).toEqual(

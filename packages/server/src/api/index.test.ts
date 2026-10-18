@@ -1744,7 +1744,13 @@ describe('会话历史分页接口', () => {
         : null
     }
     expect(images(shown)).toEqual([{ mime: 'image/png', data: bytes }])
-    expect(images(hidden)).toEqual([{ mime: 'image/png', resourceId: expect.any(String) }])
+    expect(images(hidden)).toEqual([
+      {
+        mime: 'image/png',
+        resourceId: expect.any(String),
+        bytes: Buffer.from(bytes, 'base64').byteLength,
+      },
+    ])
   })
 
   test('非法页大小返回 422，不静默改为其他值', async () => {

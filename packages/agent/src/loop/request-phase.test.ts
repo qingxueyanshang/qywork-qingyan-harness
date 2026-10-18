@@ -61,7 +61,7 @@ function ledger(): Ledger {
     appendText: () => {},
     openToolStep: () => 'st_tool',
     markExecuting: () => {},
-    settleTool: () => {},
+    settleTool: (_stepId, _status, outcome) => outcome,
     saveUsage: () => {},
     recordCompaction: () => {},
     openRequest: (input) => openProviderRequest(store, input).id,

@@ -2,7 +2,7 @@
  * 图像块的两种形态。
  *
  * 覆盖范围：`loop/request.ts` 的 `toolResultContent` / `materialize` / `breakdownOf` 的
- * tool 分支、`mediaBytes` / `evictedMedia` / `omitImages` 的按字节预算换出，以及
+ * tool 分支、`mediaBytes` / `evictedMedia` / `omitImages` 的按字节预算换出、`payloadSnapshotOf` 的请求体字节数，以及
  * `compaction.ts` 的 `condenseMessage` 对块数组的处置。
  *
  * 本文件锁定三类不报错的失败：图片跨轮次出现两种形态、收纳无法移除图片、
@@ -24,6 +24,7 @@ import {
   materialize,
   mediaBytes,
   omitImages,
+  payloadSnapshotOf,
   toolResultContent,
   videoDelivery,
 } from './request.ts'
@@ -137,7 +138,7 @@ describe('materialize', () => {
         ],
       },
     ]
-    const out = await materialize(req(original), media(true))
+    const out = await materialize(req(original), media(true), null)
     const before = original[0]!.content as ContentBlock[]
     expect(before[1]).toMatchObject({ source: { kind: 'path' } })
     const after = out.messages[0]!.content as ContentBlock[]
@@ -147,7 +148,7 @@ describe('materialize', () => {
   /** 内容全部为字符串时返回原对象，不复制。 */
   test('没有内容块时返回原对象', async () => {
     const r = req([{ role: 'user', content: '你好' }])
-    expect(await materialize(r, media(true))).toBe(r)
+    expect(await materialize(r, media(true), null)).toBe(r)
   })
 
   /** 文件不存在同样是终态，不抛异常：一张图无法发送不应导致整轮无法启动。 */
@@ -163,6 +164,7 @@ describe('materialize', () => {
         },
       ]),
       media(true),
+      null,
     )
     const blocks = out.messages[0]!.content as ContentBlock[]
     expect((blocks[0] as { text: string }).text).toContain('已不存在')
@@ -200,6 +202,7 @@ describe('materialize', () => {
         },
       ]),
       media(false),
+      null,
     )
     const all = out.messages.flatMap((m) => m.content as ContentBlock[])
     expect(all.some((b) => b.type === 'image')).toBe(false)
@@ -218,6 +221,7 @@ describe('materialize', () => {
         },
       ]),
       media(null),
+      null,
     )
     const blocks = out.messages[0]!.content as ContentBlock[]
     expect(blocks[0]).toMatchObject({ source: { kind: 'base64' } })
@@ -235,7 +239,7 @@ describe('materialize', () => {
       },
     ]
 
-    const out = await materialize(req(original), media(true, true))
+    const out = await materialize(req(original), media(true, true), null)
     expect((original[0]!.content as ContentBlock[])[0]).toMatchObject({
       source: { kind: 'path', path },
     })
@@ -262,6 +266,7 @@ describe('materialize', () => {
         },
       ]),
       media(true, true),
+      null,
     )
     const block = (out.messages[0]!.content as ContentBlock[])[0]
     expect(block).toMatchObject({ type: 'video', source: { kind: 'base64' } })
@@ -284,6 +289,7 @@ describe('materialize', () => {
         },
       ]),
       media(true, true, true),
+      null,
     )
     expect((out.messages[0]?.content as ContentBlock[])[0]).toEqual({
       type: 'video',
@@ -307,6 +313,7 @@ describe('materialize', () => {
           },
         ]),
         caps,
+        null,
       ).then((out) => (out.messages[0]?.content as ContentBlock[])[0])
     const inline = (await send({ image: true, video: true })) as { type: string; text: string }
     expect(inline.type).toBe('text')
@@ -328,6 +335,7 @@ describe('materialize', () => {
           },
         ]),
         media(image, false),
+        null,
       ).then((out) => (out.messages[0]?.content as ContentBlock[])[0])
     expect(await block(true)).toEqual({
       type: 'text',
@@ -352,6 +360,7 @@ describe('materialize', () => {
         },
       ]),
       media(true, false),
+      null,
     )
     const blocks = out.messages[0]!.content as ContentBlock[]
     expect(blocks.some((b) => b.type === 'video')).toBe(false)
@@ -590,6 +599,30 @@ describe('媒体按字节预算换出', () => {
       previous = evicted
     }
   })
+})
+
+/**
+ * 正文库引用与它物化后的 base64 计入同样的字节：换出预算与请求账的 `requestBytes` 都不随形态变化。
+ * 引用按自身长度计时，带图请求的 `requestBytes` 只有几十字节，与响应头时间、413 拒绝的对照失效。
+ */
+test('正文库引用与等价的 base64 计入相同的媒体字节与请求体字节', () => {
+  const bytes = 30_000
+  const data = Buffer.alloc(bytes, 3).toString('base64')
+  const as = (source: ContentBlock & { type: 'image' }): WireMessage => ({
+    role: 'tool',
+    toolCallId: 'c1',
+    content: [{ type: 'text', text: envelope }, source],
+  })
+  const inline = as({ type: 'image', mimeType: 'image/png', source: { kind: 'base64', data } })
+  const stored = as({
+    type: 'image',
+    mimeType: 'image/png',
+    source: { kind: 'resource', resourceId: 'rs_0mvdn1ek80000twshi9', bytes },
+  })
+  const caps = { image: true, video: false }
+  expect(mediaBytes(stored, caps)).toBe(bytes)
+  expect(mediaBytes(inline, caps)).toBe(bytes)
+  expect(payloadSnapshotOf(req([stored])).bytes).toBe(payloadSnapshotOf(req([inline])).bytes)
 })
 
 /** 移出说明中写给模型的容量必须与实际上限一致：说明写错时，模型按错误的容量安排对比。 */
