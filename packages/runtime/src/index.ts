@@ -85,4 +85,5 @@ export { makeSummarizer, Session } from './session.ts'
 export { collectResourceGarbage, RuntimeSink } from './sink.ts'
 // 历史投影：`Session.ask` 用它装配本轮历史，回归测试用它验证
 // 运行中的 transcript 与跨 run 投影出的历史逐条位置一致。
+export { removeConversationTemp } from './temp-files.ts'
 export { buildHistory } from './transcript.ts'

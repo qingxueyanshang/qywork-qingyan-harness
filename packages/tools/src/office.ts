@@ -22,7 +22,14 @@ import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
 import { readHashes } from './files.ts'
 import { shrinkImage } from './image.ts'
-import { noResponse, READ_TIMEOUT_MS, residueNote, runWorker, stageNote } from './office-worker.ts'
+import {
+  noResponse,
+  READ_TIMEOUT_MS,
+  releaseCall,
+  residueNote,
+  runWorker,
+  stageNote,
+} from './office-worker.ts'
 import {
   displayPath,
   resolveInWorkspace,
@@ -36,7 +43,10 @@ import { deliverReadable } from './sink.ts'
 /** `write` 执行模型脚本并渲染整份文件，大文档导出需要数十秒；其余动作只读。 */
 const WRITE_TIMEOUT_MS = 600_000
 
-/** 回执中保留的脚本输出长度。完整输出位于调用目录的 `response.json` 中。 */
+/**
+ * 回执中保留的脚本输出长度，取末尾。写入未提交时调用目录保留至本轮结束，完整输出位于其中的
+ * `response.json`；已提交的调用目录随即删除。
+ */
 const SCRIPT_OUTPUT_CHARS = 4000
 
 const FORMATS = ['docx', 'pptx', 'xlsx'] as const
@@ -63,6 +73,7 @@ async function guide(ctx: ToolContext, port: OfficePort, args: Record<string, un
   }
   const run = await runWorker(ctx, port, { action: 'guide', format }, READ_TIMEOUT_MS)
   if (!run.response) return noResponse(run)
+  await releaseCall(run)
   const text = run.response.text ?? ''
   return deliverReadable(ctx, {
     toolName: 'read_office_guide',
@@ -83,6 +94,7 @@ async function read(ctx: ToolContext, port: OfficePort, args: Record<string, unk
   }
   const run = await runWorker(ctx, port, request, READ_TIMEOUT_MS)
   if (!run.response) return noResponse(run)
+  await releaseCall(run)
   const res = run.response
   if (!res.ok) return { status: 'failure' as const, message: res.message + stageNote(res) }
   const sha = res.files?.[0]?.sha256
@@ -152,6 +164,8 @@ async function write(ctx: ToolContext, port: OfficePort, args: Record<string, un
   const run = await runWorker(ctx, port, request, WRITE_TIMEOUT_MS)
   if (!run.response) return noResponse(run)
   const res = run.response
+  // 全部提交后工作副本与目标逐字节相同，调用目录不再有用；未提交时保留其中的候选文件。
+  if (res.ok) await releaseCall(run)
   const fileChanges: FileChange[] = []
   const lines: string[] = []
   for (const f of res.files ?? []) {
@@ -229,6 +243,7 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
     if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
     images.push({ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime })
   }
+  await releaseCall(run)
   const labels = res.images.map((i) => i.label).join('、')
   return {
     status: 'success' as const,

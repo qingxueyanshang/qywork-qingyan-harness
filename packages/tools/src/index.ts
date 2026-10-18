@@ -49,7 +49,9 @@ export {
 // 网络访问：供 runtime/capabilities.ts 实现插件的 host.net.fetch
 export { type SafetyOptions, safeFetch } from './net-safety.ts'
 // 路径：工作区边界的唯一判据，runtime 与 server 均使用
+export { officeRunDir } from './office-worker.ts'
 export {
+  conversationTempDir,
   displayPath,
   IGNORED_DIRS,
   normalizeAdditionalDirectories,

@@ -110,6 +110,8 @@ import {
   workflowIdsOf,
 } from '@qywork/store'
 import {
+  conversationTempDir,
+  displayPath,
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
   externalSchemaTokens,
   listScopedEntries,
@@ -139,6 +141,7 @@ import { makeMediaPort } from './media.ts'
 import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 import { requestPersistence } from './request-persistence.ts'
 import { RuntimeSink } from './sink.ts'
+import { releaseRunTemp } from './temp-files.ts'
 import { buildHistory } from './transcript.ts'
 
 export interface SessionOptions {
@@ -518,6 +521,10 @@ export class Session {
         : {}
     const contextSnapshot = buildTailNotes({
       workspaceRoot: this.opts.workspaceRoot,
+      tempDir: displayPath(
+        this.opts.workspaceRoot,
+        conversationTempDir(this.opts.workspaceRoot, conversationId),
+      ),
       platform: process.platform,
       mode: this.opts.config.mode ?? 'auto',
       skills,
@@ -770,6 +777,20 @@ export class Session {
             reasoningTokens: ev.usage.reasoningTokens,
             cost: ev.usage.cost,
             currency: ev.usage.currency,
+          })
+          /*
+           * 临时目录在发出 `run.finished` 之前处理：收到该事件的一方可以立即发起下一轮，
+           * 此后不能再有等待。只改名移入回收目录、实际删除在后台进行（见 `temp-files.ts`）。
+           * 没有 `run.finished` 的轮次（生成器被提前关闭）不处理，其目录随会话临时目录删除。
+           */
+          await releaseRunTemp({
+            store,
+            workspaceRoot: this.opts.workspaceRoot,
+            conversationId,
+            runId: run.id,
+            stopReason: ev.stopReason,
+            topLevel: !conversation?.parentConversationId,
+            subagentsRunning: (this.opts.delegate?.inflight().length ?? 0) > 0,
           })
         }
         yield out

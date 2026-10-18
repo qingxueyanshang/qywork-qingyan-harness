@@ -9,7 +9,7 @@
  */
 
 import { readlink, realpath, stat } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 /**
  * 路径位于允许范围内，但该位置不存在文件。
@@ -461,6 +461,16 @@ export async function resolveWritablePath(
     throw new ProtectedPathError(candidate)
   }
   return resolved
+}
+
+/**
+ * 一条会话的临时目录：`<工作区>/.tmp/<会话 id>`。命令与 Office 执行程序的临时文件、Office 调用目录都在其中。
+ *
+ * 按会话划分，清理时只删除该目录：任务的待办全部完成后由 `Session` 删除，删除会话时由会话接口删除。
+ * 子 agent 使用自己子会话的目录，随父会话一并删除。工作区观察器硬性排除 `.tmp`，其中的文件不进入变更清单。
+ */
+export function conversationTempDir(workspaceRoot: string, conversationId: string): string {
+  return join(workspaceRoot, '.tmp', conversationId)
 }
 
 /**

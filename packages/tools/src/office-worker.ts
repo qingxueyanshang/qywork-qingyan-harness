@@ -1,8 +1,13 @@
 /**
- * Office worker 的调用约定：请求写入 `.tmp/office/<调用>/<动作>-request.json`，worker 在同目录写入
- * `response.json` 后以 0 退出。超时或取消时 worker 进程树被结束，但办公软件进程不在该进程树中，
- * 因此随后以 `cleanup` 动作再启动一次 worker，按调用目录中登记的实例处理残留进程。
+ * Office worker 的调用约定：请求写入调用目录 `<会话临时目录>/office/<runId>/<调用>/<动作>-request.json`，
+ * worker 在同目录写入 `response.json` 后以 0 退出。超时或取消时 worker 进程树被结束，但办公软件进程不在
+ * 该进程树中，因此随后以 `cleanup` 动作再启动一次 worker，按调用目录中登记的实例处理残留进程。
  * `office` 工具与 `read_file` 的视频抽帧共用此约定。
+ *
+ * 目录的生命周期：worker 给出结果且调用方读完其中的文件后，调用方以 `releaseCall` 删除调用目录；
+ * 写入未提交、超时、取消时保留，供本轮查看候选文件与处理残留进程。渲染缓存位于同一 run 目录下，
+ * 本轮结束时 `Session` 删除整个 `office/<runId>`。不要把缓存移回按会话或按工作区共用：
+ * 每个中间版本都会留下一整套页面图片，且没有任何回收路径。
  */
 
 import { randomUUID } from 'node:crypto'
@@ -17,7 +22,7 @@ import {
 } from '@qywork/agent'
 import { MEDIA_TOKENS } from '@qywork/ai'
 import { shrinkImage } from './image.ts'
-import { PROTECTED_DIRS } from './paths.ts'
+import { conversationTempDir, PROTECTED_DIRS } from './paths.ts'
 import { collectProcess, type SandboxPolicy, spawnGuarded } from './sandbox.ts'
 import { redactSecrets } from './secrets.ts'
 import { commandEnv } from './shell.ts'
@@ -78,13 +83,13 @@ export async function runWorker(
   request: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<WorkerRun> {
-  const officeRoot = join(ctx.workspaceRoot, '.tmp', 'office')
-  const callDir = join(officeRoot, `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`)
+  const runDir = officeRunDir(ctx.workspaceRoot, ctx.conversationId, ctx.runId)
+  const callDir = join(runDir, `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`)
   await mkdir(callDir, { recursive: true })
   const base = {
     call_dir: callDir,
     workspace: ctx.workspaceRoot,
-    cache_dir: join(officeRoot, 'cache'),
+    cache_dir: join(runDir, 'cache'),
   }
   // 模型代码在 worker 中执行，沙箱与路径边界使用与 `run_command` 相同的根目录清单。
   const policy: SandboxPolicy = {
@@ -132,6 +137,20 @@ export async function runWorker(
     cleanup,
     callDir,
   }
+}
+
+/** 一轮的 Office 目录：本轮各次调用的目录与渲染缓存。本轮结束时 `Session` 删除它。 */
+export function officeRunDir(workspaceRoot: string, conversationId: string, runId: string): string {
+  return join(conversationTempDir(workspaceRoot, conversationId), 'office', runId)
+}
+
+/**
+ * 删除一次调用的目录。只在 worker 给出结果、调用方已读完其中的文件之后调用。
+ *
+ * 删除失败（办公软件仍占用其中的文件）不影响本次结果：本轮结束时整个 run 目录会再删除一次。
+ */
+export async function releaseCall(run: WorkerRun): Promise<void> {
+  await rm(run.callDir, { recursive: true, force: true }).catch(() => {})
 }
 
 /** worker 未给出结果时的回执：说明超时、取消或崩溃，以及残留处理的结果。 */
@@ -199,7 +218,7 @@ export async function readVideoFrames(
     if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
     images.push({ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime })
   }
-  // 帧已写入回执，磁盘上的副本不再被读取；不删除时每次读取视频都会在工作区中留下一批图片。
-  await rm(join(run.callDir, 'frames'), { recursive: true, force: true })
+  // 帧已写入回执，磁盘上的副本不再被读取。
+  await releaseCall(run)
   return { status: 'success', message: res.text ?? '', data: { images } }
 }

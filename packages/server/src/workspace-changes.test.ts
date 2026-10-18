@@ -117,6 +117,7 @@ async function turn(conversationId: ConversationId, text: string, tags: string[]
   for (const tag of tags) {
     const outcome = await runCommand.fn({ command: command(tag) }, {
       workspaceRoot: dir,
+      conversationId,
       emit: () => {},
       sink: null,
       state,

@@ -31,11 +31,16 @@
 
 import { mkdir } from 'node:fs/promises'
 import { isIP } from 'node:net'
-import { join } from 'node:path'
 import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } from '@qywork/agent'
 import type { FileChange, IntermediateResourceRef } from '@qywork/core'
 import { classifyAddress } from './net-safety.ts'
-import { PROTECTED_DIRS, resolveInWorkspace, rootsOf, writableRoots } from './paths.ts'
+import {
+  conversationTempDir,
+  PROTECTED_DIRS,
+  resolveInWorkspace,
+  rootsOf,
+  writableRoots,
+} from './paths.ts'
 import {
   type CommandShell,
   collectProcess,
@@ -106,25 +111,24 @@ function trackReported(reported: Set<string>, changes: FileChange[]): void {
  * NON_INTERACTIVE_ENV 放在剥离之后：它由本文件注入，不含凭证，也不应被变量名规则误删。
  */
 export async function commandEnv(
-  ctx: Pick<ToolContext, 'secrets' | 'envAllowList' | 'workspaceRoot'>,
+  ctx: Pick<ToolContext, 'secrets' | 'envAllowList' | 'workspaceRoot' | 'conversationId'>,
 ): Promise<Record<string, string>> {
   return {
     ...scrubEnv(process.env, ctx.secrets ?? { values: [] }, {
       allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW,
     }),
     ...NON_INTERACTIVE_ENV,
-    ...(await tmpEnv(ctx.workspaceRoot)),
+    ...(await tmpEnv(conversationTempDir(ctx.workspaceRoot, ctx.conversationId))),
   }
 }
 
 /**
- * 子进程的临时目录，即工作区根下的 `.tmp`。
+ * 子进程的临时目录，即本会话的临时目录（`conversationTempDir`）。
  *
- * 观察器硬性排除此目录，因此模型写入其中的缓存、中间产物、浏览器 profile 不进入变更清单。
+ * 观察器硬性排除 `.tmp`，因此其中的缓存与中间产物不进入变更清单。
  * 必须排在 `scrubEnv` 之后：这三个变量原本就在环境中，不覆盖时仍指向系统临时目录。
  */
-async function tmpEnv(workspaceRoot: string): Promise<Record<string, string>> {
-  const dir = join(workspaceRoot, '.tmp')
+async function tmpEnv(dir: string): Promise<Record<string, string>> {
   await mkdir(dir, { recursive: true })
   return { TMP: dir, TEMP: dir, TMPDIR: dir }
 }

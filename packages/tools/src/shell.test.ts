@@ -23,6 +23,7 @@ test('同一轮内安装 Git 后已创建的工具仍使用声明的 PowerShell�
   const ctx = () =>
     ({
       workspaceRoot: root,
+      conversationId: 'cv_shell',
       emit: () => {},
       sink: null,
       density: DEFAULT_DENSITY,
@@ -75,7 +76,7 @@ describe('run_command 参数校验', () => {
 
 describe('run_command 的子进程环境', () => {
   /** 三个变量分别由 bash、cmd 与 POSIX 工具链读取，使用哪一个由子进程决定，因此三个都必须指向同一目录。 */
-  test('临时目录指向工作区的 .tmp，且目录已预先创建', async () => {
+  test('临时目录指向本会话的临时目录，且目录已预先创建', async () => {
     const found = commandShell()
     if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
     const root = await mkdtemp(join(tmpdir(), 'qywork-shell-'))
@@ -88,6 +89,7 @@ describe('run_command 的子进程环境', () => {
 
     const outcome = await makeShellTool(found).fn({ command: `bun "${script}"` }, {
       workspaceRoot: root,
+      conversationId: 'cv_shell',
       emit: () => {},
       sink: null,
       density: DEFAULT_DENSITY,
@@ -96,7 +98,7 @@ describe('run_command 的子进程环境', () => {
     } as unknown as ToolContext)
 
     expect(outcome.status).toBe('success')
-    const dir = join(root, '.tmp')
+    const dir = join(root, '.tmp', 'cv_shell')
     expect(String(outcome.data?.stdout).trim()).toBe(JSON.stringify([dir, dir, dir]))
     expect(existsSync(dir)).toBe(true)
   })
@@ -114,6 +116,7 @@ describe('run_command 的用量记账', () => {
 
     const ctx = {
       workspaceRoot: root,
+      conversationId: 'cv_shell',
       contextWindow: 200_000,
       density: DEFAULT_DENSITY,
       state: openBatchBudget(new Map<string, unknown>(), 1000),

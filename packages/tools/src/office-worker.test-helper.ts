@@ -3,6 +3,7 @@
  * 行为由脚本文件名决定。
  *
  * - `crash.py`：不写结果，以退出码 1 退出（工具随后应以 cleanup 动作再启动一次 worker）。
+ * - `uncommitted.py`：只在调用目录的 `work/` 中写出候选文件，返回未提交。
  * - 其余脚本：为每个输出写入内容，返回已写入状态、页数与一条检查提示。
  * 每次调用把收到的请求追加到调用目录上一级的 `requests.jsonl`，测试据此核对请求。
  */
@@ -41,6 +42,16 @@ switch (req.action) {
   case 'write': {
     if (basename(String(req.script)) === 'crash.py') process.exit(1)
     const outputs = req.outputs as { path: string; expected_sha256: string | null }[]
+    if (basename(String(req.script)) === 'uncommitted.py') {
+      mkdirSync(join(callDir, 'work'), { recursive: true })
+      const pending = outputs.map((o, i) => {
+        const candidate = join(callDir, 'work', `${i}-${basename(o.path)}`)
+        writeFileSync(candidate, '候选')
+        return { path: o.path, committed: false, sha256: null, candidate, pages: null, checks: [] }
+      })
+      respond({ ok: false, action: 'write', message: '已提交 0 / 1 个文件', files: pending })
+      break
+    }
     const files = outputs.map((o) => {
       const bytes = Buffer.from(`内容 ${basename(o.path)}`)
       mkdirSync(dirname(o.path), { recursive: true })

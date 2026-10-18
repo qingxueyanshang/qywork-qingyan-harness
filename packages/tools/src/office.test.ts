@@ -79,10 +79,17 @@ function blankPdf(): Uint8Array {
   return new TextEncoder().encode(out)
 }
 
+/** 本轮的 Office 目录：调用目录、渲染缓存与模拟 worker 记录的 `requests.jsonl` 都在其中。 */
+const runDir = (root: string) => join(root, '.tmp', 'cv_test', 'office', 'rn_test')
+
+/** 本轮仍保留的调用目录。 */
+async function callDirs(root: string): Promise<string[]> {
+  const names = await readdir(runDir(root)).catch(() => [] as string[])
+  return names.filter((n) => n !== 'cache' && !n.endsWith('.jsonl'))
+}
+
 async function requests(root: string): Promise<Record<string, unknown>[]> {
-  const text = await readFile(join(root, '.tmp', 'office', 'requests.jsonl'), 'utf8').catch(
-    () => '',
-  )
+  const text = await readFile(join(runDir(root), 'requests.jsonl'), 'utf8').catch(() => '')
   return text
     .split('\n')
     .filter(Boolean)
@@ -135,6 +142,28 @@ describe('office write', () => {
     const sha = new Bun.CryptoHasher('sha256').update('v1').digest('hex')
     expect((write?.outputs as { expected_sha256: string }[])[0]?.expected_sha256).toBe(sha)
     expect(res.fileChanges).toContainEqual({ path: 'deck.pdf', changeType: 'created' })
+  })
+
+  /**
+   * 原始失败形状：每次写入都在工作区中留下一个调用目录与一份完整文档副本，从不删除。
+   * 全部提交后副本与目标逐字节相同，调用目录随即删除；未提交时保留候选文件，本轮结束时由 `Session` 删除。
+   */
+  test('全部提交后调用目录随即删除，未提交时保留候选文件', async () => {
+    const root = await workspace()
+    const done = await writeOfficeTool.fn({ script: 'make.py', outputs: ['ok.docx'] }, ctx(root))
+    expect(done.status).toBe('success')
+    expect(await callDirs(root)).toEqual([])
+
+    await writeFile(join(root, 'uncommitted.py'), 'print(1)\n')
+    const pending = await writeOfficeTool.fn(
+      { script: 'uncommitted.py', outputs: ['draft.docx'] },
+      ctx(root),
+    )
+    expect(pending.status).toBe('failure')
+    const [kept] = await callDirs(root)
+    expect(kept).toBeDefined()
+    expect(await readdir(join(runDir(root), kept as string, 'work'))).toEqual(['0-draft.docx'])
+    expect(pending.message).toContain('0-draft.docx')
   })
 
   test('worker 未写出结果：以 cleanup 再启动一次，回执写明残留处理', async () => {
@@ -301,11 +330,8 @@ describe('read_file 读取视频：模型不接受原生视频时按时间抽帧
     expect(images).toHaveLength(2)
     expect(res.message).toBe('区间 2–8；声音未处理')
     expect(res.data).not.toHaveProperty('videos')
-    // 帧已写入回执，调用目录中的图片必须删除，避免在工作区中持续累积。
-    const calls = await readdir(join(root, '.tmp', 'office'))
-    for (const call of calls.filter((c) => c !== 'cache' && !c.endsWith('.jsonl'))) {
-      expect(await readdir(join(root, '.tmp', 'office', call))).not.toContain('frames')
-    }
+    // 帧已写入回执，调用目录随即删除，避免在工作区中持续累积。
+    expect(await callDirs(root)).toEqual([])
   })
 
   /**

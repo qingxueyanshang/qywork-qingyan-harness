@@ -66,7 +66,7 @@ export const ENVIRONMENT_LAYER = `## 工作方式
 const CAPABILITY_LINES: { tool: string; line: string }[] = [
   {
     tool: 'run_command',
-    line: '- 命令：用 run_command 执行 shell 命令。临时文件与缓存放在工作区的 .tmp/，该目录不计入变更。启动 Chrome 时必须指定 --user-data-dir=.tmp/chrome，否则每次启动都会在临时目录留下一份无法删除的崩溃指标文件。',
+    line: '- 命令：用 run_command 执行 shell 命令。临时文件与缓存放在本会话临时目录（运行上下文中列出，命令的 TMP、TEMP、TMPDIR 指向它），该目录不计入变更。待办全部完成后系统删除该目录，交给用户的文件与之后还要用到的文件放在工作区的其他位置。启动 Chrome 时必须指定 --user-data-dir=.tmp/chrome，否则每次启动都会在临时目录留下一份无法删除的崩溃指标文件。',
   },
   {
     tool: 'create_canvas',
@@ -350,6 +350,8 @@ export function buildTailNotes(input: {
   /** `process.platform` 的原值。可读名称由 `osName` 在此处转换，调用方无需预先转换。 */
   platform: string
   gitBranch?: string | null
+  /** 本会话临时目录，工作区相对路径。只在会话已确定时传入。 */
+  tempDir?: string
   /**
    * 权限模式。必须告知模型：未告知时模型只能逐次试探，每次被拒绝都多消耗一轮
    * 「被拒 → 改写 → 重发」的 token，而被拒绝的工具调用本身也已计费。
@@ -406,6 +408,7 @@ export function buildTailNotes(input: {
     `当前日期：${today}`,
   ]
   if (input.gitBranch) lines.push(`git 分支：${input.gitBranch}`)
+  if (input.tempDir) lines.push(`本会话临时目录：${input.tempDir}`)
   lines.push(
     input.mode === 'full'
       ? '权限模式：完全访问，不做裁决，也不设路径边界。'

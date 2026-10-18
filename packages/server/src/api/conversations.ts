@@ -38,6 +38,7 @@ import {
   exportConversationDiagnostics,
   listMediaModels,
   type QyConfig,
+  removeConversationTemp,
   resolveModel,
   type StoredCatalogEntry,
 } from '@qywork/runtime'
@@ -47,6 +48,7 @@ import {
   currentGoal,
   deleteConversation,
   getConversation,
+  getWorkspace,
   listChildConversations,
   listConversationChangesPage,
   listConversationHistoryPage,
@@ -487,10 +489,14 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
      * run / step 仍在被该轮写入。
      */
     if (req.method === 'DELETE') {
-      if (!getConversation(d.store, id)) return json({ error: 'conversation not found' }, 404)
+      const conversation = getConversation(d.store, id)
+      if (!conversation) return json({ error: 'conversation not found' }, 404)
       if (d.runs.isBusy(id)) return json({ error: '该会话正在执行，请先中断再删除' }, 409)
       // 先关闭该会话名下的内置浏览器 AI 页面：会话删除后页面归属无从追溯，保留即成为孤立页面。
       await d.closeBrowserPages(id)
+      // 临时目录在删除账本记录之前删除：子会话随父会话级联删除后无法再列出它们的目录。
+      const root = getWorkspace(d.store, conversation.workspaceId)?.rootPath
+      if (root) await removeConversationTemp(d.store, root, id)
       deleteConversation(d.store, id)
       /*
        * 附件目录随会话一并删除。只删除该目录，不按 `Attachment.path` 逐条删除：
