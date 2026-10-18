@@ -61,6 +61,7 @@ export async function tickSchedules(deps: SchedulerDeps): Promise<void> {
     now: Date.now(),
     provider: active.provider,
     model: active.model,
+    mode: deps.config.mode ?? 'auto',
   })
   for (const claim of claims) {
     try {

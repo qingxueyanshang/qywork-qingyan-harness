@@ -15,6 +15,7 @@
 import type {
   Conversation,
   ConversationId,
+  PermissionMode,
   Schedule,
   ScheduleDraft,
   ScheduleLastRun,
@@ -251,6 +252,8 @@ interface ClaimInput {
   now: number
   provider: string
   model: string
+  /** 新建会话时的权限模式，即配置中的默认值；复用绑定会话时不使用。 */
+  mode: PermissionMode
 }
 
 /** 事务内的单条认领。调用方负责在 `store.tx()` 中调用。 */
@@ -279,6 +282,7 @@ function claimInTx(
           provider: input.provider,
           model: input.model,
           title: s.title,
+          mode: input.mode,
         })
       : null
   const conversationId = created?.id ?? (s.conversationId as ConversationId)

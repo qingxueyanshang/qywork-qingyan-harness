@@ -124,15 +124,6 @@ export interface ServerCapabilities {
    */
   environment: EnvDependency[]
   /**
-   * 权限模式，只有两种：`auto` 由路径边界与 `run_command` 的拒绝规则裁决，
-   * `full` 全部放行，路径边界一并放开，只保留凭证剥离（`scrubEnv`）。
-   *
-   * 与 `sandbox` 放在一起、经由同一路径进入握手：二者回答的是同一个问题，
-   * 即本轮在什么边界内运行。该答案的真源是服务端的 config.json，
-   * 客户端只显示与请求修改，不自行保存一份。
-   */
-  mode: PermissionMode
-  /**
    * 内置浏览器。两项状态分开报告，不合并为一个布尔值。
    *
    * 合并后，「运行时版本不达标」会被理解为「浏览器不可用」，而此时手动浏览仍然可用。
@@ -246,6 +237,7 @@ export type ClientCommand =
   | InterruptConversationCommand
   | SubscribeCommand
   | SetModelCommand
+  | SetModeCommand
   | CompactCommand
   | GoalResumeCommand
   | GoalSetCommand
@@ -296,6 +288,13 @@ export interface SetModelCommand {
   /** 接口名。切换模型实质是同时切换接口与模型，两者必须一同发送，不得只发送其一。 */
   provider: string
   model: string
+}
+
+/** 切换会话的权限模式。运行中同样可以切换：之后的每次 `run_command` 裁决按新模式执行。 */
+export interface SetModeCommand {
+  type: 'conversation.setMode'
+  conversationId: ConversationId
+  mode: PermissionMode
 }
 
 /**

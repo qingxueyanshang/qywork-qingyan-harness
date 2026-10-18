@@ -138,7 +138,6 @@ export function handleHello(
         config: deps.config,
         ...(deps.office ? { office: deps.office } : {}),
       }),
-      mode: deps.config.mode ?? 'auto',
       browser: deps.browser(),
       desktop: deps.desktop(),
     },

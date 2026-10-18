@@ -4038,7 +4038,6 @@ describe('内置浏览器能力投影', () => {
     ({
       sandbox: { backend: 'none', active: false, reason: '' },
       environment: [],
-      mode: 'auto',
       browser: { connected, runtimeSupported: connected },
     }) as never
 
@@ -4056,6 +4055,6 @@ describe('内置浏览器能力投影', () => {
     expect(state.capabilities?.browser.connected).toBe(true)
     expect(state.capabilities?.browser.runtimeSupported).toBe(true)
     // 同一投影中的其他字段不受影响。
-    expect(state.capabilities?.mode).toBe('auto')
+    expect(state.capabilities?.sandbox.backend).toBe('none')
   })
 })

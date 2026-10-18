@@ -167,7 +167,7 @@ async function checkConfig(): Promise<Line[]> {
 
   out.push({
     level: 'ok',
-    text: `权限模式 ${cfg.mode ?? 'auto'}`,
+    text: `新会话的权限模式 ${cfg.mode ?? 'auto'}`,
     detail:
       (cfg.mode ?? 'auto') === 'full'
         ? '不裁决，全部放行（凭证剥离仍然生效）'

@@ -48,8 +48,8 @@ export type EffortLevel = (typeof EFFORT_ORDER)[number]
  * 权限模式，只有两种：`auto` 由路径边界与 `run_command` 的拒绝规则裁决，
  * `full` 全部放行，路径边界一并放开，只保留凭证剥离（`scrubEnv`）。
  *
- * 真源是服务端的 config.json，经握手传给客户端；客户端只负责显示与请求修改，
- * 不另存副本。
+ * 真源是会话行（`Conversation.mode`），随会话列表与 `conversation.updated` 传给客户端；
+ * 客户端只负责显示与请求修改，不另存副本。
  */
 export type PermissionMode = 'auto' | 'full'
 
@@ -214,6 +214,11 @@ export interface Conversation {
    * 之后不再修改：子会话不会更换父会话。
    */
   parentConversationId: ConversationId | null
+  /**
+   * 该会话的权限模式，由输入区开关经 `conversation.setMode` 修改；配置中的 `mode` 只是新会话的默认值。
+   * 子会话不读取本字段：按顶层会话的模式运行（store 的 `permissionModeOf`），子会话没有自己的开关。
+   */
+  mode: PermissionMode
   createdAt: number
   updatedAt: number
 }

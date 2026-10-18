@@ -10,6 +10,7 @@ import {
   getConversation,
   interruptRunningNodes,
   listRuns,
+  setConversationMode,
   setConversationModel,
 } from '@qywork/store'
 import type { ServerWebSocket } from 'bun'
@@ -160,6 +161,33 @@ export async function handleCommand(cmd: ClientCommand, deps: CommandDeps): Prom
           provider: updated.provider,
           model: updated.model,
           title: updated.title,
+          mode: updated.mode,
+          updatedAt: updated.updatedAt,
+        },
+        cmd.conversationId,
+      )
+      return
+    }
+
+    case 'conversation.setMode': {
+      // 取值在写入前校验：账本列的 CHECK 约束会使非法值在 UPDATE 时抛出，指令得不到回执。
+      if (cmd.mode !== 'auto' && cmd.mode !== 'full') {
+        reject(deps.ws, cmd.type, 'invalid_payload', `未知的权限模式 "${String(cmd.mode)}"`)
+        return
+      }
+      const updated = setConversationMode(deps.store, cmd.conversationId, cmd.mode)
+      if (!updated) {
+        reject(deps.ws, cmd.type, 'invalid_payload', '会话不存在')
+        return
+      }
+      deps.bus.publish(
+        {
+          type: 'conversation.updated',
+          conversationId: updated.id,
+          provider: updated.provider,
+          model: updated.model,
+          title: updated.title,
+          mode: updated.mode,
           updatedAt: updated.updatedAt,
         },
         cmd.conversationId,

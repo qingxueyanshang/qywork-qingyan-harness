@@ -427,6 +427,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         provider: ref?.provider ?? '',
         model: ref?.model ?? '',
         ...(body.title ? { title: body.title } : {}),
+        mode: d.config.mode ?? 'auto',
       })
       return json({ conversation: conv })
     }
@@ -474,6 +475,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
           provider: conv.provider,
           model: conv.model,
           title: conv.title,
+          mode: conv.mode,
           updatedAt: conv.updatedAt,
         },
         id,

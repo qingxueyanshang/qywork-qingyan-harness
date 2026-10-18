@@ -217,6 +217,7 @@ export function makeDelegate(ctx: {
         provider: renamed.provider,
         model: renamed.model,
         title: renamed.title,
+        mode: renamed.mode,
         updatedAt: renamed.updatedAt,
       },
       renamed.id,

@@ -81,7 +81,10 @@ export interface QyConfig {
    * 缺少某一类别表示该类别没有默认模型；该类别添加第一个模型时由设置页设置。
    */
   mediaDefaults?: Partial<Record<MediaOutput, ModelRef>>
-  /** 权限模式，默认 auto。 */
+  /**
+   * 新会话的权限模式，默认 auto。只在创建顶层会话时写入会话行，之后由会话自己的 `mode` 决定；
+   * 输入区开关只修改当前会话，不修改本字段。
+   */
   mode?: PermissionMode
   /**
    * 是否允许 agent 控制内置浏览器。缺省时视为启用，只有显式 `false` 表示关闭。
@@ -1080,8 +1083,8 @@ export function configNotices(cfg: QyConfig): string[] {
   if ((cfg as { autoApprove?: unknown }).autoApprove !== undefined) {
     notices.push(
       `配置中的 autoApprove 已不再生效，权限改为两种模式。\n` +
-        `- 当前按 "${cfg.mode ?? 'auto'}" 运行（默认 auto：不弹出确认框，由硬边界与静态规则裁决）。\n` +
-        `- 如需完全访问，在 ${configPath()} 中设置 "mode": "full"，该模式不做任何裁决。\n` +
+        `- 新会话按 "${cfg.mode ?? 'auto'}" 运行（默认 auto：不弹出确认框，由硬边界与静态规则裁决）。\n` +
+        `- 如需新会话默认完全访问，在 ${configPath()} 中设置 "mode": "full"，该模式不做任何裁决。\n` +
         `- 删除 autoApprove 字段即可消除本提示。`,
     )
   }

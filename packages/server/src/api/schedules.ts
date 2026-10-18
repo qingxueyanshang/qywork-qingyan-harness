@@ -90,6 +90,7 @@ export const handleSchedulesApi: ApiHandler = async (url, req, d) => {
       now: Date.now(),
       provider: d.config.active.provider,
       model: d.config.active.model,
+      mode: d.config.mode ?? 'auto',
     })
     if (!claimed.ok) {
       if (claimed.reason === 'busy') return json({ error: '上一次触发尚未执行完毕' }, 409)

@@ -40,7 +40,7 @@ let wsB: WorkspaceId
 let homeA: ConversationId
 let homeB: ConversationId
 
-const CLAIM = { provider: 'p', model: 'm' }
+const CLAIM = { provider: 'p', model: 'm', mode: 'auto' } as const
 
 function newConversation(workspaceId: WorkspaceId, title: string): ConversationId {
   return createConversation(store, { workspaceId, provider: 'p', model: 'm', title }).id

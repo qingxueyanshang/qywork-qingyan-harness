@@ -21,6 +21,7 @@ import type {
   FollowUp,
   Goal,
   NodeState,
+  PermissionMode,
   RunUsage,
   StopReason,
   TodoItem,
@@ -107,7 +108,7 @@ export interface ConversationCreatedEvent {
 }
 
 /**
- * 会话属性变更：模型、标题、最近修改时间。
+ * 会话属性变更：模型、标题、权限模式、最近修改时间。
  *
  * 必须经事件总线广播，不能只返回给发起方：手机与桌面可能同时打开同一个会话，
  * 一端切换模型而另一端仍显示旧模型时，下一轮的实际用量与计价将与界面不一致。
@@ -122,6 +123,7 @@ export interface ConversationUpdatedEvent {
   provider: string
   model: string
   title: string
+  mode: PermissionMode
   /** 账本中的 `updated_at`，即侧栏中该会话行显示的时间。 */
   updatedAt: number
 }

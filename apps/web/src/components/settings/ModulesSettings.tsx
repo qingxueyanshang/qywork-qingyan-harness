@@ -132,13 +132,6 @@ const MODULES: Module[] = [
     consoles: [{ page: 'access', label: '去配置' }],
     notes: [
       {
-        label: 'mode',
-        text: () =>
-          state.capabilities?.mode === 'full'
-            ? '完全访问 · 沙箱与凭证剥离不受影响'
-            : '自动审批 · MCP 与插件工具不经权限检查',
-      },
-      {
         label: 'additionalDirectories',
         text: () =>
           '工作区之外额外允许读写的目录；符号链接按实际路径判定。.qy 与 .agents 目录由文件工具拦截，shell 不拦截；完全访问模式下不设此限制。',

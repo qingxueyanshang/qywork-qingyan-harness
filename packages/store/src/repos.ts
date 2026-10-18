@@ -21,6 +21,7 @@ import type {
   MessageId,
   NodePhase,
   NodeState,
+  PermissionMode,
   ProviderHedge,
   ProviderKind,
   ProviderRequest,
@@ -267,6 +268,8 @@ export function createConversation(
     /** 派发任务创建子会话时必须提供：归属只能在创建时正确写入，事后无法从任何来源推导。 */
     parentConversationId?: ConversationId
     externalSession?: string
+    /** 顶层会话传入配置中的默认模式；子会话省略，它按顶层会话的模式运行。 */
+    mode?: PermissionMode
   },
 ): Conversation {
   const now = Date.now()
@@ -282,14 +285,15 @@ export function createConversation(
     sourceRef: input.sourceRef ?? null,
     parentConversationId: input.parentConversationId ?? null,
     externalSession: input.externalSession ?? null,
+    mode: input.mode ?? 'auto',
     createdAt: now,
     updatedAt: now,
   }
   store.db
     .query(
       `INSERT INTO conversations
-       (id, workspace_id, title, provider, model, compaction_manifest, cache_generation, source, source_ref, parent_conversation_id, external_session, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       (id, workspace_id, title, provider, model, compaction_manifest, cache_generation, source, source_ref, parent_conversation_id, external_session, permission_mode, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       conv.id,
@@ -303,6 +307,7 @@ export function createConversation(
       conv.sourceRef,
       conv.parentConversationId,
       conv.externalSession,
+      conv.mode,
       now,
       now,
     )
@@ -469,6 +474,34 @@ export function setConversationModel(
     .run(ref.provider, ref.model, Date.now(), id)
   if (changed.changes === 0) return null
   return getConversation(store, id)
+}
+
+/**
+ * 切换会话的权限模式。不修改 `updated_at`，理由同 `setConversationTitle`。
+ * 返回 null 表示会话不存在。
+ */
+export function setConversationMode(
+  store: Store,
+  id: ConversationId,
+  mode: PermissionMode,
+): Conversation | null {
+  const changed = store.db
+    .query('UPDATE conversations SET permission_mode = ? WHERE id = ?')
+    .run(mode, id)
+  if (changed.changes === 0) return null
+  return getConversation(store, id)
+}
+
+/**
+ * 本会话执行时适用的权限模式：顶层会话的 `mode`。
+ *
+ * 子会话没有开关，按顶层会话的模式运行；不要改为读取子会话自身的列，
+ * 否则用户切换父会话后，已创建的子 agent 仍按创建时的模式执行。会话不存在时返回 `auto`。
+ */
+export function permissionModeOf(store: Store, id: ConversationId): PermissionMode {
+  let conv = getConversation(store, id)
+  while (conv?.parentConversationId) conv = getConversation(store, conv.parentConversationId)
+  return conv?.mode ?? 'auto'
 }
 
 /**
@@ -2198,6 +2231,7 @@ function rowToConversation(r: ConversationRow): Conversation {
     sourceRef: r.source_ref,
     parentConversationId: r.parent_conversation_id,
     externalSession: r.external_session,
+    mode: r.permission_mode,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }

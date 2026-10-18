@@ -1867,3 +1867,20 @@ VALUES ('ms_1', 'cv', 'user', '改一下登录页', '[]', 1, NULL),
     db.close()
   })
 })
+
+describe('迁移 71：权限模式由会话保存', () => {
+  test('已有会话一律为 auto，非法取值被拒绝', () => {
+    const db = dbBefore(71)
+    db.exec(
+      "INSERT INTO conversations (id, workspace_id, title, provider, model, created_at, updated_at) VALUES ('cv_old', 'ws', '', 'p', 'm', 1, 1)",
+    )
+    applyOne(db, 71)
+    expect(db.query('SELECT permission_mode FROM conversations').all()).toEqual([
+      { permission_mode: 'auto' },
+    ])
+    expect(() =>
+      db.exec("UPDATE conversations SET permission_mode = 'root' WHERE id = 'cv_old'"),
+    ).toThrow()
+    db.close()
+  })
+})

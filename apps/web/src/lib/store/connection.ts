@@ -286,6 +286,7 @@ export function applyEvent(frame: EventEnvelope<AgentEvent>): void {
           conv.provider = ev.provider
           conv.model = ev.model
           conv.title = ev.title
+          conv.mode = ev.mode
           conv.updatedAt = ev.updatedAt
         }
       }),

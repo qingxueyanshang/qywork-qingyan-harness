@@ -1046,7 +1046,6 @@ describe('看板按当前端实际具备的能力列出各行', () => {
     store.setState('capabilities', {
       sandbox: { backend: 'none', active: false, reason: '' },
       environment: [],
-      mode: 'auto',
       browser: {
         connected: true,
         runtimeSupported: true,

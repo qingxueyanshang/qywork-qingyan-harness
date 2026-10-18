@@ -96,6 +96,7 @@ import {
   markImagesUndelivered,
   markRunRunning,
   markStepExecuting,
+  permissionModeOf,
   recordCompactionStep,
   recordFileRead,
   recordLoadedTools,
@@ -464,7 +465,7 @@ export class Session {
         ...(options?.sourceRef ? { sourceRef: options.sourceRef } : {}),
         ...(options?.parentConversationId
           ? { parentConversationId: options.parentConversationId }
-          : {}),
+          : { mode: config.mode ?? 'auto' }),
       }).id
 
     const conversation = getConversation(store, conversationId)
@@ -524,7 +525,7 @@ export class Session {
         conversationTempDir(this.opts.workspaceRoot, conversationId),
       ),
       platform: process.platform,
-      mode: this.opts.config.mode ?? 'auto',
+      mode: permissionModeOf(store, conversationId),
       skills,
       memories,
       // 派发工具存在时才提供；成员会话没有 delegate，既看不到清单也无法递归派发任务。
@@ -656,6 +657,7 @@ export class Session {
         provider: announced.provider,
         model: announced.model,
         title: announced.title,
+        mode: announced.mode,
         updatedAt: announced.updatedAt,
       }
     }
@@ -1061,11 +1063,15 @@ export class Session {
    * - `run_command`：唯一能同时绕过路径约束与 SSRF 防护的工具
    *   （命令字符串中的路径不经过参数解析），只有它需要实际裁决。
    */
-  private async decide(call: {
-    toolName: string
-    args: Record<string, unknown>
-  }): Promise<PermissionVerdict> {
-    if ((this.opts.config.mode ?? 'auto') === 'full') return { allowed: true }
+  private async decide(
+    conversationId: ConversationId,
+    call: {
+      toolName: string
+      args: Record<string, unknown>
+    },
+  ): Promise<PermissionVerdict> {
+    // 每次裁决从账本读取：运行中切换模式后，下一条命令即按新模式裁决。
+    if (permissionModeOf(this.opts.store, conversationId) === 'full') return { allowed: true }
 
     if (call.toolName !== 'run_command') return { allowed: true }
 
@@ -1232,8 +1238,8 @@ export class Session {
       // 「完全访问」即全部权限，路径边界也由它决定。这与下方 `decide` 中
       // 「`full` 不裁决」是同一规则的两个方面：只放开权限检查而保留路径层，
       // 会形成「read_file 被拒、run_command 可读」的两套账。
-      ...((this.opts.config.mode ?? 'auto') === 'full' ? { unrestrictedPaths: true } : {}),
-      requestPermission: (call) => this.decide(call),
+      ...(permissionModeOf(store, conversationId) === 'full' ? { unrestrictedPaths: true } : {}),
+      requestPermission: (call) => this.decide(conversationId, call),
     }
   }
 }

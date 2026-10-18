@@ -25,6 +25,7 @@ import {
   listRunContextSnapshots,
   listWorkspaces,
   Store,
+  setConversationMode,
   setConversationTitle,
   setStepNodeState,
   settleToolStep,
@@ -501,9 +502,12 @@ describe('被拒绝时返回的说明', () => {
     const { s, store } = await session()
     const v = await (
       s as unknown as {
-        decide(m: { toolName: string; args: Record<string, unknown> }): Promise<Deny>
+        decide(
+          conversationId: string,
+          m: { toolName: string; args: Record<string, unknown> },
+        ): Promise<Deny>
       }
-    ).decide({ toolName: 'run_command', args: { command } })
+    ).decide('cv_auto', { toolName: 'run_command', args: { command } })
     store.close()
     return v
   }
@@ -520,6 +524,39 @@ describe('被拒绝时返回的说明', () => {
     const mentions = (reason.match(/换/g) ?? []).length
     const negated = (reason.match(/不要换|不能换|别换/g) ?? []).length
     expect(mentions).toBe(negated)
+  })
+})
+
+/**
+ * 裁决按会话的模式执行，与配置中的 `mode` 无关：配置只决定新会话的初始值。
+ * 子会话没有开关，按顶层会话的模式运行，父会话切换后随即生效。
+ */
+describe('权限模式按会话裁决', () => {
+  test('同一项目中一个会话完全访问、另一个自动审批；子会话随顶层会话', async () => {
+    const { s, store } = await session({ config: { ...config, mode: 'full' } })
+    const ws = upsertWorkspace(store, '/w', 'w')
+    const open = (extra: { parentConversationId?: ConversationId } = {}) =>
+      createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm', ...extra }).id
+    const a = open()
+    const b = open()
+    const child = open({ parentConversationId: a })
+    const allowed = async (id: ConversationId) =>
+      (
+        await (
+          s as unknown as {
+            decide(
+              conversationId: ConversationId,
+              m: { toolName: string; args: Record<string, unknown> },
+            ): Promise<{ allowed: boolean }>
+          }
+        ).decide(id, { toolName: 'run_command', args: { command: 'rm -rf ~/' } })
+      ).allowed
+
+    setConversationMode(store, a, 'full')
+    expect([await allowed(a), await allowed(child), await allowed(b)]).toEqual([true, true, false])
+    setConversationMode(store, a, 'auto')
+    expect(await allowed(child)).toBe(false)
+    store.close()
   })
 })
 

@@ -294,7 +294,6 @@ describe('正文链接交给内置浏览器', () => {
     ({
       sandbox: { backend: 'none', active: false, reason: '' },
       environment: [],
-      mode: 'auto',
       browser,
     }) as never
 

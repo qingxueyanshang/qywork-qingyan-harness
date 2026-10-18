@@ -13,6 +13,7 @@ import { matchesMention, mentionQuery, replaceMention } from '../lib/composer-su
 import { sessionSignal } from '../lib/session.ts'
 import { slashDispatch } from '../lib/slash.ts'
 import {
+  activeMode,
   activeModel,
   activeModelRow,
   type CliAgentRow,
@@ -36,7 +37,7 @@ import {
   type SkillMeta,
   sendMessage,
   setComposerSeed,
-  setPermissionMode,
+  setMode,
   setState,
   state,
   steerFollowUp,
@@ -66,49 +67,28 @@ import { RunStatus } from './RunStatus.tsx'
 import { VoiceButton } from './VoiceButton.tsx'
 
 /**
- * 权限模式。
+ * 当前会话的权限模式。
  *
- * 位于输入区而不是设置中：它决定下一轮的放行级别，
- * 与「使用哪个模型」属于同一层级的决定，需要随时修改。放入设置意味着每次修改需要点击四次，
- * 且与模型选择器分处两处，同一个决定被拆分到两个位置。
+ * 位于输入区而不是设置中：它决定该会话的放行级别，与「使用哪个模型」属于同一层级的决定，
+ * 同样按会话保存，需要随时修改。运行中不禁用：之后的每次命令裁决即按新模式执行。
  *
  * 只有两种模式，因此使用开关而不是下拉框。文案使用「自动审批 / 完全访问」，
- * 不使用配置中的 `auto` / `full`：后者是配置文件中的字面量，不面向用户。
+ * 不使用 `auto` / `full`：后者是协议中的字面量，不面向用户。
  */
 function ModeChip() {
-  const [busy, setBusy] = createSignal(false)
-  const mode = () => state.capabilities?.mode ?? 'auto'
-  const full = () => mode() === 'full'
-
-  const toggle = async () => {
-    if (busy()) return
-    setBusy(true)
-    const next = full() ? 'auto' : 'full'
-    try {
-      await setPermissionMode(next)
-      // 握手只在连接时报告一次模式，此处就地同步；否则点击后按钮不变，看起来未生效。
-      setState('capabilities', (c) => (c ? { ...c, mode: next } : c))
-    } catch (e) {
-      setState('notice', {
-        message: e instanceof Error ? e.message : String(e),
-        reason: 'config_write_failed',
-      })
-    } finally {
-      setBusy(false)
-    }
-  }
+  const full = () => activeMode() === 'full'
 
   return (
     <button
       class="mode-chip"
       classList={{ full: full() }}
       type="button"
-      disabled={busy()}
+      disabled={!state.activeConversation}
       aria-pressed={full()}
       data-tip={
         full() ? '不做权限检查，也不限制路径；仍剥离凭证' : '只放行确定安全的命令，其余直接拒绝'
       }
-      onClick={() => void toggle()}
+      onClick={() => setMode(full() ? 'auto' : 'full')}
     >
       <IconShield size={13} />
       {full() ? '完全访问' : '自动审批'}

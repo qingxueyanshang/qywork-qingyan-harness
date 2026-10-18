@@ -59,7 +59,6 @@ async function mount(tabId: string, browser: BrowserCapability) {
   store.setState('capabilities', {
     sandbox: { backend: 'none', active: false, reason: '' },
     environment: [],
-    mode: 'auto',
     browser,
   } as never)
   store.setWorkspace(WS)

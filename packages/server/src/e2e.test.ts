@@ -297,9 +297,9 @@ describe('HTTP 接口', () => {
      * `mergeConfig` 从 `incoming.providers ?? {}` **重建**接口表，
      * 一次只带 mode 的 PUT 会清除所有接口。
      *
-     * 因此界面上的 ModeChip **先读取全量再写回**。但这只是调用方遵守约定，
+     * 因此设置页**先读取全量再写回**（`configStore.ts`）。但这只是调用方遵守约定，
      * 最终的保障必须在服务端：本断言锁定「即使客户端写错，也不会写入磁盘」。
-     * 该保障失效时，用户点击一次权限开关，所有 API Key 配置都会丢失。
+     * 该保障失效时，一次不完整的写入会使所有 API Key 配置丢失。
      */
     const before = (await (await fetch(`${base()}/api/config`, { headers: auth() })).json()) as {
       config: { active: { provider: string; model: string }; providers: Record<string, unknown> }
@@ -554,18 +554,10 @@ describe('WebSocket 协议与一轮完整 run', () => {
       type?: string
       capabilities?: {
         pty?: boolean
-        mode?: string
         sandbox?: { backend?: string; active?: boolean; reason?: string }
       }
     }
     expect(hello?.type).toBe('hello.ok')
-
-    /*
-     * 权限模式同样经由握手下发，理由与沙箱相同：它说明本轮的运行边界。
-     * 界面上的 chip 读取该字段；不进入握手时，客户端只能另行拉取一次
-     * 配置，同一个值因此有两个来源。**只有两种模式**，出现第三种即为缺陷。
-     */
-    expect(['auto', 'full']).toContain(hello?.capabilities?.mode ?? '')
 
     /*
      * 沙箱状态必须**包含在握手中**。
@@ -737,6 +729,75 @@ describe('WebSocket 协议与一轮完整 run', () => {
     await Bun.sleep(300)
     expect(seen.some((e) => e.type === 'conversation.updated')).toBe(true)
     expect(rejections).toHaveLength(1)
+    ws.close()
+  })
+
+  /**
+   * 原始失败形状：输入区开关写入全局配置，在一个会话中切换后，其他会话一并改变。
+   * 模式由会话行保存后，切换只影响该会话；配置中的 `mode` 只决定新会话的初始值。
+   */
+  test('权限模式按会话保存：新会话取配置默认值，切换只改该会话并广播', async () => {
+    type ConfigBody = { config: Record<string, unknown> }
+    const putMode = async (mode: 'auto' | 'full') => {
+      const current = (await (
+        await fetch(`${base()}/api/config`, { headers: auth() })
+      ).json()) as ConfigBody
+      const res = await fetch(`${base()}/api/config`, {
+        method: 'PUT',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ config: { ...current.config, mode } }),
+      })
+      expect(res.status).toBe(200)
+    }
+    const create = async () =>
+      (
+        (await (
+          await fetch(`${base()}/api/conversations`, { method: 'POST', headers: auth() })
+        ).json()) as { conversation: { id: string; mode: string } }
+      ).conversation
+
+    await putMode('full')
+    const a = await create()
+    await putMode('auto')
+    const b = await create()
+    expect([a.mode, b.mode]).toEqual(['full', 'auto'])
+
+    const ws = new WebSocket(`${base().replace('http', 'ws')}/stream?token=${handle.token}`)
+    const rejections: { command?: string; reason?: string }[] = []
+    const updates: { conversationId: string; mode: string }[] = []
+    const helloReady = Promise.withResolvers<void>()
+    ws.addEventListener('message', (e) => {
+      const msg = JSON.parse(String(e.data))
+      if (msg.type === 'hello.ok') helloReady.resolve()
+      else if (msg.type === 'command.rejected') rejections.push(msg)
+      else if (msg.event?.type === 'conversation.updated') updates.push(msg.event)
+    })
+    await new Promise<void>((res, rej) => {
+      ws.addEventListener('open', () => res(), { once: true })
+      ws.addEventListener('error', () => rej(new Error('ws 连接失败')), { once: true })
+    })
+    ws.send(
+      JSON.stringify({ type: 'hello', token: handle.token, origin: 'desktop', subscribe: [b.id] }),
+    )
+    await helloReady.promise
+
+    ws.send(JSON.stringify({ type: 'conversation.setMode', conversationId: b.id, mode: 'full' }))
+    ws.send(JSON.stringify({ type: 'conversation.setMode', conversationId: b.id, mode: 'root' }))
+    await Bun.sleep(300)
+    expect(updates).toEqual([expect.objectContaining({ conversationId: b.id, mode: 'full' })])
+    expect(rejections).toEqual([
+      expect.objectContaining({ command: 'conversation.setMode', reason: 'invalid_payload' }),
+    ])
+
+    ws.send(JSON.stringify({ type: 'conversation.setMode', conversationId: a.id, mode: 'auto' }))
+    await Bun.sleep(300)
+    const list = (await (
+      await fetch(`${base()}/api/conversations`, { headers: auth() })
+    ).json()) as {
+      conversations: { id: string; mode: string }[]
+    }
+    const modeOf = (id: string) => list.conversations.find((c) => c.id === id)?.mode
+    expect([modeOf(a.id), modeOf(b.id)]).toEqual(['auto', 'full'])
     ws.close()
   })
 })

@@ -17,6 +17,7 @@ import type {
   ConversationId,
   Currency,
   MessageId,
+  PermissionMode,
   ProviderKind,
   ProviderRequestContentKind,
   ProviderRequestId,
@@ -2317,6 +2318,15 @@ ALTER TABLE provider_requests ADD COLUMN hedge_won INTEGER;
      */
     background: moveToolImagesBatch,
   },
+  {
+    id: 71,
+    name: 'conversation_permission_mode',
+    /**
+     * 权限模式由会话保存，见 `Conversation.mode`。迁移无法读取配置，已有会话一律为 `auto`。
+     * 子会话的该列不参与裁决：子会话按顶层会话的模式运行（`permissionModeOf`）。
+     */
+    sql: `ALTER TABLE conversations ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'auto' CHECK (permission_mode IN ('auto','full'));`,
+  },
 ]
 
 /**
@@ -2372,6 +2382,7 @@ export interface ConversationRow {
   archived_at: number | null
   created_at: number
   updated_at: number
+  permission_mode: PermissionMode
 }
 
 export interface MessageRow {
@@ -2556,6 +2567,7 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'archived_at',
     'created_at',
     'updated_at',
+    'permission_mode',
   ],
   messages: ['id', 'conversation_id', 'role', 'content', 'attachments', 'origin', 'created_at'],
   runs: [

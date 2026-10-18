@@ -204,21 +204,6 @@ export async function saveServerConfig(
   return loadServerConfig()
 }
 
-/**
- * 切换权限模式。
- *
- * 使用已有的 `/api/config` 写入路径，不新增接口：配置的真源是唯一的
- * `config.json`，每增加一条写入路径就多一份记录。代价是先读取全量配置再写回，
- * 多一次往返，但避免了两处写入同一文件必然导致的不一致。
- *
- * 写入成功后调用方须立即更新握手时取得的 `capabilities.mode`：服务端只在握手时报告一次，
- * 不更新时按钮点击后状态不变。
- */
-export async function setPermissionMode(mode: PermissionMode): Promise<void> {
-  const payload = await loadServerConfig()
-  await saveServerConfig({ ...payload.config, mode })
-}
-
 // ───────────────────────── 模型目录 ─────────────────────────
 
 /** 接口下的一个模型。 */

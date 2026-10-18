@@ -5,7 +5,7 @@
  * 用户操作。两者都只经由 `setState` 修改同一份 store，不存在第二本账。
  */
 
-import type { Attachment, Conversation, EffortLevel } from '@qywork/core'
+import type { Attachment, Conversation, EffortLevel, PermissionMode } from '@qywork/core'
 import { produce } from 'solid-js/store'
 import { ApiError } from '../client.ts'
 import { readSession, writeSession } from '../session.ts'
@@ -180,6 +180,13 @@ export function setModel(provider: string, model: string): void {
   client.send({ type: 'conversation.setModel', conversationId: id as never, provider, model })
 }
 
+/** 切换当前会话的权限模式。与 `setModel` 相同，等服务端广播 `conversation.updated` 后再更新显示。 */
+export function setMode(mode: PermissionMode): void {
+  const id = state.activeConversation
+  if (!id) return
+  client.send({ type: 'conversation.setMode', conversationId: id as never, mode })
+}
+
 /**
  * 切换当前模型的思考强度。
  *
@@ -268,6 +275,12 @@ export function activeModel(): { provider: string; model: string } | null {
   if (!id) return null
   const conv = state.conversations.find((c) => c.id === id)
   return conv ? { provider: conv.provider, model: conv.model } : null
+}
+
+/** 当前会话的权限模式。会话不存在时返回 null。 */
+export function activeMode(): PermissionMode | null {
+  const id = state.activeConversation
+  return (id && state.conversations.find((c) => c.id === id)?.mode) || null
 }
 
 /**

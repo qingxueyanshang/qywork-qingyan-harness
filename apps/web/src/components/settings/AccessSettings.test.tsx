@@ -105,7 +105,6 @@ async function mount(
   setState('capabilities', {
     sandbox: { backend: 'none', active: false, reason: '' },
     environment: [],
-    mode: 'auto',
     browser: { connected: false, runtimeSupported: false },
     desktop: capability,
   } as never)

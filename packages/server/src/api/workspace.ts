@@ -145,6 +145,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
                     // 界面引导用户在选择器中选择模型。
                     provider: d.config.active?.provider ?? '',
                     model: d.config.active?.model ?? '',
+                    mode: d.config.mode ?? 'auto',
                   }),
                 ]
           return { workspace, conversations }

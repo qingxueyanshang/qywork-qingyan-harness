@@ -41,6 +41,7 @@ const CONVERSATION: Conversation = {
   sourceRef: null,
   externalSession: null,
   parentConversationId: null,
+  mode: 'auto',
   createdAt: 1,
   updatedAt: 2,
 }

@@ -36,6 +36,7 @@ import {
   listRuns,
   listSteps,
   loadToolImages,
+  permissionModeOf,
   SCHEMA_VERSION,
   type Store,
 } from '@qywork/store'
@@ -358,7 +359,7 @@ export function exportConversationDiagnostics(
       provider: conversationProfiles[0]?.provider ?? null,
       conversationProfiles,
       runtimeConfig: {
-        permissionMode: config.mode ?? 'auto',
+        permissionMode: permissionModeOf(store, conversationId),
         sandboxNetwork: config.sandboxNetwork ?? 'allow',
         additionalDirectories: config.additionalDirectories ?? [],
         envAllowList: config.envAllowList ?? [],
