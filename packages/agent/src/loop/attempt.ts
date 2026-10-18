@@ -12,6 +12,7 @@ import {
 } from '@qywork/ai'
 import type { AgentEvent, ProviderRetryDecision, StepId } from '@qywork/core'
 import { log } from '@qywork/core'
+import { concurrencyRejected, type SendOutcome, sendLane, sendLimiter } from '../send-limit.ts'
 import { recoverFromOverflow } from './compact.ts'
 import { contextEvent } from './context.ts'
 import {
@@ -194,7 +195,13 @@ export async function* sendTurn(
       recordedFirstEvent: false,
     }
 
+    /*
+     * 同时在途的名额（`send-limit.ts`）。在账本行写入之后、发出之前取得：排队期间该行保持未发出，
+     * 发出时刻不含排队时间。出错时在处理开头释放，重发前的退避不占名额；`finally` 覆盖生成器被提前关闭。
+     */
+    let release: ((outcome: SendOutcome) => void) | null = null
     try {
+      release = await sendLimiter.acquire(sendLane(adapter), input.signal)
       const stream = await host.openStream(run, turn.req)
       persist.markRequestSent(turn.requestId)
       yield {
@@ -207,8 +214,10 @@ export async function* sendTurn(
         at: Date.now(),
       }
       yield* consumeStream(host, run, turn, stream, probe, resends)
+      release('completed')
       return 'received'
     } catch (err) {
+      release?.(concurrencyRejected(err) ? 'concurrency_rejected' : 'failed')
       const requestId = turn.requestId
       const pe = err instanceof ProviderError ? err : null
       const code = pe?.code ?? 'internal_error'
@@ -424,6 +433,8 @@ export async function* sendTurn(
         ...(pe.timedOut ? { timedOut: true } : {}),
         cause: err,
       })
+    } finally {
+      release?.('failed')
     }
   }
 }

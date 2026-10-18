@@ -387,7 +387,10 @@ export interface ProviderUsage {
 // ─────────────────────────────── 适配器 ───────────────────────────────
 
 export interface LlmAdapter {
-  /** 工厂解析后的实际端点，仅供诊断；持久化时必须去掉认证段与查询串。 */
+  /**
+   * 工厂解析后的实际端点。用于诊断，以及按端点计数同时在途的请求（`agent` 的 `send-limit.ts`）；
+   * 持久化与写入日志时必须去掉认证段与查询串。
+   */
   readonly endpoint?: string
   readonly kind: ProviderKind
   readonly spec: ModelSpec

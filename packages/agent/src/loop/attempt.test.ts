@@ -16,6 +16,7 @@ import {
 import type { AgentEvent, ProviderRequestDiagnostic } from '@qywork/core'
 import { AgentLoop, type LoopPersistence } from '../index.ts'
 import { ToolRegistry } from '../registry.ts'
+import { sendLane, sendLimiter } from '../send-limit.ts'
 import { MAX_RESENDS } from './attempt.ts'
 import {
   baseCtx,
@@ -995,6 +996,45 @@ describe('传输中断：进入终态、无痕重发、报告失败形状', () =
     // 有 HTTP 状态码表示 provider 已拒绝，请求确实到达。该情形与「无法连接」必须分开记录，
     // 两者的区别在于计费责任。
     expect(rec.settled[0]).toEqual({ status: 'rejected', errorCode: 'provider_unavailable' })
+  })
+
+  /**
+   * 第三方在流内报告并发超限。被拒的那次在重发之前释放名额：上限已降到 1 时，
+   * 不释放的重发会等待自己占用的名额，本轮永远不会结束。
+   */
+  test('第三方报告并发超限：释放名额后重发，上限为 1 时重发照常发出', async () => {
+    const spec = lookupModel('claude-opus-5', 'anthropic_messages')
+    const endpoint = 'https://relay.example/concurrency'
+    // 先使该端点、该模型的上限降到 1。
+    const lane = sendLane({ endpoint, kind: 'anthropic_messages', spec })
+    ;(await sendLimiter.acquire(lane, new AbortController().signal))('concurrency_rejected')
+    let calls = 0
+    const adapter: LlmAdapter = {
+      endpoint,
+      kind: 'anthropic_messages',
+      transmits: { effort: true },
+      spec,
+      async *stream(): AsyncGenerator<ProviderEvent, void, unknown> {
+        calls++
+        yield { type: 'request_prepared', measuredInputTokens: 10 }
+        if (calls === 1) {
+          throw new ProviderError({
+            code: 'provider_unavailable',
+            message: 'Concurrency limit exceeded for account, please retry later',
+            provider: 'anthropic_messages',
+            detail: { source: 'stream', providerCode: 'gateway_concurrency_limit' },
+          })
+        }
+        yield { type: 'text_delta', delta: '完成', at: Date.now() }
+        yield { type: 'done', stopReason: 'end_turn', rawStopReason: '' }
+      },
+    }
+    const { rec, events } = await collect(adapter)
+    expect(calls).toBe(2)
+    expect(rec.settled.map((r) => r.status)).toEqual(['uncertain', 'received'])
+    expect(rec.diagnostics[0]?.retry.decision).toBe('resend')
+    const finished = events.find((e) => e.type === 'run.finished')
+    expect(finished?.type === 'run.finished' && finished.stopReason).toBe('completed')
   })
 
   test('上游自报暂时不可用：等待后重发，第二次成功时视为无事发生', async () => {
