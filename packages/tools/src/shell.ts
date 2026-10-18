@@ -181,8 +181,8 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       '输出会自动限长，超出部分保存到磁盘并在结果中给出 resource id（用 read_resource 取回），' +
       '因此不要为限长在末尾追加 `| tail` / `| head`：这类命令需读到 EOF 才输出，' +
       '而命令派生的后台进程会持续持有管道，EOF 不到达则命令挂起至超时，且没有任何输出返回。' +
-      // 实测模型等后台任务时写 `sleep 580; ls …`：任务一分钟就完成也要等满十分钟，
-      // 用户看到的就是命令「莫名其妙」挂到上限。给出带退出条件的写法，任务结束即返回。
+      // 固定时长的 `sleep` 不感知任务是否完成：`sleep 580; ls …` 在任务一分钟内完成时仍阻塞 580 秒。
+      // 带退出条件的循环在任务结束时返回。
       '等待后台任务时不要 sleep 固定的长时间，用带退出条件的循环' +
       '（如 `for i in $(seq 60); do [ -f 完成标志 ] && break; sleep 10; done`），任务结束即返回。',
     parameters: {
