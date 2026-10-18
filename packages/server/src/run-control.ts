@@ -132,14 +132,21 @@ export async function startRun(
    * **只有一处竞态会触发该拒绝**：目标自动继续的 `setTimeout` 到期时会话已再次忙碌
    * （`fireGoalRound`）。用户消息与定时触发不会执行到此处：两者都经由 `submitMessage`，
    * 忙碌时排入队列。
+   *
+   * 会话已有一轮在运行时不发布 `run.error`：该报错不属于任何轮次，没有等待它的请求方，
+   * 发布后客户端会把它写进正在运行那一轮的收尾条。应用更新期间没有运行中的轮次，报错照常发布。
    */
   if (!deps.runs.reserve(conversationId)) {
+    if (!deps.runs.updating) {
+      log.warn('run', '会话已有一轮在运行，本次启动取消', { conversationId })
+      return
+    }
     deps.bus.publish(
       {
         type: 'run.error',
         runId: '' as RunId,
         code: 'internal_error',
-        message: deps.runs.updating ? '应用正在更新，请稍后重试' : '该会话已有任务在执行，请先中断',
+        message: '应用正在更新，请稍后重试',
       },
       conversationId,
     )

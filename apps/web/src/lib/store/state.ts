@@ -171,14 +171,6 @@ export interface RequestProjection {
   lastContentKind: ProviderRequestContentKind | null
   /** 最后一次可见思考或正文的时刻；工具参数增量不推进。 */
   lastVisibleAt: number | null
-  /**
-   * 写入该投影的事件的序号（快照写入的是其携带的边界）。
-   *
-   * 先后顺序只按该序号裁决。序号不大于它的事件已折叠在内，予以丢弃；
-   * 因此加载期间先到达的新事件不会被较旧的快照覆盖，旧请求的迟到事件也
-   * 无法使新请求的阶段回退。
-   */
-  seq: number
 }
 
 /**
@@ -221,6 +213,23 @@ export interface ConversationView {
   runStartedAt: number | null
   /** 运行中这一轮的实时用量；收尾后转入 run 条目并清空。 */
   usage: RunUsage | null
+  /**
+   * 实时读数（`runStartedAt`、`usage`、`request`、`generatingToolCall`、`error`）所属的轮次。
+   * `null` 表示不知道有运行中的轮次。
+   *
+   * 已知一轮正在运行时，其他轮次的结束与报错事件不清空实时读数，只把收尾条写入会话流：
+   * 较早一轮迟到的收尾不能撤掉当前一轮的运行栏，「已有任务在执行」一类不属于任何轮次的报错
+   * 也不能写进当前一轮的收尾条。
+   */
+  runId: string | null
+  /**
+   * 最近一次写入实时读数的事件或快照的序号，先后只按它裁决。
+   *
+   * 序号不大于它的事件已折叠在内，予以丢弃；序号更小的快照整体丢弃：加载期间先到达的新事件
+   * 不会被较旧的快照覆盖，「没有运行中的轮次」的旧快照也不会清空已开始的一轮。
+   * 事件流无法补发或已更换时归零（`onResync`）：两段事件流的序号不可比较。
+   */
+  liveSeq: number
   /** 来自 tool.generating；参数尚未接收完整，工具尚未开始执行。 */
   generatingToolCall: boolean
   /**
@@ -248,6 +257,8 @@ const EMPTY_VIEW: ConversationView = Object.freeze({
   runUserMessageId: null,
   runStartedAt: null,
   usage: null,
+  runId: null,
+  liveSeq: 0,
   generatingToolCall: false,
   request: null,
   error: null,
@@ -401,6 +412,8 @@ export function openView(id: string): void {
     runUserMessageId: null,
     runStartedAt: null,
     usage: null,
+    runId: null,
+    liveSeq: 0,
     generatingToolCall: false,
     request: null,
     error: null,

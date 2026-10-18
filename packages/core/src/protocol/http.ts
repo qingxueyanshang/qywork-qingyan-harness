@@ -51,23 +51,24 @@ export interface ConversationHistoryPage {
 
 export interface ConversationHistoryPageResponse extends ConversationHistoryPage {
   /**
-   * 会话当前正在运行的轮次与请求；没有运行中的 run 时为 null。
+   * 会话当前正在运行的轮次与请求。
    *
    * 落库账本无法回答当前请求处于哪一阶段，而事件环容量有限，长时间断线后无法补发，
    * 因此刷新只能从此处恢复。该字段由服务端从 RunManager 的当前 run 与同一份请求账
    * 实时读取，不是第二份状态：每个字段都能在 `provider_requests` 的对应行中找到来源。
    */
-  live: ConversationLiveSnapshot | null
+  live: ConversationLiveSnapshot
 }
 
-/** 运行中轮次的只读快照。 */
+/** 会话运行状态的只读快照。没有运行中的轮次时 `runId` 为 null，序号照常携带。 */
 export interface ConversationLiveSnapshot {
-  runId: string
+  runId: string | null
   /**
    * 生成快照时事件总线的序号。
    *
    * 客户端据此判定先后：序号更大的实时事件比快照新，不得被快照覆盖；
-   * 序号不大于该值的迟到事件已包含在快照中，直接丢弃。
+   * 序号不大于该值的迟到事件已包含在快照中，直接丢弃。「没有运行中的轮次」同样按序号裁决：
+   * 历史请求在途期间新一轮开始时，该快照比已收到的 `run.started` 旧。
    */
   seq: number
   /** 本轮最近一次主请求；尚未登记任何请求时为 null。 */

@@ -166,7 +166,7 @@ test('主会话派发任务结束后刷新或切回，显示子任务进度且�
           },
         },
       ],
-      live: null,
+      live: { runId: null, seq: 0, request: null },
       todos: [],
       workflowStarts: [],
       nextCursor: null,
@@ -434,7 +434,6 @@ test('间隔按最后内容时刻计算，刷新前后取值相同', async () =>
       sentAt: t0,
       headersAt: t0,
       lastContentAt: t0 + 60_000,
-      seq: 9,
     })
     expect(note()).toBe('已 35 秒无新增内容')
   } finally {
@@ -462,7 +461,6 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
   })
   store.openConversationTab(ids[1]!, '子会话')
   store.syncViews()
-  let seq = 0
   // 静默提示按当前请求的最后内容时刻计算，因此直接把投影设为已有内容输出且 31 秒无新增内容。
   const silent = (conversationId: string) =>
     store.setState('views', conversationId, 'request', {
@@ -476,7 +474,6 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
       lastContentAt: Date.now() - 31_000,
       lastContentKind: 'thinking' as const,
       lastVisibleAt: Date.now() - 60_000,
-      seq: ++seq,
     })
   for (const id of ids) {
     store.openView(id)
@@ -504,7 +501,6 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
   )
   const progress = (conversationId: string) =>
     store.applyEvent({
-      seq: ++seq,
       at: Date.now(),
       conversationId,
       event: { type: 'tool.generating', runId: 'rn_progress', at: Date.now() },
@@ -524,7 +520,6 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
     silent(ids[0]!)
     expect(notes()[0]).toContain('无新增内容')
     store.applyEvent({
-      seq: ++seq,
       at: Date.now(),
       conversationId: ids[0],
       event: {
@@ -542,7 +537,6 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
     expect(notes()[0]).toMatch(/^第 1\/5 次重试 · 等待重试，(60|61) 秒后… · 上次失败：连接被断开$/)
     expect(host.querySelector('.run-live')?.getAttribute('data-tip')).toBe(notes()[0])
     store.applyEvent({
-      seq: ++seq,
       at: Date.now(),
       conversationId: ids[0],
       event: {
@@ -559,7 +553,6 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
     store.setState('views', ids[0]!, 'request', 'sentAt', Date.now() - 78_000)
     expect(notes()[0]).toMatch(/^第 1\/5 次重试 · 已 7[78] 秒没有响应 · 上次失败：连接被断开$/)
     store.applyEvent({
-      seq: ++seq,
       at: Date.now(),
       conversationId: ids[0],
       event: {
@@ -579,7 +572,6 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
     progress(ids[0]!)
     expect(notes()[0]).toBe('第 1/5 次重试 · 等待响应… · 上次失败：连接被断开')
     store.applyEvent({
-      seq: ++seq,
       at: Date.now(),
       conversationId: ids[0],
       event: {
@@ -592,7 +584,6 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
     } as never)
     expect(notes()[0]).toBe('正在回复…')
     store.applyEvent({
-      seq: ++seq,
       at: Date.now(),
       conversationId: ids[0],
       event: {
@@ -638,6 +629,8 @@ test.each(['running', 'success', 'failure'] as const)(
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           usage: null,
           generatingToolCall: false,
           request: null,
@@ -700,6 +693,8 @@ test('分段读取的文件行在路径后显示行号范围', async () => {
         changes: null,
         runUserMessageId: null,
         runStartedAt: null,
+        runId: null,
+        liveSeq: 0,
         usage: null,
         generatingToolCall: false,
         request: null,
@@ -751,6 +746,8 @@ describe('工具图片回放', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           usage: null,
           generatingToolCall: false,
           request: null,
@@ -803,6 +800,8 @@ describe('工具图片回放', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           usage: null,
           generatingToolCall: false,
           request: null,
@@ -1148,6 +1147,8 @@ describe('子会话与主会话共用流式外壳', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           usage: null,
           generatingToolCall: false,
           request: null,
@@ -1240,6 +1241,8 @@ describe('子会话与主会话共用流式外壳', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: 100,
+          runId: null,
+          liveSeq: 0,
           usage: null,
           lastEventAt: 100,
           generatingToolCall: false,
@@ -1336,6 +1339,8 @@ describe('子会话与主会话共用流式外壳', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           usage: null,
           generatingToolCall: false,
           request: null,
@@ -1429,6 +1434,8 @@ describe('子会话与主会话共用流式外壳', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: 100,
+          runId: null,
+          liveSeq: 0,
           usage: null,
           lastEventAt: 100,
           generatingToolCall: false,
@@ -1441,6 +1448,8 @@ describe('子会话与主会话共用流式外壳', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           usage: null,
           generatingToolCall: false,
           request: null,
@@ -1494,6 +1503,8 @@ describe('定稿的正文不随会话流的增长重建', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           usage: null,
           generatingToolCall: false,
           request: null,
@@ -1552,6 +1563,8 @@ describe('定稿的正文不随会话流的增长重建', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           error: null,
           transcript: [
             {
@@ -1643,6 +1656,8 @@ describe('定稿的正文不随会话流的增长重建', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: Date.now(),
+          runId: null,
+          liveSeq: 0,
           usage: null,
           generatingToolCall: false,
           request: null,
@@ -1705,6 +1720,8 @@ describe('定稿的正文不随会话流的增长重建', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           error: null,
           transcript: [
             { id: 'u-failed', kind: 'user', text: '开始' },
@@ -1749,6 +1766,8 @@ describe('定稿的正文不随会话流的增长重建', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           error: null,
           transcript: [
             { id: 'u-done', kind: 'user', text: '开始' },
@@ -1792,6 +1811,8 @@ describe('定稿的正文不随会话流的增长重建', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           error: null,
           transcript: [
             { id: 'u-unknown', kind: 'user', text: '开始' },
@@ -1835,6 +1856,8 @@ describe('定稿的正文不随会话流的增长重建', () => {
           changes: null,
           runUserMessageId: null,
           runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
           usage: null,
           generatingToolCall: false,
           request: null,

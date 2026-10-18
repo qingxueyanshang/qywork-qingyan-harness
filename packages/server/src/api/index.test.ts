@@ -1524,8 +1524,11 @@ describe('会话历史分页接口', () => {
     expect(page.runs).toHaveLength(1)
     expect(page.steps.map((s) => s.content)).toEqual(['答案 2'])
     expect(page.nextCursor).toBe(ids[1]!)
-    // 没有运行中的 run 时不返回运行中快照，界面因此不会把已结束的轮次渲染为执行中。
-    expect(page.live).toBeNull()
+    // 没有运行中的 run 时快照的 runId 为 null，界面因此不会把已结束的轮次渲染为执行中；
+    // 序号照常携带，客户端据此判定它与已收到的事件孰新。
+    expect(page.live.runId).toBeNull()
+    expect(page.live.request).toBeNull()
+    expect(page.live.seq).toBeNumber()
   })
 
   /**

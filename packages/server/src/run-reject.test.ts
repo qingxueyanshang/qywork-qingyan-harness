@@ -129,7 +129,7 @@ test('未配置任何模型：返回结构化的 no_model，忙闲状态恢复�
   expect(runs.hasRun(cv)).toBe(false)
 })
 
-test('会话已有任务运行中：只返回错误，不改变忙闲状态', async () => {
+test('会话已有任务运行中：不发出任何事件，不改变忙闲状态', async () => {
   const cv = conversation()
   expect(runs.reserve(cv)).toBe(true)
   events = []
@@ -137,10 +137,11 @@ test('会话已有任务运行中：只返回错误，不改变忙闲状态', as
   await startRun(cv, '你好', undefined, deps(config('sk-fake')))
 
   /*
-   * **该用例不应产生忙闲事件。** 占位属于另一轮，该会话当前确实仍在运行；
-   * 补发 `busy=false` 会使正在运行的轮次在界面上显示为空闲。
+   * **该用例不应产生任何事件。** 占位属于另一轮，该会话当前确实仍在运行：
+   * 补发 `busy=false` 会使正在运行的轮次在界面上显示为空闲；发布 `run.error` 会使
+   * 客户端把这句不属于任何轮次的报错写进正在运行那一轮的收尾条。
    */
-  expect(trace()).toEqual(['run.error internal_error runId=""'])
+  expect(trace()).toEqual([])
   expect(runs.hasRun(cv)).toBe(true)
   runs.release(cv)
 })

@@ -769,7 +769,7 @@ describe('按会话停止', () => {
     expect(nodes?.slow?.phase).toBe('interrupted')
     expect(events.some((f) => f.event.type === 'team.member')).toBe(true)
     held.release()
-    subagents.remove(cv, 'cv_child')
+    subagents.remove(cv, 'cv_child', controller)
     await idle(cv)
   }, 30_000)
 
@@ -785,7 +785,7 @@ describe('按会话停止', () => {
     })
     expect(controller.signal.aborted).toBe(true)
     expect(sock.sent).toEqual([])
-    subagents.remove(cv, 'cv_only')
+    subagents.remove(cv, 'cv_only', controller)
   })
 
   test('没有任何任务运行时如实拒绝', async () => {

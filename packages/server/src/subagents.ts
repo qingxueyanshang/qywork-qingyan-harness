@@ -28,10 +28,16 @@ export class SubagentRegistry {
     this.byConversation.set(conversationId, table)
   }
 
-  /** 内层表为空时一并删除：`has` 与 `conversations` 因此只需一种判断方式。 */
-  remove(conversationId: ConversationId, subagentId: string): void {
+  /**
+   * 删除该次派发自己的条目，按 controller 核对。内层表为空时一并删除：`has` 与 `conversations`
+   * 因此只需一种判断方式。
+   *
+   * 不要改为只按 id 删除：子 agent 的轮次注销之后、本次派发的完成回调执行之前，同一子 agent
+   * 可以被再次派发并登记新条目，只按 id 删除会删掉新条目，父会话随即显示为空闲，停止按钮也无法再停止它。
+   */
+  remove(conversationId: ConversationId, subagentId: string, controller: AbortController): void {
     const table = this.byConversation.get(conversationId)
-    if (!table) return
+    if (table?.get(subagentId)?.controller !== controller) return
     table.delete(subagentId)
     if (table.size === 0) this.byConversation.delete(conversationId)
   }

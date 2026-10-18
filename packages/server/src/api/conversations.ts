@@ -282,12 +282,12 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
  * 只统计主请求（`purpose='turn'`）：摘要请求不发送 `run.request`，计入后会使刷新后的
  * 阶段与实时事件指向两次不同的请求。
  */
-function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSnapshot | null {
+function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSnapshot {
   const runId = d.runs.currentRunId(id)
-  if (!runId) return null
+  const seq = d.bus.currentSeq
+  if (!runId) return { runId: null, seq, request: null }
   const rows = listProviderRequests(d.store, runId).filter((r) => r.purpose === 'turn')
   const last = rows.at(-1)
-  const seq = d.bus.currentSeq
   if (!last) return { runId, seq, request: null }
 
   /*

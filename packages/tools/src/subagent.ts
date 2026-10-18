@@ -22,6 +22,7 @@ export const subagentTool: ToolSpec = {
     '把一项任务委派给一个子 agent。派发后立即返回，子 agent 完成后回执会作为一条消息送到本会话，不要为了等回执反复调用。' +
     '首次派发按 kind 新建：role 按角色 id 新建、temp 为临时子 agent（name 必填）、cli 为外部 CLI；返回其 subagentId。' +
     '之后向同一个子 agent 派发任务时将 subagent 填为该 id，子 agent 在自己的会话中继续，三种种类均可续接。' +
+    '同一个子 agent 同时只执行一项任务，执行中再次派发返回「正在执行」，收到其回执后再派发。' +
     '一次只派发一个，两个及以上用 workflow。' +
     '子 agent 无法看到本会话的内容，背景需写入 task。',
   parameters: {

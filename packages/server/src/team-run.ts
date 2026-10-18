@@ -259,7 +259,9 @@ export async function runBuiltinMember(
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)
   } finally {
+    // 与顶层轮次的收尾相同：已登记的轮次注销，未取得 runId 即结束的释放派发时的占位。
     if (runId) deps.runs.unregister(runId)
+    else deps.runs.release(conversationId)
     input.signal.removeEventListener('abort', abortFromParent)
     await session.dispose().catch((reason) => {
       error = `扩展关闭失败：${String(reason)}`

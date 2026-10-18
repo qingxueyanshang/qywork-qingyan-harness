@@ -117,6 +117,9 @@ const {
 } = await import('./store/index.ts')
 const { flushSession } = await import('./session.ts')
 
+/** 历史页附带的运行状态快照：没有运行中的轮次。历史接口总是携带它。 */
+const NO_LIVE = { runId: null, seq: 0, request: null }
+
 test('刷新恢复压缩后继续更新同一进度条，旧快照不覆盖新进度', async () => {
   const id = 'cv_compaction_refresh'
   const runId = 'rn_compaction_refresh'
@@ -162,7 +165,7 @@ test('刷新恢复压缩后继续更新同一进度条，旧快照不覆盖新�
         todos: [],
         workflowStarts: [],
         nextCursor: null,
-        live: null,
+        live: NO_LIVE,
       }
     }
     if (path.includes('/context')) return { context: null }
@@ -241,6 +244,7 @@ describe('激活项目复用服务端返回的会话列表', () => {
           todos: [],
           workflowStarts: [],
           nextCursor: null,
+          live: NO_LIVE,
         }
       }
       throw new Error(`投影不可用：${path}`)
@@ -960,6 +964,7 @@ describe('事件按会话归属过滤', () => {
           todos: [],
           workflowStarts: [],
           nextCursor: null,
+          live: NO_LIVE,
         }
       }
       if (path.includes('/context')) return { context: null }
@@ -1109,6 +1114,7 @@ describe('事件按会话归属过滤', () => {
         todos: [{ id: 'todo_1', content: '已经做完', status: 'completed' }],
         workflowStarts: [],
         nextCursor: null,
+        live: NO_LIVE,
       }
     }
 
@@ -1815,7 +1821,6 @@ describe('账本修订号随落库更新', () => {
       sentAt: 1,
       headersAt: 2,
       lastContentAt: 123456,
-      seq: 1,
     })
     expect(ledgerRevision()).toBe(before)
   })
@@ -1889,7 +1894,12 @@ describe('画布运行事件', () => {
  * 用模拟的 `client.api` 提供账本响应体，执行真实的折叠逻辑。
  */
 describe('重新拉取会话：账本中的内容必须出现在界面上', () => {
-  const stub = (steps: unknown[], runs: unknown[], workflowStarts: unknown[] = []) => {
+  const stub = (
+    steps: unknown[],
+    runs: unknown[],
+    workflowStarts: unknown[] = [],
+    live: unknown = NO_LIVE,
+  ) => {
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
       if (p.includes('/history')) {
         return {
@@ -1911,6 +1921,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
           todos: [],
           workflowStarts,
           nextCursor: null,
+          live,
         }
       }
       throw new Error('没有上下文面板')
@@ -2291,7 +2302,8 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
       busyConversations: ['cv_1'],
     })
     freshView('cv_1')
-    stub([toolStep()], [liveRun])
+    // 运行中的轮次由快照指明（服务端 `RunManager` 的当前轮次），用量从该轮的 runs 行恢复。
+    stub([toolStep()], [liveRun], [], { runId: liveRun.id, seq: 1, request: null })
     await reloadActiveConversation()
 
     // 重新拉取不得清除忙闲表：它由握手快照与 `conversation.busy` 维护。
@@ -2355,6 +2367,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
           todos: [{ id: 'todo-old', content: '跨页待办', status: 'pending' }],
           workflowStarts: [],
           nextCursor: older ? null : 'ms_3',
+          live: NO_LIVE,
         }
       }
       if (path.includes('/context')) return { context: null }
@@ -2420,6 +2433,7 @@ describe('重新拉取会话：账本中的内容必须出现在界面上', () =
           todos: [],
           workflowStarts: [],
           nextCursor: null,
+          live: NO_LIVE,
         }
       }
       if (path.includes('/context')) return { context: null }
@@ -2498,6 +2512,7 @@ describe('当前目标：由事件推送，刷新后仍须存在', () => {
           todos: [],
           workflowStarts: [],
           nextCursor: null,
+          live: NO_LIVE,
         }
       }
       if (p.includes('/goal')) {
@@ -2898,10 +2913,131 @@ describe('刷新按同一份请求账恢复当前请求', () => {
     expect(viewOf('cv_live').generatingToolCall).toBe(false)
   })
 
-  /** 已进入终态的 run 不带快照，投影随之清空，界面不会将其显示为执行中。 */
+  /** 没有运行中的 run 时快照的 runId 为 null，投影随之清空，界面不会将其显示为执行中。 */
   test('没有运行中的 run 时投影清空', async () => {
-    await reload(null)
+    await reload({ runId: null, seq: 100, request: null })
     expect(viewOf('cv_live').request).toBe(null)
+    expect(viewOf('cv_live').runId).toBe(null)
+  })
+
+  const started = (runId: string, seq: number) =>
+    applyEvent({
+      seq,
+      at: 0,
+      conversationId: 'cv_live',
+      event: { type: 'run.started', runId, userMessageId: null },
+    } as never)
+
+  const requested = (runId: string, requestId: string, seq: number) =>
+    applyEvent({
+      seq,
+      at: 0,
+      conversationId: 'cv_live',
+      event: { type: 'run.request', runId, requestId, phase: 'sent', attempt: 0, max: 5, at: 1 },
+    } as never)
+
+  const failed = (runId: string, message: string, seq: number) =>
+    applyEvent({
+      seq,
+      at: 0,
+      conversationId: 'cv_live',
+      event: { type: 'run.error', runId, code: 'network_error', message },
+    } as never)
+
+  const finished = (runId: string, seq: number) =>
+    applyEvent({
+      seq,
+      at: 0,
+      conversationId: 'cv_live',
+      event: {
+        type: 'run.finished',
+        runId,
+        status: 'done',
+        stopReason: 'completed',
+        usage: null,
+        stepCount: 1,
+        durationMs: 1,
+        fileChanges: [],
+      },
+    } as never)
+
+  const rowOf = (runId: string) =>
+    viewOf('cv_live').transcript.find((t) => t.id === `run_${runId}`)?.run
+
+  /**
+   * 原始失败形状：打开会话的历史请求在途期间新一轮开始，返回的快照报告「没有运行中的轮次」，
+   * 计时、用量与请求阶段被清空，本轮剩余时间计时为空。
+   */
+  test('历史加载期间新一轮开始：没有运行中轮次的旧快照不清空本轮计时与请求阶段', async () => {
+    setState({ activeConversation: 'cv_live', busyConversations: [] })
+    freshView('cv_live')
+    ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
+      if (!p.includes('/history')) throw new Error('这个接口不在本组范围内')
+      started('rn_new', 150)
+      requested('rn_new', 'pr_new', 151)
+      return {
+        messages: [],
+        runs: [],
+        steps: [],
+        todos: [],
+        workflowStarts: [],
+        nextCursor: null,
+        live: { runId: null, seq: 100, request: null },
+      }
+    }
+    await reloadActiveConversation()
+
+    expect(viewOf('cv_live').runId).toBe('rn_new')
+    expect(viewOf('cv_live').runStartedAt).not.toBe(null)
+    expect(viewOf('cv_live').request).toMatchObject({ requestId: 'pr_new', phase: 'sent' })
+    expect(state.lastRunId).toBe('rn_new')
+  })
+
+  /** 原始失败形状：较早一轮的结束事件迟到，撤掉了当前一轮的运行栏，报错写进了当前一轮的收尾条。 */
+  test('较早一轮迟到的收尾不撤掉当前一轮的运行栏，收尾条照常写入会话流', () => {
+    setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
+    freshView('cv_live')
+    started('rn_b', 10)
+    requested('rn_b', 'pr_b', 11)
+    failed('rn_a', '较早一轮的报错', 12)
+    finished('rn_a', 13)
+
+    expect(viewOf('cv_live').runId).toBe('rn_b')
+    expect(viewOf('cv_live').runStartedAt).not.toBe(null)
+    expect(viewOf('cv_live').request).toMatchObject({ requestId: 'pr_b' })
+    expect(rowOf('rn_a')).toMatchObject({ runId: 'rn_a', errorMessage: null })
+
+    finished('rn_b', 14)
+    expect(rowOf('rn_b')?.errorMessage).toBe(null)
+    expect(viewOf('cv_live').runStartedAt).toBe(null)
+    expect(viewOf('cv_live').request).toBe(null)
+  })
+
+  test('不属于任何轮次的报错不写入运行中一轮的收尾条', () => {
+    setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
+    freshView('cv_live')
+    started('rn_c', 20)
+    failed('', '该会话已有任务在执行', 21)
+    expect(viewOf('cv_live').error).toBe(null)
+
+    finished('rn_c', 22)
+    expect(rowOf('rn_c')?.errorMessage).toBe(null)
+  })
+
+  /** 服务端重启后事件流更换、序号从头开始；不归零时新事件与新快照都会被当作旧数据丢弃。 */
+  test('事件流重同步后序号归零，新事件流的快照与事件照常写入', async () => {
+    setState({ activeConversation: 'cv_live', busyConversations: ['cv_live'] })
+    freshView('cv_live')
+    requested('rn_old', 'pr_old', 500)
+    stubHistory({ runId: 'rn_after', seq: 3, request: null })
+    ;(client as unknown as { opts: { onResync: () => void } }).opts.onResync()
+    for (let i = 0; i < 100 && viewOf('cv_live').runId !== 'rn_after'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+
+    expect(viewOf('cv_live').runId).toBe('rn_after')
+    requested('rn_after', 'pr_after', 4)
+    expect(viewOf('cv_live').request).toMatchObject({ requestId: 'pr_after' })
   })
 })
 
@@ -3049,9 +3185,11 @@ describe('工具卡按 stepId 认领实时输出', () => {
  * 中间一帧若按忙闲判定，会话流末尾的同一位置会上下显示两条读数条。
  */
 describe('收尾条写入即视为本轮结束，不等待忙闲', () => {
+  // 事件流的序号只增不减：固定序号会使后到的开始事件被判为已折叠的旧事件。
+  let seq = 0
   const started = (runId: string) =>
     ({
-      seq: 1,
+      seq: ++seq,
       at: 0,
       conversationId: 'cv_tail',
       event: {
@@ -3065,7 +3203,7 @@ describe('收尾条写入即视为本轮结束，不等待忙闲', () => {
 
   const finished = (runId: string) =>
     ({
-      seq: 2,
+      seq: ++seq,
       at: 0,
       conversationId: 'cv_tail',
       event: {
@@ -3231,7 +3369,15 @@ describe('带 origin 的用户消息折叠为回执条目', () => {
     const before = client.api
     ;(client as unknown as { api: (p: string) => Promise<unknown> }).api = async (p: string) => {
       if (p.includes('/history')) {
-        return { messages, runs: [run], steps, todos: [], workflowStarts: [], nextCursor: null }
+        return {
+          messages,
+          runs: [run],
+          steps,
+          todos: [],
+          workflowStarts: [],
+          nextCursor: null,
+          live: NO_LIVE,
+        }
       }
       throw new Error('没有上下文面板')
     }
@@ -3439,6 +3585,7 @@ describe('实时到达的回执同样建为回执条目', () => {
           todos: [],
           workflowStarts: [],
           nextCursor: null,
+          live: NO_LIVE,
         }
       }
       throw new Error('没有上下文面板')
@@ -3614,6 +3761,7 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
         ],
         totals: { paths: ['a.ts'], additions: 3, deletions: 1 },
         nextCursor: null,
+        live: NO_LIVE,
       }
     })
     try {
@@ -3662,6 +3810,7 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
       ],
       totals: { paths: ['a.ts'], additions: 1, deletions: 0 },
       nextCursor: null,
+      live: NO_LIVE,
     }))
     try {
       await loadConversationChanges('cv_1')
@@ -3703,12 +3852,14 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
           turns: [{ userMessageId: 'ms_0', text: '最早', origin: null, createdAt: 0, steps: [] }],
           totals: { paths: ['a.ts'], additions: 2, deletions: 0 },
           nextCursor: null,
+          live: NO_LIVE,
         }
       }
       return {
         turns: [{ userMessageId: 'ms_1', text: '后来', origin: null, createdAt: 1, steps: [] }],
         totals: { paths: ['a.ts'], additions: 2, deletions: 0 },
         nextCursor: 'ms_1',
+        live: NO_LIVE,
       }
     })
     try {
@@ -3748,6 +3899,7 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
           ],
           totals: { paths: ['a.ts'], additions: 1, deletions: 0 },
           nextCursor: null,
+          live: NO_LIVE,
         }
       }
       return {
@@ -3765,6 +3917,7 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
         ],
         totals: { paths: ['a.ts', 'c.ts'], additions: 5, deletions: 4 },
         nextCursor: null,
+        live: NO_LIVE,
       }
     })
     try {
@@ -3818,6 +3971,7 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
         ],
         totals: { paths: ['keep.ts'], additions: 2, deletions: 0 },
         nextCursor: null,
+        live: NO_LIVE,
       }
     })
     try {
@@ -3856,6 +4010,7 @@ describe('变更面板：账本页与实时回执合并为同一份', () => {
         turns: [],
         totals: { paths: [], additions: 0, deletions: 0 },
         nextCursor: null,
+        live: NO_LIVE,
       }
     })
     try {

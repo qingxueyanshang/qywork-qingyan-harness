@@ -668,6 +668,95 @@ describe('运行表按会话管理', () => {
     const cid = conversation()
     expect(subagents.interruptConversation(cid)).toBe(false)
   })
+
+  /**
+   * 原始失败形状：向仍在运行的子 agent 再次派发时返回「已派出」，同一子会话中同时运行两轮，
+   * 两轮写入同一批文件；先结束的一轮注销后，子会话与父会话都被报告为空闲。
+   */
+  test('子 agent 执行中再次派发返回正在执行，同一子会话不会同时运行两轮', async () => {
+    const cid = conversation()
+    const where = spot(cid)
+    const first = gate()
+    router = (body) =>
+      body.includes('第二项')
+        ? new Response(textTurn('第二项完成'), { headers: SSE_HEADERS })
+        : first.respond()
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '校对' },
+      task: '第一项',
+      ...where,
+    })
+    const child = res.subagentId as ConversationId
+    await until(first.arrived, '第一轮请求发出')
+
+    const again = await delegate(cid).dispatch({
+      target: { subagent: child },
+      task: '第二项',
+      ...where,
+    })
+    expect(again).toEqual({ ok: false, error: '子 agent 校对 正在执行，回执返回后再派发' })
+    expect(runs.hasRun(child)).toBe(true)
+    expect(runs.isBusy(cid)).toBe(true)
+
+    first.open('第一项完成')
+    await until(() => receipts.length === 1 && !runs.isBusy(cid), '第一轮回执')
+    expect(listRuns(store, child)).toHaveLength(1)
+
+    const later = await delegate(cid).dispatch({
+      target: { subagent: child },
+      task: '第二项',
+      ...where,
+    })
+    expect(later.ok).toBe(true)
+    await until(() => receipts.length === 2 && !runs.isBusy(cid), '第二轮回执')
+    expect(receipts[1]?.content).toContain('第二项完成')
+    expect(listRuns(store, child)).toHaveLength(2)
+    expect(runs.hasRun(child)).toBe(false)
+  })
+
+  test('图节点续接正在执行的子 agent 时该节点失败，检查点回执照常发送', async () => {
+    const parent = conversation()
+    const first = gate()
+    router = () => first.respond()
+    const res = await delegate(parent).dispatch({
+      target: { kind: 'temp', name: '制作' },
+      task: '制作全套',
+      ...spot(parent),
+    })
+    const child = res.subagentId as ConversationId
+    await until(first.arrived, '制作请求发出')
+
+    const args = {
+      goal: '复核',
+      nodes: [
+        { id: 'a', subagent: child, task: '补充证据' },
+        { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
+      ],
+    }
+    await invoke(parent, run(parent, 'wf-busy'), 1, args, parsedStart(args))
+    await until(() => receipts.some((r) => r.content.includes('检查点 审查')), '检查点回执')
+    expect(phasesOf('a')).toContain('failed')
+    expect(receipts.find((r) => r.content.includes('检查点 审查'))?.content).toContain(
+      '子 agent 制作 正在执行，回执返回后再派发',
+    )
+    expect(listRuns(store, child)).toHaveLength(1)
+
+    first.open('制作完成')
+    await until(() => !runs.isBusy(parent), '制作结束')
+  })
+
+  test('完成回调只删除本次派发登记的条目', () => {
+    const cid = conversation()
+    const earlier = new AbortController()
+    const later = new AbortController()
+    subagents.add(cid, 'cv_child', { name: '校对', kind: 'temp', controller: earlier })
+    subagents.add(cid, 'cv_child', { name: '校对', kind: 'temp', controller: later })
+
+    subagents.remove(cid, 'cv_child', earlier)
+    expect(subagents.has(cid)).toBe(true)
+    subagents.remove(cid, 'cv_child', later)
+    expect(subagents.has(cid)).toBe(false)
+  })
 })
 
 describe('图按事件推进', () => {

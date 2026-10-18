@@ -291,7 +291,7 @@ test('快速切换会话时保持已确认的布局，重复选择不重新获�
     todos: [],
     workflowStarts: [],
     nextCursor: null,
-    live: null,
+    live: { runId: null, seq: 0, request: null },
   })
   store.client.connect = () => {}
   window.requestIdleCallback = () => 0

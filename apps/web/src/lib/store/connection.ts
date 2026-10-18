@@ -57,6 +57,13 @@ export const client = new QyClient({
   onBusy: (ids) => syncBusy(ids),
   onResync: () => {
     // 无法补齐缺口：清空本地投影并重新拉取，不在不完整的 transcript 上继续。
+    // 缺口两侧或新旧两段事件流的序号不可比较，实时读数的序号归零，由重新拉取的快照重新确定；
+    // 不归零时，服务端重启后序号从头开始，新事件与新快照都会被判为旧数据而丢弃。
+    setState(
+      produce((s) => {
+        for (const v of Object.values(s.views)) v.liveSeq = 0
+      }),
+    )
     void reloadActiveConversation()
   },
   onStreamChanged: () => {
@@ -406,9 +413,6 @@ function foldContent(cid: string, ev: AgentEvent): void {
         produce((s) => {
           const v = s.views[cid]
           if (!v) return
-          v.error = null
-          v.runStartedAt = Date.now()
-          v.runUserMessageId = ev.userMessageId
           /*
            * 对齐本轮回答所对应的用户气泡。
            *
@@ -603,6 +607,9 @@ function foldContent(cid: string, ev: AgentEvent): void {
         produce((s) => {
           const v = s.views[cid]
           if (!v) return
+          // 已知另一轮正在运行时不写入：该报错属于较早的一轮，或不属于任何轮次，
+          // 写入后会显示在正在运行那一轮的收尾条上。
+          if (!ownsLive(v, ev.runId)) return
           v.error = { code: ev.code, message: ev.message }
           /*
            * 不要在此处清除「运行中」。终态由服务端的 `conversation.busy`
@@ -625,23 +632,29 @@ function foldContent(cid: string, ev: AgentEvent): void {
               item.compaction = { runId: ev.runId, phase: 'failed', reasonCode: 'aborted' }
             }
           }
+          // 较早一轮迟到的收尾仍写入会话流，但不读取、不清空当前一轮的实时读数。
+          const owns = ownsLive(v, ev.runId)
           // 收尾读数写入为一个条目，不写入全局字段：每轮一条，
           // 刷新后由 `reloadActiveConversation` 从 run 行原样重建。
-          v.transcript.push({
-            id: `run_${ev.runId}`,
-            kind: 'run',
-            text: '',
-            run: {
-              runId: ev.runId,
-              stopReason: ev.stopReason,
-              usage: ev.usage,
-              startedAt: v.runStartedAt ?? Date.now(),
-              endedAt: Date.now(),
-              // 前一条 `run.error` 的正文（总是在 finished 之前到达）。服务端同时
-              // 将它写入 `runs.error_message`，刷新后由投影层原样恢复。
-              errorMessage: v.error?.message ?? null,
-            },
-          })
+          // 历史页已折叠出同一轮的条目时不再追加：快照之前结束的一轮，其事件可能在快照之后才到达。
+          if (!v.transcript.some((t) => t.id === `run_${ev.runId}`)) {
+            v.transcript.push({
+              id: `run_${ev.runId}`,
+              kind: 'run',
+              text: '',
+              run: {
+                runId: ev.runId,
+                stopReason: ev.stopReason,
+                usage: ev.usage,
+                startedAt: (owns ? v.runStartedAt : null) ?? Date.now(),
+                endedAt: Date.now(),
+                // 前一条 `run.error` 的正文（总是在 finished 之前到达）。服务端同时
+                // 将它写入 `runs.error_message`，刷新后由投影层原样恢复。
+                errorMessage: owns ? (v.error?.message ?? null) : null,
+              },
+            })
+          }
+          if (!owns) return
           /*
            * 错误正文已交给本轮的条目，须清除会话上的错误。
            *
@@ -663,8 +676,17 @@ function foldContent(cid: string, ev: AgentEvent): void {
 }
 
 /**
- * 把一条事件折叠进当前请求投影。序号不大于投影当前序号的事件一律丢弃：
- * 快照与实时事件经由同一路径进入，先后只由序号裁决（见 `RequestProjection.seq`）。
+ * 该轮次的结束与报错事件能否改动这条会话的实时读数。已知另一轮正在运行时不能：
+ * 较早一轮迟到的收尾不能撤掉当前一轮的运行栏。不知道有运行中的轮次时可以，
+ * 未取得 runId 即失败的报错（未配置模型等）由此显示为错误卡。
+ */
+function ownsLive(v: ConversationView, runId: string): boolean {
+  return v.runId === null || v.runId === runId
+}
+
+/**
+ * 把一条事件折叠进当前请求投影。序号不大于该会话实时读数序号的事件一律丢弃：
+ * 快照与实时事件经由同一路径进入，先后只由序号裁决（见 `ConversationView.liveSeq`）。
  */
 function writeRequest(
   cid: string,
@@ -676,9 +698,9 @@ function writeRequest(
     produce((s) => {
       const v = s.views[cid]
       if (!v) return
-      if (v.request && seq <= v.request.seq) return
-      const request = next(v.request)
-      v.request = request
+      if (seq <= v.liveSeq) return
+      v.liveSeq = seq
+      v.request = next(v.request)
       if (generatingToolCall !== undefined) v.generatingToolCall = generatingToolCall
     }),
   )
@@ -697,7 +719,13 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
       setState(
         produce((s) => {
           const v = s.views[cid]
-          if (!v) return
+          // 快照已包含该事件：快照之后迟到的开始事件不得重置计时与读数。
+          if (!v || seq <= v.liveSeq) return
+          v.liveSeq = seq
+          v.runId = ev.runId
+          v.runStartedAt = Date.now()
+          v.runUserMessageId = ev.userMessageId
+          v.error = null
           v.usage = null
           v.request = null
           v.generatingToolCall = false
@@ -728,7 +756,6 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
           lastContentAt: null,
           lastContentKind: null,
           lastVisibleAt: null,
-          seq,
         }),
         false,
       )
@@ -750,7 +777,6 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
           lastContentAt: null,
           lastContentKind: null,
           lastVisibleAt: null,
-          seq,
         }),
         false,
       )
@@ -784,7 +810,6 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
                   ev.type === 'tool.generating' || ev.delta.length === 0
                     ? prev.lastVisibleAt
                     : ev.at,
-                seq,
               }
             : null,
         ev.type === 'tool.generating',
@@ -805,8 +830,12 @@ function foldConversationRunState(cid: string, seq: number, ev: AgentEvent): voi
       setState(
         produce((s) => {
           const v = s.views[cid]
-          if (!v) return
-          if (ev.type === 'run.finished') v.usage = null
+          if (!v || !ownsLive(v, ev.runId)) return
+          if (ev.type === 'run.finished') {
+            v.usage = null
+            v.runId = null
+            v.liveSeq = Math.max(v.liveSeq, seq)
+          }
           v.request = null
           v.generatingToolCall = false
         }),
@@ -923,8 +952,8 @@ interface HistoryPage extends Folded {
   /** 本页引用但不在本页中的 workflow 首次派发，见 `ConversationHistoryPageResponse`。 */
   workflowStarts: Step[]
   nextCursor: string | null
-  /** 运行中的轮次与当前请求的只读快照；没有 run 运行时为 null。 */
-  live: ConversationLiveSnapshot | null
+  /** 运行状态与当前请求的只读快照；没有 run 运行时 `runId` 为 null。 */
+  live: ConversationLiveSnapshot
 }
 
 /**
@@ -958,25 +987,35 @@ function projectLive(live: ConversationLiveSnapshot): RequestProjection | null {
     lastContentAt: r.lastContentAt,
     lastContentKind: r.lastContentKind ?? null,
     lastVisibleAt: r.lastVisibleAt ?? null,
-    seq: live.seq,
   }
 }
 
 /**
- * 把快照写入一条会话的投影。
+ * 把快照写入一条会话的实时读数，返回是否写入。
  *
- * 序号小于现有投影的快照整体丢弃：加载期间先到达的实时事件比它新。
- * `live` 为 null 表示服务端当前没有该会话的 run，投影随之清空。
+ * 序号小于实时读数序号的快照整体丢弃：加载期间先到达的实时事件比它新，其中包括
+ * 「没有运行中的轮次」的快照之后才到达的 `run.started`。
+ *
+ * 运行中的轮次只取快照的 `runId`（服务端 `RunManager` 的当前轮次），不按 runs 行的状态列推断：
+ * 服务进程崩溃后账本中的行可能仍处于 `running`。快照所指的仍是视图已在跟踪的那一轮时，
+ * 保留按本地时钟记录的开始时刻与已收到的用量。
  */
-function restoreRequest(v: ConversationView, live: ConversationLiveSnapshot | null): void {
-  if (!live) {
-    v.request = null
-    v.generatingToolCall = false
-    return
-  }
-  if (v.request && live.seq < v.request.seq) return
-  v.request = projectLive(live)
+function restoreLive(
+  v: ConversationView,
+  live: ConversationLiveSnapshot,
+  runs: readonly Run[],
+): boolean {
+  if (live.seq < v.liveSeq) return false
+  const row = live.runId ? (runs.find((r) => r.id === live.runId) ?? null) : null
+  const same = live.runId !== null && v.runId === live.runId
+  v.liveSeq = live.seq
+  v.runId = live.runId
+  v.runStartedAt = same ? v.runStartedAt : (row?.createdAt ?? null)
+  v.runUserMessageId = same ? v.runUserMessageId : (row?.userMessageId ?? null)
+  v.usage = same ? v.usage : (row?.usage ?? null)
+  v.request = live.runId ? projectLive(live) : null
   v.generatingToolCall = v.request?.lastContentKind === 'tool_arguments'
+  return true
 }
 
 /** 将一页折叠为会话流：首次派发先进入会话流，其自身的行由 workflow 折叠隐藏，只用于完整渲染 workflow 卡片。 */
@@ -1174,9 +1213,6 @@ export async function loadConversationView(id: string): Promise<void> {
     const page = await fetchConversationPage(id, null, lease.controller.signal)
     if (canceledByNewerRequest(lease)) return
     const items = foldPage(page)
-    const live = state.busyConversations.includes(id)
-      ? (page.runs.find((run) => run.status === 'running') ?? null)
-      : null
     setState(
       produce((s) => {
         const v = s.views[id]
@@ -1184,14 +1220,7 @@ export async function loadConversationView(id: string): Promise<void> {
         // 按 id 合并加载期间到达的事件；正文以账本为准，压缩保留较新的阶段。
         v.transcript = mergeHistoryItems(items, v.transcript)
         v.history = { loading: null, nextCursor: page.nextCursor, error: null }
-        restoreRequest(v, page.live)
-        if (live) {
-          v.runStartedAt ??= live.createdAt
-          v.usage ??= live.usage
-        } else if (!s.busyConversations.includes(id)) {
-          v.runStartedAt = null
-          v.usage = null
-        }
+        restoreLive(v, page.live, page.runs)
       }),
     )
   } catch (error) {
@@ -1548,31 +1577,22 @@ export async function reloadActiveConversation(): Promise<void> {
      * 每新增一个字段，该清单就可能遗漏一次。真源是 runs 表，而此处本身就在拉取它。
      *
      * 「是否在运行」不在此列：`busyConversations` 本身带有会话维度，
-     * 切换会话即读取另一项，无需重置。此处也不得按 runs 表补写一份：
-     * 服务进程崩溃后账本中的行可能仍处于 `running`，按它写入会使界面永久
-     * 停留在执行中，而 `RunManager` 中早已没有该 run。
+     * 切换会话即读取另一项，无需重置。运行中的轮次与实时读数只取历史页附带的快照
+     * （`restoreLive`），不按 runs 表的状态列推断。
      */
-    const live = state.busyConversations.includes(id)
-      ? (runs.find((r) => r.status === 'running') ?? null)
-      : null
-
     setState(
       produce((s) => {
         const v = s.views[id]
+        // 快照比已到达的事件旧时整体不写入，本轮编号保留由 `run.started` 写入的值。
+        if (!v || restoreLive(v, folded.live, runs)) s.lastRunId = folded.live.runId
         if (v) {
           // 按 id 合并实时事件，压缩进度不可因较早的快照而回退。
           v.transcript = mergeHistoryItems(items, v.transcript)
           v.history = { loading: null, nextCursor: folded.nextCursor, error: null }
-          v.runStartedAt = live ? live.createdAt : null
-          v.runUserMessageId = live?.userMessageId ?? null
-          v.usage = live?.usage ?? null
-          // 当前请求的阶段、次数与内容时刻从同一份请求记录读取，不按重新拉取的时刻生成。
-          restoreRequest(v, folded.live)
           // 报错正文随收尾条显示，重新投影后收尾条已携带它（见 `foldTranscript`）。
           v.error = null
         }
         s.followUps = queue
-        s.lastRunId = live?.id ?? null
         // 待办从同一份 steps 账本投影得到，不新增持久化路径。
         // 若只存在于 WS 事件中，刷新或切换会话后再切回就会丢失。`write_todos` step
         // 提交整表，之后明确绑定的成功 `subagent` step 更新单项；历史接口已按此

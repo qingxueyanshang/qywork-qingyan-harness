@@ -29,9 +29,10 @@ describe('更新与新任务互斥', () => {
     })
     expect(runs.claimUpdate()).toBe(false)
     runs.unregister('rn_update' as never)
-    subagents.add(cv, 'child', { name: 'child', kind: 'temp', controller: new AbortController() })
+    const child = new AbortController()
+    subagents.add(cv, 'child', { name: 'child', kind: 'temp', controller: child })
     expect(runs.claimUpdate()).toBe(false)
-    subagents.remove(cv, 'child')
+    subagents.remove(cv, 'child', child)
     runs.enqueue(cv, { id: 'queued', content: 'pending', steer: false })
     expect(runs.claimUpdate()).toBe(false)
     runs.takeNext(cv)
@@ -244,15 +245,20 @@ describe('按会话中断', () => {
 describe('忙态包含子 agent，启动轮次的检查不包含', () => {
   const cv = 'cv_sub' as ConversationId
 
-  function withSubagent(): { runs: RunManager; table: SubagentRegistry } {
+  function withSubagent(): {
+    runs: RunManager
+    table: SubagentRegistry
+    controller: AbortController
+  } {
     const table = new SubagentRegistry()
     const runs = new RunManager(null as never, new EventBus(), table)
+    const controller = new AbortController()
     table.add(cv, 'cv_child', {
       name: '临时',
       kind: 'temp',
-      controller: new AbortController(),
+      controller,
     })
-    return { runs, table }
+    return { runs, table, controller }
   }
 
   test('只有子 agent 运行中：isBusy 为真、hasRun 为假、reserve 放行', () => {
@@ -268,8 +274,8 @@ describe('忙态包含子 agent，启动轮次的检查不包含', () => {
   })
 
   test('子 agent 结束后忙态随之解除', () => {
-    const { runs, table } = withSubagent()
-    table.remove(cv, 'cv_child')
+    const { runs, table, controller } = withSubagent()
+    table.remove(cv, 'cv_child', controller)
     expect(runs.isBusy(cv)).toBe(false)
     expect(runs.busyConversations()).toEqual([])
   })

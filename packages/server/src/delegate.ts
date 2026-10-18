@@ -392,25 +392,43 @@ export function makeDelegate(ctx: {
     at: DispatchAt & { provider?: string; model?: string },
   ): Promise<Awaited<ReturnType<DelegatePort['dispatch']>>> => {
     const nodeId = at.nodeId ?? SUBAGENT_NODE_ID
+    /*
+     * 未能启动同样是该节点的终态：不写入时卡片上该节点始终停留在等待，而工具已报告无法派发。
+     * 图节点还须继续推进：该节点没有完成回调，不推进时整张图停在这里，检查点回执不再发送。
+     */
+    const refuse = (
+      state: { label: string; kind?: SubagentKind; subagentId?: ConversationId },
+      error: string,
+    ) => {
+      note(at, nodeId)({ phase: 'failed', ...state, error })
+      if (at.workflow) continueGraph(at.workflow.workflowId, at, { nodeId, failed: true })
+      return { ok: false as const, error }
+    }
     const resolved = await resolveTarget(target, at.model, at.provider)
     if ('error' in resolved) {
-      // 目标无效同样是该节点的终态：不写入时卡片上该节点始终停留在等待，而工具已报告无法派发。
-      note(
-        at,
-        nodeId,
-      )({
-        phase: 'failed',
-        label: targetLabel(target),
-        // 只提供子 agent id 时无法判定种类：该会话未能解析，无法取得记录。
-        ...('subagent' in target ? {} : { kind: target.kind }),
-        error: resolved.error,
-      })
-      return { ok: false, error: resolved.error }
+      // 只提供子 agent id 时无法判定种类：该会话未能解析，无法取得记录。
+      return refuse(
+        { label: targetLabel(target), ...('subagent' in target ? {} : { kind: target.kind }) },
+        resolved.error,
+      )
     }
 
     const id = resolved.conversation.id
     const label = resolved.conversation.title
     const kindOf = resolved.conversation.source ? { kind: resolved.conversation.source } : {}
+    /*
+     * 子会话与顶层会话使用同一个占位：同一会话同时只运行一轮。检查与占位在同一个同步块中完成，
+     * 与解析目标之后的登记之间没有 await。不占位时，向运行中的子 agent 再次派发会在同一会话中
+     * 启动第二个循环，两轮同时写入同一批文件。占位由成员轮次的 `register` 承接，未能启动时释放。
+     */
+    if (!deps.runs.reserve(id)) {
+      return refuse(
+        { label, ...kindOf, subagentId: id },
+        deps.runs.updating
+          ? '应用正在更新，请稍后再派发'
+          : `子 agent ${label} 正在执行，回执返回后再派发`,
+      )
+    }
     const controller = new AbortController()
     deps.subagents.add(conversationId, id, {
       name: label,
@@ -422,7 +440,7 @@ export function makeDelegate(ctx: {
 
     const started = Date.now()
     void perform(resolved, task, at, controller.signal)
-      .then((outcome) => complete(resolved, at, outcome, controller.signal, started))
+      .then((outcome) => complete(resolved, at, outcome, controller, started))
       .catch((err) => {
         // `perform` 内部捕获异常、不抛出，到达此处的是完成回调中的意外异常：
         // **必须写入终态**，否则卡片上该节点停留在「进行中」，且之后没有任何路径会再处理它。
@@ -430,7 +448,7 @@ export function makeDelegate(ctx: {
           resolved,
           at,
           { ok: false, output: '', error: err instanceof Error ? err.message : String(err) },
-          controller.signal,
+          controller,
           started,
         )
       })
@@ -478,10 +496,13 @@ export function makeDelegate(ctx: {
                   ),
               }
             : {}),
-        }).catch(async (e: unknown) => {
-          await changeWindow.close()
-          throw e
         })
+          .catch(async (e: unknown) => {
+            await changeWindow.close()
+            throw e
+          })
+          // 外部 CLI 不创建轮次，没有 `register` 承接派发时的占位，进程结束时在此释放。
+          .finally(() => deps.runs.release(conversation.id))
         const watched = await changeWindow.close()
         for (const c of watched.changes) {
           if (c.changeType === 'deleted') reported.delete(c.path)
@@ -544,17 +565,17 @@ export function makeDelegate(ctx: {
     resolved: Resolved,
     at: DispatchAt,
     outcome: Outcome,
-    signal: AbortSignal,
+    controller: AbortController,
     started: number,
   ): void => {
     const id = resolved.conversation.id
     const label = resolved.conversation.title
     const kindOf = resolved.conversation.source ? { kind: resolved.conversation.source } : {}
     const nodeId = at.nodeId ?? SUBAGENT_NODE_ID
-    deps.subagents.remove(conversationId, id)
+    deps.subagents.remove(conversationId, id, controller)
     deps.runs.announce(conversationId)
 
-    const interrupted = signal.aborted || outcome.stop === 'user_interrupt'
+    const interrupted = controller.signal.aborted || outcome.stop === 'user_interrupt'
     const output = interrupted ? '' : excerpt(at, nodeId, outcome.output)
     const error = interrupted ? '已停止' : outcome.error
     note(
