@@ -549,7 +549,7 @@ export function GeneratePanel(props: {
   /** 选择素材后建立连接所用的用途；由 `@` 打开时没有用途。 */
   const roleOf = (m: Menu | null) => (m?.kind === 'pick' ? m.role : undefined)
 
-  /** 可选素材列表：首尾帧模式只列出已连接的两帧（首尾帧不能与参考素材同时提供）。 */
+  /** `@` 只列出当前卡片已连接的素材；添加素材时列出可连接的节点。 */
   const pickable = () => {
     const role = roleOf(menu())
     const connected = new Set(edges().map((e) => e.from))
@@ -560,9 +560,7 @@ export function GeneratePanel(props: {
       if (role === 'first_frame' || role === 'last_frame')
         return kind === 'image' && !connected.has(n.id)
       if (role) return !connected.has(n.id) && accepts(kind)
-      // `@`：首尾帧模式下只列出这两帧，其余模式列出可作为输入的素材。
-      if (mode() === 'first_last') return connected.has(n.id)
-      return accepts(kind)
+      return connected.has(n.id)
     })
   }
   const accepts = (kind: GenerateOutput) =>
@@ -600,7 +598,7 @@ export function GeneratePanel(props: {
       void props.apply([{ op: 'connect', from: sourceId, to: props.node.id, role }])
       return
     }
-    // `@`：在光标处插入标签并立即提交提示词；未连线的素材由服务端在同一批操作中补充连线。
+    // `@`：在光标处插入已连接素材的标签并立即提交提示词。
     const el = chip(sourceId)
     const range = caret
     if (range && editor.contains(range.startContainer)) {
@@ -1192,7 +1190,7 @@ export function GeneratePanel(props: {
               <AnchoredMenu class="canvas-pick" anchor={m().anchor} placement="above-start">
                 <SourcePicker
                   nodes={pickable()}
-                  files={roleOf(m()) !== undefined || mode() !== 'first_last'}
+                  files={roleOf(m()) !== undefined}
                   kinds={imagesOnly() ? ['image'] : ['image', 'video', 'audio']}
                   accepts={acceptsPath}
                   accept={uploadAccept()}

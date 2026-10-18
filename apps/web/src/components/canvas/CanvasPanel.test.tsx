@@ -2231,38 +2231,33 @@ describe('画布：生成卡与生成面板', () => {
     ])
   })
 
-  test('画布上没有其他素材时 @ 仍提供搜索与上传；选择工作区文件时先添加到画布再插入引用', async () => {
-    const { host, server, refs } = await mount([{ op: 'add_generate', ref: '$i', output: 'image' }])
-    await select(host, refs.$i!)
-    ;[...host.querySelectorAll<HTMLButtonElement>('.canvas-bar button')]
-      .find((b) => b.textContent === '@')!
-      .click()
-    await waitFor(
-      () => !!document.querySelector('.canvas-pick input[type="search"]'),
-      () => '',
-    )
-    expect(document.querySelector('.canvas-pick-upload')?.textContent).toContain('从设备上传')
-    const input = document.querySelector<HTMLInputElement>('.canvas-pick input[type="search"]')!
-    input.value = '小'
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    const hits = () => [
-      ...document.querySelectorAll<HTMLButtonElement>('.canvas-pick-list > button'),
-    ]
-    // 图像生成卡只接受图片：不列出视频。
-    await waitFor(
-      () => hits().length === 1,
-      () => document.querySelector('.canvas-pick')!.innerHTML,
-    )
-    hits()[0]!.click()
-    await waitFor(
-      () => server.ops.length === 2,
-      () => JSON.stringify(server.ops),
-    )
-    expect(server.ops[0]![0]).toMatchObject({ op: 'add_file', path: '角色/小满.png' })
-    expect(server.ops[0]![0]).toHaveProperty('near')
-    const added = server.doc().nodes.find((n) => n.type === 'file')!
-    expect(server.ops[1]).toEqual([{ op: 'update', id: refs.$i!, prompt: `@[${added.id}] ` }])
-  })
+  test.each(['image', 'video', 'art'] as const)(
+    '没有引用连线时 @ 列表为空且没有上传入口：%s',
+    async (output) => {
+      const { host, server, refs } = await mount([
+        ...FILES,
+        { op: 'add_generate', ref: '$i', output },
+      ])
+      await select(host, refs.$i!)
+      ;[...host.querySelectorAll<HTMLButtonElement>('.canvas-bar button')]
+        .find((b) => b.textContent === '@')!
+        .click()
+      await waitFor(
+        () => !!document.querySelector('.canvas-pick input[type="search"]'),
+        () => '',
+      )
+      expect(document.querySelectorAll('.canvas-pick-list > button').length).toBe(0)
+      expect(document.querySelector('.canvas-pick-upload')).toBeNull()
+      expect(document.querySelector('.canvas-pick input[type="file"]')).toBeNull()
+      const input = document.querySelector<HTMLInputElement>('.canvas-pick input[type="search"]')!
+      input.value = '小'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      // 等待文件搜索的防抖时间，确认搜索不会引入工作区文件。
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(document.querySelectorAll('.canvas-pick-list > button').length).toBe(0)
+      expect(server.ops).toEqual([])
+    },
+  )
 
   test('首尾帧模式下 @ 只列出已连接的帧，不提供文件与上传；从尾帧空位打开时提供', async () => {
     const { host, refs } = await mount([
@@ -2293,15 +2288,13 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
-  test('选择已在画布上的工作区文件：直接引用该节点，不再添加新节点', async () => {
+  test('从素材栏选择已在画布上的工作区文件：连接现有节点', async () => {
     const { host, server, refs } = await mount([
       { op: 'add_file', ref: '$f', path: '角色/小满.png', x: 0, y: 0 },
       { op: 'add_generate', ref: '$i', output: 'image', x: 300, y: 0 },
     ])
     await select(host, refs.$i!)
-    ;[...host.querySelectorAll<HTMLButtonElement>('.canvas-bar button')]
-      .find((b) => b.textContent === '@')!
-      .click()
+    host.querySelector<HTMLButtonElement>('.canvas-inputs button[aria-label="添加素材"]')!.click()
     await waitFor(
       () => !!document.querySelector('.canvas-pick input[type="search"]'),
       () => '',
@@ -2322,7 +2315,9 @@ describe('画布：生成卡与生成面板', () => {
       () => server.ops.length === 1,
       () => JSON.stringify(server.ops),
     )
-    expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$i!, prompt: `@[${refs.$f!}] ` }])
+    expect(server.ops[0]).toEqual([
+      { op: 'connect', from: refs.$f!, to: refs.$i!, role: 'reference' },
+    ])
   })
 
   test('从素材栏的「+」上传：上传到该卡片旁边并连接为参考', async () => {
@@ -2357,30 +2352,73 @@ describe('画布：生成卡与生成面板', () => {
     ])
   })
 
-  test('点击 @ 选择一个素材：在提示词中插入引用并立即提交', async () => {
-    const { host, server, refs } = await mount(CARD)
+  test.each(['按钮', '键盘'])('@ 只列出当前卡片已引用的素材，选择后保存标签：%s', async (entry) => {
+    const { host, server, refs } = await mount([
+      ...CARD,
+      { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+      { op: 'add_file', ref: '$b', path: 'b.png', name: '其他卡片素材' },
+      { op: 'add_file', ref: '$c', path: 'c.png', name: '未引用素材' },
+      { op: 'add_generate', ref: '$other', output: 'video' },
+      { op: 'connect', from: '$b', to: '$other', role: 'reference' },
+    ])
     await select(host, refs.$v!)
-    const at = [...host.querySelectorAll<HTMLButtonElement>('.canvas-bar button')].find(
-      (b) => b.textContent === '@',
-    )!
-    at.click()
+    const edges = structuredClone(server.doc().edges)
+    if (entry === '按钮') {
+      host.querySelector<HTMLButtonElement>('button[aria-label="引用素材"]')!.click()
+    } else {
+      host
+        .querySelector<HTMLElement>('.canvas-prompt')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: '@', bubbles: true, cancelable: true }))
+    }
     await waitFor(
       () => !!document.querySelector('.canvas-pick'),
       () => '',
     )
-    ;[...document.querySelectorAll<HTMLButtonElement>('.canvas-pick-list button')]
-      .find((b) => b.textContent?.includes('小满'))!
-      .click()
+    const choices = () => [
+      ...document.querySelectorAll<HTMLButtonElement>('.canvas-pick-list button'),
+    ]
+    expect(choices().map((b) => b.textContent)).toEqual(['小满'])
+    expect(document.querySelector('.canvas-pick-upload')).toBeNull()
+    const search = document.querySelector<HTMLInputElement>('.canvas-pick input[type="search"]')!
+    search.value = '其他'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(choices()).toHaveLength(0)
+    search.value = '小满'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(choices().map((b) => b.textContent)).toEqual(['小满'])
+    choices()[0]!.click()
     await waitFor(
       () => server.ops.length === 1,
       () => '',
     )
     expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$v!, prompt: `@[${refs.$a!}] ` }])
-    // 服务端在同一批操作中补充了参考连线，素材栏中增加一项。
+    expect(server.doc().edges).toEqual(edges)
     await waitFor(
       () => host.querySelectorAll('.canvas-inputs .canvas-input i').length === 1,
       () => '',
     )
+  })
+
+  test('@ 列表随引用连线更新，断开后移除素材', async () => {
+    const { host, server, refs } = await mount([
+      ...CARD,
+      { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+    ])
+    await select(host, refs.$v!)
+    host.querySelector<HTMLButtonElement>('button[aria-label="引用素材"]')!.click()
+    await waitFor(
+      () => document.querySelectorAll('.canvas-pick-list > button').length === 1,
+      () => document.body.innerHTML.slice(-500),
+    )
+    server.setView({ doc: { ...server.doc(), edges: [] } })
+    const store = await import('../../lib/store/index.ts')
+    store.setState('canvasVersion', 1)
+    await waitFor(
+      () => document.querySelectorAll('.canvas-pick-list > button').length === 0,
+      () => document.querySelector('.canvas-pick')?.innerHTML ?? '',
+    )
+    expect(document.querySelector('.canvas-pick')).not.toBeNull()
+    expect(server.ops).toEqual([])
   })
 
   test('在一张卡片上输入后直接选中另一张卡片：提示词提交给原卡片，新卡片的面板为空', async () => {
@@ -3475,6 +3513,7 @@ describe('画布：连线', () => {
     const { host, refs, server } = await mount(
       [
         { op: 'add_file', ref: '$voice', path: 'voice.opus' },
+        { op: 'add_file', ref: '$unused', path: 'unused.opus' },
         { op: 'add_file', ref: '$image', path: 'photo.png' },
         { op: 'add_generate', ref: '$audio', output: 'audio' },
       ],
@@ -3515,6 +3554,15 @@ describe('画布：连线', () => {
       to: refs.$audio,
       role: 'audio',
     })
+    host.querySelector<HTMLButtonElement>('button[aria-label="引用素材"]')!.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-pick'),
+      () => '',
+    )
+    expect(
+      [...document.querySelectorAll('.canvas-pick-list > button')].map((b) => b.textContent),
+    ).toEqual(['voice'])
+    expect(document.querySelector('.canvas-pick-upload')).toBeNull()
   })
 })
 
