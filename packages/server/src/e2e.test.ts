@@ -221,6 +221,57 @@ describe('HTTP 接口', () => {
     expect(ok.headers.get('access-control-allow-origin')).toBe('*')
   })
 
+  test.each(['http://localhost:5180', 'http://tauri.localhost'])(
+    '跨源重命名允许 PATCH 预检并保存标题：%s',
+    async (origin) => {
+      const created = await fetch(`${base()}/api/conversations`, {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ title: '原会话标题' }),
+      })
+      expect(created.status).toBe(200)
+      const { conversation } = (await created.json()) as { conversation: { id: string } }
+      const url = `${base()}/api/conversations/${conversation.id}`
+
+      // Bun fetch 不执行浏览器的 CORS 检查，必须单独验证预检允许实际使用的方法。
+      const pre = await fetch(url, {
+        method: 'OPTIONS',
+        headers: {
+          origin,
+          'access-control-request-method': 'PATCH',
+          'access-control-request-headers': 'authorization,content-type',
+        },
+      })
+      expect(pre.status).toBe(204)
+      expect(pre.headers.get('access-control-allow-origin')).toBe('*')
+      expect(pre.headers.get('access-control-allow-methods')?.split(/,\s*/)).toContain('PATCH')
+      const allowedHeaders = pre.headers.get('access-control-allow-headers')?.split(/,\s*/)
+      expect(allowedHeaders).toContain('authorization')
+      expect(allowedHeaders).toContain('content-type')
+
+      const init = { method: 'PATCH', body: JSON.stringify({ title: '重命名后的会话' }) }
+      const denied = await fetch(url, {
+        ...init,
+        headers: { origin, 'content-type': 'application/json' },
+      })
+      expect(denied.status).toBe(401)
+
+      const renamed = await fetch(url, {
+        ...init,
+        headers: { ...auth(), origin, 'content-type': 'application/json' },
+      })
+      expect(renamed.status).toBe(200)
+      expect(renamed.headers.get('access-control-allow-origin')).toBe('*')
+      const renamedBody = (await renamed.json()) as { conversation: { title: string } }
+      expect(renamedBody.conversation.title).toBe('重命名后的会话')
+      const list = await fetch(`${base()}/api/conversations`, { headers: auth() })
+      const { conversations } = (await list.json()) as {
+        conversations: { id: string; title: string }[]
+      }
+      expect(conversations.find((c) => c.id === conversation.id)?.title).toBe('重命名后的会话')
+    },
+  )
+
   /**
    * 附件上传的自定义头必须在预检的允许列表中。
    *

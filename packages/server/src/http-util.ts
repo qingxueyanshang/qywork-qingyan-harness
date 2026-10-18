@@ -37,7 +37,7 @@ export async function publishGitState(
  */
 export const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
   /*
    * 附件上传带 `x-attachment-name`（文件名可能含中文与空格，只能编码后放入请求头）。
    * **它不在 CORS 安全列表内，遗漏该头名会使整条上传链路全部失败**：
