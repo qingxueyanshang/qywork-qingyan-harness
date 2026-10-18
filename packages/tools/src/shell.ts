@@ -180,7 +180,11 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       // 顶层 shell 随之不退出，整条命令挂起直至超时，且无法取得任何输出。
       '输出会自动限长，超出部分保存到磁盘并在结果中给出 resource id（用 read_resource 取回），' +
       '因此不要为限长在末尾追加 `| tail` / `| head`：这类命令需读到 EOF 才输出，' +
-      '而命令派生的后台进程会持续持有管道，EOF 不到达则命令挂起至超时，且没有任何输出返回。',
+      '而命令派生的后台进程会持续持有管道，EOF 不到达则命令挂起至超时，且没有任何输出返回。' +
+      // 实测模型等后台任务时写 `sleep 580; ls …`：任务一分钟就完成也要等满十分钟，
+      // 用户看到的就是命令「莫名其妙」挂到上限。给出带退出条件的写法，任务结束即返回。
+      '等待后台任务时不要 sleep 固定的长时间，用带退出条件的循环' +
+      '（如 `for i in $(seq 60); do [ -f 完成标志 ] && break; sleep 10; done`），任务结束即返回。',
     parameters: {
       type: 'object',
       properties: {
@@ -188,7 +192,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         cwd: { type: 'string', description: '工作目录（工作区相对路径），默认工作区根' },
         timeout_ms: {
           type: 'integer',
-          description: `超时时间（毫秒），默认 ${DEFAULT_TIMEOUT_MS}`,
+          description: `超时时间（毫秒），默认 ${DEFAULT_TIMEOUT_MS}，上限 ${MAX_TIMEOUT_MS}，超过按上限执行`,
         },
         probe_url: {
           type: 'string',
@@ -325,9 +329,16 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       const watchNote = watched.incomplete ? WATCH_INCOMPLETE : ''
 
       if (got.timedOut) {
+        // 请求的时限超过上限时必须说明：实测模型传 2400000 后在 600 秒被终止，
+        // 不说明时它无从得知是上限所致，会按「命令出错」处理。
+        const requested = Number(args.timeout_ms)
+        const capped =
+          requested > MAX_TIMEOUT_MS
+            ? `；请求的 ${requested}ms 超过上限，按 ${MAX_TIMEOUT_MS}ms 执行，更长的任务放到后台再轮询结果`
+            : ''
         return {
           status: 'failure',
-          message: `命令超时（${timeout}ms）已终止${got.backgroundHeld ? BACKGROUND_HELD : ''}${watchNote}`,
+          message: `命令超时（${timeout}ms）已终止${capped}${got.backgroundHeld ? BACKGROUND_HELD : ''}${watchNote}`,
           data: { ...delivered.data, timedOut: true },
           ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
