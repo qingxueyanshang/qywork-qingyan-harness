@@ -513,6 +513,7 @@ export function workflowResults(
 /**
  * 把 revise 应用到节点状态：作废的节点回到 `waiting`，保留子 agent 的 id：
  * 续发是向原子 agent 继续发送，而不是新建一个看似相同的任务。
+ * 被点名的节点同时记下续发指令，审查说明并入其中：子 agent 只收到续发指令，看不到审查调用本身。
  *
  * `foldWorkflow` 与推进器必须调用本函数，否则回放得到的投影与内存中的图不一致。
  */
@@ -520,7 +521,7 @@ export function applyRevision(
   nodes: readonly WorkflowNode[],
   states: Record<string, NodeState>,
   approvals: Record<string, string>,
-  review: { checkpointId: string; revisions: readonly WorkflowRevision[] },
+  review: { checkpointId: string; note: string; revisions: readonly WorkflowRevision[] },
 ): { ok: true } | { ok: false; error: string } {
   const closure = revisionClosure(
     nodes,
@@ -533,11 +534,17 @@ export function applyRevision(
   for (const nodeId of closure.nodeIds) {
     const state = states[nodeId]
     if (!state) continue
+    const instruction = review.revisions.find((revision) => revision.nodeId === nodeId)?.instruction
     states[nodeId] = {
       phase: 'waiting',
       label: state.label,
       ...(state.kind ? { kind: state.kind } : {}),
       ...(state.subagentId ? { subagentId: state.subagentId } : {}),
+      ...(instruction
+        ? {
+            revision: review.note ? `${instruction}\n\n## 主会话审查\n${review.note}` : instruction,
+          }
+        : {}),
     }
   }
   return { ok: true }

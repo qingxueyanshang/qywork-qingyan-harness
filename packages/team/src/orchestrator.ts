@@ -89,11 +89,10 @@ export function advance(input: AdvanceInput): AdvanceResult {
   const { plan, goal, maxConcurrent } = input
   const states: Record<string, NodeState> = { ...input.states }
   const approvals: Record<string, string> = { ...input.approvals }
-  const corrections = new Map<string, string>()
   let review: WorkflowAppliedReview | undefined
 
   if (input.review) {
-    review = applyReview(plan, states, approvals, input.review, corrections)
+    review = applyReview(plan, states, approvals, input.review)
   }
 
   let results = workflowResults(plan, states)
@@ -139,7 +138,7 @@ export function advance(input: AdvanceInput): AdvanceResult {
       })
       continue
     }
-    dispatch.push(planDispatch(node, goal, results, approvals, states, corrections))
+    dispatch.push(planDispatch(node, goal, results, approvals, states))
   }
 
   const checkpoint = readyCheckpoint(plan, results, approvals)
@@ -169,7 +168,6 @@ function applyReview(
   states: Record<string, NodeState>,
   approvals: Record<string, string>,
   review: OrchestratorReview,
-  corrections: Map<string, string>,
 ): WorkflowAppliedReview {
   const checkpoint = plan.find(
     (node): node is WorkflowCheckpointNode => isCheckpoint(node) && node.id === review.checkpointId,
@@ -204,7 +202,6 @@ function applyReview(
     if (!results[revision.nodeId]) {
       throw new Error(`节点 ${revision.nodeId} 尚无终态，收到其回执后再修订`)
     }
-    corrections.set(revision.nodeId, revision.instruction)
   }
   const applied = applyRevision(plan, states, approvals, review)
   if (!applied.ok) throw new Error(applied.error)
@@ -223,7 +220,8 @@ function dependenciesResolved(
  * 节点派发时的目标与任务正文。
  *
  * 节点上保留子 agent id 而没有回执，说明该节点执行过且已被 revise 作废：向**原有子 agent**
- * 续发，只发送修订指令与最新上游产出。重复发送整段任务会使其每一轮都重新阅读同一段内容。
+ * 续发，只发送修订指令（节点状态上的 `revision`，未被点名的下游节点为通用指令）与最新上游产出。
+ * 重复发送整段任务会使其每一轮都重新阅读同一段内容。
  *
  * **判据是该节点是否执行过，不是目标是否为已有子 agent。** 首次派发给已有子 agent 的节点
  * 必须发送节点自身的 `task`：按目标判定时该任务将完全无法发出。
@@ -234,7 +232,6 @@ function planDispatch(
   results: Record<string, WorkflowReceipt>,
   approvals: Record<string, string>,
   states: Record<string, NodeState>,
-  corrections: Map<string, string>,
 ): NodeDispatch {
   const resumeId = states[node.id]?.subagentId
   const target: SubagentTarget = resumeId ? { subagent: resumeId } : node.target
@@ -254,7 +251,7 @@ function planDispatch(
   }
   const prompt = continuing
     ? [
-        corrections.get(node.id) ?? RESUME_INSTRUCTION,
+        states[node.id]?.revision ?? RESUME_INSTRUCTION,
         wantsInput ? `## 上游产出（最新）\n\n${upstream}` : '',
       ]
         .filter(Boolean)

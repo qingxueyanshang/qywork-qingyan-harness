@@ -1019,6 +1019,74 @@ describe('图按事件推进', () => {
     await until(() => lastAsked().includes('按 bug 列表继续改'), '续发指令进原子会话')
   })
 
+  /**
+   * 原始失败形状：同一次 revise 点名了上下游两个节点，下游要等上游执行完毕的下一次推进才派发。
+   * 修订指令只保存在审查那一次推进中时，下游收到的是通用续发指令，审查说明也从未送达子 agent。
+   */
+  test('同批修订的下游节点在下一次推进中仍收到自己的修订指令与审查说明', async () => {
+    const parent = conversation()
+    const chain = {
+      goal: '先做 a 再做 b',
+      nodes: [
+        { id: 'a', kind: 'temp', name: 'a', task: '做 a' },
+        { id: 'b', kind: 'temp', name: 'b', task: '做 b', needs: ['a'] },
+        { id: 'cp', kind: 'checkpoint', label: '验收', needs: ['b'] },
+      ],
+    }
+    router = byTask({
+      '按意见改 a': 'a 修订稿',
+      '按意见改 b': 'b 修订稿',
+      '做 a': 'a 初稿',
+      '做 b': 'b 初稿',
+    })
+    const runId = run(parent, 'wf-chain-revise')
+    const first = await invoke(parent, runId, 1, chain, parsedStart(chain))
+    const checkpointReceipts = () =>
+      receipts.filter((r) => r.content.includes(first.step.id) && r.content.includes('检查点 验收'))
+    await until(() => checkpointReceipts().length === 1, '检查点回执')
+
+    const folded = foldWorkflow(
+      listSteps(store, runId)
+        .filter((s) => s.toolName === 'workflow')
+        .map((s) => ({
+          stepId: s.id,
+          ...(s.payload?.kind === 'tool_result' && s.payload.args ? { args: s.payload.args } : {}),
+          ...(s.payload?.kind === 'tool_result' ? { outcome: s.payload.outcome } : {}),
+          ...(s.payload?.kind === 'tool_result' && s.payload.nodes
+            ? { nodes: s.payload.nodes }
+            : {}),
+          status: 'success' as const,
+        })),
+      first.step.id,
+    )
+    expect(folded.ok).toBe(true)
+    if (!folded.ok) return
+    const childB = folded.projection.results.b?.subagentId as ConversationId
+
+    const reviseArgs = {
+      workflowId: first.step.id,
+      checkpointId: 'cp',
+      decision: 'revise' as const,
+      note: '页眉统一为左对齐',
+      revisions: [
+        { nodeId: 'a', instruction: '按意见改 a' },
+        { nodeId: 'b', instruction: '按意见改 b' },
+      ],
+    }
+    const revised = await invoke(parent, runId, 2, reviseArgs, { kind: 'review', ...reviseArgs })
+    expect(revised.result.transition?.dispatched).toEqual(['a'])
+
+    const lastAsked = () =>
+      listMessages(store, childB)
+        .filter((message) => message.role === 'user')
+        .at(-1)?.content ?? ''
+    await until(() => lastAsked().includes('按意见改 b'), '下游节点收到自己的修订指令')
+    expect(lastAsked()).toContain('页眉统一为左对齐')
+    expect(lastAsked()).toContain('a 修订稿')
+    // 等到第二次检查点回执，图中不再有运行中的节点，不影响后续测试。
+    await until(() => checkpointReceipts().length === 2, '第二次检查点回执')
+  })
+
   test('首次派发写入失败终态之后 approve 报告重新派发，不报告非待审查状态', async () => {
     const parent = conversation()
     const runId = run(parent, 'wf-dead')

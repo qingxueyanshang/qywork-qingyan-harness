@@ -341,7 +341,7 @@ describe('revise 只影响闭包', () => {
     checkpoint('cp', ['b', 'c']),
   ]
 
-  test('被指定的节点向原有子 agent 续发，只发送指令与最新上游产出', () => {
+  test('被指定的节点向原有子 agent 续发，发送指令与审查说明', () => {
     const result = step(plan, {
       states: {
         a: cell('a', { output: '旧 A', subagentId: 'cv_a' }),
@@ -358,7 +358,7 @@ describe('revise 只影响闭包', () => {
     expect(result.review).toEqual({ checkpointId: 'cp', decision: 'revise', note: '返工' })
     expect(dispatched(result)).toEqual(['a'])
     expect(targetOf(result, 'a')).toEqual({ subagent: 'cv_a' })
-    expect(promptOf(result, 'a')).toBe('补证据')
+    expect(promptOf(result, 'a')).toBe('补证据\n\n## 主会话审查\n返工')
     // 闭包内的下游本次仍无法派发（上游没有回执），但其旧回执已作废。
     expect(result.checkpoint).toBeNull()
   })
