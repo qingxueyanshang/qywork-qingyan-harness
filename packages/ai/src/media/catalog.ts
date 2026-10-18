@@ -123,6 +123,8 @@ export interface MediaModelSpec {
     audioMimeTypes?: readonly string[]
     maxAudioBytes?: number
     transport: 'multipart' | 'json'
+    /** JSON 素材必须使用公网地址，不能内联文件字节。 */
+    publicUrls?: boolean
     types?: Partial<Record<MediaInput['role'], string>>
     /** 允许尾帧单独输入，或首尾帧与参考素材组合。省略时各组合互斥且尾帧需要首帧。 */
     lastFrameAlone?: boolean

@@ -62,6 +62,28 @@ describe('脱敏', () => {
 })
 
 describe('回填', () => {
+  test('上传关联只存接口名，保存和重命名保留关联，删除上传接口时解除关联', () => {
+    const current = cfg()
+    current.providers.local!.media = {
+      'seedance2.5-V': { kind: 'openai_videos', provideraUploadProvider: 'main' },
+    }
+    const wire = redactConfig(current)
+    expect(JSON.stringify(wire)).not.toContain('sk-real-secret-value')
+    expect(mergeConfig(current, wire).providers.local!.media).toEqual(
+      current.providers.local!.media,
+    )
+    const renamed = structuredClone(wire)
+    renamed.providers.host = renamed.providers.main!
+    delete renamed.providers.main
+    const saved = mergeConfig(current, renamed, { from: 'main', to: 'host' })
+    expect(saved.providers.local!.media!['seedance2.5-V']!.provideraUploadProvider).toBe('host')
+    expect(current.providers.local!.media!['seedance2.5-V']!.provideraUploadProvider).toBe('main')
+    const removed = redactConfig(saved)
+    delete removed.providers.host
+    expect(mergeConfig(saved, removed).providers.local!.media!['seedance2.5-V']).toEqual({
+      kind: 'openai_videos',
+    })
+  })
   test('修改接口地址保留所有已保存的生成协议，包括与旧默认值相同的选择', () => {
     const current = cfg()
     current.providers.main!.media = {

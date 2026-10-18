@@ -33,35 +33,21 @@ test.each([false, true])(
     reply = hasId ? { id: taskId } : {}
     const adapter = buildMediaAdapter({
       kind: 'openai_videos',
-      model: '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
+      model: 'seedance2.5-V',
       apiKey: 'test',
       baseUrl: `http://127.0.0.1:${server.port}`,
     })
     let submits = 0
     const error = await adapter
-      .run(
-        {
-          ...request,
-          operation: 'reference_to_video',
-          inputs: [
-            {
-              role: 'reference',
-              bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
-              mime: 'image/png',
-              path: '/ref.png',
-            },
-          ],
+      .run(request, {
+        signal: new AbortController().signal,
+        onSubmit: () => {
+          submits++
         },
-        {
-          signal: new AbortController().signal,
-          onSubmit: () => {
-            submits++
-          },
-          onTask: async () => {
-            throw new Error('save failed')
-          },
+        onTask: async () => {
+          throw new Error('save failed')
         },
-      )
+      })
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(MediaError)
     expect(calls).toEqual(['POST'])
@@ -79,7 +65,7 @@ const cases: {
   { kind: 'openai_videos', body: (status) => ({ status }) },
   {
     kind: 'openai_videos',
-    model: '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
+    model: 'seedance2.5-V',
     body: (status) => ({ data: { status } }),
   },
   { kind: 'ark_videos', body: (status) => ({ status }) },

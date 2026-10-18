@@ -579,18 +579,11 @@ describe('模型目录', () => {
 
   test.each([
     [
-      '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
-      Array.from({ length: 12 }, (_, i) => String(i + 4)),
+      'seedance2.5-V',
+      Array.from({ length: 26 }, (_, i) => String(i + 5)),
       '5',
       '720P',
       ['1280x720', '720x1280'],
-    ],
-    [
-      '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
-      Array.from({ length: 26 }, (_, i) => String(i + 5)),
-      '5',
-      '480P',
-      ['854x480', '480x854'],
     ],
   ] as const)(
     'SD2.5 将素材上限和原生时长选项同步到模型库与画布：%s',
@@ -601,6 +594,8 @@ describe('模型目录', () => {
       for (const removed of [
         '满血sd2.5(30-10-10原生过人脸/720P)',
         'video-sd25-30s',
+        '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
+        '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
         '全能sd2.5(满血内置过脸30图超分1080P)',
         'sd-25-30/10/1-1',
         '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
@@ -620,11 +615,11 @@ describe('模型目录', () => {
         vendor: 'providerb',
         kinds: ['openai_videos'],
         maxImages: 30,
-        maxVideos: 10,
-        maxAudios: 10,
+        maxVideos: 0,
+        maxAudios: 0,
       })
       const model = response.media.find((m) => m.id === id)!
-      expect(model.operations).toEqual(['text_to_video', 'reference_to_video', 'video_to_video'])
+      expect(model.operations).toEqual(['text_to_video', 'reference_to_video'])
       const seconds = model.params.find((p) => p.name === 'seconds')!
       expect(seconds.type).toBe('enum')
       expect(seconds.default).toBe(defaultDuration)
@@ -635,7 +630,7 @@ describe('模型目录', () => {
         { ratio: '9:16', tier, value: sizes[1] },
       ])
       expect(seconds.rules).toBeUndefined()
-      if (id.startsWith('006')) expect(model.label).toBe(id)
+      expect(model.label).toBe(id)
       expect(model.params.map((p) => p.name)).toEqual(['seconds', 'size'])
     },
   )

@@ -290,11 +290,13 @@ describe('画布接口', () => {
   })
 
   test.each([
-    { id: 'TTseadanco2.5-720', min: 5, rate: 0.42, resolution: '720p' },
-    { id: 'TTsedanco2.5-480', min: 5, rate: 0.312, resolution: '480p' },
+    { id: 'TTseadanco2.5-720', min: 5, rate: 0.42, resolution: '720p', maxVideos: 10 },
+    { id: 'TTsedanco2.5-480', min: 5, rate: 0.312, resolution: '480p', maxVideos: 10 },
+    { id: 'GGseadanco2.5/720', min: 5, rate: 0.54, resolution: '720p', maxVideos: 10 },
+    { id: 'GGsedanco2.5/480', min: 5, rate: 0.42, resolution: '480p', maxVideos: 0 },
   ])(
     'providera 下发模型 ID、时长范围和画幅，报价遵循计费单位：$id',
-    async ({ id, min, rate, resolution }) => {
+    async ({ id, min, rate, resolution, maxVideos }) => {
       const { d } = await setup()
       d.config.providers.providera = {
         kind: 'openai_chat_completions',
@@ -310,6 +312,7 @@ describe('画布接口', () => {
       for (const removed of ['seedance-2.5（YX）', 'seedance2.5-yx-count', 'wf-sd2.5-v2'])
         expect(models.mediaLibrary.some((entry) => entry.id === removed)).toBe(false)
       expect(model.maxAudios).toBe(10)
+      expect(model.operations.includes('video_to_video')).toBe(maxVideos > 0)
       expect(model.params.map((p) => [p.name, p.label])).toEqual([
         ['seconds', '时长'],
         ['aspect_ratio', '画幅'],

@@ -207,6 +207,8 @@ export interface StoredProvider {
 export interface StoredMediaModel {
   /** 生成请求使用的协议。添加时默认取目录协议，保存后不随接口地址变化。 */
   kind: MediaKind
+  /** 公网参考素材的上传接口名，复用该接口的端点与凭证。 */
+  provideraUploadProvider?: string
 }
 
 /**
@@ -553,20 +555,14 @@ function migrateUnverifiedMediaKinds(cfg: QyConfig): string[] {
   return notices
 }
 
-/** 迁移已停用生成模型及默认引用；替换或删除型号时保留所属接口及凭证。 */
+/** 清理已停用生成模型及默认引用，保留所属接口及凭证。 */
 function migrateRemovedMediaModels(cfg: QyConfig): string[] {
   const notices: string[] = []
-  const replacements = new Map<string, string[]>([
-    ['video-sd25-30s', ['006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)']],
-    [
-      '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
-      [
-        '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
-        '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
-      ],
-    ],
-  ])
   const removedModels = new Set([
+    'video-sd25-30s',
+    '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
+    '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
+    '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
     'seedance-2.5（YX）',
     'seedance2.5-yx-count',
     'wf-sd2.5-v2',
@@ -580,28 +576,16 @@ function migrateRemovedMediaModels(cfg: QyConfig): string[] {
     let removedChannel = false
     for (const [id, stored] of Object.entries(provider.media ?? {})) {
       const isRemovedChannel = (stored.kind as string) === 'binguo_videos'
-      const replacement = stored.kind === 'openai_videos' ? replacements.get(id) : undefined
-      if (
-        !replacement &&
-        !isRemovedChannel &&
-        !(stored.kind === 'openai_videos' && removedModels.has(id))
-      )
-        continue
-      for (const model of replacement ?? []) provider.media![model] ??= { ...stored }
+      if (!isRemovedChannel && !(stored.kind === 'openai_videos' && removedModels.has(id))) continue
       delete provider.media![id]
       removed = true
       removedChannel ||= isRemovedChannel
       for (const output of MEDIA_OUTPUTS) {
         const ref = cfg.mediaDefaults?.[output]
         if (ref?.provider !== name || ref.model !== id) continue
-        if (replacement) ref.model = replacement[0]!
-        else delete cfg.mediaDefaults![output]
+        delete cfg.mediaDefaults![output]
       }
-      notices.push(
-        replacement
-          ? `已将生成模型 ${name} / ${id} 替换为 ${replacement.join('、')}。`
-          : `已移除停用的生成模型 ${name} / ${id}。`,
-      )
+      notices.push(`已移除停用的生成模型 ${name} / ${id}。`)
     }
     if (!removed || Object.keys(provider.media ?? {}).length) continue
     delete provider.media
@@ -772,6 +756,7 @@ export interface ResolvedMediaModel {
   apiKey?: string
   baseUrl?: string
   headers?: Record<string, string>
+  provideraUploadProvider?: string
 }
 
 /**
@@ -798,6 +783,9 @@ export function resolveMediaModel(
     ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
     ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
     ...(provider.headers ? { headers: provider.headers } : {}),
+    ...(stored.provideraUploadProvider
+      ? { provideraUploadProvider: stored.provideraUploadProvider }
+      : {}),
   }
 }
 
@@ -983,6 +971,14 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
    */
   for (const [name, p] of Object.entries(cfg.providers)) {
     for (const [id, m] of Object.entries(p.media ?? {})) {
+      if (
+        m?.provideraUploadProvider !== undefined &&
+        (typeof m.provideraUploadProvider !== 'string' || !m.provideraUploadProvider.trim())
+      ) {
+        problems.push(`${name} / ${id} 的 provideraUploadProvider 必须是非空接口名`)
+      } else if (m?.provideraUploadProvider && !cfg.providers[m.provideraUploadProvider]) {
+        problems.push(`${name} / ${id} 的上传接口 ${m.provideraUploadProvider} 不在配置中`)
+      }
       if (!MEDIA_KINDS.includes(m?.kind)) {
         problems.push(
           `${name} / ${id} 的生成协议 "${String(m?.kind)}" 不是有效值。\n` +

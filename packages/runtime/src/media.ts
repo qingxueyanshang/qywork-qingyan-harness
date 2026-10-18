@@ -122,9 +122,9 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
       if ('problem' in inferred)
         return { ok: false, executed: false, message: `未发出请求：${inferred.problem}` }
       const op = inferred.operation
+      const spec = lookupMediaModel(target.model, target.kind)
       // 接续取回不会重新提交，参数与输入均不发出，因此不校验。
       if (!call.resumeTaskId && !call.resumeImageResult) {
-        const spec = lookupMediaModel(target.model, target.kind)
         const problems = validateMediaCall(
           spec,
           op,
@@ -155,12 +155,37 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
         }
       }
 
+      const upload =
+        spec.inputs.publicUrls && call.inputs.length && !call.resumeTaskId
+          ? config.providers[target.provideraUploadProvider ?? '']
+          : undefined
+      if (
+        spec.inputs.publicUrls &&
+        call.inputs.length &&
+        !call.resumeTaskId &&
+        (!upload?.apiKey || !upload.baseUrl)
+      ) {
+        return {
+          ok: false,
+          executed: false,
+          message: `${target.provider} / ${target.model} 的参考图需要配置 provideraUploadProvider，上传接口必须具有地址和 API Key；未提交生成`,
+        }
+      }
       const adapter = buildMediaAdapter({
         kind: target.kind,
         model: target.model,
         apiKey: target.apiKey,
         ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
         ...(target.headers ? { headers: target.headers } : {}),
+        ...(upload?.apiKey && upload.baseUrl
+          ? {
+              provideraUpload: {
+                apiKey: upload.apiKey,
+                baseUrl: upload.baseUrl,
+                ...(upload.headers ? { headers: upload.headers } : {}),
+              },
+            }
+          : {}),
       })
       let receivedImage = false
       let spendReported = false

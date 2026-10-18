@@ -72,9 +72,7 @@ describe('目录查找', () => {
     expect(MEDIA_KINDS).not.toContain('binguo_videos')
     expect(findMediaModel('Seedance 2.5 720p')).toBeUndefined()
     expect(mediaCatalog().some((m) => m.vendor === '服务商D')).toBe(false)
-    expect(findMediaModel('006系列/sd2.5(满血30-10-10原生过人脸720P15秒)')?.kind).toBe(
-      'openai_videos',
-    )
+    expect(findMediaModel('seedance2.5-V')?.kind).toBe('openai_videos')
     expect(findMediaModel('doubao-seedance-2-5-260628')?.kind).toBe('ark_videos')
   })
 

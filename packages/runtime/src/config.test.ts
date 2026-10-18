@@ -39,6 +39,33 @@ function cfg(over: Partial<QyConfig> = {}): QyConfig {
   }
 }
 
+test.each(['', 'missing-provider', 1, null])('上传接口引用无效时配置校验拒绝：%s', (value) => {
+  const config = cfg()
+  config.providers.ds!.media = {
+    'seedance2.5-V': { kind: 'openai_videos', provideraUploadProvider: value as string },
+  }
+  expect(
+    diagnoseConfig(config).some((message) => /provideraUploadProvider|上传接口/.test(message)),
+  ).toBe(true)
+})
+
+test('生成模型只解析上传接口引用，不复制上传凭证到模型配置', () => {
+  const config = cfg()
+  config.providers.ds!.media = {
+    'seedance2.5-V': { kind: 'openai_videos', provideraUploadProvider: 'ds' },
+  }
+  expect(diagnoseConfig(config)).toEqual([])
+  expect(
+    resolveMediaModel(config, 'video', { provider: 'ds', model: 'seedance2.5-V' }),
+  ).toMatchObject({
+    provideraUploadProvider: 'ds',
+  })
+  expect(config.providers.ds!.media!['seedance2.5-V']).toEqual({
+    kind: 'openai_videos',
+    provideraUploadProvider: 'ds',
+  })
+})
+
 test.each([false, true])(
   '移除服务商D旧配置及默认引用，保留其他模型、凭证和空接口：混合接口=%s',
   async (mixed) => {
@@ -101,6 +128,10 @@ test.each([false, true])(
 
 test.each(
   [
+    'video-sd25-30s',
+    '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
+    '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
+    '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
     'seedance-2.5（YX）',
     'seedance2.5-yx-count',
     'wf-sd2.5-v2',
@@ -114,7 +145,7 @@ test.each(
   async (removed, mixed) => {
     const home = await mkdtemp(join(tmpdir(), 'qy-removed-providerb-'))
     const previousHome = process.env.QYWORK_HOME
-    const keep = '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)'
+    const keep = 'seedance2.5-V'
     const provider = {
       kind: 'openai_chat_completions' as const,
       baseUrl: 'https://providerb.example.com/v1',
@@ -150,73 +181,6 @@ test.each(
       expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
       await saveConfig(loaded)
       expect(await loadConfig()).toEqual(loaded)
-    } finally {
-      if (previousHome === undefined) delete process.env.QYWORK_HOME
-      else process.env.QYWORK_HOME = previousHome
-      await rm(home, { recursive: true, force: true })
-    }
-  },
-)
-
-test.each([false, true])(
-  '旧生成型号替换为新型号并迁移默认选择，不覆盖已有配置：已配置新型号=%s',
-  async (alreadyConfigured) => {
-    const home = await mkdtemp(join(tmpdir(), 'qy-replace-providerb-'))
-    const previousHome = process.env.QYWORK_HOME
-    const replacements = [
-      ['video-sd25-30s', ['006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)']],
-      [
-        '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
-        [
-          '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
-          '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
-        ],
-      ],
-    ] as const
-    try {
-      process.env.QYWORK_HOME = home
-      for (const [removed, replacement] of replacements) {
-        const media = { kind: 'openai_videos' as const }
-        const raw: QyConfig = {
-          providers: {
-            channel: {
-              kind: 'openai_chat_completions',
-              baseUrl: 'https://providerb.example.com/v1',
-              apiKey: 'keep-secret',
-              models: { chat: {} },
-              media: {
-                [removed]: media,
-                keep: { kind: 'openai_images' },
-                ...(alreadyConfigured ? { [replacement[0]]: media } : {}),
-              },
-            },
-          },
-          active: { provider: 'channel', model: 'chat' },
-          mediaDefaults: {
-            video: { provider: 'channel', model: removed },
-            image: { provider: 'channel', model: 'keep' },
-          },
-        }
-        await writeFile(join(home, 'config.json'), JSON.stringify(raw))
-        const loaded = await loadConfig()
-        expect(loaded.providers.channel).toEqual({
-          ...raw.providers.channel!,
-          media: {
-            keep: { kind: 'openai_images' },
-            ...Object.fromEntries(replacement.map((id) => [id, media])),
-          },
-        })
-        expect(loaded.active).toEqual(raw.active)
-        expect(loaded.mediaDefaults).toEqual({
-          ...raw.mediaDefaults,
-          video: { provider: 'channel', model: replacement[0] },
-        })
-        expect(resolveMediaModel(loaded, 'video')?.model).toBe(replacement[0])
-        expect(diagnoseConfig(loaded)).toEqual([])
-        expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
-        await saveConfig(loaded)
-        expect(await loadConfig()).toEqual(loaded)
-      }
     } finally {
       if (previousHome === undefined) delete process.env.QYWORK_HOME
       else process.env.QYWORK_HOME = previousHome

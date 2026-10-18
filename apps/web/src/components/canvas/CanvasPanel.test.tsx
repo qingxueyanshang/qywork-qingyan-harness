@@ -1564,6 +1564,8 @@ describe('画布：生成卡与生成面板', () => {
   test.each([
     { id: 'TTseadanco2.5-720', min: '5', defaultSeconds: '5' },
     { id: 'TTsedanco2.5-480', min: '5', defaultSeconds: '5' },
+    { id: 'GGseadanco2.5/720', min: '5', defaultSeconds: '5' },
+    { id: 'GGsedanco2.5/480', min: '5', defaultSeconds: '5' },
   ])(
     'providera 时长逐秒输入、固定清晰度隐藏，提交字符串秒数：$id',
     async ({ id, min, defaultSeconds }) => {
@@ -1648,11 +1650,8 @@ describe('画布：生成卡与生成面板', () => {
     },
   )
 
-  test.each([
-    { index: 0, min: '4', max: '15', portrait: '720x1280' },
-    { index: 1, min: '5', max: '30', portrait: '480x854' },
-  ])(
-    '006 独立型号隐藏固定清晰度，时长与横竖屏按型号保存：%j',
+  test.each([{ index: 0, min: '5', max: '30', portrait: '720x1280' }])(
+    'seedance2.5-V 隐藏固定清晰度，保存时长与横竖屏：%j',
     async ({ index, min, max, portrait }) => {
       const { providerb_MODELS } = await import(
         '../../../../../packages/ai/src/media/catalog-providerb.ts'

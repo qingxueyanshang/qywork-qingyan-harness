@@ -115,13 +115,7 @@ test('官方及渠道模型均使用目录协议，模型库显示对应页签',
   const { ModelSettings } = await import('./ModelSettings.tsx')
   const cases: { id: string; kind: MediaKind; baseUrl: string; vendor: string }[] = [
     {
-      id: '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
-      kind: 'openai_videos',
-      baseUrl: 'https://providerb.example.com/v1',
-      vendor: 'providerb',
-    },
-    {
-      id: '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
+      id: 'seedance2.5-V',
       kind: 'openai_videos',
       baseUrl: 'https://providerb.example.com/v1',
       vendor: 'providerb',
@@ -372,46 +366,46 @@ test('模型库按类别分页签；生成类一张表，厂商是一列，参�
   }
 })
 
-test.each([
-  ['006系列/sd2.5(满血30-10-10原生过人脸720P15秒)', 10, 10, '4–15 秒整数，使用字符串'],
-  ['006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)', 10, 10, '5–30 秒整数，使用字符串'],
-] as const)('模型库分别显示各类参考素材上限：%s', async (id, maxVideos, maxAudios, duration) => {
-  const { render } = await import('solid-js/web')
-  const { ModelLibrary } = await import('./ModelLibrary.tsx')
-  const model: MediaLibraryModel = {
-    id,
-    label: id,
-    vendor: 'providerb',
-    kind: 'openai_videos',
-    kinds: ['openai_videos'],
-    output: 'video',
-    operations: [
-      'text_to_video',
-      'reference_to_video',
-      ...(maxVideos ? ['video_to_video' as const] : []),
-    ],
-    maxImages: 30,
-    maxVideos,
-    maxAudios,
-    params: [`seconds：${duration}`],
-  }
-  const host = document.createElement('div')
-  document.body.append(host)
-  const dispose = render(
-    () => <ModelLibrary vendors={[]} media={[model]} loading={false} error={null} />,
-    host,
-  )
-  try {
-    fire(
-      Array.from(host.querySelectorAll<HTMLButtonElement>('.lib-tab')).find(
-        (t) => t.textContent === '视频',
-      )!,
-      'click',
+test.each([['GGseadanco2.5/720', 10, 10, '5–30 秒整数，使用字符串']] as const)(
+  '模型库分别显示各类参考素材上限：%s',
+  async (id, maxVideos, maxAudios, duration) => {
+    const { render } = await import('solid-js/web')
+    const { ModelLibrary } = await import('./ModelLibrary.tsx')
+    const model: MediaLibraryModel = {
+      id,
+      label: id,
+      vendor: 'providera',
+      kind: 'openai_videos',
+      kinds: ['openai_videos'],
+      output: 'video',
+      operations: [
+        'text_to_video',
+        'reference_to_video',
+        ...(maxVideos ? ['video_to_video' as const] : []),
+      ],
+      maxImages: 30,
+      maxVideos,
+      maxAudios,
+      params: [`seconds：${duration}`],
+    }
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(
+      () => <ModelLibrary vendors={[]} media={[model]} loading={false} error={null} />,
+      host,
     )
-    expect(host.querySelector('.lib-table.media')?.textContent).toContain('图≤30、音频≤10')
-    expect(host.querySelector('.lib-table.media')?.textContent).toContain('视频≤10、音频≤10')
-  } finally {
-    dispose()
-    host.remove()
-  }
-})
+    try {
+      fire(
+        Array.from(host.querySelectorAll<HTMLButtonElement>('.lib-tab')).find(
+          (t) => t.textContent === '视频',
+        )!,
+        'click',
+      )
+      expect(host.querySelector('.lib-table.media')?.textContent).toContain('图≤30、音频≤10')
+      expect(host.querySelector('.lib-table.media')?.textContent).toContain('视频≤10、音频≤10')
+    } finally {
+      dispose()
+      host.remove()
+    }
+  },
+)
