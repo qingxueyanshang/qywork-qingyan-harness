@@ -23,11 +23,13 @@ import type { ConversationId, ProviderRequest, RunId, StepId, WorkspaceId } from
 import {
   appendStep,
   appendTextToStep,
+  ContentStore,
   createConversation,
   createRun,
   failThinkingSteps,
   listProviderRequests,
   listSteps,
+  loadToolImages,
   markProviderRequestSent,
   markStepExecuting,
   openProviderRequest,
@@ -39,7 +41,8 @@ import {
 import { stepsToUnits } from './transcript.ts'
 
 /** 工具返回的图片字节。在请求体中直接查找该字节串，不按协议解析结构。 */
-const BYTES = 'IMGONE'
+const blobs = new ContentStore(':memory:')
+const BYTES = Buffer.from('IMGONE').toString('base64')
 
 interface Harness {
   store: Store
@@ -88,6 +91,7 @@ function harness(): Harness {
         status,
         { kind: 'tool_result', args, outcome, action },
         durationMs,
+        blobs,
       ),
     saveUsage: () => {},
     recordCompaction: () => {},
@@ -230,7 +234,9 @@ for (const { kind, model } of FAULT_PROTOCOLS) {
         // 跨 run 继续执行：history 由执行记录投影得到，该图片从未被对端接收。
         const history = [
           USER,
-          ...stepsToUnits(listSteps(h.store, failed)).flatMap((u) => u.messages),
+          ...stepsToUnits(loadToolImages(h.store, blobs, listSteps(h.store, failed))).flatMap(
+            (u) => u.messages,
+          ),
         ]
         fault.mode = 'complete'
         const resumed = newRun(h, 'images-resumed')

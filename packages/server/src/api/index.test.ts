@@ -30,6 +30,7 @@ import type {
 import {
   appendMessage,
   appendStep,
+  ContentStore,
   createConversation,
   createRun,
   finishRun,
@@ -38,6 +39,7 @@ import {
   getWorkspaceByPath,
   listConversations,
   listWorkspaces,
+  loadToolImages,
   markProviderRequestContent,
   markProviderRequestHeaders,
   markProviderRequestSent,
@@ -47,6 +49,7 @@ import {
   Store,
   setConversationTitle,
   settleProviderRequest,
+  settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
 import type { ModelsResponse } from './conversations.ts'
@@ -70,10 +73,14 @@ function deps(root = '/ws/demo'): ApiDeps & { wsId: string } {
     currentRunId: () => runsStub.runId,
   }
   const store = new Store({ path: ':memory:' })
+  const content = new ContentStore(':memory:')
   const ws = upsertWorkspace(store, root, root.split(/[/]/).filter(Boolean).pop() ?? root)
   return {
     store,
+    content,
     wsId: ws.id,
+    loadToolImages: (steps: Parameters<typeof loadToolImages>[2]) =>
+      loadToolImages(store, content, steps),
     config: {
       active: { provider: 'p', model: 'm' },
       providers: {
@@ -1667,6 +1674,77 @@ describe('会话历史分页接口', () => {
       lastContentAt: null,
       backoffUntil: 1_700_000_060_000,
     })
+  })
+
+  /**
+   * 账本只存图像引用。界面只显示声明 inline 的工具图像，历史页只为这些 step 读取字节；
+   * 其余 step 只带引用，页面不随读图次数携带 MB 级的字节。
+   */
+  test('只为声明 inline 的工具结果读取图像字节', async () => {
+    const d = deps()
+    const content = (d as unknown as { content: ContentStore }).content
+    const workspaceId = (d as unknown as { wsId: string }).wsId
+    const conv = createConversation(d.store, {
+      workspaceId: workspaceId as never,
+      provider: 'p',
+      model: 'm',
+    })
+    const msg = appendMessage(d.store, { conversationId: conv.id, role: 'user', content: '看图' })
+    const run = createRun(d.store, {
+      conversationId: conv.id,
+      workspaceId: workspaceId as never,
+      model: 'm',
+      clientRequestId: 'images',
+      userMessageId: msg.id,
+      messageIdUpperBound: msg.id,
+      contextSnapshot: [],
+    })
+    const bytes = Buffer.alloc(30_000, 3).toString('base64')
+    const settle = (seq: number, toolName: string, inline: boolean) => {
+      const step = appendStep(d.store, {
+        runId: run.id,
+        seq,
+        kind: 'tool_action',
+        toolName,
+        toolCallId: `call_${seq}`,
+        providerBatchId: `bt_${seq}`,
+        callIndex: 0,
+        status: 'running',
+      })
+      settleToolStep(
+        d.store,
+        step.id,
+        'success',
+        {
+          kind: 'tool_result',
+          args: {},
+          outcome: {
+            status: 'success',
+            executed: true,
+            message: '截图',
+            data: { images: [{ data: bytes, mime: 'image/png' }] },
+            ...(inline ? { presentation: { images: 'inline' } } : {}),
+          },
+        } as never,
+        undefined,
+        content,
+      )
+      return step.id
+    }
+    const shown = settle(1, 'plugin_snapshot', true)
+    const hidden = settle(2, 'read_file', false)
+    finishRun(d.store, run.id, { status: 'done', stopReason: 'completed' })
+
+    const res = await call(`/api/conversations/${conv.id}/history`, undefined, d)
+    const page = (await res?.json()) as ConversationHistoryPageResponse
+    const images = (id: string) => {
+      const payload = page.steps.find((step) => step.id === id)?.payload
+      return payload?.kind === 'tool_result'
+        ? (payload.outcome.data as { images: unknown[] }).images
+        : null
+    }
+    expect(images(shown)).toEqual([{ mime: 'image/png', data: bytes }])
+    expect(images(hidden)).toEqual([{ mime: 'image/png', resourceId: expect.any(String) }])
   })
 
   test('非法页大小返回 422，不静默改为其他值', async () => {

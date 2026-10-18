@@ -92,6 +92,7 @@ import {
   listSchedules,
   listSteps,
   listWorkflowRecords,
+  loadToolImages,
   markImagesUndelivered,
   markRunRunning,
   markStepExecuting,
@@ -148,11 +149,8 @@ export interface SessionOptions {
   store: Store
   config: QyConfig
   workspaceRoot: string
-  /**
-   * 正文库。未传入时本次执行不将中间资源写入磁盘，超出预算的输出只截断、不保存。
-   * `qy exec` 等一次性执行可以省略；`qy serve` 必须提供。
-   */
-  content?: ContentStore
+  /** 正文库：超出预算的工具输出与工具结果中的图像字节写入此处，账本只存引用。 */
+  content: ContentStore
   signal: AbortSignal
   /**
    * 追加到冻结前缀末尾的角色约束。Agent Team 的成员会话用它承载角色提示词。
@@ -598,6 +596,7 @@ export class Session {
     const preserveAssistantReasoning = adapter.spec.chatReasoningProtocol !== 'standard'
     const history = await buildHistory(
       store,
+      this.opts.content,
       conversationId,
       run.messageIdUpperBound,
       (content, list) => withAttachments(this.opts.workspaceRoot, content, list as Attachment[]),
@@ -686,6 +685,7 @@ export class Session {
     // 否则会将排队期间新到达的消息一并压缩，而本轮尚未读取这些消息。
     const compaction = new RuntimeCompaction({
       store,
+      content: this.opts.content,
       conversationId,
       messageIdUpperBound: run.messageIdUpperBound,
       summarize: makeSummarizer({
@@ -958,7 +958,7 @@ export class Session {
   }
 
   private makePersistence(): LoopPersistence {
-    const { store } = this.opts
+    const { store, content } = this.opts
     return {
       nextSeq: (runId) => this.nextSeq(runId),
       openTextStep: (runId, seq, batchId) =>
@@ -1019,6 +1019,7 @@ export class Session {
           status,
           { kind: 'tool_result', args, outcome, action },
           durationMs,
+          content,
         ),
       recordCompaction: (runId, seq, payload) => {
         recordCompactionStep(store, runId, seq, {
@@ -1142,7 +1143,7 @@ export class Session {
       state: new Map(),
       // sink 绑定到本 run：登记行须能追溯到产生该正文的轮次，
       // run 被删除时引用随之消失，GC 才能回收正文。
-      sink: this.opts.content ? new RuntimeSink(this.opts.store, this.opts.content, runId) : null,
+      sink: new RuntimeSink(this.opts.store, this.opts.content, runId),
       /*
        * 读取记录绑定到会话，而不是 run。
        *
@@ -1219,7 +1220,7 @@ export class Session {
        * 使用 list + find 而不是为 store 增加按 id 读取的函数：这是模型主动发起的
        * 低频调用，且会话消息与单个 run 的 step 都是小集合。
        */
-      history: historyPortFor(store, conversationId as ConversationId),
+      history: historyPortFor(store, this.opts.content, conversationId as ConversationId),
       signal: this.opts.signal,
       emitTodos: (todos) => {
         emit({ type: 'todos', runId, todos })
@@ -1573,7 +1574,7 @@ function unfinishedWorkflows(store: Store, conversationId: ConversationId): Work
  * 一个会话的历史端口。子 agent 的历史使用同一实现、按其会话 id 构造，
  * `forSubagent` 只接受本会话派发的子 agent。
  */
-function historyPortFor(store: Store, cid: ConversationId): HistoryPort {
+function historyPortFor(store: Store, content: ContentStore, cid: ConversationId): HistoryPort {
   const port: Omit<HistoryPort, 'forSubagent'> = (() => {
     /**
      * 将摘要中的 `<runId>:<stepId>` 解析为对应的 step。
@@ -1627,12 +1628,12 @@ function historyPortFor(store: Store, cid: ConversationId): HistoryPort {
         // `{tool,status,args,outcome}`，用于非工具记录时只会返回 `tool:'unknown'`
         // 与两个空 JSON，看似已处理，实际未返回任何内容。
         if (st?.kind !== 'tool_action') return null
-        return stepRecord(st)
+        return stepRecord(loadToolImages(store, content, [st])[0]!)
       },
       byCallId: (callId) => {
         for (const run of listRuns(store, cid)) {
           const st = listSteps(store, run.id).find((x) => x.toolCallId === callId)
-          if (st) return stepRecord(st)
+          if (st) return stepRecord(loadToolImages(store, content, [st])[0]!)
         }
         return null
       },
@@ -1675,7 +1676,7 @@ function historyPortFor(store: Store, cid: ConversationId): HistoryPort {
     ...port,
     forSubagent: (id) => {
       const child = getConversation(store, id as ConversationId)
-      return child?.parentConversationId === cid ? historyPortFor(store, child.id) : null
+      return child?.parentConversationId === cid ? historyPortFor(store, content, child.id) : null
     },
   }
 }

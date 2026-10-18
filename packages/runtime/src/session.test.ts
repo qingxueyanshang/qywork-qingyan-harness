@@ -15,6 +15,7 @@ import { DEFAULT_DENSITY, lookupModel, type TokenDensity } from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
 import {
   appendStep,
+  ContentStore,
   createConversation,
   createRun,
   fileReadHash,
@@ -33,6 +34,8 @@ import { NO_MODEL_MESSAGE, type QyConfig } from './config.ts'
 import { buildTailNotes, outputLimitNote } from './prompt.ts'
 import { Session, withAttachments } from './session.ts'
 
+const blobs = new ContentStore(':memory:')
+
 const config: QyConfig = {
   active: { provider: 'p', model: 'deepseek-v4-flash' },
   providers: {
@@ -48,6 +51,7 @@ const config: QyConfig = {
 async function session(over: Partial<ConstructorParameters<typeof Session>[0]> = {}) {
   const store = new Store({ path: ':memory:' })
   const s = new Session({
+    content: blobs,
     store,
     config,
     workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-sess-')),
@@ -584,6 +588,7 @@ describe('allowedTools 与扩展工具', () => {
     const store = new Store({ path: ':memory:' })
     const root = await workspaceWithMcp()
     const s = new Session({
+      content: blobs,
       store,
       config,
       workspaceRoot: root,
@@ -627,6 +632,7 @@ describe('外部工具按总量转为按需加载', () => {
     const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
 
     const s = new Session({
+      content: blobs,
       store,
       config,
       workspaceRoot: root,
@@ -701,6 +707,7 @@ describe('外部工具按总量转为按需加载', () => {
     const root = s as unknown as { opts: { workspaceRoot: string } }
 
     const next = new Session({
+      content: blobs,
       store,
       config,
       workspaceRoot: root.opts.workspaceRoot,
@@ -751,6 +758,7 @@ describe('新建会话的来源', () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-src-'))
     const controller = new AbortController()
     const s = new Session({
+      content: blobs,
       store,
       config,
       workspaceRoot: root,
@@ -798,6 +806,7 @@ describe('新建会话的来源', () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-src-'))
     const noModel = { providers: {} } as QyConfig
     const s = new Session({
+      content: blobs,
       store,
       config: noModel,
       workspaceRoot: root,
@@ -1094,16 +1103,23 @@ describe('带图执行记录的读取', () => {
       callIndex: 0,
       status: 'running',
     })
-    settleToolStep(store, shot.id, 'success', {
-      kind: 'tool_result',
-      args: { path: 'shot.png' },
-      outcome: {
-        status: 'success',
-        executed: true,
-        message: '读取 shot.png（图片）',
-        data: { images: [{ data: 'QUJD', mime: 'image/png' }] },
-      },
-    } as never)
+    settleToolStep(
+      store,
+      shot.id,
+      'success',
+      {
+        kind: 'tool_result',
+        args: { path: 'shot.png' },
+        outcome: {
+          status: 'success',
+          executed: true,
+          message: '读取 shot.png（图片）',
+          data: { images: [{ data: 'QUJD', mime: 'image/png' }] },
+        },
+      } as never,
+      undefined,
+      blobs,
+    )
     const plain = appendStep(store, {
       runId: run.id,
       seq: 2,
@@ -1288,6 +1304,7 @@ describe('会话被另一个进程占用', () => {
     const path = join(dir, 'ledger.sqlite3')
     const store = new Store({ path, owner: 'serve' })
     const s = new Session({
+      content: blobs,
       store,
       config,
       workspaceRoot: dir,

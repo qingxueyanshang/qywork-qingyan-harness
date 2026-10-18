@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, ConversationId } from '@qywork/core'
 import {
+  ContentStore,
   conversationRejectsImages,
   listProviderRequests,
   listRuns,
@@ -23,6 +24,8 @@ import {
 } from '@qywork/store'
 import type { QyConfig } from './config.ts'
 import { Session } from './session.ts'
+
+const blobs = new ContentStore(':memory:')
 
 /** 1×1 的 PNG：在缩放上限以内，`read_file` 按原样编码。 */
 const PNG_1X1 = Buffer.from(
@@ -111,6 +114,7 @@ async function harness(respond: (body: string) => Response) {
   const sessions: Session[] = []
   const ask = async (prompt: string) => {
     const session = new Session({
+      content: blobs,
       store,
       config,
       workspaceRoot,

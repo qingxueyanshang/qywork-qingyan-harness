@@ -9,7 +9,13 @@
 import { describe, expect, test } from 'bun:test'
 import type { ConversationId } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
-import { createConversation, recordUsage, Store, upsertWorkspace } from '@qywork/store'
+import {
+  ContentStore,
+  createConversation,
+  recordUsage,
+  Store,
+  upsertWorkspace,
+} from '@qywork/store'
 import { type CommandContext, handleCommand } from './tui.ts'
 
 const config: QyConfig = {
@@ -28,6 +34,7 @@ function ctx(over: Partial<{ conversationId: ConversationId | undefined; model: 
   }
   const c: CommandContext = {
     store,
+    content: new ContentStore(':memory:'),
     config,
     get conversationId() {
       return state.conversationId

@@ -11,10 +11,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { OfficePort } from '@qywork/agent'
 import type { AgentEvent } from '@qywork/core'
-import { Store } from '@qywork/store'
+import { ContentStore, Store } from '@qywork/store'
 import type { QyConfig } from './config.ts'
 import { createOfficeHost } from './office.ts'
 import { Session } from './session.ts'
+
+const blobs = new ContentStore(':memory:')
 
 const PORT: OfficePort = {
   python: process.execPath,
@@ -118,6 +120,7 @@ function toolThenStop(name: string, args: Record<string, unknown>) {
 async function session(office?: OfficePort) {
   const store = new Store({ path: ':memory:' })
   const s = new Session({
+    content: blobs,
     store,
     config: config(),
     workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-office-sess-')),

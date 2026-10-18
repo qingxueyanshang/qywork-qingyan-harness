@@ -16,12 +16,14 @@ import { join } from 'node:path'
 import type { CanvasPort } from '@qywork/agent'
 import { lookupMediaModel, validateMediaCall } from '@qywork/ai'
 import { type AgentEvent, type MediaInputRole, runCosts } from '@qywork/core'
-import { getRun, Store } from '@qywork/store'
+import { ContentStore, getRun, Store } from '@qywork/store'
 import type { QyConfig } from './config.ts'
 import { listMediaModels } from './config.ts'
 import { makeMediaPort, operationOf } from './media.ts'
 import { buildTailNotes } from './prompt.ts'
 import { Session } from './session.ts'
+
+const blobs = new ContentStore(':memory:')
 
 const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 1])
 
@@ -310,6 +312,7 @@ describe('生成花费', () => {
       })
     const store = new Store({ path: ':memory:' })
     const s = new Session({
+      content: blobs,
       store,
       config: {
         ...config(),
@@ -368,6 +371,7 @@ describe('画布与生成开关', () => {
     const names = async (over: Partial<QyConfig>) => {
       const store = new Store({ path: ':memory:' })
       const s = new Session({
+        content: blobs,
         store,
         config: config(over),
         workspaceRoot: await mkdtemp(join(tmpdir(), 'qywork-media-switch-')),

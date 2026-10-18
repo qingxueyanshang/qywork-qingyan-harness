@@ -22,6 +22,7 @@ import type { MessageId, RunContextSegment, Step } from '@qywork/core'
 import {
   appendMessage,
   appendStep,
+  ContentStore,
   createConversation,
   createRun,
   finishRun,
@@ -33,6 +34,8 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 import { buildHistory, stepsToUnits, stepsToWireMessages } from './transcript.ts'
+
+const blobs = new ContentStore(':memory:')
 
 const noAttachments = async (content: string) => content
 
@@ -397,7 +400,7 @@ describe('历史装配', () => {
     finishRun(store, r1.id, { status: 'done', stopReason: 'completed' })
 
     const m2 = ask('继续')
-    const history = await buildHistory(store, conv.id, m2, noAttachments)
+    const history = await buildHistory(store, blobs, conv.id, m2, noAttachments)
 
     expect(history.some((m) => m.role === 'assistant')).toBe(true)
     expect(history.some((m) => m.role === 'tool')).toBe(true)
@@ -428,7 +431,7 @@ describe('历史装配', () => {
       ],
     }).id
     const passed: string[][] = []
-    await buildHistory(store, conv.id, current, async (content, files) => {
+    await buildHistory(store, blobs, conv.id, current, async (content, files) => {
       passed.push((files as { name: string }[]).map((f) => f.name))
       return content
     })
@@ -454,8 +457,8 @@ describe('历史装配', () => {
       { content: '## 记忆索引\n- no-repeat\n- second', group: 'memory' },
     ])
 
-    const first = await buildHistory(store, conv.id, m3, noAttachments)
-    const second = await buildHistory(store, conv.id, m3, noAttachments)
+    const first = await buildHistory(store, blobs, conv.id, m3, noAttachments)
+    const second = await buildHistory(store, blobs, conv.id, m3, noAttachments)
     expect(second).toEqual(first)
     expect(first.map((message) => message.role)).toEqual([
       'context',
@@ -480,7 +483,7 @@ describe('历史装配', () => {
     run(m2, [{ content: '工作区：C:/other', group: 'workspaceState' }])
     run(m2, [{ content: '工作区：C:/ws', group: 'workspaceState' }])
 
-    const out = await buildHistory(store, conv.id, m2, noAttachments)
+    const out = await buildHistory(store, blobs, conv.id, m2, noAttachments)
     expect(out.map((message) => message.role)).toEqual(['context', 'user', 'user'])
     store.close()
   })
@@ -513,7 +516,7 @@ describe('历史装配', () => {
     finishRun(store, r1.id, { status: 'failed', stopReason: 'no_progress' })
 
     const m2 = ask('继续')
-    const history = await buildHistory(store, conv.id, m2, noAttachments)
+    const history = await buildHistory(store, blobs, conv.id, m2, noAttachments)
     const result = history.find((m) => m.role === 'tool')
     expect(result).toBeDefined()
     expect(JSON.parse(String(result!.content))).toMatchObject({
@@ -570,7 +573,7 @@ describe('历史装配', () => {
     finishRun(store, r1.id, { status: 'interrupted', stopReason: 'user_interrupt' })
 
     const m2 = ask('接着来')
-    const history = await buildHistory(store, conv.id, m2, noAttachments)
+    const history = await buildHistory(store, blobs, conv.id, m2, noAttachments)
 
     assertPairs(history)
     // 已写入磁盘的结果不得丢失。

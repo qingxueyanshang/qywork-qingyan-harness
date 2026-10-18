@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from './db.ts'
-import { SCHEMA_VERSION } from './schema.ts'
+import { MIGRATIONS, SCHEMA_VERSION } from './schema.ts'
 
 test('写事务在回调前取得写锁，不从读事务升级后直接返回 SQLITE_BUSY', () => {
   const dir = mkdtempSync(join(tmpdir(), 'qywork-store-tx-'))
@@ -69,7 +69,8 @@ test('空库与已迁移到当前版本的库照常打开', () => {
       .query<{ top: number }, []>('SELECT MAX(id) AS top FROM _migrations')
       .get()?.top
     again.close()
-    expect(max).toBe(SCHEMA_VERSION)
+    // 分批迁移在服务开始之后执行（`migrateInBackground`），打开时登记到最后一条同步迁移。
+    expect(max).toBe(Math.max(...MIGRATIONS.filter((m) => !m.background).map((m) => m.id)))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

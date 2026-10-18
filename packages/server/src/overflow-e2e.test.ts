@@ -42,6 +42,8 @@ import {
   upsertWorkspace,
 } from '@qywork/store'
 
+const blobs = new ContentStore(':memory:')
+
 function sse(events: { type: string; [k: string]: unknown }[]): string {
   return `${events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n`).join('\n')}\n`
 }
@@ -163,6 +165,7 @@ test('容量拒绝 → 识别凭证 → 压缩一次 → 无法缩小时以 cont
   const adapter = buildAdapter(profile)
 
   const inner = new RuntimeCompaction({
+    content: blobs,
     store,
     conversationId: conv.id,
     messageIdUpperBound: null,

@@ -36,6 +36,7 @@ import {
   contentPathFor,
   getWorkspaceByPath,
   listWorkspaces,
+  loadToolImages,
   mostRecentWorkspace,
   recoverStaleRuns,
   upsertWorkspace,
@@ -541,6 +542,7 @@ export function serve(opts: ServeOptions) {
             },
             watchGit: () => gitWatch.retarget(),
             collectGarbage,
+            loadToolImages: (steps) => loadToolImages(opts.store, content, steps),
             closeBrowserPages: (conversationId) =>
               browser?.closeConversation(conversationId) ?? Promise.resolve(),
             office,
@@ -694,6 +696,25 @@ export function serve(opts: ServeOptions) {
       },
     )
     .catch((err: unknown) => log.error('canvas', `接续任务失败：${String(err)}`))
+
+  /*
+   * 分批数据迁移（`Migration.background`）在开始服务之后执行，批与批之间让出事件循环。
+   * 不要移到打开账本时同步执行：迁移时间随账本增长，超过桌面外壳等待握手的时限后进程被终止，每次启动都从头开始。
+   * 用 setTimeout 而不是直接调用：第一批须在调用方输出握手之后执行。
+   */
+  setTimeout(async () => {
+    const started = Date.now()
+    let batches = 0
+    try {
+      while (opts.store.migrateInBackground(content)) {
+        batches++
+        await Bun.sleep(0)
+      }
+      if (batches) log.info('store', '分批迁移已完成', { batches, ms: Date.now() - started })
+    } catch (err) {
+      log.error('store', `分批迁移失败：${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, 0)
 
   return {
     server,

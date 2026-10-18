@@ -5,11 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openBatchBudget, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
-import { Store } from '@qywork/store'
+import { ContentStore, Store } from '@qywork/store'
 import { writeMcpServerTool } from '../../tools/src/mcp-config.ts'
 import { acquireExtensions, type Extensions } from './extensions.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { Session } from './session.ts'
+
+const blobs = new ContentStore(':memory:')
 
 let root: string
 let home: string
@@ -131,6 +133,7 @@ test('同一 Session 的大 schema 进入池，升级后已加载的旧工具与
   const service = mcp()
   const store = new Store({ path: ':memory:' })
   const session = new Session({
+    content: blobs,
     workspaceRoot: root,
     store,
     signal: new AbortController().signal,
@@ -369,6 +372,7 @@ test('Session 同一任务安装后下一请求直接调用新工具', async () 
   servers.push(relay)
   const store = new Store({ path: ':memory:' })
   const session = new Session({
+    content: blobs,
     workspaceRoot: root,
     store,
     signal: new AbortController().signal,

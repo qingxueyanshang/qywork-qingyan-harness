@@ -96,7 +96,7 @@ async function race(mode: string, dbPath: string, arg = '', env: Record<string, 
   }
 }
 
-test('全新库上四个进程同时打开：全部成功，每条迁移恰好登记一次', async () => {
+test('全新库上四个进程同时打开：全部成功，每条同步迁移恰好登记一次', async () => {
   for (let round = 0; round < 3; round++) {
     const path = join(tempDir(), 'ledger.sqlite3')
     const results = await race('open', path)
@@ -108,7 +108,7 @@ test('全新库上四个进程同时打开：全部成功，每条迁移恰好�
       .map((r) => r.id)
     const mode = db.query<{ journal_mode: string }, []>('PRAGMA journal_mode').get()?.journal_mode
     db.close()
-    expect(ids).toEqual(MIGRATIONS.map((m) => m.id))
+    expect(ids).toEqual(MIGRATIONS.filter((m) => !m.background).map((m) => m.id))
     expect(mode).toBe('wal')
   }
 }, 60_000)

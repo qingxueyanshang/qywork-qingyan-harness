@@ -4,6 +4,7 @@ import type { ConversationId } from '@qywork/core'
 import {
   appendMessage,
   appendStep,
+  ContentStore,
   createConversation,
   createGoal,
   createRun,
@@ -19,6 +20,8 @@ import {
 } from '@qywork/store'
 import pkg from '../package.json' with { type: 'json' }
 import { collect, exportConversation, exportConversationDiagnostics } from './archive.ts'
+
+const blobs = new ContentStore(':memory:')
 
 // 已规范化的绝对路径：仓储层按 `normalizeWorkspaceRoot` 落盘，读取时返回该值。
 const ROOT = resolve('/tmp/ws')
@@ -177,7 +180,7 @@ describe('采集', () => {
 describe('markdown：供人阅读', () => {
   const md = () => {
     const { store, conversationId } = fixture()
-    const text = exportConversation(store, conversationId, 'markdown')
+    const text = exportConversation(store, blobs, conversationId, 'markdown')
     store.close()
     return text
   }
@@ -211,7 +214,7 @@ describe('markdown：供人阅读', () => {
 
   test('超长失败正文被截断，并指向 json 导出', () => {
     const { store, conversationId } = fixture()
-    const text = exportConversation(store, conversationId, 'markdown', { maxToolChars: 10 })
+    const text = exportConversation(store, blobs, conversationId, 'markdown', { maxToolChars: 10 })
     expect(text).toContain('json')
     store.close()
   })
@@ -234,7 +237,7 @@ describe('markdown：供人阅读', () => {
 describe('json：供脚本读取', () => {
   test('是合法 JSON 且结构完整', () => {
     const { store, conversationId } = fixture()
-    const parsed = JSON.parse(exportConversation(store, conversationId, 'json'))
+    const parsed = JSON.parse(exportConversation(store, blobs, conversationId, 'json'))
     expect(parsed.conversation.id).toBe(conversationId)
     expect(parsed.runs[0].steps).toHaveLength(3)
     store.close()
@@ -247,7 +250,7 @@ describe('json：供脚本读取', () => {
   test('不受 maxToolChars 影响，原样导出', () => {
     const { store, conversationId } = fixture()
     const parsed = JSON.parse(
-      exportConversation(store, conversationId, 'json', { maxToolChars: 1 }),
+      exportConversation(store, blobs, conversationId, 'json', { maxToolChars: 1 }),
     )
     const failed = parsed.runs[0].steps.find((s: { status: string }) => s.status === 'failure')
     expect(failed.payload.outcome.message).toContain('Expected 3 to be 4')
@@ -256,7 +259,7 @@ describe('json：供脚本读取', () => {
 
   test('包含导出时间，归档须能说明快照的时间', () => {
     const { store, conversationId } = fixture()
-    const parsed = JSON.parse(exportConversation(store, conversationId, 'json'))
+    const parsed = JSON.parse(exportConversation(store, blobs, conversationId, 'json'))
     expect(typeof parsed.exportedAt).toBe('number')
     store.close()
   })
@@ -425,7 +428,7 @@ describe('诊断导出', () => {
       note: '保留非媒体诊断信息',
       images: [{ mime: 'image/png', base64Chars: 8, bytesOmitted: true }],
     })
-    expect(exportConversation(store, conversationId, 'json')).toContain('QUJDRA==')
+    expect(exportConversation(store, blobs, conversationId, 'json')).toContain('QUJDRA==')
     store.close()
   })
 
@@ -696,7 +699,7 @@ describe('压缩过的会话在开头注明', () => {
       }),
       conversationId,
     )
-    const t = exportConversation(store, conversationId, 'markdown')
+    const t = exportConversation(store, blobs, conversationId, 'markdown')
     // 不注明时，模型遗忘前文的原因将无从查明。
     expect(t).toContain('压缩')
     expect(t).toContain('修订 2')
@@ -728,8 +731,8 @@ describe('执行中插入的用户消息', () => {
 
   test('以用户身份出现一次，与是否导出思考无关', () => {
     const { store, conversationId } = withInjected()
-    const plain = exportConversation(store, conversationId, 'markdown')
-    const withThinking = exportConversation(store, conversationId, 'markdown', {
+    const plain = exportConversation(store, blobs, conversationId, 'markdown')
+    const withThinking = exportConversation(store, blobs, conversationId, 'markdown', {
       includeThinking: true,
     })
 

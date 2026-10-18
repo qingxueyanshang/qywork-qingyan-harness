@@ -23,6 +23,7 @@ import type {
 } from '@qywork/core'
 import { isNoticeStep } from '@qywork/core'
 import {
+  type ContentStore,
   currentGoal,
   getConversation,
   getWorkspace,
@@ -34,6 +35,7 @@ import {
   listRunContextSnapshots,
   listRuns,
   listSteps,
+  loadToolImages,
   SCHEMA_VERSION,
   type Store,
 } from '@qywork/store'
@@ -392,12 +394,18 @@ function diagnosticProvider(
 
 export function exportConversation(
   store: Store,
+  content: ContentStore,
   conversationId: ConversationId,
   format: ArchiveFormat,
   opts: ArchiveOptions = {},
 ): string {
   const bundle = collect(store, conversationId)
-  return format === 'json' ? toJson(bundle) : toMarkdown(bundle, opts)
+  // 完整 JSON 存档带图像字节：账本中只有引用，字节在正文库中，存档离开本机之后无法据引用读取。
+  if (format === 'markdown') return toMarkdown(bundle, opts)
+  return toJson({
+    ...bundle,
+    runs: bundle.runs.map((run) => ({ ...run, steps: loadToolImages(store, content, run.steps) })),
+  })
 }
 
 /**

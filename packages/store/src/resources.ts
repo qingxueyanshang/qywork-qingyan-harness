@@ -46,7 +46,7 @@ export interface IntermediateResource {
 }
 
 export function registerResource(
-  store: Store,
+  store: Pick<Store, 'db'>,
   input: {
     runId: string
     stepId?: string | null

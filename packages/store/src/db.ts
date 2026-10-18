@@ -6,6 +6,7 @@
  */
 
 import { Database } from 'bun:sqlite'
+import type { ContentStore } from './content.ts'
 import { MIGRATIONS, SCHEMA_VERSION } from './schema.ts'
 
 /**
@@ -153,7 +154,8 @@ export class Store {
     }
     for (const m of MIGRATIONS) {
       // 上方读取的列表只用于跳过：已登记的迁移不会被撤销，跳过它总是正确的。
-      if (applied.has(m.id)) continue
+      // 分批迁移不在此执行，见 `migrateInBackground`。
+      if (applied.has(m.id) || m.background) continue
       // 每条迁移一个事务：失败时整条回滚，不留下迁移到一半的状态。
       // IMMEDIATE 在进入回调前取得写权：`apply()` 可能先读后写，DEFERRED 下的升级在另一个
       // 实例同时初始化时直接返回 SQLITE_BUSY，不经过 busy_timeout。
@@ -169,6 +171,42 @@ export class Store {
         })
         .immediate()
     }
+  }
+
+  /** 分批迁移在本进程中的进度：迁移 id → 下一批的 rowid 起点。进程重启后从头扫描，已迁移的行不再改写。 */
+  private readonly backgroundCursor = new Map<number, number>()
+
+  /**
+   * 执行一批尚未完成的分批迁移（`Migration.background`），返回是否仍有未完成的分批迁移。
+   *
+   * 每批一个 IMMEDIATE 事务，批与批之间由调用方让出事件循环。最后一批完成后执行 VACUUM 收回空间，
+   * 成功之后才登记该迁移：VACUUM 因其他连接占用而失败时不登记，下次启动重新扫描（已迁移的行很小）并再次整理。
+   */
+  migrateInBackground(content: ContentStore): boolean {
+    const done = (id: number) => !!this.db.query('SELECT 1 FROM _migrations WHERE id = ?').get(id)
+    const m = MIGRATIONS.find((x) => x.background && !done(x.id))
+    if (!m?.background) return false
+    const next = this.db
+      .transaction(() => m.background!(this.db, content, this.backgroundCursor.get(m.id) ?? 0))
+      .immediate()
+    if (next !== null) {
+      this.backgroundCursor.set(m.id, next)
+      return true
+    }
+    this.backgroundCursor.delete(m.id)
+    // 截断 WAL：VACUUM 经 WAL 写入整个新文件，不截断时 -wal 文件保持该大小。
+    this.db.exec('VACUUM')
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    this.db
+      .transaction(() => {
+        if (!done(m.id)) {
+          this.db
+            .query('INSERT INTO _migrations (id, name, applied_at) VALUES (?, ?, ?)')
+            .run(m.id, m.name, Date.now())
+        }
+      })
+      .immediate()
+    return MIGRATIONS.some((x) => x.background && !done(x.id))
   }
 
   /**

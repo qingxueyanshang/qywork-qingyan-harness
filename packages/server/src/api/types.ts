@@ -10,7 +10,7 @@
  * 接口定义在上层，实现由下层注入（`SinkPort` 采用同一做法）。
  */
 
-import type { ConversationId } from '@qywork/core'
+import type { ConversationId, Step } from '@qywork/core'
 import type { OfficeHost, QyConfig } from '@qywork/runtime'
 import type { ScheduleClaim, Store } from '@qywork/store'
 import type { EventBus } from '../bus.ts'
@@ -52,6 +52,10 @@ export interface ApiDeps {
    * 报告为删除失败会使用户再次删除，而那一次收到的是 404。
    */
   collectGarbage(): { removed: number }
+  /**
+   * 把工具结果中的图像引用还原为字节（`loadToolImages`）。理由同 `collectGarbage`：只交出读取这一种能力。
+   */
+  loadToolImages(steps: Step[]): Step[]
   /**
    * 关闭一条会话名下的全部内置浏览器 AI 页面。只有删除会话调用它，归档不关闭页面。
    *

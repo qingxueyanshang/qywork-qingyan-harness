@@ -117,6 +117,7 @@ export async function runTui(workspaceRoot: string): Promise<number> {
       if (input.startsWith('/')) {
         const done = await handleCommand(input, {
           store,
+          content,
           config,
           get conversationId() {
             return conversationId
@@ -175,6 +176,7 @@ export async function runTui(workspaceRoot: string): Promise<number> {
 
 export interface CommandContext {
   store: Store
+  content: ContentStore
   config: QyConfig
   readonly conversationId: ConversationId | undefined
   setConversation(id: ConversationId | undefined): void
@@ -240,7 +242,7 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
         process.stdout.write(`${DIM}尚无可导出的会话${RESET}\n`)
         return 'ok'
       }
-      const text = exportConversation(ctx.store, ctx.conversationId, 'markdown')
+      const text = exportConversation(ctx.store, ctx.content, ctx.conversationId, 'markdown')
       if (arg) {
         await Bun.write(arg, text)
         process.stdout.write(`${DIM}已写入 ${arg}${RESET}\n`)

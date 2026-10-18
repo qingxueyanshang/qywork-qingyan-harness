@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { lookupModel } from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
 import {
+  ContentStore,
   getConversation,
   latestSentProviderRequest,
   listRecentConversations,
@@ -15,6 +16,8 @@ import { RuntimeCompaction } from './compaction.ts'
 import type { QyConfig } from './config.ts'
 import { contextPanel } from './context-panel.ts'
 import { Session } from './session.ts'
+
+const blobs = new ContentStore(':memory:')
 
 test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿用压缩后基准', async () => {
   let mode: 'before' | 'reject' | 'no-usage' | 'after' = 'before'
@@ -63,6 +66,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
   const workspaceRoot = await mkdtemp(join(process.env.QYWORK_TEST_TEMP ?? tmpdir(), 'context-'))
   const makeSession = () =>
     new Session({
+      content: blobs,
       store,
       config,
       workspaceRoot,
@@ -103,6 +107,7 @@ test('压缩后的首次发送、失败重发、无 usage 与会话重建均沿�
     expect(before.total).toBe(602_487)
     const spec = lookupModel(model.id, model.providerKind)
     const compaction = new RuntimeCompaction({
+      content: blobs,
       store,
       conversationId: conversationId!,
       messageIdUpperBound: null,

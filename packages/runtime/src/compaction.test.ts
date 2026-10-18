@@ -13,6 +13,7 @@ import type { MessageId } from '@qywork/core'
 import {
   appendMessage,
   appendStep,
+  ContentStore,
   createConversation,
   createRun,
   getConversation,
@@ -22,6 +23,8 @@ import {
 } from '@qywork/store'
 import { RuntimeCompaction } from './compaction.ts'
 import { buildHistory } from './transcript.ts'
+
+const blobs = new ContentStore(':memory:')
 
 /** 加长助手回复，使单元之间存在体积差异，选界不会把全部单元划到同一侧。 */
 const PAD = 'x'.repeat(1000)
@@ -92,6 +95,7 @@ const summary: Summarizer = async () => '模型写的摘要'
 
 function port(store: Store, conversationId: string, summarize: Summarizer = summary) {
   return new RuntimeCompaction({
+    content: blobs,
     store,
     conversationId: conversationId as never,
     messageIdUpperBound: null,
@@ -106,7 +110,7 @@ function port(store: Store, conversationId: string, summarize: Summarizer = summ
  * 无需推测某个模型的具体数值，估算系数微调时也不会导致大量用例失败。
  */
 async function pressure(store: Store, conversationId: string): Promise<CompactionRunInput> {
-  const history = await buildHistory(store, conversationId as never, null, async (c) => c)
+  const history = await buildHistory(store, blobs, conversationId as never, null, async (c) => c)
   const total = estimateMessages(history, DEFAULT_DENSITY)
   return {
     trigger: 'automatic',
@@ -120,7 +124,7 @@ async function pressure(store: Store, conversationId: string): Promise<Compactio
 }
 
 async function history(store: Store, conversationId: string): Promise<WireMessage[]> {
-  return buildHistory(store, conversationId as never, null, async (c) => c)
+  return buildHistory(store, blobs, conversationId as never, null, async (c) => c)
 }
 
 /** 为一条 run 添加 n 个工具批次，每个批次一条调用，结果正文按 payloadChars 填充。 */
@@ -648,16 +652,23 @@ describe('投影三区', () => {
         callIndex: 0,
         status: 'running',
       })
-      settleToolStep(store, step.id, 'success', {
-        kind: 'tool_result',
-        args: { path: `shot_${w}.png` },
-        outcome: {
-          status: 'success',
-          executed: true,
-          message: `读取 shot_${w}.png（图片）`,
-          data: { images: [{ data: 'A'.repeat(4000), mime: 'image/png' }] },
-        },
-      } as never)
+      settleToolStep(
+        store,
+        step.id,
+        'success',
+        {
+          kind: 'tool_result',
+          args: { path: `shot_${w}.png` },
+          outcome: {
+            status: 'success',
+            executed: true,
+            message: `读取 shot_${w}.png（图片）`,
+            data: { images: [{ data: 'A'.repeat(4000), mime: 'image/png' }] },
+          },
+        } as never,
+        undefined,
+        blobs,
+      )
     }
 
     const p = port(store, conv.id)

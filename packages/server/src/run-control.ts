@@ -790,6 +790,7 @@ export async function compactConversation(
     onProgress('preparing')
     const compaction = new RuntimeCompaction({
       store: deps.store,
+      content: deps.content,
       conversationId,
       messageIdUpperBound: null,
       summarize: makeSummarizer({

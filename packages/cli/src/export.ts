@@ -10,7 +10,7 @@
 import { writeFile } from 'node:fs/promises'
 import type { ConversationId } from '@qywork/core'
 import { dataPath, exportConversation } from '@qywork/runtime'
-import { listRecentConversations, Store } from '@qywork/store'
+import { ContentStore, contentPathFor, listRecentConversations, Store } from '@qywork/store'
 
 const DIM = '\x1b[2m'
 const RESET = '\x1b[0m'
@@ -26,6 +26,7 @@ export async function runExport(args: string[]): Promise<number> {
   const id = args.find((a, i) => !a.startsWith('-') && i !== outValueIndex)
 
   const store = new Store({ path: dataPath() })
+  const content = new ContentStore(contentPathFor(dataPath()))
   try {
     if (!id) {
       // 不默认取最近的会话：导出结果用于存档或转发，导出了错误的会话在使用过程中不会被发现。
@@ -46,7 +47,7 @@ export async function runExport(args: string[]): Promise<number> {
 
     let text: string
     try {
-      text = exportConversation(store, id as ConversationId, json ? 'json' : 'markdown', {
+      text = exportConversation(store, content, id as ConversationId, json ? 'json' : 'markdown', {
         includeThinking: thinking,
       })
     } catch (err) {
@@ -62,6 +63,7 @@ export async function runExport(args: string[]): Promise<number> {
     }
     return 0
   } finally {
+    content.close()
     store.close()
   }
 }

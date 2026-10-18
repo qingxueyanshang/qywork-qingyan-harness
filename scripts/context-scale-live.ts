@@ -29,6 +29,8 @@ import {
 } from '@qywork/runtime'
 import { serve } from '@qywork/server'
 import {
+  ContentStore,
+  contentPathFor,
   createRun,
   finishRun,
   getConversation,
@@ -276,7 +278,12 @@ function repeatedOpeners(text: string): [string, number][] {
   return [...count].filter(([, times]) => times > 1)
 }
 
-async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<void> {
+async function runFor(
+  store: Store,
+  content: ContentStore,
+  config: QyConfig,
+  ref: ModelRef,
+): Promise<void> {
   // 每个模型都从「未安装 MCP」的状态开始，否则第二个模型的第一阶段已包含该 MCP。
   await rm(join(WS_DIR, '.agents', 'mcp.json'), { force: true })
   const mcpEntry = join(WS_DIR, 'mcp-fixture.mjs')
@@ -465,6 +472,7 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
   let budgetSeen = 0
   const compaction = new RuntimeCompaction({
     store,
+    content,
     conversationId: conv as ConversationId,
     messageIdUpperBound: null,
     // 使用真实装配，思考档位、预算与诊断记录必须与线上一致。
@@ -474,7 +482,13 @@ async function runFor(store: Store, config: QyConfig, ref: ModelRef): Promise<vo
     },
   })
 
-  const beforeMsgs = await buildHistory(store, conv as ConversationId, null, async (c) => c)
+  const beforeMsgs = await buildHistory(
+    store,
+    content,
+    conv as ConversationId,
+    null,
+    async (c) => c,
+  )
   /*
    * 两种计量都取自**同一次请求**：`measuredInputTokens` 即该次请求的 `estimateRequest`，
    * 与其 provider 回执逐字配对。不能用 `estimateMessages(history)` 替代：
@@ -632,6 +646,7 @@ async function main(): Promise<number> {
   await writeFile(join(WS_DIR, 'mcp-fixture.mjs'), MCP_SOURCE, 'utf8')
 
   const store = new Store({ path: DB })
+  const content = new ContentStore(contentPathFor(DB))
   const config = await loadConfig()
 
   // 不传参数时只运行配置中当前生效的模型；传入参数时逐条运行，格式如 `deepseek/deepseek-flash`。
@@ -651,7 +666,7 @@ async function main(): Promise<number> {
 
   for (const ref of refs) {
     try {
-      await runFor(store, config, ref)
+      await runFor(store, content, config, ref)
     } catch (err) {
       failures++
       process.stdout.write(`  ✗ ${ref.provider}/${ref.model} 这一轮抛了：${err instanceof Error ? err.message : String(err)}

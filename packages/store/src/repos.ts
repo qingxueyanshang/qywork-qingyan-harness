@@ -53,6 +53,7 @@ import {
   newStepId,
   newWorkspaceId,
 } from '@qywork/core'
+import type { ContentStore } from './content.ts'
 import type { RunOwner, Store } from './db.ts'
 import { readJson, writeJson } from './db.ts'
 import type {
@@ -64,6 +65,7 @@ import type {
   WorkspaceRow,
 } from './schema.ts'
 import { latestTodos } from './todos.ts'
+import { hasImageBytes, storeToolImages } from './tool-images.ts'
 
 const EMPTY_USAGE: RunUsage = {
   inputTokens: 0,
@@ -1970,7 +1972,12 @@ export function setStepNodeState(store: Store, id: StepId, nodeId: string, state
     .run(nodeId, JSON.stringify(state), id)
 }
 
-/** 一次调用一行，原地从 running 更新到终态；不产生第二行。 */
+/**
+ * 一次调用一行，原地从 running 更新到终态；不产生第二行。
+ *
+ * 结果中的图像字节在此写入正文库，payload 只存引用（见 `tool-images.ts`）。这是工具结果写入账本的
+ * 唯一入口，带图像字节的结果必须提供正文库，未提供时抛出，不写入字节。
+ */
 export function settleToolStep(
   store: Store,
   id: StepId,
@@ -1981,17 +1988,38 @@ export function settleToolStep(
    * 而此处只能取得写入时刻。
    */
   durationMs?: number,
+  content?: ContentStore,
 ): void {
-  const current = store.db
-    .query<{ payload: string | null }, [string]>('SELECT payload FROM steps WHERE id = ?')
-    .get(id)
-  const before = readJson<Step['payload']>(current?.payload ?? null, null)
-  const nodes =
-    before?.kind === 'tool_call' || before?.kind === 'tool_result' ? before.nodes : undefined
-  const settled = payload?.kind === 'tool_result' && nodes ? { ...payload, nodes } : payload
-  store.db
-    .query('UPDATE steps SET status = ?, payload = ?, duration_ms = ? WHERE id = ?')
-    .run(status, writeJson(settled), durationMs ?? null, id)
+  store.tx(() => {
+    const current = store.db
+      .query<{ payload: string | null; run_id: string; tool_name: string | null }, [string]>(
+        'SELECT payload, run_id, tool_name FROM steps WHERE id = ?',
+      )
+      .get(id)
+    const before = readJson<Step['payload']>(current?.payload ?? null, null)
+    const nodes =
+      before?.kind === 'tool_call' || before?.kind === 'tool_result' ? before.nodes : undefined
+    let settled = payload?.kind === 'tool_result' && nodes ? { ...payload, nodes } : payload
+    if (settled?.kind === 'tool_result' && hasImageBytes(settled.outcome.data)) {
+      if (!content) throw new Error(`工具结果 ${id} 含图像字节，写入账本需要正文库`)
+      if (!current) throw new Error(`未找到执行记录 ${id}`)
+      settled = {
+        ...settled,
+        outcome: {
+          ...settled.outcome,
+          data: storeToolImages(
+            store,
+            content,
+            { runId: current.run_id, stepId: id, toolName: current.tool_name ?? '' },
+            settled.outcome.data as Record<string, unknown>,
+          ),
+        },
+      }
+    }
+    store.db
+      .query('UPDATE steps SET status = ?, payload = ?, duration_ms = ? WHERE id = ?')
+      .run(status, writeJson(settled), durationMs ?? null, id)
+  })
 }
 
 /**

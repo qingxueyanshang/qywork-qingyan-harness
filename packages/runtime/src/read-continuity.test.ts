@@ -55,6 +55,8 @@ import { RuntimeCompaction } from './compaction.ts'
 import { RuntimeSink } from './sink.ts'
 import { stepsToUnits } from './transcript.ts'
 
+const blobs = new ContentStore(':memory:')
+
 const flash = lookupModel('deepseek-flash', 'openai_chat_completions')
 const spec = { ...flash, contextWindow: 32_000 }
 const LINES = 6_000
@@ -193,6 +195,7 @@ async function readThrough() {
 
   const summarize: Summarizer = async () => '已读过 big.txt 的前面几段。'
   const compaction = new RuntimeCompaction({
+    content: blobs,
     store,
     conversationId: conv.id,
     messageIdUpperBound: ask.id as MessageId,
@@ -395,6 +398,7 @@ async function readScript(window: number, files: { name: string; tokens: number 
    * 执行工具之前的检查点压缩的正是该版本。
    */
   const port = new RuntimeCompaction({
+    content: blobs,
     store,
     conversationId: conv.id,
     messageIdUpperBound: ask.id as MessageId,
