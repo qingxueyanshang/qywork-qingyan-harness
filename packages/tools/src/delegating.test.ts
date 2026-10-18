@@ -154,12 +154,19 @@ describe('派发单个子 agent', () => {
     expect(s.calls[0]?.target).toEqual({ kind: 'role', role: 'reviewer' })
   })
 
-  test('填写 subagent 表示续接，此时不能再填写种类字段', async () => {
+  test('填写 subagent 表示续接，此时不能再填写种类字段，名称可选', async () => {
     const s = stub(sent({ subagentId: 'cv_2', name: '审查员', kind: 'role', created: false }))
     const res = await subagentTool.fn({ subagent: 'cv_2', task: '再看一遍' }, ctx(s.port))
     expect(res.status).toBe('success')
     expect(res.message).toContain('已派出角色 审查员')
     expect(s.calls[0]?.target).toEqual({ subagent: 'cv_2' })
+
+    const renamed = await subagentTool.fn(
+      { subagent: 'cv_2', name: '版式修复', task: '修复版式' },
+      ctx(s.port),
+    )
+    expect(renamed.status).toBe('success')
+    expect(s.calls[1]?.target).toEqual({ subagent: 'cv_2', name: '版式修复' })
 
     const both = await subagentTool.fn(
       { subagent: 'cv_2', kind: 'temp', name: 'x', task: '再看一遍' },
@@ -167,7 +174,7 @@ describe('派发单个子 agent', () => {
     )
     expect(both.status).toBe('failure')
     expect(both.message).toContain('不能再填写 kind')
-    expect(s.calls).toHaveLength(1)
+    expect(s.calls).toHaveLength(2)
   })
 
   test('种类与 id 都未填写时拒绝，不推测种类', async () => {

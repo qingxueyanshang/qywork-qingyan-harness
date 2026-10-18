@@ -53,6 +53,7 @@ import {
   listChildConversations,
   listWorkflowRecords,
   setConversationExternalSession,
+  setConversationTitle,
   setStepNodeState,
 } from '@qywork/store'
 import {
@@ -202,6 +203,28 @@ export function makeDelegate(ctx: {
   const children = () => listChildConversations(deps.store, conversationId)
 
   /**
+   * 续接时给出了新名称：写入子会话标题并广播。回执、图节点与运行上下文中的子 agent 清单都取该标题，
+   * 子 agent 转而承担另一项任务后，三处一并显示新名称。
+   */
+  const retitle = (conversation: Conversation, name: string | undefined): Conversation => {
+    if (!name || name === conversation.title) return conversation
+    const renamed = setConversationTitle(deps.store, conversation.id, name)
+    if (!renamed) return conversation
+    deps.bus.publish(
+      {
+        type: 'conversation.updated',
+        conversationId: renamed.id,
+        provider: renamed.provider,
+        model: renamed.model,
+        title: renamed.title,
+        updatedAt: renamed.updatedAt,
+      },
+      renamed.id,
+    )
+    return renamed
+  }
+
+  /**
    * 解析派发目标。已有子 agent 按 id 取得，并校验其属于本会话；新建时立即写入一条会话记录，
    * id 随即固定，进度事件与图卡片在子 agent 开始运行之前即可取得入口。
    */
@@ -217,13 +240,14 @@ export function makeDelegate(ctx: {
       if (model || provider) {
         return { error: '续接已有子 agent 时不能另行指定模型，子 agent 沿用其原有会话' }
       }
-      const conversation = getConversation(deps.store, target.subagent as ConversationId)
-      if (!conversation || conversation.parentConversationId !== conversationId) {
+      const child = getConversation(deps.store, target.subagent as ConversationId)
+      if (!child || child.parentConversationId !== conversationId) {
         return { error: `本会话中没有子 agent ${target.subagent}` }
       }
-      if (conversation.source === 'cli') {
-        const cli = conversation.sourceRef ? await findCli(conversation.sourceRef) : null
-        if (!cli) return { error: `本机未识别到 ${conversation.sourceRef}` }
+      if (child.source === 'cli') {
+        const cli = child.sourceRef ? await findCli(child.sourceRef) : null
+        if (!cli) return { error: `本机未识别到 ${child.sourceRef}` }
+        const conversation = retitle(child, target.name)
         // 无法续接会话时照常执行，但将该事实返回给模型：子 agent 只收到了本次的指令。
         const note = !conversation.externalSession
           ? '该 CLI 上次未提供会话号，本次为新会话，只收到了本次的指令'
@@ -232,6 +256,7 @@ export function makeDelegate(ctx: {
             : undefined
         return { conversation, role: null, cli, created: false, ...(note ? { note } : {}) }
       }
+      const conversation = retitle(child, target.name)
       if (conversation.source === 'role') {
         const found = (await team()).roles.find((r) => r.id === conversation.sourceRef)
         if (found) return { conversation, role: found, cli: null, created: false }
@@ -300,7 +325,7 @@ export function makeDelegate(ctx: {
     (target: SubagentTarget): { label: string; kind?: SubagentKind } | null => {
       if ('subagent' in target) {
         const c = existing.find((x) => x.id === target.subagent)
-        return c ? { label: c.title, ...(c.source ? { kind: c.source } : {}) } : null
+        return c ? { label: target.name ?? c.title, ...(c.source ? { kind: c.source } : {}) } : null
       }
       if (target.kind === 'temp') return { label: target.name, kind: 'temp' }
       if (target.kind === 'role') {

@@ -45,7 +45,8 @@ export const workflowTool: ToolSpec = {
             name: {
               type: 'string',
               description:
-                '子 agent 的名称。kind 为 temp 时必填；role / cli 可选，不填时使用角色名或 CLI 名',
+                '子 agent 的名称。kind 为 temp 时必填；role / cli 可选，不填时使用角色名或 CLI 名；' +
+                '指向已有子 agent 时可选，填写后改为该名称',
             },
             cli: {
               type: 'string',
@@ -54,7 +55,8 @@ export const workflowTool: ToolSpec = {
             subagent: {
               type: 'string',
               description:
-                '本会话已有子 agent 的 id。填写后该节点在该子 agent 的上下文中继续，不再填 kind、role、name、cli',
+                '本会话已有子 agent 的 id。填写后该节点在该子 agent 的上下文中继续，不再填 kind、role、cli；' +
+                '节点任务与其现有名称不符时同时填写 name',
             },
             task: { type: 'string', description: '子 agent 节点任务' },
             label: { type: 'string', description: 'checkpoint 显示名称' },

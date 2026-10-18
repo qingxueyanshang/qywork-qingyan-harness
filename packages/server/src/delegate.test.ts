@@ -714,6 +714,34 @@ describe('运行表按会话管理', () => {
     expect(runs.hasRun(child)).toBe(false)
   })
 
+  /**
+   * 原始失败形状：同一个子 agent 先后承担几项不相关的任务，名称停留在第一项，
+   * 回执与清单按旧名称显示，无法从名称判断它当前承担的任务。
+   */
+  test('续接时给出名称，子会话标题与回执改用新名称', async () => {
+    const cid = conversation()
+    const where = spot(cid)
+    router = byTask({ 修复版式: '修复完成', 审计源稿: '审计完成' })
+    const res = await delegate(cid).dispatch({
+      target: { kind: 'temp', name: '源稿审计' },
+      task: '审计源稿',
+      ...where,
+    })
+    const child = res.subagentId as ConversationId
+    await until(() => receipts.length === 1 && !runs.isBusy(cid), '第一轮回执')
+
+    const again = await delegate(cid).dispatch({
+      target: { subagent: child, name: '版式修复' },
+      task: '修复版式',
+      ...where,
+    })
+    expect(again.ok).toBe(true)
+    expect(getConversation(store, child)?.title).toBe('版式修复')
+    await until(() => receipts.length === 2 && !runs.isBusy(cid), '第二轮回执')
+    expect(receipts[1]?.content).toContain('版式修复')
+    expect(receipts[1]?.content).not.toContain('源稿审计')
+  })
+
   test('图节点续接正在执行的子 agent 时该节点失败，检查点回执照常发送', async () => {
     const parent = conversation()
     const first = gate()

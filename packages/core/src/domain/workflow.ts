@@ -15,7 +15,8 @@ export const SUBAGENT_KIND_LABEL: Record<SubagentKind, string> = {
   cli: '外部 CLI',
 }
 /** 派发对象：新建（按种类）或本会话已有的子 agent（按 id）。 */
-export type SubagentTarget = SubagentSpec | { subagent: string }
+/** 续接已有子 agent 时 `name` 可选：给出时改为该名称，用于子 agent 转而承担另一项任务。 */
+export type SubagentTarget = SubagentSpec | { subagent: string; name?: string }
 
 export interface WorkflowAgentNode {
   id: string
@@ -173,10 +174,10 @@ export function parseSubagentTarget(raw: Record<string, unknown>): SubagentTarge
   const cli = wireText(raw.cli)
   const subagent = wireText(raw.subagent)
   if (subagent) {
-    if (kind || role || cli || name) {
-      return { ok: false, error: '填写 subagent 时不能再填写 kind、role、name、cli' }
+    if (kind || role || cli) {
+      return { ok: false, error: '填写 subagent 时不能再填写 kind、role、cli' }
     }
-    return { ok: true, target: { subagent } }
+    return { ok: true, target: { subagent, ...(name ? { name } : {}) } }
   }
   if (kind === 'role') {
     if (!role) return { ok: false, error: 'kind 为 role 时必须填写 role' }
@@ -201,7 +202,7 @@ export function parseSubagentTarget(raw: Record<string, unknown>): SubagentTarge
 
 /** 节点名称，仅凭调用参数即可计算：刷新之后回放、进度事件到达之前都使用它。 */
 export function targetLabel(target: SubagentTarget): string {
-  if ('subagent' in target) return target.subagent
+  if ('subagent' in target) return target.name ?? target.subagent
   if (target.kind === 'temp') return target.name
   return target.name ?? (target.kind === 'role' ? target.role : target.cli)
 }

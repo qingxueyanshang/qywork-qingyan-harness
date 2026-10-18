@@ -42,7 +42,8 @@ export const subagentTool: ToolSpec = {
       name: {
         type: 'string',
         description:
-          '子 agent 的名称。kind 为 temp 时必填；role / cli 可选，不填时使用角色名或 CLI 名。',
+          '子 agent 的名称。kind 为 temp 时必填；role / cli 可选，不填时使用角色名或 CLI 名；' +
+          '续接已有子 agent 时可选，填写后改为该名称。',
       },
       cli: {
         type: 'string',
@@ -52,7 +53,7 @@ export const subagentTool: ToolSpec = {
         type: 'string',
         description:
           '本会话已有子 agent 的 id（上一次派发返回的 subagentId，或运行上下文「本会话的子 agent」清单里的 id）。' +
-          '填写后在该子 agent 的上下文中继续，不再填 kind、role、name、cli。',
+          '填写后在该子 agent 的上下文中继续，不再填 kind、role、cli；本次任务与其现有名称不符时同时填写 name。',
       },
       task: {
         type: 'string',
