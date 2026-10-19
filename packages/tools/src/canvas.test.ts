@@ -1,12 +1,22 @@
 /**
- * 覆盖 `canvas.ts` 的读取、编辑、运行与取回工具，以及 `index.ts` 中按通道注册的逻辑。
+ * 覆盖 `canvas.ts` 的读取、编辑、运行与取回工具，`index.ts` 中按通道注册的逻辑，
+ * 以及 `files.ts` 写入文本文件后附上的画布引用说明。
  *
  * 端口使用假实现：此处验证工具一侧的行为，包括按通道是否存在决定注册、按动作声明权限、参数解析、
  * 运行时使用本轮的生成端口与中止信号、结果写为回执。端口背后的画布服务由 server 包的测试覆盖。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { type CanvasPort, type MediaPort, type ToolContext, ToolRegistry } from '@qywork/agent'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  type CanvasPort,
+  type MediaPort,
+  openBatchBudget,
+  type ToolContext,
+  ToolRegistry,
+} from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import { applyCanvasOps, type CanvasOp, type CanvasView, emptyCanvas } from '@qywork/core'
 import {
@@ -16,6 +26,7 @@ import {
   retrieveCanvasTool,
   runCanvasTool,
 } from './canvas.ts'
+import { editFileTool, readFileTool, writeFileTool } from './files.ts'
 import { registerBuiltinTools } from './index.ts'
 
 function view(): CanvasView {
@@ -97,10 +108,18 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
         return path
       },
       list: async () => ['board.canvas.json', '分镜/第二集.canvas.json'],
+      textReferences: async () => [],
       read: async () => view(),
       edit: async (_path, ops) => {
         seen.edits.push(ops)
-        return { view: view(), refs: { $x: 'id9' } }
+        return {
+          view: view(),
+          refs: { $x: 'id9' },
+          skipped: [],
+          changed: ['id2'],
+          removed: [],
+          replaced: [],
+        }
       },
       run: async (_path, _node, media, signal) => {
         seen.runs.push({ media, signal })
@@ -214,45 +233,99 @@ describe('canvas 工具', () => {
     expect(out.data?.results).toHaveLength(3)
   })
 
-  test('read 不提供路径时列出画布；提供路径时输出节点、状态与连线', async () => {
+  /**
+   * 原始失败形状：读取回执列出每张卡的提示词全文，二十张卡达数万字，模型改用脚本读取画布文件。
+   * 概况每张卡一行，只写提示词字数；全文按卡片名称读取。
+   */
+  test('read 不提供路径时列出画布；提供路径时为概况，提示词只写字数；node 给出时为这些卡的全文', async () => {
     const { port } = fakePort(DONE)
     const list = await readCanvasTool.fn({}, ctx(port))
     expect(list.message).toContain('分镜/第二集.canvas.json')
     const one = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
     expect(one.message).toContain('- id1 文件「小满」（组：图片）角色/小满.png（正常）')
     expect(one.message).toContain(
-      '- id2 video 生成卡「视频1」（组：视频）默认模型，0 版（失败：内容审核未通过）',
+      '- id2 video 生成卡「视频1」（组：视频）默认模型，0 版（失败：内容审核未通过）；参数：未设置，按模型缺省值生成；输入：小满（reference）；提示词 11 字',
     )
-    expect(one.message).toContain('提示词：@[id1] 走出校门')
-    expect(one.message).toContain('  输入：小满（reference）')
+    expect(one.message).not.toContain('走出校门')
     expect(one.message).toContain('小满 → 视频1（reference）')
+    const full = await readCanvasTool.fn({ path: 'board.canvas.json', node: ['视频1'] }, ctx(port))
+    expect(full.message).toContain('提示词：@[id1] 走出校门')
+    expect(full.message).toContain('  输入：小满（reference）')
+    expect(full.message).not.toContain('文件「小满」')
+    const missing = await readCanvasTool.fn(
+      { path: 'board.canvas.json', node: ['镜头9'] },
+      ctx(port),
+    )
+    expect(missing.status).toBe('failure')
     port.read = async () => {
       const v = view()
       return { ...v, doc: { ...v.doc, edges: [] } }
     }
     const lone = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
-    expect(lone.message).toContain('  输入：无，只按提示词生成')
+    expect(lone.message).toContain('输入：无，只按提示词生成')
+  })
+
+  test('read 在概况与全文中标出失效的文本引用', async () => {
+    const { port } = fakePort(DONE)
+    const broken = '@[脚本#1-2 入梦]：文中没有标题「1-2 入梦」'
+    port.read = async () => ({ ...view(), references: { id2: [broken] } })
+    const one = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
+    expect(one.message).toContain(`提示词 11 字；引用失效：${broken}`)
+    const full = await readCanvasTool.fn({ path: 'board.canvas.json', node: ['视频1'] }, ctx(port))
+    expect(full.message).toContain(`  引用失效（运行前须修正）：${broken}`)
+  })
+
+  test('写入或编辑文本文件后，回执附上画布中引用它的卡与失效的引用；其他类型的文件不查询', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-canvas-note-'))
+    const { port } = fakePort(DONE)
+    const asked: string[] = []
+    port.textReferences = async (path) => {
+      asked.push(path)
+      return ['画布 board.canvas.json 中 1 张卡引用此文件（视频1），下次运行时发送修改后的内容。']
+    }
+    const c = {
+      ...ctx(port),
+      workspaceRoot: dir,
+      state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+    }
+    const created = await writeFileTool.fn(
+      { path: '脚本.md', mode: 'create', content: '## 1-1\n推门。\n' },
+      c,
+    )
+    expect(created.message).toBe(
+      '创建 脚本.md\n画布 board.canvas.json 中 1 张卡引用此文件（视频1），下次运行时发送修改后的内容。',
+    )
+    await readFileTool.fn({ path: '脚本.md' }, c)
+    const edited = await editFileTool.fn(
+      { path: '脚本.md', edits: [{ old_string: '推门', new_string: '敲门' }] },
+      c,
+    )
+    expect(edited.message).toContain('（1/1 项已写入）\n画布 board.canvas.json 中 1 张卡')
+    await writeFileTool.fn({ path: 'a.json', mode: 'create', content: '{}' }, c)
+    expect(asked).toEqual(['脚本.md', '脚本.md'])
   })
 
   test('读取运行中的视频：无任务号明确未确认受理，已有任务号立即展示并区分平台阶段', async () => {
     const { port } = fakePort(DONE)
     const v = view()
     port.read = async () => v
+    const card = { path: v.path, node: ['视频1'] }
     v.states.id2 = { state: 'running', startedAt: 1 }
-    const pending = await readCanvasTool.fn({ path: v.path }, ctx(port))
+    expect((await readCanvasTool.fn({ path: v.path }, ctx(port))).message).toContain('提交中')
+    const pending = await readCanvasTool.fn(card, ctx(port))
     expect(pending.message).toContain('提交中')
     expect(pending.message).toContain('尚未取得远端任务号，不能确认平台已受理')
     expect(pending.message).not.toContain('排队中')
     v.states.id2 = { state: 'running', startedAt: 1, taskId: 'remote-task' }
-    const submitted = await readCanvasTool.fn({ path: v.path }, ctx(port))
+    const submitted = await readCanvasTool.fn(card, ctx(port))
     expect(submitted.message).toContain('已提交')
     expect(submitted.message).toContain('远端任务号：remote-task')
     v.states.id2.phase = 'queued'
-    const queued = await readCanvasTool.fn({ path: v.path }, ctx(port))
+    const queued = await readCanvasTool.fn(card, ctx(port))
     expect(queued.message).toContain('排队中')
     expect(queued.message).not.toContain('不能确认平台已受理')
     v.states.id2.phase = 'running'
-    expect((await readCanvasTool.fn({ path: v.path }, ctx(port))).message).toContain('生成中')
+    expect((await readCanvasTool.fn(card, ctx(port))).message).toContain('生成中')
   })
 
   test('edit 解析 ops_json 后交给端口；不是 JSON 数组或操作不合法时不调用端口', async () => {
@@ -280,6 +353,82 @@ describe('canvas 工具', () => {
     expect(seen.edits).toHaveLength(1)
   })
 
+  /**
+   * 原始失败形状：一批 8 张卡中的一条夹带未知字段 `_x`，整批被拒，模型重发约 1.3 万字；
+   * 同一处修改要套到 10 张卡时只能逐张写，模型改用脚本改写画布文件。
+   */
+  test('edit 逐条生效：不成立的条目跳过并写明原因，其余照常交给端口；ids 与 group 展开为逐卡操作', async () => {
+    const { port, seen } = fakePort(DONE)
+    const out = await editCanvasTool.fn(
+      {
+        path: 'board.canvas.json',
+        ops_json: [
+          { op: 'update', id: '视频1', model: 'm', _x: 0 },
+          { op: 'replace_text', ids: ['视频1', '镜头B'], old: '校门', new: '操场' },
+          { op: 'update', group: '视频', provider: 'p', model: 'm' },
+          { op: 'update', group: '道具', model: 'm' },
+          { op: 'replace_text', id: '视频1', ids: ['视频1'], old: 'a', new: 'b' },
+        ],
+      },
+      ctx(port),
+    )
+    expect(seen.edits).toEqual([
+      [
+        { op: 'replace_text', id: '视频1', old: '校门', new: '操场' },
+        { op: 'replace_text', id: '镜头B', old: '校门', new: '操场' },
+        { op: 'update', id: '视频1', provider: 'p', model: 'm' },
+      ],
+    ])
+    expect(out.status).toBe('success')
+    expect(out.message).toContain('本批 6 项操作，执行 3 项，跳过 3 项')
+    expect(out.message).toContain('- 第 1 条（update「视频1」）：含有未知字段：_x')
+    expect(out.message).toContain('- 第 4 条（update）：组「道具」中没有生成卡')
+    expect(out.message).toContain(
+      '- 第 5 条（replace_text「视频1」）：id 与 ids、group 只能给出其中一个',
+    )
+  })
+
+  test('edit 回执只列改动的卡与端口跳过的条目，未改动的卡不写入', async () => {
+    const { port } = fakePort(DONE)
+    port.edit = async () => ({
+      view: view(),
+      refs: {},
+      skipped: [{ at: 1, error: '「镜头9」不存在' }],
+      changed: ['id2'],
+      removed: ['旧卡'],
+      replaced: [{ at: 0, count: 2 }],
+    })
+    const out = await editCanvasTool.fn(
+      {
+        path: 'board.canvas.json',
+        ops_json: [
+          { op: 'replace_text', id: '视频1', old: '校门', new: '操场' },
+          { op: 'remove', id: '镜头9' },
+        ],
+      },
+      ctx(port),
+    )
+    expect(out.message).toContain('- 第 2 条（remove「镜头9」）：「镜头9」不存在')
+    expect(out.message).toContain('替换：第 1 条（replace_text「视频1」） 2 处')
+    expect(out.message).toContain('提示词：@[id1] 走出校门')
+    expect(out.message).not.toContain('文件「小满」')
+    expect(out.message).toContain('删除：「旧卡」')
+    expect(out.message).toContain('未改动的卡用 read_canvas 的 node 按名称读取全文')
+    port.edit = async () => ({
+      view: view(),
+      refs: {},
+      skipped: [{ at: 0, error: '原因' }],
+      changed: [],
+      removed: [],
+      replaced: [],
+    })
+    const none = await editCanvasTool.fn(
+      { path: 'board.canvas.json', ops_json: [{ op: 'remove', id: '镜头9' }] },
+      ctx(port),
+    )
+    expect(none.status).toBe('failure')
+  })
+
   test('ops_json 直接传数组时与 JSON 文本同样生效', async () => {
     const { port, seen } = fakePort(DONE)
     const ok = await editCanvasTool.fn(
@@ -290,7 +439,7 @@ describe('canvas 工具', () => {
     expect(seen.edits).toEqual([[{ op: 'add_generate', ref: '$x', output: 'image' }]])
   })
 
-  test('edit 的新增操作不接受坐标、尺寸与相邻节点，位置由画布按组排列；移动已有节点不受影响', async () => {
+  test('edit 的新增操作不接受坐标、尺寸与相邻节点，该条跳过，其余照常执行；移动已有节点不受影响', async () => {
     const { port, seen } = fakePort(DONE)
     for (const extra of [
       '"x":0,"y":950',
@@ -305,12 +454,13 @@ describe('canvas 工具', () => {
         },
         ctx(port),
       )
-      expect(out.status).toBe('failure')
-      expect(out.errorKind).toBe('invalid_tool_arguments')
-      expect(out.message).toContain('第 2 条操作')
+      expect(out.status).toBe('success')
+      expect(out.message).toContain('本批 2 项操作，执行 1 项，跳过 1 项')
+      expect(out.message).toContain('- 第 2 条（add_generate）：')
       expect(out.message).toContain('由画布按 group 排列')
     }
-    expect(seen.edits).toHaveLength(0)
+    expect(seen.edits).toEqual(Array(4).fill([{ op: 'add_file', path: 'a.png', group: '素材' }]))
+    seen.edits.length = 0
     const moved = await editCanvasTool.fn(
       { path: 'board.canvas.json', ops_json: '[{"op":"update","id":"id1","x":10,"y":20}]' },
       ctx(port),
@@ -358,7 +508,7 @@ describe('canvas 工具', () => {
     expect(sent.message).toContain('generated/b.mp4（854×480，15 秒）')
     expect(sent.message).toContain('发送的参数：{"resolution":"480P","duration":15}')
     const read = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
-    expect(read.message).toContain('  参数：未设置，按模型缺省值生成')
+    expect(read.message).toContain('参数：未设置，按模型缺省值生成')
   })
 
   test('远端任务未结束时回执说明取回方式；没有生成通道时不调用端口', async () => {

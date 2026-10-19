@@ -3,9 +3,10 @@
  * 两个方向的转换均在本文件中，编辑框只使用这两个函数。
  */
 
-const MENTION_RE = /@\[([A-Za-z0-9_-]{1,64})\]/g
+/** 与 core `canvas.ts` 的 `MENTION_RE` 同一格式：引用文本卡时可带 `#标题`。 */
+const MENTION_RE = /@\[([A-Za-z0-9_-]{1,64})(?:#([^\]\n]{1,120}))?\]/g
 
-export type PromptPart = { text: string } | { id: string }
+export type PromptPart = { text: string } | { id: string; heading?: string }
 
 /** 保存的提示词拆分为文字段与引用段，顺序不变。 */
 export function promptParts(prompt: string): PromptPart[] {
@@ -13,7 +14,7 @@ export function promptParts(prompt: string): PromptPart[] {
   let last = 0
   for (const m of prompt.matchAll(MENTION_RE)) {
     if (m.index! > last) parts.push({ text: prompt.slice(last, m.index) })
-    parts.push({ id: m[1]! })
+    parts.push(m[2] ? { id: m[1]!, heading: m[2] } : { id: m[1]! })
     last = m.index! + m[0].length
   }
   if (last < prompt.length) parts.push({ text: prompt.slice(last) })
@@ -35,7 +36,8 @@ export function promptOfEditor(root: Node): string {
     const el = node as HTMLElement
     const id = el.dataset?.node
     if (id) {
-      out += `@[${id}]`
+      const heading = el.dataset.heading
+      out += heading ? `@[${id}#${heading}]` : `@[${id}]`
       return
     }
     if (el.tagName === 'BR') {

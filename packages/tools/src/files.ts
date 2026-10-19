@@ -731,15 +731,25 @@ export const writeFileTool: ToolSpec = {
     return {
       status: 'success',
       message:
-        existing !== null
+        (existing !== null
           ? `写入 ${change.path}`
           : renamed
             ? `${requested} 已存在，已创建 ${change.path}`
-            : `创建 ${change.path}`,
+            : `创建 ${change.path}`) + (await canvasNote(ctx, change.path)),
       data: { path: change.path },
       fileChanges: [change],
     }
   },
+}
+
+/**
+ * 写入 .md / .txt 之后，引用它的画布卡片与其中已不成立的引用（文本卡引用，见画布工具说明），每项一行。
+ * 改动会进入这些卡下次发送的提示词；标题改名或删除使引用失效时在此当场指出，不等到运行时才发现。
+ */
+async function canvasNote(ctx: ToolContext, path: string): Promise<string> {
+  if (!ctx.canvas || !/\.(md|txt)$/i.test(path)) return ''
+  const lines = await ctx.canvas.textReferences(path).catch(() => [])
+  return lines.length ? `\n${lines.join('\n')}` : ''
 }
 
 export const editFileTool: ToolSpec = {
@@ -868,7 +878,9 @@ export const editFileTool: ToolSpec = {
       changeType: 'modified',
       ...countDiff(current, next),
     }
-    const written = `编辑 ${change.path}（${edits.length - skipped.length}/${edits.length} 项已写入）`
+    const written =
+      `编辑 ${change.path}（${edits.length - skipped.length}/${edits.length} 项已写入）` +
+      (await canvasNote(ctx, change.path))
     // 部分写入记为失败：文件已改动，但请求未全部完成；fileChanges 照常记录实际改动。
     if (first) {
       return {

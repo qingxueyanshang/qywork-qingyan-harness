@@ -7,7 +7,13 @@
 
 import type { CanvasPixels } from '@qywork/core'
 import { createResource, createSignal, onCleanup, onMount, Show } from 'solid-js'
-import { type ArtHandle, artSizeOfHtml, connectArt, dropStalePoster } from './art.ts'
+import {
+  type ArtHandle,
+  artSizeOfHtml,
+  connectArt,
+  dropStalePoster,
+  inlineArtImages,
+} from './art.ts'
 import { Bitmap } from './Bitmap.tsx'
 
 /** 实时页面的句柄与视口。 */
@@ -33,7 +39,7 @@ export function ArtView(props: {
       if (!res.ok) throw new Error(`页面读取失败：${res.status}`)
       const html = await res.text()
       dropStalePoster(url, html)
-      return html
+      return inlineArtImages(html, url)
     },
   )
   return (

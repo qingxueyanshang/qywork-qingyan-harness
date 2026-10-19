@@ -1562,6 +1562,56 @@ button.canvas-input:hover {
   border-radius: 3px;
   object-fit: cover;
 }
+/* 文本卡的引用：没有缩略图，点击展开引用的正文；文件或标题不存在时以危险色标出（服务端判定）。 */
+.canvas-chip.text {
+  padding: 0 6px;
+  cursor: pointer;
+}
+.canvas-chip.broken {
+  color: var(--danger);
+  background: var(--danger-soft);
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+.canvas-text-preview {
+  max-height: 160px;
+  margin: 0 14px 6px;
+  padding: 8px 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+}
+/* 文本卡的段落选择：@ 选中有标题的文本卡后出现，样式独立于 .canvas-pick（浮层不共用选择器）。 */
+.canvas-section-pick {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: 260px;
+  max-height: 300px;
+  padding: 4px;
+  overflow-y: auto;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+.canvas-section-pick > button {
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+.canvas-section-pick > button:hover {
+  background: var(--bg-hover);
+}
 .canvas-media-notice {
   position: absolute;
   left: 0;

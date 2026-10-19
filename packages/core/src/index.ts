@@ -13,11 +13,14 @@
 // Art 页面：尺寸参数与 viewport 读写。服务端生成、尺寸读取与界面渲染共用
 export {
   ART_DEFAULT_SIZE,
+  ART_IMAGE_REF_RE,
   ART_MENTION,
   ART_SIZE_PARAM,
+  artImageRefs,
   artSizeOf,
   artViewportOf,
   insertAfterHead,
+  resolveArtRef,
   withArtViewport,
 } from './domain/art.ts'
 // 画布文档：格式、操作与不变式。服务端画布服务、画布工具与界面共用同一套规则
@@ -32,6 +35,7 @@ export {
   type CanvasClip,
   type CanvasDoc,
   type CanvasEdge,
+  type CanvasEdgeRole,
   type CanvasFileKind,
   type CanvasFileNode,
   type CanvasGenerateNode,
@@ -58,7 +62,11 @@ export {
   emptyCanvas,
   fitBox,
   inputsOf,
+  isTextCard,
   type MentionStyle,
+  markdownHeadings,
+  mediaInputsOf,
+  mentionRefsOf,
   mentionsOf,
   modeOf,
   newCanvasId,
@@ -68,6 +76,8 @@ export {
   serializeCanvas,
   settleVersion,
   TIMELINE_W,
+  textReferenceOf,
+  textReferenceProblems,
   validateCanvas,
 } from './domain/canvas.ts'
 // id 与构造器：账本、事件、协议三处都按它们对齐类型

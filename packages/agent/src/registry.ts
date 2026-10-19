@@ -58,6 +58,10 @@ export interface MediaCall {
   prompt: string
   /** 输入文件，各自带有用途。操作由用途推导（见实现方），不由大模型选择。 */
   inputs: MediaInput[]
+  /**
+   * 产物将写入的目录（绝对路径）。`art` 据此告诉模型每张参考图相对页面的路径，页面按该路径引用图片。
+   */
+  outputDir?: string
   /** 大模型按参数表填写的原生字段，由实现方按目录校验。 */
   params: Record<string, unknown>
   /** 与 `model` 须同时提供或同时省略；均省略时使用该类别的默认模型。 */
@@ -407,13 +411,33 @@ export interface BrowserRefusal {
  *
  * 失败以抛出 `Error` 表示，`message` 原样交给大模型。
  */
+/** `CanvasPort.edit` 的结果。 */
+export interface CanvasEditResult {
+  view: CanvasView
+  refs: Record<string, string>
+  skipped: { at: number; error: string }[]
+  changed: string[]
+  removed: string[]
+  replaced: { at: number; count: number }[]
+}
+
 export interface CanvasPort {
   /** 在指定工作区路径创建空画布；已有文件不覆盖。返回规范化的工作区相对路径。 */
   create(path: string): Promise<string>
   /** 工作区中的画布文件，以工作区相对路径表示。 */
   list(): Promise<string[]>
+  /**
+   * 引用文本文件 `path`（工作区相对路径）的画布卡片与其中已不成立的引用，每项一行；没有引用时为空。
+   * 文件工具写入 .md / .txt 后附在结果中。
+   */
+  textReferences(path: string): Promise<string[]>
   read(path: string): Promise<CanvasView>
-  edit(path: string, ops: CanvasOp[]): Promise<{ view: CanvasView; refs: Record<string, string> }>
+  /**
+   * 逐条应用一批操作：不成立的条目跳过，`skipped` 中的 `at` 为该条在 `ops` 中的序号；其余照常生效。
+   * `changed` 为本批新增或内容有变化的节点 id，`removed` 为本批删除的节点名称，
+   * `replaced` 为每条 `replace_text` 在该卡提示词中替换的处数（按 `ops` 的序号）。
+   */
+  edit(path: string, ops: CanvasOp[]): Promise<CanvasEditResult>
   /** 运行一张生成卡并等待结束。花费记入 `media`：Agent 传入本轮的 `ctx.media`，花费计入本轮。 */
   run(path: string, nodeId: string, media: MediaPort, signal: AbortSignal): Promise<CanvasRunResult>
   /** 只运行指定节点，独立节点有界并行，批内依赖按顺序执行。 */

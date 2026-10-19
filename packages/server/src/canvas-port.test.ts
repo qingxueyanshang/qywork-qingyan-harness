@@ -11,7 +11,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { MediaCallResult, MediaPort } from '@qywork/agent'
+import type { CanvasEditResult, MediaCallResult, MediaPort } from '@qywork/agent'
 import {
   type AgentEvent,
   applyCanvasOps,
@@ -30,6 +30,11 @@ const OPS: CanvasOp[] = [
   { op: 'add_file', ref: '$a', path: 'a.png', name: '小满' },
   { op: 'add_generate', ref: '$v', output: 'video', prompt: '@[$a] 走出校门', x: 400, y: 0 },
 ]
+
+/** 端口逐条执行：返回被跳过条目的原因，供断言。 */
+async function skippedOf(pending: Promise<CanvasEditResult>): Promise<string> {
+  return (await pending).skipped.map((s) => s.error).join('\n')
+}
 
 function sequence(): () => string {
   let n = 0
@@ -96,15 +101,17 @@ describe('画布端口', () => {
     const card = () => view.doc.nodes.find((n) => n.type === 'generate')
     expect(card()).toMatchObject({ prompt: '@[id1] 走出校门', w: 169, h: 300 })
     expect(view.doc.edges.filter((e) => e.from === 'id1')).toHaveLength(1)
-    await expect(
-      port.edit(PATH, [{ op: 'add_generate', output: 'video', name: '小满' }]),
-    ).rejects.toThrow('名称「小满」已被另一张卡使用')
-    await expect(
-      port.edit(PATH, [{ op: 'update', id: '走出校门', params: { duration: 30 } }]),
-    ).rejects.toThrow('「走出校门」的参数 duration 取值 30 不合法：范围 1–15')
-    await expect(
-      port.edit(PATH, [{ op: 'update', id: '走出校门', params: { seconds: 5 } }]),
-    ).rejects.toThrow('「走出校门」的参数 seconds 不存在。可用参数：aspect_ratio、duration')
+    expect(
+      await skippedOf(port.edit(PATH, [{ op: 'add_generate', output: 'video', name: '小满' }])),
+    ).toContain('名称「小满」已被另一张卡使用')
+    expect(
+      await skippedOf(
+        port.edit(PATH, [{ op: 'update', id: '走出校门', params: { duration: 30 } }]),
+      ),
+    ).toContain('「走出校门」的参数 duration 取值 30 不合法：范围 1–15')
+    expect(
+      await skippedOf(port.edit(PATH, [{ op: 'update', id: '走出校门', params: { seconds: 5 } }])),
+    ).toContain('「走出校门」的参数 seconds 不存在。可用参数：aspect_ratio、duration')
     const wide = await port.edit(PATH, [
       { op: 'update', id: '走出校门', params: { aspect_ratio: '16:9' } },
     ])
@@ -171,21 +178,96 @@ describe('画布端口', () => {
     ])
   })
 
+  /**
+   * 原始失败形状：一批操作中有一条不成立时整批被拒，模型须把整批（会话中一次约 1.3 万字）重发。
+   * 改为逐条生效：不成立的条目跳过，依赖它的批内名称的条目同样跳过，其余写入；
+   * 新卡仍在本批全部连线之后按组排位，与整批应用的位置相同。
+   */
+  test('经端口一批中有不成立的条目时只跳过这些条目，其余写入，新卡按组排位', async () => {
+    const root = await workspace()
+    const service = new CanvasService({ publish: () => {}, newId: sequence() })
+    const port = canvasPort(service, { id: 'ws', root })
+    const result = await port.edit(PATH, [
+      { op: 'add_file', ref: '$a', path: 'a.png', name: '小满', group: '角色/小满' },
+      { op: 'add_file', ref: '$b', path: 'missing.png', name: '缺失' },
+      { op: 'connect', from: '$b', to: '$v', role: 'reference' },
+      {
+        op: 'add_generate',
+        ref: '$v',
+        output: 'image',
+        name: '定妆',
+        group: '镜头/定妆',
+        prompt: '@[$a]',
+      },
+      { op: 'update', id: '不存在的卡', name: 'x' },
+    ])
+    expect(result.skipped.map((s) => s.at)).toEqual([1, 2, 4])
+    expect(result.skipped[2]!.error).toContain('不存在的卡')
+    const names = result.view.doc.nodes.map((n) => (n.type === 'file' ? n.name : n.name))
+    expect(names).toEqual(['小满', '定妆'])
+    expect(result.changed).toHaveLength(2)
+
+    // 同一批整批成立时的位置作为对照。
+    const solo = await workspace()
+    const reference = await canvasPort(
+      new CanvasService({ publish: () => {}, newId: sequence() }),
+      {
+        id: 'ws',
+        root: solo,
+      },
+    ).edit(PATH, [
+      { op: 'add_file', ref: '$a', path: 'a.png', name: '小满', group: '角色/小满' },
+      {
+        op: 'add_generate',
+        ref: '$v',
+        output: 'image',
+        name: '定妆',
+        group: '镜头/定妆',
+        prompt: '@[$a]',
+      },
+    ])
+    const place = (v: CanvasEditResult) => v.view.doc.nodes.map((n) => [n.x, n.y])
+    expect(place(result)).toEqual(place(reference))
+
+    const nothing = await port.edit(PATH, [{ op: 'remove', id: '不存在的卡' }])
+    expect(nothing.skipped).toHaveLength(1)
+    expect(nothing.changed).toEqual([])
+  })
+
+  test('经端口的 replace_text 回报每张卡替换的处数', async () => {
+    const root = await workspace()
+    const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
+    await port.edit(PATH, [
+      { op: 'add_generate', output: 'image', name: '同学录', prompt: '暖黄灯光，暖黄灯光' },
+      { op: 'add_generate', output: 'image', name: 'MP3', prompt: '冷光' },
+    ])
+    const result = await port.edit(PATH, [
+      { op: 'replace_text', id: '同学录', old: '暖黄灯光', new: '自然光' },
+      { op: 'replace_text', id: 'MP3', old: '暖黄灯光', new: '自然光' },
+    ])
+    expect(result.replaced).toEqual([{ at: 0, count: 2 }])
+    expect(result.skipped).toEqual([{ at: 1, error: '「MP3」的提示词中没有「暖黄灯光」' }])
+  })
+
   /** 原始失败形状：模型在后一批中以另一个名称再次放置同一份制作稿，画布上同一文件出现两张卡。 */
-  test('经端口再次放置已在画布上的文件时整批拒绝，并给出已有卡片的名称', async () => {
+  test('经端口再次放置已在画布上的文件时该条跳过，并给出已有卡片的名称', async () => {
     const root = await workspace()
     const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
     await port.edit(PATH, [{ op: 'add_file', path: 'a.png', group: '角色/小满' }])
-    await expect(
-      port.edit(PATH, [{ op: 'add_file', path: 'a.png', name: '小满_审定', group: '角色/小满' }]),
-    ).rejects.toThrow('a.png 已在画布上，卡片名称为「a」：同一文件只放一张卡')
+    expect(
+      await skippedOf(
+        port.edit(PATH, [{ op: 'add_file', path: 'a.png', name: '小满_审定', group: '角色/小满' }]),
+      ),
+    ).toContain('a.png 已在画布上，卡片名称为「a」：同一文件只放一张卡')
     const other = await port.create('b.canvas.json')
-    await expect(
-      port.edit(other, [
-        { op: 'add_file', path: 'a.png', name: '小满' },
-        { op: 'add_file', path: 'a.png', name: '小满_审定' },
-      ]),
-    ).rejects.toThrow('a.png 已在画布上，卡片名称为「小满」')
+    expect(
+      await skippedOf(
+        port.edit(other, [
+          { op: 'add_file', path: 'a.png', name: '小满' },
+          { op: 'add_file', path: 'a.png', name: '小满_审定' },
+        ]),
+      ),
+    ).toContain('a.png 已在画布上，卡片名称为「小满」')
     const view = await port.read(PATH)
     expect(view.doc.nodes.filter((n) => n.type === 'file')).toHaveLength(1)
   })
@@ -210,14 +292,14 @@ describe('画布端口', () => {
       port.edit(PATH, [
         { op: 'add_generate', output: 'image', name: `林晚${size}`, params: { size } },
       ])
-    await expect(add('1536x864')).rejects.toThrow(
+    expect(await skippedOf(add('1536x864'))).toContain(
       '「林晚1536x864」的参数 size 取值 "1536x864" 不合法：可选 auto（自动宽高比）、1360x768（16:9 · 1K）、832x1248（2:3 · 1K）',
     )
     const { view } = await add('832x1248')
     expect(view.doc.nodes[0]).toMatchObject({ w: 169, h: 254 })
   })
   /** 原始失败形状：模型写入当前模式下不可用的参数，工具返回成功，而画布不发送该参数，参数面板也不显示。 */
-  test('参数按卡片批后的输入与其他参数核对是否可用，不可用时整批拒绝', async () => {
+  test('参数按卡片批后的输入与其他参数核对是否可用，不可用时该条跳过', async () => {
     const root = await workspace()
     const specs: MediaParamDefinition[] = [
       { name: 'output_format', type: 'enum', values: ['png', 'jpeg'], default: 'png' },
@@ -234,11 +316,11 @@ describe('画布端口', () => {
     const port = canvasPort(service, { id: 'ws', root })
     const card = (name: string, params: Record<string, unknown>, prompt = '') =>
       port.edit(PATH, [{ op: 'add_generate', output: 'image', name, prompt, params }])
-    await expect(card('压缩', { output_compression: 90 })).rejects.toThrow(
+    expect(await skippedOf(card('压缩', { output_compression: 90 }))).toContain(
       '「压缩」的参数 output_compression 取值 90 在当前的输入与参数下不可用：当前生成模式或参数组合不支持此参数',
     )
     await card('压缩', { output_format: 'jpeg', output_compression: 90 })
-    await expect(card('保真', { input_fidelity: 'high' })).rejects.toThrow(
+    expect(await skippedOf(card('保真', { input_fidelity: 'high' }))).toContain(
       '「保真」的参数 input_fidelity 取值 "high" 在当前的输入与参数下不可用',
     )
     await port.edit(PATH, [{ op: 'add_file', path: 'a.png', name: '参考' }])
@@ -268,7 +350,7 @@ describe('画布端口', () => {
       },
     ])
     const edge = view.doc.edges[0]!
-    await expect(port.edit(PATH, [{ op: 'remove', id: edge.id }])).rejects.toThrow(
+    expect(await skippedOf(port.edit(PATH, [{ op: 'remove', id: edge.id }]))).toContain(
       '「保真」的参数 input_fidelity 取值 "high" 在当前的输入与参数下不可用',
     )
     await port.edit(PATH, [
@@ -286,11 +368,13 @@ describe('画布端口', () => {
       output_format: 'jpeg',
     })
     expect(read?.type === 'generate' && read.params).toEqual({ output_format: 'jpeg' })
-    await expect(
-      port.edit(PATH, [
-        { op: 'update', id: '保真', params: { input_fidelity: 'high', output_format: 'jpeg' } },
-      ]),
-    ).rejects.toThrow('「保真」的参数 input_fidelity 取值 "high" 在当前的输入与参数下不可用')
+    expect(
+      await skippedOf(
+        port.edit(PATH, [
+          { op: 'update', id: '保真', params: { input_fidelity: 'high', output_format: 'jpeg' } },
+        ]),
+      ),
+    ).toContain('「保真」的参数 input_fidelity 取值 "high" 在当前的输入与参数下不可用')
 
     // 改换模型时恢复该模型保存的参数；取值与切换前相同的参数同样须可发送。
     const high = { input_fidelity: 'high' }
@@ -300,12 +384,12 @@ describe('画布端口', () => {
       { op: 'update', id: '换模型', model: 'm1' },
       { op: 'update', id: '换模型', params: high },
     ])
-    await expect(port.edit(PATH, [{ op: 'update', id: '换模型', model: 'm2' }])).rejects.toThrow(
-      '「换模型」的参数 input_fidelity 取值 "high" 在当前的输入与参数下不可用',
-    )
+    expect(
+      await skippedOf(port.edit(PATH, [{ op: 'update', id: '换模型', model: 'm2' }])),
+    ).toContain('「换模型」的参数 input_fidelity 取值 "high" 在当前的输入与参数下不可用')
   })
 
-  test('卡片写入的生成模型须已配置，未配置时整批拒绝', async () => {
+  test('卡片写入的生成模型须已配置，未配置时该条跳过', async () => {
     const root = await workspace()
     const specs: MediaParamDefinition[] = [{ name: 'n', type: 'integer', min: 1, max: 4 }]
     const service = new CanvasService({
@@ -315,13 +399,13 @@ describe('画布端口', () => {
     const port = canvasPort(service, { id: 'ws', root })
     const add = (name: string, model: string) =>
       port.edit(PATH, [{ op: 'add_generate', output: 'image', name, provider: 'p', model }])
-    await expect(add('甲', 'img-x')).rejects.toThrow(
+    expect(await skippedOf(add('甲', 'img-x'))).toContain(
       '「甲」的生成模型 p / img-x 未配置：provider 与 model 取自本轮「可用的生成模型」中的同一行',
     )
     await add('甲', 'img-1')
-    await expect(port.edit(PATH, [{ op: 'update', id: '甲', model: 'img-x' }])).rejects.toThrow(
-      '未配置',
-    )
+    expect(
+      await skippedOf(port.edit(PATH, [{ op: 'update', id: '甲', model: 'img-x' }])),
+    ).toContain('未配置')
     const bare = canvasPort(
       new CanvasService({
         publish: () => {},
@@ -329,9 +413,9 @@ describe('画布端口', () => {
       }),
       { id: 'ws', root },
     )
-    await expect(
-      bare.edit(PATH, [{ op: 'add_generate', output: 'image', name: '乙' }]),
-    ).rejects.toThrow('「乙」未指定生成模型，且没有默认的生成模型')
+    expect(
+      await skippedOf(bare.edit(PATH, [{ op: 'add_generate', output: 'image', name: '乙' }])),
+    ).toContain('「乙」未指定生成模型，且没有默认的生成模型')
   })
 
   test('同一批操作经端口与经 HTTP 写出的文件逐字节相同', async () => {

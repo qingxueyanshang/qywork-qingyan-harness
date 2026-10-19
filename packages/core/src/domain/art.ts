@@ -75,3 +75,38 @@ export function insertAfterHead(html: string, content: string): string {
   const at = anchor.index + anchor[0].length
   return html.slice(0, at) + content + html.slice(at)
 }
+
+/**
+ * 页面中按相对路径引用图片的两种写法：`src="…"` 与 CSS 的 `url(…)`。第 1 组是写法前缀，第 2 组是路径。
+ * 画布显示时按它把工作区图片载入页面（界面 `inlineArtImages`），生成后按它核对与补连线（服务端），两处共用。
+ */
+export const ART_IMAGE_REF_RE =
+  /(\bsrc\s*=\s*["']|url\(\s*["']?)([^"'()\s]+?\.(?:png|jpe?g|gif|webp|avif|svg))(?=["')\s])/gi
+
+/** 页面中按相对路径引用的图片，按首次出现去重；网络地址、data URL 与根路径不计入。 */
+export function artImageRefs(html: string): string[] {
+  const refs = new Set<string>()
+  for (const m of html.matchAll(ART_IMAGE_REF_RE)) {
+    const rel = m[2]!
+    if (/^[a-z]+:|^\/\//i.test(rel) || rel.startsWith('/')) continue
+    refs.add(rel)
+  }
+  return [...refs]
+}
+
+/** 页面 `page`（工作区路径）所在目录下的相对路径，规范化为工作区路径；越出工作区根时返回 null。 */
+export function resolveArtRef(page: string, rel: string): string | null {
+  const parts = page.split('/').slice(0, -1)
+  let decoded = rel
+  try {
+    decoded = decodeURI(rel)
+  } catch {}
+  for (const seg of decoded.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') {
+      if (!parts.length) return null
+      parts.pop()
+    } else parts.push(seg)
+  }
+  return parts.join('/')
+}

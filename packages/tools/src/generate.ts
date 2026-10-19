@@ -324,10 +324,12 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
       : await reserveDefault(req.roots)
   try {
     let recordPath: string | null = null
+    const target = await resolveWritablePath(req.roots, slot.target, { followFinalSymlink: false })
     const call: MediaCall = {
       type: req.type,
       prompt: req.prompt,
       inputs,
+      outputDir: dirname(target),
       params: req.params,
       ...(req.pick ?? {}),
       ...(req.onSpend ? { onSpend: req.onSpend } : {}),

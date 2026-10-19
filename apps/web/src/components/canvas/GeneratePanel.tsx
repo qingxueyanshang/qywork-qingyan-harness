@@ -20,21 +20,25 @@ import {
   fitBox,
   formatMoney,
   type GenerateOutput,
-  inputsOf,
   isInlineAudio,
   isInlineImage,
   isInlineVideo,
+  isTextCard,
   type MediaInputRole,
+  markdownHeadings,
+  mediaInputsOf,
   mediaOperationFor,
   mediaParamProblem,
   mediaParamValues,
   modeOf,
   ratioOf,
   resolveMediaParam,
+  textReferenceOf,
 } from '@qywork/core'
 import {
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   For,
   Match,
@@ -80,6 +84,7 @@ type Mode = 'reference' | 'first_last'
 type Menu =
   | { kind: 'model' | 'mode' | 'params'; anchor: HTMLElement }
   | { kind: 'pick'; anchor: HTMLElement; role?: MediaInputRole }
+  | { kind: 'section'; anchor: HTMLElement; nodeId: string; headings: string[] }
 
 export const ROLE_LABEL: Record<MediaInputRole, string> = {
   reference: '参考',
@@ -342,7 +347,8 @@ export function GeneratePanel(props: {
   /** `@` 打开选择框时光标所在的位置；选中后在此处插入标签。 */
   let caret: Range | null = null
 
-  const edges = () => inputsOf(props.view.doc, props.node.id)
+  /** 素材输入线：文本卡以提示词中的引用标签表示，不在素材栏中列出。 */
+  const edges = () => mediaInputsOf(props.view.doc, props.node.id)
   const mode = (): Mode =>
     props.node.output !== 'video'
       ? 'reference'
@@ -502,12 +508,24 @@ export function GeneratePanel(props: {
     ),
   )
 
-  function chip(id: string): HTMLElement {
+  function chip(id: string, heading?: string): HTMLElement {
     const el = document.createElement('span')
     el.className = 'canvas-chip'
     el.contentEditable = 'false'
     el.dataset.node = id
     const node = props.view.doc.nodes.find((n) => n.id === id)
+    if (node && isTextCard(node)) {
+      const label = `${displayNameOf(node)}${heading ? `#${heading}` : ''}`
+      el.classList.add('text')
+      if (heading) el.dataset.heading = heading
+      // 失效的判定与运行前的核对相同（服务端 `textReferenceProblems`），界面不另行判定。
+      const broken = props.view.references?.[props.node.id]?.some((p) =>
+        p.startsWith(`@[${label}]`),
+      )
+      if (broken) el.classList.add('broken')
+      el.append(label)
+      return el
+    }
     const media = mediaOf(props.view, id)
     if (media.kind === 'image' && media.path) {
       const thumb = document.createElement('canvas')
@@ -526,7 +544,7 @@ export function GeneratePanel(props: {
   function render(prompt: string) {
     editor.replaceChildren(
       ...promptParts(prompt).map((part) =>
-        'text' in part ? document.createTextNode(part.text) : chip(part.id),
+        'text' in part ? document.createTextNode(part.text) : chip(part.id, part.heading),
       ),
     )
   }
@@ -549,12 +567,15 @@ export function GeneratePanel(props: {
   /** 选择素材后建立连接所用的用途；由 `@` 打开时没有用途。 */
   const roleOf = (m: Menu | null) => (m?.kind === 'pick' ? m.role : undefined)
 
-  /** `@` 只列出当前卡片已连接的素材；添加素材时列出可连接的节点。 */
+  /**
+   * `@` 列出当前卡片已连接的素材与画布上的全部文本卡（引用文本卡即连线）；添加素材时列出可连接的媒体节点。
+   */
   const pickable = () => {
     const role = roleOf(menu())
     const connected = new Set(edges().map((e) => e.from))
     return props.view.doc.nodes.filter((n) => {
       if (n.id === props.node.id) return false
+      if (isTextCard(n)) return role === undefined
       const kind = mediaOf(props.view, n.id).kind
       if (!kind) return false
       if (role === 'first_frame' || role === 'last_frame')
@@ -598,8 +619,34 @@ export function GeneratePanel(props: {
       void props.apply([{ op: 'connect', from: sourceId, to: props.node.id, role }])
       return
     }
-    // `@`：在光标处插入已连接素材的标签并立即提交提示词。
-    const el = chip(sourceId)
+    const source = props.view.doc.nodes.find((n) => n.id === sourceId)
+    if (source && m && isTextCard(source)) {
+      void chooseSection(sourceId, m.anchor)
+      return
+    }
+    insertChip(sourceId)
+  }
+
+  /** 文本卡有标题时先选择引用整篇还是某一段；没有标题或读取失败时直接引用整篇。 */
+  const chooseSection = async (sourceId: string, anchor: HTMLElement) => {
+    const source = props.view.doc.nodes.find((n) => n.id === sourceId)
+    const text =
+      source?.type === 'file'
+        ? await fetch(client.fileUrl(source.path), { cache: 'no-store' })
+            .then((r) => (r.ok ? r.text() : ''))
+            .catch(() => '')
+        : ''
+    const headings = markdownHeadings(text).map((h) => h.title)
+    if (!headings.length) {
+      insertChip(sourceId)
+      return
+    }
+    setMenu({ kind: 'section', anchor, nodeId: sourceId, headings: [...new Set(headings)] })
+  }
+
+  /** 在光标处插入引用标签并立即提交提示词。文本卡的连线由提示词中的引用决定（core `syncTextInputs`）。 */
+  const insertChip = (sourceId: string, heading?: string) => {
+    const el = chip(sourceId, heading)
     const range = caret
     if (range && editor.contains(range.startContainer)) {
       range.deleteContents()
@@ -620,14 +667,40 @@ export function GeneratePanel(props: {
     setMenu({ kind: 'pick', anchor, ...(role ? { role } : {}) })
   }
 
+  /** 展开查看的文本引用：点击文本标签切换。内容为文件当前的段落，与运行时展开的内容相同。 */
+  const [preview, setPreview] = createSignal<{ id: string; heading?: string } | null>(null)
+  const [previewText] = createResource(preview, async (p) => {
+    const source = props.view.doc.nodes.find((n) => n.id === p.id)
+    if (source?.type !== 'file') return ''
+    const res = await fetch(client.fileUrl(source.path), { cache: 'no-store' }).catch(() => null)
+    if (!res?.ok) return '文件不存在'
+    const text = await res.text()
+    return textReferenceOf(text, p.heading) ?? `文中没有标题「${p.heading}」`
+  })
+  /** 画布上有文本卡时，任何生成卡都可以用 @ 引用：文本不受卡片接受的素材类别限制。 */
+  const canMention = () => showInputs() || props.view.doc.nodes.some(isTextCard)
+
   /** 编辑框的监听器注册在元素上：可编辑元素本身接收焦点与按键，不另设 ARIA 角色。 */
   function listen(el: HTMLDivElement) {
     el.addEventListener('input', () => setDraft(promptOfEditor(el)))
+    el.addEventListener('click', (e) => {
+      const tag = (e.target as HTMLElement).closest<HTMLElement>('.canvas-chip.text')
+      if (!tag?.dataset.node) return
+      const id = tag.dataset.node
+      const heading = tag.dataset.heading
+      const open = preview()
+      setPreview(
+        open?.id === id && open.heading === heading
+          ? null
+          : { id, ...(heading ? { heading } : {}) },
+      )
+    })
     el.addEventListener('blur', () => {
-      if (menu()?.kind !== 'pick') void commit()
+      const open = menu()?.kind
+      if (open !== 'pick' && open !== 'section') void commit()
     })
     el.addEventListener('keydown', (e) => {
-      if (e.key === '@' && showInputs()) {
+      if (e.key === '@' && canMention()) {
         e.preventDefault()
         openPicker(el)
       }
@@ -1088,6 +1161,9 @@ export function GeneratePanel(props: {
           listen(el)
         }}
       />
+      <Show when={preview()}>
+        <pre class="canvas-text-preview">{previewText() ?? ''}</pre>
+      </Show>
 
       <Show when={stopping() || stopNotice()}>
         <output class="canvas-stop-notice" id={`canvas-stop-${nodeId}`}>
@@ -1200,6 +1276,43 @@ export function GeneratePanel(props: {
                   onUpload={(files) => void place(files.map((file) => ({ file })))}
                 />
               </AnchoredMenu>
+            </Match>
+            <Match
+              when={(() => {
+                const v = m()
+                return v.kind === 'section' ? v : null
+              })()}
+            >
+              {(s) => (
+                <AnchoredMenu
+                  class="canvas-section-pick"
+                  anchor={s().anchor}
+                  placement="above-start"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenu(null)
+                      insertChip(s().nodeId)
+                    }}
+                  >
+                    整篇
+                  </button>
+                  <For each={s().headings}>
+                    {(title) => (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenu(null)
+                          insertChip(s().nodeId, title)
+                        }}
+                      >
+                        {title}
+                      </button>
+                    )}
+                  </For>
+                </AnchoredMenu>
+              )}
             </Match>
             <Match when={m().kind === 'params'}>
               <AnchoredMenu

@@ -283,6 +283,8 @@ async function mount(
       return view()
     }
     if (path.startsWith('/api/canvas/quote')) return { quote: server.quote }
+    // 文本卡的节点预览；内容不参与断言。
+    if (path.startsWith('/api/files/preview')) return { content: '' }
     if (path.startsWith('/api/files/find')) {
       const params = new URLSearchParams(path.split('?')[1])
       const q = params.get('q')
@@ -2323,6 +2325,60 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
+  test('@ 选择文本卡后选择段落：提示词写入带标题的引用，并连接文本线', async () => {
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string) =>
+      String(url).includes(encodeURIComponent('制作脚本.md'))
+        ? Promise.resolve(new Response('## 1-1 修车铺\n推门。\n\n## 1-2 入梦\n握手。\n'))
+        : original(url)) as unknown as typeof fetch
+    try {
+      const { host, server, refs } = await mount([
+        { op: 'add_file', ref: '$t', path: '制作脚本.md', name: '制作脚本', x: 0, y: 0 },
+        { op: 'add_generate', ref: '$v', output: 'video', x: 300, y: 0 },
+      ])
+      await select(host, refs.$v!)
+      ;[...host.querySelectorAll<HTMLButtonElement>('.canvas-bar button')]
+        .find((b) => b.textContent === '@')!
+        .click()
+      const choices = () => [
+        ...document.querySelectorAll<HTMLButtonElement>('.canvas-pick-list > button'),
+      ]
+      await waitFor(
+        () => choices().length === 1,
+        () => document.body.innerHTML.slice(-300),
+      )
+      expect(choices()[0]!.textContent).toBe('制作脚本')
+      choices()[0]!.click()
+      const sections = () => [
+        ...document.querySelectorAll<HTMLButtonElement>('.canvas-section-pick button'),
+      ]
+      await waitFor(
+        () => sections().length === 3,
+        () => document.body.innerHTML.slice(-300),
+      )
+      expect(sections().map((b) => b.textContent)).toEqual(['整篇', '1-1 修车铺', '1-2 入梦'])
+      sections()[2]!.click()
+      await waitFor(
+        () => server.ops.length === 1,
+        () => '',
+      )
+      expect(server.ops[0]).toEqual([
+        { op: 'update', id: refs.$v!, prompt: `@[${refs.$t!}#1-2 入梦] ` },
+      ])
+      expect(server.doc().edges.map((e) => [e.from, e.to, e.role])).toEqual([
+        [refs.$t!, refs.$v!, 'text'],
+      ])
+      await waitFor(
+        () =>
+          host.querySelector('.canvas-prompt .canvas-chip.text')?.textContent ===
+          '制作脚本#1-2 入梦',
+        () => host.querySelector('.canvas-prompt')?.innerHTML ?? '',
+      )
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
   test('从素材栏选择已在画布上的工作区文件：连接现有节点', async () => {
     const { host, server, refs } = await mount([
       { op: 'add_file', ref: '$f', path: '角色/小满.png', x: 0, y: 0 },
@@ -3838,6 +3894,50 @@ describe('画布：纯函数与标签页', () => {
     chip.textContent = '小满'
     root.append(chip, ' 走出', document.createElement('br'), '下雨')
     expect(promptOfEditor(root)).toBe('@[n1] 走出\n下雨')
+  })
+
+  test('文本卡的段落引用：标题随引用一起解析与写回', async () => {
+    const { promptOfEditor, promptParts } = await import('./prompt.ts')
+    expect(promptParts('@[t1#1-2 入梦]\n@[n1]')).toEqual([
+      { id: 't1', heading: '1-2 入梦' },
+      { text: '\n' },
+      { id: 'n1' },
+    ])
+    const root = document.createElement('div')
+    const chip = document.createElement('span')
+    chip.dataset.node = 't1'
+    chip.dataset.heading = '1-2 入梦'
+    chip.textContent = '制作脚本#1-2 入梦'
+    root.append(chip, ' 画面')
+    expect(promptOfEditor(root)).toBe('@[t1#1-2 入梦] 画面')
+  })
+
+  test('设计稿页面按相对路径引用的工作区图片内嵌为 data URL；不存在的与网络地址保持原样', async () => {
+    const { inlineArtImages } = await import('./art.ts')
+    const original = globalThis.fetch
+    const asked: string[] = []
+    globalThis.fetch = ((url: string) => {
+      const path = new URL(String(url), 'http://localhost/').searchParams.get('path') ?? ''
+      asked.push(path)
+      return Promise.resolve(
+        path === '角色/小满.png'
+          ? new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png' } })
+          : new Response('', { status: 404 }),
+      )
+    }) as unknown as typeof fetch
+    try {
+      const page = 'http://localhost/api/files/raw?path=%E4%BD%9C%E5%93%81%2Fp.html'
+      const html =
+        '<img src="../角色/小满.png"><div style="background:url(\'../缺失.png\')"></div>' +
+        '<img src="https://x.test/a.png">'
+      const out = await inlineArtImages(html, page)
+      expect(out).toContain('<img src="data:image/png;base64,AQID">')
+      expect(out).toContain("url('../缺失.png')")
+      expect(out).toContain('src="https://x.test/a.png"')
+      expect(asked).toEqual(['角色/小满.png', '缺失.png'])
+    } finally {
+      globalThis.fetch = original
+    }
   })
 
   test('取帧的时刻与名称：起点为首帧，终点为尾帧且取 duration - 1/30 秒，其余按 0.1 秒', async () => {

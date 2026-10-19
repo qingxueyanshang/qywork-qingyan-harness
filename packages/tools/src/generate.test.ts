@@ -95,6 +95,7 @@ describe('generate_image', () => {
       prompt: '一只猫',
       inputs: [],
       params: { size: '1024*1536' },
+      outputDir: join(root, 'generated'),
     })
     const [name] = await readdir(join(root, 'generated'))
     expect(name).toMatch(/^\d{8}-\d{6}\.png$/)

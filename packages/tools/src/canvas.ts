@@ -8,10 +8,11 @@
  * 运行使用本轮的生成端口（`ctx.media`），费用计入本轮。
  */
 
-import type { CanvasPort, ToolOutcome, ToolSpec } from '@qywork/agent'
+import type { CanvasEditResult, CanvasPort, ToolOutcome, ToolSpec } from '@qywork/agent'
 import {
   ART_SIZE_PARAM,
   type CanvasBatchRunResult,
+  type CanvasNode,
   type CanvasOp,
   type CanvasView,
   canvasFileKind,
@@ -30,81 +31,124 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-/** 把画布转写为供大模型读取的文本行：节点（id、类型、名称、状态、路径或提示词）与连线。 */
-function describe(view: CanvasView): string {
-  const byId = new Map(view.doc.nodes.map((n) => [n.id, n]))
-  const lines = [
-    `画布 ${view.path}：${view.doc.nodes.length} 个节点，${view.doc.edges.length} 条连线`,
+function statusOf(view: CanvasView, n: CanvasNode): string {
+  const state = view.states[n.id]
+  if (state?.state === 'failed') return `失败：${state.message}`
+  if (state?.state === 'unknown') return `结果未知：${state.message}`
+  if (state?.state === 'pending') return `待取回（版本 ${state.version}）`
+  if (state?.state === 'running')
+    return canvasRunLabel(n.type === 'generate' ? n.output : 'image', state)
+  return ({ normal: '正常', missing: '文件缺失', empty: '未生成' } as const)[
+    state?.state ?? 'normal'
   ]
-  for (const n of view.doc.nodes) {
-    const state = view.states[n.id]
-    const status =
-      state?.state === 'failed'
-        ? `失败：${state.message}`
-        : state?.state === 'unknown'
-          ? `结果未知：${state.message}`
-          : state?.state === 'pending'
-            ? `待取回（版本 ${state.version}）`
-            : state?.state === 'running'
-              ? canvasRunLabel(n.type === 'generate' ? n.output : 'image', state)
-              : ({ normal: '正常', missing: '文件缺失', empty: '未生成' } as const)[
-                  state?.state ?? 'normal'
-                ]
-    const group = n.type !== 'timeline' && n.group ? `（组：${n.group}）` : ''
-    if (n.type === 'file') {
-      lines.push(`- ${n.id} 文件「${displayNameOf(n)}」${group}${n.path}（${status}）`)
-      continue
-    }
-    if (n.type === 'timeline') {
-      const total = n.clips.reduce((sum, c) => sum + c.out - c.in, 0)
-      lines.push(
-        `- ${n.id} 时间线「${n.name}」${n.clips.length} 段，共 ${Math.round(total * 10) / 10} 秒` +
-          `${n.muted ? '，静音' : ''}（${status}）`,
-        ...n.clips.map((c, i) => `  ${i + 1}. ${c.path} ${c.in}–${c.out} 秒`),
-      )
-      continue
-    }
-    const current = n.versions.find((v) => v.id === n.current)
-    const model = n.provider && n.model ? `${n.provider} / ${n.model}` : '默认模型'
-    lines.push(
-      `- ${n.id} ${n.output} 生成卡「${n.name}」${group}${model}，${n.versions.length} 版` +
-        `${current ? `，当前 ${current.path}` : ''}（${status}）`,
-      `  提示词：${n.prompt || '（空）'}`,
-    )
-    lines.push(`  参数：${paramsText(n.params)}`)
-    for (const v of n.versions) {
-      const task = view.tasks?.[v.id]
-      if (!task) continue
-      lines.push(
-        `  已提交任务（版本 ${v.id}）：${task.taskId ?? '无任务号'}；恢复记录 ${task.record}；取回后结果位置 ${task.output}。取回此版本只查询、下载；再次生成会另发付费请求。`,
-      )
-    }
-    if (state?.state === 'running' && n.output === 'video') {
-      lines.push(
-        state.taskId
-          ? `  远端任务号：${state.taskId}`
-          : state.stage === 'preparing'
-            ? '  正在准备素材，尚未提交生成；此时可以取消，不产生生成费用。'
-            : '  尚未取得远端任务号，不能确认平台已受理；开始时间与用时仅为本地等待记录。',
-      )
-    }
-    // 每张卡写明输入：连线只列在末尾时，回执中不易发现哪张卡没有连接参考图。
-    const inputs = view.doc.edges
-      .filter((e) => e.to === n.id)
-      .map((e) => {
-        const from = byId.get(e.from)
-        return `${from ? displayNameOf(from) : e.from}（${e.role}）`
-      })
-    lines.push(`  输入：${inputs.length ? inputs.join('、') : '无，只按提示词生成'}`)
-  }
-  for (const e of view.doc.edges) {
-    const from = byId.get(e.from)
-    const to = byId.get(e.to)
-    lines.push(
-      `- 连线 ${e.id}：${from ? displayNameOf(from) : e.from} → ${to ? displayNameOf(to) : e.to}（${e.role}）`,
+}
+
+/** 每张卡写明输入：连线只列在末尾时，回执中不易发现哪张卡没有连接参考图。 */
+function inputsText(view: CanvasView, id: string): string {
+  const inputs = view.doc.edges
+    .filter((e) => e.to === id)
+    .map((e) => {
+      const from = view.doc.nodes.find((n) => n.id === e.from)
+      return `${from ? displayNameOf(from) : e.from}（${e.role}）`
+    })
+  return inputs.length ? inputs.join('、') : '无，只按提示词生成'
+}
+
+/** 节点的首行：id、类型、名称、组、模型、版本与状态。 */
+function headLine(view: CanvasView, n: CanvasNode): string {
+  const status = statusOf(view, n)
+  const group = n.type !== 'timeline' && n.group ? `（组：${n.group}）` : ''
+  if (n.type === 'file')
+    return `- ${n.id} 文件「${displayNameOf(n)}」${group}${n.path}（${status}）`
+  if (n.type === 'timeline') {
+    const total = n.clips.reduce((sum, c) => sum + c.out - c.in, 0)
+    return (
+      `- ${n.id} 时间线「${n.name}」${n.clips.length} 段，共 ${Math.round(total * 10) / 10} 秒` +
+      `${n.muted ? '，静音' : ''}（${status}）`
     )
   }
-  return lines.join('\n')
+  const current = n.versions.find((v) => v.id === n.current)
+  const model = n.provider && n.model ? `${n.provider} / ${n.model}` : '默认模型'
+  return (
+    `- ${n.id} ${n.output} 生成卡「${n.name}」${group}${model}，${n.versions.length} 版` +
+    `${current ? `，当前 ${current.path}` : ''}（${status}）`
+  )
+}
+
+/** 节点的全文：生成卡含提示词、参数、已提交的任务与输入，时间线含全部片段。 */
+function nodeLines(view: CanvasView, n: CanvasNode): string[] {
+  const lines = [headLine(view, n)]
+  if (n.type === 'timeline') {
+    lines.push(...n.clips.map((c, i) => `  ${i + 1}. ${c.path} ${c.in}–${c.out} 秒`))
+    return lines
+  }
+  if (n.type === 'file') return lines
+  lines.push(`  提示词：${n.prompt || '（空）'}`, `  参数：${paramsText(n.params)}`)
+  for (const v of n.versions) {
+    const task = view.tasks?.[v.id]
+    if (!task) continue
+    lines.push(
+      `  已提交任务（版本 ${v.id}）：${task.taskId ?? '无任务号'}；恢复记录 ${task.record}；取回后结果位置 ${task.output}。取回此版本只查询、下载；再次生成会另发付费请求。`,
+    )
+  }
+  const state = view.states[n.id]
+  if (state?.state === 'running' && n.output === 'video') {
+    lines.push(
+      state.taskId
+        ? `  远端任务号：${state.taskId}`
+        : state.stage === 'preparing'
+          ? '  正在准备素材，尚未提交生成；此时可以取消，不产生生成费用。'
+          : '  尚未取得远端任务号，不能确认平台已受理；开始时间与用时仅为本地等待记录。',
+    )
+  }
+  lines.push(`  输入：${inputsText(view, n.id)}`)
+  const broken = view.references?.[n.id]
+  if (broken?.length) lines.push(`  引用失效（运行前须修正）：${broken.join('；')}`)
+  return lines
+}
+
+/** 概况中的一行：生成卡写参数、输入与提示词字数，不写提示词正文。 */
+function overviewLine(view: CanvasView, n: CanvasNode): string {
+  if (n.type !== 'generate') return nodeLines(view, n).join('\n')
+  const broken = view.references?.[n.id]
+  return (
+    `${headLine(view, n)}；参数：${paramsText(n.params)}；输入：${inputsText(view, n.id)}；` +
+    `提示词 ${n.prompt.length} 字${broken?.length ? `；引用失效：${broken.join('；')}` : ''}`
+  )
+}
+
+function edgeLines(view: CanvasView): string[] {
+  const name = (id: string) => {
+    const n = view.doc.nodes.find((x) => x.id === id)
+    return n ? displayNameOf(n) : id
+  }
+  return view.doc.edges.map((e) => `- 连线 ${e.id}：${name(e.from)} → ${name(e.to)}（${e.role}）`)
+}
+
+function countsLine(view: CanvasView): string {
+  return `画布 ${view.path}：${view.doc.nodes.length} 个节点，${view.doc.edges.length} 条连线`
+}
+
+/**
+ * 读取的回执。未指定节点时为概况：每张卡一行，生成卡只写提示词字数，另列全部连线；
+ * 指定节点时为这些节点的全文。不要恢复为默认列出全部提示词：二十张卡的回执达数万字，
+ * 模型因此改用脚本读写画布文件，跳过画布的全部核对。
+ */
+function describe(view: CanvasView, ids?: readonly string[]): string {
+  if (ids) {
+    const lines = [countsLine(view)]
+    for (const id of ids) {
+      const n = view.doc.nodes.find((x) => x.id === id)
+      if (n) lines.push(...nodeLines(view, n))
+    }
+    return lines.join('\n')
+  }
+  return [
+    countsLine(view),
+    ...view.doc.nodes.map((n) => overviewLine(view, n)),
+    ...edgeLines(view),
+    '生成卡的提示词全文用 read_canvas 的 node 按卡片名称读取。',
+  ].join('\n')
 }
 
 /**
@@ -119,9 +163,16 @@ const CANVAS_NOTE =
   '画布是工作区里的 *.canvas.json，只引用工作区文件：file 节点是一个文件路径，' +
   'generate 节点是一张生成卡（输出类别、提示词、模型、参数与历次结果），timeline 节点是一条视频时间线' +
   '（clips 按顺序首尾相接，每段 {"path":"视频路径","in":起始秒,"out":结束秒}，只引用、不修改源文件；成片须由用户在界面上点击导出，本工具无法完成）。连线将素材连接到生成卡，用途 role 为 ' +
-  'reference（参考图）、first_frame / last_frame（首尾帧，不能与参考素材同时提供）、video（参考视频）、audio（参考音频）。' +
+  'reference（参考图）、first_frame / last_frame（首尾帧，不能与参考素材同时提供）、video（参考视频）、audio（参考音频）、' +
+  'text（文本卡）。' +
+  '文本卡是放上画布的 .md / .txt：生成卡的提示词写 @[文本卡名称] 引用全文，写 @[文本卡名称#标题] 只引用该标题下的段落，' +
+  '运行时展开为文件当前的内容，修改文件即改变所有引用它的卡发送的提示词，不需要把文字复制进各张卡；' +
+  '多张卡共用的要求与剧本、制作稿各段都以此引用。文本的连线即引用：写入引用自动连线，删除引用自动断开。' +
+  '引用的文件或标题不存在时该卡不能运行，读取画布时标为引用失效。' +
   'output 为 art 的生成卡由对话模型写出一个 HTML 页面（3D 白模、动画、前端设计稿），产物是 generated/ 下的 .html，' +
   '再次运行时在当前页面上修改；它只接受参考图，本身不能作为输入（截图与录制由用户在界面上完成）。' +
+  '页面中要显示工作区里的图片时，把图片放上画布并连到 art 卡，页面按相对路径引用，画布显示时载入该图片；' +
+  '不要把图片编码进 HTML。' +
   '.html 文件放上画布同样作为 art 页面显示。'
 
 export const createCanvasTool: ToolSpec = {
@@ -164,11 +215,18 @@ export const readCanvasTool: ToolSpec = {
   description:
     '读取画布。' +
     CANVAS_NOTE +
-    '提供 path 时返回节点、连线与各节点状态（正常、文件缺失、未生成、生成中、待取回、失败）；省略 path 时列出工作区里的画布。',
+    '提供 path 时返回概况：每张卡一行（名称、组、模型、版本、状态即正常、文件缺失、未生成、生成中、待取回或失败、参数、输入与提示词字数）与全部连线；' +
+    '同时提供 node 时返回这些卡的全文（提示词、参数、输入、已提交的任务）。省略 path 时列出工作区里的画布。',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: '画布文件的工作区路径；省略时列出工作区里的画布' },
+      // 只用数组一种类型，理由同 run_canvas 的 node。
+      node: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '要读取全文的卡片名称数组；省略时返回概况',
+      },
     },
     required: [],
     additionalProperties: false,
@@ -195,11 +253,107 @@ export const readCanvasTool: ToolSpec = {
         }
       }
       const view = await canvas.read(path)
-      return { status: 'success', message: describe(view), data: { view } }
+      const refs = Array.isArray(args.node) ? args.node.map((r) => String(r)) : []
+      if (!refs.length) return { status: 'success', message: describe(view), data: { view } }
+      const ids: string[] = []
+      for (const ref of refs) {
+        const found = cardIdOf(view.doc, ref)
+        if (!found.ok) return failure(found.error, 'invalid_tool_arguments')
+        ids.push(found.id)
+      }
+      return { status: 'success', message: describe(view, ids), data: { view } }
     } catch (err) {
       return { status: 'failure', executed: false, message: (err as Error).message }
     }
   },
+}
+
+/** 一条待发送的操作：`at` 为它在模型所写数组中的序号，`label` 用于回执中的指代。 */
+interface PlannedOp {
+  at: number
+  label: string
+  op: CanvasOp
+}
+
+/** 回执中指代一条操作：「第 3 条（update「镜头A」）」。 */
+function labelOf(at: number, raw: unknown, target?: string): string {
+  const op = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const name = target ?? [op.name, op.id, op.path].find((v) => typeof v === 'string')
+  const kind = typeof op.op === 'string' ? op.op : '操作'
+  return `第 ${at + 1} 条（${kind}${name ? `「${String(name)}」` : ''}）`
+}
+
+/**
+ * `update` 与 `replace_text` 的 `ids`（卡片名称数组）或 `group`（组名，含其下以 `组名/` 开头的组）
+ * 展开为逐卡操作。返回展开后的目标，或无法展开的原因；没有这两个字段时返回 null。
+ * `group` 只匹配生成卡：这两种操作修改的是模型、参数与提示词。
+ */
+async function targetsOf(
+  raw: Record<string, unknown>,
+  read: () => Promise<CanvasView>,
+): Promise<string[] | { error: string } | null> {
+  // 新增操作的 group 是卡片所在的组，不是目标；其他操作带 ids 时由操作核对报出未知字段。
+  if (raw.op !== 'update' && raw.op !== 'replace_text') return null
+  if (!('ids' in raw) && !('group' in raw)) return null
+  if ('id' in raw) return { error: 'id 与 ids、group 只能给出其中一个' }
+  if ('ids' in raw && 'group' in raw) return { error: 'ids 与 group 只能给出其中一个' }
+  if ('ids' in raw) {
+    const ids = raw.ids
+    if (!Array.isArray(ids) || !ids.length || ids.some((x) => typeof x !== 'string' || !x))
+      return { error: 'ids 须为非空的卡片名称数组' }
+    return ids as string[]
+  }
+  const group = raw.group
+  if (typeof group !== 'string' || !group) return { error: 'group 须为组名' }
+  const doc = (await read()).doc
+  const names = doc.nodes
+    .filter((n) => n.type === 'generate' && (n.group === group || n.group?.startsWith(`${group}/`)))
+    .map((n) => displayNameOf(n))
+  return names.length ? names : { error: `组「${group}」中没有生成卡` }
+}
+
+/**
+ * 修改回执：执行与跳过的条目、新建的批内名称、每条 replace_text 替换的处数、改动的卡的全文与删除的卡。
+ * 未改动的卡不写入：每次回执都列出整张画布时，二十张卡的回执达数万字，模型因此改用脚本读写画布文件。
+ */
+function editReceipt(
+  planned: readonly PlannedOp[],
+  rejected: readonly { label: string; error: string }[],
+  result: CanvasEditResult | null,
+  view: CanvasView | null,
+): string {
+  const skipped = [
+    ...rejected,
+    ...(result?.skipped ?? []).map((s) => ({ label: planned[s.at]!.label, error: s.error })),
+  ]
+  const total = planned.length + rejected.length
+  const done = total - skipped.length
+  const lines = [
+    `本批 ${total} 项操作，执行 ${done} 项${skipped.length ? `，跳过 ${skipped.length} 项` : ''}。`,
+  ]
+  if (skipped.length)
+    lines.push('跳过的操作（其余照常执行）：', ...skipped.map((s) => `- ${s.label}：${s.error}`))
+  if (result) {
+    const named = Object.entries(result.refs).map(([ref, id]) => `${ref} = ${id}`)
+    if (named.length) lines.push(`新建：${named.join('、')}`)
+    if (result.replaced.length)
+      lines.push(
+        `替换：${result.replaced.map((r) => `${planned[r.at]!.label} ${r.count} 处`).join('、')}`,
+      )
+  }
+  if (view && result) {
+    if (result.changed.length) {
+      lines.push('改动的卡：')
+      for (const id of result.changed) {
+        const n = view.doc.nodes.find((x) => x.id === id)
+        if (n) lines.push(...nodeLines(view, n))
+      }
+    }
+    if (result.removed.length)
+      lines.push(`删除：${result.removed.map((n) => `「${n}」`).join('、')}`)
+    lines.push(`${countsLine(view)}；未改动的卡用 read_canvas 的 node 按名称读取全文。`)
+  }
+  return lines.join('\n')
 }
 
 /**
@@ -209,13 +363,47 @@ export const readCanvasTool: ToolSpec = {
  * 不要放开：模型给出的坐标与相邻节点使排列取决于模型的习惯，同一模型会把 169 高的卡片按 350 或 950 的
  * 步长排列；相邻节点还要求每张卡引用另一张卡，引用写错时整批被拒。画布按 group 排位时与模型无关。
  */
-function placedOf(ops: readonly CanvasOp[]): string | null {
-  for (const [i, op] of ops.entries()) {
-    if (op.op !== 'add_file' && op.op !== 'add_generate' && op.op !== 'add_timeline') continue
-    const field = (['x', 'y', 'w', 'h', 'near', 'beside'] as const).find((k) => k in op)
-    if (field) return `第 ${i + 1} 条操作的 ${field} 不可用：新卡片的位置由画布按 group 排列`
+function placedOf(op: CanvasOp): string | null {
+  if (op.op !== 'add_file' && op.op !== 'add_generate' && op.op !== 'add_timeline') return null
+  const field = (['x', 'y', 'w', 'h', 'near', 'beside'] as const).find((k) => k in op)
+  return field ? `${field} 不可用：新卡片的位置由画布按 group 排列` : null
+}
+
+/**
+ * 逐条核对模型所写的操作并展开 `ids` / `group`。不成立的条目进入 `rejected`，其余按原顺序进入 `planned`；
+ * 一条展开为多张卡时，每张卡各占一项，各自成立与否互不影响。
+ */
+async function planOps(
+  raws: readonly unknown[],
+  read: () => Promise<CanvasView>,
+): Promise<{ planned: PlannedOp[]; rejected: { label: string; error: string }[] }> {
+  const planned: PlannedOp[] = []
+  const rejected: { label: string; error: string }[] = []
+  for (const [at, raw] of raws.entries()) {
+    const record =
+      raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : null
+    const targets = record ? await targetsOf(record, read) : null
+    if (targets && 'error' in targets) {
+      rejected.push({ label: labelOf(at, raw), error: targets.error })
+      continue
+    }
+    const expanded = targets
+      ? targets.map((id) => {
+          const { ids: _ids, group: _group, ...rest } = record!
+          return { raw: { ...rest, id }, label: labelOf(at, raw, id) }
+        })
+      : [{ raw, label: labelOf(at, raw) }]
+    for (const item of expanded) {
+      const parsed = parseCanvasOps([item.raw])
+      const op = parsed.ok ? parsed.ops[0]! : null
+      const error = parsed.ok ? placedOf(op!) : parsed.error.replace(/^第 1 条操作 ?/, '')
+      if (error || !op) rejected.push({ label: item.label, error: error ?? '无法识别' })
+      else planned.push({ at, label: item.label, op })
+    }
   }
-  return null
+  return { planned, rejected }
 }
 
 export const editCanvasTool: ToolSpec = {
@@ -224,11 +412,15 @@ export const editCanvasTool: ToolSpec = {
     '修改画布的节点、提示词、参数与连线，不发起生成。' +
     CANVAS_NOTE +
     '先用 read_canvas 查看画布；画布尚不存在时先用 create_canvas 创建。' +
-    'ops_json 是一批操作的 JSON 数组，整批生效或整批不生效。操作：' +
+    'ops_json 是一批操作的 JSON 数组，逐条生效：某条不成立时跳过并在回执中写明原因，其余照常执行；' +
+    '引用了被跳过操作的批内名称的操作同样跳过。回执只列出本批执行与跳过的操作、改动的卡的全文与删除的卡。操作：' +
     '{"op":"add_file","path":"工作区路径","name":"卡片名称","group":"组"}、' +
     '{"op":"add_generate","output":"image|video|audio|art","name":"卡片名称","group":"组","prompt":"…","params":{…}}、' +
     '{"op":"update","id":"卡片名称",…要改的字段}（prompt 整体替换提示词）、' +
-    '{"op":"edit_prompt","id":"生成卡名称","old":"提示词中的一段原文","new":"替换后的文字"}（只改提示词中的一段：old 照抄 read_canvas 回执中的原文，必须恰好出现一次；new 为空时删除该段）、' +
+    '{"op":"edit_prompt","id":"生成卡名称","old":"提示词中的一段原文","new":"替换后的文字"}（只改提示词中的一段：old 照抄 read_canvas 读取的原文，必须恰好出现一次；new 为空时删除该段）、' +
+    '{"op":"edit_prompt","id":"生成卡名称","from":"前标记","to":"后标记","new":"…"}（替换两个标记之间的文字，标记保留，各须恰好出现一次；省略 to 时替换到末尾）、' +
+    '{"op":"replace_text","id":"生成卡名称","old":"原文","new":"新文字"}（把提示词中出现的原文全部替换）、' +
+    'update 与 replace_text 可用 "ids":["卡片名称",…] 或 "group":"组名"（含其下的「组名/对象」）代替 id，对每张生成卡各执行一次，逐卡报告、互不影响、' +
     '{"op":"connect","from":"素材卡片名称","to":"生成卡名称","role":"…"}（新连线排在该卡输入的末尾）、' +
     '{"op":"order_inputs","id":"生成卡名称","inputs":["素材卡片名称",…]}（按新顺序列出该卡的全部输入，含同批 connect 新连的素材）、' +
     '{"op":"remove","id":"卡片名称或连线 id"}（删除某一版时另加 "version"）、{"op":"set_mode","id":"视频卡名称","mode":"reference|first_last"}、' +
@@ -242,7 +434,7 @@ export const editCanvasTool: ToolSpec = {
     '分镜或镜头按发生的场景各占一列，group 写「场景名·分镜」或「场景名·镜头」，如「山门·分镜」。' +
     '同一列的卡按创建顺序自上而下，后补的卡接在同一对象或同一列的末尾；新的列按创建顺序排在画布最右侧，时间线单独占一列。' +
     '因此先建人物、场景等素材再建分镜，同一列的卡按剧情顺序创建。' +
-    'add_generate 可选 provider、model、params：取值见本轮「可用的生成模型」，参数名与取值按所用模型与卡片的输入核对，不合法或在当前输入下不可用时整批拒绝并说明原因；' +
+    'add_generate 可选 provider、model、params：取值见本轮「可用的生成模型」，参数名与取值按所用模型与卡片的输入核对，不合法或在当前输入下不可用时该条不执行并说明原因；' +
     'update 的 params 整体替换卡片参数，未写出的参数恢复缺省；read_canvas 列出的参数即实际发送的参数，与参数面板一致。' +
     '宽高比或尺寸参数同时决定卡片形状；未给出时卡片为方形，出图后按结果的比例改变形状，相邻的卡随之移开。' +
     `art 卡的 provider、model 是对话模型，缺省为当前对话模型，params 只有 size：${ART_SIZE_PARAM.values?.join('、')}。` +
@@ -273,18 +465,21 @@ export const editCanvasTool: ToolSpec = {
     try {
       const raw = jsonArg(args.ops_json, 'array', 'ops_json')
       if (!raw.ok) return failure(raw.error, 'invalid_tool_arguments')
-      if (raw.value === undefined) return failure('缺少 ops_json', 'invalid_tool_arguments')
-      const parsed = parseCanvasOps(raw.value)
-      if (!parsed.ok) return failure(parsed.error, 'invalid_tool_arguments')
-      const placed = placedOf(parsed.ops)
-      if (placed) return failure(placed, 'invalid_tool_arguments')
-      const { view, refs } = await canvas.edit(path, parsed.ops)
-      const named = Object.entries(refs).map(([ref, id]) => `${ref} = ${id}`)
-      return {
-        status: 'success',
-        message: `${named.length ? `新建：${named.join('、')}\n` : ''}${describe(view)}`,
-        data: { refs },
+      const raws = raw.value as unknown[] | undefined
+      if (!raws?.length) return failure('ops_json 须为非空数组', 'invalid_tool_arguments')
+      const { planned, rejected } = await planOps(raws, () => canvas.read(path))
+      if (!planned.length) {
+        return failure(editReceipt(planned, rejected, null, null), 'invalid_tool_arguments')
       }
+      const result = await canvas.edit(
+        path,
+        planned.map((p) => p.op),
+      )
+      const done = planned.length - result.skipped.length
+      const message = editReceipt(planned, rejected, result, result.view)
+      return done > 0
+        ? { status: 'success', message, data: { refs: result.refs } }
+        : { status: 'failure', executed: false, message, errorKind: 'invalid_tool_arguments' }
     } catch (err) {
       return { status: 'failure', executed: true, message: (err as Error).message }
     }

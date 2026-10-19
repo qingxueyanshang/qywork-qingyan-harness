@@ -1,11 +1,13 @@
-/** 覆盖范围：`art.ts` 的尺寸参数、viewport 标签的读取与写入。 */
+/** 覆盖范围：`art.ts` 的尺寸参数、viewport 标签的读取与写入、页面中图片相对路径的提取与解析。 */
 
 import { describe, expect, test } from 'bun:test'
 import {
   ART_DEFAULT_SIZE,
+  artImageRefs,
   artSizeOf,
   artViewportOf,
   insertAfterHead,
+  resolveArtRef,
   withArtViewport,
 } from './art.ts'
 
@@ -59,5 +61,22 @@ describe('Art：尺寸参数', () => {
     expect(artSizeOf({ size: '720x1280' })).toEqual({ w: 720, h: 1280 })
     expect(artSizeOf({})).toEqual(ART_DEFAULT_SIZE)
     expect(artSizeOf({ size: '333x333' })).toEqual(ART_DEFAULT_SIZE)
+  })
+})
+
+describe('Art：页面引用的图片', () => {
+  test('提取 src 与 url() 中的相对路径，按首次出现去重；网络地址、data URL 与根路径不计入', () => {
+    const html =
+      `<img src="../角色/小满.png"><img src='a.JPG'>` +
+      `<div style="background: url( ../角色/小满.png )"></div><i style="background:url('b.webp')"></i>` +
+      '<img src="https://x.test/c.png"><img src="//cdn/d.png"><img src="/e.png"><img src="data:image/png;base64,AA">'
+    expect(artImageRefs(html)).toEqual(['../角色/小满.png', 'a.JPG', 'b.webp'])
+  })
+
+  test('相对页面所在目录解析为工作区路径；越出工作区根时为 null', () => {
+    expect(resolveArtRef('作品/首页.html', '../角色/小满.png')).toBe('角色/小满.png')
+    expect(resolveArtRef('作品/首页.html', './图/%E5%9B%BE.png')).toBe('作品/图/图.png')
+    expect(resolveArtRef('首页.html', 'a.png')).toBe('a.png')
+    expect(resolveArtRef('首页.html', '../a.png')).toBeNull()
   })
 })

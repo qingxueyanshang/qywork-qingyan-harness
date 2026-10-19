@@ -31,6 +31,7 @@ import {
   activeMediaParams,
   addVersions,
   applyCanvasOps,
+  artImageRefs,
   type CanvasBatchRunResult,
   type CanvasCancelOutcome,
   type CanvasClip,
@@ -48,6 +49,7 @@ import {
   type CanvasVersion,
   type CanvasView,
   canvasMediaOf,
+  cardIdOf,
   compilePrompt,
   displayNameOf,
   emptyCanvas,
@@ -55,12 +57,15 @@ import {
   inputsOf,
   type MediaParamDefinition,
   type MentionStyle,
+  mediaInputsOf,
   mediaOperationFor,
   newCanvasId,
   parseCanvas,
   recordRun,
+  resolveArtRef,
   serializeCanvas,
   settleVersion,
+  textReferenceProblems,
   toPosixPath,
 } from '@qywork/core'
 import {
@@ -548,7 +553,13 @@ export class CanvasService {
     const page =
       node.output === 'art' ? node.versions.find((v) => v.id === node.current)?.path : undefined
     if (page && (await this.isFile(ws.root, page))) inputs.push({ role: 'reference', path: page })
-    for (const edge of inputsOf(doc, nodeId)) {
+    // 文本卡不作为素材发送：提示词中的引用在编译时展开为文件当前的内容，引用不成立时不提交。
+    const texts = await this.textsOf(ws.root, doc, nodeId)
+    const broken = textReferenceProblems(doc, nodeId, texts)
+    if (broken.length) {
+      throw new CanvasFailure(`「${node.name}」的提示词引用不成立：${broken.join('；')}`, 422)
+    }
+    for (const edge of mediaInputsOf(doc, nodeId)) {
       const source = doc.nodes.find((n) => n.id === edge.from)!
       // 时间线不能作为输入（`validateCanvas` 拒绝），不会执行到此处。
       const file =
@@ -569,7 +580,7 @@ export class CanvasService {
       node.provider !== undefined && node.model !== undefined
         ? { provider: node.provider, model: node.model }
         : undefined
-    const prompt = compilePrompt(doc, nodeId, this.deps.mentionStyleOf?.(node.output, pick))
+    const prompt = compilePrompt(doc, nodeId, this.deps.mentionStyleOf?.(node.output, pick), texts)
     const specs = this.deps.paramSpecsOf?.(node.output, pick)
     const params = specs
       ? activeMediaParams(
@@ -669,6 +680,14 @@ export class CanvasService {
         ...(outcome.warning ? { warning: outcome.warning } : {}),
       })
       const id: string | null = versionId
+      const images = node.output === 'art' ? await this.artImagesOf(ws.root, files[0]?.path) : null
+      const warning =
+        [
+          outcome.warning,
+          images?.missing.length ? `页面引用的图片不存在：${images.missing.join('、')}` : '',
+        ]
+          .filter(Boolean)
+          .join('；') || undefined
       return this.writeBack(
         ws.root,
         rel,
@@ -676,19 +695,21 @@ export class CanvasService {
         (d) => {
           if (node.output === 'image' && id)
             return settleImages(d, nodeId, id, files, sizes, outcome.warning)
-          if (node.output !== 'video')
-            return addVersions(
+          if (node.output !== 'video') {
+            const added = addVersions(
               d,
               nodeId,
               files.map((f) => version(f.path)),
             )
+            return added.ok && images ? linkArtImages(added.doc, nodeId, images.found) : added
+          }
           if (id) return settleVideo(d, nodeId, id, files, sizes)
           // 取得任务号时未能写入画布（文件被外部改写），成功后补充一个版本。
           const late = version(videoOf(files).path)
           const added = addVersions(d, nodeId, [late])
           return added.ok ? settleVideo(added.doc, nodeId, late.id, files, sizes) : added
         },
-        outcome.warning,
+        warning,
       )
     })
     this.running.get(key)!.done = done
@@ -1048,11 +1069,93 @@ export class CanvasService {
     ).catch(() => {})
   }
 
+  /**
+   * 设计稿页面按相对路径引用的工作区图片：`found` 为存在的图片（工作区路径），`missing` 为页面中写的、
+   * 不存在或越出工作区的路径。页面无法读取时两者都为空。
+   */
+  private async artImagesOf(
+    root: string,
+    page: string | undefined,
+  ): Promise<{ found: string[]; missing: string[] }> {
+    const html = page ? await readFile(join(root, page), 'utf8').catch(() => '') : ''
+    const found: string[] = []
+    const missing: string[] = []
+    for (const ref of artImageRefs(html)) {
+      const path = page ? resolveArtRef(page, ref) : null
+      if (path && (await this.isFile(root, path))) found.push(path)
+      else missing.push(ref)
+    }
+    return { found, missing }
+  }
+
   private isFile(root: string, path: string): Promise<boolean> {
     return stat(join(root, path)).then(
       (s) => s.isFile(),
       () => false,
     )
+  }
+
+  /**
+   * 工作区中引用文本文件 `path` 的画布卡片，以及其中按文件当前内容已不成立的引用。
+   * 供文件工具在写入 .md / .txt 后告知模型：改动会进入哪些卡下次发送的提示词、哪些引用的标题已不存在。
+   * 无法读取的画布跳过：它们在被读取或运行时各自报错。
+   */
+  async textReferences(workspaceRoot: string, path: string): Promise<string[]> {
+    const lines: string[] = []
+    for (const canvas of await this.list(workspaceRoot)) {
+      let doc: CanvasDoc
+      try {
+        doc = await this.load(await this.locate(workspaceRoot, canvas))
+      } catch {
+        continue
+      }
+      const file = doc.nodes.find((n) => n.type === 'file' && n.path === path)
+      if (!file) continue
+      const users = doc.edges
+        .filter((e) => e.from === file.id && e.role === 'text')
+        .map((e) => e.to)
+      if (!users.length) continue
+      const names = users.map((id) => {
+        const n = doc.nodes.find((x) => x.id === id)
+        return n ? displayNameOf(n) : id
+      })
+      lines.push(
+        `画布 ${canvas} 中 ${users.length} 张卡引用此文件（${names.join('、')}），下次运行时发送修改后的内容。`,
+      )
+      const cache = new Map<string, string | null>()
+      const label = `@[${displayNameOf(file)}`
+      for (const [i, id] of users.entries()) {
+        const texts = await this.textsOf(workspaceRoot, doc, id, cache)
+        for (const p of textReferenceProblems(doc, id, texts)) {
+          if (p.startsWith(label)) lines.push(`引用失效：「${names[i]}」${p}`)
+        }
+      }
+    }
+    return lines
+  }
+
+  /**
+   * 生成卡引用的文本卡文件当前的内容，按节点 id。文件不存在或无法读取时不提供该项，
+   * 由 `textReferenceProblems` 报为失效。`cache` 按路径复用同一次读取画布中已读的文件。
+   */
+  private async textsOf(
+    root: string,
+    doc: CanvasDoc,
+    nodeId: string,
+    cache = new Map<string, string | null>(),
+  ): Promise<Map<string, string>> {
+    const texts = new Map<string, string>()
+    for (const edge of inputsOf(doc, nodeId)) {
+      if (edge.role !== 'text') continue
+      const source = doc.nodes.find((n) => n.id === edge.from)
+      if (source?.type !== 'file') continue
+      if (!cache.has(source.path)) {
+        cache.set(source.path, await readFile(join(root, source.path), 'utf8').catch(() => null))
+      }
+      const text = cache.get(source.path)
+      if (typeof text === 'string') texts.set(source.id, text)
+    }
+    return texts
   }
 
   /**
@@ -1315,7 +1418,14 @@ export class CanvasService {
     const doc = await this.load(abs)
     const states: Record<string, CanvasNodeState> = {}
     const tasks: Record<string, CanvasTaskInfo> = {}
+    const references: Record<string, string[]> = {}
+    const read = new Map<string, string | null>()
     for (const node of doc.nodes) {
+      if (node.type === 'generate') {
+        const texts = await this.textsOf(workspaceRoot, doc, node.id, read)
+        const broken = textReferenceProblems(doc, node.id, texts)
+        if (broken.length) references[node.id] = broken
+      }
       states[node.id] = await this.stateOf(
         workspaceRoot,
         keyOf(workspaceRoot, path),
@@ -1334,35 +1444,102 @@ export class CanvasService {
       doc,
       states,
       ...(Object.keys(tasks).length ? { tasks } : {}),
+      ...(Object.keys(references).length ? { references } : {}),
     }
     return agent ? agentView(view, this.deps.paramSpecsOf) : view
   }
 
   /**
-   * 应用一批操作并写入，返回应用后的文档与批内名称对照。
+   * 应用一批界面操作并写入，整批成立才写入，返回应用后的文档与批内名称对照。
    * 文件节点的路径先按工作区核实，并规范化为正斜杠相对路径；运行中的卡片不能删除（409）。
-   * `agent` 为真时先按 `prepareAgentOps` 核对与补全，应用后按 `checkActiveParams` 核对参数可用，在同一次读写中进行。
+   * 大模型的操作走 `applyAgent`。
    */
   apply(
     workspaceRoot: string,
     path: string,
     ops: CanvasOp[],
-    agent = false,
   ): Promise<{ doc: CanvasDoc; refs: Record<string, string>; step: CanvasStep }> {
     return this.enqueue(keyOf(workspaceRoot, path), async () => {
       const abs = await this.locate(workspaceRoot, path)
       const normalized = await Promise.all(ops.map((op) => this.normalizePath(workspaceRoot, op)))
       const r = await this.commit(abs, (doc) => {
-        const prepared = agent
-          ? prepareAgentOps(doc, normalized, this.deps.paramSpecsOf)
-          : normalized
-        this.refuseRemovingRunning(workspaceRoot, path, doc, prepared)
-        const applied = applyCanvasOps(doc, prepared, this.deps.newId)
-        if (agent && applied.ok)
-          checkActiveParams(doc, applied.doc, prepared, this.deps.paramSpecsOf)
-        return applied
+        this.refuseRemovingRunning(workspaceRoot, path, doc, normalized)
+        return applyCanvasOps(doc, normalized, this.deps.newId)
       })
       return { doc: r.doc, refs: r.refs, step: r.step }
+    })
+  }
+
+  /**
+   * 大模型提交的一批操作：逐条生效。某条不成立时跳过并记录原因（`at` 为该条在 `ops` 中的序号），
+   * 其余照常执行；引用了被跳过操作的批内名称的操作同样不成立。每条按大模型的规则核对（`prepareAgentOps`）。
+   *
+   * 全部成立时整批应用一次，与界面相同。有不成立的条目时，依次把每一条加入已保留的条目试应用，成立才保留，
+   * 最后把保留的条目整批应用一次：未给出位置的新卡于本批全部连线之后按组排位（core `arrangeNew`），
+   * 逐条分别写入会使新卡先于连线排位。
+   */
+  applyAgent(
+    workspaceRoot: string,
+    path: string,
+    ops: CanvasOp[],
+  ): Promise<{
+    before: CanvasDoc
+    doc: CanvasDoc
+    refs: Record<string, string>
+    step: CanvasStep
+    skipped: { at: number; error: string }[]
+  }> {
+    return this.enqueue(keyOf(workspaceRoot, path), async () => {
+      const abs = await this.locate(workspaceRoot, path)
+      const unready: { at: number; error: string }[] = []
+      const ready: { at: number; op: CanvasOp }[] = []
+      for (const [at, op] of ops.entries()) {
+        try {
+          ready.push({ at, op: await this.normalizePath(workspaceRoot, op) })
+        } catch (err) {
+          if (!(err instanceof CanvasFailure)) throw err
+          unready.push({ at, error: err.message })
+        }
+      }
+      let before: CanvasDoc = emptyCanvas()
+      let skipped: { at: number; error: string }[] = []
+      const specs = this.deps.paramSpecsOf
+      const attempt = (doc: CanvasDoc, list: CanvasOp[], newId?: () => string): CanvasResult => {
+        try {
+          const prepared = prepareAgentOps(doc, list, specs)
+          this.refuseRemovingRunning(workspaceRoot, path, doc, prepared)
+          const applied = applyCanvasOps(doc, prepared, newId)
+          if (applied.ok) checkActiveParams(doc, applied.doc, prepared, specs)
+          return applied
+        } catch (err) {
+          return { ok: false, error: (err as Error).message }
+        }
+      }
+      const r = await this.commit(abs, (doc) => {
+        before = doc
+        skipped = [...unready]
+        const all = attempt(
+          doc,
+          ready.map((x) => x.op),
+          this.deps.newId,
+        )
+        if (all.ok || ready.length === 0) {
+          return all.ok ? all : { ok: true, doc, refs: {} }
+        }
+        // 试应用使用另一个 id 来源：结果只用于判定，不应消耗最终写入所用的 id。
+        const kept: CanvasOp[] = []
+        for (const { at, op } of ready) {
+          const tried = attempt(doc, [...kept, op])
+          if (tried.ok) kept.push(op)
+          else skipped.push({ at, error: tried.error })
+        }
+        if (kept.length === 0) return { ok: true, doc, refs: {} }
+        const final = attempt(doc, kept, this.deps.newId)
+        if (!final.ok) throw new CanvasFailure(final.error, 422)
+        return final
+      })
+      skipped.sort((a, b) => a.at - b.at)
+      return { before, doc: r.doc, refs: r.refs, step: r.step, skipped }
     })
   }
 
@@ -1615,6 +1792,57 @@ export class CanvasService {
 }
 
 /**
+ * 设计稿页面引用的工作区图片连到该 art 卡：未放上画布的先放上，已连接的不重复连接。
+ * 连线使图片来源在画布上可见，重新生成时这些图片也作为参考图交给模型。
+ * 不成立时（例如该卡已不存在）保持原文档：版本已写入，补连线不应使回写失败。
+ */
+function linkArtImages(doc: CanvasDoc, nodeId: string, paths: readonly string[]): CanvasResult {
+  const connected = new Set(inputsOf(doc, nodeId).map((e) => e.from))
+  const ops: CanvasOp[] = []
+  for (const [i, path] of paths.entries()) {
+    const placed = doc.nodes.find((n) => n.type === 'file' && n.path === path)
+    if (placed && connected.has(placed.id)) continue
+    const from = placed ? placed.id : `$img${i}`
+    if (!placed) ops.push({ op: 'add_file', ref: from, path })
+    ops.push({ op: 'connect', from, to: nodeId, role: 'reference' })
+  }
+  if (!ops.length) return { ok: true, doc, refs: {} }
+  const linked = applyCanvasOps(doc, ops)
+  return linked.ok ? linked : { ok: true, doc, refs: {} }
+}
+
+/**
+ * 一批操作前后的差异：新增或内容有变化的节点 id、删除的节点名称，以及每条执行了的 `replace_text` 替换的处数。
+ * 节点按序列化后的内容比较，位置随排位移动的节点同样计入。
+ */
+function changesOf(
+  before: CanvasDoc,
+  after: CanvasDoc,
+  ops: readonly CanvasOp[],
+  skipped: readonly { at: number }[],
+): { changed: string[]; removed: string[]; replaced: { at: number; count: number }[] } {
+  const old = new Map(before.nodes.map((n) => [n.id, JSON.stringify(n)]))
+  const edges = (doc: CanvasDoc, id: string) =>
+    JSON.stringify(doc.edges.filter((e) => e.to === id).map((e) => [e.from, e.role]))
+  const changed = after.nodes
+    .filter(
+      (n) => old.get(n.id) !== JSON.stringify(n) || edges(before, n.id) !== edges(after, n.id),
+    )
+    .map((n) => n.id)
+  const kept = new Set(after.nodes.map((n) => n.id))
+  const removed = before.nodes.filter((n) => !kept.has(n.id)).map(displayNameOf)
+  const failed = new Set(skipped.map((s) => s.at))
+  const replaced = ops.flatMap((op, at) => {
+    if (op.op !== 'replace_text' || failed.has(at)) return []
+    const target = cardIdOf(before, op.id)
+    const node = target.ok ? before.nodes.find((n) => n.id === target.id) : undefined
+    if (node?.type !== 'generate' || !op.old) return []
+    return [{ at, count: node.prompt.split(op.old).length - 1 }]
+  })
+  return { changed, removed, replaced }
+}
+
+/**
  * 提供给会话的画布端口：使用同一个画布服务，绑定该会话所在的项目。
  * 运行与取回在工具中等待至结束；中止信号来自本轮，停止本轮即停止等待，视频版本保留以待取回。
  * 修改按大模型的规则核对（`prepareAgentOps`），读取的生成卡参数为实际发送的参数（`agentView`）。
@@ -1623,10 +1851,16 @@ export function canvasPort(service: CanvasService, ws: CanvasWorkspace): CanvasP
   return {
     create: (path) => service.create(ws.root, { path }),
     list: () => service.list(ws.root),
+    textReferences: (path) => service.textReferences(ws.root, path),
     read: (path) => service.read(ws.root, path, true),
     edit: async (path, ops) => {
-      const { refs } = await service.apply(ws.root, path, ops, true)
-      return { view: await service.read(ws.root, path, true), refs }
+      const { before, doc, refs, skipped } = await service.applyAgent(ws.root, path, ops)
+      return {
+        view: await service.read(ws.root, path, true),
+        refs,
+        skipped,
+        ...changesOf(before, doc, ops, skipped),
+      }
     },
     run: async (path, nodeId, media, signal) =>
       (await service.run(ws, path, nodeId, { media, signal })).done,

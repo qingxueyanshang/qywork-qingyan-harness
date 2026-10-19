@@ -4,7 +4,7 @@
  * - 卡片名称在同一张画布中不能重复：大模型按名称引用卡片，名称重复时无法确定所指。
  * - 同一文件只放一张文件卡：已在画布上的文件再次放置时拒绝并给出已有卡片的名称。界面复制粘贴文件卡不经过这里。
  * - 参数按所用模型的参数表核对，应用后再按卡片的输入与其他参数核对是否可用：不存在、不合法或不可用的取值
- *   整批拒绝并列出可选值。大模型写入的每个参数都会发送，也都显示在参数面板上。
+ *   该条操作不成立并列出可选值（`applyAgent` 逐条判定）。大模型写入的每个参数都会发送，也都显示在参数面板上。
  * - 大模型读取的画布中，生成卡的参数为实际发送的参数（`agentView`），与参数面板的显示一致。
  * - 尚无结果的生成卡按参数中的宽高比确定形状，出图前的排列即接近出图后的排列；结果的形状不同时，出图时相邻的卡随之移动（core `keepSpacing`）。
  */
@@ -20,8 +20,8 @@ import {
   displayNameOf,
   fitBox,
   type GenerateOutput,
-  inputsOf,
   type MediaParamDefinition,
+  mediaInputsOf,
   mediaOperationFor,
   mediaParamProblem,
   mediaParamValues,
@@ -110,7 +110,7 @@ export function prepareAgentOps(
  *   （如 PNG 时没有压缩质量、有参考图时没有 4K）。画布只发送可用的参数，参数面板也只显示这些参数；
  *   连线或其他参数的改动使已发送的参数不可用时，同样拒绝。
  *
- * 不成立时整批拒绝并说明原因。参数表本身的核对在 `prepareAgentOps` 中，那里尚无批后的连线。
+ * 不成立时抛出并说明原因，由 `applyAgent` 记为该条跳过。参数表本身的核对在 `prepareAgentOps` 中，那里尚无批后的连线。
  */
 export function checkActiveParams(
   before: CanvasDoc,
@@ -151,7 +151,7 @@ export function checkActiveParams(
             (k) => node.params[k] === prior.params[k],
           )
         : []
-    const roles = inputsOf(after, node.id).map((e) => e.role)
+    const roles = mediaInputsOf(after, node.id).map((e) => e.role)
     const operation = mediaOperationFor(node.output, roles)
     const refs = roles.filter((r) => r === 'reference').length
     const active = activeMediaParams(specs, operation, node.params, refs)
@@ -189,7 +189,7 @@ function sentParams(
   node: CanvasGenerateNode,
   specs: readonly MediaParamDefinition[],
 ): Record<string, unknown> {
-  const roles = inputsOf(doc, node.id).map((e) => e.role)
+  const roles = mediaInputsOf(doc, node.id).map((e) => e.role)
   return activeMediaParams(
     specs,
     mediaOperationFor(node.output, roles),

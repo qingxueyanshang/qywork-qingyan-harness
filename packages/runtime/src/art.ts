@@ -8,6 +8,7 @@
  * 失败的约定与生成端口相同：返回 `{ ok: false, message }`；用户停止时 signal 中止，异常原样抛出。
  */
 
+import { relative } from 'node:path'
 import type { MediaCall, MediaCallResult } from '@qywork/agent'
 import {
   buildAdapter,
@@ -48,6 +49,8 @@ export function artSystemPrompt(size: { w: number; h: number }): string {
     '',
     '术语：白模指只有几何形体、统一浅灰材质、带光照与阴影的场景，用于构图与走位。',
     `参考图按顺序依次称为「${mention(1)}」「${mention(2)}」……，要求中以同样的名称指代。`,
+    '参考图后括号中的路径是该图相对页面的路径。页面中要显示参考图时，<img> 的 src 或 CSS 的 url() 直接写这个路径，' +
+      '画布显示页面时载入该图片；不要把图片编码进页面，也不要用占位图形代替已提供的参考图。',
     '给出当前页面时，在它的基础上按要求修改，输出修改后的完整文档。',
   ].join('\n')
 }
@@ -107,7 +110,11 @@ export async function generateArt(
       continue
     }
     images += 1
-    content.push({ type: 'text', text: `${mention(images)}：` })
+    const rel = call.outputDir ? relative(call.outputDir, input.path).replaceAll('\\', '/') : ''
+    content.push({
+      type: 'text',
+      text: rel ? `${mention(images)}（${rel}）：` : `${mention(images)}：`,
+    })
     content.push({
       type: 'image',
       mimeType: input.mime,

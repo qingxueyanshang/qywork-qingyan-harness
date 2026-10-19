@@ -8,7 +8,15 @@
  * - 页面时钟由运行时接管（`artRuntime`）：手动模式下按界面给出的时刻逐帧推进，录制的帧率因此与机器快慢无关。
  */
 
-import { ART_DEFAULT_SIZE, artViewportOf, type CanvasPixels, insertAfterHead } from '@qywork/core'
+import {
+  ART_DEFAULT_SIZE,
+  ART_IMAGE_REF_RE,
+  artImageRefs,
+  artViewportOf,
+  type CanvasPixels,
+  insertAfterHead,
+  resolveArtRef,
+} from '@qywork/core'
 import { client } from '../../lib/store/index.ts'
 import { FPS, mp4Output, outputSize } from './render.ts'
 
@@ -183,6 +191,50 @@ export function prepareArt(html: string, opts: RuntimeOptions): string {
   )
 }
 
+/** 页面文件的工作区路径：取自 `client.fileUrl` 生成的地址中的 `path`。 */
+function pagePathOf(url: string): string | null {
+  try {
+    return new URL(url).searchParams.get('path')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 页面中按相对路径引用的工作区图片换成 data URL。页面在不透明源的沙箱 iframe 中运行，无法读取工作区文件。
+ * 不要改为写入 `client.fileUrl` 的地址：地址中带访问令牌，页面脚本可以读取它并调用接口。
+ * 网络地址、data URL 与读取失败的引用保持原样；保存的页面文件不改动，直接用浏览器打开时同样按相对路径显示。
+ */
+export async function inlineArtImages(html: string, url: string): Promise<string> {
+  const page = pagePathOf(url)
+  if (!page) return html
+  const found = new Map<string, string | null>()
+  for (const rel of artImageRefs(html)) {
+    const path = resolveArtRef(page, rel)
+    found.set(rel, path ? await dataUrlOf(client.fileUrl(path)) : null)
+  }
+  return html.replace(ART_IMAGE_REF_RE, (whole, lead: string, rel: string) => {
+    const data = found.get(rel)
+    return data ? `${lead}${data}` : whole
+  })
+}
+
+async function dataUrlOf(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { cache: 'no-store' })
+    if (!res.ok) return null
+    const blob = await res.blob()
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsDataURL(blob)
+    })
+  } catch {
+    return null
+  }
+}
+
 /** 页面的视口：取自 viewport 标签，没有时为缺省尺寸。 */
 export function artSizeOfHtml(html: string): CanvasPixels {
   return artViewportOf(html) ?? ART_DEFAULT_SIZE
@@ -318,6 +370,7 @@ async function renderPoster(url: string, onSource: (html: string) => void): Prom
   if (!res.ok) throw new Error(`页面读取失败：${res.status}`)
   const html = await res.text()
   onSource(html)
+  const page = await inlineArtImages(html, url)
   const size = artSizeOfHtml(html)
   const frame = document.createElement('iframe')
   frame.setAttribute('sandbox', 'allow-scripts')
@@ -327,7 +380,7 @@ async function renderPoster(url: string, onSource: (html: string) => void): Prom
     'position:fixed;left:0;top:0;border:0;visibility:hidden;pointer-events:none;z-index:-1'
   document.body.append(frame)
   const errors: string[] = []
-  const art = connectArt(frame, html, { manual: true, onError: (m) => errors.push(m) })
+  const art = connectArt(frame, page, { manual: true, onError: (m) => errors.push(m) })
   try {
     await art.ready
     // 逐帧推进：页面按帧累积状态（物理、阻尼）时一次跳到终点与实际显示不同。消息按发送顺序处理。

@@ -116,12 +116,18 @@ export interface CanvasTimelineNode {
 
 export type CanvasNode = CanvasFileNode | CanvasGenerateNode | CanvasTimelineNode
 
-/** 输入线：`from` 的内容作为 `to` 的输入，用途见 `MediaInputRole`。连线在数组中的顺序即输入顺序。 */
+/**
+ * 连线用途：媒体输入的用途（`MediaInputRole`），或 `text`——文本卡（`.md` / `.txt`）被生成卡的提示词引用。
+ * `text` 连线不作为素材发送，运行时把提示词中的 `@[文本卡]` / `@[文本卡#标题]` 展开为文件当前的内容。
+ */
+export type CanvasEdgeRole = MediaInputRole | 'text'
+
+/** 输入线：`from` 的内容作为 `to` 的输入。连线在数组中的顺序即输入顺序。 */
 export interface CanvasEdge {
   id: string
   from: string
   to: string
-  role: MediaInputRole
+  role: CanvasEdgeRole
 }
 
 export interface CanvasDoc {
@@ -225,6 +231,8 @@ export interface CanvasView {
   doc: CanvasDoc
   states: Record<string, CanvasNodeState>
   tasks?: Record<string, CanvasTaskInfo>
+  /** 生成卡提示词中不成立的文本卡引用（文件不存在、文中没有该标题），按节点 id；没有时不写该键。 */
+  references?: Record<string, string[]>
 }
 
 /** 一个产物：工作区路径，以及从文件头读取的像素宽高与时长（秒）；无法读取时缺省。 */
@@ -324,14 +332,20 @@ export type CanvasOp =
       path?: string
       /** 同 `add_file` 的 `size`，与 `path` 一起提供。 */
       size?: CanvasPixels
-      role?: MediaInputRole
+      role?: CanvasEdgeRole
       /** 时间线的全部片段，整组替换。 */
       clips?: CanvasClip[]
       muted?: boolean
     }
-  /** 替换生成节点提示词中的一段文字：`old` 必须恰好出现一次，`new` 为空时删除该段。`update` 的 `prompt` 是整体替换。 */
-  | { op: 'edit_prompt'; id: string; old: string; new: string }
-  | { op: 'connect'; ref?: string; from: string; to: string; role: MediaInputRole }
+  /**
+   * 替换生成节点提示词中的一段文字，`new` 为空时删除该段。`update` 的 `prompt` 是整体替换。
+   * 两种定位二选一：`old` 是原文，必须恰好出现一次；`from` 与可选的 `to` 是前后标记，替换两者之间的文字
+   * （不含标记本身，省略 `to` 时到提示词末尾），每个标记必须恰好出现一次。
+   */
+  | { op: 'edit_prompt'; id: string; old?: string; from?: string; to?: string; new: string }
+  /** 把生成节点提示词中出现的 `old` 全部替换为 `new`；一处都没有时不成立。 */
+  | { op: 'replace_text'; id: string; old: string; new: string }
+  | { op: 'connect'; ref?: string; from: string; to: string; role: CanvasEdgeRole }
   /**
    * 按 `inputs` 的顺序重排生成节点的输入线，须列出该节点的全部输入素材，每项一次。连线、用途与提示词不变。
    * 不要改为断开后重连：断开连线的批次结束时，提示词中对它的 `@` 已替换为纯文本，之后再连接也不会恢复。
@@ -363,18 +377,109 @@ export function newCanvasId(): string {
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 /** 批内名称允许中文等任意文字的字母与数字：只允许英文时，模型按画布内容起的中文名称整批被拒。 */
 const REF_RE = /^\$[\p{L}\p{N}_-]{1,64}$/u
-/** 已保存的提示词中的引用：只有节点 id。 */
-const MENTION_RE = /@\[([A-Za-z0-9_-]{1,64})\]/g
 /**
- * 本批写入的提示词中的引用：节点 id、卡片名称或批内名称，保存前一律换成 id。
+ * 已保存的提示词中的引用：节点 id，引用文本卡时可带 `#标题`（只展开该标题下的段落）。
+ * 修改时同步界面的 `canvas/prompt.ts`：两处按同一格式拆分提示词。
+ */
+const MENTION_RE = /@\[([A-Za-z0-9_-]{1,64})(?:#([^\]\n]{1,120}))?\]/g
+/**
+ * 本批写入的提示词中的引用：节点 id、卡片名称或批内名称（可带 `#标题`），保存前一律换成 id。
  * 不要用于已保存的提示词：其中「@[」开头的普通文字会被当作引用，原本合法的文件读取时被拒。
  */
-const INPUT_MENTION_RE = /@\[([^[\]\n]{1,80})\]/g
+const INPUT_MENTION_RE = /@\[([^[\]\n]{1,200})\]/g
 const AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|flac|opus)$/i
 
 /** 提示词中 `@[id]` 引用的 id，按首次出现顺序去重。 */
 export function mentionsOf(prompt: string): string[] {
   return [...new Set([...prompt.matchAll(MENTION_RE)].map((m) => m[1]!))]
+}
+
+/** 提示词中的每一处引用：节点 id 与可选的标题，按出现顺序，不去重。 */
+export function mentionRefsOf(prompt: string): { id: string; heading?: string }[] {
+  return [...prompt.matchAll(MENTION_RE)].map((m) =>
+    m[2] ? { id: m[1]!, heading: m[2] } : { id: m[1]! },
+  )
+}
+
+/** 把提示词中对 `id` 的每一处引用（含带标题的）替换为 `to` 的返回值。 */
+function replaceMentionsOf(prompt: string, id: string, to: (heading?: string) => string): string {
+  return prompt.replace(MENTION_RE, (whole, m: string, heading?: string) =>
+    m === id ? to(heading) : whole,
+  )
+}
+
+/** Markdown 标题行：`#` 到 `######` 加空格，行尾可带收尾的 `#`。 */
+const HEADING_RE = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/
+
+/** 文本中的标题，按出现顺序。界面据此列出可引用的段落。 */
+export function markdownHeadings(text: string): { level: number; title: string }[] {
+  return text.split(/\r?\n/).flatMap((line) => {
+    const m = HEADING_RE.exec(line)
+    return m ? [{ level: m[1]!.length, title: m[2]! }] : []
+  })
+}
+
+/**
+ * 标题为 `heading` 的段落：从该标题的下一行到下一个同级或更高级标题之前；同名标题取第一个。
+ * 没有该标题时返回 null。
+ */
+function sectionOf(text: string, heading: string): string | null {
+  const lines = text.split(/\r?\n/)
+  const at = lines.findIndex((line) => HEADING_RE.exec(line)?.[2] === heading)
+  if (at < 0) return null
+  const level = HEADING_RE.exec(lines[at]!)![1]!.length
+  const rest = lines.slice(at + 1)
+  const end = rest.findIndex((line) => {
+    const m = HEADING_RE.exec(line)
+    return m !== null && m[1]!.length <= level
+  })
+  return (end < 0 ? rest : rest.slice(0, end)).join('\n')
+}
+
+/** Markdown 代码块的围栏行：以 ``` 或 ~~~ 开头。 */
+const FENCE_RE = /^[ \t]*(?:```|~~~)/
+
+/**
+ * 文本引用展开后的内容：`heading` 缺省时为全文，否则为该标题下的段落；没有该标题时返回 null。
+ * 代码块的围栏行不计入：围栏是排版标记，发送的是块内的文字。运行时展开与界面预览都使用它。
+ */
+export function textReferenceOf(text: string, heading?: string): string | null {
+  const body = heading === undefined ? text : sectionOf(text, heading)
+  if (body === null) return null
+  return body
+    .split(/\r?\n/)
+    .filter((line) => !FENCE_RE.test(line))
+    .join('\n')
+    .trim()
+}
+
+/** 文件节点是否为文本卡（`.md` / `.txt`）：可被生成卡的提示词引用。 */
+export function isTextCard(node: CanvasNode): boolean {
+  return node.type === 'file' && canvasFileKind(node.path) === 'text'
+}
+
+/**
+ * 生成卡提示词中引用的文本卡与段落，以及其中不成立的引用。`texts` 为各文本卡文件当前的内容（按节点 id），
+ * 文件不存在时不提供该项。运行前据此拒绝、读取画布时据此标出失效的引用。
+ */
+export function textReferenceProblems(
+  doc: CanvasDoc,
+  nodeId: string,
+  texts: ReadonlyMap<string, string>,
+): string[] {
+  const node = doc.nodes.find((n) => n.id === nodeId)
+  if (node?.type !== 'generate') return []
+  const problems: string[] = []
+  for (const ref of mentionRefsOf(node.prompt)) {
+    const source = doc.nodes.find((n) => n.id === ref.id)
+    if (!source || !isTextCard(source)) continue
+    const label = `@[${displayNameOf(source)}${ref.heading ? `#${ref.heading}` : ''}]`
+    const text = texts.get(ref.id)
+    if (text === undefined) problems.push(`${label}：文件不存在`)
+    else if (ref.heading && textReferenceOf(text, ref.heading) === null)
+      problems.push(`${label}：文中没有标题「${ref.heading}」`)
+  }
+  return [...new Set(problems)]
 }
 
 const TEXT_RE = /\.(md|txt)$/i
@@ -426,8 +531,15 @@ export type MentionStyle = Partial<Record<GenerateOutput, string>>
  *
  * 参考素材（参考图、参考视频、参考音频）按其在本次输入中同类别的序号套用 `style`；首帧、尾帧、未登记写法的类别、
  * 不在输入中的节点替换为节点名称：各模型的文档均未说明首尾帧是否计入编号，因此不做推测。
+ * 文本卡展开为 `texts` 中该卡文件的内容，带 `#标题` 时只展开该段；`texts` 中没有的按名称写出，
+ * 运行前由调用方以 `textReferenceProblems` 拒绝不成立的引用。
  */
-export function compilePrompt(doc: CanvasDoc, nodeId: string, style: MentionStyle = {}): string {
+export function compilePrompt(
+  doc: CanvasDoc,
+  nodeId: string,
+  style: MentionStyle = {},
+  texts: ReadonlyMap<string, string> = new Map(),
+): string {
   const node = doc.nodes.find((n) => n.id === nodeId)
   if (node?.type !== 'generate') return ''
   const numbered = new Map<string, string>()
@@ -442,9 +554,11 @@ export function compilePrompt(doc: CanvasDoc, nodeId: string, style: MentionStyl
     const template = style[kind]
     if (template) numbered.set(edge.from, template.replaceAll('{n}', String(n)))
   }
-  return node.prompt.replace(MENTION_RE, (_whole, id: string) => {
+  return node.prompt.replace(MENTION_RE, (_whole, id: string, heading?: string) => {
     const named = numbered.get(id)
     if (named) return named
+    const text = texts.get(id)
+    if (text !== undefined) return textReferenceOf(text, heading) ?? ''
     const source = doc.nodes.find((n) => n.id === id)
     return source ? displayNameOf(source) : id
   })
@@ -453,6 +567,16 @@ export function compilePrompt(doc: CanvasDoc, nodeId: string, style: MentionStyl
 /** 一个生成节点的输入线，按输入顺序。 */
 export function inputsOf(doc: CanvasDoc, nodeId: string): CanvasEdge[] {
   return doc.edges.filter((e) => e.to === nodeId)
+}
+
+/** 一个生成节点的素材输入线：不含文本卡的 `text` 连线，按输入顺序。生成模式、参数与发送的素材只由它们决定。 */
+export function mediaInputsOf(
+  doc: CanvasDoc,
+  nodeId: string,
+): (CanvasEdge & { role: MediaInputRole })[] {
+  return inputsOf(doc, nodeId).filter(
+    (e): e is CanvasEdge & { role: MediaInputRole } => e.role !== 'text',
+  )
 }
 
 /** 视频生成节点当前的输入模式：存在首帧或尾帧连线时为首尾帧，否则为参考。 */
@@ -587,6 +711,7 @@ export function applyCanvasOps(
     for (const op of ops) applyOne(next, op, refs, pending, mint)
     resolveInputMentions(doc, next, refs)
     keepMentionsConnected(doc, next, mint)
+    syncTextInputs(doc, next)
     // 先移动再排新卡：新卡按移动之后的位置排位，不再被移动一次。
     keepSpacing(next, resizedCards(doc, next))
     arrangeNew(next, pending)
@@ -766,13 +891,29 @@ function applyOne(
     case 'edit_prompt': {
       const node = doc.nodes.find((n) => n.id === resolve(op.id)) ?? fail(`目标已不存在：${op.id}`)
       if (node.type !== 'generate') fail('只有生成节点有提示词')
-      if (!op.old) fail('old 不能为空')
-      const count = node.prompt.split(op.old).length - 1
+      if ((op.old === undefined) === (op.from === undefined)) fail('old 与 from 须给出其中一个')
+      if (op.to !== undefined && op.from === undefined) fail('to 须与 from 一起给出')
+      if (op.from !== undefined) {
+        node.prompt = betweenMarkers(node.name, node.prompt, op.from, op.to, op.new)
+        return
+      }
+      const old = op.old!
+      if (!old) fail('old 不能为空')
+      const count = node.prompt.split(old).length - 1
       if (count === 0) fail(`「${node.name}」的提示词中没有 old 指定的文字`)
       if (count > 1)
         fail(`「${node.name}」的提示词中 old 出现 ${count} 次，加长 old 使其只出现一次`)
       // 使用函数形式：字符串形式的替换值中 `$&` `$'` 等会被展开。
-      node.prompt = node.prompt.replace(op.old, () => op.new)
+      node.prompt = node.prompt.replace(old, () => op.new)
+      return
+    }
+    case 'replace_text': {
+      const node = doc.nodes.find((n) => n.id === resolve(op.id)) ?? fail(`目标已不存在：${op.id}`)
+      if (node.type !== 'generate') fail('只有生成节点有提示词')
+      if (!op.old) fail('old 不能为空')
+      const parts = node.prompt.split(op.old)
+      if (parts.length === 1) fail(`「${node.name}」的提示词中没有「${op.old}」`)
+      node.prompt = parts.join(op.new)
       return
     }
     case 'connect': {
@@ -856,6 +997,31 @@ function applyOne(
       return
     }
   }
+}
+
+/** 某段标记在提示词中的唯一位置；不存在或出现多次时不成立。 */
+function markerAt(name: string, prompt: string, marker: string, key: 'from' | 'to'): number {
+  if (!marker) fail(`${key} 不能为空`)
+  const at = prompt.indexOf(marker)
+  if (at < 0) fail(`「${name}」的提示词中没有 ${key} 指定的标记「${marker}」`)
+  if (prompt.indexOf(marker, at + 1) >= 0)
+    fail(`「${name}」的提示词中 ${key} 标记「${marker}」出现多次，加长标记使其只出现一次`)
+  return at
+}
+
+/** 把 `from` 与 `to` 之间的文字换成 `text`，标记本身保留；省略 `to` 时替换到末尾。 */
+function betweenMarkers(
+  name: string,
+  prompt: string,
+  from: string,
+  to: string | undefined,
+  text: string,
+): string {
+  const start = markerAt(name, prompt, from, 'from') + from.length
+  if (to === undefined) return prompt.slice(0, start) + text
+  const end = markerAt(name, prompt, to, 'to')
+  if (end < start) fail(`「${name}」的提示词中 to 标记「${to}」位于 from 标记之前`)
+  return prompt.slice(0, start) + text + prompt.slice(end)
 }
 
 /**
@@ -960,8 +1126,9 @@ export function cardIdOf(
 }
 
 /**
- * 把本批写入的提示词中的 `@[卡片名称]`、`@[$批内名称]` 换成 `@[id]`；未改动的提示词保持原样。
- * 本批删除的节点的 id 不在此处解析，由 `keepMentionsConnected` 替换为名称纯文本。
+ * 把本批写入的提示词中的 `@[卡片名称]`、`@[$批内名称]`（可带 `#标题`）换成 `@[id]` / `@[id#标题]`；
+ * 未改动的提示词保持原样。本批删除的节点的 id 不在此处解析，由 `keepMentionsConnected` 处理。
+ * 名称本身含 `#` 的卡片按全名优先匹配，其次把第一个 `#` 之后视为标题。
  */
 function resolveInputMentions(
   before: CanvasDoc,
@@ -969,22 +1136,29 @@ function resolveInputMentions(
   refs: Record<string, string>,
 ): void {
   const beforeById = new Map(before.nodes.map((n) => [n.id, n]))
+  const known = (id: string) => beforeById.has(id) || doc.nodes.some((x) => x.id === id)
   for (const n of doc.nodes) {
     if (n.type !== 'generate') continue
     const old = beforeById.get(n.id)
     if (old?.type === 'generate' && old.prompt === n.prompt) continue
-    n.prompt = n.prompt.replace(INPUT_MENTION_RE, (whole, key: string) =>
-      beforeById.has(key) || doc.nodes.some((x) => x.id === key)
-        ? whole
-        : `@[${resolveRef(doc, refs, key)}]`,
-    )
+    n.prompt = n.prompt.replace(INPUT_MENTION_RE, (whole, key: string) => {
+      if (known(key)) return whole
+      const cut = key.indexOf('#')
+      const whole_name = doc.nodes.some((x) => displayNameOf(x) === key)
+      if (cut < 0 || whole_name) return `@[${resolveRef(doc, refs, key)}]`
+      const base = key.slice(0, cut)
+      const heading = key.slice(cut + 1)
+      const id = known(base) ? base : resolveRef(doc, refs, base)
+      return heading ? `@[${id}#${heading}]` : `@[${id}]`
+    })
   }
 }
 
 /**
  * 维持「提示词中的每个 @ 都有输入线」。对每个没有连线的 `@[m]`：
- * - 本批新写入提示词的：补充一条连线（用途见 `MENTION_ROLE`）；无法补充时整批拒绝；
- * - 本批之前已在提示词中的（连线或节点在本批被删除）：替换为节点名称纯文本。
+ * - 本批新写入提示词的：补充一条连线（媒体用途见 `MENTION_ROLE`，文本卡为 `text`）；无法补充时整批拒绝；
+ * - 本批之前已在提示词中的（连线或节点在本批被删除）：媒体替换为节点名称纯文本；文本卡删除该引用，
+ *   断开即删除引用，替换为名称会使发送的提示词在原位置只剩一个名称。
  */
 function keepMentionsConnected(before: CanvasDoc, doc: CanvasDoc, mint: () => string): void {
   const beforeById = new Map(before.nodes.map((n) => [n.id, n]))
@@ -997,10 +1171,16 @@ function keepMentionsConnected(before: CanvasDoc, doc: CanvasDoc, mint: () => st
       const source = doc.nodes.find((n) => n.id === m)
       if (!source || oldMentions.has(m)) {
         const named = source ?? beforeById.get(m) ?? fail(`提示词引用的节点不存在：${m}`)
-        node.prompt = node.prompt.split(`@[${m}]`).join(displayNameOf(named))
+        node.prompt = replaceMentionsOf(node.prompt, m, () =>
+          isTextCard(named) ? '' : displayNameOf(named),
+        )
         continue
       }
       if (source.id === node.id) fail(`「${node.name}」不能引用自己`)
+      if (isTextCard(source)) {
+        doc.edges.push({ id: mint(), from: source.id, to: node.id, role: 'text' })
+        continue
+      }
       if (modeOf(doc, node.id) === 'first_last') {
         fail(`「${node.name}」是首尾帧模式，不能引用首帧、尾帧以外的素材：${displayNameOf(source)}`)
       }
@@ -1010,6 +1190,34 @@ function keepMentionsConnected(before: CanvasDoc, doc: CanvasDoc, mint: () => st
       doc.edges.push({ id: mint(), from: source.id, to: node.id, role: MENTION_ROLE[kind] })
     }
   }
+}
+
+/**
+ * 文本卡的连线与提示词中的引用是同一件事：
+ * - 本批之前已有的 `text` 连线，提示词中已不再引用该卡：删除连线（删除引用即断开）；
+ * - 本批新建的 `text` 连线，提示词中尚未引用该卡：在提示词末尾补上引用（连线即插入引用）。
+ * 必须在 `keepMentionsConnected` 之后执行：那里为新写的引用补齐连线。
+ */
+function syncTextInputs(before: CanvasDoc, doc: CanvasDoc): void {
+  const existed = new Set(before.edges.map((e) => e.id))
+  const kept: CanvasEdge[] = []
+  for (const e of doc.edges) {
+    const target = doc.nodes.find((n) => n.id === e.to)
+    if (
+      e.role !== 'text' ||
+      target?.type !== 'generate' ||
+      mentionsOf(target.prompt).includes(e.from)
+    ) {
+      kept.push(e)
+      continue
+    }
+    if (existed.has(e.id)) continue
+    target.prompt = target.prompt
+      ? `${target.prompt.replace(/\s+$/, '')} @[${e.from}]`
+      : `@[${e.from}]`
+    kept.push(e)
+  }
+  doc.edges = kept
 }
 
 /**
@@ -1057,12 +1265,13 @@ export function copyOps(
       })
       continue
     }
-    const prompt = n.prompt.replace(MENTION_RE, (whole, id: string) => {
+    const prompt = n.prompt.replace(MENTION_RE, (whole, id: string, heading?: string) => {
       const copy = refOf.get(id)
-      if (copy) return `@[${copy}]`
+      if (copy) return heading ? `@[${copy}#${heading}]` : `@[${copy}]`
       if (keepsInput(id)) return whole
       const named = byId.get(id)
-      return named ? displayNameOf(named) : whole
+      if (!named) return whole
+      return isTextCard(named) ? '' : displayNameOf(named)
     })
     ops.push({
       op: 'add_generate',
@@ -1093,14 +1302,16 @@ const MENTION_ROLE: Record<MediaOutput, MediaInputRole> = {
   audio: 'audio',
 }
 
-/** 连线用途与两端类别是否相符。 */
+/** 连线用途与两端类别是否相符。文本卡只能以 `text` 连接，任何生成卡都可以引用文本。 */
 function roleProblem(
   source: CanvasNode,
   target: CanvasGenerateNode,
-  role: MediaInputRole,
+  role: CanvasEdgeRole,
 ): string | null {
   const from = `「${displayNameOf(source)}」`
   const to = `「${target.name}」`
+  if (isTextCard(source)) return role === 'text' ? null : `${from} 是文本，只能被提示词引用`
+  if (role === 'text') return `${from} 不是文本卡（.md / .txt），不能以 text 连接`
   const kind = canvasMediaOf(source)
   if (target.output === 'audio') {
     return kind === 'audio' && role === 'audio' ? null : `${to} 只接受参考音频，${from} 无法连接`
@@ -1179,7 +1390,7 @@ export function validateCanvas(doc: CanvasDoc): string | null {
   for (const n of doc.nodes) {
     if (n.type !== 'generate') continue
     const inputs = inputsOf(doc, n.id)
-    const count = (role: MediaInputRole) => inputs.filter((e) => e.role === role).length
+    const count = (role: CanvasEdgeRole) => inputs.filter((e) => e.role === role).length
     const frames = count('first_frame') + count('last_frame')
     if (count('first_frame') > 1 || count('last_frame') > 1) {
       return `「${n.name}」的首帧、尾帧各只能有一张`
@@ -1258,6 +1469,7 @@ type Shape =
   | 'array'
   | 'strings'
   | 'role'
+  | 'edgeRole'
   | 'output'
   | 'mode'
   | 'nullable'
@@ -1307,6 +1519,8 @@ function matches(v: unknown, shape: Shape): boolean {
       return Array.isArray(v) && v.every((x) => typeof x === 'string')
     case 'role':
       return (MEDIA_INPUT_ROLES as readonly unknown[]).includes(v)
+    case 'edgeRole':
+      return v === 'text' || (MEDIA_INPUT_ROLES as readonly unknown[]).includes(v)
     case 'output':
       return (GENERATE_OUTPUTS as readonly unknown[]).includes(v)
     case 'mode':
@@ -1427,12 +1641,26 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     params: 'object',
     current: 'string',
     path: 'string',
-    role: 'role',
+    role: 'edgeRole',
     clips: 'clips',
     muted: 'boolean',
   },
-  edit_prompt: { 'op!': 'string', 'id!': 'string', 'old!': 'string', 'new!': 'string' },
-  connect: { 'op!': 'string', ref: 'string', 'from!': 'string', 'to!': 'string', 'role!': 'role' },
+  edit_prompt: {
+    'op!': 'string',
+    'id!': 'string',
+    old: 'string',
+    from: 'string',
+    to: 'string',
+    'new!': 'string',
+  },
+  replace_text: { 'op!': 'string', 'id!': 'string', 'old!': 'string', 'new!': 'string' },
+  connect: {
+    'op!': 'string',
+    ref: 'string',
+    'from!': 'string',
+    'to!': 'string',
+    'role!': 'edgeRole',
+  },
   order_inputs: { 'op!': 'string', 'id!': 'string', 'inputs!': 'strings' },
   remove: { 'op!': 'string', 'id!': 'string', version: 'string' },
   set_mode: { 'op!': 'string', 'id!': 'string', 'mode!': 'mode' },
@@ -1536,7 +1764,7 @@ const EDGE_FIELDS: Record<string, Shape> = {
   'id!': 'string',
   'from!': 'string',
   'to!': 'string',
-  'role!': 'role',
+  'role!': 'edgeRole',
 }
 
 function boxRequired(): Record<string, Shape> {

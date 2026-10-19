@@ -12,6 +12,7 @@ import {
   applyCanvasOps,
   blankBox,
   type CanvasDoc,
+  type CanvasEdgeRole,
   type CanvasGenerateNode,
   type CanvasNode,
   type CanvasOp,
@@ -25,6 +26,7 @@ import {
   GENERATE_OUTPUTS,
   type GenerateOutput,
   inputsOf,
+  isTextCard,
   type MediaInputRole,
   modeOf,
 } from '@qywork/core'
@@ -1355,9 +1357,14 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
    * 从 `from` 连接到 `to` 时的用途；无法连接时返回 `null`。先按素材类别与目标的模式确定用途，
    * 再交给 core 的操作校验检查一次：能否连接只由 core 判定。
    */
-  const linkRole = (from: string, to: string): MediaInputRole | null => {
+  const linkRole = (from: string, to: string): CanvasEdgeRole | null => {
     const v = view()
     const target = byId(to)
+    const source = byId(from)
+    // 文本卡连接即在提示词末尾插入引用（core `syncTextInputs`），任何生成卡都可以连接。
+    if (v && source && isTextCard(source) && target?.type === 'generate') {
+      return applyCanvasOps(v.doc, [{ op: 'connect', from, to, role: 'text' }]).ok ? 'text' : null
+    }
     const kind = v ? mediaOf(v, from).kind : null
     if (!v || !kind || kind === 'art' || target?.type !== 'generate') return null
     let role: MediaInputRole = kind === 'image' ? 'reference' : kind

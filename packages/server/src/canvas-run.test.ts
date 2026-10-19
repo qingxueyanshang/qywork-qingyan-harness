@@ -498,6 +498,118 @@ describe('画布运行：Art', () => {
     expect(g2.versions).toHaveLength(2)
     expect(g2.versions[1]!.made.inputs[0]).toEqual({ role: 'reference', path: v1.path })
   })
+
+  /**
+   * 原始失败形状：设计稿页面无法读取工作区图片，模型每次生成后用脚本把图片 base64 内嵌进 HTML，
+   * 再次运行时整页发回模型（一次 $1.415）。改为告诉模型参考图相对页面的路径，页面按路径引用。
+   */
+  test('参考图附带相对页面的路径；页面引用的工作区图片自动连线，不存在的写入回执', async () => {
+    const { ws, ids } = await setup([
+      { op: 'add_file', ref: '$a', path: 'a.png', name: '横幅' },
+      { op: 'add_generate', ref: '$g', output: 'art', prompt: '首页用 @[$a] 做横幅' },
+    ])
+    const svc = new CanvasService({ publish: () => {} })
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$g!, { media: fake.port })
+    const p = await fake.next()
+    expect(relative(p.call.outputDir!, join(ws.root, 'a.png')).replaceAll('\\', '/')).toBe(
+      '../a.png',
+    )
+    p.finish({
+      ok: true,
+      provider: 'relay',
+      model: 'chat',
+      files: [
+        {
+          bytes: page(
+            720,
+            1280,
+            '<img src="../a.png"><div style="background:url(../b.png)"></div><img src="../缺失.jpg">',
+          ),
+          mime: 'text/html',
+        },
+      ],
+    })
+    const done = await run.done
+    expect(done).toMatchObject({ ok: true, warning: '页面引用的图片不存在：../缺失.jpg' })
+    const doc = await onDisk(ws.root)
+    const b = doc.nodes.find((n) => n.type === 'file' && n.path === 'b.png')
+    expect(b).toBeDefined()
+    expect(doc.edges.filter((e) => e.to === ids.$g).map((e) => [e.from, e.role])).toEqual([
+      [ids.$a!, 'reference'],
+      [b!.id, 'reference'],
+    ])
+  })
+})
+
+describe('画布运行：文本卡引用', () => {
+  const SCRIPT = '## 1-1 修车铺\n阿七推门：“又做梦了？”\n\n## 1-2 入梦\n阿七说：“手给我。”\n'
+
+  test('运行时把引用展开为文件当前的内容，版本记录展开后的提示词；文本卡不作为素材发送', async () => {
+    const { ws, svc, ids } = await setup([
+      { op: 'add_file', ref: '$md', path: '制作脚本.md', name: '制作脚本' },
+      { op: 'add_file', ref: '$a', path: 'a.png', name: '阿七' },
+      { op: 'add_generate', ref: '$v', output: 'video', prompt: '@[$md#1-2 入梦]\n@[$a]' },
+    ])
+    await writeFile(join(ws.root, '制作脚本.md'), SCRIPT)
+    const fake = fakePort()
+    const run = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    expect(p.call.prompt).toBe('阿七说：“手给我。”\n阿七')
+    expect(p.call.inputs.map((i) => relative(ws.root, i.path))).toEqual(['a.png'])
+    await p.submit()
+    p.finish({
+      ok: true,
+      provider: 'ark',
+      model: 'seedance',
+      files: [{ bytes: MP4, mime: 'video/mp4' }],
+    })
+    await run.done
+    expect((await node(ws.root, ids.$v!)).versions[0]!.made.prompt).toBe('阿七说：“手给我。”\n阿七')
+
+    // 修改文件即改变下次发送的内容，不需要修改卡片。
+    await writeFile(join(ws.root, '制作脚本.md'), SCRIPT.replace('手给我', '握三秒'))
+    const again = await svc.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p2 = await fake.next()
+    expect(p2.call.prompt).toContain('握三秒')
+    await p2.submit()
+    p2.finish({
+      ok: true,
+      provider: 'ark',
+      model: 'seedance',
+      files: [{ bytes: MP4, mime: 'video/mp4' }],
+    })
+    await again.done
+  })
+
+  test('引用的标题或文件不存在时不提交生成；读取画布标出失效的引用；修改文件时报告引用它的卡与失效引用', async () => {
+    const { ws, svc, ids } = await setup([
+      { op: 'add_file', ref: '$md', path: '制作脚本.md', name: '制作脚本' },
+      {
+        op: 'add_generate',
+        ref: '$v',
+        output: 'video',
+        name: '1-2 入梦',
+        prompt: '@[$md#1-2 入梦]',
+      },
+    ])
+    await writeFile(join(ws.root, '制作脚本.md'), '## 1-1 修车铺\n阿七推门。\n')
+    const fake = fakePort()
+    const refused = await failure(svc.run(ws, PATH, ids.$v!, { media: fake.port }))
+    expect(refused.message).toBe(
+      '「1-2 入梦」的提示词引用不成立：@[制作脚本#1-2 入梦]：文中没有标题「1-2 入梦」',
+    )
+    expect(fake.calls).toHaveLength(0)
+    const view = await svc.read(ws.root, PATH)
+    expect(view.references).toEqual({
+      [ids.$v!]: ['@[制作脚本#1-2 入梦]：文中没有标题「1-2 入梦」'],
+    })
+    expect(await svc.textReferences(ws.root, '制作脚本.md')).toEqual([
+      `画布 ${PATH} 中 1 张卡引用此文件（1-2 入梦），下次运行时发送修改后的内容。`,
+      '引用失效：「1-2 入梦」@[制作脚本#1-2 入梦]：文中没有标题「1-2 入梦」',
+    ])
+    expect(await svc.textReferences(ws.root, '其他.md')).toEqual([])
+  })
 })
 
 describe('画布运行：视频', () => {
