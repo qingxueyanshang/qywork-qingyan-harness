@@ -20,6 +20,7 @@ import {
   displayNameOf,
   parseCanvasOps,
 } from '@qywork/core'
+import { jsonArg } from './args.ts'
 
 function failure(message: string, errorKind?: string): ToolOutcome {
   return { status: 'failure', executed: false, message, ...(errorKind ? { errorKind } : {}) }
@@ -270,13 +271,10 @@ export const editCanvasTool: ToolSpec = {
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
     try {
-      let raw: unknown
-      try {
-        raw = JSON.parse(String(args.ops_json ?? ''))
-      } catch {
-        return failure('ops_json 必须是 JSON 数组', 'invalid_tool_arguments')
-      }
-      const parsed = parseCanvasOps(raw)
+      const raw = jsonArg(args.ops_json, 'array', 'ops_json')
+      if (!raw.ok) return failure(raw.error, 'invalid_tool_arguments')
+      if (raw.value === undefined) return failure('缺少 ops_json', 'invalid_tool_arguments')
+      const parsed = parseCanvasOps(raw.value)
       if (!parsed.ok) return failure(parsed.error, 'invalid_tool_arguments')
       const placed = placedOf(parsed.ops)
       if (placed) return failure(placed, 'invalid_tool_arguments')

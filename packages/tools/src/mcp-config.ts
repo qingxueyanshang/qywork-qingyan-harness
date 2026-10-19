@@ -6,6 +6,7 @@
  */
 
 import type { ToolSpec } from '@qywork/agent'
+import { jsonArg } from './args.ts'
 
 function scopeProperty(): Record<string, unknown> {
   return {
@@ -51,10 +52,12 @@ export const writeMcpServerTool: ToolSpec = {
 
   async fn(args, ctx) {
     const name = String(args.name ?? '').trim()
-    const configJson = String(args.config_json ?? '').trim()
+    const config = jsonArg(args.config_json, 'object', 'config_json')
     const scope = writableScope(args.scope)
     if (!name) return { status: 'failure', message: '缺少 name' }
-    if (!configJson) return { status: 'failure', message: '缺少 config_json' }
+    if (!config.ok) return { status: 'failure', message: config.error }
+    if (config.value === undefined) return { status: 'failure', message: '缺少 config_json' }
+    const configJson = JSON.stringify(config.value)
     if (!scope) return { status: 'failure', message: 'scope 只能是 project 或 global' }
     if (!ctx.mcpConfig) return { status: 'failure', message: '本次执行没有 MCP 配置通道' }
 

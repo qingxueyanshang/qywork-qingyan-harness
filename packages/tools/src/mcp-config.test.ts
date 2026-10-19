@@ -65,6 +65,32 @@ describe('模型侧 MCP 配置工具', () => {
     expect(received).toMatchObject({ name: 'docs', scope: 'global' })
   })
 
+  test('config_json 直接传对象时按 JSON 文本交给端口；形状不符时不调用端口', async () => {
+    const received: unknown[] = []
+    const port = {
+      mcpConfig: {
+        writeServer: async (input: unknown) => {
+          received.push(input)
+          return { ok: true, saved: true, path: 'p', replaced: false }
+        },
+        moveServer: async () => ({ ok: false }),
+      },
+    } as Partial<ToolContext>
+    await writeMcpServerTool.fn(
+      { name: 'docs', config_json: { url: 'https://example.com/mcp' }, scope: 'project' },
+      ctx(port),
+    )
+    expect(received).toEqual([
+      { name: 'docs', configJson: '{"url":"https://example.com/mcp"}', scope: 'project' },
+    ])
+    const bad = await writeMcpServerTool.fn(
+      { name: 'docs', config_json: '["x"]', scope: 'project' },
+      ctx(port),
+    )
+    expect(bad.message).toBe('config_json 须为 JSON 对象，收到的是数组')
+    expect(received).toHaveLength(1)
+  })
+
   test('迁移是单个端口动作，不由模型拆成先写入再删除两步', async () => {
     let calls = 0
     const result = await moveMcpServerTool.fn(

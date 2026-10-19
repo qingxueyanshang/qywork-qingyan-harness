@@ -23,6 +23,7 @@ import {
   type MediaSpend,
   mimeOf,
 } from '@qywork/core'
+import { jsonArg } from './args.ts'
 import { imageSizeOf } from './image.ts'
 import {
   displayPath,
@@ -508,16 +509,11 @@ function imageResultWarning(
 
 // ── 工具 ──
 
-/** 参数对象以 JSON 字符串传入：严格模式的工具 schema 无法表达字段由模型决定的开放对象。 */
+/** 参数对象以 JSON 文本声明，解析规则见 `jsonArg`。 */
 function parseParams(raw: unknown): Record<string, unknown> | string {
-  if (raw === undefined || raw === null || raw === '') return {}
-  try {
-    const value = JSON.parse(String(raw)) as unknown
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      return value as Record<string, unknown>
-    }
-  } catch {}
-  return 'params_json 必须是一个 JSON 对象，例如 {"size":"1024x1536"}'
+  const got = jsonArg(raw, 'object', 'params_json')
+  if (!got.ok) return `${got.error}，例如 {"size":"1024x1536"}`
+  return (got.value as Record<string, unknown> | undefined) ?? {}
 }
 
 function failure(message: string, errorKind?: string): ToolOutcome {

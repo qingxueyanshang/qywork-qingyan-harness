@@ -280,6 +280,16 @@ describe('canvas 工具', () => {
     expect(seen.edits).toHaveLength(1)
   })
 
+  test('ops_json 直接传数组时与 JSON 文本同样生效', async () => {
+    const { port, seen } = fakePort(DONE)
+    const ok = await editCanvasTool.fn(
+      { path: 'board.canvas.json', ops_json: [{ op: 'add_generate', ref: '$x', output: 'image' }] },
+      ctx(port),
+    )
+    expect(ok.status).toBe('success')
+    expect(seen.edits).toEqual([[{ op: 'add_generate', ref: '$x', output: 'image' }]])
+  })
+
   test('edit 的新增操作不接受坐标、尺寸与相邻节点，位置由画布按组排列；移动已有节点不受影响', async () => {
     const { port, seen } = fakePort(DONE)
     for (const extra of [

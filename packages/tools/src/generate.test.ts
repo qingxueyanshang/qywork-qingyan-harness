@@ -155,6 +155,20 @@ describe('generate_image', () => {
     expect(await readFile(join(root, 'out', 'a-2.png'), 'utf8')).toBe('taken')
   })
 
+  /**
+   * 原始失败形状：模型把 params_json 直接写成对象，旧解析按 `String(对象)` 得到 `[object Object]`，
+   * 报「必须是一个 JSON 对象」后模型改写重发。对象与对应的 JSON 文本含义相同，照常接受。
+   */
+  test('params_json 直接传对象时与 JSON 文本同样生效；形状不符时报出实际收到的类型', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
+    const out = await run(root, { prompt: '一只猫', params_json: { size: '1024*1536' } })
+    expect(out.status).toBe('success')
+    expect(calls[0]?.params).toEqual({ size: '1024*1536' })
+    const bad = await run(root, { prompt: '一只猫', params_json: '[1]' })
+    expect(bad.message).toContain('params_json 须为 JSON 对象，收到的是数组')
+    expect(calls).toHaveLength(1)
+  })
+
   test('参数、指定模型或参考图类型不合法时不调用接口', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qy-gen-'))
     await writeFile(join(root, 'a.txt'), 'x')
