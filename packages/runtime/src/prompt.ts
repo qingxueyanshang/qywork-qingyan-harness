@@ -89,6 +89,10 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line: '- 画布取回：取回已有远端视频结果使用 retrieve_canvas，不重新提交生成。',
   },
   {
+    tool: 'browser_tabs',
+    line: '- 内置浏览器：browser_tabs、browser_navigate、browser_observe、browser_act 操作应用内置的浏览器。打开的页面以页签显示在界面右侧面板中，用户可以直接看到；打开网页或本地 HTML 供用户查看或核对时使用它。',
+  },
+  {
     tool: 'desktop_windows',
     line:
       '- 电脑控制：已有桌面窗口及其内容属于用户。操作本机应用应使用 desktop_windows → desktop_observe → desktop_act，不得通过 run_command 截图或注入鼠标、键盘事件。' +

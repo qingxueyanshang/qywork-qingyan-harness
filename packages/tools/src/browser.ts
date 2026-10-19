@@ -617,7 +617,7 @@ export const browserTabsTool: ToolSpec = {
   name: 'browser_tabs',
   description:
     '列出内置浏览器的标签页，或新建、接管、关闭一个标签页。' +
-    'create 打开的页归本会话，后续消息可直接对其 observe 与 act；' +
+    'create 打开的页由本会话控制，同时以页签显示在界面右侧面板中，用户可以直接看到；后续消息可直接对其 observe 与 act；' +
     '简单 HTML 可直接传入本地路径或 file URL，无需启动服务；依赖开发服务器、模块加载或接口的项目使用 http/https 地址。' +
     'tabId 由 create 的返回值给出，同一轮中无法预知；create 已按 url 加载页面，无需再 navigate。' +
     '打开页面不附带观察，先 browser_observe 或 browser_wait 再操作。' +

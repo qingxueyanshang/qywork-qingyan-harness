@@ -381,6 +381,18 @@ describe('能力段', () => {
     expect(buildSystemPrompt(new Set(['desktop_windows']))).not.toContain('create_canvas')
   })
 
+  /**
+   * 原始失败形状：用户要求打开页面查看，模型认为内置浏览器的页面用户看不到，用 `start` 启动系统 Chrome，
+   * 之后用电脑控制激活窗口、按 F5、截图。能力段缺少内置浏览器一行，而电脑控制一行写有完整用法。
+   */
+  test('注册了浏览器工具时写明页面显示在右侧面板、用户可见，并排在电脑控制之前；未注册时不出现', () => {
+    const prompt = buildSystemPrompt(new Set(['browser_tabs', 'desktop_windows']))
+    expect(prompt).toContain('- 内置浏览器：')
+    expect(prompt).toContain('打开的页面以页签显示在界面右侧面板中，用户可以直接看到')
+    expect(prompt.indexOf('- 内置浏览器：')).toBeLessThan(prompt.indexOf('- 电脑控制：'))
+    expect(buildSystemPrompt(new Set(['desktop_windows']))).not.toContain('内置浏览器')
+  })
+
   test('没有桌面工具时不提及桌面工具', () => {
     const prompt = buildSystemPrompt(new Set(['run_command']))
     expect(prompt).not.toContain('desktop_windows')
