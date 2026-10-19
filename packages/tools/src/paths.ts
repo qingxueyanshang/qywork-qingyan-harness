@@ -474,6 +474,20 @@ export function conversationTempDir(workspaceRoot: string, conversationId: strin
 }
 
 /**
+ * 工作区 Python 环境：`<工作区>/.tmp/python`，继承本机 Python 全部包的虚拟环境，由 runtime 在每轮开始前确保存在。
+ * 命令中的 `python` 指向它（`commandEnv`），`python -m pip install` 装入其中，之后的命令与会话可直接导入。
+ * 不随会话删除：它不是会话临时目录。
+ */
+export function workspacePythonDir(workspaceRoot: string): string {
+  return join(workspaceRoot, '.tmp', 'python')
+}
+
+/** 工作区 Python 环境的可执行目录：Windows 为 `Scripts`，其他平台为 `bin`。 */
+export function workspacePythonBin(workspaceRoot: string): string {
+  return join(workspacePythonDir(workspaceRoot), process.platform === 'win32' ? 'Scripts' : 'bin')
+}
+
+/**
  * 展示给用户与模型的路径。
  *
  * 工作区内使用相对形式（简短、稳定、不泄露绝对路径）。**工作区外原样返回绝对路径**：

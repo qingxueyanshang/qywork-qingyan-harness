@@ -59,6 +59,8 @@ export {
   resolveInWorkspace,
   resolveWritablePath,
   rootsOf,
+  workspacePythonBin,
+  workspacePythonDir,
 } from './paths.ts'
 export { renameWithRetry } from './rename.ts'
 // 命令运行在先于监听端口启动的子进程中。`qy serve` 在绑定端口前启动该子进程，

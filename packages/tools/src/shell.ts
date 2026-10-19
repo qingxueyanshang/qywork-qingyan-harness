@@ -29,8 +29,10 @@
  * 面向用户操作，与本文件无关。
  */
 
+import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { isIP } from 'node:net'
+import { delimiter, join } from 'node:path'
 import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } from '@qywork/agent'
 import type { FileChange, IntermediateResourceRef } from '@qywork/core'
 import { classifyAddress } from './net-safety.ts'
@@ -39,6 +41,7 @@ import {
   PROTECTED_DIRS,
   resolveInWorkspace,
   rootsOf,
+  workspacePythonBin,
   writableRoots,
 } from './paths.ts'
 import {
@@ -113,13 +116,27 @@ function trackReported(reported: Set<string>, changes: FileChange[]): void {
 export async function commandEnv(
   ctx: Pick<ToolContext, 'secrets' | 'envAllowList' | 'workspaceRoot' | 'conversationId'>,
 ): Promise<Record<string, string>> {
-  return {
-    ...scrubEnv(process.env, ctx.secrets ?? { values: [] }, {
-      allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW,
-    }),
-    ...NON_INTERACTIVE_ENV,
-    ...(await tmpEnv(conversationTempDir(ctx.workspaceRoot, ctx.conversationId))),
-  }
+  return withWorkspacePython(
+    {
+      ...scrubEnv(process.env, ctx.secrets ?? { values: [] }, {
+        allow: ctx.envAllowList ?? DEFAULT_ENV_ALLOW,
+      }),
+      ...NON_INTERACTIVE_ENV,
+      ...(await tmpEnv(conversationTempDir(ctx.workspaceRoot, ctx.conversationId))),
+    },
+    ctx.workspaceRoot,
+  )
+}
+
+/**
+ * 工作区 Python 环境存在时，把它的可执行目录放在 PATH 最前：命令中的 `python` 与安装的命令行工具都取自该环境。
+ * 键名沿用环境中原有的写法（Windows 上通常为 `Path`）：变量名不区分大小写，另写一个 `PATH` 会传入两份。
+ */
+function withWorkspacePython(env: Record<string, string>, workspaceRoot: string) {
+  const bin = workspacePythonBin(workspaceRoot)
+  if (!existsSync(join(bin, process.platform === 'win32' ? 'python.exe' : 'python'))) return env
+  const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+  return { ...env, [key]: env[key] ? `${bin}${delimiter}${env[key]}` : bin }
 }
 
 /**

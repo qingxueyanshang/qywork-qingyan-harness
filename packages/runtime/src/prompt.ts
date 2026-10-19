@@ -356,6 +356,8 @@ export function buildTailNotes(input: {
   gitBranch?: string | null
   /** 本会话临时目录，工作区相对路径。只在会话已确定时传入。 */
   tempDir?: string
+  /** 运行环境一节（`environment.ts` 的 `describeEnvironment`），每轮读取本机目录生成。 */
+  environment?: string
   /**
    * 权限模式。必须告知模型：未告知时模型只能逐次试探，每次被拒绝都多消耗一轮
    * 「被拒 → 改写 → 重发」的 token，而被拒绝的工具调用本身也已计费。
@@ -428,6 +430,9 @@ export function buildTailNotes(input: {
       ? [{ content: mediaModelsNote(input.mediaModels), group: 'workspaceState' as const }]
       : []),
     { content: lines.join('\n'), group: 'workspaceState' },
+    ...(input.environment
+      ? [{ content: input.environment, group: 'workspaceState' as const }]
+      : []),
   ]
 
   /*

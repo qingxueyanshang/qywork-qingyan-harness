@@ -137,9 +137,11 @@ import {
   resolveModel,
 } from './config.ts'
 import { contextBasis } from './context-panel.ts'
+import { describeEnvironment, ensureWorkspacePython } from './environment.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { makeMediaPort } from './media.ts'
+import { findPython } from './office.ts'
 import { buildSystemPrompt, buildTailNotes } from './prompt.ts'
 import { requestPersistence } from './request-persistence.ts'
 import { RuntimeSink } from './sink.ts'
@@ -518,8 +520,13 @@ export class Session {
             subagents: await this.opts.delegate.subagents(),
           }
         : {}
+    // 运行环境随快照冻结：工作区 Python 环境在此确保存在，命令中的 python 指向它（tools `commandEnv`）。
+    const python = findPython(config)
+    const venvError = python ? await ensureWorkspacePython(this.opts.workspaceRoot, python) : null
+    const environment = await describeEnvironment(this.opts.workspaceRoot, python, venvError)
     const contextSnapshot = buildTailNotes({
       workspaceRoot: this.opts.workspaceRoot,
+      environment,
       tempDir: displayPath(
         this.opts.workspaceRoot,
         conversationTempDir(this.opts.workspaceRoot, conversationId),

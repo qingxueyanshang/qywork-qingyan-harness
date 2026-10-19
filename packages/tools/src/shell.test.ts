@@ -102,6 +102,46 @@ describe('run_command 的子进程环境', () => {
     expect(String(outcome.data?.stdout).trim()).toBe(JSON.stringify([dir, dir, dir]))
     expect(existsSync(dir)).toBe(true)
   })
+
+  /** 工作区 Python 环境由 runtime 创建；此处直接用 venv 创建同样的目录，验证命令中的 python 取自它。 */
+  const python = Bun.which(process.platform === 'win32' ? 'python.exe' : 'python3')
+  test.skipIf(!python || /WindowsApps/i.test(python))(
+    '工作区 Python 环境存在时，命令中的 python 为该环境；不存在时不改变 PATH',
+    async () => {
+      const found = commandShell()
+      if (!found) throw new Error('这台机器上 bash / pwsh / powershell 一个都没有，跑不了本测试')
+      const ctx = (root: string) =>
+        ({
+          workspaceRoot: root,
+          conversationId: 'cv_shell',
+          emit: () => {},
+          sink: null,
+          density: DEFAULT_DENSITY,
+          contextWindow: 200_000,
+          state: openBatchBudget(new Map(), Number.POSITIVE_INFINITY),
+        }) as unknown as ToolContext
+      const command = 'python -c "import sys; print(sys.prefix)"'
+      const root = await mkdtemp(join(tmpdir(), 'qywork-shell-py-'))
+      const without = await makeShellTool(found).fn({ command }, ctx(root))
+      expect(String(without.data?.stdout).trim()).not.toBe(join(root, '.tmp', 'python'))
+
+      const venv = Bun.spawn(
+        [
+          python!,
+          '-m',
+          'venv',
+          '--system-site-packages',
+          '--without-pip',
+          join(root, '.tmp', 'python'),
+        ],
+        { stdout: 'ignore', stderr: 'ignore' },
+      )
+      expect(await venv.exited).toBe(0)
+      const outcome = await makeShellTool(found).fn({ command }, ctx(root))
+      expect(outcome.status).toBe('success')
+      expect(String(outcome.data?.stdout).trim()).toBe(join(root, '.tmp', 'python'))
+    },
+  )
 })
 
 describe('run_command 的用量记账', () => {

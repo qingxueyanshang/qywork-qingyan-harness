@@ -17,6 +17,15 @@ const note = (notes: ReturnType<typeof buildTailNotes>, group: string) =>
   notes.find((n) => n.group === group)
 
 describe('上下文末尾注记', () => {
+  test('运行环境一节紧随工作区状态行，归入工作区状态；未提供时不出现', () => {
+    const environment = '## 运行环境（本轮开始时读取本机目录）\n- Python：未找到。'
+    const notes = buildTailNotes({ ...base, environment })
+    const states = notes.filter((n) => n.group === 'workspaceState').map((n) => n.content)
+    expect(states.at(-1)).toBe(environment)
+    expect(states.at(-2)).toStartWith('工作区：/tmp/ws')
+    expect(buildTailNotes(base).some((n) => n.content.includes('运行环境'))).toBe(false)
+  })
+
   test('记忆每条一行：key 与首行摘要，不含正文', () => {
     const notes = buildTailNotes({
       ...base,
