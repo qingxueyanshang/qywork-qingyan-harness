@@ -1,3 +1,4 @@
+import type { PermissionMode } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import {
   client,
@@ -12,7 +13,14 @@ import {
 } from '../../lib/store/index.ts'
 import PairPanel from '../PairPanel.tsx'
 import { ConfigStatus } from './ConfigStatus.tsx'
-import { config, configError, configPath, ensureConfig, reloadConfig } from './configStore.ts'
+import {
+  config,
+  configError,
+  configPath,
+  ensureConfig,
+  patchConfig,
+  reloadConfig,
+} from './configStore.ts'
 import { LoadState } from './LoadState.tsx'
 import { PathRow, Row } from './Row.tsx'
 import { UpdateSettings } from './UpdateSettings.tsx'
@@ -26,6 +34,11 @@ const THEMES: { id: ThemePref; label: string }[] = [
 const FOLLOWUP_MODES: { id: FollowUpMode; label: string }[] = [
   { id: 'queue', label: '加入队列' },
   { id: 'steer', label: '调整方向' },
+]
+
+const PERMISSION_MODES: { id: PermissionMode; label: string }[] = [
+  { id: 'auto', label: '自动审批' },
+  { id: 'full', label: '完全访问' },
 ]
 
 /**
@@ -126,7 +139,7 @@ export function GeneralSettings() {
     <>
       <UpdateSettings />
       <section class="settings-block">
-        <h3 class="settings-block-head">外观</h3>
+        <h3 class="settings-block-head">偏好</h3>
         <div class="setting-rows">
           {/* 使用三态而不是深色开关：开关关闭后，系统切换为深色时应用是否跟随，
               界面上无法区分。`system` 必须单独作为一项。 */}
@@ -165,6 +178,24 @@ export function GeneralSettings() {
                 )}
               </For>
             </div>
+          </Row>
+          <Row label="新对话默认权限">
+            <fieldset class="seg" aria-label="新对话默认权限">
+              <For each={PERMISSION_MODES}>
+                {(m) => (
+                  <button
+                    class="seg-item"
+                    classList={{ active: !!config() && (config()?.mode ?? 'auto') === m.id }}
+                    type="button"
+                    aria-pressed={!!config() && (config()?.mode ?? 'auto') === m.id}
+                    disabled={!config()}
+                    onClick={() => void patchConfig({ mode: m.id })}
+                  >
+                    {m.label}
+                  </button>
+                )}
+              </For>
+            </fieldset>
           </Row>
         </div>
       </section>

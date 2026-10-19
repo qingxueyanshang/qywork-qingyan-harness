@@ -424,6 +424,11 @@
   border-radius: var(--r-sm);
   background: var(--bg-inset);
 }
+fieldset.seg {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+}
 .seg-item {
   padding: 4px var(--s-3);
   border-radius: var(--r-xs);

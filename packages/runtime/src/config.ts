@@ -86,6 +86,8 @@ export interface QyConfig {
    * 输入区开关只修改当前会话，不修改本字段。
    */
   mode?: PermissionMode
+  /** 新对话默认权限的一次性迁移标记；权限值仍只由 mode 决定。 */
+  permissionDefaultsVersion?: 1
   /**
    * 是否允许 agent 控制内置浏览器。缺省时视为启用，只有显式 `false` 表示关闭。
    *
@@ -374,6 +376,7 @@ export const NO_MODEL_MESSAGE = '未配置模型'
 const DEFAULT_CONFIG: QyConfig = {
   providers: {},
   mode: 'auto',
+  permissionDefaultsVersion: 1,
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -646,6 +649,13 @@ export async function loadConfig(): Promise<QyConfig> {
     return structuredClone(DEFAULT_CONFIG)
   }
 
+  // 未迁移的全局 mode 可能来自输入区开关，不能视为新对话的显式偏好。
+  // 只重置未迁移的默认值，已有会话的 mode 保存在数据库中，不受影响。
+  // 与其他配置迁移相同，加载即生效，下一次保存时由 saveConfig 一并落盘。
+  if (parsed.permissionDefaultsVersion !== 1) {
+    parsed.mode = 'auto'
+    parsed.permissionDefaultsVersion = 1
+  }
   const cfg: QyConfig = { ...structuredClone(DEFAULT_CONFIG), ...parsed }
 
   // 模型库的旧结构就地迁移为两维键。冲突在此处记录：迁移发生在解析阶段，
@@ -699,7 +709,11 @@ export async function saveConfig(cfg: QyConfig): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`
   try {
-    await writeFile(temporary, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
+    await writeFile(
+      temporary,
+      `${JSON.stringify({ ...cfg, permissionDefaultsVersion: 1 }, null, 2)}\n`,
+      'utf8',
+    )
     const deadline = Date.now() + RENAME_RETRY_MS
     for (;;) {
       try {
@@ -879,6 +893,9 @@ export function collectSecrets(cfg: QyConfig): { values: string[] } {
  */
 export function diagnoseConfig(cfg: QyConfig): string[] {
   const problems: string[] = []
+  if (cfg.mode !== undefined && cfg.mode !== 'auto' && cfg.mode !== 'full') {
+    problems.push('新对话默认权限必须是 auto 或 full')
+  }
   if (
     cfg.updates !== undefined &&
     (!cfg.updates ||

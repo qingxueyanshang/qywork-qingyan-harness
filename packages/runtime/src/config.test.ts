@@ -39,6 +39,53 @@ function cfg(over: Partial<QyConfig> = {}): QyConfig {
   }
 }
 
+test.each([undefined, 'auto', 'full'] as const)(
+  '旧配置升级后新对话默认自动审批，之后显式选择可持久保存：旧值=%s',
+  async (mode) => {
+    const home = await mkdtemp(join(tmpdir(), 'qy-default-permission-'))
+    const previousHome = process.env.QYWORK_HOME
+    const raw = cfg({ ...(mode ? { mode } : {}), additionalDirectories: ['C:/allowed'] })
+    try {
+      process.env.QYWORK_HOME = home
+      const file = join(home, 'config.json')
+      await writeFile(file, JSON.stringify(raw))
+      const loaded = await loadConfig()
+      expect(loaded).toEqual({ ...raw, mode: 'auto', permissionDefaultsVersion: 1 })
+      expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(raw)
+      await saveConfig(loaded)
+      expect(await loadConfig()).toEqual(loaded)
+      for (const selected of ['full', 'auto', 'full'] as const) {
+        loaded.mode = selected
+        await saveConfig(loaded)
+        expect(await loadConfig()).toEqual(loaded)
+        expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(loaded)
+      }
+    } finally {
+      if (previousHome === undefined) delete process.env.QYWORK_HOME
+      else process.env.QYWORK_HOME = previousHome
+      await rm(home, { recursive: true, force: true })
+    }
+  },
+)
+
+test('新版本直接保存的默认权限不被识别为旧配置，非法权限值不能通过校验', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'qy-default-permission-save-'))
+  const previousHome = process.env.QYWORK_HOME
+  try {
+    process.env.QYWORK_HOME = home
+    const selected = cfg({ mode: 'full' })
+    await saveConfig(selected)
+    expect(await loadConfig()).toEqual({ ...selected, permissionDefaultsVersion: 1 })
+    expect(diagnoseConfig(cfg({ mode: 'invalid' as never }))).toContain(
+      '新对话默认权限必须是 auto 或 full',
+    )
+  } finally {
+    if (previousHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('原生上传迁移只清除跨渠道引用，保留模型、默认选择和全部凭证', async () => {
   const home = await mkdtemp(join(tmpdir(), 'qy-native-upload-'))
   const previousHome = process.env.QYWORK_HOME
@@ -51,7 +98,7 @@ test('原生上传迁移只清除跨渠道引用，保留模型、默认选择�
     process.env.QYWORK_HOME = home
     await writeFile(join(home, 'config.json'), JSON.stringify(raw))
     const loaded = await loadConfig()
-    expect(loaded).toEqual({ mode: 'auto', ...expected })
+    expect(loaded).toEqual({ mode: 'auto', permissionDefaultsVersion: 1, ...expected })
     expect(diagnoseConfig(loaded)).toEqual([])
     expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
     await saveConfig(loaded)

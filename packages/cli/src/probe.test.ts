@@ -139,6 +139,7 @@ test('qy probe --save 只写回校准字段，保留探测期间其他位置保�
         touched = true
         const other = JSON.parse(await readFile(file, 'utf8')) as QyConfig
         other.mode = 'full'
+        other.permissionDefaultsVersion = 1
         other.providers.other = {
           kind: 'openai_chat_completions',
           apiKey: 'sk-saved-during-probe',

@@ -113,6 +113,7 @@ export function sampleConfig(): QyConfig {
     catalog,
     mediaDefaults,
     mode: 'auto',
+    permissionDefaultsVersion: 1,
     browserEnabled: false,
     desktopEnabled: false,
     desktopForeground: false,
@@ -133,11 +134,12 @@ function resolved(r: ReturnType<typeof resolveModel>) {
   return { ...rest, hasApiKey: Boolean(apiKey) }
 }
 
-/** 各开关与设置字段。映射类型要求列出全部字段：配置类型新增字段时此处类型检查失败。 */
+/** 各开关与设置字段；迁移标记不属于配置含义。新增设置字段时此处类型检查失败。 */
 type Settings = {
-  [K in Exclude<keyof QyConfig, 'providers' | 'catalog' | 'active' | 'mediaDefaults'>]-?:
-    | QyConfig[K]
-    | undefined
+  [K in Exclude<
+    keyof QyConfig,
+    'providers' | 'catalog' | 'active' | 'mediaDefaults' | 'permissionDefaultsVersion'
+  >]-?: QyConfig[K] | undefined
 }
 
 /**
