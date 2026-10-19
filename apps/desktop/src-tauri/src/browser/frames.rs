@@ -71,6 +71,9 @@ pub struct RequestFrame {
     /// `download.arm` / `download.disarm` 使用的本次下载身份。服务端每次生成一个不复用的值。
     #[serde(default)]
     pub download_id: Option<String>,
+    /// `create` 为真时：该页只供服务端内部渲染，不列入界面的页签条。其余 op 忽略该字段。
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -210,6 +213,7 @@ mod tests {
             url: None,
             path: None,
             download_id: None,
+            hidden: false,
         }
     }
 
@@ -242,6 +246,16 @@ mod tests {
         assert_eq!(parsed.workspace_id.as_deref(), Some("ws_a"));
         assert_eq!(parsed.conversation_id.as_deref(), Some("cv_a1"));
         assert_eq!(parsed.url.as_deref(), Some("http://127.0.0.1:9000/page"));
+        assert!(!parsed.hidden);
+    }
+
+    #[test]
+    fn render_request_sample_is_hidden() {
+        let parsed: RequestFrame =
+            serde_json::from_value(sample("renderRequest")).expect("样例必须能反序列化");
+        assert_eq!(parsed.op, "create");
+        assert_eq!(parsed.url.as_deref(), Some("about:blank"));
+        assert!(parsed.hidden);
     }
 
     #[test]

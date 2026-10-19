@@ -40,6 +40,17 @@
     "conversationId": "cv_a1",
     "url": "http://127.0.0.1:9000/page"
   },
+  "renderRequest": {
+    "type": "browser.request",
+    "requestId": "br_14",
+    "connectionEpoch": 3,
+    "deadline": 1757744400000,
+    "op": "create",
+    "workspaceId": "ws_a",
+    "conversationId": "cv_a1",
+    "url": "about:blank",
+    "hidden": true
+  },
   "request": {
     "type": "browser.request",
     "requestId": "br_12",

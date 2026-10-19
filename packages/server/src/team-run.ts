@@ -13,7 +13,7 @@ import type { AgentEvent, ConversationId, RunId, StepId, StopReason } from '@qyw
 import { type ModelRef, NO_MODEL_MESSAGE, type QyConfig, Session } from '@qywork/runtime'
 import { getConversation } from '@qywork/store'
 import type { Role } from '@qywork/team'
-import { canvasPort } from './canvas.ts'
+import { artRenderOf, canvasPort } from './canvas.ts'
 import { type CommandDeps, officePortOf } from './deps.ts'
 
 /**
@@ -219,8 +219,17 @@ export async function runBuiltinMember(
     // 成员会话与顶层会话使用同一判定：处理文档的成员同样需要 `office`。
     ...officePortOf(deps),
     // 画布与顶层会话使用同一个服务：成员修改的节点同样即时推送给界面。
+    // 设计稿渲染使用内置浏览器的隐藏页，归属同上记为顶层会话；宿主不可用时画布端口不提供渲染。
     ...(deps.canvas && workspaceId
-      ? { canvas: canvasPort(deps.canvas, { id: workspaceId, root: ctx.workspaceRoot }) }
+      ? {
+          canvas: canvasPort(
+            deps.canvas,
+            { id: workspaceId, root: ctx.workspaceRoot },
+            deps.browser?.available()
+              ? artRenderOf(deps.browser, ownerConversation, workspaceId, ctx.workspaceRoot)
+              : undefined,
+          ),
+        }
       : {}),
   })
 

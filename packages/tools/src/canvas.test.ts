@@ -275,6 +275,37 @@ describe('canvas 工具', () => {
     expect(full.message).toContain(`  引用失效（运行前须修正）：${broken}`)
   })
 
+  test('read 的 render：截图作为图片附上，回执写明尺寸、截图序号、页面脚本报错与无法渲染的原因', async () => {
+    const { port } = fakePort(DONE)
+    const asked: string[][] = []
+    port.render = async (_path, nodes) => {
+      asked.push(nodes)
+      return [
+        {
+          name: '首页',
+          size: { w: 960, h: 1280 },
+          png: 'iVBORw0KGgo=',
+          errors: ['TypeError: x is null'],
+        },
+        { name: '小满', failure: '不是设计稿卡' },
+      ]
+    }
+    const out = await readCanvasTool.fn(
+      { path: 'board.canvas.json', render: ['首页', '小满'] },
+      ctx(port),
+    )
+    expect(out.status).toBe('success')
+    expect(asked).toEqual([['首页', '小满']])
+    expect(out.message).toContain(
+      '\n截图 1：「首页」按 960×1280 渲染\n  页面脚本报错：TypeError: x is null\n「小满」无法渲染：不是设计稿卡',
+    )
+    expect(out.data?.images).toEqual([{ data: 'iVBORw0KGgo=', mime: 'image/png' }])
+
+    delete port.render
+    const none = await readCanvasTool.fn({ path: 'board.canvas.json', render: ['首页'] }, ctx(port))
+    expect(none).toMatchObject({ status: 'failure', message: '内置浏览器不可用，无法渲染设计稿' })
+  })
+
   test('写入或编辑文本文件后，回执附上画布中引用它的卡与失效的引用；其他类型的文件不查询', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qywork-canvas-note-'))
     const { port } = fakePort(DONE)

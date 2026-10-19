@@ -53,7 +53,7 @@ import {
   workspaceOf,
 } from '@qywork/store'
 import { redactSecrets } from '@qywork/tools'
-import { canvasPort } from './canvas.ts'
+import { artRenderOf, canvasPort } from './canvas.ts'
 import { makeDelegate } from './delegate.ts'
 import { type CommandDeps, officePortOf } from './deps.ts'
 import { publishGitState } from './http-util.ts'
@@ -283,8 +283,17 @@ export async function startRun(
         ...(deps.desktop?.available() ? { desktop: deps.desktop.portFor(conversationId) } : {}),
         // Office 同样实时判定：开关关闭或本机缺少 Python 与文档库时不提供端口，本轮没有 `office`。
         ...officePortOf(deps),
+        // 设计稿渲染使用内置浏览器的隐藏页，与浏览器端口同样实时判定；宿主不可用时画布端口不提供渲染。
         ...(deps.canvas
-          ? { canvas: canvasPort(deps.canvas, { id: ws.id, root: ws.rootPath }) }
+          ? {
+              canvas: canvasPort(
+                deps.canvas,
+                { id: ws.id, root: ws.rootPath },
+                deps.browser?.available()
+                  ? artRenderOf(deps.browser, conversationId, ws.id, ws.rootPath)
+                  : undefined,
+              ),
+            }
           : {}),
         // 跟进消息队列同样只提供给顶层会话：成员会话不显示在界面上，用户无法向其插入消息。
         followUps: (id) => deps.runs.takeSteered(id),

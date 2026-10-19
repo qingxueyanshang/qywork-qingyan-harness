@@ -5,15 +5,9 @@
  * 页面脚本的第一条错误显示在节点上。截图与录制经 `register` 交出的句柄执行。
  */
 
-import type { CanvasPixels } from '@qywork/core'
+import { artPageSize, type CanvasPixels } from '@qywork/core'
 import { createResource, createSignal, onCleanup, onMount, Show } from 'solid-js'
-import {
-  type ArtHandle,
-  artSizeOfHtml,
-  connectArt,
-  dropStalePoster,
-  inlineArtImages,
-} from './art.ts'
+import { type ArtHandle, connectArt, dropStalePoster, inlineArtImages } from './art.ts'
 import { Bitmap } from './Bitmap.tsx'
 
 /** 实时页面的句柄与视口。 */
@@ -56,7 +50,7 @@ export function ArtView(props: {
       keyed
     >
       {(page) => {
-        const size = artSizeOfHtml(page)
+        const size = artPageSize(page)
         const [error, setError] = createSignal<string | null>(null)
         let frame!: HTMLIFrameElement
         onMount(() => {

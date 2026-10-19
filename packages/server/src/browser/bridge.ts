@@ -59,6 +59,8 @@ export interface BrowserRequestParams {
   url?: string
   path?: string
   downloadId?: string
+  /** `create` 专用：内部渲染页，不列入界面的页签条（`renderArt`）。 */
+  hidden?: boolean
 }
 
 export class BrowserBridge {
@@ -148,6 +150,7 @@ export class BrowserBridge {
       ...(params.url !== undefined ? { url: params.url } : {}),
       ...(params.path !== undefined ? { path: params.path } : {}),
       ...(params.downloadId !== undefined ? { downloadId: params.downloadId } : {}),
+      ...(params.hidden ? { hidden: true } : {}),
     }
     return new Promise<BrowserResultFrame['data']>((resolve, reject) => {
       const timer = setTimeout(() => {

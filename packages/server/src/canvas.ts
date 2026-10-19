@@ -24,7 +24,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import type { CanvasPort, MediaPort } from '@qywork/agent'
+import type { CanvasPort, CanvasRender, MediaPort } from '@qywork/agent'
 import { type TaskPhase, taskPhase } from '@qywork/ai'
 import {
   type AgentEvent,
@@ -32,6 +32,7 @@ import {
   addVersions,
   applyCanvasOps,
   artImageRefs,
+  artPageSize,
   type CanvasBatchRunResult,
   type CanvasCancelOutcome,
   type CanvasClip,
@@ -48,6 +49,7 @@ import {
   type CanvasTaskInfo,
   type CanvasVersion,
   type CanvasView,
+  canvasFileKind,
   canvasMediaOf,
   cardIdOf,
   compilePrompt,
@@ -79,6 +81,7 @@ import {
   resumeMedia,
   TASK_SUFFIX,
 } from '@qywork/tools'
+import type { BrowserCoordinator } from './browser/coordinator.ts'
 import { agentView, checkActiveParams, prepareAgentOps } from './canvas-agent-ops.ts'
 import { findByName } from './files.ts'
 import { mediaDurationOf, mediaSizeOf } from './media-size.ts'
@@ -256,6 +259,17 @@ export interface CanvasWorkspace {
   id: string
   root: string
 }
+
+/**
+ * 设计稿页面的渲染：页面原文、页面文件的绝对路径与显示尺寸 → PNG（base64）与页面脚本报错。
+ * 由服务端以内置浏览器的隐藏页实现（`BrowserCoordinator.renderArt`），按会话绑定后交给画布端口。
+ */
+export type ArtRender = (page: {
+  html: string
+  pagePath: string
+  width: number
+  height: number
+}) => Promise<{ png: string; errors: string[] }>
 
 /**
  * 运行或取回的计费归属与中止时机由调用方提供：界面发起时使用服务端创建的端口（花费记为不属于任何轮次），
@@ -1135,6 +1149,49 @@ export class CanvasService {
   }
 
   /**
+   * 设计稿卡按页面的显示尺寸（`artPageSize`，与画布显示相同）渲染并截图。生成卡取当前版本的页面，
+   * `.html` 文件卡取其文件。不是设计稿卡、尚无结果或页面无法读取的项写明原因，其余照常渲染。
+   */
+  async renderArt(
+    workspaceRoot: string,
+    path: string,
+    keys: string[],
+    render: ArtRender,
+  ): Promise<CanvasRender[]> {
+    const { doc } = await this.read(workspaceRoot, path)
+    const out: CanvasRender[] = []
+    for (const key of keys) {
+      const node =
+        doc.nodes.find((n) => n.id === key) ?? doc.nodes.find((n) => displayNameOf(n) === key)
+      if (!node) {
+        out.push({ name: key, failure: '画布上没有这张卡' })
+        continue
+      }
+      const name = displayNameOf(node)
+      const art = node.type === 'generate' && node.output === 'art'
+      const page = art
+        ? node.versions.find((v) => v.id === node.current)?.path
+        : node.type === 'file' && canvasFileKind(node.path) === 'art'
+          ? node.path
+          : undefined
+      if (!page) {
+        out.push({ name, failure: art ? '尚无结果' : '不是设计稿卡' })
+        continue
+      }
+      const pagePath = join(workspaceRoot, page)
+      const html = await readFile(pagePath, 'utf8').catch(() => null)
+      if (html === null) {
+        out.push({ name, failure: `页面文件不存在：${page}` })
+        continue
+      }
+      const size = artPageSize(html)
+      const shot = await render({ html, pagePath, width: size.w, height: size.h })
+      out.push({ name, size, png: shot.png, errors: shot.errors })
+    }
+    return out
+  }
+
+  /**
    * 生成卡引用的文本卡文件当前的内容，按节点 id。文件不存在或无法读取时不提供该项，
    * 由 `textReferenceProblems` 报为失效。`cache` 按路径复用同一次读取画布中已读的文件。
    */
@@ -1847,11 +1904,31 @@ function changesOf(
  * 运行与取回在工具中等待至结束；中止信号来自本轮，停止本轮即停止等待，视频版本保留以待取回。
  * 修改按大模型的规则核对（`prepareAgentOps`），读取的生成卡参数为实际发送的参数（`agentView`）。
  */
-export function canvasPort(service: CanvasService, ws: CanvasWorkspace): CanvasPort {
+/** 绑定到一条会话的设计稿渲染：渲染页归该会话所有（`BrowserCoordinator.renderArt`）。 */
+export function artRenderOf(
+  browser: BrowserCoordinator,
+  conversationId: string,
+  workspaceId: string,
+  workspaceRoot: string,
+): ArtRender {
+  return (page) => browser.renderArt(conversationId, workspaceId, { ...page, workspaceRoot })
+}
+
+export function canvasPort(
+  service: CanvasService,
+  ws: CanvasWorkspace,
+  render?: ArtRender,
+): CanvasPort {
   return {
     create: (path) => service.create(ws.root, { path }),
     list: () => service.list(ws.root),
     textReferences: (path) => service.textReferences(ws.root, path),
+    ...(render
+      ? {
+          render: (path: string, nodes: string[]) =>
+            service.renderArt(ws.root, path, nodes, render),
+        }
+      : {}),
     read: (path) => service.read(ws.root, path, true),
     edit: async (path, ops) => {
       const { before, doc, refs, skipped } = await service.applyAgent(ws.root, path, ops)

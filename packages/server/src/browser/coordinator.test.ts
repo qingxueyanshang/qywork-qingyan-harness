@@ -6,7 +6,8 @@
  * 观察登记与失败说明，
  * 选项页读取不分配新编号、多事件动作未完成时仍返回观察，
  * 下载的身份登记与终态认领，以及它经 `bridge.ts` 发出的
- * `create` / `bind` / `close.conversation` / `download.arm` / `download.disarm` 帧格式。
+ * `create` / `bind` / `close.conversation` / `download.arm` / `download.disarm` 帧格式，
+ * 以及设计稿渲染（`renderArt`、`render.ts`，经由 `canvas.ts` 的画布端口）。
  *
  * 对端是自动应答的假宿主，以及只覆盖基本流程的假调试端点。本文件测试页面归属、
  * 两条会话能否同时操作各自的页、删除会话能否关闭页面，
@@ -14,7 +15,7 @@
  */
 
 import { afterEach, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -44,6 +45,7 @@ import {
 import { registerBuiltinTools } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import { EventBus } from '../bus.ts'
+import { artRenderOf, CanvasService, canvasPort } from '../canvas.ts'
 import { handleCommand } from '../commands.ts'
 import { makeDelegate } from '../delegate.ts'
 import type { SocketData } from '../deps.ts'
@@ -132,7 +134,12 @@ interface Devtools {
   failKeyAt: number | null
   /** 每条命令应答后回调一次，用于在动作与观察之间插入操作。 */
   onCommand: ((method: string, expression: string) => void) | null
+  /** 收到的全部命令与参数，按到达顺序。 */
+  calls: { method: string; params: Record<string, unknown> }[]
 }
+
+/** 假调试端点对 `Page.captureScreenshot` 返回的截图。 */
+const SHOT = 'iVBORw0KGgo='
 
 /**
  * 只覆盖基本流程的假调试端点：一个 page target、一个可点击的下载链接、一个可读取选项的下拉框。
@@ -166,6 +173,7 @@ function fakeDevtools(marker: string): Devtools {
     blindProbe: false,
     failKeyAt: null,
     onCommand: null,
+    calls: [],
   }
   const server = Bun.serve({
     port: 0,
@@ -193,6 +201,7 @@ function fakeDevtools(marker: string): Devtools {
           params?: Record<string, unknown>
         }
         commands += 1
+        state.calls.push({ method: cmd.method, params: cmd.params ?? {} })
         let result: Record<string, unknown> = {}
         let error: string | null = null
         if (cmd.method === 'Target.getTargets') {
@@ -327,8 +336,11 @@ function fakeDevtools(marker: string): Devtools {
             result = { result: { value: { id: 7, immediate: false } } }
           } else if (expr.includes('__qyworkAwait(')) {
             result = { result: { value: { met: true, id: 7 } } }
+          } else if (expr.includes("document.readyState === 'complete'")) {
+            result = { result: { value: true } }
           } else result = { result: { value: { waiters: 0, observers: 0, timers: 0 } } }
         }
+        if (cmd.method === 'Page.captureScreenshot') result = { data: SHOT }
         const reply = JSON.stringify(
           error === null
             ? { id: cmd.id, result }
@@ -1078,6 +1090,57 @@ test('停止指令收回每个成员的控制槽，页面保留在宿主上供�
   expect((await next?.observe({ tabId: 'bt_1' }))?.observationId).toBeTruthy()
   expect((await next?.observe({ tabId: 'bt_2' }))?.observationId).toBeTruthy()
   parked.open()
+})
+
+/**
+ * 设计稿渲染：原始失败形状是模型在 1280×800 的标签页里核对 960×1280 的设计稿卡，按错误的版面修改页面。
+ * 渲染使用隐藏页（不列入界面页签条与模型的页清单），视口设为页面声明的尺寸，结束后关闭该页。
+ */
+test('设计稿渲染：隐藏页按页面尺寸设定视口，经引导页写入内嵌了图片的页面并截图，结束后关闭', async () => {
+  const { handle, host, devtools, dir } = await ready()
+  const browser = handle.browser!
+  mkdirSync(join(dir, '素材'), { recursive: true })
+  mkdirSync(join(dir, '设计'), { recursive: true })
+  writeFileSync(join(dir, '素材', 'a.png'), Buffer.from([1, 2, 3]))
+  const pagePath = join(dir, '设计', '首页.html')
+  const html =
+    '<!doctype html><html><head><meta name="viewport" content="width=960, height=1280"></head>' +
+    '<body><img src="../素材/a.png"></body></html>'
+  writeFileSync(pagePath, html)
+
+  const during: { tabs?: Promise<unknown> } = {}
+  devtools.onCommand = (method) => {
+    if (method === 'Page.captureScreenshot' && !during.tabs)
+      during.tabs = browser.portFor('cv_a', WS).tabs()
+  }
+  const service = new CanvasService({ publish: () => {} })
+  await service.create(dir, { path: 'board.canvas.json' })
+  await service.apply(dir, 'board.canvas.json', [
+    { op: 'add_file', path: '设计/首页.html', name: '首页' },
+  ])
+  const port = canvasPort(service, { id: WS, root: dir }, artRenderOf(browser, 'cv_a', WS, dir))
+  const [shot] = await port.render!('board.canvas.json', ['首页'])
+  expect(shot).toEqual({ name: '首页', size: { w: 960, h: 1280 }, png: SHOT, errors: [] })
+
+  expect(host.received.find((f) => f.op === 'create')).toMatchObject({
+    conversationId: 'cv_a',
+    url: 'about:blank',
+    hidden: true,
+  })
+  expect(host.ops().at(-1)).toBe('close')
+  expect(await during.tabs).toEqual([])
+  const params = (method: string) =>
+    devtools.calls.filter((c) => c.method === method).map((c) => c.params)
+  expect(params('Emulation.setDeviceMetricsOverride')).toEqual([
+    { width: 960, height: 1280, deviceScaleFactor: 1, mobile: false },
+  ])
+  expect(String(params('Page.navigate')[0]?.url)).toEndWith('/art/host')
+  const posted = String(
+    params('Runtime.evaluate').find((p) => String(p.expression).includes('qywork-art-load'))
+      ?.expression,
+  )
+  expect(posted).toContain('src=\\"data:image/png;base64,AQID\\"')
+  expect(posted).toContain('/art/lib/three.module.js')
 })
 
 test('两条会话各自建页、观察、执行动作，互不影响', async () => {

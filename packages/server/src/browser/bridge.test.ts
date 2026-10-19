@@ -418,6 +418,7 @@ test('请求帧的线上格式与 Rust 侧共用同一份样例', async () => {
   expect(create.conversationId).toBe('cv_bridge')
   expect(create.workspaceId).toBe(WS)
   expect(create.deadline).toBeGreaterThan(Date.now())
+  expect('hidden' in create).toBe(false)
 
   host.refuse(create, 'refused')
   expect((await failure(opening)).message).toBe('refused')
@@ -450,6 +451,10 @@ test('请求帧的线上格式与 Rust 侧共用同一份样例', async () => {
       'workspaceId',
     ].sort(),
   )
+  // 设计稿渲染的建页帧多一个 hidden（`BrowserCoordinator.renderArt`，帧内容由 coordinator 测试核对）。
+  const rendering = samples().renderRequest as unknown as BrowserRequestFrame
+  expect(Object.keys(rendering).sort()).toEqual([...Object.keys(creating), 'hidden'].sort())
+  expect(rendering.hidden).toBe(true)
 })
 
 /**

@@ -404,13 +404,6 @@ export interface BrowserRefusal {
   executed: false
 }
 
-/**
- * 画布端口：Agent 读取、修改、运行画布，由服务端画布服务执行。与界面使用同一个实例，
- * 因此画布的写入次序与运行中卡片的状态只有一份。接口定义在此处，实现由 server 注入（同 `BrowserPort`）；
- * 没有服务端的会话（CLI）不注入，画布工具不注册。
- *
- * 失败以抛出 `Error` 表示，`message` 原样交给大模型。
- */
 /** `CanvasPort.edit` 的结果。 */
 export interface CanvasEditResult {
   view: CanvasView
@@ -421,6 +414,18 @@ export interface CanvasEditResult {
   replaced: { at: number; count: number }[]
 }
 
+/** `CanvasPort.render` 的一项：渲染出的截图（PNG 的 base64）与页面脚本报错，或该卡无法渲染的原因。 */
+export type CanvasRender =
+  | { name: string; size: { w: number; h: number }; png: string; errors: string[] }
+  | { name: string; failure: string }
+
+/**
+ * 画布端口：Agent 读取、修改、运行画布，由服务端画布服务执行。与界面使用同一个实例，
+ * 因此画布的写入次序与运行中卡片的状态只有一份。接口定义在此处，实现由 server 注入（同 `BrowserPort`）；
+ * 没有服务端的会话（CLI）不注入，画布工具不注册。
+ *
+ * 失败以抛出 `Error` 表示，`message` 原样交给大模型。
+ */
 export interface CanvasPort {
   /** 在指定工作区路径创建空画布；已有文件不覆盖。返回规范化的工作区相对路径。 */
   create(path: string): Promise<string>
@@ -431,6 +436,11 @@ export interface CanvasPort {
    * 文件工具写入 .md / .txt 后附在结果中。
    */
   textReferences(path: string): Promise<string[]>
+  /**
+   * 设计稿卡按页面的显示尺寸渲染并截图，`nodes` 为卡片名称或 id。在内置浏览器的隐藏页中进行，
+   * 界面不受影响。内置浏览器不可用时不提供该方法。
+   */
+  render?(path: string, nodes: string[]): Promise<CanvasRender[]>
   read(path: string): Promise<CanvasView>
   /**
    * 逐条应用一批操作：不成立的条目跳过，`skipped` 中的 `at` 为该条在 `ops` 中的序号；其余照常生效。

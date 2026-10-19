@@ -8,7 +8,13 @@
  * 运行使用本轮的生成端口（`ctx.media`），费用计入本轮。
  */
 
-import type { CanvasEditResult, CanvasPort, ToolOutcome, ToolSpec } from '@qywork/agent'
+import type {
+  CanvasEditResult,
+  CanvasPort,
+  CanvasRender,
+  ToolOutcome,
+  ToolSpec,
+} from '@qywork/agent'
 import {
   ART_SIZE_PARAM,
   type CanvasBatchRunResult,
@@ -22,6 +28,7 @@ import {
   parseCanvasOps,
 } from '@qywork/core'
 import { jsonArg } from './args.ts'
+import { shrinkImage } from './image.ts'
 
 function failure(message: string, errorKind?: string): ToolOutcome {
   return { status: 'failure', executed: false, message, ...(errorKind ? { errorKind } : {}) }
@@ -173,7 +180,9 @@ const CANVAS_NOTE =
   '再次运行时在当前页面上修改；它只接受参考图，本身不能作为输入（截图与录制由用户在界面上完成）。' +
   '页面中要显示工作区里的图片时，把图片放上画布并连到 art 卡，页面按相对路径引用，画布显示时载入该图片；' +
   '不要把图片编码进 HTML。' +
-  '.html 文件放上画布同样作为 art 页面显示。'
+  '.html 文件放上画布同样作为 art 页面显示。' +
+  '核对设计稿的版面优先用 read_canvas 的 render：按页面声明的尺寸（与画布显示相同）渲染并附上截图；' +
+  '浏览器标签页的尺寸与卡片不同，在其中看到的版面不是卡片上的版面。'
 
 export const createCanvasTool: ToolSpec = {
   name: 'create_canvas',
@@ -216,7 +225,9 @@ export const readCanvasTool: ToolSpec = {
     '读取画布。' +
     CANVAS_NOTE +
     '提供 path 时返回概况：每张卡一行（名称、组、模型、版本、状态即正常、文件缺失、未生成、生成中、待取回或失败、参数、输入与提示词字数）与全部连线；' +
-    '同时提供 node 时返回这些卡的全文（提示词、参数、输入、已提交的任务）。省略 path 时列出工作区里的画布。',
+    '同时提供 node 时返回这些卡的全文（提示词、参数、输入、已提交的任务）。省略 path 时列出工作区里的画布。' +
+    'render 列出设计稿卡（art 生成卡或 .html 文件卡）时，在内置浏览器的隐藏页中按页面声明的尺寸渲染，' +
+    '附上截图并列出页面脚本报错；界面不受影响。',
   parameters: {
     type: 'object',
     properties: {
@@ -226,6 +237,11 @@ export const readCanvasTool: ToolSpec = {
         type: 'array',
         items: { type: 'string' },
         description: '要读取全文的卡片名称数组；省略时返回概况',
+      },
+      render: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '要渲染截图的设计稿卡名称数组',
       },
     },
     required: [],
@@ -254,18 +270,48 @@ export const readCanvasTool: ToolSpec = {
       }
       const view = await canvas.read(path)
       const refs = Array.isArray(args.node) ? args.node.map((r) => String(r)) : []
-      if (!refs.length) return { status: 'success', message: describe(view), data: { view } }
       const ids: string[] = []
       for (const ref of refs) {
         const found = cardIdOf(view.doc, ref)
         if (!found.ok) return failure(found.error, 'invalid_tool_arguments')
         ids.push(found.id)
       }
-      return { status: 'success', message: describe(view, ids), data: { view } }
+      const read = describe(view, ids.length ? ids : undefined)
+      const wanted = Array.isArray(args.render) ? args.render.map((r) => String(r)) : []
+      if (!wanted.length) return { status: 'success', message: read, data: { view } }
+      if (!canvas.render) return failure('内置浏览器不可用，无法渲染设计稿')
+      const rendered = await rendersOf(await canvas.render(path, wanted))
+      return {
+        status: 'success',
+        message: `${read}\n${rendered.lines.join('\n')}`,
+        data: { view, ...(rendered.images.length ? { images: rendered.images } : {}) },
+      }
     } catch (err) {
       return { status: 'failure', executed: false, message: (err as Error).message }
     }
   },
+}
+
+/**
+ * 渲染结果写成回执：每张卡一行（尺寸与截图序号，或无法渲染的原因），页面脚本报错跟在该卡之后。
+ * 截图超过模型可接受的边长时缩小（`shrinkImage`），回执中的尺寸仍是页面的显示尺寸。
+ */
+async function rendersOf(
+  items: CanvasRender[],
+): Promise<{ lines: string[]; images: { data: string; mime: string }[] }> {
+  const lines: string[] = []
+  const images: { data: string; mime: string }[] = []
+  for (const item of items) {
+    if ('failure' in item) {
+      lines.push(`「${item.name}」无法渲染：${item.failure}`)
+      continue
+    }
+    const fit = await shrinkImage(new Uint8Array(Buffer.from(item.png, 'base64')), 'image/png')
+    images.push({ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime })
+    lines.push(`截图 ${images.length}：「${item.name}」按 ${item.size.w}×${item.size.h} 渲染`)
+    if (item.errors.length) lines.push(`  页面脚本报错：${item.errors.join('；')}`)
+  }
+  return { lines, images }
 }
 
 /** 一条待发送的操作：`at` 为它在模型所写数组中的序号，`label` 用于回执中的指代。 */

@@ -9,6 +9,16 @@
  *   因此响应带 `Access-Control-Allow-Origin: *`。
  */
 
+import { readFile } from 'node:fs/promises'
+import { join, relative } from 'node:path'
+import {
+  ART_IMAGE_REF_RE,
+  artImageRefs,
+  artImportMap,
+  insertAfterHead,
+  resolveArtRef,
+} from '@qywork/core'
+
 // @ts-expect-error 以文件路径形式导入的库文件，没有类型声明。
 import screenshot from '../node_modules/modern-screenshot/dist/index.mjs' with { type: 'file' }
 // @ts-expect-error 同上。
@@ -30,7 +40,8 @@ import roundedBox from '../node_modules/three/examples/jsm/geometries/RoundedBox
 
 /** 引导页的路径。界面按 sidecar 地址拼接。 */
 export const ART_HOST_PATH = '/art/host'
-const LIB_PREFIX = '/art/lib/'
+/** 库文件目录的路径，importmap 指向它。 */
+export const ART_LIB_PATH = '/art/lib/'
 
 /** 库文件：发布路径 → 内嵌文件的路径。附加模块与系统提示词中的清单 `ART_ADDONS` 一一对应（测试核对）。 */
 export const ART_LIBRARY: Readonly<Record<string, string>> = {
@@ -57,6 +68,45 @@ addEventListener('message', function load(e) {
 parent.postMessage({ type: 'qywork-art-host' }, '*')
 </script>`
 
+/** 图片扩展名对应的媒体类型，与 `ART_IMAGE_REF_RE` 接受的扩展名一致。 */
+const IMAGE_MIME: Readonly<Record<string, string>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  svg: 'image/svg+xml',
+}
+
+/**
+ * 内部渲染（`browser/render.ts`）使用的页面：注入 importmap（库地址为 `lib`），并把按相对路径引用的工作区图片
+ * 换成 data URL。引导页以 sidecar 的源加载，相对路径会按 `/art/host` 解析。
+ * 不要改为写入带令牌的文件地址：页面脚本可以读取它并调用接口。
+ * `pagePath` 为页面文件的绝对路径；不存在或越出工作区的图片保持原样。
+ */
+export async function prepareArtForRender(
+  html: string,
+  pagePath: string,
+  workspaceRoot: string,
+  lib: string,
+): Promise<string> {
+  const page = relative(workspaceRoot, pagePath).replaceAll('\\', '/')
+  const found = new Map<string, string>()
+  for (const rel of artImageRefs(html)) {
+    const path = resolveArtRef(page, rel)
+    const mime = IMAGE_MIME[rel.split('.').pop()?.toLowerCase() ?? '']
+    if (!path || !mime) continue
+    const bytes = await readFile(join(workspaceRoot, path)).catch(() => null)
+    if (bytes) found.set(rel, `data:${mime};base64,${bytes.toString('base64')}`)
+  }
+  const inlined = html.replace(ART_IMAGE_REF_RE, (whole, lead: string, rel: string) => {
+    const data = found.get(rel)
+    return data ? `${lead}${data}` : whole
+  })
+  return insertAfterHead(inlined, artImportMap(lib))
+}
+
 /** 处理 `/art/*`；其他路径返回 `null`。 */
 export function serveArt(pathname: string): Response | null {
   if (pathname === ART_HOST_PATH) {
@@ -64,8 +114,8 @@ export function serveArt(pathname: string): Response | null {
       headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' },
     })
   }
-  if (!pathname.startsWith(LIB_PREFIX)) return null
-  const file = ART_LIBRARY[pathname.slice(LIB_PREFIX.length)]
+  if (!pathname.startsWith(ART_LIB_PATH)) return null
+  const file = ART_LIBRARY[pathname.slice(ART_LIB_PATH.length)]
   if (!file) return new Response('not found', { status: 404 })
   return new Response(Bun.file(file), {
     headers: {

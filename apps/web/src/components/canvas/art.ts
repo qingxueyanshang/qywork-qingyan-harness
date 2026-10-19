@@ -9,10 +9,11 @@
  */
 
 import {
-  ART_DEFAULT_SIZE,
   ART_IMAGE_REF_RE,
+  ART_POSTER_MS,
   artImageRefs,
-  artViewportOf,
+  artImportMap,
+  artPageSize,
   type CanvasPixels,
   insertAfterHead,
   resolveArtRef,
@@ -183,11 +184,9 @@ const libUrl = () => `${client.base}/art/lib/`
 
 /** 在页面最前面注入运行时与 importmap。importmap 必须位于页面自己的模块脚本之前。 */
 export function prepareArt(html: string, opts: RuntimeOptions): string {
-  const imports = { three: `${opts.lib}three.module.js`, 'three/addons/': `${opts.lib}addons/` }
   return insertAfterHead(
     html,
-    `<script>(${artRuntime.toString()})(${JSON.stringify(opts)})</script>` +
-      `<script type="importmap">${JSON.stringify({ imports })}</script>`,
+    `<script>(${artRuntime.toString()})(${JSON.stringify(opts)})</script>${artImportMap(opts.lib)}`,
   )
 }
 
@@ -233,11 +232,6 @@ async function dataUrlOf(url: string): Promise<string | null> {
   } catch {
     return null
   }
-}
-
-/** 页面的视口：取自 viewport 标签，没有时为缺省尺寸。 */
-export function artSizeOfHtml(html: string): CanvasPixels {
-  return artViewportOf(html) ?? ART_DEFAULT_SIZE
 }
 
 /** 与一个 art 页面通信的句柄。 */
@@ -334,9 +328,6 @@ export async function pngOf(bitmap: ImageBitmap): Promise<Blob> {
   return canvas.convertToBlob({ type: 'image/png' })
 }
 
-/** 封面所取的页面时刻（毫秒）：常见的入场动画在此之前已有画面。 */
-const POSTER_AT = 500
-
 /**
  * 已生成的封面（PNG）与其所依据的页面内容，按页面地址缓存。生成卡的版本文件写出后不再修改；
  * 放上画布的 HTML 文件可能被改写，实时页面读到不同内容时经 `dropStalePoster` 丢弃。
@@ -350,7 +341,7 @@ export function dropStalePoster(url: string, html: string): void {
 }
 
 /**
- * 页面的封面：在隐藏的 iframe 中从 0 开始逐帧推进到 `POSTER_AT`，截取后关闭。页面脚本报错或加载超时时拒绝。
+ * 页面的封面：在隐藏的 iframe 中从 0 开始逐帧推进到 `ART_POSTER_MS`，截取后关闭。页面脚本报错或加载超时时拒绝。
  */
 export function artPoster(url: string): Promise<Blob> {
   const hit = posters.get(url)
@@ -371,7 +362,7 @@ async function renderPoster(url: string, onSource: (html: string) => void): Prom
   const html = await res.text()
   onSource(html)
   const page = await inlineArtImages(html, url)
-  const size = artSizeOfHtml(html)
+  const size = artPageSize(html)
   const frame = document.createElement('iframe')
   frame.setAttribute('sandbox', 'allow-scripts')
   frame.width = String(size.w)
@@ -384,8 +375,8 @@ async function renderPoster(url: string, onSource: (html: string) => void): Prom
   try {
     await art.ready
     // 逐帧推进：页面按帧累积状态（物理、阻尼）时一次跳到终点与实际显示不同。消息按发送顺序处理。
-    for (let t = 0; t < POSTER_AT; t += 1000 / FPS) art.step(t)
-    const bitmap = await art.capture(POSTER_AT)
+    for (let t = 0; t < ART_POSTER_MS; t += 1000 / FPS) art.step(t)
+    const bitmap = await art.capture(ART_POSTER_MS)
     if (errors.length) {
       bitmap.close()
       throw new Error(errors[0])

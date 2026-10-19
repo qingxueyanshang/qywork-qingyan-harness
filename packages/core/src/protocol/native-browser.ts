@@ -156,6 +156,8 @@ export interface BrowserRequestFrame {
    * 缺少该值时，同一页面上一次调用的迟到终态会结算本次调用：tabId 只能区分页面，无法区分新旧调用。
    */
   downloadId?: string
+  /** `create` 为真时：该页只供服务端内部渲染，宿主不把它列入界面的页签条。 */
+  hidden?: boolean
 }
 
 /** 操作结果。`data` 的字段按 op 取用，无法识别的 op 只会返回 `ok:false`。 */

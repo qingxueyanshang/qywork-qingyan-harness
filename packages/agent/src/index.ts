@@ -116,6 +116,7 @@ export {
   type BrowserWaitState,
   type CanvasEditResult,
   type CanvasPort,
+  type CanvasRender,
   compactionEpoch,
   type DelegatePort,
   type FileReadPort,

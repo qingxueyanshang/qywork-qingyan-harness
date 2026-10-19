@@ -34,7 +34,8 @@ import type {
   FollowUpObservation,
 } from '@qywork/agent'
 import type { BrowserEventFrame } from '@qywork/core'
-import { log } from '@qywork/core'
+import { ART_POSTER_MS, log } from '@qywork/core'
+import { ART_HOST_PATH, ART_LIB_PATH, prepareArtForRender } from '../art.ts'
 import { type BrowserBridge, BrowserBridgeError, type NativeBrowserHost } from './bridge.ts'
 import { CdpClient, CdpDisconnectedError, CdpInitError } from './cdp.ts'
 import {
@@ -48,6 +49,7 @@ import {
   uploadToPage,
   waitOnPage,
 } from './page.ts'
+import { type ArtRenderResult, renderArtPage } from './render.ts'
 
 /**
  * 浏览器控制的最低 Chromium 主版本。WebView2 Runtime 与 Chrome / Edge / Chromium 均按此版本判定。
@@ -128,6 +130,8 @@ const NAVIGATE_TIMEOUT_MS = 30_000
  * 用户按下停止之后，这段时间内界面没有任何进展。
  */
 const RELEASE_BUDGET_MS = 5_000
+/** 一次设计稿渲染（建页、加载引导页与页面、等待入场、截图）的总时限。 */
+const RENDER_BUDGET_MS = 20_000
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /** 距截止时间的剩余毫秒数。 */
@@ -224,16 +228,21 @@ export function meetsRuntimeFloor(version: string, floor = MIN_CHROMIUM_MAJOR): 
 export class BrowserCoordinator {
   #bridge: BrowserBridge
   #enabled: () => boolean
+  /** sidecar 的地址（`http://127.0.0.1:端口`）：内部渲染页加载 Art 引导页与库文件。 */
+  #sidecar: () => string
   /** owner → 控制槽。每次执行一个，彼此独立；访问同一页时才互斥。 */
   #controls = new Map<number, Control>()
   #nextOwner = 0
   #nextDownload = 0
+  /** 内部渲染页（`renderArt`）。不列入模型的页清单。 */
+  #rendering = new Set<string>()
   #offHostChange: () => void
   #offClosed: () => void
 
-  constructor(bridge: BrowserBridge, enabled: () => boolean) {
+  constructor(bridge: BrowserBridge, enabled: () => boolean, sidecar: () => string) {
     this.#bridge = bridge
     this.#enabled = enabled
+    this.#sidecar = sidecar
     // 断开与重连均使全部控制失效：重连后的调试端点已更换，旧连接上的页会话已不存在。
     this.#offHostChange = bridge.onHostChange(() => this.#dropAll())
     // 宿主侧关闭的页（用户关闭、按会话关闭）须从持有它的控制槽中移除会话，
@@ -307,6 +316,59 @@ export class BrowserCoordinator {
     }
   }
 
+  /**
+   * 按设计稿页面的显示尺寸渲染并截图（`render.ts`），供画布核对设计稿版面。
+   *
+   * 使用一页 hidden 页：宿主不把它列入界面的页签条，面板中显示的页不受影响；渲染结束即关闭，
+   * 也不列入模型的页清单。该页归发起的会话所有，占用规则与该会话的其他页相同。
+   * `pagePath` 为页面文件的绝对路径，页面中按相对路径引用的工作区图片据此内嵌。
+   */
+  async renderArt(
+    conversationId: string,
+    workspaceId: string,
+    input: { html: string; pagePath: string; workspaceRoot: string; width: number; height: number },
+  ): Promise<ArtRenderResult> {
+    this.#nextOwner += 1
+    const lease: Lease = { owner: this.#nextOwner, conversationId, workspaceId, released: false }
+    let tabId: string | undefined
+    try {
+      await this.#acquire(lease)
+      const base = this.#sidecar()
+      const html = await prepareArtForRender(
+        input.html,
+        input.pagePath,
+        input.workspaceRoot,
+        `${base}${ART_LIB_PATH}`,
+      )
+      const data = await this.#bridge.request('create', {
+        url: 'about:blank',
+        workspaceId,
+        conversationId,
+        hidden: true,
+      })
+      tabId = data?.tabId
+      if (!tabId) throw new BrowserBridgeError('宿主未返回 tabId')
+      this.#rendering.add(tabId)
+      const { page } = await this.#pageOf(lease, tabId)
+      return await renderArtPage(page, {
+        hostUrl: `${base}${ART_HOST_PATH}`,
+        html,
+        width: input.width,
+        height: input.height,
+        settleMs: ART_POSTER_MS,
+        deadline: Date.now() + RENDER_BUDGET_MS,
+      })
+    } finally {
+      if (tabId) {
+        await this.#close(lease, tabId).catch((err: unknown) => {
+          log.warn('browser', `渲染页关闭失败：${err instanceof Error ? err.message : String(err)}`)
+        })
+        this.#rendering.delete(tabId)
+      }
+      await this.#release(lease)
+    }
+  }
+
   stop(): void {
     this.#offHostChange()
     this.#offClosed()
@@ -332,7 +394,8 @@ export class BrowserCoordinator {
       .filter(
         (tab) =>
           tab.workspaceId === lease.workspaceId &&
-          (tab.conversationId === lease.conversationId || tab.conversationId === null),
+          (tab.conversationId === lease.conversationId || tab.conversationId === null) &&
+          !this.#rendering.has(tab.tabId),
       )
       .map((tab) => ({
         tabId: tab.tabId,

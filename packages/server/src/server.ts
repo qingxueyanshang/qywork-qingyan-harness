@@ -185,7 +185,11 @@ export function serve(opts: ServeOptions) {
    */
   const browserBridge = opts.hostKey ? new BrowserBridge(opts.hostKey) : null
   const browser = browserBridge
-    ? new BrowserCoordinator(browserBridge, () => opts.config.browserEnabled !== false)
+    ? new BrowserCoordinator(
+        browserBridge,
+        () => opts.config.browserEnabled !== false,
+        () => `http://127.0.0.1:${boundPort}`,
+      )
     : null
   /*
    * 宿主连接或断开时重新广播能力投影。

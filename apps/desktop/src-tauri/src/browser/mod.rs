@@ -117,6 +117,9 @@ struct Tab {
     created_seq: u64,
     /// 拥有该页的会话 id；`None` 表示用户手动打开的页。归属由会话决定，跨消息保持不变。
     conversation_id: Option<String>,
+    /// 服务端内部渲染用的页（设计稿按卡片尺寸截图）：不列入界面的页签条，界面因此从不摆放它，
+    /// 它始终在可视区外，面板中显示的页不受影响。
+    hidden: bool,
 }
 
 #[cfg(desktop)]
@@ -310,6 +313,7 @@ impl BrowserHost {
         let mut list: Vec<TabView> = state
             .tabs
             .iter()
+            .filter(|(_, tab)| !tab.hidden)
             .map(|(id, tab)| TabView {
                 tab_id: id.clone(),
                 url: tab.url.clone(),
@@ -357,7 +361,7 @@ impl BrowserHost {
             "create" => {
                 let url = frame.url.clone().ok_or("create 缺少 url")?;
                 let workspace_id = workspace_of(frame, "create")?;
-                self.create(app, &url, workspace_id, frame.conversation_id.clone())
+                self.create(app, &url, workspace_id, frame.conversation_id.clone(), frame.hidden)
                     .map(|(data, _)| data)
             }
             "close" => self.close(frame.tab_id.as_deref().ok_or("close 缺少 tabId")?),
@@ -401,6 +405,7 @@ impl BrowserHost {
         url: &str,
         workspace_id: String,
         conversation_id: Option<String>,
+        hidden: bool,
     ) -> Result<(ResultData, u64), String> {
         // 序号与 tabId 在同一次加锁中分配：分开分配时，并发创建页面会使 `bt_N` 的编号
         // 与创建顺序不一致，页签上的「浏览器 2」会排在「浏览器 1」之前。
@@ -427,6 +432,7 @@ impl BrowserHost {
             workspace_id,
             created_seq,
             conversation_id,
+            hidden,
         };
         Ok((self.admit(tab_id, tab), created_seq))
     }
@@ -677,6 +683,7 @@ impl BrowserHost {
             let opener = state.tabs.get(opener_tab)?;
             let workspace_id = opener.workspace_id.clone();
             let conversation_id = opener.conversation_id.clone();
+            let hidden = opener.hidden;
             state.next_tab += 1;
             let tab_id = format!("bt_{}", state.next_tab);
             let tab = Tab {
@@ -687,6 +694,7 @@ impl BrowserHost {
                 workspace_id,
                 created_seq: crate::next_created_seq(),
                 conversation_id,
+                hidden,
             };
             (tab_id, tab)
         };
@@ -765,7 +773,7 @@ pub fn user_open(app: &AppHandle, url: Option<&str>, workspace_id: &str) -> Resu
     }
     // 不提供地址时创建空白标签页，地址由用户在地址栏中输入。
     let target = url.unwrap_or(address::BLANK);
-    let (data, created_seq) = host.create(app, target, workspace_id.to_owned(), None)?;
+    let (data, created_seq) = host.create(app, target, workspace_id.to_owned(), None, false)?;
     Ok(TabView {
         tab_id: data.tab_id.unwrap_or_default(),
         url: data.url.unwrap_or_default(),

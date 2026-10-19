@@ -67,6 +67,23 @@ export function withArtViewport(html: string, size: CanvasPixels): string {
   return insertAfterHead(html, tag)
 }
 
+/** 页面的显示尺寸：取自 viewport 标签，没有时为缺省尺寸。画布显示与内部渲染按同一尺寸布局。 */
+export function artPageSize(html: string): CanvasPixels {
+  return artViewportOf(html) ?? ART_DEFAULT_SIZE
+}
+
+/** 封面与内部渲染所取的页面时刻（毫秒）：常见的入场动画在此之前已有画面。 */
+export const ART_POSTER_MS = 500
+
+/**
+ * 页面使用的 importmap 标签：`three` 与 `three/addons/` 指向 `lib`（引导页所在服务的 `/art/lib/`）。
+ * 画布显示（界面 `prepareArt`）与内部渲染（服务端 `prepareArtForRender`）共用。必须位于页面自己的模块脚本之前。
+ */
+export function artImportMap(lib: string): string {
+  const imports = { three: `${lib}three.module.js`, 'three/addons/': `${lib}addons/` }
+  return `<script type="importmap">${JSON.stringify({ imports })}</script>`
+}
+
 /** 在 `<head>` 之后插入一段内容，位置规则同 `withArtViewport`。 */
 export function insertAfterHead(html: string, content: string): string {
   const anchor =
