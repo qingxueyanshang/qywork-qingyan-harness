@@ -607,6 +607,8 @@ function migrateRemovedMediaModels(cfg: QyConfig): string[] {
     'seedance-2.5（YX）',
     'seedance-2.5（AA）',
     'sd2.5-pp-1080p',
+    'XG-Seedance-2.5-720p-2',
+    'lec-vp-seedance-2-5-301010-1',
     '满血sd2.5(30-10-10原生过人脸/720P)',
     '高质量sd2.5/(全参原生过真人速度快720P)',
     '全能sd2.5(满血内置过脸30图超分1080P)',

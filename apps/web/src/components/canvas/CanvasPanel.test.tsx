@@ -1601,11 +1601,10 @@ describe('画布：生成卡与生成面板', () => {
     { id: 'TTsedanco2.5-480', min: '5', defaultSeconds: '5' },
     { id: 'GGseadanco2.5/720', min: '5', defaultSeconds: '5' },
     { id: 'seedance2.5-aa-count', min: '4', defaultSeconds: '30' },
-    { id: 'XG-Seedance-2.5-720p-2', min: '4', defaultSeconds: '30' },
-    { id: 'lec-vp-seedance-2-5-301010-1', min: '10', defaultSeconds: '30' },
+    { id: 'seedance-2.5  AA-按次', min: '30', defaultSeconds: '30', fixedSeconds: true },
   ])(
-    'providera 时长逐秒输入、固定清晰度隐藏，提交字符串秒数：$id',
-    async ({ id, min, defaultSeconds }) => {
+    'providera 隐藏固定参数，时长按型号规格提交：$id',
+    async ({ id, min, defaultSeconds, fixedSeconds = false }) => {
       const { lookupMediaModel } = await import('../../../../../packages/ai/src/media/catalog.ts')
       const spec = lookupMediaModel(id, 'openai_videos')
       const catalog = {
@@ -1640,32 +1639,43 @@ describe('画布：生成卡与生成面板', () => {
       )
       const panel = document.querySelector('.canvas-params-panel')!
       const buttons = [...panel.querySelectorAll<HTMLButtonElement>('button')]
-      expect(buttons.map((b) => b.textContent)).toEqual(['−', '+', '16:9', '9:16', '1:1'])
+      expect(buttons.map((b) => b.textContent)).toEqual([
+        ...(fixedSeconds ? [] : ['−', '+']),
+        '16:9',
+        '9:16',
+        '1:1',
+      ])
       expect(
         [...panel.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
-      ).toEqual(['时长', '宽高比'])
+      ).toEqual([...(fixedSeconds ? [] : ['时长']), '宽高比'])
       expect(panel.textContent).not.toContain(
         spec.params.find((p) => p.name === 'resolution')!.default as string,
       )
       expect(panel.querySelector('.canvas-param-description')).toBeNull()
-      const duration = panel.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
-      expect([duration.min, duration.max, duration.step, duration.value]).toEqual([
-        min,
-        '30',
-        '1',
-        defaultSeconds,
-      ])
-      for (const seconds of ['15', '30', min, '15']) {
-        duration.value = seconds
-        duration.dispatchEvent(new Event('change', { bubbles: true }))
-        await waitFor(
-          () => {
-            const node = server.doc().nodes[0]
-            return node?.type === 'generate' && (node.params.seconds ?? defaultSeconds) === seconds
-          },
-          () => JSON.stringify(server.ops),
-        )
-        expect(chip.textContent).toBe(`${seconds} 秒 · 16:9`)
+      const duration = panel.querySelector<HTMLInputElement>('input[aria-label="时长"]')
+      if (fixedSeconds) {
+        expect(duration).toBeNull()
+      } else {
+        expect([duration!.min, duration!.max, duration!.step, duration!.value]).toEqual([
+          min,
+          '30',
+          '1',
+          defaultSeconds,
+        ])
+        for (const seconds of ['15', '30', min, '15']) {
+          duration!.value = seconds
+          duration!.dispatchEvent(new Event('change', { bubbles: true }))
+          await waitFor(
+            () => {
+              const node = server.doc().nodes[0]
+              return (
+                node?.type === 'generate' && (node.params.seconds ?? defaultSeconds) === seconds
+              )
+            },
+            () => JSON.stringify(server.ops),
+          )
+          expect(chip.textContent).toBe(`${seconds} 秒 · 16:9`)
+        }
       }
       buttons.find((b) => b.textContent === '9:16')!.click()
       await waitFor(
@@ -1682,7 +1692,7 @@ describe('画布：生成卡与生成面板', () => {
       )
       const node = server.doc().nodes[0]
       expect(node?.type === 'generate' && node.params).toEqual({
-        seconds: '15',
+        ...(fixedSeconds ? {} : { seconds: '15' }),
         aspect_ratio: '9:16',
       })
       expect(server.runs[0]?.nodeId).toBe(refs.$g!)

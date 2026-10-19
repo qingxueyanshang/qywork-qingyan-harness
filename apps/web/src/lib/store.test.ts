@@ -83,6 +83,7 @@ const {
   loadOlderConversation,
   loadConversationChanges,
   loadConversationView,
+  loadServerConfig,
   loadOlderConversationChanges,
   openPreviewTab,
   openCanvasTab,
@@ -95,6 +96,7 @@ const {
   panelTabs,
   panelWidth,
   reloadActiveConversation,
+  reloadModelCatalog,
   runClosed,
   resizePanel,
   restoreTerminalTabs,
@@ -3042,12 +3044,57 @@ describe('刷新按同一份请求账恢复当前请求', () => {
 })
 
 /**
- * 模型目录是配置的派生状态，失效点只有一个：配置落盘处。
+ * 模型目录是配置的派生状态，读取最新配置后同步重新计算。
  *
  * 各组件各自缓存一份时的实测后果：设置页校准思考后写回了配置，
  * 输入区的目录仍是启动时获取的，档位要整页重载才出现。
  */
-describe('配置落盘后模型目录随之重新计算', () => {
+describe('读取配置后模型目录随之重新计算', () => {
+  test('外部配置增删模型后，设置与画布使用同一份最新模型列表', async () => {
+    const originalApi = client.api
+    let diskIds = ['seedance2.5-aa-count', 'GGsedanco2.5/480']
+    let adoptedIds = [...diskIds]
+    client.api = async <T>(path: string): Promise<T> => {
+      if (path === '/api/config') {
+        adoptedIds = [...diskIds]
+        return {
+          config: {
+            providers: {
+              providera: {
+                kind: 'openai_chat_completions',
+                hasApiKey: true,
+                models: {},
+                media: Object.fromEntries(diskIds.map((id) => [id, { kind: 'openai_videos' }])),
+              },
+            },
+          },
+          path: '',
+          notices: [],
+          problems: [],
+        } as T
+      }
+      if (path === '/api/models') {
+        return {
+          providers: [],
+          media: adoptedIds.map((id) => ({ provider: 'providera', id, output: 'video' })),
+          mediaLibrary: [],
+          library: [],
+        } as T
+      }
+      throw new Error(`unexpected ${path}`)
+    }
+    try {
+      await reloadModelCatalog()
+      expect(modelCatalog()?.media.map((m) => m.id)).toEqual(diskIds)
+      diskIds = ['seedance2.5-aa-count', 'GGseadanco2.5/720', 'TTseadanco2.5-720']
+      const fresh = await loadServerConfig()
+      expect(Object.keys(fresh.config.providers.providera!.media!)).toEqual(diskIds)
+      expect(modelCatalog()?.media.map((m) => m.id)).toEqual(diskIds)
+    } finally {
+      client.api = originalApi
+    }
+  })
+
   test('保存后获取的目录是保存后的版本', async () => {
     const calls: string[] = []
     let levels = ['low']

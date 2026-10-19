@@ -182,6 +182,8 @@ test.each(
     'seedance-2.5（YX）',
     'seedance-2.5（AA）',
     'sd2.5-pp-1080p',
+    'XG-Seedance-2.5-720p-2',
+    'lec-vp-seedance-2-5-301010-1',
     '满血sd2.5(30-10-10原生过人脸/720P)',
     '高质量sd2.5/(全参原生过真人速度快720P)',
     '全能sd2.5(满血内置过脸30图超分1080P)',
@@ -312,10 +314,15 @@ test('providera 精简后保留选定型号与有效默认值，其他协议及�
     'TTsedanco2.5-480',
     'GGseadanco2.5/720',
     'seedance2.5-aa-count',
+    'seedance-2.5  AA-按次',
+  ]
+  const removed = [
+    'GGsedanco2.5/480',
+    'seedance-2.5（AA）',
+    'sd2.5-pp-1080p',
     'XG-Seedance-2.5-720p-2',
     'lec-vp-seedance-2-5-301010-1',
   ]
-  const removed = ['GGsedanco2.5/480', 'seedance-2.5（AA）', 'sd2.5-pp-1080p']
   const media = Object.fromEntries(kept.map((id) => [id, { kind: 'openai_videos' as const }]))
   const raw = cfg({
     permissionDefaultsVersion: 1,

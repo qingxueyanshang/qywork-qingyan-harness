@@ -126,8 +126,11 @@ export interface ConfigPayload {
   defaultEnvAllowList: string[]
 }
 
-export function loadServerConfig(): Promise<ConfigPayload> {
-  return client.api<ConfigPayload>('/api/config')
+export async function loadServerConfig(): Promise<ConfigPayload> {
+  const payload = await client.api<ConfigPayload>('/api/config')
+  // 读取配置会让服务端采用磁盘上的最新值，派生目录必须随后刷新。
+  await reloadModelCatalog()
+  return payload
 }
 
 /** 本次保存中的接口改名关系；仅用于服务端回填密钥，不写入配置。 */
@@ -198,9 +201,6 @@ export async function saveServerConfig(
     if (e instanceof ApiError && e.status === 409) throw e
     throw new Error(explainApiError(e, '保存失败'))
   }
-  // 配置是模型目录的唯一权威，落盘后立即重算。这是目录唯一的失效点：
-  // 由各消费者自行判断是否刷新，会使过期判据分散为多份。
-  await reloadModelCatalog()
   return loadServerConfig()
 }
 
@@ -347,7 +347,8 @@ export async function loadModels(): Promise<ModelCatalog> {
  * 它由服务端按配置中的「接口 × 模型」实时计算：窗口、档位、思考参数的判定都在
  * `@qywork/ai` 中，界面无法引用，因此只能来自服务端。
  *
- * 失效点位于唯一的写入路径上（`saveServerConfig`），不由各消费者自行刷新。
+ * 失效点位于统一的配置读取路径上（`loadServerConfig`），保存回执同样经过此处。
+ * 读取配置可能采用外部写入的值，因此不能只在当前页面保存后刷新目录。
  * 各组件分别持有永不失效的缓存时，实测结果：设置页校准思考参数并写回配置后，
  * 输入区的目录仍是启动时获取的版本，档位需要重新加载整个页面才出现。
  */

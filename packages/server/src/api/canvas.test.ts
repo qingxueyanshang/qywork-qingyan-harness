@@ -296,22 +296,14 @@ describe('画布接口', () => {
     {
       id: 'seedance2.5-aa-count',
       min: 4,
-      rate: 5.6,
+      rate: 6,
       perRequest: true,
       resolution: '720p',
       maxVideos: 10,
     },
     {
-      id: 'XG-Seedance-2.5-720p-2',
-      min: 4,
-      rate: 6.6,
-      perRequest: true,
-      resolution: '720p',
-      maxVideos: 0,
-    },
-    {
-      id: 'lec-vp-seedance-2-5-301010-1',
-      min: 10,
+      id: 'seedance-2.5  AA-按次',
+      min: 30,
       rate: 5.5,
       perRequest: true,
       resolution: '720p',
@@ -340,6 +332,8 @@ describe('画布接口', () => {
         'GGsedanco2.5/480',
         'seedance-2.5（AA）',
         'sd2.5-pp-1080p',
+        'XG-Seedance-2.5-720p-2',
+        'lec-vp-seedance-2-5-301010-1',
       ])
         expect(models.mediaLibrary.some((entry) => entry.id === removed)).toBe(false)
       expect(model.maxAudios).toBe(10)
@@ -354,7 +348,7 @@ describe('画布接口', () => {
       )
       expect(model.params[1]?.shapes?.map((s) => s.ratio)).toEqual(['16:9', '9:16', '1:1'])
       expect(model.params[2]?.values).toEqual([resolution])
-      for (const seconds of [String(min), '15', '30']) {
+      for (const seconds of [String(min), String(Math.max(15, min)), '30']) {
         const result = (await (
           await call(d, '/api/canvas/quote', {
             output: 'video',
