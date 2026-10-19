@@ -233,6 +233,15 @@ describe('桌面发布清单', () => {
     expect(workflow).toContain('macos-15-intel')
     expect(workflow).toContain('macos-latest')
   })
+
+  test('macOS 打包保留 DMG 子命令输出', () => {
+    const workflow = Bun.YAML.parse(workflowText('release-macos.yml')) as {
+      jobs: { release: { steps: { id?: string; with?: { args?: string } }[] } }
+    }
+    const args = workflow.jobs.release.steps.find((step) => step.id === 'tauri')?.with?.args
+    expect(args?.split(/\s+/)).toContain('--verbose')
+  })
+
   test('安装包携带项目与第三方许可证', () => {
     const config = JSON.parse(
       readFileSync(join(ROOT, 'apps', 'desktop', 'src-tauri', 'tauri.conf.json'), 'utf8'),

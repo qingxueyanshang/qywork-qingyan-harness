@@ -92,7 +92,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: bun run tauri
-          args: --target ${{ matrix.target }} --bundles app,dmg --config ../../.tmp/updater-config.json
+          args: --verbose --target ${{ matrix.target }} --bundles app,dmg --config ../../.tmp/updater-config.json
           tagName: v__VERSION__
           releaseName: qywork v__VERSION__
           releaseCommitish: ${{ github.sha }}
