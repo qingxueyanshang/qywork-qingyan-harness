@@ -7,11 +7,12 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent } from '@qywork/core'
 import { Store, upsertWorkspace } from '@qywork/store'
+import { openChangeWindow } from '@qywork/tools'
 import type { EventBus } from './bus.ts'
 import { createGitWatch } from './git-watch.ts'
 
@@ -122,6 +123,52 @@ describe('分支名跟随 HEAD', () => {
       expect(() => watch.retarget()).not.toThrow()
       await Bun.sleep(300)
       expect(branches).toEqual([])
+    } finally {
+      watch.stop()
+    }
+  })
+
+  /** 先打开项目、之后才执行 `git init`：在检查间隔内发现并广播分支名。 */
+  test('打开后才初始化的仓库，广播分支名', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qy-lategit-'))
+    const { branches, watch } = fixture(dir)
+    try {
+      watch.retarget()
+      const run = repo(dir)
+      run('init', '-q', '-b', 'late', '.')
+      run('config', 'user.email', 't@t')
+      run('config', 'user.name', 't')
+      await Bun.write(join(dir, 'a.txt'), 'x')
+      run('add', '.')
+      run('commit', '-qm', 'x')
+      expect(await until(branches, 'late', 8000)).toBe(true)
+    } finally {
+      watch.stop()
+    }
+  })
+
+  /**
+   * 复现原始失败形状：分支监听存在时，同一项目根上的命令改动观察仍按时收尾，子目录中的删除照常报告。
+   * 在项目根上另建非递归监听时，Windows 上收尾每次等待 5 秒并标记不完整，`sub/gone.txt` 的删除丢失。
+   */
+  test('分支监听不影响同一项目的命令改动观察', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qy-gitwatch-window-'))
+    await mkdir(join(dir, 'sub'))
+    await writeFile(join(dir, 'sub', 'gone.txt'), 'x')
+    const { watch } = fixture(dir)
+    try {
+      watch.retarget()
+      const window = openChangeWindow(dir)
+      await rm(join(dir, 'sub', 'gone.txt'))
+      await writeFile(join(dir, 'sub', 'new.txt'), 'y')
+      const started = performance.now()
+      const observed = await window.close()
+      expect(performance.now() - started).toBeLessThan(1000)
+      expect(observed.incomplete).toBe(false)
+      expect(observed.changes.map((c) => `${c.changeType}:${c.path}`).sort()).toEqual([
+        'created:sub/new.txt',
+        'deleted:sub/gone.txt',
+      ])
     } finally {
       watch.stop()
     }

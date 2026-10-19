@@ -15,7 +15,8 @@
  * 因此这些操作不在这里报告。
  */
 
-import { type FSWatcher, watch } from 'node:fs'
+import { existsSync, type FSWatcher, watch } from 'node:fs'
+import { join } from 'node:path'
 import { mostRecentWorkspace, type Store } from '@qywork/store'
 import type { EventBus } from './bus.ts'
 import { gitDir } from './git.ts'
@@ -28,6 +29,15 @@ import { publishGitState } from './http-util.ts'
  * 逐次查询会逐次启动一个 `git` 子进程。
  */
 const SETTLE_MS = 120
+
+/**
+ * 尚不是 git 仓库时检查 `<root>/.git` 是否出现的间隔。
+ *
+ * 不要改为监听项目根目录：Bun 在 Windows 上，同一目录先有非递归监听时，之后建立的递归监听
+ * （`workspace-watch.ts` 的命令改动观察）收不到子目录中的事件，每条命令收尾都等待屏障超时（5 秒），
+ * 子目录中删除的文件也不再报告。监听 git 目录本身不受影响。
+ */
+const GIT_POLL_MS = 2000
 
 export interface GitWatch {
   /** 重新指向最近打开的项目。对同一个项目重复调用为空操作。 */
@@ -42,9 +52,14 @@ export function createGitWatch(store: Store, bus: EventBus): GitWatch {
   let workspaceId = ''
   /** 该工作树的 git 目录（见 `gitDir`）：分支名的变化在此处触发。不是 git 仓库时为 null。 */
   let inner: FSWatcher | null = null
-  /** `<root>`：仅用于等待 `.git` 出现，`git init` 之后才有可监听的目录。 */
-  let outer: FSWatcher | null = null
+  /** 尚未挂载 `inner` 时等待 `<root>/.git` 出现，`git init` 之后才有可监听的目录。 */
+  let poll: ReturnType<typeof setInterval> | null = null
   let settle: ReturnType<typeof setTimeout> | null = null
+
+  const stopPolling = () => {
+    if (poll) clearInterval(poll)
+    poll = null
+  }
 
   const announce = () => {
     if (settle) clearTimeout(settle)
@@ -85,7 +100,10 @@ export function createGitWatch(store: Store, bus: EventBus): GitWatch {
     inner = hold(dir, (name) => {
       if (name === 'HEAD') announce()
     })
-    if (inner) announce()
+    if (inner) {
+      stopPolling()
+      announce()
+    }
   }
 
   const retarget = () => {
@@ -95,10 +113,10 @@ export function createGitWatch(store: Store, bus: EventBus): GitWatch {
     workspaceId = recent.id
     inner?.close()
     inner = null
-    outer?.close()
-    outer = hold(root, (name) => {
-      if (name === '.git') void attachInner()
-    })
+    stopPolling()
+    poll = setInterval(() => {
+      if (!inner && existsSync(join(root, '.git'))) void attachInner()
+    }, GIT_POLL_MS)
     void attachInner()
     // 切换项目后立即广播一次，不等待 `.git` 的变化：分支名必须立即更新为新项目的值。
     announce()
@@ -113,8 +131,7 @@ export function createGitWatch(store: Store, bus: EventBus): GitWatch {
       root = ''
       inner?.close()
       inner = null
-      outer?.close()
-      outer = null
+      stopPolling()
     },
   }
 }
