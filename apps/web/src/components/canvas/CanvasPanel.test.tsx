@@ -362,6 +362,14 @@ function zoom(host: HTMLElement): number {
   return Number(host.querySelector<HTMLElement>('.canvas-stage')!.style.getPropertyValue('--z'))
 }
 
+/** 当前视口平移量：节点层 `translate` 的两个分量（屏幕像素）。 */
+function offset(host: HTMLElement): { x: number; y: number } {
+  const t = host.querySelector<HTMLElement>('.canvas-world')!.style.transform
+  const m = /translate\(([^,]+)px, ([^)]+)px\)/.exec(t)
+  if (!m) throw new Error(`无法解析节点层的平移：${t}`)
+  return { x: Number(m[1]), y: Number(m[2]) }
+}
+
 function node(host: HTMLElement, id: string): HTMLElement {
   const el = host.querySelector<HTMLElement>(`[data-node="${id}"]`)
   if (!el) throw new Error(`没有节点 ${id}`)
@@ -411,7 +419,7 @@ describe('画布：节点操作', () => {
       () => zoom(host) !== 1,
       () => String(zoom(host)),
     )
-    const px = Number.parseFloat(stage.style.getPropertyValue('--px'))
+    const px = offset(host).x
     for (const n of server.doc().nodes) {
       expect(px + n.x * zoom(host)).toBeGreaterThanOrEqual(0)
       expect(px + (n.x + n.w) * zoom(host)).toBeLessThanOrEqual(380)
@@ -590,6 +598,32 @@ describe('画布：节点操作', () => {
     )
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(node(host, refs.$b!)).toBe(other)
+  })
+
+  test('拖动节点时其余连线所在的图层不发生修改，连到该节点的连线随位置更新', async () => {
+    const { host, server, refs } = await mount([
+      ...CARD,
+      { op: 'add_file', ref: '$b', path: 'b.png', x: 0, y: 300 },
+      { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+      { op: 'connect', from: '$b', to: '$v', role: 'reference' },
+    ])
+    const edge = (from: string) => {
+      const id = server.doc().edges.find((e) => e.from === from)!.id
+      return host.querySelector<SVGPathElement>(`.canvas-edge-hit[data-edge="${id}"]`)!
+    }
+    const stage = host.querySelector('.canvas-stage')!
+    pointer(node(host, refs.$a!), 'pointerdown', 10, 10)
+    pointer(stage, 'pointermove', 60, 30)
+    const rest = edge(refs.$b!).closest('svg')!
+    expect(edge(refs.$a!).closest('svg')).not.toBe(rest)
+    const d = edge(refs.$a!).getAttribute('d')
+    const observer = new MutationObserver(() => {})
+    observer.observe(rest, { subtree: true, attributes: true, childList: true })
+    pointer(stage, 'pointermove', 110, 60)
+    expect(observer.takeRecords()).toEqual([])
+    observer.disconnect()
+    expect(edge(refs.$a!).getAttribute('d')).not.toBe(d)
+    pointer(stage, 'pointerup', 110, 60)
   })
 
   test('拖动只在松开指针时提交一次位置', async () => {
@@ -835,8 +869,7 @@ describe('画布：生成卡与生成面板', () => {
     await select(host, refs.$v!)
     const n = server.doc().nodes.find((x) => x.id === refs.$v)!
     const z = zoom(host)
-    const px = Number.parseFloat(stage.style.getPropertyValue('--px'))
-    const py = Number.parseFloat(stage.style.getPropertyValue('--py'))
+    const { x: px, y: py } = offset(host)
     const panel = host.querySelector<HTMLElement>('.canvas-panel')!
     const bottom = py + (n.y + n.h) * z
     // 面板（180）放在节点下方时超出画布区底边。
@@ -2727,7 +2760,7 @@ describe('画布：生成卡与生成面板', () => {
 
 describe('画布：导航与选择的快捷键', () => {
   const stageOf = (host: HTMLElement) => host.querySelector<HTMLElement>('.canvas-stage')!
-  const pan = (host: HTMLElement) => stageOf(host).style.getPropertyValue('--px')
+  const pan = (host: HTMLElement) => String(offset(host).x)
   const spaceKey = (target: EventTarget, type: 'keydown' | 'keyup', repeat = false) => {
     const event = new KeyboardEvent(type, {
       key: ' ',
@@ -2825,6 +2858,28 @@ describe('画布：导航与选择的快捷键', () => {
     expect(pan(host)).not.toBe(afterMiddle)
     expect(node(host, refs.$a!).classList.contains('selected')).toBe(true)
     expect(node(host, refs.$b!).classList.contains('selected')).toBe(false)
+  })
+
+  test('平移后网格点与画布原点对齐，网格层覆盖画布区', async () => {
+    const { host } = await mount(FILES)
+    pointer(stageOf(host), 'pointerdown', 100, 100, { button: 1 })
+    pointer(stageOf(host), 'pointermove', 137, 113, { button: 1 })
+    pointer(stageOf(host), 'pointerup', 137, 113, { button: 1 })
+    const grid = host.querySelector<HTMLElement>('.canvas-grid')!
+    const g = Number.parseFloat(grid.style.backgroundSize)
+    const m = /translate\(([^,]+)px, ([^)]+)px\)/.exec(grid.style.transform)!
+    const { x, y } = offset(host)
+    for (const [shift, origin] of [
+      [Number(m[1]), x],
+      [Number(m[2]), y],
+    ] as const) {
+      expect(shift).toBeLessThanOrEqual(0)
+      expect(shift).toBeGreaterThanOrEqual(-g)
+      // 网格点位于 shift + k × 点距；位移取整到像素，与原点相差不超过半个像素。
+      const r = (((origin - shift) % g) + g) % g
+      expect(Math.min(r, g - r)).toBeLessThanOrEqual(0.5)
+    }
+    expect(grid.style.width).toBe(`calc(100% + ${g}px)`)
   })
 
   test('Ctrl+A 全选；Shift+2 缩放到选中', async () => {
@@ -3039,11 +3094,11 @@ describe('画布：右键菜单', () => {
 
   test('右键拖动只平移，不弹出菜单，不改变选区', async () => {
     const { host, refs } = await mount(FILES)
-    const before = stageOf(host).style.getPropertyValue('--px')
+    const before = offset(host).x
     pointer(node(host, refs.$a!), 'pointerdown', 100, 100, { button: 2 })
     pointer(stageOf(host), 'pointermove', 180, 100, { button: 2 })
     pointer(stageOf(host), 'pointerup', 180, 100, { button: 2 })
-    expect(stageOf(host).style.getPropertyValue('--px')).not.toBe(before)
+    expect(offset(host).x).not.toBe(before)
     expect(menu()).toBeNull()
     expect(node(host, refs.$a!).classList.contains('selected')).toBe(false)
   })
@@ -3059,8 +3114,7 @@ describe('画布：右键菜单', () => {
       expect(items()).toContain(label)
     }
     const z = zoom(host)
-    const px = Number.parseFloat(stageOf(host).style.getPropertyValue('--px'))
-    const py = Number.parseFloat(stageOf(host).style.getPropertyValue('--py'))
+    const { x: px, y: py } = offset(host)
     choose('图像生成')
     await waitFor(
       () => server.ops.length === 1,
@@ -3132,10 +3186,7 @@ describe('画布：刷新后恢复', () => {
     const { flushSession } = await import('../../lib/session.ts')
     flushSession()
   }
-  const viewport = (host: HTMLElement) => {
-    const stage = host.querySelector<HTMLElement>('.canvas-stage')!
-    return ['--z', '--px', '--py'].map((v) => stage.style.getPropertyValue(v))
-  }
+  const viewport = (host: HTMLElement) => [zoom(host), offset(host).x, offset(host).y]
 
   test('视口与选中的节点按刷新前恢复，不重新适配', async () => {
     const first = await mount(CARD)
@@ -3367,9 +3418,7 @@ describe('画布：连线', () => {
   test('拖到空白处松开：菜单从落点向右展开，新卡片的输入端位于落点并完成连接', async () => {
     const { host, server, refs } = await mount(CARD)
     const z = zoom(host)
-    const stage = host.querySelector<HTMLElement>('.canvas-stage')!
-    const px = Number.parseFloat(stage.style.getPropertyValue('--px'))
-    const py = Number.parseFloat(stage.style.getPropertyValue('--py'))
+    const { x: px, y: py } = offset(host)
     // happy-dom 不进行布局：为落点锚点与菜单提供尺寸，菜单的定位才能区分向左与向右展开。
     const rect = spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
       this: HTMLElement,

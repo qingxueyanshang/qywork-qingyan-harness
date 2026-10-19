@@ -14,9 +14,6 @@
   /* 画布中的层级只在画布区内比较：不建立独立层叠上下文时，工具条（8）、生成面板（7）会遮挡会话输入框中的菜单。 */
   isolation: isolate;
   background-color: var(--bg-sunken);
-  background-image: radial-gradient(circle, var(--border-subtle) 1px, transparent 1.3px);
-  background-size: var(--grid, 24px) var(--grid, 24px);
-  background-position: var(--px, 0) var(--py, 0);
   touch-action: none;
   outline: none;
   /* 拖动与框选时禁止选中文字；提示词与输入框在下方的规则中单独允许。 */
@@ -38,6 +35,19 @@
 .canvas-stage.grabbing {
   cursor: grabbing;
 }
+/*
+ * 网格点单独成层，平移只改变该层的位移（`CanvasPanel` 的 `gridShift`）。
+ * 不要写成画布区的 `background-position`：每次平移都要重绘整块画布区，
+ * 写在画布区上的平移变量还会使全部子元素重新计算样式。
+ */
+.canvas-grid {
+  position: absolute;
+  left: 0;
+  top: 0;
+  background-image: radial-gradient(circle, var(--border-subtle) 1px, transparent 1.3px);
+  pointer-events: none;
+  will-change: transform;
+}
 .canvas-world,
 .canvas-edges {
   position: absolute;
@@ -45,7 +55,7 @@
   top: 0;
   transform-origin: 0 0;
 }
-/* 连线层单独成层：生成中的连线逐次重绘时，不连带重新光栅化画布背景的网格点。 */
+/* 连线层单独成层：连线重绘（生成中的流动、拖动节点）时不连带重新光栅化同一层中的节点。 */
 .canvas-edges {
   overflow: visible;
   pointer-events: none;

@@ -34,6 +34,8 @@ import {
   createResource,
   createSignal,
   For,
+  Index,
+  type JSX,
   Match,
   on,
   onCleanup,
@@ -340,6 +342,14 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
   const grid = () => {
     const n = Math.max(-2, Math.min(6, Math.round(Math.log2(24 / (20 * z())))))
     return 20 * 2 ** n * z()
+  }
+  /**
+   * 网格层的位移：平移量对点距取模后减去一个点距，网格层比画布区宽高各多一个点距，始终覆盖画布区。
+   * 取整到像素：合成层位于小数位置时按插值绘制，网格点模糊。
+   */
+  const gridShift = (p: number) => {
+    const g = grid()
+    return Math.round((((p % g) + g) % g) - g)
   }
   const toWorld = (clientX: number, clientY: number) => {
     const r = stage.getBoundingClientRect()
@@ -1457,7 +1467,11 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     }),
   ]
 
-  const edgePaths = () => {
+  /**
+   * 拖动节点时每次移动都返回新对象：按位置渲染（`Index`），只更新几何变化的连线的属性。
+   * 不要改用 `For`：`For` 按对象重建全部连线元素，整个连线层随之重新光栅化，开销随连线数与刷新率增长。
+   */
+  const edgePaths = createMemo(() => {
     const v = view()
     if (!v) return []
     return links(v).flatMap((e) => {
@@ -1476,6 +1490,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           id: e.id,
           d: `M${x1} ${y1} C${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2} ${y2}`,
           live: v.states[b.id]?.state === 'running',
+          moving: moving()[a.id] !== undefined || moving()[b.id] !== undefined,
           hot: selected().has(a.id) || selected().has(b.id),
           x1,
           y1,
@@ -1487,6 +1502,64 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         },
       ]
     })
+  })
+
+  /**
+   * 一层连线，单独成为合成层。拖动节点时连到被拖节点的连线放在上层，其余连线留在下层，拖动期间下层不发生修改。
+   * 不要合并为一层：每次移动时被拖节点的连线经过的图块都要重新光栅化，图块中的其他连线（包括生成中的虚线）
+   * 随之重画，开销随连线数与刷新率增长。
+   */
+  function EdgeLayer(p: { edges: ReturnType<typeof edgePaths>; children?: JSX.Element }) {
+    return (
+      <svg
+        class="canvas-edges"
+        aria-hidden="true"
+        width="1"
+        height="1"
+        style={{
+          transform: `translate(${px()}px, ${py()}px) scale(${z()})`,
+          '--canvas-flow': flow().toFixed(2),
+        }}
+      >
+        <defs>
+          <Index each={p.edges.filter((e) => e.live || e.hot)}>
+            {(e) => (
+              <linearGradient
+                id={`canvas-flow-${e().id}`}
+                gradientUnits="userSpaceOnUse"
+                x1={e().x1}
+                y1={e().y1}
+                x2={e().x2}
+                y2={e().y2}
+              >
+                <stop offset="0" stop-color="#ddd6fe" />
+                <stop offset=".3" stop-color="#a78bfa" />
+                <stop offset=".62" stop-color="#7c3aed" />
+                <stop offset="1" stop-color="#5b21b6" />
+              </linearGradient>
+            )}
+          </Index>
+        </defs>
+        <Index each={p.edges}>
+          {(e) => (
+            <>
+              <path
+                d={e().d}
+                classList={{
+                  live: e().live,
+                  hot: !e().live && e().hot,
+                  selected: edgeSelected() === e().id,
+                }}
+                // 渐变写在内联样式中：写成 `stroke` 属性会被 `.canvas-edges path` 的描边色覆盖。
+                style={e().live || e().hot ? { stroke: `url("#canvas-flow-${e().id}")` } : {}}
+              />
+              <path class="canvas-edge-hit" data-edge={e().id} d={e().d} />
+            </>
+          )}
+        </Index>
+        {p.children}
+      </svg>
+    )
   }
 
   // ── 节点 ──
@@ -2008,12 +2081,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       ref={stage}
       role="application"
       aria-label="画布"
-      style={{
-        '--z': String(z()),
-        '--grid': `${grid()}px`,
-        '--px': `${px()}px`,
-        '--py': `${py()}px`,
-      }}
+      style={{ '--z': String(z()) }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -2028,53 +2096,18 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
       onDragStart={(e) => e.preventDefault()}
       onContextMenu={(e) => e.preventDefault()}
     >
+      <div
+        class="canvas-grid"
+        style={{
+          width: `calc(100% + ${grid()}px)`,
+          height: `calc(100% + ${grid()}px)`,
+          'background-size': `${grid()}px ${grid()}px`,
+          transform: `translate(${gridShift(px())}px, ${gridShift(py())}px)`,
+        }}
+      />
       <Show when={view() && !broken()} fallback={<div class="canvas-note">{broken() ?? ''}</div>}>
-        <svg
-          class="canvas-edges"
-          aria-hidden="true"
-          width="1"
-          height="1"
-          style={{
-            transform: `translate(${px()}px, ${py()}px) scale(${z()})`,
-            '--canvas-flow': flow().toFixed(2),
-          }}
-        >
-          <defs>
-            <For each={edgePaths().filter((e) => e.live || e.hot)}>
-              {(e) => (
-                <linearGradient
-                  id={`canvas-flow-${e.id}`}
-                  gradientUnits="userSpaceOnUse"
-                  x1={e.x1}
-                  y1={e.y1}
-                  x2={e.x2}
-                  y2={e.y2}
-                >
-                  <stop offset="0" stop-color="#ddd6fe" />
-                  <stop offset=".3" stop-color="#a78bfa" />
-                  <stop offset=".62" stop-color="#7c3aed" />
-                  <stop offset="1" stop-color="#5b21b6" />
-                </linearGradient>
-              )}
-            </For>
-          </defs>
-          <For each={edgePaths()}>
-            {(e) => (
-              <>
-                <path
-                  d={e.d}
-                  classList={{
-                    live: e.live,
-                    hot: !e.live && e.hot,
-                    selected: edgeSelected() === e.id,
-                  }}
-                  // 渐变写在内联样式中：写成 `stroke` 属性会被 `.canvas-edges path` 的描边色覆盖。
-                  style={e.live || e.hot ? { stroke: `url("#canvas-flow-${e.id}")` } : {}}
-                />
-                <path class="canvas-edge-hit" data-edge={e.id} d={e.d} />
-              </>
-            )}
-          </For>
+        <EdgeLayer edges={edgePaths().filter((e) => !e.moving)} />
+        <EdgeLayer edges={edgePaths().filter((e) => e.moving)}>
           <Show when={linking()}>
             {(l) => {
               const d = () => {
@@ -2092,7 +2125,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           <For each={guides()}>
             {(g) => <line class="canvas-guide" x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} />}
           </For>
-        </svg>
+        </EdgeLayer>
         <div
           class="canvas-world"
           style={{ transform: `translate(${px()}px, ${py()}px) scale(${z()})` }}
