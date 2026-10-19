@@ -367,46 +367,56 @@ test('模型库按类别分页签；生成类一张表，厂商是一列，参�
 })
 
 test.each([
-  ['GGseadanco2.5/720', 10, 10, '5–30 秒整数，使用字符串'],
-  ['seedance-2.5（YX）', 10, 10, '4–30 秒整数，使用字符串'],
-  ['seedance2.5-yx-count', 10, 10, '4–30 秒整数，使用字符串'],
-] as const)('模型库分别显示各类参考素材上限：%s', async (id, maxVideos, maxAudios, duration) => {
-  const { render } = await import('solid-js/web')
-  const { ModelLibrary } = await import('./ModelLibrary.tsx')
-  const model: MediaLibraryModel = {
-    id,
-    label: id,
-    vendor: 'providera',
-    kind: 'openai_videos',
-    kinds: ['openai_videos'],
-    output: 'video',
-    operations: [
-      'text_to_video',
-      'reference_to_video',
-      ...(maxVideos ? ['video_to_video' as const] : []),
-    ],
-    maxImages: 30,
-    maxVideos,
-    maxAudios,
-    params: [`seconds：${duration}`],
-  }
-  const host = document.createElement('div')
-  document.body.append(host)
-  const dispose = render(
-    () => <ModelLibrary vendors={[]} media={[model]} loading={false} error={null} />,
-    host,
-  )
-  try {
-    fire(
-      Array.from(host.querySelectorAll<HTMLButtonElement>('.lib-tab')).find(
-        (t) => t.textContent === '视频',
-      )!,
-      'click',
+  ['GGseadanco2.5/720', 30, 10, 10, '5–30 秒整数，使用字符串'],
+  ['seedance-2.5（AA）', 30, 10, 10, '4–30 秒整数，使用字符串'],
+  ['seedance2.5-aa-count', 30, 10, 10, '4–30 秒整数，使用字符串'],
+  ['sd2.5-pp-1080p', 9, 0, 3, '4–30 秒整数，使用字符串'],
+] as const)(
+  '模型库分别显示各类参考素材上限：%s',
+  async (id, maxImages, maxVideos, maxAudios, duration) => {
+    const { render } = await import('solid-js/web')
+    const { ModelLibrary } = await import('./ModelLibrary.tsx')
+    const model: MediaLibraryModel = {
+      id,
+      label: id,
+      vendor: 'providera',
+      kind: 'openai_videos',
+      kinds: ['openai_videos'],
+      output: 'video',
+      operations: [
+        'text_to_video',
+        'reference_to_video',
+        ...(maxVideos ? ['video_to_video' as const] : []),
+      ],
+      maxImages,
+      maxVideos,
+      maxAudios,
+      params: [`seconds：${duration}`],
+    }
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(
+      () => <ModelLibrary vendors={[]} media={[model]} loading={false} error={null} />,
+      host,
     )
-    expect(host.querySelector('.lib-table.media')?.textContent).toContain('图≤30、音频≤10')
-    expect(host.querySelector('.lib-table.media')?.textContent).toContain('视频≤10、音频≤10')
-  } finally {
-    dispose()
-    host.remove()
-  }
-})
+    try {
+      fire(
+        Array.from(host.querySelectorAll<HTMLButtonElement>('.lib-tab')).find(
+          (t) => t.textContent === '视频',
+        )!,
+        'click',
+      )
+      expect(host.querySelector('.lib-table.media')?.textContent).toContain(
+        `图≤${maxImages}、音频≤${maxAudios}`,
+      )
+      if (maxVideos)
+        expect(host.querySelector('.lib-table.media')?.textContent).toContain(
+          `视频≤${maxVideos}、音频≤${maxAudios}`,
+        )
+      else expect(host.querySelector('.lib-table.media')?.textContent).not.toContain('视频≤')
+    } finally {
+      dispose()
+      host.remove()
+    }
+  },
+)

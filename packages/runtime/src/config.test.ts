@@ -185,9 +185,16 @@ test.each(
   },
 )
 
-test.each(['seedance-2.5（YX）', 'seedance2.5-yx-count'])(
-  '加载和保存配置保留启用的 YX 型号及默认引用：%s',
-  async (model) => {
+test.each(
+  [
+    ['seedance-2.5（YX）', 'seedance-2.5（AA）'],
+    ['seedance2.5-yx-count', 'seedance2.5-aa-count'],
+  ].flatMap(([oldId, newId]) =>
+    [false, true].map((alreadyAdded) => ({ oldId: oldId!, newId: newId!, alreadyAdded })),
+  ),
+)(
+  'YX 改名 AA，保留凭证与默认引用并去重：$oldId，已添加=$alreadyAdded',
+  async ({ oldId, newId, alreadyAdded }) => {
     const home = await mkdtemp(join(tmpdir(), 'qy-providera-yx-'))
     const previousHome = process.env.QYWORK_HOME
     const raw = {
@@ -196,20 +203,49 @@ test.each(['seedance-2.5（YX）', 'seedance2.5-yx-count'])(
           kind: 'openai_chat_completions' as const,
           baseUrl: 'https://providera.example.com',
           apiKey: 'test-providera-key',
+          headers: { 'x-channel': 'keep' },
           models: {},
-          media: { [model]: { kind: 'openai_videos' as const } },
+          media: {
+            [oldId]: { kind: 'openai_videos' as const },
+            ...(alreadyAdded ? { [newId]: { kind: 'openai_videos' as const } } : {}),
+            'TTseadanco2.5-720': { kind: 'openai_videos' as const },
+          },
+        },
+        other: {
+          kind: 'openai_chat_completions' as const,
+          models: { [oldId]: {} },
+          media: { [oldId]: { kind: 'openai_images' as const } },
         },
       },
-      mediaDefaults: { video: { provider: 'providera', model } },
+      mediaDefaults: {
+        video: { provider: 'providera', model: oldId },
+        image: { provider: 'other', model: oldId },
+      },
     }
     try {
       process.env.QYWORK_HOME = home
       await writeFile(join(home, 'config.json'), JSON.stringify(raw))
       const loaded = await loadConfig()
-      expect(loaded.providers).toEqual(raw.providers)
-      expect(loaded.mediaDefaults).toEqual(raw.mediaDefaults)
+      expect(loaded.providers).toEqual({
+        ...raw.providers,
+        providera: {
+          ...raw.providers.providera,
+          media: {
+            [newId]: { kind: 'openai_videos' },
+            'TTseadanco2.5-720': { kind: 'openai_videos' },
+          },
+        },
+      })
+      expect(loaded.mediaDefaults).toEqual({
+        ...raw.mediaDefaults,
+        video: { provider: 'providera', model: newId },
+      })
       expect(diagnoseConfig(loaded)).toEqual([])
-      expect(listMediaModels(loaded).map((entry) => entry.model)).toEqual([model])
+      expect(resolveMediaModel(loaded, 'video')).toMatchObject({ model: newId })
+      expect(
+        listMediaModels(loaded).filter((entry) => entry.provider === 'providera'),
+      ).toHaveLength(2)
+      expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
       await saveConfig(loaded)
       expect(await loadConfig()).toEqual(loaded)
     } finally {

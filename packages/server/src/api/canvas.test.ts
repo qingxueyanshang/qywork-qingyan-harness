@@ -291,21 +291,40 @@ describe('画布接口', () => {
 
   test.each([
     { id: 'TTseadanco2.5-720', min: 5, rate: 0.42, resolution: '720p', maxVideos: 10 },
-    { id: 'TTsedanco2.5-480', min: 5, rate: 0.312, resolution: '480p', maxVideos: 10 },
+    { id: 'TTsedanco2.5-480', min: 5, rate: 0.31, resolution: '480p', maxVideos: 10 },
     { id: 'GGseadanco2.5/720', min: 5, rate: 0.54, resolution: '720p', maxVideos: 10 },
     { id: 'GGsedanco2.5/480', min: 5, rate: 0.42, resolution: '480p', maxVideos: 0 },
-    { id: 'seedance-2.5（YX）', min: 4, rate: 0.4, resolution: '720p', maxVideos: 10 },
+    { id: 'seedance-2.5（AA）', min: 4, rate: 0.4, resolution: '720p', maxVideos: 10 },
     {
-      id: 'seedance2.5-yx-count',
+      id: 'seedance2.5-aa-count',
       min: 4,
       rate: 5.6,
       perRequest: true,
       resolution: '720p',
       maxVideos: 10,
     },
+    {
+      id: 'sd2.5-pp-1080p',
+      min: 4,
+      rate: 14.4,
+      perRequest: true,
+      resolution: '1080p',
+      maxVideos: 0,
+      maxAudios: 3,
+      ratios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
+    },
   ])(
     'providera 下发模型 ID、时长范围和画幅，报价遵循计费单位：$id',
-    async ({ id, min, rate, resolution, maxVideos, perRequest }) => {
+    async ({
+      id,
+      min,
+      rate,
+      resolution,
+      maxVideos,
+      maxAudios = 10,
+      ratios = ['16:9', '9:16', '1:1'],
+      perRequest,
+    }) => {
       const { d } = await setup()
       d.config.providers.providera = {
         kind: 'openai_chat_completions',
@@ -318,9 +337,14 @@ describe('画布接口', () => {
       const model = models.media.find((m) => m.provider === 'providera')!
       expect(model.known).toBe(true)
       expect(model.label).toBe(id)
-      for (const removed of ['seedance-2.5（YX）-按次', 'wf-sd2.5-v2'])
+      for (const removed of [
+        'seedance-2.5（YX）',
+        'seedance2.5-yx-count',
+        'seedance-2.5（YX）-按次',
+        'wf-sd2.5-v2',
+      ])
         expect(models.mediaLibrary.some((entry) => entry.id === removed)).toBe(false)
-      expect(model.maxAudios).toBe(10)
+      expect(model.maxAudios).toBe(maxAudios)
       expect(model.operations.includes('video_to_video')).toBe(maxVideos > 0)
       expect(model.params.map((p) => [p.name, p.label])).toEqual([
         ['seconds', '时长'],
@@ -330,7 +354,7 @@ describe('画布接口', () => {
       expect(model.params[0]?.values).toEqual(
         Array.from({ length: 31 - min }, (_, i) => String(i + min)),
       )
-      expect(model.params[1]?.shapes?.map((s) => s.ratio)).toEqual(['16:9', '9:16', '1:1'])
+      expect(model.params[1]?.shapes?.map((s) => s.ratio)).toEqual([...ratios])
       expect(model.params[2]?.values).toEqual([resolution])
       for (const seconds of [String(min), '15', '30']) {
         const result = (await (

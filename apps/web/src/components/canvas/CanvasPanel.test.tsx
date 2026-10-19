@@ -1566,11 +1566,17 @@ describe('画布：生成卡与生成面板', () => {
     { id: 'TTsedanco2.5-480', min: '5', defaultSeconds: '5' },
     { id: 'GGseadanco2.5/720', min: '5', defaultSeconds: '5' },
     { id: 'GGsedanco2.5/480', min: '5', defaultSeconds: '5' },
-    { id: 'seedance-2.5（YX）', min: '4', defaultSeconds: '30' },
-    { id: 'seedance2.5-yx-count', min: '4', defaultSeconds: '30' },
+    { id: 'seedance-2.5（AA）', min: '4', defaultSeconds: '30' },
+    { id: 'seedance2.5-aa-count', min: '4', defaultSeconds: '30' },
+    {
+      id: 'sd2.5-pp-1080p',
+      min: '4',
+      defaultSeconds: '30',
+      ratios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
+    },
   ])(
     'providera 时长逐秒输入、固定清晰度隐藏，提交字符串秒数：$id',
-    async ({ id, min, defaultSeconds }) => {
+    async ({ id, min, defaultSeconds, ratios = ['16:9', '9:16', '1:1'] }) => {
       const { lookupMediaModel } = await import('../../../../../packages/ai/src/media/catalog.ts')
       const spec = lookupMediaModel(id, 'openai_videos')
       const catalog = {
@@ -1605,11 +1611,13 @@ describe('画布：生成卡与生成面板', () => {
       )
       const panel = document.querySelector('.canvas-params-panel')!
       const buttons = [...panel.querySelectorAll<HTMLButtonElement>('button')]
-      expect(buttons.map((b) => b.textContent)).toEqual(['−', '+', '16:9', '9:16', '1:1'])
+      expect(buttons.map((b) => b.textContent)).toEqual(['−', '+', ...ratios])
       expect(
         [...panel.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
       ).toEqual(['时长', '宽高比'])
-      expect(panel.textContent).not.toContain('720p')
+      expect(panel.textContent).not.toContain(
+        spec.params.find((p) => p.name === 'resolution')!.default as string,
+      )
       expect(panel.querySelector('.canvas-param-description')).toBeNull()
       const duration = panel.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
       expect([duration.min, duration.max, duration.step, duration.value]).toEqual([
