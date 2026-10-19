@@ -590,7 +590,7 @@ async function ready(): Promise<Fixture & { host: AutoHost; devtools: Devtools }
   const host = await AutoHost.connect(fixture.handle.port)
   const devtools = fakeDevtools(host.marker)
   host.ready(devtools.port)
-  await settle()
+  await until(() => fixture.handle.browser?.available() === true, '浏览器宿主完成注册')
   return { ...fixture, host, devtools }
 }
 
