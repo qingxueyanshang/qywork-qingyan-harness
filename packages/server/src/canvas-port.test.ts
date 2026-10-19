@@ -113,6 +113,64 @@ describe('画布端口', () => {
       h: 169,
     })
   })
+  /** 原始失败形状：只改长提示词中的几句时 `update` 须重写整段提示词，模型改为用脚本直接改写画布文件。 */
+  test('经端口用 edit_prompt 按卡片名称只改提示词中的一段，写入画布文件', async () => {
+    const root = await workspace()
+    const port = canvasPort(new CanvasService({ publish: () => {}, newId: sequence() }), {
+      id: 'ws',
+      root,
+    })
+    await port.edit(PATH, OPS)
+    await port.edit(PATH, [{ op: 'edit_prompt', id: '视频1', old: '走出校门', new: '站在台口' }])
+    const saved = parseCanvas(await readFile(join(root, PATH), 'utf8'))
+    if (!saved.ok) throw new Error(saved.error)
+    expect(saved.doc.nodes.find((n) => n.type === 'generate')).toMatchObject({
+      prompt: '@[id1] 站在台口',
+    })
+  })
+
+  test('经端口用 order_inputs 调整输入顺序后运行：发送的素材顺序与提示词编号随之改变', async () => {
+    const root = await workspace()
+    await writeFile(join(root, 'b.png'), new Uint8Array([0x89, 0x50, 0x4e, 0x47]))
+    const port = canvasPort(
+      new CanvasService({ publish: () => {}, mentionStyleOf: () => ({ image: '图片{n}' }) }),
+      { id: 'ws', root },
+    )
+    const { refs } = await port.edit(PATH, [
+      { op: 'add_file', path: 'a.png', name: '小满' },
+      { op: 'add_file', path: 'b.png', name: '妈妈' },
+      {
+        op: 'add_generate',
+        ref: '$g',
+        output: 'image',
+        name: '合影',
+        prompt: '@[小满] 和 @[妈妈]',
+      },
+    ])
+    await port.edit(PATH, [{ op: 'order_inputs', id: '合影', inputs: ['妈妈', '小满'] }])
+    const calls: { prompt: string; inputs: string[] }[] = []
+    const result = await port.run(
+      PATH,
+      refs.$g!,
+      {
+        generate: async (call) => {
+          calls.push({ prompt: call.prompt, inputs: call.inputs.map((i) => i.path) })
+          return {
+            ok: true,
+            provider: 'q',
+            model: 'm',
+            files: [{ bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), mime: 'image/png' }],
+          }
+        },
+      },
+      new AbortController().signal,
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toEqual([
+      { prompt: '图片2 和 图片1', inputs: [join(root, 'b.png'), join(root, 'a.png')] },
+    ])
+  })
+
   /** 原始失败形状：模型在后一批中以另一个名称再次放置同一份制作稿，画布上同一文件出现两张卡。 */
   test('经端口再次放置已在画布上的文件时整批拒绝，并给出已有卡片的名称', async () => {
     const root = await workspace()

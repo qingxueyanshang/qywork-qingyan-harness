@@ -226,7 +226,10 @@ export const editCanvasTool: ToolSpec = {
     'ops_json 是一批操作的 JSON 数组，整批生效或整批不生效。操作：' +
     '{"op":"add_file","path":"工作区路径","name":"卡片名称","group":"组"}、' +
     '{"op":"add_generate","output":"image|video|audio|art","name":"卡片名称","group":"组","prompt":"…","params":{…}}、' +
-    '{"op":"update","id":"卡片名称",…要改的字段}、{"op":"connect","from":"素材卡片名称","to":"生成卡名称","role":"…"}、' +
+    '{"op":"update","id":"卡片名称",…要改的字段}（prompt 整体替换提示词）、' +
+    '{"op":"edit_prompt","id":"生成卡名称","old":"提示词中的一段原文","new":"替换后的文字"}（只改提示词中的一段：old 照抄 read_canvas 回执中的原文，必须恰好出现一次；new 为空时删除该段）、' +
+    '{"op":"connect","from":"素材卡片名称","to":"生成卡名称","role":"…"}（新连线排在该卡输入的末尾）、' +
+    '{"op":"order_inputs","id":"生成卡名称","inputs":["素材卡片名称",…]}（按新顺序列出该卡的全部输入，含同批 connect 新连的素材）、' +
     '{"op":"remove","id":"卡片名称或连线 id"}（删除某一版时另加 "version"）、{"op":"set_mode","id":"视频卡名称","mode":"reference|first_last"}、' +
     '{"op":"add_timeline","name":"…","clips":[…]}（修改片段时用 update 的 clips 整组替换，muted 切换整条静音）。' +
     '引用卡片时写卡片名称（读取回执中的 id 同样可用）；同一张画布中卡片名称不能重复，同一文件只放一张卡。' +
@@ -242,7 +245,9 @@ export const editCanvasTool: ToolSpec = {
     'update 的 params 整体替换卡片参数，未写出的参数恢复缺省；read_canvas 列出的参数即实际发送的参数，与参数面板一致。' +
     '宽高比或尺寸参数同时决定卡片形状；未给出时卡片为方形，出图后按结果的比例改变形状，相邻的卡随之移开。' +
     `art 卡的 provider、model 是对话模型，缺省为当前对话模型，params 只有 size：${ART_SIZE_PARAM.values?.join('、')}。` +
-    '提示词中用 @[卡片名称] 指代素材，引用未连线的素材时自动连线。运行生成卡使用 run_canvas。',
+    '提示词中用 @[卡片名称] 指代素材，引用未连线的素材时自动连线。' +
+    '输入顺序即发送给模型的素材顺序；所用模型有素材编号写法时，提示词中的 @ 引用按输入顺序编号，与在提示词中出现的先后无关。' +
+    '运行生成卡使用 run_canvas。',
   parameters: {
     type: 'object',
     properties: {

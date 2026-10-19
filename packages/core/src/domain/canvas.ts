@@ -329,7 +329,14 @@ export type CanvasOp =
       clips?: CanvasClip[]
       muted?: boolean
     }
+  /** 替换生成节点提示词中的一段文字：`old` 必须恰好出现一次，`new` 为空时删除该段。`update` 的 `prompt` 是整体替换。 */
+  | { op: 'edit_prompt'; id: string; old: string; new: string }
   | { op: 'connect'; ref?: string; from: string; to: string; role: MediaInputRole }
+  /**
+   * 按 `inputs` 的顺序重排生成节点的输入线，须列出该节点的全部输入素材，每项一次。连线、用途与提示词不变。
+   * 不要改为断开后重连：断开连线的批次结束时，提示词中对它的 `@` 已替换为纯文本，之后再连接也不会恢复。
+   */
+  | { op: 'order_inputs'; id: string; inputs: string[] }
   | { op: 'remove'; id: string; version?: string }
   | { op: 'set_mode'; id: string; mode: CanvasMode }
 
@@ -756,6 +763,18 @@ function applyOne(
       else if (op.model !== undefined) node.model = op.model
       return
     }
+    case 'edit_prompt': {
+      const node = doc.nodes.find((n) => n.id === resolve(op.id)) ?? fail(`目标已不存在：${op.id}`)
+      if (node.type !== 'generate') fail('只有生成节点有提示词')
+      if (!op.old) fail('old 不能为空')
+      const count = node.prompt.split(op.old).length - 1
+      if (count === 0) fail(`「${node.name}」的提示词中没有 old 指定的文字`)
+      if (count > 1)
+        fail(`「${node.name}」的提示词中 old 出现 ${count} 次，加长 old 使其只出现一次`)
+      // 使用函数形式：字符串形式的替换值中 `$&` `$'` 等会被展开。
+      node.prompt = node.prompt.replace(op.old, () => op.new)
+      return
+    }
     case 'connect': {
       const edge: CanvasEdge = {
         id: mint(),
@@ -765,6 +784,29 @@ function applyOne(
       }
       claim(op.ref, edge.id)
       doc.edges.push(edge)
+      return
+    }
+    case 'order_inputs': {
+      const node = doc.nodes.find((n) => n.id === resolve(op.id)) ?? fail(`目标已不存在：${op.id}`)
+      if (node.type !== 'generate') fail('只有生成节点有输入')
+      const edges = inputsOf(doc, node.id)
+      const order = op.inputs.map(resolve)
+      const listed = new Set(order)
+      if (
+        listed.size !== order.length ||
+        order.length !== edges.length ||
+        edges.some((e) => !listed.has(e.from))
+      ) {
+        const current = edges.map((e) => displayNameOf(doc.nodes.find((n) => n.id === e.from)!))
+        fail(
+          `inputs 须按新顺序列出「${node.name}」的全部输入，每项一次；当前输入：${current.join('、') || '无'}`,
+        )
+      }
+      // 只在该节点原有连线的位置之间换位，其他节点的输入顺序不变。
+      const slots = doc.edges.flatMap((e, i) => (e.to === node.id ? [i] : []))
+      for (const [k, from] of order.entries()) {
+        doc.edges[slots[k]!] = edges.find((e) => e.from === from)!
+      }
       return
     }
     case 'remove': {
@@ -1214,6 +1256,7 @@ type Shape =
   | 'number'
   | 'object'
   | 'array'
+  | 'strings'
   | 'role'
   | 'output'
   | 'mode'
@@ -1260,6 +1303,8 @@ function matches(v: unknown, shape: Shape): boolean {
       return isObject(v)
     case 'array':
       return Array.isArray(v)
+    case 'strings':
+      return Array.isArray(v) && v.every((x) => typeof x === 'string')
     case 'role':
       return (MEDIA_INPUT_ROLES as readonly unknown[]).includes(v)
     case 'output':
@@ -1324,6 +1369,7 @@ const TYPE_NAMES: Partial<Record<Shape | 'null', string>> = {
   boolean: '布尔值',
   object: '对象',
   array: '数组',
+  strings: '字符串数组',
   null: 'null',
 }
 
@@ -1385,7 +1431,9 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     clips: 'clips',
     muted: 'boolean',
   },
+  edit_prompt: { 'op!': 'string', 'id!': 'string', 'old!': 'string', 'new!': 'string' },
   connect: { 'op!': 'string', ref: 'string', 'from!': 'string', 'to!': 'string', 'role!': 'role' },
+  order_inputs: { 'op!': 'string', 'id!': 'string', 'inputs!': 'strings' },
   remove: { 'op!': 'string', 'id!': 'string', version: 'string' },
   set_mode: { 'op!': 'string', 'id!': 'string', 'mode!': 'mode' },
 }

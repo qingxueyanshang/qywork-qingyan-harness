@@ -89,7 +89,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
         return {
           ok: false,
           executed: false,
-          message: `本轮${call.type === 'image' ? '图片' : OUTPUT_LABEL[call.type]}结果尚未确认，已停止自动重新生成；已有任务记录时请取回原结果。重新生成须由用户明确发起。`,
+          message: `本轮${call.type === 'image' ? '图片' : OUTPUT_LABEL[call.type]}结果尚未确认，本轮不再提交新的生成；已有任务记录时请取回原结果。用户在下一条消息中要求重新生成后，方可再次提交。`,
         }
       }
       const type = call.type

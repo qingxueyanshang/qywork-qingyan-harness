@@ -238,6 +238,100 @@ describe('画布：操作', () => {
     expect(gen(doc, 'a4').prompt).toBe('小满 和 @[a2] 在校门口')
   })
 
+  test('edit_prompt 只替换提示词中的一段，其余原文不变；新写的 @[名称] 换成 id 并补连线，替换值中的 $ 原样保留', () => {
+    const long = `${'【整体风格】保持胶片质感。'.repeat(80)}\n@[a1]用于小满的脸。\n@[a2]用于妈妈的背包带。`
+    const doc = apply(sample(), [{ op: 'update', id: 'a4', prompt: long }])
+    const next = apply(doc, [
+      { op: 'edit_prompt', id: 'a4', old: '妈妈的背包带', new: '妈妈的右胳膊' },
+      { op: 'edit_prompt', id: 'a4', old: '\n@[a1]用于小满的脸。', new: '' },
+      { op: 'edit_prompt', id: 'a4', old: '右胳膊。', new: '右胳膊，@[a3] 的末尾 $& 接上。' },
+    ])
+    expect(gen(next, 'a4').prompt).toBe(
+      `${'【整体风格】保持胶片质感。'.repeat(80)}\n@[a2]用于妈妈的右胳膊，@[a3] 的末尾 $& 接上。`,
+    )
+    expect(next.edges.find((e) => e.from === 'a3')).toMatchObject({ to: 'a4', role: 'video' })
+    // 删除 @ 不删除连线：输入只由连线决定。
+    expect(next.edges.some((e) => e.from === 'a1' && e.to === 'a4')).toBe(true)
+
+    const named = apply(doc, [
+      { op: 'update', id: 'a3', name: '镜头1' },
+      { op: 'edit_prompt', id: 'a4', old: '小满的脸', new: '@[镜头1] 结尾的小满' },
+    ])
+    expect(gen(named, 'a4').prompt).toContain('@[a1]用于@[a3] 结尾的小满。')
+  })
+
+  /**
+   * 原始失败形状：后补的素材只能排在输入末尾，要调到中间只能断开再重连；
+   * 断开的批次结束时提示词中的 @ 已变为纯文本，发送时不再编号，模型因此改为直接改写画布文件。
+   */
+  test('order_inputs 重排输入：连线、用途与提示词不变，提示词编号随之改变，其他节点的输入顺序不变', () => {
+    const style = { image: '图片{n}' }
+    let doc = apply(sample(), [
+      { op: 'add_file', ref: '$tk', path: '道具/三轮车.png' },
+      { op: 'add_generate', ref: '$g', output: 'image', prompt: '@[a2] 和 @[a1]' },
+    ])
+    const truck = doc.nodes.find((n) => n.type === 'file' && n.path === '道具/三轮车.png')!.id
+    const other = doc.nodes.find((n) => n.type === 'generate' && n.output === 'image')!.id
+    doc = apply(doc, [{ op: 'edit_prompt', id: 'a4', old: ' 和 ', new: ` 推着 @[${truck}] 和 ` }])
+    expect(compilePrompt(doc, 'a4', style)).toBe('图片1 推着 图片3 和 图片2 在校门口')
+
+    const ordered = apply(doc, [{ op: 'order_inputs', id: 'a4', inputs: ['a1', truck, 'a2'] }])
+    const from = (d: CanvasDoc, id: string) => d.edges.filter((e) => e.to === id).map((e) => e.from)
+    expect(from(ordered, 'a4')).toEqual(['a1', truck, 'a2'])
+    expect(from(ordered, other)).toEqual(['a2', 'a1'])
+    expect(gen(ordered, 'a4').prompt).toBe(gen(doc, 'a4').prompt)
+    expect(compilePrompt(ordered, 'a4', style)).toBe('图片1 推着 图片2 和 图片3 在校门口')
+    const key = (d: CanvasDoc) => d.edges.map((e) => `${e.id}:${e.from}>${e.to}:${e.role}`).sort()
+    expect(key(ordered)).toEqual(key(doc))
+
+    // 同一批中先连接再排序：新连线参与排序。
+    const added = apply(sample(), [
+      { op: 'add_file', ref: '$tk', path: '道具/三轮车.png' },
+      { op: 'connect', from: '$tk', to: 'a4', role: 'reference' },
+      { op: 'order_inputs', id: 'a4', inputs: ['$tk', 'a1', 'a2'] },
+    ])
+    expect(from(added, 'a4')).toEqual([added.nodes.at(-1)!.id, 'a1', 'a2'])
+    expect(gen(added, 'a4').prompt).toBe('@[a1] 和 @[a2] 在校门口')
+  })
+
+  test('order_inputs 漏列、重复、多列输入或目标不是生成节点时整批拒绝，报错列出当前输入', () => {
+    const doc = sample()
+    const listed = 'inputs 须按新顺序列出「视频2」的全部输入，每项一次；当前输入：小满、妈妈'
+    expect(rejects(doc, [{ op: 'order_inputs', id: 'a4', inputs: ['a2'] }])).toBe(listed)
+    expect(rejects(doc, [{ op: 'order_inputs', id: 'a4', inputs: ['a2', 'a2'] }])).toBe(listed)
+    expect(rejects(doc, [{ op: 'order_inputs', id: 'a4', inputs: ['a2', 'a1', 'a3'] }])).toBe(
+      listed,
+    )
+    expect(rejects(doc, [{ op: 'order_inputs', id: 'a1', inputs: [] }])).toBe('只有生成节点有输入')
+    expect(parseCanvasOps([{ op: 'order_inputs', id: 'a4', inputs: 'a1' }])).toEqual({
+      ok: false,
+      error: '第 1 条操作 的 inputs 类型错误：应为字符串数组，收到的是字符串',
+    })
+  })
+
+  test('edit_prompt 的 old 未出现、出现多次、为空或目标不是生成节点时整批拒绝', () => {
+    const doc = sample()
+    expect(rejects(doc, [{ op: 'edit_prompt', id: 'a4', old: '操场', new: '教室' }])).toBe(
+      '「视频2」的提示词中没有 old 指定的文字',
+    )
+    expect(rejects(doc, [{ op: 'edit_prompt', id: 'a4', old: '@[a', new: '' }])).toBe(
+      '「视频2」的提示词中 old 出现 2 次，加长 old 使其只出现一次',
+    )
+    expect(rejects(doc, [{ op: 'edit_prompt', id: 'a4', old: '', new: 'x' }])).toBe('old 不能为空')
+    expect(rejects(doc, [{ op: 'edit_prompt', id: 'a1', old: 'x', new: 'y' }])).toBe(
+      '只有生成节点有提示词',
+    )
+    const half = rejects(doc, [
+      { op: 'edit_prompt', id: 'a4', old: '校门口', new: '操场' },
+      { op: 'edit_prompt', id: 'a4', old: '校门口', new: '教室' },
+    ])
+    expect(half).toBe('「视频2」的提示词中没有 old 指定的文字')
+    expect(gen(doc, 'a4').prompt).toBe('@[a1] 和 @[a2] 在校门口')
+    expect(parseCanvasOps([{ op: 'edit_prompt', id: 'a4', old: '校门口' }])).toMatchObject({
+      ok: false,
+    })
+  })
+
   test('切换到首尾帧：前两张图变为首帧、尾帧；切换回来后全部变为参考', () => {
     let doc = apply(sample(), [
       { op: 'add_file', ref: '$tk', path: '道具/三轮车.png' },
