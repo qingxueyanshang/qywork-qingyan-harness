@@ -573,10 +573,9 @@ function migrateMediaUploadProvider(cfg: QyConfig): string[] {
   return notices
 }
 
-/** providera 的 YX 改名为 AA；只迁移已配置的视频型号及默认引用，保留接口与凭证。 */
+/** providera 的 YX 按次改名为 AA 按次；迁移已配置型号及默认引用，保留接口与凭证。 */
 function migrateRenamedMediaModels(cfg: QyConfig): string[] {
   const renamed = {
-    'seedance-2.5（YX）': 'seedance-2.5（AA）',
     'seedance2.5-yx-count': 'seedance2.5-aa-count',
   }
   const notices: string[] = []
@@ -604,6 +603,10 @@ function migrateRemovedMediaModels(cfg: QyConfig): string[] {
     '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
     '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
     'wf-sd2.5-v2',
+    'GGsedanco2.5/480',
+    'seedance-2.5（YX）',
+    'seedance-2.5（AA）',
+    'sd2.5-pp-1080p',
     '满血sd2.5(30-10-10原生过人脸/720P)',
     '高质量sd2.5/(全参原生过真人速度快720P)',
     '全能sd2.5(满血内置过脸30图超分1080P)',

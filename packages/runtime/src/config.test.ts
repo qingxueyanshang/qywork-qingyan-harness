@@ -178,6 +178,10 @@ test.each(
     '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
     '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
     'wf-sd2.5-v2',
+    'GGsedanco2.5/480',
+    'seedance-2.5（YX）',
+    'seedance-2.5（AA）',
+    'sd2.5-pp-1080p',
     '满血sd2.5(30-10-10原生过人脸/720P)',
     '高质量sd2.5/(全参原生过真人速度快720P)',
     '全能sd2.5(满血内置过脸30图超分1080P)',
@@ -233,10 +237,7 @@ test.each(
 )
 
 test.each(
-  [
-    ['seedance-2.5（YX）', 'seedance-2.5（AA）'],
-    ['seedance2.5-yx-count', 'seedance2.5-aa-count'],
-  ].flatMap(([oldId, newId]) =>
+  [['seedance2.5-yx-count', 'seedance2.5-aa-count']].flatMap(([oldId, newId]) =>
     [false, true].map((alreadyAdded) => ({ oldId: oldId!, newId: newId!, alreadyAdded })),
   ),
 )(
@@ -302,6 +303,61 @@ test.each(
     }
   },
 )
+
+test('providera 精简后保留选定型号与有效默认值，其他协议及凭证保持原样', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'qy-providera-stable-'))
+  const previousHome = process.env.QYWORK_HOME
+  const kept = [
+    'TTseadanco2.5-720',
+    'TTsedanco2.5-480',
+    'GGseadanco2.5/720',
+    'seedance2.5-aa-count',
+    'XG-Seedance-2.5-720p-2',
+    'lec-vp-seedance-2-5-301010-1',
+  ]
+  const removed = ['GGsedanco2.5/480', 'seedance-2.5（AA）', 'sd2.5-pp-1080p']
+  const media = Object.fromEntries(kept.map((id) => [id, { kind: 'openai_videos' as const }]))
+  const raw = cfg({
+    permissionDefaultsVersion: 1,
+    mode: 'full',
+    providers: {
+      channel: {
+        kind: 'openai_chat_completions',
+        baseUrl: 'https://providera.example.com',
+        apiKey: 'keep-channel-key',
+        headers: { 'x-channel': 'keep' },
+        models: { chat: {} },
+        media: {
+          ...media,
+          ...Object.fromEntries(removed.map((id) => [id, { kind: 'openai_videos' as const }])),
+        },
+      },
+      other: {
+        kind: 'openai_chat_completions',
+        apiKey: 'keep-other-key',
+        models: { 'seedance-2.5（AA）': {} },
+        media: { 'seedance-2.5（AA）': { kind: 'openai_images' } },
+      },
+    },
+    mediaDefaults: { video: { provider: 'channel', model: 'seedance2.5-aa-count' } },
+  })
+  try {
+    process.env.QYWORK_HOME = home
+    await writeFile(join(home, 'config.json'), JSON.stringify(raw))
+    const loaded = await loadConfig()
+    expect(loaded).toEqual({
+      ...raw,
+      providers: { ...raw.providers, channel: { ...raw.providers.channel!, media } },
+    })
+    expect(resolveMediaModel(loaded, 'video')).toMatchObject({ model: 'seedance2.5-aa-count' })
+    await saveConfig(loaded)
+    expect(await loadConfig()).toEqual(loaded)
+  } finally {
+    if (previousHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
 
 test('已落盘的旧参数模式不能覆盖模型库的协议策略', async () => {
   const model = 'mimo-v2.6-pro'
