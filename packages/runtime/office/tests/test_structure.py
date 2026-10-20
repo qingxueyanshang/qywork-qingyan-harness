@@ -107,6 +107,33 @@ class PptxTest(unittest.TestCase):
             self.assertIn("越界", text)
             self.assertIn("备注", text)
 
+    def test_read_lists_group_members_at_slide_position(self):
+        from PIL import Image
+        from pptx import Presentation
+        from pptx.oxml.ns import qn
+        from pptx.util import Inches
+
+        with TempDir() as d:
+            Image.new("RGB", (40, 20), (200, 30, 30)).save(d / "pill.png")
+            prs = Presentation()
+            s = prs.slides.add_slide(prs.slide_layouts[6])
+            outer = s.shapes.add_group_shape()
+            outer.shapes.add_picture(str(d / "pill.png"), Inches(1), Inches(1), Inches(2), Inches(1))
+            inner = outer.shapes.add_group_shape()
+            label = inner.shapes.add_textbox(Inches(1.2), Inches(1.2), Inches(1.6), Inches(0.6))
+            label.text_frame.text = "种质库"
+            # 外层组整体右移 2.54 cm（子坐标框不变）：组内形状在页面上随之右移。
+            off = outer._element.grpSpPr.find(qn("a:xfrm")).find(qn("a:off"))
+            off.set("x", str(int(off.get("x")) + Inches(1)))
+            prs.save(d / "a.pptx")
+            text = structure.read_pptx(d / "a.pptx")
+            self.assertIn("种质库", text)
+            self.assertIn("图片 ppt/media/", text)
+            self.assertIn("40×20 px", text)
+            line = next(x for x in text.splitlines() if "种质库" in x)
+            self.assertTrue(line.startswith("      - "), line)          # 第二层组内：缩进三级
+            self.assertIn("@(5.59,3.05)", line)                         # (1.2 in + 1 in, 1.2 in)
+
 
     def test_text_overflow_and_east_asia_font(self):
         from pptx import Presentation

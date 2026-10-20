@@ -459,6 +459,63 @@ def check_pptx(path):
     return checks
 
 
+def _child_transform(grp, tf):
+    """组内坐标到页面坐标的换算 (ax, bx, ay, by)：页面 x = ax·x + bx。组的 a:xfrm 把子坐标框 chOff/chExt 映射到
+    组在上一层的位置 off/ext；嵌套的组逐层复合。"""
+    xfrm = grp._element.grpSpPr.find(f"{{{A}}}xfrm")
+    parts = [xfrm.find(f"{{{A}}}{t}") if xfrm is not None else None for t in ("off", "ext", "chOff", "chExt")]
+    if any(p is None for p in parts):
+        return tf
+    off, ext, ch_off, ch_ext = parts
+    sx = int(ext.get("cx")) / max(1, int(ch_ext.get("cx")))
+    sy = int(ext.get("cy")) / max(1, int(ch_ext.get("cy")))
+    bx = int(off.get("x")) - sx * int(ch_off.get("x"))
+    by = int(off.get("y")) - sy * int(ch_off.get("y"))
+    return (tf[0] * sx, tf[0] * bx + tf[1], tf[2] * sy, tf[2] * by + tf[3])
+
+
+def _picture_info(shp):
+    """图片在包里的部件名与像素尺寸，替换图片时按它定位。链接的外部图片没有包内部件，返回空。"""
+    try:
+        part = shp.part.related_part(shp._element.blip_rId)
+        w, h = shp.image.size
+        return f"图片 {str(part.partname).lstrip('/')} {w}×{h} px"
+    except (AttributeError, KeyError, ValueError):
+        return ""
+
+
+def _list_shapes(shapes, lines, depth, tf):
+    """逐个列出形状；组合逐层展开，组内形状缩进列出，位置换算为页面坐标。
+    只列组合本身时组内的文本框和图片都看不到：分层重建的胶囊、标签是“图片 + 文本框”的组合，
+    模型读后判定“这些不是文本框，改不了”（精创 P3/P7/P8）。"""
+    for shp in shapes:
+        kind = str(shp.shape_type).split(".")[-1].split(" ")[0] if shp.shape_type else "?"
+        pos = ""
+        box = _shape_box(shp)
+        if box:
+            x0, y0 = tf[0] * box[0] + tf[1], tf[2] * box[1] + tf[3]
+            x1, y1 = tf[0] * box[2] + tf[1], tf[2] * box[3] + tf[3]
+            pos = f" @({_cm(x0)},{_cm(y0)}) {_cm(x1 - x0)}×{_cm(y1 - y0)} cm"
+        extra = []
+        if shp.is_placeholder:
+            extra.append(f"占位符 {shp.placeholder_format.type}")
+        if getattr(shp, "has_chart", False) and shp.has_chart:
+            ch = shp.chart
+            extra.append(f"图表 {ch.chart_type} · {sum(len(p.series) for p in ch.plots)} 个系列")
+        if getattr(shp, "has_table", False) and shp.has_table:
+            t = shp.table
+            extra.append(f"表格 {len(t.rows)}×{len(t.columns)}")
+        if kind == "GROUP":
+            extra.append(f"组合 {len(shp.shapes)} 个，组内形状缩进列在下面")
+        if kind == "PICTURE" and _picture_info(shp):
+            extra.append(_picture_info(shp))
+        text = _clip(shp.text_frame.text, 200) if shp.has_text_frame else ""
+        lines.append(f"{'  ' * depth}- #{shp.shape_id}「{shp.name}」{kind}{pos}"
+                     + (f"〔{'，'.join(extra)}〕" if extra else "") + (f"：{text}" if text else ""))
+        if kind == "GROUP":
+            _list_shapes(shp.shapes, lines, depth + 1, _child_transform(shp, tf))
+
+
 def read_pptx(path, rng=None):
     from pptx import Presentation
 
@@ -469,25 +526,7 @@ def read_pptx(path, rng=None):
         if window and not (window[0] <= i <= window[1]):
             continue
         lines.append(f"[第{i}页] 版式「{slide.slide_layout.name}」")
-        for shp in slide.shapes:
-            kind = str(shp.shape_type).split(".")[-1].split(" ")[0] if shp.shape_type else "?"
-            pos = ""
-            if _shape_box(shp):
-                pos = (f" @({_cm(shp.left)},{_cm(shp.top)}) {_cm(shp.width)}×{_cm(shp.height)} cm")
-            extra = []
-            if shp.is_placeholder:
-                extra.append(f"占位符 {shp.placeholder_format.type}")
-            if getattr(shp, "has_chart", False) and shp.has_chart:
-                ch = shp.chart
-                extra.append(f"图表 {ch.chart_type} · {sum(len(p.series) for p in ch.plots)} 个系列")
-            if getattr(shp, "has_table", False) and shp.has_table:
-                t = shp.table
-                extra.append(f"表格 {len(t.rows)}×{len(t.columns)}")
-            if kind == "GROUP":
-                extra.append(f"组合 {len(shp.shapes)} 个")
-            text = _clip(shp.text_frame.text, 200) if shp.has_text_frame else ""
-            lines.append(f"  - #{shp.shape_id}「{shp.name}」{kind}{pos}"
-                         + (f"〔{'，'.join(extra)}〕" if extra else "") + (f"：{text}" if text else ""))
+        _list_shapes(slide.shapes, lines, 1, (1.0, 0.0, 1.0, 0.0))
         if slide.has_notes_slide and slide.notes_slide.notes_text_frame.text.strip():
             lines.append(f"  备注：{_clip(slide.notes_slide.notes_text_frame.text)}")
         if _comments(slide):
