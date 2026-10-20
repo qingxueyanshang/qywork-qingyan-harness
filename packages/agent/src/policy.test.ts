@@ -3,7 +3,7 @@
  *
  * 裁决只有一张拒绝清单，默认放行。因此本文件锁定两项行为：
  *
- * 1. 应拦截的三类命令，任何写法都必须拦截：它们是唯一的防线，遗漏一种写法即存在实际漏洞。
+ * 1. 应拦截的四类命令，任何写法都必须拦截：它们是唯一的防线，遗漏一种写法即存在实际漏洞。
  * 2. 不应拦截的命令不得拦截：误拦截的代价不是多一次往返，而是模型无法完成工作；
  *    拦截正常工作的裁决器会促使用户直接切换到 full，导致所有防线失效。
  */
@@ -336,7 +336,9 @@ describe('正常工作放行', () => {
   test('安装依赖包', () => {
     expect(kind('npm install lodash')).toBe('allow')
     expect(kind('bun add -d vitest')).toBe('allow')
-    expect(kind('pip install requests')).toBe('allow')
+    expect(decideCommand('pip install requests', { ...ctx, workspacePython: true }).kind).toBe(
+      'allow',
+    )
   })
 
   /** 下载即执行同样放行：拦截一种写法无法阻止该行为，却会误拦截 rustup / bun 的官方安装方式。 */
@@ -359,6 +361,60 @@ describe('正常工作放行', () => {
   test('组合命令的每一段都不命中规则时放行', () => {
     expect(kind('cd packages/web && npm run build')).toBe('allow')
     expect(kind('git add -A; git commit -m x')).toBe('allow')
+  })
+})
+
+/**
+ * 第四类：auto 模式下把 Python 包装入全局环境。
+ *
+ * 原始失败形状：运行上下文写着工作区外的写入会被拒绝，而 `pip install` 实际装入全局；模型因此改用
+ * `--target` 装进工作区的多个目录，装入的包不在导入路径上，下一次又重装。工作区环境存在时命令中的 pip
+ * 即该环境，放行；越过它的写法与工作区环境不存在时的安装一律拒绝。
+ */
+describe('auto 模式下全局安装 Python 包', () => {
+  const ws = process.platform === 'win32' ? 'C:\\ws' : '/ws'
+  const ready: PolicyContext = { workspaceRoot: ws, workspacePython: true }
+  const at = (command: string, c: PolicyContext = ready) => decideCommand(command, c).kind
+
+  test('工作区环境存在时，命令中的 python 与 pip 装入工作区，放行', () => {
+    for (const cmd of [
+      'pip install pyjokes',
+      'pip3 install -r requirements.txt',
+      'python -m pip install faster-whisper',
+      'pip install --target .tmp/asr faster-whisper',
+      `"${ws}/.tmp/python/Scripts/python.exe" -m pip install x`,
+      'uv pip install x',
+    ]) {
+      expect(at(cmd)).toBe('allow')
+    }
+  })
+
+  test('越过工作区环境的写法拒绝', () => {
+    for (const cmd of [
+      'pip install --user pyjokes',
+      'py -m pip install pyjokes',
+      'py -3.12 -m pip install pyjokes',
+      '& "C:\\Program Files\\Python312\\python.exe" -m pip install pyjokes',
+      '/usr/bin/python3 -m pip install pyjokes',
+      'C:/Python312/Scripts/pip.exe install pyjokes',
+      'pip install --target C:\\Users\\x\\lib pyjokes',
+      'pip install --prefix=/usr/local pyjokes',
+      'uv pip install --system pyjokes',
+    ]) {
+      expect(at(cmd)).toBe('deny')
+    }
+    expect(decideCommand('py -m pip install x', ready)).toMatchObject({
+      kind: 'deny',
+      reason: expect.stringContaining('auto 模式下包只能装入工作区环境 .tmp/python'),
+    })
+  })
+
+  test('工作区环境不存在时 pip 即全局，安装拒绝；不安装的 pip 子命令放行', () => {
+    const missing: PolicyContext = { workspaceRoot: ws }
+    expect(at('pip install pyjokes', missing)).toBe('deny')
+    expect(at('python -m pip install pyjokes', missing)).toBe('deny')
+    expect(at('pip list', missing)).toBe('allow')
+    expect(at('python -m pip show numpy', missing)).toBe('allow')
   })
 })
 

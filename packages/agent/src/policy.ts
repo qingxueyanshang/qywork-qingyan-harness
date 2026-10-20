@@ -8,9 +8,10 @@
  * 1. 删除或覆写工作区之外的路径（家目录、系统目录、盘符根目录）
  * 2. 修改系统状态：提权、关机、格式化、写入块设备
  * 3. 访问凭证文件：私钥、云厂商凭据、包管理器 token，以及本程序的 config.json
+ * 4. 把 Python 包装入全局环境（`globalPythonInstall`）：auto 模式下包只装入工作区环境
  *
  * 其余一律放行，包括工作区内的任何读写与执行、读取工作区外的文件、启动本地服务器、
- * 安装依赖包、git push。判据是不可逆性与边界，而不是命令表面上是否危险。
+ * 装入工作区的依赖包、git push。判据是不可逆性与边界，而不是命令表面上是否危险。
  *
  * 没有允许清单，也没有「无法判定」这一结论。不要重新引入「静态允许清单 + 组合结构检测 + LLM 分类器」
  * 这一组合：
@@ -19,8 +20,8 @@
  *   （参数守卫、前缀守卫、组合符号扫描、可疑码点检测）都服务于判定能否安全地跳过
  *   分类器。没有分类器，允许清单就没有存在理由。
  * - LLM 分类器不稳定：同一条命令连续运行两次给出相反结论，实测出现两次。
- *   上述三类拦截都能用确定性规则表达，不应交给概率判断。
- * - 因此 `undecided` 没有消费者。不属于上述三类的命令即放行。
+ *   上述四类拦截都能用确定性规则表达，不应交给概率判断。
+ * - 因此 `undecided` 没有消费者。不属于上述四类的命令即放行。
  *
  * 组合命令无需单独处理。硬拒绝的模式或锚定在命令位（`CMD_POS` 匹配 `;` `&&` `|` `{` 换行之
  * 后的每一段），或扫描整个原始字符串（路径与凭证规则）。因此 `ls && rm -rf ~` 中的第二段同样被
@@ -41,8 +42,9 @@
  *   表中的规则只匹配 bash 的 `:(){ :|:& };:` 形式。
  * - 拼接与转义：反引号、`-join`、`Invoke-Expression $x`。把命令拆成变量再拼接后，
  *   任何静态模式都无法识别。这与 bash 中的 `$(echo rm)` 属于同一类，不在本层的覆盖范围内。
+ * - 不经 pip 的全局安装：`conda install`、Python 代码中调用 `subprocess` 运行 pip。
  *
- * 前三条不补充，因为补充的只是又一种写法而不是这一行为本身，按写法枚举
+ * 前三条与第五条不补充，因为补充的只是又一种写法而不是这一行为本身，按写法枚举
  * 总会遗漏；第四条无法补充。实际的防线仍是沙箱，以及用户能看到每一条命令。
  */
 
@@ -61,6 +63,11 @@ export interface PolicyContext {
    * 得到的却是「越界一律拒绝」的错误，而该说法此时已不成立。
    */
   additionalDirectories?: readonly string[]
+  /**
+   * 工作区 Python 环境（`.tmp/python`，带 pip）是否存在。存在时命令中的 python 与 pip 指向它；
+   * 不存在时 pip 即全局，`globalPythonInstall` 拒绝全部 pip 安装。
+   */
+  workspacePython?: boolean
 }
 
 // ───────────────────────── 硬拒绝 ─────────────────────────
@@ -335,7 +342,7 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
  * 裁决一条 shell 命令。
  *
  * 只有拒绝清单：命中即拒绝，否则放行。没有「无法判定」这一结论，因为要判定的
- * 三类（越界写入或删除、修改系统状态、访问凭证）都是确定性的，不属于其中任何一类
+ * 四类（越界写入或删除、修改系统状态、访问凭证、全局安装 Python 包）都是确定性的，不属于其中任何一类
  * 即说明不需要拒绝。
  */
 export function decideCommand(command: string, ctx: PolicyContext): PolicyDecision {
@@ -360,7 +367,84 @@ export function decideCommand(command: string, ctx: PolicyContext): PolicyDecisi
   const literal = literalOutsideHome(command, ctx)
   if (literal !== null) return { kind: 'deny', reason: literal }
 
-  return { kind: 'allow', reason: '不属于「越界写入或删除 / 修改系统状态 / 访问凭证」三类' }
+  const install = globalPythonInstall(command, ctx)
+  if (install !== null) return { kind: 'deny', reason: install }
+
+  return {
+    kind: 'allow',
+    reason: '不属于「越界写入或删除 / 修改系统状态 / 访问凭证 / 全局安装 Python 包」四类',
+  }
+}
+
+/** pip 安装命令：`pip install`、`pip3 install`、`python -m pip install`、`uv pip install`。 */
+const PIP_INSTALL = /(?:\bpip(?:\d+(?:\.\d+)?)?(?:\.exe)?["']?|\s-m\s+pip)\s+install\b/i
+
+/** 解释器或 pip 的路径（可带引号）紧接安装子命令：`"C:\Python312\python.exe" -m pip install`。 */
+const INTERPRETER_INSTALL =
+  /(?:"([^"\n]+)"|'([^'\n]+)'|((?:[A-Za-z]:[\\/]|\/)[^\s"'`;&|)]+))\s+(?:-m\s+pip\s+)?install\b/gi
+
+/** 指定安装位置的参数与其路径。 */
+const INSTALL_LOCATION =
+  /(?:^|\s)(?:--target|--prefix|--root|-t)(?:\s+|=)(?:"([^"\n]+)"|'([^'\n]+)'|([^\s"'`;&|)]+))/gi
+
+/**
+ * auto 模式下把 Python 包装入全局环境。命中时返回拒绝理由，否则返回 `null`。
+ *
+ * 工作区环境存在时，命令中的 python 与 pip 指向它（tools `commandEnv`），只有以下写法越过它：
+ * `--user`、`uv pip install --system`、Windows 的 `py` 启动器、工作区外的解释器或 pip 路径、
+ * `--target` / `--prefix` / `--root` 指向工作区外。工作区环境不存在时 pip 即全局，安装一律拒绝。
+ */
+function globalPythonInstall(command: string, ctx: PolicyContext): string | null {
+  if (!PIP_INSTALL.test(command)) return null
+  const deny = (how: string) =>
+    `${how}，会把 Python 包装入全局环境。auto 模式下包只能装入工作区环境 .tmp/python，` +
+    '命令中的 python 与 pip 即该环境；装入全局需要用户改为「完全访问」模式'
+  if (!ctx.workspacePython) return deny('工作区 Python 环境不存在，命令中的 pip 为全局解释器')
+  if (/(?:^|\s)--user\b/i.test(command)) return deny('--user 装入用户目录')
+  if (/\buv\s+pip\s+install\b[^\n]*\s--system\b/i.test(command))
+    return deny('uv pip install --system')
+  if (
+    atCommandStart(String.raw`(?:&\s*)?py(?:\.exe)?(?:\s+-[\w.]+)*\s+-m\s+pip\s+install\b`).test(
+      command,
+    )
+  )
+    return deny('py 启动器运行全局解释器')
+  for (const m of command.matchAll(INTERPRETER_INSTALL)) {
+    const p = m[1] ?? m[2] ?? m[3] ?? ''
+    if (!/(?:^|[\\/])(?:python|pip)[\d.]*(?:\.exe)?$/i.test(p)) continue
+    if (/^(?:[A-Za-z]:[\\/]|\/)/.test(p) && !withinAllowed(p, ctx))
+      return deny(`${p} 是工作区外的解释器`)
+  }
+  for (const m of command.matchAll(INSTALL_LOCATION)) {
+    const p = m[1] ?? m[2] ?? m[3] ?? ''
+    if (/^(?:[A-Za-z]:[\\/]|\/|~)/.test(p) && !withinAllowed(p, ctx))
+      return deny(`安装位置 ${p} 在工作区外`)
+  }
+  return null
+}
+
+/** 路径是否位于工作区或额外目录内。 */
+function withinAllowed(path: string, ctx: PolicyContext): boolean {
+  const p = normalizeSeparators(path.startsWith('~') ? homedir() + path.slice(1) : path)
+  return [ctx.workspaceRoot, ...(ctx.additionalDirectories ?? [])]
+    .map(normalizeSeparators)
+    .filter(Boolean)
+    .some((root) => inside(p, root))
+}
+
+/**
+ * Windows 与 macOS 的文件系统不区分大小写，`c:/users/x/.ssh/id_rsa` 与 `C:/Users/x/.ssh/id_rsa` 是同一个文件；
+ * 不统一时，把盘符写成小写即可绕过路径规则。
+ */
+function fold(s: string): string {
+  return process.platform === 'win32' || process.platform === 'darwin' ? s.toLowerCase() : s
+}
+
+/** `p` 是否为 `root` 本身或位于其下。两者均已统一分隔符。 */
+function inside(p: string, root: string): boolean {
+  const a = fold(p)
+  const b = fold(root)
+  return a === b || a.startsWith(`${b}/`)
 }
 
 /**
@@ -389,18 +473,8 @@ function literalOutsideHome(command: string, ctx: PolicyContext): string | null 
     .map(normalizeSeparators)
     .filter(Boolean)
 
-  // 必须统一大小写。Windows 与 macOS 的文件系统不区分大小写，`c:/users/x/.ssh/id_rsa`
-  // 与 `C:/Users/x/.ssh/id_rsa` 是同一个文件；不统一时，把盘符写成小写即可绕过
-  // 本规则，即函数注释所述的同一位置两种写法得出两种结论。
-  // 本文件中 isSystem 的两条正则都带 /i，此处的字符串比较需要自行统一大小写。
-  const fold = (s: string) =>
-    process.platform === 'win32' || process.platform === 'darwin' ? s.toLowerCase() : s
-  const inside = (p: string, root: string) => {
-    const a = fold(p)
-    const b = fold(root)
-    return a === b || a.startsWith(`${b}/`)
-  }
-
+  // 比较前统一大小写（`inside`），否则把盘符写成小写即可绕过本规则，即函数注释所述的
+  // 同一位置两种写法得出两种结论。isSystem 的两条正则都带 /i。
   for (const m of command.matchAll(/(?:^|[\s"'=(])((?:\/|[A-Za-z]:[\\/])[^\s"'`;&|)]*)/g)) {
     const p = normalizeSeparators(m[1] ?? '')
     if (!p) continue

@@ -137,7 +137,7 @@ import {
   resolveModel,
 } from './config.ts'
 import { contextBasis } from './context-panel.ts'
-import { describeEnvironment, ensureWorkspacePython } from './environment.ts'
+import { describeEnvironment, ensureWorkspacePython, workspacePythonReady } from './environment.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
 import { makeMediaPort } from './media.ts'
@@ -520,10 +520,15 @@ export class Session {
             subagents: await this.opts.delegate.subagents(),
           }
         : {}
-    // 运行环境随快照冻结：工作区 Python 环境在此确保存在，命令中的 python 指向它（tools `commandEnv`）。
+    // 运行环境随快照冻结。auto 模式下工作区 Python 环境在此确保存在，命令中的 python 与 pip 指向它
+    // （tools `commandEnv`）；完全访问模式不创建，装入全局还是工作区由模型选择。
+    const mode = permissionModeOf(store, conversationId)
     const python = findPython(config)
-    const venvError = python ? await ensureWorkspacePython(this.opts.workspaceRoot, python) : null
-    const environment = await describeEnvironment(this.opts.workspaceRoot, python, venvError)
+    const venvError =
+      python && mode === 'auto'
+        ? await ensureWorkspacePython(this.opts.workspaceRoot, python)
+        : null
+    const environment = await describeEnvironment(this.opts.workspaceRoot, python, venvError, mode)
     const contextSnapshot = buildTailNotes({
       workspaceRoot: this.opts.workspaceRoot,
       environment,
@@ -532,7 +537,7 @@ export class Session {
         conversationTempDir(this.opts.workspaceRoot, conversationId),
       ),
       platform: process.platform,
-      mode: permissionModeOf(store, conversationId),
+      mode,
       skills,
       memories,
       // 派发工具存在时才提供；成员会话没有 delegate，既看不到清单也无法递归派发任务。
@@ -1088,6 +1093,7 @@ export class Session {
     const d = decideCommand(command, {
       workspaceRoot: this.opts.workspaceRoot,
       ...(this.extraDirs.length ? { additionalDirectories: this.extraDirs } : {}),
+      workspacePython: workspacePythonReady(this.opts.workspaceRoot),
     })
     if (d.kind === 'allow') return { allowed: true }
     /*

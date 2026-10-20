@@ -260,6 +260,7 @@ describe('上下文末尾注记', () => {
 
     expect(state('auto')).toContain('权限模式：auto')
     expect(state('auto')).toContain('凭证')
+    expect(state('auto')).toContain('把 Python 包装入全局环境')
     expect(state('full')).toContain('完全访问')
     // full 下不设裁决，不发送 auto 的边界说明。
     expect(state('full')).not.toContain('会被拒绝')

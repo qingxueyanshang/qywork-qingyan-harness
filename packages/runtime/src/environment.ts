@@ -1,15 +1,17 @@
 /**
  * 运行环境说明：本机 Python、已安装的包、ffmpeg、工作区中的包目录与已下载的模型。每轮开始前读取目录生成，
- * 写入运行上下文。只读取目录，不启动进程；唯一的例外是工作区 Python 环境缺失时创建它（`ensureWorkspacePython`）。
+ * 写入运行上下文。只读取目录，不启动进程；唯一的例外是 auto 模式下工作区 Python 环境缺失时创建它
+ * （`ensureWorkspacePython`）。
  *
  * 包名取自 `*.dist-info` 目录，只列出带 `REQUESTED` 标记的包（主动安装，不含作为依赖装入的包）。
  * 模型取自 Hugging Face 缓存的 `models--组织--名称` 目录。
  */
 
 import { existsSync } from 'node:fs'
-import { readdir, readFile } from 'node:fs/promises'
+import { readdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import type { PermissionMode } from '@qywork/core'
 import { displayPath, workspacePythonBin, workspacePythonDir } from '@qywork/tools'
 
 /** 列出的包目录与模型的上限：超出部分只写数量，避免运行上下文随工作区的历史产物增长。 */
@@ -34,9 +36,28 @@ async function venvConfig(dir: string): Promise<Record<string, string> | null> {
 }
 
 /**
- * 确保工作区 Python 环境存在，基于 `python` 创建，继承其全部包（`--system-site-packages`），不另装 pip
- * （`python -m pip` 使用基础解释器的 pip，装入本环境）。环境的基础解释器目录已不存在时原地升级。
- * 返回失败原因；成功或无需处理时为 null。
+ * 工作区环境中 `pip` / `pip3` 的启动脚本：以本环境的解释器运行 `-m pip`，包装入本环境。
+ * Windows 上同时写 `.cmd`（PowerShell 与 cmd 按 PATHEXT 解析）与无扩展名的 sh 脚本（Git Bash 只认后者）。
+ */
+function pipLaunchers(bin: string): { path: string; text: string }[] {
+  const win = process.platform === 'win32'
+  const sh = `#!/bin/sh\nexec "$(dirname "$0")/${win ? 'python.exe' : 'python'}" -m pip "$@"\n`
+  return ['pip', 'pip3'].flatMap((name) => [
+    { path: join(bin, name), text: sh },
+    ...(win ? [{ path: join(bin, `${name}.cmd`), text: '@"%~dp0python.exe" -m pip %*\r\n' }] : []),
+  ])
+}
+
+/** 工作区 Python 环境带有 pip 启动脚本：此时命令中单独的 `pip` 解析到本环境（auto 模式的权限规则据此判定全局安装）。 */
+export function workspacePythonReady(workspaceRoot: string): boolean {
+  return pipLaunchers(workspacePythonBin(workspaceRoot)).every((l) => existsSync(l.path))
+}
+
+/**
+ * 确保工作区 Python 环境存在：基于 `python` 创建，继承其全部包（`--system-site-packages`），不另装 pip，
+ * 写入 pip 启动脚本（`pipLaunchers`），命令中单独的 `pip` 因此同样装入本环境。基础解释器目录已不存在时原地升级。
+ * 不要改为带 pip 创建：安装 pip 需 2.5–4.7 秒，每个新工作区的首轮都要等待；继承全局包时基础解释器的 pip 可以导入，
+ * 以本环境的解释器运行即装入本环境。返回失败原因；成功或无需处理时为 null。
  */
 export async function ensureWorkspacePython(
   workspaceRoot: string,
@@ -44,21 +65,26 @@ export async function ensureWorkspacePython(
 ): Promise<string | null> {
   const dir = workspacePythonDir(workspaceRoot)
   const cfg = await venvConfig(dir)
-  if (cfg?.home && existsSync(cfg.home)) return null
-  const proc = Bun.spawn(
-    [
-      python,
-      '-m',
-      'venv',
-      '--system-site-packages',
-      '--without-pip',
-      ...(cfg ? ['--upgrade'] : []),
-      dir,
-    ],
-    { stdout: 'ignore', stderr: 'pipe' },
-  )
-  const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
-  return code === 0 ? null : err.trim().split(/\r?\n/).at(-1) || `退出码 ${code}`
+  if (!cfg?.home || !existsSync(cfg.home)) {
+    const proc = Bun.spawn(
+      [
+        python,
+        '-m',
+        'venv',
+        '--system-site-packages',
+        '--without-pip',
+        ...(cfg ? ['--upgrade'] : []),
+        dir,
+      ],
+      { stdout: 'ignore', stderr: 'pipe' },
+    )
+    const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
+    if (code !== 0) return err.trim().split(/\r?\n/).at(-1) || `退出码 ${code}`
+  }
+  for (const l of pipLaunchers(workspacePythonBin(workspaceRoot))) {
+    if (!existsSync(l.path)) await writeFile(l.path, l.text, { mode: 0o755 })
+  }
+  return null
 }
 
 /** `*.dist-info` 目录中主动安装的包名。 */
@@ -117,12 +143,14 @@ function capped(items: string[], max: number): string {
 
 /**
  * 运行上下文中的「运行环境」一节。`python` 为基础解释器（office 的 `findPython`），未找到时为 null；
- * `venvError` 为创建工作区 Python 环境的失败原因。
+ * `venvError` 为创建工作区 Python 环境的失败原因（只在 auto 模式下创建）。
+ * 安装位置按权限模式写明可选的范围，不替模型选择：auto 只能装入工作区环境，完全访问时全局与工作区均可。
  */
 export async function describeEnvironment(
   workspaceRoot: string,
   python: string | null,
   venvError: string | null,
+  mode: PermissionMode,
 ): Promise<string> {
   const lines: string[] = ['## 运行环境（本轮开始时读取本机目录）']
   const shown = (p: string) => displayPath(workspaceRoot, p)
@@ -139,14 +167,27 @@ export async function describeEnvironment(
     const base = sitePackages(existsSync(join(prefix, 'Lib')) ? prefix : dirname(prefix), version)
     const user = userSitePackages(version)
     const venvSite = sitePackages(venvDir, version)
-    sites.push(...(venv ? [venvSite] : []), base, ...(user ? [user] : []))
-    lines.push(
-      venv
-        ? `- Python ${version ?? ''}：命令中的 python 为工作区环境 ${shown(venvDir)}，继承 ${prefix} 的全部包。` +
-            `安装包优先用 python -m pip install <包>：装入该环境，之后的命令与会话可直接导入；` +
-            `命令行工具装在 ${shown(workspacePythonBin(workspaceRoot))}，已在 PATH 最前。`
-        : `- Python：${python}。工作区环境 ${shown(venvDir)} 创建失败（${venvError ?? '未知原因'}），命令中的 python 为该解释器。`,
+    const venvPython = join(
+      workspacePythonBin(workspaceRoot),
+      process.platform === 'win32' ? 'python.exe' : 'python',
     )
+    sites.push(...(venv ? [venvSite] : []), base, ...(user ? [user] : []))
+    if (mode === 'auto')
+      lines.push(
+        venv
+          ? `- Python ${version ?? ''}：auto 模式下包只能装入工作区环境 ${shown(venvDir)}，命令中的 python 与 pip 即该环境，` +
+              `继承 ${prefix} 的全部包；装入后之后的命令与会话可直接导入，装入的命令行工具在 PATH 最前。全局环境不可写入。`
+          : `- Python：${python}。工作区环境 ${shown(venvDir)} 创建失败（${venvError ?? '未知原因'}），` +
+              'auto 模式下无法安装 Python 包；命令中的 python 为该解释器。',
+      )
+    else
+      lines.push(
+        `- Python：${python}。完全访问模式下包可以装入全局环境（命令中的 python 与 pip 即该解释器，所有工作区共用），` +
+          `也可以装入工作区环境 ${shown(venvDir)}（继承全局的全部包，只在本工作区生效；` +
+          (venv
+            ? `已存在，以 ${shown(venvPython)} 运行）。`
+            : `以 python -m venv --system-site-packages ${shown(venvDir)} 创建）。`),
+      )
     const global = [
       ...new Set([...(await requestedIn(base)), ...(user ? await requestedIn(user) : [])]),
     ]
@@ -200,7 +241,10 @@ export async function describeEnvironment(
   await hubModels(globalHub, models, globalHub)
   const listed = [...models].map(([repo, at]) => `${repo}（${at.join('、')}）`)
   lines.push(
-    `- 已下载的模型：${listed.length ? capped(listed, MAX_MODELS) : '无'}。新下载的模型放在 ${shown(join(tmp, 'models'))} 下。`,
+    `- 已下载的模型：${listed.length ? capped(listed, MAX_MODELS) : '无'}。` +
+      (mode === 'auto'
+        ? `auto 模式下新下载的模型放在 ${shown(join(tmp, 'models'))} 下。`
+        : `新下载的模型可以放在全局缓存 ${globalHub}，也可以放在 ${shown(join(tmp, 'models'))} 下。`),
   )
   return lines.join('\n')
 }

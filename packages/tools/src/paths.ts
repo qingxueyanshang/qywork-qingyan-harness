@@ -474,8 +474,8 @@ export function conversationTempDir(workspaceRoot: string, conversationId: strin
 }
 
 /**
- * 工作区 Python 环境：`<工作区>/.tmp/python`，继承本机 Python 全部包的虚拟环境，由 runtime 在每轮开始前确保存在。
- * 命令中的 `python` 指向它（`commandEnv`），`python -m pip install` 装入其中，之后的命令与会话可直接导入。
+ * 工作区 Python 环境：`<工作区>/.tmp/python`，继承本机 Python 全部包的虚拟环境。auto 模式下由 runtime 在每轮开始前
+ * 确保存在，命令中的 `python` 与 `pip` 指向它（`commandEnv`），装入的包之后的命令与会话可直接导入。
  * 不随会话删除：它不是会话临时目录。
  */
 export function workspacePythonDir(workspaceRoot: string): string {
