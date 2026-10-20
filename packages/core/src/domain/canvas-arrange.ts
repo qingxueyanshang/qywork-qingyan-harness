@@ -1,5 +1,5 @@
 /**
- * 未给出位置的新节点按组排列。只有大模型的操作走到这里：界面的新增操作都带坐标、`beside` 或 `near`。
+ * 未给出位置的新节点与改换了组的节点按组排列。只有大模型的操作走到这里：界面的新增操作都带坐标、`beside` 或 `near`。
  *
  * - 组名决定列：「类别/对象」中斜杠前是列，如「角色/沈砚」「角色/顾衡」同在「角色」列；没有斜杠时整个组名是列，
  *   如「山门·分镜」。
@@ -11,8 +11,10 @@
  * 不要按「组内有没有输入」把列分到左右两区：同一人物的服装变体常以基础定妆图为参考，
  * 按输入分区时该人物会被当作分镜，其他列被移到它的左侧。素材先于引用它的分镜创建，按创建顺序已位于分镜左侧。
  *
- * 算出的位置被占用时沿竖直方向顺延到第一个空位。已有节点只在三种情况下移动：同列中为插入让位；
- * 新卡比所在列宽时右侧各列让开；卡片改变尺寸后随之移开或移回（`keepSpacing`）。三者使用同一套规则（`follow`）。
+ * 算出的位置被占用时沿竖直方向顺延到第一个空位。已有节点只在以下情况下移动：同列中为插入让位；
+ * 新卡比所在列宽时右侧各列让开；卡片改变尺寸后随之移开或移回（`keepSpacing`）；带组的卡被删除或换组后，
+ * 同列下方的卡上移补上空位（`closeGaps`）；排成网格后，网格右侧与下方的节点让开或移回（`arrangeGrid`）。
+ * 这些情况使用同一套规则（`follow`），界面删除的卡同样适用。
  */
 
 import type { CanvasDoc, CanvasNode } from './canvas.ts'
@@ -65,7 +67,7 @@ function laneRight(doc: CanvasDoc, node: CanvasNode, x: number): number | null {
   return mates.length ? Math.max(...mates.map((n) => n.x + n.w)) : null
 }
 
-const placed = (n: CanvasNode) => Number.isFinite(n.x) && Number.isFinite(n.y)
+const placed = (n: Box) => Number.isFinite(n.x) && Number.isFinite(n.y)
 
 function groupOf(n: CanvasNode): string | undefined {
   return n.type === 'timeline' ? undefined : n.group
@@ -167,6 +169,67 @@ export function keepSpacing(doc: CanvasDoc, resized: readonly Resized[]): void {
     if (!node || !placed(node)) continue
     if (node.w !== r.w) follow(doc, node, { x: node.x, y: node.y, w: r.w, h: node.h }, 'right')
     if (node.h !== r.h) follow(doc, node, { x: node.x, y: node.y, w: node.w, h: r.h }, 'down')
+  }
+}
+
+/**
+ * 带组的卡被删除或移到其他组之后，同列中紧挨在空位下方的卡上移，不留空位。`vacated` 为空出的框，未排位的跳过。
+ *
+ * 每个空位以其上方一个间距处、高为 0 的框代替原卡，下方的节点按 `follow` 的收回规则移动，与卡片变小时相同；
+ * 间距大于 `CARD_GAP` 的节点不动。空位自下而上处理：同一列中先处理上方的空位时，下方空位之下的卡与它不相邻，不会移回。
+ */
+export function closeGaps(doc: CanvasDoc, vacated: readonly Box[]): void {
+  const gaps = vacated.filter((b) => placed(b)).sort((a, b) => b.y - a.y)
+  for (const box of gaps) {
+    const gap: CanvasNode = { ...ghost(), x: box.x, y: box.y - CARD_GAP, w: box.w, h: 0 }
+    doc.nodes.push(gap)
+    follow(doc, gap, box, 'down')
+    doc.nodes.pop()
+  }
+}
+
+/**
+ * 把 `cards` 按给出的顺序排成每行 `perRow` 张的网格，左上角是这些卡原来所占区域的左上角。
+ * 列宽取其中最宽的卡，行高取该行最高的卡，间距为 `CARD_GAP`；卡片保持各自的尺寸。
+ * 文本卡与 16:9 的生成卡缺省框相同，一组这样的卡排成的各行等高。
+ *
+ * 网格所占的区域按一张由原区域改变尺寸的卡处理（`keepSpacing`）：右侧与下方的节点让开，网格变小时紧挨着的节点移回。
+ * 不在 `cards` 中、却位于原区域内部的节点（选出的卡分属不相邻的几列时）不移动。
+ */
+export function arrangeGrid(doc: CanvasDoc, cards: readonly CanvasNode[], perRow: number): void {
+  const grid = cards.filter((n) => placed(n))
+  if (!grid.length) return
+  const was = boundsOf(grid)
+  const cell = Math.max(...grid.map((n) => n.w))
+  let y = was.y
+  for (let i = 0; i < grid.length; i += perRow) {
+    const row = grid.slice(i, i + perRow)
+    for (const [k, n] of row.entries()) {
+      n.x = was.x + k * (cell + CARD_GAP)
+      n.y = y
+    }
+    y += Math.max(...row.map((n) => n.h)) + CARD_GAP
+  }
+  const all = doc.nodes
+  const block: CanvasNode = { ...ghost(), ...boundsOf(grid) }
+  doc.nodes = [...all.filter((n) => !grid.includes(n)), block]
+  keepSpacing(doc, [{ id: block.id, w: was.w, h: was.h }])
+  doc.nodes = all
+}
+
+/** 只在排位计算中临时加入文档的框：id 为空，不与任何节点的 id 相同，计算结束即移除。 */
+function ghost(): CanvasNode {
+  return { id: '', type: 'file', path: '', x: 0, y: 0, w: 0, h: 0 }
+}
+
+function boundsOf(boxes: readonly Box[]): Box {
+  const x = Math.min(...boxes.map((b) => b.x))
+  const y = Math.min(...boxes.map((b) => b.y))
+  return {
+    x,
+    y,
+    w: Math.max(...boxes.map((b) => b.x + b.w)) - x,
+    h: Math.max(...boxes.map((b) => b.y + b.h)) - y,
   }
 }
 

@@ -94,6 +94,21 @@ describe('图片生成的完整结果与部分结果', () => {
     expect(version.warning).toBe(result.warning)
   })
 
+  /** 原始失败形状：n=1 的卡得到两个文件，结果只列出两个路径，调用方无从得知卡片显示哪一张。 */
+  test('请求一张而接口返回两张：两张都保存为版本，结果写明卡片的当前版本为第一张', async () => {
+    reply = () =>
+      Response.json({ data: images.slice(0, 2).map((b) => ({ b64_json: b.toString('base64') })) })
+    const { run, card } = await setup(1)
+    const result = await run()
+    if (!result.ok) throw new Error(result.message)
+    expect(requests[0]?.n).toBe(1)
+    expect(result.outputs).toHaveLength(2)
+    const node = await card()
+    expect(node.versions.map((v) => v.path)).toEqual(result.outputs.map((o) => o.path))
+    expect(node.current).toBe(node.versions[0]!.id)
+    expect(result.current).toBe(result.outputs[0]!.path)
+  })
+
   test('请求并返回四张：全部落盘为四版，可切换，重复生成追加版本', async () => {
     const { root, svc, id, run, card } = await setup()
     expect((await run()).ok).toBe(true)

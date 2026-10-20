@@ -219,6 +219,8 @@ export interface CanvasServiceDeps {
     output: GenerateOutput,
     pick: { provider: string; model: string } | undefined,
   ): readonly MediaParamDefinition[] | undefined
+  /** 已配置模型 `model` 的接口名，大模型只给出 model 时据此补上 provider（`prepareAgentOps`）。 */
+  providersOf?(output: GenerateOutput, model: string): readonly string[]
   /** 发送一条全局事件（不带会话 id）。 */
   publish(event: AgentEvent): void
   /** 与对话共用更新占位；文件校验结束后、开始生成前再检查一次。 */
@@ -711,6 +713,7 @@ export class CanvasService {
       return this.writeBack(
         ws.root,
         rel,
+        nodeId,
         { files, sizes, params },
         (d) => {
           if (node.output === 'image' && id)
@@ -802,6 +805,7 @@ export class CanvasService {
       return this.writeBack(
         ws.root,
         rel,
+        nodeId,
         { files: outcome.files, sizes, params: version.made.params },
         (d) =>
           node.output === 'image'
@@ -1046,12 +1050,14 @@ export class CanvasService {
   }
 
   /**
-   * 产物已落盘，回写画布。成功时返回各产物的像素宽高与时长，以及实际发送的参数，供调用方核对结果。
+   * 产物已落盘，回写画布。成功时返回各产物的像素宽高与时长、实际发送的参数，以及回写后卡片当前版本的路径，
+   * 供调用方核对结果：一次生成有多个产物时只有当前版本显示在卡片上。
    * 回写失败（节点或该版本已被外部修改）时，失败原文写明产物位置。
    */
   private async writeBack(
     root: string,
     rel: string,
+    nodeId: string,
     made: {
       files: GeneratedFile[]
       sizes: Map<string, CanvasPixels>
@@ -1062,7 +1068,12 @@ export class CanvasService {
   ): Promise<CanvasRunResult> {
     const paths = made.files.map((f) => f.path)
     try {
-      await this.mutate(root, rel, change)
+      const { doc } = await this.mutate(root, rel, change)
+      const node = doc.nodes.find((n) => n.id === nodeId)
+      const current =
+        node?.type === 'generate'
+          ? node.versions.find((v) => v.id === node.current)?.path
+          : undefined
       const outputs = await Promise.all(
         paths.map(async (path) => {
           const duration = await mediaDurationOf(join(root, path))
@@ -1073,7 +1084,13 @@ export class CanvasService {
           }
         }),
       )
-      return { ok: true, outputs, params: made.params, ...(warning ? { warning } : {}) }
+      return {
+        ok: true,
+        outputs,
+        params: made.params,
+        ...(current ? { current } : {}),
+        ...(warning ? { warning } : {}),
+      }
     } catch (err) {
       return {
         ok: false,
@@ -1577,7 +1594,7 @@ export class CanvasService {
       const specs = this.deps.paramSpecsOf
       const attempt = (doc: CanvasDoc, list: CanvasOp[], newId?: () => string): CanvasResult => {
         try {
-          const prepared = prepareAgentOps(doc, list, specs)
+          const prepared = prepareAgentOps(doc, list, specs, this.deps.providersOf)
           this.refuseRemovingRunning(workspaceRoot, path, doc, prepared)
           const applied = applyCanvasOps(doc, prepared, newId)
           if (applied.ok) checkActiveParams(doc, applied.doc, prepared, specs)
@@ -1883,22 +1900,37 @@ function linkArtImages(doc: CanvasDoc, nodeId: string, paths: readonly string[])
 }
 
 /**
- * 一批操作前后的差异：新增或内容有变化的节点 id、删除的节点名称，以及每条执行了的 `replace_text` 替换的处数。
- * 节点按序列化后的内容比较，位置随排位移动的节点同样计入。
+ * 一批操作前后的差异：新增或内容有变化的节点 id、只改变了位置或尺寸的节点 id、删除的节点名称，
+ * 以及每条执行了的 `replace_text` 替换的处数。节点按序列化后的内容比较，不含框。
+ * 位置与尺寸单独列出：排成网格或补上空位时移动的卡可达整列，按改动的卡列出全文时回执达数万字。
  */
 function changesOf(
   before: CanvasDoc,
   after: CanvasDoc,
   ops: readonly CanvasOp[],
   skipped: readonly { at: number }[],
-): { changed: string[]; removed: string[]; replaced: { at: number; count: number }[] } {
-  const old = new Map(before.nodes.map((n) => [n.id, JSON.stringify(n)]))
+): {
+  changed: string[]
+  moved: string[]
+  removed: string[]
+  replaced: { at: number; count: number }[]
+} {
+  const content = ({ x: _x, y: _y, w: _w, h: _h, ...rest }: CanvasNode) => JSON.stringify(rest)
+  const box = (n: CanvasNode) => JSON.stringify([n.x, n.y, n.w, n.h])
+  const old = new Map(before.nodes.map((n) => [n.id, n]))
   const edges = (doc: CanvasDoc, id: string) =>
     JSON.stringify(doc.edges.filter((e) => e.to === id).map((e) => [e.from, e.role]))
   const changed = after.nodes
-    .filter(
-      (n) => old.get(n.id) !== JSON.stringify(n) || edges(before, n.id) !== edges(after, n.id),
-    )
+    .filter((n) => {
+      const was = old.get(n.id)
+      return !was || content(was) !== content(n) || edges(before, n.id) !== edges(after, n.id)
+    })
+    .map((n) => n.id)
+  const moved = after.nodes
+    .filter((n) => {
+      const was = old.get(n.id)
+      return was && !changed.includes(n.id) && box(was) !== box(n)
+    })
     .map((n) => n.id)
   const kept = new Set(after.nodes.map((n) => n.id))
   const removed = before.nodes.filter((n) => !kept.has(n.id)).map(displayNameOf)
@@ -1910,7 +1942,7 @@ function changesOf(
     if (node?.type !== 'generate' || !op.old) return []
     return [{ at, count: node.prompt.split(op.old).length - 1 }]
   })
-  return { changed, removed, replaced }
+  return { changed, moved, removed, replaced }
 }
 
 /**

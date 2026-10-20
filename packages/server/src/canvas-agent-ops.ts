@@ -4,6 +4,8 @@
  * - 卡片名称在同一张画布中不能重复：大模型按名称引用卡片，名称重复时无法确定所指。
  * - 同一文件只放一张整篇的文件卡，同一段摘录只放一张摘录卡：再次放置时拒绝并给出已有卡片的名称。
  *   界面复制粘贴文件卡不经过这里。摘录卡须给出名称：缺省名称是文件名，同一文件的各张摘录卡无法按名称区分。
+ *   以上两条按本批进行到该条时的画布判定，同一批中先删除的卡让出名称与文件。
+ * - 只给出 model 时按已配置的模型补上 provider（`providerFor`），参数按该模型的参数表核对。
  * - 参数按所用模型的参数表核对，应用后再按卡片的输入与其他参数核对是否可用：不存在、不合法或不可用的取值
  *   该条操作不成立并列出可选值（`applyAgent` 逐条判定）。大模型写入的每个参数都会发送，也都显示在参数面板上。
  * - 大模型读取的画布中，生成卡的参数为实际发送的参数（`agentView`），与参数面板的显示一致。
@@ -16,6 +18,7 @@ import {
   type CanvasDoc,
   type CanvasExcerpt,
   type CanvasGenerateNode,
+  type CanvasNode,
   type CanvasOp,
   type CanvasView,
   cardIdOf,
@@ -36,61 +39,88 @@ export type ParamSpecsOf = (
   pick: { provider: string; model: string } | undefined,
 ) => readonly MediaParamDefinition[] | undefined
 
-/** 核对并返回补全后的操作；不成立时抛出 `Error`，消息原样交给大模型。 */
+/** 已配置模型 `model` 的接口名：生成卡为配置了该生成模型的接口，art 卡为提供该对话模型的接口。 */
+export type ProvidersOf = (output: GenerateOutput, model: string) => readonly string[]
+
+/** 本批进行中的一张卡：名称，文件卡另有路径与摘录。名称未定（新卡的缺省名称在应用时才分配）时为 undefined。 */
+interface Held {
+  name: string | undefined
+  path?: string
+  excerpt?: CanvasExcerpt
+}
+
+/**
+ * 核对并返回补全后的操作；不成立时抛出 `Error`，消息原样交给大模型。
+ *
+ * 名称与文件卡的唯一性按本批进行到该条时的画布判定，而不是按本批之前的画布：本批先删除或改名的卡让出原名称，
+ * 先删除的文件卡让出原文件或摘录；同一批中先放置的卡同样占用名称、文件与摘录。
+ */
 export function prepareAgentOps(
   doc: CanvasDoc,
   ops: readonly CanvasOp[],
   specsOf: ParamSpecsOf | undefined,
+  providersOf: ProvidersOf | undefined,
 ): CanvasOp[] {
-  const taken = new Set(doc.nodes.map(displayNameOf))
+  // 键为节点 id；本批新增的卡为其批内名称，没有批内名称时为条目序号（无法被引用）。
+  const cards = new Map<string, Held>(doc.nodes.map((n) => [n.id, heldOf(n)]))
+  // 引用的解析与 core `resolveRef` 相同：先按 id 或批内名称，再按唯一的名称。
+  const holderOf = (ref: string): string | undefined => {
+    if (cards.has(ref)) return ref
+    const named = [...cards].filter(([, c]) => c.name === ref)
+    return named.length === 1 ? named[0]![0] : undefined
+  }
+  const checkName = (name: string, self?: string) => {
+    if ([...cards].some(([h, c]) => h !== self && c.name === name)) {
+      throw new Error(`名称「${name}」已被另一张卡使用：同一张画布中的卡片名称不能重复`)
+    }
+  }
   // 画布只接受规范的相对路径（core `isRelativePath`），同一文件的路径写法唯一，直接比较即可。
-  const placed = new Map(
-    doc.nodes.flatMap((n) =>
-      n.type === 'file' ? [[placedKey(n.path, n.excerpt), displayNameOf(n)]] : [],
-    ),
-  )
+  const checkFile = (path: string, excerpt: CanvasExcerpt | undefined, self?: string) => {
+    const key = placedKey(path, excerpt)
+    const held = [...cards].find(
+      ([h, c]) => h !== self && c.path !== undefined && placedKey(c.path, c.excerpt) === key,
+    )?.[1]
+    if (!held) return
+    throw new Error(
+      excerpt
+        ? `${path} 中的这一段已有摘录卡「${held.name}」：同一段只放一张卡`
+        : `${path} 已在画布上，卡片名称为「${held.name}」：同一文件只放一张整篇的卡`,
+    )
+  }
   const out: CanvasOp[] = []
-  for (const op of ops) {
+  for (const [at, raw] of ops.entries()) {
+    let op = raw
     if (op.op === 'add_file' && op.excerpt && !op.name) {
       throw new Error('摘录卡须给出 name：同一文件的各张摘录卡按名称区分')
     }
     if (op.op === 'add_file' || op.op === 'add_generate' || op.op === 'add_timeline') {
-      if (op.name !== undefined) {
-        if (taken.has(op.name)) {
-          throw new Error(`名称「${op.name}」已被另一张卡使用：同一张画布中的卡片名称不能重复`)
-        }
-        taken.add(op.name)
-      }
-    }
-    if (op.op === 'add_file') {
-      const key = placedKey(op.path, op.excerpt)
-      const held = placed.get(key)
-      if (held !== undefined) {
-        throw new Error(
-          op.excerpt
-            ? `${op.path} 中的这一段已有摘录卡「${held}」：同一段只放一张卡`
-            : `${op.path} 已在画布上，卡片名称为「${held}」：同一文件只放一张整篇的卡`,
-        )
-      }
-      placed.set(
-        key,
-        displayNameOf({
-          id: '',
-          type: 'file',
-          path: op.path,
-          x: 0,
-          y: 0,
-          w: 0,
-          h: 0,
-          ...(op.name ? { name: op.name } : {}),
-        }),
+      if (op.name !== undefined) checkName(op.name)
+      if (op.op === 'add_file') checkFile(op.path, op.excerpt)
+      cards.set(
+        op.ref ?? `#${at}`,
+        op.op === 'add_file'
+          ? heldOf({
+              id: '',
+              type: 'file',
+              path: op.path,
+              x: 0,
+              y: 0,
+              w: 0,
+              h: 0,
+              ...(op.name ? { name: op.name } : {}),
+              ...(op.excerpt ? { excerpt: op.excerpt } : {}),
+            })
+          : { name: op.name },
       )
     }
     if (op.op === 'add_generate') {
+      const label = op.name ?? '新卡'
+      if (op.model !== undefined && op.provider === undefined) {
+        op = { ...op, provider: providerFor(label, op.output, op.model, providersOf) }
+      }
       const pick = op.provider && op.model ? { provider: op.provider, model: op.model } : undefined
       const specs = specsOf?.(op.output, pick)
-      const label = op.name ?? '新卡'
-      if (op.params && specs) checkParams(label, op.params, specs)
+      if (op.params && specs) checkParams(label, op.params, specs, pick)
       const shape =
         op.w === undefined && op.h === undefined && specs
           ? shapeOf(op.output, op.params ?? {}, specs)
@@ -99,23 +129,67 @@ export function prepareAgentOps(
       continue
     }
     if (op.op === 'update') {
-      const node = doc.nodes.find((n) => n.id === op.id || displayNameOf(n) === op.id)
-      if (op.name && node && displayNameOf(node) !== op.name && taken.has(op.name)) {
-        throw new Error(`名称「${op.name}」已被另一张卡使用：同一张画布中的卡片名称不能重复`)
+      const self = holderOf(op.id)
+      const held = self === undefined ? undefined : cards.get(self)
+      if (op.name && held && held.name !== op.name) {
+        checkName(op.name, self)
+        held.name = op.name
       }
-      if (op.params && node?.type === 'generate') {
-        out.push(updateWithShape(op, node, specsOf))
-        continue
+      if (held?.path !== undefined && (op.path !== undefined || op.excerpt !== undefined)) {
+        const path = op.path ?? held.path
+        const excerpt = op.excerpt === null ? undefined : (op.excerpt ?? held.excerpt)
+        checkFile(path, excerpt, self)
+        held.path = path
+        if (excerpt) held.excerpt = excerpt
+        else delete held.excerpt
       }
+      const node = doc.nodes.find((n) => n.id === self)
+      if (node?.type === 'generate') {
+        if (typeof op.model === 'string' && op.provider === undefined && !node.provider) {
+          op = { ...op, provider: providerFor(node.name, node.output, op.model, providersOf) }
+        }
+        if (op.params) {
+          out.push(updateWithShape(op, node, specsOf))
+          continue
+        }
+      }
+    }
+    if (op.op === 'remove' && op.version === undefined) {
+      const self = holderOf(op.id)
+      if (self !== undefined) cards.delete(self)
     }
     out.push(op)
   }
   return out
 }
 
+function heldOf(n: CanvasNode): Held {
+  if (n.type !== 'file') return { name: displayNameOf(n) }
+  return { name: displayNameOf(n), path: n.path, ...(n.excerpt ? { excerpt: n.excerpt } : {}) }
+}
+
 /** 文件卡的唯一性键：整篇卡为路径，摘录卡为路径加摘录。 */
 function placedKey(path: string, excerpt: CanvasExcerpt | undefined): string {
   return excerpt ? JSON.stringify([path, excerpt.after ?? null, excerpt.start, excerpt.end]) : path
+}
+
+/**
+ * 只给出 model 时确定 provider：已配置该模型的接口恰有一个时使用它，没有或有多个时不成立。
+ * 不要改为不填：卡片没有 provider 时参数按默认模型的参数表核对，报错列出的是另一个模型的参数。
+ */
+function providerFor(
+  label: string,
+  output: GenerateOutput,
+  model: string,
+  providersOf: ProvidersOf | undefined,
+): string {
+  const owners = providersOf?.(output, model) ?? []
+  if (owners.length === 1) return owners[0]!
+  throw new Error(
+    owners.length
+      ? `「${label}」只给出 model ${model}，缺少 provider：${owners.join('、')} 都提供该模型，provider 写明其中一个`
+      : `「${label}」只给出 model ${model}，缺少 provider，且本轮「可用的生成模型」中没有该模型：provider 与 model 取自其中的同一行`,
+  )
 }
 
 /**
@@ -227,24 +301,28 @@ function updateWithShape(
 ): CanvasOp {
   const provider = op.provider === undefined ? node.provider : (op.provider ?? undefined)
   const model = op.model === undefined ? node.model : (op.model ?? undefined)
-  const specs = specsOf?.(node.output, provider && model ? { provider, model } : undefined)
+  const pick = provider && model ? { provider, model } : undefined
+  const specs = specsOf?.(node.output, pick)
   if (!specs || !op.params) return op
-  checkParams(node.name, op.params, specs)
+  checkParams(node.name, op.params, specs, pick)
   if (node.versions.length > 0 || op.w !== undefined || op.h !== undefined) return op
   const shape = shapeOf(node.output, op.params, specs)
   return shape ? { ...op, ...fitBox(node, shape) } : op
 }
 
+/** 按 `pick` 的参数表核对参数；`pick` 缺省时为默认模型的参数表。报错写明核对所用的模型。 */
 function checkParams(
   label: string,
   params: Record<string, unknown>,
   specs: readonly MediaParamDefinition[],
+  pick: { provider: string; model: string } | undefined,
 ): void {
   for (const [name, value] of Object.entries(params)) {
     const spec = specs.find((p) => p.name === name)
     if (!spec) {
+      const source = pick ? `${pick.provider} / ${pick.model} ` : '默认模型'
       throw new Error(
-        `「${label}」的参数 ${name} 不存在。可用参数：${specs.map((p) => p.name).join('、')}`,
+        `「${label}」的参数 ${name} 不存在。${source}的可用参数：${specs.map((p) => p.name).join('、')}`,
       )
     }
     const problem = mediaParamProblem(spec, value)

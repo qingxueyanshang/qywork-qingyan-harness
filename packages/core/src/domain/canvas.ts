@@ -12,7 +12,15 @@
  *   替换为节点名称纯文本；修改提示词后新引用了未连接的节点时补充一条连线。
  */
 
-import { arrangeNew, CARD_GAP, keepSpacing, resizedCards } from './canvas-arrange.ts'
+import {
+  arrangeGrid,
+  arrangeNew,
+  type Box,
+  CARD_GAP,
+  closeGaps,
+  keepSpacing,
+  resizedCards,
+} from './canvas-arrange.ts'
 import {
   GENERATE_OUTPUTS,
   type GenerateOutput,
@@ -258,10 +266,18 @@ export interface CanvasOutput {
 
 /**
  * 一次运行或取回的结果。`params` 是实际发送的参数（画布只发送当前模式允许的取值，可能少于卡片上保存的参数）；
+ * `current` 是回写后卡片当前版本的路径：多张图片中只有第一张成为当前版本，其余为该卡的其他版本；
+ * 取回的不是当前版本时与产物不同；卡片没有版本时缺省。
  * `pending`：存在恢复记录，该版本保留以待取回。
  */
 export type CanvasRunResult =
-  | { ok: true; outputs: CanvasOutput[]; params: Record<string, unknown>; warning?: string }
+  | {
+      ok: true
+      outputs: CanvasOutput[]
+      params: Record<string, unknown>
+      current?: string
+      warning?: string
+    }
   | { ok: false; message: string; pending: boolean; diagnostic?: MediaDiagnostic }
 
 /** 批量运行按请求顺序返回每个节点的结果；skipped 表示该节点未提交生成。 */
@@ -277,7 +293,7 @@ export type CanvasMode = 'reference' | 'first_last'
 /**
  * 界面与大模型可提交的操作。
  *
- * 引用节点的字段（`id` / `from` / `to` / `beside` 与提示词中的 `@[…]`）接受节点 id、卡片名称或批内名称。
+ * 引用节点的字段（`id` / `from` / `to` / `beside` / `ids` 与提示词中的 `@[…]`）接受节点 id、卡片名称或批内名称。
  * `ref`：以 `$` 开头的批内名称，只在同一批中有效，应用结果返回名称到 id 的对照；界面据此取得新节点的 id。
  * 新增操作不给出位置（`x` / `y` / `beside` / `near`）时按 `group` 排位，见 `canvas-arrange.ts`。
  * `null` 表示清除该字段。
@@ -353,6 +369,8 @@ export type CanvasOp =
       /** 时间线的全部片段，整组替换。 */
       clips?: CanvasClip[]
       muted?: boolean
+      /** 改变时卡片移到新组所在列，排位与新卡相同；同一次操作给出 `x` / `y` 时以其为准。时间线没有组。 */
+      group?: string
     }
   /**
    * 替换生成节点提示词中的一段文字，`new` 为空时删除该段。`update` 的 `prompt` 是整体替换。
@@ -368,8 +386,15 @@ export type CanvasOp =
    * 不要改为断开后重连：断开连线的批次结束时，提示词中对它的 `@` 已替换为纯文本，之后再连接也不会恢复。
    */
   | { op: 'order_inputs'; id: string; inputs: string[] }
+  /** 删除带组的卡后，同列中紧挨在它下方的卡上移补上空位（`closeGaps`）。 */
   | { op: 'remove'; id: string; version?: string }
   | { op: 'set_mode'; id: string; mode: CanvasMode }
+  /**
+   * 把一组卡按名称排成网格，名称中的数字按数值比较（P2 在 P10 之前），每行 `perRow` 张，缺省 4 张（`arrangeGrid`）。
+   * `ids` 与 `group` 二选一，`group` 含其下以「组名/」开头的组。在本批其他操作与按组排位之后执行，
+   * 同一批中新增或换组的卡同样参与排列。
+   */
+  | { op: 'arrange'; ids?: string[]; group?: string; perRow?: number }
 
 export type CanvasResult =
   | { ok: true; doc: CanvasDoc; refs: Record<string, string> }
@@ -794,14 +819,17 @@ export function applyCanvasOps(
   }
 
   try {
-    const pending: string[] = []
-    for (const op of ops) applyOne(next, op, refs, pending, mint)
+    const later: Deferred = { pending: [], vacated: [], grids: [] }
+    for (const op of ops) applyOne(next, op, refs, later, mint)
     resolveInputMentions(doc, next, refs)
     keepMentionsConnected(doc, next, mint)
     syncTextInputs(doc, next)
-    // 先移动再排新卡：新卡按移动之后的位置排位，不再被移动一次。
+    // 先移动、补空位，再排新卡：新卡按移动之后的位置排位，不再被移动一次。
     keepSpacing(next, resizedCards(doc, next))
-    arrangeNew(next, pending)
+    closeGaps(next, later.vacated)
+    arrangeNew(next, later.pending)
+    // 网格最后排列：本批新增或换组的卡此时已有位置。
+    for (const grid of later.grids) arrangeGrid(next, gridCards(next, grid), grid.perRow)
   } catch (err) {
     if (err instanceof CanvasError) return { ok: false, error: err.message }
     throw err
@@ -810,11 +838,41 @@ export function applyCanvasOps(
   return problem ? { ok: false, error: problem } : { ok: true, doc: next, refs }
 }
 
+/** 本批全部操作之后才执行的排位：待按组排位的节点、带组的卡空出的框、待排成网格的卡。 */
+interface Deferred {
+  pending: string[]
+  vacated: Box[]
+  grids: Grid[]
+}
+
+/** 一条 `arrange`：`ids` 在该条操作时已换成节点 id，`group` 在全部操作之后取组内的卡。 */
+type Grid = { perRow: number } & ({ ids: string[] } | { group: string })
+
+/** `arrange` 每行的缺省张数。 */
+const GRID_PER_ROW = 4
+/** `arrange` 的排列顺序：名称中的数字按数值比较，P2 在 P10 之前。 */
+const NAME_ORDER = new Intl.Collator('zh', { numeric: true })
+
+/** 一条 `arrange` 在本批之后要排列的卡，按名称排序；本批中已删除的卡不计入。 */
+function gridCards(doc: CanvasDoc, grid: Grid): CanvasNode[] {
+  const cards =
+    'ids' in grid
+      ? doc.nodes.filter((n) => grid.ids.includes(n.id))
+      : doc.nodes.filter(
+          (n) =>
+            n.type !== 'timeline' &&
+            (n.group === grid.group || n.group?.startsWith(`${grid.group}/`) === true),
+        )
+  if (!cards.length)
+    fail('group' in grid ? `组「${grid.group}」中没有卡片` : 'ids 中的卡已全部删除')
+  return cards.sort((a, b) => NAME_ORDER.compare(displayNameOf(a), displayNameOf(b)))
+}
+
 function applyOne(
   doc: CanvasDoc,
   op: CanvasOp,
   refs: Record<string, string>,
-  pending: string[],
+  later: Deferred,
   mint: () => string,
 ): void {
   const resolve = (ref: string): string => resolveRef(doc, refs, ref)
@@ -829,7 +887,7 @@ function applyOne(
       node.x = Number.NaN
       node.y = Number.NaN
       if (node.type !== 'timeline') node.group ??= defaultGroup(node)
-      pending.push(node.id)
+      later.pending.push(node.id)
     }
     doc.nodes.push(node)
   }
@@ -915,6 +973,7 @@ function applyOne(
       }
       const node = doc.nodes.find((n) => n.id === id) ?? fail(`目标已不存在：${op.id}`)
       if (op.role !== undefined) fail('节点没有用途，用途属于连线')
+      const box = { x: node.x, y: node.y, w: node.w, h: node.h }
       if (op.x !== undefined) node.x = op.x
       if (op.y !== undefined) node.y = op.y
       if (op.w !== undefined) node.w = op.w
@@ -928,6 +987,7 @@ function applyOne(
           'current',
           'path',
           'excerpt',
+          'group',
         ] as const) {
           if (op[key] !== undefined) fail(`时间线没有 ${key}`)
         }
@@ -941,6 +1001,17 @@ function applyOne(
           if (op.h === undefined) node.h = timelineHeight(node.clips)
         }
         return
+      }
+      // 换组即移到新组所在的列，与新卡一样留待全部操作完成后排位；原位置由同列下方的卡补上。
+      // 尚未排位的卡（同一批中新增或已换组）只改组，排位时按新组。
+      if (op.group !== undefined && op.group !== node.group) {
+        node.group = op.group
+        if (op.x === undefined && op.y === undefined && Number.isFinite(box.x)) {
+          later.vacated.push(box)
+          node.x = Number.NaN
+          node.y = Number.NaN
+          later.pending.push(node.id)
+        }
       }
       if (op.clips !== undefined || op.muted !== undefined) fail('只有时间线有片段与静音')
       if (node.type === 'file') {
@@ -1068,9 +1139,29 @@ function applyOne(
         doc.edges = doc.edges.filter((e) => e.id !== id)
         return
       }
-      if (!doc.nodes.some((n) => n.id === id)) fail(`目标已不存在：${op.id}`)
+      const node = doc.nodes.find((n) => n.id === id) ?? fail(`目标已不存在：${op.id}`)
+      if (node.type !== 'timeline' && node.group !== undefined) {
+        later.vacated.push({ x: node.x, y: node.y, w: node.w, h: node.h })
+      }
       doc.nodes = doc.nodes.filter((n) => n.id !== id)
       doc.edges = doc.edges.filter((e) => e.from !== id && e.to !== id)
+      return
+    }
+    case 'arrange': {
+      if ((op.ids === undefined) === (op.group === undefined)) fail('ids 与 group 须给出其中一个')
+      const perRow = op.perRow ?? GRID_PER_ROW
+      if (!Number.isInteger(perRow) || perRow < 1) fail(`perRow 须为正整数：${perRow}`)
+      if (op.group !== undefined) {
+        later.grids.push({ group: op.group, perRow })
+        return
+      }
+      if (!op.ids?.length) fail('ids 不能为空')
+      const ids = op.ids.map((ref) => {
+        const id = resolve(ref)
+        if (!doc.nodes.some((n) => n.id === id)) fail(`「${ref}」不是卡片`)
+        return id
+      })
+      later.grids.push({ ids, perRow })
       return
     }
     case 'set_mode': {
@@ -1753,6 +1844,7 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     role: 'edgeRole',
     clips: 'clips',
     muted: 'boolean',
+    group: 'string',
   },
   edit_prompt: {
     'op!': 'string',
@@ -1773,6 +1865,7 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
   order_inputs: { 'op!': 'string', 'id!': 'string', 'inputs!': 'strings' },
   remove: { 'op!': 'string', 'id!': 'string', version: 'string' },
   set_mode: { 'op!': 'string', 'id!': 'string', 'mode!': 'mode' },
+  arrange: { 'op!': 'string', ids: 'strings', group: 'string', perRow: 'number' },
 }
 
 /** 核对界面或大模型提交的一批操作。版本不在可提交的字段中：带 `versions` 的操作一律拒绝。 */
