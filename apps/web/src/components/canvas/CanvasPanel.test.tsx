@@ -346,12 +346,21 @@ async function mount(
   // 模型目录在模块中只获取一次；同一进程中先运行的测试文件可能已获取过其他目录。
   await store.reloadModelCatalog()
   const { render } = await import('solid-js/web')
+  const { Suspense } = await import('solid-js')
   const { default: CanvasPanel } = await import('./CanvasPanel.tsx')
   const host = document.createElement('div')
   host.style.width = '1000px'
   host.style.height = '700px'
   document.body.append(host)
-  dispose = render(() => <CanvasPanel path="board.canvas.json" active />, host)
+  // 与侧栏相同，包在 Suspense 中：组件内读取尚在获取的 resource 时，整块画布被占位替换。
+  dispose = render(
+    () => (
+      <Suspense fallback={<div class="suspended" />}>
+        <CanvasPanel path="board.canvas.json" active />
+      </Suspense>
+    ),
+    host,
+  )
   await waitFor(
     () => host.querySelectorAll('[data-node]').length === doc.nodes.length && doc.nodes.length > 0,
     () => host.innerHTML.slice(0, 300),
@@ -844,6 +853,52 @@ describe('画布：节点操作', () => {
       store.setFileSelectRequest(null)
       store.setOpenFile(null)
       store.setWorkspace(workspace)
+    }
+  })
+
+  /** 原始失败形状：生成时每次写文件文件版本加一，文本卡重新读取期间外层 Suspense 显示占位，整块画布闪烁。 */
+  test('文件版本变化时文本卡重新读取，画布不被占位替换', async () => {
+    let reads = 0
+    const original = globalThis.fetch
+    globalThis.fetch = (async (url: string) => {
+      if (!String(url).includes(encodeURIComponent('脚本.md'))) return original(url)
+      reads += 1
+      await new Promise((r) => setTimeout(r, 30))
+      return new Response('## 1-1\n推门。\n')
+    }) as unknown as typeof fetch
+    try {
+      const { host } = await mount([
+        {
+          op: 'add_file',
+          path: '脚本.md',
+          name: '1-1 段',
+          excerpt: { start: '推门', end: '。' },
+          x: 0,
+          y: 0,
+        },
+      ])
+      const text = () => host.querySelector('.canvas-text')?.textContent
+      await waitFor(
+        () => text() === '推门。',
+        () => text() ?? '',
+      )
+      const store = await import('../../lib/store/index.ts')
+      let suspended = false
+      const watch = new MutationObserver(() => {
+        if (host.querySelector('.suspended')) suspended = true
+      })
+      watch.observe(host, { childList: true, subtree: true })
+      store.setState('fileVersion', store.state.fileVersion + 1)
+      await waitFor(
+        () => reads === 2,
+        () => `reads=${reads}`,
+      )
+      await new Promise((r) => setTimeout(r, 60))
+      watch.disconnect()
+      expect(suspended).toBe(false)
+      expect(text()).toBe('推门。')
+    } finally {
+      globalThis.fetch = original
     }
   })
 

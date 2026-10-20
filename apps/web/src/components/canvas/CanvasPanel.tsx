@@ -48,6 +48,7 @@ import {
   Switch,
 } from 'solid-js'
 import { Portal } from 'solid-js/web'
+import { loaded } from '../../lib/resource.ts'
 import { readSession, SET_CODEC, sessionSignal } from '../../lib/session.ts'
 import {
   absPath,
@@ -1631,7 +1632,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
         return r.ok ? r.text : r.error
       },
     )
-    return <div class="canvas-text">{text() ?? ''}</div>
+    // 使用 `loaded()`，不要改为 `text()`：重新读取期间后者使外层 Suspense 显示占位，生成时每次写文件整块画布闪烁一次。
+    return <div class="canvas-text">{loaded(text) ?? ''}</div>
   }
 
   /** `w` 是节点的画布宽度，图片按该宽度乘以当前缩放与设备像素比解码。 */
