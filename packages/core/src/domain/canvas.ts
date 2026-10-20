@@ -689,11 +689,13 @@ const GENERATE_SIZE: Record<GenerateOutput, [number, number]> = {
   audio: [300, 96],
   art: [300, 169],
 }
-const FILE_SIZE: Record<GenerateOutput | 'other', [number, number]> = {
+/** 文件卡的缺省框。文本卡与 16:9 的视频生成卡相同：两者常并排成列，框高一致时两列对齐，文本卡也能显示开头七八行。 */
+const FILE_SIZE: Record<CanvasFileKind | 'other', [number, number]> = {
   image: [225, 169],
   video: [300, 169],
   audio: [300, 96],
   art: [300, 169],
+  text: [300, 169],
   other: [220, 138],
 }
 /**
@@ -844,8 +846,7 @@ function applyOne(
       if (!isRelativePath(op.path)) fail(`不是工作区中的相对路径：${op.path}`)
       const id = mint()
       claim(op.ref, id)
-      const kind = canvasMediaOf({ id, type: 'file', path: op.path, x: 0, y: 0, w: 0, h: 0 })
-      const [dw, dh] = FILE_SIZE[kind ?? 'other']
+      const [dw, dh] = FILE_SIZE[canvasFileKind(op.path) ?? 'other']
       const fit = op.size ? fitBox({ w: dw, h: dh }, op.size) : { w: dw, h: dh }
       const node: CanvasFileNode = {
         id,
