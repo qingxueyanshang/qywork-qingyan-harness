@@ -766,6 +766,15 @@ export function claudeCatalog(): ModelSpec[] {
     },
     {
       ...CLAUDE_BASE,
+      id: 'claude-sonnet-5-5',
+      displayName: 'Claude Sonnet 5.5',
+      // 2026-10-20 核对：https://platform.claude.com/docs/en/models/sonnet-5-5/overview
+      pricing: { ...anthropicPricing(2, 10), cacheRead: 0.1 },
+      thinksByDefault: true,
+      minCacheablePrefix: 512,
+    },
+    {
+      ...CLAUDE_BASE,
       id: 'claude-fable-5-1',
       displayName: 'Claude Fable 5.1',
       // 5.1 的缓存读取是输入价的 0.025 倍；写入仍是 1.25 / 2 倍。

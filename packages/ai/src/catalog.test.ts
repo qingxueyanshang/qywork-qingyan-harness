@@ -103,6 +103,34 @@ test('Claude Opus 5.5 的官方价格、缓存与恒开思考规格', () => {
   })
 })
 
+test('Claude Sonnet 5.5 使用官方规格与缓存价格，长上下文不加价', () => {
+  const sonnet = lookupModel('claude-sonnet-5-5', 'anthropic_messages')
+  expect(sonnet).toMatchObject({
+    displayName: 'Claude Sonnet 5.5',
+    provider: 'anthropic_messages',
+    vendor: 'anthropic',
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    vision: true,
+    video: false,
+    thinking: 'adaptive_only',
+    thinksByDefault: true,
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    minCacheablePrefix: 512,
+    pricing: { input: 2, output: 10, cacheRead: 0.1, cacheWrite5m: 2.5, cacheWrite1h: 4 },
+  })
+  expect(reasoningReplay(sonnet)).toEqual({ opaque: true, text: 'none' })
+  expect(
+    computeCost(sonnet, {
+      inputTokens: 100_000,
+      outputTokens: 10_000,
+      cachedTokens: 600_000,
+      cacheWriteTokens: 200_000,
+    }),
+  ).toBe(0.86)
+  expect(lookupModel('claude-sonnet-5', 'anthropic_messages').pricing.cacheRead).toBe(0.2)
+})
+
 describe('模型库与端点校验的优先级', () => {
   const transport = {
     effort: true,

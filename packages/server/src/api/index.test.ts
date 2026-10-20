@@ -991,6 +991,36 @@ describe('模型目录', () => {
     }
   })
 
+  test('Sonnet 5.5 的规格、缓存价格与思考档位进入模型库和已配置列表', async () => {
+    const b = await body(withConfig('anthropic_messages', 'claude-sonnet-5-5'))
+    const rows = b.library
+      .find((v) => v.id === 'anthropic')!
+      .models.filter((m) => m.id === 'claude-sonnet-5-5')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      label: 'Claude Sonnet 5.5',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      vision: true,
+      thinksByDefault: true,
+      effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      input: 2,
+      output: 10,
+      cacheRead: 0.1,
+      cacheWrite: 2.5,
+      currency: 'USD',
+    })
+    expect(b.providers[0]!.models[0]).toMatchObject({
+      id: 'claude-sonnet-5-5',
+      label: 'Claude Sonnet 5.5',
+      known: true,
+      defaultBaseUrl: 'https://api.anthropic.com',
+      vision: true,
+      video: false,
+      effortLevels: rows[0]!.effortLevels,
+    })
+  })
+
   test('MiMo 的三种协议规格同时进入模型库与已配置列表', async () => {
     for (const kind of ['openai_chat_completions', 'openai_responses', 'anthropic_messages']) {
       const b = await body(withConfig(kind, 'mimo-v2.6-pro'))

@@ -102,6 +102,21 @@ async function send(
 }
 
 describe('思考档位严格遵守用户选择', () => {
+  test('Sonnet 5.5 发送五档自适应思考与摘要，未选择或不支持的档位使用默认值', async () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max', undefined, 'minimal'] as const) {
+      const body = await send([{ role: 'user', content: 'hi' }], effort, 'claude-sonnet-5-5', {
+        thinking: 'always_on',
+      })
+      expect(body.model).toBe('claude-sonnet-5-5')
+      expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+      expect(body.output_config).toEqual(effort && effort !== 'minimal' ? { effort } : undefined)
+      expect(body.max_tokens).toBe(16_000)
+      for (const field of ['temperature', 'top_p', 'top_k', 'tool_choice']) {
+        expect(body).not.toHaveProperty(field)
+      }
+    }
+  })
+
   test('Claude 恒开思考模型请求摘要，旧检测记录不覆盖模型库声明', async () => {
     for (const model of ['claude-opus-5-5', 'claude-fable-5-1', 'claude-fable-5']) {
       for (const effort of ['medium', 'xhigh'] as const) {
@@ -428,6 +443,51 @@ async function capture(events: Record<string, unknown>[]): Promise<ProviderEvent
 }
 
 describe('原生思考块', () => {
+  test('Sonnet 5.5 的思考摘要可见，工具续接按原位置回传签名与密文', async () => {
+    reply = sse([
+      { ...START, message: { ...START.message, model: 'claude-sonnet-5-5' } },
+      ...THINKING_TURN.slice(1),
+      { type: 'message_stop' },
+    ])
+    try {
+      await send([{ role: 'user', content: '读 a.ts' }], 'high', 'claude-sonnet-5-5')
+    } finally {
+      reply = SSE
+    }
+    expect(lastEvents).toContainEqual(
+      expect.objectContaining({ type: 'thinking_delta', delta: '先看' }),
+    )
+    const reasoning = lastEvents.find((event) => event.type === 'response_reasoning')
+    const toolCalls = lastEvents.find((event) => event.type === 'tool_calls')
+    if (reasoning?.type !== 'response_reasoning' || toolCalls?.type !== 'tool_calls') {
+      throw new Error('响应缺少原生思考或工具调用')
+    }
+    const body = await send(
+      [
+        { role: 'user', content: '读 a.ts' },
+        {
+          role: 'assistant',
+          content: '读一下',
+          responseReasoning: reasoning.reasoning,
+          toolCalls: toolCalls.calls,
+        },
+        { role: 'tool', toolCallId: 'toolu_1', content: '文件内容' },
+      ],
+      'high',
+      'claude-sonnet-5-5',
+    )
+    const messages = body.messages as { content: Record<string, unknown>[] }[]
+    expect(messages[1]?.content).toEqual([
+      { type: 'thinking', thinking: '先看', signature: 'sig-a1sig-a2' },
+      { type: 'text', text: '读一下' },
+      { type: 'redacted_thinking', data: 'cipher' },
+      { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'a.ts' } },
+    ])
+    expect(messages[2]?.content).toEqual([
+      { type: 'tool_result', tool_use_id: 'toolu_1', content: '文件内容' },
+    ])
+  })
+
   test('采集签名、密文与位置锚，思考 token 取自回执', async () => {
     const events = await capture([...THINKING_TURN, { type: 'message_stop' }])
     expect(bodies[0]?.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
