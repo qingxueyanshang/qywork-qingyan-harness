@@ -15,6 +15,7 @@ import {
   modeOf,
   parseCanvas,
   parseCanvasOps,
+  promptInputProblems,
   recordRun,
   serializeCanvas,
   settleVersion,
@@ -1548,6 +1549,35 @@ describe('画布：文本卡引用', () => {
       '@[制作脚本#1-9 结尾]：文件不存在',
       '@[制作脚本#1-2 入梦]：文件不存在',
     ])
+  })
+
+  test('运行前核对：手写的图片编号与连线数量不一致时报告；以 @[卡片] 引用的素材与正文中的「图片」二字不计入', () => {
+    const two = apply(withScript(), [
+      { op: 'update', id: 'a3', prompt: '@图片1 用于阿七的脸。@图片2 用于院子。' },
+      { op: 'connect', from: '小满', to: '1-2 入梦', role: 'reference' },
+    ])
+    expect(promptInputProblems(two, 'a3')).toEqual([
+      '提示词引用至图片2，该卡连接了1张图片；图片编号须与连线数量一致',
+    ])
+    const one = apply(two, [
+      { op: 'update', id: 'a3', prompt: '@图片1 用于阿七的脸，不采用图片背景。' },
+    ])
+    expect(promptInputProblems(one, 'a3')).toEqual([])
+    const named = apply(withScript(), [{ op: 'update', id: 'a3', prompt: '@[小满] 用于阿七的脸' }])
+    expect(promptInputProblems(named, 'a3')).toEqual([])
+  })
+
+  test('运行前核对：引用展开后的文本仍含 @[…] 时报告', () => {
+    const doc = apply(withScript(), [
+      { op: 'update', id: 'a3', prompt: '@[制作脚本#1-2 入梦]' },
+      { op: 'connect', from: '小满', to: '1-2 入梦', role: 'reference' },
+    ])
+    const texts = new Map([['a1', '## 1-2 入梦\n@[小满]用于阿七的脸。\n']])
+    expect(promptInputProblems(doc, 'a3', texts)).toEqual([
+      '引用展开后仍含 @[小满]，该引用不会转换为素材编号，将按原文发送给模型',
+    ])
+    const fixed = new Map([['a1', '## 1-2 入梦\n@图片1用于阿七的脸。\n']])
+    expect(promptInputProblems(doc, 'a3', fixed)).toEqual([])
   })
 
   test('复制卡片时保留引用的标题', () => {

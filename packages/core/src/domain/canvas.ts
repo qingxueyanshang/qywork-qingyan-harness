@@ -586,6 +586,58 @@ export function compilePrompt(
   })
 }
 
+/** 提示词中手写的素材编号，如 `图片3`、`@图片3`、`@Image3`；音频编号同理。 */
+const NUMBERED_INPUT_RE = {
+  image: /(?:图片|Image|image)\s?(\d{1,2})(?!\d)/g,
+  audio: /(?:音频|Audio|audio)\s?(\d{1,2})(?!\d)/g,
+} as const
+const NUMBERED_LABEL = { image: '图片', audio: '音频' } as const
+const NUMBERED_UNIT = { image: '张', audio: '段' } as const
+const LEFT_MENTION_RE = /@\[[^[\]\n]{1,200}\]/g
+
+/**
+ * 运行前核对提示词与输入。只检查展开引用后的文本（`compilePrompt` 不套用写法的结果），不依赖文本引用的段落定位方式。
+ * - 手写的 `图片N` / `音频N` 的最大编号须等于连接到该卡的同类参考素材数量：多出的素材同样会发送，
+ *   超出连线数量的编号指向不存在的素材。以 `@[卡片]` 引用素材时由编译统一编号，不属于本项检查。
+ * - 展开后的文本不得含有 `@[…]`：引用只展开一层，文本卡中的 `@[名称]` 会按原文发送给模型。
+ */
+export function promptInputProblems(
+  doc: CanvasDoc,
+  nodeId: string,
+  texts: ReadonlyMap<string, string> = new Map(),
+): string[] {
+  const node = doc.nodes.find((n) => n.id === nodeId)
+  if (node?.type !== 'generate') return []
+  const text = compilePrompt(doc, nodeId, {}, texts)
+  const sources = { image: new Set<string>(), audio: new Set<string>() }
+  for (const edge of mediaInputsOf(doc, nodeId)) {
+    if (edge.role === 'first_frame' || edge.role === 'last_frame') continue
+    const source = doc.nodes.find((n) => n.id === edge.from)
+    const kind = source && canvasMediaOf(source)
+    if (kind === 'image' || kind === 'audio') sources[kind].add(edge.from)
+  }
+  const problems: string[] = []
+  for (const kind of ['image', 'audio'] as const) {
+    const numbers = [...text.matchAll(NUMBERED_INPUT_RE[kind])].map((m) => Number(m[1]))
+    if (!numbers.length) continue
+    const top = Math.max(...numbers)
+    const count = sources[kind].size
+    if (top !== count) {
+      const label = NUMBERED_LABEL[kind]
+      problems.push(
+        `提示词引用至${label}${top}，该卡连接了${count}${NUMBERED_UNIT[kind]}${label}；${label}编号须与连线数量一致`,
+      )
+    }
+  }
+  const left = [...new Set([...text.matchAll(LEFT_MENTION_RE)].map((m) => m[0]))]
+  if (left.length) {
+    problems.push(
+      `引用展开后仍含 ${left.slice(0, 3).join('、')}，该引用不会转换为素材编号，将按原文发送给模型`,
+    )
+  }
+  return problems
+}
+
 /** 一个生成节点的输入线，按输入顺序。 */
 export function inputsOf(doc: CanvasDoc, nodeId: string): CanvasEdge[] {
   return doc.edges.filter((e) => e.to === nodeId)

@@ -63,6 +63,7 @@ import {
   mediaOperationFor,
   newCanvasId,
   parseCanvas,
+  promptInputProblems,
   recordRun,
   resolveArtRef,
   serializeCanvas,
@@ -572,6 +573,10 @@ export class CanvasService {
     const broken = textReferenceProblems(doc, nodeId, texts)
     if (broken.length) {
       throw new CanvasFailure(`「${node.name}」的提示词引用不成立：${broken.join('；')}`, 422)
+    }
+    const mismatched = promptInputProblems(doc, nodeId, texts)
+    if (mismatched.length) {
+      throw new CanvasFailure(`「${node.name}」${mismatched.join('；')}`, 422)
     }
     for (const edge of mediaInputsOf(doc, nodeId)) {
       const source = doc.nodes.find((n) => n.id === edge.from)!
