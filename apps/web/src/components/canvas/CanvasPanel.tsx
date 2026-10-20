@@ -13,6 +13,7 @@ import {
   blankBox,
   type CanvasDoc,
   type CanvasEdgeRole,
+  type CanvasExcerpt,
   type CanvasGenerateNode,
   type CanvasNode,
   type CanvasOp,
@@ -23,6 +24,7 @@ import {
   canvasRunLabel,
   copyOps,
   displayNameOf,
+  excerptOf,
   GENERATE_OUTPUTS,
   type GenerateOutput,
   inputsOf,
@@ -1571,13 +1573,46 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
   // ── 节点 ──
 
-  function TextPreview(p: { path: string }) {
+  const excerptOfNode = (id: string): CanvasExcerpt | undefined => {
+    const node = byId(id)
+    return node?.type === 'file' ? node.excerpt : undefined
+  }
+
+  /** 摘录卡读取的文件全文：同一文件的各张摘录卡共用一次读取，`fileVersion` 变化后重新读取。 */
+  let fileTexts = { version: -1, texts: new Map<string, Promise<string | null>>() }
+  const fileText = (path: string): Promise<string | null> => {
+    if (fileTexts.version !== state.fileVersion) {
+      fileTexts = { version: state.fileVersion, texts: new Map() }
+    }
+    let text = fileTexts.texts.get(path)
+    if (!text) {
+      text = fetch(client.fileUrl(path), { cache: 'no-store' }).then(
+        (r) => (r.ok ? r.text() : null),
+        () => null,
+      )
+      fileTexts.texts.set(path, text)
+    }
+    return text
+  }
+
+  /**
+   * 文本卡的正文：整篇卡为文件开头，摘录卡为摘录的文字（与运行时发送的相同），无法定位时为原因。
+   * 摘录可能位于长文件的任意位置，因此读取全文定位；文件修改后随 `fileVersion` 重新读取。
+   */
+  function TextPreview(p: { path: string; excerpt: CanvasExcerpt | undefined }) {
     const [text] = createResource(
-      () => p.path,
-      (path) =>
-        client
-          .api<{ content?: string }>(`/api/files/preview?path=${encodeURIComponent(path)}`)
-          .then((r) => (r.content ?? '').slice(0, 600)),
+      () => [p.path, p.excerpt && JSON.stringify(p.excerpt), state.fileVersion] as const,
+      async ([path]) => {
+        if (!p.excerpt) {
+          return client
+            .api<{ content?: string }>(`/api/files/preview?path=${encodeURIComponent(path)}`)
+            .then((r) => (r.content ?? '').slice(0, 600))
+        }
+        const whole = await fileText(path)
+        if (whole === null) return ''
+        const r = excerptOf(whole, p.excerpt)
+        return r.ok ? r.text : r.error
+      },
     )
     return <div class="canvas-text">{text() ?? ''}</div>
   }
@@ -1604,7 +1639,7 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
               </div>
             }
           >
-            <TextPreview path={p.path} />
+            <TextPreview path={p.path} excerpt={excerptOfNode(p.nodeId)} />
           </Show>
         }
       >

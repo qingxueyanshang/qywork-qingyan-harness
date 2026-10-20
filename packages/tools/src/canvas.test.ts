@@ -265,12 +265,22 @@ describe('canvas 工具', () => {
     expect(lone.message).toContain('输入：无，只按提示词生成')
   })
 
-  test('read 在概况与全文中标出失效的文本引用', async () => {
+  test('read 列出摘录卡的摘录，并在概况与全文中标出失效的摘录卡与引用它的卡', async () => {
     const { port } = fakePort(DONE)
-    const broken = '@[脚本#1-2 入梦]：文中没有标题「1-2 入梦」'
-    port.read = async () => ({ ...view(), references: { id2: [broken] } })
+    const excerpt = { after: '## 1-2 入梦', start: '阿七说', end: '。' }
+    const card = { id: 'id3', type: 'file' as const, path: '脚本.md', name: '1-2 段', excerpt }
+    const own = '文中没有 after 「## 1-2 入梦」'
+    const broken = `@[1-2 段]：${own}`
+    port.read = async () => {
+      const v = view()
+      const doc = { ...v.doc, nodes: [...v.doc.nodes, { ...card, x: 0, y: 0, w: 220, h: 64 }] }
+      return { ...v, doc, references: { id2: [broken], id3: [own] } }
+    }
     const one = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
     expect(one.message).toContain(`提示词 11 字；引用失效：${broken}`)
+    expect(one.message).toContain(
+      `- id3 文件「1-2 段」脚本.md，摘录 ${JSON.stringify(excerpt)}（正常）\n  引用失效（运行前须修正）：${own}`,
+    )
     const full = await readCanvasTool.fn({ path: 'board.canvas.json', node: ['视频1'] }, ctx(port))
     expect(full.message).toContain(`  引用失效（运行前须修正）：${broken}`)
   })

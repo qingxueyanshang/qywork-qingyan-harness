@@ -57,6 +57,7 @@ import {
   emptyCanvas,
   type GenerateOutput,
   inputsOf,
+  isTextCard,
   type MediaParamDefinition,
   type MentionStyle,
   mediaInputsOf,
@@ -1115,12 +1116,13 @@ export class CanvasService {
   }
 
   /**
-   * 工作区中引用文本文件 `path` 的画布卡片，以及其中按文件当前内容已不成立的引用。
-   * 供文件工具在写入 .md / .txt 后告知模型：改动会进入哪些卡下次发送的提示词、哪些引用的标题已不存在。
-   * 无法读取的画布跳过：它们在被读取或运行时各自报错。
+   * 工作区中引用文本文件 `path` 的画布卡片，以及其中按文件当前内容已无法定位的摘录卡。
+   * 供文件工具在写入 .md / .txt 后告知模型：改动会进入哪些卡下次发送的提示词、哪些摘录卡须重新给出摘录。
+   * 同一文件可有多张文本卡（整篇卡与各摘录卡）。无法读取的画布跳过：它们在被读取或运行时各自报错。
    */
   async textReferences(workspaceRoot: string, path: string): Promise<string[]> {
     const lines: string[] = []
+    const cache = new Map<string, string | null>()
     for (const canvas of await this.list(workspaceRoot)) {
       let doc: CanvasDoc
       try {
@@ -1128,25 +1130,27 @@ export class CanvasService {
       } catch {
         continue
       }
-      const file = doc.nodes.find((n) => n.type === 'file' && n.path === path)
-      if (!file) continue
-      const users = doc.edges
-        .filter((e) => e.from === file.id && e.role === 'text')
-        .map((e) => e.to)
-      if (!users.length) continue
-      const names = users.map((id) => {
-        const n = doc.nodes.find((x) => x.id === id)
-        return n ? displayNameOf(n) : id
-      })
-      lines.push(
-        `画布 ${canvas} 中 ${users.length} 张卡引用此文件（${names.join('、')}），下次运行时发送修改后的内容。`,
-      )
-      const cache = new Map<string, string | null>()
-      const label = `@[${displayNameOf(file)}`
-      for (const [i, id] of users.entries()) {
-        const texts = await this.textsOf(workspaceRoot, doc, id, cache)
-        for (const p of textReferenceProblems(doc, id, texts)) {
-          if (p.startsWith(label)) lines.push(`引用失效：「${names[i]}」${p}`)
+      const cards = doc.nodes.filter((n) => n.type === 'file' && n.path === path)
+      if (!cards.length) continue
+      const ids = new Set(cards.map((n) => n.id))
+      const users = [
+        ...new Set(doc.edges.filter((e) => ids.has(e.from) && e.role === 'text').map((e) => e.to)),
+      ]
+      if (users.length) {
+        const names = users.map((id) => {
+          const n = doc.nodes.find((x) => x.id === id)
+          return n ? displayNameOf(n) : id
+        })
+        lines.push(
+          `画布 ${canvas} 中 ${users.length} 张卡引用此文件（${names.join('、')}），下次运行时发送修改后的内容。`,
+        )
+      }
+      for (const card of cards) {
+        const texts = await this.textsOf(workspaceRoot, doc, card.id, cache)
+        for (const p of textReferenceProblems(doc, card.id, texts)) {
+          lines.push(
+            `引用失效：画布 ${canvas} 的「${displayNameOf(card)}」${p}；用 edit_canvas 的 update 给出新的 excerpt。`,
+          )
         }
       }
     }
@@ -1197,8 +1201,8 @@ export class CanvasService {
   }
 
   /**
-   * 生成卡引用的文本卡文件当前的内容，按节点 id。文件不存在或无法读取时不提供该项，
-   * 由 `textReferenceProblems` 报为失效。`cache` 按路径复用同一次读取画布中已读的文件。
+   * 文本卡文件当前的内容，按节点 id：`nodeId` 为生成卡时是它引用的文本卡，为文本卡时是它本身。
+   * 文件不存在或无法读取时不提供该项，由 `textReferenceProblems` 报为失效。`cache` 按路径复用同一次读取画布中已读的文件。
    */
   private async textsOf(
     root: string,
@@ -1207,10 +1211,15 @@ export class CanvasService {
     cache = new Map<string, string | null>(),
   ): Promise<Map<string, string>> {
     const texts = new Map<string, string>()
-    for (const edge of inputsOf(doc, nodeId)) {
-      if (edge.role !== 'text') continue
-      const source = doc.nodes.find((n) => n.id === edge.from)
-      if (source?.type !== 'file') continue
+    const sources = [
+      nodeId,
+      ...inputsOf(doc, nodeId)
+        .filter((e) => e.role === 'text')
+        .map((e) => e.from),
+    ]
+    for (const id of sources) {
+      const source = doc.nodes.find((n) => n.id === id)
+      if (source?.type !== 'file' || !isTextCard(source)) continue
       if (!cache.has(source.path)) {
         cache.set(source.path, await readFile(join(root, source.path), 'utf8').catch(() => null))
       }
@@ -1483,7 +1492,7 @@ export class CanvasService {
     const references: Record<string, string[]> = {}
     const read = new Map<string, string | null>()
     for (const node of doc.nodes) {
-      if (node.type === 'generate') {
+      if (node.type === 'generate' || isTextCard(node)) {
         const texts = await this.textsOf(workspaceRoot, doc, node.id, read)
         const broken = textReferenceProblems(doc, node.id, texts)
         if (broken.length) references[node.id] = broken

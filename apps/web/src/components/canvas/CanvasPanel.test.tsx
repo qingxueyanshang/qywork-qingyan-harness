@@ -2338,7 +2338,7 @@ describe('画布：生成卡与生成面板', () => {
     )
   })
 
-  test('@ 选择文本卡后选择段落：提示词写入带标题的引用，并连接文本线', async () => {
+  test('@ 列出整篇卡与摘录卡，选中即写入引用并连接文本线；点击标签显示摘录的文字', async () => {
     const original = globalThis.fetch
     globalThis.fetch = ((url: string) =>
       String(url).includes(encodeURIComponent('制作脚本.md'))
@@ -2347,6 +2347,15 @@ describe('画布：生成卡与生成面板', () => {
     try {
       const { host, server, refs } = await mount([
         { op: 'add_file', ref: '$t', path: '制作脚本.md', name: '制作脚本', x: 0, y: 0 },
+        {
+          op: 'add_file',
+          ref: '$e',
+          path: '制作脚本.md',
+          name: '1-2 段',
+          excerpt: { after: '## 1-2 入梦', start: '握手', end: '。' },
+          x: 0,
+          y: 200,
+        },
         { op: 'add_generate', ref: '$v', output: 'video', x: 300, y: 0 },
       ])
       await select(host, refs.$v!)
@@ -2357,35 +2366,28 @@ describe('画布：生成卡与生成面板', () => {
         ...document.querySelectorAll<HTMLButtonElement>('.canvas-pick-list > button'),
       ]
       await waitFor(
-        () => choices().length === 1,
+        () => choices().length === 2,
         () => document.body.innerHTML.slice(-300),
       )
-      expect(choices()[0]!.textContent).toBe('制作脚本')
-      choices()[0]!.click()
-      const sections = () => [
-        ...document.querySelectorAll<HTMLButtonElement>('.canvas-section-pick button'),
-      ]
-      await waitFor(
-        () => sections().length === 3,
-        () => document.body.innerHTML.slice(-300),
-      )
-      expect(sections().map((b) => b.textContent)).toEqual(['整篇', '1-1 修车铺', '1-2 入梦'])
-      sections()[2]!.click()
+      expect(choices().map((b) => b.textContent)).toEqual(['制作脚本', '1-2 段'])
+      choices()[1]!.click()
       await waitFor(
         () => server.ops.length === 1,
         () => '',
       )
-      expect(server.ops[0]).toEqual([
-        { op: 'update', id: refs.$v!, prompt: `@[${refs.$t!}#1-2 入梦] ` },
-      ])
+      expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$v!, prompt: `@[${refs.$e!}] ` }])
       expect(server.doc().edges.map((e) => [e.from, e.to, e.role])).toEqual([
-        [refs.$t!, refs.$v!, 'text'],
+        [refs.$e!, refs.$v!, 'text'],
       ])
+      const tag = () => host.querySelector<HTMLElement>('.canvas-prompt .canvas-chip.text')
       await waitFor(
-        () =>
-          host.querySelector('.canvas-prompt .canvas-chip.text')?.textContent ===
-          '制作脚本#1-2 入梦',
+        () => tag()?.textContent === '1-2 段',
         () => host.querySelector('.canvas-prompt')?.innerHTML ?? '',
+      )
+      tag()!.click()
+      await waitFor(
+        () => host.querySelector('.canvas-text-preview')?.textContent === '握手。',
+        () => host.querySelector('.canvas-text-preview')?.textContent ?? '',
       )
     } finally {
       globalThis.fetch = original
@@ -3907,22 +3909,6 @@ describe('画布：纯函数与标签页', () => {
     chip.textContent = '小满'
     root.append(chip, ' 走出', document.createElement('br'), '下雨')
     expect(promptOfEditor(root)).toBe('@[n1] 走出\n下雨')
-  })
-
-  test('文本卡的段落引用：标题随引用一起解析与写回', async () => {
-    const { promptOfEditor, promptParts } = await import('./prompt.ts')
-    expect(promptParts('@[t1#1-2 入梦]\n@[n1]')).toEqual([
-      { id: 't1', heading: '1-2 入梦' },
-      { text: '\n' },
-      { id: 'n1' },
-    ])
-    const root = document.createElement('div')
-    const chip = document.createElement('span')
-    chip.dataset.node = 't1'
-    chip.dataset.heading = '1-2 入梦'
-    chip.textContent = '制作脚本#1-2 入梦'
-    root.append(chip, ' 画面')
-    expect(promptOfEditor(root)).toBe('@[t1#1-2 入梦] 画面')
   })
 
   test('设计稿页面按相对路径引用的工作区图片内嵌为 data URL；不存在的与网络地址保持原样', async () => {

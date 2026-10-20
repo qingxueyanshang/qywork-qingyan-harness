@@ -53,6 +53,16 @@ export interface CanvasVersion {
   warning?: string
 }
 
+/**
+ * 文本卡只引用文件中的一段：从 `start` 起点到其后第一次出现的 `end` 终点（均含）。
+ * 给出 `after` 时 `start` 取 `after` 之后第一次出现处，`after` 须全文唯一；未给出时 `start` 须全文唯一。取值见 `excerptOf`。
+ */
+export interface CanvasExcerpt {
+  after?: string
+  start: string
+  end: string
+}
+
 export interface CanvasFileNode {
   id: string
   type: 'file'
@@ -61,6 +71,8 @@ export interface CanvasFileNode {
   /** 所属的组（如「角色」「分镜」），决定新卡排在哪里，见 `canvas-arrange.ts`。界面添加的节点没有组。 */
   group?: string
   path: string
+  /** 只用于文本卡；缺省时引用全文。 */
+  excerpt?: CanvasExcerpt
   x: number
   y: number
   w: number
@@ -118,7 +130,7 @@ export type CanvasNode = CanvasFileNode | CanvasGenerateNode | CanvasTimelineNod
 
 /**
  * 连线用途：媒体输入的用途（`MediaInputRole`），或 `text`——文本卡（`.md` / `.txt`）被生成卡的提示词引用。
- * `text` 连线不作为素材发送，运行时把提示词中的 `@[文本卡]` / `@[文本卡#标题]` 展开为文件当前的内容。
+ * `text` 连线不作为素材发送，运行时把提示词中的 `@[文本卡]` 展开为文件当前的内容（摘录卡为其中的一段）。
  */
 export type CanvasEdgeRole = MediaInputRole | 'text'
 
@@ -231,7 +243,9 @@ export interface CanvasView {
   doc: CanvasDoc
   states: Record<string, CanvasNodeState>
   tasks?: Record<string, CanvasTaskInfo>
-  /** 生成卡提示词中不成立的文本卡引用（文件不存在、文中没有该标题），按节点 id；没有时不写该键。 */
+  /**
+   * 不成立的文本引用，按节点 id；没有时不写该键。文本卡为摘录无法定位的原因，生成卡为其引用的失效文本卡。
+   */
   references?: Record<string, string[]>
 }
 
@@ -285,6 +299,7 @@ export type CanvasOp =
       h?: number
       /** 文件的像素宽高，未给出 `w` / `h` 时按其比例确定框。只由服务端核验路径时填写，提交的操作中不接受该字段。 */
       size?: CanvasPixels
+      excerpt?: CanvasExcerpt
     }
   | {
       op: 'add_generate'
@@ -332,6 +347,8 @@ export type CanvasOp =
       path?: string
       /** 同 `add_file` 的 `size`，与 `path` 一起提供。 */
       size?: CanvasPixels
+      /** 文本卡的摘录；`null` 改为引用全文。 */
+      excerpt?: CanvasExcerpt | null
       role?: CanvasEdgeRole
       /** 时间线的全部片段，整组替换。 */
       clips?: CanvasClip[]
@@ -378,12 +395,12 @@ const ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 /** 批内名称允许中文等任意文字的字母与数字：只允许英文时，模型按画布内容起的中文名称整批被拒。 */
 const REF_RE = /^\$[\p{L}\p{N}_-]{1,64}$/u
 /**
- * 已保存的提示词中的引用：节点 id，引用文本卡时可带 `#标题`（只展开该标题下的段落）。
+ * 已保存的提示词中的引用：节点 id。
  * 修改时同步界面的 `canvas/prompt.ts`：两处按同一格式拆分提示词。
  */
-const MENTION_RE = /@\[([A-Za-z0-9_-]{1,64})(?:#([^\]\n]{1,120}))?\]/g
+const MENTION_RE = /@\[([A-Za-z0-9_-]{1,64})\]/g
 /**
- * 本批写入的提示词中的引用：节点 id、卡片名称或批内名称（可带 `#标题`），保存前一律换成 id。
+ * 本批写入的提示词中的引用：节点 id、卡片名称或批内名称，保存前一律换成 id。
  * 不要用于已保存的提示词：其中「@[」开头的普通文字会被当作引用，原本合法的文件读取时被拒。
  */
 const INPUT_MENTION_RE = /@\[([^[\]\n]{1,200})\]/g
@@ -394,85 +411,62 @@ export function mentionsOf(prompt: string): string[] {
   return [...new Set([...prompt.matchAll(MENTION_RE)].map((m) => m[1]!))]
 }
 
-/** 提示词中的每一处引用：节点 id 与可选的标题，按出现顺序，不去重。 */
-export function mentionRefsOf(prompt: string): { id: string; heading?: string }[] {
-  return [...prompt.matchAll(MENTION_RE)].map((m) =>
-    m[2] ? { id: m[1]!, heading: m[2] } : { id: m[1]! },
-  )
+/** 把提示词中对 `id` 的每一处引用替换为 `to`。 */
+function replaceMentionsOf(prompt: string, id: string, to: string): string {
+  return prompt.replace(MENTION_RE, (whole, m: string) => (m === id ? to : whole))
 }
 
-/** 把提示词中对 `id` 的每一处引用（含带标题的）替换为 `to` 的返回值。 */
-function replaceMentionsOf(prompt: string, id: string, to: (heading?: string) => string): string {
-  return prompt.replace(MENTION_RE, (whole, m: string, heading?: string) =>
-    m === id ? to(heading) : whole,
-  )
+/** `part` 在 `text` 中出现的次数，重叠的出现分别计数。 */
+function occurrences(text: string, part: string): number {
+  let count = 0
+  for (let at = text.indexOf(part); at >= 0; at = text.indexOf(part, at + 1)) count++
+  return count
 }
 
-/** Markdown 标题行：`#` 到 `######` 加空格，行尾可带收尾的 `#`。 */
-const HEADING_RE = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/
-
-/** 文本中的标题，按出现顺序。界面据此列出可引用的段落。 */
-export function markdownHeadings(text: string): { level: number; title: string }[] {
-  return text.split(/\r?\n/).flatMap((line) => {
-    const m = HEADING_RE.exec(line)
-    return m ? [{ level: m[1]!.length, title: m[2]! }] : []
-  })
+/** 报错中引用的锚点：过长时只写开头。 */
+function quoted(anchor: string): string {
+  return `「${anchor.length > 30 ? `${anchor.slice(0, 30)}…` : anchor}」`
 }
 
 /**
- * 标题为 `heading` 的段落：从该标题的下一行到下一个同级或更高级标题之前；同名标题取第一个。
- * 没有该标题时返回 null。
+ * 文本卡发送的文字：没有摘录时为全文（去掉首尾空白），否则为摘录的一段（规则见 `CanvasExcerpt`）。
+ * 正文与锚点的行尾都先统一为 LF：文件以 CRLF 保存时，跨行的锚点同样能找到。`end` 落在 `start` 之内时摘录至少包含 `start`。
+ * 运行时展开、失效核对与界面显示都使用它。
  */
-function sectionOf(text: string, heading: string): string | null {
-  const lines = text.split(/\r?\n/)
-  const at = lines.findIndex((line) => HEADING_RE.exec(line)?.[2] === heading)
-  if (at < 0) return null
-  const level = HEADING_RE.exec(lines[at]!)![1]!.length
-  const rest = lines.slice(at + 1)
-  const end = rest.findIndex((line) => {
-    const m = HEADING_RE.exec(line)
-    return m !== null && m[1]!.length <= level
-  })
-  return (end < 0 ? rest : rest.slice(0, end)).join('\n')
-}
-
-/** Markdown 代码块的围栏行：以 ``` 或 ~~~ 开头，捕获围栏字符与其后的内容。 */
-const FENCE_RE = /^[ \t]*(`{3,}|~{3,})(.*)$/
-
-/**
- * 文本中各代码块内的文字，按出现顺序，不含围栏行；空块不计入。未闭合的代码块到文末为止。
- * 结束围栏须与开始围栏同一字符、不短于它且其后只有空白：带语言标记的 ```text 行在块内是正文。
- */
-function codeBlocksOf(text: string): string[] {
-  const blocks: string[] = []
-  let fence: string | null = null
-  let lines: string[] = []
-  for (const line of text.split(/\r?\n/)) {
-    const m = FENCE_RE.exec(line)
-    if (fence === null) {
-      if (m) {
-        fence = m[1]!
-        lines = []
+export function excerptOf(
+  text: string,
+  excerpt?: CanvasExcerpt,
+): { ok: true; text: string } | { ok: false; error: string } {
+  const lf = (s: string) => s.replace(/\r\n?/g, '\n')
+  const body = lf(text)
+  if (!excerpt) return { ok: true, text: body.trim() }
+  const start = lf(excerpt.start)
+  const end = lf(excerpt.end)
+  let from = 0
+  if (excerpt.after !== undefined) {
+    const after = lf(excerpt.after)
+    const n = occurrences(body, after)
+    if (n !== 1) {
+      return {
+        ok: false,
+        error: n ? `after ${quoted(after)} 在文中出现 ${n} 次` : `文中没有 after ${quoted(after)}`,
       }
-    } else if (m && m[1]![0] === fence[0] && m[1]!.length >= fence.length && !m[2]!.trim()) {
-      blocks.push(lines.join('\n'))
-      fence = null
-    } else lines.push(line)
+    }
+    from = body.indexOf(after) + after.length
+  } else {
+    const n = occurrences(body, start)
+    if (n > 1) return { ok: false, error: `start ${quoted(start)} 在文中出现 ${n} 次` }
   }
-  if (fence !== null) blocks.push(lines.join('\n'))
-  return blocks.map((b) => b.trim()).filter((b) => b.length > 0)
-}
-
-/**
- * 文本引用展开后的内容：`heading` 缺省时为全文，否则为该标题下的段落；没有该标题时返回 null。
- * 范围内有代码块时只取各代码块内的文字，以空行分隔：代码块是要发送的原文，块外是标签、字段与备注，
- * 各类脚本格式均如此，不要求文档另加标题。没有代码块时取全部文字。运行时展开与界面预览都使用它。
- */
-export function textReferenceOf(text: string, heading?: string): string | null {
-  const body = heading === undefined ? text : sectionOf(text, heading)
-  if (body === null) return null
-  const blocks = codeBlocksOf(body)
-  return blocks.length ? blocks.join('\n\n') : body.trim()
+  const s = body.indexOf(start, from)
+  if (s < 0) {
+    return {
+      ok: false,
+      error: from ? `after 之后没有 start ${quoted(start)}` : `文中没有 start ${quoted(start)}`,
+    }
+  }
+  const e = body.indexOf(end, s)
+  if (e < 0) return { ok: false, error: `start 之后没有 end ${quoted(end)}` }
+  return { ok: true, text: body.slice(s, Math.max(e + end.length, s + start.length)) }
 }
 
 /** 文件节点是否为文本卡（`.md` / `.txt`）：可被生成卡的提示词引用。 */
@@ -480,9 +474,17 @@ export function isTextCard(node: CanvasNode): boolean {
   return node.type === 'file' && canvasFileKind(node.path) === 'text'
 }
 
+/** 文本卡本身不成立的原因；成立时为 null。`text` 为文件当前的内容，文件不存在时为 undefined。 */
+function textCardProblem(node: CanvasFileNode, text: string | undefined): string | null {
+  if (text === undefined) return '文件不存在'
+  const r = excerptOf(text, node.excerpt)
+  return r.ok ? null : r.error
+}
+
 /**
- * 生成卡提示词中引用的文本卡与段落，以及其中不成立的引用。`texts` 为各文本卡文件当前的内容（按节点 id），
- * 文件不存在时不提供该项。运行前据此拒绝、读取画布时据此标出失效的引用。
+ * 不成立的文本引用。`nodeId` 为文本卡时是摘录无法定位的原因（文件不存在由节点状态表示，此处不报）；
+ * 为生成卡时是它引用的失效文本卡，每项写成「@[卡片名称]：原因」。
+ * `texts` 为各文本卡文件当前的内容（按节点 id），文件不存在时不提供该项。运行前据此拒绝、读取画布时据此标出失效的引用。
  */
 export function textReferenceProblems(
   doc: CanvasDoc,
@@ -490,18 +492,20 @@ export function textReferenceProblems(
   texts: ReadonlyMap<string, string>,
 ): string[] {
   const node = doc.nodes.find((n) => n.id === nodeId)
+  if (node?.type === 'file') {
+    const text = texts.get(node.id)
+    const problem = isTextCard(node) && text !== undefined ? textCardProblem(node, text) : null
+    return problem ? [problem] : []
+  }
   if (node?.type !== 'generate') return []
   const problems: string[] = []
-  for (const ref of mentionRefsOf(node.prompt)) {
-    const source = doc.nodes.find((n) => n.id === ref.id)
-    if (!source || !isTextCard(source)) continue
-    const label = `@[${displayNameOf(source)}${ref.heading ? `#${ref.heading}` : ''}]`
-    const text = texts.get(ref.id)
-    if (text === undefined) problems.push(`${label}：文件不存在`)
-    else if (ref.heading && textReferenceOf(text, ref.heading) === null)
-      problems.push(`${label}：文中没有标题「${ref.heading}」`)
+  for (const id of mentionsOf(node.prompt)) {
+    const source = doc.nodes.find((n) => n.id === id)
+    if (source?.type !== 'file' || !isTextCard(source)) continue
+    const problem = textCardProblem(source, texts.get(id))
+    if (problem) problems.push(`@[${displayNameOf(source)}]：${problem}`)
   }
-  return [...new Set(problems)]
+  return problems
 }
 
 const TEXT_RE = /\.(md|txt)$/i
@@ -553,8 +557,8 @@ export type MentionStyle = Partial<Record<GenerateOutput, string>>
  *
  * 参考素材（参考图、参考视频、参考音频）按其在本次输入中同类别的序号套用 `style`；首帧、尾帧、未登记写法的类别、
  * 不在输入中的节点替换为节点名称：各模型的文档均未说明首尾帧是否计入编号，因此不做推测。
- * 文本卡展开为 `texts` 中该卡文件的内容，带 `#标题` 时只展开该段；`texts` 中没有的按名称写出，
- * 运行前由调用方以 `textReferenceProblems` 拒绝不成立的引用。
+ * 文本卡展开为 `texts` 中该卡文件的内容（摘录卡为其中的一段，见 `excerptOf`），无法定位的摘录展开为空；
+ * `texts` 中没有的按名称写出。运行前由调用方以 `textReferenceProblems` 拒绝不成立的引用。
  */
 export function compilePrompt(
   doc: CanvasDoc,
@@ -576,12 +580,15 @@ export function compilePrompt(
     const template = style[kind]
     if (template) numbered.set(edge.from, template.replaceAll('{n}', String(n)))
   }
-  return node.prompt.replace(MENTION_RE, (_whole, id: string, heading?: string) => {
+  return node.prompt.replace(MENTION_RE, (_whole, id: string) => {
     const named = numbered.get(id)
     if (named) return named
-    const text = texts.get(id)
-    if (text !== undefined) return textReferenceOf(text, heading) ?? ''
     const source = doc.nodes.find((n) => n.id === id)
+    const text = texts.get(id)
+    if (text !== undefined && source?.type === 'file') {
+      const r = excerptOf(text, source.excerpt)
+      return r.ok ? r.text : ''
+    }
     return source ? displayNameOf(source) : id
   })
 }
@@ -685,6 +692,8 @@ const FILE_SIZE: Record<GenerateOutput | 'other', [number, number]> = {
   art: [300, 169],
   other: [220, 138],
 }
+/** 摘录卡的框只显示开头一两行：一份文档的摘录卡常有几十张，按整篇文本卡的框排列时一列超出一屏。 */
+const EXCERPT_SIZE: [number, number] = [220, 64]
 /**
  * 时间线的框：宽度固定；为空时只有工具行、刻度与轨道（`TIMELINE_BARE`），有片段后上方增加预览区。
  * 预览区按 16:9 占满框宽：框宽减去预览区左右各 8 的外边距（`canvas.css` 的 `.canvas-tl-view`），再按 16:9 换算为高度。
@@ -834,7 +843,7 @@ function applyOne(
       const id = mint()
       claim(op.ref, id)
       const kind = canvasMediaOf({ id, type: 'file', path: op.path, x: 0, y: 0, w: 0, h: 0 })
-      const [dw, dh] = FILE_SIZE[kind ?? 'other']
+      const [dw, dh] = op.excerpt ? EXCERPT_SIZE : FILE_SIZE[kind ?? 'other']
       const fit = op.size ? fitBox({ w: dw, h: dh }, op.size) : { w: dw, h: dh }
       const node: CanvasFileNode = {
         id,
@@ -847,6 +856,7 @@ function applyOne(
       }
       if (op.name) node.name = op.name
       if (op.group !== undefined) node.group = op.group
+      if (op.excerpt) node.excerpt = structuredClone(op.excerpt)
       put(node, op)
       return
     }
@@ -907,7 +917,15 @@ function applyOne(
       if (op.w !== undefined) node.w = op.w
       if (op.h !== undefined) node.h = op.h
       if (node.type === 'timeline') {
-        for (const key of ['prompt', 'provider', 'model', 'params', 'current', 'path'] as const) {
+        for (const key of [
+          'prompt',
+          'provider',
+          'model',
+          'params',
+          'current',
+          'path',
+          'excerpt',
+        ] as const) {
           if (op[key] !== undefined) fail(`时间线没有 ${key}`)
         }
         if (op.name === null || op.name === '') fail('时间线必须有名称')
@@ -928,6 +946,8 @@ function applyOne(
         }
         if (op.name === null || op.name === '') delete node.name
         else if (op.name !== undefined) node.name = op.name
+        if (op.excerpt === null) delete node.excerpt
+        else if (op.excerpt !== undefined) node.excerpt = structuredClone(op.excerpt)
         if (op.path !== undefined) {
           if (!isRelativePath(op.path)) fail(`不是工作区中的相对路径：${op.path}`)
           node.path = op.path
@@ -939,6 +959,7 @@ function applyOne(
         return
       }
       if (op.path !== undefined) fail('生成节点的路径由生成结果决定，不能直接修改')
+      if (op.excerpt !== undefined) fail('只有文本卡有摘录')
       if (op.name === null || op.name === '') fail('生成节点必须有名称')
       if (op.name !== undefined) node.name = op.name
       if (op.prompt !== undefined) node.prompt = op.prompt
@@ -1200,9 +1221,8 @@ export function cardIdOf(
 }
 
 /**
- * 把本批写入的提示词中的 `@[卡片名称]`、`@[$批内名称]`（可带 `#标题`）换成 `@[id]` / `@[id#标题]`；
- * 未改动的提示词保持原样。本批删除的节点的 id 不在此处解析，由 `keepMentionsConnected` 处理。
- * 名称本身含 `#` 的卡片按全名优先匹配，其次把第一个 `#` 之后视为标题。
+ * 把本批写入的提示词中的 `@[卡片名称]`、`@[$批内名称]` 换成 `@[id]`；未改动的提示词保持原样。
+ * 本批删除的节点的 id 不在此处解析，由 `keepMentionsConnected` 处理。
  */
 function resolveInputMentions(
   before: CanvasDoc,
@@ -1215,16 +1235,9 @@ function resolveInputMentions(
     if (n.type !== 'generate') continue
     const old = beforeById.get(n.id)
     if (old?.type === 'generate' && old.prompt === n.prompt) continue
-    n.prompt = n.prompt.replace(INPUT_MENTION_RE, (whole, key: string) => {
-      if (known(key)) return whole
-      const cut = key.indexOf('#')
-      const whole_name = doc.nodes.some((x) => displayNameOf(x) === key)
-      if (cut < 0 || whole_name) return `@[${resolveRef(doc, refs, key)}]`
-      const base = key.slice(0, cut)
-      const heading = key.slice(cut + 1)
-      const id = known(base) ? base : resolveRef(doc, refs, base)
-      return heading ? `@[${id}#${heading}]` : `@[${id}]`
-    })
+    n.prompt = n.prompt.replace(INPUT_MENTION_RE, (whole, key: string) =>
+      known(key) ? whole : `@[${resolveRef(doc, refs, key)}]`,
+    )
   }
 }
 
@@ -1245,7 +1258,9 @@ function keepMentionsConnected(before: CanvasDoc, doc: CanvasDoc, mint: () => st
       const source = doc.nodes.find((n) => n.id === m)
       if (!source || oldMentions.has(m)) {
         const named = source ?? beforeById.get(m) ?? fail(`提示词引用的节点不存在：${m}`)
-        node.prompt = replaceMentionsOf(node.prompt, m, () =>
+        node.prompt = replaceMentionsOf(
+          node.prompt,
+          m,
           isTextCard(named) ? '' : displayNameOf(named),
         )
         continue
@@ -1323,6 +1338,7 @@ export function copyOps(
         path: n.path,
         ...(n.name ? { name: n.name } : {}),
         ...(n.group ? { group: n.group } : {}),
+        ...(n.excerpt ? { excerpt: structuredClone(n.excerpt) } : {}),
         ...box,
       })
       continue
@@ -1339,9 +1355,9 @@ export function copyOps(
       })
       continue
     }
-    const prompt = n.prompt.replace(MENTION_RE, (whole, id: string, heading?: string) => {
+    const prompt = n.prompt.replace(MENTION_RE, (whole, id: string) => {
       const copy = refOf.get(id)
-      if (copy) return heading ? `@[${copy}#${heading}]` : `@[${copy}]`
+      if (copy) return `@[${copy}]`
       if (keepsInput(id)) return whole
       const named = byId.get(id)
       if (!named) return whole
@@ -1420,6 +1436,10 @@ export function validateCanvas(doc: CanvasDoc): string | null {
     }
     if (n.type === 'file') {
       if (!isRelativePath(n.path)) return `不是工作区中的相对路径：${n.path}`
+      if (n.excerpt && !isTextCard(n))
+        return `「${displayNameOf(n)}」不是文本卡（.md / .txt），不能摘录`
+      if (n.excerpt && [n.excerpt.start, n.excerpt.end, n.excerpt.after].includes(''))
+        return `「${displayNameOf(n)}」的摘录 start、end、after 不能为空`
       continue
     }
     if (n.type === 'timeline') {
@@ -1552,6 +1572,8 @@ type Shape =
   | 'boolean'
   | 'true'
   | 'clips'
+  | 'excerpt'
+  | 'excerptOrNull'
   | 'inputs'
   | 'action'
   | 'result'
@@ -1605,6 +1627,10 @@ function matches(v: unknown, shape: Shape): boolean {
       return v === true
     case 'clips':
       return Array.isArray(v) && v.every((c) => checkFields('片段', c, CLIP_FIELDS) === null)
+    case 'excerpt':
+      return checkFields('摘录', v, EXCERPT_FIELDS) === null
+    case 'excerptOrNull':
+      return v === null || matches(v, 'excerpt')
     case 'inputs':
       return Array.isArray(v) && v.every((x) => checkFields('输入', x, INPUT_FIELDS) === null)
     case 'action':
@@ -1638,6 +1664,10 @@ function checkFields(where: string, raw: unknown, fields: Record<string, Shape>)
       continue
     }
     if (!matches(raw[name], shape)) {
+      // 摘录写错键名（如 from / to）时报出具体的键，只报「不合法」时模型无从修改。
+      if ((shape === 'excerpt' || shape === 'excerptOrNull') && isObject(raw[name])) {
+        return checkFields(`${where} 的 ${name}`, raw[name], EXCERPT_FIELDS)
+      }
       const want = TYPE_NAMES[shape]
       return want
         ? `${where} 的 ${name} 类型错误：应为${want}，收到的是${typeName(raw[name])}`
@@ -1675,6 +1705,7 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     'path!': 'string',
     name: 'string',
     group: 'string',
+    excerpt: 'excerpt',
     beside: 'string',
     near: 'point',
     ...BOX,
@@ -1715,6 +1746,7 @@ const OP_FIELDS: Record<CanvasOp['op'], Record<string, Shape>> = {
     params: 'object',
     current: 'string',
     path: 'string',
+    excerpt: 'excerptOrNull',
     role: 'edgeRole',
     clips: 'clips',
     muted: 'boolean',
@@ -1762,6 +1794,7 @@ const FILE_FIELDS: Record<string, Shape> = {
   name: 'string',
   group: 'string',
   'path!': 'string',
+  excerpt: 'excerpt',
   ...boxRequired(),
 }
 const GENERATE_FIELDS: Record<string, Shape> = {
@@ -1788,6 +1821,11 @@ const TIMELINE_FIELDS: Record<string, Shape> = {
   muted: 'true',
 }
 const CLIP_FIELDS: Record<string, Shape> = { 'path!': 'string', 'in!': 'number', 'out!': 'number' }
+const EXCERPT_FIELDS: Record<string, Shape> = {
+  after: 'string',
+  'start!': 'string',
+  'end!': 'string',
+}
 const VERSION_FIELDS: Record<string, Shape> = {
   'id!': 'string',
   'path!': 'string',
@@ -1926,6 +1964,15 @@ export function serializeCanvas(doc: CanvasDoc): string {
           ...(n.name ? { name: n.name } : {}),
           ...(n.group ? { group: n.group } : {}),
           path: n.path,
+          ...(n.excerpt
+            ? {
+                excerpt: {
+                  ...(n.excerpt.after !== undefined ? { after: n.excerpt.after } : {}),
+                  start: n.excerpt.start,
+                  end: n.excerpt.end,
+                },
+              }
+            : {}),
           x: n.x,
           y: n.y,
           w: n.w,

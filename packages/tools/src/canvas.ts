@@ -65,8 +65,10 @@ function inputsText(view: CanvasView, id: string): string {
 function headLine(view: CanvasView, n: CanvasNode): string {
   const status = statusOf(view, n)
   const group = n.type !== 'timeline' && n.group ? `（组：${n.group}）` : ''
-  if (n.type === 'file')
-    return `- ${n.id} 文件「${displayNameOf(n)}」${group}${n.path}（${status}）`
+  if (n.type === 'file') {
+    const excerpt = n.excerpt ? `，摘录 ${JSON.stringify(n.excerpt)}` : ''
+    return `- ${n.id} 文件「${displayNameOf(n)}」${group}${n.path}${excerpt}（${status}）`
+  }
   if (n.type === 'timeline') {
     const total = n.clips.reduce((sum, c) => sum + c.out - c.in, 0)
     return (
@@ -89,7 +91,11 @@ function nodeLines(view: CanvasView, n: CanvasNode): string[] {
     lines.push(...n.clips.map((c, i) => `  ${i + 1}. ${c.path} ${c.in}–${c.out} 秒`))
     return lines
   }
-  if (n.type === 'file') return lines
+  if (n.type === 'file') {
+    const broken = view.references?.[n.id]
+    if (broken?.length) lines.push(`  引用失效（运行前须修正）：${broken.join('；')}`)
+    return lines
+  }
   lines.push(`  提示词：${n.prompt || '（空）'}`, `  参数：${paramsText(n.params)}`)
   for (const v of n.versions) {
     const task = view.tasks?.[v.id]
@@ -172,18 +178,17 @@ const CANVAS_NOTE =
   '（clips 按顺序首尾相接，每段 {"path":"视频路径","in":起始秒,"out":结束秒}，只引用、不修改源文件；成片须由用户在界面上点击导出，本工具无法完成）。连线将素材连接到生成卡，用途 role 为 ' +
   'reference（参考图）、first_frame / last_frame（首尾帧，不能与参考素材同时提供）、video（参考视频）、audio（参考音频）、' +
   'text（文本卡）。' +
-  '文本卡是放上画布的 .md / .txt：生成卡的提示词写 @[文本卡名称] 引用全文，写 @[文本卡名称#标题] 只引用该标题下的段落，' +
-  '运行时展开为文件当前的内容，修改文件即改变所有引用它的卡发送的提示词。' +
-  '生成卡的提示词取自工作区中的文档时（剧本、要求、制作稿中的镜头提示词），优先写引用而不是复制文字：复制的文字不随文档的修改而更新。' +
-  '文本的连线即引用：写入引用自动连线，删除引用自动断开。引用的文件或标题不存在时该卡不能运行，读取画布时标为引用失效。' +
-  '标题按 Markdown 标题行的文字精确匹配（不含 # 号），同名标题只取第一个；' +
-  '段落从标题的下一行到下一个同级或更高级的标题为止，包含其中的下级标题。' +
-  '引用的范围内有代码块时只发送各代码块内的文字，块外的标签、字段与备注不发送；没有代码块时发送全部文字。' +
-  '因此提示词写在代码块中的脚本（无论按哪种格式写成），用镜头的标题即可只引用该镜头的提示词，文档不需要改动。' +
-  '编写要放上画布的文档时，每段要发送的提示词写在代码块中，所在的标题全文唯一。' +
-  '一个标题下有多个代码块而只需要其中一个时，在它之前插入一个全文唯一的下级标题后引用；' +
-  '插入的标题与该文档所用技能的格式规则（包括其检查脚本）冲突时，在写这些卡的提示词之前停下，' +
-  '向用户说明冲突的规则与位置，由用户选择修改文档还是复制文字，确认后再继续。' +
+  '文本卡是放上画布的 .md / .txt：生成卡的提示词写 @[文本卡名称]，运行时展开为文件当前的内容，' +
+  '修改文件即改变所有引用它的卡发送的提示词。' +
+  'add_file 给出 excerpt 时该卡是摘录卡，只引用文件中的一段：' +
+  '{"after":"该段之前全文唯一的一段文字，如所在的标题行","start":"该段开头的文字","end":"该段结尾的文字"}，' +
+  '发送从 after 之后第一次出现的 start 起、到其后第一次出现的 end 止的文字（均含）；不给 after 时 start 须全文唯一。' +
+  'start 与 end 逐字照抄原文，只取要发送的文字本身，不含标题行与代码块的围栏行；文档不需要为此改写。' +
+  '生成卡的提示词取自工作区中的文档时（剧本、要求、制作稿中的镜头提示词），优先为该段建摘录卡并引用，而不是复制文字：复制的文字不随文档的修改而更新。' +
+  '每段一张摘录卡，name 写该段的用途（如「1-1 视频提示词」），同一份文档的摘录卡写同一个 group。' +
+  '文本的连线即引用：写入引用自动连线，删除引用自动断开。' +
+  '文件不存在或摘录无法定位（after、start、end 被改动或不再唯一）时引用它的卡不能运行，读取画布时标为引用失效；' +
+  '修改文档后按回执中的原因用 update 给出新的 excerpt。' +
   'output 为 art 的生成卡由对话模型写出一个 HTML 页面（3D 白模、动画、前端设计稿），产物是 generated/ 下的 .html，' +
   '再次运行时在当前页面上修改；它只接受参考图，本身不能作为输入（截图与录制由用户在界面上完成）。' +
   '页面中要显示工作区里的图片时，把图片放上画布并连到 art 卡，页面按相对路径引用，画布显示时载入该图片；' +
@@ -468,9 +473,9 @@ export const editCanvasTool: ToolSpec = {
     '先用 read_canvas 查看画布；画布尚不存在时先用 create_canvas 创建。' +
     'ops_json 是一批操作的 JSON 数组，逐条生效：某条不成立时跳过并在回执中写明原因，其余照常执行；' +
     '引用了被跳过操作的批内名称的操作同样跳过。回执只列出本批执行与跳过的操作、改动的卡的全文与删除的卡。操作：' +
-    '{"op":"add_file","path":"工作区路径","name":"卡片名称","group":"组"}、' +
+    '{"op":"add_file","path":"工作区路径","name":"卡片名称","group":"组"}（摘录卡另加 "excerpt"）、' +
     '{"op":"add_generate","output":"image|video|audio|art","name":"卡片名称","group":"组","prompt":"…","params":{…}}、' +
-    '{"op":"update","id":"卡片名称",…要改的字段}（prompt 整体替换提示词）、' +
+    '{"op":"update","id":"卡片名称",…要改的字段}（prompt 整体替换提示词；excerpt 改摘录，为 null 时改为整篇）、' +
     '{"op":"edit_prompt","id":"生成卡名称","old":"提示词中的一段原文","new":"替换后的文字"}（只改提示词中的一段：old 照抄 read_canvas 读取的原文，必须恰好出现一次；new 为空时删除该段）、' +
     '{"op":"edit_prompt","id":"生成卡名称","from":"前标记","to":"后标记","new":"…"}（替换两个标记之间的文字，标记保留，各须恰好出现一次；省略 to 时替换到末尾）、' +
     '{"op":"replace_text","id":"生成卡名称","old":"原文","new":"新文字"}（把提示词中出现的原文全部替换）、' +
@@ -479,8 +484,9 @@ export const editCanvasTool: ToolSpec = {
     '{"op":"order_inputs","id":"生成卡名称","inputs":["素材卡片名称",…]}（按新顺序列出该卡的全部输入，含同批 connect 新连的素材）、' +
     '{"op":"remove","id":"卡片名称或连线 id"}（删除某一版时另加 "version"）、{"op":"set_mode","id":"视频卡名称","mode":"reference|first_last"}、' +
     '{"op":"add_timeline","name":"…","clips":[…]}（修改片段时用 update 的 clips 整组替换，muted 切换整条静音）。' +
-    '引用卡片时写卡片名称（读取回执中的 id 同样可用）；同一张画布中卡片名称不能重复，同一文件只放一张卡。' +
-    'add_file 放置生成用到的素材与成品（图片、视频、音频、.html）；剧本、制作稿、报告等文本文件在用户要求时放上画布。' +
+    '引用卡片时写卡片名称（读取回执中的 id 同样可用）；同一张画布中卡片名称不能重复，同一文件只放一张整篇的卡，同一段只放一张摘录卡。' +
+    'add_file 放置生成用到的素材与成品（图片、视频、音频、.html）；剧本、制作稿、报告等文本文件整篇放上画布只在用户要求时进行，' +
+    '生成卡要用其中的段落时放摘录卡。' +
     '新卡片的位置由画布排列，不写坐标：group 写「类别/对象」，斜杠前的类别决定卡片所在的列，同一对象的各张卡片在列中相连。' +
     '斜杠前只写类别，不写轮次、版本或项目名：之后的轮次新增的人物仍写「角色/人物名」，轮次写在卡片名称中。' +
     '人物、场景、道具按类别各占一列，如「角色/沈砚」「角色/顾衡」「场景/山门」「道具/玉佩」；同一对象的各套服装、各个角度写同一个组名。' +
