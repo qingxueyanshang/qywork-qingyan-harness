@@ -273,7 +273,7 @@ describe('canvas 工具', () => {
     const broken = `@[1-2 段]：${own}`
     port.read = async () => {
       const v = view()
-      const doc = { ...v.doc, nodes: [...v.doc.nodes, { ...card, x: 0, y: 0, w: 220, h: 64 }] }
+      const doc = { ...v.doc, nodes: [...v.doc.nodes, { ...card, x: 0, y: 0, w: 300, h: 169 }] }
       return { ...v, doc, references: { id2: [broken], id3: [own] } }
     }
     const one = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
