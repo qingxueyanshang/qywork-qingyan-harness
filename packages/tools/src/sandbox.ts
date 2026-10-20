@@ -655,6 +655,35 @@ export interface CommandShell {
    * 退出码（`cmd /c exit 7` 时 `-Command` 返回 1、`-File` 返回 0），这比反斜杠问题更严重。
    */
   readonly scriptArgv?: (scriptPath: string) => readonly string[]
+  /**
+   * 执行命令前由 shell 读入的设置，参数为退出时写入管道各段退出码的文件，以及环境中原有的 `BASH_ENV`。
+   * 只有 bash 提供（`bashPrelude`，经 `BASH_ENV` 读入）；两种 PowerShell 没有 pipefail 语义。
+   */
+  readonly prelude?: (statusFile: string, previous?: string) => string
+}
+
+/**
+ * bash 执行命令前读入的设置（经 `BASH_ENV`）：开启 pipefail，退出时把最后一条管道各段的退出码写入 `statusFile`。
+ *
+ * 不开启 pipefail 时管道的退出码只取最后一段：`python crash.py | tail -3 && next` 报告成功并继续执行 next，
+ * 前段的 KeyError 不出现在结果中（实测）。开启后前段失败即整条失败；前段被后段提前结束（`| head`）
+ * 同样报告失败，区分这种情况需要各段的退出码，由 `shell.ts` 的 `pipelineExit` 判定。
+ *
+ * 经 `BASH_ENV` 读入，不拼接在命令正文之前：拼接的内容会出现在 bash 的语法错误回显中（`bash: -c: line 1: …`），
+ * 另起一行则错误信息中的行号与模型所写的命令错开一行。读入后恢复环境中原有的 `BASH_ENV`（没有时删除），
+ * 命令中再启动的 bash 与未加设置时相同。
+ * 命令自行设置 EXIT trap 或以 exec 结束时不写入状态文件，退出码按 pipefail 的结果报告。
+ */
+function bashPrelude(statusFile: string, previous?: string): string {
+  const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
+  const target = process.platform === 'win32' ? statusFile.replaceAll('\\', '/') : statusFile
+  return [
+    previous ? `export BASH_ENV=${quote(previous)}; . ${quote(previous)}` : 'unset BASH_ENV',
+    'set -o pipefail',
+    `__qy_pipestatus() { printf '%s' "\${PIPESTATUS[*]}" > ${quote(target)}; } 2>/dev/null`,
+    'trap __qy_pipestatus EXIT',
+    '',
+  ].join('\n')
 }
 
 /**
@@ -805,9 +834,11 @@ export function resolveCommandShell(deps: ShellProbeDeps): CommandShell | null {
       argv: [bash, '-c'],
       // 以正斜杠形式把路径交给 MSYS：反斜杠形式的路径同样会经过上述去除反斜杠的解析。
       scriptArgv: (scriptPath) => [bash, scriptPath.replaceAll('\\', '/')],
+      prelude: bashPrelude,
       hint:
         '命令由 `bash -c` 执行（POSIX 语法；Windows 上是 Git for Windows 自带的 bash，' +
-        '不是 cmd/PowerShell，也不是 WSL）：`&&`、`||`、管道、`2>/dev/null` 都可用；路径用 `/` 分隔。',
+        '不是 cmd/PowerShell，也不是 WSL）：`&&`、`||`、管道、`2>/dev/null` 都可用；路径用 `/` 分隔。' +
+        '已开启 pipefail：管道中任一段失败即整条失败。',
     }
   }
 

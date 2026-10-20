@@ -29,8 +29,9 @@
  * 面向用户操作，与本文件无关。
  */
 
+import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { isIP } from 'node:net'
 import { delimiter, join } from 'node:path'
 import { deliveredTokens, recordBatchSpent, type ToolContext, type ToolSpec } from '@qywork/agent'
@@ -144,6 +145,76 @@ function withWorkspacePython(env: Record<string, string>, workspaceRoot: string)
     [key]: env[key] ? `${bin}${delimiter}${env[key]}` : bin,
     VIRTUAL_ENV: workspacePythonDir(workspaceRoot),
   }
+}
+
+/**
+ * bash 读入的设置文件与管道各段退出码的记录文件（`bashPrelude`），位于本会话临时目录：
+ * 内核沙箱中工作区可写、宿主可读，观察器硬性排除 `.tmp`，两者都不进入变更清单。
+ * `read` 取回记录并删除两个文件，命令以任何方式结束后都调用一次；未写入记录时返回 null。
+ * shell 不提供 `prelude`（PowerShell）时返回 null，命令照原样执行。
+ */
+async function pipeStatusFiles(
+  shell: CommandShell,
+  env: Record<string, string>,
+  dir: string,
+): Promise<{ env: Record<string, string>; read(): Promise<number[] | null> } | null> {
+  if (!shell.prelude) return null
+  const base = join(dir, `qy-bash-${randomUUID()}`)
+  const preludePath = `${base}.sh`
+  const statusPath = `${base}.status`
+  await writeFile(preludePath, shell.prelude(statusPath, env.BASH_ENV), 'utf8')
+  const bashEnv = process.platform === 'win32' ? preludePath.replaceAll('\\', '/') : preludePath
+  return {
+    env: { ...env, BASH_ENV: bashEnv },
+    async read() {
+      const text = (await readFile(statusPath, 'utf8').catch(() => '')).trim()
+      await Promise.all([rm(preludePath, { force: true }), rm(statusPath, { force: true })])
+      const statuses = text ? text.split(/\s+/).map(Number) : []
+      return statuses.length && statuses.every(Number.isInteger) ? statuses : null
+    },
+  }
+}
+
+/**
+ * 前段写入已被后段关闭的管道时，python 在 stderr 末行写出的报错：Windows 上为 Errno 22，其他平台为 Errno 32。
+ * 行尾不带文件名；打开文件失败的 Errno 22 带文件名，不会命中。
+ */
+const BROKEN_PIPE_LINE =
+  /^(?:BrokenPipeError: \[Errno 32\] Broken pipe|OSError: \[Errno 22\] Invalid argument)$/
+
+/**
+ * 按命令最后一条管道各段的退出码确定命令的退出码与附加说明。
+ *
+ * pipefail 下前段失败即整条失败（`bashPrelude`），此处只处理一种例外：前段被后段提前结束
+ * （`| head` 读够即退出）。这时前段的退出码有三种：被 SIGPIPE 终止的 MSYS 与 POSIX 工具为 141；
+ * python 退出时刷新 stdout 失败为 120；python 写入时出错为 1，stderr 末行是写入已关闭管道的报错。
+ * 最后一段为 0、前段只有这几种退出码时不计为失败，说明中写明 bash 仍按失败处理该管道：
+ * 其后以 `&&` 连接的命令没有执行。
+ *
+ * 其余情况按 pipefail 的结果报告，并列出各段退出码：`crash.py | tail -3` 中 tail 成功、crash.py 失败，
+ * 模型据此知道失败的是哪一段。命令的退出码不等于这条管道的 pipefail 结果时（其后还有 `exit 7` 等），
+ * 退出码不来自这条管道，按原退出码报告，不附加说明。
+ */
+function pipelineExit(
+  exitCode: number,
+  statuses: readonly number[] | null,
+  stderr: string,
+): { exitCode: number; note: string } {
+  if (exitCode === 0 || !statuses || statuses.length < 2) return { exitCode, note: '' }
+  if ((statuses.findLast((s) => s !== 0) ?? 0) !== exitCode) return { exitCode, note: '' }
+  const lastLine = stderr.trimEnd().split('\n').at(-1)?.trim() ?? ''
+  const cutShort = (s: number) =>
+    s === 0 || s === 141 || s === 120 || (s === 1 && BROKEN_PIPE_LINE.test(lastLine))
+  const segments = statuses.join('、')
+  if (statuses.at(-1) === 0 && statuses.slice(0, -1).every(cutShort)) {
+    return {
+      exitCode: 0,
+      note:
+        `。注意：管道前段在后段提前结束（如 head 读够即退出）后被中止（各段退出码依次为 ${segments}），不计为失败；` +
+        'bash 仍按失败处理这条管道，其后以 && 连接的命令没有执行。',
+    }
+  }
+  return { exitCode, note: `（管道各段退出码依次为 ${segments}）` }
 }
 
 /**
@@ -289,6 +360,11 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       }
 
       const env = await commandEnv(ctx)
+      const pipe = await pipeStatusFiles(
+        shell,
+        env,
+        conversationTempDir(ctx.workspaceRoot, ctx.conversationId),
+      )
 
       // 命令修改了哪些文件由工作区观察器提供：shell 没有精确明细，路径与变更类型是能取得的全部信息。
       // 必须先打开观察窗口再启动进程：窗口起点之前写入的文件无法判定为本命令新建。
@@ -301,12 +377,17 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       }
 
       // spawn 抛错时关闭观察窗口：不关闭则它始终排在最前，此后的窗口收不到任何事件。
-      const { proc, sandbox } = await spawnGuarded({ shell, command, cwd, policy, env }).catch(
-        async (e: unknown) => {
-          await changeWindow.close()
-          throw e
-        },
-      )
+      const { proc, sandbox } = await spawnGuarded({
+        shell,
+        command,
+        cwd,
+        policy,
+        env: pipe?.env ?? env,
+      }).catch(async (e: unknown) => {
+        await changeWindow.close()
+        await pipe?.read()
+        throw e
+      })
 
       // 每条流使用一个脱敏器：脱敏器各自持有跨分片缓冲，共用会把两条流的末尾混在一起。
       const redactors = {
@@ -332,6 +413,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       if (probeUrl !== null) {
         const probe = await probeThenKill(probeUrl, proc, timeout, ctx.signal)
         const got = await collecting
+        await pipe?.read()
         const watched = await closeWindow()
         const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
         return {
@@ -348,6 +430,7 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
       }
 
       const got = await collecting
+      const statuses = (await pipe?.read()) ?? null
       const watched = await closeWindow()
       const delivered = deliverStreams(ctx, command, got.stdout, got.stderr)
       const watchNote = watched.incomplete ? WATCH_INCOMPLETE : ''
@@ -370,16 +453,17 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         }
       }
 
+      const exit = pipelineExit(got.exitCode, statuses, got.stderr)
       return {
         // 非零退出码是事实而不是异常：模型需要看到失败输出才能修复。
-        status: got.exitCode === 0 ? 'success' : 'failure',
+        status: exit.exitCode === 0 ? 'success' : 'failure',
         message:
-          (got.exitCode === 0
-            ? '命令执行成功'
-            : `命令退出码 ${got.exitCode}${sandboxHint(sandbox.active, got.stderr)}`) +
+          (exit.exitCode === 0
+            ? `命令执行成功${exit.note}`
+            : `命令退出码 ${exit.exitCode}${exit.note}${sandboxHint(sandbox.active, got.stderr)}`) +
           (got.backgroundHeld ? BACKGROUND_HELD : '') +
           watchNote,
-        data: { exitCode: got.exitCode, ...delivered.data },
+        data: { exitCode: exit.exitCode, ...delivered.data },
         ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
         ...(delivered.resources.length ? { resources: delivered.resources } : {}),
       }
@@ -443,6 +527,14 @@ const NON_INTERACTIVE_ENV: Record<string, string> = {
    * 设为 UTF-8 会使 `cmd /c type 中文.txt` 这类调用收到原生程序无法解析的字节。
    */
   PYTHONIOENCODING: 'utf-8',
+  /*
+   * python 的 UTF-8 模式：`open()` 未指定 encoding 时按 UTF-8 读写。
+   *
+   * 不设置时 Windows 上按系统代码页读取（实测本机为 GBK），模型脚本中常见的 `json.load(open(p))`
+   * 读取 UTF-8 文件即抛出 `UnicodeDecodeError: 'gbk' codec`；`PYTHONIOENCODING` 只作用于 stdout，不作用于文件。
+   * 放在这里而不是 `withWorkspacePython`：auto 与完全访问两种模式都需要，Office worker 经 `commandEnv` 同样取得。
+   */
+  PYTHONUTF8: '1',
 }
 
 /**
