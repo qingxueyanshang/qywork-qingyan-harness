@@ -573,27 +573,6 @@ function migrateMediaUploadProvider(cfg: QyConfig): string[] {
   return notices
 }
 
-/** hongcheng 的 YX 按次改名为 AA 按次；迁移已配置型号及默认引用，保留接口与凭证。 */
-function migrateRenamedMediaModels(cfg: QyConfig): string[] {
-  const renamed = {
-    'seedance2.5-yx-count': 'seedance2.5-aa-count',
-  }
-  const notices: string[] = []
-  for (const [name, provider] of Object.entries(cfg.providers ?? {})) {
-    for (const [oldId, newId] of Object.entries(renamed)) {
-      const stored = provider.media?.[oldId]
-      if (stored?.kind !== 'openai_videos') continue
-      // 新旧 ID 同时存在时保留新 ID 的显式配置，不覆盖用户选择。
-      provider.media![newId] ??= stored
-      delete provider.media![oldId]
-      const ref = cfg.mediaDefaults?.video
-      if (ref?.provider === name && ref.model === oldId) ref.model = newId
-      notices.push(`已将生成模型 ${name} / ${oldId} 更新为 ${newId}。`)
-    }
-  }
-  return notices
-}
-
 /** 清理已停用生成模型及默认引用，保留所属接口及凭证。 */
 function migrateRemovedMediaModels(cfg: QyConfig): string[] {
   const notices: string[] = []
@@ -605,7 +584,11 @@ function migrateRemovedMediaModels(cfg: QyConfig): string[] {
     'wf-sd2.5-v2',
     'GGsedanco2.5/480',
     'seedance-2.5（YX）',
+    'seedance-2.5（YX）-按次',
+    'seedance2.5-yx-count',
     'seedance-2.5（AA）',
+    'seedance2.5-aa-count',
+    'seedance-2.5  AA-按次',
     'sd2.5-pp-1080p',
     'XG-Seedance-2.5-720p-2',
     'lec-vp-seedance-2-5-301010-1',
@@ -668,7 +651,6 @@ export async function loadConfig(): Promise<QyConfig> {
   for (const n of migrateModelLibrary(cfg)) log.warn('config', n)
   for (const n of migrateDisabledEffort(cfg)) log.warn('config', n)
   for (const n of migrateRetiredDeepSeekOverrides(cfg)) log.warn('config', n)
-  for (const n of migrateRenamedMediaModels(cfg)) log.warn('config', n)
   for (const n of migrateRemovedMediaModels(cfg)) log.warn('config', n)
   for (const n of migrateMediaUploadProvider(cfg)) log.warn('config', n)
   for (const n of migrateUnverifiedMediaKinds(cfg)) log.warn('config', n)

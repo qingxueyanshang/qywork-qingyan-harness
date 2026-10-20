@@ -180,7 +180,11 @@ test.each(
     'wf-sd2.5-v2',
     'GGsedanco2.5/480',
     'seedance-2.5（YX）',
+    'seedance-2.5（YX）-按次',
+    'seedance2.5-yx-count',
     'seedance-2.5（AA）',
+    'seedance2.5-aa-count',
+    'seedance-2.5  AA-按次',
     'sd2.5-pp-1080p',
     'XG-Seedance-2.5-720p-2',
     'lec-vp-seedance-2-5-301010-1',
@@ -238,74 +242,6 @@ test.each(
   },
 )
 
-test.each(
-  [['seedance2.5-yx-count', 'seedance2.5-aa-count']].flatMap(([oldId, newId]) =>
-    [false, true].map((alreadyAdded) => ({ oldId: oldId!, newId: newId!, alreadyAdded })),
-  ),
-)(
-  'YX 改名 AA，保留凭证与默认引用并去重：$oldId，已添加=$alreadyAdded',
-  async ({ oldId, newId, alreadyAdded }) => {
-    const home = await mkdtemp(join(tmpdir(), 'qy-hongcheng-yx-'))
-    const previousHome = process.env.QYWORK_HOME
-    const raw = {
-      providers: {
-        hongcheng: {
-          kind: 'openai_chat_completions' as const,
-          baseUrl: 'https://hongcheng.lol',
-          apiKey: 'test-hongcheng-key',
-          headers: { 'x-channel': 'keep' },
-          models: {},
-          media: {
-            [oldId]: { kind: 'openai_videos' as const },
-            ...(alreadyAdded ? { [newId]: { kind: 'openai_videos' as const } } : {}),
-            'TTseadanco2.5-720': { kind: 'openai_videos' as const },
-          },
-        },
-        other: {
-          kind: 'openai_chat_completions' as const,
-          models: { [oldId]: {} },
-          media: { [oldId]: { kind: 'openai_images' as const } },
-        },
-      },
-      mediaDefaults: {
-        video: { provider: 'hongcheng', model: oldId },
-        image: { provider: 'other', model: oldId },
-      },
-    }
-    try {
-      process.env.QYWORK_HOME = home
-      await writeFile(join(home, 'config.json'), JSON.stringify(raw))
-      const loaded = await loadConfig()
-      expect(loaded.providers).toEqual({
-        ...raw.providers,
-        hongcheng: {
-          ...raw.providers.hongcheng,
-          media: {
-            [newId]: { kind: 'openai_videos' },
-            'TTseadanco2.5-720': { kind: 'openai_videos' },
-          },
-        },
-      })
-      expect(loaded.mediaDefaults).toEqual({
-        ...raw.mediaDefaults,
-        video: { provider: 'hongcheng', model: newId },
-      })
-      expect(diagnoseConfig(loaded)).toEqual([])
-      expect(resolveMediaModel(loaded, 'video')).toMatchObject({ model: newId })
-      expect(
-        listMediaModels(loaded).filter((entry) => entry.provider === 'hongcheng'),
-      ).toHaveLength(2)
-      expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8'))).toEqual(raw)
-      await saveConfig(loaded)
-      expect(await loadConfig()).toEqual(loaded)
-    } finally {
-      if (previousHome === undefined) delete process.env.QYWORK_HOME
-      else process.env.QYWORK_HOME = previousHome
-      await rm(home, { recursive: true, force: true })
-    }
-  },
-)
-
 test('hongcheng 精简后保留选定型号与有效默认值，其他协议及凭证保持原样', async () => {
   const home = await mkdtemp(join(tmpdir(), 'qy-hongcheng-stable-'))
   const previousHome = process.env.QYWORK_HOME
@@ -313,12 +249,16 @@ test('hongcheng 精简后保留选定型号与有效默认值，其他协议及�
     'TTseadanco2.5-720',
     'TTsedanco2.5-480',
     'GGseadanco2.5/720',
-    'seedance2.5-aa-count',
-    'seedance-2.5  AA-按次',
+    'seedance-2.5-yy-720p',
   ]
   const removed = [
     'GGsedanco2.5/480',
     'seedance-2.5（AA）',
+    'seedance-2.5（YX）',
+    'seedance-2.5（YX）-按次',
+    'seedance2.5-yx-count',
+    'seedance2.5-aa-count',
+    'seedance-2.5  AA-按次',
     'sd2.5-pp-1080p',
     'XG-Seedance-2.5-720p-2',
     'lec-vp-seedance-2-5-301010-1',
@@ -346,7 +286,7 @@ test('hongcheng 精简后保留选定型号与有效默认值，其他协议及�
         media: { 'seedance-2.5（AA）': { kind: 'openai_images' } },
       },
     },
-    mediaDefaults: { video: { provider: 'channel', model: 'seedance2.5-aa-count' } },
+    mediaDefaults: { video: { provider: 'channel', model: 'seedance-2.5-yy-720p' } },
   })
   try {
     process.env.QYWORK_HOME = home
@@ -356,7 +296,7 @@ test('hongcheng 精简后保留选定型号与有效默认值，其他协议及�
       ...raw,
       providers: { ...raw.providers, channel: { ...raw.providers.channel!, media } },
     })
-    expect(resolveMediaModel(loaded, 'video')).toMatchObject({ model: 'seedance2.5-aa-count' })
+    expect(resolveMediaModel(loaded, 'video')).toMatchObject({ model: 'seedance-2.5-yy-720p' })
     await saveConfig(loaded)
     expect(await loadConfig()).toEqual(loaded)
   } finally {

@@ -25,22 +25,13 @@ const MODELS = [
     maxVideos: 10,
   },
   {
-    id: 'seedance2.5-aa-count',
+    id: 'seedance-2.5-yy-720p',
     min: 4,
     defaultSeconds: '30',
-    rate: 6,
+    rate: 7.3,
     perRequest: true,
     resolution: '720p',
-    maxVideos: 10,
-  },
-  {
-    id: 'seedance-2.5  AA-按次',
-    min: 30,
-    defaultSeconds: '30',
-    rate: 5.5,
-    perRequest: true,
-    resolution: '720p',
-    maxVideos: 10,
+    maxVideos: 0,
   },
 ]
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
@@ -128,7 +119,7 @@ const call = () => ({
 })
 const signal = () => new AbortController().signal
 
-test('hongcheng 目录仅收录选定的五个型号，不包含移除型号规格', () => {
+test('hongcheng 目录仅收录选定的四个型号，不包含移除型号规格', () => {
   expect(
     mediaCatalog()
       .filter((model) => model.vendor === 'hongcheng')
@@ -138,6 +129,8 @@ test('hongcheng 目录仅收录选定的五个型号，不包含移除型号规�
     'seedance-2.5（YX）',
     'seedance2.5-yx-count',
     'seedance-2.5（YX）-按次',
+    'seedance2.5-aa-count',
+    'seedance-2.5  AA-按次',
     'wf-sd2.5-v2',
     'GGsedanco2.5/480',
     'seedance-2.5（AA）',
@@ -210,18 +203,14 @@ test.each(MODELS)(
   },
 )
 
-test.each([
-  { id: 'seedance2.5-aa-count', rate: 6 },
-  { id: 'seedance-2.5  AA-按次', rate: 5.5 },
-])('按次型号在响应缺少秒数时仍记录一次生成的目录估价：$id', async ({ id, rate }) => {
+test('YY 按次型号在响应缺少秒数时仍记录一次生成的目录估价', async () => {
   poll = { status: 'completed' }
   const spends: MediaSpend[] = []
-  const result = await makeMediaPort(config('', id), (spend) => spends.push(spend)).generate(
-    call(),
-    signal(),
-  )
+  const result = await makeMediaPort(config('', 'seedance-2.5-yy-720p'), (spend) =>
+    spends.push(spend),
+  ).generate(call(), signal())
   expect(result.ok).toBe(true)
-  expect(spends[0]).toMatchObject({ quantity: null, cost: rate, currency: 'CNY' })
+  expect(spends[0]).toMatchObject({ quantity: null, cost: 7.3, currency: 'CNY' })
 })
 
 test.each(MODELS)('时长下限可提交，低于下限或超过上限时不上传：$id', async ({ id, min }) => {
@@ -302,14 +291,10 @@ test.each(MODELS)(
   },
 )
 
-test('AA 按次支持三种画幅及 30 图 10 视频 10 音频，超限在上传前拒绝', async () => {
-  const id = 'seedance2.5-aa-count'
+test('YY 按次支持三种画幅及 30 图 10 音频，参考视频与超限素材在上传前拒绝', async () => {
+  const id = 'seedance-2.5-yy-720p'
   const port = makeMediaPort(config('', id))
-  for (const references of [
-    Array(31).fill(inputs[0]),
-    Array(11).fill(inputs[1]),
-    Array(11).fill(inputs[2]),
-  ]) {
+  for (const references of [Array(31).fill(inputs[0]), [inputs[1]!], Array(11).fill(inputs[2])]) {
     expect(await port.generate({ ...call(), inputs: references }, signal())).toMatchObject({
       ok: false,
       executed: false,
@@ -329,27 +314,23 @@ test('AA 按次支持三种画幅及 30 图 10 视频 10 音频，超限在上�
         await port.generate(
           {
             ...call(),
-            inputs: [
-              ...Array(30).fill(inputs[0]),
-              ...Array(10).fill(inputs[1]),
-              ...Array(10).fill(inputs[2]),
-            ],
+            inputs: [...Array(30).fill(inputs[0]), ...Array(10).fill(inputs[2])],
             params: { aspect_ratio: ratio },
           },
           signal(),
         )
       ).ok,
     ).toBe(true)
-    expect(seen[50]?.body).toMatchObject({
+    expect(seen[40]?.body).toMatchObject({
       model: id,
       resolution: '720p',
       seconds: '30',
       aspect_ratio: ratio,
       ratio,
     })
-    expect(seen[50]?.body?.reference_images).toHaveLength(30)
-    expect(seen[50]?.body?.reference_audios).toHaveLength(10)
-    expect(seen[50]?.body?.reference_videos).toHaveLength(10)
+    expect(seen[40]?.body?.reference_images).toHaveLength(30)
+    expect(seen[40]?.body?.reference_audios).toHaveLength(10)
+    expect(seen[40]?.body).not.toHaveProperty('reference_videos')
   }
 })
 

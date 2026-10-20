@@ -3086,7 +3086,12 @@ describe('读取配置后模型目录随之重新计算', () => {
     try {
       await reloadModelCatalog()
       expect(modelCatalog()?.media.map((m) => m.id)).toEqual(diskIds)
-      diskIds = ['seedance2.5-aa-count', 'GGseadanco2.5/720', 'TTseadanco2.5-720']
+      diskIds = [
+        'seedance-2.5-yy-720p',
+        'GGseadanco2.5/720',
+        'TTseadanco2.5-720',
+        'TTsedanco2.5-480',
+      ]
       const fresh = await loadServerConfig()
       expect(Object.keys(fresh.config.providers.hongcheng!.media!)).toEqual(diskIds)
       expect(modelCatalog()?.media.map((m) => m.id)).toEqual(diskIds)

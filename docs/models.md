@@ -6,6 +6,26 @@
 接口支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
 选择协议时，以所连接端点提供的接口为准。通过中转站接入时，使用中转站给出的地址与凭证。
 
+## Claude Sonnet 5.5
+
+模型 ID 为 `claude-sonnet-5-5`，选择 Anthropic Messages；官方 Base URL 为
+`https://api.anthropic.com`。支持文本、图片输入与文本输出，上下文为 1,000,000 token，
+单次输出上限为 128,000 token，思考与正文共用输出预算。
+
+思考档位为 `low / medium / high / xhigh / max`，未选择时使用官方默认 `high`。
+请求使用自适应思考和可见摘要，档位通过 `output_config.effort` 传递。
+工具调用之间的思考摘要沿现有流式通道展示，原生签名与密文按原位置回传；
+前缀变化后沿现有规则剥离失效思考块。
+
+标准价格为美元 / 百万 token：输入 2、输出 10、缓存读取 0.10、
+5 分钟缓存写入 2.50、1 小时缓存写入 4。最小可缓存前缀为 512 token，
+1M 窗口内不另收长上下文溢价；当前请求使用 5 分钟缓存。
+
+2026-10-20 核对：[模型规格](https://platform.claude.com/docs/en/models/sonnet-5-5/overview)、
+[迁移说明](https://platform.claude.com/docs/en/models/sonnet-5-5/migration-guide)、
+[思考强度](https://platform.claude.com/docs/en/build-with-claude/effort)、
+[价格](https://platform.claude.com/docs/en/about-claude/pricing)。本地协议回归不等同于官方端点实测。
+
 ## Gemini 4 Argon
 
 模型 ID 为 `gemini-4-argon`，选择 OpenAI Chat Completions；官方 Base URL 为
@@ -351,31 +371,29 @@ Flash 读取 `input_tokens` / `output_tokens` 计价；Next 官方响应目前�
 加载旧配置时移除该渠道的模型及对应默认引用，混合接口中的其他模型和凭证保留。
 该渠道专用的影币计价与展示已一并移除。
 
-hongcheng 渠道（Base URL：`https://hongcheng.lol`）仅保留以下五个型号，显示名称直接使用模型 ID：
+hongcheng 渠道（Base URL：`https://hongcheng.lol`）仅保留以下四个型号，显示名称直接使用模型 ID：
 
 | 模型 ID | 固定分辨率 | 时长 | 计价 |
 | --- | --- | --- | --- |
 | `TTseadanco2.5-720` | 720p | 5–30 秒 | ¥0.42/秒 |
 | `TTsedanco2.5-480` | 480p | 5–30 秒 | ¥0.31/秒 |
 | `GGseadanco2.5/720` | 720p | 5–30 秒 | ¥0.54/秒 |
-| `seedance2.5-aa-count` | 720p | 4–30 秒 | ¥6.00/条 |
-| `seedance-2.5  AA-按次` | 720p | 固定 30 秒 | ¥5.50/条 |
+| `seedance-2.5-yy-720p` | 720p | 4–30 秒 | ¥7.30/条 |
 
 TT 的 720p 与 480p ID 拼写不同，GG 型号使用斜杠。
-福利按次型号 `seedance-2.5  AA-按次` 的 `2.5` 与 `AA` 之间有两个半角空格，调用时完整保留。
-画布隐藏固定分辨率及福利型号的固定时长；TT 与 GG 时长默认 5 秒，AA 默认 30 秒；宽高比支持 16:9、9:16 和 1:1。
-这些型号均支持最多 30 张图片、10 个视频和 10 段音频。
+画布隐藏固定分辨率；TT 与 GG 时长默认 5 秒，YY 默认 30 秒；宽高比支持 16:9、9:16 和 1:1。
+这些型号均支持最多 30 张图片和 10 段音频；TT 与 GG 另外支持最多 10 个参考视频，YY 不支持参考视频。
 素材先上传到 `/refhost/upload`，
 再将公网地址通过 `reference_images`、`reference_videos`、`reference_audios` 提交到 `/v1/videos`。
 按秒型号的报价按所选时长计算，生成费用按接口回报秒数计量；缺少回报时长时不推算费用。
-AA 可选时长与福利固定时长型号的报价和生成费用分别使用每条 ¥6.00、¥5.50 的目录估价，不表示平台回报的实际扣费。
+YY 的报价和生成费用使用每条 ¥7.30 的目录估价，不随时长变化，不表示平台回报的实际扣费。
 参数与价格依据：[渠道工作台目录](https://hongcheng.lol/api/workbench-models)、[计费说明](https://hongcheng.lol/api/pricing)。
-2026-10-19 核对上述两个接口及已配置渠道的 `/v1/models`，确认所列模型 ID 均可列出。
-AA 可选时长按次价格已按工作台结构化价格及计费说明更新为 ¥6.00/条，福利固定时长按次型号为 ¥5.50/条。
+2026-10-20 核对上述两个公开接口及已配置渠道的 `/v1/models`，四个模型均可列出，
+价格、时长及素材上限与渠道目录一致。
 本次仅核对目录、参数与配置，未发起付费生成。
-加载旧配置时移除 GG 480p、AA 按秒、PP 1080p、XG、VP 及其默认引用；YX 按秒也直接移除，YX 按次继续迁移至 AA 按次。
+加载旧配置时移除 GG 480p、YX、AA、PP 1080p、XG、VP 及其默认引用，不再将 YX 按次迁移为 AA。
 接口、凭证、其他型号及历史结果保留，迁移随下一次保存配置落盘。
-TT、GG、AA 的保留范围依据用户选择。
+TT、GG、YY 的保留范围依据用户选择。
 2026-10-18，GG 720p 使用与 mumu 样片相同的参考图、提示词和 30 秒参数完成生成与下载，
 成片为 1280×720、约 30.04 秒、24 fps；音视频完整解码通过。单次测试从提交准备到下载完成约 11 分 56 秒，
 30 秒目录报价为 ¥16.20，响应未返回计费秒数或实扣金额。

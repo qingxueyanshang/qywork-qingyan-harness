@@ -12,20 +12,12 @@ export const HONGCHENG_MODELS: readonly MediaModelSpec[] = [
   { id: 'TTsedanco2.5-480', resolution: '480p', maxVideos: 10, price: perSecond(0.31) },
   { id: 'GGseadanco2.5/720', resolution: '720p', maxVideos: 10, price: perSecond(0.54) },
   {
-    id: 'seedance2.5-aa-count',
+    id: 'seedance-2.5-yy-720p',
     resolution: '720p',
-    maxVideos: 10,
+    maxVideos: 0,
     minSeconds: 4,
     defaultSeconds: '30',
-    price: { currency: 'CNY' as const, cost: () => 6, usageOf: () => ({}) },
-  },
-  {
-    id: 'seedance-2.5  AA-按次',
-    resolution: '720p',
-    maxVideos: 10,
-    minSeconds: 30,
-    defaultSeconds: '30',
-    price: { currency: 'CNY' as const, cost: () => 5.5, usageOf: () => ({}) },
+    price: { currency: 'CNY' as const, cost: () => 7.3, usageOf: () => ({}) },
   },
 ].map(
   ({ id, resolution, maxVideos, minSeconds = 5, defaultSeconds = '5', price }): MediaModelSpec => ({
@@ -53,8 +45,7 @@ export const HONGCHENG_MODELS: readonly MediaModelSpec[] = [
           ]),
         ),
         default: defaultSeconds,
-        description:
-          minSeconds === 30 ? '固定 30 秒，使用字符串' : `${minSeconds}–30 秒整数，使用字符串`,
+        description: `${minSeconds}–30 秒整数，使用字符串`,
       },
       {
         name: 'aspect_ratio',
