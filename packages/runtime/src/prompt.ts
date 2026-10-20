@@ -288,6 +288,11 @@ function osName(platform: string): string {
   return platform
 }
 
+/** token 数折算为「万」，保留一位小数，整数不带小数点。 */
+function wan(tokens: number): string {
+  return String(Math.round(tokens / 1000) / 10)
+}
+
 /** 待办状态的可读名称。 */
 const TODO_LABEL: Record<TodoItem['status'], string> = {
   pending: '未开始',
@@ -363,6 +368,14 @@ export function buildTailNotes(input: {
    * 「被拒 → 改写 → 重发」的 token，而被拒绝的工具调用本身也已计费。
    */
   mode: 'auto' | 'full'
+  /**
+   * 本轮开始时的上下文占用（`context-panel.ts` 的 `contextPanel`：与运行中读数、压缩触发同一口径）、
+   * 窗口与压缩触发线，单位 token。
+   *
+   * 必须告知模型：未告知时模型只能凭感觉判断剩余空间，实测 1M 窗口的模型在 50–67 万时多次向用户声称
+   * 「上下文快耗尽」，跳过验证并提前结束任务，而压缩在 80% 时自动执行。
+   */
+  context?: { used: number; window: number; compactAt: number }
   /** 技能索引：只含 name 与 description，正文由模型按需通过 read_skill 读取。 */
   skills?: { name: string; description: string }[]
   /** 记忆索引：只含 key 与首行摘要，正文由模型按需通过 read_memory 读取。 */
@@ -421,6 +434,13 @@ export function buildTailNotes(input: {
       : '权限模式：auto。在家目录或系统目录中写入与删除（工作区与额外目录除外）、把 Python 包装入全局环境、' +
           '修改系统状态的命令、读写凭证文件会被拒绝，其余放行。',
   )
+  if (input.context) {
+    const { used, window, compactAt } = input.context
+    lines.push(
+      `上下文：本轮开始时已用${used < 10_000 ? '不足 1 万' : `约 ${wan(used)} 万`} / ${wan(window)} 万 token，` +
+        `约 ${Math.round((compactAt / window) * 100)}% 时自动压缩`,
+    )
+  }
 
   /*
    * 生成模型的参数表排在最前，工作区状态行在其后。快照与用户消息合并在同一条消息中，

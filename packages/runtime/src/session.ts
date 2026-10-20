@@ -138,7 +138,7 @@ import {
   type QyConfig,
   resolveModel,
 } from './config.ts'
-import { contextBasis } from './context-panel.ts'
+import { contextBasis, contextPanel } from './context-panel.ts'
 import { describeEnvironment, ensureWorkspacePython, workspacePythonReady } from './environment.ts'
 import { acquireExtensions, type Extensions, releaseExtensions } from './extensions.ts'
 import { makeMcpConfigPort } from './mcp-config-store.ts'
@@ -531,9 +531,17 @@ export class Session {
         ? await ensureWorkspacePython(this.opts.workspaceRoot, python)
         : null
     const environment = await describeEnvironment(this.opts.workspaceRoot, python, venvError, mode)
+    // 本轮开始时的上下文占用：与面板、运行中读数和压缩触发同一口径，不另行估算。
+    const context = contextPanel(store, conversationId, {
+      id: adapter.spec.id,
+      contextWindow: adapter.spec.contextWindow,
+      providerName: resolvedTarget?.provider ?? '',
+      providerKind: adapter.kind,
+    })
     const contextSnapshot = buildTailNotes({
       workspaceRoot: this.opts.workspaceRoot,
       environment,
+      context: { used: context.total, window: context.limit, compactAt: context.compactAt },
       tempDir: displayPath(
         this.opts.workspaceRoot,
         conversationTempDir(this.opts.workspaceRoot, conversationId),

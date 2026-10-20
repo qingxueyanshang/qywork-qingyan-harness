@@ -251,6 +251,24 @@ describe('上下文末尾注记', () => {
   })
 
   /**
+   * 原始失败：1M 窗口的模型在 50–67 万 token 时多次声称「上下文快耗尽、只剩一两次调用」，
+   * 跳过验证并提前结束。快照中写明实测占用、窗口与自动压缩的位置，只占一行。
+   */
+  test('上下文占用写成一行：本轮开始时已用、窗口与自动压缩的比例；未提供时不出现', () => {
+    const state = (context?: { used: number; window: number; compactAt: number }) =>
+      note(buildTailNotes({ ...base, ...(context ? { context } : {}) }), 'workspaceState')
+        ?.content ?? ''
+    const lines = state({ used: 523_456, window: 1_000_000, compactAt: 800_000 })
+      .split('\n')
+      .filter((l) => l.startsWith('上下文：'))
+    expect(lines).toEqual(['上下文：本轮开始时已用约 52.3 万 / 100 万 token，约 80% 时自动压缩'])
+    expect(state({ used: 2_139, window: 128_000, compactAt: 102_400 })).toContain(
+      '上下文：本轮开始时已用不足 1 万 / 12.8 万 token，约 80% 时自动压缩',
+    )
+    expect(state()).not.toContain('上下文：')
+  })
+
+  /**
    * 权限模式必须位于上下文末尾。未告知时模型只能逐次试探：每次被拒绝都多消耗一轮
    * 「被拒 → 改写 → 重发」，而被拒绝的调用本身已计费。
    */
