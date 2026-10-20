@@ -112,7 +112,7 @@ describe('画布端口', () => {
     ).toContain('「走出校门」的参数 duration 取值 30 不合法：范围 1–15')
     expect(
       await skippedOf(port.edit(PATH, [{ op: 'update', id: '走出校门', params: { seconds: 5 } }])),
-    ).toContain('「走出校门」的参数 seconds 不存在。可用参数：aspect_ratio、duration')
+    ).toContain('「走出校门」的参数 seconds 不存在。默认模型的可用参数：aspect_ratio、duration')
     const wide = await port.edit(PATH, [
       { op: 'update', id: '走出校门', params: { aspect_ratio: '16:9' } },
     ])
@@ -445,6 +445,141 @@ describe('画布端口', () => {
     expect(
       await skippedOf(bare.edit(PATH, [{ op: 'add_generate', output: 'image', name: '乙' }])),
     ).toContain('「乙」未指定生成模型，且没有默认的生成模型')
+  })
+
+  /**
+   * 原始失败形状：add_generate 只写 model: gpt-image-2.5-sunburst，参数按默认模型的参数表核对，
+   * 报错列出的是另一个模型的参数，也没有写明按哪个模型核对。
+   */
+  test('只给出 model 时按提供该模型的接口补上 provider，参数按该模型核对；没有或有多个接口提供时写明原因', async () => {
+    const root = await workspace()
+    const grok: MediaParamDefinition[] = [
+      { name: 'aspect_ratio', type: 'enum', values: ['1:1', '16:9'] },
+    ]
+    const gpt: MediaParamDefinition[] = [
+      { name: 'output_format', type: 'enum', values: ['png', 'jpeg'] },
+    ]
+    const owners: Record<string, string[]> = {
+      'gpt-image-2.5-sunburst': ['relay'],
+      seedream: ['ark', 'relay'],
+    }
+    const service = new CanvasService({
+      publish: () => {},
+      paramSpecsOf: (_output, pick) =>
+        !pick ? grok : pick.model === 'gpt-image-2.5-sunburst' ? gpt : undefined,
+      providersOf: (_output, model) => owners[model] ?? [],
+    })
+    const port = canvasPort(service, { id: 'ws', root })
+    const placed = await port.edit(PATH, [
+      {
+        op: 'add_generate',
+        output: 'image',
+        name: 'P01 封面',
+        model: 'gpt-image-2.5-sunburst',
+        params: { output_format: 'png' },
+      },
+    ])
+    expect(placed.skipped).toEqual([])
+    expect(placed.view.doc.nodes[0]).toMatchObject({
+      provider: 'relay',
+      model: 'gpt-image-2.5-sunburst',
+      params: { output_format: 'png' },
+    })
+    const add = (name: string, extra: Partial<Extract<CanvasOp, { op: 'add_generate' }>>) =>
+      skippedOf(port.edit(PATH, [{ op: 'add_generate', output: 'image', name, ...extra }]))
+    expect(await add('乙', { model: 'seedream' })).toContain(
+      '「乙」只给出 model seedream，缺少 provider：ark、relay 都提供该模型，provider 写明其中一个',
+    )
+    expect(await add('丙', { model: 'img-x' })).toContain(
+      '「丙」只给出 model img-x，缺少 provider，且本轮「可用的生成模型」中没有该模型',
+    )
+    expect(await add('丁', { params: { output_format: 'png' } })).toContain(
+      '「丁」的参数 output_format 不存在。默认模型的可用参数：aspect_ratio',
+    )
+    expect(
+      await add('戊', {
+        provider: 'relay',
+        model: 'gpt-image-2.5-sunburst',
+        params: { quality: 'max' },
+      }),
+    ).toContain(
+      '「戊」的参数 quality 不存在。relay / gpt-image-2.5-sunburst 的可用参数：output_format',
+    )
+    // 使用默认模型的卡改换模型时同样补上 provider。
+    await port.edit(PATH, [{ op: 'add_generate', output: 'image', name: '己' }])
+    const changed = await port.edit(PATH, [
+      { op: 'update', id: '己', model: 'gpt-image-2.5-sunburst' },
+    ])
+    expect(
+      changed.view.doc.nodes.find((n) => n.type === 'generate' && n.name === '己'),
+    ).toMatchObject({ provider: 'relay', model: 'gpt-image-2.5-sunburst' })
+  })
+
+  /** 原始失败形状：同一批中先删除「P01 封面」再把另一张卡改名为「P01 封面」，被拒为名称已被另一张卡使用。 */
+  test('同一批中先删除或改动的卡让出名称、文件与摘录；同一批中重复的名称、文件与摘录仍被拒绝', async () => {
+    const root = await workspace()
+    await writeFile(join(root, '脚本.md'), '## 1-1\n阿七推门。\n## 1-2\n阿七握手。\n')
+    const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
+    const shot = (after: string) => ({ after, start: '阿七', end: '。' })
+    await port.edit(PATH, [
+      { op: 'add_generate', output: 'image', name: 'P01 封面', group: '幻灯片' },
+      { op: 'add_generate', output: 'image', name: 'P01 封面 重做', group: '幻灯片' },
+      { op: 'add_file', path: 'a.png', name: '小满' },
+      { op: 'add_file', path: '脚本.md', name: '1-1 段', excerpt: shot('## 1-1') },
+    ])
+    const swapped = await port.edit(PATH, [
+      { op: 'remove', id: 'P01 封面' },
+      { op: 'update', id: 'P01 封面 重做', name: 'P01 封面' },
+      { op: 'remove', id: '小满' },
+      { op: 'add_file', path: 'a.png', name: '小满_审定' },
+      { op: 'update', id: '1-1 段', excerpt: shot('## 1-2') },
+      { op: 'add_file', path: '脚本.md', name: '1-1 段 补', excerpt: shot('## 1-1') },
+    ])
+    expect(swapped.skipped).toEqual([])
+    expect(swapped.view.doc.nodes.map(displayNameOf)).toEqual([
+      'P01 封面',
+      '1-1 段',
+      '小满_审定',
+      '1-1 段 补',
+    ])
+    const repeated = await port.edit(PATH, [
+      { op: 'add_generate', output: 'image', name: 'P02' },
+      { op: 'add_generate', output: 'image', name: 'P02' },
+      { op: 'add_file', path: 'a.png', name: '小满' },
+      { op: 'update', id: '1-1 段 补', excerpt: shot('## 1-2') },
+    ])
+    expect(repeated.skipped.map((s) => s.error)).toEqual([
+      '名称「P02」已被另一张卡使用：同一张画布中的卡片名称不能重复',
+      'a.png 已在画布上，卡片名称为「小满_审定」：同一文件只放一张整篇的卡',
+      '脚本.md 中的这一段已有摘录卡「1-1 段」：同一段只放一张卡',
+    ])
+  })
+
+  test('经端口排列卡片：只改变了位置的卡列入 moved，回执不列出其全文', async () => {
+    const root = await workspace()
+    const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
+    await port.edit(
+      PATH,
+      ['P2', 'P1', 'P3'].map((name) => ({
+        op: 'add_generate' as const,
+        output: 'image' as const,
+        name,
+        group: '幻灯片',
+        prompt: `${name} 的画面`,
+      })),
+    )
+    const r = await port.edit(PATH, [{ op: 'arrange', group: '幻灯片', perRow: 2 }])
+    const at = (name: string) => {
+      const n = r.view.doc.nodes.find((x) => x.type === 'generate' && x.name === name)!
+      return [n.x, n.y]
+    }
+    expect([at('P1'), at('P2'), at('P3')]).toEqual([
+      [0, 0],
+      [269, 0],
+      [0, 269],
+    ])
+    expect(r.changed).toEqual([])
+    expect(r.moved).toHaveLength(3)
   })
 
   test('同一批操作经端口与经 HTTP 写出的文件逐字节相同', async () => {

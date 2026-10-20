@@ -727,6 +727,175 @@ describe('画布：操作', () => {
     }
   })
 
+  /** 原始失败形状：删除列中的卡后列中留下空位，模型只能用脚本改写坐标。 */
+  test('删除带组的卡后同列下方紧挨的卡上移；一批删除多张时同样补齐；其他列、没有组的卡不动', () => {
+    let doc = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_generate', output: 'image', group: '角色/甲' },
+        { op: 'add_generate', output: 'image', group: '角色/乙' },
+        { op: 'add_generate', output: 'image', group: '角色/丙' },
+        { op: 'add_generate', output: 'image', group: '角色/丁' },
+        { op: 'add_generate', output: 'image', group: '场景/山门' },
+        { op: 'add_generate', output: 'image', group: '场景/书房' },
+      ],
+      ids('n'),
+    )
+    doc = apply(
+      doc,
+      [
+        { op: 'add_file', path: 'u1.png', x: 1000, y: 0 },
+        { op: 'add_file', path: 'u2.png', x: 1000, y: 269 },
+        { op: 'add_file', path: 'far.png', x: 0, y: 2000 },
+      ],
+      ids('u'),
+    )
+    const at = (id: string) => {
+      const n = doc.nodes.find((x) => x.id === id)!
+      return [n.x, n.y]
+    }
+    expect(['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(at)).toEqual([
+      [0, 0],
+      [0, 269],
+      [0, 538],
+      [0, 807],
+      [269, 0],
+      [269, 269],
+    ])
+    doc = apply(doc, [{ op: 'remove', id: 'n2' }])
+    expect(['n1', 'n3', 'n4', 'n5', 'n6', 'u3'].map(at)).toEqual([
+      [0, 0],
+      [0, 269],
+      [0, 538],
+      [269, 0],
+      [269, 269],
+      [0, 2000],
+    ])
+    // 同一批删除列首与中间两张，并在列中补一张：剩下的卡移到列首，新卡接在补齐之后的列末。
+    doc = apply(
+      doc,
+      [
+        { op: 'remove', id: 'n1' },
+        { op: 'remove', id: 'n3' },
+        { op: 'add_generate', output: 'image', group: '角色/戊' },
+      ],
+      ids('m'),
+    )
+    expect([at('n4'), at('m1'), at('u3')]).toEqual([
+      [0, 0],
+      [0, 269],
+      [0, 2000],
+    ])
+    // 界面放置的卡没有组，删除后不移动其他卡。
+    doc = apply(doc, [{ op: 'remove', id: 'u1' }])
+    expect(at('u2')).toEqual([1000, 269])
+  })
+
+  /** 原始失败形状：`update` 不接受 group，「含有未知字段：group」，模型改用脚本改写画布文件。 */
+  test('update 改组：卡移到新组所在列的末尾，原列补上空位；同时给出 x、y 时以其为准；时间线没有组', () => {
+    let doc = apply(
+      emptyCanvas(),
+      [
+        { op: 'add_generate', output: 'image', group: '角色/甲' },
+        { op: 'add_generate', output: 'image', group: '角色/乙' },
+        { op: 'add_generate', output: 'image', group: '场景/山门' },
+        { op: 'add_timeline', name: '成片' },
+      ],
+      ids('n'),
+    )
+    const at = (id: string) => {
+      const n = doc.nodes.find((x) => x.id === id)!
+      return [n.x, n.y]
+    }
+    expect(['n1', 'n2', 'n3'].map(at)).toEqual([
+      [0, 0],
+      [0, 269],
+      [269, 0],
+    ])
+    doc = apply(doc, [{ op: 'update', id: 'n1', group: '场景/后山' }])
+    expect([at('n1'), at('n2'), at('n3')]).toEqual([
+      [269, 269],
+      [0, 0],
+      [269, 0],
+    ])
+    expect(gen(doc, 'n1').group).toBe('场景/后山')
+    expect(parseCanvas(serializeCanvas(doc))).toEqual({ ok: true, doc })
+    doc = apply(doc, [{ op: 'update', id: 'n2', group: '道具/玉佩', x: 2000, y: 0 }])
+    expect(at('n2')).toEqual([2000, 0])
+    expect(gen(doc, 'n2').group).toBe('道具/玉佩')
+    expect(rejects(doc, [{ op: 'update', id: 'n4', group: '成片' }])).toBe('时间线没有 group')
+  })
+
+  /** 原始失败形状：P01…P13 的幻灯片图要按阅读顺序每行 4 张排列，画布没有排列操作。 */
+  test('arrange 按名称排成网格：名称中的数字按数值排序，右侧的列随之让开；同一批新增的卡一并排列', () => {
+    const order = [10, 2, 1, 13, 3, 4, 5, 6, 7, 8, 9, 11, 12]
+    let doc = apply(
+      emptyCanvas(),
+      [
+        ...order.map(
+          (n): CanvasOp => ({
+            op: 'add_generate',
+            output: 'image',
+            name: `P${n}`,
+            group: '幻灯片',
+            w: 300,
+            h: 169,
+          }),
+        ),
+        { op: 'add_file', path: '文本/大纲.md', name: '大纲', group: '文本' },
+        { op: 'add_file', path: '文本/讲稿.md', name: '讲稿', group: '文本' },
+      ],
+      ids('n'),
+    )
+    const at = (name: string) => {
+      const n = doc.nodes.find((x) => x.name === name)!
+      return [n.x, n.y]
+    }
+    expect([at('P10'), at('P1'), at('大纲')]).toEqual([
+      [0, 0],
+      [0, 538],
+      [400, 0],
+    ])
+    doc = apply(doc, [{ op: 'arrange', group: '幻灯片' }])
+    const cell = (k: number) => [(k % 4) * 400, Math.floor(k / 4) * 269]
+    for (let k = 0; k < 13; k++) expect(at(`P${k + 1}`)).toEqual(cell(k))
+    // 网格宽 4 × 300 + 3 × 100：「文本」列右移到其右侧一个间距处，列内对齐不变。
+    expect([at('大纲'), at('讲稿')]).toEqual([
+      [1600, 0],
+      [1600, 269],
+    ])
+    doc = apply(
+      doc,
+      [
+        { op: 'add_generate', output: 'image', name: 'P14', group: '幻灯片', w: 300, h: 169 },
+        { op: 'arrange', group: '幻灯片', perRow: 4 },
+      ],
+      ids('m'),
+    )
+    for (let k = 0; k < 14; k++) expect(at(`P${k + 1}`)).toEqual(cell(k))
+    expect(at('大纲')).toEqual([1600, 0])
+    doc = apply(doc, [{ op: 'arrange', ids: ['P3', 'P1', 'P2'], perRow: 2 }])
+    expect([at('P1'), at('P2'), at('P3')]).toEqual([
+      [0, 0],
+      [400, 0],
+      [0, 269],
+    ])
+    for (const a of doc.nodes) {
+      for (const b of doc.nodes) if (a !== b) expect(overlaps(a, b)).toBe(false)
+    }
+    expect(rejects(doc, [{ op: 'arrange' }])).toBe('ids 与 group 须给出其中一个')
+    expect(rejects(doc, [{ op: 'arrange', group: '幻灯片', perRow: 0 }])).toBe(
+      'perRow 须为正整数：0',
+    )
+    expect(rejects(doc, [{ op: 'arrange', group: '道具' }])).toBe('组「道具」中没有卡片')
+    expect(rejects(doc, [{ op: 'arrange', ids: [] }])).toBe('ids 不能为空')
+    expect(parseCanvasOps([{ op: 'arrange', group: '幻灯片', perRow: 3 }]).ok).toBe(true)
+    expect(parseCanvasOps([{ op: 'arrange', group: '幻灯片', across: 3 }])).toEqual({
+      ok: false,
+      error: '第 1 条操作 含有未知字段：across',
+    })
+  })
+
   test('复制：选区内的连线与 @ 指向副本；不带输入时外部 @ 变为名称，带输入时连接外部连线', () => {
     const base = apply(
       emptyCanvas(),

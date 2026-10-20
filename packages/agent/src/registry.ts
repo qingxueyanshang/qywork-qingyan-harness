@@ -410,6 +410,7 @@ export interface CanvasEditResult {
   refs: Record<string, string>
   skipped: { at: number; error: string }[]
   changed: string[]
+  moved: string[]
   removed: string[]
   replaced: { at: number; count: number }[]
 }
@@ -444,8 +445,8 @@ export interface CanvasPort {
   read(path: string): Promise<CanvasView>
   /**
    * 逐条应用一批操作：不成立的条目跳过，`skipped` 中的 `at` 为该条在 `ops` 中的序号；其余照常生效。
-   * `changed` 为本批新增或内容有变化的节点 id，`removed` 为本批删除的节点名称，
-   * `replaced` 为每条 `replace_text` 在该卡提示词中替换的处数（按 `ops` 的序号）。
+   * `changed` 为本批新增或内容有变化的节点 id，`moved` 为只改变了位置或尺寸的节点 id，
+   * `removed` 为本批删除的节点名称，`replaced` 为每条 `replace_text` 在该卡提示词中替换的处数（按 `ops` 的序号）。
    */
   edit(path: string, ops: CanvasOp[]): Promise<CanvasEditResult>
   /** 运行一张生成卡并等待结束。花费记入 `media`：Agent 传入本轮的 `ctx.media`，花费计入本轮。 */

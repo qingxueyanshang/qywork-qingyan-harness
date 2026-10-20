@@ -27,6 +27,7 @@ import {
   configDir,
   createOfficeHost,
   importLegacySchedules,
+  listMediaModels,
   releaseExtensions,
   resolveMediaModel,
 } from '@qywork/runtime'
@@ -171,6 +172,13 @@ export function serve(opts: ServeOptions) {
       const target = resolveMediaModel(opts.config, output, pick)
       return target ? lookupMediaModel(target.model, target.kind).params : undefined
     },
+    // art 的模型是对话模型，按接口下声明的对话模型查找。
+    providersOf: (output, model) =>
+      output === 'art'
+        ? Object.keys(opts.config.providers).filter((p) => opts.config.providers[p]?.models[model])
+        : listMediaModels(opts.config)
+            .filter((m) => m.output === output && m.model === model)
+            .map((m) => m.provider),
     publish: (event) => bus.publish(event),
     updating: () => runs.updating,
     mentionStyleOf: (output, pick) => {

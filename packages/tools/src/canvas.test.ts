@@ -117,6 +117,7 @@ function fakePort(result: Awaited<ReturnType<CanvasPort['run']>>): {
           refs: { $x: 'id9' },
           skipped: [],
           changed: ['id2'],
+          moved: [],
           removed: [],
           replaced: [],
         }
@@ -429,13 +430,40 @@ describe('canvas 工具', () => {
     )
   })
 
-  test('edit 回执只列改动的卡与端口跳过的条目，未改动的卡不写入', async () => {
+  /** 原始失败形状：模型用 update 把卡移到另一组时被拒，只能用脚本改写画布文件。 */
+  test('update 给出 id 或 ids 时 group 是要改成的组；arrange 原样交给端口', async () => {
+    const { port, seen } = fakePort(DONE)
+    const out = await editCanvasTool.fn(
+      {
+        path: 'board.canvas.json',
+        ops_json: [
+          { op: 'update', id: '视频1', group: '幻灯片' },
+          { op: 'update', ids: ['视频1', '小满'], group: '幻灯片' },
+          { op: 'update', id: '视频1', ids: ['视频1'], group: '幻灯片' },
+          { op: 'arrange', group: '幻灯片', perRow: 4 },
+        ],
+      },
+      ctx(port),
+    )
+    expect(seen.edits).toEqual([
+      [
+        { op: 'update', id: '视频1', group: '幻灯片' },
+        { op: 'update', id: '视频1', group: '幻灯片' },
+        { op: 'update', id: '小满', group: '幻灯片' },
+        { op: 'arrange', group: '幻灯片', perRow: 4 },
+      ],
+    ])
+    expect(out.message).toContain('- 第 3 条（update「视频1」）：id 与 ids、group 只能给出其中一个')
+  })
+
+  test('edit 回执只列改动的卡与端口跳过的条目，未改动的卡不写入，移动的卡只写名称', async () => {
     const { port } = fakePort(DONE)
     port.edit = async () => ({
       view: view(),
       refs: {},
       skipped: [{ at: 1, error: '「镜头9」不存在' }],
       changed: ['id2'],
+      moved: ['id1'],
       removed: ['旧卡'],
       replaced: [{ at: 0, count: 2 }],
     })
@@ -453,6 +481,7 @@ describe('canvas 工具', () => {
     expect(out.message).toContain('替换：第 1 条（replace_text「视频1」） 2 处')
     expect(out.message).toContain('提示词：@[id1] 走出校门')
     expect(out.message).not.toContain('文件「小满」')
+    expect(out.message).toContain('位置或尺寸改变：「小满」')
     expect(out.message).toContain('删除：「旧卡」')
     expect(out.message).toContain('未改动的卡用 read_canvas 的 node 按名称读取全文')
     port.edit = async () => ({
@@ -460,6 +489,7 @@ describe('canvas 工具', () => {
       refs: {},
       skipped: [{ at: 0, error: '原因' }],
       changed: [],
+      moved: [],
       removed: [],
       replaced: [],
     })
@@ -550,6 +580,46 @@ describe('canvas 工具', () => {
     expect(sent.message).toContain('发送的参数：{"resolution":"480P","duration":15}')
     const read = await readCanvasTool.fn({ path: 'board.canvas.json' }, ctx(port))
     expect(read.message).toContain('参数：未设置，按模型缺省值生成')
+  })
+
+  /** 原始失败形状：n=1 的生成卡得到两张图，回执只列出两个路径，没有写明哪一张是卡片的当前版本。 */
+  test('同类产物不止一个或取回的不是当前版本时，回执写明卡片的当前版本；图片多于请求的张数时写明', async () => {
+    const { port } = fakePort({
+      ok: true,
+      outputs: [
+        { path: 'generated/20261020-033247.png' },
+        { path: 'generated/20261020-033247-5.png' },
+      ],
+      params: { n: 1 },
+      current: 'generated/20261020-033247.png',
+    })
+    const c = ctx(port, media)
+    const out = await runCanvasTool.fn({ path: 'board.canvas.json', node: ['id2'] }, c)
+    expect(out.message).toContain(
+      '卡片的当前版本：generated/20261020-033247.png；本次其余 1 个结果保存为该卡的其他版本；请求 1 张，接口返回 2 张',
+    )
+    port.retrieve = async () => ({
+      ok: true,
+      outputs: [{ path: 'generated/b.mp4' }],
+      params: {},
+      current: 'generated/a.mp4',
+    })
+    const late = await retrieveCanvasTool.fn(
+      { path: 'board.canvas.json', node: 'id2', version: 'v1' },
+      c,
+    )
+    expect(late.message).toContain(
+      '卡片的当前版本仍为 generated/a.mp4；本次结果保存为该卡的其他版本',
+    )
+    // 视频随附的尾帧图是另一张卡；只有一个视频时不写当前版本。
+    port.run = async () => ({
+      ok: true,
+      outputs: [{ path: 'generated/a.mp4' }, { path: 'generated/a.jpg' }],
+      params: {},
+      current: 'generated/a.mp4',
+    })
+    const tail = await runCanvasTool.fn({ path: 'board.canvas.json', node: ['id2'] }, c)
+    expect(tail.message).not.toContain('当前版本')
   })
 
   test('远端任务未结束时回执说明取回方式；没有生成通道时不调用端口', async () => {

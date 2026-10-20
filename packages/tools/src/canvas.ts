@@ -20,6 +20,7 @@ import {
   type CanvasBatchRunResult,
   type CanvasNode,
   type CanvasOp,
+  type CanvasRunResult,
   type CanvasView,
   canvasFileKind,
   canvasRunLabel,
@@ -344,23 +345,25 @@ function labelOf(at: number, raw: unknown, target?: string): string {
 
 /**
  * `update` 与 `replace_text` 的 `ids`（卡片名称数组）或 `group`（组名，含其下以 `组名/` 开头的组）
- * 展开为逐卡操作。返回展开后的目标，或无法展开的原因；没有这两个字段时返回 null。
+ * 展开为逐卡操作。返回展开后的目标与用作目标的字段，或无法展开的原因；没有目标字段时返回 null。
  * `group` 只匹配生成卡：这两种操作修改的是模型、参数与提示词。
+ * `update` 给出 `id` 或 `ids` 时 `group` 是卡片的新组，不是目标。
  */
 async function targetsOf(
   raw: Record<string, unknown>,
   read: () => Promise<CanvasView>,
-): Promise<string[] | { error: string } | null> {
+): Promise<{ names: string[]; key: 'ids' | 'group' } | { error: string } | null> {
   // 新增操作的 group 是卡片所在的组，不是目标；其他操作带 ids 时由操作核对报出未知字段。
   if (raw.op !== 'update' && raw.op !== 'replace_text') return null
-  if (!('ids' in raw) && !('group' in raw)) return null
+  const byGroup = 'group' in raw && !(raw.op === 'update' && ('id' in raw || 'ids' in raw))
+  if (!('ids' in raw) && !byGroup) return null
   if ('id' in raw) return { error: 'id 与 ids、group 只能给出其中一个' }
-  if ('ids' in raw && 'group' in raw) return { error: 'ids 与 group 只能给出其中一个' }
+  if ('ids' in raw && byGroup) return { error: 'ids 与 group 只能给出其中一个' }
   if ('ids' in raw) {
     const ids = raw.ids
     if (!Array.isArray(ids) || !ids.length || ids.some((x) => typeof x !== 'string' || !x))
       return { error: 'ids 须为非空的卡片名称数组' }
-    return ids as string[]
+    return { names: ids as string[], key: 'ids' }
   }
   const group = raw.group
   if (typeof group !== 'string' || !group) return { error: 'group 须为组名' }
@@ -368,12 +371,13 @@ async function targetsOf(
   const names = doc.nodes
     .filter((n) => n.type === 'generate' && (n.group === group || n.group?.startsWith(`${group}/`)))
     .map((n) => displayNameOf(n))
-  return names.length ? names : { error: `组「${group}」中没有生成卡` }
+  return names.length ? { names, key: 'group' } : { error: `组「${group}」中没有生成卡` }
 }
 
 /**
- * 修改回执：执行与跳过的条目、新建的批内名称、每条 replace_text 替换的处数、改动的卡的全文与删除的卡。
- * 未改动的卡不写入：每次回执都列出整张画布时，二十张卡的回执达数万字，模型因此改用脚本读写画布文件。
+ * 修改回执：执行与跳过的条目、新建的批内名称、每条 replace_text 替换的处数、改动的卡的全文、移动的卡与删除的卡。
+ * 未改动的卡不写入，只改变了位置或尺寸的卡只写名称：每次回执都列出整张画布时，二十张卡的回执达数万字，
+ * 模型因此改用脚本读写画布文件。
  */
 function editReceipt(
   planned: readonly PlannedOp[],
@@ -408,6 +412,11 @@ function editReceipt(
         if (n) lines.push(...nodeLines(view, n))
       }
     }
+    const moved = result.moved.flatMap((id) => {
+      const n = view.doc.nodes.find((x) => x.id === id)
+      return n ? [`「${displayNameOf(n)}」`] : []
+    })
+    if (moved.length) lines.push(`位置或尺寸改变：${moved.join('、')}`)
     if (result.removed.length)
       lines.push(`删除：${result.removed.map((n) => `「${n}」`).join('、')}`)
     lines.push(`${countsLine(view)}；未改动的卡用 read_canvas 的 node 按名称读取全文。`)
@@ -449,8 +458,8 @@ async function planOps(
       continue
     }
     const expanded = targets
-      ? targets.map((id) => {
-          const { ids: _ids, group: _group, ...rest } = record!
+      ? targets.names.map((id) => {
+          const { [targets.key]: _target, ...rest } = record!
           return { raw: { ...rest, id }, label: labelOf(at, raw, id) }
         })
       : [{ raw, label: labelOf(at, raw) }]
@@ -472,29 +481,36 @@ export const editCanvasTool: ToolSpec = {
     CANVAS_NOTE +
     '先用 read_canvas 查看画布；画布尚不存在时先用 create_canvas 创建。' +
     'ops_json 是一批操作的 JSON 数组，逐条生效：某条不成立时跳过并在回执中写明原因，其余照常执行；' +
-    '引用了被跳过操作的批内名称的操作同样跳过。回执只列出本批执行与跳过的操作、改动的卡的全文与删除的卡。操作：' +
+    '引用了被跳过操作的批内名称的操作同样跳过。回执只列出本批执行与跳过的操作、改动的卡的全文、位置或尺寸改变的卡的名称与删除的卡。操作：' +
     '{"op":"add_file","path":"工作区路径","name":"卡片名称","group":"组"}（摘录卡另加 "excerpt"）、' +
     '{"op":"add_generate","output":"image|video|audio|art","name":"卡片名称","group":"组","prompt":"…","params":{…}}、' +
-    '{"op":"update","id":"卡片名称",…要改的字段}（prompt 整体替换提示词；excerpt 改摘录，为 null 时改为整篇）、' +
+    '{"op":"update","id":"卡片名称",…要改的字段}（可改 name、group、prompt、provider、model、params、current、path、excerpt、clips、muted 与位置尺寸 x、y、w、h；' +
+    'prompt 整体替换提示词；excerpt 改摘录，为 null 时改为整篇；group 改变时卡片移到新组所在列的末尾，同时给出 x、y 时以其为准）、' +
     '{"op":"edit_prompt","id":"生成卡名称","old":"提示词中的一段原文","new":"替换后的文字"}（只改提示词中的一段：old 照抄 read_canvas 读取的原文，必须恰好出现一次；new 为空时删除该段）、' +
     '{"op":"edit_prompt","id":"生成卡名称","from":"前标记","to":"后标记","new":"…"}（替换两个标记之间的文字，标记保留，各须恰好出现一次；省略 to 时替换到末尾）、' +
     '{"op":"replace_text","id":"生成卡名称","old":"原文","new":"新文字"}（把提示词中出现的原文全部替换）、' +
-    'update 与 replace_text 可用 "ids":["卡片名称",…] 或 "group":"组名"（含其下的「组名/对象」）代替 id，对每张生成卡各执行一次，逐卡报告、互不影响、' +
+    'update 与 replace_text 可用 "ids":["卡片名称",…] 或 "group":"组名"（含其下的「组名/对象」）代替 id，对每张生成卡各执行一次，逐卡报告、互不影响' +
+    '（update 给出 id 或 ids 时，group 是要改成的组，不是目标）、' +
     '{"op":"connect","from":"素材卡片名称","to":"生成卡名称","role":"…"}（新连线排在该卡输入的末尾）、' +
     '{"op":"order_inputs","id":"生成卡名称","inputs":["素材卡片名称",…]}（按新顺序列出该卡的全部输入，含同批 connect 新连的素材）、' +
-    '{"op":"remove","id":"卡片名称或连线 id"}（删除某一版时另加 "version"）、{"op":"set_mode","id":"视频卡名称","mode":"reference|first_last"}、' +
+    '{"op":"remove","id":"卡片名称或连线 id"}（删除某一版时另加 "version"；删除卡片后同一列中其下方的卡上移，不留空位）、{"op":"set_mode","id":"视频卡名称","mode":"reference|first_last"}、' +
+    '{"op":"arrange","group":"组名"} 或 {"op":"arrange","ids":["卡片名称",…]}（按卡片名称排成网格，名称中的数字按数值排序，P2 在 P10 之前；' +
+    '"perRow" 为每行张数，缺省 4；网格从这些卡原来所占区域的左上角开始，右侧与下方的卡随之让开；在本批其他操作之后执行，同一批新增的卡同样参与）、' +
     '{"op":"add_timeline","name":"…","clips":[…]}（修改片段时用 update 的 clips 整组替换，muted 切换整条静音）。' +
-    '引用卡片时写卡片名称（读取回执中的 id 同样可用）；同一张画布中卡片名称不能重复，同一文件只放一张整篇的卡，同一段只放一张摘录卡。' +
+    '引用卡片时写卡片名称（读取回执中的 id 同样可用）；同一张画布中卡片名称不能重复，同一文件只放一张整篇的卡，同一段只放一张摘录卡；' +
+    '同一批中先删除的卡让出其名称与文件，之后的操作可以使用。' +
     'add_file 放置生成用到的素材与成品（图片、视频、音频、.html）；剧本、制作稿、报告等文本文件整篇放上画布只在用户要求时进行，' +
     '生成卡要用其中的段落时放摘录卡。' +
-    '新卡片的位置由画布排列，不写坐标：group 写「类别/对象」，斜杠前的类别决定卡片所在的列，同一对象的各张卡片在列中相连。' +
+    '新卡片的位置由画布排列，新增时不写坐标：group 写「类别/对象」，斜杠前的类别决定卡片所在的列，同一对象的各张卡片在列中相连。' +
     '斜杠前只写类别，不写轮次、版本或项目名：之后的轮次新增的人物仍写「角色/人物名」，轮次写在卡片名称中。' +
     '人物、场景、道具按类别各占一列，如「角色/沈砚」「角色/顾衡」「场景/山门」「道具/玉佩」；同一对象的各套服装、各个角度写同一个组名。' +
     '其他卡片同样按类别写，如「预演/献丹」「文本/剧本」。' +
     '分镜或镜头按发生的场景各占一列，group 写「场景名·分镜」或「场景名·镜头」，如「山门·分镜」。' +
     '同一列的卡按创建顺序自上而下，后补的卡接在同一对象或同一列的末尾；新的列按创建顺序排在画布最右侧，时间线单独占一列。' +
     '因此先建人物、场景等素材再建分镜，同一列的卡按剧情顺序创建。' +
-    'add_generate 可选 provider、model、params：取值见本轮「可用的生成模型」，参数名与取值按所用模型与卡片的输入核对，不合法或在当前输入下不可用时该条不执行并说明原因；' +
+    '要按顺序成行排列（如逐页的幻灯片）时用 arrange；移动单张已有的卡用 update 的 x、y。' +
+    'add_generate 可选 provider、model、params：取值见本轮「可用的生成模型」，只写 model 时按提供该模型的接口补上 provider，有多个接口提供时须写明 provider；' +
+    '参数名与取值按所用模型与卡片的输入核对，不合法或在当前输入下不可用时该条不执行并说明原因；' +
     'update 的 params 整体替换卡片参数，未写出的参数恢复缺省；read_canvas 列出的参数即实际发送的参数，与参数面板一致。' +
     '宽高比或尺寸参数同时决定卡片形状；未给出时卡片为方形，出图后按结果的比例改变形状，相邻的卡随之移开。' +
     `art 卡的 provider、model 是对话模型，缺省为当前对话模型，params 只有 size：${ART_SIZE_PARAM.values?.join('、')}。` +
@@ -588,10 +604,33 @@ function generationReceipt(
     status: 'success',
     message:
       `已取得结果：\n${outputs.join('\n')}\n  发送的参数：${paramsText(result.params)}` +
+      currentText(result) +
       `${result.warning ? `\n${result.warning}` : ''}${step ? viewStep(paths) : ''}`,
     data: { outputs: result.outputs, params: result.params },
     fileChanges: paths.map((p) => ({ path: p, changeType: 'created' as const })),
   }
+}
+
+/**
+ * 卡片显示哪一个结果：同类产物不止一个、或取回的不是当前版本时写明当前版本，模型据此查看与引用，不必推测。
+ * 接口返回的图片多于请求的张数时一并写明：每张都保存为该卡的版本。同一秒开始的几次生成共用时间戳文件名，
+ * 路径末尾的 `-2`、`-5` 等编号只用于避开已有文件，不表示属于哪一次生成。视频随附的尾帧图是另一张卡，不计入。
+ */
+function currentText(result: Extract<CanvasRunResult, { ok: true }>): string {
+  const { current, outputs } = result
+  if (!current) return ''
+  const kind = canvasFileKind(current)
+  const same = outputs.filter((o) => canvasFileKind(o.path) === kind)
+  const included = same.some((o) => o.path === current)
+  if (included && same.length === 1) return ''
+  const n = result.params.n
+  const extra =
+    kind === 'image' && typeof n === 'number' && same.length > n
+      ? `；请求 ${n} 张，接口返回 ${same.length} 张`
+      : ''
+  return included
+    ? `\n  卡片的当前版本：${current}；本次其余 ${same.length - 1} 个结果保存为该卡的其他版本${extra}`
+    : `\n  卡片的当前版本仍为 ${current}；本次结果保存为该卡的其他版本`
 }
 
 /** 卡片名称或 id 按画布当前内容换成 id；有一项无法确定时返回原因。 */
