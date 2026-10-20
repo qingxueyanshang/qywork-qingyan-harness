@@ -1409,6 +1409,7 @@ describe('工具清单', () => {
       { name: 'limit', required: false },
       { name: 'start', required: false },
       { name: 'end', required: false },
+      { name: 'region', required: false },
     ])
     // 整份 schema 的体积由第三方 server 决定，不受控制，因此不下发其中任何键
     expect(row).not.toHaveProperty('parameters')

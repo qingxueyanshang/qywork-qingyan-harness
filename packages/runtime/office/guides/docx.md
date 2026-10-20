@@ -92,7 +92,7 @@ def add_toc(paragraph, levels="1-3"):
 
 - 带宏的文件（.docm 等）一律拒绝打开。
 - 渲染、目录回填需要 Windows 上的 WPS 或 Microsoft Office；没有时这两个阶段返回 unavailable，不能当成看过页面。
-- 技能里写的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）只当做法参考，执行一律用 write_office；技能附带的专属代码要改写成这里支持的 Python。
+- 技能里写的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）只当做法参考，执行一律用 write_office。技能已经生成了给 write_office 执行的脚本时（例如它打印的 `office_job.py`），直接把该脚本交给 write_office，不要改写技能的代码。
 
 ## 最小示例
 

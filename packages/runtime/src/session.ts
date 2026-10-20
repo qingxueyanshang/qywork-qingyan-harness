@@ -114,8 +114,10 @@ import {
 import {
   conversationTempDir,
   displayPath,
+  downscaleNote,
   EXTERNAL_SCHEMA_BUDGET_TOKENS,
   externalSchemaTokens,
+  imageSizeOf,
   listScopedEntries,
   MEDIA_TOOLS,
   makeLoadToolTool,
@@ -1140,6 +1142,12 @@ export class Session {
     // 两次不同的解析结果。
     const adapter = buildAdapter(this.resolveProfile(target))
     const spec = adapter.spec
+    const attached = listMessages(store, conversationId, null).flatMap((m) =>
+      m.attachments.map((a) =>
+        isAbsolute(a.path) ? resolve(a.path) : resolve(this.opts.workspaceRoot, a.path),
+      ),
+    )
+    const readOnly = [...this.skillDirs, ...attached]
     return {
       workspaceRoot: this.opts.workspaceRoot,
       conversationId,
@@ -1246,7 +1254,9 @@ export class Session {
       ...(this.opts.config.envAllowList ? { envAllowList: this.opts.config.envAllowList } : {}),
       ...(this.extraDirs.length ? { additionalDirectories: this.extraDirs } : {}),
       // 本轮技能索引中各技能的目录：其中的参考文档、模板与代码可读、不可写。
-      ...(this.skillDirs.length ? { readOnlyRoots: this.skillDirs } : {}),
+      // 本会话的附件同样只读：附件是用户的显式授权（见 `withAttachments`），缩小发送的截图要用
+      // `read_file` 的 region 截取局部放大，附件不在工作区内时，缺少这一条即无法读取。
+      ...(readOnly.length ? { readOnlyRoots: readOnly } : {}),
       ...(this.opts.office ? { office: this.opts.office } : {}),
       // 「完全访问」即全部权限，路径边界也由它决定。这与下方 `decide` 中
       // 「`full` 不裁决」是同一规则的两个方面：只放开权限检查而保留路径层，
@@ -1457,21 +1467,24 @@ const NEWLINE = String.fromCharCode(10)
  * 条目数有上限，超出时丢弃最早写入的条目。
  */
 const ATTACHMENT_CACHE_LIMIT = 64
-const attachmentCache = new Map<string, { data: string; mime: string }>()
+const attachmentCache = new Map<string, { data: string; mime: string; note: string }>()
 
 async function encodedAttachment(
   path: string,
   mtimeMs: number,
   size: number,
   mime: string,
-): Promise<{ data: string; mime: string } | null> {
+): Promise<{ data: string; mime: string; note: string } | null> {
   const key = `${path}|${mtimeMs}|${size}`
   const hit = attachmentCache.get(key)
   if (hit) return hit
   const bytes = await readFile(path).catch(() => null)
   if (!bytes) return null
-  const fit = await shrinkImage(new Uint8Array(bytes), mime)
-  const out = { data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime }
+  const raw = new Uint8Array(bytes)
+  const fit = await shrinkImage(raw, mime)
+  // 缩小发送的截图写明原图尺寸：模型只看到缩小图，不说明时会把看不清的描边、残影判为没有。
+  const note = downscaleNote(imageSizeOf(raw), imageSizeOf(fit.bytes))
+  const out = { data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime, note }
   if (attachmentCache.size >= ATTACHMENT_CACHE_LIMIT) {
     const oldest = attachmentCache.keys().next().value
     if (oldest !== undefined) attachmentCache.delete(oldest)
@@ -1547,7 +1560,8 @@ export async function withAttachments(
       continue
     }
     // 提供路径：模型无法读取时 `read_file` 会明确报告越界或不存在，而不是静默失败。
-    notes.push(`（附件 ${a.name}：${toPosixPath(abs)}）`)
+    // 附件路径在本会话中可由 `read_file` 读取（`readOnlyRoots`），缩小发送的截图据此截取局部放大。
+    const line = notes.push(`（附件 ${a.name}：${toPosixPath(abs)}）`) - 1
     // 按扩展名分类，与界面附件入口使用同一判据。
     // 按 `a.type` 判定会读取历史行中按 mime 计算的旧值，两处结果不一致。
     if (isInlineVideo(a.path)) {
@@ -1564,6 +1578,7 @@ export async function withAttachments(
       notes.push(`（附件 ${a.name} 读取失败，跳过）`)
       continue
     }
+    if (fit.note) notes[line] = `（附件 ${a.name}：${toPosixPath(abs)}${fit.note}）`
     blocks.push({ type: 'image', mimeType: fit.mime, source: { kind: 'base64', data: fit.data } })
   }
 

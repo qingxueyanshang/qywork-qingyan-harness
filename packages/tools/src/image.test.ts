@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { imageSizeOf, shrinkImage } from './image.ts'
+import { downscaleNote, imageSizeOf, shrinkImage, zoomImage } from './image.ts'
 
 /** 构造只有头部合法的 PNG：`imageSizeOf` 只读取文件头。 */
 function png(width: number, height: number): Uint8Array {
@@ -121,5 +121,49 @@ describe('上限内的大 PNG', () => {
     const bytes = await scene(255)
     const out = await shrinkImage(bytes, 'image/gif')
     expect(out.bytes).toBe(bytes)
+  })
+})
+
+describe('局部放大', () => {
+  async function blank(width: number, height: number, alpha = 255) {
+    const photon = await import('@silvia-odwyer/photon-node')
+    const px = new Uint8Array(width * height * 4).fill(255)
+    for (let i = 3; i < px.length; i += 4) px[i] = alpha
+    return new photon.PhotonImage(px, width, height).get_bytes()
+  }
+
+  /** 越界的比例收到图内；截取至少 1 像素，放大不超过 4 倍。 */
+  test('越界的区域收到图内，放大不超过 4 倍', async () => {
+    const z = await zoomImage(await blank(1000, 500), {
+      left: 0.9,
+      top: 0.9,
+      width: 0.5,
+      height: 0.5,
+    })
+    expect(z.box).toEqual({ x: 900, y: 450, width: 100, height: 50 })
+    expect(z.size).toEqual({ width: 400, height: 200 })
+    expect(z.scale).toBe(4)
+    expect(z.source).toEqual({ width: 1000, height: 500 })
+  })
+
+  /** 截取范围大于上限时缩小到长边 1568，与整图发送一致。 */
+  test('截取范围超过上限时缩小', async () => {
+    const z = await zoomImage(await blank(4000, 1000), { left: 0, top: 0, width: 1, height: 1 })
+    expect(z.size.width).toBe(1568)
+    expect(z.scale).toBeLessThan(1)
+  })
+
+  /** 有透明像素时只用 PNG：JPEG 没有透明通道。 */
+  test('有透明像素时输出 PNG', async () => {
+    const z = await zoomImage(await blank(200, 100, 128), { left: 0, top: 0, width: 1, height: 1 })
+    expect(z.mime).toBe('image/png')
+  })
+
+  test('缩小说明：只在发送尺寸小于原图时给出', () => {
+    expect(downscaleNote({ width: 2560, height: 1360 }, { width: 1568, height: 833 })).toBe(
+      '，原图 2560×1360，缩小为 1568×833 发送；细线、描边、小字看不清时用 read_file 的 region 截取局部放大',
+    )
+    expect(downscaleNote({ width: 800, height: 600 }, { width: 800, height: 600 })).toBe('')
+    expect(downscaleNote(null, { width: 1, height: 1 })).toBe('')
   })
 })

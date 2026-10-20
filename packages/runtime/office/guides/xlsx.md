@@ -53,7 +53,7 @@ openpyxl 只写公式、不算结果。`write` 会用办公软件只读打开工
 
 - 带宏的文件（.xlsm 等）一律拒绝打开。
 - 重算、渲染需要 Windows 上的 WPS 或 Microsoft Office；没有时这两个阶段返回 unavailable。WPS 与 Excel 的公式支持不完全相同。
-- 技能里写的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）只当做法参考，执行一律用 write_office；技能附带的专属代码要改写成这里支持的 Python。
+- 技能里写的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）只当做法参考，执行一律用 write_office。技能已经生成了给 write_office 执行的脚本时（例如它打印的 `office_job.py`），直接把该脚本交给 write_office，不要改写技能的代码。
 
 ## 最小示例
 

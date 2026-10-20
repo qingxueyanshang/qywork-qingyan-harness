@@ -10,10 +10,12 @@ import { afterEach, describe, expect, spyOn, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { deflateSync } from 'node:zlib'
 import type { BrowserPort, DelegatePort, ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY, lookupModel, type TokenDensity } from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
 import {
+  appendMessage,
   appendStep,
   ContentStore,
   createConversation,
@@ -153,6 +155,40 @@ describe('派发工具只提供给有派发通道的会话', () => {
   })
 })
 
+/** 浅色噪点 PNG（真实编码，可解码）。runtime 不直接依赖图像库，按 PNG 格式手工拼装。 */
+function noisyPng(width: number, height: number): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const out = Buffer.alloc(body.length + 8)
+    out.writeUInt32BE(data.length, 0)
+    body.copy(out, 4)
+    out.writeUInt32BE(Bun.hash.crc32(body) >>> 0, body.length + 4)
+    return out
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(height, 4)
+  ihdr.set([8, 2, 0, 0, 0], 8)
+  // 带噪点的灰度：纯色图压缩后比缩小再编码的结果还小，`shrinkImage` 会原样发送，测不到缩小。
+  let seed = 7
+  const raw = Buffer.concat(
+    Array.from({ length: height }, () => {
+      const row = Buffer.alloc(1 + width * 3)
+      for (let i = 1; i < row.length; i++) {
+        seed = (Math.imul(seed, 1103515245) + 12345) >>> 0
+        row[i] = 128 + (seed >>> 25)
+      }
+      return row
+    }),
+  )
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
 describe('附件请求形状', () => {
   /** 1×1 的 PNG：在缩放上限与 300 KB 以内，按原样编码。 */
   const PNG_1X1 = Buffer.from(
@@ -200,6 +236,23 @@ describe('附件请求形状', () => {
     expect(out[1]!.type).toBe('text')
     expect(out[1]!.text).toContain('（附件 notes.txt：')
     expect(out[1]!.text).toContain('（附件 gone.png 已不存在，跳过）')
+  })
+
+  /**
+   * 缩小发送的截图在附件说明中写明原图与发送尺寸，并指出 region。
+   *
+   * 实测缩小到长边 1568 后，模型把胶囊白字外的浅色描边 6 次都判为「干净」：它不知道看到的是缩小图。
+   */
+  test('缩小发送的截图：附件说明写明原图与发送尺寸', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))
+    await writeFile(join(root, 'shot.png'), noisyPng(2560, 1360))
+    const out = (await withAttachments(root, '看这里', [attachment('shot.png', 'image')])) as {
+      type: string
+      text?: string
+    }[]
+    const text = out.find((b) => b.type === 'text')!.text!
+    expect(text).toContain('原图 2560×1360，缩小为 1568×833 发送')
+    expect(text).toContain('read_file 的 region')
   })
 
   /** 附件是实时引用：文件修改后，下一轮读取新内容，不返回缓存中的旧编码。 */
@@ -1396,4 +1449,33 @@ describe('会话被另一个进程占用', () => {
       store.close()
     }
   }, 30_000)
+})
+
+/**
+ * 本会话的附件对 `read_file` 只读可见：截图缩小发送后要按路径截取局部放大，被换出后要按路径重读。
+ * 粘贴的截图存放在 `~/.qywork/attachments/<会话>/`，不在工作区内，没有这一条时只有「完全访问」下读得到。
+ */
+test('本会话的附件路径进入只读根，read_file 可读', async () => {
+  const { s, store } = await session()
+  const ws = listWorkspaces(store)[0]!
+  const conv = createConversation(store, { workspaceId: ws.id, provider: 'p', model: 'm' })
+  const outside = await mkdtemp(join(tmpdir(), 'qywork-attached-'))
+  const shot = join(outside, 'shot.png')
+  await writeFile(shot, Buffer.from('x'))
+  appendMessage(store, {
+    conversationId: conv.id,
+    role: 'user',
+    content: '看图',
+    attachments: [{ type: 'image', name: 'shot.png', mime: 'image/png', size: 1, path: shot }],
+  })
+  const ctx = (
+    s as unknown as {
+      makeToolContext(r: string, e: () => void, m: string, c: string): ToolContext
+    }
+  ).makeToolContext('rn_x', () => {}, 'm', conv.id)
+  expect(ctx.readOnlyRoots).toContain(shot)
+  // 同目录下的其他文件不因此可读：授权的是附件本身。
+  expect(ctx.readOnlyRoots).not.toContain(outside)
+  s.dispose()
+  store.close()
 })
