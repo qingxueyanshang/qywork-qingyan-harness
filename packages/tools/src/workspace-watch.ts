@@ -5,7 +5,7 @@
  * - `fs.watch`（递归）收集路径。通知不保证覆盖每次文件操作，被合并或丢失的事件由收尾扫描补充。
  *   删除只能由事件或调用方的已报告路径判定，文件不存在时扫描无法发现。
  * - 收尾时扫描一遍工作区，`mtime` 位于窗口内的文件即为已改动。扫描需要 stat 每个文件；
- *   超过 `MAX_WALK_ENTRIES` 即停止，此时结果标记为 `incomplete`。
+ *   超过 `MAX_WALK_ENTRIES` 即停止。在 Git 仓库中此时剪去 Git 忽略的目录后重扫，仍超过上限才标记为 `incomplete`。
  * - 调用方传入的 `reported`：本轮之前已报告过的路径，收尾时逐个 stat 核对。
  *   整个目录被删除时，前两个来源都无法给出其中的文件：递归 watch 只为目录产生一条事件
  *   （Windows 实测 `rm -rf d`：`d/a.txt` 与 `d` 有事件，`d/sub/b.txt` 没有），
@@ -102,14 +102,17 @@ export interface ChangeWindowOptions {
    * 只放入文件路径：目录从不进入结果，因此该来源不会报告目录的删除。
    */
   reported?: ReadonlySet<string>
+  /** 收尾扫描的条目上限，默认 `MAX_WALK_ENTRIES`。供测试用较小的值构造达到上限的工作区，生产代码不传入。 */
+  walkLimit?: number
 }
 
 /**
  * 按种类计数的 git 子进程数，只增不减。
  *
- * 供测试断言一个窗口收尾时最多启动两个进程，且该数不随 fs 事件次数增加；生产代码不读取它。
+ * 供测试断言一个窗口收尾时最多启动两个进程（扫描达到上限时另有一次 `ignoredDirs`），
+ * 且该数不随 fs 事件次数增加；生产代码不读取它。
  */
-export const gitProcessCount = { checkIgnore: 0, lsFiles: 0 }
+export const gitProcessCount = { checkIgnore: 0, lsFiles: 0, ignoredDirs: 0 }
 
 const MAX_WALK_ENTRIES = 50_000
 /** 只对不超过此大小的文件计算行数：更大的文件通常是产物或数据，行数对其没有意义。 */
@@ -282,6 +285,36 @@ async function trackedInPruned(
 }
 
 /**
+ * Git 忽略的目录（工作区相对、不带末尾斜杠）。返回 null = 查询未执行成功。
+ *
+ * 只在收尾扫描达到上限时查询：`--directory` 不进入被忽略的目录，但仍要遍历未跟踪的目录
+ * （实测一个含 2.8 万个未跟踪文件的工作区约 430 ms），每条命令都查询的代价过大。
+ * 输出中不以 `/` 结尾的是单个被忽略的文件，不参与剪枝。
+ */
+async function gitIgnoredDirs(repoRoot: string, prefix: string): Promise<Set<string> | null> {
+  gitProcessCount.ignoredDirs++
+  const got = await runGit(
+    repoRoot,
+    [
+      'ls-files',
+      '-z',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '--directory',
+      ...(prefix ? ['--', prefix] : []),
+    ],
+    NO_STDIN,
+  )
+  if (got === null || got.exitCode !== 0) return null
+  return new Set(
+    stripPrefix(got.stdout, prefix)
+      .filter((rel) => rel.length > 1 && rel.endsWith('/'))
+      .map((rel) => rel.slice(0, -1)),
+  )
+}
+
+/**
  * 新建的文本文件按内容计算行数；二进制文件（前 8 KiB 中含 NUL）或过大的文件不计算。
  * 返回 null = 不带行数。
  */
@@ -324,8 +357,17 @@ interface Walked {
   truncated: boolean
 }
 
-/** 工作区中 mtime 位于 [since, until] 内的文件，路径为工作区相对、使用 posix 分隔符。 */
-async function touchedSince(root: string, since: number, until: number): Promise<Walked> {
+/**
+ * 工作区中 mtime 位于 [since, until] 内的文件，路径为工作区相对、使用 posix 分隔符。
+ * `ignored` 中的目录（Git 忽略的目录）与运行产物目录同样剪枝，不计入 `limit`。
+ */
+async function touchedSince(
+  root: string,
+  since: number,
+  until: number,
+  limit: number,
+  ignored: ReadonlySet<string> = new Set(),
+): Promise<Walked> {
   const out: string[] = []
   const pruned = new Set<string>()
   const queue: string[] = ['']
@@ -340,11 +382,11 @@ async function touchedSince(root: string, since: number, until: number): Promise
     }
     const checks: Promise<void>[] = []
     for (const entry of entries) {
-      if (++seen > MAX_WALK_ENTRIES) return { paths: out, pruned, truncated: true }
+      if (++seen > limit) return { paths: out, pruned, truncated: true }
       const child = rel ? `${rel}/${entry.name}` : entry.name
       const skip = classifySegment(entry.name)
       if (entry.isDirectory()) {
-        if (skip === 'pruned') pruned.add(child)
+        if (skip === 'pruned' || (skip === 'none' && ignored.has(child))) pruned.add(child)
         else if (skip === 'none') queue.push(child)
         continue
       }
@@ -545,7 +587,19 @@ export function openChangeWindow(
       else handOff()
 
       const until = closedAt + CLOCK_SLACK_MS
-      const walked = await touchedSince(root, window.startedAt, until)
+      const limit = opts.walkLimit ?? MAX_WALK_ENTRIES
+      let walked = await touchedSince(root, window.startedAt, until, limit)
+      /*
+       * 达到上限时剪去 Git 忽略的目录后重扫一遍。被忽略目录中的未跟踪文件本就不报告，
+       * 而渲染产物、缓存这类目录动辄数万个文件，不剪枝时扫描耗尽上限，每条命令都标记观察范围不完整，
+       * 真正需要提示的情况被淹没。剪去的目录与运行产物目录相同，其中已跟踪的文件仍由索引补齐。
+       * 重扫后仍达到上限的是未被忽略的文件过多，照常标记不完整。
+       */
+      if (walked.truncated && owner.repoRoot !== null) {
+        const ignored = await gitIgnoredDirs(owner.repoRoot, owner.prefix)
+        if (ignored?.size)
+          walked = await touchedSince(root, window.startedAt, until, limit, ignored)
+      }
       const walkOnly = walked.paths.filter((rel) => !window.paths.has(rel))
       const prunedDirs = [...new Set([...window.prunedDirs, ...walked.pruned])]
 

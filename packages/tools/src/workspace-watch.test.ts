@@ -263,6 +263,47 @@ describe('执行窗口内的工作区变更', () => {
     expect(got.incomplete).toBe(false)
   })
 
+  /**
+   * 原始失败：工作区中 Git 忽略的渲染目录有数万个文件，收尾扫描在其中耗尽上限，
+   * 每条命令都附带「观察范围不完整」，模型不再理会这句提示。达到上限时剪去 Git 忽略的目录后重扫，
+   * 其中已跟踪的文件仍报告；未被忽略的文件过多时照常标记不完整。上限用 `walkLimit` 缩小构造。
+   */
+  test('收尾扫描达到上限时剪去 Git 忽略的目录，不因此标记不完整', async () => {
+    const root = await gitRepo()
+    await writeFile(join(root, '.gitignore'), 'renders/\n')
+    await mkdir(join(root, 'renders', 'run1'), { recursive: true })
+    await writeFile(join(root, 'renders', 'keep.txt'), 'v1\n')
+    Bun.spawnSync(['git', 'add', '-f', 'renders/keep.txt'], { cwd: root })
+    for (let i = 0; i < 30; i++) await writeFile(join(root, 'renders', 'run1', `f${i}.png`), 'x')
+    await Bun.sleep(20)
+    const before = { ...gitProcessCount }
+
+    const window = openChangeWindow(root, { walkLimit: 20 })
+    await settle()
+    await writeFile(join(root, 'kept.ts'), 'export const a = 1\n')
+    await writeFile(join(root, 'renders', 'keep.txt'), 'v2\n')
+    await writeFile(join(root, 'renders', 'run1', 'new.png'), 'y')
+    await settle()
+    const got = await window.close()
+
+    expect(got.incomplete).toBe(false)
+    expect(typeOf(got.changes)).toEqual(
+      new Map([
+        ['kept.ts', 'created'],
+        ['renders/keep.txt', 'modified'],
+      ]),
+    )
+    expect(gitProcessCount.ignoredDirs - before.ignoredDirs).toBe(1)
+
+    // 未被忽略的目录同样多：剪枝后仍达到上限，如实标记不完整。
+    await mkdir(join(root, 'data'))
+    for (let i = 0; i < 30; i++) await writeFile(join(root, 'data', `d${i}.csv`), 'x')
+    await Bun.sleep(20)
+    const next = openChangeWindow(root, { walkLimit: 20 })
+    await settle()
+    expect((await next.close()).incomplete).toBe(true)
+  })
+
   test('删除、原子保存与嵌套目录', async () => {
     const root = await gitRepo()
     await writeFile(join(root, 'gone.txt'), 'x\n')
