@@ -696,8 +696,6 @@ const FILE_SIZE: Record<GenerateOutput | 'other', [number, number]> = {
   art: [300, 169],
   other: [220, 138],
 }
-/** 摘录卡的框只显示开头一两行：一份文档的摘录卡常有几十张，按整篇文本卡的框排列时一列超出一屏。 */
-const EXCERPT_SIZE: [number, number] = [220, 64]
 /**
  * 时间线的框：宽度固定；为空时只有工具行、刻度与轨道（`TIMELINE_BARE`），有片段后上方增加预览区。
  * 预览区按 16:9 占满框宽：框宽减去预览区左右各 8 的外边距（`canvas.css` 的 `.canvas-tl-view`），再按 16:9 换算为高度。
@@ -847,7 +845,7 @@ function applyOne(
       const id = mint()
       claim(op.ref, id)
       const kind = canvasMediaOf({ id, type: 'file', path: op.path, x: 0, y: 0, w: 0, h: 0 })
-      const [dw, dh] = op.excerpt ? EXCERPT_SIZE : FILE_SIZE[kind ?? 'other']
+      const [dw, dh] = FILE_SIZE[kind ?? 'other']
       const fit = op.size ? fitBox({ w: dw, h: dh }, op.size) : { w: dw, h: dh }
       const node: CanvasFileNode = {
         id,

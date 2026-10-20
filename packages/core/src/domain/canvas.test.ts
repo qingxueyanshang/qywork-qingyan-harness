@@ -1561,10 +1561,11 @@ describe('画布：文本卡引用', () => {
     expect(compilePrompt(doc, 'a3', {}, texts)).toBe(`${renamed.trim()} `)
   })
 
-  test('摘录只用于文本卡，键名与取值逐项核对；update 可改摘录或以 null 改回整篇；摘录卡的框只显示开头', () => {
+  test('摘录只用于文本卡，键名与取值逐项核对；update 可改摘录或以 null 改回整篇；摘录卡与整篇卡的框相同', () => {
     const doc = withScript()
     const card = doc.nodes.find((n) => n.id === 'a4')!
-    expect([card.w, card.h]).toEqual([220, 64])
+    const script = doc.nodes.find((n) => n.id === 'a1')!
+    expect([card.w, card.h]).toEqual([script.w, script.h])
     expect(
       rejects(doc, [{ op: 'add_file', path: 'a.png', excerpt: { start: 'x', end: 'y' } }]),
     ).toBe('「a」不是文本卡（.md / .txt），不能摘录')
