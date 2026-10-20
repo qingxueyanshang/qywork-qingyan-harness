@@ -46,6 +46,7 @@ import {
   Show,
   Switch,
 } from 'solid-js'
+import { loaded } from '../../lib/resource.ts'
 import { readSession, sessionSignal, writeSession } from '../../lib/session.ts'
 import {
   type CanvasQuote,
@@ -1130,7 +1131,8 @@ export function GeneratePanel(props: {
         }}
       />
       <Show when={preview()}>
-        <pre class="canvas-text-preview">{previewText() ?? ''}</pre>
+        {/* 使用 `loaded()`：`previewText()` 在读取期间使外层 Suspense 显示占位，点击标签时整块画布闪烁。 */}
+        <pre class="canvas-text-preview">{loaded(previewText) ?? ''}</pre>
       </Show>
 
       <Show when={stopping() || stopNotice()}>
