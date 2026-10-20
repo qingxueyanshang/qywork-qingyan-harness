@@ -436,21 +436,43 @@ function sectionOf(text: string, heading: string): string | null {
   return (end < 0 ? rest : rest.slice(0, end)).join('\n')
 }
 
-/** Markdown 代码块的围栏行：以 ``` 或 ~~~ 开头。 */
-const FENCE_RE = /^[ \t]*(?:```|~~~)/
+/** Markdown 代码块的围栏行：以 ``` 或 ~~~ 开头，捕获围栏字符与其后的内容。 */
+const FENCE_RE = /^[ \t]*(`{3,}|~{3,})(.*)$/
+
+/**
+ * 文本中各代码块内的文字，按出现顺序，不含围栏行；空块不计入。未闭合的代码块到文末为止。
+ * 结束围栏须与开始围栏同一字符、不短于它且其后只有空白：带语言标记的 ```text 行在块内是正文。
+ */
+function codeBlocksOf(text: string): string[] {
+  const blocks: string[] = []
+  let fence: string | null = null
+  let lines: string[] = []
+  for (const line of text.split(/\r?\n/)) {
+    const m = FENCE_RE.exec(line)
+    if (fence === null) {
+      if (m) {
+        fence = m[1]!
+        lines = []
+      }
+    } else if (m && m[1]![0] === fence[0] && m[1]!.length >= fence.length && !m[2]!.trim()) {
+      blocks.push(lines.join('\n'))
+      fence = null
+    } else lines.push(line)
+  }
+  if (fence !== null) blocks.push(lines.join('\n'))
+  return blocks.map((b) => b.trim()).filter((b) => b.length > 0)
+}
 
 /**
  * 文本引用展开后的内容：`heading` 缺省时为全文，否则为该标题下的段落；没有该标题时返回 null。
- * 代码块的围栏行不计入：围栏是排版标记，发送的是块内的文字。运行时展开与界面预览都使用它。
+ * 范围内有代码块时只取各代码块内的文字，以空行分隔：代码块是要发送的原文，块外是标签、字段与备注，
+ * 各类脚本格式均如此，不要求文档另加标题。没有代码块时取全部文字。运行时展开与界面预览都使用它。
  */
 export function textReferenceOf(text: string, heading?: string): string | null {
   const body = heading === undefined ? text : sectionOf(text, heading)
   if (body === null) return null
-  return body
-    .split(/\r?\n/)
-    .filter((line) => !FENCE_RE.test(line))
-    .join('\n')
-    .trim()
+  const blocks = codeBlocksOf(body)
+  return blocks.length ? blocks.join('\n\n') : body.trim()
 }
 
 /** 文件节点是否为文本卡（`.md` / `.txt`）：可被生成卡的提示词引用。 */
