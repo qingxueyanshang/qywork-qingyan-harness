@@ -9,7 +9,7 @@
  */
 
 import { EditorState, type Extension } from '@codemirror/state'
-import { drawSelection, EditorView, highlightActiveLine, lineNumbers } from '@codemirror/view'
+import { drawSelection, EditorView, lineNumbers } from '@codemirror/view'
 
 /** 扩展名 → 语言包加载器。未找到时使用无高亮的纯文本，不报错。 */
 const LOADERS: Record<string, () => Promise<Extension>> = {
@@ -63,8 +63,6 @@ export const theme = EditorView.theme({
     color: 'var(--text-tertiary)',
     border: 'none',
   },
-  '.cm-activeLine': { backgroundColor: 'var(--bg-hover)' },
-  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--text-secondary)' },
   '.cm-scroller': { lineHeight: '1.6' },
   '&.cm-focused': { outline: 'none' },
   '.cm-selectionBackground, ::selection': { backgroundColor: 'var(--accent-soft)' },
@@ -82,8 +80,8 @@ export async function createReadonlyEditor(
       doc,
       extensions: [
         lineNumbers(),
-        highlightActiveLine(),
         // 由编辑器绘制选区：只读视图没有焦点时浏览器不显示原生选区，`selectRange` 选中的一段将不可见。
+        // 不加当前行高亮：只读视图没有光标，半透明的当前行底色叠在选区上，选中段的末行显示为两层。
         drawSelection(),
         // 只读预览：不提供编辑能力，避免出现可修改但无法保存的编辑器。
         EditorState.readOnly.of(true),
