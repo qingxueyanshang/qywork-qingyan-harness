@@ -1,6 +1,6 @@
 /**
  * Mumugofe 渠道使用 /v1/videos 提交，素材通过 JSON 字段传递。
- * seedance2.5-V 为 720P、5–30 秒，按次计费；参考图通过本渠道的 studio/assets 接口上传。
+ * seedance2.5-V 参考图通过本渠道上传；007 按次型号直接发送 base64 图片与 MP3 音频。
  * 保留渠道原始编号，不继承官方 Seedance 的素材格式或价格。
  */
 import type { MediaModelSpec, MediaParamSpec } from './catalog.ts'
@@ -58,6 +58,18 @@ export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
       SIZE,
     ],
     price: { currency: 'CNY', cost: () => 7.5, usageOf: () => ({}) },
+    catalogued: true,
+  },
+  {
+    id: '007系列/sd2.5(30图10音/4-30秒/720P)',
+    displayName: '007系列/sd2.5(30图10音/4-30秒/720P)',
+    vendor: 'Mumugofe',
+    kind: 'openai_videos',
+    videoFormat: 'mumugofe',
+    operations: ['text_to_video', 'reference_to_video'],
+    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10, transport: 'json' },
+    params: [SECONDS, SIZE],
+    price: { currency: 'CNY', cost: () => 6, usageOf: () => ({}) },
     catalogued: true,
   },
 ]

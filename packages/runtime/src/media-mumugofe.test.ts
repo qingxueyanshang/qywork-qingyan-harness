@@ -21,6 +21,7 @@ const REMOVED_006 = '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P
 const SERIES_006_720 = '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)'
 const SERIES_006_480 = '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)'
 const MODEL = 'seedance2.5-V'
+const SERIES_007 = '007系列/sd2.5(30图10音/4-30秒/720P)'
 const HIGH_QUALITY = '高质量sd2.5/(全参原生过真人速度快720P)'
 const REMOVED_UPSCALED = '全能sd2.5(满血内置过脸30图超分1080P)'
 const REMOVED_FULL_REFERENCE = 'sd-25-30/10/1-1'
@@ -418,6 +419,83 @@ test('远端明确失败时返回任务接口中的拒绝原因，不下载或�
   ])
 })
 
+test('007 按次型号提供独立的参考素材规格、参数与报价', () => {
+  const spec = findMediaModel(SERIES_007)!
+  expect(spec).toMatchObject({
+    catalogued: true,
+    videoFormat: 'mumugofe',
+    operations: ['text_to_video', 'reference_to_video'],
+    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10, transport: 'json' },
+  })
+  expect(spec.inputs.publicUrls).toBeUndefined()
+  expect(mediaKindsOf(spec)).toEqual(['openai_videos'])
+  const text = buildTailNotes({
+    workspaceRoot: '/w',
+    platform: 'win32',
+    mode: 'auto',
+    mediaModels: listMediaModels(config(SERIES_007)),
+  })
+    .map((n) => n.content)
+    .join('\n')
+  expect(text).toContain('参考图最多 30 张')
+  expect(text).toContain('参考音频最多 10 段')
+  expect(text).toContain('4–30 秒整数，使用字符串')
+  expect(text).not.toContain('参考视频最多')
+  for (const seconds of ['4', '17', '30']) {
+    expect(quoteMedia(spec, { seconds }, { images: 30, videos: 0 })).toEqual({
+      cost: 6,
+      currency: 'CNY',
+    })
+  }
+})
+
+test.each([undefined, '4', '17', '30'])(
+  '007 按次发送原始编号、字符串时长、图片和 MP3，成功后只计一次费用：%s',
+  async (seconds) => {
+    const spends: MediaSpend[] = []
+    const result = await makeMediaPort(config(SERIES_007), (s) => spends.push(s)).generate(
+      call({
+        params: seconds === undefined ? {} : { seconds, size: '720x1280' },
+        inputs: [
+          { role: 'reference', bytes: PNG, mime: 'image/png', path: '/image.png' },
+          { role: 'audio', bytes: MP3, mime: 'audio/mp3', path: '/voice.mp3' },
+        ],
+      }),
+      signal(),
+    )
+    expect(result).toMatchObject({ ok: true, model: SERIES_007 })
+    expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+      'POST /v1/videos',
+      `GET /v1/video/generations/${TASK}`,
+      `GET /generated/${TASK}.mp4`,
+    ])
+    expect(seen[0]?.body).toEqual({
+      model: SERIES_007,
+      prompt: PROMPT,
+      seconds: seconds ?? '5',
+      size: seconds === undefined ? '1280x720' : '720x1280',
+      images: [`data:image/png;base64,${Buffer.from(PNG).toString('base64')}`],
+      audios: [`data:audio/mpeg;base64,${Buffer.from(MP3).toString('base64')}`],
+    })
+    expect(spends).toHaveLength(1)
+    expect(spends[0]).toMatchObject({ quantity: null, cost: 6, currency: 'CNY' })
+  },
+)
+
+test.each([
+  { seconds: '3' },
+  { seconds: '31' },
+  { seconds: '4.5' },
+  { seconds: 4 },
+  { size: '854x480' },
+  { size: '1920x1080' },
+])('007 按次在发送前拒绝无效时长或尺寸：%j', async (params) => {
+  expect(
+    await makeMediaPort(config(SERIES_007)).generate(call({ params }), signal()),
+  ).toMatchObject({ ok: false, executed: false })
+  expect(seen).toEqual([])
+})
+
 test('下架专享版保留旧配置的时长与音频规格', () => {
   const spec = lookupMediaModel(EXCLUSIVE, 'openai_videos')
   expect(spec).toMatchObject({
@@ -628,12 +706,36 @@ const fullInput = (role: 'reference' | 'video' | 'audio', i = 0) => ({
   path: `/reference-${role}-${i}`,
 })
 
+test('007 按次支持 30 图 10 音频，在发送前拒绝超限素材与参考视频', async () => {
+  const port = makeMediaPort(config(SERIES_007))
+  for (const inputs of [
+    Array.from({ length: 31 }, (_, i) => fullInput('reference', i)),
+    Array.from({ length: 11 }, (_, i) => fullInput('audio', i)),
+    [fullInput('video')],
+  ]) {
+    expect(await port.generate(call({ inputs }), signal())).toMatchObject({
+      ok: false,
+      executed: false,
+    })
+    expect(seen).toEqual([])
+  }
+  const inputs = [
+    ...Array.from({ length: 30 }, (_, i) => fullInput('reference', i)),
+    ...Array.from({ length: 10 }, (_, i) => fullInput('audio', i)),
+  ]
+  expect(await port.generate(call({ inputs }), signal())).toMatchObject({ ok: true })
+  const body = seen[0]?.body as Record<string, unknown>
+  expect(body.images).toHaveLength(30)
+  expect(body.audios).toHaveLength(10)
+  expect(body.videos).toBeUndefined()
+})
+
 test('模型库收录当前型号，下架型号保留旧任务取回规格', () => {
   expect(
     mediaCatalog()
       .filter((m) => m.vendor === 'Mumugofe')
       .map((m) => m.id),
-  ).toEqual([MODEL])
+  ).toEqual([MODEL, SERIES_007])
   for (const id of [SERIES_006_720, SERIES_006_480]) {
     expect(findMediaModel(id)).toBeUndefined()
     expect(lookupMediaModel(id, 'openai_videos').videoFormat).toBeUndefined()
@@ -658,7 +760,7 @@ test('模型库收录当前型号，下架型号保留旧任务取回规格', ()
   }
 })
 
-test.each([EXCLUSIVE, FULL_PARAMS, MODEL])(
+test.each([EXCLUSIVE, FULL_PARAMS, MODEL, SERIES_007])(
   '当前与下架型号取回仅查询下载原任务：%s',
   async (model) => {
     expect(

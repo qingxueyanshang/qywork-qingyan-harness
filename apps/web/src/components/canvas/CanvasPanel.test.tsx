@@ -1699,8 +1699,11 @@ describe('画布：生成卡与生成面板', () => {
     },
   )
 
-  test.each([{ index: 0, min: '5', max: '30', portrait: '720x1280' }])(
-    'seedance2.5-V 隐藏固定清晰度，保存时长与横竖屏：%j',
+  test.each([
+    { index: 0, min: '5', max: '30', portrait: '720x1280' },
+    { index: 1, min: '4', max: '30', portrait: '720x1280' },
+  ])(
+    'Mumugofe 隐藏固定清晰度，按型号保存时长与横竖屏：%j',
     async ({ index, min, max, portrait }) => {
       const { MUMUGOFE_MODELS } = await import(
         '../../../../../packages/ai/src/media/catalog-mumugofe.ts'
