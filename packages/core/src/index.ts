@@ -75,6 +75,7 @@ export {
   newCanvasId,
   parseCanvas,
   parseCanvasOps,
+  promptInputProblems,
   recordRun,
   serializeCanvas,
   settleVersion,

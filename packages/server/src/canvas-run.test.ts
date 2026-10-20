@@ -610,6 +610,27 @@ describe('画布运行：文本卡引用', () => {
     ])
     expect(await svc.textReferences(ws.root, '其他.md')).toEqual([])
   })
+
+  test('提示词中的图片编号与连线数量不一致时不提交生成', async () => {
+    const { ws, svc, ids } = await setup([
+      { op: 'add_file', ref: '$a', path: 'a.png', name: '阿七' },
+      {
+        op: 'add_generate',
+        ref: '$v',
+        output: 'video',
+        name: '1-1',
+        prompt: '@图片1 用于阿七的脸。@图片2 用于院子。',
+      },
+      { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+    ])
+    await writeFile(join(ws.root, 'a.png'), PNG)
+    const fake = fakePort()
+    const refused = await failure(svc.run(ws, PATH, ids.$v!, { media: fake.port }))
+    expect(refused.message).toBe(
+      '「1-1」提示词引用至图片2，该卡连接了1张图片；图片编号须与连线数量一致',
+    )
+    expect(fake.calls).toHaveLength(0)
+  })
 })
 
 describe('画布运行：视频', () => {
