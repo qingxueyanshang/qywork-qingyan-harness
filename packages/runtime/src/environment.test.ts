@@ -11,6 +11,7 @@ import { statSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { probeBash } from '@qywork/tools'
 import type { QyConfig } from './config.ts'
 import { describeEnvironment, ensureWorkspacePython, workspacePythonReady } from './environment.ts'
 import { findPython } from './office.ts'
@@ -163,10 +164,13 @@ describe('运行环境', () => {
         join(site, 'qyfake-0.0.1.dist-info', 'METADATA'),
         'Metadata-Version: 2.1\nName: qyfake\nVersion: 0.0.1\n',
       )
+      // 无扩展名的脚本以命令实际使用的 bash（Git for Windows）运行。不要改用 PATH 上的 bash：
+      // 在 PowerShell 中它常是 System32 的 WSL 启动器，会去掉路径中的反斜杠，脚本无法打开。
+      const bash = WIN ? probeBash().path : null
       const runs = WIN
         ? [
             ['cmd.exe', '/d', '/c', join(bin, 'pip.cmd')],
-            ...(Bun.which('bash') ? [['bash', join(bin, 'pip')]] : []),
+            ...(bash ? [[bash, join(bin, 'pip')]] : []),
           ]
         : [[join(bin, 'pip')]]
       for (const run of runs) {
