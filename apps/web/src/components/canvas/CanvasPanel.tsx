@@ -72,6 +72,7 @@ import {
   retrieveCard,
   revealFile,
   runCard,
+  setFileSelectRequest,
   state,
   uploadToCanvas,
   WORKSPACE_PATH_TYPE,
@@ -666,8 +667,15 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
 
   // ── 指针：平移、选中、拖动、框选 ──
 
+  /**
+   * 最近一次按下指针时的目标，供 `onDblClick` 判断双击的卡片与部位。不要改用双击事件的目标：
+   * 按下时 `setPointerCapture` 使随后的 click / dblclick 以画布本身为目标（Chromium 实测）。
+   */
+  let pressed: HTMLElement | null = null
+
   const onPointerDown = (e: PointerEvent) => {
     const target = e.target as HTMLElement
+    pressed = target
     // 平移：中键、右键或按住 Space 时的左键，在画布任意位置均可。
     if (e.button === 1 || e.button === 2 || (e.button === 0 && space)) {
       if (target.closest('.canvas-panel, .canvas-rail, .canvas-picker, .canvas-dock')) return
@@ -853,18 +861,27 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     void apply(ops).then(() => setMoving({}))
   }
 
-  /** 双击标题重命名，双击内容在主区打开对应文件。 */
-  const onDblClick = (e: MouseEvent) => {
-    const target = e.target as HTMLElement
-    const nodeEl = target.closest<HTMLElement>('[data-node]')
-    if (!nodeEl) return
+  /** 双击标题重命名，双击内容在主区打开对应文件；摘录卡打开后选中摘录的一段。 */
+  const onDblClick = () => {
+    const target = pressed
+    const nodeEl = target?.closest<HTMLElement>('[data-node]')
+    if (!target || !nodeEl) return
     const id = nodeEl.dataset.node!
     if (target.closest('.canvas-node-title')) {
       setRenaming(id)
       return
     }
     const media = view() ? mediaOf(view()!, id) : null
-    if (media?.path) openFileInPanel(media.path)
+    if (!media?.path) return
+    const path = media.path
+    // 先读取摘录与文件全文再打开：打开文件会把面板切到文件页，画布在面板中时随之卸载，之后无法读取节点。
+    const excerpt = excerptOfNode(id)
+    const text = excerpt ? fileText(path) : null
+    openFileInPanel(path)
+    void text?.then((whole) => {
+      const r = whole === null ? null : excerptOf(whole, excerpt)
+      if (r?.ok) setFileSelectRequest({ path, from: r.from, to: r.to })
+    })
   }
 
   // ── 从文件树或系统拖入 ──

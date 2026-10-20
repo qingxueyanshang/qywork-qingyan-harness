@@ -339,6 +339,55 @@ describe('文件页刷新', () => {
     )
   })
 
+  test('文件页执行选中请求：编辑器装配前到达的在装配后执行，已打开时立即执行，执行后清除', async () => {
+    const store = await import('../lib/store/index.ts')
+    const { EditorView } = await import('@codemirror/view')
+    const originalApi = store.client.api
+    const content = '## 1-1\n推门。\n## 1-2\n握手。\n'
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async () => ({
+      path: '脚本.md',
+      kind: 'text',
+      mime: 'text/markdown',
+      size: content.length,
+      content,
+      truncated: false,
+    })
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+    const at = (text: string) => ({
+      from: content.indexOf(text),
+      to: content.indexOf(text) + text.length,
+    })
+    store.setFileSelectRequest({ path: '脚本.md', ...at('握手。') })
+
+    const { render } = await import('solid-js/web')
+    const { default: FileView } = await import('./FileView.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <FileView path="脚本.md" />, host as unknown as HTMLElement)
+    const editor = () => {
+      const el = host.querySelector<HTMLElement>('.cm-editor')
+      return el ? EditorView.findFromDOM(el) : null
+    }
+    const selected = () => {
+      const s = editor()?.state.selection.main
+      return s ? { from: s.from, to: s.to } : null
+    }
+    await waitFor(
+      () => store.fileSelectRequest() === null && selected()?.from === at('握手。').from,
+      () =>
+        `request=${JSON.stringify(store.fileSelectRequest())}, selected=${JSON.stringify(selected())}`,
+    )
+    expect(selected()).toEqual(at('握手。'))
+
+    store.setFileSelectRequest({ path: '其他.md', ...at('推门。') })
+    expect(store.fileSelectRequest()).not.toBeNull()
+    store.setFileSelectRequest({ path: '脚本.md', ...at('推门。') })
+    expect(store.fileSelectRequest()).toBeNull()
+    expect(selected()).toEqual(at('推门。'))
+  })
+
   test('开始新一轮时不重取未变化的文件，文件实际更新时保留阅读位置', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api

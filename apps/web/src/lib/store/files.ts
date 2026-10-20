@@ -9,6 +9,13 @@ export const [fileRevealRequest, setFileRevealRequest] = createSignal<{
   path: string
 } | null>(null)
 
+/** 打开文本文件后选中的一段（位置按 LF 计），如画布摘录卡的段落。文件页执行一次后清除。 */
+export const [fileSelectRequest, setFileSelectRequest] = createSignal<{
+  path: string
+  from: number
+  to: number
+} | null>(null)
+
 /** 聊天链接、文件树与画布附件共用的入口。href 仅用于保留本地网页的查询与锚点。 */
 export function openFileInPanel(path: string, href?: string): void {
   const ws = workspace()

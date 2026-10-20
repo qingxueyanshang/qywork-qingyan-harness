@@ -774,10 +774,18 @@ describe('画布：节点操作', () => {
     expect(server.ops[1]).toEqual([{ op: 'update', id: refs.$b!, path: 'b2.png' }])
   })
 
+  /** 双击按浏览器的顺序派发：按下时画布捕获指针，随后的 dblclick 以画布为目标（Chromium 实测）。 */
+  const doubleClick = (host: HTMLElement, el: Element) => {
+    const stage = host.querySelector('.canvas-stage')!
+    pointer(el, 'pointerdown', 10, 10)
+    pointer(stage, 'pointerup', 10, 10)
+    stage.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+  }
+
   test('双击标题重命名', async () => {
     const { host, server, refs } = await mount(FILES)
     const title = node(host, refs.$a!).querySelector('.canvas-node-title')!
-    title.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    doubleClick(host, title)
     await waitFor(
       () => !!title.querySelector('input'),
       () => title.innerHTML,
@@ -790,6 +798,53 @@ describe('画布：节点操作', () => {
       () => '',
     )
     expect(server.ops[0]).toEqual([{ op: 'update', id: refs.$a!, name: '小满（校服）' }])
+  })
+
+  /** 原始失败形状：dblclick 的目标是画布本身，双击卡片既不打开文件也不重命名。 */
+  test('双击卡片内容在主区打开文件；摘录卡打开后选中摘录的一段', async () => {
+    const MD = '## 1-1\n推门。\n## 1-2\n握手。\n'
+    const original = globalThis.fetch
+    globalThis.fetch = ((url: string) =>
+      String(url).includes(encodeURIComponent('脚本.md'))
+        ? Promise.resolve(new Response(MD))
+        : original(url)) as unknown as typeof fetch
+    const store = await import('../../lib/store/index.ts')
+    const workspace = store.workspace()
+    store.setWorkspace({ id: 'ws_canvas_open', root: 'C:/w', name: 'w' })
+    try {
+      const { host, refs } = await mount([
+        { op: 'add_file', ref: '$a', path: 'a.png', name: '小满', x: 0, y: 0 },
+        {
+          op: 'add_file',
+          ref: '$e',
+          path: '脚本.md',
+          name: '1-2 段',
+          excerpt: { after: '## 1-2', start: '握手', end: '。' },
+          x: 0,
+          y: 300,
+        },
+      ])
+      doubleClick(host, node(host, refs.$a!).querySelector('.canvas-media')!)
+      expect(store.openFile()).toBe('a.png')
+      expect(store.fileSelectRequest()).toBeNull()
+      await waitFor(
+        () => !!node(host, refs.$e!).querySelector('.canvas-text')?.textContent,
+        () => node(host, refs.$e!).innerHTML,
+      )
+      doubleClick(host, node(host, refs.$e!).querySelector('.canvas-text')!)
+      expect(store.openFile()).toBe('脚本.md')
+      await waitFor(
+        () => store.fileSelectRequest() !== null,
+        () => '没有选中请求',
+      )
+      const from = MD.indexOf('握手。')
+      expect(store.fileSelectRequest()).toEqual({ path: '脚本.md', from, to: from + 3 })
+    } finally {
+      globalThis.fetch = original
+      store.setFileSelectRequest(null)
+      store.setOpenFile(null)
+      store.setWorkspace(workspace)
+    }
   })
 
   test('文件快照或画布事件序号变化时重新读取', async () => {
