@@ -1493,9 +1493,18 @@ describe('工具清单', () => {
     for (const name of ['read_office_guide', 'read_office', 'write_office', 'view_office']) {
       const row = rows.find((row) => row.name === name)
       expect(row?.category).toBe('office')
-      expect(row?.permissionEffect).toBe(name === 'write_office' ? 'execute' : 'read')
+      expect(row?.permissionEffect).toBe(
+        name === 'write_office' ? 'execute' : name === 'view_office' ? 'write' : 'read',
+      )
       expect(row?.params.map((param) => param.name)).not.toContain('action')
     }
+    // 页面图经 save_to 保存到工作区，作为画布生成卡片等的参考图。
+    expect(rows.find((row) => row.name === 'view_office')?.params).toEqual([
+      { name: 'path', required: true },
+      { name: 'pages', required: false },
+      { name: 'region', required: false },
+      { name: 'save_to', required: false },
+    ])
     for (const name of ['subagent', 'workflow', 'define_role']) expect(names).toContain(name)
     for (const name of ['create_canvas', 'edit_canvas', 'run_canvas', 'retrieve_canvas']) {
       expect(

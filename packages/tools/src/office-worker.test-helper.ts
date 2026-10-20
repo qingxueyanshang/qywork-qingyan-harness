@@ -72,13 +72,13 @@ switch (req.action) {
     break
   }
   case 'view': {
-    const img = join(callDir, 'page-1.png')
-    writeFileSync(img, PNG)
-    respond({
-      action: 'view',
-      message: '',
-      images: [{ path: img, label: `第 ${(req.pages as string[])[0]} 页`, width: 1, height: 1 }],
+    // 每个请求的页码返回一张图，与实际 worker 相同带回页码。
+    const images = (req.pages as string[]).map((key, i) => {
+      const img = join(callDir, `page-${i}.png`)
+      writeFileSync(img, PNG)
+      return { path: img, key, label: `第 ${key} 页`, width: 1, height: 1 }
     })
+    respond({ action: 'view', message: '', images })
     break
   }
   case 'frames': {
