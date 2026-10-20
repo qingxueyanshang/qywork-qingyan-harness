@@ -973,6 +973,23 @@ describe('会话标题', () => {
     store.close()
   })
 
+  /** 占用取自上下文面板的读数，窗口与压缩比例取自当前模型；尚未发送请求的会话为不足 1 万。 */
+  test('run 快照写明本轮开始时的上下文占用、窗口与自动压缩的比例', async () => {
+    const { s, store } = await session()
+    await firstEvent(s, '第一条消息')
+    const conv = listRecentConversations(store, 1)[0]!
+    const window = lookupModel('deepseek-v4-flash', 'openai_chat_completions').contextWindow
+    const state = listRunContextSnapshots(store, conv.id)[0]!.segments.map((x) => x.content)
+    const line = state
+      .join('\n')
+      .split('\n')
+      .find((l) => l.startsWith('上下文：'))
+    expect(line).toBe(
+      `上下文：本轮开始时已用不足 1 万 / ${Math.round(window / 1000) / 10} 万 token，约 80% 时自动压缩`,
+    )
+    store.close()
+  })
+
   test('上一份待办全部完成后，第二条指令的 run 快照不再包含旧清单', async () => {
     const { s, store } = await session()
     const ws = listWorkspaces(store)[0]!
