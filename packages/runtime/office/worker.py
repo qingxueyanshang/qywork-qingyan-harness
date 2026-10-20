@@ -198,11 +198,23 @@ class OfficeContext:
         self._apps = None
 
     def output(self, path):
-        """已声明输出对应的工作副本路径。脚本写入该路径，worker 检查并渲染后再提交到正式路径。"""
+        """已声明输出对应的工作副本路径。脚本写入该路径，worker 检查并渲染后再提交到正式路径。
+
+        只给文件名时按文件名对应：输出声明在子目录中，而指南示例只写文件名。恰有一个同名输出时返回它，
+        有多个时报错并列出这几个，由脚本改写为完整路径。
+        """
         target = path if os.path.isabs(path) else os.path.join(self.workspace, path)
         for o, _, work in self._works:
             if util.same_path(o["path"], target):
                 return str(work)
+        if os.path.basename(path) == path:
+            named = [(o, work) for o, _, work in self._works
+                     if os.path.normcase(os.path.basename(o["path"])) == os.path.normcase(path)]
+            if len(named) == 1:
+                return str(named[0][1])
+            if named:
+                listed = "、".join(o["path"] for o, _ in named)
+                raise KeyError(f"{path} 对应多个已声明的输出，需写完整路径：{listed}")
         declared = "、".join(o["path"] for o, _, _ in self._works)
         raise KeyError(f"{path} 不是已声明的输出；已声明：{declared}")
 

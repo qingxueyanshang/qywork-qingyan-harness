@@ -252,8 +252,8 @@ def view(path, fmt, pages, region, cache_dir, call_dir, apps):
         if fmt == "pdf":
             page = _ensure_pdf_page(path, page)
         if not region:
-            images.append({"path": page["png"], "label": page["label"], "width": page["width"],
-                           "height": page["height"]})
+            images.append({"path": page["png"], "key": key, "label": page["label"],
+                           "width": page["width"], "height": page["height"]})
             continue
         with Image.open(page["png"]) as im:
             W, H = im.size
@@ -265,6 +265,6 @@ def view(path, fmt, pages, region, cache_dir, call_dir, apps):
             crop = im.crop(box)
             out = Path(call_dir) / f"view-{_safe(key)}-crop.png"
             crop.save(out)
-            images.append({"path": str(out), "label": f"{page['label']} · 局部",
+            images.append({"path": str(out), "key": key, "label": f"{page['label']} · 局部",
                            "width": crop.width, "height": crop.height})
     return manifest, images, missing

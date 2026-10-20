@@ -61,7 +61,8 @@ export interface WorkerResponse {
   stages?: WorkerStage[]
   files?: WorkerFile[]
   text?: string
-  images?: { path: string; label: string; width: number; height: number }[]
+  /** `key` 是 view 渲染的页码（xlsx 为「工作表名:页码」），保存页面图时据此命名；frames 不提供。 */
+  images?: { path: string; key?: string; label: string; width: number; height: number }[]
   script_output?: string
   residue?: { pid: number; name: string; cmdline: string }[]
   errors?: string[]

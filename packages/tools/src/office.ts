@@ -8,8 +8,8 @@
  * worker 的调用约定见 `office-worker.ts`。
  */
 
-import { readFile } from 'node:fs/promises'
-import { extname } from 'node:path'
+import { readFile, stat } from 'node:fs/promises'
+import { basename, extname, join } from 'node:path'
 import {
   chargeBatchBudget,
   type OfficePort,
@@ -21,6 +21,7 @@ import {
 import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
 import { readHashes } from './files.ts'
+import { landFiles } from './generate.ts'
 import { downscaleNote, imageSizeOf, shrinkImage, zoomImage } from './image.ts'
 import {
   noResponse,
@@ -221,6 +222,9 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
   if (!viewable(abs)) return failArgs('view 只处理 .docx、.pptx、.xlsx、.pdf 文件')
   const pages = stringList(args.pages)
   const region = regionOf(args.region)
+  // 保存位置在渲染之前确定：越界、受保护或形式不对时不启动 worker。
+  const save = await saveTarget(ctx, args.save_to, pages.length || 1)
+  if (typeof save === 'string') return failArgs(save)
   const bytes = new Uint8Array(await readFile(abs))
   const request = {
     action: 'view',
@@ -237,9 +241,16 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
   }
   const images: { data: string; mime: string }[] = []
   const labels: string[] = []
+  const saved: string[] = []
   let note = ''
-  for (const img of res.images) {
+  for (const [i, img] of res.images.entries()) {
     const raw = new Uint8Array(await readFile(img.path))
+    if (save) {
+      const key = img.key ?? request.pages[i] ?? String(i + 1)
+      const target = 'file' in save ? save.file : join(save.dir, pageFileName(abs, key, !!region))
+      const [landed] = await landFiles(rootsOf(ctx), [{ bytes: raw, mime: 'image/png' }], target)
+      if (landed) saved.push(landed.path)
+    }
     /*
      * 局部图放大到长边 MAX_EDGE（至多 ZOOM_MAX 倍）：worker 从原始渲染图裁出局部，区域小时只有
      * 一两百像素宽，原样发送与在整页缩小图上看没有区别。整页图缩小发送时写明尺寸，提示用 region。
@@ -264,9 +275,48 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
         ? `
 整页${note.slice(1)}`
         : ''
-    }${residueNote(res)}`,
+    }${saved.length ? `\n页面原图已保存：${saved.join('、')}` : ''}${residueNote(res)}`,
     data: { images },
+    ...(saved.length
+      ? { fileChanges: saved.map((path) => ({ path, changeType: 'created' as const })) }
+      : {}),
   }
+}
+
+/**
+ * `save_to` 指定的保存位置：以 .png 结尾为一个文件（只能保存一页），否则为目录。返回字符串 = 参数错误的说明。
+ *
+ * 与其他写入工具使用同一可写判定（`resolveWritablePath`：可写根与受保护目录）。写入经 `landFiles`：
+ * 已存在的文件不覆盖，改名追加 -2、-3，回执写明实际位置。
+ */
+async function saveTarget(
+  ctx: ToolContext,
+  raw: unknown,
+  pageCount: number,
+): Promise<{ file: string } | { dir: string } | null | string> {
+  const requested = typeof raw === 'string' ? raw.trim() : ''
+  if (!requested) return null
+  const abs = await resolveWritablePath(rootsOf(ctx), requested, { followFinalSymlink: false })
+  const ext = extname(abs).toLowerCase()
+  if (ext === '.png') {
+    return pageCount > 1
+      ? 'save_to 是 .png 文件时只能保存一页；保存多页时 save_to 写目录'
+      : { file: abs }
+  }
+  if (['.jpg', '.jpeg', '.webp'].includes(ext)) {
+    return '页面图为 PNG：save_to 写 .png 文件路径或目录'
+  }
+  const existing = await stat(abs).catch(() => null)
+  if (existing && !existing.isDirectory()) {
+    return `save_to 指向的 ${requested} 已存在且不是目录；保存一页时写 .png 文件路径，多页时写目录`
+  }
+  return { dir: abs }
+}
+
+/** 目录中每页的文件名：`<源文件名>-p<页码>.png`，xlsx 为 `<源文件名>-<工作表名>-<页码>.png`，局部图另加 `-region`。 */
+function pageFileName(source: string, key: string, region: boolean): string {
+  const tag = /^\d+$/.test(key) ? `p${key}` : key.replace(/[\\/:*?"<>|\s]+/g, '-')
+  return `${basename(source, extname(source))}-${tag}${region ? '-region' : ''}.png`
 }
 
 function stringList(v: unknown): string[] {
@@ -396,7 +446,8 @@ export const viewOfficeTool: ToolSpec = {
   name: 'view_office',
   description:
     '将 Word / PPT / Excel / PDF 文件的指定页面渲染为图片，用于检查版式、图表和扫描件。' +
-    '交付文档前应查看页面，当前模型须支持图片输入。读取结构与文字使用 read_office。',
+    '交付文档前应查看页面，当前模型须支持图片输入。读取结构与文字使用 read_office。' +
+    '页面要作为参考图使用时（如画布生成卡片的输入），用 save_to 把页面原图保存到工作区。',
   parameters: {
     type: 'object',
     properties: {
@@ -423,6 +474,13 @@ export const viewOfficeTool: ToolSpec = {
           '可选，按页面比例（0 到 1）指定局部区域，从原始渲染图裁剪并放大到长边 1568（至多 4 倍）。' +
           '整页图缩小发送，细线、描边、残影、小字要用它放大后再判断',
       },
+      save_to: {
+        type: 'string',
+        description:
+          '可选，把渲染出的页面原图（PNG，渲染分辨率，不缩放；给出 region 时为局部原图）保存到工作区。' +
+          '一页时可写 .png 文件路径；写目录时每页保存为「文件名-p页码.png」，多页时必须写目录。' +
+          '已存在的文件不覆盖，改名追加 -2、-3，回执写明保存位置',
+      },
     },
     required: ['path'],
     additionalProperties: false,
@@ -433,7 +491,8 @@ export const viewOfficeTool: ToolSpec = {
   facet: '文档',
   summary: '查看 Word / PPT / Excel / PDF 页面',
   targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
-  permissionEffect: 'read',
+  // 给出 save_to 时向工作区写入页面图；权限效果须固定（工具清单按此列显示边界），因此声明为 write。
+  permissionEffect: 'write',
   parallelSafe: false,
   resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
   fn: withOffice(view),

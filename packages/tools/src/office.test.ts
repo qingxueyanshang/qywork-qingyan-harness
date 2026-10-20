@@ -199,6 +199,59 @@ describe('office view 与 guide', () => {
     expect(view?.expected_sha256).toBe(new Bun.CryptoHasher('sha256').update('doc').digest('hex'))
   })
 
+  /**
+   * 原始失败：渲染的页面只能查看、无法保存到工作区，画布生成卡片无法引用，每次生成的输入都是「无」。
+   * save_to 保存渲染原图（不经发送前的缩放），与其他写入工具使用同一可写判定，已存在的文件不覆盖。
+   */
+  test('save_to 把页面原图保存到工作区：目录中按页命名，单页可写文件路径，重名时改名', async () => {
+    const root = await workspace()
+    await writeFile(join(root, 'deck.pptx'), 'deck')
+    const c = ctx(root)
+    const many = await viewOfficeTool.fn(
+      { path: 'deck.pptx', pages: ['2', '3'], save_to: 'refs' },
+      c,
+    )
+    expect(many.status).toBe('success')
+    expect(many.fileChanges).toEqual([
+      { path: 'refs/deck-p2.png', changeType: 'created' },
+      { path: 'refs/deck-p3.png', changeType: 'created' },
+    ])
+    expect(many.message).toContain('页面原图已保存：refs/deck-p2.png、refs/deck-p3.png')
+    // 与 worker 渲染出的字节相同：保存的是原图，不是发送给模型的缩放图。
+    const rendered = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+      'base64',
+    )
+    expect(Buffer.from(await readFile(join(root, 'refs', 'deck-p3.png')))).toEqual(rendered)
+    expect((many.data as { images: unknown[] }).images).toHaveLength(2)
+
+    const one = await viewOfficeTool.fn({ path: 'deck.pptx', save_to: 'refs/封面.png' }, c)
+    expect(one.fileChanges).toEqual([{ path: 'refs/封面.png', changeType: 'created' }])
+    const again = await viewOfficeTool.fn({ path: 'deck.pptx', save_to: 'refs/封面.png' }, c)
+    expect(again.fileChanges).toEqual([{ path: 'refs/封面-2.png', changeType: 'created' }])
+    expect(again.message).toContain('页面原图已保存：refs/封面-2.png')
+  })
+
+  test('save_to 形式不对、越出工作区或位于受保护目录：不启动 worker，不写文件', async () => {
+    const root = await workspace()
+    await writeFile(join(root, 'deck.pptx'), 'deck')
+    const c = ctx(root)
+    const two = await viewOfficeTool.fn(
+      { path: 'deck.pptx', pages: ['1', '2'], save_to: 'a.png' },
+      c,
+    )
+    expect(two).toMatchObject({ status: 'failure', executed: false, errorKind: 'invalid_args' })
+    expect(two.message).toContain('写目录')
+    const jpg = await viewOfficeTool.fn({ path: 'deck.pptx', save_to: 'a.jpg' }, c)
+    expect(jpg.errorKind).toBe('invalid_args')
+    await expect(viewOfficeTool.fn({ path: 'deck.pptx', save_to: '../a.png' }, c)).rejects.toThrow()
+    await expect(viewOfficeTool.fn({ path: 'deck.pptx', save_to: '.qy/a.png' }, c)).rejects.toThrow(
+      /扩展配置/,
+    )
+    expect(await requests(root)).toEqual([])
+    expect((await readdir(root)).sort()).toEqual(['deck.pptx', 'make.py'])
+  })
+
   test('view 接受 PDF 原件，read 不接受', async () => {
     const root = await workspace()
     await writeFile(join(root, 'scan.pdf'), 'pdf')
@@ -257,7 +310,10 @@ describe('注册与工具指引', () => {
         errorKind: 'invalid_tool_arguments',
       })
       expect(tool.parameters.properties).not.toHaveProperty('action')
-      expect(tool.permissionEffect).toBe(tool === writeOfficeTool ? 'execute' : 'read')
+      // view_office 给出 save_to 时向工作区写入页面图，权限效果按可能的最大影响声明。
+      expect(tool.permissionEffect).toBe(
+        tool === writeOfficeTool ? 'execute' : tool === viewOfficeTool ? 'write' : 'read',
+      )
     }
     expect(requested).toEqual([])
     expect(

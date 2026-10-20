@@ -433,11 +433,33 @@ def _text_extent(shp, tf=IDENTITY):
     unwrapped = body is not None and body.get("wrap") == "none"
     w, h = _text_size(shp.text_frame, 10 ** 12 if unwrapped else width)
     h -= _first_size(shp.text_frame) * 127 * 0.2
-    align = str(shp.text_frame.paragraphs[0].alignment or "")
+    try:                                                  # an algn python-pptx has no member for (WPS writes
+        align = str(shp.text_frame.paragraphs[0].alignment or "")   # values like "None") reads as left
+    except ValueError:
+        align = ""
     anchor = body.get("anchor", "t") if body is not None else "t"
     x = box[0] + left + ((width - w) / 2 if "CENTER" in align else width - w if "RIGHT" in align else 0)
     y = box[1] + top + ((height - h) / 2 if anchor == "ctr" else height - h if anchor == "b" else 0)
     return (x, y, x + w, y + h)
+
+
+def _same_line_neighbors(a, b):
+    """两段单行文字基线相同、左右相接，且水平重叠不超过较大字号的半个字：重叠来自宽度估算，不是遮挡。
+
+    数字与半角字符按 0.55 个字号估宽，实际多数更窄（「36.92」估算比实际宽约 0.4 个字号），
+    数值与单位分成两个文本框紧挨着排时，估算的文字区域会伸进单位的框里。
+    基线按文字区域底边上移 0.2 个字号估算，两段相差不超过较小字号的四分之一即为同一基线。
+    一行压在另一行上（重叠超过半个字）、上下两行错开（基线不同）、一段包含另一段，都不在此列，照常报告。
+    """
+    (ba, ema), (bb, emb) = a, b
+    if ba[3] - ba[1] > ema * 1.05 or bb[3] - bb[1] > emb * 1.05:
+        return False
+    if abs((ba[3] - 0.2 * ema) - (bb[3] - 0.2 * emb)) > 0.25 * min(ema, emb):
+        return False
+    left, right = (ba, bb) if ba[0] <= bb[0] else (bb, ba)
+    if right[2] <= left[2]:
+        return False
+    return left[2] - right[0] <= 0.5 * max(ema, emb)
 
 
 def check_pptx(path):
@@ -472,13 +494,13 @@ def check_pptx(path):
                 checks.append({"level": "info", "code": "empty_placeholder",
                                "message": f"第 {i} 页占位符「{shp.name}」为空"})
             if box and shp.has_text_frame and shp.text_frame.text.strip():
-                texts.append((shp.name, _text_extent(shp, tf)))
+                texts.append((shp.name, _text_extent(shp, tf), _first_size(shp.text_frame) * 127))
         for a in range(len(texts)):
             for b in range(a + 1, len(texts)):
-                (na, ba), (nb, bb) = texts[a], texts[b]
+                (na, ba, ema), (nb, bb, emb) = texts[a], texts[b]
                 w = min(ba[2], bb[2]) - max(ba[0], bb[0])
                 h = min(ba[3], bb[3]) - max(ba[1], bb[1])
-                if w <= 0 or h <= 0:
+                if w <= 0 or h <= 0 or _same_line_neighbors((ba, ema), (bb, emb)):
                     continue
                 smaller = min((ba[2] - ba[0]) * (ba[3] - ba[1]), (bb[2] - bb[0]) * (bb[3] - bb[1]))
                 if smaller and w * h / smaller > 0.1:

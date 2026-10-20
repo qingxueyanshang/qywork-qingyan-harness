@@ -31,9 +31,10 @@ ASSOC = {
 }
 WPS_PROGIDS = {"KWPS.Application", "KET.Application", "KWPP.Application"}
 
-# 同一实例中第二次及以后的打开会写入最近文档与账号打开记录（只读打开同样如此）的组件；
-# 这些组件每个实例只打开一个文件，再次打开时改用新实例。
-ONE_OPEN_PER_INSTANCE = {"KWPS.Application"}
+# 每个实例只打开一个文件、再次打开时改用新实例的组件：
+# - KWPS：第二次及以后的打开会写入最近文档与账号打开记录（只读打开同样如此）。
+# - KWPP：第二次打开返回的对象没有 SaveAs、Close 等成员（渲染后在同一实例导出 PDF，报 AttributeError: Open.SaveAs）。
+ONE_OPEN_PER_INSTANCE = {"KWPS.Application", "KWPP.Application"}
 
 # 组件规则表：异常结束（worker 已被结束、无法再调用 COM）时能否按 PID 结束。
 # end：实测用户经资源管理器打开的文件不会并入产品新启动的实例，按 PID 结束不影响用户文档。

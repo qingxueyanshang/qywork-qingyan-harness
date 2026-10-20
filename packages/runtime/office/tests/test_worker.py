@@ -90,6 +90,24 @@ class ContextTest(unittest.TestCase):
             with self.assertRaises(KeyError):
                 ctx.output("other.docx")
 
+    def test_output_by_file_name(self):
+        """输出声明在子目录中、脚本只写文件名时按文件名对应；同名输出有多个时报错并列出它们。"""
+        with TempDir() as d:
+            one = ({"path": str(d / "output" / "精创_20261019" / "精创.pptx")}, "pptx", d / "work" / "0-精创.pptx")
+            ctx = worker.OfficeContext(d, d / "call", [], [one])
+            self.assertEqual(ctx.output("精创.pptx"), str(d / "work" / "0-精创.pptx"))
+            # 带目录的路径不按文件名对应：目录写错时应报错，而不是写入另一个位置。
+            with self.assertRaises(KeyError):
+                ctx.output("other/精创.pptx")
+            two = ({"path": str(d / "备份" / "精创.pptx")}, "pptx", d / "work" / "1-精创.pptx")
+            ctx = worker.OfficeContext(d, d / "call", [], [one, two])
+            with self.assertRaises(KeyError) as raised:
+                ctx.output("精创.pptx")
+            message = raised.exception.args[0]
+            self.assertIn(str(d / "output" / "精创_20261019" / "精创.pptx"), message)
+            self.assertIn(str(d / "备份" / "精创.pptx"), message)
+            self.assertIn("多个", message)
+
     def test_run_script(self):
         with TempDir() as d:
             ctx = worker.OfficeContext(d, d, [], [])

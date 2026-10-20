@@ -137,6 +137,35 @@ class PptxTest(unittest.TestCase):
             ea = [c["message"] for c in structure.check_pptx(d / "a.pptx") if c["code"] == "east_asia_font_missing"]
             self.assertTrue(ea and label.name in ea[0], ea)
 
+    def test_number_and_unit_side_by_side_are_not_overlap(self):
+        """数值与单位各占一个文本框、同一基线左右相接（精创 P2「36.92」「亿元」，坐标取自原文件）：估算的文字区域
+        伸进单位的框里不到半个字，不报告。上下两行错开（精创 P12 眉题压标题）、同一基线一行压在另一行上，照常报告。"""
+        from pptx import Presentation
+        from pptx.util import Emu, Pt
+
+        def box(s, name, text, x, y, w, h, size):
+            t = s.shapes.add_textbox(Emu(x), Emu(y), Emu(w), Emu(h))
+            t.name = name
+            f = t.text_frame
+            f.word_wrap = False
+            f.margin_left = f.margin_right = f.margin_top = f.margin_bottom = 0
+            f.text = text
+            f.paragraphs[0].runs[0].font.size = Pt(size)
+
+        with TempDir() as d:
+            prs = Presentation()
+            s = prs.slides.add_slide(prs.slide_layouts[6])
+            box(s, "数值", "36.92", 4280802, 1363691, 1757296, 905627, 58.44)
+            box(s, "单位", "亿元", 6021837, 1759483, 568751, 331042, 20.76)
+            box(s, "眉题", "风险防控", 684252, 230271, 831252, 251563, 15.53)
+            box(s, "标题", "五类风险与应对措施", 321928, 400022, 3930217, 522085, 33.28)
+            box(s, "原文", "年产值 3.2 亿元", 6846308, 4323312, 2000000, 234063, 14.39)
+            box(s, "副本", "年产值 3.2 亿元", 7146308, 4323312, 2000000, 234063, 14.39)
+            prs.save(d / "a.pptx")
+            overlaps = [c["message"] for c in structure.check_pptx(d / "a.pptx") if c["code"] == "text_overlap"]
+            self.assertEqual(len(overlaps), 2, overlaps)
+            self.assertTrue(any("眉题" in m and "标题" in m for m in overlaps), overlaps)
+            self.assertTrue(any("原文" in m and "副本" in m for m in overlaps), overlaps)
 
     def test_text_overflow_and_east_asia_font(self):
         from pptx import Presentation
