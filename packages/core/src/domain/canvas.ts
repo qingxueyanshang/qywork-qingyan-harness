@@ -431,15 +431,18 @@ function quoted(anchor: string): string {
 /**
  * 文本卡发送的文字：没有摘录时为全文（去掉首尾空白），否则为摘录的一段（规则见 `CanvasExcerpt`）。
  * 正文与锚点的行尾都先统一为 LF：文件以 CRLF 保存时，跨行的锚点同样能找到。`end` 落在 `start` 之内时摘录至少包含 `start`。
- * 运行时展开、失效核对与界面显示都使用它。
+ * `from` / `to` 是该段在 LF 正文中的位置，界面据此在文件中定位。运行时展开、失效核对与界面显示都使用它。
  */
 export function excerptOf(
   text: string,
   excerpt?: CanvasExcerpt,
-): { ok: true; text: string } | { ok: false; error: string } {
+): { ok: true; text: string; from: number; to: number } | { ok: false; error: string } {
   const lf = (s: string) => s.replace(/\r\n?/g, '\n')
   const body = lf(text)
-  if (!excerpt) return { ok: true, text: body.trim() }
+  if (!excerpt) {
+    const from = body.length - body.trimStart().length
+    return { ok: true, text: body.trim(), from, to: from + body.trim().length }
+  }
   const start = lf(excerpt.start)
   const end = lf(excerpt.end)
   let from = 0
@@ -466,7 +469,8 @@ export function excerptOf(
   }
   const e = body.indexOf(end, s)
   if (e < 0) return { ok: false, error: `start 之后没有 end ${quoted(end)}` }
-  return { ok: true, text: body.slice(s, Math.max(e + end.length, s + start.length)) }
+  const to = Math.max(e + end.length, s + start.length)
+  return { ok: true, text: body.slice(s, to), from: s, to }
 }
 
 /** 文件节点是否为文本卡（`.md` / `.txt`）：可被生成卡的提示词引用。 */

@@ -9,7 +9,7 @@
  */
 
 import { EditorState, type Extension } from '@codemirror/state'
-import { EditorView, highlightActiveLine, lineNumbers } from '@codemirror/view'
+import { drawSelection, EditorView, highlightActiveLine, lineNumbers } from '@codemirror/view'
 
 /** 扩展名 → 语言包加载器。未找到时使用无高亮的纯文本，不报错。 */
 const LOADERS: Record<string, () => Promise<Extension>> = {
@@ -83,6 +83,8 @@ export async function createReadonlyEditor(
       extensions: [
         lineNumbers(),
         highlightActiveLine(),
+        // 由编辑器绘制选区：只读视图没有焦点时浏览器不显示原生选区，`selectRange` 选中的一段将不可见。
+        drawSelection(),
         // 只读预览：不提供编辑能力，避免出现可修改但无法保存的编辑器。
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
@@ -107,4 +109,17 @@ export function scrollToLine(view: EditorView, line: number): void {
   const doc = view.state.doc
   const target = doc.line(Math.min(Math.max(1, line), doc.lines))
   view.dispatch({ effects: EditorView.scrollIntoView(target.from, { y: 'start' }) })
+}
+
+/**
+ * 选中 `from` 到 `to` 一段并滚动到其开头所在的行，超出全文的部分截到末尾。位置按 LF 计，与编辑器的文档一致。
+ * 下一帧再滚动一次：目标在视口外时按估算行高定位，自动换行的长行测量后更高，只滚动一次会停在目标之后。
+ */
+export function selectRange(view: EditorView, from: number, to: number): void {
+  const end = view.state.doc.length
+  const anchor = Math.min(from, end)
+  const scroll = () => view.dispatch({ effects: EditorView.scrollIntoView(anchor, { y: 'start' }) })
+  view.dispatch({ selection: { anchor, head: Math.min(to, end) } })
+  scroll()
+  requestAnimationFrame(scroll)
 }

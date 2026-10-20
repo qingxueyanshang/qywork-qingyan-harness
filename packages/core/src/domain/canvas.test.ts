@@ -1501,25 +1501,28 @@ describe('画布：文本卡引用', () => {
     ].join('\n')
     const shot = (after: string, end: string) =>
       excerptOf(md, { after, start: '【视频约束】', end })
+    const first =
+      '【视频约束】全片台词说中文普通话。\n【剧本内容】0-4秒：推门。本镜头排除：门框变形。'
     expect(shot('1-1 视频提示词', '门框变形。')).toEqual({
       ok: true,
-      text: '【视频约束】全片台词说中文普通话。\n【剧本内容】0-4秒：推门。本镜头排除：门框变形。',
+      text: first,
+      from: md.indexOf(first),
+      to: md.indexOf(first) + first.length,
     })
-    expect(shot('镜头1-2｜', '多余手指。')).toEqual({
+    expect(shot('镜头1-2｜', '多余手指。')).toMatchObject({
       ok: true,
       text: '【视频约束】全片台词说中文普通话。\n【剧本内容】0-4秒：握手。本镜头排除：多余手指。',
     })
     // end 取 start 之后第一次出现处；落在 start 之内时摘录至少为 start。
     expect(
       excerptOf(md, { after: '镜头1-2', start: '【剧本内容】0-4秒：握手。', end: '握手' }),
-    ).toEqual({ ok: true, text: '【剧本内容】0-4秒：握手。' })
-    // 文件以 CRLF 保存时，按 LF 书写的跨行锚点同样能找到，发送的文字为 LF。
+    ).toMatchObject({ ok: true, text: '【剧本内容】0-4秒：握手。' })
+    // 文件以 CRLF 保存时，按 LF 书写的跨行锚点同样能找到，发送的文字与位置均按 LF 计。
     const crlf = md.replaceAll('\n', '\r\n')
-    expect(excerptOf(crlf, { start: '推门。本镜头排除：门框变形。\n```', end: '```' })).toEqual({
-      ok: true,
-      text: '推门。本镜头排除：门框变形。\n```',
-    })
-    expect(excerptOf(`\n${md}\n`)).toEqual({ ok: true, text: md })
+    const lf = excerptOf(crlf, { start: '推门。本镜头排除：门框变形。\n```', end: '```' })
+    expect(lf).toMatchObject({ ok: true, text: '推门。本镜头排除：门框变形。\n```' })
+    expect(lf.ok && md.slice(lf.from, lf.to)).toBe('推门。本镜头排除：门框变形。\n```')
+    expect(excerptOf(`\n${md}\n`)).toEqual({ ok: true, text: md, from: 1, to: md.length + 1 })
   })
 
   test('摘录无法定位时报出原因：after 缺失或不唯一、未给 after 时 start 不唯一、start 或 end 缺失', () => {

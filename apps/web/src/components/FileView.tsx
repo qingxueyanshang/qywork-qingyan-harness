@@ -11,10 +11,17 @@ import {
   Switch,
 } from 'solid-js'
 import { ApiError } from '../lib/client.ts'
-import { createReadonlyEditor, scrollToLine, topLine } from '../lib/editor.ts'
+import { createReadonlyEditor, scrollToLine, selectRange, topLine } from '../lib/editor.ts'
 import { loaded } from '../lib/resource.ts'
 import { readSession, writeSession } from '../lib/session.ts'
-import { absPath, client, explainApiError, setOpenFile } from '../lib/store/index.ts'
+import {
+  absPath,
+  client,
+  explainApiError,
+  fileSelectRequest,
+  setFileSelectRequest,
+  setOpenFile,
+} from '../lib/store/index.ts'
 import FileImageView from './FileImageView.tsx'
 import { IconX } from './Icons.tsx'
 
@@ -194,6 +201,15 @@ function CodeView(props: { content: string; path: string }) {
   /** 只采用最后一次装配的结果：语言包是动态 import，两次改动间隔很短时，后发出的可能先完成。 */
   let generation = 0
 
+  /** 执行指向本文件的选中请求（`fileSelectRequest`）。请求可能先于编辑器装配完成到达，装配后再执行一次。 */
+  const applySelect = () => {
+    const req = fileSelectRequest()
+    if (!view || !req || req.path !== mountedPath) return
+    setFileSelectRequest(null)
+    selectRange(view, req.from, req.to)
+  }
+  createEffect(on(fileSelectRequest, applySelect))
+
   // 只有路径变化时才整体重建（语言包由路径决定）。同一文件的正文更新直接派发到
   // 现有 CodeMirror：重建实例会替换 `.cm-scroller`，用户阅读到中间时会回到顶部。
   //
@@ -225,6 +241,7 @@ function CodeView(props: { content: string; path: string }) {
       mountedPath = path
       const saved = readSession<ScrollRecord>(SCROLL_KEY)
       if (saved?.path === path) scrollToLine(next, saved.line)
+      applySelect()
       next.scrollDOM.addEventListener('scroll', () =>
         writeSession(SCROLL_KEY, { path, line: topLine(next) } satisfies ScrollRecord),
       )
