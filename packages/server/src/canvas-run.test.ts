@@ -545,11 +545,20 @@ describe('画布运行：Art', () => {
 describe('画布运行：文本卡引用', () => {
   const SCRIPT = '## 1-1 修车铺\n阿七推门：“又做梦了？”\n\n## 1-2 入梦\n阿七说：“手给我。”\n'
 
-  test('运行时把引用展开为文件当前的内容，版本记录展开后的提示词；文本卡不作为素材发送', async () => {
+  /** 制作脚本中「1-2 入梦」一段的摘录卡。 */
+  const EXCERPT: CanvasOp = {
+    op: 'add_file',
+    ref: '$md',
+    path: '制作脚本.md',
+    name: '1-2 段',
+    excerpt: { after: '## 1-2 入梦', start: '阿七说', end: '”' },
+  }
+
+  test('运行时把引用展开为文件当前内容中的摘录，版本记录展开后的提示词；文本卡不作为素材发送', async () => {
     const { ws, svc, ids } = await setup([
-      { op: 'add_file', ref: '$md', path: '制作脚本.md', name: '制作脚本' },
+      EXCERPT,
       { op: 'add_file', ref: '$a', path: 'a.png', name: '阿七' },
-      { op: 'add_generate', ref: '$v', output: 'video', prompt: '@[$md#1-2 入梦]\n@[$a]' },
+      { op: 'add_generate', ref: '$v', output: 'video', prompt: '@[$md]\n@[$a]' },
     ])
     await writeFile(join(ws.root, '制作脚本.md'), SCRIPT)
     const fake = fakePort()
@@ -582,31 +591,35 @@ describe('画布运行：文本卡引用', () => {
     await again.done
   })
 
-  test('引用的标题或文件不存在时不提交生成；读取画布标出失效的引用；修改文件时报告引用它的卡与失效引用', async () => {
+  test('摘录无法定位或文件不存在时不提交生成；读取画布标出失效的摘录卡与引用它的卡；修改文件时报告二者', async () => {
     const { ws, svc, ids } = await setup([
-      { op: 'add_file', ref: '$md', path: '制作脚本.md', name: '制作脚本' },
+      EXCERPT,
+      { op: 'add_file', ref: '$whole', path: '制作脚本.md', name: '制作脚本' },
       {
         op: 'add_generate',
         ref: '$v',
         output: 'video',
         name: '1-2 入梦',
-        prompt: '@[$md#1-2 入梦]',
+        prompt: '@[$md]',
       },
     ])
-    await writeFile(join(ws.root, '制作脚本.md'), '## 1-1 修车铺\n阿七推门。\n')
     const fake = fakePort()
+    const missing = await failure(svc.run(ws, PATH, ids.$v!, { media: fake.port }))
+    expect(missing.message).toBe('「1-2 入梦」的提示词引用不成立：@[1-2 段]：文件不存在')
+    await writeFile(join(ws.root, '制作脚本.md'), '## 1-1 修车铺\n阿七推门。\n')
     const refused = await failure(svc.run(ws, PATH, ids.$v!, { media: fake.port }))
     expect(refused.message).toBe(
-      '「1-2 入梦」的提示词引用不成立：@[制作脚本#1-2 入梦]：文中没有标题「1-2 入梦」',
+      '「1-2 入梦」的提示词引用不成立：@[1-2 段]：文中没有 after 「## 1-2 入梦」',
     )
     expect(fake.calls).toHaveLength(0)
     const view = await svc.read(ws.root, PATH)
     expect(view.references).toEqual({
-      [ids.$v!]: ['@[制作脚本#1-2 入梦]：文中没有标题「1-2 入梦」'],
+      [ids.$md!]: ['文中没有 after 「## 1-2 入梦」'],
+      [ids.$v!]: ['@[1-2 段]：文中没有 after 「## 1-2 入梦」'],
     })
     expect(await svc.textReferences(ws.root, '制作脚本.md')).toEqual([
       `画布 ${PATH} 中 1 张卡引用此文件（1-2 入梦），下次运行时发送修改后的内容。`,
-      '引用失效：「1-2 入梦」@[制作脚本#1-2 入梦]：文中没有标题「1-2 入梦」',
+      `引用失效：画布 ${PATH} 的「1-2 段」文中没有 after 「## 1-2 入梦」；用 edit_canvas 的 update 给出新的 excerpt。`,
     ])
     expect(await svc.textReferences(ws.root, '其他.md')).toEqual([])
   })

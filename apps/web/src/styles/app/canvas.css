@@ -1587,31 +1587,6 @@ button.canvas-input:hover {
   word-break: break-word;
   color: var(--text-secondary);
 }
-/* 文本卡的段落选择：@ 选中有标题的文本卡后出现，样式独立于 .canvas-pick（浮层不共用选择器）。 */
-.canvas-section-pick {
-  position: fixed;
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
-  width: 260px;
-  max-height: 300px;
-  padding: 4px;
-  overflow-y: auto;
-  background: var(--bg-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-lg);
-}
-.canvas-section-pick > button {
-  padding: 6px 10px;
-  border-radius: var(--r-sm);
-  text-align: left;
-  font-size: var(--fs-sm);
-  color: var(--text-primary);
-}
-.canvas-section-pick > button:hover {
-  background: var(--bg-hover);
-}
 .canvas-media-notice {
   position: absolute;
   left: 0;

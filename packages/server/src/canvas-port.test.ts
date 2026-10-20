@@ -16,6 +16,7 @@ import {
   type AgentEvent,
   applyCanvasOps,
   type CanvasOp,
+  displayNameOf,
   emptyCanvas,
   type MediaParamDefinition,
   parseCanvas,
@@ -258,7 +259,7 @@ describe('画布端口', () => {
       await skippedOf(
         port.edit(PATH, [{ op: 'add_file', path: 'a.png', name: '小满_审定', group: '角色/小满' }]),
       ),
-    ).toContain('a.png 已在画布上，卡片名称为「a」：同一文件只放一张卡')
+    ).toContain('a.png 已在画布上，卡片名称为「a」：同一文件只放一张整篇的卡')
     const other = await port.create('b.canvas.json')
     expect(
       await skippedOf(
@@ -270,6 +271,34 @@ describe('画布端口', () => {
     ).toContain('a.png 已在画布上，卡片名称为「小满」')
     const view = await port.read(PATH)
     expect(view.doc.nodes.filter((n) => n.type === 'file')).toHaveLength(1)
+  })
+
+  test('同一文件可放整篇卡与多张摘录卡；同一段只放一张；摘录卡须有名称；失效原因随回执返回', async () => {
+    const root = await workspace()
+    await writeFile(join(root, '脚本.md'), '## 1-1\n阿七推门。\n## 1-2\n阿七握手。\n')
+    const port = canvasPort(new CanvasService({ publish: () => {} }), { id: 'ws', root })
+    const shot = (n: string, start: string) => ({
+      op: 'add_file' as const,
+      path: '脚本.md',
+      name: `${n} 段`,
+      excerpt: { after: `## ${n}`, start, end: '。' },
+    })
+    const placed = await port.edit(PATH, [
+      { op: 'add_file', path: '脚本.md' },
+      shot('1-1', '阿七'),
+      shot('1-2', '阿七'),
+      { ...shot('1-2', '阿七'), name: '1-2 重复' },
+      { op: 'add_file', path: '脚本.md', excerpt: { start: '阿七握手', end: '。' } },
+      shot('1-3', '阿七'),
+    ])
+    expect(placed.skipped.map((s) => s.error)).toEqual([
+      '脚本.md 中的这一段已有摘录卡「1-2 段」：同一段只放一张卡',
+      '摘录卡须给出 name：同一文件的各张摘录卡按名称区分',
+    ])
+    expect(placed.view.doc.nodes.map(displayNameOf)).toEqual(['脚本', '1-1 段', '1-2 段', '1-3 段'])
+    expect(placed.view.references).toEqual({
+      [placed.view.doc.nodes[3]!.id]: ['文中没有 after 「## 1-3」'],
+    })
   })
   /** 原始失败形状：模型填写表外的 1536x864，校验通过，而参数面板的宽高比与分辨率无一选中。 */
   test('带对照表的尺寸只接受表中的取值，报错列出全部可选值；表中取值决定卡片形状', async () => {

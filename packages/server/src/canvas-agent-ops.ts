@@ -2,7 +2,8 @@
  * 大模型提交的画布操作在应用前后的核对与补全。只用于画布端口（大模型），界面的操作不经过这里。
  *
  * - 卡片名称在同一张画布中不能重复：大模型按名称引用卡片，名称重复时无法确定所指。
- * - 同一文件只放一张文件卡：已在画布上的文件再次放置时拒绝并给出已有卡片的名称。界面复制粘贴文件卡不经过这里。
+ * - 同一文件只放一张整篇的文件卡，同一段摘录只放一张摘录卡：再次放置时拒绝并给出已有卡片的名称。
+ *   界面复制粘贴文件卡不经过这里。摘录卡须给出名称：缺省名称是文件名，同一文件的各张摘录卡无法按名称区分。
  * - 参数按所用模型的参数表核对，应用后再按卡片的输入与其他参数核对是否可用：不存在、不合法或不可用的取值
  *   该条操作不成立并列出可选值（`applyAgent` 逐条判定）。大模型写入的每个参数都会发送，也都显示在参数面板上。
  * - 大模型读取的画布中，生成卡的参数为实际发送的参数（`agentView`），与参数面板的显示一致。
@@ -13,6 +14,7 @@ import {
   activeMediaParams,
   blankBox,
   type CanvasDoc,
+  type CanvasExcerpt,
   type CanvasGenerateNode,
   type CanvasOp,
   type CanvasView,
@@ -43,10 +45,15 @@ export function prepareAgentOps(
   const taken = new Set(doc.nodes.map(displayNameOf))
   // 画布只接受规范的相对路径（core `isRelativePath`），同一文件的路径写法唯一，直接比较即可。
   const placed = new Map(
-    doc.nodes.flatMap((n) => (n.type === 'file' ? [[n.path, displayNameOf(n)]] : [])),
+    doc.nodes.flatMap((n) =>
+      n.type === 'file' ? [[placedKey(n.path, n.excerpt), displayNameOf(n)]] : [],
+    ),
   )
   const out: CanvasOp[] = []
   for (const op of ops) {
+    if (op.op === 'add_file' && op.excerpt && !op.name) {
+      throw new Error('摘录卡须给出 name：同一文件的各张摘录卡按名称区分')
+    }
     if (op.op === 'add_file' || op.op === 'add_generate' || op.op === 'add_timeline') {
       if (op.name !== undefined) {
         if (taken.has(op.name)) {
@@ -56,12 +63,17 @@ export function prepareAgentOps(
       }
     }
     if (op.op === 'add_file') {
-      const held = placed.get(op.path)
+      const key = placedKey(op.path, op.excerpt)
+      const held = placed.get(key)
       if (held !== undefined) {
-        throw new Error(`${op.path} 已在画布上，卡片名称为「${held}」：同一文件只放一张卡`)
+        throw new Error(
+          op.excerpt
+            ? `${op.path} 中的这一段已有摘录卡「${held}」：同一段只放一张卡`
+            : `${op.path} 已在画布上，卡片名称为「${held}」：同一文件只放一张整篇的卡`,
+        )
       }
       placed.set(
-        op.path,
+        key,
         displayNameOf({
           id: '',
           type: 'file',
@@ -99,6 +111,11 @@ export function prepareAgentOps(
     out.push(op)
   }
   return out
+}
+
+/** 文件卡的唯一性键：整篇卡为路径，摘录卡为路径加摘录。 */
+function placedKey(path: string, excerpt: CanvasExcerpt | undefined): string {
+  return excerpt ? JSON.stringify([path, excerpt.after ?? null, excerpt.start, excerpt.end]) : path
 }
 
 /**

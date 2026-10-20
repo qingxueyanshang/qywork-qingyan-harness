@@ -11,7 +11,7 @@ import {
   compilePrompt,
   copyOps,
   emptyCanvas,
-  markdownHeadings,
+  excerptOf,
   modeOf,
   parseCanvas,
   parseCanvasOps,
@@ -19,7 +19,6 @@ import {
   recordRun,
   serializeCanvas,
   settleVersion,
-  textReferenceOf,
   textReferenceProblems,
 } from './canvas.ts'
 
@@ -1418,38 +1417,44 @@ describe('画布：Art', () => {
  * 20 张设计稿卡各带一份相同的公共要求。文本卡被提示词引用后，运行时展开为文件当前的内容，不复制。
  */
 describe('画布：文本卡引用', () => {
-  /** 一张文本卡（制作脚本）、一张图、一张视频卡。 */
+  /** 一张整篇文本卡（制作脚本）、一张图、一张视频卡、一张摘录卡（1-2 段）。 */
   function withScript(): CanvasDoc {
     return apply(emptyCanvas(), [
       { op: 'add_file', ref: '$md', path: '作品/制作脚本.md', name: '制作脚本' },
       { op: 'add_file', ref: '$img', path: '角色/小满.png', name: '小满' },
       { op: 'add_generate', ref: '$v', output: 'video', name: '1-2 入梦' },
+      {
+        op: 'add_file',
+        path: '作品/制作脚本.md',
+        name: '1-2 段',
+        excerpt: { after: '## 1-2 入梦', start: '阿七说', end: '铜铃响。' },
+      },
     ])
   }
   const SCRIPT =
     '# 第1集\n\n## 1-1 修车铺\n阿七推门。\n\n## 1-2 入梦\n阿七说：“手给我。”\n\n### 细节\n铜铃响。\n\n## 1-3 教室\n空教室。\n'
 
-  test('引用文本卡即以 text 连线，带标题的引用换成 id；编译时展开全文或该标题下的段落', () => {
+  test('引用文本卡即以 text 连线，名称换成 id；整篇卡展开全文，摘录卡展开文件当前内容中的该段', () => {
     const doc = apply(withScript(), [
-      { op: 'update', id: '1-2 入梦', prompt: '@[制作脚本#1-2 入梦]\n@[小满] 用于阿七的脸' },
+      { op: 'update', id: '1-2 入梦', prompt: '@[1-2 段]\n@[小满] 用于阿七的脸' },
     ])
-    expect(gen(doc, 'a3').prompt).toBe('@[a1#1-2 入梦]\n@[a2] 用于阿七的脸')
+    expect(gen(doc, 'a3').prompt).toBe('@[a4]\n@[a2] 用于阿七的脸')
     expect(doc.edges.map((e) => [e.from, e.role])).toEqual([
-      ['a1', 'text'],
+      ['a4', 'text'],
       ['a2', 'reference'],
     ])
-    const texts = new Map([['a1', SCRIPT]])
+    const texts = new Map([['a4', SCRIPT]])
     expect(compilePrompt(doc, 'a3', { image: '@Image{n}' }, texts)).toBe(
       '阿七说：“手给我。”\n\n### 细节\n铜铃响。\n@Image1 用于阿七的脸',
     )
+    const edited = new Map([['a4', SCRIPT.replace('手给我', '把手给我')]])
+    expect(compilePrompt(doc, 'a3', {}, edited)).toStartWith('阿七说：“把手给我。”')
     const whole = apply(doc, [{ op: 'update', id: 'a3', prompt: '@[制作脚本]' }])
-    expect(compilePrompt(whole, 'a3', {}, texts)).toBe(SCRIPT.trim())
+    expect(compilePrompt(whole, 'a3', {}, new Map([['a1', SCRIPT]]))).toBe(SCRIPT.trim())
   })
 
   test('删除引用即断开文本连线；断开连线或删除文本卡时从提示词中删除引用；连接文本卡即在末尾插入引用', () => {
-    const doc = apply(withScript(), [
-      { op: 'update', id: 'a3', prompt: '开头 @[制作脚本#1-2 入梦]' },
-    ])
+    const doc = apply(withScript(), [{ op: 'update', id: 'a3', prompt: '开头 @[制作脚本]' }])
     const unmentioned = apply(doc, [{ op: 'update', id: 'a3', prompt: '开头' }])
     expect(unmentioned.edges).toEqual([])
     const edge = doc.edges[0]!
@@ -1473,82 +1478,110 @@ describe('画布：文本卡引用', () => {
     )
     const frames = apply(doc, [
       { op: 'connect', from: '小满', to: '1-2 入梦', role: 'first_frame' },
-      { op: 'update', id: '1-2 入梦', prompt: '@[制作脚本#1-2 入梦]' },
+      { op: 'update', id: '1-2 入梦', prompt: '@[1-2 段]' },
     ])
     expect(frames.edges.map((e) => e.role).sort()).toEqual(['first_frame', 'text'])
   })
 
-  test('范围内有代码块时只展开代码块内的文字，块外的标签、字段与备注不展开', () => {
+  /** 原始失败形状：八栏提示词各镜头首行相同，只能按标题或代码块引用时文档须为画布改写格式。 */
+  test('摘录从 after 之后第一次出现的 start 到其后第一次出现的 end，均含；首行相同的各段靠 after 区分', () => {
     const md = [
-      '#### 1-1 视频提示词',
-      '',
+      '#### 镜头1-1｜推门',
+      '**生成时长：**4秒',
+      '##### 1-1 视频提示词',
       '```text',
       '【视频约束】全片台词说中文普通话。',
-      '',
-      '【剧本内容】0-4秒：推门。',
+      '【剧本内容】0-4秒：推门。本镜头排除：门框变形。',
       '```',
-      '',
-      '#### 1-2 视频提示词',
-      '~~~',
-      '握手。',
-      '~~~',
-      '',
-    ].join('\n')
-    expect(textReferenceOf(md, '1-1 视频提示词')).toBe(
-      '【视频约束】全片台词说中文普通话。\n\n【剧本内容】0-4秒：推门。',
-    )
-    expect(textReferenceOf(md)).toBe(
-      '【视频约束】全片台词说中文普通话。\n\n【剧本内容】0-4秒：推门。\n\n握手。',
-    )
-    const shots = [
-      '### 镜头 1-1',
-      '- 景别：远景',
-      '- 台词：无',
-      '',
-      '**视频提示词**',
-      '',
+      '#### 镜头1-2｜握手',
       '```text',
-      '雨夜，修车铺门口。',
+      '【视频约束】全片台词说中文普通话。',
+      '【剧本内容】0-4秒：握手。本镜头排除：多余手指。',
       '```',
-      '',
-      '备注：与 1-2 的灯光一致。',
-      '',
-      '### 镜头 1-2',
-      '#### 提示词',
-      '````',
-      '```',
-      '阿七推门。',
-      '```text',
-      '````',
-      '#### 备注',
-      '铜铃响。',
     ].join('\n')
-    expect(textReferenceOf(shots, '镜头 1-1')).toBe('雨夜，修车铺门口。')
-    expect(textReferenceOf(shots, '镜头 1-2')).toBe('```\n阿七推门。\n```text')
-    expect(textReferenceOf(shots, '备注')).toBe('铜铃响。')
+    const shot = (after: string, end: string) =>
+      excerptOf(md, { after, start: '【视频约束】', end })
+    expect(shot('1-1 视频提示词', '门框变形。')).toEqual({
+      ok: true,
+      text: '【视频约束】全片台词说中文普通话。\n【剧本内容】0-4秒：推门。本镜头排除：门框变形。',
+    })
+    expect(shot('镜头1-2｜', '多余手指。')).toEqual({
+      ok: true,
+      text: '【视频约束】全片台词说中文普通话。\n【剧本内容】0-4秒：握手。本镜头排除：多余手指。',
+    })
+    // end 取 start 之后第一次出现处；落在 start 之内时摘录至少为 start。
+    expect(
+      excerptOf(md, { after: '镜头1-2', start: '【剧本内容】0-4秒：握手。', end: '握手' }),
+    ).toEqual({ ok: true, text: '【剧本内容】0-4秒：握手。' })
+    // 文件以 CRLF 保存时，按 LF 书写的跨行锚点同样能找到，发送的文字为 LF。
+    const crlf = md.replaceAll('\n', '\r\n')
+    expect(excerptOf(crlf, { start: '推门。本镜头排除：门框变形。\n```', end: '```' })).toEqual({
+      ok: true,
+      text: '推门。本镜头排除：门框变形。\n```',
+    })
+    expect(excerptOf(`\n${md}\n`)).toEqual({ ok: true, text: md })
   })
 
-  test('标题段落到下一个同级或更高级标题为止；标题列表按出现顺序；引用的文件或标题不存在时报出', () => {
-    expect(textReferenceOf(SCRIPT, '1-1 修车铺')).toBe('阿七推门。')
-    expect(textReferenceOf(SCRIPT, '细节')).toBe('铜铃响。')
-    expect(textReferenceOf(SCRIPT, '1-9')).toBeNull()
-    expect(markdownHeadings(SCRIPT).map((h) => `${h.level}${h.title}`)).toEqual([
-      '1第1集',
-      '21-1 修车铺',
-      '21-2 入梦',
-      '3细节',
-      '21-3 教室',
+  test('摘录无法定位时报出原因：after 缺失或不唯一、未给 after 时 start 不唯一、start 或 end 缺失', () => {
+    const md = '## 1-1\n阿七推门。\n## 1-10\n阿七推门。\n'
+    const error = (after: string | undefined, start: string, end: string) => {
+      const r = excerptOf(md, { ...(after === undefined ? {} : { after }), start, end })
+      return r.ok ? r.text : r.error
+    }
+    expect(error('## 1-9', '阿七', '。')).toBe('文中没有 after 「## 1-9」')
+    expect(error('## 1-1', '阿七', '。')).toBe('after 「## 1-1」 在文中出现 2 次')
+    expect(error('## 1-10', '阿七', '。')).toBe('阿七推门。')
+    expect(error(undefined, '阿七推门', '。')).toBe('start 「阿七推门」 在文中出现 2 次')
+    expect(error('## 1-10', '阿七开门', '。')).toBe('after 之后没有 start 「阿七开门」')
+    expect(error(undefined, '阿七开门', '。')).toBe('文中没有 start 「阿七开门」')
+    expect(error('## 1-10', '阿七', '！')).toBe('start 之后没有 end 「！」')
+  })
+
+  test('失效的引用：摘录卡报出无法定位的原因，生成卡列出引用的失效文本卡', () => {
+    const doc = apply(withScript(), [{ op: 'update', id: 'a3', prompt: '@[制作脚本] @[1-2 段]' }])
+    expect(textReferenceProblems(doc, 'a4', new Map([['a4', SCRIPT]]))).toEqual([])
+    // 文本卡的文件不存在由节点状态表示，卡片本身不重复报出。
+    expect(textReferenceProblems(doc, 'a4', new Map())).toEqual([])
+    const renamed = SCRIPT.replace('## 1-2 入梦', '## 1-2 入睡')
+    const texts = new Map([
+      ['a1', renamed],
+      ['a4', renamed],
     ])
-    const doc = apply(withScript(), [
-      { op: 'update', id: 'a3', prompt: '@[制作脚本#1-9 结尾] @[制作脚本#1-2 入梦]' },
-    ])
-    expect(textReferenceProblems(doc, 'a3', new Map([['a1', SCRIPT]]))).toEqual([
-      '@[制作脚本#1-9 结尾]：文中没有标题「1-9 结尾」',
+    expect(textReferenceProblems(doc, 'a4', texts)).toEqual(['文中没有 after 「## 1-2 入梦」'])
+    expect(textReferenceProblems(doc, 'a3', texts)).toEqual([
+      '@[1-2 段]：文中没有 after 「## 1-2 入梦」',
     ])
     expect(textReferenceProblems(doc, 'a3', new Map())).toEqual([
-      '@[制作脚本#1-9 结尾]：文件不存在',
-      '@[制作脚本#1-2 入梦]：文件不存在',
+      '@[制作脚本]：文件不存在',
+      '@[1-2 段]：文件不存在',
     ])
+    expect(compilePrompt(doc, 'a3', {}, texts)).toBe(`${renamed.trim()} `)
+  })
+
+  test('摘录只用于文本卡，键名与取值逐项核对；update 可改摘录或以 null 改回整篇；摘录卡的框只显示开头', () => {
+    const doc = withScript()
+    const card = doc.nodes.find((n) => n.id === 'a4')!
+    expect([card.w, card.h]).toEqual([220, 64])
+    expect(
+      rejects(doc, [{ op: 'add_file', path: 'a.png', excerpt: { start: 'x', end: 'y' } }]),
+    ).toBe('「a」不是文本卡（.md / .txt），不能摘录')
+    expect(rejects(doc, [{ op: 'update', id: '1-2 段', excerpt: { start: '', end: 'y' } }])).toBe(
+      '「1-2 段」的摘录 start、end、after 不能为空',
+    )
+    expect(rejects(doc, [{ op: 'update', id: '1-2 入梦', excerpt: null }])).toBe('只有文本卡有摘录')
+    const parsed = parseCanvasOps([
+      { op: 'add_file', path: 'a.md', excerpt: { from: '阿七', to: '。' } },
+    ])
+    expect(parsed.ok ? '' : parsed.error).toBe('第 1 条操作 的 excerpt 含有未知字段：from')
+    const whole = apply(doc, [{ op: 'update', id: '1-2 段', excerpt: null }])
+    const node = whole.nodes.find((n) => n.id === 'a4')
+    expect(node?.type === 'file' && node.excerpt).toBeUndefined()
+    const moved = apply(doc, [
+      { op: 'update', id: '1-2 段', excerpt: { start: '空教室', end: '。' } },
+    ])
+    const back = parseCanvas(serializeCanvas(moved))
+    const kept = back.ok ? back.doc.nodes.find((n) => n.id === 'a4') : null
+    expect(kept?.type === 'file' && kept.excerpt).toEqual({ start: '空教室', end: '。' })
   })
 
   test('运行前核对：手写的图片编号与连线数量不一致时报告；以 @[卡片] 引用的素材与正文中的「图片」二字不计入', () => {
@@ -1569,7 +1602,7 @@ describe('画布：文本卡引用', () => {
 
   test('运行前核对：引用展开后的文本仍含 @[…] 时报告', () => {
     const doc = apply(withScript(), [
-      { op: 'update', id: 'a3', prompt: '@[制作脚本#1-2 入梦]' },
+      { op: 'update', id: 'a3', prompt: '@[制作脚本]' },
       { op: 'connect', from: '小满', to: '1-2 入梦', role: 'reference' },
     ])
     const texts = new Map([['a1', '## 1-2 入梦\n@[小满]用于阿七的脸。\n']])
@@ -1580,10 +1613,16 @@ describe('画布：文本卡引用', () => {
     expect(promptInputProblems(doc, 'a3', fixed)).toEqual([])
   })
 
-  test('复制卡片时保留引用的标题', () => {
-    const doc = apply(withScript(), [{ op: 'update', id: 'a3', prompt: '@[制作脚本#1-2 入梦]' }])
-    const copy = apply(doc, copyOps(doc, ['a1', 'a3'], doc, { dx: 0, dy: 500 }, false), ids('c'))
+  test('复制摘录卡时保留摘录，复制的生成卡引用副本', () => {
+    const doc = apply(withScript(), [{ op: 'update', id: 'a3', prompt: '@[1-2 段]' }])
+    const copy = apply(doc, copyOps(doc, ['a4', 'a3'], doc, { dx: 0, dy: 500 }, false), ids('c'))
+    const card = copy.nodes.find((n) => n.type === 'file' && n.id.startsWith('c'))
     const pasted = copy.nodes.find((n) => n.id !== 'a3' && n.type === 'generate')
-    expect(pasted?.type === 'generate' && pasted.prompt).toMatch(/^@\[c\d#1-2 入梦\]$/)
+    expect(card?.type === 'file' && card.excerpt).toEqual({
+      after: '## 1-2 入梦',
+      start: '阿七说',
+      end: '铜铃响。',
+    })
+    expect(pasted?.type === 'generate' && pasted.prompt).toBe(`@[${card?.id}]`)
   })
 })
