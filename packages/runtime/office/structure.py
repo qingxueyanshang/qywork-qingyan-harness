@@ -307,6 +307,45 @@ def _shape_box(shp):
     return (shp.left, shp.top, shp.left + shp.width, shp.top + shp.height)
 
 
+IDENTITY = (1.0, 0.0, 1.0, 0.0)
+
+
+def _kind(shp):
+    return str(shp.shape_type).split(".")[-1].split(" ")[0] if shp.shape_type else "?"
+
+
+def _walk(shapes, tf=IDENTITY, depth=1):
+    """页面上的全部形状，组合逐层展开：(形状, 到页面坐标的换算, 层级)。
+    只看最外层时组内的文本框和图片都看不到：分层重建的胶囊、标签是“图片 + 文本框”的组合，模型读后判定
+    “这些不是文本框，改不了”（精创 P3/P7/P8），组内文字的溢出、遮挡、东亚字体也都没有检查。"""
+    for shp in shapes:
+        yield shp, tf, depth
+        if _kind(shp) == "GROUP":
+            yield from _walk(shp.shapes, _child_transform(shp, tf), depth + 1)
+
+
+def _child_transform(grp, tf):
+    """组内坐标到页面坐标的换算 (ax, bx, ay, by)：页面 x = ax·x + bx。组的 a:xfrm 把子坐标框 chOff/chExt 映射到
+    组在上一层的位置 off/ext；嵌套的组逐层复合。"""
+    xfrm = grp._element.grpSpPr.find(f"{{{A}}}xfrm")
+    parts = [xfrm.find(f"{{{A}}}{t}") if xfrm is not None else None for t in ("off", "ext", "chOff", "chExt")]
+    if any(p is None for p in parts):
+        return tf
+    off, ext, ch_off, ch_ext = parts
+    sx = int(ext.get("cx")) / max(1, int(ch_ext.get("cx")))
+    sy = int(ext.get("cy")) / max(1, int(ch_ext.get("cy")))
+    bx = int(off.get("x")) - sx * int(ch_off.get("x"))
+    by = int(off.get("y")) - sy * int(ch_off.get("y"))
+    return (tf[0] * sx, tf[0] * bx + tf[1], tf[2] * sy, tf[2] * by + tf[3])
+
+
+def _slide_box(shp, tf=IDENTITY):
+    box = _shape_box(shp)
+    if box is None:
+        return None
+    return (tf[0] * box[0] + tf[1], tf[2] * box[1] + tf[3], tf[0] * box[2] + tf[1], tf[2] * box[3] + tf[3])
+
+
 def _comments(slide):
     return any(rel.reltype.endswith("/comments") for rel in slide.part.rels.values())
 
@@ -360,17 +399,17 @@ def _first_size(tf):
     return DEFAULT_FONT_SIZE
 
 
-def _frame(shp):
-    """文本框的 bodyPr 与去除内边距后的可用宽高。"""
+def _frame(shp, tf=IDENTITY):
+    """文本框的 bodyPr 与去除内边距后的可用宽高（组合缩放后页面上的尺寸）。"""
     body = shp.text_frame._txBody.find(f"{{{A}}}bodyPr")
     get = (lambda k, d: int(body.get(k, d))) if body is not None else (lambda k, d: d)
     left, right, top, bottom = get("lIns", 91440), get("rIns", 91440), get("tIns", 45720), get("bIns", 45720)
-    return body, left, top, shp.width - left - right, shp.height - top - bottom
+    return body, left, top, shp.width * tf[0] - left - right, shp.height * tf[2] - top - bottom
 
 
-def _overflow(shp):
+def _overflow(shp, tf=IDENTITY):
     """文本框关闭自动调整且开启换行时，估算文字高度超出框高 20% 以上即判定为疑似溢出。"""
-    body, _, _, width, height = _frame(shp)
+    body, _, _, width, height = _frame(shp, tf)
     if body is None or body.get("wrap") == "none":
         return None
     if body.find(f"{{{A}}}normAutofit") is not None or body.find(f"{{{A}}}spAutofit") is not None:
@@ -380,15 +419,15 @@ def _overflow(shp):
     return need if height > 0 and need > height * 1.2 else None
 
 
-def _text_extent(shp):
-    """文字实际占据的区域：按估算的宽高、段落对齐与垂直锚点放入文本框。旋转的形状使用外框。
+def _text_extent(shp, tf=IDENTITY):
+    """文字实际占据的区域（页面坐标）：按估算的宽高、段落对齐与垂直锚点放入文本框。旋转的形状使用外框。
 
     遮挡按该区域判定，不要改为按外框判定：外框通常比文字大得多，排版正常的成品也会报告上百条。
     """
-    box = _shape_box(shp)
+    box = _slide_box(shp, tf)
     if box is None or shp.rotation:
         return box
-    body, left, top, width, height = _frame(shp)
+    body, left, top, width, height = _frame(shp, tf)
     if width <= 0 or height <= 0:
         return box
     unwrapped = body is not None and body.get("wrap") == "none"
@@ -396,8 +435,8 @@ def _text_extent(shp):
     h -= _first_size(shp.text_frame) * 127 * 0.2
     align = str(shp.text_frame.paragraphs[0].alignment or "")
     anchor = body.get("anchor", "t") if body is not None else "t"
-    x = shp.left + left + ((width - w) / 2 if "CENTER" in align else width - w if "RIGHT" in align else 0)
-    y = shp.top + top + ((height - h) / 2 if anchor == "ctr" else height - h if anchor == "b" else 0)
+    x = box[0] + left + ((width - w) / 2 if "CENTER" in align else width - w if "RIGHT" in align else 0)
+    y = box[1] + top + ((height - h) / 2 if anchor == "ctr" else height - h if anchor == "b" else 0)
     return (x, y, x + w, y + h)
 
 
@@ -412,20 +451,20 @@ def check_pptx(path):
     no_ea = []
     for i, slide in enumerate(prs.slides, 1):
         texts = []
-        for shp in slide.shapes:
+        for shp, tf, _ in _walk(slide.shapes):
             if shp.has_text_frame and shp.text_frame.text.strip():
-                need = _overflow(shp)
+                need = _overflow(shp, tf)
                 if need:
                     checks.append({"level": "warning", "code": "text_overflow",
                                    "message": f"第 {i} 页「{shp.name}」的文字估计需要 {_cm(need)} cm 高，"
-                                              f"文本框只有 {_cm(shp.height)} cm，疑似溢出，需查看页面确认"})
+                                              f"文本框只有 {_cm(shp.height * tf[2])} cm，疑似溢出，需查看页面确认"})
                 if not theme_ea:
                     for p in shp.text_frame._txBody.iter(f"{{{A}}}p"):
                         if any(CJK.search(r.findtext(f"{{{A}}}t") or "") and not _run_has_ea(r, p)
                                for r in p.iter(f"{{{A}}}r")):
                             no_ea.append(f"第 {i} 页「{shp.name}」")
                             break
-            box = _shape_box(shp)
+            box = _slide_box(shp, tf)
             if box and (box[0] < -tol or box[1] < -tol or box[2] > sw + tol or box[3] > sh + tol):
                 checks.append({"level": "warning", "code": "off_slide",
                                "message": f"第 {i} 页「{shp.name}」超出页面范围"})
@@ -433,7 +472,7 @@ def check_pptx(path):
                 checks.append({"level": "info", "code": "empty_placeholder",
                                "message": f"第 {i} 页占位符「{shp.name}」为空"})
             if box and shp.has_text_frame and shp.text_frame.text.strip():
-                texts.append((shp.name, _text_extent(shp)))
+                texts.append((shp.name, _text_extent(shp, tf)))
         for a in range(len(texts)):
             for b in range(a + 1, len(texts)):
                 (na, ba), (nb, bb) = texts[a], texts[b]
@@ -459,21 +498,6 @@ def check_pptx(path):
     return checks
 
 
-def _child_transform(grp, tf):
-    """组内坐标到页面坐标的换算 (ax, bx, ay, by)：页面 x = ax·x + bx。组的 a:xfrm 把子坐标框 chOff/chExt 映射到
-    组在上一层的位置 off/ext；嵌套的组逐层复合。"""
-    xfrm = grp._element.grpSpPr.find(f"{{{A}}}xfrm")
-    parts = [xfrm.find(f"{{{A}}}{t}") if xfrm is not None else None for t in ("off", "ext", "chOff", "chExt")]
-    if any(p is None for p in parts):
-        return tf
-    off, ext, ch_off, ch_ext = parts
-    sx = int(ext.get("cx")) / max(1, int(ch_ext.get("cx")))
-    sy = int(ext.get("cy")) / max(1, int(ch_ext.get("cy")))
-    bx = int(off.get("x")) - sx * int(ch_off.get("x"))
-    by = int(off.get("y")) - sy * int(ch_off.get("y"))
-    return (tf[0] * sx, tf[0] * bx + tf[1], tf[2] * sy, tf[2] * by + tf[3])
-
-
 def _picture_info(shp):
     """图片在包里的部件名与像素尺寸，替换图片时按它定位。链接的外部图片没有包内部件，返回空。"""
     try:
@@ -482,38 +506,6 @@ def _picture_info(shp):
         return f"图片 {str(part.partname).lstrip('/')} {w}×{h} px"
     except (AttributeError, KeyError, ValueError):
         return ""
-
-
-def _list_shapes(shapes, lines, depth, tf):
-    """逐个列出形状；组合逐层展开，组内形状缩进列出，位置换算为页面坐标。
-    只列组合本身时组内的文本框和图片都看不到：分层重建的胶囊、标签是“图片 + 文本框”的组合，
-    模型读后判定“这些不是文本框，改不了”（精创 P3/P7/P8）。"""
-    for shp in shapes:
-        kind = str(shp.shape_type).split(".")[-1].split(" ")[0] if shp.shape_type else "?"
-        pos = ""
-        box = _shape_box(shp)
-        if box:
-            x0, y0 = tf[0] * box[0] + tf[1], tf[2] * box[1] + tf[3]
-            x1, y1 = tf[0] * box[2] + tf[1], tf[2] * box[3] + tf[3]
-            pos = f" @({_cm(x0)},{_cm(y0)}) {_cm(x1 - x0)}×{_cm(y1 - y0)} cm"
-        extra = []
-        if shp.is_placeholder:
-            extra.append(f"占位符 {shp.placeholder_format.type}")
-        if getattr(shp, "has_chart", False) and shp.has_chart:
-            ch = shp.chart
-            extra.append(f"图表 {ch.chart_type} · {sum(len(p.series) for p in ch.plots)} 个系列")
-        if getattr(shp, "has_table", False) and shp.has_table:
-            t = shp.table
-            extra.append(f"表格 {len(t.rows)}×{len(t.columns)}")
-        if kind == "GROUP":
-            extra.append(f"组合 {len(shp.shapes)} 个，组内形状缩进列在下面")
-        if kind == "PICTURE" and _picture_info(shp):
-            extra.append(_picture_info(shp))
-        text = _clip(shp.text_frame.text, 200) if shp.has_text_frame else ""
-        lines.append(f"{'  ' * depth}- #{shp.shape_id}「{shp.name}」{kind}{pos}"
-                     + (f"〔{'，'.join(extra)}〕" if extra else "") + (f"：{text}" if text else ""))
-        if kind == "GROUP":
-            _list_shapes(shp.shapes, lines, depth + 1, _child_transform(shp, tf))
 
 
 def read_pptx(path, rng=None):
@@ -526,7 +518,26 @@ def read_pptx(path, rng=None):
         if window and not (window[0] <= i <= window[1]):
             continue
         lines.append(f"[第{i}页] 版式「{slide.slide_layout.name}」")
-        _list_shapes(slide.shapes, lines, 1, (1.0, 0.0, 1.0, 0.0))
+        for shp, tf, depth in _walk(slide.shapes):
+            kind = _kind(shp)
+            box = _slide_box(shp, tf)
+            pos = f" @({_cm(box[0])},{_cm(box[1])}) {_cm(box[2] - box[0])}×{_cm(box[3] - box[1])} cm" if box else ""
+            extra = []
+            if shp.is_placeholder:
+                extra.append(f"占位符 {shp.placeholder_format.type}")
+            if getattr(shp, "has_chart", False) and shp.has_chart:
+                ch = shp.chart
+                extra.append(f"图表 {ch.chart_type} · {sum(len(p.series) for p in ch.plots)} 个系列")
+            if getattr(shp, "has_table", False) and shp.has_table:
+                t = shp.table
+                extra.append(f"表格 {len(t.rows)}×{len(t.columns)}")
+            if kind == "GROUP":
+                extra.append(f"组合 {len(shp.shapes)} 个，组内形状缩进列在下面")
+            if kind == "PICTURE" and _picture_info(shp):
+                extra.append(_picture_info(shp))
+            text = _clip(shp.text_frame.text, 200) if shp.has_text_frame else ""
+            lines.append(f"{'  ' * depth}- #{shp.shape_id}「{shp.name}」{kind}{pos}"
+                         + (f"〔{'，'.join(extra)}〕" if extra else "") + (f"：{text}" if text else ""))
         if slide.has_notes_slide and slide.notes_slide.notes_text_frame.text.strip():
             lines.append(f"  备注：{_clip(slide.notes_slide.notes_text_frame.text)}")
         if _comments(slide):

@@ -133,6 +133,9 @@ class PptxTest(unittest.TestCase):
             line = next(x for x in text.splitlines() if "种质库" in x)
             self.assertTrue(line.startswith("      - "), line)          # 第二层组内：缩进三级
             self.assertIn("@(5.59,3.05)", line)                         # (1.2 in + 1 in, 1.2 in)
+            # 组内文字同样检查：中文没有东亚字体
+            ea = [c["message"] for c in structure.check_pptx(d / "a.pptx") if c["code"] == "east_asia_font_missing"]
+            self.assertTrue(ea and label.name in ea[0], ea)
 
 
     def test_text_overflow_and_east_asia_font(self):
