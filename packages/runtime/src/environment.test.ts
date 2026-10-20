@@ -3,16 +3,16 @@
  *
  * 原始失败形状：模型按 `import faster_whisper` 与 `ffmpeg -version` 失败断定没有能力，而 faster-whisper
  * 已由此前的会话装在 `.tmp/asr`、ffmpeg 由 imageio-ffmpeg 提供；同一个包在三个目录各装一次，
- * 同一个模型下载四次。说明中必须出现这些已有的包、ffmpeg 路径与模型位置。
+ * 同一个模型下载四次。说明中必须出现这些已有的包、ffmpeg 路径与模型位置，并按权限模式写明包可以装入的位置。
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import { statSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { QyConfig } from './config.ts'
-import { describeEnvironment, ensureWorkspacePython } from './environment.ts'
+import { describeEnvironment, ensureWorkspacePython, workspacePythonReady } from './environment.ts'
 import { findPython } from './office.ts'
 
 const WIN = process.platform === 'win32'
@@ -88,11 +88,13 @@ describe('运行环境', () => {
       : join(f.ws, '.tmp', 'python', 'lib', 'python3.12', 'site-packages')
     await distInfo(venvSite, 'pyjokes-0.8.3', true)
 
-    const text = await describeEnvironment(f.ws, f.python, null)
+    const text = await describeEnvironment(f.ws, f.python, null, 'auto')
     const lines = text.split('\n')
     expect(lines[0]).toBe('## 运行环境（本轮开始时读取本机目录）')
-    expect(lines[1]).toStartWith('- Python 3.12.10：命令中的 python 为工作区环境 .tmp/python')
-    expect(lines[1]).toContain('安装包优先用 python -m pip install <包>')
+    expect(lines[1]).toStartWith(
+      '- Python 3.12.10：auto 模式下包只能装入工作区环境 .tmp/python，命令中的 python 与 pip 即该环境',
+    )
+    expect(lines[1]).toEndWith('全局环境不可写入。')
     expect(text).toContain('- 已安装的包（主动安装的 1 个，不含依赖）：numpy\n')
     expect(text).toContain('- 工作区环境中的包：pyjokes\n')
     expect(text).toContain(
@@ -103,31 +105,47 @@ describe('运行环境', () => {
     expect(text).toContain('Systran/faster-whisper-base（.tmp/asr-models）')
     expect(text).toContain('Systran/faster-whisper-small（.tmp/asr-cache、.tmp/models/whisper）')
     expect(text).toContain(`Systran/faster-whisper-medium（${f.hub}）`)
-    expect(text).toEndWith('新下载的模型放在 .tmp/models 下。')
+    expect(text).toEndWith('auto 模式下新下载的模型放在 .tmp/models 下。')
     expect(text).not.toContain('six')
     expect(text).not.toContain('ctranslate2')
+
+    // 完全访问模式写明全局与工作区两处均可，不替模型选择；已有的工作区环境给出其解释器。
+    const full = await describeEnvironment(f.ws, f.python, null, 'full')
+    const venvPython = WIN ? '.tmp/python/Scripts/python.exe' : '.tmp/python/bin/python'
+    expect(full).toContain(
+      `- Python：${f.python}。完全访问模式下包可以装入全局环境（命令中的 python 与 pip 即该解释器，所有工作区共用），` +
+        `也可以装入工作区环境 .tmp/python（继承全局的全部包，只在本工作区生效；已存在，以 ${venvPython} 运行）。`,
+    )
+    expect(full).toContain('- 工作区环境中的包：pyjokes\n')
+    expect(full).toEndWith(`新下载的模型可以放在全局缓存 ${f.hub}，也可以放在 .tmp/models 下。`)
+    expect(full).not.toContain('不可写入')
   })
 
-  test('没有 Python 时写明未找到；工作区环境创建失败时写明原因，命令中的 python 为基础解释器', async () => {
+  test('没有 Python 时写明未找到；工作区环境创建失败时写明原因；完全访问模式下没有工作区环境时写明创建方法', async () => {
     const f = await fixture()
-    expect(await describeEnvironment(f.ws, null, null)).toContain('- Python：未找到。')
-    const failed = await describeEnvironment(f.ws, f.python, 'Error: [WinError 5] 拒绝访问')
+    expect(await describeEnvironment(f.ws, null, null, 'auto')).toContain('- Python：未找到。')
+    const failed = await describeEnvironment(f.ws, f.python, 'Error: [WinError 5] 拒绝访问', 'auto')
     expect(failed).toContain(
-      `- Python：${f.python}。工作区环境 .tmp/python 创建失败（Error: [WinError 5] 拒绝访问），命令中的 python 为该解释器。`,
+      `- Python：${f.python}。工作区环境 .tmp/python 创建失败（Error: [WinError 5] 拒绝访问），` +
+        'auto 模式下无法安装 Python 包；命令中的 python 为该解释器。',
+    )
+    expect(await describeEnvironment(f.ws, f.python, null, 'full')).toContain(
+      '以 python -m venv --system-site-packages .tmp/python 创建）。',
     )
   })
 
   const python = findPython({ providers: {} } as unknown as QyConfig)
   test.skipIf(!python)(
-    '首次创建工作区 Python 环境并继承基础解释器的包；已存在时不改动；基础解释器目录不存在时原地升级',
+    '首次创建工作区 Python 环境并继承基础解释器的包，单独的 pip 装入本环境；已存在时不改动；缺少 pip 启动脚本时补写；基础解释器目录不存在时原地升级',
     async () => {
       const root = await mkdtemp(join(tmpdir(), 'qy-venv-'))
       expect(await ensureWorkspacePython(root, python!)).toBeNull()
+      expect(workspacePythonReady(root)).toBe(true)
       const dir = join(root, '.tmp', 'python')
-      const exe = join(dir, WIN ? 'Scripts' : 'bin', WIN ? 'python.exe' : 'python')
+      const bin = join(dir, WIN ? 'Scripts' : 'bin')
       const proc = Bun.spawn(
         [
-          exe,
+          join(bin, WIN ? 'python.exe' : 'python'),
           '-c',
           'import sys, site; print(sys.prefix != sys.base_prefix, site.ENABLE_USER_SITE)',
         ],
@@ -135,15 +153,45 @@ describe('运行环境', () => {
       )
       expect((await new Response(proc.stdout).text()).trim()).toBe('True True')
 
+      // 单独的 pip 经启动脚本以本环境的解释器运行：本环境中的包对它可见，即装入的位置是本环境。
+      const lib = join(dir, WIN ? 'Lib' : 'lib')
+      const site = WIN
+        ? join(lib, 'site-packages')
+        : join(lib, (await readdir(lib))[0]!, 'site-packages')
+      await mkdir(join(site, 'qyfake-0.0.1.dist-info'), { recursive: true })
+      await writeFile(
+        join(site, 'qyfake-0.0.1.dist-info', 'METADATA'),
+        'Metadata-Version: 2.1\nName: qyfake\nVersion: 0.0.1\n',
+      )
+      const runs = WIN
+        ? [
+            ['cmd.exe', '/d', '/c', join(bin, 'pip.cmd')],
+            ...(Bun.which('bash') ? [['bash', join(bin, 'pip')]] : []),
+          ]
+        : [[join(bin, 'pip')]]
+      for (const run of runs) {
+        const show = Bun.spawn([...run, 'show', 'qyfake'], { stdout: 'pipe', stderr: 'ignore' })
+        expect(await new Response(show.stdout).text()).toContain(`Location: ${site}`)
+      }
+
       const cfg = join(dir, 'pyvenv.cfg')
       const written = await readFile(cfg, 'utf8')
       const mtime = statSync(cfg).mtimeMs
       expect(await ensureWorkspacePython(root, python!)).toBeNull()
       expect(statSync(cfg).mtimeMs).toBe(mtime)
 
+      // 没有启动脚本的环境（命令中单独的 pip 会落到全局）：补写，不重建环境。
+      await rm(join(bin, 'pip'))
+      expect(workspacePythonReady(root)).toBe(false)
+      expect(await ensureWorkspacePython(root, python!)).toBeNull()
+      expect(workspacePythonReady(root)).toBe(true)
+      expect(statSync(cfg).mtimeMs).toBe(mtime)
+
       await writeFile(cfg, written.replace(/^home = .*$/m, `home = ${join(root, '已卸载')}`))
       expect(await ensureWorkspacePython(root, python!)).toBeNull()
       expect(await readFile(cfg, 'utf8')).toContain(written.match(/^home = .*$/m)![0])
     },
+    // 启动 Python 与 pip 共五次，负载高时单次可达数秒。
+    30_000,
   )
 })
