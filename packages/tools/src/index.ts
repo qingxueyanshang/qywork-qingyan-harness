@@ -35,7 +35,16 @@ export {
   TASK_SUFFIX,
 } from './generate.ts'
 // 画布按图片文件头的宽高确定节点尺寸。
-export { type ImageSize, imageSizeOf, shrinkImage } from './image.ts'
+export {
+  downscaleNote,
+  type ImageRegion,
+  type ImageSize,
+  imageSizeOf,
+  shrinkImage,
+  ZOOM_MAX,
+  type ZoomedImage,
+  zoomImage,
+} from './image.ts'
 // 记忆：runtime/session.ts 装配提示词时读取索引，server/api/memory.ts 读写单条记忆
 export {
   listAllScopedEntries,

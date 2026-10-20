@@ -21,7 +21,7 @@ import {
 import { MEDIA_TOKENS } from '@qywork/ai'
 import type { FileChange } from '@qywork/core'
 import { readHashes } from './files.ts'
-import { shrinkImage } from './image.ts'
+import { downscaleNote, imageSizeOf, shrinkImage, zoomImage } from './image.ts'
 import {
   noResponse,
   READ_TIMEOUT_MS,
@@ -236,18 +236,35 @@ async function view(ctx: ToolContext, port: OfficePort, args: Record<string, unk
     return { status: 'failure' as const, message: res.message + stageNote(res) + residueNote(res) }
   }
   const images: { data: string; mime: string }[] = []
+  const labels: string[] = []
+  let note = ''
   for (const img of res.images) {
     const raw = new Uint8Array(await readFile(img.path))
-    const fit = await shrinkImage(raw, 'image/png')
+    /*
+     * 局部图放大到长边 MAX_EDGE（至多 ZOOM_MAX 倍）：worker 从原始渲染图裁出局部，区域小时只有
+     * 一两百像素宽，原样发送与在整页缩小图上看没有区别。整页图缩小发送时写明尺寸，提示用 region。
+     */
+    const zoom = region
+      ? await zoomImage(raw, { left: 0, top: 0, width: 1, height: 1 }).catch(() => null)
+      : null
+    const fit = zoom ?? (await shrinkImage(raw, 'image/png'))
+    if (zoom && zoom.scale > 1.01) labels.push(`${img.label}（放大 ${zoom.scale.toFixed(1)} 倍）`)
+    else labels.push(img.label)
+    if (!region && !note)
+      note = downscaleNote(imageSizeOf(raw), imageSizeOf(fit.bytes), 'view_office')
     // 余量不足以容纳一张图片时仍然投递，超出部分由下一次发送前的压缩回收（与 read_file 相同）。
     if (!chargeBatchBudget(ctx, MEDIA_TOKENS).ok) recordBatchSpent(ctx, MEDIA_TOKENS)
     images.push({ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime })
   }
   await releaseCall(run)
-  const labels = res.images.map((i) => i.label).join('、')
   return {
     status: 'success' as const,
-    message: `${displayPath(ctx.workspaceRoot, abs)}（sha256 ${request.expected_sha256.slice(0, 12)}）：${labels}${residueNote(res)}`,
+    message: `${displayPath(ctx.workspaceRoot, abs)}（sha256 ${request.expected_sha256.slice(0, 12)}）：${labels.join('、')}${
+      note
+        ? `
+整页${note.slice(1)}`
+        : ''
+    }${residueNote(res)}`,
     data: { images },
   }
 }
@@ -402,7 +419,9 @@ export const viewOfficeTool: ToolSpec = {
         },
         required: ['left', 'top', 'width', 'height'],
         additionalProperties: false,
-        description: '可选，按页面比例（0 到 1）指定局部区域，从原始渲染图裁剪',
+        description:
+          '可选，按页面比例（0 到 1）指定局部区域，从原始渲染图裁剪并放大到长边 1568（至多 4 倍）。' +
+          '整页图缩小发送，细线、描边、残影、小字要用它放大后再判断',
       },
     },
     required: ['path'],

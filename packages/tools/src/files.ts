@@ -30,7 +30,14 @@ import type { FileChange } from '@qywork/core'
 import { isInlineImage, isInlineVideo, mimeOf } from '@qywork/core'
 import { badIntMessage, intArg } from './args.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
-import { shrinkImage } from './image.ts'
+import {
+  downscaleNote,
+  type ImageRegion,
+  imageSizeOf,
+  shrinkImage,
+  type ZoomedImage,
+  zoomImage,
+} from './image.ts'
 import { readVideoFrames } from './office-worker.ts'
 import {
   displayPath,
@@ -309,10 +316,43 @@ async function readVideo(
   }
 }
 
+/**
+ * `region` 参数：按比例给出的局部，与 `view_office` 的 region 同义。未提供时为 null，不合法时返回说明。
+ *
+ * 不合法时拒绝而不是改读整图：模型要查看的是局部细节，不经说明改为整图会使它把看不清的细节判为不存在。
+ */
+function regionArg(v: unknown): ImageRegion | null | string {
+  if (v === undefined || v === null) return null
+  if (typeof v !== 'object') return 'region 应为 {left, top, width, height}，取值 0 到 1'
+  const r = v as Record<string, unknown>
+  const out = {
+    left: Number(r.left),
+    top: Number(r.top),
+    width: Number(r.width),
+    height: Number(r.height),
+  }
+  if (!Object.values(out).every(Number.isFinite)) {
+    return 'region 应为 {left, top, width, height}，取值 0 到 1'
+  }
+  if (
+    out.width <= 0 ||
+    out.height <= 0 ||
+    out.left < 0 ||
+    out.top < 0 ||
+    out.left >= 1 ||
+    out.top >= 1
+  ) {
+    return 'region 的 left/top 应在 0 到 1 之间，width/height 应大于 0'
+  }
+  return out
+}
+
 export const readFileTool: ToolSpec = {
   name: 'read_file',
   description:
-    '读取工作区内一个文件。文本返回带行号的正文；PNG/JPG/GIF/WebP 作为图片返回；' +
+    '读取工作区内一个文件。文本返回带行号的正文；PNG/JPG/GIF/WebP 作为图片返回，' +
+    '长边超过 1568 的图片缩小后发送，回执写明原图与发送尺寸；缩小后细线、描边、残影、小字看不清，' +
+    '要判断这类细节（含用户截图里圈出的位置）时用 region 按比例截取局部，从原图截取并放大发送；' +
     'MP4/MOV/WebM/MKV 在当前模型支持视频输入时作为视频返回，否则按时间抽取若干帧作为图片返回，' +
     '回执写明已看到的时间点与未看到的区间，start/end（秒）指定续读区间；' +
     'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配；没有文字层时返回失败）。' +
@@ -327,6 +367,19 @@ export const readFileTool: ToolSpec = {
       limit: { type: 'integer', description: '最多读取行数，默认读取到文件末尾' },
       start: { type: 'number', description: '视频抽帧区间的起点（秒），默认从开头。只对视频有效' },
       end: { type: 'number', description: '视频抽帧区间的终点（秒），默认到结尾。只对视频有效' },
+      region: {
+        type: 'object',
+        properties: {
+          left: { type: 'number' },
+          top: { type: 'number' },
+          width: { type: 'number' },
+          height: { type: 'number' },
+        },
+        required: ['left', 'top', 'width', 'height'],
+        additionalProperties: false,
+        description:
+          '只对图片有效。按图片宽高的比例（0 到 1）指定局部，从原图截取后放大到长边 1568（至多 4 倍）发送',
+      },
     },
     required: ['path'],
     additionalProperties: false,
@@ -354,6 +407,18 @@ export const readFileTool: ToolSpec = {
      */
     // PDF 提取缓存的键：文件修改后即为另一份内容，缓存不会命中。
     const fingerprint = `${Math.trunc(info.mtimeMs)}:${info.size}`
+    const region = regionArg(args.region)
+    if (typeof region === 'string') {
+      return { status: 'failure', executed: false, message: region, errorKind: 'invalid_args' }
+    }
+    if (region && !isInlineImage(abs)) {
+      return {
+        status: 'failure',
+        executed: false,
+        message: `region 只对图片有效，${displayPath(ctx.workspaceRoot, abs)} 不是图片`,
+        errorKind: 'invalid_args',
+      }
+    }
     if (isInlineImage(abs)) {
       /*
        * 当前模型不接受图片：在读取字节之前即拒绝，并完整说明原因。
@@ -399,12 +464,29 @@ export const readFileTool: ToolSpec = {
        * 一张 1440×900 的网页截图重编码后体积增大到 2.4 倍（实测，见 `image.ts`）。
        */
       const raw = new Uint8Array(await readFile(abs))
+      const shown = displayPath(ctx.workspaceRoot, abs)
+      if (region) {
+        let zoom: ZoomedImage
+        try {
+          zoom = await zoomImage(raw, region)
+        } catch {
+          return { status: 'failure', message: `${shown} 无法解码，不能截取局部` }
+        }
+        const { box, source, size } = zoom
+        return {
+          status: 'success',
+          message:
+            `读取 ${shown} 的局部（原图 ${source.width}×${source.height}，` +
+            `截取 x ${box.x}–${box.x + box.width}、y ${box.y}–${box.y + box.height}，` +
+            `${zoom.scale > 1.01 ? `放大 ${zoom.scale.toFixed(1)} 倍` : zoom.scale < 0.99 ? `缩小到 ${zoom.scale.toFixed(2)} 倍` : '原尺寸'}发送为 ${size.width}×${size.height}）`,
+          data: { images: [{ data: Buffer.from(zoom.bytes).toString('base64'), mime: zoom.mime }] },
+        }
+      }
       const fit = await shrinkImage(raw, mimeOf(abs))
       const shrunk = { data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime }
-      const note = fit.bytes.length < raw.length ? '，已缩放' : ''
       return {
         status: 'success',
-        message: `读取 ${displayPath(ctx.workspaceRoot, abs)}（图片${note}）`,
+        message: `读取 ${shown}（图片${downscaleNote(imageSizeOf(raw), imageSizeOf(fit.bytes))}）`,
         /*
          * 字节在读取时固定保存，不返回路径。
          *

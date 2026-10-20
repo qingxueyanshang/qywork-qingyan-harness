@@ -1907,6 +1907,83 @@ describe('read_file 识别图片', () => {
     expect(typeof (out.data as { images?: { data: string }[] }).images?.[0]?.data).toBe('string')
   })
 
+  /** 一张纯白 PNG，指定位置画一块黑：缩放与截取的结果按像素核对。 */
+  async function canvasPng(width: number, height: number, mark?: [number, number, number, number]) {
+    const photon = await import('@silvia-odwyer/photon-node')
+    const px = new Uint8Array(width * height * 4).fill(255)
+    if (mark) {
+      const [x0, y0, x1, y1] = mark
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) px.fill(0, (y * width + x) * 4, (y * width + x) * 4 + 3)
+      }
+    }
+    return Buffer.from(new photon.PhotonImage(px, width, height).get_bytes())
+  }
+
+  /**
+   * 缩小发送时回执写明原图与发送尺寸，并指出 region。
+   *
+   * 实测缩小后模型把看不清的白边判为「干净」：不说明它看到的是缩小图，它不会去截取局部。
+   */
+  test('长边超过上限的图片：回执写明原图与发送尺寸并指出 region', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-img-big-'))
+    await writeFile(join(root, 'shot.png'), await canvasPng(3000, 1000))
+    const out = await registry().execute('read_file', { path: 'shot.png' }, ctx(root))
+    expect(out.status).toBe('success')
+    expect(out.message).toContain('原图 3000×1000，缩小为 1568×523 发送')
+    expect(out.message).toContain('region')
+
+    // 在上限内的图片原样发送，回执不提缩小。
+    await writeFile(join(root, 'small.png'), await canvasPng(800, 600))
+    const small = await registry().execute('read_file', { path: 'small.png' }, ctx(root))
+    expect(small.message).toBe('读取 small.png（图片）')
+  })
+
+  /** region 从原图截取，不从缩小图截取，并放大到长边 1568（至多 4 倍）。 */
+  test('region 从原图截取并放大，回执写明截取范围与倍数', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-img-zoom-'))
+    await writeFile(join(root, 'shot.png'), await canvasPng(3000, 1000, [1500, 500, 1510, 502]))
+    const out = await registry().execute(
+      'read_file',
+      { path: 'shot.png', region: { left: 0.5, top: 0.5, width: 0.1, height: 0.1 } },
+      ctx(root),
+    )
+    expect(out.status).toBe('success')
+    expect(out.message).toContain('截取 x 1500–1800、y 500–600')
+    expect(out.message).toContain('放大 4.0 倍发送为 1200×400')
+    const img = (out.data as { images: { data: string; mime: string }[] }).images[0]!
+    const photon = await import('@silvia-odwyer/photon-node')
+    const got = photon.PhotonImage.new_from_byteslice(Buffer.from(img.data, 'base64'))
+    expect([got.get_width(), got.get_height()]).toEqual([1200, 400])
+    // 原图 10×2 的黑块放大 4 倍后约 40×8，位于左上角：截取的是原图像素。
+    const px = got.get_raw_pixels()
+    const dark = (x: number, y: number) => px[(y * 1200 + x) * 4]! < 128
+    expect(dark(20, 4)).toBe(true)
+    expect(dark(60, 4)).toBe(false)
+    expect(dark(20, 12)).toBe(false)
+  })
+
+  /** 不合法的 region 与用在非图片上都拒绝：不经说明改读整图会使模型把看不清的细节判为不存在。 */
+  test('region 不合法或用在非图片上：拒绝并说明', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-img-region-'))
+    await writeFile(join(root, 'a.png'), PNG)
+    await writeFile(join(root, 'a.txt'), 'x')
+    const bad = await registry().execute(
+      'read_file',
+      { path: 'a.png', region: { left: 1.2, top: 0, width: 0.1, height: 0.1 } },
+      ctx(root),
+    )
+    expect(bad.status).toBe('failure')
+    expect(bad.message).toContain('region')
+    const text = await registry().execute(
+      'read_file',
+      { path: 'a.txt', region: { left: 0, top: 0, width: 0.5, height: 0.5 } },
+      ctx(root),
+    )
+    expect(text.status).toBe('failure')
+    expect(text.message).toContain('只对图片有效')
+  })
+
   /**
    * 读取图片之后必须能够覆盖写入。
    *
