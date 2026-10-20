@@ -22,6 +22,7 @@ const SERIES_006_720 = '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)'
 const SERIES_006_480 = '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)'
 const MODEL = 'seedance2.5-V'
 const SERIES_007 = '007系列/sd2.5(30图10音/4-30秒/720P)'
+const SERIES_X = 'X-SD25-301010'
 const HIGH_QUALITY = '高质量sd2.5/(全参原生过真人速度快720P)'
 const REMOVED_UPSCALED = '全能sd2.5(满血内置过脸30图超分1080P)'
 const REMOVED_FULL_REFERENCE = 'sd-25-30/10/1-1'
@@ -255,38 +256,41 @@ test.each<MediaInputRole>(['video', 'audio', 'first_frame', 'last_frame'])(
   },
 )
 
-test('参考图直接上传到 mumu，原图字节、凭证和输入顺序保持一致', async () => {
-  const inputs = [PNG, new Uint8Array([...PNG, 2])].map((bytes, i) => ({
-    role: 'reference' as const,
-    bytes,
-    mime: 'image/png',
-    path: `/reference-${i}.png`,
-  }))
-  const result = await makeMediaPort(config()).generate(
-    call({
-      inputs,
-      params: { seconds: '30' },
-      onSubmit: () => {
-        expect(seen.map((entry) => entry.method)).toEqual(['PUT', 'PUT'])
-      },
-    }),
-    signal(),
-  )
-  expect(result).toMatchObject({ ok: true, files: [{ bytes: MP4 }] })
-  expect(seen.slice(0, 2).map((entry) => entry.body)).toEqual(inputs.map((input) => input.bytes))
-  expect(seen.slice(0, 2).every((entry) => entry.contentType === 'image/png')).toBe(true)
-  expect(seen[2]?.body).toEqual({
-    model: MODEL,
-    prompt: PROMPT,
-    seconds: '30',
-    size: '1280x720',
-    images: inputs.map((input) => {
-      const digest = createHash('sha256').update(input.bytes).digest('hex')
-      return `http://127.0.0.1:${server.port}/v1/studio/assets/studioasset_${'a'.repeat(64)}_${digest}/artifacts/source/content?signature=test`
-    }),
-  })
-  expect(seen.every((entry) => entry.auth === 'Bearer test-only-key')).toBe(true)
-})
+test.each([MODEL, SERIES_X])(
+  '参考图直接上传到 mumu，原图字节、凭证和输入顺序保持一致：%s',
+  async (model) => {
+    const inputs = [PNG, new Uint8Array([...PNG, 2])].map((bytes, i) => ({
+      role: 'reference' as const,
+      bytes,
+      mime: 'image/png',
+      path: `/reference-${i}.png`,
+    }))
+    const result = await makeMediaPort(config(model)).generate(
+      call({
+        inputs,
+        params: { seconds: '30' },
+        onSubmit: () => {
+          expect(seen.map((entry) => entry.method)).toEqual(['PUT', 'PUT'])
+        },
+      }),
+      signal(),
+    )
+    expect(result).toMatchObject({ ok: true, files: [{ bytes: MP4 }] })
+    expect(seen.slice(0, 2).map((entry) => entry.body)).toEqual(inputs.map((input) => input.bytes))
+    expect(seen.slice(0, 2).every((entry) => entry.contentType === 'image/png')).toBe(true)
+    expect(seen[2]?.body).toEqual({
+      model,
+      prompt: PROMPT,
+      seconds: '30',
+      size: '1280x720',
+      images: inputs.map((input) => {
+        const digest = createHash('sha256').update(input.bytes).digest('hex')
+        return `http://127.0.0.1:${server.port}/v1/studio/assets/studioasset_${'a'.repeat(64)}_${digest}/artifacts/source/content?signature=test`
+      }),
+    })
+    expect(seen.every((entry) => entry.auth === 'Bearer test-only-key')).toBe(true)
+  },
+)
 
 test.each([
   'http',
@@ -735,7 +739,7 @@ test('模型库收录当前型号，下架型号保留旧任务取回规格', ()
     mediaCatalog()
       .filter((m) => m.vendor === 'Mumugofe')
       .map((m) => m.id),
-  ).toEqual([MODEL, SERIES_007])
+  ).toEqual([MODEL, SERIES_007, SERIES_X])
   for (const id of [SERIES_006_720, SERIES_006_480]) {
     expect(findMediaModel(id)).toBeUndefined()
     expect(lookupMediaModel(id, 'openai_videos').videoFormat).toBeUndefined()
@@ -760,7 +764,7 @@ test('模型库收录当前型号，下架型号保留旧任务取回规格', ()
   }
 })
 
-test.each([EXCLUSIVE, FULL_PARAMS, MODEL, SERIES_007])(
+test.each([EXCLUSIVE, FULL_PARAMS, MODEL, SERIES_007, SERIES_X])(
   '当前与下架型号取回仅查询下载原任务：%s',
   async (model) => {
     expect(
@@ -772,6 +776,71 @@ test.each([EXCLUSIVE, FULL_PARAMS, MODEL, SERIES_007])(
     ])
   },
 )
+
+test.each([{}, { seconds: '30', size: '720x1280' }])(
+  'X 型号发送固定 30 秒和横竖屏参数，按条计费：%j',
+  async (params) => {
+    const spends: MediaSpend[] = []
+    expect(
+      await makeMediaPort(config(SERIES_X), (spend) => spends.push(spend)).generate(
+        call({ params }),
+        signal(),
+      ),
+    ).toMatchObject({ ok: true, model: SERIES_X, files: [{ bytes: MP4 }] })
+    expect(seen[0]?.body).toEqual({
+      model: SERIES_X,
+      prompt: PROMPT,
+      seconds: '30',
+      size: '1280x720',
+      ...params,
+    })
+    expect(spends).toMatchObject([{ cost: 7, currency: 'CNY', quantity: null }])
+  },
+)
+
+test.each([{ seconds: '5' }, { seconds: '29' }, { seconds: 30 }, { size: '1920x1080' }])(
+  'X 型号不允许改变固定时长和清晰度：%j',
+  async (params) => {
+    expect(
+      await makeMediaPort(config(SERIES_X)).generate(call({ params }), signal()),
+    ).toMatchObject({ ok: false, executed: false })
+    expect(seen).toEqual([])
+  },
+)
+
+test('X 型号允许上传 30 张参考图，超限及尚未接通上传的素材在发送前拒绝', async () => {
+  const port = makeMediaPort(config(SERIES_X))
+  for (const inputs of [
+    Array.from({ length: 31 }, (_, i) => fullInput('reference', i)),
+    [fullInput('reference'), fullInput('video')],
+    [fullInput('reference'), fullInput('audio')],
+  ]) {
+    expect(await port.generate(call({ inputs }), signal())).toMatchObject({
+      ok: false,
+      executed: false,
+    })
+    expect(seen).toEqual([])
+  }
+  const inputs = Array.from({ length: 30 }, (_, i) => fullInput('reference', i))
+  expect(await port.generate(call({ inputs }), signal())).toMatchObject({ ok: true })
+  expect(seen.filter((entry) => entry.method === 'PUT')).toHaveLength(30)
+  const body = seen.find((entry) => entry.method === 'POST')!.body as Record<string, unknown>
+  expect(body.images).toHaveLength(30)
+  expect(body).toMatchObject({ model: SERIES_X, seconds: '30', size: '1280x720' })
+  expect(body.videos).toBeUndefined()
+  expect(body.audios).toBeUndefined()
+})
+
+test('X 型号原生上传被拒时不会提交收费的生成请求', async () => {
+  uploadStatus = 400
+  expect(
+    await makeMediaPort(config(SERIES_X)).generate(
+      call({ inputs: [fullInput('reference')] }),
+      signal(),
+    ),
+  ).toMatchObject({ ok: false, diagnostic: { stage: 'upload' } })
+  expect(seen.map((entry) => entry.method)).toEqual(['PUT'])
+})
 
 test.each(['5', '16', '30'])('seedance2.5-V 时长逐秒选择且按次报价：%s', async (seconds) => {
   const spec = findMediaModel(MODEL)!

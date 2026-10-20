@@ -289,42 +289,47 @@ describe('画布接口', () => {
     expect(JSON.stringify(wan.params)).not.toContain('description')
   })
 
-  test('007 按次型号在配置列表与模型库中提供相同规格及固定报价', async () => {
-    const { d } = await setup()
-    const id = '007系列/sd2.5(30图10音/4-30秒/720P)'
-    d.config.providers.ds!.media![id] = { kind: 'openai_videos' }
-    const models = (await (await call(d, '/api/models')).json()) as ModelsResponse
-    expect(models.media.find((model) => model.id === id)).toMatchObject({
-      known: true,
-      operations: ['text_to_video', 'reference_to_video'],
-      maxAudios: 10,
-    })
-    expect(models.mediaLibrary.find((model) => model.id === id)).toMatchObject({
-      maxImages: 30,
-      maxVideos: 0,
-      maxAudios: 10,
-    })
-    const model = models.media.find((row) => row.id === id)!
-    expect(model.params.find((p) => p.name === 'seconds')?.values).toEqual(
-      Array.from({ length: 27 }, (_, i) => String(i + 4)),
-    )
-    expect(model.params.find((p) => p.name === 'size')?.shapes?.map((s) => s.value)).toEqual([
-      '1280x720',
-      '720x1280',
-    ])
-    for (const seconds of ['4', '30']) {
-      const response = (await (
-        await call(d, '/api/canvas/quote', {
-          output: 'video',
-          provider: 'ds',
-          model: id,
-          params: { seconds },
-          inputs: { images: 30, videos: 0 },
-        })
-      ).json()) as CanvasQuoteResponse
-      expect(response.quote).toEqual({ cost: 6, currency: 'CNY' })
-    }
-  })
+  test.each([
+    { id: '007系列/sd2.5(30图10音/4-30秒/720P)', min: 4, maxAudios: 10, cost: 6 },
+    { id: 'X-SD25-301010', min: 30, maxAudios: 0, cost: 7 },
+  ])(
+    '木木按次型号在配置列表与模型库中提供相同规格及固定报价：$id',
+    async ({ id, min, maxAudios, cost }) => {
+      const { d } = await setup()
+      d.config.providers.ds!.media![id] = { kind: 'openai_videos' }
+      const models = (await (await call(d, '/api/models')).json()) as ModelsResponse
+      expect(models.media.find((model) => model.id === id)).toMatchObject({
+        known: true,
+        operations: ['text_to_video', 'reference_to_video'],
+        maxAudios,
+      })
+      expect(models.mediaLibrary.find((model) => model.id === id)).toMatchObject({
+        maxImages: 30,
+        maxVideos: 0,
+        maxAudios,
+      })
+      const model = models.media.find((row) => row.id === id)!
+      expect(model.params.find((p) => p.name === 'seconds')?.values).toEqual(
+        Array.from({ length: 31 - min }, (_, i) => String(i + min)),
+      )
+      expect(model.params.find((p) => p.name === 'size')?.shapes?.map((s) => s.value)).toEqual([
+        '1280x720',
+        '720x1280',
+      ])
+      for (const seconds of new Set([String(min), '30'])) {
+        const response = (await (
+          await call(d, '/api/canvas/quote', {
+            output: 'video',
+            provider: 'ds',
+            model: id,
+            params: { seconds },
+            inputs: { images: 30, videos: 0 },
+          })
+        ).json()) as CanvasQuoteResponse
+        expect(response.quote).toEqual({ cost, currency: 'CNY' })
+      }
+    },
+  )
 
   test.each([
     { id: 'TTseadanco2.5-720', min: 5, rate: 0.42, resolution: '720p', maxVideos: 10 },

@@ -1797,6 +1797,7 @@ describe('画布：生成卡与生成面板', () => {
   test.each([
     { index: 0, min: '5', max: '30', portrait: '720x1280' },
     { index: 1, min: '4', max: '30', portrait: '720x1280' },
+    { index: 2, min: '30', max: '30', portrait: '720x1280' },
   ])(
     'Mumugofe 隐藏固定清晰度，按型号保存时长与横竖屏：%j',
     async ({ index, min, max, portrait }) => {
@@ -1823,10 +1824,11 @@ describe('画布：生成卡与生成面板', () => {
       await select(host, refs.$g!)
       host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!.click()
       const input = () => document.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
-      expect([input().min, input().max, input().value]).toEqual([min, max, '5'])
+      if (min === max) expect(input()).toBeNull()
+      else expect([input().min, input().max, input().value]).toEqual([min, max, '5'])
       expect(
         [...document.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
-      ).toEqual(['时长', '宽高比'])
+      ).toEqual(min === max ? ['宽高比'] : ['时长', '宽高比'])
       expect(document.querySelector('.canvas-params-panel')?.textContent).not.toMatch(/720P|480P/)
       expect(host.querySelector('.canvas-bar .mode-chip.model')?.textContent).toContain(spec.id)
       const ratio = [
@@ -1841,6 +1843,11 @@ describe('画布：生成卡与生成面板', () => {
         () => JSON.stringify(server.ops),
       )
       expect(document.querySelector('.canvas-param-notice')).toBeNull()
+      if (min === max) {
+        expect(server.doc().nodes[0]).toMatchObject({ params: { size: portrait } })
+        expect(server.doc().nodes[0]).not.toHaveProperty('params.seconds')
+        return
+      }
       input().value = '99'
       input().dispatchEvent(new Event('change', { bubbles: true }))
       expect(input().value).toBe(max)

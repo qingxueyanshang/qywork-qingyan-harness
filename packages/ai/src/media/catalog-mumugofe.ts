@@ -1,6 +1,6 @@
 /**
  * Mumugofe 渠道使用 /v1/videos 提交，素材通过 JSON 字段传递。
- * seedance2.5-V 参考图通过本渠道上传；007 按次型号直接发送 base64 图片与 MP3 音频。
+ * 公网链接型号的参考图通过本渠道上传；007 按次型号直接发送 base64 图片与 MP3 音频。
  * 保留渠道原始编号，不继承官方 Seedance 的素材格式或价格。
  */
 import type { MediaModelSpec, MediaParamSpec } from './catalog.ts'
@@ -70,6 +70,19 @@ export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
     inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10, transport: 'json' },
     params: [SECONDS, SIZE],
     price: { currency: 'CNY', cost: () => 6, usageOf: () => ({}) },
+    catalogued: true,
+  },
+  {
+    id: 'X-SD25-301010',
+    displayName: 'X-SD25-301010',
+    vendor: 'Mumugofe',
+    kind: 'openai_videos',
+    videoFormat: 'mumugofe',
+    operations: ['text_to_video', 'reference_to_video'],
+    // 渠道支持视频、音频公网链接，但原生上传接口实测仅接受图片；目录只开放已接通的本地素材。
+    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 0, transport: 'json', publicUrls: true },
+    params: [FIXED_SECONDS, SIZE],
+    price: { currency: 'CNY', cost: () => 7, usageOf: () => ({}) },
     catalogued: true,
   },
 ]
