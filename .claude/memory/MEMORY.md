@@ -25,3 +25,4 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [常驻动画只能动 transform / opacity](continuous-animation-cost.md) — 用户显示器 180Hz，CSS 重绘型动画开销为 60Hz 的三倍；画布连线流动改为每秒 24 次的定时器推进，删除视觉效果前先问用户
 - [刷新恢复的测试方法](refresh-restore-testing.md) — 带查询串重新导入模块模拟刷新；组件测试 afterEach 清空记录；性能对照构建把 sessionSignal 换成 createSignal
 - [画布卡顿须在桌面外壳中按用户布局测量](canvas-perf-measure-in-shell.md) — 无头 Chrome 与窄面板都无法复现；瓶颈是 180Hz 下 GPU 进程的光栅化，测量脚本在 .tmp/perf-drag/
+- [画布提交前不在背后改写提示词](canvas-prompt-no-hidden-rewrite.md) — 手写编号与型号写法不一致时应可见地提示，按型号自动改写已被否决并撤回
