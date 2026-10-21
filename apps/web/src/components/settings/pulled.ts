@@ -108,24 +108,26 @@ export function addPulled(
   }
 }
 
-/** 时长与素材上限的摘要，写法与模型库表格相同。 */
-export function specSummary(model: PulledModel): string {
+/** 可选时长。没有渠道规格时为空串。 */
+export function durationSummary(model: PulledModel): string {
   if (model.output === 'chat' || !model.spec) return ''
-  const { seconds, maxImages, maxVideos, maxAudios } = model.spec
+  const { seconds } = model.spec
   const first = seconds[0]!
   const last = seconds[seconds.length - 1]!
+  return first === last ? `${first}秒` : `${first}–${last}秒`
+}
+
+/** 参考素材上限，写法与模型库表格相同。没有渠道规格时为空串。 */
+export function referenceSummary(model: PulledModel): string {
+  if (model.output === 'chat' || !model.spec) return ''
+  const { maxImages, maxVideos, maxAudios } = model.spec
   return [
-    first === last ? `${first}秒` : `${first}–${last}秒`,
-    [
-      maxImages ? `图≤${maxImages}` : '',
-      maxVideos ? `视频≤${maxVideos}` : '',
-      maxAudios ? `音频≤${maxAudios}` : '',
-    ]
-      .filter(Boolean)
-      .join('、'),
+    maxImages ? `图≤${maxImages}` : '',
+    maxVideos ? `视频≤${maxVideos}` : '',
+    maxAudios ? `音频≤${maxAudios}` : '',
   ]
     .filter(Boolean)
-    .join(' · ')
+    .join('、')
 }
 
 /** 价格摘要：对话为每百万 Token 的输入与输出，生成为每次或每秒。价格不明时为空串。 */

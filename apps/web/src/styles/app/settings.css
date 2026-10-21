@@ -618,7 +618,8 @@ fieldset.seg {
 .field textarea,
 .setting-row input,
 .setting-row select,
-.setting-row textarea {
+.setting-row textarea,
+.pull-base {
   padding: 6px var(--s-2);
   border: 1px solid var(--border-default);
   border-radius: var(--r-xs);
@@ -639,7 +640,8 @@ fieldset.seg {
  * 右内距为箭头预留位置，修改箭头的 `background-position` 时须同步修改右内距。
  */
 .field select,
-.setting-row select {
+.setting-row select,
+.pull-base {
   appearance: none;
   padding-right: 26px;
   background-image:
@@ -665,7 +667,8 @@ fieldset.seg {
 .field textarea:focus,
 .setting-row input:focus,
 .setting-row select:focus,
-.setting-row textarea:focus {
+.setting-row textarea:focus,
+.pull-base:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -1797,7 +1800,7 @@ textarea.code-area::placeholder {
   min-height: min(560px, calc(100vh - 48px));
   max-height: min(560px, calc(100vh - 48px));
   box-sizing: border-box;
-  padding: 24px;
+  padding: 16px;
   border: 1px solid var(--border-default);
   border-radius: var(--r-lg);
   background: var(--bg-raised);
@@ -1820,11 +1823,11 @@ textarea.code-area::placeholder {
   margin: 4px 0 10px;
 }
 
-/* 各行共用列宽（行用 subgrid）：某一行缺少价格时，其他列不随之移动。 */
+/* 各行共用列宽（行用 subgrid）：型号、时长、参考素材、价格、状态或对应型号。某一行缺少某项时，其他列不随之移动。 */
 .pull-list {
   display: grid;
   flex: 1;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   align-content: start;
   column-gap: var(--s-3);
   min-height: 0;
@@ -1844,12 +1847,15 @@ textarea.code-area::placeholder {
   font-size: var(--fs-xs);
 }
 
+/* 行高固定：带对应型号下拉框的行与其他行同高。 */
 .pull-row {
   display: grid;
   grid-column: 1 / -1;
   grid-template-columns: subgrid;
   align-items: center;
-  padding: 7px 10px;
+  box-sizing: border-box;
+  height: 34px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--border-subtle);
   font-size: var(--fs-xs);
 }
@@ -1881,20 +1887,21 @@ textarea.code-area::placeholder {
   white-space: nowrap;
 }
 
-.pull-spec,
-.pull-price,
-.pull-status {
+/* 各列左对齐：右对齐时长短不同的文字左边缘参差不齐。 */
+.pull-cell {
   color: var(--text-secondary);
-  text-align: right;
   white-space: nowrap;
 }
 
+.pull-row.off .pull-cell {
+  color: var(--text-tertiary);
+}
+
+/* 对应型号：边框、底色、箭头、聚焦与设置页的下拉框共用上方的规则；此处缩小上下内距与字号，
+   使下拉框不超过行高。 */
 .pull-base {
   max-width: 200px;
-  padding: 3px var(--s-2);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-xs);
-  background-color: var(--bg-inset);
-  color: var(--text-primary);
+  padding-top: 1px;
+  padding-bottom: 1px;
   font-size: var(--fs-xs);
 }

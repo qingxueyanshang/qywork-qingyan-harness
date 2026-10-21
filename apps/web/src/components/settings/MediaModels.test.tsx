@@ -519,6 +519,13 @@ test('拉取模型：打开即刷新已添加型号，勾选后写入规格与�
     const base = dialog.querySelector<HTMLSelectElement>(
       'select[aria-label="对应型号 deepseek-v4.1-flash"]',
     )!
+    // 占位项只在框内显示，展开的列表只有型号，不分组。
+    expect(base.value).toBe('')
+    expect(Array.from(base.options, (o) => [o.value, o.hidden])).toEqual([
+      ['', true],
+      ['deepseek-flash', false],
+    ])
+    expect(base.querySelector('optgroup')).toBeNull()
     base.value = 'deepseek-flash'
     base.dispatchEvent(new Event('change', { bubbles: true }))
     const check = (id: string) =>

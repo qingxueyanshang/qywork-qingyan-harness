@@ -2,7 +2,13 @@
 import { expect, test } from 'bun:test'
 import type { ChannelVideoSpec } from '@qywork/core'
 import type { PullResult, RedactedConfig } from '../../lib/store/index.ts'
-import { addPulled, priceSummary, refreshPulled, specSummary } from './pulled.ts'
+import {
+  addPulled,
+  durationSummary,
+  priceSummary,
+  referenceSummary,
+  refreshPulled,
+} from './pulled.ts'
 
 const SPEC: ChannelVideoSpec = {
   channel: 'mumugofe',
@@ -116,15 +122,21 @@ test('接口原本没有对话型号时，第一个添加的成为默认模型',
 })
 
 test('摘要：时长与素材上限、价格', () => {
-  expect(specSummary(RESULT.models[2]!)).toBe('30秒 · 图≤30')
-  expect(
-    specSummary({
-      id: 'v',
-      output: 'video',
-      kind: 'openai_videos',
-      spec: { ...SPEC, seconds: [5, 30], maxVideos: 10, maxAudios: 10 },
-    }),
-  ).toBe('5–30秒 · 图≤30、视频≤10、音频≤10')
+  expect([durationSummary(RESULT.models[2]!), referenceSummary(RESULT.models[2]!)]).toEqual([
+    '30秒',
+    '图≤30',
+  ])
+  const full = {
+    id: 'v',
+    output: 'video' as const,
+    kind: 'openai_videos' as const,
+    spec: { ...SPEC, seconds: [5, 30], maxVideos: 10, maxAudios: 10 },
+  }
+  expect([durationSummary(full), referenceSummary(full)]).toEqual([
+    '5–30秒',
+    '图≤30、视频≤10、音频≤10',
+  ])
+  expect(durationSummary(RESULT.models[0]!)).toBe('')
   expect(priceSummary(RESULT.models[2]!)).toBe('¥7.00/次')
   expect(priceSummary(RESULT.models[0]!)).toBe('输入 ¥1.80 · 输出 ¥9.00 /百万')
   expect(priceSummary(RESULT.models[1]!)).toBe('')
