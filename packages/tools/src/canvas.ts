@@ -8,6 +8,7 @@
  * 运行使用本轮的生成端口（`ctx.media`），费用计入本轮。
  */
 
+import { readFile } from 'node:fs/promises'
 import type {
   CanvasEditResult,
   CanvasPort,
@@ -30,6 +31,7 @@ import {
 } from '@qywork/core'
 import { jsonArg } from './args.ts'
 import { shrinkImage } from './image.ts'
+import { resolveInWorkspace, rootsOf } from './paths.ts'
 
 function failure(message: string, errorKind?: string): ToolOutcome {
   return { status: 'failure', executed: false, message, ...(errorKind ? { errorKind } : {}) }
@@ -480,6 +482,7 @@ export const editCanvasTool: ToolSpec = {
     '修改画布的节点、提示词、参数与连线，不发起生成。' +
     CANVAS_NOTE +
     '先用 read_canvas 查看画布；画布尚不存在时先用 create_canvas 创建。' +
+    '操作已由脚本写成 .json 文件时，用 ops_path 给出该文件的工作区路径，不要把文件内容抄进 ops_json；二者只给一个。' +
     'ops_json 是一批操作的 JSON 数组，逐条生效：某条不成立时跳过并在回执中写明原因，其余照常执行；' +
     '引用了被跳过操作的批内名称的操作同样跳过。回执只列出本批执行与跳过的操作、改动的卡的全文、位置或尺寸改变的卡的名称与删除的卡。操作：' +
     '{"op":"add_file","path":"工作区路径","name":"卡片名称","group":"组"}（摘录卡另加 "excerpt"）、' +
@@ -521,9 +524,14 @@ export const editCanvasTool: ToolSpec = {
     type: 'object',
     properties: {
       path: { type: 'string', description: '画布文件的工作区路径' },
-      ops_json: { type: 'string', description: '画布操作数组，JSON' },
+      ops_json: { type: 'string', description: '画布操作数组，JSON；与 ops_path 二选一' },
+      ops_path: {
+        type: 'string',
+        description:
+          '写有画布操作数组的 JSON 文件的工作区路径，如脚本生成的 canvas-ops.json；与 ops_json 二选一',
+      },
     },
-    required: ['path', 'ops_json'],
+    required: ['path'],
     additionalProperties: false,
   },
   actionKind: 'edit',
@@ -532,17 +540,36 @@ export const editCanvasTool: ToolSpec = {
   facet: '生成',
   summary: '修改画布的节点、提示词、参数与连线',
   targetExtractor: (a) => text(a.path) ?? null,
+  requireOneOf: [['ops_json', 'ops_path']],
   permissionEffect: 'write',
   async fn(args, ctx) {
     const canvas = ctx.canvas
     if (!canvas) return failure('本次执行没有画布通道')
     const path = text(args.path)
     if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+    const opsPath = text(args.ops_path)
+    if (opsPath && text(args.ops_json)) {
+      return failure('ops_json 与 ops_path 只给一个', 'invalid_tool_arguments')
+    }
     try {
-      const raw = jsonArg(args.ops_json, 'array', 'ops_json')
+      // 脚本写好的操作文件直接读取：由模型抄写数十 KB 的 JSON 时，会抄错、截断或自行挑拣其中几条
+      // （宁德画布 2026-10-21：模型挑出部分操作重写，漏掉删除旧连线的几条，随后的 order_inputs 全部被拒）。
+      const source = opsPath
+        ? await readFile(
+            await resolveInWorkspace(rootsOf(ctx), opsPath, { mustExist: true }),
+            'utf8',
+          )
+        : args.ops_json
+      const name = opsPath ? 'ops_path 文件' : 'ops_json'
+      const raw = jsonArg(source, 'array', name)
       if (!raw.ok) return failure(raw.error, 'invalid_tool_arguments')
       const raws = raw.value as unknown[] | undefined
-      if (!raws?.length) return failure('ops_json 须为非空数组', 'invalid_tool_arguments')
+      if (!raws?.length) {
+        return failure(
+          opsPath ? `${name} 须为非空数组` : '缺少 ops_json 或 ops_path，或操作数组为空',
+          'invalid_tool_arguments',
+        )
+      }
       const { planned, rejected } = await planOps(raws, () => canvas.read(path))
       if (!planned.length) {
         return failure(editReceipt(planned, rejected, null, null), 'invalid_tool_arguments')

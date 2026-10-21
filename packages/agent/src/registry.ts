@@ -1318,6 +1318,11 @@ export interface ToolSpec {
   objectLabel: string | ((args: Record<string, unknown>) => string)
   /** 从参数提取稳定目标（通常是文件路径），供进度判定与并行冲突检测使用。 */
   targetExtractor?: (args: Record<string, unknown>) => string | null
+  /**
+   * 每组参数至少给出一个，如 `[['ops_json', 'ops_path']]`。schema 的 `required` 表达不了二选一，
+   * 与 `required` 一样在权限解析之前核对：缺参的调用不询问权限。
+   */
+  requireOneOf?: readonly (readonly string[])[]
   permissionEffect: PermissionEffect | ((args: Record<string, unknown>) => PermissionEffect)
   /**
    * 并行默认关闭。只有工具显式 opt-in **且**本次具体参数通过 parallelSafe，
@@ -1458,6 +1463,9 @@ export class ToolRegistry {
     const missing = Array.isArray(required)
       ? required.filter((key): key is string => typeof key === 'string' && args[key] === undefined)
       : []
+    for (const group of spec.requireOneOf ?? []) {
+      if (!group.some((key) => args[key] !== undefined)) missing.push(group.join(' 或 '))
+    }
     if (missing.length) {
       return {
         status: 'failure',
