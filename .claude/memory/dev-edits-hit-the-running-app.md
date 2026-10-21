@@ -9,7 +9,7 @@ metadata:
 
 - 修改组件（`apps/web/src/components/**`）→ vite 热更新直接作用于用户正在使用的窗口。修改 `TerminalPanel.tsx` 会重建
   xterm 实例，`ensureStarted` 随即再开一条 PTY，用户屏幕上的终端被替换为一个新 shell。实测：保存文件的
-  同一分钟内，`qywork.exe` 下多出 `conhost.exe` + `powershell.exe` 各一个。
+  同一分钟内，开发外壳进程下多出 `conhost.exe` + `powershell.exe` 各一个。
 - 修改 `apps/web/src/lib/store/**` 或 `packages/**` → **整页刷新**（不是局部热更新，已按加载计数实测确认），
   前端状态全部丢失：页签、打开的文件、终端页都被清空。终端页会自动恢复（`terminal_list` 恢复页签 + `terminal_open` 回放最近 256K 输出，
   连接的仍是原有的那条 shell），其他状态不会恢复。
