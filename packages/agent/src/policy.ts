@@ -192,6 +192,9 @@ const OUTSIDE_LOCATION = String.raw`(?:^|[\s"'=(])~[/\\]|${OUTSIDE_SYMBOL_RE}|(?
  * `Set-Content .qy\mcp.json` 与 `echo x > .qy/mcp.json` 是同一操作。
  */
 
+/** `additionalDirectories` 在界面上的设置项。拒绝理由用它指明放开该位置的方式，不写配置字段名。 */
+const EXTRA_DIRS_SETTING = '「设置 → 权限 → 工作区之外额外可读写的目录」'
+
 /**
  * 硬拒绝的模式。导出供文档与测试。
  *
@@ -221,10 +224,7 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
         String.raw`|(?:${OUTSIDE_LOCATION})[^\n]*\s>>?`,
       'i',
     ),
-    reason:
-      '该命令会在家目录或系统目录中写入或删除，效果超出工作区且不可回滚。' +
-      '本机没有内核级的路径边界，此规则是唯一的约束。' +
-      '确需写入工作区外的位置时，请用户将该位置加入 additionalDirectories',
+    reason: `命令在家目录或系统目录中写入或删除，该位置未列入${EXTRA_DIRS_SETTING}`,
   },
   {
     // rm -rf / | rm -fr /* | rm -Rf ~ | rm --recursive --force ~/
@@ -232,11 +232,11 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
     pattern: atCommandStart(
       String.raw`rm\b[^\n]*?\s-{1,2}(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r|recursive|force)[^\n]*?\s(?:\/|~)[*/]*(?=\s|$)`,
     ),
-    reason: '递归删除根目录或家目录会破坏整台机器上的数据，且不可回滚',
+    reason: '命令会递归删除根目录或家目录',
   },
   {
     pattern: /--no-preserve-root\b/,
-    reason: 'rm 仅在删除根目录被拦截时才需要此开关，出现此开关即表明意图明确',
+    reason: '命令包含 --no-preserve-root，该开关只用于删除根目录',
   },
   {
     /*
@@ -247,11 +247,11 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
      * 目标包含 `~`：PowerShell 支持该写法，而 `rm -rf ~` 规则只匹配 POSIX 的 `rm`。
      */
     pattern: /\bRemove-Item\b(?=[^\n]*-Recurse\b)[^\n]*\s(?:[A-Za-z]:[\\/]|~|\/)[*\\/]*(?=\s|$)/i,
-    reason: '递归删除盘符根目录或家目录，等同于 rm -rf /',
+    reason: '命令会递归删除盘符根目录或家目录',
   },
   {
     pattern: /\b(?:del|rd|rmdir)\b[^\n]*\s\/[sS]\b[^\n]*\s[A-Za-z]:\\[*\\]*(?=\s|$)/,
-    reason: '递归删除盘符根目录（cmd 语法），等同于 rm -rf /',
+    reason: '命令会递归删除盘符根目录（cmd 语法）',
   },
   /*
    * 「下载即执行」不在本表中，不要添加。
@@ -267,7 +267,7 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
   {
     pattern:
       /(?:>>?|\btee\b|\bcp\b|\bmv\b|\bchmod\b|\bchown\b|\bln\b|-o\b|--output\b|\bSet-Content\b|\bAdd-Content\b|\bOut-File\b|\bCopy-Item\b)[^\n]*(?:\.ssh[\\/]|\bauthorized_keys\b|\bid_rsa\b|\bid_ed25519\b)/i,
-    reason: '向 SSH 凭据写入等同于植入长期后门，此后每次登录都绕过本权限模型',
+    reason: '命令会写入 SSH 密钥或 authorized_keys',
   },
   {
     /**
@@ -296,43 +296,41 @@ export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string 
     pattern:
       /(?:\.ssh[\\/]|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|\.aws[\\/]credentials|\.config[\\/]gcloud[\\/]|\.kube[\\/]config|\.npmrc\b|\.netrc\b|\.pgpass\b|\.docker[\\/]config\.json|\.qywork[\\/]config\.json)/i,
     reason:
-      '这是凭证文件（SSH 私钥、云厂商凭据、包管理器 token，或 qywork 自身的配置）。' +
-      '读取的内容会进入上下文并发送给模型供应商，发送后无法撤回。' +
-      '需要使用某个凭证时，通过环境变量传给命令，不要读取文件内容',
+      '命令会访问凭证文件（SSH 私钥、云服务凭据、包管理器令牌或 qywork 配置）；需要凭证时由环境变量传入命令',
   },
   {
     pattern: atCommandStart(
       String.raw`(?:shutdown|reboot|halt|poweroff|Stop-Computer|Restart-Computer)\b`,
     ),
-    reason: '关机/重启会中断用户正在进行的全部工作，编写代码的 agent 没有理由执行此操作',
+    reason: '命令会关闭或重启计算机',
   },
   {
     pattern: atCommandStart(String.raw`(?:sudo|doas|runas|su)\b`),
-    reason: '提权执行：提权之后，工作区边界与权限检查均失去作用',
+    reason: '命令会以提升的权限执行（sudo、doas、runas、su）',
   },
   {
     pattern: /-Verb\s+RunAs\b/i,
-    reason: 'Windows 上的提权（UAC 提权），与 sudo 同类',
+    reason: '命令会以管理员权限启动进程（-Verb RunAs）',
   },
   {
     pattern: /\bchmod\b[^\n]*\b(?:777|a\+rwx)\b[^\n]*\s(?:\/|~)[*/]*(?=\s|$)/i,
-    reason: '将根目录/家目录整体改为所有用户可写，系统的权限模型随即失效',
+    reason: '命令会将根目录或家目录改为所有用户可写',
   },
   {
     pattern: /\bdd\b[^\n]*\bof=\s*\/dev\/(?!null\b|zero\b|tty\b|stdout\b|stderr\b|u?random\b)/i,
-    reason: 'dd 直接写入裸设备，会整块覆盖分区表和文件系统，无法撤销',
+    reason: '命令会用 dd 写入块设备',
   },
   {
     pattern: />\s*\/dev\/(?:sd[a-z]|nvme\d|hd[a-z]|disk\d|mmcblk\d)/i,
-    reason: '将输出重定向到块设备，等同于擦除整块磁盘',
+    reason: '命令会将输出重定向到块设备',
   },
   {
     pattern: atCommandStart(String.raw`(?:mkfs(?:\.\w+)?|diskpart|Format-Volume|Clear-Disk)\b`),
-    reason: '格式化/重新分区会擦除整块磁盘上的数据',
+    reason: '命令会格式化磁盘或重新分区',
   },
   {
     pattern: /:\(\)\s*\{[^\n]*\|[^\n]*&[^\n]*\}\s*;?\s*:/,
-    reason: 'fork 炸弹会占满进程表，导致只能硬重启',
+    reason: '命令是 fork 炸弹，会无限创建进程',
   },
 ]
 
@@ -397,10 +395,10 @@ const INSTALL_LOCATION =
 function globalPythonInstall(command: string, ctx: PolicyContext): string | null {
   if (!PIP_INSTALL.test(command)) return null
   const deny = (how: string) =>
-    `${how}，会把 Python 包装入全局环境。auto 模式下包只能装入工作区环境 .tmp/python，` +
-    '命令中的 python 与 pip 即该环境；装入全局需要用户改为「完全访问」模式'
-  if (!ctx.workspacePython) return deny('工作区 Python 环境不存在，命令中的 pip 为全局解释器')
-  if (/(?:^|\s)--user\b/i.test(command)) return deny('--user 装入用户目录')
+    `${how}，会安装到全局 Python 环境；包只能安装到工作区环境 .tmp/python，` +
+    '命令中的 python 与 pip 即指向该环境'
+  if (!ctx.workspacePython) return deny('工作区 Python 环境不存在，命令中的 pip 属于全局环境')
+  if (/(?:^|\s)--user\b/i.test(command)) return deny('--user 安装到用户目录')
   if (/\buv\s+pip\s+install\b[^\n]*\s--system\b/i.test(command))
     return deny('uv pip install --system')
   if (
@@ -408,7 +406,7 @@ function globalPythonInstall(command: string, ctx: PolicyContext): string | null
       command,
     )
   )
-    return deny('py 启动器运行全局解释器')
+    return deny('py 启动器调用全局解释器')
   for (const m of command.matchAll(INTERPRETER_INSTALL)) {
     const p = m[1] ?? m[2] ?? m[3] ?? ''
     if (!/(?:^|[\\/])(?:python|pip)[\d.]*(?:\.exe)?$/i.test(p)) continue
@@ -485,12 +483,7 @@ function literalOutsideHome(command: string, ctx: PolicyContext): string | null 
     const isSystem = /^\/etc(\/|$)/i.test(p) || /^[A-Za-z]:\/Windows(\/|$)/i.test(p)
     if (!isHome && !isSystem) continue
 
-    return (
-      `写入或删除命令引用了 ${m[1]}，该路径位于${isHome ? '家目录' : '系统目录'}中，且不在工作区内` +
-      `（也不在 additionalDirectories 中），效果必然超出工作区。` +
-      `本机没有内核级的路径边界，因此越界操作一律拒绝。` +
-      `确需访问此目录时，请让用户将其加入 additionalDirectories。`
-    )
+    return `含写入或删除操作的命令引用了${isHome ? '家目录' : '系统目录'}中的 ${m[1]}，该位置未列入${EXTRA_DIRS_SETTING}`
   }
   return null
 }

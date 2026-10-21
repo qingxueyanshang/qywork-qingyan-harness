@@ -405,7 +405,7 @@ describe('auto 模式下全局安装 Python 包', () => {
     }
     expect(decideCommand('py -m pip install x', ready)).toMatchObject({
       kind: 'deny',
-      reason: expect.stringContaining('auto 模式下包只能装入工作区环境 .tmp/python'),
+      reason: expect.stringContaining('包只能安装到工作区环境 .tmp/python'),
     })
   })
 
