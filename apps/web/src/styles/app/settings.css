@@ -759,8 +759,10 @@ textarea.code-area::placeholder {
 .provider-tabs-menu {
   position: fixed;
   z-index: 100;
-  width: 240px;
-  max-width: calc(100vw - 32px);
+  /* 接口名通常很短，菜单按内容收紧；长名称仍受视口与宽度上限约束。 */
+  width: max-content;
+  min-width: 88px;
+  max-width: min(240px, calc(100vw - 32px));
   max-height: min(320px, calc(100dvh - 32px));
   overflow-y: auto;
   overscroll-behavior: contain;

@@ -272,7 +272,8 @@
 }
 .composer-body {
   position: relative;
-  z-index: 1;
+  /* 位于 rails 之后，按 DOM 顺序即可盖住其底边。不要在此建立层叠上下文：
+     模型等菜单需以自身层级覆盖侧面板的拖拽把手，否则菜单上仍能触发拖动。 */
   border: 1px solid var(--border-default);
   border-radius: var(--r-xl);
   background: var(--bg-raised);
@@ -446,8 +447,10 @@
   /* 下沿与一级面板的外边沿齐平：抵消其内边距与边框。 */
   bottom: calc(-1px - var(--s-1));
   z-index: 31;
-  min-width: 220px;
-  max-width: 280px;
+  /* 按最长选项收紧：推理档位只有几个字，不应与模型列表共用固定宽度。 */
+  width: max-content;
+  min-width: 88px;
+  max-width: 240px;
   max-height: 320px;
   overflow-y: auto;
   padding: var(--s-1);

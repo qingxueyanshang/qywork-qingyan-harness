@@ -171,11 +171,6 @@ export function ModelPicker() {
                           }}
                         >
                           <span class="model-name truncate">{m.label}</span>
-                          {/* 标出以人民币计价的模型。不标注时「¥21 / 百万」会被读作 $21，
-                              而 Kimi 与 GPT-5.6 Sol 的数值恰好处于同一量级，无法区分。 */}
-                          <Show when={m.currency === 'CNY'}>
-                            <span class="model-tag">¥</span>
-                          </Show>
                           {/* 标出内置目录中没有的模型：它没有计价与能力信息，
                               用量和费用只能按 provider 返回的数据计算。 */}
                           <Show when={!m.known}>
