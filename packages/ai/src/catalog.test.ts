@@ -989,3 +989,45 @@ describe('目录中的价格与档位', () => {
     ).toEqual(['grok-4.7', 'grok-4.7', 'grok-4.6', 'grok-4.5'])
   })
 })
+
+describe('对应型号与接口价格', () => {
+  test('自定义名称按对应型号取得规格，显示名称仍为自定义名称', () => {
+    const base = lookupModel('deepseek-flash', 'openai_chat_completions')
+    const spec = lookupModel(
+      'deepseek-v4.1-flash',
+      'openai_chat_completions',
+      undefined,
+      'deepseek-flash',
+    )
+    expect(spec).toMatchObject({
+      id: 'deepseek-v4.1-flash',
+      displayName: 'deepseek-v4.1-flash',
+      contextWindow: base.contextWindow,
+      effortLevels: base.effortLevels,
+      thinking: base.thinking,
+    })
+    expect(spec.catalogued).not.toBe(false)
+    expect(lookupModel('deepseek-v4.1-flash', 'openai_chat_completions').catalogued).toBe(false)
+    expect(
+      lookupModel('relay-x', 'openai_chat_completions', undefined, 'not-in-catalog').catalogued,
+    ).toBe(false)
+  })
+
+  test('覆盖改变币种时去掉按原币种填写的长上下文档与时段折扣', () => {
+    const gpt = lookupModel('gpt-5.6-sol', 'openai_chat_completions')
+    expect(gpt.longContext?.length).toBeGreaterThan(0)
+    const relay = applySpecOverride(gpt, { input: 2.08, output: 12.48, currency: 'CNY' })
+    expect(relay.longContext).toBeUndefined()
+    expect(priceAt(relay, { promptTokens: 400_000 })).toMatchObject({
+      input: 2.08,
+      currency: 'CNY',
+    })
+    // 币种不变时保留目录的档位。
+    expect(applySpecOverride(gpt, { input: 3 }).longContext).toEqual(gpt.longContext)
+    const deepseek = lookupModel('deepseek-flash', 'openai_chat_completions')
+    expect(applySpecOverride(deepseek, { input: 1, currency: 'CNY' }).offPeak).toEqual(
+      deepseek.offPeak,
+    )
+    expect(applySpecOverride(deepseek, { input: 1, currency: 'USD' }).offPeak).toBeUndefined()
+  })
+})

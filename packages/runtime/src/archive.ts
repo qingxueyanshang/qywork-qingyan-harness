@@ -389,7 +389,10 @@ function diagnosticProvider(
     headerNames: Object.keys(resolved.headers ?? {}).sort(),
     effort: resolved.effort ?? null,
     catalogOverride: resolved.spec ?? null,
-    effectiveModel: applySpecOverride(lookupModel(resolved.model, resolved.kind), resolved.spec),
+    effectiveModel: applySpecOverride(
+      lookupModel(resolved.model, resolved.kind, undefined, resolved.spec?.base),
+      resolved.spec,
+    ),
   }
 }
 

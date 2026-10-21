@@ -92,7 +92,7 @@ export interface ProviderProfile {
    * 目录 seed 之上只有它，`buildAdapter` 不接受第二条覆盖通道。
    *
    * 落盘按「模型 id × 协议」两维索引（`runtime` 的 `QyConfig.catalog`），
-   * 因为同一个模型在不同协议上能力不同；此处取得的已是选中的条目。
+   * 因为同一个模型在不同协议上能力不同；此处取得的已是选中的条目，并已合成该接口的价格（`resolveModel`）。
    */
   spec?: SpecOverride
   /** 当前「接口 × 模型」的传输校准，不写进全局模型目录。 */

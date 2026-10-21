@@ -105,6 +105,9 @@ export {
 } from './domain/ids.ts'
 // 生成模型的协议与类别：配置校验、目录、设置页共用
 export {
+  type ChannelPrice,
+  type ChannelVideoSpec,
+  channelVideoSpecProblem,
   defaultMediaKind,
   GENERATE_OUTPUTS,
   type GenerateOutput,
@@ -121,6 +124,8 @@ export {
   type MediaOutput,
   type MediaQuote,
   type MediaSpend,
+  VIDEO_CHANNELS,
+  type VideoChannel,
 } from './domain/media.ts'
 export { mediaBoxAt, movieMetadataOf, videoMetadataOf } from './domain/media-container.ts'
 export {

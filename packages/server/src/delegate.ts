@@ -364,7 +364,12 @@ export function makeDelegate(ctx: {
       conv?.provider && conv.model ? { provider: conv.provider, model: conv.model } : undefined,
     )
     const spec = applySpecOverride(
-      lookupModel(stored?.model ?? conv?.model ?? '', stored?.kind ?? 'openai_chat_completions'),
+      lookupModel(
+        stored?.model ?? conv?.model ?? '',
+        stored?.kind ?? 'openai_chat_completions',
+        undefined,
+        stored?.spec?.base,
+      ),
       stored?.spec,
     )
     return {

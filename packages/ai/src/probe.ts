@@ -139,7 +139,7 @@ async function probeEffort(
 ): Promise<ProbeOutcome> {
   // 保留用户的参数格式声明，移除上次检测结果，允许重新发现已恢复的档位。
   const { transport: _previous, ...declared } = profile
-  const seed = lookupModel(profile.model, profile.kind)
+  const seed = lookupModel(profile.model, profile.kind, undefined, profile.spec?.base)
   const levels = declaredEffortLevels(seed, profile.spec)
   const bare = await attempt(declared, '最小请求', undefined, opts.signal)
   const outcome: ProbeOutcome = {

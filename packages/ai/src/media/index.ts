@@ -19,7 +19,7 @@ import { lookupMediaModel } from './catalog.ts'
 import type { MediaAdapter, MediaProfile } from './types.ts'
 
 export function buildMediaAdapter(profile: MediaProfile): MediaAdapter {
-  const spec = lookupMediaModel(profile.model, profile.kind)
+  const spec = lookupMediaModel(profile.model, profile.kind, profile.spec)
   switch (profile.kind) {
     case 'gemini_images':
     case 'gemini_videos':
