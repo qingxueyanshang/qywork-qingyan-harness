@@ -41,14 +41,14 @@ function Say($msg) { Write-Host "  $msg" -ForegroundColor Cyan }
 function Warn($msg) { Write-Host "  $msg" -ForegroundColor Yellow }
 
 # --- 端口清理 -----------------------------------------------------------------
-# 只清理开发进程（node / bun / vite / qy / qywork）。端口被其他进程占用时停止并
+# 只清理开发进程（node / bun / vite / qy / qywork-dev）。端口被其他进程占用时停止并
 # 报告给用户：由脚本推测并结束进程，比端口冲突本身危险得多。
 function Clear-DevPort([int]$Port) {
   $conns = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
   foreach ($c in $conns) {
     $proc = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
     $name = if ($proc) { $proc.ProcessName } else { '<已退出>' }
-    if ($proc -and $proc.ProcessName -notin @('node', 'bun', 'vite', 'qy', 'qywork')) {
+    if ($proc -and $proc.ProcessName -notin @('node', 'bun', 'vite', 'qy', 'qywork-dev')) {
       throw "端口 $Port 被 $name (pid $($c.OwningProcess)) 占用，判定不是 qywork 的开发进程，脚本不结束该进程。请自行确认后处理。"
     }
     Warn "端口 $Port 被 $name (pid $($c.OwningProcess)) 占用，正在结束该进程"
@@ -65,10 +65,10 @@ function Clear-DevPort([int]$Port) {
 # 「拒绝访问」，无法看出与上一个仍在运行的窗口有关。已实测复现。
 #
 # 只清理本仓库 target 目录下的两个可执行文件，路径不匹配的同名进程一律不处理：
-# 本机可能安装了正式版 qywork。
+# 安装版的 sidecar 同样名为 qy.exe。
 function Clear-StaleShell {
   $root = (Resolve-Path $PSScriptRoot\..).Path
-  foreach ($p in @(Get-Process qywork, qy -ErrorAction SilentlyContinue)) {
+  foreach ($p in @(Get-Process qywork-dev, qy -ErrorAction SilentlyContinue)) {
     $path = try { $p.Path } catch { $null }
     if ($path -and $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
       Warn "上一次的 $($p.ProcessName) (pid $($p.Id)) 仍在运行，占用 .tmp\cargo-target\debug 中的文件，正在结束该进程"
