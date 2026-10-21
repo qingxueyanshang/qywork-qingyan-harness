@@ -1277,19 +1277,21 @@ describe('搜索与命令', () => {
   }, 30_000)
 
   /**
-   * 原始失败：一套 25 页 PPT 的重建脚本逐页输出进度，运行 15–20 分钟，按总时长在 600 秒时被终止，
-   * 模型连续四次重新运行后改为放到后台轮询。`timeout_ms` 是两片输出之间的间隔上限：
-   * 仍在输出的命令继续运行，不输出的命令按时终止。两件都锁定：只锁定前者时，
-   * 去掉全部时限也能通过。
+   * 原始失败：一套 25 页 PPT 的重建脚本逐页处理，运行 15–20 分钟，按总时长在 600 秒时被终止，
+   * 模型连续四次重新运行后改为放到后台轮询。三条命令：持续输出、总时长超过时限的命令正常结束；
+   * 不输出但一直占用 CPU 的命令也正常结束（输出接到 `| tail` 时就是这样）；不输出也不占用 CPU
+   * 的命令到时限后终止。三件都锁定：只锁定前两件时，去掉全部时限也能通过。
    */
-  test('timeout_ms 按无输出计：持续输出的命令运行超过时限仍正常结束，不输出的命令按时终止', async () => {
+  async function idleJudged(root: string) {
     const shell = commandShell()
     if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
-    const root = await workspace()
     const ps = shell.argv.includes('-Command')
     const talking = ps
       ? '1..6 | ForEach-Object { Write-Output $_; Start-Sleep -Milliseconds 400 }'
       : 'for i in 1 2 3 4 5 6; do echo $i; sleep 0.4; done'
+    const computing = ps
+      ? "$e = (Get-Date).AddSeconds(6); while ((Get-Date) -lt $e) {}; 'finished'"
+      : 'end=$((SECONDS+6)); while [ $SECONDS -lt $end ]; do :; done; echo finished'
     const silent = ps ? 'Start-Sleep -Seconds 20' : 'sleep 20'
 
     const started = Date.now()
@@ -1302,6 +1304,14 @@ describe('搜索与命令', () => {
     expect(String(ok.data?.stdout)).toContain('6')
     expect(Date.now() - started).toBeGreaterThan(1500)
 
+    const busy = await registry().execute(
+      'run_command',
+      { command: computing, timeout_ms: 1500 },
+      ctx(root),
+    )
+    expect(busy.status).toBe('success')
+    expect(String(busy.data?.stdout)).toContain('finished')
+
     const stuck = await registry().execute(
       'run_command',
       { command: silent, timeout_ms: 1500 },
@@ -1309,8 +1319,29 @@ describe('搜索与命令', () => {
     )
     expect(stuck.status).toBe('failure')
     expect(stuck.errorKind).toBe('timeout')
-    expect(stuck.message).toContain('没有任何输出')
-  }, 30_000)
+    expect(stuck.message).toContain('没有占用 CPU')
+  }
+
+  test('timeout_ms 判定停滞：仍在输出或仍在计算的命令运行超过时限照常结束，什么都不做的命令按时终止', async () => {
+    await idleJudged(await workspace())
+  }, 60_000)
+
+  /** 产品经 runner 执行命令：runner 若攒到退出才转发输出，无输出判定会把持续输出的命令当作停滞。 */
+  test('runner 代为执行时同样按无输出判定', async () => {
+    const root = await workspace()
+    const runner = startCommandRunner([
+      process.execPath,
+      '-e',
+      `import { runCommandRunner } from ${JSON.stringify(Bun.fileURLToPath(new URL('./runner.ts', import.meta.url)))}; runCommandRunner()`,
+    ])
+    setCommandRunner(runner)
+    try {
+      await idleJudged(root)
+    } finally {
+      setCommandRunner(null)
+      runner.stop()
+    }
+  }, 60_000)
 
   /**
    * 同一行为在 runner 路径上也必须成立：产品实际使用该路径。

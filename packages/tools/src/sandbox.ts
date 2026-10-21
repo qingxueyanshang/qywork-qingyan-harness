@@ -41,7 +41,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { rm, writeFile } from 'node:fs/promises'
+import { readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join as joinNative } from 'node:path'
 /*
@@ -1058,6 +1058,152 @@ export function killTree(proc: { pid: number; kill(): void }): void {
 }
 
 /**
+ * 判定进程树是否仍在工作时的采样间隔与门槛。
+ *
+ * 两次采样之间，整棵树的 CPU 时间增长不少于间隔的 5%（一个核的 5%），或读写字节数增长不少于
+ * 64KB，即视为仍在工作。计算任务通常占满一个核；等待输入、网络或子进程的进程接近 0。
+ * 每秒派生一次 `sleep` 的轮询脚本约占 1%，按停滞处理。
+ */
+const BUSY_WINDOW_MS = 2000
+const BUSY_CPU_SHARE = 0.05
+const BUSY_IO_BYTES = 64 * 1024
+/** 读取进程表的时限。PowerShell 启动与 CIM 查询通常在 2 秒内完成，超时按读取失败处理。 */
+const PROCESS_TABLE_TIMEOUT_MS = 15_000
+
+interface ProcessRow {
+  pid: number
+  ppid: number
+  cpuMs: number
+  ioBytes: number
+}
+
+/**
+ * 以 `pid` 为根的进程树此刻是否仍在工作：相隔 `BUSY_WINDOW_MS` 读取两次进程表，比较整棵树的
+ * CPU 时间与读写字节数。无法读取进程表（平台不支持、进程已退出）时返回 false，按无输出处理。
+ */
+export async function treeBusy(pid: number): Promise<boolean> {
+  const before = await treeUsage(pid)
+  if (before === null) return false
+  await Bun.sleep(BUSY_WINDOW_MS)
+  const after = await treeUsage(pid)
+  if (after === null) return false
+  return (
+    after.cpuMs - before.cpuMs >= BUSY_CPU_SHARE * BUSY_WINDOW_MS ||
+    after.ioBytes - before.ioBytes >= BUSY_IO_BYTES
+  )
+}
+
+async function treeUsage(root: number): Promise<{ cpuMs: number; ioBytes: number } | null> {
+  const rows = await Promise.race([
+    processTable().catch(() => null),
+    Bun.sleep(PROCESS_TABLE_TIMEOUT_MS).then(() => null),
+  ])
+  if (rows === null) return null
+  const byPid = new Map(rows.map((r) => [r.pid, r]))
+  if (!byPid.has(root)) return null
+  const children = new Map<number, number[]>()
+  for (const r of rows) {
+    if (r.pid === r.ppid) continue
+    const list = children.get(r.ppid)
+    if (list) list.push(r.pid)
+    else children.set(r.ppid, [r.pid])
+  }
+  // 进程号会被复用，父进程号可能指向一个无关的新进程而形成环；`seen` 保证每个进程只计一次。
+  let cpuMs = 0
+  let ioBytes = 0
+  const seen = new Set<number>()
+  const stack = [root]
+  while (stack.length) {
+    const p = stack.pop() as number
+    if (seen.has(p)) continue
+    seen.add(p)
+    const r = byPid.get(p)
+    if (r) {
+      cpuMs += r.cpuMs
+      ioBytes += r.ioBytes
+    }
+    stack.push(...(children.get(p) ?? []))
+  }
+  return { cpuMs, ioBytes }
+}
+
+/**
+ * 本机全部进程的父子关系、累计 CPU 时间与读写字节数。
+ *
+ * - Windows：`Win32_Process`，CPU 时间单位为 100 纳秒，读写字节含文件与管道；
+ * - Linux：`/proc/<pid>/stat` 的 utime + stime（按每秒 100 个时钟周期换算）与 `/proc/<pid>/io`；
+ * - 其他：`ps` 的累计 CPU 时间，不含读写字节。
+ */
+async function processTable(): Promise<ProcessRow[]> {
+  if (process.platform === 'win32') {
+    const ps = Bun.spawn(
+      [
+        'powershell.exe',
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) ' +
+          '$($_.KernelModeTime + $_.UserModeTime) $($_.ReadTransferCount + $_.WriteTransferCount)" }',
+      ],
+      { stdout: 'pipe', stderr: 'ignore', windowsHide: true },
+    )
+    const text = await new Response(ps.stdout).text()
+    await ps.exited
+    return text
+      .split(/\r?\n/)
+      .map((l) => l.trim().split(/\s+/).map(Number))
+      .filter((f) => f.length === 4 && f.every(Number.isFinite))
+      .map(([pid, ppid, cpu, io]) => ({
+        pid: pid as number,
+        ppid: ppid as number,
+        cpuMs: (cpu as number) / 10_000,
+        ioBytes: io as number,
+      }))
+  }
+  if (process.platform === 'linux') {
+    const rows: ProcessRow[] = []
+    for (const name of await readdir('/proc')) {
+      if (!/^\d+$/.test(name)) continue
+      try {
+        const stat = await readFile(`/proc/${name}/stat`, 'utf8')
+        // 进程名可含空格与括号，字段从最后一个右括号之后数起。
+        const f = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+        let ioBytes = 0
+        try {
+          const io = await readFile(`/proc/${name}/io`, 'utf8')
+          for (const m of io.matchAll(/^(?:read|write)_bytes: (\d+)$/gm)) ioBytes += Number(m[1])
+        } catch {
+          // 无权读取 io 时只按 CPU 判定。
+        }
+        rows.push({
+          pid: Number(name),
+          ppid: Number(f[1]),
+          cpuMs: ((Number(f[11]) + Number(f[12])) * 1000) / 100,
+          ioBytes,
+        })
+      } catch {
+        // 进程在读取期间退出。
+      }
+    }
+    return rows
+  }
+  const ps = Bun.spawn(['ps', '-A', '-o', 'pid=,ppid=,time='], { stdout: 'pipe', stderr: 'ignore' })
+  const text = await new Response(ps.stdout).text()
+  await ps.exited
+  const rows: ProcessRow[] = []
+  for (const line of text.split('\n')) {
+    const [pid, ppid, time] = line.trim().split(/\s+/)
+    if (!pid || !ppid || !time) continue
+    // [[dd-]hh:]mm:ss[.cc]
+    const [days, clock] = time.includes('-') ? time.split('-') : ['0', time]
+    const parts = (clock as string).split(':').map(Number)
+    const secs = parts.reduce((acc, v) => acc * 60 + v, 0) + Number(days) * 86_400
+    rows.push({ pid: Number(pid), ppid: Number(ppid), cpuMs: secs * 1000, ioBytes: 0 })
+  }
+  return rows
+}
+
+/**
  * 进程退出后，读取管道中剩余字节的时限。
  *
  * 这不是超时后备处理：正常命令上它没有开销，EOF 紧随退出到达，下方的 race
@@ -1162,7 +1308,7 @@ export interface CollectedProcess {
   exitCode: number
   stdout: string
   stderr: string
-  /** `timeoutMs` 或 `idleMs` 已到期，进程树已终止。 */
+  /** `timeoutMs` 到期，或 `idleMs` 到期且 `busy` 判定进程树没有在工作，进程树已终止。 */
   timedOut: boolean
   /**
    * 进程已经退出，但仍有后代进程持有输出管道，读取由本地主动结束。
@@ -1184,6 +1330,11 @@ export interface CollectOptions {
    * `idleMs` 计量两片输出之间的间隔，只要仍在输出就持续等待。
    */
   idleMs?: number
+  /**
+   * `idleMs` 到期时先调用：返回 true 表示进程树仍在工作（占用 CPU、读写磁盘），重新计时而不终止。
+   * 没有输出不等于没有进展：输出接到 `| tail` 时攒到结束才送出，长时间计算本身也可能不输出。
+   */
+  busy?: () => Promise<boolean>
   /** 中断信号。abort 时终止进程树，使用户点击停止后子进程确实停止。 */
   signal?: AbortSignal
   /** 每片解码后的文本先经过此函数，其返回值计入结果。脱敏与流式回传都在此完成。 */
@@ -1233,6 +1384,9 @@ export async function collectProcess(
   // 进程退出后必须停止：退出后还有一段读取剩余缓冲的时间，其间没有输出属于正常情况，
   // 不停止时一次正常退出会被报告为 `timedOut`。
   let idleTimer: ReturnType<typeof setTimeout> | null = null
+  // 每次计时一个序号：检查进程树期间若收到输出（序号已变）或进程已退出，本次到期作废。
+  let idleGen = 0
+  let finished = false
   const stopIdle = () => {
     if (idleTimer !== null) clearTimeout(idleTimer)
     idleTimer = null
@@ -1240,10 +1394,18 @@ export async function collectProcess(
   const armIdle = () => {
     if (opts.idleMs === undefined) return
     stopIdle()
-    idleTimer = setTimeout(() => {
-      timedOut = true
-      killTree(proc)
-    }, opts.idleMs)
+    const gen = ++idleGen
+    idleTimer = setTimeout(() => void onIdle(gen), opts.idleMs)
+  }
+  const onIdle = async (gen: number) => {
+    const working = opts.busy ? await opts.busy().catch(() => false) : false
+    if (gen !== idleGen || finished) return
+    if (working) {
+      armIdle()
+      return
+    }
+    timedOut = true
+    killTree(proc)
   }
 
   // 使用显式 reader 而不是 `for await`：后者把流锁定在循环中，结束时在外部调用
@@ -1291,6 +1453,7 @@ export async function collectProcess(
 
   try {
     const exitCode = await proc.exited
+    finished = true
     stopIdle()
     const drained = await Promise.race([
       pumping.then(() => true),
@@ -1304,6 +1467,7 @@ export async function collectProcess(
     return { exitCode, stdout: text.stdout, stderr: text.stderr, timedOut, backgroundHeld }
   } finally {
     if (timer !== null) clearTimeout(timer)
+    finished = true
     stopIdle()
     opts.signal?.removeEventListener('abort', onAbort)
   }
