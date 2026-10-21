@@ -2,7 +2,13 @@ import { MEDIA_OUTPUTS, type MediaOutput } from '@qywork/core'
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { modelCatalog, type PullResult, pullModels } from '../../lib/store/index.ts'
 import { config, replaceConfig } from './configStore.ts'
-import { addPulled, priceSummary, refreshPulled, specSummary } from './pulled.ts'
+import {
+  addPulled,
+  durationSummary,
+  priceSummary,
+  referenceSummary,
+  refreshPulled,
+} from './pulled.ts'
 
 const TAB_LABEL: Record<'chat' | MediaOutput, string> = {
   chat: '对话',
@@ -35,8 +41,9 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
       result()?.models.some((m) => m.output === o),
     )
   const rows = () => result()?.models.filter((m) => m.output === tab()) ?? []
-  /** 对应型号的可选项：模型库中的内置型号，按厂商分组。 */
-  const vendors = () => (modelCatalog()?.library ?? []).filter((v) => v.id && v.models.length)
+  /** 对应型号的可选项：模型库中的内置型号，按模型库的厂商顺序排列。 */
+  const libraryIds = () =>
+    (modelCatalog()?.library ?? []).flatMap((v) => (v.id ? v.models.map((m) => m.id) : []))
 
   const toggle = (id: string, on: boolean) =>
     setPicked((prev) => {
@@ -137,12 +144,13 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
                   </label>
                   {/* 各列的单元格始终存在：行按共用的列宽对齐，空单元格保留该列的位置。
                       对应型号只在未添加时出现，与「已添加」「不支持」不会同时出现，共用最后一列。 */}
-                  <span class="pull-spec">{specSummary(m)}</span>
-                  <span class="pull-price">{priceSummary(m)}</span>
+                  <span class="pull-cell">{durationSummary(m)}</span>
+                  <span class="pull-cell">{referenceSummary(m)}</span>
+                  <span class="pull-cell">{priceSummary(m)}</span>
                   <Show
                     when={m.output === 'chat' && !m.known && !done()}
                     fallback={
-                      <span class="pull-status" title={!done() && blocked ? blocked : undefined}>
+                      <span class="pull-cell" title={!done() && blocked ? blocked : undefined}>
                         {done() ? '已添加' : blocked ? '不支持' : ''}
                       </span>
                     }
@@ -153,22 +161,14 @@ export function PullDialog(props: { provider: string; onClose: () => void }) {
                       value={bases()[m.id] ?? ''}
                       onChange={(e) => {
                         const value = e.currentTarget.value
-                        setBases((prev) => {
-                          const { [m.id]: _drop, ...rest } = prev
-                          return value ? { ...rest, [m.id]: value } : rest
-                        })
+                        setBases((prev) => ({ ...prev, [m.id]: value }))
                       }}
                     >
-                      <option value="">对应型号</option>
-                      <For each={vendors()}>
-                        {(v) => (
-                          <optgroup label={v.displayName}>
-                            <For each={v.models}>
-                              {(lib) => <option value={lib.id}>{lib.id}</option>}
-                            </For>
-                          </optgroup>
-                        )}
-                      </For>
+                      {/* 占位项只在未选择时显示在框内，不出现在展开的列表中。 */}
+                      <option value="" disabled hidden>
+                        对应型号
+                      </option>
+                      <For each={libraryIds()}>{(id) => <option value={id}>{id}</option>}</For>
                     </select>
                   </Show>
                 </div>
