@@ -44,6 +44,7 @@ import {
   panelTabs,
   panelWidth,
   resizePanel,
+  revealFile,
   revealWorkspace,
   setFileRevealRequest,
   setOpenFile,
@@ -649,6 +650,22 @@ function FileBrowser() {
    */
   const [manualRefresh, setManualRefresh] = createSignal(0)
 
+  let browser!: HTMLDivElement
+  onMount(() => {
+    // 点击空白、预览或会话区时取消行选择；树内操作仍使用当前选择确定目标。
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0 || !(e.target instanceof Element)) return
+      if (
+        browser.contains(e.target) &&
+        e.target.closest('.tree-item, .tree-root-acts, .tree-search, .tree-edit, .tree-menu')
+      )
+        return
+      setSelected(null)
+    }
+    window.addEventListener('pointerdown', onDown, true)
+    onCleanup(() => window.removeEventListener('pointerdown', onDown, true))
+  })
+
   // 打开文件时同步选中并展开祖先目录；后续点击目录仍由 selected 决定高亮。
   createEffect(
     on(fileRevealRequest, (request) => {
@@ -708,8 +725,7 @@ function FileBrowser() {
      *
      * 不要把主区打开的文件（`openFile`）也纳入判定：两个权威争夺同一处高亮时，
      * 点击文件夹不会高亮（高亮停留在已打开的文件上），点击文件后选中状态看起来没有保留。
-     * 行为与资源管理器一致：**最后点击的行即选中行**，保持高亮，
-     * 直到点击其他行。
+     * 最后点击的行即选中行；点击空白或树外区域时取消选中，已打开的预览保持不变。
      */
     selected: () => renaming()?.path ?? selected()?.path ?? null,
     load: loadDir,
@@ -807,7 +823,7 @@ function FileBrowser() {
      * 面板宽度由用户拖动左边沿调整（`.panel-grip`）：两栏并排时必须支持调整，
      * 否则内容栏只有一百多像素。
      */
-    <div class="file-browser">
+    <div class="file-browser" ref={browser}>
       <div class="file-tree-col">
         {/* 搜索位于第一行：它是文件树的入口，不应排在文件树操作之后。 */}
         <input
@@ -1060,11 +1076,9 @@ function TreeMenu(props: {
           role="menuitem"
           onClick={() =>
             run(() => {
-              // 先从使用斜杠的相对路径取父目录，再转换为本机路径。
-              const dir = absPath(
-                props.node.kind === 'dir' ? props.node.path : parentDir(props.node.path),
-              )
-              void revealWorkspace(dir).catch((err) =>
+              // 文件必须保留完整路径交给系统选中；目录则打开自身。
+              const reveal = props.node.kind === 'dir' ? revealWorkspace : revealFile
+              void reveal(abs()).catch((err) =>
                 props.onError(err instanceof Error ? err.message : String(err)),
               )
             })

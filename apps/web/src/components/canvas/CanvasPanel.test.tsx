@@ -182,12 +182,14 @@ async function mount(
   let written = 0
   let fingerprint = 'd0'
   const snapshots = new Map<string, CanvasDoc>([['d0', doc]])
-  const view = (): CanvasView => ({
-    path: 'board.canvas.json',
-    doc,
-    states: extraStates,
-    tasks: extraTasks,
-  })
+  // HTTP JSON 响应不会保留上次读取的对象引用。
+  const view = (): CanvasView =>
+    structuredClone({
+      path: 'board.canvas.json',
+      doc,
+      states: extraStates,
+      tasks: extraTasks,
+    })
   const server: Server = {
     hold: null,
     cancels: [],
@@ -2570,6 +2572,43 @@ describe('画布：生成卡与生成面板', () => {
     ])
   })
 
+  test.each(['素材缩略图', '提示词内容'])('添加图片保留已有%s，不重建或重置视口', async (part) => {
+    const { host, refs } = await mount([
+      ...CARD,
+      { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+      { op: 'update', id: '$v', prompt: '人物保持一致，继续向前走。' },
+    ])
+    await select(host, refs.$v!)
+    const panel = host.querySelector('.canvas-panel')!
+    const editor = host.querySelector<HTMLElement>('.canvas-prompt')!
+    const before =
+      part === '素材缩略图' ? panel.querySelector('.canvas-input canvas') : editor.firstChild
+    expect(before).not.toBeNull()
+    const position = offset(host)
+    const scale = zoom(host)
+    editor.scrollTop = 42
+    host.querySelector<HTMLButtonElement>('.canvas-inputs button[aria-label="添加素材"]')!.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-pick input[type="file"]'),
+      () => '',
+    )
+    const upload = document.querySelector<HTMLInputElement>('.canvas-pick input[type="file"]')!
+    Object.defineProperty(upload, 'files', { value: [new File(['a'], '参考.png')] })
+    upload.dispatchEvent(new Event('change', { bubbles: true }))
+    await waitFor(
+      () => panel.querySelectorAll('.canvas-input-remove').length === 2,
+      () => panel.innerHTML,
+    )
+    expect(host.querySelector('.canvas-panel') === panel).toBe(true)
+    const after =
+      part === '素材缩略图' ? panel.querySelector('.canvas-input canvas') : editor.firstChild
+    expect(after === before).toBe(true)
+    expect(editor.scrollTop).toBe(42)
+    expect(offset(host)).toEqual(position)
+    expect(zoom(host)).toBe(scale)
+    expect(host.querySelector('.suspended')).toBeNull()
+  })
+
   test.each(['按钮', '键盘'])('@ 只列出当前卡片已引用的素材，选择后保存标签：%s', async (entry) => {
     const { host, server, refs } = await mount([
       ...CARD,
@@ -2615,6 +2654,82 @@ describe('画布：生成卡与生成面板', () => {
       () => host.querySelectorAll('.canvas-inputs .canvas-input i').length === 1,
       () => '',
     )
+  })
+
+  test('提示词标签原位更新名称和图片路径，外部修改提示词仍正常同步', async () => {
+    const { host, refs } = await mount([
+      ...CARD,
+      { op: 'connect', from: '$a', to: '$v', role: 'reference' },
+    ])
+    const store = await import('../../lib/store/index.ts')
+    const change = async (ops: CanvasOp[]) => {
+      await store.client.api('/api/canvas/ops', { method: 'POST', body: JSON.stringify({ ops }) })
+      store.setState('canvasVersion', (v) => v + 1)
+    }
+    await select(host, refs.$v!)
+    await change([{ op: 'update', id: refs.$v!, prompt: `@[${refs.$a!}] 向前走` }])
+    const editor = host.querySelector<HTMLElement>('.canvas-prompt')!
+    await waitFor(
+      () => !!editor.querySelector('.canvas-chip'),
+      () => editor.innerHTML,
+    )
+    const tag = editor.querySelector<HTMLElement>('.canvas-chip')!
+    const text = editor.lastChild
+    await waitFor(
+      () => !tag.querySelector('canvas'),
+      () => tag.innerHTML,
+    )
+    await waitFor(
+      () => host.querySelectorAll('.canvas-bitmap-failed').length === 2,
+      () => '',
+    )
+    const before = fetched.length
+
+    await change([{ op: 'update', id: refs.$a!, name: '角色新名称' }])
+    await waitFor(
+      () => tag.textContent === '角色新名称',
+      () => editor.innerHTML,
+    )
+    expect(editor.firstChild === tag).toBe(true)
+    expect(editor.lastChild === text).toBe(true)
+    expect(fetched.slice(before)).toEqual([])
+
+    await change([{ op: 'update', id: refs.$a!, path: '新图片.png' }])
+    await waitFor(
+      () => fetched.slice(before).includes(store.client.fileUrl('新图片.png')),
+      () => fetched.slice(before).join('\n'),
+    )
+    expect(editor.firstChild === tag).toBe(true)
+    await change([{ op: 'update', id: refs.$v!, prompt: '新的提示词' }])
+    await waitFor(
+      () => editor.textContent === '新的提示词',
+      () => editor.innerHTML,
+    )
+  })
+
+  test('首尾帧互换后素材按新连线更新，断开当前首帧', async () => {
+    const { host, server, refs } = await mount([
+      ...CARD,
+      { op: 'add_file', ref: '$b', path: 'b.png' },
+      { op: 'connect', from: '$a', to: '$v', role: 'first_frame' },
+      { op: 'connect', from: '$b', to: '$v', role: 'last_frame' },
+    ])
+    await select(host, refs.$v!)
+    const first = host.querySelector('.canvas-input')!
+    host.querySelector<HTMLButtonElement>('button[aria-label="互换首尾帧"]')!.click()
+    await waitFor(
+      () => server.doc().edges.find((e) => e.from === refs.$b)?.role === 'first_frame',
+      () => JSON.stringify(server.doc().edges),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(host.querySelector('.canvas-input') === first).toBe(true)
+    first.querySelector<HTMLButtonElement>('button[aria-label="断开"]')!.click()
+    await waitFor(
+      () => server.doc().edges.length === 1,
+      () => JSON.stringify(server.doc().edges),
+    )
+    expect(server.doc().edges[0]?.from).toBe(refs.$a!)
+    expect(server.doc().edges[0]?.role).toBe('last_frame')
   })
 
   test('@ 列表随引用连线更新，断开后移除素材', async () => {

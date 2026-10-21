@@ -4,7 +4,7 @@
  * 该按钮位于文件树与已打开文件共用的文件页中，点击后刷新整页，不只重新读取左侧文件树。
  * 原始失败形状：文件树请求已发出，右侧已打开的文件仍显示旧正文，按钮看起来没有响应。
  * 另覆盖右键菜单与预览切换时的树宽规则；实际尺寸由浏览器复测验证。
- * 覆盖资源管理器菜单的本机目录参数与失败提示。
+ * 覆盖资源管理器菜单的文件定位、目录打开参数与失败提示。
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
@@ -127,8 +127,124 @@ async function waitFor(done: () => boolean, detail: () => string) {
   throw new Error(`界面没有在时限内更新：${detail()}`)
 }
 
+describe('文件树取消选中', () => {
+  async function mount() {
+    const store = await import('../lib/store/index.ts')
+    const original = store.client.api
+    const created: string[] = []
+    store.client.api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
+      if (path.startsWith('/api/files/tree?path=')) return { nodes: [] } as T
+      if (path.startsWith('/api/files/tree'))
+        return {
+          nodes: [
+            {
+              name: '素材',
+              path: '素材',
+              kind: 'dir',
+              children: [{ name: '参考.bin', path: '素材/参考.bin', kind: 'file' }],
+            },
+          ],
+        } as T
+      if (path.startsWith('/api/files/preview'))
+        return { path: '素材/参考.bin', kind: 'binary', note: '测试预览', truncated: false } as T
+      if (path.startsWith('/api/files/create')) {
+        const body = JSON.parse(String(init?.body))
+        created.push(body.path)
+        return { node: { name: body.path.split('/').at(-1), ...body } } as T
+      }
+      throw new Error(`未预期请求：${path}`)
+    }
+    restoreApi = () => {
+      store.client.api = original
+    }
+    store.setWorkspace({ id: 'ws_tree_selection', root: 'C:/work', name: 'work' })
+    store.setSidePanel('files')
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host)
+    await waitFor(
+      () => !!host.querySelector('[data-path="素材"]'),
+      () => host.innerHTML,
+    )
+    return { host, store, created }
+  }
+
+  const click = (el: HTMLElement) => {
+    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    el.click()
+  }
+
+  test.each(['空白', '预览', '面板外'])(
+    '点击%s取消选中，保留已打开的文件和展开的目录',
+    async (where) => {
+      const { host, store } = await mount()
+      click(host.querySelector<HTMLElement>('[data-path="素材"]')!)
+      click(host.querySelector<HTMLElement>('[data-path="素材/参考.bin"]')!)
+      await waitFor(
+        () => !!host.querySelector('.preview'),
+        () => host.innerHTML,
+      )
+      const preview = host.querySelector<HTMLElement>('.preview')!
+      expect(host.querySelector('.tree-item.selected')?.getAttribute('data-path')).toBe(
+        '素材/参考.bin',
+      )
+      click(
+        where === '面板外'
+          ? document.body
+          : where === '预览'
+            ? preview
+            : host.querySelector<HTMLElement>('.file-tree-col')!,
+      )
+      expect(host.querySelectorAll('.tree-item.selected').length).toBe(0)
+      expect(host.querySelector('[aria-current="true"]')).toBeNull()
+      expect(store.openFile()).toBe('素材/参考.bin')
+      expect(host.querySelector('.preview') === preview).toBe(true)
+      expect(host.querySelector('[data-path="素材/参考.bin"]')).not.toBeNull()
+    },
+  )
+
+  test.each([false, true])('新建使用当前选择；点击空白后改为根目录：%s', async (clear) => {
+    const { host, created } = await mount()
+    click(host.querySelector<HTMLElement>('[data-path="素材"]')!)
+    click(host.querySelector<HTMLElement>('.tree-search')!)
+    expect(host.querySelector('.tree-item.selected')?.getAttribute('data-path')).toBe('素材')
+    if (clear) click(host.querySelector<HTMLElement>('.file-tree-col')!)
+    click(host.querySelector<HTMLElement>('[aria-label="新建文件夹"]')!)
+    const input = host.querySelector<HTMLInputElement>('.tree-edit-input')!
+    click(input)
+    input.value = '新目录'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await waitFor(
+      () => created.length === 1,
+      () => JSON.stringify(created),
+    )
+    expect(created).toEqual([clear ? '新目录' : '素材/新目录'])
+  })
+
+  test('点击右键菜单与重命名输入框保留选中，点击其他区域仍能清除', async () => {
+    const { host } = await mount()
+    const row = host.querySelector<HTMLElement>('[data-path="素材"]')!
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    const rename = [...host.querySelectorAll<HTMLElement>('.tree-menu-item')].find(
+      (b) => b.textContent === '重命名',
+    )!
+    click(rename)
+    const input = host.querySelector<HTMLInputElement>('.tree-edit-input')!
+    expect(input.value).toBe('素材')
+    click(input)
+    expect(host.querySelector('.tree-edit-input') === input).toBe(true)
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(host.querySelector('.tree-item.selected')?.getAttribute('data-path')).toBe('素材')
+    click(document.body)
+    expect(host.querySelector('.tree-item.selected') === null).toBe(true)
+  })
+})
+
 describe('在资源管理器中显示', () => {
-  async function mount(root: string, reveal: (path: string) => Promise<void>) {
+  async function mount(root: string, reveal: (path: string, command: string) => Promise<void>) {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     store.client.api = async <T,>(path: string): Promise<T> => {
@@ -164,8 +280,9 @@ describe('在资源管理器中显示', () => {
     const previousShell = g.__TAURI_INTERNALS__
     g.__TAURI_INTERNALS__ = {
       invoke: (cmd: string, args: { path: string }) => {
-        if (cmd !== 'reveal_workspace') throw new Error(`未预期命令：${cmd}`)
-        return reveal(args.path)
+        if (cmd !== 'reveal_workspace' && cmd !== 'reveal_file')
+          throw new Error(`未预期命令：${cmd}`)
+        return reveal(args.path, cmd)
       },
     }
     restoreShell = () => {
@@ -205,30 +322,45 @@ describe('在资源管理器中显示', () => {
   }
 
   test.each([
-    ['C:\\项目 工作', 'C:\\项目 工作\\', 'C:\\项目 工作\\素材 文件'],
+    [
+      'C:\\项目 工作',
+      'C:\\项目 工作\\根目录.txt',
+      'C:\\项目 工作\\素材 文件',
+      'C:\\项目 工作\\素材 文件\\视频 1.mp4',
+    ],
     [
       '\\\\server\\share\\项目 工作',
-      '\\\\server\\share\\项目 工作\\',
+      '\\\\server\\share\\项目 工作\\根目录.txt',
       '\\\\server\\share\\项目 工作\\素材 文件',
+      '\\\\server\\share\\项目 工作\\素材 文件\\视频 1.mp4',
     ],
-    ['/tmp/项目 工作', '/tmp/项目 工作/', '/tmp/项目 工作/素材 文件'],
-  ])('%s：文件打开父目录，目录打开自身', async (root, expectedRoot, expectedDir) => {
-    const paths: string[] = []
-    const page = await mount(root, async (path) => {
-      paths.push(path)
+    [
+      '/tmp/项目 工作',
+      '/tmp/项目 工作/根目录.txt',
+      '/tmp/项目 工作/素材 文件',
+      '/tmp/项目 工作/素材 文件/视频 1.mp4',
+    ],
+  ])('%s：文件定位选中，目录打开自身', async (root, expectedFile, expectedDir, expectedNested) => {
+    const calls: { command: string; path: string }[] = []
+    const page = await mount(root, async (path, command) => {
+      calls.push({ command, path })
     })
     page.clickReveal('根目录.txt')
-    expect(paths).toEqual([expectedRoot])
+    expect(calls).toEqual([{ command: 'reveal_file', path: expectedFile }])
     expect(page.host.querySelector('.tree-menu')).toBeNull()
     page.clickReveal('素材 文件')
-    expect(paths.at(-1)).toBe(expectedDir)
+    expect(calls.at(-1)).toEqual({ command: 'reveal_workspace', path: expectedDir })
     page.row('素材 文件').click()
     await waitFor(
       () => page.host.textContent?.includes('视频 1.mp4') ?? false,
       () => page.host.innerHTML,
     )
     page.clickReveal('视频 1.mp4')
-    expect(paths).toEqual([expectedRoot, expectedDir, expectedDir])
+    expect(calls).toEqual([
+      { command: 'reveal_file', path: expectedFile },
+      { command: 'reveal_workspace', path: expectedDir },
+      { command: 'reveal_file', path: expectedNested },
+    ])
     expect(page.host.querySelector('[role="alert"]')).toBeNull()
   })
 
@@ -258,7 +390,7 @@ describe('在资源管理器中显示', () => {
   test('桌面命令失败后显示原因，再次操作清除旧错误', async () => {
     let fail = true
     const page = await mount('C:\\项目 工作', async () => {
-      if (fail) throw '不是目录：C:\\项目 工作'
+      if (fail) throw '文件不存在：C:\\项目 工作\\根目录.txt'
     })
     page.clickReveal('根目录.txt')
     await waitFor(
@@ -266,7 +398,7 @@ describe('在资源管理器中显示', () => {
       () => page.host.innerHTML,
     )
     expect(page.host.querySelector('[role="alert"]')?.textContent).toContain(
-      '不是目录：C:\\项目 工作',
+      '文件不存在：C:\\项目 工作\\根目录.txt',
     )
     expect(page.host.querySelector('.tree-menu')).toBeNull()
     fail = false

@@ -492,7 +492,7 @@ export function GeneratePanel(props: {
   }
 
   /*
-   * 画布每次重新读取后重建编辑框（素材标签的名称随节点更新）。编辑框有焦点时以编辑框内容为准；
+   * 画布重新读取后同步编辑框，未变化的内容与缩略图保留原 DOM。编辑框有焦点时以编辑框内容为准；
    * 没有焦点时，返回的提示词变化则按它重建，未变化则保留当前草稿。不要改为一律按返回的提示词重建：
    * 刷新后恢复的草稿尚未提交、编辑框也没有焦点，下一次重新读取会清除它。
    */
@@ -510,39 +510,49 @@ export function GeneratePanel(props: {
     ),
   )
 
-  function chip(id: string): HTMLElement {
-    const el = document.createElement('span')
-    el.className = 'canvas-chip'
+  function chip(id: string, el = document.createElement('span')): HTMLElement {
+    el.classList.add('canvas-chip')
     el.contentEditable = 'false'
     el.dataset.node = id
     const node = props.view.doc.nodes.find((n) => n.id === id)
-    if (node && isTextCard(node)) {
-      const label = displayNameOf(node)
-      el.classList.add('text')
-      // 失效的判定与运行前的核对相同（服务端 `textReferenceProblems`），界面不另行判定。
-      const broken = props.view.references?.[props.node.id]?.some((p) =>
-        p.startsWith(`@[${label}]`),
-      )
-      if (broken) el.classList.add('broken')
-      el.append(label)
-      return el
-    }
+    const label = node ? displayNameOf(node) : id
+    const text = !!node && isTextCard(node)
+    el.classList.toggle('text', text)
+    // 失效的判定与运行前的核对相同（服务端 `textReferenceProblems`），界面不另行判定。
+    const broken =
+      text && props.view.references?.[props.node.id]?.some((p) => p.startsWith(`@[${label}]`))
+    el.classList.toggle('broken', !!broken)
     const media = mediaOf(props.view, id)
-    if (media.kind === 'image' && media.path) {
-      const thumb = document.createElement('canvas')
-      thumb.className = 'canvas-bitmap'
-      const side = 32 * window.devicePixelRatio
-      void decodeImage(client.fileUrl(media.path), { w: side, h: side }).then(
-        (bitmap) => paint(thumb, bitmap),
-        () => thumb.remove(),
-      )
-      el.append(thumb)
+    const path = media.kind === 'image' ? (media.path ?? '') : ''
+    // 只在引用的图片版本变化时替换缩略图；重读文档和修改名称不重新取图。
+    if ((el.dataset.preview ?? '') !== path) {
+      el.dataset.preview = path
+      el.querySelector('canvas')?.remove()
+      if (path) {
+        const thumb = document.createElement('canvas')
+        thumb.className = 'canvas-bitmap'
+        const side = 32 * window.devicePixelRatio
+        void decodeImage(client.fileUrl(path), { w: side, h: side }).then(
+          (bitmap) => paint(thumb, bitmap),
+          () => thumb.remove(),
+        )
+        el.prepend(thumb)
+      }
     }
-    el.append(node ? displayNameOf(node) : id)
+    if (el.lastChild?.nodeType === Node.TEXT_NODE) {
+      if (el.lastChild.textContent !== label) el.lastChild.textContent = label
+    } else el.append(label)
     return el
   }
 
   function render(prompt: string) {
+    // 上传、连线、任务进度都会返回新的画布快照，提示词未变时不能清空输入框再填回。
+    if (promptOfEditor(editor) === prompt) {
+      for (const el of editor.querySelectorAll<HTMLElement>('.canvas-chip[data-node]')) {
+        chip(el.dataset.node!, el)
+      }
+      return
+    }
     editor.replaceChildren(
       ...promptParts(prompt).map((part) =>
         'text' in part ? document.createTextNode(part.text) : chip(part.id),
@@ -1018,15 +1028,15 @@ export function GeneratePanel(props: {
     ),
   )
 
-  const inputTile = (edgeId: string, sourceId: string, role: MediaInputRole) => (
+  const InputTile = (p: { edge: ReturnType<typeof mediaInputsOf>[number] }) => (
     <div class="canvas-input">
-      <Thumb view={props.view} nodeId={sourceId} />
-      <i>{ROLE_LABEL[role]}</i>
+      <Thumb view={props.view} nodeId={p.edge.from} />
+      <i>{ROLE_LABEL[p.edge.role]}</i>
       <button
         class="canvas-input-remove"
         type="button"
         aria-label="断开"
-        onClick={() => void props.apply([{ op: 'remove', id: edgeId }])}
+        onClick={() => void props.apply([{ op: 'remove', id: p.edge.id }])}
       >
         <IconX size={10} />
       </button>
@@ -1050,7 +1060,7 @@ export function GeneratePanel(props: {
           </button>
         }
       >
-        {(e) => inputTile(e().id, e().from, role)}
+        {(e) => <InputTile edge={e()} />}
       </Show>
     )
   }
@@ -1092,7 +1102,14 @@ export function GeneratePanel(props: {
             when={mode() === 'first_last'}
             fallback={
               <>
-                <For each={edges()}>{(e) => inputTile(e.id, e.from, e.role)}</For>
+                {/* 按连线 id 保留素材；每次 JSON 响应里的连线对象都是新对象。 */}
+                <For each={edges().map((e) => e.id)}>
+                  {(id) => (
+                    <Show when={edges().find((e) => e.id === id)}>
+                      {(edge) => <InputTile edge={edge()} />}
+                    </Show>
+                  )}
+                </For>
                 <button
                   class="canvas-input"
                   type="button"
