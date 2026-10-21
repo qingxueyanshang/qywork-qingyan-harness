@@ -68,6 +68,17 @@ const DEFAULT_TIMEOUT_MS = 120_000
 export const MAX_TIMEOUT_MS = 600_000
 
 /**
+ * 一条命令的总时长上限。`timeout_ms` 是无输出时限，不是总时长。
+ *
+ * 按总时长判定时，一条仍在逐页输出进度的长任务与一条停滞的命令在 600 秒时被同样终止，
+ * 已完成的输出随之丢失。实测一套 25 页 PPT 的重建（拟合、拆层、审查）需要 15–20 分钟，
+ * 模型在一个会话里连续四次在 600 秒被终止，随后改为放到后台轮询，又在前一份未结束时
+ * 再启动一份，两份同时运行。判据改为两片输出之间的间隔：仍在输出就继续等待。
+ * 总上限只用于持续输出、但不会自行结束的命令（`tail -f`、打印错误的死循环）。
+ */
+const MAX_RUN_MS = 3_600_000
+
+/**
  * 命令已退出，但其派生的后代进程仍持有输出管道。
  *
  * 必须告知模型：模型据此才能知道后台留有进程（启动服务的脚本即属此类），
@@ -287,7 +298,9 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         cwd: { type: 'string', description: '工作目录（工作区相对路径），默认工作区根' },
         timeout_ms: {
           type: 'integer',
-          description: `超时时间（毫秒），默认 ${DEFAULT_TIMEOUT_MS}，上限 ${MAX_TIMEOUT_MS}，超过按上限执行`,
+          description:
+            `无输出时限（毫秒）：命令连续这么久没有任何输出即判定为停滞并终止。默认 ${DEFAULT_TIMEOUT_MS}，` +
+            `上限 ${MAX_TIMEOUT_MS}，超过按上限执行。命令持续输出时，总时长可到 ${MAX_RUN_MS / 60_000} 分钟`,
         },
         probe_url: {
           type: 'string',
@@ -402,8 +415,10 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
 
       // 等待与收尾的规则集中在 `collectProcess` 中：完成判据是进程退出而不是管道 EOF，
       // 超时与中断都终止进程树。此处只负责把字节转换为结果。
+      const startedAt = Date.now()
       const collecting = collectProcess(proc, {
-        timeoutMs: timeout,
+        timeoutMs: MAX_RUN_MS,
+        idleMs: timeout,
         signal: ctx.signal,
         onText: (channel, text) => emit(channel, redactors[channel].push(text)),
         // 不调用 flush 会静默丢弃输出末尾，这比泄露更难发现，因为无人逐字节核对。
@@ -441,11 +456,18 @@ export function makeShellTool(shell: CommandShell): ToolSpec {
         const requested = Number(args.timeout_ms)
         const capped =
           requested > MAX_TIMEOUT_MS
-            ? `；请求的 ${requested}ms 超过上限，按 ${MAX_TIMEOUT_MS}ms 执行，更长的任务放到后台再轮询结果`
+            ? `；请求的 ${requested}ms 超过上限，按 ${MAX_TIMEOUT_MS}ms 执行`
             : ''
+        // 两种到期的处理方式不同：无输出时通常是输出被 `| tail` / `| grep` 攒到了最后，
+        // 或命令在等待输入；总时长到期则是命令不会自行结束。
+        const why =
+          Date.now() - startedAt >= MAX_RUN_MS - 1000
+            ? `命令运行超过 ${MAX_RUN_MS / 60_000} 分钟总上限，已终止`
+            : `命令连续 ${timeout / 1000} 秒没有任何输出，判定为停滞，已终止${capped}。` +
+              '仍在工作的长任务应持续输出进度；末尾接 `| tail`、`| grep` 会把输出攒到结束才给出，期间按无输出计'
         return {
           status: 'failure',
-          message: `命令超时（${timeout}ms）已终止${capped}${got.backgroundHeld ? BACKGROUND_HELD : ''}${watchNote}`,
+          message: `${why}${got.backgroundHeld ? BACKGROUND_HELD : ''}${watchNote}`,
           data: { ...delivered.data, timedOut: true },
           ...(watched.changes.length ? { fileChanges: watched.changes } : {}),
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
@@ -535,6 +557,13 @@ const NON_INTERACTIVE_ENV: Record<string, string> = {
    * 放在这里而不是 `withWorkspacePython`：auto 与完全访问两种模式都需要，Office worker 经 `commandEnv` 同样取得。
    */
   PYTHONUTF8: '1',
+  /*
+   * python 输出不缓冲。
+   *
+   * stdout 接到管道时 python 按 8 KB 整块输出：逐页打印进度的脚本运行十分钟也可能一个字节都
+   * 没有送出，`timeout_ms` 按无输出判定，会把它当作停滞终止。界面上的流式输出也因此停在原处。
+   */
+  PYTHONUNBUFFERED: '1',
 }
 
 /**

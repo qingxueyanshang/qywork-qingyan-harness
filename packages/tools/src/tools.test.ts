@@ -1277,6 +1277,42 @@ describe('搜索与命令', () => {
   }, 30_000)
 
   /**
+   * 原始失败：一套 25 页 PPT 的重建脚本逐页输出进度，运行 15–20 分钟，按总时长在 600 秒时被终止，
+   * 模型连续四次重新运行后改为放到后台轮询。`timeout_ms` 是两片输出之间的间隔上限：
+   * 仍在输出的命令继续运行，不输出的命令按时终止。两件都锁定：只锁定前者时，
+   * 去掉全部时限也能通过。
+   */
+  test('timeout_ms 按无输出计：持续输出的命令运行超过时限仍正常结束，不输出的命令按时终止', async () => {
+    const shell = commandShell()
+    if (shell === null) throw new Error('这台机器一个可用的 shell 都没有，这条测不了')
+    const root = await workspace()
+    const ps = shell.argv.includes('-Command')
+    const talking = ps
+      ? '1..6 | ForEach-Object { Write-Output $_; Start-Sleep -Milliseconds 400 }'
+      : 'for i in 1 2 3 4 5 6; do echo $i; sleep 0.4; done'
+    const silent = ps ? 'Start-Sleep -Seconds 20' : 'sleep 20'
+
+    const started = Date.now()
+    const ok = await registry().execute(
+      'run_command',
+      { command: talking, timeout_ms: 1500 },
+      ctx(root),
+    )
+    expect(ok.status).toBe('success')
+    expect(String(ok.data?.stdout)).toContain('6')
+    expect(Date.now() - started).toBeGreaterThan(1500)
+
+    const stuck = await registry().execute(
+      'run_command',
+      { command: silent, timeout_ms: 1500 },
+      ctx(root),
+    )
+    expect(stuck.status).toBe('failure')
+    expect(stuck.errorKind).toBe('timeout')
+    expect(stuck.message).toContain('没有任何输出')
+  }, 30_000)
+
+  /**
    * 同一行为在 runner 路径上也必须成立：产品实际使用该路径。
    *
    * `qy serve` 的命令一律由 runner 代为执行（它是先于监听端口启动的父进程），
