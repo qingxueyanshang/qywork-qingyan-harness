@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -166,6 +166,9 @@ describe('canvas 工具', () => {
     expect(runCanvasTool.actionKind).toBe('run')
     for (const tool of [createCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool]) {
       expect(tool.permissionEffect).toBe('write')
+    }
+    expect(editCanvasTool.requireOneOf).toEqual([['ops_json', 'ops_path']])
+    for (const tool of [createCanvasTool, editCanvasTool, runCanvasTool, retrieveCanvasTool]) {
       expect(tool.parameters.properties).not.toHaveProperty('action')
     }
   })
@@ -508,6 +511,32 @@ describe('canvas 工具', () => {
     )
     expect(ok.status).toBe('success')
     expect(seen.edits).toEqual([[{ op: 'add_generate', ref: '$x', output: 'image' }]])
+  })
+
+  test('ops_path 读取工作区中的操作文件；与 ops_json 同时给出、文件不存在或不在工作区时不调用端口', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-canvas-ops-'))
+    await writeFile(join(dir, 'canvas-ops.json'), '[\r\n{"op": "remove", "id": "镜头A"}\r\n]\r\n')
+    const { port, seen } = fakePort(DONE)
+    const c = { ...ctx(port), workspaceRoot: dir }
+    const ok = await editCanvasTool.fn(
+      { path: 'board.canvas.json', ops_path: 'canvas-ops.json' },
+      c,
+    )
+    expect(ok.status).toBe('success')
+    expect(seen.edits).toEqual([[{ op: 'remove', id: '镜头A' }]])
+    const both = await editCanvasTool.fn(
+      { path: 'board.canvas.json', ops_path: 'canvas-ops.json', ops_json: '[]' },
+      c,
+    )
+    expect(both.errorKind).toBe('invalid_tool_arguments')
+    const missing = await editCanvasTool.fn({ path: 'board.canvas.json', ops_path: 'none.json' }, c)
+    expect(missing.status).toBe('failure')
+    const outside = await editCanvasTool.fn(
+      { path: 'board.canvas.json', ops_path: join(tmpdir(), 'elsewhere.json') },
+      c,
+    )
+    expect(outside.status).toBe('failure')
+    expect(seen.edits).toHaveLength(1)
   })
 
   test('edit 的新增操作不接受坐标、尺寸与相邻节点，该条跳过，其余照常执行；移动已有节点不受影响', async () => {
