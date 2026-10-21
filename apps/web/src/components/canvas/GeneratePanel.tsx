@@ -405,7 +405,10 @@ export function GeneratePanel(props: {
   const models = createMemo((): CardModel[] => {
     const catalog = modelCatalog()
     if (props.node.output !== 'art') {
-      return (catalog?.media ?? []).filter((m) => m.output === props.node.output)
+      // 已下架的型号仍列出（卡片可能正在使用它），名称后标出状态；提交时由服务端拒绝。
+      return (catalog?.media ?? [])
+        .filter((m) => m.output === props.node.output)
+        .map((m) => (m.delisted ? { ...m, label: `${m.label}（已下架）` } : m))
     }
     return (catalog?.providers ?? []).flatMap((p) =>
       p.models.map((m) => ({

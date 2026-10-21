@@ -1,6 +1,6 @@
 /** 各协议的陌生状态不能变成假排队或终态失败；恢复必须沿用原任务，不产生新 POST。 */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
-import type { MediaKind } from '@qywork/core'
+import type { ChannelVideoSpec, MediaKind } from '@qywork/core'
 import { buildMediaAdapter } from './index.ts'
 import { taskPhase } from './task.ts'
 import { MediaError } from './types.ts'
@@ -24,6 +24,17 @@ beforeAll(() => {
 })
 afterAll(() => server.stop(true))
 const request = { operation: 'text_to_video' as const, prompt: '', inputs: [], params: {} }
+/** 木木型号拉取后保存的规格；格式由 `spec.channel` 决定，与型号名无关。 */
+const MUMUGOFE: ChannelVideoSpec = {
+  channel: 'mumugofe',
+  seconds: [5],
+  ratios: ['16:9'],
+  resolutions: ['720p'],
+  sizes: { '720p': [1280, 720] },
+  maxImages: 0,
+  maxVideos: 0,
+  maxAudios: 0,
+}
 const taskId = 'saved-task'
 
 test.each([false, true])(
@@ -36,6 +47,7 @@ test.each([false, true])(
       model: 'seedance2.5-V',
       apiKey: 'test',
       baseUrl: `http://127.0.0.1:${server.port}`,
+      spec: MUMUGOFE,
     })
     let submits = 0
     const error = await adapter
@@ -60,12 +72,14 @@ test.each([false, true])(
 const cases: {
   kind: MediaKind
   model?: string
+  spec?: ChannelVideoSpec
   body: (status?: string) => Record<string, unknown>
 }[] = [
   { kind: 'openai_videos', body: (status) => ({ status }) },
   {
     kind: 'openai_videos',
     model: 'seedance2.5-V',
+    spec: MUMUGOFE,
     body: (status) => ({ data: { status } }),
   },
   { kind: 'ark_videos', body: (status) => ({ status }) },
@@ -88,6 +102,7 @@ for (const item of cases) {
         model: item.model ?? 'test',
         apiKey: 'test',
         baseUrl: `http://127.0.0.1:${server.port}`,
+        ...(item.spec ? { spec: item.spec } : {}),
       })
       const phases: string[] = []
       const error = await adapter

@@ -7,6 +7,7 @@
 
 import type {
   Attachment,
+  ChannelVideoSpec,
   Conversation,
   EffortLevel,
   MediaKind,
@@ -51,6 +52,27 @@ export interface RedactedModel {
     thinking?: ThinkingMode
     toolCalls?: ToolCallCheck
   }
+  /** 该接口的实际价格，拉取模型时写入。 */
+  price?: ChatPrice
+  /** 上一次拉取时中转的计费清单中已没有该型号。 */
+  delisted?: true
+}
+
+/** 接口下的生成模型。 */
+export interface RedactedMediaModel {
+  kind: MediaKind
+  /** 拉取时由渠道目录得到的规格。 */
+  spec?: ChannelVideoSpec
+  delisted?: true
+}
+
+/** 每百万 Token 的价格。 */
+export interface ChatPrice {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  currency: 'USD' | 'CNY'
 }
 
 /** 接口的对外结构：明文 key 不离开服务进程，只返回是否已设置。 */
@@ -60,7 +82,7 @@ export interface RedactedProvider {
   headers?: Record<string, string>
   models: Record<string, RedactedModel>
   /** 该接口下的生成模型，键为模型 id。与 `models` 分开存放：输入框的模型选择只列出 `models`。 */
-  media?: Record<string, { kind: MediaKind }>
+  media?: Record<string, RedactedMediaModel>
   hasApiKey: boolean
   /**
    * 只写字段。读接口从不返回它（返回的是上方的 `hasApiKey`），
@@ -302,6 +324,8 @@ export interface MediaModelOption {
   maxAudios?: number
   /** 画布生成面板上的参数控件：目录中标注了界面名称的参数。 */
   params: MediaParamOption[]
+  /** 上一次拉取时渠道已不再提供该型号，生成时被拒绝。 */
+  delisted?: true
 }
 
 /** 生成面板上的一个参数控件。取值约束与服务端的参数校验使用同一份目录。 */
@@ -436,6 +460,31 @@ export function probeModel(provider: string, model: string): Promise<ProbeResult
   return scheduleWrite('/api/probe', {
     method: 'POST',
     body: JSON.stringify({ provider, model }),
+  })
+}
+
+/** 拉取得到的一个型号。字段与服务端 `PulledModel` 一致。 */
+export type PulledModel =
+  | { id: string; output: 'chat'; known: boolean; price?: ChatPrice }
+  | {
+      id: string
+      output: MediaOutput
+      kind: MediaKind
+      spec?: ChannelVideoSpec
+      unsupported?: string
+    }
+
+export interface PullResult {
+  /** `pricing` 是中转的完整计费清单，只有它可以用来标记已下架。 */
+  source: 'pricing' | 'models'
+  models: PulledModel[]
+}
+
+/** 读取已保存接口上的型号、参数与价格。只读，不写配置；key 由服务端读取。 */
+export function pullModels(provider: string): Promise<PullResult> {
+  return client.api<PullResult>('/api/models/pull', {
+    method: 'POST',
+    body: JSON.stringify({ provider }),
   })
 }
 

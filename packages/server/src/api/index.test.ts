@@ -488,6 +488,24 @@ describe('模型目录', () => {
   /** 展平为一张表仅为便于断言；界面取得的是分组后的结构。 */
   const models = async (d: ApiDeps) => (await body(d)).providers.flatMap((p) => p.models)
 
+  test('自定义名称按对应型号显示思考档位，币种取该接口的价格', async () => {
+    const d = withConfig('openai_chat_completions', 'deepseek-v4.1-flash')
+    const before = (await models(d))[0]!
+    expect(before.known).toBe(false)
+    expect(before.effortLevels).toEqual([])
+    d.config.catalog = {
+      'deepseek-v4.1-flash|openai_chat_completions': { base: 'deepseek-flash' },
+    }
+    d.config.providers.p!.models['deepseek-v4.1-flash'] = {
+      price: { input: 1.04, output: 4.16, cacheRead: 0.02, cacheWrite: 1.04, currency: 'CNY' },
+    }
+    const after = (await models(d))[0]!
+    expect(after).toMatchObject({ id: 'deepseek-v4.1-flash', label: 'deepseek-v4.1-flash' })
+    expect(after.known).toBe(true)
+    expect(after.effortLevels).toEqual(['low', 'high', 'max'])
+    expect(after.currency).toBe('CNY')
+  })
+
   test('Seedream 模型库与画布均显示水印默认关闭', async () => {
     const d = withConfig('openai_chat_completions', 'm')
     const ids = ['doubao-seedream-5-0-pro-260628', 'doubao-seedream-5-0-flash-260915']
@@ -593,39 +611,29 @@ describe('模型目录', () => {
       ['1280x720', '720x1280'],
     ],
   ] as const)(
-    'SD2.5 将素材上限和原生时长选项同步到模型库与画布：%s',
+    'SD2.5 按保存的渠道规格把素材上限和原生时长选项同步到画布，模型库不收录：%s',
     async (id, durations, defaultDuration, tier, sizes) => {
       const d = withConfig('openai_chat_completions', 'm')
-      d.config.providers.p!.media = { [id]: { kind: 'openai_videos' } }
-      const response = await body(d)
-      for (const removed of [
-        '满血sd2.5(30-10-10原生过人脸/720P)',
-        'video-sd25-30s',
-        '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
-        '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
-        '全能sd2.5(满血内置过脸30图超分1080P)',
-        'sd-25-30/10/1-1',
-        '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
-      ]) {
-        expect(response.mediaLibrary.some((m) => m.id === removed)).toBe(false)
+      d.config.providers.p!.media = {
+        [id]: {
+          kind: 'openai_videos',
+          spec: {
+            channel: 'mumugofe',
+            seconds: durations.map(Number),
+            ratios: ['16:9', '9:16'],
+            resolutions: ['720p'],
+            sizes: { '720p': [1280, 720] },
+            maxImages: 30,
+            maxVideos: 0,
+            maxAudios: 0,
+            publicUrls: true,
+          },
+        },
       }
-      expect(
-        response.mediaLibrary.some((m) => m.id === '高质量sd2.5/(全参原生过真人速度快720P)'),
-      ).toBe(false)
-      expect(response.mediaLibrary.some((m) => m.id === '专享sd2.5(30图10音/4-30秒/720p)')).toBe(
-        false,
-      )
-      expect(response.mediaLibrary.some((m) => m.id === '高质量sd2.5(满血全参/720P/按次)')).toBe(
-        false,
-      )
-      expect(response.mediaLibrary.find((m) => m.id === id)).toMatchObject({
-        vendor: 'Mumugofe',
-        kinds: ['openai_videos'],
-        maxImages: 30,
-        maxVideos: 0,
-        maxAudios: 0,
-      })
+      const response = await body(d)
+      expect(response.mediaLibrary.some((m) => m.vendor === 'Mumugofe')).toBe(false)
       const model = response.media.find((m) => m.id === id)!
+      expect(model.maxAudios).toBe(0)
       expect(model.operations).toEqual(['text_to_video', 'reference_to_video'])
       const seconds = model.params.find((p) => p.name === 'seconds')!
       expect(seconds.type).toBe('enum')

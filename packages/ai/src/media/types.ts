@@ -4,7 +4,13 @@
  * 与对话适配器（`LlmAdapter`）分离：生成接口不是流式接口，没有 token 事件，结果是一组文件。
  */
 
-import type { Currency, MediaDiagnostic, MediaInputRole, MediaKind } from '@qywork/core'
+import type {
+  ChannelVideoSpec,
+  Currency,
+  MediaDiagnostic,
+  MediaInputRole,
+  MediaKind,
+} from '@qywork/core'
 import type { MediaModelSpec, MediaOperation } from './catalog.ts'
 
 /** 发送生成请求所需的端点与凭证。 */
@@ -14,6 +20,8 @@ export interface MediaProfile {
   apiKey: string
   baseUrl?: string
   headers?: Record<string, string>
+  /** 该型号配置中保存的渠道规格，见 `lookupMediaModel`。 */
+  spec?: ChannelVideoSpec
 }
 
 /** 输入文件。字节由调用方预先读取，适配器只负责按协议放入请求。用途的含义见 `MediaInputRole`。 */

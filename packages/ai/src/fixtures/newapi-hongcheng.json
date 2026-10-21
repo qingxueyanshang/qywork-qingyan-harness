@@ -1,0 +1,193 @@
+{
+  "workbench": {
+    "success": true,
+    "data": [
+      {
+        "id": "TTseadanco2.5-720",
+        "name": "Seedance 2.5 720P【30图10音10视 · 5-30秒 · 原生不卡脸】按秒计费",
+        "description": "Seedance 2.5；720P；5-30 秒自由选择；最多 30 张参考图 / 10 条参考音频 / 10 段参考视频；原生不卡脸；按秒计费 ¥0.42/秒。",
+        "api_model": "TTseadanco2.5-720",
+        "duration": "5-30",
+        "resolution": "720p",
+        "aspect_ratios": "16:9,9:16,1:1",
+        "max_image_refs": "30",
+        "max_video_refs": "10",
+        "max_audio_refs": "10",
+        "enabled": true,
+        "group": "视频生成",
+        "refbridge_path": "/refhost",
+        "price": 0.42
+      },
+      {
+        "id": "TTsedanco2.5-480",
+        "name": "Seedance 2.5 480P【30图10音10视 · 5-30秒】按秒计费",
+        "description": "Seedance 2.5；480P；5-30 秒自由选择；最多 30 张参考图 / 10 条参考音频 / 10 段参考视频；按秒计费 ¥0.31/秒。",
+        "api_model": "TTsedanco2.5-480",
+        "duration": "5-30",
+        "resolution": "480p",
+        "aspect_ratios": "16:9,9:16,1:1",
+        "max_image_refs": "30",
+        "max_video_refs": "10",
+        "max_audio_refs": "10",
+        "enabled": true,
+        "group": "视频生成",
+        "refbridge_path": "/refhost",
+        "price": 0.31
+      },
+      {
+        "id": "GGseadanco2.5/720",
+        "name": "Seedance 2.5 720P【30图10音10视 · 5-30秒 · 原生不卡脸】GG",
+        "description": "Seedance 2.5；720p；5-30 秒自由选择；最多 30 张参考图 / 10 段参考视频 / 10 条参考音频；原生不卡脸；按秒计费 ¥0.54/秒。",
+        "api_model": "GGseadanco2.5/720",
+        "duration": "5-30",
+        "resolution": "720p",
+        "aspect_ratios": "16:9,9:16,1:1",
+        "max_image_refs": "30",
+        "max_video_refs": "10",
+        "max_audio_refs": "10",
+        "enabled": true,
+        "group": "视频生成",
+        "refbridge_path": "/refhost",
+        "price": 0.54
+      },
+      {
+        "id": "seedance-2.5-yy-720p",
+        "name": "Seedance 2.5 YY 720P【30图10音频 · 4-30秒 · 按条计费】",
+        "description": "Seedance 2.5 YY 720P；4-30 秒（默认30秒）；最多 30 张参考图 / 10 条参考音频；不支持参考视频；按条计费 ¥7.3/条。",
+        "api_model": "seedance-2.5-yy-720p",
+        "duration": "4-30",
+        "resolution": "720p",
+        "aspect_ratios": "16:9,9:16,1:1",
+        "max_image_refs": "30",
+        "max_video_refs": "0",
+        "max_audio_refs": "10",
+        "enabled": true,
+        "group": "视频生成",
+        "refbridge_path": "/refhost",
+        "price": 7.3
+      },
+      {
+        "id": "bb2.5",
+        "name": "BB2.5 720P【最多30图/10视频/10音频 · 4-30秒 · 按条计费】",
+        "description": "BB2.5 720P；4-30 秒任选、不乘时长；最多 30 图 / 10 视频 / 10 音频（音视频各自 ≤30 秒）；支持文生、图生、多模态；按条计费 ¥6.2/条。",
+        "api_model": "bb2.5",
+        "duration": "4-30",
+        "resolution": "720p",
+        "aspect_ratios": "16:9,9:16,1:1,4:3,3:4,21:9",
+        "max_image_refs": "30",
+        "max_video_refs": "10",
+        "max_audio_refs": "10",
+        "enabled": true,
+        "group": "视频生成",
+        "refbridge_path": "/refhost",
+        "price": 6.2
+      },
+      {
+        "id": "AIGV-dola-2.0",
+        "name": "AIGV 720P 2.0【不要写秒，用镜头一这样代替秒数，9张参考图】内置过人脸",
+        "description": "AIGV 2.0（内置过人脸）；720p；固定15秒；最多9张参考图；不支持参考视频/音频；按条计费 ¥2.4/条。",
+        "api_model": "AIGV-dola-2.0",
+        "duration": "15-15",
+        "resolution": "720p",
+        "aspect_ratios": "16:9,9:16,1:1",
+        "max_image_refs": "9",
+        "max_video_refs": "0",
+        "max_audio_refs": "3",
+        "enabled": false,
+        "group": "视频生成",
+        "refbridge_path": "",
+        "price": 240
+      }
+    ]
+  },
+  "pricing": {
+    "success": true,
+    "group_ratio": {
+      "default": 1,
+      "vip": 1
+    },
+    "data": [
+      {
+        "model_name": "TTseadanco2.5-720",
+        "display_name": "Seedance 2.5 720P【30图10音10视 · 5-30秒 · 原生不卡脸】按秒计费",
+        "description": "Seedance 2.5；720P；5-30 秒自由选择；最多 30 张参考图 / 10 条参考音频 / 10 段参考视频；原生不卡脸；按秒计费 ¥0.42/秒。",
+        "tags": "视频生成,720p,30图10音10视,按秒计费,原生不卡脸",
+        "vendor_id": 1,
+        "quota_type": 2,
+        "model_ratio": 0,
+        "model_price": 0.0575342466,
+        "owner_by": "",
+        "completion_ratio": 0,
+        "enable_groups": ["vip", "svip", "default"],
+        "supported_endpoint_types": ["openai-video"],
+        "billing_mode": "per_second"
+      },
+      {
+        "model_name": "TTsedanco2.5-480",
+        "display_name": "Seedance 2.5 480P【30图10音10视 · 5-30秒】按秒计费",
+        "description": "Seedance 2.5；480P；5-30 秒自由选择；最多 30 张参考图 / 10 条参考音频 / 10 段参考视频；按秒计费 ¥0.31/秒。",
+        "tags": "视频生成,480p,30图10音10视,按秒计费",
+        "vendor_id": 1,
+        "quota_type": 2,
+        "model_ratio": 0,
+        "model_price": 0.0424657534,
+        "owner_by": "",
+        "completion_ratio": 0,
+        "enable_groups": ["default", "vip", "svip"],
+        "supported_endpoint_types": ["openai-video"],
+        "billing_mode": "per_second"
+      },
+      {
+        "model_name": "GGseadanco2.5/720",
+        "display_name": "鸿呈Seedance 2.5 720P【30图10音10视 · 5-30秒 · 原生不卡脸】AA",
+        "description": "Seedance 2.5；720p；5-30 秒自由选择；最多 30 张参考图 / 10 段参考视频 / 10 条参考音频；原生不卡脸；按秒计费 ¥0.54/秒。",
+        "tags": "视频生成,720p,30图10视频10音频,按秒计费",
+        "vendor_id": 1,
+        "quota_type": 2,
+        "model_ratio": 0,
+        "model_price": 0.0739726027,
+        "owner_by": "",
+        "completion_ratio": 0,
+        "enable_groups": ["default", "vip", "svip"],
+        "supported_endpoint_types": ["openai-video"],
+        "billing_mode": "per_second",
+        "pricing_version": "5a90f2b86c08bd983a9a2e6d66c255f4eaef9c4bc934386d2b6ae84ef0ff1f1f"
+      },
+      {
+        "model_name": "seedance-2.5-yy-720p",
+        "display_name": "Seedance 2.5 YY 720P【30图10音频 · 4-30秒 · 按条计费】",
+        "description": "Seedance 2.5 YY 720P；4-30 秒（默认30秒）；最多 30 张参考图 / 10 条参考音频；不支持参考视频；按条计费 ¥7.3/条；优先推荐，约10分钟出片。",
+        "tags": "视频生成,720p,4-30秒,按条计费,30图10音",
+        "vendor_id": 1,
+        "quota_type": 1,
+        "model_ratio": 0,
+        "model_price": 1,
+        "owner_by": "",
+        "completion_ratio": 0,
+        "enable_groups": ["default", "vip", "svip"],
+        "supported_endpoint_types": ["openai-video"]
+      },
+      {
+        "model_name": "bb2.5",
+        "display_name": "BB2.5 720P【最多30图/10视频/10音频 · 4-30秒 · 按条计费】",
+        "description": "鸿呈BB2.5；720P；4-30 秒任选且不乘时长；最多 30 张参考图 / 10 段参考视频 / 10 条参考音频（音视频各自 ≤30 秒）；支持文生、图生、多模态，不支持首尾帧；按条计费 ¥6.2/条。",
+        "tags": "视频生成,720p,30图10视频10音频,按条计费",
+        "vendor_id": 1,
+        "quota_type": 1,
+        "model_ratio": 0,
+        "model_price": 0.8493150685,
+        "owner_by": "",
+        "completion_ratio": 0,
+        "enable_groups": ["default", "vip", "svip"],
+        "supported_endpoint_types": ["openai-video"]
+      }
+    ]
+  },
+  "status": {
+    "success": true,
+    "data": {
+      "price": 7.3,
+      "usd_exchange_rate": 7.3
+    }
+  }
+}

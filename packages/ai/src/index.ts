@@ -79,6 +79,15 @@ export {
   probeModel,
   toTransportCapabilities,
 } from './probe.ts'
+// 拉取模型：设置页的「拉取模型」按钮
+export {
+  PullError,
+  type PulledModel,
+  type PullResult,
+  type PullTarget,
+  pullModels,
+} from './pull/index.ts'
+export type { ChatPrice } from './pull/pricing.ts'
 // 字符估算：agent 在没有 count_tokens 的端点上将其作为后备
 export {
   DEFAULT_DENSITY,

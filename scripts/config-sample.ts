@@ -11,7 +11,7 @@
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { CHAT_REASONING_PROTOCOLS, type TransportCapabilities } from '@qywork/ai'
+import { builtinCatalog, CHAT_REASONING_PROTOCOLS, type TransportCapabilities } from '@qywork/ai'
 import {
   CACHE_ROUTINGS,
   EFFORT_ORDER,
@@ -22,6 +22,7 @@ import {
   REASONING_ECHOES,
   THINKING_MODES,
   TOOL_SCHEMA_MODES,
+  VIDEO_CHANNELS,
 } from '@qywork/core'
 import {
   listMediaModels,
@@ -63,7 +64,18 @@ export function sampleConfig(): QyConfig {
           status: pick(['passed', 'failed', 'inconclusive'] as const, n),
         },
       }
-      models[id] = { effort, transport }
+      models[id] = {
+        effort,
+        transport,
+        price: {
+          input: 1 + n,
+          output: 2 + n,
+          cacheRead: 0.1,
+          cacheWrite: 1.25,
+          currency: pick(['USD', 'CNY'] as const, n + 1),
+        },
+        delisted: true,
+      }
       catalog[`${id}|${kind}`] = {
         displayName: `Sample ${n}`,
         vendor: 'sample',
@@ -81,12 +93,33 @@ export function sampleConfig(): QyConfig {
         chatReasoningProtocol: pick(CHAT_REASONING_PROTOCOLS, n),
         reasoningEcho: pick(REASONING_ECHOES, n),
         cacheRouting: pick(CACHE_ROUTINGS, n),
+        base: pick(builtinCatalog(), n).id,
       }
       n++
     }
     const media: Record<string, StoredMediaModel> = {}
     for (const [m, mediaKind] of MEDIA_KINDS.entries()) {
       if (m % PROVIDER_KINDS.length === p) media[`media-${mediaKind}`] = { kind: mediaKind }
+    }
+    if ('media-openai_videos' in media) {
+      for (const [c, channel] of VIDEO_CHANNELS.entries()) {
+        media[`channel-${channel}`] = {
+          kind: 'openai_videos',
+          spec: {
+            channel,
+            seconds: [4, 5, 30],
+            ratios: ['16:9', '9:16'],
+            resolutions: ['720p'],
+            sizes: { '720p': [1280, 720] },
+            maxImages: 30,
+            maxVideos: c,
+            maxAudios: 10,
+            publicUrls: true,
+            price: { per: pick(['request', 'second'] as const, c), amount: 7, currency: 'CNY' },
+          },
+          ...(c === 0 ? { delisted: true as const } : {}),
+        }
+      }
     }
     providers[`sample-${kind}`] = {
       kind,

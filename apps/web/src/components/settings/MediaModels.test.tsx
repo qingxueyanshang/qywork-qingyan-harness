@@ -2,12 +2,12 @@
  * 设置页里的生成模型：接口页添加、默认、删除，以及模型库的类别页签。
  *
  * 覆盖范围：`ModelSettings.tsx` 的 `addModel` 分流、生成模型行、`removeMediaModel` 与 `withMediaDefaults`；
- * `ModelLibrary.tsx` 的类别页签、未知单价显示与 `MediaTable`。
+ * `ModelLibrary.tsx` 的类别页签、未知单价显示与 `MediaTable`；`PullDialog.tsx` 的拉取、刷新与添加。
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import { MEDIA_KIND_OUTPUT, type MediaKind } from '@qywork/core'
-import type { MediaLibraryModel, RedactedConfig } from '../../lib/store/index.ts'
+import type { MediaLibraryModel, PullResult, RedactedConfig } from '../../lib/store/index.ts'
 
 beforeAll(() => GlobalRegistrator.register({ url: 'http://localhost/' }))
 afterAll(async () => {
@@ -108,18 +108,12 @@ test('模型库未知单价显示横线，并直接显示订阅限制', async ()
   }
 })
 
-test('官方及渠道模型均使用目录协议，模型库显示对应页签', async () => {
+test('官方模型使用目录协议，模型库显示对应页签', async () => {
   const { render } = await import('solid-js/web')
   const store = await import('../../lib/store/index.ts')
   const { config, configBusy, reloadConfig } = await import('./configStore.ts')
   const { ModelSettings } = await import('./ModelSettings.tsx')
   const cases: { id: string; kind: MediaKind; baseUrl: string; vendor: string }[] = [
-    {
-      id: 'seedance2.5-V',
-      kind: 'openai_videos',
-      baseUrl: 'https://api.mumugofe.com/v1',
-      vendor: 'Mumugofe',
-    },
     {
       id: 'gemini-3.1-flash-image',
       kind: 'gemini_images',
@@ -420,3 +414,147 @@ test.each([
     }
   },
 )
+
+test('拉取模型：打开即刷新已添加型号，勾选后写入规格与对应型号，渠道型号的接入方式显示渠道名', async () => {
+  const { render } = await import('solid-js/web')
+  const store = await import('../../lib/store/index.ts')
+  const { config, configBusy, reloadConfig } = await import('./configStore.ts')
+  const { ModelSettings } = await import('./ModelSettings.tsx')
+  const spec = {
+    channel: 'mumugofe' as const,
+    seconds: [30],
+    ratios: ['16:9', '9:16'],
+    resolutions: ['720p'],
+    sizes: { '720p': [1280, 720] as [number, number] },
+    maxImages: 30,
+    maxVideos: 0,
+    maxAudios: 0,
+    price: { per: 'request' as const, amount: 7, currency: 'CNY' as const },
+  }
+  const result: PullResult = {
+    source: 'pricing',
+    models: [
+      { id: 'deepseek-v4.1-flash', output: 'chat', known: false },
+      { id: 'X-SD25-301010', output: 'video', kind: 'openai_videos', spec },
+      {
+        id: 'sd-2.0-vip',
+        output: 'video',
+        kind: 'openai_videos',
+        unsupported: '该型号按表单上传素材，当前未接入',
+      },
+    ],
+  }
+  let stored: RedactedConfig = {
+    providers: {
+      mumu: {
+        kind: 'openai_chat_completions',
+        baseUrl: 'https://api.mumugofe.com/v1',
+        hasApiKey: true,
+        models: {},
+        media: { 'old-video': { kind: 'openai_videos' } },
+      },
+    },
+  }
+  let pulls = 0
+  store.client.api = async <T,>(path: string, init?: RequestInit) => {
+    if (path === '/api/models')
+      return {
+        providers: [],
+        media: [],
+        mediaLibrary: [],
+        library: [
+          {
+            id: 'deepseek',
+            displayName: 'DeepSeek',
+            models: [{ id: 'deepseek-flash', label: 'DeepSeek Flash' }],
+          },
+        ],
+      } as T
+    if (path === '/api/models/pull') {
+      pulls++
+      return result as T
+    }
+    if (path === '/api/config' && init?.method === 'PUT') {
+      stored = (JSON.parse(String(init.body)) as { config: RedactedConfig }).config
+      return { ok: true } as T
+    }
+    if (path === '/api/config')
+      return {
+        path: 'config.json',
+        config: stored,
+        version: 'v',
+        notices: [],
+        problems: [],
+        defaultEnvAllowList: [],
+      } as T
+    throw new Error(`unexpected ${path}`)
+  }
+  await reloadConfig()
+  await store.reloadModelCatalog()
+
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <ModelSettings />, host as unknown as HTMLElement)
+  try {
+    fire(
+      Array.from(host.querySelectorAll<HTMLButtonElement>('.tab-chip')).find(
+        (b) => b.textContent === 'mumu',
+      )!,
+      'click',
+    )
+    fire(host.querySelector<HTMLButtonElement>('.pull-open')!, 'click')
+    expect(await until(() => !!document.querySelector('.pull-dialog .pull-row'))).toBe(true)
+    expect(pulls).toBe(1)
+    // 计费清单中没有的已添加型号标记已下架，接口页行上显示。
+    expect(
+      await until(
+        () => !configBusy() && !!config()?.providers.mumu?.media?.['old-video']?.delisted,
+      ),
+    ).toBe(true)
+    expect(host.textContent).toContain('已下架')
+
+    const dialog = document.querySelector<HTMLElement>('.pull-dialog')!
+    const tabs = () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('.lib-tab'))
+    expect(tabs().map((b) => b.textContent)).toEqual(['对话 1', '视频 2'])
+    const base = dialog.querySelector<HTMLSelectElement>(
+      'select[aria-label="对应型号 deepseek-v4.1-flash"]',
+    )!
+    base.value = 'deepseek-flash'
+    base.dispatchEvent(new Event('change', { bubbles: true }))
+    const check = (id: string) =>
+      Array.from(dialog.querySelectorAll<HTMLElement>('.pull-row'))
+        .find((r) => r.textContent?.includes(id))!
+        .querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    check('deepseek-v4.1-flash').checked = true
+    check('deepseek-v4.1-flash').dispatchEvent(new Event('change', { bubbles: true }))
+
+    fire(tabs()[1]!, 'click')
+    expect(check('sd-2.0-vip').disabled).toBe(true)
+    expect(dialog.textContent).toContain('¥7.00/次')
+    check('X-SD25-301010').checked = true
+    check('X-SD25-301010').dispatchEvent(new Event('change', { bubbles: true }))
+
+    const add = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.textContent === '添加 2 个',
+    )!
+    fire(add, 'click')
+    expect(
+      await until(() => !configBusy() && !!config()?.providers.mumu?.media?.['X-SD25-301010']),
+    ).toBe(true)
+    expect(document.querySelector('.pull-dialog')).toBeNull()
+    expect(stored.providers.mumu?.models).toEqual({ 'deepseek-v4.1-flash': {} })
+    expect(stored.providers.mumu?.media?.['X-SD25-301010']).toEqual({ kind: 'openai_videos', spec })
+    expect(stored.catalog).toEqual({
+      'deepseek-v4.1-flash|openai_chat_completions': { base: 'deepseek-flash' },
+    })
+    expect(stored.active).toEqual({ provider: 'mumu', model: 'deepseek-v4.1-flash' })
+    const row = Array.from(host.querySelectorAll<HTMLElement>('.model-row')).find((r) =>
+      r.textContent?.includes('X-SD25-301010'),
+    )!
+    expect(row.textContent).toContain('接入方式 Mumugofe')
+    expect(row.querySelector('select')).toBeNull()
+  } finally {
+    dispose()
+    host.remove()
+  }
+})

@@ -210,7 +210,7 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
       const res: CanvasQuoteResponse = {
         quote: target
           ? quoteMedia(
-              lookupMediaModel(target.model, target.kind),
+              lookupMediaModel(target.model, target.kind, target.spec),
               params as Record<string, unknown>,
               {
                 images: Number(inputs?.images) || 0,

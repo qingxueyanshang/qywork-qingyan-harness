@@ -1,16 +1,13 @@
-/** Mumugofe 从已配置模型、参数校验到实际 HTTP 请求与任务恢复的回归测试。 */
+/**
+ * Mumugofe 从已配置模型、参数校验到实际 HTTP 请求与任务恢复的回归测试。
+ * 型号规格按拉取后保存在配置中的形式构造（`StoredMediaModel.spec`）。
+ */
 
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import type { MediaCall } from '@qywork/agent'
-import {
-  findMediaModel,
-  lookupMediaModel,
-  mediaCatalog,
-  mediaKindsOf,
-  quoteMedia,
-} from '@qywork/ai'
-import type { MediaInputRole, MediaSpend } from '@qywork/core'
+import { lookupMediaModel, mediaCatalog, mediaKindsOf, quoteMedia } from '@qywork/ai'
+import type { ChannelVideoSpec, MediaInputRole, MediaSpend } from '@qywork/core'
 import { listMediaModels, type QyConfig } from './config.ts'
 import { makeMediaPort } from './media.ts'
 import { buildTailNotes } from './prompt.ts'
@@ -28,6 +25,29 @@ const REMOVED_UPSCALED = '全能sd2.5(满血内置过脸30图超分1080P)'
 const REMOVED_FULL_REFERENCE = 'sd-25-30/10/1-1'
 const EXCLUSIVE = '专享sd2.5(30图10音/4-30秒/720p)'
 const FULL_PARAMS = '高质量sd2.5(满血全参/720P/按次)'
+const range = (min: number) => Array.from({ length: 31 - min }, (_, i) => i + min)
+const mumugofe = (
+  seconds: number[],
+  inputs: Pick<ChannelVideoSpec, 'maxVideos' | 'maxAudios' | 'publicUrls'>,
+  amount?: number,
+): ChannelVideoSpec => ({
+  channel: 'mumugofe',
+  seconds,
+  ratios: ['16:9', '9:16'],
+  resolutions: ['720p'],
+  sizes: { '720p': [1280, 720] },
+  maxImages: 30,
+  ...inputs,
+  ...(amount ? { price: { per: 'request', amount, currency: 'CNY' } } : {}),
+})
+const SPECS: Record<string, ChannelVideoSpec> = {
+  [MODEL]: mumugofe(range(5), { maxVideos: 0, maxAudios: 0, publicUrls: true }, 7.5),
+  [SERIES_007]: mumugofe(range(4), { maxVideos: 0, maxAudios: 10 }, 6),
+  [SERIES_X]: mumugofe([30], { maxVideos: 0, maxAudios: 0, publicUrls: true }, 7),
+  [EXCLUSIVE]: mumugofe(range(4), { maxVideos: 0, maxAudios: 10 }),
+  [FULL_PARAMS]: mumugofe([30], { maxVideos: 10, maxAudios: 10 }),
+}
+const specOf = (id: string) => lookupMediaModel(id, 'openai_videos', SPECS[id])
 const PROMPT = '雨后咖啡馆，一位成年女性坐下阅读。\n镜头缓慢后退，人物望向窗外微笑。'
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
@@ -141,7 +161,7 @@ const config = (model = MODEL): QyConfig => ({
       apiKey: 'test-only-key',
       baseUrl: `http://127.0.0.1:${server.port}/v1`,
       models: {},
-      media: { [model]: { kind: 'openai_videos' } },
+      media: { [model]: { kind: 'openai_videos', spec: SPECS[model]! } },
     },
   },
   mediaDefaults: { video: { provider: 'mumugofe', model } },
@@ -156,7 +176,7 @@ const call = (over: Partial<MediaCall> = {}): MediaCall => ({
 const signal = () => new AbortController().signal
 
 test('渠道型号在模型库和 Agent 参数表中使用自己的协议与能力', () => {
-  const spec = findMediaModel(MODEL)!
+  const spec = specOf(MODEL)
   expect(spec.vendor).toBe('Mumugofe')
   expect(spec.catalogued).toBe(true)
   expect(mediaKindsOf(spec)).toEqual(['openai_videos'])
@@ -424,7 +444,7 @@ test('远端明确失败时返回任务接口中的拒绝原因，不下载或�
 })
 
 test('007 按次型号提供独立的参考素材规格、参数与报价', () => {
-  const spec = findMediaModel(SERIES_007)!
+  const spec = specOf(SERIES_007)
   expect(spec).toMatchObject({
     catalogued: true,
     videoFormat: 'mumugofe',
@@ -476,7 +496,7 @@ test.each([undefined, '4', '17', '30'])(
     expect(seen[0]?.body).toEqual({
       model: SERIES_007,
       prompt: PROMPT,
-      seconds: seconds ?? '5',
+      seconds: seconds ?? '4',
       size: seconds === undefined ? '1280x720' : '720x1280',
       images: [`data:image/png;base64,${Buffer.from(PNG).toString('base64')}`],
       audios: [`data:audio/mpeg;base64,${Buffer.from(MP3).toString('base64')}`],
@@ -501,7 +521,7 @@ test.each([
 })
 
 test('下架专享版保留旧配置的时长与音频规格', () => {
-  const spec = lookupMediaModel(EXCLUSIVE, 'openai_videos')
+  const spec = specOf(EXCLUSIVE)
   expect(spec).toMatchObject({
     vendor: 'Mumugofe',
     videoFormat: 'mumugofe',
@@ -520,11 +540,11 @@ test('下架专享版保留旧配置的时长与音频规格', () => {
     .join('\n')
   expect(text).toContain('参考音频最多 10 段')
   expect(text).toContain('4–30 秒整数，使用字符串')
-  expect(findMediaModel(MODEL)!.inputs.maxAudios).toBe(0)
+  expect(specOf(MODEL).inputs.maxAudios).toBe(0)
 })
 
 test.each([undefined, '4', '17', '30'])(
-  '专享版默认 5 秒和 4–30 秒边界原样发送字符串：%s',
+  '专享版默认最短 4 秒，4–30 秒边界原样发送字符串：%s',
   async (seconds) => {
     const params = seconds === undefined ? {} : { seconds, size: '720x1280' }
     const spends: MediaSpend[] = []
@@ -536,7 +556,7 @@ test.each([undefined, '4', '17', '30'])(
     expect(seen[0]?.body).toEqual({
       model: EXCLUSIVE,
       prompt: PROMPT,
-      seconds: seconds ?? '5',
+      seconds: seconds ?? '4',
       size: seconds === undefined ? '1280x720' : '720x1280',
     })
     expect(spends[0]).toMatchObject({ quantity: null, cost: 0 })
@@ -568,7 +588,7 @@ test('图片和 MP3 交错输入时按类别保持顺序，音频别名统一成
   expect(seen[0]?.body).toEqual({
     model: EXCLUSIVE,
     prompt: PROMPT,
-    seconds: '5',
+    seconds: '4',
     size: '1280x720',
     images: [inputs[1], inputs[3]].map(
       (i) => `data:image/png;base64,${Buffer.from(i!.bytes).toString('base64')}`,
@@ -592,7 +612,7 @@ test.each([EXCLUSIVE])('%s 允许单独音频参考，最多 10 段，不伪造 
   expect(seen[0]?.body).toEqual({
     model,
     prompt: PROMPT,
-    seconds: '5',
+    seconds: '4',
     size: '1280x720',
     audios: inputs.map((i) => `data:audio/mpeg;base64,${Buffer.from(i.bytes).toString('base64')}`),
   })
@@ -665,7 +685,7 @@ test.each(['audio/wav', 'audio/mp4', 'audio/mpeg'])(
 )
 
 test('下架高质量版保留旧配置的图、视频、音频规格', () => {
-  const spec = lookupMediaModel(FULL_PARAMS, 'openai_videos')
+  const spec = specOf(FULL_PARAMS)
   expect(spec).toMatchObject({
     vendor: 'Mumugofe',
     videoFormat: 'mumugofe',
@@ -685,7 +705,7 @@ test('下架高质量版保留旧配置的图、视频、音频规格', () => {
   expect(text).toContain('参考图最多 30 张')
   expect(text).toContain('参考视频最多 10 个')
   expect(text).toContain('参考音频最多 10 段')
-  expect(lookupMediaModel(EXCLUSIVE, 'openai_videos').inputs.maxVideos).toBe(0)
+  expect(specOf(EXCLUSIVE).inputs.maxVideos).toBe(0)
   expect(spec.params.find((p) => p.name === 'seconds')?.values).toEqual(['30'])
 })
 
@@ -734,33 +754,26 @@ test('007 按次支持 30 图 10 音频，在发送前拒绝超限素材与参�
   expect(body.videos).toBeUndefined()
 })
 
-test('模型库收录当前型号，下架型号保留旧任务取回规格', () => {
-  expect(
-    mediaCatalog()
-      .filter((m) => m.vendor === 'Mumugofe')
-      .map((m) => m.id),
-  ).toEqual([MODEL, SERIES_007, SERIES_X])
-  for (const id of [SERIES_006_720, SERIES_006_480]) {
-    expect(findMediaModel(id)).toBeUndefined()
+test('代码目录不登记木木型号；规格只来自保存的渠道规格', () => {
+  expect(mediaCatalog().filter((m) => m.vendor === 'Mumugofe')).toEqual([])
+  for (const id of [
+    ...Object.keys(SPECS),
+    SERIES_006_720,
+    SERIES_006_480,
+    REMOVED_FULL,
+    REMOVED_006,
+    REMOVED_FULL_REFERENCE,
+    REMOVED_VIDEO_30S,
+    REMOVED_UPSCALED,
+    HIGH_QUALITY,
+  ]) {
+    expect(lookupMediaModel(id, 'openai_videos')).toMatchObject({ catalogued: false })
     expect(lookupMediaModel(id, 'openai_videos').videoFormat).toBeUndefined()
   }
-  expect(findMediaModel(REMOVED_FULL)).toBeUndefined()
-  expect(lookupMediaModel(REMOVED_FULL, 'openai_videos').videoFormat).toBeUndefined()
-  expect(findMediaModel(REMOVED_006)).toBeUndefined()
-  expect(findMediaModel(REMOVED_FULL_REFERENCE)).toBeUndefined()
-  expect(lookupMediaModel(REMOVED_FULL_REFERENCE, 'openai_videos').videoFormat).toBeUndefined()
-  expect(findMediaModel(REMOVED_VIDEO_30S)).toBeUndefined()
-  expect(findMediaModel(REMOVED_UPSCALED)).toBeUndefined()
-  expect(lookupMediaModel(REMOVED_UPSCALED, 'openai_videos').videoFormat).toBeUndefined()
-  expect(findMediaModel(HIGH_QUALITY)).toBeUndefined()
-  expect(lookupMediaModel(HIGH_QUALITY, 'openai_videos').videoFormat).toBeUndefined()
-  for (const id of [EXCLUSIVE, FULL_PARAMS]) {
-    expect(findMediaModel(id)).toBeUndefined()
-    expect(lookupMediaModel(id, 'openai_videos')).toMatchObject({
-      catalogued: false,
-      videoFormat: 'mumugofe',
-    })
-    expect(lookupMediaModel(id, 'ark_videos').videoFormat).toBeUndefined()
+  for (const id of Object.keys(SPECS)) {
+    expect(specOf(id)).toMatchObject({ catalogued: true, videoFormat: 'mumugofe' })
+    // 保存的规格只用于 openai_videos。
+    expect(lookupMediaModel(id, 'ark_videos', SPECS[id]).videoFormat).toBeUndefined()
   }
 })
 
@@ -843,7 +856,7 @@ test('X 型号原生上传被拒时不会提交收费的生成请求', async () 
 })
 
 test.each(['5', '16', '30'])('seedance2.5-V 时长逐秒选择且按次报价：%s', async (seconds) => {
-  const spec = findMediaModel(MODEL)!
+  const spec = specOf(MODEL)
   expect(spec.params.find((p) => p.name === 'seconds')?.values).toEqual(
     Array.from({ length: 26 }, (_, i) => String(i + 5)),
   )

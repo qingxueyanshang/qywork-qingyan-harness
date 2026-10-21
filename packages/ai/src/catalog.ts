@@ -1787,6 +1787,11 @@ export interface SpecOverride {
    * 同一个模型在不同中转站上结论不同，内置表只能提供 seed。
    */
   cacheRouting?: CacheRouting
+  /**
+   * 对应型号：模型库中的 id。中转站的自定义名称按该型号的目录条目作为 seed（`lookupModel` 的 `base`），
+   * 由用户在拉取模型时选择，不按名称推测。
+   */
+  base?: string
 }
 
 /**
@@ -1799,12 +1804,16 @@ export interface SpecOverride {
  *   （Anthropic 写入为 1.25x，DeepSeek 写入免费）。
  * - **`catalogued` 只在覆盖中包含单价时才设为 true。** 若只修改显示名就标记为
  *   「已收录」，计价仍为 0 而提醒消失：账本继续显示 $0，且不再有任何提示。
+ * - **覆盖改变币种时去掉目录中的长上下文档与时段折扣。** 二者的单价按目录币种填写，
+ *   与覆盖后的币种混用会使长提示词按另一币种的数字记账。
  */
 export function applySpecOverride(spec: ModelSpec, o: SpecOverride | undefined): ModelSpec {
   if (!o) return spec
   const priced = o.input !== undefined || o.output !== undefined
+  const recurrency = o.currency !== undefined && o.currency !== (spec.pricing.currency ?? 'USD')
+  const { longContext: _long, offPeak: _offPeak, ...flat } = spec
   return {
-    ...spec,
+    ...(recurrency ? flat : spec),
     ...(o.displayName ? { displayName: o.displayName } : {}),
     ...(o.vendor ? { vendor: o.vendor } : {}),
     ...(o.contextWindow ? { contextWindow: o.contextWindow } : {}),
@@ -1885,8 +1894,20 @@ export function builtinCatalog(now = Date.now()): ModelSpec[] {
  *
  * 若只按 id 查找（`.find(m => m.id === id)`），同 id 的多个条目中始终只命中先声明的一条，
  * 而声明顺序与正确性无关。
+ *
+ * `base` 是模型库覆盖中的对应型号（`SpecOverride.base`）：中转站的自定义名称按该型号的目录条目取得规格，
+ * 显示名称仍为自定义名称。调用方必须传入与覆盖层相同的 `base`，否则各处取得的窗口与档位不一致。
  */
-export function lookupModel(id: string, provider: ProviderKind, now = Date.now()): ModelSpec {
+export function lookupModel(
+  id: string,
+  provider: ProviderKind,
+  now = Date.now(),
+  base?: string,
+): ModelSpec {
+  if (base !== undefined && base !== id) {
+    const seed = lookupModel(base, provider, now)
+    return seed.catalogued === false ? unknownModel(id, provider) : { ...seed, id, displayName: id }
+  }
   const all = builtinCatalog(now)
   const exact = all.find((m) => m.id === id && m.provider === provider)
   if (exact) return exact

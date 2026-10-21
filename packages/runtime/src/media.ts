@@ -95,7 +95,11 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
       const type = call.type
       const label = OUTPUT_LABEL[type]
       const candidates = listMediaModels(config).filter((m) => m.output === type)
-      const choices = candidates.map((m) => `${m.provider} / ${m.model}`).join('、') || '（无）'
+      const choices =
+        candidates
+          .filter((m) => !m.delisted)
+          .map((m) => `${m.provider} / ${m.model}`)
+          .join('、') || '（无）'
       const ref =
         call.provider !== undefined && call.model !== undefined
           ? { provider: call.provider, model: call.model }
@@ -117,12 +121,20 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
           message: `接口 ${target.provider} 未配置 API Key，请在设置 → 模型中填写`,
         }
       }
+      // 渠道已不再计费该型号，提交必然被拒绝；已提交的任务仍可取回。
+      if (target.delisted && !call.resumeTaskId && !call.resumeImageResult) {
+        return {
+          ok: false,
+          executed: false,
+          message: `${target.provider} / ${target.model} 已下架，未发出请求。可选：${choices}`,
+        }
+      }
 
       const inferred = operationOf(type, call.inputs)
       if ('problem' in inferred)
         return { ok: false, executed: false, message: `未发出请求：${inferred.problem}` }
       const op = inferred.operation
-      const spec = lookupMediaModel(target.model, target.kind)
+      const spec = lookupMediaModel(target.model, target.kind, target.spec)
       // 接续取回不会重新提交，参数与输入均不发出，因此不校验。
       if (!call.resumeTaskId && !call.resumeImageResult) {
         const problems = validateMediaCall(
@@ -141,7 +153,10 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
         if (problems.length > 0) {
           const others = candidates
             .filter((m) => m.provider !== target.provider || m.model !== target.model)
-            .filter((m) => lookupMediaModel(m.model, m.kind).operations.includes(op))
+            .filter(
+              (m) =>
+                !m.delisted && lookupMediaModel(m.model, m.kind, m.spec).operations.includes(op),
+            )
             .map((m) => `${m.provider} / ${m.model}`)
           return {
             ok: false,
@@ -161,6 +176,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
         apiKey: target.apiKey,
         ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
         ...(target.headers ? { headers: target.headers } : {}),
+        ...(target.spec ? { spec: target.spec } : {}),
       })
       let receivedImage = false
       let spendReported = false
@@ -270,6 +286,7 @@ export async function cancelMediaTask(
     apiKey: target.apiKey,
     ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
     ...(target.headers ? { headers: target.headers } : {}),
+    ...(target.spec ? { spec: target.spec } : {}),
   })
   return adapter.cancel ? adapter.cancel(task.taskId, signal) : 'unsupported'
 }

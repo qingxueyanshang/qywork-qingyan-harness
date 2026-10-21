@@ -1,9 +1,13 @@
-/** hongcheng：覆盖模型目录、运行时校验、原始素材上传、视频提交、计量与任务取回。 */
+/**
+ * hongcheng：覆盖保存的渠道规格、运行时校验、原始素材上传、视频提交、计量与任务取回。
+ * 型号规格按拉取后保存在配置中的形式构造（`StoredMediaModel.spec`）。
+ */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
-import { findMediaModel, lookupMediaModel, mediaCatalog, quoteMedia } from '@qywork/ai'
-import type { MediaSpend } from '@qywork/core'
-import type { QyConfig } from './config.ts'
+import { lookupMediaModel, mediaCatalog, quoteMedia } from '@qywork/ai'
+import type { ChannelVideoSpec, MediaSpend } from '@qywork/core'
+import { listMediaModels, type QyConfig } from './config.ts'
 import { makeMediaPort } from './media.ts'
+import { buildTailNotes } from './prompt.ts'
 
 const MODEL = 'TTseadanco2.5-720'
 const MODELS = [
@@ -27,13 +31,26 @@ const MODELS = [
   {
     id: 'seedance-2.5-yy-720p',
     min: 4,
-    defaultSeconds: '30',
+    defaultSeconds: '4',
     rate: 7.3,
     perRequest: true,
     resolution: '720p',
     maxVideos: 0,
   },
 ]
+const specOf = (id: string): ChannelVideoSpec => {
+  const { min, resolution, maxVideos, rate, perRequest } = MODELS.find((m) => m.id === id)!
+  return {
+    channel: 'hongcheng',
+    seconds: Array.from({ length: 31 - min }, (_, i) => i + min),
+    ratios: ['16:9', '9:16', '1:1'],
+    resolutions: [resolution],
+    maxImages: 30,
+    maxVideos,
+    maxAudios: 10,
+    price: { per: perRequest ? 'request' : 'second', amount: rate, currency: 'CNY' },
+  }
+}
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
 const WAV = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45])
@@ -106,7 +123,7 @@ const config = (suffix = '', model = MODEL): QyConfig => ({
       apiKey: 'test-only-key',
       baseUrl: `http://127.0.0.1:${server.port}${suffix}`,
       models: {},
-      media: { [model]: { kind: 'openai_videos' } },
+      media: { [model]: { kind: 'openai_videos', spec: specOf(model) } },
     },
   },
   mediaDefaults: { video: { provider: 'hongcheng', model } },
@@ -119,13 +136,10 @@ const call = () => ({
 })
 const signal = () => new AbortController().signal
 
-test('hongcheng 目录仅收录选定的四个型号，不包含移除型号规格', () => {
-  expect(
-    mediaCatalog()
-      .filter((model) => model.vendor === 'hongcheng')
-      .map((model) => model.id),
-  ).toEqual(MODELS.map((model) => model.id))
+test('代码目录不登记 hongcheng 型号；没有保存规格的同名型号使用协议默认', () => {
+  expect(mediaCatalog().filter((model) => model.vendor === 'hongcheng')).toEqual([])
   for (const id of [
+    ...MODELS.map((model) => model.id),
     'seedance-2.5（YX）',
     'seedance2.5-yx-count',
     'seedance-2.5（YX）-按次',
@@ -138,7 +152,6 @@ test('hongcheng 目录仅收录选定的四个型号，不包含移除型号规�
     'XG-Seedance-2.5-720p-2',
     'lec-vp-seedance-2-5-301010-1',
   ]) {
-    expect(findMediaModel(id)).toBeUndefined()
     expect(lookupMediaModel(id, 'openai_videos').videoFormat).toBeUndefined()
   }
 })
@@ -155,7 +168,7 @@ test.each(MODELS)('型号不接受其他分辨率，拒绝发生在上传之前�
 test.each(MODELS)(
   '渠道模型以 ID 显示并登记独立能力，其他协议不继承规格：$id',
   ({ id, maxVideos }) => {
-    expect(findMediaModel(id)).toMatchObject({
+    expect(lookupMediaModel(id, 'openai_videos', specOf(id))).toMatchObject({
       displayName: id,
       vendor: 'hongcheng',
       videoFormat: 'hongcheng',
@@ -169,7 +182,7 @@ test.each(MODELS)(
 test.each(MODELS)(
   '报价按渠道计费单位计算，省略时长使用模型默认值：$id',
   ({ id, min, defaultSeconds, rate, perRequest }) => {
-    const spec = findMediaModel(id)!
+    const spec = lookupMediaModel(id, 'openai_videos', specOf(id))!
     for (const seconds of [undefined, String(min), String(Math.max(10, min)), '30']) {
       const quote = quoteMedia(spec, seconds ? { seconds } : {}, { images: 1, videos: 0 })
       expect(quote?.currency).toBe('CNY')
@@ -303,7 +316,7 @@ test('YY 按次支持三种画幅及 30 图 10 音频，参考视频与超限素
   expect(seen).toEqual([])
   const ratios = ['16:9', '9:16', '1:1']
   expect(
-    findMediaModel(id)
+    lookupMediaModel(id, 'openai_videos', specOf(id))
       ?.params.find((p) => p.name === 'aspect_ratio')
       ?.shapes?.map((s) => s.value),
   ).toEqual(ratios)
@@ -324,7 +337,7 @@ test('YY 按次支持三种画幅及 30 图 10 音频，参考视频与超限素
     expect(seen[40]?.body).toMatchObject({
       model: id,
       resolution: '720p',
-      seconds: '30',
+      seconds: '4',
       aspect_ratio: ratio,
       ratio,
     })
@@ -418,4 +431,28 @@ test('远端拒绝保留错误原文，下载失败保留原任务号', async ()
   expect(
     await makeMediaPort(config()).generate({ ...call(), resumeTaskId: 'task_hongcheng' }, signal()),
   ).toMatchObject({ ok: false, pendingTaskId: 'task_hongcheng' })
+})
+
+test('已下架的型号不提交、不列给大模型；已提交的任务仍可取回', async () => {
+  const cfg = config()
+  cfg.providers.hongcheng!.media![MODEL]!.delisted = true
+  expect(await makeMediaPort(cfg).generate({ ...call(), inputs }, signal())).toMatchObject({
+    ok: false,
+    executed: false,
+    message: expect.stringContaining('已下架'),
+  })
+  expect(seen).toEqual([])
+  const text = buildTailNotes({
+    workspaceRoot: '/w',
+    platform: 'win32',
+    mode: 'auto',
+    mediaModels: listMediaModels(cfg),
+  })
+    .map((n) => n.content)
+    .join('\n')
+  expect(text).not.toContain(MODEL)
+  expect(
+    (await makeMediaPort(cfg).generate({ ...call(), resumeTaskId: 'task_hongcheng' }, signal())).ok,
+  ).toBe(true)
+  expect(seen.map((entry) => entry.method)).not.toContain('POST')
 })

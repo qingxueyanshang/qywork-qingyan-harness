@@ -89,11 +89,11 @@ test('新版本直接保存的默认权限不被识别为旧配置，非法权�
 test('原生上传迁移只清除跨渠道引用，保留模型、默认选择和全部凭证', async () => {
   const home = await mkdtemp(join(tmpdir(), 'qy-native-upload-'))
   const previousHome = process.env.QYWORK_HOME
-  const raw = cfg({ mediaDefaults: { video: { provider: 'ds', model: 'seedance2.5-V' } } })
+  const raw = cfg({ mediaDefaults: { video: { provider: 'ds', model: 'video-model' } } })
   const stored = { kind: 'openai_videos' as const, hongchengUploadProvider: 'missing-provider' }
-  raw.providers.ds!.media = { 'seedance2.5-V': stored }
+  raw.providers.ds!.media = { 'video-model': stored }
   const expected = structuredClone(raw)
-  expected.providers.ds!.media!['seedance2.5-V'] = { kind: 'openai_videos' }
+  expected.providers.ds!.media!['video-model'] = { kind: 'openai_videos' }
   try {
     process.env.QYWORK_HOME = home
     await writeFile(join(home, 'config.json'), JSON.stringify(raw))
@@ -198,7 +198,7 @@ test.each(
   async (removed, mixed) => {
     const home = await mkdtemp(join(tmpdir(), 'qy-removed-mumugofe-'))
     const previousHome = process.env.QYWORK_HOME
-    const keep = 'seedance2.5-V'
+    const keep = 'video-model'
     const provider = {
       kind: 'openai_chat_completions' as const,
       baseUrl: 'https://api.mumugofe.com/v1',
@@ -292,10 +292,13 @@ test('hongcheng 精简后保留选定型号与有效默认值，其他协议及�
     process.env.QYWORK_HOME = home
     await writeFile(join(home, 'config.json'), JSON.stringify(raw))
     const loaded = await loadConfig()
-    expect(loaded).toEqual({
-      ...raw,
-      providers: { ...raw.providers, channel: { ...raw.providers.channel!, media } },
-    })
+    expect(Object.keys(loaded.providers.channel!.media!)).toEqual(Object.keys(media))
+    for (const id of kept)
+      expect(loaded.providers.channel!.media![id]).toMatchObject({
+        kind: 'openai_videos',
+        spec: { channel: 'hongcheng' },
+      })
+    expect(loaded.providers.other).toEqual(raw.providers.other)
     expect(resolveMediaModel(loaded, 'video')).toMatchObject({ model: 'seedance-2.5-yy-720p' })
     await saveConfig(loaded)
     expect(await loadConfig()).toEqual(loaded)
@@ -304,6 +307,111 @@ test('hongcheng 精简后保留选定型号与有效默认值，其他协议及�
     else process.env.QYWORK_HOME = previousHome
     await rm(home, { recursive: true, force: true })
   }
+})
+
+test('已落盘的渠道型号加载时补上保存的规格；带规格的同名型号不按旧名单删除', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'qy-channel-specs-'))
+  const previousHome = process.env.QYWORK_HOME
+  const pulled = {
+    kind: 'openai_videos' as const,
+    spec: {
+      channel: 'hongcheng' as const,
+      seconds: [4, 5, 6],
+      ratios: ['16:9'],
+      resolutions: ['1080p'],
+      maxImages: 9,
+      maxVideos: 0,
+      maxAudios: 3,
+    },
+  }
+  const raw = cfg({
+    providers: {
+      ds: {
+        kind: 'openai_chat_completions',
+        apiKey: 'keep',
+        models: {},
+        media: {
+          'TTseadanco2.5-720': { kind: 'openai_videos' },
+          '007系列/sd2.5(30图10音/4-30秒/720P)': { kind: 'openai_videos' },
+          // 旧名单中的型号名，由拉取重新添加。
+          'sd2.5-pp-1080p': pulled,
+        },
+      },
+    },
+  })
+  try {
+    process.env.QYWORK_HOME = home
+    await writeFile(join(home, 'config.json'), JSON.stringify(raw))
+    const loaded = await loadConfig()
+    expect(loaded.providers.ds!.media).toEqual({
+      'TTseadanco2.5-720': {
+        kind: 'openai_videos',
+        spec: {
+          channel: 'hongcheng',
+          seconds: Array.from({ length: 26 }, (_, i) => i + 5),
+          ratios: ['16:9', '9:16', '1:1'],
+          resolutions: ['720p'],
+          maxImages: 30,
+          maxVideos: 10,
+          maxAudios: 10,
+          price: { per: 'second', amount: 0.42, currency: 'CNY' },
+        },
+      },
+      '007系列/sd2.5(30图10音/4-30秒/720P)': {
+        kind: 'openai_videos',
+        spec: {
+          channel: 'mumugofe',
+          seconds: Array.from({ length: 27 }, (_, i) => i + 4),
+          ratios: ['16:9', '9:16'],
+          resolutions: ['720p'],
+          sizes: { '720p': [1280, 720] },
+          maxImages: 30,
+          maxVideos: 0,
+          maxAudios: 10,
+          price: { per: 'request', amount: 6, currency: 'CNY' },
+        },
+      },
+      'sd2.5-pp-1080p': pulled,
+    })
+    expect(diagnoseConfig(loaded)).toEqual([])
+  } finally {
+    if (previousHome === undefined) delete process.env.QYWORK_HOME
+    else process.env.QYWORK_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('保存的渠道规格不合法时阻止保存', () => {
+  const bad = (spec: unknown, kind = 'openai_videos') =>
+    diagnoseConfig(
+      cfg({
+        providers: {
+          ds: {
+            kind: 'openai_chat_completions',
+            models: {},
+            media: { v: { kind, spec } as never },
+          },
+        },
+      }),
+    )
+  const ok = {
+    channel: 'mumugofe',
+    seconds: [5],
+    ratios: ['16:9'],
+    resolutions: ['720p'],
+    sizes: { '720p': [1280, 720] },
+    maxImages: 1,
+    maxVideos: 0,
+    maxAudios: 0,
+  }
+  expect(bad(ok)).toEqual([])
+  expect(bad(ok, 'ark_videos')[0]).toContain('只有 openai_videos 协议可以保存渠道规格')
+  expect(bad({ ...ok, channel: 'other' })[0]).toContain('channel 必须是')
+  expect(bad({ ...ok, seconds: [10, 5] })[0]).toContain('seconds 必须是升序的正整数数组')
+  expect(bad({ ...ok, sizes: {} })[0]).toContain('mumugofe 的每个分辨率档位都必须提供 sizes')
+  expect(bad({ ...ok, price: { per: 'request', amount: 0, currency: 'CNY' } })[0]).toContain(
+    'price 必须包含',
+  )
 })
 
 test('已落盘的旧参数模式不能覆盖模型库的协议策略', async () => {
@@ -363,6 +471,39 @@ describe('模型解析', () => {
         models: { 'deepseek-v4-flash': {} },
       },
     },
+  })
+
+  test('接口价格只合成进该接口的覆盖对象，同名同协议的其他接口不受影响', () => {
+    const priced = structuredClone(two)
+    priced.catalog = { 'deepseek-v4-flash|openai_chat_completions': { contextWindow: 500_000 } }
+    priced.providers.mirror!.models['deepseek-v4-flash'] = {
+      price: { input: 1.04, output: 4.16, cacheRead: 0.02, cacheWrite: 1.04, currency: 'CNY' },
+    }
+    expect(resolveModel(priced, { provider: 'mirror', model: 'deepseek-v4-flash' })?.spec).toEqual({
+      contextWindow: 500_000,
+      input: 1.04,
+      output: 4.16,
+      cacheRead: 0.02,
+      cacheWrite: 1.04,
+      currency: 'CNY',
+    })
+    expect(resolveModel(priced, { provider: 'ds', model: 'deepseek-v4-flash' })?.spec).toEqual({
+      contextWindow: 500_000,
+    })
+    expect(diagnoseConfig(priced)).toEqual([])
+    priced.providers.mirror!.models['deepseek-v4-flash'] = {
+      price: { input: -1, output: 1, cacheRead: 0, cacheWrite: 0, currency: 'CNY' },
+    }
+    expect(diagnoseConfig(priced)[0]).toContain('price 必须包含非负数')
+  })
+
+  test('对应型号必须在模型库中', () => {
+    const mapped = cfg({
+      catalog: { 'deepseek-v4.1-flash|openai_chat_completions': { base: 'deepseek-flash' } },
+    })
+    expect(diagnoseConfig(mapped)).toEqual([])
+    mapped.catalog!['deepseek-v4.1-flash|openai_chat_completions']!.base = 'not-in-catalog'
+    expect(diagnoseConfig(mapped)[0]).toContain('对应型号 "not-in-catalog" 不在模型库中')
   })
 
   test('同接口下切换模型，凭证与端点随接口确定', () => {

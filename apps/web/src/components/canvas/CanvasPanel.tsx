@@ -1459,7 +1459,8 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     const current = currentOf(n)
     const id = n.model ?? current?.made.model
     if (!id) return ''
-    return catalogModel(n.provider ?? current?.made.provider, id)?.label ?? id
+    const m = catalogModel(n.provider ?? current?.made.provider, id)
+    return m ? `${m.label}${m.delisted ? '（已下架）' : ''}` : id
   }
   const panelAt = () => {
     const n = single()

@@ -7,6 +7,7 @@ import {
   PROVIDER_KINDS,
   type ProviderKind,
   type ToolCallCheck,
+  type VideoChannel,
 } from '@qywork/core'
 import { createSignal, For, Show } from 'solid-js'
 import { sessionSignal } from '../../lib/session.ts'
@@ -35,6 +36,7 @@ import {
 import { LoadState } from './LoadState.tsx'
 import { MEDIA_KIND_LABEL, ModelLibrary } from './ModelLibrary.tsx'
 import { ProviderTabs } from './ProviderTabs.tsx'
+import { PullDialog } from './PullDialog.tsx'
 import { Field, Row } from './Row.tsx'
 
 /**
@@ -54,6 +56,9 @@ const probeKey = (provider: string, model: string) => JSON.stringify([provider, 
 
 /** 生成模型行上的类别名。同一列中既有对话模型的「默认」，也有各类生成模型的「默认」，缺少类别名时无法区分各自的用途。 */
 const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
+
+/** 拉取得到渠道规格的型号，接入方式即该渠道的请求格式，名称与模型库厂商列相同。 */
+const CHANNEL_LABEL: Record<VideoChannel, string> = { hongcheng: 'hongcheng', mumugofe: 'Mumugofe' }
 
 /**
  * 模型配置分为接口与模型两层。
@@ -89,6 +94,8 @@ export function ModelSettings() {
   /** 最近一次探测结果按接口与模型区分，不落盘。 */
   const [probes, setProbes] = createSignal<Record<string, ProbeResult | { error: string }>>({})
   const [probing, setProbing] = createSignal<string | null>(null)
+  /** 打开拉取窗口的接口名。 */
+  const [pulling, setPulling] = createSignal<string | null>(null)
 
   const names = () => Object.keys(config()?.providers ?? {})
   const current = () => {
@@ -453,6 +460,14 @@ export function ModelSettings() {
                   <section class="settings-block">
                     <div class="settings-block-head">
                       <h3>模型</h3>
+                      <button
+                        class="btn-ghost sm pull-open"
+                        type="button"
+                        disabled={!p().baseUrl || configBusy()}
+                        onClick={() => setPulling(name())}
+                      >
+                        拉取模型
+                      </button>
                     </div>
 
                     <div class="model-list">
@@ -486,6 +501,9 @@ export function ModelSettings() {
                                   {isDefault() ? '默认' : '设为默认'}
                                 </button>
                                 <span class="model-id">{id}</span>
+                                <Show when={p().models[id]?.delisted}>
+                                  <span class="model-delisted">已下架</span>
+                                </Show>
                                 {/* 探测结论与模型 id 位于同一行。放在行下方时，
                                       每次探测都会增加行高，下方各行随之下移。 */}
                                 <Show when={result()}>{(r) => <ProbeSummary result={r()} />}</Show>
@@ -562,41 +580,55 @@ export function ModelSettings() {
                                 </button>
                                 <span class="model-id">{id}</span>
                                 <span class="model-output">{OUTPUT_LABEL[output]}</span>
-                                <label class="model-access">
-                                  接入方式
-                                  <select
-                                    aria-label={`接入方式 ${id}`}
-                                    value={m.kind}
-                                    disabled={configBusy() || kinds().length < 2}
-                                    onChange={(e) => {
-                                      const provider = name()
-                                      const kind = e.currentTarget.value as MediaKind
-                                      void replaceConfig((cur) => {
-                                        const owner = cur.providers[provider]
-                                        if (!owner?.media?.[id]) return null
-                                        return {
-                                          ...cur,
-                                          providers: {
-                                            ...cur.providers,
-                                            [provider]: {
-                                              ...owner,
-                                              media: {
-                                                ...owner.media,
-                                                [id]: { ...owner.media[id], kind },
+                                <Show when={m.delisted}>
+                                  <span class="model-delisted">已下架</span>
+                                </Show>
+                                <Show
+                                  when={m.spec}
+                                  fallback={
+                                    <label class="model-access">
+                                      接入方式
+                                      <select
+                                        aria-label={`接入方式 ${id}`}
+                                        value={m.kind}
+                                        disabled={configBusy() || kinds().length < 2}
+                                        onChange={(e) => {
+                                          const provider = name()
+                                          const kind = e.currentTarget.value as MediaKind
+                                          void replaceConfig((cur) => {
+                                            const owner = cur.providers[provider]
+                                            if (!owner?.media?.[id]) return null
+                                            return {
+                                              ...cur,
+                                              providers: {
+                                                ...cur.providers,
+                                                [provider]: {
+                                                  ...owner,
+                                                  media: {
+                                                    ...owner.media,
+                                                    [id]: { ...owner.media[id], kind },
+                                                  },
+                                                },
                                               },
-                                            },
-                                          },
-                                        }
-                                      })
-                                    }}
-                                  >
-                                    <For each={kinds()}>
-                                      {(kind) => (
-                                        <option value={kind}>{MEDIA_KIND_LABEL[kind]}</option>
-                                      )}
-                                    </For>
-                                  </select>
-                                </label>
+                                            }
+                                          })
+                                        }}
+                                      >
+                                        <For each={kinds()}>
+                                          {(kind) => (
+                                            <option value={kind}>{MEDIA_KIND_LABEL[kind]}</option>
+                                          )}
+                                        </For>
+                                      </select>
+                                    </label>
+                                  }
+                                >
+                                  {(spec) => (
+                                    <span class="model-access">
+                                      接入方式 {CHANNEL_LABEL[spec().channel]}
+                                    </span>
+                                  )}
+                                </Show>
                                 {/* 生成模型不提供「检测」：每次探测都会实际执行一次生成并计费。 */}
                                 <button
                                   class="icon-btn"
@@ -641,6 +673,10 @@ export function ModelSettings() {
           </Show>
 
           <ConfigStatus />
+
+          <Show when={pulling()}>
+            {(provider) => <PullDialog provider={provider()} onClose={() => setPulling(null)} />}
+          </Show>
 
           <ConfirmDialog
             open={doomed() !== null}

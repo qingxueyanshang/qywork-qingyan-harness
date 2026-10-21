@@ -170,7 +170,7 @@ export function serve(opts: ServeOptions) {
     paramSpecsOf: (output, pick) => {
       if (output === 'art') return [ART_SIZE_PARAM]
       const target = resolveMediaModel(opts.config, output, pick)
-      return target ? lookupMediaModel(target.model, target.kind).params : undefined
+      return target ? lookupMediaModel(target.model, target.kind, target.spec).params : undefined
     },
     // art 的模型是对话模型，按接口下声明的对话模型查找。
     providersOf: (output, model) =>
@@ -184,7 +184,7 @@ export function serve(opts: ServeOptions) {
     mentionStyleOf: (output, pick) => {
       if (output === 'art') return ART_MENTION
       const target = resolveMediaModel(opts.config, output, pick)
-      return target ? lookupMediaModel(target.model, target.kind).mention : undefined
+      return target ? lookupMediaModel(target.model, target.kind, target.spec).mention : undefined
     },
   })
   /*

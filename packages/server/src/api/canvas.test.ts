@@ -13,6 +13,7 @@ import {
   type AgentEvent,
   applyCanvasOps,
   type CanvasView,
+  type ChannelVideoSpec,
   emptyCanvas,
   serializeCanvas,
   type UsageResponse,
@@ -293,21 +294,28 @@ describe('画布接口', () => {
     { id: '007系列/sd2.5(30图10音/4-30秒/720P)', min: 4, maxAudios: 10, cost: 6 },
     { id: 'X-SD25-301010', min: 30, maxAudios: 0, cost: 7 },
   ])(
-    '木木按次型号在配置列表与模型库中提供相同规格及固定报价：$id',
+    '木木按次型号按保存的规格下发参数与固定报价，不出现在模型库：$id',
     async ({ id, min, maxAudios, cost }) => {
       const { d } = await setup()
-      d.config.providers.ds!.media![id] = { kind: 'openai_videos' }
+      const spec: ChannelVideoSpec = {
+        channel: 'mumugofe',
+        seconds: Array.from({ length: 31 - min }, (_, i) => i + min),
+        ratios: ['16:9', '9:16'],
+        resolutions: ['720p'],
+        sizes: { '720p': [1280, 720] },
+        maxImages: 30,
+        maxVideos: 0,
+        maxAudios,
+        price: { per: 'request', amount: cost, currency: 'CNY' },
+      }
+      d.config.providers.ds!.media![id] = { kind: 'openai_videos', spec }
       const models = (await (await call(d, '/api/models')).json()) as ModelsResponse
       expect(models.media.find((model) => model.id === id)).toMatchObject({
         known: true,
         operations: ['text_to_video', 'reference_to_video'],
         maxAudios,
       })
-      expect(models.mediaLibrary.find((model) => model.id === id)).toMatchObject({
-        maxImages: 30,
-        maxVideos: 0,
-        maxAudios,
-      })
+      expect(models.mediaLibrary.some((model) => model.id === id)).toBe(false)
       const model = models.media.find((row) => row.id === id)!
       expect(model.params.find((p) => p.name === 'seconds')?.values).toEqual(
         Array.from({ length: 31 - min }, (_, i) => String(i + min)),
@@ -344,7 +352,7 @@ describe('画布接口', () => {
       maxVideos: 0,
     },
   ])(
-    'hongcheng 下发模型 ID、时长范围和画幅，报价遵循计费单位：$id',
+    'hongcheng 按保存的规格下发模型 ID、时长范围和画幅，报价遵循计费单位：$id',
     async ({ id, min, rate, resolution, maxVideos, perRequest }) => {
       const { d } = await setup()
       d.config.providers.hongcheng = {
@@ -352,26 +360,27 @@ describe('画布接口', () => {
         apiKey: 'sk-test',
         baseUrl: origin(),
         models: {},
-        media: { [id]: { kind: 'openai_videos' } },
+        media: {
+          [id]: {
+            kind: 'openai_videos',
+            spec: {
+              channel: 'hongcheng',
+              seconds: Array.from({ length: 31 - min }, (_, i) => i + min),
+              ratios: ['16:9', '9:16', '1:1'],
+              resolutions: [resolution],
+              maxImages: 30,
+              maxVideos,
+              maxAudios: 10,
+              price: { per: perRequest ? 'request' : 'second', amount: rate, currency: 'CNY' },
+            },
+          },
+        },
       }
       const models = (await (await call(d, '/api/models')).json()) as ModelsResponse
       const model = models.media.find((m) => m.provider === 'hongcheng')!
       expect(model.known).toBe(true)
       expect(model.label).toBe(id)
-      for (const removed of [
-        'seedance-2.5（YX）',
-        'seedance2.5-yx-count',
-        'seedance-2.5（YX）-按次',
-        'seedance2.5-aa-count',
-        'seedance-2.5  AA-按次',
-        'wf-sd2.5-v2',
-        'GGsedanco2.5/480',
-        'seedance-2.5（AA）',
-        'sd2.5-pp-1080p',
-        'XG-Seedance-2.5-720p-2',
-        'lec-vp-seedance-2-5-301010-1',
-      ])
-        expect(models.mediaLibrary.some((entry) => entry.id === removed)).toBe(false)
+      expect(models.mediaLibrary.some((entry) => entry.vendor === 'hongcheng')).toBe(false)
       expect(model.maxAudios).toBe(10)
       expect(model.operations.includes('video_to_video')).toBe(maxVideos > 0)
       expect(model.params.map((p) => [p.name, p.label])).toEqual([

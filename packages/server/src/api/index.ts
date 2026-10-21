@@ -22,6 +22,7 @@ import { handleMemoryApi } from './memory.ts'
 import { handlePairingApi } from './pairing.ts'
 import { handlePluginsApi } from './plugins.ts'
 import { handleProbeApi } from './probe.ts'
+import { handlePullApi } from './pull.ts'
 import { handleSchedulesApi } from './schedules.ts'
 import { handleTeamApi } from './team.ts'
 import type { ApiDeps, ApiHandler, ApiRequestDeps } from './types.ts'
@@ -58,6 +59,7 @@ const HANDLERS: ApiHandler[] = [
   handleWorkspaceApi,
   handleConfigApi,
   handleProbeApi,
+  handlePullApi,
   handleSchedulesApi,
   handleMemoryApi,
   handleMcpApi,

@@ -1710,10 +1710,18 @@ describe('画布：生成卡与生成面板', () => {
     { id: 'TTseadanco2.5-720', min: '5', defaultSeconds: '5' },
     { id: 'TTsedanco2.5-480', min: '5', defaultSeconds: '5' },
     { id: 'GGseadanco2.5/720', min: '5', defaultSeconds: '5' },
-    { id: 'seedance-2.5-yy-720p', min: '4', defaultSeconds: '30' },
+    { id: 'seedance-2.5-yy-720p', min: '4', defaultSeconds: '4' },
   ])('hongcheng 隐藏固定参数，时长按型号规格提交：$id', async ({ id, min, defaultSeconds }) => {
-    const { lookupMediaModel } = await import('../../../../../packages/ai/src/media/catalog.ts')
-    const spec = lookupMediaModel(id, 'openai_videos')
+    const { channelMediaSpec } = await import('../../../../../packages/ai/src/media/channels.ts')
+    const spec = channelMediaSpec(id, {
+      channel: 'hongcheng',
+      seconds: Array.from({ length: 31 - Number(min) }, (_, i) => Number(min) + i),
+      ratios: ['16:9', '9:16', '1:1'],
+      resolutions: ['720p'],
+      maxImages: 30,
+      maxVideos: 10,
+      maxAudios: 10,
+    })
     const catalog = {
       ...MODELS,
       media: [
@@ -1795,81 +1803,83 @@ describe('画布：生成卡与生成面板', () => {
   })
 
   test.each([
-    { index: 0, min: '5', max: '30', portrait: '720x1280' },
-    { index: 1, min: '4', max: '30', portrait: '720x1280' },
-    { index: 2, min: '30', max: '30', portrait: '720x1280' },
-  ])(
-    'Mumugofe 隐藏固定清晰度，按型号保存时长与横竖屏：%j',
-    async ({ index, min, max, portrait }) => {
-      const { MUMUGOFE_MODELS } = await import(
-        '../../../../../packages/ai/src/media/catalog-mumugofe.ts'
-      )
-      const spec = MUMUGOFE_MODELS[index]!
-      const catalog = {
-        ...MODELS,
-        media: [{ ...MODELS.media[0], id: spec.id, label: spec.id, params: spec.params }],
-      }
-      const { host, server, refs } = await mount(
-        [
-          {
-            op: 'add_generate',
-            ref: '$g',
-            output: 'video',
-            params: {},
-          },
-        ],
-        {},
-        catalog,
-      )
-      await select(host, refs.$g!)
-      host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!.click()
-      const input = () => document.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
-      if (min === max) expect(input()).toBeNull()
-      else expect([input().min, input().max, input().value]).toEqual([min, max, '5'])
-      expect(
-        [...document.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
-      ).toEqual(min === max ? ['宽高比'] : ['时长', '宽高比'])
-      expect(document.querySelector('.canvas-params-panel')?.textContent).not.toMatch(/720P|480P/)
-      expect(host.querySelector('.canvas-bar .mode-chip.model')?.textContent).toContain(spec.id)
-      const ratio = [
-        ...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button'),
-      ].find((b) => b.textContent === '9:16')!
-      ratio.click()
-      await waitFor(
-        () => {
-          const node = server.doc().nodes[0]
-          return node?.type === 'generate' && node.params.size === portrait
+    { min: '5', max: '30', portrait: '720x1280' },
+    { min: '4', max: '30', portrait: '720x1280' },
+    { min: '30', max: '30', portrait: '720x1280' },
+  ])('Mumugofe 隐藏固定清晰度，按型号保存时长与横竖屏：%j', async ({ min, max, portrait }) => {
+    const { channelMediaSpec } = await import('../../../../../packages/ai/src/media/channels.ts')
+    const spec = channelMediaSpec(`sd2.5-${min}`, {
+      channel: 'mumugofe',
+      seconds: Array.from({ length: Number(max) - Number(min) + 1 }, (_, i) => Number(min) + i),
+      ratios: ['16:9', '9:16'],
+      resolutions: ['720p'],
+      sizes: { '720p': [1280, 720] },
+      maxImages: 30,
+      maxVideos: 0,
+      maxAudios: 0,
+    })
+    const catalog = {
+      ...MODELS,
+      media: [{ ...MODELS.media[0], id: spec.id, label: spec.id, params: spec.params }],
+    }
+    const { host, server, refs } = await mount(
+      [
+        {
+          op: 'add_generate',
+          ref: '$g',
+          output: 'video',
+          params: {},
         },
-        () => JSON.stringify(server.ops),
-      )
-      expect(document.querySelector('.canvas-param-notice')).toBeNull()
-      if (min === max) {
-        expect(server.doc().nodes[0]).toMatchObject({ params: { size: portrait } })
-        expect(server.doc().nodes[0]).not.toHaveProperty('params.seconds')
-        return
-      }
-      input().value = '99'
-      input().dispatchEvent(new Event('change', { bubbles: true }))
-      expect(input().value).toBe(max)
-      await waitFor(
-        () => {
-          const node = server.doc().nodes[0]
-          return node?.type === 'generate' && node.params.seconds === max
-        },
-        () => JSON.stringify(server.ops),
-      )
-      document
-        .querySelector<HTMLButtonElement>('.canvas-stepper button[aria-label="减少"]')!
-        .click()
-      await waitFor(
-        () => input().value === String(Number(max) - 1),
-        () => JSON.stringify(server.ops),
-      )
-      expect(server.doc().nodes[0]).toMatchObject({
-        params: { seconds: String(Number(max) - 1), size: portrait },
-      })
-    },
-  )
+      ],
+      {},
+      catalog,
+    )
+    await select(host, refs.$g!)
+    host.querySelector<HTMLButtonElement>('.canvas-bar .mode-chip.params')!.click()
+    const input = () => document.querySelector<HTMLInputElement>('input[aria-label="时长"]')!
+    if (min === max) expect(input()).toBeNull()
+    else expect([input().min, input().max, input().value]).toEqual([min, max, min])
+    expect(
+      [...document.querySelectorAll('.canvas-params-title')].map((el) => el.textContent),
+    ).toEqual(min === max ? ['宽高比'] : ['时长', '宽高比'])
+    expect(document.querySelector('.canvas-params-panel')?.textContent).not.toMatch(/720P|480P/)
+    expect(host.querySelector('.canvas-bar .mode-chip.model')?.textContent).toContain(spec.id)
+    const ratio = [
+      ...document.querySelectorAll<HTMLButtonElement>('.canvas-params-panel button'),
+    ].find((b) => b.textContent === '9:16')!
+    ratio.click()
+    await waitFor(
+      () => {
+        const node = server.doc().nodes[0]
+        return node?.type === 'generate' && node.params.size === portrait
+      },
+      () => JSON.stringify(server.ops),
+    )
+    expect(document.querySelector('.canvas-param-notice')).toBeNull()
+    if (min === max) {
+      expect(server.doc().nodes[0]).toMatchObject({ params: { size: portrait } })
+      expect(server.doc().nodes[0]).not.toHaveProperty('params.seconds')
+      return
+    }
+    input().value = '99'
+    input().dispatchEvent(new Event('change', { bubbles: true }))
+    expect(input().value).toBe(max)
+    await waitFor(
+      () => {
+        const node = server.doc().nodes[0]
+        return node?.type === 'generate' && node.params.seconds === max
+      },
+      () => JSON.stringify(server.ops),
+    )
+    document.querySelector<HTMLButtonElement>('.canvas-stepper button[aria-label="减少"]')!.click()
+    await waitFor(
+      () => input().value === String(Number(max) - 1),
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.doc().nodes[0]).toMatchObject({
+      params: { seconds: String(Number(max) - 1), size: portrait },
+    })
+  })
 
   test('固定 30 秒与 720P 不显示，底栏与面板只保留可选宽高比', async () => {
     const { host, refs } = await mount(

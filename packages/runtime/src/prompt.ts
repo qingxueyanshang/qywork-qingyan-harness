@@ -318,11 +318,12 @@ function mentionNote(style: MentionStyle): string {
 function mediaModelsNote(models: MediaModelEntry[]): string {
   const sections: string[] = []
   for (const output of MEDIA_OUTPUTS) {
-    const rows = models.filter((m) => m.output === output)
+    // 已下架的型号提交即被拒绝，不列给大模型。
+    const rows = models.filter((m) => m.output === output && !m.delisted)
     if (!rows.length) continue
     const lines = [`### ${MEDIA_LABEL[output]} · ${MEDIA_TOOLS[output].name}`]
     for (const m of rows) {
-      const spec = lookupMediaModel(m.model, m.kind)
+      const spec = lookupMediaModel(m.model, m.kind, m.spec)
       const ops = spec.operations.map(operationLabel).join('、')
       const limits = [
         spec.inputs.maxImages ? `参考图最多 ${spec.inputs.maxImages} 张` : '',

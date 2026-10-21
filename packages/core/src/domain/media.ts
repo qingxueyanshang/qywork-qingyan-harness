@@ -28,6 +28,87 @@ export const MEDIA_KINDS = [
 ] as const
 export type MediaKind = (typeof MEDIA_KINDS)[number]
 
+/**
+ * 中转渠道的视频请求格式。请求字段、素材上传与任务查询由 `@qywork/ai` 按格式实现；
+ * 型号的时长、画幅、素材上限与价格来自拉取时的渠道目录，保存在该型号的配置中（`ChannelVideoSpec`）。
+ */
+export const VIDEO_CHANNELS = ['hongcheng', 'mumugofe'] as const
+export type VideoChannel = (typeof VIDEO_CHANNELS)[number]
+
+/** 渠道公布的价格。金额按渠道充值价与分组倍率折算，币种为渠道的计价币种。 */
+export interface ChannelPrice {
+  per: 'request' | 'second'
+  amount: number
+  currency: Currency
+}
+
+/**
+ * 拉取模型时由渠道目录得到的视频型号规格，保存在该型号的配置中。
+ * 只保存目录中的事实；参数名、默认值与说明由 `@qywork/ai` 按渠道格式生成。
+ */
+export interface ChannelVideoSpec {
+  channel: VideoChannel
+  /** 可选时长（秒），升序；第一项为默认值。 */
+  seconds: number[]
+  /** 宽高比；第一项为默认值。 */
+  ratios: string[]
+  /** 分辨率档位，如 `720p`。 */
+  resolutions: string[]
+  /** 各档位的横屏像素尺寸 `[宽, 高]`。按像素尺寸提交的格式（mumugofe）必须提供。 */
+  sizes?: Record<string, [number, number]>
+  maxImages: number
+  maxVideos: number
+  maxAudios: number
+  /** 参考素材先上传到渠道，请求中只发送地址；省略时内联发送（mumugofe）。 */
+  publicUrls?: true
+  /** 省略表示价格不明。 */
+  price?: ChannelPrice
+}
+
+const isCount = (v: unknown) => Number.isInteger(v) && (v as number) >= 0
+const isTextList = (v: unknown) =>
+  Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string' && x !== '')
+
+/** 配置中保存的渠道规格不合法时返回原因。配置写入前校验，不合法的规格不落盘。 */
+export function channelVideoSpecProblem(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return '不是对象'
+  const s = value as Partial<ChannelVideoSpec>
+  if (!VIDEO_CHANNELS.includes(s.channel as VideoChannel))
+    return `channel 必须是 ${VIDEO_CHANNELS.join('、')} 之一`
+  if (
+    !Array.isArray(s.seconds) ||
+    !s.seconds.length ||
+    !s.seconds.every((n, i) => Number.isInteger(n) && n > 0 && (i === 0 || n > s.seconds![i - 1]!))
+  )
+    return 'seconds 必须是升序的正整数数组'
+  if (!isTextList(s.ratios)) return 'ratios 必须是非空字符串数组'
+  if (!isTextList(s.resolutions)) return 'resolutions 必须是非空字符串数组'
+  if (
+    s.sizes !== undefined &&
+    (!s.sizes ||
+      typeof s.sizes !== 'object' ||
+      !Object.values(s.sizes).every(
+        (d) => Array.isArray(d) && d.length === 2 && d.every((n) => Number.isInteger(n) && n > 0),
+      ))
+  )
+    return 'sizes 必须是「档位 → [宽, 高]」'
+  if (s.channel === 'mumugofe' && !(s.resolutions as string[]).every((r) => s.sizes?.[r]))
+    return 'mumugofe 的每个分辨率档位都必须提供 sizes'
+  if (!isCount(s.maxImages) || !isCount(s.maxVideos) || !isCount(s.maxAudios))
+    return 'maxImages、maxVideos、maxAudios 必须是非负整数'
+  if (s.publicUrls !== undefined && s.publicUrls !== true) return 'publicUrls 只能为 true'
+  const p = s.price
+  if (
+    p !== undefined &&
+    (!p ||
+      !['request', 'second'].includes(p.per) ||
+      !(Number.isFinite(p.amount) && p.amount > 0) ||
+      !['USD', 'CNY'].includes(p.currency))
+  )
+    return 'price 必须包含 per（request 或 second）、正数 amount 与 currency'
+  return null
+}
+
 /** 生成的产物类别。顺序即模型库页签顺序。 */
 export const MEDIA_OUTPUTS = ['image', 'video', 'audio'] as const
 export type MediaOutput = (typeof MEDIA_OUTPUTS)[number]

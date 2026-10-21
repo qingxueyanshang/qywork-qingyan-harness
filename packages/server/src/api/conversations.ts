@@ -14,7 +14,6 @@ import {
   mediaCatalog,
   mediaKindsOf,
   officialBaseUrl,
-  unknownModel,
   VENDORS,
 } from '@qywork/ai'
 import type {
@@ -138,6 +137,8 @@ export interface MediaModelRow {
   maxAudios?: number
   /** 画布生成面板上的参数控件。仅包含目录中标注了 `label` 的参数，其余参数只提供给大模型。 */
   params: MediaParamRow[]
+  /** 上一次拉取时渠道已不再提供该型号，生成工具不向它提交。 */
+  delisted?: true
 }
 
 /** 生成面板上的一个参数控件，取自目录的 `MediaParamSpec`，不含提供给大模型的说明。 */
@@ -233,12 +234,15 @@ function buildLibrary(overrides: Record<string, StoredCatalogEntry>): LibraryVen
     const o = overrides[catalogKey(m.id, m.provider)]
     rows.set(m.id, applySpecOverride(m, o))
   }
-  // 补入目录未收录的模型（用户自行添加的条目）：`unknownModel` 提供一组保守默认值，
-  // 覆盖中填写的值按原样显示。此处丢弃键的第二维：用户添加的模型只可能有一个协议。
+  // 补入目录未收录的模型（用户自行添加的条目）：有对应型号时取该型号的规格，否则 `unknownModel`
+  // 提供一组保守默认值，覆盖中填写的值按原样显示。此处丢弃键的第二维：用户添加的模型只可能有一个协议。
   for (const [key, o] of Object.entries(overrides)) {
     const id = key.split('|')[0] ?? key
     if (rows.has(id)) continue
-    rows.set(id, applySpecOverride(unknownModel(id, 'openai_chat_completions'), o))
+    rows.set(
+      id,
+      applySpecOverride(lookupModel(id, 'openai_chat_completions', undefined, o.base), o),
+    )
   }
 
   const groups = new Map<string, LibraryVendor>()
@@ -341,12 +345,13 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         name,
         models: Object.keys(provider.models).map((id) => {
           const declared = provider.models[id]
-          // 模型能力与参数按「模型 + 协议」从官方目录与模型库获取；当前中转站是否透传
-          // 控制参数只看该接口下此模型条目的 transport，不能写回全局目录。
+          // 模型能力与参数按「模型 + 协议」从官方目录与模型库获取，覆盖对象与运行时相同（含接口价格）；
+          // 当前中转站是否透传控制参数只看该接口下此模型条目的 transport，不能写回全局目录。
+          const override = resolveModel(d.config, { provider: name, model: id })?.spec
           const spec = applyTransportCapabilities(
-            lookupModel(id, provider.kind),
+            lookupModel(id, provider.kind, undefined, override?.base),
             declared?.transport,
-            overrides[catalogKey(id, provider.kind)],
+            override,
           )
           const effortLevels = effortIsTransmittable(spec) ? spec.effortLevels : []
           const defaultBaseUrl = officialBaseUrl(spec)
@@ -369,7 +374,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         }),
       }))
     const media: MediaModelRow[] = listMediaModels(d.config).map((m) => {
-      const spec = lookupMediaModel(m.model, m.kind)
+      const spec = lookupMediaModel(m.model, m.kind, m.spec)
       return {
         provider: m.provider,
         id: m.model,
@@ -383,6 +388,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
         params: spec.params.flatMap(({ description: _d, label, ...rest }) =>
           label ? [{ ...rest, label }] : [],
         ),
+        ...(m.delisted ? { delisted: true as const } : {}),
       }
     })
     const mediaLibrary: MediaLibraryModel[] = mediaCatalog().map((spec) => ({
@@ -621,7 +627,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     const stored = resolveModel(d.config, { provider: conv.provider, model: conv.model })
     if (!stored) return json({ error: '会话绑定的接口或模型已不在配置中' }, 409)
     const kind = stored.kind
-    const spec = lookupModel(conv.model, kind)
+    const spec = lookupModel(conv.model, kind, undefined, stored.spec?.base)
     return json({
       context: contextPanel(d.store, id, {
         ...spec,

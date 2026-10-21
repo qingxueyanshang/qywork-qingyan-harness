@@ -4,7 +4,7 @@
  * 按「模型 id × 协议」精确匹配，或使用该模型已声明的协议映射；其他组合使用协议默认规格。
  * 字段与对话目录不同：生成模型没有上下文窗口与思考档位，只有操作与参数表。
  *
- * 官方模型收录各厂商当前最新一代；渠道模型按渠道公示的可调用列表登记。
+ * 只收录官方模型，各厂商当前最新一代。中转渠道的型号不在此登记：拉取时由渠道目录生成规格并保存在配置中（`channels.ts`）。
  * 未收录的型号仍可经接口调用，使用协议默认的参数表。
  *
  * 参数使用接口自身的字段名，不做跨厂商统一。生成质量 `quality` 与分辨率 `size` 分别声明；
@@ -19,6 +19,7 @@
  */
 
 import {
+  type ChannelVideoSpec,
   type Currency,
   MEDIA_KIND_OUTPUT,
   type MediaKind,
@@ -27,9 +28,8 @@ import {
   type MentionStyle,
 } from '@qywork/core'
 import { GOOGLE_XAI_DEFAULTS, GOOGLE_XAI_MODELS } from './catalog-google-xai.ts'
-import { HONGCHENG_MODELS } from './catalog-hongcheng.ts'
-import { MUMUGOFE_MODELS, MUMUGOFE_RETIRED_MODELS } from './catalog-mumugofe.ts'
 import { QWEN_AUDIO_MODELS } from './catalog-qwen-audio.ts'
+import { channelMediaSpec } from './channels.ts'
 import type { MediaInput, MediaUsage } from './types.ts'
 
 /**
@@ -141,7 +141,7 @@ export interface MediaModelSpec {
     }[]
   }
   params: readonly MediaParamSpec[]
-  /** false 表示未列入内置目录；未知型号使用协议默认，下架型号保留旧配置规格。 */
+  /** false 表示协议默认规格：目录与保存的渠道规格中都没有该型号。 */
   catalogued: boolean
   /**
    * 官方单价，按接口回报的计量计算金额。以下情形没有单价，金额不明：协议默认、按 id 回退到其他协议（中转站价格不同）、
@@ -1164,8 +1164,6 @@ const SEEDANCE_25_MENTION: MentionStyle = {
 const WAN_MENTION: MentionStyle = { image: '图{n}', video: '视频{n}', audio: '音频{n}' }
 
 const SEEDS: readonly MediaModelSpec[] = [
-  ...HONGCHENG_MODELS,
-  ...MUMUGOFE_MODELS,
   ...GOOGLE_XAI_MODELS,
   ...QWEN_AUDIO_MODELS,
   spec(
@@ -1608,16 +1606,20 @@ export function mediaKindsOf(spec: MediaModelSpec): MediaKind[] {
 }
 
 /**
- * 模型在指定协议上的规格。
+ * 模型在指定协议上的规格。顺序唯一：同协议的目录条目 → 配置中保存的渠道规格 → 已登记的协议映射 → 协议默认。
  *
- * 精确匹配未命中时只使用已登记的协议映射。没有映射的组合使用协议默认，
- * 不继承无法正确序列化的原生参数、输入能力或官方单价。
+ * `saved` 是拉取时由渠道目录得到、保存在该型号配置中的规格（`StoredMediaModel.spec`），只用于 `openai_videos`。
+ * 生成工具、画布、提示词与适配器都经由本函数取得规格，调用方必须传入同一份保存的规格，否则各处参数不一致。
+ * 没有映射的组合使用协议默认，不继承无法正确序列化的原生参数、输入能力或官方单价。
  */
-export function lookupMediaModel(id: string, kind: MediaKind): MediaModelSpec {
-  const exact =
-    SEEDS.find((m) => m.id === id && m.kind === kind) ??
-    MUMUGOFE_RETIRED_MODELS.find((m) => m.id === id && m.kind === kind)
+export function lookupMediaModel(
+  id: string,
+  kind: MediaKind,
+  saved?: ChannelVideoSpec,
+): MediaModelSpec {
+  const exact = SEEDS.find((m) => m.id === id && m.kind === kind)
   if (exact) return exact
+  if (saved && kind === 'openai_videos') return channelMediaSpec(id, saved)
   const base = PROTOCOL_DEFAULTS[kind]
   const byId = SEEDS.find(
     (m) => m.id === id && MEDIA_KIND_OUTPUT[m.kind] === MEDIA_KIND_OUTPUT[kind],

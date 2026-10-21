@@ -57,7 +57,7 @@ export function buildAdapter(profile: ProviderProfile, now = Date.now()): LlmAda
 
   // 端点校验只作用于当前接口，不修改全局模型规格。
   const spec = applyTransportCapabilities(
-    lookupModel(profile.model, profile.kind, now),
+    lookupModel(profile.model, profile.kind, now, profile.spec?.base),
     profile.transport,
     profile.spec,
   )

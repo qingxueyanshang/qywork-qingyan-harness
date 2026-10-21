@@ -8,6 +8,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import {
+  builtinCatalog,
   CHAT_REASONING_PROTOCOLS,
   type ChatReasoningProtocol,
   findMediaModel,
@@ -18,6 +19,8 @@ import {
 import {
   CACHE_ROUTINGS,
   type CacheRouting,
+  type ChannelVideoSpec,
+  channelVideoSpecProblem,
   EFFORT_ORDER,
   type EffortLevel,
   log,
@@ -212,6 +215,13 @@ export interface StoredProvider {
 export interface StoredMediaModel {
   /** 生成请求使用的协议。添加时默认取目录协议，保存后不随接口地址变化。 */
   kind: MediaKind
+  /**
+   * 拉取模型时由渠道目录得到的规格，只用于 `openai_videos`。中转渠道的型号只在此处有规格，代码目录中没有；
+   * 每次拉取时按渠道目录更新。解析顺序见 `lookupMediaModel`。
+   */
+  spec?: ChannelVideoSpec
+  /** 上一次拉取时渠道的计费清单中已没有该型号。生成工具不再向它提交。 */
+  delisted?: true
 }
 
 /**
@@ -287,6 +297,8 @@ export interface StoredCatalogEntry {
    * 同一个模型经不同中转站时结论可能不同。
    */
   cacheRouting?: CacheRouting
+  /** 对应型号：中转站的自定义名称按模型库中该型号的规格取得窗口、档位与能力。由拉取模型时选择。 */
+  base?: string
 }
 
 /**
@@ -321,6 +333,24 @@ export interface StoredModel {
   effort?: EffortLevel
   /** 该接口对控制参数的透传能力；不属于全局模型能力。 */
   transport?: TransportCapabilities
+  /**
+   * 该接口的实际价格，由拉取模型时从中转的公开价格折算，每百万 Token。
+   *
+   * 不写入模型库覆盖层（`catalog`）：覆盖层按「型号 × 协议」保存、与接口无关，写入后同名同协议的官方接口也会改价。
+   * `resolveModel` 把它合成进该接口的覆盖对象，适配器与账本读取的仍是同一个对象。
+   */
+  price?: ModelPrice
+  /** 上一次拉取时中转的计费清单中已没有该型号。 */
+  delisted?: true
+}
+
+/** 每百万 Token 的价格，字段与模型库覆盖的价格字段相同。 */
+export interface ModelPrice {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  currency: 'USD' | 'CNY'
 }
 
 /**
@@ -337,7 +367,10 @@ export interface ResolvedModel {
   apiKey?: string
   baseUrl?: string
   headers?: Record<string, string>
-  /** 模型库中的对应条目。按「模型 id × 接口的 kind」查询，模型库中没有时为 undefined。 */
+  /**
+   * 模型库中的对应条目，按「模型 id × 接口的 kind」查询，并合成该接口的价格（`StoredModel.price`）。
+   * 两者都没有时为 undefined。
+   */
   spec?: StoredCatalogEntry
   /** 用户为该模型选定的思考档位。undefined 表示未选择，不发送思考字段。 */
   effort?: EffortLevel
@@ -602,7 +635,12 @@ function migrateRemovedMediaModels(cfg: QyConfig): string[] {
     let removedChannel = false
     for (const [id, stored] of Object.entries(provider.media ?? {})) {
       const isRemovedChannel = (stored.kind as string) === 'binguo_videos'
-      if (!isRemovedChannel && !(stored.kind === 'openai_videos' && removedModels.has(id))) continue
+      // 带保存规格的条目是拉取得到的型号：渠道可能重新启用同名型号，不按旧名单删除。
+      if (
+        !isRemovedChannel &&
+        !(stored.kind === 'openai_videos' && removedModels.has(id) && !stored.spec)
+      )
+        continue
       delete provider.media![id]
       removed = true
       removedChannel ||= isRemovedChannel
@@ -621,6 +659,73 @@ function migrateRemovedMediaModels(cfg: QyConfig): string[] {
   }
   if (notices.length && cfg.mediaDefaults && !Object.keys(cfg.mediaDefaults).length)
     delete cfg.mediaDefaults
+  return notices
+}
+
+/**
+ * 渠道型号的规格改为拉取时保存在配置中之前，代码目录中登记的 hongcheng 与木木型号（含两个木木下架型号）。
+ * 本表只用于为这些已落盘的条目补上同样的规格，使升级后的请求字段与升级前一致；不要增加型号，新型号经拉取取得。
+ */
+const CHANNEL_MODELS_BEFORE_PULL: Record<string, ChannelVideoSpec> = (() => {
+  const seconds = (min: number) => Array.from({ length: 31 - min }, (_, i) => i + min)
+  const hongcheng = (
+    resolution: string,
+    maxVideos: number,
+    min: number,
+    price: ChannelVideoSpec['price'],
+  ): ChannelVideoSpec => ({
+    channel: 'hongcheng',
+    seconds: seconds(min),
+    ratios: ['16:9', '9:16', '1:1'],
+    resolutions: [resolution],
+    maxImages: 30,
+    maxVideos,
+    maxAudios: 10,
+    ...(price ? { price } : {}),
+  })
+  const mumugofe = (
+    secs: number[],
+    inputs: Pick<ChannelVideoSpec, 'maxVideos' | 'maxAudios' | 'publicUrls'>,
+    amount?: number,
+  ): ChannelVideoSpec => ({
+    channel: 'mumugofe',
+    seconds: secs,
+    ratios: ['16:9', '9:16'],
+    resolutions: ['720p'],
+    sizes: { '720p': [1280, 720] },
+    maxImages: 30,
+    ...inputs,
+    ...(amount ? { price: { per: 'request', amount, currency: 'CNY' } } : {}),
+  })
+  const perSecond = (amount: number) => ({ per: 'second', amount, currency: 'CNY' }) as const
+  return {
+    'TTseadanco2.5-720': hongcheng('720p', 10, 5, perSecond(0.42)),
+    'TTsedanco2.5-480': hongcheng('480p', 10, 5, perSecond(0.31)),
+    'GGseadanco2.5/720': hongcheng('720p', 10, 5, perSecond(0.54)),
+    'seedance-2.5-yy-720p': hongcheng('720p', 0, 4, {
+      per: 'request',
+      amount: 7.3,
+      currency: 'CNY',
+    }),
+    'seedance2.5-V': mumugofe(seconds(5), { maxVideos: 0, maxAudios: 0, publicUrls: true }, 7.5),
+    '007系列/sd2.5(30图10音/4-30秒/720P)': mumugofe(seconds(4), { maxVideos: 0, maxAudios: 10 }, 6),
+    'X-SD25-301010': mumugofe([30], { maxVideos: 0, maxAudios: 0, publicUrls: true }, 7),
+    '专享sd2.5(30图10音/4-30秒/720p)': mumugofe(seconds(4), { maxVideos: 0, maxAudios: 10 }),
+    '高质量sd2.5(满血全参/720P/按次)': mumugofe([30], { maxVideos: 10, maxAudios: 10 }),
+  }
+})()
+
+/** 为已落盘的渠道型号补上保存的规格（`CHANNEL_MODELS_BEFORE_PULL`）。只修改内存，下一次保存时随整份写回。 */
+function migrateChannelModelSpecs(cfg: QyConfig): string[] {
+  const notices: string[] = []
+  for (const [name, provider] of Object.entries(cfg.providers ?? {})) {
+    for (const [id, stored] of Object.entries(provider.media ?? {})) {
+      const spec = CHANNEL_MODELS_BEFORE_PULL[id]
+      if (!spec || stored.kind !== 'openai_videos' || stored.spec) continue
+      stored.spec = structuredClone(spec)
+      notices.push(`${name} / ${id} 的参数已转存到配置中；重新拉取模型时按渠道目录更新。`)
+    }
+  }
   return notices
 }
 
@@ -652,6 +757,7 @@ export async function loadConfig(): Promise<QyConfig> {
   for (const n of migrateDisabledEffort(cfg)) log.warn('config', n)
   for (const n of migrateRetiredDeepSeekOverrides(cfg)) log.warn('config', n)
   for (const n of migrateRemovedMediaModels(cfg)) log.warn('config', n)
+  for (const n of migrateChannelModelSpecs(cfg)) log.warn('config', n)
   for (const n of migrateMediaUploadProvider(cfg)) log.warn('config', n)
   for (const n of migrateUnverifiedMediaKinds(cfg)) log.warn('config', n)
 
@@ -768,8 +874,9 @@ export function resolveModel(cfg: QyConfig, model?: string | ModelRef): Resolved
   if (!provider) return undefined
   const declared = provider.models[wanted]
   // 模型库中的覆盖按「模型 id × 该接口的协议」查询。无论接口是否声明过该模型都能取得：
-  // 参数是模型在该协议上的属性，不是接口下模型配置项的属性。
-  const spec = cfg.catalog?.[catalogKey(wanted, provider.kind)]
+  // 参数是模型在该协议上的属性，不是接口下模型配置项的属性。接口价格在此合成进同一个覆盖对象。
+  const entry = cfg.catalog?.[catalogKey(wanted, provider.kind)]
+  const spec = declared?.price ? { ...entry, ...declared.price } : entry
 
   return {
     provider: name,
@@ -794,6 +901,9 @@ export interface ResolvedMediaModel {
   apiKey?: string
   baseUrl?: string
   headers?: Record<string, string>
+  /** 保存的渠道规格，取规格时传给 `lookupMediaModel`。 */
+  spec?: ChannelVideoSpec
+  delisted?: true
 }
 
 /**
@@ -820,6 +930,8 @@ export function resolveMediaModel(
     ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
     ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
     ...(provider.headers ? { headers: provider.headers } : {}),
+    ...(stored.spec ? { spec: stored.spec } : {}),
+    ...(stored.delisted ? { delisted: true as const } : {}),
   }
 }
 
@@ -830,6 +942,9 @@ export interface MediaModelEntry {
   kind: MediaKind
   output: MediaOutput
   isDefault: boolean
+  /** 保存的渠道规格，取规格时传给 `lookupMediaModel`。 */
+  spec?: ChannelVideoSpec
+  delisted?: true
 }
 
 /** 已配置的全部生成模型，按接口在配置中的顺序。 */
@@ -845,6 +960,8 @@ export function listMediaModels(cfg: QyConfig): MediaModelEntry[] {
         kind: m.kind,
         output,
         isDefault: d?.provider === provider && d.model === model,
+        ...(m.spec ? { spec: m.spec } : {}),
+        ...(m.delisted ? { delisted: true as const } : {}),
       })
     }
   }
@@ -947,6 +1064,23 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
       if (m.transport?.thinking !== undefined && !THINKING_MODES.includes(m.transport.thinking)) {
         problems.push(`${name} / ${id} 的 transport.thinking 不是有效参数格式。`)
       }
+      // 价格直接进入账本，不合法的值会使该接口全部用量记错。
+      const price = m.price
+      if (
+        price !== undefined &&
+        (!price ||
+          !['input', 'output', 'cacheRead', 'cacheWrite'].every((k) => {
+            const v = (price as unknown as Record<string, unknown>)[k]
+            return typeof v === 'number' && Number.isFinite(v) && v >= 0
+          }) ||
+          !['USD', 'CNY'].includes(price.currency))
+      ) {
+        problems.push(
+          `${name} / ${id} 的 price 必须包含非负数 input、output、cacheRead、cacheWrite 与 currency（USD 或 CNY）。`,
+        )
+      }
+      if (m.delisted !== undefined && m.delisted !== true)
+        problems.push(`${name} / ${id} 的 delisted 只能为 true。`)
       const check = m.transport?.toolCalls
       if (
         check !== undefined &&
@@ -1000,6 +1134,16 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
         )
       }
     }
+    // 对应型号不在模型库中时取得的是默认规格，与用户的选择不一致且不报错。
+    if (
+      entry.base !== undefined &&
+      (typeof entry.base !== 'string' || !builtinCatalog().some((m) => m.id === entry.base))
+    ) {
+      problems.push(
+        `模型库 "${key}" 的对应型号 "${String(entry.base)}" 不在模型库中。\n` +
+          `  在设置 → 模型中重新拉取并选择，或修改 ${configPath()} 中 "catalog" 下的 base。`,
+      )
+    }
   }
 
   /*
@@ -1015,6 +1159,20 @@ export function diagnoseConfig(cfg: QyConfig): string[] {
             `  修改 ${configPath()} 中该接口 "media" 下的对应条目。`,
         )
       }
+      // 保存的渠道规格直接决定请求字段与素材上限，不合法的规格会使画布开放渠道不接受的素材。
+      if (m?.spec !== undefined) {
+        const problem =
+          m.kind === 'openai_videos'
+            ? channelVideoSpecProblem(m.spec)
+            : '只有 openai_videos 协议可以保存渠道规格'
+        if (problem)
+          problems.push(
+            `${name} / ${id} 的渠道规格不合法：${problem}。\n` +
+              `  在设置 → 模型中重新拉取，或修改 ${configPath()} 中该条目的 "spec"。`,
+          )
+      }
+      if (m?.delisted !== undefined && m.delisted !== true)
+        problems.push(`${name} / ${id} 的 delisted 只能为 true。`)
     }
   }
   for (const [output, ref] of Object.entries(cfg.mediaDefaults ?? {})) {
