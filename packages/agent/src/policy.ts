@@ -24,8 +24,8 @@
  * - 因此 `undecided` 没有消费者。不属于上述四类的命令即放行。
  *
  * 组合命令无需单独处理。硬拒绝的模式或锚定在命令位（`CMD_POS` 匹配 `;` `&&` `|` `{` 换行之
- * 后的每一段），或扫描整个原始字符串（路径与凭证规则）。因此 `ls && rm -rf ~` 中的第二段同样被
- * 命中，无需先判定是否为单条命令。
+ * 后的每一段），或扫描整个原始字符串（凭证规则）；工作区外写入规则先按组合符号切分，再逐段
+ * 判定写入目标。因此 `ls && rm -rf ~` 中的第二段同样被命中。
  *
  * 同时识别两种语法，且不依据 process.platform。外层 shell 是 bash 还是 PowerShell，由本机安装的程序
  * 决定（`tools/sandbox.ts` 的 `resolveCommandShell`）。本层同时识别两种语法，以下三条理由各自独立成立：
@@ -43,9 +43,11 @@
  * - 拼接与转义：反引号、`-join`、`Invoke-Expression $x`。把命令拆成变量再拼接后，
  *   任何静态模式都无法识别。这与 bash 中的 `$(echo rm)` 属于同一类，不在本层的覆盖范围内。
  * - 不经 pip 的全局安装：`conda install`、Python 代码中调用 `subprocess` 运行 pip。
+ * - 解释器代码中的文件操作：`python -c` 的参数、交给 python 等非 shell 程序的 heredoc 正文
+ *   不按 shell 语法解析。其中的 `>` 是比较运算，`.mkdir()` 是方法调用，按 shell 语法解析会误判为写入。
  *
  * 前三条与第五条不补充，因为补充的只是又一种写法而不是这一行为本身，按写法枚举
- * 总会遗漏；第四条无法补充。实际的防线仍是沙箱，以及用户能看到每一条命令。
+ * 总会遗漏；第四条与第六条无法补充。实际的防线仍是沙箱，以及用户能看到每一条命令。
  */
 
 import { homedir } from 'node:os'
@@ -89,61 +91,15 @@ const CMD_POS = String.raw`(?:^|[;&|({\n\r]|\$\()\s*(?:sudo\s+|env\s+\S+=\S+\s+)
 const atCommandStart = (body: string): RegExp => new RegExp(CMD_POS + body, 'i')
 
 /**
- * 会改变磁盘内容的动作。
- *
- * 用于把越界规则限定在写入与删除上，不拦截读取工作区外的文件。
- * 读取不改变任何状态，读取的实际风险（把凭证读入上下文）由凭证规则单独处理，
- * 该规则更精确：它匹配的是文件本身，与访问文件所用的命令无关。
- *
- * 读取类命令（`cat` / `type` / `Get-Content`）有意不列入。
- *
- * 每个 POSIX 命令都必须配有对应的 PowerShell 命令（`mv` ↔ `Move-Item`/`Rename-Item`、
- * `truncate` ↔ `Clear-Content`、`>` ↔ `Out-File`）：缺少一个，在没有 bash、外层为
- * PowerShell 的机器上就少一条规则，而模型在这类机器上只会使用 PowerShell 写法。
- */
-const WRITE_COMMAND = String.raw`(?:Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|Rename-Item|Remove-Item|\brm\b|\bmv\b|\bcp\b|\btee\b|\bdd\b|\bmkdir\b|\btouch\b|\bchmod\b|\bchown\b|\bln\b|\btruncate\b|sed\s+-i)`
-const WRITE_VERB = `(?:>>?|${WRITE_COMMAND})`
-
-/** 引号内的输出文本不构成重定向；写入与删除命令沿用同一份操作清单。 */
-function hasWriteOperation(command: string): boolean {
-  if (new RegExp(WRITE_COMMAND, 'i').test(command)) return true
-  let nestedWrite = false
-  const unquoted = command.replace(/"(?:`[\s\S]|[^"`])*"|'(?:''|[^'])*'/g, (quoted, offset) => {
-    if (/(?:^|\s)-(?:c|command)\s*$/i.test(command.slice(0, offset))) {
-      nestedWrite ||= hasWriteOperation(quoted.slice(1, -1))
-    }
-    return ''
-  })
-  return nestedWrite || />/.test(unquoted)
-}
-
-/**
- * 家目录与系统目录规则的标记。
- *
- * 它是 `HARD_DENY` 中唯一可以被 `additionalDirectories` 放开的规则：
- * 其余每条规则判定的都是行为本身没有正当理由（破坏磁盘、关机、提权），
- * 这些判定不会因用户多配置一个可写目录而改变。本规则判定的是位置，
- * 而位置正是额外目录所调整的维度。
- *
- * 使用显式标记而不是按索引取第 2 条：表中插入一行时，索引会静默错位，
- * 错位的结果是放开一条本应硬拒的规则。
- */
-const OUTSIDE_LOCATION_RULE = 'outside-location'
-
-/**
  * 工作区之外各位置的符号写法：写法与其在本机上的展开值。
  *
- * 同一张表承担两个用途，必须同源：它既拼入 `OUTSIDE_LOCATION`（判定命令是否涉及工作区外），又在
- * `locationCoveredByExtras` 中展开为真实路径（判定用户是否授权过该位置）。
- * 只在拒绝一侧添加写法会形成漏洞：一条同时引用 `~/data`（已授权）与
- * `$env:APPDATA`（未授权）的命令，因后者不在覆盖检查的范围内，`.every()`
- * 会判定为全部已覆盖并放行整条命令，添加规则反而放宽了规则。
+ * 同一张表用于展开写入目标（`expandSymbol`）与扫描命令中的工作区外引用（`OUTSIDE_REF`）。
  *
  * PowerShell 的几项是同一批位置的另一种写法：`$env:APPDATA` / `$env:LOCALAPPDATA` 位于家目录中
  * （`C:\Users\x\AppData\…`），`$env:windir` / `$env:SystemRoot` 即 `C:\Windows`。在没有 bash 的机
  * 器上模型只使用这些写法，不会出现 `~/` 与 `$HOME`。
  *
- * 无法取得值时返回空串：展开结果不会落入任何 extras，规则保持拒绝（fail-closed）。
+ * 无法取得值时返回空串，该位置按工作区外处理（fail-closed）。
  */
 const OUTSIDE_SYMBOLS: readonly { re: string; value: () => string }[] = [
   { re: String.raw`\$\{?HOME\}?`, value: homedir },
@@ -165,16 +121,8 @@ const OUTSIDE_SYMBOLS: readonly { re: string; value: () => string }[] = [
 
 const OUTSIDE_SYMBOL_RE = OUTSIDE_SYMBOLS.map((s) => s.re).join('|')
 
-/**
- * 指向工作区之外的位置：家目录的各种写法、`/etc`、`C:\Windows`。
- *
- * `~` 必须带分隔符，不能匹配单独的 `~`：`git diff HEAD~1` 中即包含 `~`，
- * 匹配单独的 `~` 会拒绝最常用的 git 命令之一。
- */
-const OUTSIDE_LOCATION = String.raw`(?:^|[\s"'=(])~[/\\]|${OUTSIDE_SYMBOL_RE}|(?:^|[\s"'=(])\/etc\/|[A-Za-z]:[\\/]Windows[\\/]`
-
 /*
- * 工作区中的 `.qy/` 与 `.agents/` 有意不列入本表。
+ * 工作区中的 `.qy/` 与 `.agents/` 有意不列入工作区外写入规则。
  *
  * 不要添加「用 shell 写入 .qy/ 或 .agents/ 即自我提权」的规则，它因以下两条理由不成立：
  *
@@ -202,30 +150,7 @@ const EXTRA_DIRS_SETTING = '「设置 → 权限 → 工作区之外额外可读
  * 是否不可能有正当理由。只要存在用户确实需要执行的可能，就不应列入本表；
  * 表外一律放行。
  */
-export const HARD_DENY: readonly { pattern: RegExp; reason: string; id?: string }[] = [
-  {
-    /**
-     * 命令引用家目录或系统目录，即效果必然超出工作区。
-     *
-     * 它必须是确定性规则。「`$HOME` 位于工作区外」是一个事实，无需每次重新判定：
-     * 交给模型调用判定时，`Get-ChildItem $HOME -Recurse -Filter *.pem` 实测
-     * 连续运行两次给出了相反结论。能用确定性规则表达的边界，不要交给模型推断。
-     *
-     * 只收录这几个位置而不收录所有绝对路径：家目录、`/etc`、`C:\Windows` 在工作区内的编码任
-     * 务中没有正当用途，符合硬拒绝的入选条件。而任意绝对路径可能是用户的另一个项目目录，
-     * 拒绝它的误拒代价过高，因此放行。
-     *
-     * `~` 必须带分隔符，只匹配 `~/` 与 `~\`：`git diff HEAD~1` 中即包含单独的 `~`，
-     * 匹配单独的 `~` 会拒绝最常用的 git 命令之一。
-     */
-    id: OUTSIDE_LOCATION_RULE,
-    pattern: new RegExp(
-      String.raw`(?:${WRITE_VERB})[^\n]*(?:${OUTSIDE_LOCATION})` +
-        String.raw`|(?:${OUTSIDE_LOCATION})[^\n]*\s>>?`,
-      'i',
-    ),
-    reason: `命令在家目录或系统目录中写入或删除，该位置未列入${EXTRA_DIRS_SETTING}`,
-  },
+export const HARD_DENY: readonly { pattern: RegExp; reason: string }[] = [
   {
     // rm -rf / | rm -fr /* | rm -Rf ~ | rm --recursive --force ~/
     // 目标必须是根目录或家目录本身：`rm -rf /home/x/build` 不在此列，照常放行。
@@ -351,19 +276,16 @@ export function decideCommand(command: string, ctx: PolicyContext): PolicyDecisi
 
   /*
    * 每条规则或锚定在命令位（`CMD_POS` 匹配 `;` `&&` `|` 换行之后的每一段），
-   * 或扫描整个原始字符串（路径与凭证规则）。因此 `ls && rm -rf ~` 中的第二段
+   * 或扫描整个原始字符串（凭证规则）。因此 `ls && rm -rf ~` 中的第二段
    * 同样被命中，无需先判定是否为单条命令：组合符号扫描的
    * 唯一用途是保护允许清单，而此处没有允许清单。
    */
   for (const rule of HARD_DENY) {
-    if (!rule.pattern.test(command)) continue
-    if (rule.id === OUTSIDE_LOCATION_RULE && locationCoveredByExtras(command, ctx)) continue
-    return { kind: 'deny', reason: rule.reason }
+    if (rule.pattern.test(command)) return { kind: 'deny', reason: rule.reason }
   }
 
-  // 越界位置的字面写法，与 OUTSIDE_LOCATION_RULE 共同构成同一条规则，见函数注释。
-  const literal = literalOutsideHome(command, ctx)
-  if (literal !== null) return { kind: 'deny', reason: literal }
+  const outside = outsideWrite(command, ctx)
+  if (outside !== null) return { kind: 'deny', reason: outside }
 
   const install = globalPythonInstall(command, ctx)
   if (install !== null) return { kind: 'deny', reason: install }
@@ -445,110 +367,450 @@ function inside(p: string, root: string): boolean {
   return a === b || a.startsWith(`${b}/`)
 }
 
+// ───────────────────────── 工作区外的写入与删除 ─────────────────────────
+
 /**
- * 家目录的字面写法。命中时返回拒绝理由，否则返回 `null`。
+ * 写入或删除磁盘内容的命令，值为写入目标的取法：
+ * - `all`：全部非选项参数；
+ * - `dest`：`-t` / `--target-directory` / `-Destination` 的值，否则为最后一个非选项参数。
+ *   其余参数是读取来源：从工作区外复制到工作区内只读取工作区外的文件；
+ * - `of`：`dd` 的 `of=` 值。
  *
- * 本函数补充上述硬拒绝规则未覆盖的部分：`OUTSIDE_LOCATION_RULE` 的正则只匹配符号写法（`~/`、
- * `$HOME`、`%USERPROFILE%`、`$env:APPDATA`）。同一位置写成字面绝对路径
- * （`C:\Users\<user>\notes`）时不匹配，而 Windows 上工作区通常位于家目录中，
- * 模型写出的往往正是字面路径。
+ * 读取类命令（`cat` / `type` / `Get-Content`）有意不列入：读取不改变任何状态，
+ * 读取的实际风险（把凭证读入上下文）由凭证规则按文件本身判定。
  *
- * 同一位置的两种写法不得得出两种结论。确定性规则只识别一半写法时，
- * 等同于没有该规则：只需把 `~` 展开即可绕过。
- *
- * 不要改为放宽正则：要判定的不是路径形似家目录，而是路径是否位于允许的范
- * 围内，这必须与真实的 homedir 和工作区比较。Windows 上工作区几乎总是位于家目录中
- * （`C:\Users\<user>\Desktop\proj`），因此「家目录一律拒绝」的正则会拒绝工作区本身。该判定无法用
- * 纯文本匹配实现。
- *
- * 仅裁决包含写删操作的命令。只读操作由凭证规则单独裁决。
- * 写删命令引用家目录或系统目录内、且不在工作区及额外目录内的绝对路径时拒绝。
+ * 每个 POSIX 命令都必须配有对应的 PowerShell 命令（`mv` ↔ `Move-Item`/`Rename-Item`、
+ * `truncate` ↔ `Clear-Content`、`>` ↔ `Out-File`）：缺少一个，在没有 bash、外层为
+ * PowerShell 的机器上就少一条规则，而模型在这类机器上只会使用 PowerShell 写法。
  */
-function literalOutsideHome(command: string, ctx: PolicyContext): string | null {
-  if (!hasWriteOperation(command)) return null
-  const home = normalizeSeparators(homedir())
-  const allowed = [ctx.workspaceRoot, ...(ctx.additionalDirectories ?? [])]
-    .map(normalizeSeparators)
-    .filter(Boolean)
+const WRITE_COMMANDS = new Map<string, 'all' | 'dest' | 'of'>([
+  ['rm', 'all'],
+  ['mv', 'all'],
+  ['tee', 'all'],
+  ['mkdir', 'all'],
+  ['touch', 'all'],
+  ['chmod', 'all'],
+  ['chown', 'all'],
+  ['truncate', 'all'],
+  ['sed', 'all'],
+  ['set-content', 'all'],
+  ['add-content', 'all'],
+  ['clear-content', 'all'],
+  ['out-file', 'all'],
+  ['new-item', 'all'],
+  ['move-item', 'all'],
+  ['rename-item', 'all'],
+  ['remove-item', 'all'],
+  ['cp', 'dest'],
+  ['ln', 'dest'],
+  ['copy-item', 'dest'],
+  ['dd', 'of'],
+])
 
-  // 比较前统一大小写（`inside`），否则把盘符写成小写即可绕过本规则，即函数注释所述的
-  // 同一位置两种写法得出两种结论。isSystem 的两条正则都带 /i。
-  for (const m of command.matchAll(/(?:^|[\s"'=(])((?:\/|[A-Za-z]:[\\/])[^\s"'`;&|)]*)/g)) {
-    const p = normalizeSeparators(m[1] ?? '')
-    if (!p) continue
-    // 先判定允许范围：工作区本身位于家目录中，先判定允许范围才不会拒绝工作区自身。
-    if (allowed.some((root) => inside(p, root))) continue
+/** 在参数中执行另一条命令的程序。其后出现的写入命令，目标无法按参数位置确定。 */
+const RUNNERS = new Set([
+  'env',
+  'nohup',
+  'time',
+  'nice',
+  'timeout',
+  'command',
+  'exec',
+  'xargs',
+  'busybox',
+  '-exec',
+  '-execdir',
+  '-ok',
+  '-okdir',
+])
 
-    const isHome = home !== '' && inside(p, home)
-    const isSystem = /^\/etc(\/|$)/i.test(p) || /^[A-Za-z]:\/Windows(\/|$)/i.test(p)
-    if (!isHome && !isSystem) continue
+/** 位于命令名之前的 bash 关键字：`for f in …; do rm "$f"; done` 中该段的命令是 `rm`。 */
+const SHELL_KEYWORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!'])
 
-    return `含写入或删除操作的命令引用了${isHome ? '家目录' : '系统目录'}中的 ${m[1]}，该位置未列入${EXTRA_DIRS_SETTING}`
+/** 切换当前目录的命令。切换到工作区外之后，相对路径的写入目标同样位于工作区外。 */
+const CHANGE_DIR = new Set(['cd', 'chdir', 'pushd', 'set-location', 'sl', 'push-location'])
+
+/**
+ * 解释 shell 语法的程序。只有它们的 `-c` / `-Command` 参数与 heredoc 正文按命令解析；
+ * 交给 python 等其他程序的代码是数据，见文件头「已知未拦截的写法」。
+ */
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'pwsh', 'powershell'])
+
+/** 组合符号之间的一条简单命令。 */
+interface Segment {
+  words: string[]
+  /** `>` / `>>` 的目标。`2>&1` 这类文件描述符复制没有目标。 */
+  redirects: string[]
+  /** 交给本段命令的 heredoc 正文。 */
+  heredocs: string[]
+  /** 双引号内 `$( )` 中的命令。 */
+  substitutions: string[]
+  /** 本段在 `(` 处结束：其后的参数是子表达式的结果，无法从命令文本确定。 */
+  opensExpr: boolean
+}
+
+interface PendingHeredoc {
+  seg: Segment
+  delim: string
+  strip: boolean
+}
+
+type Place = 'allowed' | 'outside' | 'unknown'
+
+interface Located {
+  place: Place
+  /** 拒绝理由中显示的路径：相对路径前加上工作区外的当前目录。 */
+  shown: string
+}
+
+/**
+ * 工作区外的写入或删除。命中时返回拒绝理由，否则返回 `null`。
+ *
+ * 判定的是写入目标，不是命令中出现的路径：`cp <家目录中的附件> docs/` 只读取工作区外的文件。
+ * 不要改为「命令含写入动作且引用工作区外路径即拒绝」：`python -c` 代码中的 `.mkdir()`、
+ * `2>/dev/null`、复制来源都会使只读取工作区外文件的命令被拒绝，而同一操作换一种写法即可执行。
+ *
+ * 写入目标无法从命令文本确定（变量、管道输入、子表达式、`xargs` 等之后的写入命令）时，
+ * 命令中出现任一工作区外引用即拒绝（fail-closed）。
+ *
+ * 必须是确定性规则：交给模型判定时，`Get-ChildItem $HOME -Recurse -Filter *.pem` 实测连续运行两次
+ * 给出了相反结论。只判定家目录、`/etc`、`C:\Windows`，不判定所有绝对路径：其他绝对路径可能是
+ * 用户的另一个项目目录，误拒代价过高。
+ */
+function outsideWrite(command: string, ctx: PolicyContext): string | null {
+  let cwd: Located = { place: 'allowed', shown: '' }
+  let indeterminate = false
+  for (const seg of segments(command)) {
+    // 跳过命令名之前的环境变量赋值（`FOO=1 rm …`）与关键字。
+    let k = 0
+    while (k < seg.words.length) {
+      const w = seg.words[k] as string
+      if (!/^[A-Za-z_]\w*=/.test(w) && !SHELL_KEYWORDS.has(w)) break
+      k++
+    }
+    const name = commandName(seg.words[k] ?? '')
+    const args = seg.words.slice(k + 1)
+
+    if (CHANGE_DIR.has(name)) {
+      const target = args.length === 0 ? '~' : args.find((a) => !a.startsWith('-'))
+      if (target !== undefined) cwd = locate(target, ctx, cwd)
+      continue
+    }
+
+    const mode = WRITE_COMMANDS.get(name)
+    const inPlace = name !== 'sed' || args.some((a) => /^-(?:[a-zA-Z]*i|-in-place)/.test(a))
+    const targets = mode !== undefined && inPlace ? pick(mode, args) : null
+    // PowerShell 命令没有路径参数时，写入目标来自管道输入。
+    if (targets !== null && (seg.opensExpr || (targets.length === 0 && name.includes('-')))) {
+      indeterminate = true
+    }
+    const runner = seg.words.findIndex((w, j) => j >= k && RUNNERS.has(commandName(w)))
+    if (
+      runner !== -1 &&
+      seg.words.slice(runner + 1).some((w) => WRITE_COMMANDS.has(commandName(w)))
+    ) {
+      indeterminate = true
+    }
+
+    for (const t of [...seg.redirects, ...(targets ?? [])]) {
+      const at = locate(t, ctx, cwd)
+      if (at.place === 'outside') {
+        return `写入目标 ${at.shown} 位于工作区之外，且未列入${EXTRA_DIRS_SETTING}`
+      }
+      if (at.place === 'unknown') indeterminate = true
+    }
+
+    const scripts = SHELLS.has(name) ? [...seg.heredocs, ...inlineScript(name, args)] : []
+    for (const inner of [...seg.substitutions, ...scripts]) {
+      const reason = outsideWrite(inner, ctx)
+      if (reason !== null) return reason
+    }
+  }
+  if (!indeterminate) return null
+  for (const m of command.matchAll(OUTSIDE_REF)) {
+    if (classify(m[0], ctx) === 'outside') {
+      return `命令引用了工作区之外的 ${m[0]}，且写入目标无法从命令文本确定`
+    }
   }
   return null
 }
 
 /**
- * 命令中每一处家目录或系统目录引用是否都位于额外根目录中。
+ * 把命令切分为段。识别引号、文件描述符复制、heredoc 与行尾的换行转义，不展开变量。
  *
- * 必须逐处检查，不能在配置了额外目录时放行整条命令。用户把 `~/notes` 加入
- * `additionalDirectories`，含义是该目录可以访问，而不是整个家目录都可以访问。放行整条命令时，
- * `cat ~/.ssh/id_rsa` 会一并被放行，即把一项精确的授权扩大为全部授权。
- *
- * fail-closed：无法解析出具体路径（例如 `$HOME` 之后是变量而不是字面量）时，
- * 按未覆盖处理，规则照常拒绝。本规则是 deny 最终判决，没有第二层后备处理，
- * 因此无法确定时应保持拒绝，而不是放行。
- *
- * `$env:USERPROFILE` 等无法静态展开的写法：`$env:USERPROFILE\notes` 中的 `\notes` 是字面量，
- * `$env:USERPROFILE` 是展开式，判定时按本机 home 展开。这只在本机 home 与命令实际展开结果一致时成立，
- * 而这是常态。不一致的极端情况（命令在另一台机器上执行）回退为拒绝，方向安全。
+ * 反斜杠不作为转义符：PowerShell 路径以反斜杠分隔，按 bash 规则去除反斜杠时
+ * `C:\Users\x` 变为 `C:Usersx`，不再被识别为家目录。
  */
-function locationCoveredByExtras(command: string, ctx: PolicyContext): boolean {
-  const extras = (ctx.additionalDirectories ?? []).map(normalizeSeparators).filter(Boolean)
-  if (extras.length === 0) return false
-
-  const home = normalizeSeparators(homedir())
-
-  const found = command.match(OUTSIDE_REFS)
-  if (found === null || found.length === 0) return false
-
-  return found.every((raw) => {
-    const expanded = normalizeSeparators(expandOutsideRef(raw, home))
-    // 展开后仍含 `$` / `%` 表示其中还有其他变量，静态分析无法确定其指向。
-    if (/[$%]/.test(expanded)) return false
-    return extras.some((root) => expanded === root || expanded.startsWith(`${root}/`))
+function segments(command: string): Segment[] {
+  const out: Segment[] = []
+  const fresh = (): Segment => ({
+    words: [],
+    redirects: [],
+    heredocs: [],
+    substitutions: [],
+    opensExpr: false,
   })
+  const pending: PendingHeredoc[] = []
+  let seg = fresh()
+  let word = ''
+  let inWord = false
+  // 下一个词的用途：命令参数、重定向目标，或 `<` 的输入来源（不是写入目标）。
+  let role: 'word' | 'redirect' | 'input' = 'word'
+
+  const endWord = () => {
+    if (!inWord) return
+    if (role === 'word') seg.words.push(word)
+    else if (role === 'redirect') seg.redirects.push(word)
+    role = 'word'
+    word = ''
+    inWord = false
+  }
+  const endSegment = (opensExpr: boolean) => {
+    endWord()
+    role = 'word'
+    seg.opensExpr = opensExpr
+    if (seg.words.length + seg.redirects.length + seg.substitutions.length > 0) out.push(seg)
+    seg = fresh()
+  }
+
+  let i = 0
+  while (i < command.length) {
+    const c = command[i] as string
+    const next = command[i + 1]
+    if (
+      (c === '\\' || c === '`') &&
+      (next === '\n' || (next === '\r' && command[i + 2] === '\n'))
+    ) {
+      i += next === '\n' ? 2 : 3
+    } else if (c === "'") {
+      const end = command.indexOf("'", i + 1)
+      const stop = end === -1 ? command.length : end
+      word += command.slice(i + 1, stop)
+      inWord = true
+      i = stop + 1
+    } else if (c === '"') {
+      let j = i + 1
+      while (j < command.length && command[j] !== '"') {
+        if (command[j] === '$' && command[j + 1] === '(') {
+          const end = closingParen(command, j + 1)
+          seg.substitutions.push(command.slice(j + 2, end))
+          j = end + 1
+        } else {
+          j += command[j] === '\\' || command[j] === '`' ? 2 : 1
+        }
+      }
+      word += command.slice(i + 1, j)
+      inWord = true
+      i = j + 1
+    } else if (c === '$' && next === '{') {
+      const end = command.indexOf('}', i)
+      const stop = end === -1 ? command.length : end + 1
+      word += command.slice(i, stop)
+      inWord = true
+      i = stop
+    } else if (c === '{' && next === '}') {
+      // `find -exec` 与 `xargs -I` 的占位符，不是语句块。
+      word += '{}'
+      inWord = true
+      i += 2
+    } else if (c === '\n') {
+      endSegment(false)
+      i = readHeredocs(command, i + 1, pending)
+    } else if (';&|(){}\r`'.includes(c)) {
+      endSegment(c === '(')
+      i++
+    } else if (c === '>') {
+      // `2>`、`*>` 中的数字与星号是文件描述符，不是参数。
+      if (/^(?:\d+|\*)$/.test(word)) {
+        word = ''
+        inWord = false
+      }
+      endWord()
+      i++
+      if (command[i] === '>' || command[i] === '|') i++
+      if (command[i] === '&' && /[\d-]/.test(command[i + 1] ?? '')) {
+        // `2>&1`、`>&-`：复制或关闭文件描述符，没有写入目标。
+        i++
+        while (/[\d-]/.test(command[i] ?? '')) i++
+      } else {
+        if (command[i] === '&') i++
+        role = 'redirect'
+      }
+    } else if (c === '<') {
+      endWord()
+      const heredoc = /^<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([^\s;&|<>()]+))/.exec(
+        command.slice(i),
+      )
+      if (heredoc !== null && command[i + 2] !== '<') {
+        pending.push({
+          seg,
+          delim: heredoc[2] ?? heredoc[3] ?? heredoc[4] ?? '',
+          strip: heredoc[1] === '-',
+        })
+        i += heredoc[0].length
+      } else {
+        while (command[i] === '<') i++
+        role = 'input'
+      }
+    } else if (c === ' ' || c === '\t') {
+      endWord()
+      i++
+    } else {
+      word += c
+      inWord = true
+      i++
+    }
+  }
+  endSegment(false)
+  return out
 }
 
-/** 路径尾部的终止符：空白、引号、反引号、shell 组合符号；其后的内容不再属于该路径。 */
-const PATH_TAIL = '[^\\s"\'`;&|)]*'
+/** 从 `start` 起依次读取各 heredoc 的正文，直到各自的结束行。返回正文之后的下标。 */
+function readHeredocs(command: string, start: number, pending: PendingHeredoc[]): number {
+  let i = start
+  for (const p of pending.splice(0)) {
+    const body: string[] = []
+    while (i < command.length) {
+      const nl = command.indexOf('\n', i)
+      const end = nl === -1 ? command.length : nl
+      const line = command.slice(i, end).replace(/\r$/, '')
+      i = end + 1
+      if ((p.strip ? line.replace(/^\t+/, '') : line) === p.delim) break
+      body.push(line)
+    }
+    p.seg.heredocs.push(body.join('\n'))
+  }
+  return i
+}
+
+/** `s[open]` 为 `(`，返回与之匹配的 `)` 的下标；单引号内的括号不计。未闭合时返回 `s.length`。 */
+function closingParen(s: string, open: number): number {
+  let depth = 0
+  for (let j = open; j < s.length; j++) {
+    const c = s[j]
+    if (c === "'") {
+      const end = s.indexOf("'", j + 1)
+      if (end === -1) return s.length
+      j = end
+    } else if (c === '(') {
+      depth++
+    } else if (c === ')') {
+      depth--
+      if (depth === 0) return j
+    }
+  }
+  return s.length
+}
+
+/** 命令名：去掉目录与 `.exe` 后转为小写。PowerShell 命令不区分大小写。 */
+function commandName(word: string): string {
+  return word
+    .replace(/^.*[\\/]/, '')
+    .replace(/\.exe$/i, '')
+    .toLowerCase()
+}
+
+/** 按 `WRITE_COMMANDS` 的取法从参数中取出写入目标。 */
+function pick(mode: 'all' | 'dest' | 'of', args: readonly string[]): string[] {
+  if (mode === 'of') return args.filter((a) => a.startsWith('of=')).map((a) => a.slice(3))
+  const positional = args.filter((a) => !a.startsWith('-'))
+  if (mode === 'all') return positional
+  for (const [j, a] of args.entries()) {
+    if (a.startsWith('--target-directory=')) return [a.slice('--target-directory='.length)]
+    const flag = a.toLowerCase()
+    // PowerShell 参数名可以写为任意无歧义的前缀。
+    if (
+      flag === '-t' ||
+      flag === '--target-directory' ||
+      (flag.length >= 4 && '-destination'.startsWith(flag))
+    ) {
+      return args.slice(j + 1, j + 2)
+    }
+  }
+  return positional.slice(-1)
+}
 
 /**
- * 命令中每一处工作区之外的引用，连同其后的路径尾部。
+ * shell 的内联脚本：bash 的 `-c`（可与其他单字母选项合写，如 `-lc`），PowerShell 的 `-Command`
+ * 及其前缀缩写。PowerShell 把 `-Command` 之后的全部参数作为命令，因此拼接其后全部参数。
  *
- * 写法清单与 `OUTSIDE_LOCATION` 同源（见 `OUTSIDE_SYMBOLS`）：两边不一致且此处
- * 较少时，多识别一种写法反而会放宽规则。
+ * 不要对 PowerShell 使用 bash 的判据：`-Exec`（`-ExecutionPolicy` 的缩写）以 `c` 结尾，
+ * 会被当作 `-c`，真正的 `-Command` 脚本因此不被解析。
  */
-const OUTSIDE_REFS = new RegExp(
-  String.raw`(?:^|(?<=[\s"'=(]))(?:~|${OUTSIDE_SYMBOL_RE}|\/etc\/|[A-Za-z]:[\\/]Windows[\\/])` +
-    PATH_TAIL,
+function inlineScript(name: string, args: readonly string[]): string[] {
+  const powershell = name === 'pwsh' || name === 'powershell'
+  const at = args.findIndex((a) => {
+    const flag = a.toLowerCase()
+    return powershell
+      ? flag.length >= 2 && '-command'.startsWith(flag)
+      : /^-[a-z]*c[a-z]*$/.test(flag)
+  })
+  return at === -1 ? [] : [args.slice(at + 1).join(' ')]
+}
+
+/** 写入目标的位置。相对路径按当前目录判定：`cd` 到工作区外之后，`rm -rf build` 删除的是工作区外的内容。 */
+function locate(word: string, ctx: PolicyContext, cwd: Located): Located {
+  const place = classify(word, ctx)
+  if (
+    place === 'allowed' &&
+    cwd.place !== 'allowed' &&
+    !/^(?:[\\/]|[A-Za-z]:[\\/]|~|\$|%)/.test(word)
+  ) {
+    return { place: cwd.place, shown: `${cwd.shown}/${word}` }
+  }
+  return { place, shown: word }
+}
+
+/**
+ * 判定一个路径的位置。
+ * - `allowed`：工作区、额外目录、相对路径，以及家目录与系统目录之外的绝对路径；
+ * - `outside`：家目录或系统目录中、且不在工作区与额外目录内；
+ * - `unknown`：以变量开头，无法从命令文本确定。
+ *
+ * 路径中段出现变量时按变量之前的字面前缀判定：`$HOME/$X/out` 的前缀是家目录本身，
+ * 位于额外目录 `~/data` 之外，按工作区外处理。
+ */
+function classify(word: string, ctx: PolicyContext): Place {
+  if (/^\$null$/i.test(word)) return 'allowed'
+  const expanded = expandSymbol(word)
+  if (expanded === '') return 'outside'
+  let path = normalizeSeparators(expanded ?? word)
+  const cut = path.search(/\$|%\w+%/)
+  if (cut === 0) return 'unknown'
+  if (cut > 0) path = path.slice(0, cut)
+  if (!/^(?:\/|[A-Za-z]:\/)/.test(path)) return 'allowed'
+  // 先判定允许范围：Windows 上工作区通常位于家目录中。
+  if (withinAllowed(path, ctx)) return 'allowed'
+  const home = normalizeSeparators(homedir())
+  const isHome = home !== '' && inside(path, home)
+  const isSystem = /^\/etc(?:\/|$)/i.test(path) || /^[A-Za-z]:\/Windows(?:\/|$)/i.test(path)
+  return isHome || isSystem ? 'outside' : 'allowed'
+}
+
+/** 把开头的家目录或系统目录符号展开为本机路径。没有符号时返回 `null`，符号在本机没有值时返回空串。 */
+function expandSymbol(word: string): string | null {
+  if (/^~(?:[\\/]|$)/.test(word)) {
+    const home = homedir()
+    return home === '' ? '' : home + word.slice(1)
+  }
+  for (const sym of OUTSIDE_SYMBOLS) {
+    const m = new RegExp(`^(?:${sym.re})(?!\\w)`, 'i').exec(word)
+    if (m === null) continue
+    const value = sym.value()
+    return value === '' ? '' : value + word.slice(m[0].length)
+  }
+  return null
+}
+
+/**
+ * 命令文本中可能位于工作区外的引用：`~`、各符号写法与绝对路径，连同其后的路径尾部。
+ * `~` 必须单独成词或后接分隔符：`git diff HEAD~1` 中的 `~` 不是家目录。
+ */
+const OUTSIDE_REF = new RegExp(
+  String.raw`(?<=^|[\s"'=(,])(?:~(?=[\\/\s"',)]|$)|${OUTSIDE_SYMBOL_RE}|\/|[A-Za-z]:[\\/])` +
+    '[^\\s"\'`;&|),]*',
   'gi',
 )
-
-/**
- * 把一处引用的头部替换为本机上的真实路径，尾部原样保留。
- *
- * 无法取得值时（`$PROFILE`，或本机没有 `APPDATA`）保留空串或原样的
- * `$` / `%`，调用方按 fail-closed 处理：本规则是最终判决，无法确定时拒绝。
- */
-function expandOutsideRef(raw: string, home: string): string {
-  if (raw.startsWith('~')) return home + raw.slice(1)
-  for (const sym of OUTSIDE_SYMBOLS) {
-    const m = new RegExp(`^(?:${sym.re})`, 'i').exec(raw)
-    if (m !== null) return sym.value() + raw.slice(m[0].length)
-  }
-  return raw
-}
 
 function normalizeSeparators(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '')
